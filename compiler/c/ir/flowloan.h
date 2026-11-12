@@ -401,6 +401,9 @@ int loanShapeOwnerByValue(uint32_t loan);
 int loanShapeInFlight(uint32_t loan);
 int loanShapeSamePlace(uint32_t loan, Place *pl);
 int loanShapeDisjoint(uint32_t loan, Place *pl);
+// the borrow expression 'site', whose loan is in 'set', is of a place apart from the shape loan's
+// (an argument that is a sibling field)
+int loanShapeDisjointAt(uint32_t loan, PathSet *set, INode *site);
 void loanShapeNow(INode *call, uint32_t loan, int why, Name *callee);
 void loanShapePend(INode *call, uint32_t loan, int why, Name *callee);
 

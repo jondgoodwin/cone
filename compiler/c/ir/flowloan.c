@@ -2666,3 +2666,19 @@ int loanShapeDisjoint(uint32_t loan, Place *pl) {
         ++d;
     return lp->owned <= d && pl->owned <= d;
 }
+
+// Is the argument borrow 'site' (the borrow expression itself), whose loan is among those its value
+// carries ('set': the loan it made, and what the root of its place holds), of a place that
+// diverges from the shape loan's, as loanShapeDisjoint says of one place? Then the argument is a
+// value of the function's own, apart from the collection the loan points into. A place reached
+// through a reference read from a borrowed one ('far') says nothing of where it is
+int loanShapeDisjointAt(uint32_t loan, PathSet *set, INode *site) {
+    if (set == NULL)
+        return 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        Loan *l = &loans[loanOf(set->ids[i])];
+        if (l->site == site && l->kind != LoanCaller)
+            return !l->source && !l->place.far && loanShapeDisjoint(loan, &l->place);
+    }
+    return 0;
+}

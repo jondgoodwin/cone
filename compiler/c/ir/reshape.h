@@ -164,6 +164,8 @@ typedef struct {
 // of a struct other than the borrow's 'owner' is another value than the one the borrow is into, and is
 // not asked: that needs both known.
 int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, INode *recvowner,
-    int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv);
+    int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv, const uint8_t *apart);
+// 'apart' (or NULL): per argument, a borrow of a place that diverges from the borrow's own (a sibling
+// field, loanShapeDisjointAt): a value this function owns whole, as a unique local is
 
 #endif
