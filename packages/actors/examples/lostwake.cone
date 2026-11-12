@@ -1,0 +1,71 @@
+// A runnable actor left in the queue of a worker whose turn does not end
+// (Bug 2, #989: the scheduler's lost wake). X's turn sends to idle Y, which
+// is pushed on X's own worker's empty queue (a local push, no wake), and X
+// then waits inside the turn, without returning, for a flag only Y sets. Every
+// other worker is idle (parked). Y must run on another worker while X waits:
+// the invariant (the header, THE SEARCH INVARIANT) says a worker searches while
+// any queue holds a runnable actor and one sleeps. X gives up after 300 ms
+// of waiting, so a stranded Y shows as a count of rounds, not as a hang.
+//
+// NOTE, 7 Nov 2026: this FAILS (19 of 20 rounds strand, round 1 passes) on
+// master 79d75ad82, on #989's head, and with THE SEARCH INVARIANT's two duties
+// in: neither duty covers a push to the pusher's own EMPTY queue, which wakes
+// nobody by design. So it is an example, not a test in the suite, until
+// design chat rules whether such a push may wake a sleeper (or a turn may not
+// wait for another actor). Run: congo run --release examples/lostwake.cone
+
+mod lostwake;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+let flag: Atomic[u64];
+let seen: Atomic[u64];
+let stranded: Atomic[u64];
+
+fn @initpure init() {
+  flag = Atomic[u64].of(0u64);
+  seen = Atomic[u64].of(0u64);
+  stranded = Atomic[u64].of(0u64);
+}
+
+actor Y {
+  pub async fn set(self) {
+    flag.add(1u64);
+  }
+}
+
+actor X {
+  pub async fn go(self, y: Y, round: u64) {
+    y.set();
+    var tries = 0u32;
+    while flag.load() < round && tries < 300u32 {
+      thread.sleep(time.Duration.fromMillis(1i64));
+      tries = tries + 1u32;
+    }
+    if flag.load() < round {
+      stranded.add(1u64);
+    }
+    seen.add(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 8u32));
+  var round = 1u64;
+  while round <= 20u64 {
+    thread.sleep(time.Duration.fromMillis(30i64));
+    let x = X();
+    let y = Y();
+    x.go(y, round);
+    actors.waitUntilIdle();
+    round = round + 1u64;
+  }
+  expectUInt(seen.load(), 20u64, "every round's turn ended");
+  expectUInt(stranded.load(), 0u64, "Y ran while X's turn was held, in every round");
+  finalAll();
+  done()
+}

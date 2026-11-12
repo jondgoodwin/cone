@@ -290,8 +290,9 @@
 //
 // THE I/O THREAD. One thread, started by the first operation awaited (or the
 // first job queued for a hosted service), owns the actor runtime's iocore Loop
-// and waits in its poll; it is the one thread that touches the Loop, as iocore
-// asks. The actors' workers never wait on I/O (they could not: an actor's
+// and waits in its poll; only one thread touches the Loop at a time, as iocore
+// asks: this one, or a worker on its pass (A WORKER'S PASS, below). The actors'
+// workers never wait on I/O (they could not: an actor's
 // behaviour runs to its 'await' and returns). An 'await' on a socket's read
 // into a buffer (read(buf), readIn(buf, lim)) or a write first ISSUES it on its
 // own worker, through the Loop's shared table (iocore's WORKER-SIDE ISSUE),
@@ -320,6 +321,57 @@
 // queued; and gives each service its turn. Either way a reply goes to the
 // actor's mailbox as any reply does -- one push, and, if the actor was idle,
 // its scheduling. Nothing of the actor runs on the I/O thread.
+//
+// A WORKER'S PASS. A completion raised inside a worker's own send (loopback TCP
+// raises the peer's in the send itself) would wake the I/O thread, asleep in
+// the port, twice a round trip. So a turn that sent, or that queued a record,
+// ends with a PASS on its worker: the records queued started, a look at the
+// port that does not wait, and the answers sent on, the same code as the I/O
+// thread's, the worker's own actors usually the next to run. The Loop stays one
+// thread's at a time: a BATON (one word) says whose, and only its holder touches
+// the Loop, so one thread dequeues at a time and an answer cannot be taken
+// twice. The I/O thread holds it, in the port too, except while it STANDS ASIDE
+// (iocore's STANDING ASIDE): when it sees workers asking for passes it leaves
+// the port, lets go of the baton and waits on a word of its own, and a blocked
+// wait no longer takes the completions as the kernel raises them. A worker that
+// finds the baton taken leaves a word for the holder, which passes once more. A
+// worker with no pass to come needs the I/O thread: while the I/O thread is in
+// the port everything is as before, a record queued wakes it and no pass is
+// made. A record queued on a worker while it stands aside wakes nothing, its
+// worker's pass takes it (the only posts that went: they existed so the
+// I/O thread would dequeue). It stands aside only when turns ask at least every
+// 100 us: slower than that a completion would wait for a pass, and the port
+// answers at once. Standing aside it wakes every 500 us, in real time (iocore's
+// waitAside), to see when a turn last asked, touching neither the Loop nor the
+// baton, and goes back to the port when: no turn has asked for 300 us, a long
+// turn being what stalls a pass, so a completion nobody is polling waits at
+// most those two and the timer's lateness; anything is posted to it, so jobs,
+// hosted services' first jobs, a pool thread's answers and the end reach it at
+// once; the last worker that asked goes idle (actors' 'idle' hook, after a last
+// pass: that worker is the only one who would have looked); or a pass finds a
+// timer due within 2 ms, as the Loop's own wait is armed for the instant. With
+// a service hosted it never
+// stands aside: a service's completions are its alone (HOSTED SERVICES), and
+// it runs only there. Its jobs, and aio's own, stay the I/O thread's: a pass
+// with any queued takes nothing. opStats' workerDone counts the passes' answers.
+//
+// MEMORY ORDERS OF THE BATON AND THE HOOK PATH. Every word that decides who may
+// touch the Loop or whether a pass runs is SeqCst (Atomic's own load, store,
+// swap, add, sub, which are SeqCst): the baton (tryBaton's swap takes it, a
+// store of 0 gives it up, so the Loop and its lists pass from holder to holder
+// acquire/release at least), 'again' (a Dekker pair with the baton: a worker
+// stores again=1 and then looks at the baton, the holder frees the baton and then
+// looks at again; with anything weaker both could miss the other's store and
+// a worker's send go unpolled, so this pair needs the total order), 'hot', the
+// waker's 'aside' word (iocore), 'ended', and actors' hook pointer
+// (workerHooksAt, published once). Three words are RELAXED, and carry nothing
+// else with them: 'asks' (a count the I/O thread compares between wakes to
+// guess a rate), 'lastAsk' (a time, read to guess whether turns are quiet) and
+// 'workerDone' (a statistic). A stale read of the first two makes the thread
+// stand aside, or return to the port, one tick (500 us) early or late, a
+// timing cost that the 300 us and 500 us bounds already allow, never a lost or
+// doubled completion. The thread-locals (onIo, hereHot, actors' turnAsked and
+// inHook) are one thread's own.
 //
 // HOSTED SERVICES. Another package's code that runs ON the I/O thread, with its
 // Loop: the actorhttp package's HTTP clients, connections and servers
@@ -662,7 +714,7 @@ let takenAway: Atomic[u64];
 // The threads' blocks of counts (HereCounts), newest first, pushed under ioLock
 let countsAt: Atomic[usize];
 
-// True on the I/O thread alone
+// True on the I/O thread, and on a worker through its pass (A WORKER'S PASS)
 var @threadlocal onIo = false;
 
 // The record's buffer replaced by b, through a reference, so that the one it
@@ -734,6 +786,9 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
         sh.unlock(h);
         bump(&mut (*c).here as *u64);
         answerRec(ctx as *OpRec[Ask]);
+        if w == opSend {
+          askPass();
+        }
         return;
       }
       if got == issuePending {
@@ -843,6 +898,17 @@ struct IoThread {
   pub loopDone: u64;            // records it took back answered from its Loop (opStats): its own, stored whole
   pub os: thread.Thread[u32];
   pub shared: Shared;           // its Loop's handles as other threads see them: written before 'ready'; one holder of the table, for the life of the process
+  pub baton: Atomic[u32];       // 1 while a thread has the Loop (A WORKER'S PASS): this thread, but for when it stands aside
+  pub again: Atomic[u32];       // a worker found the baton taken: its holder passes once more
+  pub hot: Atomic[u32];         // workers that have asked for a pass and not gone idle since
+  pub asks: Atomic[u64];        // turns ended that asked for a pass: the I/O thread watches it move
+  pub workerDone: Atomic[u64];  // records answered by workers' passes (opStats)
+  pub seen: u64;                // the I/O thread's own: 'asks' at its last look,
+  pub lookedAt: Instant;        //   and when that was
+  pub lastAsk: Atomic[i64];     // while it stands aside, when a turn last asked (Instant's nanoseconds)
+  pub loopAt: usize;            // the thread's Loop and its two lists, for the holder of the baton:
+  pub outAt: usize;             //   written before 'ready', all three on the thread's stack
+  pub gotAt: usize;
 }
 
 // Guards the queues, 'io', 'ended' and the pool's making
@@ -1049,7 +1115,221 @@ fn enqueueRec(p: *OpCore) {
   }
   (*t).rtail = p;
   ioLock.unlock();
+  // A worker's pass after its turn takes it, if the I/O thread stands aside.
+  // The record is queued before this load, and the I/O thread looks at the
+  // queue after lowering the word: one or the other sees it
+  if askPass() && (*t).waker.isAside() {
+    return;
+  }
   (*t).waker.wake();
+}
+
+// A WORKER'S PASS (the package's header, THE I/O THREAD)
+
+// How often the I/O thread, standing aside, sees when a turn last asked; how
+// long with none it takes for quiet; how near a timer sends it back to the
+// Loop's own wait; and how often turns must ask for it to stand aside at all
+// (slower than that, a completion would wait for a pass, and the port answers
+// at once). A completion nobody is polling waits at most asideNanos and
+// asideQuietNanos, and the timer's lateness, beyond the port's own path.
+//
+// asideNanos and asideQuietNanos are measured, roughly (a busy machine, Windows,
+// examples/longturn.cone and stream at 24 workers): at these values the added
+// delay was under 1 ms at worst and stream did not fall. Quiet at 100 us, or
+// counting asks between looks, took a pause between turns for quiet: stream at
+// 24 workers fell by a fifth or more, with worker switches up, as the answers
+// the I/O thread then took went to sleeping workers and parted actors sharing a
+// worker. The wake itself cost nothing that showed. asideRateNanos and
+// asideMarginNanos are NOT measured: the rate is a guess, kept from the first
+// build, and the margin is four looks, by reasoning
+const asideNanos = 500000i64;
+const asideMarginNanos = 2000000i64;
+const asideRateNanos = 100000i64;
+const asideQuietNanos = 300000i64;
+
+// On the I/O thread: whether workers are passing often enough to leave the
+// port to them, since its last look
+fn workersBusy(t: *IoThread) bool {
+  let a = (*t).asks.load();
+  let now = Instant.now();
+  let moved = a - (*t).seen;
+  let gap = (now - (*t).lookedAt).nanos();
+  (*t).seen = a;
+  (*t).lookedAt = now;
+  (*t).hot.load() != 0u32 && moved != 0u64 && i64.from(moved) * asideRateNanos >= gap
+}
+
+// On the I/O thread, standing aside: no turn has asked for as long as they must
+// to keep it aside, so a look need not wait for the count to fall. Hard asking
+// that stops just after a look would otherwise pass for busy at the next one
+fn turnsQuiet(t: *IoThread) bool {
+  Instant.now().nanos() - (*t).lastAsk.loadOrdered(MemOrder.Relaxed) > asideQuietNanos
+}
+
+// True on a worker that has asked for a pass and not gone idle since
+var @threadlocal hereHot = false;
+
+// This worker passes after its turn (false off the workers, and on a pass)
+fn askPass() bool {
+  if onIo || !actors.askAfterTurn() {
+    return false;
+  }
+  if !hereHot {
+    let t = io.load();
+    if t == 0usize {
+      return false;
+    }
+    hereHot = true;
+    (*(t as *IoThread)).hot.add(1u32);
+  }
+  true
+}
+
+fn tryBaton(t: *IoThread) bool {
+  (*t).baton.load() == 0u32 && (*t).baton.swap(1u32) == 0u32
+}
+
+// One pass over the Loop that does not wait, by the holder of the baton: the
+// records queued started (first, so a completion come before its record's
+// link meets it), what the kernel has answered taken, and the answers sent on.
+// How many answers. Aio's jobs and the services attached are the I/O thread's
+// alone and go first: with any queued, nothing is taken here, and that thread
+// has been woken for them
+fn quickPass(t: *IoThread) usize {
+  ioLock.lock();
+  if ended.load() || (*t).head as usize != 0usize || (*t).fhead as usize != 0usize {
+    ioLock.unlock();
+    return 0usize;
+  }
+  let r = (*t).rhead;
+  (*t).rhead = nullCore();
+  (*t).rtail = nullCore();
+  ioLock.unlock();
+  let lp = (*t).loopAt as *Loop as &mut Loop;
+  let out = (*t).outAt as *List[Completion] as &mut List[Completion];
+  let got = (*t).gotAt as *List[*OpCore] as &mut List[*OpCore];
+  startRecs(r, lp);
+  lp.poll(Instant.now(), out);
+  out.clear();
+  var n = 0usize;
+  while lp.takeDone(got) != 0usize {
+    var k = 0usize;
+    while k < got.len() {
+      doneRec(lp, *got[k]);
+      k = k + 1usize;
+    }
+    n = n + k;
+    got.clear();
+  }
+  thePool().flushHere();
+  // The I/O thread waiting aside does not touch the Loop, so a time to keep is
+  // seen here, by whoever has it
+  if lp.dueWithin(Duration.fromNanos(asideMarginNanos)) {
+    (*t).waker.endAside();
+  }
+  n
+}
+
+// A pass on a worker, if the I/O thread stands aside and no other thread has
+// the Loop; one that has it is asked to pass again, for what this worker's
+// send has raised since its look. How many answers
+fn passHere(t: *IoThread) usize {
+  var n = 0usize;
+  while (*t).waker.isAside() {
+    if !tryBaton(t) {
+      (*t).again.store(1u32);
+      if !tryBaton(t) {
+        return n;
+      }
+    }
+    (*t).again.store(0u32);
+    onIo = true;
+    let answered = quickPass(t);
+    onIo = false;
+    (*t).baton.store(0u32);
+    if answered != 0usize {
+      (*t).workerDone.addOrdered(u64.from(answered), MemOrder.Relaxed);
+      n = n + answered;
+    }
+    if (*t).again.load() == 0u32 {
+      return n;
+    }
+  }
+  n
+}
+
+// actors' 'after' hook: a turn that asked for a pass has ended
+fn afterTurn() {
+  let t = io.load();
+  if t != 0usize {
+    (*(t as *IoThread)).asks.addOrdered(1u64, MemOrder.Relaxed);
+    if (*(t as *IoThread)).waker.isAside() {
+      (*(t as *IoThread)).lastAsk.storeOrdered(Instant.now().nanos(), MemOrder.Relaxed);
+      passHere(t as *IoThread);
+    }
+  }
+}
+
+// actors' 'idle' hook: this worker is about to sleep. A last pass, and true if
+// it brought anything. Then nobody may be left to poll: the last worker going
+// idle sends the I/O thread back to the port
+fn beforePark() bool {
+  if !hereHot {
+    return false;
+  }
+  let t = io.load() as *IoThread;
+  if passHere(t) != 0usize {
+    return true;
+  }
+  hereHot = false;
+  if (*t).hot.sub(1u32) == 1u32 {
+    (*t).waker.endAside();
+  }
+  false
+}
+
+// The I/O thread, with workers passing, waits on its word and not in the port
+// (iocore's STANDING ASIDE), the baton free for them. It wakes every asideNanos
+// and goes back when anything is posted, when the last worker has gone idle,
+// when a pass has found a timer near, or at the first wake that finds turns
+// quiet (a worker in a long turn polls nothing). It comes back with the baton
+// and the word lowered; the caller's next look must not wait
+fn standAside(t: *IoThread) {
+  let tick = Duration.fromNanos(asideNanos);
+  (*t).lastAsk.storeOrdered(Instant.now().nanos(), MemOrder.Relaxed);
+  (*t).waker.raiseAside();
+  quickPass(t);
+  while true {
+    (*t).baton.store(0u32);
+    if (*t).again.load() == 0u32 || !tryBaton(t) {
+      break;
+    }
+    (*t).again.store(0u32);
+    quickPass(t);
+  }
+  // Turns asking look for themselves, and this thread leaves them to it: an
+  // answer taken here goes to a worker asleep, parting actors sharing a worker.
+  // The words a worker leaves for the baton's holder are workers' now: only
+  // holders' releases read them, and this thread holds it no more
+  var stay = true;
+  while stay {
+    stay = (*t).waker.waitAside(tick) && !turnsQuiet(t);
+  }
+  workersBusy(t);           // a fresh count: what it counted aside says nothing of now
+  takeBaton(t);
+  (*t).waker.lowerAside();
+}
+
+// The I/O thread takes the baton back: any pass is short
+fn takeBaton(t: *IoThread) {
+  var spins = 0u32;
+  while !tryBaton(t) {
+    spins = spins + 1u32;
+    if spins >= 64u32 {
+      spins = 0u32;
+      thread.yieldNow();
+    }
+  }
 }
 
 // What the I/O thread is handed: its IoThread, where it puts its loop's waker
@@ -1102,17 +1382,24 @@ fn ioMain(arg: IoArg) u32 {
     // use-after-free iocore's sharedend test pins
     mem.writeRaw[Shared](&(*me).shared as *Shared, lp.share());
     onIo = true;
-    (*me).ready.store(1u32);
-    sync.futexWake(&(*me).ready);
     var out = List[Completion]();
     var got = List[*OpCore]();
+    (*me).baton.store(1u32);
+    (*me).loopAt = &mut lp as *Loop as usize;
+    (*me).outAt = &mut out as *List[Completion] as usize;
+    (*me).gotAt = &mut got as *List[*OpCore] as usize;
+    actors.workerHooks(&afterTurn, &beforePark);
+    (*me).ready.store(1u32);
+    sync.futexWake(&(*me).ready);
     var hosts = List[*HostHead]();     // the services hosted here, oldest first: this thread's alone
     var until = forever();                   // the earliest wakeAt, taken at the services' last turns
     var more = true;
+    var quick = false;                      // back from standing aside: this look does not wait
     // With no service hosted the pass is aio's alone: every step for the
     // services is skipped, one test each
     while more {
-      lp.poll(until, &mut out);
+      lp.poll(if quick {Instant.now()} else {until}, &mut out);
+      quick = false;
       if hosts.len() != 0usize {
         offerAll(&hosts, &mut lp, &mut out);
       }
@@ -1158,6 +1445,12 @@ fn ioMain(arg: IoArg) u32 {
         }
       }
       pool.flushHere();
+      // Workers are passing: leave the port to them. Never with a service
+      // hosted: its completions are for this thread
+      if more && hosts.len() == 0usize && workersBusy(me) && !lp.dueWithin(Duration.fromNanos(asideMarginNanos)) {
+        standAside(me);
+        quick = true;
+      }
     }
   }
   pool.flushHere();
@@ -2145,6 +2438,7 @@ pub struct OpStats {
   pub handedOver: u64;     // ...handed to the I/O thread: in flight, or to be started there
   pub contended: u64;      // handle entry locks that were found held (iocore's Shared.contended)
   pub recordBytes: u64;    // the size of one record (iocore's OpCore and aio's part)
+  pub workerDone: u64;     // of loopDone, those taken back by workers' passes (A WORKER'S PASS)
 }
 
 // The pool's counts, and the two above: zero before the first record is taken
@@ -2155,12 +2449,14 @@ pub fn opStats() OpStats {
   var here = 0u64;
   var over = 0u64;
   var contended = 0u64;
+  var workerDone = 0u64;
   ioLock.lock();
   let t = io.load() as *IoThread;
   if t as usize != 0usize {
     queued = (*t).queued;
     done = mem.atomicLoad[u64](&(*t).loopDone as *u64, MemOrder.Relaxed);
     contended = (*t).shared.contended();
+    workerDone = (*t).workerDone.loadOrdered(MemOrder.Relaxed);
   }
   var c = countsAt.load() as *HereCounts;
   while c as usize != 0usize {
@@ -2173,11 +2469,11 @@ pub fn opStats() OpStats {
   let at = poolAt.load();
   if at == 0usize {
     return OpStats(0u64, 0u64, cancelsAsked.load(), takenAway.load(), queued, done, started, here, over, contended,
-      u64.from(mem.sizeof[OpRec[Ask]]()));
+      u64.from(mem.sizeof[OpRec[Ask]]()), workerDone);
   }
   let pl = at as *OpPool[Ask] as &OpPool[Ask];
   OpStats(u64.from(pl.inUse()), u64.from(pl.size()), cancelsAsked.load(), takenAway.load(), queued, done,
-    started, here, over, contended, u64.from(mem.sizeof[OpRec[Ask]]()))
+    started, here, over, contended, u64.from(mem.sizeof[OpRec[Ask]]()), workerDone)
 }
 
 // ---------------------------------------------------------------------------
