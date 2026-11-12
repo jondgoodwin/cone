@@ -25,43 +25,52 @@ pub struct Sentences {
   // The reply so far: text, but a piece may end inside a character (the rest comes with the next piece), and
   // nothing here reads a character, only ASCII marks and bytes
   pending: String;
+  // Bytes at the front of `pending` already given out (a sentence and the white space after it); they are dropped
+  // from the buffer once they are half of it, so taking a sentence does not copy what follows it
+  start: usize;
+  // Where the latest piece begins in `pending`
   latestFrom: usize;
 
-  pub fn make() Sentences { Sentences(String(), 0usize) }
+  pub fn make() Sentences { Sentences(String(), 0usize, 0usize) }
 
   // Add the next piece of the reply
   pub fn push(self: &mut, b: &Array[u8]) {
+    // drop the consumed front only once it is half the buffer (amortised: each byte is moved O(1) times)
+    if start > 0usize && start * 2usize >= pending.len() {
+      pending.remove(0usize, start);
+      start = 0usize;
+    }
     latestFrom = pending.len();
     pending.appendBytes(b);
   }
 
   // The first finished sentence, if there is one
   pub fn next(self: &mut) Option[Sentence] {
-    let e = sentenceEnd(pending.view());
+    let e = sentenceEnd(pending.view(), start);
     if e == 0usize { return None; }
     self.take(e)
   }
 
   // Whatever is left when the reply is over, if it has anything but white space
   pub fn finish(self: &mut) Option[Sentence] {
-    if pending.len() == 0usize { return None; }
+    if pending.len() == start { return None; }
     self.take(pending.len())
   }
 
   // Drop everything held (a reply cut off)
   pub fn clear(self: &mut) {
     pending.clear();
+    start = 0usize;
     latestFrom = 0usize;
   }
 
   fn take(self: &mut, e: usize) Option[Sentence] {
-    let text = pending.sub(0usize, e).trim();
+    let text = pending.sub(start, e).trim();
     // the sentence is gone, and the white space after it
     var cut = e;
     while cut < pending.len() && isSpace(pending.view()[cut]) { cut = cut + 1usize; }
     let inLatest = e - 1usize >= latestFrom;
-    pending = pending.sub(cut, pending.len());
-    if latestFrom >= cut { latestFrom = latestFrom - cut; } else { latestFrom = 0usize; }
+    start = cut;
     if text.len() == 0usize { return self.next(); }
     Some[Sentence](Sentence(text, inLatest))
   }
@@ -112,9 +121,9 @@ fn abbreviation(p: &Array[u8], i: usize, first: usize) bool {
   false
 }
 
-// Where the first finished sentence of p ends (the index after its mark and closers), or 0 if none has
-fn sentenceEnd(p: &Array[u8]) usize {
-  var first = 0usize;
+// Where the first finished sentence of p[from..] ends (the index in p after its mark and closers), or 0 if none has
+fn sentenceEnd(p: &Array[u8], from: usize) usize {
+  var first = from;
   while first < p.len && isSpace(p[first]) { first = first + 1usize; }
   var sawWord = false;
   var i = first;
