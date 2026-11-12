@@ -191,7 +191,8 @@ pub struct Loop {
       events = libc.malloc(usize.from(batch) * mem.sizeof[EpollEvent]()) as *EpollEvent;
     }
     let shared = Arc[imm, Port](Port(#if #os == .windows {port} #else {wake}, Atomic[bool].of(false),
-      Atomic[u32].of(0u32), Mutex.make(), null, null, null, null, Atomic[u32].of(0u32), Atomic[u64].of(0u64)));
+      Atomic[u32].of(0u32), Mutex.make(), null, null, null, null, Atomic[u32].of(0u32), Atomic[u64].of(0u64),
+      Atomic[u32].of(0u32), 0usize, 0usize));
     Loop(
       loopId: diag.nextLoopId(), driverGen: 0u32, port: shared, portHandle: port,
       pool: OpPool[OldAsk].make(), kernelHeld: 0u32,
@@ -2227,6 +2228,19 @@ pub struct Loop {
       }
     }
     n
+  }
+
+  // Whether the loop has a time to keep within d: a timer due, or a held
+  // operation to retry. A thread that keeps its time by the loop's own wait
+  // does not stand aside then (Waker's STANDING ASIDE): the wait aside looks
+  // only every so often, and the loop's wait is armed for the instant
+  pub fn dueWithin(self: &mut, d: Duration) bool {
+    if held.len() > 0usize {return true;}
+    match wheel.nextExpiry() {
+      case let Some(s) {return s <= Instant.now() + d;}
+      case is None[Instant] {}
+    }
+    false
   }
 
   // Arm the high-resolution timer for wakeAt (unless it already is) and
