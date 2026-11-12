@@ -447,8 +447,10 @@ pub struct Deflater {
   fn delivered(self: &mut, n: usize, max: usize) Status {
     outTotal = outTotal + u64.from(n);
     if !bw.out.isEmpty() { return Status.MoreOutput; }
-    if done { return Status.Done; }
+    if done { self.release(); return Status.Done; }
     if n == max && n > 0usize { return Status.MoreOutput; }
+    // Nothing waiting: no block held while the deflater waits for input (a stage may wait long)
+    self.release();
     Status.NeedInput
   }
 
@@ -468,8 +470,15 @@ pub struct Deflater {
     if failed { return; }
     failed = true;
     err = DeflateError.make(ErrorKind.TooLarge, inTotal, "the compressed output is more than the buffer pool will hold; pull it in smaller pieces");
-    bw.out.clear();
+    self.release();
     tokens.clear();
+  }
+
+  // The output's pool buffers go back at the end of the stream, not when the
+  // deflater is dropped (a stage may hold it long after): a writer with no block
+  fn release(self: &mut) {
+    var empty = streams.Writer.tryEmpty(65536usize);
+    empty <-> bw.out;
   }
 
   // One unit of work; false when it can do nothing without more input
