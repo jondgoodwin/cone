@@ -57,41 +57,48 @@ pub struct ChallengeGate {
   }
 
   fn cookie(self: &, addr: &str, salt: u64, epoch: i64) u64 {
-    var m = List[u8]();
-    putU64(&mut m, salt);
-    putU64(&mut m, u64.from(epoch));
-    putBytes(&mut m, addr);
-    sipHash24(k0, k1, m.view())
+    var m = streams.Writer.make(16usize + addr.len);
+    m.putBE[u64](salt);
+    m.putBE[u64](u64.from(epoch));
+    m.put(addr);
+    let all = m.intoBuf();
+    sipHash24(k0, k1, all.view())
+  }
+
+  // The start of a datagram: its protocol id and kind. The kind, or None
+  // when it is short or of another protocol
+  fn kindOf(c: &mut streams.ByteCursor) Option[u8] {
+    let magic = c.getBE[u32]()?;
+    let kind = c.getByte()?;
+    if magic != protocolId {return None[u8];}
+    Some[u8](kind)
   }
 
   // Look at a datagram that came from 'addr' (its address as text) and is
-  // not part of a connection. 'reply' is cleared and, for Reply and Accept,
-  // holds the datagram to send back.
-  pub fn handle(self: &, addr: &str, data: &Array[u8], now: Instant, reply: &mut List[u8]) GateVerdict {
-    reply.clear();
-    var c = PacketReader.start();
-    let magic = c.rdU32(data);
-    let kind = c.rdU8(data);
-    let salt = c.rdU64(data);
-    if !c.ok || magic != protocolId {return GateVerdict.Ignore;}
+  // not part of a connection. For Reply and Accept, 'reply' has the datagram
+  // to send back put into it (a fresh Writer for each call); for Ignore it
+  // is untouched.
+  pub fn handle(self: &, addr: &str, data: &Array[u8], now: Instant, reply: &mut streams.Writer) GateVerdict {
+    var c = streams.ByteCursor.over(data);
+    let Some(kind) = ChallengeGate.kindOf(&mut c) else {return GateVerdict.Ignore;};
+    let Some(salt) = c.getBE[u64]() else {return GateVerdict.Ignore;};
     let epoch = now.nanos() / epochNs;
     if kind == kindRequest {
       if data.len < handshakeSize {return GateVerdict.Ignore;}
-      putU32(reply, protocolId);
-      putU8(reply, kindChallenge);
-      putU64(reply, salt);
-      putU64(reply, self.cookie(addr, salt, epoch));
+      reply.putBE[u32](protocolId);
+      reply.putByte(kindChallenge);
+      reply.putBE[u64](salt);
+      reply.putBE[u64](self.cookie(addr, salt, epoch));
       return GateVerdict.Reply;
     }
     if kind == kindResponse {
       if data.len < handshakeSize {return GateVerdict.Ignore;}
-      let got = c.rdU64(data);
-      if !c.ok {return GateVerdict.Ignore;}
+      let Some(got) = c.getBE[u64]() else {return GateVerdict.Ignore;};
       if got != self.cookie(addr, salt, epoch) && got != self.cookie(addr, salt, epoch - 1i64) {return GateVerdict.Ignore;}
       let session = salt ^ got;
-      putU32(reply, protocolId);
-      putU8(reply, kindAccept);
-      putU64(reply, session);
+      reply.putBE[u32](protocolId);
+      reply.putByte(kindAccept);
+      reply.putBE[u64](session);
       return GateVerdict.Accept(session);
     }
     GateVerdict.Ignore
@@ -99,22 +106,20 @@ pub struct ChallengeGate {
 
   // The datagram that tells a client its connection was refused (the server
   // is full)
-  pub fn denied(salt: u64) List[u8] {
-    var p = List[u8].withCapacity(13usize);
-    putU32(&mut p, protocolId);
-    putU8(&mut p, kindDenied);
-    putU64(&mut p, salt);
-    p
+  pub fn denied(salt: u64) IoBuf {
+    var p = streams.Writer.make(13usize);
+    p.putBE[u32](protocolId);
+    p.putByte(kindDenied);
+    p.putBE[u64](salt);
+    p.intoBuf()
   }
 
   // The client salt in a Response datagram, or 0 if it is not one
   pub fn saltOf(data: &Array[u8]) u64 {
-    var c = PacketReader.start();
-    let magic = c.rdU32(data);
-    let kind = c.rdU8(data);
-    let salt = c.rdU64(data);
-    if !c.ok || magic != protocolId || kind != kindResponse {return 0u64;}
-    salt
+    var c = streams.ByteCursor.over(data);
+    let Some(kind) = ChallengeGate.kindOf(&mut c) else {return 0u64;};
+    if kind != kindResponse {return 0u64;}
+    c.getBE[u64]() || 0u64
   }
 }
 
@@ -169,7 +174,7 @@ pub struct ClientHandshake {
   // Append the datagram due, if any: a Request or a Response (each repeated
   // every connectRetryMs until answered). The attempt fails when
   // connectTimeoutMs pass with no Accept.
-  pub fn poll(self: &mut, now: Instant, out: &mut List[List[u8]]) {
+  pub fn poll(self: &mut, now: Instant, out: &mut Packets) {
     let t = now.nanos();
     if state != HandshakeState.Requesting && state != HandshakeState.Responding {return;}
     if t - startedAt >= cfg.connectTimeoutMs * msNs2 {
@@ -178,18 +183,18 @@ pub struct ClientHandshake {
     }
     if t - lastSent < cfg.connectRetryMs * msNs2 {return;}
     lastSent = t;
-    var p = List[u8].withCapacity(handshakeSize);
-    putU32(&mut p, protocolId);
+    var p = streams.Writer.make(handshakeSize);
+    p.putBE[u32](protocolId);
     if state == HandshakeState.Requesting {
-      putU8(&mut p, kindRequest);
-      putU64(&mut p, salt);
+      p.putByte(kindRequest);
+      p.putBE[u64](salt);
     } else {
-      putU8(&mut p, kindResponse);
-      putU64(&mut p, salt);
-      putU64(&mut p, cookie);
+      p.putByte(kindResponse);
+      p.putBE[u64](salt);
+      p.putBE[u64](cookie);
     }
-    putZeros(&mut p, handshakeSize - p.len());
-    out.push(p);
+    p.repeat(0u8, handshakeSize - p.len());
+    out.push(p.intoBuf());
   }
 
   // A datagram from the server. A Challenge moves on to the Responses; an
@@ -198,14 +203,12 @@ pub struct ClientHandshake {
   // that packet to the connection, too.
   pub fn receive(self: &mut, data: &Array[u8]) HandshakeEvent {
     if state != HandshakeState.Requesting && state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
-    var c = PacketReader.start();
-    let magic = c.rdU32(data);
-    let kind = c.rdU8(data);
-    if !c.ok || magic != protocolId {return HandshakeEvent.Nothing;}
+    var c = streams.ByteCursor.over(data);
+    let Some(kind) = ChallengeGate.kindOf(&mut c) else {return HandshakeEvent.Nothing;};
     if kind == kindChallenge {
-      let s = c.rdU64(data);
-      let ck = c.rdU64(data);
-      if c.ok && s == salt && state == HandshakeState.Requesting {
+      let Some(s) = c.getBE[u64]() else {return HandshakeEvent.Nothing;};
+      let Some(ck) = c.getBE[u64]() else {return HandshakeEvent.Nothing;};
+      if s == salt && state == HandshakeState.Requesting {
         cookie = ck;
         session = salt ^ ck;
         state = HandshakeState.Responding;
@@ -215,16 +218,16 @@ pub struct ClientHandshake {
     }
     if state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
     if kind == kindAccept || kind == kindPayload {
-      let s = c.rdU64(data);
-      if c.ok && s == session {
+      let Some(s) = c.getBE[u64]() else {return HandshakeEvent.Nothing;};
+      if s == session {
         state = HandshakeState.Connected;
         return HandshakeEvent.Connected;
       }
       return HandshakeEvent.Nothing;
     }
     if kind == kindDenied {
-      let s = c.rdU64(data);
-      if c.ok && s == salt {
+      let Some(s) = c.getBE[u64]() else {return HandshakeEvent.Nothing;};
+      if s == salt {
         state = HandshakeState.Failed;
         refused = true;
         return HandshakeEvent.Refused;
