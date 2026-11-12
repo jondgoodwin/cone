@@ -645,9 +645,69 @@ uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, 
     return 0;
 }
 
+// Does a written type show a borrow of its own, one the signature writes
+// (an unnamed '&i32' in 'Vec[&i32]')? A type parameter shows none: what it
+// holds is hidden, whatever it is instantiated with.
+static int loanWritesBorrow(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+    {
+        RefNode *ref = (RefNode *)type;
+        if (itypeGetTypeDcl(ref->region) == borrowRef)
+            return 1;
+        return loanWritesBorrow(ref->vtexp);
+    }
+    case PtrTag:
+        return loanWritesBorrow(((StarNode *)type)->vtexp);
+    case ArrayTag:
+        return loanWritesBorrow(arrayElemType(type));
+    case TTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (loanWritesBorrow(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case NameUseTag:
+    {
+        LifeUse *lifeuse = ((NameUseNode *)type)->lifeuse;
+        if (lifeuse && lifeuse->typeargs) {
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(lifeuse->typeargs, cnt, nodesp)) {
+                if (loanWritesBorrow(*nodesp))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Do two parameters, the first the one written through, share one written
+// lifetime name so that a store between them is tied by it? Only where the
+// borrows the first's place holds are hidden: a type parameter's (a closure's
+// captures), which no signature writes, sit under the reference reaching
+// them, so by the elided signature's one-name rule they take that name.
+// Jon's rule (11 Nov): an unnamed borrow a signature WRITES, inside a
+// signature that writes names, is a fresh name of its own, so in
+// 'g: &'a mut Vec[&i32]' the inner '&i32' is not 'a, and 'v: &'a i32' is
+// refused there. The two are told apart by whether the written type shows a
+// borrow beneath the reference (loanWritesBorrow), not by elided versus named.
 int loanSameOwnName(INode *a, INode *b) {
     INode *ad = itypeGetTypeDcl(a), *bd = itypeGetTypeDcl(b);
     if (ad->tag != RefTag || bd->tag != RefTag)
+        return 0;
+    if (loanWritesBorrow(((RefNode *)ad)->vtexp))
         return 0;
     Name *name = ((RefNode *)ad)->lifename;
     return name != NULL && name == ((RefNode *)bd)->lifename;
