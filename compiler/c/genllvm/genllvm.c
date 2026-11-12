@@ -1474,7 +1474,10 @@ static void genlStitch(GenState *gen, int which) {
         LLVMPositionBuilderAtEnd(builder, done);
         LLVMBuildRetVoid(builder);
         if (again != NULL) {
-            // A stand-in site: the report names no source file
+            // A stand-in site: the report names no source file. It still prints as
+            // "panic at :0:" because every conestd panic entry (cone_panic, which
+            // cone_panicAlloc also ends in) always prints file:line, and a site-less
+            // path would need a new public name in conestd [design chat 12 Nov].
             INode site;
             memset(&site, 0, sizeof(site));
             LLVMBuilderRef saved = gen->builder;
