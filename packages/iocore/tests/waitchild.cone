@@ -120,13 +120,8 @@ struct Late {
   pub got: Got;
 }
 
-var late: List[Late];
-
-fn @initpure init() {
-  late = List[Late]();
-}
-
-fn pump(lp: &mut Loop, until: Instant) {
+// 'late' is main's list, passed to the polling functions
+fn pump(lp: &mut Loop, late: &mut List[Late], until: Instant) {
   var out = List[Completion]();
   lp.poll(until, &mut out);
   each c in out.drain() {
@@ -134,7 +129,7 @@ fn pump(lp: &mut Loop, until: Instant) {
   }
 }
 
-fn takeLate(tok: u64) Option[Got] {
+fn takeLate(late: &mut List[Late], tok: u64) Option[Got] {
   var k = 0usize;
   while k < late.len() {
     if late[k].token == tok {
@@ -152,23 +147,23 @@ fn takeLate(tok: u64) Option[Got] {
   None[Got]
 }
 
-fn await1(lp: &mut Loop, tok: u64, seconds: i64) Got {
+fn await1(lp: &mut Loop, late: &mut List[Late], tok: u64, seconds: i64) Got {
   let until = Instant.now() + Duration.fromSeconds(seconds);
   while true {
-    match takeLate(tok) {
+    match takeLate(late, tok) {
       case let Some(g) {return g;}
       else {}
     }
     if Instant.now() >= until {break;}
-    pump(lp, until);
+    pump(lp, late, until);
   }
   Got(99u32, 0usize, 0u32)
 }
 
 // Whether no answer with token tok comes in ms milliseconds
-fn quiet(lp: &mut Loop, tok: u64, ms: i64) bool {
+fn quiet(lp: &mut Loop, late: &mut List[Late], tok: u64, ms: i64) bool {
   let until = Instant.now() + Duration.fromMillis(ms);
-  while Instant.now() < until {pump(lp, until);}
+  while Instant.now() < until {pump(lp, late, until);}
   var k = 0usize;
   while k < late.len() {
     if late[k].token == tok {return false;}
@@ -187,6 +182,7 @@ fn adopt(lp: &mut Loop, raw: usize) Handle {
 
 fn main() i32 {
   {
+    var late = List[Late]();
     var lp = Loop.mustMake();
 
     // 1. Exit codes
@@ -195,17 +191,17 @@ fn main() i32 {
     var h = adopt(&mut lp, raw);
     expect(!h.isNone() && lp.isOpen(h), "1: ...and is adopted");
     lp.submit(Op.WaitChild(h), Target.Here(1u64));
-    let g1 = await1(&mut lp, 1u64, 20i64);
+    let g1 = await1(&mut lp, &mut late,1u64, 20i64);
     expect(g1.status == diag.outcomeDone && g1.n == 0usize && g1.code == 0u32, "1: exit 0 is Done(0), code 0");
     // 7. A second wait on the same handle
     lp.submit(Op.WaitChild(h), Target.Here(2u64));
-    let g2 = await1(&mut lp, 2u64, 20i64);
+    let g2 = await1(&mut lp, &mut late,2u64, 20i64);
     expect(g2.status == diag.outcomeFailed, "7: a second wait fails, on both systems");
     lp.close(h);
     raw = startChild(5u32, 0u32);
     h = adopt(&mut lp, raw);
     lp.submit(Op.WaitChild(h), Target.Here(3u64));
-    let g3 = await1(&mut lp, 3u64, 20i64);
+    let g3 = await1(&mut lp, &mut late,3u64, 20i64);
     expect(g3.status == diag.outcomeDone && g3.n == 5usize && g3.code == 0u32, "1: exit 5 is Done(5), code 0");
     lp.close(h);
 
@@ -213,17 +209,17 @@ fn main() i32 {
     raw = startChild(0u32, 0u32);
     h = adopt(&mut lp, raw);
     lp.submit(Op.WaitChild(h), Target.Here(4u64));
-    await1(&mut lp, 4u64, 20i64);
+    await1(&mut lp, &mut late,4u64, 20i64);
     lp.submit(Op.WaitChild(h), Target.Here(5u64));
-    let g4 = await1(&mut lp, 5u64, 20i64);
+    let g4 = await1(&mut lp, &mut late,5u64, 20i64);
     expect(g4.status == diag.outcomeFailed, "2: a wait on a child already waited for fails, ended or not");
     lp.close(h);
     raw = startChild(5u32, 0u32);
     lp.after(Instant.now() + Duration.fromMillis(1000i64), Target.Here(6u64));
-    await1(&mut lp, 6u64, 5i64);
+    await1(&mut lp, &mut late,6u64, 5i64);
     h = adopt(&mut lp, raw);
     lp.submit(Op.WaitChild(h), Target.Here(7u64));
-    let g5 = await1(&mut lp, 7u64, 20i64);
+    let g5 = await1(&mut lp, &mut late,7u64, 20i64);
     expect(g5.status == diag.outcomeDone && g5.n == 5usize, "2: a child ended before the adopt and the wait: Done(5)");
     lp.close(h);
 
@@ -231,9 +227,9 @@ fn main() i32 {
     raw = startChild(0u32, 30u32);
     h = adopt(&mut lp, raw);
     lp.submit(Op.WaitChild(h), Target.Here(10u64));
-    expect(quiet(&mut lp, 10u64, 200i64), "3: a wait on a running child waits");
+    expect(quiet(&mut lp, &mut late,10u64, 200i64), "3: a wait on a running child waits");
     kill(raw);
-    let g6 = await1(&mut lp, 10u64, 20i64);
+    let g6 = await1(&mut lp, &mut late,10u64, 20i64);
     #if #os == .windows {
       expect(g6.status == diag.outcomeDone && g6.n == 7usize && g6.code == 0u32, "3: TerminateProcess(7) is Done(7)");
     } #else {
@@ -245,13 +241,13 @@ fn main() i32 {
     raw = startChild(0u32, 30u32);
     h = adopt(&mut lp, raw);
     let id = lp.submit(Op.WaitChild(h), Target.Here(20u64));
-    expect(quiet(&mut lp, 20u64, 100i64), "4: the wait waits");
+    expect(quiet(&mut lp, &mut late,20u64, 100i64), "4: the wait waits");
     expect(lp.cancel(id), "4: cancel taken");
-    let g7 = await1(&mut lp, 20u64, 5i64);
+    let g7 = await1(&mut lp, &mut late,20u64, 5i64);
     expect(g7.status == diag.outcomeCancelled, "4: Cancelled");
     lp.submit(Op.WaitChild(h), Target.Here(21u64));
     kill(raw);
-    let g8 = await1(&mut lp, 21u64, 20i64);
+    let g8 = await1(&mut lp, &mut late,21u64, 20i64);
     expect(g8.status == diag.outcomeDone, "4: the child is still waited for after a cancel");
     lp.close(h);
 
@@ -260,32 +256,32 @@ fn main() i32 {
     h = adopt(&mut lp, raw);
     let t0 = Instant.now();
     lp.submitBy(Op.WaitChild(h), Target.Here(30u64), t0 + Duration.fromMillis(150i64));
-    let g9 = await1(&mut lp, 30u64, 5i64);
+    let g9 = await1(&mut lp, &mut late,30u64, 5i64);
     let took = (Instant.now() - t0).millis();
     expect(g9.status == diag.outcomeTimedOut, "5: TimedOut");
     expect(took >= 140i64, "5: ...not before the deadline");
     kill(raw);
     lp.submit(Op.WaitChild(h), Target.Here(31u64));
-    await1(&mut lp, 31u64, 20i64);
+    await1(&mut lp, &mut late,31u64, 20i64);
     lp.close(h);
 
     // 6. close with a wait in flight
     raw = startChild(0u32, 2u32);
     h = adopt(&mut lp, raw);
     lp.submit(Op.WaitChild(h), Target.Here(40u64));
-    expect(quiet(&mut lp, 40u64, 50i64), "6: the wait waits");
+    expect(quiet(&mut lp, &mut late,40u64, 50i64), "6: the wait waits");
     expect(lp.close(h), "6: close");
-    let g10 = await1(&mut lp, 40u64, 5i64);
+    let g10 = await1(&mut lp, &mut late,40u64, 5i64);
     expect(g10.status == diag.outcomeCancelled, "6: the wait in flight answers Cancelled");
     expect(!lp.isOpen(h), "6: ...and the handle names nothing");
 
     // 8. Refused
     lp.submit(Op.WaitChild(Handle.none()), Target.Here(50u64));
-    let g11 = await1(&mut lp, 50u64, 5i64);
+    let g11 = await1(&mut lp, &mut late,50u64, 5i64);
     expect(g11.status == diag.outcomeFailed, "8: a wait on no handle fails");
     let l = lp.mustListen(SocketAddr.localhost(0u16));
     lp.submit(Op.WaitChild(l), Target.Here(51u64));
-    let g12 = await1(&mut lp, 51u64, 5i64);
+    let g12 = await1(&mut lp, &mut late,51u64, 5i64);
     expect(g12.status == diag.outcomeFailed, "8: ...and one on a listener's handle");
     lp.close(l);
 
@@ -307,14 +303,14 @@ fn main() i32 {
       };
       if i % 2usize == 0usize {
         let until = Instant.now() + delay;
-        while Instant.now() < until {pump(&mut lp, until);}
+        while Instant.now() < until {pump(&mut lp, &mut late, until);}
         lp.cancel(id2);
       }
-      let g = await1(&mut lp, tok, 20i64);
+      let g = await1(&mut lp, &mut late,tok, 20i64);
       if g.status == diag.outcomeDone {dones = dones + 1usize; answers = answers + 1usize;}
       else if g.status == diag.outcomeCancelled || g.status == diag.outcomeTimedOut {cuts = cuts + 1usize; answers = answers + 1usize;}
       // Nothing more for it
-      if !quiet(&mut lp, tok, 3i64) {doubles = doubles + 1usize;}
+      if !quiet(&mut lp, &mut late,tok, 3i64) {doubles = doubles + 1usize;}
       lp.close(h);
       i = i + 1usize;
     }
@@ -333,16 +329,16 @@ fn main() i32 {
         let ftok = 5000u64 + u64.from(f);
         let fid = lp.submit(Op.WaitChild(h), Target.Here(ftok));
         if running {lp.cancel(fid);}
-        let g = await1(&mut lp, ftok, 20i64);
+        let g = await1(&mut lp, &mut late,ftok, 20i64);
         if g.status == diag.outcomeDone {dones = dones + 1usize;}
         else if g.status == diag.outcomeCancelled || g.status == diag.outcomeTimedOut {cuts = cuts + 1usize;}
         expect(g.status == (if running {diag.outcomeCancelled} else {diag.outcomeDone}), "9: a forced end answers as ordered");
-        if !quiet(&mut lp, ftok, 3i64) {doubles = doubles + 1usize;}
+        if !quiet(&mut lp, &mut late,ftok, 3i64) {doubles = doubles + 1usize;}
         if running {
           // the cancelled child is still there: end it and wait for it
           lp.submit(Op.WaitChild(h), Target.Here(ftok + 10u64));
           kill(raw);
-          await1(&mut lp, ftok + 10u64, 20i64);
+          await1(&mut lp, &mut late,ftok + 10u64, 20i64);
         }
         lp.close(h);
         f = f + 1usize;

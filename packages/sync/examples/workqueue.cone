@@ -17,9 +17,13 @@
 // sum to 1240, and 1000 jobs are 62 rounds of 16 and the first 8 again, so
 // 3 * (62 * 1240 + 140) = 231060.)
 //
-// Nothing checks that the plain globals below are touched only under their
-// locks: that is the program's discipline, until the compiler's lock
-// permissions are built.
+// The table, the scale and the results each live in an Arc whose Mutex or
+// Rwlock the compiler takes for every borrow, so nothing reaches them
+// unlocked; main hands them to each worker. The queue's three globals stay
+// plain, touched only under queueLock: a Condvar waits on a plain Mutex
+// only, and the queue is slept on, so it cannot be an Arc[Mutex, T] (a
+// lock permission's lock is in the allocation's header, which a Condvar
+// cannot be given).
 
 mod workqueue;
 
@@ -37,18 +41,27 @@ var jobs: List[u64];
 var nextJob: usize = 0usize;
 var closed: bool = false;
 
-// The table of squares, built once
+// The table of squares, built once, under the Once; read under a read lock
+struct Table {pub sq: Array[u64, 16];}
+alias Squares = Arc[Rwlock, Table];
 let tableOnce: Once;
-var table = Array[u64, 16]() <- fill 0u64;
 let builds: Atomic[u32];
 
-// The scale, guarded by settings
-let settings: Rwlock;
-var scale: u64 = 1u64;
+// The scale, read by the workers under a read lock while main may change it
+// under the write lock
+struct Scale {pub v: u64;}
+alias Scaling = Arc[Rwlock, Scale];
 
-// The results, guarded by resultsLock
-let resultsLock: Mutex;
-var results: List[u64];
+// The results
+struct Results {pub list: List[u64];}
+alias Collected = Arc[Mutex, Results];
+
+// What a worker is given
+struct Work {
+  pub table: Squares;
+  pub scale: Scaling;
+  pub results: Collected;
+}
 
 fn @initpure init() {
   queueLock = Mutex.make();
@@ -56,16 +69,14 @@ fn @initpure init() {
   jobs = List[u64]();
   tableOnce = Once.make();
   builds = Atomic[u32].of(0u32);
-  settings = Rwlock.make();
-  resultsLock = Mutex.make();
-  results = List[u64]();
 }
 
-fn buildTable() {
+fn buildTable(table: Squares) {
   builds.add(1u32);
+  let t = &mut *table;
   var i = 0u64;
   while i < 16u64 {
-    table[i] = i * i;
+    t.sq[i] = i * i;
     i = i + 1u64;
   }
 }
@@ -87,19 +98,15 @@ fn takeJob() u64, bool {
 }
 
 // Take jobs until there are none: how many this worker did
-fn worker(id: u32) u32 {
+fn worker(w: Work) u32 {
   var done = 0u32;
   var j = 0u64;
   var more = true;
   j, more = takeJob();
   while more {
-    tableOnce.callOnce(&buildTable);
-    settings.readLock();
-    let r = table[j % 16u64] * scale;
-    settings.readUnlock();
-    resultsLock.lock();
-    results.push(r);
-    resultsLock.unlock();
+    tableOnce.callOnceWith(w.table, &buildTable);
+    let r = (&*w.table).sq[j % 16u64] * (&*w.scale).v;
+    (&mut *w.results).list.push(r);
     done = done + 1u32;
     j, more = takeJob();
   }
@@ -108,14 +115,15 @@ fn worker(id: u32) u32 {
 
 fn main() {
   initAll();
-  settings.writeLock();
-  scale = 3u64;
-  settings.writeUnlock();
+  let table = Squares(Table(Array[u64, 16]() <- fill 0u64));
+  let scale = Scaling(Scale(1u64));
+  let results = Collected(Results(List[u64]()));
+  (&mut *scale).v = 3u64;
 
-  let a = thread.start(0u32, &worker);
-  let b = thread.start(1u32, &worker);
-  let c = thread.start(2u32, &worker);
-  let d = thread.start(3u32, &worker);
+  let a = thread.start(Work(table, scale, results), &worker);
+  let b = thread.start(Work(table, scale, results), &worker);
+  let c = thread.start(Work(table, scale, results), &worker);
+  let d = thread.start(Work(table, scale, results), &worker);
 
   var j = 0u64;
   while j < 1000u64 {
@@ -133,14 +141,15 @@ fn main() {
   let did = a.join() + b.join() + c.join() + d.join();
   var sum = 0u64;
   var i = 0usize;
-  while i < results.len() {
-    sum = sum + *results[i];
+  let all = &*results;
+  while i < all.list.len() {
+    sum = sum + *all.list[i];
     i = i + 1usize;
   }
   printStr("jobs     ");
   printInt(i64.from(did));
   printStr("\nresults  ");
-  printInt(i64.from(results.len()));
+  printInt(i64.from(all.list.len()));
   printStr("\nsum      ");
   printInt(i64.from(sum));
   printStr("\ntable built ");

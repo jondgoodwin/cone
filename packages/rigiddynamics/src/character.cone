@@ -47,7 +47,7 @@ pub struct CharacterSettings {
 
   // A person-sized capsule: 'height' tall in all, 'radius' round, climbing steps of 0.4 m and slopes to 45 degrees
   pub fn person(radius: f32, height: f32) CharacterSettings {
-    CharacterSettings(radius, maxf(0.01, height * 0.5 - radius), 0.7853982, 0.4, 0.02, 0.35, 0xffffffffu32, 70., 9.81, 55., 1.)
+    CharacterSettings(radius, (height * 0.5 - radius).max(0.01), 0.7853982, 0.4, 0.02, 0.35, 0xffffffffu32, 70., 9.81, 55., 1.)
   }
 }
 
@@ -135,14 +135,14 @@ fn slideMove(w: &mut World, ch: &Character, start: Vec3, disp: Vec3, push: bool,
     }
     let nS = hit.normal * -1.;
     let toward = (-dir.dot(nS)).max(0.05);
-    let adv = maxf(0., hit.fraction * len - skin / toward);
+    let adv = (hit.fraction * len - skin / toward).max(0.);
     pos = pos + dir * adv;
     remaining = dir * (len - adv);
     // shove a dynamic body: the character's momentum into it
     if push && ch.s.pushStrength > 0. && dt > 0. {
       let b = w.bodies[usize.from(hit.body)];
       if b.motion == MotionDynamic {
-        let speedInto = maxf(0., -remaining.dot(nS) / dt);
+        let speedInto = (-remaining.dot(nS) / dt).max(0.);
         w.applyImpulseAt(hit.body, nS * (-ch.s.mass * ch.s.pushStrength * speedInto), hit.pointB);
       }
     }
@@ -188,13 +188,13 @@ fn tryStep(w: &mut World, ch: &Character, start: Vec3, dispH: Vec3, dt: f32, out
   let stepH = ch.s.stepHeight;
   // up
   let upHit = sweepCapsule(w, ch, start, upV() * stepH);
-  let raise = if upHit.hit { maxf(0., upHit.fraction * stepH - skin) } else { stepH };
+  let raise = if upHit.hit { (upHit.fraction * stepH - skin).max(0.) } else { stepH };
   if raise < 0.01 { return false; }
   let raised = start + upV() * raise;
   // over: the move asked for, and a test a radius ahead of it, where the floor is found
   let hl = dispH.length();
   let dirH = dispH * (1. / hl);
-  let testLen = maxf(hl, ch.s.radius);
+  let testLen = hl.max(ch.s.radius);
   let over = slideMove(w, ch, raised, dispH, false, dt);
   if (over - raised).length() < hl - 0.002 { return false; }
   let ahead = slideMove(w, ch, raised, dirH * testLen, false, dt);
@@ -205,7 +205,7 @@ fn tryStep(w: &mut World, ch: &Character, start: Vec3, dispH: Vec3, dt: f32, out
   if !downHit.hit { return false; }
   let nS = downHit.normal * -1.;
   if nS.y < cosSlope { return false; }
-  let drop = maxf(0., downHit.fraction * dropMax - skin);
+  let drop = (downHit.fraction * dropMax - skin).max(0.);
   *out = Vec3(over.x, ahead.y - drop, over.z);
   *floorBody = downHit.body;
   true
@@ -251,7 +251,7 @@ pub fn updateCharacter(w: &mut World, ch: &mut Character, wish: Vec3, jump: f32,
     // sliding down a wall of a slope: keep the speed it has and let gravity add to it
     v = ch.vel + up * (-ch.s.gravity * dt);
   } else {
-    v = Vec3(wishH.x, maxf(ch.vel.y - ch.s.gravity * dt, -ch.s.maxFallSpeed), wishH.z);
+    v = Vec3(wishH.x, (ch.vel.y - ch.s.gravity * dt).max(-ch.s.maxFallSpeed), wishH.z);
   }
   let rising = jumped || (!wasGrounded && !wasSteep && v.y > 0.0001);
   let stepStart = ch.pos;
@@ -281,7 +281,7 @@ pub fn updateCharacter(w: &mut World, ch: &mut Character, wish: Vec3, jump: f32,
     if hit.hit {
       let nS = hit.normal * -1.;
       if nS.y >= cosSlope {
-        ch.pos = ch.pos - up * maxf(0., hit.fraction * ch.s.stickDistance - ch.s.skin);
+        ch.pos = ch.pos - up * (hit.fraction * ch.s.stickDistance - ch.s.skin).max(0.);
         vel = Vec3(vel.x, 0., vel.z);
         snapped = true;
       }
@@ -301,7 +301,7 @@ pub fn updateCharacter(w: &mut World, ch: &mut Character, wish: Vec3, jump: f32,
           // the slide off the edge may leave it short of the floor: finish the drop
           let again = sweepCapsule(w, ch, ch.pos, downV() * ch.s.stickDistance);
           if again.hit && again.normal.y <= -cosSlope {
-            ch.pos = ch.pos - up * maxf(0., again.fraction * ch.s.stickDistance - ch.s.skin);
+            ch.pos = ch.pos - up * (again.fraction * ch.s.stickDistance - ch.s.skin).max(0.);
           }
         }
       }
@@ -335,7 +335,7 @@ pub fn updateCharacter(w: &mut World, ch: &mut Character, wish: Vec3, jump: f32,
       ch.steepNormal = nS;
     }
   }
-  ch.landSpeed = if ch.grounded && !wasGrounded { maxf(0., -v.y) } else { 0. };
+  ch.landSpeed = if ch.grounded && !wasGrounded { (-v.y).max(0.) } else { 0. };
   if ch.grounded {
     vel = zero3();
     // loads a dynamic body it stands on with its weight

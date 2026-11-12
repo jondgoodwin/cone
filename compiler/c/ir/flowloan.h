@@ -149,6 +149,11 @@ uint32_t loanCallerApart(FnSigNode *sig, PathSet *set, INode *wanted);
 uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
     VarDclNode **through);
 
+// Do two parameter types borrow under the same written lifetime name? One
+// name ties them: a store between them is legal in the body, and the caller
+// is held to the tie (loanStoredApart, pwCallStores)
+int loanSameOwnName(INode *a, INode *b);
+
 // What an arena reached through a reference takes of caller loans: only those
 // of the parameter the reference holds a loan of, the arena's own (Bug 48's
 // exception, Bug 51). Returns the first stored caller loan that is not, or 0,
@@ -162,7 +167,7 @@ uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, 
 // dereferences alone, a path whose places a caller's own check sees.
 // Bug 65: a reference reached by parameter is asked too, unless 'readsnothing':
 // the node stored into is of a type whose death reads no borrow (#992's exception).
-int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsnothing);
+int loanArenaNodeBarred(PathSet *refholds, int byparm, int readsnothing);
 
 // Whether the arena reference holding 'arenaholds' is checked at all: not
 // where it holds no loan but what was stored through it (made from a raw
@@ -170,13 +175,6 @@ int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsn
 // 'root', the variable the arena was reached from (NULL where that is not
 // known: no caller loan at all).
 int loanArenaChecked(PathSet *stored, PathSet *arenaholds, VarDclNode *root);
-
-// The same for a function naming no lifetimes: a caller loan among 'stored'
-// going where a reference holding 'refholds' points, at what a parameter lent
-// that holds no borrow but ''static' ones (itypeCarriesEndingBorrow), which
-// takes no borrow the caller lent. Returns 0, or the loan, with that
-// parameter as 'through'.
-uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through);
 
 // A loan in 'set' that is not global -- a caller loan, or one of this
 // function's own storage -- or 0

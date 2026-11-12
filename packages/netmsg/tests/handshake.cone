@@ -9,6 +9,8 @@ import testing use *;
 import collections use *;
 import time use Duration, Instant;
 import netmsg use *;
+import iobuf use IoBuf;
+import streams;
 
 const sec = 1000000000i64;
 
@@ -16,21 +18,37 @@ fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
 
 // The datagram a dialer sends at 'now', if any
 fn dialed(d: &mut ClientHandshake, now: Instant) List[u8] {
-  var out = List[List[u8]]();
+  var out = Packets();
   d.poll(now, &mut out);
   var r = List[u8]();
   if out.len() > 0usize {
     match out.pop() {
-      case let Some(p) { r = p; }
-      case is None[List[u8]] {}
+      case let Some(p) { r = copyBytes(p.view()); }
+      case is None[IoBuf] {}
     }
   }
   r
 }
 
+// The gate, asked as the endpoint asks it (through a Writer), with the reply
+// copied into 'reply' (cleared first) so the checks below can read it. The
+// Writer is kept and cleared for each call
+struct Gate {
+  g: ChallengeGate;
+  w: streams.Writer;
+
+  fn handle(self: &mut, addr: &str, data: &Array[u8], now: Instant, reply: &mut List[u8]) GateVerdict {
+    reply.clear();
+    w.clear();
+    let v = g.handle(addr, data, now, &mut w);
+    reply.appendSlice(w.view());
+    v
+  }
+}
+
 fn main() i32 {
   let cfg = NetConfig.defaults();
-  let gate = ChallengeGate.make(12345u64);
+  var gate = Gate(ChallengeGate.make(12345u64), streams.Writer.make(32usize));
   var reply = List[u8]();
 
   // The whole handshake
@@ -117,7 +135,7 @@ fn main() i32 {
   var a = ConnectionCore.make(cfg, 0xABCDu64, at(0i64));
   var b = ConnectionCore.make(cfg, 0xABCEu64, at(0i64));
   a.sendReliable("hi");
-  var pk = List[List[u8]]();
+  var pk = Packets();
   var evs = List[CoreEvent]();
   a.poll(at(10i64), &mut pk, &mut evs);
   expectUInt(u64.from(pk.len()), 1u64, "a sends a packet");

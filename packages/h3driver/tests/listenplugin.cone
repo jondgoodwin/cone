@@ -1,0 +1,132 @@
+// What a Plugin's listener tells a client about its request streams, end to end.
+// Plugin.listen builds the server's QUIC context itself and copies Config.make's
+// transport.maxStreamsBidi into it (plugin.cone, listen): the one number a server
+// advertises to every client, which the listener also hands HTTP/3 as its
+// maxRequestStreams (driver.cone, listen). listenstreams.cone checks the two
+// numbers in Config.make; this checks the copy, which nothing else reads: a real
+// Plugin listener on 127.0.0.1, a Driver client asking for more streams than the
+// pool allows, the server answering none. The most requests the server ever sees
+// at once is the limit it advertised.
+//
+// A 16 MiB pool: 96 (the scaled maxRequestStreams, listenstreams.cone), the
+// default would be 100; an 8 MiB pool: 48 (a share of 6 MiB, 768 streams, a sixteenth;
+// a 1 MiB pool is too small for the handshake to finish here). The client asks for 110 on one connection;
+// the rest wait for the server's limit (or are refused), and none gets through.
+
+mod listenplugin;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf;
+import iocore use Loop, Completion, SocketAddr;
+import http use *;
+import tls;
+import httpclient;
+import h3driver use *;
+
+// A file of tls's test certificates: congo test runs a test in
+// build/<mode>/tests/<name>/, four folders below this package's
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String()
+}
+
+// One pump of both ends on one Loop: the client's events (Connected is what is
+// read), the server's Requests counted
+struct Ends {
+  pub srv: Plugin;
+  pub cl: Driver;
+  pub connected: bool;
+  pub requests: u64;
+}
+
+fn step(w: &mut Ends, lp: &mut Loop, until: Instant) {
+  var cev = List[Event]();
+  w.cl.pump(lp, &mut cev);
+  var k = 0usize;
+  while k < cev.len() {
+    if cev[k].kind == EventKind.Connected {w.connected = true;}
+    k = k + 1usize;
+  }
+  w.srv.turn(lp);
+  var sev = List[httpclient.H3Event]();
+  w.srv.takeEvents(&mut sev);
+  k = 0usize;
+  while k < sev.len() {
+    if sev[k].kind == httpclient.H3Kind.Request {w.requests = w.requests + 1u64;}
+    k = k + 1usize;
+  }
+  var limit = until;
+  let a = w.cl.wakeAt();
+  if a < limit {limit = a;}
+  let b = w.srv.wakeAt();
+  if b < limit {limit = b;}
+  var comps = List[Completion]();
+  lp.poll(limit, &mut comps);
+  k = 0usize;
+  while k < comps.len() {
+    if !w.cl.complete(lp, &mut comps[k]) {w.srv.complete(lp, &mut comps[k]);}
+    k = k + 1usize;
+  }
+}
+
+// The requests a server whose pool is poolBytes sees at once from a client
+// that asks for 110
+fn seenAtOnce(poolBytes: usize) u64 {
+  iobuf.setLimits(poolBytes,poolBytes / 8usize);
+  var lp = Loop.mustMake();
+  var ccfg = Config.make();
+  ccfg.transport.verify = tls.Verifier.roots(readText("ca.pem").view());
+  var w = Ends(srv: Plugin.make(Config.make()), cl: Driver.make(ccfg), connected: false, requests: 0u64);
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  let scfg = tls.ServerConfig.make(&cert, &key);
+  var port = 0u16;
+  match w.srv.listen(&mut lp, SocketAddr.localhost(0u16), &scfg, 5u64) {
+    case let Ok(l) {port = w.srv.localPort(&lp, l);}
+    case let Err(f) {panic("the listener could not be made");}
+  }
+  match w.cl.connect(&mut lp, SocketAddr.localhost(port), "localhost", 6u64) {
+    case let Ok(c) {
+      let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+      while !w.connected && Instant.now() < giveUp {step(&mut w, &mut lp, giveUp);}
+      var k = 0u32;
+      while k < 110u32 {
+        w.cl.request(&mut lp, c, RequestHead.get("/held", "localhost"), BodyLength(), 7u64);
+        k = k + 1u32;
+      }
+      // (the server answers none; a stream past the limit has nowhere to go)
+      let settle = Instant.now() + Duration.fromMillis(1500i64);
+      while Instant.now() < settle {step(&mut w, &mut lp, settle);}
+    }
+    case let Err(f) {panic("the client could not begin a connection");}
+  }
+  w.cl.abortAll(&mut lp);
+  w.srv.abortAll(&mut lp);
+  w.requests
+}
+
+fn main() {
+  let pool = iobuf.stats();
+  let big = seenAtOnce(16777216usize);
+  printStr("a 16 MiB pool: the server sees "); printUInt(big); printStr(" requests at once\n");
+  let eight = seenAtOnce(8388608usize);
+  printStr("an 8 MiB pool: the server sees "); printUInt(eight); printStr(" requests at once\n");
+  iobuf.setLimits(pool.maxBytes, pool.keepBytes);
+}
