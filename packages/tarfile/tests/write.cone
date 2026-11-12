@@ -1,0 +1,237 @@
+// Writing: files and folders round-trip through the reader; a long name goes through the prefix field; what the
+// writer makes is, byte for byte, what GNU tar made (tests/data/gnu-ustar-long.tar); names, modes and times
+// that do not fit are refused with a clear Err; the bytes come out in pieces of any size.
+
+mod writetest;
+
+import testing use *;
+import iobuf use IoBuf;
+import collections use *;
+import tarfile use *;
+import fs;
+import path use Path;
+
+fn load(name: &str) List[u8] {
+  var p = String.from("../../../../tests/data/");
+  p.append(name);
+  match fs.readFile(&Path.from(p.view())) {
+    case let Ok(s) {
+      var out = List[u8].withCapacity(s.len());
+      var k = 0usize;
+      while k < s.len() { out.push(s[k]); k += 1usize; }
+      out
+    }
+    case let Err(e) {
+      expect(false, "a fixture is missing");
+      List[u8]()
+    }
+  }
+}
+
+// Everything the writer has made, pulled 'piece' bytes at a time
+fn drain(tar: &mut TarWriter, piece: usize) List[u8] {
+  var all = List[u8]();
+  var out = IoBuf(65536usize);
+  while true {
+    out.clear();
+    let s = tar.pull(&mut out, piece);
+    all.appendSlice(out.view());
+    if s != Status.MoreOutput { break; }
+  }
+  all
+}
+
+// Reads an archive made here back as lines: kind, name, size, mode, mtime, data
+fn readBack(arch: &Array[u8]) String {
+  var tar = TarReader.make();
+  tar.feed(arch);
+  tar.finish();
+  var out = IoBuf(65536usize);
+  var s = String();
+  var data = String();
+  while true {
+    let st = tar.pull(&mut out);
+    if st == Step.Begin {
+      let e = tar.current();
+      s.append(if e.kind == EntryKind.Dir { "D " } else { "F " });
+      s.append(e.name.view());
+      s.append(" ");
+      s.appendUInt(e.size);
+      s.append(" ");
+      s.appendUInt(u64.from(e.mode));
+      s.append(" ");
+      s.appendInt(e.mtime);
+      data = String();
+    } else if st == Step.Data {
+      data.appendBytes(out.view());
+      out.clear();
+    } else if st == Step.End {
+      s.append(" [");
+      s.append(data.view());
+      s.append("]\n");
+    } else if st == Step.Done {
+      s.append("done\n");
+      break;
+    } else {
+      s.append("failed: ");
+      match tar.error() {
+        case let Some(e) { s.append(e.reason.view()); }
+        case is None[TarError] {}
+      }
+      break;
+    }
+  }
+  s
+}
+
+fn ok(r: Result[void, TarError]) {
+  match r {
+    case let Ok(v) {}
+    case let Err(e) { expect(false, e.reason.view()); }
+  }
+}
+
+fn sameBytes(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len { return false; }
+  var k = 0usize;
+  while k < a.len {
+    if a[k] != b[k] { return false; }
+    k += 1usize;
+  }
+  true
+}
+
+fn failsWith(r: Result[void, TarError], want: ErrorKind, label: &str) {
+  match r {
+    case let Ok(v) { expect(false, label); }
+    case let Err(e) { expect(e.kind == want, label); }
+  }
+}
+
+fn main() i32 {
+  // files and folders round trip
+  var tar = TarWriter.make();
+  var plain = EntryOptions.plain();
+  var timed = EntryOptions(0o600u32, 1700000000i64);
+  ok(tar.addDir("docs", &plain));
+  ok(tar.add("docs/readme.txt", "hello".bytes(), &timed));
+  ok(tar.add("empty", "".bytes(), &plain));
+  var exact = List[u8]();
+  var k = 0usize;
+  while k < 512usize { exact.push(u8.from(65usize + k % 26usize)); k += 1usize; }
+  ok(tar.add("docs/block.bin", exact.view(), &plain));
+  expectUInt(u64.from(tar.count()), 4u64, "four entries added");
+  expect(!tar.isFinished(), "not finished yet");
+  tar.finish();
+  expect(tar.isFinished(), "finished");
+  let arch = drain(&mut tar, 65536usize);
+  // headers 4 x 512, data 512 (hello) + 512 (block), nothing for the empty file, then two zero blocks
+  expectUInt(u64.from(arch.len()), 4u64 * 512u64 + 512u64 + 512u64 + 1024u64, "the archive's size is whole blocks");
+  var blockText = String();
+  blockText.appendBytes(exact.view());
+  var want = String.from("D docs/ 0 493 0 []\nF docs/readme.txt 5 384 1700000000 [hello]\nF empty 0 420 0 []\nF docs/block.bin 512 420 0 [");
+  want.append(blockText.view());
+  want.append("]\ndone\n");
+  expectStr(readBack(arch.view()).view(), want.view(), "round trip");
+
+  // the same bytes whatever the size of the pulls
+  var again = TarWriter.make();
+  ok(again.addDir("docs", &plain));
+  ok(again.add("docs/readme.txt", "hello".bytes(), &timed));
+  ok(again.add("empty", "".bytes(), &plain));
+  ok(again.add("docs/block.bin", exact.view(), &plain));
+  again.finish();
+  let pieces = drain(&mut again, 100usize);
+  expectUInt(u64.from(pieces.len()), u64.from(arch.len()), "pulled 100 bytes at a time, the same length");
+  expect(sameBytes(pieces.view(), arch.view()), "pulled 100 bytes at a time, the same archive");
+
+  // pulling after each add holds one entry at a time
+  var live = TarWriter.make();
+  var out = IoBuf(65536usize);
+  ok(live.add("a", "x".bytes(), &plain));
+  expect(live.pull(&mut out, 65536usize) == Status.NeedInput, "everything pulled: NeedInput");
+  expectUInt(u64.from(out.len()), 1024u64, "an entry of one byte is a header and a block");
+  expect(live.pull(&mut out, 65536usize) == Status.NeedInput, "nothing more to pull");
+  live.finish();
+  expect(live.pull(&mut out, 100usize) == Status.MoreOutput, "a limited pull of the end marker");
+  expect(live.pull(&mut out, 65536usize) == Status.Done, "done");
+
+  // byte for byte what GNU tar made
+  let fixture = load("gnu-ustar-long.tar");
+  var gnuLike = EntryOptions(0o644u32, 1700000000i64);
+  var gnuDir = EntryOptions(0o755u32, 1700000000i64);
+  let dir1 = "this-is-a-deliberately-long-folder-name-to-push-the-path-past-one-hundred-bytes";
+  var longName = String.from(dir1);
+  longName.append("/and-another-long-folder-name-in-it");
+  var leaf = String.from(longName.view());
+  leaf.append("/leaf.txt");
+  var m = TarWriter.make();
+  ok(m.add("hello.txt", "hello, tar\n".bytes(), &gnuLike));
+  ok(m.addDir(dir1, &gnuDir));
+  ok(m.addDir(longName.view(), &gnuDir));
+  ok(m.add(leaf.view(), "long name data\n".bytes(), &gnuLike));
+  m.finish();
+  let made = drain(&mut m, 4096usize);
+  expectUInt(u64.from(made.len()), u64.from(fixture.len()), "the same length as GNU tar's archive");
+  var firstDiff = 0u64;
+  var d = 0usize;
+  while d < made.len() && d < fixture.len() {
+    if made[d] != fixture[d] { firstDiff = u64.from(d) + 1u64; break; }
+    d += 1usize;
+  }
+  expectUInt(firstDiff, 0u64, "no byte differs from GNU tar's (0, or the first differing offset plus one)");
+
+  // a name through the prefix is read back whole, and a folder given without its '/' gets one
+  var pre = TarWriter.make();
+  ok(pre.add(leaf.view(), "x".bytes(), &plain));
+  ok(pre.addDir("plain-dir", &plain));
+  pre.finish();
+  let preBytes = drain(&mut pre, 65536usize);
+  let preText = readBack(preBytes.view());
+  var preWant = String.from("F ");
+  preWant.append(leaf.view());
+  preWant.append(" 1 420 0 [x]\nD plain-dir/ 0 493 0 []\ndone\n");
+  expectStr(preText.view(), preWant.view(), "a name through the prefix field");
+  // the prefix field really holds the front of it: the name field is the last part
+  expect(preBytes[345usize] == 116u8, "the prefix field starts with the name's front");
+  expect(preBytes[0usize] == 108u8 || preBytes[0usize] == 97u8, "the name field starts with the name's rest");
+
+  // refused names and values
+  var r = TarWriter.make();
+  failsWith(r.add("", "x".bytes(), &plain), ErrorKind.BadArgument, "an empty name");
+  var withNul = String.from("a");
+  withNul.appendByte(0u8);
+  withNul.append("b");
+  failsWith(r.add(withNul.view(), "x".bytes(), &plain), ErrorKind.BadArgument, "a NUL in a name");
+  var hundredOne = String();
+  k = 0usize;
+  while k < 101usize { hundredOne.append("a"); k += 1usize; }
+  failsWith(r.add(hundredOne.view(), "x".bytes(), &plain), ErrorKind.BadArgument, "101 bytes with no '/' to split at");
+  var hundred = String();
+  k = 0usize;
+  while k < 100usize { hundred.append("a"); k += 1usize; }
+  expect(r.add(hundred.view(), "x".bytes(), &plain) is Ok, "100 bytes fits the name field");
+  var wide = String();
+  k = 0usize;
+  while k < 160usize { wide.append("p"); k += 1usize; }
+  wide.append("/rest");
+  failsWith(r.add(wide.view(), "x".bytes(), &plain), ErrorKind.BadArgument, "a prefix of 160 bytes");
+  var deep = String.from("p/");
+  deep.append(hundredOne.view());
+  failsWith(r.add(deep.view(), "x".bytes(), &plain), ErrorKind.BadArgument, "101 bytes after the last '/'");
+  var late = EntryOptions(0u32, -1i64);
+  failsWith(r.add("t", "x".bytes(), &late), ErrorKind.BadArgument, "a negative time");
+  var huge = EntryOptions(0u32, 8589934592i64);
+  failsWith(r.add("t", "x".bytes(), &huge), ErrorKind.BadArgument, "a time past eleven octal digits");
+  var wild = EntryOptions(0o20000u32, 0i64);
+  failsWith(r.add("t", "x".bytes(), &wild), ErrorKind.BadArgument, "mode bits above twelve");
+  var big = List[u8].withCapacity(16777217usize);
+  k = 0usize;
+  while k < 16777217usize { big.push(0u8); k += 1usize; }
+  failsWith(r.add("big", big.view(), &plain), ErrorKind.TooLarge, "an entry past 16 MiB");
+  expectUInt(u64.from(r.count()), 1u64, "only the one good entry was added");
+  r.finish();
+  failsWith(r.add("late", "x".bytes(), &plain), ErrorKind.BadArgument, "an entry after finish");
+  failsWith(r.addDir("late", &plain), ErrorKind.BadArgument, "a folder after finish");
+  done()
+}

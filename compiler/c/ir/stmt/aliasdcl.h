@@ -33,6 +33,7 @@ typedef struct AliasDclNode {
     Name *namesym;      // The spelling this binding answers to
     INode *target;      // A name use of what it stands for, bound to that declaration
     INode *through;     // A name use of the global the target is reached through, or NULL
+    struct GenericInfo *genericinfo;  // A type alias's type parameters and bounds ('alias Items[T] = List[T]'), or NULL
 } AliasDclNode;
 
 // Create an alias under a local spelling for what 'target' names. A folded name
