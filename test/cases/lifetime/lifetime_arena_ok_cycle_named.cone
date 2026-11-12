@@ -1,0 +1,37 @@
+// The cure for lifetime_arena_refuse_unnamed_cycle_no_final, in a smaller shape:
+// the nodes name the arena's lifetime ('a) on Bin and Expr, and the parser's
+// functions take the arena as '&'a mut Arena' and return Expr['a]. The nodes
+// then belong to the arena by name, and no caller check is needed. Accepted and run.
+mod lifetime_arena_ok_cycle_named;
+import stdio use *;
+import arena use *;
+
+struct Num { pub v: i64; }
+struct Bin['a] { pub l: Expr['a]; pub r: Expr['a]; }
+enum Expr['a] {
+  N(&'a mut Num);
+  B(&'a mut Bin['a]);
+}
+struct P { pub pos: i64; pub n: i64; }
+fn term(p: &mut P, ar: &'a mut Arena) Expr['a] {
+  p.pos = p.pos + 1;
+  Expr.N(ar.alloc(Num(p.pos)))
+}
+fn expr(p: &mut P, ar: &'a mut Arena) Expr['a] {
+  let l = term(p, ar);
+  if p.pos >= p.n { return l; }
+  let r = expr(p, ar);
+  Expr.B(ar.alloc(Bin(l, r)))
+}
+fn sum(e: &Expr['a]) i64 {
+  match e {
+    case let N(n) { n.v }
+    case let B(b) { sum(&b.l) + sum(&b.r) }
+  }
+}
+fn main() {
+  var ar = Arena();
+  var p = P(0, 4);
+  let e = expr(&mut p, &mut ar);
+  print <- sum(&e), "\n";
+}

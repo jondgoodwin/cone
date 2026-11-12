@@ -1,0 +1,169 @@
+// The unicode package: the properties of a char and its simple case mapping,
+// from run tables generated from the Unicode Character Database
+// (unicodetables.py writes unicodetables.cone; its header names the version).
+// Pure Cone over core, no C library.
+//
+//   mod demo;
+//   import unicode;
+//
+//   fn main() {
+//     let a = unicode.isAlphabetic('é');   // true
+//     let u = unicode.toUpperSimple('é');  // 'É'
+//   }
+//
+// WHAT EACH ANSWERS (the names of Rust's char methods, the same sets)
+//   isAlphabetic   the Alphabetic property (letters, letter numbers, some marks)
+//   isNumeric      general category Nd, Nl or No
+//   isWhitespace   the White_Space property (the 25 code points; not U+200B)
+//   isUpper        the Uppercase property;  isLower  the Lowercase property
+//   toUpperSimple / toLowerSimple   UnicodeData's simple one-to-one mapping; a
+//                  char with none is given back. U+00DF stays U+00DF in
+//                  toUpperSimple, though its full upper case is "SS".
+//   toUpper / toLower   a text's full case mapping: SpecialCasing.txt's
+//                  unconditional entries (U+00DF to "SS", the ligatures, U+0149,
+//                  the Greek iota-subscript forms; U+0130 to "i" and U+0307 in
+//                  lower case), else the simple mapping. NOT applied, by design:
+//                  the conditional entries, i.e. final sigma (U+03A3 always
+//                  lowers to U+03C3) and the Lithuanian, Turkish and Azeri rules.
+//                  A text with none of those is mapped exactly as the real
+//                  language-neutral full mapping does.
+//
+// LOOKUP. Each table is the first code point of each run of equal value, in
+// order; a lookup is a binary search for the last start not above the char.
+// The case mappings answer ASCII before any table. The tables are about 37 KB
+// in all.
+
+mod unicode;
+
+import collections use *;
+
+fn code(c: char) u32 inline { u32.from(c) }
+
+// The index of the last start at or below x, for starts[0] == 0
+fn runOf(starts: &Array[u32], x: u32) usize {
+  var lo = 0usize;
+  var hi = starts.len();
+  // starts[lo] <= x < starts[hi] (past the end is infinity)
+  while hi - lo > 1usize {
+    let mid = lo + (hi - lo) / 2usize;
+    if starts[mid] <= x { lo = mid; } else { hi = mid; }
+  }
+  lo
+}
+
+fn flags(c: char) u8 {
+  flagBits[runOf(&flagStarts, code(c))]
+}
+
+pub fn isAlphabetic(c: char) bool { (flags(c) & 1u8) != 0u8 }
+pub fn isUpper(c: char) bool { (flags(c) & 2u8) != 0u8 }
+pub fn isLower(c: char) bool { (flags(c) & 4u8) != 0u8 }
+pub fn isWhitespace(c: char) bool { (flags(c) & 8u8) != 0u8 }
+pub fn isNumeric(c: char) bool { (flags(c) & 16u8) != 0u8 }
+
+fn shifted(x: u32, delta: i32) char {
+  char.from(u32.from(i64.from(x) + i64.from(delta)))
+}
+
+// The simple upper-case mapping of c. A char whose upper case changes length
+// (U+00DF, whose upper case is "SS") maps to itself, as does any char with no
+// mapping.
+pub fn toUpperSimple(c: char) char {
+  let x = code(c);
+  if x < 128u32 {
+    if x >= 97u32 && x <= 122u32 { return char.from(x - 32u32); }
+    return c;
+  }
+  shifted(x, upperDelta[runOf(&upperStarts, x)])
+}
+
+// The simple lower-case mapping of c. A char whose lower case changes length
+// maps to itself, as does any char with no mapping.
+pub fn toLowerSimple(c: char) char {
+  let x = code(c);
+  if x < 128u32 {
+    if x >= 65u32 && x <= 90u32 { return char.from(x + 32u32); }
+    return c;
+  }
+  shifted(x, lowerDelta[runOf(&lowerStarts, x)])
+}
+
+// ---- Text: the full case mappings ----
+
+// Whether x is in a sorted key table (its index is then runOf(keys, x))
+fn hasKey(keys: &Array[u32], x: u32) bool { keys[runOf(keys, x)] == x }
+
+// c as UTF-8 at the end of out. (Not TextOut.putChar, which drops U+0000.)
+fn appendCode(out: &mut String, x: u32) {
+  if x < 0x80u32 {
+    out.appendByte(u8.from(x));
+  }
+  else if x < 0x800u32 {
+    out.appendByte(0xC0u8 | u8.from(x >> 6u32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+  else if x < 0x10000u32 {
+    out.appendByte(0xE0u8 | u8.from(x >> 12u32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+  else {
+    out.appendByte(0xF0u8 | u8.from(x >> 18u32));
+    out.appendByte(0x80u8 | u8.from((x >> 12u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+}
+
+// The text with every char given its full upper-case mapping: the
+// unconditional entries of SpecialCasing.txt where there are any (U+00DF
+// becomes "SS", U+FB00 "FF", U+0149 U+02BC U+004E, the Greek iota-subscript
+// forms their capital and U+0399), else UnicodeData's simple mapping, as
+// toUpperSimple. The conditional entries are not applied: none of the
+// language-sensitive rules (Lithuanian, Turkish, Azeri) and no final-sigma
+// context. The result can be longer
+// than the text, never shorter.
+pub fn toUpper(s: &str) String {
+  var out = String.withCapacity(s.len());
+  each c in s.chars() {
+    let x = code(c);
+    if x >= 0xDFu32 {
+      if hasKey(&specialUpperKeys, x) {
+        let i = runOf(&specialUpperKeys, x);
+        var k = 0usize;
+        while k < 3usize && specialUpperVals[i * 3usize + k] != 0u32 {
+          appendCode(&mut out, specialUpperVals[i * 3usize + k]);
+          k += 1usize;
+        }
+        continue;
+      }
+    }
+    appendCode(&mut out, code(toUpperSimple(c)));
+  }
+  out
+}
+
+// The text with every char given its full lower-case mapping: SpecialCasing.txt's
+// unconditional entries (only U+0130, which becomes "i" and U+0307) else
+// UnicodeData's simple mapping, as toLowerSimple. Not applied: final sigma
+// (U+03A3 always becomes U+03C3, never U+03C2) and the language-sensitive
+// Lithuanian, Turkish and Azeri rules. The result can be longer than the text.
+pub fn toLower(s: &str) String {
+  var out = String.withCapacity(s.len());
+  each c in s.chars() {
+    let x = code(c);
+    if x >= 0x130u32 {
+      if hasKey(&specialLowerKeys, x) {
+        let i = runOf(&specialLowerKeys, x);
+        var k = 0usize;
+        while k < 3usize && specialLowerVals[i * 3usize + k] != 0u32 {
+          appendCode(&mut out, specialLowerVals[i * 3usize + k]);
+          k += 1usize;
+        }
+        continue;
+      }
+    }
+    appendCode(&mut out, code(toLowerSimple(c)));
+  }
+  out
+}

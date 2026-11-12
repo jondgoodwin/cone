@@ -6,8 +6,11 @@
 // distances ahead, from its own place: the colours say which eye is which, and
 // the shift of the near things against the far ones is the stereo.
 //
-//   congo run packages/render/examples/xrstereo.cone -- [--frames N] [--shot PREFIX] [--validation] [--mirror]
+//   congo run packages/render/examples/xrstereo.cone -- [--frames N] [--shot PREFIX] [--validation] [--mirror] [--foveation LEVEL]
 //
+// - --foveation LEVEL (off, low, medium, high; default off): ask for fragment shading rates on the headset's device and
+//   shade each eye's periphery in coarser blocks (foveation.cone); prints the tile size when it is in use.
+
 // - --frames N: draw N frames and leave (default 300).
 // - --shot PREFIX: near the end, copy each eye's image out and write
 //   PREFIX-left.bmp and PREFIX-right.bmp (and PREFIX-mirror.bmp with --mirror).
@@ -89,6 +92,7 @@ fn main(argc: i32, argv: **u8) i32 {
   var prefix = String();
   var validation = false;
   var mirrorWanted = false;
+  var level = FoveationLevel.Off;
   var a = 1;
   while a < argc {
     let arg = *(argv + usize.from(a));
@@ -113,8 +117,21 @@ fn main(argc: i32, argv: **u8) i32 {
       validation = true;
     } else if cstrEquals(arg, "--mirror") {
       mirrorWanted = true;
+    } else if cstrEquals(arg, "--foveation") && a + 1 < argc {
+      var name = String();
+      let s = *(argv + usize.from(a + 1));
+      var i = 0usize;
+      while *(s + i) != 0u8 {
+        name.appendByte(*(s + i));
+        i = i + 1usize;
+      }
+      match FoveationLevel.named(name.view()) {
+        case let Some(l) { level = l; }
+        else { print <- "--foveation is off, low, medium or high\n"; return 2; }
+      }
+      a = a + 1;
     } else {
-      print <- "Unknown argument; use --frames N, --shot PREFIX, --validation, --mirror\n";
+      print <- "Unknown argument; use --frames N, --shot PREFIX, --validation, --mirror, --foveation LEVEL\n";
       return 2;
     }
     a = a + 1;
@@ -127,6 +144,7 @@ fn main(argc: i32, argv: **u8) i32 {
   var options = HeadsetOptions();
   options.validation = validation;
   options.copySource = shots;
+  options.foveation = level != FoveationLevel.Off;
   if mirrorWanted {
     if !win.isOpen() {
       print <- "The mirror's window could not be opened\n";
@@ -176,8 +194,10 @@ fn main(argc: i32, argv: **u8) i32 {
   let gray = renderer.addMaterial(&mut gpu.device, &Material.plain(Color(0.35, 0.35, 0.38, 1.)));
   let light = Light.directional(Vec3(-0.3, -1., -0.4), Color.gray(2.5), Color.gray(0.3));
 
+  var fovea = Foveation.make(level);
+  var foveaPrinted = false;
   var frame = 0u32;
-  var after = 0u32;               // frames since the exit was asked for
+  var after = 0u32;              // frames since the exit was asked for
   var shotsDone = 0u32;
   var cpuFrames = 0u32;
   var eyesPrinted = false;
@@ -249,7 +269,18 @@ fn main(argc: i32, argv: **u8) i32 {
           }
           var camera = headset.eyeCamera(&state, eye);
           camera.background = if eye == 0usize { Color(0.45, 0.1, 0.1, 1.) } else { Color(0.1, 0.1, 0.45, 1.) };
+          // With --foveation: the eye's periphery shaded in coarser blocks (when the device has the feature)
+          let rated = level != FoveationLevel.Off && state.located && fovea.prepare(&mut gpu.device, &state, headset.eyeWidth, headset.eyeHeight);
+          if rated {
+            renderer.setShadingRate(&gpu.device, fovea.rate(eye), fovea.texelWidth, fovea.texelHeight);
+            if !foveaPrinted {
+              print <- "Foveation "; printStr(level.name()); print <- ": tiles "; print <- u64.from(fovea.texelWidth); print <- " x ";
+              print <- u64.from(fovea.texelHeight); print <- " pixels, full rate on "; print <- f64.from(fovea.fullPercent); print <- " %\n";
+              foveaPrinted = true;
+            }
+          }
           headset.drawEye(&mut gpu.device, &state, eye, &mut renderer, &camera, &light, &list);
+          if rated { renderer.clearShadingRate(); }
           eye = eye + 1usize;
         }
       }

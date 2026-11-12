@@ -1,0 +1,268 @@
+// How late a completion nobody is polling is taken: every worker in a long
+// turn, just after workers were asking hard for passes (aio's A WORKER'S PASS).
+// The I/O thread has then stood aside, no pass is coming, and only its own look
+// finds the completion. Run it with
+//
+//   congo run --release packages/aio/examples/longturn.cone -- [pairs] [rounds] [hotMs]
+//
+// 'pairs' pairs of actors, on two workers a pair (default: one worker for each
+// logical processor), play ping over loopback TCP. Each round every actor goes
+// into a turn that does not end until this program's main thread, which is no
+// worker, says so. Once all are in it, the main thread waits up to 1.2 ms (a
+// different offset each round), writes one byte from a socket of its own to a
+// socket with an aio read waiting, and watches opStats' loopDone for the read's
+// completion being taken. The rounds alternate:
+//
+//   hot    hotMs of ping first (default 20), then straight into the long turns
+//   port   a single message, so nothing asks hard and the I/O thread is in the
+//          port: the same turns, the same write, the port path to compare with
+//
+// It prints both rows and the added delay, a hot row's p99 and worst less the
+// port row's p50, and checks every byte written was read once: 'lost' and
+// 'doubled' must be 0. A busy machine makes this a check only. Comparing against
+// the budget (2 ms) wants a quiet one, at the default pairs and at fewer than
+// the machine has, so that the main thread and the I/O thread have processors.
+
+mod longturn;
+
+import stdio use *;
+import collections use List;
+import iobuf use IoBuf;
+import iocore use SocketAddr, Loop, Op, Target, Completion, Handle, forever;
+import time use Instant, Duration;
+import process;
+import thread;
+import actors;
+import aio;
+
+const maxOffsetNanos = 1200000i64;
+const settleNanos = 4000000i64;
+
+struct State {
+  pub want: Atomic[u32];        // 0 ping on; 1 go into the long turn; 2 finish
+  pub gen: Atomic[u32];         // moved by the main thread: the long turns end
+  pub arrived: Atomic[u32];     // actors in this round's long turn
+  pub port: Atomic[u32];        // where the readers listen
+  pub armed: Atomic[u32];       // reads waiting
+  pub bytes: Atomic[u64];       // bytes the reads answered
+  pub bad: Atomic[u64];         // a read that answered anything but one byte
+}
+
+let st: State;
+
+fn @initpure init() {
+  st = State(Atomic[u32].of(0u32), Atomic[u32].of(0u32), Atomic[u32].of(0u32), Atomic[u32].of(0u32),
+    Atomic[u32].of(0u32), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+// A turn that lasts until the main thread moves 'gen'
+fn longTurn() {
+  let g = st.gen.load();
+  st.arrived.add(1u32);
+  while st.gen.load() == g {}
+}
+
+fn msg(k: u8) IoBuf {
+  var b = IoBuf(8usize);
+  let bytes = [k];
+  b.append(&bytes);
+  b
+}
+
+actor Caller {
+  pub async fn play(self, port: u16) {
+    let s = (await aio.connect(SocketAddr.localhost(port))).expect("connect");
+    while true {
+      let w = st.want.load();
+      if w == 2u32 {
+        _ = await s.write(msg(2u8));
+        return;
+      }
+      if w == 1u32 {
+        _ = await s.write(msg(1u8));
+        longTurn();
+        continue;
+      }
+      _ = await s.write(msg(0u8));
+      _ = await s.read(IoBuf(64usize));
+    }
+  }
+}
+
+actor Answerer {
+  pub async fn play(self, caller: Caller) {
+    let l = (await aio.listen(SocketAddr.localhost(0u16))).expect("bind");
+    let port = (await l.localAddr()).expect("addr").port();
+    caller.play(port);
+    let conn = (await l.accept()).expect("accept");
+    while true {
+      match await conn.read(IoBuf(64usize)) {
+        case let Ok(b) if b.len() > 0usize {
+          let k = b.view()[0usize];
+          if k == 2u8 {return;}
+          if k == 1u8 {
+            longTurn();
+          } else {
+            _ = await conn.write(b);
+          }
+        }
+        else {return;}
+      }
+    }
+  }
+}
+
+actor Reader {
+  pub async fn run(self, conn: aio.Socket) {
+    st.armed.add(1u32);
+    match await conn.read(IoBuf(64usize)) {
+      case let Ok(b) {
+        st.bytes.add(u64.from(b.len()));
+        if b.len() != 1usize {st.bad.add(1u64);}
+      }
+      else {st.bad.add(1u64);}
+    }
+  }
+}
+
+actor Acceptor {
+  pub async fn run(self, n: u32) {
+    let l = (await aio.listen(SocketAddr.localhost(0u16))).expect("bind");
+    st.port.store(u32.from((await l.localAddr()).expect("addr").port()));
+    var k = 0u32;
+    while k < n {
+      let conn = (await l.accept()).expect("accept");
+      Reader().run(conn);
+      k = k + 1u32;
+    }
+  }
+}
+
+fn waitFor(word: &Atomic[u32], n: u32, what: &str) bool {
+  let t0 = Instant.now();
+  while word.load() < n {
+    if t0.elapsed() > Duration.fromSeconds(10i64) {
+      print <- "longturn: timed out waiting for ", what, ": ", word.load(), " of ", n, "\n";
+      st.want.store(2u32);
+      st.gen.add(1u32);
+      return false;
+    }
+    thread.yieldNow();
+  }
+  true
+}
+
+fn nth(v: &List[i64], q: usize) i64 {
+  v[(v.len() - 1usize) * q / 100usize]
+}
+
+fn row(what: &str, v: &mut List[i64]) {
+  v.sortBy((a, b) => *a <=> *b);
+  print <- what, ": p50 ", nth(v, 50usize) / 1000i64, " us, p99 ", nth(v, 99usize) / 1000i64, " us, worst ",
+    v[v.len() - 1usize] / 1000i64, " us, of ", v.len(), "\n";
+}
+
+fn main() i32 {
+  let args = process.args();
+  let pairs = match args.get(1) {
+    case let Some(s) {u32.from(u64.parse(s.view()) || 0u64)}
+    else {0u32}
+  };
+  let np = if pairs != 0u32 {pairs} else if thread.parallelism() >= 4u32 {thread.parallelism() / 2u32} else {1u32};
+  let rounds = match args.get(2) {
+    case let Some(s) {u32.from(u64.parse(s.view()) || 300u64)}
+    else {300u32}
+  };
+  let hotMs = match args.get(3) {
+    case let Some(s) {i64.from(u64.parse(s.view()) || 20u64)}
+    else {20i64}
+  };
+  let n = rounds * 2u32;
+  let actorsIn = np * 2u32;
+  actors.configure(actors.Options(workers: actorsIn));
+
+  // A socket for each round, its read waiting from the start
+  Acceptor().run(n);
+  if !waitFor(&st.port, 1u32, "the listener") {return 1;}
+  let port = u16.from(st.port.load());
+  var lp = Loop.mustMake();
+  var out = List[Completion]();
+  var conns = List[Handle]();
+  var k = 0u32;
+  while k < n {
+    lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(0u64));
+    while out.len() == 0usize {lp.poll(forever(), &mut out);}
+    conns <- out[0usize].handle;
+    out.clear();
+    k = k + 1u32;
+  }
+  if !waitFor(&st.armed, n, "the reads") {return 1;}
+  thread.sleep(Duration.fromMillis(100i64));
+
+  st.want.store(1u32);
+  var i = 0u32;
+  while i < np {
+    Answerer().play(Caller());
+    i = i + 1u32;
+  }
+
+  var hot = List[i64]();
+  var plain = List[i64]();
+  let doneAtStart = aio.opStats().workerDone;
+  k = 0u32;
+  while k < n {
+    let isHot = k % 2u32 == 1u32;
+    if !waitFor(&st.arrived, actorsIn, "the long turns") {
+      print <- "at round ", k, "\n";
+      return 1;
+    }
+    let at = Instant.now();
+    // A port round waits out the look that sends the I/O thread back, as the
+    // single messages that began it may have looked like asking hard
+    let offset = (i64.from(k) * 7919000i64) % maxOffsetNanos + if isHot {0i64} else {settleNanos};
+    while at.elapsed().nanos() < offset {}
+    let done = aio.opStats().loopDone;
+    let t0 = Instant.now();
+    lp.submit(Op.Send(conns[usize.from(k)], msg(7u8)), Target.Here(1u64));
+    while aio.opStats().loopDone == done {
+      let s = Instant.now();
+      while s.elapsed().nanos() < 2000i64 {}
+      if t0.elapsed() > Duration.fromSeconds(10i64) {
+        print <- "longturn: a completion was not taken in 10 s\n";
+        return 1;
+      }
+    }
+    let took = t0.elapsed().nanos();
+    if isHot {hot <- took;} else {plain <- took;}
+    lp.poll(Instant.now(), &mut out);
+    out.clear();
+
+    // The next round: a hot one pings before its long turns
+    st.arrived.store(0u32);
+    let nextHot = !isHot;
+    k = k + 1u32;
+    if k == n {break;}
+    st.want.store(if nextHot {0u32} else {1u32});
+    st.gen.add(1u32);
+    if nextHot {
+      thread.sleep(Duration.fromMillis(hotMs));
+      st.want.store(1u32);
+    }
+  }
+  st.want.store(2u32);
+  st.gen.add(1u32);
+
+  let t1 = Instant.now();
+  while st.bytes.load() < u64.from(n) && t1.elapsed() < Duration.fromSeconds(10i64) {thread.yieldNow();}
+  actors.waitUntilIdle();
+  let bytes = st.bytes.load();
+  print <- "workers ", actorsIn, ", rounds ", rounds, ", ping ", hotMs, " ms before each hot round\n";
+  row("port", &mut plain);
+  row("hot ", &mut hot);
+  let base = nth(&plain, 50usize);
+  print <- "added: p99 ", (nth(&hot, 99usize) - base) / 1000i64, " us, worst ", (hot[hot.len() - 1usize] - base) / 1000i64, " us\n";
+  print <- "passes answered ", aio.opStats().workerDone - doneAtStart, "\n";
+  print <- "lost ", if bytes < u64.from(n) {u64.from(n) - bytes} else {0u64}, ", doubled ",
+    if bytes > u64.from(n) {bytes - u64.from(n)} else {0u64}, ", bad ", st.bad.load(), "\n";
+  0
+}

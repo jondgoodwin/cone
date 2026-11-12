@@ -316,12 +316,18 @@ int siVisit(INode *node, SiVisitFn fn, void *ctx) {
 // ---- Does a function write storage through one of its parameters? -------------
 
 // Can the compiler read what this function does: it has a body here, which is a
-// call of this very function and not of one of a trait's (a virtual call)?
+// call of this very function and not of one of a trait's (a virtual call)? An enum is
+// marked 'TraitType' too. A method whose receiver names the enum (Option.unwrap) is one
+// function over the whole enum, not dispatched, so it is read. One with a 'self &'
+// receiver is copied into each variant and dispatched by tag, and a variant may override
+// it: it stays unreadable, as a trait's is (sound, without a union of the copies)
 int siVisible(FnDclNode *fn) {
     if (fn == NULL || fn->genericinfo != NULL || (fn->flags & FlagExtern) || (fn->dclinfo.facts & DclIntrinsic)
         || fn->value == NULL || fn->value->tag != BlockTag)
         return 0;
     INode *owner = inodeGetOwner((INode *)fn);
+    if (owner && owner->tag == StructTag && (owner->flags & TraitType) && (owner->flags & EnumType))
+        return structIsWholeEnumMethod((INode *)fn);
     return !(owner && owner->tag == StructTag && (owner->flags & TraitType));
 }
 
@@ -1462,6 +1468,15 @@ void shapeDeclaredCheck(void) {
 typedef struct {
     INode *seen[1024];
     uint8_t shared[1024];   // reached through a reference that may write by a path others share
+    // For a shared one: the field whose pointer or '&mut' made it shared, for the error text
+    INode *viaOwner[1024];
+    Name *viaField[1024];
+    const char *viaKind[1024];
+    INode *curOwner;        // the struct and field being walked
+    Name *curField;
+    INode *hopOwner;        // the field that made the path shared, once it is
+    Name *hopField;
+    const char *hopKind;
     int n;
     int full;
 } SkWalk;
@@ -1492,11 +1507,38 @@ static void skCollect(INode *type, int shared, SkWalk *w) {
         return;
     case RefTag:
     case ArrayRefTag:
-        skCollect(((RefNode *)type)->vtexp, shared || skWritingHop((RefNode *)type), w);
+    {
+        int hop = !shared && skWritingHop((RefNode *)type);
+        INode *oo = w->hopOwner;
+        Name *of = w->hopField;
+        const char *ok = w->hopKind;
+        if (hop) {
+            w->hopOwner = w->curOwner;
+            w->hopField = w->curField;
+            w->hopKind = "a `&mut` field";
+        }
+        skCollect(((RefNode *)type)->vtexp, shared || hop, w);
+        w->hopOwner = oo;
+        w->hopField = of;
+        w->hopKind = ok;
         return;
+    }
     case PtrTag:
+    {
+        INode *oo = w->hopOwner;
+        Name *of = w->hopField;
+        const char *ok = w->hopKind;
+        if (!shared) {
+            w->hopOwner = w->curOwner;
+            w->hopField = w->curField;
+            w->hopKind = "a pointer field";
+        }
         skCollect(((StarNode *)type)->vtexp, 1, w);
+        w->hopOwner = oo;
+        w->hopField = of;
+        w->hopKind = ok;
         return;
+    }
     case ArrayTag:
         skCollect(arrayElemType(type), shared, w);
         return;
@@ -1519,11 +1561,21 @@ static void skCollect(INode *type, int shared, SkWalk *w) {
             return;
         }
         w->seen[w->n] = type;
+        w->viaOwner[w->n] = shared ? w->hopOwner : NULL;
+        w->viaField[w->n] = shared ? w->hopField : NULL;
+        w->viaKind[w->n] = shared ? w->hopKind : NULL;
         w->shared[w->n++] = (uint8_t)shared;
         INode **nodesp;
         uint32_t cnt;
-        for (nodelistFor(&((StructNode *)type)->fields, cnt, nodesp))
+        INode *saveOwner = w->curOwner;
+        Name *saveField = w->curField;
+        for (nodelistFor(&((StructNode *)type)->fields, cnt, nodesp)) {
+            w->curOwner = type;
+            w->curField = (*nodesp)->tag == FieldDclTag ? ((FieldDclNode *)*nodesp)->namesym : NULL;
             skCollect(((IExpNode *)*nodesp)->vtype, shared, w);
+        }
+        w->curOwner = saveOwner;
+        w->curField = saveField;
         if (((StructNode *)type)->derived) {
             for (nodesFor(((StructNode *)type)->derived, cnt, nodesp))
                 skCollect(*nodesp, shared, w);
@@ -1537,6 +1589,12 @@ static void skCollect(INode *type, int shared, SkWalk *w) {
 
 #define SkMax 160
 
+// How each type skFrom put in 'out' was reached: the field whose pointer or '&mut'
+// shared it (NULL when it was a parameter's own), read by skMethod just after skReached
+static INode *skViaOwner[SkMax];
+static Name *skViaField[SkMax];
+static const char *skViaKind[SkMax];
+
 // The shape-changing types a method's parameters reach by a path it may write by,
 // and so share with whoever else holds the value. 'full' says too many to follow
 static int skFrom(INode *start, int shared, StructNode **out, int n, int *full, int *pending) {
@@ -1544,6 +1602,9 @@ static int skFrom(INode *start, int shared, StructNode **out, int n, int *full, 
     SkWalk *w = &skw;
     w->n = 0;
     w->full = 0;
+    w->curOwner = w->hopOwner = NULL;
+    w->curField = w->hopField = NULL;
+    w->hopKind = NULL;
     skCollect(start, shared, w);
     if (w->full)
         *full = 1;
@@ -1571,6 +1632,9 @@ static int skFrom(INode *start, int shared, StructNode **out, int n, int *full, 
             *full = 1;
             return n;
         }
+        skViaOwner[n] = w->viaOwner[i];
+        skViaField[n] = w->viaField[i];
+        skViaKind[n] = w->viaKind[i];
         out[n++] = st;
     }
     return n;
@@ -1673,8 +1737,9 @@ static char *skDup(const char *s) {
     return copy;
 }
 
-// What the method does that reshapes, in words: the node the question stopped at
-static void skSay(FnDclNode *meth, StructNode *impl, StructNode *cont, INode *hit, char *buf, size_t size) {
+// What the method does that reshapes, in words: the node the question stopped at, the
+// method that reshapes (named with its type) and the field path the type was reached by
+static void skSay(FnDclNode *meth, StructNode *impl, StructNode *cont, INode *hit, INode *viaOwner, Name *viaField, const char *viaKind, char *buf, size_t size) {
     ClosureInfo *closure = impl ? closureOfStruct((INode *)impl) : NULL;
     char who[200];
     if (closure)
@@ -1683,17 +1748,30 @@ static void skSay(FnDclNode *meth, StructNode *impl, StructNode *cont, INode *hi
         snprintf(who, sizeof(who), "%s's `%s`", &impl->namesym->namestr, &meth->namesym->namestr);
     else
         snprintf(who, sizeof(who), "the function `%s`", &meth->namesym->namestr);
-    char what[200];
-    if (hit && hit->tag == FnCallTag && isNameUseNode(((FnCallNode *)hit)->objfn))
-        snprintf(what, sizeof(what), "calls `%s` (line %u)",
-            &((NameUseNode *)((FnCallNode *)hit)->objfn)->namesym->namestr, hit->linenbr);
+    const char *contName = cont->namesym ? &cont->namesym->namestr : "collection";
+    char what[240];
+    if (hit && hit->tag == FnCallTag && isNameUseNode(((FnCallNode *)hit)->objfn)) {
+        NameUseNode *callee = (NameUseNode *)((FnCallNode *)hit)->objfn;
+        INode *owner = callee->dclnode ? inodeGetOwner(callee->dclnode) : NULL;
+        if (owner && owner->tag == StructTag && ((StructNode *)owner)->namesym)
+            snprintf(what, sizeof(what), "calls `%s.%s` (line %u), which reshapes `%s` storage",
+                &((StructNode *)owner)->namesym->namestr, &callee->namesym->namestr, hit->linenbr, contName);
+        else
+            snprintf(what, sizeof(what), "calls `%s` (line %u), which reshapes `%s` storage",
+                &callee->namesym->namestr, hit->linenbr, contName);
+    }
     else if (hit && (hit->tag == AssignTag || hit->tag == SwapTag))
-        snprintf(what, sizeof(what), "stores over a place (line %u)", hit->linenbr);
+        snprintf(what, sizeof(what), "stores over a place (line %u) in `%s` storage", hit->linenbr, contName);
     else
-        snprintf(what, sizeof(what), "reshapes one");
+        snprintf(what, sizeof(what), "reshapes `%s` storage", contName);
+    char path[300];
+    if (viaOwner && viaOwner->tag == StructTag && ((StructNode *)viaOwner)->namesym && viaField)
+        snprintf(path, sizeof(path), "reached through `%s.%s` (%s)", &((StructNode *)viaOwner)->namesym->namestr, &viaField->namestr, viaKind ? viaKind : "a field");
+    else
+        snprintf(path, sizeof(path), "reached through a shared mutable path (a `&mut` parameter, a variable it borrows or holds by reference, or a global)");
     snprintf(buf, size,
-        "%s %s on a `%s` that it reaches through a shared mutable path (a `&mut` parameter, a variable it borrows or holds by reference, or a global), which could be a collection the caller holds a borrow into",
-        who, what, cont->namesym ? &cont->namesym->namestr : "collection");
+        "%s %s %s, which could be a collection the caller holds a borrow into",
+        who, what, path);
 }
 
 // One function or method: does it reshape nothing its parameters (and what it holds)
@@ -1721,6 +1799,14 @@ static int skMethod(FnDclNode *meth, StructNode *impl, char *why, size_t size, i
     StructNode *reached[SkMax];
     int full = 0;
     int n = skReached(meth, reached, &full, &pending);
+    INode *viaOwner[SkMax];
+    Name *viaField[SkMax];
+    const char *viaKind[SkMax];
+    for (int i = 0; i < n; ++i) {
+        viaOwner[i] = skViaOwner[i];
+        viaField[i] = skViaField[i];
+        viaKind[i] = skViaKind[i];
+    }
     if (full) {
         if (why)
             snprintf(why, size, "`%s` reaches too many shape-changing types to follow, so it is assumed to reshape one", &meth->namesym->namestr);
@@ -1731,7 +1817,7 @@ static int skMethod(FnDclNode *meth, StructNode *impl, char *why, size_t size, i
         int answer = siAsk(meth, 0, SiModeType, (INode *)reached[i]);
         if (answer == SiYes) {
             if (why)
-                skSay(meth, impl, reached[i], siHitNode, why, size);
+                skSay(meth, impl, reached[i], siHitNode, viaOwner[i], viaField[i], viaKind[i], why, size);
             return ShapeKeepsNo;
         }
         if (answer == SiPending)
@@ -1861,6 +1947,33 @@ void shapeKeepDeferred(void) {
         }
     }
     skDeferredUsed = 0;
+}
+
+// The last value refused for a '+ ShapeKeeping' reference while a call's candidates were tried
+static StructNode *skRefusedImpl = NULL;
+static StructNode *skRefusedTrait = NULL;
+
+void shapeRefusedClear(void) {
+    skRefusedImpl = NULL;
+    skRefusedTrait = NULL;
+}
+
+void shapeRefusedNote(StructNode *impl, StructNode *trait) {
+    skRefusedImpl = impl;
+    skRefusedTrait = trait;
+}
+
+int shapeRefusedReport(INode *at) {
+    if (skRefusedImpl == NULL)
+        return 0;
+    char reason[900] = "";
+    shapeKeepsVia(skRefusedImpl, skRefusedTrait, reason, sizeof(reason));
+    errorMsgNode(at, ErrorNotShapeKeeping,
+        "No candidate takes this argument: a reference marked `+ ShapeKeeping` to `%s` says calls through it reshape nothing the caller holds a borrow into, and %s: %s.",
+        skRefusedTrait->namesym ? &skRefusedTrait->namesym->namestr : "the trait",
+        skRefusedImpl->namesym ? &skRefusedImpl->namesym->namestr : "this value", reason);
+    shapeRefusedClear();
+    return 1;
 }
 
 // A reference to a plain function, '&growWorld', made a virtual reference marked

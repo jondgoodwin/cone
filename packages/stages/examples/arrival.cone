@@ -73,13 +73,6 @@ struct Corpus {
   data: List[List[u8]];
 }
 
-fn bytesOfStr(s: &str) List[u8] {
-  var out = List[u8].withCapacity(s.len);
-  var k = 0usize;
-  while k < s.len { out.push(s[k]); k += 1usize; }
-  out
-}
-
 fn endsWith(s: &str, tail: &str) bool {
   s.len >= tail.len && &s[s.len - tail.len ..< s.len] == tail
 }
@@ -98,11 +91,14 @@ fn collect(dir: &Path, prefix: &str, c: &mut Corpus) {
           name.append("/");
           collect(&e.path, name.view(), c);
         } else if e.isFile && endsWith(e.name.view(), ".acn") {
-          match fs.readFile(&e.path) {
-            case let Ok(text) {
-              if text.len() <= 65536usize {
+          match fs.readBytes(&e.path) {
+            case let Ok(bytes) {
+              if bytes.len() <= 65536usize {
+                var file = List[u8]();
+                file.resize(bytes.len(), 0u8);
+                _ = bytes.copyOut(0usize, file.viewMut());
                 c.names.push(name);
-                c.data.push(bytesOfStr(text.view()));
+                c.data.push(file);
               }
             }
             case let Err(er) {}

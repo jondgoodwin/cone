@@ -155,6 +155,20 @@ fn main() {
 	<p>The <a href="lib-netmsg.html"><span class="pre">netmsg</span> package</a> is a game's protocol built on these two
 		operations: acknowledged packets, reliable messages and latest-wins values between a server and its clients.</p>
 
+	<h2 id="children">Child processes on the loop</h2>
+	<p><span class="pre">lp.adoptChild(raw)</span> gives the loop a child process, and <span class="pre">Op.WaitChild(child)</span>
+		answers when it has ended, with no thread waiting for it. What <span class="pre">raw</span> is, and what the loop
+		owns, differ by system. On Windows it is the process handle, and the loop owns it from the call, whatever the
+		result; <span class="pre">lp.close(h)</span> closes it. On Linux it is the process id, and the loop owns only the
+		pidfd it opens for it (<span class="pre">pidfd_open</span>, Linux 5.3 and later); the pid stays the caller's. The
+		answer is Done with <span class="pre">n</span> the exit code; on Linux, for a process a signal ended,
+		<span class="pre">n</span> is 0 and the answer's <span class="pre">code</span> is the signal's number (<span class="pre">code</span>
+		is 0 in every other Done). A child is waited for once, on both systems: the wait that answers Done is the only one
+		that does, and a second wait on the same handle fails (on Linux the first reaped the child, and the failure is ECHILD;
+		on Windows the handle remembers it was waited for, and the failure is ERROR_WAIT_NO_CHILDREN). A cancelled or timed
+		out wait has answered for nothing. On Linux a child never waited for stays a zombie until its parent reaps it. A wait can be cancelled, can have a deadline, and is cancelled by closing the handle, like any
+		other operation.</p>
+
 	<h2 id="pipes">Pipes on the loop</h2>
 	<p><span class="pre">lp.adoptPipe(raw)</span> gives the loop one end of a pipe: on Windows a handle opened
 		<span class="pre">FILE_FLAG_OVERLAPPED</span> (an end of a named pipe; an anonymous pipe cannot be overlapped), on Linux a
@@ -253,7 +267,10 @@ cancel again
 		the first operation awaited starts: it waits in <span class="pre">iocore</span>'s completion loop, and hands each
 		answer to the actor awaiting it as a message, in its mailbox. A socket's read into a buffer, and a write, are first
 		tried on the awaiting actor's own worker: one that finishes at once (a write the socket takes, a read whose bytes have
-		come) is answered there, and the actor goes on without the I/O thread; only one that has to wait goes to it. The
+		come) is answered there, and the actor goes on without the I/O thread; only one that has to wait goes to it. A
+		worker whose turn sent something, or left an operation waiting, looks for completions itself as the turn ends, without
+		waiting; while workers are doing that often, the I/O thread stands aside and they take its work in turn, one at a time,
+		so that an exchange between actors over a socket needs no thread woken. The
 		worker threads never wait on I/O. An operation in
 		flight keeps the actor awaiting it alive, whether or not anything else holds the actor, as a request to another actor
 		does. There is one I/O thread; more than one is not built yet.</p>

@@ -1,0 +1,274 @@
+// HTTP/1.1: a handler that answers first can still read its whole body (lanes 133 and 140, rows 130 and 133).
+// A raw client sends the head and only a prefix of the body, reads the response, and only then opens a gate and
+// writes the rest: the handler cannot have the tail before it has answered, whatever the load, and no clock
+// decides the order. Scenarios: a handler that reads the body after the answer (20,000 bytes: every byte and
+// End); a slow reader of a body of 1,000,000 bytes (held for as long as the handler reads it, past any drain
+// bound); a handler that drops the body (kept under 256 KiB: a second request on the connection is answered;
+// closed over it); and the cause a read's Err names when the peer leaves in the middle of the body.
+// HTTP/2 and HTTP/3 are covered by reqbody's /answerfirst (this package's and h3driver's).
+mod answerfirst;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import actors;
+import aio use IoLimits;
+import actorhttp use BodyError, Server, ServerConfig, Exchange;
+
+struct T {
+  pub gate: Atomic[u64];
+  pub bytes: Atomic[u64];
+  pub ends: Atomic[u64];
+  pub errs: Atomic[u64];
+  pub done: Atomic[u64];
+  pub closeHdr: Atomic[u64];   // the client sends 'Connection: close'
+}
+let t: T;
+
+fn @initpure init() {
+  t = T(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  t.gate.store(0u64);
+  t.bytes.store(0u64);
+  t.ends.store(0u64);
+  t.errs.store(0u64);
+  t.done.store(0u64);
+}
+
+const modeRead = 0u32;      // read the body after the answer
+const modeSlow = 1u32;      // read it slowly
+const modeDrop = 2u32;      // drop it unread
+
+actor Handler {
+  ex: Exchange;
+  errText: Sender[String];
+  mode: u32;
+  idx: u32;
+
+  pub async fn run(self) {
+    if idx > 0u32 {
+      ex.text(200u16, "next");
+      return;
+    }
+    ex.text(200u16, "ok");
+    if mode == modeDrop {
+      {
+        let body = ex.body();
+      }
+      t.done.add(1u64);
+      return;
+    }
+    // wait for the client's signal, which it gives after it has the whole response
+    let limit = Instant.now() + Duration.fromMillis(30000i64);
+    while t.gate.load() == 0u64 && Instant.now() < limit {
+      let s = await aio.sleep(Duration.fromMillis(5i64));
+    }
+    let body = ex.body();
+    var going = true;
+    while going {
+      let r = await body.read();
+      match r {
+        case let Ok(o) {
+          match o {
+            case let Some(piece) {t.bytes.add(u64.from(piece.len()));}
+            case is None[String] {t.ends.add(1u64); going = false;}
+          }
+        }
+        case let Err(e) {
+          t.errs.add(1u64);
+          errText.send(String() <- e);
+          going = false;
+        }
+      }
+      if going && mode == modeSlow {
+        let nap = await aio.sleep(Duration.fromMillis(2i64));
+      }
+    }
+    t.done.add(1u64);
+  }
+}
+
+actor Acceptor {
+  server: Server;
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+  pub async fn serve(self, errText: Sender[String], mode: u32) {
+    var idx = 0u32;
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {let h = Handler(ok, errText.clone(), mode, idx); h.run(); idx = idx + 1u32;}
+        case let Err(e) {break;}
+      }
+    }
+  }
+  pub async fn stop(self) {server.close();}
+}
+
+actor Raw {
+  // out gets: the first response's start, then what happened with the tail, then (when asked) the second request
+  pub async fn run(self, port: u16, prefix: usize, total: usize, second: bool, leave: bool, out: Sender[String]) {
+    let c = await aio.connect(SocketAddr.localhost(port));
+    match c {
+      case var Ok(sock) {
+        var head = String.from("POST /x HTTP/1.1\r\nHost: x\r\n");
+        if t.closeHdr.load() == 1u64 {head.append("Connection: close\r\n");}
+        head.append("Content-Length: ");
+        let tn = String() <- total;
+        head.append(tn.view());
+        head.append("\r\n\r\n");
+        var i = 0usize;
+        while i < prefix {head.append("a"); i = i + 1usize;}
+        match IoBuf.tryMake(head.len()) {
+          case var Some(b) {
+            b.append(head.view() as &Array[u8]);
+            let w = await sock.write(b);
+          }
+          else {}
+        }
+        var got = String();
+        let r1 = await sock.readIn(IoLimits.until(Instant.now() + Duration.fromMillis(5000i64)));
+        match r1 {
+          case let Ok(b) {got = String.fromBytes(b.view());}
+          case let Err(e) {got = String.from("error");}
+        }
+        out.send(got);
+        if leave {
+          // leave in the middle of the body, then let the handler read
+          {
+            var gone = aio.Socket.none();
+            gone <-> sock;
+          }
+          let nap = await aio.sleep(Duration.fromMillis(200i64));
+          t.gate.store(1u64);
+          out.send(String.from("left"));
+          return;
+        }
+        // the response is in: now the handler may read; the tail is still to send
+        t.gate.store(1u64);
+        var left = total - prefix;
+        var tailOk = true;
+        while left > 0usize && tailOk {
+          let k = if left > 32768usize {32768usize} else {left};
+          var tail = String();
+          var j = 0usize;
+          while j < k {tail.append("a"); j = j + 1usize;}
+          match IoBuf.tryMake(tail.len()) {
+            case var Some(b) {
+              b.append(tail.view() as &Array[u8]);
+              let w = await sock.write(b);
+              match w {
+                case let Ok(x) {}
+                case let Err(e) {tailOk = false;}
+              }
+            }
+            else {tailOk = false;}
+          }
+          left = left - k;
+        }
+        out.send(String.from(if tailOk {"tail written"} else {"tail write failed"}));
+        if second {
+          // a second request on the same connection: answered if the connection was kept
+          match IoBuf.tryMake(64usize) {
+            case var Some(b) {
+              b.append("GET /next HTTP/1.1\r\nHost: x\r\n\r\n");
+              let w = await sock.write(b);
+            }
+            else {}
+          }
+          var after = String();
+          let r2 = await sock.readIn(IoLimits.until(Instant.now() + Duration.fromMillis(3000i64)));
+          match r2 {
+            case let Ok(b) {after = String.fromBytes(b.view());}
+            case let Err(e) {after = String.from("error");}
+          }
+          out.send(String.from(if after.view().startsWith("HTTP/1.1 200") {"second request answered: kept"} else {"no answer to the second request: closed"}));
+        }
+      }
+      case let Err(e) {out.send(String.from("connect failed"));}
+    }
+  }
+}
+
+fn scenario(label: &str, mode: u32, prefix: usize, total: usize, second: bool, leave: bool) {
+  reset();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var etx: Sender[String];
+  var erx: Receiver[String];
+  etx, erx = Channel[String].make();
+  var otx: Sender[String];
+  var orx: Receiver[String];
+  otx, orx = Channel[String].make();
+  printStr(label);
+  printStr("\n");
+  var cfg = ServerConfig.make().streamBodies();
+  cfg.maxBody = 65536usize;
+  let a = Acceptor(Server.none());
+  a.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  a.serve(etx.clone(), mode);
+  let r = Raw();
+  r.run(port, prefix, total, second, leave, otx.clone());
+  let reply = orx.recv() || String();
+  printStr("  response to the client: ");
+  printStr(if reply.view().startsWith("HTTP/1.1 200") {"200"} else {"other"});
+  printStr("\n");
+  let w = orx.recv() || String();
+  printStr("  client: ");
+  printStr(w.view());
+  printStr("\n");
+  if second {
+    let z = orx.recv() || String();
+    printStr("  client: ");
+    printStr(z.view());
+    printStr("\n");
+  }
+  if mode != modeDrop {
+    let limit = Instant.now() + Duration.fromMillis(40000i64);
+    while t.done.load() == 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+    printStr("  handler: bytes ");
+    printUInt(t.bytes.load());
+    printStr(", clean ends ");
+    printUInt(t.ends.load());
+    printStr(", errs ");
+    printUInt(t.errs.load());
+    printStr("\n");
+    if t.errs.load() > 0u64 {
+      let m = erx.recv() || String();
+      printStr("  err text: ");
+      printStr(m.view());
+      printStr("\n");
+    }
+  }
+  a.stop();
+}
+
+fn main() i32 {
+  initAll();
+  scenario("handler reads the body after its answer (prefix 5000 of 20000)", modeRead, 5000usize, 20000usize, false, false);
+  t.closeHdr.store(1u64);
+  scenario("handler reads the body after its answer, the client having said Connection: close", modeRead, 5000usize, 20000usize, false, false);
+  t.closeHdr.store(0u64);
+  scenario("handler reads a body of 1,000,000 slowly after its answer", modeSlow, 5000usize, 1000000usize, false, false);
+  scenario("handler drops a body of 100,000 after its answer", modeDrop, 5000usize, 100000usize, true, false);
+  scenario("handler drops a body of 400,000 after its answer", modeDrop, 5000usize, 400000usize, true, false);
+  scenario("the peer leaves in the middle of the body while the handler is yet to read it", modeRead, 5000usize, 20000usize, false, true);
+  actors.waitQuiet();
+  0
+}

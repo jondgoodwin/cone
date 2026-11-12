@@ -2,7 +2,21 @@
 // in Rust's regex syntax is parsed, compiled to a byte-level automaton, and run
 // by a Pike VM: every search takes time proportional to the pattern's size times
 // the text's length, whatever the pattern, so a pattern built from a user's input
-// is no denial of service.
+// is no denial of service. When the groups of a match are wanted ('captures',
+// 'capturesFrom', 'replace' with a '$1'), a bounded backtracker finds them where the
+// states x text positions it must remember fit 32 KB of bits (RE2's budget): it is
+// quicker than the Pike VM there. A longer text is searched by the Pike VM for the
+// match's bounds alone, and the backtracker then finds the groups inside the match
+// if the match is short enough; else the Pike VM finds them. Both give the same
+// answer, and either way the time is bounded by states x positions.
+//
+// A search that wants only the bounds of a match ('isMatch', 'find', 'findFrom', 'matches',
+// 'split', and 'replace' without a '$1') on a text of 512 bytes or more is first tried by a
+// lazy DFA (src/dfa.cone): one table lookup for each byte, the states made as the search
+// first needs them and kept in a cache of a fixed number of bytes. A forward DFA finds the
+// end of the match and a reverse DFA the start. If the cache keeps filling up, the DFA
+// gives the search to the Pike VM (RE2's rule), so no pattern is slower than the Pike VM by
+// more than a constant. A program of 10000 states or more is not given to the DFA.
 //
 //   mod demo;
 //   import stdio use *;
@@ -57,16 +71,15 @@
 // between two bytes of one character.
 //
 // SCRATCH. A search needs working space of the size of the program (states x
-// slots). Each call of 'isMatch', 'find', 'findFrom', 'captures', 'replace' and
+// slots), or for the backtracker up to 32 KB of bits, or for the lazy DFAs a cache of up to
+// 'setCacheBudget' bytes (1 MB unless set). Each call of 'isMatch', 'find', 'findFrom', 'captures', 'replace' and
 // 'replaceAll' makes its own; 'matches' and 'split' make one for the whole
 // iteration. A Regex is not changed by a search, so one may be shared.
 //
 // LIMITS. A pattern may be nested 250 deep, a repetition count may be at most 1000,
 // and a program at most 200000 states (the error is ErrorKind.TooBig).
 //
-// METHOD CHOICES. Left out for now, each to come as its own step: a bounded
-// backtracker for captures on short texts, a lazy DFA for 'isMatch' and 'find',
-// literal prefilters beyond a pattern's own leading literal (which is scanned for
+// METHOD CHOICES. Left out for now, each to come as its own step: literal prefilters beyond a pattern's own leading literal (which is scanned for
 // with a plain loop), a reusable cache, a closure form of 'replaceAll', and
 // Unicode classes.
 
@@ -198,8 +211,16 @@ pub struct Regex {
     var seedLo = List[u8]();
     var seedHi = List[u8]();
     let seed = startStates(&insts, &trans, start, &mut seedLo, &mut seedHi);
-    Ok[Regex, RegexError](Regex(Program(insts, trans, start, 2 * usize.from(p.groups), prefix, seed, seedLo, seedHi, nullable(&p, root)), p.groups, names, bytesMode))
+    let dp = makeDfaProg(&insts, &trans, start);
+    Ok[Regex, RegexError](Regex(Program(insts, trans, start, 2 * usize.from(p.groups), prefix, seed, seedLo, seedHi, nullable(&p, root), dp), p.groups, names, bytesMode))
   }
+
+  // Give the lazy DFAs this many bytes of cache (shared by the two directions) instead of
+  // the default (1 MB). The budget is per Regex, so a program holding hundreds of patterns
+  // pays it hundreds of times. Only a pattern with a big DFA gains from a larger one:
+  // `[ab]*a[ab]{12}` falls back to the Pike VM at 1 MB and runs 15x faster at 4 MB. A search
+  // that fills the cache drops it and goes on, and gives up to the Pike VM if it keeps doing so.
+  pub fn setCacheBudget(self: &mut, bytes: usize) { prog.dp.budget = bytes; }
 
   // How many groups the pattern has, not counting the whole match
   pub fn groupCount(self: &) usize { usize.from(groups) - 1 }

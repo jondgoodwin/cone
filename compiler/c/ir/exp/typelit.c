@@ -315,6 +315,7 @@ void typeLitFlow(FlowState *fstate, FnCallNode **nodep) {
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
 
     INode *littype = itypeGetTypeDcl(arrlit->vtype);
+    structMembersUse(pstate, littype, 1);
     if (!itypeIsConcrete(arrlit->vtype))
         errorMsgNode((INode*)arrlit, ErrorInvType, "Type must be concrete and instantiable.");
     else if (littype->tag == StructTag) {

@@ -1,0 +1,238 @@
+// What a DensePool does, case by case. Each expected value is worked out by hand.
+
+mod densepool;
+
+import testing use *;
+import pools use *;
+import collections use List;
+
+struct Pt {
+  pub x: i64;
+  pub y: i64;
+}
+
+let deaths: Atomic[u64];
+
+fn @initpure init() {
+  deaths = Atomic[u64].of(0u64);
+}
+
+struct Mortal is Move {
+  pub id: i64;
+
+  fn final(self: &uni) {
+    deaths.add(1u64);
+  }
+}
+
+// Whether the handle reaches nothing
+fn gone(t: &DensePool[Pt], h: Handle) bool {
+  match t.borrow(h) {
+    case is None {true}
+    case is Some {false}
+  }
+}
+
+// What the handle reaches, x
+fn xOf(t: &DensePool[Pt], h: Handle) i64 {
+  t.borrow(h).unwrap().x
+}
+
+// A handle is stale after remove, and after its cell is reused
+fn stale() {
+  var t = DensePool[Pt](4usize);
+  let a = t.add(Pt(1i64, 2i64));
+  expectUInt(u64.from(a.index), 0u64, "first entry in sparse cell 0");
+  expectUInt(u64.from(a.gen), 1u64, "as its first occupant");
+  expectInt(t.borrow(a).unwrap().y, 2i64, "get reads it");
+  expect(t.isLive(a), "live");
+  expectUInt(u64.from(t.rowIndex(a)), 0u64, "in row 0");
+  expect(t.remove(a), "remove answers true");
+  expect(gone(&t, a), "a removed entry's handle reaches nothing");
+  expect(!t.isLive(a), "not live");
+  expectUInt(u64.from(t.rowIndex(a)), 0xFFFFFFFFu64, "no row");
+  expect(!t.remove(a), "removing it again answers false");
+  let b = t.add(Pt(5i64, 6i64));
+  expectUInt(u64.from(b.index), 0u64, "the freed cell is used again");
+  expectUInt(u64.from(b.gen), 2u64, "as its second occupant");
+  expect(gone(&t, a), "the old handle still reaches nothing after reuse");
+  expectInt(xOf(&t, b), 5i64, "the new one reaches the new entry");
+  expect(t.handleAt(1u32).isNone(), "no handle for a row past the end");
+}
+
+// Remove moves the last row into the hole; its handle still reaches it
+fn moves() {
+  var t = DensePool[Pt](4usize);
+  let a = t.add(Pt(10i64, 0i64));
+  let b = t.add(Pt(20i64, 0i64));
+  let c = t.add(Pt(30i64, 0i64));
+  let d = t.add(Pt(40i64, 0i64));
+  expect(t.remove(b), "remove b");
+  expectUInt(u64.from(t.len()), 3u64, "three left");
+  expectUInt(u64.from(t.rowIndex(a)), 0u64, "a stays in row 0");
+  expectUInt(u64.from(t.rowIndex(d)), 1u64, "d moved into b's row");
+  expectUInt(u64.from(t.rowIndex(c)), 2u64, "c stays");
+  expectInt(xOf(&t, d), 40i64, "d's handle reaches d");
+  expect(t.handleAt(1u32) == d, "handleAt names the mover");
+  expectInt(t.rows()[1usize].x, 40i64, "rows() sees it in row 1");
+  // removing the last row moves nothing
+  expect(t.remove(c), "remove the last row");
+  expectUInt(u64.from(t.rowIndex(a)), 0u64, "a still row 0");
+  expectUInt(u64.from(t.rowIndex(d)), 1u64, "d still row 1");
+  expectUInt(u64.from(t.len()), 2u64, "two left");
+  // remove the first: d (last) takes row 0 after a
+  expect(t.remove(a), "remove a");
+  expectUInt(u64.from(t.rowIndex(d)), 0u64, "d is row 0");
+  match t.borrowMut(d) {
+    case let Some(p) {p.x = 41i64;}
+    else {expect(false, "borrowMut");}
+  }
+  match t.borrowAt(0u32) {
+    case let Some(p) {expectInt(p.x, 41i64, "borrowAt sees the write");}
+    else {expect(false, "borrowAt");}
+  }
+  match t.borrowMutAt(0u32) {
+    case let Some(p) {p.x = 42i64;}
+    else {expect(false, "borrowMutAt");}
+  }
+  expectInt(t.rows()[0usize].x, 42i64, "borrowMutAt wrote row 0");
+  match t.borrowAt(1u32) {
+    case is None {}
+    else {expect(false, "borrowAt past the end");}
+  }
+  match t.borrowMutAt(1u32) {
+    case is None {}
+    else {expect(false, "borrowMutAt past the end");}
+  }
+}
+
+// 10,000 random steps against a reference List of (handle, value)
+fn random() {
+  var t = DensePool[Pt](16usize);
+  var model = List[Pt]();
+  var hs = List[Handle]();
+  var seed = 12345u64;
+  var step = 0;
+  while step < 10000 {
+    seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+    let r = (seed >> 33u64) % 100u64;
+    let n = model.len();
+    if n == 0usize || r < 50u64 {
+      let v = Pt(i64.from(step), 7i64);
+      hs.push(t.add(v));
+      model.push(v);
+    } else {
+      seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+      let k = usize.from((seed >> 33u64) % u64.from(n));
+      expect(t.remove(*hs[k]), "remove live");
+      // the reference moves its last into the hole, as the pool does
+      let last = n - 1usize;
+      model.set(k, *model[last]);
+      hs.set(k, *hs[last]);
+      model.pop();
+      hs.pop();
+    }
+    step = step + 1;
+  }
+  expectUInt(u64.from(t.len()), u64.from(model.len()), "same count");
+  var ok = true;
+  var i = 0usize;
+  while i < model.len() {
+    if t.rows()[i].x != (*model[i]).x || !(t.handleAt(u32.from(i)) == *hs[i]) || t.rowIndex(*hs[i]) != u32.from(i) || xOf(&t, *hs[i]) != (*model[i]).x {
+      ok = false;
+    }
+    i = i + 1usize;
+  }
+  expect(ok, "rows, handles and row indexes equal the reference after 10,000 steps");
+  var visited = 0usize;
+  var sum = 0i64;
+  var it = t.iter();
+  while true {
+    match it.next() {
+      case let Some(p) {
+        visited = visited + 1usize;
+        sum = sum + p.x;
+      }
+      case is None {break;}
+    }
+  }
+  var want = 0i64;
+  i = 0usize;
+  while i < model.len() {want = want + (*model[i]).x; i = i + 1usize;}
+  expectUInt(u64.from(visited), u64.from(model.len()), "the walk visits exactly the live entries");
+  expectInt(sum, want, "and in row order sums them");
+}
+
+// A cell whose generation would wrap is never handed out again
+fn wrap() {
+  var t = DensePool[Pt](4usize);
+  let a = t.add(Pt(1i64, 0i64));
+  t.remove(a);
+  t.setGenForTests(0u32, 0xFFFFFFFFu32);
+  let b = t.add(Pt(2i64, 0i64));
+  expectUInt(u64.from(b.index), 0u64, "the cell is used");
+  expectUInt(u64.from(b.gen), 0xFFFFFFFFu64, "at the top generation");
+  expect(t.remove(b), "removed");
+  expect(gone(&t, b), "stale");
+  var seen0 = false;
+  var i = 0;
+  while i < 12 {
+    let h = t.add(Pt(0i64, 0i64));
+    if h.index == 0u32 {seen0 = true;}
+    i = i + 1;
+  }
+  expect(!seen0, "the cell is never handed out again");
+  expectUInt(u64.from(t.len()), 12u64, "twelve live");
+}
+
+fn clearing() {
+  var t = DensePool[Pt](4usize);
+  let a = t.add(Pt(1i64, 0i64));
+  let b = t.add(Pt(2i64, 0i64));
+  t.clear();
+  expectUInt(u64.from(t.len()), 0u64, "empty");
+  expect(gone(&t, a) && gone(&t, b), "every handle is stale");
+  let c = t.add(Pt(3i64, 0i64));
+  expect(c != a && c != b, "a new handle differs from both");
+  expect(gone(&t, a) && gone(&t, b), "old ones stay stale after reuse");
+  expectInt(xOf(&t, c), 3i64, "the new one reaches");
+}
+
+fn finalizers() {
+  let before = deaths.load();
+  {
+    var t = DensePool[Mortal](4usize);
+    let a = t.add(Mortal(1i64));
+    let b = t.add(Mortal(2i64));
+    let c = t.add(Mortal(3i64));
+    let d = t.add(Mortal(4i64));
+    t.remove(a);
+    expectUInt(deaths.load() - before, 1u64, "remove finalizes once");
+    t.remove(a);
+    expectUInt(deaths.load() - before, 1u64, "a stale remove does not");
+    match t.take(b) {
+      case let Some(m) {
+        expectUInt(deaths.load() - before, 1u64, "take does not finalize");
+      }
+      case is None[Mortal] {expect(false, "take gives Some");}
+    }
+    expectUInt(deaths.load() - before, 2u64, "the value taken dies with its new owner");
+    expectUInt(u64.from(t.len()), 2u64, "c and d remain");
+    t.clear();
+    expectUInt(deaths.load() - before, 4u64, "clear finalizes the rest");
+    t.add(Mortal(5i64));
+    t.add(Mortal(6i64));
+    t.add(Mortal(7i64));
+  }
+  expectUInt(deaths.load() - before, 7u64, "dropping the pool finalizes everything in it");
+}
+
+fn main() i32 {
+  stale();
+  moves();
+  random();
+  wrap();
+  clearing();
+  finalizers();
+  done()
+}

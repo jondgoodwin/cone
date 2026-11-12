@@ -77,11 +77,12 @@ import time use Instant, Duration;
 import libc;
 import thread;
 import timewheel use Wheel, TimerId, Expiry;
+import pools use GenPool, Handle;
 
 let groupSeq: Atomic[u64];
 
 // The timer's world, all under 'timerLock': the wheel; the slot table of the
-// groups armed in it (a wheel token is a slot's index), with the free slots;
+// groups armed in it (a wheel token is a slot's index and generation), whose pool keeps the free slots;
 // what an arm found already due; and whether the thread has started
 let timerLock: Mutex;
 let timerWake: Condvar;
@@ -94,8 +95,7 @@ let timerStarted: Atomic[u32];
 // of a group's state)
 struct Timers {
   wheel: Wheel;
-  slots: List[Option[Arc[imm, GroupState]]];
-  free: List[u32];
+  slots: GenPool[Arc[imm, GroupState]];
   due: List[Expiry];
 }
 
@@ -109,8 +109,8 @@ fn @initpure init() {
   timerLock = Mutex.make();
   timerWake = Condvar.make();
   let t = libc.malloc(mem.sizeof[Timers]()) as *Timers;
-  mem.writeRaw[Timers](t, Timers(Wheel.make(Instant.now()), List[Option[Arc[imm, GroupState]]](),
-    List[u32](), List[Expiry]()));
+  mem.writeRaw[Timers](t, Timers(Wheel.make(Instant.now()), GenPool[Arc[imm, GroupState]](),
+    List[Expiry]()));
   timersAt = Atomic[usize].of(t as usize);
   timerStarted = Atomic[u32].of(0u32);
 }
@@ -267,7 +267,7 @@ struct Registry {
 // What a handle holds to keep its group's timer armed: when the last handle
 // goes, so does this, and the timer lets go of the group (see DEADLINES)
 struct TimerGuard is Sendable, Move {
-  slot: u32;
+  slot: Handle;
   id: TimerId;
 
   fn final(self: &uni) {disarm(slot, id);}
@@ -437,16 +437,9 @@ fn arm(a: Arc[imm, GroupState], deadline: Instant) Option[Arc[imm, TimerGuard]] 
   timerLock.lock();
   // The wheel's time brought up to now first: it may have idled for long
   tm.wheel.expired(Instant.now(), &mut tm.due);
-  var slot = 0u32;
-  if tm.free.len() > 0usize {
-    slot = tm.free.pop().unwrap();
-    tm.slots[usize.from(slot)] = Some[Arc[imm, GroupState]](a);
-  } else {
-    slot = u32.from(tm.slots.len());
-    tm.slots.push(Some[Arc[imm, GroupState]](a));
-  }
+  let slot = tm.slots.add(a);
   let before = tm.wheel.nextExpiry();
-  let id = tm.wheel.insert(deadline, u64.from(slot));
+  let id = tm.wheel.insert(deadline, (u64.from(slot.gen) << 32u64) | u64.from(slot.index));
   let after = tm.wheel.nextExpiry();
   var earlier = true;
   match before {
@@ -465,14 +458,12 @@ fn arm(a: Arc[imm, GroupState], deadline: Instant) Option[Arc[imm, TimerGuard]] 
 }
 
 // The last handle on a group went before its deadline: the timer lets go of it
-fn disarm(slot: u32, id: TimerId) {
+fn disarm(slot: Handle, id: TimerId) {
   var held: Option[Arc[imm, GroupState]] = None;
   let tm = timers();
   timerLock.lock();
   if tm.wheel.cancel(id) {
-    held = tm.slots[usize.from(slot)];
-    tm.slots[usize.from(slot)] = None;
-    tm.free.push(slot);
+    held = tm.slots.take(slot);
   }
   timerLock.unlock();
   // 'held' goes here, outside the lock: it may be the group's last owner
@@ -483,13 +474,13 @@ fn collectDue(firing: &mut List[Arc[imm, GroupState]]) {
   let tm = timers();
   var k = 0usize;
   while k < tm.due.len() {
-    let slot = usize.from((*tm.due[k]).token);
-    match tm.slots[slot] {
+    // A token whose slot was freed and reused names an older generation: refused
+    let token = (*tm.due[k]).token;
+    let slot = Handle(u32.from(token & 0xFFFFFFFFu64), u32.from(token >> 32u64));
+    match tm.slots.take(slot) {
       case let Some(a) {firing.push(a);}
       else {}
     }
-    tm.slots[slot] = None;
-    tm.free.push(u32.from(slot));
     k = k + 1usize;
   }
   tm.due.clear();
