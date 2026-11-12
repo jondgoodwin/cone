@@ -1488,7 +1488,7 @@ pub struct Client {
       } else if (t & tokConn) != 0u64 {
         if index < connCount {
           let p = self.connAt(index) as &PConn;
-          if p.gen == gen && p.state != pFree && p.quic {self.onH3Conn(index, &e);}
+          if p.gen == gen && p.state != pFree && p.quic {self.onH3Conn(lp, index, &e);}
         }
       }
     }
@@ -1498,7 +1498,7 @@ pub struct Client {
 
   // An HTTP/3 connection's event: connected (it takes fetches now), or
   // closed (one that never connected falls back)
-  fn onH3Conn(self: &mut, pc: u32, e: &H3Event) {
+  fn onH3Conn(self: &mut, lp: &mut Loop, pc: u32, e: &H3Event) {
     let p = self.connAt(pc) as &mut PConn;
     let og = self.originAt(p.origin) as &mut Origin;
     if e.kind == H3Kind.Connected {
@@ -1511,6 +1511,11 @@ pub struct Client {
       return;
     }
     if e.kind != H3Kind.Closed {return;}
+    // A close ends every fetch still on the connection (the plug-in answers
+    // each request before it, but a fetch it left unanswered would wait for
+    // its deadline): each fails at once, or is retried as any other loss of
+    // its connection would be
+    self.failFetchesOn(lp, pc, e);
     let was = p.state;
     removeValue(&mut attempts, pc);
     if og.h3c == pc {og.h3c = noEntry;}
@@ -1528,6 +1533,23 @@ pub struct Client {
     st.closed = st.closed + 1u64;
     self.freeConnRec(pc);
     wantSchedule = true;
+  }
+
+  // The fetches still under way on HTTP/3 connection pc, whose Closed event e
+  // has come: each fails with the connection's failure (a Closed one of ours
+  // when it ended cleanly), through reqFailed, so that a fetch the retry
+  // rules allow goes to another connection
+  fn failFetchesOn(self: &mut, lp: &mut Loop, pc: u32, e: &H3Event) {
+    var i = 0u32;
+    while i < fetchCount {
+      let f = self.fetchAt(i) as &Fetch;
+      if f.state == fActive && f.conn == pc {
+        var fl = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the HTTP/3 connection closed before the exchange ended");
+        if !e.clean {fl = e.failure.clone();}
+        self.reqFailed(lp, i, fl);
+      }
+      i = i + 1u32;
+    }
   }
 
   // ---------------------------------------------------------------------------
