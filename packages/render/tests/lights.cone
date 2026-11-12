@@ -76,8 +76,6 @@ const SIDEZ = 256usize;
 const HEIGHT = 6.f;
 const HALF_VIEW = 2.18382f;
 
-fn maxf(a: f32, b: f32) f32 { if a > b { a } else { b } }
-
 // A number from 0 to 1 from the state 's', which moves on
 fn rnd(s: &mut u32) f32 {
   *s = *s * 1664525u32 + 1013904223u32;
@@ -281,9 +279,9 @@ fn clusterChecks(renderer: &mut Renderer, device: &mut Device) {
       var radius = 0.f;
       renderer.lights.lightSphere(l, &mut center, &mut radius);
       let v = view * center;
-      let dx = maxf(lo.x - v.x, v.x - hi.x).max(0.);
-      let dy = maxf(lo.y - v.y, v.y - hi.y).max(0.);
-      let dz = maxf(lo.z - v.z, v.z - hi.z).max(0.);
+      let dx = (lo.x - v.x).max(v.x - hi.x).max(0.);
+      let dy = (lo.y - v.y).max(v.y - hi.y).max(0.);
+      let dz = (lo.z - v.z).max(v.z - hi.z).max(0.);
       let touchesBox = dx * dx + dy * dy + dz * dz <= radius * radius;
       let listed = k < count && renderer.lights.clusterLight(c, k) == u32.from(l);
       if listed { k = k + 1u32; }
@@ -545,7 +543,7 @@ fn pointRow(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth
   while x < 250usize {
     let want = pointRadiance(at, candela, range, radius, planeAt(x), planeAt(128usize));
     let got = ch(p, x, 128usize, 0usize);
-    expectNear(got, want, maxf(1.5 / 255., 0.015 * want), label);
+    expectNear(got, want, (0.015 * want).max(1.5 / 255.), label);
     x = x + 14usize;
   }
 }
@@ -569,12 +567,12 @@ fn lightChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, de
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
   let moved = Vec3(1., 1.5, 0.);
   let wantRed = pointRadiance(moved, 5., 8., 0., planeAt(128usize + 20usize), planeAt(128usize));
-  expectNear(ch(p, 128usize + 20usize, 128usize, 0usize), wantRed, maxf(1.5 / 255., 0.015 * wantRed), "a light moved by its handle");
+  expectNear(ch(p, 128usize + 20usize, 128usize, 0usize), wantRed, (0.015 * wantRed).max(1.5 / 255.), "a light moved by its handle");
   expectNear(ch(p, 128usize + 20usize, 128usize, 1usize), 0., 0.5 / 255., "a red light gives no green");
   expectNear(ch(p, 128usize + 20usize, 128usize, 2usize), 0., 0.5 / 255., "nor blue");
   expect(renderer.lights.setIntensity(h, 2.5), "its intensity set");
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
-  expectNear(ch(p, 128usize + 20usize, 128usize, 0usize), wantRed * 0.5, maxf(1.5 / 255., 0.015 * wantRed), "half the candela, half the light");
+  expectNear(ch(p, 128usize + 20usize, 128usize, 0usize), wantRed * 0.5, (0.015 * wantRed).max(1.5 / 255.), "half the candela, half the light");
   renderer.lights.remove(h);
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
   expectNear(ch(p, 128usize + 20usize, 128usize, 0usize), 0., 0.5 / 255., "a removed light lights nothing");
@@ -594,7 +592,7 @@ fn lightChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, de
     let cosine = 2. / d2.sqrt();
     let want = 0.8 / pi * 8. * cosine * pointFalloff(d2, 10., 0.) * spotFalloff(cosine, scale, offset);
     let got = ch(p, x, 128usize, 0usize);
-    expectNear(got, want, maxf(1.5 / 255., 0.015 * want), "the spot's row against the formula");
+    expectNear(got, want, (0.015 * want).max(1.5 / 255.), "the spot's row against the formula");
     if (got - want).abs() > worst { worst = (got - want).abs(); }
     x = x + 1usize;
   }
@@ -612,7 +610,7 @@ fn lightChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, de
   let dd2 = toL.lengthSquared();
   let cosAxis = (Vec3(0., 0., 0.) - toL.normalize()).dot(axis);
   let wantTurned = 0.8 / pi * 8. * (2. / dd2.sqrt()) * pointFalloff(dd2, 10., 0.) * spotFalloff(cosAxis, scale, offset);
-  expectNear(ch(p, 200usize, 128usize, 0usize), wantTurned, maxf(1.5 / 255., 0.015 * wantTurned), "the turned spot");
+  expectNear(ch(p, 200usize, 128usize, 0usize), wantTurned, (0.015 * wantTurned).max(1.5 / 255.), "the turned spot");
   expectNear(ch(p, 128usize - 40usize, 128usize, 0usize), 0., 0.5 / 255., "and dark behind it");
   renderer.lights.clear();
 
@@ -809,7 +807,7 @@ fn crowd(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &
             let err = (got - expected).abs();
             compared = compared + 1u32;
             if err > worst { worst = err; }
-            if err > maxf(2. / 255., 0.02 * expected) { bad = bad + 1u32; }
+            if err > (0.02 * expected).max(2. / 255.) { bad = bad + 1u32; }
           }
         }
         sx = sx + 1usize;
