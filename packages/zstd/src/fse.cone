@@ -12,14 +12,14 @@
 
 // -------- forward bits: table descriptions --------
 
-// The 32 bits of *src[start, end) from bit 'bit' on (zeros past the end)
-fn fwdPeek(src: &List[u8], start: usize, end: usize, bit: usize) u32 {
+// The 32 bits of src[start, end) from bit 'bit' on (zeros past the end)
+fn fwdPeek(src: &Array[u8], start: usize, end: usize, bit: usize) u32 {
   var p = start + bit / 8usize;
   // Five bytes cover 32 bits at any bit offset
   var wide = 0u64;
   var k = 0u32;
   while k < 5u32 {
-    if p < end { wide = wide | (u64.from(*src[p]) << u64.from(k * 8u32)); }
+    if p < end { wide = wide | (u64.from(src[p]) << u64.from(k * 8u32)); }
     p = p + 1usize;
     k = k + 1u32;
   }
@@ -28,7 +28,7 @@ fn fwdPeek(src: &List[u8], start: usize, end: usize, bit: usize) u32 {
 
 // -------- backward bits: entropy-coded data --------
 
-// A backward bitstream over *src[start, end). 'acc' holds 'n' bits not yet
+// A backward bitstream over src[start, end). 'acc' holds 'n' bits not yet
 // read in its low bits, the next to read the highest of them; 'pos' is the
 // next byte to load (counting down to 'start'); 'over' counts the zero bits
 // read past the start, which a valid stream never needs.
@@ -41,9 +41,9 @@ struct BackBits {
 
   // A reader of src[start, end), at its end: None when the stream is empty or
   // its last byte is 0 (no closing 1 bit)
-  fn open(src: &List[u8], start: usize, end: usize) Option[BackBits] {
+  fn open(src: &Array[u8], start: usize, end: usize) Option[BackBits] {
     if end <= start { return None[BackBits]; }
-    let last = *src[end - 1usize];
+    let last = src[end - 1usize];
     if last == 0u8 { return None[BackBits]; }
     // The bits below the closing 1
     var b = BackBits(start, end - 1usize, u64.from(last), 7u32 - last.leadingZeros(), 0u32);
@@ -52,12 +52,12 @@ struct BackBits {
   }
 
   // Load bytes until 57 or more bits are held, or none are left
-  fn refill(self: &mut, src: &List[u8]) {
+  fn refill(self: &mut, src: &Array[u8]) {
     if n <= 56u32 && pos >= start + 8usize {
       // Eight bytes in one load, of which the top 'm' (the ones at the highest
       // addresses, which come first) are taken: the same bits the loop below
       // would load a byte at a time (pos <= src.len(), so the load is in range)
-      let w = mem.readRaw[u64](((src.view() as *u8) + (pos - 8usize)) as *u64);
+      let w = mem.readRaw[u64](((src as *u8) + (pos - 8usize)) as *u64);
       let m = u64.from((64u32 - n) >> 3u32);
       acc = if m == 8u64 {w} else {(acc << (8u64 * m)) | (w >> (64u64 - 8u64 * m))};
       pos = pos - usize.from(m);
@@ -66,13 +66,13 @@ struct BackBits {
     }
     while n <= 56u32 && pos > start {
       pos = pos - 1usize;
-      acc = (acc << 8u64) | u64.from(*src[pos]);
+      acc = (acc << 8u64) | u64.from(src[pos]);
       n = n + 8u32;
     }
   }
 
   // Read k bits, 0 to 32
-  fn read(self: &mut, src: &List[u8], k: u32) u32 inline {
+  fn read(self: &mut, src: &Array[u8], k: u32) u32 inline {
     if k == 0u32 { return 0u32; }
     if n < k { self.refill(src); }
     if n >= k {
@@ -88,7 +88,7 @@ struct BackBits {
   }
 
   // The next k bits (1 to 32) without reading them
-  fn peek(self: &mut, src: &List[u8], k: u32) u32 {
+  fn peek(self: &mut, src: &Array[u8], k: u32) u32 {
     if n < k { self.refill(src); }
     if n >= k {
       return u32.from((acc >> u64.from(n - k)) & ((1u64 << u64.from(k)) - 1u64));
@@ -114,12 +114,12 @@ struct BackBits {
 // The highest set bit of x (x > 0)
 fn highBit(x: u32) u32 { 31u32 - x.leadingZeros() }
 
-// Reads an FSE table description (RFC 8878 section 4.1.1) at *src[start,
+// Reads an FSE table description (RFC 8878 section 4.1.1) at src[start,
 // end) into 'norm' (the normalized count of symbols 0 to norm.len() - 1)
 // and 'log' (the accuracy log). The bytes it took, or -1 when it is not
 // valid: an accuracy log over 'maxLog', a symbol over 'maxSymbol', counts
 // that do not sum to the table's size, or bits past 'end'.
-fn readNCount(src: &List[u8], start: usize, end: usize, maxSymbol: usize, maxLog: u32,
+fn readNCount(src: &Array[u8], start: usize, end: usize, maxSymbol: usize, maxLog: u32,
     norm: &mut List[i16], log: &mut u32) i64 {
   norm.clear();
   if end <= start { return -1i64; }
