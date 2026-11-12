@@ -1,0 +1,331 @@
+// What the reader refuses, and says why: archives cut at every length, damaged headers, a file that is not a
+// tar, entry types and PAX records this package does not read, and the PAX records it does (path and size) and
+// symbolic links, which no fixture could carry here (the machine that made the fixtures cannot make links), so
+// their headers are made by hand.
+
+mod refusetest;
+
+import testing use *;
+import iobuf use IoBuf;
+import collections use *;
+import tarfile use *;
+import fs;
+import path use Path;
+
+fn load(name: &str) List[u8] {
+  var p = String.from("../../../../tests/data/");
+  p.append(name);
+  match fs.readFile(&Path.from(p.view())) {
+    case let Ok(s) {
+      var out = List[u8].withCapacity(s.len());
+      var k = 0usize;
+      while k < s.len() { out.push(s[k]); k += 1usize; }
+      out
+    }
+    case let Err(e) {
+      expect(false, "a fixture is missing");
+      List[u8]()
+    }
+  }
+}
+
+fn kindName(k: ErrorKind) &str {
+  if k == ErrorKind.NotTar { "NotTar" }
+  else if k == ErrorKind.Truncated { "Truncated" }
+  else if k == ErrorKind.Corrupt { "Corrupt" }
+  else if k == ErrorKind.Unsupported { "Unsupported" }
+  else if k == ErrorKind.TooLarge { "TooLarge" }
+  else if k == ErrorKind.BadArgument { "BadArgument" }
+  else { "Overloaded" }
+}
+
+// What reading says: a line for each entry (kind, name, size, link target, data), then 'done' or the failure
+fn outcome(arch: &Array[u8]) String {
+  var tar = TarReader.make();
+  tar.feed(arch);
+  tar.finish();
+  var out = IoBuf(4096usize);
+  var s = String();
+  var data = String();
+  while true {
+    let st = tar.pull(&mut out);
+    if st == Step.Begin {
+      let e = tar.current();
+      s.append(if e.kind == EntryKind.Dir { "D " } else if e.kind == EntryKind.Symlink { "L " } else { "F " });
+      s.append(e.name.view());
+      s.append(" ");
+      s.appendUInt(e.size);
+      if e.link.len() > 0usize { s.append(" -> "); s.append(e.link.view()); }
+      data = String();
+    } else if st == Step.Data {
+      data.appendBytes(out.view());
+      out.clear();
+    } else if st == Step.End {
+      if data.len() > 0usize { s.append(" ["); s.append(data.view()); s.append("]"); }
+      s.append("\n");
+    } else if st == Step.Done {
+      s.append("done");
+      break;
+    } else {
+      match tar.error() {
+        case let Some(e) {
+          s.append("failed ");
+          s.append(kindName(e.kind));
+          s.append(" at ");
+          s.appendUInt(e.offset);
+          s.append(": ");
+          s.append(e.reason.view());
+        }
+        case is None[TarError] { s.append("failed with no error"); }
+      }
+      break;
+    }
+  }
+  s
+}
+
+// Just the failure's kind and offset ("" if the archive read through)
+fn failKind(arch: &Array[u8]) String {
+  var tar = TarReader.make();
+  tar.feed(arch);
+  tar.finish();
+  var out = IoBuf(4096usize);
+  var s = String();
+  while true {
+    let st = tar.pull(&mut out);
+    if st == Step.Data { out.clear(); }
+    else if st == Step.Done { break; }
+    else if st == Step.Failed {
+      match tar.error() {
+        case let Some(e) { s.append(kindName(e.kind)); }
+        case is None[TarError] { s.append("no error"); }
+      }
+      break;
+    }
+  }
+  s
+}
+
+// ---- headers by hand ----
+
+fn putText(b: &mut List[u8], at: usize, s: &str) {
+  let bytes = s.bytes();
+  var k = 0usize;
+  while k < bytes.len { b.set(at + k, bytes[k]); k += 1usize; }
+}
+
+// v in octal, zero-filled to n - 1 digits, then a NUL
+fn putOct(b: &mut List[u8], at: usize, n: usize, v: u64) {
+  var rest = v;
+  var k = n - 1usize;
+  b.set(at + k, 0u8);
+  while k > 0usize {
+    k -= 1usize;
+    b.set(at + k, 48u8 + u8.from(rest & 7u64));
+    rest = rest >> 3u64;
+  }
+}
+
+// Seals a header block: the checksum, from the other bytes
+fn seal(b: &mut List[u8]) {
+  var k = 148usize;
+  while k < 156usize { b.set(k, 32u8); k += 1usize; }
+  var sum = 0u64;
+  k = 0usize;
+  while k < 512usize { sum += u64.from(*b[k]); k += 1usize; }
+  putOct(b, 148usize, 7usize, sum);
+  b.set(155usize, 32u8);
+}
+
+// A POSIX ustar header (mode 0644, time 1700000000)
+fn header(name: &str, typeflag: u8, size: u64, link: &str) List[u8] {
+  var b = List[u8].withCapacity(512usize);
+  var k = 0usize;
+  while k < 512usize { b.push(0u8); k += 1usize; }
+  putText(&mut b, 0usize, name);
+  putOct(&mut b, 100usize, 8usize, 420u64);
+  putOct(&mut b, 108usize, 8usize, 0u64);
+  putOct(&mut b, 116usize, 8usize, 0u64);
+  putOct(&mut b, 124usize, 12usize, size);
+  putOct(&mut b, 136usize, 12usize, 1700000000u64);
+  b.set(156usize, typeflag);
+  putText(&mut b, 157usize, link);
+  putText(&mut b, 257usize, "ustar");
+  putText(&mut b, 263usize, "00");
+  seal(&mut b);
+  b
+}
+
+// Adds a header, then the data padded to a block
+fn addEntry(arch: &mut List[u8], hdr: &List[u8], data: &str) {
+  var k = 0usize;
+  while k < 512usize { arch.push(*hdr[k]); k += 1usize; }
+  k = 0usize;
+  while k < data.len() { arch.push(data.bytes()[k]); k += 1usize; }
+  var pad = (512usize - data.len() % 512usize) % 512usize;
+  while pad > 0usize { arch.push(0u8); pad -= 1usize; }
+}
+
+fn endMarker(arch: &mut List[u8]) {
+  var k = 0usize;
+  while k < 1024usize { arch.push(0u8); k += 1usize; }
+}
+
+// One PAX record: "<length> <key>=<value>\n", the length counting itself
+fn record(key: &str, value: &str) String {
+  let body = key.len() + 1usize + value.len() + 2usize;
+  var digits = 1usize;
+  if body + 1usize >= 10usize { digits = 2usize; }
+  if body + 2usize >= 100usize { digits = 3usize; }
+  var s = String();
+  s.appendUInt(u64.from(body + digits));
+  s.append(" ");
+  s.append(key);
+  s.append("=");
+  s.append(value);
+  s.append("\n");
+  s
+}
+
+fn main() i32 {
+  let gnu = load("gnu-short.tar");
+
+  // cut at every length: Done only at the entry boundaries (1024, 1536, 2048; 3584 with no end marker) and from
+  // 4096 on (a zero block ends the archive; what follows it is not read), else Truncated
+  var wrongs = 0usize;
+  var cut = 1usize;
+  while cut < gnu.len() {
+    let r = failKind(&gnu.view()[0usize ..< cut]);
+    let boundary = cut == 1024usize || cut == 1536usize || cut == 2048usize || cut == 3584usize || cut >= 4096usize;
+    if boundary { if r.len() != 0usize { wrongs += 1usize; } }
+    else if r.view() != "Truncated" { wrongs += 1usize; }
+    cut += 1usize;
+  }
+  expectUInt(u64.from(wrongs), 0u64, "an archive cut at any length is Done at a boundary, else Truncated");
+  expectStr(outcome(&gnu.view()[0usize ..< 100usize]).view(),
+    "failed Truncated at 0: the archive ends inside a header (truncated?)", "cut inside the first header");
+  expectStr(outcome(&gnu.view()[0usize ..< 520usize]).view(),
+    "F hello.txt 11failed Truncated at 520: the archive ends inside the data of 'hello.txt' (truncated?)", "cut inside hello.txt's data");
+  expectStr(outcome(&gnu.view()[0usize ..< 3300usize]).view(),
+    "F hello.txt 11 [hello, tar\n]\nF empty.txt 0\nD sub/ 0\nF sub/data.txt 991failed Truncated at 3300: the archive ends inside the data of 'sub/data.txt' (truncated?)",
+    "entries before the cut are whole");
+
+  // damage
+  var bad = gnu.clone();
+  bad.set(3usize, 90u8);
+  expectStr(outcome(bad.view()).view(), "failed Corrupt at 0: a header's checksum does not match its bytes", "a changed name byte");
+  var text = String();
+  while text.len() < 600usize { text.append("This is plain text, not a tar archive. "); }
+  expectStr(outcome(text.view().bytes()).view(), "failed NotTar at 0: not a tar archive: a header does not carry the 'ustar' mark", "text");
+
+  // the entry types: symlink and a folder with data, and what is refused
+  var a = List[u8]();
+  addEntry(&mut a, &header("lnk", 50u8, 0u64, "target/file"), "");
+  addEntry(&mut a, &header("plain", 48u8, 3u64, ""), "abc");
+  addEntry(&mut a, &header("old", 0u8, 1u64, ""), "z");
+  endMarker(&mut a);
+  expectStr(outcome(a.view()).view(), "L lnk 0 -> target/file\nF plain 3 [abc]\nF old 1 [z]\ndone", "a symlink and two spellings of a file");
+
+  var d = List[u8]();
+  addEntry(&mut d, &header("dir/", 53u8, 4u64, ""), "data");
+  expectStr(outcome(d.view()).view(), "failed Corrupt at 0: the folder or link 'dir/' carries data", "a folder with data");
+
+  var hard = List[u8]();
+  addEntry(&mut hard, &header("h", 49u8, 0u64, "plain"), "");
+  expectStr(outcome(hard.view()).view(),
+    "failed Unsupported at 0: entry 'h' is of type '1' (a hard link), which is not read (only files, folders and symbolic links are)", "hard link");
+  var dev = List[u8]();
+  addEntry(&mut dev, &header("tty", 51u8, 0u64, ""), "");
+  expectStr(outcome(dev.view()).view(),
+    "failed Unsupported at 0: entry 'tty' is of type number 51, which is not read (only files, folders and symbolic links are)", "character device");
+  var fifo = List[u8]();
+  addEntry(&mut fifo, &header("pipe", 54u8, 0u64, ""), "");
+  expectStr(failKind(fifo.view()).view(), "Unsupported", "fifo");
+  var gnuLong = List[u8]();
+  addEntry(&mut gnuLong, &header("././@LongLink", 76u8, 5u64, ""), "abcd\0");
+  expectStr(outcome(gnuLong.view()).view(),
+    "failed Unsupported at 0: entry '././@LongLink' is of type 'L' or 'K' (a GNU long name), which is not read (only files, folders and symbolic links are)", "GNU long name");
+  var global = List[u8]();
+  addEntry(&mut global, &header("pax_global_header", 103u8, 0u64, ""), "");
+  expectStr(failKind(global.view()).view(), "Unsupported", "PAX global header");
+
+  // numbers
+  var big256 = header("b", 48u8, 0u64, "");
+  big256.set(124usize, 128u8);
+  seal(&mut big256);
+  var c = List[u8]();
+  addEntry(&mut c, &big256, "");
+  expectStr(outcome(c.view()).view(), "failed Unsupported at 0: the size field of a header is in base 256, which is not read", "base 256");
+  var notOct = header("n", 48u8, 0u64, "");
+  putText(&mut notOct, 100usize, "12x4567");
+  seal(&mut notOct);
+  var c2 = List[u8]();
+  addEntry(&mut c2, &notOct, "");
+  expectStr(outcome(c2.view()).view(), "failed Corrupt at 0: the mode field of a header is not an octal number", "a mode that is not octal");
+  var badName = header("n", 48u8, 0u64, "");
+  badName.set(0usize, 255u8);
+  seal(&mut badName);
+  var c3 = List[u8]();
+  addEntry(&mut c3, &badName, "");
+  expectStr(outcome(c3.view()).view(), "failed Corrupt at 0: an entry's name is not UTF-8", "a name that is not UTF-8");
+
+  // PAX: path and size are read
+  var p = List[u8]();
+  var recs = record("path", "a/very/long/name/that/this/archive/gave/in/a/pax/record.txt");
+  recs.append(record("size", "5").view());
+  addEntry(&mut p, &header("PaxHeader/x", 120u8, u64.from(recs.len()), ""), recs.view());
+  addEntry(&mut p, &header("short", 48u8, 0u64, ""), "abcde");
+  addEntry(&mut p, &header("next", 48u8, 1u64, ""), "n");
+  endMarker(&mut p);
+  expectStr(outcome(p.view()).view(),
+    "F a/very/long/name/that/this/archive/gave/in/a/pax/record.txt 5 [abcde]\nF next 1 [n]\ndone", "PAX path and size replace the header's");
+  var offsetCheck = TarReader.make();
+  offsetCheck.feed(p.view());
+  offsetCheck.finish();
+  var o = IoBuf(4096usize);
+  expect(offsetCheck.pull(&mut o) == Step.Begin, "the entry begins");
+  expectUInt(offsetCheck.current().offset, 0u64, "its offset counts the extended header before it");
+
+  // PAX: anything else is refused
+  var pm = List[u8]();
+  let mt = record("mtime", "1700000000.5");
+  addEntry(&mut pm, &header("PaxHeader/x", 120u8, u64.from(mt.len()), ""), mt.view());
+  addEntry(&mut pm, &header("f", 48u8, 0u64, ""), "");
+  expectStr(outcome(pm.view()).view(),
+    "failed Unsupported at 512: an extended header record 'mtime' is not read; only 'path' and 'size' are", "PAX mtime");
+  var pl = List[u8]();
+  let lp = record("linkpath", "elsewhere");
+  addEntry(&mut pl, &header("PaxHeader/x", 120u8, u64.from(lp.len()), ""), lp.view());
+  addEntry(&mut pl, &header("f", 50u8, 0u64, "x"), "");
+  expectStr(failKind(pl.view()).view(), "Unsupported", "PAX linkpath");
+  var pb = List[u8]();
+  addEntry(&mut pb, &header("PaxHeader/x", 120u8, 10u64, ""), "99 nonsense");
+  expectStr(failKind(pb.view()).view(), "Corrupt", "a PAX record whose length is wrong");
+  var pn = List[u8]();
+  addEntry(&mut pn, &header("PaxHeader/x", 120u8, 11u64, ""), "11 size=x2\n");
+  expectStr(outcome(pn.view()).view(), "failed Corrupt at 512: an extended header's size is not a number", "a PAX size that is not a number");
+  var p2 = List[u8]();
+  addEntry(&mut p2, &header("PaxHeader/x", 120u8, 0u64, ""), "");
+  addEntry(&mut p2, &header("PaxHeader/x", 120u8, 0u64, ""), "");
+  expectStr(outcome(p2.view()).view(), "failed Corrupt at 512: two extended headers in a row", "two extended headers");
+  var p3 = List[u8]();
+  addEntry(&mut p3, &header("PaxHeader/x", 120u8, 0u64, ""), "");
+  expectStr(outcome(p3.view()).view(), "failed Truncated at 512: the archive ends inside a header (truncated?)", "an extended header and then nothing");
+  var p4 = List[u8]();
+  addEntry(&mut p4, &header("PaxHeader/x", 120u8, 2097152u64, ""), "");
+  expectStr(outcome(p4.view()).view(), "failed TooLarge at 0: an extended header is larger than 1 MiB", "a huge extended header");
+
+  // after a failure, it stays failed; a full buffer is refused
+  var tar = TarReader.make();
+  tar.feed(text.view().bytes());
+  var out = IoBuf(1024usize);
+  expect(tar.pull(&mut out) == Step.Failed, "text fails");
+  expect(tar.pull(&mut out) == Step.Failed, "and stays failed");
+  var again = TarReader.make();
+  var full = IoBuf(64usize);
+  full.putRepeat(0u8, full.capacity());
+  expect(again.pull(&mut full) == Step.Failed, "a pull into a buffer with no room fails");
+  expectStr(kindName(again.error().unwrap().kind), "BadArgument", "and says BadArgument");
+
+  done()
+}

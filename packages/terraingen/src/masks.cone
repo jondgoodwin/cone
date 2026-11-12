@@ -76,6 +76,13 @@ pub struct MaskSpec {
   }
 }
 
+// A biome's place in the 'biomes' table (the table is data, so the ids are an open set)
+pub struct BiomeId {
+  pub index: u8;
+}
+
+pub alias BiomeIds = List[BiomeId];
+
 pub struct MaskSet {
   pub w: usize;
   pub h: usize;
@@ -90,7 +97,7 @@ pub struct MaskSet {
   pub lake: List[f32];
   pub waterDistance: List[f32];
   pub curvature: List[f32];
-  pub biome: List[u8];
+  pub biome: BiomeIds;
   pub weights: List[f32];       // biomeCount per sample
   pub biomeCount: usize;
   pub biomeNames: List[String];
@@ -113,12 +120,12 @@ fn index(w: usize, h: usize, x: i32, z: i32) usize {
 
 // Distance in metres to the nearest sample where 'water' is set, by the two-pass chamfer transform
 // (Borgefors 1986, the 3-4 weights, here 1 and sqrt 2), capped at FAR
-fn distanceToWater(water: &List[u8], w: usize, h: usize, cell: f32) List[f32] {
+fn distanceToWater(water: &List[bool], w: usize, h: usize, cell: f32) List[f32] {
   let big = 1.0e9f;
   var d = List[f32].withCapacity(w * h);
   var i = 0usize;
   while i < w * h {
-    d.push(if *water[i] != 0u8 { 0. } else { big });
+    d.push(if *water[i] { 0. } else { big });
     i = i + 1usize;
   }
   let r2 = 1.41421356f;
@@ -232,10 +239,10 @@ pub fn computeMasks(hf: &Heightfield, hy: &Hydrology, rm: &RiverMaps, spec: &Mas
     }
     iz = iz + 1usize;
   }
-  var isWater = List[u8].withCapacity(n);
+  var isWater = List[bool].withCapacity(n);
   var i = 0usize;
   while i < n {
-    isWater.push(if *rm.waterDepth[i] > 0.01 { 1u8 } else { 0u8 });
+    isWater.push(*rm.waterDepth[i] > 0.01);
     i = i + 1usize;
   }
   let wd = distanceToWater(&isWater, w, h, hf.cell);
@@ -261,7 +268,7 @@ pub fn computeMasks(hf: &Heightfield, hy: &Hydrology, rm: &RiverMaps, spec: &Mas
   // biomes
   let bc = biomes.len();
   var weights = List[f32].withCapacity(n * bc);
-  var id = List[u8].withCapacity(n);
+  var id = BiomeIds.withCapacity(n);
   var names = List[String]();
   var b = 0usize;
   while b < bc { names.push(biomes[b].name.clone()); b = b + 1usize; }
@@ -299,7 +306,7 @@ pub fn computeMasks(hf: &Heightfield, hy: &Hydrology, rm: &RiverMaps, spec: &Mas
       while b < bc { weights.set(base + b, if b == bc - 1usize { 1. } else { 0. }); b = b + 1usize; }
       best = bc - 1usize;
     }
-    id.push(u8.from(best));
+    id.push(BiomeId(u8.from(best)));
     i = i + 1usize;
   }
   MaskSet(w, h, hf.cell, hf.originX, hf.originZ, slope, moisture, exposure, flow, cloneList(&rm.river), cloneList(&hy.lakeDepth), wd, curv,

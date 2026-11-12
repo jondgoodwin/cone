@@ -309,10 +309,11 @@ pub actor TransformStage[T: Transform] is ChunkSink, ChunkSource {
     if ended || !actors.isCancelled() { return; }
     self.finish(Ending.Failed(AnyError.msg("streams: cancelled")));
     self.flush();
-    // The upstream is told by the chunks given back; its 'end' may never come (a
-    // producer that does not look at its group), so the handle goes now. A chunk
-    // that still arrives has nowhere to go back to and is freed.
-    up = None[ChunkSource];
+    // The handle stays. The upstream is told by the chunks given back, and a chunk
+    // that arrives after this is given back too (accept: 'ended'); a stage left idle
+    // with its window full is woken only by that credit. The handle goes when the
+    // upstream's 'end' comes (settle), which the credit makes it send; a producer
+    // that never looks at its group never ends, and finalAll breaks the cycle.
   }
 
   // Every input chunk held goes back to the upstream
@@ -485,7 +486,8 @@ pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
     stopped = true;
     to.digest(Err[D.Out, AnyError](AnyError.msg("streams: cancelled")));
     self.endDown(Ending.Failed(AnyError.msg("streams: cancelled")));
-    up = None[ChunkSource];
+    // 'up' stays until the upstream's 'end' (settle), as in TransformStage.cancelCheck:
+    // chunks that arrive or come back later are given back to it
   }
 
   // A stop from downstream (ChunkSource.stop): the digest sink is answered with an
