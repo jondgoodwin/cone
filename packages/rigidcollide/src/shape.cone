@@ -19,6 +19,18 @@ pub struct HullFace {
   pub count: u32;
 }
 
+// Which of a triangle's three edges are active: bit e is set if edge e (corner
+// e to e+1) is. One byte, as the list of them is walked for every candidate triangle.
+pub struct EdgeMask {
+  bits: u8;
+
+  // all three edges active
+  pub fn all() EdgeMask { EdgeMask(7u8) }
+  pub fn has(self, e: usize) bool { (bits & u8.from(1usize << e)) != 0u8 }
+  pub fn without(self, e: usize) EdgeMask { EdgeMask(bits & (7u8 ^ u8.from(1usize << e))) }
+}
+pub alias EdgeMasks = List[EdgeMask];
+
 // A node of a triangle BVH: its box, and either two children (count 0: the
 // left child is the next node, the right is 'first') or 'count' triangles
 // starting at 'first' in the mesh's reordered triangle list
@@ -56,7 +68,7 @@ pub struct Prim {
   pub tris: List[u32];         // mesh: three vertex numbers a triangle, in BVH order
   pub triId: List[u32];        // mesh: the triangle's number in the order the mesh was given
   pub bvh: List[BvhNode];      // mesh
-  pub edgeActive: List[u8];    // mesh, per triangle in BVH order: bit e set if edge e (corner e to e+1) is active
+  pub edgeActive: EdgeMasks;   // mesh, per triangle in BVH order: bit e set if edge e (corner e to e+1) is active
   pub heights: List[f32];      // heightfield: rows of 'cols' samples
   pub cols: u32;
   pub rows: u32;
@@ -68,7 +80,7 @@ pub struct Prim {
 
   pub fn blank(kind: i32) Prim {
     Prim(kind, 0., Vec3(0., 0., 0.), List[Vec3](), List[u32](), List[HullFace](),
-      List[u32](), List[u32](), List[BvhNode](), List[u8](), List[f32](), 0u32, 0u32,
+      List[u32](), List[u32](), List[BvhNode](), EdgeMasks(), List[f32](), 0u32, 0u32,
       Vec2(1., 1.), Vec3(0., 0., 0.), Vec3(0., 0., 0.), Vec3(0., 0., 0.), Vec3(0., 0., 0.))
   }
 
