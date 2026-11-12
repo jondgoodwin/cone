@@ -1,0 +1,38 @@
+// GlbBin has no size limit: 1.5 MiB written in pieces (more than one buffer of
+// its writer), read back with 'view' in the middle of the writing and at the
+// end, wrapped by 'writeGlb' and loaded again.
+
+mod glbbin;
+
+import testing use *;
+import collections use *;
+import gltfimport use *;
+
+fn main() i32 {
+  var bin = GlbBin.make();
+  var i = 0usize;
+  while i < 393216usize {
+    bin.putU32(u32.from(i));
+    i = i + 1usize;
+    if i == 100000usize {
+      expectInt(i64.from(bin.view().len), 400000i64, "a view part way");
+    }
+  }
+  expectInt(i64.from(bin.len()), 1572864i64, "1.5 MiB written");
+  let v = bin.view();
+  expectInt(i64.from(v.len), 1572864i64, "the view holds all of it");
+  expectInt(i64.from(v[4usize]), 1i64, "the second number, low byte");
+  expectInt(i64.from(v[399996usize]), 159i64, "a number written before the part-way view (99999, low byte 0x9F)");
+  expectInt(i64.from(v[1572860usize]), 255i64, "the last number's low byte (393215)");
+  expectInt(i64.from(v[1572861usize]), 255i64, "and its next byte");
+
+  var json = String();
+  json.append("{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"byteLength\":1572864}],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":1572864}]}");
+  let file = writeGlb(json.view(), &mut bin);
+  expectInt(i64.from(file.len()), 12i64 + 8i64 + i64.from((json.len() + 3usize) / 4usize * 4usize) + 8i64 + 1572864i64, "the container's size");
+  match loadGltfBytes(file.view(), false) {
+    case is Ok { expect(true, "the 1.5 MiB glb loads"); }
+    case let Err(e) { expect(false, e.reason.view()); }
+  }
+  done()
+}
