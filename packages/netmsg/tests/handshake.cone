@@ -30,14 +30,16 @@ fn dialed(d: &mut ClientHandshake, now: Instant) List[u8] {
   r
 }
 
-// The gate, asked as the endpoint asks it (a fresh Writer for the reply), with
-// the reply copied into 'reply' (cleared first) so the checks below can read it
+// The gate, asked as the endpoint asks it (through a Writer), with the reply
+// copied into 'reply' (cleared first) so the checks below can read it. The
+// Writer is kept and cleared for each call
 struct Gate {
   g: ChallengeGate;
+  w: streams.Writer;
 
-  fn handle(self: &, addr: &str, data: &Array[u8], now: Instant, reply: &mut List[u8]) GateVerdict {
+  fn handle(self: &mut, addr: &str, data: &Array[u8], now: Instant, reply: &mut List[u8]) GateVerdict {
     reply.clear();
-    var w = streams.Writer.make(32usize);
+    w.clear();
     let v = g.handle(addr, data, now, &mut w);
     reply.appendSlice(w.view());
     v
@@ -46,7 +48,7 @@ struct Gate {
 
 fn main() i32 {
   let cfg = NetConfig.defaults();
-  let gate = Gate(ChallengeGate.make(12345u64));
+  var gate = Gate(ChallengeGate.make(12345u64), streams.Writer.make(32usize));
   var reply = List[u8]();
 
   // The whole handshake
