@@ -167,7 +167,7 @@ struct Origin {
   secure: bool;
   host: String;              // without an IPv6 address's brackets
   port: u16;
-  queue: List[u32];          // fetches waiting
+  queue: Deque[u32];         // fetches waiting
   idle: List[u32];           // pooled connections idle, the latest last
   shared: List[u32];         // HTTP/2 connections open (pShared), the first the one kept
   open: u32;                 // connections connecting, idle, busy or shared
@@ -386,7 +386,7 @@ pub struct Client {
       }
     }
     origins.add(Origin(key: key, secure: secure, host: u.host.clone(),
-      port: port, queue: List[u32](), idle: List[u32](), shared: List[u32](),
+      port: port, queue: Deque[u32](), idle: List[u32](), shared: List[u32](),
       open: 0u32, connecting: 0u32, undecided: 0u32, h2: !secure && cfg.priorKnowledge,
       h3Port: if prior {port} else {0u16}, h3Until: if prior {forever()} else {Instant()}, h3Prior: prior,
       h3Broken: Instant(), h3c: noEntry)).index
@@ -713,7 +713,15 @@ pub struct Client {
     let f0 = self.fetches.borrowMutAt(fi).unwrap();
     if f0.state == fQueued && f0.origin != noEntry {
       let og = self.origins.borrowMutAt(u32.from(f0.origin)).unwrap();
-      if removeValue(&mut og.queue, fi) {queuedN = queuedN - 1u32;}
+      var qk = 0usize;
+      while qk < og.queue.len() {
+        if *og.queue[qk] == fi {
+          og.queue.remove(qk);
+          queuedN = queuedN - 1u32;
+          break;
+        }
+        qk = qk + 1usize;
+      }
     }
     if !f0.watch.isNone() {
       lp.cancel(f0.watch);
@@ -1282,7 +1290,7 @@ pub struct Client {
       while self.origins.borrowAt(u32.from(oi)).unwrap().queue.len() > 0usize && self.roomOn(qc) {
         let pos = self.firstIn(oi);
         let fi = *self.origins.borrowAt(u32.from(oi)).unwrap().queue[pos];
-        removeAt(&mut self.origins.borrowMutAt(u32.from(oi)).unwrap().queue, pos);
+        self.origins.borrowMutAt(u32.from(oi)).unwrap().queue.remove(pos);
         queuedN = queuedN - 1u32;
         self.dispatch(lp, fi, qc);
         did = true;
@@ -1602,7 +1610,7 @@ pub struct Client {
         }
         removeValue(&mut self.origins.borrowMutAt(o).unwrap().idle, pc);
         let fi = *self.origins.borrowAt(o).unwrap().queue[pos];
-        removeAt(&mut self.origins.borrowMutAt(o).unwrap().queue, pos);
+        self.origins.borrowMutAt(o).unwrap().queue.remove(pos);
         queuedN = queuedN - 1u32;
         self.dispatch(lp, fi, pc);
         did = true;
@@ -1624,7 +1632,7 @@ pub struct Client {
         }
         let pos = self.firstIn(o);
         let fi = *self.origins.borrowAt(o).unwrap().queue[pos];
-        removeAt(&mut self.origins.borrowMutAt(o).unwrap().queue, pos);
+        self.origins.borrowMutAt(o).unwrap().queue.remove(pos);
         queuedN = queuedN - 1u32;
         self.dispatch(lp, fi, pc);
         did = true;
@@ -2199,24 +2207,10 @@ fn safeToRetry(fl: &Failure, method: Method, reused: bool, h2: bool) bool {
   fl.error.noResponse && (isIdempotent(method) || (reused && !h2))
 }
 
-fn removeAt(l: &mut List[u32], k: usize) {
-  var j = k;
-  while j + 1usize < l.len() {
-    l.swap(j, j + 1usize);
-    j = j + 1usize;
-  }
-  l.pop();
-}
-
-// Remove v from l, keeping the order: whether it was there
+// Remove the first v from l, keeping the order: whether it was there
 fn removeValue(l: &mut List[u32], v: u32) bool {
-  var k = 0usize;
-  while k < l.len() {
-    if *l[k] == v {
-      removeAt(l, k);
-      return true;
-    }
-    k = k + 1usize;
+  match l.indexOf(&v) {
+    case let Some(k) {l.remove(k); true}
+    case is None[usize] {false}
   }
-  false
 }
