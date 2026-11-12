@@ -1,0 +1,76 @@
+// What an IdPool does, case by case. Each expected value is worked out by hand.
+
+mod idpool;
+
+import testing use *;
+import pools use *;
+
+fn idOf(o: Option[u32]) u32 {
+  match o {
+    case let Some(v) { v }
+    else { 0xFFFFFFFFu32 }
+  }
+}
+
+fn isNone(o: Option[u32]) bool {
+  match o {
+    case is None { true }
+    else { false }
+  }
+}
+
+// fresh ids run 0,1,2; freed ones come back last in, first out
+fn reuse() {
+  var p = IdPool.make();
+  expectUInt(u64.from(idOf(p.alloc())), 0u64, "first id is 0");
+  expectUInt(u64.from(idOf(p.alloc())), 1u64, "then 1");
+  expectUInt(u64.from(idOf(p.alloc())), 2u64, "then 2");
+  expectUInt(u64.from(p.len()), 3u64, "three live");
+  expectUInt(u64.from(p.bound()), 3u64, "three issued");
+  p.free(0u32);
+  p.free(2u32);
+  expect(!p.isLive(0u32), "0 is not live");
+  expect(p.isLive(1u32), "1 is live");
+  expect(!p.isLive(2u32), "2 is not live");
+  expectUInt(u64.from(p.len()), 1u64, "one live");
+  expectUInt(u64.from(idOf(p.alloc())), 2u64, "the last freed comes back first");
+  expectUInt(u64.from(idOf(p.alloc())), 0u64, "then the one freed before it");
+  expectUInt(u64.from(idOf(p.alloc())), 3u64, "then a fresh one");
+  expectUInt(u64.from(p.bound()), 4u64, "four ever issued");
+  expect(!p.isLive(4u32), "an id past the bound is not live");
+  p.clear();
+  expectUInt(u64.from(p.len()), 0u64, "clear leaves none live");
+  expectUInt(u64.from(p.bound()), 0u64, "and none issued");
+  expect(!p.isLive(1u32), "1 is no longer live");
+  expectUInt(u64.from(idOf(p.alloc())), 0u64, "ids begin again at 0");
+  // across a word of the live bits: ids 63, 64, 65
+  var q = IdPool.make();
+  var i = 0u32;
+  while i < 66u32 { q.alloc(); i = i + 1u32; }
+  expect(q.isLive(63u32) && q.isLive(64u32) && q.isLive(65u32), "ids over a word boundary are live");
+  q.free(64u32);
+  expect(q.isLive(63u32) && !q.isLive(64u32) && q.isLive(65u32), "freeing 64 touches only 64");
+  expectUInt(u64.from(idOf(q.alloc())), 64u64, "and 64 is reused");
+}
+
+// a bounded pool holds at most cap live ids, and frees make room
+fn bounded() {
+  var p = IdPool.makeBounded(2u32);
+  expectUInt(u64.from(idOf(p.alloc())), 0u64, "bounded: first is 0");
+  expectUInt(u64.from(idOf(p.alloc())), 1u64, "bounded: second is 1");
+  expect(isNone(p.alloc()), "full: None");
+  expect(isNone(p.alloc()), "still full: None");
+  expectUInt(u64.from(p.len()), 2u64, "two live");
+  p.free(0u32);
+  expectUInt(u64.from(idOf(p.alloc())), 0u64, "room again: the freed id");
+  expect(isNone(p.alloc()), "full again");
+  expectUInt(u64.from(p.bound()), 2u64, "never more than two issued");
+  var z = IdPool.makeBounded(0u32);
+  expect(isNone(z.alloc()), "a bound of 0 never allocs");
+}
+
+fn main() i32 {
+  reuse();
+  bounded();
+  done()
+}

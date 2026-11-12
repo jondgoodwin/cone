@@ -261,8 +261,7 @@ struct Collapser {
   pub eB: List[u32];
   pub eVa: List[u32];
   pub eVb: List[u32];
-  pub free: List[u32];         // entries free for reuse, the first 'freeN'
-  pub freeN: usize;
+  pub ids: IdPool;             // the entry ids in use; a freed one is reused first. An id equal to eA's length is fresh
 
   // -------- the heap --------
 
@@ -278,16 +277,17 @@ struct Collapser {
 
   fn pushEdge(self: &mut, a: u32, b: u32, cost: f64) {
     var id = 0u32;
-    if freeN > 0usize {
-      freeN = freeN - 1usize;
-      id = *free[freeN];
+    match ids.alloc() {
+      case let Some(k) { id = k; }
+      else { panic("decimate: edge ids ran out"); }   // an unbounded pool never answers None
+    }
+    if usize.from(id) < eA.len() {
       eCost.set(usize.from(id), cost);
       eA.set(usize.from(id), a);
       eB.set(usize.from(id), b);
       eVa.set(usize.from(id), *ver[usize.from(a)]);
       eVb.set(usize.from(id), *ver[usize.from(b)]);
     } else {
-      id = u32.from(eA.len());
       eCost.push(cost);
       eA.push(a);
       eB.push(b);
@@ -310,8 +310,7 @@ struct Collapser {
 
   // An entry popped and read, kept for reuse
   fn release(self: &mut, id: u32) {
-    if freeN < free.len() { free.set(freeN, id); } else { free.push(id); }
-    freeN = freeN + 1usize;
+    ids.free(id);
   }
 
   // The cheapest entry, taken off the heap
@@ -1229,7 +1228,7 @@ fn startCollapser(m: &PolyMesh, symmetry: u32, weight: &str, te: &mut List[u32],
     nvSlots: nvSlots, vvals: vvals, ncSlots: ncSlots, cvals: cvals,
     cFound: false, cKeep: 0u32, cOther: 0u32, cPos: DVec3(0.0, 0.0, 0.0), cT: 0., cCost: 0.0, cHalf: false,
     hp: List[u32](), hn: 0usize, eCost: List[f64](), eA: List[u32](), eB: List[u32](),
-    eVa: List[u32](), eVb: List[u32](), free: List[u32](), freeN: 0usize);
+    eVa: List[u32](), eVb: List[u32](), ids: IdPool.make());
 
   // Every edge, once, from its lower vertex
   v = 0usize;
