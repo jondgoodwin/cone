@@ -42,8 +42,9 @@
 //   half-limbs a limb; a word of 2^32 or more takes the general path.
 // - Text: 'parse' reads base 10, 'parseHex' base 16, 'parseBase' any base 2 to
 //   36. Digits only: no sign, no prefix, no '_' or whitespace; upper and lower
-//   case letters both read. 'toText' writes base 10; 'toTextBase' and
-//   'toStringBase' any base 2 to 36, lower case. Both directions are
+//   case letters both read. 'toText' writes base 10 and 'toTextBase' any
+//   base 2 to 36, lower case, to a 'TextOut' ('String() <- n', or
+//   'n.toTextBase(&uni s.textOut(), 16u32)'). Both directions are
 //   quadratic (a chunk of digits at a time), fine to many thousands of bits.
 // - 'shiftLeft', 'shiftRight' and 'mulSmall' are public because the tests and
 //   callers need them (2^n, n!); they are not in the brief's list.
@@ -273,6 +274,49 @@ fn digitValue(c: u8) u64 {
   if c >= 'a' && c <= 'z' { return u64.from(c) - 87u64; }
   if c >= 'A' && c <= 'Z' { return u64.from(c) - 55u64; }
   99u64
+}
+
+// The limbs in a base from 2 to 36 (lower case) as a String; a base outside it is taken as 10
+fn textBase(limbs: &List[u64], base: u32) String {
+  let b = if base < 2u32 || base > 36u32 { 10u64 } else { u64.from(base) };
+  var s = String();
+  if limbs.len() == 0usize { s.appendByte('0'); return s; }
+  // Chunks of k digits, each the remainder by base^k (under 2^32), least significant first
+  var k = 0usize;
+  var power = 1u64;
+  while power <= 0xFFFFFFFFu64 / b { power = power * b; k = k + 1usize; }
+  var rest = limbs.clone();
+  var next = List[u64]();
+  var chunks = List[u64]();
+  while rest.len() > 0usize {
+    chunks.push(divSmall32(&rest, power, &mut next));
+    trim(&mut next);
+    rest <-> next;
+  }
+  var c = chunks.len();
+  var first = true;
+  while c > 0usize {
+    c = c - 1usize;
+    var v = *chunks[c];
+    var digits = List[u8]();
+    var n = 0usize;
+    while n < k {
+      digits.push(digitByte(v % b));
+      v = v / b;
+      n = n + 1usize;
+    }
+    var at = k;
+    // Leading zeros are dropped from the first chunk only
+    if first {
+      while at > 1usize && *digits[at - 1usize] == '0' { at = at - 1usize; }
+      first = false;
+    }
+    while at > 0usize {
+      at = at - 1usize;
+      s.appendByte(*digits[at]);
+    }
+  }
+  s
 }
 
 // -------- BigUint --------
@@ -563,58 +607,14 @@ pub struct BigUint is Eq, Ordered, Hash, Clone {
 
   // The number in base 10, written to a writer ('String() <- n')
   pub fn toText(self: &, out: &uni TextOut) {
-    let s = self.toStringBase(10u32);
+    let s = textBase(&limbs, 10u32);
     out <- s.view();
   }
 
   // The number in a base from 2 to 36 (lower case), written to a writer; a
   // base outside it is written as 10
   pub fn toTextBase(self: &, out: &uni TextOut, base: u32) {
-    let s = self.toStringBase(base);
+    let s = textBase(&limbs, base);
     out <- s.view();
-  }
-
-  // The number in a base from 2 to 36 (lower case) as a String; a base
-  // outside it is taken as 10
-  pub fn toStringBase(self: &, base: u32) String {
-    let b = if base < 2u32 || base > 36u32 { 10u64 } else { u64.from(base) };
-    var s = String();
-    if limbs.len() == 0usize { s.appendByte('0'); return s; }
-    // Chunks of k digits, each the remainder by base^k (under 2^32), least significant first
-    var k = 0usize;
-    var power = 1u64;
-    while power <= 0xFFFFFFFFu64 / b { power = power * b; k = k + 1usize; }
-    var rest = limbs.clone();
-    var next = List[u64]();
-    var chunks = List[u64]();
-    while rest.len() > 0usize {
-      chunks.push(divSmall32(&rest, power, &mut next));
-      trim(&mut next);
-      rest <-> next;
-    }
-    var c = chunks.len();
-    var first = true;
-    while c > 0usize {
-      c = c - 1usize;
-      var v = *chunks[c];
-      var digits = List[u8]();
-      var n = 0usize;
-      while n < k {
-        digits.push(digitByte(v % b));
-        v = v / b;
-        n = n + 1usize;
-      }
-      var at = k;
-      // Leading zeros are dropped from the first chunk only
-      if first {
-        while at > 1usize && *digits[at - 1usize] == '0' { at = at - 1usize; }
-        first = false;
-      }
-      while at > 0usize {
-        at = at - 1usize;
-        s.appendByte(*digits[at]);
-      }
-    }
-    s
   }
 }
