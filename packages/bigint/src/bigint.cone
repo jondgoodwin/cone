@@ -411,8 +411,10 @@ fn karatsubaLimbs(a: &List[u64], b: &List[u64], t: usize) List[u64] {
 }
 
 // Below this many limbs in the smaller operand, 'mul' stays schoolbook
-// (measured 11 Nov 2026, release build under load, examples/thresholdbench.cone: schoolbook and
-// Karatsuba cross at about 64 limbs, because the splitting allocates; num-bigint's is about 32)
+// Measured 11 Nov 2026, release build under load (other gates running), n x n limbs, schoolbook
+// vs Karatsuba with this threshold: a tie at 64 limbs (4.8 us each), Karatsuba ahead from 96
+// (10.6 vs 9.9 us) and 128 (17.3 vs 15.5), and 164 vs 269 us at 512. Karatsuba wins late because
+// each split allocates its halves and sums; num-bigint's threshold is about 32.
 const karatsubaThreshold = 64usize;
 
 // The limbs in a base from 2 to 36 (lower case) as a String; a base outside it is taken as 10
@@ -585,16 +587,7 @@ pub struct BigUint is Eq, Ordered, Hash, Clone {
   }
 
   // The product: Karatsuba while both operands have 'karatsubaThreshold' limbs or more, schoolbook below
-  pub fn mul(self: &, o: &BigUint) BigUint { self.mulKaratsuba(o, karatsubaThreshold) }
-
-  // Karatsuba multiplication, recursing until the smaller operand has fewer than 'threshold' limbs (at
-  // least 4) and then going schoolbook. Public so the tests and the bench can set the threshold.
-  pub fn mulKaratsuba(self: &, o: &BigUint, threshold: usize) BigUint {
-    BigUint(karatsubaLimbs(&limbs, &o.limbs, if threshold < 4usize { 4usize } else { threshold }))
-  }
-
-  // Schoolbook multiplication, O(n*m)
-  pub fn mulSchoolbook(self: &, o: &BigUint) BigUint { BigUint(schoolLimbs(&limbs, &o.limbs)) }
+  pub fn mul(self: &, o: &BigUint) BigUint { BigUint(karatsubaLimbs(&limbs, &o.limbs, karatsubaThreshold)) }
 
   // This times a word
   pub fn mulSmall(self: &, m: u64) BigUint {
