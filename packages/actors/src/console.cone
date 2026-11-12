@@ -42,9 +42,22 @@
 // program's end flushes before the workers stop, and again after the parked
 // records are dropped (their finalizers print); the owner then stays up to the
 // end of the process, so a print from a later module's finalizer still goes
-// through it, and conestd's atexit flush waits for it. A panic's flush is best
-// effort: it waits a moment for the owner to finish what it holds, then goes
-// on and writes its message itself.
+// through it, and conestd's atexit flush waits for it.
+//
+// A PANIC'S FLUSH is best effort, and it waits for PROGRESS, not for a count of
+// sleeps: the owner bumps an atomic counter ('coDelivered', the records that
+// have reached the operating system) as it writes, and the panic returns as
+// soon as the owner is idle. It gives up when that counter has not moved for
+// 500 ms (a destination that has stalled: a pipe nobody reads), or when 10 s
+// have passed in all (a destination that trickles on for ever). A backlog that
+// is draining slowly, on a loaded machine or into a slow reader, is therefore
+// allowed to finish, and the lines nearest the failure are not the ones lost.
+// If the wait gives up with records unwritten, the panic goes on and writes its
+// message itself, and the process's LAST line, written to standard error after
+// the panic's message and its hook, says how many lines were dropped
+// ('console: N lines were queued but not written (no progress for 500 ms)', or
+// '(ceiling of 10000 ms reached)': which limit ended the wait; op 2 below, which
+// conestd's panic.cone calls last). A failed main does not: its end drains without a limit.
 
 const consoleBufCap = 16384usize;
 const consoleLimit = 67108864usize;
@@ -63,22 +76,37 @@ let coWake: sync.Condvar;      // the owner sleeps here while nothing is queued
 let coRoom: sync.Condvar;      // senders wait here at the limit
 let coDone: sync.Condvar;      // flushers wait here
 let coHold: Atomic[u32];       // 1 while a test holds the destination stalled
-// Everything below is touched only under coLock
-var coHead: usize = 0usize;
-var coTail: usize = 0usize;
-var coQueued: usize = 0usize;       // bytes queued or being written
-var coPushed: u64 = 0u64;           // records ever queued
-var coWritten: u64 = 0u64;          // records ever written and freed
-var coAsleep: bool = false;
-var coBusy: bool = false;           // the owner holds a list it has not finished
-var coRoomWaiters: u32 = 0u32;
-var coDoneWaiters: u32 = 0u32;
-var coLimit: usize = consoleLimit;
-var coStarted: bool = false;
-// The owner's own: used by its thread alone
-var coBuf: usize = 0usize;          // its write buffer
-var coBufLen: usize = 0usize;
-var coTty: bool = false;
+// Progress, for a panic's wait: records that reached the operating system
+// (bumped by the owner after a write, read without a lock by a panic)
+let coDelivered: Atomic[u64];
+let coGaveUp: Atomic[u32];     // once a panic's wait gave up with the owner not idle: 1 the stall ended it, 2 the ceiling
+let coGaveLimit: Atomic[u32];  // that limit in ms
+// The panic's limits in ms, 0 for the defaults below (a test sets them)
+let coStallMs: Atomic[u32];
+let coCeilingMs: Atomic[u32];
+const consoleStallMs = 500u32;
+const consoleCeilingMs = 10000u32;
+// Everything below is touched only under coLock, with loadOrdered and storeOrdered
+// at Relaxed (the lock's acquire and release order it), except coStarted
+let coHead: Atomic[usize];
+let coTail: Atomic[usize];
+let coQueued: Atomic[usize];        // bytes queued or being written
+let coPushed: Atomic[u64];          // records ever queued
+let coWritten: Atomic[u64];         // records ever written and freed
+let coAsleep: Atomic[bool];
+let coBusy: Atomic[bool];           // the owner holds a list it has not finished
+let coRoomWaiters: Atomic[u32];
+let coDoneWaiters: Atomic[u32];
+let coLimit: Atomic[usize];         // consoleLimit until a test sets it (init)
+let coStarted: Atomic[bool];        // set once as the owner starts; consoleDrain reads it without the lock
+
+// The owner's own: a local of its thread, which lends it to the functions below
+struct OwnerOut {
+  buf: usize;            // its write buffer
+  len: usize;            // the bytes the buffer holds
+  recs: u64;             // the records whose bytes are in that buffer
+  tty: bool;             // standard output is a terminal
+}
 
 struct OwnerArg is Sendable {
   pub unused: usize;
@@ -100,22 +128,22 @@ fn nodeBytes(n: *ConsoleNode) *u8 {
 fn consolePush(n: *ConsoleNode) {
   let cost = (*n).size + mem.sizeof[ConsoleNode]();
   coLock.lock();
-  while coQueued >= coLimit && coQueued != 0usize {
-    coRoomWaiters = coRoomWaiters + 1u32;
+  while coQueued.loadOrdered(MemOrder.Relaxed) >= coLimit.loadOrdered(MemOrder.Relaxed) && coQueued.loadOrdered(MemOrder.Relaxed) != 0usize {
+    coRoomWaiters.storeOrdered(coRoomWaiters.loadOrdered(MemOrder.Relaxed) + 1u32, MemOrder.Relaxed);
     coRoom.condWait(&coLock);
-    coRoomWaiters = coRoomWaiters - 1u32;
+    coRoomWaiters.storeOrdered(coRoomWaiters.loadOrdered(MemOrder.Relaxed) - 1u32, MemOrder.Relaxed);
   }
   (*n).next = null;
-  if coTail == 0usize {
-    coHead = n as usize;
+  if coTail.loadOrdered(MemOrder.Relaxed) == 0usize {
+    coHead.storeOrdered(n as usize, MemOrder.Relaxed);
   }
   else {
-    (*(coTail as *ConsoleNode)).next = n;
+    (*(coTail.loadOrdered(MemOrder.Relaxed) as *ConsoleNode)).next = n;
   }
-  coTail = n as usize;
-  coQueued = coQueued + cost;
-  coPushed = coPushed + 1u64;
-  let wake = coAsleep;
+  coTail.storeOrdered(n as usize, MemOrder.Relaxed);
+  coQueued.storeOrdered(coQueued.loadOrdered(MemOrder.Relaxed) + cost, MemOrder.Relaxed);
+  coPushed.storeOrdered(coPushed.loadOrdered(MemOrder.Relaxed) + 1u64, MemOrder.Relaxed);
+  let wake = coAsleep.loadOrdered(MemOrder.Relaxed);
   coLock.unlock();
   if wake {
     coWake.notifyOne();
@@ -188,10 +216,12 @@ fn consoleTakeBytes(fd: i32, p: *u8, len: usize) {
 // ---- the owner's side ----
 
 // What the buffer holds is written
-fn ownerFlushBuf() {
-  if coBufLen > 0usize {
-    cone_consoleWrite(1i32, coBuf as *u8, coBufLen);
-    coBufLen = 0usize;
+fn ownerFlushBuf(o: &mut OwnerOut) {
+  if o.len > 0usize {
+    cone_consoleWrite(1i32, o.buf as *u8, o.len);
+    o.len = 0usize;
+    coDelivered.add(o.recs);
+    o.recs = 0u64;
   }
 }
 
@@ -224,8 +254,8 @@ fn ownerWriteNode(fd: i32, n: *ConsoleNode) {
 }
 
 // Copy a node's bytes into the buffer, which has room for them
-fn ownerBuffer(n: *ConsoleNode) {
-  let dst = (coBuf as *u8) + coBufLen;
+fn ownerBuffer(o: &mut OwnerOut, n: *ConsoleNode) {
+  let dst = (o.buf as *u8) + o.len;
   if (*n).inlen > 0usize {
     mem.moveRaw[u8](dst, nodeBytes(n), (*n).inlen);
   }
@@ -239,27 +269,31 @@ fn ownerBuffer(n: *ConsoleNode) {
     }
     c = (*c).next;
   }
-  coBufLen = coBufLen + at;
+  o.len = o.len + at;
 }
 
 // One record, written or held for the next write, in order
-fn ownerWrite(n: *ConsoleNode) {
+fn ownerWrite(o: &mut OwnerOut, n: *ConsoleNode) {
   if (*n).fd == 2i32 {
-    ownerFlushBuf();
+    ownerFlushBuf(o);
     ownerWriteNode(2i32, n);
+    coDelivered.add(1u64);
   }
-  else if coTty {
+  else if o.tty {
     ownerWriteNode(1i32, n);
+    coDelivered.add(1u64);
   }
   else if (*n).size < consoleBufCap {
-    if (*n).size > consoleBufCap - coBufLen {
-      ownerFlushBuf();
+    if (*n).size > consoleBufCap - o.len {
+      ownerFlushBuf(o);
     }
-    ownerBuffer(n);
+    ownerBuffer(o, n);
+    o.recs = o.recs + 1u64;
   }
   else {
-    ownerFlushBuf();
+    ownerFlushBuf(o);
     ownerWriteNode(1i32, n);
+    coDelivered.add(1u64);
   }
 }
 
@@ -275,22 +309,22 @@ fn ownerFree(n: *ConsoleNode) {
 }
 
 fn ownerMain(arg: OwnerArg) u32 {
-  coTty = cone_consoleIsTty(1i32) != 0i32;
-  coBuf = libc.malloc(consoleBufCap) as usize;
-  if coBuf == 0usize {
+  var out = OwnerOut(0usize, 0usize, 0u64, cone_consoleIsTty(1i32) != 0i32);
+  out.buf = libc.malloc(consoleBufCap) as usize;
+  if out.buf == 0usize {
     die("actors: out of memory for the console's buffer");
   }
   while true {
     coLock.lock();
-    while coHead == 0usize {
-      coAsleep = true;
+    while coHead.loadOrdered(MemOrder.Relaxed) == 0usize {
+      coAsleep.storeOrdered(true, MemOrder.Relaxed);
       coWake.condWait(&coLock);
-      coAsleep = false;
+      coAsleep.storeOrdered(false, MemOrder.Relaxed);
     }
-    var n = coHead as *ConsoleNode;
-    coHead = 0usize;
-    coTail = 0usize;
-    coBusy = true;
+    var n = coHead.loadOrdered(MemOrder.Relaxed) as *ConsoleNode;
+    coHead.storeOrdered(0usize, MemOrder.Relaxed);
+    coTail.storeOrdered(0usize, MemOrder.Relaxed);
+    coBusy.storeOrdered(true, MemOrder.Relaxed);
     coLock.unlock();
 
     // A test's stalled destination (holdConsole)
@@ -302,19 +336,19 @@ fn ownerMain(arg: OwnerArg) u32 {
     while n != null {
       let following = (*n).next;
       cost = cost + (*n).size + mem.sizeof[ConsoleNode]();
-      ownerWrite(n);
+      ownerWrite(&mut out, n);
       ownerFree(n);
       count = count + 1u64;
       n = following;
     }
-    ownerFlushBuf();
+    ownerFlushBuf(&mut out);
 
     coLock.lock();
-    coQueued = coQueued - cost;
-    coWritten = coWritten + count;
-    coBusy = false;
-    let room = coRoomWaiters != 0u32;
-    let done = coDoneWaiters != 0u32;
+    coQueued.storeOrdered(coQueued.loadOrdered(MemOrder.Relaxed) - cost, MemOrder.Relaxed);
+    coWritten.storeOrdered(coWritten.loadOrdered(MemOrder.Relaxed) + count, MemOrder.Relaxed);
+    coBusy.storeOrdered(false, MemOrder.Relaxed);
+    let room = coRoomWaiters.loadOrdered(MemOrder.Relaxed) != 0u32;
+    let done = coDoneWaiters.loadOrdered(MemOrder.Relaxed) != 0u32;
     coLock.unlock();
     if room {
       coRoom.notifyAll();
@@ -327,38 +361,156 @@ fn ownerMain(arg: OwnerArg) u32 {
 }
 
 // Everything pushed so far has been written (op 0), or a moment is given to
-// that (op 1, for a panic: it takes no lock it might wait on and gives up)
+// that (op 1, for a panic: it takes no lock it might wait on, waits while the
+// owner makes progress, and gives up when it stalls or at the ceiling; see the
+// header), or the dropped lines are reported (op 2, a panic's last step)
 fn consoleControl(op: u32) {
   if op == 1u32 {
-    var tries = 0u32;
-    while tries < 200u32 {
+    if coGaveUp.load() != 0u32 {
+      return;
+    }
+    var stall = coStallMs.load();
+    if stall == 0u32 {
+      stall = consoleStallMs;
+    }
+    var ceiling = coCeilingMs.load();
+    if ceiling == 0u32 {
+      ceiling = consoleCeilingMs;
+    }
+    let start = time.Instant.now();
+    var moved = start;
+    var seen = coDelivered.load();
+    while true {
       if coLock.tryLock() {
-        let idle = coHead == 0usize && !coBusy;
+        let idle = coHead.loadOrdered(MemOrder.Relaxed) == 0usize && !coBusy.loadOrdered(MemOrder.Relaxed);
         coLock.unlock();
         if idle {
           return;
         }
       }
       thread.sleep(time.Duration.fromMillis(1i64));
-      tries = tries + 1u32;
+      let now = coDelivered.load();
+      if now != seen {
+        seen = now;
+        moved = time.Instant.now();
+      }
+      if moved.elapsed().millis() >= i64.from(stall) || start.elapsed().millis() >= i64.from(ceiling) {
+        break;
+      }
+    }
+    // The owner is not finished: the panic goes on without it, and op 2
+    // reports what is still unwritten then
+    // and which limit ended the wait goes with it: the stall (no progress for that
+    // long) takes the credit if both are up
+    if moved.elapsed().millis() >= i64.from(stall) {
+      coGaveLimit.store(stall);
+      coGaveUp.store(1u32);
+    }
+    else {
+      coGaveLimit.store(ceiling);
+      coGaveUp.store(2u32);
     }
     return;
   }
+  if op == 2u32 {
+    consoleReportDropped();
+    return;
+  }
   coLock.lock();
-  let target = coPushed;
-  while coWritten < target {
-    coDoneWaiters = coDoneWaiters + 1u32;
+  let target = coPushed.loadOrdered(MemOrder.Relaxed);
+  while coWritten.loadOrdered(MemOrder.Relaxed) < target {
+    coDoneWaiters.storeOrdered(coDoneWaiters.loadOrdered(MemOrder.Relaxed) + 1u32, MemOrder.Relaxed);
     coDone.condWait(&coLock);
-    coDoneWaiters = coDoneWaiters - 1u32;
+    coDoneWaiters.storeOrdered(coDoneWaiters.loadOrdered(MemOrder.Relaxed) - 1u32, MemOrder.Relaxed);
   }
   coLock.unlock();
+}
+
+// After a panic's wait gave up: one line to standard error saying how many
+// records were queued and never reached the operating system. It reads the
+// count of those queued without the lock (the process is ending, and the owner
+// may hold the lock), so the number is the tally at this moment
+fn consoleReportDropped() {
+  if coGaveUp.load() == 0u32 {
+    return;
+  }
+  let pushed = coPushed.load();
+  let delivered = coDelivered.load();
+  if pushed <= delivered {
+    return;
+  }
+  let dropped = pushed - delivered;
+  var buf = Array[u8, 160]() <- fill 0u8;
+  let head = "console: ";
+  var at = 0usize;
+  var i = 0usize;
+  while i < head.len() {
+    buf[at] = head[i];
+    at = at + 1usize;
+    i = i + 1usize;
+  }
+  // The decimal, backwards, then in place
+  var digits = Array[u8, 24]() <- fill 0u8;
+  var nd = 0usize;
+  var v = dropped;
+  while v > 0u64 {
+    digits[nd] = 48u8 + u8.from(v % 10u64);
+    nd = nd + 1usize;
+    v = v / 10u64;
+  }
+  while nd > 0usize {
+    nd = nd - 1usize;
+    buf[at] = digits[nd];
+    at = at + 1usize;
+  }
+  let tail = if dropped == 1u64 { " line was queued but not written (" } else { " lines were queued but not written (" };
+  i = 0usize;
+  while i < tail.len() {
+    buf[at] = tail[i];
+    at = at + 1usize;
+    i = i + 1usize;
+  }
+  // Which limit ended the wait, so a test (and a reader) can tell a stalled destination from a
+  // trickling one without timing anything: "no progress for 500 ms" or "ceiling of 10000 ms reached"
+  let stalled = coGaveUp.load() == 1u32;
+  let why = if stalled { "no progress for " } else { "ceiling of " };
+  i = 0usize;
+  while i < why.len() {
+    buf[at] = why[i];
+    at = at + 1usize;
+    i = i + 1usize;
+  }
+  var ms = coGaveLimit.load();
+  nd = 0usize;
+  if ms == 0u32 {
+    digits[nd] = 48u8;
+    nd = nd + 1usize;
+  }
+  while ms > 0u32 {
+    digits[nd] = 48u8 + u8.from(ms % 10u32);
+    nd = nd + 1usize;
+    ms = ms / 10u32;
+  }
+  while nd > 0usize {
+    nd = nd - 1usize;
+    buf[at] = digits[nd];
+    at = at + 1usize;
+  }
+  let end = if stalled { " ms)\n" } else { " ms reached)\n" };
+  i = 0usize;
+  while i < end.len() {
+    buf[at] = end[i];
+    at = at + 1usize;
+    i = i + 1usize;
+  }
+  cone_consoleWrite(2i32, &mut buf[0usize] as *u8, at);
 }
 
 // Wait until the owner has written what it was sent: the end of the program's
 // and a flush (this package's stopWorkers; stdio's print.flush() reaches the
 // same through the console)
 fn consoleDrain() {
-  if coStarted {
+  if coStarted.load() {
     consoleControl(0u32);
   }
 }
@@ -367,19 +519,25 @@ fn consoleDrain() {
 // lock, and switches. One owner serves the process, so a runtime started again
 // after finalAll finds it there: two would share its write buffer
 fn consoleOwnerStart() {
-  if coStarted {
+  if coStarted.load() {
     return;
   }
-  coStarted = true;
+  coStarted.store(true);
   let t = thread.startWith(thread.Options(name: "console owner"), OwnerArg(0usize), &ownerMain);
   t.detach();
   cone_consoleInstall(&consoleTake as usize, &consoleTakeBytes as usize, &consoleControl as usize);
 }
 
+// For a test: the console's owner has been started in this process (it stays
+// up across finalAll)
+pub fn consoleStarted() bool {
+  coStarted.load()
+}
+
 // For a test: the bytes the queue may hold before a sender waits
 pub fn setConsoleLimit(bytes: usize) {
   coLock.lock();
-  coLimit = bytes;
+  coLimit.storeOrdered(bytes, MemOrder.Relaxed);
   coLock.unlock();
 }
 
@@ -393,10 +551,22 @@ pub fn releaseConsole() {
   coHold.store(0u32);
 }
 
+// For a test: the panic's wait gives up after 'stallMs' without progress or
+// 'ceilingMs' in all (0 for the default of either).
+//
+// This exists for tests only and is NOT a supported API: it is public only
+// because a test cannot yet reach a package's private code (testing.cone lists
+// that as not built). It goes away once tests can, and no manual or package
+// documentation names it.
+pub fn setPanicWait(stallMs: u32, ceilingMs: u32) {
+  coStallMs.store(stallMs);
+  coCeilingMs.store(ceilingMs);
+}
+
 // For a test: the bytes queued or being written now
 pub fn consoleQueued() usize {
   coLock.lock();
-  let q = coQueued;
+  let q = coQueued.loadOrdered(MemOrder.Relaxed);
   coLock.unlock();
   q
 }

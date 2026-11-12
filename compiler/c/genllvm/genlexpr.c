@@ -998,6 +998,20 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                 errorUnreachable((INode *)fndcl, "an inline function's parameter whose construction never ran");
         }
         gen->deferredcnt = defermark;
+        // An inline '@noalias' function has no symbol to carry the attribute: it goes
+        // on the call that gives the value, where that value is a call (an indirect
+        // one, for a region's 'allocate'). Honors --no-noalias
+        if (fndcl->dclinfo.facts & DclNoAlias) {
+            if (inlined == NULL || LLVMGetTypeKind(LLVMTypeOf(inlined)) != LLVMPointerTypeKind)
+                errorMsgNode((INode*)fndcl, ErrorNoAliasAttr, "'@noalias' says the pointer a function returns is a fresh block, "
+                    "so the function must return a pointer or a thin reference: this one returns neither.");
+            else if (!LLVMIsACallInst(inlined))
+                errorMsgNode((INode*)fndcl, ErrorNoAliasAttr, "'@noalias' on an inline function marks the call that gives its value, "
+                    "so the function's value must be a call (the allocation itself); this one's is not.");
+            else if (!gen->opt->no_noalias && !gen->opt->gpu)
+                LLVMAddCallSiteAttribute(inlined, LLVMAttributeReturnIndex, LLVMCreateEnumAttribute(gen->context,
+                    LLVMGetEnumAttributeKindForName("noalias", 7), 0));
+        }
         return inlined;
     }
 

@@ -1,0 +1,23 @@
+// A group table entry taken twice is a runtime bug that must die, not unlink
+// through links that are no longer in the table: the node carries a magic word,
+// set when it is noted and cleared when it is unlinked, and a take checks it
+// (actors.cone, THE GROUP SURVIVES AN AWAIT). The test-only hook
+// actors.testTakeTwice notes an entry, takes it, and takes it again without
+// freeing it between, so the second take reads a live node (no use after free).
+// Its .exit is a panic's. Its stderr, unchecked here (a line number would pin
+// actors.cone), says: panic at actors.cone:<line>: actors: a reply made in a
+// cancel group has no group noted. What was printed before is kept: a panic
+// flushes stdout first.
+
+mod groupdoubletake;
+
+import stdio use *;
+import actors;
+import cancelgroups use *;
+
+fn main() {
+  let g = CancelGroup.make();
+  printStr("before\n");
+  actors.withGroup(&g, fn() { actors.testTakeTwice(); });
+  printStr("not reached\n");
+}

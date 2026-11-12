@@ -1,0 +1,104 @@
+// The scheduler study's probe (THE MONITOR, the header): every other worker
+// is busy on its own queue, and one actor waits behind a long turn. Four
+// workers. Three Churn actors send themselves a message at the end of every
+// turn, so three workers run short turns for ever; the fourth worker sleeps.
+// Main sends Hold, which wakes the fourth worker and holds it for 400 ms with
+// its first act the making of Late runnable, onto that worker's own queue
+// (a push to an empty queue wakes nobody: nothing sleeps now in any case).
+// Notifying cannot help here, since no worker sleeps; the monitor moves Late
+// to the inject queue, where a busy worker finds it at its next look there
+// (every injectEvery turns). Late must run within 100 ms of being made
+// runnable, with Hold still in its turn (the bound is the monitor's two ticks
+// at their longest, 4 ms, and a look: 100 ms is 25 times that, for a loaded
+// machine). Five rounds.
+
+mod monitorstarve;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+const rounds = 5u32;
+
+struct Flags {
+  pub stop: Atomic[u32];
+  pub madeAt: Atomic[u64];     // when Hold made Late runnable
+  pub lateAt: Atomic[u64];     // when Late ran, 0 before
+  pub holdDone: Atomic[u32];
+  pub lateDuring: Atomic[u32]; // Late ran before Hold had finished
+}
+
+let flags: Flags;
+
+fn @initpure init() {
+  flags = Flags(Atomic[u32].of(0u32), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u32].of(0u32), Atomic[u32].of(0u32));
+}
+
+fn nowNs() u64 {u64.from(time.Instant.now().nanos())}
+
+actor Churn {
+  pub async fn go(self) {
+    if flags.stop.load() == 0u32 {
+      selfactor.go();
+    }
+  }
+}
+
+actor Late {
+  pub async fn run(self) {
+    flags.lateDuring.store(1u32 - flags.holdDone.load());
+    flags.lateAt.store(nowNs());
+  }
+}
+
+actor Hold {
+  pub async fn hold(self, late: Late) {
+    flags.madeAt.store(nowNs());
+    late.run();
+    let until = nowNs() + 400000000u64;
+    while nowNs() < until {}
+    flags.holdDone.store(1u32);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32, monitorMicros: 500u32));
+  {
+    let c1 = Churn();
+    let c2 = Churn();
+    let c3 = Churn();
+    c1.go();
+    c2.go();
+    c3.go();
+    let hold = Hold();
+    let late = Late();
+    var prompt = 0u32;
+    var during = 0u32;
+    var r = 0u32;
+    while r < rounds {
+      thread.sleep(time.Duration.fromMillis(30i64));
+      flags.lateAt.store(0u64);
+      flags.holdDone.store(0u32);
+      hold.hold(late);
+      let deadline = nowNs() + 2000000000u64;
+      while flags.holdDone.load() == 0u32 && nowNs() < deadline {
+        thread.yieldNow();
+      }
+      require(flags.holdDone.load() == 1u32, "Hold ended within 2 s");
+      require(flags.lateAt.load() != 0u64, "Late ran by the end of Hold's turn");
+      if flags.lateAt.load() - flags.madeAt.load() < 100000000u64 {prompt = prompt + 1u32;}
+      if flags.lateDuring.load() == 1u32 {during = during + 1u32;}
+      r = r + 1u32;
+    }
+    flags.stop.store(1u32);
+    actors.waitUntilIdle();
+    expectUInt(u64.from(during), u64.from(rounds), "every round, Late ran while Hold was still in its turn");
+    expectUInt(u64.from(prompt), u64.from(rounds), "every round, Late ran within 100 ms of being made runnable");
+    expectBool(actors.stats().monitorWakes >= u64.from(rounds), true, "the monitor found the stranded queue each round");
+  }
+  finalAll();
+  done()
+}
