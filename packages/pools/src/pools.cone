@@ -46,7 +46,7 @@
 //   t.entries()        the same, each with its cell index: (u32, &T)
 //   t.nextLive(i)      the first live cell at or after i, or noCell
 //
-// STORAGE. The cells are one contiguous block, as a List's values are, from the
+// WALKING. iter, entries and nextLive scan the cells of the block, so a walk costs O(capacity), not O(live):\n// a pool that is walked while sparse should be a DensePool (as in Rust's slotmap).\n//\n// STORAGE. The cells are one contiguous block, as a List's values are, from the
 // pool's region, grown by doubling when it is full. A cell is an 8-byte header
 // (its generation, and the next free cell when it is free) then the value. A
 // cell is reached by its index from the block's start: a lookup is the block's
@@ -179,44 +179,61 @@ pub struct GenPool[T] is ShapeChanging, CarriesRegion {
     live = live + 1u32;
     Handle(i, (*c).gen)
   }
-  // TRANSITIONAL, for actorhttp and httpclient only (their records hold plug-ins reached through a Uni[Trait],
-  // which the borrow checker will not let a borrowed cell reach). The entry h names, or null if it is gone (or h names
-  // nothing). The address is good only until the pool changes shape. Other code uses borrow/borrowMut.
-  pub fn rawGet(self: &, h: Handle) *T {
+  // The entry h names, or null if it is gone (or h names nothing). Private; the checked
+  // accessors and rawGet are made from it
+  fn peek(self: &, h: Handle) *T {
     if h.index >= top {return nullOf[T]();}
     let c = cells + usize.from(h.index);
     if (*c).next != liveMark || (*c).gen != h.gen {return nullOf[T]();}
     &(*c).value as *T
   }
 
-  // The live entry in cell i, or null. TRANSITIONAL, as 'rawGet': for actorhttp and httpclient only
-  pub fn rawAt(self: &, i: u32) *T {
+  // The live entry in cell i, or null. Private, as 'peek'
+  fn peekAt(self: &, i: u32) *T {
     if i >= top {return nullOf[T]();}
     let c = cells + usize.from(i);
     if (*c).next != liveMark {return nullOf[T]();}
     &(*c).value as *T
   }
 
+  // TRANSITIONAL, for actorhttp only (its records hold plug-ins reached through a Uni[Trait],
+  // which the borrow checker will not let a borrowed cell reach). The address of the entry h
+  // names; a panic, at the caller's line, if h is stale or none. The address is good only until
+  // the pool changes shape. Other code uses borrow/borrowMut.
+  pub fn rawGet(self: &, h: Handle, file: &Array[u8] = srcFile(), line: u32 = srcLine()) *T {
+    let p = self.peek(h);
+    if p as usize == 0usize {panic("pools: GenPool.rawGet of a handle that names no live entry", file, line);}
+    p
+  }
+
+  // The address of the live entry in cell i; a panic, at the caller's line, if the cell is not
+  // live. TRANSITIONAL, as 'rawGet'
+  pub fn rawAt(self: &, i: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) *T {
+    let p = self.peekAt(i);
+    if p as usize == 0usize {panic("pools: GenPool.rawAt of a cell that is not live", file, line);}
+    p
+  }
+
   pub fn borrow(self: &, h: Handle) Option[&T] {
-    let p = self.rawGet(h);
+    let p = self.peek(h);
     if p as usize == 0usize {return None;}
     Some[&T](p as &T)
   }
 
   pub fn borrowMut(self: &mut, h: Handle) Option[&mut T] {
-    let p = self.rawGet(h);
+    let p = self.peek(h);
     if p as usize == 0usize {return None;}
     Some[&mut T](p as &mut T)
   }
 
   pub fn borrowAt(self: &, i: u32) Option[&T] {
-    let p = self.rawAt(i);
+    let p = self.peekAt(i);
     if p as usize == 0usize {return None;}
     Some[&T](p as &T)
   }
 
   pub fn borrowMutAt(self: &mut, i: u32) Option[&mut T] {
-    let p = self.rawAt(i);
+    let p = self.peekAt(i);
     if p as usize == 0usize {return None;}
     Some[&mut T](p as &mut T)
   }
@@ -385,7 +402,7 @@ pub struct PoolEntries['a, T] is Iterator[(u32, &T)] {
     let i = pool.nextLive(pos);
     if i == noCell {pos = noCell; return None;}
     pos = i + 1u32;
-    Some[(u32, &T)]((i, pool.rawAt(i) as &T))
+    Some[(u32, &T)]((i, pool.peekAt(i) as &T))
   }
 }
 
@@ -498,17 +515,17 @@ pub struct DensePool[T] is ShapeChanging, CarriesRegion {
 
   // The row h names, or noCell if it is gone
   pub fn rowIndex(self: &, h: Handle) u32 {
-    let p = index.rawGet(h);
+    let p = index.peek(h);
     if p as usize == 0usize {return noCell;}
     *p
   }
 
-  pub fn isLive(self: &, h: Handle) bool {index.rawGet(h) as usize != 0usize}
+  pub fn isLive(self: &, h: Handle) bool {index.peek(h) as usize != 0usize}
 
   // The entry h names, or null if it is gone. Private: the address is good
   // only until the pool changes
   fn get(self: &, h: Handle) *T {
-    let p = index.rawGet(h);
+    let p = index.peek(h);
     if p as usize == 0usize {return nullOf[T]();}
     block.vals + usize.from(*p)
   }
@@ -550,7 +567,7 @@ pub struct DensePool[T] is ShapeChanging, CarriesRegion {
   fn dropAt(self: &mut, h: Handle, r: usize, fin: bool) {
     block.dropRow(r, fin);
     if r < block.n {
-      let moved = index.rawAt(*(block.cells + r));
+      let moved = index.peekAt(*(block.cells + r));
       *moved = u32.from(r);
     }
     index.remove(h);
@@ -558,7 +575,7 @@ pub struct DensePool[T] is ShapeChanging, CarriesRegion {
 
   // Finalize the entry h names and take it out: true if there was one
   pub fn remove(self: &mut, h: Handle) bool {
-    let p = index.rawGet(h);
+    let p = index.peek(h);
     if p as usize == 0usize {return false;}
     self.dropAt(h, usize.from(*p), true);
     true
@@ -566,7 +583,7 @@ pub struct DensePool[T] is ShapeChanging, CarriesRegion {
 
   // Move the entry out by value; nothing is finalized
   pub fn take(self: &mut, h: Handle) Option[T] {
-    let p = index.rawGet(h);
+    let p = index.peek(h);
     if p as usize == 0usize {return None;}
     let r = usize.from(*p);
     let v = mem.readRaw[T](block.vals + r);
