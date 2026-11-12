@@ -266,6 +266,13 @@ fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
   // The bitstream, the last sequence first: each sequence's codes are
   // written after the next one's extra bits, so that reading backward the
   // decoder takes a sequence's extra bits, then moves its states on
+  // A sequence's bits: the three states at most 9 + 8 + 9, the extra bits at
+  // most 16 + 16 + 31, so 89 bits and at most 12 bytes, inside the 16 reserved
+  // a sequence. The container holds at most 7 bits between flushes, so the
+  // states and the literal-length bits (7 + 26 + 16) and then the match-length
+  // and offset bits (7 + 16 + 31) each fit in 64 bits before their flush.
+  // The table logs are what that rests on, checked here.
+  if enc.ll.log > 9u32 || enc.of.log > 8u32 || enc.ml.log > 9u32 { panic("zstd: an FSE table log is above its limit"); }
   var bw = BitRun.open(out, nb * 16usize + 16usize);
   let last = nb - 1usize;
   var llc = usize.from(*enc.llCodes[last]);
@@ -286,9 +293,11 @@ fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
     ofState = enc.of.encodeRun(&mut bw, ofState, ofc);
     mlState = enc.ml.encodeRun(&mut bw, mlState, mlc);
     llState = enc.ll.encodeRun(&mut bw, llState, llc);
-    bw.put(u64.from(*seqs.ll[n] - llBase[llc]), llBits[llc]);
-    bw.put(u64.from(*seqs.ml[n] - mlBase[mlc]), mlBits[mlc]);
-    bw.put(u64.from(*seqs.off[n]), u32.from(ofc));
+    bw.add(u64.from(*seqs.ll[n] - llBase[llc]), llBits[llc]);
+    bw.flush();
+    bw.add(u64.from(*seqs.ml[n] - mlBase[mlc]), mlBits[mlc]);
+    bw.add(u64.from(*seqs.off[n]), u32.from(ofc));
+    bw.flush();
   }
   enc.ml.flushRun(&mut bw, mlState);
   enc.of.flushRun(&mut bw, ofState);
