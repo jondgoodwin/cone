@@ -1435,12 +1435,15 @@ static void genlStitch(GenState *gen, int which) {
     LLVMBuilderRef builder = LLVMCreateBuilderInContext(gen->context);
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, fn, "entry");
     LLVMPositionBuilderAtEnd(builder, entry);
-    // The program is live between its init and its final. A call that finds it
-    // already in the state it asks for returns at once: the swap of the flag
-    // is the call's first instruction, so the second of two calls (the entry's
-    // and the program's own, or two threads') does nothing, and a program that
-    // finalizes and initializes again still runs both. A final with no init in
-    // this object to set the flag always runs.
+    // The flag has three states: 0 never live, 1 live, 2 finished. The program
+    // is live between its init and its final. A call that finds it already in
+    // the state it asks for returns at once: the init's swap or the final's
+    // compare-exchange is the call's first instruction, so the second of two
+    // calls (the entry's and the program's own, or two threads') does nothing.
+    // Init runs once per process [Jon 6 Nov]: an init that finds the program
+    // finished panics (cone_panicInitAgain). A final that finds the program
+    // never live does nothing and leaves it so. A final with no init in this
+    // object to set the flag always runs.
     if (which == 0 || gen->stitch[0] != NULL) {
         LLVMTypeRef flagtype = LLVMInt8TypeInContext(gen->context);
         LLVMValueRef flag = LLVMGetNamedGlobal(gen->module, "cone.live");
@@ -1451,12 +1454,35 @@ static void genlStitch(GenState *gen, int which) {
         }
         LLVMBasicBlockRef run = LLVMAppendBasicBlockInContext(gen->context, fn, "run");
         LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(gen->context, fn, "done");
-        LLVMValueRef before = LLVMBuildAtomicRMW(builder, LLVMAtomicRMWBinOpXchg, flag,
-            LLVMConstInt(flagtype, which == 0 ? 1 : 0, 0), LLVMAtomicOrderingSequentiallyConsistent, 0);
-        LLVMBuildCondBr(builder, LLVMBuildICmp(builder, LLVMIntEQ, before,
-            LLVMConstInt(flagtype, which == 0 ? 0 : 1, 0), ""), run, done);
+        LLVMBasicBlockRef again = which == 0 ? LLVMAppendBasicBlockInContext(gen->context, fn, "again") : NULL;
+        if (which == 0) {
+            LLVMValueRef before = LLVMBuildAtomicRMW(builder, LLVMAtomicRMWBinOpXchg, flag,
+                LLVMConstInt(flagtype, 1, 0), LLVMAtomicOrderingSequentiallyConsistent, 0);
+            LLVMBasicBlockRef notnew = LLVMAppendBasicBlockInContext(gen->context, fn, "notnew");
+            LLVMBuildCondBr(builder, LLVMBuildICmp(builder, LLVMIntEQ, before,
+                LLVMConstInt(flagtype, 0, 0), ""), run, notnew);
+            LLVMPositionBuilderAtEnd(builder, notnew);
+            LLVMBuildCondBr(builder, LLVMBuildICmp(builder, LLVMIntEQ, before,
+                LLVMConstInt(flagtype, 1, 0), ""), done, again);
+        }
+        else {
+            LLVMValueRef swap = LLVMBuildAtomicCmpXchg(builder, flag, LLVMConstInt(flagtype, 1, 0),
+                LLVMConstInt(flagtype, 2, 0), LLVMAtomicOrderingSequentiallyConsistent,
+                LLVMAtomicOrderingSequentiallyConsistent, 0);
+            LLVMBuildCondBr(builder, LLVMBuildExtractValue(builder, swap, 1, ""), run, done);
+        }
         LLVMPositionBuilderAtEnd(builder, done);
         LLVMBuildRetVoid(builder);
+        if (again != NULL) {
+            // A stand-in site: the report names no source file
+            INode site;
+            memset(&site, 0, sizeof(site));
+            LLVMBuilderRef saved = gen->builder;
+            LLVMPositionBuilderAtEnd(builder, again);
+            gen->builder = builder;
+            genlPanic(gen, &site, PanicInitAgain, NULL);
+            gen->builder = saved;
+        }
         LLVMPositionBuilderAtEnd(builder, run);
     }
     Nodes *order = gen->pgm->initorder;
