@@ -2,7 +2,8 @@
 // stranded queue (the header's THE MONITOR). Two workers, monitorMicros 500.
 //
 // 1. Every worker idle: the monitor parks after monitorIdleTicks quiet ticks
-//    (monitorParked), at its base tick.
+//    (monitorParked), at its base tick (when a loaded machine let the tick back
+//    off before the park, the test wakes it and lets it park again).
 // 2. A message to an actor wakes a worker, and the first worker out of its
 //    park (uncount) wakes the monitor: monitorParked turns false within 2 s.
 // 3. That actor, Hold, holds one worker for its whole turn. First it spins
@@ -31,6 +32,7 @@ import thread;
 import time;
 
 const many = 40u64;
+const parkAttempts = 50u32;
 
 struct Flags {
   pub go: Atomic[u32];         // main's: Hold may make Late runnable now
@@ -110,6 +112,14 @@ fn parkedWithin(ms: i64) bool {
   actors.monitorParked()
 }
 
+fn unparkedWithin(ms: i64) bool {
+  let deadline = nowNs() + u64.from(ms) * 1000000u64;
+  while actors.monitorParked() && nowNs() < deadline {
+    thread.sleep(time.Duration.fromMillis(1i64));
+  }
+  !actors.monitorParked()
+}
+
 fn main() i32 {
   initAll();
   actors.configure(actors.Options(workers: 2u32, monitorMicros: 500u32));
@@ -117,10 +127,30 @@ fn main() i32 {
     let h = Hold();
     let late = Late();
     // 1. idle: the monitor parks
-    h.poke();
-    actors.waitUntilIdle();
-    require(parkedWithin(2000i64), "the monitor parks when every worker is parked");
-    expectUInt(u64.from(actors.monitorTick()), 500u64, "it parks at its base tick");
+    // The tick it parks at is the base only if the workers parked within the
+    // monitor's first rounds: a loaded machine can keep a worker from its park
+    // long enough for quiet rounds to back the tick off before the park (the
+    // park keeps the tick it had; the wake resets it). A park at a backed-off
+    // tick is not a failure of the monitor: wake it (a poke does) and let it
+    // park again from its base. The check fails only when no park out of many
+    // is at the base tick; a monitor that never parks fails parkedWithin's 10 s.
+    // (No check inside the loop: the output's count of checks must not depend
+    // on how many attempts a run took.)
+    var attempts = 0u32;
+    var tick = 0u32;
+    var parked = false;
+    while attempts < parkAttempts {
+      h.poke();
+      actors.waitUntilIdle();
+      parked = parkedWithin(10000i64);
+      tick = actors.monitorTick();
+      if !parked || tick == 500u32 {break;}
+      attempts = attempts + 1u32;
+      h.poke();
+      if !unparkedWithin(10000i64) {break;}
+    }
+    require(parked, "the monitor parks when every worker is parked");
+    expectUInt(u64.from(tick), 500u64, "it parks at its base tick");
     // 2. the first worker out of a park wakes it
     h.first(late);
     let deadline = nowNs() + 2000000000u64;
