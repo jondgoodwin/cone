@@ -1,0 +1,60 @@
+// Karatsuba against schoolbook on random operands from fixed seeds, with limb counts either side of
+// the default threshold (32) and of the smallest one (4), balanced and not, including all-ones and
+// zero runs (which reach the carries of the middle product).
+
+mod karatsuba;
+
+import testing use *;
+import collections use *;
+import bigint use BigUint;
+import random;
+
+fn draw(rng: &mut random.Rng, limbCount: usize, runs: bool) BigUint {
+  var l = List[u64]();
+  var i = 0usize;
+  while i < limbCount {
+    let kind = if runs { rng.below(5u64) } else { 9u64 };
+    if kind == 0u64 { l.push(0xFFFFFFFFFFFFFFFFu64); }
+    else if kind == 1u64 { l.push(0u64); }
+    else { l.push(rng.next()); }
+    i = i + 1usize;
+  }
+  BigUint.fromLimbs(l)
+}
+
+fn agree(a: &BigUint, b: &BigUint, threshold: usize) bool {
+  a.mulKaratsuba(b, threshold).cmp(&a.mulSchoolbook(b)) == 0i32
+}
+
+fn main() i32 {
+  var rng = random.Rng.fromSeed(31337u64);
+  var bad = 0i32;
+  let sizes = [3usize, 4usize, 5usize, 7usize, 8usize, 15usize, 16usize, 31usize, 32usize, 33usize, 63usize, 64usize, 65usize, 100usize, 257usize];
+  var i = 0usize;
+  while i < 15usize {
+    var j = 0usize;
+    while j < 15usize {
+      let a = draw(&mut rng, sizes[i], (i + j) % 2usize == 0usize);
+      let b = draw(&mut rng, sizes[j], (i + j) % 3usize == 0usize);
+      if !agree(&a, &b, 4usize) { bad = bad + 1i32; }
+      if !agree(&a, &b, 8usize) { bad = bad + 1i32; }
+      if !agree(&a, &b, 32usize) { bad = bad + 1i32; }
+      // mul itself (default threshold) and operand order
+      if a.mul(&b).cmp(&a.mulSchoolbook(&b)) != 0i32 { bad = bad + 1i32; }
+      if b.mul(&a).cmp(&a.mulSchoolbook(&b)) != 0i32 { bad = bad + 1i32; }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(bad), 0i64, "225 size pairs, three thresholds");
+
+  // All ones squared: (2^k - 1)^2, the worst carries
+  var ones = List[u64]();
+  var n = 0usize;
+  while n < 70usize { ones.push(0xFFFFFFFFFFFFFFFFu64); n = n + 1usize; }
+  let m = BigUint.fromLimbs(ones);
+  expect(agree(&m, &m, 4usize), "all-ones squared");
+  expect(agree(&m, &BigUint.zero(), 4usize), "times zero");
+  expect(agree(&m, &BigUint.one(), 4usize), "times one");
+  done()
+}

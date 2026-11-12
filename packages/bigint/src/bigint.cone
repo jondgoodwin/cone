@@ -1,7 +1,8 @@
 // The bigint package: arbitrary-size integers, written in Cone with no C
-// library and no call to the OS. This first release holds the unsigned
-// magnitude 'BigUint'. The signed 'BigInt' and faster multiplication (Karatsuba)
-// come later and are not here.
+// library and no call to the OS. It holds the unsigned magnitude 'BigUint' and
+// the signed 'BigInt' (a sign and a BigUint magnitude, with no negative zero;
+// the same methods, with 'divmod' truncating like Rust's '/' and '%' and
+// 'divEuclid'/'remEuclid' for a non-negative remainder, and text with a leading '-').
 //
 //   mod factorial;
 //   import stdio use *;
@@ -33,9 +34,10 @@
 // - A subtraction that would go below zero, a division by zero, and text that
 //   is not a number are a 'Result[_, BigUintError]'. Nothing wraps and nothing
 //   panics. The error says its kind and, for a bad digit, the byte offset.
-// - Multiplication is schoolbook, O(n*m). The 64 x 64 -> 128 bit product is
-//   four 32 x 32 products in integers (as the random package does), since Cone
-//   has no 128-bit type. Karatsuba is left for a later PR.
+// - Multiplication is Karatsuba while the smaller operand has at least
+//   'karatsubaThreshold' limbs, schoolbook O(n*m) below. The 64 x 64 -> 128 bit
+//   product is four 32 x 32 products in integers (as the random package does),
+//   since Cone has no 128-bit type.
 // - Division by a BigUint is Knuth's Algorithm D (TAOCP 4.3.1) on 32-bit
 //   digits, so that every step is within u64 arithmetic. Division by a word
 //   below 2^32 (the fast path, which text conversion also uses) runs two
@@ -276,6 +278,143 @@ fn digitValue(c: u8) u64 {
   99u64
 }
 
+// The limbs from (inclusive) to to (exclusive) of a list, clamped to its length, trimmed
+fn part(l: &List[u64], from: usize, to: usize) List[u64] {
+  var out = List[u64].withCapacity(to - from);
+  var i = from;
+  while i < to && i < l.len() { out.push(*l[i]); i = i + 1usize; }
+  trim(&mut out);
+  out
+}
+
+// a - b where b is known not to exceed a
+fn subKnown(a: &BigUint, b: &BigUint) BigUint {
+  match a.sub(b) {
+    case let Ok(d) { d }
+    case is Err { BigUint.zero() }
+  }
+}
+
+// The sum of two limb lists, trimmed
+fn addLimbs(a: &List[u64], b: &List[u64]) List[u64] {
+  let n = if a.len() > b.len() { a.len() } else { b.len() };
+  var out = List[u64].withCapacity(n + 1usize);
+  var carry = 0u64;
+  var i = 0usize;
+  while i < n {
+    let x = limbOr0(a, i);
+    let s = x + limbOr0(b, i);
+    let c1 = if s < x { 1u64 } else { 0u64 };
+    let t = s + carry;
+    let c2 = if t < s { 1u64 } else { 0u64 };
+    out.push(t);
+    carry = c1 + c2;
+    i = i + 1usize;
+  }
+  if carry != 0u64 { out.push(carry); }
+  trim(&mut out);
+  out
+}
+
+// out[at..] += x, the carry running on as far as it must (out is long enough)
+fn addInto(out: &mut List[u64], x: &List[u64], at: usize) {
+  var carry = 0u64;
+  var i = 0usize;
+  while i < x.len() || carry != 0u64 {
+    let v = *out[at + i];
+    let s = v + limbOr0(x, i);
+    let c1 = if s < v { 1u64 } else { 0u64 };
+    let t = s + carry;
+    let c2 = if t < s { 1u64 } else { 0u64 };
+    out.set(at + i, t);
+    carry = c1 + c2;
+    i = i + 1usize;
+  }
+}
+
+// out -= x, known not to go below zero
+fn subFrom(out: &mut List[u64], x: &List[u64]) {
+  var borrow = 0u64;
+  var i = 0usize;
+  while i < x.len() || borrow != 0u64 {
+    let a = *out[i];
+    let b = limbOr0(x, i);
+    let d = a - b;
+    let b1 = if a < b { 1u64 } else { 0u64 };
+    let e = d - borrow;
+    let b2 = if d < borrow { 1u64 } else { 0u64 };
+    out.set(i, e);
+    borrow = b1 + b2;
+    i = i + 1usize;
+  }
+}
+
+// Schoolbook product of two limb lists, trimmed
+fn schoolLimbs(x: &List[u64], y: &List[u64]) List[u64] {
+  if x.len() == 0usize || y.len() == 0usize { return List[u64](); }
+  let n = x.len();
+  let m = y.len();
+  var out = List[u64].withCapacity(n + m);
+  out.resize(n + m, 0u64);
+  var i = 0usize;
+  while i < n {
+    let a = *x[i];
+    var carry = 0u64;
+    var j = 0usize;
+    while j < m {
+      let p = mulWide(a, *y[j]);
+      let t = *out[i + j] + p.1;
+      let c1 = if t < p.1 { 1u64 } else { 0u64 };
+      let t2 = t + carry;
+      let c2 = if t2 < t { 1u64 } else { 0u64 };
+      out.set(i + j, t2);
+      carry = p.0 + c1 + c2;
+      j = j + 1usize;
+    }
+    out.set(i + m, carry);
+    i = i + 1usize;
+  }
+  trim(&mut out);
+  out
+}
+
+// Karatsuba product of two trimmed limb lists, trimmed; t (at least 4) is the threshold
+fn karatsubaLimbs(a: &List[u64], b: &List[u64], t: usize) List[u64] {
+  let n = a.len();
+  let m = b.len();
+  if n == 0usize || m == 0usize { return List[u64](); }
+  if n < m { return karatsubaLimbs(b, a, t); }
+  if m < t { return schoolLimbs(a, b); }
+  let h = (n + 1usize) / 2usize;
+  var out = List[u64].withCapacity(n + m);
+  out.resize(n + m, 0u64);
+  let a0 = part(a, 0usize, h);
+  let a1 = part(a, h, n);
+  if m <= h {
+    // The smaller operand lies within the low half: two products
+    addInto(&mut out, &karatsubaLimbs(&a0, b, t), 0usize);
+    addInto(&mut out, &karatsubaLimbs(&a1, b, t), h);
+  } else {
+    let b0 = part(b, 0usize, h);
+    let b1 = part(b, h, m);
+    let z0 = karatsubaLimbs(&a0, &b0, t);
+    let z2 = karatsubaLimbs(&a1, &b1, t);
+    var z1 = karatsubaLimbs(&addLimbs(&a0, &a1), &addLimbs(&b0, &b1), t);
+    subFrom(&mut z1, &z0);
+    subFrom(&mut z1, &z2);
+    addInto(&mut out, &z0, 0usize);
+    addInto(&mut out, &z1, h);
+    addInto(&mut out, &z2, 2usize * h);
+  }
+  trim(&mut out);
+  out
+}
+
+// Below this many limbs in the smaller operand, 'mul' stays schoolbook
+// (measured 11 Nov 2026, release build under load, examples/thresholdbench.cone: schoolbook and
+// Karatsuba cross at about 64 limbs, because the splitting allocates; num-bigint's is about 32)
+const karatsubaThreshold = 64usize;
+
 // The limbs in a base from 2 to 36 (lower case) as a String; a base outside it is taken as 10
 fn textBase(limbs: &List[u64], base: u32) String {
   let b = if base < 2u32 || base > 36u32 { 10u64 } else { u64.from(base) };
@@ -445,34 +584,17 @@ pub struct BigUint is Eq, Ordered, Hash, Clone {
     Ok[BigUint, BigUintError](BigUint(out))
   }
 
-  // Schoolbook multiplication
-  pub fn mul(self: &, o: &BigUint) BigUint {
-    if limbs.len() == 0usize || o.limbs.len() == 0usize { return BigUint.zero(); }
-    let n = limbs.len();
-    let m = o.limbs.len();
-    var out = List[u64].withCapacity(n + m);
-    out.resize(n + m, 0u64);
-    var i = 0usize;
-    while i < n {
-      let a = *limbs[i];
-      var carry = 0u64;
-      var j = 0usize;
-      while j < m {
-        let p = mulWide(a, *o.limbs[j]);
-        let t = *out[i + j] + p.1;
-        let c1 = if t < p.1 { 1u64 } else { 0u64 };
-        let t2 = t + carry;
-        let c2 = if t2 < t { 1u64 } else { 0u64 };
-        out.set(i + j, t2);
-        carry = p.0 + c1 + c2;
-        j = j + 1usize;
-      }
-      out.set(i + m, carry);
-      i = i + 1usize;
-    }
-    trim(&mut out);
-    BigUint(out)
+  // The product: Karatsuba while both operands have 'karatsubaThreshold' limbs or more, schoolbook below
+  pub fn mul(self: &, o: &BigUint) BigUint { self.mulKaratsuba(o, karatsubaThreshold) }
+
+  // Karatsuba multiplication, recursing until the smaller operand has fewer than 'threshold' limbs (at
+  // least 4) and then going schoolbook. Public so the tests and the bench can set the threshold.
+  pub fn mulKaratsuba(self: &, o: &BigUint, threshold: usize) BigUint {
+    BigUint(karatsubaLimbs(&limbs, &o.limbs, if threshold < 4usize { 4usize } else { threshold }))
   }
+
+  // Schoolbook multiplication, O(n*m)
+  pub fn mulSchoolbook(self: &, o: &BigUint) BigUint { BigUint(schoolLimbs(&limbs, &o.limbs)) }
 
   // This times a word
   pub fn mulSmall(self: &, m: u64) BigUint {
@@ -616,5 +738,168 @@ pub struct BigUint is Eq, Ordered, Hash, Clone {
   pub fn toTextBase(self: &, out: &uni TextOut, base: u32) {
     let s = textBase(&limbs, base);
     out <- s.view();
+  }
+}
+
+// -------- BigInt --------
+
+// What the signed 'divmod' answers: 'quot * divisor + rem' is the dividend. The division truncates
+// toward zero (as Rust's '/' and '%' do), so 'rem' has the sign of the dividend and is smaller than the divisor
+pub struct IntQuotRem {
+  pub quot: BigInt;
+  pub rem: BigInt;
+}
+
+// A sign and a magnitude, never a negative zero (zero is not negative)
+fn signed(negative: bool, mag: BigUint) BigInt {
+  BigInt(negative && !mag.isZero(), mag)
+}
+
+// A signed integer of any size: a BigUint magnitude and a sign
+pub struct BigInt is Eq, Ordered, Hash, Clone {
+  negative: bool;
+  mag: BigUint;
+
+  pub fn zero() BigInt { BigInt(false, BigUint.zero()) }
+
+  pub fn one() BigInt { BigInt(false, BigUint.one()) }
+
+  pub fn fromI64(x: i64) BigInt {
+    if x >= 0i64 { return BigInt(false, BigUint.fromU64(u64.from(x))); }
+    BigInt(true, BigUint.fromU64(u64.from(-(x + 1i64)) + 1u64))
+  }
+
+  // A sign and a magnitude: negative zero becomes zero
+  pub fn fromParts(negative: bool, mag: BigUint) BigInt { signed(negative, mag) }
+
+  pub fn fromBigUint(mag: BigUint) BigInt { BigInt(false, mag) }
+
+  pub fn isZero(self: &) bool { mag.isZero() }
+
+  pub fn isNegative(self: &) bool { negative }
+
+  // The absolute value, as a BigUint
+  pub fn magnitude(self: &) BigUint { mag.clone() }
+
+  // The number as an i64, None if it does not fit
+  pub fn toI64(self: &) Option[i64] {
+    match mag.toU64() {
+      case is None { None[i64] }
+      case let Some(v) {
+        if !negative {
+          if v < 0x8000000000000000u64 { Some[i64](i64.from(v)) } else { None[i64] }
+        } else if v <= 0x8000000000000000u64 {
+          if v == 0x8000000000000000u64 { Some[i64](-9223372036854775807i64 - 1i64) }
+          else { Some[i64](-i64.from(v)) }
+        } else { None[i64] }
+      }
+    }
+  }
+
+  pub fn clone(self: &) BigInt { BigInt(negative, mag.clone()) }
+
+  // The same magnitude with the opposite sign (zero stays zero)
+  pub fn negate(self: &) BigInt { signed(!negative, mag.clone()) }
+
+  // The number without its sign
+  pub fn abs(self: &) BigInt { BigInt(false, mag.clone()) }
+
+  pub fn `==`(self: &, o: &BigInt) bool { self.cmp(o) == 0i32 }
+
+  // -1, 0 or 1 as this number is below, equal to or above the other
+  pub fn cmp overload `<=>`(self: &, o: &BigInt) i32 {
+    if negative != o.negative { return if negative { -1i32 } else { 1i32 }; }
+    let c = mag.cmp(&o.mag);
+    if negative { -c } else { c }
+  }
+
+  pub fn hash(self: &, h: &mut Hasher) {
+    h.writeU64(if negative { 1u64 } else { 0u64 });
+    mag.hash(h);
+  }
+
+  pub fn add(self: &, o: &BigInt) BigInt {
+    if negative == o.negative { return BigInt(negative, mag.add(&o.mag)); }
+    // Opposite signs: the larger magnitude's sign, the difference of the magnitudes
+    if mag.cmp(&o.mag) >= 0i32 { signed(negative, subKnown(&mag, &o.mag)) }
+    else { signed(o.negative, subKnown(&o.mag, &mag)) }
+  }
+
+  // This minus the other: always defined
+  pub fn sub(self: &, o: &BigInt) BigInt { self.add(&o.negate()) }
+
+  pub fn mul(self: &, o: &BigInt) BigInt { signed(negative != o.negative, mag.mul(&o.mag)) }
+
+  // Quotient and remainder, truncating toward zero like Rust's '/' and '%': the remainder has the
+  // dividend's sign. DivideByZero if the divisor is zero.
+  pub fn divmod(self: &, d: &BigInt) Result[IntQuotRem, BigUintError] {
+    match mag.divmod(&d.mag) {
+      case let Err(e) { Err[IntQuotRem, BigUintError](e) }
+      case let Ok(qr) {
+        Ok[IntQuotRem, BigUintError](IntQuotRem(signed(negative != d.negative, qr.quot.clone()), signed(negative, qr.rem.clone())))
+      }
+    }
+  }
+
+  // Euclidean quotient (Rust's 'div_euclid'): the remainder 'remEuclid' is never negative.
+  // DivideByZero if the divisor is zero.
+  pub fn divEuclid(self: &, d: &BigInt) Result[BigInt, BigUintError] {
+    match self.divmod(d) {
+      case let Err(e) { Err[BigInt, BigUintError](e) }
+      case let Ok(qr) {
+        if !qr.rem.negative { return Ok[BigInt, BigUintError](qr.quot.clone()); }
+        // A negative remainder: step the quotient away from zero in the divisor's direction
+        if d.negative { Ok[BigInt, BigUintError](qr.quot.add(&BigInt.one())) }
+        else { Ok[BigInt, BigUintError](qr.quot.sub(&BigInt.one())) }
+      }
+    }
+  }
+
+  // Euclidean remainder (Rust's 'rem_euclid'): 0 up to but excluding the divisor's magnitude.
+  // DivideByZero if the divisor is zero.
+  pub fn remEuclid(self: &, d: &BigInt) Result[BigInt, BigUintError] {
+    match self.divmod(d) {
+      case let Err(e) { Err[BigInt, BigUintError](e) }
+      case let Ok(qr) {
+        if qr.rem.negative { Ok[BigInt, BigUintError](qr.rem.add(&d.abs())) }
+        else { Ok[BigInt, BigUintError](qr.rem.clone()) }
+      }
+    }
+  }
+
+  // Base 10 text with an optional leading '-': otherwise digits only
+  pub fn parse(text: &str) Result[BigInt, BigUintError] { BigInt.parseBase(text, 10u32) }
+
+  // Text in a base from 2 to 36 with an optional leading '-'. "-0" is zero. An error's position counts the '-'.
+  pub fn parseBase(text: &str, base: u32) Result[BigInt, BigUintError] {
+    let bytes: &Array[u8] = text;
+    if bytes.len() == 0usize || bytes[0usize] != '-' {
+      return match BigUint.parseBase(text, base) {
+        case let Ok(m) { Ok[BigInt, BigUintError](BigInt(false, m)) }
+        case let Err(e) { Err[BigInt, BigUintError](e) }
+      };
+    }
+    var rest = String();
+    var i = 1usize;
+    while i < bytes.len() { rest.appendByte(bytes[i]); i = i + 1usize; }
+    match BigUint.parseBase(rest.view(), base) {
+      case let Ok(m) { Ok[BigInt, BigUintError](signed(true, m)) }
+      case let Err(e) {
+        let at = if e.kind == BigUintErrorKind.BadDigit { e.position + 1usize } else { e.position };
+        Err[BigInt, BigUintError](failure(e.kind, at))
+      }
+    }
+  }
+
+  // The number in base 10 ('-' first when negative), written to a writer ('String() <- n')
+  pub fn toText(self: &, out: &uni TextOut) {
+    if negative { out <- "-"; }
+    mag.toText(out);
+  }
+
+  // The number in a base from 2 to 36 (lower case), '-' first when negative
+  pub fn toTextBase(self: &, out: &uni TextOut, base: u32) {
+    if negative { out <- "-"; }
+    mag.toTextBase(out, base);
   }
 }
