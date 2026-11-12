@@ -92,10 +92,11 @@ modules this object generates; [Module](../nodes/module.md), "Init and final"),
 and `cone.finalAll` each module's `finalfn` in the reverse,
 declaring the symbol of one this object does not define. They are built last
 because they call what the passes above named. Both are internal, and share a
-flag, `cone.live`, swapped atomically as each one's first act: the init runs only
-on a program not live and the final only on one that is, so two calls in a row
-(the entry's and a program's own) run the modules once, and a program that
-finalizes and initializes again runs both again. A final with no init in the
+three-state flag, `cone.live` (0 never, 1 live, 2 finished), changed atomically as
+each one's first act: the init runs only on a program never live and the final
+only on one that is live, so two calls in a row (the entry's and a program's own)
+run the modules once. Init runs once per process: an init on a finished program
+panics (`PanicInitAgain`, conestd's `cone_panicInitAgain`). A final with no init in the
 object runs always.
 **The entry** is the C `main`, `define i32 @main(i32 %argc, ptr %argv)`: it calls
 `cone.initAll`, the program's own `main`, then `cone.finalAll`, and returns the
