@@ -664,6 +664,11 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
         // takes none, so nothing stored can land in it
         if (itypeHoldsNoBorrow(place))
             continue;
+        // Nor does one that shows no borrow at all, 'static ones included (an
+        // arena holds borrows its type does not show, so it is always asked).
+        // The same for the unnamed lifetime as for a named one
+        if (!itypeIsArena(place) && !itypeCarriesBorrow(place))
+            continue;
         int slotted = lifeSlotted(place) != NULL;
         // The field a store lands in is known only where it is in what the
         // parameter's own reference points at
