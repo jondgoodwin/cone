@@ -1,0 +1,427 @@
+// ======== Patterns: a strftime subset, written and read ========
+//
+// A pattern is text with directives in it: '%Y-%m-%d %H:%M' writes
+// '2026-10-03 14:05'. Every byte but '%' stands for itself; '%' and a letter
+// is a directive, and '%%' is a '%'. The directives are these, and no others:
+//
+//   %Y  the year: four digits, or outside 0000 to 9999 ISO 8601's expanded
+//       form, a sign and at least six digits ('+010000', '-000044')
+//   %m  the month, 01 to 12            %d  the day of the month, 01 to 31
+//   %e  the day of the month, space-padded to two characters (' 6')
+//   %j  the day of the year, 001 to 366
+//   %H  the hour, 00 to 23             %M  the minute, 00 to 59
+//   %S  the second, 00 to 59
+//   %f  the nanosecond, nine digits (000000000 to 999999999)
+//   %a  the day's name, three letters ('Sun')    %A  the whole name ('Sunday')
+//   %b  the month's name, three letters ('Nov')  %B  the whole name ('November')
+//   %z  the offset from UTC: '+hhmm' or '-hhmm' ('+0530'); written '+hhmmss'
+//       when it has seconds. Read as 'Z', '+hhmm' or '+hh:mm'
+//   %Z  the offset's name, 'BRT': written only, never read, since a name such
+//       as 'IST' is the name of several zones
+//
+// Names are English, as the HTTP dates' are, and are read case-sensitively.
+// Anything else is refused, by the byte of the pattern it stopped at: an
+// unknown directive (no '%-d', '%E', '%c'), a '%' at the end, and, for a
+// pattern that is read, a directive that is named twice, a pattern with no
+// year or no day, or one that gives both a day of the year and a month or a
+// day of the month. What is read is read strictly, as the RFC 3339 reader's
+// is: every digit the directive says, every part in its range, the whole text
+// and nothing after it. A time part the pattern does not name is zero. A day's
+// name, when the pattern has one, must be the date's.
+
+// What a directive's letter is called, when it may be named once only
+fn directiveKey(c: u8) u8 {
+  if c == 'Y' {'Y'}
+  else if c == 'm' || c == 'b' || c == 'B' {'m'}
+  else if c == 'd' || c == 'e' {'d'}
+  else if c == 'j' {'j'}
+  else if c == 'H' {'H'}
+  else if c == 'M' {'M'}
+  else if c == 'S' {'S'}
+  else if c == 'f' {'f'}
+  else if c == 'z' {'z'}
+  else if c == 'a' || c == 'A' {'a'}
+  else if c == 'Z' {'Z'}
+  else if c == '%' {'%'}
+  else {0u8}
+}
+
+fn keyWord(k: u8) &str {
+  if k == 'Y' {"year"}
+  else if k == 'm' {"month"}
+  else if k == 'd' {"day of the month"}
+  else if k == 'j' {"day of the year"}
+  else if k == 'H' {"hour"}
+  else if k == 'M' {"minute"}
+  else if k == 'S' {"second"}
+  else if k == 'f' {"fraction of a second"}
+  else if k == 'z' {"offset"}
+  else {"day's name"}
+}
+
+fn hasKey(seen: &String, k: u8) bool {
+  let v: &Array[u8] = seen.view();
+  var i = 0usize;
+  while i < v.len {
+    if v[i] == k { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+fn monthName(m: i64) &str {
+  if m == 1i64 {"January"} else if m == 2i64 {"February"} else if m == 3i64 {"March"}
+  else if m == 4i64 {"April"} else if m == 5i64 {"May"} else if m == 6i64 {"June"}
+  else if m == 7i64 {"July"} else if m == 8i64 {"August"} else if m == 9i64 {"September"}
+  else if m == 10i64 {"October"} else if m == 11i64 {"November"} else {"December"}
+}
+
+// The pattern, or the first thing wrong with it. 'reading' adds the rules of a
+// pattern that is read; 'needOffset' that it must have a %z
+fn checkPattern(pattern: &Array[u8], s: &mut Scan, reading: bool, needOffset: bool) {
+  var seen = String();
+  var i = 0usize;
+  while i < pattern.len && !s.failed {
+    if pattern[i] != '%' {
+      i = i + 1usize;
+    }
+    else if i + 1usize >= pattern.len {
+      failAt(s, i, "the pattern ends with a '%'");
+    }
+    else {
+      let c = pattern[i + 1usize];
+      let k = directiveKey(c);
+      if k == 0u8 {
+        var m = String.from("the pattern has no directive '%");
+        if c < 128u8 { m.appendByte(c); } else { m.append("(a non-ASCII byte)"); }
+        m.append("': the directives are %Y %m %d %e %j %H %M %S %f %a %A %b %B %z %Z and %%");
+        failAt(s, i, m.view());
+      }
+      else if reading && k == 'Z' {
+        failAt(s, i, "the pattern cannot read '%Z': a name such as IST is the name of several zones");
+      }
+      else if reading && k != '%' && hasKey(&seen, k) {
+        var m = String.from("the pattern names the ");
+        m.append(keyWord(k));
+        m.append(" twice");
+        failAt(s, i, m.view());
+      }
+      else {
+        if reading && k != '%' { seen.appendByte(k); }
+        i = i + 2usize;
+      }
+    }
+  }
+  if s.failed || !reading { return; }
+  let end = pattern.len;
+  if !hasKey(&seen, 'Y') {
+    failAt(s, end, "the pattern gives no year: it needs %Y");
+  }
+  else if hasKey(&seen, 'j') && (hasKey(&seen, 'm') || hasKey(&seen, 'd')) {
+    failAt(s, end, "the pattern gives the day of the year (%j) and also a month or a day of the month");
+  }
+  else if !hasKey(&seen, 'j') && !(hasKey(&seen, 'm') && hasKey(&seen, 'd')) {
+    failAt(s, end, "the pattern gives no day: it needs %m or %b and %d or %e, or %j");
+  }
+  else if needOffset && !hasKey(&seen, 'z') {
+    failAt(s, end, "the pattern of an OffsetDateTime needs a %z");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Writing
+// ---------------------------------------------------------------------------
+
+// '+hhmm' or '-hhmm', and the seconds after them when there are any
+fn appendOffsetZ(out: &mut String, seconds: i64) {
+  out.appendByte(if seconds < 0i64 {'-'} else {'+'});
+  let a = if seconds < 0i64 {0i64 - seconds} else {seconds};
+  appendPadded(out, a / 3600i64, 2usize);
+  appendPadded(out, a % 3600i64 / 60i64, 2usize);
+  if a % 60i64 != 0i64 { appendPadded(out, a % 60i64, 2usize); }
+}
+
+fn appendDirective(out: &mut String, c: u8, dt: DateTime, off: Offset) {
+  let d = dt.ymd;
+  let t = dt.hms;
+  if c == '%' { out.appendByte('%'); }
+  else if c == 'Y' { appendYear(out, i64.from(d.year())); }
+  else if c == 'm' { appendPadded(out, i64.from(d.month()), 2usize); }
+  else if c == 'd' { appendPadded(out, i64.from(d.day()), 2usize); }
+  else if c == 'e' {
+    if d.day() < 10i8 { out.appendByte(' '); }
+    out.appendInt(i64.from(d.day()));
+  }
+  else if c == 'j' { appendPadded(out, i64.from(d.dayOfYear()), 3usize); }
+  else if c == 'H' { appendPadded(out, i64.from(t.hour()), 2usize); }
+  else if c == 'M' { appendPadded(out, i64.from(t.minute()), 2usize); }
+  else if c == 'S' { appendPadded(out, i64.from(t.second()), 2usize); }
+  else if c == 'f' { appendPadded(out, i64.from(t.nanosecond()), 9usize); }
+  else if c == 'a' || c == 'A' {
+    let name: &Array[u8] = dayName(weekdayIndex(d.unixDays()));
+    if c == 'a' { out.appendBytes(&name[0usize..<3usize]); } else { out.appendBytes(name); }
+  }
+  else if c == 'b' { out.append(monthAbbr(i64.from(d.month()))); }
+  else if c == 'B' { out.append(monthName(i64.from(d.month()))); }
+  else if c == 'z' { appendOffsetZ(out, i64.from(off.seconds)); }
+  else {
+    // %Z: the offset's name; an offset with none (one read from text) writes
+    // as %z does
+    if off.abbr.len > 0usize { out.append(off.abbr); } else { appendOffsetZ(out, i64.from(off.seconds)); }
+  }
+}
+
+fn formatPattern(dt: DateTime, off: Offset, pattern: &Array[u8]) Result[String, TimeError] {
+  var s = newScan();
+  checkPattern(pattern, &mut s, false, false);
+  if s.failed { return Err[String, TimeError](scanError(s)); }
+  var out = String.withCapacity(pattern.len + 16usize);
+  var i = 0usize;
+  while i < pattern.len {
+    if pattern[i] != '%' {
+      out.appendByte(pattern[i]);
+      i = i + 1usize;
+    }
+    else {
+      appendDirective(&mut out, pattern[i + 1usize], dt, off);
+      i = i + 2usize;
+    }
+  }
+  Ok[String, TimeError](out)
+}
+
+// ---------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------
+
+// A name from the table, whole (full) or its first three letters: 1 for the
+// first. 'months' says which table
+fn scanName(text: &Array[u8], s: &mut Scan, months: bool, full: bool) i64 {
+  if s.failed { return 0i64; }
+  let n = if months {12i64} else {7i64};
+  var i = 1i64;
+  while i <= n {
+    let whole: &Array[u8] = if months {monthName(i)} else {dayName(i - 1i64)};
+    let want: &Array[u8] = if full {whole} else {&whole[0usize..<3usize]};
+    if s.pos + want.len <= text.len && &text[s.pos..<s.pos + want.len] == want {
+      s.pos = s.pos + want.len;
+      return i;
+    }
+    i = i + 1i64;
+  }
+  var m = String.from("expected ");
+  m.append(if months {"a month's"} else {"a day's"});
+  m.append(if full {" English name"} else {" English name of three letters"});
+  fail(s, m.view());
+  0i64
+}
+
+// The offset from UTC of %z, in seconds: 'Z', '+hhmm' or '+hh:mm'
+fn scanZ(text: &Array[u8], s: &mut Scan) i64 {
+  if s.failed { return 0i64; }
+  if s.pos >= text.len {
+    fail(s, "expected the offset: 'Z', '+hhmm' or '+hh:mm'");
+    return 0i64;
+  }
+  let c = text[s.pos];
+  if c == 'Z' {
+    s.pos = s.pos + 1usize;
+    return 0i64;
+  }
+  if c != '+' && c != '-' {
+    fail(s, "expected the offset: 'Z', '+hhmm' or '+hh:mm'");
+    return 0i64;
+  }
+  s.pos = s.pos + 1usize;
+  let hourAt = s.pos;
+  let hours = digits(text, s, 2usize, "the offset's hours");
+  if !s.failed && s.pos < text.len && text[s.pos] == ':' { s.pos = s.pos + 1usize; }
+  let minuteAt = s.pos;
+  let minutes = digits(text, s, 2usize, "the offset's minutes");
+  if s.failed { return 0i64; }
+  if hours > 23i64 {
+    outOfRange(s, hourAt, "offset's hour", hours, "00 to 23");
+    return 0i64;
+  }
+  if minutes > 59i64 {
+    outOfRange(s, minuteAt, "offset's minute", minutes, "00 to 59");
+    return 0i64;
+  }
+  let total = hours * 3600i64 + minutes * 60i64;
+  if c == '-' {0i64 - total} else {total}
+}
+
+// The date and time the pattern read, as written (not moved to UTC), and the
+// offset it read, or why not
+fn parseOffsetPattern(pattern: &Array[u8], text: &Array[u8], needOffset: bool) Result[OffsetDateTime, TimeError] {
+  var s = newScan();
+  checkPattern(pattern, &mut s, true, needOffset);
+  var year = 0i64;
+  var month = 0i64;
+  var day = 0i64;
+  var doy = 0i64;
+  var hour = 0i64;
+  var minute = 0i64;
+  var second = 0i64;
+  var nanos = 0i64;
+  var weekday = 0i64;
+  var zone = 0i64;
+  var hasDoy = false;
+  var monthAt = 0usize;
+  var dayAt = 0usize;
+  var doyAt = 0usize;
+  var hourAt = 0usize;
+  var minuteAt = 0usize;
+  var secondAt = 0usize;
+  var weekdayAt = 0usize;
+  var i = 0usize;
+  while i < pattern.len && !s.failed {
+    let p = pattern[i];
+    if p != '%' {
+      if s.pos < text.len && text[s.pos] == p {
+        s.pos = s.pos + 1usize;
+      }
+      else if p < 128u8 {
+        var m = String.from("expected '");
+        m.appendByte(p);
+        m.append("', as the pattern has it");
+        fail(&mut s, m.view());
+      }
+      else {
+        fail(&mut s, "expected the text the pattern has");
+      }
+      i = i + 1usize;
+    }
+    else {
+      let c = pattern[i + 1usize];
+      i = i + 2usize;
+      if c == '%' { oneByte(text, &mut s, '%', "expected '%', as the pattern has it"); }
+      else if c == 'Y' { year = scanYear(text, &mut s); }
+      else if c == 'm' {
+        monthAt = s.pos;
+        month = digits(text, &mut s, 2usize, "the month");
+        if !s.failed && (month < 1i64 || month > 12i64) { outOfRange(&mut s, monthAt, "month", month, "01 to 12"); }
+      }
+      else if c == 'b' || c == 'B' {
+        monthAt = s.pos;
+        month = scanName(text, &mut s, true, c == 'B');
+      }
+      else if c == 'd' || c == 'e' {
+        dayAt = s.pos;
+        if c == 'e' && s.pos < text.len && text[s.pos] == ' ' {
+          s.pos = s.pos + 1usize;
+          day = digits(text, &mut s, 1usize, "the day");
+        }
+        else {
+          day = digits(text, &mut s, 2usize, "the day");
+          if c == 'e' && !s.failed && text[dayAt] == '0' { failAt(&mut s, dayAt, "expected a space, not a zero, in front of a one-digit day (%e)"); }
+        }
+      }
+      else if c == 'j' {
+        doyAt = s.pos;
+        hasDoy = true;
+        doy = digits(text, &mut s, 3usize, "the day of the year");
+      }
+      else if c == 'H' {
+        hourAt = s.pos;
+        hour = digits(text, &mut s, 2usize, "the hour");
+        if !s.failed && hour > 23i64 { outOfRange(&mut s, hourAt, "hour", hour, "00 to 23"); }
+      }
+      else if c == 'M' {
+        minuteAt = s.pos;
+        minute = digits(text, &mut s, 2usize, "the minute");
+        if !s.failed && minute > 59i64 { outOfRange(&mut s, minuteAt, "minute", minute, "00 to 59"); }
+      }
+      else if c == 'S' {
+        secondAt = s.pos;
+        second = digits(text, &mut s, 2usize, "the second");
+        if !s.failed && second == 60i64 {
+          failAt(&mut s, secondAt, "the second is 60, a leap second, which this package does not count (a Timestamp ignores leap seconds)");
+        }
+        else if !s.failed && second > 59i64 { outOfRange(&mut s, secondAt, "second", second, "00 to 59"); }
+      }
+      else if c == 'f' { nanos = digits(text, &mut s, 9usize, "the nanoseconds"); }
+      else if c == 'a' || c == 'A' {
+        weekdayAt = s.pos;
+        weekday = scanName(text, &mut s, false, c == 'A');
+      }
+      else { zone = scanZ(text, &mut s); }
+    }
+  }
+  scanEnd(text, &mut s, "the date-time");
+  var date = Date();
+  if !s.failed {
+    if hasDoy {
+      let days = if calendar.isLeapYear(year) {366i64} else {365i64};
+      if doy > days {
+        var m = String.from("the day of the year is ");
+        appendPadded(&mut m, doy, 3usize);
+        m.append(", and ");
+        appendYear(&mut m, year);
+        m.append(" has ");
+        m.appendInt(days);
+        m.append(" days");
+        failAt(&mut s, doyAt, m.view());
+      }
+      else if doy < 1i64 {
+        failAt(&mut s, doyAt, "the day of the year is 000, outside 001 to 366");
+      }
+      else {
+        date = civilFromDays(daysFromCivil(year, 1i64, 1i64) + doy - 1i64);
+      }
+    }
+    else {
+      let last = calendar.daysInMonth(year, month);
+      if day < 1i64 || day > last {
+        var m = String.from("the day is ");
+        appendPadded(&mut m, day, 2usize);
+        m.append(", and ");
+        appendYear(&mut m, year);
+        m.append("-");
+        appendPadded(&mut m, month, 2usize);
+        m.append(" has ");
+        m.appendInt(last);
+        m.append(" days");
+        failAt(&mut s, dayAt, m.view());
+      }
+      else {
+        date = Date(i32.from(year), i8.from(month), i8.from(day));
+      }
+    }
+  }
+  if !s.failed && weekday > 0i64 && i64.from(date.isoWeekday()) != weekday {
+    var m = String.from("the day is named ");
+    m.append(dayName(weekday - 1i64));
+    m.append(", but ");
+    var d = String();
+    appendDate(&mut d, date);
+    m.append(d.view());
+    m.append(" was a ");
+    m.append(dayName(weekdayIndex(date.unixDays())));
+    failAt(&mut s, weekdayAt, m.view());
+  }
+  if s.failed { return Err[OffsetDateTime, TimeError](scanError(s)); }
+  let tod = TimeOfDay(i8.from(hour), i8.from(minute), i8.from(second), i32.from(nanos));
+  Ok[OffsetDateTime, TimeError](OffsetDateTime(DateTime(date, tod), Offset(i32.from(zone), "", false)))
+}
+
+// ---------------------------------------------------------------------------
+// OffsetDateTime
+// ---------------------------------------------------------------------------
+
+// A DateTime that is a place's wall clock, and the Offset that applied there:
+// '2026-10-03T14:05:09' with +02:00 is the instant 12:05:09Z. Made by
+// Zone.toOffsetDateTime(t), or read from a pattern with a %z
+pub struct OffsetDateTime {
+  pub dt: DateTime = DateTime();       // the wall clock's reading
+  pub offset: Offset = Offset(0i32, "", false);
+
+  // Written by a pattern, %z and %Z as the offset
+  pub fn formatWith(self, pattern: &str) Result[String, TimeError] { formatPattern(dt, offset, pattern) }
+
+  // Read by a pattern, which must have a %z; the date-time is the text's, not
+  // moved to UTC, and the offset has no name
+  pub fn parseWith(pattern: &str, text: &str) Result[OffsetDateTime, TimeError] {
+    parseOffsetPattern(pattern, text, true)
+  }
+}
