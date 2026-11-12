@@ -1,0 +1,43 @@
+// A model larger than the buffer pool allows (64 MiB by default) is an error from
+// 'finish', not a panic: the Writer writes through a fallible streams.Writer and
+// maps its starving onto ErrorKind.Starved. The tensors are zeros made in memory.
+
+mod bigwrite;
+
+import testing use *;
+import collections use *;
+import gguf use *;
+
+fn main() i32 {
+  var w = Writer.make();
+  w.putText("general.architecture", "big");
+  // Three tensors of 40 MiB each (F32): 120 MiB of data against a 64 MiB pool
+  let n = 10485760u64;
+  var t = 0u32;
+  while t < 3u32 {
+    var data = List[u8]();
+    data.resize(usize.from(n * 4u64), 0u8);
+    let name = if t == 0u32 { "a" } else if t == 1u32 { "b" } else { "c" };
+    match w.addTensor(name, TensorType.F32, &[n], data) {
+      case is Ok {}
+      case is Err { expect(false, "the big tensor is accepted"); }
+    }
+    t = t + 1u32;
+  }
+  match w.finish() {
+    case is Ok { expect(false, "a model over the pool bound is not written"); }
+    case let Err(e) {
+      expect(e.kind == ErrorKind.Starved, "the error is Starved");
+      expect(e.offset > 0u64, "it carries the bytes reached");
+      expect(e.offset < 3u64 * n * 4u64, "fewer bytes than the whole model");
+    }
+  }
+  // The pool recovers once the buffers are released: a small model after it writes
+  var s = Writer.make();
+  s.putText("general.architecture", "small");
+  match s.finish() {
+    case is Ok { expect(true, "a small model still writes"); }
+    case is Err { expect(false, "a small model still writes"); }
+  }
+  done()
+}
