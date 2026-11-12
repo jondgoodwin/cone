@@ -645,6 +645,14 @@ uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, 
     return 0;
 }
 
+int loanSameOwnName(INode *a, INode *b) {
+    INode *ad = itypeGetTypeDcl(a), *bd = itypeGetTypeDcl(b);
+    if (ad->tag != RefTag || bd->tag != RefTag)
+        return 0;
+    Name *name = ((RefNode *)ad)->lifename;
+    return name != NULL && name == ((RefNode *)bd)->lifename;
+}
+
 uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
         VarDclNode **through) {
     if (refholds == NULL || stored == NULL)
@@ -705,6 +713,14 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
                 flows = lifePartFlowsSlots(sig, sparm->vtype, spart, place, LifeAllSlots, 1);
             else
                 flows = lifePartFlows(sig, sparm->vtype, spart, place);
+            // One name ties: the borrows a place shows only unnamed (a type
+            // argument's, as a closure's captures) sit under the reference
+            // reaching them, so a borrow of that reference's own name may be
+            // stored there, as an elided signature's one name may. The body
+            // is then legal, and the caller is held to the tie.
+            if (!flows && !slotted && loans[id].part <= LifePartHeld && spart == LifePartOwn
+                    && loanSameOwnName(parm->vtype, sparm->vtype) && lifeHolds(place, NULL))
+                flows = 1;
             if (!flows) {
                 *through = parm;
                 return sid;

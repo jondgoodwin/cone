@@ -2378,7 +2378,14 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
                     itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp),
                     !(permGetFlags(((RefNode *)iexpGetTypeDcl(site))->perm) & MayWrite)))
                 carried = pathSetWithout(carried, own);
-            others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
+            // One written name ties this argument to the writable one, as the
+            // elided signature's one name does: what the place shows only
+            // unnamed (loanStoredApart) takes it whole
+            if (parmtype && pointee && i < sig->parms->used && !arenaplace && !arenaparm
+                    && loanSameOwnName(parmtype, ((IExpNode *)nodesGet(sig->parms, i))->vtype) && lifeHolds(pointee, NULL))
+                others = pathSetUnion(others, carried);
+            else
+                others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
         }
         if (others == NULL)
             continue;
