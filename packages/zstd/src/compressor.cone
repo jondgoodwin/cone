@@ -377,8 +377,11 @@ pub struct Compressor {
 
   fn drainAll(self: &mut, result: &mut List[u8]) bool {
     if out.starved() { return false; }
-    // Taken a buffer at a time and appended as a slice copy: drainTo copies the buffer in use a byte at a
-    // time (Writer, package streams), which was 19 of 148 ms at level 1 on the binary 32 MiB
+    // Taken a buffer at a time and appended as a slice copy. Draining into a resized List instead pays a
+    // zero-fill and a byte copy of the same size (19 of 148 ms at level 1 on the binary 32 MiB).
+    // The edge: take() on the buffer in use asks the pool for a fresh one. Mid-frame the next block's
+    // writes would ask for it anyway, but the frame's last drain asks for one buffer it doesn't need, so
+    // on a pool with exactly none left this reports starved where a drainTo would have finished.
     result.reserve(out.len());
     while out.len() > 0usize {
       let b = out.take();
