@@ -88,12 +88,12 @@ pub fn analyze(hf: &Heightfield, eps: f32, lakeMin: f32, lakeMax: f32) Hydrology
   let n = w * h;
   var filled = List[f32].withCapacity(n);
   var down = List[u32].withCapacity(n);
-  var closed = List[u8].withCapacity(n);
+  var closed = List[bool].withCapacity(n);
   var i = 0usize;
   while i < n {
     filled.push(*hf.data[i]);
     down.push(NO_CELL);
-    closed.push(0u8);
+    closed.push(false);
     i = i + 1usize;
   }
   var heap = MinHeap.create(n);
@@ -101,17 +101,17 @@ pub fn analyze(hf: &Heightfield, eps: f32, lakeMin: f32, lakeMax: f32) Hydrology
   var x = 0usize;
   while x < w {
     i = x;
-    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push(*filled[i], i); }
+    if !*closed[i] { closed.set(i, true); heap.push(*filled[i], i); }
     i = (h - 1usize) * w + x;
-    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push(*filled[i], i); }
+    if !*closed[i] { closed.set(i, true); heap.push(*filled[i], i); }
     x = x + 1usize;
   }
   var z = 0usize;
   while z < h {
     i = z * w;
-    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push(*filled[i], i); }
+    if !*closed[i] { closed.set(i, true); heap.push(*filled[i], i); }
     i = z * w + w - 1usize;
-    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push(*filled[i], i); }
+    if !*closed[i] { closed.set(i, true); heap.push(*filled[i], i); }
     z = z + 1usize;
   }
   while heap.len() > 0usize {
@@ -127,8 +127,8 @@ pub fn analyze(hf: &Heightfield, eps: f32, lakeMin: f32, lakeMax: f32) Hydrology
         let nz = i32.from(cz) + dz;
         if (dx != 0 || dz != 0) && nx >= 0 && nz >= 0 && nx < i32.from(w) && nz < i32.from(h) {
           let ni = usize.from(nz) * w + usize.from(nx);
-          if *closed[ni] == 0u8 {
-            closed.set(ni, 1u8);
+          if !*closed[ni] {
+            closed.set(ni, true);
             let lowest = *filled[c] + eps;
             if *filled[ni] < lowest { filled.set(ni, lowest); }
             heap.push(*filled[ni], ni);
@@ -232,14 +232,14 @@ pub fn analyze(hf: &Heightfield, eps: f32, lakeMin: f32, lakeMax: f32) Hydrology
   }
   // classes: a puddle (shallower than lakeMin or under 6 cells) is filled for the drainage and shows
   // no water; a lake is shown; a dry basin (deeper than lakeMax) drains to its own pit
-  var dry = List[u8].withCapacity(n);
+  var dry = List[bool].withCapacity(n);
   i = 0usize;
   while i < n {
-    var d = 0u8;
+    var d = false;
     if *label[i] != NO_CELL {
       let id = usize.from(*label[i]);
       let depthMax = *labelDepth[id];
-      if depthMax > lakeMax { d = 1u8; }
+      if depthMax > lakeMax { d = true; }
       else if depthMax >= lakeMin && *labelArea[id] >= 6u32 { lake.set(i, *filled[i] - *hf.data[i]); }
     }
     dry.push(d);
@@ -251,7 +251,7 @@ pub fn analyze(hf: &Heightfield, eps: f32, lakeMin: f32, lakeMax: f32) Hydrology
   var surf = List[f32].withCapacity(n);
   i = 0usize;
   // (a sliver of the fill is kept, so flat ground inside a basin still drains toward the outlet)
-  while i < n { surf.push(if *dry[i] == 1u8 { *hf.data[i] + 0.001 * (*filled[i] - *hf.data[i]) } else { *filled[i] }); i = i + 1usize; }
+  while i < n { surf.push(if *dry[i] { *hf.data[i] + 0.001 * (*filled[i] - *hf.data[i]) } else { *filled[i] }); i = i + 1usize; }
   c = 0usize;
   while c < n {
     let cx = c % w;

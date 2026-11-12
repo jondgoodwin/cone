@@ -1,0 +1,162 @@
+// Known values, from Python's integers (not this package): 2^521 - 1, 100!,
+// a quotient and remainder, hex, ordering, hashing, and the refusals.
+
+mod known;
+
+import testing use *;
+import collections use *;
+import bigint use BigUint, BigUintError, BigUintErrorKind;
+
+fn text(n: &BigUint) String {
+  var s = String();
+  s <- *n;
+  s
+}
+
+fn inBase(n: &BigUint, base: u32) String {
+  var s = String();
+  n.toTextBase(&uni s.textOut(), base);
+  s
+}
+
+fn big(t: &str) BigUint {
+  match BigUint.parse(t) {
+    case let Ok(n) { n }
+    case is Err { BigUint.zero() }
+  }
+}
+
+fn factorial(n: u64) BigUint {
+  var f = BigUint.one();
+  var i = 2u64;
+  while i <= n { f = f.mulSmall(i); i = i + 1u64; }
+  f
+}
+
+fn main() i32 {
+  // 2^521 - 1, the 13th Mersenne prime
+  let two521 = BigUint.one().shiftLeft(521usize);
+  match two521.sub(&BigUint.one()) {
+    case let Ok(m) {
+      expectStr(text(&m).view(), "6864797660130609714981900799081393217269435300143305409394463459185543183397656052122559640661454554977296311391480858037121987999716643812574028291115057151", "2^521-1 in decimal");
+      expectStr(inBase(&m, 16u32).view(), "1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "2^521-1 in hex");
+      expectUInt(u64.from(m.bitLen()), 521u64, "2^521-1 bit length");
+    }
+    case is Err { expect(false, "2^521 - 1 is not below zero"); }
+  }
+
+  // 100!, by repeated multiplication by a word, and again by full multiplications
+  let f100 = factorial(100u64);
+  let want100 = "93326215443944152681699238856266700490715968264381621468592963895217599993229915608941463976156518286253697920827223758251185210916864000000000000000000000000";
+  expectStr(text(&f100).view(), want100, "100! by mulSmall");
+  var g = BigUint.one();
+  var i = 2u64;
+  while i <= 100u64 { g = g.mul(&BigUint.fromU64(i)); i = i + 1u64; }
+  expectStr(text(&g).view(), want100, "100! by mul");
+  expect(g == f100, "the two 100! are equal");
+
+  // Division: by a word under 2^32, a word over it, and a BigUint
+  let f30 = factorial(30u64);
+  match f30.divmodSmall(1000000007u64) {
+    case let Ok(qr) {
+      expectStr(text(&qr.quot).view(), "265252857955421052948361", "30! / 1000000007");
+      expectUInt(qr.rem, 109361473u64, "30! % 1000000007");
+    }
+    case is Err { expect(false, "divide by a word"); }
+  }
+  match f30.divmodSmall(10000000019u64) {
+    case let Ok(qr) {
+      expectStr(text(&qr.quot).view(), "26525285930821062595070", "30! / 10000000019");
+      expectUInt(qr.rem, 8290693670u64, "30! % 10000000019");
+    }
+    case is Err { expect(false, "divide by a word over 2^32"); }
+  }
+  let a = big("265613988875874769338781322035779626829233452653394495974574961739092490901302182994384699044001");
+  let b = BigUint.one().shiftLeft(100usize).add(&BigUint.one());
+  match a.divmod(&b) {
+    case let Ok(qr) {
+      expectStr(text(&qr.quot).view(), "209532491703986330431325155582500843655638545255539709368519481732", "3^200 / (2^100+1)");
+      expectStr(text(&qr.rem).view(), "802512919326757349229503371037", "3^200 % (2^100+1)");
+    }
+    case is Err { expect(false, "divmod by a BigUint"); }
+  }
+
+  // Hex
+  match BigUint.parseHex("DeadBeefCafeBabe0123456789abcdef") {
+    case let Ok(h) {
+      expectStr(inBase(&h, 16u32).view(), "deadbeefcafebabe0123456789abcdef", "hex round trip");
+      expectStr(text(&h).view(), "295990755076957304698161171062762229231", "hex to decimal");
+    }
+    case is Err { expect(false, "parse hex"); }
+  }
+
+  // Zero, normalisation, and ordering
+  expectStr(text(&BigUint.zero()).view(), "0", "zero writes 0");
+  expect(big("000000").isZero(), "leading zeros parse to zero");
+  expectUInt(u64.from(big("0000012").limbView().len()), 1u64, "leading zeros leave one limb");
+  let x = big("18446744073709551616");   // 2^64
+  let y = big("18446744073709551615");   // 2^64 - 1
+  expect(x.cmp(&y) > 0i32, "2^64 above 2^64-1");
+  expect(y.cmp(&x) < 0i32, "2^64-1 below 2^64");
+  expect((x <=> &y) > 0i32, "2^64 above 2^64-1, by <=>");
+  expect(x == BigUint.one().shiftLeft(64usize), "2^64 is 1 shifted 64");
+  expect(x != y, "not equal");
+  expectUInt(u64.from(x.limbView().len()), 2u64, "2^64 holds two limbs");
+  expect((x.sub(&BigUint.one()) || BigUint.zero()) == y, "2^64 - 1");
+  expect(x.shiftRight(64usize) == BigUint.one(), "2^64 shifted right 64");
+  expect(x.shiftRight(65usize).isZero(), "2^64 shifted right 65");
+
+  // A Dict keyed by BigUint finds an equal key
+  var d = Dict[BigUint, i32]();
+  d.insert(big("123456789012345678901234567890"), 7i32);
+  let probe = big("123456789012345678901234567890");
+  match d.get(&probe) {
+    case let Some(v) { expectInt(i64.from(*v), 7i64, "dict lookup by equal BigUint"); }
+    case is None { expect(false, "dict lookup by equal BigUint"); }
+  }
+
+  // Refusals
+  match BigUint.one().sub(&x) {
+    case is Ok { expect(false, "1 - 2^64 refused"); }
+    case let Err(e) { expect(e.kind == BigUintErrorKind.Underflow, "1 - 2^64 is Underflow"); }
+  }
+  match x.divmod(&BigUint.zero()) {
+    case is Ok { expect(false, "divide by zero refused"); }
+    case let Err(e) { expect(e.kind == BigUintErrorKind.DivideByZero, "divide by zero"); }
+  }
+  match x.divmodSmall(0u64) {
+    case is Ok { expect(false, "divide by zero word refused"); }
+    case let Err(e) { expect(e.kind == BigUintErrorKind.DivideByZero, "divide by zero word"); }
+  }
+  match BigUint.parse("") {
+    case is Ok { expect(false, "empty refused"); }
+    case let Err(e) { expect(e.kind == BigUintErrorKind.Empty, "empty text"); }
+  }
+  match BigUint.parse("12345x7") {
+    case is Ok { expect(false, "bad digit refused"); }
+    case let Err(e) {
+      expect(e.kind == BigUintErrorKind.BadDigit, "bad digit kind");
+      expectUInt(u64.from(e.position), 5u64, "bad digit position");
+      let msg = String() <- e;
+      expectStr(msg.view(), "bigint: not a digit of the base, at offset 5", "bad digit message");
+    }
+  }
+  match BigUint.parse("-5") {
+    case is Ok { expect(false, "sign refused"); }
+    case let Err(e) { expectUInt(u64.from(e.position), 0u64, "sign is a bad digit at 0"); }
+  }
+  match BigUint.parse("12 ") {
+    case is Ok { expect(false, "space refused"); }
+    case let Err(e) { expectUInt(u64.from(e.position), 2u64, "trailing space at 2"); }
+  }
+  // 'f' is a digit in base 16 but not 10; a digit of the 40th chunk is found at its place
+  match BigUint.parseHex("1234567890abcdef1234567890abcdef1234g") {
+    case is Ok { expect(false, "g refused in hex"); }
+    case let Err(e) { expectUInt(u64.from(e.position), 36u64, "g in a long hex text"); }
+  }
+  match BigUint.parseBase("11", 1u32) {
+    case is Ok { expect(false, "base 1 refused"); }
+    case let Err(e) { expect(e.kind == BigUintErrorKind.BadBase, "base 1"); }
+  }
+  done()
+}

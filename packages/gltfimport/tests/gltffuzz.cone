@@ -15,57 +15,47 @@ import gltfimport use *;
 import libc;
 import stdio use *;
 
-struct Bin {
-  pub b: List[u8];
-
-  pub fn putU8(self: &mut, v: u8) { b.push(v); }
-  pub fn putU16(self: &mut, v: u32) { b.push(u8.from(v & 255u32)); b.push(u8.from((v >> 8u32) & 255u32)); }
-  pub fn putU32(self: &mut, v: u32) { self.putU16(v & 0xFFFFu32); self.putU16(v >> 16u32); }
-  pub fn putF32(self: &mut, v: f32) { self.putU32(v.bits()); }
-  pub fn align4(self: &mut) { while b.len() % 4usize != 0usize { b.push(0u8); } }
-}
-
 // Mark the bytes since 'start' as the next buffer view
-fn view(b: &mut Bin, views: &mut String, count: &mut usize, start: usize) {
+fn view(b: &mut GlbBin, views: &mut String, count: &mut usize, start: usize) {
   if *count > 0usize { views.append(","); }
   views.append("{\"buffer\":0,\"byteOffset\":");
   views.appendInt(i64.from(start));
   views.append(",\"byteLength\":");
-  views.appendInt(i64.from(b.b.len() - start));
+  views.appendInt(i64.from(b.len() - start));
   views.append("}");
   *count = *count + 1usize;
   b.align4();
 }
 
-fn vec3(b: &mut Bin, x: f32, y: f32, z: f32) { b.putF32(x); b.putF32(y); b.putF32(z); }
+fn vec3(b: &mut GlbBin, x: f32, y: f32, z: f32) { b.putF32(x); b.putF32(y); b.putF32(z); }
 
-fn build(json: &mut String, bin: &mut Bin) {
+fn build(json: &mut String, bin: &mut GlbBin) {
   var views = String();
   var nv = 0usize;
   var s = 0usize;
   // V0 quad positions
-  s = bin.b.len(); vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 0., 2., 0.); vec3(bin, 1., 2., 0.); view(bin, &mut views, &mut nv, s);
+  s = bin.len(); vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 0., 2., 0.); vec3(bin, 1., 2., 0.); view(bin, &mut views, &mut nv, s);
   // V1 joints (u8 x4), V2 weights (normalised u8 x4), V3 indices (u8)
-  s = bin.b.len();
+  s = bin.len();
   bin.putU8(1u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
   bin.putU8(1u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
   bin.putU8(0u8); bin.putU8(1u8); bin.putU8(0u8); bin.putU8(0u8);
   bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
   view(bin, &mut views, &mut nv, s);
-  s = bin.b.len();
+  s = bin.len();
   bin.putU8(255u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
   bin.putU8(255u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
   bin.putU8(128u8); bin.putU8(127u8); bin.putU8(0u8); bin.putU8(0u8);
   bin.putU8(255u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
   view(bin, &mut views, &mut nv, s);
-  s = bin.b.len();
+  s = bin.len();
   bin.putU8(0u8); bin.putU8(1u8); bin.putU8(2u8); bin.putU8(2u8); bin.putU8(1u8); bin.putU8(3u8);
   view(bin, &mut views, &mut nv, s);
   // V4, V5 morph target displacements
-  s = bin.b.len(); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); view(bin, &mut views, &mut nv, s);
-  s = bin.b.len(); vec3(bin, 1., 0., 0.); vec3(bin, 2., 0., 0.); vec3(bin, 3., 0., 0.); vec3(bin, 4., 0., 0.); view(bin, &mut views, &mut nv, s);
+  s = bin.len(); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); view(bin, &mut views, &mut nv, s);
+  s = bin.len(); vec3(bin, 1., 0., 0.); vec3(bin, 2., 0., 0.); vec3(bin, 3., 0., 0.); vec3(bin, 4., 0., 0.); view(bin, &mut views, &mut nv, s);
   // V6 inverse bind matrices: joint 0 (J1) a move of (0, -1, 0); joint 1 (J0) none
-  s = bin.b.len();
+  s = bin.len();
   bin.putF32(1.); bin.putF32(0.); bin.putF32(0.); bin.putF32(0.);
   bin.putF32(0.); bin.putF32(1.); bin.putF32(0.); bin.putF32(0.);
   bin.putF32(0.); bin.putF32(0.); bin.putF32(1.); bin.putF32(0.);
@@ -76,34 +66,34 @@ fn build(json: &mut String, bin: &mut Bin) {
   bin.putF32(0.); bin.putF32(0.); bin.putF32(0.); bin.putF32(1.);
   view(bin, &mut views, &mut nv, s);
   // V7, V8: J1's rotation keys
-  s = bin.b.len(); bin.putF32(0.); bin.putF32(1.); bin.putF32(2.); view(bin, &mut views, &mut nv, s);
-  s = bin.b.len();
+  s = bin.len(); bin.putF32(0.); bin.putF32(1.); bin.putF32(2.); view(bin, &mut views, &mut nv, s);
+  s = bin.len();
   bin.putF32(0.); bin.putF32(0.); bin.putF32(0.); bin.putF32(1.);
   bin.putF32(0.); bin.putF32(0.); bin.putF32(0.70710678); bin.putF32(0.70710678);
   bin.putF32(0.); bin.putF32(0.); bin.putF32(0.); bin.putF32(1.);
   view(bin, &mut views, &mut nv, s);
   // V9, V10: J0's translation keys
-  s = bin.b.len(); bin.putF32(0.); bin.putF32(1.); view(bin, &mut views, &mut nv, s);
-  s = bin.b.len(); vec3(bin, 0., 0., 0.); vec3(bin, 4., 0., 0.); view(bin, &mut views, &mut nv, s);
+  s = bin.len(); bin.putF32(0.); bin.putF32(1.); view(bin, &mut views, &mut nv, s);
+  s = bin.len(); vec3(bin, 0., 0., 0.); vec3(bin, 4., 0., 0.); view(bin, &mut views, &mut nv, s);
   // V11, V12: morph weights, cubic: per key in, value, out of both targets
-  s = bin.b.len(); bin.putF32(0.); bin.putF32(1.); view(bin, &mut views, &mut nv, s);
-  s = bin.b.len();
+  s = bin.len(); bin.putF32(0.); bin.putF32(1.); view(bin, &mut views, &mut nv, s);
+  s = bin.len();
   bin.putF32(0.); bin.putF32(0.);  bin.putF32(0.); bin.putF32(1.);  bin.putF32(2.); bin.putF32(0.);
   bin.putF32(0.4); bin.putF32(0.);  bin.putF32(1.); bin.putF32(0.);  bin.putF32(0.); bin.putF32(0.);
   view(bin, &mut views, &mut nv, s);
   // V13: strip positions
-  s = bin.b.len();
+  s = bin.len();
   vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 0., 1., 0.); vec3(bin, 1., 1., 0.); vec3(bin, 0., 2., 0.);
   view(bin, &mut views, &mut nv, s);
   // V14: the fan's positions, as sparse values; V15 their indices (u8)
-  s = bin.b.len();
+  s = bin.len();
   vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 1., 1., 0.); vec3(bin, 0., 1., 0.); vec3(bin, -1., 1., 0.);
   view(bin, &mut views, &mut nv, s);
-  s = bin.b.len(); bin.putU8(0u8); bin.putU8(1u8); bin.putU8(2u8); bin.putU8(3u8); bin.putU8(4u8); view(bin, &mut views, &mut nv, s);
+  s = bin.len(); bin.putU8(0u8); bin.putU8(1u8); bin.putU8(2u8); bin.putU8(3u8); bin.putU8(4u8); view(bin, &mut views, &mut nv, s);
   // V16: three positions; V17: a sparse index (u16 1); V18: its value
-  s = bin.b.len(); vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 0., 1., 0.); view(bin, &mut views, &mut nv, s);
-  s = bin.b.len(); bin.putU16(1u32); view(bin, &mut views, &mut nv, s);
-  s = bin.b.len(); vec3(bin, 5., 6., 7.); view(bin, &mut views, &mut nv, s);
+  s = bin.len(); vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 0., 1., 0.); view(bin, &mut views, &mut nv, s);
+  s = bin.len(); bin.putU16(1u32); view(bin, &mut views, &mut nv, s);
+  s = bin.len(); vec3(bin, 5., 6., 7.); view(bin, &mut views, &mut nv, s);
 
   *json = String.from("{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0,2,3,4,5]}],");
   json.append("\"nodes\":[{\"name\":\"J0\",\"children\":[1]},{\"name\":\"J1\",\"translation\":[0,1,0]},");
@@ -119,7 +109,7 @@ fn build(json: &mut String, bin: &mut Bin) {
   json.append("\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"rotation\"}},{\"sampler\":1,\"target\":{\"node\":0,\"path\":\"translation\"}},");
   json.append("{\"sampler\":2,\"target\":{\"node\":2,\"path\":\"weights\"}}]}],");
   json.append("\"buffers\":[{\"byteLength\":");
-  json.appendInt(i64.from(bin.b.len()));
+  json.appendInt(i64.from(bin.len()));
   json.append(",\"uri\":\"data:application/octet-stream;base64,@@\"}],\"bufferViews\":[");
   json.append(views.view());
   json.append("],\"accessors\":[");
@@ -246,9 +236,9 @@ fn consistent(g: &Gltf) bool {
 
 fn main() i32 {
   var json = String();
-  var bin = Bin(List[u8]());
+  var bin = GlbBin.make();
   build(&mut json, &mut bin);
-  json.replace("@@", base64(bin.b.view()).view());
+  json.replace("@@", base64(bin.view()).view());
   var rng = envNumber("FUZZ_SEED", 777u64);
   let scale = usize.from(envNumber("FUZZ_SCALE", 1u64));
   let trace = envNumber("FUZZ_TRACE", 0u64) == 1u64;

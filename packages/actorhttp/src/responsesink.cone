@@ -6,16 +6,13 @@
 // exchange's record (serverservice.cone, ExRec) and sends them as the connection
 // takes them.
 //
-// CREDIT BY COPY. For each piece of a chunk the service thread takes a buffer of its own
-// from the pool, copies the piece into it and gives that copy to the connection
-// (srvSend). The chunk itself goes back to the source ('giveBack') once all its
-// pieces are accepted. So the connection's watermark is the credit: while the
-// peer reads slowly the connection refuses, the chunk stays queued, the source is not
-// given its buffer back and sends no more. What is held is the source's window of
-// bytes (and one copy in the connection's queue at most as far as its watermark).
-// Chunks are sent one by one (a pool buffer holds at most sendChunk bytes of one
-// chunk); small chunks are not joined here, the cores join small buffers themselves
-// (h2). A sized body's length is counted on the service thread as the chunks
+// OWNED CREDIT. The service thread gives the chunk itself to the connection (srvSendBuf), moved, with
+// the source's home on it (iobuf IoHome, stages.chunkHome): the buffer is not copied, and when the connection
+// is done with it, wherever that is (the kernel's send completing, a TLS write, an h2 frame cut, a reset),
+// its death sends the source 'giveBack'. While the peer reads slowly the connection refuses the chunk, which
+// stays queued here as a plain buffer (its credit not returned), the source is not given its buffer back
+// and sends no more. What is held is the source's window of bytes. A chunk is sent whole, as it
+// came; small chunks are not joined here, the cores join small buffers themselves. A sized body's length is counted on the service thread as the chunks
 // arrive: past the length, or short of it at the end, the exchange is cancelled
 // (srvCancel) and the source stopped Failed, because the cores panic on either.
 //
@@ -50,7 +47,6 @@ fn sinkDrain(x: &mut ExRec) {
       else {break;}
     }
   }
-  x.sinkOff = 0usize;
 }
 
 // The exchange's source is stopped with why (once), and the chunks held go back
@@ -65,54 +61,65 @@ fn sinkStop(x: &mut ExRec, why: Ending) {
 }
 
 // The body cannot go on: the exchange is cancelled and the source stopped
-fn sinkFail(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec, text: &str) {
-  if x.sinkFailed {return;}
-  srvCancel(srv, lp, x);
-  sinkStop(x, Ending.Failed(AnyError.msg(text)));
+fn sinkFail(srv: &mut SrvRec, lp: &mut Loop, slot: usize, text: &str) {
+  if srv.exs.borrowAt(u32.from(slot)).unwrap().sinkFailed {return;}
+  srvCancel(srv, lp, slot);
+  sinkStop(srv.exs.borrowMutAt(u32.from(slot)).unwrap(), Ending.Failed(AnyError.msg(text)));
 }
 
 // Send as much of the chunks held as the connection takes, and finish the body
 // once the sink has ended and they are all sent
-fn pumpSink(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
-  if x.over || x.sinkFailed {return;}
-  while x.sinkChunks.len() > 0usize {
-    let total = x.sinkChunks[0usize].len();
-    let off = x.sinkOff;
-    if off >= total {
-      // an empty chunk, or the last piece went: it goes back
-      match x.sinkChunks.popFront() {
-        case var Some(b) {sinkGive(x, b);}
-        else {}
-      }
-      x.sinkOff = 0usize;
-    } else {
-      let left = total - off;
-      let n = if left < sendChunk {left} else {sendChunk};
-      // A pool that refuses the buffer ends the exchange, as for a String write
-      var b = match IoBuf.tryMake(n) {
-        case var Some(got) {got}
-        else {
-          sinkFail(srv, lp, x, "the buffer pool refused a buffer for the response body");
-          return;
+fn pumpSink(srv: &mut SrvRec, lp: &mut Loop, slot: usize) {
+  let k = u32.from(slot);
+  {
+    let x0 = srv.exs.borrowAt(k).unwrap();
+    if x0.over || x0.sinkFailed {return;}
+  }
+  while srv.exs.borrowAt(k).unwrap().sinkChunks.len() > 0usize {
+    match srv.exs.borrowMutAt(k).unwrap().sinkChunks.popFront() {
+      case var Some(b) {
+        let n = b.len();
+        if n == 0usize {
+          // an empty chunk: it goes back
+          sinkGive(srv.exs.borrowAt(k).unwrap(), b);
+        } else {
+          // The chunk itself goes to the connection, moved, wearing the source's home: its death, wherever
+          // the connection is done with it, returns the credit
+          {
+            let x1 = srv.exs.borrowAt(k).unwrap();
+            match &x1.sinkHome {
+              case let &Some(h) {b.setHome(h);}
+              else {}
+            }
+          }
+          match srvSendBuf(srv, slot, b) {
+            case is None[IoBuf] {
+              let x2 = srv.exs.borrowMutAt(k).unwrap();
+              x2.written = x2.written + u64.from(n);
+            }
+            case var Some(back) {
+              // Refused (Writable comes when there is room): a plain chunk again, waiting at the front, so that
+              // its credit is not returned now
+              back.clearHome();
+              srv.exs.borrowMutAt(k).unwrap().sinkChunks.pushFront(back);
+              return;
+            }
+          }
         }
-      };
-      {
-        let all = x.sinkChunks[0usize].view() as &Array[u8];
-        b.append(&all[off ..< off + n]);
       }
-      // Refused: Writable comes when there is room
-      if !srvSend(srv, x, b) {return;}
-      x.sinkOff = off + n;
-      x.written = x.written + u64.from(n);
+      else {break;}
     }
   }
-  if x.sinkEnded && !x.finished {
-    x.finished = true;
-    x.sinkOpen = false;
-    srvFinish(srv, x);
-  }
+  let fin = {
+    let x3 = srv.exs.borrowMutAt(k).unwrap();
+    if x3.sinkEnded && !x3.finished {
+      x3.finished = true;
+      x3.sinkOpen = false;
+      true
+    } else {false}
+  };
+  if fin {srvFinish(srv, slot);}
 }
-
 // ---------------------------------------------------------------------------
 // The sink
 // ---------------------------------------------------------------------------
@@ -181,8 +188,8 @@ struct SinkOpenJob {
 
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let loc = locate(sv, self.srv, self.slot, self.id);
-    if loc.ex as usize == 0usize {return;}
-    let x = loc.ex as &mut ExRec;
+    if !loc.ok {return;}
+    let x = (sv.srvs.rawAt(loc.k) as &mut SrvRec).exs.borrowMutAt(self.slot).unwrap();
     x.sinkOpen = true;
     // the exchange ended already: the source, once attached, is stopped
     if x.over {x.sinkFailed = true;}
@@ -197,9 +204,9 @@ struct SinkGoneJob {
 
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let loc = locate(sv, self.srv, self.slot, self.id);
-    if loc.ex as usize == 0usize {return;}
-    let s = loc.srv as &mut SrvRec;
-    let x = loc.ex as &mut ExRec;
+    if !loc.ok {return;}
+    let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
+    let x = s.exs.borrowMutAt(self.slot).unwrap();
     if x.over || x.finished || x.finishing || !x.sinkOpen || x.sinkFailed || x.sinkEnded || x.sinkIn != 0u64 {return;}
     match &x.sinkUp {
       case let &Some(u) {return;}
@@ -209,7 +216,7 @@ struct SinkGoneJob {
     // the Exchange is dropped already: no body will come
     if !x.handle {
       x.sinkOpen = false;
-      endBodyUnsunk(s, lp, x);
+      endBodyUnsunk(s, lp, usize.from(self.slot));
     }
   }
 }
@@ -224,15 +231,16 @@ struct SinkAttachJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let srv, slot, id, up = self.(srv, slot, id, up);
     let loc = locate(sv, srv, slot, id);
-    if loc.ex as usize == 0usize {
+    if !loc.ok {
       up.stop(Ending.Failed(AnyError.from(ServerError.closed())));
       return;
     }
-    let x = loc.ex as &mut ExRec;
+    let x = (sv.srvs.rawAt(loc.k) as &mut SrvRec).exs.borrowMutAt(slot).unwrap();
     if x.sinkFailed {
       up.stop(Ending.Failed(AnyError.from(ServerError.closed())));
       return;
     }
+    x.sinkHome = Some[IoHome](chunkHome(up.clone()));
     x.sinkUp = Some[ChunkSource](up);
   }
 }
@@ -248,12 +256,13 @@ struct SinkChunkJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let srv, slot, id, buf, home = self.(srv, slot, id, buf, home);
     let loc = locate(sv, srv, slot, id);
-    if loc.ex as usize == 0usize {
+    if !loc.ok {
       home.home(buf);
       return;
     }
-    let s = loc.srv as &mut SrvRec;
-    let x = loc.ex as &mut ExRec;
+    let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
+    let sl = usize.from(slot);
+    let x = s.exs.borrowMutAt(slot).unwrap();
     if !x.sinkOpen || x.sinkFailed || x.over {
       home.home(buf);
       return;
@@ -261,11 +270,11 @@ struct SinkChunkJob {
     x.sinkIn = x.sinkIn + u64.from(buf.len());
     if x.sized && x.sinkIn > x.length {
       home.home(buf);
-      sinkFail(s, lp, x, "the body is longer than the length declared to start");
+      sinkFail(s, lp, sl, "the body is longer than the length declared to start");
       return;
     }
     x.sinkChunks.push(buf);
-    pumpSink(s, lp, x);
+    pumpSink(s, lp, sl);
   }
 }
 
@@ -279,19 +288,20 @@ struct SinkEndJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let srv, slot, id, how = self.(srv, slot, id, how);
     let loc = locate(sv, srv, slot, id);
-    if loc.ex as usize == 0usize {return;}
-    let s = loc.srv as &mut SrvRec;
-    let x = loc.ex as &mut ExRec;
+    if !loc.ok {return;}
+    let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
+    let sl = usize.from(slot);
+    let x = s.exs.borrowMutAt(slot).unwrap();
     if !x.sinkOpen {return;}
     match how {
       case is Finished {
         if x.sinkFailed {
           x.sinkOpen = false;
         } else if x.sized && x.sinkIn != x.length {
-          sinkFail(s, lp, x, "the body is shorter than the length declared to start");
+          sinkFail(s, lp, sl, "the body is shorter than the length declared to start");
         } else {
           x.sinkEnded = true;
-          pumpSink(s, lp, x);
+          pumpSink(s, lp, sl);
         }
       }
       else {
@@ -301,7 +311,7 @@ struct SinkEndJob {
         } else {
           x.sinkFailed = true;
           sinkDrain(x);
-          if !x.finished {srvCancel(s, lp, x);}
+          if !s.exs.borrowAt(slot).unwrap().finished {srvCancel(s, lp, sl);}
         }
       }
     }

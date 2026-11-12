@@ -72,7 +72,7 @@ pub struct Synth {
   // Wind: 'intensity' 0 (a breath) to 1 (a gale)
   pub fn wind(rate: f32, seed: u32, intensity: f32) Synth {
     var s = Synth.base(SYNTH_WIND, rate, seed);
-    s.p0 = clampf(intensity, 0., 1.);
+    s.p0 = intensity.clamp(0., 1.);
     s.lfo = OnePole.cutoff(0.25, rate);
     s.fa = Biquad.design(FILTER_BANDPASS, 400., 0.8, 0., rate);
     s.fb = Biquad.design(FILTER_BANDPASS, 700., 10., 0., rate);
@@ -82,7 +82,7 @@ pub struct Synth {
   // A brook: 'intensity' 0 (a trickle) to 1 (a rushing stream)
   pub fn water(rate: f32, seed: u32, intensity: f32) Synth {
     var s = Synth.base(SYNTH_WATER, rate, seed);
-    s.p0 = clampf(intensity, 0., 1.);
+    s.p0 = intensity.clamp(0., 1.);
     s.fa = Biquad.design(FILTER_BANDPASS, 700., 0.6, 0., rate);
     s.fb = Biquad.design(FILTER_HIGHPASS, 3000., 0.7071, 0., rate);
     s.lfo = OnePole.cutoff(3., rate);
@@ -93,8 +93,8 @@ pub struct Synth {
   // rush (a balloon burner is roar 1; a campfire roar 0.1)
   pub fn fire(rate: f32, seed: u32, crackle: f32, roar: f32) Synth {
     var s = Synth.base(SYNTH_FIRE, rate, seed);
-    s.p0 = clampf(crackle, 0., 1.);
-    s.p1 = clampf(roar, 0., 1.);
+    s.p0 = crackle.clamp(0., 1.);
+    s.p1 = roar.clamp(0., 1.);
     s.fa = Biquad.design(FILTER_LOWPASS, 160., 0.7071, 0., rate);
     s.fb = Biquad.design(FILTER_BANDPASS, 1000., 0.7, 0., rate);
     s.fc = Biquad.design(FILTER_HIGHPASS, 5000., 0.7071, 0., rate);
@@ -109,7 +109,7 @@ pub struct Synth {
   pub fn step(rate: f32, seed: u32, material: u32, weight: f32) Synth {
     var s = Synth.base(SYNTH_STEP, rate, seed);
     s.p0 = f32.from(material);
-    s.p1 = clampf(weight, 0., 1.);
+    s.p1 = weight.clamp(0., 1.);
     // the material's resonances, a little different each step
     if material == MATERIAL_WOOD {
       let f1 = s.rng.range(140., 200.);
@@ -185,7 +185,7 @@ pub struct Synth {
 fn windNext(s: &mut Synth) f32 {
   // the gust level: low-passed white noise, centred on 0.5, spread by 2.5
   let g = s.lfo.process(s.rng.signed()) * 2.5 + 0.5;
-  let gust = clampf(g, 0., 1.);
+  let gust = g.clamp(0., 1.);
   if s.tick % 48u32 == 0u32 {
     let lvl = gust * s.p0;
     s.fa.retune(Biquad.design(FILTER_BANDPASS, 250. + 900. * lvl, 0.8, 0., s.rate));
@@ -241,8 +241,8 @@ fn waterNext(s: &mut Synth) f32 {
 
 // -------- fire --------
 fn fireNext(s: &mut Synth) f32 {
-  let flick = clampf(0.6 + s.lfo.process(s.rng.signed()) * 2.5, 0.2, 1.);
-  let swell = clampf(0.7 + s.lfo2.process(s.rng.signed()) * 4., 0.3, 1.);
+  let flick = (0.6 + s.lfo.process(s.rng.signed()) * 2.5).clamp(0.2, 1.);
+  let swell = (0.7 + s.lfo2.process(s.rng.signed()) * 4.).clamp(0.3, 1.);
   // rumble: brown noise, low-passed
   let rumble = s.fa.process(s.brown.next()) * 0.45 * (0.4 + 0.6 * flick);
   // roar: pink noise in a mid band, the burner's rush
@@ -316,7 +316,7 @@ fn voiceNext(s: &mut Synth) f32 {
   let src = saw * (0.6 + 0.4 * (1. - s.s0)) + 0.04 * s.rng.signed();
   let y = s.fa.process(src) * 1.0 + s.fb.process(src) * 0.7 + s.fc.process(src) * 0.35 + s.fd.process(s.rng.signed()) * 0.03;
   // Attack 15 ms, then a decay
-  let att = clampf(s.t / 0.015, 0., 1.);
+  let att = (s.t / 0.015).clamp(0., 1.);
   let env = att * (1. - u) * (1. - u * 0.3);
   y * env * 1.6
 }
@@ -335,6 +335,6 @@ fn birdNext(s: &mut Synth) f32 {
   let f = s.p0 * s.s3 * (1. + 0.5 * arc) * vib;
   s.s0 = s.s0 + f / s.rate;
   if s.s0 >= 1. { s.s0 = s.s0 - 1.; }
-  let env = libc.sqrtf(clampf((TAU * 0.5 * u).sin(), 0., 1.));
+  let env = libc.sqrtf((TAU * 0.5 * u).sin().clamp(0., 1.));
   ((s.s0 * TAU).sin() + 0.2 * (s.s0 * TAU * 2.).sin()) * env * 0.5
 }

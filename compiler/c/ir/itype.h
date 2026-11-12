@@ -73,6 +73,13 @@ int itypeCarriesEndingBorrow(INode *type);
 // to a trait?
 int itypeHoldsBorrowOf(INode *type, INode *want);
 
+// Can a call leave a holder of type 'holder' holding a borrow of a value of
+// type 'x' it was lent: can the holder hold a borrow whose target type is
+// reachable inside x (its own type, its fields and elements, what it owns)?
+// 'readonly': the lent borrow is a read-only one, which no '&mut' slot holds.
+// Conservative: yes for a type either side shows only in part.
+int itypeMayHoldBorrowInside(INode *holder, INode *x, int readonly);
+
 // Is it certain no value of this type holds a borrowed reference anywhere?
 // Unlike !itypeCarriesBorrow, a type not fully seen (open trait, opaque,
 // type parameter, closure, virtual reference) answers no.
@@ -82,6 +89,11 @@ int itypeHoldsNoBorrow(INode *type);
 // through raw memory its fields do not show, so it is a place a borrow is stored
 // in though its type carries none (Bug 51).
 int itypeIsArena(INode *type);
+
+// Can a place of this type hold a borrow stored into it: it is an arena, or its
+// type carries a borrow? Both the call-side filter (lifeCarry) and the check of
+// a signature's own stores (loanStoredApart) ask this, elided or named.
+int itypeMayHoldStoredBorrow(INode *type);
 
 // How many writable borrows deep can a store into a value of this type reach,
 // to store a borrow there, up to 'most'? A callee handed a '&mut H', 'H'
@@ -142,6 +154,12 @@ int itypeHoldsTracedPlaced(INode *type);
 // (not through a reference or a pointer)? Remembered per struct once the
 // struct is type checked.
 int itypeHoldsAtomic(INode *type);
+
+// May a callee holding only a read-only borrow of a value of this type still
+// change it: an atomic, a lock, a writable reference or raw pointer inside, an
+// arena, or a type not seen all of? Conservative (yes when unsure); 'most'
+// bounds the levels walked (past it, yes). Not remembered.
+int itypeMayMutateShared(INode *type, int most);
 
 // Does a value of this type hold a borrowed reference (not a function's) where
 // it sits, inline rather than through an owning reference or a pointer?

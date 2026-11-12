@@ -467,6 +467,10 @@ int lifeCarry(FnSigNode *sig, INode *parm, INode *to, uint32_t *slots) {
     *slots = LifeAllSlots;
     if (sig == NULL)
         return LifeCarryWhole;
+    // Into a place that can hold no stored borrow nothing is carried (the
+    // same question loanStoredApart asks of a signature's own stores)
+    if (to != NULL && !itypeMayHoldStoredBorrow(to))
+        return LifeCarryNone;
     INode *typedcl = itypeGetTypeDcl(parm);
     int isref = lifeIsBorrowRef(typedcl);
     if (isref) {

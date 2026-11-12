@@ -1019,7 +1019,7 @@ tags = ["genllvm", "runtime"]
 name = "the-layer-is-bound-to-conestds-three-functions"
 target = "preir"
 contains = [
-  "call ptr @cone_rawBlockAlloc(",
+  "call noalias ptr @cone_rawBlockAlloc(",
   "call ptr @cone_rawBlockResize(",
   "call %void @cone_rawBlockRelease(",
 ]
@@ -1384,3 +1384,32 @@ options = []
 [[scenario.region_sort_unstable_heap_gc.run]]
 name = "debug"
 options = ["--debug"]
+
+# A collection's block: the call a list makes through its region's allocation function
+# carries 'noalias' (core's MemRegion.allocate is '@noalias'). 10 + 20 + 30 is 60.
+[scenario.region_alloc_noalias]
+category = "run"
+description = "A list's block comes from its region through an indirect call whose result is marked noalias"
+tags = ["genllvm", "runtime"]
+
+[[scenario.region_alloc_noalias.check]]
+name = "the-region-allocation-call-returns-noalias"
+target = "preir"
+contains = [
+  "call noalias ptr %",
+]
+
+# 'RawBlocks.allocAligned' / 'releaseAligned' (lane 84). Every line of the .out
+# is 1 by hand: the checks print 1 when the address has no low bits below the
+# alignment, all bytes read back as written, and masking an interior address
+# gives the start; the two live blocks differ; 5 is the byte written.
+[scenario.region_aligned_blocks]
+category = "run"
+description = "Aligned raw blocks at 4 KiB, 64 KiB, 256 KiB and 1 MiB: address a multiple of the alignment, the whole block written and read, the block found by masking an interior address, released by its AlignedBlock's final; two live blocks distinct; zero bytes and align 1"
+tags = ["genllvm", "runtime"]
+
+[scenario.region_aligned_bad_align]
+category = "run"
+description = "RawBlocks.allocAligned with an alignment that is not a power of two panics naming it; nothing after it runs"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"

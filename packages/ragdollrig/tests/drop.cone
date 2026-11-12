@@ -25,7 +25,7 @@ import collections use List;
 import geomath use *;
 import rigidcollide use *;
 import rigiddynamics use *;
-import bonepose use * but clampf;
+import bonepose use *;
 import ragdollrig use *;
 
 fn near(got: f32, want: f32, within: f32, label: &Array[u8]) bool {
@@ -59,31 +59,31 @@ fn dropRun(tuned: bool) {
   var i = 0;
   while i < 360 {
     let before = comVelocity(&rig, &w);
-    if firstImpact < 0 { fastest = maxf(fastest, -before.y); }
+    if firstImpact < 0 { fastest = fastest.max(-before.y); }
     stepRagdoll(&mut rig, &mut w, 1. / 60.);
     if firstImpact < 0 && lastImpactSpeed(&rig) > 0. { firstImpact = i; }
     if settledAt < 0 && rig.settled { settledAt = i; }
-    deepest = minf(deepest, rig.lowestPoint(&w, &spec));
+    deepest = deepest.min(rig.lowestPoint(&w, &spec));
     var k = 0usize;
     while k < rig.links.len() {
       let l = rig.links[k];
       let p = w.positionOf(l.body);
       if !(p.x < 1000. && p.x > -1000. && p.y < 1000. && p.y > -1000.) { finite = false; }
       if !l.joint.isNone() {
-        let j = *w.joints.get(l.joint);
-        worstAnchor = maxf(worstAnchor, w.jointError(l.joint));
+        let j = w.joints.borrow(l.joint).unwrap();
+        worstAnchor = worstAnchor.max(w.jointError(l.joint));
         if l.kind == JOINT_HINGE {
           let a = w.hingeAngleOf(l.joint);
-          worstHinge = maxf(worstHinge, maxf(l.lo - a, a - l.hi));
+          worstHinge = worstHinge.max((l.lo - a).max(a - l.hi));
         } else {
           let pl = rig.links[usize.from(l.parent)];
           let fa = (w.rotationOf(pl.body) * j.fa).normalize();
           let fb = (w.rotationOf(l.body) * j.fb).normalize();
-          let swing = acos(clampf((fa * Vec3(1., 0., 0.)).dot(fb * Vec3(1., 0., 0.)), -1., 1.));
-          worstCone = maxf(worstCone, swing - l.cone);
+          let swing = acos((fa * Vec3(1., 0., 0.)).dot(fb * Vec3(1., 0., 0.)).clamp(-1., 1.));
+          worstCone = worstCone.max(swing - l.cone);
           let tw = twistAbout((fa.conjugate() * fb).normalize());
-          worstTwist = maxf(worstTwist, maxf(l.lo - tw, tw - l.hi));
-          worstEllipse = maxf(worstEllipse, swingMeasure(&rig, &w, k));
+          worstTwist = worstTwist.max((l.lo - tw).max(tw - l.hi));
+          worstEllipse = worstEllipse.max(swingMeasure(&rig, &w, k));
         }
       }
       k = k + 1usize;

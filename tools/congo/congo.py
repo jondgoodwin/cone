@@ -2434,16 +2434,28 @@ def mode_folder(mode: str) -> str:
 
 def build_folder(pkg: Package, mode: str) -> Path:
     folder = mode_folder(mode)
-    return lone_build_root(pkg.src) / folder if pkg.lone else pkg.root / "build" / folder
+    if not pkg.lone:
+        return pkg.root / "build" / folder
+    # A missing compiler is reported at the compile, after the source's errors
+    try:
+        conec: Path | None = find_conec()
+    except CongoError:
+        conec = None
+    return lone_build_root(pkg.src, conec) / folder
 
 
-def lone_build_root(file: Path) -> Path:
+def lone_build_root(file: Path, conec: Path | None = None) -> Path:
     """A lone file's build goes under the Congo home, not beside the file: the
     folder a lone file sits in is nobody's package, and may well hold a 'build'
-    folder of its own that 'congo clean' must not delete."""
+    folder of its own that 'congo clean' must not delete. With the compiler
+    given, the folder is that compiler's own, <file>-<hash>/<c8>/, c8 being the
+    first 8 hex digits of conec's content hash, so that two compilers building
+    one file keep separate builds instead of rebuilding over each other.
+    Without it, the folder of all of them, which 'congo clean' removes."""
     spelled = str(file.resolve())
     digest = hashlib.sha1((spelled.lower() if IS_WINDOWS else spelled).encode()).hexdigest()[:10]
-    return congo_home() / "lone" / f"{file.stem}-{digest}"
+    root = congo_home() / "lone" / f"{file.stem}-{digest}"
+    return root / tool_hash(conec)[:8] if conec is not None else root
 
 
 LINKER_LOCK = threading.Lock()
@@ -3459,6 +3471,15 @@ def cmd_test(args: argparse.Namespace) -> int:
     # A folder of packages (a registry folder such as packages/) that is not a
     # package itself: each package in it is tested
     manifests = [] if (here / MANIFEST).is_file() else package_manifests(here)
+    if args.only is not None:
+        if not manifests:
+            raise CongoError("--only names packages of a folder of packages, and this is not one")
+        wanted = [n for n in args.only.split(",") if n]
+        known = {m.parent.name for m in manifests}
+        unknown = [n for n in wanted if n not in known]
+        if unknown:
+            raise CongoError("--only names no such package: " + ", ".join(unknown))
+        manifests = [m for m in manifests if m.parent.name in set(wanted)]
     if not manifests:
         manifests = [current_package_manifest()]
     total = Tally()
@@ -3555,6 +3576,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                       help="over a folder of packages, run N packages' tests at once"
                            " (default: half the logical processors); 1 runs the packages"
                            " one at a time, build and run together, as before")
+    test.add_argument("--only", metavar="A,B,C", default=None,
+                      help="over a folder of packages, test only these packages (by folder"
+                           " name, comma-separated), run as the whole folder is run;"
+                           " an unknown name is an error")
     test.add_argument("--bless", action="store_true",
                       help="write the expected output of a test that has none, from a"
                            " run; check it by hand against the source")

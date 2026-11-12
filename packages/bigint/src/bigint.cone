@@ -1,0 +1,898 @@
+// The bigint package: arbitrary-size integers, written in Cone with no C
+// library and no call to the OS. It holds the unsigned magnitude 'BigUint' and
+// the signed 'BigInt' (a sign and a BigUint magnitude, with no negative zero;
+// the same methods, with 'divmod' truncating like Rust's '/' and '%' and
+// 'divEuclid'/'remEuclid' for a non-negative remainder, and text with a leading '-').
+//
+//   mod factorial;
+//   import stdio use *;
+//   import collections use *;
+//   import bigint;
+//
+//   fn main() i32 {
+//     var f = bigint.BigUint.fromU64(1u64);
+//     var i = 2u64;
+//     while i <= 25u64 { f = f.mulSmall(i); i = i + 1u64; }
+//     var s = String();
+//     s <- f;                                    // 15511210043330985984000000
+//     printStr(s.view());
+//     0i32;
+//   }
+//
+// A BigUint is a VALUE that owns its limbs: 'u64' digits in a 'List', least
+// significant first, NORMALISED (the list never ends in a zero limb, so zero is
+// the empty list and one number has one list). Every operation borrows its
+// operands ('&') and answers a new BigUint; none changes its operand.
+//
+// Operators wait for operator methods (Backlog 10), so the arithmetic is named
+// methods, as core names its own: 'parse' and 'toText' for text, 'cmp' (the
+// '<=>' of the 'Ordered' trait), '==' ('Eq') and 'hash' ('Hash') so a BigUint
+// is a Dict key and sorts.
+//
+// METHOD CHOICES. These are defaults a later design may revisit.
+//
+// - A subtraction that would go below zero, a division by zero, and text that
+//   is not a number are a 'Result[_, BigUintError]'. Nothing wraps and nothing
+//   panics. The error says its kind and, for a bad digit, the byte offset.
+// - Multiplication is Karatsuba while the smaller operand has at least
+//   'karatsubaThreshold' limbs, schoolbook O(n*m) below. The 64 x 64 -> 128 bit
+//   product is four 32 x 32 products in integers (as the random package does),
+//   since Cone has no 128-bit type.
+// - Division by a BigUint is Knuth's Algorithm D (TAOCP 4.3.1) on 32-bit
+//   digits, so that every step is within u64 arithmetic. Division by a word
+//   below 2^32 (the fast path, which text conversion also uses) runs two
+//   half-limbs a limb; a word of 2^32 or more takes the general path.
+// - Text: 'parse' reads base 10, 'parseHex' base 16, 'parseBase' any base 2 to
+//   36. Digits only: no sign, no prefix, no '_' or whitespace; upper and lower
+//   case letters both read. 'toText' writes base 10 and 'toTextBase' any
+//   base 2 to 36, lower case, to a 'TextOut' ('String() <- n', or
+//   'n.toTextBase(&uni s.textOut(), 16u32)'). Both directions are
+//   quadratic (a chunk of digits at a time), fine to many thousands of bits.
+// - 'shiftLeft', 'shiftRight' and 'mulSmall' are public because the tests and
+//   callers need them (2^n, n!); they are not in the brief's list.
+
+mod bigint;
+
+import collections use List, String;
+
+// -------- failure --------
+
+pub enum BigUintErrorKind {
+  Underflow;      // a subtraction below zero
+  DivideByZero;   // a division or remainder by zero
+  Empty;          // text with no digits
+  BadDigit;       // a character that is not a digit of the base, at 'position'
+  BadBase;        // a base outside 2 to 36
+
+  // The reason, in a few words
+  pub fn describe(self: &BigUintErrorKind, out: &uni TextOut) {
+    match self {
+      case is Underflow { out <- "subtraction below zero"; }
+      case is DivideByZero { out <- "division by zero"; }
+      case is Empty { out <- "no digits in the text"; }
+      case is BadDigit { out <- "not a digit of the base"; }
+      case is BadBase { out <- "base outside 2 to 36"; }
+    }
+  }
+}
+
+// Why an operation was refused
+pub struct BigUintError is Error {
+  pub kind: BigUintErrorKind;
+  // For BadDigit, the byte offset of the character at fault; else 0
+  pub position: usize;
+
+  // One line for a person: 'bigint: not a digit of the base, at offset 3'
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- "bigint: ";
+    kind.describe(out);
+    match kind {
+      case is BadDigit { out <- ", at offset ", position; }
+      case is Underflow { }
+      case is DivideByZero { }
+      case is Empty { }
+      case is BadBase { }
+    }
+  }
+}
+
+fn failure(kind: BigUintErrorKind, position: usize) BigUintError { BigUintError(kind, position) }
+
+// -------- limb arithmetic --------
+
+const mask32 = 0xFFFFFFFFu64;
+
+// The 128-bit product of two u64, as (high 64 bits, low 64 bits), from four
+// 32 x 32 products
+fn mulWide(a: u64, b: u64) (u64, u64) {
+  let a0 = a & mask32;
+  let a1 = a >> 32u64;
+  let b0 = b & mask32;
+  let b1 = b >> 32u64;
+  let p00 = a0 * b0;
+  let p01 = a0 * b1;
+  let p10 = a1 * b0;
+  let p11 = a1 * b1;
+  let mid = (p00 >> 32u64) + (p01 & mask32) + (p10 & mask32);
+  let high = p11 + (p01 >> 32u64) + (p10 >> 32u64) + (mid >> 32u64);
+  (high, a * b)
+}
+
+// Drop zero limbs from the top: the normal form
+fn trim(l: &mut List[u64]) {
+  var n = l.len();
+  while n > 0usize && *l[n - 1usize] == 0u64 { n = n - 1usize; }
+  l.truncate(n);
+}
+
+fn limbOr0(l: &List[u64], i: usize) u64 { if i < l.len() { *l[i] } else { 0u64 } }
+
+// l = l * m + a, in place
+fn mulAddSmall(l: &mut List[u64], m: u64, a: u64) {
+  var carry = a;
+  var i = 0usize;
+  while i < l.len() {
+    let p = mulWide(*l[i], m);
+    let lo = p.1 + carry;
+    var hi = p.0;
+    if lo < carry { hi = hi + 1u64; }
+    l.set(i, lo);
+    carry = hi;
+    i = i + 1usize;
+  }
+  if carry != 0u64 { l.push(carry); }
+}
+
+// A list of limbs as 32-bit digits (one per u64 entry), least significant first, trimmed
+fn toDigits(l: &List[u64]) List[u64] {
+  var d = List[u64].withCapacity(l.len() * 2usize);
+  var i = 0usize;
+  while i < l.len() {
+    d.push(*l[i] & mask32);
+    d.push(*l[i] >> 32u64);
+    i = i + 1usize;
+  }
+  trim(&mut d);
+  d
+}
+
+fn fromDigits(d: &List[u64]) List[u64] {
+  var l = List[u64].withCapacity((d.len() + 1usize) / 2usize);
+  var i = 0usize;
+  while i < d.len() {
+    l.push(*d[i] | (limbOr0(d, i + 1usize) << 32u64));
+    i = i + 2usize;
+  }
+  trim(&mut l);
+  l
+}
+
+// Divide limbs by a word below 2^32: the quotient limbs (untrimmed) are put in q, which is
+// emptied first, and the remainder is answered
+fn divSmall32(l: &List[u64], d: u64, q: &mut List[u64]) u64 {
+  q.clear();
+  q.resize(l.len(), 0u64);
+  var rem = 0u64;
+  var i = l.len();
+  while i > 0usize {
+    i = i - 1usize;
+    let x = *l[i];
+    var cur = (rem << 32u64) | (x >> 32u64);
+    let q1 = cur / d;
+    rem = cur % d;
+    cur = (rem << 32u64) | (x & mask32);
+    let q0 = cur / d;
+    rem = cur % d;
+    q.set(i, (q1 << 32u64) | q0);
+  }
+  rem
+}
+
+// Knuth's Algorithm D: u / v on 32-bit digits, v having at least 2 digits and u at least as many.
+// The quotient and remainder as digit lists (untrimmed)
+fn knuthD(u: &List[u64], v: &List[u64], q: &mut List[u64], r: &mut List[u64]) {
+  let n = v.len();
+  let m = u.len() - n;
+  let s = u64.from((*v[n - 1usize]).leadingZeros()) - 32u64;   // 0 to 31: the top digit's lead
+  var vn = List[u64].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    let lower = if i == 0usize { 0u64 } else { *v[i - 1usize] >> (32u64 - s) };
+    vn.push(((*v[i] << s) | lower) & mask32);
+    i = i + 1usize;
+  }
+  var un = List[u64].withCapacity(u.len() + 1usize);
+  i = 0usize;
+  while i <= u.len() {
+    let lower = if i == 0usize { 0u64 } else { *u[i - 1usize] >> (32u64 - s) };
+    let here = if i < u.len() { *u[i] << s } else { 0u64 };
+    un.push((here | lower) & mask32);
+    i = i + 1usize;
+  }
+  q.clear();
+  q.resize(m + 1usize, 0u64);
+  let top = *vn[n - 1usize];
+  let next = *vn[n - 2usize];
+  var j = m + 1usize;
+  while j > 0usize {
+    j = j - 1usize;
+    let num = (*un[j + n] << 32u64) | *un[j + n - 1usize];
+    var qhat = num / top;
+    var rhat = num % top;
+    while qhat > mask32 || qhat * next > ((rhat << 32u64) | *un[j + n - 2usize]) {
+      qhat = qhat - 1u64;
+      rhat = rhat + top;
+      if rhat > mask32 { break; }
+    }
+    // un[j..j+n] -= qhat * vn
+    var mulcarry = 0u64;
+    var borrow = 0u64;
+    i = 0usize;
+    while i < n {
+      let p = qhat * *vn[i] + mulcarry;
+      mulcarry = p >> 32u64;
+      let y = (p & mask32) + borrow;
+      let x = *un[i + j];
+      if x >= y { un.set(i + j, x - y); borrow = 0u64; }
+      else { un.set(i + j, x + 0x100000000u64 - y); borrow = 1u64; }
+      i = i + 1usize;
+    }
+    let y = mulcarry + borrow;
+    let x = *un[j + n];
+    var negative = false;
+    if x >= y { un.set(j + n, x - y); }
+    else { un.set(j + n, (x + 0x100000000u64 - y) & mask32); negative = true; }
+    if negative {
+      // qhat was one too large: add the divisor back
+      qhat = qhat - 1u64;
+      var carry = 0u64;
+      i = 0usize;
+      while i < n {
+        let t = *un[i + j] + *vn[i] + carry;
+        un.set(i + j, t & mask32);
+        carry = t >> 32u64;
+        i = i + 1usize;
+      }
+      un.set(j + n, (*un[j + n] + carry) & mask32);
+    }
+    q.set(j, qhat);
+  }
+  // The remainder: un[0..n] shifted back down by s
+  r.clear();
+  i = 0usize;
+  while i < n {
+    let hi = (*un[i + 1usize] << (32u64 - s)) & mask32;
+    r.push((*un[i] >> s) | hi);
+    i = i + 1usize;
+  }
+}
+
+// The digit for a value 0 to 35
+fn digitByte(d: u64) u8 { if d < 10u64 { u8.from(48u64 + d) } else { u8.from(87u64 + d) } }
+
+// The value of a digit character, or 99 when it is none
+fn digitValue(c: u8) u64 {
+  if c >= '0' && c <= '9' { return u64.from(c) - 48u64; }
+  if c >= 'a' && c <= 'z' { return u64.from(c) - 87u64; }
+  if c >= 'A' && c <= 'Z' { return u64.from(c) - 55u64; }
+  99u64
+}
+
+// The limbs from (inclusive) to to (exclusive) of a list, clamped to its length, trimmed
+fn part(l: &List[u64], from: usize, to: usize) List[u64] {
+  var out = List[u64].withCapacity(to - from);
+  var i = from;
+  while i < to && i < l.len() { out.push(*l[i]); i = i + 1usize; }
+  trim(&mut out);
+  out
+}
+
+// a - b where b is known not to exceed a
+fn subKnown(a: &BigUint, b: &BigUint) BigUint {
+  match a.sub(b) {
+    case let Ok(d) { d }
+    case is Err { BigUint.zero() }
+  }
+}
+
+// The sum of two limb lists, trimmed
+fn addLimbs(a: &List[u64], b: &List[u64]) List[u64] {
+  let n = if a.len() > b.len() { a.len() } else { b.len() };
+  var out = List[u64].withCapacity(n + 1usize);
+  var carry = 0u64;
+  var i = 0usize;
+  while i < n {
+    let x = limbOr0(a, i);
+    let s = x + limbOr0(b, i);
+    let c1 = if s < x { 1u64 } else { 0u64 };
+    let t = s + carry;
+    let c2 = if t < s { 1u64 } else { 0u64 };
+    out.push(t);
+    carry = c1 + c2;
+    i = i + 1usize;
+  }
+  if carry != 0u64 { out.push(carry); }
+  trim(&mut out);
+  out
+}
+
+// out[at..] += x, the carry running on as far as it must (out is long enough)
+fn addInto(out: &mut List[u64], x: &List[u64], at: usize) {
+  var carry = 0u64;
+  var i = 0usize;
+  while i < x.len() || carry != 0u64 {
+    let v = *out[at + i];
+    let s = v + limbOr0(x, i);
+    let c1 = if s < v { 1u64 } else { 0u64 };
+    let t = s + carry;
+    let c2 = if t < s { 1u64 } else { 0u64 };
+    out.set(at + i, t);
+    carry = c1 + c2;
+    i = i + 1usize;
+  }
+}
+
+// out -= x, known not to go below zero
+fn subFrom(out: &mut List[u64], x: &List[u64]) {
+  var borrow = 0u64;
+  var i = 0usize;
+  while i < x.len() || borrow != 0u64 {
+    let a = *out[i];
+    let b = limbOr0(x, i);
+    let d = a - b;
+    let b1 = if a < b { 1u64 } else { 0u64 };
+    let e = d - borrow;
+    let b2 = if d < borrow { 1u64 } else { 0u64 };
+    out.set(i, e);
+    borrow = b1 + b2;
+    i = i + 1usize;
+  }
+}
+
+// Schoolbook product of two limb lists, trimmed
+fn schoolLimbs(x: &List[u64], y: &List[u64]) List[u64] {
+  if x.len() == 0usize || y.len() == 0usize { return List[u64](); }
+  let n = x.len();
+  let m = y.len();
+  var out = List[u64].withCapacity(n + m);
+  out.resize(n + m, 0u64);
+  var i = 0usize;
+  while i < n {
+    let a = *x[i];
+    var carry = 0u64;
+    var j = 0usize;
+    while j < m {
+      let p = mulWide(a, *y[j]);
+      let t = *out[i + j] + p.1;
+      let c1 = if t < p.1 { 1u64 } else { 0u64 };
+      let t2 = t + carry;
+      let c2 = if t2 < t { 1u64 } else { 0u64 };
+      out.set(i + j, t2);
+      carry = p.0 + c1 + c2;
+      j = j + 1usize;
+    }
+    out.set(i + m, carry);
+    i = i + 1usize;
+  }
+  trim(&mut out);
+  out
+}
+
+// Karatsuba product of two trimmed limb lists, trimmed; t (at least 4) is the threshold
+fn karatsubaLimbs(a: &List[u64], b: &List[u64], t: usize) List[u64] {
+  let n = a.len();
+  let m = b.len();
+  if n == 0usize || m == 0usize { return List[u64](); }
+  if n < m { return karatsubaLimbs(b, a, t); }
+  if m < t { return schoolLimbs(a, b); }
+  let h = (n + 1usize) / 2usize;
+  var out = List[u64].withCapacity(n + m);
+  out.resize(n + m, 0u64);
+  let a0 = part(a, 0usize, h);
+  let a1 = part(a, h, n);
+  if m <= h {
+    // The smaller operand lies within the low half: two products
+    addInto(&mut out, &karatsubaLimbs(&a0, b, t), 0usize);
+    addInto(&mut out, &karatsubaLimbs(&a1, b, t), h);
+  } else {
+    let b0 = part(b, 0usize, h);
+    let b1 = part(b, h, m);
+    let z0 = karatsubaLimbs(&a0, &b0, t);
+    let z2 = karatsubaLimbs(&a1, &b1, t);
+    var z1 = karatsubaLimbs(&addLimbs(&a0, &a1), &addLimbs(&b0, &b1), t);
+    subFrom(&mut z1, &z0);
+    subFrom(&mut z1, &z2);
+    addInto(&mut out, &z0, 0usize);
+    addInto(&mut out, &z1, h);
+    addInto(&mut out, &z2, 2usize * h);
+  }
+  trim(&mut out);
+  out
+}
+
+// Below this many limbs in the smaller operand, 'mul' stays schoolbook
+// Measured 11 Nov 2026, release build under load (other gates running), n x n limbs, schoolbook
+// vs Karatsuba with this threshold: a tie at 64 limbs (4.8 us each), Karatsuba ahead from 96
+// (10.6 vs 9.9 us) and 128 (17.3 vs 15.5), and 164 vs 269 us at 512. Karatsuba wins late because
+// each split allocates its halves and sums; num-bigint's threshold is about 32.
+const karatsubaThreshold = 64usize;
+
+// The limbs in a base from 2 to 36 (lower case) as a String; a base outside it is taken as 10
+fn textBase(limbs: &List[u64], base: u32) String {
+  let b = if base < 2u32 || base > 36u32 { 10u64 } else { u64.from(base) };
+  var s = String();
+  if limbs.len() == 0usize { s.appendByte('0'); return s; }
+  // Chunks of k digits, each the remainder by base^k (under 2^32), least significant first
+  var k = 0usize;
+  var power = 1u64;
+  while power <= 0xFFFFFFFFu64 / b { power = power * b; k = k + 1usize; }
+  var rest = limbs.clone();
+  var next = List[u64]();
+  var chunks = List[u64]();
+  while rest.len() > 0usize {
+    chunks.push(divSmall32(&rest, power, &mut next));
+    trim(&mut next);
+    rest <-> next;
+  }
+  var c = chunks.len();
+  var first = true;
+  while c > 0usize {
+    c = c - 1usize;
+    var v = *chunks[c];
+    var digits = List[u8]();
+    var n = 0usize;
+    while n < k {
+      digits.push(digitByte(v % b));
+      v = v / b;
+      n = n + 1usize;
+    }
+    var at = k;
+    // Leading zeros are dropped from the first chunk only
+    if first {
+      while at > 1usize && *digits[at - 1usize] == '0' { at = at - 1usize; }
+      first = false;
+    }
+    while at > 0usize {
+      at = at - 1usize;
+      s.appendByte(*digits[at]);
+    }
+  }
+  s
+}
+
+// -------- BigUint --------
+
+// What 'divmod' answers: 'quot * divisor + rem' is the dividend and 'rem' is below the divisor
+pub struct QuotRem {
+  pub quot: BigUint;
+  pub rem: BigUint;
+}
+
+// What 'divmodSmall' answers: the same, the remainder a word
+pub struct QuotRemWord {
+  pub quot: BigUint;
+  pub rem: u64;
+}
+
+// An unsigned integer of any size: limbs of u64, least significant first, no
+// zero limb at the top
+pub struct BigUint is Eq, Ordered, Hash, Clone {
+  limbs: List[u64];
+
+  pub fn zero() BigUint { BigUint(List[u64]()) }
+
+  pub fn one() BigUint { BigUint.fromU64(1u64) }
+
+  pub fn fromU64(x: u64) BigUint {
+    var l = List[u64]();
+    if x != 0u64 { l.push(x); }
+    BigUint(l)
+  }
+
+  // The number whose limbs these are, least significant first (zero limbs at the top are dropped)
+  pub fn fromLimbs(limbs: List[u64]) BigUint {
+    var l = limbs;
+    trim(&mut l);
+    BigUint(l)
+  }
+
+  // The limbs, least significant first
+  pub fn limbView(self: &) &Array[u64] { limbs.view() }
+
+  pub fn isZero(self: &) bool { limbs.len() == 0usize }
+
+  // How many bits the number needs: 0 for zero
+  pub fn bitLen(self: &) usize {
+    let n = limbs.len();
+    if n == 0usize { return 0usize; }
+    n * 64usize - usize.from((*limbs[n - 1usize]).leadingZeros())
+  }
+
+  // The number as a u64, None if it does not fit
+  pub fn toU64(self: &) Option[u64] {
+    if limbs.len() == 0usize { return Some[u64](0u64); }
+    if limbs.len() == 1usize { return Some[u64](*limbs[0usize]); }
+    None[u64]
+  }
+
+  pub fn clone(self: &) BigUint { BigUint(limbs.clone()) }
+
+  pub fn `==`(self: &, o: &BigUint) bool { self.cmp(o) == 0i32 }
+
+  // -1, 0 or 1 as this number is below, equal to or above the other
+  pub fn cmp overload `<=>`(self: &, o: &BigUint) i32 {
+    if limbs.len() != o.limbs.len() {
+      return if limbs.len() < o.limbs.len() { -1i32 } else { 1i32 };
+    }
+    var i = limbs.len();
+    while i > 0usize {
+      i = i - 1usize;
+      let a = *limbs[i];
+      let b = *o.limbs[i];
+      if a != b { return if a < b { -1i32 } else { 1i32 }; }
+    }
+    0i32
+  }
+
+  pub fn hash(self: &, h: &mut Hasher) {
+    h.writeU64(u64.from(limbs.len()));
+    var i = 0usize;
+    while i < limbs.len() {
+      h.writeU64(*limbs[i]);
+      i = i + 1usize;
+    }
+  }
+
+  pub fn add(self: &, o: &BigUint) BigUint {
+    let n = if limbs.len() > o.limbs.len() { limbs.len() } else { o.limbs.len() };
+    var out = List[u64].withCapacity(n + 1usize);
+    var carry = 0u64;
+    var i = 0usize;
+    while i < n {
+      let a = limbOr0(&limbs, i);
+      let b = limbOr0(&o.limbs, i);
+      let s = a + b;
+      let c1 = if s < a { 1u64 } else { 0u64 };
+      let t = s + carry;
+      let c2 = if t < s { 1u64 } else { 0u64 };
+      out.push(t);
+      carry = c1 + c2;
+      i = i + 1usize;
+    }
+    if carry != 0u64 { out.push(carry); }
+    BigUint(out)
+  }
+
+  // This minus the other; Underflow if the other is the larger
+  pub fn sub(self: &, o: &BigUint) Result[BigUint, BigUintError] {
+    if self.cmp(o) < 0i32 {
+      return Err[BigUint, BigUintError](failure(BigUintErrorKind.Underflow, 0usize));
+    }
+    var out = List[u64].withCapacity(limbs.len());
+    var borrow = 0u64;
+    var i = 0usize;
+    while i < limbs.len() {
+      let a = *limbs[i];
+      let b = limbOr0(&o.limbs, i);
+      let d = a - b;
+      let b1 = if a < b { 1u64 } else { 0u64 };
+      let e = d - borrow;
+      let b2 = if d < borrow { 1u64 } else { 0u64 };
+      out.push(e);
+      borrow = b1 + b2;
+      i = i + 1usize;
+    }
+    trim(&mut out);
+    Ok[BigUint, BigUintError](BigUint(out))
+  }
+
+  // The product: Karatsuba while both operands have 'karatsubaThreshold' limbs or more, schoolbook below
+  pub fn mul(self: &, o: &BigUint) BigUint { BigUint(karatsubaLimbs(&limbs, &o.limbs, karatsubaThreshold)) }
+
+  // This times a word
+  pub fn mulSmall(self: &, m: u64) BigUint {
+    if m == 0u64 { return BigUint.zero(); }
+    var out = limbs.clone();
+    mulAddSmall(&mut out, m, 0u64);
+    BigUint(out)
+  }
+
+  // This shifted left by a number of bits (times 2^bits)
+  pub fn shiftLeft(self: &, bits: usize) BigUint {
+    if limbs.len() == 0usize { return BigUint.zero(); }
+    let whole = bits / 64usize;
+    let part = u64.from(bits % 64usize);
+    var out = List[u64].withCapacity(limbs.len() + whole + 1usize);
+    out.resize(whole, 0u64);
+    var carry = 0u64;
+    var i = 0usize;
+    while i < limbs.len() {
+      let x = *limbs[i];
+      out.push((x << part) | carry);
+      carry = if part == 0u64 { 0u64 } else { x >> (64u64 - part) };
+      i = i + 1usize;
+    }
+    if carry != 0u64 { out.push(carry); }
+    BigUint(out)
+  }
+
+  // This shifted right by a number of bits (divided by 2^bits, rounded down)
+  pub fn shiftRight(self: &, bits: usize) BigUint {
+    let whole = bits / 64usize;
+    if whole >= limbs.len() { return BigUint.zero(); }
+    let part = u64.from(bits % 64usize);
+    var out = List[u64].withCapacity(limbs.len() - whole);
+    var i = whole;
+    while i < limbs.len() {
+      let hi = if part == 0u64 { 0u64 } else { limbOr0(&limbs, i + 1usize) << (64u64 - part) };
+      out.push((*limbs[i] >> part) | hi);
+      i = i + 1usize;
+    }
+    trim(&mut out);
+    BigUint(out)
+  }
+
+  // Quotient and remainder by a word: DivideByZero if it is 0
+  pub fn divmodSmall(self: &, d: u64) Result[QuotRemWord, BigUintError] {
+    if d == 0u64 {
+      return Err[QuotRemWord, BigUintError](failure(BigUintErrorKind.DivideByZero, 0usize));
+    }
+    if d <= mask32 {
+      var q = List[u64]();
+      let r = divSmall32(&limbs, d, &mut q);
+      trim(&mut q);
+      return Ok[QuotRemWord, BigUintError](QuotRemWord(BigUint(q), r));
+    }
+    // 2^32 or more: the divisor is two digits, and the dividend at least that many or smaller
+    if limbs.len() == 0usize || (limbs.len() == 1usize && *limbs[0usize] < d) {
+      return Ok[QuotRemWord, BigUintError](QuotRemWord(BigUint.zero(), limbOr0(&limbs, 0usize)));
+    }
+    let v = toDigits(&BigUint.fromU64(d).limbs);
+    let u = toDigits(&limbs);
+    var qd = List[u64]();
+    var rd = List[u64]();
+    knuthD(&u, &v, &mut qd, &mut rd);
+    Ok[QuotRemWord, BigUintError](QuotRemWord(BigUint(fromDigits(&qd)), limbOr0(&fromDigits(&rd), 0usize)))
+  }
+
+  // Quotient and remainder: DivideByZero if the divisor is zero
+  pub fn divmod(self: &, d: &BigUint) Result[QuotRem, BigUintError] {
+    if d.limbs.len() == 0usize {
+      return Err[QuotRem, BigUintError](failure(BigUintErrorKind.DivideByZero, 0usize));
+    }
+    if self.cmp(d) < 0i32 {
+      return Ok[QuotRem, BigUintError](QuotRem(BigUint.zero(), self.clone()));
+    }
+    let v = toDigits(&d.limbs);
+    if v.len() == 1usize {
+      var q = List[u64]();
+      let r = divSmall32(&limbs, *v[0usize], &mut q);
+      trim(&mut q);
+      return Ok[QuotRem, BigUintError](QuotRem(BigUint(q), BigUint.fromU64(r)));
+    }
+    let u = toDigits(&limbs);
+    var qd = List[u64]();
+    var rd = List[u64]();
+    knuthD(&u, &v, &mut qd, &mut rd);
+    Ok[QuotRem, BigUintError](QuotRem(BigUint(fromDigits(&qd)), BigUint(fromDigits(&rd))))
+  }
+
+  // Base 10 text: digits only
+  pub fn parse(text: &str) Result[BigUint, BigUintError] { BigUint.parseBase(text, 10u32) }
+
+  // Base 16 text: digits only, either case, no '0x'
+  pub fn parseHex(text: &str) Result[BigUint, BigUintError] { BigUint.parseBase(text, 16u32) }
+
+  // Text in a base from 2 to 36: one or more digits (letters of either case
+  // for 10 and up), nothing else
+  pub fn parseBase(text: &str, base: u32) Result[BigUint, BigUintError] {
+    if base < 2u32 || base > 36u32 {
+      return Err[BigUint, BigUintError](failure(BigUintErrorKind.BadBase, 0usize));
+    }
+    let bytes: &Array[u8] = text;
+    if bytes.len() == 0usize {
+      return Err[BigUint, BigUintError](failure(BigUintErrorKind.Empty, 0usize));
+    }
+    let b = u64.from(base);
+    // The most digits whose base^k fits a u64
+    var chunk = 0usize;
+    var power = 1u64;
+    while power <= 0xFFFFFFFFFFFFFFFFu64 / b { power = power * b; chunk = chunk + 1usize; }
+    var l = List[u64]();
+    var i = 0usize;
+    while i < bytes.len() {
+      var acc = 0u64;
+      var scale = 1u64;
+      var k = 0usize;
+      while k < chunk && i < bytes.len() {
+        let d = digitValue(bytes[i]);
+        if d >= b {
+          return Err[BigUint, BigUintError](failure(BigUintErrorKind.BadDigit, i));
+        }
+        acc = acc * b + d;
+        scale = scale * b;
+        k = k + 1usize;
+        i = i + 1usize;
+      }
+      if k == chunk { mulAddSmall(&mut l, power, acc); } else { mulAddSmall(&mut l, scale, acc); }
+    }
+    trim(&mut l);
+    Ok[BigUint, BigUintError](BigUint(l))
+  }
+
+  // The number in base 10, written to a writer ('String() <- n')
+  pub fn toText(self: &, out: &uni TextOut) {
+    let s = textBase(&limbs, 10u32);
+    out <- s.view();
+  }
+
+  // The number in a base from 2 to 36 (lower case), written to a writer; a
+  // base outside it is written as 10
+  pub fn toTextBase(self: &, out: &uni TextOut, base: u32) {
+    let s = textBase(&limbs, base);
+    out <- s.view();
+  }
+}
+
+// -------- BigInt --------
+
+// What the signed 'divmod' answers: 'quot * divisor + rem' is the dividend. The division truncates
+// toward zero (as Rust's '/' and '%' do), so 'rem' has the sign of the dividend and is smaller than the divisor
+pub struct IntQuotRem {
+  pub quot: BigInt;
+  pub rem: BigInt;
+}
+
+// A sign and a magnitude, never a negative zero (zero is not negative)
+fn signed(negative: bool, mag: BigUint) BigInt {
+  BigInt(negative && !mag.isZero(), mag)
+}
+
+// A signed integer of any size: a BigUint magnitude and a sign
+pub struct BigInt is Eq, Ordered, Hash, Clone {
+  negative: bool;
+  mag: BigUint;
+
+  pub fn zero() BigInt { BigInt(false, BigUint.zero()) }
+
+  pub fn one() BigInt { BigInt(false, BigUint.one()) }
+
+  pub fn fromI64(x: i64) BigInt {
+    if x >= 0i64 { return BigInt(false, BigUint.fromU64(u64.from(x))); }
+    BigInt(true, BigUint.fromU64(u64.from(-(x + 1i64)) + 1u64))
+  }
+
+  // A sign and a magnitude: negative zero becomes zero
+  pub fn fromParts(negative: bool, mag: BigUint) BigInt { signed(negative, mag) }
+
+  pub fn fromBigUint(mag: BigUint) BigInt { BigInt(false, mag) }
+
+  pub fn isZero(self: &) bool { mag.isZero() }
+
+  pub fn isNegative(self: &) bool { negative }
+
+  // The absolute value, as a BigUint
+  pub fn magnitude(self: &) BigUint { mag.clone() }
+
+  // The number as an i64, None if it does not fit
+  pub fn toI64(self: &) Option[i64] {
+    match mag.toU64() {
+      case is None { None[i64] }
+      case let Some(v) {
+        if !negative {
+          if v < 0x8000000000000000u64 { Some[i64](i64.from(v)) } else { None[i64] }
+        } else if v <= 0x8000000000000000u64 {
+          if v == 0x8000000000000000u64 { Some[i64](-9223372036854775807i64 - 1i64) }
+          else { Some[i64](-i64.from(v)) }
+        } else { None[i64] }
+      }
+    }
+  }
+
+  pub fn clone(self: &) BigInt { BigInt(negative, mag.clone()) }
+
+  // The same magnitude with the opposite sign (zero stays zero)
+  pub fn negate(self: &) BigInt { signed(!negative, mag.clone()) }
+
+  // The number without its sign
+  pub fn abs(self: &) BigInt { BigInt(false, mag.clone()) }
+
+  pub fn `==`(self: &, o: &BigInt) bool { self.cmp(o) == 0i32 }
+
+  // -1, 0 or 1 as this number is below, equal to or above the other
+  pub fn cmp overload `<=>`(self: &, o: &BigInt) i32 {
+    if negative != o.negative { return if negative { -1i32 } else { 1i32 }; }
+    let c = mag.cmp(&o.mag);
+    if negative { -c } else { c }
+  }
+
+  pub fn hash(self: &, h: &mut Hasher) {
+    h.writeU64(if negative { 1u64 } else { 0u64 });
+    mag.hash(h);
+  }
+
+  pub fn add(self: &, o: &BigInt) BigInt {
+    if negative == o.negative { return BigInt(negative, mag.add(&o.mag)); }
+    // Opposite signs: the larger magnitude's sign, the difference of the magnitudes
+    if mag.cmp(&o.mag) >= 0i32 { signed(negative, subKnown(&mag, &o.mag)) }
+    else { signed(o.negative, subKnown(&o.mag, &mag)) }
+  }
+
+  // This minus the other: always defined
+  pub fn sub(self: &, o: &BigInt) BigInt { self.add(&o.negate()) }
+
+  pub fn mul(self: &, o: &BigInt) BigInt { signed(negative != o.negative, mag.mul(&o.mag)) }
+
+  // Quotient and remainder, truncating toward zero like Rust's '/' and '%': the remainder has the
+  // dividend's sign. DivideByZero if the divisor is zero.
+  pub fn divmod(self: &, d: &BigInt) Result[IntQuotRem, BigUintError] {
+    match mag.divmod(&d.mag) {
+      case let Err(e) { Err[IntQuotRem, BigUintError](e) }
+      case let Ok(qr) {
+        Ok[IntQuotRem, BigUintError](IntQuotRem(signed(negative != d.negative, qr.quot.clone()), signed(negative, qr.rem.clone())))
+      }
+    }
+  }
+
+  // Euclidean quotient (Rust's 'div_euclid'): the remainder 'remEuclid' is never negative.
+  // DivideByZero if the divisor is zero.
+  pub fn divEuclid(self: &, d: &BigInt) Result[BigInt, BigUintError] {
+    match self.divmod(d) {
+      case let Err(e) { Err[BigInt, BigUintError](e) }
+      case let Ok(qr) {
+        if !qr.rem.negative { return Ok[BigInt, BigUintError](qr.quot.clone()); }
+        // A negative remainder: step the quotient away from zero in the divisor's direction
+        if d.negative { Ok[BigInt, BigUintError](qr.quot.add(&BigInt.one())) }
+        else { Ok[BigInt, BigUintError](qr.quot.sub(&BigInt.one())) }
+      }
+    }
+  }
+
+  // Euclidean remainder (Rust's 'rem_euclid'): 0 up to but excluding the divisor's magnitude.
+  // DivideByZero if the divisor is zero.
+  pub fn remEuclid(self: &, d: &BigInt) Result[BigInt, BigUintError] {
+    match self.divmod(d) {
+      case let Err(e) { Err[BigInt, BigUintError](e) }
+      case let Ok(qr) {
+        if qr.rem.negative { Ok[BigInt, BigUintError](qr.rem.add(&d.abs())) }
+        else { Ok[BigInt, BigUintError](qr.rem.clone()) }
+      }
+    }
+  }
+
+  // Base 10 text with an optional leading '-': otherwise digits only
+  pub fn parse(text: &str) Result[BigInt, BigUintError] { BigInt.parseBase(text, 10u32) }
+
+  // Text in a base from 2 to 36 with an optional leading '-'. "-0" is zero. An error's position counts the '-'.
+  pub fn parseBase(text: &str, base: u32) Result[BigInt, BigUintError] {
+    let bytes: &Array[u8] = text;
+    if bytes.len() == 0usize || bytes[0usize] != '-' {
+      return match BigUint.parseBase(text, base) {
+        case let Ok(m) { Ok[BigInt, BigUintError](BigInt(false, m)) }
+        case let Err(e) { Err[BigInt, BigUintError](e) }
+      };
+    }
+    var rest = String();
+    var i = 1usize;
+    while i < bytes.len() { rest.appendByte(bytes[i]); i = i + 1usize; }
+    match BigUint.parseBase(rest.view(), base) {
+      case let Ok(m) { Ok[BigInt, BigUintError](signed(true, m)) }
+      case let Err(e) {
+        let at = if e.kind == BigUintErrorKind.BadDigit { e.position + 1usize } else { e.position };
+        Err[BigInt, BigUintError](failure(e.kind, at))
+      }
+    }
+  }
+
+  // The number in base 10 ('-' first when negative), written to a writer ('String() <- n')
+  pub fn toText(self: &, out: &uni TextOut) {
+    if negative { out <- "-"; }
+    mag.toText(out);
+  }
+
+  // The number in a base from 2 to 36 (lower case), '-' first when negative
+  pub fn toTextBase(self: &, out: &uni TextOut, base: u32) {
+    if negative { out <- "-"; }
+    mag.toTextBase(out, base);
+  }
+}

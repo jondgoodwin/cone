@@ -17,7 +17,7 @@ import collections use List;
 import geomath use *;
 import rigidcollide use *;
 import rigiddynamics use *;
-import bonepose use * but clampf;
+import bonepose use *;
 import ragdollrig use *;
 
 fn near(got: f32, want: f32, within: f32, label: &Array[u8]) bool {
@@ -68,13 +68,13 @@ fn main() i32 {
     let bs = spec.bones[l.bone];
     if !l.joint.isNone() {
       joints = joints + 1;
-      let j = *w.joints.get(l.joint);
+      let j = w.joints.borrow(l.joint).unwrap();
       if bs.joint == JOINT_HINGE {
         hinges = hinges + 1;
         if j.kind != JointHinge || !j.limitOn || (j.lower - bs.lo).abs() > 0.00001 || (j.upper - bs.hi).abs() > 0.00001 { limitsMatch = false; }
       } else {
         cones = cones + 1;
-        let outer = maxf(maxf(bs.flex, bs.ext), maxf(bs.abd, bs.add));
+        let outer = bs.flex.max(bs.ext).max(bs.abd.max(bs.add));
         if j.kind != JointConeTwist || (j.coneAngle - outer).abs() > 0.00001 || (j.twistLo - bs.lo).abs() > 0.00001 || (j.twistHi - bs.hi).abs() > 0.00001 { limitsMatch = false; }
       }
     }
@@ -86,15 +86,15 @@ fn main() i32 {
   expectBool(limitsMatch, true, "every joint's limits are the table's");
 
   // spot values, from the table in spec.cone's header
-  let knee = *w.joints.get(rig.links[usize.from(rig.linkOfBone(SHIN_L))].joint);
+  let knee = w.joints.borrow(rig.links[usize.from(rig.linkOfBone(SHIN_L))].joint).unwrap();
   near(knee.lower, -2.45, 0.00001, "the knee flexes 140 degrees (2.45 rad)");
   near(knee.upper, 0.03, 0.00001, "and hyperextends almost not at all");
-  let elbow = *w.joints.get(rig.links[usize.from(rig.linkOfBone(FOREARM_R))].joint);
+  let elbow = w.joints.borrow(rig.links[usize.from(rig.linkOfBone(FOREARM_R))].joint).unwrap();
   near(elbow.upper, 2.50, 0.00001, "the elbow flexes 145 degrees");
-  let hip = *w.joints.get(rig.links[usize.from(rig.linkOfBone(THIGH_R))].joint);
+  let hip = w.joints.borrow(rig.links[usize.from(rig.linkOfBone(THIGH_R))].joint).unwrap();
   near(hip.coneAngle, 2.10, 0.00001, "the hip's cone is its flexion, 120 degrees");
   near(hip.twistHi, 0.75, 0.00001, "and it twists 43 degrees");
-  let ankle = *w.joints.get(rig.links[usize.from(rig.linkOfBone(FOOT_L))].joint);
+  let ankle = w.joints.borrow(rig.links[usize.from(rig.linkOfBone(FOOT_L))].joint).unwrap();
   near(ankle.lower, -0.90, 0.00001, "the ankle plantar-flexes 50 degrees");
 
   // ---- the bodies stand where the rest pose has them

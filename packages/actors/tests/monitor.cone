@@ -1,0 +1,157 @@
+// THE MONITOR's park and wake path, its tick's back-off and its move of a
+// stranded queue (the header's THE MONITOR). Two workers, monitorMicros 500.
+//
+// 1. Every worker idle: the monitor parks after monitorIdleTicks quiet ticks
+//    (monitorParked), at its base tick.
+// 2. A message to an actor wakes a worker, and the first worker out of its
+//    park (uncount) wakes the monitor: monitorParked turns false within 2 s.
+// 3. That actor, Hold, holds one worker for its whole turn. First it spins
+//    (nothing queued behind it) until the monitor's tick has backed off to its
+//    longest, four times the base (2 ms): checked. Then it makes actor Late
+//    runnable, which lands on its own worker's queue (a push to an empty queue
+//    wakes nobody) and spins on 300 ms more. The monitor, finding the worker's
+//    turn count still with the queue not empty, moves the queue to the inject
+//    queue, whose push wakes the other worker: Late runs within 250 ms, while
+//    Hold is still in its turn, and the tick it finds when it has waited 2 ms
+//    is below the longest (the find snapped it back). stats(): monitorFinds
+//    and monitorMoved are at least 1.
+// 4. A second Hold makes forty actors runnable the same way (the first push
+//    wakes nobody, later ones wake the other worker to steal, the monitor
+//    moves what is left). Every one runs, and the runtime is quiet again
+//    within 5 s: an actor taken off a queue by the monitor, a thread that is
+//    no worker, counts for the activation counts as any other (the counts are
+//    sums over all the workers, and the move changes neither); finalAll,
+//    which finds quiescence from the counts, ends the run.
+
+mod monitor;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+const many = 40u64;
+
+struct Flags {
+  pub go: Atomic[u32];         // main's: Hold may make Late runnable now
+  pub lateAt: Atomic[u64];     // when Late began its turn (ns), 0 before
+  pub lateTick: Atomic[u32];   // the monitor's tick once back below 2000 (up to 2 s)
+  pub holdDone: Atomic[u32];
+  pub ran: Atomic[u64];        // Counter turns run
+}
+
+let flags: Flags;
+
+fn @initpure init() {
+  flags = Flags(Atomic[u32].of(0u32), Atomic[u64].of(0u64), Atomic[u32].of(0u32),
+    Atomic[u32].of(0u32), Atomic[u64].of(0u64));
+}
+
+fn nowNs() u64 {u64.from(time.Instant.now().nanos())}
+
+actor Late {
+  pub async fn run(self) {
+    flags.lateAt.store(nowNs());
+    // wait until the tick is back below 2000 (the find snapped it back); fail
+    // only on the 2 s cap, when the check sees it still at 2000
+    let cap = nowNs() + 2000000000u64;
+    while actors.monitorTick() >= 2000u32 && nowNs() < cap {
+      thread.sleep(time.Duration.fromMillis(1i64));
+    }
+    flags.lateTick.store(actors.monitorTick());
+  }
+}
+
+actor Counter {
+  pub async fn bump(self) {
+    flags.ran.add(1u64);
+  }
+}
+
+actor Hold {
+  pub async fn poke(self) {}
+
+  // Spin until main says go (at most 3 s), then make Late runnable and spin 300 ms
+  pub async fn first(self, late: Late) {
+    let limit = nowNs() + 3000000000u64;
+    while flags.go.load() == 0u32 && nowNs() < limit {}
+    late.run();
+    let until = nowNs() + 300000000u64;
+    while nowNs() < until {}
+    flags.holdDone.store(1u32);
+  }
+
+  pub async fn spray(self) {
+    var k = 0u64;
+    while k < many {
+      let c = Counter();
+      c.bump();
+      k = k + 1u64;
+    }
+    let until = nowNs() + 300000000u64;
+    while nowNs() < until {}
+    flags.holdDone.store(1u32);
+  }
+}
+
+fn waitFor(f: &Atomic[u32], want: u32, ms: i64) bool {
+  let deadline = nowNs() + u64.from(ms) * 1000000u64;
+  while f.load() != want && nowNs() < deadline {
+    thread.yieldNow();
+  }
+  f.load() == want
+}
+
+fn parkedWithin(ms: i64) bool {
+  let deadline = nowNs() + u64.from(ms) * 1000000u64;
+  while !actors.monitorParked() && nowNs() < deadline {
+    thread.sleep(time.Duration.fromMillis(1i64));
+  }
+  actors.monitorParked()
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32, monitorMicros: 500u32));
+  {
+    let h = Hold();
+    let late = Late();
+    // 1. idle: the monitor parks
+    h.poke();
+    actors.waitUntilIdle();
+    require(parkedWithin(2000i64), "the monitor parks when every worker is parked");
+    expectUInt(u64.from(actors.monitorTick()), 500u64, "it parks at its base tick");
+    // 2. the first worker out of a park wakes it
+    h.first(late);
+    let deadline = nowNs() + 2000000000u64;
+    while actors.monitorParked() && nowNs() < deadline {
+      thread.yieldNow();
+    }
+    expectBool(actors.monitorParked(), false, "a worker leaving its park woke the monitor");
+    // 3. back-off while Hold spins with nothing behind it
+    let backoff = nowNs() + 2000000000u64;
+    while actors.monitorTick() < 2000u32 && nowNs() < backoff {
+      thread.sleep(time.Duration.fromMillis(1i64));
+    }
+    expectUInt(u64.from(actors.monitorTick()), 2000u64, "after quiet rounds the tick doubles to four times the base");
+    let before = actors.stats();
+    flags.go.store(1u32);
+    let sent = nowNs();
+    require(waitFor(&flags.holdDone, 1u32, 3000i64), "Hold ended");
+    require(flags.lateAt.load() != 0u64, "Late ran");
+    expectBool(flags.lateAt.load() - sent < 250000000u64, true, "Late ran within 250 ms, in Hold's turn");
+    let after = actors.stats();
+    expectBool(after.monitorFinds > before.monitorFinds, true, "the monitor's find is counted");
+    expectBool(after.monitorMoved > before.monitorMoved, true, "its moved actor is counted");
+    expectBool(flags.lateTick.load() < 2000u32, true, "a find snapped the tick back from its longest");
+    actors.waitUntilIdle();
+    // 4. forty actors stranded behind a turn
+    flags.holdDone.store(0u32);
+    h.spray();
+    require(waitFor(&flags.holdDone, 1u32, 3000i64), "the second Hold ended");
+    require(actors.waitUntilIdleFor(time.Duration.fromMillis(5000i64)), "every actor ran and the runtime is quiet");
+    expectUInt(flags.ran.load(), many, "every stranded actor ran once");
+  }
+  finalAll();
+  done()
+}

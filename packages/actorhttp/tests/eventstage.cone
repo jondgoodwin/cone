@@ -214,8 +214,19 @@ actor Reader {
     match r {
       case let Ok(es) {
         let first = await es.next();
-        let s = await aio.sleep(Duration.fromMillis(500i64));
-        let at1 = sent.load();
+        // The sends run until the window is full: how long that takes depends on the machine's load
+        // (a debug build under load needed over 500 ms), so wait until the count has not moved for
+        // 300 ms (at most 10 s), then see it stay put another 300 ms
+        var at1 = sent.load();
+        var waited = 0i64;
+        while waited < 10000i64 {
+          let s = await aio.sleep(Duration.fromMillis(300i64));
+          waited = waited + 300i64;
+          let now = sent.load();
+          let still = now == at1;
+          at1 = now;
+          if still {break;}
+        }
         let s2 = await aio.sleep(Duration.fromMillis(300i64));
         let at2 = sent.load();
         printStr("flood: the sends stalled short of the whole: ");

@@ -131,8 +131,8 @@ pub struct JState {
 }
 
 pub fn jointState(w: &World, j: &Joint) JState {
-  let bA = (w.bodies.at(u32.from(usize.from(j.a))) as &mut Body);
-  let bB = (w.bodies.at(u32.from(usize.from(j.b))) as &mut Body);
+  let bA = (w.bodies.rawAt(u32.from(usize.from(j.a))) as &mut Body);
+  let bB = (w.bodies.rawAt(u32.from(usize.from(j.b))) as &mut Body);
   let rA = bA.rot * j.la;
   let rB = bB.rot * j.lb;
   JState(usize.from(j.a), usize.from(j.b), bA.invMass, bB.invMass, bA.invInertia, bB.invInertia, rA, rB,
@@ -163,8 +163,8 @@ fn kPoint(s: &JState) Mat3 {
 
 // A linear row's Jacobian times the velocities
 fn linJv(w: &World, s: &JState, u: Vec3, armA: Vec3, armB: Vec3) f32 {
-  let bA = (w.bodies.at(u32.from(s.ia)) as &mut Body);
-  let bB = (w.bodies.at(u32.from(s.ib)) as &mut Body);
+  let bA = (w.bodies.rawAt(u32.from(s.ia)) as &mut Body);
+  let bB = (w.bodies.rawAt(u32.from(s.ib)) as &mut Body);
   u.dot(bB.linVel - bA.linVel) + armB.cross(u).dot(bB.angVel) - armA.cross(u).dot(bA.angVel)
 }
 
@@ -176,21 +176,21 @@ fn linK(s: &JState, u: Vec3, armA: Vec3, armB: Vec3) f32 {
 
 // An impulse of 'lambda' along u at the arms: B gets it, A gets its opposite
 fn linApply(w: &mut World, s: &JState, u: Vec3, armA: Vec3, armB: Vec3, lambda: f32) {
-  (w.bodies.at(u32.from(s.ia)) as &mut Body).linVel = (w.bodies.at(u32.from(s.ia)) as &mut Body).linVel - u * (lambda * s.mA);
-  (w.bodies.at(u32.from(s.ia)) as &mut Body).angVel = (w.bodies.at(u32.from(s.ia)) as &mut Body).angVel - s.iA * armA.cross(u) * lambda;
-  (w.bodies.at(u32.from(s.ib)) as &mut Body).linVel = (w.bodies.at(u32.from(s.ib)) as &mut Body).linVel + u * (lambda * s.mB);
-  (w.bodies.at(u32.from(s.ib)) as &mut Body).angVel = (w.bodies.at(u32.from(s.ib)) as &mut Body).angVel + s.iB * armB.cross(u) * lambda;
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().linVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().linVel - u * (lambda * s.mA);
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel - s.iA * armA.cross(u) * lambda;
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().linVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().linVel + u * (lambda * s.mB);
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel + s.iB * armB.cross(u) * lambda;
 }
 
 fn linApplyVec(w: &mut World, s: &JState, p: Vec3, armA: Vec3, armB: Vec3) {
-  (w.bodies.at(u32.from(s.ia)) as &mut Body).linVel = (w.bodies.at(u32.from(s.ia)) as &mut Body).linVel - p * s.mA;
-  (w.bodies.at(u32.from(s.ia)) as &mut Body).angVel = (w.bodies.at(u32.from(s.ia)) as &mut Body).angVel - s.iA * armA.cross(p);
-  (w.bodies.at(u32.from(s.ib)) as &mut Body).linVel = (w.bodies.at(u32.from(s.ib)) as &mut Body).linVel + p * s.mB;
-  (w.bodies.at(u32.from(s.ib)) as &mut Body).angVel = (w.bodies.at(u32.from(s.ib)) as &mut Body).angVel + s.iB * armB.cross(p);
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().linVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().linVel - p * s.mA;
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel - s.iA * armA.cross(p);
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().linVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().linVel + p * s.mB;
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel + s.iB * armB.cross(p);
 }
 
 fn angJv(w: &World, s: &JState, u: Vec3) f32 {
-  u.dot((w.bodies.at(u32.from(s.ib)) as &mut Body).angVel - (w.bodies.at(u32.from(s.ia)) as &mut Body).angVel)
+  u.dot(w.bodies.borrowAt(u32.from(s.ib)).unwrap().angVel - w.bodies.borrowAt(u32.from(s.ia)).unwrap().angVel)
 }
 
 fn angK(s: &JState, u: Vec3) f32 {
@@ -198,13 +198,13 @@ fn angK(s: &JState, u: Vec3) f32 {
 }
 
 fn angApply(w: &mut World, s: &JState, u: Vec3, lambda: f32) {
-  (w.bodies.at(u32.from(s.ia)) as &mut Body).angVel = (w.bodies.at(u32.from(s.ia)) as &mut Body).angVel - s.iA * u * lambda;
-  (w.bodies.at(u32.from(s.ib)) as &mut Body).angVel = (w.bodies.at(u32.from(s.ib)) as &mut Body).angVel + s.iB * u * lambda;
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel - s.iA * u * lambda;
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel + s.iB * u * lambda;
 }
 
 fn angApplyVec(w: &mut World, s: &JState, l: Vec3) {
-  (w.bodies.at(u32.from(s.ia)) as &mut Body).angVel = (w.bodies.at(u32.from(s.ia)) as &mut Body).angVel - s.iA * l;
-  (w.bodies.at(u32.from(s.ib)) as &mut Body).angVel = (w.bodies.at(u32.from(s.ib)) as &mut Body).angVel + s.iB * l;
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel - s.iA * l;
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel + s.iB * l;
 }
 
 fn invOrZero(k: f32) f32 { if k > 0. { 1. / k } else { 0. } }
@@ -234,7 +234,7 @@ pub fn sliderOffset(w: &World, j: &Joint) f32 {
 // Warm start
 
 pub fn warmStartJoint(w: &mut World, ji: usize) {
-  let j = (w.joints.at(u32.from(ji)) as &mut Joint);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let s = jointState(w, &*j);
   let ax = s.fa * Vec3(1., 0., 0.);
   if j.kind == JointPoint || j.kind == JointFixed || j.kind == JointHinge || j.kind == JointConeTwist {
@@ -271,9 +271,9 @@ pub fn warmStartJoint(w: &mut World, ji: usize) {
 
 // The 3x3 point block: the anchors together
 fn solvePointBlock(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness) {
-  let j = (w.joints.at(u32.from(ji)) as &mut Joint);
-  let bA = (w.bodies.at(u32.from(s.ia)) as &mut Body);
-  let bB = (w.bodies.at(u32.from(s.ib)) as &mut Body);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
+  let bA = (w.bodies.rawAt(u32.from(s.ia)) as &mut Body);
+  let bB = (w.bodies.rawAt(u32.from(s.ib)) as &mut Body);
   let jv = (bB.linVel + bB.angVel.cross(s.rB)) - (bA.linVel + bA.angVel.cross(s.rA));
   let kinv = kPoint(s).inverse();
   let bias = if useBias { s.d * soft.biasRate } else { zero3() };
@@ -286,11 +286,11 @@ fn solvePointBlock(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: So
 
 // The 3x3 orientation block: B's joint frame turned to A's
 fn solveOrientationBlock(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness) {
-  let j = (w.joints.at(u32.from(ji)) as &mut Joint);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let q0 = relRot(s);
   let sg = if q0.w < 0. { -1.f } else { 1. };
   let err = (s.fa * Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
-  let jv = (w.bodies.at(u32.from(s.ib)) as &mut Body).angVel - (w.bodies.at(u32.from(s.ia)) as &mut Body).angVel;
+  let jv = w.bodies.borrowAt(u32.from(s.ib)).unwrap().angVel - w.bodies.borrowAt(u32.from(s.ia)).unwrap().angVel;
   let kinv = mat3Add(s.iA, s.iB).inverse();
   let bias = if useBias { err * soft.biasRate } else { zero3() };
   let ms = if useBias { soft.massScale } else { 1. };
@@ -308,11 +308,11 @@ fn solveOrientationBlock(w: &mut World, ji: usize, s: &JState, useBias: bool, so
 // enough yields, as a muscle does. (Jolt's SwingTwistConstraint and Box2D v3's joint motors are the same
 // idea; the soft form is Catto's, Solver2D 2024.)
 fn solveDrive(w: &mut World, ji: usize, s: &JState, h: f32) {
-  let j = (w.joints.at(u32.from(ji)) as &mut Joint);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let q0 = (relRot(s) * j.driveTarget.conjugate()).normalize();
   let sg = if q0.w < 0. { -1.f } else { 1. };
   let err = (s.fa * Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
-  let jv = (w.bodies.at(u32.from(s.ib)) as &mut Body).angVel - (w.bodies.at(u32.from(s.ia)) as &mut Body).angVel;
+  let jv = w.bodies.borrowAt(u32.from(s.ib)).unwrap().angVel - w.bodies.borrowAt(u32.from(s.ia)).unwrap().angVel;
   let kmat = mat3Add(s.iA, s.iB);
   let kinv = kmat.inverse();
   // a spring of stiffness k (N m per radian) and damping c (N m s per radian) as Catto's soft constraint, in torque
@@ -338,7 +338,7 @@ fn solveDrive(w: &mut World, ji: usize, s: &JState, h: f32) {
 
 // A hinge keeps its two axes together: two angular rows perpendicular to A's axis
 fn solveHingeAlign(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness) {
-  let j = (w.joints.at(u32.from(ji)) as &mut Joint);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let axA = s.fa * Vec3(1., 0., 0.);
   let axB = s.fb * Vec3(1., 0., 0.);
   let c = axA.cross(axB);
@@ -361,7 +361,7 @@ fn solveHingeAlign(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: So
 
 // A slider keeps B on A's axis: two linear rows perpendicular to it
 fn solveSliderPerp(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness) {
-  let j = (w.joints.at(u32.from(ji)) as &mut Joint);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let ax = s.fa * Vec3(1., 0., 0.);
   let u1 = perpendicular(ax);
   let u2 = ax.cross(u1);
@@ -383,57 +383,57 @@ fn solveSliderPerp(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: So
 
 // Limits and motor along an angular axis (hinge, twist) or a linear one (slider)
 fn solveAngularLimits(w: &mut World, ji: usize, s: &JState, axis: Vec3, angle: f32, useBias: bool, soft: Softness, invH: f32, h: f32) {
-  let j = (w.joints.at(u32.from(ji)) as &mut Joint);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let km = invOrZero(angK(s, axis));
   if j.motorOn {
     let lambda = -km * (angJv(w, s, axis) - j.motorSpeed);
     let maxI = j.motorMax * h;
     let old = j.impMotor;
-    j.impMotor = clampf(old + lambda, -maxI, maxI);
+    j.impMotor = (old + lambda).clamp(-maxI, maxI);
     angApply(w, s, axis, j.impMotor - old);
   }
   if j.limitOn {
     // lower: C = angle - lower; B turning in +axis raises the angle
     let rl = limitRow(angle - j.lower, useBias, soft, invH);
     let ll = -km * rl.massScale * (angJv(w, s, axis) + rl.bias) - rl.impulseScale * j.impLo;
-    let newLo = maxf(j.impLo + ll, 0.);
+    let newLo = (j.impLo + ll).max(0.);
     angApply(w, s, axis, newLo - j.impLo);
     j.impLo = newLo;
     // upper: C = upper - angle; the row pushes the other way
     let ru = limitRow(j.upper - angle, useBias, soft, invH);
     let lu = -km * ru.massScale * (-angJv(w, s, axis) + ru.bias) - ru.impulseScale * j.impHi;
-    let newHi = maxf(j.impHi + lu, 0.);
+    let newHi = (j.impHi + lu).max(0.);
     angApply(w, s, axis, -(newHi - j.impHi));
     j.impHi = newHi;
   }
 }
 
 fn solveLinearLimits(w: &mut World, ji: usize, s: &JState, axis: Vec3, pos: f32, armA: Vec3, useBias: bool, soft: Softness, invH: f32, h: f32) {
-  let j = (w.joints.at(u32.from(ji)) as &mut Joint);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let km = invOrZero(linK(s, axis, armA, s.rB));
   if j.motorOn {
     let lambda = -km * (linJv(w, s, axis, armA, s.rB) - j.motorSpeed);
     let maxI = j.motorMax * h;
     let old = j.impMotor;
-    j.impMotor = clampf(old + lambda, -maxI, maxI);
+    j.impMotor = (old + lambda).clamp(-maxI, maxI);
     linApply(w, s, axis, armA, s.rB, j.impMotor - old);
   }
   if j.limitOn {
     let rl = limitRow(pos - j.lower, useBias, soft, invH);
     let ll = -km * rl.massScale * (linJv(w, s, axis, armA, s.rB) + rl.bias) - rl.impulseScale * j.impLo;
-    let newLo = maxf(j.impLo + ll, 0.);
+    let newLo = (j.impLo + ll).max(0.);
     linApply(w, s, axis, armA, s.rB, newLo - j.impLo);
     j.impLo = newLo;
     let ru = limitRow(j.upper - pos, useBias, soft, invH);
     let lu = -km * ru.massScale * (-linJv(w, s, axis, armA, s.rB) + ru.bias) - ru.impulseScale * j.impHi;
-    let newHi = maxf(j.impHi + lu, 0.);
+    let newHi = (j.impHi + lu).max(0.);
     linApply(w, s, axis, armA, s.rB, -(newHi - j.impHi));
     j.impHi = newHi;
   }
 }
 
 fn solveDistance(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness, invH: f32, h: f32) {
-  let j = (w.joints.at(u32.from(ji)) as &mut Joint);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let len = s.d.length();
   let n = if len > 0.000001 { s.d * (1. / len) } else { Vec3(1., 0., 0.) };
   let km = invOrZero(linK(s, n, s.rA, s.rB));
@@ -461,13 +461,13 @@ fn solveDistance(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Soft
     // not shorter than lower
     let rl = limitRow(len - j.lower, useBias, soft, invH);
     let ll = -km * rl.massScale * (linJv(w, s, n, s.rA, s.rB) + rl.bias) - rl.impulseScale * j.impLo;
-    let newLo = maxf(j.impLo + ll, 0.);
+    let newLo = (j.impLo + ll).max(0.);
     linApply(w, s, n, s.rA, s.rB, newLo - j.impLo);
     j.impLo = newLo;
     // not longer than upper
     let ru = limitRow(j.upper - len, useBias, soft, invH);
     let lu = -km * ru.massScale * (-linJv(w, s, n, s.rA, s.rB) + ru.bias) - ru.impulseScale * j.impHi;
-    let newHi = maxf(j.impHi + lu, 0.);
+    let newHi = (j.impHi + lu).max(0.);
     linApply(w, s, n, s.rA, s.rB, -(newHi - j.impHi));
     j.impHi = newHi;
   }
@@ -480,14 +480,14 @@ fn solveDistance(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Soft
 // speculative, as every limit row is). The tip's move is the small-angle tangent; the scaled point is not the
 // ellipse's nearest point to the swing, but it is on the ellipse, and the rows converge to inside it.
 fn solveEllipse(w: &mut World, ji: usize, s: &JState, xa: Vec3, xb: Vec3, useBias: bool, soft: Softness, invH: f32) {
-  let j = (w.joints.at(u32.from(ji)) as &mut Joint);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let sw = xa.cross(xb);
   let swl = sw.length();
   if swl < 0.00001 { j.impEll = 0.; return; }
   let c = xa.dot(xb);
   let th = atan2(swl, c);
   let sdir = (xb - xa * c) * (1. / swl);
-  let rotA = (w.bodies.at(u32.from(s.ia)) as &mut Body).rot;
+  let rotA = w.bodies.borrowAt(u32.from(s.ia)).unwrap().rot;
   let uAxis = rotA * j.ellU;
   let vAxis = rotA * j.ellV;
   let u = th * sdir.dot(uAxis);
@@ -508,14 +508,14 @@ fn solveEllipse(w: &mut World, ji: usize, s: &JState, xa: Vec3, xb: Vec3, useBia
   let km = invOrZero(angK(s, axis));
   let rw = limitRow(cval, useBias, soft, invH);
   let lambda = -km * rw.massScale * (angJv(w, s, axis) + rw.bias) - rw.impulseScale * j.impEll;
-  let newImp = maxf(j.impEll + lambda, 0.);
+  let newImp = (j.impEll + lambda).max(0.);
   angApply(w, s, axis, newImp - j.impEll);
   j.impEll = newImp;
   j.ellDir = axis;
 }
 
 fn solveConeTwist(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness, invH: f32) {
-  let j = (w.joints.at(u32.from(ji)) as &mut Joint);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   // swing: the angle between the two x axes may not pass the cone
   let xa = s.fa * Vec3(1., 0., 0.);
   let xb = s.fb * Vec3(1., 0., 0.);
@@ -530,7 +530,7 @@ fn solveConeTwist(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Sof
     let km = invOrZero(angK(s, u));
     let rl = limitRow(j.coneAngle - swing, useBias, soft, invH);
     let lambda = -km * rl.massScale * (angJv(w, s, u) + rl.bias) - rl.impulseScale * j.impSwing;
-    let newImp = maxf(j.impSwing + lambda, 0.);
+    let newImp = (j.impSwing + lambda).max(0.);
     angApply(w, s, u, newImp - j.impSwing);
     j.impSwing = newImp;
   }
@@ -539,20 +539,20 @@ fn solveConeTwist(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Sof
   let km2 = invOrZero(angK(s, xa));
   let rlo = limitRow(tw - j.twistLo, useBias, soft, invH);
   let llo = -km2 * rlo.massScale * (angJv(w, s, xa) + rlo.bias) - rlo.impulseScale * j.impTwistLo;
-  let newLo = maxf(j.impTwistLo + llo, 0.);
+  let newLo = (j.impTwistLo + llo).max(0.);
   angApply(w, s, xa, newLo - j.impTwistLo);
   j.impTwistLo = newLo;
   let rhi = limitRow(j.twistHi - tw, useBias, soft, invH);
   let lhi = -km2 * rhi.massScale * (-angJv(w, s, xa) + rhi.bias) - rhi.impulseScale * j.impTwistHi;
-  let newHi = maxf(j.impTwistHi + lhi, 0.);
+  let newHi = (j.impTwistHi + lhi).max(0.);
   angApply(w, s, xa, -(newHi - j.impTwistHi));
   j.impTwistHi = newHi;
 }
 
 pub fn solveJoint(w: &mut World, ji: usize, useBias: bool, invH: f32, h: f32, soft: Softness) {
-  let kind = (w.joints.at(u32.from(ji)) as &mut Joint).kind;
-  let s = jointState(w, (w.joints.at(u32.from(ji)) as &mut Joint));
-  if (w.joints.at(u32.from(ji)) as &mut Joint).driveOn && kind != JointFixed && kind != JointSlider && kind != JointDistance {
+  let kind = w.joints.borrowMutAt(u32.from(ji)).unwrap().kind;
+  let s = jointState(w, w.joints.borrowMutAt(u32.from(ji)).unwrap());
+  if w.joints.borrowMutAt(u32.from(ji)).unwrap().driveOn && kind != JointFixed && kind != JointSlider && kind != JointDistance {
     solveDrive(w, ji, &s, h);
   }
   if kind == JointPoint {

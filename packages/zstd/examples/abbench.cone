@@ -1,0 +1,97 @@
+// Encode and decode, streamed (64 KiB in, 64 KiB out), best of 5 each, in
+// milliseconds, for the before/after of the byte-list ports. Run in release mode:
+//
+//   congo run --release examples/abbench.cone -- file
+
+mod abbench;
+
+import collections use *;
+import zstd use *;
+import time use *;
+import fs;
+import path use Path;
+import process;
+import stdio use *;
+import iobuf use IoBuf;
+
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  var buf = IoBuf(max);
+  let pre = buf.capacity() - max;
+  buf.setLen(pre);
+  let s = x.pull(&mut buf);
+  out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  s
+}
+
+fn main() i32 {
+  let args = process.args();
+  match fs.readFile(&Path.from(args[1usize].view())) {
+    case let Ok(file) { run(file.view().bytes()); }
+    case let Err(e) { printStr("cannot read\n"); }
+  }
+  0i32
+}
+
+fn run(data: &Array[u8]) {
+  var encBest = 0x7FFFFFFFFFFFFFFFi64;
+  var decBest = 0x7FFFFFFFFFFFFFFFi64;
+  var packed = List[u8]();
+  var r = 0;
+  while r < 5 {
+    packed.clear();
+    let t0 = Instant.now();
+    var c = Compressor.make(3);
+    var pos = 0usize;
+    var piece = List[u8].withCapacity(65536usize);
+    var st: Status = Status.NeedInput;
+    while st != Status.Done {
+      if st == Status.NeedInput {
+        let n = if data.len - pos < 65536usize {data.len - pos} else {65536usize};
+        c.feed(&data[pos..<pos + n]);
+        pos += n;
+        if pos == data.len { c.finish(); }
+      }
+      piece.clear();
+      st = pullN(&mut c, &mut piece, 65536usize);
+      packed.appendSlice(piece.view());
+    }
+    let ns = t0.elapsed().nanos();
+    if ns < encBest { encBest = ns; }
+    r += 1;
+  }
+  r = 0;
+  var total = 0usize;
+  while r < 5 {
+    let t0 = Instant.now();
+    var d = Decompressor.make();
+    var pos = 0usize;
+    var piece = List[u8].withCapacity(65536usize);
+    var st: Status = Status.NeedInput;
+    total = 0usize;
+    while st != Status.Done && st != Status.Failed {
+      if st == Status.NeedInput {
+        let n = if packed.len() - pos < 65536usize {packed.len() - pos} else {65536usize};
+        d.feed(&packed.view()[pos..<pos + n]);
+        pos += n;
+        if pos == packed.len() { d.finish(); }
+      }
+      piece.clear();
+      st = pullN(&mut d, &mut piece, 65536usize);
+      total += piece.len();
+    }
+    let ns = t0.elapsed().nanos();
+    if ns < decBest { decBest = ns; }
+    r += 1;
+  }
+  printStr("in ");
+  printInt(i64.from(data.len));
+  printStr(" packed ");
+  printInt(i64.from(packed.len()));
+  printStr(" out ");
+  printInt(i64.from(total));
+  printStr(" enc_us ");
+  printInt(encBest / 1000i64);
+  printStr(" dec_us ");
+  printInt(decBest / 1000i64);
+  printStr("\n");
+}

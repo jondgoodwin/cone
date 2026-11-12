@@ -538,7 +538,9 @@
 // is there when the poll returns (on both systems the loop takes the wake
 // before it looks). It is also how Target.Post reaches its loop. A waker keeps its loop's port open (not the
 // loop): one woken or posted to after its loop has died says so (false), and
-// a posted answer's buffer goes home.
+// a posted answer's buffer goes home. A waker also carries STANDING ASIDE
+// (raiseAside, waitAside, lowerAside, isAside, endAside: at Waker), where a
+// loop's owner waits while other threads take turns polling its loop.
 //
 // HANDLES. A Handle names a socket or a file the loop holds: an entry of the
 // loop's handle table and the entry's generation, plain data, copied freely.
@@ -667,8 +669,8 @@ mod iocore;
 import libc;
 import thread;
 import sync use Arc, Once, Mutex, Condvar, Sender, OneshotSender;
-import collections use List, String;
-import slots use SlotTable, Slot;
+import collections use Deque, List, String;
+import pools use GenPool, Handle as PoolHandle;
 import time use Instant, Duration, Timestamp;
 import iobuf use IoBuf, Bytes, Chain;
 import path use Path;
@@ -1202,6 +1204,15 @@ struct Port is Sendable {
   // The system calls posting made (a PostQueuedCompletionStatus, an eventfd
   // write), from any thread: the loop's 'posted' counter
   posts: Atomic[u64];
+  // 1 while the loop's thread stands aside, waiting on this word and not on
+  // the port (Waker's STANDING ASIDE): whatever is posted lowers it, and wakes
+  // that thread
+  aside: Atomic[u32];
+  // Windows: what that thread waits on, made at its first raiseAside: an event
+  // that ends the wait, and a timer of its own that keeps its time. A timed
+  // wait on the word itself would be the system's tick late
+  asideEvent: usize;
+  asideTimer: usize;
 
   // Its queue, changed under its lock through a shared reference
   fn lists(self: &) &mut Port {
@@ -1210,8 +1221,60 @@ struct Port is Sendable {
   }
 
   // Post a packet for the loop to take: its key, and a pointer that means
-  // what the key says. False if it could not be queued
+  // what the key says. False if it could not be queued. A thread standing
+  // aside is not in the port, so it is woken too: after the post, which its
+  // last look before it waits then sees if this load came too early
   fn send(self: &, key: usize, ov: *u8) bool {
+    let sent = self.sendPacket(key, ov);
+    self.endAside();
+    sent
+  }
+
+  // The thread standing aside, if one is, told to come back
+  fn endAside(self: &) {
+    if aside.load() != 0u32 && aside.swap(0u32) != 0u32 {
+      #if #os == .windows {SetEvent(asideEvent);} #else {sync.futexWake(&aside);}
+    }
+  }
+
+  // On the loop's thread. Windows: what it will wait on made, or nothing
+  // raised if that cannot be, and that thread goes on using the port
+  fn raiseAside(self: &) {
+    #if #os == .windows {
+      if asideEvent == 0usize {
+        let made = CreateEventW(null, 0i32, 0i32, null);
+        if made == 0usize {return;}
+        var tm = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
+        if tm == 0usize {
+          tm = CreateWaitableTimerExW(null, null, 0u32, timerAllAccess);
+        }
+        self.lists().asideEvent = made;
+        self.lists().asideTimer = tm;
+      }
+    }
+    aside.store(1u32);
+  }
+
+  // On the loop's thread: sleep at most d, or until the word is lowered. An
+  // event left set by a poster that was late ends one wait early, which is
+  // only a look more. The port's own timeout is the backstop, as in armFor
+  fn waitAside(self: &, d: Duration) {
+    #if #os == .windows {
+      if aside.load() == 0u32 {return;}
+      var hs = AsideHandles(asideEvent, asideTimer);
+      var n = 1u32;
+      if asideTimer != 0usize {
+        var due = 0i64 - (d.nanos() + 99i64) / 100i64;
+        if SetWaitableTimer(asideTimer, &due, 0i32, null, null, 0i32) != 0i32 {n = 2u32;}
+      }
+      WaitForMultipleObjects(n, &mut hs as *AsideHandles as *u8, 0i32,
+        u32.from((d.nanos() + 999999i64) / 1000000i64 + 1i64));
+    } #else {
+      sync.futexWaitTimeout(&aside, 1u32, d);
+    }
+  }
+
+  fn sendPacket(self: &, key: usize, ov: *u8) bool {
     #if #os == .windows {
       if key == keyWake {
         // A wake packet carries nothing, so one in the port serves every wake
@@ -1360,8 +1423,18 @@ struct Port is Sendable {
   // records is dropped (drainDead), and the port closed
   fn final(self: &uni) {
     self.drainDead();
-    #if #os == .windows {CloseHandle(handle);} #else {sysClose(fdOf(handle));}
+    #if #os == .windows {
+      CloseHandle(handle);
+      if asideEvent != 0usize {CloseHandle(asideEvent);}
+      if asideTimer != 0usize {CloseHandle(asideTimer);}
+    } #else {sysClose(fdOf(handle));}
   }
+}
+
+// The two handles a thread standing aside waits on, side by side for the wait
+struct AsideHandles {
+  event: usize;
+  timer: usize;
 }
 
 // A packet in the queue of a Linux Port
@@ -1380,6 +1453,37 @@ pub struct Waker {
   pub fn wake(self: &) bool {
     if port.closed.load() {return false;}
     port.send(keyWake, null)
+  }
+
+  // STANDING ASIDE, substrate for aio and not for programs. A blocked wait in the port takes every completion the
+  // moment the kernel raises it, so a thread waiting there is woken for each
+  // one even when another thread could have taken it without a switch: the
+  // completions a sending thread raises inside its own send (loopback TCP),
+  // which it would find by polling just after. So the thread that owns a Loop
+  // may stand aside: it leaves the port for a word of its own while other
+  // threads, by the owner's arrangement, have the Loop in turn and poll it
+  // (aio's THE I/O THREAD). The Loop stays one thread's at a time: this is
+  // only where its owner waits. Anything posted to the port ends the wait, as
+  // it would have ended the port's, so nothing posted waits for a poller, and
+  // only the kernel's own completions are left to them.
+  //
+  // raiseAside, then a look at the port that does not wait, then waitAside
+  // until it answers false; lowerAside, then a look again, before waiting in
+  // the port. A poster sees the word raised, or its packet is before that look
+  pub fn raiseAside(self: &) {port.raiseAside();}
+  pub fn lowerAside(self: &) {port.aside.store(0u32);}
+  pub fn isAside(self: &) bool {port.aside.load() != 0u32}
+
+  // The thread standing aside told to come back, with nothing posted
+  pub fn endAside(self: &) {port.endAside();}
+
+  // Wait for at most d, in real time (on Windows a high-resolution timer of its
+  // own, and no process-wide timer resolution; on Linux the timed futex keeps
+  // it already), anything posted ending it at once: whether the word is still
+  // raised
+  pub fn waitAside(self: &, d: Duration) bool {
+    port.waitAside(d);
+    port.aside.load() != 0u32
   }
 
   // Post an answer to the loop: false, and the answer dropped (its buffer

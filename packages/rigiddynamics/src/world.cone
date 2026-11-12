@@ -39,8 +39,8 @@ pub struct World {
   pub substepSeconds: f32;           // the time of the last sub-step (joint loads are impulses over it)
 
   pub fn make() World {
-    World(Vec3(0., -9.81, 0.), Settings.standard(), List[Shape](), Bodies.make(),
-      Joints.make(), List[List[u32]](), SweepAndPrune(), List[Contact](), List[Contact](), List[BodyPair](),
+    World(Vec3(0., -9.81, 0.), Settings.standard(), List[Shape](), Bodies(),
+      Joints(), List[List[u32]](), SweepAndPrune(), List[Contact](), List[Contact](), List[BodyPair](),
       List[u32](), List[u32](), List[Event](), 0u32, 1u32, 1. / 60., 0., 0usize, 0usize, 0, false, 0.)
   }
 
@@ -55,16 +55,12 @@ pub struct World {
   // ------------------------------------------------------------------ bodies
 
   // The body in cell i (the solver's index, from a contact, a joint or the broad phase: always a live cell)
-  pub fn bd(self: &, i: usize) &mut Body { bodies.at(u32.from(i)) as &mut Body }
-
-  // The body an id names, or null if it is stale or none (the getters below answer a neutral value for it,
-  // the setters do nothing)
-  fn bodyOf(self: &, id: BodyId) *Body { bodies.get(id) }
+  pub fn bd(self: &mut, i: usize) &mut Body { bodies.borrowMutAt(u32.from(i)).unwrap() }
 
   // The cell of the body an id names, or NoBody if it is stale or none: validated once, here, when a
   // contact or a joint is made
   pub fn cellOf(self: &, id: BodyId) u32 {
-    if bodies.get(id) as usize == 0usize { NoBody } else { id.index }
+    if self.isAlive(id) { id.index } else { NoBody }
   }
 
   // The id of the live body in cell i (the id a contact's cell is named by outside)
@@ -72,83 +68,72 @@ pub struct World {
 
   // The shape's origin and orientation (what a renderer places the mesh by)
   pub fn transformOf(self: &, id: BodyId) Rigid {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { return Rigid.identity(); }
-    let b = p as &Body;
-    Rigid(b.pos - b.rot * b.comLocal, b.rot)
+    match bodies.borrow(id) {
+      case var Some(b) { Rigid(b.pos - b.rot * b.comLocal, b.rot) }
+      case is None { Rigid.identity() }
+    }
   }
 
   pub fn positionOf(self: &, id: BodyId) Vec3 { self.transformOf(id).pos }
   pub fn rotationOf(self: &, id: BodyId) Quat {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { Quat.identity() } else { (p as &Body).rot }
+    match bodies.borrow(id) { case var Some(b) {b.rot} case is None {Quat.identity()} }
   }
   pub fn centerOfMass(self: &, id: BodyId) Vec3 {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { zero3() } else { (p as &Body).pos }
+    match bodies.borrow(id) { case var Some(b) {b.pos} case is None {zero3()} }
   }
   pub fn linearVelocity(self: &, id: BodyId) Vec3 {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { zero3() } else { (p as &Body).linVel }
+    match bodies.borrow(id) { case var Some(b) {b.linVel} case is None {zero3()} }
   }
   pub fn angularVelocity(self: &, id: BodyId) Vec3 {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { zero3() } else { (p as &Body).angVel }
+    match bodies.borrow(id) { case var Some(b) {b.angVel} case is None {zero3()} }
   }
   pub fn isAsleep(self: &, id: BodyId) bool {
-    let p = self.bodyOf(id);
-    p as usize != 0usize && (p as &Body).asleep
+    match bodies.borrow(id) { case var Some(b) {b.asleep} case is None {false} }
   }
-  pub fn isAlive(self: &, id: BodyId) bool { self.bodyOf(id) as usize != 0usize }
+  pub fn isAlive(self: &, id: BodyId) bool { match bodies.borrow(id) { case is Some {true} case is None {false} } }
   pub fn massOf(self: &, id: BodyId) f32 {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { 0. } else { (p as &Body).mass }
+    match bodies.borrow(id) { case var Some(b) {b.mass} case is None {0.} }
   }
   pub fn userDataOf(self: &, id: BodyId) u32 {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { 0u32 } else { (p as &Body).userData }
+    match bodies.borrow(id) { case var Some(b) {b.userData} case is None {0u32} }
   }
   pub fn materialOf(self: &, id: BodyId) PhysMaterial {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { PhysMaterial.standard() } else { (p as &Body).material }
+    match bodies.borrow(id) { case var Some(b) {b.material} case is None {PhysMaterial.standard()} }
   }
   pub fn bodyCount(self: &) usize { bodies.len() }
 
   // The velocity of the body's material at a world point (a platform's, under a rider)
   pub fn pointVelocity(self: &, id: BodyId, p: Vec3) Vec3 {
-    let q = self.bodyOf(id);
-    if q as usize == 0usize { return zero3(); }
-    let b = q as &Body;
-    b.linVel + b.angVel.cross(p - b.pos)
+    match bodies.borrow(id) {
+      case var Some(b) { b.linVel + b.angVel.cross(p - b.pos) }
+      case is None { zero3() }
+    }
   }
 
   fn velMargin(self: &, i: usize, dt: f32) f32 {
-    let b = self.bd(i);
-    minf(settings.maxSpeculative, (b.linVel.length() + b.angVel.length() * b.radius) * dt)
+    let b = bodies.borrowAt(u32.from(i)).unwrap();
+    settings.maxSpeculative.min((b.linVel.length() + b.angVel.length() * b.radius) * dt)
   }
 
   fn bodyBox(self: &, i: usize, dt: f32) Aabb3 {
-    let b = self.bd(i);
+    let b = bodies.borrowAt(u32.from(i)).unwrap();
     let xf = Rigid(b.pos - b.rot * b.comLocal, b.rot);
     shapes[usize.from(b.shape)].bounds(xf).expand(settings.speculativeDistance * 0.5 + self.velMargin(i, dt))
   }
 
   pub fn setMaterial(self: &mut, id: BodyId, m: PhysMaterial) {
-    let p = self.bodyOf(id);
-    if p as usize != 0usize { (p as &mut Body).material = m; }
+    match bodies.borrowMut(id) { case var Some(b) { b.material = m; } case is None {} }
   }
   pub fn setLayers(self: &mut, id: BodyId, layer: u32, mask: u32) {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { return; }
-    let b = p as &mut Body;
+    if !self.isAlive(id) { return; }
+    let b = self.bd(usize.from(id.index));
     b.layer = layer;
     b.mask = mask;
     bp.remove(id.index);
     bp.add(id.index, self.bodyBox(usize.from(id.index), 0.), layer, mask, b.motion == MotionStatic);
   }
   pub fn setSensor(self: &mut, id: BodyId, sensor: bool) {
-    let p = self.bodyOf(id);
-    if p as usize != 0usize { (p as &mut Body).sensor = sensor; }
+    match bodies.borrowMut(id) { case var Some(b) { b.sensor = sensor; } case is None {} }
   }
 
   // Make a body. A body of a shape with no volume (a triangle mesh, a
@@ -174,7 +159,7 @@ pub struct World {
     let mid = lb.center();
     let toFar = Vec3((mid.x - com.x).abs() + ext.x, (mid.y - com.y).abs() + ext.y, (mid.z - com.z).abs() + ext.z);
     let radius = toFar.length();
-    let minExtent = minf(ext.x, minf(ext.y, ext.z));
+    let minExtent = ext.x.min(ext.y.min(ext.z));
     let pos = def.pos + def.rot * com;
     let body = Body(motion, def.shape, def.layer, def.mask, def.sensor, def.allowSleep, def.bullet, def.userData,
       pos, def.rot, com, def.linVel, def.angVel, mass, if dynamic { 1. / mass } else { 0. }, inertia, invI,
@@ -196,7 +181,7 @@ pub struct World {
     var k = 0usize;
     while k < jointsOf[i].len() {
       let ji = *jointsOf[i][k];                // every listed joint is live (removeJoint and breakJoints unlist)
-      let jp = joints.at(ji) as &Joint;
+      let jp = joints.borrowAt(ji).unwrap();
       let other = if jp.a == id { jp.b } else { jp.a };
       if other != id { self.unindexJoint(other, ji); }
       joints.removeAt(ji);
@@ -230,9 +215,8 @@ pub struct World {
 
   // Put the body's shape origin and orientation somewhere else (a teleport; the velocity is kept)
   pub fn setTransform(self: &mut, id: BodyId, pos: Vec3, rot: Quat) {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { return; }
-    let b = p as &mut Body;
+    if !self.isAlive(id) { return; }
+    let b = self.bd(usize.from(id.index));
     b.rot = rot;
     b.pos = pos + rot * b.comLocal;
     self.touchBox(id.index);
@@ -240,16 +224,14 @@ pub struct World {
   }
 
   pub fn setLinearVelocity(self: &mut, id: BodyId, v: Vec3) {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { return; }
-    let b = p as &mut Body;
+    if !self.isAlive(id) { return; }
+    let b = self.bd(usize.from(id.index));
     b.linVel = v;
     if b.motion == MotionDynamic { self.wakeAt(id.index); }
   }
   pub fn setAngularVelocity(self: &mut, id: BodyId, v: Vec3) {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { return; }
-    let b = p as &mut Body;
+    if !self.isAlive(id) { return; }
+    let b = self.bd(usize.from(id.index));
     b.angVel = v;
     if b.motion == MotionDynamic { self.wakeAt(id.index); }
   }
@@ -257,9 +239,8 @@ pub struct World {
   // Drive a kinematic body to a pose over 'dt' seconds: sets the velocities that get it there
   // (it carries what stands on it and shoves what it meets); call each step
   pub fn moveKinematic(self: &mut, id: BodyId, pos: Vec3, rot: Quat, dt: f32) {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { return; }
-    let b = p as &mut Body;
+    if !self.isAlive(id) { return; }
+    let b = self.bd(usize.from(id.index));
     let target = pos + rot * b.comLocal;
     b.linVel = (target - b.pos) * (1. / dt);
     var dq = rot * b.rot.conjugate();
@@ -270,43 +251,38 @@ pub struct World {
   }
 
   pub fn applyForce(self: &mut, id: BodyId, f: Vec3) {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { return; }
-    let b = p as &mut Body;
+    if !self.isAlive(id) { return; }
+    let b = self.bd(usize.from(id.index));
     if b.motion != MotionDynamic { return; }
     b.force = b.force + f;
     self.wakeAt(id.index);
   }
   pub fn applyForceAt(self: &mut, id: BodyId, f: Vec3, p: Vec3) {
-    let q = self.bodyOf(id);
-    if q as usize == 0usize { return; }
-    let b = q as &mut Body;
+    if !self.isAlive(id) { return; }
+    let b = self.bd(usize.from(id.index));
     if b.motion != MotionDynamic { return; }
     b.force = b.force + f;
     b.torque = b.torque + (p - b.pos).cross(f);
     self.wakeAt(id.index);
   }
   pub fn applyTorque(self: &mut, id: BodyId, t: Vec3) {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { return; }
-    let b = p as &mut Body;
+    if !self.isAlive(id) { return; }
+    let b = self.bd(usize.from(id.index));
     if b.motion != MotionDynamic { return; }
     b.torque = b.torque + t;
     self.wakeAt(id.index);
   }
   // An instant change of velocity: impulse p (kg m/s)
   pub fn applyImpulse(self: &mut, id: BodyId, p: Vec3) {
-    let q = self.bodyOf(id);
-    if q as usize == 0usize { return; }
-    let b = q as &mut Body;
+    if !self.isAlive(id) { return; }
+    let b = self.bd(usize.from(id.index));
     if b.motion != MotionDynamic { return; }
     b.linVel = b.linVel + p * b.invMass;
     self.wakeAt(id.index);
   }
   pub fn applyImpulseAt(self: &mut, id: BodyId, p: Vec3, at: Vec3) {
-    let q = self.bodyOf(id);
-    if q as usize == 0usize { return; }
-    let b = q as &mut Body;
+    if !self.isAlive(id) { return; }
+    let b = self.bd(usize.from(id.index));
     if b.motion != MotionDynamic { return; }
     b.linVel = b.linVel + p * b.invMass;
     b.angVel = b.angVel + rotateInertia(b.rot, b.invInertiaLocal) * (at - b.pos).cross(p);
@@ -321,9 +297,8 @@ pub struct World {
 
   // Wake the sleeping island the body in cell 'id' belongs to (every body of its sleep group)
   fn wakeAt(self: &mut, id: u32) {
-    let p0 = bodies.at(id);
-    if p0 as usize == 0usize { return; }     // an empty cell: a dead joint's body was destroyed
-    let b0 = p0 as &Body;
+    if !bodies.isLive(id) { return; }     // an empty cell: a dead joint's body was destroyed
+    let b0 = bodies.borrowAt(id).unwrap();
     if !b0.asleep { return; }
     let g = b0.sleepGroup;
     var k = bodies.nextLive(0u32);
@@ -342,9 +317,8 @@ pub struct World {
 
   // Put a body (and everything resting on or joined to it) to sleep now
   pub fn sleep(self: &mut, id: BodyId) {
-    let p = self.bodyOf(id);
-    if p as usize == 0usize { return; }
-    let b = p as &mut Body;
+    if !self.isAlive(id) { return; }
+    let b = self.bd(usize.from(id.index));
     if b.motion != MotionDynamic || b.asleep { return; }
     b.asleep = true;
     b.linVel = zero3();
@@ -397,13 +371,13 @@ pub struct World {
   }
 
   // The joint in cell i (the solver's index, from activeJoints or jointsOf: always a live cell)
-  pub fn jt(self: &, i: usize) &mut Joint { joints.at(u32.from(i)) as &mut Joint }
+  pub fn jt(self: &mut, i: usize) &mut Joint { joints.borrowMutAt(u32.from(i)).unwrap() }
 
   // The joint an id names; only after jointLive(j)
-  fn jr(self: &, j: JointId) &mut Joint { joints.get(j) as &mut Joint }
+  fn jr(self: &mut, j: JointId) &mut Joint { joints.borrowMut(j).unwrap() }
 
   // Does the id name a joint that still exists?
-  pub fn jointLive(self: &, j: JointId) bool { joints.get(j) as usize != 0usize }
+  pub fn jointLive(self: &, j: JointId) bool { match joints.borrow(j) { case is Some {true} case is None {false} } }
 
   // A ball and socket: the two bodies share the world point
   pub fn addPointJoint(self: &mut, a: BodyId, b: BodyId, anchor: Vec3) JointId {
@@ -487,10 +461,10 @@ pub struct World {
     jj.ellOn = true;
     jj.ellU = uDir.normalize();
     jj.ellV = vDir.normalize();
-    jj.ellFlex = maxf(flex, 0.001);
-    jj.ellExt = maxf(ext, 0.001);
-    jj.ellAbd = maxf(abd, 0.001);
-    jj.ellAdd = maxf(add, 0.001);
+    jj.ellFlex = flex.max(0.001);
+    jj.ellExt = ext.max(0.001);
+    jj.ellAbd = abd.max(0.001);
+    jj.ellAdd = add.max(0.001);
     jj.impEll = 0.;
   }
   pub fn setTwistLimits(self: &mut, j: JointId, lo: f32, hi: f32) {
@@ -507,8 +481,7 @@ pub struct World {
     var k = 0usize;
     let n = usize.from(joints.bound());
     while k < n {
-      let p = joints.at(u32.from(k));
-      if p as usize != 0usize && !(p as &Joint).collide { noCollideJoints = true; }
+      if joints.isLive(u32.from(k)) && !joints.borrowAt(u32.from(k)).unwrap().collide { noCollideJoints = true; }
       k = k + 1usize;
     }
   }
@@ -570,7 +543,7 @@ pub struct World {
   // The force and torque joint j carried in the last sub-step, N and N m
   pub fn jointLoad(self: &, j: JointId) (f32, f32) {
     if !self.jointLive(j) { return (0., 0.); }
-    jointLoadOf(self.jr(j), substepSeconds)
+    jointLoadOf(joints.borrow(j).unwrap(), substepSeconds)
   }
 
   // Remove the breakable joints loaded past their limits in the sub-step just solved
@@ -578,7 +551,7 @@ pub struct World {
     var a = 0usize;
     while a < activeJoints.len() {
       let ji = usize.from(*activeJoints[a]);
-      let jt = joints.at(u32.from(ji)) as &Joint;
+      let jt = joints.borrowAt(u32.from(ji)).unwrap();
       if jt.breakForce < 0. && jt.breakTorque < 0. { a = a + 1usize; continue; }
       let load = jointLoadOf(jt, h);
       let byForce = jt.breakForce >= 0. && load.0 > jt.breakForce;
@@ -603,16 +576,16 @@ pub struct World {
   }
   pub fn hingeAngleOf(self: &, j: JointId) f32 {
     if !self.jointLive(j) { return 0.; }
-    hingeAngle(self, self.jr(j))
+    hingeAngle(self, joints.borrow(j).unwrap())
   }
   // How far apart the joint's two anchors are now (zero when it is satisfied), metres
   pub fn jointError(self: &, j: JointId) f32 {
     if !self.jointLive(j) { return 0.; }
-    jointState(self, self.jr(j)).d.length()
+    jointState(self, joints.borrow(j).unwrap()).d.length()
   }
   pub fn sliderOffsetOf(self: &, j: JointId) f32 {
     if !self.jointLive(j) { return 0.; }
-    sliderOffset(self, self.jr(j))
+    sliderOffset(self, joints.borrow(j).unwrap())
   }
 
   // Does a joint that stops collision join the bodies in cells a and b? (a joint between them is in a's list)
@@ -620,7 +593,7 @@ pub struct World {
     let l = &jointsOf[usize.from(a)];
     var k = 0usize;
     while k < l.len() {
-      let j = self.jt(usize.from(*l[k]));
+      let j = joints.borrowAt(*l[k]).unwrap();
       if !j.collide && ((j.a == a && j.b == b) || (j.a == b && j.b == a)) { return true; }
       k = k + 1usize;
     }
@@ -652,7 +625,7 @@ pub struct World {
   // Advance by a frame's time in fixed steps (Fiedler, "Fix Your Timestep"); returns
   // the steps taken. The leftover is 'accumulator', over fixedDt the blend for drawing.
   pub fn advance(self: &mut, frameDt: f32) i32 {
-    accumulator = accumulator + minf(frameDt, 0.25);
+    accumulator = accumulator + frameDt.min(0.25);
     var n = 0;
     while accumulator >= fixedDt {
       self.step(fixedDt);
@@ -678,9 +651,8 @@ pub struct World {
     let n = usize.from(bodies.bound());
     var i = 0usize;
     while i < n {
-      let p = bodies.at(u32.from(i));
-      if p as usize != 0usize {
-        let b = p as &mut Body;
+      if bodies.isLive(u32.from(i)) {
+        let b = self.bd(i);
         b.dpos = zero3();
         b.dq = Quat.identity();
         b.color = 0u64;
@@ -698,9 +670,8 @@ pub struct World {
     let n = usize.from(bodies.bound());
     var i = 0usize;
     while i < n {
-      let p = bodies.at(u32.from(i));
-      if p as usize != 0usize {
-        let b = p as &Body;
+      if bodies.isLive(u32.from(i)) {
+        let b = self.bd(i);
         if isAwakeDynamic(b) || isMovingKinematic(b) { bp.update(u32.from(i), self.bodyBox(i, dt)); }
       }
       i = i + 1usize;
@@ -708,7 +679,7 @@ pub struct World {
   }
 
   fn isMover(self: &, i: usize) bool {
-    let b = self.bd(i);
+    let b = bodies.borrowAt(u32.from(i)).unwrap();
     isAwakeDynamic(b) || isMovingKinematic(b)
   }
 
@@ -744,8 +715,8 @@ pub struct World {
         self.retire(oldIdx, a, b);
         oldIdx = groupEnd;
       } else {
-        let bA = bodies.at(u32.from(ia)) as &Body;       // the body pointers, once for the pair
-        let bB = bodies.at(u32.from(ib)) as &Body;
+        let bA = bodies.borrowAt(u32.from(ia)).unwrap();       // the body pointers, once for the pair
+        let bB = bodies.borrowAt(u32.from(ib)).unwrap();
         let asleepA = bA.asleep;
         let asleepB = bB.asleep;
         let margin = settings.speculativeDistance + self.velMargin(ia, dt) + self.velMargin(ib, dt);
@@ -996,10 +967,9 @@ pub struct World {
     var ji = 0usize;
     let nj = usize.from(joints.bound());      // cells in index order, the order the solver sweeps them
     while ji < nj {
-      let jp = joints.at(u32.from(ji));
-      if jp as usize != 0usize {
-        let ja = (jp as &Joint).a;
-        let jb = (jp as &Joint).b;
+      if joints.isLive(u32.from(ji)) {
+        let ja = joints.borrowAt(u32.from(ji)).unwrap().a;
+        let jb = joints.borrowAt(u32.from(ji)).unwrap().b;
         let aw = isAwakeDynamic(self.bd(usize.from(ja)));
         let bw = isAwakeDynamic(self.bd(usize.from(jb)));
         if aw && self.bd(usize.from(jb)).asleep { self.wakeAt(jb); }
@@ -1017,9 +987,8 @@ pub struct World {
     let n = usize.from(bodies.bound());
     var i = 0usize;
     while i < n {
-      let p = bodies.at(u32.from(i));
-      if p as usize != 0usize && isAwakeDynamic(p as &Body) {
-        let b = p as &mut Body;
+      if bodies.isLive(u32.from(i)) && isAwakeDynamic(self.bd(i)) {
+        let b = self.bd(i);
         var v = b.linVel + (g * b.gravityFactor + b.force * b.invMass) * h;
         var w = b.angVel + b.invInertia * b.torque * h;
         if b.gyro {
@@ -1045,9 +1014,8 @@ pub struct World {
     let n = usize.from(bodies.bound());
     var i = 0usize;
     while i < n {
-      let p = bodies.at(u32.from(i));
-      if p as usize != 0usize && !(p as &Body).asleep && (p as &Body).motion != MotionStatic {
-        let b = p as &mut Body;
+      if bodies.isLive(u32.from(i)) && !self.bd(i).asleep && self.bd(i).motion != MotionStatic {
+        let b = self.bd(i);
         if b.motion == MotionDynamic || isMovingKinematic(b) {
           let dp = b.linVel * h;
           b.pos = b.pos + dp;
@@ -1074,7 +1042,7 @@ pub struct World {
       let mA = self.bd(usize.from(self.jt(ji).a)).mass;
       let mB = self.bd(usize.from(self.jt(ji).b)).mass;
       let reduced = if mA <= 0. { mB } else if mB <= 0. { mA } else { mA * mB / (mA + mB) };
-      let rho = if jsoft.massScale >= 1. || jsoft.massScale <= 0. || reduced <= 0. { 1. } else { reduced / maxf(mA, mB) };
+      let rho = if jsoft.massScale >= 1. || jsoft.massScale <= 0. || reduced <= 0. { 1. } else { reduced / mA.max(mB) };
       let a2 = jsoft.massScale / (1. - jsoft.massScale);
       let js = if rho >= 1. { jsoft } else { Softness(jsoft.biasRate, a2 / (a2 + rho), rho / (a2 + rho)) };
       solveJoint(self, ji, useBias, invH, h, js);
@@ -1096,7 +1064,7 @@ pub struct World {
     let substeps = if settings.substeps < 1 { 1 } else { settings.substeps };
     let h = dt / f32.from(substeps);
     let invH = 1. / h;
-    let hz = minf(settings.contactHertz, 0.25 * invH);
+    let hz = settings.contactHertz.min(0.25 * invH);
     let soft = makeSoft(hz, settings.contactDamping, h);
     let softStatic = makeSoft(2. * hz, settings.contactDamping, h);
     let jsoft = makeSoft(settings.jointHertz, settings.jointDamping, h);
@@ -1186,9 +1154,8 @@ pub struct World {
     let n = usize.from(bodies.bound());
     var i = 0usize;
     while i < n {
-      let p = bodies.at(u32.from(i));
-      if p as usize != 0usize && isAwakeDynamic(p as &Body) {
-        let b = p as &mut Body;
+      if bodies.isLive(u32.from(i)) && isAwakeDynamic(self.bd(i)) {
+        let b = self.bd(i);
         b.force = zero3();
         b.torque = zero3();
       }
@@ -1215,18 +1182,16 @@ pub struct World {
     var ji = 0usize;
     let nj = usize.from(joints.bound());
     while ji < nj {
-      let jp = joints.at(u32.from(ji));
-      if jp as usize != 0usize {
-        jointed.set(usize.from((jp as &Joint).a), true);
-        jointed.set(usize.from((jp as &Joint).b), true);
+      if joints.isLive(u32.from(ji)) {
+        jointed.set(usize.from(joints.borrowAt(u32.from(ji)).unwrap().a), true);
+        jointed.set(usize.from(joints.borrowAt(u32.from(ji)).unwrap().b), true);
       }
       ji = ji + 1usize;
     }
     i = 0usize;
     while i < n {
-      let pb = bodies.at(u32.from(i));
-      if pb as usize == 0usize { i = i + 1usize; continue; }
-      let b = pb as &mut Body;
+      if !bodies.isLive(u32.from(i)) { i = i + 1usize; continue; }
+      let b = self.bd(i);
       if isAwakeDynamic(b) && !b.sensor {
         let now = Rigid(b.pos - b.rot * b.comLocal, b.rot);
         let disp = now.pos - b.startPos;
@@ -1254,7 +1219,7 @@ pub struct World {
             k = k + 1usize;
           }
           if bestT <= 1. {
-            let t = maxf(0., bestT - settings.linearSlop / dist);
+            let t = (bestT - settings.linearSlop / dist).max(0.);
             let origin = b.startPos + disp * t;
             let rot = b.startRot.slerp(b.rot, t);
             let newPos = origin + rot * b.comLocal;
@@ -1291,14 +1256,13 @@ pub struct World {
     }
     i = 0usize;
     while i < n {
-      let p = bodies.at(u32.from(i));
-      if p as usize != 0usize && isAwakeDynamic(p as &Body) {
-        let b = p as &mut Body;
+      if bodies.isLive(u32.from(i)) && isAwakeDynamic(self.bd(i)) {
+        let b = self.bd(i);
         // Box2D's measure: the faster of its speed and its farthest point's speed from spin
-        let slow = maxf(b.linVel.length(), b.angVel.length() * b.radius) < settings.sleepSpeed;
+        let slow = b.linVel.length().max(b.angVel.length() * b.radius) < settings.sleepSpeed;
         if slow && b.allowSleep { b.sleepTime = b.sleepTime + dt; } else { b.sleepTime = 0.; }
         let r = usize.from(findSet(&mut parent, u32.from(i)));
-        minSleep.set(r, minf(*minSleep[r], if b.allowSleep { b.sleepTime } else { 0. }));
+        minSleep.set(r, (*minSleep[r]).min(if b.allowSleep { b.sleepTime } else { 0. }));
       }
       i = i + 1usize;
     }
@@ -1325,9 +1289,8 @@ pub struct World {
     while i < n { groups.push(0u32); i = i + 1usize; }
     i = 0usize;
     while i < n {
-      let p = bodies.at(u32.from(i));
-      if p as usize != 0usize && isAwakeDynamic(p as &Body) {
-        let b = p as &mut Body;
+      if bodies.isLive(u32.from(i)) && isAwakeDynamic(self.bd(i)) {
+        let b = self.bd(i);
         let r = usize.from(findSet(&mut parent, u32.from(i)));
         if *minSleep[r] >= settings.timeToSleep {
           if *groups[r] == 0u32 { groups.set(r, nextGroup); nextGroup = nextGroup + 1u32; }

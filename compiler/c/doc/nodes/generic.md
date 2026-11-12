@@ -1128,6 +1128,30 @@ the member (`instmeth`) and its depth (`instdepth`, `structInstanceNote`); a cha
 reaching `TypeCheckLoopMax` is refused by `structInstanceNest` with `ErrorInstDepth`,
 once per chain, naming its first instances, the last, and the member.
 
+**A nested instance of its own template waits for a use (Bug 71, option D).** An
+instance whose template already appears in its parent chain (`instfrom`, read through
+an enum's variants to the enum) is `memlazy`: its members are not checked when it is
+laid out. Only these two things check them (`structMembersUse`):
+- a call of a method on the instance (`fnCallLowerMethodOn`);
+- a construction of it outside the member check that created it (`typeLitTypeCheck`;
+  the check that made `Wrap[Option[R]]` builds it in `lift` without needing it).
+
+Every other instance stays eager, and `ErrorInstDepth` stays as the backstop: a chain
+that goes on by calls (a method calling `lift().deep()`) is refused at the limit as
+before. Code generation skips a `memlazy` instance's members that were never checked
+(`genlMemberUnchecked`), and generates those some other route checked: a method named
+as a function value, a vtable slot, a closure's call, a trait-bounded call, the
+instance's `final` (checked with its layout, since the drop of a local calls it).
+
+**What goes unreported.** An error inside a member of such an instance that no call
+reaches is not reported for that instance. The first instance of the chain is
+checked whole and its body is the template's, so an error that does not depend on
+the argument is reported there; an error that does (`self.v + 1`, fine for `i64`, not
+for `Option[i64]`) surfaces only when a call reaches that instance. The same holds for
+what the members check does beyond bodies: the requirements of a trait the instance
+claims, and its overload sets, are verified when a use releases it. A generic trait's
+instance is always eager.
+
 **Macros differ from generics in three ways**: a value argument is never type
 checked in place before it is substituted or bound, an expansion is never
 memoized, and the type arguments are given at the use — `m[i32](x)`,

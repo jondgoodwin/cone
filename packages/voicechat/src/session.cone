@@ -86,14 +86,6 @@ fn containsLetter(s: &str) bool {
   false
 }
 
-fn bytesOf(s: &str) List[u8] {
-  var out = List[u8]();
-  let b: &Array[u8] = s;
-  var i = 0usize;
-  while i < b.len { out.push(b[i]); i = i + 1usize; }
-  out
-}
-
 // The ids that open a user turn: what closes the reply before it (when there was one), <|im_start|> and "user\n". The
 // turn's words and its end (`tailTokens`) follow. Together they are what `ModelTokens.userTurn` makes; the text is
 // encoded apart from "user\n", which the pre-tokenizer does anyway (a newline never joins the letters after it).
@@ -105,8 +97,7 @@ pub fn headTokens(vocab: &llmrun.ModelTokens, closeFirst: bool) List[u32] {
     while i < c.len() { out.push(*c[i]); i = i + 1usize; }
   }
   out.push(vocab.imStart);
-  let user = bytesOf("user\n");
-  vocab.text(user.view(), &mut out);
+  vocab.text("user\n", &mut out);
   out
 }
 
@@ -114,16 +105,13 @@ pub fn headTokens(vocab: &llmrun.ModelTokens, closeFirst: bool) List[u32] {
 pub fn tailTokens(vocab: &llmrun.ModelTokens) List[u32] {
   var out = List[u32]();
   out.push(vocab.imEnd);
-  let nl = bytesOf("\n");
-  let nn = bytesOf("\n\n");
-  let assistant = bytesOf("assistant\n");
-  vocab.text(nl.view(), &mut out);
+  vocab.text("\n", &mut out);
   out.push(vocab.imStart);
-  vocab.text(assistant.view(), &mut out);
+  vocab.text("assistant\n", &mut out);
   out.push(vocab.think);
-  vocab.text(nn.view(), &mut out);
+  vocab.text("\n\n", &mut out);
   out.push(vocab.thinkEnd);
-  vocab.text(nn.view(), &mut out);
+  vocab.text("\n\n", &mut out);
   out
 }
 
@@ -283,16 +271,14 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   let sampler = llmrun.TokenSampler.make(f32.from(o.temperature), o.topK, f32.from(o.topP));
 
   // ---- the conversation starts with the system turn; a short exchange warms the kernels, then the cache is wound back
-  let systemBytes = bytesOf(o.system.view());
-  let sysTurn = vocab.systemTurn(systemBytes.view());
+  let sysTurn = vocab.systemTurn(o.system.view());
   match engine.feed(device, sysTurn.view(), false) {
     case is Ok {}
     case let Err(m) { say((String() <- m).view()); say("\n"); return 1i32; }
   }
   let afterSystem = engine.pos;
   {
-    let hello = bytesOf("Hello.");
-    let hi = vocab.userTurn(hello.view(), false);
+    let hi = vocab.userTurn("Hello.", false);
     var logits = List[f32]();
     match engine.feed(device, hi.view(), true) {
       case var Ok(l) { logits = l; }
@@ -495,9 +481,8 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
 
     // THINK: the user's words and the end of the turn into the cache (its start is already there). Without room for
     // them and a reply, a new conversation.
-    let userBytes = bytesOf(spoken.view());
     var turn = List[u32]();
-    vocab.text(userBytes.view(), &mut turn);
+    vocab.text(spoken.view(), &mut turn);
     {
       let tail = tailTokens(&vocab);
       var i = 0usize;
