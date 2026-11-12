@@ -1,0 +1,74 @@
+// Packets are IoBufs: what 'poll' hands out, what a link carries, what the
+// gate's 'denied' makes. Their bytes are checked against the layout (numbers
+// most significant byte first, the counts filled in after the body), and a
+// packet goes through a link as it is.
+
+mod packets;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant;
+import netmsg use *;
+import iobuf use IoBuf;
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+fn byteAt(b: &IoBuf, i: usize) u64 {u64.from(b.view()[i])}
+
+fn main() i32 {
+  // A payload packet with one reliable message and one value
+  var a = ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64));
+  a.sendReliable("first");
+  a.sendLatest(7u16, "xy");
+  var pk = Packets();
+  var evs = List[CoreEvent]();
+  a.poll(at(5i64), &mut pk, &mut evs);
+  expectUInt(u64.from(pk.len()), 1u64, "one packet");
+  let p = &pk[0usize];
+  // 23 header + (4 + 5) message + (6 + 2) value
+  expectUInt(u64.from(p.len()), 40u64, "the layout's size");
+  expectUInt(byteAt(p, 5usize), 0u64, "the session, most significant byte first");
+  expectUInt(byteAt(p, 11usize), 0x55u64, "...");
+  expectUInt(byteAt(p, 12usize), 0x55u64, "...to the last byte");
+  expectUInt(byteAt(p, 21usize), 1u64, "the reliable count, filled in after the body");
+  expectUInt(byteAt(p, 22usize), 1u64, "the latest count, filled in after the body");
+  expectUInt(byteAt(p, 25usize), 0u64, "the message length, high byte");
+  expectUInt(byteAt(p, 26usize), 5u64, "and low byte");
+  expectUInt(byteAt(p, 27usize), 102u64, "the message bytes follow");
+  expectUInt(byteAt(p, 32usize), 0u64, "the value's stream, high byte");
+  expectUInt(byteAt(p, 33usize), 7u64, "and low byte");
+  expectUInt(byteAt(p, 39usize), 121u64, "the value's last byte is the packet's");
+  var b = ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64));
+  expect(b.receive(p.view(), at(6i64), &mut evs), "and the other end takes it");
+  expectUInt(u64.from(evs.len()), 2u64, "both things arrive");
+
+  // A disconnect packet
+  var c = ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64));
+  c.close();
+  var dk = Packets();
+  c.poll(at(1i64), &mut dk, &mut evs);
+  expect(dk.len() > 0usize, "closing sends disconnect packets");
+  expectUInt(u64.from(dk[0usize].len()), 13u64, "of 13 bytes");
+
+  // A packet through a link comes out the same, and a duplicate is a copy of it
+  var link = LinkSim.make(LinkConfig.perfect(), 1u64);
+  var one = IoBuf(16usize);
+  _ = one.append("hello");
+  link.send(at(0i64), one);
+  var out = Packets();
+  link.deliver(at(0i64), &mut out);
+  expectUInt(u64.from(out.len()), 1u64, "delivered");
+  expectUInt(u64.from(out[0usize].len()), 5u64, "whole");
+  var dup = LinkSim.make(LinkConfig(0u32, 0i64, 0i64, 1000u32, 0u32, 0i64), 1u64);
+  dup.send(at(0i64), copyPacket("abc"));
+  var two = Packets();
+  dup.deliver(at(0i64), &mut two);
+  expectUInt(u64.from(two.len()), 2u64, "a duplicated packet arrives twice");
+  expectUInt(u64.from(two[1usize].len()), 3u64, "each whole");
+
+  // The refusal datagram
+  let denied = ChallengeGate.denied(0x0102030405060708u64);
+  expectUInt(u64.from(denied.len()), 13u64, "a Denied is 13 bytes");
+  expectUInt(byteAt(&denied, 12usize), 8u64, "its salt ends the datagram");
+  done()
+}
