@@ -1,0 +1,120 @@
+// Signed division, addition, multiplication and text against Python's integers (not this package):
+// truncating quotients computed with sign rules checked against Rust's '/' and '%' definitions
+// (-7/2 = -3 rem -1), Euclidean ones as Rust's div_euclid/rem_euclid (-7 rem_euclid 2 = 1).
+
+mod signed;
+
+import testing use *;
+import collections use *;
+import bigint use BigInt, BigUint, BigUintErrorKind;
+
+fn big(t: &str) BigInt {
+  match BigInt.parse(t) {
+    case let Ok(n) { n }
+    case is Err { BigInt.zero() }
+  }
+}
+
+fn text(n: &BigInt) String {
+  var s = String();
+  s <- *n;
+  s
+}
+
+fn okText(r: &Result[BigInt, bigint.BigUintError]) String {
+  match r {
+    case let Ok(n) { text(n) }
+    case is Err { String() <- "error" }
+  }
+}
+
+fn check(a: &str, b: &str, q: &str, r: &str, qe: &str, re: &str) {
+  let x = big(a);
+  let y = big(b);
+  match x.divmod(&y) {
+    case let Ok(qr) {
+      expectStr(text(&qr.quot).view(), q, "quot");
+      expectStr(text(&qr.rem).view(), r, "rem");
+    }
+    case is Err { expect(false, "divmod refused"); }
+  }
+  expectStr(okText(&x.divEuclid(&y)).view(), qe, "divEuclid");
+  expectStr(okText(&x.remEuclid(&y)).view(), re, "remEuclid");
+}
+
+fn main() i32 {
+  check("7", "2", "3", "1", "3", "1");
+  check("-7", "2", "-3", "-1", "-4", "1");
+  check("7", "-2", "-3", "1", "-3", "1");
+  check("-7", "-2", "3", "-1", "4", "1");
+  check("6", "3", "2", "0", "2", "0");
+  check("-6", "3", "-2", "0", "-2", "0");
+  check("6", "-3", "-2", "0", "-2", "0");
+  check("-6", "-3", "2", "0", "2", "0");
+  check("0", "5", "0", "0", "0", "0");
+  check("0", "-5", "0", "0", "0", "0");
+  check("1", "7", "0", "1", "0", "1");
+  check("-1", "7", "0", "-1", "-1", "6");
+  check("1", "-7", "0", "1", "0", "1");
+  check("-1", "-7", "0", "-1", "1", "6");
+  check("10000000000000000000000000000000000012345", "-100000000000000000007", "-99999999999999999993", "12394", "-99999999999999999993", "12394");
+  check("-10000000000000000000000000000000000012345", "100000000000000000007", "-99999999999999999993", "-12394", "-99999999999999999994", "99999999999999987613");
+  check("-10000000000000000000000000000000000012345", "-100000000000000000007", "99999999999999999993", "-12394", "99999999999999999994", "99999999999999987613");
+  check("-1606938044258990275541962092341162602522202993782792835301376", "18446744073709551616", "-87112285931760246646623899502532662132736", "0", "-87112285931760246646623899502532662132736", "0");
+  check("1606938044258990275541962092341162602522202993782792835301376", "-18446744073709551615", "-87112285931760246651346265985402307346688", "256", "-87112285931760246651346265985402307346688", "256");
+  check("-18446744073709551616", "18446744073709551616", "-1", "0", "-1", "0");
+  check("-18446744073709551617", "18446744073709551616", "-1", "-1", "-2", "18446744073709551615");
+
+  // Add, sub, mul: signs
+  expectStr(text(&big("-5").add(&big("3"))).view(), "-2", "-5+3");
+  expectStr(text(&big("5").add(&big("-5"))).view(), "0", "5+-5 is 0, not -0");
+  expectStr(text(&big("-5").sub(&big("-5"))).view(), "0", "-5 - -5");
+  expectStr(text(&big("3").sub(&big("5"))).view(), "-2", "3-5 never fails");
+  expectStr(text(&big("-3").mul(&big("-5"))).view(), "15", "-3 * -5");
+  expectStr(text(&big("-3").mul(&big("0"))).view(), "0", "-3 * 0 is 0, not -0");
+  expect(!big("-3").mul(&big("0")).isNegative(), "no negative zero from mul");
+  expect(!big("-0").isNegative(), "-0 parses to zero");
+  expect(big("-0") == big("0"), "-0 equals 0");
+  // Ordering and hashing
+  expect(big("-10").cmp(&big("-2")) < 0i32, "-10 < -2");
+  expect(big("-1").cmp(&big("0")) < 0i32, "-1 < 0");
+  expect(big("2").cmp(&big("10")) < 0i32, "2 < 10");
+  expect(big("3").cmp(&big("-300")) > 0i32, "3 !< -300");
+  var h1 = Hasher.withSeed(1u64); big("-12345678901234567890123").hash(&mut h1);
+  var h2 = Hasher.withSeed(1u64); big("-12345678901234567890123").hash(&mut h2);
+  expect(h1.finish() == h2.finish(), "equal numbers hash alike");
+  var h3 = Hasher.withSeed(1u64); big("12345678901234567890123").hash(&mut h3);
+  expect(h1.finish() != h3.finish(), "sign enters the hash");
+  // i64
+  expectStr(text(&BigInt.fromI64(-9223372036854775807i64 - 1i64)).view(), "-9223372036854775808", "i64 min");
+  match BigInt.fromI64(-9223372036854775807i64 - 1i64).toI64() {
+    case let Some(v) { expect(v == -9223372036854775807i64 - 1i64, "i64 min round trip"); }
+    case is None { expect(false, "i64 min fits"); }
+  }
+  match big("9223372036854775808").toI64() {
+    case is Some { expect(false, "2^63 does not fit"); }
+    case is None { }
+  }
+  // Text
+  expectStr(text(&big("-0012")).view(), "-12", "leading zeros");
+  match BigInt.parse("-") {
+    case is Ok { expect(false, "lone minus refused"); }
+    case let Err(e) { expect(e.kind == BigUintErrorKind.Empty, "lone minus is empty"); }
+  }
+  match BigInt.parse("-12x") {
+    case is Ok { expect(false, "bad digit refused"); }
+    case let Err(e) { expectUInt(u64.from(e.position), 3u64, "bad digit position counts the minus"); }
+  }
+  match BigInt.parse("--5") {
+    case is Ok { expect(false, "double minus refused"); }
+    case let Err(e) { expectUInt(u64.from(e.position), 1u64, "second minus at 1"); }
+  }
+  match big("-5").divmod(&BigInt.zero()) {
+    case is Ok { expect(false, "divide by zero refused"); }
+    case let Err(e) { expect(e.kind == BigUintErrorKind.DivideByZero, "divide by zero kind"); }
+  }
+  var hx = String();
+  big("-255").toTextBase(&uni hx.textOut(), 16u32);
+  expectStr(hx.view(), "-ff", "-255 in hex");
+  done()
+}
