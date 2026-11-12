@@ -532,24 +532,27 @@ pub struct Driver {
   // false while it holds a record unread (the Layer's contract: every byte was
   // taken), so the end is never fed ahead of a record the credit stopped
   fn feed(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
-    let c = self.conns.borrowMutAt(i).unwrap();
-    let need = self.feedNeed(c);
-    c.feedHeld = false;
-    while c.decided {
+    // The layer's own calls may reshape the pool, so each use of the entry borrows it afresh
+    let need = self.feedNeed(self.conns.borrowAt(i).unwrap());
+    self.conns.borrowMutAt(i).unwrap().feedHeld = false;
+    while self.conns.borrowAt(i).unwrap().decided {
       // A core that has ended takes and drops what it is given, so it never holds
+      let c = self.conns.borrowMutAt(i).unwrap();
       if coreCredit(c) < need && !coreClosed(c) {
         c.feedHeld = true;
         break;
       }
-      let b = c.layer.plainOut();
+      let b = self.conns.borrowMutAt(i).unwrap().layer.plainOut();
       if b.len() == 0usize {break;}
-      coreInput(c, b, now);
+      coreInput(self.conns.borrowMutAt(i).unwrap(), b, now);
     }
-    if c.layer.peerEnded() && !c.eofFed {
+    let ended = self.conns.borrowAt(i).unwrap().layer.peerEnded();
+    let c = self.conns.borrowMutAt(i).unwrap();
+    if ended && !c.eofFed {
       c.eofFed = true;
       coreInput(c, IoBuf(), now);
     }
-    if c.layer.failed() {
+    if self.conns.borrowAt(i).unwrap().layer.failed() {
       self.layerFailed(lp, i);
     }
   }
@@ -578,7 +581,10 @@ pub struct Driver {
   fn layerCall(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.conns.borrowMutAt(i).unwrap();
     if !c.callOp.isNone() || !c.layer.wantsCall() {return;}
-    c.callOp = lp.submit(c.layer.takeCall(), Target.Here(self.tok(kCall, i, c.gen)));
+    let gen = c.gen;
+    let call = self.conns.borrowMutAt(i).unwrap().layer.takeCall();
+    let op = lp.submit(call, Target.Here(self.tok(kCall, i, gen)));
+    self.conns.borrowMutAt(i).unwrap().callOp = op;
   }
 
   // A client's next waiting request, when the connection is free for it
@@ -998,15 +1004,16 @@ pub struct Driver {
   // core had written is in a send submitted). Until the protocol is chosen
   // only the layer's own bytes go
   fn transmit(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
-    let c = self.conns.borrowMutAt(i).unwrap();
-    c.allTaken = false;
-    if c.shut {return;}
-    while c.sendsOut < cfg.sendDepth {
-      c.allTaken = false;
+    // The layer's and the loop's calls may reshape the pool, so each use of the entry borrows it afresh
+    self.conns.borrowMutAt(i).unwrap().allTaken = false;
+    if self.conns.borrowAt(i).unwrap().shut {return;}
+    while self.conns.borrowAt(i).unwrap().sendsOut < cfg.sendDepth {
+      self.conns.borrowMutAt(i).unwrap().allTaken = false;
       var wire = Chain.make(noBound);
       while wire.segments() < gatherSegments && wire.len() < gatherBytes {
-        let b = c.layer.wireOut(now);
+        let b = self.conns.borrowMutAt(i).unwrap().layer.wireOut(now);
         if b.len() == 0usize {
+          let c = self.conns.borrowMutAt(i).unwrap();
           if !c.decided {
             c.allTaken = true;
             break;
@@ -1018,7 +1025,7 @@ pub struct Driver {
           }
           while true {
             match plain.popFront() {
-              case var Some(p) {c.layer.plainIn(p);}
+              case var Some(p) {self.conns.borrowMutAt(i).unwrap().layer.plainIn(p);}
               else {break;}
             }
           }
@@ -1027,18 +1034,23 @@ pub struct Driver {
         _ = wire.push(b);
       }
       if wire.isEmpty() {break;}
+      let c = self.conns.borrowMutAt(i).unwrap();
       c.sendSeq = c.sendSeq + 1u64;
+      let sock = c.sock;
+      let gen = c.gen;
       if wire.segments() == 1usize {
         match wire.popFront() {
-          case var Some(b) {lp.submit(Op.Send(c.sock, b), Target.Here(self.tok(kSend, i, c.gen)));}
+          case var Some(b) {lp.submit(Op.Send(sock, b), Target.Here(self.tok(kSend, i, gen)));}
           else {}
         }
       } else {
-        lp.submit(Op.SendChain(c.sock, wire), Target.Here(self.tok(kSend, i, c.gen)));
+        lp.submit(Op.SendChain(sock, wire), Target.Here(self.tok(kSend, i, gen)));
       }
-      c.sendsOut = c.sendsOut + 1u32;
+      let c2 = self.conns.borrowMutAt(i).unwrap();
+      c2.sendsOut = c2.sendsOut + 1u32;
       // A layer's own bytes (a TLS handshake's) are not the request's
-      if c.current != noEntry && c.layer.isOpen() {(self.reqs.borrowMutAt(c.current).unwrap()).wrote = true;}
+      let cur = c2.current;
+      if cur != noEntry && c2.layer.isOpen() {(self.reqs.borrowMutAt(cur).unwrap()).wrote = true;}
     }
   }
 
@@ -1088,8 +1100,11 @@ pub struct Driver {
     }
     if t < forever() && (c.timer.isNone() || t < c.timerAt) {
       if !c.timer.isNone() {lp.cancel(c.timer);}
-      c.timer = lp.after(t, Target.Here(self.tok(kTimer, i, c.gen)));
-      c.timerAt = t;
+      let gen = c.gen;
+      let tm = lp.after(t, Target.Here(self.tok(kTimer, i, gen)));
+      let c2 = self.conns.borrowMutAt(i).unwrap();
+      c2.timer = tm;
+      c2.timerAt = t;
     }
   }
 
@@ -1118,8 +1133,10 @@ pub struct Driver {
     if c.recvOut || c.readyOut || c.eof || c.shut {return;}
     if coreCredit(c) < cfg.recvSize || c.layer.wireRoom() < cfg.recvSize {return;}
     if !reading && cfg.idleRecvReady && !c.readyHit {
-      lp.submit(Op.RecvReady(c.sock), Target.Here(self.tok(kReady, i, c.gen)));
-      c.readyOut = true;
+      let sock = c.sock;
+      let gen = c.gen;
+      lp.submit(Op.RecvReady(sock), Target.Here(self.tok(kReady, i, gen)));
+      self.conns.borrowMutAt(i).unwrap().readyOut = true;
       return;
     }
     c.readyHit = false;
@@ -1132,10 +1149,14 @@ pub struct Driver {
         return;
       }
     };
-    c.recvOp = lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
-    c.recvOut = true;
-    c.recvReading = reading;
-    c.recvAsked = false;
+    let sock = c.sock;
+    let gen = c.gen;
+    let op = lp.submit(Op.Recv(sock, b), Target.Here(self.tok(kRecv, i, gen)));
+    let c2 = self.conns.borrowMutAt(i).unwrap();
+    c2.recvOp = op;
+    c2.recvOut = true;
+    c2.recvReading = reading;
+    c2.recvAsked = false;
   }
 
   // Close the connection once the core says it is over and all it sent has
@@ -1191,10 +1212,14 @@ pub struct Driver {
         return;
       }
     };
-    c.recvOp = lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
-    c.recvOut = true;
-    c.recvReading = false;
-    c.recvAsked = false;
+    let sock = c.sock;
+    let gen = c.gen;
+    let op = lp.submit(Op.Recv(sock, b), Target.Here(self.tok(kRecv, i, gen)));
+    let c2 = self.conns.borrowMutAt(i).unwrap();
+    c2.recvOp = op;
+    c2.recvOut = true;
+    c2.recvReading = false;
+    c2.recvAsked = false;
   }
 
   // ---------------------------------------------------------------------------
