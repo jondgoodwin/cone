@@ -77,7 +77,7 @@ pub fn bagWindow(ui: &mut Ui, item: u32, x: f32, y: f32, cols: u32) usize {
   let size = ui.theme.num(ui.theme.find("slot"), P_SIZE, 0u32, 44.);
   let gap = ui.theme.num(ui.theme.find("slot"), P_SPACING, 0u32, 3.);
   let rows = (n + cols - 1u32) / cols;
-  let w = maxf(150., f32.from(cols) * (size + gap) - gap + 8. + 12.);
+  let w = (f32.from(cols) * (size + gap) - gap + 8. + 12.).max(150.);
   let h = f32.from(rows) * (size + gap) - gap + 8. + 12. + 28.;
   let win = window(ui, name.view(), x, y, w, h);
   windowSetResizable(ui, win, false);
@@ -167,7 +167,7 @@ pub fn hotbarStartCooldown(ui: &mut Ui, slot: usize, seconds: f32) {
 // The fraction of the cooldown still to run, 1 just started, 0 ready
 pub fn hotbarCooldown(ui: &Ui, slot: usize) f32 {
   let d = ui.nodes[slot].data;
-  if ui.hotslots[d].cdTotal <= 0. {0.} else {clampf(ui.hotslots[d].cdLeft / ui.hotslots[d].cdTotal, 0., 1.)}
+  if ui.hotslots[d].cdTotal <= 0. {0.} else {(ui.hotslots[d].cdLeft / ui.hotslots[d].cdTotal).clamp(0., 1.)}
 }
 
 pub fn hotbarBinding(ui: &Ui, slot: usize) u32 {ui.hotslots[ui.nodes[slot].data].bind}
@@ -244,7 +244,7 @@ fn hotbarUpdate(ui: &mut Ui, dt: f32) {
   var i = 0usize;
   while i < ui.hotslots.len() {
     if ui.hotslots[i].cdLeft > 0. {
-      ui.hotslots[i].cdLeft = maxf(0., ui.hotslots[i].cdLeft - dt);
+      ui.hotslots[i].cdLeft = (ui.hotslots[i].cdLeft - dt).max(0.);
     }
     i = i + 1usize;
   }
@@ -292,7 +292,7 @@ pub fn minimapSetView(ui: &mut Ui, id: usize, cu: f32, cv: f32, zoom: f32) {
   let d = ui.nodes[id].data;
   ui.minimaps[d].cu = cu;
   ui.minimaps[d].cv = cv;
-  ui.minimaps[d].zoom = clampf(zoom, 0.25, 16.);
+  ui.minimaps[d].zoom = zoom.clamp(0.25, 16.);
 }
 
 pub fn minimapSetShape(ui: &mut Ui, id: usize, shape: u32) {ui.minimaps[ui.nodes[id].data].shape = shape;}
@@ -327,13 +327,13 @@ pub fn minimapView(ui: &Ui, id: usize) Aabb2 {
 fn minimapEvent(ui: &mut Ui, node: usize, ev: &Ev) bool {
   let d = ui.nodes[node].data;
   if ev.kind == EK_CLICK && ev.button == BTN_LEFT {
-    let fx = clampf((ev.x - ui.nodes[node].gx) / maxf(1., ui.nodes[node].w), 0., 1.);
-    let fy = clampf((ev.y - ui.nodes[node].gy) / maxf(1., ui.nodes[node].h), 0., 1.);
+    let fx = ((ev.x - ui.nodes[node].gx) / ui.nodes[node].w.max(1.)).clamp(0., 1.);
+    let fy = ((ev.y - ui.nodes[node].gy) / ui.nodes[node].h.max(1.)).clamp(0., 1.);
     ui.emit(UE_MAP_CLICK, node, NIL, fx, fy, 0i32, 0u32);
     return true;
   }
   if ev.kind == EK_WHEEL {
-    let z = clampf(ui.minimaps[d].zoom * (if ev.dy > 0. {1.25} else {0.8}), 0.25, 16.);
+    let z = (ui.minimaps[d].zoom * (if ev.dy > 0. {1.25} else {0.8})).clamp(0.25, 16.);
     ui.minimaps[d].zoom = z;
     ui.emit(UE_MAP_ZOOM, node, NIL, z, 0., 0i32, 0u32);
     return true;
