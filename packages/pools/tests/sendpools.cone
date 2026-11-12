@@ -1,0 +1,49 @@
+// A GenPool and a DensePool move between actors: each is built here, then handed
+// to an actor's behaviour, which owns it afterwards and sums it. Values worked
+// out by hand: GenPool 10, 20, 30 less the 20 is 40; DensePool 1, 2, 3 is 6.
+
+mod sendpools;
+
+import actors;
+import pools use *;
+import stdio use *;
+
+actor Sink {
+  total: i64;
+
+  fn init(self: &new) {
+    *self = Self(0i64);
+  }
+
+  pub async fn takeGen(self, p: GenPool[i64]) {
+    each v in p.iter() { total = total + *v; }
+    printStr("gen ");
+    printInt(total);
+    printStr("\n");
+  }
+
+  pub async fn takeDense(self, p: DensePool[i64]) {
+    var sum = 0i64;
+    each v in p.iter() { sum = sum + *v; }
+    printStr("dense ");
+    printInt(sum);
+    printStr("\n");
+  }
+}
+
+fn main() {
+  let s = Sink();
+  var g = GenPool[i64]();
+  g.add(10i64);
+  let mid = g.add(20i64);
+  g.add(30i64);
+  g.remove(mid);
+  s.takeGen(g);
+  actors.waitUntilIdle();
+  var d = DensePool[i64]();
+  d.add(1i64);
+  d.add(2i64);
+  d.add(3i64);
+  s.takeDense(d);
+  actors.waitUntilIdle();
+}
