@@ -1358,12 +1358,13 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
     used = 0usize;
   }
 
-  // Move the value at position index out, or None when index is out of range (as
-  // 'get' answers), the values on the shorter side of it closing the gap: [a, b, c, d]
-  // with 1 removed gives b and leaves [a, c, d]. At most half the values move, and
-  // the order of the rest is kept. Every borrow into the deque is then stale.
-  pub fn removeAt(self: &mut, index: usize) Option[T] {
-    if index >= used { return None; }
+  // Move the value at position index out, the values on the shorter side of it
+  // closing the gap: [a, b, c, d] with 1 removed gives b and leaves [a, c, d]. At
+  // most half the values move, and the order of the rest is kept. A program error
+  // if index is not below the length, reported at the line of the caller. Every
+  // borrow into the deque is then stale.
+  pub fn removeOne overload remove(self: &mut, index: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) T {
+    if index >= used { outOfRange(index, used, file, line); }
     let value = mem.readRaw(ptr + self.slot(index));
     if index < used - index - 1usize {
       // Fewer values before it: they move one place toward the back, and the front moves on
@@ -1383,14 +1384,13 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
       }
     }
     used = used - 1usize;
-    Some[T](value)
+    value
   }
 
-  // Keep the values that 'pred(x)' says are so of (a borrow of it) and finalize the
-  // rest, in one pass front to back that moves each kept value once; the order of the
+  // Drop every value that 'pred(x)' says is so of (a borrow of it), finalizing each
+  // first to last, in one pass that moves each kept value once; the order of the
   // kept is unchanged and the block is kept. 'pred' is given each value once, in order.
-  // (Rust's 'retain'; List's 'removeIf' is the same pass with the sense turned round.)
-  pub fn retain[F: fn(x: &T) bool](self: &mut, pred: &F) {
+  pub fn removeIf[F: fn(x: &T) bool](self: &mut, pred: &F) {
     let n = used;
     // The values are counted only as they are settled, so none that is finalized is counted
     used = 0usize;
@@ -1398,11 +1398,11 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
     var r = 0usize;
     while r < n {
       if pred((ptr + self.slot(r)) as &T) {
-        if w != r { mem.moveRaw(ptr + self.slot(w), ptr + self.slot(r), 1usize); }
-        w = w + 1usize;
+        if mem.needsFinal[T]() { mem.finalize(ptr + self.slot(r)); }
       }
       else {
-        if mem.needsFinal[T]() { mem.finalize(ptr + self.slot(r)); }
+        if w != r { mem.moveRaw(ptr + self.slot(w), ptr + self.slot(r), 1usize); }
+        w = w + 1usize;
       }
       r = r + 1usize;
     }
