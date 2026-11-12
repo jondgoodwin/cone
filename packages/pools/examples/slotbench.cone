@@ -460,7 +460,7 @@ struct FixNew {
 }
 
 fn fixNew(n: usize, seq: bool) FixNew {
-  var t = GenPool[Row].make(perSlab);
+  var t = GenPool[Row]();
   let hs = libc.malloc(n * 8usize) as *Handle;
   var i = 0usize;
   while i < n {
@@ -492,8 +492,8 @@ fn lookupNew(n: usize, seq: bool, byHandle: bool, m: &mut Meas) u64 {
   while true {
     var k = 0usize;
     while k < 4096usize {
-      let p = if byHandle { f.t.get(*(f.hq + pos)) } else { f.t.at(*(f.ids + pos)) };
-      sink = sink + ((*p).w[0] + (*p).w[7]);
+      let p = if byHandle { f.t.borrow(*(f.hq + pos)).unwrap() } else { f.t.borrowAt(*(f.ids + pos)).unwrap() };
+      sink = sink + (p.w[0] + p.w[7]);
       pos = pos + 1usize;
       if pos == f.m { pos = 0usize; }
       k = k + 1usize;
@@ -576,13 +576,13 @@ fn thrashNew(m: &mut Meas) u64 {
     if m.expired() { break; }
   }
   m.end(ops, u64.from(f.t.len()));
-print <- "  (thrash: slabs held ", f.t.slabCount(), ")\n";
+print <- "  (thrash: cells used ", f.t.bound(), ")\n";
   u64.from(f.t.len())
 }
 
 // 6b: 100,000 parts up, 90% down, how many slabs are held
 fn unloadNew(scattered: bool) usize {
-  var t = GenPool[Part].make(perSlab);
+  var t = GenPool[Part]();
   let hs = libc.malloc(100000usize * 8usize) as *Handle;
   var i = 0usize;
   while i < 100000usize {
@@ -596,7 +596,8 @@ fn unloadNew(scattered: bool) usize {
     if !keep { t.remove(*(hs + i)); }
     i = i + 1usize;
   }
-t.slabCount()
+// one contiguous block: nothing is given back, so what it holds is all it ever used
+t.bound() / 512usize + 1usize
 }
 
 // ---- the runs ----
