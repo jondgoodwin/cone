@@ -1769,10 +1769,10 @@ static void pwBoundHolds(INode *val, INode *type, PathSet *holds) {
 // LoanEscapeStore or LoanEscapeCall); 'beyond' when it may land past where
 // the reference points; 'landing' the slots of the field of a struct
 // declaring lifetimes it lands in, 0 where that is not known. Where the
-// function names no lifetimes, every borrow in its signature shares one, and
-// only what a parameter points at holding no borrow but ''static' ones takes
-// none the caller lent (loanStoredStatic): a caller hands it only a global's
-// loans (pwCallStores). 'byparm' when the reference is a parameter or a path
+// function names no lifetimes, every borrow in its signature is the one
+// unnamed lifetime, a name like any other, so this is the same check: what a
+// parameter points at holding no borrow but ''static' ones takes none the
+// caller lent, and a caller hands it only a global's loans (pwCallStores). 'byparm' when the reference is a parameter or a path
 // of field steps from one (pwByParm of the variable at its root); a local
 // holding a call's result, or a copy of a parameter, is not.
 static int pwIsParm(VarDclNode *var);
@@ -1788,18 +1788,18 @@ static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t la
     VarDclNode *through;
     pwNoteReach(stored, PwReachStored);
     // A node of an arena a caller keeps takes no other parameter's borrow where
-    // the function names no lifetime (every borrow in its signature would share
-    // one) or the arena was reached through a struct's field, whatever it
+    // the arena was reached through a struct's field, whatever the function
     // names: the arena's finalizers may read it after the caller's value is
     // gone. Only what the arena itself was lent is checked here.
-    if (loanArenaNodeBarred(refholds, pwSig->lifenamed, byparm, readsnothing)) {
+    if (loanArenaNodeBarred(refholds, byparm, readsnothing)) {
         uint32_t foreign = loanArenaApart(stored, refholds, NULL, &through);
         if (foreign)
             loanApart(node, foreign, through, how);
         return;
     }
-    uint32_t apart = pwSig->lifenamed ? loanStoredApart(pwSig, stored, refholds, beyond, landing, &through)
-        : loanStoredStatic(stored, refholds, beyond, &through);
+    // Named or elided, one path: an elided borrow is the signature's unnamed
+    // lifetime, a name like any other (lifetime.h)
+    uint32_t apart = loanStoredApart(pwSig, stored, refholds, beyond, landing, &through);
     if (apart)
         loanApart(node, apart, through, how);
 }
@@ -2336,7 +2336,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         // What a writable borrow points at, where it holds no borrow but
         // ''static' ones and no writable borrow leads further, takes only a
         // global's loans: the callee may store nothing else there
-        // (loanStoredStatic)
+        // (loanStoredApart)
         int globalonly = isref && depth == 1 && !arenaplace && !arenaparm && !itypeCarriesEndingBorrow(storedin);
         PathSet *others = NULL;
         // A writable borrow of an arena among the arguments is a place the
@@ -2378,7 +2378,14 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
                     itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp),
                     !(permGetFlags(((RefNode *)iexpGetTypeDcl(site))->perm) & MayWrite)))
                 carried = pathSetWithout(carried, own);
-            others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
+            // One written name ties this argument to the writable one, as the
+            // elided signature's one name does: what the place shows only
+            // unnamed (loanStoredApart) takes it whole
+            if (parmtype && pointee && i < sig->parms->used && !arenaplace && !arenaparm
+                    && loanSameOwnName(parmtype, ((IExpNode *)nodesGet(sig->parms, i))->vtype) && lifeHolds(pointee, NULL))
+                others = pathSetUnion(others, carried);
+            else
+                others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
         }
         if (others == NULL)
             continue;
@@ -3598,13 +3605,7 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
                 uint32_t apart;
                 if (local)
                     loanEscape(ret->exp, local, LoanEscapeReturn);
-                else if (pwSig->lifenamed && (apart = loanCallerApart(pwSig, carried, pwSig->rettype)))
-                    loanApart(ret->exp, apart, NULL, LoanEscapeReturn);
-                // A result holding no borrow but ''static' ones holds none
-                // the caller lent, named or not: a caller takes it to carry
-                // only a global's loans (pwCall)
-                else if (!pwSig->lifenamed && itypeCarriesBorrow(pwSig->rettype)
-                        && !itypeCarriesEndingBorrow(pwSig->rettype) && (apart = loanNotGlobalIn(carried)))
+                else if ((apart = loanCallerApart(pwSig, carried, pwSig->rettype)))
                     loanApart(ret->exp, apart, NULL, LoanEscapeReturn);
                 else
                     pwBoundHolds(ret->exp, pwSig->rettype, carried);
