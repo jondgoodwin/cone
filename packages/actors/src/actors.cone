@@ -4843,18 +4843,20 @@ fn moveQueue(s: *Sched, w: *Worker) bool {
   }
   (*last).link = nullHeader();
   injectPush(s, first, last, count);
-  monitorWakesTotal.addOrdered(1u64, MemOrder.Relaxed);
+  monitorFindsTotal.addOrdered(1u64, MemOrder.Relaxed);
   monitorMovedTotal.addOrdered(count, MemOrder.Relaxed);
   true
 }
 
-// A TEST HOOK: whether the monitor is parked now (THE MONITOR), and the tick
-// it sleeps now, in microseconds, 0 with no monitor (tests/monitor.cone)
+// A TEST HOOK, not part of the API (tests/monitor.cone): whether the monitor
+// is parked now (THE MONITOR)
 pub fn monitorParked() bool {
   let s = running.load() as *Sched;
   s as usize != 0usize && (*s).monitor.load() != 0u32
 }
 
+// A TEST HOOK, not part of the API (tests/monitor.cone): the tick the monitor
+// sleeps now, in microseconds, 0 with no monitor
 pub fn monitorTick() u32 {
   let s = running.load() as *Sched;
   if s as usize == 0usize || (*s).monitorMicros == 0u32 {
@@ -5108,7 +5110,7 @@ pub struct Stats {
   pub parks: u64 = 0u64;        // times a worker slept on its park word (THE PARK WORD)
   pub reparks: u64 = 0u64;      // returns from that sleep with nobody having chosen the worker, which slept again at once
   pub marksSpent: u64 = 0u64;   // times a notify chose a worker already leaving the park with work seen: it woke nobody new
-  pub monitorWakes: u64 = 0u64; // the monitor's finds: times it found a worker holding one turn for a whole tick with actors waiting in its queue, and moved the queue to the inject queue (THE MONITOR)
+  pub monitorFinds: u64 = 0u64; // the monitor's finds: times it found a worker holding one turn for a whole tick with actors waiting in its queue, and moved the queue to the inject queue (THE MONITOR)
   pub monitorMoved: u64 = 0u64; // the actors those moves took off the queues
 }
 
@@ -5121,7 +5123,7 @@ let chosenSpinCap: Atomic[u32];
 let chosenInjectEvery: Atomic[u32];
 let chosenWakeOnPush: Atomic[u32];
 let chosenMonitorMicros: Atomic[u32];
-let monitorWakesTotal: Atomic[u64];   // the monitor's finds, queues it moved (Relaxed); the monitor is the one writer, and stats() reads
+let monitorFindsTotal: Atomic[u64];   // the monitor's finds, queues it moved (Relaxed); the monitor is the one writer, and stats() reads
 let monitorMovedTotal: Atomic[u64];   // the actors it moved (Relaxed), likewise
 let monitorTickNow: Atomic[u32];      // the monitor's tick now, in microseconds (Relaxed), likewise
 
@@ -5179,7 +5181,7 @@ fn @initpure init() {
   chosenInjectEvery = Atomic[u32].of(defaultInjectEvery);
   chosenWakeOnPush = Atomic[u32].of(0u32);
   chosenMonitorMicros = Atomic[u32].of(defaultMonitorMicros);
-  monitorWakesTotal = Atomic[u64].of(0u64);
+  monitorFindsTotal = Atomic[u64].of(0u64);
   monitorMovedTotal = Atomic[u64].of(0u64);
   monitorTickNow = Atomic[u32].of(0u32);
   statSlots = Atomic[usize].of(0usize);
@@ -5527,7 +5529,7 @@ pub fn stats() Stats {
     st.marksSpent = st.marksSpent + (*slot).marksSpent.loadOrdered(MemOrder.Relaxed);
     i = i + 1u32;
   }
-  st.monitorWakes = monitorWakesTotal.loadOrdered(MemOrder.Relaxed);
+  st.monitorFinds = monitorFindsTotal.loadOrdered(MemOrder.Relaxed);
   st.monitorMoved = monitorMovedTotal.loadOrdered(MemOrder.Relaxed);
   st
 }

@@ -1,0 +1,88 @@
+// Ping-pong, timed: two actors pass a ball back and forth a million times
+// (a million messages), and the program prints how long the runtime took,
+// from before the first actor started the workers to the end of finalAll(),
+// which waits for quiescence and stops them, and so how many messages a
+// second. Build it optimised to measure:
+//
+//   congo run --release packages/actors/examples/pingpong.cone
+//
+// An argument, the number of workers, overrides the default of one per
+// logical processor: '-- 1' runs everything on one worker.
+
+mod ppstat;
+
+import stdio use *;
+import actors;
+import time use Instant;
+
+const balls = 1000000u64;
+
+// A decimal number's value, from its digits
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+actor Player {
+  peer: Option[Player];
+
+  fn init(self: &new) {
+    *self = Self(None[Player]);
+  }
+
+  pub async fn meet(self, p: Player) {
+    peer = Some[Player](p);
+  }
+
+  pub async fn ball(self, n: u64) {
+    if n + 1u64 < balls {
+      match peer {
+        case let Some(p) {p.ball(n + 1u64);}
+        case is None[Player] {}
+      }
+    } else {
+      match peer {
+        case let Some(p) {p.leave();}
+        case is None[Player] {}
+      }
+      peer = None;
+    }
+  }
+
+  pub async fn leave(self) {
+    peer = None;
+  }
+}
+
+fn main(argc: i32, argv: **u8) {
+  initAll();
+  var workers = 0u32;
+  if argc > 1i32 {
+    workers = digits(*(argv + 1usize));
+  }
+  actors.configure(actors.Options(workers: workers));
+  let t0 = Instant.now();
+  {
+    let ping = Player();
+    let pong = Player();
+    ping.meet(pong);
+    pong.meet(ping);
+    ping.ball(0u64);
+  }
+  finalAll();
+  let ns = u64.from(t0.elapsed().nanos());
+  let st = actors.stats();
+  printStr("workers "); printUInt(u64.from(st.workers)); printStr("\n");
+  printStr("messages "); printUInt(st.messages); printStr("\n");
+  printStr("elapsed "); printUInt(ns / 1000000u64); printStr(" ms\n");
+  printStr("per message "); printUInt(ns / st.messages); printStr(" ns\n");
+  printStr("messages a second "); printUInt(st.messages * 1000000000u64 / ns); printStr("\n");
+  printStr("turns "); printUInt(st.activations); printStr(", steals "); printUInt(st.steals); printStr("\n");
+  printStr("parks "); printUInt(st.parks); printStr(" spins "); printUInt(st.spins);
+  printStr(" parks a second "); printUInt(st.parks * 1000000000u64 / ns); printStr("\n");
+}

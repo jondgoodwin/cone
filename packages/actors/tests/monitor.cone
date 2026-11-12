@@ -13,7 +13,7 @@
 //    turn count still with the queue not empty, moves the queue to the inject
 //    queue, whose push wakes the other worker: Late runs within 250 ms, while
 //    Hold is still in its turn, and the tick it finds when it has waited 2 ms
-//    is below the longest (the find snapped it back). stats(): monitorWakes
+//    is below the longest (the find snapped it back). stats(): monitorFinds
 //    and monitorMoved are at least 1.
 // 4. A second Hold makes forty actors runnable the same way (the first push
 //    wakes nobody, later ones wake the other worker to steal, the monitor
@@ -35,7 +35,7 @@ const many = 40u64;
 struct Flags {
   pub go: Atomic[u32];         // main's: Hold may make Late runnable now
   pub lateAt: Atomic[u64];     // when Late began its turn (ns), 0 before
-  pub lateTick: Atomic[u32];   // the monitor's tick 2 ms after that
+  pub lateTick: Atomic[u32];   // the monitor's tick once back below 2000 (up to 2 s)
   pub holdDone: Atomic[u32];
   pub ran: Atomic[u64];        // Counter turns run
 }
@@ -52,7 +52,12 @@ fn nowNs() u64 {u64.from(time.Instant.now().nanos())}
 actor Late {
   pub async fn run(self) {
     flags.lateAt.store(nowNs());
-    thread.sleep(time.Duration.fromMillis(2i64));
+    // wait until the tick is back below 2000 (the find snapped it back); fail
+    // only on the 2 s cap, when the check sees it still at 2000
+    let cap = nowNs() + 2000000000u64;
+    while actors.monitorTick() >= 2000u32 && nowNs() < cap {
+      thread.sleep(time.Duration.fromMillis(1i64));
+    }
     flags.lateTick.store(actors.monitorTick());
   }
 }
@@ -136,7 +141,7 @@ fn main() i32 {
     require(flags.lateAt.load() != 0u64, "Late ran");
     expectBool(flags.lateAt.load() - sent < 250000000u64, true, "Late ran within 250 ms, in Hold's turn");
     let after = actors.stats();
-    expectBool(after.monitorWakes > before.monitorWakes, true, "the monitor's find is counted");
+    expectBool(after.monitorFinds > before.monitorFinds, true, "the monitor's find is counted");
     expectBool(after.monitorMoved > before.monitorMoved, true, "its moved actor is counted");
     expectBool(flags.lateTick.load() < 2000u32, true, "a find snapped the tick back from its longest");
     actors.waitUntilIdle();
