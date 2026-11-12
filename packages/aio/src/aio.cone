@@ -1363,7 +1363,16 @@ struct HostBlock[S] {
 // is made, and no thread started, until its first job is queued. Its methods
 // may be called from any thread. S is the type of the service, which a job
 // queued here is run with
-pub struct Host[S: Hosted] {
+//
+// Host declares Shareable, true whatever S holds: it keeps one address, and
+// each method only queues a job for the I/O thread (post, awaitable: enqueue,
+// under ioLock) or only reads that address and the block's header under
+// ioLock or through an atomic (end). No code of S runs on a caller's thread:
+// the service is made (hostMake), turned, completed, asked wakeAt, ended and
+// dropped (hostEnd) by the I/O thread alone, and a job's 'run' meets the
+// service only there (runHostJob, runHostAwaitJob). A hosting package may so
+// keep a Host in a 'let' global, whatever its S holds
+pub struct Host[S: Hosted] is Shareable {
   at: usize;                   // its block, which lives as long as the process
 
   // A job for the service, queued: J has 'run(self, lp &mut Loop, s &mut S)',
