@@ -337,16 +337,22 @@ pub struct Connection is Move {
       }
     } else if s.kind == StreamKind.Untyped {
       self.take(s, buf, file, line);
-      self.typeStream(s);
+      self.typeStream(slot);
     } else if s.kind == StreamKind.Control {
       self.take(s, buf, file, line);
-      self.readControl(s);
+      self.readControl(slot);
     } else if s.kind == StreamKind.Encoder {
       self.encoderBytes(buf.view());
     } else if s.kind == StreamKind.Decoder {
       self.decoderBytes(buf.view());
     }
-    if fin && !closed {self.uniEnded(s);}
+    if fin && !closed {
+      // typeStream and readControl may have changed the table: look again
+      match streams.borrowMutAt(slot.index) {
+        case let Some(s2) {self.uniEnded(s2);}
+        case is None {}
+      }
+    }
     self.reap(i);
   }
 
@@ -1322,7 +1328,11 @@ pub struct Connection is Move {
 
   // A unidirectional stream's type, once it has arrived (section 6.2): the
   // stream becomes what it says, and what follows is read as that
-  fn typeStream(self: &mut, s: &mut H3Stream) {
+  fn typeStream(self: &mut, slot: H3StreamId) {
+    let s = match streams.borrowMut(slot) {
+      case let Some(v) {v}
+      case is None {return;}
+    };
     var t = 0u64;
     let n = peekVarint(&s.input, 0usize, &mut t);
     if n == 0usize {return;}
@@ -1334,7 +1344,7 @@ pub struct Connection is Move {
       }
       peerControl = true;
       s.kind = StreamKind.Control;
-      self.readControl(s);
+      self.readControl(slot);
     } else if t == streamEncoder || t == streamDecoder {
       let encoder = t == streamEncoder;
       if (encoder && peerEncoder) || (!encoder && peerDecoder) {
@@ -1436,8 +1446,13 @@ pub struct Connection is Move {
   // ------------------------------------------------------------- inside: the control stream
 
   // The peer's control stream's frames, each as it is whole (section 6.2.1)
-  fn readControl(self: &mut, s: &mut H3Stream) {
+  fn readControl(self: &mut, slot: H3StreamId) {
     while !closed {
+      // taken again each turn: the frames handled below may change the table
+      let s = match streams.borrowMut(slot) {
+        case let Some(v) {v}
+        case is None {return;}
+      };
       if s.frameLeft > 0u64 {
         let n = if s.frameLeft < u64.from(s.input.len()) {usize.from(s.frameLeft)} else {s.input.len()};
         s.input.advance(n);

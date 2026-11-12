@@ -41,44 +41,44 @@ fn addGetRemove() {
   expectUInt(u64.from(a.gen), 1u64, "as its first occupant");
   expectUInt(u64.from(b.index), 1u64, "second value in cell 1");
   expectUInt(u64.from(t.len()), 2u64, "two values");
-  expectInt((*t.get(a)).x, 1i64, "get reads the value");
-  expectInt((*t.get(b)).y, 4i64, "get reads the other");
+  expectInt(t.borrow(a).unwrap().x, 1i64, "get reads the value");
+  expectInt(t.borrow(b).unwrap().y, 4i64, "get reads the other");
   expect(t.remove(a), "remove answers true");
   expectUInt(u64.from(t.len()), 1u64, "one value left");
-  expectInt((*t.get(b)).x, 3i64, "the other is untouched");
+  expectInt(t.borrow(b).unwrap().x, 3i64, "the other is untouched");
 }
 
 fn stale() {
   var t = SlotTable[Pt](4usize);
   let a = t.add(Pt(1i64, 2i64));
   t.remove(a);
-  expect(t.get(a) as usize == 0usize, "a removed value's Slot reaches nothing");
+  expect(t.borrow(a) is None, "a removed value's Slot reaches nothing");
   expect(!t.remove(a), "removing it again answers false");
   expectUInt(u64.from(t.len()), 0u64, "and does nothing");
   let b = t.add(Pt(5i64, 6i64));
   expectUInt(u64.from(b.index), 0u64, "the freed cell is the next used");
   expectUInt(u64.from(b.gen), 2u64, "as its second occupant");
-  expect(t.get(a) as usize == 0usize, "the old Slot still reaches nothing, though the cell is live");
-  expect(t.get(b) as usize != 0usize, "the new one does");
-  expect(t.get(Slot.none()) as usize == 0usize, "none reaches nothing");
-  expect(t.get(Slot(900u32, 1u32)) as usize == 0usize, "a Slot past the table reaches nothing");
+  expect(t.borrow(a) is None, "the old Slot still reaches nothing, though the cell is live");
+  expect(t.borrow(b) is Some, "the new one does");
+  expect(t.borrow(Slot.none()) is None, "none reaches nothing");
+  expect(t.borrow(Slot(900u32, 1u32)) is None, "a Slot past the table reaches nothing");
   expect(!t.remove(Slot(900u32, 1u32)), "and removes nothing");
-  expect(t.at(0u32) as usize != 0usize, "at reaches the live cell by index alone");
-  expect(t.at(1u32) as usize == 0usize, "a free cell by index: null");
-  expect(t.at(900u32) as usize == 0usize, "past the table: null");
+  expect(t.borrowAt(0u32) is Some, "at reaches the live cell by index alone");
+  expect(t.borrowAt(1u32) is None, "a free cell by index: null");
+  expect(t.borrowAt(900u32) is None, "past the table: null");
 }
 
 fn stable() {
-  // No value moves when the table grows: the addresses taken at the start are
-  // good after 1,000 more values
+  // The table grows by moving its cells: every Slot taken at the start still
+  // reaches its own value after 1,000 more values
   var t = SlotTable[Pt](8usize);
   var slots = List[Slot]();
-  var ptrs = List[usize]();
+
   var i = 0i64;
   while i < 1000i64 {
     let s = t.add(Pt(i, i * 2i64));
     slots.push(s);
-    ptrs.push(t.get(s) as usize);
+
     i = i + 1i64;
   }
   expectUInt(u64.from(t.len()), 1000u64, "1,000 values");
@@ -86,11 +86,11 @@ fn stable() {
   var same = true;
   var k = 0usize;
   while k < 1000usize {
-    if t.get(*slots[k]) as usize != *ptrs[k] {same = false;}
-    if (*t.get(*slots[k])).y != i64.from(k) * 2i64 {same = false;}
+
+    if t.borrow(*slots[k]).unwrap().y != i64.from(k) * 2i64 {same = false;}
     k = k + 1usize;
   }
-  expect(same, "every value is where it was, and intact");
+  expect(same, "every value is reached by its Slot, and intact");
 }
 
 fn churn() {
@@ -116,8 +116,8 @@ fn churn() {
     round = round + 1i64;
   }
   expectUInt(u64.from(t.len()), 500u64, "50 rounds of +40 -30 leave 500");
-  // The most live at once was 49 rounds of +10 net, then +40 = 530: 34 chunks of 16
-  expectUInt(u64.from(t.bound()), 544u64, "held in 34 chunks of 16, enough for the peak of 530");
+  // The most live at once was 49 rounds of +10 net, then +40 = 530; freed cells are reused first, so 530 cells were ever used
+  expectUInt(u64.from(t.bound()), 530u64, "530 cells used, the peak");
   var n = 0usize;
   var c = 0u32;
   while usize.from(c) < t.bound() {
@@ -138,7 +138,7 @@ fn finalizers() {
     expectUInt(deaths.load() - before, 1u64, "remove finalizes the value");
     t.remove(b);
     expectUInt(deaths.load() - before, 1u64, "and not twice");
-    expectInt((*t.get(c)).id, 3i64, "the others are intact");
+    expectInt(t.borrow(c).unwrap().id, 3i64, "the others are intact");
   }
   expectUInt(deaths.load() - before, 3u64, "the table's death finalizes the two left");
 }
@@ -152,7 +152,7 @@ fn slotAt() {
   expect(t.removeAt(0u32) == false, "removeAt of a free cell: false");
   let b = t.add(Pt(3i64, 4i64));
   expect(t.removeAt(0u32), "removeAt of a live cell: true");
-  expect(t.get(b) as usize == 0usize, "and its Slot reaches nothing");
+  expect(t.borrow(b) is None, "and its Slot reaches nothing");
 }
 
 fn take() {
@@ -172,7 +172,7 @@ fn take() {
     }
     expectUInt(deaths.load() - before, 1u64, "the value taken dies with its new owner");
     expectUInt(u64.from(t.len()), 1u64, "one value left");
-    expect(t.get(a) as usize == 0usize, "the Slot taken reaches nothing");
+    expect(t.borrow(a) is None, "the Slot taken reaches nothing");
     match t.take(a) {
       case let Some(m) {expect(false, "take of a stale Slot gives None");}
       case is None[Mortal] {expect(true, "take of a stale Slot gives None");}
@@ -180,7 +180,7 @@ fn take() {
     let c = t.add(Mortal(3i64));
     expectUInt(u64.from(c.index), 0u64, "the freed cell is the next used");
     expectUInt(u64.from(c.gen), 2u64, "as its second occupant");
-    expectInt((*t.get(b)).id, 2i64, "the other is untouched");
+    expectInt(t.borrow(b).unwrap().id, 2i64, "the other is untouched");
   }
   expectUInt(deaths.load() - before, 3u64, "every value died once");
 }
