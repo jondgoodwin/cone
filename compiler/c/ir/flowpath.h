@@ -58,7 +58,7 @@ typedef struct {
     uint8_t sharedlen;  // then, how many steps lead to the first reference that may alias (0: the root's)
     uint8_t shwrite;    // 1: some reference on the way may alias and is not 'imm' or 'mut1' (pwMayAliasWritten),
                         // so another holder may change what the place is in; a collection's block may move
-    uint8_t owned;     // 1: a step dereferences an owning reference others may own too ('Rc'), so
+    uint8_t owned;     // nonzero (1 + the index of the last such step, loanShapeDisjoint): a step dereferences an owning reference others may own too ('Rc'), so
                         // the place may outlive its root variable
     uint8_t far;        // deref: the reference was itself read through a borrowed one ('**pp',
                         // '*r.g'), so the root stands for anything a borrow or more past where
@@ -129,6 +129,9 @@ typedef struct {
     uint8_t tracked;    // drop-flag client: its state is followed (flowDropTracked)
     uint8_t dies;       // drop-flag client: it has something to do as it dies (itypeNeedsFinal)
     uint8_t flagged;    // drop-flag client: its state differs by path at a release
+    uint8_t partmix;    // drop-flag client: paths hollowed it by different parts and joined (VarPartFlag)
+    uint8_t jh;         // scratch: a join, a hollow path met
+    uint32_t jm1;       // scratch: a join, the first hollow path's moves
     uint8_t initing;    // its initializer is being walked: it holds no value yet
     uint8_t hascand;    // a read of it is a candidate for its last use (RefCountNode.cand): a move of it may be undone
     void *lastcand;     // the RefCountNode of the candidate that last moved it on the walk, which the next read of it fails

@@ -39,6 +39,8 @@
 // as its end, fails with EINVAL before anything is asked of the system.
 // Cone has no '?' yet, so a caller matches each Result; a value is moved out
 // of a matched 'Ok' by binding it ('case let Ok(ok) { text = ok; }').
+// 'readBytes' reads a file as a Chain of buffers (iobuf's), with no String between: a caller that needs
+// one contiguous block copies it out once ('chain.copyOut'), one that passes the bytes on copies nothing.
 // Asking whether something is there is not a failure: 'exists', 'isDir' and
 // 'isFile' answer a bool, false for anything they cannot see.
 //
@@ -158,6 +160,7 @@ mod fs;
 import libc;
 import posix;
 import collections use String, List;
+import iobuf use IoBuf, Chain, largestClass;
 import path use Path;
 import sync;
 import time;
@@ -371,6 +374,45 @@ pub fn readFile(path: &Path) Result[String, FsError] {
   libc.fclose(f);
   if broke { return fail[String]("readFile", path, code); }
   Ok[String, FsError](out)
+}
+
+// The whole of a file as a Chain of buffers, read straight into them: no String built and copied from.
+// A Chain, not one IoBuf, because a file is any size and a buffer is a pool block (a file past the
+// pool's bound could never be one): the buffers start at 64 KiB and double to the pool's largest block
+// (1 MiB), so a file under 64 KiB is one segment and a large one a short chain. A caller that wants one
+// contiguous block calls 'copyOut' once, at its edge; one that passes the bytes on copies nothing. Fails
+// with ENOMEM (a kind of its own, OutOfMemory) when the pool will not give a buffer without growing past
+// its bound (IoBuf.tryMake), where 'readFile' would grow its String without limit.
+pub fn readBytes(path: &Path) Result[Chain, FsError] {
+  if hasNul(path) { return fail[Chain]("readBytes", path, posix.EINVAL); }
+  useUtf8();
+  var c = cText(path);
+  let f = libc.fopen(c.cstr(), "rb");
+  if f == null { return fail[Chain]("readBytes", path, openErrno(path)); }
+  var chain = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var size = 65536usize;
+  var going = true;
+  var nomem = false;
+  while going {
+    match IoBuf.tryMake(size) {
+      case let Some(got) {
+        var buf = got;
+        let want = buf.room();
+        let n = libc.fread(buf.base() + buf.len(), 1usize, want, f);
+        buf.setLen(buf.len() + n);
+        going = n == want;
+        _ = chain.push(buf);
+      }
+      case is None[IoBuf] { nomem = true; going = false; }
+    }
+    if size < largestClass { size = size * 2usize; }
+  }
+  let broke = libc.ferror(f) != 0i32;
+  let code = lastErrno();
+  libc.fclose(f);
+  if nomem { return fail[Chain]("readBytes", path, posix.ENOMEM); }
+  if broke { return fail[Chain]("readBytes", path, code); }
+  Ok[Chain, FsError](chain)
 }
 
 // Open with mode, write data, close; a failure anywhere is op's
@@ -876,6 +918,162 @@ fn removeLink(path: &Path) Result[void, FsError] {
   if posix.rmdir(c.cstr()) == 0i32 { return succeeded(); }
   if posix.unlink(c.cstr()) == 0i32 { return succeeded(); }
   fail[void]("removeAll", path, lastErrno())
+}
+
+// -------- copying --------
+
+// Copy a file's bytes to another path, making it or replacing what it held,
+// and give the copy the original's permission bits (on Windows, its
+// read-only attribute). A folder as 'from' is refused (EISDIR), and so is
+// the same file as both (EINVAL), which would empty it. A failure names both
+// paths, as 'rename' does. The copy is not atomic: a failure part-way leaves
+// a partial 'to'.
+pub fn copyFile(from: &Path, to: &Path) Result[void, FsError] {
+  if hasNul(from) || hasNul(to) { return failedCopy(from, to, posix.EINVAL); }
+  useUtf8();
+  let kind = kindOf(from);
+  if kind == posix.S_IFDIR { return failedCopy(from, to, posix.EISDIR); }
+  match absolute(from) {
+    case let Ok(a) {
+      match absolute(to) {
+        case let Ok(b) {
+          if a.view() == b.view() { return failedCopy(from, to, posix.EINVAL); }
+        }
+        case is Err { }
+      }
+    }
+    case is Err { }
+  }
+  var a = cText(from);
+  let src = libc.fopen(a.cstr(), "rb");
+  if src == null { return failedCopy(from, to, openErrno(from)); }
+  var b = cText(to);
+  let dst = libc.fopen(b.cstr(), "wb");
+  if dst == null {
+    let code = openErrno(to);
+    libc.fclose(src);
+    return failedCopy(from, to, code);
+  }
+  var buf = Array[u8, 65536]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  var code = 0i32;
+  var going = true;
+  while going {
+    let n = libc.fread(bp, 1usize, 65536usize, src);
+    if n > 0usize && libc.fwrite(bp, 1usize, n, dst) != n {
+      code = lastErrno();
+      going = false;
+    } else if n < 65536usize {
+      if libc.ferror(src) != 0i32 { code = lastErrno(); }
+      going = false;
+    }
+  }
+  libc.fclose(src);
+  if libc.fclose(dst) != 0i32 && code == 0i32 { code = lastErrno(); }
+  if code != 0i32 { return failedCopy(from, to, code); }
+  // The original's bits (fopen gave the copy the umask's)
+  var st = emptyStat();
+  if posix.stat(a.cstr(), &mut st) == 0i32 {
+    if copyBits(&b, u32.from(st.st_mode)) != 0i32 { return failedCopy(from, to, lastErrno()); }
+  }
+  succeeded()
+}
+
+fn failedCopy(from: &Path, to: &Path, code: i32) Result[void, FsError] {
+  Err[void, FsError](FsError(String.from("copyFile"), from.clone(), to.clone(), code))
+}
+
+fn copyBits(c: &String, mode: u32) i32 {
+  let bits = mode & modeBits;
+  #if #os == .windows {
+    _chmod(c.cstr(), if (bits & ownerWrite) != 0u32 {winWritable} else {winReadable})
+  } #else {
+    posixChmod(c.cstr(), bits)
+  }
+}
+
+// -------- temporary folders --------
+
+extern {
+  fn @c _getpid() i32;
+  fn @c getpid() i32;
+}
+
+// A folder made new in the system's temporary folder (TMPDIR, or /tmp, on
+// POSIX; TEMP on Windows), removed with everything in it when its owner dies.
+// One owner, moved, never copied. Readable by its owner alone on POSIX.
+// Removal at death is best effort: a failure (a file another program holds
+// open on Windows) is not reported, and leaves the folder behind.
+pub struct TempDir is Move {
+  dir: Path;
+
+  // The folder's absolute path, good while this owner lives
+  pub fn path(self: &) &Path { &dir }
+
+  // Remove the folder and everything in it
+  fn final(self: &uni) {
+    if !dir.isEmpty() { _ = removeAll(&dir); }
+  }
+}
+
+fn tempBase() Path {
+  var variable: cstr = "TMPDIR";
+  #if #os == .windows { variable = "TEMP"; }
+  let t = libc.getenv(variable);
+  if t != null {
+    let p = Path.from(cstr.fromPtr(t).view());
+    if !p.isEmpty() { return p; }
+  }
+  #if #os == .windows { Path.from(".") } #else { Path.from("/tmp") }
+}
+
+// n in lower-case hex
+fn hexText(n: u64) String {
+  var out = String();
+  var shift = 60u64;
+  var started = false;
+  while true {
+    let d = (n >> shift) & 15u64;
+    if d != 0u64 || started || shift == 0u64 {
+      started = true;
+      let digit = if d < 10u64 {48u8 + u8.from(d)} else {87u8 + u8.from(d)};
+      out.appendBytes(mem.sliceFromParts(&digit as *u8, 1usize));
+    }
+    if shift == 0u64 { break; }
+    shift = shift - 4u64;
+  }
+  out
+}
+
+// Make a new folder, named 'cone-' and the process and the time in hex, in
+// the system's temporary folder. A name already taken is tried again, so two
+// calls never share a folder.
+pub fn tempDir() Result[TempDir, FsError] {
+  let base = tempBase();
+  var tries = 0i32;
+  let pid = #if #os == .windows {_getpid()} #else {getpid()};
+  while true {
+    var name = String.from("cone-");
+    name.append(hexText(u64.from(pid)).view());
+    name.append("-");
+    name.append(hexText(u64.from(time.Instant.now().nanos()) + u64.from(tries)).view());
+    let candidate = base.join(name.view());
+    useUtf8();
+    var c = cText(&candidate);
+    if posix.mkdir(c.cstr(), 0x1C0u32) == 0i32 {
+      // Absolute, so a later change of the current folder does not move it
+      var made = candidate.clone();
+      match absolute(&candidate) {
+        case let Ok(a) { made = a; }
+        case is Err { }
+      }
+      return Ok[TempDir, FsError](TempDir(made));
+    }
+    let code = lastErrno();
+    tries = tries + 1i32;
+    if code != posix.EEXIST || tries >= 100i32 { return fail[TempDir]("tempDir", &candidate, code); }
+  }
+  fail[TempDir]("tempDir", &base, posix.EINVAL)
 }
 
 // -------- the current folder --------

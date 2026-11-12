@@ -1,0 +1,224 @@
+// An HTTP/3 connection's close fails the fetches still on it (Bug 86), against a scripted plug-in (no QUIC): it
+// answers its first request whole, takes three more without a word, and then reports the connection Closed, as
+// a peer's close, an idle timeout or a transport error would, with no request of those three answered.
+// 1. Each of the three is Failed (Stage.Closed, ErrorKind.Closed) as the close arrives, not TimedOut at its
+//    deadline six seconds away.
+// 2. The fetch Done before the close keeps its response and body.
+// 3. A clean close fails them all the same.
+// 4. Every fetch has its one final answer, and the client holds none.
+
+mod h3close;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, forever;
+import http use *;
+import tls;
+import httpclient use *;
+
+// The plug-in: connection 1 is Connected at once; the request made first is answered whole; when the fourth is
+// made (all four go out together on the one connection), Closed follows, clean or not as it was made to be
+struct Scripted is Http3 {
+  pub evs: List[H3Event];
+  pub connToken: u64;
+  pub requests: u32;
+  pub clean: bool;
+  pub closed: bool;
+  pub toks: List[u64];        // each request's token, by its number less one
+
+  pub fn make(clean: bool) Scripted {Scripted(List[H3Event](), 0u64, 0u32, clean, false, List[u64]())}
+
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {if evs.len() > 0usize {Instant()} else {forever()}}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+  pub fn takeEvents(self: &mut, out: &mut List[H3Event]) usize {
+    let n = evs.len();
+    var mine = List[H3Event]();
+    mine <-> evs;
+    each e in mine.drain() {out.push(e);}
+    n
+  }
+  pub fn connect(self: &mut, lp: &mut Loop, addr: SocketAddr, serverName: &str, token: u64) Result[u64, Failure] {
+    connToken = token;
+    evs.push(H3Event.make(H3Kind.Connected, token, 1u64, H3Req.none()));
+    Ok[u64, Failure](1u64)
+  }
+  pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, cfg: &tls.ServerConfig, token: u64) Result[u64, Failure] {
+    Err[u64, Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Unsupported, "scripted: no server"))
+  }
+  pub fn localPort(self: &, lp: &Loop, listener: u64) u16 {0u16}
+  pub fn stopListening(self: &mut, lp: &mut Loop, listener: u64) bool {false}
+  pub fn close(self: &mut, lp: &mut Loop, conn: u64) bool {true}
+  pub fn abort(self: &mut, lp: &mut Loop, conn: u64) bool {true}
+  pub fn abortAll(self: &mut, lp: &mut Loop) {}
+  pub fn takesRequests(self: &, conn: u64) bool {!closed}
+  pub fn hasRoom(self: &, conn: u64) bool {!closed}
+  pub fn peer(self: &, conn: u64) SocketAddr {SocketAddr.localhost(0u16)}
+  pub fn live(self: &) usize {if closed {0usize} else {1usize}}
+  pub fn request(self: &mut, lp: &mut Loop, conn: u64, head: RequestHead, body: BodyLength, token: u64) H3Req {
+    requests = requests + 1u32;
+    toks.push(token);
+    let r = H3Req(conn, u64.from(requests));
+    if requests == 1u32 {
+      var resp = H3Event.make(H3Kind.Response, token, conn, r);
+      resp.response = ResponseHead.make(200u16);
+      resp.body = BodyLength.sized(5u64);
+      evs.push(resp);
+      var data = H3Event.make(H3Kind.Data, token, conn, r);
+      var b = IoBuf(5usize);
+      b.append("hello");
+      data.buf = b;
+      evs.push(data);
+      evs.push(H3Event.make(H3Kind.End, token, conn, r));
+      evs.push(H3Event.make(H3Kind.Done, token, conn, r));
+    }
+    if requests == 4u32 {
+      closed = true;
+      var c = H3Event.make(H3Kind.Closed, connToken, conn, H3Req.none());
+      c.clean = clean;
+      if !clean {c.failure = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the peer closed the connection");}
+      evs.push(c);
+    }
+    r
+  }
+  pub fn respond(self: &mut, req: H3Req, head: ResponseHead, body: BodyLength) bool {false}
+  pub fn sendInterim(self: &mut, req: H3Req, head: ResponseHead) bool {false}
+  pub fn sendData(self: &mut, req: H3Req, buf: IoBuf) Option[IoBuf] {None}
+  pub fn finish(self: &mut, req: H3Req) {}
+  pub fn release(self: &mut, req: H3Req, n: usize) {}
+  // A request given up (a deadline's, say) is answered Cancelled, as a plug-in does
+  pub fn cancel(self: &mut, lp: &mut Loop, req: H3Req) bool {
+    let k = usize.from(req.req);
+    if k == 0usize || k > toks.len() {return false;}
+    evs.push(H3Event.make(H3Kind.Cancelled, toks[k - 1usize], req.conn, req));
+    true
+  }
+}
+
+fn scriptedClean(t: &tls.ClientConfig) Uni[Http3] {Uni[Scripted](Scripted.make(true))}
+fn scriptedFailed(t: &tls.ClientConfig) Uni[Http3] {Uni[Scripted](Scripted.make(false))}
+
+struct Seen {
+  pub id: FetchId;
+  pub status: u16;
+  pub body: String;
+  pub finals: u64;
+  pub last: EventKind;
+  pub failText: String;
+  pub stageClosed: bool;
+  pub kindClosed: bool;
+}
+
+fn seen(id: FetchId) Seen {
+  Seen(id: id, status: 0u16, body: String(), finals: 0u64, last: EventKind.Done, failText: String(), stageClosed: false,
+    kindClosed: false)
+}
+
+fn client(maker: &fn(t: &tls.ClientConfig) Uni[Http3]) Client {
+  var cfg = Config.make();
+  cfg.tlsConfig.offline = true;
+  cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[Http3]](maker);
+  cfg.http3Origins.push(String.from("https://127.0.0.1:4433"));
+  Client.make(cfg)
+}
+
+// Runs the client until every fetch in ss has its final answer, or ten seconds pass
+fn drive(cl: &mut Client, lp: &mut Loop, ss: &uni List[Seen]) bool {
+  var out = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while Instant.now() < giveUp {
+    var all = true;
+    var j = 0usize;
+    while j < ss.len() {
+      if ss[j].finals == 0u64 {all = false;}
+      j = j + 1usize;
+    }
+    if all {return true;}
+    cl.pump(lp, &uni out);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      j = 0usize;
+      while j < ss.len() {
+        if ss[j].id == e.id {
+          let s = &mut ss[j];
+          if e.kind == EventKind.Response {
+            s.status = e.response.status;
+          } else if e.kind == EventKind.Data {
+            s.body.appendBytes(e.buf.view());
+          } else if e.isTerminal() {
+            s.finals = s.finals + 1u64;
+            s.last = e.kind;
+            if e.kind == EventKind.Failed {
+              s.failText = String() <- e.failure;
+              s.stageClosed = e.failure.stage == Stage.Closed;
+              s.kindClosed = e.failure.error.kind == ErrorKind.Closed;
+            }
+          }
+        }
+        j = j + 1usize;
+      }
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
+      k = k + 1usize;
+    }
+    let more = out.len() > 0usize;
+    out.clear();
+    var limit = giveUp;
+    let a = cl.wakeAt();
+    if a < limit {limit = a;}
+    if more {limit = Instant();}
+    var comps = List[Completion]();
+    lp.poll(limit, &mut comps);
+    k = 0usize;
+    while k < comps.len() {
+      let cp = &mut comps[k];
+      cl.complete(lp, cp);
+      k = k + 1usize;
+    }
+  }
+  false
+}
+
+fn scenario(maker: &fn(t: &tls.ClientConfig) Uni[Http3], what: &str) {
+  var lp = Loop.mustMake();
+  var cl = client(maker);
+  var ss = List[Seen]();
+  ss.push(seen(cl.get(&mut lp, "https://127.0.0.1:4433/done", Sink.Here(1u64))));
+  var k = 0usize;
+  while k < 3usize {
+    var r = Request.make("POST", "https://127.0.0.1:4433/hold");
+    r.body = String.from("x");
+    r.deadline = Instant.now() + Duration.fromSeconds(6i64);
+    ss.push(seen(cl.send(&mut lp, r, Sink.Here(2u64))));
+    k = k + 1usize;
+  }
+  let t0 = Instant.now();
+  let all = drive(&mut cl, &mut lp, &uni ss);
+  let took = Instant.now() - t0;
+  expect(all, what);  expect(took < Duration.fromSeconds(2i64), "...every answer well before the fetches' deadline (6 s)");
+  expect(ss[0usize].last == EventKind.Done && ss[0usize].status == 200u16 && ss[0usize].body.view() == "hello",
+    "...the fetch Done before the close keeps its response and body");
+  var failed = 0u64;
+  var typed = 0u64;
+  var j = 1usize;
+  while j < ss.len() {
+    if ss[j].last == EventKind.Failed {failed = failed + 1u64;}
+    if ss[j].stageClosed && ss[j].kindClosed {typed = typed + 1u64;}
+    j = j + 1usize;
+  }
+  expectUInt(failed, 3u64, "...each of the three on it Failed, none TimedOut");
+  expectUInt(typed, 3u64, "...with the Closed stage and error kind");
+  let s = cl.stats();
+  expectUInt(s.fetches, s.done + s.failed + s.cancelled + s.timedOut, "...every fetch has its one final answer");
+  expectUInt(u64.from(cl.live()), 0u64, "...the client holds no fetch");
+  cl.abortAll(&mut lp);
+}
+
+fn main() i32 {
+  scenario(&scriptedFailed, "a connection that closed with a failure under three fetches");
+  scenario(&scriptedClean, "a connection that closed cleanly under three fetches");
+  done()
+}
