@@ -28,6 +28,8 @@ const maxCached = 256usize;      // sessions a client keeps to resume, at most
 const maxPerServer = 8usize;     // TLS 1.3 tickets kept for one server, at most
 
 // A cached session: which server it is for, and OpenSSL's SSL_SESSION
+alias Cache = Deque[Cached];
+
 struct Cached {
   key: String;
   sess: *u8;
@@ -45,7 +47,7 @@ struct CtxState is Sendable {
   lane: Lane;
   offline: bool;
   alpn: *u8;               // a server's: the length (u32), then ALPN's wire format
-  cache: List[Cached];     // oldest first
+  cache: Cache;            // oldest first
 
   // A session for 'key' to resume, or null: the newest the cache holds for
   // it. A TLS 1.3 ticket is taken out (it is used once); a TLS 1.2 session
@@ -106,12 +108,7 @@ struct CtxState is Sendable {
 
   // The entry at k out of the cache, its session the caller's, the order kept
   fn removeAt(self: &mut, k: usize) {
-    var j = k;
-    while j + 1usize < cache.len() {
-      cache.swap(j, j + 1usize);
-      j = j + 1usize;
-    }
-    cache.pop();
+    cache.removeAt(k);
   }
 
   fn cachedCount(self: &) usize {cache.len()}
@@ -239,7 +236,7 @@ pub struct Client {
     }
     let st = Shared(CtxState(ctx: ctx, server: false, kind: kind, pins: pins,
       resume: resume, lane: cfg.verifyLane, offline: cfg.offline, alpn: null,
-      cache: List[Cached]()));
+      cache: Cache()));
     Ok[Client, TlsError](Client(st))
   }
 
@@ -318,7 +315,7 @@ pub struct Server {
     SSL_CTX_set_alpn_select_cb(ctx, &alpnSelect, block);
     let st = Shared(CtxState(ctx: ctx, server: true, kind: VerifyKind.Insecure,
       pins: List[u8](), resume: false, lane: defaultVerifyLane(), offline: false, alpn: block,
-      cache: List[Cached]()));
+      cache: Cache()));
     Ok[Server, TlsError](Server(st))
   }
 
