@@ -63,6 +63,20 @@
 //     them. Each takes x by value: pad("ab", 5), pad(hex(n), 8, Align.right, '0'), pad(&v, 6)
 //     (a reference to a value that has a toText) for a value you keep.
 //
+//   STYLES (color on a terminal, nothing anywhere else)
+//     plain  red  green  yellow  blue  magenta  cyan  white  black  bold  dim  underline
+//                      values of type Style, sent with '<-' like anything else:
+//                      out <- red, "failed", plain, "\n". 'bold + red' combines (the right's color
+//                      wins), 'red.on(white)' adds a background (white's color); 'plain' is the reset
+//     A style writes its escape ('ESC [ 1;31 m') only when the writer's color is on: 'out.colorOn()',
+//     which only a record the console made for a terminal has (print and eprint, when standard
+//     output or error is a terminal that takes color: TERM set and not dumb on POSIX, virtual-
+//     terminal mode switched on in Windows, and NO_COLOR unset or empty). Every other writer, a String
+//     included, has it off, so a style writes nothing there and a program may style freely. A style
+//     stays set until the next one ('red, "a", "b"' is red for both): the record that wrote any
+//     style ends with a reset, so a forgotten 'plain' never leaks into the shell. A program's own
+//     sink may turn it on with 'out.setColor(true)'. Colors only, for now: no 256-color or RGB form.
+//
 //   WHAT IT DEPENDS ON. The number wrappers need only core. Columns need two packages more:
 //   collections, for the scratch String that pad and truncate write the item into so its width can
 //   be measured before any of it goes out (a writer's record can't be read back, and a fixed window
@@ -498,3 +512,77 @@ pub struct Truncated[T] {
 pub fn truncate[T](x: T, n: usize) Truncated[T] inline {
   Truncated(x, n)
 }
+
+// ---- Styles: color on a terminal, nothing anywhere else ----
+
+// A foreground color, a background, and three bits (bold, dim, underline), written as one
+// ANSI escape. Colors are held as 0 (none) or 1 to 8 (black, red, green, yellow, blue, magenta,
+// cyan, white), so the escape's number is 29 + the color for a foreground and 39 + the color for a
+// background.
+pub struct Style {
+  pub fg: u8;
+  pub bg: u8;
+  pub bold: bool;
+  pub dim: bool;
+  pub underline: bool;
+
+  // Both styles' settings in one: the right's color wins where both set one
+  pub fn add overload `+`(self, o: Style) Style {
+    Style(if o.fg != 0u8 {o.fg} else {fg}, if o.bg != 0u8 {o.bg} else {bg},
+      bold || o.bold, dim || o.dim, underline || o.underline)
+  }
+
+  // This style with the foreground color of 'back' as its background: red.on(white)
+  pub fn on(self, back: Style) Style {
+    Style(fg, back.fg, bold, dim, underline)
+  }
+
+  // The escape that sets this style, only when the writer's color is on (a terminal that
+  // takes it, or a writer whose maker turned it on with setColor); plain writes the reset.
+  // A writer that got a style ends its record with a reset.
+  pub fn toText(self: &, out: &uni TextOut) {
+    if !out.colorOn() {return;}
+    out.putByte(27u8);
+    out.putByte('[');
+    var first = true;
+    if bold {out.putByte('1'); first = false;}
+    if dim {
+      if !first {out.putByte(';');}
+      out.putByte('2'); first = false;
+    }
+    if underline {
+      if !first {out.putByte(';');}
+      out.putByte('4'); first = false;
+    }
+    if fg != 0u8 {
+      if !first {out.putByte(';');}
+      out.putU64(29u64 + u64.from(fg)); first = false;
+    }
+    if bg != 0u8 {
+      if !first {out.putByte(';');}
+      out.putU64(39u64 + u64.from(bg)); first = false;
+    }
+    if first {
+      // Nothing set: the reset
+      out.putByte('0');
+    }
+    else {
+      out.setStyled();
+    }
+    out.putByte('m');
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+}
+
+pub let plain = Style(0u8, 0u8, false, false, false);
+pub let black = Style(1u8, 0u8, false, false, false);
+pub let red = Style(2u8, 0u8, false, false, false);
+pub let green = Style(3u8, 0u8, false, false, false);
+pub let yellow = Style(4u8, 0u8, false, false, false);
+pub let blue = Style(5u8, 0u8, false, false, false);
+pub let magenta = Style(6u8, 0u8, false, false, false);
+pub let cyan = Style(7u8, 0u8, false, false, false);
+pub let white = Style(8u8, 0u8, false, false, false);
+pub let bold = Style(0u8, 0u8, true, false, false);
+pub let dim = Style(0u8, 0u8, false, true, false);
+pub let underline = Style(0u8, 0u8, false, false, true);
