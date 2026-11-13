@@ -131,13 +131,84 @@ void genlParCapture(GenState *gen, VarDclNode *var) {
 // count. So the piece copies each small captured variable (not what a pointer in
 // it leads to) into a local of its own at its entry, which LLVM keeps in registers,
 // and the loop reads the copy. (llvm.invariant.start was tried first: the
-// optimiser did not use it.) A variable holding an atomic inline is left as it
-// is, read in place: it does change while the passes run. So is a builder's bag.
+// optimiser did not use it.)
+//
+// The copy is sound only for PLAIN DATA, so it is made by an allow-list
+// (genlParPlain): numbers, enums without data, borrowed references and raw pointers
+// (the pointer value, not what it points to), and tuples, arrays and structs made
+// only of those, such as a List's header. Anything else is read in place, as
+// before: an atomic, a lock or Condvar (they change while the passes run), an
+// owning reference (Uni, Rc, a box), a reference whose permission is a lock, a
+// virtual reference or actor handle, an arena, a type parameter. One variable
+// of plain type is also left: a builder's bag (a usize the lowering writes from
+// the passes through '&mut'); pareach.c refuses a body's write to any other
+// outside variable, so no other plain variable is written. The copy is a bitwise read into a local that is
+// never finalized or dropped; the original is released by its owner as always.
+
+// Is a value of this type plain data all the way down, to the depth allowed?
+static int genlParPlain(INode *type, int most) {
+    if (type == NULL || most <= 0)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? genlParPlain(itypeGetTypeDcl(type), most) : 0;
+    case AliasDclTag:
+        return genlParPlain(((AliasDclNode *)type)->target, most);
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case EnumTag:
+        return 1;
+    case RefTag:
+    case ArrayRefTag: {
+        // A borrow's pointer (and length) only
+        RefNode *ref = (RefNode *)type;
+        return !regionIsRegionRef(ref->region) && !permIsLock(ref->perm);
+    }
+    case PtrTag:
+        return 1;
+    case ArrayTag:
+        return genlParPlain(arrayElemType(type), most - 1);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (!genlParPlain(*nodesp, most - 1))
+                return 0;
+        }
+        return 1;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)type;
+        if (itypeHoldsAtomic(type) || structDeclaresTrait(strnode, atomicValueTrait)
+                || structDeclaresTrait(strnode, lockPermTrait) || strnode->lends == LendsNoLoanMut)
+            return 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (!genlParPlain(((IExpNode *)*nodesp)->vtype, most - 1))
+                return 0;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (!genlParPlain(*nodesp, most - 1))
+                    return 0;
+            }
+        }
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
 static void genlParInvariant(GenState *gen, GenParBody *pb, uint32_t index, VarDclNode *var, LLVMValueRef loaded) {
     LLVMValueRef home = pb->caps[index].home;
     INode *vtype = var->vtype;
-    // (the passes write only what they are made to: an atomic, and the builder's bag)
-    if (vtype == NULL || itypeHoldsAtomic(vtype) || var->namesym == parBagName)
+    // (a builder's bag is plain data, a usize, but the lowering itself writes it
+    // from the passes through '&mut': the one variable that is written; the check
+    // refuses every other write to an outside variable)
+    if (!genlParPlain(vtype, 8) || var->namesym == parBagName)
         return;
     LLVMTypeRef type = LLVMIsAAllocaInst(home) ? LLVMGetAllocatedType(home) : genlType(gen, vtype);
     unsigned long long size = LLVMABISizeOfType(gen->datalayout, type);

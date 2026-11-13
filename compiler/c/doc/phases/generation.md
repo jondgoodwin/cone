@@ -1964,9 +1964,14 @@ local of the piece at that point and the copy stands for it (`genlParInvariant`)
 the piece's stores into the items it changes may, as far as LLVM can tell, land in
 the caller's variable, so read in place its fields (a source's position and length,
 a list's pointer and count) are loaded again on every pass, while from a local they
-are held in registers and the bounds checks fold into the loop count. Not copied:
-a variable holding an atomic inline (`itypeHoldsAtomic`) and a builder's bag
-(`parBagName`), which the passes do write. After the piece, each captured variable's slot is put
+are held in registers and the bounds checks fold into the loop count. The copy
+is by an allow-list (`genlParPlain`): numbers, data-less enums, borrowed references
+and raw pointers (the pointer value only), and tuples, arrays and structs made only
+of those, a List's header among them. Anything else is read in place: an atomic, a
+lock, an owning reference (`Uni`, `Rc`), a virtual reference, an arena, a type
+parameter; so is a builder's bag (`parBagName`, a plain `usize` the lowering writes
+from the passes). The copy is a bitwise read into a local that is never finalized.
+After the piece, each captured variable's slot is put
 back, and the caller makes the record, an `alloca` of `[n x ptr]` holding the
 slot of each, and passes it. So a variable is read in place, where it lives in
 the caller's frame, for as long as the loop runs: that is why an outside
