@@ -1,0 +1,357 @@
+// ======== The writer: a TOML text built key by key ========
+//
+// A Writer is told what to write, in order, and keeps the text:
+//
+//   var w = Writer(WriteOptions.standard());
+//   w.string("title", "hello");           // before any table: the root's keys
+//   w.table("package");
+//   w.string("name", "hello");
+//   w.int("size", 12i64);
+//   w.boolean("ok", true);
+//   w.table("link");
+//   w.strings("libraries", &libs);        // a List[String]
+//   match w.finish() { case var Ok(t) { ... t ... } case let Err(e) { ... } }
+//
+// writes exactly what the reader reads: keys bare, strings in double quotes,
+// a list on one line, a blank line before each '[table]'. A call that cannot
+// be written (a key that is not bare, a key set twice in one table, a table
+// opened twice, a name that is empty, a string that is not UTF-8) does not
+// stop the program: the Writer remembers the first such failure, writes
+// nothing more, and 'finish' answers it as a TomlError whose line is the line
+// of the text the failing call would have written.
+//
+// A key that needs quotes fails, naming the key: quoted keys come when the
+// reader reads them. Floats and the other value kinds come with the reader.
+//
+// Writing what 'parse' read gives the same data but not the same text:
+// comments, spacing and the '_' in integers are not kept.
+
+// How to write: nothing to choose yet; 'standard' is what there is
+pub struct WriteOptions {
+  pub fn standard() WriteOptions { WriteOptions() }
+}
+
+pub struct Writer {
+  pub opts: WriteOptions;
+  out: String;
+  // Lines written so far, each ended by '\n'
+  lines: u32;
+  failed: bool;
+  errLine: u32;
+  reason: String;
+  // The names of the tables opened, and the keys of the one now open
+  tables: List[String];
+  keys: List[String];
+  // Every key written, as its path ('k' at the root, 'a.k' in [a]), and the
+  // name of the table now open ('' before the first)
+  paths: List[String];
+  cur: String;
+
+  pub fn init(self: &new, opts: WriteOptions) {
+    *self = Writer(opts, String(), 0u32, false, 0u32, String(), List[String](), List[String](), List[String](), String());
+  }
+
+  fn fail(self: &mut, reason: &str) {
+    if self.failed { return; }
+    self.failed = true;
+    self.errLine = self.lines + 1u32;
+    self.reason = String.from(reason);
+  }
+
+  // A failure whose reason is 'what', then the text in quotes, then 'why'
+  fn failNaming(self: &mut, what: &str, name: &str, why: &str) {
+    if self.failed { return; }
+    var m = String.from(what);
+    m.append(" ");
+    // Written in quotes for the reader's eye; a name that is not UTF-8 shows as it can
+    var q = String();
+    appendQuoted(&mut q, name);
+    m.append(q.view());
+    m.append(why);
+    self.fail(m.view());
+  }
+
+  // Whether name is one bare key (letters, digits, '_', '-'; not empty)
+  fn bare(name: &Array[u8]) bool {
+    if name.len == 0usize { return false; }
+    var i = 0usize;
+    while i < name.len {
+      if !isKeyByte(name[i]) { return false; }
+      i = i + 1usize;
+    }
+    true
+  }
+
+  // A table's header: '[a]' or '[a.b]', each part bare. A name opened before
+  // fails. Keys written after it belong to it.
+  pub fn table(self: &mut, name: &str) {
+    if self.failed { return; }
+    // A blank line comes before the header (not at the start of the text),
+    // so the header is a line later
+    let blank = self.out.len() > 0usize;
+    if blank { self.lines = self.lines + 1u32; }
+    let b = name as &Array[u8];
+    var from = 0usize;
+    var i = 0usize;
+    var ok = b.len > 0usize;
+    while ok && i <= b.len {
+      if i == b.len || b[i] == '.' {
+        if !Writer.bare(&b[from..<i]) { ok = false; }
+        from = i + 1usize;
+      }
+      i = i + 1usize;
+    }
+    if !ok {
+      self.failNaming("the table name", name, " cannot be written: each part must be a bare key (letters, digits, '_' and '-'); quoted names are not written yet");
+      return;
+    }
+    var j = 0usize;
+    while j < self.tables.len() {
+      if self.tables[j].view() == name {
+        self.failNaming("the table", name, " is opened twice");
+        return;
+      }
+      j = j + 1usize;
+    }
+    // The reader refuses a table named like a key: a root key like the table's
+    // first part, or a key of the table above like its last part
+    var firstEnd = b.len;
+    var lastDot = b.len;
+    var k = 0usize;
+    while k < b.len {
+      if b[k] == '.' {
+        if firstEnd == b.len { firstEnd = k; }
+        lastDot = k;
+      }
+      k = k + 1usize;
+    }
+    let firstPart = name.slice(0usize, firstEnd);
+    var q = 0usize;
+    while q < self.paths.len() {
+      let p = self.paths[q].view();
+      if p == name || p == firstPart {
+        var m = String.from("the table \"");
+        m.append(name);
+        m.append("\" has the name of the key \"");
+        if p == name && lastDot < b.len {
+          m.append(name.sliceFrom(lastDot + 1usize));
+          m.append("\" of [");
+          m.append(name.slice(0usize, lastDot));
+          m.append("]");
+        } else {
+          m.append(p);
+          m.append("\" of the root");
+        }
+        self.fail(m.view());
+        return;
+      }
+      q = q + 1usize;
+    }
+    if blank { self.out.appendByte('\n'); }
+    self.out.appendByte('[');
+    self.out.append(name);
+    self.out.appendByte(']');
+    self.endLine();
+    self.tables.push(String.from(name));
+    self.cur = String.from(name);
+    self.keys = List[String]();
+  }
+
+  fn endLine(self: &mut) {
+    self.out.appendByte('\n');
+    self.lines = self.lines + 1u32;
+  }
+
+  // 'key = ' for a key to be written in the open table; false, having failed,
+  // when it cannot be
+  fn beginKey(self: &mut, key: &str) bool {
+    if self.failed { return false; }
+    if !Writer.bare(key as &Array[u8]) {
+      self.failNaming("the key", key, " cannot be written: it must be a bare key (letters, digits, '_' and '-'); quoted keys are not written yet");
+      return false;
+    }
+    var j = 0usize;
+    while j < self.keys.len() {
+      if self.keys[j].view() == key {
+        self.failNaming("the key", key, " is set twice in one table");
+        return false;
+      }
+      j = j + 1usize;
+    }
+    var path = String();
+    if self.cur.len() > 0usize { path.append(self.cur.view()); path.append("."); }
+    path.append(key);
+    var t = 0usize;
+    while t < self.tables.len() {
+      if self.tables[t].view() == path.view() {
+        var m = String.from("the key \"");
+        m.append(key);
+        m.append("\" of [");
+        m.append(self.cur.view());
+        m.append("] has the name of the table \"");
+        m.append(path.view());
+        m.append("\"");
+        self.fail(m.view());
+        return false;
+      }
+      t = t + 1usize;
+    }
+    self.paths.push(path);
+    self.keys.push(String.from(key));
+    self.out.append(key);
+    self.out.append(" = ");
+    true
+  }
+
+  // s in double quotes; false, having failed, when it is not UTF-8
+  fn quotedValue(self: &mut, s: &str) bool {
+    match appendQuoted(&mut self.out, s as &Array[u8]) {
+      case let Some(at) {
+        var m = String.from("a string is not valid UTF-8 at its byte ");
+        m.appendUInt(u64.from(at));
+        self.fail(m.view());
+        false
+      }
+      case is None { true }
+    }
+  }
+
+  pub fn string(self: &mut, key: &str, value: &str) {
+    if !self.beginKey(key) { return; }
+    if self.quotedValue(value) { self.endLine(); }
+  }
+
+  pub fn int(self: &mut, key: &str, n: i64) {
+    if !self.beginKey(key) { return; }
+    self.out.appendInt(n);
+    self.endLine();
+  }
+
+  pub fn boolean(self: &mut, key: &str, b: bool) {
+    if !self.beginKey(key) { return; }
+    if b { self.out.append("true"); } else { self.out.append("false"); }
+    self.endLine();
+  }
+
+  // A list of strings on one line: '["a", "b"]', or '[]'
+  pub fn strings(self: &mut, key: &str, items: &List[String]) {
+    if !self.beginKey(key) { return; }
+    self.out.appendByte('[');
+    var i = 0usize;
+    while i < items.len() {
+      if i > 0usize { self.out.append(", "); }
+      // Copied first: the Writer changes the shape of its own String as it writes
+      let item = items[i].clone();
+      if !self.quotedValue(item.view()) { return; }
+      i = i + 1usize;
+    }
+    self.out.appendByte(']');
+    self.endLine();
+  }
+
+  // The text written, or the first failure. The writer is given up.
+  pub fn finish(self) Result[String, TomlError] {
+    var me = self;
+    if me.failed {
+      let errLine, reason = me.(errLine, reason);
+      return Err[String, TomlError](TomlError(errLine, reason));
+    }
+    Ok[String, TomlError](me.(out))
+  }
+}
+
+// A document as text: its root's keys, then each table in order
+pub fn write(doc: &Document) Result[String, TomlError] {
+  var w = Writer(WriteOptions.standard());
+  writeTable(&mut w, &doc.root);
+  var i = 0usize;
+  while i < doc.tables.len() {
+    let name = doc.tables[i].name.clone();
+    w.table(name.view());
+    writeTable(&mut w, &doc.tables[i]);
+    i = i + 1usize;
+  }
+  w.finish()
+}
+
+fn writeTable(w: &mut Writer, t: &Table) {
+  var i = 0usize;
+  while i < t.entries.len() {
+    let e = &t.entries[i];
+    // The key and value are copied before they are handed to the Writer, which
+    // changes the shape of its own Strings as it writes
+    let key = e.key.clone();
+    match e.value.kind {
+      case is Text {
+        let s = e.value.text.clone();
+        w.string(key.view(), s.view());
+      }
+      case is Integer { w.int(key.view(), e.value.integer); }
+      case is Boolean { w.boolean(key.view(), e.value.boolean); }
+      case is List {
+        let items = e.value.list.clone();
+        w.strings(key.view(), &items);
+      }
+    }
+    i = i + 1usize;
+  }
+}
+
+// -------- helpers --------
+
+// s in double quotes, escaped, appended to out. None when it is written;
+// Some(offset) of the first byte that is not well-formed UTF-8, with out
+// holding whatever was written before it.
+fn appendQuoted(out: &mut String, s: &Array[u8]) Option[usize] {
+  out.appendByte('"');
+  var i = 0usize;
+  while i < s.len {
+    let b = s[i];
+    if b == '"' { out.append("\\\""); i = i + 1usize; }
+    else if b == '\\' { out.append("\\\\"); i = i + 1usize; }
+    else if b < 0x20u8 || b == 0x7Fu8 {
+      if b == 8u8 { out.append("\\b"); }
+      else if b == 12u8 { out.append("\\f"); }
+      else if b == '\n' { out.append("\\n"); }
+      else if b == '\r' { out.append("\\r"); }
+      else if b == '\t' { out.append("\\t"); }
+      else {
+        out.append("\\u");
+        out.appendHex(u64.from(b), 4usize);
+      }
+      i = i + 1usize;
+    }
+    else if b < 0x80u8 { out.appendByte(b); i = i + 1usize; }
+    else {
+      let len = utf8Length(s, i);
+      if len == 0usize { return Some[usize](i); }
+      out.appendBytes(&s[i..<i + len]);
+      i = i + len;
+    }
+  }
+  out.appendByte('"');
+  None
+}
+
+// The length of the well-formed UTF-8 character at pos (no overlong form, no
+// surrogate, nothing beyond U+10FFFF), or 0 when it is not well-formed
+fn utf8Length(t: &Array[u8], pos: usize) usize {
+  let b = t[pos];
+  var more = 0usize;
+  var cp = 0u32;
+  var least = 0u32;
+  if b >= 0xC2u8 && b <= 0xDFu8 { more = 1usize; cp = u32.from(b & 0x1Fu8); least = 0x80u32; }
+  else if b >= 0xE0u8 && b <= 0xEFu8 { more = 2usize; cp = u32.from(b & 0x0Fu8); least = 0x800u32; }
+  else if b >= 0xF0u8 && b <= 0xF4u8 { more = 3usize; cp = u32.from(b & 0x07u8); least = 0x10000u32; }
+  else { return 0usize; }
+  if pos + more >= t.len { return 0usize; }
+  var k = 1usize;
+  while k <= more {
+    let c = t[pos + k];
+    if (c & 0xC0u8) != 0x80u8 { return 0usize; }
+    cp = (cp << 6u32) | u32.from(c & 0x3Fu8);
+    k = k + 1usize;
+  }
+  if cp < least || cp > 0x10FFFFu32 || (cp >= 0xD800u32 && cp <= 0xDFFFu32) { return 0usize; }
+  more + 1usize
+}

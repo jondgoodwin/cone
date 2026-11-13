@@ -1,0 +1,188 @@
+// Writing: every value kind, the root's keys then tables (dotted ones too), the
+// escapes, a key that needs quotes, a key or table set twice, an empty name, a
+// string that is not UTF-8 (each failure remembered to 'finish', with its
+// line), and the round trip: what the Writer writes is read back as the same
+// data, and so is what 'write' makes of a read Document.
+
+mod writer;
+
+import testing use *;
+import collections use *;
+import toml;
+
+fn text(r: Result[String, toml.TomlError]) String {
+  match r {
+    case var Ok(t) { var s = String(); s <-> t; s }
+    case let Err(e) { let m = String() <- e; var s = String.from("ERR "); s.append(m.view()); s }
+  }
+}
+
+fn list2(a: &str, b: &str) List[String] {
+  var l = List[String]();
+  l.push(String.from(a));
+  l.push(String.from(b));
+  l
+}
+
+fn parsed(t: &str, label: &str) toml.Document {
+  var doc = toml.Document();
+  match toml.parse(t) {
+    case var Ok(ok) { doc <-> ok; }
+    case let Err(e) { let m = String() <- e; expectStr(m.view(), "<parsed>", label); }
+  }
+  doc
+}
+
+const keyWhy = " cannot be written: it must be a bare key (letters, digits, '_' and '-'); quoted keys are not written yet";
+const nameWhy = " cannot be written: each part must be a bare key (letters, digits, '_' and '-'); quoted names are not written yet";
+
+fn main() i32 {
+  // every kind, root keys first, then tables, a blank line before each header
+  var w = toml.Writer(toml.WriteOptions.standard());
+  w.string("title", "hi");
+  w.table("package");
+  w.string("name", "demo");
+  w.int("size", -12i64);
+  w.int("big", 9223372036854775807i64);
+  w.boolean("ok", true);
+  w.boolean("no", false);
+  w.table("link.windows");
+  let libs = list2("SDL3", "user32");
+  let none = List[String]();
+  w.strings("libraries", &libs);
+  w.strings("none", &none);
+  let t = text(w.finish());
+  expectStr(t.view(), "title = \"hi\"\n\n[package]\nname = \"demo\"\nsize = -12\nbig = 9223372036854775807\nok = true\nno = false\n\n[link.windows]\nlibraries = [\"SDL3\", \"user32\"]\nnone = []\n", "all kinds");
+
+  // no table at all; nothing at all; a table alone
+  var w2 = toml.Writer(toml.WriteOptions.standard());
+  w2.int("a", 1i64);
+  expectStr(text(w2.finish()).view(), "a = 1\n", "root only");
+  var w3 = toml.Writer(toml.WriteOptions.standard());
+  expectStr(text(w3.finish()).view(), "", "empty");
+  var w4 = toml.Writer(toml.WriteOptions.standard());
+  w4.table("t");
+  expectStr(text(w4.finish()).view(), "[t]\n", "empty table first");
+
+  // escapes: quote, backslash, \n \r \t, control bytes 1 and 7F and 8 and 12, and UTF-8 raw
+  var raw = String.from("q\" b\\ n\n r\r t\t ");
+  raw.appendByte(1u8);
+  raw.appendByte(0x7Fu8);
+  raw.appendByte(8u8);
+  raw.appendByte(12u8);
+  raw.append(" é €");
+  var w5 = toml.Writer(toml.WriteOptions.standard());
+  w5.string("s", raw.view());
+  let e = text(w5.finish());
+  expectStr(e.view(), "s = \"q\\\" b\\\\ n\\n r\\r t\\t \\u0001\\u007f\\b\\f é €\"\n", "escapes");
+  let back = parsed(e.view(), "escapes back");
+  expectStr(back.root.getString("s").unwrap().view(), raw.view(), "escapes round trip");
+
+  // keys that need quotes, by name
+  var b1 = toml.Writer(toml.WriteOptions.standard());
+  b1.string("ok", "x");
+  b1.int("a b", 1i64);
+  b1.int("later", 2i64);
+  var m1 = String.from("ERR line 2: the key \"a b\"");
+  m1.append(keyWhy);
+  expectStr(text(b1.finish()).view(), m1.view(), "space key");
+  var b2 = toml.Writer(toml.WriteOptions.standard());
+  b2.boolean("", true);
+  var m2 = String.from("ERR line 1: the key \"\"");
+  m2.append(keyWhy);
+  expectStr(text(b2.finish()).view(), m2.view(), "empty key");
+  var b3 = toml.Writer(toml.WriteOptions.standard());
+  b3.string("a.b", "x");
+  var m3 = String.from("ERR line 1: the key \"a.b\"");
+  m3.append(keyWhy);
+  expectStr(text(b3.finish()).view(), m3.view(), "dotted key");
+
+  // table names
+  var t1 = toml.Writer(toml.WriteOptions.standard());
+  t1.table("a..b");
+  var m4 = String.from("ERR line 1: the table name \"a..b\"");
+  m4.append(nameWhy);
+  expectStr(text(t1.finish()).view(), m4.view(), "empty part");
+  var t2 = toml.Writer(toml.WriteOptions.standard());
+  t2.table("");
+  var m5 = String.from("ERR line 1: the table name \"\"");
+  m5.append(nameWhy);
+  expectStr(text(t2.finish()).view(), m5.view(), "empty name");
+  var t3 = toml.Writer(toml.WriteOptions.standard());
+  t3.table("a");
+  t3.int("k", 1i64);
+  t3.table("a");
+  expectStr(text(t3.finish()).view(), "ERR line 4: the table \"a\" is opened twice", "table twice");
+
+  // duplicate keys: in one table, not across tables; the first failure stays
+  var d1 = toml.Writer(toml.WriteOptions.standard());
+  d1.table("a");
+  d1.int("k", 1i64);
+  d1.int("k", 2i64);
+  d1.int("bad key", 3i64);
+  expectStr(text(d1.finish()).view(), "ERR line 3: the key \"k\" is set twice in one table", "key twice");
+  var d2 = toml.Writer(toml.WriteOptions.standard());
+  d2.table("a");
+  d2.int("k", 1i64);
+  d2.table("b");
+  d2.int("k", 2i64);
+  expectStr(text(d2.finish()).view(), "[a]\nk = 1\n\n[b]\nk = 2\n", "same key, other table");
+  var d3 = toml.Writer(toml.WriteOptions.standard());
+  d3.int("k", 1i64);
+  d3.table("a");
+  d3.int("k", 2i64);
+  expectStr(text(d3.finish()).view(), "k = 1\n\n[a]\nk = 2\n", "same key as the root's");
+
+  // a table named like a key, as the reader refuses: either order
+  var c1 = toml.Writer(toml.WriteOptions.standard());
+  c1.int("x", 1i64);
+  c1.table("x");
+  expectStr(text(c1.finish()).view(), "ERR line 3: the table \"x\" has the name of the key \"x\" of the root", "table named like a root key");
+  var c2 = toml.Writer(toml.WriteOptions.standard());
+  c2.table("a");
+  c2.int("b", 1i64);
+  c2.table("a.b");
+  expectStr(text(c2.finish()).view(), "ERR line 4: the table \"a.b\" has the name of the key \"b\" of [a]", "key first, then the table");
+  var c4 = toml.Writer(toml.WriteOptions.standard());
+  c4.table("a.b");
+  c4.table("a");
+  c4.int("b", 1i64);
+  expectStr(text(c4.finish()).view(), "ERR line 4: the key \"b\" of [a] has the name of the table \"a.b\"", "table first, then the key");
+
+  // a string that is not UTF-8
+  var u = String();
+  u.appendByte('a');
+  u.appendByte(0xFFu8);
+  var u1 = toml.Writer(toml.WriteOptions.standard());
+  u1.string("k", u.view());
+  expectStr(text(u1.finish()).view(), "ERR line 1: a string is not valid UTF-8 at its byte 1", "bad utf8");
+  var u2 = toml.Writer(toml.WriteOptions.standard());
+  var l = List[String]();
+  l.push(String.from("ok"));
+  l.push(u.clone());
+  u2.strings("k", &l);
+  expectStr(text(u2.finish()).view(), "ERR line 1: a string is not valid UTF-8 at its byte 1", "bad utf8 in list");
+
+  // round trip: a Document read, written, read again, the same data
+  let src = "top = \"x\\ty\"\n# c\n[package]\nname = \"demo\"\nsize = 1_000\nneg = -5\nok = false\n\n[link]\nlibraries = [\n  \"a\", # one\n  \"b\\n\",\n]\nempty = []\n\n[link.windows]\npaths = [\"é\"]\n";
+  let doc = parsed(src, "src");
+  let out = text(toml.write(&doc));
+  expectStr(out.view(), "top = \"x\\ty\"\n\n[package]\nname = \"demo\"\nsize = 1000\nneg = -5\nok = false\n\n[link]\nlibraries = [\"a\", \"b\\n\"]\nempty = []\n\n[link.windows]\npaths = [\"é\"]\n", "written document");
+  let doc2 = parsed(out.view(), "again");
+  let out2 = text(toml.write(&doc2));
+  expectStr(out2.view(), out.view(), "write is stable");
+  expectStr(String.join(doc2.names().view(), "|").view(), "package|link|link.windows", "names");
+  expectStr(doc2.root.getString("top").unwrap().view(), "x\ty", "root string");
+  expectStr(doc2["package"].getString("name").unwrap().view(), "demo", "name");
+  expectInt(doc2["package"].getInt("size").unwrap(), 1000i64, "size");
+  expectInt(doc2["package"].getInt("neg").unwrap(), -5i64, "neg");
+  expectBool(doc2["package"].getBool("ok").unwrap(), false, "ok");
+  expectStr(String.join(doc2["link"].getStrings("libraries").unwrap().view(), "|").view(), "a|b\n", "libraries");
+  expectInt(i64.from(doc2["link"].getStrings("empty").unwrap().len()), 0i64, "empty list");
+  expectStr(String.join(doc2["link.windows"].getStrings("paths").unwrap().view(), "|").view(), "é", "paths");
+
+  // an empty Document
+  let empty = toml.Document();
+  expectStr(text(toml.write(&empty)).view(), "", "empty document");
+  done()
+}
