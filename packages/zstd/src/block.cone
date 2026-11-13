@@ -212,8 +212,7 @@ fn decodeLiterals(src: &Array[u8], p: &mut usize, end: usize, ent: &mut Entropy)
 fn seqTable(src: &Array[u8], p: &mut usize, end: usize, mode: u8, t: &mut FseTable, defaults: &Array[i16],
     defaultLog: u32, maxSymbol: usize, maxLog: u32, norm: &mut List[i16], ready: bool, kind: u32) Fault {
   if mode == 0u8 {
-    t.build(defaults, defaultLog);
-    t.fold(kind);
+    t.buildSeq(defaults, defaultLog, kind);
     return Fault.Ok;
   }
   if mode == 1u8 {
@@ -229,8 +228,7 @@ fn seqTable(src: &Array[u8], p: &mut usize, end: usize, mode: u8, t: &mut FseTab
     var log = 0u32;
     let used = readNCount(src, *p, end, maxSymbol, maxLog, norm, &mut log);
     if used < 0i64 { return Fault.FseTable; }
-    if !t.build(norm.view(), log) { return Fault.FseTable; }
-    t.fold(kind);
+    if !t.buildSeq(norm.view(), log, kind) { return Fault.FseTable; }
     *p = *p + usize.from(used);
     return Fault.Ok;
   }
@@ -291,7 +289,7 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
   //   these. Entry check: their sum is at most 26, or the block is refused;
   // - the extra bits: a cell's code is below its distribution's size, so the
   //   offset's are at most 31 and the match's and literal's at most 16 each;
-  //   'fold' took them from the code tables by checked lookups.
+  //   'buildSeq' (or 'fold') took them from the code tables by checked lookups.
   // 'refillSeq' leaves 56 to 63 bits held, whatever the input. A sequence
   // starts with at least 56 and takes T = of + ml + ll extra bits, then S <= 26
   // state bits. If T < 31, T + S <= 56: no refill between. Otherwise there is

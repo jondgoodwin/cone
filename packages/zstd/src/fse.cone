@@ -240,14 +240,25 @@ struct FseTable is Default {
   // count -1 at the top, the others spread with the step (size / 2 + size /
   // 8 + 3). false if the spread does not come out even (counts that do not
   // sum to the size).
-  fn build(self: &mut, norm: &Array[i16], log: u32) bool {
+  fn build(self: &mut, norm: &Array[i16], log: u32) bool { buildKind(norm, log, 3u32) }
+
+  // 'build' for a sequence table, with the 'seq' cells made in the same pass
+  // as 'cells' (what 'fold' makes, so the two are the same bytes). 'kind' as
+  // in 'fold'.
+  fn buildSeq(self: &mut, norm: &Array[i16], log: u32, kind: u32) bool { buildKind(norm, log, kind) }
+
+  // 'kind' 3 makes no 'seq' cells. The spread of symbols to states is
+  // written into a list of 'size' zero bytes; every write and read of it,
+  // and of 'next', stays bounds-checked as before (counts come from the
+  // input).
+  fn buildKind(self: &mut, norm: &Array[i16], log: u32, kind: u32) bool {
     let size = 1usize << usize.from(log);
     let mask = size - 1usize;
     cells.clear();
     spread.clear();
     next.clear();
+    spread.resize(size, 0u8);
     var i = 0usize;
-    while i < size { spread.push(0u8); i = i + 1usize; }
     var high = size - 1usize;
     var s = 0usize;
     while s < norm.len {
@@ -264,17 +275,32 @@ struct FseTable is Default {
     let step = (size >> 1usize) + (size >> 3usize) + 3usize;
     var position = 0usize;
     s = 0usize;
-    while s < norm.len {
-      var k = 0i16;
-      while k < norm[s] {
-        spread.set(position, u8.from(s));
-        position = (position + step) & mask;
-        while position > high { position = (position + step) & mask; }
-        k = k + 1i16;
+    if high == size - 1usize {
+      // No symbol of count -1: every position is free
+      while s < norm.len {
+        var k = 0i16;
+        while k < norm[s] {
+          spread.set(position, u8.from(s));
+          position = (position + step) & mask;
+          k = k + 1i16;
+        }
+        s = s + 1usize;
       }
-      s = s + 1usize;
+    } else {
+      while s < norm.len {
+        var k = 0i16;
+        while k < norm[s] {
+          spread.set(position, u8.from(s));
+          position = (position + step) & mask;
+          while position > high { position = (position + step) & mask; }
+          k = k + 1i16;
+        }
+        s = s + 1usize;
+      }
     }
     if position != 0usize { return false; }
+    cells.reserve(size);
+    if kind < 3u32 { seq.clear(); seq.reserve(size); }
     i = 0usize;
     while i < size {
       let sym = *spread[i];
@@ -283,6 +309,17 @@ struct FseTable is Default {
       let nb = log - highBit(x);
       let baseline = (x << nb) - u32.from(size);
       cells.push(u32.from(sym) | (nb << 8u32) | (baseline << 16u32));
+      if kind < 3u32 {
+        // As 'fold' (symbols are below the code tables' sizes: checked lookups)
+        let sy = usize.from(sym);
+        var base = 0u32;
+        var eb = 0u32;
+        if kind == 0u32 { base = llBase[sy]; eb = llBits[sy]; }
+        else if kind == 1u32 { base = mlBase[sy]; eb = mlBits[sy]; }
+        else { base = 1u32 << u32.from(sy); eb = u32.from(sy); }
+        seq.push(u64.from(base) | (u64.from(eb) << 32u64) | (u64.from(nb) << 40u64)
+          | (u64.from(baseline) << 48u64));
+      }
       i = i + 1usize;
     }
     self.log = log;
