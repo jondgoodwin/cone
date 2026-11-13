@@ -77,12 +77,9 @@ typedef struct ConeOptions {
     int emit_include;      // Write the package's include file, as a library compile does
     int lint_llvm;        // Run the LLVM linting pass on generated IR
     int intrinsic_fallback; // Use each intrinsic's Cone fallback body wherever it has one
-<<<<<<< HEAD
-    int lto;             // --lto: a release native compile writes ThinLTO bitcode (<name>.bc) in place of an object
+    int lto;            // --lto: a release native compile writes ThinLTO bitcode (<name>.bc) in place of an object
     int ltolink;         // --lto-link: no compile; the bitcode files named link into one object each (genlLtoLink)
-=======
     int align_code;      // --align-code: functions and loop headers aligned to 64 bytes (genlCreateMachine)
->>>>>>> origin/code-alignment
     int no_noalias;      // --no-noalias, or CONE_NO_NOALIAS set: no 'noalias' on a unique or immutable borrow parameter
     int warn_index_star; // Warn at each '*x[i]' over a type's index place (WarnIndexStar)
     int await_direct;    // Test only: split each message's seams, each record handed straight to its second half

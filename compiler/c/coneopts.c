@@ -65,12 +65,9 @@ enum
     OPT_WARN_INDEX_STAR,
     OPT_PRIVATE_INSTANCES,
     OPT_NO_NOALIAS,
-<<<<<<< HEAD
     OPT_LTO,
     OPT_LTO_LINK,
-=======
     OPT_ALIGN_CODE,
->>>>>>> origin/code-alignment
 
     OPT_BNF,
     OPT_ANTLR,
@@ -125,12 +122,9 @@ static opt_arg_t args[] =
     { "warn-index-star", '\0', OPT_ARG_NONE, OPT_WARN_INDEX_STAR },
     { "private-instances", '\0', OPT_ARG_REQUIRED, OPT_PRIVATE_INSTANCES },
     { "no-noalias", '\0', OPT_ARG_NONE, OPT_NO_NOALIAS },
-<<<<<<< HEAD
     { "lto", '\0', OPT_ARG_NONE, OPT_LTO },
     { "lto-link", '\0', OPT_ARG_NONE, OPT_LTO_LINK },
-=======
     { "align-code", '\0', OPT_ARG_NONE, OPT_ALIGN_CODE },
->>>>>>> origin/code-alignment
 
     OPT_ARGS_FINISH
 };
@@ -412,6 +406,9 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         char *nn = getenv("CONE_NO_NOALIAS");
         if (nn && *nn && strcmp(nn, "0") != 0)
             opt->no_noalias = 1;
+        char *ac = getenv("CONE_ALIGN_CODE");   // measurement aid for the row 33 timing: a build tool's every conec
+        if (ac && *ac && strcmp(ac, "0") != 0)
+            opt->align_code = 1;
     }
 
     while ((id = optNext(&s)) != -1) {
@@ -493,12 +490,9 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
                 ok = 0;
             break;
         case OPT_NO_NOALIAS: opt->no_noalias = 1; break;
-<<<<<<< HEAD
         case OPT_LTO: opt->lto = 1; break;
         case OPT_LTO_LINK: opt->ltolink = 1; break;
-=======
         case OPT_ALIGN_CODE: opt->align_code = 1; break;
->>>>>>> origin/code-alignment
 
         case OPT_VERBOSE:
         {
