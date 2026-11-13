@@ -37,7 +37,6 @@ pub const JointDistance = 4;
 pub const JointConeTwist = 5;
 
 pub struct Joint {
-  pub alive: bool;
   pub kind: i32;
   pub a: u32;
   pub b: u32;
@@ -111,7 +110,7 @@ pub fn jointLoadOf(j: &Joint, h: f32) (f32, f32) {
 }
 
 pub fn blankJoint(kind: i32, a: u32, b: u32) Joint {
-  Joint(true, kind, a, b, false, zero3(), zero3(), Quat.identity(), Quat.identity(), false, 0., 0., false, 0., 0.,
+  Joint(kind, a, b, false, zero3(), zero3(), Quat.identity(), Quat.identity(), false, 0., 0., false, 0., 0.,
     0., 0., 0., 0.7853982, -0.7853982, 0.7853982, zero3(), zero3(), 0., 0., 0., 0., 0., 0., 0.,
     false, Quat.identity(), 0., 1., 0., zero3(), false, zero3(), zero3(), 0., 0., 0., 0., 0., zero3())
 }
@@ -221,13 +220,13 @@ fn relRot(s: &JState) Quat { (s.fa.conjugate() * s.fb).normalize() }
 
 // The hinge angle of a hinge joint, radians (0 where it was made)
 pub fn hingeAngle(w: &World, j: &Joint) f32 {
-  let s = jointState(w, j);
+  let s = jointState(w, &*j);
   twistOf(relRot(&s))
 }
 
 // The slide of a slider joint, metres (0 where it was made)
 pub fn sliderOffset(w: &World, j: &Joint) f32 {
-  let s = jointState(w, j);
+  let s = jointState(w, &*j);
   s.d.dot(s.fa * Vec3(1., 0., 0.))
 }
 
@@ -235,8 +234,8 @@ pub fn sliderOffset(w: &World, j: &Joint) f32 {
 // Warm start
 
 pub fn warmStartJoint(w: &mut World, ji: usize) {
-  let j = &w.joints[ji];
-  let s = jointState(w, j);
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
+  let s = jointState(w, &*j);
   let ax = s.fa * Vec3(1., 0., 0.);
   if j.kind == JointPoint || j.kind == JointFixed || j.kind == JointHinge || j.kind == JointConeTwist {
     linApplyVec(w, &s, j.impPoint, s.rA, s.rB);
@@ -272,7 +271,7 @@ pub fn warmStartJoint(w: &mut World, ji: usize) {
 
 // The 3x3 point block: the anchors together
 fn solvePointBlock(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness) {
-  let j = &mut w.joints[ji];
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let bA = w.bodies.borrowAt(u32.from(s.ia)).unwrap();
   let bB = w.bodies.borrowAt(u32.from(s.ib)).unwrap();
   let jv = (bB.linVel + bB.angVel.cross(s.rB)) - (bA.linVel + bA.angVel.cross(s.rA));
@@ -287,7 +286,7 @@ fn solvePointBlock(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: So
 
 // The 3x3 orientation block: B's joint frame turned to A's
 fn solveOrientationBlock(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness) {
-  let j = &mut w.joints[ji];
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let q0 = relRot(s);
   let sg = if q0.w < 0. { -1.f } else { 1. };
   let err = (s.fa * Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
@@ -309,7 +308,7 @@ fn solveOrientationBlock(w: &mut World, ji: usize, s: &JState, useBias: bool, so
 // enough yields, as a muscle does. (Jolt's SwingTwistConstraint and Box2D v3's joint motors are the same
 // idea; the soft form is Catto's, Solver2D 2024.)
 fn solveDrive(w: &mut World, ji: usize, s: &JState, h: f32) {
-  let j = &mut w.joints[ji];
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let q0 = (relRot(s) * j.driveTarget.conjugate()).normalize();
   let sg = if q0.w < 0. { -1.f } else { 1. };
   let err = (s.fa * Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
@@ -339,7 +338,7 @@ fn solveDrive(w: &mut World, ji: usize, s: &JState, h: f32) {
 
 // A hinge keeps its two axes together: two angular rows perpendicular to A's axis
 fn solveHingeAlign(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness) {
-  let j = &mut w.joints[ji];
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let axA = s.fa * Vec3(1., 0., 0.);
   let axB = s.fb * Vec3(1., 0., 0.);
   let c = axA.cross(axB);
@@ -362,7 +361,7 @@ fn solveHingeAlign(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: So
 
 // A slider keeps B on A's axis: two linear rows perpendicular to it
 fn solveSliderPerp(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness) {
-  let j = &mut w.joints[ji];
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let ax = s.fa * Vec3(1., 0., 0.);
   let u1 = perpendicular(ax);
   let u2 = ax.cross(u1);
@@ -384,7 +383,7 @@ fn solveSliderPerp(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: So
 
 // Limits and motor along an angular axis (hinge, twist) or a linear one (slider)
 fn solveAngularLimits(w: &mut World, ji: usize, s: &JState, axis: Vec3, angle: f32, useBias: bool, soft: Softness, invH: f32, h: f32) {
-  let j = &mut w.joints[ji];
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let km = invOrZero(angK(s, axis));
   if j.motorOn {
     let lambda = -km * (angJv(w, s, axis) - j.motorSpeed);
@@ -410,7 +409,7 @@ fn solveAngularLimits(w: &mut World, ji: usize, s: &JState, axis: Vec3, angle: f
 }
 
 fn solveLinearLimits(w: &mut World, ji: usize, s: &JState, axis: Vec3, pos: f32, armA: Vec3, useBias: bool, soft: Softness, invH: f32, h: f32) {
-  let j = &mut w.joints[ji];
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let km = invOrZero(linK(s, axis, armA, s.rB));
   if j.motorOn {
     let lambda = -km * (linJv(w, s, axis, armA, s.rB) - j.motorSpeed);
@@ -434,7 +433,7 @@ fn solveLinearLimits(w: &mut World, ji: usize, s: &JState, axis: Vec3, pos: f32,
 }
 
 fn solveDistance(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness, invH: f32, h: f32) {
-  let j = &mut w.joints[ji];
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let len = s.d.length();
   let n = if len > 0.000001 { s.d * (1. / len) } else { Vec3(1., 0., 0.) };
   let km = invOrZero(linK(s, n, s.rA, s.rB));
@@ -481,7 +480,7 @@ fn solveDistance(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Soft
 // speculative, as every limit row is). The tip's move is the small-angle tangent; the scaled point is not the
 // ellipse's nearest point to the swing, but it is on the ellipse, and the rows converge to inside it.
 fn solveEllipse(w: &mut World, ji: usize, s: &JState, xa: Vec3, xb: Vec3, useBias: bool, soft: Softness, invH: f32) {
-  let j = &mut w.joints[ji];
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   let sw = xa.cross(xb);
   let swl = sw.length();
   if swl < 0.00001 { j.impEll = 0.; return; }
@@ -516,7 +515,7 @@ fn solveEllipse(w: &mut World, ji: usize, s: &JState, xa: Vec3, xb: Vec3, useBia
 }
 
 fn solveConeTwist(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness, invH: f32) {
-  let j = &mut w.joints[ji];
+  let j = w.joints.borrowMutAt(u32.from(ji)).unwrap();
   // swing: the angle between the two x axes may not pass the cone
   let xa = s.fa * Vec3(1., 0., 0.);
   let xb = s.fb * Vec3(1., 0., 0.);
@@ -551,9 +550,9 @@ fn solveConeTwist(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Sof
 }
 
 pub fn solveJoint(w: &mut World, ji: usize, useBias: bool, invH: f32, h: f32, soft: Softness) {
-  let kind = w.joints[ji].kind;
-  let s = jointState(w, &w.joints[ji]);
-  if w.joints[ji].driveOn && kind != JointFixed && kind != JointSlider && kind != JointDistance {
+  let kind = w.joints.borrowMutAt(u32.from(ji)).unwrap().kind;
+  let s = jointState(w, w.joints.borrowMutAt(u32.from(ji)).unwrap());
+  if w.joints.borrowMutAt(u32.from(ji)).unwrap().driveOn && kind != JointFixed && kind != JointSlider && kind != JointDistance {
     solveDrive(w, ji, &s, h);
   }
   if kind == JointPoint {
