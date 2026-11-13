@@ -13,13 +13,15 @@
 // each count change: '+n' after an 'aliasRef', '-n' after a 'dealiasRef'. 'F<n>' is a
 // Fin's 'final'. A counted 'Tally' (its count is not atomic) is not Shareable, so it is no longer
 // a global: it is a local here, moved into another and released with it. Replacing a global owner
-// needed a plain 'var', refused (ErrorGlobalShare), so the globals are 'let's set in 'init'. The
+// needed a plain 'var', refused (ErrorGlobalShare), so the owners that are replaced sit in a struct
+// behind a lock-guarded global ('Arc[Mutex, Owners]'); the other globals are 'let's set in 'init'. The
 // counts at the end say every allocation was freed, and freed once.
 
 mod module_final_globals;
 
 import stdio use *;
 import libc;
+import sync use Mutex, Arc;
 
 var @threadlocal allocs = 0i64;
 var @threadlocal frees = 0i64;
@@ -48,9 +50,13 @@ struct Fin {
   fn final(self: &uni) { printStr("F"); printInt(n); printStr(" "); }
 }
 
-let own: One[Fin];
+struct Owners {
+  pub own: One[Fin];
+  pub vown: One[App + Shareable];
+}
+
+let guard: Arc[Mutex, Owners];
 let pair: (Fin, i64);
-let vown: One[App + Shareable];
 let row = [Fin(7), Fin(8)];
 let sofin: Uni[Fin];
 let vso: Uni[App + Shareable];
@@ -58,9 +64,8 @@ let vso: Uni[App + Shareable];
 fn pairOf(n: i64) Fin, i64 { Fin(n), n }
 
 fn @initpure init() {
-  own = One[Fin](1);
+  guard = Arc[Mutex, Owners](Owners(One[Fin](1), One[Fin](2)));
   pair = pairOf(5);
-  vown = One[Fin](2);
   sofin = Uni[Fin](4);
   vso = Uni[Fin](6);
 }
@@ -79,6 +84,12 @@ fn main() i32 {
       printInt(loc.look());
       printStr(" ");
     }
+  }
+  printStr("\nreplaced: ");
+  {
+    let owners = &mut *guard;
+    owners.own = One[Fin](9);
+    owners.vown = One[Fin](10);
   }
   printStr("\nfinalAll: ");
   finalAll();
