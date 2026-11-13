@@ -2486,6 +2486,59 @@ int lifeBrandsAdopt(INode *inferred, INode *declared) {    if (!lifeInvariantSee
     return subst && itypeIsSame(subst, declared);
 }
 
+// A type read off a struct instance's own declaration (a bound's method, as
+// genericInferFromBounds reads them) names that instance's brands, numbered
+// ''=1', ''=2'..., not those of the use that asks: 'ListIter[Tok['=a]]' holds
+// 'Tok['=1]'. Give it the brands the use names instead, by the place each holds
+// in the struct's own, so a type inferred from the bound and one inferred from
+// the value are in one space (lifeCanonBrands numbers them together). A type
+// naming a brand the struct does not hold, or a use that writes none, is
+// returned as it was.
+INode *lifeBrandsToUse(INode *type, INode *use) {
+    if (!lifeInvariantSeen || type == NULL || use == NULL || !isTypeNode(type) || !isNameUseNode(use))
+        return type;
+    INode *dcl = itypeGetTypeDcl(use);
+    if (dcl == NULL || dcl->tag != StructTag || ((NameUseNode *)use)->lifeuse == NULL)
+        return type;
+    LifeBrands decl, given, held;
+    lifeBrandsInit(&decl);
+    lifeBrandsInit(&given);
+    lifeBrandsInit(&held);
+    lifeBrandsOfStruct((StructNode *)dcl, NULL, &decl, 0);
+    lifeBrandsOf(use, &given, 0);
+    lifeBrandsOf(type, &held, 0);
+    if (held.cnt == 0 || decl.cnt != given.cnt)
+        return type;
+    LifeBind bind;
+    lifeBindInit(&bind);
+    int differs = 0;
+    for (uint32_t i = 0; i < decl.cnt; ++i) {
+        if (decl.names[i] == NULL || given.names[i] == NULL)
+            continue;
+        Name *bound = lifePairFind(bind.from, bind.to, bind.cnt, decl.names[i]);
+        if (bound && bound != given.names[i])
+            return type;
+        if (bound == NULL) {
+            // Not one-to-one: unreachable after canonicalization, but it would merge two brands
+            // the instance holds apart, and today's refusal is the safe answer
+            for (uint32_t k = 0; k < bind.cnt; ++k) {
+                if (bind.to[k] == given.names[i])
+                    return type;
+            }
+            lifePairAdd(&bind.from, &bind.to, &bind.cnt, &bind.cap, decl.names[i], given.names[i]);
+        }
+        if (decl.names[i] != given.names[i])
+            differs = 1;
+    }
+    if (!differs)
+        return type;
+    for (uint32_t i = 0; i < held.cnt; ++i) {
+        if (held.names[i] && lifePairFind(bind.from, bind.to, bind.cnt, held.names[i]) == NULL)
+            return type;
+    }
+    return lifeBrandSubstAt(type, &bind, NULL, 0);
+}
+
 int lifeBrandsEqual(INode *a, INode *b) {
     if (!lifeInvariantSeen)
         return 1;
