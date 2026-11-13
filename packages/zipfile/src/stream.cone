@@ -118,7 +118,7 @@ enum Mode {
 }
 
 // A local header, parsed out of the bytes it was peeked in ('v' holds the header, name and extra field)
-fn parseHeader(v: &Array[u8], at: u64) Result[Local, ZipError] {
+fn parseHeader(v: &Array[u8], at: u64, crcTable: &deflate.Crc32) Result[Local, ZipError] {
   let nlen = usize.from(le16(v, 26usize));
   let elen = usize.from(le16(v, 28usize));
   let flags = le16(v, 6usize);
@@ -159,8 +159,7 @@ fn parseHeader(v: &Array[u8], at: u64) Result[Local, ZipError] {
     } else if tag == 0x7075u16 {
       if sz >= 5usize && v[body] == 1u8 {
         let utf = &v[body + 5usize ..< body + sz];
-        let table = deflate.Crc32.make();
-        if table.update(0u32, raw, 0usize, raw.len) == le32(v, body + 1usize) && validUtf8(utf) {
+        if crcTable.update(0u32, raw, 0usize, raw.len) == le32(v, body + 1usize) && validUtf8(utf) {
           name = String.fromBytes(utf);
           named = true;
         }
@@ -372,7 +371,7 @@ pub struct ArchiveStream is Move {
     if !rd.tryReserve(total) { return self.overloaded(); }
     var res = Err[Local, ZipError](ZipError.make(ErrorKind.Corrupt, pos, "a local header could not be read"));
     match rd.peek(total) {
-      case let Some(v) { res = parseHeader(v, pos); }
+      case let Some(v) { res = parseHeader(v, pos, &table); }
       case is None[&Array[u8]] {}
     }
     rd.consume(total);
