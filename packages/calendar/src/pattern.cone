@@ -443,11 +443,13 @@ fn parseOffsetPattern(pattern: &Array[u8], text: &Array[u8], needOffset: bool) R
 // DateStyle: dates for a person, in English
 // ---------------------------------------------------------------------------
 
-// How much of a date to write for a reader. Day, month, year order, which
-// reads the same in the US and the UK; there is no short style until locale
-// context (text PR 6) can say which order a reader expects
+// How much of a date to write for a reader. medium, long and full are words, in the
+// writer's locale (English when it has none); the invariant order, day, month, year,
+// reads the same in the US and the UK. short is numbers, for a locale that has a form that
+// reads one way ('03.10.2026' in de); a locale without one (invariant, en: en-US and en-GB
+// disagree on the order) writes ISO's '2026-10-03', which reads the same everywhere
 pub enum DateStyle {
-  medium, long, full;
+  medium, long, full, short;
 }
 
 // A date, or a date and a time, with the style it is to be written in; made
@@ -458,8 +460,10 @@ pub enum DateStyle {
 //   full   'Saturday, 3 October 2026'   'Saturday, 3 October 2026 14:05:09 UTC'
 // An offset form writes its offset ('+05:30') in place of 'UTC'; medium has
 // no zone word and writes none. The time is hh:mm:ss, its fraction not
-// written. The words become the locale's when locale context arrives, with no
-// change of spelling
+// written. In a writer whose maker chose a locale (locale.set) the words and the order
+// are the locale's ('3. Oktober 2026' in de); 'short' is '03.10.2026' in de and ISO
+// elsewhere, with a time after it ('2026-10-03 14:05:09') and no zone word. toDebug is
+// always English
 pub struct StyledDate {
   date: Date;
   hasTime: bool;
@@ -468,25 +472,52 @@ pub struct StyledDate {
   offsetSeconds: i32;
   style: DateStyle;
 
-  fn text(self) String {
+  // The text in the locale with this id (0, invariant, is English)
+  fn text(self, l: Locale) String {
     var out = String.withCapacity(48usize);
+    let ld = l.data();
     let m = i64.from(date.month());
-    if style == DateStyle.full {
-      out.append(dayName(weekdayIndex(date.unixDays())));
-      out.append(", ");
-    }
-    out.appendInt(i64.from(date.day()));
-    out.appendByte(' ');
-    out.append(if style == DateStyle.medium {monthAbbr(m)} else {monthName(m)});
-    out.appendByte(' ');
-    // for a person the year is unpadded ('44'), as ICU's 'y'; outside 1 to
+    // the year is unpadded for a person ('44'), as ICU's 'y'; outside 1 to
     // 9999 it is ISO's expanded form
     let y = i64.from(date.year());
-    if y >= 1i64 && y <= 9999i64 { out.appendInt(y); } else { appendYear(&mut out, y); }
+    if style == DateStyle.short {
+      if ld.hasShort {
+        let sep = ld.shortSep;
+        let w = if ld.shortPad {2usize} else {1usize};
+        let order = ld.shortOrder;
+        var part = 0u8;
+        while part < 3u8 {
+          if part > 0u8 { out.appendByte(u8.from(u32.from(sep))); }
+          // order 0 is d m y, 1 is m d y, 2 is y m d
+          let which = if order == 0u8 { part } else if order == 1u8 { if part == 0u8 {1u8} else if part == 1u8 {0u8} else {2u8} }
+                      else { if part == 0u8 {2u8} else if part == 1u8 {1u8} else {0u8} };
+          if which == 0u8 { appendPadded(&mut out, i64.from(date.day()), w); }
+          else if which == 1u8 { appendPadded(&mut out, m, w); }
+          else if y >= 1i64 && y <= 9999i64 { out.appendInt(y); } else { appendYear(&mut out, y); }
+          part += 1u8;
+        }
+      }
+      else {
+        // no short form that reads one way in the locale: ISO's, which reads the same everywhere
+        appendDate(&mut out, date);
+      }
+    }
+    else {
+      if style == DateStyle.full {
+        out.append(ld.dayName(weekdayIndex(date.unixDays())));
+        out.append(", ");
+      }
+      out.appendInt(i64.from(date.day()));
+      if ld.dayDot { out.appendByte('.'); }
+      out.appendByte(' ');
+      out.append(if style == DateStyle.medium {ld.monthAbbr(m)} else {ld.monthName(m)});
+      out.appendByte(' ');
+      if y >= 1i64 && y <= 9999i64 { out.appendInt(y); } else { appendYear(&mut out, y); }
+    }
     if hasTime {
       out.appendByte(' ');
       appendHms(&mut out, time);
-      if style != DateStyle.medium {
+      if style != DateStyle.medium && style != DateStyle.short {
         out.appendByte(' ');
         if hasOffset { appendOffsetColon(&mut out, i64.from(offsetSeconds)); }
         else { out.append("UTC"); }
@@ -494,8 +525,10 @@ pub struct StyledDate {
     }
     out
   }
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.text().view(); }
-  pub fn toDebug(self: &, out: &uni TextOut) { out <- self.text().view(); }
+  // In the writer's locale; the invariant writer (every new one) gets English
+  pub fn toText(self: &, out: &uni TextOut) { out <- self.text(Locale.of(out)).view(); }
+  // debug is always invariant
+  pub fn toDebug(self: &, out: &uni TextOut) { out <- self.text(Locale.invariant).view(); }
 }
 
 // ---------------------------------------------------------------------------

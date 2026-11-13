@@ -1,0 +1,104 @@
+// The locale package: ids and tags, Locale.parse, the id in a writer (core's localeId and
+// locale.set), and each locale's data checked by hand against CLDR 49.0.0.
+
+mod basic;
+
+import testing use *;
+import collections use *;
+import locale;
+
+fn tagOf(t: &str) &'static str {
+  match locale.Locale.parse(t) {
+    case let Some(l) { l.tag() }
+    case is None { "none" }
+  }
+}
+
+fn main() i32 {
+  // tags
+  expectStr(locale.Locale.invariant.tag(), "und", "invariant tag");
+  expectStr(locale.Locale.en.tag(), "en", "en tag");
+  expectStr(locale.Locale.de.tag(), "de", "de tag");
+  expectStr(tagOf("de"), "de", "parse de");
+  expectStr(tagOf("DE"), "de", "parse DE");
+  expectStr(tagOf("de-DE"), "de", "parse de-DE");
+  expectStr(tagOf("de_AT"), "de", "parse de_AT");
+  expectStr(tagOf("en-GB"), "en", "parse en-GB");
+  expectStr(tagOf("en"), "en", "parse en");
+  expectStr(tagOf("und"), "und", "parse und");
+  expectStr(tagOf("fr"), "none", "parse fr");
+  expectStr(tagOf(""), "none", "parse empty");
+  expectStr(tagOf("d"), "none", "parse d");
+  expectStr(tagOf("deu"), "none", "parse deu");
+  expectStr(tagOf("-de"), "none", "parse -de");
+
+  // a new writer is invariant; set and read back; an unknown id reads as invariant; other
+  // mode bits survive
+  var s = String();
+  {
+    var w = s.textOut();
+    expectUInt(u64.from(w.localeId()), 0u64, "a new writer has id 0");
+    expectBool(locale.Locale.of(&w) == locale.Locale.invariant, true, "a new writer is invariant");
+    w.setColor(true);
+    locale.set(&uni w, locale.Locale.de);
+    expectUInt(u64.from(w.localeId()), 2u64, "de is id 2");
+    expectBool(locale.Locale.of(&w) == locale.Locale.de, true, "de read back");
+    expectBool(w.colorOn(), true, "color survives set");
+    locale.set(&uni w, locale.Locale.en);
+    expectBool(locale.Locale.of(&w) == locale.Locale.en, true, "en read back");
+    w.setLocaleId(200u8);
+    expectUInt(u64.from(w.localeId()), 200u64, "any id is kept by core");
+    expectBool(locale.Locale.of(&w) == locale.Locale.invariant, true, "an unknown id is invariant");
+    w.setLocaleId(0u8);
+    expectBool(w.colorOn(), true, "color survives the id");
+    w.setColor(false);
+    expectUInt(u64.from(w.localeId()), 0u64, "color off leaves the id");
+    locale.set(&uni w, locale.Locale.de);
+    w.setColor(true);
+    expectUInt(u64.from(w.localeId()), 2u64, "color on leaves the id");
+  }
+
+  // data
+  let inv = locale.Locale.invariant.data();
+  let en = locale.Locale.en.data();
+  let de = locale.Locale.de.data();
+  expectBool(inv.decimal == '.' && inv.group == ',' && inv.groupSize == 3usize, true, "invariant numbers");
+  expectBool(en.decimal == '.' && en.group == ',' && en.groupSize == 3usize, true, "en numbers");
+  expectBool(de.decimal == ',' && de.group == '.' && de.groupSize == 3usize, true, "de numbers");
+  expectBool(inv.dayDot, false, "invariant no day dot");
+  expectBool(en.dayDot, false, "en no day dot");
+  expectBool(de.dayDot, true, "de day dot");
+  expectBool(inv.hasShort, false, "invariant has no short date");
+  expectBool(en.hasShort, false, "en has no short date");
+  expectBool(de.hasShort, true, "de has a short date");
+  expectUInt(u64.from(de.shortOrder), 0u64, "de short order is day month year");
+  expectBool(de.shortSep == '.' && de.shortPad, true, "de short is dd.MM.y");
+  var i = 1i64;
+  let enMonths = ["January", "February", "March", "April", "May", "June", "July", "August",
+                  "September", "October", "November", "December"];
+  let enAbbr = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  let deMonths = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August",
+                  "September", "Oktober", "November", "Dezember"];
+  let deAbbr = ["Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."];
+  while i <= 12i64 {
+    let k = usize.from(i - 1i64);
+    expectStr(en.monthName(i), enMonths[k], "en month");
+    expectStr(inv.monthName(i), enMonths[k], "invariant month is en's");
+    expectStr(en.monthAbbr(i), enAbbr[k], "en abbr");
+    expectStr(inv.monthAbbr(i), enAbbr[k], "invariant abbr is en's");
+    expectStr(de.monthName(i), deMonths[k], "de month");
+    expectStr(de.monthAbbr(i), deAbbr[k], "de abbr");
+    i += 1i64;
+  }
+  let enDays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  let deDays = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+  var d = 0i64;
+  while d < 7i64 {
+    let k = usize.from(d);
+    expectStr(en.dayName(d), enDays[k], "en day");
+    expectStr(inv.dayName(d), enDays[k], "invariant day is en's");
+    expectStr(de.dayName(d), deDays[k], "de day");
+    d += 1i64;
+  }
+  return done();
+}

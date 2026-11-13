@@ -78,9 +78,18 @@
 //     grouped(x, sep, size)       1,234,567. A leading sign and everything after the digits (a
 //                                 fraction, an exponent) is left alone, so grouped(fixed(1234.5, 2))
 //                                 is 1,234.50. Decimal text only: a hex or bin item is not
-//                                 grouped sensibly. The defaults, ',' and 3, stand until locale
-//                                 context arrives, then they come from it with no change of spelling.
+//                                 grouped sensibly. With no sep or size the writer's locale says
+//                                 (the locale package: ',' and 3 for invariant and en, '.' and 3
+//                                 for de, and a '.' that follows the digits becomes the locale's
+//                                 decimal mark); given one, it is used as written, in any locale.
 //                                 Wrap pad outside it: pad(grouped(n), 12, Align.right).
+//
+//   LOCALE. fixed, digits and sci write the writer's locale's decimal mark (',' in de) and grouped
+//   its marks, because a caller who asked for them asked for a locale's text. A plain number
+//   ('<-' of a float) never changes, and nor does any debug form: those stay machine-readable.
+//   A writer's locale is its maker's to choose (locale.set); every new writer is invariant, so
+//   nothing here differs from before until one does. pad, truncate, quoted and grouped carry
+//   the writer's locale into the item they write.
 //
 //   STYLES (color on a terminal, nothing anywhere else)
 //     plain  red  green  yellow  blue  magenta  cyan  white  black  bold  dim  underline
@@ -107,6 +116,7 @@ mod format;
 
 import collections use String;
 import unicode;
+import locale;
 
 // A whole number of 32-bit limbs, little-endian, for the exact digits. The
 // largest is a subnormal's m * 5^1074, 2547 bits (80 limbs)
@@ -279,6 +289,17 @@ struct Dec {
   }
 }
 
+// The decimal mark: '.', or the writer's locale's when its maker chose one. fixed, digits and sci are
+// formats a caller asked a locale for; a plain float never comes here
+fn putMark(out: &uni TextOut) {
+  if out.localeId() == 0u8 {
+    out.putByte('.');
+  }
+  else {
+    out.putChar(locale.Locale.of(out).data().decimal);
+  }
+}
+
 // The sign, then the exact value rounded to n places after the mark
 fn putFixed(out: &uni TextOut, d: &Dec, n: usize) {
   if d.point <= 0i64 || d.len == 0usize {
@@ -292,7 +313,7 @@ fn putFixed(out: &uni TextOut, d: &Dec, n: usize) {
     }
   }
   if n > 0usize {
-    out.putByte('.');
+    putMark(out);
     var j = 0usize;
     while j < n {
       out.putByte(d.at(d.point + i64.from(j)) + '0');
@@ -305,7 +326,7 @@ fn putFixed(out: &uni TextOut, d: &Dec, n: usize) {
 fn putSci(out: &uni TextOut, d: &Dec, n: usize) {
   out.putByte(d.at(0i64) + '0');
   if n > 0usize {
-    out.putByte('.');
+    putMark(out);
     var j = 0usize;
     while j < n {
       out.putByte(d.at(1i64 + i64.from(j)) + '0');
@@ -372,7 +393,7 @@ pub struct FloatFormat {
       }
     }
   }
-  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+  pub fn toDebug(self: &, out: &uni TextOut) {debugText(self, out);}
 }
 
 // x with n places after the mark (an n below 0 is 0)
@@ -463,13 +484,30 @@ pub enum Align {left, right, center}
 // width of each char summed (unicode.width: 2 for wide East Asian chars, 0 for
 // combining marks and the like). The pieces of a send into that scratch are the
 // item's own, so what 'pad' measures is exactly what the item writes.
-fn measure[T](x: &T, scratch: &mut String) usize {
-  x.toText(&uni scratch.textOut());
+fn measure[T](x: &T, scratch: &mut String, id: u8) usize {
+  textInto(x, scratch, id);
   var cols = 0usize;
   each c in scratch.view().chars() {
     cols += usize.from(unicode.width(c));
   }
   cols
+}
+
+// x's text written into the scratch String, in the locale the real writer has (its id), so a
+// locale-aware item inside pad, truncate, quoted or grouped writes the same text it would to out
+fn textInto[T](x: &T, scratch: &mut String, id: u8) {
+  var w = scratch.textOut();
+  w.setLocaleId(id);
+  x.toText(&uni w);
+}
+
+// A wrapper's debug form is its text with no locale: debug is always invariant, however the
+// writer's maker set it
+fn debugText[T](x: &T, out: &uni TextOut) {
+  let id = out.localeId();
+  out.setLocaleId(0u8);
+  x.toText(out);
+  out.setLocaleId(id);
 }
 
 fn putFill(out: &uni TextOut, fill: char, n: usize) {
@@ -488,14 +526,14 @@ pub struct Padded[T] {
 
   pub fn toText(self: &, out: &uni TextOut) {
     var scratch = String();
-    let have = measure(&x, &mut scratch);
+    let have = measure(&x, &mut scratch, out.localeId());
     let gap = if have >= cols {0usize} else {cols - have};
     let before = if align == Align.left {0usize} else if align == Align.right {gap} else {gap / 2usize};
     putFill(out, fill, before);
     out.writeStr(scratch.view());
     putFill(out, fill, gap - before);
   }
-  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+  pub fn toDebug(self: &, out: &uni TextOut) {debugText(self, out);}
 }
 
 // x in a field 'width' columns wide, short text filled out with 'fill' on the side
@@ -513,7 +551,7 @@ pub struct Truncated[T] {
 
   pub fn toText(self: &, out: &uni TextOut) {
     var scratch = String();
-    x.toText(&uni scratch.textOut());
+    textInto(&x, &mut scratch, out.localeId());
     var used = 0usize;
     each c in scratch.view().chars() {
       let w = usize.from(unicode.width(c));
@@ -522,7 +560,7 @@ pub struct Truncated[T] {
       out.putChar(c);
     }
   }
-  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+  pub fn toDebug(self: &, out: &uni TextOut) {debugText(self, out);}
 }
 
 // The first n columns of x's text: whole chars only, so a wide char that would
@@ -537,10 +575,10 @@ pub struct Quoted[T] {
 
   pub fn toText(self: &, out: &uni TextOut) {
     var scratch = String();
-    x.toText(&uni scratch.textOut());
+    textInto(&x, &mut scratch, out.localeId());
     out.putDebugStr(scratch.view());
   }
-  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+  pub fn toDebug(self: &, out: &uni TextOut) {debugText(self, out);}
 }
 
 // x's text in double quotes, always, escaped as a string's debug form is:
@@ -578,6 +616,10 @@ pub fn join[T, C: Iterable[T]](items: &C, sep: &str) Joined[C] inline {
   Joined(items, sep)
 }
 
+// grouped's defaults for 'size' (and '\u0000' for 'sep'): no choice made, so the writer's locale
+// says. Invariant says ',' and 3, as before locales
+const noSize = 0xFFFFFFFFFFFFFFFFusize;
+
 pub struct Grouped[T] {
   x: T;
   sep: char;
@@ -585,8 +627,11 @@ pub struct Grouped[T] {
 
   pub fn toText(self: &, out: &uni TextOut) {
     var scratch = String();
-    x.toText(&uni scratch.textOut());
+    textInto(&x, &mut scratch, out.localeId());
     let b = scratch.view() as &Array[u8];
+    // '\u0000' and noSize are grouped's own defaults: the locale's mark and size
+    let mark = if sep == '\u0000' {locale.Locale.of(out).data().group} else {sep};
+    let group = if size == noSize {locale.Locale.of(out).data().groupSize} else {size};
     var i = 0usize;
     // a leading sign stays outside the groups
     if b.len > 0usize && (b[0usize] == '-' || b[0usize] == '+') {
@@ -599,23 +644,28 @@ pub struct Grouped[T] {
     let n = end - i;
     var k = 0usize;
     while k < n {
-      if k > 0usize && size > 0usize && (n - k) % size == 0usize {out.putChar(sep);}
+      if k > 0usize && group > 0usize && (n - k) % group == 0usize {out.putChar(mark);}
       out.putByte(b[i + k]);
       k += 1usize;
     }
-    // the fraction, exponent or whatever follows
+    // the fraction, exponent or whatever follows: a plain float's '.' becomes the locale's mark
+    // (a fixed or sci inside already wrote it)
+    if end < b.len && b[end] == '.' && out.localeId() != 0u8 {
+      out.putChar(locale.Locale.of(out).data().decimal);
+      end += 1usize;
+    }
     while end < b.len {
       out.putByte(b[end]);
       end += 1usize;
     }
   }
-  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+  pub fn toDebug(self: &, out: &uni TextOut) {debugText(self, out);}
 }
 
 // x's text with the digits of its integer part in groups of 'size' from the right,
 // 'sep' between: 1,234,567. Sign and fraction are left alone. Decimal text only
 // (a hex or bin item is not grouped sensibly). Put pad outside it, not inside.
-pub fn grouped[T](x: T, sep: char = ',', size: usize = 3usize) Grouped[T] inline {
+pub fn grouped[T](x: T, sep: char = '\u0000', size: usize = noSize) Grouped[T] inline {
   Grouped(x, sep, size)
 }
 
