@@ -131,6 +131,7 @@ extern StructNode *carriesRegionTrait;
 // structGcTraceElementsElem)
 extern StructNode *gcTraceElementsTrait;
 extern StructNode *atomicValueTrait;
+extern StructNode *soaLayoutTrait;
 extern StructNode *integerTrait;
 extern StructNode *floatTrait;
 extern StructNode *signedTrait;

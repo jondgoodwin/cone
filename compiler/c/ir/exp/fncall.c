@@ -5048,6 +5048,198 @@ static int fnCallCloneCopy(FnCallNode **nodep) {
     return 1;
 }
 
+// The type declaration an expression has, read from what is already known of it and without
+// checking it: a variable's declared or inferred type, or a field of such a value. Answers
+// NULL where that is not known (a call, a field not yet laid out), and the reference's target
+// where the type is a reference.
+static INode *fnCallPeekTypeDcl(INode *exp) {
+    INode *vtype = NULL;
+    if (isNameUseNode(exp)) {
+        INode *dcl = nameUseGetDcl((NameUseNode*)exp);
+        if (dcl && dcl->tag == VarDclTag)
+            vtype = ((VarDclNode*)dcl)->vtype;
+    }
+    else if (exp->tag == FnCallTag) {
+        FnCallNode *call = (FnCallNode*)exp;
+        if (call->methfld && isNameUseNode(call->methfld) && call->args == NULL
+            && !(call->flags & (FlagIndex | FlagOperator | FlagBorrow | FlagRange | FlagNew))) {
+            INode *owner = fnCallPeekTypeDcl(call->objfn);
+            if (owner && isMethodType(owner)) {
+                INode *found = iNsTypeFindFnField((INsTypeNode*)owner, ((NameUseNode*)call->methfld)->namesym);
+                if (found && found->tag == FieldDclTag)
+                    vtype = ((FieldDclNode*)found)->vtype;
+            }
+        }
+    }
+    // 'w.get()[i].f': a call of one non-generic method of a type known here, by what it returns
+    if (vtype == NULL && exp->tag == FnCallTag) {
+        FnCallNode *call = (FnCallNode*)exp;
+        // 'lists()[i].f': a call of one non-generic function
+        if (call->methfld == NULL && call->args != NULL && isNameUseNode(call->objfn)
+            && !(call->flags & (FlagIndex | FlagOperator | FlagBorrow | FlagRange | FlagNew))) {
+            INode *fn = nameUseGetDcl((NameUseNode*)call->objfn);
+            if (fn && fn->tag == FnDclTag && !(fn->flags & FlagMethFld) && ((FnDclNode*)fn)->genericinfo == NULL) {
+                fnCallDemandCandidates(fn);
+                INode *sig = ((FnDclNode*)fn)->vtype;
+                if (sig && sig->tag == FnSigTag)
+                    vtype = ((FnSigNode*)sig)->rettype;
+            }
+        }
+        else if (call->methfld && isNameUseNode(call->methfld) && call->args != NULL
+            && !(call->flags & (FlagIndex | FlagOperator | FlagBorrow | FlagRange | FlagNew))) {
+            INode *owner = fnCallPeekTypeDcl(call->objfn);
+            if (owner && isMethodType(owner)) {
+                INode *found = iNsTypeFindFnField((INsTypeNode*)owner, ((NameUseNode*)call->methfld)->namesym);
+                if (found && found->tag == FnDclTag && (found->flags & FlagMethFld)
+                    && ((FnDclNode*)found)->genericinfo == NULL) {
+                    fnCallDemandCandidates(found);
+                    INode *sig = ((FnDclNode*)found)->vtype;
+                    if (sig && sig->tag == FnSigTag)
+                        vtype = ((FnSigNode*)sig)->rettype;
+                }
+            }
+        }
+    }
+    if (vtype == NULL || !isTypeNode(vtype))
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(vtype);
+    if (dcl && dcl->tag == RefTag && isTypeNode(((RefNode*)dcl)->vtexp))
+        dcl = itypeGetTypeDcl(((RefNode*)dcl)->vtexp);
+    return dcl;
+}
+
+// The struct whose rows 'index', a plain 'x[i]', picks one of, where x's type declares SoaLayout
+static StructNode *fnCallSoaOf(INode *index) {
+    if (!fnCallIsPlainIndex(index))
+        return NULL;
+    FnCallNode *call = (FnCallNode*)index;
+    if (call->objfn == NULL || call->args == NULL || call->args->used != 1)
+        return NULL;
+    INode *dcl = fnCallPeekTypeDcl(call->objfn);
+    if (dcl == NULL || dcl->tag != StructTag || !structDeclaresTrait((StructNode*)dcl, soaLayoutTrait))
+        return NULL;
+    return (StructNode*)dcl;
+}
+
+// The row type of a SoaLayout struct instance, 'Pt' of 'SoaList[Pt]', as the name a message gives
+static const char *fnCallSoaRowName(StructNode *soa) {
+    Nodes *targs = itypeInstanceTypeArgs((INode*)soa);
+    if (targs && targs->used > 0) {
+        INode *arg = nodesGet(targs, 0);
+        INode *dcl = isTypeNode(arg) ? itypeGetTypeDcl(arg) : NULL;
+        Name *name = dcl ? inodeGetName(dcl) : NULL;
+        if (name)
+            return &name->namestr;
+    }
+    return "its row type";
+}
+
+// How a message names the list a row is of: 'ps' where it is a name, else 'the list'
+static const char *fnCallSoaListName(INode *rcv) {
+    if (isNameUseNode(rcv))
+        return &((NameUseNode*)rcv)->namesym->namestr;
+    if (rcv->tag == FnCallTag && ((FnCallNode*)rcv)->methfld && isNameUseNode(((FnCallNode*)rcv)->methfld))
+        return &((NameUseNode*)((FnCallNode*)rcv)->methfld)->namesym->namestr;
+    return "the list";
+}
+
+// 'ps[i].f' over a type declaring SoaLayout is the element of the column 'ps.f': 'ps.f[i]'. An
+// ordinary field read and an ordinary index, so reads, '=', '+=', '++' and the borrows of the
+// place follow the column's List rules with no permission logic of their own. The index node
+// is reused as the new index, with the field read made its receiver, so the set-place mark an
+// assignment or an operator laid on it (fnCallSetPlace) stays on the index that now is the
+// place. The receiver 'ps' is unchecked until here: its type is read from what is known
+// (fnCallPeekTypeDcl), and it is checked once, as the new field read's.
+int fnCallSoaFieldLower(INode **placep) {
+    if ((*placep)->tag != FnCallTag)
+        return 0;
+    FnCallNode *node = (FnCallNode*)*placep;
+    if (node->methfld == NULL || !isNameUseNode(node->methfld) || node->args != NULL || node->objfn == NULL
+        || (node->flags & (FlagIndex | FlagOperator | FlagBorrow | FlagRange | FlagNew)))
+        return 0;
+    StructNode *soa = fnCallSoaOf(node->objfn);
+    if (soa == NULL)
+        return 0;
+    FnCallNode *index = (FnCallNode*)node->objfn;
+    Name *name = ((NameUseNode*)node->methfld)->namesym;
+    INode *found = iNsTypeFindFnField((INsTypeNode*)soa, name);
+    if (found == NULL || found->tag != FieldDclTag) {
+        errorMsgNode((INode*)node->methfld, ErrorSoaNoColumn,
+            "'%s[i]' is a row of %s, which has no field '%s'. A row is read and written by the fields of %s.",
+            fnCallSoaListName(index->objfn), fnCallSoaRowName(soa), &name->namestr, fnCallSoaRowName(soa));
+        *placep = newErrorNode((INode*)node);
+        return -1;
+    }
+    node->objfn = index->objfn;
+    index->objfn = (INode*)node;
+    inodeLexCopy((INode*)index, (INode*)node);
+    *placep = (INode*)index;
+    return 1;
+}
+
+static int fnCallSoaField(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
+    int lowered = fnCallSoaFieldLower((INode**)nodep);
+    if (lowered > 0)
+        inodeTypeCheck(pstate, (INode**)nodep, expectType);
+    return lowered != 0;
+}
+
+// 'ps[i]' over a type declaring SoaLayout, read as a whole row, is 'ps.rowAt(i)'. A row is not
+// a place, so a write through the whole row ('ps[i] += r', '++') has none to go to: refused.
+// Only a Copy row has a rowAt (a 'where T is Copy' of the method), which type checking the
+// call says.
+static int fnCallSoaRow(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
+    FnCallNode *node = *nodep;
+    StructNode *soa = fnCallSoaOf((INode*)node);
+    if (soa == NULL)
+        return 0;
+    if (fnCallIsSetIndex(node)) {
+        errorMsgNode((INode*)node, ErrorSoaRowBorrow,
+            "A whole row of %s is written by '%s[i] = row' alone: it is split into columns, so it cannot be changed in place. Change one field, '%s[i].field = ...'.",
+            fnCallSoaRowName(soa), fnCallSoaListName(node->objfn), fnCallSoaListName(node->objfn));
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return 1;
+    }
+    FnCallNode *call = newFnCallLower((INode*)node, node->objfn, 0);
+    call->methfld = (INode*)newMemberUseNode(nametblFind("rowAt", 5));
+    inodeLexCopy(call->methfld, (INode*)node);
+    call->args = node->args;
+    *nodep = call;
+    inodeTypeCheck(pstate, (INode**)nodep, expectType);
+    return 1;
+}
+
+// 'ps[i] = r' over a type declaring SoaLayout is 'ps.setRowAt(i, r)'
+int fnCallSoaRowAssign(TypeCheckState *pstate, AssignNode **nodep) {
+    AssignNode *node = *nodep;
+    if ((node->flags & FlagDestructAssign) || node->lval == NULL || node->lval->tag != FnCallTag)
+        return 0;
+    StructNode *soa = fnCallSoaOf(node->lval);
+    if (soa == NULL)
+        return 0;
+    FnCallNode *index = (FnCallNode*)node->lval;
+    FnCallNode *call = newFnCallLower((INode*)node, index->objfn, 0);
+    call->methfld = (INode*)newMemberUseNode(nametblFind("setRowAt", 8));
+    inodeLexCopy(call->methfld, (INode*)node);
+    call->args = index->args;
+    nodesAdd(&call->args, node->rval);
+    *nodep = (AssignNode*)call;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
+// A borrow of 'ps[i]', the whole row of a type declaring SoaLayout
+int fnCallSoaRowBorrow(INode *place) {
+    StructNode *soa = fnCallSoaOf(place);
+    if (soa == NULL)
+        return 0;
+    INode *rcv = ((FnCallNode*)place)->objfn;
+    errorMsgNode(place, ErrorSoaRowBorrow,
+        "A row of %s cannot be borrowed whole: it is split into columns, so no one value holds it. Borrow a field of it, '&uni %s.field[i]' (or '&mut', '&'), or copy the row, 'let r = %s[i]'.",
+        fnCallSoaRowName(soa), fnCallSoaListName(rcv), fnCallSoaListName(rcv));
+    return 1;
+}
+
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
 
@@ -5117,6 +5309,12 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             node->methfld = access->methfld;
         }
     }
+
+    // 'ps[i].f' and 'ps[i]' over a type declaring SoaLayout: the column's element, and the
+    // whole row's 'rowAt'. Ahead of the operator macros and the index lowering below, which
+    // would look for a '[]' that such a type does not have.
+    if (fnCallSoaField(pstate, nodep, expectType) || fnCallSoaRow(pstate, nodep, expectType))
+        return;
 
     // 'x[i] += 1', 'x[i].f++': an operator changing its operand in place
     // writes to it, so every index in its place is in set position, as an

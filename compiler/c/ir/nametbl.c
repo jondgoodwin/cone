@@ -283,6 +283,7 @@ void nametblInit() {
     gcTraceElementsMethodName = nametblFind("gcTraceElements", 15);
     visitMethodName = nametblFind("visit", 5);
     atomicValueTraitName = nametblFind("AtomicValue", 11);
+    soaLayoutTraitName = nametblFind("SoaLayout", 9);
     integerTraitName = nametblFind("Integer", 7);
     floatTraitName = nametblFind("Float", 5);
     signedTraitName = nametblFind("Signed", 6);

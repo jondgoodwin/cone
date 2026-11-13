@@ -1033,7 +1033,7 @@ pub struct ListDrain['a, T] is Iterator[T] {
 // The columns are made by the compile-time walk of T's fields (mod-generativity.html#meta), so T
 // must be a struct, and its fields public, or all of them visible to this module (a type from
 // another module opts in with '@reflect'). A field of T named 'push', 'len', 'isEmpty', 'get',
-// 'remove' or 'swapRemove' clashes with the method of that name and is refused (ErrorMetaGenClash, 1596, naming the field
+// 'remove', 'swapRemove', 'rowAt' or 'setRowAt' clashes with the method of that name and is refused (ErrorMetaGenClash, 1596, naming the field
 // and T).
 //
 // A row goes in whole with 'push' and comes out whole with 'get(i)', where T is Copy: a row is
@@ -1053,8 +1053,14 @@ pub struct ListDrain['a, T] is Iterator[T] {
 // 'final' included: the row is rebuilt from a raw read of each column's value, the columns close
 // the gap, and the rebuilt value is the caller's, finalized as any value is when it is dropped.
 // 'SoaList[T](region)' hands the region to each column, so the columns' blocks come from it.
-// Not yet: 'ps[i].pos' as a place, and a layout marker.
-pub struct SoaList[T] is Default, Sendable, CarriesRegion {
+// 'SoaList' declares 'SoaLayout', which makes the row a place for the compiler: 'ps[i].pos' is
+// 'ps.pos[i]', so it reads, assigns, '+='s and borrows ('&uni ps[i].pos') as that element of the
+// column does, 'ps[i].pos.x += 1' included; a name that is no column is refused. Where T is Copy a
+// whole row reads as 'ps[i]' (which is 'ps.rowAt(i)') and is written as 'ps[i] = r' (which is
+// 'ps.setRowAt(i, r)'). No borrow of a whole row exists, since the row is split into columns:
+// '&uni ps[i]' is refused, and '&uni ps.pos[i]' is the form to write. 'rowAt' and 'setRowAt' are
+// field names T may not have, as 'len' and 'push' are.
+pub struct SoaList[T] is Default, Sendable, CarriesRegion, SoaLayout {
   #each #f in #fields(T) {
     pub #f: List[#f.type];
   }
@@ -1087,6 +1093,24 @@ pub struct SoaList[T] is Default, Sendable, CarriesRegion {
   pub fn get(self: &, index: usize) Option[T] where T is Copy {
     if index >= self.len() { return None; }
     Some[T](T(#each #f in #fields(T) { #f: self.#f[index] }))
+  }
+
+  // The row at index, built from each column's value there: what the compiler makes of 'ps[i]' read
+  // as a whole row. A program error if index is not below the length, reported at the caller's line.
+  pub fn rowAt(self: &, index: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) T where T is Copy {
+    let n = self.len();
+    if index >= n { outOfRange(index, n, file, line); }
+    T(#each #f in #fields(T) { #f: self.#f[index] })
+  }
+
+  // Store a row at index, each field into its column: what the compiler makes of 'ps[i] = r'. A
+  // program error if index is not below the length, reported at the caller's line.
+  pub fn setRowAt(self: &mut, index: usize, row: T, file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Copy {
+    let n = self.len();
+    if index >= n { outOfRange(index, n, file, line); }
+    #each #f in #fields(T) {
+      self.#f[index] = row.#f;
+    }
   }
 
   // Take the row at index out whole, the rows after it moving down one: rows [a, b, c] with 1

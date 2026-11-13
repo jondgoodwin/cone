@@ -188,6 +188,7 @@ extern Name *erasedName;         // "Erased", core's value known only by its typ
 extern Name *gcTraceElementsTraitName;  // "GcTraceElements", a type saying how a collector reaches what it holds in memory it points to
 extern Name *gcTraceElementsMethodName; // "gcTraceElements", the method such a type declares: a cursor over writable references to its elements
 extern Name *visitMethodName;    // "visit", which a counted region's trace calls to trace an object once per collection
+extern Name *soaLayoutTraitName;    // "SoaLayout", a type holding its rows as columns, one per field of the row type
 extern Name *atomicValueTraitName;   // "AtomicValue", a value changed only by atomic operations
 extern Name *integerTraitName;   // "Integer", the integer types, which a constraint may ask for
 extern Name *floatTraitName;     // "Float", f32 and f64
