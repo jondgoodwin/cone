@@ -540,6 +540,107 @@ static void varDclWorkgroupCheck(TypeCheckState *pstate, INode *node, void *extr
             &name->namesym->namestr);
 }
 
+// A global's type must be Shareable (Jon 4 Nov): every thread may name a global
+// at once, and every program is taken to have threads. So a global is a 'let'
+// of a Shareable type (itypeNotShareableWhy, the test a 'parallel each' asks of
+// an outside value and an 'Arc[imm, T]' of its T), a 'var' of an atomic or a
+// lock type (reached only through synchronized operations: globalSyncType),
+// '@threadlocal' (one copy per thread) or '@workgroup' (trusted). Any other
+// 'var' is refused whatever it holds. Each module global is noted as type check
+// meets it and judged once type check has finished, when every struct is laid
+// out (globalShareCheckAll). A module-level 'static' and a static in a struct
+// body are module globals and are judged; a function's static (scope above 0)
+// is not a module global and is not.
+static VarDclNode **globalShareNotes = NULL;
+static uint32_t globalShareCnt = 0;
+static uint32_t globalShareMax = 0;
+
+static void globalShareNote(VarDclNode *var) {
+    if (globalShareCnt == globalShareMax) {
+        uint32_t newmax = globalShareMax ? globalShareMax * 2 : 256;
+        VarDclNode **notes = (VarDclNode **)memAllocBlk(newmax * sizeof(VarDclNode *));
+        if (globalShareCnt)
+            memcpy(notes, globalShareNotes, globalShareCnt * sizeof(VarDclNode *));
+        globalShareNotes = notes;
+        globalShareMax = newmax;
+    }
+    globalShareNotes[globalShareCnt++] = var;
+}
+
+// Is this type one a shared 'var' may have: an atomic value, a lock, or an
+// array, tuple or struct holding one inline? Its operations are synchronized,
+// so a plain 'var' of it is the shared mutable form (WI shareable-globals,
+// rule 3)
+static int globalSyncType(INode *type) {
+    if (type == NULL)
+        return 0;
+    if (itypeHoldsAtomic(type))
+        return 1;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? globalSyncType(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return globalSyncType(((AliasDclNode *)type)->target);
+    case ArrayTag:
+        return globalSyncType(arrayElemType(type));
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (globalSyncType(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)type;
+        if (structDeclaresTrait(strnode, lockPermTrait))
+            return 1;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (globalSyncType(((VarDclNode *)*nodesp)->vtype))
+                return 1;
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+void globalShareCheckAll() {
+    uint32_t cnt = globalShareCnt;
+    globalShareCnt = 0;
+    for (uint32_t i = 0; i < cnt; ++i) {
+        VarDclNode *var = globalShareNotes[i];
+        if (var->vtype == NULL || var->vtype == unknownType || var->vtype == errorType
+            || (var->dclinfo.facts & (DclThreadLocal | DclWorkgroup)))
+            continue;
+        char *name = &var->namesym->namestr;
+        char typename[256] = "";
+        itypeSpellCat(typename, sizeof(typename), var->vtype, 0);
+        if (itypeGetTypeDcl(var->perm) != (INode *)immPerm) {
+            if (globalSyncType(var->vtype))
+                continue;
+            errorMsgNode((INode *)var, ErrorGlobalShare,
+                "Global %s (%s) is a plain 'var', and every thread may reach a global at once (every program is taken to have threads). A global is a 'let' of a Shareable type, a 'var' of an atomic or a lock, '@threadlocal' (one copy per thread) or '@workgroup'. A value known only after the program has started belongs to the object it describes, and is handed down as state.",
+                name, typename);
+            continue;
+        }
+        char path[256];
+        INode *culprit = itypeNotShareableWhy(var->vtype, 1, path, sizeof(path));
+        if (culprit == NULL)
+            continue;
+        char reason[512] = "", culpritname[256] = "";
+        genericNotShareableReason(culprit, 1, reason, sizeof(reason));
+        itypeSpellCat(culpritname, sizeof(culpritname), culprit, 0);
+        errorMsgNode((INode *)var, ErrorGlobalShare,
+            "Global %s's type %s is not Shareable, and every thread may reach a global at once: %s is %s, %s. A global is a 'let' of a Shareable type, a 'var' of an atomic or a lock, '@threadlocal' (one copy per thread) or '@workgroup'.",
+            name, typename, path[0] ? path : "it", culpritname, reason);
+    }
+}
+
 // Type check variable against its initial value
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     // Rule 3: the declared type is established before anything that could read
@@ -728,6 +829,8 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     // traced reference (judged once every type is laid out)
     if (name->scope == 0 || (name->flags & FlagStatic))
         regionTracedGlobalNote(name);
+    if (name->scope == 0)
+        globalShareNote(name);
     // A local or a parameter is a root: the collector finds what it holds by its
     // type's trace (judged once every type is laid out)
     else

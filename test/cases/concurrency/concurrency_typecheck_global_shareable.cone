@@ -1,0 +1,85 @@
+// A global's type must be Shareable: every thread may name a global at once,
+// and every program is taken to have threads (doc/reference/refmodule.html,
+// "Global variables"). The check is made at the declaration, ErrorGlobalShare.
+//
+// Refused: a plain 'var' whatever it holds (a number, an inferred type, a
+// struct, a list, an array, an 'extern' one, a module-level 'static', a
+// 'static' in a struct body); and a 'let', 'extern' or not, whose type is not
+// Shareable by the test a 'parallel each' applies to a value from outside the
+// loop and an 'Arc[imm, T]' to its T: an 'Rc', or a struct holding one.
+//
+// Accepted beside them, each declaration unmarked: a 'let' of a Shareable type
+// (a number, a struct of numbers, a List), a 'var' of an atomic or a lock (the
+// shared mutable form, alone or held in a struct or an array), '@threadlocal',
+// '@workgroup', an 'extern let' of a Shareable type, and a function's own
+// 'static var', which is not a module global and is not judged. 'const' is
+// not a global variable.
+
+mod concurrency_typecheck_global_shareable;
+
+import collections use List;
+import sync use Mutex, Arc;
+
+struct Item { pub n: i64; }
+
+struct Holds {
+  pub shared: Rc[imm, Item];
+}
+
+struct Counters {
+  pub hits: Atomic[i64];
+  pub misses: Atomic[i64];
+}
+
+struct Kept {
+  static var inBody = 3i64;                    //~ ErrorGlobalShare "Global inBody (i64) is a plain 'var'"
+  pub n: i64;
+}
+
+// ---- refused: a plain var
+var plain: i64 = 0i64;                          //~ ErrorGlobalShare "Global plain (i64) is a plain 'var'"
+pub var inferred = 5i64;                        //~ ErrorGlobalShare "Global inferred (i64) is a plain 'var'"
+var box: Item = Item(1i64);                 //~ ErrorGlobalShare "Global box (Item) is a plain 'var'"
+var items: List[Item];                          //~ ErrorGlobalShare "Global items (List) is a plain 'var'"
+var counts: Array[i64, 3] = [0i64, 0i64, 0i64]; //~ ErrorGlobalShare "Global counts (Array[i64, 3]) is a plain 'var'"
+extern var cvalue: i32;                         //~ ErrorGlobalShare "Global cvalue (i32) is a plain 'var'"
+static var moduleStatic = 7i64;                 //~ ErrorGlobalShare "Global moduleStatic (i64) is a plain 'var'"
+
+// ---- refused: a let of a type that is not Shareable
+let rc: Rc[imm, Item];                          //~ ErrorGlobalShare "Global rc's type"
+let holds: Holds;                               //~ ErrorGlobalShare "Global holds's type"
+extern let crc: Rc[imm, Item];                  //~ ErrorGlobalShare "Global crc's type"
+
+// ---- accepted
+const SIZE = 4i64;
+let limit: i64 = 10i64;
+let pair: Array[i64, 2] = [1i64, 2i64];
+let roster: List[Item];
+var hits: Atomic[i64];
+var lock: Mutex;
+var both: Counters;
+var cells: Array[Atomic[u32], 2];
+let shared: Arc[imm, Item];
+extern let cconst: i32;
+var @threadlocal depth: i64 = 0i64;
+var @threadlocal slots: Array[i64, 2] = [0i64, 0i64];
+var @workgroup tile: Array[u32, 4];
+
+fn @initpure init() {
+  items = List[Item]();
+  roster = List[Item]();
+  rc = Rc[imm, Item](Item(2i64));
+  holds = Holds(Rc[imm, Item](Item(2i64)));
+  hits = Atomic[i64].of(0i64);
+  lock = Mutex.make();
+  both = Counters(Atomic[i64].of(0i64), Atomic[i64].of(0i64));
+  cells = [Atomic[u32].of(0u32), Atomic[u32].of(0u32)];
+  shared = Arc[imm, Item](Item(3i64));
+}
+
+// A function's own static is not a module global: it is not judged
+fn tick() i64 {
+  static var calls = 0i64;
+  calls = calls + 1i64;
+  calls
+}
