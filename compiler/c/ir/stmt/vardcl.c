@@ -549,8 +549,8 @@ static void varDclWorkgroupCheck(TypeCheckState *pstate, INode *node, void *extr
 // 'var' is refused whatever it holds. Each module global is noted as type check
 // meets it and judged once type check has finished, when every struct is laid
 // out (globalShareCheckAll). A module-level 'static' and a static in a struct
-// body are module globals and are judged; a function's static (scope above 0)
-// is not a module global and is not.
+// body are module globals and are judged, and so is a function's static (rule 1:
+// statics, in a function or a struct, are globals).
 static VarDclNode **globalShareNotes = NULL;
 static uint32_t globalShareCnt = 0;
 static uint32_t globalShareMax = 0;
@@ -567,15 +567,14 @@ static void globalShareNote(VarDclNode *var) {
     globalShareNotes[globalShareCnt++] = var;
 }
 
-// Is this type one a shared 'var' may have: an atomic value, a lock, or an
-// array, tuple or struct holding one inline? Its operations are synchronized,
-// so a plain 'var' of it is the shared mutable form (WI shareable-globals,
-// rule 3)
+// Is a plain 'var' of this type reached only through synchronized operations
+// (WI shareable-globals, rule 3: atomics, locks, actor handles)? An atomic
+// value, a lock and an actor's handle are; an array or tuple is when every
+// element is; a struct is when every field is, or is immutable (a 'let' field),
+// so that a struct with an atomic beside a plain mutable field is not
 static int globalSyncType(INode *type) {
     if (type == NULL)
         return 0;
-    if (itypeHoldsAtomic(type))
-        return 1;
     switch (type->tag) {
     case NameUseTag:
         return isTypeNode(type) ? globalSyncType(itypeGetTypeDcl(type)) : 0;
@@ -587,22 +586,30 @@ static int globalSyncType(INode *type) {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
-            if (globalSyncType(*nodesp))
-                return 1;
+            if (!globalSyncType(*nodesp))
+                return 0;
         }
-        return 0;
+        return 1;
     }
     case StructTag: {
         StructNode *strnode = (StructNode *)type;
-        if (structDeclaresTrait(strnode, lockPermTrait))
+        if (structDeclaresTrait(strnode, atomicValueTrait) || structDeclaresTrait(strnode, lockPermTrait)
+            || actorOfHandle(type) != NULL || actorTraitOfHandle(type) != NULL)
             return 1;
         INode **nodesp;
         uint32_t cnt;
+        int fields = 0;
         for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-            if (globalSyncType(((VarDclNode *)*nodesp)->vtype))
-                return 1;
+            if ((*nodesp)->tag != FieldDclTag)
+                continue;
+            FieldDclNode *field = (FieldDclNode *)*nodesp;
+            ++fields;
+            if (itypeGetTypeDcl(field->perm) == (INode *)immPerm)
+                continue;
+            if (!globalSyncType(field->vtype))
+                return 0;
         }
-        return 0;
+        return fields > 0;
     }
     default:
         return 0;
@@ -827,10 +834,11 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
 
     // A global or a static is found by no collector, so it may not hold a
     // traced reference (judged once every type is laid out)
-    if (name->scope == 0 || (name->flags & FlagStatic))
+    // A global or a static must also be Shareable (globalShareCheckAll)
+    if (name->scope == 0 || (name->flags & FlagStatic)) {
         regionTracedGlobalNote(name);
-    if (name->scope == 0)
         globalShareNote(name);
+    }
     // A local or a parameter is a root: the collector finds what it holds by its
     // type's trace (judged once every type is laid out)
     else

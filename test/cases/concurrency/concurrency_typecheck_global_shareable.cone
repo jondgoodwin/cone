@@ -11,8 +11,8 @@
 // Accepted beside them, each declaration unmarked: a 'let' of a Shareable type
 // (a number, a struct of numbers, a List), a 'var' of an atomic or a lock (the
 // shared mutable form, alone or held in a struct or an array), '@threadlocal',
-// '@workgroup', an 'extern let' of a Shareable type, and a function's own
-// 'static var', which is not a module global and is not judged. 'const' is
+// '@workgroup' and an 'extern let' of a Shareable type. A function's own
+// 'static var' is a global too (rule 1) and is refused. 'const' is not a global variable.
 // not a global variable.
 
 mod concurrency_typecheck_global_shareable;
@@ -31,6 +31,11 @@ struct Counters {
   pub misses: Atomic[i64];
 }
 
+struct Mixed {
+  pub hits: Atomic[i64];
+  pub n: i64;
+}
+
 struct Kept {
   static var inBody = 3i64;                    //~ ErrorGlobalShare "Global inBody (i64) is a plain 'var'"
   pub n: i64;
@@ -41,6 +46,7 @@ var plain: i64 = 0i64;                          //~ ErrorGlobalShare "Global pla
 pub var inferred = 5i64;                        //~ ErrorGlobalShare "Global inferred (i64) is a plain 'var'"
 var box: Item = Item(1i64);                 //~ ErrorGlobalShare "Global box (Item) is a plain 'var'"
 var items: List[Item];                          //~ ErrorGlobalShare "Global items (List) is a plain 'var'"
+var mixed: Mixed;                              //~ ErrorGlobalShare "Global mixed (Mixed) is a plain 'var'"
 var counts: Array[i64, 3] = [0i64, 0i64, 0i64]; //~ ErrorGlobalShare "Global counts (Array[i64, 3]) is a plain 'var'"
 extern var cvalue: i32;                         //~ ErrorGlobalShare "Global cvalue (i32) is a plain 'var'"
 static var moduleStatic = 7i64;                 //~ ErrorGlobalShare "Global moduleStatic (i64) is a plain 'var'"
@@ -72,14 +78,15 @@ fn @initpure init() {
   holds = Holds(Rc[imm, Item](Item(2i64)));
   hits = Atomic[i64].of(0i64);
   lock = Mutex.make();
+  mixed = Mixed(Atomic[i64].of(0i64), 1i64);
   both = Counters(Atomic[i64].of(0i64), Atomic[i64].of(0i64));
   cells = [Atomic[u32].of(0u32), Atomic[u32].of(0u32)];
   shared = Arc[imm, Item](Item(3i64));
 }
 
-// A function's own static is not a module global: it is not judged
+// A function's own static is a global: it is judged
 fn tick() i64 {
-  static var calls = 0i64;
+  static var calls = 0i64;  //~ ErrorGlobalShare "Global calls (i64) is a plain 'var'"
   calls = calls + 1i64;
   calls
 }
