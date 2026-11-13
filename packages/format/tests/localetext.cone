@@ -1,0 +1,118 @@
+// format through a locale: the same values written by an invariant writer (the text every
+// existing test blesses) and by a de writer; grouped's marks, the decimal mark of fixed,
+// digits and sci, nothing for plain numbers or ints, explicit grouped arguments kept,
+// pad/truncate/quoted/join carrying the locale to their item, and debug forms unchanged. Every
+// expected text is worked out by hand: de groups with '.' and marks decimals with ','.
+
+mod localetext;
+
+import testing use *;
+import collections use *;
+import format use *;
+import locale;
+
+fn chk(got: &String, want: &str, label: &str) {
+  expectStr(got.view(), want, label);
+}
+
+fn main() i32 {
+  var s = String();
+  var d = String();
+  let big = 1234567;
+
+  // invariant: today's text
+  s <- grouped(big); chk(&s, "1,234,567", "invariant grouped"); s.clear();
+  s <- grouped(fixed(1234567.5, 2)); chk(&s, "1,234,567.50", "invariant grouped fixed"); s.clear();
+  s <- fixed(3.14159, 2); chk(&s, "3.14", "invariant fixed"); s.clear();
+  s <- sci(1234.5, 2); chk(&s, "1.23e+03", "invariant sci"); s.clear();
+  s <- digits(1234.5, 6); chk(&s, "1234.50", "invariant digits"); s.clear();
+  s <- 2.5; chk(&s, "2.5", "invariant plain float"); s.clear();
+  s <- grouped(big, '_', 4usize); chk(&s, "123_4567", "invariant explicit sep and size"); s.clear();
+
+  // a de writer
+  {
+    var w = s.textOut();
+    locale.set(&uni w, locale.Locale.de);
+    w <- grouped(big), "|", grouped(-big), "|", grouped(999), "|", grouped(1000);
+  }
+  chk(&s, "1.234.567|-1.234.567|999|1.000", "de grouped"); s.clear();
+  {
+    var w = s.textOut();
+    locale.set(&uni w, locale.Locale.de);
+    w <- grouped(fixed(1234567.5, 2)), "|", fixed(3.14159, 2), "|", fixed(2.5, 0), "|", fixed(-0.5, 1);
+  }
+  chk(&s, "1.234.567,50|3,14|2|-0,5", "de fixed (no mark when there are no places)"); s.clear();
+  {
+    var w = s.textOut();
+    locale.set(&uni w, locale.Locale.de);
+    w <- sci(1234.5, 2), "|", sci(1234.5, 0), "|", digits(1234.5, 6), "|", digits(1234.5, 2), "|", digits(0.5, 3);
+  }
+  chk(&s, "1,23e+03|1e+03|1234,50|1,2e+03|0,500", "de sci and digits"); s.clear();
+  // plain numbers stay machine-readable, whatever the locale
+  {
+    var w = s.textOut();
+    locale.set(&uni w, locale.Locale.de);
+    w <- 2.5, "|", big, "|", -3, "|", 1234.5, "|", hex(255u8);
+  }
+  chk(&s, "2.5|1234567|-3|1234.5|ff", "de plain numbers unchanged"); s.clear();
+  // grouped of a plain float is a locale's text: the mark follows the digits
+  {
+    var w = s.textOut();
+    locale.set(&uni w, locale.Locale.de);
+    w <- grouped(1234567.5);
+  }
+  chk(&s, "1.234.567,5", "de grouped plain float"); s.clear();
+  // explicit arguments are kept, in any locale
+  {
+    var w = s.textOut();
+    locale.set(&uni w, locale.Locale.de);
+    w <- grouped(big, ',', 3usize), "|", grouped(big, '_', 4usize), "|", grouped(big, ' ');
+  }
+  chk(&s, "1,234,567|123_4567|1 234 567", "de explicit sep and size"); s.clear();
+  // pad, truncate, quoted and join carry the locale to the item
+  {
+    var w = s.textOut();
+    locale.set(&uni w, locale.Locale.de);
+    w <- pad(grouped(big), 12usize, Align.right), "|", pad(fixed(1.5, 2), 8usize, Align.right), "|",
+      truncate(fixed(3.14159, 3), 4usize), "|", quoted(fixed(1.5, 1));
+  }
+  chk(&s, "   1.234.567|    1,50|3,14|\"1,5\"", "de pad, truncate, quoted"); s.clear();
+  {
+    var xs = List[f64]();
+    xs.push(1.5); xs.push(0.25);
+    var w = s.textOut();
+    locale.set(&uni w, locale.Locale.de);
+    w <- join(&xs, "; ");
+    w <- "|";
+    w <- join(&xs, "; ");
+  }
+  chk(&s, "1.5; 0.25|1.5; 0.25", "de join of plain floats is plain"); s.clear();
+
+  // en is invariant's text here
+  {
+    var w = s.textOut();
+    locale.set(&uni w, locale.Locale.en);
+    w <- grouped(fixed(1234567.5, 2)), "|", fixed(3.14159, 2);
+  }
+  chk(&s, "1,234,567.50|3.14", "en"); s.clear();
+
+  // debug forms are invariant, whatever the writer's locale
+  {
+    var w = s.textOut();
+    locale.set(&uni w, locale.Locale.de);
+    w <- toDebug(&fixed(3.14159, 2)), "|", toDebug(&grouped(big)), "|", toDebug(&pad(fixed(1.5, 1), 5usize, Align.right)),
+      "|", toDebug(&sci(1234.5, 2)), "|", fixed(1.5, 1);
+    expectBool(locale.Locale.of(&w) == locale.Locale.de, true, "debug leaves the writer's locale");
+  }
+  chk(&s, "3.14|1,234,567|  1.5|1.23e+03|1,5", "debug is invariant"); s.clear();
+
+  // the same values, invariant and de, differ
+  s <- grouped(fixed(1234567.5, 2));
+  {
+    var w = d.textOut();
+    locale.set(&uni w, locale.Locale.de);
+    w <- grouped(fixed(1234567.5, 2));
+  }
+  expectBool(s.view() != d.view(), true, "the same value reads differently in de");
+  return done();
+}

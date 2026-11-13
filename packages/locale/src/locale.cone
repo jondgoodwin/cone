@@ -1,0 +1,126 @@
+// The locale package: which locale a writer writes in, and the number and date
+// conventions of the locales known. Text is invariant (machine-readable, English
+// words, '.' for the decimal mark) unless the maker of a writer chose a locale:
+//
+//   mod app;
+//   import collections use String;
+//   import locale;
+//   import format use grouped;
+//
+//   fn main() {
+//     var s = String();
+//     {
+//       var w = s.textOut();
+//       locale.set(&uni w, locale.Locale.de);
+//       w <- grouped(1234567);
+//     }
+//     // s is '1.234.567'
+//   }
+//
+//   Locale        invariant (id 0, today's text), en, de. Locale.parse(tag) reads a BCP 47 tag by
+//                 its first part ('de', 'de-DE', 'de_AT' are de; 'und' is invariant; anything else
+//                 None); Locale.tag is back the other way. Locale.of(out) is a writer's.
+//   set(out, l)   the maker's: the writer writes in l from now on. The id is kept in the writer
+//                 (core's localeId, setLocaleId), so a writer costs nothing for it, and every
+//                 writer starts invariant. An id the package does not know reads as invariant.
+//   LocaleData    what a locale says, by Locale.data(): decimal mark, group mark and size, the
+//                 month and day words, and whether the locale has a short date (and its order).
+//                 Read only.
+//
+// Who reads it: format's grouped (its group mark and size, when asked for no other), fixed, digits
+// and sci (the decimal mark), and calendar's DateStyle (words and the '3.' of a day). Plain numbers
+// ('<-' of a float), 'debug' and ISO dates never read it, so machine-read text stays machine-read
+// whatever the locale. The tables are generated from CLDR (localetables.py names the version) and
+// are plain functions: a program that never reads a locale carries none of them.
+
+mod locale;
+
+// A locale. The order is the id order of localetables.py (invariant 0, then en, de)
+pub enum Locale {
+  invariant, en, de;
+
+  // The locale of this tag, by its first part and ignoring case ('de-DE' is de); None for a
+  // language not known here
+  pub fn parse(tag: &str) Option[Locale] {
+    let b = tag as &Array[u8];
+    var n = 0usize;
+    while n < b.len && b[n] != '-' && b[n] != '_' {n += 1usize;}
+    if n == 2usize {
+      let a = lowerByte(b[0usize]);
+      let c = lowerByte(b[1usize]);
+      if a == 'e' && c == 'n' {return Some[Locale](Locale.en);}
+      if a == 'd' && c == 'e' {return Some[Locale](Locale.de);}
+    }
+    else if n == 3usize {
+      if lowerByte(b[0usize]) == 'u' && lowerByte(b[1usize]) == 'n' && lowerByte(b[2usize]) == 'd' {
+        return Some[Locale](Locale.invariant);
+      }
+    }
+    None
+  }
+
+  // Its BCP 47 tag: 'und' (no language) for invariant, 'en', 'de'
+  pub fn tag(self: Locale) &str {
+    if self == Locale.en {"en"}
+    else if self == Locale.de {"de"}
+    else {"und"}
+  }
+
+  // The locale the writer writes in: invariant unless its maker chose one
+  pub fn of(out: &TextOut) Locale {
+    fromId(out.localeId())
+  }
+
+  // What this locale says
+  pub fn data(self: Locale) LocaleData {
+    let id = idOf(self);
+    LocaleData(id, decimalOf(id), groupOf(id), usize.from(groupSizeOf(id)), dayDotOf(id),
+      hasShortOf(id), shortOrderOf(id), shortSepOf(id), shortPadOf(id))
+  }
+}
+
+fn lowerByte(b: u8) u8 {
+  if b >= 'A' && b <= 'Z' {b + 32u8} else {b}
+}
+
+fn idOf(l: Locale) u8 {
+  if l == Locale.en {1u8}
+  else if l == Locale.de {2u8}
+  else {0u8}
+}
+
+// An id outside the known range is invariant
+fn fromId(id: u8) Locale {
+  if id == 1u8 {Locale.en}
+  else if id == 2u8 {Locale.de}
+  else {Locale.invariant}
+}
+
+// The maker's: the writer writes in this locale from now on
+pub fn set(out: &uni TextOut, l: Locale) {
+  out.setLocaleId(idOf(l));
+}
+
+// What a locale says: read only, made by Locale.data(). The short date is 'hasShort'
+// (not every locale has an unambiguous one): its parts in 'shortOrder' (0 day, month,
+// year; 1 month, day, year; 2 year, month, day), 'shortSep' between them, the day and
+// month in two digits when 'shortPad'. 'dayDot' is whether a day is followed by a '.'
+// in the long forms ('3. Oktober 2026')
+pub struct LocaleData {
+  id: u8;
+  pub decimal: char;
+  pub group: char;
+  pub groupSize: usize;
+  pub dayDot: bool;
+  pub hasShort: bool;
+  pub shortOrder: u8;
+  pub shortSep: char;
+  pub shortPad: bool;
+
+  // The month's name, 1 to 12 ('October', 'Oktober')
+  pub fn monthName(self, month: i64) &str inline {monthWideOf(id, usize.from(month - 1i64))}
+  // The month's short name, 1 to 12 ('Oct', 'Okt.')
+  pub fn monthAbbr(self, month: i64) &str inline {monthAbbrOf(id, usize.from(month - 1i64))}
+  // The day's name, 0 for Monday to 6 for Sunday ('Saturday', 'Samstag')
+  pub fn dayName(self, i: i64) &str inline {dayWideOf(id, usize.from(i))}
+}
