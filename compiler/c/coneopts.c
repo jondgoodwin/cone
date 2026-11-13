@@ -65,8 +65,12 @@ enum
     OPT_WARN_INDEX_STAR,
     OPT_PRIVATE_INSTANCES,
     OPT_NO_NOALIAS,
+<<<<<<< HEAD
     OPT_LTO,
     OPT_LTO_LINK,
+=======
+    OPT_ALIGN_CODE,
+>>>>>>> origin/code-alignment
 
     OPT_BNF,
     OPT_ANTLR,
@@ -121,8 +125,12 @@ static opt_arg_t args[] =
     { "warn-index-star", '\0', OPT_ARG_NONE, OPT_WARN_INDEX_STAR },
     { "private-instances", '\0', OPT_ARG_REQUIRED, OPT_PRIVATE_INSTANCES },
     { "no-noalias", '\0', OPT_ARG_NONE, OPT_NO_NOALIAS },
+<<<<<<< HEAD
     { "lto", '\0', OPT_ARG_NONE, OPT_LTO },
     { "lto-link", '\0', OPT_ARG_NONE, OPT_LTO_LINK },
+=======
+    { "align-code", '\0', OPT_ARG_NONE, OPT_ALIGN_CODE },
+>>>>>>> origin/code-alignment
 
     OPT_ARGS_FINISH
 };
@@ -223,6 +231,8 @@ static void usage()
         "                  specialised; with n, only those of at most n\n"
         "                  unoptimised LLVM instructions, and larger ones stay\n"
         "                  shared, one copy per program. 0 shares them all.\n"
+        "  --align-code    Align every function and loop header to 64 bytes\n"
+        "                  (release builds; off by default).\n"
         "  --no-noalias    Attach no 'noalias' to a unique or immutable borrow\n"
         "                  parameter (also set by CONE_NO_NOALIAS in the\n"
         "                  environment): the way to bisect a suspected miscompile.\n"
@@ -483,8 +493,12 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
                 ok = 0;
             break;
         case OPT_NO_NOALIAS: opt->no_noalias = 1; break;
+<<<<<<< HEAD
         case OPT_LTO: opt->lto = 1; break;
         case OPT_LTO_LINK: opt->ltolink = 1; break;
+=======
+        case OPT_ALIGN_CODE: opt->align_code = 1; break;
+>>>>>>> origin/code-alignment
 
         case OPT_VERBOSE:
         {

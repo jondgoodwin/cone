@@ -1705,6 +1705,17 @@ PROVISIONAL (Jon approved it "for now", 9 Nov). `--no-noalias` and the GPU leave
 `MemRegion`) is what a user-written region must meet. Arenas, pools and `Arena.alloc` are not
 marked.
 
+### `--align-code`
+
+Off by default, and then codegen is unchanged. On, `genlCreateMachine` hands LLVM
+two codegen options through `LLVMParseCommandLineOptions` (the C API has no setter):
+`-align-all-functions=6` (every function starts on 64 bytes) and
+`-x86-experimental-pref-innermost-loop-alignment=6` (the x86 backend aligns an
+innermost loop's top block to 64). llc's own `-align-loops` does not reach a
+machine made through the C API. The option exists to test whether a hot loop's
+speed follows its position in a 64-byte line (`Ruminations\code-alignment-2026-11-09.md`).
+It is x86 only, and outer loops are not aligned.
+
 ### A split method
 
 An actor's behaviour holding an `await` is cut at each one, a seam, where it

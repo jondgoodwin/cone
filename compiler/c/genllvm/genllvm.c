@@ -1708,6 +1708,18 @@ LLVMTargetMachineRef genlCreateMachine(ConeOptions *opt) {
     }
     if (!opt->features)
         opt->features = "";
+    // --align-code: LLVM's C API has no setter for code alignment, so it is
+    // LLVM's own codegen options (log2): every function to 64 bytes, and the
+    // x86 target's preferred alignment for innermost loops to 64. ('-align-loops'
+    // from llc's command-line flags does not reach a machine made through the
+    // C API; this one is read by the x86 backend itself.) Read when code is
+    // emitted, and set once for the process.
+    static int alignset = 0;
+    if (opt->align_code && !alignset) {
+        static const char *const alignargs[] = { "conec", "-align-all-functions=6", "-x86-experimental-pref-innermost-loop-alignment=6" };
+        LLVMParseCommandLineOptions(3, alignargs, NULL);
+        alignset = 1;
+    }
     if (!(machine = LLVMCreateTargetMachine(target, opt->triple, opt->cpu, opt->features, opt_level, reloc, LLVMCodeModelDefault))) {
         errorMsg(ErrorGenErr, "Could not create target machine");
         return NULL;
