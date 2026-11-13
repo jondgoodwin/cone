@@ -1,0 +1,35 @@
+// cat: copy standard input to standard output, a block at a time, with readBytes. A filter's whole shape:
+// read until the read answers 0, write what came.
+//
+// On Windows, standard output goes through the C runtime's text mode (nothing sets another), so a '\n' this
+// writes arrives as '\r\n': a copy of text is right, a byte-exact copy of binary data is not. Standard
+// input is read as it is on both systems.
+//
+//   cat < file
+//   some-program | cat
+
+mod cat;
+
+import stdio use *;
+import collections use String;
+
+fn main() i32 {
+  var buf = Array[u8, 65536]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  var going = true;
+  var status = 0i32;
+  while going {
+    match readBytes(&mut buf) {
+      case let Ok(n) {
+        if n == 0usize { going = false; }
+        else {
+          var chunk = String();
+          chunk.appendBytes(mem.sliceFromParts(bp, n));
+          printStr(chunk.view());
+        }
+      }
+      case is Err { eprintStr("cat: read failed\n"); status = 1i32; going = false; }
+    }
+  }
+  status
+}

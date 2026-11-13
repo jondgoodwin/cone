@@ -1,0 +1,313 @@
+// Reading standard input: readLine, readAll and readBytes. 'congo test' runs a
+// program with standard input at NUL (/dev/null), so this test starts itself
+// again, as a child ('--child' and a mode), with standard input redirected from
+// a file the test wrote ('cmd /c' and '/bin/sh -c' both take '<'), and reads
+// what the child printed. The child prints no line end (what a console would do
+// to one is not this test's question), only text that is the same on both
+// systems: lines in brackets, bytes in hex.
+//
+// What it covers: '\n', '\r\n' and a last line with no line end; a lone '\r'
+// at the end of the input kept; empty lines; empty input; a 1 MiB line (a
+// line longer than every buffer there is); bytes that are not UTF-8, a 0x1A
+// byte and '\r\n' pairs that the C runtime's text mode would change, through
+// readBytes (a small buffer, then one larger than conestd's own) and readAll;
+// readLine, readBytes and readAll taking turns on one input, each finding where
+// the last stopped.
+//
+// It works in a folder of its own under TEMP (TMPDIR or /tmp on POSIX),
+// 'cone-stdio-input-test', which it clears if an interrupted run left it, makes
+// and removes at the end.
+
+mod input;
+
+import testing use *;
+import collections use *;
+import stdio;
+import libc;
+import path use Path;
+import fs;
+import process;
+
+fn tempText() String {
+  var variable: cstr = "TMPDIR";
+  #if #os == .windows { variable = "TEMP"; }
+  let temp = libc.getenv(variable);
+  require(#if #os == .windows {temp != null} #else {true}, "TEMP is set");
+  if temp != null {String.from(cstr.fromPtr(temp).view())} else {String.from("/tmp")}
+}
+
+fn makeRoot(name: &str) Path {
+  let tempText = tempText();
+  let tempPath = Path.from(tempText.view());
+  var root = Path.from("");
+  match fs.absolute(&tempPath) {
+    case let Ok(t) { root = t.join(name); }
+    case is Err { require(false, "TEMP has an absolute path"); }
+  }
+  let up = root.parent();
+  let safe = root.isAbsolute() && root.view().endsWith(name) && up.view().len() > 3usize;
+  require(safe, "the test's folder is under TEMP");
+  root
+}
+
+// The bytes in hex, two digits each
+fn hexOf(s: &Array[u8]) String {
+  var out = String();
+  var i = 0usize;
+  while i < s.len {
+    out.appendHex(u64.from(s[i]), 2usize);
+    i = i + 1usize;
+  }
+  out
+}
+
+// The bytes the byte-oriented cases read
+fn rawBytes() String {
+  var s = String();
+  // 'a', a '\r\n' (the text mode drops the '\r'), 'b', '\n', 0x1A (the text mode ends the input here), 'c', '\r\n',
+  // and four bytes that are not UTF-8
+  s.appendByte(0x61u8); s.appendByte(0x0Du8); s.appendByte(0x0Au8); s.appendByte(0x62u8); s.appendByte(0x0Au8);
+  s.appendByte(0x1Au8); s.appendByte(0x63u8); s.appendByte(0x0Du8); s.appendByte(0x0Au8);
+  s.appendByte(0xFFu8); s.appendByte(0xFEu8); s.appendByte(0xC3u8); s.appendByte(0x28u8);
+  s
+}
+
+// 100000 bytes in a pattern, for the large read
+fn patterned(n: usize) String {
+  var s = String();
+  var i = 0usize;
+  while i < n {
+    s.appendByte(u8.from(i % 251usize));
+    i = i + 1usize;
+  }
+  s
+}
+
+fn sumOf(s: &Array[u8]) u64 {
+  var total = 0u64;
+  var i = 0usize;
+  while i < s.len {
+    total = total + u64.from(s[i]);
+    i = i + 1usize;
+  }
+  total
+}
+
+// -------- the child --------
+
+// Each line in brackets, or '[error]' if a read failed
+fn childLines(hex: bool, lens: bool) String {
+  var out = String();
+  var line = String();
+  var going = true;
+  while going {
+    match stdio.readLine(&mut line) {
+      case let Ok(more) {
+        if more {
+          if lens { out.appendUInt(u64.from(line.len())); out.append(","); }
+          else if hex { out.append("["); out.append(hexOf(line.view()).view()); out.append("]"); }
+          else { out.append("["); out.append(line.view()); out.append("]"); }
+        }
+        else { going = false; }
+      }
+      case is Err { out.append("[error]"); going = false; }
+    }
+  }
+  out
+}
+
+// All the bytes through readBytes, 'room' at a time, in hex
+fn childBytes(room: usize) String {
+  var out = String();
+  var all = List[u8]();
+  var buf = List[u8]();
+  var i = 0usize;
+  while i < room { buf.push(0u8); i = i + 1usize; }
+  var going = true;
+  while going {
+    match stdio.readBytes(buf.viewMut()) {
+      case let Ok(n) {
+        if n == 0usize { going = false; }
+        else {
+          var j = 0usize;
+          while j < n { all.push(buf[j]); j = j + 1usize; }
+        }
+      }
+      case is Err { out.append("error"); going = false; }
+    }
+  }
+  var s = String();
+  var k = 0usize;
+  while k < all.len() { s.appendByte(all[k]); k = k + 1usize; }
+  out.appendUInt(u64.from(s.len()));
+  out.append(":");
+  out.appendUInt(sumOf(s.view()));
+  out.append(":");
+  if s.len() <= 64usize { out.append(hexOf(s.view()).view()); }
+  out
+}
+
+fn childAll() String {
+  var out = String();
+  match stdio.readAll() {
+    case let Ok(s) {
+      out.appendUInt(u64.from(s.len()));
+      out.append(":");
+      out.appendUInt(sumOf(s.view()));
+      out.append(":");
+      if s.len() <= 64usize { out.append(hexOf(s.view()).view()); }
+    }
+    case is Err { out.append("error"); }
+  }
+  out
+}
+
+// A line, four bytes, then all the rest
+fn childMixed() String {
+  var out = String();
+  var line = String();
+  match stdio.readLine(&mut line) {
+    case let Ok(more) { out.append(if more {"1"} else {"0"}); out.append("["); out.append(line.view()); out.append("]"); }
+    case is Err { out.append("error"); }
+  }
+  var buf = List[u8]();
+  buf.push(0u8); buf.push(0u8); buf.push(0u8); buf.push(0u8);
+  match stdio.readBytes(buf.viewMut()) {
+    case let Ok(n) {
+      out.append("{");
+      var j = 0usize;
+      while j < n { out.appendByte(buf[j]); j = j + 1usize; }
+      out.append("}");
+    }
+    case is Err { out.append("error"); }
+  }
+  match stdio.readAll() {
+    case let Ok(s) { out.append("<"); out.append(s.view()); out.append(">"); }
+    case is Err { out.append("error"); }
+  }
+  out
+}
+
+fn child(mode: &String) i32 {
+  var out = String();
+  if mode.equals("lines") { out = childLines(false, false); }
+  else if mode.equals("linehex") { out = childLines(true, false); }
+  else if mode.equals("lens") { out = childLines(false, true); }
+  else if mode.equals("bytes5") { out = childBytes(5usize); }
+  else if mode.equals("bytes70000") { out = childBytes(70000usize); }
+  else if mode.equals("all") { out = childAll(); }
+  else if mode.equals("mixed") { out = childMixed(); }
+  else { return 2i32; }
+  stdio.printStr(out.view());
+  0i32
+}
+
+// -------- the parent --------
+
+// The child run on 'exe' with its input redirected from the file 'name' under 'root', what it printed
+fn runChild(exe: &str, mode: &str, root: &Path, input: &Array[u8], label: &Array[u8]) String {
+  let file = root.join("in.txt");
+  let wrote = fs.writeFile(&file, input);
+  require(wrote is Ok, "the input written");
+  var line = String();
+  #if #os == .windows {
+    // cmd takes off the outer pair of quotes when a line holds more than two
+    line.append("cmd /c \"\"");
+  } #else {
+    line.append("\"");
+  }
+  line.append(exe);
+  line.append("\" --child ");
+  line.append(mode);
+  line.append(" < \"");
+  line.append(file.view());
+  line.append("\"");
+  #if #os == .windows { line.append("\""); }
+  var result = String();
+  match process.runLine(line.view()) {
+    case var Ok(o) {
+      expectUInt(u64.from(o.exitCode), 0u64, label);
+      result <-> o.stdout;
+    }
+    case is Err { expect(false, label); }
+  }
+  result
+}
+
+fn check(exe: &str, mode: &str, root: &Path, input: &Array[u8], want: &Array[u8], label: &Array[u8]) {
+  let got = runChild(exe, mode, root, input, label);
+  expectStr(got.view(), want, label);
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 3usize && a[1usize].equals("--child") { return child(&a[2usize]); }
+
+  var exe = Path.from("");
+  match process.currentExe() {
+    case var Ok(e) { exe <-> e; }
+    case is Err { require(false, "currentExe"); }
+  }
+  let root = makeRoot("cone-stdio-input-test");
+  if fs.exists(&root) { _ = fs.removeAll(&root); }
+  require(fs.makeDir(&root) is Ok, "the test's folder made");
+  let x = exe.view();
+
+  check(x, "lines", &root, "a\nb\nc\n", "[a][b][c]", "lines ended by \\n");
+  check(x, "lines", &root, "a\r\nb\r\n", "[a][b]", "lines ended by \\r\\n");
+  check(x, "lines", &root, "a\nb", "[a][b]", "a last line with no line end");
+  check(x, "lines", &root, "a\r", "[a\r]", "a lone \\r at the end stays");
+  check(x, "lines", &root, "", "", "empty input has no line");
+  check(x, "lines", &root, "\n\nx\r\n\r\n", "[][][x][]", "empty lines");
+  check(x, "lines", &root, "p\r\r\nq\n", "[p\r][q]", "only one \\r goes with the \\n");
+  check(x, "lines", &root, "héllo 日本\n", "[héllo 日本]", "UTF-8 text");
+  check(x, "all", &root, "", "0:0:", "readAll of empty input");
+
+  // A line longer than every buffer: 1 MiB, then a short line
+  var big = String();
+  var i = 0usize;
+  while i < 1048576usize { big.appendByte(0x78u8); i = i + 1usize; }
+  big.append("\nz\n");
+  check(x, "lens", &root, big.view(), "1048576,1,", "a 1 MiB line, then another");
+  var bigCr = String();
+  i = 0usize;
+  while i < 70000usize { bigCr.appendByte(0x79u8); i = i + 1usize; }
+  bigCr.append("\r\n");
+  check(x, "lens", &root, bigCr.view(), "70000,", "a long line ended by \\r\\n");
+
+  // Bytes that are not UTF-8, and the ones the C runtime's text mode would change
+  let raw = rawBytes();
+  var rawWant = String();
+  rawWant.append("13:");
+  rawWant.appendUInt(sumOf(raw.view()));
+  rawWant.append(":");
+  rawWant.append(hexOf(raw.view()).view());
+  check(x, "bytes5", &root, raw.view(), rawWant.view(), "readBytes, 5 at a time, every byte as it was");
+  check(x, "bytes70000", &root, raw.view(), rawWant.view(), "readBytes with a room larger than the buffer");
+  check(x, "all", &root, raw.view(), rawWant.view(), "readAll, every byte as it was");
+  var hexLine = String();
+  hexLine.append("[61ff]");
+  check(x, "linehex", &root, "aÿ\n", "[61c3bf]", "readLine of UTF-8 keeps the bytes");
+  var oddLine = String();
+  oddLine.appendByte(0x61u8); oddLine.appendByte(0xFFu8); oddLine.appendByte(0x0Au8);
+  check(x, "linehex", &root, oddLine.view(), hexLine.view(), "readLine keeps bytes that are not UTF-8");
+
+  // A larger input, through a room larger than conestd's buffer and the other ways
+  let pattern = patterned(200000usize);
+  var patWant = String();
+  patWant.appendUInt(200000u64);
+  patWant.append(":");
+  patWant.appendUInt(sumOf(pattern.view()));
+  patWant.append(":");
+  check(x, "bytes70000", &root, pattern.view(), patWant.view(), "200000 bytes, 70000 at a time");
+  check(x, "bytes5", &root, pattern.view(), patWant.view(), "200000 bytes, 5 at a time");
+  check(x, "all", &root, pattern.view(), patWant.view(), "200000 bytes with readAll");
+
+  // The three calls taking turns on one input
+  check(x, "mixed", &root, "first\r\nrest of it, more", "1[first]{rest}< of it, more>", "line, bytes and all in turn");
+  check(x, "mixed", &root, "", "0[]{}<>", "all three at the end of empty input");
+
+  let removed = fs.removeAll(&root);
+  expect(removed is Ok, "the test's folder removed");
+  done()
+}
