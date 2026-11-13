@@ -10,7 +10,10 @@
 
 // A canonical Huffman code ready to decode: 'fast' is indexed by the next
 // FastBits bits (low bit first) and holds symbol * 16 + length for a code
-// that short, else 0; 'count' is the number of codes of each length 0 to 15
+// that short; for a longer code it holds k * 16 (length field 0), k >= 1, which
+// names the (k - 1)th second-level table: it follows the first level at
+// 2^FastBits + 1 + (k - 1) * 2^subBits, is indexed by the subBits bits after the first
+// FastBits (subBits is the entry at 2^FastBits, maxLen - FastBits), and holds symbol * 16 + the code's whole length; 0 is no code; 'count' is the number of codes of each length 0 to 15
 // and 'symbols' the symbols in order of code (by length, then value), for the
 // longer codes' walk.
 pub struct Huffman is Default {
@@ -70,11 +73,19 @@ pub struct Huffman is Default {
       }
       i = i + 1usize;
     }
-    // The first-level table: assign the canonical codes, reversed
+    // The bits a second-level table is indexed by: maxLen - FastBits, or 0 when no code is longer than that.
+    // It sits in the entry just after the first level, where the decoder reads it when it meets a pointer
+    // (so the hot loop carries nothing for it); the second-level tables follow that entry.
+    let subBits = if maxLen > FastBits { maxLen - FastBits } else { 0u32 };
+    let rootSize = 1usize << usize.from(FastBits);
+    let subSize = 1usize << usize.from(subBits);
+    fast.push(u16.from(subBits));
+    var subs = 0usize;     // second-level tables made so far
+    // The tables: assign the canonical codes, reversed
     var code = 0u32;
     var k = 0usize;       // index in 'symbols'
     len = 1usize;
-    while len <= usize.from(FastBits) {
+    while len <= usize.from(maxLen) {
       var c = 0u16;
       while c < *count[len] {
         let sym = *symbols[k];
@@ -85,10 +96,32 @@ pub struct Huffman is Default {
           rev = (rev << 1u32) | ((code >> u32.from(b)) & 1u32);
           b = b + 1usize;
         }
-        var e = usize.from(rev);
-        while e < (1usize << usize.from(FastBits)) {
-          fast.set(e, sym * 16u16 + u16.from(len));
-          e = e + (1usize << len);
+        if len <= usize.from(FastBits) {
+          var e = usize.from(rev);
+          while e < rootSize {
+            fast.set(e, sym * 16u16 + u16.from(len));
+            e = e + (1usize << len);
+          }
+        } else {
+          // A longer code: its first FastBits bits (the low ones of 'rev') pick a second-level table, made
+          // when first met. No short code shares that prefix (the code is prefix-free: over-subscription was
+          // refused above), so the entry is 0 or a pointer. The rest of the bits index the table; every entry
+          // filled lies below 'subSize', so inside this table, which lies inside 'fast'.
+          let prefix = usize.from(rev) & (rootSize - 1usize);
+          var ptr = *fast[prefix];
+          if ptr == 0u16 {
+            subs = subs + 1usize;
+            ptr = u16.from(subs) * 16u16;
+            fast.set(prefix, ptr);
+            var z = 0usize;
+            while z < subSize { fast.push(0u16); z = z + 1usize; }
+          }
+          let off = rootSize + 1usize + (usize.from(ptr >> 4u16) - 1usize) * subSize;
+          var e = usize.from(rev) >> usize.from(FastBits);
+          while e < subSize {
+            fast.set(off + e, sym * 16u16 + u16.from(len));
+            e = e + (1usize << (len - usize.from(FastBits)));
+          }
         }
         code = code + 1u32;
         k = k + 1usize;

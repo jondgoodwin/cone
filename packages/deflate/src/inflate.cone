@@ -171,7 +171,8 @@ struct BitIn {
   fn decode(self: &mut, h: &Huffman) i32 {
     if nbits < 16u32 { self.refill(); }
     let e = *h.fast[usize.from(bits & ((1u64 << u64.from(FastBits)) - 1u64))];
-    if e != 0u16 {
+    // 0 and a second-level pointer (length field 0) fall to the walk, which does not use the tables
+    if (e & 15u16) != 0u16 {
       let l = u32.from(e & 15u16);
       bits = bits >> u64.from(l);
       nbits = nbits - l;
@@ -905,8 +906,19 @@ pub struct Inflater {
         pos = pos + usize.from(k);
         nbits = nbits + take;
       }
-      let e = lf[usize.from(bits & fmask)];
-      if e == 0u16 { break; }
+      var e = lf[usize.from(bits & fmask)];
+      if (e & 15u16) == 0u16 {
+        // 0 is no code; else a pointer k * 16 to second-level table k - 1 (see 'Huffman'), indexed by the next
+        // sb bits, sb being the entry after the first level. The index is 2^FastBits + 1 + (k - 1) * 2^sb +
+        // (< 2^sb); 'build' made k <= the tables it appended, each 2^sb long, so it is inside 'lf' (indexing is
+        // checked as well, so a table that was not built so would stop here, not read outside). The bits are
+        // there: the step's budget of 48 covers a 15-bit code.
+        if e == 0u16 { break; }
+        let sb = u64.from(lf[1usize << usize.from(FastBits)]);
+        e = lf[(1usize << usize.from(FastBits)) + 1usize + ((usize.from(e >> 4u16) - 1usize) << usize.from(sb))
+          + usize.from((bits >> u64.from(FastBits)) & ((1u64 << sb) - 1u64))];
+        if e == 0u16 { break; }
+      }
       let l = u32.from(e & 15u16);
       let sym = usize.from(e >> 4u16);
       if sym < 256usize {
@@ -923,8 +935,15 @@ pub struct Inflater {
         let len = usize.from(lenBase[li]) + usize.from(b & ((1u64 << u64.from(le)) - 1u64));
         b = b >> u64.from(le);
         nb = nb - le;
-        let de = df[usize.from(b & fmask)];
-        if de == 0u16 { break; }
+        var de = df[usize.from(b & fmask)];
+        if (de & 15u16) == 0u16 {
+          // as for the literal/length code above, with the distance table's own second level
+          if de == 0u16 { break; }
+          let sbd = u64.from(df[1usize << usize.from(FastBits)]);
+          de = df[(1usize << usize.from(FastBits)) + 1usize + ((usize.from(de >> 4u16) - 1usize) << usize.from(sbd))
+            + usize.from((b >> u64.from(FastBits)) & ((1u64 << sbd) - 1u64))];
+          if de == 0u16 { break; }
+        }
         let ds = usize.from(de >> 4u16);
         if ds >= 30usize { break; }
         let dl = u32.from(de & 15u16);

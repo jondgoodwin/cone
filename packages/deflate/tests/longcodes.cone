@@ -1,0 +1,246 @@
+// Codes longer than FastBits (10 bits) are decoded inside the fast loop through a second-level table. This pins
+// that: hand-built dynamic blocks whose literal/length code and whose distance code both run 1, 2, 3 ... bits
+// up to a longest length of 11 to 15 (a complete code, the longest length twice), carrying random literals and
+// matches that use every code, are inflated whole and in small pulls, with the fast loop on and off, and
+// compared with the output worked out here a byte at a time. A code of the same lengths with the last one
+// missing is incomplete and must be refused.
+
+mod longcodes;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+import iobuf use IoBuf;
+import stdio use *;
+
+var seed: u64 = 4242u64;
+fn rnd() u64 {
+  seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+  seed >> 24u64
+}
+
+struct BitW {
+  v: List[u8];
+  acc: u64;
+  n: u32;
+
+  fn put(self: &mut, val: u64, bits: u32) {
+    acc = acc | (val << u64.from(n));
+    n += bits;
+    while n >= 8u32 { v.push(u8.from(acc & 255u64)); acc = acc >> 8u64; n -= 8u32; }
+  }
+  // A Huffman code, most significant bit first
+  fn code(self: &mut, c: u64, bits: u32) {
+    var r = 0u64;
+    var i = 0u32;
+    while i < bits { r = (r << 1u64) | ((c >> u64.from(i)) & 1u64); i += 1u32; }
+    self.put(r, bits);
+  }
+}
+
+let lenB: Array[u64, 29] = [3u64,4u64,5u64,6u64,7u64,8u64,9u64,10u64,11u64,13u64,15u64,17u64,19u64,23u64,27u64,31u64,35u64,43u64,51u64,59u64,67u64,83u64,99u64,115u64,131u64,163u64,195u64,227u64,258u64];
+let lenE: Array[u32, 29] = [0u32,0u32,0u32,0u32,0u32,0u32,0u32,0u32,1u32,1u32,1u32,1u32,2u32,2u32,2u32,2u32,3u32,3u32,3u32,3u32,4u32,4u32,4u32,4u32,5u32,5u32,5u32,5u32,0u32];
+let disB: Array[u64, 30] = [1u64,2u64,3u64,4u64,5u64,7u64,9u64,13u64,17u64,25u64,33u64,49u64,65u64,97u64,129u64,193u64,257u64,385u64,513u64,769u64,1025u64,1537u64,2049u64,3073u64,4097u64,6145u64,8193u64,12289u64,16385u64,24577u64];
+let disE: Array[u32, 30] = [0u32,0u32,0u32,0u32,1u32,1u32,2u32,2u32,3u32,3u32,4u32,4u32,5u32,5u32,6u32,6u32,7u32,7u32,8u32,8u32,9u32,9u32,10u32,10u32,11u32,11u32,12u32,12u32,13u32,13u32];
+let clOrder: Array[u32, 19] = [16u32,17u32,18u32,0u32,8u32,7u32,9u32,6u32,10u32,5u32,11u32,4u32,12u32,3u32,13u32,2u32,14u32,1u32,15u32];
+
+// The code of the symbol at 'pos' in a code whose lengths run 1, 2 ... maxLen - 1 and then maxLen twice (position
+// maxLen is the second of those, all ones): the canonical code of that shape
+fn emit(w: &mut BitW, pos: u32, maxLen: u32) {
+  if pos >= maxLen {
+    w.code((1u64 << u64.from(maxLen)) - 1u64, maxLen);
+  } else {
+    // pos ones, then a zero, in pos + 1 bits (the last of the unique lengths, at pos maxLen - 1, is maxLen long)
+    let l = if pos == maxLen - 1u32 { maxLen } else { pos + 1u32 };
+    w.code(((1u64 << u64.from(pos)) - 1u64) << u64.from(l - pos), l);
+  }
+}
+
+fn lenOf(pos: u32, maxLen: u32) u32 { if pos >= maxLen - 1u32 { maxLen } else { pos + 1u32 } }
+
+// The literal/length symbols of the code, in order of position: literals 0 .. maxLen - 5, three length symbols,
+// then the end of block and one more length symbol (the last two share the longest length, in ascending order)
+fn litSyms(maxLen: u32) List[u32] {
+  var s = List[u32]();
+  var i = 0u32;
+  while i < maxLen - 4u32 { s.push(i); i += 1u32; }
+  s.push(258u32);
+  s.push(264u32);
+  s.push(270u32);
+  s.push(256u32);
+  s.push(257u32);
+  s
+}
+
+fn posOf(s: &Array[u32], sym: u32) u32 {
+  var i = 0usize;
+  while i < s.len { if s[i] == sym { return u32.from(i); } i += 1usize; }
+  0u32
+}
+
+// Builds the stream; 'missing' drops the code's last symbol (the code is then incomplete). 'want' gets the output.
+fn build(maxLen: u32, events: usize, missing: bool, want: &mut List[u8]) List[u8] {
+  var w = BitW(List[u8](), 0u64, 0u32);
+  w.put(1u64, 1u32);
+  w.put(2u64, 2u32);
+  w.put(271u64 - 257u64, 5u32);        // 271 symbols, 0 .. 270
+  w.put(u64.from(maxLen), 5u32);       // distance symbols 0 .. maxLen
+  w.put(15u64, 4u32);                  // all 19 code-length code lengths
+  var i = 0usize;
+  while i < 19usize {
+    let sym = clOrder[i];
+    w.put(if sym < 16u32 { 4u64 } else { 0u64 }, 3u32);
+    i += 1usize;
+  }
+  // The code lengths: the literal/length code's, then the distance code's, each symbol's as a 4-bit code
+  let ls = litSyms(maxLen);
+  var sym = 0u32;
+  while sym < 271u32 {
+    var l = 0u32;
+    let p = posOf(ls.view(), sym);
+    if sym == *ls[usize.from(p)] {
+      l = lenOf(p, maxLen);
+      if missing && p == maxLen { l = 0u32; }
+    }
+    w.code(u64.from(l), 4u32);
+    sym += 1u32;
+  }
+  var j = 0u32;
+  while j <= maxLen {
+    var l = lenOf(j, maxLen);
+    if missing && j == maxLen { l = 0u32; }
+    w.code(u64.from(l), 4u32);
+    j += 1u32;
+  }
+  // The data
+  let lensyms: Array[u32, 4] = [257u32, 258u32, 264u32, 270u32];
+  var n = 0usize;
+  while n < events {
+    if want.len() > 0usize && rnd() % 3u64 == 0u64 {
+      let ls2 = lensyms[usize.from(rnd() % 4u64)];
+      let li = usize.from(ls2 - 257u32);
+      emit(&mut w, posOf(ls.view(), ls2), maxLen);
+      let lextra = rnd() % (1u64 << u64.from(lenE[li]));
+      w.put(lextra, lenE[li]);
+      let mlen = usize.from(lenB[li] + lextra);
+      var dj = usize.from(rnd() % u64.from(maxLen + 1u32));
+      while disB[dj] > u64.from(want.len()) { dj -= 1usize; }
+      emit(&mut w, u32.from(dj), maxLen);
+      var room = u64.from(want.len()) - disB[dj] + 1u64;
+      let cap = 1u64 << u64.from(disE[dj]);
+      if room > cap { room = cap; }
+      let dextra = rnd() % room;
+      w.put(dextra, disE[dj]);
+      let d = usize.from(disB[dj] + dextra);
+      var k = 0usize;
+      while k < mlen { want.push(*want[want.len() - d]); k += 1usize; }
+    } else {
+      let b = u32.from(rnd() % u64.from(maxLen - 4u32));
+      emit(&mut w, posOf(ls.view(), b), maxLen);
+      want.push(u8.from(b));
+    }
+    n += 1usize;
+  }
+  emit(&mut w, posOf(ls.view(), 256u32), maxLen);
+  w.put(0u64, 8u32);
+  var out = List[u8]();
+  out.appendSlice(w.v.view());
+  out
+}
+
+fn sameBytes(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len { return false; }
+  var i = 0usize;
+  while i < a.len { if a[i] != b[i] { return false; } i += 1usize; }
+  true
+}
+
+fn decode(s: &Array[u8], maxPull: usize, fast: bool, ok: &mut bool) List[u8] {
+  var inf = Inflater.make(Format.Raw);
+  inf.setFastLoop(fast);
+  inf.feed(s);
+  inf.finish();
+  var out = List[u8]();
+  var guard = 0usize;
+  var st = Status.MoreOutput;
+  while guard < 1000000usize && (st == Status.MoreOutput || st == Status.NeedInput) {
+    guard += 1usize;
+    var buf = IoBuf(maxPull);
+    let pre = buf.capacity() - maxPull;
+    buf.setLen(pre);
+    st = inf.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    if st == Status.NeedInput { break; }
+  }
+  *ok = st == Status.Done;
+  out
+}
+
+fn main() i32 {
+  var cases = 0usize;
+  var bad = 0usize;
+  var refusedBad = 0usize;
+  var diffs = 0usize;
+  var maxLen = 11u32;
+  while maxLen <= 15u32 {
+    var round = 0usize;
+    while round < 20usize {
+      var want = List[u8]();
+      let s = build(maxLen, 40usize + round * 60usize, false, &mut want);
+      let pulls: Array[usize, 3] = [65536usize, 997usize, 13usize];
+      var pi = 0usize;
+      while pi < 3usize {
+        var fi = 0usize;
+        while fi < 2usize {
+          var ok = false;
+          let got = decode(s.view(), pulls[pi], fi == 0usize, &mut ok);
+          cases += 1usize;
+          if !ok || !sameBytes(got.view(), want.view()) {
+            bad += 1usize;
+          }
+          fi += 1usize;
+        }
+        pi += 1usize;
+      }
+      round += 1usize;
+    }
+    // The same streams with a byte changed (the code lengths, the codes, the extra bits) or cut short: the fast
+    // loop and the slow path must agree on whether it inflates and on every byte it gave
+    var cr = 0usize;
+    while cr < 60usize {
+      var w2 = List[u8]();
+      let s2 = build(maxLen, 200usize, false, &mut w2);
+      var m = List[u8]();
+      m.appendSlice(s2.view());
+      if cr % 5usize == 4usize {
+        m.truncate(usize.from(rnd() % u64.from(m.len())));
+      } else {
+        let at = if cr % 2usize == 0usize { 3usize + usize.from(rnd() % 100u64) } else { usize.from(rnd() % u64.from(m.len())) };
+        if at < m.len() { m.set(at, *m[at] ^ u8.from(1u64 << (rnd() % 8u64))); }
+      }
+      var okA = false;
+      var okB = false;
+      let ga = decode(m.view(), 65536usize, true, &mut okA);
+      let gb = decode(m.view(), 65536usize, false, &mut okB);
+      cases += 1usize;
+      if okA != okB || !sameBytes(ga.view(), gb.view()) { diffs += 1usize; }
+      cr += 1usize;
+    }
+    // An incomplete code is refused, fast loop or not
+    var junk = List[u8]();
+    let t = build(maxLen, 50usize, true, &mut junk);
+    var ok = true;
+    let _x = decode(t.view(), 65536usize, true, &mut ok);
+    if ok { refusedBad += 1usize; }
+    ok = true;
+    let _y = decode(t.view(), 65536usize, false, &mut ok);
+    if ok { refusedBad += 1usize; }
+    maxLen += 1u32;
+  }
+  printStr("long-code streams checked "); printInt(i64.from(cases)); printStr(", wrong "); printInt(i64.from(bad));
+  printStr(", incomplete codes accepted "); printInt(i64.from(refusedBad)); printStr("\n");
+  expectInt(i64.from(bad), 0i64, "every stream with long codes inflates to the expected bytes");
+  expectInt(i64.from(refusedBad), 0i64, "an incomplete long-code set is refused");
+  expectInt(i64.from(diffs), 0i64, "damaged long-code streams give the same result with the fast loop on and off");
+  done()
+}
