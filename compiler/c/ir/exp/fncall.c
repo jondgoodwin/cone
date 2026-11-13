@@ -5071,6 +5071,35 @@ static INode *fnCallPeekTypeDcl(INode *exp) {
             }
         }
     }
+    // 'w.get()[i].f': a call of one non-generic method of a type known here, by what it returns
+    if (vtype == NULL && exp->tag == FnCallTag) {
+        FnCallNode *call = (FnCallNode*)exp;
+        // 'lists()[i].f': a call of one non-generic function
+        if (call->methfld == NULL && call->args != NULL && isNameUseNode(call->objfn)
+            && !(call->flags & (FlagIndex | FlagOperator | FlagBorrow | FlagRange | FlagNew))) {
+            INode *fn = nameUseGetDcl((NameUseNode*)call->objfn);
+            if (fn && fn->tag == FnDclTag && !(fn->flags & FlagMethFld) && ((FnDclNode*)fn)->genericinfo == NULL) {
+                fnCallDemandCandidates(fn);
+                INode *sig = ((FnDclNode*)fn)->vtype;
+                if (sig && sig->tag == FnSigTag)
+                    vtype = ((FnSigNode*)sig)->rettype;
+            }
+        }
+        else if (call->methfld && isNameUseNode(call->methfld) && call->args != NULL
+            && !(call->flags & (FlagIndex | FlagOperator | FlagBorrow | FlagRange | FlagNew))) {
+            INode *owner = fnCallPeekTypeDcl(call->objfn);
+            if (owner && isMethodType(owner)) {
+                INode *found = iNsTypeFindFnField((INsTypeNode*)owner, ((NameUseNode*)call->methfld)->namesym);
+                if (found && found->tag == FnDclTag && (found->flags & FlagMethFld)
+                    && ((FnDclNode*)found)->genericinfo == NULL) {
+                    fnCallDemandCandidates(found);
+                    INode *sig = ((FnDclNode*)found)->vtype;
+                    if (sig && sig->tag == FnSigTag)
+                        vtype = ((FnSigNode*)sig)->rettype;
+                }
+            }
+        }
+    }
     if (vtype == NULL || !isTypeNode(vtype))
         return NULL;
     INode *dcl = itypeGetTypeDcl(vtype);

@@ -409,8 +409,10 @@ of one, through a reference), because the index would otherwise check it a secon
   `where T is Copy`, so a move type's row is refused by `ErrorWhereAbsent` at the call.
   `ps[i] += r` and `&ps[i]`, `&mut ps[i]`, `&uni ps[i]` are `ErrorSoaRowBorrow`: the row is
   split into columns, so no one value exists to borrow or change in place.
-- A receiver whose type cannot be read before it is checked (a call's result, a field of
-  one) is not rewritten, and `ps[i]` meets the ordinary index and its `[]`.
+- The type is read for a variable, a field path (`self.ps`), and a call of a non-generic function
+  or method by its declared return type. A receiver whose type cannot be read before it is
+  checked (a generic call, a closure's result) is not rewritten, and `ps[i]` meets the
+  ordinary index and its `[]`.
 
 ### Selecting a candidate
 
