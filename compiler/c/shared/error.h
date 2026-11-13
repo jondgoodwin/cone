@@ -714,7 +714,7 @@ enum ErrorCode {
 
     // A virtual reference that may write sees each field at exactly the trait's type (ir/types/fnsig.c, ir/types/reference.c)
     // A global's type must be Shareable (ir/stmt/vardcl.c)
-    ErrorGlobalShare = 1624,    // A module global that several threads could reach at once: a plain 'var' that is not an atomic or a lock type and not '@threadlocal' or '@workgroup', or a 'let' whose type is not Shareable (it holds a counted owner whose count is not atomic, a traced reference, or a reference that writes through a shared path). A function's static is not judged
+    ErrorGlobalShare = 1626,    // A module global that several threads could reach at once: a plain 'var' that is not an atomic or a lock type and not '@threadlocal' or '@workgroup', or a 'let' whose type is not Shareable (it holds a counted owner whose count is not atomic, a traced reference, or a reference that writes through a shared path). A function's static is not judged
     ErrorVtableField = 1504,   // A struct viewed as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `Uni[Trait]`) whose field the trait requires has a narrower type than the trait gives it (a `Shape.Circle` where the trait says `Shape`): a store through the trait would leave a value of another type in the field
 
     // 'mut' on an owner of a region with one owner per value (ir/types/permission.c)
