@@ -12,7 +12,7 @@
 //     match toml.parse(text) {
 //       case let Ok(ok) { doc = ok; }               // the Document moved out
 //       case let Err(e) {
-//         let m = String() <- e;                      // such as 'line 3: floats are not supported'
+//         let m = String() <- e;                      // such as 'line 3: inline tables are not supported'
 //         return 1i32;
 //       }
 //     }
@@ -45,7 +45,7 @@
 //
 // **What it refuses.** The rest of TOML is outside the subset, and each part
 // of it is refused by name, with its line, never read as something else:
-// dates and times, floats (and 'inf' and 'nan'), integers in hex, octal or
+// dates and times, integers in hex, octal or
 // binary, literal strings ('...'), multi-line strings ('"""' and "'''"),
 // inline tables ('{...}'), arrays of tables ('[[...]]'), dotted keys
 // ('a.b = ...'), quoted keys and table names, and lists holding anything but
@@ -72,8 +72,8 @@
 // reader reads, so 'parse(write(doc))' holds the same data (not the same text:
 // comments, spacing and a number's '_' are not kept). A key or a table name
 // that is not bare, a key set twice in one table, a table opened twice and a
-// string that is not UTF-8 are failures, remembered until 'finish'. Floats and
-// quoted keys come when the reader reads them.
+// string that is not UTF-8 are failures, remembered until 'finish'. Quoted keys
+// come when the reader reads them.
 //
 // Tables and keys keep the order they were written in ('names', 'keys'), so
 // a program can refuse what it does not know, naming it, in that order.
@@ -102,7 +102,7 @@ pub struct TomlError is Error {
 
 // The kinds of value the subset holds
 pub enum Kind {
-  Text, Integer, Boolean, List
+  Text, Integer, Boolean, List, Float
 }
 
 // One value, as written: its kind, the line its key is on, and, in the field
@@ -118,6 +118,8 @@ pub struct Value {
   pub boolean: bool;
   // List: the strings, in order
   pub list: List[String];
+  // Float
+  pub float: f64;
 }
 
 // One key of a table and its value
@@ -188,6 +190,14 @@ pub struct Table {
     let i = self.find(key);
     if i == entries.len() || entries[i].value.kind != Kind.Integer { return None; }
     Some[i64](entries[i].value.integer)
+  }
+
+  // key's float, or None when it is not there or is not a float. An integer
+  // is not a float: '1' is one, '1.0' the other.
+  pub fn getFloat(self: &, key: &str) Option[f64] {
+    let i = self.find(key);
+    if i == entries.len() || entries[i].value.kind != Kind.Float { return None; }
+    Some[f64](entries[i].value.float)
   }
 
   // key's 'true' or 'false', or None when it is not there or is not one
@@ -482,7 +492,7 @@ fn keyValue(text: &Array[u8], r: &mut Reader, doc: &mut Document, current: usize
   }
   r.pos = r.pos + 1usize;
   skipSpace(text, r);
-  var value = Value(Kind.Text, at, String(), 0i64, false, List[String]());
+  var value = Value(Kind.Text, at, String(), 0i64, false, List[String](), 0.0);
   if !readValue(text, r, &mut value) { return; }
   if current == rootTable {
     addEntry(&mut doc.root, key, value, r);
@@ -556,8 +566,86 @@ fn readValue(text: &Array[u8], r: &mut Reader, dest: &mut Value) bool {
     dest.boolean = word == "true";
     return true;
   }
+  if isFloatWord(word) {
+    dest.kind = Kind.Float;
+    return readFloat(word, r, &mut dest.float);
+  }
   dest.kind = Kind.Integer;
   readInteger(word, r, &mut dest.integer)
+}
+
+// Whether word is a float's: 'inf' or 'nan' (signed or not), or a number that
+// starts with a digit and has a '.' or an exponent (not a time, whose ':'
+// comes first, nor a hexadecimal, octal or binary integer, whose 'e' is a digit)
+fn isFloatWord(word: &Array[u8]) bool {
+  let signed = word.len > 0usize && (word[0usize] == '+' || word[0usize] == '-');
+  let body = if signed {&word[1usize..]} else {word};
+  if body == "inf" || body == "nan" { return true; }
+  if body.len == 0usize || !isDigit(body[0usize]) { return false; }
+  if hasByte(word, ':') { return false; }
+  if body.len > 1usize && body[0usize] == '0' && (body[1usize] == 'x' || body[1usize] == 'o' || body[1usize] == 'b') { return false; }
+  hasByte(body, '.') || hasByte(body, 'e') || hasByte(body, 'E')
+}
+
+// Digits from at on, a '_' only between two of them: the end of the run,
+// those digits appended to out
+fn floatDigits(body: &Array[u8], at: usize, out: &mut String) usize {
+  var i = at;
+  while i < body.len {
+    let c = body[i];
+    if isDigit(c) { out.appendByte(c); }
+    else if c == '_' && i > at && i + 1usize < body.len && isDigit(body[i - 1usize]) && isDigit(body[i + 1usize]) {
+    }
+    else { break; }
+    i = i + 1usize;
+  }
+  i
+}
+
+// word as a TOML float, into dest: decimal digits (no leading zero but a lone
+// one), then a fraction, an exponent or both, '_' only between two digits;
+// or 'inf' or 'nan', signed or not. False, having failed, when it is not one
+// or is beyond f64's range.
+fn readFloat(word: &Array[u8], r: &mut Reader, dest: &mut f64) bool {
+  let signed = word.len > 0usize && (word[0usize] == '+' || word[0usize] == '-');
+  let body = if signed {&word[1usize..]} else {word};
+  var clean = String();
+  if word.len > 0usize && word[0usize] == '-' { clean.appendByte('-'); }
+  if body == "inf" || body == "nan" {
+    clean.append(body as &str);
+  }
+  else {
+    var i = floatDigits(body, 0usize, &mut clean);
+    var ok = i > 0usize && !(i > 1usize && body[0usize] == '0');
+    if ok && i < body.len && body[i] == '.' {
+      clean.appendByte('.');
+      let j = floatDigits(body, i + 1usize, &mut clean);
+      ok = j > i + 1usize;
+      i = j;
+    }
+    if ok && i < body.len && (body[i] == 'e' || body[i] == 'E') {
+      clean.appendByte('e');
+      i = i + 1usize;
+      if i < body.len && (body[i] == '+' || body[i] == '-') { clean.appendByte(body[i]); i = i + 1usize; }
+      let j = floatDigits(body, i, &mut clean);
+      ok = j > i;
+      i = j;
+    }
+    if !ok || i != body.len {
+      fail(r, "a float is digits with a fraction or an exponent, '_' only between two digits, or inf or nan");
+      return false;
+    }
+  }
+  match f64.parse(clean.view()) {
+    case let Ok(x) {
+      *dest = x;
+      true
+    }
+    case is Err {
+      fail(r, "the float is beyond f64's range");
+      false
+    }
+  }
 }
 
 fn isWordEnd(c: u8) bool {
@@ -578,10 +666,6 @@ fn hasByte(s: &Array[u8], b: u8) bool {
 fn readInteger(word: &Array[u8], r: &mut Reader, dest: &mut i64) bool {
   let signed = word.len > 0usize && (word[0usize] == '+' || word[0usize] == '-');
   let body = if signed {&word[1usize..]} else {word};
-  if body == "inf" || body == "nan" {
-    fail(r, "floats are not supported");
-    return false;
-  }
   if body.len == 0usize || !isDigit(body[0usize]) {
     fail(r, "expected a value: a string in \"...\", an integer, true, false or a list of strings");
     return false;
@@ -594,10 +678,6 @@ fn readInteger(word: &Array[u8], r: &mut Reader, dest: &mut i64) bool {
   }
   if body.len > 1usize && body[0usize] == '0' && (body[1usize] == 'x' || body[1usize] == 'o' || body[1usize] == 'b') {
     fail(r, "hexadecimal, octal and binary integers are not supported");
-    return false;
-  }
-  if hasByte(body, '.') || hasByte(body, 'e') || hasByte(body, 'E') {
-    fail(r, "floats are not supported");
     return false;
   }
   if hasByte(body, '-') {

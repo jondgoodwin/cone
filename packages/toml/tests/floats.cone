@@ -1,0 +1,199 @@
+// Floats: every form the TOML 1.0 spec's float section lists, read; the
+// malformed ones refused with their line; and the round trip through the
+// Writer's 'float' (core's FloatText), bit for bit, for the edges (zeros,
+// subnormals, the largest, 1e16, 1e-5, inf, nan).
+
+mod floats;
+
+import testing use *;
+import collections use *;
+import toml;
+
+fn parsed(t: &str, label: &str) toml.Document {
+  var doc = toml.Document();
+  match toml.parse(t) {
+    case var Ok(ok) { doc <-> ok; }
+    case let Err(e) { let m = String() <- e; expectStr(m.view(), "<parsed>", label); }
+  }
+  doc
+}
+
+// The float a one-key text holds, or 0.0 (after a failure)
+fn readOne(value: &str) f64 {
+  var t = String.from("x = ");
+  t.append(value);
+  t.append("\n");
+  let doc = parsed(t.view(), value);
+  match doc.root.getFloat("x") {
+    case let Some(v) { v }
+    case is None { expect(false, value); 0.0 }
+  }
+}
+
+fn reads(value: &str, want: f64) {
+  let got = readOne(value);
+  expect(got.bits() == want.bits(), value);
+}
+
+fn refuses(text: &str, want: &str, label: &str) {
+  match toml.parse(text) {
+    case let Ok(ok) { expect(false, label); }
+    case let Err(e) {
+      let m = String() <- e;
+      expectStr(m.view(), want, label);
+    }
+  }
+}
+
+// text is refused as a malformed float, on that line
+fn malformedAt(text: &str, line: &str, label: &str) {
+  var want = String.from("line ");
+  want.append(line);
+  want.append(": a float is digits with a fraction or an exponent, '_' only between two digits, or inf or nan");
+  refuses(text, want.view(), label);
+}
+
+fn hasInt(t: &toml.Table, key: &str) bool {
+  match t.getInt(key) { case is Some { true } case is None { false } }
+}
+
+fn hasFloat(t: &toml.Table, key: &str) bool {
+  match t.getFloat(key) { case is Some { true } case is None { false } }
+}
+
+// x written, read back: the same bits (a NaN: a NaN)
+fn roundTrips(x: f64, text: &str) {
+  var w = toml.Writer(toml.WriteOptions.standard());
+  w.float("x", x);
+  match w.finish() {
+    case var Ok(t) {
+      var want = String.from("x = ");
+      want.append(text);
+      want.append("\n");
+      expectStr(t.view(), want.view(), text);
+      let doc = parsed(t.view(), text);
+      match doc.root.getFloat("x") {
+        case let Some(v) {
+          if x != x { expect(v != v, text); } else { expect(v.bits() == x.bits(), text); }
+        }
+        case is None { expect(false, text); }
+      }
+    }
+    case let Err(e) { let m = String() <- e; expectStr(m.view(), "<written>", text); }
+  }
+}
+
+fn main() i32 {
+  // -------- the spec's examples --------
+  reads("+1.0", 1.0);
+  reads("3.1415", 3.1415);
+  reads("-0.01", -0.01);
+  reads("5e+22", 5e22);
+  reads("1e06", 1e6);
+  reads("-2E-2", -0.02);
+  reads("6.626e-34", 6.626e-34);
+  reads("224_617.445_991_228", 224617.445991228);
+  reads("1e1_0", 1e10);
+  reads("0.0", 0.0);
+  reads("-0.0", -0.0);
+  reads("+0.0", 0.0);
+  reads("0e0", 0.0);
+  reads("1E3", 1000.0);
+  reads("9_007_199_254_740_993.0", 9007199254740992.0);
+  reads("inf", f64.fromBits(0x7FF0000000000000u64));
+  reads("+inf", f64.fromBits(0x7FF0000000000000u64));
+  reads("-inf", f64.fromBits(0xFFF0000000000000u64));
+  expect(readOne("nan") != readOne("nan"), "nan");
+  expect(readOne("+nan") != readOne("+nan"), "+nan");
+  expect(readOne("-nan") != readOne("-nan"), "-nan");
+  reads("5e-324", f64.fromBits(1u64));
+  reads("1.7976931348623157e308", f64.fromBits(0x7FEFFFFFFFFFFFFFu64));
+
+  // a float is not an integer, nor an integer a float
+  let doc = parsed("a = 1\nb = 1.0\nc = \"1.0\"\n[t]\nd = 2e0\n", "mixed");
+  expect(!hasInt(&doc.root, "b"), "b is no integer");
+  expect(!hasFloat(&doc.root, "a"), "a is no float");
+  expect(!hasFloat(&doc.root, "c"), "c is no float");
+  expect(!hasFloat(&doc.root, "missing"), "no key");
+  expectInt(doc.root.getInt("a").unwrap(), 1i64, "a is 1");
+  expectFloat(doc.root.getFloat("b").unwrap(), 1.0, 0.0, "b is 1.0");
+  expectFloat(doc["t"].getFloat("d").unwrap(), 2.0, 0.0, "d in a table");
+  expectUInt(u64.from(doc.root.lineOf("b")), 2u64, "b's line");
+
+  // -------- malformed --------
+  malformedAt("a = 1\nb = 7.\n", "2", "a trailing dot");
+  malformedAt("b = 3.e+20\n", "1", "a dot, no digits, an exponent");
+  malformedAt("b = 1.e5\n", "1", "1.e5");
+  malformedAt("b = 1e\n", "1", "an exponent with no digits");
+  malformedAt("b = 1e+\n", "1", "an exponent sign only");
+  malformedAt("b = 01.5\n", "1", "a leading zero");
+  malformedAt("b = 1_.5\n", "1", "'_' before the dot");
+  malformedAt("b = 1._5\n", "1", "'_' after the dot");
+  malformedAt("b = 1.5_\n", "1", "a trailing '_'");
+  malformedAt("b = 1e_5\n", "1", "'_' after the e");
+  malformedAt("b = 1__0.5\n", "1", "two '_'");
+  malformedAt("b = 1.5.5\n", "1", "two dots");
+  malformedAt("b = 1e1.5\n", "1", "a dot after the exponent");
+  malformedAt("b = 1.5e3e3\n", "1", "two exponents");
+  malformedAt("b = 1.5x\n", "1", "a letter after a float");
+  refuses("a = 1\nb = 2\nc = 1e999\n", "line 3: the float is beyond f64's range", "past the range");
+  refuses("c = -1.0e400\n", "line 1: the float is beyond f64's range", "past the range, negative");
+  refuses("c = Inf\n", "line 1: expected a value: a string in \"...\", an integer, true, false or a list of strings", "Inf is not inf");
+  refuses("c = .5\n", "line 1: expected a value: a string in \"...\", an integer, true, false or a list of strings", "no integer part");
+  refuses("c = infinity\n", "line 1: expected a value: a string in \"...\", an integer, true, false or a list of strings", "infinity");
+  refuses("c = 1979-05-27\n", "line 1: dates and times are not supported", "a date is not a float");
+  refuses("c = 0x1e\n", "line 1: hexadecimal, octal and binary integers are not supported", "hex is not a float");
+  refuses("c = 12:30:00.5\n", "line 1: dates and times are not supported", "a time with a fraction");
+
+  // -------- the writer, and the round trip --------
+  roundTrips(0.0, "0.0");
+  roundTrips(-0.0, "-0.0");
+  roundTrips(1.0, "1.0");
+  roundTrips(100.0, "100.0");
+  roundTrips(0.1, "0.1");
+  roundTrips(-2.5, "-2.5");
+  roundTrips(1e16, "1e+16");
+  roundTrips(1e-5, "1e-05");
+  roundTrips(0.0001, "0.0001");
+  roundTrips(123456789012345.0, "123456789012345.0");
+  roundTrips(1.5e-5, "1.5e-05");
+  roundTrips(1e22, "1e+22");
+  roundTrips(1e23, "1e+23");
+  roundTrips(0.3, "0.3");
+  roundTrips(9007199254740993.0, "9007199254740992.0");
+  roundTrips(f64.fromBits(1u64), "5e-324");
+  roundTrips(f64.fromBits(0x000FFFFFFFFFFFFFu64), "2.225073858507201e-308");
+  roundTrips(f64.fromBits(0x0010000000000000u64), "2.2250738585072014e-308");
+  roundTrips(f64.fromBits(0x7FEFFFFFFFFFFFFFu64), "1.7976931348623157e+308");
+  roundTrips(f64.fromBits(0xFFEFFFFFFFFFFFFFu64), "-1.7976931348623157e+308");
+  roundTrips(f64.fromBits(0x7FF0000000000000u64), "inf");
+  roundTrips(f64.fromBits(0xFFF0000000000000u64), "-inf");
+  roundTrips(f64.fromBits(0x7FF8000000000000u64), "nan");
+
+  // a Document of floats is written and read back the same
+  let src = parsed("a = 0.5\nb = -inf\n[t]\nc = 1e300\nd = 7\n", "document");
+  match toml.write(&src) {
+    case var Ok(t) {
+      expectStr(t.view(), "a = 0.5\nb = -inf\n\n[t]\nc = 1e+300\nd = 7\n", "a document written");
+      let back = parsed(t.view(), "document back");
+      expect(back.root.getFloat("a").unwrap().bits() == 0.5.bits(), "a back");
+      expect(back.root.getFloat("b").unwrap().bits() == 0xFFF0000000000000u64, "b back");
+      expect(back["t"].getFloat("c").unwrap().bits() == 1e300.bits(), "c back");
+      expectInt(back["t"].getInt("d").unwrap(), 7i64, "d back");
+    }
+    case let Err(e) { let m = String() <- e; expectStr(m.view(), "<written>", "document"); }
+  }
+
+  // a float key is a key: set twice, it fails like any other
+  var w = toml.Writer(toml.WriteOptions.standard());
+  w.float("x", 1.0);
+  w.float("x", 2.0);
+  match w.finish() {
+    case var Ok(t) { expect(false, "a float key twice"); }
+    case let Err(e) {
+      let m = String() <- e;
+      expectStr(m.view(), "line 2: the key \"x\" is set twice in one table", "a float key twice");
+    }
+  }
+  done()
+}
