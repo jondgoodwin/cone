@@ -97,6 +97,7 @@ mod testing;
 import stdio;
 import libc;
 import time;
+import collections use List;
 
 // Where 'blackBox' lets an address escape
 let sink: Atomic[usize];
@@ -292,8 +293,9 @@ pub struct BenchConfig {
   pub warmupMs: u32;     // untimed warm-up: 100
   pub rounds: u32;       // samples: 21, odd so the median is a sample
   pub batchMs: u32;      // the length a sample's batch of calls grows to: 1
-  pub print: bool;       // print the line: true. A test of the loop turns it off, since its
-                         // pinned .out cannot hold a time
+  pub print: bool;       // print the line: true. Turn it off for any caller collecting
+                         // BenchResults quietly (a lane script, a later 'congo bench', a test,
+                         // whose pinned .out cannot hold a time)
 
   pub fn standard() BenchConfig {BenchConfig(100u32, 21u32, 1u32, true)}
 }
@@ -325,27 +327,26 @@ pub fn benchWith[F: fn()](name: &Array[u8], cfg: &BenchConfig, body: &F) BenchRe
   };
 
   // The rounds, each ns per call
-  let per = malloc(rounds * 8usize) as *f64;
+  var per = Samples();
   var i = 0usize;
   while i < rounds {
     let t = batchNsOf(body, iters);
-    *(per + i) = f64.from(t) / f64.from(iters);
+    per.push(f64.from(t) / f64.from(iters));
     i = i + 1usize;
   };
-  sortF64(per, rounds);
-  let med = medianOf(per, rounds);
-  let lo = *per;
-  let hi = *(per + (rounds - 1usize));
+  per.sort();
+  let med = medianOf(&per);
+  let lo = *per[0usize];
+  let hi = *per[rounds - 1usize];
   // The deviations from the median, in place, then their median
   i = 0usize;
   while i < rounds {
-    let d = *(per + i) - med;
-    *(per + i) = if d < 0. {-d} else {d};
+    let d = *per[i] - med;
+    per[i] = if d < 0. {-d} else {d};
     i = i + 1usize;
   };
-  sortF64(per, rounds);
-  let mad = medianOf(per, rounds);
-  libc.free(per as *u8);
+  per.sort();
+  let mad = medianOf(&per);
 
   if cfg.print {
     stdio.printStr(name as &str);
@@ -362,10 +363,13 @@ pub fn benchWith[F: fn()](name: &Array[u8], cfg: &BenchConfig, body: &F) BenchRe
 
 // A value the optimiser cannot see through: returns 'v', after the address of
 // a copy of it has gone through an atomic exchange that every thread could
-// read, so the compiler must have 'v' in memory and must read it back. A body
-// times 'blackBox(f(blackBox(x)))' for a pure 'f': the inner call hides 'x'
-// from the optimiser, so 'f' cannot be folded to a constant, and the outer
-// one uses the result, so 'f' cannot be deleted. The sink costs about 6 ns a
+// read, so the compiler must have 'v' in memory and must read it back.
+//
+// The rule: wrap both the inputs and the result of what you time,
+// 'blackBox(f(blackBox(3)))'. Wrapping the result keeps the call from being
+// deleted as unused; wrapping the inputs keeps it from being folded, because a
+// constant input still folds ('blackBox(f(3))' computes 'f(3)' at compile time
+// and times only the sink). The sink costs about 6 ns a
 // call (one atomic exchange; measured once on the developer's laptop, release
 // build, as an empty body against 'blackBox(1u64)': 0.0 against 5.8 and 6.3
 // ns), so 'blackBox(f(blackBox(x)))' adds about 12 ns to 'f'. The figures
@@ -394,27 +398,16 @@ fn batchNsOf[F: fn()](body: &F, n: u64) i64 {
   start.elapsed().nanos()
 }
 
-// Insertion sort: a bench has tens of rounds
-fn sortF64(p: *f64, n: usize) {
-  var i = 1usize;
-  while i < n {
-    let x = *(p + i);
-    var j = i;
-    while j > 0usize && *(p + (j - 1usize)) > x {
-      *(p + j) = *(p + (j - 1usize));
-      j = j - 1usize;
-    };
-    *(p + j) = x;
-    i = i + 1usize;
-  };
-}
+// The ns per call of each round of a bench
+alias Samples = List[f64];
 
-// The median of n sorted values: the middle one, or the mean of the middle two
-fn medianOf(p: *f64, n: usize) f64 {
+// The median of sorted values: the middle one, or the mean of the middle two
+fn medianOf(p: &Samples) f64 {
+  let n = p.len();
   if n % 2usize == 1usize {
-    *(p + n / 2usize)
+    *p[n / 2usize]
   } else {
-    (*(p + (n / 2usize - 1usize)) + *(p + n / 2usize)) / 2.
+    (*p[n / 2usize - 1usize] + *p[n / 2usize]) / 2.
   }
 }
 
