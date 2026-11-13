@@ -274,18 +274,10 @@ pub struct Decompressor {
   }
 
   // One unit: as far as the input allows
-  // The input Reader is moved out of its field for the step and back after
-  // it: a step lends a view of the input's bytes (a peek) while it changes
-  // the entropy tables and the history, which the checker (error 1339)
-  // cannot tell apart from the input if all are fields of 'self'. A local
-  // Reader is not one.
   fn step(self: &mut) Step {
-    var r = Reader.make(0usize);
-    r <-> inp;
-    let s = self.stepIn(&mut r);
+    let s = self.stepIn();
     // A failed stream uses no more input: its buffers go back to their pool now
-    if s == Step.Fail { r = Reader.make(0usize); }
-    r <-> inp;
+    if s == Step.Fail { inp = Reader.make(0usize); }
     s
   }
 
@@ -298,14 +290,14 @@ pub struct Decompressor {
     }
   }
 
-  // 'n' bytes of 'r' are used up
-  fn used(self: &mut, r: &mut Reader, n: usize) {
-    r.consume(n);
+  // 'n' bytes of the input are used up
+  fn used(self: &mut, n: usize) {
+    inp.consume(n);
     inBase = inBase + u64.from(n);
   }
 
-  fn stepIn(self: &mut, r: &mut Reader) Step {
-    let avail = r.len();
+  fn stepIn(self: &mut) Step {
+    let avail = inp.len();
     if stage == Stage.Magic {
       if !multi && frames > 0u32 { stage = Stage.End; return Step.Go; }
       if avail == 0usize {
@@ -313,16 +305,16 @@ pub struct Decompressor {
         return Step.Wait;
       }
       if avail < 4usize { return self.starved("zstd: the input ends inside a frame's magic number"); }
-      let magic = u32.from(Decompressor.peekLE(r, 0usize, 4usize));
+      let magic = u32.from(Decompressor.peekLE(&mut inp, 0usize, 4usize));
       if magic == frameMagic() {
-        self.used(r, 4usize);
+        self.used(4usize);
         stage = Stage.Header;
         return Step.Go;
       }
       if (magic & 0xFFFFFFF0u32) == skippableMagic() {
         if avail < 8usize { return self.starved("zstd: a skippable frame's header is cut off"); }
-        skipLeft = Decompressor.peekLE(r, 4usize, 4usize);
-        self.used(r, 8usize);
+        skipLeft = Decompressor.peekLE(&mut inp, 4usize, 4usize);
+        self.used(8usize);
         stage = Stage.Skip;
         return Step.Go;
       }
@@ -330,20 +322,20 @@ pub struct Decompressor {
     }
     if stage == Stage.Skip {
       let n = if u64.from(avail) < skipLeft {avail} else {usize.from(skipLeft)};
-      self.used(r, n);
+      self.used(n);
       skipLeft = skipLeft - u64.from(n);
       if skipLeft == 0u64 { stage = Stage.Magic; return Step.Go; }
       return self.starved("zstd: a skippable frame is cut off");
     }
-    if stage == Stage.Header { return self.frameHeader(r); }
-    if stage == Stage.BlockHead { return self.block(r); }
+    if stage == Stage.Header { return self.frameHeader(); }
+    if stage == Stage.BlockHead { return self.block(); }
     if stage == Stage.Checksum {
       if avail < 4usize { return self.starved("zstd: the content checksum is cut off"); }
-      let want = u32.from(Decompressor.peekLE(r, 0usize, 4usize));
+      let want = u32.from(Decompressor.peekLE(&mut inp, 0usize, 4usize));
       if u32.from(xxh.digest() & 0xFFFFFFFFu64) != want {
         return self.fail(ErrorKind.BadChecksum, "zstd: the content checksum does not match");
       }
-      self.used(r, 4usize);
+      self.used(4usize);
       return self.frameEnd();
     }
     Step.Stop
@@ -351,10 +343,10 @@ pub struct Decompressor {
 
   // RFC 8878 section 3.1.1.1: the descriptor, the window, the dictionary ID
   // and the content size; all of it or nothing
-  fn frameHeader(self: &mut, r: &mut Reader) Step {
-    let avail = r.len();
+  fn frameHeader(self: &mut) Step {
+    let avail = inp.len();
     if avail < 1usize { return self.starved("zstd: the frame header is cut off"); }
-    let fhd = u8.from(Decompressor.peekLE(r, 0usize, 1usize));
+    let fhd = u8.from(Decompressor.peekLE(&mut inp, 0usize, 1usize));
     let fcsFlag = fhd >> 6u8;
     let single = (fhd & 0x20u8) != 0u8;
     if (fhd & 0x08u8) != 0u8 { return self.fail(ErrorKind.BadHeader, "zstd: the frame header's reserved bit is set"); }
@@ -366,15 +358,15 @@ pub struct Decompressor {
     var q = 1usize;
     var win = 0u64;
     if !single {
-      let wd = u8.from(Decompressor.peekLE(r, q, 1usize));
+      let wd = u8.from(Decompressor.peekLE(&mut inp, q, 1usize));
       q = q + 1usize;
       let wlog = 10u64 + u64.from(wd >> 3u8);
       let wbase = 1u64 << wlog;
       win = wbase + (wbase >> 3u64) * u64.from(wd & 7u8);
     }
-    let did = Decompressor.peekLE(r, q, didSize);
+    let did = Decompressor.peekLE(&mut inp, q, didSize);
     q = q + didSize;
-    var fcs = Decompressor.peekLE(r, q, fcsSize);
+    var fcs = Decompressor.peekLE(&mut inp, q, fcsSize);
     if fcsSize == 2usize { fcs = fcs + 256u64; }
     q = q + fcsSize;
     if single { win = fcs; }
@@ -413,16 +405,16 @@ pub struct Decompressor {
       let most = (if left > 4294967296u64 {4294967296u64} else {left}) * 32768u64;
       hist.reserve(usize.from(if fcs < most {fcs} else {most}));
     }
-    self.used(r, q);
+    self.used(q);
     stage = Stage.BlockHead;
     Step.Go
   }
 
   // RFC 8878 section 3.1.1.2: a block header and the block, decoded whole
-  fn block(self: &mut, r: &mut Reader) Step {
-    let avail = r.len();
+  fn block(self: &mut) Step {
+    let avail = inp.len();
     if avail < 3usize { return self.starved("zstd: a block header is cut off"); }
-    let h = u32.from(Decompressor.peekLE(r, 0usize, 3usize));
+    let h = u32.from(Decompressor.peekLE(&mut inp, 0usize, 3usize));
     let last = (h & 1u32) != 0u32;
     let kind = (h >> 1u32) & 3u32;
     let size = usize.from(h >> 3u32);
@@ -436,7 +428,7 @@ pub struct Decompressor {
     // The block's bytes are lent by the Reader (in place when they lie in one
     // segment) while the history and the tables change
     var f = Fault.Ok;
-    match r.peek(start + need) {
+    match inp.peek(start + need) {
       case let Some(v) {
         if kind == 0u32 {
           hist.appendSlice(&v[start ..< start + size]);
@@ -463,7 +455,7 @@ pub struct Decompressor {
     if hasChecksum { xxh.update(hist.view(), before, hist.len()); }
     frameOut = frameOut + produced;
     outTotal = outTotal + produced;
-    self.used(r, start + need);
+    self.used(start + need);
     if last {
       if hasChecksum { stage = Stage.Checksum; return Step.Go; }
       return self.frameEnd();

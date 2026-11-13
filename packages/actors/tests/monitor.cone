@@ -2,7 +2,7 @@
 // stranded queue (the header's THE MONITOR). Two workers, monitorMicros 500.
 //
 // 1. Every worker idle: the monitor parks after monitorIdleTicks quiet ticks
-//    (monitorParked), at its base tick.
+//    (monitorParked); woken by a worker, its tick is the base.
 // 2. A message to an actor wakes a worker, and the first worker out of its
 //    park (uncount) wakes the monitor: monitorParked turns false within 2 s.
 // 3. That actor, Hold, holds one worker for its whole turn. First it spins
@@ -110,6 +110,14 @@ fn parkedWithin(ms: i64) bool {
   actors.monitorParked()
 }
 
+fn unparkedWithin(ms: i64) bool {
+  let deadline = nowNs() + u64.from(ms) * 1000000u64;
+  while actors.monitorParked() && nowNs() < deadline {
+    thread.sleep(time.Duration.fromMillis(1i64));
+  }
+  !actors.monitorParked()
+}
+
 fn main() i32 {
   initAll();
   actors.configure(actors.Options(workers: 2u32, monitorMicros: 500u32));
@@ -117,10 +125,21 @@ fn main() i32 {
     let h = Hold();
     let late = Late();
     // 1. idle: the monitor parks
+    // The tick held while parked is never used (the park waits on a futex with
+    // no timer), and a loaded machine can leave it backed off. What matters is
+    // that the wake sets the base before the next tick: wake the monitor (a
+    // poke does) and wait for its tick to read the base.
     h.poke();
     actors.waitUntilIdle();
-    require(parkedWithin(2000i64), "the monitor parks when every worker is parked");
-    expectUInt(u64.from(actors.monitorTick()), 500u64, "it parks at its base tick");
+    require(parkedWithin(10000i64), "the monitor parks when every worker is parked");
+    h.poke();
+    unparkedWithin(10000i64);
+    let baseBy = nowNs() + 10000000000u64;
+    while actors.monitorTick() != 500u32 && nowNs() < baseBy {
+      thread.sleep(time.Duration.fromMillis(1i64));
+    }
+    expectUInt(u64.from(actors.monitorTick()), 500u64, "it wakes at its base tick");
+    actors.waitUntilIdle();
     // 2. the first worker out of a park wakes it
     h.first(late);
     let deadline = nowNs() + 2000000000u64;

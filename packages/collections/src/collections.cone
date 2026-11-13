@@ -85,7 +85,7 @@
 // them), and for the tables, 'Dict[String, i64](100)', 'new
 // OrderedDict[String, i64](100)' and 'Set[String](100)', room for 100
 // entries without growing (rounded up to the table's size), as is 'new
-// Pool[Npc](100)' for its slots. A function a type offers without a receiver
+// GenPool[Npc](100)' (the pools package's) for its cells. A function a type offers without a receiver
 // makes one too: 'List[i64]()', 'List[i64].withCapacity(n)' (never less
 // than 4), 'String.from("text")', and a 'withCapacity(n)' on each of the others.
 //
@@ -661,10 +661,18 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   pub fn resizeValue overload resize(self: &mut, n: usize, value: T) where T is Clone {
     if n <= used { self.truncate(n); return; }
     self.reserve(n - used);
-    while used < n {
-      mem.writeRaw(ptr + used, (&value).clone());
-      used = used + 1usize;
+    // The count and the block stay in locals through the fill and 'used' is stored
+    // once, so LLVM can see the writes through 'p' do not alias the list's fields
+    // and turn the loop into a memset or vector stores. A Clone type has no
+    // finalizer, so a 'clone()' that panics mid-loop leaves at worst some plain
+    // values written beyond 'used', uncounted and never read.
+    let p = ptr;
+    var i = used;
+    while i < n {
+      mem.writeRaw(p + i, (&value).clone());
+      i = i + 1usize;
     }
+    used = i;
   }
 
   // Make it exactly n values long, as 'resize(n, value)' does, each new value the
@@ -673,10 +681,14 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   pub fn resizeDefault overload resize(self: &mut, n: usize) where T is Default {
     if n <= used { self.truncate(n); return; }
     self.reserve(n - used);
-    while used < n {
-      mem.writeRaw(ptr + used, T());
-      used = used + 1usize;
+    // Count and block in locals, 'used' stored once: see 'resizeValue'.
+    let p = ptr;
+    var i = used;
+    while i < n {
+      mem.writeRaw(p + i, T());
+      i = i + 1usize;
     }
+    used = i;
   }
 
   // Give back the room beyond the values, in the heap region only: the capacity
@@ -1351,6 +1363,25 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
     (ptr + self.slot(index)) as &mut T
   }
 
+  // Whether some value is '==' to x. Only where T is Eq
+  pub fn contains(self: &, x: &T) bool where T is Eq {
+    var i = 0usize;
+    while i < used {
+      if ((ptr + self.slot(i)) as &T) == x { return true; }
+      i = i + 1usize;
+    }
+    false
+  }
+
+  // The position from the front of the first value '==' to x, or None. Only where T is Eq
+  pub fn indexOf(self: &, x: &T) Option[usize] where T is Eq {
+    var i = 0usize;
+    while i < used {
+      if ((ptr + self.slot(i)) as &T) == x { return Some[usize](i); }
+      i = i + 1usize;
+    }
+    None
+  }
   // Finalize every value, front to back, and keep the block for reuse
   pub fn clear(self: &mut) {
     self.finalizeAll();

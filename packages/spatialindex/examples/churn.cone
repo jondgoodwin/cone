@@ -1,0 +1,168 @@
+// Churn for the spatial indexes: every frame 10% of the items are removed and
+// the same number of new boxes inserted, at 10,000 and 100,000 boxes, on the
+// BVH, the loose octree and the hash grid. Then 2,000 box queries, whose hit
+// count is the same on all three. Build it optimised and run it:
+//
+//   congo run --release packages/spatialindex/examples/churn.cone
+//
+// It prints ns per item churned (a remove and an insert) and the query cost.
+
+mod churn;
+
+import libc;
+import stdio use *;
+import time use Instant;
+import collections use *;
+import geomath use *;
+import spatialindex use *;
+
+struct Rng {
+  s: u64;
+  fn next(self: &mut) u64 {
+    s = s ^ (s >> 12u64);
+    s = s ^ (s << 25u64);
+    s = s ^ (s >> 27u64);
+    s * 2685821657736338717u64
+  }
+  fn unit(self: &mut) f32 {f32.from(next() >> 40u64) / 16777216.}
+  fn range(self: &mut, lo: f32, hi: f32) f32 {lo + (hi - lo) * unit()}
+}
+
+fn v3(x: f32, y: f32, z: f32) Vec3 {Vec3(x, y, z)}
+
+fn randBox(rng: &mut Rng, world: f32) Aabb3 {
+  let c = v3(rng.range(0., world), rng.range(0., world), rng.range(0., world));
+  Aabb3.fromCenter(c, v3(rng.range(0.5, 1.5), rng.range(0.5, 1.5), rng.range(0.5, 1.5)))
+}
+
+fn row(what: &str, n: usize, ns: i64, ops: usize, count: i64) {
+  printStr(what);
+  printStr(" | ");
+  printInt(i64.from(n));
+  printStr(" boxes | ");
+  printInt(ns / i64.from(ops));
+  printStr(" ns/op, total ");
+  printInt(ns / 1000i64);
+  printStr(" us, count ");
+  printInt(count);
+  printStr("\n");
+}
+
+// $IDX is the structure, $NEW its constructor
+fn churnBvh(n: usize, frames: usize, seed: u64) {
+  let world = 10. * libc.powf(f32.from(n), 0.33333334);
+  var rng = Rng(seed);
+  var idx = Bvh[u64].create(0.);
+  var ps = List[Proxy].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    ps.push(idx.insert(randBox(&mut rng, world), u64.from(i)));
+    i = i + 1usize;
+  }
+  let k = n / 10usize;
+  let t = Instant.now();
+  var f = 0usize;
+  while f < frames {
+    i = 0usize;
+    while i < k {
+      let j = usize.from(rng.next() % u64.from(n));
+      idx.remove(*ps[j]);
+      ps.set(j, idx.insert(randBox(&mut rng, world), u64.from(j)));
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  row("Bvh churn", n, t.elapsed().nanos(), k * frames, i64.from(idx.len()));
+  var hits = 0i64;
+  var cb = fn(h: u64, p: Proxy) bool { hits = hits + 1i64; true };
+  var q = Rng(seed + 1u64);
+  let t2 = Instant.now();
+  i = 0usize;
+  while i < 2000usize {
+    idx.overlapAabb(Aabb3.fromCenter(v3(q.range(0., world), q.range(0., world), q.range(0., world)), v3(4., 4., 4.)), &mut cb);
+    i = i + 1usize;
+  }
+  row("Bvh box query after churn", n, t2.elapsed().nanos(), 2000usize, hits);
+}
+
+fn churnOctree(n: usize, frames: usize, seed: u64) {
+  let world = 10. * libc.powf(f32.from(n), 0.33333334);
+  var rng = Rng(seed);
+  var idx = LooseOctree[u64].create(v3(world * 0.5, world * 0.5, world * 0.5), world, 7i32, 2.);
+  var ps = List[Proxy].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    ps.push(idx.insert(randBox(&mut rng, world), u64.from(i)));
+    i = i + 1usize;
+  }
+  let k = n / 10usize;
+  let t = Instant.now();
+  var f = 0usize;
+  while f < frames {
+    i = 0usize;
+    while i < k {
+      let j = usize.from(rng.next() % u64.from(n));
+      idx.remove(*ps[j]);
+      ps.set(j, idx.insert(randBox(&mut rng, world), u64.from(j)));
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  row("Octree churn", n, t.elapsed().nanos(), k * frames, i64.from(idx.len()));
+  var hits = 0i64;
+  var cb = fn(h: u64, p: Proxy) bool { hits = hits + 1i64; true };
+  var q = Rng(seed + 1u64);
+  let t2 = Instant.now();
+  i = 0usize;
+  while i < 2000usize {
+    idx.overlapAabb(Aabb3.fromCenter(v3(q.range(0., world), q.range(0., world), q.range(0., world)), v3(4., 4., 4.)), &mut cb);
+    i = i + 1usize;
+  }
+  row("Octree box query after churn", n, t2.elapsed().nanos(), 2000usize, hits);
+}
+
+fn churnGrid(n: usize, frames: usize, seed: u64) {
+  let world = 10. * libc.powf(f32.from(n), 0.33333334);
+  var rng = Rng(seed);
+  var idx = HashGrid[u64].create(4.);
+  var ps = List[Proxy].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    ps.push(idx.insert(randBox(&mut rng, world), u64.from(i)));
+    i = i + 1usize;
+  }
+  let k = n / 10usize;
+  let t = Instant.now();
+  var f = 0usize;
+  while f < frames {
+    i = 0usize;
+    while i < k {
+      let j = usize.from(rng.next() % u64.from(n));
+      idx.remove(*ps[j]);
+      ps.set(j, idx.insert(randBox(&mut rng, world), u64.from(j)));
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  row("Grid churn", n, t.elapsed().nanos(), k * frames, i64.from(idx.len()));
+  var hits = 0i64;
+  var cb = fn(h: u64, p: Proxy) bool { hits = hits + 1i64; true };
+  var q = Rng(seed + 1u64);
+  let t2 = Instant.now();
+  i = 0usize;
+  while i < 2000usize {
+    idx.overlapAabb(Aabb3.fromCenter(v3(q.range(0., world), q.range(0., world), q.range(0., world)), v3(4., 4., 4.)), &mut cb);
+    i = i + 1usize;
+  }
+  row("Grid box query after churn", n, t2.elapsed().nanos(), 2000usize, hits);
+}
+
+fn main() i32 {
+  churnBvh(10000usize, 100usize, 7u64);
+  churnOctree(10000usize, 100usize, 7u64);
+  churnGrid(10000usize, 100usize, 7u64);
+  churnBvh(100000usize, 20usize, 7u64);
+  churnOctree(100000usize, 20usize, 7u64);
+  churnGrid(100000usize, 20usize, 7u64);
+  0i32
+}

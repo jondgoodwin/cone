@@ -449,3 +449,76 @@ pub fn eprintFlush() {
   consoleFlush(0u32);
   libc.fflush(libc.stderr());
 }
+
+// ---- Standard input -------------------------------------------------------------------------------------
+//
+// The reads of the stdinput package ('readLine', 'readAll', 'readBytes'). The raw read is console.c's
+// cone_stdinRead (up to n bytes, waiting for at least one; 0 at the end; the system's error number made
+// negative); the buffer that sits over it is here, so a line read leaves what follows it for the next
+// call. A thread that reads holds cone_stdinLock for the read and blocks in it, so a second reader waits
+// its turn: these are for a program with no actors, and an actor's behaviour does not call them. The
+// console's lock (the printing above) is never taken, so a read that waits stops no printing.
+//
+// The buffer is a block made on the first read that needs it and never freed, held as its address like the
+// console's (its position and length are atomics read and written only under the stdin lock, relaxed).
+// Do not mix these reads with C's own 'stdin' (libc.fread) in one program: C's buffer would hold bytes this
+// one never sees.
+
+extern fn cone_stdinLock();
+extern fn cone_stdinUnlock();
+extern fn cone_stdinRead(buf: *u8, n: usize) i64;
+
+const stdinCap = 65536usize;
+let stdinBuf: core.Atomic[usize];
+let stdinPos: core.Atomic[usize];
+let stdinLen: core.Atomic[usize];
+
+// Up to n bytes of standard input into p: how many (0 at the end of the input), or an error number made
+// negative. With 'line' not 0, no more than up to and including the first '\n' that is there (what is
+// copied ends with it when it was found). Waits for input only when the buffer is empty. A read at least
+// as large as the buffer, with nothing buffered and no 'line', goes straight into p.
+pub fn cone_stdinChunk(p: *u8, n: usize, line: i32) i64 {
+  if n == 0usize {return 0i64;}
+  cone_stdinLock();
+  var pos = stdinPos.loadOrdered(core.MemOrder.Relaxed);
+  var len = stdinLen.loadOrdered(core.MemOrder.Relaxed);
+  if pos == len {
+    if n >= stdinCap && line == 0i32 {
+      let direct = cone_stdinRead(p, n);
+      cone_stdinUnlock();
+      return direct;
+    }
+    if stdinBuf.loadOrdered(core.MemOrder.Relaxed) == 0usize {
+      let block = core.RawBlocks.alloc(stdinCap, 16usize);
+      if block == null {
+        cone_stdinUnlock();
+        return -12i64;
+      }
+      stdinBuf.storeOrdered(block as usize, core.MemOrder.Relaxed);
+    }
+    let got = cone_stdinRead(stdinBuf.loadOrdered(core.MemOrder.Relaxed) as *u8, stdinCap);
+    if got <= 0i64 {
+      cone_stdinUnlock();
+      return got;
+    }
+    pos = 0usize;
+    len = usize.from(got);
+  }
+  let base = stdinBuf.loadOrdered(core.MemOrder.Relaxed) as *u8;
+  var take = len - pos;
+  if take > n {take = n;}
+  if line != 0i32 {
+    var i = 0usize;
+    var found = false;
+    while i < take && !found {
+      if *(base + pos + i) == 10u8 {found = true;}
+      i = i + 1usize;
+    }
+    if found {take = i;}
+  }
+  core.mem.moveRaw[u8](p, base + pos, take);
+  stdinPos.storeOrdered(pos + take, core.MemOrder.Relaxed);
+  stdinLen.storeOrdered(len, core.MemOrder.Relaxed);
+  cone_stdinUnlock();
+  i64.from(take)
+}

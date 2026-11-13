@@ -291,7 +291,7 @@ fn openEntry(ar: &Archive, data: &Array[u8], i: usize) Result[EntryReader, ZipEr
   var zd = zstd.Decompressor.make();
   zd.setLimit(e.size);
   Ok[EntryReader, ZipError](EntryReader(e.name.clone(), e.method, e.flags, loc.start, loc.end, e.size, e.crc,
-    e.compressedSize, 0u64, 0u32, deflate.Crc32.make(), inf, zd, false, false, false, None[ZipError]))
+    e.compressedSize, 0u64, 0u32, deflate.Crc32(ar.crcTable.table.clone()), inf, zd, false, false, false, None[ZipError]))
 }
 
 // The whole data of entry 'i'
@@ -328,8 +328,7 @@ fn readEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError
     why.appendUInt(e.size);
     return refusal[List[u8]](ErrorKind.BadChecksum, loc.start, why.view());
   }
-  let table = deflate.Crc32.make();
-  if table.update(0u32, out.view(), 0usize, out.len()) != e.crc {
+  if ar.crcTable.update(0u32, out.view(), 0usize, out.len()) != e.crc {
     return refusal[List[u8]](ErrorKind.BadChecksum, loc.start,
       about("the CRC-32 of the data of", e.name.view(), "does not match the entry's").view());
   }

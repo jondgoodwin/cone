@@ -1,0 +1,84 @@
+// The state a world's 'start' returns is held by 'run' and lent to each callback
+// as '&uni S': a callback's change to it is the next callback's start, a field
+// is matched in place through the borrow, and the state is finalized when 'run'
+// ends, after 'quit' and before 'run' returns. A 'start' that answers None ends
+// the run with code 1 and no 'quit', and a world with nothing to hold uses
+// NoState.
+//
+// Headless, on the synthetic clock, 3 frames, one step each (the first frame
+// runs none), so 'simulate' is called twice and 'draw' three times.
+
+mod state;
+
+import stdio use *;
+import frame use *;
+import arena use Arena;
+import sdl;
+
+struct Res {
+  pub id: i32;
+  pub fn final(self: &uni) {
+    print <- "res "; print <- id; print <- " finalized\n";
+  }
+}
+
+struct Counts {
+  pub res: Option[Res];
+  pub steps: i32;
+  pub draws: i32;
+}
+
+fn start(host: &mut Host) Option[Counts] {
+  Some[Counts](Counts(Some[Res](Res(7)), 0, 0))
+}
+fn event(host: &mut Host, st: &uni Counts, e: &imm sdl.Event) {}
+fn simulate(host: &mut Host, st: &uni Counts, step: &imm Step, scratch: &mut Arena) {
+  st.steps = st.steps + 1;
+}
+fn draw(host: &mut Host, st: &uni Counts, alpha: f32, scratch: &mut Arena) {
+  st.draws = st.draws + 10;
+  match &uni st.res {
+    case var &uni Some(r) { print <- "draw sees res "; print <- (*r).id; print <- "\n"; }
+    else { print <- "no res\n"; }
+  }
+}
+fn quit(host: &mut Host, st: &uni Counts) i32 {
+  print <- "quit: steps "; print <- st.steps; print <- ", draws "; print <- st.draws; print <- "\n";
+  st.steps + st.draws
+}
+
+fn refuse(host: &mut Host) Option[Counts] { None }
+
+fn noneStart(host: &mut Host) Option[NoState] { Some[NoState](NoState()) }
+fn noneEvent(host: &mut Host, st: &uni NoState, e: &imm sdl.Event) {}
+fn noneSimulate(host: &mut Host, st: &uni NoState, step: &imm Step, scratch: &mut Arena) {}
+fn noneDraw(host: &mut Host, st: &uni NoState, alpha: f32, scratch: &mut Arena) {}
+fn noneQuit(host: &mut Host, st: &uni NoState) i32 { print <- "stateless quit\n"; 5i32 }
+
+fn config() Config {
+  var c = Config.defaults();
+  c.headless = true;
+  c.synthetic = true;
+  c.printStats = false;
+  c.frames = 3u64;
+  c
+}
+
+fn main() i32 {
+  // quit sees the steps (2) and draws (30) the callbacks made: it answers 32;
+  // res 7 is finalized after quit, before run returns
+  let world = worldOf(&start, &event, &simulate, &draw, &quit);
+  let c1 = run(config(), &world);
+  print <- "run answered "; print <- c1; print <- "\n";
+
+  // start answers None: code 1, nothing else printed
+  let refused = worldOf(&refuse, &event, &simulate, &draw, &quit);
+  let c2 = run(config(), &refused);
+  print <- "refused answered "; print <- c2; print <- "\n";
+
+  // a world with nothing to hold
+  let bare = worldOf(&noneStart, &noneEvent, &noneSimulate, &noneDraw, &noneQuit);
+  let c3 = run(config(), &bare);
+  print <- "stateless answered "; print <- c3; print <- "\n";
+  0
+}

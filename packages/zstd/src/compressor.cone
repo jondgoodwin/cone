@@ -284,7 +284,7 @@ pub struct Compressor {
             &mut longG, &mut shortG, &mut work, &mut seqs);
         }
         blk.clear();
-        writeLiterals(&seqs.lits, &mut enc.huf, &mut blk);
+        writeLiterals(&seqs.lits.view()[0usize ..< seqs.nlit], &mut enc.huf, &mut blk);
         writeSequences(&seqs, &mut enc, &mut blk);
         let size = blk.len();
         if size + minGain(n) < n {
@@ -377,10 +377,17 @@ pub struct Compressor {
 
   fn drainAll(self: &mut, result: &mut List[u8]) bool {
     if out.starved() { return false; }
-    let n = out.len();
-    let at = result.len();
-    result.resize(at + n, 0u8);
-    _ = out.drainTo(&mut result.viewMut()[at ..< at + n]);
+    // Taken a buffer at a time and appended as a slice copy. Draining into a resized List instead pays a
+    // zero-fill and a byte copy of the same size (19 of 148 ms at level 1 on the binary 32 MiB).
+    // The edge: take() on the buffer in use asks the pool for a fresh one. Mid-frame the next block's
+    // writes would ask for it anyway, but the frame's last drain asks for one buffer it doesn't need, so
+    // on a pool with exactly none left this reports starved where a drainTo would have finished.
+    result.reserve(out.len());
+    while out.len() > 0usize {
+      let b = out.take();
+      result.appendSlice(b.view());
+      if out.starved() { return false; }
+    }
     true
   }
 }

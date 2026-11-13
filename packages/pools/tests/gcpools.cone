@@ -1,0 +1,85 @@
+// A GenPool and a DensePool inside an actor's state hold ActorGc references, and
+// the actor's collector must find them through the pools' cells and rows. The
+// stress mode collects after every message, and garbage made between them makes
+// the survivors move to new addresses, so a reference the collector missed
+// reads a freed chunk. Every value is worked out by hand.
+
+mod gcpools;
+
+import actors;
+import pools use *;
+import collections use List;
+import stdio use *;
+
+struct Leaf { pub n: i64; }
+alias LeafRef = ActorGc[mut, Leaf];
+
+fn line(label: &str, n: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+actor Shelf {
+  gen: GenPool[LeafRef];
+  dense: DensePool[LeafRef];
+  hg: List[Handle];
+  hd: List[Handle];
+
+  fn init(self: &new) {
+    *self = Self(GenPool[LeafRef](), DensePool[LeafRef](), List[Handle](), List[Handle]());
+  }
+
+  // Leaves 1 to count in the GenPool, 100 times each in the DensePool
+  pub async fn fill(self, count: i64) {
+    var i = 1i64;
+    while i <= count {
+      hg.push(gen.add(new self[Leaf](i)));
+      hd.push(dense.add(new self[Leaf](i * 100)));
+      i = i + 1;
+    }
+  }
+
+  // Garbage: leaves nothing reaches
+  pub async fn churn(self, count: i64) {
+    var i = 0i64;
+    while i < count {
+      let junk = new self[Leaf](i);
+      i = i + 1;
+    }
+  }
+
+  // Remove the third entry of each, so a free cell and a moved row are traced too
+  pub async fn dropThird(self) {
+    gen.remove(*hg.get(2usize).unwrap());
+    dense.remove(*hd.get(2usize).unwrap());
+  }
+
+  // The sum of what each pool's live entries hold, read through borrows
+  pub async fn report(self, tag: i64) {
+    var g = 0i64;
+    each v in gen.iter() { g = g + v.n; }
+    var d = 0i64;
+    each v in dense.iter() { d = d + v.n; }
+    let st = self.allocRegion().stats();
+    line("report", tag);
+    line("  gen", g);
+    line("  dense", d);
+    line("  objects", i64.from(st.objects));
+    line("  collections", i64.from(st.collections));
+  }
+}
+
+fn main() {
+  actors.setStress(true);
+  {
+    let s = Shelf();
+    s.fill(10i64);
+    s.churn(25i64);
+    s.report(1i64);
+    s.dropThird();
+    s.churn(25i64);
+    s.report(2i64);
+  }
+}
