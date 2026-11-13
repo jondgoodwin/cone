@@ -1,0 +1,43 @@
+// How to time a function with the testing package. Run it with
+//
+//   congo run --release packages/testing/examples/bench.cone
+//
+// It times two bodies, the same loop over 100 values and over 10,000, so the
+// second takes about a hundred times as long as the first, and prints one line
+// for each, then 'ordering ok' (the 10,000 is slower, by a margin no noise
+// closes). The times differ on every run and every machine: they are for the
+// reader, so no test pins this program's output. Each result goes through
+// 'blackBox' so the optimiser can neither fold the loop to a constant nor drop
+// it. A run beside other work is noise.
+
+mod benchdemo;
+
+import testing use *;
+import stdio;
+
+// A loop the optimiser cannot turn into a formula: each step mixes the last
+fn mix(n: u64) u64 {
+  var s = 1u64;
+  var i = 0u64;
+  while i < n {
+    s = (s ^ (s << 13u64)) + i;
+    s = s ^ (s >> 7u64);
+    i = i + 1u64;
+  };
+  s
+}
+
+fn main() i32 {
+  // Short runs, to keep the example about a second
+  var cfg = BenchConfig.standard();
+  cfg.warmupMs = 20u32;
+  let small = benchWith("mix of 100", &cfg, fn() { blackBox(mix(blackBox(100u64))); });
+  let big = benchWith("mix of 10000", &cfg, fn() { blackBox(mix(blackBox(10000u64))); });
+  if big.medianNs > small.medianNs {
+    stdio.printStr("ordering ok\n");
+    0i32
+  } else {
+    stdio.printStr("ordering wrong\n");
+    1i32
+  }
+}

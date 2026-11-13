@@ -61,5 +61,50 @@ fn main() i32 {
   let f2 = textField(&mut ui, ui.root, "wxyz");
   expectInt(i64.from(ui.fields[ui.nodes[f2].data].caret), 4i64, "a reused field row is the new field's");
   expectInt(i64.from(ui.fields[ui.nodes[f2].data].node), i64.from(f2), "and names its node");
+
+  // markers: clearing frees rows in place; live handles keep their value; the next markers reuse the rows
+  let mm = minimap(&mut ui, ui.root, 100., 1u32);
+  let mm2 = minimap(&mut ui, ui.root, 100., 1u32);
+  let m0 = minimapAddMarker(&mut ui, mm, 0.1, 0.1, 0xff0000ffu32, 6.);
+  let m1 = minimapAddMarker(&mut ui, mm2, 0.2, 0.2, 0xff0000ffu32, 6.);
+  let m2 = minimapAddMarker(&mut ui, mm, 0.3, 0.3, 0xff0000ffu32, 6.);
+  minimapClearMarkers(&mut ui, mm);
+  expectInt(i64.from(ui.markers.len()), 3i64, "clearing keeps every row in place");
+  expectFloat(f64.from(ui.markers[m1].u), 0.2, 0.001, "a live marker keeps its handle");
+  let m3 = minimapAddMarker(&mut ui, mm2, 0.4, 0.4, 0xff0000ffu32, 6.);
+  let m4 = minimapAddMarker(&mut ui, mm2, 0.5, 0.5, 0xff0000ffu32, 6.);
+  expectInt(i64.from(ui.markers.len()), 3i64, "two new markers reuse the two freed rows");
+  expectInt(i64.from(m3 != m1 && m4 != m1 && m3 != m4), 1i64, "and none shares the live marker's row");
+  expectFloat(f64.from(ui.markers[m1].u), 0.2, 0.001, "the live marker is untouched");
+  // destroying the minimap frees its markers
+  ui.destroy(mm2);
+  var live = 0;
+  var k = 0usize;
+  while k < ui.markers.len() {
+    if ui.markers[k].owner != NIL {live = live + 1;}
+    k = k + 1usize;
+  }
+  expectInt(i64.from(live), 0i64, "a destroyed minimap leaves no live markers");
+  var j = 0;
+  while j < 50 {
+    let mmx = minimap(&mut ui, ui.root, 100., 1u32);
+    minimapAddMarker(&mut ui, mmx, 0.5, 0.5, 0xff0000ffu32, 6.);
+    ui.destroy(mmx);
+    j = j + 1;
+  }
+  expectInt(i64.from(ui.markers.len()), 3i64, "50 minimaps with a marker each: the table holds steady");
+
+  // hotbars drop destroyed ids
+  let bar = hotbar(&mut ui, ui.root, 3u32);
+  let bar2 = hotbar(&mut ui, ui.root, 3u32);
+  expectInt(i64.from(ui.input.hotbars.len()), 2i64, "two bars");
+  ui.destroy(bar);
+  expectInt(i64.from(ui.input.hotbars.len()), 1i64, "a destroyed bar's id is dropped");
+  expectInt(i64.from(*ui.input.hotbars[0] == bar2), 1i64, "and the live bar's stays");
+  let outer = ui.create(ui.root, K_PLAIN);
+  hotbar(&mut ui, outer, 2u32);
+  expectInt(i64.from(ui.input.hotbars.len()), 2i64, "a bar inside a panel");
+  ui.destroy(outer);
+  expectInt(i64.from(ui.input.hotbars.len()), 1i64, "destroying the panel above a bar drops it too");
   done()
 }
