@@ -66,6 +66,9 @@ pub extern {
 
 // The console takes a finished record away
 extern fn @c consoleDeliver(record: &uni TextOut);
+// Whether the stream (1 or 2) takes color: a terminal that does, and NO_COLOR not set;
+// asked once per stream (conestd's console.c)
+extern fn @c cone_consoleColor(fd: i32) i32;
 
 // A stream to print to: 'fd' is its POSIX number, 1 for standard output and
 // 2 for standard error. It keeps nothing it writes, since the console holds
@@ -88,7 +91,9 @@ pub struct IOStream {
   // record held across statements is 'var rec = print.record()', sent to with
   // '<-' like any writer, and delivered at its scope's end.
   pub fn record(self: &) TextOut {
-    TextOut.record(&consoleDeliver as usize, null, u32.from(fd))
+    var w = TextOut.record(&consoleDeliver as usize, null, u32.from(fd));
+    w.setColor(cone_consoleColor(fd) != 0i32);
+    w
   }
   // Write out what the console holds, and what the C library holds
   pub fn flush(self: &) {if fd == 2i32 {eprintFlush();} else {printFlush();}}
