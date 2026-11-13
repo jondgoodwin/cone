@@ -13,12 +13,6 @@ pub struct SlotData {
   pub index: u32 = 0u32;
 }
 
-pub struct InvGridData {
-  pub node: usize = 0usize;
-  pub container: u32 = 0u32;
-  pub cols: u32 = 1u32;
-}
-
 pub fn inventoryGrid(ui: &mut Ui, parent: usize, container: u32, cols: u32) usize {
   let n = ui.inv.slotCount(container);
   let size = ui.theme.num(ui.theme.find("slot"), P_SIZE, 0u32, 44.);
@@ -31,9 +25,6 @@ pub fn inventoryGrid(ui: &mut Ui, parent: usize, container: u32, cols: u32) usiz
     ui.addTrack(grid, 0u32, TRACK_FIXED, size);
     c = c + 1u32;
   }
-  ui.nodes[grid].data = ui.invgrids.len();
-  ui.invgrids.push(InvGridData(node: grid, container: container, cols: cols));
-  // (invgrids is written here and read nowhere; the grid is a K_PLAIN node, so its row is not freed with it)
   var i = 0u32;
   while i < n {
     let s = made(ui, grid, K_SLOT, "slot");
@@ -304,8 +295,16 @@ pub fn minimapSetView(ui: &mut Ui, id: usize, cu: f32, cv: f32, zoom: f32) {
 pub fn minimapSetShape(ui: &mut Ui, id: usize, shape: u32) {ui.minimaps[ui.nodes[id].data].shape = shape;}
 
 pub fn minimapAddMarker(ui: &mut Ui, id: usize, u: f32, v: f32, color: u32, size: f32) usize {
-  ui.markers.push(MapMarker(owner: id, u: u, v: v, color: color, size: size));
-  ui.markers.len() - 1usize
+  let m = MapMarker(owner: id, u: u, v: v, color: color, size: size);
+  let n = ui.freeMarkers.len();
+  if n == 0usize {
+    ui.markers.push(m);
+    return ui.markers.len() - 1usize;
+  }
+  let r = *ui.freeMarkers[n - 1usize];
+  ui.freeMarkers.truncate(n - 1usize);
+  ui.markers.set(r, m);
+  r
 }
 
 pub fn minimapMoveMarker(ui: &mut Ui, marker: usize, u: f32, v: f32) {
@@ -314,13 +313,7 @@ pub fn minimapMoveMarker(ui: &mut Ui, marker: usize, u: f32, v: f32) {
 }
 
 pub fn minimapClearMarkers(ui: &mut Ui, id: usize) {
-  var keep = List[MapMarker]();
-  var i = 0usize;
-  while i < ui.markers.len() {
-    if ui.markers[i].owner != id {keep.push(*ui.markers[i]);}
-    i = i + 1usize;
-  }
-  ui.markers = keep;
+  ui.freeMarkersOf(id);
 }
 
 // The part of the texture the frame shows: (u0, v0) to (u1, v1)

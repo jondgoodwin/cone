@@ -220,7 +220,6 @@ pub struct Ui {
   pub tabpages: List[TabPage];
   pub toggles: List[ToggleData];
   pub slots: List[SlotData];
-  pub invgrids: List[InvGridData];
   pub hotslots: List[HotSlotData];
   pub minimaps: List[MinimapData];
   pub markers: List[MapMarker];
@@ -234,6 +233,9 @@ pub struct Ui {
   // Rows of the tables above whose node is gone, free for the next create: one list per node kind
   // (indexed by K_*). A row is reused in place, so every node.data index stays valid.
   freeRows: List[List[usize]];
+  // Marker rows that are free (owner NIL), reused in place by the next marker, so every live
+  // marker keeps its index
+  freeMarkers: List[usize];
 
   // set while measuring: some child's size was shaped by a bound (layout.cone)
   pub clampSeen: bool = false;
@@ -244,9 +246,9 @@ pub struct Ui {
       List[UiEvent](), 0.,
       List[SliderData](), List[KnobData](), List[FieldData](), List[ListData](),
       List[WindowData](), List[TabsData](), List[TabPage](), List[ToggleData](),
-      List[SlotData](), List[InvGridData](), List[HotSlotData](), List[MinimapData](),
+      List[SlotData](), List[HotSlotData](), List[MinimapData](),
       List[MapMarker](), InvModel.make(), InputState.make(),
-      List[List[usize]]());
+      List[List[usize]](), List[usize]());
     var k = 0u32;
     while k <= K_HOSTED {
       ui.freeRows.push(List[usize]());
@@ -326,6 +328,10 @@ pub struct Ui {
     }
     if input.win.node == id {input.win.mode = 0u32;}
     freeRow(id);
+    var h = 0usize;
+    while h < input.hotbars.len() {
+      if *input.hotbars[h] == id {input.hotbars.remove(h);} else {h = h + 1usize;}
+    }
     unlisten(self, id);
     var i = 0usize;
     while i < input.hoverChain.len() {
@@ -360,10 +366,22 @@ pub struct Ui {
     }
     else if kind == K_SLOT {slots.set(d, SlotData());}
     else if kind == K_HOTSLOT {hotslots.set(d, HotSlotData());}
-    else if kind == K_MINIMAP {minimaps.set(d, MinimapData());}
+    else if kind == K_MINIMAP {minimaps.set(d, MinimapData()); freeMarkersOf(id);}
     else if kind == K_HOSTED {input.hosted.set(d, HostedWidget(0usize, DrawList.make()));}
     else {done = false;}
     if done {freeRows[usize.from(kind)].push(d);}
+  }
+
+  // The markers owned by 'id' become free rows (owner NIL, so no scan finds them), each keeping its index
+  fn freeMarkersOf(self: &mut, id: usize) {
+    var i = 0usize;
+    while i < markers.len() {
+      if markers[i].owner == id {
+        markers.set(i, MapMarker(owner: NIL));
+        freeMarkers.push(i);
+      }
+      i = i + 1usize;
+    }
   }
 
   // The row for a new widget: a freed one of this kind if there is one, else 'fresh' (the
