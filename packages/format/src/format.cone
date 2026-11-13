@@ -63,6 +63,25 @@
 //     them. Each takes x by value: pad("ab", 5), pad(hex(n), 8, Align.right, '0'), pad(&v, 6)
 //     (a reference to a value that has a toText) for a value you keep.
 //
+//   TEXT WRAPPERS (of any value that has a 'toText'; they nest inside pad and each other)
+//     quoted(x)                   x's text in double quotes, escaped as a string's debug form is
+//                                 (", \, \n, \r, \t, other control bytes as \xHH): quoted(12) is "12".
+//                                 Always quotes; csv.field quotes only when needed, and doubles the quote.
+//     join(&items, sep)           the items of anything iterable, each as its text, with the &str
+//                                 'sep' between (none before the first or after the last; an item
+//                                 that writes nothing keeps its separators). It writes straight
+//                                 out, no scratch String, and walks the items again for each write,
+//                                 so it takes a borrow of a list, not a one-shot generator. Its
+//                                 debug form writes each item's debug form, the same separator, no
+//                                 brackets: debug(join(&names, ", ")) is "a", "b".
+//     grouped(x)                  x's text with the decimal digits of its integer part grouped:
+//     grouped(x, sep, size)       1,234,567. A leading sign and everything after the digits (a
+//                                 fraction, an exponent) is left alone, so grouped(fixed(1234.5, 2))
+//                                 is 1,234.50. Decimal text only: a hex or bin item is not
+//                                 grouped sensibly. The defaults, ',' and 3, stand until locale
+//                                 context arrives, then they come from it with no change of spelling.
+//                                 Wrap pad outside it: pad(grouped(n), 12, Align.right).
+//
 //   STYLES (color on a terminal, nothing anywhere else)
 //     plain  red  green  yellow  blue  magenta  cyan  white  black  bold  dim  underline
 //                      values of type Style, sent with '<-' like anything else:
@@ -511,6 +530,93 @@ pub struct Truncated[T] {
 // (its combining marks) go with it. Text no wider than n is written whole.
 pub fn truncate[T](x: T, n: usize) Truncated[T] inline {
   Truncated(x, n)
+}
+
+pub struct Quoted[T] {
+  x: T;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    var scratch = String();
+    x.toText(&uni scratch.textOut());
+    out.putDebugStr(scratch.view());
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+}
+
+// x's text in double quotes, always, escaped as a string's debug form is:
+// quoted(12) is "12", quoted("a\"b") is "a\"b" in quotes with the backslash.
+pub fn quoted[T](x: T) Quoted[T] inline {
+  Quoted(x)
+}
+
+pub struct Joined[C] {
+  items: &C;
+  sep: &str;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    var first = true;
+    each v in items.iter() {
+      if !first {out.writeStr(sep);}
+      first = false;
+      v.toText(out);
+    }
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {
+    var first = true;
+    each v in items.iter() {
+      if !first {out.writeStr(sep);}
+      first = false;
+      v.toDebug(out);
+    }
+  }
+}
+
+// The items of a list (or any Iterable), each as its text, with 'sep' between.
+// Walks the items once per write, straight to the writer; a one-shot generator
+// can't be joined, a list can.
+pub fn join[T, C: Iterable[T]](items: &C, sep: &str) Joined[C] inline {
+  Joined(items, sep)
+}
+
+pub struct Grouped[T] {
+  x: T;
+  sep: char;
+  size: usize;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    var scratch = String();
+    x.toText(&uni scratch.textOut());
+    let b = scratch.view() as &Array[u8];
+    var i = 0usize;
+    // a leading sign stays outside the groups
+    if b.len > 0usize && (b[0usize] == '-' || b[0usize] == '+') {
+      out.putByte(b[0usize]);
+      i = 1usize;
+    }
+    // the first run of ASCII digits
+    var end = i;
+    while end < b.len && b[end] >= '0' && b[end] <= '9' {end += 1usize;}
+    let n = end - i;
+    var k = 0usize;
+    while k < n {
+      if k > 0usize && size > 0usize && (n - k) % size == 0usize {out.putChar(sep);}
+      out.putByte(b[i + k]);
+      k += 1usize;
+    }
+    // the fraction, exponent or whatever follows
+    while end < b.len {
+      out.putByte(b[end]);
+      end += 1usize;
+    }
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+}
+
+// x's text with the digits of its integer part in groups of 'size' from the right,
+// 'sep' between: 1,234,567. Sign and fraction are left alone. Decimal text only
+// (a hex or bin item is not grouped sensibly). Put pad outside it, not inside.
+pub fn grouped[T](x: T, sep: char = ',', size: usize = 3usize) Grouped[T] inline {
+  Grouped(x, sep, size)
 }
 
 // ---- Styles: color on a terminal, nothing anywhere else ----
