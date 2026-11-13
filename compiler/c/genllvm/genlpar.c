@@ -85,6 +85,8 @@ static void genlParCount(GenState *gen, BlockNode *blk, VarDclNode *first, VarDc
     LLVMBuildStore(gen->builder, n, hi->llvmvar);
 }
 
+static void genlParInvariant(GenState *gen, GenParBody *pb, uint32_t index, VarDclNode *var, LLVMValueRef loaded);
+
 void genlParCapture(GenState *gen, VarDclNode *var) {
     GenParBody *pb = gen->parbody;
     LLVMValueRef home = var->llvmvar;
@@ -116,8 +118,36 @@ void genlParCapture(GenState *gen, VarDclNode *var) {
     LLVMValueRef at = LLVMConstInt(LLVMInt32TypeInContext(context), index, 0);
     LLVMValueRef slot = LLVMBuildInBoundsGEP2(gen->builder, ptr, pb->record, &at, 1, "capslot");
     var->llvmvar = LLVMBuildLoad2(gen->builder, ptr, slot, &var->namesym->namestr);
+    genlParInvariant(gen, pb, index, var, var->llvmvar);
     LLVMPositionBuilderAtEnd(gen->builder, current);
     LLVMSetCurrentDebugLocation2(gen->builder, debugloc);
+}
+
+// What the piece reads of the variables it found outside is fixed for as long as
+// it runs: nothing writes them (pareach.c checks it), the passes only read them
+// and the caller waits. But the piece's own stores (into the items it changes) may,
+// as far as LLVM can tell, land in those variables, so it loads their fields again
+// on every pass: the source's position and length, a collection's pointer and
+// count. So the piece copies each small captured variable (not what a pointer in
+// it leads to) into a local of its own at its entry, which LLVM keeps in registers,
+// and the loop reads the copy. (llvm.invariant.start was tried first: the
+// optimiser did not use it.) A variable holding an atomic inline is left as it
+// is, read in place: it does change while the passes run. So is a builder's bag.
+static void genlParInvariant(GenState *gen, GenParBody *pb, uint32_t index, VarDclNode *var, LLVMValueRef loaded) {
+    LLVMValueRef home = pb->caps[index].home;
+    INode *vtype = var->vtype;
+    // (the passes write only what they are made to: an atomic, and the builder's bag)
+    if (vtype == NULL || itypeHoldsAtomic(vtype) || var->namesym == parBagName)
+        return;
+    LLVMTypeRef type = LLVMIsAAllocaInst(home) ? LLVMGetAllocatedType(home) : genlType(gen, vtype);
+    unsigned long long size = LLVMABISizeOfType(gen->datalayout, type);
+    if (size == 0 || size > 128)
+        return;
+    // (the builder is before the allocas' point, in the piece's entry)
+    LLVMValueRef local = LLVMBuildAlloca(gen->builder, type, &var->namesym->namestr);
+    LLVMValueRef value = LLVMBuildLoad2(gen->builder, type, loaded, "capcopy");
+    LLVMBuildStore(gen->builder, value, local);
+    var->llvmvar = local;
 }
 
 INode *genlParallelRun(GenState *gen, BlockNode *blk, INode *kdcl) {
