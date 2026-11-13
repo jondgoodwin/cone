@@ -205,9 +205,10 @@ static int genlParPlain(INode *type, int most) {
 static void genlParInvariant(GenState *gen, GenParBody *pb, uint32_t index, VarDclNode *var, LLVMValueRef loaded) {
     LLVMValueRef home = pb->caps[index].home;
     INode *vtype = var->vtype;
-    // (a builder's bag is plain data, a usize, but the lowering itself writes it
-    // from the passes through '&mut': the one variable that is written; the check
-    // refuses every other write to an outside variable)
+    // The only outside variable written in a body is the lowering's own bag,
+    // because pareach.c refuses every other write. The bag is plain data (a
+    // PieceBag(usize)) that the passes write through '&mut', so it is named here.
+    // A future lowering that writes another outside variable must be added here.
     if (!genlParPlain(vtype, 8) || var->namesym == parBagName)
         return;
     LLVMTypeRef type = LLVMIsAAllocaInst(home) ? LLVMGetAllocatedType(home) : genlType(gen, vtype);
