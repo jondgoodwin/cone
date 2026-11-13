@@ -39,17 +39,19 @@
 // record moves to it and the sender goes on, and print.flush() waits until all
 // that was sent has been written.
 //
-// Standard input is read by three functions, for a program with no actors (a
+// Standard input is read by three methods of the value 'stdin', for a program with no actors (a
 // tool, a filter, a script):
 //
-//   readLine(&mut line)   the next line into a String, without its '\n' or '\r\n';
-//                         Ok(false) at the end of the input, nothing read
-//   readAll()             everything that is left, as a String
-//   readBytes(&mut buf)   up to buf.len bytes into an array: how many, 0 at the end
+//   stdin.readLine(&mut line)   the next line into a String, without its '\n' or '\r\n';
+//                               Ok(false) at the end of the input, nothing read
+//   stdin.readAll()             everything that is left, as a String
+//   stdin.readBytes(&mut buf)   up to buf.len bytes into an array: how many, 0 at the end
 //
 // 'readLine' and 'readAll' put the bytes they read into a String as they came: input that is not
 // UTF-8 makes a String that is not, so a program that cannot trust its input reads with 'readBytes'.
-// A failure is the IoErrorKind of the system's error (ioerror's kinds, the same on every system).
+// A failure is the IoErrorKind of the system's error (ioerror's kinds, the same on every system). It is
+// an IoErrorKind and not iocore's IoError because iocore imports diag, and diag imports stdio: stdio
+// importing iocore would be a cycle.
 // A last line with no '\n' is a line. A read is of standard input's own handle: nothing in the C
 // runtime's text mode touches it (no '\r' dropped, no 0x1A that ends the input), and on a Windows
 // console the text arrives as UTF-8 whatever the console's code page.
@@ -72,7 +74,7 @@ extern fn @c cone_stdinChunk(p: *u8, n: usize, line: i32) i64;
 
 // The next line of standard input into 'line', replacing what it held, without its line end ('\n' or
 // '\r\n'). False, with 'line' empty, at the end of the input. A last line with no '\n' is a line.
-pub fn readLine(line: &mut String) Result[bool, IoErrorKind] {
+fn lineIn(line: &mut String) Result[bool, IoErrorKind] {
   line.clear();
   var tmp = Array[u8, 4096]() <- fill 0u8;
   let tp: *u8 = &[]tmp as *u8;
@@ -100,7 +102,7 @@ pub fn readLine(line: &mut String) Result[bool, IoErrorKind] {
 }
 
 // All that is left of standard input, as a String (empty at the end of the input)
-pub fn readAll() Result[String, IoErrorKind] {
+fn allIn() Result[String, IoErrorKind] {
   var out = String();
   var tmp = Array[u8, 65536]() <- fill 0u8;
   let tp: *u8 = &[]tmp as *u8;
@@ -116,11 +118,27 @@ pub fn readAll() Result[String, IoErrorKind] {
 
 // Up to buf.len bytes of standard input into 'buf', waiting for at least one: how many, 0 at the end of
 // the input (and for an empty 'buf')
-pub fn readBytes(buf: &mut Array[u8]) Result[usize, IoErrorKind] {
+fn bytesIn(buf: &mut Array[u8]) Result[usize, IoErrorKind] {
   let got = cone_stdinChunk(buf as *u8, buf.len, 0i32);
   if got < 0i64 { return Err[usize, IoErrorKind](osKind(u32.from(0i64 - got))); }
   Ok[usize, IoErrorKind](usize.from(got))
 }
+
+// Standard input, as 'stdin.readLine(&mut line)', 'stdin.readAll()' and 'stdin.readBytes(&mut buf)'. It
+// keeps nothing itself (conestd holds the buffer), so its methods take 'self: &' and 'stdin' is 'imm'.
+pub struct Stdin {
+  pub fd: i32;
+  // The next line into 'line', replacing what it held, without its line end ('\n' or '\r\n'). Ok(false),
+  // with 'line' empty, at the end of the input. A last line with no '\n' is a line.
+  pub fn readLine(self: &, line: &mut String) Result[bool, IoErrorKind] { lineIn(line) }
+  // All that is left, as a String (empty at the end of the input)
+  pub fn readAll(self: &) Result[String, IoErrorKind] { allIn() }
+  // Up to buf.len bytes into 'buf', waiting for at least one: how many, 0 at the end of the input (and
+  // for an empty 'buf')
+  pub fn readBytes(self: &, buf: &mut Array[u8]) Result[usize, IoErrorKind] { bytesIn(buf) }
+}
+
+pub let stdin = Stdin(0i32);
 
 // Standard output
 pub extern {
