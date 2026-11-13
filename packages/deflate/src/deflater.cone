@@ -59,7 +59,7 @@ fn chainMatchLen(bp: *u8, ci: usize, ib: usize, n: usize) usize inline {
 // level 1 does; true enters every position it covers. 'head' and
 // 'prev' are the hash chains: 'head' by hash the newest position, 'prev' by
 // position (modulo 32768) the one before it with the same hash.
-fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32],
+fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32], lf: &mut List[u32], df: &mut List[u32],
   chainLimit: usize, insertAll: bool, maxTokens: usize, final: bool) bool {
   let n = buf.len;
   let bp = buf as *u8;
@@ -102,6 +102,7 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
     }
     if bestLen >= 3usize {
       tokens.push(0x80000000u32 | (u32.from(bestLen) << 16u32) | u32.from(bestDist));
+      if insertAll { countMatch(lf, df, bestLen, bestDist); }
       // Insert the positions the match covers: all of them, or just its first
       let covered = if insertAll {bestLen} else {1usize};
       var k = 0usize;
@@ -117,6 +118,7 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
       *cur = i + i64.from(bestLen);
     } else {
       tokens.push(u32.from(buf[ib]));
+      if insertAll { countLit(lf, buf[ib]); }
       if ib + 3usize <= n {
         let h = hash3(buf, ib);
         prev.set(usize.from(i & 32767i64), *head[h]);
@@ -140,7 +142,7 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
 // '*savedLen' and '*savedDist' are the held match (0 for none), found at
 // position cur - 1; they live in the Deflater between calls, so a call may stop
 // for want of look-ahead with a match held. Otherwise as 'lzScan'.
-fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32],
+fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32], lf: &mut List[u32], df: &mut List[u32],
   chainLimit: usize, savedLen: &mut usize, savedDist: &mut usize, maxTokens: usize, final: bool) bool {
   let n = buf.len;
   let bp = buf as *u8;
@@ -189,6 +191,7 @@ fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], p
     if held && newLen <= *savedLen {
       // The held match (found at i - 1) goes out; i is already in the chain
       tokens.push(0x80000000u32 | (u32.from(*savedLen) << 16u32) | u32.from(*savedDist));
+      countMatch(lf, df, *savedLen, *savedDist);
       let end = i - 1i64 + i64.from(*savedLen);
       var p = i + 1i64;
       while p < end {
@@ -206,12 +209,14 @@ fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], p
     } else {
       // A literal for the held match's byte (i - 1), or for this one when
       // nothing is held and nothing found
-      if held { tokens.push(u32.from(buf[ib - 1usize])); }
+      if held { tokens.push(u32.from(buf[ib - 1usize])); countLit(lf, buf[ib - 1usize]); }
       if newLen == 0usize {
         tokens.push(u32.from(buf[ib]));
+        countLit(lf, buf[ib]);
         *cur = i + 1i64;
       } else if newLen >= 128usize {
         tokens.push(0x80000000u32 | (u32.from(newLen) << 16u32) | u32.from(bestDist));
+        countMatch(lf, df, newLen, bestDist);
         let end = i + i64.from(newLen);
         var p = i + 1i64;
         while p < end {
@@ -341,6 +346,9 @@ pub struct Deflater {
   head: List[i64];
   prev: List[i64];
   tokens: List[u32];
+  // The literal/length and distance symbol counts of the tokens gathered (levels 2 to 9)
+  lf: List[u32];
+  df: List[u32];
   // Levels 4 to 9: the lazy matcher's held match, found at position cur - 1
   // (length 0 for none) and not yet written
   savedLen: usize;
@@ -382,10 +390,19 @@ pub struct Deflater {
       var i = 0usize;
       while i < 32768usize { head.push(-1i64); prev.push(-1i64); i += 1usize; }
     }
+    var lf = List[u32]();
+    var df = List[u32]();
+    if lv > 1 {
+      var j = 0usize;
+      while j < 286usize { lf.push(0u32); j += 1usize; }
+      j = 0usize;
+      while j < 30usize { df.push(0u32); j += 1usize; }
+      lf.set(256usize, 1u32);
+    }
     let table = if format == Format.Gzip {Crc32.make()} else {Crc32(List[u32]())};
     var gz = GzipHeader.plain();
     gz.xfl = xflOf(lv);
-    Deflater(format, lv, List[u8](), 0i64, 0i64, head, prev, List[u32](), 0usize, 0usize,
+    Deflater(format, lv, List[u8](), 0i64, 0i64, head, prev, List[u32](), lf, df, 0usize, 0usize,
       BitWriter(streams.Writer.tryEmpty(65536usize), 0u64, 0u32), false, false, DeflateError.make(ErrorKind.TooLarge, 0u64, ""), false, false, false,
       Code(List[u8](), List[u32]()), Code(List[u8](), List[u32]()), false,
       Adler32.start(), table, 0u32, 0u64, gz, 0u64)
@@ -508,10 +525,10 @@ pub struct Deflater {
     self.slide();
     if level == 0 { return self.stepStored(); }
     let full = if level >= 4 {
-      lzScanLazy(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level), &mut savedLen, &mut savedDist,
+      lzScanLazy(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, &mut lf, &mut df, chainLimitOf(level), &mut savedLen, &mut savedDist,
         blockTokens(), finishing)
     } else {
-      lzScan(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level), level > 1,
+      lzScan(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, &mut lf, &mut df, chainLimitOf(level), level > 1,
         if level == 1 {fixedFlushTokens()} else {blockTokens()}, finishing)
     };
     if full {
@@ -587,7 +604,8 @@ pub struct Deflater {
       }
       writeTokenCodes(&mut bw, tokens.view(), 0usize, tokens.len(), &fixLit, &fixDist);
     } else {
-      writeDynamicBlock(&mut bw, tokens.view(), 0usize, tokens.len(), false);
+      writeDynamicBlock(&mut bw, tokens.view(), 0usize, tokens.len(), false, lf.view(), df.view());
+      resetCounts(&mut lf, &mut df);
     }
     tokens.clear();
   }
@@ -603,7 +621,7 @@ pub struct Deflater {
       }
       writeTokens(&mut bw, tokens.view(), 0usize, tokens.len(), &fixLit, &fixDist);
     } else {
-      writeDynamicBlock(&mut bw, tokens.view(), 0usize, tokens.len(), true);
+      writeDynamicBlock(&mut bw, tokens.view(), 0usize, tokens.len(), true, lf.view(), df.view());
     }
     tokens.clear();
     self.finishTrailer();

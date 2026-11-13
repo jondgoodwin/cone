@@ -221,6 +221,28 @@ fn distSymbol(d: usize) usize {
   s
 }
 
+// Count a token's symbols as the matcher records it (the block's histogram)
+fn countLit(lf: &mut List[u32], b: u8) inline {
+  let k = usize.from(b);
+  lf.set(k, *lf[k] + 1u32);
+}
+
+fn countMatch(lf: &mut List[u32], df: &mut List[u32], len: usize, dist: usize) inline {
+  let ls = 257usize + lengthSymbol(len);
+  lf.set(ls, *lf[ls] + 1u32);
+  let ds = distSymbol(dist);
+  df.set(ds, *df[ds] + 1u32);
+}
+
+// Zero the counts for the next block (256, end of block, counts once)
+fn resetCounts(lf: &mut List[u32], df: &mut List[u32]) {
+  var i = 0usize;
+  while i < 286usize { lf.set(i, 0u32); i += 1usize; }
+  i = 0usize;
+  while i < 30usize { df.set(i, 0u32); i += 1usize; }
+  lf.set(256usize, 1u32);
+}
+
 fn hash3(d: &Array[u8], i: usize) usize {
   usize.from(((u32.from(d[i]) << 10u32) ^ (u32.from(d[i + 1usize]) << 5u32) ^ u32.from(d[i + 2usize])) & 32767u32)
 }
@@ -303,29 +325,10 @@ fn fixedCodes(lit: &mut Code, dist: &mut Code) {
 }
 
 // A dynamic block of tokens [from, to)
-fn writeDynamicBlock(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usize, last: bool) {
-  var lf = List[u32]();
+fn writeDynamicBlock(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usize, last: bool, lf: &Array[u32], df: &Array[u32]) {
   var i = 0usize;
-  while i < 286usize { lf.push(0u32); i += 1usize; }
-  var df = List[u32]();
-  i = 0usize;
-  while i < 30usize { df.push(0u32); i += 1usize; }
-  lf.set(256usize, 1u32);
-  i = from;
-  while i < to {
-    let t = tokens[i];
-    if (t & 0x80000000u32) == 0u32 {
-      lf.set(usize.from(t), *lf[usize.from(t)] + 1u32);
-    } else {
-      let ls = 257usize + lengthSymbol(usize.from((t >> 16u32) & 0x7FFFu32));
-      lf.set(ls, *lf[ls] + 1u32);
-      let ds = distSymbol(usize.from(t & 0xFFFFu32));
-      df.set(ds, *df[ds] + 1u32);
-    }
-    i += 1usize;
-  }
-  let lit = makeCode(huffmanLengths(lf.view(), 286usize, 15u8));
-  let dist = makeCode(huffmanLengths(df.view(), 30usize, 15u8));
+  let lit = makeCode(huffmanLengths(lf, 286usize, 15u8));
+  let dist = makeCode(huffmanLengths(df, 30usize, 15u8));
   // Trim trailing unused lengths (at least 257 literal/length, 1 distance)
   var nlen = 286usize;
   while nlen > 257usize && *lit.lens[nlen - 1usize] == 0u8 { nlen -= 1usize; }
