@@ -668,7 +668,7 @@ class Scenarios(unittest.TestCase):
 
             import stdio;
 
-            pub var count: i64 = 3i64;
+            pub var @threadlocal count: i64 = 3i64;
 
             pub fn hello(n: i64) {
               stdio.print <- "greet ";
