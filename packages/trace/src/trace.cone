@@ -1276,8 +1276,8 @@ fn textOfMessage overload textOf(m: &Message) &str {m.text()}
 
 // A call site's storage, zeroed by the compiler: its kind is made when its first event is on
 pub struct Site {
-  ready: u32;                               // atomic: 0 not made, 1 being made, 2 made
-  info: Info;
+  ready: Atomic[u32];                       // 0 not made, 1 being made, 2 made
+  info: Atomic[usize];                      // the kind's Info, made once on the heap, set before ready is 2
 }
 
 pub struct Log {
@@ -1486,7 +1486,7 @@ pub struct LogRecord is DebugText {
     if mem.atomicLoad[u32](&(*site).ready as *u32, MemOrder.Acquire) != 2u32 {
       self.makeKind();
     }
-    let k = &(*site).info;
+    let k = (*site).info.loadOrdered(MemOrder.Relaxed) as *Info as &Info;
     let bits = k.state.loadOrdered(MemOrder.Acquire);
     if bits == stateOff || bits == stateNew {
       return;
@@ -1548,8 +1548,13 @@ pub struct LogRecord is DebugText {
     if n > 4usize {
       n = 4usize;
     }
-    (*site).info = makeInfo(name, (*self.log).info.target, (*self.log).info.level, u32.from(n), names, types);
-    register(&(*site).info);
+    let ip = RawBlocks.alloc(mem.sizeof[Info](), 16usize);
+    if ip == null {
+      panic("trace: out of memory");
+    }
+    *(ip as *Info) = makeInfo(name, (*self.log).info.target, (*self.log).info.level, u32.from(n), names, types);
+    (*site).info.storeOrdered(ip as usize, MemOrder.Relaxed);
+    register(ip as *Info as &Info);
     mem.atomicStore[u32](&(*site).ready as *u32, 2u32, MemOrder.Release);
   }
 }
