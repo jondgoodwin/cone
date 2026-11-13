@@ -1,0 +1,103 @@
+// Text wrappers: quoted (escapes, empty, numbers, multibyte, nested in pad), join
+// (empty, one, many, empty separator, items that write nothing, a list of numbers and
+// of strings, hex items, debug form) and grouped (zero, 999, 1000, signs, i64.min,
+// u64.max, floats, fixed, nan, a size and separator, inside pad). Each expected text
+// is worked out by hand: quoted writes a string's debug form of the item's text; join
+// writes the items with the separator between; grouped puts the separator before every
+// third digit counted from the right end of the first digit run.
+
+mod text;
+
+import testing use *;
+import collections use String, List;
+import format use *;
+
+// A value of my own: writes nothing
+struct Nil {
+  pub fn toText(self: &, out: &uni TextOut) { }
+  pub fn toDebug(self: &, out: &uni TextOut) { }
+}
+
+fn chk(got: &String, want: &Array[u8], label: &Array[u8]) {
+  expectStr(got.view(), want, label);
+}
+
+fn main() i32 {
+  var s = String();
+
+  // ---- quoted ----
+  s <- quoted("ab"); chk(&s, "\"ab\"", "quoted text"); s.clear();
+  s <- quoted(""); chk(&s, "\"\"", "quoted empty"); s.clear();
+  s <- quoted("a\"b\\c"); chk(&s, "\"a\\\"b\\\\c\"", "quoted quote and backslash"); s.clear();
+  s <- quoted("a\nb\rc\td"); chk(&s, "\"a\\nb\\rc\\td\"", "quoted newline, return, tab"); s.clear();
+  s <- quoted("a\x01b\x7f"); chk(&s, "\"a\\x01b\\x7f\"", "quoted control bytes"); s.clear();
+  s <- quoted("é中"); chk(&s, "\"é中\"", "quoted multibyte whole"); s.clear();
+  s <- quoted(12); chk(&s, "\"12\"", "quoted number is its text"); s.clear();
+  s <- quoted('x'); chk(&s, "\"x\"", "quoted char"); s.clear();
+  s <- quoted(0.1); chk(&s, "\"0.1\"", "quoted float"); s.clear();
+  s <- quoted(hex(255u8)); chk(&s, "\"ff\"", "quoted hex"); s.clear();
+  s <- quoted(Nil()); chk(&s, "\"\"", "quoted a type that writes nothing"); s.clear();
+  s <- pad(quoted("ab"), 6); chk(&s, "\"ab\"  ", "pad around quoted"); s.clear();
+  s <- quoted(pad("ab", 4)); chk(&s, "\"ab  \"", "quoted around pad"); s.clear();
+  s <- "x=", quoted("v"), "!"; chk(&s, "x=\"v\"!", "quoted in a send"); s.clear();
+
+  // ---- join ----
+  var nums = List[i32]();
+  s <- join(&nums, ", "); chk(&s, "", "join empty"); s.clear();
+  nums.push(7);
+  s <- join(&nums, ", "); chk(&s, "7", "join one item, no separator"); s.clear();
+  nums.push(8); nums.push(9);
+  s <- join(&nums, ", "); chk(&s, "7, 8, 9", "join many"); s.clear();
+  s <- join(&nums, ""); chk(&s, "789", "join empty separator"); s.clear();
+  s <- "[", join(&nums, "|"), "]"; chk(&s, "[7|8|9]", "join in a send"); s.clear();
+  s <- pad(join(&nums, ","), 8, Align.right); chk(&s, "   7,8,9", "pad around join"); s.clear();
+  s <- join(&nums, ", "); s <- "/"; s <- join(&nums, ";"); chk(&s, "7, 8, 9/7;8;9", "join twice over one list"); s.clear();
+
+  var names = List[String]();
+  names.push(String.from("a")); names.push(String.from("b\"c"));
+  s <- join(&names, ", "); chk(&s, "a, b\"c", "join strings, text form"); s.clear();
+  var d = String();
+  d <- toDebug(&join(&names, ", ")); chk(&d, "\"a\", \"b\\\"c\"", "join debug form, bare list body"); d.clear();
+
+  var hexes = List[RadixText]();
+  hexes.push(hex(10u8)); hexes.push(hex(255u8));
+  s <- join(&hexes, ":"); chk(&s, "a:ff", "join of hex items"); s.clear();
+
+  var nils = List[Nil]();
+  nils.push(Nil()); nils.push(Nil()); nils.push(Nil());
+  s <- join(&nils, "-"); chk(&s, "--", "join items that write nothing keeps separators"); s.clear();
+
+  // ---- grouped ----
+  s <- grouped(0); chk(&s, "0", "grouped 0"); s.clear();
+  s <- grouped(999); chk(&s, "999", "grouped 999"); s.clear();
+  s <- grouped(1000); chk(&s, "1,000", "grouped 1000"); s.clear();
+  s <- grouped(1234567); chk(&s, "1,234,567", "grouped 1234567"); s.clear();
+  s <- grouped(-1234567); chk(&s, "-1,234,567", "grouped negative"); s.clear();
+  s <- grouped(-123); chk(&s, "-123", "grouped negative, no group"); s.clear();
+  s <- grouped(-1000); chk(&s, "-1,000", "grouped -1000"); s.clear();
+  s <- grouped(signed(1234)); chk(&s, "+1,234", "grouped signed"); s.clear();
+  s <- grouped(-9223372036854775807i64 - 1i64); chk(&s, "-9,223,372,036,854,775,808", "grouped i64.min"); s.clear();
+  s <- grouped(18446744073709551615u64); chk(&s, "18,446,744,073,709,551,615", "grouped u64.max"); s.clear();
+  s <- grouped(fixed(1234567.891, 2)); chk(&s, "1,234,567.89", "grouped fixed"); s.clear();
+  s <- grouped(fixed(0.5, 2)); chk(&s, "0.50", "grouped fixed below one"); s.clear();
+  s <- grouped(fixed(-1234.5, 1)); chk(&s, "-1,234.5", "grouped negative fixed"); s.clear();
+  s <- grouped(fixed(1234.56789, 5)); chk(&s, "1,234.56789", "fraction left alone"); s.clear();
+  s <- grouped(1234.5); chk(&s, "1,234.5", "grouped default float"); s.clear();
+  s <- grouped(sci(1234.5, 2)); chk(&s, "1.23e+03", "grouped exponent text left alone"); s.clear();
+  let z = 0.0;
+  s <- grouped(z / z); chk(&s, "nan", "grouped nan"); s.clear();
+  s <- grouped(1.0 / z); chk(&s, "inf", "grouped inf"); s.clear();
+  s <- grouped(0.0 - 1.0 / z); chk(&s, "-inf", "grouped -inf"); s.clear();
+  s <- grouped("12345"); chk(&s, "12,345", "grouped text of digits"); s.clear();
+  s <- grouped(""); chk(&s, "", "grouped empty text"); s.clear();
+  s <- grouped(1234567, '.'); chk(&s, "1.234.567", "grouped with another separator"); s.clear();
+  s <- grouped(1234567, ' ', 2usize); chk(&s, "1 23 45 67", "grouped size 2"); s.clear();
+  s <- grouped(1234567, '\'', 4usize); chk(&s, "123'4567", "grouped size 4"); s.clear();
+  s <- grouped(12, ',', 0usize); chk(&s, "12", "grouped size 0 groups nothing"); s.clear();
+  s <- pad(grouped(1234567), 12, Align.right); chk(&s, "   1,234,567", "pad around grouped"); s.clear();
+  s <- pad(grouped(1234567), 11); chk(&s, "1,234,567  ", "pad left around grouped"); s.clear();
+  s <- quoted(grouped(1234)); chk(&s, "\"1,234\"", "quoted around grouped"); s.clear();
+  s <- join(&nums, " "), "|", grouped(1000000); chk(&s, "7 8 9|1,000,000", "join and grouped in one send"); s.clear();
+
+  return done();
+}
