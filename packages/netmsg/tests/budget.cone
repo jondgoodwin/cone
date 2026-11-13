@@ -7,7 +7,11 @@ mod budget;
 import testing use *;
 import collections use *;
 import time use Duration, Instant, Clock;
+import iobuf use IoBuf, Bytes;
 import netmsg use *;
+
+// A copy of some bytes, frozen: what the core takes to send
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
 
 fn filled(n: usize, b: u8) List[u8] {
   var d = List[u8]();
@@ -57,11 +61,11 @@ fn main() i32 {
   // The largest message that fits one packet, and one byte more
   expectUInt(u64.from(p.a.maxReliable()), 1173u64, "1200 less 23 of header and 4 of the message's own");
   expectUInt(u64.from(p.a.maxLatest()), 1171u64, "and 6 of the value's own");
-  expect(p.a.sendReliable(filled(1173usize, 7u8).view()), "a reliable message of the largest size");
-  expect(!p.a.sendReliable(filled(1174usize, 7u8).view()), "one byte more is refused");
-  expect(p.a.sendReliable(filled(0usize, 0u8).view()), "an empty message is a message");
-  expect(p.a.sendLatest(1u16, filled(1171usize, 7u8).view()), "a value of the largest size");
-  expect(!p.a.sendLatest(1u16, filled(1172usize, 7u8).view()), "one byte more is refused");
+  expect(p.a.sendReliable(fz(filled(1173usize, 7u8).view())), "a reliable message of the largest size");
+  expect(!p.a.sendReliable(fz(filled(1174usize, 7u8).view())), "one byte more is refused");
+  expect(p.a.sendReliable(fz(filled(0usize, 0u8).view())), "an empty message is a message");
+  expect(p.a.sendLatest(1u16, fz(filled(1171usize, 7u8).view())), "a value of the largest size");
+  expect(!p.a.sendLatest(1u16, fz(filled(1172usize, 7u8).view())), "one byte more is refused");
 
   // Reliable messages go first. The first fills a packet; the empty one and the
   // value are too much for the second (27 + 1177 > 1200), so the value gets the third
@@ -86,8 +90,8 @@ fn main() i32 {
   let base2 = got.s2;
   var i = 0u32;
   while i < 220u32 {
-    p.a.sendLatest(1u16, filled(700usize, 1u8).view());
-    p.a.sendLatest(2u16, filled(700usize, 2u8).view());
+    p.a.sendLatest(1u16, fz(filled(700usize, 1u8).view()));
+    p.a.sendLatest(2u16, fz(filled(700usize, 2u8).view()));
     go(&mut p, &mut clock, 34i64, &mut got);
     i = i + 1u32;
   }
@@ -103,7 +107,7 @@ fn main() i32 {
   var ok = 0u32;
   var s = 0u16;
   while s < 70u16 {
-    if q.a.sendLatest(100u16 + s, filled(1usize, 1u8).view()) {ok = ok + 1u32;}
+    if q.a.sendLatest(100u16 + s, fz(filled(1usize, 1u8).view())) {ok = ok + 1u32;}
     s = s + 1u16;
   }
   expectUInt(u64.from(ok), 64u64, "a connection carries 64 streams");
@@ -115,7 +119,7 @@ fn main() i32 {
   var queued = 0u32;
   var n = 0u32;
   while n < 1100u32 {
-    if w.a.sendReliable(filled(10usize, 9u8).view()) {queued = queued + 1u32;}
+    if w.a.sendReliable(fz(filled(10usize, 9u8).view())) {queued = queued + 1u32;}
     n = n + 1u32;
   }
   expectUInt(u64.from(queued), 1024u64, "1024 reliable messages wait, no more");
@@ -131,6 +135,6 @@ fn main() i32 {
   expectUInt(recovered.reliable, 1024u64, "all 1024 arrived once the link was back");
   go(&mut w, &mut clock, 500i64, &mut recovered);
   go(&mut w, &mut clock, 500i64, &mut recovered);
-  expect(w.a.sendReliable(filled(10usize, 9u8).view()), "and there is room again");
+  expect(w.a.sendReliable(fz(filled(10usize, 9u8).view())), "and there is room again");
   done()
 }

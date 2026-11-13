@@ -13,6 +13,11 @@
  * still whole with respect to every other record), and a function to run at
  * exit, when what waits is written.
  *
+ * Standard input's raw read is here too, 'cone_stdinRead': the bytes of the next read, as UTF-8 on a console and
+ * as they are anywhere else (stdin's own section below says how), and the lock that keeps one thread's use of
+ * the buffer whole (conestd's stdio.cone holds the buffer). It never takes the console's lock above: a read
+ * that blocks must not stop printing.
+ *
  * No function reports a failure: a write that fails is dropped, as the C
  * library's would have been for output nobody reads. ONE RULE, for standard
  * output alone: a write to descriptor 1 that fails because the reader has gone
@@ -32,6 +37,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <errno.h>
 
 // Standard output's reader has gone: end the program now and quietly (the header: ONE RULE). Not 'exit': what waits to be
@@ -73,6 +79,82 @@ void cone_consoleWrite(int fd, const uint8_t *p, size_t n) {
 void cone_consoleWriteParts(int fd, const size_t *parts, size_t count) {
     for (size_t i = 0; i < count; ++i)
         cone_consoleWrite(fd, (const uint8_t *)parts[2 * i], parts[2 * i + 1]);
+}
+
+// ---- Standard input (the header above) ----------------------------------------------------------------
+static SRWLOCK stdinLock = SRWLOCK_INIT;
+void cone_stdinLock(void) { AcquireSRWLockExclusive(&stdinLock); }
+void cone_stdinUnlock(void) { ReleaseSRWLockExclusive(&stdinLock); }
+
+// A console's reads are made in UTF-16 (ReadConsoleW, which gives the text exactly whatever the console's code page:
+// ReadFile on a console in a legacy code page turns a letter its page lacks into another) and given on as UTF-8. What
+// one read gave and the caller's room did not take stays here, and so does a high surrogate that ended a read, until
+// its low half arrives
+static uint8_t conLeft[16384];
+static size_t conLeftPos = 0, conLeftLen = 0;
+static WCHAR conHigh = 0;
+static int conHasHigh = 0;
+
+static int64_t stdinConsole(HANDLE h, uint8_t *buf, size_t n) {
+    while (conLeftPos == conLeftLen) {
+        WCHAR w[4096];
+        size_t have = 0;
+        DWORD got = 0;
+        if (conHasHigh) {
+            w[0] = conHigh;
+            have = 1;
+            conHasHigh = 0;
+        }
+        if (!ReadConsoleW(h, w + have, (DWORD)(4096 - have), &got, NULL))
+            return -(int64_t)GetLastError();
+        have += got;
+        if (got > 0 && have > 0 && w[have - 1] >= 0xD800 && w[have - 1] <= 0xDBFF) {
+            // A pair cut between reads: hold the first half back for the next read
+            conHigh = w[have - 1];
+            conHasHigh = 1;
+            have--;
+        }
+        if (have > 0) {
+            // 4096 units are at most 12288 bytes of UTF-8, which conLeft holds
+            int len = WideCharToMultiByte(CP_UTF8, 0, w, (int)have, (LPSTR)conLeft, (int)sizeof conLeft, NULL, NULL);
+            if (len <= 0)
+                return -(int64_t)GetLastError();
+            conLeftPos = 0;
+            conLeftLen = (size_t)len;
+        }
+        else if (got == 0)
+            return 0;
+    }
+    size_t take = conLeftLen - conLeftPos;
+    if (take > n)
+        take = n;
+    memcpy(buf, conLeft + conLeftPos, take);
+    conLeftPos += take;
+    return (int64_t)take;
+}
+
+// Up to n bytes of standard input, waiting for at least one: how many (0 at the end of the input), or the system's
+// error number made negative. On a console, ReadConsoleW and UTF-8; otherwise (a pipe, a redirected file) ReadFile on
+// the handle, which the C runtime's text mode (a '\r' dropped, a 0x1A that ends the input) never sees. Nothing sets a
+// mode. A broken pipe is the end of the input.
+int64_t cone_stdinRead(uint8_t *buf, size_t n) {
+    if (n == 0)
+        return 0;
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    if (h == NULL || h == INVALID_HANDLE_VALUE)
+        return -(int64_t)ERROR_INVALID_HANDLE;
+    DWORD mode;
+    if (GetConsoleMode(h, &mode))
+        return stdinConsole(h, buf, n);
+    DWORD got = 0;
+    DWORD want = n > 0x40000000u ? 0x40000000u : (DWORD)n;
+    if (!ReadFile(h, buf, want, &got, NULL)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_BROKEN_PIPE || err == ERROR_HANDLE_EOF)
+            return 0;
+        return -(int64_t)err;
+    }
+    return (int64_t)got;
 }
 #else
 #include <errno.h>
@@ -137,6 +219,27 @@ void cone_consoleWriteParts(int fd, const size_t *parts, size_t count) {
         }
         parts += 2 * batch;
         count -= batch;
+    }
+}
+
+// ---- Standard input (the header above) ----------------------------------------------------------------
+static pthread_mutex_t stdinLock = PTHREAD_MUTEX_INITIALIZER;
+void cone_stdinLock(void) { pthread_mutex_lock(&stdinLock); }
+void cone_stdinUnlock(void) { pthread_mutex_unlock(&stdinLock); }
+
+// Up to n bytes of standard input, waiting for at least one: how many (0 at the end of the input), or the errno made
+// negative. read(0), again after a signal
+int64_t cone_stdinRead(uint8_t *buf, size_t n) {
+    if (n == 0)
+        return 0;
+    if (n > 0x40000000u)
+        n = 0x40000000u;
+    for (;;) {
+        ssize_t got = read(0, buf, n);
+        if (got >= 0)
+            return (int64_t)got;
+        if (errno != EINTR)
+            return -(int64_t)errno;
     }
 }
 #endif
