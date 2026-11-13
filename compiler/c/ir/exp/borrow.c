@@ -581,6 +581,18 @@ static int borrowLocalLendsUni(INode *lval, INode *lvalperm, uint16_t scope, INo
 void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
 
+    // '&uni ps[i]' over a row of a type declaring SoaLayout: the row is split into columns
+    if (!(node->flags & FlagSuffix) && fnCallSoaRowBorrow(node->vtexp)) {
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
+    // '&uni ps[i].f' is '&uni ps.f[i]': the field of the row, lowered to the column's element
+    // before the borrow of an index is reassociated below
+    if (!(node->flags & FlagSuffix) && fnCallSoaFieldLower(&node->vtexp) < 0) {
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
+
     if (borrowReassocIndex(node)) {
         FnCallNode *index = (FnCallNode*)node->vtexp;
         node->vtexp = index->objfn;

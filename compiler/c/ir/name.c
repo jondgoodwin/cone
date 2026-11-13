@@ -134,6 +134,7 @@ Name *gcTraceElementsTraitName;
 Name *gcTraceElementsMethodName;
 Name *visitMethodName;
 Name *atomicValueTraitName;
+Name *soaLayoutTraitName;
 Name *integerTraitName;
 Name *floatTraitName;
 Name *signedTraitName;
