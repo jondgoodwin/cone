@@ -2518,8 +2518,15 @@ INode *lifeBrandsToUse(INode *type, INode *use) {
         Name *bound = lifePairFind(bind.from, bind.to, bind.cnt, decl.names[i]);
         if (bound && bound != given.names[i])
             return type;
-        if (bound == NULL)
+        if (bound == NULL) {
+            // Not one-to-one: unreachable after canonicalization, but it would merge two brands
+            // the instance holds apart, and today's refusal is the safe answer
+            for (uint32_t k = 0; k < bind.cnt; ++k) {
+                if (bind.to[k] == given.names[i])
+                    return type;
+            }
             lifePairAdd(&bind.from, &bind.to, &bind.cnt, &bind.cap, decl.names[i], given.names[i]);
+        }
         if (decl.names[i] != given.names[i])
             differs = 1;
     }
