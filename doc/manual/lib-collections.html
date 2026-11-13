@@ -471,8 +471,8 @@ fn main() {
 		one at a time keeps them the same length; when the list dies and <span class="pre">T</span> has something to finalize, each row is built whole again from its columns, first to last, and dropped, so <span class="pre">T</span>'s own <span class="pre">final</span> runs once for it, then each field's (the fields must be ones the list's module may give a value to, so a private field of an <span class="pre">@reflect</span> type is refused there, with <span class="pre">ErrorFieldsRebuild</span> naming the field); a <span class="pre">T</span> with nothing to finalize costs nothing extra. <span class="pre">len</span>
 		is the length of the columns and <span class="pre">isEmpty</span> is a list's. A field of
 		<span class="pre">T</span> named <span class="pre">push</span>, <span class="pre">get</span>,
-		<span class="pre">len</span>, <span class="pre">isEmpty</span>, <span class="pre">remove</span> or
-		<span class="pre">swapRemove</span> clashes with the method of that name and is
+		<span class="pre">len</span>, <span class="pre">isEmpty</span>, <span class="pre">remove</span>,
+		<span class="pre">swapRemove</span>, <span class="pre">rowAt</span> or <span class="pre">setRowAt</span> clashes with the method of that name and is
 		refused (<span class="pre">ErrorMetaGenClash</span>, naming the field and <span class="pre">T</span>). A push can move the blocks, so a column borrowed before it is stale after.</p>
 	<p><span class="pre">remove(i)</span> and <span class="pre">swapRemove(i)</span> take row <span class="pre">i</span> out
 		whole, as a list's do (<span class="pre">remove</span> closes the gap in order, <span class="pre">swapRemove</span>
@@ -481,8 +481,20 @@ fn main() {
 		column's value, and the caller owns it. <span class="pre">SoaList[T]</span> is <span class="pre">Sendable</span>
 		where <span class="pre">T</span> is, and <span class="pre">SoaList[T](region)</span>, or one made in an arena,
 		gives each column its blocks from the region.</p>
-	<p><i>Not built:</i> <span class="pre">ps[i].pos</span> as a place and the layout marker the compiler would
-		recognise it by, and a borrowed slice of rows.</p>
+	<p><span class="pre">SoaList</span> declares the built-in marker <span class="pre">SoaLayout</span>, and the
+		compiler makes a row of such a type a place: <span class="pre">ps[i].pos</span> is the element
+		<span class="pre">ps.pos[i]</span> of the column, so it reads, assigns, <span class="pre">+=</span>s,
+		<span class="pre">++</span>s and borrows (<span class="pre">&amp;uni ps[i].pos</span>) as that element does, with
+		the column's own borrow rules, and <span class="pre">ps[i].pos.x += 1</span> reaches into it. A name that is no
+		column is refused (<span class="pre">ErrorSoaNoColumn</span>, naming <span class="pre">T</span>). Where
+		<span class="pre">T</span> is <span class="pre">Copy</span>, a whole row is read as <span class="pre">ps[i]</span>
+		(<span class="pre">ps.rowAt(i)</span>, a program error past the end) and written as
+		<span class="pre">ps[i] = r</span> (<span class="pre">ps.setRowAt(i, r)</span>). A whole row cannot be
+		borrowed, being split into columns: <span class="pre">&amp;ps[i]</span>, <span class="pre">&amp;mut ps[i]</span> and
+		<span class="pre">&amp;uni ps[i]</span> are refused (<span class="pre">ErrorSoaRowBorrow</span>), and the form
+		to write is <span class="pre">&amp;uni ps.pos[i]</span>. The list's receiver must be a variable, or a field of
+		one, whose type is known where the index is checked.</p>
+	<p><i>Not built:</i> a borrowed slice of rows.</p>
 
 	<h2 id="string">String</h2>
 	<p><span class="pre">String</span> is the growable string: a list of bytes, lent as text,
