@@ -1,0 +1,225 @@
+// Reading: RFC 4180's own example, line ends (CRLF, bare LF, a last record with
+// none, a lone CR kept), quoted fields holding the delimiter, line ends and
+// quotes, "" unescaped, empty fields and empty lines, the byte-order mark, a
+// tab delimiter, skipEmptyLines, the header option, the free field count,
+// record and line numbers, wasQuoted, the '[]' index, and the C2 shape:
+// 'next' answering a borrowed Record the loop reads and lets go.
+
+mod reading;
+
+import testing use *;
+import collections use *;
+import csv;
+
+// Every record of text as 'a|b|c', records joined by '/', or the error's line
+fn flat(text: &str) String { flatWith(text, &csv.Options.standard()) }
+
+fn flatWith(text: &str, opts: &csv.Options) String {
+  var out = String();
+  var r = csv.readerWith(text, opts);
+  var first = true;
+  while true {
+    match r.next() {
+      case let Ok(o) {
+        match o {
+          case let Some(rec) {
+            if !first { out.append("/"); }
+            first = false;
+            var i = 0usize;
+            while i < rec.len() {
+              if i > 0usize { out.append("|"); }
+              out.append(fld(rec, i));
+              i = i + 1usize;
+            }
+          }
+          case is None { break; }
+        }
+      }
+      case let Err(e) {
+        out.append(" ERROR ");
+        out.append(e.reason.view());
+        return out;
+      }
+    }
+  }
+  out
+}
+
+fn main() i32 {
+  // -------- RFC 4180, section 2's examples --------
+  expectStr(flat("aaa,bbb,ccc\r\nzzz,yyy,xxx\r\n").view(), "aaa|bbb|ccc/zzz|yyy|xxx", "2.1 CRLF after every record");
+  expectStr(flat("aaa,bbb,ccc\r\nzzz,yyy,xxx").view(), "aaa|bbb|ccc/zzz|yyy|xxx", "2.2 the last record needs no line end");
+  expectStr(flat("field_name,field_name,field_name\r\naaa,bbb,ccc\r\nzzz,yyy,xxx\r\n").view(),
+            "field_name|field_name|field_name/aaa|bbb|ccc/zzz|yyy|xxx", "2.3 a header is a record");
+  expectStr(flat("\"aaa\",\"bbb\",\"ccc\"\r\nzzz,yyy,xxx").view(), "aaa|bbb|ccc/zzz|yyy|xxx", "2.5 quoted fields");
+  expectStr(flat("\"aaa\",\"b\r\nbb\",\"ccc\"\r\nzzz,yyy,xxx").view(), "aaa|b\r\nbb|ccc/zzz|yyy|xxx", "2.6 a quoted field holds CRLF");
+  expectStr(flat("\"aaa\",\"b\"\"bb\",\"ccc\"").view(), "aaa|b\"bb|ccc", "2.7 a doubled quote is one quote");
+
+  // -------- line ends --------
+  expectStr(flat("a,b\nc,d\n").view(), "a|b/c|d", "a bare LF ends a record");
+  expectStr(flat("a,b\nc,d\r\ne,f").view(), "a|b/c|d/e|f", "LF and CRLF mixed");
+  expectStr(flat("a\rb,c").view(), "a\rb|c", "a lone CR is part of the field");
+  expectStr(flat("a,b\r\n\r\n").view(), "a|b ERROR the record has 1 fields, the first had 2", "an empty line is a record of one empty field, so locked refuses it");
+
+  // -------- empty fields and lines --------
+  expectStr(flat(",,\r\n,,").view(), "||/||", "empty fields");
+  expectStr(flat("a,\r\n,b").view(), "a|/|b", "an empty field at either end");
+  expectStr(flat("a,b,\r\n").view(), "a|b|", "a trailing delimiter is an empty field");
+  expectStr(flat("").view(), "", "an empty text has no records");
+  expectStr(flat("\"\"").view(), "", "a quoted empty field alone is one empty field");
+  expectStr(flatWith("a\n\nb\n", &csvFree()).view(), "a//b", "an empty line between records of one field");
+  var skip = csv.Options.standard();
+  skip.skipEmptyLines = true;
+  expectStr(flatWith("a\n\n\r\nb\n", &skip).view(), "a/b", "skipEmptyLines drops empty lines");
+
+  // -------- quoting --------
+  expectStr(flat("\"a,b\",c").view(), "a,b|c", "a quoted field holds the delimiter");
+  expectStr(flat("\"a\nb\",c").view(), "a\nb|c", "a quoted field holds LF");
+  expectStr(flat("\"\"\"\",x").view(), "\"|x", "a field of one quote");
+  expectStr(flat("\"a\"\"\"\"b\",x").view(), "a\"\"b|x", "two doubled quotes");
+  expectStr(flat("\"\"\"a\"\"\",x").view(), "\"a\"|x", "quotes at both ends");
+  expectStr(flat("\"\",x").view(), "|x", "a quoted empty field");
+  expectStr(flat("a b, c ,\"d\"").view(), "a b| c |d", "spaces are kept");
+
+  // -------- byte-order mark, tabs, UTF-8 --------
+  expectStr(flat("\xEF\xBB\xBFa,b").view(), "a|b", "a leading byte-order mark is passed over");
+  expectStr(flatWith("a,b\tc\t\"d\te\"\n", &csv.Options.tabs()).view(), "a,b|c|d\te", "a tab delimiter");
+  expectStr(flat("h\xC3\xA9llo,\xE4\xB8\x96\xE7\x95\x8C").view(), "h\xC3\xA9llo|\xE4\xB8\x96\xE7\x95\x8C", "multi-byte characters");
+
+  // -------- field count --------
+  expectStr(flat("a,b\r\nc,d,e").view(), "a|b ERROR the record has 3 fields, the first had 2", "locked: a longer record");
+  expectStr(flat("a,b\r\nc").view(), "a|b ERROR the record has 1 fields, the first had 2", "locked: a shorter record");
+  expectStr(flatWith("a,b\r\nc,d,e\r\nf", &csvFree()).view(), "a|b/c|d|e/f", "free: records differ");
+
+  // -------- the Record --------
+  let free = csvFree();
+  var r = csv.readerWith("a,\"b\"\"c\",\"d\"\r\n\"x\ny\",z,w\r\n\r", &free);
+  match r.next() {
+    case let Ok(o) {
+      match o {
+        case let Some(rec) {
+          expectUInt(u64.from(rec.len()), 3u64, "record 1 length");
+          expectUInt(u64.from(rec.number()), 1u64, "record 1 number");
+          expectUInt(u64.from(rec.line()), 1u64, "record 1 line");
+          expect(!rec.wasQuoted(0usize), "an unquoted field");
+          expect(rec.wasQuoted(1usize), "a quoted field with an escape");
+          expect(rec.wasQuoted(2usize), "a quoted field without");
+          expect(!rec.wasQuoted(3usize), "past the end");
+          match rec.get(1usize) {
+            case let Some(f) { expectStr(f, "b\"c", "get of an unescaped field"); }
+            case is None { expect(false, "get 1"); }
+          }
+          expect(!rec.get(3usize).isTrue(), "get past the end is None");
+          let owned = rec.toList();
+          expectUInt(u64.from(owned.len()), 3u64, "toList length");
+          expectStr(owned[1usize].view(), "b\"c", "toList keeps the unescaped text");
+        }
+        case is None { expect(false, "record 1"); }
+      }
+    }
+    case is Err { expect(false, "record 1 error"); }
+  }
+  expectUInt(u64.from(r.line()), 2u64, "the reader is at line 2");
+  match r.next() {
+    case let Ok(o) {
+      match o {
+        case let Some(rec) {
+          expectUInt(u64.from(rec.number()), 2u64, "record 2 number");
+          expectUInt(u64.from(rec.line()), 2u64, "record 2 starts on line 2");
+          expectStr(fld(rec, 0usize), "x\ny", "a field across lines");
+        }
+        case is None { expect(false, "record 2"); }
+      }
+    }
+    case is Err { expect(false, "record 2 error"); }
+  }
+  expectUInt(u64.from(r.line()), 4u64, "after a field of two lines the reader is at line 4");
+  match r.next() {
+    case let Ok(o) {
+      match o {
+        case let Some(rec) {
+          // a lone CR as a last record is one field of CR
+          expectUInt(u64.from(rec.line()), 4u64, "record 3 line");
+          expectStr(fld(rec, 0usize), "\r", "a lone CR");
+        }
+        case is None { expect(false, "record 3"); }
+      }
+    }
+    case is Err { expect(false, "record 3 error"); }
+  }
+  match r.next() {
+    case let Ok(o) { expect(!o.isTrue(), "the end answers None"); }
+    case is Err { expect(false, "end error"); }
+  }
+  match r.next() {
+    case let Ok(o) { expect(!o.isTrue(), "the end answers None again"); }
+    case is Err { expect(false, "end error again"); }
+  }
+
+  // -------- the header --------
+  var hopts = csv.Options.standard();
+  hopts.header = true;
+  var h = csv.readerWith("name,size\r\nbolt,12\r\nnut,7\r\n", &hopts);
+  match h.headers() {
+    case let Some(hd) { expectStr(fld(hd, 1usize), "size", "headers holds the first record"); expectUInt(u64.from(hd.number()), 1u64, "the header is record 1"); }
+    case is None { expect(false, "headers"); }
+  }
+  expectUInt(u64.from(at(h.index("size"))), 1u64, "index finds a column");
+  expectUInt(u64.from(at(h.index("name"))), 0u64, "index finds the first column");
+  expect(!h.index("nope").isTrue(), "index of a missing name is None");
+  var total = 0u64;
+  var seen = 0usize;
+  while true {
+    match h.next() {
+      case let Ok(o) {
+        match o {
+          case let Some(rec) {
+            seen = seen + 1usize;
+            if seen == 1usize { expectStr(fld(rec, 0usize), "bolt", "the first record after the header"); expectUInt(u64.from(rec.number()), 2u64, "its number"); }
+            let col = at(h.index("size"));
+            total = total + (if fld(rec, col) == "12" { 12u64 } else { 7u64 });
+          }
+          case is None { break; }
+        }
+      }
+      case is Err { expect(false, "header loop error"); }
+    }
+  }
+  expectUInt(u64.from(seen), 2u64, "two records after the header");
+  expectUInt(total, 19u64, "both records read through the index");
+  var plain = csv.reader("a,b");
+  expect(!plain.headers().isTrue(), "no header unless asked");
+  expect(!plain.index("a").isTrue(), "no index without a header");
+  var empty = csv.readerWith("", &hopts);
+  expect(!empty.headers().isTrue(), "an empty text has no header");
+
+  // -------- readAll --------
+  match csv.readAll("a,b\r\nc,\"d,e\"\r\n") {
+    case let Ok(rows) {
+      expectUInt(u64.from(rows.len()), 2u64, "readAll rows");
+      expectStr(rows[1usize][1usize].view(), "d,e", "readAll field");
+    }
+    case is Err { expect(false, "readAll"); }
+  }
+  match csv.readAll("a,\"b") {
+    case is Ok { expect(false, "readAll of a broken text"); }
+    case let Err(e) { expectStr((String() <- e).view(), "csv: record 1, line 1, column 3: the text ends inside a quoted field", "readAll's error"); }
+  }
+
+  done()
+}
+
+fn fld(r: &csv.Record, i: usize) &str { &r[i] }
+
+fn at(i: Option[usize]) usize {
+  match i {
+    case let Some(n) { n }
+    case is None { 99usize }
+  }
+}
+
+fn csvFree() csv.Options {
+  var o = csv.Options.standard();
+  o.fieldCount = csv.FieldCount.Free;
+  o
+}

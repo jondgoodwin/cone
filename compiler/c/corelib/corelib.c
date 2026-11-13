@@ -103,6 +103,7 @@ StructNode *noLoanReadTrait;
 StructNode *carriesRegionTrait;
 StructNode *gcTraceElementsTrait;
 StructNode *atomicValueTrait;
+StructNode *soaLayoutTrait;
 StructNode *integerTrait;
 StructNode *floatTrait;
 StructNode *signedTrait;
@@ -185,7 +186,7 @@ int corelibIsBuiltinTrait(INode *node) {
         || node == (INode*)shapeChangingTrait
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
         || node == (INode*)carriesRegionTrait || node == (INode*)gcTraceElementsTrait
-        || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
+        || node == (INode*)atomicValueTrait || node == (INode*)soaLayoutTrait || node == (INode*)integerTrait
         || node == (INode*)floatTrait || node == (INode*)signedTrait
         || node == (INode*)unsignedTrait || node == (INode*)numericTrait
         || node == (INode*)pointerTrait || node == (INode*)sendableTrait
@@ -375,6 +376,12 @@ void stdlibInit(int ptrsize) {
     // nor held in a 'const'. The core package's 'Atomic[T]' declares it; the
     // compiler knows nothing else of that type.
     atomicValueTrait = newBuiltinTrait(atomicValueTraitName);
+    // 'SoaLayout': a type that holds its rows as columns, a field of its own for each field
+    // of the row type. A marker only: the compiler makes 'ps[i].f' of such a type the
+    // element 'f' of the column 'ps.f' (fnCallSoaField), and a whole row 'ps[i]' the type's
+    // 'rowAt' and 'setRowAt' (fnCallSoaRow, assignSoaRow). The collections package's
+    // 'SoaList' declares it.
+    soaLayoutTrait = newBuiltinTrait(soaLayoutTraitName);
     // 'Integer' [Jon 27 Sep]: the integer types, signed and unsigned, of 8 to
     // 64 bits and pointer width. Granted by the compiler to i8 ... i64, u8 ...
     // u64, isize and usize while those are built here in C (genericTypeIs),

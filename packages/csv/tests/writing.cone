@@ -1,0 +1,151 @@
+// Writing: quoting only where needed (the delimiter, the quote, CR, LF) or
+// always, a quote written twice, CRLF or LF, a tab delimiter, empty fields and
+// records, 'record' and 'write', an illegal option remembered until 'finish',
+// 'quoted' into an 'out <- ...' (strings, numbers), and a round trip: 300
+// tables of hard fields written and read back the same.
+
+mod writing;
+
+import testing use *;
+import collections use *;
+import csv;
+
+fn written(fields: &List[String], opts: csv.WriteOptions) String {
+  var w = csv.Writer(opts);
+  w.record(fields);
+  match w.finish() {
+    case var Ok(t) { var s = String(); s <-> t; s }
+    case is Err { String.from("<error>") }
+  }
+}
+
+fn row(a: &str, b: &str, c: &str) List[String] {
+  var l = List[String]();
+  l.push(String.from(a));
+  l.push(String.from(b));
+  l.push(String.from(c));
+  l
+}
+
+// A table as 'length:text' per field, ';' ends a record
+fn canon(rows: &csv.Rows) String {
+  var out = String();
+  var i = 0usize;
+  while i < rows.len() {
+    var j = 0usize;
+    while j < rows[i].len() {
+      out.appendUInt(u64.from(rows[i][j].len()));
+      out.append(":");
+      out.append(rows[i][j].view());
+      out.append("|");
+      j = j + 1usize;
+    }
+    out.append(";");
+    i = i + 1usize;
+  }
+  out
+}
+
+fn main() i32 {
+  let std = csv.WriteOptions.standard();
+  expectStr(written(&row("a", "b", "c"), std).view(), "a,b,c\r\n", "plain fields");
+  expectStr(written(&row("a,b", "c", "d"), std).view(), "\"a,b\",c,d\r\n", "a delimiter");
+  expectStr(written(&row("a\"b", "", "\""), std).view(), "\"a\"\"b\",,\"\"\"\"\r\n", "a quote doubled; an empty field plain");
+  expectStr(written(&row("a\nb", "c\rd", "e\r\nf"), std).view(), "\"a\nb\",\"c\rd\",\"e\r\nf\"\r\n", "LF, CR and CRLF");
+  expectStr(written(&row(" a ", "x y", "\t"), std).view(), " a ,x y,\t\r\n", "spaces and tabs need no quotes");
+  expectStr(written(&row("h\xC3\xA9", "\xE4\xB8\x96", "x"), std).view(), "h\xC3\xA9,\xE4\xB8\x96,x\r\n", "UTF-8 as it is");
+
+  var always = csv.WriteOptions.standard();
+  always.quoting = csv.Quoting.Always;
+  expectStr(written(&row("a", "", "b\"c"), always).view(), "\"a\",\"\",\"b\"\"c\"\r\n", "Always quotes every field");
+  var lf = csv.WriteOptions.standard();
+  lf.crlf = false;
+  expectStr(written(&row("a", "b", "c"), lf).view(), "a,b,c\n", "LF line ends");
+  expectStr(written(&row("a,b", "c\td", "e"), csv.WriteOptions.tabs()).view(), "a,b\t\"c\td\"\te\r\n", "a tab delimiter quotes tabs, not commas");
+
+  // -------- records, fields and finish --------
+  var w = csv.Writer(std);
+  w.field("a");
+  w.field("b");
+  w.endRecord();
+  w.endRecord();
+  w.field("c");
+  match w.finish() {
+    case let Ok(t) { expectStr(t.view(), "a,b\r\n\r\nc\r\n", "an empty record is an empty line; finish ends an open record"); }
+    case is Err { expect(false, "finish"); }
+  }
+  var none = csv.Writer(std);
+  match none.finish() {
+    case let Ok(t) { expectUInt(u64.from(t.len()), 0u64, "nothing written is empty text"); }
+    case is Err { expect(false, "empty finish"); }
+  }
+  var rows = csv.Rows();
+  rows.push(row("a", "b,c", "d"));
+  rows.push(row("1", "2", "3"));
+  match csv.write(&rows) {
+    case let Ok(t) { expectStr(t.view(), "a,\"b,c\",d\r\n1,2,3\r\n", "write"); }
+    case is Err { expect(false, "write"); }
+  }
+
+  // -------- quoted --------
+  var q = String();
+  q <- csv.quoted("a, b"), ",", csv.quoted(12), ",", csv.quoted("say \"hi\""), ",", csv.quoted(-3.5), ",", csv.quoted("plain");
+  expectStr(q.view(), "\"a, b\",12,\"say \"\"hi\"\"\",-3.5,plain", "quoted into an 'out <- ...'");
+
+  // -------- the round trip --------
+  var parts = List[String]();
+  parts.push(String.from("a"));
+  parts.push(String.from(","));
+  parts.push(String.from("\""));
+  parts.push(String.from("\r"));
+  parts.push(String.from("\n"));
+  parts.push(String.from("\r\n"));
+  parts.push(String.from(" "));
+  parts.push(String.from("\t"));
+  parts.push(String.from("\xC3\xA9"));
+  parts.push(String.from(""));
+  parts.push(String.from("x y"));
+  parts.push(String.from("\"\""));
+  var state = 12345u64;
+  var wrong = 0usize;
+  var t = 0usize;
+  while t < 300usize {
+    state = (state * 1103515245u64 + 12345u64) & 0x7FFFFFFFu64;
+    let cols = 1usize + usize.from((state >> 8u64) % 4u64);
+    state = (state * 1103515245u64 + 12345u64) & 0x7FFFFFFFu64;
+    let nrows = 1usize + usize.from((state >> 8u64) % 4u64);
+    var table = csv.Rows();
+    var i = 0usize;
+    while i < nrows {
+      var fields = List[String]();
+      var j = 0usize;
+      while j < cols {
+        var f = String();
+        state = (state * 1103515245u64 + 12345u64) & 0x7FFFFFFFu64;
+        var k = usize.from((state >> 8u64) % 5u64);
+        while k > 0usize {
+          state = (state * 1103515245u64 + 12345u64) & 0x7FFFFFFFu64;
+          f.append(parts[usize.from((state >> 8u64) % 12u64)].view());
+          k = k - 1usize;
+        }
+        fields.push(f);
+        j = j + 1usize;
+      }
+      table.push(fields);
+      i = i + 1usize;
+    }
+    match csv.write(&table) {
+      case let Ok(text) {
+        match csv.readAll(text.view()) {
+          case let Ok(back) { if canon(&back) != canon(&table) { wrong = wrong + 1usize; } }
+          case is Err { wrong = wrong + 1usize; }
+        }
+      }
+      case is Err { wrong = wrong + 1usize; }
+    }
+    t = t + 1usize;
+  }
+  expectUInt(u64.from(wrong), 0u64, "300 tables of hard fields read back the same");
+
+  done()
+}

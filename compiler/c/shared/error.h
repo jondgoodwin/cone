@@ -308,7 +308,9 @@ enum ErrorCode {
     ErrorBadExtern = 1134,      // 'extern' on a declaration an importer needs the body of -- inline, generic, an intrinsic, a trait's or a generic type's method -- or on something not a fn or a global
     ErrorLlvmName = 1541,       // A function or global whose final C name (its own '@c("...")', or its C-named module's prefix and its name) begins 'llvm.': LLVM's names for its intrinsics, which are no symbol to link and which the code generator cannot select. Pointed at the declaration
     ErrorCNameConflict = 1152, // One C name declared two ways in one compile: functions of differing signatures, globals of differing type or permission, a function and a global, or a symbol the compiler generates itself
-    ErrorNoAliasAttr = 1623,    // '@noalias' on a fn that cannot carry it: one not returning a pointer or thin reference, or an inline one whose value is not the call that allocates
+    ErrorSoaNoColumn = 1624,    // 'ps[i].f' over a type declaring SoaLayout where 'f' names no column: the row type has no field of that name (a method of the list, a misspelling). The message names the row type and the name
+    ErrorSoaRowBorrow = 1625,   // A borrow of a whole row of a SoaLayout type, '&ps[i]', '&mut ps[i]' or '&uni ps[i]', or a whole row changed in place, 'ps[i] += r': the row is split into columns, so no one value exists to borrow or change. The message names the column form, '&uni ps.pos[i]'
+    ErrorNoAliasAttr = 1623,   // '@noalias' on a fn that cannot carry it: one not returning a pointer or thin reference, or an inline one whose value is not the call that allocates
     ErrorCNameDefTwice = 1153,  // One C name defined twice in one compile: two bodies the linker would see, or two defined globals
 
     // A module trait, and a module conforming to one with 'is'
