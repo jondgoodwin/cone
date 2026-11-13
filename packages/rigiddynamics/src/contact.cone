@@ -102,8 +102,8 @@ pub fn sameKey(c: &Contact, a: u32, b: u32, pa: u32, pb: u32, sa: u32, sb: u32) 
 // inertia (refreshed by the step).
 pub fn prepareContact(w: &mut World, ci: usize) {
   let c = &mut w.cache[ci];
-  let bA = w.bodies[usize.from(c.a)];
-  let bB = w.bodies[usize.from(c.b)];
+  let bA = w.bodies.borrowAt(c.a).unwrap();
+  let bB = w.bodies.borrowAt(c.b).unwrap();
   let mA = bA.invMass;
   let mB = bB.invMass;
   let iA = bA.invInertia;
@@ -176,16 +176,16 @@ pub fn prepareContact(w: &mut World, ci: usize) {
 // Apply last step's impulses (or this sub-step's predecessor's) to the bodies
 pub fn warmStartContact(w: &mut World, ci: usize) {
   let c = w.cache[ci];
-  let ia = usize.from(c.a);
-  let ib = usize.from(c.b);
-  let mA = w.bodies[ia].invMass;
-  let mB = w.bodies[ib].invMass;
-  let iA = w.bodies[ia].invInertia;
-  let iB = w.bodies[ib].invInertia;
-  var vA = w.bodies[ia].linVel;
-  var wA = w.bodies[ia].angVel;
-  var vB = w.bodies[ib].linVel;
-  var wB = w.bodies[ib].angVel;
+  let pa = w.bodies.borrowMutAt(c.a).unwrap();     // the body pointers, once per contact
+  let pb = w.bodies.borrowMutAt(c.b).unwrap();
+  let mA = pa.invMass;
+  let mB = pb.invMass;
+  let iA = pa.invInertia;
+  let iB = pb.invInertia;
+  var vA = pa.linVel;
+  var wA = pa.angVel;
+  var vB = pb.linVel;
+  var wB = pb.angVel;
   var k = 0usize;
   while k < c.count {
     let rA = c.pts[k].rA;
@@ -203,10 +203,10 @@ pub fn warmStartContact(w: &mut World, ci: usize) {
   wA = wA - iA * (c.cA.cross(pf) + c.normal * c.ft + roll);
   vB = vB + pf * mB;
   wB = wB + iB * (c.cB.cross(pf) + c.normal * c.ft + roll);
-  w.bodies[ia].linVel = vA;
-  w.bodies[ia].angVel = wA;
-  w.bodies[ib].linVel = vB;
-  w.bodies[ib].angVel = wB;
+  pa.linVel = vA;
+  pa.angVel = wA;
+  pb.linVel = vB;
+  pb.angVel = wB;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,20 +217,20 @@ pub fn warmStartContact(w: &mut World, ci: usize) {
 // the relax pass.
 pub fn solveContact(w: &mut World, ci: usize, useBias: bool, reverse: bool, invH: f32, soft: Softness, softStatic: Softness) {
   let c = &mut w.cache[ci];
-  let ia = usize.from(c.a);
-  let ib = usize.from(c.b);
-  let mA = w.bodies[ia].invMass;
-  let mB = w.bodies[ib].invMass;
-  let iA = w.bodies[ia].invInertia;
-  let iB = w.bodies[ib].invInertia;
-  let dpA = w.bodies[ia].dpos;
-  let dpB = w.bodies[ib].dpos;
-  let dqA = w.bodies[ia].dq;
-  let dqB = w.bodies[ib].dq;
-  var vA = w.bodies[ia].linVel;
-  var wA = w.bodies[ia].angVel;
-  var vB = w.bodies[ib].linVel;
-  var wB = w.bodies[ib].angVel;
+  let pa = w.bodies.borrowMutAt(c.a).unwrap();     // the body pointers, once per contact
+  let pb = w.bodies.borrowMutAt(c.b).unwrap();
+  let mA = pa.invMass;
+  let mB = pb.invMass;
+  let iA = pa.invInertia;
+  let iB = pb.invInertia;
+  let dpA = pa.dpos;
+  let dpB = pb.dpos;
+  let dqA = pa.dq;
+  let dqB = pb.dq;
+  var vA = pa.linVel;
+  var wA = pa.angVel;
+  var vB = pb.linVel;
+  var wB = pb.angVel;
   let n = c.normal;
   let t1 = c.t1;
   let t2 = c.t2;
@@ -339,10 +339,10 @@ pub fn solveContact(w: &mut World, ci: usize, useBias: bool, reverse: bool, invH
     wB = wB + iB * dr;
   }
 
-  w.bodies[ia].linVel = vA;
-  w.bodies[ia].angVel = wA;
-  w.bodies[ib].linVel = vB;
-  w.bodies[ib].angVel = wB;
+  pa.linVel = vA;
+  pa.angVel = wA;
+  pb.linVel = vB;
+  pb.angVel = wB;
 }
 
 // Bounce: after the sub-steps, give a point that was closing faster than the
@@ -351,16 +351,16 @@ pub fn solveContact(w: &mut World, ci: usize, useBias: bool, reverse: bool, invH
 pub fn applyRestitution(w: &mut World, ci: usize, threshold: f32) {
   let c = &mut w.cache[ci];
   if c.restitution == 0. { return; }
-  let ia = usize.from(c.a);
-  let ib = usize.from(c.b);
-  let mA = w.bodies[ia].invMass;
-  let mB = w.bodies[ib].invMass;
-  let iA = w.bodies[ia].invInertia;
-  let iB = w.bodies[ib].invInertia;
-  var vA = w.bodies[ia].linVel;
-  var wA = w.bodies[ia].angVel;
-  var vB = w.bodies[ib].linVel;
-  var wB = w.bodies[ib].angVel;
+  let pa = w.bodies.borrowMutAt(c.a).unwrap();     // the body pointers, once per contact
+  let pb = w.bodies.borrowMutAt(c.b).unwrap();
+  let mA = pa.invMass;
+  let mB = pb.invMass;
+  let iA = pa.invInertia;
+  let iB = pb.invInertia;
+  var vA = pa.linVel;
+  var wA = pa.angVel;
+  var vB = pb.linVel;
+  var wB = pb.angVel;
   let n = c.normal;
   var k = 0usize;
   while k < c.count {
@@ -383,8 +383,8 @@ pub fn applyRestitution(w: &mut World, ci: usize, threshold: f32) {
     }
     k = k + 1usize;
   }
-  w.bodies[ia].linVel = vA;
-  w.bodies[ia].angVel = wA;
-  w.bodies[ib].linVel = vB;
-  w.bodies[ib].angVel = wB;
+  pa.linVel = vA;
+  pa.angVel = wA;
+  pb.linVel = vB;
+  pb.angVel = wB;
 }

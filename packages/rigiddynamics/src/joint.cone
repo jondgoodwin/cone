@@ -132,8 +132,8 @@ pub struct JState {
 }
 
 pub fn jointState(w: &World, j: &Joint) JState {
-  let bA = w.bodies[usize.from(j.a)];
-  let bB = w.bodies[usize.from(j.b)];
+  let bA = w.bodies.borrowAt(u32.from(usize.from(j.a))).unwrap();
+  let bB = w.bodies.borrowAt(u32.from(usize.from(j.b))).unwrap();
   let rA = bA.rot * j.la;
   let rB = bB.rot * j.lb;
   JState(usize.from(j.a), usize.from(j.b), bA.invMass, bB.invMass, bA.invInertia, bB.invInertia, rA, rB,
@@ -164,8 +164,8 @@ fn kPoint(s: &JState) Mat3 {
 
 // A linear row's Jacobian times the velocities
 fn linJv(w: &World, s: &JState, u: Vec3, armA: Vec3, armB: Vec3) f32 {
-  let bA = w.bodies[s.ia];
-  let bB = w.bodies[s.ib];
+  let bA = w.bodies.borrowAt(u32.from(s.ia)).unwrap();
+  let bB = w.bodies.borrowAt(u32.from(s.ib)).unwrap();
   u.dot(bB.linVel - bA.linVel) + armB.cross(u).dot(bB.angVel) - armA.cross(u).dot(bA.angVel)
 }
 
@@ -177,21 +177,21 @@ fn linK(s: &JState, u: Vec3, armA: Vec3, armB: Vec3) f32 {
 
 // An impulse of 'lambda' along u at the arms: B gets it, A gets its opposite
 fn linApply(w: &mut World, s: &JState, u: Vec3, armA: Vec3, armB: Vec3, lambda: f32) {
-  w.bodies[s.ia].linVel = w.bodies[s.ia].linVel - u * (lambda * s.mA);
-  w.bodies[s.ia].angVel = w.bodies[s.ia].angVel - s.iA * armA.cross(u) * lambda;
-  w.bodies[s.ib].linVel = w.bodies[s.ib].linVel + u * (lambda * s.mB);
-  w.bodies[s.ib].angVel = w.bodies[s.ib].angVel + s.iB * armB.cross(u) * lambda;
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().linVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().linVel - u * (lambda * s.mA);
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel - s.iA * armA.cross(u) * lambda;
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().linVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().linVel + u * (lambda * s.mB);
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel + s.iB * armB.cross(u) * lambda;
 }
 
 fn linApplyVec(w: &mut World, s: &JState, p: Vec3, armA: Vec3, armB: Vec3) {
-  w.bodies[s.ia].linVel = w.bodies[s.ia].linVel - p * s.mA;
-  w.bodies[s.ia].angVel = w.bodies[s.ia].angVel - s.iA * armA.cross(p);
-  w.bodies[s.ib].linVel = w.bodies[s.ib].linVel + p * s.mB;
-  w.bodies[s.ib].angVel = w.bodies[s.ib].angVel + s.iB * armB.cross(p);
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().linVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().linVel - p * s.mA;
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel - s.iA * armA.cross(p);
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().linVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().linVel + p * s.mB;
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel + s.iB * armB.cross(p);
 }
 
 fn angJv(w: &World, s: &JState, u: Vec3) f32 {
-  u.dot(w.bodies[s.ib].angVel - w.bodies[s.ia].angVel)
+  u.dot(w.bodies.borrowAt(u32.from(s.ib)).unwrap().angVel - w.bodies.borrowAt(u32.from(s.ia)).unwrap().angVel)
 }
 
 fn angK(s: &JState, u: Vec3) f32 {
@@ -199,13 +199,13 @@ fn angK(s: &JState, u: Vec3) f32 {
 }
 
 fn angApply(w: &mut World, s: &JState, u: Vec3, lambda: f32) {
-  w.bodies[s.ia].angVel = w.bodies[s.ia].angVel - s.iA * u * lambda;
-  w.bodies[s.ib].angVel = w.bodies[s.ib].angVel + s.iB * u * lambda;
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel - s.iA * u * lambda;
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel + s.iB * u * lambda;
 }
 
 fn angApplyVec(w: &mut World, s: &JState, l: Vec3) {
-  w.bodies[s.ia].angVel = w.bodies[s.ia].angVel - s.iA * l;
-  w.bodies[s.ib].angVel = w.bodies[s.ib].angVel + s.iB * l;
+  w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ia)).unwrap().angVel - s.iA * l;
+  w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel = w.bodies.borrowMutAt(u32.from(s.ib)).unwrap().angVel + s.iB * l;
 }
 
 fn invOrZero(k: f32) f32 { if k > 0. { 1. / k } else { 0. } }
@@ -273,8 +273,8 @@ pub fn warmStartJoint(w: &mut World, ji: usize) {
 // The 3x3 point block: the anchors together
 fn solvePointBlock(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness) {
   let j = &mut w.joints[ji];
-  let bA = w.bodies[s.ia];
-  let bB = w.bodies[s.ib];
+  let bA = w.bodies.borrowAt(u32.from(s.ia)).unwrap();
+  let bB = w.bodies.borrowAt(u32.from(s.ib)).unwrap();
   let jv = (bB.linVel + bB.angVel.cross(s.rB)) - (bA.linVel + bA.angVel.cross(s.rA));
   let kinv = kPoint(s).inverse();
   let bias = if useBias { s.d * soft.biasRate } else { zero3() };
@@ -291,7 +291,7 @@ fn solveOrientationBlock(w: &mut World, ji: usize, s: &JState, useBias: bool, so
   let q0 = relRot(s);
   let sg = if q0.w < 0. { -1.f } else { 1. };
   let err = (s.fa * Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
-  let jv = w.bodies[s.ib].angVel - w.bodies[s.ia].angVel;
+  let jv = w.bodies.borrowAt(u32.from(s.ib)).unwrap().angVel - w.bodies.borrowAt(u32.from(s.ia)).unwrap().angVel;
   let kinv = mat3Add(s.iA, s.iB).inverse();
   let bias = if useBias { err * soft.biasRate } else { zero3() };
   let ms = if useBias { soft.massScale } else { 1. };
@@ -313,7 +313,7 @@ fn solveDrive(w: &mut World, ji: usize, s: &JState, h: f32) {
   let q0 = (relRot(s) * j.driveTarget.conjugate()).normalize();
   let sg = if q0.w < 0. { -1.f } else { 1. };
   let err = (s.fa * Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
-  let jv = w.bodies[s.ib].angVel - w.bodies[s.ia].angVel;
+  let jv = w.bodies.borrowAt(u32.from(s.ib)).unwrap().angVel - w.bodies.borrowAt(u32.from(s.ia)).unwrap().angVel;
   let kmat = mat3Add(s.iA, s.iB);
   let kinv = kmat.inverse();
   // a spring of stiffness k (N m per radian) and damping c (N m s per radian) as Catto's soft constraint, in torque
@@ -488,7 +488,7 @@ fn solveEllipse(w: &mut World, ji: usize, s: &JState, xa: Vec3, xb: Vec3, useBia
   let c = xa.dot(xb);
   let th = atan2(swl, c);
   let sdir = (xb - xa * c) * (1. / swl);
-  let rotA = w.bodies[s.ia].rot;
+  let rotA = w.bodies.borrowAt(u32.from(s.ia)).unwrap().rot;
   let uAxis = rotA * j.ellU;
   let vAxis = rotA * j.ellV;
   let u = th * sdir.dot(uAxis);
