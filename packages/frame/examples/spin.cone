@@ -26,7 +26,7 @@
 // (Congo copies SDL3.dll from beside it to beside the program). With the
 // Vulkan SDK, validation is on.
 
-mod spin is World;
+mod spin;
 
 import stdio use *;
 import libc;
@@ -37,19 +37,10 @@ import gpu use *;
 import render use *;
 import window use *;
 import arena use Arena;
-import frame use World, Config, Host, Step;
+import frame use worldOf, run, Config, Host, Step;
 
 // The sphere turns 0.8 radians a second of simulated time
 const spinrate = 0.8f64;
-
-// The simulation's state, which only simulate writes: the angle after the
-// last step, and after the one before
-var @threadlocal angle: f32 = 0.;
-var @threadlocal before: f32 = 0.;
-
-// What render reads, which only publish writes
-var @threadlocal shownFrom: f32 = 0.;
-var @threadlocal shownTo: f32 = 0.;
 
 // The GPU side, made by start and released by quit. Its fields die in the
 // order they are declared, so the device outlives what it made, and the
@@ -70,26 +61,27 @@ struct Gfx {
   pub light: Light;
 }
 
-// Made in start. (A global Option cannot be matched in place, only a borrow
-// of a local can, so each callback swaps it out into a local and back.)
-var gfx: Option[Gfx];
-
-// Frames drawn, and the color at the middle of the window on the tenth
-var @threadlocal drawn = 0;
-var @threadlocal centre = Array[i32, 3]() <- fill 0;
-
-fn @initpure init() {
-  gfx = None;
+// The world's state: made by start, held by frame's run, and lent to each
+// callback. The simulation's state only simulate writes: the angle after the
+// last step, and after the one before. What render reads only publish writes.
+// 'gfx' is None in a headless run. frame finalizes the state when the run ends,
+// the GPU's objects before the window.
+struct State {
+  pub gfx: Option[Gfx];
+  pub angle: f32;
+  pub before: f32;
+  pub shownFrom: f32;
+  pub shownTo: f32;
+  pub drawn: i32;                  // frames drawn
+  pub centre: Array[i32, 3];       // the color at the middle of the window on the tenth
 }
 
-fn takeGfx() Option[Gfx] {
-  var g: Option[Gfx] = None;
-  g <-> gfx;
-  g
+fn newState(gfx: Option[Gfx]) State {
+  State(gfx, 0., 0., 0., 0., 0, Array[i32, 3]() <- fill 0)
 }
 
-pub fn start(host: &mut Host) bool {
-  if !host.hasWindow() { return true; }       // headless: the simulation alone
+fn start(host: &mut Host) Option[State] {
+  if !host.hasWindow() { return Some[State](newState(None)); }       // headless: the simulation alone
   var instance = Instance.create("spin");
   var surface = instance.createSurface(host.window().sdlHandle());
   var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
@@ -100,7 +92,7 @@ pub fn start(host: &mut Host) bool {
   var adapter = instance.requestAdapter(&surface, preference);
   if !adapter.isValid() {
     print <- "No GPU can draw to the window\n";
-    return false;
+    return None;
   }
   print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
   var device = adapter.requestDevice();
@@ -109,7 +101,7 @@ pub fn start(host: &mut Host) bool {
   var renderer = Renderer.create(&mut device, swapchain.format, TEXTURE_FORMAT_DEPTH32_FLOAT);
   if !renderer.isValid() {
     print <- "The renderer could not be made\n";
-    return false;
+    return None;
   }
 
   // The camera at (0, 0, 3.5) looks down -z at the sphere, on a dark blue sky
@@ -134,81 +126,77 @@ pub fn start(host: &mut Host) bool {
 
   // The first frame's texture: each present acquires the next
   let target = swapchain.getCurrentTexture(&mut device);
-  gfx = Some[Gfx](Gfx(Buffer.none(), target, renderer, swapchain, device, adapter, surface, instance,
-    ball, material, DrawList(), camera, light));
-  true
+  Some[State](newState(Some[Gfx](Gfx(Buffer.none(), target, renderer, swapchain, device, adapter, surface, instance,
+    ball, material, DrawList(), camera, light))))
 }
 
 // The window's own events are frame's; a resize is the swapchain's
-pub fn event(host: &mut Host, e: &imm sdl.Event) {
+fn event(host: &mut Host, st: &uni State, e: &imm sdl.Event) {
   if !host.hasWindow() || !host.window().resized { return; }
   host.window().resized = false;
   let s = host.window().size();
-  var g = takeGfx();
-  match &mut g {
-    case var &mut Some(some) { (*some).swapchain.resize(u32.from(s.w), u32.from(s.h)); }
+  match &uni st.gfx {
+    case var &uni Some(some) { (*some).swapchain.resize(u32.from(s.w), u32.from(s.h)); }
     else {}
   }
-  gfx = g;
 }
 
 // One step: the angle at the end of it, from the steps taken times the step,
 // so it is exact however many steps a frame runs
-pub fn simulate(host: &mut Host, step: &imm Step, scratch: &mut Arena) {
-  before = angle;
+fn simulate(host: &mut Host, st: &uni State, step: &imm Step, scratch: &mut Arena) {
+  st.before = st.angle;
   let endNs = step.startNs + step.ns;
-  angle = f32.from(spinrate * f64.from(endNs) / 1.0e9f64);
+  st.angle = f32.from(spinrate * f64.from(endNs) / 1.0e9f64);
 }
 
 // What render will read: the last two steps' angles
-pub fn publish(host: &mut Host) {
-  shownFrom = before;
-  shownTo = angle;
+fn publish(host: &mut Host, st: &uni State) {
+  st.shownFrom = st.before;
+  st.shownTo = st.angle;
 }
 
 // Record the frame: the sphere 'alpha' of the way from the step before to the last
-pub fn draw(host: &mut Host, alpha: f32, scratch: &mut Arena) {
-  let a = shownFrom + (shownTo - shownFrom) * alpha;
-  var g = takeGfx();
-  match &mut g {
-    case var &mut Some(some) { drawBall(&mut *some, a); }
+fn draw(host: &mut Host, st: &uni State, alpha: f32, scratch: &mut Arena) {
+  let a = st.shownFrom + (st.shownTo - st.shownFrom) * alpha;
+  match &uni st.gfx {
+    case var &uni Some(some) {
+      if drawBall(&mut *some, a, st.drawn + 1) { st.drawn = st.drawn + 1; }
+    }
     else {}
   }
-  gfx = g;
 }
 
-fn drawBall(g: &mut Gfx, a: f32) {
-  if !g.target.ok() { return; }
+// Draws frame number n; false if there was nothing to draw into
+fn drawBall(g: &mut Gfx, a: f32, n: i32) bool {
+  if !g.target.ok() { return false; }
   let tilt = Quat.angleAxis(0.4, Vec3(1., 0., 0.));
   g.list.clear();
   g.list.add(g.ball, g.material, Mat4.fromTrs(Vec3(0., 0., 0.), tilt * Quat.angleAxis(a, Vec3(0., 1., 0.)),
     Vec3(1., 1., 1.)));
   var encoder = g.device.createCommandEncoder();
   g.renderer.render(&mut g.device, &mut encoder, &g.target.texture, &g.target.depth, &g.camera, &g.light, &g.list);
-  drawn = drawn + 1;
 
   // What was drawn at the middle of the window on the tenth frame: copied
   // now, read once presented
-  if drawn == 10 {
+  if n == 10 {
     let w = g.target.texture.width;
     let h = g.target.texture.height;
     g.readback = g.device.createBuffer(u64.from(w) * u64.from(h) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
     encoder.copyTextureToBuffer(&g.target.texture, &g.readback);
   }
   g.device.queue.submit(encoder.finish());
+  true
 }
 
 // Show the frame, and wait for the next texture to draw into: the present wait
-pub fn present(host: &mut Host) {
-  var g = takeGfx();
-  match &mut g {
-    case var &mut Some(some) { showAndAcquire(&mut *some); }
+fn present(host: &mut Host, st: &uni State) {
+  match &uni st.gfx {
+    case var &uni Some(some) { showAndAcquire(&mut *some, st.drawn, &mut st.centre); }
     else {}
   }
-  gfx = g;
 }
 
-fn showAndAcquire(g: &mut Gfx) {
+fn showAndAcquire(g: &mut Gfx, drawn: i32, centre: &mut Array[i32, 3]) {
   if g.target.ok() {
     g.swapchain.present(&mut g.device);
     if drawn == 10 && g.readback.size > 0u64 {
@@ -229,20 +217,18 @@ fn showAndAcquire(g: &mut Gfx) {
   g.target = g.swapchain.getCurrentTexture(&mut g.device);
 }
 
-pub fn quit(host: &mut Host) i32 {
+fn quit(host: &mut Host, st: &uni State) i32 {
   print <- "Steps "; print <- host.stats.steps; print <- ", simulated ";
-  print <- host.simNs(); print <- " ns, angle "; print <- f64.from(angle); print <- "\n";
+  print <- host.simNs(); print <- " ns, angle "; print <- f64.from(st.angle); print <- "\n";
   if !host.hasWindow() { return 0i32; }
   var code = 0i32;
-  var g = takeGfx();
-  match &mut g {
-    case var &mut Some(some) { (*some).device.waitIdle(); }
+  match &uni st.gfx {
+    case var &uni Some(some) { (*some).device.waitIdle(); }
     else {}
   }
-  g = None;      // the GPU's objects go before the window does
-  print <- "Frames drawn: "; print <- drawn; print <- "\n";
+  print <- "Frames drawn: "; print <- st.drawn; print <- "\n";
   print <- "Middle of the window on frame 10: ";
-  print <- centre[0]; print <- " "; print <- centre[1]; print <- " "; print <- centre[2]; print <- "\n";
+  print <- st.centre[0]; print <- " "; print <- st.centre[1]; print <- " "; print <- st.centre[2]; print <- "\n";
   print <- "Vulkan failures: "; print <- u64.from(failures());
   print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
   if failures() != 0u32 || validationMessages() != 0u32 { code = 1i32; }
@@ -254,7 +240,10 @@ fn main(argc: i32, argv: **u8) i32 {
   var config = Config.fromArgs(argc, argv);
   config.setTitle("Cone: a lit, textured, turning sphere");
   if config.frames == 0u64 { config.frames = 600u64; }
-  let code = run(config);
+  var world = worldOf(&start, &event, &simulate, &draw, &quit);
+  world.publish = &publish;
+  world.present = &present;
+  let code = run(config, &world);
   finalAll();
   code
 }
