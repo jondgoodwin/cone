@@ -1,0 +1,107 @@
+// Bodies are named by a BodyId {index, gen} (the World's bodies are a GenPool). A stale id reaches nothing.
+//
+//   stale      a destroyed body's id: isAlive false, getters answer a neutral value, setters do nothing
+//   reuse      a new body takes the freed cell with a new generation; the old id does not reach it
+//   joints     a joint to a stale id is not made (addPointJoint answers NoBody)
+//   cells      cellOf names the cell of a live id (NoBody for a stale one); idOf is its inverse
+//   events     the removal event made by destroyBody names the ids as they were
+//   queries    ray, overlap and cast answer ids that equal the createBody ones; a filter excludes by id
+
+mod bodyid;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn main() i32 {
+  var w = World.make();
+  let box = w.addShape(Shape.single(Prim.box(Vec3(0.25, 0.25, 0.25))));
+  let floorS = w.addShape(Shape.single(Prim.box(Vec3(20., 1., 20.))));
+  let a = w.createBody(BodyDef.dynamicAt(box, Vec3(0., 5., 0.)));
+  let b = w.createBody(BodyDef.dynamicAt(box, Vec3(3., 5., 0.)));
+  expect(a != b, "two bodies, two ids");
+  expectUInt(u64.from(a.index), 0u64, "the first takes cell 0");
+  expectUInt(u64.from(b.index), 1u64, "the second cell 1");
+  expectUInt(u64.from(w.bodyCount()), 2u64, "two live bodies");
+
+  // stale
+  w.destroyBody(a);
+  expect(!w.isAlive(a), "a destroyed body is not alive");
+  expect(w.isAlive(b), "and the other is");
+  expectUInt(u64.from(w.bodyCount()), 1u64, "one live body");
+  expectFloat(f64.from(w.massOf(a)), 0.0, 0.0, "a stale id has no mass");
+  expectFloat(f64.from(w.positionOf(a).length()), 0.0, 0.0, "and sits at the origin");
+  w.setLinearVelocity(a, Vec3(1., 2., 3.));
+  w.applyImpulse(a, Vec3(5., 0., 0.));
+  w.applyForce(a, Vec3(5., 0., 0.));
+  w.setTransform(a, Vec3(9., 9., 9.), Quat.identity());
+  w.wake(a);
+  w.sleep(a);
+  w.destroyBody(a);
+  expectUInt(u64.from(w.bodyCount()), 1u64, "setters, wake, sleep and a second destroy on a stale id do nothing");
+  expect(w.cellOf(a) == NoBody, "a stale id has no cell");
+
+  // reuse
+  let c = w.createBody(BodyDef.dynamicAt(box, Vec3(6., 5., 0.)));
+  expectUInt(u64.from(c.index), u64.from(a.index), "the new body takes the freed cell");
+  expect(c.gen != a.gen, "with a new generation");
+  expect(c != a, "so the ids differ");
+  expect(!w.isAlive(a), "the old id still does not reach it");
+  w.setLinearVelocity(a, Vec3(1., 2., 3.));
+  expectFloat(f64.from(w.linearVelocity(c).length()), 0.0, 0.0, "a write through the old id does not touch the new body");
+  expectFloat(f64.from(w.positionOf(c).x), 6.0, 0.0001, "which is where it was put");
+  expectUInt(u64.from(w.cellOf(c)), u64.from(c.index), "a live id's cell is its index");
+  expect(w.idOf(w.cellOf(c)) == c, "and idOf turns it back");
+  expect(w.idOf(7u32).isNone(), "an empty cell has no id");
+
+  // joints
+  let none = w.addPointJoint(a, b, Vec3(1., 5., 0.));
+  expectUInt(u64.from(none), u64.from(NoBody), "a joint to a stale id is not made");
+  expectUInt(u64.from(w.joints.len()), 0u64, "so there are no joints");
+  let ok = w.addPointJoint(c, b, Vec3(4.5, 5., 0.));
+  expectUInt(u64.from(ok), 0u64, "a joint between live ids is joint 0");
+
+  // events: a ball resting on a floor, destroyed; the removal names the ids
+  var w2 = World.make();
+  let floorShape = w2.addShape(Shape.single(Prim.box(Vec3(20., 1., 20.))));
+  let ballShape = w2.addShape(Shape.single(Prim.sphere(0.25)));
+  let floor = w2.createBody(BodyDef.staticAt(floorShape, Vec3(0., -1., 0.)));
+  let ball = w2.createBody(BodyDef.dynamicAt(ballShape, Vec3(0., 0.25, 0.)));
+  var i = 0;
+  while i < 30 { w2.step(1. / 60.); i = i + 1; }
+  var ev = w2.takeEvents();
+  var added = 0;
+  var k = 0usize;
+  while k < ev.len() {
+    if ev[k].kind == EvContactAdded && ev[k].a == floor && ev[k].b == ball { added = added + 1; }
+    k = k + 1usize;
+  }
+  expectInt(i64.from(added), 1i64, "the contact event names the floor and the ball by id");
+  w2.destroyBody(ball);
+  ev = w2.takeEvents();
+  var removed = 0;
+  k = 0usize;
+  while k < ev.len() {
+    if ev[k].kind == EvContactRemoved && ev[k].a == floor && ev[k].b == ball { removed = removed + 1; }
+    k = k + 1usize;
+  }
+  expectInt(i64.from(removed), 1i64, "destroying the ball reports the contact removed, naming the ball by the id it had");
+
+  // queries
+  var w3 = World.make();
+  let big = w3.addShape(Shape.single(Prim.box(Vec3(1., 1., 1.))));
+  let p = w3.createBody(BodyDef.staticAt(big, Vec3(0., 0., 0.)));
+  let q = w3.createBody(BodyDef.staticAt(big, Vec3(0., 0., 5.)));
+  let hit = w3.castRay(Vec3(0., 5., 0.), Vec3(0., -1., 0.), 10., QueryFilter.all());
+  expect(hit.hit && hit.body == p, "a ray down on p hits p, by id");
+  let hq = w3.castRay(Vec3(0., 5., 5.), Vec3(0., -1., 0.), 10., QueryFilter.all());
+  expect(hq.hit && hq.body == q, "and on q hits q");
+  let ex = w3.castRay(Vec3(0., 5., 0.), Vec3(0., -1., 0.), 10., QueryFilter.all().without(p));
+  expect(!ex.hit, "a filter that excludes p by id lets the ray through to nothing");
+  var out = List[BodyId]();
+  w3.overlapPoint(Vec3(0., 0.5, 5.), QueryFilter.all(), &mut out);
+  expect(out.len() == 1usize && *out[0usize] == q, "a point inside q overlaps q, by id");
+  done()
+}
