@@ -22,7 +22,7 @@ const outboxBound = 256usize;
 // A latest-wins value waiting for credit: only the newest of its stream is kept
 struct PendingUpdate {
   stream: u16;
-  data: List[u8];
+  data: Bytes;
 }
 
 // A Connection is a ValueSource of NetEvents: it sends them to its handler (a
@@ -85,7 +85,7 @@ pub actor Connection is ValueSource {
   // is not built; the connection goes on). The same on every kind of
   // connection. If so many messages are waiting that the window is full, the
   // peer is not keeping up and the connection ends with CloseReason.Overflow.
-  pub async fn sendReliable(self, data: List[u8]) {
+  pub async fn sendReliable(self, data: Bytes) {
     if !open {return;}
     if data.len() > peer.maxReliable() {
       self.refuse(true, 0u16, RefusalKind.TooLarge, data.len(), peer.maxReliable());
@@ -98,7 +98,7 @@ pub actor Connection is ValueSource {
       }
       return;
     }
-    if !peer.sendReliable(data.view()) {
+    if !peer.sendReliable(data) {
       self.fail(CloseReason.Overflow);
       return;
     }
@@ -109,7 +109,7 @@ pub actor Connection is ValueSource {
   // room unless a newer value replaces it first, and never resent. At most
   // maxLatestBytes (1171 by default); a larger value, or one for a 65th
   // stream, is refused as a message is (NetEvent.Refused).
-  pub async fn sendLatest(self, stream: u16, data: List[u8]) {
+  pub async fn sendLatest(self, stream: u16, data: Bytes) {
     if !open {return;}
     if data.len() > peer.maxLatest() {
       self.refuse(false, stream, RefusalKind.TooLarge, data.len(), peer.maxLatest());
@@ -122,7 +122,7 @@ pub actor Connection is ValueSource {
       }
       return;
     }
-    if !peer.sendLatest(stream, data.view()) {
+    if !peer.sendLatest(stream, data) {
       self.refuse(false, stream, RefusalKind.TooManyStreams, data.len(), maxStreams);
       return;
     }
@@ -187,7 +187,8 @@ pub actor Connection is ValueSource {
   async fn packet(self, data: IoBuf) {
     if !open {return;}
     var evs = List[CoreEvent]();
-    peer.receive(data.view(), Instant.now(), &mut evs);
+    let dg = data.freeze();
+    peer.receive(&dg, Instant.now(), &mut evs);
     self.dispatch(evs);
     self.run();
   }
@@ -198,13 +199,13 @@ pub actor Connection is ValueSource {
     self.run();
   }
 
-  async fn inMessage(self, data: List[u8]) {
+  async fn inMessage(self, data: Bytes) {
     if open {
       self.emit(NetEvent.Message(id, data));
     }
   }
 
-  async fn inUpdate(self, stream: u16, data: List[u8]) {
+  async fn inUpdate(self, stream: u16, data: Bytes) {
     if open {
       self.emit(NetEvent.Update(id, stream, data));
     }

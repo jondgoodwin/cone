@@ -42,7 +42,7 @@ pub struct Tile {
   pub pverts: List[i32];      // MaxVerts a polygon, -1 after the last
   pub pnei: List[i32];        // MaxVerts a polygon: neighbour polygon, -1, or PortalFlag | side
   pub pcount: List[i32];
-  pub parea: List[u8];
+  pub parea: AreaIds;
   pub pbmin: List[Vec3];
   pub pbmax: List[Vec3];
   pub linkStart: List[i32];   // polyCount + 1 offsets into 'links'
@@ -50,7 +50,7 @@ pub struct Tile {
 
   pub fn empty(tx: i32, tz: i32) Tile {
     Tile(tx, tz, 0u32, false, List[Vec3](), List[i32](), List[i32](), List[i32](),
-      List[u8](), List[Vec3](), List[Vec3](), List[i32](), List[Link]())
+      AreaIds(), List[Vec3](), List[Vec3](), List[i32](), List[Link]())
   }
 
   pub fn polyCount(self: &) usize { pcount.len() }
@@ -63,7 +63,7 @@ pub struct OffMeshConn {
   pub b: Vec3;
   pub radius: f32;
   pub bidirectional: bool;
-  pub area: u8;
+  pub area: AreaId;
   pub enabled: bool;
   pub refA: u64;        // the polygons nearest its ends, NoRef when there is none
   pub refB: u64;
@@ -107,7 +107,7 @@ pub struct NavMesh {
     self.refPoly(r) < tile.polyCount()
   }
 
-  pub fn polyArea(self: &, r: u64) u8 {
+  pub fn polyArea(self: &, r: u64) AreaId {
     (*tiles[usize.from(self.refTile(r))].parea[self.refPoly(r)])
   }
 
@@ -167,7 +167,7 @@ pub fn buildTile(nav: &NavMesh, input: &NavInput, tx: i32, tz: i32) Tile {
     let hi = a.max(b).max(c);
     if hi.x >= bmin.x && lo.x <= wx1 && hi.z >= bmin.z && lo.z <= wz1 {
       var area = *input.triArea[t];
-      if area != AreaNull && triNormalY(a, b, c) <= walkThr { area = AreaNull; }
+      if area.index != AreaNull.index && triNormalY(a, b, c) <= walkThr { area = AreaNull; }
       rasterizeTriangle(&mut hf, a, b, c, area, climb, &mut sc);
     }
     t = t + 1usize;
@@ -175,7 +175,7 @@ pub fn buildTile(nav: &NavMesh, input: &NavInput, tx: i32, tz: i32) Tile {
   var o = 0usize;
   while o < input.obstacles.len() {
     let ob = &input.obstacles[o];
-    if ob.enabled && ob.area == AreaNull {
+    if ob.enabled && ob.area.index == AreaNull.index {
       let e = ob.extent();
       if e.z >= bmin.x && e.x <= wx1 && e.w >= bmin.z && e.y <= wz1 {
         rasterizeObstacle(&mut hf, ob, climb);
@@ -191,7 +191,7 @@ pub fn buildTile(nav: &NavMesh, input: &NavInput, tx: i32, tz: i32) Tile {
   o = 0usize;
   while o < input.obstacles.len() {
     let ob = &input.obstacles[o];
-    if ob.enabled && ob.area != AreaNull {
+    if ob.enabled && ob.area.index != AreaNull.index {
       let e = ob.extent();
       if e.z >= bmin.x && e.x <= wx1 && e.w >= bmin.z && e.y <= wz1 { markObstacleArea(&mut chf, ob); }
     }

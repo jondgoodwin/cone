@@ -10,17 +10,20 @@ import testing use *;
 import collections use *;
 import time use Duration, Instant;
 import netmsg use *;
-import iobuf use IoBuf;
+import iobuf use IoBuf, Bytes;
+
+// A copy of some bytes, frozen: what the core takes to send
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
 
 fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
 
 // A packet from a connection with a reliable message and two values waiting
 fn sample() List[u8] {
   var a = ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64));
-  a.sendReliable("first");
-  a.sendReliable("second");
-  a.sendLatest(1u16, "alpha");
-  a.sendLatest(2u16, "beta");
+  a.sendReliable(fz("first"));
+  a.sendReliable(fz("second"));
+  a.sendLatest(1u16, fz("alpha"));
+  a.sendLatest(2u16, fz("beta"));
   var pk = Packets();
   var evs = List[CoreEvent]();
   a.poll(at(5i64), &mut pk, &mut evs);
@@ -41,7 +44,7 @@ fn main() i32 {
   // The good packet delivers its four things
   var evs = List[CoreEvent]();
   var b = fresh();
-  expect(b.receive(good.view(), at(6i64), &mut evs), "a good packet is taken");
+  expect(b.receive(&fz(good.view()), at(6i64), &mut evs), "a good packet is taken");
   expectUInt(u64.from(evs.len()), 4u64, "two messages and two values");
 
   // Every shorter prefix is refused
@@ -52,7 +55,7 @@ fn main() i32 {
     var e2 = List[CoreEvent]();
     var cut = copyBytes(good.view());
     cut.truncate(n);
-    if c.receive(cut.view(), at(6i64), &mut e2) || e2.len() != 0usize {refusedAll = false;}
+    if c.receive(&fz(cut.view()), at(6i64), &mut e2) || e2.len() != 0usize {refusedAll = false;}
     n = n + 1usize;
   }
   expect(refusedAll, "every cut-short packet is refused, and tells nothing");
@@ -62,21 +65,21 @@ fn main() i32 {
   longer.push(0u8);
   var d = fresh();
   var e3 = List[CoreEvent]();
-  expect(!d.receive(longer.view(), at(6i64), &mut e3), "a packet with a byte added is refused");
+  expect(!d.receive(&fz(longer.view()), at(6i64), &mut e3), "a packet with a byte added is refused");
 
   // The reserved bits of a message's length
   var flagged = copyBytes(good.view());
   flagged.set(23usize + 2usize, *flagged[23usize + 2usize] | 0x40u8);
   var f = fresh();
-  expect(!f.receive(flagged.view(), at(6i64), &mut e3), "a message with a fragmentation bit set is refused (not built)");
+  expect(!f.receive(&fz(flagged.view()), at(6i64), &mut e3), "a message with a fragmentation bit set is refused (not built)");
   expectUInt(u64.from(e3.len()), 0u64, "and nothing of the packet got through");
 
   // The same packet twice
   var g = fresh();
   var e4 = List[CoreEvent]();
-  g.receive(good.view(), at(6i64), &mut e4);
+  g.receive(&fz(good.view()), at(6i64), &mut e4);
   let first = e4.len();
-  expect(g.receive(good.view(), at(7i64), &mut e4), "a repeated packet is valid");
+  expect(g.receive(&fz(good.view()), at(7i64), &mut e4), "a repeated packet is valid");
   expectUInt(u64.from(e4.len()), u64.from(first), "but gives its contents once");
   expectUInt(g.stats().packetsDuplicate, 1u64, "and is counted as a duplicate");
 
@@ -113,7 +116,7 @@ fn main() i32 {
         j = j + 1usize;
       }
     }
-    if h.receive(p.view(), at(8i64 + i64.from(i)), &mut e5) {accepted = accepted + 1u32;}
+    if h.receive(&fz(p.view()), at(8i64 + i64.from(i)), &mut e5) {accepted = accepted + 1u32;}
     e5.clear();
     i = i + 1u32;
   }

@@ -123,9 +123,9 @@ fn decodeBlock(src: &Array[u8], start: usize, end: usize, ent: &mut Entropy, his
 // The literals section at src[*p, end) into ent.lits; *p moves past it
 fn decodeLiterals(src: &Array[u8], p: &mut usize, end: usize, ent: &mut Entropy) Fault {
   ent.lits.clear();
-  // Room for the largest literals and 8 bytes of slack, which the sequences'
-  // word-wise copies read past the end into
-  ent.lits.reserve(blockSizeMax() + 8usize);
+  // Room for the largest literals and 16 bytes of slack, which the sequences'
+  // wide copies read past the end into
+  ent.lits.reserve(blockSizeMax() + 16usize);
   let at = *p;
   if at >= end { return Fault.LitHeader; }
   let b0 = src[at];
@@ -201,10 +201,7 @@ fn decodeLiterals(src: &Array[u8], p: &mut usize, end: usize, ent: &mut Entropy)
     let b = a + s1;
     let c = b + s2;
     let d = c + s3;
-    if !ent.lit.decodeStream(src, a, b, seg, &mut ent.lits) { return Fault.HuffStream; }
-    if !ent.lit.decodeStream(src, b, c, seg, &mut ent.lits) { return Fault.HuffStream; }
-    if !ent.lit.decodeStream(src, c, d, seg, &mut ent.lits) { return Fault.HuffStream; }
-    if !ent.lit.decodeStream(src, d, qend, regen - 3usize * seg, &mut ent.lits) { return Fault.HuffStream; }
+    if !ent.lit.decode4(src, a, b, c, d, qend, seg, regen, &mut ent.lits) { return Fault.HuffStream; }
   }
   *p = qend;
   Fault.Ok
@@ -213,9 +210,9 @@ fn decodeLiterals(src: &Array[u8], p: &mut usize, end: usize, ent: &mut Entropy)
 // One of the three tables by its mode (RFC 8878 section 3.1.1.3.2.1.2) at
 // src[*p, end); *p moves past what it took
 fn seqTable(src: &Array[u8], p: &mut usize, end: usize, mode: u8, t: &mut FseTable, defaults: &Array[i16],
-    defaultLog: u32, maxSymbol: usize, maxLog: u32, norm: &mut List[i16], ready: bool) Fault {
+    defaultLog: u32, maxSymbol: usize, maxLog: u32, norm: &mut List[i16], ready: bool, kind: u32) Fault {
   if mode == 0u8 {
-    t.build(defaults, defaultLog);
+    t.buildSeq(defaults, defaultLog, kind);
     return Fault.Ok;
   }
   if mode == 1u8 {
@@ -223,6 +220,7 @@ fn seqTable(src: &Array[u8], p: &mut usize, end: usize, mode: u8, t: &mut FseTab
     let s = src[*p];
     if usize.from(s) > maxSymbol { return Fault.RleSymbol; }
     t.rle(s);
+    t.fold(kind);
     *p = *p + 1usize;
     return Fault.Ok;
   }
@@ -230,7 +228,7 @@ fn seqTable(src: &Array[u8], p: &mut usize, end: usize, mode: u8, t: &mut FseTab
     var log = 0u32;
     let used = readNCount(src, *p, end, maxSymbol, maxLog, norm, &mut log);
     if used < 0i64 { return Fault.FseTable; }
-    if !t.build(norm.view(), log) { return Fault.FseTable; }
+    if !t.buildSeq(norm.view(), log, kind) { return Fault.FseTable; }
     *p = *p + usize.from(used);
     return Fault.Ok;
   }
@@ -271,11 +269,11 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
   p = p + 1usize;
   if (modes & 3u8) != 0u8 { return Fault.SeqHeader; }
   let ready = ent.seqReady;
-  var f = seqTable(src, &mut p, end, modes >> 6u8, &mut ent.ll, &llDefault, 6u32, 35usize, 9u32, &mut ent.norm, ready);
+  var f = seqTable(src, &mut p, end, modes >> 6u8, &mut ent.ll, &llDefault, 6u32, 35usize, 9u32, &mut ent.norm, ready, 0u32);
   if f != Fault.Ok { return f; }
-  f = seqTable(src, &mut p, end, (modes >> 4u8) & 3u8, &mut ent.of, &ofDefault, 5u32, 31usize, 8u32, &mut ent.norm, ready);
+  f = seqTable(src, &mut p, end, (modes >> 4u8) & 3u8, &mut ent.of, &ofDefault, 5u32, 31usize, 8u32, &mut ent.norm, ready, 2u32);
   if f != Fault.Ok { return f; }
-  f = seqTable(src, &mut p, end, (modes >> 2u8) & 3u8, &mut ent.ml, &mlDefault, 6u32, 52usize, 9u32, &mut ent.norm, ready);
+  f = seqTable(src, &mut p, end, (modes >> 2u8) & 3u8, &mut ent.ml, &mlDefault, 6u32, 52usize, 9u32, &mut ent.norm, ready, 1u32);
   if f != Fault.Ok { return f; }
   ent.seqReady = true;
 
@@ -283,6 +281,24 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
   var llState = bits.read(src, ent.ll.log);
   var ofState = bits.read(src, ent.of.log);
   var mlState = bits.read(src, ent.ml.log);
+  // The fast reads in the loop below take bits with no test, on this budget
+  // (every figure is a bound that holds on any input):
+  // - the next-state bits of a sequence: each is at most its table's log, and
+  //   the logs are at most 9 (ll), 9 (ml) and 8 (of), 'readNCount' refusing
+  //   more; the predefined tables are 6, 6, 5 and a repeated table is one of
+  //   these. Entry check: their sum is at most 26, or the block is refused;
+  // - the extra bits: a cell's code is below its distribution's size, so the
+  //   offset's are at most 31 and the match's and literal's at most 16 each;
+  //   'buildSeq' (or 'fold') took them from the code tables by checked lookups.
+  // 'refillSeq' leaves 56 to 63 bits held, whatever the input. A sequence
+  // starts with at least 56 and takes T = of + ml + ll extra bits, then S <= 26
+  // state bits. If T < 31, T + S <= 56: no refill between. Otherwise there is
+  // one after the offset's bits (56 >= ml + ll, at most 32) and one after the
+  // extras (56 >= S). The sequence ends with a refill when fewer than 56 are
+  // held. 'readFast' needs n >= k and n between 8 and 64: n is 56 to 63 after
+  // a refill and above 8 at every read by the above.
+  if ent.ll.log + ent.ml.log + ent.of.log > 26u32 { return Fault.FseTable; }
+  bits.refillSeq(src);
   var r1 = ent.rep1;
   var r2 = ent.rep2;
   var r3 = ent.rep3;
@@ -290,7 +306,14 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
   let dictLen = dict.len();
   // The block's own output may not pass the block maximum
   let room = reach.blockMax;
-  hist.reserve(room + 8usize);
+  // The 16 bytes of slack are what the wide copies below may write past the end
+  // of a literal run or a match (at most 15), after the checks have shown the
+  // run or match itself inside 'room'; 'reserve' makes capacity for len + room
+  // + 16, so no raw write leaves the allocation. A wide copy reads only bytes of
+  // the literals (inside their 16-byte slack) or of this block's own output
+  // behind its write point; a match whose offset reaches before the frame's
+  // output, or past the window, is refused by the checks below before its copy.
+  hist.reserve(room + 16usize);
   // The block is written through pointers into the room just reserved
   // (everything checked against 'room' and the literals' length first), 'w'
   // the next byte; 'hist' gets its new length once, at the end
@@ -300,15 +323,17 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
   var w = blockStart;
   var i = 0usize;
   while i < nseq {
-    let llc = *ent.ll.cells[usize.from(llState)];
-    let ofc = *ent.of.cells[usize.from(ofState)];
-    let mlc = *ent.ml.cells[usize.from(mlState)];
-    let ofCode = ofc & 0xFFu32;
-    let mlCode = usize.from(mlc & 0xFFu32);
-    let llCode = usize.from(llc & 0xFFu32);
-    let ofValue = (1u64 << u64.from(ofCode)) + u64.from(bits.read(src, ofCode));
-    let ml = usize.from(mlBase[mlCode] + bits.read(src, mlBits[mlCode]));
-    let ll = usize.from(llBase[llCode] + bits.read(src, llBits[llCode]));
+    let llc = *ent.ll.seq[usize.from(llState)];
+    let ofc = *ent.of.seq[usize.from(ofState)];
+    let mlc = *ent.ml.seq[usize.from(mlState)];
+    let ofX = u32.from((ofc >> 32u64) & 0xFFu64);
+    let mlX = u32.from((mlc >> 32u64) & 0xFFu64);
+    let llX = u32.from((llc >> 32u64) & 0xFFu64);
+    let wide = ofX + mlX + llX >= 31u32;
+    let ofValue = (ofc & 0xFFFFFFFFu64) + u64.from(bits.readFast(ofX));
+    if wide && bits.n < 56u32 { bits.refillSeq(src); }
+    let ml = usize.from(u32.from(mlc & 0xFFFFFFFFu64) + bits.readFast(mlX));
+    let ll = usize.from(u32.from(llc & 0xFFFFFFFFu64) + bits.readFast(llX));
     var off = 0u64;
     if ofValue > 3u64 {
       off = ofValue - 3u64;
@@ -337,9 +362,11 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
       }
     }
     if i + 1usize < nseq {
-      llState = (llc >> 16u32) + bits.read(src, (llc >> 8u32) & 0xFFu32);
-      mlState = (mlc >> 16u32) + bits.read(src, (mlc >> 8u32) & 0xFFu32);
-      ofState = (ofc >> 16u32) + bits.read(src, (ofc >> 8u32) & 0xFFu32);
+      if wide && bits.n < 56u32 { bits.refillSeq(src); }
+      llState = u32.from(llc >> 48u64) + bits.readFast(u32.from((llc >> 40u64) & 0xFFu64));
+      mlState = u32.from(mlc >> 48u64) + bits.readFast(u32.from((mlc >> 40u64) & 0xFFu64));
+      ofState = u32.from(ofc >> 48u64) + bits.readFast(u32.from((ofc >> 40u64) & 0xFFu64));
+      if bits.n < 56u32 { bits.refillSeq(src); }
     }
     // Execute: the literals, then the match
     if ll > nlits - litPos { return Fault.LitOverrun; }
@@ -412,15 +439,18 @@ fn copyBytes(to: *u8, from: *u8, n: usize) inline {
   }
 }
 
-// The same for a copy that may read up to 7 bytes past its source and write
-// up to 7 past its target (short ones are two words, not a byte loop); both
-// have the slack, as 'decodeLiterals' and 'decodeSequences' reserve it
+// A wild copy of n bytes from 'from' to 'to', which do not overlap, sixteen
+// bytes a step (two words): it reads up to 15 bytes past the source's end and
+// writes up to 15 past the target's, so both need 16 bytes of slack beyond the
+// n (as 'decodeLiterals' and 'decodeSequences' reserve it). Longer ones go to
+// the block move, which a call per copy makes dearer than the steps below that.
 fn copyWords(to: *u8, from: *u8, n: usize) inline {
-  if n <= 16usize {
+  if n <= 64usize {
     var k = 0usize;
     while k < n {
       mem.writeRaw[u64]((to + k) as *u64, mem.readRaw[u64]((from + k) as *u64));
-      k = k + 8usize;
+      mem.writeRaw[u64]((to + (k + 8usize)) as *u64, mem.readRaw[u64]((from + (k + 8usize)) as *u64));
+      k = k + 16usize;
     }
   } else {
     mem.moveRaw[u8](to, from, n);
@@ -430,38 +460,51 @@ fn copyWords(to: *u8, from: *u8, n: usize) inline {
 // Writes 'ml' bytes at b[at] as if copied one at a time from b[from],
 // b[from + 1], ...: when the source runs on into the bytes being written (the
 // match is longer than its offset, from + ml > at), the last 'at - from' bytes
-// repeat. The caller has checked 0 < at - from and that b has room to at + ml.
+// repeat. The caller has checked 0 < at - from and that b has room to at + ml
+// plus 16 bytes of slack, which the last step may write into.
 fn copyMatch(b: *u8, at: usize, from: usize, ml: usize) {
+  var a = at;
+  var f = from;
+  var n = ml;
   let off = at - from;
-  if off >= 8usize {
-    // Eight bytes a step, each read after the write before it, so the
-    // repeating of a short offset comes out right as long as it is eight or
-    // more; the last step may write up to 7 bytes past the match, into the
-    // slack the block reserved
-    if off >= ml && ml > 16usize { mem.moveRaw[u8](b + at, b + from, ml); return; }
-    var k = 0usize;
-    while k < ml {
-      mem.writeRaw[u64]((b + (at + k)) as *u64, mem.readRaw[u64]((b + (from + k)) as *u64));
-      k = k + 8usize;
+  if off < 8usize {
+    if ml <= 8usize {
+      var k = 0usize;
+      while k < ml {
+        mem.writeRaw[u8](b + (at + k), mem.readRaw[u8](b + (from + k)));
+        k = k + 1usize;
+      }
+      return;
     }
-    return;
-  }
-  if ml <= 16usize {
+    // The first eight bytes one at a time (each reads what the one before
+    // wrote); the output is then periodic with period 'off', so the rest can
+    // be read from d bytes behind the write, d a multiple of 'off' in 8 to 14
+    // (the table: 8 8 9 8 10 12 14 for off 1 to 7), a distance the word steps
+    // below handle
     var k = 0usize;
-    while k < ml {
+    while k < 8usize {
       mem.writeRaw[u8](b + (at + k), mem.readRaw[u8](b + (from + k)));
       k = k + 1usize;
     }
+    let d = usize.from((0x0E0C0A0809080800u64 >> u64.from(off << 3usize)) & 0xFFu64);
+    a = at + 8usize;
+    f = a - d;
+    n = ml - 8usize;
+  } else if off >= n && n > 64usize {
+    mem.moveRaw[u8](b + a, b + f, n);
     return;
   }
-  // Overlapping and long: the output is the last 'off' bytes repeated. Each
-  // step copies the run that starts at 'from' and ends where the output so
-  // far ends (at most off + done bytes) to the end of the output, so a step's
-  // source and target never overlap.
-  var done = 0usize;
-  while done < ml {
-    let chunk = if off + done < ml - done {off + done} else {ml - done};
-    mem.moveRaw[u8](b + (at + done), b + from, chunk);
-    done = done + chunk;
+  // Here a - f >= 8. Two words a step, the second read after the first
+  // written: the bytes a step reads are all written before it reads them, since
+  // each is at least 8 behind its own target and the steps go in order. The
+  // last step may write up to 15 bytes past the match, into the slack, from
+  // bytes it reads that are not yet written (inside the allocation, and they
+  // reach only those bytes past the match: byte j of a step comes from j - d
+  // behind it, so the bytes of the match itself never depend on them).
+  var k = 0usize;
+  while k < n {
+    mem.writeRaw[u64]((b + (a + k)) as *u64, mem.readRaw[u64]((b + (f + k)) as *u64));
+    mem.writeRaw[u64]((b + (a + (k + 8usize))) as *u64, mem.readRaw[u64]((b + (f + (k + 8usize))) as *u64));
+    k = k + 16usize;
   }
 }

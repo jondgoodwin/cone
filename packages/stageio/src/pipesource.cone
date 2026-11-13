@@ -218,27 +218,46 @@ pub actor ChildStages {
         // The pipes are adopted first and the process last: a failure before 'takeProcess' leaves the child with 'c', whose
         // drop kills it and waits for it (no handle leaked on Windows, no zombie on Linux). The loop closes the raw end of
         // a pipe whose adopt failed (iocore's adoptPipe), and the ends adopted close as 'out' and 'err' drop.
-        let po = await aio.adoptPipe(c.takeStdout());
-        let pe = await aio.adoptPipe(c.takeStderr());
         var out = Pipe.none();
         var err = Pipe.none();
         var inp = Pipe.none();
         var child = aio.Child.none();
         var bad = None[IoError];
-        if wantsIn {
-          let pi = await aio.adoptPipe(c.takeStdin());
-          match pi {
-            case var Ok(p) { inp <-> p; }
-            case let Err(e) { bad = Some[IoError](e); }
+        var taken = false;
+        var oe = c.takeStdout();
+        var ee = c.takeStderr();
+        var ie = c.takeStdin();
+        match oe {
+          case var Some(x) {
+            let po = await aio.adoptStdout(x);
+            match po {
+              case var Ok(p) { out <-> p; }
+              case let Err(e) { bad = Some[IoError](e); }
+            }
           }
+          case is None {}
         }
-        match po {
-          case var Ok(p) { out <-> p; }
-          case let Err(e) { bad = Some[IoError](e); }
+        match ee {
+          case var Some(x) {
+            let pe = await aio.adoptStderr(x);
+            match pe {
+              case var Ok(p) { err <-> p; }
+              case let Err(e) { bad = Some[IoError](e); }
+            }
+          }
+          case is None {}
         }
-        match pe {
-          case var Ok(p) { err <-> p; }
-          case let Err(e) { bad = Some[IoError](e); }
+        if wantsIn {
+          match ie {
+            case var Some(x) {
+              let pi = await aio.adoptStdin(x);
+              match pi {
+                case var Ok(p) { inp <-> p; }
+                case let Err(e) { bad = Some[IoError](e); }
+              }
+            }
+            case is None {}
+          }
         }
         var pipesOk = true;
         match &bad {
@@ -246,31 +265,26 @@ pub actor ChildStages {
           case is None {}
         }
         if pipesOk {
-          // Windows: the process HANDLE is the loop's from here, whatever the result (closed when 'child' drops). Linux: the
-          // pid is lent to adoptChild and 'c' stays its owner until the adopt has succeeded; only then is it let go
-          // ('takeProcess'), and the wait that answers reaps it. A failed adopt (pidfd_open) leaves the owner to kill and
-          // reap the pid as 'c' drops
-          var raw = 0usize;
-          #if #os == .windows {
-            raw = c.takeProcess();
-          } #else {
-            raw = usize.from(c.pid());
-          }
-          let ch = await aio.adoptChild(raw);
-          match ch {
-            case var Ok(x) {
-              child <-> x;
-              #if #os != .windows {
-                _ = c.takeProcess();
+          // The ChildProcess goes to the loop. Windows: the process HANDLE is the loop's from here (closed when 'child'
+          // drops). Linux: the loop holds a pidfd, the wait that answers reaps the pid, and a failed adopt (pidfd_open)
+          // drops the ChildProcess on the loop's thread, which ends and reaps the child
+          var pr = c.takeProcess();
+          match pr {
+            case var Some(x) {
+              taken = true;
+              let ch = await aio.adoptChild(x);
+              match ch {
+                case var Ok(y) { child <-> y; }
+                case let Err(e) { bad = Some[IoError](e); }
               }
             }
-            case let Err(e) { bad = Some[IoError](e); }
+            case is None {}
           }
         }
         match bad {
           case let Some(e) {
-            // Killed here; waited for as 'c' drops when takeProcess did not run (on Linux that includes a failed adopt)
-            c.kill();
+            // Killed here; waited for as 'c' drops when the process was not taken
+            if !taken { c.kill(); }
             self.fail(AnyError.from(e));
             return;
           }

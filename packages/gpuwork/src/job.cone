@@ -14,6 +14,24 @@ pub fn upload(device: &mut Device, words: &Array[u32]) Buffer {
   buffer
 }
 
+// A buffer holding 'bytes', in the GPU's own memory, copied as 'upload' does.
+// The buffer is a whole number of words: when the length is not a multiple of
+// 4 the last word is padded with zero bytes (the bytes are little-endian words
+// to a kernel). Check 'isValid'.
+pub fn uploadBytes(device: &mut Device, bytes: &Array[u8]) Buffer {
+  let padded = (bytes.len + 3usize) / 4usize * 4usize;
+  let buffer = device.createBuffer(if padded == 0usize { 4u64 } else { u64.from(padded) }, WORK_USAGE);
+  if bytes.len == 0usize || !buffer.isValid() { return buffer; }
+  if padded == bytes.len {
+    device.queue.writeBuffer(&buffer, 0u64, &bytes[0usize] as *u8, u64.from(padded));
+  } else {
+    var tail = List[u8](padded) <- fill 0u8;
+    libc.memcpy(&mut tail[0usize] as *u8, &bytes[0usize] as *u8, bytes.len);
+    device.queue.writeBuffer(&buffer, 0u64, &tail[0usize] as *u8, u64.from(padded));
+  }
+  buffer
+}
+
 // A buffer holding one 'value', a struct of 32-bit numbers (or fixed arrays
 // of them): what a kernel's by-value struct parameter is bound to, a small
 // read-only storage buffer. Check 'isValid'.

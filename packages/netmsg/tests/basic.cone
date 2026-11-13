@@ -9,7 +9,11 @@ mod basic;
 import testing use *;
 import collections use *;
 import time use Duration, Instant, Clock;
+import iobuf use IoBuf, Bytes;
 import netmsg use *;
+
+// A copy of some bytes, frozen: what the core takes to send
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
 
 struct Heard {
   pub reliable: List[String];
@@ -58,13 +62,13 @@ fn main() i32 {
   var ha = Heard(List[String](), List[String](), List[u32]());
   var hb = Heard(List[String](), List[String](), List[u32]());
 
-  expect(p.a.sendReliable("one"), "queued one");
-  expect(p.a.sendReliable("two"), "queued two");
-  expect(p.a.sendReliable("three"), "queued three");
-  expect(p.a.sendLatest(7u16, "v1"), "a value for stream 7");
-  expect(p.a.sendLatest(7u16, "v2"), "replaced before it went");
-  expect(p.a.sendLatest(7u16, "v3"), "replaced again");
-  expect(p.a.sendLatest(8u16, "other"), "a value for stream 8");
+  expect(p.a.sendReliable(fz("one")), "queued one");
+  expect(p.a.sendReliable(fz("two")), "queued two");
+  expect(p.a.sendReliable(fz("three")), "queued three");
+  expect(p.a.sendLatest(7u16, fz("v1")), "a value for stream 7");
+  expect(p.a.sendLatest(7u16, fz("v2")), "replaced before it went");
+  expect(p.a.sendLatest(7u16, fz("v3")), "replaced again");
+  expect(p.a.sendLatest(8u16, fz("other")), "a value for stream 8");
   expectUInt(u64.from(p.a.reliablePending()), 3u64, "three waiting");
 
   run(&mut p, &mut clock, 60i64, &mut ha, &mut hb);
@@ -94,7 +98,7 @@ fn main() i32 {
   expect(p.a.stats().packetsReceived > 30u64, "keep-alives came");
 
   // Latest-wins values keep coming
-  p.a.sendLatest(7u16, "v4");
+  p.a.sendLatest(7u16, fz("v4"));
   run(&mut p, &mut clock, 100i64, &mut ha, &mut hb);
   expectStr(hb.latest[2usize].view(), "7:v4", "a newer value arrives");
 

@@ -34,6 +34,22 @@ fn chainLimitOf(level: i32) usize {
   768usize
 }
 
+// The length (at most 258) of the common run of the bytes at 'ci' and 'ib' (ci < ib) in the
+// 'n' bytes at 'bp', given that the first two are already known equal: eight bytes at a
+// time, the first difference found with trailingZeros (as miniz's find_match does)
+fn chainMatchLen(bp: *u8, ci: usize, ib: usize, n: usize) usize inline {
+  var l = 2usize;
+  // Bounds: ci < ib and ib + l + 8 <= n, so both 8-byte reads end at or before 'n'
+  while l + 8usize <= 258usize && ib + l + 8usize <= n {
+    let x = mem.readRaw[u64]((bp + (ci + l)) as *u64) ^ mem.readRaw[u64]((bp + (ib + l)) as *u64);
+    if x != 0u64 { return l + usize.from(x.trailingZeros() >> 3u32); }
+    l += 8usize;
+  }
+  // Bounds: the byte reads are guarded by ib + l < n, and ci < ib
+  while l < 258usize && ib + l < n && mem.readRaw[u8](bp + (ci + l)) == mem.readRaw[u8](bp + (ib + l)) { l += 1usize; }
+  l
+}
+
 // The matcher: from position '*cur' (absolute, the byte at 'base' is buf[0]),
 // turn bytes into tokens (a literal byte, or 0x80000000 | length << 16 |
 // distance) until the data runs out (answers false; with 'final' false it
@@ -46,6 +62,7 @@ fn chainLimitOf(level: i32) usize {
 fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32],
   chainLimit: usize, insertAll: bool, maxTokens: usize, final: bool) bool {
   let n = buf.len;
+  let bp = buf as *u8;
   let endPos = base + i64.from(n);
   while *cur < endPos {
     if !final && endPos - *cur < lookAhead() { return false; }
@@ -65,12 +82,14 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
         // position at every byte up to and including bestLen, so the byte at bestLen (and the one
         // before it), then the first two, refuse most candidates before the compare. (None can win
         // when the data ends first.) A refused candidate would have had l <= bestLen: output is the same.
-        if ib + bestLen < n && buf[ci + bestLen] == buf[ib + bestLen]
-            && (bestLen == 0usize || buf[ci + bestLen - 1usize] == buf[ib + bestLen - 1usize])
-            && buf[ci] == buf[ib] && buf[ci + 1usize] == buf[ib + 1usize] {
-          // Match length at this candidate
-          var l = 0usize;
-          while l < 258usize && ib + l < n && buf[ci + l] == buf[ib + l] { l += 1usize; }
+        // Bounds of the raw reads: ib + bestLen < n (the guard) and ci < ib, so the two bytes at
+        // bestLen - 1 (bestLen >= 1) and bestLen lie inside the input for both; the first
+        // two bytes lie inside as ib + 3 <= n
+        if ib + bestLen < n && (bestLen == 0usize
+              || mem.readRaw[u16]((bp + (ci + (bestLen - 1usize))) as *u16) == mem.readRaw[u16]((bp + (ib + (bestLen - 1usize))) as *u16))
+            && mem.readRaw[u16]((bp + ci) as *u16) == mem.readRaw[u16]((bp + ib) as *u16) {
+          // Match length at this candidate (the first two bytes are equal)
+          let l = chainMatchLen(bp, ci, ib, n);
           if l > bestLen {
             bestLen = l;
             bestDist = usize.from(i - cand);
@@ -124,6 +143,7 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
 fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32],
   chainLimit: usize, savedLen: &mut usize, savedDist: &mut usize, maxTokens: usize, final: bool) bool {
   let n = buf.len;
+  let bp = buf as *u8;
   let endPos = base + i64.from(n);
   while *cur < endPos {
     if !final && endPos - *cur < lookAhead() { return false; }
@@ -146,9 +166,11 @@ fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], p
         if i - cand > 32768i64 { break; }
         let ci = usize.from(cand - base);
         // Only a candidate that agrees at bestLen can beat bestLen (and none can when the data ends first)
-        if ib + bestLen < n && buf[ci + bestLen] == buf[ib + bestLen] {
-          var l = 0usize;
-          while l < 258usize && ib + l < n && buf[ci + l] == buf[ib + l] { l += 1usize; }
+        // Bounds of the raw reads: as in 'lzScan'; with bestLen 0 the two bytes tested are the first two
+        let off = if bestLen > 0usize {bestLen - 1usize} else {0usize};
+        if ib + bestLen < n && mem.readRaw[u16]((bp + (ci + off)) as *u16) == mem.readRaw[u16]((bp + (ib + off)) as *u16)
+            && mem.readRaw[u16]((bp + ci) as *u16) == mem.readRaw[u16]((bp + ib) as *u16) {
+          let l = chainMatchLen(bp, ci, ib, n);
           if l > bestLen {
             bestLen = l;
             bestDist = usize.from(i - cand);

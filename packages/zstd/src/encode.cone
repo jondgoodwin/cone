@@ -52,6 +52,61 @@ struct BitOut {
   }
 }
 
+// The same writer for the hot streams (the sequences, the Huffman literals):
+// the bytes go straight to room reserved in the List beforehand, through a
+// pointer, and each put stores the whole 64-bit container and moves the
+// pointer past its complete bytes, so a put is a few instructions with no
+// branch, no List call, and 'acc' and 'n' live in registers once inlined.
+// The output bytes are the same as BitOut's. The caller reserves a bound on
+// the stream's size and puts nothing else into the List until 'finish'.
+struct BitRun {
+  acc: u64;
+  n: u32;
+  w: *u8;
+  start: *u8;
+
+  // 'room' bytes (a bound on the stream's size) are reserved, and 8 more for
+  // the last store's overhang; 'out' must not be empty (its pointer is real)
+  fn open(out: &mut List[u8], room: usize) BitRun {
+    out.reserve(room + 8usize);
+    let p = (out.viewMut() as *u8) + out.len();
+    BitRun(0u64, 0u32, p, p)
+  }
+
+  // The low 'bits' (0 to 32) bits of v
+  fn put(self: &mut, v: u64, bits: u32) inline {
+    acc = acc | ((v & ((1u64 << u64.from(bits)) - 1u64)) << u64.from(n));
+    n = n + bits;
+    mem.writeRaw[u64](w as *u64, acc);
+    w = w + usize.from(n >> 3u32);
+    acc = acc >> u64.from(n & 248u32);
+    n = n & 7u32;
+  }
+
+  // The low 'bits' of v are added to the container with no store: the caller
+  // keeps n plus all the bits added before the next 'flush' at 64 or fewer
+  fn add(self: &mut, v: u64, bits: u32) inline {
+    acc = acc | ((v & ((1u64 << u64.from(bits)) - 1u64)) << u64.from(n));
+    n = n + bits;
+  }
+
+  // Stores the container and moves past its complete bytes (n goes to 0-7)
+  fn flush(self: &mut) inline {
+    mem.writeRaw[u64](w as *u64, acc);
+    w = w + usize.from(n >> 3u32);
+    acc = acc >> u64.from(n & 248u32);
+    n = n & 7u32;
+  }
+
+  // Ends the stream (the closing 1 bit, zero padding to a byte) and gives
+  // the bytes to 'out', which is where they were written
+  fn finish(self: &mut, out: &mut List[u8]) {
+    self.put(1u64, 1u32);
+    if n > 0u32 { w = w + 1usize; }
+    out.appendSlice(mem.sliceFromParts[u8](start, w - start));
+  }
+}
+
 // -------- FSE --------
 
 // log2(x) for x from 1 to 2^16, in 1/256 bits, the part after the point taken
@@ -153,6 +208,8 @@ fn writeNCount(out: &mut List[u8], norm: &Array[i16], log: u32) {
   bw.flushAll(out);
 }
 
+const cellBias: i32 = 1048576i32;
+
 // An FSE encoding table (the reference's FSE_buildCTable): 'states' gives,
 // symbol by symbol in the order of the decoding table, the states to move
 // to; 'deltaBits' and 'deltaFind' say, for each symbol, how many bits a
@@ -164,6 +221,7 @@ struct FseEnc is Default {
   states: List[u16];
   deltaBits: List[u32];
   deltaFind: List[i32];
+  cell: List[u64];
   // Scratch for building: each state's symbol, each symbol's next slot
   spread: List[u8];
   cumul: List[u32];
@@ -238,6 +296,14 @@ struct FseEnc is Default {
       }
       s += 1usize;
     }
+    // One cell a symbol for 'encodeRun': deltaBits below, deltaFind plus
+    // cellBias above (deltaFind is never below -cellBias)
+    cell.clear();
+    s = 0usize;
+    while s < deltaBits.len() {
+      cell.push(u64.from(*deltaBits[s]) | (u64.from(*deltaFind[s] + cellBias) << 32u64));
+      s += 1usize;
+    }
   }
 
   // The table of one symbol that always repeats
@@ -265,6 +331,20 @@ struct FseEnc is Default {
     u32.from(*states[usize.from(i64.from(state >> nb) + i64.from(*deltaFind[sym]))])
   }
 
+  // 'encode' for a BitRun
+  fn encodeRun(self: &, bw: &mut BitRun, state: u32, sym: usize) u32 inline {
+    if rle { return 0u32; }
+    let c = *cell[sym];
+    let nb = (state + u32.from(c & 0xFFFFFFFFu64)) >> 16u32;
+    bw.add(u64.from(state), nb);
+    u32.from(*states[usize.from(u64.from(state >> nb) + (c >> 32u64)) - usize.from(cellBias)])
+  }
+
+  // 'flush' for a BitRun
+  fn flushRun(self: &, bw: &mut BitRun, state: u32) {
+    if !rle { bw.put(u64.from(state), log); }
+  }
+
   // The final state, which the decoder reads first
   fn flush(self: &, bw: &mut BitOut, out: &mut List[u8], state: u32) {
     if !rle { bw.put(out, u64.from(state), log); }
@@ -281,11 +361,13 @@ struct HufEnc is Default {
   count: List[u32];
   lens: List[u8];
   codes: List[u32];
+  // code | (length << 16) per symbol, for encodeStream: one load a literal
+  pk: List[u32];
   maxSym: usize;
   tableLog: u32;
   // Scratch: the counts being merged, the symbols by count, the merge tree
   freq: List[u32];
-  order: List[u16];
+  order: List[u64];
   weight: List[u64];
   parent: List[u32];
   depth: List[u8];
@@ -297,10 +379,9 @@ struct HufEnc is Default {
   wfse: FseEnc;
 
   // Counts the bytes of 'lits'; answers how many distinct ones there are
-  fn histogram(self: &mut, litList: &List[u8]) usize {
+  fn histogram(self: &mut, lits: &Array[u8]) usize {
     count.clear();
     count.resize(256usize, 0u32);
-    let lits = litList.view();
     let c = count.viewMut();
     var i = 0usize;
     while i < lits.len {
@@ -349,18 +430,18 @@ struct HufEnc is Default {
     while s <= maxSym {
       let f = *freq[s];
       if f > 0u32 {
-        order.push(u16.from(s));
+        order.push((u64.from(f) << 16u64) | u64.from(s));
       }
       s += 1usize;
     }
-    // By count, then by symbol (a stable sort of symbols pushed in order)
-    order.sortByKey(fn(sym: &u16) u32 { *freq[usize.from(*sym)] });
+    // By count, then by symbol: each entry is count << 16 | symbol, so its natural order is that order
+    order.sort();
     let m = order.len();
     weight.clear();
     parent.clear();
     var i = 0usize;
     while i < m {
-      weight.push(u64.from(*freq[usize.from(*order[i])]));
+      weight.push(*order[i] >> 16u64);
       parent.push(0u32);
       i += 1usize;
     }
@@ -403,7 +484,7 @@ struct HufEnc is Default {
     i = 0usize;
     while i < m {
       let dp = *depth[i];
-      lens.set(usize.from(*order[i]), dp);
+      lens.set(usize.from(*order[i] & 65535u64), dp);
       if u32.from(dp) > longest { longest = u32.from(dp); }
       i += 1usize;
     }
@@ -451,6 +532,14 @@ struct HufEnc is Default {
         codes.set(s, start >> (wt - 1u32));
         rankStart.set(usize.from(wt), start + (1u32 << (wt - 1u32)));
       }
+      s += 1usize;
+    }
+    pk.clear();
+    pk.resize(256usize, 0u32);
+    s = 0usize;
+    while s <= maxSym {
+      let l = u32.from(*lens[s]);
+      if l > 0u32 { pk.set(s, (*codes[s] & ((1u32 << l) - 1u32)) | (l << 16u32)); }
       s += 1usize;
     }
   }
@@ -544,14 +633,57 @@ struct HufEnc is Default {
 
   // Appends one Huffman stream of lits[from, to): the last literal first,
   // so the decoder, reading backward, meets the first one first
-  fn encodeStream(self: &, lits: &List[u8], from: usize, to: usize, out: &mut List[u8]) {
-    var bw = BitOut.make();
+  fn encodeStream(self: &, lits: &Array[u8], from: usize, to: usize, out: &mut List[u8]) {
+    if from > to || to > lits.len { panic("zstd: a literal stream lies outside the literals"); }
+    // The table is read by pointer: a byte indexes it, so the 256 entries, checked here once, cover every access
+    if pk.len() != 256usize { panic("zstd: the literal code table is not 256 entries"); }
+    // The stores below write 64 bits at a time: 7 held bits and 5 codes fit only while no code is over 11 bits,
+    // and the bytes stay inside BitRun's reservation only then. tableLog is the longest code length (assignCodes)
+    if tableLog > maxHuffBits() { panic("zstd: a literal code is longer than 11 bits"); }
+    let t = pk.view() as *u32 as *u8;
+    let src = lits as *u8;
+    let cnt = to - from;
+    var bw = BitRun.open(out, cnt + cnt / 2usize + 16usize);
+    var acc = 0u64;
+    var n = 0u32;
+    var w = bw.w;
     var i = to;
+    // Five literals to a store: at most 7 held bits and 5 codes of 11 bits fit in 64
+    while i >= from + 5usize {
+      let e0 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 1usize)))) as *u32));
+      let e1 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 2usize)))) as *u32));
+      let e2 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 3usize)))) as *u32));
+      let e3 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 4usize)))) as *u32));
+      let e4 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 5usize)))) as *u32));
+      i -= 5usize;
+      acc = acc | ((e0 & 65535u64) << u64.from(n));
+      n = n + u32.from(e0 >> 16u64);
+      acc = acc | ((e1 & 65535u64) << u64.from(n));
+      n = n + u32.from(e1 >> 16u64);
+      acc = acc | ((e2 & 65535u64) << u64.from(n));
+      n = n + u32.from(e2 >> 16u64);
+      acc = acc | ((e3 & 65535u64) << u64.from(n));
+      n = n + u32.from(e3 >> 16u64);
+      acc = acc | ((e4 & 65535u64) << u64.from(n));
+      n = n + u32.from(e4 >> 16u64);
+      mem.writeRaw[u64](w as *u64, acc);
+      w = w + usize.from(n >> 3u32);
+      acc = acc >> u64.from(n & 248u32);
+      n = n & 7u32;
+    }
     while i > from {
       i -= 1usize;
-      let b = usize.from(*lits[i]);
-      bw.put(out, u64.from(*codes[b]), u32.from(*lens[b]));
+      let e = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + i))) as *u32));
+      acc = acc | ((e & 65535u64) << u64.from(n));
+      n = n + u32.from(e >> 16u64);
+      mem.writeRaw[u64](w as *u64, acc);
+      w = w + usize.from(n >> 3u32);
+      acc = acc >> u64.from(n & 248u32);
+      n = n & 7u32;
     }
-    bw.close(out);
+    bw.acc = acc;
+    bw.n = n;
+    bw.w = w;
+    bw.finish(out);
   }
 }
