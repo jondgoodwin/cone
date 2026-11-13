@@ -221,6 +221,17 @@ fn distSymbol(d: usize) usize {
   s
 }
 
+// The symbol tables writeTokenCodes and the histogram share (see writeTokenCodes)
+fn fillSymTables(lsym: &mut Array[u8, 259], dsym: &mut Array[u8, 512]) {
+  var q = 3usize;
+  while q < 259usize { lsym[q] = u8.from(lengthSymbol(q)); q += 1usize; }
+  q = 0usize;
+  while q < 512usize {
+    dsym[q] = u8.from(distSymbol(if q < 256usize {q + 1usize} else {((q - 256usize) << 7u32) + 1usize}));
+    q += 1usize;
+  }
+}
+
 fn hash3(d: &Array[u8], i: usize) usize {
   usize.from(((u32.from(d[i]) << 10u32) ^ (u32.from(d[i + 1usize]) << 5u32) ^ u32.from(d[i + 2usize])) & 32767u32)
 }
@@ -233,14 +244,12 @@ fn hash3(d: &Array[u8], i: usize) usize {
 // every distance code over 256 starts at a multiple of 128 plus one).
 fn writeTokenCodes(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usize, lit: &Code, dist: &Code) {
   var lsym = Array[u8, 259]() <- fill 0u8;
-  var q = 3usize;
-  while q < 259usize { lsym[q] = u8.from(lengthSymbol(q)); q += 1usize; }
   var dsym = Array[u8, 512]() <- fill 0u8;
-  q = 0usize;
-  while q < 512usize {
-    dsym[q] = u8.from(distSymbol(if q < 256usize {q + 1usize} else {((q - 256usize) << 7u32) + 1usize}));
-    q += 1usize;
-  }
+  fillSymTables(&mut lsym, &mut dsym);
+  writeTokenCodesWith(w, tokens, from, to, lit, dist, &lsym, &dsym);
+}
+
+fn writeTokenCodesWith(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usize, lit: &Code, dist: &Code, lsym: &Array[u8, 259], dsym: &Array[u8, 512]) {
   var acc = w.acc;
   var n = u64.from(w.n);
   var i = from;
@@ -311,15 +320,19 @@ fn writeDynamicBlock(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: us
   i = 0usize;
   while i < 30usize { df.push(0u32); i += 1usize; }
   lf.set(256usize, 1u32);
+  var lsym = Array[u8, 259]() <- fill 0u8;
+  var dsym = Array[u8, 512]() <- fill 0u8;
+  fillSymTables(&mut lsym, &mut dsym);
   i = from;
   while i < to {
     let t = tokens[i];
     if (t & 0x80000000u32) == 0u32 {
       lf.set(usize.from(t), *lf[usize.from(t)] + 1u32);
     } else {
-      let ls = 257usize + lengthSymbol(usize.from((t >> 16u32) & 0x7FFFu32));
+      let ls = 257usize + usize.from(lsym[usize.from((t >> 16u32) & 0x7FFFu32)]);
       lf.set(ls, *lf[ls] + 1u32);
-      let ds = distSymbol(usize.from(t & 0xFFFFu32));
+      let d = usize.from(t & 0xFFFFu32);
+      let ds = usize.from(dsym[if d <= 256usize {d - 1usize} else {256usize + ((d - 1usize) >> 7u32)}]);
       df.set(ds, *df[ds] + 1u32);
     }
     i += 1usize;
@@ -394,6 +407,7 @@ fn writeDynamicBlock(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: us
     else if s == 18usize { w.put(u32.from(*extra[i]), 7u32); }
     i += 1usize;
   }
-  writeTokens(w, tokens, from, to, &lit, &dist);
+  writeTokenCodesWith(w, tokens, from, to, &lit, &dist, &lsym, &dsym);
+  w.putCode(*lit.codes[256usize], u32.from(*lit.lens[256usize]));
 }
 
