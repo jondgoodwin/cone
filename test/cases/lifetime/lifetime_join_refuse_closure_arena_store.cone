@@ -1,4 +1,4 @@
-// Bug 65, open: a closure that gives a 'var' parameter an arena node (reached through another parameter, 'a') and stores the borrow of a third ('x') into it. Refuse.
+// Bug 65, closed by #1007: a closure that gives a 'var' parameter an arena node (reached through another parameter, 'a') and stores the borrow of a third ('x') into it. Refuse.
 // Master e9e953096: compiled, and the program printed: none | finalizer reads 2520268099792 (the arena node's finalizer reads a dead slot).
 // Still compiles with Bug 62's join: the slot 'f' sits in was assigned a call's result, yet the path to it is a parameter's, so #998's narrowing leaves the arena bar off; at the closure's construction every borrow is a caller's, so by the shared-lifetime rule it is legal. No closure is needed: a plain struct field does the same.
 mod lifetime_join_refuse_closure_arena_store;
@@ -10,6 +10,10 @@ struct Hd { pub ar: &mut Arena; }
 fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
 fn mkF(a: &mut Hd) &mut F { a.ar.alloc(F(None)) }
 fn mkO(a: &mut Hd) Option[&mut F] { Some(mkF(a)) }
-fn stash(a: &mut Hd, var f: &mut F, x: &mut T) { var g = fn() { f = mkF(a); f.p = Some(x); }; g(); }  //~ ErrorCallEscape
+fn stash(a: &mut Hd, var f: &mut F, x: &mut T) { var g = fn() { f = mkF(a); f.p = Some(x); }; g(); }  //~ ErrorCallEscape:58
+//~^ ErrorEscape:65
+//~^^ ErrorEscape:78
+//~^^^ ErrorEscape:65
+//~^^^^ ErrorEscape:78
 fn scope(q: &mut Arena) { var t = T(7); var h = Hd(q); var g = F(None); stash(&mut h, &mut g, &mut t); }
 fn main() { var a = Arena(); scope(&mut a); print <- clobber(3), "\n"; }
