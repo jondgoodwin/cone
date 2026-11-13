@@ -4586,8 +4586,11 @@ pub struct TextOut {
   pub base: *u8;
   pub len: usize;
   pub cap: usize;
-  // 0: a record (blocks chain on), 1: a window made roomy by 'spill', 2: a
-  // window of fixed size
+  // The low two bits: 0: a record (blocks chain on), 1: a window made roomy by
+  // 'spill', 2: a window of fixed size (read 'mode & 3'). Bit 2 (4): color is on,
+  // the maker's to set (colorOn, setColor): the sink is a terminal that takes
+  // color. Bit 3 (8): a style was written, so the record ends with a reset
+  // (styled, setStyled). Both are off in a new writer.
   pub mode: u32;
   // What the maker tagged the record with (the console's: which stream)
   pub tag: u32;
@@ -4626,6 +4629,20 @@ pub struct TextOut {
   pub fn over(base: *u8, len: usize, cap: usize, owner: *u8, spill: usize, done: usize) TextOut inline {
     TextOut(base, len, cap, if spill == 0usize {2u32} else {1u32}, 0u32, spill, done, owner, 0usize, null, null,
       Array[u8, 128]() <- fill 0u8, 0u32, 0u32)
+  }
+
+  // Whether styles (format's red, bold, ...) write their escape bytes here: off
+  // unless the writer's maker turned it on, since only a terminal wants them
+  pub fn colorOn(self: &) bool inline {(mode & 4u32) != 0u32}
+  // The maker's: color on or off for this writer
+  pub fn setColor(self: &uni, on: bool) inline {
+    mode = if on {mode | 4u32} else {mode & 0xFFFFFFFBu32};
+  }
+  // Whether a style was written here (so the record ends with a reset), and the
+  // writer of a style saying it was
+  pub fn styled(self: &) bool inline {(mode & 8u32) != 0u32}
+  pub fn setStyled(self: &uni) inline {
+    mode = mode | 8u32;
   }
 
   // The maker's: the tag, and the thing the record was made for

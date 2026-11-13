@@ -47,10 +47,47 @@ static void consoleReaderGone(int fd) {
         _Exit(141);
 }
 
+// Whether a stream should be sent color (cone_consoleColor's rule, kept apart so it can be tested without a terminal):
+// it is a terminal; on POSIX (needTerm) TERM is set and not "dumb"; and NO_COLOR is unset or empty (no-color.org: any
+// non-empty value turns color off). FORCE_COLOR and CLICOLOR_FORCE are not honoured: the sink decides.
+int cone_consoleColorWanted(int isTty, int needTerm, const char *term, const char *noColor) {
+    if (!isTty)
+        return 0;
+    if (needTerm && (term == NULL || term[0] == '\0' || strcmp(term, "dumb") == 0))
+        return 0;
+    if (noColor != NULL && noColor[0] != '\0')
+        return 0;
+    return 1;
+}
+
+// Asked once per stream (0 not asked, 1 no, 2 yes; fd 1 and 2): two threads asking at once store the same answer
+static volatile int consoleColorKnown[3];
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <io.h>
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
+// Whether the stream takes color: Windows' virtual-terminal mode is switched on for it, and it must say yes
+int cone_consoleColor(int fd) {
+    if (fd != 1 && fd != 2)
+        return 0;
+    if (consoleColorKnown[fd] == 0) {
+        int yes = 0;
+        if (_isatty(fd)) {
+            HANDLE h = GetStdHandle(fd == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
+            DWORD mode;
+            if (h != NULL && h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &mode)
+                && ((mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) || SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)))
+                yes = 1;
+        }
+        yes = cone_consoleColorWanted(yes, 0, NULL, getenv("NO_COLOR"));
+        consoleColorKnown[fd] = yes ? 2 : 1;
+    }
+    return consoleColorKnown[fd] == 2;
+}
 static SRWLOCK consoleLock = SRWLOCK_INIT;
 void cone_consoleLock(void) { AcquireSRWLockExclusive(&consoleLock); }
 void cone_consoleUnlock(void) { ReleaseSRWLockExclusive(&consoleLock); }
@@ -167,6 +204,17 @@ void cone_consoleLock(void) { pthread_mutex_lock(&consoleLock); }
 void cone_consoleUnlock(void) { pthread_mutex_unlock(&consoleLock); }
 int cone_consoleTryLock(void) { return pthread_mutex_trylock(&consoleLock) == 0; }
 int cone_consoleIsTty(int fd) { return isatty(fd) != 0; }
+
+// Whether the stream takes color: a terminal, TERM set and not "dumb", NO_COLOR unset or empty
+int cone_consoleColor(int fd) {
+    if (fd != 1 && fd != 2)
+        return 0;
+    if (consoleColorKnown[fd] == 0) {
+        int yes = cone_consoleColorWanted(isatty(fd) != 0, 1, getenv("TERM"), getenv("NO_COLOR"));
+        consoleColorKnown[fd] = yes ? 2 : 1;
+    }
+    return consoleColorKnown[fd] == 2;
+}
 
 void cone_consoleWrite(int fd, const uint8_t *p, size_t n) {
     while (n > 0) {
