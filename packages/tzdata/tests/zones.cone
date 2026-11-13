@@ -1,0 +1,61 @@
+// tzdata: the IANA zones as embedded data. Each zone's bytes are read by
+// calendar's Zone.fromTzif and asked for the offset at two instants of 2026
+// (1 Jan = 1767225600, 1 Jul = 1782864000), both well after the last transition
+// a slim file lists, so the answers come from the footer rule.
+
+mod zones;
+
+import testing use *;
+import time use Timestamp;
+import calendar use Zone;
+import tzdata;
+
+fn check(name: &str, janSeconds: i64, janAbbr: &str, julSeconds: i64, julAbbr: &str) {
+  match tzdata.find(name) {
+    case let Some(bytes) {
+      match Zone.fromTzif(bytes) {
+        case let Ok(z) {
+          let jan = z.offsetAt(Timestamp.fromUnixSeconds(1767225600));
+          let jul = z.offsetAt(Timestamp.fromUnixSeconds(1782864000));
+          expectInt(i64.from(jan.seconds), janSeconds, name);
+          expectStr(jan.abbr, janAbbr, name);
+          expectInt(i64.from(jul.seconds), julSeconds, name);
+          expectStr(jul.abbr, julAbbr, name);
+        }
+        case let Err(e) { require(false, name); }
+      }
+    }
+    case is None { require(false, name); }
+  }
+}
+
+fn same(a: &str, b: &str) {
+  match tzdata.find(a) {
+    case let Some(x) {
+      match tzdata.find(b) {
+        case let Some(y) { expectBool(x == y, true, a); }
+        case is None { require(false, b); }
+      }
+    }
+    case is None { require(false, a); }
+  }
+}
+
+fn main() i32 {
+  check("America/New_York", -18000, "EST", -14400, "EDT");
+  check("Europe/Kyiv", 7200, "EET", 10800, "EEST");
+  check("Europe/London", 0, "GMT", 3600, "BST");
+  check("Asia/Tokyo", 32400, "JST", 32400, "JST");
+  check("Asia/Kolkata", 19800, "IST", 19800, "IST");
+  check("America/Sao_Paulo", -10800, "-03", -10800, "-03");
+  check("Australia/Sydney", 39600, "AEDT", 36000, "AEST");
+  check("UTC", 0, "UTC", 0, "UTC");
+  same("Europe/Kyiv", "Europe/Kiev");
+  same("Asia/Kolkata", "Asia/Calcutta");
+  expectStr(tzdata.version, "2026f", "version");
+  match tzdata.find("Mars/Olympus") {
+    case let Some(b) { require(false, "no such zone"); }
+    case is None { require(true, "no such zone"); }
+  }
+  done()
+}
