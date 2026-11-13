@@ -4523,9 +4523,46 @@ pub struct FloatText {
   pub fn text(self: &) &str inline {
     mem.sliceFromParts[u8](&bytes as *u8, len) as &str
   }
+
+  // The digits and exponent of the shortest text, for a caller that lays the
+  // number out itself (see FloatDigits): the same digits 'FloatText(x)' writes
+  pub fn shortest(x: f64) FloatDigits inline {
+    let bits = x.bits();
+    let negative = (bits >> 63u64) != 0u64;
+    if ((bits >> 52u64) & 0x7FFu64) == 0x7FFu64 || (bits & 0x7FFFFFFFFFFFFFFFu64) == 0u64 {
+      return FloatDigits(digits: 0u64, exponent: 0i32, negative: negative);
+    }
+    var dg = 0u64;
+    let e = floatDigits(&mut dg as *u64, x);
+    FloatDigits(digits: dg, exponent: i32.from(e), negative: negative)
+  }
+
+  // The same for the shortest text that reads back as that f32
+  pub fn shortestF32(x: f32) FloatDigits inline {
+    let bits = u64.from(x.bits());
+    let negative = (bits >> 31u64) != 0u64;
+    if ((bits >> 23u64) & 0xFFu64) == 0xFFu64 || (bits & 0x7FFFFFFFu64) == 0u64 {
+      return FloatDigits(digits: 0u64, exponent: 0i32, negative: negative);
+    }
+    var dg = 0u64;
+    let e = floatDigits32(&mut dg as *u64, x);
+    FloatDigits(digits: dg, exponent: i32.from(e), negative: negative)
+  }
+}
+
+// The shortest digits of a float: its value is digits * 10^exponent (negated
+// if 'negative'), where 'digits' is an integer of 1 to 17 digits with no
+// trailing zero. Zero, an infinity and a NaN have digits 0 and exponent 0, and
+// 'negative' is their sign bit: the caller tells them apart by the float.
+pub struct FloatDigits {
+  pub digits: u64;
+  pub exponent: i32;
+  pub negative: bool;
 }
 
 extern {
+  fn @c("cone_floatDigits") floatDigits(out: *u64, x: f64) i64;
+  fn @c("cone_floatDigits32") floatDigits32(out: *u64, x: f32) i64;
   fn @c("cone_floatShortest") floatShortest(buf: *u8, x: f64) usize;
   fn @c("cone_floatShortest32") floatShortest32(buf: *u8, x: f32) usize;
 }

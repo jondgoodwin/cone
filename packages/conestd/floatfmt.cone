@@ -341,6 +341,39 @@ pub fn cone_floatShortest32(buf: *u8, x: f32) usize {
     bits & 0x7FFFFFu64, 23u64, 0xFFu64, 150i64)
 }
 
+// The shortest digits of a finite nonzero float given by its parts (as for
+// shortestOf), with no trailing zero: writes the digits (an integer) at 'out'
+// and answers the power of ten of the last digit
+fn digitsOf(out: *u64, biased: u64, fraction: u64, fracBits: u64, bias: i64) i64 {
+  let m2 = if biased == 0u64 {fraction} else {fraction | (1u64 << fracBits)};
+  let e2 = (if biased == 0u64 {1i64} else {i64.from(biased)}) - bias;
+  let sd = shortestDigits(m2, e2, fraction == 0u64 && biased > 1u64);
+  var dg = sd.digits;
+  var e10 = sd.exp10;
+  while dg % 10u64 == 0u64 {
+    dg = dg / 10u64;
+    e10 = e10 + 1i64;
+  }
+  *out = dg;
+  e10
+}
+
+// The shortest digits of a finite nonzero f64: the integer (no trailing zero)
+// is written at 'out', and the power of ten of its last digit is answered; the
+// same digits cone_floatShortest writes
+pub fn cone_floatDigits(out: *u64, x: f64) i64 {
+  var v = x;
+  let bits = *(&mut v as *u64);
+  digitsOf(out, (bits >> 52u64) & 0x7FFu64, bits & 0xFFFFFFFFFFFFFu64, 52u64, 1075i64)
+}
+
+// The same for an f32 (cone_floatShortest32's digits)
+pub fn cone_floatDigits32(out: *u64, x: f32) i64 {
+  var v = x;
+  let bits = u64.from(*(&mut v as *u32));
+  digitsOf(out, (bits >> 23u64) & 0xFFu64, bits & 0x7FFFFFu64, 23u64, 150i64)
+}
+
 // ---------------------------------------------------------------------------
 // A float read from text
 // ---------------------------------------------------------------------------
