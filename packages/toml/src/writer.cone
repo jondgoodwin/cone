@@ -42,9 +42,13 @@ pub struct Writer {
   // The names of the tables opened, and the keys of the one now open
   tables: List[String];
   keys: List[String];
+  // Every key written, as its path ('k' at the root, 'a.k' in [a]), and the
+  // name of the table now open ('' before the first)
+  paths: List[String];
+  cur: String;
 
   pub fn init(self: &new, opts: WriteOptions) {
-    *self = Writer(opts, String(), 0u32, false, 0u32, String(), List[String](), List[String]());
+    *self = Writer(opts, String(), 0u32, false, 0u32, String(), List[String](), List[String](), List[String](), String());
   }
 
   fn fail(self: &mut, reason: &str) {
@@ -109,12 +113,47 @@ pub struct Writer {
       }
       j = j + 1usize;
     }
+    // The reader refuses a table named like a key: a root key like the table's
+    // first part, or a key of the table above like its last part
+    var firstEnd = b.len;
+    var lastDot = b.len;
+    var k = 0usize;
+    while k < b.len {
+      if b[k] == '.' {
+        if firstEnd == b.len { firstEnd = k; }
+        lastDot = k;
+      }
+      k = k + 1usize;
+    }
+    let firstPart = name.slice(0usize, firstEnd);
+    var q = 0usize;
+    while q < self.paths.len() {
+      let p = self.paths[q].view();
+      if p == name || p == firstPart {
+        var m = String.from("the table \"");
+        m.append(name);
+        m.append("\" has the name of the key \"");
+        if p == name && lastDot < b.len {
+          m.append(name.sliceFrom(lastDot + 1usize));
+          m.append("\" of [");
+          m.append(name.slice(0usize, lastDot));
+          m.append("]");
+        } else {
+          m.append(p);
+          m.append("\" of the root");
+        }
+        self.fail(m.view());
+        return;
+      }
+      q = q + 1usize;
+    }
     if blank { self.out.appendByte('\n'); }
     self.out.appendByte('[');
     self.out.append(name);
     self.out.appendByte(']');
     self.endLine();
     self.tables.push(String.from(name));
+    self.cur = String.from(name);
     self.keys = List[String]();
   }
 
@@ -139,6 +178,25 @@ pub struct Writer {
       }
       j = j + 1usize;
     }
+    var path = String();
+    if self.cur.len() > 0usize { path.append(self.cur.view()); path.append("."); }
+    path.append(key);
+    var t = 0usize;
+    while t < self.tables.len() {
+      if self.tables[t].view() == path.view() {
+        var m = String.from("the key \"");
+        m.append(key);
+        m.append("\" of [");
+        m.append(self.cur.view());
+        m.append("] has the name of the table \"");
+        m.append(path.view());
+        m.append("\"");
+        self.fail(m.view());
+        return false;
+      }
+      t = t + 1usize;
+    }
+    self.paths.push(path);
     self.keys.push(String.from(key));
     self.out.append(key);
     self.out.append(" = ");
