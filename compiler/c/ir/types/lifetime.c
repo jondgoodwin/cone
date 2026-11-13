@@ -84,6 +84,8 @@ static Name *lifeErasedName(Name *name) {
     return lifeIsInvariant(name) ? name : NULL;
 }
 
+static int lifeArgsHoldBrand(Nodes *args);
+
 INode *lifeErased(INode *type) {
     if (type == NULL)
         return type;
@@ -99,13 +101,23 @@ INode *lifeErased(INode *type) {
         int anyinv = 0;
         for (uint32_t k = 0; lifeuse->names && k < lifeuse->count; ++k)
             anyinv |= lifeIsInvariant(lifeuse->names[k]);
-        if (anyinv) {
+        // A written argument that holds a brand keeps its own arguments, erased
+        // in turn, so lifeCanonBrands numbers that brand with the caller's.
+        int holdbrand = lifeuse->typeargs && lifeArgsHoldBrand(lifeuse->typeargs);
+        if (anyinv || holdbrand) {
             LifeUse *erased = memAllocBlk(sizeof(LifeUse));
-            erased->names = memAllocBlk(lifeuse->count * sizeof(Name *));
+            erased->names = lifeuse->count ? memAllocBlk(lifeuse->count * sizeof(Name *)) : NULL;
             for (uint32_t k = 0; k < lifeuse->count; ++k)
                 erased->names[k] = lifeErasedName(lifeuse->names[k]);
             erased->count = lifeuse->count;
             erased->typeargs = NULL;
+            if (holdbrand) {
+                erased->typeargs = newNodes(lifeuse->typeargs->used);
+                INode **argp;
+                uint32_t argcnt;
+                for (nodesFor(lifeuse->typeargs, argcnt, argp))
+                    nodesAdd(&erased->typeargs, isTypeNode(*argp) ? lifeErased(*argp) : *argp);
+            }
             erased->at = lifeuse->at;
             erased->held = NULL;
             copy->lifeuse = erased;
