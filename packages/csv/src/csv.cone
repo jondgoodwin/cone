@@ -51,6 +51,9 @@
 //   the next 'next' (error 1339, the record "changes shape"); the Record
 //   itself, kept as a bare '&Record', is not refused (Cone's '&mut' is shared)
 //   and shows the later row, so copy with 'toList' what must outlive a row.
+//   ('next(self: &uni)' was tried: it also refuses a kept '&Record', but it
+//   refuses 'index', 'headers' and 'line' while a record is held, the usual
+//   loop, so it stays '&mut'.)
 // - The rules are RFC 4180's, with a bare LF accepted as a line end on reading
 //   (a lone CR is not one). The last record needs no line end. A field may be
 //   quoted with '"', and then may hold the delimiter, CR and LF, and writes a
@@ -68,7 +71,7 @@
 //   'next' answers the records after it. A header that fails to read fails the
 //   first 'next'. Record numbers count the header as record 1.
 // - The delimiter and the quote are options ('Options.tabs()' for TSV). They
-//   must differ, and neither may be CR or LF.
+//   must differ, and neither may be CR or LF: options that break this are a\n//   program error, a panic at the call of 'readerWith' or 'Writer', not an Err.
 // - The writer quotes a field only when it holds the delimiter, the quote, CR
 //   or LF ('Quoting.Necessary'), or always ('Quoting.Always'). It writes CRLF
 //   after a record ('WriteOptions.crlf', LF when false). A record of no
@@ -96,8 +99,9 @@ pub enum ErrorKind {
   BadUtf8;
   // A record whose length differs from the first's (when 'FieldCount.Locked')
   FieldCount;
-  // An option CSV cannot work with (a delimiter equal to the quote, or either
-  // one CR or LF), found when a Reader or a Writer is made
+  // Writing: a field CSV cannot hold (none today: fields are '&str', always
+  // UTF-8; kept for a byte-field writer). Illegal options are not this: they
+  // panic where the Reader or Writer is made.
   WriteValue;
 }
 
@@ -205,10 +209,17 @@ pub enum Quoting {
 // A table as owned text: records of fields
 pub alias Rows = List[List[String]];
 
-// Why options cannot be used, or an empty string
-fn optionProblem(delimiter: u8, quote: u8) &str {
-  if delimiter == quote { return "the delimiter and the quote are the same byte"; }
-  if delimiter == '\r' || delimiter == '\n' { return "the delimiter may not be CR or LF"; }
-  if quote == '\r' || quote == '\n' { return "the quote may not be CR or LF"; }
-  ""
+// Options that cannot work are a program error: a panic at the caller's line
+// that names the function, the option and why
+fn checkOptions(delimiter: u8, quote: u8, who: &str, file: &Array[u8], line: u32) {
+  var why = "";
+  if delimiter == quote { why = "delimiter equals the quote"; }
+  else if delimiter == '\r' || delimiter == '\n' { why = "delimiter is CR or LF"; }
+  else if quote == '\r' || quote == '\n' { why = "quote is CR or LF"; }
+  if why.len > 0usize {
+    var m = String.from(who);
+    m.append(": ");
+    m.append(why);
+    panic(m.view(), file, line);
+  }
 }
