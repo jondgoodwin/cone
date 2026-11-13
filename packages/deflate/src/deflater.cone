@@ -59,7 +59,7 @@ fn chainMatchLen(bp: *u8, ci: usize, ib: usize, n: usize) usize inline {
 // level 1 does; true enters every position it covers. 'head' and
 // 'prev' are the hash chains: 'head' by hash the newest position, 'prev' by
 // position (modulo 32768) the one before it with the same hash.
-fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32],
+fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut Array[i64, 32768], tokens: &mut List[u32],
   chainLimit: usize, insertAll: bool, maxTokens: usize, final: bool) bool {
   let n = buf.len;
   let bp = buf as *u8;
@@ -74,30 +74,34 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
     if ib + 3usize <= n {
       let h = hash3(buf, ib);
       var cand = *head[h];
-      var chain = 0usize;
-      while cand >= 0i64 && chain < chainLimit {
+      // The candidates left to try (ib + 3 <= n here, so the data does not end at bestLen 0)
+      var left = chainLimit;
+      // The byte pair compared first: the two ending at bestLen (the first two while bestLen is 0)
+      var off = 0usize;
+      while cand >= 0i64 && left > 0usize {
         if i - cand > 32768i64 { break; }
         let ci = usize.from(cand - base);
         // Quick reject, as miniz's find_match does: a candidate longer than bestLen agrees with this
         // position at every byte up to and including bestLen, so the byte at bestLen (and the one
-        // before it), then the first two, refuse most candidates before the compare. (None can win
-        // when the data ends first.) A refused candidate would have had l <= bestLen: output is the same.
-        // Bounds of the raw reads: ib + bestLen < n (the guard) and ci < ib, so the two bytes at
+        // before it), then the first two, refuse most candidates before the compare. A refused candidate
+        // would have had l <= bestLen: output is the same.
+        // Bounds of the raw reads: ib + bestLen < n (kept by the break below once a match reaches the
+        // end of the data, after which no candidate can win) and ci < ib, so the two bytes at
         // bestLen - 1 (bestLen >= 1) and bestLen lie inside the input for both; the first
         // two bytes lie inside as ib + 3 <= n
-        if ib + bestLen < n && (bestLen == 0usize
-              || mem.readRaw[u16]((bp + (ci + (bestLen - 1usize))) as *u16) == mem.readRaw[u16]((bp + (ib + (bestLen - 1usize))) as *u16))
+        if mem.readRaw[u16]((bp + (ci + off)) as *u16) == mem.readRaw[u16]((bp + (ib + off)) as *u16)
             && mem.readRaw[u16]((bp + ci) as *u16) == mem.readRaw[u16]((bp + ib) as *u16) {
           // Match length at this candidate (the first two bytes are equal)
           let l = chainMatchLen(bp, ci, ib, n);
           if l > bestLen {
             bestLen = l;
             bestDist = usize.from(i - cand);
-            if l == 258usize { break; }
+            if l == 258usize || ib + bestLen >= n { break; }
+            off = bestLen - 1usize;
           }
         }
-        cand = *prev[usize.from(cand & 32767i64)];
-        chain += 1usize;
+        cand = prev[usize.from(cand & 32767i64)];
+        left -= 1usize;
       }
     }
     if bestLen >= 3usize {
@@ -109,7 +113,7 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
         if ib + k + 3usize <= n {
           let h = hash3(buf, ib + k);
           let p = i + i64.from(k);
-          prev.set(usize.from(p & 32767i64), *head[h]);
+          prev[usize.from(p & 32767i64)] = *head[h];
           head.set(h, p);
         }
         k += 1usize;
@@ -119,7 +123,7 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
       tokens.push(u32.from(buf[ib]));
       if ib + 3usize <= n {
         let h = hash3(buf, ib);
-        prev.set(usize.from(i & 32767i64), *head[h]);
+        prev[usize.from(i & 32767i64)] = *head[h];
         head.set(h, i);
       }
       *cur = i + 1i64;
@@ -140,7 +144,7 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
 // '*savedLen' and '*savedDist' are the held match (0 for none), found at
 // position cur - 1; they live in the Deflater between calls, so a call may stop
 // for want of look-ahead with a match held. Otherwise as 'lzScan'.
-fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32],
+fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut Array[i64, 32768], tokens: &mut List[u32],
   chainLimit: usize, savedLen: &mut usize, savedDist: &mut usize, maxTokens: usize, final: bool) bool {
   let n = buf.len;
   let bp = buf as *u8;
@@ -161,26 +165,28 @@ fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], p
         if limit == 0usize { limit = 1usize; }
       }
       var cand = *head[h];
-      var chain = 0usize;
-      while cand >= 0i64 && chain < limit {
+      // The candidates left to try; none when the data already ends at the held match's length
+      var left = if ib + bestLen < n {limit} else {0usize};
+      var off = if bestLen > 0usize {bestLen - 1usize} else {0usize};
+      while cand >= 0i64 && left > 0usize {
         if i - cand > 32768i64 { break; }
         let ci = usize.from(cand - base);
-        // Only a candidate that agrees at bestLen can beat bestLen (and none can when the data ends first)
+        // Only a candidate that agrees at bestLen can beat bestLen
         // Bounds of the raw reads: as in 'lzScan'; with bestLen 0 the two bytes tested are the first two
-        let off = if bestLen > 0usize {bestLen - 1usize} else {0usize};
-        if ib + bestLen < n && mem.readRaw[u16]((bp + (ci + off)) as *u16) == mem.readRaw[u16]((bp + (ib + off)) as *u16)
+        if mem.readRaw[u16]((bp + (ci + off)) as *u16) == mem.readRaw[u16]((bp + (ib + off)) as *u16)
             && mem.readRaw[u16]((bp + ci) as *u16) == mem.readRaw[u16]((bp + ib) as *u16) {
           let l = chainMatchLen(bp, ci, ib, n);
           if l > bestLen {
             bestLen = l;
             bestDist = usize.from(i - cand);
-            if l == 258usize { break; }
+            if l == 258usize || ib + bestLen >= n { break; }
+            off = bestLen - 1usize;
           }
         }
-        cand = *prev[usize.from(cand & 32767i64)];
-        chain += 1usize;
+        cand = prev[usize.from(cand & 32767i64)];
+        left -= 1usize;
       }
-      prev.set(usize.from(i & 32767i64), *head[h]);
+      prev[usize.from(i & 32767i64)] = *head[h];
       head.set(h, i);
     }
     // The match found here, if it is a usable one (and, when one is held, longer)
@@ -195,7 +201,7 @@ fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], p
         let pb = usize.from(p - base);
         if pb + 3usize <= n {
           let h = hash3(buf, pb);
-          prev.set(usize.from(p & 32767i64), *head[h]);
+          prev[usize.from(p & 32767i64)] = *head[h];
           head.set(h, p);
         }
         p += 1i64;
@@ -218,7 +224,7 @@ fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], p
           let pb = usize.from(p - base);
           if pb + 3usize <= n {
             let h = hash3(buf, pb);
-            prev.set(usize.from(p & 32767i64), *head[h]);
+            prev[usize.from(p & 32767i64)] = *head[h];
             head.set(h, p);
           }
           p += 1i64;
@@ -339,7 +345,7 @@ pub struct Deflater {
   base: i64;
   cur: i64;
   head: List[i64];
-  prev: List[i64];
+  prev: Uni[Array[i64, 32768]];
   tokens: List[u32];
   // Levels 4 to 9: the lazy matcher's held match, found at position cur - 1
   // (length 0 for none) and not yet written
@@ -375,12 +381,12 @@ pub struct Deflater {
   pub fn make(format: Format, level: i32) Deflater {
     let lv = levelOf(level);
     var head = List[i64]();
-    var prev = List[i64]();
+    // 'prev' is filled at every level (level 0 never reads it), so it is always a whole array
+    let prev = Uni[Array[i64, 32768]](Array[i64, 32768]() <- fill -1i64);
     if lv > 0 {
       head.reserve(32768usize);
-      prev.reserve(32768usize);
       var i = 0usize;
-      while i < 32768usize { head.push(-1i64); prev.push(-1i64); i += 1usize; }
+      while i < 32768usize { head.push(-1i64); i += 1usize; }
     }
     let table = if format == Format.Gzip {Crc32.make()} else {Crc32(List[u32]())};
     var gz = GzipHeader.plain();
@@ -508,10 +514,10 @@ pub struct Deflater {
     self.slide();
     if level == 0 { return self.stepStored(); }
     let full = if level >= 4 {
-      lzScanLazy(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level), &mut savedLen, &mut savedDist,
+      lzScanLazy(buf.view(), base, &mut cur, &mut head, &mut *prev, &mut tokens, chainLimitOf(level), &mut savedLen, &mut savedDist,
         blockTokens(), finishing)
     } else {
-      lzScan(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level), level > 1,
+      lzScan(buf.view(), base, &mut cur, &mut head, &mut *prev, &mut tokens, chainLimitOf(level), level > 1,
         if level == 1 {fixedFlushTokens()} else {blockTokens()}, finishing)
     };
     if full {
