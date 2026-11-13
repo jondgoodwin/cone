@@ -1,0 +1,151 @@
+// The fast loop writes literals and matches through raw pointers, matches in whole words (16 bytes a
+// step, so up to 15 bytes land past a match, in slack the list has not yet been given). This pins that
+// the slack never shows in the output: hand-built fixed-Huffman streams of P literals, one match
+// (length 3 to 258, distance 1 to 40, then 100, 1000 and the whole output so far) and a literal, are
+// inflated whole and in small pulls (so the fast loop stops and restarts at many positions), and
+// compared byte for byte with a copy made one byte at a time here.
+
+mod fastwide;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+import iobuf use IoBuf;
+import stdio use *;
+
+var seed: u64 = 99u64;
+fn rnd() u64 {
+  seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+  seed >> 24u64
+}
+
+struct BitW {
+  v: List[u8];
+  acc: u64;
+  n: u32;
+
+  fn put(self: &mut, val: u64, bits: u32) {
+    acc = acc | (val << u64.from(n));
+    n += bits;
+    while n >= 8u32 { v.push(u8.from(acc & 255u64)); acc = acc >> 8u64; n -= 8u32; }
+  }
+  fn code(self: &mut, c: u64, bits: u32) {
+    var r = 0u64;
+    var i = 0u32;
+    while i < bits { r = (r << 1u64) | ((c >> u64.from(i)) & 1u64); i += 1u32; }
+    self.put(r, bits);
+  }
+  fn lit(self: &mut, s: u64) {
+    if s < 144u64 { self.code(0x30u64 + s, 8u32); }
+    else if s < 256u64 { self.code(0x190u64 + (s - 144u64), 9u32); }
+    else if s < 280u64 { self.code(s - 256u64, 7u32); }
+    else { self.code(0xC0u64 + (s - 280u64), 8u32); }
+  }
+}
+
+let lenB: Array[u64, 29] = [3u64,4u64,5u64,6u64,7u64,8u64,9u64,10u64,11u64,13u64,15u64,17u64,19u64,23u64,27u64,31u64,35u64,43u64,51u64,59u64,67u64,83u64,99u64,115u64,131u64,163u64,195u64,227u64,258u64];
+let lenE: Array[u32, 29] = [0u32,0u32,0u32,0u32,0u32,0u32,0u32,0u32,1u32,1u32,1u32,1u32,2u32,2u32,2u32,2u32,3u32,3u32,3u32,3u32,4u32,4u32,4u32,4u32,5u32,5u32,5u32,5u32,0u32];
+let disB: Array[u64, 30] = [1u64,2u64,3u64,4u64,5u64,7u64,9u64,13u64,17u64,25u64,33u64,49u64,65u64,97u64,129u64,193u64,257u64,385u64,513u64,769u64,1025u64,1537u64,2049u64,3073u64,4097u64,6145u64,8193u64,12289u64,16385u64,24577u64];
+let disE: Array[u32, 30] = [0u32,0u32,0u32,0u32,1u32,1u32,2u32,2u32,3u32,3u32,4u32,4u32,5u32,5u32,6u32,6u32,7u32,7u32,8u32,8u32,9u32,9u32,10u32,10u32,11u32,11u32,12u32,12u32,13u32,13u32];
+
+// Fills 'lits' with p random bytes, answers the stream and puts the expected output in 'want'
+fn build(p: usize, len: usize, dist: usize, lits: &mut List[u8], want: &mut List[u8]) List[u8] {
+  var w = BitW(List[u8](), 0u64, 0u32);
+  w.put(1u64, 1u32);
+  w.put(1u64, 2u32);
+  var i = 0usize;
+  while i < p {
+    let b = u8.from(rnd() % 256u64);
+    w.lit(u64.from(b));
+    want.push(b);
+    i += 1usize;
+  }
+  var li = 28usize;
+  while lenB[li] > u64.from(len) { li -= 1usize; }
+  w.lit(257u64 + u64.from(li));
+  w.put(u64.from(len) - lenB[li], lenE[li]);
+  var di = 29usize;
+  while disB[di] > u64.from(dist) { di -= 1usize; }
+  w.code(u64.from(di), 5u32);
+  w.put(u64.from(dist) - disB[di], disE[di]);
+  var k = 0usize;
+  while k < len { want.push(*want[want.len() - dist]); k += 1usize; }
+  w.lit(65u64);
+  want.push(65u8);
+  w.lit(256u64);
+  w.put(0u64, 8u32);
+  var out = List[u8]();
+  out.appendSlice(w.v.view());
+  out
+}
+
+fn sameBytes(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len { return false; }
+  var i = 0usize;
+  while i < a.len { if a[i] != b[i] { return false; } i += 1usize; }
+  true
+}
+
+// Inflates 's' taking 'maxPull' output bytes at a time; answers the output (and whether it ended Done)
+fn decode(s: &Array[u8], maxPull: usize, ok: &mut bool) List[u8] {
+  var inf = Inflater.make(Format.Raw);
+  inf.feed(s);
+  inf.finish();
+  var out = List[u8]();
+  var guard = 0usize;
+  var st = Status.MoreOutput;
+  while guard < 1000000usize && (st == Status.MoreOutput || st == Status.NeedInput) {
+    guard += 1usize;
+    var buf = IoBuf(maxPull);
+    let pre = buf.capacity() - maxPull;
+    buf.setLen(pre);
+    st = inf.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    if st == Status.NeedInput { break; }
+  }
+  *ok = st == Status.Done;
+  out
+}
+
+fn main() i32 {
+  var cases = 0usize;
+  var bad = 0usize;
+  let ps: Array[usize, 9] = [1usize, 2usize, 7usize, 8usize, 9usize, 40usize, 300usize, 1000usize, 5000usize];
+  var pi = 0usize;
+  while pi < 9usize {
+    let p = ps[pi];
+    var dl = List[usize]();
+    var q = 1usize;
+    while q <= 40usize { dl.push(q); q += 1usize; }
+    dl.push(100usize);
+    dl.push(1000usize);
+    dl.push(p);
+    var di = 0usize;
+    while di < dl.len() {
+      let d = *dl[di];
+      if d >= 1usize && d <= p {
+        var len = 3usize;
+        while len <= 258usize {
+          var lits = List[u8]();
+          var want = List[u8]();
+          let s = build(p, len, d, &mut lits, &mut want);
+          var pullIdx = 0usize;
+          let pulls: Array[usize, 4] = [65536usize, 261usize, 1000usize, 17usize];
+          while pullIdx < 4usize {
+            var ok = false;
+            let got = decode(s.view(), pulls[pullIdx], &mut ok);
+            cases += 1usize;
+            if !ok || !sameBytes(got.view(), want.view()) { bad += 1usize; }
+            pullIdx += 1usize;
+          }
+          len += if len < 20usize { 1usize } else { 29usize };
+        }
+      }
+      di += 1usize;
+    }
+    pi += 1usize;
+  }
+  printStr("wide copies checked "); printInt(i64.from(cases)); printStr(", wrong "); printInt(i64.from(bad)); printStr("\n");
+  expectInt(i64.from(bad), 0i64, "every wide copy matches the byte-at-a-time copy");
+  done()
+}
