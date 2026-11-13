@@ -11,10 +11,10 @@
 // order declared. 'One' is a single-owner region and 'Tally' a counted one; both
 // count their allocations and frees and print each free, and 'Tally' prints
 // each count change: '+n' after an 'aliasRef', '-n' after a 'dealiasRef'. 'F<n>' is a
-// Fin's 'final'. The counted global is copied into a local first, so its last
-// owner is the global, released only by 'finalAll()'. Replacing a global owner
-// releases what it held, as before; the counts at the end say every allocation
-// was freed, and freed once.
+// Fin's 'final'. A counted 'Tally' (its count is not atomic) is not Shareable, so it is no longer
+// a global: it is a local here, moved into another and released with it. Replacing a global owner
+// needed a plain 'var', refused (ErrorGlobalShare), so the globals are 'let's set in 'init'. The
+// counts at the end say every allocation was freed, and freed once.
 
 mod module_final_globals;
 
@@ -48,13 +48,12 @@ struct Fin {
   fn final(self: &uni) { printStr("F"); printInt(n); printStr(" "); }
 }
 
-var own: One[Fin];
-var pair: (Fin, i64);
-var vown: One[App];
-var row = [Fin(7), Fin(8)];
-var shared: Tally[mut, Fin];
-var sofin: Uni[Fin];
-var vso: Uni[App];
+let own: One[Fin];
+let pair: (Fin, i64);
+let vown: One[App + Shareable];
+let row = [Fin(7), Fin(8)];
+let sofin: Uni[Fin];
+let vso: Uni[App + Shareable];
 
 fn pairOf(n: i64) Fin, i64 { Fin(n), n }
 
@@ -62,7 +61,6 @@ fn @initpure init() {
   own = One[Fin](1);
   pair = pairOf(5);
   vown = One[Fin](2);
-  shared = Tally[mut, Fin](3);
   sofin = Uni[Fin](4);
   vso = Uni[Fin](6);
 }
@@ -75,13 +73,13 @@ fn main() i32 {
   initAll();
   printStr("shared with a local: ");
   {
-    let loc = shared;
-    printInt(loc.look());
-    printStr(" ");
+    let shared = Tally[mut, Fin](3);
+    {
+      let loc = shared;
+      printInt(loc.look());
+      printStr(" ");
+    }
   }
-  printStr("\nreplaced: ");
-  own = One[Fin](9);
-  vown = One[Fin](10);
   printStr("\nfinalAll: ");
   finalAll();
   printStr("\nallocs ");
