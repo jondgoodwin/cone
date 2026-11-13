@@ -1,0 +1,121 @@
+// ======== The writer: fields and records onto a String ========
+//
+// A Writer is given one field at a time and a call to end each record, and
+// keeps the text; 'finish' answers it. It answers a Result from 'finish', for a failure a later
+// version may find in a field. 'write' writes a
+// whole table, and 'quoted' writes one item, quoted if it needs it, into any
+// 'out <- ...'.
+
+pub struct Writer {
+  pub opts: WriteOptions;
+  out: String;
+  inRecord: bool;
+  failed: bool;
+  err: CsvError;
+
+  pub fn init(self: &new, opts: WriteOptions, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    checkOptions(opts.delimiter, opts.quote, "csv.Writer", file, line);
+    *self = Writer(opts, String(), false, false, CsvError.none());
+  }
+
+  // One field of the record: quoted when it holds the delimiter, the quote, CR
+  // or LF (or always, by 'Quoting.Always'), with a quote inside written twice
+  pub fn field(self: &mut, s: &str) {
+    if self.failed { return; }
+    if self.inRecord { self.out.appendByte(self.opts.delimiter); }
+    self.inRecord = true;
+    let always = match self.opts.quoting {
+      case is Always { true }
+      case is Necessary { false }
+    };
+    appendField(&mut self.out, s, self.opts.delimiter, self.opts.quote, always);
+  }
+
+  // The end of a record: the line end. A record that has had no field written
+  // is an empty line.
+  pub fn endRecord(self: &mut) {
+    if self.failed { return; }
+    if self.opts.crlf { self.out.appendByte('\r'); }
+    self.out.appendByte('\n');
+    self.inRecord = false;
+  }
+
+  // The fields, then the end of the record
+  pub fn record(self: &mut, fields: &List[String]) {
+    var i = 0usize;
+    while i < fields.len() {
+      self.field(fields[i].view());
+      i = i + 1usize;
+    }
+    self.endRecord();
+  }
+
+  // The text written, or the first failure. A record whose fields were written
+  // but whose 'endRecord' was not is ended here.
+  pub fn finish(self) Result[String, CsvError] {
+    var me = self;
+    if !me.failed && me.inRecord { me.endRecord(); }
+    if me.failed { return Err[String, CsvError](me.err.clone()); }
+    Ok[String, CsvError](me.(out))
+  }
+}
+
+// A table as text, standard options
+pub fn write(rows: &Rows) Result[String, CsvError] {
+  var w = Writer(WriteOptions.standard());
+  var i = 0usize;
+  while i < rows.len() {
+    w.record(&rows[i]);
+    i = i + 1usize;
+  }
+  w.finish()
+}
+
+// x as one CSV field, quoted if it needs it (comma and double quote, as
+// 'WriteOptions.standard()'), for any 'out <- ...'
+pub struct Quoted[T] {
+  x: T;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    var scratch = String();
+    x.toText(&uni scratch.textOut());
+    var field = String();
+    appendField(&mut field, scratch.view(), ',', '"', false);
+    out.writeStr(field.view());
+  }
+}
+
+pub fn quoted[T](x: T) Quoted[T] inline {
+  Quoted(x)
+}
+
+// -------- helpers --------
+
+// s appended to dest as one field
+fn appendField(dest: &mut String, s: &str, delim: u8, quote: u8, always: bool) {
+  var need = always;
+  let b = s as &Array[u8];
+  var i = 0usize;
+  while !need && i < b.len {
+    let c = b[i];
+    if c == delim || c == quote || c == '\r' || c == '\n' { need = true; }
+    i = i + 1usize;
+  }
+  if !need {
+    dest.append(s);
+    return;
+  }
+  dest.appendByte(quote);
+  var from = 0usize;
+  i = 0usize;
+  while i < b.len {
+    if b[i] == quote {
+      dest.appendBytes(&b[from..<i + 1usize]);
+      dest.appendByte(quote);
+      from = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  dest.appendBytes(&b[from..<b.len]);
+  dest.appendByte(quote);
+}

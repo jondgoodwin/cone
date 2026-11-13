@@ -1032,8 +1032,8 @@ pub struct ListDrain['a, T] is Iterator[T] {
 //
 // The columns are made by the compile-time walk of T's fields (mod-generativity.html#meta), so T
 // must be a struct, and its fields public, or all of them visible to this module (a type from
-// another module opts in with '@reflect'). A field of T named 'push', 'len', 'isEmpty' or 'get'
-// clashes with the method of that name and is refused (ErrorMetaGenClash, 1596, naming the field
+// another module opts in with '@reflect'). A field of T named 'push', 'len', 'isEmpty', 'get',
+// 'remove', 'swapRemove', 'rowAt' or 'setRowAt' clashes with the method of that name and is refused (ErrorMetaGenClash, 1596, naming the field
 // and T).
 //
 // A row goes in whole with 'push' and comes out whole with 'get(i)', where T is Copy: a row is
@@ -1049,10 +1049,26 @@ pub struct ListDrain['a, T] is Iterator[T] {
 // columns and dropped, so T's own 'final' runs once per row (see 'final' below); T's fields must
 // then be ones this module may give a value to, which a private field of an '@reflect' type is not
 // (ErrorFieldsRebuild, 1622, at the rebuilding line).
-// Not yet: 'ps[i].pos' as a place, a layout marker, and 'remove'.
-pub struct SoaList[T] is Default {
+// 'remove(i)' and 'swapRemove(i)' take a row out whole, for any T, a move type and a T with its own
+// 'final' included: the row is rebuilt from a raw read of each column's value, the columns close
+// the gap, and the rebuilt value is the caller's, finalized as any value is when it is dropped.
+// 'SoaList[T](region)' hands the region to each column, so the columns' blocks come from it.
+// 'SoaList' declares 'SoaLayout', which makes the row a place for the compiler: 'ps[i].pos' is
+// 'ps.pos[i]', so it reads, assigns, '+='s and borrows ('&uni ps[i].pos') as that element of the
+// column does, 'ps[i].pos.x += 1' included; a name that is no column is refused. Where T is Copy a
+// whole row reads as 'ps[i]' (which is 'ps.rowAt(i)') and is written as 'ps[i] = r' (which is
+// 'ps.setRowAt(i, r)'). No borrow of a whole row exists, since the row is split into columns:
+// '&uni ps[i]' is refused, and '&uni ps.pos[i]' is the form to write. 'rowAt' and 'setRowAt' are
+// field names T may not have, as 'len' and 'push' are.
+pub struct SoaList[T] is Default, Sendable, CarriesRegion, SoaLayout {
   #each #f in #fields(T) {
     pub #f: List[#f.type];
+  }
+
+  // An empty list of rows, 'SoaList[Body]()': each column empty, its block to come from the
+  // region, which a construction that names none leaves out and is handed the heap's.
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) {
+    *self = SoaList(#each #f in #fields(T) { #f: List[#f.type](region) });
   }
 
   // How many rows it holds: the length of its columns (0 for a T with no fields)
@@ -1077,6 +1093,54 @@ pub struct SoaList[T] is Default {
   pub fn get(self: &, index: usize) Option[T] where T is Copy {
     if index >= self.len() { return None; }
     Some[T](T(#each #f in #fields(T) { #f: self.#f[index] }))
+  }
+
+  // The row at index, built from each column's value there: what the compiler makes of 'ps[i]' read
+  // as a whole row. A program error if index is not below the length, reported at the caller's line.
+  pub fn rowAt(self: &, index: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) T where T is Copy {
+    let n = self.len();
+    if index >= n { outOfRange(index, n, file, line); }
+    T(#each #f in #fields(T) { #f: self.#f[index] })
+  }
+
+  // Store a row at index, each field into its column: what the compiler makes of 'ps[i] = r'. A
+  // program error if index is not below the length, reported at the caller's line.
+  pub fn setRowAt(self: &mut, index: usize, row: T, file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Copy {
+    let n = self.len();
+    if index >= n { outOfRange(index, n, file, line); }
+    #each #f in #fields(T) {
+      self.#f[index] = row.#f;
+    }
+  }
+
+  // Take the row at index out whole, the rows after it moving down one: rows [a, b, c] with 1
+  // removed gives b and leaves [a, c]. A program error if index is not below the length, reported
+  // at the line of the caller. Works for a T that moves (a String field) or has a 'final': the
+  // row is rebuilt from a raw read of each column's value, and each column closes its gap.
+  pub fn remove(self: &mut, index: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) T {
+    let n = self.len();
+    if index >= n { outOfRange(index, n, file, line); }
+    let row = T(#each #f in #fields(T) { #f: mem.readRaw(self.#f.ptr + index) });
+    #each #f in #fields(T) {
+      mem.moveRaw(self.#f.ptr + index, self.#f.ptr + (index + 1usize), self.#f.used - index - 1usize);
+      self.#f.used = self.#f.used - 1usize;
+    }
+    row
+  }
+
+  // Take the row at index out whole and put the last row in its place, in constant time: rows
+  // [a, b, c, d] with 1 swap-removed gives b and leaves [a, d, c]. The order of the rest is not
+  // kept. A program error if index is not below the length.
+  pub fn swapRemove(self: &mut, index: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) T {
+    let n = self.len();
+    if index >= n { outOfRange(index, n, file, line); }
+    let row = T(#each #f in #fields(T) { #f: mem.readRaw(self.#f.ptr + index) });
+    let last = n - 1usize;
+    #each #f in #fields(T) {
+      if index != last { mem.moveRaw(self.#f.ptr + index, self.#f.ptr + last, 1usize); }
+      self.#f.used = last;
+    }
+    row
   }
 
   // Its death, for a T that has something to finalize: each row is built whole again from its

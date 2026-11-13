@@ -149,12 +149,12 @@ fn consoleOne(fd: i32, p: *u8, n: usize) {
 
 // Make room for 'need' more bytes: whether there is now
 pub fn cone_textGrow(w: &uni core.TextOut, need: usize) bool {
-  if w.mode == 1u32 {
+  if (w.mode & 3u32) == 1u32 {
     let spiller = w.spill as core.TextSpill;
     spiller(w, need);
     return w.len + need <= w.cap;
   }
-  if w.mode == 2u32 {return false;}
+  if (w.mode & 3u32) == 2u32 {return false;}
   // A record: seal the current bytes, chain on a block big enough
   var size = 1024usize;
   if w.last != null {size = (*w.last).cap * 2usize;}
@@ -185,6 +185,12 @@ pub fn cone_textGrow(w: &uni core.TextOut, need: usize) bool {
 // The writer dies: the function its maker gave takes the record away, then the
 // blocks go back
 pub fn cone_textFinish(w: &uni core.TextOut) {
+  // A record that wrote a style, with color on, ends with a reset, so a style left
+  // on never leaks into the shell. Before 'done', which takes the record away
+  if w.styled() && w.colorOn() {
+    w.putByte(27u8);
+    w.writeStr("[0m");
+  }
   if w.done != 0usize {
     let finish = w.done as core.TextDone;
     finish(w);

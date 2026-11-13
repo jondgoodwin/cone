@@ -455,11 +455,27 @@ category = "reject"
 description = "A loop among a call's arguments whose value does not suit a field: the construction's own error, in the instance that has it"
 tags = ["typecheck"]
 
-# SoaList[T]'s whole-row 'push' on a SoaList of a move type. (A T with a field named 'len' is also
-# refused, but inside collections.cone, where this runner cannot take an annotation: see the PR.)
+# SoaList[T]'s whole-row 'push' on a SoaList of a move type.
 [scenario.meta_soalist_reject]
 category = "reject"
 description = "SoaList[T]'s whole-row 'push' refused where T is a move type (the 'where T is Copy' unmet): ErrorWhereAbsent at the call"
+tags = ["typecheck"]
+
+# A T with a field named as a SoaList method. The refusal is at the method in collections.cone, which
+# this runner cannot annotate, so it is listed as unlocated; the call that follows is annotated.
+[scenario.meta_soalist_reject_field]
+category = "reject"
+description = "SoaList[T] of a T with a field named 'len': ErrorMetaGenClash naming the field, T and the method (located in collections.cone), then ErrorFldArgs at the call (the field is not callable)"
+tags = ["typecheck"]
+
+[[scenario.meta_soalist_reject_field.unlocated]]
+code = "ErrorMetaGenClash"
+path = "packages/collections/src/collections.cone"
+message = "Field 'len' of 'Ln' clashes with the method 'len' of 'SoaList'"
+
+[scenario.meta_soalist_reject_send]
+category = "reject"
+description = "SoaList[T] is Sendable where T is: rows of plain data and of a String are accepted where a Sendable is asked, rows with a raw pointer refused (ErrorNotSendable)"
 tags = ["typecheck"]
 
 [scenario.meta_if_define_order]
@@ -479,3 +495,20 @@ tags = ["parse", "runtime"]
 [[scenario.meta_if_define_ne.run]]
 name = "release"
 options = ["-DLEVEL=3", "--define=NEG=-7"]
+
+# 'ps[i].f' and the whole row 'ps[i]' over a type declaring SoaLayout (SoaList): the compiler makes
+# them 'ps.f[i]', 'ps.rowAt(i)' and 'ps.setRowAt(i, r)'.
+[scenario.meta_soa_place]
+category = "run"
+description = "'ps[i].f' over a SoaList is the element of the column 'ps.f[i]': read, '=', '+=', '++', a nested field, '&uni' of a field, through a '&uni SoaList' parameter; a whole Copy row read as 'ps[i]' and written as 'ps[i] = r'; a List of the same type and a type with its own '[]' unaffected"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.meta_soa_place_reject]
+category = "reject"
+description = "'ps[i]' over a SoaList refused: a name that is no column (ErrorSoaNoColumn naming the row type), '&ps[i]', '&mut ps[i]', '&uni ps[i]' and 'ps[i] += r' (ErrorSoaRowBorrow naming the column form), and a whole row of a move type (ErrorWhereAbsent, rowAt and setRowAt exist only for Copy)"
+tags = ["typecheck"]
+
+[scenario.meta_soa_place_borrow]
+category = "reject"
+description = "Borrows through 'ps[i].f' over a SoaList follow the column's rules: an '&uni' field of a row then written or borrowed again, a field borrowed then the list grown (ErrorFrozen); another column of the same row, written meanwhile, is accepted"
+tags = ["flow"]

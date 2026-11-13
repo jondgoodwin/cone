@@ -314,6 +314,11 @@ reported by generation: one whose return is not a pointer or thin reference, or 
 one whose value is not the call that allocates. The remedy is to drop the marker or fix the
 return.
 
+`ErrorSoaNoColumn` (1624) and `ErrorSoaRowBorrow` (1625) are raised by type check on a row of a
+type declaring `SoaLayout` (`SoaList`): `ps[i].f` where `f` is no field of the row type, and a
+borrow of the whole row, or a change of it in place. See type-check-reasoning, "A row of a
+`SoaLayout` type".
+
 A module trait and a module's conformance to one take four codes, split where
 the remedy is: the author of the `mod` line, of the trait, or of the module's
 declarations. `ErrorModIs` is a `mod` line's `is` that does not name one module
