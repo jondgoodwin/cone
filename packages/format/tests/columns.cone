@@ -1,0 +1,83 @@
+// Columns: pad (three aligns, fill chars, widths of ASCII, CJK and combining marks,
+// content wider than the field, hex and a type of your own) and truncate. Each
+// expected text is worked out by hand from the widths: a char of East Asian Width
+// W or F is 2 columns, a combining mark (Mn) 0, anything else 1. The gap is the
+// field's width less the text's; left puts it after, right before, center half
+// before (rounded down) and the rest after.
+
+mod columns;
+
+import testing use *;
+import collections use String;
+import format use pad, truncate, hex, Align;
+
+// A value of my own: writes "ab" (two columns)
+struct Tag {
+  pub fn toText(self: &, out: &uni TextOut) { out <- "ab"; }
+}
+
+fn chk(got: &String, want: &Array[u8], label: &Array[u8]) {
+  expectStr(got.view(), want, label);
+}
+
+fn main() i32 {
+  var s = String();
+
+  // ASCII, the three aligns, an odd and an even gap
+  s <- pad("ab", 5); chk(&s, "ab   ", "default is left"); s.clear();
+  s <- pad("ab", 5, Align.left); chk(&s, "ab   ", "left"); s.clear();
+  s <- pad("ab", 5, Align.right); chk(&s, "   ab", "right"); s.clear();
+  s <- pad("ab", 5, Align.center); chk(&s, " ab  ", "center, odd gap goes after"); s.clear();
+  s <- pad("ab", 6, Align.center); chk(&s, "  ab  ", "center, even gap"); s.clear();
+  s <- pad("ab", 2); chk(&s, "ab", "exact width"); s.clear();
+  s <- pad("", 3, Align.right); chk(&s, "   ", "empty text"); s.clear();
+
+  // Fill characters, including a wide one and a combining-free multibyte one
+  s <- pad("ab", 5, Align.left, '.'); chk(&s, "ab...", "left fill"); s.clear();
+  s <- pad("ab", 5, Align.right, '*'); chk(&s, "***ab", "right fill"); s.clear();
+  s <- pad("ab", 5, Align.center, '-'); chk(&s, "-ab--", "center fill"); s.clear();
+  s <- pad("ab", 4, Align.right, 'é'); chk(&s, "ééab", "latin-1 fill"); s.clear();
+
+  // CJK counts 2 a char; a combining mark 0
+  s <- pad("中文", 6); chk(&s, "中文  ", "cjk left (width 4)"); s.clear();
+  s <- pad("中文", 6, Align.right); chk(&s, "  中文", "cjk right"); s.clear();
+  s <- pad("中文", 7, Align.center, '.'); chk(&s, ".中文..", "cjk center"); s.clear();
+  s <- pad("é", 3); chk(&s, "é  ", "combining mark is 0 (width 1)"); s.clear();
+  s <- pad("á̂", 2, Align.right); chk(&s, " á̂", "two marks are 0"); s.clear();
+
+  // A column of mixed rows, all 4 wide
+  s <- "|", pad("a", 4), "|", pad("中", 4), "|", pad("éx", 4), "|", pad("中文", 4), "|";
+  chk(&s, "|a   |中  |éx  |中文|", "mixed column"); s.clear();
+
+  // Content wider than the field is never cut
+  s <- pad("abcdef", 3); chk(&s, "abcdef", "wider, ascii"); s.clear();
+  s <- pad("中文", 3, Align.right); chk(&s, "中文", "wider, cjk"); s.clear();
+  s <- pad("ab", 0, Align.center); chk(&s, "ab", "width 0"); s.clear();
+
+  // Around a number wrapper, a plain integer and a type of my own
+  s <- pad(hex(255u8), 6, Align.right, '0'); chk(&s, "0000ff", "hex zero filled"); s.clear();
+  s <- pad(hex(255u8), 4); chk(&s, "ff  ", "hex left"); s.clear();
+  s <- pad(42, 6, Align.right); chk(&s, "    42", "integer right"); s.clear();
+  s <- pad(-7i64, 5); chk(&s, "-7   ", "negative integer"); s.clear();
+  s <- pad(Tag(), 5, Align.center, '_'); chk(&s, "_ab__", "user type"); s.clear();
+  let t = Tag();
+  s <- pad(&t, 4, Align.right); chk(&s, "  ab", "user type by reference"); s.clear();
+  s <- "[", pad("x", 3), "]", pad("y", 3, Align.right), "!"; chk(&s, "[x  ]  y!", "in a send list"); s.clear();
+
+  // truncate: by columns, whole chars only
+  s <- truncate("abcdef", 3); chk(&s, "abc", "truncate ascii"); s.clear();
+  s <- truncate("ab", 5); chk(&s, "ab", "truncate: already short"); s.clear();
+  s <- truncate("abc", 0); chk(&s, "", "truncate to 0"); s.clear();
+  s <- truncate("中文字", 4); chk(&s, "中文", "truncate cjk, exact"); s.clear();
+  s <- truncate("中文字", 5); chk(&s, "中文", "truncate cjk, wide char would straddle"); s.clear();
+  s <- truncate("中文字", 1); chk(&s, "", "truncate cjk to 1 column"); s.clear();
+  s <- truncate("éx", 1); chk(&s, "é", "truncate keeps the mark"); s.clear();
+  s <- truncate("éx", 0); chk(&s, "", "truncate combining to 0"); s.clear();
+  s <- truncate("a中b", 2); chk(&s, "a", "truncate mixed, straddle"); s.clear();
+  s <- truncate("a中b", 3); chk(&s, "a中", "truncate mixed"); s.clear();
+  s <- truncate(hex(255u8), 1); chk(&s, "f", "truncate hex"); s.clear();
+  s <- pad(truncate("abcdef", 3), 5, Align.right); chk(&s, "  abc", "pad around truncate"); s.clear();
+  s <- truncate(Tag(), 1); chk(&s, "a", "truncate user type"); s.clear();
+
+  return done();
+}

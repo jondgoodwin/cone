@@ -27,11 +27,14 @@
 //                  lowers to U+03C3) and the Lithuanian, Turkish and Azeri rules.
 //                  A text with none of those is mapped exactly as the real
 //                  language-neutral full mapping does.
+//   width          the columns a char takes in a terminal, 0, 1 or 2 (East Asian
+//                  Width W and F as 2; combining marks, format chars and controls
+//                  as 0; Ambiguous as 1). Per code point, no grapheme clusters.
 //
 // LOOKUP. Each table is the first code point of each run of equal value, in
 // order; a lookup is a binary search for the last start not above the char.
-// The case mappings answer ASCII before any table. The tables are about 37 KB
-// in all.
+// The case mappings answer ASCII before any table. The tables are about 45 KB
+// in all, and only a program that looks one up carries it.
 
 mod unicode;
 
@@ -166,4 +169,21 @@ pub fn toLower(s: &str) String {
     appendCode(&mut out, code(toLowerSimple(c)));
   }
   out
+}
+
+// ---- Display width ----
+
+// How many terminal columns c takes: 2 for East Asian Width W and F (CJK
+// ideographs, kana, hangul, fullwidth forms, emoji with default emoji
+// presentation), 0 for combining marks (Mn, Me), format characters (Cf: the
+// joiners, directional marks, soft hyphen) and the C0 and C1 controls, else 1
+// (Ambiguous counts as 1, as terminals do). Per code point, so a text's width
+// is the sum over its chars: a joined emoji or a flag (several code points
+// drawn as one) is over-counted.
+pub fn width(c: char) u8 {
+  let x = code(c);
+  // ASCII and Latin-1 before the search: the controls are 0, the rest 1 but U+00AD
+  if x < 0xA0u32 { return if x < 0x20u32 || x >= 0x7Fu32 {0u8} else {1u8}; }
+  if x < 0x300u32 { return if x == 0xADu32 {0u8} else {1u8}; }
+  widthVals[runOf(&widthStarts, x)]
 }
