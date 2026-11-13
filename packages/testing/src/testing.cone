@@ -57,6 +57,34 @@
 // check of two plain integer literals ambiguous: the compiler does not prefer
 // an exact match over a coercion.
 //
+// Benchmarks: 'bench(name, &body)' times a function and prints one line,
+//
+//   fastSum: 12.4 ns/call (median of 21, MAD 0.3)
+//
+// 'body' is a function, a closure or a struct with '()', taking nothing, met
+// statically as 'sortBy' meets its order so a call can inline. The loop warms
+// up (100 ms), sizes a batch by doubling its calls until one batch takes about
+// 1 ms, so a clock read (tens of ns) is shared by thousands of calls, then
+// times 21 such batches and reports ns per call: the median, the least and
+// greatest ('minNs', 'maxNs') and the median absolute deviation ('madNs'),
+// returned in a BenchResult. With the standard settings a bench takes about
+// 0.2 s (the 100 ms warm-up, the doubling, and 21 rounds of about 1 ms; a body
+// of milliseconds per call takes longer, one batch being at least one call).
+// 'benchWith(name, &cfg, &body)' takes the settings, from
+// 'BenchConfig.standard()' with a field changed ('print' off silences the line,
+// for a test, whose pinned .out cannot hold a time). Wrap what the body computes
+// in 'blackBox' so the optimiser cannot delete or hoist it: for a pure
+// function 'f', 'blackBox(f(blackBox(x)))'.
+//
+// The numbers belong in the stdout of an example program run by 'congo run',
+// never in a test's pinned .out file: a time changes on every run. A test of
+// the loop checks counts and orderings, never a time. A run beside other work
+// is noise; keeping a machine quiet for timing is the business of the lanes'
+// timing windows, and no thread is pinned to a core. Not here yet: comparing
+// a run with a saved baseline; allocation counts per call (a planned
+// follow-up, which needs a hook in core's allocator); benchmarks found by
+// name or by an attribute, which wait for attributes.
+//
 // Not here yet, deferred to the careful design of testing, which is not yet
 // made: a failure naming the expression it checked
 // and the line it is on, which needs the compiler to hand a function its
@@ -68,6 +96,10 @@ mod testing;
 
 import stdio;
 import libc;
+import time;
+
+// Where 'blackBox' lets an address escape
+let sink: Atomic[usize];
 
 // How many checks have run, and how many of them failed. A check may run on
 // any thread, so each count is an atomic held by a 'let' global
@@ -75,6 +107,7 @@ let checks: Atomic[u64];
 let failures: Atomic[u64];
 
 fn @initpure init() {
+  sink = Atomic[usize].of(0usize);
   checks = Atomic[u64].of(0u64);
   failures = Atomic[u64].of(0u64);
 }
@@ -241,7 +274,157 @@ pub fn skip(reason: &Array[u8]) i32 {
   77i32
 }
 
+// -------- benchmarks --------
+
+// What one 'bench' measured, in ns per call
+pub struct BenchResult {
+  pub rounds: usize;     // samples taken
+  pub iters: u64;        // calls in each sample
+  pub medianNs: f64;     // the median of the samples
+  pub minNs: f64;
+  pub maxNs: f64;
+  pub madNs: f64;        // the median absolute deviation of the samples from their median
+}
+
+// The settings of a run. 'BenchConfig.standard()' is the defaults; change a
+// field of it for a slow body (fewer 'rounds') or a smoke test (1 round, no warm-up).
+pub struct BenchConfig {
+  pub warmupMs: u32;     // untimed warm-up: 100
+  pub rounds: u32;       // samples: 21, odd so the median is a sample
+  pub batchMs: u32;      // the length a sample's batch of calls grows to: 1
+  pub print: bool;       // print the line: true. A test of the loop turns it off, since its
+                         // pinned .out cannot hold a time
+
+  pub fn standard() BenchConfig {BenchConfig(100u32, 21u32, 1u32, true)}
+}
+
+// Time 'body' with the standard settings, print its line, return the result
+pub fn bench[F: fn()](name: &Array[u8], body: &F) BenchResult {
+  let cfg = BenchConfig.standard();
+  benchWith(name, &cfg, body)
+}
+
+// Time 'body' with the settings given, print 'name: 12.4 ns/call (median of 21, MAD 0.3)',
+// return the result. At least one round is taken.
+pub fn benchWith[F: fn()](name: &Array[u8], cfg: &BenchConfig, body: &F) BenchResult {
+  let batchNs = i64.from(cfg.batchMs) * 1000000i64;
+  let warmNs = i64.from(cfg.warmupMs) * 1000000i64;
+  let rounds = if cfg.rounds == 0u32 {1usize} else {usize.from(cfg.rounds)};
+
+  // Warm up, and size the batch: double its calls until it takes the batch
+  // length, then go on with batches of that size until the warm-up time is spent
+  var iters = 1u64;
+  var spent = 0i64;
+  var sized = false;
+  while !sized || spent < warmNs {
+    let t = batchNsOf(body, iters);
+    spent = spent + t;
+    if !sized {
+      if t >= batchNs || iters >= 1099511627776u64 {sized = true;} else {iters = iters * 2u64;};
+    };
+  };
+
+  // The rounds, each ns per call
+  let per = malloc(rounds * 8usize) as *f64;
+  var i = 0usize;
+  while i < rounds {
+    let t = batchNsOf(body, iters);
+    *(per + i) = f64.from(t) / f64.from(iters);
+    i = i + 1usize;
+  };
+  sortF64(per, rounds);
+  let med = medianOf(per, rounds);
+  let lo = *per;
+  let hi = *(per + (rounds - 1usize));
+  // The deviations from the median, in place, then their median
+  i = 0usize;
+  while i < rounds {
+    let d = *(per + i) - med;
+    *(per + i) = if d < 0. {-d} else {d};
+    i = i + 1usize;
+  };
+  sortF64(per, rounds);
+  let mad = medianOf(per, rounds);
+  libc.free(per as *u8);
+
+  if cfg.print {
+    stdio.printStr(name as &str);
+    stdio.printStr(": ");
+    printTenths(med);
+    stdio.printStr(" ns/call (median of ");
+    stdio.printUInt(u64.from(rounds));
+    stdio.printStr(", MAD ");
+    printTenths(mad);
+    stdio.printStr(")\n");
+  };
+  BenchResult(rounds, iters, med, lo, hi, mad)
+}
+
+// A value the optimiser cannot see through: returns 'v', after the address of
+// a copy of it has gone through an atomic exchange that every thread could
+// read, so the compiler must have 'v' in memory and must read it back. A body
+// times 'blackBox(f(blackBox(x)))' for a pure 'f': the inner call hides 'x'
+// from the optimiser, so 'f' cannot be folded to a constant, and the outer
+// one uses the result, so 'f' cannot be deleted. The sink costs about 6 ns a
+// call (one atomic exchange; measured once on the developer's laptop, release
+// build, as an empty body against 'blackBox(1u64)': 0.0 against 5.8 and 6.3
+// ns), so 'blackBox(f(blackBox(x)))' adds about 12 ns to 'f'. The figures
+// 'bench' prints include it and are not corrected for it: read a result under
+// about 20 ns with that cost beside it. What the optimiser does with it, read
+// from the IR: a pure call whose result goes unused is deleted; one wrapped
+// in 'blackBox' alone, on a constant, is folded to its value at compile time
+// (the exchange stays, the work goes); with the inner 'blackBox' the argument
+// is read back from memory and the work is done on every call.
+pub fn blackBox[T](v: T) T {
+  var held = v;
+  sink.swap(&held as usize);
+  held
+}
+
 // -------- inside the package --------
+
+// The ns a batch of 'n' calls of 'body' takes
+fn batchNsOf[F: fn()](body: &F, n: u64) i64 {
+  let start = time.Instant.now();
+  var k = 0u64;
+  while k < n {
+    body();
+    k = k + 1u64;
+  };
+  start.elapsed().nanos()
+}
+
+// Insertion sort: a bench has tens of rounds
+fn sortF64(p: *f64, n: usize) {
+  var i = 1usize;
+  while i < n {
+    let x = *(p + i);
+    var j = i;
+    while j > 0usize && *(p + (j - 1usize)) > x {
+      *(p + j) = *(p + (j - 1usize));
+      j = j - 1usize;
+    };
+    *(p + j) = x;
+    i = i + 1usize;
+  };
+}
+
+// The median of n sorted values: the middle one, or the mean of the middle two
+fn medianOf(p: *f64, n: usize) f64 {
+  if n % 2usize == 1usize {
+    *(p + n / 2usize)
+  } else {
+    (*(p + (n / 2usize - 1usize)) + *(p + n / 2usize)) / 2.
+  }
+}
+
+// One decimal place, rounded
+fn printTenths(v: f64) {
+  let n = u64.from(v * 10. + 0.5);
+  stdio.printUInt(n / 10u64);
+  stdio.printStr(".");
+  stdio.printUInt(n % 10u64);
+}
 
 fn pass() bool {
   checks.add(1u64);
