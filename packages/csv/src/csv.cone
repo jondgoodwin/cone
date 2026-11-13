@@ -1,0 +1,214 @@
+// The csv package: comma-separated values (RFC 4180) read and written in
+// Cone, with no C library. A pull reader over a text held in memory that hands
+// out one record at a time, a writer onto a String, and 'quoted', which writes
+// one item with CSV quoting into any 'out <- ...'.
+//
+//   mod table;
+//   import stdio use *;
+//   import collections use String;
+//   import csv;
+//
+//   fn main() i32 {
+//     var r = csv.reader("name,size\r\nbolt,12\r\n\"a, b\",3\r\n");
+//     while true {
+//       match r.next() {
+//         case let Ok(o) {
+//           match o {
+//             case let Some(rec) {                    // a &Record, good until the next 'next'
+//               match rec.get(0usize) {
+//                 case let Some(f) { printStr(f); printStr("\n"); }   // a &str
+//                 case is None { }
+//               }
+//             }
+//             case is None { return 0i32; }           // the end of the text
+//           }
+//         }
+//         case let Err(e) {
+//           let m = String() <- e;                    // 'csv: record 2, line 2, column 3: ...'
+//           printStr(m.view());
+//           return 1i32;
+//         }
+//       }
+//     }
+//     0i32
+//   }
+//
+// Writing: a 'Writer' takes 'field(&str)' and 'endRecord()' and answers the text
+// from 'finish()'; 'write(rows)' does a whole table. Anything with 'toText' goes
+// through 'quoted(x)': 'out <- csv.quoted(12), ",", csv.quoted("a, b")'.
+// 'examples/tour.cone' is the example above, with columns padded.
+//
+// METHOD CHOICES. These are defaults a later design may revisit. Each says
+// what was chosen and what was left out.
+//
+// - The text is read as bytes held in memory, as json and toml do. Left out: a
+//   reader fed in pieces (a record ends only when its closing quote arrives),
+//   over a 'streams.Reader'; and a writer onto one. A later layer.
+// - A Reader hands out one Record at a time and reuses it: 'next' answers a
+//   '&Record' that lives until the next 'next'. A field is a '&str' borrowed
+//   from the text, or, when it had "" escapes, from the record's scratch
+//   String. The checker refuses a '&str' taken from a record and used after
+//   the next 'next' (error 1339, the record "changes shape"); the Record
+//   itself, kept as a bare '&Record', is not refused (Cone's '&mut' is shared)
+//   and shows the later row, so copy with 'toList' what must outlive a row.
+// - The rules are RFC 4180's, with a bare LF accepted as a line end on reading
+//   (a lone CR is not one). The last record needs no line end. A field may be
+//   quoted with '"', and then may hold the delimiter, CR and LF, and writes a
+//   quote as ""; an empty line is one record of one empty field
+//   ('Options.skipEmptyLines' drops them). A quote inside an unquoted field
+//   (BareQuote) and text after a closing quote (QuoteThenText) are errors,
+//   not silently taken. A leading UTF-8 byte-order mark is passed over.
+// - Every record must be as long as the first ('FieldCount.Locked', the
+//   default; the first record is the header when 'Options.header' is set).
+//   'FieldCount.Free' lets them differ.
+// - The text is checked to be UTF-8, record by record, as toml does
+//   ('Options.checkUtf8', on by default); BadUtf8 holds the line and column.
+// - Header: with 'Options.header' the first record is read when the Reader is
+//   made and kept as 'headers()', 'index(name)' finds a column by it, and
+//   'next' answers the records after it. A header that fails to read fails the
+//   first 'next'. Record numbers count the header as record 1.
+// - The delimiter and the quote are options ('Options.tabs()' for TSV). They
+//   must differ, and neither may be CR or LF.
+// - The writer quotes a field only when it holds the delimiter, the quote, CR
+//   or LF ('Quoting.Necessary'), or always ('Quoting.Always'). It writes CRLF
+//   after a record ('WriteOptions.crlf', LF when false). A record of no
+//   fields and a record of one empty field both write an empty line.
+// - Left out, for later: a typed layer (rows into structs), a spreadsheet
+//   formula guard on writing, a backslash escape, skipping initial spaces,
+//   comment lines, lenient quotes, other line ends.
+// - Written in Cone with no C call, no global and no thread-local.
+
+mod csv;
+
+import collections use String, List;
+
+// -------- failure --------
+
+// What kind of thing was wrong
+pub enum ErrorKind {
+  // The text ended inside a quoted field
+  UnexpectedEnd;
+  // A quote inside an unquoted field
+  BareQuote;
+  // Text after a closing quote, before a delimiter or a line end
+  QuoteThenText;
+  // A byte sequence that is not UTF-8 (when 'Options.checkUtf8')
+  BadUtf8;
+  // A record whose length differs from the first's (when 'FieldCount.Locked')
+  FieldCount;
+  // An option CSV cannot work with (a delimiter equal to the quote, or either
+  // one CR or LF), found when a Reader or a Writer is made
+  WriteValue;
+}
+
+// Why a text could not be read or written. A reading failure holds where, in
+// bytes from the start of the text, and the line and column of that byte (a
+// quoted field may span lines), and the record, counted from 1; a writing one
+// holds zeros.
+pub struct CsvError is Error {
+  pub kind: ErrorKind;
+  pub offset: usize;
+  pub line: u32;
+  pub column: u32;
+  pub record: u32;
+  pub reason: String;
+
+  // An error that says nothing, the value a Reader or Writer holds until it fails
+  pub fn none() CsvError {
+    CsvError(ErrorKind.UnexpectedEnd, 0usize, 0u32, 0u32, 0u32, String())
+  }
+
+  // One line for a person: 'csv: record 4, line 7, column 3: a quote inside ...'
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- "csv: ";
+    if record > 0u32 { out <- "record ", record; }
+    if line > 0u32 {
+      if record > 0u32 { out <- ", "; }
+      out <- "line ", line, ", column ", column, ": ";
+    }
+    else if record > 0u32 { out <- ": "; }
+    out <- reason.view();
+  }
+
+  pub fn clone(self: &) CsvError {
+    CsvError(kind, offset, line, column, record, reason.clone())
+  }
+}
+
+// -------- options --------
+
+// Whether records must all be as long as the first
+pub enum FieldCount {
+  // A record of another length is a FieldCount error
+  Locked;
+  // Records may differ
+  Free;
+}
+
+// How a text is read
+pub struct Options {
+  // The byte between fields: not the quote, CR or LF
+  pub delimiter: u8;
+  // The byte that quotes a field
+  pub quote: u8;
+  // Whether records must be as long as the first
+  pub fieldCount: FieldCount;
+  // Whether bytes that are not UTF-8 are an error
+  pub checkUtf8: bool;
+  // Whether an empty line is dropped, not read as a record of one empty field
+  pub skipEmptyLines: bool;
+  // Whether the first record is a header, kept apart as 'headers()'
+  pub header: bool;
+
+  // Comma, double quote, every record as long as the first, UTF-8 checked,
+  // empty lines kept, no header
+  pub fn standard() Options {
+    Options(',', '"', FieldCount.Locked, true, false, false)
+  }
+
+  // As standard, with a tab between fields
+  pub fn tabs() Options {
+    Options('\t', '"', FieldCount.Locked, true, false, false)
+  }
+}
+
+// How a table is written
+pub struct WriteOptions {
+  // The byte between fields: not the quote, CR or LF
+  pub delimiter: u8;
+  // The byte that quotes a field
+  pub quote: u8;
+  // CRLF after a record (RFC 4180), or LF when false
+  pub crlf: bool;
+  // When a field is quoted
+  pub quoting: Quoting;
+
+  // Comma, double quote, CRLF, quoting only where needed
+  pub fn standard() WriteOptions {
+    WriteOptions(',', '"', true, Quoting.Necessary)
+  }
+
+  // As standard, with a tab between fields
+  pub fn tabs() WriteOptions {
+    WriteOptions('\t', '"', true, Quoting.Necessary)
+  }
+}
+
+// When the writer quotes a field
+pub enum Quoting {
+  // Only a field holding the delimiter, the quote, CR or LF
+  Necessary;
+  // Every field
+  Always;
+}
+
+// A table as owned text: records of fields
+pub alias Rows = List[List[String]];
+
+// Why options cannot be used, or an empty string
+fn optionProblem(delimiter: u8, quote: u8) &str {
+  if delimiter == quote { return "the delimiter and the quote are the same byte"; }
+  if delimiter == '\r' || delimiter == '\n' { return "the delimiter may not be CR or LF"; }
+  if quote == '\r' || quote == '\n' { return "the quote may not be CR or LF"; }
+  ""
+}

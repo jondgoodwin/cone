@@ -1,0 +1,379 @@
+// ======== The reader: one record at a time over a text held in memory ========
+//
+// A Reader walks a CSV text and answers a '&Record' at a time. The Record is
+// reused: it holds, for each field, where it lies in the text (a span), and
+// one scratch String that takes the fields that had "" escapes, which are
+// unescaped there once. A clean text allocates nothing after the first record.
+
+// Where one field is: bytes of the text, or of the scratch when 'inScratch'
+struct Span {
+  start: usize;
+  end: usize;
+  quoted: bool;
+  inScratch: bool;
+}
+
+// One row. It lives until the Reader's next 'next', which rewrites it.
+pub struct Record['a] {
+  src: &'a Array[u8];
+  spans: List[Span];
+  scratch: String;
+  startLine: u32;
+  num: u32;
+
+  // How many fields
+  pub fn len(self: &) usize { self.spans.len() }
+
+  // Field i, a borrow of the text (or of the record's scratch); None past the end
+  pub fn get(self: &, i: usize) Option[&str] {
+    match self.spans.get(i) {
+      case let Some(sp) {
+        if sp.inScratch { return Some[&str](self.scratch.view().slice(sp.start, sp.end)); }
+        Some[&str]((&self.src[sp.start..<sp.end]) as &str)
+      }
+      case is None { None[&str] }
+    }
+  }
+
+  // Field i; one past the end is a program error, a panic at the line of the
+  // caller: ask 'len' or use 'get'
+  pub fn `[]`(self: &, i: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &str {
+    let f = self.get(i);
+    if !f.isTrue() {
+      var m = String.from("csv: the record has no field ");
+      m.appendUInt(u64.from(i));
+      panic(m.view(), file, line);
+    }
+    f.unwrap()
+  }
+
+  // Whether field i was written in quotes
+  pub fn wasQuoted(self: &, i: usize) bool {
+    match self.spans.get(i) {
+      case let Some(sp) { sp.quoted }
+      case is None { false }
+    }
+  }
+
+  // The line the record started on (from 1)
+  pub fn line(self: &) u32 { self.startLine }
+
+  // The record's number (from 1; a header is record 1)
+  pub fn number(self: &) u32 { self.num }
+
+  // The fields as owned Strings
+  pub fn toList(self: &) List[String] {
+    var out = List[String]();
+    var i = 0usize;
+    while i < self.spans.len() {
+      match self.get(i) {
+        case let Some(f) { out.push(String.from(f)); }
+        case is None { }
+      }
+      i = i + 1usize;
+    }
+    out
+  }
+
+  fn clear(self: &mut) {
+    self.spans.clear();
+    self.scratch.clear();
+  }
+}
+
+pub struct Reader['a] {
+  src: &'a Array[u8];
+  pos: usize;
+  lineNo: u32;
+  recNo: u32;
+  delim: u8;
+  quote: u8;
+  locked: bool;
+  checkUtf8: bool;
+  skipEmpty: bool;
+  wantHeader: bool;
+  haveCount: bool;
+  count0: usize;
+  rec: Record['a];
+  hdr: Record['a];
+  hasHdr: bool;
+  failed: bool;
+  finished: bool;
+  err: CsvError;
+
+  // The next record, or Ok(None) at the end of the text, or why the text is not
+  // CSV. The Record is borrowed from the Reader and rewritten by the next call.
+  // After a failure it answers the same failure again.
+  pub fn next(self: &mut) Result[Option[&Record], CsvError] {
+    if self.failed { return Err[Option[&Record], CsvError](self.err.clone()); }
+    let s = self.step();
+    if s == 2u8 { return Err[Option[&Record], CsvError](self.err.clone()); }
+    if s == 1u8 { return Ok[Option[&Record], CsvError](None[&Record]); }
+    Ok[Option[&Record], CsvError](Some[&Record](&self.rec))
+  }
+
+  // The header record, when 'Options.header' was set and the text had one
+  pub fn headers(self: &) Option[&Record] {
+    if self.hasHdr { return Some[&Record](&self.hdr); }
+    None[&Record]
+  }
+
+  // The column named name in the header (the first of that name)
+  pub fn index(self: &, name: &str) Option[usize] {
+    if !self.hasHdr { return None[usize]; }
+    var i = 0usize;
+    while i < self.hdr.len() {
+      match self.hdr.get(i) {
+        case let Some(f) { if f == name { return Some[usize](i); } }
+        case is None { }
+      }
+      i = i + 1usize;
+    }
+    None[usize]
+  }
+
+  // The line (from 1) the reader is at: where the next record starts
+  pub fn line(self: &) u32 { self.lineNo }
+
+  // Bytes of the text read so far
+  pub fn offset(self: &) usize { self.pos }
+
+  fn fail(self: &mut, kind: ErrorKind, at: usize, reason: &str) {
+    if self.failed { return; }
+    self.failed = true;
+    let src = self.src;
+    self.err = CsvError(kind, at, lineOf(src, at), columnOf(src, at), self.recNo, String.from(reason));
+  }
+
+  fn addSpan(self: &mut, start: usize, end: usize, quoted: bool, inScratch: bool) {
+    self.rec.spans.push(Span(start, end, quoted, inScratch));
+  }
+
+  // Reads the Options' header when asked, once, as the Reader is made
+  fn begin(self: &mut) {
+    if !self.wantHeader { return; }
+    let s = self.step();
+    if s == 0u8 {
+      self.hdr <-> self.rec;
+      self.hasHdr = true;
+    }
+  }
+
+  // 0: a record is in 'rec'; 1: the text is finished; 2: failed
+  fn step(self: &mut) u8 {
+    let src = self.src;
+    let n = src.len;
+    let delim = self.delim;
+    let quote = self.quote;
+    while self.skipEmpty && self.pos < n {
+      let c = src[self.pos];
+      if c == '\n' { self.pos = self.pos + 1usize; self.lineNo = self.lineNo + 1u32; }
+      else if c == '\r' && self.pos + 1usize < n && src[self.pos + 1usize] == '\n' {
+        self.pos = self.pos + 2usize;
+        self.lineNo = self.lineNo + 1u32;
+      }
+      else { break; }
+    }
+    if self.pos >= n { return 1u8; }
+    self.recNo = self.recNo + 1u32;
+    self.rec.clear();
+    self.rec.startLine = self.lineNo;
+    self.rec.num = self.recNo;
+    let recStart = self.pos;
+    while true {
+      if self.pos < n && src[self.pos] == quote {
+        // A quoted field
+        let open = self.pos;
+        var p = open + 1usize;
+        var segStart = p;
+        var escaped = false;
+        var closed = false;
+        let scratchStart = self.rec.scratch.len();
+        while p < n {
+          let c = src[p];
+          if c == quote {
+            if p + 1usize < n && src[p + 1usize] == quote {
+              escaped = true;
+              self.rec.scratch.appendBytes(&src[segStart..<p + 1usize]);
+              p = p + 2usize;
+              segStart = p;
+              continue;
+            }
+            closed = true;
+            break;
+          }
+          if c == '\n' { self.lineNo = self.lineNo + 1u32; }
+          p = p + 1usize;
+        }
+        if !closed {
+          self.fail(ErrorKind.UnexpectedEnd, open, "the text ends inside a quoted field");
+          return 2u8;
+        }
+        if escaped {
+          self.rec.scratch.appendBytes(&src[segStart..<p]);
+          self.addSpan(scratchStart, self.rec.scratch.len(), true, true);
+        }
+        else {
+          self.addSpan(open + 1usize, p, true, false);
+        }
+        self.pos = p + 1usize;
+        if self.pos < n {
+          let c = src[self.pos];
+          let ok = c == delim || c == '\n' || (c == '\r' && self.pos + 1usize < n && src[self.pos + 1usize] == '\n');
+          if !ok {
+            self.fail(ErrorKind.QuoteThenText, self.pos, "text after the closing quote of a quoted field: expected the delimiter or a line end");
+            return 2u8;
+          }
+        }
+      }
+      else {
+        var p = self.pos;
+        while p < n {
+          let c = src[p];
+          if c == delim || c == '\n' { break; }
+          if c == '\r' && p + 1usize < n && src[p + 1usize] == '\n' { break; }
+          if c == quote {
+            self.fail(ErrorKind.BareQuote, p, "a quote inside an unquoted field: quote the whole field and write the quote twice");
+            return 2u8;
+          }
+          p = p + 1usize;
+        }
+        self.addSpan(self.pos, p, false, false);
+        self.pos = p;
+      }
+      if self.pos >= n { break; }
+      let c = src[self.pos];
+      if c == delim { self.pos = self.pos + 1usize; }
+      else {
+        if c == '\n' { self.pos = self.pos + 1usize; }
+        else { self.pos = self.pos + 2usize; }
+        self.lineNo = self.lineNo + 1u32;
+        break;
+      }
+    }
+    if self.checkUtf8 {
+      var i = recStart;
+      while i < self.pos {
+        let k = utf8Length(src, i);
+        if k == 0usize {
+          self.fail(ErrorKind.BadUtf8, i, "the bytes are not UTF-8");
+          return 2u8;
+        }
+        i = i + k;
+      }
+    }
+    if self.locked {
+      let cnt = self.rec.len();
+      if !self.haveCount {
+        self.haveCount = true;
+        self.count0 = cnt;
+      }
+      else if cnt != self.count0 {
+        var m = String.from("the record has ");
+        m.appendUInt(u64.from(cnt));
+        m.append(" fields, the first had ");
+        m.appendUInt(u64.from(self.count0));
+        self.fail(ErrorKind.FieldCount, recStart, m.view());
+        return 2u8;
+      }
+    }
+    0u8
+  }
+}
+
+// A Reader over text, standard options. A leading UTF-8 byte-order mark is
+// passed over.
+pub fn reader(text: &'a Array[u8]) Reader['a] {
+  let opts = Options.standard();
+  readerWith(text, &opts)
+}
+
+pub fn readerWith(text: &'a Array[u8], opts: &'b Options) Reader['a] {
+  var start = 0usize;
+  if text.len >= 3usize && text[0usize] == 0xEFu8 && text[1usize] == 0xBBu8 && text[2usize] == 0xBFu8 {
+    start = 3usize;
+  }
+  let locked = match opts.fieldCount {
+    case is Locked { true }
+    case is Free { false }
+  };
+  var r = Reader(text, start, 1u32, 0u32, opts.delimiter, opts.quote, locked, opts.checkUtf8, opts.skipEmptyLines,
+                 opts.header, false, 0usize, Record(text, List[Span](), String(), 1u32, 0u32),
+                 Record(text, List[Span](), String(), 1u32, 0u32), false, false, false, CsvError.none());
+  let why = optionProblem(opts.delimiter, opts.quote);
+  if why.len > 0usize {
+    r.failed = true;
+    r.err = CsvError(ErrorKind.WriteValue, 0usize, 0u32, 0u32, 0u32, String.from(why));
+    return r;
+  }
+  r.begin();
+  r
+}
+
+// Every record of text, as owned Strings; the first failure otherwise. Standard
+// options (the first record is a record, whatever it holds).
+pub fn readAll(text: &Array[u8]) Result[Rows, CsvError] {
+  var r = reader(text);
+  var rows = Rows();
+  while true {
+    match r.next() {
+      case let Ok(o) {
+        match o {
+          case let Some(rec) { rows.push(rec.toList()); }
+          case is None { break; }
+        }
+      }
+      case let Err(e) { return Err[Rows, CsvError](e.clone()); }
+    }
+  }
+  Ok[Rows, CsvError](rows)
+}
+
+// -------- helpers --------
+
+// The length (1 to 4) of the well-formed UTF-8 character at pos, or 0 when
+// the bytes there are not one: no overlong form, no surrogate, nothing beyond
+// U+10FFFF, no cut-off character
+fn utf8Length(t: &Array[u8], pos: usize) usize {
+  let b = t[pos];
+  if b < 0x80u8 { return 1usize; }
+  var more = 0usize;
+  var cp = 0u32;
+  var least = 0u32;
+  if b >= 0xC2u8 && b <= 0xDFu8 { more = 1usize; cp = u32.from(b & 0x1Fu8); least = 0x80u32; }
+  else if b >= 0xE0u8 && b <= 0xEFu8 { more = 2usize; cp = u32.from(b & 0x0Fu8); least = 0x800u32; }
+  else if b >= 0xF0u8 && b <= 0xF4u8 { more = 3usize; cp = u32.from(b & 0x07u8); least = 0x10000u32; }
+  else { return 0usize; }
+  if pos + more >= t.len { return 0usize; }
+  var k = 1usize;
+  while k <= more {
+    let c = t[pos + k];
+    if (c & 0xC0u8) != 0x80u8 { return 0usize; }
+    cp = (cp << 6u32) | u32.from(c & 0x3Fu8);
+    k = k + 1usize;
+  }
+  if cp < least || cp > 0x10FFFFu32 || (cp >= 0xD800u32 && cp <= 0xDFFFu32) { return 0usize; }
+  more + 1usize
+}
+
+// The line (from 1) of the byte at offset, a line ending at '\n'
+fn lineOf(t: &Array[u8], offset: usize) u32 {
+  var line = 1u32;
+  var i = 0usize;
+  while i < offset && i < t.len {
+    if t[i] == '\n' { line = line + 1u32; }
+    i = i + 1usize;
+  }
+  line
+}
+
+// The column (from 1, in bytes) of the byte at offset
+fn columnOf(t: &Array[u8], offset: usize) u32 {
+  var col = 1u32;
+  var i = 0usize;
+  while i < offset && i < t.len {
+    if t[i] == '\n' { col = 1u32; } else { col = col + 1u32; }
+    i = i + 1usize;
+  }
+  col
+}
