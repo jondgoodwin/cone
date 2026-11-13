@@ -231,6 +231,10 @@ pub struct Ui {
   // input state (input.cone, dragdrop.cone)
   pub input: InputState;
 
+  // Rows of the tables above whose node is gone, free for the next create: one list per node kind
+  // (indexed by K_*). A row is reused in place, so every node.data index stays valid.
+  freeRows: List[List[usize]];
+
   // set while measuring: some child's size was shaped by a bound (layout.cone)
   pub clampSeen: bool = false;
 
@@ -241,7 +245,13 @@ pub struct Ui {
       List[SliderData](), List[KnobData](), List[FieldData](), List[ListData](),
       List[WindowData](), List[TabsData](), List[TabPage](), List[ToggleData](),
       List[SlotData](), List[InvGridData](), List[HotSlotData](), List[MinimapData](),
-      List[MapMarker](), InvModel.make(), InputState.make());
+      List[MapMarker](), InvModel.make(), InputState.make(),
+      List[List[usize]]());
+    var k = 0u32;
+    while k <= K_HOSTED {
+      ui.freeRows.push(List[usize]());
+      k = k + 1u32;
+    }
     ui.nodes.pool.add(Node());      // cell 0: the null node
     ui.texts.push(String());
     ui.tips.push(String());
@@ -315,6 +325,7 @@ pub struct Ui {
       input.tip.shown = false;
     }
     if input.win.node == id {input.win.mode = 0u32;}
+    freeRow(id);
     unlisten(self, id);
     var i = 0usize;
     while i < input.hoverChain.len() {
@@ -323,6 +334,46 @@ pub struct Ui {
       }
       i = i + 1usize;
     }
+  }
+
+  // The node's widget row goes back to its kind's free list, reset to a blank row (which
+  // releases the Strings and Lists it held, and stops a field scan from finding the dead node)
+  fn freeRow(self: &mut, id: usize) {
+    let kind = nodes[id].kind;
+    let d = nodes[id].data;
+    var done = true;
+    if kind == K_TOGGLE {toggles.set(d, ToggleData());}
+    else if kind == K_SLIDER {sliders.set(d, SliderData());}
+    else if kind == K_KNOB {knobs.set(d, KnobData());}
+    else if kind == K_TEXTFIELD {fields.set(d, FieldData(adv: List[f32](), placeholder: String()));}
+    else if kind == K_LIST {lists.set(d, ListData());}
+    else if kind == K_WINDOW {windows.set(d, WindowData());}
+    else if kind == K_TABS {
+      tabsets.set(d, TabsData());
+      var keep = List[TabPage]();
+      var i = 0usize;
+      while i < tabpages.len() {
+        if tabpages[i].tabs != id {keep.push(*tabpages[i]);}
+        i = i + 1usize;
+      }
+      tabpages = keep;
+    }
+    else if kind == K_SLOT {slots.set(d, SlotData());}
+    else if kind == K_HOTSLOT {hotslots.set(d, HotSlotData());}
+    else if kind == K_MINIMAP {minimaps.set(d, MinimapData());}
+    else if kind == K_HOSTED {input.hosted.set(d, HostedWidget(0usize, DrawList.make()));}
+    else {done = false;}
+    if done {freeRows[usize.from(kind)].push(d);}
+  }
+
+  // The row for a new widget: a freed one of this kind if there is one, else 'fresh' (the
+  // table's length: the caller pushes a new row)
+  fn takeRow(self: &mut, kind: u32, fresh: usize) usize {
+    let n = freeRows[usize.from(kind)].len();
+    if n == 0usize {return fresh;}
+    let r = *freeRows[usize.from(kind)][n - 1usize];
+    freeRows[usize.from(kind)].truncate(n - 1usize);
+    r
   }
 
   pub fn setFocus(self: &mut, id: usize) {

@@ -1,0 +1,65 @@
+// Widget rows: a widget's row in its kind's table is freed with its node and reused by the next
+// widget of that kind, so creating and destroying in a loop holds the tables at a steady size.
+
+mod rows;
+
+import testing use *;
+import collections use *;
+import uilayout use *;
+
+fn main() i32 {
+  var ui = Ui.make(800., 600.);
+  // N sliders, made and destroyed one at a time
+  var i = 0;
+  while i < 50 {
+    let s = slider(&mut ui, ui.root, 0., 10., 3., 0.);
+    ui.destroy(s);
+    i = i + 1;
+  }
+  expectInt(i64.from(ui.sliders.len()), 1i64, "50 sliders made and destroyed: one row");
+  // the same for the other kinds
+  let pack = ui.inv.makeContainer(4u32, 0u32);
+  i = 0;
+  while i < 50 {
+    let t = toggle(&mut ui, ui.root, "t", true);
+    let f = textField(&mut ui, ui.root, "hello");
+    let k = knob(&mut ui, ui.root, 0., 1., 0.5, 0.);
+    let w = window(&mut ui, "w", 0., 0., 200., 100.);
+    let tb = tabs(&mut ui, ui.root);
+    addTab(&mut ui, tb, "one");
+    let l = listBox(&mut ui, ui.root);
+    let m = minimap(&mut ui, ui.root, 64., 1u32);
+    let g = inventoryGrid(&mut ui, ui.root, pack, 2u32);
+    ui.destroy(t); ui.destroy(f); ui.destroy(k); ui.destroy(w); ui.destroy(tb); ui.destroy(l); ui.destroy(m);
+    ui.destroy(g);
+    i = i + 1;
+  }
+  expectInt(i64.from(ui.toggles.len()), 1i64, "toggles steady");
+  expectInt(i64.from(ui.fields.len()), 1i64, "fields steady");
+  expectInt(i64.from(ui.knobs.len()), 1i64, "knobs steady");
+  expectInt(i64.from(ui.windows.len()), 1i64, "windows steady");
+  expectInt(i64.from(ui.tabsets.len()), 1i64, "tabsets steady");
+  expectInt(i64.from(ui.tabpages.len()), 0i64, "a tab set's pages go with it");
+  expectInt(i64.from(ui.lists.len()), 1i64, "lists steady");
+  expectInt(i64.from(ui.minimaps.len()), 1i64, "minimaps steady");
+  expectInt(i64.from(ui.slots.len()), 4i64, "slots steady: the 4 of one grid");
+
+  // widgets made after a destroy work, and two live at once do not share a row
+  let a = slider(&mut ui, ui.root, 0., 10., 3., 0.);
+  let b = slider(&mut ui, ui.root, 0., 100., 40., 0.);
+  expectFloat(f64.from(sliderValue(&ui, a)), 3., 0.001, "a reused row holds the new slider's value");
+  expectFloat(f64.from(sliderValue(&ui, b)), 40., 0.001, "and the next one its own");
+  ui.destroy(a);
+  let c = slider(&mut ui, ui.root, 0., 1., 0.25, 0.);
+  expectFloat(f64.from(sliderValue(&ui, c)), 0.25, 0.001, "a row freed in the middle is reused");
+  expectFloat(f64.from(sliderValue(&ui, b)), 40., 0.001, "and the slider still alive is untouched");
+  expectInt(i64.from(ui.sliders.len()), 2i64, "two live sliders, two rows");
+
+  // a field reusing a row is the only one the scan finds for its node
+  let f1 = textField(&mut ui, ui.root, "abc");
+  ui.destroy(f1);
+  let f2 = textField(&mut ui, ui.root, "wxyz");
+  expectInt(i64.from(ui.fields[ui.nodes[f2].data].caret), 4i64, "a reused field row is the new field's");
+  expectInt(i64.from(ui.fields[ui.nodes[f2].data].node), i64.from(f2), "and names its node");
+  done()
+}
