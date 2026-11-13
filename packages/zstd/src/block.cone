@@ -123,9 +123,9 @@ fn decodeBlock(src: &Array[u8], start: usize, end: usize, ent: &mut Entropy, his
 // The literals section at src[*p, end) into ent.lits; *p moves past it
 fn decodeLiterals(src: &Array[u8], p: &mut usize, end: usize, ent: &mut Entropy) Fault {
   ent.lits.clear();
-  // Room for the largest literals and 8 bytes of slack, which the sequences'
-  // word-wise copies read past the end into
-  ent.lits.reserve(blockSizeMax() + 8usize);
+  // Room for the largest literals and 16 bytes of slack, which the sequences'
+  // wide copies read past the end into
+  ent.lits.reserve(blockSizeMax() + 16usize);
   let at = *p;
   if at >= end { return Fault.LitHeader; }
   let b0 = src[at];
@@ -308,7 +308,14 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
   let dictLen = dict.len();
   // The block's own output may not pass the block maximum
   let room = reach.blockMax;
-  hist.reserve(room + 8usize);
+  // The 16 bytes of slack are what the wide copies below may write past the end
+  // of a literal run or a match (at most 15), after the checks have shown the
+  // run or match itself inside 'room'; 'reserve' makes capacity for len + room
+  // + 16, so no raw write leaves the allocation. A wide copy reads only bytes of
+  // the literals (inside their 16-byte slack) or of this block's own output
+  // behind its write point; a match whose offset reaches before the frame's
+  // output, or past the window, is refused by the checks below before its copy.
+  hist.reserve(room + 16usize);
   // The block is written through pointers into the room just reserved
   // (everything checked against 'room' and the literals' length first), 'w'
   // the next byte; 'hist' gets its new length once, at the end
@@ -434,15 +441,18 @@ fn copyBytes(to: *u8, from: *u8, n: usize) inline {
   }
 }
 
-// The same for a copy that may read up to 7 bytes past its source and write
-// up to 7 past its target (short ones are two words, not a byte loop); both
-// have the slack, as 'decodeLiterals' and 'decodeSequences' reserve it
+// A wild copy of n bytes from 'from' to 'to', which do not overlap, sixteen
+// bytes a step (two words): it reads up to 15 bytes past the source's end and
+// writes up to 15 past the target's, so both need 16 bytes of slack beyond the
+// n (as 'decodeLiterals' and 'decodeSequences' reserve it). Longer ones go to
+// the block move, which a call per copy makes dearer than the steps below that.
 fn copyWords(to: *u8, from: *u8, n: usize) inline {
-  if n <= 16usize {
+  if n <= 64usize {
     var k = 0usize;
     while k < n {
       mem.writeRaw[u64]((to + k) as *u64, mem.readRaw[u64]((from + k) as *u64));
-      k = k + 8usize;
+      mem.writeRaw[u64]((to + (k + 8usize)) as *u64, mem.readRaw[u64]((from + (k + 8usize)) as *u64));
+      k = k + 16usize;
     }
   } else {
     mem.moveRaw[u8](to, from, n);
@@ -452,38 +462,51 @@ fn copyWords(to: *u8, from: *u8, n: usize) inline {
 // Writes 'ml' bytes at b[at] as if copied one at a time from b[from],
 // b[from + 1], ...: when the source runs on into the bytes being written (the
 // match is longer than its offset, from + ml > at), the last 'at - from' bytes
-// repeat. The caller has checked 0 < at - from and that b has room to at + ml.
+// repeat. The caller has checked 0 < at - from and that b has room to at + ml
+// plus 16 bytes of slack, which the last step may write into.
 fn copyMatch(b: *u8, at: usize, from: usize, ml: usize) {
+  var a = at;
+  var f = from;
+  var n = ml;
   let off = at - from;
-  if off >= 8usize {
-    // Eight bytes a step, each read after the write before it, so the
-    // repeating of a short offset comes out right as long as it is eight or
-    // more; the last step may write up to 7 bytes past the match, into the
-    // slack the block reserved
-    if off >= ml && ml > 16usize { mem.moveRaw[u8](b + at, b + from, ml); return; }
-    var k = 0usize;
-    while k < ml {
-      mem.writeRaw[u64]((b + (at + k)) as *u64, mem.readRaw[u64]((b + (from + k)) as *u64));
-      k = k + 8usize;
+  if off < 8usize {
+    if ml <= 8usize {
+      var k = 0usize;
+      while k < ml {
+        mem.writeRaw[u8](b + (at + k), mem.readRaw[u8](b + (from + k)));
+        k = k + 1usize;
+      }
+      return;
     }
-    return;
-  }
-  if ml <= 16usize {
+    // The first eight bytes one at a time (each reads what the one before
+    // wrote); the output is then periodic with period 'off', so the rest can
+    // be read from d bytes behind the write, d a multiple of 'off' in 8 to 14
+    // (the table: 8 8 9 8 10 12 14 for off 1 to 7), a distance the word steps
+    // below handle
     var k = 0usize;
-    while k < ml {
+    while k < 8usize {
       mem.writeRaw[u8](b + (at + k), mem.readRaw[u8](b + (from + k)));
       k = k + 1usize;
     }
+    let d = usize.from((0x0E0C0A0809080800u64 >> u64.from(off << 3usize)) & 0xFFu64);
+    a = at + 8usize;
+    f = a - d;
+    n = ml - 8usize;
+  } else if off >= n && n > 64usize {
+    mem.moveRaw[u8](b + a, b + f, n);
     return;
   }
-  // Overlapping and long: the output is the last 'off' bytes repeated. Each
-  // step copies the run that starts at 'from' and ends where the output so
-  // far ends (at most off + done bytes) to the end of the output, so a step's
-  // source and target never overlap.
-  var done = 0usize;
-  while done < ml {
-    let chunk = if off + done < ml - done {off + done} else {ml - done};
-    mem.moveRaw[u8](b + (at + done), b + from, chunk);
-    done = done + chunk;
+  // Here a - f >= 8. Two words a step, the second read after the first
+  // written: the bytes a step reads are all written before it reads them, since
+  // each is at least 8 behind its own target and the steps go in order. The
+  // last step may write up to 15 bytes past the match, into the slack, from
+  // bytes it reads that are not yet written (inside the allocation, and they
+  // reach only those bytes past the match: byte j of a step comes from j - d
+  // behind it, so the bytes of the match itself never depend on them).
+  var k = 0usize;
+  while k < n {
+    mem.writeRaw[u64]((b + (a + k)) as *u64, mem.readRaw[u64]((b + (f + k)) as *u64));
+    mem.writeRaw[u64]((b + (a + (k + 8usize))) as *u64, mem.readRaw[u64]((b + (f + (k + 8usize))) as *u64));
+    k = k + 16usize;
   }
 }
