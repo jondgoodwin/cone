@@ -1,21 +1,32 @@
 #!/usr/bin/env python3
-"""Generate packages/tzdata/src/tzdata.cone from an IANA tz release.
+r"""Generate packages/tzdata/src/tzdata.cone from an IANA tz release.
 
-A bump when IANA releases is one run of this tool and one PR.
+A bump when IANA releases is one run of this recipe and one PR. Nothing in the
+download runs; its files are data. Last used: release 2026f.
 
-  1. Get tzdata<version>.tar.gz from https://data.iana.org/time-zones/releases/
-     and unpack it into a folder of its own (the files are data; nothing in them runs).
-  2. Compile it to TZif files with zic, which is a Linux tool (glibc ships it as
-     /usr/sbin/zic). Slim files, which calendar reads after their last listed
-     transition through the footer rule:
-         zic -b slim -d out africa antarctica asia australasia backward etcetera \\
-             europe factory northamerica southamerica
-  3. Run this tool over the compiled folder:
-         python tools/tzdata/gentzdata.py --zoneinfo out --version 2026f
-     or, for a smaller package, with chrono-tz's zone filter (a regular expression
-     searched in each zone name, so anchor it yourself):
-         python tools/tzdata/gentzdata.py --zoneinfo out --version 2026f \\
+  1. Download https://data.iana.org/time-zones/releases/tzdata<VERSION>.tar.gz
+     (data.iana.org only) into a new, empty folder of its own, for example
+     C:\src\zz-tzdata\, and extract it there. Add or update its row in
+     C:\src\DOWNLOADS-REGISTER.md.
+  2. On Linux (zic is a Linux tool; the Linux test machine has glibc's, at
+     /usr/sbin/zic): copy the extracted data files (africa antarctica asia
+     australasia backward etcetera europe factory northamerica southamerica;
+     not backzone) into a scratch folder there, for example ~/zz-tzgen, and run
+         zic -b slim -d out africa antarctica asia australasia backward \
+             etcetera europe factory northamerica southamerica
+     'out' then holds one slim TZif file per zone name. Copy 'out' back to a
+     folder on this machine outside MyDrive (for example C:\src\zz-tzdata-out\out)
+     and delete the scratch folder on Linux.
+  3. From the repo root, over that folder:
+         python tools/tzdata/gentzdata.py --zoneinfo C:\src\zz-tzdata-out\out --version <VERSION>
+     or, for a smaller package, with chrono-tz's zone filter (a regular
+     expression searched in each zone name, so anchor it yourself):
+         python tools/tzdata/gentzdata.py --zoneinfo C:\src\zz-tzdata-out\out --version <VERSION> \
              --filter '^(Europe/(London|Paris|Kyiv)|America/New_York|UTC)$'
+     This rewrites packages/tzdata/src/tzdata.cone. The committed package holds
+     every zone; a filtered run is for a program that wants fewer.
+  4. Change the version in packages/tzdata/tests/zones.cone, run 'congo test' in
+     packages/tzdata, zonedata and calendar, and open the PR.
 
 Names that hold the same bytes (zic links) share one constant in the output.
 The run prints the zone count, unique file count and sizes.
@@ -69,7 +80,17 @@ def main():
     L.append("// Zones: %d names, %d distinct files%s." % (len(zones), len(unique),
              ", filtered by /%s/" % a.filter if a.filter else ", unfiltered"))
     L.append("")
+    L.append("// The IANA zones as data, for a system with no zone files (Windows). Opt-in: a")
+    L.append("// program that does not import tzdata carries none of it.")
+    L.append("//")
+    L.append("//   zonedata.named(n)         the operating system's zone files, then")
+    L.append("//   tzdata.zone(n)            this, when named answers NoSource")
+    L.append("//")
+    L.append("// 'find' gives the same zone as the bytes of its TZif file; 'version' is the IANA release.")
+    L.append("")
     L.append("mod tzdata;")
+    L.append("")
+    L.append("import calendar use Zone;")
     L.append("")
     L.append("// The IANA release the data comes from")
     L.append('pub const version = "%s";' % a.version)
@@ -84,6 +105,20 @@ def main():
         i = unique[hashlib.sha256(zones[n]).hexdigest()][0]
         L.append('  if name == "%s" { return Some[&str](z%d); }' % (n, i))
     L.append("  None")
+    L.append("}")
+    L.append("")
+    L.append("// The Zone of an IANA zone name, or None if the package holds no such zone. Use it")
+    L.append("// when zonedata.named answers NoSource")
+    L.append("pub fn zone(name: &str) Option[Zone] {")
+    L.append("  match find(name) {")
+    L.append("    case let Some(bytes) {")
+    L.append("      match Zone.fromTzif(bytes) {")
+    L.append("        case let Ok(z) { Some[Zone](z) }")
+    L.append("        case let Err(e) { None }")
+    L.append("      }")
+    L.append("    }")
+    L.append("    case is None { None }")
+    L.append("  }")
     L.append("}")
     L.append("")
     os.makedirs(os.path.dirname(out), exist_ok=True)
