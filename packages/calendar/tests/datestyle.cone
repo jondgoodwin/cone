@@ -1,0 +1,92 @@
+// Date styles in English: Date, DateTime and OffsetDateTime styled medium,
+// long and full, by `<-` and in `$"..."`; all twelve months and seven
+// weekdays, each style, with and without a time, and an offset in place of UTC.
+
+mod datestyle;
+
+import testing use *;
+import collections use *;
+import calendar use Date, TimeOfDay, DateTime, Offset, OffsetDateTime, DateStyle;
+
+fn ymd(y: i64, m: i64, d: i64) Date {
+  match Date.fromYmd(y, m, d) {
+    case let Some(s) { s }
+    case is None {
+      require(false, "the test's date exists");
+      Date()
+    }
+  }
+}
+
+fn dt(d: Date) DateTime {
+  match TimeOfDay.fromHms(14, 5, 9, 250000000) {
+    case let Some(t) { DateTime.fromParts(d, t) }
+    case is None {
+      require(false, "the test's time exists");
+      DateTime()
+    }
+  }
+}
+
+fn months() {
+  let abbr = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  let full = ["January", "February", "March", "April", "May", "June", "July",
+              "August", "September", "October", "November", "December"];
+  var i = 0usize;
+  while i < 12usize {
+    let d = ymd(2026, i64.from(i) + 1i64, 3i64);
+    var want = String();
+    want <- "3 "; want <- abbr[i]; want <- " 2026";
+    expectStr($"{d.styled(DateStyle.medium)}".view(), want.view(), "a month, medium");
+    var wantTime = String();
+    wantTime <- want.view(); wantTime <- " 14:05:09";
+    expectStr($"{dt(d).styled(DateStyle.medium)}".view(), wantTime.view(), "a month, medium with a time");
+    var wantLong = String();
+    wantLong <- "3 "; wantLong <- full[i]; wantLong <- " 2026";
+    expectStr($"{d.styled(DateStyle.long)}".view(), wantLong.view(), "a month, long");
+    var wantLongTime = String();
+    wantLongTime <- wantLong.view(); wantLongTime <- " 14:05:09 UTC";
+    expectStr($"{dt(d).styled(DateStyle.long)}".view(), wantLongTime.view(), "a month, long with a time");
+    i = i + 1usize;
+  }
+}
+
+fn weekdays() {
+  // 5 October 2026 is a Monday
+  let names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  var i = 0usize;
+  while i < 7usize {
+    let d = ymd(2026, 10, 5i64 + i64.from(i));
+    var want = String();
+    want <- names[i]; want <- ", "; want <- 5i64 + i64.from(i); want <- " October 2026";
+    expectStr($"{d.styled(DateStyle.full)}".view(), want.view(), "a weekday, full");
+    var wantTime = String();
+    wantTime <- want.view(); wantTime <- " 14:05:09 UTC";
+    expectStr($"{dt(d).styled(DateStyle.full)}".view(), wantTime.view(), "a weekday, full with a time");
+    i = i + 1usize;
+  }
+}
+
+fn others() {
+  let d = ymd(2026, 10, 3);
+  expectStr($"{d.styled(DateStyle.medium)}".view(), "3 Oct 2026", "medium");
+  expectStr($"{d.styled(DateStyle.long)}".view(), "3 October 2026", "long");
+  expectStr($"{d.styled(DateStyle.full)}".view(), "Saturday, 3 October 2026", "full");
+  // the day is not padded; the year is written as the ISO forms write it
+  expectStr($"{ymd(44, 3, 15).styled(DateStyle.long)}".view(), "15 March 0044", "a short year");
+  expectStr($"{ymd(2026, 12, 25).styled(DateStyle.full)}".view(), "Friday, 25 December 2026", "a two-digit day");
+  // an offset in place of UTC; medium has no zone word
+  let o = OffsetDateTime(dt(d), Offset(19800i32, "", false));
+  expectStr($"{o.styled(DateStyle.medium)}".view(), "3 Oct 2026 14:05:09", "offset, medium");
+  expectStr($"{o.styled(DateStyle.long)}".view(), "3 October 2026 14:05:09 +05:30", "offset, long");
+  expectStr($"{o.styled(DateStyle.full)}".view(), "Saturday, 3 October 2026 14:05:09 +05:30", "offset, full");
+  let z = OffsetDateTime(dt(d), Offset(-10800i32, "", false));
+  expectStr($"{z.styled(DateStyle.long)}".view(), "3 October 2026 14:05:09 -03:00", "a negative offset");
+}
+
+fn main() i32 {
+  months();
+  weekdays();
+  others();
+  done()
+}

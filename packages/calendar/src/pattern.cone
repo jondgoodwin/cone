@@ -440,6 +440,62 @@ fn parseOffsetPattern(pattern: &Array[u8], text: &Array[u8], needOffset: bool) R
 }
 
 // ---------------------------------------------------------------------------
+// DateStyle: dates for a person, in English
+// ---------------------------------------------------------------------------
+
+// How much of a date to write for a reader. Day, month, year order, which
+// reads the same in the US and the UK; there is no short style until locale
+// context (text PR 6) can say which order a reader expects
+pub enum DateStyle {
+  medium, long, full;
+}
+
+// A date, or a date and a time, with the style it is to be written in; made
+// by styled(style) on a Date, a DateTime or an OffsetDateTime, and written by
+// `<-` and in `$"..."`:
+//   medium '3 Oct 2026'   '3 Oct 2026 14:05:09'
+//   long   '3 October 2026'   '3 October 2026 14:05:09 UTC'
+//   full   'Saturday, 3 October 2026'   'Saturday, 3 October 2026 14:05:09 UTC'
+// An offset form writes its offset ('+05:30') in place of 'UTC'; medium has
+// no zone word and writes none. The time is hh:mm:ss, its fraction not
+// written. The words become the locale's when locale context arrives, with no
+// change of spelling
+pub struct StyledDate {
+  date: Date;
+  hasTime: bool;
+  time: TimeOfDay;
+  hasOffset: bool;
+  offsetSeconds: i32;
+  style: DateStyle;
+
+  fn text(self) String {
+    var out = String.withCapacity(48usize);
+    let m = i64.from(date.month());
+    if style == DateStyle.full {
+      out.append(dayName(weekdayIndex(date.unixDays())));
+      out.append(", ");
+    }
+    out.appendInt(i64.from(date.day()));
+    out.appendByte(' ');
+    out.append(if style == DateStyle.medium {monthAbbr(m)} else {monthName(m)});
+    out.appendByte(' ');
+    appendYear(&mut out, i64.from(date.year()));
+    if hasTime {
+      out.appendByte(' ');
+      appendHms(&mut out, time);
+      if style != DateStyle.medium {
+        out.appendByte(' ');
+        if hasOffset { appendOffsetColon(&mut out, i64.from(offsetSeconds)); }
+        else { out.append("UTC"); }
+      }
+    }
+    out
+  }
+  pub fn toText(self: &, out: &uni TextOut) { out <- self.text().view(); }
+  pub fn toDebug(self: &, out: &uni TextOut) { out <- self.text().view(); }
+}
+
+// ---------------------------------------------------------------------------
 // OffsetDateTime
 // ---------------------------------------------------------------------------
 
@@ -461,6 +517,9 @@ pub struct OffsetDateTime {
     appendTime(&mut out, dt.time());
     appendOffsetColon(&mut out, i64.from(offset.seconds));
     out
+  }
+  pub fn styled(self, style: DateStyle) StyledDate {
+    StyledDate(dt.date(), true, dt.time(), true, offset.seconds, style)
   }
   pub fn toText(self: &, out: &uni TextOut) { out <- self.isoText().view(); }
   pub fn toDebug(self: &, out: &uni TextOut) { out <- self.isoText().view(); }
