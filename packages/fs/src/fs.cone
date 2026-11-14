@@ -105,6 +105,14 @@
 //     case imm e Err { ... }                                // as readFile's
 //   }
 //
+// **Open files.** 'open(path)' (read-only) and 'create(path)' (read and write, made or emptied) answer a
+// 'File': one owner, moved, closed when it dies, with an unbuffered position: 'read(&mut buf)' (how many,
+// 0 at the end), 'write(data)' (all of it), 'seek(pos)', 'seekBy(delta)', 'seekEnd(delta)' (each answers
+// the new position), 'flush()' (fsync), and 'close()', which answers the close's own error. Its descriptor
+// calls are the C runtime's ('_wopen' with a UTF-16 name and _O_BINARY, '_read' on Windows; 'open', 'read' on Linux), bytes unchanged. A
+// 'LineReader.over(file)' reads it by line: 'readLine(&mut line)' as 'stdinput.readLine' does, in 64 KiB
+// blocks, '\n' and '\r\n' both ending a line, a last line with no end counting.
+//
 // Method choices (defaults for review, not rulings):
 // - The whole file, read-only, private: no writable map, no map of a byte
 //   range, no offset. A range is a sub-slice of the view; the OS pages in only
@@ -1125,4 +1133,278 @@ pub fn absolute(path: &Path) Result[Path, FsError] {
   let raw = Path.from(cstr.fromPtr(got).view());
   libc.free(got);
   Ok[Path, FsError](raw.normalize())
+}
+
+// -------- open files --------
+
+extern {
+  // Windows: the C runtime's file-descriptor calls (binary mode is asked for in the flags)
+  fn @c _wopen(path: *u16, flags: i32, mode: i32) i32;
+  fn @c _read(fd: i32, p: *u8, n: u32) i32;
+  fn @c _write(fd: i32, p: *u8, n: u32) i32;
+  fn @c _close(fd: i32) i32;
+  fn @c _commit(fd: i32) i32;
+  fn @c _lseeki64(fd: i32, offset: i64, whence: i32) i64;
+  // Linux: the C library's
+  fn @c("open") posixOpen(path: cstr, flags: i32, mode: u32) i32;
+  fn @c("read") posixRead(fd: i32, p: *u8, n: usize) i64;
+  fn @c("write") posixWrite(fd: i32, p: *u8, n: usize) i64;
+  fn @c("close") posixClose(fd: i32) i32;
+  fn @c("fsync") posixFsync(fd: i32) i32;
+}
+
+// open(2)'s flags: O_RDONLY, O_RDWR and O_TRUNC are the same on Windows's runtime and Linux; the rest differ
+const openRead = 0i32;              // O_RDONLY
+const openWriteOnly = 1i32;         // O_WRONLY
+const openReadWrite = 2i32;         // O_RDWR
+const openTruncate = 0x200i32;      // O_TRUNC
+const seekStart = 0i32;             // SEEK_SET
+const seekCurrent = 1i32;           // SEEK_CUR
+const seekFromEnd = 2i32;           // SEEK_END
+const eintr = 4i32;                 // EINTR
+const oneChunk = 0x40000000usize;   // the most one call is asked for: _read/_write count in 32 bits, so a larger count goes in 1 GiB pieces (write loops; read answers fewer)
+
+// O_APPEND: every write goes to the end of the file
+fn appendFlag() i32 { #if #os == .windows { 0x8i32 } #else { 0x400i32 } }
+
+// O_CREAT
+fn createFlag() i32 { #if #os == .windows { 0x100i32 } #else { 0x40i32 } }
+
+// _O_BINARY | _O_NOINHERIT on Windows (no line-end changes, not passed to child programs); O_CLOEXEC on Linux
+fn plainFlags() i32 { #if #os == .windows { 0x8080i32 } #else { 0x80000i32 } }
+
+fn openFd(path: &Path, flags: i32) i32 {
+  var c = cText(path);
+  // A new file's mode: 0o666 (less the umask) on Linux; Windows reads only whether it may be written
+  #if #os == .windows {
+    // the name goes to '_wopen' as UTF-16 (converted from UTF-8, as setTimesWindows does), never the ANSI page
+    let n = MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, null, 0i32);
+    if n <= 0i32 { *libc.errno() = posix.EINVAL; return -1i32; }
+    let wide = libc.malloc(usize.from(n) * 2usize) as *u16;
+    MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, wide, n);
+    let fd = _wopen(wide, flags | plainFlags(), 0x180i32);
+    let saved = lastErrno();
+    libc.free(wide as *u8);
+    *libc.errno() = saved;
+    fd
+  }
+  #else { posixOpen(c.cstr(), flags | plainFlags(), 0x1B6u32) }
+}
+
+fn rawRead(fd: i32, p: *u8, n: usize) i64 {
+  let want = if n > oneChunk {oneChunk} else {n};
+  #if #os == .windows { i64.from(_read(fd, p, u32.from(want))) } #else { posixRead(fd, p, want) }
+}
+
+fn rawWrite(fd: i32, p: *u8, n: usize) i64 {
+  let want = if n > oneChunk {oneChunk} else {n};
+  #if #os == .windows { i64.from(_write(fd, p, u32.from(want))) } #else { posixWrite(fd, p, want) }
+}
+
+fn rawSeek(fd: i32, offset: i64, whence: i32) i64 {
+  #if #os == .windows { _lseeki64(fd, offset, whence) } #else { lseek(fd, offset, whence) }
+}
+
+fn rawClose(fd: i32) i32 {
+  #if #os == .windows { _close(fd) } #else { posixClose(fd) }
+}
+
+fn rawSync(fd: i32) i32 {
+  #if #os == .windows { _commit(fd) } #else { posixFsync(fd) }
+}
+
+// A file held open, for reading, writing or both, with a position that every read and write moves. Nothing
+// is buffered here: each 'read' and 'write' is one system call (or a few, for a write that goes in pieces),
+// so a program that reads small pieces wraps the file in a 'LineReader' or reads big blocks itself. One owner,
+// moved, never copied; dying closes the handle, and a failure of that close is lost, so a program that must
+// know calls 'close' itself. Every failure is an 'FsError' naming the operation and the path, as the rest of
+// this package's are. The bytes are as they are: no line ends are changed on Windows either.
+pub struct File is Move {
+  fd: i32;           // the descriptor; -1 once closed
+  given: Path;       // as it was given, for the failures
+
+  fn failed(self: &, op: &str, code: i32) FsError { failure(op, &given, code) }
+
+  // The next bytes into 'buf', as many as it has room for or the file has left, whichever is less: how
+  // many. 0 means the end of the file (or an empty 'buf'). A read can answer fewer bytes than there are
+  // left, so a program that wants a full block asks again.
+  pub fn read(self: &mut, buf: &mut Array[u8]) Result[usize, FsError] {
+    if fd < 0i32 { return Err[usize, FsError](self.failed("read", posix.EBADF)); }
+    if buf.len == 0usize { return Ok[usize, FsError](0usize); }
+    var going = true;
+    while going {
+      let n = rawRead(fd, buf as *u8, buf.len);
+      if n >= 0i64 { return Ok[usize, FsError](usize.from(n)); }
+      if lastErrno() != eintr { going = false; }
+    }
+    Err[usize, FsError](self.failed("read", lastErrno()))
+  }
+
+  // All of 'data' at the position, however many system calls it takes; the position moves past it. A file
+  // opened with 'open' is read-only and refuses it (EBADF).
+  pub fn write(self: &mut, data: &Array[u8]) Result[void, FsError] {
+    if fd < 0i32 { return Err[void, FsError](self.failed("write", posix.EBADF)); }
+    var done = 0usize;
+    while done < data.len {
+      let n = rawWrite(fd, (data as *u8) + done, data.len - done);
+      if n > 0i64 { done = done + usize.from(n); }
+      else if n == 0i64 { return Err[void, FsError](self.failed("write", posix.EIO)); }
+      else if lastErrno() != eintr { return Err[void, FsError](self.failed("write", lastErrno())); }
+    }
+    succeeded()
+  }
+
+  // Move to byte 'pos' from the start of the file (past its end is allowed: a write there leaves a gap).
+  // Answers the new position.
+  pub fn seek(self: &mut, pos: u64) Result[u64, FsError] {
+    if pos > 0x7FFFFFFFFFFFFFFFu64 { return Err[u64, FsError](self.failed("seek", posix.EINVAL)); }
+    self.moveTo("seek", i64.from(pos), seekStart)
+  }
+
+  // Move by 'delta' bytes from where the position is (negative goes back). Answers the new position;
+  // a move before the start is refused (EINVAL).
+  pub fn seekBy(self: &mut, delta: i64) Result[u64, FsError] {
+    self.moveTo("seekBy", delta, seekCurrent)
+  }
+
+  // Move to 'delta' bytes from the end of the file (0 is the end, negative goes back). Answers the new
+  // position, so 'seekEnd(0)' is the file's size.
+  pub fn seekEnd(self: &mut, delta: i64) Result[u64, FsError] {
+    self.moveTo("seekEnd", delta, seekFromEnd)
+  }
+
+  fn moveTo(self: &mut, op: &str, offset: i64, whence: i32) Result[u64, FsError] {
+    if fd < 0i32 { return Err[u64, FsError](self.failed(op, posix.EBADF)); }
+    let at = rawSeek(fd, offset, whence);
+    if at < 0i64 { return Err[u64, FsError](self.failed(op, lastErrno())); }
+    Ok[u64, FsError](u64.from(at))
+  }
+
+  // Ask the system to put what was written on the disk (fsync; _commit on Windows). Nothing is held back
+  // by this package, so a program that does not need the bytes safely on the disk need not call it.
+  pub fn flush(self: &mut) Result[void, FsError] {
+    if fd < 0i32 { return Err[void, FsError](self.failed("flush", posix.EBADF)); }
+    if rawSync(fd) != 0i32 { return Err[void, FsError](self.failed("flush", lastErrno())); }
+    succeeded()
+  }
+
+  // Close the file now, and say whether that worked (a write the disk refused can show only here). It is
+  // closed either way; closing again does nothing and answers Ok.
+  pub fn close(self: &mut) Result[void, FsError] {
+    if fd < 0i32 { return succeeded(); }
+    let was = fd;
+    fd = -1i32;
+    if rawClose(was) != 0i32 { return Err[void, FsError](self.failed("close", lastErrno())); }
+    succeeded()
+  }
+
+  // The path it was opened with
+  pub fn path(self: &) &Path { &given }
+
+  // Close the handle if 'close' has not
+  fn final(self: &uni) {
+    if fd >= 0i32 { rawClose(fd); }
+  }
+}
+
+fn openWith(op: &str, path: &Path, flags: i32) Result[File, FsError] {
+  if hasNul(path) { return fail[File](op, path, posix.EINVAL); }
+  useUtf8();
+  let fd = openFd(path, flags);
+  if fd < 0i32 { return fail[File](op, path, openErrno(path)); }
+  // Linux opens a folder for reading and fails only at the first read; refuse it here, as Windows does
+  if isDir(path) { rawClose(fd); return fail[File](op, path, posix.EISDIR); }
+  Ok[File, FsError](File(fd, path.clone()))
+}
+
+// Open an existing file for reading, at its start. A missing file is NotFound; a folder is refused
+// (EISDIR), as 'readFile' refuses it.
+pub fn open(path: &Path) Result[File, FsError] {
+  openWith("open", path, openRead)
+}
+
+// Make a file for reading and writing, at its start: a new one if the path is free, and an existing
+// one is emptied. A missing folder above it is NotFound.
+pub fn create(path: &Path) Result[File, FsError] {
+  openWith("create", path, openReadWrite | createFlag() | openTruncate)
+}
+
+// Open a file for writing only, made if the path is free (an existing one keeps its bytes), every write
+// going to the end of the file whatever the position (O_APPEND; _O_APPEND on Windows). A read is refused
+// (EBADF).
+pub fn append(path: &Path) Result[File, FsError] {
+  openWith("append", path, openWriteOnly | createFlag() | appendFlag())
+}
+
+// -------- lines --------
+
+const lineBuffer = 65536usize;
+
+// Lines read from a 'File', one 'readLine' at a time, as 'stdinput.readLine' reads them from standard input.
+// It reads the file in 64 KiB blocks and finds the line ends in the block, so a line costs no call per byte
+// and a long line (past the block) is gathered from as many blocks as it takes. It owns the file ('over'
+// takes it), so the file's position is the reader's.
+//
+//   match fs.open("notes.txt") {
+//     case let Ok(f) {
+//       var lines = fs.LineReader.over(f);
+//       var line = String();
+//       var going = true;
+//       while going {
+//         match lines.readLine(&mut line) {
+//           case let Ok(more) { if more { print <- line.view(), "\n"; } else { going = false; } }
+//           case is Err { going = false; }
+//         }
+//       }
+//     }
+//     case is Err { }
+//   }
+pub struct LineReader is Move {
+  file: File;
+  buf: List[u8];     // lineBuffer bytes, the first 'end' of them read from the file
+  pos: usize;        // the next unread byte of buf
+  end: usize;        // bytes in buf that were read from the file
+
+  // A reader of 'file' from where its position is now
+  pub fn over(file: File) LineReader {
+    var b = List[u8].withCapacity(lineBuffer);
+    var i = 0usize;
+    while i < lineBuffer { b.push(0u8); i = i + 1usize; }
+    LineReader(file, b, 0usize, 0usize)
+  }
+
+  // The next line into 'line', replacing what it held, without its line end ('\n' or '\r\n'). Ok(false),
+  // with 'line' empty, at the end of the file. A last line with no '\n' is a line, as it is for stdinput;
+  // so is an empty one. The bytes go in as they came: String holds UTF-8 by convention and checks no
+  // more than 'appendBytes' does, so a file that is not text makes a String that is not. It does not
+  // validate UTF-8, matching String today.
+  pub fn readLine(self: &mut, line: &mut String) Result[bool, FsError] {
+    line.clear();
+    var any = false;
+    while true {
+      if pos == end {
+        match file.read(buf.viewMut()) {
+          case let Ok(n) {
+            if n == 0usize { return Ok[bool, FsError](any); }
+            pos = 0usize;
+            end = n;
+          }
+          case let Err(e) { return Err[bool, FsError](e); }
+        }
+      }
+      let base: *u8 = buf.viewMut() as *u8;
+      var i = pos;
+      while i < end && *(base + i) != 10u8 { i = i + 1usize; }
+      line.appendBytes(mem.sliceFromParts(base + pos, i - pos));
+      any = true;
+      if i < end {
+        pos = i + 1usize;
+        let keep = line.len();
+        if keep > 0usize && line[keep - 1usize] == 13u8 { line.truncate(keep - 1usize); }
+        return Ok[bool, FsError](true);
+      }
+      pos = end;
+    }
+    Ok[bool, FsError](any)
+  }
 }
