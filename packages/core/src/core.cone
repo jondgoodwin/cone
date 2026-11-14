@@ -1152,18 +1152,25 @@ pub struct @opaque Array[T] is GcTraceElements {
     let was = l >= r;
     // The rest by a branch-free sweep: each element is exchanged with the first one not
     // before the pivot, and that boundary moves up by one when it was before it. No
-    // branch depends on a comparison, so random input costs no mispredictions
+    // branch depends on a comparison, so random input costs no mispredictions. The pivot is
+    // compared through a bitwise copy, made once: the stores of the sweep might alias the
+    // pivot's slot, so the comparison would otherwise reload it (and, for a float, work out
+    // its total-order key again) at every element. The copy is only read, and never dropped:
+    // it is forgotten at the end, since the pivot stays in the list, in slot 0, which the
+    // sweep never writes
     let p = self as *T;
+    let pv = mem.readRaw[T](p);
     var bound = l;
     var i = l;
     while i < r {
-      let before = order((p + i) as &T, p as &T) < 0i32;
+      let before = order((p + i) as &T, &pv) < 0i32;
       let held = mem.readRaw[T](p + i);
       mem.writeRaw[T](p + i, mem.readRaw[T](p + bound));
       mem.writeRaw[T](p + bound, held);
       bound = bound + (if before { 1usize } else { 0usize });
       i = i + 1usize;
     }
+    mem.forget[T](pv);
     let mid = bound - 1usize;
     self.swapAt(0usize, mid);
     (mid, was)
