@@ -1,0 +1,332 @@
+// The textcodec package: text in other encodings, to and from a Cone String
+// (UTF-8). UTF-16 in either byte order (what Windows tools write, with a
+// byte-order mark), Latin-1 (ISO-8859-1) and Windows-1252, each decoded to a
+// String and encoded from a str, and 'sniff', which reads a byte-order mark.
+// Pure Cone over core and collections: no OS call, no C library.
+//
+//   mod demo;
+//   import textcodec;
+//
+//   fn main() {
+//     let file: &Array[u8] = ...;                  // bytes read from a file
+//     let bom = textcodec.sniff(file);
+//     if bom == textcodec.Bom.Utf16Le {
+//       match textcodec.decodeUtf16Le(file.slice(bom.length(), file.len)) { ... }
+//     }
+//   }
+//
+// CHOICES. Each says what was chosen and what was left out.
+//
+// - A new package, not a part of 'unicode': that package answers questions about
+//   a char (its properties, its case, its normal form) from tables, while this
+//   one converts byte streams. They share nothing but the word.
+// - A decoder takes the bytes of the text alone: it does not look for a byte-order
+//   mark and does not skip one. A BOM read by 'decodeUtf16Le' is the char
+//   U+FEFF, as the Unicode standard has it. 'sniff' names the mark and 'length'
+//   says how many bytes it takes, so the caller chooses what to do (see
+//   'decodeSniffed').
+// - Strict decoders (UTF-16) stop at the first fault and give its kind and the
+//   byte position of the unit at fault. The '...Replacing' forms put U+FFFD for
+//   it and go on, as the WHATWG Encoding Standard's decoders do: one U+FFFD for
+//   each lone surrogate unit, one for a last odd byte.
+// - Latin-1 and Windows-1252 cannot fail to decode, since every byte has a
+//   char, so their decoders answer a String, not a Result, and have no
+//   replacing form. Windows-1252 follows the WHATWG index (index-windows-1252,
+//   dated 2024-09-18): the five bytes Microsoft leaves undefined (0x81, 0x8D,
+//   0x8F, 0x90 and 0x9D) decode to the C1 controls U+0081, U+008D, U+008F,
+//   U+0090 and U+009D, as browsers do, so no byte is refused.
+// - Encoders refuse a char the target cannot hold, with its byte offset in the
+//   UTF-8 input. Latin-1 holds U+0000 to U+00FF; Windows-1252 holds U+0000 to
+//   U+007F, U+00A0 to U+00FF, the 27 chars of its 0x80 to 0x9F block (and the
+//   five controls above). There is no replacing encoder: a replacement
+//   character is a choice (the WHATWG standard writes numeric character
+//   references, which only HTML wants) that the caller makes by splitting the
+//   text.
+// - A String is UTF-8 by convention and a str with a bad byte reads as U+FFFD
+//   through 'chars', so an encoder given such bytes encodes U+FFFD.
+// - Left out: UTF-32, other legacy code pages, guessing an encoding without a
+//   byte-order mark.
+
+mod textcodec;
+
+import collections use String, List;
+
+// What 'sniff' found at the start of some bytes
+pub enum Bom {
+  NoBom;      // none of the three marks
+  Utf8;       // EF BB BF
+  Utf16Le;    // FF FE
+  Utf16Be;    // FE FF
+
+  // How many bytes the mark takes (0 for NoBom)
+  pub fn length(self: &Bom) usize {
+    match self {
+      case is NoBom { 0usize }
+      case is Utf8 { 3usize }
+      case is Utf16Le { 2usize }
+      case is Utf16Be { 2usize }
+    }
+  }
+
+  pub fn eq overload `==`(self: &Bom, o: &Bom) bool { self.tag() == o.tag() }
+
+  fn tag(self: &Bom) u32 {
+    match self {
+      case is NoBom { 0u32 }
+      case is Utf8 { 1u32 }
+      case is Utf16Le { 2u32 }
+      case is Utf16Be { 3u32 }
+    }
+  }
+}
+
+// The byte-order mark at the start of the bytes. FF FE is read as UTF-16LE
+// (never as the UTF-32LE mark FF FE 00 00), as the WHATWG standard does.
+pub fn sniff(b: &Array[u8]) Bom {
+  if b.len >= 3usize && b[0usize] == 0xEFu8 && b[1usize] == 0xBBu8 && b[2usize] == 0xBFu8 { return Bom.Utf8; }
+  if b.len >= 2usize && b[0usize] == 0xFFu8 && b[1usize] == 0xFEu8 { return Bom.Utf16Le; }
+  if b.len >= 2usize && b[0usize] == 0xFEu8 && b[1usize] == 0xFFu8 { return Bom.Utf16Be; }
+  Bom.NoBom
+}
+
+pub enum CodecErrorKind {
+  OddLength;          // UTF-16 with a byte left over at the end
+  LoneHighSurrogate;  // a UTF-16 unit D800 to DBFF not followed by DC00 to DFFF
+  LoneLowSurrogate;   // a UTF-16 unit DC00 to DFFF not after a high one
+  Unmappable;         // an encoder's char that the target encoding does not hold
+
+  pub fn describe(self: &CodecErrorKind, out: &uni TextOut) {
+    match self {
+      case is OddLength { out <- "a byte is left over at the end"; }
+      case is LoneHighSurrogate { out <- "a high surrogate without a low one"; }
+      case is LoneLowSurrogate { out <- "a low surrogate without a high one"; }
+      case is Unmappable { out <- "a char the encoding cannot hold"; }
+    }
+  }
+}
+
+// 'position' is a byte offset: in the bytes being decoded (of the unit at
+// fault, or of the leftover byte), or in the UTF-8 text being encoded (of the
+// char at fault).
+pub struct CodecError is Error {
+  pub kind: CodecErrorKind;
+  pub position: usize;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- "textcodec: ";
+    kind.describe(out);
+    out <- " at byte ", position;
+  }
+}
+
+// Windows-1252's bytes 0x80 to 0x9F, from the WHATWG Encoding Standard's
+// index-windows-1252.txt (2024-09-18). Bytes 0xA0 to 0xFF are the same code
+// points, and below 0x80 ASCII.
+let w1252: Array[u32, 32] = [
+  0x20ACu32, 0x0081u32, 0x201Au32, 0x0192u32, 0x201Eu32, 0x2026u32, 0x2020u32, 0x2021u32,
+  0x02C6u32, 0x2030u32, 0x0160u32, 0x2039u32, 0x0152u32, 0x008Du32, 0x017Du32, 0x008Fu32,
+  0x0090u32, 0x2018u32, 0x2019u32, 0x201Cu32, 0x201Du32, 0x2022u32, 0x2013u32, 0x2014u32,
+  0x02DCu32, 0x2122u32, 0x0161u32, 0x203Au32, 0x0153u32, 0x009Du32, 0x017Eu32, 0x0178u32
+];
+
+fn appendCode(out: &mut String, x: u32) {
+  if x < 0x80u32 {
+    out.appendByte(u8.from(x));
+  }
+  else if x < 0x800u32 {
+    out.appendByte(0xC0u8 | u8.from(x >> 6u32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+  else if x < 0x10000u32 {
+    out.appendByte(0xE0u8 | u8.from(x >> 12u32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+  else {
+    out.appendByte(0xF0u8 | u8.from(x >> 18u32));
+    out.appendByte(0x80u8 | u8.from((x >> 12u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+}
+
+fn fault(kind: CodecErrorKind, position: usize) Result[void, CodecError] {
+  Err[void, CodecError](CodecError(kind, position))
+}
+
+fn unitAt(b: &Array[u8], i: usize, big: bool) u32 {
+  let x = u32.from(b[i]);
+  let y = u32.from(b[i + 1usize]);
+  if big { (x << 8u32) | y } else { (y << 8u32) | x }
+}
+
+// One decoder for both byte orders and both modes: strict stops at the first
+// fault (and says it), replacing puts U+FFFD and goes on
+fn decode16(b: &Array[u8], big: bool, replace: bool, out: &mut String) Result[void, CodecError] {
+  let n = b.len;
+  var i = 0usize;
+  while i + 1usize < n {
+    let u = unitAt(b, i, big);
+    if u < 0xD800u32 || u > 0xDFFFu32 {
+      appendCode(out, u);
+      i = i + 2usize;
+      continue;
+    }
+    if u >= 0xDC00u32 {
+      if !replace { return fault(CodecErrorKind.LoneLowSurrogate, i); }
+      appendCode(out, 0xFFFDu32);
+      i = i + 2usize;
+      continue;
+    }
+    if i + 3usize < n {
+      let v = unitAt(b, i + 2usize, big);
+      if v >= 0xDC00u32 && v <= 0xDFFFu32 {
+        appendCode(out, 0x10000u32 + ((u - 0xD800u32) << 10u32) + (v - 0xDC00u32));
+        i = i + 4usize;
+        continue;
+      }
+    }
+    if !replace { return fault(CodecErrorKind.LoneHighSurrogate, i); }
+    appendCode(out, 0xFFFDu32);
+    i = i + 2usize;
+  }
+  if i < n {
+    if !replace { return fault(CodecErrorKind.OddLength, i); }
+    appendCode(out, 0xFFFDu32);
+  }
+  Ok[void, CodecError](nil)
+}
+
+fn decode16Strict(b: &Array[u8], big: bool) Result[String, CodecError] {
+  var out = String.withCapacity(b.len);
+  match decode16(b, big, false, &mut out) {
+    case let Err(e) { Err[String, CodecError](e) }
+    case is Ok { Ok[String, CodecError](out) }
+  }
+}
+
+fn decode16Replacing(b: &Array[u8], big: bool) String {
+  var out = String.withCapacity(b.len);
+  match decode16(b, big, true, &mut out) {
+    case is Err { }
+    case is Ok { }
+  }
+  out
+}
+
+// The UTF-16 little-endian bytes as text; a fault is the first lone surrogate
+// or a last odd byte
+pub fn decodeUtf16Le(b: &Array[u8]) Result[String, CodecError] { decode16Strict(b, false) }
+
+pub fn decodeUtf16Be(b: &Array[u8]) Result[String, CodecError] { decode16Strict(b, true) }
+
+// As decodeUtf16Le, with U+FFFD for each fault
+pub fn decodeUtf16LeReplacing(b: &Array[u8]) String { decode16Replacing(b, false) }
+
+pub fn decodeUtf16BeReplacing(b: &Array[u8]) String { decode16Replacing(b, true) }
+
+// The text of bytes that start with a byte-order mark, or of bytes with none
+// (taken as UTF-8: copied, with each bad byte as U+FFFD, as a String reads
+// them), without the mark. A UTF-16 fault is strict, as decodeUtf16Le; its
+// position counts from the start of 'b', the mark included.
+pub fn decodeSniffed(b: &Array[u8]) Result[String, CodecError] {
+  let bom = sniff(b);
+  let n = bom.length();
+  let rest: &Array[u8] = b.slice(n, b.len);
+  let r = match bom {
+    case is Utf16Le { decode16Strict(rest, false) }
+    case is Utf16Be { decode16Strict(rest, true) }
+    case is Utf8 { Ok[String, CodecError](String.fromBytes(rest)) }
+    case is NoBom { Ok[String, CodecError](String.fromBytes(rest)) }
+  };
+  match r {
+    case let Err(e) { Err[String, CodecError](CodecError(e.kind, e.position + n)) }
+    case let Ok(s) { Ok[String, CodecError](s) }
+  }
+}
+
+// Latin-1 (ISO-8859-1): each byte is the code point of the same value
+pub fn decodeLatin1(b: &Array[u8]) String {
+  var out = String.withCapacity(b.len + b.len / 2usize);
+  var i = 0usize;
+  while i < b.len {
+    appendCode(&mut out, u32.from(b[i]));
+    i = i + 1usize;
+  }
+  out
+}
+
+// Windows-1252, per the WHATWG index (see the CHOICES above)
+pub fn decodeWindows1252(b: &Array[u8]) String {
+  var out = String.withCapacity(b.len + b.len / 2usize);
+  var i = 0usize;
+  while i < b.len {
+    let x = u32.from(b[i]);
+    appendCode(&mut out, if x >= 0x80u32 && x < 0xA0u32 { w1252[usize.from(x - 0x80u32)] } else { x });
+    i = i + 1usize;
+  }
+  out
+}
+
+fn put16(out: &mut List[u8], u: u32, big: bool) {
+  let hi = u8.from((u >> 8u32) & 0xFFu32);
+  let lo = u8.from(u & 0xFFu32);
+  if big { out.push(hi); out.push(lo); } else { out.push(lo); out.push(hi); }
+}
+
+fn encode16(s: &str, big: bool, bom: bool) List[u8] {
+  var out = List[u8].withCapacity(s.len() * 2usize + 2usize);
+  if bom { put16(&mut out, 0xFEFFu32, big); }
+  each c in s.chars() {
+    let x = u32.from(c);
+    if x < 0x10000u32 {
+      put16(&mut out, x, big);
+    } else {
+      let y = x - 0x10000u32;
+      put16(&mut out, 0xD800u32 + (y >> 10u32), big);
+      put16(&mut out, 0xDC00u32 + (y & 0x3FFu32), big);
+    }
+  }
+  out
+}
+
+// The text as UTF-16 little-endian bytes; 'bom' puts the mark FF FE first
+pub fn encodeUtf16Le(s: &str, bom: bool) List[u8] { encode16(s, false, bom) }
+
+pub fn encodeUtf16Be(s: &str, bom: bool) List[u8] { encode16(s, true, bom) }
+
+// The text as Latin-1 bytes; a char above U+00FF is refused, at its byte offset in 's'
+pub fn encodeLatin1(s: &str) Result[List[u8], CodecError] {
+  var out = List[u8].withCapacity(s.len());
+  each ci in s.charIndices() {
+    let x = u32.from(ci.ch);
+    if x > 0xFFu32 { return Err[List[u8], CodecError](CodecError(CodecErrorKind.Unmappable, ci.offset)); }
+    out.push(u8.from(x));
+  }
+  Ok[List[u8], CodecError](out)
+}
+
+// The text as Windows-1252 bytes; a char the encoding does not hold is refused,
+// at its byte offset in 's'
+pub fn encodeWindows1252(s: &str) Result[List[u8], CodecError] {
+  var out = List[u8].withCapacity(s.len());
+  each ci in s.charIndices() {
+    let x = u32.from(ci.ch);
+    if x < 0x80u32 || (x >= 0xA0u32 && x <= 0xFFu32) {
+      out.push(u8.from(x));
+      continue;
+    }
+    var found = false;
+    var k = 0usize;
+    while k < 32usize {
+      if w1252[k] == x {
+        out.push(u8.from(0x80u32 + u32.from(k)));
+        found = true;
+        break;
+      }
+      k = k + 1usize;
+    }
+    if !found { return Err[List[u8], CodecError](CodecError(CodecErrorKind.Unmappable, ci.offset)); }
+  }
+  Ok[List[u8], CodecError](out)
+}

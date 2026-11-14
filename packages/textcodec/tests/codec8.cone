@@ -1,0 +1,138 @@
+// Latin-1 and Windows-1252: each of the 256 bytes decodes to the code point the
+// standard gives and encodes back to the same byte; the whole 256 bytes
+// round-trip as one text. Windows-1252's 0x80 to 0x9F block is checked against
+// 'want1252', copied from the WHATWG Encoding Standard's index-windows-1252.txt
+// (dated 2024-09-18), where the five bytes Microsoft leaves undefined (0x81,
+// 0x8D, 0x8F, 0x90, 0x9D) are the C1 controls U+0081, U+008D, U+008F, U+0090 and
+// U+009D. Then the encoders' refusals, with the byte offset of the char refused:
+// U+0100 for Latin-1; for Windows-1252 the C1 controls with no byte of their own
+// (U+0080, U+008E, U+009F), U+3042, and U+1F600; and a few known byte patterns.
+
+mod codec8;
+
+import testing use *;
+import collections use *;
+import textcodec use *;
+
+let want1252: Array[u32, 32] = [
+  0x20ACu32, 0x0081u32, 0x201Au32, 0x0192u32, 0x201Eu32, 0x2026u32, 0x2020u32, 0x2021u32,
+  0x02C6u32, 0x2030u32, 0x0160u32, 0x2039u32, 0x0152u32, 0x008Du32, 0x017Du32, 0x008Fu32,
+  0x0090u32, 0x2018u32, 0x2019u32, 0x201Cu32, 0x201Du32, 0x2022u32, 0x2013u32, 0x2014u32,
+  0x02DCu32, 0x2122u32, 0x0161u32, 0x203Au32, 0x0153u32, 0x009Du32, 0x017Eu32, 0x0178u32
+];
+
+fn hex(b: &Array[u8]) String {
+  let d: &Array[u8] = "0123456789ABCDEF";
+  var s = String();
+  var i = 0usize;
+  while i < b.len {
+    if i > 0usize { s.appendByte(' '); }
+    s.appendByte(d[usize.from(b[i] >> 4u8)]);
+    s.appendByte(d[usize.from(b[i] & 15u8)]);
+    i = i + 1usize;
+  }
+  s
+}
+
+// the one code point of a text of one char (0xFFFFFFFF if it is not one char)
+fn onlyChar(s: &String) u32 {
+  var n = 0u32;
+  var x = 0xFFFFFFFFu32;
+  each c in s.view().chars() { n = n + 1u32; x = u32.from(c); }
+  if n == 1u32 { x } else { 0xFFFFFFFFu32 }
+}
+
+// 0 if encoded; else 1000 + position of the refusal
+fn refusal(r: Result[List[u8], CodecError]) i64 {
+  match r {
+    case is Ok { 0i64 }
+    case let Err(e) { 1000i64 + i64.from(e.position) }
+  }
+}
+
+fn bytesOf(r: Result[List[u8], CodecError]) String {
+  match r {
+    case is Err { String.from("<refused>") }
+    case let Ok(l) { hex(l.view()) }
+  }
+}
+
+fn main() i32 {
+  var all = List[u8].withCapacity(256usize);
+  var b = 0u32;
+  while b < 256u32 { all.push(u8.from(b)); b = b + 1u32; }
+
+  // each byte alone
+  b = 0u32;
+  var latinOk = 0u64;
+  var cpOk = 0u64;
+  var latinBack = 0u64;
+  var cpBack = 0u64;
+  while b < 256u32 {
+    let one: Array[u8, 1] = [u8.from(b)];
+    let lat = decodeLatin1(&one);
+    if onlyChar(&lat) == b { latinOk = latinOk + 1u64; }
+    let wantCp = if b >= 0x80u32 && b < 0xA0u32 { want1252[usize.from(b - 0x80u32)] } else { b };
+    let cp = decodeWindows1252(&one);
+    if onlyChar(&cp) == wantCp { cpOk = cpOk + 1u64; }
+    match encodeLatin1(lat.view()) {
+      case let Ok(l) { if l.len() == 1usize && l[0usize] == u8.from(b) { latinBack = latinBack + 1u64; } }
+      case is Err { }
+    }
+    match encodeWindows1252(cp.view()) {
+      case let Ok(l) { if l.len() == 1usize && l[0usize] == u8.from(b) { cpBack = cpBack + 1u64; } }
+      case is Err { }
+    }
+    b = b + 1u32;
+  }
+  expectUInt(latinOk, 256u64, "Latin-1: every byte is the code point of its value");
+  expectUInt(cpOk, 256u64, "Windows-1252: every byte is the standard's code point");
+  expectUInt(latinBack, 256u64, "Latin-1: every byte encodes back");
+  expectUInt(cpBack, 256u64, "Windows-1252: every byte encodes back, the five controls too");
+
+  // all 256 as one text
+  let lat = decodeLatin1(all.view());
+  expectUInt(u64.from(lat.charCount()), 256u64, "Latin-1 text has 256 chars");
+  expectUInt(u64.from(lat.len()), 128u64 + 2u64 * 128u64, "Latin-1 text: 128 ASCII bytes, 128 of two bytes");
+  match encodeLatin1(lat.view()) {
+    case let Ok(l) { expect(l.view() == all.view(), "Latin-1 round trip of all 256"); }
+    case is Err { expect(false, "Latin-1 round trip encodes"); }
+  }
+  let cp = decodeWindows1252(all.view());
+  expectUInt(u64.from(cp.charCount()), 256u64, "Windows-1252 text has 256 chars");
+  match encodeWindows1252(cp.view()) {
+    case let Ok(l) { expect(l.view() == all.view(), "Windows-1252 round trip of all 256"); }
+    case is Err { expect(false, "Windows-1252 round trip encodes"); }
+  }
+  expect(decodeWindows1252(all.view()).view() != lat.view(), "the two differ (0x80 to 0x9F)");
+  expectUInt(u64.from(decodeLatin1(all.view().slice(0usize, 0usize)).len()), 0u64, "empty");
+
+  // known patterns, worked by hand
+  let e9: Array[u8, 1] = [0xE9u8];
+  expectStr(hex(decodeLatin1(&e9).view()).view(), "C3 A9", "Latin-1 E9 is U+00E9, C3 A9");
+  let x80: Array[u8, 1] = [0x80u8];
+  expectStr(hex(decodeLatin1(&x80).view()).view(), "C2 80", "Latin-1 80 is U+0080, C2 80");
+  expectStr(hex(decodeWindows1252(&x80).view()).view(), "E2 82 AC", "Windows-1252 80 is the euro, E2 82 AC");
+  let x81: Array[u8, 1] = [0x81u8];
+  expectStr(hex(decodeWindows1252(&x81).view()).view(), "C2 81", "Windows-1252 81 is U+0081");
+  let x9f: Array[u8, 1] = [0x9Fu8];
+  expectStr(hex(decodeWindows1252(&x9f).view()).view(), "C5 B8", "Windows-1252 9F is U+0178, C5 B8");
+  expectStr(bytesOf(encodeWindows1252("€")).view(), "80", "the euro is 80");
+  expectStr(bytesOf(encodeWindows1252("café — “ok”")).view(), "63 61 66 E9 20 97 20 93 6F 6B 94", "café with a dash and quotes");
+  expectStr(bytesOf(encodeLatin1("café")).view(), "63 61 66 E9", "Latin-1 café");
+  expectStr(bytesOf(encodeLatin1("")).view(), "", "Latin-1 empty");
+
+  // refusals, with the byte offset in the UTF-8 text
+  expectInt(refusal(encodeLatin1("Ā")), 1000i64, "Latin-1 refuses U+0100 at 0");
+  expectInt(refusal(encodeLatin1("aé€")), 1000i64 + 3i64, "Latin-1 refuses the euro after a (1) and e-acute (2): offset 3");
+  expectInt(refusal(encodeLatin1("\U0001F600")), 1000i64, "Latin-1 refuses an emoji");
+  expectInt(refusal(encodeLatin1("ÿ")), 0i64, "Latin-1 holds U+00FF");
+  expectInt(refusal(encodeWindows1252("\u0080")), 1000i64, "Windows-1252 refuses U+0080 (its byte 80 is the euro)");
+  expectInt(refusal(encodeWindows1252("ab\u008E")), 1002i64, "Windows-1252 refuses U+008E (it has no byte: the standard's 8E is U+017D)");
+  expectInt(refusal(encodeWindows1252("\u009F")), 1000i64, "Windows-1252 refuses U+009F");
+  expectInt(refusal(encodeWindows1252("xあ")), 1001i64, "Windows-1252 refuses a hiragana");
+  expectInt(refusal(encodeWindows1252("é\U0001F600")), 1002i64, "Windows-1252 refuses an emoji after e-acute (2 bytes)");
+  expectInt(refusal(encodeWindows1252("\u0081\u008D\u008F\u0090\u009D")), 0i64, "Windows-1252 holds the five C1 controls");
+  expectInt(refusal(encodeWindows1252("Ā")), 1000i64, "Windows-1252 refuses U+0100");
+  done()
+}
