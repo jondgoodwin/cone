@@ -1,0 +1,234 @@
+// unicode.caseFold, toNfd, toNfc, isNfc (Unicode 18.0.0): hand-checked cases first
+// (case folding where lowercasing is wrong, composition exclusions, Hangul, mark
+// reordering; every non-ASCII char is a \U escape, so no editor can renormalize
+// the source), then every line of NormalizationTest.txt's Part 0 and Part 1 (the
+// lines are in tests/data/normalization-part01.txt, five columns each, cut from the
+// 18.0.0 file with the comments dropped, so the test runs offline), then Part 1's
+// closing invariant: a code point not listed there is its own NFC and NFD.
+
+mod normalize;
+
+import testing use *;
+import collections use *;
+import stdio use *;
+import fs;
+import path use Path;
+import unicode;
+
+fn same(a: &str, b: &str) bool {
+  if a.len() != b.len() { return false; }
+  var i = 0usize;
+  while i < a.len() {
+    if a[i] != b[i] { return false; }
+    i += 1usize;
+  }
+  true
+}
+
+fn fold(s: &str, want: &str, label: &Array[u8]) bool { let f = unicode.caseFold(s); expectStr(f.view(), want, label) }
+fn nfc(s: &str, want: &str, label: &Array[u8]) bool { let f = unicode.toNfc(s); expectStr(f.view(), want, label) }
+fn nfd(s: &str, want: &str, label: &Array[u8]) bool { let f = unicode.toNfd(s); expectStr(f.view(), want, label) }
+
+fn hexVal(b: u8) u32 {
+  if b >= 48u8 && b <= 57u8 { u32.from(b) - 48u32 }
+  else if b >= 65u8 && b <= 70u8 { u32.from(b) - 55u32 }
+  else { 0u32 }
+}
+
+fn encode(out: &mut String, x: u32) {
+  if x < 0x80u32 { out.appendByte(u8.from(x)); }
+  else if x < 0x800u32 {
+    out.appendByte(0xC0u8 | u8.from(x >> 6u32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+  else if x < 0x10000u32 {
+    out.appendByte(0xE0u8 | u8.from(x >> 12u32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+  else {
+    out.appendByte(0xF0u8 | u8.from(x >> 18u32));
+    out.appendByte(0x80u8 | u8.from((x >> 12u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+}
+
+// The text of the hex code points (separated by spaces) in d[from, to)
+fn decode(d: &str, from: usize, to: usize) String {
+  var out = String();
+  var cur = 0u32;
+  var any = false;
+  var i = from;
+  while i <= to {
+    if i == to || d[i] == 32u8 {
+      if any { encode(&mut out, cur); }
+      cur = 0u32; any = false;
+    }
+    else { cur = cur * 16u32 + hexVal(d[i]); any = true; }
+    i += 1usize;
+  }
+  out
+}
+
+// The k-th field (from 0) of the line d[ls, le)
+fn fieldOf(d: &str, ls: usize, le: usize, k: u32) String {
+  var i = ls;
+  var n = 0u32;
+  var from = ls;
+  while i <= le {
+    if i == le || d[i] == 59u8 {
+      if n == k { return decode(d, from, i); }
+      n += 1u32;
+      from = i + 1usize;
+    }
+    i += 1usize;
+  }
+  String()
+}
+
+fn readData() String {
+  let file = Path.fromString(String.from("../../../../../unicode/tests/data/normalization-part01.txt"));
+  var out = String();
+  match fs.readFile(&file) {
+    case var Ok(r) { out <-> r; }
+    case let Err(e) {}
+  }
+  out
+}
+
+fn main() i32 {
+  // Case folding where lowercasing is wrong or differs
+  fold("Stra\U000000DFe", "strasse", "sharp s folds to ss");
+  fold("STRASSE", "strasse", "STRASSE");
+  fold("\U00001E9E", "ss", "capital sharp s folds to ss (toLower gives sharp s)");
+  fold("\U000003C2", "\U000003C3", "final sigma folds to sigma");
+  fold("\U000003A3", "\U000003C3", "capital sigma");
+  fold("\U000003A3\U00000391\U000003A3", "\U000003C3\U000003B1\U000003C3", "sigma word, no final form");
+  fold("\U00000130", "i\U00000307", "dotted capital I folds to i and a combining dot");
+  fold("\U00000131", "\U00000131", "dotless i is not folded (T entry only)");
+  fold("\U0000017F", "s", "long s folds to s");
+  fold("\U0000212A", "k", "kelvin sign folds to k");
+  fold("\U00000149", "\U000002BCn", "n with apostrophe");
+  fold("\U0000FB01", "fi", "fi ligature");
+  fold("\U00001FB3", "\U000003B1\U000003B9", "alpha with ypogegrammeni");
+  fold("\U00001FBC", "\U000003B1\U000003B9", "alpha with prosgegrammeni");
+  fold("Hello, World 123", "hello, world 123", "ascii");
+  fold("", "", "empty");
+  fold("\U000001C5", "\U000001C6", "dz titlecase");
+  fold("\U000013A0", "\U000013A0", "cherokee capital folds to itself");
+  fold("\U0000AB70", "\U000013A0", "cherokee small folds to the capital");
+  fold("\U00010400", "\U00010428", "deseret");
+  fold("\U000001F0", "j\U0000030C", "j caron folds to j and a combining caron (F)");
+
+  // Normalization: hand-checked
+  nfd("\U000000E9", "e\U00000301", "e acute decomposes");
+  nfc("e\U00000301", "\U000000E9", "e and acute compose");
+  nfc("\U000000E9", "\U000000E9", "e acute stays");
+  nfd("\U0000212B", "A\U0000030A", "angstrom sign decomposes to A and ring");
+  nfc("\U0000212B", "\U000000C5", "angstrom sign composes to A ring");
+  nfd("\U00001E69", "s\U00000323\U00000307", "s dot below dot above, in order");
+  nfc("s\U00000307\U00000323", "\U00001E69", "s dot above, dot below reorders and composes");
+  nfc("s\U00000323\U00000307", "\U00001E69", "s dot below, dot above composes");
+  nfc("\U00000958", "\U00000915\U0000093C", "U+0958 is a composition exclusion: NFC leaves it decomposed");
+  nfd("\U00000958", "\U00000915\U0000093C", "U+0958 decomposes");
+  nfd("\U0000D55C", "\U00001112\U00001161\U000011AB", "hangul syllable, three jamo");
+  nfc("\U00001112\U00001161\U000011AB", "\U0000D55C", "three jamo, one syllable");
+  nfd("\U0000AC00", "\U00001100\U00001161", "hangul syllable, two jamo");
+  nfc("\U00001100\U00001161", "\U0000AC00", "two jamo compose");
+  nfc("\U0000AC00\U000011A8", "\U0000AC01", "LV and T compose");
+  nfc("\U00001100\U00001161\U000011A8x", "\U0000AC01x", "hangul then ascii");
+  nfd("\U0000AC00\U0000D7A3", "\U00001100\U00001161\U00001112\U00001175\U000011C2", "hangul bounds");
+  nfc("a\U00000308\U00000323", "\U00001EA1\U00000308", "a, diaeresis, dot below: mark order then composition");
+  nfd("\U00001EA1\U00000308", "a\U00000323\U00000308", "same, decomposed");
+  nfc("d\U00000307\U00000323", "\U00001E0D\U00000307", "d dot above, dot below");
+  nfc("", "", "empty");
+  nfd("", "", "empty d");
+  nfc("plain ascii", "plain ascii", "ascii");
+  nfd("plain ascii", "plain ascii", "ascii d");
+  nfc("\U0001D15E", "\U0001D157\U0001D165", "musical half note is excluded from composition");
+  nfd("\U0001D15E", "\U0001D157\U0001D165", "musical half note decomposes");
+
+  expectBool(unicode.isNfc("plain"), true, "ascii is nfc");
+  expectBool(unicode.isNfc("\U000000E9"), true, "precomposed is nfc");
+  expectBool(unicode.isNfc("e\U00000301"), false, "e plus acute is not nfc");
+  expectBool(unicode.isNfc("\U0000212B"), false, "angstrom sign is not nfc");
+  expectBool(unicode.isNfc("\U0000AC01"), true, "hangul syllable");
+  expectBool(unicode.isNfc("\U00001100\U00001161"), false, "hangul jamo");
+  expectBool(unicode.isNfc("q\U00000323\U00000307"), true, "marks in order, no composite");
+  expectBool(unicode.isNfc("q\U00000307\U00000323"), false, "marks out of order");
+  expectBool(unicode.isNfc(""), true, "empty");
+  nfc("q\U00000323\U00000307", "q\U00000323\U00000307", "q with two marks in order stays");
+  nfc("x\U00000323\U00000307", "\U00001E8B\U00000323", "x dot below dot above: the dot above composes past the dot below");
+  expectBool(unicode.isNfc("x\U00000323\U00000307"), false, "that text is not nfc");
+
+  // NormalizationTest.txt, Part 0 and Part 1: c2 == NFC(c1, c2, c3), c4 == NFC(c4, c5),
+  // c3 == NFD(c1, c2, c3), c5 == NFD(c4, c5), and isNfc agrees with toNfc on each column
+  let data = readData();
+  let d = data.view();
+  expectBool(d.len() > 600000usize, true, "the data file was read");
+  var lines = 0u64; var bad = 0u64; var badIs = 0u64;
+  var singles = List[u32]();
+  var ls = 0usize;
+  var i = 0usize;
+  while i < d.len() {
+    if d[i] == 10u8 {
+      let c1 = fieldOf(d, ls, i, 0u32);
+      let c2 = fieldOf(d, ls, i, 1u32);
+      let c3 = fieldOf(d, ls, i, 2u32);
+      let c4 = fieldOf(d, ls, i, 3u32);
+      let c5 = fieldOf(d, ls, i, 4u32);
+      let n1 = unicode.toNfc(c1.view()); let n2 = unicode.toNfc(c2.view()); let n3 = unicode.toNfc(c3.view());
+      let n4 = unicode.toNfc(c4.view()); let n5 = unicode.toNfc(c5.view());
+      let d1 = unicode.toNfd(c1.view()); let d2 = unicode.toNfd(c2.view()); let d3 = unicode.toNfd(c3.view());
+      let d4 = unicode.toNfd(c4.view()); let d5 = unicode.toNfd(c5.view());
+      let ok = same(n1.view(), c2.view()) && same(n2.view(), c2.view()) && same(n3.view(), c2.view())
+            && same(n4.view(), c4.view()) && same(n5.view(), c4.view())
+            && same(d1.view(), c3.view()) && same(d2.view(), c3.view()) && same(d3.view(), c3.view())
+            && same(d4.view(), c5.view()) && same(d5.view(), c5.view());
+      if !ok { bad += 1u64; if bad < 6u64 { printStr("fails, line "); printUInt(lines + 1u64); printStr("\n"); } }
+      let isOk = unicode.isNfc(c1.view()) == same(n1.view(), c1.view())
+              && unicode.isNfc(c2.view()) == same(n2.view(), c2.view())
+              && unicode.isNfc(c3.view()) == same(n3.view(), c3.view())
+              && unicode.isNfc(c4.view()) == same(n4.view(), c4.view())
+              && unicode.isNfc(c5.view()) == same(n5.view(), c5.view());
+      if !isOk { badIs += 1u64; if badIs < 6u64 { printStr("isNfc fails, line "); printUInt(lines + 1u64); printStr("\n"); } }
+      if c1.view().charCount() == 1usize { singles.push(u32.from(c1.view().chars().next().unwrap())); }
+      lines += 1u64;
+      ls = i + 1usize;
+    }
+    i += 1usize;
+  }
+  expectUInt(lines, 17200u64, "lines of Part 0 and Part 1");
+  expectUInt(bad, 0u64, "lines whose NFC and NFD invariants fail");
+  expectUInt(badIs, 0u64, "lines where isNfc disagrees with toNfc");
+
+  // Part 1's closing invariant, over every code point but the surrogates and Hangul
+  // syllables (the algorithm decomposes those; Part 1 lists only some of them)
+  singles.sort();
+  var other = 0u64; var bad2 = 0u64;
+  var x = 0u32;
+  while x <= 0x10FFFFu32 {
+    if (x < 0xD800u32 || x > 0xDFFFu32) && (x < 0xAC00u32 || x > 0xD7A3u32) {
+      var lo = 0usize; var hi = singles.view().len(); var found = false;
+      while lo < hi {
+        let mid = lo + (hi - lo) / 2usize;
+        let m = singles[mid];
+        if m == x { found = true; break; }
+        if m < x { lo = mid + 1usize; } else { hi = mid; }
+      }
+      if !found {
+        other += 1u64;
+        var one = String();
+        encode(&mut one, x);
+        let a = unicode.toNfc(one.view());
+        let b = unicode.toNfd(one.view());
+        if !same(a.view(), one.view()) || !same(b.view(), one.view()) || !unicode.isNfc(one.view()) { bad2 += 1u64; }
+      }
+    }
+    x += 1u32;
+  }
+  expectBool(other > 1000000u64, true, "code points outside Part 1 checked");
+  expectUInt(bad2, 0u64, "code points outside Part 1 that change");
+  done()
+}
