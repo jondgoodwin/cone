@@ -1,0 +1,298 @@
+// The uuid package: universally unique identifiers as RFC 9562 defines them. A
+// 'Uuid' is a 16-byte value; 'Uuid.v4()' is 122 random bits from the OS,
+// 'Uuid.v7()' is the Unix time in milliseconds followed by random bits, so v7s
+// sort by when they were made; 'parse' and 'toText' go to and from the
+// hyphenated text.
+//
+//   mod ids;
+//   import uuid use Uuid;
+//
+//   fn main() i32 {
+//     match Uuid.v4() {
+//       case let Ok(u) { var s = String(); s <- u; /* "919108f7-52d1-4320-9bac-f847db4148a8" */ }
+//       case is Err { }
+//     }
+//     0i32;
+//   }
+//
+// CHOICES. Each says what was chosen and what was left out.
+//
+// - The value is two u64 (the first eight bytes and the last eight, big-endian),
+//   which makes '==', '<=>' and 'hash' three one-line comparisons. 'bytes' and
+//   'fromBytes' convert to and from the 16 bytes in RFC order.
+// - Randomness is 'random.osFill': the OS's secure generator, never 'Rng'. It
+//   can fail, so 'v4', 'v7' and 'UuidGen.next' answer a Result with random's
+//   'OsRandomError'.
+// - 'v7' follows RFC 9562 section 5.7 with its 48-bit millisecond clock from
+//   the time package, 12 bits 'rand_a' and 62 bits 'rand_b', all random. Two
+//   v7s made in the same millisecond by 'Uuid.v7()' are in no particular
+//   order. For ids that must sort in the order they were made, hold a
+//   'UuidGen' and call 'next()': it is the RFC's method 2 (a 12-bit counter in
+//   'rand_a', started at a random value below 2048 whenever the millisecond
+//   moves on, and counted up within one millisecond; if the counter fills, the
+//   millisecond is advanced by one, as the RFC allows). If the clock reads
+//   earlier than the last id it made, it keeps the last millisecond. The
+//   generator is a value, with no global and no thread-local behind it, so one
+//   generator is not shared between threads.
+// - 'parse' reads exactly the 36-character hyphenated form (8-4-4-4-12), hex
+//   digits of either case. Left out: braces, 'urn:uuid:', and the form with no
+//   hyphens; a caller who has them strips them first. Any version and variant
+//   is accepted, since 'parse' reads text and does not judge it.
+// - 'toText' writes lower case, hyphenated, as RFC 9562 says to write one.
+// - The order is by bytes, first byte most significant, which is also the RFC's
+//   own order for v7. Left out: v1, v3, v5, v6 and v8 (v5 needs SHA-1, which
+//   cryptohash has; it can come later).
+
+mod uuid;
+
+import collections use String;
+import random use osFill, OsRandomError;
+import time use Timestamp;
+
+// -------- failure --------
+
+pub enum UuidErrorKind {
+  BadLength;   // not 36 bytes long
+  BadHyphen;   // a hyphen missing at 8, 13, 18 or 23, or one elsewhere
+  BadDigit;    // a character that is not a hex digit
+
+  // The reason, in a few words
+  pub fn describe(self: &UuidErrorKind, out: &uni TextOut) {
+    match self {
+      case is BadLength { out <- "not 36 characters long"; }
+      case is BadHyphen { out <- "hyphens are not at offsets 8, 13, 18 and 23"; }
+      case is BadDigit { out <- "not a hex digit"; }
+    }
+  }
+}
+
+// Why text was refused
+pub struct UuidError is Error {
+  pub kind: UuidErrorKind;
+  // For BadHyphen and BadDigit, the byte offset of the character at fault; for
+  // BadLength, the length found
+  pub position: usize;
+
+  // One line for a person: 'uuid: not a hex digit, at offset 3'
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- "uuid: ";
+    kind.describe(out);
+    match kind {
+      case is BadLength { out <- " (found ", position, ")"; }
+      case is BadHyphen { out <- ", at offset ", position; }
+      case is BadDigit { out <- ", at offset ", position; }
+    }
+  }
+}
+
+// -------- hex --------
+
+// The value of one hex digit of either case, or 16 if it is not one
+fn hexValue(c: u8) u32 {
+  if c >= '0' && c <= '9' { return u32.from(c) - u32.from('0'); }
+  if c >= 'a' && c <= 'f' { return u32.from(c) - u32.from('a') + 10u32; }
+  if c >= 'A' && c <= 'F' { return u32.from(c) - u32.from('A') + 10u32; }
+  16u32
+}
+
+fn hexDigit(v: u64) u8 {
+  let digits: &Array[u8] = "0123456789abcdef";
+  digits[usize.from(v & 15u64)]
+}
+
+// The eight bytes of a word, most significant first, into buf at 'at'
+fn putWord(buf: &mut Array[u8], at: usize, w: u64) {
+  var i = 0usize;
+  while i < 8usize {
+    buf[at + i] = u8.from((w >> u64.from(56usize - 8usize * i)) & 0xFFu64);
+    i = i + 1usize;
+  }
+}
+
+fn getWord(buf: &Array[u8], at: usize) u64 {
+  var w = 0u64;
+  var i = 0usize;
+  while i < 8usize {
+    w = (w << 8u64) | u64.from(buf[at + i]);
+    i = i + 1usize;
+  }
+  w
+}
+
+// -------- Uuid --------
+
+// A UUID: 128 bits, held as the first eight bytes ('hi') and the last eight
+// ('lo'), each big-endian
+pub struct Uuid is Eq, Ordered, Hash {
+  hi: u64 = 0u64;
+  lo: u64 = 0u64;
+
+  // Whether this is the nil UUID, all zero bits of the RFC (all zero bits). "nil" is a keyword, so it is spelled zero
+  pub fn zero() Uuid { Uuid(0u64, 0u64) }
+
+  // The max UUID, all one bits
+  pub fn max() Uuid { Uuid(0xFFFFFFFFFFFFFFFFu64, 0xFFFFFFFFFFFFFFFFu64) }
+
+  // The UUID of these 16 bytes, as they stand: the version and variant bits
+  // are not touched
+  pub fn fromBytes(b: &Array[u8, 16]) Uuid {
+    let a: &Array[u8] = b;
+    Uuid(getWord(a, 0usize), getWord(a, 8usize))
+  }
+
+  // The 16 bytes, in RFC order
+  pub fn bytes(self: &) Array[u8, 16] {
+    var out = Array[u8, 16]() <- fill 0u8;
+    putWord(&mut out, 0usize, hi);
+    putWord(&mut out, 8usize, lo);
+    out
+  }
+
+  // 4 for a random UUID, 7 for a time-ordered one, and so on: the top four
+  // bits of byte 6
+  pub fn version(self: &) u32 { u32.from((hi >> 12u64) & 15u64) }
+
+  // True if the variant bits are the RFC's own (binary 10 at the top of byte 8)
+  pub fn isRfcVariant(self: &) bool { (lo >> 62u64) == 2u64 }
+
+  // Whether this is the nil UUID, all zero bits
+  pub fn isZero(self: &) bool { hi == 0u64 && lo == 0u64 }
+
+  // A random UUID (version 4): 122 random bits from the OS
+  pub fn v4() Result[Uuid, OsRandomError] {
+    var buf = Array[u8, 16]() <- fill 0u8;
+    match osFill(&mut buf) {
+      case let Err(e) { return Err[Uuid, OsRandomError](e); }
+      case is Ok { }
+    }
+    let a: &Array[u8] = &buf;
+    let h = (getWord(a, 0usize) & 0xFFFFFFFFFFFF0FFFu64) | 0x0000000000004000u64;
+    let l = (getWord(a, 8usize) & 0x3FFFFFFFFFFFFFFFu64) | 0x8000000000000000u64;
+    Ok[Uuid, OsRandomError](Uuid(h, l))
+  }
+
+  // A time-ordered UUID (version 7) for the current time. The milliseconds
+  // order two made apart; two made in the same millisecond are in no
+  // particular order: for those, 'UuidGen.next'
+  pub fn v7() Result[Uuid, OsRandomError] {
+    var buf = Array[u8, 16]() <- fill 0u8;
+    match osFill(&mut buf) {
+      case let Err(e) { return Err[Uuid, OsRandomError](e); }
+      case is Ok { }
+    }
+    let a: &Array[u8] = &buf;
+    let ms = nowMs();
+    Ok[Uuid, OsRandomError](v7Of(ms, getWord(a, 0usize) & 0xFFFu64, getWord(a, 8usize)))
+  }
+
+  // The UUID of hyphenated text: 8-4-4-4-12 hex digits, either case
+  pub fn parse(text: &str) Result[Uuid, UuidError] {
+    let t: &Array[u8] = text;
+    if t.len != 36usize {
+      return Err[Uuid, UuidError](UuidError(UuidErrorKind.BadLength, t.len));
+    }
+    var h = 0u64;
+    var l = 0u64;
+    var digits = 0usize;
+    var i = 0usize;
+    while i < 36usize {
+      let c = t[i];
+      let hyphenHere = i == 8usize || i == 13usize || i == 18usize || i == 23usize;
+      if hyphenHere {
+        if c != '-' { return Err[Uuid, UuidError](UuidError(UuidErrorKind.BadHyphen, i)); }
+      } else {
+        if c == '-' { return Err[Uuid, UuidError](UuidError(UuidErrorKind.BadHyphen, i)); }
+        let d = hexValue(c);
+        if d > 15u32 { return Err[Uuid, UuidError](UuidError(UuidErrorKind.BadDigit, i)); }
+        if digits < 16usize { h = (h << 4u64) | u64.from(d); } else { l = (l << 4u64) | u64.from(d); }
+        digits = digits + 1usize;
+      }
+      i = i + 1usize;
+    }
+    Ok[Uuid, UuidError](Uuid(h, l))
+  }
+
+  // Lower case, hyphenated: 'out <- uuid' or 'String() <- uuid'
+  pub fn toText(self: &, out: &uni TextOut) {
+    var s = String();
+    var i = 0usize;
+    while i < 32usize {
+      if i == 8usize || i == 12usize || i == 16usize || i == 20usize { s.appendByte('-'); }
+      let w = if i < 16usize { hi } else { lo };
+      let shift = 60usize - 4usize * (i % 16usize);
+      s.appendByte(hexDigit(w >> u64.from(shift)));
+      i = i + 1usize;
+    }
+    out <- s.view();
+  }
+
+  pub fn `==`(self: &, o: &Uuid) bool { hi == o.hi && lo == o.lo }
+
+  // -1, 0 or 1 by bytes, the first most significant
+  pub fn cmp overload `<=>`(self: &, o: &Uuid) i32 {
+    if hi != o.hi { return if hi < o.hi { -1i32 } else { 1i32 }; }
+    if lo != o.lo { return if lo < o.lo { -1i32 } else { 1i32 }; }
+    0i32
+  }
+
+  pub fn hash(self: &, h: &mut Hasher) {
+    h.writeU64(hi);
+    h.writeU64(lo);
+  }
+}
+
+// Milliseconds since the Unix epoch, now (0 if the clock reads before it)
+fn nowMs() u64 {
+  let ns = Timestamp.now().unixNanos();
+  if ns < 0i64 { return 0u64; }
+  u64.from(ns / 1000000i64)
+}
+
+// A v7 UUID of a 48-bit millisecond time, 12 bits for rand_a and a 64-bit word
+// of which 62 bits are rand_b
+fn v7Of(ms: u64, randA: u64, randB: u64) Uuid {
+  let h = ((ms & 0xFFFFFFFFFFFFu64) << 16u64) | 0x7000u64 | (randA & 0xFFFu64);
+  let l = (randB & 0x3FFFFFFFFFFFFFFFu64) | 0x8000000000000000u64;
+  Uuid(h, l)
+}
+
+// -------- UuidGen --------
+
+// Makes v7 UUIDs that sort in the order they were made, however many in a
+// millisecond. A value: keep one where the ids are made, not shared between
+// threads
+pub struct UuidGen {
+  lastMs: u64 = 0u64;
+  counter: u64 = 0u64;
+  started: bool = false;
+
+  pub fn make() UuidGen { UuidGen(0u64, 0u64, false) }
+
+  // The next v7 UUID, after every one this generator gave
+  pub fn next(self: &mut) Result[Uuid, OsRandomError] {
+    var buf = Array[u8, 16]() <- fill 0u8;
+    match osFill(&mut buf) {
+      case let Err(e) { return Err[Uuid, OsRandomError](e); }
+      case is Ok { }
+    }
+    let a: &Array[u8] = &buf;
+    let r0 = getWord(a, 0usize);
+    let r1 = getWord(a, 8usize);
+    let now = nowMs();
+    if !started || now > lastMs {
+      // The millisecond moved on: a fresh counter, with room above it
+      lastMs = now;
+      counter = r0 & 0x7FFu64;
+      started = true;
+    } else {
+      // The same millisecond (or the clock went back): count up, and spill
+      // into the next millisecond if the counter is full
+      counter = counter + 1u64;
+      if counter > 0xFFFu64 {
+        lastMs = lastMs + 1u64;
+        counter = (r0 >> 16u64) & 0x7FFu64;
+      }
+    }
+    Ok[Uuid, OsRandomError](v7Of(lastMs, counter, r1))
+  }
+}

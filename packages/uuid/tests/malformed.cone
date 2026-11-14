@@ -1,0 +1,66 @@
+// Text that is not a UUID is refused at each position: the wrong length, a
+// hyphen out of place or missing, a character that is not a hex digit.
+
+mod malformed;
+
+import testing use *;
+import collections use String;
+import uuid use Uuid, UuidErrorKind;
+
+const good = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f";
+
+// 0 if accepted; else 1 length, 2 hyphen or 3 digit, plus 10 times the position
+fn kindAt(t: &str) i64 {
+  match Uuid.parse(t) {
+    case is Ok { 0i64 }
+    case let Err(e) {
+      let k = match e.kind {
+        case is BadLength { 1i64 }
+        case is BadHyphen { 2i64 }
+        case is BadDigit { 3i64 }
+      };
+      k + 10i64 * i64.from(e.position)
+    }
+  }
+}
+
+// 'good' with the byte at 'at' replaced by 'c'
+fn replaced(at: usize, c: u8) String {
+  var s = String();
+  let g: &Array[u8] = good;
+  var i = 0usize;
+  while i < g.len { s.appendByte(if i == at { c } else { g[i] }); i = i + 1usize; }
+  s
+}
+
+fn main() i32 {
+  expectInt(kindAt(good), 0i64, "the good text is accepted");
+  expectInt(kindAt(""), 1i64, "empty");
+  expectInt(kindAt("017f22e2-79b0-7cc3-98c4-dc0c0c07398"), 1i64 + 350i64, "one short");
+  expectInt(kindAt("017f22e2-79b0-7cc3-98c4-dc0c0c07398ff"), 1i64 + 370i64, "one long");
+  expectInt(kindAt("{017f22e2-79b0-7cc3-98c4-dc0c0c07398f}"), 1i64 + 380i64, "braces");
+  expectInt(kindAt("017f22e279b07cc398c4dc0c0c07398f"), 1i64 + 320i64, "no hyphens");
+
+  // A non-hex char at every position, and a hyphen out of place at each digit
+  var p = 0usize;
+  while p < 36usize {
+    let at = i64.from(p);
+    let hyphen = p == 8usize || p == 13usize || p == 18usize || p == 23usize;
+    expectInt(kindAt(replaced(p, 'g').view()), (if hyphen { 2i64 } else { 3i64 }) + 10i64 * at, "g at a position");
+    if !hyphen {
+      expectInt(kindAt(replaced(p, '-').view()), 2i64 + 10i64 * at, "hyphen out of place");
+      expectInt(kindAt(replaced(p, ' ').view()), 3i64 + 10i64 * at, "space");
+      expectInt(kindAt(replaced(p, 0xC3u8).view()), 3i64 + 10i64 * at, "high byte");
+    }
+    p = p + 1usize;
+  }
+  // The edges of the hex ranges
+  expectInt(kindAt(replaced(0usize, '/').view()), 3i64, "slash");
+  expectInt(kindAt(replaced(0usize, ':').view()), 3i64, "colon");
+  expectInt(kindAt(replaced(0usize, '@').view()), 3i64, "at sign");
+  expectInt(kindAt(replaced(0usize, 'G').view()), 3i64, "capital G");
+  expectInt(kindAt(replaced(0usize, '`').view()), 3i64, "backtick");
+  expectInt(kindAt(replaced(0usize, 'F').view()), 0i64, "F is a digit");
+  expectInt(kindAt(replaced(0usize, 'a').view()), 0i64, "a is a digit");
+  done()
+}

@@ -1,0 +1,97 @@
+// Made UUIDs: the version and variant bits on 1,000 v4s and 1,000 v7s, the
+// v7 clock field near the real time, v4s all different, and a UuidGen's v7s
+// in strictly increasing order however fast they are made.
+
+mod generate;
+
+import testing use *;
+import collections use String, List;
+import uuid use Uuid, UuidGen;
+import time use Timestamp;
+
+fn msOf(u: &Uuid) u64 {
+  let b = u.bytes();
+  var ms = 0u64;
+  var i = 0usize;
+  while i < 6usize { ms = (ms << 8u64) | u64.from(b[i]); i = i + 1usize; }
+  ms
+}
+
+fn main() i32 {
+  // v4: 1,000 of them, version 4, RFC variant, no two alike
+  var seen = List[Uuid]();
+  var bad = 0i64;
+  var i = 0i64;
+  while i < 1000i64 {
+    match Uuid.v4() {
+      case let Ok(u) {
+        if u.version() != 4u32 || !u.isRfcVariant() { bad = bad + 1i64; }
+        seen.push(u);
+      }
+      case is Err { bad = bad + 1i64; }
+    }
+    i = i + 1i64;
+  }
+  expectInt(bad, 0i64, "1000 v4s carry version 4 and the RFC variant");
+  seen.sort();
+  var dup = 0i64;
+  var k = 1usize;
+  while k < seen.len() {
+    if *seen[k - 1usize] == *seen[k] { dup = dup + 1i64; }
+    k = k + 1usize;
+  }
+  expectInt(dup, 0i64, "1000 v4s are all different");
+
+  // v7: version and variant, a clock field near now
+  let before = u64.from(Timestamp.now().unixNanos() / 1000000i64);
+  bad = 0i64;
+  var late = 0i64;
+  i = 0i64;
+  while i < 1000i64 {
+    match Uuid.v7() {
+      case let Ok(u) {
+        if u.version() != 7u32 || !u.isRfcVariant() { bad = bad + 1i64; }
+        let ms = msOf(&u);
+        if ms < before || ms > before + 60000u64 { late = late + 1i64; }
+      }
+      case is Err { bad = bad + 1i64; }
+    }
+    i = i + 1i64;
+  }
+  expectInt(bad, 0i64, "1000 v7s carry version 7 and the RFC variant");
+  expectInt(late, 0i64, "the v7 clock field is the time it was made");
+
+  // UuidGen: 5,000 in a loop (many to a millisecond), strictly increasing
+  var g = UuidGen.make();
+  var prev = Uuid.zero();
+  var unordered = 0i64;
+  bad = 0i64;
+  i = 0i64;
+  while i < 5000i64 {
+    match g.next() {
+      case let Ok(u) {
+        if u.version() != 7u32 || !u.isRfcVariant() { bad = bad + 1i64; }
+        if !(prev.cmp(&u) < 0i32) { unordered = unordered + 1i64; }
+        prev = u;
+      }
+      case is Err { bad = bad + 1i64; }
+    }
+    i = i + 1i64;
+  }
+  expectInt(bad, 0i64, "generator v7s carry version 7 and the RFC variant");
+  expectInt(unordered, 0i64, "generator v7s come out in sorted order");
+
+  // A text of a made one parses back to it
+  match Uuid.v4() {
+    case let Ok(u) {
+      var s = String();
+      s <- u;
+      match Uuid.parse(s.view()) {
+        case let Ok(p) { expect(p == u, "a made v4 prints and parses back"); }
+        case is Err { expect(false, "a made v4 parses"); }
+      }
+    }
+    case is Err { expect(false, "v4 made one"); }
+  }
+  done()
+}
