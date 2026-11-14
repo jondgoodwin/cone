@@ -908,6 +908,27 @@ caller's expression text and location; test functions marked in source
 (`@test`) and a test build; a test reaching a package's private submodules;
 fixtures, setup and teardown; and mocks.
 
+### When a test hangs
+
+A test that runs past its time (180 seconds) is stopped and fails with
+"timed out". With the environment variable `CONE_HANG_DIR` set to a folder,
+Congo first saves what the program was doing, so that a hang that cannot be
+repeated still leaves something to read. Unset, nothing changes. Files are
+named `<package>-<test>-<head>-<yyyymmdd-HHMMSS>`, the head being
+`git rev-parse --short=8 HEAD` in the package's repository, or `unknown`:
+
+- Windows: a `.dmp`, a full-memory minidump of the process (written through
+  `MiniDumpWriteDump`; tens of megabytes), and a `.txt` with the process id,
+  the thread count, and each thread's id and start time. The stacks are in
+  the dump; reading them needs a debugger, and Visual Studio opens `.dmp`
+  files (Debug > Start Debugging, then Parallel Stacks).
+- Linux: a `.txt` with `gdb -p <pid> -batch -ex "thread apply all bt"` when
+  gdb is installed; else each thread's `comm`, `wchan`, `stat` and (when
+  readable, usually only as root) kernel `stack` from `/proc`.
+
+A capture that fails prints one line on stderr and goes on: the test is still
+stopped and still reported as timed out.
+
 ### Testing the repository's packages
 
 The repository's packages are tested with
