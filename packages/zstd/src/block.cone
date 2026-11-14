@@ -385,7 +385,11 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
       // From the frame's own output
       let o = usize.from(off);
       if o > w - reach.base { return Fault.OffsetFar; }
-      copyMatch(bp, w, w - o, ml);
+      if o >= 16usize && ml <= 64usize {
+        copyFar(bp + w, bp + (w - o), ml);
+      } else {
+        copyMatch(bp, w, w - o, ml);
+      }
     } else {
       // From the dictionary, then on into the frame's output
       let back = usize.from(off - pos);
@@ -454,6 +458,18 @@ fn copyWords(to: *u8, from: *u8, n: usize) inline {
     }
   } else {
     mem.moveRaw[u8](to, from, n);
+  }
+}
+
+// A match of n bytes, 16 or more behind its target (so each 16-byte step reads
+// only bytes already final), sixteen bytes a step as 'copyWords' does; the last
+// step writes up to 15 bytes past the match, into the 16 bytes of slack
+fn copyFar(to: *u8, from: *u8, n: usize) inline {
+  var k = 0usize;
+  while k < n {
+    mem.writeRaw[u64]((to + k) as *u64, mem.readRaw[u64]((from + k) as *u64));
+    mem.writeRaw[u64]((to + (k + 8usize)) as *u64, mem.readRaw[u64]((from + (k + 8usize)) as *u64));
+    k = k + 16usize;
   }
 }
 
