@@ -7,6 +7,9 @@
 //    one (appended, not truncated). The same child installs a second time: that is an Err with EBUSY.
 // 3. missing: installFile on a path in a folder that does not exist answers the FsError (NotFound), and no sink
 //    is installed (a later 'install' of the console's would work).
+// 4. full (Linux only): installFile on /dev/full, where every write fails with ENOSPC: 3 events give
+//    'failures() == 3' and no panic. Skipped on Windows, which has no /dev/full (there is no device whose every
+//    write fails); Windows's expected output is file.out, Linux's, with the extra check, file.linux.out.
 
 mod file;
 
@@ -106,11 +109,25 @@ fn childMissing(p: &Path) i32 {
   }
 }
 
+fn childFull(p: &Path) i32 {
+  match logsink.installFile(p, Level.Info) {
+    case let Ok(log) {
+      oneKind.emit(1u64);
+      oneKind.emit(2u64);
+      oneKind.emit(3u64);
+      if log.failures() != 3u64 { return 3i32; }
+      0i32
+    }
+    case is Err { 1i32 }
+  }
+}
+
 fn child(mode: &str, p: &str) i32 {
   let path = Path.from(p);
   if mode == "actors" { return childActors(&path); }
   if mode == "again" { return childAgain(&path); }
   if mode == "missing" { return childMissing(&path); }
+  if mode == "full" { return childFull(&path); }
   2i32
 }
 
@@ -257,6 +274,11 @@ fn main() i32 {
       let m = ran(exe.view(), "missing", noneText.view());
       expectUInt(u64.from(m.exitCode), 0u64, "a path in a missing folder: NotFound, and nothing installed");
       expect(!fs.exists(&none), "and no file was made");
+      #if #os != .windows {
+        // /dev/full fails every write with ENOSPC; Windows has no such device, so this case is Linux's only
+        let f = ran(exe.view(), "full", "/dev/full");
+        expectUInt(u64.from(f.exitCode), 0u64, "/dev/full: 3 events, failures() == 3, no panic");
+      }
     }
     case is Err { require(false, "tempDir"); }
   }
