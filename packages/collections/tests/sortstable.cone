@@ -19,8 +19,9 @@
 //   on random input); input already in order, reversed or all equal takes n - 1 or fewer, so at
 //   most n.
 // - A region counts what the sort asks of it: a list of 1,000 structs made in a counting region
-//   sorts with one allocation of 500 structs (20,000 bytes) and one release, nothing when the
-//   input is already in order, nothing at 20 values.
+//   sorts with one allocation of the whole list (1,000 structs, 40,000 bytes) and one release,
+//   nothing when the input is already in order, nothing at 20 values; 500,000 structs get n / 2
+//   (8 MB holds only 200,000 of them), 100,000 u32 the whole list.
 // - Strings sort() by '<=>' and sortByKey keeps ties in their order.
 
 mod sortstable;
@@ -246,10 +247,12 @@ struct Counting {
   allocs: usize;
   releases: usize;
   live: isize;
+  last: usize;
 }
 
 fn countAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
   let c = r as *Counting;
+  (*c).last = bytes;
   (*c).allocs = (*c).allocs + 1usize;
   (*c).live = (*c).live + isize.from(bytes);
   libc.malloc(bytes)
@@ -272,7 +275,7 @@ fn countRelease(r: *MemRegion, block: *u8, bytes: usize) {
 fn countSize(r: *MemRegion, bytes: usize, align: usize) usize { bytes }
 
 fn newCounting() Counting {
-  Counting(MemRegion(&countAlloc, &countResize, &countRelease, &countSize), 0usize, 0usize, 0isize)
+  Counting(MemRegion(&countAlloc, &countResize, &countRelease, &countSize), 0usize, 0usize, 0isize, 0usize)
 }
 
 fn regionOf(c: &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
@@ -297,7 +300,8 @@ fn regions() {
     var l = recsIn(&mut c, 0i32, 1000usize);
     tally(&c, 1, 0, 40000, "a list of 1,000 structs: its one block of 40,000 bytes");
     l.sortBy(&recOrder);
-    tally(&c, 2, 1, 40000, "sorting asked its own region for one block of 500 structs (20,000 bytes) and gave it back");
+    tally(&c, 2, 1, 40000, "sorting asked its own region for one block and gave it back");
+    expectInt(i64.from(c.last), 40000i64, "the block holds the whole list of 1,000 structs (40,000 bytes): 8 MB / 40 is 200,000, above 1,000");
     let want = expected(&l);
     expect(matches(&l, &want) && l.len() == 1000usize, "and the list is in order");
     l.sortBy(&recOrder);
@@ -316,7 +320,28 @@ fn regions() {
     tally(&c, 6, 3, 80800, "sortByKey takes its buffer from the list's region too");
   }
   tally(&c, 6, 6, 0, "all gave their blocks back");
+  // A long list of big elements: 8 MB holds 200,000 structs, so n / 2 (250,000) wins at 500,000
+  {
+    var c2 = newCounting();
+    var l = recsIn(&mut c2, 0i32, 500000usize);
+    l.sortBy(&recOrder);
+    expectInt(i64.from(c2.last), 10000000i64, "500,000 structs: the block is n / 2 = 250,000 structs (10,000,000 bytes), not the 8 MB cap");
+    tally(&c2, 2, 1, 20000000, "and it was given back");
+  }
+  // A long list of small elements: the whole list (the cap, 8 MB, is 2,000,000 u32)
+  {
+    var c3 = newCounting();
+    var l = List[u32](100000usize, regionOf(&mut c3));
+    var s = 99u64;
+    var i = 0usize;
+    while i < 100000usize { l.push(patternValue(0i32, i, 100000usize, &mut s)); i = i + 1usize; }
+    l.sortBy(&u32Order);
+    expectInt(i64.from(c3.last), 400000i64, "100,000 u32: the block is the whole list (400,000 bytes)");
+    expectInt(if l.isSorted() { 1i64 } else { 0i64 }, 1i64, "and the u32 list is sorted");
+  }
 }
+
+fn u32Order(a: &u32, b: &u32) i32 { *a <=> *b }
 
 fn strings() {
   var l = List[String]();

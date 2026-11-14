@@ -1347,7 +1347,7 @@ pub struct @opaque Array[T] is GcTraceElements {
   // long the runs are.
   // Sorted input is one run, so it takes n - 1 comparisons, no merge and no allocation;
   // a merge of two runs already in order is skipped. A merge copies the shorter of its two
-  // runs to a buffer of bufElems elements (n / 2, more for a short list), got from 'scratch' at the first merge that needs
+  // runs to a buffer of bufElems elements (n / 2 up to the whole list, capped at 8 MB; more for a short list), got from 'scratch' at the first merge that needs
   // it and given back before the sort returns. A merge works in blocks of 16 plain steps
   // and gallops (a doubling search, then a binary one, then one block move) after a block
   // that one run won whole, so streaks of equal or clustered values cost log time, not linear.
@@ -1793,7 +1793,9 @@ pub struct @opaque Array[T] is GcTraceElements {
   // The merge buffer's size in elements: n / 2, but at least what the small sort of a
   // quicksort's tail needs (stableQuick runs it only when the buffer holds the tail, 32 at most,
   // and 16 more; otherwise it insertion-sorts), which is n + 16 up to 48. So a list of 95 or
-  // fewer gets more than n / 2, and a list of 96 or more is unchanged
+  // fewer gets more than n / 2. A list of 96 or more gets up to the whole list, as Rust's
+  // driftsort does: max(n / 2, min(n, 8 MB / size of T)), so a long list of small elements
+  // sorts without the top merge level, and a long list of large elements keeps n / 2
   fn bufElems(self: &) usize {
     var half = self.len / 2usize;
     if mem.sizeof[T]() > 0usize && self.len >= 96usize {
@@ -2104,6 +2106,7 @@ pub struct @opaque Array[T] is GcTraceElements {
   // equal. 'scratch' is where the merges' buffer comes from (null, the default, is the heap's
   // region; a default must be a literal, which 'heapRegion()' is not) (bufElems elements, nothing for 20
   // or fewer elements or for input that is already in order); a list passes its own region.
+  // Peak scratch is up to the whole list, capped at 8 MB, and never below half the list.
   // A debug build panics if 'order' is not a consistent order (the result is not in order by
   // it); a release build always returns some permutation of the elements
   pub fn sortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F, scratchIn: *MemRegion = null) {
