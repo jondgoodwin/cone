@@ -21,9 +21,29 @@ import stdio use *;
 import testing use *;
 import signals use *;
 
+// Raise a signal that is installed; a refusal would show as the flag not being set
+fn fire(s: Signal) {
+  match raise(s) {
+    case is Ok {}
+    case is Err {}
+  }
+}
+
+fn refused(s: Signal) bool {
+  var r = false;
+  match raise(s) {
+    case is Ok {}
+    case is Err {r = true;}
+  }
+  r
+}
+
 fn main() i32 {
   initAll();
   expectBool(received(Signal.Interrupt) || received(Signal.Terminate), false, "no flag is set before anything is raised");
+  // Nothing is installed yet: raise is refused on both systems, and sets nothing (and on Linux sends nothing)
+  expectBool(refused(Signal.Interrupt) && refused(Signal.Terminate), true, "raising an uninstalled signal gives the error");
+  expectBool(received(Signal.Interrupt) || received(Signal.Terminate), false, "and sets no flag");
 
   var ok = false;
   match install(SignalSet.of(Signal.Interrupt).plus(Signal.Terminate)) {
@@ -32,7 +52,7 @@ fn main() i32 {
   }
   expectBool(ok, true, "install of both succeeds");
 
-  raise(Signal.Interrupt);
+  fire(Signal.Interrupt);
   expectBool(received(Signal.Interrupt), true, "an interrupt sets its flag");
   expectBool(received(Signal.Terminate), false, "and not the other");
   expectBool(received(Signal.Interrupt), true, "received does not clear");
@@ -40,19 +60,19 @@ fn main() i32 {
   expectBool(take(Signal.Interrupt), false, "and clears it");
   expectBool(received(Signal.Interrupt), false, "so it is no longer received");
 
-  raise(Signal.Terminate);
+  fire(Signal.Terminate);
   expectBool(received(Signal.Terminate), true, "a terminate sets its flag");
   expectBool(received(Signal.Interrupt), false, "and not the interrupt");
   expectBool(take(Signal.Terminate), true, "take sees it");
   expectBool(take(Signal.Terminate), false, "and clears it");
 
-  raise(Signal.Interrupt);
-  raise(Signal.Terminate);
+  fire(Signal.Interrupt);
+  fire(Signal.Terminate);
   expectBool(take(Signal.Interrupt) && take(Signal.Terminate), true, "both raised, both taken");
   expectBool(received(Signal.Interrupt) || received(Signal.Terminate), false, "and none left");
 
-  raise(Signal.Interrupt);
-  raise(Signal.Interrupt);
+  fire(Signal.Interrupt);
+  fire(Signal.Interrupt);
   expectBool(take(Signal.Interrupt), true, "two arrivals before a take are one signal");
   expectBool(take(Signal.Interrupt), false, "taken once");
 
