@@ -1,0 +1,63 @@
+// A comparison that panics partway through the stable sort's leaf (16 to 32 elements, heads
+// by sort8, insertion tails, then the merge from both ends) must leave every element present
+// exactly once and finalize none. The elements have a 'final' that counts its runs; a
+// panic ends the program with nothing unwound, so none must have run, and the check is made by
+// the panic hook, which runs before the end: it counts the ids 0 to 199 still in the list.
+// The list has 200 elements, so the sort's buffer (100) is large enough for the leaf, and the
+// comparison panics at call KILL, which falls in the first leaf's head and insertion phases,
+// before its merge writes over the array.
+// This test's .out is the hook's lines; its .exit a panic's.
+
+mod sortstableleafpanic;
+
+import stdio use *;
+import collections use *;
+
+var @threadlocal data: *Counted = null;
+var @threadlocal calls = 0u32;
+var @threadlocal finals = 0u32;
+
+struct Counted {
+  pub key: u32;
+  pub id: u32;
+  fn final(self: &uni) { finals = finals + 1u32; }
+}
+
+fn order(a: &Counted, b: &Counted) i32 {
+  calls = calls + 1u32;
+  if calls == 150u32 { panic("the comparison fails"); }
+  a.key <=> b.key
+}
+
+fn onPanic(msg: &str, file: &str, line: u32) {
+  printStr(msg); printStr(" at call "); printInt(i64.from(calls)); printStr("\n");
+  var seen = List[u32]();
+  var i = 0usize;
+  while i < 200usize { seen.push(0u32); i = i + 1usize; }
+  i = 0usize;
+  while i < 200usize {
+    let v = (*(data + i)).id;
+    if v < 200u32 { seen[usize.from(v)] = seen[usize.from(v)] + 1u32; }
+    i = i + 1usize;
+  }
+  var once = 0i64;
+  i = 0usize;
+  while i < 200usize { if seen[i] == 1u32 { once = once + 1i64; } i = i + 1usize; }
+  printStr("ids present exactly once: ");
+  printInt(once);
+  printStr(" of 200\n");
+  printStr("finalizers run: ");
+  printInt(i64.from(finals));
+  printStr("\n");
+}
+
+fn main() i32 {
+  var l = List[Counted]();
+  var i = 0u32;
+  while i < 200u32 { l.push(Counted((i * 137u32) % 200u32, i)); i = i + 1u32; }
+  data = l.viewMut() as *Counted;
+  setPanicHook(&onPanic);
+  l.sortBy(&order);
+  printStr("not reached\n");
+  0i32
+}

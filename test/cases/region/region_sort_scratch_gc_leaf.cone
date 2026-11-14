@@ -1,0 +1,86 @@
+// The stable sort's 16-to-32 element leaf copies elements into the sort's scratch buffer
+// and merges them back over the array, so while the merge runs an element can live only in the
+// scratch, which no collector traces by itself (the sort roots it through SortScratch). The
+// leaf runs only when the buffer holds len + 16 elements, so this list has 300 (a buffer
+// of 150, enough for the leaf of 32 elements; the leaves of the quicksort are 16 to 32 of them)
+// and the element is a traced reference (8 bytes). A collection (mem.traceRoots) runs inside
+// EVERY comparison, and the worst trace is reported: "found 300 of 300" means no element was
+// ever out of sight, in the leaf's merge or anywhere else in the sort.
+
+mod region_sort_scratch_gc_leaf;
+
+import stdio use *;
+import collections;
+import libc;
+
+var @threadlocal nextId = 1i64;
+var @threadlocal seen = Array[u64, 5]() <- fill 0u64;
+var @threadlocal epoch = 1u32;
+var @threadlocal worst = 999i64;
+var @threadlocal traces = 0i64;
+var @threadlocal lossy = 0i64;
+var @threadlocal total = 300i64;
+
+struct Tr is RegionRef, Traced {
+  pub id: i64;
+  fn alloc(size: usize) *u8 {
+    let p = malloc(size);
+    mem.writeRaw(p as *Tr, Tr(nextId));
+    nextId = nextId + 1;
+    p
+  }
+  fn mark(self: &uni Tr, slot: *usize, perm: u32, mode: u32) {
+    let b = id - 1;
+    let w = usize.from(b / 64);
+    seen[w] = seen[w] | (1u64 << u64.from(b % 64));
+  }
+}
+struct Leaf { pub n: i32; }
+alias Ref = Tr[mut, Leaf];
+fn leaf(n: i32) Ref { Tr[mut, Leaf](n) }
+
+// Collect, and count how many of the leaves (ids 1 to 300) were marked
+fn trace() {
+  var w = 0usize;
+  while w < 5usize { seen[w] = 0u64; w = w + 1usize; }
+  mem.traceRoots(epoch);
+  epoch = epoch + 1u32;
+  var found = 0i64;
+  var id = 1i64;
+  while id <= total {
+    let b = id - 1;
+    if (seen[usize.from(b / 64)] & (1u64 << u64.from(b % 64))) != 0u64 { found = found + 1; }
+    id = id + 1;
+  }
+  traces = traces + 1;
+  if found < worst { worst = found; }
+  if found < total { lossy = lossy + 1; }
+}
+
+fn byN(a: &Ref, b: &Ref) i32 { trace(); a.n <=> b.n }
+
+fn sortedList(l: &collections.List[Ref]) bool {
+  var i = 1usize;
+  while i < l.len() { if l[i - 1usize].n > l[i].n { return false; } i = i + 1usize; }
+  true
+}
+
+fn leafSortBy() {
+  var list = collections.List[Ref]();
+  var i = 0;
+  while i < 300 { list.push(leaf((i * 137) % 300)); i = i + 1; }
+  list.sortBy(&byN);
+  printStr(if traces > 1000 { "collected inside the comparison" } else { "TOO FEW COLLECTIONS" });
+  printStr(", worst found ");
+  printInt(worst);
+  printStr(" of ");
+  printInt(total);
+  printStr(", collections that lost one: ");
+  printInt(lossy);
+  printStr("\n");
+  printStr(if sortedList(&list) { "in order\n" } else { "not in order\n" });
+}
+
+fn main() {
+  leafSortBy();
+}
