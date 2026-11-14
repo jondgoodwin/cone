@@ -3223,8 +3223,14 @@ actor RunDriver {
   pub async fn go(self, rp: actors.ReplyOf[Result[process.Output, IoError]]) {
     reply = Some[actors.ReplyOf[Result[process.Output, IoError]]](rp);
     var launched: Result[process.Child, process.ProcessError];
-    if isLine { launched = process.launchLine(line.view(), opts, &dir); }
-    else { launched = process.launch(args.view(), opts, &dir); }
+    // The launch takes its own Options: the scalars copied, the child's environment moved out of ours (this driver only
+    // reads inherit and timeout from 'opts' after; 'input' is not used by 'launch')
+    var lo = process.Options(timeout: opts.timeout, inherit: opts.inherit, crashReport: opts.crashReport,
+      stdin: opts.stdin, clearEnv: opts.clearEnv);
+    lo.env <-> opts.env;
+    lo.removeEnv <-> opts.removeEnv;
+    if isLine { launched = process.launchLine(line.view(), lo, &dir); }
+    else { launched = process.launch(args.view(), lo, &dir); }
     match launched {
       case let Err(e) { self.answer(Err[process.Output, IoError](IoError(e.code))); }
       case var Ok(c) {
