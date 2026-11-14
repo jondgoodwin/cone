@@ -1,7 +1,7 @@
 // The sync package: what threads share safely, where it needs the OS. It
 // holds 'Arc', the region whose owners of one value several threads may
 // hold; the futex, the one way a thread sleeps until another wakes it; the
-// locks built on the futex: Mutex, Rwlock, Condvar and Once, the first two
+// locks built on the futex: Mutex, Rwlock, Condvar, Semaphore and Once, the first two
 // also lock permissions, 'Arc[Mutex, T]'; and the
 // channel, a pipe of values from any number of threads to one, unbounded or
 // bounded, or from one thread to one. On Windows and on Linux: the futex's
@@ -20,6 +20,7 @@
 //   Rwlock         many readers, or one writer
 //   Arc[Mutex, T], Arc[Rwlock, T]  a borrow takes the lock      (LOCK PERMISSIONS)
 //   Condvar        sleep until another thread says something changed
+//   Semaphore      a count of permits, taken and given back
 //   Once           a function run exactly once, however many threads ask
 //   Channel[T]     values sent by many threads, or one, taken by one
 //                                                                (CHANNELS)
@@ -165,6 +166,24 @@
 // A notification with nobody waiting is not remembered, which is why a waiter
 // checks what it waits for before it waits. Notifying with the Mutex held or
 // not are both correct.
+//
+// Semaphore: a counting semaphore, a count of permits. acquire takes one,
+// sleeping while there is none; release gives one. Release is not capped at
+// the count the semaphore started with: an extra release is an extra permit
+// (as POSIX's sem_post and Go's and .NET's unbounded semaphores allow; a
+// semaphore is also how a thread says "one more item is ready"). A program
+// that wants at most n at once releases only what it acquired.
+//
+//   Semaphore.make(n)          a semaphore holding n permits
+//   s.acquire()                take a permit, sleeping while there is none
+//   s.tryAcquire()             take one if there is: whether it did
+//   s.acquireTimeout(d)        the same, sleeping at most d, a Duration:
+//                              false only if no permit came by then
+//   s.release()                add a permit, waking a sleeper
+//
+// A permit belongs to no thread: any thread may release. Sleepers are not
+// served in any order. It is built on the futex, not on a Condvar, so no Mutex
+// or borrow is held across its wait.
 //
 // Once: a function run exactly once, however many threads ask at once. The
 // first caller runs it; every other caller sleeps until it has returned, and
@@ -953,6 +972,89 @@ pub struct Condvar is Move {
     let woken = rawWait(p, seen, timeoutNs);
     mutex.lock();
     woken
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Semaphore: a counting semaphore on the futex alone. The one word is the
+// count of permits. A thread takes a permit by lowering the count with a
+// compare-and-swap, and sleeps (futex, expecting zero) only when it sees zero.
+// Nothing is held across a wait, so no Mutex or borrow is needed.
+//
+// Why a wake is never lost: 'release' raises the count, then wakes one sleeper.
+// A thread that read zero and has not yet slept finds the count changed when it
+// does sleep (the futex sleeps only while the word is still zero), and returns
+// at once. A thread already asleep is woken by the release's wake. Every return
+// from a wait, woken, spurious or timed out, goes back to read the count and
+// try to take a permit; a timed wait gives up only on the clock, after it has
+// seen the count zero, never on the wait's own answer. So a wake that lands on
+// a thread whose timeout fired at the same moment is not lost: that thread reads
+// the count again and takes the permit itself. A wake spent on a thread that
+// then finds the count taken by another is not lost either: whoever took the
+// permit consumed it, and the sleepers who remain are right to sleep. The wake
+// is sent after every release, since the single word has no room for a
+// "sleepers" flag; the cost is one wake call per release.
+// ---------------------------------------------------------------------------
+
+pub struct Semaphore is Move {
+  count: Atomic[u32];
+
+  // A semaphore holding n permits
+  pub fn make(n: u32) Semaphore {Semaphore(Atomic[u32].of(n))}
+
+  fn word(self: &opaq) *u32 {&(*(self as *Semaphore)).count as *u32}
+
+  // Take a permit if one is there: whether one was taken. Never sleeps
+  pub fn tryAcquire(self: &opaq) bool {
+    let p = self.word();
+    var c = loadRelaxed(p);
+    while c != 0u32 {
+      var seen = 0u32;
+      var taken = false;
+      seen, taken = casAcquire(p, c, c - 1u32);
+      if taken {
+        return true;
+      }
+      c = seen;
+    }
+    false
+  }
+
+  // Take a permit, sleeping while there is none
+  pub fn acquire(self: &opaq) {
+    let p = self.word();
+    while !self.tryAcquire() {
+      rawWait(p, 0u32, forever);
+    }
+  }
+
+  // Take a permit, sleeping at most d, a Duration (as futexWaitTimeout rounds
+  // it): false only if none came by then. A d of zero or less is tryAcquire
+  pub fn acquireTimeout(self: &opaq, d: time.Duration) bool {
+    let p = self.word();
+    let deadline = nowNs() + durationNs(d);
+    while true {
+      if self.tryAcquire() {
+        return true;
+      }
+      let now = nowNs();
+      if now >= deadline {
+        return false;
+      }
+      rawWait(p, 0u32, deadline - now);
+    }
+    false
+  }
+
+  // Add a permit and wake one sleeper. The count the semaphore started with
+  // is no ceiling: a release with no acquire before it is a permit like any
+  // other. Past 2^32 - 1 permits it ends the program
+  pub fn release(self: &opaq) {
+    let p = self.word();
+    if mem.atomicAdd[u32](p, 1u32, MemOrder.Release) == 0xFFFFFFFFu32 {
+      die("sync: Semaphore.release past 2^32 - 1 permits\n");
+    }
+    rawWake(p);
   }
 }
 
