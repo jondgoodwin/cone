@@ -1,0 +1,122 @@
+// Semaphore. tryAcquire at zero is false and takes nothing; a release is a
+// permit even past the starting count; permits are counted exactly. Then 8
+// threads share a limit of 3: each takes a permit, raises an atomic count of
+// those inside, records the most ever inside, lingers, lowers the count and
+// releases, over many rounds. The most inside must reach the limit (the
+// threads do overlap) and never pass it, and every permit must be back at the
+// end. A last check hands one permit at a time from a producer to a consumer
+// that always sleeps first: a lost wakeup would leave the consumer asleep for
+// good and the test would hang (and fail, at Congo's 60 seconds).
+
+mod semaphore;
+
+import testing use *;
+import thread;
+import sync use *;
+
+const threads = 8u64;
+const limit = 3u32;
+const rounds = 20000u64;
+const handoffs = 20000u64;
+
+let sem: Semaphore;
+let inside: Atomic[u32];
+let most: Atomic[u32];
+let over: Atomic[u32];
+
+let ping: Semaphore;
+let got: Atomic[u64];
+
+fn @initpure init() {
+  sem = Semaphore.make(limit);
+  inside = Atomic[u32].of(0u32);
+  most = Atomic[u32].of(0u32);
+  over = Atomic[u32].of(0u32);
+  ping = Semaphore.make(0u32);
+  got = Atomic[u64].of(0u64);
+}
+
+fn worker(k: u64) u64 {
+  var i = 0u64;
+  while i < rounds {
+    sem.acquire();
+    let now = inside.add(1u32) + 1u32;
+    most.max(now);
+    if now > limit { over.add(1u32); }
+    // Linger so that others arrive while this one is inside
+    var spin = 0u32;
+    while spin < 20u32 { spin = spin + 1u32; }
+    inside.sub(1u32);
+    sem.release();
+    i = i + 1u64;
+  }
+  i
+}
+
+fn consumer(n: u64) u64 {
+  var i = 0u64;
+  while i < handoffs {
+    ping.acquire();
+    got.add(1u64);
+    i = i + 1u64;
+  }
+  i
+}
+
+fn main() i32 {
+  initAll();
+
+  // Counting, on one thread
+  let z = Semaphore.make(0u32);
+  expect(!z.tryAcquire(), "tryAcquire at zero is false");
+  expect(!z.tryAcquire(), "and again: it took nothing");
+  z.release();
+  z.release();
+  z.release();
+  expect(z.tryAcquire(), "a released permit is taken (1)");
+  expect(z.tryAcquire(), "a released permit is taken (2)");
+  expect(z.tryAcquire(), "a released permit is taken (3)");
+  expect(!z.tryAcquire(), "exactly three were there");
+  let two = Semaphore.make(2u32);
+  two.release();
+  two.release();
+  var n = 0u32;
+  while two.tryAcquire() { n = n + 1u32; }
+  expectUInt(u64.from(n), 4u64, "release past the starting count is a permit");
+  let one = Semaphore.make(1u32);
+  one.acquire();
+  expect(!one.tryAcquire(), "acquire took the only permit");
+
+  // Eight threads, a limit of three
+  let t1 = thread.start(1u64, &worker);
+  let t2 = thread.start(2u64, &worker);
+  let t3 = thread.start(3u64, &worker);
+  let t4 = thread.start(4u64, &worker);
+  let t5 = thread.start(5u64, &worker);
+  let t6 = thread.start(6u64, &worker);
+  let t7 = thread.start(7u64, &worker);
+  let t8 = thread.start(8u64, &worker);
+  let done8 = t1.join() + t2.join() + t3.join() + t4.join() + t5.join() + t6.join() + t7.join() + t8.join();
+  expectUInt(done8, threads * rounds, "every round of every thread ran");
+  expectUInt(u64.from(over.load()), 0u64, "never more than 3 inside at once");
+  expect(most.load() <= limit, "the most inside never passed the limit");
+  expect(most.load() >= 2u32, "the threads did overlap");
+  expectUInt(u64.from(inside.load()), 0u64, "nobody left inside");
+  var back = 0u32;
+  while sem.tryAcquire() { back = back + 1u32; }
+  expectUInt(u64.from(back), u64.from(limit), "every permit came back");
+
+  // One permit at a time to a consumer that sleeps
+  let c = thread.start(0u64, &consumer);
+  var i = 0u64;
+  while i < handoffs {
+    ping.release();
+    // Let the consumer catch up now and then, so that it sleeps
+    if i % 64u64 == 0u64 { thread.yieldNow(); }
+    i = i + 1u64;
+  }
+  expectUInt(c.join(), handoffs, "the consumer took every handoff");
+  expectUInt(got.load(), handoffs, "each handoff counted once");
+  expect(!ping.tryAcquire(), "no permit left over");
+  done()
+}

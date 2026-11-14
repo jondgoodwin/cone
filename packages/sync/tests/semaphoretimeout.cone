@@ -1,0 +1,98 @@
+// Semaphore, timed. A timeout with no permit returns false, having slept its
+// time and taken nothing; a timeout of zero returns at once; a permit that is
+// already there is taken without sleeping; one released by another thread
+// during the wait is taken and the wait returns true well before the timeout.
+// Then the race the design must survive: three threads take permits with
+// short timeouts while the main thread releases a known number, so wakes and
+// timeouts land together. Every permit released must be taken by exactly one
+// acquireTimeout or still be there at the end: a wake lost on a timeout would
+// leave one uncounted and a sleeper asleep. These tests measure time, so this
+// one runs alone, last (quiet in congo.toml; Bug 9).
+
+mod semaphoretimeout;
+
+import testing use *;
+import thread;
+import sync use *;
+import time use Duration, Instant;
+
+const released = 3000u64;
+
+let sem: Semaphore;
+let taken: Atomic[u64];
+let stop: Atomic[bool];
+let late: Semaphore;
+
+fn @initpure init() {
+  sem = Semaphore.make(0u32);
+  late = Semaphore.make(0u32);
+  taken = Atomic[u64].of(0u64);
+  stop = Atomic[bool].of(false);
+}
+
+fn lateReleaser(ms: u64) u64 {
+  thread.sleep(Duration.fromMillis(i64.from(ms)));
+  late.release();
+  1u64
+}
+
+fn taker(k: u64) u64 {
+  while !stop.load() {
+    if sem.acquireTimeout(Duration.fromMicros(300)) {
+      taken.add(1u64);
+    }
+  }
+  1u64
+}
+
+fn main() i32 {
+  initAll();
+  let s = Semaphore.make(0u32);
+
+  let before = Instant.now();
+  expect(!s.acquireTimeout(Duration.fromMillis(30)), "a timeout with no permit returns false");
+  expect(before.elapsed() >= Duration.fromMillis(29), "having slept its 30 ms (to the timer's rounding)");
+  expect(!s.tryAcquire(), "and took nothing");
+
+  expect(!s.acquireTimeout(Duration.fromMillis(0)), "a timeout of zero is false at once with no permit");
+  expect(!s.acquireTimeout(Duration.fromMillis(-5)), "so is a negative one");
+  s.release();
+  expect(s.acquireTimeout(Duration.fromMillis(0)), "a timeout of zero takes a permit that is there");
+  s.release();
+  let t0 = Instant.now();
+  expect(s.acquireTimeout(Duration.fromMillis(5000)), "a permit that is there is taken");
+  expect(t0.elapsed() < Duration.fromMillis(1000), "without sleeping");
+
+  // Met: released by another thread 20 ms in, of a 5000 ms timeout
+  let r = thread.start(20u64, &lateReleaser);
+  let t1 = Instant.now();
+  expect(late.acquireTimeout(Duration.fromMillis(5000)), "a permit released during the wait is taken");
+  expect(t1.elapsed() < Duration.fromMillis(2500), "well before the timeout");
+  r.join();
+  expect(!late.tryAcquire(), "nothing left over");
+
+  // Wakes and timeouts together
+  let k1 = thread.start(1u64, &taker);
+  let k2 = thread.start(2u64, &taker);
+  let k3 = thread.start(3u64, &taker);
+  var i = 0u64;
+  while i < released {
+    sem.release();
+    if i % 7u64 == 0u64 { thread.sleep(Duration.fromMicros(200)); }
+    i = i + 1u64;
+  }
+  // Give the takers time to drain it, then stop them
+  let drain = Instant.now();
+  while taken.load() < released && drain.elapsed() < Duration.fromMillis(20000) {
+    thread.sleep(Duration.fromMillis(1));
+  }
+  stop.store(true);
+  k1.join();
+  k2.join();
+  k3.join();
+  var left = 0u64;
+  while sem.tryAcquire() { left = left + 1u64; }
+  expectUInt(taken.load() + left, released, "every permit released was taken once or is still there");
+  expectUInt(taken.load(), released, "and the takers took them all before they stopped");
+  done()
+}

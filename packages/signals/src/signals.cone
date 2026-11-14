@@ -1,0 +1,249 @@
+// The signals package: a program hears Ctrl-C or a terminate request as a flag it looks at, and shuts down cleanly
+// rather than dying mid-write.
+//
+//   signals.install(SignalSet.all())?;                    // Ctrl-C and terminate are now flags
+//   while !signals.take(Signal.Interrupt) { ...work... }  // 'take' reads and clears; 'received' reads only
+//
+// The two signals:
+//   Interrupt  Ctrl-C (Windows: CTRL_C_EVENT; POSIX: SIGINT)
+//   Terminate  a request to end (Windows: the console's close, the user's logoff and the system's shutdown; POSIX: SIGTERM)
+// Windows' Ctrl-Break is not an Interrupt and is left alone, so it still ends a program that has stopped looking.
+//
+// WHAT INSTALLING CHANGES. Once a signal is installed, it no longer ends the program: it sets the flag and nothing
+// else, and Ctrl-C does nothing more until the program looks at the flag. A program that installs and then never looks
+// cannot be stopped by Ctrl-C (Ctrl-Break on Windows, SIGKILL on POSIX, still can). Install once the program is able to
+// act on the flag, and look at it from the loop that does the work. Installing again with a larger set adds signals; a
+// signal once installed stays installed to the end of the program (there is no uninstall in this first version). On
+// Windows a console close, logoff or shutdown (Terminate) ends the process as soon as the handler returns, so there the
+// handler sets the flag and then does not return: it sleeps until the process exits. That is the program's grace period,
+// and its length is the system's own timeout for a program that does not exit (a few seconds, set by Windows and not by
+// this package), after which Windows ends the process whether the flag was looked at or not. A program has only that
+// long to finish. Ctrl-C (Interrupt) is not like this: its handler returns at once and the program runs on as long as it likes.
+//
+// WHY THE HANDLER ONLY STORES. The handler does exactly one thing, an atomic store of a bit in one word. On POSIX a
+// handler runs on whatever thread the signal interrupted, between any two instructions, and may call only
+// async-signal-safe functions: it must not allocate, take a lock, print, or touch a collection the program may be in the
+// middle of using. A lock-free atomic store is safe there. On Windows the handler runs on a fresh thread the system
+// creates for it, concurrent with the rest of the program, so the same rule holds for another reason: the word is
+// shared with the other threads and only an atomic operation on it is safe. A signal arriving twice before the flag is
+// taken is one signal (it is a flag, not a count).
+//
+// POSIX installs with 'sigaction' and SA_RESTART, so a system call the signal interrupts is restarted rather than failing
+// with EINTR. A program blocked in a call that does not restart (a sleep) wakes late rather than at once; look at the
+// flag between calls. Where another library has installed its own handler for the same signal (SDL does, for SIGINT and
+// SIGTERM, once its events start), whichever installed last is the one that runs; install this one after.
+//
+// Linux and Windows only. Delivering a signal as an event to actors and cancel groups is a later change.
+
+mod signals;
+
+import libc;
+
+// ---- the public names ----
+
+pub enum Signal {
+  Interrupt,
+  Terminate
+}
+
+// A set of signals, for 'install'
+pub struct SignalSet {
+  bits: u32;
+
+  pub fn none() SignalSet {SignalSet(0u32)}
+  pub fn of(s: Signal) SignalSet {SignalSet(bitOf(s))}
+  pub fn all() SignalSet {SignalSet(bothBits)}
+  // This set with s added
+  pub fn plus(self: &, s: Signal) SignalSet {SignalSet(bits | bitOf(s))}
+  pub fn has(self: &, s: Signal) bool {(bits & bitOf(s)) != 0u32}
+}
+
+pub enum SignalErrorKind {
+  Failed,        // the system refused the handler: 'code' is its error number
+  NotInstalled   // 'raise' of a signal that was not installed
+}
+
+pub struct SignalError is Error {
+  cause: SignalErrorKind;
+  pub code: i32;
+
+  pub fn kind(self: &) SignalErrorKind {cause}
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    if cause == SignalErrorKind.NotInstalled {out <- "the signal is not installed";}
+    else {out <- "the system refused to install the signal handler (error ", code, ")";}
+  }
+}
+
+// ---- the word the handler writes ----
+
+const interruptBit = 1u32;
+const terminateBit = 2u32;
+const bothBits = 3u32;
+
+// The signals that have arrived and not been taken; the handler writes into this word and nothing else
+let pending: Atomic[u32];
+// Which signals are installed, so Windows' one handler can tell a signal it was asked for from one it was not
+let installed: Atomic[u32];
+
+fn @initpure init() {
+  pending = Atomic[u32].of(0u32);
+  installed = Atomic[u32].of(0u32);
+}
+
+fn bitOf(s: Signal) u32 {
+  match s {
+    case is Signal.Interrupt {interruptBit}
+    case is Signal.Terminate {terminateBit}
+  }
+}
+
+// The handler's whole work: one atomic store
+fn mark(bit: u32) {
+  pending.bitOr(bit);
+}
+
+// ---- the public functions ----
+
+// Has the signal arrived since it was last taken? Does not clear it.
+pub fn received(s: Signal) bool {
+  (pending.load() & bitOf(s)) != 0u32
+}
+
+// Has the signal arrived since it was last taken? Clears it, so it answers true once per arrival.
+pub fn take(s: Signal) bool {
+  let b = bitOf(s);
+  (pending.bitAnd(b ^ 0xFFFFFFFFu32) & b) != 0u32
+}
+
+// Install the handler for each signal in the set. Everything installed so far stays installed.
+pub fn install(set: SignalSet) Result[void, SignalError] {
+  let r = installOs(set.bits);
+  if r != 0i32 {
+    return Err[void, SignalError](SignalError(SignalErrorKind.Failed, r));
+  }
+  Ok[void, SignalError](nil)
+}
+
+// Make the signal arrive as if the system had sent it. A signal that is not installed is refused with an error on both
+// systems (without this, a POSIX program would be ended by its own default action and a Windows one would see nothing).
+// On POSIX it is C's 'raise' (a real signal through the installed handler); on Windows the handler's own code is run
+// directly, where the console would call it, since a real Ctrl-C reaches every process on the console; there it does
+// not wait out the grace period a real close, logoff or shutdown gets (see the Windows handler). It is for a test, and
+// for a program that wants its own shutdown to look like Ctrl-C.
+pub fn raise(s: Signal) Result[void, SignalError] {
+  if (installed.load() & bitOf(s)) == 0u32 {
+    return Err[void, SignalError](SignalError(SignalErrorKind.NotInstalled, 0i32));
+  }
+  raiseOs(s);
+  Ok[void, SignalError](nil)
+}
+
+// ---- Windows ----
+
+#if #os == .windows {
+  extern {
+    fn @c(system) SetConsoleCtrlHandler(handler: &fn @c (kind: u32) i32, add: i32) i32;
+    fn @c(system) GetLastError() u32;
+    fn @c(system) Sleep(ms: u32);
+  }
+
+  const ctrlC = 0u32;
+  const ctrlClose = 2u32;
+  const ctrlLogoff = 5u32;
+  const ctrlShutdown = 6u32;
+
+  // Which signal's bit an installed console event is, or 0 (Ctrl-Break (1) and any event not installed are 0)
+  fn bitOfEvent(kind: u32) u32 {
+    var bit = 0u32;
+    if kind == ctrlC {bit = interruptBit;}
+    else if kind == ctrlClose || kind == ctrlLogoff || kind == ctrlShutdown {bit = terminateBit;}
+    if bit == 0u32 || (installed.load() & bit) == 0u32 {return 0u32;}
+    bit
+  }
+
+  // The system calls this on a thread it makes. For Ctrl-C it sets the flag and returns TRUE (handled) at once. For a
+  // close, logoff or shutdown, Windows ends the process the moment the handler returns, so it sets the flag and then
+  // sleeps until the process exits: the program's grace period is the system's own timeout. An event that is not
+  // installed returns FALSE, passing it to the default, which ends the program.
+  fn @c consoleHandler(kind: u32) i32 {
+    let bit = bitOfEvent(kind);
+    if bit == 0u32 {return 0i32;}
+    mark(bit);
+    if bit == terminateBit {
+      while true {Sleep(0xFFFFFFFFu32);}
+    }
+    1i32
+  }
+
+  fn installOs(bits: u32) i32 {
+    let before = installed.bitOr(bits);
+    if before == 0u32 {
+      if SetConsoleCtrlHandler(&consoleHandler, 1i32) == 0i32 {
+        installed.store(0u32);
+        return i32.from(GetLastError());
+      }
+    }
+    0i32
+  }
+
+  // The handler's own decision and store, without the wait a real terminate event gets
+  fn raiseOs(s: Signal) {
+    let bit = bitOfEvent(if s == Signal.Interrupt {ctrlC} else {ctrlClose});
+    if bit != 0u32 {mark(bit);}
+  }
+}
+
+// ---- POSIX (Linux's layout of struct sigaction) ----
+
+#if #os != .windows {
+  struct SigAction {
+    handler: &fn @c (sig: i32);
+    mask: Array[u64, 16];       // the 1024-bit sigset_t
+    flags: i32;
+    pad: i32;
+    restorer: usize;
+  }
+
+  extern {
+    fn @c sigaction(sig: i32, act: *SigAction, old: *SigAction) i32;
+    fn @c sigemptyset(set: *u8) i32;
+    fn @c("raise") cRaise(sig: i32) i32;
+  }
+
+  const sigInt = 2i32;
+  const sigTerm = 15i32;
+  const saRestart = 0x10000000i32;
+
+  fn @c onSignal(sig: i32) {
+    if sig == sigInt {mark(interruptBit);}
+    else if sig == sigTerm {mark(terminateBit);}
+  }
+
+  fn setOne(sig: i32) i32 {
+    let zeros = Array[u64, 16]() <- fill 0u64;
+    var act = SigAction(&onSignal, zeros, saRestart, 0i32, 0usize);
+    sigemptyset(&mut act.mask as *u8);
+    if sigaction(sig, &act as *SigAction, null) != 0i32 {
+      return *libc.errno();
+    }
+    0i32
+  }
+
+  fn installOs(bits: u32) i32 {
+    if (bits & interruptBit) != 0u32 {
+      let r = setOne(sigInt);
+      if r != 0i32 {return r;}
+    }
+    if (bits & terminateBit) != 0u32 {
+      let r = setOne(sigTerm);
+      if r != 0i32 {return r;}
+    }
+    installed.bitOr(bits);
+    0i32
+  }
+
+  fn raiseOs(s: Signal) {
+    cRaise(if s == Signal.Interrupt {sigInt} else {sigTerm});
+  }
+}
