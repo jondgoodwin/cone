@@ -1070,6 +1070,11 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             break;
         }
 
+        if (stitched == VecGatherIntrinsic) {
+            fncallret = genlVectorGather(gen, objfn, ((IntrinsicNode *)fndcl->value)->typearg, fnargs);
+            break;
+        }
+
         // A float's encoding: the bit operation on the one argument, whose
         // result type is the signature's
         if (stitched >= FloatBitsIntrinsic && stitched <= FloatSignBitIntrinsic) {

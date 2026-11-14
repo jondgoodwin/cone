@@ -233,6 +233,25 @@ fn double(s: &amp;mut Array[f32]) {                      // a multiple of 4 long
   }
 }
 </pre>
+	<h3 id="gather">Gather and scatter</h3>
+	<p>When the lanes are not side by side, <span class="pre">Vector[T, N].gather(s, idx)</span> reads
+		<span class="pre">s[idx[0]]</span>, <span class="pre">s[idx[1]]</span> and on, one lane for each of a
+		<span class="pre">Vector[usize, N]</span> of indices, and <span class="pre">v.scatter(s, idx)</span> writes
+		the lanes to those places. The indices come in any order and may repeat. Like <span class="pre">load</span> and
+		<span class="pre">store</span>, both are checked: if any index is not below the slice's length, the program panics at
+		the line, reporting the first such index and the length, before any lane is read or written (a scatter that
+		panics has changed nothing). If a scatter's indices repeat, the highest lane's value is the one that stays.
+		There is no unchecked form.</p>
+<pre>
+let table: Array[f32, 256] = ...;
+let at = Vector[usize, 8]() &lt;- 3usize, 200usize, 7usize, 7usize, 0usize, 255usize, 1usize, 2usize;
+let v = Vector[f32, 8].gather(&amp;table, at);       // table[3], table[200], table[7], table[7], ...
+v.scatter(&amp;mut table, at);                       // and back
+</pre>
+	<p>The speed is the target's. On the default <span class="pre">--cpu=generic</span> target both are N
+		separate loads or stores, no faster than a loop. With <span class="pre">--cpu=native</span> on a processor with AVX2,
+		gather is the processor's gather instruction; scatter stays N stores unless the processor has AVX-512. A mask has
+		neither, as with <span class="pre">load</span>.</p>
 	<p>A fixed array's borrow is a slice, so <span class="pre">Vector[f32, 4].load(&amp;data, 3)</span> works on an
 		array. A mask has neither: its lanes are bits with no form in memory. Load numbers and compare them.</p>
 
