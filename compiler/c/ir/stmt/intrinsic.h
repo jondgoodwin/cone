@@ -120,6 +120,8 @@ enum IntrinsicFn {
     VecAllIntrinsic,        // mask.all()
     VecLoadIntrinsic,       // Vector[T, N].load(s, at): the lanes at s[at..at+N], bounds checked once
     VecStoreIntrinsic,      // v.store(s, at)
+    VecGatherIntrinsic,     // Vector[T, N].gather(s, idx): the lanes s[idx[0]] ... s[idx[N-1]], every index checked first
+    VecScatterIntrinsic,    // v.scatter(s, idx): the lanes to s[idx[i]], every index checked first; the highest lane wins a repeat
 
     // The program's stitched lifecycle (genlStitch): every module's 'init' in
     // dependency order, and every module's finalizer in exactly the reverse.
