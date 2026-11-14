@@ -30,11 +30,34 @@ const etwDescOffset = 112usize;
 const etwGuidAt = 64usize * 128usize;   // after the kinds' entries; the provider's metadata is entry 0
 const etwScratchBytes = 256usize;
 
-extern {
-  fn @c(system) EventRegister(provider: *u8, callback: *u8, ctx: *u8, handle: *u64) u32;
-  fn @c(system) EventSetInformation(handle: u64, infoClass: u32, info: *u8, size: u32) u32;
-  fn @c(system) EventEnabled(handle: u64, descriptor: *u8) u8;
-  fn @c(system) EventWriteTransfer(handle: u64, descriptor: *u8, activity: *u8, related: *u8, count: u32, data: *u8) u32;
+#if #os == .windows {
+  extern {
+    fn @c(system) EventRegister(provider: *u8, callback: *u8, ctx: *u8, handle: *u64) u32;
+    fn @c(system) EventSetInformation(handle: u64, infoClass: u32, info: *u8, size: u32) u32;
+    fn @c(system) EventEnabled(handle: u64, descriptor: *u8) u8;
+    fn @c(system) EventWriteTransfer(handle: u64, descriptor: *u8, activity: *u8, related: *u8, count: u32, data: *u8) u32;
+  }
+}
+
+// Elsewhere these do nothing, so the file links without advapi32
+fn etwRegister(provider: *u8, handle: *u64) u32 {
+  #if #os == .windows {EventRegister(provider, null, null, handle)} #else {1u32}
+}
+
+fn etwSetInfo(handle: u64, info: *u8, size: u32) {
+  #if #os == .windows {
+    EventSetInformation(handle, 2u32, info, size);
+  }
+}
+
+fn etwEnabled(handle: u64, descriptor: *u8) u8 {
+  #if #os == .windows {EventEnabled(handle, descriptor)} #else {0u8}
+}
+
+fn etwWrite(handle: u64, descriptor: *u8, data: *u8) {
+  #if #os == .windows {
+    EventWriteTransfer(handle, descriptor, null, null, 3u32, data);
+  }
 }
 
 fn put16(p: *u8, v: u32) {
@@ -83,12 +106,12 @@ fn etwStart(st: *State) {
     j = j + 1usize;
   }
   var reg = 0u64;
-  let rc = EventRegister(g, null, null, &mut reg as *u64);
+  let rc = etwRegister(g, &mut reg as *u64);
   if rc != 0u32 {
     panic("actortrace: EventRegister failed");
   }
   (*st).etwReg = reg;
-  EventSetInformation(reg, 2u32, ev, u32.from(n0 + 2usize));
+  etwSetInfo(reg, ev, u32.from(n0 + 2usize));
   // Each kind's event
   var k = 1usize;
   while k < maxKinds {
@@ -136,7 +159,7 @@ fn sinkEtw(kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
   let ev = (*st).etwEvents;
   let m = ev + usize.from(kind) * etwEventBytes;
   let desc = m + etwDescOffset;
-  if (*st).etwCheck && EventEnabled((*st).etwReg, desc) == 0u8 {
+  if (*st).etwCheck && etwEnabled((*st).etwReg, desc) == 0u8 {
     return;
   }
   let si = slotIndex(st, worker);
@@ -163,7 +186,7 @@ fn sinkEtw(kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
   mem.writeRaw[u64]((dd + 32usize) as *u64, u64.from(sc as usize));
   mem.writeRaw[u32]((dd + 40usize) as *u32, 24u32);
   mem.writeRaw[u32]((dd + 44usize) as *u32, 0u32);
-  EventWriteTransfer((*st).etwReg, desc, null, null, 3u32, dd);
+  etwWrite((*st).etwReg, desc, dd);
   (*sl).count = (*sl).count + 1u64;
   if shared {
     unlockWord(&(*sl).lock as *u32);
