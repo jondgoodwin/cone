@@ -1,0 +1,116 @@
+// The stable sort's leaf for 16 to 32 elements (sort8 heads, an insertion tail, a merge from
+// both ends) must keep equal keys in their order. Each element is a key and its original
+// position (8 bytes, so the leaf applies; the 24-byte 'Wide' keeps the insertion leaf).
+// Lists of every length 0 to 64, and of 300, 1000 and 5000 elements (large enough that the
+// buffer has room for the leaf), with 1, 2, 4, 7, 50 and 1000 distinct keys, in a scrambled
+// order by a fixed generator and in the order the keys come when only four distinct keys
+// repeat. After each sort the program checks that the keys are in order, that equal keys
+// have rising positions, and that each position is present once. A case that fails prints
+// its length and key count; the last line counts the cases checked.
+// Every printed value was checked by hand: lengths 0..64 (65) + 3 large = 68 lengths, 6 key
+// counts, 2 element types, so 816 cases.
+
+mod collection_sort_stable_leaf;
+
+import stdio use *;
+import collections use *;
+
+struct Tag { key: u32; pos: u32; }
+struct Wide { key: u32; pos: u32; pad0: u64; pad1: u64; }
+
+fn byKey(a: &Tag, b: &Tag) i32 {
+  if a.key < b.key { -1i32 } else if a.key > b.key { 1i32 } else { 0i32 }
+}
+
+fn byWideKey(a: &Wide, b: &Wide) i32 {
+  if a.key < b.key { -1i32 } else if a.key > b.key { 1i32 } else { 0i32 }
+}
+
+fn nextRand(s: u64) u64 {
+  s * 6364136223846793005u64 + 1442695040888963407u64
+}
+
+// Check a sorted list's (key, pos) pairs: keys in order, positions rising among equal keys,
+// each position once
+fn checkTags(l: &List[Tag], n: usize) bool {
+  if l.len() != n { return false; }
+  var seen = List[bool]();
+  var i = 0usize;
+  while i < n { seen.push(false); i = i + 1usize; }
+  i = 0usize;
+  while i < n {
+    let p = usize.from(l[i].pos);
+    if p >= n || seen[p] { return false; }
+    seen[p] = true;
+    if i > 0usize {
+      if l[i - 1usize].key > l[i].key { return false; }
+      if l[i - 1usize].key == l[i].key && l[i - 1usize].pos > l[i].pos { return false; }
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+fn checkWide(l: &List[Wide], n: usize) bool {
+  if l.len() != n { return false; }
+  var seen = List[bool]();
+  var i = 0usize;
+  while i < n { seen.push(false); i = i + 1usize; }
+  i = 0usize;
+  while i < n {
+    let p = usize.from(l[i].pos);
+    if p >= n || seen[p] || l[i].pad1 != u64.from(l[i].key) { return false; }
+    seen[p] = true;
+    if i > 0usize {
+      if l[i - 1usize].key > l[i].key { return false; }
+      if l[i - 1usize].key == l[i].key && l[i - 1usize].pos > l[i].pos { return false; }
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+fn main() {
+  var cases = 0i32;
+  var failed = 0i32;
+  var lens = List[usize]();
+  var n = 0usize;
+  while n <= 64usize { lens.push(n); n = n + 1usize; }
+  lens.push(300usize);
+  lens.push(1000usize);
+  lens.push(5000usize);
+  var keys = List[u32]();
+  keys.push(1u32);
+  keys.push(2u32);
+  keys.push(4u32);
+  keys.push(7u32);
+  keys.push(50u32);
+  keys.push(1000u32);
+  var li = 0usize;
+  while li < lens.len() {
+    let len = lens[li];
+    var ki = 0usize;
+    while ki < keys.len() {
+      let distinct = keys[ki];
+      var s = 88172645463325252u64 + u64.from(len) * 31u64 + u64.from(distinct);
+      var a = List[Tag]();
+      var w = List[Wide]();
+      var i = 0usize;
+      while i < len {
+        s = nextRand(s);
+        let k = u32.from(s >> 33u64) % distinct;
+        a.push(Tag(k, u32.from(i)));
+        w.push(Wide(k, u32.from(i), 0u64, u64.from(k)));
+        i = i + 1usize;
+      }
+      a.sortBy(&byKey);
+      w.sortBy(&byWideKey);
+      cases = cases + 2i32;
+      if !checkTags(&a, len) { failed = failed + 1i32; printStr("Tag fails: length "); printInt(i64.from(len)); printStr(", keys "); printInt(i64.from(distinct)); printStr("\n"); }
+      if !checkWide(&w, len) { failed = failed + 1i32; printStr("Wide fails: length "); printInt(i64.from(len)); printStr(", keys "); printInt(i64.from(distinct)); printStr("\n"); }
+      ki = ki + 1usize;
+    }
+    li = li + 1usize;
+  }
+  printStr("cases checked: "); printInt(i64.from(cases)); printStr(", failed: "); printInt(i64.from(failed)); printStr("\n");
+}
