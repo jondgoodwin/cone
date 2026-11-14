@@ -18,6 +18,10 @@
 // 10. With 'crashReport: false' a panicking child ends at once with the exit code of the crash (Windows: the
 //    exception's, 3221226505; POSIX: SIGABRT), as 'run''s does.
 // 11. (Windows) A parent that exits while its 'crashReport: false' child sleeps takes the child with it.
+// 14. 'launch' with 'Options.env' (a test of its own, as 'run''s is in childenv.cone): a variable set for the child is
+//    seen by it; "PATH" set while this program has "Path" (Windows) replaces it, so the child holds exactly one entry of
+//    that name (matched without regard to case on Windows) with the new value; 'removeEnv' of "PATH" leaves none; and
+//    this program's environment is unchanged.
 
 mod launch;
 
@@ -26,6 +30,7 @@ import collections use *;
 import libc;
 import path use Path;
 import process;
+import env;
 import time use Duration, Instant;
 import iocore use *;
 import diag;
@@ -41,8 +46,10 @@ extern {
   fn @c(system) GetOverlappedResult(h: usize, ov: *u8, got: *u32, block: i32) i32;
   fn @c(system) GetLastError() u32;
   fn @c(system) WriteFile(h: usize, buf: *u8, size: u32, written: *u32, ov: *u8) i32;
+  fn @c(system) GetEnvironmentStringsW() *u16;
 }
 extern {
+  fn @c cone_environ() **u8;
   fn @c usleep(us: u32) i32;
   fn @c _exit(code: i32);
   fn @c kill(pid: i32, signal: i32) i32;
@@ -106,8 +113,65 @@ fn childSum() i32 {
   0i32
 }
 
+// Whether an environment entry "NAME=value" is of this name: Windows' names match without regard to case (ASCII)
+fn entryIs(e: &Array[u8], name: &Array[u8]) bool {
+  var k = #if #os == .windows {1usize} #else {0usize};
+  while k < e.len && e[k] != '=' { k = k + 1usize; }
+  if k != name.len { return false; }
+  var i = 0usize;
+  while i < k {
+    var x = e[i];
+    var y = name[i];
+    #if #os == .windows {
+      if x >= 'a' && x <= 'z' { x = x - 32u8; }
+      if y >= 'a' && y <= 'z' { y = y - 32u8; }
+    }
+    if x != y { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+// Every entry of this child's environment of that name, each "NAME=value|" (non-ASCII shown as '?')
+fn childEnvMatch(name: &String, want: &String) i32 {
+  // (written between '<' and '>', so that the child always writes something)
+  var out = String.from("<");
+  #if #os == .windows {
+    let block = GetEnvironmentStringsW();
+    var i = 0usize;
+    while *(block + i) != 0u16 {
+      var j = i;
+      while *(block + j) != 0u16 { j = j + 1usize; }
+      var e = String();
+      var m = i;
+      while m < j {
+        let c = *(block + m);
+        e.appendByte(if c < 128u16 {u8.from(c)} else {'?'});
+        m = m + 1usize;
+      }
+      if entryIs(e.view(), name.view()) { out.append(e.view()); out.append("|"); }
+      i = j + 1usize;
+    }
+  } #else {
+    let vars = cone_environ();
+    var i = 0usize;
+    while *(vars + i) != null {
+      let entry = *(vars + i);
+      var e = String();
+      var j = 0usize;
+      while entry[j] != 0u8 { e.appendByte(entry[j]); j = j + 1usize; }
+      if entryIs(e.view(), name.view()) { out.append(e.view()); out.append("|"); }
+      i = i + 1usize;
+    }
+  }
+  out.append(">");
+  // The answer is the exit code: 0 when the entries are exactly what the parent said they should be (no output to read)
+  if out.equals(want.view()) { 0i32 } else { 3i32 }
+}
+
 fn child(a: &List[String]) i32 {
   let mode = &a[2usize];
+  if mode.equals("envmatch") { return childEnvMatch(&a[3usize], &a[4usize]); }
   if mode.equals("sum") { return childSum(); }
   if mode.equals("streams") { return childStreams(usize.from(number(&a[3usize]))); }
   if mode.equals("exit") {
@@ -272,6 +336,70 @@ fn gone(id: u32) bool {
   } #else {
     kill(i32.from(id), 0i32) != 0i32
   }
+}
+
+fn pathVars(value: &str) process.EnvVars {
+  var v = process.EnvVars();
+  v.push(process.EnvVar(String.from("PATH"), String.from(value)));
+  v
+}
+
+fn ownPath() String {
+  match env.get("PATH") { case let Some(v) { String.from(v.view()) } case is None { String() } }
+}
+
+// Launch a child that holds, of the entries named 'name', exactly 'want' ("<NAME=value|>", "<>" for none): its exit
+// code, which is 0 when it does, is the answer, so there is no output to read
+fn launched(exe: &str, name: &str, want: &str, opts: process.Options, lp: &mut Loop, label: &Array[u8]) {
+  var cmd = command(exe, "envmatch", name);
+  cmd.push(String.from(want));
+  match process.launch(cmd.view(), opts) {
+    case var Ok(c) {
+      closeEnd(rawOut(c.takeStdout()));
+      closeEnd(rawErr(c.takeStderr()));
+      let w = waitFor(lp, rawProc(c.takeProcess()), 20i64);
+      expect(w.status == diag.outcomeDone && w.n == 0usize && w.code == 0u32, label);
+    }
+    case is Err { expect(false, label); }
+  }
+}
+
+fn launchEnv(exe: &str, lp: &mut Loop) {
+  let before = ownPath();
+  var one = process.EnvVars();
+  one.push(process.EnvVar(String.from("CONE_LAUNCHENV_X"), String.from("xv")));
+  launched(exe, "CONE_LAUNCHENV_X", "<CONE_LAUNCHENV_X=xv|>", process.Options(env: Some(one)), lp,
+    "14: a variable set through launch is seen by the child");
+  launched(exe, "CONE_LAUNCHENV_X", "<>", process.Options(), lp, "14: and not in the next launch");
+
+  // This program has "Path" on Windows, "PATH" on POSIX: setting "PATH" leaves one entry of that name, the new value
+  // (the old value kept, with a mark added, so that the child can still find what it loads)
+  var newPath = String.from(before.view());
+  newPath.append(";cone-launch-env");
+  var wantEntry = String.from("<PATH=");
+  wantEntry.append(newPath.view());
+  wantEntry.append("|>");
+  // (a launched child that has no PATH at all does not run here, so a removal is shown on a variable of this test's own)
+  env.set("CONE_LAUNCHENV_Y", "yv");
+  launched(exe, "CONE_LAUNCHENV_Y", "<CONE_LAUNCHENV_Y=yv|>", process.Options(), lp,
+    "14: an inherited variable reaches the launched child");
+  var names = List[String]();
+  names.push(String.from("CONE_LAUNCHENV_Y"));
+  launched(exe, "CONE_LAUNCHENV_Y", "<>", process.Options(removeEnv: Some(names)), lp,
+    "14: removeEnv through launch leaves no entry of that name");
+  #if #os == .windows {
+    var lower = List[String]();
+    lower.push(String.from("cone_launchenv_y"));
+    launched(exe, "CONE_LAUNCHENV_Y", "<>", process.Options(removeEnv: Some(lower)), lp,
+      "14: on Windows a name of another case is removed too");
+  } #else {
+    expect(true, "14: (Windows only: a name of another case is removed too)");
+  }
+  env.unset("CONE_LAUNCHENV_Y");
+  launched(exe, "PATH", wantEntry.view(), process.Options(env: Some(pathVars(newPath.view()))), lp,
+    "14: PATH set through launch replaces the inherited one: a single entry");
+  let after = ownPath();
+  expect(after.equals(before.view()), "14: this program's own PATH is as it was");
 }
 
 fn main(argc: i32, argv: **u8) i32 {
@@ -459,6 +587,9 @@ fn main(argc: i32, argv: **u8) i32 {
       case is Err { expect(false, "13: launch started"); }
     }
     expect(id != 0u32 && gone(id), "13: a dropped ChildProcess ends and reaps the child");
+
+    // 14. 'launch' with a child environment (before the tests that start debuggees)
+    launchEnv(exe.view(), &mut lp);
 
     // 10. 'crashReport: false': a panic ends the child at once with the exit code Windows would have given it (the
     // exception's own code), or POSIX's SIGABRT; the options of a launch otherwise unchanged (the output ends)
