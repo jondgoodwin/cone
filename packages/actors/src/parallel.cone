@@ -145,6 +145,8 @@ struct LoopRec {
   pub doneArg: *u8;
   pub scheduled: bool;          // a heap block, with an onDone to call
   pub adaptive: bool;           // splits on demand (a 'parallel each'), not to 'grain'
+  pub costTicks: u64;           // adaptive: clock ticks the cost guard spent running costItems items inline
+  pub costItems: u64;
 }
 
 // A task: a range of a loop. It is a plain value; a deque holds copies.
@@ -307,20 +309,33 @@ fn runTask(s: *Sched, t: Task) {
 // hintExt: a wake-tree hint naming the shared deque (a worker's is its index + 1)
 const hintExt = 0xFFFFFFFFu32;
 
-// SCRATCH tuning, to be removed: CONE_SC=<digit> caps the budget of a stolen piece
-let scCap: Atomic[u32];
-fn splitCap() u32 {
-  var c = scCap.load();
-  if c == 0u32 {
-    c = 0xFFFFu32;
-    let v = libc.getenv("CONE_SC");
-    if v as usize != 0usize {
-      c = u32.from(*v) - 48u32;
-    }
-    scCap.store(c + 1u32);
-    return c;
+// The wake tree's gate. A woken worker needs about 5 us to arrive (row 283's
+// measure), so a piece whose remaining work, items left times the cost per item the
+// guard measured, is shorter than that is left to master's single wake: two wakes
+// there are two system calls for workers that find nothing. 'wakeTreeSplits' caps
+// the split budget of a stolen piece (chosen by a pass over none, 2 and 4: row 293).
+const wakeTreeNanos = 5000u64;
+const wakeTreeSplits = 2u32;
+
+var @threadlocal treeLimit: u64 = 0u64;
+var @threadlocal inlineSpent: u64 = 0u64;   // clock ticks of the last runInline
+
+// wakeTreeNanos in the clock's ticks, found once a thread
+fn treeTicks() u64 {
+  if treeLimit == 0u64 {
+    let q = clockFrequency() * wakeTreeNanos / 1000000000u64;
+    treeLimit = if q > 0u64 {q} else {1u64};
   }
-  c - 1u32
+  treeLimit
+}
+
+// Does a piece of n items have work enough for the tree's two wakes?
+fn treeWorth(rec: *LoopRec, n: usize) bool {
+  let items = (*rec).costItems;
+  if items == 0u64 {
+    return true;
+  }
+  u64.from(n) * (*rec).costTicks >= items * treeTicks()
 }
 
 // root is true for the first task of a blocking loop (the caller's): it wakes
@@ -349,12 +364,13 @@ fn runTaskW(s: *Sched, t: Task, root: bool) {
       let nw = (*s).nworkers;
       let half = splits / 2u32;
       splits = if half > nw {half} else {nw};
-      let cap = splitCap();
-      if splits > cap {
-        splits = cap;
+      if splits > wakeTreeSplits {
+        splits = wakeTreeSplits;
       }
     }
-    var treeWoke = !(root || t.stolen);
+    // The tree is for a piece with work enough to pay for two workers' arrival;
+    // a smaller one wakes as master did, one sleeper a split (notify).
+    var treeWoke = !(root || t.stolen) || !treeWorth(rec, hi - t.lo);
     while splits > 0u32 && hi - t.lo > 1usize {
       splits = splits / 2u32;
       let mid = t.lo + (hi - t.lo) / 2usize;
@@ -461,9 +477,11 @@ fn runInline(body: PieceFn, data: *u8, lo: usize, hi: usize) usize {
     body(data, at, at + 1usize);
     at = at + 1usize;
     if hi - at > 1usize && clockTicks() - t0 >= limit {
+      inlineSpent = clockTicks() - t0;
       return at;
     }
   }
+  inlineSpent = clockTicks() - t0;
   hi
 }
 
@@ -526,7 +544,7 @@ fn rangeRun(lo: usize, hi: usize, grain: usize, adaptive: bool, body: PieceFn, d
   }
   ensureRunning();
   let s = running.load() as *Sched;
-  var rec = LoopRec(hi - from, g, body, data, &noDone, null, false, adaptive);
+  var rec = LoopRec(hi - from, g, body, data, &noDone, null, false, adaptive, inlineSpent, u64.from(from - lo));
   let p = &mut rec as *LoopRec;
   runTaskW(s, Task(p, from, hi, (*s).nworkers, false), adaptive);
   helpUntilDone(s, p);
@@ -834,7 +852,7 @@ fn rangeThen(lo: usize, hi: usize, grain: usize, adaptive: bool, body: PieceFn, 
   if rec as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
-  mem.writeRaw[LoopRec](rec, LoopRec(hi - from, g, body, data, onDone, doneArg, true, adaptive));
+  mem.writeRaw[LoopRec](rec, LoopRec(hi - from, g, body, data, onDone, doneArg, true, adaptive, inlineSpent, u64.from(from - lo)));
   (*s).liveScheduled.add(1u64);
   if !dequePush(curDeque(s), Task(rec, from, hi, (*s).nworkers, false)) {
     // The deque is full: run the loop's first task here, which splits it
