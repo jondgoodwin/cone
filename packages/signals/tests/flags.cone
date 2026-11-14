@@ -1,0 +1,83 @@
+// Each signal is raised in this process, and the flag is seen set, left set by 'received', and cleared by 'take'.
+//
+// Nothing here sends a real keystroke or console event. On Linux 'signals.raise' is C's 'raise': a real SIGINT and SIGTERM,
+// delivered to this process through the handler 'sigaction' installed. On Windows a real console event
+// (GenerateConsoleCtrlEvent) reaches every process on the console, the test runner and the shell around it included, so
+// 'signals.raise' calls the registered handler function directly instead: what runs is the handler's own code (the decision
+// and the atomic store); the system's call of it is not exercised, only that SetConsoleCtrlHandler accepted it.
+//
+// Worked out by hand, in order, one line each:
+//   before install:        both flags false
+//   install both -> Ok
+//   raise Interrupt:       received(Interrupt) true, Terminate false; received again true (not cleared);
+//                          take true, then take false, received false
+//   raise Terminate:       likewise, and Interrupt stays false
+//   raise both then take:  each taken once
+//   raised twice, taken:   one signal (true, then false)
+
+mod flags;
+
+import stdio use *;
+import testing use *;
+import signals use *;
+
+// Raise a signal that is installed; a refusal would show as the flag not being set
+fn fire(s: Signal) {
+  match raise(s) {
+    case is Ok {}
+    case is Err {}
+  }
+}
+
+fn refused(s: Signal) bool {
+  var r = false;
+  match raise(s) {
+    case is Ok {}
+    case is Err {r = true;}
+  }
+  r
+}
+
+fn main() i32 {
+  initAll();
+  expectBool(received(Signal.Interrupt) || received(Signal.Terminate), false, "no flag is set before anything is raised");
+  // Nothing is installed yet: raise is refused on both systems, and sets nothing (and on Linux sends nothing)
+  expectBool(refused(Signal.Interrupt) && refused(Signal.Terminate), true, "raising an uninstalled signal gives the error");
+  expectBool(received(Signal.Interrupt) || received(Signal.Terminate), false, "and sets no flag");
+
+  var ok = false;
+  match install(SignalSet.of(Signal.Interrupt).plus(Signal.Terminate)) {
+    case is Ok {ok = true;}
+    case is Err {}
+  }
+  expectBool(ok, true, "install of both succeeds");
+
+  fire(Signal.Interrupt);
+  expectBool(received(Signal.Interrupt), true, "an interrupt sets its flag");
+  expectBool(received(Signal.Terminate), false, "and not the other");
+  expectBool(received(Signal.Interrupt), true, "received does not clear");
+  expectBool(take(Signal.Interrupt), true, "take sees it");
+  expectBool(take(Signal.Interrupt), false, "and clears it");
+  expectBool(received(Signal.Interrupt), false, "so it is no longer received");
+
+  fire(Signal.Terminate);
+  expectBool(received(Signal.Terminate), true, "a terminate sets its flag");
+  expectBool(received(Signal.Interrupt), false, "and not the interrupt");
+  expectBool(take(Signal.Terminate), true, "take sees it");
+  expectBool(take(Signal.Terminate), false, "and clears it");
+
+  fire(Signal.Interrupt);
+  fire(Signal.Terminate);
+  expectBool(take(Signal.Interrupt) && take(Signal.Terminate), true, "both raised, both taken");
+  expectBool(received(Signal.Interrupt) || received(Signal.Terminate), false, "and none left");
+
+  fire(Signal.Interrupt);
+  fire(Signal.Interrupt);
+  expectBool(take(Signal.Interrupt), true, "two arrivals before a take are one signal");
+  expectBool(take(Signal.Interrupt), false, "taken once");
+
+  expectBool(SignalSet.none().has(Signal.Interrupt), false, "the empty set has nothing");
+  expectBool(SignalSet.all().has(Signal.Terminate), true, "the full set has terminate");
+  expectBool(SignalSet.of(Signal.Interrupt).has(Signal.Terminate), false, "a set of one has only it");
+  done()
+}

@@ -7,6 +7,9 @@ The folder holds UnicodeData.txt, PropList.txt, DerivedCoreProperties.txt and Ea
 downloaded from https://www.unicode.org/Public/UCD/latest/ucd/ (or the same
 file names under a numbered version folder); the version is read from the
 header of PropList.txt and written into the output. The folder also holds
+CaseFolding.txt and DerivedNormalizationProps.txt of the same version (18.0.0, from
+https://www.unicode.org/Public/UCD/latest/ucd/ on 14 Nov 2026, headers checked the same
+way), and NormalizationTest.txt, which tests/data is cut from. The folder also holds
 SpecialCasing.txt of the same version (the copy used was SpecialCasing-18.0.0.txt,
 from https://www.unicode.org/Public/UCD/latest/ucd/ on 12 Nov 2026); its version
 header must match PropList.txt's or the run stops. EastAsianWidth.txt (EastAsianWidth-18.0.0.txt,
@@ -35,6 +38,25 @@ that is not above the code point.
                              mapping contains U+0000). The conditional entries
                              (final sigma, the lt, tr and az rules) are left out.
                              The title-case column is not used.
+  foldStarts / foldDelta     CaseFolding.txt's C entries (common, one code point to one):
+                             the run's change to a code point's number to fold it. 0
+                             where there is none.
+  foldFullKeys / foldFullVals   CaseFolding.txt's F entries (full, one to several): the
+                             sorted code points, and three u32 for each, padded with 0.
+                             The S (simple, where an F entry exists) and T (Turkic)
+                             entries are not read.
+  cccStarts / cccVals        canonical combining class (UnicodeData field 3), a u8 for each run.
+  decompKeys / decompOffs / decompPool   the full (recursive) canonical decomposition of
+                             every code point that has one, Hangul syllables apart (the
+                             algorithm does them): the sorted code points, an offset
+                             into the pool for each (one more at the end), and the pool
+                             of u32 code points.
+  compFirst / compSecond / compResult   the primary composites: each direct canonical
+                             decomposition of two code points that is not in
+                             Full_Composition_Exclusion (DerivedNormalizationProps.txt),
+                             sorted by (first, second).
+  nfcQcStarts / nfcQcVals    NFC_QC (DerivedNormalizationProps.txt), a u8 for each run:
+                             0 Yes, 1 Maybe, 2 No.
   widthStarts / widthVals    the display width of a code point in terminal columns,
                              one u8 for each run: 2 for East Asian Width W and F, else
                              0 for general category Mn, Me, Cf and the controls Cc
@@ -127,6 +149,60 @@ def read_special(path):
     return out
 
 
+def read_fold(path):
+    """CaseFolding.txt: ({cp: delta} for C, {cp: [cps]} for F)."""
+    common, full = {}, {}
+    for line in open(path, encoding="utf8"):
+        line = line.split("#")[0].strip()
+        if not line:
+            continue
+        f = [x.strip() for x in line.split(";")]
+        c = int(f[0], 16)
+        m = [int(x, 16) for x in f[2].split()]
+        if f[1] == "C":
+            common[c] = m[0] - c
+        elif f[1] == "F":
+            if len(m) > 3:
+                sys.exit("fold of %04X does not fit" % c)
+            full[c] = m
+    return common, full
+
+
+def read_norm(unidata):
+    """(ccc per code point, direct canonical decomposition {cp: [cps]}). The First/Last ranges
+    (CJK, Hangul syllables, private use) have no ccc and no decomposition table entry."""
+    ccc = [0] * N
+    direct = {}
+    for line in open(unidata, encoding="utf8"):
+        f = line.rstrip("\n").split(";")
+        c = int(f[0], 16)
+        if f[1].endswith(", First>") or f[1].endswith(", Last>"):
+            continue
+        ccc[c] = int(f[3])
+        if f[5] and not f[5].startswith("<"):
+            direct[c] = [int(x, 16) for x in f[5].split()]
+    return ccc, direct
+
+
+def read_normprops(path):
+    """(set of Full_Composition_Exclusion, NFC_QC value per code point: 0 Y, 1 M, 2 N)."""
+    excl = set()
+    qc = [0] * N
+    for line in open(path, encoding="utf8"):
+        line = line.split("#")[0].strip()
+        if not line:
+            continue
+        f = [x.strip() for x in line.split(";")]
+        lo, _, hi = f[0].partition("..")
+        r = range(int(lo, 16), int(hi or lo, 16) + 1)
+        if f[1] == "Full_Composition_Exclusion":
+            excl.update(r)
+        elif f[1] == "NFC_QC":
+            for c in r:
+                qc[c] = 1 if f[2] == "M" else 2
+    return excl, qc
+
+
 def runs(values):
     starts, vals = [], []
     for c, v in enumerate(values):
@@ -168,11 +244,34 @@ def main():
     if ev != version:
         sys.exit("EastAsianWidth is %s but PropList is %s" % (ev, version))
     width = read_width(os.path.join(d, "UnicodeData.txt"), os.path.join(d, "EastAsianWidth.txt"))
+    for fn in ("CaseFolding", "DerivedNormalizationProps"):
+        fv = re.search(fn + r"-([0-9.]+)\.txt", open(os.path.join(d, fn + ".txt"), encoding="utf8").readline()).group(1)
+        if fv != version:
+            sys.exit("%s is %s but PropList is %s" % (fn, fv, version))
+    fold_c, fold_f = read_fold(os.path.join(d, "CaseFolding.txt"))
+    fold = [fold_c.get(c, 0) for c in range(N)]
+    ccc, direct = read_norm(os.path.join(d, "UnicodeData.txt"))
+    excl, qc = read_normprops(os.path.join(d, "DerivedNormalizationProps.txt"))
+    full_decomp = {}
+
+    def decomp(c):
+        if c not in direct:
+            return [c]
+        if c not in full_decomp:
+            full_decomp[c] = [y for x in direct[c] for y in decomp(x)]
+        return full_decomp[c]
+    dkeys = sorted(direct)
+    dpool, doffs = [], []
+    for c in dkeys:
+        doffs.append(len(dpool))
+        dpool.extend(decomp(c))
+    doffs.append(len(dpool))
+    pairs = sorted((m[0], m[1], c) for c, m in direct.items() if len(m) == 2 and c not in excl)
     flags = [0] * N
     for c in range(N):
         flags[c] = (dp["Alphabetic"][c] * 1 | dp["Uppercase"][c] * 2 | dp["Lowercase"][c] * 4
                     | pl["White_Space"][c] * 8 | numeric[c] * 16)
-    out = "// unicodetables: Unicode %s properties and simple case mappings and display widths, as run\n// tables, and the unconditional SpecialCasing expansions.\n" % version
+    out = "// unicodetables: Unicode %s properties and simple case mappings and display widths, as run\n// tables, the unconditional SpecialCasing expansions, case folding and the normalization data.\n" % version
     out += "// Written by unicodetables.py, which says how each is made; change that and\n"
     out += "// run it, never this file.\n\n"
     fs, fv = runs(flags)
@@ -191,6 +290,23 @@ def main():
         out += emit(name + "Keys", "u32", sorted(tbl), "u32", 8, True)
         vals = [(tbl[c] + [0, 0, 0])[i] for c in sorted(tbl) for i in range(3)]
         out += emit(name + "Vals", "u32", vals, "u32", 8, True)
+    fs2, fv2 = runs(fold)
+    out += emit("foldStarts", "u32", fs2, "u32", 8, True)
+    out += emit("foldDelta", "i32", fv2, "i32", 12, False)
+    out += emit("foldFullKeys", "u32", sorted(fold_f), "u32", 8, True)
+    out += emit("foldFullVals", "u32", [(fold_f[c] + [0, 0, 0])[i] for c in sorted(fold_f) for i in range(3)], "u32", 8, True)
+    cs, cv = runs(ccc)
+    out += emit("cccStarts", "u32", cs, "u32", 8, True)
+    out += emit("cccVals", "u8", cv, "u8", 16, False)
+    out += emit("decompKeys", "u32", dkeys, "u32", 8, True)
+    out += emit("decompOffs", "u32", doffs, "u32", 12, False)
+    out += emit("decompPool", "u32", dpool, "u32", 8, True)
+    out += emit("compFirst", "u32", [p[0] for p in pairs], "u32", 8, True)
+    out += emit("compSecond", "u32", [p[1] for p in pairs], "u32", 8, True)
+    out += emit("compResult", "u32", [p[2] for p in pairs], "u32", 8, True)
+    qs, qv = runs(qc)
+    out += emit("nfcQcStarts", "u32", qs, "u32", 8, True)
+    out += emit("nfcQcVals", "u8", qv, "u8", 16, False)
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "src", "unicodetables.cone"), "w", encoding="utf8", newline="\n") as f:
         f.write(out)
@@ -203,6 +319,8 @@ def main():
         sum(c + lower[c] for c in nonsur)))
     print("width totals (tests/width.cone): zero %d wide %d" % (
         sum(width[c] == 0 for c in nonsur), sum(width[c] == 2 for c in nonsur)))
+    print("fold: C runs %d F entries %d; ccc runs %d; decomposable %d pool %d; composition pairs %d; nfc_qc runs %d" % (
+        len(fs2), len(fold_f), len(cs), len(dkeys), len(dpool), len(pairs), len(qs)))
     print("special: upper %d lower %d" % (len(sp_up), len(sp_lo)))
     print("Unicode", version, "width runs", len(ws), "flag runs", len(fs), "upper runs", len(us), "lower runs", len(ls))
 

@@ -1,0 +1,226 @@
+// Case folding and canonical normalization (NFC, NFD), over the tables of
+// unicodetables.cone. The same module as unicode.cone: it uses that file's
+// runOf, hasKey, appendCode and shifted. NFKC and NFKD (the compatibility forms)
+// are not here.
+
+// ---- Case folding ----
+
+// The text folded for comparing without case: CaseFolding.txt's C (common) and F
+// (full) entries, so "Straße" and "STRASSE" fold alike (U+00DF folds to "ss", U+1E9E
+// to "ss", U+0130 to "i" and U+0307, the final sigma U+03C2 to U+03C3). Fold both
+// texts, then compare the results byte for byte. This is for comparison, not for
+// display: it is not lowercasing (toLower leaves U+00DF as it is), and the result
+// of a fold is not meant to be shown. The S (simple) and T (Turkic) entries are not
+// used, so the Turkic dotless i is not folded to "i". The fold does not normalize:
+// compare toNfd(caseFold(a)) with toNfd(caseFold(b)) to ignore composition too.
+pub fn caseFold(s: &str) String {
+  var out = String.withCapacity(s.len());
+  each c in s.chars() {
+    let x = code(c);
+    if x < 128u32 {
+      out.appendByte(if x >= 65u32 && x <= 90u32 {u8.from(x + 32u32)} else {u8.from(x)});
+      continue;
+    }
+    if hasKey(&foldFullKeys, x) {
+      let i = runOf(&foldFullKeys, x);
+      var k = 0usize;
+      while k < 3usize && foldFullVals[i * 3usize + k] != 0u32 {
+        appendCode(&mut out, foldFullVals[i * 3usize + k]);
+        k += 1usize;
+      }
+      continue;
+    }
+    appendCode(&mut out, code(shifted(x, foldDelta[runOf(&foldStarts, x)])));
+  }
+  out
+}
+
+// ---- Normalization: NFC and NFD (canonical) ----
+
+const sBase = 0xAC00u32;
+const lBase = 0x1100u32;
+const vBase = 0x1161u32;
+const tBase = 0x11A7u32;
+const lCount = 19u32;
+const vCount = 21u32;
+const tCount = 28u32;
+const nCount = 588u32;
+const sCount = 11172u32;
+
+// The canonical combining class of x
+fn cccOf(x: u32) u8 {
+  if x < 0x300u32 { return 0u8; }
+  cccVals[runOf(&cccStarts, x)]
+}
+
+// x decomposed canonically (fully) onto the end of buf, not yet reordered. Hangul
+// syllables by the algorithm, the rest by table.
+fn pushDecomposed(x: u32, buf: &mut List[u32]) {
+  if x < 0xC0u32 { buf.push(x); return; }
+  if x - sBase < sCount {   // wraps for x below sBase, so false there
+    let si = x - sBase;
+    buf.push(lBase + si / nCount);
+    buf.push(vBase + (si % nCount) / tCount);
+    let t = si % tCount;
+    if t != 0u32 { buf.push(tBase + t); }
+    return;
+  }
+  if hasKey(&decompKeys, x) {
+    let i = runOf(&decompKeys, x);
+    var k = usize.from(decompOffs[i]);
+    let end = usize.from(decompOffs[i + 1usize]);
+    while k < end {
+      buf.push(decompPool[k]);
+      k += 1usize;
+    }
+    return;
+  }
+  buf.push(x);
+}
+
+// The canonical ordering: within each run of non-starters, by combining class,
+// keeping the order of equal classes (an insertion sort: runs are short)
+fn reorder(buf: &mut List[u32]) {
+  let n = buf.view().len();
+  var i = 1usize;
+  while i < n {
+    let x = buf[i];
+    let cc = cccOf(x);
+    if cc != 0u8 {
+      var j = i;
+      while j > 0usize && cccOf(buf[j - 1usize]) > cc {
+        buf.set(j, buf[j - 1usize]);
+        j -= 1usize;
+      }
+      buf.set(j, x);
+    }
+    i += 1usize;
+  }
+}
+
+// The primary composite of the pair, or 0 when there is none. Hangul by the
+// algorithm (L V, then LV T), the rest from the composition table.
+fn composePair(a: u32, b: u32) u32 {
+  if a - lBase < lCount && b - vBase < vCount {
+    return sBase + ((a - lBase) * vCount + (b - vBase)) * tCount;
+  }
+  if a - sBase < sCount && (a - sBase) % tCount == 0u32 && b - tBase - 1u32 < tCount - 1u32 {
+    return a + (b - tBase);
+  }
+  var lo = 0usize;
+  let firsts: &Array[u32] = &compFirst;
+  var hi = firsts.len();
+  while lo < hi {
+    let mid = lo + (hi - lo) / 2usize;
+    let f = compFirst[mid];
+    let sec = compSecond[mid];
+    if f == a && sec == b { return compResult[mid]; }
+    if f < a || (f == a && sec < b) { lo = mid + 1usize; } else { hi = mid; }
+  }
+  0u32
+}
+
+// Composes in place (buf already decomposed and reordered): each char joins the
+// last starter unless blocked by a char between of the same or higher class
+fn composeAll(buf: &mut List[u32]) {
+  let n = buf.view().len();
+  var w = 0usize;
+  var starter = 0usize;
+  var haveStarter = false;
+  var lastCcc = 0u8;
+  var r = 0usize;
+  while r < n {
+    let x = buf[r];
+    let cc = cccOf(x);
+    r += 1usize;
+    if haveStarter && (w - 1usize == starter || lastCcc < cc) {
+      let p = composePair(buf[starter], x);
+      if p != 0u32 { buf.set(starter, p); continue; }
+    }
+    buf.set(w, x);
+    if cc == 0u8 { starter = w; haveStarter = true; }
+    lastCcc = cc;
+    w += 1usize;
+  }
+  buf.truncate(w);
+}
+
+fn flush(buf: &List[u32], out: &mut String) {
+  let v = buf.view();
+  var i = 0usize;
+  while i < v.len() { appendCode(out, v[i]); i += 1usize; }
+}
+
+// Whether every byte of s is below the limit: for 0x80, ASCII; for 0xCC, every
+// char below U+0300 (the lead bytes C2..CB are U+0080..U+02FF, the continuation
+// bytes are below 0xC0)
+fn allBelow(s: &str, limit: u8) bool {
+  var i = 0usize;
+  while i < s.len() {
+    if s[i] >= limit { return false; }
+    i += 1usize;
+  }
+  true
+}
+
+// The text in Normalization Form D: every char fully canonically decomposed (Hangul
+// syllables into jamo), then the combining marks put in canonical order. ASCII text
+// is returned as it is. Compatibility decomposition (NFKD) is not provided.
+pub fn toNfd(s: &str) String {
+  if allBelow(s, 0x80u8) { return String.from(s); }
+  var buf = List[u32].withCapacity(s.len());
+  each c in s.chars() { pushDecomposed(code(c), &mut buf); }
+  reorder(&mut buf);
+  var out = String.withCapacity(s.len() + s.len() / 2usize);
+  flush(&buf, &mut out);
+  out
+}
+
+// The text in Normalization Form C: decomposed and put in canonical order as toNfd
+// does, then recomposed by the primary composites (not those in the composition
+// exclusions), Hangul by the algorithm. Text whose every char is below U+0300 is
+// returned as it is. Compatibility composition (NFKC) is not provided.
+pub fn toNfc(s: &str) String {
+  if allBelow(s, 0xCCu8) { return String.from(s); }
+  var buf = List[u32].withCapacity(s.len());
+  each c in s.chars() { pushDecomposed(code(c), &mut buf); }
+  reorder(&mut buf);
+  composeAll(&mut buf);
+  var out = String.withCapacity(s.len());
+  flush(&buf, &mut out);
+  out
+}
+
+fn sameBytes(a: &str, b: &str) bool {
+  if a.len() != b.len() { return false; }
+  var i = 0usize;
+  while i < a.len() {
+    if a[i] != b[i] { return false; }
+    i += 1usize;
+  }
+  true
+}
+
+// Whether the text is in Normalization Form C (toNfc leaves it as it is). By the
+// NFC_QC quick-check property: a char that is No, or marks out of canonical order,
+// say false at once; a Maybe (a combining mark that may compose with what precedes,
+// a Hangul vowel or trailing jamo) is settled by comparing with toNfc. Text with
+// every char below U+0300 is answered true without a lookup.
+pub fn isNfc(s: &str) bool {
+  if allBelow(s, 0xCCu8) { return true; }
+  var maybe = false;
+  var last = 0u8;
+  each c in s.chars() {
+    let x = code(c);
+    if x < 0x300u32 { last = 0u8; continue; }
+    let q = nfcQcVals[runOf(&nfcQcStarts, x)];
+    if q == 2u8 { return false; }
+    if q == 1u8 { maybe = true; }
+    let cc = cccOf(x);
+    if cc != 0u8 && last > cc { return false; }
+    last = cc;
+  }
+  if !maybe { return true; }
+  let n = toNfc(s);
+  sameBytes(n.view(), s)
+}
