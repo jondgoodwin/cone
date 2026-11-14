@@ -4558,7 +4558,6 @@ fn wakeOne(s: *Sched, hint: u32) bool {
           if hint != 0u32 {
             mem.atomicStore[u32](&(*w).hint as *u32, hint, MemOrder.Relaxed);
           }
-          scratchWakes.addOrdered(1u64, MemOrder.Relaxed);
           sync.futexWake(&(*w).park);
           return true;
         }
@@ -5292,8 +5291,6 @@ struct StatSlot {
 }
 
 let statSlots: Atomic[usize];   // the address of the first slot, or 0 before the workers have started
-let scratchWakes: Atomic[u64];
-pub fn scratchWakeCount() u64 { scratchWakes.load() }
 let statWorkers: Atomic[u32];   // how many slots; 0 before the workers have started
 let taskStealsTotal: Atomic[u64];   // pieces stealTask took (Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
 
@@ -5324,8 +5321,6 @@ fn @initpure init() {
   monitorTickNow = Atomic[u32].of(0u32);
   statSlots = Atomic[usize].of(0usize);
   statWorkers = Atomic[u32].of(0u32);
-  scratchWakes = Atomic[u64].of(0u64);
-  rootTreeV = Atomic[u32].of(0u32);
   taskStealsTotal = Atomic[u64].of(0u64);
   traceMask = Atomic[u32].of(0u32);
   traceSink = Atomic[usize].of(0usize);

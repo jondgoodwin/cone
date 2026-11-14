@@ -303,7 +303,7 @@ fn stealTask(s: *Sched, w: *Worker, out: *Task) bool {
 // upper half of each split on top of this thread's deque; run the piece left;
 // count it done
 fn runTask(s: *Sched, t: Task) {
-  runTaskW(s, t, false);
+  runTaskW(s, t);
 }
 
 // hintExt: a wake-tree hint naming the shared deque (a worker's is its index + 1)
@@ -337,21 +337,6 @@ fn treeTicks() u64 {
   treeLimit
 }
 
-var rootTreeV: Atomic[u32];
-// SCRATCH, remove: CONE_RT=0 makes the caller's own first piece wake as master does
-fn rootTreeOn() bool {
-  var c = rootTreeV.load();
-  if c == 0u32 {
-    c = 2u32;
-    let v = libc.getenv("CONE_RT");
-    if v as usize != 0usize && *v == 48u8 {
-      c = 1u32;
-    }
-    rootTreeV.store(c);
-  }
-  c == 2u32
-}
-
 // Does a piece of n items have work enough for the tree's two wakes?
 fn treeWorth(rec: *LoopRec, n: usize) bool {
   let items = (*rec).costItems;
@@ -361,9 +346,11 @@ fn treeWorth(rec: *LoopRec, n: usize) bool {
   u64.from(n) * (*rec).costTicks >= items * treeTicks()
 }
 
-// root is true for the first task of a blocking loop (the caller's): it wakes
-// like a thief's piece does (the wake tree, actors.notifyTree)
-fn runTaskW(s: *Sched, t: Task, root: bool) {
+// The caller's own first piece of a blocking loop wakes as master did, one
+// sleeper a split (notify); the wake tree (actors.notifyTree) is for the pieces
+// thieves start (row 305: the tree on the caller's piece cost 15-50% on 65,536
+// items after a nap, and the tree there bought nothing the thieves' pieces did not).
+fn runTaskW(s: *Sched, t: Task) {
   let rec = t.rec;
   let body = (*rec).body;
   let data = (*rec).data;
@@ -393,7 +380,7 @@ fn runTaskW(s: *Sched, t: Task, root: bool) {
     }
     // The tree is for a piece with work enough to pay for two workers' arrival;
     // a smaller one wakes as master did, one sleeper a split (notify).
-    var treeWoke = !((root && rootTreeOn()) || t.stolen) || !treeWorth(rec, hi - t.lo);
+    var treeWoke = !t.stolen || !treeWorth(rec, hi - t.lo);
     while splits > 0u32 && hi - t.lo > 1usize {
       splits = splits / 2u32;
       let mid = t.lo + (hi - t.lo) / 2usize;
@@ -593,7 +580,7 @@ fn rangeRun(lo: usize, hi: usize, grain: usize, adaptive: bool, body: PieceFn, d
   let s = running.load() as *Sched;
   var rec = LoopRec(hi - from, g, body, data, &noDone, null, false, adaptive, inlineSpent, inlineItems);
   let p = &mut rec as *LoopRec;
-  runTaskW(s, Task(p, from, hi, (*s).nworkers, false), adaptive);
+  runTaskW(s, Task(p, from, hi, (*s).nworkers, false));
   helpUntilDone(s, p);
 }
 
