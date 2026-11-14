@@ -1,0 +1,84 @@
+// Times 10,000! to decimal text (the word-at-a-time path 'toTextBase(10)' and the divide and
+// conquer 'toText') and a 4,096-bit modPow (odd modulus, so Montgomery), one round per run. The
+// modPow operands are SplitMix64 limbs (seeds 1, 2, 3; the modulus has its top and bottom bit set),
+// the same a Rust twin with num-bigint draws, so results can be checked by low and top 32 bits and
+// the digits by their length and FNV-1a hash. Direction only: a loaded machine, a debug build or a
+// single round moves the numbers.
+//
+//   congo run --release examples/bigbench.cone
+
+mod bigbench;
+
+import stdio use *;
+import collections use *;
+import time use Instant;
+import random;
+import bigint use BigUint;
+
+fn operand(seed: u64, n: usize) List[u64] {
+  var state = seed;
+  var l = List[u64]();
+  var i = 0usize;
+  while i < n {
+    l.push(random.splitMix64(&mut state));
+    i = i + 1usize;
+  }
+  l
+}
+
+fn fnv(s: &str) u64 {
+  let b: &Array[u8] = s;
+  var h = 14695981039346656037u64;
+  var i = 0usize;
+  while i < b.len() {
+    h = (h ^ u64.from(b[i])) * 1099511628211u64;
+    i = i + 1usize;
+  }
+  h
+}
+
+fn main() i32 {
+  var f = BigUint.one();
+  var i = 2u64;
+  let t0 = Instant.now();
+  while i <= 10000u64 { f = f.mulSmall(i); i = i + 1u64; }
+  let buildUs = t0.elapsed().nanos() / 1000i64;
+
+  let t1 = Instant.now();
+  var old = String();
+  f.toTextBase(&uni old.textOut(), 10u32);
+  let oldUs = t1.elapsed().nanos() / 1000i64;
+
+  let t2 = Instant.now();
+  var now = String();
+  now <- f;
+  let newUs = t2.elapsed().nanos() / 1000i64;
+
+  printStr("10000! build us "); printInt(buildUs);
+  printStr("  toTextBase(10) us "); printInt(oldUs);
+  printStr("  toText us "); printInt(newUs);
+  printStr("  digits "); printInt(i64.from(now.len()));
+  printStr("  same "); printStr(if fnv(old.view()) == fnv(now.view()) { "yes" } else { "NO" });
+  printStr("  fnv "); printInt(i64.from(fnv(now.view()) >> 1u64));
+  printStr("\n");
+
+  let base = BigUint.fromLimbs(operand(1u64, 64usize));
+  let exp = BigUint.fromLimbs(operand(2u64, 64usize));
+  var ml = operand(3u64, 64usize);
+  ml.set(0usize, *ml[0usize] | 1u64);
+  ml.set(63usize, *ml[63usize] | 0x8000000000000000u64);
+  let m = BigUint.fromLimbs(ml);
+  let t3 = Instant.now();
+  match base.modPow(&exp, &m) {
+    case let Ok(r) {
+      let us = t3.elapsed().nanos() / 1000i64;
+      let v = r.limbView();
+      printStr("modPow 4096 us "); printInt(us);
+      printStr("  low32 "); printInt(i64.from(v[0usize] & 0xFFFFFFFFu64));
+      printStr("  top32 "); printInt(i64.from(v[v.len() - 1usize] & 0xFFFFFFFFu64));
+      printStr("\n");
+    }
+    case is Err { printStr("modPow failed\n"); return 1i32; }
+  }
+  0i32
+}
