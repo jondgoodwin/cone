@@ -86,8 +86,8 @@
 // OrderedDict[String, i64](100)' and 'Set[String](100)', room for 100
 // entries without growing (rounded up to the table's size), as is 'new
 // GenPool[Npc](100)' (the pools package's) for its cells. A function a type offers without a receiver
-// makes one too: 'List[i64]()', 'List[i64].withCapacity(n)' (reserves exactly n;
-// growth from empty starts at 8, 4 or 1 element by size), 'String.from("text")', and a 'withCapacity(n)' on each of the others.
+// makes one too: 'List[i64]()', 'List[i64].withCapacity(n)' (gives exactly n, as Rust's with_capacity does;
+// growth (push, reserve and the appends) doubles, and from empty starts at 8, 4 or 1 element by size), 'String.from("text")', and a 'withCapacity(n)' on each of the others.
 //
 // Methods take their receiver as '&' or '&mut'; calling one on a variable
 // borrows the variable for the call ('list.push(x)' is '(&mut list).push(x)').
@@ -230,7 +230,11 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // An empty list whose block already has room for n values
   pub fn withCapacity(n: usize) List {
     var l = List(null, 0usize, 0usize, heapRegion());
-    l.reserve(n);
+    if n > 0usize {
+      let room = blockRoom[T](l.region, n);
+      l.ptr = blockGrow[T](l.region, l.ptr, 0usize, n);
+      l.cap = room;
+    }
     l
   }
 
@@ -272,8 +276,9 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // Make room for 'more' values beyond those it holds. A block too small is
   // replaced by one twice its size, or exactly big enough if that is more,
   // (and the capacity is then all the room the region gave the block, which may
-  // be more). 'withCapacity(n)' and 'reserve' give exactly n, as Rust's do;
-  // growth from empty by 'push' starts at 8, 4 or 1 element by size.
+  // be more). 'withCapacity(n)' gives exactly n, as Rust's with_capacity does;
+  // growth (push, reserve and the appends) doubles, and from empty starts at 8,
+  // 4 or 1 element by size.
   // The block may move: every borrow into it, and every slice from 'view', is then stale.
   pub fn reserve(self: &mut, more: usize) {
     // 'used <= cap', so 'cap - used' does not wrap, where 'used + more' could
@@ -281,26 +286,20 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     if more > (0usize - 1usize) - used { listTooMany(); }
     var want = cap * 2usize;
     if want < used + more { want = used + more; }
+    if cap == 0usize {
+      // the first block, by element size: 8 for 1-byte elements, 1 over 1 KiB, else 4
+      let size = mem.sizeof[T]();
+      let first = if size == 1usize { 8usize } else if size > 1024usize { 1usize } else { 4usize };
+      if want < first { want = first; }
+    }
     let room = blockRoom[T](region, want);
     ptr = blockGrow[T](region, ptr, cap, want);
     cap = room;
   }
 
-  // Room for one more value; from empty the first block is sized by element:
-  // 8 values for 1-byte elements, 1 for elements over 1 KiB, else 4
-  fn growBy(self: &mut, more: usize) {
-    if cap == 0usize {
-      let size = mem.sizeof[T]();
-      let first = if size == 1usize { 8usize } else if size > 1024usize { 1usize } else { 4usize };
-      self.reserve(if more < first { first } else { more });
-    } else {
-      self.reserve(more);
-    }
-  }
-
   // Move a value in at the end
   pub fn push(self: &mut, value: T) {
-    self.growBy(1usize);
+    self.reserve(1usize);
     mem.writeRaw(ptr + used, value);
     used = used + 1usize;
   }
@@ -360,7 +359,7 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // block may move, as for 'reserve'.
   pub fn insertOne overload insert(self: &mut, index: usize, value: T, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     if index > used { outOfRange(index, used, file, line); }
-    self.growBy(1usize);
+    self.reserve(1usize);
     mem.moveRaw(ptr + (index + 1usize), ptr + index, used - index);
     mem.writeRaw(ptr + index, value);
     used = used + 1usize;
@@ -1735,7 +1734,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
   // block has nothing to terminate: its view is the static empty literal.
   fn seal(self: &mut) {
     if buf.ptr == null { return; }
-    if buf.used >= buf.cap { buf.growBy(1usize); }
+    if buf.used >= buf.cap { buf.reserve(1usize); }
     mem.writeRaw(buf.ptr + buf.used, 0u8);
   }
 
@@ -1831,7 +1830,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
   // are UTF-8 (see 'fromBytes')
   pub fn appendBytes(self: &mut, b: &Array[u8]) {
     let n = b.len;
-    buf.growBy(n + 1usize);
+    buf.reserve(n + 1usize);
     if n > 0usize {
       // One block copy, as List.appendSliceCopy does; the reserve has room
       // for the bytes and the NUL, so seal() finds the NUL's room
@@ -1910,7 +1909,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
     let text: &Array[u8] = s;
     if text.len == 0usize { return; }
     let old = buf.used;
-    buf.growBy(text.len + 1usize);
+    buf.reserve(text.len + 1usize);
     mem.moveRaw(buf.ptr + index + text.len, buf.ptr + index, old - index);
     var i = 0usize;
     while i < text.len { mem.writeRaw(buf.ptr + index + i, text[i]); i = i + 1usize; }
@@ -2095,7 +2094,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
 fn stringTextSpill(w: &uni TextOut, need: usize) {
   let me = w.ownerOf() as &mut String;
   me.buf.used = w.used();
-  me.buf.growBy(need + 1usize);
+  me.buf.reserve(need + 1usize);
   w.setBuffer(me.buf.ptr, me.buf.cap);
 }
 
