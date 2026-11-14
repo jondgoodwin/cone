@@ -15,6 +15,9 @@
 //
 //   ConsoleSink                the sink: 'is trace.Sink'
 //   install(max)               installs one, wanting kinds no more detailed than 'max'
+//   FileSink                   a sink that appends the same lines to a file: 'is trace.Sink'
+//   FileLog                    the program's handle on an installed FileSink: 'failures()', 'path()'
+//   installFile(path, max)     opens the file for appending and installs a FileSink; the FsError if it cannot
 //   formatLine(e, at, line)  the line layout as a pure function of an event and a time: what 'record' writes
 //
 // THE LINE. Time, level, target, text, then each field as name=value, separated by single spaces; one event is
@@ -47,9 +50,27 @@
 // thread's other prints, and 'trace.flush()' / the program's end drain it with the rest. A behaviour that logs
 // pays a hand-over, not a write. The sink never writes to the console by any other way (no fd of its own).
 //
-// NOT HERE: a file sink, rotation, colour, a stream other than standard output.
+// THE FILE SINK. 'FileSink' writes the same 'formatLine' text to a file opened by 'fs.append' (made if missing;
+// an existing file keeps its bytes, so a second program run, or a second install of one path, adds to it).
+// CONCURRENCY: A LOCK. The file and the count of failed writes live in one 'Arc[Mutex, FileState]'. 'record'
+// builds its line on the emitting thread with no lock held, then takes the mutex for ONE 'File.write' of the
+// whole line and gives it back, so lines of any threads or actors never interleave, and the lock covers only
+// the write system call. (An owner thread with a queue, the console's pattern, would make an event cost a
+// hand-over and lose the line when the program dies before the owner runs; here an event is in the file, in
+// the OS's hands, when 'record' returns, so a crash loses at most the event in flight.) Each thread's own
+// events stay in the order it emitted them, since each write finishes before that thread's next 'record'.
+// FLUSHING. Nothing is buffered by this package: each event is one write to the descriptor. 'flush()' (what
+// 'trace.flush()' calls) is an fsync, to reach the disk; per event it would cost a disk wait a line. So lines
+// are written through with no fsync per event: a process crash loses nothing already recorded, while an OS
+// crash between flushes may lose lines.
+// ERRORS. A file that cannot be opened is 'installFile''s Err, the 'FsError' of 'fs.append'. A write that
+// fails after that (disk full, the file gone from under it) is counted, not raised: the event is lost, the
+// later events are tried again, and 'FileLog.failures()' says how many have failed so far. A sink that is
+// already installed is an Err too (code EBUSY, op "installFile"), the file closed again.
 //
-// The package imports trace, calendar, time, collections and stdio.
+// NOT HERE: rotation by size (later), colour, a stream other than standard output.
+//
+// The package imports trace, calendar, time, collections, stdio, fs, path, posix and sync.
 
 mod logsink;
 
@@ -58,6 +79,10 @@ import calendar;
 import time use Timestamp;
 import collections use String;
 import stdio use *;
+import fs;
+import path use Path;
+import posix;
+import sync use Arc, Mutex;
 
 pub struct ConsoleSink is trace.Sink {
   max: Level;
@@ -70,6 +95,71 @@ pub struct ConsoleSink is trace.Sink {
     var line = String.withCapacity(160usize);
     formatLine(e, Timestamp.now(), &mut line);
     print <- line.view();
+  }
+}
+
+// What the file sink's lock guards: the file, and how many writes failed
+struct FileState {
+  file: fs.File;
+  failed: u64;
+}
+
+alias SharedFile = Arc[Mutex, FileState];
+
+pub struct FileSink is trace.Sink {
+  max: Level;
+  state: SharedFile;
+
+  pub fn enabled(self: &, k: &trace.Info) bool {
+    k.level != Level.Off && k.level.rank() <= self.max.rank()
+  }
+
+  pub fn record(self: &, e: &trace.Event) {
+    var line = String.withCapacity(160usize);
+    formatLine(e, Timestamp.now(), &mut line);
+    let st = &mut *state;
+    match st.file.write(line.view()) {
+      case is Ok {}
+      case is Err {st.failed = st.failed + 1u64;}
+    }
+  }
+
+  pub fn flush(self: &) {
+    let st = &mut *state;
+    match st.file.flush() {
+      case is Ok {}
+      case is Err {st.failed = st.failed + 1u64;}
+    }
+  }
+}
+
+// The program's handle on the file sink it installed: how many writes have failed, and which file
+pub struct FileLog {
+  state: SharedFile;
+  given: Path;
+
+  // Events lost because their write failed
+  pub fn failures(self: &) u64 {
+    (&*state).failed
+  }
+
+  pub fn path(self: &) &Path { &given }
+}
+
+// Opens 'path' for appending (made if missing, never emptied) and installs a FileSink wanting kinds up to 'max',
+// setting trace's default level to 'max' as 'install' does. Err: the FsError of the open, or EBUSY when a sink
+// was already installed (the file is closed again and the default level left alone).
+pub fn installFile(path: &Path, max: Level) Result[FileLog, fs.FsError] {
+  match fs.append(path) {
+    case var Ok(f) {
+      let shared = SharedFile(FileState(f, 0u64));
+      if !trace.install(Uni[FileSink](max, shared)) {
+        return Err[FileLog, fs.FsError](fs.FsError(String.from("installFile"), path.clone(), Path.from(""), posix.EBUSY));
+      }
+      trace.setDefaultLevel(max);
+      Ok[FileLog, fs.FsError](FileLog(shared, path.clone()))
+    }
+    case let Err(e) { Err[FileLog, fs.FsError](e) }
   }
 }
 

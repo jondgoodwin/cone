@@ -17,4 +17,5 @@ output line by line.
 
 ## Not here
 
-A file sink, rotation, colour, another stream than standard output.
+Rotation, colour, another stream than standard output. (`installFile(path, max)` is the file sink: see the source's
+header comment, "THE FILE SINK".) It also imports `fs`, `path`, `posix` and `sync`.

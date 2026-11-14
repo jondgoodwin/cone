@@ -3173,6 +3173,9 @@ fn copyArgs(args: &Array[String]) List[String] {
 
 // A run: started on the child's own pipes and exit wait (RunDriver)
 fn runAwaitable(isLine: bool, line: &str, args: List[String], opts: process.Options, dir: &Path, lim: IoLimits) actors.Awaitable[Result[process.Output, IoError]] {
+  // Not honoured yet (the driver reads the child's two outputs through its own pipes and never writes its input), so
+  // refused at the call, not ignored: a panic naming it. IoError carries a system number, not a message
+  if opts.input is Some { panic("aio.run: input is not supported by aio.run yet"); }
   let drv = RunDriver(isLine, String.from(line), args, opts, dir.clone(), lim);
   actors.Awaitable[Result[process.Output, IoError]].make(fn(rp: actors.ReplyOf[Result[process.Output, IoError]]) [drv] {
     drv.go(rp);
@@ -3223,8 +3226,14 @@ actor RunDriver {
   pub async fn go(self, rp: actors.ReplyOf[Result[process.Output, IoError]]) {
     reply = Some[actors.ReplyOf[Result[process.Output, IoError]]](rp);
     var launched: Result[process.Child, process.ProcessError];
-    if isLine { launched = process.launchLine(line.view(), opts, &dir); }
-    else { launched = process.launch(args.view(), opts, &dir); }
+    // The launch takes its own Options: the scalars copied, the child's environment moved out of ours (this driver only
+    // reads inherit and timeout from 'opts' after; 'input' is not used by 'launch')
+    var lo = process.Options(timeout: opts.timeout, inherit: opts.inherit, crashReport: opts.crashReport,
+      stdin: opts.stdin, clearEnv: opts.clearEnv);
+    lo.env <-> opts.env;
+    lo.removeEnv <-> opts.removeEnv;
+    if isLine { launched = process.launchLine(line.view(), lo, &dir); }
+    else { launched = process.launch(args.view(), lo, &dir); }
     match launched {
       case let Err(e) { self.answer(Err[process.Output, IoError](IoError(e.code))); }
       case var Ok(c) {
@@ -3386,7 +3395,9 @@ actor RunDriver {
 // (NotFound for none of that name; its code the system's number).
 // The behaviour pauses meanwhile, and a thread of the blocking pool waits for
 // the child (the package's header, CHILD PROCESSES). 'opts' is the process
-// package's Options: a 'timeout' stops the child and everything it started
+// package's Options: a 'timeout' stops the child and everything it started;
+// its 'env', 'removeEnv' and 'clearEnv' give the child's environment. Its
+// 'input' is not supported by aio.run yet: a call with one panics, saying so
 pub fn run(args: &Array[String], opts: process.Options = process.Options(), dir: &Path = "") actors.Awaitable[Result[process.Output, IoError]] {
   runAwaitable(false, "", copyArgs(args), opts, dir, IoLimits.none())
 }
