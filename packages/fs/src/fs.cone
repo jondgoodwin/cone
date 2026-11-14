@@ -860,6 +860,263 @@ fn walkInto(dir: &Path, out: &mut List[DirEntry]) Result[void, FsError] {
   succeeded()
 }
 
+// -------- glob --------
+
+// The ASCII-folded byte where case does not count (Windows), as it is elsewhere
+fn foldByte(b: u8) u8 {
+  #if #os == .windows { if b >= 'A' && b <= 'Z' {b + 32u8} else {b} } #else { b }
+}
+
+fn foldCp(c: u32) u32 {
+  #if #os == .windows { if c >= 65u32 && c <= 90u32 {c + 32u32} else {c} } #else { c }
+}
+
+// '\' escapes in a pattern on POSIX; on Windows it separates names
+fn escapes() bool { #if #os == .windows { false } #else { true } }
+
+fn isSepByte(b: u8) bool { b == '/' || (#if #os == .windows { b == '\\' } #else { false }) }
+
+// Bytes of the UTF-8 character starting at i (1 for a stray byte)
+fn charLen(s: &Array[u8], i: usize) usize {
+  let b = s[i];
+  var n = if b < 0xC0u8 {1usize} else if b < 0xE0u8 {2usize} else if b < 0xF0u8 {3usize} else {4usize};
+  if i + n > s.len { n = s.len - i; }
+  n
+}
+
+fn charAt(s: &Array[u8], i: usize, n: usize) u32 {
+  if n == 1usize { return u32.from(s[i]); }
+  var cp = u32.from(s[i]) & (if n == 2usize {0x1Fu32} else if n == 3usize {0x0Fu32} else {0x07u32});
+  var k = 1usize;
+  while k < n {
+    cp = (cp << 6u32) | (u32.from(s[i + k]) & 0x3Fu32);
+    k = k + 1usize;
+  }
+  cp
+}
+
+// Where a '[...]' class starting at p[pi] ends (the index after its ']'),
+// or 0 if it is never closed, and the '[' is then an ordinary character
+fn classEnd(p: &Array[u8], pi: usize) usize {
+  var j = pi + 1usize;
+  if j < p.len && p[j] == '!' { j = j + 1usize; }
+  if j < p.len && p[j] == ']' { j = j + 1usize; }
+  while j < p.len && p[j] != ']' {
+    if p[j] == '\\' && escapes() { j = j + 1usize; }
+    j = j + 1usize;
+  }
+  if j >= p.len { return 0usize; }
+  j + 1usize
+}
+
+// Is the character c in the class p[pi..<end]?
+fn classHas(p: &Array[u8], pi: usize, end: usize, c: u32) bool {
+  let close = end - 1usize;
+  var j = pi + 1usize;
+  var negate = false;
+  if p[j] == '!' { negate = true; j = j + 1usize; }
+  let want = foldCp(c);
+  var found = false;
+  while j < close {
+    if p[j] == '\\' && escapes() && j + 1usize < close { j = j + 1usize; }
+    let ln = charLen(p, j);
+    let lo = foldCp(charAt(p, j, ln));
+    j = j + ln;
+    var hi = lo;
+    if j + 1usize < close && p[j] == '-' {
+      j = j + 1usize;
+      if p[j] == '\\' && escapes() && j + 1usize < close { j = j + 1usize; }
+      let hn = charLen(p, j);
+      hi = foldCp(charAt(p, j, hn));
+      j = j + hn;
+    }
+    if want >= lo && want <= hi { found = true; }
+  }
+  found != negate
+}
+
+// Does one name match one pattern segment (no separators in either)?
+fn segMatch(p: &Array[u8], p0: usize, n: &Array[u8], n0: usize) bool {
+  var pi = p0;
+  var ni = n0;
+  while pi < p.len {
+    let c = p[pi];
+    if c == '*' {
+      while pi < p.len && p[pi] == '*' { pi = pi + 1usize; }
+      if pi == p.len { return true; }
+      var k = ni;
+      while true {
+        if segMatch(p, pi, n, k) { return true; }
+        if k >= n.len { break; }
+        k = k + charLen(n, k);
+      }
+      return false;
+    }
+    if ni >= n.len { return false; }
+    if c == '?' {
+      ni = ni + charLen(n, ni);
+      pi = pi + 1usize;
+    } else {
+      let end = if c == '[' {classEnd(p, pi)} else {0usize};
+      if end > 0usize {
+        let ln = charLen(n, ni);
+        if !classHas(p, pi, end, charAt(n, ni, ln)) { return false; }
+        ni = ni + ln;
+        pi = end;
+      } else {
+        var lit = c;
+        if c == '\\' && escapes() && pi + 1usize < p.len { pi = pi + 1usize; lit = p[pi]; }
+        if foldByte(lit) != foldByte(n[ni]) { return false; }
+        pi = pi + 1usize;
+        ni = ni + 1usize;
+      }
+    }
+  }
+  ni == n.len
+}
+
+// A hidden name (a leading '.') is matched only by a segment that starts with '.'
+fn nameMatches(seg: &Array[u8], name: &Array[u8]) bool {
+  if name.len > 0usize && name[0] == '.' && !(seg.len > 0usize && seg[0] == '.') { return false; }
+  segMatch(seg, 0usize, name, 0usize)
+}
+
+fn hasWild(seg: &Array[u8]) bool {
+  var i = 0usize;
+  while i < seg.len {
+    let b = seg[i];
+    if b == '*' || b == '?' || b == '[' || (b == '\\' && escapes()) { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+fn isStars(seg: &Array[u8]) bool { seg.len == 2usize && seg[0] == '*' && seg[1] == '*' }
+
+fn childOf(base: &Path, e: &DirEntry) DirEntry {
+  DirEntry(e.name.clone(), base.join(e.name.view()), e.isDir, e.isFile, e.isLink)
+}
+
+// What a folder holds, for the glob; a folder that is not there (or is a file) holds nothing
+fn globList(base: &Path) Result[List[DirEntry], FsError] {
+  let dir = if base.isEmpty() {Path.from(".")} else {base.clone()};
+  match readDir(&dir) {
+    case var Err(e) {
+      if e.code == posix.ENOENT || e.code == posix.ENOTDIR { return Ok[List[DirEntry], FsError](List[DirEntry]()); }
+      e.op = String.from("glob");
+      Err[List[DirEntry], FsError](e)
+    }
+    case let Ok(l) { Ok[List[DirEntry], FsError](l) }
+  }
+}
+
+fn globIn(base: &Path, segs: &List[String], si: usize, dirsOnly: bool, out: &mut List[DirEntry]) Result[void, FsError] {
+  let seg = segs[si].view();
+  let last = si + 1usize == segs.len();
+  if isStars(seg) {
+    // '**': no folder, or any depth of them, never into a hidden or a linked one
+    if !last { globIn(base, segs, si + 1usize, dirsOnly, out)?; }
+    let listed = globList(base)?;
+    var i = 0usize;
+    while i < listed.len() {
+      let e = &listed[i];
+      if !(e.name.len() > 0usize && e.name.view()[0] == '.') {
+        let child = childOf(base, e);
+        if last && (!dirsOnly || e.isDir) { out.push(childOf(base, e)); }
+        if e.isDir && !e.isLink { globIn(&child.path, segs, si, dirsOnly, out)?; }
+      }
+      i = i + 1usize;
+    }
+    return succeeded();
+  }
+  let listed = globList(base)?;
+  var i = 0usize;
+  while i < listed.len() {
+    let e = &listed[i];
+    if nameMatches(seg, e.name.view()) {
+      let child = childOf(base, e);
+      if last {
+        if !dirsOnly || e.isDir { out.push(child); }
+      } else if e.isDir && !e.isLink {
+        globIn(&child.path, segs, si + 1usize, dirsOnly, out)?;
+      }
+    }
+    i = i + 1usize;
+  }
+  succeeded()
+}
+
+fn byPath(a: &DirEntry, b: &DirEntry) i32 {
+  let x = a.path.view();
+  let y = b.path.view();
+  var i = 0usize;
+  while i < x.len && i < y.len {
+    if x[i] != y[i] { return if x[i] < y[i] {-1i32} else {1i32}; }
+    i = i + 1usize;
+  }
+  if x.len == y.len { 0i32 } else if x.len < y.len { -1i32 } else { 1i32 }
+}
+
+fn samePath(a: &DirEntry, b: &DirEntry) bool { byPath(a, b) == 0i32 }
+
+// Every file and folder a pattern names, sorted by path, as 'walk' lists them:
+// a List of 'DirEntry', each one's path the pattern's literal start joined to
+// the names down to the match. Nothing matching is an empty list, not an error.
+//   '*'      any run of characters within one name ('*' never crosses a '/')
+//   '?'      any one character
+//   '[abc]'  one of those; '[a-z]' one in the range; '[!a-z]' one not in it
+//   '**'     as a whole name: no folder or any depth of them ('a/**/b' is
+//            'a/b', 'a/x/b', 'a/x/y/b'); last, everything below
+//   '\'      makes the next character ordinary, on POSIX only
+// A name beginning with '.' is matched only by a pattern name that begins with
+// '.': neither '*', '?', a class nor '**' reaches a hidden one. A pattern ending
+// in '/' matches folders only. Like 'walk', 'glob' never goes down into a
+// linked folder (a link is a match like any other name, listed as a link), so
+// a link back up the tree cannot loop it; the leading names of the pattern
+// with no wildcard are joined into the folder it starts in and opened as
+// given, so a link there is followed by the system. Only what the pattern can
+// match is read: it starts in that folder, and a folder is listed only if the
+// pattern can match something in it, not the whole tree.
+// By system: on Windows '/' and '\' both separate names, so '\' escapes
+// nothing, and ASCII letters match without regard to case; on POSIX only '/'
+// separates names, and case counts. A folder that cannot be read ends it with
+// its error (op "glob"); one that is not there holds nothing.
+pub fn glob(pattern: &str) Result[List[DirEntry], FsError] {
+  var out = List[DirEntry]();
+  var i = 0usize;
+  #if #os == .windows {
+    if pattern.len >= 2usize && ((pattern[0] >= 'a' && pattern[0] <= 'z') || (pattern[0] >= 'A' && pattern[0] <= 'Z')) && pattern[1] == ':' { i = 2usize; }
+  }
+  while i < pattern.len && isSepByte(pattern[i]) { i = i + 1usize; }
+  var base = Path.from(&pattern[..<i]);
+  var segs = List[String]();
+  var start = i;
+  var k = i;
+  while k <= pattern.len {
+    if k == pattern.len || isSepByte(pattern[k]) {
+      if k > start {
+        let seg = &pattern[start..<k];
+        let prevStars = segs.len() > 0usize && isStars(segs[segs.len() - 1usize].view());
+        if !(isStars(seg) && prevStars) { segs.push(String.fromBytes(seg)); }
+      }
+      start = k + 1usize;
+    }
+    k = k + 1usize;
+  }
+  if segs.len() == 0usize { return Ok[List[DirEntry], FsError](out); }
+  let dirsOnly = pattern.len > i && isSepByte(pattern[pattern.len - 1usize]);
+  // The leading names with no wildcard (the last never) are the folder it starts in
+  var first = 0usize;
+  while first + 1usize < segs.len() && !hasWild(segs[first].view()) {
+    base = base.join(segs[first].view());
+    first = first + 1usize;
+  }
+  globIn(&base, &segs, first, dirsOnly, &mut out)?;
+  out.sortBy(&byPath);
+  out.dedupBy(&samePath);
+  Ok[List[DirEntry], FsError](out)
+}
+
 // Remove what a path names, and, for a folder, everything in it. A link is
 // removed itself, never what it leads to. Nothing there is success. The
 // first thing that will not go (a read-only file, a file another program

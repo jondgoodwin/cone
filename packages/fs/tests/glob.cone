@@ -1,0 +1,281 @@
+// 'fs.glob': each operator ('*', '?', '[abc]', '[a-z]', '[!a-z]', '**' at the
+// start, middle and end, '\' as an escape on POSIX only), no match as an empty
+// list and not an error, a pattern with no wildcard that names a file, hidden
+// names, a trailing '/' for folders only, case (ignored on Windows, counted on
+// POSIX), '\' as a separator on Windows, and a link back up a tree not
+// looping it. What differs by system is checked the way each system does it,
+// in the same number of checks.
+//
+// It works in a folder of its own under TEMP (TMPDIR or /tmp on POSIX),
+// 'cone-fs-test-glob', which it clears if an interrupted run left it, makes,
+// and removes at the end. Nothing is removed until the folder's path has been
+// checked to be TEMP's, absolute, with that name after it. A listing is shown
+// with each entry's path, the folder as '<root>', a '/' after a folder, an '@'
+// after a link, and a space after each.
+
+mod glob;
+
+import testing use *;
+import collections use *;
+import libc;
+import posix;
+import path use Path;
+import fs;
+
+fn makeRoot(name: &str) Path {
+  var variable: cstr = "TMPDIR";
+  #if #os == .windows { variable = "TEMP"; }
+  let temp = libc.getenv(variable);
+  require(#if #os == .windows { temp != null } #else { true }, "TEMP is set");
+  let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view())} else {Path.from("/tmp")};
+  var root = Path.from("");
+  match fs.absolute(&tempPath) {
+    case let Ok(t) { root = t.join(name); }
+    case is Err { require(false, "TEMP has an absolute path"); }
+  }
+  let up = root.parent();
+  let safe = root.isAbsolute() && root.view().endsWith(name) && up.view().len() > 3usize;
+  require(safe, "the test's folder is under TEMP");
+  root
+}
+
+fn shown(root: &Path, text: &Array[u8]) String {
+  var out = String.fromBytes(text);
+  out.replaceByte('\\', '/');
+  if !root.isEmpty() { out.replace(root.view(), "<root>" as &str); }
+  out
+}
+
+fn showEntries(root: &Path, entries: &List[fs.DirEntry]) String {
+  var out = String();
+  var i = 0usize;
+  while i < entries.len() {
+    let e = &entries[i];
+    let p = shown(root, e.path.view());
+    out.append(p.view());
+    if e.isDir { out.append("/"); }
+    if e.isLink { out.append("@"); }
+    out.append(" ");
+    i = i + 1usize;
+  }
+  out
+}
+
+// The pattern is the root and a tail ('/' in the tail becomes '\' on request)
+fn globIs(root: &Path, pattern: &str, want: &Array[u8], label: &Array[u8]) {
+  match fs.glob(pattern) {
+    case let Ok(l) { let s = showEntries(root, &l); expectStr(s.view(), want, label); }
+    case let Err(e) {
+      let m = String() <- e;
+      let s = shown(root, m.view());
+      expectStr(s.view(), want, label);
+    }
+  }
+}
+
+fn at(root: &Path, tail: &str) String {
+  var s = String.from(root.view());
+  s.append("/");
+  s.append(tail);
+  s
+}
+
+fn touch(p: &Path) { require(fs.writeFile(p, "x") is Ok, "write a file"); }
+
+fn dir(p: &Path) { require(fs.makeDirAll(p) is Ok, "make a folder"); }
+
+fn junction(link: &Path, target: &Path) bool {
+  var command = String();
+  #if #os == .windows {
+    var paths = String.from(link.view());
+    paths.append("\" \"");
+    paths.append(target.view());
+    paths.replaceByte('/', '\\');
+    command.append("mklink /J \"");
+    command.append(paths.view());
+    command.append("\" >nul");
+  } #else {
+    command.append("ln -s '");
+    command.append(target.view());
+    command.append("' '");
+    command.append(link.view());
+    command.append("'");
+  }
+  libc.system(command.cstr()) == 0i32
+}
+
+fn operators(root: &Path) {
+  let g = root.join("g");
+  dir(&g.join("d/e"));
+  dir(&g.join(".hidden"));
+  touch(&g.join("a.txt"));
+  touch(&g.join("b.TXT"));
+  touch(&g.join("c.md"));
+  touch(&g.join(".hid.txt"));
+  touch(&g.join(".hidden/in.txt"));
+  touch(&g.join("d/x.txt"));
+  touch(&g.join("d/y.md"));
+  touch(&g.join("d/e/z.txt"));
+  touch(&g.join("d/e/.q"));
+  touch(&g.join("a1.dat"));
+  touch(&g.join("a2.dat"));
+  touch(&g.join("a3.dat"));
+  touch(&g.join("b1.dat"));
+
+  // '*' stays inside one name; on Windows b.TXT matches too
+  let star = at(&g, "*.txt");
+  globIs(root, star.view(),
+    #if #os == .windows {"<root>/g/a.txt <root>/g/b.TXT "} #else {"<root>/g/a.txt "},
+    "star, case by system");
+  let all = at(&g, "*.dat");
+  globIs(root, all.view(), "<root>/g/a1.dat <root>/g/a2.dat <root>/g/a3.dat <root>/g/b1.dat ", "star over dat");
+  let mid = at(&g, "a*1.dat");
+  globIs(root, mid.view(), "<root>/g/a1.dat ", "star with letters after it");
+  let across = at(&g, "*x.txt");
+  globIs(root, across.view(), "", "star does not cross a separator");
+
+  let q = at(&g, "a?.dat");
+  globIs(root, q.view(), "<root>/g/a1.dat <root>/g/a2.dat <root>/g/a3.dat ", "question mark");
+  let one = at(&g, "?.md");
+  globIs(root, one.view(), "<root>/g/c.md ", "question mark, one character");
+
+  let set = at(&g, "a[12].dat");
+  globIs(root, set.view(), "<root>/g/a1.dat <root>/g/a2.dat ", "set");
+  let range = at(&g, "a[2-3].dat");
+  globIs(root, range.view(), "<root>/g/a2.dat <root>/g/a3.dat ", "range");
+  let not = at(&g, "[!a]*.dat");
+  globIs(root, not.view(), "<root>/g/b1.dat ", "negated range");
+  let notRange = at(&g, "a[!1-2].dat");
+  globIs(root, notRange.view(), "<root>/g/a3.dat ", "negated range of two");
+  let open = at(&g, "a[1.dat");
+  globIs(root, open.view(), "", "an unclosed '[' is an ordinary character");
+
+  // '**' at the end, the middle and the start
+  let end = at(&g, "d/**");
+  globIs(root, end.view(), "<root>/g/d/e/ <root>/g/d/e/z.txt <root>/g/d/x.txt <root>/g/d/y.md ", "double star last");
+  let deep = at(&g, "**/*.txt");
+  globIs(root, deep.view(),
+    #if #os == .windows {"<root>/g/a.txt <root>/g/b.TXT <root>/g/d/e/z.txt <root>/g/d/x.txt "}
+    #else {"<root>/g/a.txt <root>/g/d/e/z.txt <root>/g/d/x.txt "},
+    "double star then a name: any depth including none");
+  let middle = at(&g, "d/**/z.txt");
+  globIs(root, middle.view(), "<root>/g/d/e/z.txt ", "double star in the middle");
+  let none = at(&g, "d/**/x.txt");
+  globIs(root, none.view(), "<root>/g/d/x.txt ", "double star as no folder");
+  let both = at(&g, "**/e/z.txt");
+  globIs(root, both.view(), "<root>/g/d/e/z.txt ", "double star then names");
+  let twice = at(&g, "**/**/y.md");
+  globIs(root, twice.view(), "<root>/g/d/y.md ", "two double stars");
+
+  // ...and at the very start of a relative pattern, read from the current folder
+  var before = Path.from("");
+  match fs.currentDir() {
+    case let Ok(c) { before = c; }
+    case is Err { require(false, "currentDir"); }
+  }
+  require(fs.setCurrentDir(&g) is Ok, "enter the fixture");
+  globIs(root, "**/*.md", "c.md d/y.md ", "double star first");
+  globIs(root, "d/*.md", "d/y.md ", "a relative pattern");
+  globIs(root, "*.md", "c.md ", "a pattern with no folder in it");
+  globIs(root, "c.md", "c.md ", "a name alone");
+  require(fs.setCurrentDir(&before) is Ok, "leave the fixture");
+
+  // No wildcard at all; and nothing there
+  let file = at(&g, "d/x.txt");
+  globIs(root, file.view(), "<root>/g/d/x.txt ", "a file named without a wildcard");
+  let folder = at(&g, "d/e");
+  globIs(root, folder.view(), "<root>/g/d/e/ ", "a folder named without a wildcard");
+  let missing = at(&g, "d/nothing.txt");
+  globIs(root, missing.view(), "", "a name that is not there");
+  let nofolder = at(&g, "nofolder/*.txt");
+  globIs(root, nofolder.view(), "", "a folder that is not there");
+  let infile = at(&g, "a.txt/*");
+  globIs(root, infile.view(), "", "a file where a folder should be");
+  globIs(root, "", "", "an empty pattern");
+  let nomatch = at(&g, "*.zzz");
+  globIs(root, nomatch.view(), "", "no match is an empty list");
+
+  // Hidden names
+  let any = at(&g, "*");
+  globIs(root, any.view(),
+    "<root>/g/a.txt <root>/g/a1.dat <root>/g/a2.dat <root>/g/a3.dat <root>/g/b.TXT <root>/g/b1.dat <root>/g/c.md <root>/g/d/ ",
+    "star leaves hidden names out");
+  let dots = at(&g, ".*");
+  globIs(root, dots.view(), "<root>/g/.hid.txt <root>/g/.hidden/ ", "a leading dot reaches hidden names");
+  let inside = at(&g, ".hidden/*");
+  globIs(root, inside.view(), "<root>/g/.hidden/in.txt ", "a hidden folder named by the pattern");
+  let skipped = at(&g, "**/in.txt");
+  globIs(root, skipped.view(), "", "double star does not go into a hidden folder");
+  let dotq = at(&g, "**/.q");
+  globIs(root, dotq.view(), "<root>/g/d/e/.q ", "a hidden name asked for, at depth");
+  let hq = at(&g, "?hid.txt");
+  globIs(root, hq.view(), "", "question mark does not match a leading dot");
+
+  // A '/' at the end: folders only
+  let folders = at(&g, "*/");
+  globIs(root, folders.view(), "<root>/g/d/ ", "a trailing separator, folders only");
+
+  // Case
+  let upper = at(&g, "A.TXT");
+  globIs(root, upper.view(),
+    #if #os == .windows {"<root>/g/a.txt "} #else {""},
+    "case by system");
+  let upperSet = at(&g, "[A-B].txt");
+  globIs(root, upperSet.view(),
+    #if #os == .windows {"<root>/g/a.txt <root>/g/b.TXT "} #else {""},
+    "case in a class by system");
+  let upperFolder = at(&g, "D/X.TXT");
+  globIs(root, upperFolder.view(),
+    #if #os == .windows {"<root>/g/D/x.txt "} #else {""},
+    "case in a folder by system");
+
+  // Windows: '\' separates names; POSIX: it escapes
+  #if #os == .windows {
+    var back = at(&g, "d/*.md");
+    back.replaceByte('/', '\\');
+    globIs(root, back.view(), "<root>/g/d/y.md ", "a backslash separates names");
+    var backStars = at(&g, "**/*.md");
+    backStars.replaceByte('/', '\\');
+    globIs(root, backStars.view(), "<root>/g/c.md <root>/g/d/y.md ", "backslashes with double star");
+  } #else {
+    touch(&g.join("s*t"));
+    touch(&g.join("sxt"));
+    let loose = at(&g, "s*t");
+    globIs(root, loose.view(), "<root>/g/s*t <root>/g/sxt ", "star matches a star and others");
+    let escaped = at(&g, "s\\*t");
+    globIs(root, escaped.view(), "<root>/g/s*t ", "backslash makes the star ordinary");
+    let escapedSet = at(&g, "s\\[x]t");
+    globIs(root, escapedSet.view(), "", "backslash makes a bracket ordinary");
+  }
+  #if #os == .windows {
+    expect(true, "keeps the count equal");
+  }
+}
+
+// A link back up the tree does not loop the walk of a pattern
+fn loops(root: &Path) {
+  let l = root.join("loop");
+  dir(&l.join("sub"));
+  touch(&l.join("sub/f.txt"));
+  require(junction(&l.join("sub/up"), &l), "make a link back up");
+  let everything = at(&l, "**");
+  globIs(root, everything.view(), "<root>/loop/sub/ <root>/loop/sub/f.txt <root>/loop/sub/up@ ", "a link is a match, not entered");
+  let find = at(&l, "**/f.txt");
+  globIs(root, find.view(), "<root>/loop/sub/f.txt ", "a link up the tree does not loop");
+  let through = at(&l, "sub/up/*");
+  globIs(root, through.view(), "<root>/loop/sub/up/sub/ ", "a link in the pattern's literal start is followed");
+  expect(fs.removeAll(&l) is Ok, "remove the loop tree");
+}
+
+fn main() i32 {
+  let root = makeRoot("cone-fs-test-glob");
+  require(fs.removeAll(&root) is Ok, "clear what an earlier run left");
+  require(fs.makeDir(&root) is Ok, "make the test's folder");
+
+  operators(&root);
+  loops(&root);
+
+  expect(fs.removeAll(&root) is Ok, "remove the test's folder");
+  expect(!fs.exists(&root), "the test's folder is gone");
+  done()
+}
