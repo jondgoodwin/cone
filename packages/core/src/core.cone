@@ -1795,7 +1795,12 @@ pub struct @opaque Array[T] is GcTraceElements {
   // and 16 more; otherwise it insertion-sorts), which is n + 16 up to 48. So a list of 95 or
   // fewer gets more than n / 2, and a list of 96 or more is unchanged
   fn bufElems(self: &) usize {
-    let half = self.len / 2usize;
+    var half = self.len / 2usize;
+    if mem.sizeof[T]() > 0usize && self.len >= 96usize {
+      let big = 8000000usize / mem.sizeof[T]();
+      let whole = if self.len < big { self.len } else { big };
+      if whole > half { half = whole; }
+    }
     let leaf = if self.len + 16usize < 48usize { self.len + 16usize } else { 48usize };
     if half > leaf { half } else { leaf }
   }
@@ -2017,7 +2022,7 @@ pub struct @opaque Array[T] is GcTraceElements {
     let x = top - 2usize;
     let y = top - 1usize;
     var buf = bufIn;
-    if !sorted[x] && !sorted[y] && lens[x] + lens[y] <= self.len / 2usize {
+    if !sorted[x] && !sorted[y] && lens[x] + lens[y] <= (if self.len >= 96usize { self.bufElems() } else { self.len / 2usize }) {
       lens[x] = lens[x] + lens[y];
       return buf;
     }
