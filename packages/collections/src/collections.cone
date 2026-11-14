@@ -86,8 +86,8 @@
 // OrderedDict[String, i64](100)' and 'Set[String](100)', room for 100
 // entries without growing (rounded up to the table's size), as is 'new
 // GenPool[Npc](100)' (the pools package's) for its cells. A function a type offers without a receiver
-// makes one too: 'List[i64]()', 'List[i64].withCapacity(n)' (never less
-// than 4), 'String.from("text")', and a 'withCapacity(n)' on each of the others.
+// makes one too: 'List[i64]()', 'List[i64].withCapacity(n)' (gives exactly n, as Rust's with_capacity does, and builds of known length (clone, from a slice or str) are exact;
+// growth (push, reserve and the appends) doubles, and from empty starts at 8, 4 or 1 element by size), 'String.from("text")', and a 'withCapacity(n)' on each of the others.
 //
 // Methods take their receiver as '&' or '&mut'; calling one on a variable
 // borrows the variable for the call ('list.push(x)' is '(&mut list).push(x)').
@@ -230,8 +230,18 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // An empty list whose block already has room for n values
   pub fn withCapacity(n: usize) List {
     var l = List(null, 0usize, 0usize, heapRegion());
-    l.reserve(n);
+    l.exact(n);
     l
+  }
+
+  // A fresh list's block, exactly n values (no floor): for a constructor that
+  // knows the final length
+  fn exact(self: &mut, n: usize) {
+    if n > 0usize {
+      let room = blockRoom[T](region, n);
+      ptr = blockGrow[T](region, ptr, 0usize, n);
+      cap = room;
+    }
   }
 
   // A list of what an iterator gives, in order, in the heap: 'List[&str].from(text.lines())' is a list of
@@ -254,7 +264,7 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // Exists only where T is Clone
   pub fn clone(self: &) List[T] where T is Clone {
     var l = List(null, 0usize, 0usize, region);
-    l.reserve(used);
+    l.exact(used);
     var i = 0usize;
     while i < used {
       mem.writeRaw(l.ptr + i, ((ptr + i) as &T).clone());
@@ -271,16 +281,24 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
 
   // Make room for 'more' values beyond those it holds. A block too small is
   // replaced by one twice its size, or exactly big enough if that is more,
-  // and never smaller than 4 (and the capacity is then all the room the region
-  // gave the block, which may be more). The block may move: every borrow into
-  // it, and every slice from 'view', is then stale.
+  // (and the capacity is then all the room the region gave the block, which may
+  // be more). 'withCapacity(n)' gives exactly n, as Rust's with_capacity does,
+  // and builds of known length (clone, from a slice or str) are exact; growth
+  // (push, reserve and the appends) doubles, and from empty starts at 8,
+  // 4 or 1 element by size.
+  // The block may move: every borrow into it, and every slice from 'view', is then stale.
   pub fn reserve(self: &mut, more: usize) {
     // 'used <= cap', so 'cap - used' does not wrap, where 'used + more' could
     if more <= cap - used { return; }
     if more > (0usize - 1usize) - used { listTooMany(); }
     var want = cap * 2usize;
     if want < used + more { want = used + more; }
-    if want < 4usize { want = 4usize; }
+    if cap == 0usize {
+      // the first block, by element size: 8 for 1-byte elements, 1 over 1 KiB, else 4
+      let size = mem.sizeof[T]();
+      let first = if size == 1usize { 8usize } else if size > 1024usize { 1usize } else { 4usize };
+      if want < first { want = first; }
+    }
     let room = blockRoom[T](region, want);
     ptr = blockGrow[T](region, ptr, cap, want);
     cap = room;
@@ -501,7 +519,7 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     var l = List(null, 0usize, 0usize, region);
     let n = used - index;
     if n > 0usize {
-      l.reserve(n);
+      l.exact(n);
       mem.moveRawInto(l.ptr, ptr + index, n);
       l.used = n;
       used = index;
@@ -1689,7 +1707,9 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
 
   // A String holding a copy of these bytes, for bytes that are text (a buffer
   // read from a file or a socket, a part of one). Nothing checks they are
-  // UTF-8: strings are UTF-8 by convention, as 'bytes as &str' is.
+  // UTF-8: strings are UTF-8 by convention, as 'bytes as &str' is. For a List
+  // you built and no longer need, 'String.fromList(list)' takes its block with
+  // no copy.
   pub fn fromBytes(b: &Array[u8]) String {
     var str = String.withCapacity(b.len);
     str.appendBytes(b);

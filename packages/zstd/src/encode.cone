@@ -355,7 +355,7 @@ struct FseEnc is Default {
 
 // A Huffman code for literals, as RFC 8878 section 4.2 describes one: the
 // lengths by Huffman's merge of the two lightest (limited to 11 bits by
-// halving the counts until they fit), the codes canonical in the order the
+// moving depths in place, as the reference does), the codes canonical in the order the
 // decoder's table puts them (longest first, then by symbol)
 struct HufEnc is Default {
   count: List[u32];
@@ -372,6 +372,7 @@ struct HufEnc is Default {
   parent: List[u32];
   depth: List[u8];
   rankStart: List[u32];
+  nlev: List[u32];
   // The tree description: the weights, and their FSE coding
   wts: List[u8];
   wcount: List[u32];
@@ -403,23 +404,72 @@ struct HufEnc is Default {
   }
 
   // The code for the counts (two or more symbols present): lengths of at
-  // most 'maxBits', then the canonical codes
+  // most 'maxBits', then the canonical codes. The tree is built once; a
+  // longest length over 'maxBits' is cut back in place (limitHeight).
   fn build(self: &mut, maxBits: u32) {
     freq.clear();
     var s = 0usize;
     while s <= maxSym { freq.push(*count[s]); s += 1usize; }
-    while true {
-      let longest = self.lengths();
-      if longest <= maxBits { break; }
-      // Too deep: halve the counts (a symbol present stays present) and merge again
-      s = 0usize;
-      while s <= maxSym {
-        let f = *freq[s];
-        if f > 0u32 { freq.set(s, (f + 1u32) / 2u32); }
-        s += 1usize;
-      }
-    }
+    let longest = self.lengths();
+    if longest > maxBits { self.limitHeight(maxBits); }
+    self.setLens();
     self.assignCodes();
+  }
+
+  // Cuts the depths in 'depth' (of the leaves in 'order', fewest first) to
+  // 'maxBits' without building the tree again, as the reference's
+  // HUF_setMaxHeight does. The depths are clamped to maxBits, which leaves the
+  // Kraft sum (in units of 2^-maxBits) over 2^maxBits by 'over'; each step then
+  // moves the deepest leaf above maxBits one level down and a maxBits leaf up
+  // beside it (the sum falls by exactly 1), until it is exactly 2^maxBits. The
+  // depths are then dealt out again, the deepest to the fewest.
+  fn limitHeight(self: &mut, maxBits: u32) {
+    let m = order.len();
+    let mb = usize.from(maxBits);
+    nlev.clear();
+    nlev.resize(mb + 1usize, 0u32);
+    var i = 0usize;
+    var kraft = 0u64;
+    while i < m {
+      var dp = usize.from(*depth[i]);
+      if dp > mb { dp = mb; }
+      nlev.set(dp, *nlev[dp] + 1u32);
+      kraft = kraft + (1u64 << u64.from(mb - dp));
+      i += 1usize;
+    }
+    var over = kraft - (1u64 << u64.from(mb));
+    while over > 0u64 {
+      var b = mb - 1usize;
+      while *nlev[b] == 0u32 { b -= 1usize; }
+      nlev.set(b, *nlev[b] - 1u32);
+      nlev.set(b + 1usize, *nlev[b + 1usize] + 2u32);
+      nlev.set(mb, *nlev[mb] - 1u32);
+      over -= 1u64;
+    }
+    // Deal out: the fewest leaves take the deepest level
+    var lvl = mb;
+    var left = *nlev[lvl];
+    i = 0usize;
+    while i < m {
+      while left == 0u32 {
+        lvl -= 1usize;
+        left = *nlev[lvl];
+      }
+      depth.set(i, u8.from(lvl));
+      left -= 1u32;
+      i += 1usize;
+    }
+  }
+
+  // The length of each symbol, from the depths of the sorted leaves
+  fn setLens(self: &mut) {
+    lens.clear();
+    lens.resize(maxSym + 1usize, 0u8);
+    var i = 0usize;
+    while i < order.len() {
+      lens.set(usize.from(*order[i] & 65535u64), *depth[i]);
+      i += 1usize;
+    }
   }
 
   // Huffman's lengths for 'freq', by the two-queue merge: the leaves sorted
@@ -479,12 +529,9 @@ struct HufEnc is Default {
       let dp = *depth[usize.from(*parent[d])] + 1u8;
       depth.set(d, dp);
     }
-    lens.clear();
-    lens.resize(maxSym + 1usize, 0u8);
     i = 0usize;
     while i < m {
       let dp = *depth[i];
-      lens.set(usize.from(*order[i] & 65535u64), dp);
       if u32.from(dp) > longest { longest = u32.from(dp); }
       i += 1usize;
     }
