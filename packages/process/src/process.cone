@@ -130,8 +130,11 @@
 // program's (or nothing), minus 'removeEnv', then 'env'. The block handed to
 // the system is built for the child alone, with no call that sets a variable
 // here ('setenv', '_putenv'): on Windows a sorted, UTF-16 'lpEnvironment'
-// block, whose names match without regard to case (so 'path' replaces
-// 'Path'); on POSIX an 'envp' array, whose names are exact. A name that is
+// block, whose names match without regard to case (so 'PATH' replaces or
+// removes an inherited 'Path', and never sits beside it as a second entry;
+// only ASCII letters are folded, so a name beyond ASCII matches only the same
+// spelling, where Windows itself would also match its other case); on POSIX
+// an 'envp' array, whose names are exact. A name that is
 // empty, holds '=' or a NUL, or a value that holds a NUL, is refused
 // (ERROR_INVALID_PARAMETER, EINVAL); on Windows so is one that is not UTF-8
 // (ERROR_NO_UNICODE_TRANSLATION).
@@ -219,6 +222,7 @@ import env;
 import time;
 import thread;
 import ioerror use osKind;
+import iobuf;
 
 // ---------------------------------------------------------------------------
 // Windows: kernel32. Everything the package asks of the OS (but the arguments
@@ -807,10 +811,11 @@ pub struct Options {
   // then shares this program's standard input)
   pub stdin: bool = false;
   // Bytes for the child's standard input, written to it and then closed, whatever the child reads or writes meanwhile
-  // (above, "The child's input"); None, the default, leaves it reading from NUL (/dev/null). Owned, so that an Options
-  // can cross to another thread (aio's). Used by 'run' and 'runLine'; ignored by 'launch', which has 'stdin' and
-  // 'Child.takeStdin', and where 'inherit' is true
-  pub input: Option[String] = None;
+  // (above, "The child's input"); None, the default, leaves it reading from NUL (/dev/null). A child's standard input
+  // is a byte stream, so these are bytes, not text: iobuf.Bytes, read-only and shared (Sendable, so an Options can
+  // cross to another thread and be reused across runs); text goes in as its bytes. Used by 'run' and 'runLine';
+  // ignored by 'launch', which has 'stdin' and 'Child.takeStdin', and where 'inherit' is true
+  pub input: Option[iobuf.Bytes] = None;
   // Variables the child has beyond this program's, or instead of them: each replaces the one of that name this
   // program's environment has, if any (above, "The environment"). The child's environment only: this program's is
   // never changed
@@ -1920,7 +1925,7 @@ fn start(op: &str, program: &str, line: &str, dir: &Path, opts: Options) Result[
   var se = noStream();
   var fd = noFeed();
   let noInput = String();
-  let inBytes = match &opts.input { case let Some(s) { s.view() } case is None { noInput.view() } };
+  let inBytes: &Array[u8] = match &opts.input { case let Some(s) { s.view() } case is None { noInput.view() } };
   var childIn = 0usize;
   var childOut = 0usize;
   var childErr = 0usize;
@@ -2301,7 +2306,7 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   let inp: *i32 = &[]inFds as *i32;
   var inOff = 0usize;
   let noInput = String();
-  let inData = match &opts.input { case let Some(s) { s.view() } case is None { noInput.view() } };
+  let inData: &Array[u8] = match &opts.input { case let Some(s) { s.view() } case is None { noInput.view() } };
   var actions = Array[u64, 32]() <- fill 0u64;
   var attr = Array[u64, 64]() <- fill 0u64;
   // (opaque to us, and aligned for the pointers they hold: a block of words)
