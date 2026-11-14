@@ -1,0 +1,51 @@
+// A comparison that panics partway through the leaf of the unstable sort must leave every
+// element present exactly once. A compare-exchange reads both elements before it writes
+// either, and the comparison is between the two, so a panic in it cannot have copied one
+// over the other; this test is what would notice a network written to hold an element in
+// flight. The panic ends the program, so the check is made by the panic hook, which runs
+// before it ends: it counts the values of 0 to 12 still in the list, and says whether each is
+// there once. The 25th comparison of 13 values is inside the network (it makes 48).
+// This test's .out is the hook's line; its .exit a panic's; its .err the panic's line.
+
+mod sortleafpanic;
+
+import stdio use *;
+import collections use *;
+
+var @threadlocal data: *u32 = null;
+var @threadlocal calls = 0u32;
+
+fn order(a: &u32, b: &u32) i32 {
+  calls = calls + 1u32;
+  if calls == 25u32 { panic("the comparison fails"); }
+  *a <=> *b
+}
+
+fn onPanic(msg: &str, file: &str, line: u32) {
+  var seen = Array[u32, 13]() <- fill 0u32;
+  var i = 0usize;
+  while i < 13usize {
+    let v = *(data + i);
+    if v < 13u32 { seen[usize.from(v)] = seen[usize.from(v)] + 1u32; }
+    i = i + 1usize;
+  }
+  var once = 0i64;
+  i = 0usize;
+  while i < 13usize { if seen[i] == 1u32 { once = once + 1i64; } i = i + 1usize; }
+  printStr("values present exactly once: ");
+  printInt(once);
+  printStr(" of 13\n");
+}
+
+fn main() i32 {
+  var l = Array[u32, 13]() <- fill 0u32;
+  // a scrambled order of 0 to 12
+  let start = Array[u32, 13]() <- 7u32, 12u32, 3u32, 9u32, 0u32, 11u32, 5u32, 1u32, 10u32, 4u32, 8u32, 2u32, 6u32;
+  var i = 0usize;
+  while i < 13usize { l[i] = start[i]; i = i + 1usize; }
+  data = (&mut l) as *u32;
+  setPanicHook(&onPanic);
+  l.sortUnstableBy(&order);
+  printStr("not reached\n");
+  0i32
+}

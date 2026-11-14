@@ -78,15 +78,15 @@ pub struct Graph {
   pub nodes: List[Node];
   pub edges: List[GraphEdge];
   pub groups: List[GraphGroup];
+  keys: Dict[String, u32];          // key -> the id of the node that took it last; 'find' trusts it only while that node is alive
 
-  pub fn make() Graph { Graph(List[Node](), List[GraphEdge](), List[GraphGroup]()) }
+  pub fn make() Graph { Graph(List[Node](), List[GraphEdge](), List[GraphGroup](), Dict[String, u32].deterministic()) }
 
   // The id of the live node with 'key', or -1
   pub fn find(self: &, key: &str) i32 {
-    var i = 0usize;
-    while i < nodes.len() {
-      if nodes[i].alive && nodes[i].key.view() == key { return i32.from(i); }
-      i = i + 1usize;
+    match keys.getCopy(key) {
+      case let Some(id) { if nodes[usize.from(id)].alive { return i32.from(id); } }
+      else {}
     }
     -1
   }
@@ -102,7 +102,9 @@ pub struct Graph {
       return u32.from(at);
     }
     nodes.push(Node(String.from(key), String.from(label), w, h, 0., 0., 0., -1, 0u32, List[Port](), false, false, true));
-    u32.from(nodes.len() - 1usize)
+    let id = u32.from(nodes.len() - 1usize);
+    keys.insert(String.from(key), id);
+    id
   }
 
   pub fn addPort(self: &mut, node: u32, name: &str, side: u32, offset: f32) i32 {

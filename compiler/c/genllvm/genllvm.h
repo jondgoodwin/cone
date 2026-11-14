@@ -392,7 +392,8 @@ typedef enum {
     PanicIndex,     // an index at or past the count: the index, the count
     PanicSlice,     // a range not within the count: its start, its end, the count
     PanicAlloc,     // a region's 'alloc' answered null: the size asked for
-    PanicDivide     // an integer divided by zero, or its minimum by -1: 0 for the zero, 1 for the overflow
+    PanicDivide,    // an integer divided by zero, or its minimum by -1: 0 for the zero, 1 for the overflow
+    PanicInitAgain  // the stitched init called after the final has run: no values
 } GenlPanicKind;
 // Panic unless index < count, reporting both at 'site'
 void genlBoundsCheck(GenState *gen, INode *site, LLVMValueRef index, LLVMValueRef count);
@@ -407,6 +408,7 @@ LLVMValueRef genlVectorConvert(GenState *gen, FnCallNode *lit);
 // 'Vector[T, N].load(s, at)', a call of the vector type's function: the lanes of
 // the slice, bounds checked once
 LLVMValueRef genlVectorLoad(GenState *gen, INode *site, INode *vectype, LLVMValueRef *fnargs);
+LLVMValueRef genlVectorGather(GenState *gen, INode *site, INode *vectype, LLVMValueRef *fnargs);
 // 'm[i]', a lane of a mask: a bool read, bounds checked
 LLVMValueRef genlMaskLane(GenState *gen, FnCallNode *fncall);
 // The address of a lane of the vector at 'vecp': bounds checked against its

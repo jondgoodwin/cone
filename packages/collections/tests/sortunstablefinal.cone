@@ -1,0 +1,90 @@
+// The unstable sort's partition compares every element with a bitwise copy of the pivot, made
+// once before the sweep. The copy must never be finalized and must not disturb what the pivot
+// owns. The elements here have a finalizer that counts its runs and own a String, so a
+// finalized copy would count one extra and free a name still in use.
+//
+// What each check protects (every value is worked out by hand):
+// - After the sort no finalizer has run (a dropped copy would have counted).
+// - The keys are in order, every id 0 to 999 is present exactly once, and every name is the
+//   one its id gave it ("alpha", "beta", "gamma" or "delta" for id 0, 1, 2, 3 modulo 4): an
+//   element lost or duplicated by the sweep, or a name freed, shows here.
+// - Once the list ends, 1000 finalizers have run: each element exactly once.
+// It is run on keys spread over 1000 values (the partition) and on 4 distinct keys (the
+// partition by equal elements, and the pivot copy when many are equal).
+
+mod sortunstablefinal;
+
+import testing use *;
+import collections use *;
+
+var @threadlocal finals = 0i64;
+
+struct Owned {
+  pub key: u32;
+  pub id: u32;
+  pub name: String;
+  fn final(self: &uni) { finals = finals + 1i64; }
+}
+
+fn byKey(a: &Owned, b: &Owned) i32 { a.key <=> b.key }
+
+fn nextRand(s: &mut u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+fn nameOf(id: u32) String {
+  let m = id % 4u32;
+  if m == 0u32 { String.from("alpha") } else if m == 1u32 { String.from("beta") } else if m == 2u32 { String.from("gamma") } else { String.from("delta") }
+}
+
+fn wantLen(id: u32) usize {
+  let m = id % 4u32;
+  if m == 0u32 { 5usize } else if m == 1u32 { 4usize } else if m == 2u32 { 5usize } else { 5usize }
+}
+
+// Sort 1000 elements whose keys are r % distinct, and answer how many checks failed
+fn sortOne(distinct: u32) i64 {
+  var l = List[Owned]();
+  var s = 88172645463325252u64;
+  var i = 0u32;
+  while i < 1000u32 {
+    let k = u32.from(nextRand(&mut s) >> 40u64) % distinct;
+    l.push(Owned(k, i, nameOf(i)));
+    i = i + 1u32;
+  }
+  l.sortUnstableBy(&byKey);
+  var bad = 0i64;
+  if finals != 0i64 { bad = bad + 1i64; }
+  var seen = List[bool]();
+  var j = 0usize;
+  while j < 1000usize { seen.push(false); j = j + 1usize; }
+  j = 0usize;
+  while j < 1000usize {
+    if j > 0usize && l[j - 1usize].key > l[j].key { bad = bad + 1i64; }
+    let id = l[j].id;
+    if id >= 1000u32 || seen[usize.from(id)] { bad = bad + 1i64; }
+    else {
+      seen[usize.from(id)] = true;
+      if l[j].name.len() != wantLen(id) { bad = bad + 1i64; }
+    }
+    j = j + 1usize;
+  }
+  bad
+}
+
+fn main() i32 {
+  finals = 0i64;
+  let bad1 = sortOne(1000u32);
+  expectInt(bad1, 0i64, "1000 elements, keys 0 to 999: sorted, none lost, no finalizer run, names intact");
+  expectInt(finals, 1000i64, "each element finalized once when the list ended");
+  finals = 0i64;
+  let bad2 = sortOne(4u32);
+  expectInt(bad2, 0i64, "1000 elements, 4 distinct keys: sorted, none lost, no finalizer run, names intact");
+  expectInt(finals, 1000i64, "each element finalized once when the list ended, 4 distinct keys");
+  done()
+}

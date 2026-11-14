@@ -32,12 +32,12 @@ pub struct Bvh[T: Copy] {
 
   pub fn len(self: &) usize {items.count}
   pub fn contains(self: &, p: Proxy) bool {items.alive(p)}
-  pub fn handle(self: &, p: Proxy) T {items.list[usize.from(p.slot)].handle}
-  pub fn box(self: &, p: Proxy) Aabb3 {items.list[usize.from(p.slot)].box}
+  pub fn handle(self: &, p: Proxy) T {(*items.cell(usize.from(p.slot))).handle}
+  pub fn box(self: &, p: Proxy) Aabb3 {(*items.cell(usize.from(p.slot))).box}
 
   // The box the tree holds for the item: its box grown by the margin
   pub fn fatBox(self: &, p: Proxy) Aabb3 {
-    tree.nodes[usize.from(items.list[usize.from(p.slot)].x)].box
+    tree.nodes[usize.from((*items.cell(usize.from(p.slot))).x)].box
   }
 
   // The box pairs are judged by (the fat box); the same name on every index
@@ -52,8 +52,8 @@ pub struct Bvh[T: Copy] {
   pub fn sahCost(self: &) f32 {tree.sahCost()}
 
   fn flagMoved(self: &mut, slot: u32) {
-    if !items.list[usize.from(slot)].moved {
-      items.list[usize.from(slot)].moved = true;
+    if !(*items.cell(usize.from(slot))).moved {
+      (*items.cell(usize.from(slot))).moved = true;
       moved.push(slot);
     }
   }
@@ -61,7 +61,7 @@ pub struct Bvh[T: Copy] {
   pub fn insert(self: &mut, box: Aabb3, handle: T) Proxy {
     let p = items.add(box, handle);
     let leaf = tree.newLeaf(p.slot, box.expand(margin));
-    items.list[usize.from(p.slot)].x = leaf;
+    (*items.cell(usize.from(p.slot))).x = leaf;
     tree.insertLeaf(leaf);
     flagMoved(p.slot);
     p
@@ -71,21 +71,21 @@ pub struct Bvh[T: Copy] {
   pub fn remove(self: &mut, p: Proxy) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
-    let leaf = items.list[si].x;
+    let leaf = (*items.cell(si)).x;
     tree.removeLeaf(leaf);
     tree.release(leaf);
     // pairs it was in end now; report them at the next update
     var ended = List[u32]();
     pairs.forget(p.slot, &mut ended);
-    let h = items.list[si].handle;
+    let h = (*items.cell(si)).handle;
     var i = 0usize;
     while i < ended.len() {
       let o = *ended[i];
       let oi = usize.from(o);
-      pendingRemoved.push(pairOf(p.slot, h, o, items.list[oi].handle));
+      pendingRemoved.push(pairOf(p.slot, h, o, (*items.cell(oi)).handle));
       i = i + 1usize;
     }
-    items.list[si].moved = false;
+    (*items.cell(si)).moved = false;
     items.release(p.slot);
     true
   }
@@ -107,8 +107,8 @@ pub struct Bvh[T: Copy] {
   pub fn move(self: &mut, p: Proxy, box: Aabb3, displacement: Vec3) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
-    items.list[si].box = box;
-    let leaf = items.list[si].x;
+    (*items.cell(si)).box = box;
+    let leaf = (*items.cell(si)).x;
     let fat = tree.nodes[usize.from(leaf)].box;
     if containsBox(fat, box) {
       // not too huge: not more than 4 margins larger than needed
@@ -136,8 +136,8 @@ pub struct Bvh[T: Copy] {
   pub fn moveRefit(self: &mut, p: Proxy, box: Aabb3) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
-    items.list[si].box = box;
-    let leaf = items.list[si].x;
+    (*items.cell(si)).box = box;
+    let leaf = (*items.cell(si)).x;
     tree.nodes[usize.from(leaf)].box = box.expand(margin);
     tree.refitUp(tree.nodes[usize.from(leaf)].parent);
     flagMoved(p.slot);
@@ -149,8 +149,8 @@ pub struct Bvh[T: Copy] {
   pub fn setBox(self: &mut, p: Proxy, box: Aabb3) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
-    items.list[si].box = box;
-    tree.nodes[usize.from(items.list[si].x)].box = box.expand(margin);
+    (*items.cell(si)).box = box;
+    tree.nodes[usize.from((*items.cell(si)).x)].box = box.expand(margin);
     flagMoved(p.slot);
     true
   }
@@ -163,11 +163,11 @@ pub struct Bvh[T: Copy] {
     var work = List[BuildItem].withCapacity(items.count + 1usize);
     tree.clear();
     var i = 0usize;
-    while i < items.list.len() {
+    while i < items.bound() {
       if items.isLive(i) {
-        let fat = items.list[i].box.expand(margin);
+        let fat = (*items.cell(i)).box.expand(margin);
         let leaf = tree.newLeaf(u32.from(i), fat);
-        items.list[i].x = leaf;
+        (*items.cell(i)).x = leaf;
         work.push(BuildItem(leaf, fat.center(), fat));
       }
       i = i + 1usize;
@@ -182,7 +182,7 @@ pub struct Bvh[T: Copy] {
     var i = 0usize;
     while i < boxes.len {
       let p = items.add(boxes[i], handles[i]);
-      items.list[usize.from(p.slot)].moved = true;
+      (*items.cell(usize.from(p.slot))).moved = true;
       moved.push(p.slot);
       out.push(p);
       i = i + 1usize;
@@ -207,9 +207,9 @@ pub struct Bvh[T: Copy] {
       if !tree.nodes[n].box.overlaps(box) {continue;}
       if tree.nodes[n].b == NONE {
         let slot = tree.nodes[n].a;
-        let it = items.list[usize.from(slot)];
+        let it = (*items.cell(usize.from(slot)));
         if it.box.overlaps(box) {
-          if !visit(it.handle, Proxy(slot, it.gen)) {return;}
+          if !visit(it.handle, items.proxyOf(slot)) {return;}
         }
       }
       else {
@@ -232,9 +232,9 @@ pub struct Bvh[T: Copy] {
       if !s.overlapsAabb(tree.nodes[n].box) {continue;}
       if tree.nodes[n].b == NONE {
         let slot = tree.nodes[n].a;
-        let it = items.list[usize.from(slot)];
+        let it = (*items.cell(usize.from(slot)));
         if s.overlapsAabb(it.box) {
-          if !visit(it.handle, Proxy(slot, it.gen)) {return;}
+          if !visit(it.handle, items.proxyOf(slot)) {return;}
         }
       }
       else {
@@ -262,9 +262,9 @@ pub struct Bvh[T: Copy] {
       if m == NONE {continue;}
       if tree.nodes[n].b == NONE {
         let slot = tree.nodes[n].a;
-        let it = items.list[usize.from(slot)];
+        let it = (*items.cell(usize.from(slot)));
         if m == 0u32 || cullMask(f, &it.box, m) != NONE {
-          if !visit(it.handle, Proxy(slot, it.gen)) {return;}
+          if !visit(it.handle, items.proxyOf(slot)) {return;}
         }
       }
       else {
@@ -297,10 +297,10 @@ pub struct Bvh[T: Copy] {
       let n = usize.from(stack[sp]);
       if tree.nodes[n].b == NONE {
         let slot = tree.nodes[n].a;
-        let it = items.list[usize.from(slot)];
+        let it = (*items.cell(usize.from(slot)));
         let t = rayBox(&r, &it.box, limit);
         if t >= 0. {
-          let res = visit(it.handle, Proxy(slot, it.gen), t);
+          let res = visit(it.handle, items.proxyOf(slot), t);
           if res < 0. {return;}
           if res < limit {limit = res;}
         }
@@ -365,14 +365,14 @@ pub struct Bvh[T: Copy] {
     while heap.len() > 0usize && out.len() < k {
       let e = heap.pop();
       if e.isItem {
-        let it = items.list[usize.from(e.id)];
-        out.push(Neighbor[T](it.handle, Proxy(e.id, it.gen), e.key));
+        let it = (*items.cell(usize.from(e.id)));
+        out.push(Neighbor[T](it.handle, items.proxyOf(e.id), e.key));
       }
       else {
         let n = usize.from(e.id);
         if tree.nodes[n].b == NONE {
           let slot = tree.nodes[n].a;
-          heap.push(HeapEntry(distSqPointBox(point, items.list[usize.from(slot)].box), slot, true,
+          heap.push(HeapEntry(distSqPointBox(point, (*items.cell(usize.from(slot))).box), slot, true,
             Vec3(0., 0., 0.), 0.));
         }
         else {
@@ -420,15 +420,15 @@ pub struct Bvh[T: Copy] {
   pub fn allPairs(self: &, out: &mut List[Pair[T]]) {
     var found = List[u32]();
     var i = 0usize;
-    while i < items.list.len() {
+    while i < items.bound() {
       if items.isLive(i) {
         found.clear();
-        queryFat(tree.nodes[usize.from(items.list[i].x)].box, &mut found);
+        queryFat(tree.nodes[usize.from((*items.cell(i)).x)].box, &mut found);
         var j = 0usize;
         while j < found.len() {
           let o = *found[j];
           if usize.from(o) > i {
-            out.push(pairOf(u32.from(i), items.list[i].handle, o, items.list[usize.from(o)].handle));
+            out.push(pairOf(u32.from(i), (*items.cell(i)).handle, o, (*items.cell(usize.from(o))).handle));
           }
           j = j + 1usize;
         }
@@ -457,23 +457,23 @@ pub struct Bvh[T: Copy] {
       let m = *moved[i];
       let mi = usize.from(m);
       i = i + 1usize;
-      if !items.isLive(mi) || !items.list[mi].moved {continue;}
-      items.list[mi].moved = false;
+      if !items.isLive(mi) || !(*items.cell(mi)).moved {continue;}
+      (*items.cell(mi)).moved = false;
       found.clear();
       added.clear();
       ended.clear();
-      queryFat(tree.nodes[usize.from(items.list[mi].x)].box, &mut found);
+      queryFat(tree.nodes[usize.from((*items.cell(mi)).x)].box, &mut found);
       pairs.sync(m, &found, &mut added, &mut ended);
       var j = 0usize;
       while j < added.len() {
         let o = *added[j];
-        events.added.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
+        events.added.push(pairOf(m, (*items.cell(mi)).handle, o, (*items.cell(usize.from(o))).handle));
         j = j + 1usize;
       }
       j = 0usize;
       while j < ended.len() {
         let o = *ended[j];
-        events.removed.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
+        events.removed.push(pairOf(m, (*items.cell(mi)).handle, o, (*items.cell(usize.from(o))).handle));
         j = j + 1usize;
       }
     }

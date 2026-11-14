@@ -1,0 +1,111 @@
+// Date styles through a locale: the same dates in an invariant writer (English, as the
+// datestyle test blesses), an en writer and a de writer. de: the day's '.', its month and
+// day words (every month and weekday), 'short' as dd.MM.y; invariant and en short is ISO.
+// Debug is always the invariant text. Expected texts are worked out by hand: 3 Oct 2026
+// is a Saturday, 5 Oct 2026 a Monday.
+
+mod datelocale;
+
+import testing use *;
+import collections use *;
+import calendar use Date, TimeOfDay, DateTime, Offset, OffsetDateTime, DateStyle;
+import locale;
+
+fn ymd(y: i64, m: i64, d: i64) Date {
+  match Date.fromYmd(y, m, d) {
+    case let Some(s) { s }
+    case is None {
+      require(false, "the test's date exists");
+      Date()
+    }
+  }
+}
+
+fn dt(d: Date) DateTime {
+  match TimeOfDay.fromHms(14, 5, 9, 250000000) {
+    case let Some(t) { DateTime.fromParts(d, t) }
+    case is None {
+      require(false, "the test's time exists");
+      DateTime()
+    }
+  }
+}
+
+// What a writer in this locale writes for the value, as a String
+fn through[T](l: locale.Locale, v: &T) String {
+  var s = String();
+  {
+    var w = s.textOut();
+    locale.set(&uni w, l);
+    w <- v;
+  }
+  s
+}
+
+fn main() i32 {
+  let d = ymd(2026, 10, 3);
+  let de = locale.Locale.de;
+  let en = locale.Locale.en;
+  let inv = locale.Locale.invariant;
+
+  // invariant and en: English, short is ISO
+  expectStr(through(inv, &d.styled(DateStyle.medium)).view(), "3 Oct 2026", "invariant medium");
+  expectStr(through(en, &d.styled(DateStyle.medium)).view(), "3 Oct 2026", "en medium");
+  expectStr(through(en, &d.styled(DateStyle.full)).view(), "Saturday, 3 October 2026", "en full");
+  expectStr(through(inv, &d.styled(DateStyle.short)).view(), "2026-10-03", "invariant short is ISO");
+  expectStr(through(en, &d.styled(DateStyle.short)).view(), "2026-10-03", "en short is ISO");
+  expectStr(through(en, &dt(d).styled(DateStyle.short)).view(), "2026-10-03 14:05:09", "en short with a time");
+  expectStr($"{d.styled(DateStyle.short)}".view(), "2026-10-03", "short in a template (invariant)");
+
+  // de
+  expectStr(through(de, &d.styled(DateStyle.medium)).view(), "3. Okt. 2026", "de medium");
+  expectStr(through(de, &d.styled(DateStyle.long)).view(), "3. Oktober 2026", "de long");
+  expectStr(through(de, &d.styled(DateStyle.full)).view(), "Samstag, 3. Oktober 2026", "de full");
+  expectStr(through(de, &d.styled(DateStyle.short)).view(), "03.10.2026", "de short");
+  expectStr(through(de, &dt(d).styled(DateStyle.medium)).view(), "3. Okt. 2026 14:05:09", "de medium with a time");
+  expectStr(through(de, &dt(d).styled(DateStyle.long)).view(), "3. Oktober 2026 14:05:09 UTC", "de long with a time");
+  expectStr(through(de, &dt(d).styled(DateStyle.short)).view(), "03.10.2026 14:05:09", "de short with a time, no zone");
+  let odt = OffsetDateTime(dt(d), Offset(19800i32, "", false));
+  expectStr(through(de, &odt.styled(DateStyle.full)).view(), "Samstag, 3. Oktober 2026 14:05:09 +05:30", "de full with an offset");
+  expectStr(through(de, &ymd(2026, 1, 5).styled(DateStyle.short)).view(), "05.01.2026", "de short pads day and month");
+  expectStr(through(de, &ymd(44, 3, 15).styled(DateStyle.short)).view(), "15.03.44", "de short year unpadded");
+  expectStr(through(de, &ymd(2026, 3, 1).styled(DateStyle.long)).view(), "1. März 2026", "de march");
+  expectStr(through(de, &ymd(2026, 5, 31).styled(DateStyle.medium)).view(), "31. Mai 2026", "de may");
+
+  // every month and weekday in de
+  let months = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August",
+                "September", "Oktober", "November", "Dezember"];
+  let abbr = ["Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."];
+  var i = 0usize;
+  while i < 12usize {
+    let m = ymd(2026, i64.from(i) + 1i64, 3i64);
+    var wantLong = String();
+    wantLong <- "3. "; wantLong <- months[i]; wantLong <- " 2026";
+    expectStr(through(de, &m.styled(DateStyle.long)).view(), wantLong.view(), "de month, long");
+    var wantMed = String();
+    wantMed <- "3. "; wantMed <- abbr[i]; wantMed <- " 2026";
+    expectStr(through(de, &m.styled(DateStyle.medium)).view(), wantMed.view(), "de month, medium");
+    i += 1usize;
+  }
+  let days = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+  var k = 0usize;
+  while k < 7usize {
+    let day = ymd(2026, 10, 5i64 + i64.from(k));
+    var want = String();
+    want <- days[k]; want <- ", "; want <- 5usize + k; want <- ". Oktober 2026";
+    expectStr(through(de, &day.styled(DateStyle.full)).view(), want.view(), "de weekday");
+    k += 1usize;
+  }
+
+  // debug is invariant, ISO forms never read the locale
+  {
+    var s = String();
+    {
+      var w = s.textOut();
+      locale.set(&uni w, de);
+      w <- toDebug(&d.styled(DateStyle.long)), "|", d;
+    }
+    expectStr(s.view(), "3 October 2026|2026-10-03", "de debug and ISO forms unchanged");
+  }
+  return done();
+}

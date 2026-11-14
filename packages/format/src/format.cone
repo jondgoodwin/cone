@@ -1,4 +1,4 @@
-// The format package: options for one number in a text, as small typed values
+// The format package: options for one number in a text, and columns, as small typed values
 // that are themselves writable. None of them is visible without an import
 // (they are words people want for their own names); each is used as
 // 'format.fixed(price, 2)' or brought in by name with 'import format use fixed'.
@@ -46,8 +46,77 @@
 //   The sign of a negative number is kept, a negative zero too, and a negative
 //   that rounds to zero ("-0.00"), as C's printf does. NaN is "nan", and an
 //   infinity "inf" or "-inf", as the default form writes them, whatever the option.
+//
+//   COLUMNS (of any value that has a 'toText': text, a number, hex(..), a type of your own)
+//     pad(x, width)               x in a field 'width' columns wide, short text filled out on the
+//     pad(x, width, align)        right (Align.left, the default), on the left (Align.right) or both
+//     pad(x, width, align, fill)  sides (Align.center; an odd extra column goes after), with the
+//                                 char 'fill' (a space by default). pad never truncates: text wider
+//                                 than the field is written whole.
+//     truncate(x, n)              the first n columns of x's text, whole chars only: a wide char that
+//                                 would straddle column n is left out
+//     Widths are columns (unicode.width), summed per code point: a wide East Asian char is 2, a
+//     combining mark, joiner or control 0, the rest 1. Per code point, not per grapheme cluster, so a
+//     joined emoji (several code points) or a flag (two) is over-counted, as terminals disagree on
+//     them anyway. The item is written once into a scratch String, measured, then copied, so pad and
+//     truncate allocate; the width table is carried only by a program that uses
+//     them. Each takes x by value: pad("ab", 5), pad(hex(n), 8, Align.right, '0'), pad(&v, 6)
+//     (a reference to a value that has a toText) for a value you keep.
+//
+//   TEXT WRAPPERS (of any value that has a 'toText'; they nest inside pad and each other)
+//     quoted(x)                   x's text in double quotes, escaped as a string's debug form is
+//                                 (", \, \n, \r, \t, other control bytes as \xHH): quoted(12) is "12".
+//                                 Always quotes; csv.field quotes only when needed, and doubles the quote.
+//     join(&items, sep)           the items of anything iterable, each as its text, with the &str
+//                                 'sep' between (none before the first or after the last; an item
+//                                 that writes nothing keeps its separators). It writes straight
+//                                 out, no scratch String, and walks the items again for each write,
+//                                 so it takes a borrow of a list, not a one-shot generator. Its
+//                                 debug form writes each item's debug form, the same separator, no
+//                                 brackets: debug(join(&names, ", ")) is "a", "b".
+//     grouped(x)                  x's text with the decimal digits of its integer part grouped:
+//     grouped(x, sep, size)       1,234,567. A leading sign and everything after the digits (a
+//                                 fraction, an exponent) is left alone, so grouped(fixed(1234.5, 2))
+//                                 is 1,234.50. Decimal text only: a hex or bin item is not
+//                                 grouped sensibly. With no sep or size the writer's locale says
+//                                 (the locale package: ',' and 3 for invariant and en, '.' and 3
+//                                 for de, and a '.' that follows the digits becomes the locale's
+//                                 decimal mark); given one, it is used as written, in any locale.
+//                                 Wrap pad outside it: pad(grouped(n), 12, Align.right).
+//
+//   LOCALE. fixed, digits and sci write the writer's locale's decimal mark (',' in de) and grouped
+//   its marks, because a caller who asked for them asked for a locale's text. A plain number
+//   ('<-' of a float) never changes, and nor does any debug form: those stay machine-readable.
+//   A writer's locale is its maker's to choose (locale.set); every new writer is invariant, so
+//   nothing here differs from before until one does. pad, truncate, quoted and grouped carry
+//   the writer's locale into the item they write.
+//
+//   STYLES (color on a terminal, nothing anywhere else)
+//     plain  red  green  yellow  blue  magenta  cyan  white  black  bold  dim  underline
+//                      values of type Style, sent with '<-' like anything else:
+//                      out <- red, "failed", plain, "\n". 'bold + red' combines (the right's color
+//                      wins), 'red.on(white)' adds a background (white's color); 'plain' is the reset
+//     A style writes its escape ('ESC [ 1;31 m') only when the writer's color is on: 'out.colorOn()',
+//     which only a record the console made for a terminal has (print and eprint, when standard
+//     output or error is a terminal that takes color: TERM set and not dumb on POSIX, virtual-
+//     terminal mode switched on in Windows, and NO_COLOR unset or empty). Every other writer, a String
+//     included, has it off, so a style writes nothing there and a program may style freely. A style
+//     stays set until the next one ('red, "a", "b"' is red for both): the record that wrote any
+//     style ends with a reset, so a forgotten 'plain' never leaks into the shell. A program's own
+//     sink may turn it on with 'out.setColor(true)'. Colors only, for now: no 256-color or RGB form.
+//
+//   WHAT IT DEPENDS ON. The number wrappers need only core. Columns need two packages more:
+//   collections, for the scratch String that pad and truncate write the item into so its width can
+//   be measured before any of it goes out (a writer's record can't be read back, and a fixed window
+//   would lose a longer item), and unicode, for the column width of each char. So each pad or
+//   truncate call allocates once; if a program shows pad hot, the fix is a small buffer on the stack
+//   with the String as its fallback.
 
 mod format;
+
+import collections use String;
+import unicode;
+import locale;
 
 // A whole number of 32-bit limbs, little-endian, for the exact digits. The
 // largest is a subnormal's m * 5^1074, 2547 bits (80 limbs)
@@ -220,6 +289,17 @@ struct Dec {
   }
 }
 
+// The decimal mark: '.', or the writer's locale's when its maker chose one. fixed, digits and sci are
+// formats a caller asked a locale for; a plain float never comes here
+fn putMark(out: &uni TextOut) {
+  if out.localeId() == 0u8 {
+    out.putByte('.');
+  }
+  else {
+    out.putChar(locale.Locale.of(out).data().decimal);
+  }
+}
+
 // The sign, then the exact value rounded to n places after the mark
 fn putFixed(out: &uni TextOut, d: &Dec, n: usize) {
   if d.point <= 0i64 || d.len == 0usize {
@@ -233,7 +313,7 @@ fn putFixed(out: &uni TextOut, d: &Dec, n: usize) {
     }
   }
   if n > 0usize {
-    out.putByte('.');
+    putMark(out);
     var j = 0usize;
     while j < n {
       out.putByte(d.at(d.point + i64.from(j)) + '0');
@@ -246,7 +326,7 @@ fn putFixed(out: &uni TextOut, d: &Dec, n: usize) {
 fn putSci(out: &uni TextOut, d: &Dec, n: usize) {
   out.putByte(d.at(0i64) + '0');
   if n > 0usize {
-    out.putByte('.');
+    putMark(out);
     var j = 0usize;
     while j < n {
       out.putByte(d.at(1i64 + i64.from(j)) + '0');
@@ -313,7 +393,7 @@ pub struct FloatFormat {
       }
     }
   }
-  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+  pub fn toDebug(self: &, out: &uni TextOut) {debugText(self, out);}
 }
 
 // x with n places after the mark (an n below 0 is 0)
@@ -393,3 +473,272 @@ pub fn signed[T: Integer](x: T) SignedText {
     SignedText(u64.from(x), false)
   }
 }
+
+// ---- Columns: pad and truncate ----
+
+// Where the text goes in the field 'pad' makes: at the left (spaces after), at the
+// right (spaces before), or in the middle (an odd extra column goes after)
+pub enum Align {left, right, center}
+
+// x's text and its width in columns: written once into a scratch String and the
+// width of each char summed (unicode.width: 2 for wide East Asian chars, 0 for
+// combining marks and the like). The pieces of a send into that scratch are the
+// item's own, so what 'pad' measures is exactly what the item writes.
+fn measure[T](x: &T, scratch: &mut String, id: u8) usize {
+  textInto(x, scratch, id);
+  var cols = 0usize;
+  each c in scratch.view().chars() {
+    cols += usize.from(unicode.width(c));
+  }
+  cols
+}
+
+// x's text written into the scratch String, in the locale the real writer has (its id), so a
+// locale-aware item inside pad, truncate, quoted or grouped writes the same text it would to out
+fn textInto[T](x: &T, scratch: &mut String, id: u8) {
+  var w = scratch.textOut();
+  w.setLocaleId(id);
+  x.toText(&uni w);
+}
+
+// A wrapper's debug form is its text with no locale: debug is always invariant, however the
+// writer's maker set it
+fn debugText[T](x: &T, out: &uni TextOut) {
+  let id = out.localeId();
+  out.setLocaleId(0u8);
+  x.toText(out);
+  out.setLocaleId(id);
+}
+
+fn putFill(out: &uni TextOut, fill: char, n: usize) {
+  var i = 0usize;
+  while i < n {
+    out.putChar(fill);
+    i += 1usize;
+  }
+}
+
+pub struct Padded[T] {
+  x: T;
+  cols: usize;
+  align: Align;
+  fill: char;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    var scratch = String();
+    let have = measure(&x, &mut scratch, out.localeId());
+    let gap = if have >= cols {0usize} else {cols - have};
+    let before = if align == Align.left {0usize} else if align == Align.right {gap} else {gap / 2usize};
+    putFill(out, fill, before);
+    out.writeStr(scratch.view());
+    putFill(out, fill, gap - before);
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {debugText(self, out);}
+}
+
+// x in a field 'width' columns wide, short text filled out with 'fill' on the side
+// 'align' says. Columns, not bytes or chars: a wide East Asian char is 2 and a
+// combining mark 0 (see 'unicode.width'; it counts code points, so a joined emoji
+// or a flag is over-counted). 'pad' never truncates: text wider than the field is
+// written whole (use 'truncate' first to cut it).
+pub fn pad[T](x: T, width: usize, align: Align = Align.left, fill: char = ' ') Padded[T] inline {
+  Padded(x, width, align, fill)
+}
+
+pub struct Truncated[T] {
+  x: T;
+  cols: usize;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    var scratch = String();
+    textInto(&x, &mut scratch, out.localeId());
+    var used = 0usize;
+    each c in scratch.view().chars() {
+      let w = usize.from(unicode.width(c));
+      if used + w > cols {break;}
+      used += w;
+      out.putChar(c);
+    }
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {debugText(self, out);}
+}
+
+// The first n columns of x's text: whole chars only, so a wide char that would
+// straddle column n is left out, and the zero-width chars after the last char kept
+// (its combining marks) go with it. Text no wider than n is written whole.
+pub fn truncate[T](x: T, n: usize) Truncated[T] inline {
+  Truncated(x, n)
+}
+
+pub struct Quoted[T] {
+  x: T;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    var scratch = String();
+    textInto(&x, &mut scratch, out.localeId());
+    out.putDebugStr(scratch.view());
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {debugText(self, out);}
+}
+
+// x's text in double quotes, always, escaped as a string's debug form is:
+// quoted(12) is "12", quoted("a\"b") is "a\"b" in quotes with the backslash.
+pub fn quoted[T](x: T) Quoted[T] inline {
+  Quoted(x)
+}
+
+pub struct Joined[C] {
+  items: &C;
+  sep: &str;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    var first = true;
+    each v in items.iter() {
+      if !first {out.writeStr(sep);}
+      first = false;
+      v.toText(out);
+    }
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {
+    var first = true;
+    each v in items.iter() {
+      if !first {out.writeStr(sep);}
+      first = false;
+      v.toDebug(out);
+    }
+  }
+}
+
+// The items of a list (or any Iterable), each as its text, with 'sep' between.
+// Walks the items once per write, straight to the writer; a one-shot generator
+// can't be joined, a list can.
+pub fn join[T, C: Iterable[T]](items: &C, sep: &str) Joined[C] inline {
+  Joined(items, sep)
+}
+
+// grouped's defaults for 'size' (and '\u0000' for 'sep'): no choice made, so the writer's locale
+// says. Invariant says ',' and 3, as before locales
+const noSize = 0xFFFFFFFFFFFFFFFFusize;
+
+pub struct Grouped[T] {
+  x: T;
+  sep: char;
+  size: usize;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    var scratch = String();
+    textInto(&x, &mut scratch, out.localeId());
+    let b = scratch.view() as &Array[u8];
+    // '\u0000' and noSize are grouped's own defaults: the locale's mark and size
+    let mark = if sep == '\u0000' {locale.Locale.of(out).data().group} else {sep};
+    let group = if size == noSize {locale.Locale.of(out).data().groupSize} else {size};
+    var i = 0usize;
+    // a leading sign stays outside the groups
+    if b.len > 0usize && (b[0usize] == '-' || b[0usize] == '+') {
+      out.putByte(b[0usize]);
+      i = 1usize;
+    }
+    // the first run of ASCII digits
+    var end = i;
+    while end < b.len && b[end] >= '0' && b[end] <= '9' {end += 1usize;}
+    let n = end - i;
+    var k = 0usize;
+    while k < n {
+      if k > 0usize && group > 0usize && (n - k) % group == 0usize {out.putChar(mark);}
+      out.putByte(b[i + k]);
+      k += 1usize;
+    }
+    // the fraction, exponent or whatever follows: a plain float's '.' becomes the locale's mark
+    // (a fixed or sci inside already wrote it)
+    if end < b.len && b[end] == '.' && out.localeId() != 0u8 {
+      out.putChar(locale.Locale.of(out).data().decimal);
+      end += 1usize;
+    }
+    while end < b.len {
+      out.putByte(b[end]);
+      end += 1usize;
+    }
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {debugText(self, out);}
+}
+
+// x's text with the digits of its integer part in groups of 'size' from the right,
+// 'sep' between: 1,234,567. Sign and fraction are left alone. Decimal text only
+// (a hex or bin item is not grouped sensibly). Put pad outside it, not inside.
+pub fn grouped[T](x: T, sep: char = '\u0000', size: usize = noSize) Grouped[T] inline {
+  Grouped(x, sep, size)
+}
+
+// ---- Styles: color on a terminal, nothing anywhere else ----
+
+// A foreground color, a background, and three bits (bold, dim, underline), written as one
+// ANSI escape. Colors are held as 0 (none) or 1 to 8 (black, red, green, yellow, blue, magenta,
+// cyan, white), so the escape's number is 29 + the color for a foreground and 39 + the color for a
+// background.
+pub struct Style {
+  pub fg: u8;
+  pub bg: u8;
+  pub bold: bool;
+  pub dim: bool;
+  pub underline: bool;
+
+  // Both styles' settings in one: the right's color wins where both set one
+  pub fn add overload `+`(self, o: Style) Style {
+    Style(if o.fg != 0u8 {o.fg} else {fg}, if o.bg != 0u8 {o.bg} else {bg},
+      bold || o.bold, dim || o.dim, underline || o.underline)
+  }
+
+  // This style with the foreground color of 'back' as its background: red.on(white)
+  pub fn on(self, back: Style) Style {
+    Style(fg, back.fg, bold, dim, underline)
+  }
+
+  // The escape that sets this style, only when the writer's color is on (a terminal that
+  // takes it, or a writer whose maker turned it on with setColor); plain writes the reset.
+  // A writer that got a style ends its record with a reset.
+  pub fn toText(self: &, out: &uni TextOut) {
+    if !out.colorOn() {return;}
+    out.putByte(27u8);
+    out.putByte('[');
+    var first = true;
+    if bold {out.putByte('1'); first = false;}
+    if dim {
+      if !first {out.putByte(';');}
+      out.putByte('2'); first = false;
+    }
+    if underline {
+      if !first {out.putByte(';');}
+      out.putByte('4'); first = false;
+    }
+    if fg != 0u8 {
+      if !first {out.putByte(';');}
+      out.putU64(29u64 + u64.from(fg)); first = false;
+    }
+    if bg != 0u8 {
+      if !first {out.putByte(';');}
+      out.putU64(39u64 + u64.from(bg)); first = false;
+    }
+    if first {
+      // Nothing set: the reset
+      out.putByte('0');
+    }
+    else {
+      out.setStyled();
+    }
+    out.putByte('m');
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+}
+
+pub let plain = Style(0u8, 0u8, false, false, false);
+pub let black = Style(1u8, 0u8, false, false, false);
+pub let red = Style(2u8, 0u8, false, false, false);
+pub let green = Style(3u8, 0u8, false, false, false);
+pub let yellow = Style(4u8, 0u8, false, false, false);
+pub let blue = Style(5u8, 0u8, false, false, false);
+pub let magenta = Style(6u8, 0u8, false, false, false);
+pub let cyan = Style(7u8, 0u8, false, false, false);
+pub let white = Style(8u8, 0u8, false, false, false);
+pub let bold = Style(0u8, 0u8, true, false, false);
+pub let dim = Style(0u8, 0u8, false, true, false);
+pub let underline = Style(0u8, 0u8, false, false, true);

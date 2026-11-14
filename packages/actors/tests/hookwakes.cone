@@ -1,0 +1,84 @@
+// A worker's 'after' hook that wakes several actors, as aio's pass does when it
+// answers other actors' completions: each must find a worker while the first
+// runs a long turn. Four workers, four actors, and each round every one of them
+// stays in its turn until all four are in theirs: one left on the queue of the
+// worker that ran the hook, behind a long turn, with workers asleep, would keep
+// the others waiting to the time limit. The workers rest between rounds, so that
+// they are asleep when the hook runs.
+
+mod hookwakes;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import thread;
+import actors;
+
+const workers = 4u32;
+const rounds = 100u64;
+
+let arrived: Atomic[u64];
+let late: Atomic[u64];
+let partsAt: Atomic[usize];
+
+fn @initpure init() {
+  arrived = Atomic[u64].of(0u64);
+  late = Atomic[u64].of(0u64);
+  partsAt = Atomic[usize].of(0usize);
+}
+
+actor Part {
+  pub async fn meet(self, all: u64) {
+    arrived.add(1u64);
+    let t0 = Instant.now();
+    while arrived.load() < all {
+      if t0.elapsed() > Duration.fromSeconds(2i64) {
+        late.add(1u64);
+        return;
+      }
+    }
+  }
+}
+
+fn after() {
+  let parts = partsAt.load() as *List[Part] as &List[Part];
+  let all = arrived.load() + u64.from(workers);
+  var i = 0usize;
+  while i < parts.len() {
+    parts[i].meet(all);
+    i = i + 1usize;
+  }
+}
+
+fn idle() bool {false}
+
+actor Kicker {
+  pub async fn kick(self) {
+    actors.askAfterTurn();
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: workers));
+  actors.workerHooks(&after, &idle);
+  var parts = List[Part]();
+  var i = 0u32;
+  while i < workers {
+    parts <- Part();
+    i = i + 1u32;
+  }
+  partsAt.store(&mut parts as *List[Part] as usize);
+  let k = Kicker();
+  var r = 0u64;
+  while r < rounds && late.load() == 0u64 {
+    k.kick();
+    actors.waitUntilIdle();
+    thread.sleep(Duration.fromMillis(2i64));
+    r = r + 1u64;
+  }
+  expectUInt(late.load(), 0u64, "every actor the hook woke found a worker");
+  expectUInt(arrived.load(), rounds * u64.from(workers), "each ran once a round");
+  finalAll();
+  done()
+}

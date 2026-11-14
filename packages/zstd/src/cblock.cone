@@ -72,21 +72,20 @@ fn writeLitHeader(out: &mut List[u8], kind: u8, n: usize) {
   }
 }
 
-fn writeRawLiterals(out: &mut List[u8], lits: &List[u8]) {
-  let n = lits.len();
+fn writeRawLiterals(out: &mut List[u8], lits: &Array[u8]) {
+  let n = lits.len;
   writeLitHeader(out, 0u8, n);
   out.reserve(n);
   var i = 0usize;
   while i < n {
-    out.push(*lits[i]);
+    out.push(lits[i]);
     i += 1usize;
   }
 }
 
-// Appends the literals section for 'lits'. (They are read through the List,
-// not a slice of it, for the reason matcher.cone gives.)
-fn writeLiterals(lits: &List[u8], huf: &mut HufEnc, out: &mut List[u8]) {
-  let n = lits.len();
+// Appends the literals section for 'lits' (the block's literals: the first 'nlit' of the Seqs' array)
+fn writeLiterals(lits: &Array[u8], huf: &mut HufEnc, out: &mut List[u8]) {
+  let n = lits.len;
   if n < 64usize {
     writeRawLiterals(out, lits);
     return;
@@ -94,7 +93,7 @@ fn writeLiterals(lits: &List[u8], huf: &mut HufEnc, out: &mut List[u8]) {
   let distinct = huf.histogram(lits);
   if distinct == 1usize {
     writeLitHeader(out, 1u8, n);
-    out.push(*lits[0usize]);
+    out.push(lits[0usize]);
     return;
   }
   huf.build(maxHuffBits());
@@ -231,7 +230,7 @@ fn chooseTable(codes: &List[u8], alphabet: usize, defaults: &Array[i16], default
 
 // Appends the sequences section for 'seqs'
 fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
-  let nb = seqs.ll.len();
+  let nb = seqs.nseq;
   if nb < 128usize {
     out.push(u8.from(nb));
   } else if nb < 0x7F00usize {
@@ -267,7 +266,14 @@ fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
   // The bitstream, the last sequence first: each sequence's codes are
   // written after the next one's extra bits, so that reading backward the
   // decoder takes a sequence's extra bits, then moves its states on
-  var bw = BitOut.make();
+  // A sequence's bits: the three states at most 9 + 8 + 9, the extra bits at
+  // most 16 + 16 + 31, so 89 bits and at most 12 bytes, inside the 16 reserved
+  // a sequence. The container holds at most 7 bits between flushes, so the
+  // states and the literal-length bits (7 + 26 + 16) and then the match-length
+  // and offset bits (7 + 16 + 31) each fit in 64 bits before their flush.
+  // The table logs are what that rests on, checked here.
+  if enc.ll.log > 9u32 || enc.of.log > 8u32 || enc.ml.log > 9u32 { panic("zstd: an FSE table log is above its limit"); }
+  var bw = BitRun.open(out, nb * 16usize + 16usize);
   let last = nb - 1usize;
   var llc = usize.from(*enc.llCodes[last]);
   var ofc = usize.from(*enc.ofCodes[last]);
@@ -275,24 +281,26 @@ fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
   var llState = enc.ll.first(llc);
   var ofState = enc.of.first(ofc);
   var mlState = enc.ml.first(mlc);
-  bw.put(out, u64.from(*seqs.ll[last] - llBase[llc]), llBits[llc]);
-  bw.put(out, u64.from(*seqs.ml[last] - mlBase[mlc]), mlBits[mlc]);
-  bw.put(out, u64.from(*seqs.off[last]), u32.from(ofc));
+  bw.put(u64.from(*seqs.ll[last] - llBase[llc]), llBits[llc]);
+  bw.put(u64.from(*seqs.ml[last] - mlBase[mlc]), mlBits[mlc]);
+  bw.put(u64.from(*seqs.off[last]), u32.from(ofc));
   var n = last;
   while n > 0usize {
     n -= 1usize;
     llc = usize.from(*enc.llCodes[n]);
     ofc = usize.from(*enc.ofCodes[n]);
     mlc = usize.from(*enc.mlCodes[n]);
-    ofState = enc.of.encode(&mut bw, out, ofState, ofc);
-    mlState = enc.ml.encode(&mut bw, out, mlState, mlc);
-    llState = enc.ll.encode(&mut bw, out, llState, llc);
-    bw.put(out, u64.from(*seqs.ll[n] - llBase[llc]), llBits[llc]);
-    bw.put(out, u64.from(*seqs.ml[n] - mlBase[mlc]), mlBits[mlc]);
-    bw.put(out, u64.from(*seqs.off[n]), u32.from(ofc));
+    ofState = enc.of.encodeRun(&mut bw, ofState, ofc);
+    mlState = enc.ml.encodeRun(&mut bw, mlState, mlc);
+    llState = enc.ll.encodeRun(&mut bw, llState, llc);
+    bw.add(u64.from(*seqs.ll[n] - llBase[llc]), llBits[llc]);
+    bw.flush();
+    bw.add(u64.from(*seqs.ml[n] - mlBase[mlc]), mlBits[mlc]);
+    bw.add(u64.from(*seqs.off[n]), u32.from(ofc));
+    bw.flush();
   }
-  enc.ml.flush(&mut bw, out, mlState);
-  enc.of.flush(&mut bw, out, ofState);
-  enc.ll.flush(&mut bw, out, llState);
-  bw.close(out);
+  enc.ml.flushRun(&mut bw, mlState);
+  enc.of.flushRun(&mut bw, ofState);
+  enc.ll.flushRun(&mut bw, llState);
+  bw.finish(out);
 }

@@ -1,0 +1,469 @@
+// 'Vector[T, N].gather(s, idx)' and 'v.scatter(s, idx)': the lanes at s[idx[0]] ... s[idx[N-1]] for a
+// vector of usize indices, in any order and with repeats. Each case below has M = N + 3 data
+// numbers, data[i] = 3 * (i + 1), and writes what it computes one number to a line.
+//   gather reversed: lane i is data[N-1-i] = 3 * (N - i)
+//   gather halves:   lane i is data[i/2] = 3 * (i/2 + 1)
+//   gather last:     every lane is data[M-1] = 3 * M (the last place the slice has)
+//   scatter reversed: out[N-1-i] = i + 1, so out[j] = N - j for j < N and the rest stay 0
+//   scatter repeats: idx[i] = i/2, so out[j] is the value of the highest lane i with i/2 == j,
+//                    lane 2j+1 (value 2j+2), for j < N/2, and the rest stay 0
+//   round trip: gather the reversal, scatter it through the reversal: the data again
+// Lanes of one case print on one line, separated by spaces.
+
+mod vector_gather;
+
+import stdio use *;
+
+fn lanes_i32_4(label: &str, v: Vector[i32, 4]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printInt(i64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn whole_i32_4(label: &str, s: &Array[i32, 7]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 7usize {
+    printStr(" ");
+    printInt(i64.from(s[i]));
+  }
+  printStr("\n");
+}
+
+fn case_i32_4() {
+  let data: Array[i32, 7] = [3, 6, 9, 12, 15, 18, 21];
+  let rev = Vector[usize, 4]() <- 3usize, 2usize, 1usize, 0usize;
+  let half = Vector[usize, 4]() <- 0usize, 0usize, 1usize, 1usize;
+  let last = Vector[usize, 4]() <- 6usize, 6usize, 6usize, 6usize;
+  lanes_i32_4("i32_4 gather reversed", Vector[i32, 4].gather(&data, rev));
+  lanes_i32_4("i32_4 gather halves", Vector[i32, 4].gather(&data, half));
+  lanes_i32_4("i32_4 gather last", Vector[i32, 4].gather(&data, last));
+  let v = Vector[i32, 4]() <- 1, 2, 3, 4;
+  var out: Array[i32, 7] = [0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out, rev);
+  whole_i32_4("i32_4 scatter reversed", &out);
+  var out2: Array[i32, 7] = [0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out2, half);
+  whole_i32_4("i32_4 scatter repeats", &out2);
+  var back: Array[i32, 7] = [0, 0, 0, 0, 0, 0, 0];
+  Vector[i32, 4].gather(&data, rev).scatter(&mut back, rev);
+  whole_i32_4("i32_4 round trip", &back);
+}
+
+fn lanes_f32_4(label: &str, v: Vector[f32, 4]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printFloat(f64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn whole_f32_4(label: &str, s: &Array[f32, 7]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 7usize {
+    printStr(" ");
+    printFloat(f64.from(s[i]));
+  }
+  printStr("\n");
+}
+
+fn case_f32_4() {
+  let data: Array[f32, 7] = [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0];
+  let rev = Vector[usize, 4]() <- 3usize, 2usize, 1usize, 0usize;
+  let half = Vector[usize, 4]() <- 0usize, 0usize, 1usize, 1usize;
+  let last = Vector[usize, 4]() <- 6usize, 6usize, 6usize, 6usize;
+  lanes_f32_4("f32_4 gather reversed", Vector[f32, 4].gather(&data, rev));
+  lanes_f32_4("f32_4 gather halves", Vector[f32, 4].gather(&data, half));
+  lanes_f32_4("f32_4 gather last", Vector[f32, 4].gather(&data, last));
+  let v = Vector[f32, 4]() <- 1.0, 2.0, 3.0, 4.0;
+  var out: Array[f32, 7] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  v.scatter(&mut out, rev);
+  whole_f32_4("f32_4 scatter reversed", &out);
+  var out2: Array[f32, 7] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  v.scatter(&mut out2, half);
+  whole_f32_4("f32_4 scatter repeats", &out2);
+  var back: Array[f32, 7] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  Vector[f32, 4].gather(&data, rev).scatter(&mut back, rev);
+  whole_f32_4("f32_4 round trip", &back);
+}
+
+fn lanes_u8_4(label: &str, v: Vector[u8, 4]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printInt(i64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn whole_u8_4(label: &str, s: &Array[u8, 7]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 7usize {
+    printStr(" ");
+    printInt(i64.from(s[i]));
+  }
+  printStr("\n");
+}
+
+fn case_u8_4() {
+  let data: Array[u8, 7] = [3, 6, 9, 12, 15, 18, 21];
+  let rev = Vector[usize, 4]() <- 3usize, 2usize, 1usize, 0usize;
+  let half = Vector[usize, 4]() <- 0usize, 0usize, 1usize, 1usize;
+  let last = Vector[usize, 4]() <- 6usize, 6usize, 6usize, 6usize;
+  lanes_u8_4("u8_4 gather reversed", Vector[u8, 4].gather(&data, rev));
+  lanes_u8_4("u8_4 gather halves", Vector[u8, 4].gather(&data, half));
+  lanes_u8_4("u8_4 gather last", Vector[u8, 4].gather(&data, last));
+  let v = Vector[u8, 4]() <- 1, 2, 3, 4;
+  var out: Array[u8, 7] = [0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out, rev);
+  whole_u8_4("u8_4 scatter reversed", &out);
+  var out2: Array[u8, 7] = [0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out2, half);
+  whole_u8_4("u8_4 scatter repeats", &out2);
+  var back: Array[u8, 7] = [0, 0, 0, 0, 0, 0, 0];
+  Vector[u8, 4].gather(&data, rev).scatter(&mut back, rev);
+  whole_u8_4("u8_4 round trip", &back);
+}
+
+fn lanes_f64_4(label: &str, v: Vector[f64, 4]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printFloat(f64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn whole_f64_4(label: &str, s: &Array[f64, 7]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 7usize {
+    printStr(" ");
+    printFloat(f64.from(s[i]));
+  }
+  printStr("\n");
+}
+
+fn case_f64_4() {
+  let data: Array[f64, 7] = [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0];
+  let rev = Vector[usize, 4]() <- 3usize, 2usize, 1usize, 0usize;
+  let half = Vector[usize, 4]() <- 0usize, 0usize, 1usize, 1usize;
+  let last = Vector[usize, 4]() <- 6usize, 6usize, 6usize, 6usize;
+  lanes_f64_4("f64_4 gather reversed", Vector[f64, 4].gather(&data, rev));
+  lanes_f64_4("f64_4 gather halves", Vector[f64, 4].gather(&data, half));
+  lanes_f64_4("f64_4 gather last", Vector[f64, 4].gather(&data, last));
+  let v = Vector[f64, 4]() <- 1.0, 2.0, 3.0, 4.0;
+  var out: Array[f64, 7] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  v.scatter(&mut out, rev);
+  whole_f64_4("f64_4 scatter reversed", &out);
+  var out2: Array[f64, 7] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  v.scatter(&mut out2, half);
+  whole_f64_4("f64_4 scatter repeats", &out2);
+  var back: Array[f64, 7] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  Vector[f64, 4].gather(&data, rev).scatter(&mut back, rev);
+  whole_f64_4("f64_4 round trip", &back);
+}
+
+fn lanes_i32_8(label: &str, v: Vector[i32, 8]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 8usize {
+    printStr(" ");
+    printInt(i64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn whole_i32_8(label: &str, s: &Array[i32, 11]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 11usize {
+    printStr(" ");
+    printInt(i64.from(s[i]));
+  }
+  printStr("\n");
+}
+
+fn case_i32_8() {
+  let data: Array[i32, 11] = [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33];
+  let rev = Vector[usize, 8]() <- 7usize, 6usize, 5usize, 4usize, 3usize, 2usize, 1usize, 0usize;
+  let half = Vector[usize, 8]() <- 0usize, 0usize, 1usize, 1usize, 2usize, 2usize, 3usize, 3usize;
+  let last = Vector[usize, 8]() <- 10usize, 10usize, 10usize, 10usize, 10usize, 10usize, 10usize, 10usize;
+  lanes_i32_8("i32_8 gather reversed", Vector[i32, 8].gather(&data, rev));
+  lanes_i32_8("i32_8 gather halves", Vector[i32, 8].gather(&data, half));
+  lanes_i32_8("i32_8 gather last", Vector[i32, 8].gather(&data, last));
+  let v = Vector[i32, 8]() <- 1, 2, 3, 4, 5, 6, 7, 8;
+  var out: Array[i32, 11] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out, rev);
+  whole_i32_8("i32_8 scatter reversed", &out);
+  var out2: Array[i32, 11] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out2, half);
+  whole_i32_8("i32_8 scatter repeats", &out2);
+  var back: Array[i32, 11] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  Vector[i32, 8].gather(&data, rev).scatter(&mut back, rev);
+  whole_i32_8("i32_8 round trip", &back);
+}
+
+fn lanes_f32_8(label: &str, v: Vector[f32, 8]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 8usize {
+    printStr(" ");
+    printFloat(f64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn whole_f32_8(label: &str, s: &Array[f32, 11]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 11usize {
+    printStr(" ");
+    printFloat(f64.from(s[i]));
+  }
+  printStr("\n");
+}
+
+fn case_f32_8() {
+  let data: Array[f32, 11] = [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0, 33.0];
+  let rev = Vector[usize, 8]() <- 7usize, 6usize, 5usize, 4usize, 3usize, 2usize, 1usize, 0usize;
+  let half = Vector[usize, 8]() <- 0usize, 0usize, 1usize, 1usize, 2usize, 2usize, 3usize, 3usize;
+  let last = Vector[usize, 8]() <- 10usize, 10usize, 10usize, 10usize, 10usize, 10usize, 10usize, 10usize;
+  lanes_f32_8("f32_8 gather reversed", Vector[f32, 8].gather(&data, rev));
+  lanes_f32_8("f32_8 gather halves", Vector[f32, 8].gather(&data, half));
+  lanes_f32_8("f32_8 gather last", Vector[f32, 8].gather(&data, last));
+  let v = Vector[f32, 8]() <- 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0;
+  var out: Array[f32, 11] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  v.scatter(&mut out, rev);
+  whole_f32_8("f32_8 scatter reversed", &out);
+  var out2: Array[f32, 11] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  v.scatter(&mut out2, half);
+  whole_f32_8("f32_8 scatter repeats", &out2);
+  var back: Array[f32, 11] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  Vector[f32, 8].gather(&data, rev).scatter(&mut back, rev);
+  whole_f32_8("f32_8 round trip", &back);
+}
+
+fn lanes_u8_8(label: &str, v: Vector[u8, 8]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 8usize {
+    printStr(" ");
+    printInt(i64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn whole_u8_8(label: &str, s: &Array[u8, 11]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 11usize {
+    printStr(" ");
+    printInt(i64.from(s[i]));
+  }
+  printStr("\n");
+}
+
+fn case_u8_8() {
+  let data: Array[u8, 11] = [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33];
+  let rev = Vector[usize, 8]() <- 7usize, 6usize, 5usize, 4usize, 3usize, 2usize, 1usize, 0usize;
+  let half = Vector[usize, 8]() <- 0usize, 0usize, 1usize, 1usize, 2usize, 2usize, 3usize, 3usize;
+  let last = Vector[usize, 8]() <- 10usize, 10usize, 10usize, 10usize, 10usize, 10usize, 10usize, 10usize;
+  lanes_u8_8("u8_8 gather reversed", Vector[u8, 8].gather(&data, rev));
+  lanes_u8_8("u8_8 gather halves", Vector[u8, 8].gather(&data, half));
+  lanes_u8_8("u8_8 gather last", Vector[u8, 8].gather(&data, last));
+  let v = Vector[u8, 8]() <- 1, 2, 3, 4, 5, 6, 7, 8;
+  var out: Array[u8, 11] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out, rev);
+  whole_u8_8("u8_8 scatter reversed", &out);
+  var out2: Array[u8, 11] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out2, half);
+  whole_u8_8("u8_8 scatter repeats", &out2);
+  var back: Array[u8, 11] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  Vector[u8, 8].gather(&data, rev).scatter(&mut back, rev);
+  whole_u8_8("u8_8 round trip", &back);
+}
+
+fn lanes_f64_8(label: &str, v: Vector[f64, 8]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 8usize {
+    printStr(" ");
+    printFloat(f64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn whole_f64_8(label: &str, s: &Array[f64, 11]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 11usize {
+    printStr(" ");
+    printFloat(f64.from(s[i]));
+  }
+  printStr("\n");
+}
+
+fn case_f64_8() {
+  let data: Array[f64, 11] = [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0, 33.0];
+  let rev = Vector[usize, 8]() <- 7usize, 6usize, 5usize, 4usize, 3usize, 2usize, 1usize, 0usize;
+  let half = Vector[usize, 8]() <- 0usize, 0usize, 1usize, 1usize, 2usize, 2usize, 3usize, 3usize;
+  let last = Vector[usize, 8]() <- 10usize, 10usize, 10usize, 10usize, 10usize, 10usize, 10usize, 10usize;
+  lanes_f64_8("f64_8 gather reversed", Vector[f64, 8].gather(&data, rev));
+  lanes_f64_8("f64_8 gather halves", Vector[f64, 8].gather(&data, half));
+  lanes_f64_8("f64_8 gather last", Vector[f64, 8].gather(&data, last));
+  let v = Vector[f64, 8]() <- 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0;
+  var out: Array[f64, 11] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  v.scatter(&mut out, rev);
+  whole_f64_8("f64_8 scatter reversed", &out);
+  var out2: Array[f64, 11] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  v.scatter(&mut out2, half);
+  whole_f64_8("f64_8 scatter repeats", &out2);
+  var back: Array[f64, 11] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  Vector[f64, 8].gather(&data, rev).scatter(&mut back, rev);
+  whole_f64_8("f64_8 round trip", &back);
+}
+
+fn lanes_u8_16(label: &str, v: Vector[u8, 16]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 16usize {
+    printStr(" ");
+    printInt(i64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn whole_u8_16(label: &str, s: &Array[u8, 19]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 19usize {
+    printStr(" ");
+    printInt(i64.from(s[i]));
+  }
+  printStr("\n");
+}
+
+fn case_u8_16() {
+  let data: Array[u8, 19] = [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57];
+  let rev = Vector[usize, 16]() <- 15usize, 14usize, 13usize, 12usize, 11usize, 10usize, 9usize, 8usize, 7usize, 6usize, 5usize, 4usize, 3usize, 2usize, 1usize, 0usize;
+  let half = Vector[usize, 16]() <- 0usize, 0usize, 1usize, 1usize, 2usize, 2usize, 3usize, 3usize, 4usize, 4usize, 5usize, 5usize, 6usize, 6usize, 7usize, 7usize;
+  let last = Vector[usize, 16]() <- 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize;
+  lanes_u8_16("u8_16 gather reversed", Vector[u8, 16].gather(&data, rev));
+  lanes_u8_16("u8_16 gather halves", Vector[u8, 16].gather(&data, half));
+  lanes_u8_16("u8_16 gather last", Vector[u8, 16].gather(&data, last));
+  let v = Vector[u8, 16]() <- 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16;
+  var out: Array[u8, 19] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out, rev);
+  whole_u8_16("u8_16 scatter reversed", &out);
+  var out2: Array[u8, 19] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out2, half);
+  whole_u8_16("u8_16 scatter repeats", &out2);
+  var back: Array[u8, 19] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  Vector[u8, 16].gather(&data, rev).scatter(&mut back, rev);
+  whole_u8_16("u8_16 round trip", &back);
+}
+
+fn lanes_i32_16(label: &str, v: Vector[i32, 16]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 16usize {
+    printStr(" ");
+    printInt(i64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn whole_i32_16(label: &str, s: &Array[i32, 19]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 19usize {
+    printStr(" ");
+    printInt(i64.from(s[i]));
+  }
+  printStr("\n");
+}
+
+fn case_i32_16() {
+  let data: Array[i32, 19] = [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57];
+  let rev = Vector[usize, 16]() <- 15usize, 14usize, 13usize, 12usize, 11usize, 10usize, 9usize, 8usize, 7usize, 6usize, 5usize, 4usize, 3usize, 2usize, 1usize, 0usize;
+  let half = Vector[usize, 16]() <- 0usize, 0usize, 1usize, 1usize, 2usize, 2usize, 3usize, 3usize, 4usize, 4usize, 5usize, 5usize, 6usize, 6usize, 7usize, 7usize;
+  let last = Vector[usize, 16]() <- 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize;
+  lanes_i32_16("i32_16 gather reversed", Vector[i32, 16].gather(&data, rev));
+  lanes_i32_16("i32_16 gather halves", Vector[i32, 16].gather(&data, half));
+  lanes_i32_16("i32_16 gather last", Vector[i32, 16].gather(&data, last));
+  let v = Vector[i32, 16]() <- 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16;
+  var out: Array[i32, 19] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out, rev);
+  whole_i32_16("i32_16 scatter reversed", &out);
+  var out2: Array[i32, 19] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  v.scatter(&mut out2, half);
+  whole_i32_16("i32_16 scatter repeats", &out2);
+  var back: Array[i32, 19] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  Vector[i32, 16].gather(&data, rev).scatter(&mut back, rev);
+  whole_i32_16("i32_16 round trip", &back);
+}
+
+fn lanes_f32_16(label: &str, v: Vector[f32, 16]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 16usize {
+    printStr(" ");
+    printFloat(f64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn whole_f32_16(label: &str, s: &Array[f32, 19]) {
+  printStr(label);
+  printStr(":");
+  each i in 0usize ..< 19usize {
+    printStr(" ");
+    printFloat(f64.from(s[i]));
+  }
+  printStr("\n");
+}
+
+fn case_f32_16() {
+  let data: Array[f32, 19] = [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0, 33.0, 36.0, 39.0, 42.0, 45.0, 48.0, 51.0, 54.0, 57.0];
+  let rev = Vector[usize, 16]() <- 15usize, 14usize, 13usize, 12usize, 11usize, 10usize, 9usize, 8usize, 7usize, 6usize, 5usize, 4usize, 3usize, 2usize, 1usize, 0usize;
+  let half = Vector[usize, 16]() <- 0usize, 0usize, 1usize, 1usize, 2usize, 2usize, 3usize, 3usize, 4usize, 4usize, 5usize, 5usize, 6usize, 6usize, 7usize, 7usize;
+  let last = Vector[usize, 16]() <- 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize, 18usize;
+  lanes_f32_16("f32_16 gather reversed", Vector[f32, 16].gather(&data, rev));
+  lanes_f32_16("f32_16 gather halves", Vector[f32, 16].gather(&data, half));
+  lanes_f32_16("f32_16 gather last", Vector[f32, 16].gather(&data, last));
+  let v = Vector[f32, 16]() <- 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0;
+  var out: Array[f32, 19] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  v.scatter(&mut out, rev);
+  whole_f32_16("f32_16 scatter reversed", &out);
+  var out2: Array[f32, 19] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  v.scatter(&mut out2, half);
+  whole_f32_16("f32_16 scatter repeats", &out2);
+  var back: Array[f32, 19] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  Vector[f32, 16].gather(&data, rev).scatter(&mut back, rev);
+  whole_f32_16("f32_16 round trip", &back);
+}
+
+fn main() {
+  case_i32_4();
+  case_f32_4();
+  case_u8_4();
+  case_f64_4();
+  case_i32_8();
+  case_f32_8();
+  case_u8_8();
+  case_f64_8();
+  case_u8_16();
+  case_i32_16();
+  case_f32_16();
+}

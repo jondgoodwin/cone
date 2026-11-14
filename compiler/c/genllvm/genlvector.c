@@ -141,6 +141,73 @@ LLVMValueRef genlVectorLoad(GenState *gen, INode *site, INode *vectype, LLVMValu
     return load;
 }
 
+// The slice's pointer and count, once every lane of the index vector is below the
+// count: the compare, one reduction and one branch, whatever the number of lanes,
+// before anything is read or written. Else the index panic with the first lane
+// out of range and the count.
+static LLVMValueRef genlGatherIndices(GenState *gen, INode *site, LLVMValueRef slice, LLVMValueRef idx, LLVMValueRef *ptr) {
+    LLVMBuilderRef bld = gen->builder;
+    LLVMTypeRef usize = genlUsize(gen);
+    LLVMTypeRef idxtype = LLVMTypeOf(idx);
+    unsigned lanes = LLVMGetVectorSize(idxtype);
+    *ptr = LLVMBuildExtractValue(bld, slice, 0, "sliceptr");
+    LLVMValueRef count = LLVMBuildExtractValue(bld, slice, 1, "count");
+    LLVMValueRef bad = LLVMBuildICmp(bld, LLVMIntUGE, idx, genlSplat(gen, count, lanes), "idxbad");
+    LLVMTypeRef masktype = LLVMTypeOf(bad);
+    LLVMValueRef anybad = genlVecCall(gen, "llvm.vector.reduce.or", &masktype, 1, &bad, 1);
+    LLVMBasicBlockRef panicblk = genlInsertBlock(gen, "panic");
+    LLVMBasicBlockRef okblk = genlInsertBlock(gen, "idxin");
+    LLVMBuildCondBr(bld, anybad, panicblk, okblk);
+    LLVMPositionBuilderAtEnd(bld, panicblk);
+    // The first bad lane's index (the panic path is cold, so a chain of selects will do)
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
+    LLVMValueRef first = LLVMConstInt(usize, 0, 0);
+    for (unsigned i = lanes; i-- > 0;) {
+        LLVMValueRef at = LLVMConstInt(i32, i, 0);
+        LLVMValueRef isbad = LLVMBuildExtractElement(bld, bad, at, "");
+        first = LLVMBuildSelect(bld, isbad, LLVMBuildExtractElement(bld, idx, at, ""), first, "");
+    }
+    LLVMValueRef vals[2] = {first, count};
+    genlPanic(gen, site, PanicIndex, vals);
+    LLVMPositionBuilderAtEnd(bld, okblk);
+    return idx;
+}
+
+// The N pointers s[idx[0]] ... s[idx[N-1]], a call of LLVM's masked gather or scatter
+// with every lane on (each was checked), the lanes' own alignment on the pointers
+static LLVMValueRef genlGatherScatter(GenState *gen, int scatter, LLVMValueRef val, LLVMValueRef base, LLVMValueRef idx, LLVMTypeRef vectype) {
+    LLVMBuilderRef bld = gen->builder;
+    LLVMTypeRef lane = LLVMGetElementType(vectype);
+    unsigned lanes = LLVMGetVectorSize(vectype);
+    LLVMValueRef ptrs = LLVMBuildGEP2(bld, lane, base, &idx, 1, "lanes");
+    LLVMValueRef on = genlSplat(gen, LLVMConstInt(LLVMInt1TypeInContext(gen->context), 1, 0), lanes);
+    LLVMTypeRef types[2] = {vectype, LLVMTypeOf(ptrs)};
+    LLVMValueRef call;
+    unsigned ptrarg;
+    if (scatter) {
+        LLVMValueRef args[3] = {val, ptrs, on};
+        call = genlVecCall(gen, "llvm.masked.scatter", types, 2, args, 3);
+        ptrarg = 1;
+    }
+    else {
+        LLVMValueRef args[3] = {ptrs, on, LLVMGetPoison(vectype)};
+        call = genlVecCall(gen, "llvm.masked.gather", types, 2, args, 3);
+        ptrarg = 0;
+    }
+    unsigned kind = LLVMGetEnumAttributeKindForName("align", 5);
+    LLVMAddCallSiteAttribute(call, 1 + ptrarg,
+        LLVMCreateEnumAttribute(gen->context, kind, genlLaneAlign(lane)));
+    return call;
+}
+
+// 'Vector[T, N].gather(s, idx)': the lanes s[idx[0]] ... s[idx[N-1]] as a vector
+LLVMValueRef genlVectorGather(GenState *gen, INode *site, INode *vectype, LLVMValueRef *fnargs) {
+    LLVMTypeRef llvmvec = genlType(gen, vectype);
+    LLVMValueRef base;
+    LLVMValueRef idx = genlGatherIndices(gen, site, fnargs[0], fnargs[1], &base);
+    return genlGatherScatter(gen, 0, NULL, base, idx, llvmvec);
+}
+
 // 'm[i]': a mask's lane, a bool. The mask is a register value (or, through a
 // reference, loaded), and its lane is taken at a checked index.
 LLVMValueRef genlMaskLane(GenState *gen, FnCallNode *fncall) {
@@ -286,6 +353,13 @@ LLVMValueRef genlVectorIntrinsic(GenState *gen, INode *site, int16_t kind, LLVMV
         LLVMValueRef store = LLVMBuildStore(bld, a, slot);
         LLVMSetAlignment(store, genlLaneAlign(lane));
         return store;
+    }
+    case VecScatterIntrinsic: {
+        // 'v.scatter(s, idx)': a is the vector, then the slice and the indices. A
+        // repeated index takes the highest lane, as LLVM's scatter promises
+        LLVMValueRef base;
+        LLVMValueRef idx = genlGatherIndices(gen, site, fnargs[1], fnargs[2], &base);
+        return genlGatherScatter(gen, 1, a, base, idx, vectype);
     }
     }
     errorUnreachable(site, "a vector operation generation has no case for");

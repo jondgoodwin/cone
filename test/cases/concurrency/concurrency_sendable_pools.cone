@@ -1,0 +1,52 @@
+// A GenPool and a DensePool declare 'Sendable', as a List does: a pool belongs
+// to one thread at a time and moves between them (Jon, 8 Nov 2026), so it may be
+// moved into another thread, where its elements may be. The sums are worked out
+// by hand: the GenPool takes 10, 20, 30, 40 and has 20 removed, leaving 10 + 30 +
+// 40 = 80; the DensePool holds 1, 2, 3, 4 (10).
+
+mod concurrency_sendable_pools;
+
+import stdio use *;
+import pools use *;
+import thread;
+
+fn crosses[T: Sendable]() {}
+
+// Sums a pool's live values in another thread
+fn sumGen(p: GenPool[i64]) i64 {
+  var total = 0i64;
+  each v in p.iter() {total = total + *v;}
+  total
+}
+
+fn sumDense(p: DensePool[i64]) i64 {
+  var total = 0i64;
+  each v in p.iter() {total = total + *v;}
+  total
+}
+
+fn main() {
+  crosses[GenPool[i64]]();
+  crosses[DensePool[i64]]();
+
+  var g = GenPool[i64]();
+  g.add(10i64);
+  let mid = g.add(20i64);
+  g.add(30i64);
+  g.add(40i64);
+  g.remove(mid);
+  let gt = thread.start(g, &sumGen);
+  printStr("gen ");
+  printInt(gt.join());
+  printStr("\n");
+
+  var d = DensePool[i64]();
+  d.add(1i64);
+  d.add(2i64);
+  d.add(3i64);
+  d.add(4i64);
+  let dt = thread.start(d, &sumDense);
+  printStr("dense ");
+  printInt(dt.join());
+  printStr("\n");
+}

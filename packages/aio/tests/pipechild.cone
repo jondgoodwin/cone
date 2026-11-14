@@ -36,6 +36,11 @@ extern {
 
 fn take(rx: &mut Receiver[u64]) u64 { rx.recv() || 999u64 }
 
+// The owned values a launch gives, unwrapped (every one is there in these tests)
+fn outOf(o: Option[process.ChildStdout]) process.ChildStdout { match o { case var Some(x) { x } case is None { panic("no stdout end") } } }
+fn errOf(o: Option[process.ChildStderr]) process.ChildStderr { match o { case var Some(x) { x } case is None { panic("no stderr end") } } }
+fn procOf(o: Option[process.ChildProcess]) process.ChildProcess { match o { case var Some(x) { x } case is None { panic("no process") } } }
+
 fn number(s: &String) u64 { u64.parse(s.view()) || 0u64 }
 
 fn childStreams(n: usize) i32 {
@@ -133,9 +138,9 @@ actor Tester {
   pub async fn streams(self, cmd: List[String], out: Sender[u64]) {
     match process.launch(cmd.view()) {
       case var Ok(c) {
-        let po = pipeOf(await aio.adoptPipe(c.takeStdout()));
-        let pe = pipeOf(await aio.adoptPipe(c.takeStderr()));
-        let ch = childOf(await aio.adoptChild(c.takeProcess()));
+        let po = pipeOf(await aio.adoptStdout(outOf(c.takeStdout())));
+        let pe = pipeOf(await aio.adoptStderr(errOf(c.takeStderr())));
+        let ch = childOf(await aio.adoptChild(procOf(c.takeProcess())));
         let d1 = await self.drain(po, out.clone());
         let d2 = await self.drain(pe, out.clone());
         let w = await ch.exited();
@@ -157,9 +162,9 @@ actor Tester {
   pub async fn sleeper(self, cmd: List[String], out: Sender[u64]) {
     match process.launch(cmd.view()) {
       case var Ok(c) {
-        let po = pipeOf(await aio.adoptPipe(c.takeStdout()));
-        let pe = pipeOf(await aio.adoptPipe(c.takeStderr()));
-        let ch = childOf(await aio.adoptChild(c.takeProcess()));
+        let po = pipeOf(await aio.adoptStdout(outOf(c.takeStdout())));
+        let pe = pipeOf(await aio.adoptStderr(errOf(c.takeStderr())));
+        let ch = childOf(await aio.adoptChild(procOf(c.takeProcess())));
         let t0 = Instant.now();
         let w1 = await ch.exitedIn(IoLimits.until(t0 + Duration.fromMillis(300i64)));
         match &w1 {

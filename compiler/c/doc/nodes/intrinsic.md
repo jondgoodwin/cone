@@ -13,7 +13,7 @@ they differ in who declares them and in how their meaning is decided.
 
 The kinds built in C are left as they are until the number types are rebuilt
 over generics; nothing new is to be added to them. The one exception is the
-`Vec*` kinds (`VecSum` … `VecAll`, with `VecLoad` and `VecStore`, which take a slice), built in C because `Vector` has no Cone
+`Vec*` kinds (`VecSum` … `VecAll`, with `VecLoad`, `VecStore`, `VecGather` and `VecScatter`, which take a slice), built in C because `Vector` has no Cone
 declaration to hang a declared intrinsic on (`vector.md`). **A new intrinsic is declared
 in core, entered in the registry, and given an arm in `genlDeclaredIntrinsic`**
 — or, for one whose meaning depends on its call as well as its instance, as the
@@ -254,6 +254,7 @@ type while each call gives its own orderings.
 | `min[T]`, `max[T]` | operation | a float's `llvm.minimum` and `llvm.maximum` (a NaN in either gives a NaN, and `-0.0` is below `0.0`, as the vector reductions `fminimum` and `fmaximum` are), an integer's `llvm.smin`/`smax` or `llvm.umin`/`umax` by signedness. `T` an integer or a float |
 | `clamp[T]` | operation | `max(x, lo)` then `min(_, hi)`, each as `min` and `max` above, so a NaN in any of the three gives a NaN and `lo > hi` gives `hi`. `T` an integer or a float. A kernel's float `min`, `max` and `clamp` keep SPIR-V's `NMin` and `NMax`, a stated exception to the NaN answer (generation.md, the SPIR-V section) |
 | `floor[T]`, `ceil[T]`, `round[T]`, `fma[T]` | operation | `llvm.floor`, `llvm.ceil`, `llvm.round` (half away from zero, never `roundeven`) and `llvm.fma`. `T` a float (`ClassFloat`) |
+| `blackBox[T]` | operation | `trust` 0. The argument stored in an entry-block slot (`genlAlloca`), a call of an empty inline asm (`LLVMGetInlineAsm`, string `""`, constraints `"r,~{memory}"`, side effects on, type `void(ptr)`) on the slot's address, and the slot loaded back: about 0.3 ns, no atomic. Side effects stop deletion and hoisting; the memory clobber makes the slot's contents unknown after the call, which is how this lowering works and not a promise of the contract (the manual says only that the optimiser assumes nothing of the value). On a GPU or WebAssembly target the argument is returned as it is. Declared in `mem` with the fallback body `{ v }`. Checked by `intrinsic_blackbox` (values, lowered and through the fallback) and `intrinsic_genllvm_blackbox` (optimized IR) |
 | `mulFold` | operation | both `u64`s zero-extended to `i128`, one `mul`, the product's high half `lshr` 64, and the two halves `trunc`ated and xored (`genlDeclaredIntrinsic`): one multiply on a 64-bit target. Declared in `mem` with a fallback body that forms the product from 32-bit halves, which `intrinsic_mulfold` checks against the lowering. The mixing step of core's `Hasher` ([struct](struct.md), "Hash") |
 
 **Facts of the build are not intrinsics.** `isDebugBuild`, `isWindows`,

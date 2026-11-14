@@ -1,0 +1,45 @@
+// 'ps[i].f' over a SoaList is the column's element 'ps.f[i]', so a borrow of it follows the column's
+// rules unchanged: a field of a row borrowed '&uni' may not be written or borrowed again while the
+// first is used, and a field borrowed shared may not be written, nor the list grown, meanwhile. A
+// different column of the same row is free, as two columns are ('&uni ps.at' beside '&imm ps.x').
+
+mod meta_soa_place_borrow;
+
+import collections use *;
+
+struct Pt {
+  pub x: i32;
+  pub y: i32;
+}
+
+struct Row {
+  pub x: i32;
+  pub at: Pt;
+}
+
+fn conflictWrite(ps: &uni SoaList[Row]) {
+  let a = &uni ps[0usize].at;
+  ps[0usize].at.x = 1;              //~ ErrorFrozen:13 "'*ps' is borrowed mutably"
+  a.y = 2;
+}
+
+fn conflictTwice(ps: &uni SoaList[Row]) {
+  let a = &uni ps[0usize].at;
+  let b = &uni ps[0usize].at;       //~ ErrorFrozen:11 "'*ps' is borrowed mutably"
+  a.y = 2;
+  b.y = 3;
+}
+
+fn conflictPush(ps: &uni SoaList[Row]) {
+  let a = &ps[0usize].x;
+  ps.push(Row(1, Pt(1, 2)));        //~ ErrorFrozen:3 "may not be borrowed mutably"
+  let n = *a;
+}
+
+fn otherColumn(ps: &uni SoaList[Row]) {
+  let a = &uni ps[0usize].at;
+  ps[0usize].x = 3;
+  a.y = 2;
+}
+
+fn main() {}

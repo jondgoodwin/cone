@@ -2229,10 +2229,12 @@ hides them; a module-level one is refused as a duplicate at parse
 (`modAddNamedNode`), as one named `i64` is — Jon, 24 September 2026: the
 compiler is right, and they hold that place for now
 ([Name Resolution](../phases/name-resolution.md), "Some bindings are never hooked").
-Both stitched functions swap one flag, `cone.live`, as their first act: the init
-does nothing on a program already live and the final nothing on one that is not,
-so a call after the entry's runs nothing, and a program that finalizes and
-initializes again runs both again. A library called from C gets no entry, and the
+Both stitched functions change one three-state flag, `cone.live` (0 never live,
+1 live, 2 finished), as their first act: the init does nothing on a program
+already live and the final nothing on one that is not live, so a call after the
+entry's runs nothing. Init runs once per process (Jon, 6 November): an init that
+finds the program finished panics (`cone_panicInitAgain`, `PanicInitAgain`).
+A library called from C gets no entry, and the
 C caller sets it up.
 
 **A C-named module's `init` is a static constructor, not a stitched call**

@@ -20,6 +20,69 @@
 // (plus slack) that matches copy from; the history is the decoder's own, so
 // the caller may do what it likes with the bytes it was given.
 
+// -------- wide writes (copied from package zstd's block.cone, #1277: its helpers are private there) --------
+
+// Gives 'hist' the n bytes already written at its end, past its length, in
+// room it reserved: 'appendSlice' of exactly those bytes (a copy of them onto
+// themselves, a block move, where growing the list by 'resize' or 'push'
+// writes a byte at a time)
+fn commit(hist: &mut List[u8], at: usize, n: usize) {
+  let p = hist.viewMut() as *u8;
+  hist.appendSlice(mem.sliceFromParts[u8](p + at, n));
+}
+
+// Writes 'ml' bytes at b[at] as if copied one at a time from b[from],
+// b[from + 1], ...: when the source runs on into the bytes being written (the
+// match is longer than its offset, from + ml > at), the last 'at - from' bytes
+// repeat. The caller has checked 0 < at - from and that b has room to at + ml
+// plus 16 bytes of slack, which the last step may write into.
+fn wideMatch(b: *u8, at: usize, from: usize, ml: usize) {
+  var a = at;
+  var f = from;
+  var n = ml;
+  let off = at - from;
+  if off < 8usize {
+    if ml <= 8usize {
+      var k = 0usize;
+      while k < ml {
+        mem.writeRaw[u8](b + (at + k), mem.readRaw[u8](b + (from + k)));
+        k = k + 1usize;
+      }
+      return;
+    }
+    // The first eight bytes one at a time (each reads what the one before
+    // wrote); the output is then periodic with period 'off', so the rest can
+    // be read from d bytes behind the write, d a multiple of 'off' in 8 to 14
+    // (the table: 8 8 9 8 10 12 14 for off 1 to 7), a distance the word steps
+    // below handle
+    var k = 0usize;
+    while k < 8usize {
+      mem.writeRaw[u8](b + (at + k), mem.readRaw[u8](b + (from + k)));
+      k = k + 1usize;
+    }
+    let d = usize.from((0x0E0C0A0809080800u64 >> u64.from(off << 3usize)) & 0xFFu64);
+    a = at + 8usize;
+    f = a - d;
+    n = ml - 8usize;
+  } else if off >= n && n > 64usize {
+    mem.moveRaw[u8](b + a, b + f, n);
+    return;
+  }
+  // Here a - f >= 8. Two words a step, the second read after the first
+  // written: the bytes a step reads are all written before it reads them, since
+  // each is at least 8 behind its own target and the steps go in order. The
+  // last step may write up to 15 bytes past the match, into the slack, from
+  // bytes it reads that are not yet written (inside the allocation, and they
+  // reach only those bytes past the match: byte j of a step comes from j - d
+  // behind it, so the bytes of the match itself never depend on them).
+  var k = 0usize;
+  while k < n {
+    mem.writeRaw[u64]((b + (a + k)) as *u64, mem.readRaw[u64]((b + (f + k)) as *u64));
+    mem.writeRaw[u64]((b + (a + (k + 8usize))) as *u64, mem.readRaw[u64]((b + (f + (k + 8usize))) as *u64));
+    k = k + 16usize;
+  }
+}
+
 // -------- the bit reader --------
 
 // The fed input, and the bit buffer taken from it. 'pos' is the next byte to
@@ -789,7 +852,7 @@ pub struct Inflater {
   // symbol is left unread for 'codes' to handle, with its checks and errors.
   // Answers the bytes it appended to the history.
   fn fastRun(self: &mut, maxOut: usize) usize {
-    hist.reserve(maxOut);
+    hist.reserve(maxOut + 16usize);
     var produced = 0usize;
     var bits = bi.bits;
     var nbits = bi.nbits;
@@ -817,12 +880,24 @@ pub struct Inflater {
     let inLen = src.len;
     let fmask = (1u64 << u64.from(FastBits)) - 1u64;
     var produced = 0usize;
+    // Raw access, with its arguments:
+    // - 'bp' is the history's data pointer, 'w0' its length: byte w0 + produced is the next to write. 'fastRun'
+    //   reserved maxOut + 16 bytes beyond the length (and nothing here grows the list), so the room runs to
+    //   w0 + maxOut + 16.
+    // - The loop runs only while produced + 258 <= maxOut, so a symbol writes at most 258 bytes below
+    //   w0 + maxOut; a wide step may write 15 past that, inside the 16 bytes of slack.
+    // - 'sp' is the input's data pointer and 'inLen' its length; the loop runs only while pos + 8 <= inLen, so
+    //   the 8-byte refill load below stays inside the input.
+    // - The history is committed (given to the list) once, after the loop; every exit goes through that.
+    let w0 = hist.len();
+    let bp = hist.viewMut() as *u8;
+    let sp = src as *u8;
     while produced + 258usize <= maxOut && pos + 8usize <= inLen {
+      // Bit budget: this step takes at most 15 (literal/length code) + 5 (length extra) + 15 (distance code)
+      // + 13 (distance extra) = 48 bits. With nbits >= 48 it needs no refill; below that one load tops the
+      // buffer up to at least 57 bits.
       if nbits < 48u32 {
-        let w = u64.from(src[pos]) | (u64.from(src[pos + 1usize]) << 8u64) | (u64.from(src[pos + 2usize]) << 16u64)
-          | (u64.from(src[pos + 3usize]) << 24u64) | (u64.from(src[pos + 4usize]) << 32u64)
-          | (u64.from(src[pos + 5usize]) << 40u64) | (u64.from(src[pos + 6usize]) << 48u64)
-          | (u64.from(src[pos + 7usize]) << 56u64);
+        let w = mem.readRaw[u64]((sp + pos) as *u64);
         let k = (64u32 - nbits) / 8u32;
         let take = k * 8u32;
         let m = if take >= 64u32 {18446744073709551615u64} else {(1u64 << u64.from(take)) - 1u64};
@@ -837,7 +912,7 @@ pub struct Inflater {
       if sym < 256usize {
         bits = bits >> u64.from(l);
         nbits = nbits - l;
-        hist.push(u8.from(sym));
+        mem.writeRaw[u8](bp + (w0 + produced), u8.from(sym));
         produced = produced + 1usize;
       } else {
         if sym == 256usize || sym >= 286usize { break; }
@@ -859,19 +934,17 @@ pub struct Inflater {
         let d = usize.from(distBase[ds]) + usize.from(b & ((1u64 << u64.from(dx)) - 1u64));
         b = b >> u64.from(dx);
         nb = nb - dx;
-        if d > hist.len() - start { break; }
+        // The output so far is w0 + produced bytes, of which the first 'start' are not for matches to reach
+        if d > (w0 + produced) - start { break; }
         bits = b;
         nbits = nb;
-        var from = hist.len() - d;
-        var j = 0usize;
-        while j < len {
-          hist.push(*hist[from]);
-          from = from + 1usize;
-          j = j + 1usize;
-        }
+        // d >= 1 and d <= w0 + produced - start, so the source starts inside the output; len <= 258 and
+        // produced + 258 <= maxOut, so the target ends inside the room (slack aside)
+        wideMatch(bp, w0 + produced, w0 + produced - d, len);
         produced = produced + len;
       }
     }
+    commit(hist, w0, produced);
     // The bits above 'nbits' stay zero, as 'refill' keeps them
     *bitsIn = bits;
     *nbitsIn = nbits;

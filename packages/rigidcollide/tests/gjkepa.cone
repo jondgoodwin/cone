@@ -87,7 +87,7 @@ fn testHandWorked() {
 
 struct Pair { a: Vec3; b: Vec3; }
 
-fn clamp01(x: f32) f32 { clampf(x, 0., 1.) }
+fn clamp01(x: f32) f32 { x.clamp(0., 1.) }
 
 // Ericson 5.1.9
 fn segSeg(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) Pair {
@@ -147,8 +147,8 @@ fn bruteDistance(ta: &List[Tri], tb: &List[Tri]) f32 {
       while v < 3usize {
         let pa = corner(t, v);
         let pb = corner(u, v);
-        best = minf(best, pa.distance(closestPointOnTriangle(pa, u.a, u.b, u.c)));
-        best = minf(best, pb.distance(closestPointOnTriangle(pb, t.a, t.b, t.c)));
+        best = best.min(pa.distance(closestPointOnTriangle(pa, u.a, u.b, u.c)));
+        best = best.min(pb.distance(closestPointOnTriangle(pb, t.a, t.b, t.c)));
         v = v + 1usize;
       }
       var e = 0usize;
@@ -156,7 +156,7 @@ fn bruteDistance(ta: &List[Tri], tb: &List[Tri]) f32 {
         var g = 0usize;
         while g < 3usize {
           let pr = segSeg(corner(t, e), corner(t, (e + 1usize) % 3usize), corner(u, g), corner(u, (g + 1usize) % 3usize));
-          best = minf(best, pr.a.distance(pr.b));
+          best = best.min(pr.a.distance(pr.b));
           g = g + 1usize;
         }
         e = e + 1usize;
@@ -179,7 +179,7 @@ fn axisGap(ta: &List[Tri], tb: &List[Tri], axis: Vec3) f32 {
     var k = 0usize;
     while k < 3usize {
       let d = corner(&ta[i], k).dot(axis);
-      minA = minf(minA, d); maxA = maxf(maxA, d);
+      minA = minA.min(d); maxA = maxA.max(d);
       k = k + 1usize;
     }
     i = i + 1usize;
@@ -189,12 +189,12 @@ fn axisGap(ta: &List[Tri], tb: &List[Tri], axis: Vec3) f32 {
     var k = 0usize;
     while k < 3usize {
       let d = corner(&tb[i], k).dot(axis);
-      minB = minf(minB, d); maxB = maxf(maxB, d);
+      minB = minB.min(d); maxB = maxB.max(d);
       k = k + 1usize;
     }
     i = i + 1usize;
   }
-  maxf(minB - maxA, minA - maxB)
+  (minB - maxA).max(minA - maxB)
 }
 
 fn triNormal(t: &Tri) Vec3 { (t.b - t.a).cross(t.c - t.a).normalize() }
@@ -204,12 +204,12 @@ fn bruteSignedGap(ta: &List[Tri], tb: &List[Tri]) f32 {
   var best = -1.0e30f;
   var i = 0usize;
   while i < ta.len() {
-    best = maxf(best, axisGap(ta, tb, triNormal(&ta[i])));
+    best = best.max(axisGap(ta, tb, triNormal(&ta[i])));
     i = i + 1usize;
   }
   i = 0usize;
   while i < tb.len() {
-    best = maxf(best, axisGap(ta, tb, triNormal(&tb[i])));
+    best = best.max(axisGap(ta, tb, triNormal(&tb[i])));
     i = i + 1usize;
   }
   i = 0usize;
@@ -223,7 +223,7 @@ fn bruteSignedGap(ta: &List[Tri], tb: &List[Tri]) f32 {
         while g < 3usize {
           let eb = corner(&tb[j], (g + 1usize) % 3usize) - corner(&tb[j], g);
           let cr = ea.cross(eb);
-          if cr.length() > 1.0e-4 { best = maxf(best, axisGap(ta, tb, cr.normalize())); }
+          if cr.length() > 1.0e-4 { best = best.max(axisGap(ta, tb, cr.normalize())); }
           g = g + 1usize;
         }
         e = e + 1usize;
@@ -273,12 +273,12 @@ fn testRandomHulls() {
       apart = apart + 1i64;
       let want = bruteDistance(&ta, &tb);
       let err = (-pen.depth - want).abs();
-      worstDist = maxf(worstDist, err);
+      worstDist = worstDist.max(err);
       if err > 0.002 || !pen.hit { failures = failures + 1i64; }
     } else if gap < -0.01 {
       overlaps = overlaps + 1i64;
       let err = (pen.depth + gap).abs();
-      worstDepth = maxf(worstDepth, err);
+      worstDepth = worstDepth.max(err);
       if err > 0.003 || !pen.hit { failures = failures + 1i64; }
     }
   }

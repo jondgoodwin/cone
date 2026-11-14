@@ -483,3 +483,35 @@ contains = [
 ]
 excludes = ["call float @hypotf(", "call float @tanf(", "call float @expf(", "call float @logf(", "call float @powf(",
   "call double @tan(", "call double @log(", "call double @pow(", "call float @powi("]
+
+# mem.blackBox: the value comes back unchanged for an integer, a float, a bool
+# and a struct, in the lowering and through the fallback body `{ v }`, with one .out
+[scenario.intrinsic_blackbox]
+category = "run"
+description = "mem.blackBox returns its argument unchanged for an integer, a float, a bool and a struct, and f(blackBox(3)) is computed each time; optimized, unoptimized and through the fallback body"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.intrinsic_blackbox.run]]
+name = "release"
+options = []
+
+[[scenario.intrinsic_blackbox.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.intrinsic_blackbox.run]]
+name = "fallback"
+options = ["--intrinsic-fallback", "--debug"]
+
+# The optimized IR, read: with both boxes the multiplies stay and the constant
+# 27 they would fold to does not appear; the asm is the compiler's own
+[scenario.intrinsic_genllvm_blackbox]
+category = "compile"
+description = "mem.blackBox is an empty side-effecting asm with a memory clobber over a stack slot: after optimization f(blackBox(3)) is not folded and blackBox(f(blackBox(3))) with an unused result is not deleted"
+tags = ["genllvm"]
+
+[[scenario.intrinsic_genllvm_blackbox.check]]
+name = "the-work-survives-the-optimizer"
+target = "llvmir"
+contains = ["call void asm sideeffect \"\", \"r,~{memory}\"(ptr", "= mul i64 ", "= ashr i64 "]
+excludes = ["i64 27", "mem.blackBox", "@blackBox"]

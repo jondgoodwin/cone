@@ -540,6 +540,114 @@ static void varDclWorkgroupCheck(TypeCheckState *pstate, INode *node, void *extr
             &name->namesym->namestr);
 }
 
+// A global's type must be Shareable (Jon 4 Nov): every thread may name a global
+// at once, and every program is taken to have threads. So a global is a 'let'
+// of a Shareable type (itypeNotShareableWhy, the test a 'parallel each' asks of
+// an outside value and an 'Arc[imm, T]' of its T), a 'var' of an atomic or a
+// lock type (reached only through synchronized operations: globalSyncType),
+// '@threadlocal' (one copy per thread) or '@workgroup' (trusted). Any other
+// 'var' is refused whatever it holds. Each module global is noted as type check
+// meets it and judged once type check has finished, when every struct is laid
+// out (globalShareCheckAll). A module-level 'static' and a static in a struct
+// body are module globals and are judged, and so is a function's static (rule 1:
+// statics, in a function or a struct, are globals).
+static VarDclNode **globalShareNotes = NULL;
+static uint32_t globalShareCnt = 0;
+static uint32_t globalShareMax = 0;
+
+static void globalShareNote(VarDclNode *var) {
+    if (globalShareCnt == globalShareMax) {
+        uint32_t newmax = globalShareMax ? globalShareMax * 2 : 256;
+        VarDclNode **notes = (VarDclNode **)memAllocBlk(newmax * sizeof(VarDclNode *));
+        if (globalShareCnt)
+            memcpy(notes, globalShareNotes, globalShareCnt * sizeof(VarDclNode *));
+        globalShareNotes = notes;
+        globalShareMax = newmax;
+    }
+    globalShareNotes[globalShareCnt++] = var;
+}
+
+// Is a plain 'var' of this type reached only through synchronized operations
+// (WI shareable-globals, rule 3: atomics, locks, actor handles)? An atomic
+// value, a lock and an actor's handle are; an array or tuple is when every
+// element is; a struct is when every field is, or is immutable (a 'let' field),
+// so that a struct with an atomic beside a plain mutable field is not
+static int globalSyncType(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? globalSyncType(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return globalSyncType(((AliasDclNode *)type)->target);
+    case ArrayTag:
+        return globalSyncType(arrayElemType(type));
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (!globalSyncType(*nodesp))
+                return 0;
+        }
+        return 1;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)type;
+        if (structDeclaresTrait(strnode, atomicValueTrait) || structDeclaresTrait(strnode, lockPermTrait)
+            || actorOfHandle(type) != NULL || actorTraitOfHandle(type) != NULL)
+            return 1;
+        INode **nodesp;
+        uint32_t cnt;
+        int fields = 0;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if ((*nodesp)->tag != FieldDclTag)
+                continue;
+            FieldDclNode *field = (FieldDclNode *)*nodesp;
+            ++fields;
+            if (itypeGetTypeDcl(field->perm) == (INode *)immPerm)
+                continue;
+            if (!globalSyncType(field->vtype))
+                return 0;
+        }
+        return fields > 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+void globalShareCheckAll() {
+    uint32_t cnt = globalShareCnt;
+    globalShareCnt = 0;
+    for (uint32_t i = 0; i < cnt; ++i) {
+        VarDclNode *var = globalShareNotes[i];
+        if (var->vtype == NULL || var->vtype == unknownType || var->vtype == errorType
+            || (var->dclinfo.facts & (DclThreadLocal | DclWorkgroup)))
+            continue;
+        char *name = &var->namesym->namestr;
+        char typename[256] = "";
+        itypeSpellCat(typename, sizeof(typename), var->vtype, 0);
+        if (itypeGetTypeDcl(var->perm) != (INode *)immPerm) {
+            if (globalSyncType(var->vtype))
+                continue;
+            errorMsgNode((INode *)var, ErrorGlobalShare,
+                "Global %s (%s) is a plain 'var', and every thread may reach a global at once (every program is taken to have threads). A global is a 'let' of a Shareable type, a 'var' of an atomic or a lock, '@threadlocal' (one copy per thread) or '@workgroup'. A value known only after the program has started belongs to the object it describes, and is handed down as state.",
+                name, typename);
+            continue;
+        }
+        char path[256];
+        INode *culprit = itypeNotShareableWhy(var->vtype, 1, path, sizeof(path));
+        if (culprit == NULL)
+            continue;
+        char reason[512] = "", culpritname[256] = "";
+        genericNotShareableReason(culprit, 1, reason, sizeof(reason));
+        itypeSpellCat(culpritname, sizeof(culpritname), culprit, 0);
+        errorMsgNode((INode *)var, ErrorGlobalShare,
+            "Global %s's type %s is not Shareable, and every thread may reach a global at once: %s is %s, %s. A global is a 'let' of a Shareable type, a 'var' of an atomic or a lock, '@threadlocal' (one copy per thread) or '@workgroup'.",
+            name, typename, path[0] ? path : "it", culpritname, reason);
+    }
+}
+
 // Type check variable against its initial value
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     // Rule 3: the declared type is established before anything that could read
@@ -726,8 +834,11 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
 
     // A global or a static is found by no collector, so it may not hold a
     // traced reference (judged once every type is laid out)
-    if (name->scope == 0 || (name->flags & FlagStatic))
+    // A global or a static must also be Shareable (globalShareCheckAll)
+    if (name->scope == 0 || (name->flags & FlagStatic)) {
         regionTracedGlobalNote(name);
+        globalShareNote(name);
+    }
     // A local or a parameter is a root: the collector finds what it holds by its
     // type's trace (judged once every type is laid out)
     else

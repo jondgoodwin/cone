@@ -1,0 +1,86 @@
+// Reliable messages that wait for credit to be sent must not hold the buffers
+// the caller gave them. 256 messages of 100 bytes are queued before any poll:
+// the first can go at the next poll and is kept as given; the other 255 wait
+// behind it and are kept as copies of their own bytes on the heap, so the
+// callers' pool buffers (4 KiB each, 1 MiB for 256) go back. Then they are
+// sent and all arrive, in order, with their bytes.
+
+mod parkedout;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant;
+import iobuf use IoBuf, Bytes, stats, classSize;
+import netmsg use *;
+
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+const parkedCount = 256usize;
+const bodyLen = 100usize;
+
+fn body(k: usize) List[u8] {
+  var b = List[u8].withCapacity(bodyLen);
+  var i = 0usize;
+  while i < bodyLen {
+    b.push(u8.from((k + i) & 0xFFusize));
+    i = i + 1usize;
+  }
+  b
+}
+
+fn main() i32 {
+  var cfg = NetConfig.defaults();
+  cfg.timeoutMs = 600000i64;
+  var a = ConnectionCore.make(cfg, 0x7777u64, at(0i64));
+  var b = ConnectionCore.make(cfg, 0x7777u64, at(0i64));
+  var evA = List[CoreEvent]();
+  var evB = List[CoreEvent]();
+
+  let before = stats().lentBytes;
+  var k = 0usize;
+  while k < parkedCount {
+    expect(a.sendReliable(fz(body(k).view())), "queued");
+    k = k + 1usize;
+  }
+  let held = stats().lentBytes - before;
+  // Without parking this is 256 pool buffers (1 MiB); the first message is
+  // kept as given (one buffer), the rest are heap copies: 255 x 100 bytes
+  expect(held < 2usize * classSize(0u32), "waiting messages hold no pool buffers");
+  expectUInt(u64.from(a.reliablePending()), u64.from(parkedCount), "all pending");
+
+  // Send them all: a poll every millisecond, delivered to b
+  var ms = 1i64;
+  while evB.len() < parkedCount && ms < 5000i64 {
+    var out = Packets();
+    a.poll(at(ms), &mut out, &mut evA);
+    each p in out.drain() {
+      let d = p.freeze();
+      _ = b.receive(&d, at(ms), &mut evB);
+    }
+    var back = Packets();
+    b.poll(at(ms), &mut back, &mut evB);
+    each p in back.drain() {
+      let d = p.freeze();
+      _ = a.receive(&d, at(ms), &mut evA);
+    }
+    ms = ms + 1i64;
+  }
+  expectUInt(u64.from(evB.len()), u64.from(parkedCount), "all delivered");
+  var inOrder = true;
+  k = 0usize;
+  each e in evB.drain() {
+    match e {
+      case let Reliable(r) {
+        let want = body(k);
+        let w = want.view();
+        if r.data.len() != bodyLen || r.data.view()[0usize] != w[0usize] || r.data.view()[bodyLen - 1usize] != w[bodyLen - 1usize] {inOrder = false;}
+      }
+      else {inOrder = false;}
+    }
+    k = k + 1usize;
+  }
+  expect(inOrder, "in order, with their bytes");
+  done()
+}

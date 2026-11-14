@@ -1,0 +1,40 @@
+// Node handles: the tree links and the API use cell ids (usize); a handle (Ui.handleOf) adds the
+// generation, so it stops naming a node once that node is destroyed, even after the cell is reused.
+// Events carry the generation of the node they name.
+
+mod handles;
+
+import testing use *;
+import collections use *;
+import uilayout use *;
+
+fn main() i32 {
+  var ui = Ui.make(800., 600.);
+  let a = ui.create(ui.root, K_PLAIN);
+  let b = ui.create(a, K_PLAIN);
+  let ha = ui.handleOf(a);
+  let hb = ui.handleOf(b);
+  expect(ui.resolve(ha) == a, "a handle resolves to its node");
+  expect(ui.resolve(hb) == b, "and so does a child's");
+  expect(ui.handleOf(NIL).isNone(), "the null node has no handle");
+
+  ui.emit(UE_FOCUS, b, a, 0., 0., 0i32, 0u32);
+  let ev = ui.takeEvents();
+  expectUInt(u64.from(ev.len()), 1u64, "one event");
+  expectUInt(u64.from(ev[0].nodeGen), u64.from(hb.gen), "the event carries the node's generation");
+  expectUInt(u64.from(ev[0].otherGen), u64.from(ha.gen), "and the other's");
+
+  ui.destroy(a);
+  expect(!ui.alive(a) && !ui.alive(b), "destroy takes the subtree");
+  expect(ui.resolve(ha) == NIL && ui.resolve(hb) == NIL, "both handles are stale");
+  expect(ui.handleOf(a).isNone(), "a dead cell has no handle");
+
+  // Cells are reused: a new node may take a's or b's cell, and the old handles still name nothing
+  let c = ui.create(ui.root, K_PLAIN);
+  let d = ui.create(c, K_PLAIN);
+  expect(ui.alive(c) && ui.alive(d), "new nodes are alive");
+  expect(ui.resolve(ha) == NIL && ui.resolve(hb) == NIL, "old handles stay stale after reuse");
+  expect(ui.resolve(ui.handleOf(c)) == c && ui.resolve(ui.handleOf(d)) == d, "new handles resolve");
+  expect(ui.handleOf(c).gen != ha.gen || c != a, "a reused cell has a new generation");
+  done()
+}

@@ -125,7 +125,7 @@ pub struct Gaze {
     Vec3(atan2(-g.x, -g.z), atan2(g.y, flat), g.length())
   }
 
-  fn clampEye(self: &, a: f32) f32 { clampf(a, -params.eyeLimit, params.eyeLimit) }
+  fn clampEye(self: &, a: f32) f32 { a.clamp(-params.eyeLimit, params.eyeLimit) }
 
   // Advance 'dt' seconds. The eyes and the head are updated; 'launched' says
   // whether a saccade began.
@@ -137,8 +137,8 @@ pub struct Gaze {
     // ---- the head ----
     let sy = if ta.x < 0. { -1.f } else { 1. };
     let sp = if ta.y < 0. { -1.f } else { 1. };
-    let wantYaw = sy * params.headGainYaw * fmax(0., ta.x.abs() - params.headDeadYaw);
-    let wantPitch = sp * params.headGainPitch * fmax(0., ta.y.abs() - params.headDeadPitch);
+    let wantYaw = sy * params.headGainYaw * (ta.x.abs() - params.headDeadYaw).max(0.);
+    let wantPitch = sp * params.headGainPitch * (ta.y.abs() - params.headDeadPitch).max(0.);
     if (wantYaw - lastWantYaw).abs() > 0.03 || (wantPitch - lastWantPitch).abs() > 0.03 {
       headDelay = params.headLatency;
       lastWantYaw = wantYaw;
@@ -155,7 +155,7 @@ pub struct Gaze {
     let w = params.headOmega;
     var left = dt;
     while left > 0. {
-      let h = fmin(left, 1. / 240.);
+      let h = left.min(1. / 240.);
       headVelYaw = headVelYaw + (w * w * (headCmdYaw - headYaw) - 2. * w * headVelYaw) * h;
       headYaw = headYaw + headVelYaw * h;
       headVelPitch = headVelPitch + (w * w * (headCmdPitch - headPitch) - 2. * w * headVelPitch) * h;
@@ -175,7 +175,7 @@ pub struct Gaze {
       if rng.chance(params.idleChance) {
         // Lee, Badler and Badler's magnitude: A = -6.9 ln(P / 15.7) degrees, P a frequency in percent
         let p = rng.range(1.2, 15.7);
-        let a = fmin(radians(-6.9 * libc.logf(p / 15.7)), params.idleMax);
+        let a = radians(-6.9 * libc.logf(p / 15.7)).min(params.idleMax);
         let dir = rng.range(0., 2. * pi);
         offYaw = a.max(0.035) * cos(dir);
         offPitch = a.max(0.035) * sin(dir) * 0.6;

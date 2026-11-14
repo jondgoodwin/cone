@@ -140,6 +140,26 @@ def lcg_data(kind, n):
     return bytes(d)
 
 
+def fibonacci_literals(n):
+    """24 byte values with Fibonacci frequencies, in LCG order: an unlimited Huffman tree 23 deep, so the 11-bit
+    height limit has to move depths (tests/roundtrip.cone makes the same bytes)"""
+    fib = [1, 1]
+    while len(fib) < 24:
+        fib.append(fib[-1] + fib[-2])
+    total = sum(fib)
+    d = bytearray()
+    s = 777
+    while len(d) < n:
+        s = (s * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
+        k = (s >> 33) % total
+        v = 0
+        while k >= fib[v]:
+            k -= fib[v]
+            v += 1
+        d.append(v)
+    return bytes(d)
+
+
 def far_repeat(r, dist):
     """4 KiB, 'dist' - 4 KiB of noise, the same 4 KiB again: a match exactly 'dist' back"""
     head = rand(r, 4096)
@@ -177,6 +197,7 @@ def corpus():
     cases.append(("mixed 5 MB", bytes(big)))
     cases.append(("lcg six letters", lcg_data(3, 300000)))
     cases.append(("lcg words", lcg_data(5, 300000)))
+    cases.append(("fibonacci literals", fibonacci_literals(300000)))
     return cases
 
 

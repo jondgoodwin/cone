@@ -33,6 +33,7 @@
 //   Zone         the rules of one place, from a TZif file        (ZONES)
 //   Offset       the offset from UTC at an instant               (ZONES)
 //   LocalResult  what a wall clock reading is: one instant, none or two (ZONES)
+//   OffsetDateTime  a wall clock DateTime and the Offset that applied (PATTERNS)
 //
 // WHY A PACKAGE OF ITS OWN. The time package is a foundation that sync,
 // thread, fs and process import, and it needs nothing but libc. The calendar
@@ -43,8 +44,8 @@
 // back before 1582, when it was adopted, and on past 9999, years counted
 // astronomically (year 0 is 1 BC, -1 is 2 BC), as ISO 8601 counts them.
 // Every day is 86400 seconds, as a Timestamp's is: no leap second. No names
-// of months or days but HTTP's English ones, and no pattern language
-// ('%Y-%m-%d'): each format is a function of its own. All of it is
+// of months or days but English ones, and no pattern language beyond
+// strftime's subset (PATTERNS): each fixed format is a function of its own. All of it is
 // arithmetic, no OS's. A part out of its range is never wrapped or carried
 // into a value: construction answers an Option, None for a date or a time
 // that does not exist, and reading a text a core Result.
@@ -123,6 +124,11 @@
 //   tod.rfc3339()                   '14:05:09', a partial-time
 //   dt.rfc3339()                    '2026-10-03T14:05:09Z'
 //   calendar.rfc3339(t)             the same, of a Timestamp
+//   out <- d, $"{dt}"               Date, TimeOfDay, DateTime write that same text by toText
+//                                   (and toDebug); Weekday writes 'Monday'
+//   out <- offset, odt              Offset '-03:00' ('+00:00' for zero, never 'Z'; leftover
+//                                   seconds '-04:56:02', which RFC 3339 cannot express);
+//                                   OffsetDateTime '2026-10-03T11:05:09-03:00'
 //   Date.parseRfc3339(text)         each reads what its type writes
 //   TimeOfDay.parseRfc3339(text)
 //   DateTime.parseRfc3339(text)
@@ -176,6 +182,38 @@
 // it the old one; before the first listed transition the file's first time
 // type does.
 //
+// PATTERNS. A strftime subset writes and reads a date-time in any layout;
+// the directives (%Y %m %d %e %j %H %M %S %f %a %A %b %B %z %Z %%) and the
+// rules are in pattern.cone's header.
+//
+//   dt.format(pattern)          Result[String, TimeError]; this being
+//                                   UTC, %z is '+0000' and %Z 'UTC'
+//   DateTime.parse(pattern, text)  Result[DateTime, TimeError]; a %z read
+//                                   moves the result to UTC
+//   z.toOffsetDateTime(t)           an OffsetDateTime: the wall clock at t
+//                                   (.dt) and the Offset that applied (.offset)
+//   odt.format(pattern)         %z and %Z from the offset ('-0400 EDT')
+//   OffsetDateTime.parse(pattern, text)   keeps the text's wall clock and
+//                                   offset; the pattern must have a %z
+//
+// DATE STYLES. For a person, in English unless the writer's maker chose a locale
+// (the locale package's locale.set), day-month-year:
+//
+//   d.styled(DateStyle.medium)      '3 Oct 2026'
+//   d.styled(DateStyle.long)        '3 October 2026'
+//   d.styled(DateStyle.full)        'Saturday, 3 October 2026'
+//   d.styled(DateStyle.short)       '2026-10-03' ('03.10.2026' in a de writer)
+//
+// en's short form follows invariant (ISO) until en-US and en-GB are separate
+// locale ids, and will change then (m/d/y and d/m/y).
+//
+// styled is on Date, DateTime and OffsetDateTime and returns a StyledDate,
+// written by `<-` and in `$"..."`. With a time: '14:05:09' (medium and short),
+// '14:05:09 UTC' (long and full); an OffsetDateTime writes its offset
+// ('+05:30') in place of 'UTC'. In a de writer: '3. Oktober 2026',
+// 'Samstag, 3. Oktober 2026'. short is a locale's own numeric form where it has
+// one that reads one way, and ISO's elsewhere.
+//
 // LOCAL TIME. A DateTime is UTC everywhere else; here it is also read as a
 // place's wall clock, and the call says which.
 //
@@ -208,6 +246,7 @@ mod calendar;
 
 import time use Duration, Timestamp;
 import collections use String, List;
+import locale use Locale;
 
 const nsPerSecond = 1000000000i64;
 

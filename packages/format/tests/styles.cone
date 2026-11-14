@@ -1,0 +1,66 @@
+// Styles: a String's writer has color off, so a style writes no bytes there; a writer with color
+// forced on (setColor) writes the exact escapes (ESC [ then the numbers, ';' between, then 'm') and
+// ends its record with a reset when it wrote any style. Each expected text is worked out from the
+// ANSI numbers: foreground 30 + color (black 0 ... white 7), background 40 + color, bold 1, dim 2,
+// underline 4, reset 0; the numbers go in the order bold, dim, underline, foreground, background.
+
+mod styles;
+
+import testing use *;
+import collections use String;
+import format use plain, red, green, yellow, blue, magenta, cyan, white, black, bold, dim, underline;
+
+fn chk(got: &String, want: &Array[u8], label: &Array[u8]) {
+  expectStr(got.view(), want, label);
+}
+
+fn main() i32 {
+  var s = String();
+
+  // A String's writer: color off, nothing written, whatever the styles
+  s <- red, "a", bold + green, "b", plain, "c"; chk(&s, "abc", "string ignores styles"); s.clear();
+  s <- red.on(white), underline, "x"; chk(&s, "x", "string ignores background and underline"); s.clear();
+
+  // Color forced on: the exact bytes, a reset after the last style at the record's end
+  {
+    var w = s.textOut();
+    w.setColor(true);
+    expectBool(w.colorOn(), true, "setColor(true)");
+    w <- red, "a", plain, "b";
+  }
+  chk(&s, "\x1b[31ma\x1b[0mb\x1b[0m", "red then plain, reset at the end"); s.clear();
+  {
+    var w = s.textOut();
+    w.setColor(true);
+    w <- bold + red, "x";
+  }
+  chk(&s, "\x1b[1;31mx\x1b[0m", "bold + red, reset added"); s.clear();
+  {
+    var w = s.textOut();
+    w.setColor(true);
+    w <- red.on(white), "x", dim + underline + cyan.on(black), "y";
+  }
+  chk(&s, "\x1b[31;47mx\x1b[2;4;36;40my\x1b[0m", "background, dim, underline"); s.clear();
+  {
+    var w = s.textOut();
+    w.setColor(true);
+    w <- black, yellow, blue, magenta, "";
+  }
+  chk(&s, "\x1b[30m\x1b[33m\x1b[34m\x1b[35m\x1b[0m", "each color"); s.clear();
+  {
+    // A record that wrote no style, or only the reset, gets no extra reset
+    var w = s.textOut();
+    w.setColor(true);
+    w <- "plain text ", plain;
+  }
+  chk(&s, "plain text \x1b[0m", "only plain: no second reset"); s.clear();
+  {
+    var w = s.textOut();
+    w.setColor(true);
+    w.setColor(false);
+    w <- red, "x";
+  }
+  chk(&s, "x", "setColor(false) turns it off again"); s.clear();
+
+  return done();
+}

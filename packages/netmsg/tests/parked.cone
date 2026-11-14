@@ -1,0 +1,96 @@
+// Reliable messages that arrive out of order wait for the ones before them,
+// and must not hold the datagrams they came in while they wait. 256 messages
+// of 100 bytes each arrive in a datagram of its own, behind one that was lost.
+// They are parked, and the pool's buffers they hold stay near one exact-size
+// buffer each: the datagrams (2048 bytes of room each) go back. Then the lost
+// one arrives and all 257 come out, in order.
+
+mod parked;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant;
+import iobuf use IoBuf, Bytes, stats, classSize;
+import netmsg use *;
+
+// A copy of some bytes, frozen
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+fn atUs(us: i64) Instant {Instant.fromNanos(us * 1000i64)}
+
+const parkedCount = 256usize;
+const bodyLen = 100usize;
+
+fn body(k: usize) List[u8] {
+  var b = List[u8].withCapacity(bodyLen);
+  var i = 0usize;
+  while i < bodyLen {
+    b.push(u8.from((k + i) & 0xFFusize));
+    i = i + 1usize;
+  }
+  b
+}
+
+// A datagram as the endpoint reads one: a buffer of 2048 bytes holding fewer
+fn datagram(bytes: &Array[u8]) Bytes {
+  var d = IoBuf(2048usize);
+  _ = d.append(bytes);
+  d.freeze()
+}
+
+fn main() i32 {
+  var cfg = NetConfig.defaults();
+  cfg.goodRate = 100000u32;    // a packet at every millisecond poll, all within the 2 s before a resend:
+  cfg.timeoutMs = 600000i64;   // each datagram carries its own message
+  var a = ConnectionCore.make(cfg, 0x7777u64, at(0i64));
+  var b = ConnectionCore.make(cfg, 0x7777u64, at(0i64));
+  var evA = List[CoreEvent]();
+  var evB = List[CoreEvent]();
+  var wire = List[List[u8]]();
+  var k = 0usize;
+  while k <= parkedCount {
+    expect(a.sendReliable(fz(body(k).view())), "queued");
+    var out = Packets();
+    a.poll(atUs(20i64 * i64.from(k) + 20i64), &mut out, &mut evA);
+    each p in out.drain() {
+      wire.push(copyBytes(p.view()));
+    }
+    k = k + 1usize;
+  }
+  expectUInt(u64.from(wire.len()), u64.from(parkedCount + 1usize), "a datagram for each message");
+
+  // All but the first arrive
+  let before = stats().lentBytes;
+  k = 1usize;
+  while k <= parkedCount {
+    let d = datagram(wire[k].view());
+    expect(b.receive(&d, atUs(20i64 * i64.from(k) + 20i64), &mut evB), "a datagram is taken");
+    k = k + 1usize;
+  }
+  let held = stats().lentBytes - before;
+  expectUInt(u64.from(evB.len()), 0u64, "all parked, none delivered");
+  // The parked bytes are copies on the heap: the datagrams (and a slice of
+  // each, kept, would be 256 pool buffers of classSize(0), 1 MiB) went back
+  expect(held < 4usize * classSize(0u32), "parked messages hold no pool buffers");
+
+  // The first arrives: everything comes out, in order
+  let d0 = datagram(wire[0usize].view());
+  expect(b.receive(&d0, at(300i64), &mut evB), "the first datagram is taken");
+  expectUInt(u64.from(evB.len()), u64.from(parkedCount + 1usize), "all delivered");
+  var inOrder = true;
+  k = 0usize;
+  each e in evB.drain() {
+    match e {
+      case let Reliable(r) {
+        let want = body(k);
+        let w = want.view();
+        if r.data.len() != bodyLen || r.data.view()[0usize] != w[0usize] || r.data.view()[bodyLen - 1usize] != w[bodyLen - 1usize] {inOrder = false;}
+      }
+      else {inOrder = false;}
+    }
+    k = k + 1usize;
+  }
+  expect(inOrder, "in order, with their bytes");
+  done()
+}

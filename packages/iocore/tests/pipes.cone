@@ -36,7 +36,7 @@ extern {
   fn @c("pipe2") lxPipe2(fds: *i32, flags: i32) i32;
 }
 
-var serial: u32 = 0u32;
+var @threadlocal serial: u32 = 0u32;
 
 // A pipe: its read end and its write end, as the OS's (both overlapped, or non-blocking)
 fn makePair() usize, usize {
@@ -95,14 +95,8 @@ struct Late {
   pub got: Got;
 }
 
-var late: List[Late];
-
-fn @initpure init() {
-  late = List[Late]();
-}
-
-// Poll until the time is up, keeping every answer in 'late'
-fn pump(lp: &mut Loop, until: Instant) {
+// Poll until the time is up, keeping every answer in 'late' (main's list)
+fn pump(lp: &mut Loop, late: &mut List[Late], until: Instant) {
   var out = List[Completion]();
   lp.poll(until, &mut out);
   each c in out.drain() {
@@ -112,7 +106,7 @@ fn pump(lp: &mut Loop, until: Instant) {
   }
 }
 
-fn takeLate(tok: u64) Option[Got] {
+fn takeLate(late: &mut List[Late], tok: u64) Option[Got] {
   var k = 0usize;
   while k < late.len() {
     if late[k].token == tok {
@@ -130,23 +124,23 @@ fn takeLate(tok: u64) Option[Got] {
   None[Got]
 }
 
-fn await1(lp: &mut Loop, tok: u64, seconds: i64) Got {
+fn await1(lp: &mut Loop, late: &mut List[Late], tok: u64, seconds: i64) Got {
   let until = Instant.now() + Duration.fromSeconds(seconds);
   while true {
-    match takeLate(tok) {
+    match takeLate(late, tok) {
       case let Some(g) {return g;}
       else {}
     }
     if Instant.now() >= until {break;}
-    pump(lp, until);
+    pump(lp, late, until);
   }
   Got(99u32, 0usize, 0u32, IoBuf())
 }
 
 // Whether no answer with token tok comes in ms milliseconds
-fn quiet(lp: &mut Loop, tok: u64, ms: i64) bool {
+fn quiet(lp: &mut Loop, late: &mut List[Late], tok: u64, ms: i64) bool {
   let until = Instant.now() + Duration.fromMillis(ms);
-  while Instant.now() < until {pump(lp, until);}
+  while Instant.now() < until {pump(lp, late, until);}
   var k = 0usize;
   while k < late.len() {
     if late[k].token == tok {return false;}
@@ -165,6 +159,7 @@ fn pattern(i: usize) u8 {u8.from((i * 7usize + i / 251usize) % 251usize)}
 
 fn main() i32 {
   {
+    var late = List[Late]();
     var lp = Loop.mustMake();
 
     // 1. Bytes through
@@ -174,63 +169,63 @@ fn main() i32 {
     expect(!r.isNone() && !w.isNone(), "1: both ends adopted");
     expect(lp.isOpen(r) && lp.isOpen(w), "1: ...and open");
     lp.submit(Op.PipeWrite(w, text("hello")), Target.Here(1u64));
-    let g1 = await1(&mut lp, 1u64, 3i64);
+    let g1 = await1(&mut lp, &mut late,1u64, 3i64);
     expect(g1.status == diag.outcomeDone && g1.n == 5usize, "1: five bytes written");
     expect(g1.kind == diag.kindPipeWrite, "1: ...a pipeWrite");
     lp.submit(Op.PipeRead(r, IoBuf(4096usize)), Target.Here(2u64));
-    let g2 = await1(&mut lp, 2u64, 3i64);
+    let g2 = await1(&mut lp, &mut late,2u64, 3i64);
     expect(g2.status == diag.outcomeDone && g2.n == 5usize, "1: five bytes read, not the room");
     expect(g2.buf.len() == 5usize && g2.buf.view()[0usize] == 104u8 && g2.buf.view()[4usize] == 111u8, "1: ...'hello', added to the buffer's length");
     // A read already waiting, then a write
     lp.submit(Op.PipeRead(r, IoBuf(4096usize)), Target.Here(3u64));
-    expect(quiet(&mut lp, 3u64, 60i64), "1: a read on a silent pipe waits");
+    expect(quiet(&mut lp, &mut late,3u64, 60i64), "1: a read on a silent pipe waits");
     lp.submit(Op.PipeWrite(w, text("xyz")), Target.Here(4u64));
-    let g3 = await1(&mut lp, 3u64, 3i64);
+    let g3 = await1(&mut lp, &mut late,3u64, 3i64);
     expect(g3.status == diag.outcomeDone && g3.n == 3usize, "1: ...and takes what is written");
-    await1(&mut lp, 4u64, 3i64);
+    await1(&mut lp, &mut late,4u64, 3i64);
 
     // 2. The end of the stream
     lp.submit(Op.PipeRead(r, IoBuf(4096usize)), Target.Here(10u64));
-    expect(quiet(&mut lp, 10u64, 30i64), "2: a read waits while the writer is open");
+    expect(quiet(&mut lp, &mut late,10u64, 30i64), "2: a read waits while the writer is open");
     expect(lp.close(w), "2: the writer closes");
-    let g4 = await1(&mut lp, 10u64, 3i64);
+    let g4 = await1(&mut lp, &mut late,10u64, 3i64);
     expect(g4.status == diag.outcomeDone && g4.n == 0usize, "2: the waiting read answers Done(0)");
     lp.submit(Op.PipeRead(r, IoBuf(4096usize)), Target.Here(11u64));
-    let g5 = await1(&mut lp, 11u64, 3i64);
+    let g5 = await1(&mut lp, &mut late,11u64, 3i64);
     expect(g5.status == diag.outcomeDone && g5.n == 0usize, "2: a read after it too");
     lp.close(r);
     // Bytes first, then the end
     r, w = open(&mut lp);
     lp.submit(Op.PipeWrite(w, text("tail")), Target.Here(12u64));
-    await1(&mut lp, 12u64, 3i64);
+    await1(&mut lp, &mut late,12u64, 3i64);
     lp.close(w);
     lp.submit(Op.PipeRead(r, IoBuf(4096usize)), Target.Here(13u64));
-    let g6 = await1(&mut lp, 13u64, 3i64);
+    let g6 = await1(&mut lp, &mut late,13u64, 3i64);
     expect(g6.status == diag.outcomeDone && g6.n == 4usize, "2: bytes written before the close are read first");
     lp.submit(Op.PipeRead(r, IoBuf(4096usize)), Target.Here(14u64));
-    let g7 = await1(&mut lp, 14u64, 3i64);
+    let g7 = await1(&mut lp, &mut late,14u64, 3i64);
     expect(g7.status == diag.outcomeDone && g7.n == 0usize, "2: ...then the end");
     lp.close(r);
 
     // 3. Cancel
     r, w = open(&mut lp);
     let id = lp.submit(Op.PipeRead(r, IoBuf(4096usize)), Target.Here(20u64));
-    expect(quiet(&mut lp, 20u64, 30i64), "3: a read on a silent pipe waits");
+    expect(quiet(&mut lp, &mut late,20u64, 30i64), "3: a read on a silent pipe waits");
     expect(lp.cancel(id), "3: cancel taken");
-    let g8 = await1(&mut lp, 20u64, 3i64);
+    let g8 = await1(&mut lp, &mut late,20u64, 3i64);
     expect(g8.status == diag.outcomeCancelled, "3: Cancelled");
     expectUInt(u64.from(g8.buf.capacity()), 4096u64, "3: ...its buffer back");
     expect(g8.buf.len() == 0usize, "3: ...taken nothing");
     lp.submit(Op.PipeWrite(w, text("after")), Target.Here(21u64));
-    await1(&mut lp, 21u64, 3i64);
+    await1(&mut lp, &mut late,21u64, 3i64);
     lp.submit(Op.PipeRead(r, IoBuf(4096usize)), Target.Here(22u64));
-    let g9 = await1(&mut lp, 22u64, 3i64);
+    let g9 = await1(&mut lp, &mut late,22u64, 3i64);
     expect(g9.status == diag.outcomeDone && g9.n == 5usize, "3: the pipe still works after a cancel");
 
     // 4. Deadline
     let t0 = Instant.now();
     lp.submitBy(Op.PipeRead(r, IoBuf(4096usize)), Target.Here(30u64), t0 + Duration.fromMillis(100i64));
-    let g10 = await1(&mut lp, 30u64, 3i64);
+    let g10 = await1(&mut lp, &mut late,30u64, 3i64);
     let took = (Instant.now() - t0).millis();
     expect(g10.status == diag.outcomeTimedOut, "4: TimedOut");
     expect(took >= 90i64, "4: ...not before the deadline");
@@ -246,13 +241,13 @@ fn main() i32 {
     }
     big.setLen(total);
     lp.submit(Op.PipeWrite(w, big), Target.Here(40u64));
-    expect(quiet(&mut lp, 40u64, 150i64), "5: the write stays pending: the pipe holds only so much");
+    expect(quiet(&mut lp, &mut late,40u64, 150i64), "5: the write stays pending: the pipe holds only so much");
     var got = 0usize;
     var good = true;
     var reads = 0usize;
     while got < total && reads < 4096usize {
       lp.submit(Op.PipeRead(r, IoBuf(65536usize)), Target.Here(41u64));
-      let c = await1(&mut lp, 41u64, 5i64);
+      let c = await1(&mut lp, &mut late,41u64, 5i64);
       if c.status != diag.outcomeDone || c.n == 0usize {good = false; break;}
       let v = c.buf.view();
       var j = 0usize;
@@ -265,22 +260,22 @@ fn main() i32 {
     }
     expect(good, "5: every byte read, in order");
     expectUInt(u64.from(got), u64.from(total), "5: ...all of them");
-    let g11 = await1(&mut lp, 40u64, 5i64);
+    let g11 = await1(&mut lp, &mut late,40u64, 5i64);
     expect(g11.status == diag.outcomeDone && g11.n == total,"5: the write answers Done with its whole length once they are read");
 
     // 6. A write to a pipe nobody reads any more
     lp.close(r);
     lp.submit(Op.PipeWrite(w, text("nobody")), Target.Here(50u64));
-    let g12 = await1(&mut lp, 50u64, 3i64);
+    let g12 = await1(&mut lp, &mut late,50u64, 3i64);
     expect(g12.status == diag.outcomeFailed, "6: a write after the reader closed fails");
     lp.close(w);
 
     // 7. close with a read in flight
     r, w = open(&mut lp);
     lp.submit(Op.PipeRead(r, IoBuf(4096usize)), Target.Here(60u64));
-    expect(quiet(&mut lp, 60u64, 30i64), "7: a read waits");
+    expect(quiet(&mut lp, &mut late,60u64, 30i64), "7: a read waits");
     expect(lp.close(r), "7: close");
-    let g13 = await1(&mut lp, 60u64, 3i64);
+    let g13 = await1(&mut lp, &mut late,60u64, 3i64);
     expect(g13.status == diag.outcomeCancelled, "7: the read in flight answers Cancelled");
     expect(!lp.isOpen(r), "7: ...and the handle names nothing");
     lp.close(w);
@@ -290,14 +285,14 @@ fn main() i32 {
     var full = IoBuf(4usize);
     full.setLen(full.capacity());
     lp.submit(Op.PipeRead(r, full), Target.Here(70u64));
-    let g14 = await1(&mut lp, 70u64, 3i64);
+    let g14 = await1(&mut lp, &mut late,70u64, 3i64);
     expect(g14.status == diag.outcomeFailed, "8: a read into a buffer with no room fails");
     let l = lp.mustListen(SocketAddr.localhost(0u16));
     lp.submit(Op.PipeRead(l, IoBuf(16usize)), Target.Here(71u64));
-    let g15 = await1(&mut lp, 71u64, 3i64);
+    let g15 = await1(&mut lp, &mut late,71u64, 3i64);
     expect(g15.status == diag.outcomeFailed, "8: a PipeRead on a listener's handle fails");
     lp.submit(Op.PipeWrite(Handle.none(), text("x")), Target.Here(72u64));
-    let g16 = await1(&mut lp, 72u64, 3i64);
+    let g16 = await1(&mut lp, &mut late,72u64, 3i64);
     expect(g16.status == diag.outcomeFailed, "8: ...and a PipeWrite on no handle");
     lp.close(l);
     lp.close(r);

@@ -1,0 +1,258 @@
+// A barge-in through voicechat's real conversation loop, on SDL's disk audio driver (no device, no sound). Kokoro makes the
+// "microphone" file: at 1 s a question that wants a long answer, at 20 s a second voice that talks over the answer, at 40 s
+// "Goodbye." voicechat.run listens, answers (Qwen3-1.7B, greedy), speaks the answer into the "speaker" file, is spoken over,
+// cuts the speaker, takes the interruption as the next turn and answers that. The checks: the loop reported the interruption
+// (its "(interrupted: ...)" note, with the time it cut the speaker and how much of the reply had played), and a "you>" turn
+// followed; on the speaker file (its index is the microphone's clock), the speaker is silent from 1 s after the cut until
+// the interruption has ended (playback stopped), and the next answer then begins before the goodbye.
+//
+// The run's own printing has times in it, which a blessed output cannot hold. So the test runs itself again as a child (the
+// argument "child"), which makes the microphone and runs the conversation; the parent reads the child's output and the
+// speaker file, checks them and prints only fixed lines. The microphone's clock runs on whatever the models do, so on a
+// loaded machine the loop can fall behind it, and the interruption then lands before the answer has begun to play, or long
+// after it was over. A run whose interruption was not heard while the answer played (nothing of it had played, or the cut
+// came less than 1.5 s before the interruption ended) is not a barge-in and says nothing; so does a child that timed out or failed, and a next answer that began
+// after the goodbye. Such a run is run again, up to three times, and a test that never got a good one fails. Needs the 1.7B in C:\src\llm-models, Parakeet's and Kokoro's converted files in
+// C:\src\speech-models and a GPU; without them it skips. About 60 seconds a run, in real time, because the disk device
+// runs at the speed of sound.
+//
+// The steps are functions of their own because the test is built without optimisation, where every local lives in
+// its frame for the whole call (pipeline.cone says why).
+mod bargeintest;
+
+import testing use *;
+import collections use List, String;
+import path use Path;
+import fs;
+import time use Duration;
+import process;
+import stdio use *;
+import gpu use *;
+import texttospeech;
+import voiceaudio;
+import voicechat;
+
+const QWEN = "C:/src/llm-models/Qwen3-1.7B-Q8_0.gguf";
+const MODELS = "C:/src/speech-models/";
+const IN_FILE = "voicechat-bargein-in.raw";
+const OUT_FILE = "voicechat-bargein-out.raw";
+const QUESTION = "Tell me about the history of ancient Rome, in at least ten sentences.";
+const INTERRUPT = "Hold on a moment. Please tell me, what is two plus two?";
+const LEN_KEY = "interruption seconds: ";
+
+fn have(p: &str) bool { fs.exists(&Path.from(p)) }
+
+fn modelPath(name: &str) String {
+  var s = String.from(MODELS);
+  s <- name;
+  s
+}
+
+fn say24(speaker: &mut texttospeech.Speaker, device: &mut Device, voice: &texttospeech.Voice, text: &str) List[f32] {
+  match speaker.speak(device, text, voice, 1.0f) {
+    case var Ok(s) { voiceaudio.resampleLinear(s.view(), 24000u32, voiceaudio.DISK_RATE) }
+    case let Err(m) { require(false, (String() <- m).view()); List[f32]() }
+  }
+}
+
+// The microphone's file: a quiet noise bed with the three utterances laid in at 1 s, 20 s and 40 s. Answers the length in
+// samples of the interruption, or 0.
+fn makeMicrophone(device: &mut Device) usize {
+  let kokoro = modelPath("kokoro");
+  var speaker: texttospeech.Speaker = match texttospeech.Speaker.open(device, kokoro.view(), false) {
+    case var Ok(s) { s }
+    case let Err(m) { require(false, (String() <- m).view()); return 0usize; }
+  };
+  let voice: texttospeech.Voice = match texttospeech.Voice.load(kokoro.view(), "am_michael") {
+    case var Ok(v) { v }
+    case let Err(m) { require(false, (String() <- m).view()); return 0usize; }
+  };
+  speaker.seed(5u64);
+  let question = say24(&mut speaker, device, &voice, QUESTION);
+  let interrupt = say24(&mut speaker, device, &voice, INTERRUPT);
+  let bye = say24(&mut speaker, device, &voice, "Goodbye.");
+  let rate = usize.from(voiceaudio.DISK_RATE);
+  var mic = voiceaudio.noiseBed(55000u32, voiceaudio.DISK_RATE, 0.002f, 3u32);
+  voiceaudio.addInto(&mut mic, rate, question.view());
+  voiceaudio.addInto(&mut mic, rate * 20usize, interrupt.view());
+  voiceaudio.addInto(&mut mic, rate * 40usize, bye.view());
+  match voiceaudio.writeRawF32(&Path.from(IN_FILE), mic.view()) {
+    case is Ok {}
+    case let Err(e) { require(false, "the microphone file is written"); }
+  }
+  interrupt.len()
+}
+
+fn converse(device: &mut Device) i32 {
+  var o = voicechat.VoiceOptions.defaults(QWEN);
+  o.audio = String.from("disk");
+  o.inFile = String.from(IN_FILE);
+  o.outFile = String.from(OUT_FILE);
+  o.temperature = 0.0;
+  o.ctx = 4096usize;
+  o.runSeconds = 80u32;
+  o.echoTimings = false;
+  voicechat.run(device, &o)
+}
+
+// The child: the microphone, then the conversation. Its first line says how long the interruption is.
+fn child() i32 {
+  var instance = Instance.createHeadless("voicechatbargein", false);
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "a GPU with Vulkan 1.3");
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+  require(device.isValid(), "the GPU opens for compute");
+  let interruptLen = makeMicrophone(&mut device);
+  require(interruptLen > 0usize, "the interruption is made");
+  printStr(LEN_KEY);
+  printUInt(u64.from(interruptLen) * 1000u64 / u64.from(voiceaudio.DISK_RATE));
+  printStr(" ms\n");
+  print.flush();
+  let status = converse(&mut device);
+  _ = fs.removeFile(&Path.from(IN_FILE));
+  status
+}
+
+// The number (seconds, or milliseconds as the caller reads them) that follows 'key' in 'line': -1 when there is none
+fn numberAfter(line: &str, key: &str) f64 {
+  match line.find(key) {
+    case let Some(at) {
+      let b = line.sliceFrom(at + key.len());
+      var whole = 0.0;
+      var frac = 0.0;
+      var scale = 0.1;
+      var seenDot = false;
+      var i = 0usize;
+      var any = false;
+      while i < b.len() {
+        let c = b[i];
+        if c >= '0' && c <= '9' {
+          any = true;
+          let d = f64.from(u32.from(c) - 48u32);
+          if seenDot { frac = frac + d * scale; scale = scale / 10.0; } else { whole = whole * 10.0 + d; }
+        } else if c == '.' && !seenDot {
+          seenDot = true;
+        } else {
+          break;
+        }
+        i = i + 1usize;
+      }
+      if any { whole + frac } else { 0.0 - 1.0 }
+    }
+    else { 0.0 - 1.0 }
+  }
+}
+
+// The loudest sample of 'x' from second a to second b
+fn peak(x: &Array[f32], a: f64, b: f64) f32 {
+  let rate = f64.from(voiceaudio.DISK_RATE);
+  var k = usize.from(a * rate);
+  var to = usize.from(b * rate);
+  if to > x.len { to = x.len; }
+  var m = 0.0f;
+  while k < to {
+    var v = x[k];
+    if v < 0.0f { v = 0.0f - v; }
+    if v > m { m = v; }
+    k = k + 1usize;
+  }
+  m
+}
+
+// What the child's output shows: the first "(interrupted:" note's cut time and the seconds of the reply that had played
+// (both -1 when there is none), and whether a "you>" turn followed it
+struct Heard {
+  cutAt: f64;
+  played: f64;
+  turnAfter: bool;
+}
+
+fn readOutput(out: &String) Heard {
+  let lines = List[&str].from(out.lines());
+  var h = Heard(0.0 - 1.0, 0.0 - 1.0, false);
+  var i = 0usize;
+  while i < lines.len() {
+    if h.cutAt < 0.0 && lines[i].startsWith("(interrupted:") {
+      h.cutAt = numberAfter(lines[i], "the speaker was cut at ");
+      h.played = numberAfter(lines[i], "on the microphone's clock, after ");
+    } else if h.cutAt >= 0.0 && lines[i].startsWith("you> ") {
+      h.turnAfter = true;
+    }
+    i = i + 1usize;
+  }
+  h
+}
+
+// One run of the child. Answers 0 when the run is to be run again, else 1 after making the checks. Three things send a run
+// round again: the child timing out or failing (a loaded machine), an interruption that was not a barge-in (above), and a next
+// answer that began after the goodbye (the loop fell behind the microphone). A run that reaches the checks makes the same
+// four whether or not an earlier one was retried, so the pinned count does not depend on a retry.
+fn attempt(exe: &str) u32 {
+  var cmd = List[String]();
+  cmd.push(String.from(exe));
+  cmd.push(String.from("child"));
+  match process.run(cmd.view(), process.Options(timeout: Duration.fromMillis(240000i64))) {
+    case let Ok(o) {
+      if o.timedOut || o.exitCode != 0u32 {
+        eprintStr("bargein: the child timed out or failed; run again\n");
+        eprintStr(o.stdout.view());
+        eprintStr(o.stderr.view());
+        _ = fs.removeFile(&Path.from(OUT_FILE));
+        return 0u32;
+      }
+      let ends = 20.0 + numberAfter(o.stdout.view(), LEN_KEY) / 1000.0;
+      let h = readOutput(&o.stdout);
+      let cut = h.cutAt;
+      if h.played < 0.05 || cut < 20.0 || cut > ends - 1.5 {
+        eprintStr("bargein: a run in which the interruption was not heard while the answer played; run again\n");
+        _ = fs.removeFile(&Path.from(OUT_FILE));
+        return 0u32;
+      }
+      match voiceaudio.readRawF32(&Path.from(OUT_FILE)) {
+        case let Ok(raw) {
+          let left = voiceaudio.channel(raw.view(), 2usize, 0usize);
+          let x = left.view();
+          let answered = peak(x, ends, 40.0) > 0.01f;
+          if !answered {
+            eprintStr("bargein: the next answer did not begin before 40 s; run again\n");
+            _ = fs.removeFile(&Path.from(OUT_FILE));
+            return 0u32;
+          }
+          expect(h.turnAfter, "the loop reported the interruption, and a turn of the person's followed it");
+          require(left.len() > usize.from(voiceaudio.DISK_RATE) * 30usize, "the speaker file runs past 30 s");
+          expect(peak(x, cut + 1.0, ends) < 0.01f, "playback stopped: the speaker is silent from 1 s after the cut until the interruption ended");
+          expect(answered, "the next turn's answer began after the interruption and before the goodbye");
+        }
+        case let Err(e) { require(false, "the speaker file is read"); }
+      }
+      _ = fs.removeFile(&Path.from(OUT_FILE));
+      1u32
+    }
+    case let Err(e) { require(false, "the child starts"); 1u32 }
+  }
+}
+
+fn main() i32 {
+  let args = process.args();
+  if args.len() > 1usize && args[1usize].view() == "child" { return child(); }
+  let stt = modelPath("parakeet-tdt-0.6b-v2.f16.safetensors");
+  let vocab = modelPath("parakeet-tdt-0.6b-v2.vocab.txt");
+  let weights = modelPath("kokoro/kokoro-v1_0.safetensors");
+  if !have(QWEN) || !have(stt.view()) || !have(vocab.view()) || !have(weights.view()) {
+    return skip("the models in C:/src/llm-models and C:/src/speech-models are absent");
+  }
+  var exe = String();
+  match process.currentExe() {
+    case let Ok(e) { exe = String.from(e.view()); }
+    case is Err { require(false, "currentExe"); }
+  }
+  var tries = 0u32;
+  var got = 0u32;
+  while got == 0u32 && tries < 3u32 {
+    got = attempt(exe.view());
+    tries = tries + 1u32;
+  }
+  expect(got == 1u32, "a run in which the interruption came while the answer played (three tries)");
+  done()
+}

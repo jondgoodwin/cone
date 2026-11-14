@@ -132,6 +132,29 @@ fn main() i32 {
   }
   got.clear();
 
+  // ---- 1b. Bytes uploaded, the last word padded with zeros ----
+  {
+    var job = Job.make(&mut device);
+    let seven = [1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8];
+    let buf = job.give(uploadBytes(&mut device, &seven));
+    let eight = job.give(uploadBytes(&mut device, &[9u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 128u8]));
+    let backA = job.readback(&mut device, buf);
+    let backB = job.readback(&mut device, eight);
+    let ticket = works.submit(&mut device, job, Target.Here(1u64));
+    expectUInt(u64.from(works.waitFor(&mut device, ticket, &mut got)), 1u64, "the bytes job's completion");
+    let c = &mut got[0usize];
+    expectBool(c.ok, true, "the bytes job ran");
+    let a = c.words(backA);
+    expectUInt(u64.from(a.len), 2u64, "7 bytes make 2 words");
+    expectUInt(u64.from(*a[0usize]), 67305985u64, "little-endian: 04030201");
+    expectUInt(u64.from(*a[1usize]), 460293u64, "padded with a zero byte: 00070605");
+    let b = c.words(backB);
+    expectUInt(u64.from(b.len), 2u64, "8 bytes make 2 words");
+    expectUInt(u64.from(*b[0usize]), 9u64, "the first word");
+    expectUInt(u64.from(*b[1usize]), 2147483648u64, "the second word");
+  }
+  got.clear();
+
   // ---- 2. Refusals ----
   {
     let before = refusals();

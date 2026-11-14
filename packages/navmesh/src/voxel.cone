@@ -16,7 +16,7 @@ pub const MaxHeight: i32 = 65535i32;
 pub struct Span {
   pub smin: i32;
   pub smax: i32;
-  pub area: u8;
+  pub area: AreaId;
   pub next: i32;      // the next span up this column, -1 none
 }
 
@@ -52,7 +52,7 @@ pub struct Heightfield {
   }
 
   // A span added to column (x, z), merging with the ones it overlaps
-  pub fn addSpan(self: &mut, x: i32, z: i32, smin0: i32, smax0: i32, area0: u8, mergeThreshold: i32) {
+  pub fn addSpan(self: &mut, x: i32, z: i32, smin0: i32, smax0: i32, area0: AreaId, mergeThreshold: i32) {
     let idx = usize.from(z) * usize.from(w) + usize.from(x);
     var smin = smin0;
     var smax = smax0;
@@ -69,11 +69,11 @@ pub struct Heightfield {
         if c.smin < smin { smin = c.smin; }
         if c.smax > smax { smax = c.smax; }
         if (smax - c.smax).abs() <= mergeThreshold {
-          if c.area > area { area = c.area; }
+          if c.area.index > area.index { area = c.area; }
         }
         // drop the merged span
         let nxt = c.next;
-        spans.set(usize.from(cur), Span(0i32, 0i32, 0u8, freeHead));
+        spans.set(usize.from(cur), Span(0i32, 0i32, AreaNull, freeHead));
         freeHead = cur;
         if prev >= 0i32 {
           let p = *spans[usize.from(prev)];
@@ -173,7 +173,7 @@ pub struct RasterScratch {
 fn pushV(l: &mut List[f32], v: Vec3) { l.push(v.x); l.push(v.y); l.push(v.z); }
 
 // One triangle into the heightfield (Recast's rasterizeTri)
-pub fn rasterizeTriangle(hf: &mut Heightfield, v0: Vec3, v1: Vec3, v2: Vec3, area: u8, mergeThr: i32, sc: &mut RasterScratch) {
+pub fn rasterizeTriangle(hf: &mut Heightfield, v0: Vec3, v1: Vec3, v2: Vec3, area: AreaId, mergeThr: i32, sc: &mut RasterScratch) {
   let tmin = v0.min(v1).min(v2);
   let tmax = v0.max(v1).max(v2);
   let ics = 1. / hf.cs;
@@ -278,12 +278,12 @@ pub fn filterLowHangingObstacles(hf: &mut Heightfield, climb: i32) {
   var c = 0usize;
   while c < hf.cols.len() {
     var prevWalkable = false;
-    var prevArea = 0u8;
+    var prevArea = AreaNull;
     var prevMax = 0i32;
     var s = *hf.cols[c];
     while s >= 0i32 {
       let sp = *hf.spans[usize.from(s)];
-      let walkable = sp.area != AreaNull;
+      let walkable = sp.area.index != AreaNull.index;
       if !walkable && prevWalkable {
         if (sp.smax - prevMax).abs() <= climb {
           hf.spans.set(usize.from(s), Span(sp.smin, sp.smax, prevArea, sp.next));
@@ -311,7 +311,7 @@ pub fn filterLedgeSpans(hf: &mut Heightfield, height: i32, climb: i32) {
       var s = *hf.cols[usize.from(z) * usize.from(w) + usize.from(x)];
       while s >= 0i32 {
         let sp = *hf.spans[usize.from(s)];
-        if sp.area != AreaNull {
+        if sp.area.index != AreaNull.index {
           let bot = sp.smax;
           let top = if sp.next >= 0i32 { (*hf.spans[usize.from(sp.next)]).smin } else { MaxHeight };
           var minh = MaxHeight;

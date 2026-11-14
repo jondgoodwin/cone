@@ -1,0 +1,136 @@
+// 'ps[i].f' over a SoaList, which declares SoaLayout, is the element of the column: 'ps.f[i]'.
+// Read, '=', '+=', '++', a nested field ('ps[i].at.x += 1'), '&uni ps[i].at' and the same through
+// a '&uni SoaList' parameter. A whole row of a Copy type is 'ps[i]' (ps.rowAt(i)) and 'ps[i] = r'
+// (ps.setRowAt(i, r)). A List of the same type, and a type with a '[]' of its own, are unaffected.
+//
+// The printed values were checked by hand against the source. Rows pushed:
+//   row 0: x 1, y 10, at (1, 2)        row 1: x 2, y 20, at (3, 4)
+//   read       ps[1].x is 2, ps[1].at.y is 4:                               2 4
+//   =          ps[0].x = 7: x of row 0 is 7:                                7
+//   +=         ps[1].y += 5 makes 25:                                       25
+//   ++         ps[1].x++ makes 3; row 0 is untouched:                       3 7
+//   nested     ps[0].at.x += 10 makes 11; at.y of row 0 is still 2:        11 2
+//   &uni       'a = &uni ps[1].at' then a.y = 40: row 1's at.y is 40:      40
+//   param      bump(&uni ps) adds 100 to x of row 0 (7 -> 107), then
+//              ps[0].y = 5 and ps[0].y++ make 6:                            107 6
+//   row read   ps.len() is 2; r = ps[0] is (107, 6, at 11,2):               2 107 6 11 2
+//   row write  ps[1] = Row(9, 8, Pt(7, 6)): row 1 reads 9 8 7 6:           9 8 7 6
+//   List       pts[1].y with pts = [(1,2),(3,4)] is 4; pts[1].y += 1 is 5:  4 5
+//   own []     Own()[3].tag is 3 (its '[]' answers a struct of the index):  3
+//   a field    w.ps row (5, 6, at 0,0): x += 1 makes 6, at.y = 2, the row
+//              read and stored back with x times 10 gives 60 and 2:          60 2
+//   a method   w.step(): x is read (60), '=' 61, '+=' 62, '++' 63, at.y = 3 through
+//              '&uni self.ps[0].at'; read back through the call w.list()[0]:  63 3
+//   a call     listOf(&uni w)[0].x = 1 stores through a free function's result,
+//              and reads back:                                              1
+
+mod meta_soa_place;
+
+import stdio use *;
+import collections use *;
+
+struct Pt {
+  pub x: i32;
+  pub y: i32;
+}
+
+struct Row {
+  pub x: i32;
+  pub y: i64;
+  pub at: Pt;
+}
+
+struct Tag {
+  pub tag: i32;
+}
+
+struct Own {
+  pub fn `[]`(self: &, i: i32) Tag { Tag(i) }
+}
+
+struct World {
+  pub ps: SoaList[Row];
+
+  // 'self.ps[i].f' in a method: read, '=', '+=', '++', '&uni' and the whole row
+  pub fn step(self: &uni) {
+    let a = self.ps[0usize].x;
+    self.ps[0usize].x = a + 1;
+    self.ps[0usize].x += 1;
+    self.ps[0usize].x++;
+    let b = &uni self.ps[0usize].at;
+    b.y = 3;
+    let r = self.ps[0usize];
+    self.ps[0usize] = r;
+  }
+
+  pub fn list(self: &uni) &uni SoaList[Row] { &uni self.ps }
+}
+
+// A list held in a field of a struct: the receiver of the index is a path, 'w.ps'
+fn grow(w: &uni World) {
+  w.ps[0usize].x += 1;
+  w.ps[0usize].at.y = 2;
+  let r = w.ps[0usize];
+  w.ps[0usize] = Row(r.x * 10, r.y, r.at);
+}
+
+fn bump(ps: &uni SoaList[Row]) {
+  ps[0usize].x += 100;
+  ps[0usize].y = 5i64;
+  ps[0usize].y++;
+}
+
+fn main() {
+  var ps = SoaList[Row]();
+  ps.push(Row(1, 10i64, Pt(1, 2)));
+  ps.push(Row(2, 20i64, Pt(3, 4)));
+  print <- ps[1usize].x, " ", ps[1usize].at.y, "\n";
+
+  ps[0usize].x = 7;
+  print <- ps[0usize].x, "\n";
+
+  ps[1usize].y += 5i64;
+  print <- ps[1usize].y, "\n";
+
+  ps[1usize].x++;
+  print <- ps[1usize].x, " ", ps[0usize].x, "\n";
+
+  ps[0usize].at.x += 10;
+  print <- ps[0usize].at.x, " ", ps[0usize].at.y, "\n";
+
+  let a = &uni ps[1usize].at;
+  a.y = 40;
+  print <- ps[1usize].at.y, "\n";
+
+  bump(&uni ps);
+  print <- ps[0usize].x, " ", ps[0usize].y, "\n";
+
+  let r = ps[0usize];
+  print <- ps.len(), " ", r.x, " ", r.y, " ", r.at.x, " ", r.at.y, "\n";
+
+  ps[1usize] = Row(9, 8i64, Pt(7, 6));
+  print <- ps[1usize].x, " ", ps[1usize].y, " ", ps[1usize].at.x, " ", ps[1usize].at.y, "\n";
+
+  var pts = List[Pt]();
+  pts.push(Pt(1, 2));
+  pts.push(Pt(3, 4));
+  print <- pts[1usize].y, " ";
+  pts[1usize].y += 1;
+  print <- pts[1usize].y, "\n";
+
+  let o = Own();
+  print <- o[3].tag, "\n";
+
+  var w = World(SoaList[Row]());
+  w.ps.push(Row(5, 6i64, Pt(0, 0)));
+  grow(&uni w);
+  print <- w.ps[0usize].x, " ", w.ps[0usize].at.y, "\n";
+
+  w.step();
+  print <- w.list()[0usize].x, " ", w.list()[0usize].at.y, "\n";
+
+  listOf(&uni w)[0usize].x = 1;
+  print <- listOf(&uni w)[0usize].x, "\n";
+}
+
+fn listOf(w: &uni World) &uni SoaList[Row] { &uni w.ps }

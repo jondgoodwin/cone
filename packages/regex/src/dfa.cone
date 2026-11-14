@@ -1,0 +1,523 @@
+// ======== The lazy DFA: one table lookup for each byte ========
+//
+// A DFA state is the ordered list of automaton states a search is in (the Pike VM's
+// thread list without the captures), found only when a search first needs it and kept
+// in a cache. The forward DFA reads the text left to right, with the program's start
+// state added at every position until a match is found; it gives the END of the
+// leftmost-first match (the last position a match ended at before the threads of higher
+// priority all died). The reverse DFA reads the reversed automaton from that end back
+// towards the search's start and gives the START: of the matches that end there, the
+// leftmost. Neither tracks captures, so neither can answer a search that wants groups.
+//
+// Assertions (^ $ \b ...) need the byte on both sides of a position. A state keeps its
+// list as the automaton states BEFORE their empty-width steps ("closure"), plus the kind
+// of the byte just read; the closure is done as the next byte is read, when both sides
+// are known. So a match is seen one byte late, and the end of the text is one more
+// input symbol. A transition has a flag for "a match ended before this byte".
+//
+// Bytes the automaton cannot tell apart share a column of the table (byte classes).
+// The cache has a budget in bytes. When a new state does not fit, the whole cache is
+// dropped (the state in hand is kept) and the search goes on; as RE2 does, a search
+// that drops it a second time having read fewer than 10 bytes for each state it built
+// gives up, and the Pike VM answers.
+
+// An edge of the automaton graph: kinds
+const ekEps = 0u8;
+const ekLook = 1u8;
+const ekByte = 2u8;
+
+const unknownT = 0xFFFFFFFFu32;
+const giveUpT = 0xFFFFFFFEu32;
+const matchBit = 0x80000000u32;
+const stateMask = 0x7FFFFFFFu32;
+// A DFA search that gave up (the Pike VM must answer)
+const gaveUp = 0xFFFFFFFFFFFFFFFEusize;
+
+// Programs bigger than this are left to the Pike VM, and texts shorter than dfaMinText:
+// the cache is made for each search, and building states costs more than reading a few bytes
+const dfaMaxStates = 10000usize;
+const dfaMinText = 512usize;
+// The cache budget in bytes of a Regex that has not been given another; the forward and
+// reverse DFA share it
+const defaultCacheBudget = 1048576usize;
+
+struct Edge {
+  pub kind: u8;
+  pub lo: u8;
+  pub hi: u8;
+  pub arg: u32;
+  pub to: u32;
+}
+
+// The program as a graph of edges for each state, in priority order. 'start' is where a
+// search begins and 'accept' the state that means a match.
+struct Graph {
+  pub n: usize;
+  pub off: List[u32];
+  pub edges: List[Edge];
+  pub start: u32;
+  pub accept: u32;
+}
+
+// What the DFAs need from the program, made when the pattern is compiled
+struct DfaProg {
+  pub fwd: Graph;
+  pub rev: Graph;
+  pub classMap: List[u8];
+  pub repr: List[u8];
+  pub nclasses: usize;
+  // Whether the program has any assertion
+  pub looks: bool;
+  pub budget: usize;
+}
+
+fn graphOf(insts: &List[Inst], trans: &List[Trans], start: u32) Graph {
+  let n = insts.len();
+  var off = List[u32]();
+  var edges = List[Edge]();
+  var accept = 0u32;
+  var i = 0usize;
+  while i < n {
+    off.push(u32.from(edges.len()));
+    let inst = &insts[i];
+    let op = inst.op;
+    if op == opByte { edges.push(Edge(ekByte, inst.lo, inst.hi, 0u32, inst.next)); }
+    else if op == opSparse {
+      var t = usize.from(inst.x);
+      let end = t + usize.from(inst.y);
+      while t < end {
+        let tr = &trans[t];
+        edges.push(Edge(ekByte, tr.lo, tr.hi, 0u32, tr.next));
+        t = t + 1;
+      }
+    }
+    else if op == opSplit {
+      edges.push(Edge(ekEps, 0u8, 0u8, 0u32, inst.next));
+      edges.push(Edge(ekEps, 0u8, 0u8, 0u32, inst.x));
+    }
+    else if op == opSave { edges.push(Edge(ekEps, 0u8, 0u8, 0u32, inst.next)); }
+    else if op == opLook { edges.push(Edge(ekLook, 0u8, 0u8, inst.x, inst.next)); }
+    else if op == opMatch { accept = u32.from(i); }
+    i = i + 1;
+  }
+  off.push(u32.from(edges.len()));
+  Graph(n, off, edges, start, accept)
+}
+
+// The same edges the other way round: what leads to a state, which is how the
+// reverse DFA reads the pattern. The priority of the edges does not matter there.
+fn reverseOf(f: &Graph) Graph {
+  let n = f.n;
+  let m = f.edges.len();
+  var off = List[u32](n + 1) <- fill 0u32;
+  var k = 0usize;
+  while k < m { let to = usize.from((*f.edges[k]).to); off.set(to + 1, *off[to + 1] + 1); k = k + 1; }
+  k = 0;
+  while k < n { off.set(k + 1, *off[k + 1] + *off[k]); k = k + 1; }
+  var fillAt = List[u32](n) <- fill 0u32;
+  k = 0;
+  while k < n { fillAt.set(k, *off[k]); k = k + 1; }
+  var edges = List[Edge](m) <- fill Edge(0u8, 0u8, 0u8, 0u32, 0u32);
+  var i = 0usize;
+  while i < n {
+    var j = usize.from(*f.off[i]);
+    let end = usize.from(*f.off[i + 1]);
+    while j < end {
+      let e = *f.edges[j];
+      let to = usize.from(e.to);
+      let at = usize.from(*fillAt[to]);
+      edges.set(at, Edge(e.kind, e.lo, e.hi, e.arg, u32.from(i)));
+      fillAt.set(to, *fillAt[to] + 1);
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  Graph(n, off, edges, f.accept, f.start)
+}
+
+fn makeDfaProg(insts: &List[Inst], trans: &List[Trans], start: u32) DfaProg {
+  let fwd = graphOf(insts, trans, start);
+  let rev = reverseOf(&fwd);
+  var looks = false;
+  var i = 0usize;
+  while i < insts.len() { if (*insts[i]).op == opLook { looks = true; } i = i + 1; }
+  // byte classes: a boundary before byte b when some edge starts or ends there
+  var bound = List[bool](257) <- fill false;
+  i = 0;
+  while i < fwd.edges.len() {
+    let e = *fwd.edges[i];
+    if e.kind == ekByte { bound.set(usize.from(e.lo), true); bound.set(usize.from(e.hi) + 1, true); }
+    i = i + 1;
+  }
+  if looks {
+    // word bytes and the newline are told apart by assertions
+    bound.set(usize.from('0'), true); bound.set(usize.from('9') + 1, true);
+    bound.set(usize.from('A'), true); bound.set(usize.from('Z') + 1, true);
+    bound.set(usize.from('_'), true); bound.set(usize.from('_') + 1, true);
+    bound.set(usize.from('a'), true); bound.set(usize.from('z') + 1, true);
+    bound.set(usize.from('\n'), true); bound.set(usize.from('\n') + 1, true);
+  }
+  var classMap = List[u8]();
+  var repr = List[u8]();
+  var cls = 0usize;
+  var b = 0usize;
+  while b < 256 {
+    if b == 0 || *bound[b] { repr.push(u8.from(b)); if b > 0 { cls = cls + 1; } }
+    classMap.push(u8.from(cls));
+    b = b + 1;
+  }
+  DfaProg(fwd, rev, classMap, repr, cls + 1, looks, defaultCacheBudget)
+}
+
+// What kind of byte this is, to an assertion: 0 no byte (an end of the text), 1 a word
+// byte, 2 a newline, 3 another byte
+fn ctxOfByte(b: u8) u32 {
+  if b == '\n' { 2 } else if isWordByte(b) { 1 } else { 3 }
+}
+
+// Whether the assertion holds between a byte of kind 'before' and one of kind 'after'
+fn holdsCtx(kind: u32, before: u32, after: u32) bool {
+  if kind == lkStartText { before == 0 }
+  else if kind == lkEndText { after == 0 }
+  else if kind == lkStartLine { before == 0 || before == 2 }
+  else if kind == lkEndLine { after == 0 || after == 2 }
+  else if kind == lkWord { (before == 1) != (after == 1) }
+  else { (before == 1) == (after == 1) }
+}
+
+// One direction's cache of states and transitions
+struct Dfa {
+  pub ready: bool;
+  pub failed: bool;
+  isRev: bool;
+  stride: usize;
+  budget: usize;
+  used: usize;
+  states: usize;
+  // The lists of automaton states, end to end; state i's begins at off[i]
+  ids: List[u32];
+  off: List[u32];
+  // A state's flags: its prev kind in bits 0-1, bit 2 'a match has been seen' (forward)
+  flags: List[u8];
+  // stride entries for each state: the next state, with matchBit if a match ended
+  // before the byte; unknownT if not yet found
+  table: List[u32];
+  index: Dict[String, u32];
+  mark: List[u32];
+  epoch: u32;
+  mark2: List[u32];
+  epoch2: u32;
+  stack: List[u32];
+  work: List[u32];
+  nextIds: List[u32];
+  tmp: List[u32];
+  // The state with no list, for each kind of prev byte (0 when there are no assertions)
+  init: List[u32];
+  cur: u32;
+  flushes: usize;
+  resetPos: usize;
+  progress: usize;
+  // Set by the closure: whether the accepting state was reached
+  hit: bool;
+
+  pub fn empty() Dfa {
+    Dfa(false, false, false, 0, 0, 0, 0, List[u32](), List[u32](), List[u8](), List[u32](), Dict[String, u32](),
+      List[u32](), 0u32, List[u32](), 0u32, List[u32](), List[u32](), List[u32](), List[u32](), List[u32](), 0u32, 0, noPos, 0, false)
+  }
+
+  pub fn setup(self: &mut, g: &Graph, dp: &DfaProg, rev: bool, bytes: usize) {
+    ready = true;
+    isRev = rev;
+    stride = dp.nclasses + 1;
+    budget = bytes;
+    mark = List[u32](g.n) <- fill 0u32;
+    mark2 = List[u32](g.n) <- fill 0u32;
+    epoch = 0;
+    epoch2 = 0;
+    flushes = 0;
+    reset();
+  }
+
+  // Forget every state (the dead state, number 0, is made again)
+  fn reset(self: &mut) {
+    ids.clear();
+    off.clear();
+    flags.clear();
+    table.clear();
+    index = Dict[String, u32]();
+    init.clear();
+    var k = 0usize;
+    while k < 4 { init.push(unknownT); k = k + 1; }
+    off.push(0u32);
+    flags.push(0xFFu8);
+    k = 0;
+    while k < stride { table.push(0u32); k = k + 1; }
+    states = 1;
+    used = stride * 4 + 80;
+  }
+
+  fn endOf(self: &, i: usize) usize {
+    if i + 1 < off.len() { usize.from(*off[i + 1]) } else { ids.len() }
+  }
+
+  fn makeKey(self: &, flagv: u8) String {
+    var key = String();
+    key.appendByte(flagv);
+    var i = 0usize;
+    while i < nextIds.len() {
+      let v = *nextIds[i];
+      key.appendByte(u8.from(v));
+      key.appendByte(u8.from(v >> 8));
+      key.appendByte(u8.from(v >> 16));
+      key.appendByte(u8.from(v >> 24));
+      i = i + 1;
+    }
+    key
+  }
+
+  // Put the list in nextIds in the cache as a new state
+  fn insert(self: &mut, flagv: u8, key: String) u32 {
+    let id = u32.from(states);
+    off.push(u32.from(ids.len()));
+    var i = 0usize;
+    while i < nextIds.len() { ids.push(*nextIds[i]); i = i + 1; }
+    flags.push(flagv);
+    var k = 0usize;
+    while k < stride { table.push(unknownT); k = k + 1; }
+    index.insert(key, id);
+    states = states + 1;
+    used = used + stride * 4 + 8 * nextIds.len() + 80;
+    id
+  }
+
+  // Drop every state but the one being worked on ('cur'), which is made again.
+  // False if the search should give up instead: it dropped the cache before, having
+  // read fewer than 10 bytes for each state in it.
+  fn flush(self: &mut) bool {
+    if resetPos != noPos && progress - resetPos < 10 * states { return false; }
+    resetPos = progress;
+    flushes = flushes + 1;
+    let ci = usize.from(cur);
+    var saveFlag = 0u8;
+    tmp.clear();
+    if cur != 0 {
+      saveFlag = *flags[ci];
+      var i = usize.from(*off[ci]);
+      let end = endOf(ci);
+      while i < end { tmp.push(*ids[i]); i = i + 1; }
+    }
+    reset();
+    if cur != 0 {
+      nextIds <-> tmp;
+      let key = makeKey(saveFlag);
+      cur = insert(saveFlag, key);
+      nextIds <-> tmp;
+    }
+    true
+  }
+
+  // The state with the list in nextIds and these flags, new if need be; giveUpT if the
+  // cache cannot take it
+  fn addState(self: &mut, flagv: u8) u32 {
+    let n = nextIds.len();
+    if n == 0 && (isRev || (flagv & 4) != 0) { return 0u32; }
+    let key = makeKey(flagv);
+    match index.get(&key) {
+      case let Some(id) { return *id; }
+      case is None {}
+    }
+    let cost = stride * 4 + 8 * n + 80;
+    if used + cost > budget {
+      if !flush() { return giveUpT; }
+      if used + cost > budget { return giveUpT; }
+    }
+    insert(flagv, key)
+  }
+
+  // The state a search begins in: no list (or for the reverse DFA, the program's
+  // accepting state), after a byte of kind ctx
+  fn initial(self: &mut, g: &Graph, ctx: u32) u32 {
+    let have = *init[usize.from(ctx)];
+    if have != unknownT { return have; }
+    nextIds.clear();
+    if isRev { nextIds.push(g.start); }
+    cur = 0;
+    let id = addState(u8.from(ctx));
+    if id == giveUpT { failed = true; return giveUpT; }
+    init.set(usize.from(ctx), id);
+    id
+  }
+
+  // Add what the node leads to without reading a byte, in priority order, to 'work'
+  // (those that read a byte). Stops, answering true, when the accepting state is reached
+  // and the search is forward (leftmost-first: the rest has lower priority).
+  fn closeFrom(self: &mut, g: &Graph, root: u32, before: u32, after: u32) bool {
+    stack.push(root);
+    while stack.len() > 0 {
+      let v = usize.from(stack.pop().unwrap());
+      if *mark[v] == epoch { continue; }
+      mark.set(v, epoch);
+      if u32.from(v) == g.accept {
+        hit = true;
+        if !isRev { stack.clear(); return true; }
+      }
+      var reads = false;
+      let lo = usize.from(*g.off[v]);
+      var k = usize.from(*g.off[v + 1]);
+      while k > lo {
+        k = k - 1;
+        let e = &g.edges[k];
+        if e.kind == ekEps { stack.push(e.to); }
+        else if e.kind == ekLook { if holdsCtx(e.arg, before, after) { stack.push(e.to); } }
+        else { reads = true; }
+      }
+      if reads { work.push(u32.from(v)); }
+    }
+    false
+  }
+
+  // The transition of state s on a byte of class c (c == nclasses: the end of the text)
+  fn compute(self: &mut, g: &Graph, dp: &DfaProg, s: u32, c: usize) u32 {
+    cur = s;
+    let si = usize.from(s);
+    let flag = *flags[si];
+    let prev = u32.from(flag & 3u8);
+    let seen = (flag & 4u8) != 0;
+    let atEnd = c == dp.nclasses;
+    let ctxN = if atEnd { 0u32 } else { ctxOfByte(*dp.repr[c]) };
+    let before = if isRev { ctxN } else { prev };
+    let after = if isRev { prev } else { ctxN };
+    if epoch == 0xFFFFFFFFu32 {
+      var z = 0usize;
+      while z < mark.len() { mark.set(z, 0u32); z = z + 1; }
+      epoch = 0;
+    }
+    epoch = epoch + 1;
+    work.clear();
+    stack.clear();
+    hit = false;
+    var stop = false;
+    var i = usize.from(*off[si]);
+    let end = endOf(si);
+    while i < end && !stop {
+      stop = closeFrom(g, *ids[i], before, after);
+      i = i + 1;
+    }
+    if !stop && !isRev && !seen { closeFrom(g, g.start, before, after); }
+    let matched = hit;
+    if atEnd {
+      let r = if matched { matchBit } else { 0u32 };
+      table.set(si * stride + c, r);
+      return r;
+    }
+    // read the byte
+    let b = *dp.repr[c];
+    if epoch2 == 0xFFFFFFFFu32 {
+      var z = 0usize;
+      while z < mark2.len() { mark2.set(z, 0u32); z = z + 1; }
+      epoch2 = 0;
+    }
+    epoch2 = epoch2 + 1;
+    nextIds.clear();
+    var w = 0usize;
+    while w < work.len() {
+      let v = usize.from(*work[w]);
+      var k = usize.from(*g.off[v]);
+      let kend = usize.from(*g.off[v + 1]);
+      while k < kend {
+        let e = &g.edges[k];
+        if e.kind == ekByte && b >= e.lo && b <= e.hi {
+          let t = usize.from(e.to);
+          if *mark2[t] != epoch2 { mark2.set(t, epoch2); nextIds.push(e.to); }
+        }
+        k = k + 1;
+      }
+      w = w + 1;
+    }
+    var nf = if dp.looks { u8.from(ctxN) } else { 0u8 };
+    if !isRev && (seen || matched) { nf = nf | 4u8; }
+    let nid = addState(nf);
+    if nid == giveUpT { failed = true; return giveUpT; }
+    let packed = if matched { nid | matchBit } else { nid };
+    table.set(usize.from(cur) * stride + c, packed);
+    packed
+  }
+
+  // The end of the leftmost-first match that begins at or after 'from' (or, with
+  // 'earliest', the end of the first match to end at all); noPos if none; gaveUp if the
+  // cache was too much for this search.
+  pub fn forward(self: &mut, g: &Graph, dp: &DfaProg, text: &Array[u8], from: usize, earliest: bool, prefix: &Array[u8]) usize {
+    resetPos = noPos;
+    let tlen = text.len;
+    let ctx0 = if dp.looks && from > 0 { ctxOfByte(text[from - 1]) } else { 0u32 };
+    var s = initial(g, ctx0);
+    if s == giveUpT { return gaveUp; }
+    var last = noPos;
+    let skip = prefix.len > 0 && !dp.looks;
+    var p = from;
+    while p < tlen {
+      if skip && s == *init[0] {
+        let at = findPrefix(text, p, prefix);
+        if at == noPos { return noPos; }
+        p = at;
+      }
+      let c = usize.from(*dp.classMap[usize.from(text[p])]);
+      var t = *table[usize.from(s) * stride + c];
+      if t == unknownT {
+        progress = p - from;
+        t = compute(g, dp, s, c);
+        if t == giveUpT { return gaveUp; }
+      }
+      if (t & matchBit) != 0 {
+        last = p;
+        if earliest { return p; }
+      }
+      s = t & stateMask;
+      if s == 0 { return last; }
+      p = p + 1;
+    }
+    var t = *table[usize.from(s) * stride + dp.nclasses];
+    if t == unknownT {
+      progress = tlen - from;
+      t = compute(g, dp, s, dp.nclasses);
+      if t == giveUpT { return gaveUp; }
+    }
+    if (t & matchBit) != 0 { last = tlen; }
+    last
+  }
+
+  // Of the matches that end at 'end', where the leftmost begins (not before 'from');
+  // noPos if there is none, gaveUp as for 'forward'
+  pub fn backward(self: &mut, g: &Graph, dp: &DfaProg, text: &Array[u8], from: usize, end: usize) usize {
+    resetPos = noPos;
+    let tlen = text.len;
+    let ctx0 = if dp.looks && end < tlen { ctxOfByte(text[end]) } else { 0u32 };
+    var s = initial(g, ctx0);
+    if s == giveUpT { return gaveUp; }
+    var last = noPos;
+    var p = end;
+    while p > from {
+      let c = usize.from(*dp.classMap[usize.from(text[p - 1])]);
+      var t = *table[usize.from(s) * stride + c];
+      if t == unknownT {
+        progress = end - p;
+        t = compute(g, dp, s, c);
+        if t == giveUpT { return gaveUp; }
+      }
+      if (t & matchBit) != 0 { last = p; }
+      s = t & stateMask;
+      if s == 0 { return last; }
+      p = p - 1;
+    }
+    // at 'from': the byte before it is context for the assertions, and is not read
+    let c = if from > 0 { usize.from(*dp.classMap[usize.from(text[from - 1])]) } else { dp.nclasses };
+    var t = *table[usize.from(s) * stride + c];
+    if t == unknownT {
+      progress = end - from;
+      t = compute(g, dp, s, c);
+      if t == giveUpT { return gaveUp; }
+    }
+    if (t & matchBit) != 0 { last = from; }
+    last
+  }
+}

@@ -506,30 +506,6 @@ static INode *loanCallerPlace(uint32_t id) {
     return loans[id].part == LifePartHeld ? lifePointee(held) : held;
 }
 
-uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through) {
-    if (refholds == NULL || stored == NULL)
-        return 0;
-    uint32_t n = refholds->cnt;
-    for (uint32_t i = 0; i < n; ++i) {
-        uint32_t id = refholds->ids[i];
-        if ((id & LoanFar) && !beyond)
-            continue;
-        id = loanOf(id);
-        INode *place = loans[id].kind == LoanCaller ? loanCallerPlace(id) : NULL;
-        if (place == NULL || !itypeCarriesBorrow(place) || itypeCarriesEndingBorrow(place))
-            continue;
-        uint32_t nstored = stored->cnt;
-        for (uint32_t k = 0; k < nstored; ++k) {
-            uint32_t sid = loanOf(stored->ids[k]);
-            if (loans[sid].kind == LoanCaller) {
-                *through = loanParm(id);
-                return sid;
-            }
-        }
-    }
-    return 0;
-}
-
 // Whether the loans an arena reference holds are to be checked. One holding no
 // loan but what was stored through it was made by a route the walk does not
 // follow (from a raw pointer, as DynArena's 'alloc' reaches its inner arena,
@@ -583,9 +559,9 @@ static int loanFieldReachesArena(INode *type, int depth) {
 // Whether a store through a reference holding 'refholds' is into a node of an
 // arena (the plain 'Arena', not a 'DynArena', whose keys have their own rule)
 // that a caller may keep past this function, by a route that tells the body
-// nothing of what else the caller lent: the arena a parameter points at, where
-// the function names no lifetime; or an arena reached through a struct's field
-// whose root a caller lent, named lifetimes or not. That route is seen two
+// nothing of what else the caller lent: an arena reached through a struct's
+// field whose root a caller lent (the arena a parameter points at is checked
+// by loanStoredApart, as every signature's, elided or named). That route is seen two
 // ways: the pin an arena's method made of its receiver's place in this body
 // (viafield), or, where a helper made the node or the reference and left no
 // pin here, a far loan of a parameter whose type holds an arena in a field
@@ -607,17 +583,18 @@ static int loanFieldReachesArena(INode *type, int depth) {
 // result, a node of the arena, and the caller never asks (a holder has
 // writable-borrow depth 0). The exception (#992): a node whose death reads no
 // borrow ('readsnothing') may hold a shorter one, as nothing reads it later.
-int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsnothing) {
+int loanArenaNodeBarred(PathSet *refholds, int byparm, int readsnothing) {
     if (refholds == NULL)
         return 0;
-    int caller = 0, arenaparm = 0, viafield = 0, heldfield = 0;
+    int caller = 0, viafield = 0, heldfield = 0;
     for (uint32_t i = 0; i < refholds->cnt; ++i) {
         uint32_t id = loanOf(refholds->ids[i]);
         if (loans[id].kind == LoanCaller) {
             caller = 1;
             INode *place = lifePointee(loanParm(id)->vtype);
+            // The arena a parameter points at: loanStoredApart checks it
             if (itypeIsArena(place) && !lifeSlotted(place))
-                arenaparm = 1;
+                ;
             else if ((!byparm || !readsnothing) && (refholds->ids[i] & LoanFar) && loanFieldReachesArena(place, 0))
                 heldfield = 1;
         }
@@ -633,7 +610,7 @@ int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsn
                 viafield = 1;
         }
     }
-    return (!lifenamed && arenaparm) || (viafield && caller) || heldfield;
+    return (viafield && caller) || heldfield;
 }
 
 uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, VarDclNode **through) {
@@ -668,6 +645,74 @@ uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, 
     return 0;
 }
 
+// Does a written type show a borrow of its own, one the signature writes
+// (an unnamed '&i32' in 'Vec[&i32]')? A type parameter shows none: what it
+// holds is hidden, whatever it is instantiated with.
+static int loanWritesBorrow(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+    {
+        RefNode *ref = (RefNode *)type;
+        if (itypeGetTypeDcl(ref->region) == borrowRef)
+            return 1;
+        return loanWritesBorrow(ref->vtexp);
+    }
+    case PtrTag:
+        return loanWritesBorrow(((StarNode *)type)->vtexp);
+    case ArrayTag:
+        return loanWritesBorrow(arrayElemType(type));
+    case TTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (loanWritesBorrow(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case NameUseTag:
+    {
+        LifeUse *lifeuse = ((NameUseNode *)type)->lifeuse;
+        if (lifeuse && lifeuse->typeargs) {
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(lifeuse->typeargs, cnt, nodesp)) {
+                if (loanWritesBorrow(*nodesp))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Do two parameters, the first the one written through, share one written
+// lifetime name so that a store between them is tied by it? Only where the
+// borrows the first's place holds are hidden: a type parameter's (a closure's
+// captures), which no signature writes, sit under the reference reaching
+// them, so by the elided signature's one-name rule they take that name.
+// Jon's rule (11 Nov): an unnamed borrow a signature WRITES, inside a
+// signature that writes names, is a fresh name of its own, so in
+// 'g: &'a mut Vec[&i32]' the inner '&i32' is not 'a, and 'v: &'a i32' is
+// refused there. The two are told apart by whether the written type shows a
+// borrow beneath the reference (loanWritesBorrow), not by elided versus named.
+int loanSameOwnName(INode *a, INode *b) {
+    INode *ad = itypeGetTypeDcl(a), *bd = itypeGetTypeDcl(b);
+    if (ad->tag != RefTag || bd->tag != RefTag)
+        return 0;
+    if (loanWritesBorrow(((RefNode *)ad)->vtexp))
+        return 0;
+    Name *name = ((RefNode *)ad)->lifename;
+    return name != NULL && name == ((RefNode *)bd)->lifename;
+}
+
 uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
         VarDclNode **through) {
     if (refholds == NULL || stored == NULL)
@@ -684,9 +729,14 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
         VarDclNode *parm = loanParm(id);
         INode *place = loanCallerPlace(id);
         // A place of a type that cannot hold a borrow anywhere (itypeHoldsNoBorrow)
-        // takes none, so nothing stored can land in it; as loanStoredStatic
-        // skips one holding no borrow
+        // takes none, so nothing stored can land in it
         if (itypeHoldsNoBorrow(place))
+            continue;
+        // Nor does one that shows no borrow at all, 'static ones included (an
+        // arena holds borrows its type does not show, so it is always asked).
+        // The same for the unnamed lifetime as for a named one, and the same
+        // question lifeCarry asks of a call
+        if (!itypeMayHoldStoredBorrow(place))
             continue;
         int slotted = lifeSlotted(place) != NULL;
         // The field a store lands in is known only where it is in what the
@@ -723,6 +773,14 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
                 flows = lifePartFlowsSlots(sig, sparm->vtype, spart, place, LifeAllSlots, 1);
             else
                 flows = lifePartFlows(sig, sparm->vtype, spart, place);
+            // One name ties: the borrows a place shows only unnamed (a type
+            // argument's, as a closure's captures) sit under the reference
+            // reaching them, so a borrow of that reference's own name may be
+            // stored there, as an elided signature's one name may. The body
+            // is then legal, and the caller is held to the tie.
+            if (!flows && !slotted && loans[id].part <= LifePartHeld && spart == LifePartOwn
+                    && loanSameOwnName(parm->vtype, sparm->vtype) && lifeHolds(place, NULL))
+                flows = 1;
             if (!flows) {
                 *through = parm;
                 return sid;

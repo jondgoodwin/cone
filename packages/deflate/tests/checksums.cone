@@ -40,6 +40,46 @@ fn adlerPlain(data: &Array[u8]) u32 {
   (b << 16u32) | a
 }
 
+// The previous CRC-32 (slicing-by-4, checked indexing) kept here as the thing the new one must equal
+fn crc4(data: &Array[u8], crc: u32, from: usize, to: usize) u32 {
+  var t = List[u32]();
+  var n = 0u32;
+  while n < 256u32 {
+    var c = n;
+    var k = 0u32;
+    while k < 8u32 {
+      c = if (c & 1u32) != 0u32 {0xEDB88320u32 ^ (c >> 1u32)} else {c >> 1u32};
+      k += 1u32;
+    }
+    t.push(c);
+    n += 1u32;
+  }
+  var s = 1usize;
+  while s < 4usize {
+    n = 0u32;
+    while n < 256u32 {
+      let prev = *t[(s - 1usize) * 256usize + usize.from(n)];
+      t.push(*t[usize.from(prev & 0xFFu32)] ^ (prev >> 8u32));
+      n += 1u32;
+    }
+    s += 1usize;
+  }
+  var c = crc ^ 0xFFFFFFFFu32;
+  var i = from;
+  while i + 4usize <= to {
+    c = c ^ (u32.from(data[i]) | (u32.from(data[i + 1usize]) << 8u32)
+      | (u32.from(data[i + 2usize]) << 16u32) | (u32.from(data[i + 3usize]) << 24u32));
+    c = *t[768usize + usize.from(c & 0xFFu32)] ^ *t[512usize + usize.from((c >> 8u32) & 0xFFu32)]
+      ^ *t[256usize + usize.from((c >> 16u32) & 0xFFu32)] ^ *t[usize.from(c >> 24u32)];
+    i += 4usize;
+  }
+  while i < to {
+    c = *t[usize.from((c ^ u32.from(data[i])) & 0xFFu32)] ^ (c >> 8u32);
+    i += 1usize;
+  }
+  c ^ 0xFFFFFFFFu32
+}
+
 fn gen(n: usize, seed: u64) List[u8] {
   var d = List[u8]();
   var s = seed;
@@ -94,6 +134,30 @@ fn main() i32 {
   }
   expect(agree, "crc32 equals the bitwise definition at every alignment and length");
   expectUInt(u64.from(crc.update(0u32, d.view(), 0usize, d.len())), u64.from(crcBitwise(d.view())), "crc32 of 300 bytes");
+
+  // The sixteen-at-a-time CRC against the old four-at-a-time one, at every start 0-15 and length 0-300
+  let d2 = gen(320usize, 23u64);
+  var same16 = true;
+  var f2 = 0usize;
+  while f2 < 16usize {
+    var n2 = 0usize;
+    while n2 <= 300usize {
+      if crc.update(0u32, d2.view(), f2, f2 + n2) != crc4(d2.view(), 0u32, f2, f2 + n2) { same16 = false; }
+      n2 += 1usize;
+    }
+    f2 += 1usize;
+  }
+  expect(same16, "crc32 equals the old slice-by-4 at every start 0-15 and length 0-300");
+  // An empty Crc32 (as inflate keeps for non-gzip) still gives the right answer for empty ranges
+  expectUInt(u64.from(Crc32(List[u32]()).update(0u32, d2.view(), 5usize, 5usize)), 0u64, "empty table, empty range");
+
+  // 64 MiB of random bytes, in one call and in uneven pieces, against the old function
+  let huge = gen(64usize * 1048576usize, 99u64);
+  let whole = crc.update(0u32, huge.view(), 0usize, huge.len());
+  expectUInt(u64.from(whole), u64.from(crc4(huge.view(), 0u32, 0usize, huge.len())), "crc32 of 64 MiB");
+  let cutAt = 12345679usize;
+  let cut2 = crc.update(crc.update(0u32, huge.view(), 0usize, cutAt), huge.view(), cutAt, huge.len());
+  expectUInt(u64.from(cut2), u64.from(whole), "crc32 of 64 MiB in two pieces");
 
   // Adler-32 across the 5552-byte stretch the package sums between moduli
   let big = gen(70000usize, 11u64);

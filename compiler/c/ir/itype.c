@@ -186,6 +186,15 @@ int itypeIsArena(INode *type) {
     return dcl && dcl->tag == StructTag && ((StructNode *)dcl)->lends == LendsNoLoanMut;
 }
 
+// Can a place of this type hold a borrow stored into it? The one question
+// behind both ways a store is checked: the call-side filter (lifeCarry) and a
+// signature's own check (loanStoredApart), elided or named alike. A type that
+// shows no borrow takes none; an arena always does, it holds them through raw
+// memory its type does not show.
+int itypeMayHoldStoredBorrow(INode *type) {
+    return itypeIsArena(type) || itypeCarriesBorrow(type);
+}
+
 // Is it certain that no value of this type can hold a borrowed reference, of
 // any lifetime, anywhere a store can reach? Stricter than !itypeCarriesBorrow:
 // a type it cannot see all of answers no -- a type parameter, an open trait

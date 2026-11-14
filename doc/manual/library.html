@@ -125,19 +125,28 @@ fn main() {
 	<tr><td><span class="pre">pools</span><br><span class="pre">import pools use *;</span></td>
 		<td><span class="pre">GenPool[T]</span>, the first of the pool family: what <span class="pre">SlotTable</span> does
 		(below; <span class="pre">Slot</span> is its <span class="pre">Handle</span>), plus
-		<span class="pre">retire</span> and <span class="pre">free</span> (dead to every handle now, finalized later), a slab
-		given back when it empties (one empty slab is kept), and a walk over the live entries driven by a bitmap per
-		slab (<span class="pre">iter</span>, <span class="pre">entries</span>, <span class="pre">nextLive</span>).</td></tr>
+		<span class="pre">retire</span> and <span class="pre">free</span> (dead to every handle now, finalized later), its cells in
+		one contiguous block from a region (made by <span class="pre">GenPool[T]()</span> or <span class="pre">GenPool[T](n)</span>, grown by
+		doubling, entries moving when it grows, so the checked accessors return no address that outlasts a borrow; the one exception is
+			the transitional <span class="pre">rawGet</span> and <span class="pre">rawAt</span>, which return a raw pointer and are for the
+			<span class="pre">actorhttp</span> package only, until their records stop holding plug-ins behind a trait), and a walk over the live entries
+		(<span class="pre">iter</span>, <span class="pre">entries</span>, <span class="pre">nextLive</span>), which scans the cells and so costs O(capacity), as Rust's slotmap does: a pool walked while sparse should be a <span class="pre">DensePool</span>.
+		Also <span class="pre">IdPool</span>, an allocator of bare <span class="pre">u32</span> ids for a caller that keeps its
+		own storage in step: <span class="pre">make()</span> or <span class="pre">makeBounded(cap)</span>,
+		<span class="pre">alloc()</span> (an <span class="pre">Option[u32]</span>: a freed id, last in first out, else the next
+		fresh one; <span class="pre">None</span> only when bounded and full), <span class="pre">free(id)</span> (a program
+		error at the caller's line if <span class="pre">id</span> is not live), <span class="pre">isLive</span>,
+		<span class="pre">len</span>, <span class="pre">bound</span> (ids ever issued) and <span class="pre">clear</span>.</td></tr>
 	<tr><td><span class="pre">slots</span><br><span class="pre">import slots use *;</span></td>
-		<td><span class="pre">SlotTable[T]</span> (now the <span class="pre">pools</span> package's <span class="pre">GenPool</span> under its old name, for one release): records of one type in cells that never move, added and removed one at a time,
+		<td><span class="pre">SlotTable[T]</span> (now the <span class="pre">pools</span> package's <span class="pre">GenPool</span> under its old name, for one release): records of one type in cells of one block (which moves when the table grows), added and removed one at a time,
 		found by a <span class="pre">Slot</span> (a cell number and a generation, so a stale one reaches nothing) or by
-		the address a cell has for as long as the record is in the table. A record is borrowed checked,
+		cell number. A record is borrowed checked,
 		<span class="pre">borrow</span> and <span class="pre">borrowMut</span> (by Slot) or
 		<span class="pre">borrowAt</span> and <span class="pre">borrowMutAt</span> (by cell number) giving an
 		<span class="pre">Option</span> of a borrow that holds the table against an add, remove or take while it is
-		used (<a href="mem-shape.html">Borrowing into a collection</a>), or by raw address
-		(<span class="pre">get</span>, <span class="pre">at</span>). For one thread's use: a table of the I/O
-		thread's connections, or any records that outside code holds by address.</td></tr>
+		used (<a href="mem-shape.html">Borrowing into a collection</a>), or, transitionally and for <span class="pre">actorhttp</span> only, by raw address (a panic if the entry is gone)
+		(<span class="pre">rawGet</span>, <span class="pre">rawAt</span>). For one thread's use: a table of the I/O
+		thread's connections, or any records that outside code reaches by Slot.</td></tr>
 	<tr><td><span class="pre">rcweak</span><br><span class="pre">import rcweak use *;</span></td>
 		<td><span class="pre">Rcw</span> and <span class="pre">Weak[T]</span>: reference counting with weak
 		references that do not keep a value alive (<a href="mem-weak.html">Weak References</a>).</td></tr>
@@ -186,6 +195,15 @@ fn main() {
 		<td>File paths taken apart and put together as text; never asks the file system anything.</td></tr>
 	<tr><td><span class="pre">env</span><br><span class="pre">import env;</span></td>
 		<td>The program's environment variables.</td></tr>
+	<tr><td><span class="pre">stdinput</span><br><span class="pre">import stdinput;</span></td>
+		<td>Reading standard input, for a program with no actors: <span class="pre">stdinput.readLine(&amp;mut line)</span> (the next line into a
+		<span class="pre">String</span>, without its <span class="pre">\n</span> or <span class="pre">\r\n</span>; <span class="pre">Ok(false)</span> at
+		the end), <span class="pre">stdinput.readAll()</span> and <span class="pre">stdinput.readBytes(&amp;mut buf)</span> (for input that is not UTF-8). Each
+		answers a <span class="pre">Result</span> whose error is an <span class="pre">IoErrorKind</span>. <strong>They block the thread</strong>
+		until input arrives, so an actor's behaviour does not call them. They read the handle as it is (no text mode drops a
+		<span class="pre">\r</span> or ends the input at a 0x1A byte), a Windows console's text arrives as UTF-8 whatever its code page, and they take no
+		console lock, so a read that waits stops no printing. Not to be mixed with C's own <span class="pre">stdin</span>
+		(<span class="pre">libc.fread</span>) in one program.</td></tr>
 	<tr><td><span class="pre">args</span><br><span class="pre">import args use *;</span></td>
 		<td>The command line read as options and values: <span class="pre">--name value</span>, <span class="pre">--name=value</span>,
 		<span class="pre">-abc</span>, <span class="pre">--</span>, and typed values with errors that name the option.</td></tr>
@@ -375,7 +393,7 @@ fn main() i32 {
 	<p><span class="pre">chatapi</span>'s tests run against a mock server on loopback, and
 		<span class="pre">examples/ask.cone</span> takes a base URL, a model, the key's variable and a prompt.</p>
 
-	<h3 id="textpkgs">Text: textdiff, toml, json and regex</h3>
+	<h3 id="textpkgs">Text: textdiff, toml, json, csv and regex</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
 	<tr><td><span class="pre">textdiff</span><br><span class="pre">import textdiff;</span></td>
@@ -393,6 +411,10 @@ fn main() i32 {
 	<tr><td><span class="pre">json</span><br><span class="pre">import json;</span></td>
 		<td>JSON (RFC 8259) read and written: a value tree, a streaming reader of events, a writer, numbers kept as
 		written and read as i64 or f64 on request, UTF-8 checked. Written in Cone, with no C library.</td></tr>
+	<tr><td><span class="pre">csv</span><br><span class="pre">import csv;</span></td>
+		<td>CSV (RFC 4180) read and written: a reader that hands out one record at a time over a text in memory, an
+		optional header row, a writer onto a String, and <span class="pre">quoted</span> for one field. UTF-8 checked.
+		Written in Cone, with no C library.</td></tr>
 	<tr><td><span class="pre">regex</span><br><span class="pre">import regex;</span></td>
 		<td>Regular expressions in Rust's syntax, matched in time linear in the text: no backreferences and no
 		look-around. Captures, iteration over matches, replace and split. Written in Cone, with no C library.</td></tr>
@@ -699,6 +721,19 @@ fn main() i32 {
 		<span class="pre">%</span> (the remainder takes the dividend's sign); <span class="pre">divEuclid</span> and
 		<span class="pre">remEuclid</span> give a remainder from 0 up to the divisor's magnitude; text accepts and writes a
 		leading <span class="pre">-</span>.</p>
+	<p>Powers and number theory, on both types: <span class="pre">pow(e: u32)</span>,
+		<span class="pre">modPow(&amp;e, &amp;m)</span> (a <span class="pre">Result</span>: <span class="pre">DivideByZero</span> for
+		a zero modulus, <span class="pre">NegativeExponent</span> for a negative <span class="pre">BigInt</span> exponent;
+		Montgomery reduction for an odd modulus, a <span class="pre">divmod</span> after each product for an even one),
+		<span class="pre">gcd(&amp;o)</span> and <span class="pre">modInverse(&amp;m)</span> (an <span class="pre">Option</span>). Bits:
+		<span class="pre">and</span>, <span class="pre">or</span>, <span class="pre">xor</span>, <span class="pre">shl(u32)</span>,
+		<span class="pre">shr(u32)</span>, <span class="pre">testBit(u32)</span> and <span class="pre">bitLen</span>, and on
+		<span class="pre">BigInt</span> also <span class="pre">not</span>, all as on two's complement (a negative number is an endless
+		run of 1s; <span class="pre">shr</span> rounds toward negative infinity, as in Python and Java). Bytes:
+		<span class="pre">toBytesBE</span>, <span class="pre">toBytesLE</span> (zero is one zero byte, as in num-bigint),
+		<span class="pre">fromBytesBE</span> and <span class="pre">fromBytesLE</span> (a <span class="pre">BigInt</span> takes the sign as a
+		<span class="pre">bool</span> first). <span class="pre">toText</span> in base 10 divides and conquers by powers of ten
+		above 24 limbs; <span class="pre">toTextBase</span> stays word at a time.</p>
 <pre>
 mod factorial;
 

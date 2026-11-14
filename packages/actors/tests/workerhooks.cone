@@ -1,0 +1,74 @@
+// WORKER HOOKS: 'after' runs on the worker once the turn that asked has ended,
+// not during it, and not after a turn that did not ask; 'idle' runs as a worker
+// goes to sleep, and true sends it back to look; off the workers
+// askAfterTurn says false. A second workerHooks changes nothing.
+
+mod workerhooks;
+
+import testing use *;
+import sync use Channel, Sender, Receiver;
+import time use Duration;
+import thread;
+import actors;
+
+let afters: Atomic[u64];
+let idles: Atomic[u64];
+let wrong: Atomic[u64];
+
+fn @initpure init() {
+  afters = Atomic[u64].of(0u64);
+  idles = Atomic[u64].of(0u64);
+  wrong = Atomic[u64].of(0u64);
+}
+
+fn after() {afters.add(1u64);}
+
+// The first idle sends the worker back once, the rest let it sleep
+fn idle() bool {idles.add(1u64) == 0u64}
+
+fn wrongAfter() {wrong.add(1u64);}
+fn wrongIdle() bool {
+  wrong.add(1u64);
+  false
+}
+
+actor Asker {
+  pub async fn ask(self, done: Sender[u64]) {
+    let before = afters.load();
+    let on = actors.askAfterTurn();
+    done.send(if on && afters.load() == before {1u64} else {0u64});
+  }
+
+  pub async fn plain(self, done: Sender[u64]) {
+    done.send(afters.load());
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 1u32));
+  actors.workerHooks(&after, &idle);
+  actors.workerHooks(&wrongAfter, &wrongIdle);
+  expect(!actors.askAfterTurn(), "off the workers, nothing will run");
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let a = Asker();
+  a.ask(tx.clone());
+  expectUInt(rx.recv() || 9u64, 1u64, "on a worker it says so, and 'after' waits for the turn's end");
+  actors.waitUntilIdle();
+  expectUInt(afters.load(), 1u64, "'after' ran once the turn had ended");
+  a.plain(tx.clone());
+  expectUInt(rx.recv() || 9u64, 1u64, "a turn that did not ask runs no hook");
+  actors.waitUntilIdle();
+  expectUInt(afters.load(), 1u64, "still once");
+  var waited = 0u32;
+  while idles.load() < 2u64 && waited < 5000u32 {
+    thread.sleep(Duration.fromMillis(1i64));
+    waited = waited + 1u32;
+  }
+  expect(idles.load() >= 2u64, "'idle' ran, and a worker sent back came to it again");
+  finalAll();
+  expectUInt(wrong.load(), 0u64, "the second workerHooks changed nothing");
+  done()
+}

@@ -38,6 +38,9 @@ struct Pike {
   pub ready: bool;
   // The bounded backtracker's visited bits: one for each state at each position
   pub visited: List[u64];
+  // The lazy DFAs' caches, set up at the first search that uses them
+  pub fwd: Dfa;
+  pub rev: Dfa;
 
   pub fn start(prog: &Program, nslots: usize) Pike {
     let n = prog.insts.len();
@@ -47,7 +50,7 @@ struct Pike {
     var result = List[usize]();
     var k = 0usize;
     while k < nslots { cur.push(noPos); result.push(noPos); k = k + 1; }
-    Pike(n, nslots, List[u32](), List[u32](), lens, List[usize](), List[Frame](), cur, result, nslots, false, List[u64]())
+    Pike(n, nslots, List[u32](), List[u32](), lens, List[usize](), List[Frame](), cur, result, nslots, false, List[u64](), Dfa.empty(), Dfa.empty())
   }
 
   // The working arrays of the Pike VM, made at its first use: a search the
@@ -65,7 +68,14 @@ struct Pike {
   // for that is searched by the Pike VM for the match's bounds only, and the
   // backtracker then finds the groups within the match.
   pub fn search(self: &mut, prog: &Program, text: &Array[u8], from: usize, earliest: bool) bool {
-    if nslots <= 2 { return pikeRun(prog, text, from, earliest, nslots); }
+    if nslots <= 2 {
+      if from <= text.len && n <= dfaMaxStates && text.len - from >= dfaMinText && !fwd.failed && !rev.failed {
+        let r = dfaSearch(prog, text, from, earliest);
+        if r == 0 { return false; }
+        if r == 1 { return true; }
+      }
+      return pikeRun(prog, text, from, earliest, nslots);
+    }
     let tlen = text.len;
     if from <= tlen && n * (tlen - from + 1) <= backtrackBudget {
       return backtrack(prog, text, from, tlen, false);
@@ -78,6 +88,23 @@ struct Pike {
     }
     // a match too long for the bits
     pikeRun(prog, text, s, earliest, nslots)
+  }
+
+  // The lazy DFAs' answer, for a search that wants only the match's bounds: 0 no match,
+  // 1 a match (its slots in 'result' if the search keeps them), 2 the DFA gave up
+  fn dfaSearch(self: &mut, prog: &Program, text: &Array[u8], from: usize, earliest: bool) u32 {
+    let dp = &prog.dp;
+    if !fwd.ready { fwd.setup(&dp.fwd, dp, false, if nslots == 0 { dp.budget } else { dp.budget / 2 }); }
+    let e = fwd.forward(&dp.fwd, dp, text, from, earliest, prog.prefix.view());
+    if e == gaveUp { return 2; }
+    if e == noPos { return 0; }
+    if nslots == 0 { return 1; }
+    if !rev.ready { rev.setup(&dp.rev, dp, true, dp.budget / 2); }
+    let s = rev.backward(&dp.rev, dp, text, from, e);
+    if s == gaveUp || s == noPos { return 2; }
+    result.set(0, s);
+    result.set(1, e);
+    1
   }
 
   // The bounded backtracker: the same answer as the Pike VM's, found by trying the

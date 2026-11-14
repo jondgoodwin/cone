@@ -47,14 +47,14 @@ pub fn crc32(data: &Array[u8]) u32 {
 }
 
 // CRC-32 (PNG's, zlib's and gzip's; polynomial 0xEDB88320 reflected), by
-// tables made once: 'make' holds the byte-at-a-time table and three more for
-// taking four bytes a step (the "slicing-by-4" form; Kounavis and Berry,
-// Intel, 2005).
+// tables made once: 'make' holds the byte-at-a-time table and fifteen more for
+// taking sixteen bytes a step (the "slicing-by-16" form, from Kounavis and
+// Berry's slicing-by-4, Intel, 2005; zlib-ng and zlib-rs use the same).
 pub struct Crc32 {
   pub table: List[u32];
 
   pub fn make() Crc32 {
-    var t = List[u32].withCapacity(1024usize);
+    var t = List[u32].withCapacity(4096usize);
     var n = 0u32;
     while n < 256u32 {
       var c = n;
@@ -68,7 +68,7 @@ pub struct Crc32 {
     }
     // table s, entry n: the CRC of the byte n followed by s zero bytes
     var s = 1usize;
-    while s < 4usize {
+    while s < 16usize {
       n = 0u32;
       while n < 256u32 {
         let prev = *t[(s - 1usize) * 256usize + usize.from(n)];
@@ -84,6 +84,43 @@ pub struct Crc32 {
   pub fn update(self: &, crc: u32, data: &Array[u8], from: usize, to: usize) u32 {
     var c = crc ^ 0xFFFFFFFFu32;
     var i = from;
+    // Raw access, with its arguments:
+    // - 'tp' is the table's data pointer. A 'Crc32' from 'make' holds 4096 entries; the loop runs only when
+    //   'table.len()' is 4096, and every index below is 256 * table number + a byte (at most 15 * 256 + 255
+    //   = 4095), so each table load is inside the table. (An empty Crc32, which inflate keeps for non-gzip
+    //   formats, skips the loop and meets the checked loads below.)
+    // - 'dp' is the data's data pointer. The loop runs only while i + 16 <= to, and 'to' is at most data.len
+    //   (checked before the loop), so the 8-byte loads at dp + i and dp + i + 8 end by i + 16 <= data.len.
+    // - The 8-byte loads are little-endian words, as on every target Cone builds for.
+    if to <= data.len && self.table.len() == 4096usize {
+      let tp = self.table.view() as *u32;
+      let dp = data as *u8;
+      while i + 16usize <= to {
+        let w0 = mem.readRaw[u64]((dp + i) as *u64);
+        let w1 = mem.readRaw[u64]((dp + (i + 8usize)) as *u64);
+        let a = u32.from(w0 & 0xFFFFFFFFu64) ^ c;
+        let b = u32.from(w0 >> 32u64);
+        let d = u32.from(w1 & 0xFFFFFFFFu64);
+        let e = u32.from(w1 >> 32u64);
+        c = mem.readRaw[u32](tp + (3840usize + usize.from(a & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + (3584usize + usize.from((a >> 8u32) & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + (3328usize + usize.from((a >> 16u32) & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + (3072usize + usize.from(a >> 24u32)))
+          ^ mem.readRaw[u32](tp + (2816usize + usize.from(b & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + (2560usize + usize.from((b >> 8u32) & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + (2304usize + usize.from((b >> 16u32) & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + (2048usize + usize.from(b >> 24u32)))
+          ^ mem.readRaw[u32](tp + (1792usize + usize.from(d & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + (1536usize + usize.from((d >> 8u32) & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + (1280usize + usize.from((d >> 16u32) & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + (1024usize + usize.from(d >> 24u32)))
+          ^ mem.readRaw[u32](tp + (768usize + usize.from(e & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + (512usize + usize.from((e >> 8u32) & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + (256usize + usize.from((e >> 16u32) & 0xFFu32)))
+          ^ mem.readRaw[u32](tp + usize.from(e >> 24u32));
+        i = i + 16usize;
+      }
+    }
     while i + 4usize <= to {
       c = c ^ (u32.from(data[i]) | (u32.from(data[i + 1usize]) << 8u32)
         | (u32.from(data[i + 2usize]) << 16u32) | (u32.from(data[i + 3usize]) << 24u32));

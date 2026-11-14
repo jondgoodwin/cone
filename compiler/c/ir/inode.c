@@ -528,7 +528,9 @@ static void inodeTypeCheckWalkNode(TypeCheckState *pstate, INode **node, INode *
     case ReturnTag:
         returnTypeCheck(pstate, (BreakRetNode *)*node); break;
     case AssignTag:
-        assignTypeCheck(pstate, (AssignNode *)*node); break;
+        if (!fnCallSoaRowAssign(pstate, (AssignNode **)node))
+            assignTypeCheck(pstate, (AssignNode *)*node);
+        break;
     case SwapTag:
         swapTypeCheck(pstate, (SwapNode *)*node); break;
     // A call already lowered to a field access or an index by an earlier check

@@ -12,14 +12,15 @@
 //
 // It needs SDL3.dll, and no display.
 
-mod order is World;
+mod order;
 
 import stdio use *;
 import sdl;
 import arena use Arena;
 import frame use *;
 
-var @threadlocal stopAfter = 0u64;
+// The world's state, held by 'run' and lent to each callback
+struct State { pub stopAfter: u64; }
 
 // Where the host says the loop is
 fn at(host: &mut Host, what: &str) {
@@ -27,43 +28,43 @@ fn at(host: &mut Host, what: &str) {
   printStr(phaseName(host.currentPhase())); print <- ": "; printStr(what);
 }
 
-pub fn start(host: &mut Host) bool {
+fn start(host: &mut Host) Option[State] {
   print <- "start: window "; print <- if host.hasWindow() {1} else {0}; print <- "\n";
-  true
+  Some[State](State(0u64))
 }
 
-pub fn event(host: &mut Host, e: &imm sdl.Event) {
+fn event(host: &mut Host, st: &uni State, e: &imm sdl.Event) {
   at(host, "event "); print <- u64.from(e.type);
   print <- ", stamped "; print <- if e.timestamp > 0u64 {1} else {0}; print <- "\n";
-  if e.type == sdl.EVENT_KEY_UP { stopAfter = host.frame + 4u64; }
+  if e.type == sdl.EVENT_KEY_UP { st.stopAfter = host.frame + 4u64; }
 }
 
-pub fn simulate(host: &mut Host, step: &imm Step, scratch: &mut Arena) {
+fn simulate(host: &mut Host, st: &uni State, step: &imm Step, scratch: &mut Arena) {
   let n = scratch.alloc(step.index);     // the frame's scratch, reset by the next frame
   at(host, "step "); print <- *n; print <- " from "; print <- step.startNs;
   print <- " ns, dt "; print <- f64.from(step.dt); print <- ", substeps "; print <- u64.from(step.substeps); print <- "\n";
 }
 
-pub fn network(host: &mut Host, net: &mut NetQueues) {
+fn network(host: &mut Host, st: &uni State, net: &mut NetQueues) {
   at(host, "network, "); print <- u64.from(net.inbound.len()); print <- " in, ";
   print <- u64.from(net.ticks); print <- " ticks\n";
 }
 
-pub fn publish(host: &mut Host) {
+fn publish(host: &mut Host, st: &uni State) {
   at(host, "publish, sim time "); print <- host.simNs(); print <- " ns\n";
 }
 
-pub fn draw(host: &mut Host, alpha: f32, scratch: &mut Arena) {
+fn draw(host: &mut Host, st: &uni State, alpha: f32, scratch: &mut Arena) {
   at(host, "draw, alpha "); print <- f64.from(alpha);
   print <- ", dropped "; print <- host.stats.dropped; print <- "\n";
 }
 
-pub fn present(host: &mut Host) {
+fn present(host: &mut Host, st: &uni State) {
   at(host, "present\n");
-  if stopAfter != 0u64 && host.frame >= stopAfter { host.stop(); }
+  if st.stopAfter != 0u64 && host.frame >= st.stopAfter { host.stop(); }
 }
 
-pub fn quit(host: &mut Host) i32 {
+fn quit(host: &mut Host, st: &uni State) i32 {
   print <- "quit after frame "; print <- host.frame;
   print <- ", steps "; print <- host.stats.steps;
   print <- ", dropped "; print <- host.stats.dropped;
@@ -95,7 +96,11 @@ fn main() i32 {
   sdl.Init(sdl.INIT_EVENTS);
   push(sdl.EVENT_KEY_DOWN);
   push(sdl.EVENT_KEY_UP);
-  let code = run(c);
+  var world = worldOf(&start, &event, &simulate, &draw, &quit);
+  world.network = &network;
+  world.publish = &publish;
+  world.present = &present;
+  let code = run(c, &world);
   print <- "run answered "; print <- code; print <- "\n";
   0
 }

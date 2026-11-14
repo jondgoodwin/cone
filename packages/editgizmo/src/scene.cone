@@ -38,18 +38,17 @@ pub struct EditObject {
 pub struct SceneCore {
   pub meshes: List[PickMesh];
   pub objects: List[EditObject];
+  index: Dict[u32, usize];          // an object's id to its place in 'objects' (objects are only ever appended)
   pub selected: u32 = 0u32;         // the selected object's id, 0 for none
   pub nextId: u32 = 1u32;
   pub version: u32 = 0u32;          // changes whenever anything does (a renderer or an inspector refreshes on it)
 
   // The index of the object with this id, or objects.len()
   pub fn indexOf(self: &, id: u32) usize {
-    var i = 0usize;
-    while i < objects.len() {
-      if objects[i].id == id {return i;}
-      i = i + 1usize;
+    match index.getCopy(&id) {
+      case let Some(i) {i}
+      case is None[usize] {objects.len()}
     }
-    objects.len()
   }
 }
 
@@ -72,7 +71,7 @@ pub struct EditScene {
   pub hist: History[SceneCmd];
 
   pub fn make() EditScene {
-    EditScene(SceneCore(List[PickMesh](), List[EditObject]()), History[SceneCmd].make())
+    EditScene(SceneCore(List[PickMesh](), List[EditObject](), Dict[u32, usize]()), History[SceneCmd].make())
   }
 
   // Adds a mesh to the table; answers its index
@@ -85,6 +84,7 @@ pub struct EditScene {
   pub fn addObject(self: &mut, name: &str, mesh: usize, t: Transform3, props: List[Vec4]) u32 {
     let id = core.nextId;
     core.nextId = id + 1u32;
+    core.index.insert(id, core.objects.len());
     core.objects.push(EditObject(id, String.from(name), mesh, t, props));
     core.version = core.version + 1u32;
     id

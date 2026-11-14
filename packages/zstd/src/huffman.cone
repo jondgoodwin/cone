@@ -153,4 +153,86 @@ struct HufTable is Default {
     }
     bits.exact()
   }
+
+  // Decodes a block's four literal streams together into out[0, regen): stream
+  // 1 is src[a, b), 2 is [b, c), 3 is [c, d), 4 is [d, e); streams 1 to 3 hold
+  // 'seg' literals each and stream 4 the rest (regen - 3 * seg, at most seg).
+  // false unless every stream is used exactly. The loop takes one symbol from
+  // each stream per step, so four independent chains run side by side, and
+  // loads all four containers once per group of steps; what is left of each
+  // stream is then finished one at a time by the same reads as 'decodeStream'.
+  //
+  // Bounds (untrusted input). Reads: each stream has its own 'BackBits' over
+  // its own bytes, opened with a checked read of its last byte, so end <=
+  // src.len, and 'refillSeq' reads inside [start, src.len) (its argument is in
+  // fse.cone). Nothing is read before a stream's start: once its real bytes
+  // are all loaded, 'refillSeq' adds zero bits (counted in 'pad'), the same
+  // bits 'decodeStream' would read past the start; they make 'n' 56 to 63 after
+  // every refill. A group of g = 56 / maxBits steps takes at most g * maxBits <=
+  // 56 bits from a stream (a table entry's length is at most maxBits, since it
+  // is maxBits + 1 - weight with weight >= 1), so 'n' never goes below 0 and
+  // the peek reads the top maxBits bits of the n held (n <= 64, so the left
+  // shift 64 - n is 0 to 63; and n >= maxBits at every peek, as 'build' bounds
+  // maxBits to 1..11 and block.cone refuses treeless literals with no table).
+  // The table index is below 2^maxBits = entries.len.
+  // Writes: 'out' has regen bytes; stream k writes index (k - 1) * seg + i for
+  // i below its count, and the counts are seg, seg, seg, regen - 3 * seg, so
+  // every write is below regen (the caller checked 3 * seg <= regen). A stream
+  // that ends wrong: 'exact' is false when real bits are left or any virtual
+  // one was taken, as for 'decodeStream'; the answer is the same on every input.
+  fn decode4(self: &, src: &Array[u8], a: usize, b: usize, c: usize, d: usize, e: usize,
+      seg: usize, regen: usize, out: &mut List[u8]) bool {
+    var Some(s1) = BackBits.open(src, a, b) else { return false; };
+    var Some(s2) = BackBits.open(src, b, c) else { return false; };
+    var Some(s3) = BackBits.open(src, c, d) else { return false; };
+    var Some(s4) = BackBits.open(src, d, e) else { return false; };
+    out.resize(regen, 0u8);
+    let op = out.viewMut() as *u8;
+    let mb = maxBits;
+    let len4 = regen - 3usize * seg;
+    let g = 56u32 / mb;
+    let sh = u64.from(64u32 - mb);
+    var i = 0usize;
+    while i + usize.from(g) <= len4 {
+      s1.refillSeq(src);
+      s2.refillSeq(src);
+      s3.refillSeq(src);
+      s4.refillSeq(src);
+      var j = 0u32;
+      while j < g {
+        let e1 = *entries[usize.from(u32.from((s1.acc << u64.from(64u32 - s1.n)) >> sh))];
+        let e2 = *entries[usize.from(u32.from((s2.acc << u64.from(64u32 - s2.n)) >> sh))];
+        let e3 = *entries[usize.from(u32.from((s3.acc << u64.from(64u32 - s3.n)) >> sh))];
+        let e4 = *entries[usize.from(u32.from((s4.acc << u64.from(64u32 - s4.n)) >> sh))];
+        s1.n = s1.n - u32.from(e1 >> 8u16);
+        s2.n = s2.n - u32.from(e2 >> 8u16);
+        s3.n = s3.n - u32.from(e3 >> 8u16);
+        s4.n = s4.n - u32.from(e4 >> 8u16);
+        mem.writeRaw[u8](op + i, u8.from(e1 & 0xFFu16));
+        mem.writeRaw[u8](op + (seg + i), u8.from(e2 & 0xFFu16));
+        mem.writeRaw[u8](op + (2usize * seg + i), u8.from(e3 & 0xFFu16));
+        mem.writeRaw[u8](op + (3usize * seg + i), u8.from(e4 & 0xFFu16));
+        i = i + 1usize;
+        j = j + 1u32;
+      }
+    }
+    if !self.finish(src, &mut s1, op, 0usize, i, seg) { return false; }
+    if !self.finish(src, &mut s2, op, seg, i, seg) { return false; }
+    if !self.finish(src, &mut s3, op, 2usize * seg, i, seg) { return false; }
+    self.finish(src, &mut s4, op, 3usize * seg, i, len4)
+  }
+
+  // The rest of one stream of 'decode4': literals from index 'from' to 'count'
+  // of the stream whose output starts at op + base
+  fn finish(self: &, src: &Array[u8], bits: &mut BackBits, op: *u8, base: usize, from: usize, count: usize) bool {
+    let mb = maxBits;
+    var i = from;
+    while i < count {
+      let e = *entries[usize.from(bits.peek(src, mb))];
+      mem.writeRaw[u8](op + (base + i), u8.from(e & 0xFFu16));
+      bits.skip(u32.from(e >> 8u16));
+      i = i + 1usize;
+    }
+    bits.exact()
+  }
 }

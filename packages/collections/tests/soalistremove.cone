@@ -1,0 +1,160 @@
+// SoaList[T]'s 'remove' and 'swapRemove' (row 255), its Sendable declaration and its region init.
+// Every expected value is worked out by hand from the pushes made:
+// - 'remove(i)' answers row i whole and closes the gap in order; 'swapRemove(i)' puts the last row
+//   in its place; both work for a T with a String and a T with a 'final', which runs when the
+//   caller drops the removed row;
+// - 'SoaList[T]' is Sendable (where T is), and one made in an arena takes its blocks from it.
+
+mod soalistremove;
+
+import testing use *;
+import collections use *;
+import arena use *;
+
+var @threadlocal log = 0i64;
+
+struct Pt {
+  pub x: i32;
+  pub y: i64;
+}
+
+struct Named {
+  pub name: String;
+  pub id: i32;
+}
+
+struct Fin {
+  pub n: i64;
+  fn final(self: &uni) { log = log * 10i64 + n; }
+}
+
+fn sendableAs[T: Sendable]() bool { true }
+
+fn pts() SoaList[Pt] {
+  var ps = SoaList[Pt]();
+  ps.push(Pt(1, 10i64));
+  ps.push(Pt(2, 20i64));
+  ps.push(Pt(3, 30i64));
+  ps.push(Pt(4, 40i64));
+  ps
+}
+
+// Rows (1,10) (2,20) (3,30) (4,40): remove(1) gives (2,20) and leaves (1,10) (3,30) (4,40)
+fn removes() {
+  var ps = pts();
+  let r = ps.remove(1usize);
+  expectInt(i64.from(r.x), 2, "removed x");                          // 1
+  expectInt(r.y, 20, "removed y");                                   // 2
+  expectUInt(u64.from(ps.len()), 3, "three left");                   // 3
+  expectInt(i64.from(ps.x[0usize]), 1, "x of row 0");                // 4
+  expectInt(i64.from(ps.x[1usize]), 3, "x of row 1");                // 5
+  expectInt(i64.from(ps.x[2usize]), 4, "x of row 2");                // 6
+  expectInt(ps.y[1usize], 30, "y of row 1");                         // 7
+  expectInt(ps.y[2usize], 40, "y of row 2");                         // 8
+  // the last row out leaves (1,10) (3,30)
+  let l = ps.remove(2usize);
+  expectInt(l.y, 40, "last removed");                                // 9
+  expectUInt(u64.from(ps.len()), 2, "two left");                     // 10
+}
+
+// From (1,10) (2,20) (3,30) (4,40): swapRemove(0) gives (1,10) and leaves (4,40) (2,20) (3,30);
+// swapRemove(2) (the last) gives (3,30) and leaves (4,40) (2,20)
+fn swaps() {
+  var ps = pts();
+  let a = ps.swapRemove(0usize);
+  expectInt(a.y, 10, "swap-removed y");                              // 11
+  expectUInt(u64.from(ps.len()), 3, "three left");                   // 12
+  expectInt(i64.from(ps.x[0usize]), 4, "last row moved to 0");       // 13
+  expectInt(ps.y[0usize], 40, "its y");                              // 14
+  expectInt(i64.from(ps.x[1usize]), 2, "row 1 kept");                // 15
+  let b = ps.swapRemove(2usize);
+  expectInt(b.y, 30, "last swap-removed");                           // 16
+  expectUInt(u64.from(ps.len()), 2, "two left");                     // 17
+  expectInt(ps.y[1usize], 20, "row 1 still there");                  // 18
+}
+
+// A T with a String: rows ann/1, bob/2, cy/3; remove(1) gives bob/2, swapRemove(0) gives ann/1
+fn moves() {
+  var ns = SoaList[Named]();
+  ns.name.push(String.from("ann"));
+  ns.id.push(1);
+  ns.name.push(String.from("bob"));
+  ns.id.push(2);
+  ns.name.push(String.from("cy"));
+  ns.id.push(3);
+  let b = ns.remove(1usize);
+  expectStr(b.name.view(), "bob", "removed name");                   // 19
+  expectInt(i64.from(b.id), 2, "removed id");                        // 20
+  let a = ns.swapRemove(0usize);
+  expectStr(a.name.view(), "ann", "swap-removed name");              // 21
+  expectUInt(u64.from(ns.len()), 1, "one left");                     // 22
+  expectStr(ns.name[0usize].view(), "cy", "cy took the place");      // 23
+  expectInt(i64.from(ns.id[0usize]), 3, "its id");                   // 24
+}
+
+// A T with a 'final': Fin(1) Fin(2) Fin(3); the removed Fin(2) runs its final when its holder
+// goes out of scope (log 2), then the list's death finalizes the 1 and the 3 (log 213)
+fn finals() {
+  log = 0i64;
+  {
+    var fs = SoaList[Fin]();
+    fs.n.push(1i64);
+    fs.n.push(2i64);
+    fs.n.push(3i64);
+    {
+      let r = fs.remove(1usize);
+      expectInt(r.n, 2, "removed n");                                // 25
+      expectInt(log, 0, "nothing finalized yet");                    // 26
+    }
+    expectInt(log, 2, "the removed row's final ran");                // 27
+    expectUInt(u64.from(fs.len()), 2, "two left");                   // 28
+  }
+  expectInt(log, 213, "the rest finalized once each");               // 29
+  // swapRemove on Fin(4) Fin(5) Fin(6): removing 0 gives Fin(4), leaves 6 5
+  log = 0i64;
+  {
+    var fs = SoaList[Fin]();
+    fs.n.push(4i64);
+    fs.n.push(5i64);
+    fs.n.push(6i64);
+    {
+      let r = fs.swapRemove(0usize);
+      expectInt(r.n, 4, "swap-removed n");                           // 30
+    }
+    expectInt(log, 4, "its final ran");                              // 31
+    expectInt(fs.n[0usize], 6, "last row moved");                    // 32
+  }
+  expectInt(log, 465, "then 6 and 5");                               // 33
+}
+
+fn sendable() {
+  expectBool(sendableAs[SoaList[Pt]](), true, "plain rows are Sendable");   // 34
+  expectBool(sendableAs[SoaList[Named]](), true, "String rows are Sendable"); // 35
+}
+
+// A list made in an arena takes its columns' blocks from it
+fn inArena() {
+  var a = Arena();
+  let ps = new a[SoaList[Pt]]();
+  var i = 0;
+  while i < 10 {
+    ps.push(Pt(i, i64.from(i) * 2i64));
+    i = i + 1;
+  }
+  expectUInt(u64.from(ps.len()), 10, "ten rows");                    // 36
+  expectInt(ps.y[9usize], 18, "row 9 y");                            // 37
+  expect(a.blockCount() >= 1usize, "the arena supplied the blocks"); // 38
+  let r = ps.remove(0usize);
+  expectInt(r.y, 0, "removed in the arena");                         // 39
+  expectUInt(u64.from(ps.len()), 9, "nine left");                    // 40
+}
+
+fn main() i32 {
+  removes();
+  swaps();
+  moves();
+  finals();
+  sendable();
+  inArena();
+  done()
+}

@@ -1,0 +1,46 @@
+// The ShapeKeeping promise over a nested instance whose members have not been
+// checked, the answer that passes. 'throughTrait' (checked first) calls through
+// '&<mut Scorer + ShapeKeeping' with an element borrowed. 'Writer[Option[i64]]',
+// made by the member check of 'Writer[i64]', waits for a use; handing it to
+// 'throughTrait' checks its members late, and its 'bump' only writes a field and an
+// element in place, so the promise holds and the borrow survives the call.
+
+mod generic_lazy_shapekeeping_marker;
+
+import collections use *;
+import stdio use *;
+
+struct Entity { pub hp: i64; }
+struct World { pub score: i64; pub entities: List[Entity]; }
+
+trait Scorer { pub fn bump(self: &mut, w: &mut World); }
+
+fn throughTrait(w: &mut World, s: &<mut Scorer + ShapeKeeping) i64 {
+  let e = &w.entities[0usize];
+  s.bump(w);
+  e.hp
+}
+
+struct Writer[R] is Scorer {
+  v: R;
+
+  pub fn lift(self: &Writer[R]) Writer[Option[R]] {
+    Writer[Option[R]](None[R])
+  }
+
+  pub fn bump(self: &mut Writer[R], w: &mut World) {
+    w.score = w.score + 1i64;
+    w.entities[0usize].hp = 42i64;
+  }
+}
+
+fn main() {
+  let p = Writer[i64](5);
+  var n = p.lift();
+  var w = World(0, List[Entity]());
+  w.entities.push(Entity(3));
+  printInt(throughTrait(&mut w, &mut n));
+  printStr(" ");
+  printInt(w.score);
+  printStr("\n");
+}

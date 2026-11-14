@@ -276,6 +276,7 @@ pub fn parse(file: &Array[u8]) Result[Model, GgufError] {
 
   // The tensor table: name, dimensions, type, offset
   var tensors = List[Tensor].withCapacity(usize.from(tensorCount));
+  var byName = Dict[String, usize]();
   i = 0u64;
   while i < tensorCount && !c.failed {
     let entryAt = c.pos;
@@ -300,11 +301,10 @@ pub fn parse(file: &Array[u8]) Result[Model, GgufError] {
         if geo.fault != 0u32 {
           return problem(ErrorKind.BadDimensions, u64.from(entryAt), faultText(geo.fault));
         }
-        each prev in &tensors {
-          if prev.name.view() == name.view() {
-            return problem(ErrorKind.DuplicateTensor, u64.from(entryAt), "a tensor name is written twice");
-          }
+        if byName.contains(name.view()) {
+          return problem(ErrorKind.DuplicateTensor, u64.from(entryAt), "a tensor name is written twice");
         }
+        byName.insert(name.clone(), tensors.len());
         tensors.push(Tensor(name, kind.clone(), dims, offset, geo.elements, geo.bytes));
       }
       case is None {
@@ -333,5 +333,5 @@ pub fn parse(file: &Array[u8]) Result[Model, GgufError] {
       return problem(ErrorKind.BadOffset, dataStart + t.offset, "a tensor reaches past the end of the file");
     }
   }
-  Ok[Model, GgufError](Model(version, alignment, dataStart, meta, tensors))
+  Ok[Model, GgufError](Model(version, alignment, dataStart, meta, tensors, byName))
 }

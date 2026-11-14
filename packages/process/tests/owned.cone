@@ -1,0 +1,216 @@
+// The owned values 'launch' gives (ChildStdin, ChildStdout, ChildStderr, ChildProcess), tested without an iocore loop
+// (so also where a loop cannot be built). The child is this test's own executable, started again with '--child' and a
+// mode, as launch.cone's is.
+//
+// 1. A ChildStdin written with 'write' and dropped: the child sees those bytes, then end of input; its output comes
+//    back through ChildStdout.read, which answers 0 at the end.
+// 2. A ChildStdin dropped unwritten: the child sees end of input at once (0 bytes).
+// 3. A second take answers None.
+// 4. A ChildProcess dropped ends its child and reaps it: the child is gone (none left running, no zombie).
+// 5. A ChildProcess given away with 'intoRaw' does not end the child when it drops; the number is the caller's (here
+//    ended and closed by hand).
+
+mod owned;
+
+import testing use *;
+import collections use *;
+import libc;
+import path use Path;
+import process;
+
+extern {
+  fn @c(system) Sleep(ms: u32);
+  fn @c(system) OpenProcess(access: u32, inherit: i32, pid: u32) usize;
+  fn @c(system) WaitForSingleObject(h: usize, ms: u32) u32;
+  fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) TerminateProcess(h: usize, code: u32) i32;
+}
+extern {
+  fn @c usleep(us: u32) i32;
+  fn @c kill(pid: i32, signal: i32) i32;
+  fn @c waitpid(pid: i32, status: *i32, options: i32) i32;
+}
+
+const synchronize = 0x100000u32;     // SYNCHRONIZE
+
+// Reads its standard input to the end and reports "count sum" of the bytes
+fn childSum() i32 {
+  var buf = Array[u8, 4096]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  var count = 0u64;
+  var sum = 0u64;
+  var more = true;
+  while more {
+    let got = libc.fread(bp, 1usize, 4096usize, libc.stdin());
+    var j = 0usize;
+    while j < got { sum = sum + u64.from(buf[j]); j = j + 1usize; }
+    count = count + u64.from(got);
+    if got < 4096usize { more = false; }
+  }
+  var line = String();
+  line.appendUInt(count);
+  line.append(" ");
+  line.appendUInt(sum);
+  libc.fwrite(line.cstr().ptr(), 1usize, line.len(), libc.stdout());
+  libc.fflush(libc.stdout());
+  0i32
+}
+
+fn child(a: &List[String]) i32 {
+  let mode = &a[2usize];
+  if mode.equals("sum") { return childSum(); }
+  if mode.equals("sleep") {
+    #if #os == .windows {Sleep(60000u32);} #else {usleep(60000000u32);};
+    return 0i32;
+  }
+  1i32
+}
+
+fn command(exe: &str, mode: &str) List[String] {
+  var c = List[String]();
+  c.push(String.from(exe));
+  c.push(String.from("--child"));
+  c.push(String.from(mode));
+  c
+}
+
+// Whether the process is gone (Windows: ended; POSIX: not there, so also not a zombie)
+fn gone(id: u32) bool {
+  #if #os == .windows {
+    let h = OpenProcess(synchronize, 0i32, id);
+    if h == 0usize { return true; }
+    let r = WaitForSingleObject(h, 3000u32) == 0u32;
+    CloseHandle(h);
+    r
+  } #else {
+    kill(i32.from(id), 0i32) != 0i32
+  }
+}
+
+// Everything the child writes to its standard output, through ChildStdout.read
+fn readOut(x: &mut process.ChildStdout) String {
+  var text = String();
+  var buf = Array[u8, 64]() <- fill 0u8;
+  var more = true;
+  while more {
+    let n = x.read(&mut buf);
+    if n <= 0isize { more = false; }
+    else { text.appendBytes(mem.sliceFromParts(&[]buf as *u8, usize.from(n))); }
+  }
+  text
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  let a = process.args();
+  if a.len() >= 3usize && a[1usize].equals("--child") { return child(&a); }
+
+  var exe = Path.from("");
+  match process.currentExe() {
+    case var Ok(e) { exe <-> e; }
+    case is Err { require(false, "currentExe"); }
+  }
+
+  // 1. Written, dropped, read back
+  var data = String();
+  var want = 0u64;
+  var n = 0usize;
+  while n < 100000usize {
+    let b = u8.from(97usize + n % 26usize);
+    data.appendByte(b);
+    want = want + u64.from(b);
+    n = n + 1usize;
+  }
+  var wantLine = String.from("100000 ");
+  wantLine.appendUInt(want);
+  var cmd = command(exe.view(), "sum");
+  match process.launch(cmd.view(), process.Options(stdin: true)) {
+    case var Ok(c) {
+      var oe = c.takeStdout();
+      match c.takeStdin() {
+        case var Some(x) {
+          expect(x.write(data.view()), "1: 100000 bytes written through ChildStdin.write");
+        }                                          // dropped here: the child sees end of input
+        case is None { expect(false, "1: the stdin end is given"); }
+      }
+      match oe {
+        case var Some(x) {
+          let text = readOut(&mut x);
+          expect(text.equals(wantLine.view()), "1: the child read those bytes, then end of input; read through ChildStdout.read");
+        }
+        case is None { expect(false, "1: the output end is given"); }
+      }
+      match c.takeStdout() {
+        case is None { expect(true, "3: a second take of the output end answers None"); }
+        else { expect(false, "3: a second take of the output end answers None"); }
+      }
+      match c.takeStdin() {
+        case is None { expect(true, "3: a second take of the stdin end answers None"); }
+        else { expect(false, "3: a second take of the stdin end answers None"); }
+      }
+    }
+    case is Err { expect(false, "1: launch with stdin started"); }
+  }
+
+  // 2. Dropped unwritten
+  match process.launch(cmd.view(), process.Options(stdin: true)) {
+    case var Ok(c) {
+      {
+        let ie = c.takeStdin();
+      }                                            // dropped, nothing written
+      match c.takeStdout() {
+        case var Some(x) {
+          let text = readOut(&mut x);
+          expect(text.equals("0 0"), "2: the child saw end of input at once: 0 bytes");
+        }
+        case is None { expect(false, "2: the output end is given"); }
+      }
+    }
+    case is Err { expect(false, "2: launch with stdin started"); }
+  }
+
+  // 4. A dropped ChildProcess ends and reaps its child
+  var id = 0u32;
+  cmd = command(exe.view(), "sleep");
+  match process.launch(cmd.view()) {
+    case var Ok(c) {
+      id = c.pid();
+      match c.takeProcess() {
+        case var Some(p) { expect(p.pid() == id, "4: the ChildProcess knows the pid"); }    // dropped here
+        case is None { expect(false, "4: the process is given"); }
+      }
+      match c.takeProcess() {
+        case is None { expect(true, "3: a second take of the process answers None"); }
+        else { expect(false, "3: a second take of the process answers None"); }
+      }
+    }
+    case is Err { expect(false, "4: launch started"); }
+  }
+  expect(id != 0u32 && gone(id), "4: a dropped ChildProcess ends and reaps the child");
+
+  // 5. intoRaw: the drop leaves the child alone; the number is the caller's
+  cmd = command(exe.view(), "sleep");
+  match process.launch(cmd.view()) {
+    case var Ok(c) {
+      id = c.pid();
+      var raw = 0usize;
+      match c.takeProcess() {
+        case var Some(p) { raw = p.intoRaw(); }
+        case is None { expect(false, "5: the process is given"); }
+      }
+      #if #os == .windows {
+        expect(WaitForSingleObject(raw, 100u32) != 0u32, "5: the child still runs after the ChildProcess dropped");
+        TerminateProcess(raw, 1u32);
+        WaitForSingleObject(raw, 3000u32);
+        CloseHandle(raw);
+      } #else {
+        expect(kill(i32.from(id), 0i32) == 0i32, "5: the child still runs after the ChildProcess dropped");
+        kill(0i32 - i32.from(id), 9i32);
+        var status = 0i32;
+        waitpid(i32.from(raw), &mut status as *i32, 0i32);
+      }
+    }
+    case is Err { expect(false, "5: launch started"); }
+  }
+  expect(gone(id), "5: ...and is gone once the caller ended and reaped it");
+  done()
+}

@@ -3,10 +3,14 @@ the unicode package looks up.
 
     python unicodetables.py <folder of UCD files>      (in packages/unicode)
 
-The folder holds UnicodeData.txt, PropList.txt and DerivedCoreProperties.txt,
+The folder holds UnicodeData.txt, PropList.txt, DerivedCoreProperties.txt and EastAsianWidth.txt,
 downloaded from https://www.unicode.org/Public/UCD/latest/ucd/ (or the same
 file names under a numbered version folder); the version is read from the
-header of PropList.txt and written into the output.
+header of PropList.txt and written into the output. The folder also holds
+SpecialCasing.txt of the same version (the copy used was SpecialCasing-18.0.0.txt,
+from https://www.unicode.org/Public/UCD/latest/ucd/ on 12 Nov 2026); its version
+header must match PropList.txt's or the run stops. EastAsianWidth.txt (EastAsianWidth-18.0.0.txt,
+same source and day) is checked the same way.
 
 Every property is a run table: the code points 0 to 0x10FFFF are cut into runs
 of equal value, and a table holds each run's first code point (sorted), with
@@ -23,6 +27,19 @@ that is not above the code point.
                              mapping (fields 12 and 13, one code point to one).
                              0 where there is none. The multi-character mappings
                              of SpecialCasing.txt (U+00DF to "SS") are not here.
+  specialUpperKeys / specialUpperVals    SpecialCasing.txt's unconditional entries
+  specialLowerKeys / specialLowerVals    (those with no condition field), for the
+                             text-level toUpper and toLower: the sorted code points
+                             whose full mapping differs from the simple one, and
+                             three u32 for each, the full mapping padded with 0 (no
+                             mapping contains U+0000). The conditional entries
+                             (final sigma, the lt, tr and az rules) are left out.
+                             The title-case column is not used.
+  widthStarts / widthVals    the display width of a code point in terminal columns,
+                             one u8 for each run: 2 for East Asian Width W and F, else
+                             0 for general category Mn, Me, Cf and the controls Cc
+                             (C0 and C1), else 1 (Ambiguous counts as 1, as terminals
+                             do). Per code point: no grapheme clusters.
 """
 
 import os
@@ -68,6 +85,48 @@ def read_unicodedata(path):
     return numeric, upper, lower
 
 
+def read_width(unidata, eaw):
+    """Display width of every code point: 2 (EAW W, F), 0 (Mn, Me, Cf, Cc), else 1."""
+    zero = [False] * N
+    first = None
+    for line in open(unidata, encoding="utf8"):
+        f = line.rstrip("\n").split(";")
+        c = int(f[0], 16)
+        if f[1].endswith(", First>"):
+            first = c
+            continue
+        cps = range(first, c + 1) if f[1].endswith(", Last>") else [c]
+        if f[2] in ("Mn", "Me", "Cf", "Cc"):
+            for x in cps:
+                zero[x] = True
+    wide = [False] * N
+    for line in open(eaw, encoding="utf8"):
+        line = line.split("#")[0].strip()
+        if not line:
+            continue
+        a, p = [x.strip() for x in line.split(";")[:2]]
+        if p in ("W", "F"):
+            lo, _, hi = a.partition("..")
+            for c in range(int(lo, 16), int(hi or lo, 16) + 1):
+                wide[c] = True
+    return [2 if wide[c] else 0 if zero[c] else 1 for c in range(N)]
+
+
+def read_special(path):
+    """The unconditional entries: {code point: (lower, upper)}, each a list of code points."""
+    out = {}
+    for line in open(path, encoding="utf8"):
+        line = line.split("#")[0].strip()
+        if not line:
+            continue
+        f = [x.strip() for x in line.split(";")]
+        # code; lower; title; upper; [condition;]  (the trailing ; leaves an empty last field)
+        if len(f) != 5 or f[4] != "":
+            continue
+        out[int(f[0], 16)] = ([int(x, 16) for x in f[1].split()], [int(x, 16) for x in f[3].split()])
+    return out
+
+
 def runs(values):
     starts, vals = [], []
     for c, v in enumerate(values):
@@ -93,11 +152,27 @@ def main():
     dp = read_props(os.path.join(d, "DerivedCoreProperties.txt"), ["Alphabetic", "Uppercase", "Lowercase"])
     pl = read_props(os.path.join(d, "PropList.txt"), ["White_Space"])
     numeric, upper, lower = read_unicodedata(os.path.join(d, "UnicodeData.txt"))
+    special = read_special(os.path.join(d, "SpecialCasing.txt"))
+    sv = re.search(r"SpecialCasing-([0-9.]+)\.txt", open(os.path.join(d, "SpecialCasing.txt"), encoding="utf8").readline()).group(1)
+    if sv != version:
+        sys.exit("SpecialCasing is %s but PropList is %s" % (sv, version))
+    sp_up, sp_lo = {}, {}
+    for c, (lo, up) in sorted(special.items()):
+        for tbl, full, simple in ((sp_up, up, c + upper[c]), (sp_lo, lo, c + lower[c])):
+            if full == [simple]:
+                continue
+            if len(full) > 3 or 0 in full:
+                sys.exit("special mapping of %04X does not fit" % c)
+            tbl[c] = full
+    ev = re.search(r"EastAsianWidth-([0-9.]+)\.txt", open(os.path.join(d, "EastAsianWidth.txt"), encoding="utf8").readline()).group(1)
+    if ev != version:
+        sys.exit("EastAsianWidth is %s but PropList is %s" % (ev, version))
+    width = read_width(os.path.join(d, "UnicodeData.txt"), os.path.join(d, "EastAsianWidth.txt"))
     flags = [0] * N
     for c in range(N):
         flags[c] = (dp["Alphabetic"][c] * 1 | dp["Uppercase"][c] * 2 | dp["Lowercase"][c] * 4
                     | pl["White_Space"][c] * 8 | numeric[c] * 16)
-    out = "// unicodetables: Unicode %s properties and simple case mappings, as run tables.\n" % version
+    out = "// unicodetables: Unicode %s properties and simple case mappings and display widths, as run\n// tables, and the unconditional SpecialCasing expansions.\n" % version
     out += "// Written by unicodetables.py, which says how each is made; change that and\n"
     out += "// run it, never this file.\n\n"
     fs, fv = runs(flags)
@@ -109,6 +184,13 @@ def main():
     ls, lv = runs(lower)
     out += emit("lowerStarts", "u32", ls, "u32", 8, True)
     out += emit("lowerDelta", "i32", lv, "i32", 12, False)
+    ws, wv = runs(width)
+    out += emit("widthStarts", "u32", ws, "u32", 8, True)
+    out += emit("widthVals", "u8", wv, "u8", 16, False)
+    for name, tbl in (("specialUpper", sp_up), ("specialLower", sp_lo)):
+        out += emit(name + "Keys", "u32", sorted(tbl), "u32", 8, True)
+        vals = [(tbl[c] + [0, 0, 0])[i] for c in sorted(tbl) for i in range(3)]
+        out += emit(name + "Vals", "u32", vals, "u32", 8, True)
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "src", "unicodetables.cone"), "w", encoding="utf8", newline="\n") as f:
         f.write(out)
@@ -119,7 +201,10 @@ def main():
         sum(flags[c] & 4 != 0 for c in nonsur), sum(flags[c] & 8 != 0 for c in nonsur),
         sum(flags[c] & 16 != 0 for c in nonsur), sum(c + upper[c] for c in nonsur),
         sum(c + lower[c] for c in nonsur)))
-    print("Unicode", version, "flag runs", len(fs), "upper runs", len(us), "lower runs", len(ls))
+    print("width totals (tests/width.cone): zero %d wide %d" % (
+        sum(width[c] == 0 for c in nonsur), sum(width[c] == 2 for c in nonsur)))
+    print("special: upper %d lower %d" % (len(sp_up), len(sp_lo)))
+    print("Unicode", version, "width runs", len(ws), "flag runs", len(fs), "upper runs", len(us), "lower runs", len(ls))
 
 
 main()

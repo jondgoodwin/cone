@@ -57,7 +57,7 @@ const SIDEZ = 128usize;
 
 // If FX_SHOTS names a folder, the 128 x 128 image at 'p' is written there as
 // 'name'.bmp, to be looked at
-fn shot(p: *u8, name: &str) {
+fn shot(back: &Buffer, name: &str) {
   let folder = libc.getenv("FX_SHOTS");
   if (folder as usize) == 0usize { return; }
   var path = String();
@@ -69,7 +69,7 @@ fn shot(p: *u8, name: &str) {
   path <- "/";
   path <- name;
   path <- ".bmp";
-  let image = Image.fromTexels(p, i32.from(SIDE), i32.from(SIDE), false);
+  let image = Image.fromTexels(back.mappedBytes(), i32.from(SIDE), i32.from(SIDE), false);
   image.save(&filepath.Path.from(path.view()));
 }
 
@@ -486,8 +486,8 @@ fn movingObjects(device: &mut Device) {
       expect((halfToFloat(*(vp + at)) + 0.0275).abs() < 0.002 && halfToFloat(*(vp + at + 1usize)).abs() < 0.001
         && halfToFloat(*(vp + at + 3usize)) > 0.5, "the velocity pass wrote the sphere's motion in uv: 0.1 along x is -0.0275");
     }
-    if run == 0usize { shot(p, "moving-rigid-told"); }
-    if run == 1usize { shot(p, "moving-rigid-not-told"); }
+    if run == 0usize { shot(&rig.readback, "moving-rigid-told"); }
+    if run == 1usize { shot(&rig.readback, "moving-rigid-not-told"); }
     run = run + 1usize;
   }
   let rigidTold = *errors[0usize];
@@ -569,7 +569,7 @@ fn ambientOcclusion(device: &mut Device) {
 
   drawScene(device, &mut rig, &camera, &light, &corner);
   let cornerOff = grab(p);
-  shot(p, "ssao-corner-off");
+  shot(&rig.readback, "ssao-corner-off");
   drawScene(device, &mut rig, &camera, &light, &flat);
   let flatOff = grab(p);
   var s = FxSettings.off();
@@ -577,10 +577,10 @@ fn ambientOcclusion(device: &mut Device) {
   rig.fx.configure(&s);
   drawScene(device, &mut rig, &camera, &light, &corner);
   let cornerOn = grab(p);
-  shot(p, "ssao-corner-on");
+  shot(&rig.readback, "ssao-corner-on");
   drawScene(device, &mut rig, &camera, &light, &flat);
   let flatOn = grab(p);
-  shot(p, "ssao-flat-on");
+  shot(&rig.readback, "ssao-flat-on");
 
   // The crease: just in front of the wall's foot on the floor
   var cx = 0usize;
@@ -723,10 +723,10 @@ fn fogTest(device: &mut Device) {
   let notCasting = plateScene(plane, cube, gray, false);
   drawScene(device, &mut rig, &camera, &sun, &notCasting);
   let unshaded = grab(p);
-  shot(p, "fog-no-shadow");
+  shot(&rig.readback, "fog-no-shadow");
   drawScene(device, &mut rig, &camera, &sun, &casting);
   let shaded = grab(p);
-  shot(p, "fog-god-rays");
+  shot(&rig.readback, "fog-god-rays");
   var ax = 0usize;
   var ay = 0usize;
   pixelOf(&camera, Vec3(-3., 0., 0.), &mut ax, &mut ay);
@@ -783,13 +783,13 @@ fn depthOfField(device: &mut Device) {
   list.add(sphere, glowing, Mat4.fromTrs(far, Quat.identity(), Vec3(0.36, 0.36, 0.36)));
   drawScene(device, &mut rig, &camera, &light, &list);
   let sharp = grab(p);
-  shot(p, "dof-off");
+  shot(&rig.readback, "dof-off");
   var s = FxSettings.off();
   s.dof = DofSettings(enabled: true, focusDistance: 5., aperture: 1.4, focalLength: 0.1, maxCoc: 90., taps: 48u32);
   rig.fx.configure(&s);
   drawScene(device, &mut rig, &camera, &light, &list);
   let blurred = grab(p);
-  shot(p, "dof-on");
+  shot(&rig.readback, "dof-on");
   var nx = 0usize;
   var ny = 0usize;
   var fx0 = 0usize;
@@ -878,7 +878,7 @@ fn decalTest(device: &mut Device) {
   eprint <- "measured: the decal's edges on the middle row at columns "; eprint <- left; eprint <- " and "; eprint <- right; eprint <- "\n";
   expect((left - 64.).abs() < 1.5, "the left edge lands at the projected pixel (x = 0)");
   expect((right - 93.3).abs() < 1.5, "and the right (x = 2)");
-  shot(p, "decal-red");
+  shot(&rig.readback, "decal-red");
   // A fade of a half: halfway between the floor and the red
   rig.fx.decals.clear();
   d.fade = 0.5;
@@ -916,7 +916,7 @@ fn decalTest(device: &mut Device) {
   var patch = Decal.at(material, Mat4.fromTrs(Vec3(0., 0., -6.), Quat.identity(), Vec3(4., 1., 4.)));
   rig.fx.decals.add(patch);
   drawScene(device, &mut rig, &low, &light, &list);
-  shot(p, "decal-low");
+  shot(&rig.readback, "decal-low");
   var lx = 0usize;
   var ly = 0usize;
   pixelOf(&low, Vec3(0., 0., -6.), &mut lx, &mut ly);
@@ -937,7 +937,7 @@ fn decalTest(device: &mut Device) {
   rig.fx.decals.add(patch);
   drawScene(device, &mut rig, &low, &sunLight, &pbrList);
   let pbrAfter = grab(p);
-  shot(p, "decal-pbr");
+  shot(&rig.readback, "decal-pbr");
   eprint <- "measured: a decal on a physically based floor under a sky: changed the picture by "; eprint <- rms(&pbrBefore, &pbrAfter); eprint <- "\n";
   expect(rms(&pbrBefore, &pbrAfter) > 0.005, "a decal lands on a physically based floor under a sky and shadows");
 
@@ -954,7 +954,7 @@ fn decalTest(device: &mut Device) {
   rig.fx.decals.add(Decal.at(material, Mat4.fromTrs(Vec3(-1., 0., -5.), Quat.identity(), Vec3(3., 1., 3.))));
   drawScene(device, &mut rig, &ahead, &sunLight, &pbrList);
   let aheadAfter = grab(p);
-  shot(p, "decal-ahead");
+  shot(&rig.readback, "decal-ahead");
   eprint <- "measured: a decal 15 m ahead of the example's camera changed the picture by "; eprint <- rms(&aheadBefore, &aheadAfter); eprint <- "\n";
   expect(rms(&aheadBefore, &aheadAfter) > 0.005, "a decal lands 15 metres ahead of the example's camera");
 }

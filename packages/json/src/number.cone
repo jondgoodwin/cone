@@ -199,11 +199,12 @@ pub fn numberF64(text: &Array[u8]) Result[f64, NumberError] {
   }
 }
 
-// Digits of d from lo up to hi (not past its end), then zeros if hi is past
-fn appendDigits(s: &mut String, d: &Dec, lo: usize, hi: usize) {
+// Digits of d (nd of them, as characters) from lo up to hi (not past nd), then
+// zeros if hi is past
+fn appendDigits(s: &mut String, d: &Array[u8, 20], nd: usize, lo: usize, hi: usize) {
   var i = lo;
   while i < hi {
-    if i < d.digits.len() { s.appendByte('0' + *d.digits[i]); } else { s.appendByte('0'); }
+    if i < nd { s.appendByte(d[i]); } else { s.appendByte('0'); }
     i = i + 1usize;
   }
 }
@@ -223,34 +224,52 @@ pub fn formatF64(x: f64) Option[String] {
     s.appendByte('0');
     return Some[String](s);
   }
-  var d = decNew();
-  decShortest(&mut d, if neg {-x} else {x});
-  let nd = d.digits.len();
-  let sci = d.dp - 1i32;
+  let fd = FloatText.shortest(x);
+  // The digits as characters, most significant first (1 to 17 of them)
+  var d = Array[u8, 20]() <- fill 0u8;
+  var nd = 0usize;
+  var rest = fd.digits;
+  while rest > 0u64 {
+    d[nd] = u8.from(rest % 10u64) + '0';
+    nd = nd + 1usize;
+    rest = rest / 10u64;
+  }
+  var a = 0usize;
+  var b = nd - 1usize;
+  while a < b {
+    let t = d[a];
+    d[a] = d[b];
+    d[b] = t;
+    a = a + 1usize;
+    b = b - 1usize;
+  }
+  // The point's place: the value is 0.d1d2... times 10^dp
+  let dp = fd.exponent + i32.from(nd);
+  let sci = dp - 1i32;
   if sci >= -6i32 && sci < 21i32 {
-    if d.dp <= 0i32 {
+    if dp <= 0i32 {
       s.append("0.");
-      var z = d.dp;
+      var z = dp;
       while z < 0i32 {
         s.appendByte('0');
         z = z + 1i32;
       }
-      appendDigits(&mut s, &d, 0usize, nd);
+      appendDigits(&mut s, &d, nd, 0usize, nd);
     }
-    else if usize.from(d.dp) >= nd {
-      appendDigits(&mut s, &d, 0usize, usize.from(d.dp));
+    else if usize.from(dp) >= nd {
+      appendDigits(&mut s, &d, nd, 0usize, usize.from(dp));
     }
     else {
-      appendDigits(&mut s, &d, 0usize, usize.from(d.dp));
+      appendDigits(&mut s, &d, nd, 0usize, usize.from(dp));
       s.appendByte('.');
-      appendDigits(&mut s, &d, usize.from(d.dp), nd);
+      appendDigits(&mut s, &d, nd, usize.from(dp), nd);
     }
   }
   else {
-    appendDigits(&mut s, &d, 0usize, 1usize);
+    appendDigits(&mut s, &d, nd, 0usize, 1usize);
     if nd > 1usize {
       s.appendByte('.');
-      appendDigits(&mut s, &d, 1usize, nd);
+      appendDigits(&mut s, &d, nd, 1usize, nd);
     }
     s.appendByte('e');
     if sci < 0i32 {

@@ -1,0 +1,371 @@
+// fs.File and fs.LineReader.
+//
+//   - create makes a file, write puts bytes in it, close ends it, readFile and open read them back;
+//   - open is read-only (a write is refused), refuses a missing file and a folder, and a NUL in the path;
+//   - seek, seekBy and seekEnd move the position, and read and write follow it;
+//   - read answers 0 at the end, and an empty buffer asks nothing;
+//   - dropping a File closes it (a second create of the same path succeeds), close twice is Ok, and a
+//     closed file refuses reads;
+//   - LineReader: lines with and without a final newline, '\r\n' and bare '\n', blank lines, an empty file,
+//     a line longer than its 64 KiB buffer, a '\r' split from its '\n' by the buffer's edge.
+//
+// Everything is made inside a tempDir.
+
+mod openfile;
+
+import testing use *;
+import collections use *;
+import ioerror use IoErrorKind;
+import posix;
+import path use Path;
+import fs;
+
+// The lines of a file, each shown between '<' and '>' and joined, or '!' when it cannot be read
+fn linesOf(p: &Path) String {
+  var out = String();
+  match fs.open(p) {
+    case is Err { out.append("!"); }
+    case let Ok(f) {
+      var r = fs.LineReader.over(f);
+      var line = String();
+      var going = true;
+      while going {
+        match r.readLine(&mut line) {
+          case let Ok(more) {
+            if more { out.append("<"); out.append(line.view()); out.append(">"); }
+            else { going = false; }
+          }
+          case is Err { out.append("!"); going = false; }
+        }
+      }
+    }
+  }
+  out
+}
+
+fn lineCount(p: &Path) usize {
+  var n = 0usize;
+  match fs.open(p) {
+    case is Err { }
+    case let Ok(f) {
+      var r = fs.LineReader.over(f);
+      var line = String();
+      var going = true;
+      while going {
+        match r.readLine(&mut line) {
+          case let Ok(more) { if more { n = n + 1usize; } else { going = false; } }
+          case is Err { going = false; }
+        }
+      }
+    }
+  }
+  n
+}
+
+fn repeated(b: u8, n: usize) String {
+  var s = String();
+  var i = 0usize;
+  while i < n { s.appendBytes(mem.sliceFromParts(&b as *u8, 1usize)); i = i + 1usize; }
+  s
+}
+
+fn main() i32 {
+  match fs.tempDir() {
+    case let Err(e) { expect(false, "tempDir makes a folder"); }
+    case let Ok(t) {
+      let dir = t.path();
+      let a = dir.join("a.txt");
+
+      // round trip
+      match fs.create(&a) {
+        case let Err(e) { expect(false, "create makes a file"); }
+        case let Ok(f) {
+          var file = f;
+          expect(file.write("hello ") is Ok, "write");
+          expect(file.write("world") is Ok, "write again");
+          expect(file.write("") is Ok, "an empty write is fine");
+          expect(file.flush() is Ok, "flush");
+          expect(file.path().view() == a.view(), "path is the one given");
+          match file.seekEnd(0i64) {
+            case let Ok(n) { expectUInt(n, 11u64, "seekEnd(0) is the size"); }
+            case is Err { expect(false, "seekEnd works"); }
+          }
+          // read back through the same handle
+          expect(file.seek(0u64) is Ok, "seek to the start");
+          var buf = Array[u8, 64]() <- fill 0u8;
+          match file.read(&mut buf) {
+            case let Ok(n) {
+              expectUInt(u64.from(n), 11u64, "read gets all 11 bytes");
+              expectStr(mem.sliceFromParts(&[]buf as *u8, n), "hello world", "and they are what was written");
+            }
+            case is Err { expect(false, "read works"); }
+          }
+          match file.read(&mut buf) {
+            case let Ok(n) { expectUInt(u64.from(n), 0u64, "read at the end answers 0"); }
+            case is Err { expect(false, "read at the end works"); }
+          }
+          // seek, then read
+          match file.seek(6u64) {
+            case let Ok(p) { expectUInt(p, 6u64, "seek answers the new position"); }
+            case is Err { expect(false, "seek works"); }
+          }
+          var five = Array[u8, 5]() <- fill 0u8;
+          match file.read(&mut five) {
+            case let Ok(n) {
+              expectUInt(u64.from(n), 5u64, "read after seek");
+              expectStr(&five, "world", "reads from the position");
+            }
+            case is Err { expect(false, "read after seek works"); }
+          }
+          match file.seekBy(-3i64) {
+            case let Ok(p) { expectUInt(p, 8u64, "seekBy back 3 from 11 is 8"); }
+            case is Err { expect(false, "seekBy works"); }
+          }
+          match file.seekEnd(-5i64) {
+            case let Ok(p) { expectUInt(p, 6u64, "seekEnd(-5) is 6"); }
+            case is Err { expect(false, "seekEnd back works"); }
+          }
+          expect(file.seekBy(-100i64) is Err, "a seek before the start is refused");
+          // overwrite in place
+          expect(file.seek(0u64) is Ok, "back to the start");
+          expect(file.write("J") is Ok, "overwrite one byte");
+          expect(file.close() is Ok, "close");
+          expect(file.close() is Ok, "close twice is Ok");
+          expect(file.read(&mut buf) is Err, "a closed file refuses a read");
+          expect(file.write("x") is Err, "a closed file refuses a write");
+        }
+      }
+      match fs.readFile(&a) {
+        case let Ok(s) { expect(s.view() == "Jello world", "readFile sees the bytes"); }
+        case is Err { expect(false, "readFile reads it"); }
+      }
+
+      // open is read-only, and its refusals
+      match fs.open(&a) {
+        case let Err(e) { expect(false, "open an existing file"); }
+        case let Ok(f) {
+          var file = f;
+          expect(file.write("no") is Err, "a read-only file refuses a write");
+          var buf = Array[u8, 4]() <- fill 0u8;
+          match file.read(&mut buf) {
+            case let Ok(n) { expectUInt(u64.from(n), 4u64, "a 4 byte buffer gets 4"); expectStr(&buf, "Jell", "the first four"); }
+            case is Err { expect(false, "read"); }
+          }
+          var none = Array[u8, 0]() <- fill 0u8;
+          match file.read(&mut none) {
+            case let Ok(n) { expectUInt(u64.from(n), 0u64, "an empty buffer asks nothing"); }
+            case is Err { expect(false, "empty read"); }
+          }
+        }
+      }
+      match fs.open(&dir.join("missing")) {
+        case let Err(e) { expect(e.notFound(), "a missing file is NotFound"); expect(e.op.view() == "open", "naming open"); }
+        case is Ok { expect(false, "a missing file fails"); }
+      }
+      match fs.open(dir) {
+        case let Err(e) { expect(e.code == posix.EISDIR, "a folder: EISDIR"); }
+        case is Ok { expect(false, "a folder is refused"); }
+      }
+      match fs.open("bad\x00name") {
+        case let Err(e) { expect(e.code == posix.EINVAL, "a NUL in the path: EINVAL"); }
+        case is Ok { expect(false, "a NUL in the path fails"); }
+      }
+      match fs.create(&dir.join("nodir/x")) {
+        case let Err(e) { expect(e.notFound(), "create under a missing folder is NotFound"); }
+        case is Ok { expect(false, "create under a missing folder fails"); }
+      }
+
+      // create empties an existing file
+      match fs.create(&a) {
+        case let Ok(f) { }
+        case is Err { expect(false, "create over an existing file"); }
+      }
+      match fs.readFile(&a) {
+        case let Ok(s) { expect(s.len() == 0usize, "create emptied it, the handle having gone"); }
+        case is Err { expect(false, "readFile after create"); }
+      }
+
+      // drop closes: a second create succeeds while a first handle went out of scope; in scope it would
+      // also on POSIX, so the check is that remove works (Windows refuses to remove an open file)
+      {
+        match fs.create(&dir.join("held")) {
+          case let Ok(f) { var g = f; expect(g.write("abc") is Ok, "write to held"); }
+          case is Err { expect(false, "create held"); }
+        }
+      }
+      expect(fs.removeFile(&dir.join("held")) is Ok, "a dropped file is closed: it can be removed");
+
+      // bytes are not changed: CR LF and NUL survive a write and a read
+      let raw = dir.join("raw");
+      expect(fs.writeFile(&raw, "a\r\nb\x00c\n") is Ok, "writeFile raw");
+      match fs.open(&raw) {
+        case let Ok(f) {
+          var file = f;
+          var buf = Array[u8, 16]() <- fill 0u8;
+          match file.read(&mut buf) {
+            case let Ok(n) { expectUInt(u64.from(n), 7u64, "7 bytes, none added or dropped"); }
+            case is Err { expect(false, "read raw"); }
+          }
+        }
+        case is Err { expect(false, "open raw"); }
+      }
+      match fs.create(&raw) {
+        case let Ok(f) {
+          var file = f;
+          expect(file.write("1\r\n2\n") is Ok, "write raw through File");
+        }
+        case is Err { expect(false, "create raw"); }
+      }
+      match fs.readFile(&raw) {
+        case let Ok(s) { expectUInt(u64.from(s.len()), 5u64, "File.write keeps CR LF as it is"); }
+        case is Err { expect(false, "readFile raw"); }
+      }
+
+      // lines
+      let l = dir.join("lines");
+      expect(fs.writeFile(&l, "one\ntwo\nthree\n") is Ok, "lines: final newline");
+      expect(linesOf(&l).view() == "<one><two><three>", "lines with a final newline");
+      expect(fs.writeFile(&l, "one\ntwo\nthree") is Ok, "lines: none");
+      expect(linesOf(&l).view() == "<one><two><three>", "a last line with no newline is a line");
+      expect(fs.writeFile(&l, "one\r\ntwo\r\n\r\nthree\r\n") is Ok, "lines: crlf");
+      expect(linesOf(&l).view() == "<one><two><><three>", "CRLF ends are stripped, a blank line is a line");
+      expect(fs.writeFile(&l, "a\n\n\nb\n") is Ok, "lines: blanks");
+      expect(linesOf(&l).view() == "<a><><><b>", "blank lines");
+      expect(fs.writeFile(&l, "\n") is Ok, "lines: just a newline");
+      expect(linesOf(&l).view() == "<>", "one empty line");
+      expect(fs.writeFile(&l, "") is Ok, "lines: empty");
+      expect(linesOf(&l).view() == "", "an empty file has no lines");
+      expect(fs.writeFile(&l, "x\r") is Ok, "lines: lone CR at the end");
+      expect(linesOf(&l).view() == "<x\r>", "a CR with no LF stays");
+      expect(linesOf(&dir.join("missing")).view() == "!", "a missing file");
+
+      // a line longer than the buffer
+      let big = dir.join("big");
+      var text = repeated(120u8, 200000usize);      // 200000 'x'
+      text.append("\nnext\n");
+      expect(fs.writeFile(&big, text.view()) is Ok, "write the long line");
+      match fs.open(&big) {
+        case let Ok(f) {
+          var r = fs.LineReader.over(f);
+          var line = String();
+          match r.readLine(&mut line) {
+            case let Ok(more) {
+              expect(more, "the long line is read");
+              expectUInt(u64.from(line.len()), 200000u64, "all 200000 bytes");
+              expect(line.view() == repeated(120u8, 200000usize).view(), "and they are right");
+            }
+            case is Err { expect(false, "the long line reads"); }
+          }
+          match r.readLine(&mut line) {
+            case let Ok(more) { expect(more && line.view() == "next", "the line after it"); }
+            case is Err { expect(false, "next reads"); }
+          }
+          match r.readLine(&mut line) {
+            case let Ok(more) { expect(!more && line.len() == 0usize, "then the end, the line cleared"); }
+            case is Err { expect(false, "the end reads"); }
+          }
+        }
+        case is Err { expect(false, "open big"); }
+      }
+
+      // CRLF with the CR as the last byte of one block and the LF the first of the next
+      var edge = repeated(121u8, 65535usize);       // 65535 'y', then CR is byte 65536
+      edge.append("\r\nz\n");
+      expect(fs.writeFile(&l, edge.view()) is Ok, "write the edge case");
+      match fs.open(&l) {
+        case let Ok(f) {
+          var r = fs.LineReader.over(f);
+          var line = String();
+          match r.readLine(&mut line) {
+            case let Ok(more) { expect(more && line.len() == 65535usize, "the CR at the buffer's edge is dropped with its LF"); }
+            case is Err { expect(false, "edge reads"); }
+          }
+          match r.readLine(&mut line) {
+            case let Ok(more) { expect(more && line.view() == "z", "and the next line follows"); }
+            case is Err { expect(false, "edge next reads"); }
+          }
+        }
+        case is Err { expect(false, "open edge"); }
+      }
+
+      // many short lines across several buffers
+      var many = String();
+      var i = 0usize;
+      while i < 30000usize { many.append("line\n"); i = i + 1usize; }
+      expect(fs.writeFile(&l, many.view()) is Ok, "write many lines");
+      expectUInt(u64.from(lineCount(&l)), 30000u64, "30000 lines across three buffers");
+
+      // a non-ASCII name: created, written, reopened, read back
+      let u = dir.join("é-日本.txt");
+      match fs.create(&u) {
+        case let Ok(f) {
+          var file = f;
+          expect(file.write("unicode name") is Ok, "write to the non-ASCII name");
+          expect(file.close() is Ok, "close it");
+        }
+        case is Err { expect(false, "create a non-ASCII name"); }
+      }
+      match fs.open(&u) {
+        case let Ok(f) {
+          var file = f;
+          var buf = Array[u8, 32]() <- fill 0u8;
+          match file.read(&mut buf) {
+            case let Ok(n) { expectStr(mem.sliceFromParts(&[]buf as *u8, n), "unicode name", "the non-ASCII name reads back"); }
+            case is Err { expect(false, "read the non-ASCII name"); }
+          }
+        }
+        case is Err { expect(false, "reopen a non-ASCII name"); }
+      }
+
+      // CRLF and 0x1A bytes come back byte for byte
+      var rawb = String();
+      rawb.append("a\r\nb");
+      rawb.appendBytes(mem.sliceFromParts(&26u8 as *u8, 1usize));
+      rawb.append("c\r\n\r\n");
+      rawb.appendBytes(mem.sliceFromParts(&26u8 as *u8, 1usize));
+      rawb.append("end");
+      let rp = dir.join("rawb.bin");
+      match fs.create(&rp) {
+        case let Ok(f) {
+          var file = f;
+          expect(file.write(rawb.view()) is Ok, "write CRLF and 0x1A through File");
+          expect(file.close() is Ok, "close raw");
+        }
+        case is Err { expect(false, "create raw"); }
+      }
+      match fs.open(&rp) {
+        case let Ok(f) {
+          var file = f;
+          var buf = Array[u8, 64]() <- fill 0u8;
+          match file.read(&mut buf) {
+            case let Ok(n) {
+              expectUInt(u64.from(n), u64.from(rawb.len()), "all bytes come back, none stopped at 0x1A");
+              expectStr(mem.sliceFromParts(&[]buf as *u8, n), rawb.view(), "byte for byte");
+            }
+            case is Err { expect(false, "read raw"); }
+          }
+        }
+        case is Err { expect(false, "open raw"); }
+      }
+
+      // append: made if missing, every write at the end, reads refused
+      let ap = dir.join("log.txt");
+      match fs.append(&ap) {
+        case let Ok(f) { var file = f; expect(file.write("one\n") is Ok, "first append"); }
+        case is Err { expect(false, "append creates"); }
+      }
+      match fs.append(&ap) {
+        case let Ok(f) {
+          var file = f;
+          expect(file.seek(0u64) is Ok, "seek is allowed");
+          expect(file.write("two\n") is Ok, "second append goes to the end anyway");
+          var buf = Array[u8, 4]() <- fill 0u8;
+          expect(file.read(&mut buf) is Err, "an append file refuses a read");
+        }
+        case is Err { expect(false, "append reopens"); }
+      }
+      expectStr(linesOf(&ap).view(), "<one><two>", "two appends read back in order");
+    }
+  }
+  done()
+}

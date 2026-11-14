@@ -1,0 +1,216 @@
+// Patterns: the strftime subset of DateTime.format, DateTime.parse,
+// OffsetDateTime and Zone.toOffsetDateTime. The strings written were checked
+// against Python's strftime (%Y %m %d %e %j %H %M %S %a %A %b %B) for the dates
+// below; %f (nine digits), %z with seconds and the refusals are this package's
+// own and were worked by hand from the directive table in pattern.cone. The
+// zones are the committed files of tests/data (see zone.cone): New York in
+// July is EDT, -0400; Sao Paulo has no DST since 2019 and writes '-03'; Lord
+// Howe's winter is +10:30; Kyiv's summer EEST is +03:00; New York before 1883
+// kept local mean time, -4:56:02.
+
+mod pattern;
+
+import testing use *;
+import collections use *;
+import time use Timestamp;
+import calendar use Zone, DateTime, OffsetDateTime, Offset;
+import fs;
+import path use Path;
+
+fn loadFile(name: &str) String {
+  var p = String.from("../../../../tests/data/");
+  p.append(name);
+  var file = String();
+  match fs.readFile(&Path.from(p.view())) {
+    case var Ok(ok) { file <-> ok; }
+    case let Err(e) { require(false, "the data file is there"); }
+  }
+  file
+}
+
+fn zoneOf(file: &String) Zone {
+  Zone.fromTzif(file.view()).expect("the test's file is read")
+}
+
+fn dt(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64, ns: i64) DateTime {
+  match DateTime.fromYmdHms(y, mo, d, h, mi, s, ns) {
+    case let Some(x) { x }
+    case is None {
+      require(false, "the test's date-time exists");
+      DateTime()
+    }
+  }
+}
+
+fn utc(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) Timestamp {
+  match dt(y, mo, d, h, mi, s, 0i64).toTimestamp() {
+    case let Some(t) { t }
+    case is None {
+      require(false, "the test's instant exists");
+      Timestamp.fromUnixSeconds(0)
+    }
+  }
+}
+
+// What writing gives: the text, or the error's message
+fn writeDt(x: DateTime, pattern: &str) String {
+  match x.format(pattern) {
+    case let Ok(ok) { ok }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn writeOdt(x: OffsetDateTime, pattern: &str) String {
+  match x.format(pattern) {
+    case let Ok(ok) { ok }
+    case let Err(e) { String() <- e }
+  }
+}
+
+// What reading gives: the UTC date-time in RFC 3339, or the error's message
+fn readDt(pattern: &str, text: &str) String {
+  match DateTime.parse(pattern, text) {
+    case let Ok(ok) { ok.rfc3339() }
+    case let Err(e) { String() <- e }
+  }
+}
+
+// The wall clock in RFC 3339 form, then the offset in seconds
+fn readOdt(pattern: &str, text: &str) String {
+  match OffsetDateTime.parse(pattern, text) {
+    case let Ok(ok) {
+      var m = ok.dt.rfc3339();
+      m.append(" ");
+      m.appendInt(i64.from(ok.offset.seconds));
+      m
+    }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn writing() {
+  let t = dt(2026i64, 10i64, 3i64, 14i64, 5i64, 9i64, 250000000i64);
+  expectStr(writeDt(t, "%Y-%m-%d %H:%M:%S").view(), "2026-10-03 14:05:09", "numeric parts");
+  expectStr(writeDt(t, "%a %A %b %B").view(), "Sat Saturday Oct October", "names");
+  expectStr(writeDt(t, "%j %e").view(), "276  3", "day of the year, space-padded day");
+  expectStr(writeDt(t, "%H:%M:%S.%f").view(), "14:05:09.250000000", "nine digits of fraction");
+  expectStr(writeDt(t, "100%% %z %Z").view(), "100% +0000 UTC", "a percent, and UTC's offset");
+  expectStr(writeDt(t, "no directives").view(), "no directives", "plain text");
+  expectStr(writeDt(t, "").view(), "", "an empty pattern");
+  expectStr(writeDt(t, "café %Y").view(), "café 2026", "non-ASCII text is kept");
+  expectStr(writeDt(t, "%Y %Y").view(), "2026 2026", "a directive twice is fine to write");
+  let u = dt(2026i64, 3i64, 6i64, 1i64, 2i64, 3i64, 0i64);
+  expectStr(writeDt(u, "%e|%j|%a|%A|%b|%B").view(), " 6|065|Fri|Friday|Mar|March", "another date");
+  expectStr(writeDt(dt(2024i64, 12i64, 31i64, 23i64, 59i64, 59i64, 0i64), "%j %A").view(), "366 Tuesday", "day 366");
+  expectStr(writeDt(dt(1994i64, 11i64, 6i64, 8i64, 49i64, 37i64, 0i64), "%a %j").view(), "Sun 310", "HTTP's own example");
+  expectStr(writeDt(dt(12345i64, 1i64, 2i64, 0i64, 0i64, 0i64, 0i64), "%Y").view(), "+012345", "an expanded year");
+  expectStr(writeDt(dt(-44i64, 3i64, 15i64, 0i64, 0i64, 0i64, 0i64), "%Y-%m-%d").view(), "-000044-03-15", "a year before 1 BC");
+  expectStr(writeDt(dt(7i64, 3i64, 15i64, 0i64, 0i64, 0i64, 0i64), "%Y").view(), "0007", "a short year is padded");
+}
+
+fn writeBad() {
+  let t = dt(2026i64, 10i64, 3i64, 14i64, 5i64, 9i64, 0i64);
+  expectStr(writeDt(t, "%Q").view(), "at byte 0: the pattern has no directive '%Q': the directives are %Y %m %d %e %j %H %M %S %f %a %A %b %B %z %Z and %%", "an unknown directive");
+  expectStr(writeDt(t, "%Y-%-d").view(), "at byte 3: the pattern has no directive '%-': the directives are %Y %m %d %e %j %H %M %S %f %a %A %b %B %z %Z and %%", "glibc's %-d is refused");
+  expectStr(writeDt(t, "%c").view(), "at byte 0: the pattern has no directive '%c': the directives are %Y %m %d %e %j %H %M %S %f %a %A %b %B %z %Z and %%", "a locale directive is refused");
+  expectStr(writeDt(t, "ab%").view(), "at byte 2: the pattern ends with a '%'", "a lone percent");
+}
+
+fn zones() {
+  let ny = loadFile("America_New_York.slim.tzif");
+  let sp = loadFile("America_Sao_Paulo.slim.tzif");
+  let lh = loadFile("Australia_Lord_Howe.slim.tzif");
+  let ky = loadFile("Europe_Kyiv.slim.tzif");
+  let fat = loadFile("America_New_York.fat.tzif");
+  let p = "%Y-%m-%d %H:%M:%S %z %Z";
+  let zNy = zoneOf(&ny);
+  let zSp = zoneOf(&sp);
+  let zLh = zoneOf(&lh);
+  let zKy = zoneOf(&ky);
+  let zFat = zoneOf(&fat);
+  expectStr(writeOdt(zNy.toOffsetDateTime(utc(2026i64, 7i64, 1i64, 12i64, 0i64, 0i64)), p).view(), "2026-07-01 08:00:00 -0400 EDT", "New York in July");
+  expectStr(writeOdt(zNy.toOffsetDateTime(utc(2026i64, 1i64, 15i64, 12i64, 0i64, 0i64)), p).view(), "2026-01-15 07:00:00 -0500 EST", "New York in January");
+  expectStr(writeOdt(zSp.toOffsetDateTime(utc(2026i64, 10i64, 3i64, 14i64, 5i64, 9i64)), p).view(), "2026-10-03 11:05:09 -0300 -03", "Sao Paulo");
+  expectStr(writeOdt(zLh.toOffsetDateTime(utc(2026i64, 7i64, 1i64, 12i64, 0i64, 0i64)), p).view(), "2026-07-01 22:30:00 +1030 +1030", "Lord Howe's half hour");
+  expectStr(writeOdt(zKy.toOffsetDateTime(utc(2026i64, 7i64, 1i64, 12i64, 0i64, 0i64)), p).view(), "2026-07-01 15:00:00 +0300 EEST", "Kyiv in summer");
+  expectStr(writeOdt(zFat.toOffsetDateTime(utc(2026i64, 7i64, 1i64, 12i64, 0i64, 0i64)), p).view(), "2026-07-01 08:00:00 -0400 EDT", "the fat file agrees");
+  expectStr(writeOdt(zNy.toOffsetDateTime(utc(1850i64, 1i64, 1i64, 12i64, 0i64, 0i64)), p).view(), "1850-01-01 07:03:58 -045602 LMT", "an offset with seconds");
+  // What %z writes it reads: the LMT offset with seconds round-trips
+  let lmt = zNy.toOffsetDateTime(utc(1850i64, 1i64, 1i64, 12i64, 0i64, 0i64));
+  let w = writeOdt(lmt, "%Y-%m-%d %H:%M:%S %z");
+  expectStr(readOdt("%Y-%m-%d %H:%M:%S %z", w.view()).view(), "1850-01-01T07:03:58Z -17762", "a written offset with seconds is read back");
+  expectStr(readOdt("%Y-%m-%d %H:%M:%S %z", "1850-01-01 07:03:58 -04:56:02").view(), "1850-01-01T07:03:58Z -17762", "hh:mm:ss is read too");
+  expectStr(readDt("%Y-%m-%d %H:%M:%S %z", w.view()).view(), "1850-01-01T12:00:00Z", "and moves a DateTime to UTC");
+  let o = zNy.toOffsetDateTime(utc(2026i64, 7i64, 1i64, 12i64, 0i64, 0i64));
+  expectInt(i64.from(o.offset.seconds), -14400i64, "the OffsetDateTime keeps the offset");
+  expectStr(o.dt.rfc3339().view(), "2026-07-01T08:00:00Z", "and the wall clock");
+}
+
+fn readingGood() {
+  expectStr(readDt("%Y-%m-%d %H:%M:%S", "2026-10-03 14:05:09").view(), "2026-10-03T14:05:09Z", "numeric parts, read as UTC");
+  expectStr(readDt("%Y-%m-%d", "2026-10-03").view(), "2026-10-03T00:00:00Z", "a time not named is zero");
+  expectStr(readDt("%a, %d %b %Y %H:%M:%S %z", "Sun, 06 Nov 1994 08:49:37 +0530").view(), "1994-11-06T03:19:37Z", "an offset moves to UTC");
+  expectStr(readDt("%a, %d %b %Y %H:%M:%S %z", "Sun, 06 Nov 1994 08:49:37 Z").view(), "1994-11-06T08:49:37Z", "Z is UTC");
+  expectStr(readDt("%Y-%m-%d %H:%M %z", "2026-10-03 14:05 -03:00").view(), "2026-10-03T17:05:00Z", "hh:mm is read too");
+  expectStr(readDt("%Y-%j", "2024-366").view(), "2024-12-31T00:00:00Z", "a day of the year");
+  expectStr(readDt("%Y-%j", "2026-060").view(), "2026-03-01T00:00:00Z", "day 60 of a common year");
+  expectStr(readDt("%A %B %e %Y", "Saturday October  3 2026").view(), "2026-10-03T00:00:00Z", "whole names and a space-padded day");
+  expectStr(readDt("%A %B %e %Y", "Tuesday October 13 2026").view(), "2026-10-13T00:00:00Z", "a two-digit %e");
+  expectStr(readDt("%Y-%m-%d %H:%M:%S.%f", "2026-10-03 14:05:09.000000250").view(), "2026-10-03T14:05:09.00000025Z", "nine digits of fraction");
+  expectStr(readDt("%Y-%m-%d 100%%", "2026-10-03 100%").view(), "2026-10-03T00:00:00Z", "a percent");
+  expectStr(readDt("%Y-%m-%d", "+012345-01-02").view(), "+012345-01-02T00:00:00Z", "an expanded year");
+  let t = dt(2026i64, 10i64, 3i64, 14i64, 5i64, 9i64, 123456789i64);
+  let p = "%A %B %e %Y %H:%M:%S.%f";
+  expectStr(readDt(p, writeDt(t, p).view()).view(), "2026-10-03T14:05:09.123456789Z", "everything written is read back");
+  let q = "%a %Y-%j %H:%M:%S";
+  expectStr(readDt(q, writeDt(t, q).view()).view(), "2026-10-03T14:05:09Z", "and by the day of the year");
+  // An OffsetDateTime keeps the offset
+  expectStr(readOdt("%Y-%m-%dT%H:%M:%S%z", "2026-10-03T14:05:09+05:30").view(), "2026-10-03T14:05:09Z 19800", "the wall clock and its offset");
+  expectStr(readOdt("%Y-%m-%dT%H:%M:%S%z", "2026-10-03T14:05:09-0300").view(), "2026-10-03T14:05:09Z -10800", "a west offset");
+  expectStr(readOdt("%Y-%m-%dT%H:%M:%S%z", "2026-10-03T14:05:09Z").view(), "2026-10-03T14:05:09Z 0", "Z");
+  match OffsetDateTime.parse("%Y-%m-%d %H:%M %z", "2026-10-03 14:05 +0530") {
+    case let Ok(ok) {
+      expectStr(writeOdt(ok, "%H:%M %z|%Z").view(), "14:05 +0530|+0530", "written again, an unnamed offset writes as %z");
+    }
+    case let Err(e) { expect(false, "the OffsetDateTime is read"); }
+  }
+}
+
+fn readingBad() {
+  expectStr(readDt("%Y-%m-%d", "2026-13-01").view(), "at byte 5: the month is 13, outside 01 to 12", "a month out of range");
+  expectStr(readDt("%Y-%m-%d", "2026-02-30").view(), "at byte 8: the day is 30, and 2026-02 has 28 days", "a day that does not exist");
+  expectStr(readDt("%Y-%m-%d %H", "2026-02-03 24").view(), "at byte 11: the hour is 24, outside 00 to 23", "an hour");
+  expectStr(readDt("%H:%M:%S%Y-%m-%d", "12:00:602026-01-01").view(), "at byte 6: the second is 60, a leap second, which this package does not count (a Timestamp ignores leap seconds)", "a leap second");
+  expectStr(readDt("%a %Y-%m-%d", "Mon 2026-10-03").view(), "at byte 0: the day is named Monday, but 2026-10-03 was a Saturday", "a wrong day's name");
+  expectStr(readDt("%A %Y-%m-%d", "Sunday 2026-10-03").view(), "at byte 0: the day is named Sunday, but 2026-10-03 was a Saturday", "a wrong whole name");
+  expectStr(readDt("%Y-%m-%d", "2026-10-03x").view(), "at byte 10: unexpected text after the date-time", "text after");
+  expectStr(readDt("%Y-%m-%d", "2026/10-03").view(), "at byte 4: expected '-', as the pattern has it", "a literal that differs");
+  expectStr(readDt("%Y-%m-%d", "2026-10-").view(), "at byte 8: expected two digits for the day", "a short text");
+  expectStr(readDt("%Y-%m-%d", "").view(), "at byte 0: expected four digits for the year", "an empty text");
+  expectStr(readDt("%Y-%j", "2026-366").view(), "at byte 5: the day of the year is 366, and 2026 has 365 days", "day 366 of a common year");
+  expectStr(readDt("%Y-%j", "2026-000").view(), "at byte 5: the day of the year is 000, outside 001 to 366", "day 0");
+  expectStr(readDt("%Y %b %d", "2026 oct 03").view(), "at byte 5: expected a month's English name of three letters", "names are case-sensitive");
+  expectStr(readDt("%Y-%m-%e", "2026-03-06").view(), "at byte 8: expected a space, not a zero, in front of a one-digit day (%e)", "%e is read as written");
+  expectStr(readDt("%Y-%m-%d %z", "2026-10-03 +0560").view(), "at byte 14: the offset's minute is 60, outside 00 to 59", "an offset's minutes");
+  expectStr(readDt("%Y-%m-%d %z", "2026-10-03 +01:00:60").view(), "at byte 18: the offset's second is 60, outside 00 to 59", "an offset's seconds");
+  expectStr(readDt("%Y-%m-%d %z", "2026-10-03 0530").view(), "at byte 11: expected the offset: 'Z', '+hhmm' or '+hh:mm'", "an offset without a sign");
+  expectStr(readDt("%Y-%m-%d %f", "2026-10-03 123").view(), "at byte 14: expected nine digits for the nanoseconds", "a fraction is nine digits");
+  // The pattern's own faults come before the text is read
+  expectStr(readDt("%Z", "UTC").view(), "at byte 0: the pattern cannot read '%Z': a name such as IST is the name of several zones", "%Z is never read");
+  expectStr(readDt("%Y-%m", "2026-10").view(), "at byte 5: the pattern gives no day: it needs %m or %b and %d or %e, or %j", "no day");
+  expectStr(readDt("%m-%d", "10-03").view(), "at byte 5: the pattern gives no year: it needs %Y", "no year");
+  expectStr(readDt("%Y %Y-%m-%d", "2026 2026-10-03").view(), "at byte 3: the pattern names the year twice", "the year twice");
+  expectStr(readDt("%Y-%m-%b-%d", "2026-10-Oct-03").view(), "at byte 6: the pattern names the month twice", "the month twice");
+  expectStr(readDt("%Y-%j-%m", "2026-100-04").view(), "at byte 8: the pattern gives the day of the year (%j) and also a month or a day of the month", "%j with %m");
+  expectStr(readDt("%Y-%m-%d%", "2026-10-03").view(), "at byte 8: the pattern ends with a '%'", "a lone percent");
+  expectStr(readOdt("%Y-%m-%d %H:%M:%S", "2026-10-03 14:05:09").view(), "at byte 17: the pattern of an OffsetDateTime needs a %z", "an OffsetDateTime needs its offset");
+}
+
+fn main() i32 {
+  writing();
+  writeBad();
+  zones();
+  readingGood();
+  readingBad();
+  done()
+}

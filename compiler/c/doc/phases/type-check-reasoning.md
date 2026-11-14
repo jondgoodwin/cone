@@ -386,6 +386,34 @@ numbered through a reference or pointer (`fnCallLowerRefIntField`), to `fnCallFn
 `fnCallLowerMethod`, `fnCallLowerPtrMethod`, `fnCallArrIndex` or
 `fnCallLowerIntField`.
 
+**A row of a `SoaLayout` type** is lowered before any of that, in `fnCallTypeCheckNode`
+(the hooks `fnCallSoaField` and `fnCallSoaRow`), and in `assignTypeCheck`'s dispatch and
+`borrowTypeCheck` for the two places a call node is not what holds the row. `SoaLayout` is a
+built-in marker trait (`soaLayoutTrait`, as `AtomicValue` is); the collections package's
+`SoaList` declares it, and the compiler knows no other type by it. The type is read without
+checking the receiver (`fnCallPeekTypeDcl`: a variable's declared or inferred type, or a field
+of one, through a reference), because the index would otherwise check it a second time.
+- `ps[i].f`, a field read whose receiver is a plain index of such a type, becomes `ps.f[i]`:
+  the index node is reused as the new index, with the field read made its receiver
+  (`fnCallSoaFieldLower`). **Reusing the index is what keeps the set-place mark** that
+  `fnCallSetPlace` laid on it for `=`, `+=`, `++` and `&uni` before this node was checked;
+  a new node would be read as `ps.f[i]` in read position and refused as no lvalue. `=` needs
+  one more step (`assignTargetsTypeCheck` injects the deref a set index carries, as it does
+  for an index written directly). `&uni ps[i].f` is lowered in `borrowTypeCheck` ahead of
+  `borrowReassocIndex`, so it is `&uni ps.f[i]`, the column's own borrow, with the loans it has.
+  No permission or coercion rule is added: everything after the rewrite is `List`'s.
+- A name that is not a field of the instance (a method of the list, a misspelling) is
+  `ErrorSoaNoColumn`, naming the row type taken from the instance's first type argument.
+- `ps[i]` alone, read, is `ps.rowAt(i)` (`fnCallSoaRow`); `ps[i] = r` is `ps.setRowAt(i, r)`
+  (`fnCallSoaRowAssign`, which replaces the assignment node). Both methods are
+  `where T is Copy`, so a move type's row is refused by `ErrorWhereAbsent` at the call.
+  `ps[i] += r` and `&ps[i]`, `&mut ps[i]`, `&uni ps[i]` are `ErrorSoaRowBorrow`: the row is
+  split into columns, so no one value exists to borrow or change in place.
+- The type is read for a variable, a field path (`self.ps`), and a call of a non-generic function
+  or method by its declared return type. A receiver whose type cannot be read before it is
+  checked (a generic call, a closure's result) is not rewritten, and `ps[i]` meets the
+  ordinary index and its `[]`.
+
 ### Selecting a candidate
 
 `iNsTypeFindMethod` walks every candidate, tests each with `fnSigViableCall`,

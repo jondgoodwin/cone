@@ -1,0 +1,94 @@
+// IdPool: an allocator of bare u32 ids, for a caller that keeps its own
+// storage in step (parallel arrays, a table of slots). It holds no values
+// and gives no generation: an id is a plain index. A freed id is the next one
+// handed out (last in, first out); a fresh id is the next after the highest
+// ever issued. Each issued id has a word saying whether it is live, or else
+// which freed id comes after it, so 'free' refuses a double free or an id
+// never handed out, as a program error at the caller's line.
+//
+//   var ids = IdPool.makeBounded(4u32);      // or IdPool.make(): no limit but the u32 range
+//   match ids.alloc() {case let Some(id) {} else {}}   // None only when bounded and full
+//   ids.free(2u32);                          // panics if 2 is not live
+//
+//   ids.alloc()    Some(a freed id, else the next fresh one); None only when bounded and full
+//   ids.free(id)   give id back; a program error if id is not live
+//   ids.isLive(id) whether id is handed out and not freed
+//   ids.len()      live ids
+//   ids.bound()    ids ever issued: the length the caller's storage needs
+//   ids.clear()    forget all: every id is free to be issued afresh, from 0
+//
+// (This file has no imports: the module's imports are in pools.cone.)
+
+const idLive = 0xFFFFFFFFu32;     // a word's value while its id is live
+const idEnd = 0xFFFFFFFEu32;      // the end of the chain of freed ids
+
+pub struct IdPool is Move {
+  words: *u32;            // per issued id: idLive, or the freed id after it (idEnd at the last)
+  room: u32;              // words allocated
+  issued: u32;            // ids 0..issued have been handed out at some time
+  count: u32;             // live ids
+  top: u32;               // the freed id to hand out next, or idEnd
+  cap: u32;               // at most this many live, if 'limited'
+  limited: bool;
+
+  // An empty pool with no limit but the u32 range
+  pub fn make() IdPool {
+    IdPool(null as *u32, 0u32, 0u32, 0u32, idEnd, 0u32, false)
+  }
+
+  // An empty pool that holds at most 'cap' live ids
+  pub fn makeBounded(cap: u32) IdPool {
+    IdPool(null as *u32, 0u32, 0u32, 0u32, idEnd, cap, true)
+  }
+
+  pub fn len(self: &) usize {usize.from(count)}
+  pub fn bound(self: &) usize {usize.from(issued)}
+
+  pub fn isLive(self: &, id: u32) bool {
+    id < issued && *(words + usize.from(id)) == idLive
+  }
+
+  // A freed id, else the next fresh one; None only when bounded and full
+  pub fn alloc(self: &mut) Option[u32] {
+    if limited && count >= cap { return None; }
+    var id = top;
+    if id != idEnd {
+      top = *(words + usize.from(id));
+    } else {
+      if issued >= idEnd { panic("pools: IdPool has issued every id it can"); }
+      if issued == room {
+        let nr = if room == 0u32 {16u32} else if room >= 0x80000000u32 {idEnd} else {room * 2u32};
+        words = libc.realloc(words as *u8, usize.from(nr) * mem.sizeof[u32]()) as *u32;
+        if words as usize == 0usize { panic("pools: out of memory for an IdPool"); }
+        room = nr;
+      }
+      id = issued;
+      issued = issued + 1u32;
+    }
+    mem.writeRaw[u32](words + usize.from(id), idLive);
+    count = count + 1u32;
+    Some(id)
+  }
+
+  // Give 'id' back for reuse. A program error, reported at the caller's line,
+  // if id is not live (freed already, or never handed out)
+  pub fn free(self: &mut, id: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if !self.isLive(id) {
+      panic("pools: IdPool.free of an id that is not live (freed already, or never handed out)", file, line);
+    }
+    mem.writeRaw[u32](words + usize.from(id), top);
+    top = id;
+    count = count - 1u32;
+  }
+
+  // Forget every id: the next alloc is 0 again. The block is kept.
+  pub fn clear(self: &mut) {
+    issued = 0u32;
+    count = 0u32;
+    top = idEnd;
+  }
+
+  fn final(self: &uni) {
+    libc.free(words as *u8);
+  }
+}

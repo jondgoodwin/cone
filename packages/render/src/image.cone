@@ -55,24 +55,27 @@ pub struct Image is Default {
   // An RGB image of 'width' by 'height' texels read back from the GPU at
   // 'data': 4 bytes each, rows from the top, with no gap between rows, in
   // red, green, blue order, or blue, green, red if 'bgra' (a swapchain's
-  // BGRA formats). The fourth byte is dropped.
-  pub fn fromTexels(data: *u8, width: i32, height: i32, bgra: bool) Image {
+  // BGRA formats). The fourth byte is dropped. 'data' must hold at least
+  // width * height * 4 bytes (a readback buffer's 'mappedBytes'); if it holds
+  // fewer, or a side is not positive, the image is empty.
+  pub fn fromTexels(data: &Array[u8], width: i32, height: i32, bgra: bool) Image {
+    if width <= 0 || height <= 0 || data.len < usize.from(width) * usize.from(height) * 4usize { return Image(); }
     var img = Image(width, height, 3, List[u8].withCapacity(usize.from(width * height * 3)));
     var y = 0;
     while y < height {
       // The image's row y from the bottom is the texels' row height - 1 - y
-      let row = data + usize.from((height - 1 - y) * width * 4);
+      let row = usize.from((height - 1 - y) * width * 4);
       var x = 0;
       while x < width {
         let p = row + usize.from(x * 4);
         if bgra {
-          img.pixels.push(*(p + 2usize));
-          img.pixels.push(*(p + 1usize));
-          img.pixels.push(*p);
+          img.pixels.push(data[p + 2usize]);
+          img.pixels.push(data[p + 1usize]);
+          img.pixels.push(data[p]);
         } else {
-          img.pixels.push(*p);
-          img.pixels.push(*(p + 1usize));
-          img.pixels.push(*(p + 2usize));
+          img.pixels.push(data[p]);
+          img.pixels.push(data[p + 1usize]);
+          img.pixels.push(data[p + 2usize]);
         }
         x = x + 1;
       }

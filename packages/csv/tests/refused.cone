@@ -1,0 +1,108 @@
+// Malformed texts are refused with the kind of trouble, the record, the line
+// and the column (in bytes) of the fault, and what was expected: a text that
+// ends inside a quote, a quote in an unquoted field, text after a closing
+// quote, bytes that are not UTF-8 (and the option that lets them through), a
+// record of the wrong length (the position being where the record starts, even
+// when an earlier record spanned lines), a header
+// that fails, and the same failure answered again.
+
+mod refused;
+
+import testing use *;
+import collections use *;
+import csv;
+
+// The first failure of reading text with opts, or none
+fn failure(text: &str, opts: &csv.Options) Option[csv.CsvError] {
+  var r = csv.readerWith(text, opts);
+  while true {
+    match r.next() {
+      case let Ok(o) { if !o.isTrue() { return None[csv.CsvError]; } }
+      case let Err(e) { return Some[csv.CsvError](e.clone()); }
+    }
+  }
+  None[csv.CsvError]
+}
+
+// text must be refused with that kind, at that record, line and column, the
+// reason holding that phrase
+fn refuse(text: &str, kind: &str, record: u32, line: u32, col: u32, phrase: &str) {
+  let opts = csv.Options.standard();
+  match failure(text, &opts) {
+    case let Some(e) {
+      expectStr((String() <- toDebug(&e.kind)).view(), kind, text);
+      expectUInt(u64.from(e.record), u64.from(record), text);
+      expectUInt(u64.from(e.line), u64.from(line), text);
+      expectUInt(u64.from(e.column), u64.from(col), text);
+      if !e.reason.view().contains(phrase) { expectStr(e.reason.view(), phrase, text); }
+    }
+    case is None { expectStr("<read>", kind, text); }
+  }
+}
+
+fn accepted(text: &str, opts: &csv.Options, label: &str) {
+  expect(!failure(text, opts).isTrue(), label);
+}
+
+fn main() i32 {
+  // -------- a quote that never closes --------
+  refuse("a,\"b", "UnexpectedEnd", 1u32, 1u32, 3u32, "ends inside a quoted field");
+  refuse("a,b\r\nc,\"d\r\ne", "UnexpectedEnd", 2u32, 2u32, 3u32, "ends inside a quoted field");
+  refuse("\"", "UnexpectedEnd", 1u32, 1u32, 1u32, "quoted field");
+  refuse("\"a\"\"", "UnexpectedEnd", 1u32, 1u32, 1u32, "quoted field");
+
+  // -------- a quote in an unquoted field --------
+  refuse("a,b\"c", "BareQuote", 1u32, 1u32, 4u32, "a quote inside an unquoted field");
+  refuse("a,b\r\nc,d\"", "BareQuote", 2u32, 2u32, 4u32, "unquoted field");
+  refuse("a b\"", "BareQuote", 1u32, 1u32, 4u32, "unquoted field");
+
+  // -------- text after a closing quote --------
+  refuse("\"a\"b", "QuoteThenText", 1u32, 1u32, 4u32, "after the closing quote");
+  refuse("x,\"a\" ,c", "QuoteThenText", 1u32, 1u32, 6u32, "after the closing quote");
+  refuse("\"a\"\rb", "QuoteThenText", 1u32, 1u32, 4u32, "after the closing quote");
+  refuse("\"a\nb\"c", "QuoteThenText", 1u32, 2u32, 3u32, "after the closing quote");
+
+  // -------- bytes that are not UTF-8 --------
+  refuse("a,\xFF", "BadUtf8", 1u32, 1u32, 3u32, "not UTF-8");
+  refuse("a,b\r\n\xC3(", "BadUtf8", 2u32, 2u32, 1u32, "not UTF-8");
+  refuse("a,\xC3", "BadUtf8", 1u32, 1u32, 3u32, "not UTF-8");
+  refuse("\"x\xE2\x82\"", "BadUtf8", 1u32, 1u32, 3u32, "not UTF-8");
+  refuse("\xED\xA0\x80", "BadUtf8", 1u32, 1u32, 1u32, "not UTF-8");
+  var lax = csv.Options.standard();
+  lax.checkUtf8 = false;
+  accepted("a,\xFF\xFE", &lax, "checkUtf8 off lets the bytes through");
+  accepted("a,\xC3\xA9\xE4\xB8\x96\xF0\x9F\x98\x80", &csv.Options.standard(), "well-formed UTF-8 of every width");
+
+  // -------- a record of the wrong length --------
+  refuse("a,b\r\nc", "FieldCount", 2u32, 2u32, 1u32, "the record has 1 fields, the first had 2");
+  refuse("a,b\r\nc,d,e", "FieldCount", 2u32, 2u32, 1u32, "the record has 3 fields, the first had 2");
+  refuse("a,b\r\n\"x\ny\",z\r\nq", "FieldCount", 3u32, 4u32, 1u32, "1 fields");
+  accepted("a\r\n\r\nb", &csv.Options.standard(), "an empty line is one field, as long as a one-column first record");
+  var free = csv.Options.standard();
+  free.fieldCount = csv.FieldCount.Free;
+  accepted("a,b\r\nc\r\nd,e,f", &free, "Free: any length");
+
+  // -------- a header that fails, and a failure answered again --------
+  var h = csv.Options.standard();
+  h.header = true;
+  var r = csv.readerWith("\"a,b\r\n1,2", &h);
+  expect(!r.headers().isTrue(), "a header that failed is not held");
+  match r.next() {
+    case let Err(e) { expectStr(e.reason.view(), "the text ends inside a quoted field", "the header's failure comes from the first next"); }
+    case is Ok { expect(false, "the header's failure"); }
+  }
+  var again = csv.reader("a,b\r\nc,\"d");
+  match again.next() { case is Ok { } case is Err { expect(false, "record 1"); } }
+  var first = String();
+  match again.next() {
+    case let Err(e) { first = String() <- e; }
+    case is Ok { expect(false, "the failure"); }
+  }
+  match again.next() {
+    case let Err(e) { expectStr((String() <- e).view(), first.view(), "the same failure again"); }
+    case is Ok { expect(false, "the failure again"); }
+  }
+  expectStr(first.view(), "csv: record 2, line 2, column 3: the text ends inside a quoted field", "the line a person reads");
+
+  done()
+}

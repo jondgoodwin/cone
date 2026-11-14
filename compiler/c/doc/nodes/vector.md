@@ -179,6 +179,19 @@ argument is an LLVM vector to `genlVectorIntrinsic` (genlvector.c). What differs
   (`at + N - 1`, saturating) and the count. The access is one `load <N x T>` or `store` with the
   *lane's* alignment, since a slice promises no more. A vector of 3 lanes touches 3 lanes' bytes, not
   the padded 4.
+- `Vector[T, N].gather(s, idx)` and `v.scatter(s, idx)` (`VecGatherIntrinsic`, `VecScatterIntrinsic`,
+  declared beside `load` and `store` in `vectorSliceMethods`, `gather` a function of the type named
+  by `vectorStaticCall` as `load` is) take a `Vector[usize, N]` of indices (the vector's own type when the lane
+  is `usize`). `genlGatherIndices` checks them all before anything is read or written: `icmp uge idx, splat(count)`,
+  `reduce.or`, one branch to the index panic carrying the first lane out of range and the count; so a scatter
+  that panics has written nothing. Then `getelementptr T, ptr, <N x i64> idx` and `llvm.masked.gather` /
+  `llvm.masked.scatter` with every lane enabled (`genlGatherScatter`), the pointers marked `align` the
+  lane's. LLVM 23's masked intrinsics carry no alignment operand: it is the parameter attribute. A repeated
+  scatter index writes in lane order, which is LLVM's guarantee, so the highest lane wins. No unchecked
+  form (it would need `trust`). A mask has neither (`ErrorVectorSlice`).
+  What LLVM makes of them (probe, 13 Nov 2026): `--cpu generic` scalarises both (extract, scalar load,
+  insert); `--cpu native` on an AVX2 machine uses `vpgatherqd`/`vpgatherqq` for gather (one for 4 lanes,
+  two for 8, four for 16 of i32) and still scalarises scatter, which AVX2 lacks.
 - a mask's lane is an `extractelement` of the mask's value at the checked index (`genlMaskLane`).
 
 ## Hazards

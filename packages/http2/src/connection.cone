@@ -302,7 +302,7 @@ pub struct Connection is Move {
       peerWindow: i64.from(protocolWindow), peerMaxHeaderList: 0xFFFFFFFFu32,
       connSend: i64.from(protocolWindow), connRecv: i64.from(protocolWindow), connUnacked: 0usize,
       floor: fl, spare: sp, reserve: sp / 2u64,
-      streams: Streams.make(64u32), byId: Dict[u32, StreamId](),
+      streams: Streams(64usize), byId: Dict[u32, StreamId](),
       ready: Deque[u32](), waiting: Deque[u32](), gone: Deque[Gone](),
       goneMax: usize.from(cfg.maxConcurrentStreams) * 2usize + 32usize,
       nextLocal: if client {1u32} else {2u32}, lastLocal: 0u32, lastPeer: 0u32,
@@ -442,12 +442,12 @@ pub struct Connection is Move {
   pub fn release(self: &mut, stream: u32, n: usize) {
     let slot = self.slotOf(stream);
     if slot.isNone() {return;}
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     let k = if n > s.outstanding {s.outstanding} else {n};
     s.outstanding = s.outstanding - k;
     s.unacked = s.unacked + k;
     if s.recvDone {self.shrink(s);}
-    self.creditStream(s);
+    self.creditStream(slot);
   }
 
   // A stream's credit now: the bytes the peer may have sent on it and its
@@ -456,7 +456,7 @@ pub struct Connection is Move {
   pub fn window(self: &, stream: u32) u64 {
     let slot = self.slotOf(stream);
     if slot.isNone() {return 0u64;}
-    u64.from(floor) + (*streams.get(slot)).drawn
+    u64.from(floor) + (streams.borrow(slot).unwrap()).drawn
   }
 
   // A stream's body bytes that arrived and its owner has not released.
@@ -465,7 +465,7 @@ pub struct Connection is Move {
   pub fn unreleased(self: &, stream: u32) usize {
     let slot = self.slotOf(stream);
     if slot.isNone() {return 0usize;}
-    (*streams.get(slot)).outstanding
+    (streams.borrow(slot).unwrap()).outstanding
   }
 
   // The credit no stream holds, for streams that keep reading to draw.
@@ -509,7 +509,7 @@ pub struct Connection is Move {
   pub fn queued(self: &, stream: u32) usize {
     let slot = self.slotOf(stream);
     if slot.isNone() {return 0usize;}
-    (*streams.get(slot)).outBytes
+    (streams.borrow(slot).unwrap()).outBytes
   }
 
   pub fn writeRoom(self: &, stream: u32) usize {
@@ -525,7 +525,7 @@ pub struct Connection is Move {
   pub fn sendEnded(self: &, stream: u32) bool {
     let slot = self.slotOf(stream);
     if slot.isNone() {return true;}
-    (*streams.get(slot)).sendDone
+    (streams.borrow(slot).unwrap()).sendDone
   }
 
   // ------------------------------------------------------------- sending
@@ -553,7 +553,7 @@ pub struct Connection is Move {
     nextLocal = nextLocal + 2u32;
     let slot = streams.add(newStream(id, true, peerWindow, i64.from(floor)));
     byId.insert(id, slot);
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     s.fields = f;
     s.announced = true;
     s.headRequest = head.method == Method.Head;
@@ -576,7 +576,7 @@ pub struct Connection is Move {
     if failed || closed {return;}
     let slot = self.slotOf(stream);
     if slot.isNone() {return;}
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     if s.sendDone {return;}
     if s.responded {panic("http2: sendResponse on a stream already answered", file, line);}
     let status = head.status;
@@ -590,7 +590,7 @@ pub struct Connection is Move {
     s.responded = true;
     if end {
       s.sendDone = true;
-      self.settle(s);
+      self.settle(slot);
       return;
     }
     s.bodyFollows = true;
@@ -605,7 +605,7 @@ pub struct Connection is Move {
     if head.status < 100u16 || head.status > 199u16 || head.status == 101u16 {panic("http2: sendInterim takes a 1xx other than 101", file, line);}
     let slot = self.slotOf(stream);
     if slot.isNone() {return;}
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     if s.sendDone {return;}
     if s.responded {panic("http2: sendInterim after the final response", file, line);}
     fields.clear();
@@ -623,7 +623,7 @@ pub struct Connection is Move {
     if failed || closed {return None;}
     let slot = self.slotOf(stream);
     if slot.isNone() {return None;}
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     if s.sendDone {return None;}
     if !s.bodyFollows || s.finishing {panic("http2: sendData with no body being sent", file, line);}
     let n = buf.len();
@@ -660,7 +660,7 @@ pub struct Connection is Move {
     if failed || closed {return;}
     let slot = self.slotOf(stream);
     if slot.isNone() {return;}
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     if s.sendDone || !s.bodyFollows || s.finishing {return;}
     if s.sized && s.left != 0u64 {panic("http2: finish short of the body's Content-Length", file, line);}
     if !trailers.isEmpty() {
@@ -684,7 +684,7 @@ pub struct Connection is Move {
     if failed || closed {return;}
     let slot = self.slotOf(stream);
     if slot.isNone() {return;}
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     if s.sendDone && s.recvDone {return;}
     if code.value() == 0u32 && !s.ours && !s.sendDone && s.finishing {
       s.stopAfter = true;
@@ -697,7 +697,7 @@ pub struct Connection is Move {
       }
     }
     self.abandon(s, true);
-    self.settle(s);
+    self.settle(slot);
   }
 
   // reset with CANCEL: the program no longer wants the stream
@@ -765,7 +765,7 @@ pub struct Connection is Move {
   pub fn streamSendWindow(self: &, stream: u32) i64 {
     let slot = self.slotOf(stream);
     if slot.isNone() {return 0i64;}
-    (*streams.get(slot)).sendWindow
+    (streams.borrow(slot).unwrap()).sendWindow
   }
 
   // ------------------------------------------------------------- reading, inside
@@ -869,7 +869,11 @@ pub struct Connection is Move {
   // with it as many bytes more as the budget's spare allows, up to the
   // stream window: a stream that keeps reading doubles its window with each
   // window's worth, one that has stopped keeps what it holds (CREDIT)
-  fn creditStream(self: &mut, s: &mut Stream) {
+  fn creditStream(self: &mut, slot: Handle) {
+    let s = match streams.borrowMut(slot) {
+      case let Some(v) {v}
+      case is None {return;}
+    };
     if s.recvDone || s.unacked == 0usize {return;}
     let window = u64.from(floor) + s.drawn;
     if u64.from(s.unacked) < window / 2u64 {return;}
@@ -895,7 +899,7 @@ pub struct Connection is Move {
       else {self.onClosed(id, "DATA on a closed stream");}
       return;
     }
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     if !s.opened {
       self.connError(ErrorCode.ProtocolError, "DATA on a stream not yet opened");
       return;
@@ -941,10 +945,10 @@ pub struct Connection is Move {
       s.recvDone = true;
       self.shrink(s);
       self.emit(s, Event.End(id, Headers()));
-      self.settle(s);
+      self.settle(slot);
       return;
     }
-    self.creditStream(s);
+    self.creditStream(slot);
   }
 
   fn onHeaders(self: &mut, id: u32, endStream: bool, block: List[u8], frameError: Option[FrameError]) {
@@ -965,7 +969,7 @@ pub struct Connection is Move {
     }
     let slot = self.slotOf(id);
     if !slot.isNone() {
-      let s = streams.get(slot) as &mut Stream;
+      let s = streams.borrowMut(slot).unwrap();
       if !s.opened {
         self.connError(ErrorCode.ProtocolError, "HEADERS on a stream not yet opened");
         return;
@@ -975,7 +979,7 @@ pub struct Connection is Move {
         return;
       }
       if tooLarge {
-        self.refuseLarge(s);
+        self.refuseLarge(slot);
         return;
       }
       match frameError {
@@ -985,8 +989,8 @@ pub struct Connection is Move {
         }
         case is None[FrameError] {}
       }
-      if s.finalSeen {self.onTrailers(s, endStream);}
-      else {self.onResponseHead(s, endStream);}
+      if s.finalSeen {self.onTrailers(slot, endStream);}
+      else {self.onResponseHead(slot, endStream);}
       return;
     }
 
@@ -1050,7 +1054,7 @@ pub struct Connection is Move {
         byId.insert(id, slot2);
         peerLive = peerLive + 1u32;
         streamsOpened = streamsOpened + 1u64;
-        let s = streams.get(slot2) as &mut Stream;
+        let s = streams.borrowMut(slot2).unwrap();
         s.opened = true;
         s.announced = true;
         s.finalSeen = true;
@@ -1070,7 +1074,11 @@ pub struct Connection is Move {
   }
 
   // A client's response head, or an interim one (section 8.1)
-  fn onResponseHead(self: &mut, s: &mut Stream, endStream: bool) {
+  fn onResponseHead(self: &mut, slot: Handle, endStream: bool) {
+    let s = match streams.borrowMut(slot) {
+      case let Some(v) {v}
+      case is None {return;}
+    };
     let id = s.id;
     match readResponse(fields.view()) {
       case let Err(why) {self.streamError(id, ErrorCode.ProtocolError, why);}
@@ -1100,7 +1108,7 @@ pub struct Connection is Move {
           s.recvDone = true;
           self.shrink(s);
           self.emit(s, Event.End(id, Headers()));
-          self.settle(s);
+          self.settle(slot);
         }
       }
     }
@@ -1108,7 +1116,11 @@ pub struct Connection is Move {
 
   // A field block after the head: the trailers, which end the stream
   // (section 8.1)
-  fn onTrailers(self: &mut, s: &mut Stream, endStream: bool) {
+  fn onTrailers(self: &mut, slot: Handle, endStream: bool) {
+    let s = match streams.borrowMut(slot) {
+      case let Some(v) {v}
+      case is None {return;}
+    };
     let id = s.id;
     if !endStream {
       self.streamError(id, ErrorCode.ProtocolError, "a field block after the head that does not end the stream");
@@ -1124,22 +1136,26 @@ pub struct Connection is Move {
         s.recvDone = true;
         self.shrink(s);
         self.emit(s, Event.End(id, t));
-        self.settle(s);
+        self.settle(slot);
       }
     }
   }
 
   // A head past maxHeaderListSize on a stream under way: a server answers
   // 431 (if it has not answered), a client gives up the stream
-  fn refuseLarge(self: &mut, s: &mut Stream) {
-    let id = s.id;
+  fn refuseLarge(self: &mut, slot: Handle) {
+    let id = match streams.borrow(slot) {
+      case let Some(s) {s.id}
+      case is None {return;}
+    };
     if !self.spendLocal() {return;}
-    if !clientRole && !s.responded {
+    if !clientRole && !streams.borrow(slot).unwrap().responded {
       fields.clear();
       fields.push(HeaderField.make(":status", "431"));
       self.writeBlock(id, true);
-      s.responded = true;
+      streams.borrowMut(slot).unwrap().responded = true;
     }
+    let s = streams.borrowMut(slot).unwrap();
     var e = HttpError.coded(ErrorKind.TooLarge, u64.from(ErrorCode.Cancel.value()), ErrorScope.Stream, "a header list past maxHeaderListSize");
     e.status = 431u16;
     e.noResponse = clientRole && !s.finalSeen;
@@ -1149,7 +1165,7 @@ pub struct Connection is Move {
     }
     if s.announced {self.emit(s, Event.Reset(id, e));}
     self.abandon(s, true);
-    self.settle(s);
+    self.settle(slot);
   }
 
   // A server answers a new stream's request itself, the program never
@@ -1178,7 +1194,7 @@ pub struct Connection is Move {
       if self.isIdle(id) {self.connError(ErrorCode.ProtocolError, "RST_STREAM on an idle stream");}
       return;
     }
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     if !s.opened {
       self.connError(ErrorCode.ProtocolError, "RST_STREAM on a stream not yet opened");
       return;
@@ -1202,7 +1218,7 @@ pub struct Connection is Move {
       self.emit(s, Event.Reset(id, e));
     }
     self.abandon(s, false);
-    self.settle(s);
+    self.settle(slot);
   }
 
   fn onWindowUpdate(self: &mut, id: u32, inc: u32) {
@@ -1218,7 +1234,7 @@ pub struct Connection is Move {
       if self.isIdle(id) {self.connError(ErrorCode.ProtocolError, "WINDOW_UPDATE on an idle stream");}
       return;
     }
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     if !s.opened {
       self.connError(ErrorCode.ProtocolError, "WINDOW_UPDATE on a stream not yet opened");
       return;
@@ -1274,7 +1290,7 @@ pub struct Connection is Move {
     var i = 0u32;
     while usize.from(i) < streams.bound() {
       if streams.isLive(i) {
-        let s = streams.at(i) as &mut Stream;
+        let s = streams.borrowMutAt(i).unwrap();
         s.sendWindow = s.sendWindow + delta;
         if s.sendWindow > i64.from(maxWindowSize) {
           self.connError(ErrorCode.FlowControlError, "SETTINGS_INITIAL_WINDOW_SIZE takes a stream's window past 2^31-1");
@@ -1317,7 +1333,7 @@ pub struct Connection is Move {
     var i = 0u32;
     while usize.from(i) < streams.bound() {
       if streams.isLive(i) {
-        let s = streams.at(i) as &mut Stream;
+        let s = streams.borrowMutAt(i).unwrap();
         if s.ours && !(s.sendDone && s.recvDone) && (!s.opened || s.id > peerLast) {
           var e = HttpError.coded(ErrorKind.Refused, u64.from(code.value()), ErrorScope.Connection,
             "above the peer's GOAWAY last stream, or never sent: not processed");
@@ -1325,7 +1341,7 @@ pub struct Connection is Move {
           let id = s.id;
           self.emit(s, Event.Reset(id, e));
           self.abandon(s, false);
-          self.settle(s);
+          self.settle(streams.handleAt(i));
         }
       }
       i = i + 1u32;
@@ -1372,14 +1388,14 @@ pub struct Connection is Move {
       self.pushGone(id, true);
       return;
     }
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     if s.announced {
       var e = HttpError.coded(kindOfCode(code), u64.from(code.value()), ErrorScope.Stream, why);
       e.noResponse = s.ours && !s.finalSeen;
       self.emit(s, Event.Reset(id, e));
     }
     self.abandon(s, true);
-    self.settle(s);
+    self.settle(slot);
   }
 
   // One more stream reset for the peer's fault: false, and the connection
@@ -1430,7 +1446,7 @@ pub struct Connection is Move {
     var i = 0u32;
     while usize.from(i) < streams.bound() {
       if streams.isLive(i) {
-        let s = streams.at(i) as &mut Stream;
+        let s = streams.borrowMutAt(i).unwrap();
         if !(s.sendDone && s.recvDone) {
           n = n + 1usize;
           if s.announced {
@@ -1527,7 +1543,7 @@ pub struct Connection is Move {
   fn eventTaken(self: &mut, id: u32) {
     let slot = self.slotOf(id);
     if slot.isNone() {return;}
-    let s = streams.get(slot) as &mut Stream;
+    let s = streams.borrowMut(slot).unwrap();
     s.events = s.events - 1usize;
     if s.wireClosed && s.events == 0usize {self.reap(id);}
   }
@@ -1545,7 +1561,11 @@ pub struct Connection is Move {
 
   // s's last frame has been queued. A NO_ERROR reset asked for before (reset, above) goes now, if the
   // request is still open: the answer stands, the stream is closed, and no event follows
-  fn sentAll(self: &mut, s: &mut Stream) {
+  fn sentAll(self: &mut, slot: Handle) {
+    let s = match streams.borrowMut(slot) {
+      case let Some(v) {v}
+      case is None {return;}
+    };
     if s.stopAfter && !s.recvDone && !failed && !closed {
       s.stopAfter = false;
       if !writer.rstStream(s.id, ErrorCode.NoError) {
@@ -1554,26 +1574,47 @@ pub struct Connection is Move {
       }
       self.abandon(s, true);
     }
-    self.settle(s);
+    self.settle(slot);
   }
 
   // After s changed: once both its directions are done, it is closed on the
   // wire (its slot under the peer's limit freed, a waiting request opened),
   // and once its events are all taken too, it leaves the table. The last
   // use of s by the caller
-  fn settle(self: &mut, s: &mut Stream) {
-    if !(s.sendDone && s.recvDone) {return;}
-    let id = s.id;
-    if !s.wireClosed {
-      s.wireClosed = true;
-      if s.counted {
-        s.counted = false;
-        localOpen = localOpen - 1u32;
+  fn settle(self: &mut, slot: Handle) {
+    var id = 0u32;
+    var opened = false;
+    var ours = false;
+    var resetByUs = false;
+    var closing = false;
+    match streams.borrowMut(slot) {
+      case let Some(s) {
+        if !(s.sendDone && s.recvDone) {return;}
+        id = s.id;
+        if !s.wireClosed {
+          s.wireClosed = true;
+          if s.counted {
+            s.counted = false;
+            localOpen = localOpen - 1u32;
+          }
+          closing = true;
+          opened = s.opened;
+          ours = s.ours;
+          resetByUs = s.resetByUs;
+        }
       }
-      if s.opened {self.pushGone(id, s.resetByUs);}
-      if s.ours {self.openWaiting();}
+      case is None {return;}
     }
-    if s.events == 0usize {self.reap(id);}
+    if closing {
+      if opened {self.pushGone(id, resetByUs);}
+      if ours {self.openWaiting();}
+    }
+    // pushGone and openWaiting may have changed the table: look again
+    match streams.borrow(slot) {
+      case let Some(s) {if s.events != 0usize {return;}}
+      case is None {return;}
+    }
+    self.reap(id);
   }
 
   // A closed stream with no events left leaves the table, taken apart once
@@ -1602,7 +1643,7 @@ pub struct Connection is Move {
         case let Some(id) {
           let slot = self.slotOf(id);
           if !slot.isNone() {
-            let s = streams.get(slot) as &mut Stream;
+            let s = streams.borrowMut(slot).unwrap();
             if !(s.sendDone && s.recvDone) {self.openStream(s);}
           }
         }
@@ -1618,13 +1659,13 @@ pub struct Connection is Move {
         case let Some(id) {
           let slot = self.slotOf(id);
           if !slot.isNone() {
-            let s = streams.get(slot) as &mut Stream;
+            let s = streams.borrowMut(slot).unwrap();
             if !(s.sendDone && s.recvDone) {
               var e = HttpError.coded(ErrorKind.Refused, u64.from(code.value()), ErrorScope.Connection, why);
               e.noResponse = true;
               self.emit(s, Event.Reset(id, e));
               self.abandon(s, false);
-              self.settle(s);
+              self.settle(slot);
             }
           }
         }
@@ -1677,8 +1718,7 @@ pub struct Connection is Move {
         case let Some(id) {
           let slot = self.slotOf(id);
           if !slot.isNone() {
-            let s = streams.get(slot) as &mut Stream;
-            let r = self.sendSome(s);
+            let r = self.sendSome(slot);
             if r == 1u32 {
               ready.push(id);
               stalled = 0usize;
@@ -1699,7 +1739,11 @@ pub struct Connection is Move {
   // its window opens or it has more), 1 a frame sent and more to come, 2 a
   // frame sent and nothing more for now, 3 waiting on the connection's
   // window
-  fn sendSome(self: &mut, s: &mut Stream) u32 {
+  fn sendSome(self: &mut, slot: Handle) u32 {
+    let s = match streams.borrowMut(slot) {
+      case let Some(v) {v}
+      case is None {return 0u32;}
+    };
     let id = s.id;
     if s.sendDone {
       s.ready = false;
@@ -1726,7 +1770,7 @@ pub struct Connection is Move {
       if last {
         s.sendDone = true;
         s.ready = false;
-        self.sentAll(s);
+        self.sentAll(slot);
         return 2u32;
       }
       if s.outBytes > 0usize || s.finishing {return 1u32;}
@@ -1744,7 +1788,7 @@ pub struct Connection is Move {
       }
       s.sendDone = true;
       s.ready = false;
-      self.sentAll(s);
+      self.sentAll(slot);
       return 2u32;
     }
     s.ready = false;

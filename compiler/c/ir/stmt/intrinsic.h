@@ -120,6 +120,8 @@ enum IntrinsicFn {
     VecAllIntrinsic,        // mask.all()
     VecLoadIntrinsic,       // Vector[T, N].load(s, at): the lanes at s[at..at+N], bounds checked once
     VecStoreIntrinsic,      // v.store(s, at)
+    VecGatherIntrinsic,     // Vector[T, N].gather(s, idx): the lanes s[idx[0]] ... s[idx[N-1]], every index checked first
+    VecScatterIntrinsic,    // v.scatter(s, idx): the lanes to s[idx[i]], every index checked first; the highest lane wins a repeat
 
     // The program's stitched lifecycle (genlStitch): every module's 'init' in
     // dependency order, and every module's finalizer in exactly the reverse.
@@ -185,6 +187,9 @@ enum IntrinsicFn {
     // at a time, so there each is nothing (genllvm/genlgpusync.c)
     WorkgroupBarrierIntrinsic,  // workgroupBarrier()
     StorageBarrierIntrinsic,    // storageBarrier()
+    // Returns its argument, which the optimiser treats as made and used by code
+    // it cannot see (a benchmark's guard); an empty asm in the generator
+    BlackBoxIntrinsic,          // blackBox[T](v: T) T
     // The 128-bit product of two 64-bit numbers, its two halves xored: the
     // mixing step of the wyhash family, one instruction on a 64-bit target
     MulFoldIntrinsic,           // mulFold(a: u64, b: u64) u64

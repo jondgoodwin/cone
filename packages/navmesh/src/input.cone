@@ -13,11 +13,18 @@
 // Areas, 0 to 15. The number is also the bit of a polygon's flags, 1 << area,
 // which a query filter includes or excludes. 1 to 4 are named for the
 // examples; the rest are the caller's
-pub const AreaNull: u8 = 0u8;
-pub const AreaGround: u8 = 1u8;
-pub const AreaWater: u8 = 2u8;
-pub const AreaMud: u8 = 3u8;
-pub const AreaDoor: u8 = 4u8;
+// An area's number (an open set: a named constant, or any 0 to 15 the caller picks)
+pub struct AreaId {
+  pub index: u8;
+}
+
+pub alias AreaIds = List[AreaId];
+
+pub const AreaNull: AreaId = AreaId(0u8);
+pub const AreaGround: AreaId = AreaId(1u8);
+pub const AreaWater: AreaId = AreaId(2u8);
+pub const AreaMud: AreaId = AreaId(3u8);
+pub const AreaDoor: AreaId = AreaId(4u8);
 
 pub const ObstacleCircle: u8 = 0u8;
 pub const ObstacleBox: u8 = 1u8;
@@ -57,7 +64,7 @@ pub struct Obstacle {
   pub yaw: f32;      // a box turned this much about y (counterclockwise from above)
   pub ymin: f32;
   pub ymax: f32;
-  pub area: u8;      // AreaNull: solid, blocks; any other: the ground inside takes that area
+  pub area: AreaId;      // AreaNull: solid, blocks; any other: the ground inside takes that area
   pub enabled: bool;
 
   // The x and z extent: min x, min z, max x, max z
@@ -125,7 +132,7 @@ pub struct OffMeshLink {
   pub b: Vec3;
   pub radius: f32;      // how near the mesh each end must be
   pub bidirectional: bool;
-  pub area: u8;
+  pub area: AreaId;
   pub enabled: bool;
 }
 
@@ -140,19 +147,19 @@ pub struct DirtyBox {
 pub struct NavInput is Default {
   pub verts: List[Vec3];
   pub tris: List[u32];       // three vertex numbers a triangle
-  pub triArea: List[u8];
+  pub triArea: AreaIds;
   pub obstacles: List[Obstacle];
   pub dirty: List[DirtyBox];
   pub nextId: u32;
 
   pub fn init(self: &new) {
-    *self = NavInput(List[Vec3](), List[u32](), List[u8](), List[Obstacle](), List[DirtyBox](), 1u32);
+    *self = NavInput(List[Vec3](), List[u32](), AreaIds(), List[Obstacle](), List[DirtyBox](), 1u32);
   }
 
   pub fn triangleCount(self: &) usize { tris.len() / 3usize }
 
   // One triangle, counterclockwise seen from above
-  pub fn addTriangle(self: &mut, a: Vec3, b: Vec3, c: Vec3, area: u8) {
+  pub fn addTriangle(self: &mut, a: Vec3, b: Vec3, c: Vec3, area: AreaId) {
     let n = u32.from(verts.len());
     verts.push(a); verts.push(b); verts.push(c);
     tris.push(n); tris.push(n + 1u32); tris.push(n + 2u32);
@@ -161,7 +168,7 @@ pub struct NavInput is Default {
   }
 
   // An indexed mesh, every triangle of the given area
-  pub fn addMesh(self: &mut, vs: &Array[Vec3], indices: &Array[u32], area: u8) {
+  pub fn addMesh(self: &mut, vs: &Array[Vec3], indices: &Array[u32], area: AreaId) {
     let base = u32.from(verts.len());
     var i = 0usize;
     while i < vs.len { verts.push(vs[i]); i = i + 1usize; }
@@ -182,7 +189,7 @@ pub struct NavInput is Default {
   // A grid of heights, 'nx' by 'nz' sample points 'step' apart from (ox, oz),
   // heights in x-major rows (sample (i, j) at j * nx + i), made into two
   // triangles a cell
-  pub fn addHeightfield(self: &mut, ox: f32, oz: f32, step: f32, nx: i32, nz: i32, heights: &Array[f32], area: u8) {
+  pub fn addHeightfield(self: &mut, ox: f32, oz: f32, step: f32, nx: i32, nz: i32, heights: &Array[f32], area: AreaId) {
     let base = u32.from(verts.len());
     var lo = Vec3(3.4e38, 3.4e38, 3.4e38);
     var hi = Vec3(-3.4e38, -3.4e38, -3.4e38);
@@ -221,7 +228,7 @@ pub struct NavInput is Default {
   // A box of 'sx' by 'sz' and from 'y0' to 'y1', as walls round and a floor
   // and a roof: solid geometry (area 0) that blocks. 'area' of its top face
   // is the ground's (a platform) when > 0
-  pub fn addSolidBox(self: &mut, cx: f32, cz: f32, hx: f32, hz: f32, y0: f32, y1: f32, topArea: u8) {
+  pub fn addSolidBox(self: &mut, cx: f32, cz: f32, hx: f32, hz: f32, y0: f32, y1: f32, topArea: AreaId) {
     let p000 = Vec3(cx - hx, y0, cz - hz);
     let p100 = Vec3(cx + hx, y0, cz - hz);
     let p001 = Vec3(cx - hx, y0, cz + hz);
@@ -250,7 +257,7 @@ pub struct NavInput is Default {
 
   // ---- obstacles ----
 
-  pub fn addCircleObstacle(self: &mut, cx: f32, cz: f32, radius: f32, ymin: f32, ymax: f32, area: u8) u32 {
+  pub fn addCircleObstacle(self: &mut, cx: f32, cz: f32, radius: f32, ymin: f32, ymax: f32, area: AreaId) u32 {
     let id = nextId;
     nextId = nextId + 1u32;
     obstacles.push(Obstacle(id, ObstacleCircle, cx, cz, radius, radius, 0., ymin, ymax, area, true));
@@ -260,7 +267,7 @@ pub struct NavInput is Default {
 
   // A box turned 'yaw' about y (counterclockwise seen from above), half extents
   // 'hx' along its own x and 'hz' along its own z
-  pub fn addBoxObstacle(self: &mut, cx: f32, cz: f32, hx: f32, hz: f32, yaw: f32, ymin: f32, ymax: f32, area: u8) u32 {
+  pub fn addBoxObstacle(self: &mut, cx: f32, cz: f32, hx: f32, hz: f32, yaw: f32, ymin: f32, ymax: f32, area: AreaId) u32 {
     let id = nextId;
     nextId = nextId + 1u32;
     obstacles.push(Obstacle(id, ObstacleBox, cx, cz, hx, hz, yaw, ymin, ymax, area, true));

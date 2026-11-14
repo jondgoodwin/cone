@@ -98,10 +98,11 @@ pub struct Animators {
   pub index: Dict[u64, usize];
   pub runs: List[Running];
   pub events: List[AnimEvent];
+  runIndex: Dict[u32, usize];       // a run's handle to its place in 'runs' (rebuilt when 'compact' moves them)
 
   pub fn make() Animators {
     Animators(0.0f64, 0.0f64, 1u32, List[Field](), Dict[u64, usize](), List[Running](),
-      List[AnimEvent]())
+      List[AnimEvent](), Dict[u32, usize]())
   }
 
   // ---- fields ----
@@ -221,24 +222,29 @@ pub struct Animators {
 
   // A live animator: waiting, running, or ended and not yet removed
   fn findRun(self: &, h: u32) i64 {
-    var i = 0usize;
-    while i < self.runs.len() {
-      if self.runs[i].id == h && self.runs[i].status != ST_REMOVED && self.runs[i].status != ST_RETIRED {
-        return i64.from(i);
+    match self.runIndex.getCopy(&h) {
+      case let Some(i) {
+        if i < self.runs.len() && self.runs[i].id == h && self.runs[i].status != ST_REMOVED
+            && self.runs[i].status != ST_RETIRED {
+          return i64.from(i);
+        }
+        -1i64
       }
-      i = i + 1usize;
+      case is None[usize] { -1i64 }
     }
-    -1i64
   }
 
   // The same, an ended one that is kept included
   fn findRunAny(self: &, h: u32) i64 {
-    var i = 0usize;
-    while i < self.runs.len() {
-      if self.runs[i].id == h && self.runs[i].status != ST_REMOVED { return i64.from(i); }
-      i = i + 1usize;
+    match self.runIndex.getCopy(&h) {
+      case let Some(i) {
+        if i < self.runs.len() && self.runs[i].id == h && self.runs[i].status != ST_REMOVED {
+          return i64.from(i);
+        }
+        -1i64
+      }
+      case is None[usize] { -1i64 }
     }
-    -1i64
   }
 
   // Start 'a' now. Returns its handle
@@ -266,6 +272,7 @@ pub struct Animators {
     }
     self.runs.push(r);
     let ri = self.runs.len() - 1usize;
+    self.runIndex.insert(id, ri);
     // this call is now the newest on each field it writes
     var prevs = List[u32]();
     var owners = List[u32]();
@@ -679,6 +686,12 @@ pub struct Animators {
       }
     }
     self.runs = kept;
+    self.runIndex = Dict[u32, usize]();
+    var j = 0usize;
+    while j < self.runs.len() {
+      self.runIndex.insert(self.runs[j].id, j);
+      j = j + 1usize;
+    }
   }
 
   // Capture what a node that has just begun needs from the field it animates

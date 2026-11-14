@@ -22,6 +22,12 @@ fn putStr(out: &mut streams.Writer, s: &str) {
 
 fn badInput(reason: &str) GgufError { GgufError.make(ErrorKind.BadInput, 0u64, reason) }
 
+// The buffer pool refused a block: 'reached' is the bytes written before the step that starved
+// (0 when it starved in the header or table, where no position is kept)
+fn starvedError(reached: u64) GgufError {
+  GgufError.make(ErrorKind.TooLarge, reached, "the buffer pool refused a block: the model is larger than the pool allows")
+}
+
 // Appends the bytes of one value (not its type code)
 fn putValue(out: &mut streams.Writer, v: &Value, depth: u32) Option[GgufError] {
   match v {
@@ -61,22 +67,25 @@ fn putValue(out: &mut streams.Writer, v: &Value, depth: u32) Option[GgufError] {
 pub struct Writer {
   meta: List[MetaEntry];
   tensors: List[Pending];
+  // Key to its place in 'meta', and tensor name to its place in 'tensors'
+  metaAt: Dict[String, usize];
+  tensorAt: Dict[String, usize];
 
   pub fn make() Writer {
-    Writer(List[MetaEntry](), List[Pending]())
+    Writer(List[MetaEntry](), List[Pending](), Dict[String, usize](), Dict[String, usize]())
   }
 
   // Sets a key: replaces the value of one already put (keeping its place),
   // else adds it at the end
   pub fn put(self: &mut, key: &str, value: Value) {
-    var i = 0usize;
-    while i < meta.len() {
-      if meta[i].key.view() == key {
-        meta.set(i, MetaEntry(String.from(key), value));
+    match metaAt.get(key) {
+      case let Some(i) {
+        meta.set(*i, MetaEntry(String.from(key), value));
         return;
       }
-      i = i + 1usize;
+      case is None {}
     }
+    metaAt.insert(String.from(key), meta.len());
     meta.push(MetaEntry(String.from(key), value));
   }
 
@@ -112,11 +121,10 @@ pub struct Writer {
     if u64.from(data.len()) != geo.bytes {
       return Err[usize, GgufError](badInput("the tensor's bytes are not the number its type and dimensions need"));
     }
-    each p in &tensors {
-      if p.name.view() == name {
-        return Err[usize, GgufError](GgufError.make(ErrorKind.DuplicateTensor, 0u64, "a tensor name is added twice"));
-      }
+    if tensorAt.contains(name) {
+      return Err[usize, GgufError](GgufError.make(ErrorKind.DuplicateTensor, 0u64, "a tensor name is added twice"));
     }
+    tensorAt.insert(String.from(name), tensors.len());
     var d = List[u64].withCapacity(dims.len);
     var i = 0usize;
     while i < dims.len {
@@ -159,7 +167,11 @@ pub struct Writer {
       return Err[Chain, GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not a power of two up to 2^31"));
     }
 
-    var out = streams.Writer.make(65536usize);
+    // A fallible writer: a model larger than the buffer pool allows ends as a TooLarge error, not a panic
+    var out = match streams.Writer.tryMake(65536usize) {
+      case var Some(w) {w}
+      else {return Err[Chain, GgufError](starvedError(0u64));}
+    };
     out.put("GGUF");
     out.putLE[u32](3u32);
     out.putLE[u64](u64.from(tensors.len()));
@@ -172,6 +184,7 @@ pub struct Writer {
         case is None {}
       }
     }
+    if out.starved() { return Err[Chain, GgufError](starvedError(0u64)); }
     // The table
     var offset = 0u64;
     each p in &tensors {
@@ -185,10 +198,18 @@ pub struct Writer {
     }
     // The data: the table's end is aligned, so each tensor's padding is to the file's own position
     out.pad(usize.from(alignment));
+    if out.starved() { return Err[Chain, GgufError](starvedError(0u64)); }
     each p in &tensors {
+      // The bytes written before this tensor: where the file stops if the pool refuses it
+      let reached = u64.from(out.len());
       out.pad(usize.from(alignment));
       out.put(p.data.view());
+      if out.starved() { return Err[Chain, GgufError](starvedError(reached)); }
     }
-    Ok[Chain, GgufError](out.finish())
+    // The file as the writer's own chain of buffers; a pool that refuses the last block ends as TooLarge
+    let Some(chain) = out.tryFinish() else {
+      return Err[Chain, GgufError](starvedError(0u64));
+    };
+    Ok[Chain, GgufError](chain)
   }
 }

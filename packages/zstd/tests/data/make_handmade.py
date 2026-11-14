@@ -658,6 +658,12 @@ oblock = lits_raw(olits) + sequences(oseqs)
 ok("overlap-offsets", frame([comp(oblock, 1)], ocontent), ocontent)
 ok("overlap-offsets-no-size", frame([comp(oblock, 1)], ocontent, content_size=None), ocontent)
 ok("overlap-offsets-no-size-no-checksum", frame([comp(oblock, 1)], ocontent, content_size=None, checksum=False), ocontent)
+# Every offset 1 to 32 at every match length 3 to 64 (zstd's shortest match is 3), each after one literal byte,
+# against the byte-at-a-time copy of run_seqs
+slits = bytes((i * 11 + 5) % 253 for i in range(40 + 32 * 62))
+sseqs = [(40, 3, 1 + 3)] + [(1, ml, off + 3) for off in range(1, 33) for ml in range(3, 65)][1:]
+scontent, _ = run_seqs(slits, sseqs)
+ok("overlap-sweep", frame([comp(lits_raw(slits) + sequences(sseqs), 1)], scontent), scontent)
 # Several blocks, no content size, a 4-byte one, and an 8-byte one
 ncontent = b"A" + b"B" * 1000 + b"xyz"
 ok("blocks-no-size", frame([rle(0x41, 1), rle(0x42, 1000), raw(b"xyz", 1)], ncontent, content_size=None), ncontent)

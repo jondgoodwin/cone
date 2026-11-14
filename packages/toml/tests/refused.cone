@@ -1,6 +1,6 @@
 // Everything outside the subset, and every malformed text, refused with its
 // line and its reason, each pinned to the whole message: the TOML that the
-// subset leaves out (dates and times, floats, integers in other bases,
+// subset leaves out (dates and times, integers in other bases,
 // literal and multi-line strings, inline tables, arrays of tables, dotted
 // keys, quoted keys and table names, lists holding anything but strings), and
 // what TOML itself refuses (a key set twice, a table defined twice or named
@@ -40,12 +40,7 @@ fn main() i32 {
   refuses("at = 1979-05-27 07:32:00\n", "line 1: dates and times are not supported", "a date-time with a space");
   refuses("at = 1979-05-27T00:32:00.999-07:00\n", "line 1: dates and times are not supported",
     "a date-time with a fraction and an offset");
-  refuses("pi = 3.14\n", "line 1: floats are not supported", "a float");
-  refuses("big = 1e6\n", "line 1: floats are not supported", "an exponent");
-  refuses("big = 6E-3\n", "line 1: floats are not supported", "a negative exponent");
-  refuses("x = inf\n", "line 1: floats are not supported", "inf");
-  refuses("x = -nan\n", "line 1: floats are not supported", "-nan");
-  refuses("x = +inf\n", "line 1: floats are not supported", "+inf");
+  // (floats are read; the malformed ones are in floats.cone)
   refuses("x = 0xFF\n", "line 1: hexadecimal, octal and binary integers are not supported", "hex");
   refuses("x = 0o17\n", "line 1: hexadecimal, octal and binary integers are not supported", "octal");
   refuses("x = 0b101\n", "line 1: hexadecimal, octal and binary integers are not supported", "binary");
@@ -174,11 +169,11 @@ fn main() i32 {
   refuses("a = -9223372036854775809\n", "line 1: the integer is beyond i64's range", "one past i64's smallest");
 
   // The message is the line and the reason; the fields hold them apart
-  match toml.parse("a = 1\nb = 2.5\n") {
-    case let Ok(ok) { expect(false, "a float refused"); }
+  match toml.parse("a = 1\nb = {x = 1}\n") {
+    case let Ok(ok) { expect(false, "an inline table refused"); }
     case let Err(e) {
       expectUInt(u64.from(e.line), 2u64, "the error's line");
-      expectStr(e.reason.view(), "floats are not supported", "the error's reason");
+      expectStr(e.reason.view(), "inline tables ('{...}') are not supported", "the error's reason");
     }
   }
   done()

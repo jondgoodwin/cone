@@ -63,10 +63,15 @@ let consoleEngineControl: core.Atomic[usize];
 
 const consoleCap = 16384usize;
 // What waits to be written to standard output, and how much of it
-var consoleBuf = Array[u8, 16384]() <- fill 0u8;
-var consoleLen = 0usize;
-// Whether standard output is a terminal: -1 until the first record asks
-var consoleOutTty = -1i32;
+// (all three are atomics, read and written only under cone_consoleLock, in the
+// relaxed order: the lock orders them. The buffer is a block conestd's 'init'
+// makes and never frees, held as its address: a panic prints after 'finalAll',
+// so nothing may take it down first. Before 'init' (another module's may print)
+// the address is 0 and a record is written at once, unbuffered)
+let consoleBuf: core.Atomic[usize];
+let consoleLen: core.Atomic[usize];
+// Whether standard output is a terminal: 0 until the first record asks, then 1 + the answer
+let consoleOutTty: core.Atomic[i32];
 // Whether this thread is inside the engine, holding its lock: a panic in there
 // must not wait for it
 var @threadlocal inConsole = false;
@@ -85,18 +90,26 @@ pub fn cone_consoleInstall(take: usize, bytes: usize, control: usize) {
 
 // What waits is written (the lock is held)
 fn consolePending() {
-  if consoleLen > 0usize {
-    cone_consoleWrite(1i32, &mut consoleBuf[0usize] as *u8, consoleLen);
-    consoleLen = 0usize;
+  if consoleLen.loadOrdered(core.MemOrder.Relaxed) > 0usize {
+    cone_consoleWrite(1i32, consoleBuf.loadOrdered(core.MemOrder.Relaxed) as *u8, consoleLen.loadOrdered(core.MemOrder.Relaxed));
+    consoleLen.storeOrdered(0usize, core.MemOrder.Relaxed);
   }
+}
+
+// n bytes at p added to the buffer, which has room (the lock is held)
+fn bufferAppend(p: *u8, n: usize) {
+  let len = consoleLen.loadOrdered(core.MemOrder.Relaxed);
+  core.mem.moveRaw[u8]((consoleBuf.loadOrdered(core.MemOrder.Relaxed) as *u8) + len, p, n);
+  consoleLen.storeOrdered(len + n, core.MemOrder.Relaxed);
 }
 
 // Whether standard output is a terminal, asked once (the lock is held)
 fn consoleTty() bool {
-  if consoleOutTty < 0i32 {
-    consoleOutTty = cone_consoleIsTty(1i32);
+  if consoleOutTty.loadOrdered(core.MemOrder.Relaxed) == 0i32 {
+    let isTty = if cone_consoleIsTty(1i32) != 0i32 { 2i32 } else { 1i32 };
+    consoleOutTty.storeOrdered(isTty, core.MemOrder.Relaxed);
   }
-  consoleOutTty != 0i32
+  consoleOutTty.loadOrdered(core.MemOrder.Relaxed) == 2i32
 }
 
 // n bytes at p as one record of stream fd, 1 or 2
@@ -117,13 +130,12 @@ fn consoleOne(fd: i32, p: *u8, n: usize) {
     cone_consoleWrite(1i32, p, n);
   }
   else {
-    if n > consoleCap - consoleLen {consolePending();}
-    if n >= consoleCap {
+    if n > consoleCap - consoleLen.loadOrdered(core.MemOrder.Relaxed) {consolePending();}
+    if n >= consoleCap || consoleBuf.loadOrdered(core.MemOrder.Relaxed) == 0usize {
       cone_consoleWrite(1i32, p, n);
     }
     else {
-      core.mem.moveRaw[u8](&mut consoleBuf[0usize] as *u8 + consoleLen, p, n);
-      consoleLen = consoleLen + n;
+      bufferAppend(p, n);
     }
   }
   inConsole = false;
@@ -137,12 +149,12 @@ fn consoleOne(fd: i32, p: *u8, n: usize) {
 
 // Make room for 'need' more bytes: whether there is now
 pub fn cone_textGrow(w: &uni core.TextOut, need: usize) bool {
-  if w.mode == 1u32 {
+  if (w.mode & 3u32) == 1u32 {
     let spiller = w.spill as core.TextSpill;
     spiller(w, need);
     return w.len + need <= w.cap;
   }
-  if w.mode == 2u32 {return false;}
+  if (w.mode & 3u32) == 2u32 {return false;}
   // A record: seal the current bytes, chain on a block big enough
   var size = 1024usize;
   if w.last != null {size = (*w.last).cap * 2usize;}
@@ -173,6 +185,12 @@ pub fn cone_textGrow(w: &uni core.TextOut, need: usize) bool {
 // The writer dies: the function its maker gave takes the record away, then the
 // blocks go back
 pub fn cone_textFinish(w: &uni core.TextOut) {
+  // A record that wrote a style, with color on, ends with a reset, so a style left
+  // on never leaks into the shell. Before 'done', which takes the record away
+  if w.styled() && w.colorOn() {
+    w.putByte(27u8);
+    w.writeStr("[0m");
+  }
   if w.done != 0usize {
     let finish = w.done as core.TextDone;
     finish(w);
@@ -246,8 +264,7 @@ fn consoleParts(fd: i32, w: &core.TextOut) {
 
 // A part of a record, appended to the buffer
 fn bufferPart(p: *u8, n: usize, ctx: *u8) {
-  core.mem.moveRaw[u8](&mut consoleBuf[0usize] as *u8 + consoleLen, p, n);
-  consoleLen = consoleLen + n;
+  bufferAppend(p, n);
 }
 
 // A record of several parts, or any size, as one record of stream fd
@@ -264,8 +281,8 @@ fn consoleMany(fd: i32, w: &core.TextOut) {
     consoleParts(1i32, w);
   }
   else {
-    if size > consoleCap - consoleLen {consolePending();}
-    if size >= consoleCap {
+    if size > consoleCap - consoleLen.loadOrdered(core.MemOrder.Relaxed) {consolePending();}
+    if size >= consoleCap || consoleBuf.loadOrdered(core.MemOrder.Relaxed) == 0usize {
       consoleParts(1i32, w);
     }
     else {
@@ -437,4 +454,77 @@ pub fn eprintChar(code: u64) {
 pub fn eprintFlush() {
   consoleFlush(0u32);
   libc.fflush(libc.stderr());
+}
+
+// ---- Standard input -------------------------------------------------------------------------------------
+//
+// The reads of the stdinput package ('readLine', 'readAll', 'readBytes'). The raw read is console.c's
+// cone_stdinRead (up to n bytes, waiting for at least one; 0 at the end; the system's error number made
+// negative); the buffer that sits over it is here, so a line read leaves what follows it for the next
+// call. A thread that reads holds cone_stdinLock for the read and blocks in it, so a second reader waits
+// its turn: these are for a program with no actors, and an actor's behaviour does not call them. The
+// console's lock (the printing above) is never taken, so a read that waits stops no printing.
+//
+// The buffer is a block made on the first read that needs it and never freed, held as its address like the
+// console's (its position and length are atomics read and written only under the stdin lock, relaxed).
+// Do not mix these reads with C's own 'stdin' (libc.fread) in one program: C's buffer would hold bytes this
+// one never sees.
+
+extern fn cone_stdinLock();
+extern fn cone_stdinUnlock();
+extern fn cone_stdinRead(buf: *u8, n: usize) i64;
+
+const stdinCap = 65536usize;
+let stdinBuf: core.Atomic[usize];
+let stdinPos: core.Atomic[usize];
+let stdinLen: core.Atomic[usize];
+
+// Up to n bytes of standard input into p: how many (0 at the end of the input), or an error number made
+// negative. With 'line' not 0, no more than up to and including the first '\n' that is there (what is
+// copied ends with it when it was found). Waits for input only when the buffer is empty. A read at least
+// as large as the buffer, with nothing buffered and no 'line', goes straight into p.
+pub fn cone_stdinChunk(p: *u8, n: usize, line: i32) i64 {
+  if n == 0usize {return 0i64;}
+  cone_stdinLock();
+  var pos = stdinPos.loadOrdered(core.MemOrder.Relaxed);
+  var len = stdinLen.loadOrdered(core.MemOrder.Relaxed);
+  if pos == len {
+    if n >= stdinCap && line == 0i32 {
+      let direct = cone_stdinRead(p, n);
+      cone_stdinUnlock();
+      return direct;
+    }
+    if stdinBuf.loadOrdered(core.MemOrder.Relaxed) == 0usize {
+      let block = core.RawBlocks.alloc(stdinCap, 16usize);
+      if block == null {
+        cone_stdinUnlock();
+        return -12i64;
+      }
+      stdinBuf.storeOrdered(block as usize, core.MemOrder.Relaxed);
+    }
+    let got = cone_stdinRead(stdinBuf.loadOrdered(core.MemOrder.Relaxed) as *u8, stdinCap);
+    if got <= 0i64 {
+      cone_stdinUnlock();
+      return got;
+    }
+    pos = 0usize;
+    len = usize.from(got);
+  }
+  let base = stdinBuf.loadOrdered(core.MemOrder.Relaxed) as *u8;
+  var take = len - pos;
+  if take > n {take = n;}
+  if line != 0i32 {
+    var i = 0usize;
+    var found = false;
+    while i < take && !found {
+      if *(base + pos + i) == 10u8 {found = true;}
+      i = i + 1usize;
+    }
+    if found {take = i;}
+  }
+  core.mem.moveRaw[u8](p, base + pos, take);
+  stdinPos.storeOrdered(pos + take, core.MemOrder.Relaxed);
+  stdinLen.storeOrdered(len, core.MemOrder.Relaxed);
+  cone_stdinUnlock();
+  i64.from(take)
 }

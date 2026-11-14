@@ -1,0 +1,128 @@
+// Text formatting: Date, TimeOfDay, DateTime, Offset, OffsetDateTime and
+// Weekday written by `<-` and in `$"..."`, equal to the ISO 8601 text
+// (rfc3339() where the type has one); toDebug the same; expanded years;
+// nanosecond fractions; the offset forms ('+00:00' never 'Z', negative,
+// leftover seconds); all seven weekdays.
+
+mod text;
+
+import testing use *;
+import collections use *;
+import calendar use Date, TimeOfDay, DateTime, Offset, OffsetDateTime, Weekday;
+
+fn ymd(y: i64, m: i64, d: i64) Date {
+  match Date.fromYmd(y, m, d) {
+    case let Some(s) { s }
+    case is None {
+      require(false, "the test's date exists");
+      Date()
+    }
+  }
+}
+
+fn tod(h: i64, m: i64, s: i64, ns: i64) TimeOfDay {
+  match TimeOfDay.fromHms(h, m, s, ns) {
+    case let Some(t) { t }
+    case is None {
+      require(false, "the test's time exists");
+      TimeOfDay()
+    }
+  }
+}
+
+fn odt(d: Date, t: TimeOfDay, secs: i32) OffsetDateTime {
+  OffsetDateTime(DateTime.fromParts(d, t), Offset(secs, "", false))
+}
+
+fn viaOut[T](v: &T) String {
+  var s = String();
+  s <- v;
+  s
+}
+
+fn viaDebug[T](v: &T) String { String() <- toDebug(v) }
+
+fn dates() {
+  let a = ymd(2026, 10, 3);
+  expectStr(viaOut(&a).view(), "2026-10-03", "a date by <-");
+  expectStr(viaDebug(&a).view(), "2026-10-03", "a date's toDebug");
+  expectStr($"on {a}!".view(), "on 2026-10-03!", "a date interpolated");
+  expectStr(viaOut(&a).view(), a.rfc3339().view(), "a date equals rfc3339");
+  let b = ymd(-44, 3, 15);
+  expectStr(viaOut(&b).view(), "-000044-03-15", "an expanded negative year");
+  expectStr(viaOut(&b).view(), b.rfc3339().view(), "equals rfc3339");
+  let c = ymd(10000, 1, 1);
+  expectStr($"{c}".view(), "+010000-01-01", "an expanded positive year, interpolated");
+}
+
+fn times() {
+  let a = tod(14, 5, 9, 0);
+  expectStr(viaOut(&a).view(), "14:05:09", "a time");
+  expectStr(viaDebug(&a).view(), "14:05:09", "a time's toDebug");
+  let b = tod(14, 5, 9, 250000000);
+  expectStr($"{b}".view(), "14:05:09.25", "a fraction interpolated");
+  expectStr(viaOut(&b).view(), b.rfc3339().view(), "equals rfc3339");
+  let c = tod(0, 0, 0, 1);
+  expectStr(viaOut(&c).view(), "00:00:00.000000001", "a nanosecond");
+  let d = tod(23, 59, 59, 999999999);
+  expectStr(viaOut(&d).view(), "23:59:59.999999999", "nine digits");
+}
+
+fn dateTimes() {
+  let a = DateTime.fromParts(ymd(2026, 10, 3), tod(14, 5, 9, 250000000));
+  expectStr(viaOut(&a).view(), "2026-10-03T14:05:09.25Z", "a date-time");
+  expectStr(viaDebug(&a).view(), "2026-10-03T14:05:09.25Z", "a date-time's toDebug");
+  expectStr($"at {a}".view(), "at 2026-10-03T14:05:09.25Z", "interpolated");
+  expectStr(viaOut(&a).view(), a.rfc3339().view(), "equals rfc3339");
+  let b = DateTime.fromParts(ymd(-1, 12, 31), tod(0, 0, 0, 1));
+  expectStr(viaOut(&b).view(), "-000001-12-31T00:00:00.000000001Z", "expanded year, nanosecond");
+  expectStr(viaOut(&b).view(), b.rfc3339().view(), "equals rfc3339");
+}
+
+fn offsets() {
+  let d = ymd(2026, 10, 3);
+  let t = tod(11, 5, 9, 0);
+  let west = Offset(-10800i32, "", false);
+  expectStr(viaOut(&west).view(), "-03:00", "a negative offset");
+  expectStr(viaDebug(&west).view(), "-03:00", "an offset's toDebug");
+  expectStr($"{west}".view(), "-03:00", "an offset interpolated");
+  let zero = Offset(0i32, "UTC", false);
+  expectStr(viaOut(&zero).view(), "+00:00", "zero is +00:00, never Z");
+  let east = Offset(19800i32, "", false);
+  expectStr(viaOut(&east).view(), "+05:30", "a half-hour offset");
+  let lmt = Offset(-17762i32, "LMT", false);
+  expectStr(viaOut(&lmt).view(), "-04:56:02", "leftover seconds");
+  let lmtEast = Offset(3661i32, "", false);
+  expectStr(viaOut(&lmtEast).view(), "+01:01:01", "leftover seconds, east");
+  let a = odt(d, t, -10800i32);
+  expectStr(viaOut(&a).view(), "2026-10-03T11:05:09-03:00", "an offset date-time");
+  expectStr(viaDebug(&a).view(), "2026-10-03T11:05:09-03:00", "its toDebug");
+  expectStr($"{a}".view(), "2026-10-03T11:05:09-03:00", "interpolated");
+  let b = odt(d, tod(11, 5, 9, 250000000), 0i32);
+  expectStr(viaOut(&b).view(), "2026-10-03T11:05:09.25+00:00", "zero offset, fraction");
+  let c = odt(ymd(10000, 1, 1), t, -17762i32);
+  expectStr(viaOut(&c).view(), "+010000-01-01T11:05:09-04:56:02", "expanded year, seconds offset");
+  let e = odt(d, t, 19800i32);
+  expectStr(viaOut(&e).view(), "2026-10-03T11:05:09+05:30", "a positive offset");
+}
+
+fn weekdays() {
+  let all = [Weekday.Monday, Weekday.Tuesday, Weekday.Wednesday, Weekday.Thursday,
+             Weekday.Friday, Weekday.Saturday, Weekday.Sunday];
+  let names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  var i = 0usize;
+  while i < 7usize {
+    expectStr(viaOut(&all[i]).view(), names[i], "a weekday's name");
+    i = i + 1usize;
+  }
+  expectStr($"{ymd(2026, 10, 3).weekday()}".view(), "Saturday", "a weekday interpolated");
+}
+
+fn main() i32 {
+  dates();
+  times();
+  dateTimes();
+  offsets();
+  weekdays();
+  done()
+}

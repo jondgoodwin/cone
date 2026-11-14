@@ -57,18 +57,18 @@
 // How many answers are still owed to awaits that woke at the cancel: the
 // callee has neither answered nor ended without answering. For tests and for
 // finding callees that hold what their awaiters let go
-var lateOwed: usize = 0usize;
+let lateOwed: Atomic[usize];       // set in init
 
 pub fn lateAnswersOwed() usize {
-  mem.atomicLoad[usize](&lateOwed, MemOrder.Acquire)
+  lateOwed.loadOrdered(MemOrder.Acquire)
 }
 
 fn lateAdd() {
-  mem.atomicAdd[usize](&lateOwed, 1usize, MemOrder.Relaxed);
+  lateOwed.addOrdered(1usize, MemOrder.Relaxed);
 }
 
 fn lateSub() {
-  mem.atomicSub[usize](&lateOwed, 1usize, MemOrder.Relaxed);
+  lateOwed.subOrdered(1usize, MemOrder.Relaxed);
 }
 
 const orOpen = 0u32;       // nobody has the envelope
@@ -193,21 +193,23 @@ fn orAnswerErr[R](rp: Reply) {
   answerNowIn[Result[R, Cancelled]](&mut r, Err[R, Cancelled](Cancelled(why)));
 }
 
-// A copy of the group noted for (h, w), or None
+// A copy of the group noted for the actor h under the id word w (the node's
+// address, groupBit clear), or None. It walks the one bucket the node hashes to,
+// so it touches no node that is not in the table
 fn groupCopy(h: *Header, w: u64) Option[CancelGroup] {
   var out: Option[CancelGroup] = None;
-  gAcquire();
-  if gTable != 0usize {
-    var n = *((gTable as *usize) + gBucket(h, w)) as *GNode;
+  gL();
+  if gTable.loadOrdered(MemOrder.Relaxed) != 0usize {
+    var n = *((gTable.loadOrdered(MemOrder.Relaxed) as *usize) + gBucket(h, w)) as *GNode;
     while n as usize != 0usize {
-      if (*n).h as usize == h as usize && (*n).w == w {
+      if (*n).h as usize == h as usize && u64.from(n as usize) == w {
         out = Some[CancelGroup](*(&(*n).g as &CancelGroup));
         break;
       }
       n = (*n).next;
     }
   }
-  gRelease();
+  gU();
   out
 }
 
@@ -244,7 +246,7 @@ fn orPrepare[R](rp: Reply) Option[Arc[imm, OrCell]] {
   if (w & groupBit) != 0u64 {
     match groupCopy(h, w ^ groupBit) {
       case let Some(g) {
-        let loopId = orLoopBit | (mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64);
+        let loopId = orLoopBit | (gTicket.addOrdered(1u64, MemOrder.Relaxed) + 1u64);
         let wake = OrWake[R](cell);
         g.watch(loopId, &wake);
         // A cancel since is told to the wake; one before is seen here. Which of

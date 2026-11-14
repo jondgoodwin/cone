@@ -37,6 +37,10 @@ pub enum ErrorKind {
   // Writing: a tensor whose bytes are not the number its type and dimensions
   // need, or a metadata value the format cannot hold
   BadInput;
+  // Writing: the buffer pool refused a block, because the file is larger than
+  // the pool allows (64 MiB by default). 'offset' is the bytes written before
+  // the step that starved (0 if the header or table did)
+  TooLarge;
 }
 
 // Why a file could not be read, or a model written. 'offset' is the position
@@ -483,9 +487,11 @@ pub struct Model is Default {
   pub dataStart: u64;
   pub meta: List[MetaEntry];
   pub tensors: List[Tensor];
+  // Tensor name to its place in 'tensors', built as the table is read
+  byName: Dict[String, usize];
 
   pub fn init(self: &new) {
-    *self = Model(3u32, 32u64, 0u64, List[MetaEntry](), List[Tensor]());
+    *self = Model(3u32, 32u64, 0u64, List[MetaEntry](), List[Tensor](), Dict[String, usize]());
   }
 
   // -------- metadata --------
@@ -556,13 +562,23 @@ pub struct Model is Default {
 
   // The tensor of a name, and its place in the table
   pub fn find(self: &, name: &str) Option[&Tensor] {
-    each t in &tensors {
-      if t.name.view() == name { return Some[&Tensor](t); }
+    match self.indexOf(name) {
+      case let Some(i) { tensors.get(i) }
+      case is None { None }
     }
-    None
   }
 
   pub fn indexOf(self: &, name: &str) Option[usize] {
+    match byName.get(name) {
+      case let Some(i) {
+        match tensors.get(*i) {
+          case let Some(t) { if t.name.view() == name { return Some[usize](*i); } }
+          case is None {}
+        }
+      }
+      case is None {}
+    }
+    // Not in the table the reader built, or the list has been edited since: scan
     var i = 0usize;
     while i < tensors.len() {
       if tensors[i].name.view() == name { return Some[usize](i); }

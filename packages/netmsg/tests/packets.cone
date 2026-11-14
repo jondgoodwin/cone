@@ -9,7 +9,10 @@ import testing use *;
 import collections use *;
 import time use Duration, Instant;
 import netmsg use *;
-import iobuf use IoBuf;
+import iobuf use IoBuf, Bytes;
+
+// A copy of some bytes, frozen: what the core takes to send
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
 
 fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
 
@@ -18,8 +21,8 @@ fn byteAt(b: &IoBuf, i: usize) u64 {u64.from(b.view()[i])}
 fn main() i32 {
   // A payload packet with one reliable message and one value
   var a = ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64));
-  a.sendReliable("first");
-  a.sendLatest(7u16, "xy");
+  a.sendReliable(fz("first"));
+  a.sendLatest(7u16, fz("xy"));
   var pk = Packets();
   var evs = List[CoreEvent]();
   a.poll(at(5i64), &mut pk, &mut evs);
@@ -39,7 +42,7 @@ fn main() i32 {
   expectUInt(byteAt(p, 33usize), 7u64, "and low byte");
   expectUInt(byteAt(p, 39usize), 121u64, "the value's last byte is the packet's");
   var b = ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64));
-  expect(b.receive(p.view(), at(6i64), &mut evs), "and the other end takes it");
+  expect(b.receive(&fz(p.view()), at(6i64), &mut evs), "and the other end takes it");
   expectUInt(u64.from(evs.len()), 2u64, "both things arrive");
 
   // A disconnect packet

@@ -150,14 +150,16 @@ primes[n]          // an element, by a constant or run-time index
 		<li><b>Its type must be <a href="conc-sharing.html#shareable">Shareable</a>.</b> Every thread may name a
 			global at once, and every program is taken to have threads, so a plain <span class="pre">var</span>
 			global is refused. A global may be <span class="pre">let</span> (given its value where it is declared,
-			or by <a href="#dyninit">the module's initializer</a>), <span class="pre">let</span> holding a lock or an
-			atomic value (the shared mutable form, <a href="conc-locks.html">Lock permissions</a>),
+			or by <a href="#dyninit">the module's initializer</a>) of a Shareable type, a <span class="pre">var</span>
+			of a lock or an atomic value (the shared mutable form, <a href="conc-locks.html">Lock permissions</a>),
 			<a href="#threadlocal"><span class="pre">@threadlocal</span></a> (one per thread, never shared), or
 			<a href="#workgroup"><span class="pre">@workgroup</span></a>. A value known only after the program has
 			started (a device made, a choice read from the command line) belongs to the object it describes, and is
 			handed down as state rather than kept in a global.<br/>
-			<i>Not yet checked: a plain <span class="pre">var</span> global is still accepted today. The check at
-			the declaration is being built.</i></li>
+			The compiler refuses any other global at its declaration (error 1626): a plain <span class="pre">var</span>
+			whatever it holds, or a <span class="pre">let</span> whose type is not Shareable. A module-level
+			<span class="pre">static</span> and a <span class="pre">static</span> in a type's body are globals and
+			are judged; a function's own <span class="pre">static</span> is not.</li>
 		<li><b>It must be given a valid value.</b> Usually the initial value is known when the program is
 			compiled: a literal, a named constant, or a <a href="#const">constant expression</a>. A
 			<span class="pre">let</span> global may instead be given any other value where it is declared, a call
@@ -457,7 +459,10 @@ fn main() i32 {
 		module can use, run the same two stitched sequences, and each runs its modules once: a program that calls
 		them itself, as programs did before the entry was built, finds nothing left to run at
 		<span class="pre">initAll()</span>, and runs the finalizers at its first <span class="pre">finalAll()</span>
-		(so it may finalize early) and not again when <span class="pre">main</span> returns.</p>
+		(so it may finalize early) and not again when <span class="pre">main</span> returns.
+		<span class="pre">init</span> runs once per process: an <span class="pre">initAll()</span> after
+		<span class="pre">finalAll()</span> has run the finalizers does not start the program again but panics,
+		saying so.</p>
 	<p><i>A program ends without running any finalizer when it panics, or calls the C library's
 		<span class="pre">exit</span> or <span class="pre">abort</span>: the entry's finalizers run only when
 		<span class="pre">main</span> returns. A library compiled on its own has no entry of its own, and keeps its

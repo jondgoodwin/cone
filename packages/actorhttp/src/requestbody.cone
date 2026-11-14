@@ -262,8 +262,12 @@ actor GatherSink is ChunkSink {
 
 // A request's record freed once nothing is left to use it: the exchange is over, no Exchange names it, and no
 // body is waiting on the handler's choice
-fn inFreeIfDone(s: &mut SrvRec, x: &ExRec, slot: u32) {
-  if x.over && !x.handle && !x.inAwait {freeEx(s, usize.from(slot));}
+fn inFreeIfDone(s: &mut SrvRec, slot: u32) {
+  let done = {
+    let x = s.exs.borrowAt(slot).unwrap();
+    x.over && !x.handle && !x.inAwait
+  };
+  if done {freeEx(s, usize.from(slot));}
 }
 
 // The handler chose (a sink: its 'read' made the ReaderSink the sink, its 'to' gave one). The sink is told
@@ -282,27 +286,37 @@ struct ReqChoiceJob {
     match sk {
       case let Some(snk) {
         // the request is gone, or the body was chosen already or let go: the sink's one end says so
-        if loc.ex as usize == 0usize || !(loc.ex as &ExRec).inAwait {
+        if !loc.ok || !sv.srvs.borrowAt(loc.k).unwrap().exs.borrowAt(slot).unwrap().inAwait {
           snk.end(Ending.Failed(AnyError.from(BodyError.cancelled())));
           return;
         }
-        let s = loc.srv as &mut SrvRec;
-        let x = loc.ex as &mut ExRec;
-        x.inAwait = false;
-        x.inSink = Some[ChunkSink](snk.clone());
+        let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
+        let cont = {
+          let x = s.exs.borrowMutAt(slot).unwrap();
+          x.inAwait = false;
+          x.inSink = Some[ChunkSink](snk.clone());
+          x.inContinue
+        };
         snk.attach(ReqSource(srv, slot, id));
-        if x.inContinue {
-          x.inContinue = false;
-          if !x.responded && !x.inEnded && !x.over {sendContinue(s, x);}
+        if cont {
+          let send = {
+            let x = s.exs.borrowMutAt(slot).unwrap();
+            x.inContinue = false;
+            !x.responded && !x.inEnded && !x.over
+          };
+          if send {sendContinue(s, usize.from(slot));}
         }
-        drainStaged(&mut x.inLend, &x.inSink);
-        var how = None[Ending];
-        how <-> x.inKept;
-        match how {
-          case let Some(h) {inFinish(x, h);}
-          else {}
+        {
+          let x = s.exs.borrowMutAt(slot).unwrap();
+          drainStaged(&mut x.inLend, &x.inSink);
+          var how = None[Ending];
+          how <-> x.inKept;
+          match how {
+            case let Some(h) {inFinish(x, h);}
+            else {}
+          }
         }
-        inFreeIfDone(s, x, slot);
+        inFreeIfDone(s, slot);
       }
       else {}
     }
@@ -317,21 +331,24 @@ struct ReqDropJob {
 
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let loc = locate(sv, srv, slot, id);
-    if loc.ex as usize == 0usize {return;}
-    let s = loc.srv as &mut SrvRec;
-    let x = loc.ex as &mut ExRec;
-    if x.inAwait {
-      inDiscarded(s, x);
+    if !loc.ok {return;}
+    let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
+    let sl = usize.from(slot);
+    if s.exs.borrowAt(slot).unwrap().inAwait {
+      inDiscarded(s, sl);
     } else {
       // the reader is gone with what it held: its buffers will not come back
-      var gone = None[ChunkSink];
-      gone <-> x.inSink;
-      x.inDiscard = true;
-      let n = lendDiscard(&mut x.inLend) + lendAbandon(&mut x.inLend);
-      inRelease(s, x, n);
+      let n = {
+        let x = s.exs.borrowMutAt(slot).unwrap();
+        var gone = None[ChunkSink];
+        gone <-> x.inSink;
+        x.inDiscard = true;
+        lendDiscard(&mut x.inLend) + lendAbandon(&mut x.inLend)
+      };
+      inRelease(s, sl, n);
     }
-    stopUpload(s, x);
-    inFreeIfDone(s, x, slot);
+    stopUpload(s, sl);
+    inFreeIfDone(s, slot);
   }
 }
 
@@ -346,11 +363,10 @@ struct ReqReleaseJob {
 
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let loc = locate(sv, srv, slot, id);
-    if loc.ex as usize == 0usize {return;}
-    let s = loc.srv as &mut SrvRec;
-    let x = loc.ex as &mut ExRec;
-    let m = lendReturn(&mut x.inLend, buf.base() as usize);
-    inRelease(s, x, m);
+    if !loc.ok {return;}
+    let m = lendReturn(&mut (sv.srvs.rawAt(loc.k) as &mut SrvRec).exs.borrowMutAt(slot).unwrap().inLend, buf.base() as usize);
+    inRelease((sv.srvs.rawAt(loc.k) as &mut SrvRec), usize.from(slot), m);
+    let x = (sv.srvs.rawAt(loc.k) as &mut SrvRec).exs.borrowMutAt(slot).unwrap();
     drainStaged(&mut x.inLend, &x.inSink);
   }
 }
@@ -367,28 +383,36 @@ struct ReqStopJob {
     var w = None[Ending];
     w <-> why;
     let loc = locate(sv, srv, slot, id);
-    if loc.ex as usize == 0usize {return;}
-    let s = loc.srv as &mut SrvRec;
-    let x = loc.ex as &mut ExRec;
-    if !(x.inSink is Some) {return;}
+    if !loc.ok {return;}
+    let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
+    let sl = usize.from(slot);
+    if !(s.exs.borrowAt(slot).unwrap().inSink is Some) {return;}
     match w {
       case let Some(ww) {
         let limit = isBodyLimit(&ww);
-        var held = None[ChunkSink];
-        held <-> x.inSink;
-        match held {
-          case let Some(sk) {sk.end(ww);}
-          else {}
-        }
-        x.inDiscard = true;
-        let n = lendDiscard(&mut x.inLend);
-        inRelease(s, x, n);
-        if x.over {return;}
-        if limit && !x.responded && !x.rejected {
-          x.rejected = true;
-          answerText(s, x, 413u16, "the request body is too large", true);
+        let n = {
+          let x = s.exs.borrowMutAt(slot).unwrap();
+          var held = None[ChunkSink];
+          held <-> x.inSink;
+          match held {
+            case let Some(sk) {sk.end(ww);}
+            else {}
+          }
+          x.inDiscard = true;
+          lendDiscard(&mut x.inLend)
+        };
+        inRelease(s, sl, n);
+        let reject = {
+          let x = s.exs.borrowMutAt(slot).unwrap();
+          if x.over {return;}
+          let r = limit && !x.responded && !x.rejected;
+          if r {x.rejected = true;}
+          r
+        };
+        if reject {
+          answerText(s, sl, 413u16, "the request body is too large", true);
         } else {
-          srvCancel(s, lp, x);
+          srvCancel(s, lp, sl);
         }
       }
       else {}

@@ -1,0 +1,51 @@
+// A user generic called with its arguments inferred takes the brands the written spelling does:
+// 'firstOf(&mut it)' and 'firstOf(l.iter())', where T is what the bound's cursor gives and I is the
+// cursor the value is, are one pattern of brands, as 'firstOf[&Tok['=a], ListIter[Tok['=a]]](..)' is.
+//
+// Hand-worked, in the order printed: first token of [7, 7] is 7 through a borrowed cursor, 7 through
+// one passed by value, and 7 again with the arguments written; Walk's first is 7; the empty list gives 0.
+
+mod lifetime_inv_brand_inferred;
+
+import stdio use *;
+import collections use *;
+
+struct Tok['=a] { pub v: i64; }
+
+struct Walk[T, I: Iterator[T]] {
+  pub it: I;
+  pub fn first(self: &mut) Option[T] { it.next() }
+}
+fn firstOf[T, I: Iterator[T]](it: &mut I) Option[T] { it.next() }
+fn firstVal[T, I: Iterator[T]](it: I) Option[T] { var j = it; j.next() }
+
+fn valueOf(m: Option[&Tok['=a]]) i64 {
+  match m { case let Some(k) { k.v } else { 0 } }
+}
+
+fn viaRef(l: &List[Tok['=a]]) i64 {
+  var it = l.iter();
+  valueOf(firstOf(&mut it))
+}
+fn viaValue(l: &List[Tok['=a]]) i64 { valueOf(firstVal(l.iter())) }
+fn viaWritten(l: &List[Tok['=a]]) i64 {
+  var it = l.iter();
+  valueOf(firstOf[&Tok['=a], ListIter[Tok['=a]]](&mut it))
+}
+fn viaStruct(l: &List[Tok['=a]]) i64 {
+  var w = Walk[&Tok['=a], ListIter[Tok['=a]]](l.iter());
+  valueOf(w.first())
+}
+
+fn run(a: Tok['=a]) {
+  var l = List[Tok['=a]]();
+  print <- viaRef(&l), "\n";
+  l.push(a);
+  l.push(a);
+  print <- viaRef(&l), "\n";
+  print <- viaValue(&l), "\n";
+  print <- viaWritten(&l), "\n";
+  print <- viaStruct(&l), "\n";
+}
+
+fn main() { run(Tok(7)); }

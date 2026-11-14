@@ -8,6 +8,8 @@ import path use Path;
 import fs;
 import safetensors use *;
 
+fn orZ(o: Option[usize], d: usize) usize { match o { case let Some(v) { return v; } case is None { return d; } } }
+
 fn le64(b: &mut List[u8], v: u64) {
   var i = 0usize;
   while i < 8usize { b.push(u8.from((v >> u64.from(8usize * i)) & 255u64)); i = i + 1usize; }
@@ -72,7 +74,7 @@ fn main() i32 {
   let header = "{\"__metadata__\":{\"model\":\"tiny\"},\"a\":{\"dtype\":\"F32\",\"shape\":[2,2],\"data_offsets\":[0,16]},\"b\":{\"dtype\":\"F16\",\"shape\":[3],\"data_offsets\":[16,22]},\"c\":{\"dtype\":\"I32\",\"shape\":[1],\"data_offsets\":[22,26]},\"d\":{\"dtype\":\"BF16\",\"shape\":[2],\"data_offsets\":[26,30]}}";
   let f = file(header, more.view());
   match parseSafetensors(f.view()) {
-    case let Ok(st) {
+    case var Ok(st) {
       expectUInt(u64.from(st.tensors.len()), 4u64, "four tensors");
       match st.floats(f.view(), "a") {
         case let Some(v) {
@@ -129,6 +131,11 @@ fn main() i32 {
         case is None { expect(false, "c is found"); }
       }
       expect(st.find("zz") is None, "an absent tensor is None");
+      // The list is public: an entry replaced in place (same length) is found by its new name only
+      st.tensors[2usize].name = String.from("cc");
+      expect(st.find("c") is None, "a replaced name is gone");
+      expectUInt(u64.from(orZ(st.indexOf("cc"), 99usize)), 2u64, "the new name is found");
+      expectUInt(u64.from(orZ(st.indexOf("d"), 99usize)), 3u64, "an untouched name still found");
       match st.meta("model") {
         case let Some(v) { expectStr(v, "tiny", "metadata"); }
         case is None { expect(false, "metadata is found"); }

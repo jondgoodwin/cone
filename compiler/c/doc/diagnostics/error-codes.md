@@ -314,6 +314,11 @@ reported by generation: one whose return is not a pointer or thin reference, or 
 one whose value is not the call that allocates. The remedy is to drop the marker or fix the
 return.
 
+`ErrorSoaNoColumn` (1624) and `ErrorSoaRowBorrow` (1625) are raised by type check on a row of a
+type declaring `SoaLayout` (`SoaList`): `ps[i].f` where `f` is no field of the row type, and a
+borrow of the whole row, or a change of it in place. See type-check-reasoning, "A row of a
+`SoaLayout` type".
+
 A module trait and a module's conformance to one take four codes, split where
 the remedy is: the author of the `mod` line, of the trait, or of the module's
 declarations. `ErrorModIs` is a `mod` line's `is` that does not name one module
@@ -1183,3 +1188,13 @@ brace in the text is written `{{` or `}}`. Pointed at the brace.
 
 `ErrorInterpExpr` is the text between an interpolation's braces that is not one expression: something
 is left over after the expression (`{a; b}`). Pointed at the first token the expression does not take.
+
+`ErrorGlobalShare` (1626) is a module global that several threads could reach at once, refused
+at its declaration once type check has laid out every type: a plain `var` whatever it holds,
+unless its type is an atomic value or a lock (or an array, tuple or struct holding one inline);
+or a `let` whose type is not Shareable (a counted owner whose count is not atomic, a traced
+reference, a reference that writes through a shared path). `@threadlocal` and `@workgroup`
+globals are not judged. A module-level `static` and a static in a struct body are globals and
+are judged; a function's static is not. The remedy is a `let` of a Shareable type, a `var` of
+an atomic or a lock, `@threadlocal`, or state handed down as a value (`globalShareCheckAll`,
+`ir/stmt/vardcl.c`, called from `doAnalysis` after `parallelHelperGlobalsCheckAll`).

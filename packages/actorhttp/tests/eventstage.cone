@@ -1,9 +1,9 @@
 // An event stream's parse stage (stream.cone, SseParseStage onto stages.ValueReader), as an actor
 // sees it through Client.events, against a loopback server of the package's own. Nets for the
 // stage's three promises:
-//   1. /flood: 20000 events of about 100 bytes, read slowly. After the reader takes one event and
+//   1. /flood: 100000 events of about 100 bytes, read slowly. After the reader takes one event and
 //      waits, the server's sends stall far short of the whole (the waiting events hold buffers, the
-//      fetch's window is not exceeded), then the reader takes the rest: all 20000 in order, one clean
+//      fetch's window is not exceeded), then the reader takes the rest: all 100000 in order, one clean
 //      end, repeated the same at every read after;
 //   2. /limit: 100 events, then one of 1.5 MiB (past the reader's limit of 1 MiB). The reader waits
 //      first, then takes every one of the 100, then a failure at Stage.Limit with the limit's text,
@@ -41,7 +41,10 @@ fn @initpure init() {
   sent = Atomic[u64].of(0u64);
 }
 
-const floodCount = 20000u64;
+// The body (about 11 MB) must be more than the kernel holds unread beside the fetch's window: on
+// Linux loopback a sender stalled only after about 3.9 MB (the send buffer's 4 MB ceiling), so
+// 20000 events (2.2 MB) were all accepted at once and the stall check failed
+const floodCount = 100000u64;
 
 fn waitFor(c: &Atomic[u64], n: u64) {
   let limit = Instant.now() + Duration.fromMillis(60000i64);
@@ -233,7 +236,7 @@ actor Reader {
         printStr(yes(at1 == at2 && at2 < floodCount));
         printStr("\n");
         let held = u64.from(iobuf.stats().lentBytes);
-        printStr("flood: buffers are held, far less than the body (about 2.5 MB): ");
+        printStr("flood: buffers are held, far less than the body (about 11 MB): ");
         printStr(yes(held > 0u64 && held < 1500000u64));
         printStr("\n");
         var n = 0u64;

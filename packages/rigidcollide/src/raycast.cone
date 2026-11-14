@@ -104,7 +104,7 @@ fn rayCylinder(o: Vec3, d: Vec3, r: f32, hy: f32, maxT: f32) RayHit {
 
 fn rayCapsule(o: Vec3, d: Vec3, r: f32, hy: f32, maxT: f32) RayHit {
   // inside if within r of the segment
-  let cy = clampf(o.y, -hy, hy);
+  let cy = o.y.clamp(-hy, hy);
   if (Vec3(o.x, o.y - cy, o.z)).lengthSquared() <= r * r { return hitAt(0., -d.normalize()); }
   var best = rayCylinderSide(o, d, r, hy, maxT);
   best = nearer(best, raySphere(o, d, Vec3(0., hy, 0.), r, maxT));
@@ -166,8 +166,8 @@ fn rayBoxEnter(o: Vec3, inv: Vec3, lo: Vec3, hi: Vec3, maxT: f32) f32 {
   while ax < 3usize {
     let t1 = (vecGet(lo, ax) - vecGet(o, ax)) * vecGet(inv, ax);
     let t2 = (vecGet(hi, ax) - vecGet(o, ax)) * vecGet(inv, ax);
-    tmin = maxf(tmin, minf(t1, t2));
-    tmax = minf(tmax, maxf(t1, t2));
+    tmin = tmin.max(t1.min(t2));
+    tmax = tmax.min(t1.max(t2));
     ax = ax + 1usize;
   }
   if tmin <= tmax { tmin } else { bigNumber }
@@ -220,13 +220,13 @@ fn rayHeightfield(p: &Prim, o: Vec3, d: Vec3, maxT: f32) RayHit {
   else {
     let ta = (0. - gx) / dx;
     let tb = (f32.from(cw) - gx) / dx;
-    t0 = maxf(t0, minf(ta, tb)); t1 = minf(t1, maxf(ta, tb));
+    t0 = t0.max(ta.min(tb)); t1 = t1.min(ta.max(tb));
   }
   if dz.abs() < 1.0e-12 { if gz < 0. || gz > f32.from(ch) { return best; } }
   else {
     let ta = (0. - gz) / dz;
     let tb = (f32.from(ch) - gz) / dz;
-    t0 = maxf(t0, minf(ta, tb)); t1 = minf(t1, maxf(ta, tb));
+    t0 = t0.max(ta.min(tb)); t1 = t1.min(ta.max(tb));
   }
   if t0 > t1 { return best; }
   let sx = gx + dx * (t0 + 1.0e-5);
@@ -255,7 +255,7 @@ fn rayHeightfield(p: &Prim, o: Vec3, d: Vec3, maxT: f32) RayHit {
       s = s + 1usize;
     }
     // stop once the next cell starts beyond the best hit
-    let tNext = minf(nextX, nextZ);
+    let tNext = nextX.min(nextZ);
     if best.hit && tNext > best.t { break; }
     if tNext > t1 { break; }
     if nextX < nextZ { nextX = nextX + deltaX; ci = ci + stepX; } else { nextZ = nextZ + deltaZ; cj = cj + stepZ; }

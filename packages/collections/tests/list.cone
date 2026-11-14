@@ -2,8 +2,9 @@
 // expected value is worked out by hand from the list's rules:
 // - a list starts with no block; pushing grows it to 4, then doubles it, so
 //   10 pushes leave room for 16, and 1000 pushes room for 1024;
-// - 'reserve' and 'withCapacity' give a block exactly big enough when that is
-//   more than double the old one, and never less than 4.
+// - 'reserve' gives a block exactly big enough when that is more than double
+//   the old one; growth from empty has a first block (4, but 8 for one-byte
+//   elements and 1 above 1 KiB); 'withCapacity(n)' gives exactly n.
 
 mod list;
 
@@ -100,9 +101,34 @@ fn main() i32 {
   expectUInt(u64.from(c.capacity()), 30, "one past 15 doubles");
   expectUInt(u64.from(*c[15usize]), 15, "the sixteenth");
 
-  // A small capacity asked for is at least 4
+  // A small capacity asked for is exactly that, as Rust's
   let tiny = List[i64].withCapacity(1usize);
-  expectUInt(u64.from(tiny.capacity()), 4, "never less than 4");
+  expectUInt(u64.from(tiny.capacity()), 1, "withCapacity(1) is 1");
+  expectUInt(u64.from(List[u8].withCapacity(3usize).capacity()), 3, "withCapacity(3) of bytes is 3");
+
+  // Growth from empty by push: 8 for one byte, 4 up to 1 KiB, 1 above
+  var firstBytes = List[u8]();
+  firstBytes.push(1u8);
+  expectUInt(u64.from(firstBytes.capacity()), 8, "a byte list starts at 8");
+  var n8 = 0usize;
+  while n8 < 8usize { firstBytes.push(2u8); n8 = n8 + 1usize; }
+  expectUInt(u64.from(firstBytes.capacity()), 16, "the ninth byte doubles it");
+  var wide = List[Array[u8, 1024]]();
+  wide.push(Array[u8, 1024]() <- fill 0u8);
+  expectUInt(u64.from(wide.capacity()), 4, "a 1 KiB element still starts at 4");
+  var huge = List[Array[u8, 1025]]();
+  huge.push(Array[u8, 1025]() <- fill 0u8);
+  expectUInt(u64.from(huge.capacity()), 1, "an element over 1 KiB starts at 1");
+
+  // A build of known length is exact: a clone of five bytes, and the part split off
+  var five = List[u8]();
+  var f5 = 0u8;
+  while f5 < 5u8 { five.push(f5); f5 = f5 + 1u8; }
+  expectUInt(u64.from(five.capacity()), 8, "five pushed bytes sit in the first block of 8");
+  let fiveCopy = five.clone();
+  expectUInt(u64.from(fiveCopy.capacity()), 5, "a clone of five bytes has capacity 5");
+  let tail = five.splitOff(2usize);
+  expectUInt(u64.from(tail.capacity()), 3, "a split-off of three bytes has capacity 3");
 
   // A list of strings: its values are moved in and read through a borrow
   var names = List[String]();

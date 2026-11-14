@@ -1,0 +1,140 @@
+// Bytes in and out: known byte strings, round-trips, leading and trailing zero bytes, zero.
+
+mod bytes;
+
+import testing use *;
+import collections use *;
+import bigint use BigUint, BigInt, BigUintError;
+
+fn big(t: &str) BigUint {
+  match BigUint.parse(t) {
+    case let Ok(n) { n }
+    case is Err { BigUint.zero() }
+  }
+}
+
+fn sgn(t: &str) BigInt {
+  match BigInt.parse(t) {
+    case let Ok(n) { n }
+    case is Err { BigInt.zero() }
+  }
+}
+
+fn text(n: &BigUint) String {
+  var s = String();
+  s <- *n;
+  s
+}
+
+fn stext(n: &BigInt) String {
+  var s = String();
+  s <- *n;
+  s
+}
+
+fn unwrap(r: Result[BigUint, BigUintError]) BigUint {
+  match r {
+    case let Ok(n) { n }
+    case is Err { BigUint.zero() }
+  }
+}
+
+fn sunwrap(r: Result[BigInt, BigUintError]) BigInt {
+  match r {
+    case let Ok(n) { n }
+    case is Err { BigInt.zero() }
+  }
+}
+
+fn small(x: &BigInt) i64 {
+  match x.toI64() {
+    case let Some(v) { v }
+    case is None { 999i64 }
+  }
+}
+
+fn eqs(a: &str, b: &str) bool {
+  let x: &Array[u8] = a;
+  let y: &Array[u8] = b;
+  if x.len() != y.len() { return false; }
+  var i = 0usize;
+  while i < x.len() { if x[i] != y[i] { return false; } i = i + 1usize; }
+  true
+}
+
+fn word(x: &BigUint) u64 {
+  match x.toU64() {
+    case let Some(v) { v }
+    case is None { 0u64 }
+  }
+}
+
+fn hex(b: &List[u8]) String {
+  var s = String();
+  var i = 0usize;
+  while i < b.len() {
+    let v = *b[i];
+    let hi = u64.from(v) >> 4u64;
+    let lo = u64.from(v) & 15u64;
+    s.appendByte(if hi < 10u64 { u8.from(48u64 + hi) } else { u8.from(87u64 + hi) });
+    s.appendByte(if lo < 10u64 { u8.from(48u64 + lo) } else { u8.from(87u64 + lo) });
+    i = i + 1usize;
+  }
+  s
+}
+
+fn fromHex(h: &str) List[u8] {
+  let src: &Array[u8] = h;
+  var out = List[u8]();
+  var i = 0usize;
+  while i + 1usize < src.len() {
+    let a = if src[i] <= '9' { u64.from(src[i]) - 48u64 } else { u64.from(src[i]) - 87u64 };
+    let b = if src[i + 1usize] <= '9' { u64.from(src[i + 1usize]) - 48u64 } else { u64.from(src[i + 1usize]) - 87u64 };
+    out.push(u8.from(a * 16u64 + b));
+    i = i + 2usize;
+  }
+  out
+}
+
+fn main() i32 {
+  let x = big("1787874288711000500832273730557678874949300758992891794956131657614369904891869608646070574");
+  expectStr(hex(&x.toBytesBE()).view(), "0e0afe961d73ca041dd01033df2c8796841d18c04322bcda28f910cb951ee06430e25510d12e", "toBytesBE");
+  expectStr(hex(&x.toBytesLE()).view(), "2ed11055e23064e01e95cb10f928dabc2243c0181d8496872cdf3310d01d04ca731d96fe0a0e", "toBytesLE");
+  expectStr(text(&BigUint.fromBytesBE(fromHex("0e0afe961d73ca041dd01033df2c8796841d18c04322bcda28f910cb951ee06430e25510d12e").view())).view(), "1787874288711000500832273730557678874949300758992891794956131657614369904891869608646070574", "fromBytesBE");
+  expectStr(text(&BigUint.fromBytesLE(fromHex("2ed11055e23064e01e95cb10f928dabc2243c0181d8496872cdf3310d01d04ca731d96fe0a0e").view())).view(), "1787874288711000500832273730557678874949300758992891794956131657614369904891869608646070574", "fromBytesLE");
+  expectStr(hex(&BigUint.zero().toBytesBE()).view(), "00", "zero is one zero byte");
+  expectStr(hex(&BigUint.zero().toBytesLE()).view(), "00", "zero is one zero byte, LE");
+  expectStr(hex(&BigUint.fromU64(256u64).toBytesBE()).view(), "0100", "256");
+  expectStr(hex(&BigUint.fromU64(256u64).toBytesLE()).view(), "0001", "256 LE");
+  expectStr(hex(&BigUint.fromU64(0xFFFFFFFFFFFFFFFFu64).toBytesBE()).view(), "ffffffffffffffff", "2^64-1");
+  expectStr(hex(&BigUint.one().shiftLeft(64usize).toBytesBE()).view(), "010000000000000000", "2^64");
+  expectStr(text(&BigUint.fromBytesBE(fromHex("0000000102").view())).view(), "258", "leading zero bytes are ignored");
+  expectStr(text(&BigUint.fromBytesLE(fromHex("0201000000").view())).view(), "258", "trailing zero bytes are ignored (LE)");
+  expectStr(text(&BigUint.fromBytesBE(fromHex("").view())).view(), "0", "no bytes is zero");
+  // round-trips at every length from 0 to 40 bytes, both orders
+  var bad = 0i32;
+  var seed = 99u64;
+  var n = 1usize;
+  while n <= 40usize {
+    var b = List[u8]();
+    var i = 0usize;
+    while i < n {
+      seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+      b.push(u8.from((seed >> 33u64) & 255u64));
+      i = i + 1usize;
+    }
+    // a non-zero top byte, so the byte string is the canonical form
+    b.set(0usize, 1u8 + *b[0usize] % 255u8);
+    let v = BigUint.fromBytesBE(b.view());
+    if !eqs(hex(&v.toBytesBE()).view(), hex(&b).view()) { bad = bad + 1i32; }
+    let w = BigUint.fromBytesLE(v.toBytesLE().view());
+    if w.cmp(&v) != 0i32 { bad = bad + 1i32; }
+    let s = BigInt.fromBytesBE(true, b.view());
+    if !s.isNegative() || !eqs(hex(&s.toBytesBE()).view(), hex(&b).view()) { bad = bad + 1i32; }
+    n = n + 1usize;
+  }
+  expectInt(i64.from(bad), 0i64, "round-trips, 40 lengths");
+  expect(!BigInt.fromBytesBE(true, fromHex("00").view()).isNegative(), "negative zero from bytes is zero");
+  expectStr(stext(&BigInt.fromBytesLE(true, fromHex("0201").view())).view(), "-258", "signed from bytes LE");
+  done()
+}

@@ -25,6 +25,8 @@
 // stream's every buffer when the stream closes.
 
 // The records a callback leaves
+// No stream: a cell that cellOf did not find
+const noStream = 0xFFFFFFFFu32;
 const recData = 1u32;
 const recOpen = 2u32;
 const recClose = 3u32;
@@ -383,8 +385,8 @@ pub struct Connection is Move {
   // the buffer is dropped
   pub fn write(self: &mut, stream: i64, buf: IoBuf) bool {
     let p = self.writable(stream);
-    if p as usize == 0usize {return false;}
-    let s = p as &mut Stream;
+    if p == noStream {return false;}
+    let s = self.st(p);
     if buf.len() > 0usize {
       s.queued = s.queued + u64.from(buf.len());
       s.out.push(Piece(buf, s.queued));
@@ -394,7 +396,7 @@ pub struct Connection is Move {
 
   // The same, the bytes copied
   pub fn writeBytes(self: &mut, stream: i64, bytes: &Array[u8]) bool {
-    if self.writable(stream) as usize == 0usize {return false;}
+    if self.writable(stream) == noStream {return false;}
     var at = 0usize;
     while at < bytes.len {
       let n = if bytes.len - at > writePiece {writePiece} else {bytes.len - at};
@@ -415,18 +417,18 @@ pub struct Connection is Move {
   // The stream's end, after what was written. False as for write
   pub fn finish(self: &mut, stream: i64) bool {
     let p = self.writable(stream);
-    if p as usize == 0usize {return false;}
-    (*p).fin = true;
+    if p == noStream {return false;}
+    self.st(p).fin = true;
     true
   }
 
   // Abandon a stream's sending half with an application code (RESET_STREAM):
   // what was written and not yet sent goes nowhere
   pub fn reset(self: &mut, stream: i64, code: u64) bool {
-    let p = self.streamAt(stream);
-    if closed || p as usize == 0usize || (*p).gone || (*p).writeShut || !self.canSend(stream) {return false;}
+    let p = self.cellOf(stream);
+    if closed || p == noStream || self.st(p).gone || self.st(p).writeShut || !self.canSend(stream) {return false;}
     ngtcp2_conn_shutdown_stream_write(conn, 0u32, stream, code);
-    (*p).writeShut = true;
+    self.st(p).writeShut = true;
     true
   }
 
@@ -434,10 +436,10 @@ pub struct Connection is Move {
   // (STOP_SENDING); what arrives on it after is dropped, its credit given
   // back by ngtcp2
   pub fn stopSending(self: &mut, stream: i64, code: u64) bool {
-    let p = self.streamAt(stream);
-    if closed || p as usize == 0usize || (*p).gone || !self.canReceive(stream) {return false;}
+    let p = self.cellOf(stream);
+    if closed || p == noStream || self.st(p).gone || !self.canReceive(stream) {return false;}
     if ngtcp2_conn_shutdown_stream_read(conn, 0u32, stream, code) != 0i32 {return false;}
-    (*p).readShut = true;
+    self.st(p).readShut = true;
     self.shrink(p);
     true
   }
@@ -446,13 +448,13 @@ pub struct Connection is Move {
   // send that many more on it (see the package's header, CREDIT). A stream
   // ngtcp2 has closed goes once its bytes are all released
   pub fn release(self: &mut, stream: i64, n: usize) {
-    let p = self.streamAt(stream);
-    if n == 0usize || p as usize == 0usize {return;}
+    let p = self.cellOf(stream);
+    if n == 0usize || p == noStream {return;}
     let k = u64.from(n);
-    (*p).unreleased = if k > (*p).unreleased {0u64} else {(*p).unreleased - k};
-    if (*p).gone {
+    self.st(p).unreleased = if k > self.st(p).unreleased {0u64} else {self.st(p).unreleased - k};
+    if self.st(p).gone {
       self.shrink(p);
-      if (*p).unreleased == 0u64 {self.retire(stream);}
+      if self.st(p).unreleased == 0u64 {self.retire(stream);}
       return;
     }
     // The bytes released come back as credit, and a stream still being sent
@@ -461,13 +463,13 @@ pub struct Connection is Move {
     // window with each window's worth it reads, one that has stopped keeps
     // what it holds (see the package's header, CREDIT)
     var give = k;
-    if (*p).readShut {
+    if self.st(p).readShut {
       self.shrink(p);
     } else {
-      var grow = if (*p).window < maxWindow {maxWindow - (*p).window} else {0u64};
+      var grow = if self.st(p).window < maxWindow {maxWindow - self.st(p).window} else {0u64};
       if grow > k {grow = k;}
       if grow > spare {grow = spare;}
-      (*p).window = (*p).window + grow;
+      self.st(p).window = self.st(p).window + grow;
       spare = spare - grow;
       give = k + grow;
     }
@@ -477,20 +479,20 @@ pub struct Connection is Move {
   // A stream's credit now: the bytes the peer may have sent on it and its
   // owner not released
   pub fn window(self: &, stream: i64) u64 {
-    let p = self.streamAt(stream);
-    if p as usize == 0usize {0u64} else {(*p).window}
+    let p = self.cellOf(stream);
+    if p == noStream {0u64} else {self.stRef(p).window}
   }
 
   // A stream's bytes delivered in Data events and not yet released
   pub fn unreleased(self: &, stream: i64) u64 {
-    let p = self.streamAt(stream);
-    if p as usize == 0usize {0u64} else {(*p).unreleased}
+    let p = self.cellOf(stream);
+    if p == noStream {0u64} else {self.stRef(p).unreleased}
   }
 
   // A stream's bytes written and not yet acknowledged by the peer
   pub fn queued(self: &, stream: i64) u64 {
-    let p = self.streamAt(stream);
-    if p as usize == 0usize {0u64} else {(*p).queued - (*p).acked}
+    let p = self.cellOf(stream);
+    if p == noStream {0u64} else {self.stRef(p).queued - self.stRef(p).acked}
   }
 
   // How many streams the connection holds: those not yet closed both ways,
@@ -500,7 +502,7 @@ pub struct Connection is Move {
   // Whether the connection still holds a stream's record: false once ngtcp2
   // has closed it both ways and its owner has released every byte, or for a
   // number it never had (the owner's sign that the stream is over)
-  pub fn hasStream(self: &, stream: i64) bool {self.streamAt(stream) as usize != 0usize}
+  pub fn hasStream(self: &, stream: i64) bool {self.cellOf(stream) != noStream}
 
   // ---------------------------------------------------------------------------
   // Routing (see the package's header, ROUTING)
@@ -756,7 +758,7 @@ pub struct Connection is Move {
       k = if k + 1usize < bound {k + 1usize} else {0usize};
       visited = visited + 1usize;
       if !streams.isLive(cell) {continue;}
-      let s = streams.at(cell) as &mut Stream;
+      let s = streams.borrowMutAt(cell).unwrap();
       var going = true;
       while going && s.hasUnsent() {
         let v = s.nextVec();
@@ -910,20 +912,26 @@ pub struct Connection is Move {
     err = Some(e);
   }
 
-  // A stream's record, or null
-  fn streamAt(self: &, stream: i64) *Stream {
+  // A stream's cell, or noStream if there is none (or it is not live)
+  fn cellOf(self: &, stream: i64) u32 {
     match byId.getCopy(&stream) {
-      case let Some(cell) {return streams.at(cell);}
+      case let Some(cell) {if streams.isLive(cell) {return cell;}}
       case is None[u32] {}
     }
-    null
+    noStream
   }
 
-  // A stream's record when it may be written to now, or null
-  fn writable(self: &, stream: i64) *Stream {
-    let p = self.streamAt(stream);
-    if closed || p as usize == 0usize || (*p).gone || !self.canSend(stream) || (*p).fin || (*p).writeShut {
-      return null;
+  // The stream in a cell that cellOf gave, for one use at a time: the borrow
+  // lasts as long as the statement that asks, and no pool is changed within it
+  fn st(self: &mut, cell: u32) &mut Stream {streams.borrowMutAt(cell).unwrap()}
+
+  fn stRef(self: &, cell: u32) &Stream {streams.borrowAt(cell).unwrap()}
+
+  // A stream's cell when it may be written to now, or noStream
+  fn writable(self: &, stream: i64) u32 {
+    let p = self.cellOf(stream);
+    if closed || p == noStream || self.stRef(p).gone || !self.canSend(stream) || self.stRef(p).fin || self.stRef(p).writeShut {
+      return noStream;
     }
     p
   }
@@ -931,11 +939,11 @@ pub struct Connection is Move {
   // A stream the peer can send no more on holds credit only for the bytes its
   // owner has not yet released (never under the floor): the rest of its
   // window returns to the budget
-  fn shrink(self: &mut, p: *Stream) {
-    let keep = if (*p).unreleased > floor {(*p).unreleased} else {floor};
-    if (*p).window > keep {
-      spare = spare + ((*p).window - keep);
-      (*p).window = keep;
+  fn shrink(self: &mut, p: u32) {
+    let keep = if self.st(p).unreleased > floor {self.st(p).unreleased} else {floor};
+    if self.st(p).window > keep {
+      spare = spare + (self.st(p).window - keep);
+      self.st(p).window = keep;
     }
   }
 
@@ -943,8 +951,8 @@ pub struct Connection is Move {
   // released its bytes. The peer may then open one more stream of its kind
   // (ngtcp2 raises the peer's limit only when told)
   fn retire(self: &mut, stream: i64) {
-    let sp = self.streamAt(stream);
-    if sp as usize != 0usize {self.shrink(sp);}
+    let sp = self.cellOf(stream);
+    if sp != noStream {self.shrink(sp);}
     match byId.getCopy(&stream) {
       case let Some(cell) {
         streams.removeAt(cell);
@@ -987,8 +995,8 @@ pub struct Connection is Move {
       let room = if spare > reserve {spare - reserve} else {0u64};
       if grant > room {grant = room;}
       if grant > 0u64 {
-        let p = self.streamAt(id);
-        (*p).window = (*p).window + grant;
+        let p = self.cellOf(id);
+        self.st(p).window = self.st(p).window + grant;
         spare = spare - grant;
         if !closed {ngtcp2_conn_extend_max_stream_offset(conn, id, grant);}
       }
@@ -1048,11 +1056,11 @@ pub struct Connection is Move {
       if r.kind == recData {
         let fin = (r.flags & streamDataFlagFin) != 0u32;
         delivered = delivered + u64.from(n);
-        let p = self.streamAt(r.stream);
-        if p as usize != 0usize {
-          (*p).unreleased = (*p).unreleased + u64.from(n);
+        let p = self.cellOf(r.stream);
+        if p != noStream {
+          self.st(p).unreleased = self.st(p).unreleased + u64.from(n);
           if fin {
-            (*p).readShut = true;
+            self.st(p).readShut = true;
             self.shrink(p);
           }
         }
@@ -1091,21 +1099,21 @@ pub struct Connection is Move {
           self.addStream(r.stream);
           events.push(Event.PeerStream(r.stream));
         } else if r.kind == recClose {
-          let p = self.streamAt(r.stream);
-          if p as usize != 0usize {
-            (*p).gone = true;
-            if (*p).unreleased == 0u64 {self.retire(r.stream);}
+          let p = self.cellOf(r.stream);
+          if p != noStream {
+            self.st(p).gone = true;
+            if self.st(p).unreleased == 0u64 {self.retire(r.stream);}
           }
         } else if r.kind == recReset {
-          let p = self.streamAt(r.stream);
-          if p as usize != 0usize {
-            (*p).readShut = true;
+          let p = self.cellOf(r.stream);
+          if p != noStream {
+            self.st(p).readShut = true;
             self.shrink(p);
           }
           events.push(Event.Reset(r.stream, r.b));
         } else if r.kind == recAcked {
-          let p = self.streamAt(r.stream);
-          if p as usize != 0usize {(p as &mut Stream).ackedTo(r.a + r.b);}
+          let p = self.cellOf(r.stream);
+          if p != noStream {self.st(p).ackedTo(r.a + r.b);}
         } else if r.kind == recHandshake {
           self.handshakeEnded();
         } else if r.kind == recMoreBidi {
@@ -1185,7 +1193,7 @@ fn made(conn: *u8, ossl: *u8, ssl: *u8, b: *u8, ps: *u8, server: bool, host: &st
   Connection(conn: conn, ossl: ossl, ssl: ssl, box: b, ps: ps, server: server, host: String.from(host),
     alpnName: cfg.alpn.clone(), kind: cfg.verify.kind, pins: pins, offline: cfg.offline,
     lane: cfg.verifyLane, maxUdp: cfg.maxUdpPayload, floor: streamFloor(cfg),
-    maxWindow: cfg.streamWindow, spare: creditSpare(cfg), reserve: creditSpare(cfg) / 2u64, streams: Streams.make(16u32),
+    maxWindow: cfg.streamWindow, spare: creditSpare(cfg), reserve: creditSpare(cfg) / 2u64, streams: Streams(16usize),
     byId: Dict[i64, u32](), cursor: 0usize, events: Deque[Event](), verifyStage: stageIdle,
     lastNow: now, closed: false, closing: None, err: None)
 }

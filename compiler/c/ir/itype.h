@@ -90,6 +90,11 @@ int itypeHoldsNoBorrow(INode *type);
 // in though its type carries none (Bug 51).
 int itypeIsArena(INode *type);
 
+// Can a place of this type hold a borrow stored into it: it is an arena, or its
+// type carries a borrow? Both the call-side filter (lifeCarry) and the check of
+// a signature's own stores (loanStoredApart) ask this, elided or named.
+int itypeMayHoldStoredBorrow(INode *type);
+
 // How many writable borrows deep can a store into a value of this type reach,
 // to store a borrow there, up to 'most'? A callee handed a '&mut H', 'H'
 // holding a '&mut &R', may store through both: 2. 0 when it holds no writable

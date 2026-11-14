@@ -1023,8 +1023,14 @@ static void genericInferFromBoundsDepth(Nodes *genparms, Nodes *where, FnCallNod
         if (nwritten < tparms->used && depth < 8)
             genericInferFromBoundsDepth(tparms, trait->genericinfo->where, traitcall, depth + 1);
         for (uint32_t j = 0; j < nwritten; ++j) {
-            if (nodesGet(traitcall->args, j))
-                genericInferType(inferredgencall, genparms, nodesGet(boundcall->args, j), nodesGet(traitcall->args, j));
+            if (nodesGet(traitcall->args, j)) {
+                // Read off the argument's own declaration, a type names that
+                // instance's brands, not the ones the argument's use holds
+                INode *found = nodesGet(traitcall->args, j);
+                if (isTypeNode(found))
+                    found = lifeBrandsToUse(found, sarg);
+                genericInferType(inferredgencall, genparms, nodesGet(boundcall->args, j), found);
+            }
         }
     }
 }

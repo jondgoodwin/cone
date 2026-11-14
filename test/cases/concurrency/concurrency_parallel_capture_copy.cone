@@ -1,0 +1,92 @@
+// What a 'parallel each' piece may copy of the variables it reads from outside.
+// A small captured variable of plain data (numbers, borrows, raw pointers, and
+// structs of them, a List's header) is copied into a local of the piece, so
+// that its fields are held in registers; anything else is read in place, where
+// it lives, as before. The copy is a bitwise read that is never finalized.
+//
+// - A captured List of a type with a finalizer, read by every pass: each item is
+//   finalized exactly once, after the loop and when the list's owner dies,
+//   never by the copy (a double drop would count more than 40).
+// - A captured struct holding an Atomic, and a captured Atomic, changed by every
+//   pass under contention: the passes see the one counter, not a copy (a copy
+//   would lose the sums).
+// - (A captured Arc[Mutex, T] cannot be changed in a body at all: the check
+//   refuses a lend for writing, so no copy could meet one; the Atomics stand
+//   for the shared, changing kind.)
+// - A captured number, a captured borrowed list and a captured small struct,
+//   read by every pass, give the sums worked out by hand.
+//
+// Main prints after finalAll(), which waits for quiescence.
+
+mod concurrency_parallel_capture_copy;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+struct Results {
+  pub finals: Atomic[u64];
+}
+
+let results: Results;
+
+fn @initpure init() {
+  results = Results(Atomic[u64].of(0u64));
+}
+
+struct Note {
+  pub id: u64;
+  fn final(self: &uni) {
+    results.finals.add(1u64);
+  }
+}
+
+struct Counter {
+  pub hits: Atomic[u64];
+  pub weight: u64;
+}
+
+struct Pair {
+  pub a: u64;
+  pub b: u64;
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+
+  {
+    var notes = List[Note]();
+    each i in 0usize ..< 40usize { notes.push(Note(u64.from(i) + 1u64)); }
+    let total = Atomic[u64].of(0u64);
+    parallel each i, x in notes.indexed() {
+      let nx = &notes[(i + 1usize) % 40usize];
+      total.add(x.id + nx.id);
+    }
+    printStr("note ids twice over = "); printUInt(total.load()); printStr("\n");   // 2 * 820 = 1640
+    printStr("finals before the list dies = "); printUInt(results.finals.load()); printStr("\n");
+  }
+  printStr("finals after = "); printUInt(results.finals.load()); printStr("\n");  // 40
+
+  let counter = Counter(Atomic[u64].of(0u64), 3u64);
+  let plain = Atomic[u64].of(0u64);
+  var data = List[u64]();
+  each i in 0usize ..< 5000usize { data.push(u64.from(i)); }
+  parallel each i, x in data.indexed() {
+    counter.hits.add(counter.weight);
+    plain.add(1u64);
+  }
+  printStr("struct holding an atomic = "); printUInt(counter.hits.load()); printStr("\n");  // 15000
+  printStr("atomic = "); printUInt(plain.load()); printStr("\n");                            // 5000
+
+  let step = 7u64;
+  let pair = Pair(5u64, 11u64);
+  let seen = Atomic[u64].of(0u64);
+  parallel each i, x in data.indexed() {
+    seen.add(*x * step + pair.a + pair.b + u64.from(data.len()));
+  }
+  // 7 * (0 + ... + 4999) + 5000 * (5 + 11 + 5000)
+  printStr("plain data = "); printUInt(seen.load()); printStr("\n");                          // 87,482,500 + 25,080,000
+
+  finalAll();
+}

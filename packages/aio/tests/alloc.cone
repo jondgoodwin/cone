@@ -41,7 +41,7 @@ var mallocs: Atomic[u64];
 fn @initpure init() {
   mallocs = Atomic[u64].of(0u64);
   wrong = Atomic[u64].of(0u64);
-  counted = Array[u64, 15]() <- fill 0u64;
+  counted = Array[Atomic[u64], 15]() <- fill Atomic[u64].of(0u64);
 }
 
 #if #os == .windows {
@@ -117,7 +117,7 @@ fn kindName(k: usize) &str {
 }
 
 // What each kind counted (the fewest round) and how many answers were wrong
-var counted: Array[u64, 15];
+var counted: Array[Atomic[u64], 15];
 let wrong: Atomic[u64];
 
 fn socketOf(r: Result[Socket, IoError]) Socket { r || Socket.none() }
@@ -275,7 +275,7 @@ actor Counter {
         if round > 0u32 && n < fewest {fewest = n;}
         round = round + 1u32;
       }
-      counted[k] = fewest;
+      counted[k].store(fewest);
       k = (k + 1usize) % kinds;
       left = left - 1usize;
     }
@@ -307,10 +307,10 @@ fn main() i32 {
   finalAll();
   _ = fs.removeFile(&Path.from("aioalloc.tmp"));
   expectUInt(wrong.load(), 0u64, "every operation answered Ok");
-  let base = counted[kBase];
+  let base = counted[kBase].load();
   var k = 0usize;
   while k < kinds {
-    let n = if k == kBase {base} else if counted[k] > base {counted[k] - base} else {0u64};
+    let n = if k == kBase {base} else if counted[k].load() > base {counted[k].load() - base} else {0u64};
     #if #defined("ALLOC_REPORT") {
       printStr(kindName(k));
       printStr(": ");

@@ -668,7 +668,7 @@ class Scenarios(unittest.TestCase):
 
             import stdio;
 
-            pub var count: i64 = 3i64;
+            pub var @threadlocal count: i64 = 3i64;
 
             pub fn hello(n: i64) {
               stdio.print <- "greet ";
@@ -2205,6 +2205,19 @@ class Testing(unittest.TestCase):
                          "test other ... ok", "example demo ... built"):
                 self.assertLess(out.index(what), quiet_line, f"--jobs {jobs}: {what}\n{out}")
             self.assertIn("one at a time", out[quiet_line:timing])
+
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no --only yet")
+    def test_only_tests_the_named_packages_of_a_folder(self):
+        folder = self.quiet_packages(self.root)
+        out = self.congo("test", "--only", "qtwo", cwd=folder).stdout
+        self.assertIn("Result qtwo", out)
+        self.assertNotIn("Result qone", out)
+        out = self.congo("test", "--only", "qone,qtwo", cwd=folder).stdout
+        self.assertIn("2 packages: 3 tests: 3 passed", out)
+        run = self.congo("test", "--only", "qone,nosuch,alsonot", cwd=folder, ok=False)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("nosuch, alsonot", run.stdout + run.stderr)
+        self.assertNotIn("Result qone", run.stdout)
 
     def test_quiet_names_a_test_that_exists(self):
         folder = self.quiet_packages(self.root)

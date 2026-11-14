@@ -434,6 +434,10 @@ void lifeBrandBreaks(INode *blk, Nodes *breaks);
 // alike, and its calls bind those names afresh (lifeBindBegin)
 void lifeCanonBrands(Nodes *args);
 
+// A type read off a struct instance's own declaration, given the brands the
+// use 'use' of it names (genericInferFromBounds)
+INode *lifeBrandsToUse(INode *type, INode *use);
+
 // Do two types carry the very same brands, name for name?
 int lifeBrandsEqual(INode *a, INode *b);
 

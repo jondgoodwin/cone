@@ -1,33 +1,35 @@
 // The frame package: the loop a world runs in. The loop's owner (here a native
 // runner over the window and sdl packages; later a platform layer, or a
 // browser's requestAnimationFrame) calls the world, and the world never owns a
-// 'while running' of its own. The boundary between them is a module trait,
-// World: a world is a module that says it conforms,
+// 'while running' of its own. The boundary between them is World[S], a struct
+// of the world's callbacks, and S, the state they share:
 //
-//   mod myworld is World;
-//   import frame use World, Config;
+//   import frame use World, Config, Host, Step;
 //
-//   mut angle f32 = 0.;                        // the world's state: module globals
-//   pub fn start(host &mut Host) bool { ... }  // make what it draws with
-//   pub fn event(host &mut Host, e &imm sdl.Event) { ... }
-//   pub fn simulate(host &mut Host, step &imm Step, scratch &mut Arena) { ... }
-//   pub fn draw(host &mut Host, alpha f32, scratch &mut Arena) { ... }
-//   pub fn quit(host &mut Host) i32 { 0; }
+//   struct State { pub angle: f32; }          // the world's state: its own type
+//   fn start(host: &mut Host) Option[State] { Some[State](State(0.)) }   // make it
+//   fn event(host: &mut Host, st: &uni State, e: &imm sdl.Event) { ... }
+//   fn simulate(host: &mut Host, st: &uni State, step: &imm Step, scratch: &mut Arena) { ... }
+//   fn draw(host: &mut Host, st: &uni State, alpha: f32, scratch: &mut Arena) { ... }
+//   fn quit(host: &mut Host, st: &uni State) i32 { 0 }
 //
-//   fn main(argc i32, argv **u8) i32 {
-//     run(Config.fromArgs(argc, argv));   // World's default run, copied in
+//   fn main(argc: i32, argv: **u8) i32 {
+//     run(Config.fromArgs(argc, argv), &worldOf(&start, &event, &simulate, &draw, &quit))
 //   }
 //
-// The program keeps its own 'main', which calls 'run': how a host plugs in is
-// not decided, so nothing here takes 'main' away. The compiler's entry runs
-// every module's 'init' before it and every final after it.
+// 'run[S]' takes S from what 'start' returns, so no type is named twice. The
+// program keeps its own 'main', which calls 'run': how a host plugs in is not
+// decided, so nothing here takes 'main' away. 'network', 'publish' and
+// 'present' do nothing unless the world sets those fields of its World.
 //
-// A world is one module, so its state is the module's globals: the ones a
-// literal can start in, and the ones 'start' makes, held in an Option the
-// module's 'init' sets to None. Such an
-// Option cannot be matched in place, since only a borrow of a local may be
-// narrowed, so a callback swaps it into a local, matches that, and puts it
-// back; examples/spin.cone does.
+// THE STATE belongs to 'run': 'start' builds it and returns it, 'run' holds it
+// in a local declared after the Host and lends it as '&uni S' to one callback
+// at a time, and it is finalized, in field order, when 'run' ends, before the
+// window dies. So a world that finalizes (GPU objects) needs no global, no
+// 'init', no hand-written teardown, and no thread-local. A callback matches a
+// field of it in place: 'match &uni st.gfx { case var &uni Some(g) { ... } }'.
+// A world with no state of its own returns 'Some[NoState](NoState())'.
+// Values known before 'start' (the command line's flags) stay module globals.
 //
 // ONE FRAME is a list of named phases in a declared order (PHASE_INPUT ...
 // PHASE_PRESENT), each timed:
@@ -106,96 +108,125 @@ pub fn phaseName(phase: u32) &str {
   "?"
 }
 
-// What a world module declares to be run by a loop's owner. The five without
-// a body are required; the rest have defaults a world may replace.
-pub mod trait World {
-  // Once, before the first frame: make what the world draws with (the window
-  // is host.window(), unless the run is headless). False ends the run, with
-  // exit code 1 and no 'quit'.
-  pub fn start(host: &mut Host) bool;
+// The state a world's callbacks share is its own type, 'S': whatever 'start'
+// builds and returns. 'run' keeps it in a local, declared after the Host, and
+// lends it to one callback at a time as '&uni S', so a callback may change it
+// and none can keep a borrow past its call. When 'run' ends the state is
+// finalized, in field order, before the window dies. A world with nothing of
+// its own to hold uses 'NoState'.
+pub struct NoState {}
+
+// What a world gives a loop's owner to run: its callbacks, each handed the Host
+// and the state. 'worldOf' takes the five every world needs and leaves the
+// other three doing nothing; a world that wants one sets the field.
+pub struct World[S] {
+  // Once, before the first frame: make the state, and what the world draws with
+  // (the window is host.window(), unless the run is headless). None ends the
+  // run, with exit code 1 and no 'quit'.
+  pub start: &fn(host: &mut Host) Option[S];
 
   // Each event waiting at the top of a frame, in order, before any step. The
   // runner has already handled what every window handles (quit, Escape
   // unless Config.escapeQuits is false, F11, a resize, which sets
   // host.window().resized). With escapeQuits false the Escape key arrives
   // here like any key, and the world stops the run, or not, with host.stop().
-  pub fn event(host: &mut Host, e: &imm sdl.Event);
+  pub event: &fn(host: &mut Host, st: &uni S, e: &imm sdl.Event);
 
   // One fixed step of 'step.dt' seconds: the world moves from its state at
   // 'step.index' to the next. Called 0..Config.maxCatchUp times a frame.
-  pub fn simulate(host: &mut Host, step: &imm Step, scratch: &mut Arena);
+  pub simulate: &fn(host: &mut Host, st: &uni S, step: &imm Step, scratch: &mut Arena);
 
   // The render phase: record the frame, the picture 'alpha' of the way from
   // the state before the last step to the state after it (0 <= alpha < 1).
-  // (Named 'draw', not 'render', which a world drawing with the render
-  // package already has as the package's name.)
-  pub fn draw(host: &mut Host, alpha: f32, scratch: &mut Arena);
+  pub draw: &fn(host: &mut Host, st: &uni S, alpha: f32, scratch: &mut Arena);
 
-  // Once, after the last frame: the run's exit code, which 'run' returns.
-  pub fn quit(host: &mut Host) i32;
+  // Once, after the last frame: the run's exit code, which 'run' returns. The
+  // state is finalized after it returns.
+  pub quit: &fn(host: &mut Host, st: &uni S) i32;
 
   // The server-communication slot, each frame after the steps: read
-  // 'net.inbound', add to 'net.outbound', never wait.
-  pub fn network(host: &mut Host, net: &mut NetQueues) {}
+  // 'net.inbound', add to 'net.outbound', never wait. Default: nothing.
+  pub network: &fn(host: &mut Host, st: &uni S, net: &mut NetQueues);
 
   // Each frame after network: copy what render reads out of what simulate
-  // wrote, so render never reads the simulation's own state.
-  pub fn publish(host: &mut Host) {}
+  // wrote, so render never reads the simulation's own state. Default: nothing.
+  pub publish: &fn(host: &mut Host, st: &uni S);
 
   // Each frame after render: show the frame, and wait until the next can be
-  // drawn. A world whose render presents leaves it out.
-  pub fn present(host: &mut Host) {}
+  // drawn. A world whose render presents leaves it out. Default: nothing.
+  pub present: &fn(host: &mut Host, st: &uni S);
 
-  // The loop, run by the program's 'main'. Its answer is quit's, or 1 if the
-  // host could not open or 'start' failed.
-  pub fn run(config: Config) i32 {
-    var host = Host.open(config);
-    if !host.isOpen() { return 1i32; }
-    if !start(&mut host) { return 1i32; }
-    var net = NetQueues();   // the network slot's queues, the loop's own
-    while host.beginFrame() {
-      var scratch = Arena.withRoom(host.scratchBytes());
+}
 
-      host.beginPhase(PHASE_INPUT);
-      var e = sdl.Event();
-      while host.nextEvent(&mut e) {
-        let ev = e;           // an event is handed on immutable (&imm, so it can be matched)
-        event(&mut host, &imm ev);
+// A World with the five callbacks every world needs, and nothing in the other
+// three slots. S comes from what 'start' returns.
+pub fn worldOf[S](start: &fn(host: &mut Host) Option[S],
+    event: &fn(host: &mut Host, st: &uni S, e: &imm sdl.Event),
+    simulate: &fn(host: &mut Host, st: &uni S, step: &imm Step, scratch: &mut Arena),
+    draw: &fn(host: &mut Host, st: &uni S, alpha: f32, scratch: &mut Arena),
+    quit: &fn(host: &mut Host, st: &uni S) i32) World[S] {
+  World[S](start, event, simulate, draw, quit, &noNetwork[S], &noPublish[S], &noPresent[S])
+}
+
+fn noNetwork[S](host: &mut Host, st: &uni S, net: &mut NetQueues) {}
+fn noPublish[S](host: &mut Host, st: &uni S) {}
+fn noPresent[S](host: &mut Host, st: &uni S) {}
+
+// The loop, run by the program's 'main'. Its answer is quit's, or 1 if the
+// host could not open or 'start' failed.
+pub fn run[S](config: Config, world: &World[S]) i32 {
+  var host = Host.open(config);
+  if !host.isOpen() { return 1i32; }
+  var started = world.start(&mut host);
+  match &uni started {
+    case var &uni Some(state) {
+      var net = NetQueues();   // the network slot's queues, the loop's own
+      while host.beginFrame() {
+        var scratch = Arena.withRoom(host.scratchBytes());
+
+        host.beginPhase(PHASE_INPUT);
+        var e = sdl.Event();
+        while host.nextEvent(&mut e) {
+          let ev = e;           // an event is handed on immutable (&imm, so it can be matched)
+          world.event(&mut host, &uni *state, &imm ev);
+        }
+        host.endPhase(PHASE_INPUT);
+
+        host.beginPhase(PHASE_SIMULATE);
+        while host.nextStep() {
+          let step = host.step();
+          world.simulate(&mut host, &uni *state, &imm step, &mut scratch);
+        }
+        host.endPhase(PHASE_SIMULATE);
+
+        host.beginPhase(PHASE_NETWORK);
+        net.ticks = host.netTicks();
+        world.network(&mut host, &uni *state, &mut net);
+        host.endNet(&mut net);
+        host.endPhase(PHASE_NETWORK);
+
+        host.beginPhase(PHASE_PUBLISH);
+        world.publish(&mut host, &uni *state);
+        host.endPhase(PHASE_PUBLISH);
+
+        host.beginPhase(PHASE_RENDER);
+        let alpha = host.alpha();
+        world.draw(&mut host, &uni *state, alpha, &mut scratch);
+        host.endPhase(PHASE_RENDER);
+
+        host.beginPhase(PHASE_PRESENT);
+        world.present(&mut host, &uni *state);
+        host.endPhase(PHASE_PRESENT);
+
+        host.endFrame();
       }
-      host.endPhase(PHASE_INPUT);
-
-      host.beginPhase(PHASE_SIMULATE);
-      while host.nextStep() {
-        let step = host.step();
-        simulate(&mut host, &imm step, &mut scratch);
-      }
-      host.endPhase(PHASE_SIMULATE);
-
-      host.beginPhase(PHASE_NETWORK);
-      net.ticks = host.netTicks();
-      network(&mut host, &mut net);
-      host.endNet(&mut net);
-      host.endPhase(PHASE_NETWORK);
-
-      host.beginPhase(PHASE_PUBLISH);
-      publish(&mut host);
-      host.endPhase(PHASE_PUBLISH);
-
-      host.beginPhase(PHASE_RENDER);
-      let alpha = host.alpha();
-      draw(&mut host, alpha, &mut scratch);
-      host.endPhase(PHASE_RENDER);
-
-      host.beginPhase(PHASE_PRESENT);
-      present(&mut host);
-      host.endPhase(PHASE_PRESENT);
-
-      host.endFrame();
+      let code = world.quit(&mut host, &uni *state);
+      host.finish();
+      return code;
     }
-    let code = quit(&mut host);
-    host.finish();
-    code
+    else { return 1i32; }
   }
+  1i32
 }
 
 // How a run goes. 'Config.defaults()' is 60 steps a second, one physics

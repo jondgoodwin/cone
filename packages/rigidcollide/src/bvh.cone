@@ -32,12 +32,12 @@ pub fn edgeIsActive(t: Tri, nb: Tri) bool {
 
 // Edge flags per triangle (three bits), by pairing each edge with the one
 // that runs the other way in another triangle. An edge with no partner is active.
-fn computeEdgeFlags(verts: &List[Vec3], idx: &List[u32]) List[u8] {
+fn computeEdgeFlags(verts: &List[Vec3], idx: &List[u32]) EdgeMasks {
   let nt = idx.len() / 3usize;
   var owner = Dict[u64, u32]();
-  var flags = List[u8]();
+  var flags = EdgeMasks();
   var t = 0usize;
-  while t < nt { flags.push(7u8); t = t + 1usize; }
+  while t < nt { flags.push(EdgeMask.all()); t = t + 1usize; }
   t = 0usize;
   while t < nt {
     var e = 0usize;
@@ -54,8 +54,10 @@ fn computeEdgeFlags(verts: &List[Vec3], idx: &List[u32]) List[u8] {
         let t1 = Tri(*verts[usize.from(*idx[3usize * t])], *verts[usize.from(*idx[3usize * t + 1usize])], *verts[usize.from(*idx[3usize * t + 2usize])]);
         let t2 = Tri(*verts[usize.from(*idx[3usize * ot])], *verts[usize.from(*idx[3usize * ot + 1usize])], *verts[usize.from(*idx[3usize * ot + 2usize])]);
         if !edgeIsActive(t1, t2) {
-          flags.set(t, *flags[t] & (7u8 ^ u8.from(1usize << e)));
-          flags.set(ot, *flags[ot] & (7u8 ^ u8.from(1usize << oe)));
+          let ft = *flags[t];
+          flags.set(t, ft.without(e));
+          let fo = *flags[ot];
+          flags.set(ot, fo.without(oe));
         }
       } else {
         owner.insert(fwd, u32.from(t * 4usize + e));
@@ -210,7 +212,7 @@ fn boxesOverlap(lo: Vec3, hi: Vec3, b: Aabb3) bool {
 
 // The mesh triangles (their original numbers and corners, in the mesh's own
 // space) whose boxes meet 'lb'
-pub fn meshTrianglesIn(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut List[Tri], flags: &mut List[u8]) {
+pub fn meshTrianglesIn(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut List[Tri], flags: &mut EdgeMasks) {
   if p.bvh.len() == 0usize { return; }
   var stack = List[usize]();
   stack.push(0usize);
@@ -281,26 +283,26 @@ pub fn heightCellTriangle(p: &Prim, i: usize, j: usize, second: bool) Tri {
 }
 
 // Active edges of a cell triangle, found against the triangle across each edge
-fn heightEdgeFlags(p: &Prim, i: usize, j: usize, second: bool) u8 {
+fn heightEdgeFlags(p: &Prim, i: usize, j: usize, second: bool) EdgeMask {
   let cw = usize.from(p.cols - 1u32);
   let ch = usize.from(p.rows - 1u32);
   let t = heightCellTriangle(p, i, j, second);
-  var f = 7u8;
+  var f = EdgeMask.all();
   if !second {
     // e0 v00-v01: the cell to the west's second triangle; e1: the diagonal; e2 v10-v00: the cell to the north's second
-    if i > 0usize && !edgeIsActive(t, heightCellTriangle(p, i - 1usize, j, true)) { f = f & 6u8; }
-    if !edgeIsActive(t, heightCellTriangle(p, i, j, true)) { f = f & 5u8; }
-    if j > 0usize && !edgeIsActive(t, heightCellTriangle(p, i, j - 1usize, true)) { f = f & 3u8; }
+    if i > 0usize && !edgeIsActive(t, heightCellTriangle(p, i - 1usize, j, true)) { f = f.without(0usize); }
+    if !edgeIsActive(t, heightCellTriangle(p, i, j, true)) { f = f.without(1usize); }
+    if j > 0usize && !edgeIsActive(t, heightCellTriangle(p, i, j - 1usize, true)) { f = f.without(2usize); }
   } else {
     // e0 v10-v01: the diagonal; e1 v01-v11: the cell to the south's first; e2 v11-v10: the cell to the east's first
-    if !edgeIsActive(t, heightCellTriangle(p, i, j, false)) { f = f & 6u8; }
-    if j + 1usize < ch && !edgeIsActive(t, heightCellTriangle(p, i, j + 1usize, false)) { f = f & 5u8; }
-    if i + 1usize < cw && !edgeIsActive(t, heightCellTriangle(p, i + 1usize, j, false)) { f = f & 3u8; }
+    if !edgeIsActive(t, heightCellTriangle(p, i, j, false)) { f = f.without(0usize); }
+    if j + 1usize < ch && !edgeIsActive(t, heightCellTriangle(p, i, j + 1usize, false)) { f = f.without(1usize); }
+    if i + 1usize < cw && !edgeIsActive(t, heightCellTriangle(p, i + 1usize, j, false)) { f = f.without(2usize); }
   }
   f
 }
 
-pub fn heightTrianglesIn(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut List[Tri], flags: &mut List[u8]) {
+pub fn heightTrianglesIn(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut List[Tri], flags: &mut EdgeMasks) {
   if p.cols < 2u32 || p.rows < 2u32 { return; }
   let fx0 = (lb.min.x - p.origin.x) / p.spacing.x;
   let fx1 = (lb.max.x - p.origin.x) / p.spacing.x;
@@ -309,10 +311,10 @@ pub fn heightTrianglesIn(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut Li
   let cx = f32.from(p.cols - 1u32);
   let cz = f32.from(p.rows - 1u32);
   if fx1 < 0. || fz1 < 0. || fx0 > cx || fz0 > cz { return; }
-  let i0 = usize.from(u32.from(maxf(0., libc.floorf(fx0))));
-  let i1 = usize.from(u32.from(minf(cx - 1., libc.floorf(fx1))));
-  let j0 = usize.from(u32.from(maxf(0., libc.floorf(fz0))));
-  let j1 = usize.from(u32.from(minf(cz - 1., libc.floorf(fz1))));
+  let i0 = usize.from(u32.from(libc.floorf(fx0).max(0.)));
+  let i1 = usize.from(u32.from((cx - 1.).min(libc.floorf(fx1))));
+  let j0 = usize.from(u32.from(libc.floorf(fz0).max(0.)));
+  let j1 = usize.from(u32.from((cz - 1.).min(libc.floorf(fz1))));
   var j = j0;
   while j <= j1 {
     var i = i0;
@@ -332,7 +334,7 @@ pub fn heightTrianglesIn(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut Li
 }
 
 // The mesh or heightfield triangles meeting a box (in the shape's own space)
-pub fn concaveTriangles(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut List[Tri], flags: &mut List[u8]) {
+pub fn concaveTriangles(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut List[Tri], flags: &mut EdgeMasks) {
   if p.kind == KMesh { meshTrianglesIn(p, lb, ids, tris, flags); } else { heightTrianglesIn(p, lb, ids, tris, flags); }
 }
 

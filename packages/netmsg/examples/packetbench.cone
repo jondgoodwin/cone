@@ -12,7 +12,11 @@ mod packetbench;
 import stdio use *;
 import collections use *;
 import time use *;
+import iobuf use IoBuf, Bytes;
 import netmsg use *;
+
+// A copy of some bytes, frozen: what the core takes to send
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
 
 fn body(n: usize, seed: u8) List[u8] {
   var b = List[u8].withCapacity(n);
@@ -46,12 +50,12 @@ fn main() i32 {
       now = now + Duration.fromMillis(100i64);
       var k = 0usize;
       while k < 3usize {
-        _ = a.sendReliable(rel.view());
+        _ = a.sendReliable(fz(rel.view()));
         k = k + 1usize;
       }
       k = 0usize;
       while k < 4usize {
-        _ = a.sendLatest(u16.from(k), lat.view());
+        _ = a.sendLatest(u16.from(k), fz(lat.view()));
         k = k + 1usize;
       }
       var out = Packets();
@@ -59,8 +63,9 @@ fn main() i32 {
       a.poll(now, &mut out, &mut evA);
       buildNs = buildNs + i64.from(s1.elapsed().nanos());
       each p in out.drain() {
+        let d = p.freeze();
         let s2 = Instant.now();
-        let ok = b.receive(p.view(), now, &mut evB);
+        let ok = b.receive(&d, now, &mut evB);
         parseNs = parseNs + i64.from(s2.elapsed().nanos());
         if !ok { printStr("WRONG: packet refused\n"); return 1i32; }
         packets = packets + 1i64;
@@ -70,7 +75,8 @@ fn main() i32 {
       var back = Packets();
       b.poll(now, &mut back, &mut evB);
       each p in back.drain() {
-        _ = a.receive(p.view(), now, &mut evA);
+        let d = p.freeze();
+        _ = a.receive(&d, now, &mut evA);
       }
       evA.clear();
       evB.clear();

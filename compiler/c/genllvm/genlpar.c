@@ -85,6 +85,8 @@ static void genlParCount(GenState *gen, BlockNode *blk, VarDclNode *first, VarDc
     LLVMBuildStore(gen->builder, n, hi->llvmvar);
 }
 
+static void genlParInvariant(GenState *gen, GenParBody *pb, uint32_t index, VarDclNode *var, LLVMValueRef loaded);
+
 void genlParCapture(GenState *gen, VarDclNode *var) {
     GenParBody *pb = gen->parbody;
     LLVMValueRef home = var->llvmvar;
@@ -116,8 +118,108 @@ void genlParCapture(GenState *gen, VarDclNode *var) {
     LLVMValueRef at = LLVMConstInt(LLVMInt32TypeInContext(context), index, 0);
     LLVMValueRef slot = LLVMBuildInBoundsGEP2(gen->builder, ptr, pb->record, &at, 1, "capslot");
     var->llvmvar = LLVMBuildLoad2(gen->builder, ptr, slot, &var->namesym->namestr);
+    genlParInvariant(gen, pb, index, var, var->llvmvar);
     LLVMPositionBuilderAtEnd(gen->builder, current);
     LLVMSetCurrentDebugLocation2(gen->builder, debugloc);
+}
+
+// What the piece reads of the variables it found outside is fixed for as long as
+// it runs: nothing writes them (pareach.c checks it), the passes only read them
+// and the caller waits. But the piece's own stores (into the items it changes) may,
+// as far as LLVM can tell, land in those variables, so it loads their fields again
+// on every pass: the source's position and length, a collection's pointer and
+// count. So the piece copies each small captured variable (not what a pointer in
+// it leads to) into a local of its own at its entry, which LLVM keeps in registers,
+// and the loop reads the copy. (llvm.invariant.start was tried first: the
+// optimiser did not use it.)
+//
+// The copy is sound only for PLAIN DATA, so it is made by an allow-list
+// (genlParPlain): numbers, enums without data, borrowed references and raw pointers
+// (the pointer value, not what it points to), and tuples, arrays and structs made
+// only of those, such as a List's header. Anything else is read in place, as
+// before: an atomic, a lock or Condvar (they change while the passes run), an
+// owning reference (Uni, Rc, a box), a reference whose permission is a lock, a
+// virtual reference or actor handle, an arena, a type parameter. One variable
+// of plain type is also left: a builder's bag (a usize the lowering writes from
+// the passes through '&mut'); pareach.c refuses a body's write to any other
+// outside variable, so no other plain variable is written. The copy is a bitwise read into a local that is
+// never finalized or dropped; the original is released by its owner as always.
+
+// Is a value of this type plain data all the way down, to the depth allowed?
+static int genlParPlain(INode *type, int most) {
+    if (type == NULL || most <= 0)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? genlParPlain(itypeGetTypeDcl(type), most) : 0;
+    case AliasDclTag:
+        return genlParPlain(((AliasDclNode *)type)->target, most);
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case EnumTag:
+        return 1;
+    case RefTag:
+    case ArrayRefTag: {
+        // A borrow's pointer (and length) only
+        RefNode *ref = (RefNode *)type;
+        return !regionIsRegionRef(ref->region) && !permIsLock(ref->perm);
+    }
+    case PtrTag:
+        return 1;
+    case ArrayTag:
+        return genlParPlain(arrayElemType(type), most - 1);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (!genlParPlain(*nodesp, most - 1))
+                return 0;
+        }
+        return 1;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)type;
+        if (itypeHoldsAtomic(type) || structDeclaresTrait(strnode, atomicValueTrait)
+                || structDeclaresTrait(strnode, lockPermTrait) || strnode->lends == LendsNoLoanMut)
+            return 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (!genlParPlain(((IExpNode *)*nodesp)->vtype, most - 1))
+                return 0;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (!genlParPlain(*nodesp, most - 1))
+                    return 0;
+            }
+        }
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+static void genlParInvariant(GenState *gen, GenParBody *pb, uint32_t index, VarDclNode *var, LLVMValueRef loaded) {
+    LLVMValueRef home = pb->caps[index].home;
+    INode *vtype = var->vtype;
+    // The only outside variable written in a body is the lowering's own bag,
+    // because pareach.c refuses every other write. The bag is plain data (a
+    // PieceBag(usize)) that the passes write through '&mut', so it is named here.
+    // A future lowering that writes another outside variable must be added here.
+    if (!genlParPlain(vtype, 8) || var->namesym == parBagName)
+        return;
+    LLVMTypeRef type = LLVMIsAAllocaInst(home) ? LLVMGetAllocatedType(home) : genlType(gen, vtype);
+    unsigned long long size = LLVMABISizeOfType(gen->datalayout, type);
+    if (size == 0 || size > 128)
+        return;
+    // (the builder is before the allocas' point, in the piece's entry)
+    LLVMValueRef local = LLVMBuildAlloca(gen->builder, type, &var->namesym->namestr);
+    LLVMValueRef value = LLVMBuildLoad2(gen->builder, type, loaded, "capcopy");
+    LLVMBuildStore(gen->builder, value, local);
+    var->llvmvar = local;
 }
 
 INode *genlParallelRun(GenState *gen, BlockNode *blk, INode *kdcl) {

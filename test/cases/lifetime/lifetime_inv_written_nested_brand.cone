@@ -1,0 +1,73 @@
+// A generic's written type arguments may hold a nested instance whose own arguments carry a brand:
+// the brand written in the nested instance is the caller's brand, numbered once with the others.
+// Before, the nested instance's written arguments were dropped and its own '=1 was numbered
+// apart from the caller's '=a, so `Walk[&Tok['=a], ListIter[Tok['=a]]]` was refused 1240 and
+// `P[ListIter[Tok['=a]], ListIter[Tok['=b]]]` was taken as one brand twice.
+//
+// Hand-worked, in the order printed: Walk over [5, 5] yields the first token, 5; the swapped
+// order does the same, 5; core's IterTake written out over [7, 7] takes 7 first; the apart pair
+// holds one token from each list, 2 + 3 = 5.
+
+mod lifetime_inv_written_nested_brand;
+
+import stdio use *;
+import collections use *;
+
+struct Tok['=a] { pub v: i64; }
+
+struct Walk[T, I: Iterator[T]] is Iterator[T] {
+  pub it: I;
+  pub fn next(self: &mut) Option[T] { it.next() }
+}
+
+// The arguments in the other order
+struct Swap[I: Iterator[T], T] {
+  pub s: I;
+  pub fn one(self: &mut) Option[T] { s.next() }
+}
+
+struct P[A, B] { pub a: A; pub b: B; }
+
+fn walkFirst(t: Tok['=a]) i64 {
+  var l = List[Tok['=a]]();
+  l.push(t);
+  l.push(t);
+  var w = Walk[&Tok['=a], ListIter[Tok['=a]]](l.iter());
+  match w.next() { case let Some(k) { k.v } else { 0 } }
+}
+
+fn swapFirst(t: Tok['=a]) i64 {
+  var l = List[Tok['=a]]();
+  l.push(t);
+  l.push(t);
+  var w = Swap[ListIter[Tok['=a]], &Tok['=a]](l.iter());
+  match w.one() { case let Some(k) { k.v } else { 0 } }
+}
+
+fn takeFirst(t: Tok['=a]) i64 {
+  var l = List[Tok['=a]]();
+  l.push(t);
+  l.push(t);
+  var w = IterTake[&Tok['=a], ListIter[Tok['=a]]](l.iter(), 2usize);
+  match w.next() { case let Some(k) { k.v } else { 0 } }
+}
+
+// Two lists, two brands: the pair's arguments are apart
+fn apart(x: Tok['=a], y: Tok['=b]) i64 {
+  var l = List[Tok['=a]]();
+  l.push(x);
+  var m = List[Tok['=b]]();
+  m.push(y);
+  var p = P[ListIter[Tok['=a]], ListIter[Tok['=b]]](l.iter(), m.iter());
+  var s = 0i64;
+  match p.a.next() { case let Some(k) { s += k.v; } else { } }
+  match p.b.next() { case let Some(k) { s += k.v; } else { } }
+  s
+}
+
+fn main() {
+  print <- walkFirst(Tok(5)), "\n";
+  print <- swapFirst(Tok(5)), "\n";
+  print <- takeFirst(Tok(7)), "\n";
+  print <- apart(Tok(2), Tok(3)), "\n";
+}

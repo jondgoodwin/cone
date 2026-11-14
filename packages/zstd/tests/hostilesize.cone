@@ -1,0 +1,58 @@
+// A frame header may claim any content size. The one-call decompress reserves the claimed size only up to
+// 32768 times the input left (a 4-byte RLE block is 128 KiB), plus one block's maximum and 16, so a header
+// claiming 512 MiB over 100 bytes is refused at the end (the content does not match) with a small allocation.
+// Also: a frame whose size is right (a large claim kept: one reserve), and a frame with no content size.
+
+mod hostilesize;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+
+// A frame: a 1 KiB window, one or more raw blocks totalling 'content' bytes; 'claim' 0 means no content size
+fn frame(content: usize, claim: u64) List[u8] {
+  var f = List[u8]();
+  f.push(0x28u8); f.push(0xB5u8); f.push(0x2Fu8); f.push(0xFDu8);
+  if claim > 0u64 {
+    f.push(0xC0u8);                 // an 8-byte content size
+    f.push(0x00u8);                 // window 1 KiB
+    var k = 0u64;
+    while k < 8u64 { f.push(u8.from((claim >> (8u64 * k)) & 255u64)); k += 1u64; }
+  } else {
+    f.push(0x00u8);
+    f.push(0x00u8);
+  }
+  var p = 0usize;
+  while p < content {
+    let n = if content - p < 1000usize {content - p} else {1000usize};
+    let last = if p + n == content {1usize} else {0usize};
+    let h = last | (n << 3usize);
+    f.push(u8.from(h & 255usize)); f.push(u8.from((h >> 8usize) & 255usize)); f.push(u8.from(h >> 16usize));
+    var k = 0usize;
+    while k < n { f.push(u8.from((p + k) % 251usize)); k += 1usize; }
+    p += n;
+  }
+  f
+}
+
+fn main() i32 {
+  // Claims 512 MiB, holds 3000 bytes: refused, not allocated
+  let liar = frame(3000usize, 536870912u64);
+  match decompress(liar.view(), 0usize) {
+    case let Ok(out) { expect(false, "a frame holding less than its header claims is refused"); }
+    case let Err(e) { expect(true, "refused"); }
+  }
+  // Claims what it holds
+  let honest = frame(3000usize, 3000u64);
+  match decompress(honest.view(), 0usize) {
+    case let Ok(out) { expectInt(i64.from(out.len()), 3000i64, "an honest size"); expectInt(i64.from(out[2999usize]), i64.from(2999usize % 251usize), "its last byte"); }
+    case let Err(e) { expect(false, "an honest frame"); }
+  }
+  // No content size
+  let blind = frame(3000usize, 0u64);
+  match decompress(blind.view(), 0usize) {
+    case let Ok(out) { expectInt(i64.from(out.len()), 3000i64, "no content size"); }
+    case let Err(e) { expect(false, "a frame with no content size"); }
+  }
+  done()
+}

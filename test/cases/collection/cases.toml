@@ -408,7 +408,7 @@ diagnostics = 12
 category = "reject"
 description = "An element, a view or a struct's borrow held while another reference to the same container pushes, clears, pops or truncates it, replaces an element that owns the bytes viewed (a String), or takes one out, is handed to a call whose body reshapes it (directly, through what it calls, through a struct holding the reference, or through a global), to a function pointer or a function defined elsewhere, a view held by a result that may hold it while another String grows, and an element or view handed to the very call beside the reference that changes it"
 tags = ["flow"]
-diagnostics = 20
+diagnostics = 21
 
 # A struct that wraps a container is shape-changing too, though it declares
 # nothing: the compiler finds it from its methods (a pointer written, a borrow
@@ -428,7 +428,7 @@ diagnostics = 9
 category = "reject"
 description = "A closure that pushes to the list a borrow is into, one that pushes to a '&mut' list it borrows, a struct whose method pushes to a parameter's list or to one it holds a '&mut' of or owns, a plain function that pushes named with '&', one reached through a function reference variable, and one that clears a global list, each passed as '&<... + ShapeKeeping', refused at the pass naming the push; the same borrow across an unmarked '&<fn' and '&<mut Trait' call is still refused (1339); a type declaring ShapeKeeping"
 tags = ["flow", "typecheck"]
-diagnostics = 11
+diagnostics = 12
 
 [scenario.collection_typecheck_shapemark]
 category = "reject"
@@ -587,7 +587,7 @@ diagnostics = 5
 category = "reject"
 description = "The same view of an element of an '&imm' source's list while a 'mut' global holds Items: refused, since a method with a body of its own could return a borrow into the global; and a method of the '&imm' source that returns one"
 tags = ["flow"]
-diagnostics = 3
+diagnostics = 4
 
 # A List held as an element of an array is followed as one held by a local or a field is: an
 # array's elements are not told apart by index, so a change to any of them is a change to the
@@ -660,7 +660,7 @@ tags = ["flow", "genllvm", "runtime"]
 category = "reject"
 description = "A view of a String, or of an element of a List, held in a 'var' global across a call that may reshape it: handed to a function that writes the global by its name, held in a name across such a call, a closure in an 'imm' owner, a '&<fn', and a view passed on by a helper that calls a closure"
 tags = ["flow"]
-diagnostics = 5
+diagnostics = 6
 
 # A function handed a reference cannot tell it is a 'var' global, so where one reaches the type
 # the view reached through the reference is asked of the same calls
@@ -668,7 +668,7 @@ diagnostics = 5
 category = "reject"
 description = "A view of a String, or of an element of a List, reached through a '&mut' parameter, held across a call that may reshape it in a program with a 'var' global that reaches the type: handed on beside a closure in an 'imm' owner, beside a '&<fn', through a '&<fn' whose body is not visible, and held in a name across such a call"
 tags = ["flow"]
-diagnostics = 4
+diagnostics = 5
 
 # A call through a function value, or an extern handed anything that reaches something callable, runs
 # code the compiler cannot follow: refused whether or not the code writes the global (a quiet callback,
@@ -677,7 +677,7 @@ diagnostics = 4
 category = "reject"
 description = "A view of a 'var' global held across a call through a function value (a parameter, a struct's field, a 'var' global, a local), across an extern handed a callback that writes the global, a quiet callback, a struct holding a '&fn', a '&<mut fn' or a Uni[fn], and across String.from, which allocates through a '&fn'"
 tags = ["flow"]
-diagnostics = 10
+diagnostics = 13
 
 [scenario.collection_reshape_global_success]
 category = "run"
@@ -1027,3 +1027,31 @@ category = "reject"
 description = "Error 1339: a sibling field handed as an argument is still refused when held through an 'Rc[mut, ..]' or a '&mut', for the very field the view is into, the field of another reference to the same type, and two parameters that may be one list, and a sibling handed past the 16th argument"
 tags = ["flow"]
 diagnostics = 6
+
+# Bug 89: a '&mut' borrow taken by a 'var' global's own name is frozen against that name in this
+# function only, so it is asked of every call like a read borrow into a global is
+[scenario.collection_flow_reshape_global_excl]
+category = "reject"
+description = "A '&mut' borrow taken by a 'var' global's own name into its List, Dict, GenPool or a List in a struct it holds, across a call to a function that writes the global by its name (a push, an insert, a removal)"
+tags = ["flow"]
+diagnostics = 8
+
+[scenario.collection_reshape_global_excl_success]
+category = "run"
+description = "A '&mut' borrow of a 'var' global's List written through after a call that reshapes nothing (it writes a number)"
+tags = ["flow", "genllvm", "runtime"]
+
+# The stable sort's 16-to-32 element leaf (sort8 heads, insertion tail, merge from both ends)
+# keeps equal keys in their order, at every length 0 to 64 and some larger, for few and many keys.
+[scenario.collection_sort_stable_leaf]
+category = "run"
+description = "sortBy on keyed elements (8 and 24 bytes) of every length 0 to 64 and of 300, 1000 and 5000, with 1 to 1000 distinct keys: sorted, equal keys in their original order, each element once"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.collection_sort_stable_leaf.run]]
+name = "release"
+options = []
+
+[[scenario.collection_sort_stable_leaf.run]]
+name = "debug"
+options = ["--debug"]

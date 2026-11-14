@@ -1,67 +1,58 @@
 // ======== Items and pair bookkeeping shared by the three indexes ========
 
-// One item: its box and handle, a generation that tells a stale Proxy from
-// a live one (odd while the slot holds an item, even while it is free), and
-// three words each index uses as it likes (the BVH keeps the leaf node in
-// 'x'; the octree keeps node, next and previous in x, y, z; the grid keeps
-// its cell count in x and its place in the oversize list in y). 'moved' says
-// a pair update is owed.
+// One item: its box and handle, and three words each index uses as it likes
+// (the BVH keeps the leaf node in 'x'; the octree keeps node, next and
+// previous in x, y, z; the grid keeps its cell count in x and its place in
+// the oversize list in y). 'moved' says a pair update is owed. Which
+// occupant of a slot an item is lives in the pool's cell (pools.GenPool).
 struct Item[T: Copy] {
   box: Aabb3;
   handle: T;
-  gen: u32;
   moved: bool;
   x: u32;
   y: u32;
   z: u32;
 }
 
-// A slot array of items with a free list, never shrunk; slots are dense, so
-// per-item side tables can be indexed by slot
+// The items, in a GenPool: a slot is a cell index and never moves, so that
+// per-item side tables and the BVH's leaves can be indexed by slot, and a
+// Proxy is the pool's Handle (slot and generation). Slots are not dense: walk
+// 0 up to 'bound()' and ask 'isLive'
 struct Items[T: Copy] {
-  list: List[Item[T]];
-  free: u32;     // head of the free list, through the free slots' 'x'
+  pool: pools.GenPool[Item[T]];
   count: usize;
 
-  fn create() Items[T] {Items[T](List[Item[T]](), NONE, 0usize)}
+  fn create() Items[T] {Items[T](pools.GenPool[Item[T]](), 0usize)}
 
   fn add(self: &mut, box: Aabb3, handle: T) Proxy {
     count = count + 1usize;
-    if free != NONE {
-      let slot = free;
-      let si = usize.from(slot);
-      free = list[si].x;
-      list[si].box = box;
-      list[si].handle = handle;
-      list[si].gen = list[si].gen + 1u32;
-      list[si].moved = false;
-      list[si].x = NONE;
-      list[si].y = NONE;
-      list[si].z = NONE;
-      return Proxy(slot, list[si].gen);
-    }
-    let slot = u32.from(list.len());
-    list.push(Item[T](box, handle, 1u32, false, NONE, NONE, NONE));
-    Proxy(slot, 1u32)
+    let h = pool.add(Item[T](box, handle, false, NONE, NONE, NONE));
+    Proxy(h.index, h.gen)
   }
 
+  // The item in slot 'i', which must be live
+  fn cell(self: &, i: usize) *Item[T] {pool.rawAt(u32.from(i))}
+
+  // Slots 0 up to this are the ones to walk
+  fn bound(self: &) usize {pool.bound()}
+
   fn alive(self: &, p: Proxy) bool {
-    if p.slot == NONE || usize.from(p.slot) >= list.len() {return false;}
-    list[usize.from(p.slot)].gen == p.gen
+    if p.slot == NONE {return false;}
+    pool.borrow(pools.Handle(p.slot, p.gen)) is Some
   }
 
   // Frees the slot of a live proxy
   fn release(self: &mut, slot: u32) {
-    let si = usize.from(slot);
-    list[si].gen = list[si].gen + 1u32;
-    list[si].x = free;
-    free = slot;
+    pool.removeAt(slot);
     count = count - 1usize;
   }
 
-  fn isLive(self: &, slot: usize) bool {(list[slot].gen & 1u32) == 1u32}
+  fn isLive(self: &, slot: usize) bool {pool.isLive(u32.from(slot))}
 
-  fn proxyOf(self: &, slot: u32) Proxy {Proxy(slot, list[usize.from(slot)].gen)}
+  fn proxyOf(self: &, slot: u32) Proxy {
+    let h = pool.handleAt(slot);
+    Proxy(h.index, h.gen)
+  }
 }
 
 // ---- pairs ----

@@ -266,6 +266,7 @@ extern {
   fn @c(system) CreateEventW(sa: *u8, manual: i32, initial: i32, name: *u16) usize;
   fn @c(system) SetEvent(h: usize) i32;
   fn @c(system) ReadFile(h: usize, buf: *u8, size: u32, read: *u32, ov: &mut Overlapped) i32;
+  fn @c(system) WriteFile(h: usize, buf: *u8, size: u32, written: *u32, ov: &mut Overlapped) i32;
   fn @c(system) GetOverlappedResult(h: usize, ov: &mut Overlapped, got: &mut u32, block: i32) i32;
   fn @c(system) CancelIoEx(h: usize, ov: &mut Overlapped) i32;
   fn @c(system) WaitForSingleObject(h: usize, ms: u32) u32;
@@ -382,6 +383,7 @@ extern {
   fn @c("pipe2") makePipe2(fds: *i32, flags: i32) i32;
   fn @c("poll") pollFds(fds: *PollFd, count: u64, ms: i32) i32;
   fn @c("read") readFd(fd: i32, buf: *u8, count: usize) isize;
+  fn @c("write") writeFd(fd: i32, buf: *u8, count: usize) isize;
   fn @c("close") closeFd(fd: i32) i32;
   fn @c("waitpid") waitPid(pid: i32, status: *i32, options: i32) i32;
   fn @c("kill") killPid(pid: i32, signal: i32) i32;
@@ -713,19 +715,191 @@ pub fn runLine(line: &str, opts: Options = Options(), dir: &Path = "") Result[Ou
 // What an end that is not there holds (INVALID_HANDLE_VALUE; a descriptor is never this)
 const noEnd = 0xFFFFFFFFFFFFFFFFusize;
 
-// A child started by 'launch', still running or not: its standard output and standard error as the ends of two pipes of ours,
-// and the child itself, each as the operating system's raw value, so that a loop can take them over (iocore's
-// 'adoptPipe' for an end, 'adoptChild' for the process). Its standard input is NUL, as 'run''s is, unless 'Options.stdin' asks for a pipe
-// ('takeStdin': the same kind of end, but written to).
+const maxTransfer = 65536usize;
+
+// Up to n bytes into buf: the count, 0 at end of input, -1 for a failure
+fn endRead(h: usize, buf: *u8, n: usize) isize {
+  if h == noEnd { return -1isize; }
+  let want = if n > maxTransfer {maxTransfer} else {n};
+  #if #os == .windows {
+    var ov = Overlapped(0usize, 0usize, 0u32, 0u32, CreateEventW(null, 1i32, 0i32, null));
+    var got = 0u32;
+    var result = -1isize;
+    let ok = ReadFile(h, buf, u32.from(want), null, &mut ov);
+    var failed = false;
+    if ok == 0i32 {
+      let err = GetLastError();
+      if err == 109u32 { result = 0isize; failed = true; }       // ERROR_BROKEN_PIPE: the child closed its end
+      else if err != errorIoPending { failed = true; }
+    }
+    if !failed {
+      if GetOverlappedResult(h, &mut ov, &mut got, 1i32) != 0i32 { result = isize.from(got); }
+      else if GetLastError() == 109u32 { result = 0isize; }
+    }
+    CloseHandle(ov.hEvent);
+    result
+  } #else {
+    var r = readFd(i32.from(h), buf, want);
+    while r < 0isize && *libc.errno() == errnoInterrupted {
+      r = readFd(i32.from(h), buf, want);
+    }
+    r
+  }
+}
+
+// All n bytes of buf written; false if the child's end closed or the write failed
+fn endWrite(h: usize, buf: *u8, n: usize) bool {
+  if h == noEnd { return false; }
+  var done = 0usize;
+  var ok = true;
+  #if #os == .windows {
+    var ov = Overlapped(0usize, 0usize, 0u32, 0u32, CreateEventW(null, 1i32, 0i32, null));
+    while ok && done < n {
+      ov.internal = 0usize;
+      ov.internalHigh = 0usize;
+      var got = 0u32;
+      let left = n - done;
+      let want = if left > maxTransfer {maxTransfer} else {left};
+      let r = WriteFile(h, buf + done, u32.from(want), null, &mut ov);
+      if r == 0i32 && GetLastError() != errorIoPending {
+        ok = false;
+      } else if GetOverlappedResult(h, &mut ov, &mut got, 1i32) == 0i32 || got == 0u32 {
+        ok = false;
+      } else {
+        done = done + usize.from(got);
+      }
+    }
+    CloseHandle(ov.hEvent);
+  } #else {
+    while ok && done < n {
+      let w = writeFd(i32.from(h), buf + done, n - done);
+      if w > 0isize { done = done + usize.from(w); }
+      else if w < 0isize && *libc.errno() == errnoInterrupted {}
+      else { ok = false; }
+    }
+  }
+  ok
+}
+
+fn endClose(h: usize) {
+  if h == noEnd { return; }
+  #if #os == .windows { closeIf(h); } #else { closeFd(i32.from(h)); }
+}
+
+// The child's standard output, our end of it: it owns the operating system's value (an OVERLAPPED named-pipe HANDLE on
+// Windows, a blocking descriptor on Linux) and closes it when dropped. To feed it to a loop, 'intoRaw' gives the number
+// away (aio's 'adoptPipe' does)
+pub struct ChildStdout {
+  end: usize;
+
+  // Up to buf.len bytes read into buf, waiting for some: the count; 0 when the child has closed its end (end of input);
+  // -1 on a failure
+  pub fn read(self: &mut, buf: &mut Array[u8]) isize { endRead(end, buf as *u8, buf.len) }
+
+  // The caller now owns the number and must close it: this value no longer closes it
+  pub fn intoRaw(self) usize {
+    var me = self;
+    let e = me.end;
+    me.end = noEnd;
+    e
+  }
+
+  fn final(self: &uni) { endClose(end); }
+}
+
+// The child's standard error, our end of it; as ChildStdout
+pub struct ChildStderr {
+  end: usize;
+
+  // As 'ChildStdout.read'
+  pub fn read(self: &mut, buf: &mut Array[u8]) isize { endRead(end, buf as *u8, buf.len) }
+
+  // The caller now owns the number and must close it: this value no longer closes it
+  pub fn intoRaw(self) usize {
+    var me = self;
+    let e = me.end;
+    me.end = noEnd;
+    e
+  }
+
+  fn final(self: &uni) { endClose(end); }
+}
+
+// The child's standard input, our end of it. Dropped, it is closed and the child sees end of input
+pub struct ChildStdin {
+  end: usize;
+
+  // All of data written, waiting while the pipe is full: false if the child has closed its input or the write failed
+  pub fn write(self: &mut, data: &Array[u8]) bool { endWrite(end, data as *u8, data.len) }
+
+  // The caller now owns the number and must close it: this value no longer closes it
+  pub fn intoRaw(self) usize {
+    var me = self;
+    let e = me.end;
+    me.end = noEnd;
+    e
+  }
+
+  fn final(self: &uni) { endClose(end); }
+}
+
+// Stop the child and every program it started, and wait for it. Windows: the process HANDLE is closed too; Linux: pid is
+// the process-group leader, reaped here
+fn killAndReap(job: usize, proc: usize) {
+  #if #os == .windows {
+    stop(job, proc);
+    WaitForSingleObject(proc, infinite);
+    CloseHandle(proc);
+  } #else {
+    stopGroup(i32.from(proc), true);
+    var status = 0i32;
+    var reaped = false;
+    while !reaped {
+      let w = waitPid(i32.from(proc), &mut status as *i32, 0i32);
+      if w == i32.from(proc) || *libc.errno() != errnoInterrupted { reaped = true; }
+    }
+  }
+}
+
+// A child process given away by 'Child.takeProcess'. Dropped, it ends the child and the programs it started and waits for
+// it (as a dropped Child does), unless 'intoRaw' has given the number away
+pub struct ChildProcess {
+  proc: usize;         // Windows: the process HANDLE; Linux: the pid
+  job: usize;          // Windows: this value's own handle on the child's job object, else 0
+  procId: u32;
+  armed: bool;
+
+  // The child's process id
+  pub fn pid(self: &) u32 { procId }
+
+  // The caller now owns the number (Windows: the process HANDLE, to close; Linux: the pid, to reap by waiting for it):
+  // this value no longer ends or waits for the child. aio's 'adoptChild' takes the process this way
+  pub fn intoRaw(self) usize {
+    var me = self;
+    me.armed = false;
+    #if #os == .windows { closeIf(me.job); }
+    me.job = 0usize;
+    me.proc
+  }
+
+  fn final(self: &uni) {
+    if armed { killAndReap(job, proc); }
+    #if #os == .windows { closeIf(job); }
+  }
+}
+
+// A child started by 'launch', still running or not: its standard output and standard error as the ends of two pipes of
+// ours, and the child itself. Its standard input is NUL, as 'run''s is, unless 'Options.stdin' asks for a pipe
+// ('takeStdin', written to). Each is given away once (the 'take' calls), as an owned value that closes when dropped (the
+// process: ends and waits for the child); to hand one to a loop, its 'intoRaw' gives the number away.
 //
-// - An end is OVERLAPPED on Windows (a HANDLE of a named pipe, to read with ReadFile and an OVERLAPPED) and a blocking
-//   descriptor on Linux (iocore's adoptPipe makes it non-blocking); 'noEnd' where the child inherited the stream instead.
+// - An end is OVERLAPPED on Windows (a HANDLE of a named pipe) and a blocking descriptor on Linux (iocore's adoptPipe makes
+//   it non-blocking); there is none where the child inherited the stream instead.
 // - The child is a Windows process HANDLE, or a Linux pid. It is placed so that 'kill' reaches the programs it started
 //   too: in a job object on Windows, as the leader of a process group on Linux.
-// - 'takeStdout', 'takeStderr' and 'takeProcess' give a raw value away: the Child no longer closes it. Whatever it still
-//   holds when it dies is closed, and a child never taken by 'takeProcess' is killed and waited for there (none is left
-//   running, none a zombie). A child taken is the taker's: do not 'kill' it after its wait has answered (its id may
-//   belong to another process by then).
+// - Whatever the Child still holds when it dies is closed, and a child never taken by 'takeProcess' is killed and waited for
+//   there (none is left running, none a zombie). A child taken is the taker's: do not 'kill' it after its wait has
+//   answered (its id may belong to another process by then).
 pub struct Child {
   proc: usize;         // Windows: the process HANDLE; Linux: the pid
   job: usize;          // Windows: the job object the child is in, else 0
@@ -747,32 +921,41 @@ pub struct Child {
     }
   }
 
-  // Our end of its standard output / standard error, now the caller's to close or hand to a loop; 'noEnd' once taken
-  // or where there was none
-  pub fn takeStdout(self: &mut) usize {
+  // Our end of its standard output / standard error, now the caller's, closed when it is dropped; None once taken or
+  // where there was none
+  pub fn takeStdout(self: &mut) Option[ChildStdout] {
     let e = outEnd;
     outEnd = noEnd;
-    e
+    if e == noEnd { None[ChildStdout] } else { Some[ChildStdout](ChildStdout(e)) }
   }
-  pub fn takeStderr(self: &mut) usize {
+  pub fn takeStderr(self: &mut) Option[ChildStderr] {
     let e = errEnd;
     errEnd = noEnd;
-    e
+    if e == noEnd { None[ChildStderr] } else { Some[ChildStderr](ChildStderr(e)) }
   }
 
-  // Our end of its standard input (written to; the child sees end of input once it is closed), now the caller's to
-  // close or hand to a loop; 'noEnd' once taken, or unless 'Options.stdin' was true
-  pub fn takeStdin(self: &mut) usize {
+  // Our end of its standard input (written to; the child sees end of input once it is dropped), now the caller's; None
+  // once taken, or unless 'Options.stdin' was true
+  pub fn takeStdin(self: &mut) Option[ChildStdin] {
     let e = inEnd;
     inEnd = noEnd;
-    e
+    if e == noEnd { None[ChildStdin] } else { Some[ChildStdin](ChildStdin(e)) }
   }
 
-  // The child itself (Windows: its process HANDLE, Linux: its pid), now the caller's: iocore's 'adoptChild' takes it
-  // with the ownership its comment says
-  pub fn takeProcess(self: &mut) usize {
+  // The child itself, now the caller's: it ends and waits for the child when dropped, unless 'intoRaw' hands it to a loop
+  // (aio's 'adoptChild'). None once taken. On Windows the ChildProcess holds its own handle on the job object, so
+  // dropping it ends the programs the child started too
+  pub fn takeProcess(self: &mut) Option[ChildProcess] {
+    if !owned { return None[ChildProcess]; }
     owned = false;
-    proc
+    var j = 0usize;
+    #if #os == .windows {
+      if job != 0usize {
+        let me = GetCurrentProcess();
+        if DuplicateHandle(me, job, me, &mut j, 0u32, 0i32, duplicateSameAccess) == 0i32 { j = 0usize; }
+      }
+    }
+    Some[ChildProcess](ChildProcess(proc, j, procId, true))
   }
 
   fn final(self: &uni) {
@@ -780,25 +963,13 @@ pub struct Child {
       closeIf(outEnd);
       closeIf(errEnd);
       closeIf(inEnd);
-      if owned {
-        stop(job, proc);
-        WaitForSingleObject(proc, infinite);
-        CloseHandle(proc);
-      }
+      if owned { killAndReap(job, proc); }
       closeIf(job);
     } #else {
       if outEnd != noEnd { closeFd(i32.from(outEnd)); }
       if errEnd != noEnd { closeFd(i32.from(errEnd)); }
       if inEnd != noEnd { closeFd(i32.from(inEnd)); }
-      if owned {
-        stopGroup(i32.from(proc), true);
-        var status = 0i32;
-        var reaped = false;
-        while !reaped {
-          let w = waitPid(i32.from(proc), &mut status as *i32, 0i32);
-          if w == i32.from(proc) || *libc.errno() != errnoInterrupted { reaped = true; }
-        }
-      }
+      if owned { killAndReap(job, proc); }
     }
   }
 }

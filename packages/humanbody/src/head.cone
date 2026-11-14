@@ -46,7 +46,7 @@ pub struct HeadShape {
 pub fn headShapeOf(m: &Measures) HeadShape {
   let male = if m.sex == MALE { 1.f } else { 0. };
   HeadShape(m.headBreadth / 0.153, m.headLength / 0.200, m.faceLength / 0.120, m.cheekBreadth * 0.5, m.jawBreadth * 0.5,
-    m.brow, m.nose, m.noseWidth, m.lips, m.chin, m.cheekbones, m.jaw, male, clampf((m.age - 25.) / 40., 0., 1.),
+    m.brow, m.nose, m.noseWidth, m.lips, m.chin, m.cheekbones, m.jaw, male, ((m.age - 25.) / 40.).clamp(0., 1.),
     0.0615 + 0.0025 * male, 0.0120)
 }
 
@@ -159,7 +159,7 @@ pub fn headDistance(p: Vec3, s: &HeadShape, ft: &Features, neckR: f32, neckZ: f3
 // A soft union (the exponential smooth minimum, -k ln(e^(-a/k) + e^(-b/k))): unlike the quadratic one it is
 // associative, so a chain of many forms swells by at most k ln n where n of them meet, not by k at each
 pub fn softUnion(a: f32, b: f32, k: f32) f32 {
-  let m = minf(a, b);
+  let m = a.min(b);
   m - k * libc.logf(1. + libc.expf(0. - (a - b).abs() / k))
 }
 
@@ -213,7 +213,7 @@ fn columnAngles(n: usize) List[f32] {
     let c0 = *cdf[j];
     let c1 = if j + 1usize < cdf.len() { *cdf[j + 1usize] } else { c0 + 1. };
     let t = if c1 > c0 { (target - c0) / (c1 - c0) } else { 0. };
-    out.push(-pi + 2. * pi * (f32.from(j) + clampf(t, 0., 1.)) / f32.from(steps));
+    out.push(-pi + 2. * pi * (f32.from(j) + t.clamp(0., 1.)) / f32.from(steps));
     k = k + 1usize;
   }
   // exactly -pi and pi at the seam
@@ -250,7 +250,7 @@ fn levelRows(y0: f32, y1: f32, n: usize, ft: &Features) List[f32] {
     let c0 = *cdf[j];
     let c1 = if j + 1usize < cdf.len() { *cdf[j + 1usize] } else { c0 + 1. };
     let t = if c1 > c0 { (target - c0) / (c1 - c0) } else { 0. };
-    out.push(y0 + (y1 - y0) * (f32.from(j) + clampf(t, 0., 1.)) / f32.from(steps));
+    out.push(y0 + (y1 - y0) * (f32.from(j) + t.clamp(0., 1.)) / f32.from(steps));
     k = k + 1usize;
   }
   out
@@ -318,8 +318,8 @@ fn lidWarp(y: f32, cy: f32, dx: f32, ft: &Features) f32 {
   let past = smoothstep(1.05, 2.0, dx.abs() / ft.lidHW);
   let e0 = lidEdges(dx, ft);
   let e = Vec2(e0.x + (ft.lidHU - e0.x) * past, e0.y + (0. - ft.lidHL - e0.y) * past);
-  let u = maxf(e.x, e.y + 0.0004);
-  let lo = minf(e.y, u - 0.0004);
+  let u = e.x.max(e.y + 0.0004);
+  let lo = e.y.min(u - 0.0004);
   var out = t;
   if t < 0. - ft.lidHL { out = 0. - z + (t + z) * (lo + z) / (z - ft.lidHL); }
   else if t > ft.lidHU { out = u + (t - ft.lidHU) * (z - u) / (z - ft.lidHU); }
@@ -337,9 +337,9 @@ fn eyeOp(p: Vec3, c: Vec3, side: f32, ft: &Features) Vec3 {
   let r = (dx * dx + dy * dy).sqrt();
   if r >= zone1 { return p; }
   let edges = lidEdges(dx, ft);
-  let e = minf(edges.x - dy, dy - edges.y);        // positive inside the opening
+  let e = (edges.x - dy).min(dy - edges.y);        // positive inside the opening
   let w = smoothstep(0., 0.0012, e);
-  let rr = minf(r, zone0);
+  let rr = r.min(zone0);
   // (past the lids the shell falls back, so it never stands in front of the cheek and the brow: held level there it
   // pulled a ring of face forward round each eye, a puff with a crease at its rim)
   var zShell = c.z - (ft.shell * ft.shell - rr * rr).sqrt() + 0.9 * (r - zone0).max(0.);
@@ -381,13 +381,13 @@ fn mouthOp(p: Vec3, rowY: f32, ft: &Features) Vec3 {
 // nose's tip, fully elsewhere
 fn smoothWeight(p: Vec3, ft: &Features, cR: Vec3, cL: Vec3) f32 {
   if p.z > -0.035 { return 1.; }
-  let ex = minf((p.x - cR.x).abs(), (p.x - cL.x).abs()) / (ft.lidHW * 1.9);
+  let ex = (p.x - cR.x).abs().min((p.x - cL.x).abs()) / (ft.lidHW * 1.9);
   let ey = (p.y - cR.y).abs() / 0.015;
-  let eye = smoothstep(0.75, 1.15, maxf(ex, ey));
+  let eye = smoothstep(0.75, 1.15, ex.max(ey));
   let mx = p.x.abs() / (ft.mouthHW * 1.15);
   let my = (p.y - ft.yg).abs() / 0.013;
-  let mouth = 0.15 + 0.85 * smoothstep(0.8, 1.2, maxf(mx, my));
-  minf(eye, mouth)
+  let mouth = 0.15 + 0.85 * smoothstep(0.8, 1.2, mx.max(my));
+  eye.min(mouth)
 }
 
 // The smooth brush (see buildHead): 'passes' of Taubin's lambda-mu smoothing of the grid's points along their normals
@@ -487,7 +487,7 @@ pub fn buildHead(m: &Measures, seamY: f32) Head {
   let yTop = 0.044 * s.sF;
   var rays = List[RowRay]();
   let nA = 14usize;
-  let latB = asin(clampf((yTop + 0.007) / 0.100, -0.9, 0.9));
+  let latB = asin(((yTop + 0.007) / 0.100).clamp(-0.9, 0.9));
   var i = 0usize;
   while i < nA {
     let lat = 1.48 - (1.48 - latB) * f32.from(i) / f32.from(nA);
@@ -649,7 +649,7 @@ pub fn buildHead(m: &Measures, seamY: f32) Head {
     // proud of it, and the plane tilting back through them put the lower lip's top on the head while the mouth's row
     // went with the jaw, a sheet of lip stretched across the open mouth
     let rowY = if v < nr * nc && (*rays[v / nc]).kind == 1u32 { (*rays[v / nc]).value } else { p.y };
-    let sd = n.dot(Vec3(0., rowY - ft.yg, maxf(p.z, ft.lipZ) - ft.lipZ));
+    let sd = n.dot(Vec3(0., rowY - ft.yg, p.z.max(ft.lipZ) - ft.lipZ));
     // (sharp between the lips, broad over the cheeks, so an open jaw stretches the cheek smoothly, not along a fold)
     let width = 0.0009 + 0.018 * smoothstep(0.012, 0.036, p.x.abs());
     let jt = smoothstep(-1., 1., (0. - sd) / width);

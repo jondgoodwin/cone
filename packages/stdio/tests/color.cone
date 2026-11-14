@@ -1,0 +1,46 @@
+// The rule for sending a stream color (conestd's console.c): it is a terminal; on POSIX TERM is set
+// and not "dumb"; NO_COLOR is unset or empty. The harness runs this with its output on a pipe, so
+// the stream itself is not a terminal and asks no; the rule is tried on its own, as a terminal.
+
+mod color;
+
+import stdio use *;
+
+extern {
+  fn @c cone_consoleColorWanted(isTty: i32, needTerm: i32, term: *u8, noColor: *u8) i32;
+  fn @c cone_consoleColor(fd: i32) i32;
+}
+
+fn ptr(s: &Array[u8]) *u8 {s as *u8}
+
+fn check(got: i32, want: i32, label: &str) bool {
+  if got == want {return true;}
+  print <- label, ": got ", got, ", wanted ", want, "\n";
+  false
+}
+
+fn main() i32 {
+  var ok = true;
+  let term = ptr("xterm");
+  let dumb = ptr("dumb");
+  let empty = ptr("");
+  let one = ptr("1");
+  ok = check(cone_consoleColorWanted(1i32, 1i32, term, null), 1i32, "tty, TERM set, no NO_COLOR") && ok;
+  ok = check(cone_consoleColorWanted(0i32, 1i32, term, null), 0i32, "not a tty") && ok;
+  ok = check(cone_consoleColorWanted(1i32, 1i32, null, null), 0i32, "TERM unset") && ok;
+  ok = check(cone_consoleColorWanted(1i32, 1i32, empty, null), 0i32, "TERM empty") && ok;
+  ok = check(cone_consoleColorWanted(1i32, 1i32, dumb, null), 0i32, "TERM dumb") && ok;
+  ok = check(cone_consoleColorWanted(1i32, 1i32, term, one), 0i32, "NO_COLOR set") && ok;
+  ok = check(cone_consoleColorWanted(1i32, 1i32, term, empty), 1i32, "NO_COLOR empty counts as unset") && ok;
+  ok = check(cone_consoleColorWanted(1i32, 0i32, null, null), 1i32, "no TERM needed (Windows)") && ok;
+  ok = check(cone_consoleColorWanted(1i32, 0i32, null, one), 0i32, "NO_COLOR set (Windows)") && ok;
+  // Standard output and error here are pipes or files, never a terminal; any other fd asks no
+  ok = check(cone_consoleColor(1i32), 0i32, "stdout is a pipe") && ok;
+  ok = check(cone_consoleColor(2i32), 0i32, "stderr is a pipe") && ok;
+  ok = check(cone_consoleColor(3i32), 0i32, "fd 3") && ok;
+  // A record the console made has color off here, so a style would write nothing
+  var w = print.record();
+  ok = check(if w.colorOn() {1i32} else {0i32}, 0i32, "console record color off") && ok;
+  print <- if ok {"color: ok\n"} else {"color: FAILED\n"};
+  if ok {0i32} else {1i32}
+}

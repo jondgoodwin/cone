@@ -35,7 +35,7 @@ pub struct CompactHF {
   pub clear: List[i32];       // clearance above it
   pub reg: List[i32];
   pub con: List[u32];         // six bits a side: the layer of the neighbour, 63 none
-  pub area: List[u8];
+  pub area: AreaIds;
 
   pub fn spanCount(self: &) usize { y.len() }
 
@@ -65,7 +65,7 @@ pub fn buildCompact(hf: &Heightfield, walkableHeight: i32, walkableClimb: i32, b
   let h = hf.h;
   var c = CompactHF(w, h, hf.bmin, hf.cs, hf.ch, walkableHeight, walkableClimb, borderSize,
     List[i32].withCapacity(hf.cols.len()), List[i32].withCapacity(hf.cols.len()),
-    List[i32](), List[i32](), List[i32](), List[u32](), List[u8]());
+    List[i32](), List[i32](), List[i32](), List[u32](), AreaIds());
   var col = 0usize;
   while col < hf.cols.len() {
     c.cellIndex.push(i32.from(c.y.len()));
@@ -73,7 +73,7 @@ pub fn buildCompact(hf: &Heightfield, walkableHeight: i32, walkableClimb: i32, b
     var s = *hf.cols[col];
     while s >= 0i32 {
       let sp = *hf.spans[usize.from(s)];
-      if sp.area != AreaNull {
+      if sp.area.index != AreaNull.index {
         let top = if sp.next >= 0i32 { (*hf.spans[usize.from(sp.next)]).smin } else { MaxHeight };
         c.y.push(iclamp(sp.smax, 0i32, MaxHeight));
         c.clear.push(iclamp(top - sp.smax, 0i32, 255i32));
@@ -150,14 +150,14 @@ pub fn erodeWalkableArea(c: &mut CompactHF, radius: i32) {
       var k = ci;
       while k < ci + cn {
         let ks = usize.from(k);
-        if *c.area[ks] == AreaNull {
+        if c.area[ks].index == AreaNull.index {
           dist.set(ks, 0i32);
         } else {
           var nc = 0i32;
           var dir = 0i32;
           while dir < 4i32 {
             let nb = c.neighbour(ks, x, z, dir);
-            if nb >= 0i32 && *c.area[usize.from(nb)] != AreaNull { nc = nc + 1i32; }
+            if nb >= 0i32 && c.area[usize.from(nb)].index != AreaNull.index { nc = nc + 1i32; }
             dir = dir + 1i32;
           }
           if nc != 4i32 { dist.set(ks, 0i32); }
@@ -257,7 +257,7 @@ pub fn markObstacleArea(c: &mut CompactHF, o: &Obstacle) {
         var k = ci;
         while k < ci + cn {
           let wy = c.bmin.y + f32.from(*c.y[usize.from(k)]) * c.ch;
-          if *c.area[usize.from(k)] != AreaNull && wy >= o.ymin - c.ch && wy <= o.ymax {
+          if c.area[usize.from(k)].index != AreaNull.index && wy >= o.ymin - c.ch && wy <= o.ymax {
             c.area.set(usize.from(k), o.area);
           }
           k = k + 1i32;
@@ -286,7 +286,7 @@ fn paintRect(c: &mut CompactHF, minx: i32, maxx: i32, minz: i32, maxz: i32, id: 
       let cn = *c.cellCount[usize.from(z) * usize.from(c.w) + usize.from(x)];
       var k = ci;
       while k < ci + cn {
-        if *c.area[usize.from(k)] != AreaNull { c.reg.set(usize.from(k), id); }
+        if c.area[usize.from(k)].index != AreaNull.index { c.reg.set(usize.from(k), id); }
         k = k + 1i32;
       }
       x = x + 1i32;
@@ -328,13 +328,13 @@ pub fn buildRegionsMonotone(c: &mut CompactHF, minRegionArea: i32) i32 {
       var k = ci;
       while k < ci + cn {
         let ks = usize.from(k);
-        if *c.area[ks] == AreaNull { k = k + 1i32; continue; }
+        if c.area[ks].index == AreaNull.index { k = k + 1i32; continue; }
         // the run is continued from the span to the -x side
         var previd = 0i32;
         let nx = c.neighbour(ks, x, z, 0i32);
         if nx >= 0i32 {
           let r = *c.reg[usize.from(nx)];
-          if (r & BorderReg) == 0i32 && *c.area[ks] == *c.area[usize.from(nx)] { previd = r; }
+          if (r & BorderReg) == 0i32 && c.area[ks].index == c.area[usize.from(nx)].index { previd = r; }
         }
         if previd == 0i32 {
           previd = rid;
@@ -345,7 +345,7 @@ pub fn buildRegionsMonotone(c: &mut CompactHF, minRegionArea: i32) i32 {
         let nz = c.neighbour(ks, x, z, 3i32);
         if nz >= 0i32 {
           let nr = *c.reg[usize.from(nz)];
-          if nr != 0i32 && (nr & BorderReg) == 0i32 && *c.area[ks] == *c.area[usize.from(nz)] {
+          if nr != 0i32 && (nr & BorderReg) == 0i32 && c.area[ks].index == c.area[usize.from(nz)].index {
             let sw = *sweeps[usize.from(previd)];
             if sw.nei == 0i32 || sw.nei == nr {
               sweeps.set(usize.from(previd), Sweep(0i32, sw.ns + 1i32, nr));

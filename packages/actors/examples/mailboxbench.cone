@@ -10,6 +10,7 @@
 mod mailboxbench;
 
 import stdio use *;
+import libc;
 import actors;
 import time use Instant;
 import collections use List;
@@ -23,9 +24,37 @@ fn allocs() u64 {0u64}
 fn liveBytes() u64 {u64.from(actors.liveSegmentBytes())}
 
 fn privateBytes() u64 {
-  var buf: Array[u64, 9] = [72u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
-  K32GetProcessMemoryInfo(GetCurrentProcess(), &mut buf as *u8, 72u32);
-  buf[7]
+  #if #os == .windows {
+    var buf: Array[u64, 9] = [72u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+    K32GetProcessMemoryInfo(GetCurrentProcess(), &mut buf as *u8, 72u32);
+    buf[7]
+  } #else {
+    residentBytes()
+  }
+}
+
+// Linux: the second number of /proc/self/statm (size resident shared ...), in
+// pages; the 4096-byte page is assumed, as the other benchmarks do (no sysconf here)
+fn residentBytes() u64 {
+  let f = libc.fopen("/proc/self/statm", "rb");
+  if f == null {return 0u64;}
+  var buf = Array[u8, 256]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  let n = libc.fread(bp, 1usize, 255usize, f);
+  libc.fclose(f);
+  var field = 0u32;
+  var value = 0u64;
+  var k = 0usize;
+  while k < n {
+    let c = buf[k];
+    if c >= '0' && c <= '9' {
+      if field == 1u32 {value = value * 10u64 + u64.from(c - '0');}
+    } else {
+      field = field + 1u32;
+    }
+    k = k + 1usize;
+  }
+  value * 4096u64
 }
 
 fn digits(p: *u8) u32 {

@@ -774,6 +774,26 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
             LLVMBuildTrunc(gen->builder, high, i64, "mulfoldhi"), "mulfold");
     }
 
+    // The value, through a compiler-made stack slot that an empty asm, with a
+    // side effect and a memory clobber, takes the address of. The optimiser
+    // neither folds nor deletes the work that made the value, nor assumes
+    // anything of the value read back. A GPU or WebAssembly target keeps the
+    // value as it is, the fallback's meaning
+    case BlackBoxIntrinsic: {
+        if (gen->opt->gpu || gen->opt->wasm)
+            return fnargs[0];
+        LLVMTypeRef valtype = LLVMTypeOf(fnargs[0]);
+        LLVMValueRef slot = genlAlloca(gen, valtype, "blackbox");
+        LLVMBuildStore(gen->builder, fnargs[0], slot);
+        LLVMTypeRef ptrtype = LLVMTypeOf(slot);
+        LLVMTypeRef asmtype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), &ptrtype, 1, 0);
+        static const char constraints[] = "r,~{memory}";
+        LLVMValueRef asmfn = LLVMGetInlineAsm(asmtype, "", 0, constraints, sizeof(constraints) - 1,
+            1, 0, LLVMInlineAsmDialectATT, 0);
+        LLVMBuildCall2(gen->builder, asmtype, asmfn, &slot, 1, "");
+        return LLVMBuildLoad2(gen->builder, valtype, slot, "blackbox");
+    }
+
     // A hint to the cache: llvm.prefetch(p, read, high locality, data cache). It
     // is nothing on a GPU or WebAssembly target. The argument was evaluated for
     // its effects before this, so dropping the call drops only the hint
@@ -1047,6 +1067,11 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         // intrinsic's type argument, since no argument is one
         if (stitched == VecLoadIntrinsic) {
             fncallret = genlVectorLoad(gen, objfn, ((IntrinsicNode *)fndcl->value)->typearg, fnargs);
+            break;
+        }
+
+        if (stitched == VecGatherIntrinsic) {
+            fncallret = genlVectorGather(gen, objfn, ((IntrinsicNode *)fndcl->value)->typearg, fnargs);
             break;
         }
 
@@ -2954,8 +2979,8 @@ LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len) {
 // The runtime's entry for each failure the compiler checks for
 // (packages/conestd/panic.cone), and how many values it reports before the
 // location
-static char *genlPanicEntry[] = {"cone_panicIndex", "cone_panicSlice", "cone_panicAlloc", "cone_panicDivide"};
-static unsigned genlPanicValCnt[] = {2, 3, 1, 1};
+static char *genlPanicEntry[] = {"cone_panicIndex", "cone_panicSlice", "cone_panicAlloc", "cone_panicDivide", "cone_panicInitAgain"};
+static unsigned genlPanicValCnt[] = {2, 3, 1, 1, 0};
 
 // End the program where a check the compiler inserted has failed: a call to
 // the runtime's entry for the failure, handed the values it reports (each a

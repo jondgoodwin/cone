@@ -862,7 +862,12 @@ pub struct @opaque Array[T] is GcTraceElements {
     }
   }
 
-  // Move element i left, past the larger elements before it
+  // Move element i left, past the larger elements before it.
+  // It holds element i in flight ('held') while the larger ones shift right, so a
+  // comparator that panics mid-shift leaves one value duplicated and 'held' not
+  // written back. Harmless while a panic ends the program with nothing unwound
+  // (doc/design/panics.md); once panics unwind, this needs a hole guard that
+  // writes 'held' back on unwind (Rust's CopyOnDrop pattern).
   fn insertTail[F: fn(a: &T, b: &T) i32](self: &mut, i: usize, order: &F) inline {
     let p = self as *T;
     if i > 0usize && order((p + i) as &T, (p + i - 1usize) as &T) < 0i32 {
@@ -896,6 +901,120 @@ pub struct @opaque Array[T] is GcTraceElements {
   fn insertionSortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
     let n = self.len;
     var i = 1usize;
+    while i < n {
+      self.insertTail(i, order);
+      i = i + 1usize;
+    }
+  }
+
+  // Order two elements in place, with no branch (the places they are read from are chosen, not
+  // the values): both are read before either is written, and the comparison comes before any
+  // read, so a comparison that panics leaves both where they were
+  fn ce[F: fn(a: &T, b: &T) i32](self: &mut, i: usize, j: usize, order: &F) inline {
+    let p = self as *T;
+    let swap = order((p + j) as &T, (p + i) as &T) < 0i32;
+    // choose which place each is read from, so each value is moved once, whichever way it went
+    let first = if swap { p + j } else { p + i };
+    let second = if swap { p + i } else { p + j };
+    let a = mem.readRaw[T](first);
+    let b = mem.readRaw[T](second);
+    mem.writeRaw[T](p + i, a);
+    mem.writeRaw[T](p + j, b);
+  }
+
+  // The 25 compare-exchanges that sort 9 elements (checked by the 0-1 principle over all 512 inputs)
+  fn net9[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) inline {
+    self.ce(0usize, 3usize, order);
+    self.ce(1usize, 7usize, order);
+    self.ce(2usize, 5usize, order);
+    self.ce(4usize, 8usize, order);
+    self.ce(0usize, 7usize, order);
+    self.ce(2usize, 4usize, order);
+    self.ce(3usize, 8usize, order);
+    self.ce(5usize, 6usize, order);
+    self.ce(0usize, 2usize, order);
+    self.ce(1usize, 3usize, order);
+    self.ce(4usize, 5usize, order);
+    self.ce(7usize, 8usize, order);
+    self.ce(1usize, 4usize, order);
+    self.ce(3usize, 6usize, order);
+    self.ce(5usize, 7usize, order);
+    self.ce(0usize, 1usize, order);
+    self.ce(2usize, 4usize, order);
+    self.ce(3usize, 5usize, order);
+    self.ce(6usize, 8usize, order);
+    self.ce(2usize, 3usize, order);
+    self.ce(4usize, 5usize, order);
+    self.ce(6usize, 7usize, order);
+    self.ce(1usize, 2usize, order);
+    self.ce(3usize, 4usize, order);
+    self.ce(5usize, 6usize, order);
+  }
+
+  // The 48 compare-exchanges that sort 13 elements (Batcher's odd-even mergesort of 16 without
+  // the exchanges that reach past 13; checked by the 0-1 principle over all 8192 inputs)
+  fn net13[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) inline {
+    self.ce(0usize, 1usize, order);
+    self.ce(2usize, 3usize, order);
+    self.ce(0usize, 2usize, order);
+    self.ce(1usize, 3usize, order);
+    self.ce(1usize, 2usize, order);
+    self.ce(4usize, 5usize, order);
+    self.ce(6usize, 7usize, order);
+    self.ce(4usize, 6usize, order);
+    self.ce(5usize, 7usize, order);
+    self.ce(5usize, 6usize, order);
+    self.ce(0usize, 4usize, order);
+    self.ce(2usize, 6usize, order);
+    self.ce(2usize, 4usize, order);
+    self.ce(1usize, 5usize, order);
+    self.ce(3usize, 7usize, order);
+    self.ce(3usize, 5usize, order);
+    self.ce(1usize, 2usize, order);
+    self.ce(3usize, 4usize, order);
+    self.ce(5usize, 6usize, order);
+    self.ce(8usize, 9usize, order);
+    self.ce(10usize, 11usize, order);
+    self.ce(8usize, 10usize, order);
+    self.ce(9usize, 11usize, order);
+    self.ce(9usize, 10usize, order);
+    self.ce(8usize, 12usize, order);
+    self.ce(10usize, 12usize, order);
+    self.ce(9usize, 10usize, order);
+    self.ce(11usize, 12usize, order);
+    self.ce(0usize, 8usize, order);
+    self.ce(4usize, 12usize, order);
+    self.ce(4usize, 8usize, order);
+    self.ce(2usize, 10usize, order);
+    self.ce(6usize, 10usize, order);
+    self.ce(2usize, 4usize, order);
+    self.ce(6usize, 8usize, order);
+    self.ce(10usize, 12usize, order);
+    self.ce(1usize, 9usize, order);
+    self.ce(5usize, 9usize, order);
+    self.ce(3usize, 11usize, order);
+    self.ce(7usize, 11usize, order);
+    self.ce(3usize, 5usize, order);
+    self.ce(7usize, 9usize, order);
+    self.ce(1usize, 2usize, order);
+    self.ce(3usize, 4usize, order);
+    self.ce(5usize, 6usize, order);
+    self.ce(7usize, 8usize, order);
+    self.ce(9usize, 10usize, order);
+    self.ce(11usize, 12usize, order);
+  }
+
+  // The leaf of the unstable sort, for up to 20 elements. An element of 8 bytes or less starts
+  // with a network of compare-exchanges on its first 13 (or 9) elements, which does not wait
+  // on a comparison's result as insertion does, then inserts the rest; a larger element is
+  // sorted by insertion alone (a move costs it more than a mispredicted branch)
+  fn leafSortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
+    let n = self.len;
+    var i = 1usize;
+    if mem.sizeof[T]() <= 8usize {
+      if n >= 13usize { self.net13(order); i = 13usize; }
+      else if n >= 9usize { self.net9(order); i = 9usize; }
+    }
     while i < n {
       self.insertTail(i, order);
       i = i + 1usize;
@@ -1033,18 +1152,25 @@ pub struct @opaque Array[T] is GcTraceElements {
     let was = l >= r;
     // The rest by a branch-free sweep: each element is exchanged with the first one not
     // before the pivot, and that boundary moves up by one when it was before it. No
-    // branch depends on a comparison, so random input costs no mispredictions
+    // branch depends on a comparison, so random input costs no mispredictions. The pivot is
+    // compared through a bitwise copy, made once: the stores of the sweep might alias the
+    // pivot's slot, so the comparison would otherwise reload it (and, for a float, work out
+    // its total-order key again) at every element. The copy is only read, and never dropped:
+    // it is forgotten at the end, since the pivot stays in the list, in slot 0, which the
+    // sweep never writes
     let p = self as *T;
+    let pv = mem.readRaw[T](p);
     var bound = l;
     var i = l;
     while i < r {
-      let before = order((p + i) as &T, p as &T) < 0i32;
+      let before = order((p + i) as &T, &pv) < 0i32;
       let held = mem.readRaw[T](p + i);
       mem.writeRaw[T](p + i, mem.readRaw[T](p + bound));
       mem.writeRaw[T](p + bound, held);
       bound = bound + (if before { 1usize } else { 0usize });
       i = i + 1usize;
     }
+    mem.forget[T](pv);
     let mid = bound - 1usize;
     self.swapAt(0usize, mid);
     (mid, was)
@@ -1092,7 +1218,7 @@ pub struct @opaque Array[T] is GcTraceElements {
     while true {
       let v = mem.sliceFromPartsMut[T](base + start, n);
       if n <= 20usize {
-        v.insertionSortBy(order);
+        v.leafSortBy(order);
         return;
       }
       if limit == 0u32 {
@@ -1178,14 +1304,14 @@ pub struct @opaque Array[T] is GcTraceElements {
     }
   }
 
-  // Put the elements in the order 'order' gives, in place, without allocating. Equal
-  // elements may change their order. A debug build panics if 'order' is not a consistent
+  // Put the elements in the order 'order' gives, in place, without allocating. The sort is
+  // unstable: equal elements may change their order. A debug build panics if 'order' is not a consistent
   // order (the result is not in order by it). Input that rises and then falls (an organ pipe)
   // is slower than List.sortBy takes: a quicksort loses to a sort that merges the runs it
   // finds on that pattern
   pub fn sortUnstableBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
     if self.len <= 20usize {
-      self.insertionSortBy(order);
+      self.leafSortBy(order);
     }
     else {
       self.pdqSort(order, null, true, self.splitLimit());
@@ -1221,7 +1347,7 @@ pub struct @opaque Array[T] is GcTraceElements {
   // long the runs are.
   // Sorted input is one run, so it takes n - 1 comparisons, no merge and no allocation;
   // a merge of two runs already in order is skipped. A merge copies the shorter of its two
-  // runs to a buffer of n / 2 elements, got from 'scratch' at the first merge that needs
+  // runs to a buffer of bufElems elements (n / 2 up to the whole list, capped at 8 MB; more for a short list), got from 'scratch' at the first merge that needs
   // it and given back before the sort returns. A merge works in blocks of 16 plain steps
   // and gallops (a doubling search, then a binary one, then one block move) after a block
   // that one run won whole, so streaks of equal or clustered values cost log time, not linear.
@@ -1557,7 +1683,7 @@ pub struct @opaque Array[T] is GcTraceElements {
     if order((p + mid) as &T, (p + mid - 1usize) as &T) >= 0i32 { return bufIn; }
     var buf = bufIn;
     if buf == null {
-      buf = (scratch as &MemRegion).allocate((self.len / 2usize) * mem.sizeof[T](), mem.alignof[T]()) as *T;
+      buf = (scratch as &MemRegion).allocate(self.bufElems() * mem.sizeof[T](), mem.alignof[T]()) as *T;
       if buf == null { panic("sort: no memory for the merge buffer"); }
     }
     // A merge that fits the buffer whole goes from both ends
@@ -1664,17 +1790,34 @@ pub struct @opaque Array[T] is GcTraceElements {
     buf
   }
 
+  // The merge buffer's size in elements: n / 2, but at least what the small sort of a
+  // quicksort's tail needs (stableQuick runs it only when the buffer holds the tail, 32 at most,
+  // and 16 more; otherwise it insertion-sorts), which is n + 16 up to 48. So a list of 95 or
+  // fewer gets more than n / 2. A list of 96 or more gets up to the whole list, as Rust's
+  // driftsort does: max(n / 2, min(n, 8 MB / size of T)), so a long list of small elements
+  // sorts without the top merge level, and a long list of large elements keeps n / 2
+  fn bufElems(self: &) usize {
+    var half = self.len / 2usize;
+    if mem.sizeof[T]() > 0usize && self.len >= 96usize {
+      let big = 8000000usize / mem.sizeof[T]();
+      let whole = if self.len < big { self.len } else { big };
+      if whole > half { half = whole; }
+    }
+    let leaf = if self.len + 16usize < 48usize { self.len + 16usize } else { 48usize };
+    if half > leaf { half } else { leaf }
+  }
+
   // Sort the range [start, start + len) of unsorted elements, stably, by a quicksort that
-  // partitions through 'buf' (room for n / 2 elements, got from 'scratch' if it is still
+  // partitions through 'buf' (room for bufElems elements, got from 'scratch' if it is still
   // null). Answers the buffer
-  fn sortUnsorted[F: fn(a: &T, b: &T) i32](self: &mut, start: usize, len: usize, bufIn: *T, scratch: *MemRegion, order: &F) *T {
+  fn sortUnsorted[F: fn(a: &T, b: &T) i32](self: &mut, start: usize, len: usize, bufIn: *T, scratch: *MemRegion, root: &mut SortScratch[T], order: &F) *T {
     var buf = bufIn;
     if buf == null {
-      buf = (scratch as &MemRegion).allocate((self.len / 2usize) * mem.sizeof[T](), mem.alignof[T]()) as *T;
+      buf = (scratch as &MemRegion).allocate(self.bufElems() * mem.sizeof[T](), mem.alignof[T]()) as *T;
       if buf == null { panic("sort: no memory for the merge buffer"); }
     }
     let part = mem.sliceFromPartsMut[T]((self as *T) + start, len);
-    part.stableQuick(buf, scratch, null, 2u32 * (64u32 - u32.from(u64.from(len).leadingZeros())), order);
+    part.stableQuick(buf, self.bufElems(), scratch, root, null, 2u32 * (64u32 - u32.from(u64.from(len).leadingZeros())), order);
     buf
   }
 
@@ -1705,12 +1848,130 @@ pub struct @opaque Array[T] is GcTraceElements {
     l
   }
 
+  // Sort the 4 elements at 'from' into dst[0..4], stably (Rust's sort4_stable): five
+  // comparisons, each element copied once, and the places read from are chosen, not the
+  // values. The array is only read
+  fn sort4To[F: fn(a: &T, b: &T) i32](self: &, from: usize, dst: *T, order: &F) inline {
+    let v = (self as *T) + from;
+    let c1 = order((v + 1usize) as &T, v as &T) < 0i32;
+    let c2 = order((v + 3usize) as &T, (v + 2usize) as &T) < 0i32;
+    let a = if c1 { v + 1usize } else { v };
+    let b = if c1 { v } else { v + 1usize };
+    let c = if c2 { v + 3usize } else { v + 2usize };
+    let d = if c2 { v + 2usize } else { v + 3usize };
+    let c3 = order(c as &T, a as &T) < 0i32;
+    let c4 = order(d as &T, b as &T) < 0i32;
+    let mn = if c3 { c } else { a };
+    let mx = if c4 { b } else { d };
+    let ul = if c3 { a } else { if c4 { c } else { b } };
+    let ur = if c4 { d } else { if c3 { b } else { c } };
+    let c5 = order(ur as &T, ul as &T) < 0i32;
+    let lo = if c5 { ur } else { ul };
+    let hi = if c5 { ul } else { ur };
+    mem.moveRaw(dst, mn, 1usize);
+    mem.moveRaw(dst + 1usize, lo, 1usize);
+    mem.moveRaw(dst + 2usize, hi, 1usize);
+    mem.moveRaw(dst + 3usize, mx, 1usize);
+  }
+
+  // Sort the 8 elements at 'from' into dst[0..8], stably, through tmp[0..8]: two sort4s and
+  // a merge of their results from both ends
+  fn sort8To[F: fn(a: &T, b: &T) i32](self: &, from: usize, dst: *T, tmp: *T, order: &F) {
+    self.sort4To(from, tmp, order);
+    self.sort4To(from + 4usize, tmp + 4usize, order);
+    mem.sliceFromPartsMut[T](dst, 8usize).mergeFromBothEnds(tmp, order);
+  }
+
+  // Fill this slice from 'src', which holds as many elements, the halves [0, n/2) and [n/2, n)
+  // each sorted, merged stably from both ends at once (Rust's bidirectional_merge: one step
+  // up from the fronts and one down from the backs per round, each without a branch). 'src'
+  // is only read. If the two chains do not meet (an 'order' that is not a consistent order),
+  // some element was written twice and another not at all: merge again in one direction,
+  // which always writes each once
+  fn mergeFromBothEnds[F: fn(a: &T, b: &T) i32](self: &mut, src: *T, order: &F) {
+    let n = self.len;
+    let dst = self as *T;
+    let half = n / 2usize;
+    var left = 0usize;
+    var right = half;
+    var leftEnd = half;
+    var rightEnd = n;
+    var k = 0usize;
+    while k < half {
+      let isL = order((src + right) as &T, (src + left) as &T) >= 0i32;
+      mem.moveRaw(dst + k, if isL { src + left } else { src + right }, 1usize);
+      right = right + (if isL { 0usize } else { 1usize });
+      left = left + (if isL { 1usize } else { 0usize });
+      let isR = order((src + rightEnd - 1usize) as &T, (src + leftEnd - 1usize) as &T) >= 0i32;
+      mem.moveRaw(dst + (n - 1usize - k), if isR { src + rightEnd - 1usize } else { src + leftEnd - 1usize }, 1usize);
+      rightEnd = rightEnd - (if isR { 1usize } else { 0usize });
+      leftEnd = leftEnd - (if isR { 0usize } else { 1usize });
+      k = k + 1usize;
+    }
+    if n % 2usize == 1usize {
+      let leftNonEmpty = left < leftEnd;
+      mem.moveRaw(dst + k, if leftNonEmpty { src + left } else { src + right }, 1usize);
+      left = left + (if leftNonEmpty { 1usize } else { 0usize });
+      right = right + (if leftNonEmpty { 0usize } else { 1usize });
+    }
+    if left != leftEnd || right != rightEnd {
+      var a = 0usize;
+      var b = half;
+      var o = 0usize;
+      while a < half && b < n {
+        if order((src + b) as &T, (src + a) as &T) < 0i32 {
+          mem.moveRaw(dst + o, src + b, 1usize);
+          b = b + 1usize;
+        }
+        else {
+          mem.moveRaw(dst + o, src + a, 1usize);
+          a = a + 1usize;
+        }
+        o = o + 1usize;
+      }
+      mem.moveRaw(dst + o, src + a, half - a);
+      mem.moveRaw(dst + o + (half - a), src + b, n - b);
+    }
+  }
+
+  // The stable sort's leaf for 16 to 32 elements of at most 16 bytes (Rust's
+  // small_sort_general): the first 8 of each half are sorted by 'sort8To' into 'scratch'
+  // (room for len + 16 elements), each half is extended there by insertion, and the halves
+  // are merged from both ends back into the array. The array is only read until the merge, so
+  // a comparison that panics before it leaves the array as it was; during the merge 'root'
+  // holds the scratch, since an element may live only there
+  fn smallSortStable[F: fn(a: &T, b: &T) i32](self: &mut, scratch: *T, root: &mut SortScratch[T], order: &F) {
+    let n = self.len;
+    let p = self as *T;
+    let half = n / 2usize;
+    self.sort8To(0usize, scratch, scratch + n, order);
+    self.sort8To(half, scratch + half, scratch + n + 8usize, order);
+    let lo = mem.sliceFromPartsMut[T](scratch, half);
+    var i = 8usize;
+    while i < half {
+      mem.moveRaw(scratch + i, p + i, 1usize);
+      lo.insertTail(i, order);
+      i = i + 1usize;
+    }
+    let hi = mem.sliceFromPartsMut[T](scratch + half, n - half);
+    i = 8usize;
+    while i < n - half {
+      mem.moveRaw(scratch + half + i, p + half + i, 1usize);
+      hi.insertTail(i, order);
+      i = i + 1usize;
+    }
+    root.p = scratch;
+    root.n = n;
+    self.mergeFromBothEnds(scratch, order);
+    root.n = 0usize;
+  }
+
   // A stable quicksort. 'pred' is the pivot of a partition that left all these elements at or
   // above it (null if none): where a new pivot is not above it, it equals it, and so does
   // every element not above the pivot; those are partitioned off as done and not visited
   // again, which is what takes few distinct values in a few levels. A range still being
   // split after 'limit' levels is left to the merge sort
-  fn stableQuick[F: fn(a: &T, b: &T) i32](self: &mut, buf: *T, scratch: *MemRegion, predIn: *T, limit: u32, order: &F) {
+  fn stableQuick[F: fn(a: &T, b: &T) i32](self: &mut, buf: *T, cap: usize, scratch: *MemRegion, root: &mut SortScratch[T], predIn: *T, limit: u32, order: &F) {
     let base = self as *T;
     var start = 0usize;
     var n = self.len;
@@ -1741,13 +2002,19 @@ pub struct @opaque Array[T] is GcTraceElements {
       }
       else {
         let mid = v.stablePartition(buf, &held, false, order);
-        mem.sliceFromPartsMut[T](base + start, mid).stableQuick(buf, scratch, pred, limit - 1u32, order);
-        mem.sliceFromPartsMut[T](base + start + mid, n - mid).stableQuick(buf, scratch, &held, limit - 1u32, order);
+        mem.sliceFromPartsMut[T](base + start, mid).stableQuick(buf, cap, scratch, root, pred, limit - 1u32, order);
+        mem.sliceFromPartsMut[T](base + start + mid, n - mid).stableQuick(buf, cap, scratch, root, &held, limit - 1u32, order);
         mem.forget[T](held);
         return;
       }
     }
-    mem.sliceFromPartsMut[T](base + start, n).insertionSortBy(order);
+    let tail = mem.sliceFromPartsMut[T](base + start, n);
+    if n >= 16usize && mem.sizeof[T]() <= 16usize && cap >= n + 16usize {
+      tail.smallSortStable(buf, root, order);
+    }
+    else {
+      tail.insertionSortBy(order);
+    }
   }
 
   // Merge the top two entries of the stack of runs (entry i holds the run at bases[i], lens[i]
@@ -1757,12 +2024,12 @@ pub struct @opaque Array[T] is GcTraceElements {
     let x = top - 2usize;
     let y = top - 1usize;
     var buf = bufIn;
-    if !sorted[x] && !sorted[y] && lens[x] + lens[y] <= self.len / 2usize {
+    if !sorted[x] && !sorted[y] && lens[x] + lens[y] <= (if self.len >= 96usize { self.bufElems() } else { self.len / 2usize }) {
       lens[x] = lens[x] + lens[y];
       return buf;
     }
-    if !sorted[x] { buf = self.sortUnsorted(bases[x], lens[x], buf, scratch, order); sorted[x] = true; }
-    if !sorted[y] { buf = self.sortUnsorted(bases[y], lens[y], buf, scratch, order); sorted[y] = true; }
+    if !sorted[x] { buf = self.sortUnsorted(bases[x], lens[x], buf, scratch, root, order); sorted[x] = true; }
+    if !sorted[y] { buf = self.sortUnsorted(bases[y], lens[y], buf, scratch, root, order); sorted[y] = true; }
     buf = self.mergeRuns(bases[x], bases[y], bases[y] + lens[y], buf, scratch, root, order);
     lens[x] = lens[x] + lens[y];
     buf
@@ -1829,7 +2096,7 @@ pub struct @opaque Array[T] is GcTraceElements {
         buf = self.collapseRuns(&bases, &mut lens, &mut sorted, top, buf, scratch, &mut root, order);
         top = top - 1usize;
       }
-      if !sorted[0usize] { buf = self.sortUnsorted(0usize, n, buf, scratch, order); }
+      if !sorted[0usize] { buf = self.sortUnsorted(0usize, n, buf, scratch, &mut root, order); }
       return buf;
     }
     bufIn
@@ -1837,15 +2104,16 @@ pub struct @opaque Array[T] is GcTraceElements {
 
   // Put the elements in the order 'order' gives, keeping the order of elements it calls
   // equal. 'scratch' is where the merges' buffer comes from (null, the default, is the heap's
-  // region; a default must be a literal, which 'heapRegion()' is not) (n / 2 elements, nothing for 20
+  // region; a default must be a literal, which 'heapRegion()' is not) (bufElems elements, nothing for 20
   // or fewer elements or for input that is already in order); a list passes its own region.
+  // Peak scratch is up to the whole list, capped at 8 MB, and never below half the list.
   // A debug build panics if 'order' is not a consistent order (the result is not in order by
   // it); a release build always returns some permutation of the elements
   pub fn sortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F, scratchIn: *MemRegion = null) {
     let scratch = if scratchIn == null { heapRegion() } else { scratchIn };
     let buf = self.sortRuns(order, scratch, true, null);
     if buf != null {
-      (scratch as &MemRegion).release(buf as *u8, (self.len / 2usize) * mem.sizeof[T]());
+      (scratch as &MemRegion).release(buf as *u8, self.bufElems() * mem.sizeof[T]());
     }
     #if #debug {
       if !self.isSortedBy(order) {
@@ -3844,6 +4112,16 @@ pub struct @opaque mem {
     x >> T.from(n % (u32.from(mem.sizeof[T]()) * 8u32))
   }
 
+  // Returns 'v' unchanged. The optimiser treats 'v' as made and used by code it
+  // cannot see, so it neither folds nor deletes the work that produces 'v', and
+  // it assumes nothing about the value returned. It's a best-effort hint for
+  // benchmarks: a program's meaning never depends on it, and it promises nothing
+  // about timing or about ordering between threads. Wrap a benchmark's inputs as
+  // well as its result: 'blackBox(f(blackBox(x)))', because a constant input
+  // still folds. A target with no lowering for it runs the body, which has the
+  // same meaning and no barrier
+  pub fn @intrinsic blackBox[T](v: T) T { v }
+
   // The full 128-bit product of a and b, its high 64 bits and its low 64 bits
   // exclusive-or'd: the mixing step of the wyhash family, one multiply on a
   // 64-bit target. The low half alone is 'a * b', so the high half alone is
@@ -4404,9 +4682,46 @@ pub struct FloatText {
   pub fn text(self: &) &str inline {
     mem.sliceFromParts[u8](&bytes as *u8, len) as &str
   }
+
+  // The digits and exponent of the shortest text, for a caller that lays the
+  // number out itself (see FloatDigits): the same digits 'FloatText(x)' writes
+  pub fn shortest(x: f64) FloatDigits inline {
+    let bits = x.bits();
+    let negative = (bits >> 63u64) != 0u64;
+    if ((bits >> 52u64) & 0x7FFu64) == 0x7FFu64 || (bits & 0x7FFFFFFFFFFFFFFFu64) == 0u64 {
+      return FloatDigits(digits: 0u64, exponent: 0i32, negative: negative);
+    }
+    var dg = 0u64;
+    let e = floatDigits(&mut dg as *u64, x);
+    FloatDigits(digits: dg, exponent: i32.from(e), negative: negative)
+  }
+
+  // The same for the shortest text that reads back as that f32
+  pub fn shortestF32(x: f32) FloatDigits inline {
+    let bits = u64.from(x.bits());
+    let negative = (bits >> 31u64) != 0u64;
+    if ((bits >> 23u64) & 0xFFu64) == 0xFFu64 || (bits & 0x7FFFFFFFu64) == 0u64 {
+      return FloatDigits(digits: 0u64, exponent: 0i32, negative: negative);
+    }
+    var dg = 0u64;
+    let e = floatDigits32(&mut dg as *u64, x);
+    FloatDigits(digits: dg, exponent: i32.from(e), negative: negative)
+  }
+}
+
+// The shortest digits of a float: its value is digits * 10^exponent (negated
+// if 'negative'), where 'digits' is an integer of 1 to 17 digits with no
+// trailing zero. Zero, an infinity and a NaN have digits 0 and exponent 0, and
+// 'negative' is their sign bit: the caller tells them apart by the float.
+pub struct FloatDigits {
+  pub digits: u64;
+  pub exponent: i32;
+  pub negative: bool;
 }
 
 extern {
+  fn @c("cone_floatDigits") floatDigits(out: *u64, x: f64) i64;
+  fn @c("cone_floatDigits32") floatDigits32(out: *u64, x: f32) i64;
   fn @c("cone_floatShortest") floatShortest(buf: *u8, x: f64) usize;
   fn @c("cone_floatShortest32") floatShortest32(buf: *u8, x: f32) usize;
 }
@@ -4467,8 +4782,12 @@ pub struct TextOut {
   pub base: *u8;
   pub len: usize;
   pub cap: usize;
-  // 0: a record (blocks chain on), 1: a window made roomy by 'spill', 2: a
-  // window of fixed size
+  // The low two bits: 0: a record (blocks chain on), 1: a window made roomy by
+  // 'spill', 2: a window of fixed size (read 'mode & 3'). Bit 2 (4): color is on,
+  // the maker's to set (colorOn, setColor): the sink is a terminal that takes
+  // color. Bit 3 (8): a style was written, so the record ends with a reset
+  // (styled, setStyled). Both are off in a new writer. Bits 8 to 15: the locale
+  // id (localeId, setLocaleId), 0 in a new writer.
   pub mode: u32;
   // What the maker tagged the record with (the console's: which stream)
   pub tag: u32;
@@ -4507,6 +4826,29 @@ pub struct TextOut {
   pub fn over(base: *u8, len: usize, cap: usize, owner: *u8, spill: usize, done: usize) TextOut inline {
     TextOut(base, len, cap, if spill == 0usize {2u32} else {1u32}, 0u32, spill, done, owner, 0usize, null, null,
       Array[u8, 128]() <- fill 0u8, 0u32, 0u32)
+  }
+
+  // Whether styles (format's red, bold, ...) write their escape bytes here: off
+  // unless the writer's maker turned it on, since only a terminal wants them
+  pub fn colorOn(self: &) bool inline {(mode & 4u32) != 0u32}
+  // The maker's: color on or off for this writer
+  pub fn setColor(self: &uni, on: bool) inline {
+    mode = if on {mode | 4u32} else {mode & 0xFFFFFFFBu32};
+  }
+  // Whether a style was written here (so the record ends with a reset), and the
+  // writer of a style saying it was
+  pub fn styled(self: &) bool inline {(mode & 8u32) != 0u32}
+  pub fn setStyled(self: &uni) inline {
+    mode = mode | 8u32;
+  }
+
+  // The locale this writer writes in, a small id: 0 is invariant, the
+  // machine-readable default every new writer has. Core only stores it; what an
+  // id means is the locale package's (locale.set is the maker's way in,
+  // Locale.of reads it back)
+  pub fn localeId(self: &) u8 inline {u8.from((mode >> 8u32) & 0xFFu32)}
+  pub fn setLocaleId(self: &uni, id: u8) inline {
+    mode = (mode & 0xFFFF00FFu32) | (u32.from(id) << 8u32);
   }
 
   // The maker's: the tag, and the thing the record was made for

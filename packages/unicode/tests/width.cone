@@ -1,0 +1,45 @@
+// unicode.width: chosen code points whose widths come from the Unicode 18.0.0
+// data files by hand (EastAsianWidth.txt: W and F are 2; UnicodeData.txt general
+// category Mn, Me, Cf and Cc are 0; everything else, Ambiguous included, is 1),
+// then over every code point but the surrogates against the totals
+// unicodetables.py computes from those same files with its own code.
+
+mod width;
+
+import testing use *;
+import unicode;
+
+fn w(c: char, want: u64, label: &Array[u8]) bool { expectUInt(u64.from(unicode.width(c)), want, label) }
+
+fn main() i32 {
+  // ASCII and Latin-1: controls 0, the rest 1 but the soft hyphen (Cf)
+  w('a', 1u64, "a"); w(' ', 1u64, "space"); w('~', 1u64, "tilde");
+  w('\u0000', 0u64, "nul"); w('\u0009', 0u64, "tab"); w('\u001F', 0u64, "us"); w('\u007F', 0u64, "del");
+  w('\u0080', 0u64, "c1 first"); w('\u009F', 0u64, "c1 last"); w(' ', 1u64, "nbsp");
+  w('­', 0u64, "soft hyphen"); w('é', 1u64, "e acute"); w('±', 1u64, "plus-minus (Ambiguous)");
+  // Combining marks (Mn, Me) and format characters (Cf)
+  w('́', 0u64, "combining acute"); w('҈', 0u64, "enclosing mark"); w('️', 0u64, "VS16");
+  w('​', 0u64, "zero width space"); w('‍', 0u64, "zwj"); w('\U000E0001', 0u64, "language tag");
+  w(' ', 1u64, "line separator (Zl)"); w('•', 1u64, "bullet (Ambiguous)");
+  // Wide and fullwidth
+  w('中', 2u64, "cjk ideograph"); w('あ', 2u64, "hiragana"); w('가', 2u64, "hangul syllable");
+  w('ᄀ', 2u64, "hangul jamo"); w('〈', 2u64, "left angle bracket W"); w('⌚', 2u64, "watch emoji");
+  w('　', 2u64, "ideographic space F"); w('Ａ', 2u64, "fullwidth A"); w('｡', 1u64, "halfwidth stop H");
+  w('\U0001F600', 2u64, "grinning face"); w('\U00020000', 2u64, "cjk extension B");
+  w('\U0001F1E6', 1u64, "regional indicator A (N)"); w('\U0010FFFF', 1u64, "last code point");
+
+  var zero = 0u64; var wide = 0u64;
+  var x = 0u32;
+  while x <= 0x10FFFFu32 {
+    if x < 0xD800u32 || x > 0xDFFFu32 {
+      let n = unicode.width(char.from(x));
+      if n == 0u8 { zero = zero + 1u64; }
+      if n == 2u8 { wide = wide + 1u64; }
+    }
+    x = x + 1u32;
+  }
+  expectUInt(zero, 2331u64, "zero-width count");
+  expectUInt(wide, 183866u64, "wide count");
+
+  return done();
+}

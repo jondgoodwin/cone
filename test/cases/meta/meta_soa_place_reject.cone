@@ -1,0 +1,44 @@
+// What 'ps[i]' over a SoaList (a type declaring SoaLayout) refuses:
+// - a name that is no column ('len' a method of the list, 'nosuch'): ErrorSoaNoColumn, naming the row type;
+// - a borrow of the whole row, '&ps[i]', '&mut ps[i]', '&uni ps[i]', and a change of it in place,
+//   'ps[i] += r': ErrorSoaRowBorrow, naming the column form;
+// - a whole row of a type that moves (a String field): 'rowAt' and 'setRowAt' exist only for Copy.
+
+mod meta_soa_place_reject;
+
+import collections use *;
+
+struct Pt {
+  pub x: i32;
+  pub y: i32;
+}
+
+struct Row {
+  pub x: i32;
+  pub at: Pt;
+}
+
+struct Named {
+  pub name: String;
+  pub id: i32;
+}
+
+fn badField(ps: &uni SoaList[Row]) i32 {
+  let a = ps[0usize].len;           //~ ErrorSoaNoColumn:22 "'ps[i]' is a row of Row, which has no field 'len'"
+  let b = ps[0usize].nosuch;        //~ ErrorSoaNoColumn:22 "which has no field 'nosuch'"
+  0
+}
+
+fn badBorrow(ps: &uni SoaList[Row]) {
+  let a = &ps[0usize];              //~ ErrorSoaRowBorrow:14 "A row of Row cannot be borrowed whole"
+  let b = &mut ps[0usize];          //~ ErrorSoaRowBorrow:18 "'&uni ps.field[i]'"
+  let c = &uni ps[0usize];          //~ ErrorSoaRowBorrow:18 "A row of Row cannot be borrowed whole"
+  ps[0usize] += Row(1, Pt(1, 2));   //~ ErrorSoaRowBorrow:5 "A whole row of Row is written by"
+}
+
+fn moveRow(ns: &uni SoaList[Named], n: Named) {
+  let r = ns[0usize];               //~ ErrorWhereAbsent:13
+  ns[0usize] = n;                   //~ ErrorWhereAbsent:17
+}
+
+fn main() {}

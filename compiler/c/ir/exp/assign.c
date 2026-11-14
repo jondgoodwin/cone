@@ -342,6 +342,11 @@ static int assignTargetsTypeCheck(TypeCheckState *pstate, INode **lvalp) {
             return 0;
         if (setindex && *lvalp == (INode*)setindex && (setindex->flags & FlagBorrow))
             derefInject(lvalp);
+        // 'ps[i].f = v' over a SoaList: written as a field, checked as the column's element
+        // 'ps.f[i]' (fnCallSoaField), the index a place is stored through as above
+        else if (setindex == NULL && (*lvalp)->tag == FnCallTag && ((*lvalp)->flags & FlagIndex)
+            && ((*lvalp)->flags & FlagBorrow) && ((FnCallNode*)*lvalp)->methfld == NULL)
+            derefInject(lvalp);
         return 1;
     }
     // The targets of a parallel assignment, each its own place; the tuple of their types

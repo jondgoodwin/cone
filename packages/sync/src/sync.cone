@@ -530,7 +530,7 @@ const spinLimit = 100u32;
 
 // Put desired in *p if it holds expected, acquiring when it does: whether it
 // did, and the value seen
-fn casAcquire(p: *u32, expected: u32, desired: u32) u32, bool {
+fn casAcquire(p: *u32, expected: u32, desired: u32) u32, bool inline {
   mem.atomicCompareSwap[u32](p, expected, desired, MemOrder.Acquire, MemOrder.Relaxed)
 }
 
@@ -569,10 +569,10 @@ pub struct Mutex is Move, LockPermission, ThreadSafe {
   fn releaseMut(self: &opaq) inline {self.unlock();}
 
   // The state word, as core's mem operations reach it
-  fn word(self: &opaq) *u32 {&(*(self as *Mutex)).state as *u32}
+  fn word(self: &opaq) *u32 inline {&(*(self as *Mutex)).state as *u32}
 
   // Take the lock if nobody holds it: whether it was taken
-  pub fn tryLock(self: &opaq) bool {
+  pub fn tryLock(self: &opaq) bool inline {
     var seen = 0u32;
     var taken = false;
     seen, taken = casAcquire(self.word(), mutexUnlocked, mutexLocked);
@@ -580,7 +580,7 @@ pub struct Mutex is Move, LockPermission, ThreadSafe {
   }
 
   // Take the lock, sleeping while another thread holds it
-  pub fn lock(self: &opaq) {
+  pub fn lock(self: &opaq) inline {
     if !self.tryLock() {
       self.lockContended();
     }
@@ -631,7 +631,7 @@ pub struct Mutex is Move, LockPermission, ThreadSafe {
   // Give up the lock, waking one waiting thread if any may be asleep. The one
   // woken marks it contended again when it takes it, so every other sleeper
   // is woken in its turn.
-  pub fn unlock(self: &opaq) {
+  pub fn unlock(self: &opaq) inline {
     let p = self.word();
     let was = mem.atomicSwap[u32](p, mutexUnlocked, MemOrder.Release);
     if was == mutexContended {

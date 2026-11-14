@@ -72,6 +72,15 @@ void fnCallVariantTermNameRes(NameResState *pstate, INode **nodep);
 uint32_t fnCallSetPlace(INode *place);
 void fnCallSetPlaceEnd(uint32_t mark);
 
+// A row of a type declaring SoaLayout (a 'SoaList'): 'ps[i].f' is 'ps.f[i]', 'ps[i]' read
+// whole is 'ps.rowAt(i)' and 'ps[i] = r' is 'ps.setRowAt(i, r)' (fncall.c, fnCallSoaField).
+// 'fnCallSoaRowAssign' lowers the assignment, answering whether it did; 'fnCallSoaRowBorrow',
+// asked of a borrow's place, refuses a borrow of the whole row (ErrorSoaRowBorrow), answering
+// whether it was one.
+int fnCallSoaFieldLower(INode **placep);
+int fnCallSoaRowAssign(TypeCheckState *pstate, AssignNode **nodep);
+int fnCallSoaRowBorrow(INode *place);
+
 // The index a place written to is, 'x[i]' of 'x[i] = v' (the place itself, not a
 // link of its chain); or NULL
 FnCallNode *fnCallSetIndexRoot(INode *lval);

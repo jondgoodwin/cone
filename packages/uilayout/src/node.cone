@@ -174,13 +174,32 @@ pub struct UiEvent {
   pub b: f32 = 0.;
   pub i: i32 = 0i32;
   pub j: u32 = 0u32;
+  pub nodeGen: u32 = 0u32;      // the generation of the cell 'node' names (see Ui.handleOf)
+  pub otherGen: u32 = 0u32;
+}
+
+// The nodes: a GenPool[Node], read by cell index (the id the tree links and the
+// API use, so `ui.nodes[id]` reads as it did on a List). The generation lives in
+// the pool, and is handed out at the edges only: Ui.handleOf, UiEvent.nodeGen
+// `[]` and `&[]` are `inline` because uilayout's callers sit in other packages:
+// without it every `nodes[i]` was an out-of-line call (bench: 226 and 60 calls).
+// Next lever, unmeasured (13 Nov): layout2101 still runs 1.20x the List version,
+// likely the pool cell's bound and live-mark checks on the read path.
+pub struct NodeTable {
+  pub pool: GenPool[Node];
+
+  pub fn make() NodeTable {NodeTable(GenPool[Node]())}
+  pub fn `[]`(self: &, index: usize) &Node inline {self.pool.rawAt(u32.from(index)) as &Node}
+  pub fn `&[]`(self: &mut, index: usize) &mut Node inline {self.pool.rawAt(u32.from(index)) as &mut Node}
+  // One past the highest cell ever made (a freed cell in it reads as not alive)
+  pub fn len(self: &) usize {self.pool.bound()}
+  pub fn isLive(self: &, index: usize) bool {self.pool.isLive(u32.from(index))}
 }
 
 pub struct Ui {
-  pub nodes: List[Node];
+  pub nodes: NodeTable;
   pub texts: List[String];            // parallel to nodes
   pub tips: List[String];             // parallel to nodes
-  pub free: List[usize];
   pub tracks: List[Track];
   pub theme: Theme;
   pub root: usize;
@@ -201,7 +220,6 @@ pub struct Ui {
   pub tabpages: List[TabPage];
   pub toggles: List[ToggleData];
   pub slots: List[SlotData];
-  pub invgrids: List[InvGridData];
   pub hotslots: List[HotSlotData];
   pub minimaps: List[MinimapData];
   pub markers: List[MapMarker];
@@ -212,18 +230,31 @@ pub struct Ui {
   // input state (input.cone, dragdrop.cone)
   pub input: InputState;
 
+  // Rows of the tables above whose node is gone, free for the next create: one list per node kind
+  // (indexed by K_*). A row is reused in place, so every node.data index stays valid.
+  freeRows: List[List[usize]];
+  // Marker rows that are free (owner NIL), reused in place by the next marker, so every live
+  // marker keeps its index
+  freeMarkers: List[usize];
+
   // set while measuring: some child's size was shaped by a bound (layout.cone)
   pub clampSeen: bool = false;
 
   pub fn make(width: f32, height: f32) Ui {
-    var ui = Ui(List[Node](), List[String](), List[String](), List[usize](),
+    var ui = Ui(NodeTable.make(), List[String](), List[String](),
       List[Track](), Theme.standard(), 0usize, 0usize, width, height, Stats(),
       List[UiEvent](), 0.,
       List[SliderData](), List[KnobData](), List[FieldData](), List[ListData](),
       List[WindowData](), List[TabsData](), List[TabPage](), List[ToggleData](),
-      List[SlotData](), List[InvGridData](), List[HotSlotData](), List[MinimapData](),
-      List[MapMarker](), InvModel.make(), InputState.make());
-    ui.nodes.push(Node());          // slot 0: the null node
+      List[SlotData](), List[HotSlotData](), List[MinimapData](),
+      List[MapMarker](), InvModel.make(), InputState.make(),
+      List[List[usize]](), List[usize]());
+    var k = 0u32;
+    while k <= K_HOSTED {
+      ui.freeRows.push(List[usize]());
+      k = k + 1u32;
+    }
+    ui.nodes.pool.add(Node());      // cell 0: the null node
     ui.texts.push(String());
     ui.tips.push(String());
     ui.root = ui.allocNode(K_PLAIN);
@@ -252,21 +283,16 @@ pub struct Ui {
   // ---- allocating and linking nodes ----
 
   fn allocNode(self: &mut, kind: u32) usize {
-    var id = 0usize;
-    if free.len() > 0usize {
-      match free.pop() {
-        case let Some(v) { id = v; }
-        else {}
-      }
-      nodes.set(id, Node());
+    let id = usize.from(nodes.pool.add(Node()).index);
+    if id < texts.len() {
       texts[id].clear();
       tips[id].clear();
     }
     else {
-      id = nodes.len();
-      nodes.push(Node());
-      texts.push(String());
-      tips.push(String());
+      while texts.len() <= id {
+        texts.push(String());
+        tips.push(String());
+      }
     }
     nodes[id].alive = true;
     nodes[id].kind = kind;
@@ -301,6 +327,11 @@ pub struct Ui {
       input.tip.shown = false;
     }
     if input.win.node == id {input.win.mode = 0u32;}
+    freeRow(id);
+    var h = 0usize;
+    while h < input.hotbars.len() {
+      if *input.hotbars[h] == id {input.hotbars.remove(h);} else {h = h + 1usize;}
+    }
     unlisten(self, id);
     var i = 0usize;
     while i < input.hoverChain.len() {
@@ -311,11 +342,75 @@ pub struct Ui {
     }
   }
 
+  // The node's widget row goes back to its kind's free list, reset to a blank row (which
+  // releases the Strings and Lists it held, and stops a field scan from finding the dead node)
+  fn freeRow(self: &mut, id: usize) {
+    let kind = nodes[id].kind;
+    let d = nodes[id].data;
+    var done = true;
+    if kind == K_TOGGLE {toggles.set(d, ToggleData());}
+    else if kind == K_SLIDER {sliders.set(d, SliderData());}
+    else if kind == K_KNOB {knobs.set(d, KnobData());}
+    else if kind == K_TEXTFIELD {fields.set(d, FieldData(adv: List[f32](), placeholder: String()));}
+    else if kind == K_LIST {lists.set(d, ListData());}
+    else if kind == K_WINDOW {windows.set(d, WindowData());}
+    else if kind == K_TABS {
+      tabsets.set(d, TabsData());
+      var keep = List[TabPage]();
+      var i = 0usize;
+      while i < tabpages.len() {
+        if tabpages[i].tabs != id {keep.push(*tabpages[i]);}
+        i = i + 1usize;
+      }
+      tabpages = keep;
+    }
+    else if kind == K_SLOT {slots.set(d, SlotData());}
+    else if kind == K_HOTSLOT {hotslots.set(d, HotSlotData());}
+    else if kind == K_MINIMAP {minimaps.set(d, MinimapData()); freeMarkersOf(id);}
+    else if kind == K_HOSTED {input.hosted.set(d, HostedWidget(0usize, DrawList.make()));}
+    else {done = false;}
+    if done {freeRows[usize.from(kind)].push(d);}
+  }
+
+  // The markers owned by 'id' become free rows (owner NIL, so no scan finds them), each keeping its index
+  fn freeMarkersOf(self: &mut, id: usize) {
+    var i = 0usize;
+    while i < markers.len() {
+      if markers[i].owner == id {
+        markers.set(i, MapMarker(owner: NIL));
+        freeMarkers.push(i);
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // The row for a new widget: a freed one of this kind if there is one, else 'fresh' (the
+  // table's length: the caller pushes a new row)
+  fn takeRow(self: &mut, kind: u32, fresh: usize) usize {
+    let n = freeRows[usize.from(kind)].len();
+    if n == 0usize {return fresh;}
+    let r = *freeRows[usize.from(kind)][n - 1usize];
+    freeRows[usize.from(kind)].truncate(n - 1usize);
+    r
+  }
+
   pub fn setFocus(self: &mut, id: usize) {
     focusSet(self, id);
   }
 
-  pub fn alive(self: &, id: usize) bool {id != NIL && id < nodes.len() && nodes[id].alive}
+  pub fn alive(self: &, id: usize) bool {id != NIL && id < nodes.len() && nodes.isLive(id)}
+
+  // The handle of the live node in cell id (generation included), or Handle.none(): what a
+  // holder that outlives the node keeps; `resolve` turns it back
+  pub fn handleOf(self: &, id: usize) Handle {
+    if id == NIL || id >= nodes.len() {return Handle.none();}
+    nodes.pool.handleAt(u32.from(id))
+  }
+
+  // The cell id h names, or NIL if that node has been destroyed (even if its cell is reused)
+  pub fn resolve(self: &, h: Handle) usize {
+    if nodes.pool.borrow(h) is None {NIL} else {usize.from(h.index)}
+  }
 
   // Makes 'child' the last child of 'parent'; it leaves its old parent
   pub fn append(self: &mut, parent: usize, child: usize) {
@@ -371,10 +466,7 @@ pub struct Ui {
       c = n;
     }
     forgetNode(id);
-    nodes[id].alive = false;
-    nodes[id].first = NIL;
-    nodes[id].last = NIL;
-    free.push(id);
+    nodes.pool.removeAt(u32.from(id));
   }
 
   fn destroyBelow(self: &mut, id: usize) {
@@ -385,10 +477,7 @@ pub struct Ui {
       c = n;
     }
     forgetNode(id);
-    nodes[id].alive = false;
-    nodes[id].first = NIL;
-    nodes[id].last = NIL;
-    free.push(id);
+    nodes.pool.removeAt(u32.from(id));
   }
 
   // Moves a child to the end of its parent's list: drawn last, hit first
@@ -487,10 +576,12 @@ pub struct Ui {
   pub fn invalidateAll(self: &mut) {
     var i = 1usize;
     while i < nodes.len() {
-      nodes[i].dirty = 7u32;
-      nodes[i].cValid = false;
-      nodes[i].aValid = false;
-      nodes[i].tValid = false;
+      if nodes.isLive(i) {
+        nodes[i].dirty = 7u32;
+        nodes[i].cValid = false;
+        nodes[i].aValid = false;
+        nodes[i].tValid = false;
+      }
       i = i + 1usize;
     }
   }
@@ -716,7 +807,7 @@ pub struct Ui {
   pub fn hasState(self: &, id: usize, bit: u32) bool {(nodes[id].state & bit) != 0u32}
 
   pub fn emit(self: &mut, kind: u32, node: usize, other: usize, a: f32, b: f32, i: i32, j: u32) {
-    events.push(UiEvent(kind, node, other, a, b, i, j));
+    events.push(UiEvent(kind, node, other, a, b, i, j, handleOf(node).gen, handleOf(other).gen));
   }
 
   // The events since the last call, oldest first

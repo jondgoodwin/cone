@@ -592,7 +592,7 @@ fn drawDump(device: &mut Device, meshes: &List[mesh.Mesh], folder: &String, star
     return 0;
   }
   var readback = device.createBuffer(u64.from(w) * u64.from(h) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  let out = libc.malloc(usize.from(VIDEO_WIDTH) * usize.from(VIDEO_HEIGHT) * 4usize);
+  var out = List[u8](usize.from(VIDEO_WIDTH) * usize.from(VIDEO_HEIGHT) * 4usize) <- fill 0u8;
   let bigBytes = usize.from(w) * usize.from(h) * 4usize;
   let big = libc.malloc(bigBytes);
   let decode = decodeTable();
@@ -623,10 +623,10 @@ fn drawDump(device: &mut Device, meshes: &List[mesh.Mesh], folder: &String, star
     // Copied out of the mapped buffer first: reading it texel by texel is
     // many times slower (it is not cached)
     libc.memcpy(big, readback.mappedRange(), bigBytes);
-    downsample(big, out, VIDEO_WIDTH, VIDEO_HEIGHT, SUPERSAMPLE, decode, encode);
+    downsample(big, &mut out[0usize], VIDEO_WIDTH, VIDEO_HEIGHT, SUPERSAMPLE, decode, encode);
     let averaged = sdl.GetPerformanceCounter();
     downMs = downMs + f64.from(averaged - drawn) / frequency * 1000.;
-    let shot = Image.fromTexels(out, i32.from(VIDEO_WIDTH), i32.from(VIDEO_HEIGHT), false);
+    let shot = Image.fromTexels(out.view(), i32.from(VIDEO_WIDTH), i32.from(VIDEO_HEIGHT), false);
     let name = frameName(folder, f);
     if shot.save(&Path.from(name.view())) { written = written + 1; }
     else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; }
@@ -634,7 +634,6 @@ fn drawDump(device: &mut Device, meshes: &List[mesh.Mesh], folder: &String, star
     n = n + 1;
   }
   device.waitIdle();
-  libc.free(out);
   libc.free(big);
   libc.free(decode as *u8);
   libc.free(encode);
@@ -898,7 +897,7 @@ fn main(argc: i32, argv: **u8) i32 {
           name = shotName(&screenshot, "-solo");
         }
         if screenshot.len() > 0usize {
-          let shot = Image.fromTexels(p, i32.from(w), i32.from(h), bgra);
+          let shot = Image.fromTexels(readback.mappedBytes(), i32.from(w), i32.from(h), bgra);
           let written = shot.save(&Path.from(name.view()));
           print <- "Screenshot: "; printStr(name.view());
           if written { print <- "\n"; } else { print <- " could NOT be written\n"; shotsWritten = false; }

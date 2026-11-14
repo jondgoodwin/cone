@@ -9,8 +9,11 @@ import testing use *;
 import collections use *;
 import time use Duration, Instant;
 import netmsg use *;
-import iobuf use IoBuf;
+import iobuf use IoBuf, Bytes;
 import streams;
+
+// A copy of some bytes, frozen: what the core takes to send
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
 
 const sec = 1000000000i64;
 
@@ -134,12 +137,12 @@ fn main() i32 {
   // Packets of another session are not a connection's
   var a = ConnectionCore.make(cfg, 0xABCDu64, at(0i64));
   var b = ConnectionCore.make(cfg, 0xABCEu64, at(0i64));
-  a.sendReliable("hi");
+  a.sendReliable(fz("hi"));
   var pk = Packets();
   var evs = List[CoreEvent]();
   a.poll(at(10i64), &mut pk, &mut evs);
   expectUInt(u64.from(pk.len()), 1u64, "a sends a packet");
-  expect(!b.receive(pk[0usize].view(), at(11i64), &mut evs), "b, of another session, refuses it");
+  expect(!b.receive(&fz(pk[0usize].view()), at(11i64), &mut evs), "b, of another session, refuses it");
   expectUInt(u64.from(evs.len()), 0u64, "and hears nothing");
   expectUInt(b.stats().packetsInvalid, 1u64, "counted as invalid");
   done()

@@ -1,0 +1,25 @@
+// The one line a CsvError gives a person is pinned here, with the number
+// fields at their widest, so a change to how it is written fails.
+
+mod errortext;
+
+import testing use *;
+import collections use *;
+import csv;
+
+fn says(e: csv.CsvError, want: &str, label: &str) { expectStr((String() <- e).view(), want, label); }
+
+fn main() i32 {
+  says(csv.CsvError(csv.ErrorKind.BareQuote, 5usize, 7u32, 3u32, 4u32, String.from("a quote inside an unquoted field")),
+       "csv: record 4, line 7, column 3: a quote inside an unquoted field", "position");
+  says(csv.CsvError(csv.ErrorKind.BareQuote, 5usize, 4000000000u32, 4294967295u32, 4294967295u32, String.from("x")),
+       "csv: record 4294967295, line 4000000000, column 4294967295: x", "widest position");
+  says(csv.CsvError(csv.ErrorKind.WriteValue, 0usize, 0u32, 0u32, 0u32, String.from("the delimiter and the quote are the same byte")),
+       "csv: the delimiter and the quote are the same byte", "writing, no position");
+  says(csv.CsvError(csv.ErrorKind.FieldCount, 0usize, 0u32, 0u32, 2u32, String.from("x")), "csv: record 2: x", "a record and no line");
+  says(csv.CsvError.none(), "csv: ", "none");
+  let c = csv.CsvError(csv.ErrorKind.QuoteThenText, 9usize, 2u32, 3u32, 1u32, String.from("r")).clone();
+  expectUInt(u64.from(c.offset), 9u64, "clone keeps the offset");
+  says(c, "csv: record 1, line 2, column 3: r", "clone keeps the text");
+  done()
+}

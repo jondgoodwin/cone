@@ -67,6 +67,9 @@ extern {
   fn @c(system) CreateWaitableTimerExW(attrs: *u8, name: *u16, flags: u32, access: u32) usize;
   fn @c(system) SetWaitableTimer(h: usize, due: &i64, period: i32, apc: *u8, arg: *u8, resume: i32) i32;
   fn @c(system) CancelWaitableTimer(h: usize) i32;
+  fn @c(system) CreateEventW(attrs: *u8, manual: i32, initial: i32, name: *u8) usize;
+  fn @c(system) SetEvent(h: usize) i32;
+  fn @c(system) WaitForMultipleObjects(n: u32, handles: *u8, all: i32, ms: u32) u32;
   fn @c(system) MultiByteToWideChar(page: u32, flags: u32, from: *u8, fromLen: i32, to: *u16, toLen: i32) i32;
   fn @c(system) WideCharToMultiByte(page: u32, flags: u32, from: *u16, fromLen: i32, to: *u8, toLen: i32,
       fallback: *u8, usedFallback: *i32) i32;
@@ -281,8 +284,12 @@ fn openPort() u32, usize, usize, usize {
   #if #os == .windows {
     let ws = winsock();
     if ws != 0u32 {return ws, 0usize, 0usize, 0usize;}
-    // Concurrency 0: as many threads as processors may take from it at once
-    let port = CreateIoCompletionPort(invalidHandle, 0usize, 0usize, 0u32);
+    // No real limit on the threads that may take from it at once: a thread
+    // that has taken from a port counts against the limit while it runs, and
+    // an actor runtime's workers poll it (Waker's STANDING ASIDE), so with the
+    // system's default of one per processor, workers merely running could
+    // hold back the one thread waiting here
+    let port = CreateIoCompletionPort(invalidHandle, 0usize, 0usize, 65536u32);
     if port == 0usize {return GetLastError(), 0usize, 0usize, 0usize;}
     0u32, port, 0usize, 0usize
   } #else {
