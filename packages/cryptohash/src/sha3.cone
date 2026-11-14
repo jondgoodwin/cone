@@ -1,0 +1,217 @@
+// -------- SHA-3 (FIPS 202): Keccak-f[1600] and the sponge --------
+
+// The sponge both SHA-3 hashers share, written once. It is the state of a
+// Keccak sponge with a fixed rate: 25 lanes of 64 bits, the block being
+// filled, how much of it is filled and the bytes taken so far. SHA-3's padding
+// is the suffix bits 01 followed by pad10*1, which is the byte 0x06 then zeros
+// then 0x80 on the last byte of the block. (SHAKE would use 0x1f and squeeze
+// more than one block; it is not here.)
+pub struct Keccak {
+  st: Array[u64, 25];
+  buf: Array[u8, 144];
+  rate: usize;
+  used: usize;
+  total: u64;
+
+  // A sponge that has taken nothing; 'rate' is the block size in bytes
+  // (136 for SHA3-256, 72 for SHA3-512)
+  pub fn make(rate: usize) Keccak {
+    Keccak(Array[u64, 25]() <- fill 0u64, Array[u8, 144]() <- fill 0u8, rate, 0usize, 0u64)
+  }
+
+  pub fn copyOf(self: &) Keccak { Keccak(st, buf, rate, used, total) }
+
+  pub fn reset(self: &mut) {
+    st = Array[u64, 25]() <- fill 0u64;
+    used = 0usize;
+    total = 0u64;
+  }
+
+  pub fn length(self: &) u64 { total }
+
+  // Takes more of the message
+  pub fn update(self: &mut, data: &Array[u8]) {
+    let n = data.len;
+    var at = 0usize;
+    total = total + u64.from(n);
+    if used > 0usize {
+      while at < n && used < rate {
+        buf[used] = data[at];
+        used = used + 1usize;
+        at = at + 1usize;
+      }
+      if used == rate {
+        let block = buf;
+        keccakAbsorb(&mut st, &block, 0usize, rate, 1usize);
+        used = 0usize;
+      }
+    }
+    let whole = (n - at) / rate;
+    if whole > 0usize {
+      keccakAbsorb(&mut st, data, at, rate, whole);
+      at = at + whole * rate;
+    }
+    while at < n {
+      buf[used] = data[at];
+      used = used + 1usize;
+      at = at + 1usize;
+    }
+  }
+
+  // The first 'outLen' (at most 64, at most the rate) bytes squeezed out
+  // after padding. The sponge itself is left as it was
+  pub fn finish(self: &, outLen: usize) Array[u8, 64] {
+    var t = self.copyOf();
+    var i = t.used;
+    while i < t.rate { t.buf[i] = 0u8; i = i + 1usize; }
+    t.buf[t.used] = t.buf[t.used] ^ 0x06u8;
+    t.buf[t.rate - 1usize] = t.buf[t.rate - 1usize] ^ 0x80u8;
+    let block = t.buf;
+    keccakAbsorb(&mut t.st, &block, 0usize, t.rate, 1usize);
+    var out = Array[u8, 64]() <- fill 0u8;
+    i = 0usize;
+    while i < outLen {
+      out[i] = u8.from((t.st[i / 8usize] >> (8u64 * u64.from(i & 7usize))) & 0xffu64);
+      i = i + 1usize;
+    }
+    out
+  }
+}
+
+// A SHA3-256 hasher: 'make', 'update' (also 'feed'), 'finish', 'copyOf',
+// 'reset', 'length', as Sha256 has
+pub struct Sha3_256 {
+  k: Keccak;
+
+  pub fn make() Sha3_256 { Sha3_256(Keccak.make(136usize)) }
+  pub fn copyOf(self: &) Sha3_256 { Sha3_256(k.copyOf()) }
+  pub fn reset(self: &mut) { k.reset(); }
+  pub fn length(self: &) u64 { k.length() }
+  pub fn feed(self: &mut, data: &Array[u8]) { k.update(data); }
+  pub fn update(self: &mut, data: &Array[u8]) { k.update(data); }
+
+  // The hash of everything taken; the hasher is left as it was
+  pub fn finish(self: &) Array[u8, 32] {
+    let full = k.finish(32usize);
+    var out = Array[u8, 32]() <- fill 0u8;
+    var i = 0usize;
+    while i < 32usize { out[i] = full[i]; i = i + 1usize; }
+    out
+  }
+}
+
+// A SHA3-512 hasher, the same shape as Sha3_256
+pub struct Sha3_512 {
+  k: Keccak;
+
+  pub fn make() Sha3_512 { Sha3_512(Keccak.make(72usize)) }
+  pub fn copyOf(self: &) Sha3_512 { Sha3_512(k.copyOf()) }
+  pub fn reset(self: &mut) { k.reset(); }
+  pub fn length(self: &) u64 { k.length() }
+  pub fn feed(self: &mut, data: &Array[u8]) { k.update(data); }
+  pub fn update(self: &mut, data: &Array[u8]) { k.update(data); }
+
+  // The hash of everything taken; the hasher is left as it was
+  pub fn finish(self: &) Array[u8, 64] { k.finish(64usize) }
+}
+
+// Takes the SHA3-256 of a whole message
+pub fn sha3_256(data: &Array[u8]) Array[u8, 32] {
+  var s = Sha3_256.make();
+  s.update(data);
+  s.finish()
+}
+
+// Takes the SHA3-512 of a whole message
+pub fn sha3_512(data: &Array[u8]) Array[u8, 64] {
+  var s = Sha3_512.make();
+  s.update(data);
+  s.finish()
+}
+
+// XORs 'count' blocks of 'rate' bytes that start at 'start' in 'data' into the
+// state, lane by lane (little-endian), running Keccak-f[1600] after each
+fn keccakAbsorb(st: &mut Array[u64, 25], data: &Array[u8], start: usize, rate: usize, count: usize) {
+  var at = start;
+  var blk = 0usize;
+  while blk < count {
+    var i = 0usize;
+    while i < rate / 8usize {
+      let p = at + i * 8usize;
+      var lane = 0u64;
+      var j = 0usize;
+      while j < 8usize {
+        lane = lane | (u64.from(data[p + j]) << (8u64 * u64.from(j)));
+        j = j + 1usize;
+      }
+      st[i] = st[i] ^ lane;
+      i = i + 1usize;
+    }
+    keccakF(st);
+    at = at + rate;
+    blk = blk + 1usize;
+  }
+}
+
+// The Keccak-f[1600] permutation: 24 rounds of theta, rho, pi, chi and iota.
+// The round constants, rotations and lane order are locals
+fn keccakF(st: &mut Array[u64, 25]) {
+  let rc: Array[u64, 24] = [
+    0x0000000000000001u64, 0x0000000000008082u64, 0x800000000000808au64, 0x8000000080008000u64,
+    0x000000000000808bu64, 0x0000000080000001u64, 0x8000000080008081u64, 0x8000000000008009u64,
+    0x000000000000008au64, 0x0000000000000088u64, 0x0000000080008009u64, 0x000000008000000au64,
+    0x000000008000808bu64, 0x800000000000008bu64, 0x8000000000008089u64, 0x8000000000008003u64,
+    0x8000000000008002u64, 0x8000000000000080u64, 0x000000000000800au64, 0x800000008000000au64,
+    0x8000000080008081u64, 0x8000000000008080u64, 0x0000000080000001u64, 0x8000000080008008u64];
+  let rotc: Array[u32, 24] = [
+    1u32, 3u32, 6u32, 10u32, 15u32, 21u32, 28u32, 36u32, 45u32, 55u32, 2u32, 14u32,
+    27u32, 41u32, 56u32, 8u32, 25u32, 43u32, 62u32, 18u32, 39u32, 61u32, 20u32, 44u32];
+  let piln: Array[usize, 24] = [
+    10usize, 7usize, 11usize, 17usize, 18usize, 3usize, 5usize, 16usize, 8usize, 21usize, 24usize, 4usize,
+    15usize, 23usize, 19usize, 13usize, 12usize, 2usize, 20usize, 14usize, 22usize, 9usize, 6usize, 1usize];
+  var bc = Array[u64, 5]() <- fill 0u64;
+  var round = 0usize;
+  while round < 24usize {
+    // theta
+    var i = 0usize;
+    while i < 5usize {
+      bc[i] = st[i] ^ st[i + 5usize] ^ st[i + 10usize] ^ st[i + 15usize] ^ st[i + 20usize];
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < 5usize {
+      let t = bc[(i + 4usize) % 5usize] ^ bc[(i + 1usize) % 5usize].rotateLeft(1u32);
+      var j = 0usize;
+      while j < 25usize {
+        st[j + i] = st[j + i] ^ t;
+        j = j + 5usize;
+      }
+      i = i + 1usize;
+    }
+    // rho and pi
+    var t = st[1];
+    i = 0usize;
+    while i < 24usize {
+      let j = piln[i];
+      let keep = st[j];
+      st[j] = t.rotateLeft(rotc[i]);
+      t = keep;
+      i = i + 1usize;
+    }
+    // chi
+    var j = 0usize;
+    while j < 25usize {
+      i = 0usize;
+      while i < 5usize { bc[i] = st[j + i]; i = i + 1usize; }
+      i = 0usize;
+      while i < 5usize {
+        st[j + i] = st[j + i] ^ ((bc[(i + 1usize) % 5usize] ^ 0xffffffffffffffffu64) & bc[(i + 2usize) % 5usize]);
+        i = i + 1usize;
+      }
+      j = j + 5usize;
+    }
+    // iota
+    st[0] = st[0] ^ rc[round];
+    round = round + 1usize;
+  }
+}
