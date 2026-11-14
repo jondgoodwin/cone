@@ -1,0 +1,188 @@
+// -------- MD5 (RFC 1321) --------
+
+// NOT FOR SECURITY. MD5 is broken: collisions are made in seconds. Do not use
+// it for signatures, certificates, passwords, or telling files apart against
+// an attacker. It is here for checksums and for legacy formats that name it
+// (old download checksums, some file formats and protocols); for anything new
+// use Sha256 or Sha512.
+//
+// An MD5 hasher. Its fields are its whole state (four chaining words, the
+// block being filled, how much of it is filled, and the bytes taken so far),
+// so copying the value ('copyOf') copies the hash in progress.
+pub struct Md5 {
+  h: Array[u32, 4];
+  buf: Array[u8, 64];
+  used: usize;
+  total: u64;
+
+  // A hasher that has taken nothing
+  pub fn make() Md5 {
+    Md5([0x67452301u32, 0xefcdab89u32, 0x98badcfeu32, 0x10325476u32],
+        Array[u8, 64]() <- fill 0u8, 0usize, 0u64)
+  }
+
+  // A hasher in exactly this one's state, which goes on to give what this one
+  // will
+  pub fn copyOf(self: &) Md5 { Md5(h, buf, used, total) }
+
+  // Back to a hasher that has taken nothing
+  pub fn reset(self: &mut) {
+    h = [0x67452301u32, 0xefcdab89u32, 0x98badcfeu32, 0x10325476u32];
+    used = 0usize;
+    total = 0u64;
+  }
+
+  // How many bytes the hasher has taken
+  pub fn length(self: &) u64 { total }
+
+  // 'update' under the name package streams' Digester asks for
+  pub fn feed(self: &mut, data: &Array[u8]) { self.update(data); }
+
+  // Takes more of the message
+  pub fn update(self: &mut, data: &Array[u8]) {
+    let n = data.len;
+    var at = 0usize;
+    total = total + u64.from(n);
+    // Finish a block begun by an earlier call
+    if used > 0usize {
+      while at < n && used < 64usize {
+        buf[used] = data[at];
+        used = used + 1usize;
+        at = at + 1usize;
+      }
+      if used == 64usize {
+        let block = buf;
+        md5Blocks(&mut h, &block, 0usize, 1usize);
+        used = 0usize;
+      }
+    }
+    // Whole blocks straight from the message
+    let whole = (n - at) / 64usize;
+    if whole > 0usize {
+      md5Blocks(&mut h, data, at, whole);
+      at = at + whole * 64usize;
+    }
+    // What is left waits for the next call
+    while at < n {
+      buf[used] = data[at];
+      used = used + 1usize;
+      at = at + 1usize;
+    }
+  }
+
+  // The hash of everything taken. The hasher itself is left as it was, so it
+  // can take more and be asked again
+  pub fn finish(self: &) Array[u8, 16] {
+    var t = self.copyOf();
+    t.pad();
+    var out = Array[u8, 16]() <- fill 0u8;
+    var i = 0usize;
+    while i < 4usize {
+      out[i * 4usize] = u8.from(t.h[i] & 0xffu32);
+      out[i * 4usize + 1usize] = u8.from((t.h[i] >> 8u32) & 0xffu32);
+      out[i * 4usize + 2usize] = u8.from((t.h[i] >> 16u32) & 0xffu32);
+      out[i * 4usize + 3usize] = u8.from(t.h[i] >> 24u32);
+      i = i + 1usize;
+    }
+    out
+  }
+
+  // The padding: a 1 bit, zeros, and the message's length in bits as 64 bits,
+  // little-endian (the one place MD5 differs from SHA-1 in layout)
+  fn pad(self: &mut) {
+    let bits = total << 3u64;
+    buf[used] = 0x80u8;
+    used = used + 1usize;
+    if used > 56usize {
+      while used < 64usize { buf[used] = 0u8; used = used + 1usize; }
+      let block = buf;
+      md5Blocks(&mut h, &block, 0usize, 1usize);
+      used = 0usize;
+    }
+    while used < 56usize { buf[used] = 0u8; used = used + 1usize; }
+    var i = 0usize;
+    while i < 8usize {
+      buf[56usize + i] = u8.from((bits >> (8u64 * u64.from(i))) & 0xffu64);
+      i = i + 1usize;
+    }
+    let block = buf;
+    md5Blocks(&mut h, &block, 0usize, 1usize);
+    used = 0usize;
+  }
+}
+
+// Takes the MD5 of a whole message. NOT FOR SECURITY: see Md5
+pub fn md5(data: &Array[u8]) Array[u8, 16] {
+  var s = Md5.make();
+  s.update(data);
+  s.finish()
+}
+
+// The compression function over 'count' blocks of 64 bytes that start at
+// 'start' in 'data', folded into the chaining words 'h'. The sine-derived
+// constants and the rotate amounts are locals, as in the SHA-2 files
+fn md5Blocks(h: &mut Array[u32, 4], data: &Array[u8], start: usize, count: usize) {
+  let k: Array[u32, 64] = [
+    0xd76aa478u32, 0xe8c7b756u32, 0x242070dbu32, 0xc1bdceeeu32, 0xf57c0fafu32, 0x4787c62au32, 0xa8304613u32, 0xfd469501u32,
+    0x698098d8u32, 0x8b44f7afu32, 0xffff5bb1u32, 0x895cd7beu32, 0x6b901122u32, 0xfd987193u32, 0xa679438eu32, 0x49b40821u32,
+    0xf61e2562u32, 0xc040b340u32, 0x265e5a51u32, 0xe9b6c7aau32, 0xd62f105du32, 0x02441453u32, 0xd8a1e681u32, 0xe7d3fbc8u32,
+    0x21e1cde6u32, 0xc33707d6u32, 0xf4d50d87u32, 0x455a14edu32, 0xa9e3e905u32, 0xfcefa3f8u32, 0x676f02d9u32, 0x8d2a4c8au32,
+    0xfffa3942u32, 0x8771f681u32, 0x6d9d6122u32, 0xfde5380cu32, 0xa4beea44u32, 0x4bdecfa9u32, 0xf6bb4b60u32, 0xbebfbc70u32,
+    0x289b7ec6u32, 0xeaa127fau32, 0xd4ef3085u32, 0x04881d05u32, 0xd9d4d039u32, 0xe6db99e5u32, 0x1fa27cf8u32, 0xc4ac5665u32,
+    0xf4292244u32, 0x432aff97u32, 0xab9423a7u32, 0xfc93a039u32, 0x655b59c3u32, 0x8f0ccc92u32, 0xffeff47du32, 0x85845dd1u32,
+    0x6fa87e4fu32, 0xfe2ce6e0u32, 0xa3014314u32, 0x4e0811a1u32, 0xf7537e82u32, 0xbd3af235u32, 0x2ad7d2bbu32, 0xeb86d391u32];
+  let s: Array[u32, 64] = [
+    7u32, 12u32, 17u32, 22u32, 7u32, 12u32, 17u32, 22u32, 7u32, 12u32, 17u32, 22u32, 7u32, 12u32, 17u32, 22u32,
+    5u32, 9u32, 14u32, 20u32, 5u32, 9u32, 14u32, 20u32, 5u32, 9u32, 14u32, 20u32, 5u32, 9u32, 14u32, 20u32,
+    4u32, 11u32, 16u32, 23u32, 4u32, 11u32, 16u32, 23u32, 4u32, 11u32, 16u32, 23u32, 4u32, 11u32, 16u32, 23u32,
+    6u32, 10u32, 15u32, 21u32, 6u32, 10u32, 15u32, 21u32, 6u32, 10u32, 15u32, 21u32, 6u32, 10u32, 15u32, 21u32];
+  var m = Array[u32, 16]() <- fill 0u32;
+  var at = start;
+  var blk = 0usize;
+  while blk < count {
+    var i = 0usize;
+    while i < 16usize {
+      let p = at + i * 4usize;
+      m[i] = u32.from(data[p]) | (u32.from(data[p + 1usize]) << 8u32)
+           | (u32.from(data[p + 2usize]) << 16u32) | (u32.from(data[p + 3usize]) << 24u32);
+      i = i + 1usize;
+    }
+    var a = h[0];
+    var b = h[1];
+    var c = h[2];
+    var d = h[3];
+    i = 0usize;
+    while i < 64usize {
+      var f = 0u32;
+      var g = 0usize;
+      if i < 16usize {
+        f = (b & c) | ((b ^ 0xffffffffu32) & d);
+        g = i;
+      }
+      else if i < 32usize {
+        f = (d & b) | ((d ^ 0xffffffffu32) & c);
+        g = (5usize * i + 1usize) & 15usize;
+      }
+      else if i < 48usize {
+        f = b ^ c ^ d;
+        g = (3usize * i + 5usize) & 15usize;
+      }
+      else {
+        f = c ^ (b | (d ^ 0xffffffffu32));
+        g = (7usize * i) & 15usize;
+      }
+      let t = a + f + k[i] + m[g];
+      a = d;
+      d = c;
+      c = b;
+      b = b + t.rotateLeft(s[i]);
+      i = i + 1usize;
+    }
+    h[0] = h[0] + a;
+    h[1] = h[1] + b;
+    h[2] = h[2] + c;
+    h[3] = h[3] + d;
+    at = at + 64usize;
+    blk = blk + 1usize;
+  }
+}
