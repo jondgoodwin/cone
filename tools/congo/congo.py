@@ -3088,17 +3088,151 @@ class Debuggee:
         return self.exited
 
 
-def run_program(exe: Path, cwd: Path, timeout: float) -> subprocess.CompletedProcess:
+def hang_head(repo: Path) -> str:
+    """The short head of the repository a hung test ran from, or 'unknown'."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short=8", "HEAD"], cwd=repo,
+                             capture_output=True, text=True, timeout=20)
+        return (out.stdout.strip() or "unknown") if out.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def capture_hang(pid: int, label: str, repo: Path) -> None:
+    """With CONE_HANG_DIR set, save what a test about to be stopped for its
+    time was doing: a minidump and a thread list on Windows, gdb's stacks (else
+    /proc's) on Linux, in files named <label>-<head>-<time>. Whatever goes
+    wrong here is one line on stderr: it never changes the verdict or holds
+    up the stop. Unset, it does nothing."""
+    folder = os.environ.get("CONE_HANG_DIR")
+    if not folder:
+        return
+    try:
+        dest = Path(folder)
+        dest.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", label)
+        base = f"{safe}-{hang_head(repo)}-{time.strftime('%Y%m%d-%H%M%S')}"
+        notes = [f"process {pid}", f"label {label}", f"repo {repo}"]
+        if IS_WINDOWS:
+            notes += hang_windows(pid, dest / (base + ".dmp"))
+        else:
+            notes += hang_linux(pid)
+        (dest / (base + ".txt")).write_text("\n".join(notes) + "\n", encoding="utf-8")
+        print(f"congo: hang captured to {dest / base}.*", file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"congo: hang capture failed: {exc}", file=sys.stderr, flush=True)
+
+
+def hang_windows(pid: int, dump: Path) -> list[str]:
+    """Write a full-memory minidump of the process and list its threads (id,
+    start time). A debugger (Visual Studio opens .dmp files) reads the stacks."""
+    import ctypes
+    from ctypes import wintypes
+    bad = ctypes.c_void_p(-1).value
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.OpenThread.restype = wintypes.HANDLE
+    k.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.CreateFileW.restype = wintypes.HANDLE
+    k.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                              wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    k.GetThreadTimes.argtypes = [wintypes.HANDLE] + [ctypes.c_void_p] * 4
+    k.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k.Thread32First.argtypes = k.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+
+    class THREADENTRY32(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ThreadID", wintypes.DWORD), ("th32OwnerProcessID", wintypes.DWORD),
+                    ("tpBasePri", wintypes.LONG), ("tpDeltaPri", wintypes.LONG),
+                    ("dwFlags", wintypes.DWORD)]
+
+    lines: list[str] = []
+    threads: list[int] = []
+    snap = k.CreateToolhelp32Snapshot(0x4, 0)             # TH32CS_SNAPTHREAD
+    if snap not in (None, bad):
+        entry = THREADENTRY32()
+        entry.dwSize = ctypes.sizeof(entry)
+        more = k.Thread32First(snap, ctypes.byref(entry))
+        while more:
+            if entry.th32OwnerProcessID == pid:
+                threads.append(entry.th32ThreadID)
+            more = k.Thread32Next(snap, ctypes.byref(entry))
+        k.CloseHandle(snap)
+    lines.append(f"threads {len(threads)}")
+    for tid in threads:
+        started = "unreadable"
+        h = k.OpenThread(0x0800, False, tid)               # THREAD_QUERY_LIMITED_INFORMATION
+        if h:
+            t = [wintypes.FILETIME() for _ in range(4)]
+            if k.GetThreadTimes(h, *[ctypes.byref(x) for x in t]):
+                ticks = t[0].dwHighDateTime << 32 | t[0].dwLowDateTime
+                started = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ticks / 1e7 - 11644473600))
+            k.CloseHandle(h)
+        lines.append(f"thread {tid} started {started}")
+    process = k.OpenProcess(0x1F0FFF, False, pid)           # PROCESS_ALL_ACCESS
+    if not process:
+        lines.append(f"minidump: OpenProcess failed ({ctypes.get_last_error()})")
+        return lines
+    try:
+        out = k.CreateFileW(str(dump), 0x40000000, 0, None, 2, 0x80, None)  # GENERIC_WRITE, CREATE_ALWAYS
+        if out in (None, bad):
+            lines.append(f"minidump: cannot create {dump} ({ctypes.get_last_error()})")
+            return lines
+        try:
+            dbghelp = ctypes.WinDLL("dbghelp", use_last_error=True)
+            dbghelp.MiniDumpWriteDump.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.HANDLE,
+                                                  wintypes.DWORD, wintypes.LPVOID, wintypes.LPVOID,
+                                                  wintypes.LPVOID]
+            # MiniDumpWithFullMemory | WithHandleData | WithFullMemoryInfo | WithThreadInfo
+            kind = 0x2 | 0x4 | 0x800 | 0x1000
+            ok = dbghelp.MiniDumpWriteDump(process, pid, out, kind, None, None, None)
+            lines.append("minidump: written" if ok else
+                         f"minidump: MiniDumpWriteDump failed ({ctypes.get_last_error()})")
+        finally:
+            k.CloseHandle(out)
+    finally:
+        k.CloseHandle(process)
+    return lines
+
+
+def hang_linux(pid: int) -> list[str]:
+    """gdb's stack of every thread if gdb is here; else /proc's kernel stacks
+    and wait channels, where they can be read."""
+    if shutil.which("gdb"):
+        out = subprocess.run(["gdb", "-p", str(pid), "-batch", "-ex", "thread apply all bt"],
+                             capture_output=True, text=True, timeout=60)
+        return ["gdb:", out.stdout, out.stderr]
+    lines = ["gdb is not installed; /proc follows"]
+    for t in sorted(Path(f"/proc/{pid}/task").iterdir(), key=lambda q: int(q.name)):
+        lines.append(f"thread {t.name}")
+        for part in ("comm", "wchan", "stat", "stack"):
+            try:
+                lines.append(f"  {part}: {(t / part).read_text().strip()}")
+            except Exception as exc:
+                lines.append(f"  {part}: unreadable ({exc.__class__.__name__})")
+    return lines
+
+
+def run_program(exe: Path, cwd: Path, timeout: float, label: str = "",
+                repo: Path | None = None) -> subprocess.CompletedProcess:
     """Run a test program with no input, what it writes captured, for at most
     timeout seconds: a returncode of None is one stopped for its time, with
     what it wrote until then. On Windows it runs as Congo's debuggee
     (Debuggee), so that a crash, a panic's above all, ends at once."""
     if not IS_WINDOWS:
+        proc = subprocess.Popen([str(exe)], cwd=cwd, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            return subprocess.run([str(exe)], cwd=cwd, capture_output=True,
-                                  stdin=subprocess.DEVNULL, timeout=timeout)
-        except subprocess.TimeoutExpired as e:
-            return subprocess.CompletedProcess(e.cmd, None, e.output or b"", e.stderr or b"")
+            out, err = proc.communicate(timeout=timeout)
+            return subprocess.CompletedProcess([str(exe)], proc.returncode, out, err)
+        except subprocess.TimeoutExpired:
+            capture_hang(proc.pid, label or exe.stem, repo or cwd)
+            proc.kill()
+            out, err = proc.communicate()
+            return subprocess.CompletedProcess([str(exe)], None, out or b"", err or b"")
     process = subprocess.Popen([str(exe)], cwd=cwd, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=dict(os.environ, **Debuggee.ENVIRONMENT),
@@ -3114,6 +3248,7 @@ def run_program(exe: Path, cwd: Path, timeout: float) -> subprocess.CompletedPro
     while not debugger.pump(0.05):
         if time.monotonic() > deadline:
             timed_out = True
+            capture_hang(process.pid, label or exe.stem, repo or cwd)
             process.kill()
             # Once killed it ends at once, its last events aside
             stop = time.monotonic() + 10
@@ -3126,13 +3261,15 @@ def run_program(exe: Path, cwd: Path, timeout: float) -> subprocess.CompletedPro
     return subprocess.CompletedProcess([str(exe)], code, stdout, stderr)
 
 
-def run_test(session: Session, file: Path, bless: bool) -> tuple[bool | None, str]:
+def run_test(session: Session, file: Path, bless: bool, pkg: Package | None = None) -> tuple[bool | None, str]:
     """Build, run and compare one test program: (passed, what to show)."""
     into = session.out / TESTS / file.stem
     exe = build_program(session, file, into)
     # Run in its own build folder, so a file it writes by a relative name
     # lands there and not in the package's source
-    ran = run_program(exe, into, TEST_TIMEOUT)
+    ran = run_program(exe, into, TEST_TIMEOUT,
+                      f"{pkg.name}-{file.stem}" if pkg else file.stem,
+                      pkg.root if pkg else None)
     if ran.returncode is None:
         # What it wrote to stderr says how far it got: a panic's line, say,
         # before an end that never came
@@ -3213,7 +3350,7 @@ def run_one_test(pkg: Package, session: Session, file: Path, mode: str, bless: b
         tally.skipped += 1
         return
     try:
-        passed, detail = run_test(session, file, bless)
+        passed, detail = run_test(session, file, bless, pkg)
     except CongoError as exc:
         passed, detail = False, str(exc)
     if passed is None:
