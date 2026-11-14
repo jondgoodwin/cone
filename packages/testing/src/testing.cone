@@ -28,6 +28,13 @@
 // A test that cannot run here returns 'skip(reason)' instead, which congo
 // reports as skipped with the reason.
 //
+// A table of inputs is checked with a case per row: 'beginCase(name)' and
+// 'endCase()' around the checks of one row make a failing check's line start
+// with the row's name, and 'done' adds 'in N cases' to the summary, only when
+// cases were used.
+//
+//   while i < n { beginCase(names[i]); expectInt(f(ins[i]), wants[i], "f"); endCase(); i = i + 1; }
+//
 // Each 'expect' function has a 'require' twin that stops the test when its
 // check fails: it prints the failure line, then 'stopped: 2 checks, 1 failed',
 // and ends the program with exit status 1 through the C library's 'exit', which
@@ -106,10 +113,18 @@ import collections use List;
 // any thread, so each count is an atomic held by a 'let' global
 let checks: Atomic[u64];
 let failures: Atomic[u64];
+// How many cases have begun (beginCase), for the summary
+let cases: Atomic[u64];
+
+// The current case's name, copied (at most 120 bytes); length 0 when no case is
+// current. Thread-local, so a case belongs to the thread that began it
+var @threadlocal caseBuf: Array[u8, 120] = Array[u8, 120]() <- fill 0u8;
+var @threadlocal caseLen: usize = 0usize;
 
 fn @initpure init() {
   checks = Atomic[u64].of(0u64);
   failures = Atomic[u64].of(0u64);
+  cases = Atomic[u64].of(0u64);
 }
 
 // -------- checks that record a failure and go on --------
@@ -251,6 +266,48 @@ pub fn requireBool(got: bool, want: bool, label: &Array[u8]) bool {
 
 pub fn requireEq[T: Eq](got: &T, want: &T, label: &Array[u8]) bool {
   if expectEq(got, want, label) {true} else {stop()}
+}
+
+// -------- cases: one body, many inputs --------
+
+// Begins a case: until 'endCase', every failing check's line starts with 'name',
+// so a loop over a table of inputs says which input failed,
+//
+//   parse "1e400": expected 0, got 1
+//
+// A case is not a check: each check in it counts as it does outside one. The
+// name is copied, so it may be dropped at once; a name over 120 bytes keeps its
+// first bytes (cut on a UTF-8 boundary) and ends in '...'. Beginning a case
+// inside a case replaces it. An empty name is no case. The case is the calling
+// thread's.
+pub fn beginCase(name: &Array[u8]) {
+  caseLen = 0usize;
+  if name.len != 0usize {
+    cases.add(1u64);
+    var n = name.len;
+    var more = false;
+    if n > 120usize {
+      more = true;
+      n = 117usize;
+      // back up off a UTF-8 continuation byte, so no character is cut
+      while n > 0usize && (name[n] & 192u8) == 128u8 {n = n - 1usize;};
+    };
+    var i = 0usize;
+    while i < n {
+      caseBuf[i] = name[i];
+      i = i + 1usize;
+    };
+    if more {
+      caseBuf[i] = 46u8; caseBuf[i + 1usize] = 46u8; caseBuf[i + 2usize] = 46u8;
+      i = i + 3usize;
+    };
+    caseLen = i;
+  };
+}
+
+// Ends the current case, so checks print as they do with none
+pub fn endCase() {
+  caseLen = 0usize;
 }
 
 // -------- the end of a test --------
@@ -403,6 +460,10 @@ fn pass() bool {
 fn fail(label: &Array[u8]) {
   checks.add(1u64);
   failures.add(1u64);
+  if caseLen != 0usize {
+    stdio.printStr(mem.sliceFromParts[u8]((&caseBuf) as *u8, caseLen) as &str);
+    stdio.printStr(": ");
+  };
   stdio.printStr(label as &str);
   stdio.printStr(": ");
 }
@@ -422,12 +483,19 @@ fn summary() {
   stdio.printUInt(ran);
   if ran == 1u64 {stdio.printStr(" check");} else {stdio.printStr(" checks");};
   if failed == 0u64 {
-    stdio.printStr(" passed\n");
+    stdio.printStr(" passed");
   } else {
     stdio.printStr(", ");
     stdio.printUInt(failed);
-    stdio.printStr(" failed\n");
+    stdio.printStr(" failed");
   };
+  let used = cases.load();
+  if used != 0u64 {
+    stdio.printStr(" in ");
+    stdio.printUInt(used);
+    if used == 1u64 {stdio.printStr(" case");} else {stdio.printStr(" cases");};
+  };
+  stdio.printStr("\n");
 }
 
 fn printBool(b: bool) {
