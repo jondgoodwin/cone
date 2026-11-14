@@ -1,0 +1,114 @@
+// MD5 (NOT FOR SECURITY) against RFC 1321's test suite and independently computed digests.
+//
+// Sources of the vectors:
+// - RFC 1321, appendix A.5 test suite: the empty message and "abc"; the 448-bit
+//   and 896-bit NIST messages and the million-'a' message are the same messages
+//   the SHA tests use.
+// - 'a' x n at the 55/56/57 and 63/64/65-byte padding edges and 200 bytes.
+// All digests were computed with Python's hashlib (OpenSSL), not this package.
+// Then a 200-byte message of a pattern (byte i is (7 i + 3) mod 256) is fed in
+// two pieces split at every offset from 0 to 200: each must equal the one-shot.
+
+mod md5;
+
+import testing use *;
+import collections use *;
+import cryptohash;
+
+fn hexOf(s: &Array[u8]) String {
+  var h = String();
+  var i = 0usize;
+  while i < s.len {
+    h.appendHex(u64.from(s[i]), 2usize);
+    i = i + 1usize;
+  }
+  h
+}
+
+fn repeated(b: u8, n: usize) List[u8] {
+  var out = List[u8]();
+  var i = 0usize;
+  while i < n {
+    out.push(b);
+    i = i + 1usize;
+  }
+  out
+}
+
+fn check(label: &str, msg: &Array[u8], want: &str) {
+  let d = cryptohash.md5(msg);
+  let got = hexOf(&d);
+  expectStr(got.view(), want, label);
+}
+
+fn checkA(n: usize, want: &str) {
+  let msg = repeated(97u8, n);
+  var label = String.from("md5 of 'a' x ");
+  label.appendInt(i64.from(n));
+  check(label.view(), msg.view(), want);
+}
+
+fn two(msg: &Array[u8], at: usize) String {
+  let parts = msg.split(at);
+  var s = cryptohash.Md5.make();
+  s.update(parts.0);
+  s.update(parts.1);
+  let d = s.finish();
+  hexOf(&d)
+}
+
+fn main() i32 {
+  check("empty", "", "d41d8cd98f00b204e9800998ecf8427e");
+  check("abc", "abc", "900150983cd24fb0d6963f7d28e17f72");
+  check("448 bits", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+        "8215ef0796a20bcaaae116d3876c664a");
+  check("896 bits",
+        "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
+        "03dd8807a93175fb062dfb55dc7d359c");
+  let million = repeated(97u8, 1000000usize);
+  check("one million a", million.view(), "7707d6ae4e027c70eea2a935c2296f21");
+
+  checkA(1usize, "0cc175b9c0f1b6a831c399e269772661");
+  checkA(55usize, "ef1772b6dff9a122358552954ad0df65");
+  checkA(56usize, "3b0c8ac703f828b04c6c197006d17218");
+  checkA(57usize, "652b906d60af96844ebd21b674f35e93");
+  checkA(63usize, "b06521f39153d618550606be297466d5");
+  checkA(64usize, "014842d480b571495a4a0363793f7367");
+  checkA(65usize, "c743a45e0d2e6a95cb859adae0248435");
+  checkA(200usize, "887f30b43b2867f4a9accceee7d16e6c");
+
+  // Split at every offset
+  var all = List[u8]();
+  var i = 0usize;
+  while i < 200usize {
+    all.push(u8.from((i * 7usize + 3usize) & 0xffusize));
+    i = i + 1usize;
+  }
+  let want = "4c79b81ac94bad7a875519ce6b964c66";
+  check("pattern 200 one-shot", all.view(), want);
+  var bad = 0u64;
+  var at = 0usize;
+  while at <= 200usize {
+    let got = two(all.view(), at);
+    if got.view() != want { bad = bad + 1u64; }
+    at = at + 1usize;
+  }
+  expectUInt(bad, 0u64, "md5 split in two at each of 201 offsets: failures");
+
+  // The hasher as a value: finish leaves it as it was, copyOf forks it, reset empties it
+  var h = cryptohash.Md5.make();
+  h.update("a");
+  let part = h.copyOf();
+  h.update("bc");
+  let d1 = h.finish();
+  let d2 = h.finish();
+  expectStr(hexOf(&d1).view(), "900150983cd24fb0d6963f7d28e17f72", "finish then more");
+  expectStr(hexOf(&d2).view(), "900150983cd24fb0d6963f7d28e17f72", "finish twice");
+  expectUInt(h.length(), 3u64, "length");
+  expectUInt(part.length(), 1u64, "copy's length");
+  h.reset();
+  let d3 = h.finish();
+  expectStr(hexOf(&d3).view(), "d41d8cd98f00b204e9800998ecf8427e", "reset");
+
+  done()
+}
