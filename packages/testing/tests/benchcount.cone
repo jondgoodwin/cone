@@ -1,0 +1,30 @@
+// The bench loop calls the body as often as it says: a body that counts its
+// own calls, timed for 3 rounds with no warm-up and batches of one call
+// (batchMs 0, so the doubling stops at once). The calls are 1 (the sizing
+// batch) + 3 rounds * iters, and no time is checked.
+//
+// Worked out by hand: iters is 1, so the body runs 1 + 3 * 1 = 4 times.
+
+mod benchcount;
+
+import testing use *;
+
+let hits: Atomic[u64];
+
+fn @initpure init() {
+  hits = Atomic[u64].of(0u64);
+}
+
+fn main() i32 {
+  var cfg = BenchConfig.standard();
+  cfg.warmupMs = 0u32;
+  cfg.rounds = 3u32;
+  cfg.batchMs = 0u32;
+  cfg.print = false;
+  let r = benchWith("counting", &cfg, fn() { hits.add(1u64); });
+  expectUInt(u64.from(r.rounds), 3u64, "rounds taken");
+  expectUInt(r.iters, 1u64, "calls per round");
+  expectUInt(hits.load(), 4u64, "calls made in all");
+  expect(r.minNs <= r.medianNs && r.medianNs <= r.maxNs, "min, median, max in order");
+  done()
+}

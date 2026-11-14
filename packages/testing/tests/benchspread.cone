@@ -1,0 +1,32 @@
+// The spread statistics keep their order on a real body with the standard
+// batch length: min <= median <= max, and the median absolute deviation is not
+// negative. A short run (1 ms warm-up, 5 rounds); no time is pinned.
+
+mod benchspread;
+
+import testing use *;
+
+fn spin(n: u64) u64 {
+  var s = 0u64;
+  var i = 0u64;
+  while i < n {
+    s = s + (i ^ (s >> 3u64));
+    i = i + 1u64;
+  };
+  s
+}
+
+fn main() i32 {
+  var cfg = BenchConfig.standard();
+  cfg.warmupMs = 1u32;
+  cfg.rounds = 5u32;
+  cfg.print = false;
+  let r = benchWith("spin", &cfg, fn() { blackBox(spin(blackBox(50u64))); });
+  expectUInt(u64.from(r.rounds), 5u64, "rounds taken");
+  expect(r.iters >= 1u64, "at least one call per round");
+  expect(r.minNs <= r.medianNs, "min is not above the median");
+  expect(r.medianNs <= r.maxNs, "median is not above the max");
+  expect(r.madNs >= 0., "spread is not negative");
+  expect(r.minNs > 0., "a call takes time");
+  done()
+}
