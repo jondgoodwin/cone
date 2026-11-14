@@ -342,6 +342,39 @@ message: readFile scratch-errors/missing.txt: No such file or directory
 		there, the disk is full, the file is open elsewhere) answers an <span class="pre">Err</span> naming the
 		function.</p>
 
+	<h3 id="fs-open">Open files and lines</h3>
+	<p>A file read or written in pieces is opened: <span class="pre">fs.open(path)</span> opens an existing file
+		for reading, and <span class="pre">fs.create(path)</span> makes a file (or empties the one there) for
+		reading and writing. Both answer a <span class="pre">File</span> in the <span class="pre">Result</span>
+		as above, and a failure is an <span class="pre">FsError</span> naming <span class="pre">"open"</span> or
+		<span class="pre">"create"</span>. A <span class="pre">File</span> has one owner, moved and never
+		copied, and its death closes the handle. Nothing is buffered: each call is one system call, and the
+		bytes are as they are on Windows too (no line-end changes).</p>
+	<ul>
+	<li><span class="pre">file.read(&amp;mut buf)</span> reads up to <span class="pre">buf.len</span> bytes into a
+		<span class="pre">&amp;mut Array[u8]</span> and answers how many; 0 is the end of the file. It may answer
+		fewer than are left.</li>
+	<li><span class="pre">file.write(data)</span> writes all of <span class="pre">data</span> at the position,
+		a <span class="pre">&amp;Array[u8]</span> as <span class="pre">writeFile</span> takes. A file from
+		<span class="pre">open</span> refuses it (EBADF).</li>
+	<li><span class="pre">file.seek(pos)</span>, <span class="pre">file.seekBy(delta)</span> and
+		<span class="pre">file.seekEnd(delta)</span> move the position from the start, from where it is and from
+		the end, and answer the new position (<span class="pre">seekEnd(0i64)</span> is the size).</li>
+	<li><span class="pre">file.flush()</span> asks the system to put what was written on the disk
+		(<span class="pre">fsync</span>, <span class="pre">_commit</span> on Windows).</li>
+	<li><span class="pre">file.close()</span> closes now and answers the close's own error, which dying would
+		lose. Closing twice is Ok; every other call on a closed file is EBADF.</li>
+	</ul>
+	<p><span class="pre">fs.LineReader.over(file)</span> takes a file and reads it by line in 64 KiB blocks:
+		<span class="pre">lines.readLine(&amp;mut line)</span> puts the next line into a
+		<span class="pre">String</span>, without its <span class="pre">\n</span> or <span class="pre">\r\n</span>,
+		and answers <span class="pre">Ok(true)</span>; at the end of the file it answers
+		<span class="pre">Ok(false)</span> with <span class="pre">line</span> empty. A last line with no
+		<span class="pre">\n</span> is a line, a blank line is a line, and a line longer than the block is
+		gathered from as many blocks as it takes. It is <span class="pre">stdinput.readLine</span>'s contract, with an
+		<span class="pre">FsError</span> for failure. The bytes go in as they came: a <span class="pre">String</span>
+		holds UTF-8 by convention and nothing here checks it.</p>
+
 	<h3 id="fs-map">Mapped files</h3>
 	<p><span class="pre">fs.mapFile(path)</span> maps a whole file into memory for reading and answers a
 		<span class="pre">MappedFile</span>, in the <span class="pre">Result</span> as above. Nothing is copied:
