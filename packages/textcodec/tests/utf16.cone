@@ -1,0 +1,165 @@
+// UTF-16, both byte orders: the bytes of known text (worked out by hand: U+0041
+// is 41 00 little-endian, U+20AC is AC 20, U+1F600 is the pair D83D DE00 so
+// 3D D8 00 DE), the mark BOM on or off, a round trip over every code point
+// U+0000 to U+10FFFF except the surrogates (1,112,064 of them) in both orders,
+// and the faults: an odd byte count, a lone high surrogate (at the end, before a
+// non-low unit, before another high one), a lone low one. Each fault is checked
+// strict (its kind and byte position) and replacing (the U+FFFD, EF BF BD, it
+// puts), as the WHATWG decoders do.
+
+mod utf16;
+
+import testing use *;
+import collections use *;
+import textcodec use *;
+
+fn hex(b: &Array[u8]) String {
+  let d: &Array[u8] = "0123456789ABCDEF";
+  var s = String();
+  var i = 0usize;
+  while i < b.len {
+    if i > 0usize { s.appendByte(' '); }
+    s.appendByte(d[usize.from(b[i] >> 4u8)]);
+    s.appendByte(d[usize.from(b[i] & 15u8)]);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn hexList(l: &List[u8]) String { hex(l.view()) }
+fn hexStr(s: &String) String { hex(s.view()) }
+
+// 0 if it decoded; else 1 odd length, 2 lone high, 3 lone low, plus 10 times the position
+fn faultOf(r: Result[String, CodecError]) i64 {
+  match r {
+    case is Ok { 0i64 }
+    case let Err(e) {
+      let k = match e.kind {
+        case is OddLength { 1i64 }
+        case is LoneHighSurrogate { 2i64 }
+        case is LoneLowSurrogate { 3i64 }
+        case is Unmappable { 4i64 }
+      };
+      k + 10i64 * i64.from(e.position)
+    }
+  }
+}
+
+fn textOf(r: Result[String, CodecError]) String {
+  match r {
+    case is Err { String.from("<error>") }
+    case let Ok(s) { s }
+  }
+}
+
+// the code point as UTF-8 (the test's own, so it does not lean on the package's)
+fn putUtf8(out: &mut String, x: u32) {
+  if x < 0x80u32 {
+    out.appendByte(u8.from(x));
+  } else if x < 0x800u32 {
+    out.appendByte(0xC0u8 | u8.from(x >> 6u32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  } else if x < 0x10000u32 {
+    out.appendByte(0xE0u8 | u8.from(x >> 12u32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  } else {
+    out.appendByte(0xF0u8 | u8.from(x >> 18u32));
+    out.appendByte(0x80u8 | u8.from((x >> 12u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+}
+
+// every code point but the surrogates, in order, as UTF-8
+fn everything() String {
+  var s = String.withCapacity(4500000usize);
+  var x = 0u32;
+  while x <= 0x10FFFFu32 {
+    if x < 0xD800u32 || x > 0xDFFFu32 { putUtf8(&mut s, x); }
+    x = x + 1u32;
+  }
+  s
+}
+
+fn main() i32 {
+  // known bytes, little- and big-endian, without and with the mark
+  expectStr(hexList(&encodeUtf16Le("A", false)).view(), "41 00", "A little");
+  expectStr(hexList(&encodeUtf16Be("A", false)).view(), "00 41", "A big");
+  expectStr(hexList(&encodeUtf16Le("A", true)).view(), "FF FE 41 00", "A little with the mark");
+  expectStr(hexList(&encodeUtf16Be("A", true)).view(), "FE FF 00 41", "A big with the mark");
+  expectStr(hexList(&encodeUtf16Le("", true)).view(), "FF FE", "the mark alone");
+  expectStr(hexList(&encodeUtf16Le("", false)).view(), "", "nothing");
+  expectStr(hexList(&encodeUtf16Le("€", false)).view(), "AC 20", "euro little");
+  expectStr(hexList(&encodeUtf16Be("€", false)).view(), "20 AC", "euro big");
+  expectStr(hexList(&encodeUtf16Le("\U0001F600", false)).view(), "3D D8 00 DE", "an emoji is a pair, little");
+  expectStr(hexList(&encodeUtf16Be("\U0001F600", false)).view(), "D8 3D DE 00", "an emoji is a pair, big");
+  expectStr(hexList(&encodeUtf16Le("\U00010000\U0010FFFF￿", false)).view(), "00 D8 00 DC FF DB FF DF FF FF", "the edges: 10000, 10FFFF, FFFF");
+
+  // decoding the same bytes
+  let eur: Array[u8, 2] = [0xACu8, 0x20u8];
+  expectStr(hexStr(&textOf(decodeUtf16Le(&eur))).view(), "E2 82 AC", "euro decoded little");
+  let eurBe: Array[u8, 2] = [0x20u8, 0xACu8];
+  expectStr(hexStr(&textOf(decodeUtf16Be(&eurBe))).view(), "E2 82 AC", "euro decoded big");
+  let pair: Array[u8, 4] = [0x3Du8, 0xD8u8, 0x00u8, 0xDEu8];
+  expectStr(hexStr(&textOf(decodeUtf16Le(&pair))).view(), "F0 9F 98 80", "a pair decoded little");
+  let none: Array[u8, 1] = [0u8];
+  expectStr(hexStr(&textOf(decodeUtf16Le(none.slice(0usize, 0usize)))).view(), "", "empty decodes to empty");
+  // the mark is a char to a decoder: U+FEFF is EF BB BF
+  let marked: Array[u8, 4] = [0xFFu8, 0xFEu8, 0x41u8, 0x00u8];
+  expectStr(hexStr(&textOf(decodeUtf16Le(&marked))).view(), "EF BB BF 41", "a decoder does not skip the mark");
+
+  // the faults, strict
+  let odd: Array[u8, 3] = [0x41u8, 0x00u8, 0x42u8];
+  expectInt(faultOf(decodeUtf16Le(&odd)), 1i64 + 20i64, "odd length: the leftover byte at 2");
+  expectInt(faultOf(decodeUtf16Be(&odd)), 1i64 + 20i64, "odd length, big");
+  let one: Array[u8, 1] = [0x41u8];
+  expectInt(faultOf(decodeUtf16Le(&one)), 1i64, "one byte: leftover at 0");
+  let highEnd: Array[u8, 2] = [0x00u8, 0xD8u8];
+  expectInt(faultOf(decodeUtf16Le(&highEnd)), 2i64, "a high surrogate at the end");
+  let highThenA: Array[u8, 4] = [0x00u8, 0xD8u8, 0x41u8, 0x00u8];
+  expectInt(faultOf(decodeUtf16Le(&highThenA)), 2i64, "a high surrogate before a plain unit");
+  let highHigh: Array[u8, 6] = [0x41u8, 0x00u8, 0x00u8, 0xD8u8, 0x00u8, 0xD8u8];
+  expectInt(faultOf(decodeUtf16Le(&highHigh)), 2i64 + 20i64, "a high surrogate before another: the first, at 2");
+  let low: Array[u8, 4] = [0x41u8, 0x00u8, 0x00u8, 0xDCu8];
+  expectInt(faultOf(decodeUtf16Le(&low)), 3i64 + 20i64, "a lone low surrogate at 2");
+  let lowBe: Array[u8, 2] = [0xDCu8, 0x00u8];
+  expectInt(faultOf(decodeUtf16Be(&lowBe)), 3i64, "a lone low surrogate, big");
+  let lowHigh: Array[u8, 4] = [0x00u8, 0xDCu8, 0x00u8, 0xD8u8];
+  expectInt(faultOf(decodeUtf16Le(&lowHigh)), 3i64, "a low then a high: the low first");
+  let highThreeBytes: Array[u8, 3] = [0x00u8, 0xD8u8, 0x00u8];
+  expectInt(faultOf(decodeUtf16Le(&highThreeBytes)), 2i64, "a high surrogate and a stray byte: the surrogate first");
+  let swapped: Array[u8, 4] = [0x00u8, 0xDEu8, 0x3Du8, 0xD8u8];
+  expectInt(faultOf(decodeUtf16Le(&swapped)), 3i64, "a pair the wrong way round");
+
+  // the faults, replacing: one U+FFFD (EF BF BD) for each
+  expectStr(hexStr(&decodeUtf16LeReplacing(&odd)).view(), "41 EF BF BD", "replacing: odd byte");
+  expectStr(hexStr(&decodeUtf16LeReplacing(&highEnd)).view(), "EF BF BD", "replacing: high at the end");
+  expectStr(hexStr(&decodeUtf16LeReplacing(&highThenA)).view(), "EF BF BD 41", "replacing: high before a plain unit keeps the plain unit");
+  expectStr(hexStr(&decodeUtf16LeReplacing(&highHigh)).view(), "41 EF BF BD EF BF BD", "replacing: high before high");
+  expectStr(hexStr(&decodeUtf16LeReplacing(&low)).view(), "41 EF BF BD", "replacing: lone low");
+  expectStr(hexStr(&decodeUtf16LeReplacing(&lowHigh)).view(), "EF BF BD EF BF BD", "replacing: low then high");
+  expectStr(hexStr(&decodeUtf16LeReplacing(&highThreeBytes)).view(), "EF BF BD EF BF BD", "replacing: high then a stray byte");
+  expectStr(hexStr(&decodeUtf16BeReplacing(&lowBe)).view(), "EF BF BD", "replacing, big");
+  expectStr(hexStr(&decodeUtf16LeReplacing(&pair)).view(), "F0 9F 98 80", "replacing leaves good text alone");
+
+  // every code point but the surrogates, round trip
+  let all = everything();
+  expectUInt(u64.from(all.charCount()), 1112064u64, "the text holds 1,112,064 code points");
+  let le = encodeUtf16Le(all.view(), false);
+  let be = encodeUtf16Be(all.view(), false);
+  // 63,488 code points below U+10000 (surrogates excluded) take 2 bytes, 1,048,576 above take 4
+  expectUInt(u64.from(le.len()), 2u64 * 63488u64 + 4u64 * 1048576u64, "the byte count");
+  expectUInt(u64.from(be.len()), u64.from(le.len()), "big has the same count");
+  match decodeUtf16Le(le.view()) {
+    case let Ok(back) { expect(back.view() == all.view(), "little round trip, all code points"); }
+    case is Err { expect(false, "little round trip decodes"); }
+  }
+  match decodeUtf16Be(be.view()) {
+    case let Ok(back) { expect(back.view() == all.view(), "big round trip, all code points"); }
+    case is Err { expect(false, "big round trip decodes"); }
+  }
+  expect(decodeUtf16LeReplacing(le.view()).view() == all.view(), "replacing agrees on good input, little");
+  expect(decodeUtf16BeReplacing(be.view()).view() == all.view(), "replacing agrees on good input, big");
+  done()
+}
