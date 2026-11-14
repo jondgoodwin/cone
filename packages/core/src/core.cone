@@ -1347,7 +1347,7 @@ pub struct @opaque Array[T] is GcTraceElements {
   // long the runs are.
   // Sorted input is one run, so it takes n - 1 comparisons, no merge and no allocation;
   // a merge of two runs already in order is skipped. A merge copies the shorter of its two
-  // runs to a buffer of n / 2 elements, got from 'scratch' at the first merge that needs
+  // runs to a buffer of bufElems elements (n / 2, more for a short list), got from 'scratch' at the first merge that needs
   // it and given back before the sort returns. A merge works in blocks of 16 plain steps
   // and gallops (a doubling search, then a binary one, then one block move) after a block
   // that one run won whole, so streaks of equal or clustered values cost log time, not linear.
@@ -1683,7 +1683,7 @@ pub struct @opaque Array[T] is GcTraceElements {
     if order((p + mid) as &T, (p + mid - 1usize) as &T) >= 0i32 { return bufIn; }
     var buf = bufIn;
     if buf == null {
-      buf = (scratch as &MemRegion).allocate((self.len / 2usize) * mem.sizeof[T](), mem.alignof[T]()) as *T;
+      buf = (scratch as &MemRegion).allocate(self.bufElems() * mem.sizeof[T](), mem.alignof[T]()) as *T;
       if buf == null { panic("sort: no memory for the merge buffer"); }
     }
     // A merge that fits the buffer whole goes from both ends
@@ -1790,17 +1790,27 @@ pub struct @opaque Array[T] is GcTraceElements {
     buf
   }
 
+  // The merge buffer's size in elements: n / 2, but at least what the small sort of a
+  // quicksort's tail needs (stableQuick runs it only when the buffer holds the tail, 32 at most,
+  // and 16 more; otherwise it insertion-sorts), which is n + 16 up to 48. So a list of 95 or
+  // fewer gets more than n / 2, and a list of 96 or more is unchanged
+  fn bufElems(self: &) usize {
+    let half = self.len / 2usize;
+    let leaf = if self.len + 16usize < 48usize { self.len + 16usize } else { 48usize };
+    if half > leaf { half } else { leaf }
+  }
+
   // Sort the range [start, start + len) of unsorted elements, stably, by a quicksort that
-  // partitions through 'buf' (room for n / 2 elements, got from 'scratch' if it is still
+  // partitions through 'buf' (room for bufElems elements, got from 'scratch' if it is still
   // null). Answers the buffer
   fn sortUnsorted[F: fn(a: &T, b: &T) i32](self: &mut, start: usize, len: usize, bufIn: *T, scratch: *MemRegion, root: &mut SortScratch[T], order: &F) *T {
     var buf = bufIn;
     if buf == null {
-      buf = (scratch as &MemRegion).allocate((self.len / 2usize) * mem.sizeof[T](), mem.alignof[T]()) as *T;
+      buf = (scratch as &MemRegion).allocate(self.bufElems() * mem.sizeof[T](), mem.alignof[T]()) as *T;
       if buf == null { panic("sort: no memory for the merge buffer"); }
     }
     let part = mem.sliceFromPartsMut[T]((self as *T) + start, len);
-    part.stableQuick(buf, self.len / 2usize, scratch, root, null, 2u32 * (64u32 - u32.from(u64.from(len).leadingZeros())), order);
+    part.stableQuick(buf, self.bufElems(), scratch, root, null, 2u32 * (64u32 - u32.from(u64.from(len).leadingZeros())), order);
     buf
   }
 
@@ -2087,7 +2097,7 @@ pub struct @opaque Array[T] is GcTraceElements {
 
   // Put the elements in the order 'order' gives, keeping the order of elements it calls
   // equal. 'scratch' is where the merges' buffer comes from (null, the default, is the heap's
-  // region; a default must be a literal, which 'heapRegion()' is not) (n / 2 elements, nothing for 20
+  // region; a default must be a literal, which 'heapRegion()' is not) (bufElems elements, nothing for 20
   // or fewer elements or for input that is already in order); a list passes its own region.
   // A debug build panics if 'order' is not a consistent order (the result is not in order by
   // it); a release build always returns some permutation of the elements
@@ -2095,7 +2105,7 @@ pub struct @opaque Array[T] is GcTraceElements {
     let scratch = if scratchIn == null { heapRegion() } else { scratchIn };
     let buf = self.sortRuns(order, scratch, true, null);
     if buf != null {
-      (scratch as &MemRegion).release(buf as *u8, (self.len / 2usize) * mem.sizeof[T]());
+      (scratch as &MemRegion).release(buf as *u8, self.bufElems() * mem.sizeof[T]());
     }
     #if #debug {
       if !self.isSortedBy(order) {
