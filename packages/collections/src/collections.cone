@@ -86,8 +86,8 @@
 // OrderedDict[String, i64](100)' and 'Set[String](100)', room for 100
 // entries without growing (rounded up to the table's size), as is 'new
 // GenPool[Npc](100)' (the pools package's) for its cells. A function a type offers without a receiver
-// makes one too: 'List[i64]()', 'List[i64].withCapacity(n)' (never less
-// than 4), 'String.from("text")', and a 'withCapacity(n)' on each of the others.
+// makes one too: 'List[i64]()', 'List[i64].withCapacity(n)' (at least n;
+// from empty a block holds 8 one-byte values, else 4, or 1 for elements over 1 KiB), 'String.from("text")', and a 'withCapacity(n)' on each of the others.
 //
 // Methods take their receiver as '&' or '&mut'; calling one on a variable
 // borrows the variable for the call ('list.push(x)' is '(&mut list).push(x)').
@@ -271,8 +271,9 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
 
   // Make room for 'more' values beyond those it holds. A block too small is
   // replaced by one twice its size, or exactly big enough if that is more,
-  // and never smaller than 4 (and the capacity is then all the room the region
-  // gave the block, which may be more). The block may move: every borrow into
+  // and never smaller than the first block: 8 values for 1-byte elements, 1 for
+  // elements over 1 KiB, else 4, as Rust's Vec sizes it (and the capacity is
+  // then all the room the region gave the block, which may be more). The block may move: every borrow into
   // it, and every slice from 'view', is then stale.
   pub fn reserve(self: &mut, more: usize) {
     // 'used <= cap', so 'cap - used' does not wrap, where 'used + more' could
@@ -280,7 +281,9 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     if more > (0usize - 1usize) - used { listTooMany(); }
     var want = cap * 2usize;
     if want < used + more { want = used + more; }
-    if want < 4usize { want = 4usize; }
+    let size = mem.sizeof[T]();
+    let first = if size == 1usize { 8usize } else if size > 1024usize { 1usize } else { 4usize };
+    if want < first { want = first; }
     let room = blockRoom[T](region, want);
     ptr = blockGrow[T](region, ptr, cap, want);
     cap = room;
@@ -1689,7 +1692,9 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
 
   // A String holding a copy of these bytes, for bytes that are text (a buffer
   // read from a file or a socket, a part of one). Nothing checks they are
-  // UTF-8: strings are UTF-8 by convention, as 'bytes as &str' is.
+  // UTF-8: strings are UTF-8 by convention, as 'bytes as &str' is. For a List
+  // you built and no longer need, 'String.fromList(list)' takes its block with
+  // no copy.
   pub fn fromBytes(b: &Array[u8]) String {
     var str = String.withCapacity(b.len);
     str.appendBytes(b);

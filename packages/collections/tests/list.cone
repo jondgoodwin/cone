@@ -3,7 +3,8 @@
 // - a list starts with no block; pushing grows it to 4, then doubles it, so
 //   10 pushes leave room for 16, and 1000 pushes room for 1024;
 // - 'reserve' and 'withCapacity' give a block exactly big enough when that is
-//   more than double the old one, and never less than 4.
+//   more than double the old one, and never less than the first block (4, but
+//   8 for one-byte elements and 1 above 1 KiB).
 
 mod list;
 
@@ -84,25 +85,42 @@ fn main() i32 {
   expectInt(total, 499500, "sum of 0 to 999");
   expectInt(misplaced, 0, "every value at its index");
 
-  // Capacity asked for: exactly 5; then reserving 10 more beyond 5 held is 15,
-  // more than double 5; then one more past 15 doubles to 30
+  // Capacity asked for, in bytes
   var c = List[u8].withCapacity(5usize);
-  expectUInt(u64.from(c.capacity()), 5, "withCapacity 5");
+  // (for one-byte elements the first block is 8, so 5 asked for gives 8; then 5
+  // held and 10 more is 15, under double 8 = 16, so 16; then one past 16 doubles to 32)
+  expectUInt(u64.from(c.capacity()), 8, "withCapacity 5 of bytes gives the first block, 8");
   expectUInt(u64.from(c.len()), 0, "withCapacity holds nothing");
   var b = 0u8;
   while b < 5u8 { c.push(b); b = b + 1u8; }
-  expectUInt(u64.from(c.capacity()), 5, "five fit in five");
+  expectUInt(u64.from(c.capacity()), 8, "five fit in eight");
   c.reserve(10usize);
-  expectUInt(u64.from(c.capacity()), 15, "reserve past double");
+  expectUInt(u64.from(c.capacity()), 16, "reserve past 8: double is 16");
   c.reserve(10usize);
-  expectUInt(u64.from(c.capacity()), 15, "reserve that fits changes nothing");
-  while b < 16u8 { c.push(b); b = b + 1u8; }
-  expectUInt(u64.from(c.capacity()), 30, "one past 15 doubles");
+  expectUInt(u64.from(c.capacity()), 16, "reserve that fits changes nothing");
+  while b < 17u8 { c.push(b); b = b + 1u8; }
+  expectUInt(u64.from(c.capacity()), 32, "one past 16 doubles");
   expectUInt(u64.from(*c[15usize]), 15, "the sixteenth");
 
   // A small capacity asked for is at least 4
   let tiny = List[i64].withCapacity(1usize);
   expectUInt(u64.from(tiny.capacity()), 4, "never less than 4");
+
+  // First blocks by element size, as Rust's Vec: 8 for one byte, 4 up to 1 KiB, 1 above
+  var firstBytes = List[u8]();
+  firstBytes.push(1u8);
+  expectUInt(u64.from(firstBytes.capacity()), 8, "a byte list starts at 8");
+  var n8 = 0usize;
+  while n8 < 8usize { firstBytes.push(2u8); n8 = n8 + 1usize; }
+  expectUInt(u64.from(firstBytes.capacity()), 16, "the ninth byte doubles it");
+  expectUInt(u64.from(List[u8].withCapacity(3usize).capacity()), 8, "withCapacity(3) of bytes is the first block");
+  expectUInt(u64.from(List[u8].withCapacity(20usize).capacity()), 20, "withCapacity(20) of bytes is 20");
+  var wide = List[Array[u8, 1024]]();
+  wide.push(Array[u8, 1024]() <- fill 0u8);
+  expectUInt(u64.from(wide.capacity()), 4, "a 1 KiB element still starts at 4");
+  var huge = List[Array[u8, 1025]]();
+  huge.push(Array[u8, 1025]() <- fill 0u8);
+  expectUInt(u64.from(huge.capacity()), 1, "an element over 1 KiB starts at 1");
 
   // A list of strings: its values are moved in and read through a borrow
   var names = List[String]();
