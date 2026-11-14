@@ -4130,7 +4130,8 @@ struct Worker {
   pub index: u32;
   pub tick: u32;
   pub rng: u32;
-  pub woken: u32;               // 1 from a worker's return from its park (or its leaving it) until it stops looking (foundAway): it may be the one 'searching' counts
+  pub hint: u32;                // set by the worker that woke this one for a loop (the wake tree): its index + 1, or hintExt; read once by stealTask
+  pub woken: u32;             // 1 from a worker's return from its park (or its leaving it) until it stops looking (foundAway): it may be the one 'searching' counts
   pub cause: u64;               // the cause id of the message this worker is running, 0 between messages (tracing hooks)
   pub seq: u64;                 // the send ids this worker has made (tracing hooks)
   pub stat: *StatSlot;          // this worker's counts for stats(), in the block that outlives the stop (STATS, below), not in this struct, which the stop frees
@@ -4499,9 +4500,45 @@ fn notify(s: *Sched) bool {
   if (*s).searching.swap(1u32) != 0u32 {
     return false;
   }
-  // Choose a sleeper, mark it, then wake it (THE PARK WORD). None to be
-  // had leaves 'searching' set: every worker counted a sleeper is then chosen
-  // already or on its way out, and looks
+  wakeOne(s, 0u32)
+}
+
+// THE WAKE TREE. A worker that starts a piece of a 'parallel each' loop, and
+// splits it, wakes up to two sleepers (the loop's caller for its first piece,
+// a thief for a stolen one), so the arrival of workers grows with log2 of their
+// number, not with one wake after another, and the system calls fall to the
+// woken workers. Each woken worker looks first at the deque of the worker that
+// woke it ('hint': its index + 1, or hintExt for the shared deque). As many as
+// already spin are not woken (they find the pieces themselves). Ordinary sends
+// go through notify and keep the one-searcher rule; each worker so woken is one
+// more searcher, and clears 'searching' as any woken worker does.
+fn notifyTree(s: *Sched, hint: u32) {
+  let sp = (*s).spinning.load();
+  if sp >= 2u32 {
+    return;
+  }
+  var k = 2u32 - sp;
+  let asleep = (*s).sleepers.load();
+  if k > asleep {
+    k = asleep;
+  }
+  if k == 0u32 {
+    return;
+  }
+  (*s).searching.store(1u32);
+  while k > 0u32 {
+    if !wakeOne(s, hint) {
+      break;
+    }
+    k = k - 1u32;
+  }
+}
+
+// Choose a sleeper, mark it, then wake it (THE PARK WORD). None to be had
+// leaves 'searching' as it is: every worker counted a sleeper is then chosen
+// already or on its way out, and looks. A hint (not 0) is left for the worker
+// chosen, to look in that deque first. True when it woke one.
+fn wakeOne(s: *Sched, hint: u32) bool {
   var k = 0u32;
   while k < (*s).parkedWords {
     let wp = parkedWord(s, k);
@@ -4518,6 +4555,9 @@ fn notify(s: *Sched) bool {
         var marked = false;
         seen, marked = (*w).park.compareSwap(parkParked, parkNotified);
         if marked {
+          if hint != 0u32 {
+            mem.atomicStore[u32](&(*w).hint as *u32, hint, MemOrder.Relaxed);
+          }
           sync.futexWake(&(*w).park);
           return true;
         }
