@@ -15,8 +15,8 @@
 
 	<p>The <span class="pre">logsink</span> package is a <a href="lib-trace.html">trace</a> sink that writes each event
 		as one line of text on standard output. It is the quickest way to see what a program logs: install it, and the
-		kinds and log lines your packages emit appear, filtered by level. It writes only to the console: there is no
-		file sink, no rotation and no colour.</p>
+		kinds and log lines your packages emit appear, filtered by level. It writes to the console, or, through
+		<span class="pre">logsink.installFile(path, max)</span>, to a file. There is no rotation and no colour.</p>
 
 	<h2 id="example">An example</h2>
 <pre>
@@ -80,6 +80,16 @@ fn main() i32 {
 		which stdio takes away whole, so lines from different threads never mix. In a program that runs actors the line
 		is handed, whole, to the console's owner thread like any other print, so a behaviour that logs pays a
 		hand-over, not a write; <span class="pre">trace.flush()</span> and the end of the program drain it with the rest.</p>
+
+	<h2 id="file">The file sink</h2>
+	<p><span class="pre">installFile(path, max)</span> opens the file with <span class="pre">fs.append</span> (made if missing, an
+		existing file keeps its bytes, so a second run adds to it) and installs a <span class="pre">FileSink</span> that
+		writes the same lines. It answers <span class="pre">Result[FileLog, FsError]</span>: the open's error if the file
+		cannot be opened, or EBUSY if a sink was already installed. Each event is one write of its whole line, under a
+		mutex, so lines from any threads or actors never mix and each thread's own stay in order; nothing is buffered,
+		so a crash loses at most the event in flight. <span class="pre">trace.flush()</span> asks the disk to take the
+		bytes (fsync). A write that fails after the install (disk full) loses its event, is counted, and later events are
+		tried again; <span class="pre">FileLog.failures()</span> says how many have failed.</p>
 
 	<h2>Comes back in</h2>
 	<ul>
