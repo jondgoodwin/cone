@@ -34,6 +34,18 @@ fn smallCodes(base: &Array[u32], bias: u32, n: usize) List[u8] {
   t
 }
 
+// The base and the extra-bit count of each code in one cell (base low, bits
+// from bit 32), so the sequence loop reads one cell where it read two tables
+fn cells(base: &Array[u32], bits: &Array[u32]) List[u64] {
+  var t = List[u64].withCapacity(base.len);
+  var c = 0usize;
+  while c < base.len {
+    t.push(u64.from(base[c]) | (u64.from(bits[c]) << 32u64));
+    c += 1usize;
+  }
+  t
+}
+
 // What a block's encoding needs besides the block: the Huffman code, the
 // three FSE tables, the codes of the sequences and scratch for counting
 struct BlockEnc {
@@ -46,14 +58,18 @@ struct BlockEnc {
   mlCodes: List[u8];
   llSmall: List[u8];
   mlSmall: List[u8];
-  cnt: List[u32];
+  llCnt: List[u32];
+  ofCnt: List[u32];
+  mlCnt: List[u32];
+  llCell: List[u64];
+  mlCell: List[u64];
   norm: List[i16];
   desc: List[u8];
 
   fn make() BlockEnc {
     BlockEnc(HufEnc(), FseEnc(), FseEnc(), FseEnc(), List[u8](),
       List[u8](), List[u8](), smallCodes(&llBase, 0u32, 64usize), smallCodes(&mlBase, 3u32, 128usize),
-      List[u32](), List[i16](), List[u8]())
+      List[u32](), List[u32](), List[u32](), cells(&llBase, &llBits), cells(&mlBase, &mlBits), List[i16](), List[u8]())
   }
 }
 
@@ -161,17 +177,8 @@ fn lengthCode(small: &List[u8], v: u32, delta: u32) u8 {
 // The table for one of the three codes, by cost: appends its description
 // (an RLE symbol, or FSE counts) to 'desc', builds 't', answers the mode
 // (0 predefined, 1 RLE, 2 FSE)
-fn chooseTable(codes: &List[u8], alphabet: usize, defaults: &Array[i16], defaultLog: u32, maxLog: u32,
-    cnt: &mut List[u32], norm: &mut List[i16], desc: &mut List[u8], t: &mut FseEnc) u8 {
-  let nb = codes.len();
-  cnt.clear();
-  cnt.resize(alphabet, 0u32);
-  var i = 0usize;
-  while i < nb {
-    let c = usize.from(*codes[i]);
-    cnt.set(c, *cnt[c] + 1u32);
-    i += 1usize;
-  }
+fn chooseTable(nb: usize, alphabet: usize, defaults: &Array[i16], defaultLog: u32, maxLog: u32,
+    cnt: &List[u32], norm: &mut List[i16], desc: &mut List[u8], t: &mut FseEnc) u8 {
   var maxSym = 0usize;
   var distinct = 0usize;
   var s = 0usize;
@@ -245,17 +252,30 @@ fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
   enc.llCodes.clear();
   enc.ofCodes.clear();
   enc.mlCodes.clear();
+  enc.llCnt.clear();
+  enc.llCnt.resize(36usize, 0u32);
+  enc.ofCnt.clear();
+  enc.ofCnt.resize(32usize, 0u32);
+  enc.mlCnt.clear();
+  enc.mlCnt.resize(53usize, 0u32);
   var i = 0usize;
   while i < nb {
-    enc.llCodes.push(lengthCode(&enc.llSmall, *seqs.ll[i], 19u32));
-    enc.mlCodes.push(lengthCode(&enc.mlSmall, *seqs.ml[i] - 3u32, 36u32));
-    enc.ofCodes.push(u8.from(highBit(*seqs.off[i])));
+    // The codes and their counts in one walk
+    let lc = lengthCode(&enc.llSmall, *seqs.ll[i], 19u32);
+    let mc = lengthCode(&enc.mlSmall, *seqs.ml[i] - 3u32, 36u32);
+    let oc = u8.from(highBit(*seqs.off[i]));
+    enc.llCodes.push(lc);
+    enc.mlCodes.push(mc);
+    enc.ofCodes.push(oc);
+    enc.llCnt.set(usize.from(lc), *enc.llCnt[usize.from(lc)] + 1u32);
+    enc.mlCnt.set(usize.from(mc), *enc.mlCnt[usize.from(mc)] + 1u32);
+    enc.ofCnt.set(usize.from(oc), *enc.ofCnt[usize.from(oc)] + 1u32);
     i += 1usize;
   }
   enc.desc.clear();
-  let llMode = chooseTable(&enc.llCodes, 36usize, &llDefault, 6u32, 9u32, &mut enc.cnt, &mut enc.norm, &mut enc.desc, &mut enc.ll);
-  let ofMode = chooseTable(&enc.ofCodes, 32usize, &ofDefault, 5u32, 8u32, &mut enc.cnt, &mut enc.norm, &mut enc.desc, &mut enc.of);
-  let mlMode = chooseTable(&enc.mlCodes, 53usize, &mlDefault, 6u32, 9u32, &mut enc.cnt, &mut enc.norm, &mut enc.desc, &mut enc.ml);
+  let llMode = chooseTable(nb, 36usize, &llDefault, 6u32, 9u32, &enc.llCnt, &mut enc.norm, &mut enc.desc, &mut enc.ll);
+  let ofMode = chooseTable(nb, 32usize, &ofDefault, 5u32, 8u32, &enc.ofCnt, &mut enc.norm, &mut enc.desc, &mut enc.of);
+  let mlMode = chooseTable(nb, 53usize, &mlDefault, 6u32, 9u32, &enc.mlCnt, &mut enc.norm, &mut enc.desc, &mut enc.ml);
   out.push((llMode << 6u8) | (ofMode << 4u8) | (mlMode << 2u8));
   out.reserve(enc.desc.len());
   i = 0usize;
@@ -281,8 +301,10 @@ fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
   var llState = enc.ll.first(llc);
   var ofState = enc.of.first(ofc);
   var mlState = enc.ml.first(mlc);
-  bw.put(u64.from(*seqs.ll[last] - llBase[llc]), llBits[llc]);
-  bw.put(u64.from(*seqs.ml[last] - mlBase[mlc]), mlBits[mlc]);
+  let l0 = *enc.llCell[llc];
+  let m0 = *enc.mlCell[mlc];
+  bw.put(u64.from(*seqs.ll[last]) - (l0 & 0xFFFFFFFFu64), u32.from(l0 >> 32u64));
+  bw.put(u64.from(*seqs.ml[last]) - (m0 & 0xFFFFFFFFu64), u32.from(m0 >> 32u64));
   bw.put(u64.from(*seqs.off[last]), u32.from(ofc));
   var n = last;
   while n > 0usize {
@@ -293,9 +315,11 @@ fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
     ofState = enc.of.encodeRun(&mut bw, ofState, ofc);
     mlState = enc.ml.encodeRun(&mut bw, mlState, mlc);
     llState = enc.ll.encodeRun(&mut bw, llState, llc);
-    bw.add(u64.from(*seqs.ll[n] - llBase[llc]), llBits[llc]);
+    let lcell = *enc.llCell[llc];
+    let mcell = *enc.mlCell[mlc];
+    bw.add(u64.from(*seqs.ll[n]) - (lcell & 0xFFFFFFFFu64), u32.from(lcell >> 32u64));
     bw.flush();
-    bw.add(u64.from(*seqs.ml[n] - mlBase[mlc]), mlBits[mlc]);
+    bw.add(u64.from(*seqs.ml[n]) - (mcell & 0xFFFFFFFFu64), u32.from(mcell >> 32u64));
     bw.add(u64.from(*seqs.off[n]), u32.from(ofc));
     bw.flush();
   }
