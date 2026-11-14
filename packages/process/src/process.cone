@@ -684,13 +684,13 @@ fn validName(name: &Array[u8]) bool { name.len > 0usize && !hasByte(name, '=') &
 fn checkEnvironment(opts: &Options) u32 {
   let noVars = EnvVars();
   let noNames = List[String]();
-  let vars = match opts.env { case let Some(v) { v } case is None { noVars.view() } };
+  let vars = match &opts.env { case let Some(v) { v.view() } case is None { noVars.view() } };
   var i = 0usize;
   while i < vars.len {
     if !validName(vars[i].name.view()) || hasByte(vars[i].value.view(), 0u8) { return invalidParameter(); }
     i = i + 1usize;
   }
-  let gone = match opts.removeEnv { case let Some(v) { v } case is None { noNames.view() } };
+  let gone = match &opts.removeEnv { case let Some(v) { v.view() } case is None { noNames.view() } };
   i = 0usize;
   while i < gone.len {
     if !validName(gone[i].view()) { return invalidParameter(); }
@@ -746,7 +746,7 @@ fn childEntries(parent: &List[String], opts: &Options, heap: bool) List[String] 
   var out = List[String]();
   let noVars = EnvVars();
   let noNames = List[String]();
-  let gone = match opts.removeEnv { case let Some(v) { v } case is None { noNames.view() } };
+  let gone = match &opts.removeEnv { case let Some(v) { v.view() } case is None { noNames.view() } };
   let old = parent.view();
   var i = 0usize;
   while i < old.len && !opts.clearEnv {
@@ -759,7 +759,7 @@ fn childEntries(parent: &List[String], opts: &Options, heap: bool) List[String] 
     if !drop { out.push(String.from(old[i].view())); }
     i = i + 1usize;
   }
-  let vars = match opts.env { case let Some(v) { v } case is None { noVars.view() } };
+  let vars = match &opts.env { case let Some(v) { v.view() } case is None { noVars.view() } };
   i = 0usize;
   while i < vars.len {
     // A name set twice is the last one's
@@ -807,17 +807,17 @@ pub struct Options {
   // then shares this program's standard input)
   pub stdin: bool = false;
   // Bytes for the child's standard input, written to it and then closed, whatever the child reads or writes meanwhile
-  // (above, "The child's input"); none, the default, leaves it reading from NUL (/dev/null). Borrowed: it must be
-  // there for the call. Used by 'run' and 'runLine'; ignored by 'launch', which has 'stdin' and 'Child.takeStdin', and
-  // where 'inherit' is true
-  pub input: &Array[u8] = "";
+  // (above, "The child's input"); None, the default, leaves it reading from NUL (/dev/null). Owned, so that an Options
+  // can cross to another thread (aio's). Used by 'run' and 'runLine'; ignored by 'launch', which has 'stdin' and
+  // 'Child.takeStdin', and where 'inherit' is true
+  pub input: Option[String] = None;
   // Variables the child has beyond this program's, or instead of them: each replaces the one of that name this
   // program's environment has, if any (above, "The environment"). The child's environment only: this program's is
-  // never changed. Borrowed, as 'removeEnv' is: the list must be there for the call ('EnvVars.view()')
-  pub env: Option[&Array[EnvVar]] = None;
+  // never changed
+  pub env: Option[EnvVars] = None;
   // Names of variables the child is not given, though this program has them; one it has not is no error. Applied
   // before 'env', so a name in both is the one 'env' sets
-  pub removeEnv: Option[&Array[String]] = None;
+  pub removeEnv: Option[List[String]] = None;
   // Start the child's environment empty, rather than from this program's: it holds then only what 'env' sets
   pub clearEnv: bool = false;
 }
@@ -1919,6 +1919,8 @@ fn start(op: &str, program: &str, line: &str, dir: &Path, opts: Options) Result[
   var so = noStream();
   var se = noStream();
   var fd = noFeed();
+  let noInput = String();
+  let inBytes = match &opts.input { case let Some(s) { s.view() } case is None { noInput.view() } };
   var childIn = 0usize;
   var childOut = 0usize;
   var childErr = 0usize;
@@ -1929,7 +1931,7 @@ fn start(op: &str, program: &str, line: &str, dir: &Path, opts: Options) Result[
   }
   else {
     // With input to give, the child's standard input is a pipe we write to, in the loop below; else NUL
-    childIn = if opts.input.len > 0usize {makeFeed(&mut fd, opts.input)} else {openNul(genericRead)};
+    childIn = if inBytes.len > 0usize {makeFeed(&mut fd, inBytes)} else {openNul(genericRead)};
     childOut = makePipe(&mut so);
     childErr = makePipe(&mut se);
   }
@@ -2298,6 +2300,8 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   let errp: *i32 = &[]errFds as *i32;
   let inp: *i32 = &[]inFds as *i32;
   var inOff = 0usize;
+  let noInput = String();
+  let inData = match &opts.input { case let Some(s) { s.view() } case is None { noInput.view() } };
   var actions = Array[u64, 32]() <- fill 0u64;
   var attr = Array[u64, 64]() <- fill 0u64;
   // (opaque to us, and aligned for the pointers they hold: a block of words)
@@ -2321,7 +2325,7 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
       so.fd = outFds[0usize];
       se.fd = errFds[0usize];
       // With input to give, the child's standard input is a pipe we write to, in the poll below; else /dev/null
-      if opts.input.len > 0usize {
+      if inData.len > 0usize {
         if makePipe2(inp, closeOnExec) != 0i32 {
           rc = *libc.errno();
           closeFd(outFds[0usize]);
@@ -2386,7 +2390,6 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
     closeFdIf(inFds[1usize]);
     return Err[Output, ProcessError](failure(op, program, dir, u32.from(rc)));
   }
-  let inData = opts.input;
   var inFd = inFds[1usize];
 
   // A child with a time limit is its group's leader, so a stop reaches what

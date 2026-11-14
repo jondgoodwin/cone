@@ -217,6 +217,28 @@ fn var1(name: &str, value: &str) process.EnvVars {
   v
 }
 
+fn cp(l: &process.EnvVars) process.EnvVars {
+  var c = process.EnvVars();
+  let v = l.view();
+  var i = 0usize;
+  while i < v.len {
+    c.push(process.EnvVar(String.from(v[i].name.view()), String.from(v[i].value.view())));
+    i = i + 1usize;
+  }
+  c
+}
+
+fn cpn(l: &List[String]) List[String] {
+  var c = List[String]();
+  let v = l.view();
+  var i = 0usize;
+  while i < v.len {
+    c.push(String.from(v[i].view()));
+    i = i + 1usize;
+  }
+  c
+}
+
 fn names1(name: &str) List[String] {
   var v = List[String]();
   v.push(String.from(name));
@@ -251,46 +273,46 @@ fn environment(exe: &str) {
 
   // The child sees what was set for it, and this program does not
   let newVars = var1("CONE_ENVT_NEW", "new");
-  expectStr(seen(exe, "CONE_ENVT_NEW", process.Options(env: Some(newVars.view()))).view(), "6e6577",
+  expectStr(seen(exe, "CONE_ENVT_NEW", process.Options(env: Some(cp(&newVars)))).view(), "6e6577",
     "a variable set for the child is seen by it");
   expectBool(env.get("CONE_ENVT_NEW") is None, true, "and is not set here");
-  expectStr(seen(exe, "CONE_ENVT_OLD", process.Options(env: Some(newVars.view()))).view(), "6f6c64",
+  expectStr(seen(exe, "CONE_ENVT_OLD", process.Options(env: Some(cp(&newVars)))).view(), "6f6c64",
     "the inherited ones are still there");
   expectStr(seen(exe, "CONE_ENVT_NEW", process.Options()).view(), "<none>",
     "and the next run, with no option, has none of it");
 
   // An override replaces the inherited one, here as it was
   let overVars = var1("CONE_ENVT_OLD", "over");
-  expectStr(seen(exe, "CONE_ENVT_OLD", process.Options(env: Some(overVars.view()))).view(), "6f766572",
+  expectStr(seen(exe, "CONE_ENVT_OLD", process.Options(env: Some(cp(&overVars)))).view(), "6f766572",
     "an override replaces the inherited value");
   expectBool(here("CONE_ENVT_OLD", "old"), true, "and this program's own is as it was");
   let lowerVars = var1("cone_envt_old", "lower");
-  expectStr(seen(exe, "CONE_ENVT_OLD", process.Options(env: Some(lowerVars.view()))).view(), os("6c6f776572", "6f6c64"),
+  expectStr(seen(exe, "CONE_ENVT_OLD", process.Options(env: Some(cp(&lowerVars)))).view(), os("6c6f776572", "6f6c64"),
     "a name of another case replaces on Windows, is another variable on POSIX");
 
   // Removed ones are gone, here they remain
   let goneNames = names1("CONE_ENVT_GONE");
-  expectStr(seen(exe, "CONE_ENVT_GONE", process.Options(removeEnv: Some(goneNames.view()))).view(), "<none>",
+  expectStr(seen(exe, "CONE_ENVT_GONE", process.Options(removeEnv: Some(cpn(&goneNames)))).view(), "<none>",
     "a removed variable is gone from the child");
-  expectStr(seen(exe, "CONE_ENVT_OLD", process.Options(removeEnv: Some(goneNames.view()))).view(), "6f6c64",
+  expectStr(seen(exe, "CONE_ENVT_OLD", process.Options(removeEnv: Some(cpn(&goneNames)))).view(), "6f6c64",
     "and the others stay");
   expectBool(here("CONE_ENVT_GONE", "here"), true, "and it is still here");
   let neverNames = names1("CONE_ENVT_NEVER_SET");
-  expectStr(seen(exe, "CONE_ENVT_OLD", process.Options(removeEnv: Some(neverNames.view()))).view(), "6f6c64",
+  expectStr(seen(exe, "CONE_ENVT_OLD", process.Options(removeEnv: Some(cpn(&neverNames)))).view(), "6f6c64",
     "removing a name that is not there is no error");
   let backVars = var1("CONE_ENVT_GONE", "back");
-  expectStr(seen(exe, "CONE_ENVT_GONE", process.Options(env: Some(backVars.view()), removeEnv: Some(goneNames.view()))).view(),
+  expectStr(seen(exe, "CONE_ENVT_GONE", process.Options(env: Some(cp(&backVars)), removeEnv: Some(cpn(&goneNames)))).view(),
     "6261636b", "a name removed and set is set");
   var twice = var1("CONE_ENVT_T", "first");
   twice.push(process.EnvVar(String.from("CONE_ENVT_T"), String.from("second")));
-  expectStr(seen(exe, "CONE_ENVT_T", process.Options(env: Some(twice.view()))).view(), "7365636f6e64",
+  expectStr(seen(exe, "CONE_ENVT_T", process.Options(env: Some(cp(&twice)))).view(), "7365636f6e64",
     "a name set twice is the last one's");
 
   // A cleared environment holds only what was set
   var clearVars = var1("CONE_ENVT_ONLY", "x");
   clearVars.push(process.EnvVar(String.from("CONE_ENVT_TWO"), String.from("y")));
   var n = childCommand(exe, "envnames");
-  let names = ran(process.run(n.view(), process.Options(env: Some(clearVars.view()), clearEnv: true)), "envnames");
+  let names = ran(process.run(n.view(), process.Options(env: Some(cp(&clearVars)), clearEnv: true)), "envnames");
   var two = String.from("CONE_ENVT_ONLY");
   two.append(eol());
   two.append("CONE_ENVT_TWO");
@@ -299,7 +321,7 @@ fn environment(exe: &str) {
   expectStr(seen(exe, "CONE_ENVT_OLD", process.Options(clearEnv: true)).view(), "<none>",
     "an inherited one is not in it");
   let onlyVars = var1("CONE_ENVT_ONLY", "x");
-  let un = ran(process.run(n.view(), process.Options(env: Some(onlyVars.view()), clearEnv: true, crashReport: false)),
+  let un = ran(process.run(n.view(), process.Options(env: Some(cp(&onlyVars)), clearEnv: true, crashReport: false)),
     "envnames, crashes unreported");
   var heapLine = String.from("CONE_ENVT_ONLY");
   heapLine.append(eol());
@@ -307,26 +329,26 @@ fn environment(exe: &str) {
   expectStr(un.stdout.view(), heapLine.view(),
     "a cleared environment, crashes unreported: on Windows with its one added variable");
   let nVars = var1("CONE_ENVT_NEW", "n");
-  expectStr(seen(exe, "CONE_ENVT_NEW", process.Options(env: Some(nVars.view()), crashReport: false)).view(), "6e",
+  expectStr(seen(exe, "CONE_ENVT_NEW", process.Options(env: Some(cp(&nVars)), crashReport: false)).view(), "6e",
     "a variable set for a child run unreported");
 
   // Beyond ASCII, in the name and the value
   let utfVars = var1("CONE_ENVT_é日", "é日本");
-  expectStr(seen(exe, "CONE_ENVT_é日", process.Options(env: Some(utfVars.view()))).view(), "c3a9e697a5e69cac",
+  expectStr(seen(exe, "CONE_ENVT_é日", process.Options(env: Some(cp(&utfVars)))).view(), "c3a9e697a5e69cac",
     "a name and a value beyond ASCII");
   expectBool(env.get("CONE_ENVT_é日") is None, true, "which this program does not have");
 
   // What no environment can hold
   let emptyName = var1("", "v");
-  refused(exe, process.Options(env: Some(emptyName.view())), "an empty name is refused");
+  refused(exe, process.Options(env: Some(cp(&emptyName))), "an empty name is refused");
   let eqName = var1("A=B", "v");
-  refused(exe, process.Options(env: Some(eqName.view())), "a name with '=' is refused");
+  refused(exe, process.Options(env: Some(cp(&eqName))), "a name with '=' is refused");
   let nulName = var1("A\0B", "v");
-  refused(exe, process.Options(env: Some(nulName.view())), "a name with a NUL is refused");
+  refused(exe, process.Options(env: Some(cp(&nulName))), "a name with a NUL is refused");
   let nulValue = var1("CONE_ENVT_V", "a\0b");
-  refused(exe, process.Options(env: Some(nulValue.view())), "a value with a NUL is refused");
+  refused(exe, process.Options(env: Some(cp(&nulValue))), "a value with a NUL is refused");
   let badNames = names1("A=B");
-  refused(exe, process.Options(removeEnv: Some(badNames.view())), "a removed name with '=' is refused");
+  refused(exe, process.Options(removeEnv: Some(cpn(&badNames))), "a removed name with '=' is refused");
 
   env.unset("CONE_ENVT_OLD");
   env.unset("CONE_ENVT_GONE");
@@ -334,14 +356,14 @@ fn environment(exe: &str) {
 
 fn input(exe: &str) {
   let c = childCommand(exe, "incount");
-  let zero = ran(process.run(c.view(), process.Options(input: "")), "0 bytes");
+  let zero = ran(process.run(c.view(), process.Options(input: Some(String()))), "0 bytes");
   expectStr(zero.stdout.view(), "0 0", "0 bytes of input: the child reads end of input at once");
   let fewText = "hello\nthere";
-  let few = ran(process.run(c.view(), process.Options(input: fewText)), "a few bytes");
+  let few = ran(process.run(c.view(), process.Options(input: Some(String.from(fewText)))), "a few bytes");
   let wantFew = countSum(fewText);
   expectStr(few.stdout.view(), wantFew.view(), "a few bytes of input arrive, and then end of input");
   let utf = "é日本\n";
-  let u = ran(process.run(c.view(), process.Options(input: utf)), "UTF-8");
+  let u = ran(process.run(c.view(), process.Options(input: Some(String.from(utf)))), "UTF-8");
   let wantUtf = countSum(utf);
   expectStr(u.stdout.view(), wantUtf.view(), "bytes beyond ASCII arrive as they are");
 
@@ -349,14 +371,14 @@ fn input(exe: &str) {
   let big = payload(1048576usize);
   let wantBig = countSum(big.view());
   let e = childCommand(exe, "inecho");
-  let echoed = ran(process.run(e.view(), process.Options(input: big.view(), timeout: Duration.fromSeconds(60))), "echo");
+  let echoed = ran(process.run(e.view(), process.Options(input: Some(big.clone()),timeout: Duration.fromSeconds(60))), "echo");
   expectStr(echoed.stderr.view(), wantBig.view(), "a megabyte of input is read whole");
   expectBool(echoed.stdout.equals(big.view()), true, "and echoed back, byte for byte, while it is written");
   expectBool(echoed.exitCode == 0u32 && !echoed.timedOut, true, "the echo ended in time");
 
   // A child that writes a megabyte before it reads a byte
   let f = childCommand(exe, "outfirst");
-  let first = ran(process.run(f.view(), process.Options(input: big.view(), timeout: Duration.fromSeconds(60))),
+  let first = ran(process.run(f.view(), process.Options(input: Some(big.clone()),timeout: Duration.fromSeconds(60))),
     "output first");
   expectUInt(u64.from(first.stdout.len()), 1048576u64, "a child that writes a megabyte first is not waiting on a writer");
   expectStr(first.stderr.view(), wantBig.view(), "and then reads all of its input");
@@ -364,7 +386,7 @@ fn input(exe: &str) {
 
   // A child that never reads: the writing ends, and nothing else is wrong
   let nr = childCommand(exe, "noread");
-  let never = ran(process.run(nr.view(), process.Options(input: big.view(), timeout: Duration.fromSeconds(60))),
+  let never = ran(process.run(nr.view(), process.Options(input: Some(big.clone()),timeout: Duration.fromSeconds(60))),
     "no read");
   var said = String.from("did not read");
   said.append(eol());
@@ -373,7 +395,7 @@ fn input(exe: &str) {
 
   // With a variable too, and a time limit that is never reached
   let bothVars = var1("CONE_ENVT_BOTH", "b");
-  let b = ran(process.run(c.view(), process.Options(input: "abc", env: Some(bothVars.view()),
+  let b = ran(process.run(c.view(), process.Options(input: Some(String.from("abc")),env: Some(cp(&bothVars)),
     timeout: Duration.fromSeconds(30))), "input and env");
   let wantAbc = countSum("abc");
   expectStr(b.stdout.view(), wantAbc.view(), "input with an environment and a time limit");
