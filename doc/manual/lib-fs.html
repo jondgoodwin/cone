@@ -1105,7 +1105,38 @@ notFound: yes, code 2
 		program has printed first (<span class="pre">printFlush()</span>), or the child's lines come before it.</li>
 	<li><span class="pre">crashReport</span>: <span class="pre">true</span> by default. See
 		<a href="#process-crash">A crash</a>.</li>
+	<li><span class="pre">input</span>: <span class="pre">Some(iobuf.Bytes)</span>, bytes not text (<span class="pre">None</span>
+		by default) written to the child's standard input, which is then closed. See <a href="#process-environment">The child's environment and input</a>.</li>
+	<li><span class="pre">env</span>, <span class="pre">removeEnv</span>, <span class="pre">clearEnv</span>:
+		the child's environment. See the same section.</li>
 	</ul>
+
+	<h3 id="process-environment">The child's environment and input</h3>
+	<p>Three <span class="pre">Options</span> fields give the child an environment of its own, without changing
+		this program's (the block is built for the child alone; nothing calls
+		<span class="pre">setenv</span> or <span class="pre">_putenv</span>):</p>
+	<ul>
+	<li><span class="pre">env: Some(vars)</span>, a list of <span class="pre">process.EnvVar(name, value)</span>
+		(<span class="pre">process.EnvVars</span> is the list): each replaces the inherited variable of its
+		name, or adds one. A name given twice is the last one's.</li>
+	<li><span class="pre">removeEnv: Some(names)</span>, a list of strings: names the child is not given, applied before
+		<span class="pre">env</span>; a name it has not is no error.</li>
+	<li><span class="pre">clearEnv: true</span>: the child starts from an empty environment, so it holds only what
+		<span class="pre">env</span> sets.</li>
+	</ul>
+	<p>On Windows names match without regard to case (<span class="pre">PATH</span> replaces
+		or removes an inherited <span class="pre">Path</span>, never sitting beside it; only ASCII letters are folded,
+		so a name beyond ASCII matches only the same spelling, where Windows itself would also match its other
+		case), and the block is sorted UTF-16; on POSIX names are exact. A name that is
+		empty or holds <span class="pre">=</span> or a NUL, or a value that holds a NUL, is refused (Windows 87,
+		POSIX EINVAL); on Windows a name or value that is not UTF-8 is refused as an argument is (1113).</p>
+	<p><span class="pre">input</span> is written to the child's standard input while its outputs are read, so a
+		child that writes a megabyte before it reads a byte does not wait on a program that waits on it. A child
+		that exits, or closes its input, before it has read everything ends the writing quietly. It is used by
+		<span class="pre">run</span> and <span class="pre">runLine</span>; <span class="pre">launch</span> ignores
+		it (it has <span class="pre">stdin</span> and <span class="pre">takeStdin</span>), as it does where
+		<span class="pre">inherit</span> is true. <span class="pre">aio.run</span> does not support
+		<span class="pre">input</span> yet: a call with one panics, naming it.</p>
 
 	<h3 id="process-dir">The working folder, the environment, and finding the program</h3>
 	<p>The last parameter of <span class="pre">run</span> and <span class="pre">runLine</span> is the folder the
@@ -1113,9 +1144,8 @@ notFound: yes, code 2
 		program's current folder. Like the paths of <span class="pre">fs</span>, a string literal there is made a
 		<span class="pre">Path</span> for the call, and a <span class="pre">Path</span> in a variable is lent, not
 		given away: <span class="pre">process.run(args.view(), process.Options(), "build")</span>.</p>
-	<p>The child inherits this program's environment as it is when <span class="pre">run</span> is called: set a
-		variable with the <a href="#env">env</a> package first. There is no environment of the child's own to
-		pass.</p>
+	<p>The child inherits this program's environment as it is when <span class="pre">run</span> is called, unless
+		it is given one of its own (<a href="#process-environment">next section</a>).</p>
 	<p>The program is found as Windows' <span class="pre">CreateProcessW</span> finds it: a name with no folder
 		is looked for in the folder this program's executable is in, then the current folder, then Windows'
 		system folders, then each folder on <span class="pre">PATH</span>, with <span class="pre">.exe</span>
