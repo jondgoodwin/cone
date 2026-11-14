@@ -109,7 +109,7 @@
 // 'File': one owner, moved, closed when it dies, with an unbuffered position: 'read(&mut buf)' (how many,
 // 0 at the end), 'write(data)' (all of it), 'seek(pos)', 'seekBy(delta)', 'seekEnd(delta)' (each answers
 // the new position), 'flush()' (fsync), and 'close()', which answers the close's own error. Its descriptor
-// calls are the C runtime's ('_open', '_read' on Windows; 'open', 'read' on Linux), bytes unchanged. A
+// calls are the C runtime's ('_wopen' with a UTF-16 name and _O_BINARY, '_read' on Windows; 'open', 'read' on Linux), bytes unchanged. A
 // 'LineReader.over(file)' reads it by line: 'readLine(&mut line)' as 'stdinput.readLine' does, in 64 KiB
 // blocks, '\n' and '\r\n' both ending a line, a last line with no end counting.
 //
@@ -1139,7 +1139,7 @@ pub fn absolute(path: &Path) Result[Path, FsError] {
 
 extern {
   // Windows: the C runtime's file-descriptor calls (binary mode is asked for in the flags)
-  fn @c _open(path: cstr, flags: i32, mode: i32) i32;
+  fn @c _wopen(path: *u16, flags: i32, mode: i32) i32;
   fn @c _read(fd: i32, p: *u8, n: u32) i32;
   fn @c _write(fd: i32, p: *u8, n: u32) i32;
   fn @c _close(fd: i32) i32;
@@ -1155,13 +1155,17 @@ extern {
 
 // open(2)'s flags: O_RDONLY, O_RDWR and O_TRUNC are the same on Windows's runtime and Linux; the rest differ
 const openRead = 0i32;              // O_RDONLY
+const openWriteOnly = 1i32;         // O_WRONLY
 const openReadWrite = 2i32;         // O_RDWR
 const openTruncate = 0x200i32;      // O_TRUNC
 const seekStart = 0i32;             // SEEK_SET
 const seekCurrent = 1i32;           // SEEK_CUR
 const seekFromEnd = 2i32;           // SEEK_END
 const eintr = 4i32;                 // EINTR
-const oneChunk = 0x40000000usize;   // the most one read or write call is asked for (Windows counts in 32 bits)
+const oneChunk = 0x40000000usize;   // the most one call is asked for: _read/_write count in 32 bits, so a larger count goes in 1 GiB pieces (write loops; read answers fewer)
+
+// O_APPEND: every write goes to the end of the file
+fn appendFlag() i32 { #if #os == .windows { 0x8i32 } #else { 0x400i32 } }
 
 // O_CREAT
 fn createFlag() i32 { #if #os == .windows { 0x100i32 } #else { 0x40i32 } }
@@ -1172,7 +1176,18 @@ fn plainFlags() i32 { #if #os == .windows { 0x8080i32 } #else { 0x80000i32 } }
 fn openFd(path: &Path, flags: i32) i32 {
   var c = cText(path);
   // A new file's mode: 0o666 (less the umask) on Linux; Windows reads only whether it may be written
-  #if #os == .windows { _open(c.cstr(), flags | plainFlags(), 0x180i32) }
+  #if #os == .windows {
+    // the name goes to '_wopen' as UTF-16 (converted from UTF-8, as setTimesWindows does), never the ANSI page
+    let n = MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, null, 0i32);
+    if n <= 0i32 { *libc.errno() = posix.EINVAL; return -1i32; }
+    let wide = libc.malloc(usize.from(n) * 2usize) as *u16;
+    MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, wide, n);
+    let fd = _wopen(wide, flags | plainFlags(), 0x180i32);
+    let saved = lastErrno();
+    libc.free(wide as *u8);
+    *libc.errno() = saved;
+    fd
+  }
   #else { posixOpen(c.cstr(), flags | plainFlags(), 0x1B6u32) }
 }
 
@@ -1314,6 +1329,13 @@ pub fn create(path: &Path) Result[File, FsError] {
   openWith("create", path, openReadWrite | createFlag() | openTruncate)
 }
 
+// Open a file for writing only, made if the path is free (an existing one keeps its bytes), every write
+// going to the end of the file whatever the position (O_APPEND; _O_APPEND on Windows). A read is refused
+// (EBADF).
+pub fn append(path: &Path) Result[File, FsError] {
+  openWith("append", path, openWriteOnly | createFlag() | appendFlag())
+}
+
 // -------- lines --------
 
 const lineBuffer = 65536usize;
@@ -1354,7 +1376,8 @@ pub struct LineReader is Move {
   // The next line into 'line', replacing what it held, without its line end ('\n' or '\r\n'). Ok(false),
   // with 'line' empty, at the end of the file. A last line with no '\n' is a line, as it is for stdinput;
   // so is an empty one. The bytes go in as they came: String holds UTF-8 by convention and checks no
-  // more than 'appendBytes' does, so a file that is not text makes a String that is not.
+  // more than 'appendBytes' does, so a file that is not text makes a String that is not. It does not
+  // validate UTF-8, matching String today.
   pub fn readLine(self: &mut, line: &mut String) Result[bool, FsError] {
     line.clear();
     var any = false;

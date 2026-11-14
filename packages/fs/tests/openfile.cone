@@ -294,6 +294,77 @@ fn main() i32 {
       while i < 30000usize { many.append("line\n"); i = i + 1usize; }
       expect(fs.writeFile(&l, many.view()) is Ok, "write many lines");
       expectUInt(u64.from(lineCount(&l)), 30000u64, "30000 lines across three buffers");
+
+      // a non-ASCII name: created, written, reopened, read back
+      let u = dir.join("é-日本.txt");
+      match fs.create(&u) {
+        case let Ok(f) {
+          var file = f;
+          expect(file.write("unicode name") is Ok, "write to the non-ASCII name");
+          expect(file.close() is Ok, "close it");
+        }
+        case is Err { expect(false, "create a non-ASCII name"); }
+      }
+      match fs.open(&u) {
+        case let Ok(f) {
+          var file = f;
+          var buf = Array[u8, 32]() <- fill 0u8;
+          match file.read(&mut buf) {
+            case let Ok(n) { expectStr(mem.sliceFromParts(&[]buf as *u8, n), "unicode name", "the non-ASCII name reads back"); }
+            case is Err { expect(false, "read the non-ASCII name"); }
+          }
+        }
+        case is Err { expect(false, "reopen a non-ASCII name"); }
+      }
+
+      // CRLF and 0x1A bytes come back byte for byte
+      var rawb = String();
+      rawb.append("a\r\nb");
+      rawb.appendBytes(mem.sliceFromParts(&26u8 as *u8, 1usize));
+      rawb.append("c\r\n\r\n");
+      rawb.appendBytes(mem.sliceFromParts(&26u8 as *u8, 1usize));
+      rawb.append("end");
+      let rp = dir.join("rawb.bin");
+      match fs.create(&rp) {
+        case let Ok(f) {
+          var file = f;
+          expect(file.write(rawb.view()) is Ok, "write CRLF and 0x1A through File");
+          expect(file.close() is Ok, "close raw");
+        }
+        case is Err { expect(false, "create raw"); }
+      }
+      match fs.open(&rp) {
+        case let Ok(f) {
+          var file = f;
+          var buf = Array[u8, 64]() <- fill 0u8;
+          match file.read(&mut buf) {
+            case let Ok(n) {
+              expectUInt(u64.from(n), u64.from(rawb.len()), "all bytes come back, none stopped at 0x1A");
+              expectStr(mem.sliceFromParts(&[]buf as *u8, n), rawb.view(), "byte for byte");
+            }
+            case is Err { expect(false, "read raw"); }
+          }
+        }
+        case is Err { expect(false, "open raw"); }
+      }
+
+      // append: made if missing, every write at the end, reads refused
+      let ap = dir.join("log.txt");
+      match fs.append(&ap) {
+        case let Ok(f) { var file = f; expect(file.write("one\n") is Ok, "first append"); }
+        case is Err { expect(false, "append creates"); }
+      }
+      match fs.append(&ap) {
+        case let Ok(f) {
+          var file = f;
+          expect(file.seek(0u64) is Ok, "seek is allowed");
+          expect(file.write("two\n") is Ok, "second append goes to the end anyway");
+          var buf = Array[u8, 4]() <- fill 0u8;
+          expect(file.read(&mut buf) is Err, "an append file refuses a read");
+        }
+        case is Err { expect(false, "append reopens"); }
+      }
+      expectStr(linesOf(&ap).view(), "<one><two>", "two appends read back in order");
     }
   }
   done()
