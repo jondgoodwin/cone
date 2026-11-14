@@ -1,0 +1,67 @@
+// osFill: the OS's secure bytes into a buffer of any length (empty, under, at
+// and over the 256 bytes one getentropy call gives, and not a multiple of
+// four). The bytes are random, so this checks what cannot depend on them:
+// every byte of a long buffer was written (each byte of 1000 zeros stays zero
+// with chance 1/256, so under 2^-80 for the counts checked here), two fills
+// differ, and a fill leaves the bytes beyond its buffer alone.
+
+mod osfill;
+
+import testing use *;
+import random use osFill;
+
+fn countNonzero(b: &Array[u8]) usize {
+  var n = 0usize;
+  var i = 0usize;
+  while i < b.len { if b[i] != 0u8 { n = n + 1usize; } i = i + 1usize; }
+  n
+}
+
+fn filled(b: &mut Array[u8]) bool {
+  match osFill(b) {
+    case is Ok { true }
+    case is Err { false }
+  }
+}
+
+fn main() i32 {
+  var empty = Array[u8, 0]() <- fill 0u8;
+  expect(filled(&mut empty), "an empty buffer is filled");
+
+  var s1 = Array[u8, 1]() <- fill 0u8;
+  expect(filled(&mut s1), "one byte");
+  var s7 = Array[u8, 7]() <- fill 0u8;
+  expect(filled(&mut s7), "seven bytes");
+
+  var a = Array[u8, 255]() <- fill 0u8;
+  var b = Array[u8, 256]() <- fill 0u8;
+  var c = Array[u8, 257]() <- fill 0u8;
+  var d = Array[u8, 1000]() <- fill 0u8;
+  expect(filled(&mut a), "255 bytes");
+  expect(filled(&mut b), "256 bytes");
+  expect(filled(&mut c), "257 bytes");
+  expect(filled(&mut d), "1000 bytes");
+  expect(countNonzero(&a) > 200usize, "255 bytes are mostly nonzero");
+  expect(countNonzero(&b) > 200usize, "256 bytes are mostly nonzero");
+  expect(countNonzero(&c) > 200usize, "257 bytes are mostly nonzero");
+  expect(countNonzero(&d) > 900usize, "1000 bytes are mostly nonzero, past the 256 mark too");
+
+  // The last bytes, past the first getentropy call and past the last whole word
+  expect(d[999usize] != 0u8 || d[998usize] != 0u8 || d[997usize] != 0u8 || d[996usize] != 0u8 || d[995usize] != 0u8, "the tail was written");
+  expect(c[256usize] != 0u8 || c[255usize] != 0u8 || c[254usize] != 0u8 || c[253usize] != 0u8 || c[252usize] != 0u8, "the 257th byte's neighbourhood was written");
+
+  // Two fills differ
+  var d2 = Array[u8, 1000]() <- fill 0u8;
+  expect(filled(&mut d2), "a second 1000 bytes");
+  var same = 0usize;
+  var i = 0usize;
+  while i < 1000usize { if d[i] == d2[i] { same = same + 1usize; } i = i + 1usize; }
+  expect(same < 100usize, "two fills differ (about 4 of 1000 bytes agree by chance)");
+
+  // A fill touches only its buffer: a guard of 0xAA either side survives
+  var g = Array[u8, 16]() <- fill 0xAAu8;
+  var mid = Array[u8, 8]() <- fill 0u8;
+  expect(filled(&mut mid), "eight bytes");
+  expect(countNonzero(&g) == 16usize, "bytes beside the buffer are untouched");
+  done()
+}

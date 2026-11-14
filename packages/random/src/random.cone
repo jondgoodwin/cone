@@ -107,17 +107,65 @@ extern {
   fn @c("getentropy") getEntropy(buf: *u8, len: usize) i32;
 }
 
-// 64 random bits from the OS, or None if it refused
-fn osWord() Option[u64] {
-  var low = 0u32;
-  var high = 0u32;
-  var bits = 0u64;
+// Why the OS would not give random bytes (it does not, in practice): the C
+// call's own answer
+pub struct OsRandomError is Error {
+  pub code: i32;
+
+  // One line for a person: 'random: the OS refused to give random bytes (code -1)'
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- "random: the OS refused to give random bytes (code ", code, ")";
+  }
+}
+
+// Fills every byte of 'buf' from the OS's own secure random generator, the one
+// for keys, tokens, session ids, nonces and UUIDs; 'Rng' (xoshiro256**) is
+// NOT, even seeded from the OS. On Windows the C runtime's 'rand_s' (the
+// system's cryptographic generator) supplies four bytes at a time; elsewhere
+// 'getentropy' (the kernel's getrandom, which the C library loops on short
+// reads and EINTR for) supplies at most 256 bytes a call, so a longer buffer
+// takes several. It is the same path 'fromEntropy' seeds through. An empty
+// buffer is filled trivially. Err only if the OS refuses, in which case the
+// buffer holds an unspecified mix of old and new bytes: use none of it.
+pub fn osFill(buf: &mut Array[u8]) Result[void, OsRandomError] {
+  var i = 0usize;
   #if #os == .windows {
-    if randS(&mut low as *u32) != 0 || randS(&mut high as *u32) != 0 { return None; }
-    bits = (u64.from(high) << 32u64) | u64.from(low);
+    while i < buf.len {
+      var w = 0u32;
+      let rc = randS(&mut w as *u32);
+      if rc != 0i32 { return Err[void, OsRandomError](OsRandomError(rc)); }
+      var k = 0usize;
+      while k < 4usize && i < buf.len {
+        buf[i] = u8.from((w >> u32.from(8usize * k)) & 0xFFu32);
+        i = i + 1usize;
+        k = k + 1usize;
+      }
+    }
   }
   #else {
-    if getEntropy(&mut bits as *u8, 8usize) != 0 { return None; }
+    while i < buf.len {
+      var n = buf.len - i;
+      if n > 256usize { n = 256usize; }
+      let rc = getEntropy(&mut buf[i] as *u8, n);
+      if rc != 0i32 { return Err[void, OsRandomError](OsRandomError(rc)); }
+      i = i + n;
+    }
+  }
+  Ok[void, OsRandomError](nil)
+}
+
+// 64 random bits from the OS, or None if it refused: eight bytes of 'osFill'
+fn osWord() Option[u64] {
+  var b = Array[u8, 8]() <- fill 0u8;
+  match osFill(&mut b) {
+    case is Err { return None; }
+    case is Ok { }
+  }
+  var bits = 0u64;
+  var i = 0usize;
+  while i < 8usize {
+    bits = bits | (u64.from(b[i]) << u64.from(8usize * i));
+    i = i + 1usize;
   }
   Some[u64](bits)
 }

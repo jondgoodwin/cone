@@ -1,0 +1,72 @@
+// RFC 9562's example values parse and print back (lower case), in either case of
+// input; the byte view, the version and variant, nil and max, Eq, Ordered and Hash.
+
+mod rfc;
+
+import testing use *;
+import collections use String, Dict;
+import uuid use Uuid;
+
+fn text(u: &Uuid) String {
+  var s = String();
+  s <- *u;
+  s
+}
+
+fn parsed(t: &str) Uuid {
+  match Uuid.parse(t) {
+    case let Ok(u) { u }
+    case is Err { Uuid.zero() }
+  }
+}
+
+fn roundTrip(t: &str, lower: &str, version: u32) {
+  let u = parsed(t);
+  expect(!u.isZero(), t);
+  expectStr(text(&u).view(), lower, "prints back lower case");
+  expectUInt(u64.from(u.version()), u64.from(version), "version");
+  expect(u.isRfcVariant(), "variant");
+}
+
+fn main() i32 {
+  // RFC 9562 appendix A and B example values
+  roundTrip("C232AB00-9414-11EC-B3C8-9F6BDECED846", "c232ab00-9414-11ec-b3c8-9f6bdeced846", 1u32);
+  roundTrip("919108f7-52d1-4320-9bac-f847db4148a8", "919108f7-52d1-4320-9bac-f847db4148a8", 4u32);
+  roundTrip("1EC9414C-232A-6B00-B3C8-9F6BDECED846", "1ec9414c-232a-6b00-b3c8-9f6bdeced846", 6u32);
+  roundTrip("017F22E2-79B0-7CC3-98C4-DC0C0C07398F", "017f22e2-79b0-7cc3-98c4-dc0c0c07398f", 7u32);
+  roundTrip("2489E9AD-2EE2-8E00-8EC9-32D5F69181C0", "2489e9ad-2ee2-8e00-8ec9-32d5f69181c0", 8u32);
+  expectStr(text(&parsed("017f22e2-79B0-7cc3-98C4-dc0c0c07398F")).view(), "017f22e2-79b0-7cc3-98c4-dc0c0c07398f", "mixed case reads");
+
+  // The bytes, in RFC order, and back
+  let u = parsed("017F22E2-79B0-7CC3-98C4-DC0C0C07398F");
+  let b = u.bytes();
+  expectUInt(u64.from(b[0usize]), 0x01u64, "byte 0");
+  expectUInt(u64.from(b[5usize]), 0xB0u64, "byte 5");
+  expectUInt(u64.from(b[6usize]), 0x7Cu64, "byte 6");
+  expectUInt(u64.from(b[8usize]), 0x98u64, "byte 8");
+  expectUInt(u64.from(b[15usize]), 0x8Fu64, "byte 15");
+  expect(Uuid.fromBytes(&b) == u, "fromBytes undoes bytes");
+
+  // nil and max
+  expectStr(text(&Uuid.zero()).view(), "00000000-0000-0000-0000-000000000000", "nil text");
+  expectStr(text(&Uuid.max()).view(), "ffffffff-ffff-ffff-ffff-ffffffffffff", "max text");
+  expect(Uuid.zero().isZero() && !Uuid.max().isZero(), "isZero");
+  expect(parsed("00000000-0000-0000-0000-000000000000") == Uuid.zero(), "nil parses");
+  expect(Uuid.zero().version() == 0u32 && !Uuid.zero().isRfcVariant(), "nil has no version or variant");
+
+  // Eq, Ordered by bytes, Hash
+  let a = parsed("00000000-0000-0000-0000-000000000001");
+  let c = parsed("00000000-0000-0000-0000-ffffffffffff");
+  let d = parsed("80000000-0000-0000-0000-000000000000");
+  expect(a == parsed("00000000-0000-0000-0000-000000000001"), "equal");
+  expect(a != c, "not equal");
+  expect(a.cmp(&c) < 0i32 && c.cmp(&a) > 0i32 && a.cmp(&a) == 0i32, "low half order");
+  expect(c.cmp(&d) < 0i32 && d.cmp(&Uuid.max()) < 0i32, "high half order is unsigned");
+  var m = Dict[Uuid, i32]();
+  m.insert(a, 1i32);
+  m.insert(c, 2i32);
+  m.insert(parsed("00000000-0000-0000-0000-000000000001"), 3i32);
+  expectInt(i64.from(m.len()), 2i64, "equal keys are one key");
+
+  done()
+}
