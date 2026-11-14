@@ -46,8 +46,12 @@
 //   36. Digits only: no sign, no prefix, no '_' or whitespace; upper and lower
 //   case letters both read. 'toText' writes base 10 and 'toTextBase' any
 //   base 2 to 36, lower case, to a 'TextOut' ('String() <- n', or
-//   'n.toTextBase(&uni s.textOut(), 16u32)'). Both directions are
-//   quadratic (a chunk of digits at a time), fine to many thousands of bits.
+//   'n.toTextBase(&uni s.textOut(), 16u32)'). 'parse' and 'toTextBase' are
+//   quadratic (a chunk of digits at a time); 'toText' (base 10) divides and
+//   conquers by 10^(19 * 2^k) above 'decCutoff' limbs (still schoolbook division).
+// - 'modPow' is square-and-multiply: Montgomery (CIOS, 64-bit limbs) when the modulus is odd,
+//   a 'divmod' after each product when it is even. 'gcd' is Euclid, 'modInverse' extended Euclid.
+//   Bit operations on 'BigInt' read a negative number as two's complement with endless 1s above.
 // - 'shiftLeft', 'shiftRight' and 'mulSmall' are public because the tests and
 //   callers need them (2^n, n!); they are not in the brief's list.
 
@@ -63,6 +67,7 @@ pub enum BigUintErrorKind {
   Empty;          // text with no digits
   BadDigit;       // a character that is not a digit of the base, at 'position'
   BadBase;        // a base outside 2 to 36
+  NegativeExponent;  // a negative exponent for modPow
 
   // The reason, in a few words
   pub fn describe(self: &BigUintErrorKind, out: &uni TextOut) {
@@ -72,6 +77,7 @@ pub enum BigUintErrorKind {
       case is Empty { out <- "no digits in the text"; }
       case is BadDigit { out <- "not a digit of the base"; }
       case is BadBase { out <- "base outside 2 to 36"; }
+      case is NegativeExponent { out <- "negative exponent"; }
     }
   }
 }
@@ -92,6 +98,7 @@ pub struct BigUintError is Error {
       case is DivideByZero { }
       case is Empty { }
       case is BadBase { }
+      case is NegativeExponent { }
     }
   }
 }
@@ -460,6 +467,197 @@ fn textBase(limbs: &List[u64], base: u32) String {
   s
 }
 
+// -------- number-theory and text helpers --------
+
+// x * y + a + b as (high, low): it always fits 128 bits
+fn mulAdd2(x: u64, y: u64, a: u64, b: u64) (u64, u64) {
+  let p = mulWide(x, y);
+  let lo = p.1 + a;
+  var hi = p.0;
+  if lo < a { hi = hi + 1u64; }
+  let lo2 = lo + b;
+  if lo2 < b { hi = hi + 1u64; }
+  (hi, lo2)
+}
+
+// Montgomery product a * b / 2^(64 n) mod m (CIOS: the multiply and the reduction interleaved),
+// for n-limb a and b below the odd modulus m, np = -m^-1 mod 2^64. The answer has n limbs.
+fn montMul(a: &List[u64], b: &List[u64], m: &List[u64], np: u64) List[u64] {
+  let n = m.len();
+  var t = List[u64].withCapacity(n + 2usize);
+  t.resize(n + 2usize, 0u64);
+  var i = 0usize;
+  while i < n {
+    let ai = *a[i];
+    var c = 0u64;
+    var j = 0usize;
+    while j < n {
+      let p = mulAdd2(ai, *b[j], *t[j], c);
+      t.set(j, p.1);
+      c = p.0;
+      j = j + 1usize;
+    }
+    let s = *t[n] + c;
+    t.set(n, s);
+    t.set(n + 1usize, if s < c { 1u64 } else { 0u64 });
+    let q = *t[0usize] * np;
+    var p = mulAdd2(q, *m[0usize], *t[0usize], 0u64);
+    c = p.0;
+    j = 1usize;
+    while j < n {
+      p = mulAdd2(q, *m[j], *t[j], c);
+      t.set(j - 1usize, p.1);
+      c = p.0;
+      j = j + 1usize;
+    }
+    let s2 = *t[n] + c;
+    t.set(n - 1usize, s2);
+    t.set(n, *t[n + 1usize] + (if s2 < c { 1u64 } else { 0u64 }));
+    i = i + 1usize;
+  }
+  // The result is below 2m: one subtraction at most
+  var geq = *t[n] != 0u64;
+  if !geq {
+    geq = true;
+    var k = n;
+    while k > 0usize {
+      k = k - 1usize;
+      if *t[k] != *m[k] { geq = *t[k] > *m[k]; break; }
+    }
+  }
+  if geq { subFrom(&mut t, m); }
+  t.truncate(n);
+  t
+}
+
+// -m^-1 mod 2^64 for an odd m0, by Newton's iteration (each step doubles the correct bits)
+fn negInverse64(m0: u64) u64 {
+  var inv = m0;
+  var k = 0;
+  while k < 6 {
+    inv = inv * (2u64 - m0 * inv);
+    k = k + 1;
+  }
+  0u64 - inv
+}
+
+// The remainder of a by a non-zero b
+fn remOf(a: &BigUint, b: &BigUint) BigUint {
+  match a.divmod(b) {
+    case let Ok(qr) { qr.rem.clone() }
+    case is Err { BigUint.zero() }
+  }
+}
+
+// The two's complement of x in n limbs (n one more than the limbs of the larger operand, so the top bit is the sign)
+fn twosLimbs(x: &BigInt, n: usize) List[u64] {
+  var out = List[u64].withCapacity(n);
+  var i = 0usize;
+  if !x.negative {
+    while i < n { out.push(limbOr0(&x.mag.limbs, i)); i = i + 1usize; }
+  } else {
+    let m1 = subKnown(&x.mag, &BigUint.one());
+    while i < n { out.push(limbOr0(&m1.limbs, i) ^ 0xFFFFFFFFFFFFFFFFu64); i = i + 1usize; }
+  }
+  out
+}
+
+// The number whose two's complement limbs these are (the top bit is the sign)
+fn fromTwos(l: &List[u64]) BigInt {
+  if (*l[l.len() - 1usize] >> 63u64) == 0u64 { return BigInt.fromBigUint(BigUint.fromLimbs(l.clone())); }
+  var inv = List[u64].withCapacity(l.len());
+  var i = 0usize;
+  while i < l.len() { inv.push(*l[i] ^ 0xFFFFFFFFFFFFFFFFu64); i = i + 1usize; }
+  let mag = BigUint.fromLimbs(inv).add(&BigUint.one());
+  BigInt.fromParts(true, mag)
+}
+
+// A bitwise operation on two's complement: op 0 is and, 1 is or, 2 is xor
+fn bitOp(a: &BigInt, b: &BigInt, op: u32) BigInt {
+  let n = (if a.mag.limbs.len() > b.mag.limbs.len() { a.mag.limbs.len() } else { b.mag.limbs.len() }) + 1usize;
+  let x = twosLimbs(a, n);
+  let y = twosLimbs(b, n);
+  var out = List[u64].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    let p = *x[i];
+    let q = *y[i];
+    out.push(if op == 0u32 { p & q } else if op == 1u32 { p | q } else { p ^ q });
+    i = i + 1usize;
+  }
+  fromTwos(&out)
+}
+
+// Limbs from which toText stops dividing and writes digits directly
+const decCutoff = 24usize;
+
+fn zeros(out: &mut String, n: usize) {
+  var i = 0usize;
+  while i < n { out.appendByte('0'); i = i + 1usize; }
+}
+
+// x, below pows[lv] = 10^(19 * 2^lv), written to out; padded with leading zeros to exactly 19 * 2^lv digits when pad
+fn decRec(x: &BigUint, lv: usize, pad: bool, pows: &List[BigUint], out: &mut String) {
+  let width = 19usize << u64.from(lv);
+  if x.isZero() {
+    if pad { zeros(out, width); }
+    return;
+  }
+  if lv == 0usize || x.limbs.len() < decCutoff {
+    let s = textBase(&x.limbs, 10u32);
+    if pad { zeros(out, width - s.len()); }
+    out <- s.view();
+    return;
+  }
+  match x.divmod(&*pows[lv - 1usize]) {
+    case let Ok(qr) {
+      decRec(&qr.quot, lv - 1usize, pad, pows, out);
+      decRec(&qr.rem, lv - 1usize, pad || !qr.quot.isZero(), pows, out);
+    }
+    case is Err { }
+  }
+}
+
+// The number in base 10, divide and conquer by 10^(19 * 2^k): the same quadratic division, but in far fewer,
+// larger steps than a word at a time
+fn decText(x: &BigUint) String {
+  if x.limbs.len() < decCutoff { return textBase(&x.limbs, 10u32); }
+  var out = String();
+  var pows = List[BigUint]();
+  pows.push(BigUint.fromU64(10000000000000000000u64));
+  while (*pows[pows.len() - 1usize]).cmp(x) <= 0i32 {
+    let p = (*pows[pows.len() - 1usize]).mul(&*pows[pows.len() - 1usize]);
+    pows.push(p);
+  }
+  decRec(x, pows.len() - 1usize, false, &pows, &mut out);
+  out
+}
+
+// The limbs padded with zeros to n limbs (n at least as many as it has)
+fn padTo(l: &List[u64], n: usize) List[u64] {
+  var out = List[u64].withCapacity(n);
+  var i = 0usize;
+  while i < n { out.push(limbOr0(l, i)); i = i + 1usize; }
+  out
+}
+
+// base^e mod m for an odd m above 1 and base below m, by left-to-right square and multiply in
+// Montgomery form (R = 2^(64 n)); the last Montgomery product by 1 brings the answer out of it
+fn montPow(base: &BigUint, e: &BigUint, m: &BigUint) BigUint {
+  let n = m.limbs.len();
+  let np = negInverse64(*m.limbs[0usize]);
+  let r2 = padTo(&remOf(&BigUint.one().shiftLeft(128usize * n), m).limbs, n);
+  let one = padTo(&BigUint.one().limbs, n);
+  let a = montMul(&padTo(&base.limbs, n), &r2, &m.limbs, np);
+  var acc = montMul(&one, &r2, &m.limbs, np);
+  var i = e.bitLen();
+  while i > 0usize {
+    i = i - 1usize;
+    acc = montMul(&acc, &acc, &m.limbs, np);
+    if e.testBit(u32.from(i)) { acc = montMul(&acc, &a, &m.limbs, np); }
+  }
+  BigUint.fromLimbs(montMul(&acc, &one, &m.limbs, np))
+}
 // -------- BigUint --------
 
 // What 'divmod' answers: 'quot * divisor + rem' is the dividend and 'rem' is below the divisor
@@ -722,7 +920,7 @@ pub struct BigUint is Eq, Ordered, Hash, Clone {
 
   // The number in base 10, written to a writer ('String() <- n')
   pub fn toText(self: &, out: &uni TextOut) {
-    let s = textBase(&limbs, 10u32);
+    let s = decText(self);
     out <- s.view();
   }
 
@@ -731,6 +929,180 @@ pub struct BigUint is Eq, Ordered, Hash, Clone {
   pub fn toTextBase(self: &, out: &uni TextOut, base: u32) {
     let s = textBase(&limbs, base);
     out <- s.view();
+  }
+
+  // -------- powers, number theory, bits, bytes --------
+
+  // This to the power e (num-bigint's 'pow'); 0^0 is 1
+  pub fn pow(self: &, e: u32) BigUint {
+    var result = BigUint.one();
+    var base = self.clone();
+    var k = e;
+    while k > 0u32 {
+      if (k & 1u32) == 1u32 { result = result.mul(&base); }
+      k = k >> 1u32;
+      if k > 0u32 { base = base.mul(&base); }
+    }
+    result
+  }
+
+  // This to the power e, modulo m (num-bigint's 'modpow'): DivideByZero if m is zero. An odd
+  // modulus uses Montgomery reduction (no division inside the loop); an even one reduces by
+  // 'divmod' after each product. The answer is below m (0 when m is 1).
+  pub fn modPow(self: &, e: &BigUint, m: &BigUint) Result[BigUint, BigUintError] {
+    if m.isZero() {
+      return Err[BigUint, BigUintError](failure(BigUintErrorKind.DivideByZero, 0usize));
+    }
+    if m.cmp(&BigUint.one()) == 0i32 { return Ok[BigUint, BigUintError](BigUint.zero()); }
+    let base = remOf(self, m);
+    if (*m.limbs[0usize] & 1u64) == 1u64 {
+      return Ok[BigUint, BigUintError](montPow(&base, e, m));
+    }
+    var result = BigUint.one();
+    var i = e.bitLen();
+    while i > 0usize {
+      i = i - 1usize;
+      result = remOf(&result.mul(&result), m);
+      if e.testBit(u32.from(i)) { result = remOf(&result.mul(&base), m); }
+    }
+    Ok[BigUint, BigUintError](result)
+  }
+
+  // The greatest common divisor (Euclid); gcd(0, 0) is 0
+  pub fn gcd(self: &, o: &BigUint) BigUint {
+    var a = self.clone();
+    var b = o.clone();
+    while !b.isZero() {
+      let r = remOf(&a, &b);
+      a = b;
+      b = r;
+    }
+    a
+  }
+
+  // The x below m with this * x = 1 (mod m), or None when there is none (gcd not 1, or m zero).
+  // For m = 1 the answer is 0.
+  pub fn modInverse(self: &, m: &BigUint) Option[BigUint] {
+    if m.isZero() { return None[BigUint]; }
+    var r0 = m.clone();
+    var r1 = remOf(self, m);
+    var t0 = BigInt.zero();
+    var t1 = BigInt.one();
+    while !r1.isZero() {
+      match r0.divmod(&r1) {
+        case let Ok(qr) {
+          let t2 = t0.sub(&BigInt.fromBigUint(qr.quot.clone()).mul(&t1));
+          t0 = t1;
+          t1 = t2;
+          r0 = r1;
+          r1 = qr.rem.clone();
+        }
+        case is Err { return None[BigUint]; }
+      }
+    }
+    if r0.cmp(&BigUint.one()) != 0i32 { return None[BigUint]; }
+    match t0.remEuclid(&BigInt.fromBigUint(m.clone())) {
+      case let Ok(x) { Some[BigUint](x.magnitude()) }
+      case is Err { None[BigUint] }
+    }
+  }
+
+  // Bit i (0 is the least significant)
+  pub fn testBit(self: &, i: u32) bool {
+    let at = usize.from(i) / 64usize;
+    if at >= limbs.len() { return false; }
+    ((*limbs[at] >> u64.from(i % 64u32)) & 1u64) == 1u64
+  }
+
+  // Bitwise and
+  pub fn and(self: &, o: &BigUint) BigUint {
+    let n = if limbs.len() < o.limbs.len() { limbs.len() } else { o.limbs.len() };
+    var out = List[u64].withCapacity(n);
+    var i = 0usize;
+    while i < n { out.push(*limbs[i] & *o.limbs[i]); i = i + 1usize; }
+    BigUint.fromLimbs(out)
+  }
+
+  // Bitwise or
+  pub fn or(self: &, o: &BigUint) BigUint {
+    let n = if limbs.len() > o.limbs.len() { limbs.len() } else { o.limbs.len() };
+    var out = List[u64].withCapacity(n);
+    var i = 0usize;
+    while i < n { out.push(limbOr0(&limbs, i) | limbOr0(&o.limbs, i)); i = i + 1usize; }
+    BigUint.fromLimbs(out)
+  }
+
+  // Bitwise exclusive or
+  pub fn xor(self: &, o: &BigUint) BigUint {
+    let n = if limbs.len() > o.limbs.len() { limbs.len() } else { o.limbs.len() };
+    var out = List[u64].withCapacity(n);
+    var i = 0usize;
+    while i < n { out.push(limbOr0(&limbs, i) ^ limbOr0(&o.limbs, i)); i = i + 1usize; }
+    BigUint.fromLimbs(out)
+  }
+
+  // This shifted left by bits (times 2^bits)
+  pub fn shl(self: &, bits: u32) BigUint { self.shiftLeft(usize.from(bits)) }
+
+  // This shifted right by bits (divided by 2^bits, rounded down)
+  pub fn shr(self: &, bits: u32) BigUint { self.shiftRight(usize.from(bits)) }
+
+  // The bytes, most significant first, no leading zero byte; zero is one zero byte (as num-bigint)
+  pub fn toBytesBE(self: &) List[u8] {
+    let le = self.toBytesLE();
+    var out = List[u8].withCapacity(le.len());
+    var i = le.len();
+    while i > 0usize { i = i - 1usize; out.push(*le[i]); }
+    out
+  }
+
+  // The bytes, least significant first, no trailing zero byte; zero is one zero byte
+  pub fn toBytesLE(self: &) List[u8] {
+    let n = (self.bitLen() + 7usize) / 8usize;
+    var out = List[u8].withCapacity(n + 1usize);
+    var i = 0usize;
+    while i < n {
+      out.push(u8.from((*limbs[i / 8usize] >> u64.from((i % 8usize) * 8usize)) & 0xFFu64));
+      i = i + 1usize;
+    }
+    if n == 0usize { out.push(0u8); }
+    out
+  }
+
+  // The number whose bytes these are, most significant first (leading zeros allowed; none gives 0)
+  pub fn fromBytesBE(bytes: &Array[u8]) BigUint {
+    let n = bytes.len();
+    var l = List[u64].withCapacity(n / 8usize + 1usize);
+    var k = 0usize;
+    while k < n {
+      var limb = 0u64;
+      var j = 0usize;
+      while j < 8usize && k + j < n {
+        limb = limb | (u64.from(bytes[n - 1usize - k - j]) << u64.from(j * 8usize));
+        j = j + 1usize;
+      }
+      l.push(limb);
+      k = k + 8usize;
+    }
+    BigUint.fromLimbs(l)
+  }
+
+  // The number whose bytes these are, least significant first (trailing zeros allowed; none gives 0)
+  pub fn fromBytesLE(bytes: &Array[u8]) BigUint {
+    let n = bytes.len();
+    var l = List[u64].withCapacity(n / 8usize + 1usize);
+    var k = 0usize;
+    while k < n {
+      var limb = 0u64;
+      var j = 0usize;
+      while j < 8usize && k + j < n {
+        limb = limb | (u64.from(bytes[k + j]) << u64.from(j * 8usize));
+        j = j + 1usize;
+      }
+      l.push(limb);
+      k = k + 8usize;
+    }
+    BigUint.fromLimbs(l)
   }
 }
 
@@ -895,4 +1267,84 @@ pub struct BigInt is Eq, Ordered, Hash, Clone {
     if negative { out <- "-"; }
     mag.toTextBase(out, base);
   }
+
+  // -------- powers, number theory, bits, bytes --------
+
+  // This to the power e (num-bigint's 'pow'): negative only when this is negative and e odd
+  pub fn pow(self: &, e: u32) BigInt { signed(negative && (e & 1u32) == 1u32, mag.pow(e)) }
+
+  // This to the power e, modulo m (num-bigint's 'modpow'): the magnitudes are raised modulo |m|
+  // and the result is negative only for a negative base and an odd exponent (the sign of the
+  // truncating '%'). NegativeExponent if e is negative, DivideByZero if m is zero.
+  pub fn modPow(self: &, e: &BigInt, m: &BigInt) Result[BigInt, BigUintError] {
+    if e.negative {
+      return Err[BigInt, BigUintError](failure(BigUintErrorKind.NegativeExponent, 0usize));
+    }
+    match mag.modPow(&e.mag, &m.mag) {
+      case let Err(x) { Err[BigInt, BigUintError](x) }
+      case let Ok(r) { Ok[BigInt, BigUintError](signed(negative && e.mag.testBit(0u32), r)) }
+    }
+  }
+
+  // The greatest common divisor, never negative
+  pub fn gcd(self: &, o: &BigInt) BigInt { BigInt.fromBigUint(mag.gcd(&o.mag)) }
+
+  // The x in 0 up to but excluding |m| with this * x = 1 (mod |m|), or None when there is none (gcd not 1, or m zero).
+  // (num-bigint's 'modinv' keeps the sign of m instead; here the answer is always non-negative.)
+  pub fn modInverse(self: &, m: &BigInt) Option[BigInt] {
+    match self.remEuclid(m) {
+      case is Err { None[BigInt] }
+      case let Ok(a) {
+        match a.mag.modInverse(&m.mag) {
+          case let Some(x) { Some[BigInt](BigInt.fromBigUint(x)) }
+          case is None { None[BigInt] }
+        }
+      }
+    }
+  }
+
+  // How many bits the magnitude needs: 0 for zero (as num-bigint's 'bits': the sign is not counted)
+  pub fn bitLen(self: &) usize { mag.bitLen() }
+
+  // Bit i of the two's complement form (negative numbers read as an endless run of 1s above their top)
+  pub fn testBit(self: &, i: u32) bool {
+    if !negative { return mag.testBit(i); }
+    !subKnown(&mag, &BigUint.one()).testBit(i)
+  }
+
+  // Bitwise and, on the two's complement form (as Python and Java)
+  pub fn and(self: &, o: &BigInt) BigInt { bitOp(self, o, 0u32) }
+
+  // Bitwise or, on the two's complement form
+  pub fn or(self: &, o: &BigInt) BigInt { bitOp(self, o, 1u32) }
+
+  // Bitwise exclusive or, on the two's complement form
+  pub fn xor(self: &, o: &BigInt) BigInt { bitOp(self, o, 2u32) }
+
+  // Bitwise not: -x - 1
+  pub fn not(self: &) BigInt { self.negate().sub(&BigInt.one()) }
+
+  // This times 2^bits
+  pub fn shl(self: &, bits: u32) BigInt { signed(negative, mag.shiftLeft(usize.from(bits))) }
+
+  // This divided by 2^bits, rounded toward negative infinity (an arithmetic shift, as Python and Java;
+  // num-bigint's '>>' on a negative number rounds the same way)
+  pub fn shr(self: &, bits: u32) BigInt {
+    if !negative { return BigInt(false, mag.shiftRight(usize.from(bits))); }
+    let q = subKnown(&mag, &BigUint.one()).shiftRight(usize.from(bits));
+    BigInt(true, q.add(&BigUint.one()))
+  }
+
+  // The magnitude's bytes, most significant first; zero is one zero byte. The sign is 'isNegative'.
+  pub fn toBytesBE(self: &) List[u8] { mag.toBytesBE() }
+
+  // The magnitude's bytes, least significant first; zero is one zero byte
+  pub fn toBytesLE(self: &) List[u8] { mag.toBytesLE() }
+
+  // The number with this sign whose magnitude is these bytes, most significant first (as num-bigint's
+  // 'from_bytes_be(sign, bytes)', with a bool in place of the Sign)
+  pub fn fromBytesBE(negative: bool, bytes: &Array[u8]) BigInt { signed(negative, BigUint.fromBytesBE(bytes)) }
+
+  // The same, least significant byte first
+  pub fn fromBytesLE(negative: bool, bytes: &Array[u8]) BigInt { signed(negative, BigUint.fromBytesLE(bytes)) }
 }

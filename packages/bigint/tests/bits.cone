@@ -1,0 +1,315 @@
+// Bit operations: BigUint and/or/xor/shifts/testBit/bitLength against Python; BigInt two's complement
+// and/or/xor/not/shl/shr/testBit for negative numbers, against i64 over a grid of small values and
+// against Python for multi-limb values.
+
+mod bits;
+
+import testing use *;
+import collections use *;
+import bigint use BigUint, BigInt, BigUintError;
+
+fn big(t: &str) BigUint {
+  match BigUint.parse(t) {
+    case let Ok(n) { n }
+    case is Err { BigUint.zero() }
+  }
+}
+
+fn sgn(t: &str) BigInt {
+  match BigInt.parse(t) {
+    case let Ok(n) { n }
+    case is Err { BigInt.zero() }
+  }
+}
+
+fn text(n: &BigUint) String {
+  var s = String();
+  s <- *n;
+  s
+}
+
+fn stext(n: &BigInt) String {
+  var s = String();
+  s <- *n;
+  s
+}
+
+fn unwrap(r: Result[BigUint, BigUintError]) BigUint {
+  match r {
+    case let Ok(n) { n }
+    case is Err { BigUint.zero() }
+  }
+}
+
+fn sunwrap(r: Result[BigInt, BigUintError]) BigInt {
+  match r {
+    case let Ok(n) { n }
+    case is Err { BigInt.zero() }
+  }
+}
+
+fn small(x: &BigInt) i64 {
+  match x.toI64() {
+    case let Some(v) { v }
+    case is None { 999i64 }
+  }
+}
+
+fn eqs(a: &str, b: &str) bool {
+  let x: &Array[u8] = a;
+  let y: &Array[u8] = b;
+  if x.len() != y.len() { return false; }
+  var i = 0usize;
+  while i < x.len() { if x[i] != y[i] { return false; } i = i + 1usize; }
+  true
+}
+
+fn word(x: &BigUint) u64 {
+  match x.toU64() {
+    case let Some(v) { v }
+    case is None { 0u64 }
+  }
+}
+
+fn main() i32 {
+  // every small pair, against i64 (shifts by 0..5; arithmetic shift rounds toward negative infinity)
+  var bad = 0i32;
+  var a = -70i64;
+  while a <= 70i64 {
+    var b = -70i64;
+    while b <= 70i64 {
+      let x = BigInt.fromI64(a);
+      let y = BigInt.fromI64(b);
+      if small(&x.and(&y)) != (a & b) { bad = bad + 1i32; }
+      if small(&x.or(&y)) != (a | b) { bad = bad + 1i32; }
+      if small(&x.xor(&y)) != (a ^ b) { bad = bad + 1i32; }
+      b = b + 7i64;
+    }
+    let x = BigInt.fromI64(a);
+    if small(&x.not()) != (-a - 1i64) { bad = bad + 1i32; }
+    var s = 0u32;
+    while s < 6u32 {
+      if small(&x.shl(s)) != a * (1i64 << i64.from(s)) { bad = bad + 1i32; }
+      if small(&x.shr(s)) != (a >> i64.from(s)) { bad = bad + 1i32; }
+      s = s + 1u32;
+    }
+    var i = 0u32;
+    while i < 12u32 {
+      if x.testBit(i) != (((a >> i64.from(i)) & 1i64) == 1i64) { bad = bad + 1i32; }
+      i = i + 1u32;
+    }
+    a = a + 1i64;
+  }
+  expectInt(i64.from(bad), 0i64, "small signed grid against i64");
+  {
+    let x = sgn("-1361129467683753853853498429727072833479");
+    let y = sgn("680564733841876926926749214862548768591");
+    expectStr(stext(&x.and(&y)).view(), "4105", "and");
+    expectStr(stext(&x.or(&y)).view(), "-680564733841876926926749214864524068993", "or");
+    expectStr(stext(&x.xor(&y)).view(), "-680564733841876926926749214864524073098", "xor");
+    expectStr(stext(&x.not()).view(), "1361129467683753853853498429727072833478", "not");
+    expectStr(stext(&x.shl(70u32)).view(), "-1606938044258990275541962092341162587947799436026350294532096", "shl 70");
+    expectStr(stext(&x.shr(70u32)).view(), "-1152921504606846976", "shr 70 (floor)");
+    expectStr(stext(&x.shr(64u32)).view(), "-73786976294838206464", "shr 64 (floor)");
+    expectStr(stext(&x.shr(400u32)).view(), "-1", "shr past the top");
+    var got = String();
+    var i = 0u32;
+    while i < 260u32 { got.appendByte(if x.testBit(i) { '1' } else { '0' }); i = i + 13u32; }
+    expectStr(got.view(), "11000000001111111111", "testBit across limbs");
+    expectUInt(u64.from(x.bitLen()), 130u64, "bitLength is of the magnitude");
+  }
+  {
+    let x = sgn("-1606938044258990275541962092341162602522202993782792835301376");
+    let y = sgn("-18446744073709551616");
+    expectStr(stext(&x.and(&y)).view(), "-1606938044258990275541962092341162602522202993782792835301376", "and");
+    expectStr(stext(&x.or(&y)).view(), "-18446744073709551616", "or");
+    expectStr(stext(&x.xor(&y)).view(), "1606938044258990275541962092341162602522184547038719125749760", "xor");
+    expectStr(stext(&x.not()).view(), "1606938044258990275541962092341162602522202993782792835301375", "not");
+    expectStr(stext(&x.shl(70u32)).view(), "-1897137590064188545819787018382342682267975428761855001222473056385648716020711424", "shl 70");
+    expectStr(stext(&x.shr(70u32)).view(), "-1361129467683753853853498429727072845824", "shr 70 (floor)");
+    expectStr(stext(&x.shr(64u32)).view(), "-87112285931760246646623899502532662132736", "shr 64 (floor)");
+    expectStr(stext(&x.shr(400u32)).view(), "-1", "shr past the top");
+    var got = String();
+    var i = 0u32;
+    while i < 260u32 { got.appendByte(if x.testBit(i) { '1' } else { '0' }); i = i + 13u32; }
+    expectStr(got.view(), "00000000000000001111", "testBit across limbs");
+    expectUInt(u64.from(x.bitLen()), 201u64, "bitLength is of the magnitude");
+  }
+  {
+    let x = sgn("-1");
+    let y = sgn("1180591620717411303424");
+    expectStr(stext(&x.and(&y)).view(), "1180591620717411303424", "and");
+    expectStr(stext(&x.or(&y)).view(), "-1", "or");
+    expectStr(stext(&x.xor(&y)).view(), "-1180591620717411303425", "xor");
+    expectStr(stext(&x.not()).view(), "0", "not");
+    expectStr(stext(&x.shl(70u32)).view(), "-1180591620717411303424", "shl 70");
+    expectStr(stext(&x.shr(70u32)).view(), "-1", "shr 70 (floor)");
+    expectStr(stext(&x.shr(64u32)).view(), "-1", "shr 64 (floor)");
+    expectStr(stext(&x.shr(400u32)).view(), "-1", "shr past the top");
+    var got = String();
+    var i = 0u32;
+    while i < 260u32 { got.appendByte(if x.testBit(i) { '1' } else { '0' }); i = i + 13u32; }
+    expectStr(got.view(), "11111111111111111111", "testBit across limbs");
+    expectUInt(u64.from(x.bitLen()), 1u64, "bitLength is of the magnitude");
+  }
+  {
+    let x = sgn("6277101735386680763835789423207666416102355444464034512895");
+    let y = sgn("-340282366920938463463374607431768211461");
+    expectStr(stext(&x.and(&y)).view(), "6277101735386680763495507056286727952638980837032266301435", "and");
+    expectStr(stext(&x.or(&y)).view(), "-1", "or");
+    expectStr(stext(&x.xor(&y)).view(), "-6277101735386680763495507056286727952638980837032266301436", "xor");
+    expectStr(stext(&x.not()).view(), "-6277101735386680763835789423207666416102355444464034512896", "not");
+    expectStr(stext(&x.shl(70u32)).view(), "7410693711188236507108543040556026102609279018600996098524104784885722885652480", "shl 70");
+    expectStr(stext(&x.shr(70u32)).view(), "5316911983139663491615228241121378303", "shr 70 (floor)");
+    expectStr(stext(&x.shr(64u32)).view(), "340282366920938463463374607431768211455", "shr 64 (floor)");
+    expectStr(stext(&x.shr(400u32)).view(), "0", "shr past the top");
+    var got = String();
+    var i = 0u32;
+    while i < 260u32 { got.appendByte(if x.testBit(i) { '1' } else { '0' }); i = i + 13u32; }
+    expectStr(got.view(), "11111111111111100000", "testBit across limbs");
+    expectUInt(u64.from(x.bitLen()), 192u64, "bitLength is of the magnitude");
+  }
+  {
+    let x = sgn("-1350911845389703822340149385632005947235582530670263023965068962499169497139210488152555076");
+    let y = sgn("-1432899951726853752538630932647552045681431362030770637370546424629896782568401");
+    expectStr(stext(&x.and(&y)).view(), "-1350911845391131718351488449737427599298298467295303638957408526320127221828230536910307284", "and");
+    expectStr(stext(&x.or(&y)).view(), "-5003940387789647116978869931615420640816369691206816412821735609848024816193", "or");
+    expectStr(stext(&x.xor(&y)).view(), "1350911845391126714411100660090310620428366851874662822587717319503714400092620688885491091", "xor");
+    expectStr(stext(&x.not()).view(), "1350911845389703822340149385632005947235582530670263023965068962499169497139210488152555075", "not");
+    expectStr(stext(&x.shl(70u32)).view(), "-1594875204994979394748697738639656125729621106145704542209097442228305638314742441189159439797878966829107380224", "shl 70");
+    expectStr(stext(&x.shr(70u32)).view(), "-1144266841881186532427956115137587633646302155965706072397812235577095", "shr 70 (floor)");
+    expectStr(stext(&x.shr(64u32)).view(), "-73233077880395938075389191368805608553363337981805188633459983076934031", "shr 64 (floor)");
+    expectStr(stext(&x.shr(400u32)).view(), "-1", "shr past the top");
+    var got = String();
+    var i = 0u32;
+    while i < 260u32 { got.appendByte(if x.testBit(i) { '1' } else { '0' }); i = i + 13u32; }
+    expectStr(got.view(), "00100000101000001011", "testBit across limbs");
+    expectUInt(u64.from(x.bitLen()), 300u64, "bitLength is of the magnitude");
+  }
+  {
+    let x = sgn("1435770441930973825562814575856019692388288781751706153765602");
+    let y = sgn("-2228461576234609219193941316672942507307659803112211912000275245505297152806379263538514477941261085951428341233278855091");
+    expectStr(stext(&x.and(&y)).view(), "201926617236637713775310165439405864717028989329340006189120", "and");
+    expectStr(stext(&x.or(&y)).view(), "-2228461576234609219193941316672942507307659803112211912000274011661472458470267476034104061327433414691635918867131278609", "or");
+    expectStr(stext(&x.xor(&y)).view(), "-2228461576234609219193941316672942507307659803112211912000274213588089695107981251344269500733298131720625248207137467729", "xor");
+    expectStr(stext(&x.not()).view(), "-1435770441930973825562814575856019692388288781751706153765603", "not");
+    expectStr(stext(&x.shl(70u32)).view(), "1695058553017442261062153107504117590639484329948966992267509743164062296596021248", "shl 70");
+    expectStr(stext(&x.shr(70u32)).view(), "1216144869009402040253656649237268819574", "shr 70 (floor)");
+    expectStr(stext(&x.shr(64u32)).view(), "77833271616601730576234025551185204452760", "shr 64 (floor)");
+    expectStr(stext(&x.shr(400u32)).view(), "0", "shr past the top");
+    var got = String();
+    var i = 0u32;
+    while i < 260u32 { got.appendByte(if x.testBit(i) { '1' } else { '0' }); i = i + 13u32; }
+    expectStr(got.view(), "00011000100010000000", "testBit across limbs");
+    expectUInt(u64.from(x.bitLen()), 200u64, "bitLength is of the magnitude");
+  }
+  {
+    let x = sgn("-340282366920938463463374607431768211456");
+    let y = sgn("340282366920938463463374607431768211456");
+    expectStr(stext(&x.and(&y)).view(), "340282366920938463463374607431768211456", "and");
+    expectStr(stext(&x.or(&y)).view(), "-340282366920938463463374607431768211456", "or");
+    expectStr(stext(&x.xor(&y)).view(), "-680564733841876926926749214863536422912", "xor");
+    expectStr(stext(&x.not()).view(), "340282366920938463463374607431768211455", "not");
+    expectStr(stext(&x.shl(70u32)).view(), "-401734511064747568885490523085290650630550748445698208825344", "shl 70");
+    expectStr(stext(&x.shr(70u32)).view(), "-288230376151711744", "shr 70 (floor)");
+    expectStr(stext(&x.shr(64u32)).view(), "-18446744073709551616", "shr 64 (floor)");
+    expectStr(stext(&x.shr(400u32)).view(), "-1", "shr past the top");
+    var got = String();
+    var i = 0u32;
+    while i < 260u32 { got.appendByte(if x.testBit(i) { '1' } else { '0' }); i = i + 13u32; }
+    expectStr(got.view(), "00000000001111111111", "testBit across limbs");
+    expectUInt(u64.from(x.bitLen()), 129u64, "bitLength is of the magnitude");
+  }
+  {
+    let x = sgn("0");
+    let y = sgn("-36893488147419103232");
+    expectStr(stext(&x.and(&y)).view(), "0", "and");
+    expectStr(stext(&x.or(&y)).view(), "-36893488147419103232", "or");
+    expectStr(stext(&x.xor(&y)).view(), "-36893488147419103232", "xor");
+    expectStr(stext(&x.not()).view(), "-1", "not");
+    expectStr(stext(&x.shl(70u32)).view(), "0", "shl 70");
+    expectStr(stext(&x.shr(70u32)).view(), "0", "shr 70 (floor)");
+    expectStr(stext(&x.shr(64u32)).view(), "0", "shr 64 (floor)");
+    expectStr(stext(&x.shr(400u32)).view(), "0", "shr past the top");
+    var got = String();
+    var i = 0u32;
+    while i < 260u32 { got.appendByte(if x.testBit(i) { '1' } else { '0' }); i = i + 13u32; }
+    expectStr(got.view(), "00000000000000000000", "testBit across limbs");
+    expectUInt(u64.from(x.bitLen()), 0u64, "bitLength is of the magnitude");
+  }
+  // the identities of two's complement: a ^ b == (a | b) - (a & b), not(not(a)) == a, a & not(a) == 0
+  var seed = 1234567u64;
+  var k = 0i32;
+  var ok = 0i32;
+  while k < 100i32 {
+    var l1 = List[u64]();
+    var l2 = List[u64]();
+    var n = 0;
+    while n < 4 {
+      seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+      l1.push(seed);
+      seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+      l2.push(seed);
+      n = n + 1;
+    }
+    let x = BigInt.fromParts((k & 1i32) == 1i32, BigUint.fromLimbs(l1));
+    let y = BigInt.fromParts((k & 2i32) == 2i32, BigUint.fromLimbs(l2));
+    if x.xor(&y).cmp(&x.or(&y).sub(&x.and(&y))) == 0i32 && x.not().not().cmp(&x) == 0i32 && x.and(&x.not()).isZero()
+       && x.or(&x.not()).cmp(&BigInt.fromI64(-1i64)) == 0i32 { ok = ok + 1i32; }
+    k = k + 1i32;
+  }
+  expectInt(i64.from(ok), 100i64, "two's complement identities");
+  {
+    let x = big("1229186803895212216970530014331335367127284871029632397173933990732411015227556972427406009");
+    let y = big("929482653117001291291829337494435897326032209378042019");
+    expectStr(text(&x.and(&y)).view(), "766261659184229583850058811838287344431523938028511393", "BigUint and");
+    expectStr(text(&x.or(&y)).view(), "1229186803895212216970530014331335367290505864962404104615704516388559568122065243776936635", "BigUint or");
+    expectStr(text(&x.xor(&y)).view(), "1229186803895212216970530014331335366524244205778174520765645704550272223690541305748425242", "BigUint xor");
+    expectStr(text(&x.shl(100u32)).view(), "1558179389750384672550672331532824607352502471749200937098987119397825483573487186915599919419153683668221225139263504384", "BigUint shl");
+    expectStr(text(&x.shr(67u32)).view(), "8329293769835642434718492429504865071506197276191531180430729314372180", "BigUint shr");
+    expectUInt(u64.from(x.bitLen()), 300u64, "BigUint bitLength");
+    expect(x.testBit(0u32) == true, "testBit 0");
+    expect(x.testBit(299u32) == true, "testBit top");
+    expect(!x.testBit(5000u32), "testBit far above");
+  }
+  {
+    let x = big("340282366920938463463374607431768211455");
+    let y = big("18446744073709551616");
+    expectStr(text(&x.and(&y)).view(), "18446744073709551616", "BigUint and");
+    expectStr(text(&x.or(&y)).view(), "340282366920938463463374607431768211455", "BigUint or");
+    expectStr(text(&x.xor(&y)).view(), "340282366920938463444927863358058659839", "BigUint xor");
+    expectStr(text(&x.shl(100u32)).view(), "431359146674410236714672241392314090776926660160420930296161060782080", "BigUint shl");
+    expectStr(text(&x.shr(67u32)).view(), "2305843009213693951", "BigUint shr");
+    expectUInt(u64.from(x.bitLen()), 128u64, "BigUint bitLength");
+    expect(x.testBit(0u32) == true, "testBit 0");
+    expect(x.testBit(127u32) == true, "testBit top");
+    expect(!x.testBit(5000u32), "testBit far above");
+  }
+  {
+    let x = big("0");
+    let y = big("863065960931823307777");
+    expectStr(text(&x.and(&y)).view(), "0", "BigUint and");
+    expectStr(text(&x.or(&y)).view(), "863065960931823307777", "BigUint or");
+    expectStr(text(&x.xor(&y)).view(), "863065960931823307777", "BigUint xor");
+    expectStr(text(&x.shl(100u32)).view(), "0", "BigUint shl");
+    expectStr(text(&x.shr(67u32)).view(), "0", "BigUint shr");
+    expectUInt(u64.from(x.bitLen()), 0u64, "BigUint bitLength");
+    expect(x.testBit(0u32) == false, "testBit 0");
+    expect(x.testBit(0u32) == false, "testBit top");
+    expect(!x.testBit(5000u32), "testBit far above");
+  }
+  {
+    let x = big("13622994345418235852");
+    let y = big("15719266148662632422");
+    expectStr(text(&x.and(&y)).view(), "10954453061389197252", "BigUint and");
+    expectStr(text(&x.or(&y)).view(), "18387807432691671022", "BigUint or");
+    expectStr(text(&x.xor(&y)).view(), "7433354371302473770", "BigUint xor");
+    expectStr(text(&x.shl(100u32)).view(), "17269196958875201774777087221167045339011562340352", "BigUint shl");
+    expectStr(text(&x.shr(67u32)).view(), "0", "BigUint shr");
+    expectUInt(u64.from(x.bitLen()), 64u64, "BigUint bitLength");
+    expect(x.testBit(0u32) == false, "testBit 0");
+    expect(x.testBit(63u32) == true, "testBit top");
+    expect(!x.testBit(5000u32), "testBit far above");
+  }
+  done()
+}
