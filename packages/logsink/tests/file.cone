@@ -1,0 +1,286 @@
+// The file sink. Each case runs in a child process of this test (a trace sink installs once a process), and the
+// parent reads the file back after the child has ended and its sink is dropped.
+//
+// 1. actors: 8 actors' behaviours emit 400 events each at once, every 100th with a 20,000-byte text; the file holds
+//    every line whole, in the layout, in each actor's own order, and 'failures()' is 0.
+// 2. again: a child installs the same path once more and emits one event: the file keeps the 3200 lines and gains
+//    one (appended, not truncated). The same child installs a second time: that is an Err with EBUSY.
+// 3. missing: installFile on a path in a folder that does not exist answers the FsError (NotFound), and no sink
+//    is installed (a later 'install' of the console's would work).
+// 4. full (Linux only): installFile on /dev/full, where every write fails with ENOSPC: 3 events give
+//    'failures() == 3' and no panic. Skipped on Windows, which has no /dev/full (there is no device whose every
+//    write fails); Windows's expected output is file.out, Linux's, with the extra check, file.linux.out.
+
+mod file;
+
+import testing use *;
+import collections use *;
+import stdio use *;
+import actors;
+import time use Duration;
+import process;
+import fs;
+import path use Path;
+import posix;
+import trace use Level, Kind1, Kind3;
+import logsink;
+
+const writers = 8u64;
+const perWriter = 400u64;
+const pad = "0123456789abcdefghij0123456789";
+
+let lineKind: Kind3[u64, u64, &str];
+let oneKind: Kind1[u64];
+
+fn @initpure init() {
+  lineKind = Kind3[u64, u64, &str].make("line", "w", Level.Info, "id", "seq", "pad");
+  oneKind = Kind1[u64].make("one", "again", Level.Info, "n");
+}
+
+fn bigPad() String {
+  var s = String();
+  var i = 0u32;
+  while i < 2000u32 {
+    s <- "0123456789";
+    i = i + 1u32;
+  }
+  s
+}
+
+actor Logger {
+  pub async fn go(self, id: u64) {
+    let wide = bigPad();
+    var i = 0u64;
+    while i < perWriter {
+      if i % 100u64 == 0u64 {
+        lineKind.emit(id, i, wide.view());
+      } else {
+        lineKind.emit(id, i, pad);
+      }
+      i = i + 1u64;
+    }
+  }
+}
+
+fn childActors(p: &Path) i32 {
+  initAll();
+  match logsink.installFile(p, Level.Info) {
+    case let Ok(log) {
+      var i = 0u64;
+      while i < writers {
+        let l = Logger();
+        l.go(i);
+        i = i + 1u64;
+      }
+      finalAll();
+      trace.flush();
+      if log.failures() != 0u64 { return 3i32; }
+      0i32
+    }
+    case is Err { 1i32 }
+  }
+}
+
+fn childAgain(p: &Path) i32 {
+  match logsink.installFile(p, Level.Info) {
+    case let Ok(log) {
+      oneKind.emit(77u64);
+      trace.flush();
+      // a second install: refused, with EBUSY
+      match logsink.installFile(p, Level.Info) {
+        case is Ok { return 4i32; }
+        case let Err(e) { if e.code != posix.EBUSY { return 5i32; } }
+      }
+      if log.failures() != 0u64 { return 3i32; }
+      0i32
+    }
+    case is Err { 1i32 }
+  }
+}
+
+fn childMissing(p: &Path) i32 {
+  match logsink.installFile(p, Level.Info) {
+    case is Ok { 4i32 }
+    case let Err(e) {
+      if !e.notFound() { return 5i32; }
+      // nothing was installed: the console sink still can be
+      if logsink.install(Level.Info) { 0i32 } else { 6i32 }
+    }
+  }
+}
+
+fn childFull(p: &Path) i32 {
+  match logsink.installFile(p, Level.Info) {
+    case let Ok(log) {
+      oneKind.emit(1u64);
+      oneKind.emit(2u64);
+      oneKind.emit(3u64);
+      if log.failures() != 3u64 { return 3i32; }
+      0i32
+    }
+    case is Err { 1i32 }
+  }
+}
+
+fn child(mode: &str, p: &str) i32 {
+  let path = Path.from(p);
+  if mode == "actors" { return childActors(&path); }
+  if mode == "again" { return childAgain(&path); }
+  if mode == "missing" { return childMissing(&path); }
+  if mode == "full" { return childFull(&path); }
+  2i32
+}
+
+fn ran(exe: &str, mode: &str, p: &str) process.Output {
+  var o = process.Output(0u32, 0u32, false, String(), String());
+  var c = List[String]();
+  c.push(String.from(exe));
+  c.push(String.from("--child"));
+  c.push(String.from(mode));
+  c.push(String.from(p));
+  match process.run(c.view(), process.Options(timeout: Duration.fromMillis(180000i64))) {
+    case var Ok(ok) { o <-> ok; }
+    case let Err(e) {
+      let m = String() <- e;
+      expectStr(m.view(), "<started>", mode);
+    }
+  }
+  o
+}
+
+// '2026-11-11T09:30:15.250Z': 24 bytes, digits and the fixed marks
+fn timeOk(t: &str) bool {
+  let b: &Array[u8] = t;
+  if b.len != 24usize {
+    return false;
+  }
+  var i = 0usize;
+  while i < 24usize {
+    let c = b[i];
+    if i == 4usize || i == 7usize || i == 13usize || i == 16usize {
+      if c != '-' && c != ':' { return false; }
+    } else if i == 10usize {
+      if c != 'T' { return false; }
+    } else if i == 19usize {
+      if c != '.' { return false; }
+    } else if i == 23usize {
+      if c != 'Z' { return false; }
+    } else if c < '0' || c > '9' {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+fn after(part: &'a str, prefix: &str) Option[&'a str] {
+  if part.len() > prefix.len() && part.startsWith(prefix) {
+    Some(part.sliceFrom(prefix.len()))
+  } else {
+    None
+  }
+}
+
+// The actors' 3200 lines, then (when 'extra') the one line of the second run
+fn verify(text: &String, extra: bool, label: &str) {
+  let wide = bigPad();
+  var next = List[u64]();
+  var k = 0u64;
+  while k < writers {
+    next.push(0u64);
+    k = k + 1u64;
+  }
+  var good = 0u64;
+  var bad = 0u64;
+  var misordered = 0u64;
+  var ones = 0u64;
+  let all = List[&str].from(text.lines());
+  var li = 0usize;
+  while li < all.len() {
+    let parts = List[&str].from(all[li].splitOnChar(' '));
+    li = li + 1usize;
+    if parts.len() == 5usize && timeOk(parts[0usize]) && parts[1usize] == "INFO" && parts[2usize] == "again"
+        && parts[3usize] == "one" && parts[4usize] == "n=77" {
+      ones = ones + 1u64;
+      continue;
+    }
+    if !(parts.len() == 7usize && timeOk(parts[0usize]) && parts[1usize] == "INFO" && parts[2usize] == "w"
+        && parts[3usize] == "line") {
+      bad = bad + 1u64;
+      continue;
+    }
+    var id = 0u64;
+    var seq = 0u64;
+    var padText = "";
+    match after(parts[4usize], "id=") {
+      case let Some(v) { match u64.parse(v) { case let Ok(n) { id = n; } case is Err { bad = bad + 1u64; } } }
+      case is None { bad = bad + 1u64; }
+    }
+    match after(parts[5usize], "seq=") {
+      case let Some(v) { match u64.parse(v) { case let Ok(n) { seq = n; } case is Err { bad = bad + 1u64; } } }
+      case is None { bad = bad + 1u64; }
+    }
+    match after(parts[6usize], "pad=") {
+      case let Some(v) { padText = v; }
+      case is None { bad = bad + 1u64; }
+    }
+    let padOk = if seq % 100u64 == 0u64 { padText == wide.view() } else { padText == pad };
+    if id >= writers || !padOk {
+      bad = bad + 1u64;
+      continue;
+    }
+    let slot = usize.from(id);
+    if next[slot] != seq {
+      misordered = misordered + 1u64;
+    }
+    next[slot] = seq + 1u64;
+    good = good + 1u64;
+  }
+  expectUInt(bad, 0u64, label);
+  expectUInt(misordered, 0u64, label);
+  expectUInt(good, writers * perWriter, label);
+  expectUInt(ones, if extra { 1u64 } else { 0u64 }, label);
+}
+
+fn readBack(p: &Path) String {
+  match fs.readFile(p) {
+    case let Ok(s) { s }
+    case is Err { require(false, "the log file is read"); String() }
+  }
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 4usize && a[1usize].equals("--child") {
+    return child(a[2usize].view(), a[3usize].view());
+  }
+  var exe = String();
+  match process.currentExe() {
+    case let Ok(e) { exe = String.from(e.view()); }
+    case is Err { require(false, "currentExe"); }
+  }
+  match fs.tempDir() {
+    case let Ok(dir) {
+      let log = dir.path().join("app.log");
+      let logText = String.from(log.view());
+      let r = ran(exe.view(), "actors", logText.view());
+      expectUInt(u64.from(r.exitCode), 0u64, "8 actors: the child exits 0");
+      verify(&readBack(&log), false, "8 actors: every line whole, in the layout, in order for each actor");
+      let again = ran(exe.view(), "again", logText.view());
+      expectUInt(u64.from(again.exitCode), 0u64, "a second install appends: the child exits 0");
+      verify(&readBack(&log), true, "a second install of the path appends: 3200 lines kept, one added");
+      let none = dir.path().join("nowhere").join("app.log");
+      let noneText = String.from(none.view());
+      let m = ran(exe.view(), "missing", noneText.view());
+      expectUInt(u64.from(m.exitCode), 0u64, "a path in a missing folder: NotFound, and nothing installed");
+      expect(!fs.exists(&none), "and no file was made");
+      #if #os != .windows {
+        // /dev/full fails every write with ENOSPC; Windows has no such device, so this case is Linux's only
+        let f = ran(exe.view(), "full", "/dev/full");
+        expectUInt(u64.from(f.exitCode), 0u64, "/dev/full: 3 events, failures() == 3, no panic");
+      }
+    }
+    case is Err { require(false, "tempDir"); }
+  }
+  done()
+}
