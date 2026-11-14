@@ -151,6 +151,8 @@ static INode *vecSliceType(TypeCheckState *pstate, INode *lane, PermNode *perm) 
     return slice;
 }
 
+static VectorNode *vectorMakeType(TypeCheckState *pstate, INode *lexnode, uint64_t lanes, INode *elemtype);
+
 // 'load' and 'store': the lanes at s[at], s[at+1] ... of a slice of the lane type,
 // bounds checked once for all of them. 'load' belongs to the vector type
 // ('Vector[f32, 4].load(s, at)'), 'store' to the value. Not for a mask, whose
@@ -176,6 +178,31 @@ static void vectorSliceMethods(TypeCheckState *pstate, VectorNode *vec, INode *l
     IntrinsicNode *storenode = newIntrinsicNode(VecStoreIntrinsic);
     storenode->typearg = (INode*)vec;
     iNsTypeAddFn((INsTypeNode*)vec, newFnDclNode(nametblFind("store", 5), FlagMethFld | FlagPub, (INode*)storesig, (INode*)storenode));
+
+    // 'gather' and 'scatter': the lanes at s[idx[0]], s[idx[1]] ... for a vector of
+    // usize indices, every one checked before any lane is read or written. The
+    // index vector is this vector's own type where the lane is usize (making
+    // that type here would make its methods, which make it again).
+    INode *idxvec = itypeGetTypeDcl(lane) == (INode*)usizeType ? (INode*)vec
+        : (INode*)vectorMakeType(pstate, (INode*)vec, vectorLanes((INode*)vec), (INode*)usizeType);
+    FnSigNode *gathersig = newFnSigNode();
+    gathersig->rettype = (INode*)vec;
+    nodesAdd(&gathersig->parms, (INode*)newVarDclFull(nametblFind("s", 1), VarDclTag, vecSliceType(pstate, lane, roPerm), newPermUseNode(immPerm), NULL));
+    nodesAdd(&gathersig->parms, (INode*)newVarDclFull(nametblFind("idx", 3), VarDclTag, idxvec, newPermUseNode(immPerm), NULL));
+    IntrinsicNode *gathernode = newIntrinsicNode(VecGatherIntrinsic);
+    gathernode->typearg = (INode*)vec;
+    FnDclNode *gatherfn = newFnDclNode(nametblFind("gather", 6), FlagPub, (INode*)gathersig, (INode*)gathernode);
+    gatherfn->flags |= TypeChecked;
+    iNsTypeAddFn((INsTypeNode*)vec, gatherfn);
+
+    FnSigNode *scattersig = newFnSigNode();
+    scattersig->rettype = (INode*)newVoidNode();
+    nodesAdd(&scattersig->parms, (INode*)newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)vec, newPermUseNode(immPerm), NULL));
+    nodesAdd(&scattersig->parms, (INode*)newVarDclFull(nametblFind("s", 1), VarDclTag, vecSliceType(pstate, lane, mutPerm), newPermUseNode(immPerm), NULL));
+    nodesAdd(&scattersig->parms, (INode*)newVarDclFull(nametblFind("idx", 3), VarDclTag, idxvec, newPermUseNode(immPerm), NULL));
+    IntrinsicNode *scatternode = newIntrinsicNode(VecScatterIntrinsic);
+    scatternode->typearg = (INode*)vec;
+    iNsTypeAddFn((INsTypeNode*)vec, newFnDclNode(nametblFind("scatter", 7), FlagMethFld | FlagPub, (INode*)scattersig, (INode*)scatternode));
 }
 
 static void vecAdd(VectorNode *vec, Name *name, FnSigNode *sig, int kind) {
@@ -483,10 +510,10 @@ static int vectorNumberMethod(Name *op) {
 // are logical, not numbers, so the arithmetic and the ordering are refused as
 // such. Answers 1 when it reported.
 int vectorMissingMember(FnCallNode *callnode, INode *vectype, Name *methsym) {
-    if (vectorIsMask(vectype) && strcmp(&methsym->namestr, "store") == 0) {
+    if (vectorIsMask(vectype) && (strcmp(&methsym->namestr, "store") == 0 || strcmp(&methsym->namestr, "scatter") == 0)) {
         errorMsgNode((INode*)callnode, ErrorVectorSlice,
-            "A mask has no `store`: its lanes are bits, with no form in memory. Convert it for numbers, 'Vector[u8, %llu].from(m)', and store those.",
-            (unsigned long long)vectorLanes(vectype));
+            "A mask has no `%s`: its lanes are bits, with no form in memory. Convert it for numbers, 'Vector[u8, %llu].from(m)', and store those.",
+            &methsym->namestr, (unsigned long long)vectorLanes(vectype));
         return 1;
     }
     if (vectorIsMask(vectype) && vectorNumberMethod(methsym)) {
@@ -890,7 +917,7 @@ int vectorStaticCall(TypeCheckState *pstate, FnCallNode *node) {
         || !isNameUseNode(node->methfld) || (node->flags & (FlagIndex | FlagOperator)))
         return 0;
     Name *name = ((NameUseNode*)node->methfld)->namesym;
-    if (strcmp(&name->namestr, "load") != 0)
+    if (strcmp(&name->namestr, "load") != 0 && strcmp(&name->namestr, "gather") != 0)
         return 0;
     if (!itypeTypeCheck(pstate, &node->objfn)) {
         node->vtype = errorType;
@@ -901,8 +928,8 @@ int vectorStaticCall(TypeCheckState *pstate, FnCallNode *node) {
         return 0;
     if (vectorIsMask(vectype)) {
         errorMsgNode((INode*)node, ErrorVectorSlice,
-            "A mask has no `load`: its lanes are bits, with no form in memory. Load the numbers, 'Vector[u8, %llu].load(s, at)', and compare them.",
-            (unsigned long long)vectorLanes(vectype));
+            "A mask has no `%s`: its lanes are bits, with no form in memory. Load the numbers, 'Vector[u8, %llu].load(s, at)', and compare them.",
+            &name->namestr, (unsigned long long)vectorLanes(vectype));
         node->vtype = errorType;
         return 1;
     }

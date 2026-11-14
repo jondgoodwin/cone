@@ -487,6 +487,9 @@ file adds to the scalar's lowering:
 - **A slice's `load` and `store` check their span once** (`genlSliceSpan`: `at` below `count - N + 1`,
   else the index panic with the last lane's index) and are one `load <N x T>` or `store` of the whole
   vector at the lane's alignment.
+- **`gather` and `scatter` check every index once before touching memory** (`genlGatherIndices`: a vector
+  compare against the count, `reduce.or`, one branch to the index panic) and are one `llvm.masked.gather` or
+  `llvm.masked.scatter` with all lanes on (`genlGatherScatter`); see `nodes/vector.md`.
 
 ### C-named functions and the C ABI
 
