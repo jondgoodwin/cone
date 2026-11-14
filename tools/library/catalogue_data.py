@@ -225,6 +225,7 @@ DOMAINS = [
    ("json", "JSON (RFC 8259) read and written: a value tree, a streaming reader, and accessors."),
    ("toml", "A reader for a subset of TOML, enough for Congo's manifests."),
    ("binarytext", "Bytes as text: Base64 and hex, one-shot and streaming."),
+   ("textcodec", "UTF-16 (both byte orders, byte-order marks), Latin-1 and Windows-1252 to and from UTF-8, in Cone."),
    ("cryptohash", "SHA-256, SHA-512 and SHA-1, HMAC, constant-time comparison, PBKDF2 and HKDF."),
    ("imagedecode", "PNG and JPEG decoders and a PNG writer, with no C library."),
    ("csv", "CSV (RFC 4180) read and written as text, in Cone, with no C library."),

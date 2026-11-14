@@ -1,0 +1,124 @@
+// Byte-order marks: 'sniff' names UTF-8 (EF BB BF), UTF-16LE (FF FE) and
+// UTF-16BE (FE FF), and says none for anything else (the empty bytes, one byte
+// of a mark, FF FE 00 00, which the WHATWG standard reads as UTF-16LE, and a
+// near miss). Then files written with each mark, as PowerShell 5's '>' writes
+// them, are read back end to end through the file system, sniffed and decoded
+// with 'decodeSniffed', and the same by hand (sniff, skip 'length()', decode).
+// 'decodeSniffed' counts a fault's position from the start of the file.
+
+mod bom;
+
+import testing use *;
+import collections use *;
+import textcodec use *;
+import fs;
+import path use Path;
+
+fn name(b: Bom) &str {
+  match b {
+    case is NoBom { "none" }
+    case is Utf8 { "utf-8" }
+    case is Utf16Le { "utf-16le" }
+    case is Utf16Be { "utf-16be" }
+  }
+}
+
+fn sniffed(b: &Array[u8]) &'static str { name(sniff(b)) }
+
+// the file's bytes, read through fs
+fn readAll(p: &Path) List[u8] {
+  var out = List[u8]();
+  match fs.readBytes(p) {
+    case let Err(e) { expect(false, "the file reads"); }
+    case let Ok(chain) {
+      let n = chain.len();
+      var i = 0usize;
+      while i < n { out.push(0u8); i = i + 1usize; }
+      let got = chain.copyOut(0usize, out.viewMut());
+      expectUInt(u64.from(got), u64.from(n), "all the bytes copied out");
+    }
+  }
+  out
+}
+
+fn textOf(r: Result[String, CodecError]) String {
+  match r {
+    case is Err { String.from("<error>") }
+    case let Ok(s) { s }
+  }
+}
+
+fn main() i32 {
+  let utf8: Array[u8, 4] = [0xEFu8, 0xBBu8, 0xBFu8, 0x41u8];
+  let le: Array[u8, 4] = [0xFFu8, 0xFEu8, 0x41u8, 0x00u8];
+  let be: Array[u8, 4] = [0xFEu8, 0xFFu8, 0x00u8, 0x41u8];
+  expectStr(sniffed(&utf8), "utf-8", "EF BB BF");
+  expectStr(sniffed(&le), "utf-16le", "FF FE");
+  expectStr(sniffed(&be), "utf-16be", "FE FF");
+  expectUInt(u64.from(sniff(&utf8).length()), 3u64, "the UTF-8 mark is 3 bytes");
+  expectUInt(u64.from(sniff(&le).length()), 2u64, "the UTF-16 mark is 2 bytes");
+  expectUInt(u64.from(Bom.NoBom.length()), 0u64, "no mark, no bytes");
+  expect(sniff(&le) == Bom.Utf16Le, "== on a mark");
+  expect(sniff(&le) != Bom.Utf16Be, "!= on a mark");
+  let utf32: Array[u8, 4] = [0xFFu8, 0xFEu8, 0x00u8, 0x00u8];
+  expectStr(sniffed(&utf32), "utf-16le", "FF FE 00 00 is UTF-16LE");
+  let plain: Array[u8, 3] = [0x41u8, 0x42u8, 0x43u8];
+  expectStr(sniffed(&plain), "none", "plain text");
+  let nearly: Array[u8, 3] = [0xEFu8, 0xBBu8, 0xBEu8];
+  expectStr(sniffed(&nearly), "none", "EF BB BE");
+  let short1: Array[u8, 1] = [0xFFu8];
+  expectStr(sniffed(&short1), "none", "one byte of a mark");
+  let short2: Array[u8, 2] = [0xEFu8, 0xBBu8];
+  expectStr(sniffed(&short2), "none", "two bytes of the UTF-8 mark");
+  let swappedLe: Array[u8, 2] = [0xFFu8, 0xFFu8];
+  expectStr(sniffed(&swappedLe), "none", "FF FF");
+  expectStr(sniffed("".slice(0usize, 0usize)), "none", "no bytes");
+
+  // the mark alone, and the sniffed decoder
+  expectStr(textOf(decodeSniffed(&utf8)).view(), "A", "decodeSniffed drops the UTF-8 mark");
+  expectStr(textOf(decodeSniffed(&le)).view(), "A", "decodeSniffed UTF-16LE");
+  expectStr(textOf(decodeSniffed(&be)).view(), "A", "decodeSniffed UTF-16BE");
+  expectStr(textOf(decodeSniffed(&plain)).view(), "ABC", "no mark: taken as UTF-8");
+  let bad: Array[u8, 6] = [0xFFu8, 0xFEu8, 0x41u8, 0x00u8, 0x00u8, 0xDCu8];
+  match decodeSniffed(&bad) {
+    case is Ok { expect(false, "a lone low surrogate after a mark is refused"); }
+    case let Err(e) { expectUInt(u64.from(e.position), 4u64, "its position counts from the start, mark included"); }
+  }
+
+  // files, end to end
+  let text = "Name\tPrice\r\ncafé\t€3\r\n日本語 \U0001F600\r\n";
+  match fs.tempDir() {
+    case is Err { expect(false, "tempDir makes a folder"); }
+    case let Ok(t) {
+      let dir = t.path();
+      let fLe = dir.join("le.txt");
+      let fBe = dir.join("be.txt");
+      let f8 = dir.join("u8.txt");
+      expect(fs.writeFile(&fLe, encodeUtf16Le(text, true).view()) is Ok, "write the UTF-16LE file");
+      expect(fs.writeFile(&fBe, encodeUtf16Be(text, true).view()) is Ok, "write the UTF-16BE file");
+      var with8 = List[u8]();
+      with8.push(0xEFu8); with8.push(0xBBu8); with8.push(0xBFu8);
+      with8.appendSlice(text);
+      expect(fs.writeFile(&f8, with8.view()) is Ok, "write the UTF-8 file");
+
+      let bLe = readAll(&fLe);
+      let bBe = readAll(&fBe);
+      let b8 = readAll(&f8);
+      expectStr(sniffed(bLe.view()), "utf-16le", "the LE file's mark");
+      expectStr(sniffed(bBe.view()), "utf-16be", "the BE file's mark");
+      expectStr(sniffed(b8.view()), "utf-8", "the UTF-8 file's mark");
+      expectUInt(u64.from(bLe.len()), 2u64 + 2u64 * 29u64, "LE file size: the mark and 29 units (12 + 9 + 8 on the three lines, the emoji two)");
+      expect(textOf(decodeSniffed(bLe.view())).view() == text, "the LE file reads back to the text");
+      expect(textOf(decodeSniffed(bBe.view())).view() == text, "the BE file reads back to the text");
+      expect(textOf(decodeSniffed(b8.view())).view() == text, "the UTF-8 file reads back to the text");
+
+      // by hand
+      let m = sniff(bLe.view());
+      expect(m == Bom.Utf16Le, "by hand: LE");
+      expect(textOf(decodeUtf16Le(bLe.view().slice(m.length(), bLe.len()))).view() == text, "by hand: skip the mark, decode");
+      // a decoder given the mark keeps it as U+FEFF
+      expect(textOf(decodeUtf16Le(bLe.view())).view().startsWith("﻿"), "without skipping, the text starts with U+FEFF");
+    }
+  }
+  done()
+}

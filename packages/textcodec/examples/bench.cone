@@ -1,0 +1,67 @@
+// bench: UTF-16 to and from UTF-8, Cone's rate alone. A text of about 32 MiB of
+// UTF-8 (a mix of ASCII, Latin and Greek letters, CJK and emoji, repeated) is
+// encoded to UTF-16LE, and that decoded back, five rounds each; each row gives
+// the median rate in MB/s (10^6 bytes per second) of the bytes the step reads
+// (the UTF-8 text going out, the UTF-16 bytes coming in), and the run checks the
+// decoded text equals the original.
+//
+//   congo run --release packages/textcodec/examples/bench.cone
+//
+// Run it on a quiet machine: the rates of a busy one say nothing.
+
+mod bench;
+
+import stdio use *;
+import collections use *;
+import time use Instant;
+import textcodec;
+
+fn medianOf(l: &List[i64]) i64 {
+  var s = List[i64]();
+  var i = 0usize;
+  while i < l.len() { s.push(l[i]); i = i + 1usize; }
+  // insertion sort: five values
+  i = 1usize;
+  while i < s.len() {
+    var j = i;
+    while j > 0usize && s[j - 1usize] > s[j] {
+      let t = s[j];
+      s[j] = s[j - 1usize];
+      s[j - 1usize] = t;
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+  s[s.len() / 2usize]
+}
+
+fn main() i32 {
+  let unit = "The quick brown fox jumps over the lazy dog. café naïve αβγδ 日本語のテキスト \U0001F600\U0001F680 0123456789\r\n";
+  var text = String.withCapacity(34000000usize);
+  while text.len() < 33554432usize { text.append(unit); }
+  let n = text.len();
+  var encRates = List[i64]();
+  var decRates = List[i64]();
+  var same = true;
+  var round = 0u32;
+  while round < 5u32 {
+    let t0 = Instant.now();
+    let bytes = textcodec.encodeUtf16Le(text.view(), false);
+    let t1 = Instant.now();
+    match textcodec.decodeUtf16Le(bytes.view()) {
+      case let Ok(back) {
+        let t2 = Instant.now();
+        if back.view() != text.view() { same = false; }
+        encRates.push(i64.from(n) * 1000i64 / (t1 - t0).nanos());
+        decRates.push(i64.from(bytes.len()) * 1000i64 / (t2 - t1).nanos());
+      }
+      case is Err { same = false; }
+    }
+    round = round + 1u32;
+  }
+  print <- "text ", n, " bytes of UTF-8\n";
+  print <- "encode UTF-8 to UTF-16LE: ", medianOf(&encRates), " MB/s\n";
+  print <- "decode UTF-16LE to UTF-8: ", medianOf(&decRates), " MB/s\n";
+  print <- (if same { "round trip equal\n" } else { "ROUND TRIP DIFFERS\n" });
+  if same { 0i32 } else { 1i32 }
+}
