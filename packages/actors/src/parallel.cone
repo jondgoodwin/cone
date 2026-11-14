@@ -310,15 +310,23 @@ fn runTask(s: *Sched, t: Task) {
 const hintExt = 0xFFFFFFFFu32;
 
 // The wake tree's gate. A woken worker needs about 5 us to arrive (row 283's
-// measure), so a piece whose remaining work, items left times the cost per item the
-// guard measured, is shorter than that is left to master's single wake: two wakes
-// there are two system calls for workers that find nothing. 'wakeTreeSplits' caps
-// the split budget of a stolen piece (chosen by a pass over none, 2 and 4: row 293).
-const wakeTreeNanos = 5000u64;
+// measure), and the guard's cost per item is read off a few microseconds of cold
+// items, so it reads high (a cheap loop after a nap looks dear). A piece whose
+// remaining work, items left times that cost per item, is shorter than
+// wakeTreeNanos is left to master's single wake: two wakes there are two system
+// calls for workers that find nothing. 200 us was chosen by a sweep of 5, 20, 50,
+// 100, 200 and 400 us over loops of 256 to 1M items (row 304, Ruminations\
+// bug7-wake-tree-gated-2026-11-13.md): up to 50 us the cheap loops after a nap
+// still woke two workers; from 100 us their wakes were master's, and the big
+// loops' gain (65k and 1M items at 16-24 workers) did not change up to 400 us.
+// 'wakeTreeSplits' caps the split budget of a stolen piece (row 293: a pass over
+// none, 2 and 4).
+const wakeTreeNanos = 200000u64;
 const wakeTreeSplits = 2u32;
 
 var @threadlocal treeLimit: u64 = 0u64;
-var @threadlocal inlineSpent: u64 = 0u64;   // clock ticks of the last runInline
+var @threadlocal inlineSpent: u64 = 0u64;   // clock ticks of the last runInline's cost window
+var @threadlocal inlineItems: u64 = 0u64;   // the items that window ran
 
 // wakeTreeNanos in the clock's ticks, found once a thread
 fn treeTicks() u64 {
@@ -327,6 +335,21 @@ fn treeTicks() u64 {
     treeLimit = if q > 0u64 {q} else {1u64};
   }
   treeLimit
+}
+
+var rootTreeV: Atomic[u32];
+// SCRATCH, remove: CONE_RT=0 makes the caller's own first piece wake as master does
+fn rootTreeOn() bool {
+  var c = rootTreeV.load();
+  if c == 0u32 {
+    c = 2u32;
+    let v = libc.getenv("CONE_RT");
+    if v as usize != 0usize && *v == 48u8 {
+      c = 1u32;
+    }
+    rootTreeV.store(c);
+  }
+  c == 2u32
 }
 
 // Does a piece of n items have work enough for the tree's two wakes?
@@ -370,7 +393,7 @@ fn runTaskW(s: *Sched, t: Task, root: bool) {
     }
     // The tree is for a piece with work enough to pay for two workers' arrival;
     // a smaller one wakes as master did, one sleeper a split (notify).
-    var treeWoke = !(root || t.stolen) || !treeWorth(rec, hi - t.lo);
+    var treeWoke = !((root && rootTreeOn()) || t.stolen) || !treeWorth(rec, hi - t.lo);
     while splits > 0u32 && hi - t.lo > 1usize {
       splits = splits / 2u32;
       let mid = t.lo + (hi - t.lo) / 2usize;
@@ -473,16 +496,40 @@ fn runInline(body: PieceFn, data: *u8, lo: usize, hi: usize) usize {
   let limit = guardTicks();
   let t0 = clockTicks();
   var at = lo;
+  // The cost per item is read off the last window (from the last time the count
+  // of items run doubled), not the whole run: the first items of a loop run cold
+  // (cache, page faults) and would make a cheap loop look dear.
+  var markT = t0;
+  var markN = 0usize;
   while at < hi {
     body(data, at, at + 1usize);
     at = at + 1usize;
-    if hi - at > 1usize && clockTicks() - t0 >= limit {
-      inlineSpent = clockTicks() - t0;
+    let now = clockTicks();
+    let n = at - lo;
+    if hi - at > 1usize && now - t0 >= limit {
+      noteCost(now - markT, n - markN, now - t0, n);
       return at;
     }
+    if n & (n - 1usize) == 0usize {
+      markT = now;
+      markN = n;
+    }
   }
-  inlineSpent = clockTicks() - t0;
+  let now = clockTicks();
+  noteCost(now - markT, (at - lo) - markN, now - t0, at - lo);
   hi
+}
+
+// Record the cost of the run just made: the last window's, or the whole run's
+// when the window held no item
+fn noteCost(winTicks: u64, winItems: usize, allTicks: u64, allItems: usize) {
+  if winItems > 0usize {
+    inlineSpent = winTicks;
+    inlineItems = u64.from(winItems);
+  } else {
+    inlineSpent = allTicks;
+    inlineItems = u64.from(allItems);
+  }
 }
 
 // A 'parallel each' has no grain: it splits on demand (runTask, adaptive), the
@@ -544,7 +591,7 @@ fn rangeRun(lo: usize, hi: usize, grain: usize, adaptive: bool, body: PieceFn, d
   }
   ensureRunning();
   let s = running.load() as *Sched;
-  var rec = LoopRec(hi - from, g, body, data, &noDone, null, false, adaptive, inlineSpent, u64.from(from - lo));
+  var rec = LoopRec(hi - from, g, body, data, &noDone, null, false, adaptive, inlineSpent, inlineItems);
   let p = &mut rec as *LoopRec;
   runTaskW(s, Task(p, from, hi, (*s).nworkers, false), adaptive);
   helpUntilDone(s, p);
@@ -852,7 +899,7 @@ fn rangeThen(lo: usize, hi: usize, grain: usize, adaptive: bool, body: PieceFn, 
   if rec as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
-  mem.writeRaw[LoopRec](rec, LoopRec(hi - from, g, body, data, onDone, doneArg, true, adaptive, inlineSpent, u64.from(from - lo)));
+  mem.writeRaw[LoopRec](rec, LoopRec(hi - from, g, body, data, onDone, doneArg, true, adaptive, inlineSpent, inlineItems));
   (*s).liveScheduled.add(1u64);
   if !dequePush(curDeque(s), Task(rec, from, hi, (*s).nworkers, false)) {
     // The deque is full: run the loop's first task here, which splits it
