@@ -295,5 +295,36 @@ fn main() i32 {
   expect(decodesTo(one5.view(), wtext.view()), "2 MiB words decodes to its input");
   var sf5 = List[u8]();
   expect(streamed(wtext.view(), 1, 0usize, 65536usize, true, &mut sf5) && same(sf5.view(), one5.view()), "2 MiB words streamed is the one-call frame");
+
+  // 24 byte values with Fibonacci frequencies: Huffman's tree is 23 deep, so the 11-bit limit must move depths
+  // (crosscheck.py makes the same bytes, "fibonacci literals", and has libzstd decode the frames)
+  var fib = List[u64]();
+  fib.push(1u64);
+  fib.push(1u64);
+  var total = 2u64;
+  while fib.len() < 24usize {
+    let nx = fib[fib.len() - 1usize] + fib[fib.len() - 2usize];
+    fib.push(nx);
+    total = total + nx;
+  }
+  var fl = List[u8]();
+  var fs = 777u64;
+  while fl.len() < 300000usize {
+    fs = fs * 6364136223846793005u64 + 1442695040888963407u64;
+    var k = (fs >> 33u64) % total;
+    var v = 0usize;
+    while k >= fib[v] {
+      k = k - fib[v];
+      v += 1usize;
+    }
+    fl.push(u8.from(v));
+  }
+  var flv = 1;
+  while flv <= 3 {
+    let ff = compress(fl.view(), flv);
+    expect(decodesTo(ff.view(), fl.view()), "fibonacci literals decode to their input");
+    expect(ff.len() < 150000usize, "fibonacci literals are Huffman coded");
+    flv += 1;
+  }
   done()
 }
