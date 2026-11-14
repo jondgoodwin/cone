@@ -185,6 +185,9 @@ enum IntrinsicFn {
     // at a time, so there each is nothing (genllvm/genlgpusync.c)
     WorkgroupBarrierIntrinsic,  // workgroupBarrier()
     StorageBarrierIntrinsic,    // storageBarrier()
+    // Returns its argument, which the optimiser treats as made and used by code
+    // it cannot see (a benchmark's guard); an empty asm in the generator
+    BlackBoxIntrinsic,          // blackBox[T](v: T) T
     // The 128-bit product of two 64-bit numbers, its two halves xored: the
     // mixing step of the wyhash family, one instruction on a 64-bit target
     MulFoldIntrinsic,           // mulFold(a: u64, b: u64) u64

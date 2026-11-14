@@ -73,8 +73,11 @@
 // 'benchWith(name, &cfg, &body)' takes the settings, from
 // 'BenchConfig.standard()' with a field changed ('print' off silences the line,
 // for a test, whose pinned .out cannot hold a time). Wrap what the body computes
-// in 'blackBox' so the optimiser cannot delete or hoist it: for a pure
-// function 'f', 'blackBox(f(blackBox(x)))'.
+// in 'mem.blackBox' so the optimiser cannot delete or hoist it: for a pure
+// function 'f', 'mem.blackBox(f(mem.blackBox(x)))' (a constant input still
+// folds, so the input is wrapped too). It costs about 0.3 ns a box, so the
+// figures a bench prints include about twice that for this form and are not
+// corrected for it.
 //
 // The numbers belong in the stdout of an example program run by 'congo run',
 // never in a test's pinned .out file: a time changes on every run. A test of
@@ -99,16 +102,12 @@ import libc;
 import time;
 import collections use List;
 
-// Where 'blackBox' lets an address escape
-let sink: Atomic[usize];
-
 // How many checks have run, and how many of them failed. A check may run on
 // any thread, so each count is an atomic held by a 'let' global
 let checks: Atomic[u64];
 let failures: Atomic[u64];
 
 fn @initpure init() {
-  sink = Atomic[usize].of(0usize);
   checks = Atomic[u64].of(0u64);
   failures = Atomic[u64].of(0u64);
 }
@@ -359,30 +358,6 @@ pub fn benchWith[F: fn()](name: &Array[u8], cfg: &BenchConfig, body: &F) BenchRe
     stdio.printStr(")\n");
   };
   BenchResult(rounds, iters, med, lo, hi, mad)
-}
-
-// A value the optimiser cannot see through: returns 'v', after the address of
-// a copy of it has gone through an atomic exchange that every thread could
-// read, so the compiler must have 'v' in memory and must read it back.
-//
-// The rule: wrap both the inputs and the result of what you time,
-// 'blackBox(f(blackBox(3)))'. Wrapping the result keeps the call from being
-// deleted as unused; wrapping the inputs keeps it from being folded, because a
-// constant input still folds ('blackBox(f(3))' computes 'f(3)' at compile time
-// and times only the sink). The sink costs about 6 ns a
-// call (one atomic exchange; measured once on the developer's laptop, release
-// build, as an empty body against 'blackBox(1u64)': 0.0 against 5.8 and 6.3
-// ns), so 'blackBox(f(blackBox(x)))' adds about 12 ns to 'f'. The figures
-// 'bench' prints include it and are not corrected for it: read a result under
-// about 20 ns with that cost beside it. What the optimiser does with it, read
-// from the IR: a pure call whose result goes unused is deleted; one wrapped
-// in 'blackBox' alone, on a constant, is folded to its value at compile time
-// (the exchange stays, the work goes); with the inner 'blackBox' the argument
-// is read back from memory and the work is done on every call.
-pub fn blackBox[T](v: T) T {
-  var held = v;
-  sink.swap(&held as usize);
-  held
 }
 
 // -------- inside the package --------

@@ -187,6 +187,10 @@ static IntrinsicSpec intrinsicRegistry[] = {
         0, 0, {0}, ShapeVoid, 0, 1, PhaseOperation, 1},
     {"storageBarrier", StorageBarrierIntrinsic, "storageBarrier()",
         0, 0, {0}, ShapeVoid, 0, 1, PhaseOperation, 1},
+    // A value the optimiser can assume nothing about: the compiler's own empty
+    // asm over a stack slot holding it (genlexpr.c). The fallback returns it
+    {"blackBox", BlackBoxIntrinsic, "blackBox[T](v: T) T",
+        1, 1, {ShapeT}, ShapeT, 0, 1, PhaseOperation, 1},
     // The full 128-bit product of a and b, its high and low halves xored: wyhash's
     // mixing step. The fallback body works in 32-bit halves
     {"mulFold", MulFoldIntrinsic, "mulFold(a: u64, b: u64) u64",
