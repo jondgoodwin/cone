@@ -262,6 +262,20 @@ fn curDeque(s: *Sched) *TaskDeque {
 // at every steal.
 fn stealTask(s: *Sched, w: *Worker, out: *Task) bool {
   let n = (*s).nworkers;
+  // A worker woken by the wake tree looks first in the deque of the one that
+  // woke it (once), so its steal does not land in the caller's with all the rest
+  if w as usize != 0usize && mem.atomicLoad[u32](&(*w).hint as *u32, MemOrder.Relaxed) != 0u32 {
+    let hnt = mem.atomicSwap[u32](&(*w).hint as *u32, 0u32, MemOrder.Relaxed);
+    var from = extDeque(s);
+    if hnt != hintExt {
+      from = tasksOf(workerAt(s, hnt - 1u32));
+    }
+    if hnt != 0u32 && from as usize != tasksOf(w) as usize && dequeTakeOldest(from, out) {
+      (*out).stolen = true;
+      taskStealsTotal.addOrdered(1u64, MemOrder.Relaxed);
+      return true;
+    }
+  }
   let r = (*s).stealRot.addOrdered(1u32, MemOrder.Relaxed);
   var i = 0u32;
   while i < n {
@@ -287,6 +301,31 @@ fn stealTask(s: *Sched, w: *Worker, out: *Task) bool {
 // upper half of each split on top of this thread's deque; run the piece left;
 // count it done
 fn runTask(s: *Sched, t: Task) {
+  runTaskW(s, t, false);
+}
+
+// hintExt: a wake-tree hint naming the shared deque (a worker's is its index + 1)
+const hintExt = 0xFFFFFFFFu32;
+
+// SCRATCH tuning, to be removed: CONE_SC=<digit> caps the budget of a stolen piece
+let scCap: Atomic[u32];
+fn splitCap() u32 {
+  var c = scCap.load();
+  if c == 0u32 {
+    c = 0xFFFFu32;
+    let v = libc.getenv("CONE_SC");
+    if v as usize != 0usize {
+      c = u32.from(*v) - 48u32;
+    }
+    scCap.store(c + 1u32);
+    return c;
+  }
+  c - 1u32
+}
+
+// root is true for the first task of a blocking loop (the caller's): it wakes
+// like a thief's piece does (the wake tree, actors.notifyTree)
+fn runTaskW(s: *Sched, t: Task, root: bool) {
   let rec = t.rec;
   let body = (*rec).body;
   let data = (*rec).data;
@@ -310,14 +349,29 @@ fn runTask(s: *Sched, t: Task) {
       let nw = (*s).nworkers;
       let half = splits / 2u32;
       splits = if half > nw {half} else {nw};
+      let cap = splitCap();
+      if splits > cap {
+        splits = cap;
+      }
     }
+    var treeWoke = !(root || t.stolen);
     while splits > 0u32 && hi - t.lo > 1usize {
       splits = splits / 2u32;
       let mid = t.lo + (hi - t.lo) / 2usize;
       if !dequePush(d, Task(rec, mid, hi, splits, false)) {
         break;
       }
-      notify(s);
+      if treeWoke {
+        notify(s);
+      } else {
+        treeWoke = true;
+        let w = me as *Worker;
+        var hnt = hintExt;
+        if w as usize != 0usize && (*w).sched as usize == s as usize {
+          hnt = (*w).index + 1u32;
+        }
+        notifyTree(s, hnt);
+      }
       hi = mid;
     }
   } else {
@@ -474,7 +528,7 @@ fn rangeRun(lo: usize, hi: usize, grain: usize, adaptive: bool, body: PieceFn, d
   let s = running.load() as *Sched;
   var rec = LoopRec(hi - from, g, body, data, &noDone, null, false, adaptive);
   let p = &mut rec as *LoopRec;
-  runTask(s, Task(p, from, hi, (*s).nworkers, false));
+  runTaskW(s, Task(p, from, hi, (*s).nworkers, false), adaptive);
   helpUntilDone(s, p);
 }
 
