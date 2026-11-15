@@ -1,0 +1,62 @@
+// How fast. Give it a Brotli stream and, after it, the bytes it must decompress to; it decompresses the stream
+// 5 times, checks the output against the original, and prints the best time as megabytes a second of the
+// output, with the sizes. Run it in release mode:
+//
+//   congo run --release packages/brotli/examples/bench.cone stream.br original
+//
+// (Make the stream with the C 'brotli' command. The numbers in the package notes are from this program beside
+// 'brotli -d' on the same files.)
+
+mod bench;
+
+import collections use *;
+import brotli use *;
+import time use *;
+import fs;
+import path use Path;
+import process;
+import stdio use *;
+
+fn main() i32 {
+  let args = process.args();
+  if args.len() < 3usize {
+    printStr("usage: bench stream.br original\n");
+    return 2i32;
+  }
+  let pp = Path.from(args[1usize].view());
+  let po = Path.from(args[2usize].view());
+  var packed = String();
+  var orig = String();
+  match fs.readFile(&pp) {
+    case var Ok(ok) { packed <-> ok; }
+    case let Err(e) { printStr("cannot read the stream\n"); return 2i32; }
+  }
+  match fs.readFile(&po) {
+    case var Ok(ok) { orig <-> ok; }
+    case let Err(e) { printStr("cannot read the original\n"); return 2i32; }
+  }
+  let pb = packed.view().bytes();
+  let ob = orig.view().bytes();
+  var best = 0x7FFFFFFFFFFFFFFFi64;
+  var run = 0;
+  while run < 5 {
+    let t0 = Instant.now();
+    match decompress(pb, ob.len) {
+      case let Ok(out) { if out.view() != ob { printStr("MISMATCH\n"); } }
+      case let Err(e) { printStr("ERROR "); printStr(e.reason.view()); printStr("\n"); }
+    }
+    let ns = t0.elapsed().nanos();
+    if ns < best { best = ns; }
+    run += 1;
+  }
+  printStr("stream bytes, output bytes, best time in ms, MB/s of output: ");
+  printInt(i64.from(pb.len));
+  printStr(" ");
+  printInt(i64.from(ob.len));
+  printStr(" ");
+  printInt(best / 1000000i64);
+  printStr(" ");
+  printInt(if best > 0i64 {i64.from(ob.len) * 1000i64 / best} else {0i64});
+  printStr("\n");
+  0i32
+}

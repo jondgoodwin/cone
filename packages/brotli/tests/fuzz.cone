@@ -1,0 +1,72 @@
+// Damaged streams must never crash or hang: each of six real streams (a text, a binary and a source file from
+// the Brotli repository's own data and ours, at two qualities) has bytes changed at pseudo-random places, 400
+// ways each, and every damaged copy must either decompress (to something) or be refused with an error. The run
+// is deterministic (a fixed seed). A refusal must also name an offset not past the input's end.
+
+mod fuzz;
+
+import testing use *;
+import collections use *;
+import brotli use *;
+import fs;
+import path use Path;
+
+fn readRel(rel: &str, out: &mut String) bool {
+  let p = Path.from(rel);
+  match fs.readFile(&p) {
+    case var Ok(ok) { *out <-> ok; true }
+    case let Err(e) { false }
+  }
+}
+
+// xorshift64
+fn next(s: &mut u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+fn fuzzOne(name: &str, seed: u64, rounds: usize) usize {
+  var s = String();
+  var rel = String();
+  rel.append("../../../../tests/data/");
+  rel.append(name);
+  if !readRel(rel.view(), &mut s) { return 1000000usize; }
+  let b = s.view().bytes();
+  var bad = 0usize;
+  var rng = seed;
+  var r = 0usize;
+  while r < rounds {
+    var d = List[u8]();
+    d.appendSlice(b);
+    // One to four bytes changed
+    var k = 1u64 + next(&mut rng) % 4u64;
+    while k > 0u64 {
+      let at = usize.from(next(&mut rng) % u64.from(d.len()));
+      let v = u8.from(next(&mut rng) & 255u64);
+      d.set(at, v);
+      k -= 1u64;
+    }
+    var dc = Decompressor.make();
+    dc.setLimit(64000000u64);
+    match dc.run(d.view(), 0usize) {
+      case let Ok(out) { }
+      case let Err(e) { if e.offset > u64.from(d.len()) { bad += 1usize; } }
+    }
+    r += 1usize;
+  }
+  bad
+}
+
+fn main() i32 {
+  expectInt(i64.from(fuzzOne("google/monkey.compressed", 1u64, 400usize)), 0i64, "damaged monkey");
+  expectInt(i64.from(fuzzOne("google/cp852-utf8.compressed", 2u64, 400usize)), 0i64, "damaged cp852-utf8");
+  expectInt(i64.from(fuzzOne("own/inflate.cone.q11w16.br", 3u64, 400usize)), 0i64, "damaged source, quality 11");
+  expectInt(i64.from(fuzzOne("own/manual.html.q5w24.br", 4u64, 400usize)), 0i64, "damaged page, quality 5");
+  expectInt(i64.from(fuzzOne("own/conestd.bin.q11w10.br", 5u64, 400usize)), 0i64, "damaged binary, quality 11");
+  expectInt(i64.from(fuzzOne("own/dictwords.br", 6u64, 400usize)), 0i64, "damaged dictionary words");
+  done()
+}
