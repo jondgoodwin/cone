@@ -1,0 +1,138 @@
+// The Unicode classes: \d is Nd, \s is White_Space, \w is Alphabetic, M, Nd, Pc and
+// Join_Control, and \b and \B follow \w. Every expected answer here is worked out by hand
+// from the UTF-8 byte offsets (a Latin letter with a mark is 2 bytes, a Greek letter 2,
+// a Devanagari digit 3, a CJK character 3), and the long texts are searched twice: as written
+// (the lazy DFA answers a text of 512 bytes or more, and gives way to the Pike VM at the first
+// byte past ASCII when the pattern has a Unicode \b) and with a dead alternative of 132000
+// states added, which leaves only the Pike VM. The two must agree.
+
+mod unicode;
+import testing use *;
+import collections use *;
+import regex;
+
+fn built(pat: &str) regex.Regex {
+  match regex.Regex.parse(pat) {
+    case let Ok(re) { re }
+    case let Err(e) { panic("the pattern was refused") }
+  }
+}
+
+// Every match as 's..e', or '-'
+fn finds(pat: &str, text: &str) String {
+  let re = built(pat);
+  var out = String();
+  var it = re.matches(text);
+  var first = true;
+  var go = true;
+  while go {
+    match it.next() {
+      case let Some(m) {
+        if !first { out.append(" "); }
+        first = false;
+        out <- m.start, "..", m.end;
+      }
+      case is None { go = false; }
+    }
+  }
+  if first { out.append("-"); }
+  out
+}
+
+fn padded(pat: &str) String {
+  var p = String.from("(?:");
+  p.append(pat);
+  p.append(")|(?:\\z[a-z]{1000}){132}");
+  p
+}
+
+fn count(pat: &str, text: &str) usize {
+  let re = built(pat);
+  var it = re.matches(text);
+  var n = 0usize;
+  var go = true;
+  while go {
+    match it.next() {
+      case let Some(m) { n = n + 1; }
+      case is None { go = false; }
+    }
+  }
+  n
+}
+
+// The answer as written and with the Pike VM alone: equal, and 'want' matches
+fn both(pat: &str, text: &str, want: usize) {
+  let a = finds(pat, text);
+  let p = padded(pat);
+  let b = finds(p.view(), text);
+  expectStr(a.view(), b.view(), "DFA and Pike VM agree");
+  expectUInt(u64.from(count(pat, text)), u64.from(want), pat);
+}
+
+fn repeated(piece: &str, n: usize) String {
+  var s = String();
+  var i = 0usize;
+  while i < n { s.append(piece); i = i + 1; }
+  s
+}
+
+fn main() i32 {
+  // \d: Nd only
+  expectStr(finds("\\d+", "a12 ٣٤٥ x१२").view(), "1..3 4..10 12..18", "\\d: ASCII, Arabic-Indic, Devanagari");
+  expectStr(finds("(?-u)\\d+", "a12 ٣٤٥ x१२").view(), "1..3", "(?-u)\\d is ASCII");
+  expectStr(finds("\\d", "²½Ⅷ").view(), "-", "\\d is not No or Nl");
+  expectStr(finds("\\D+", "a١b").view(), "0..1 3..4", "\\D");
+  // \s: White_Space
+  expectStr(finds("\\s+", "a b\t\nc").view(), "1..2 3..5", "\\s ASCII");
+  expectStr(finds("\\s+", "a\u00a0b\u3000c").view(), "1..3 4..7", "\\s NBSP and ideographic space");
+  expectStr(finds("\\s", "a\u200bb").view(), "-", "\\s is not U+200B");
+  expectStr(finds("\\S+", "日本\u3000語").view(), "0..6 9..12", "\\S CJK");
+  // \w: letters of every script, marks, Nd, Pc, Join_Control
+  expectStr(finds("\\w+", "foo_bar-9 baz").view(), "0..7 8..9 10..13", "\\w ASCII");
+  expectStr(finds("\\w+", "héllo wörld").view(), "0..6 7..13", "\\w Latin");
+  expectStr(finds("\\w+", "αβγ δέλτα").view(), "0..6 7..17", "\\w Greek");
+  expectStr(finds("\\w+", "日本語 テスト").view(), "0..9 10..19", "\\w CJK");
+  expectStr(finds("\\w+", "x१२३y").view(), "0..11", "\\w Devanagari digits");
+  expectStr(finds("\\w+", "a\u200db").view(), "0..5", "\\w includes Join_Control");
+  expectStr(finds("\\w+", "e\u0301-").view(), "0..3", "\\w includes marks");
+  expectStr(finds("\\w+", "‿x").view(), "0..4", "\\w includes Pc (U+203F)");
+  expectStr(finds("(?-u)\\w+", "héllo").view(), "0..1 3..6", "(?-u)\\w is ASCII");
+  expectStr(finds("\\W+", "héllo, wörld!").view(), "6..8 14..15", "\\W");
+  expectStr(finds("[\\w&&\\D]+", "ab1é٢ü").view(), "0..2 3..5 7..9", "[\\w&&\\D]");
+  expectStr(finds("[^\\w]", "é, ü!").view(), "2..3 3..4 6..7", "[^\\w]");
+  expectStr(finds("(?i)\\w+", "Héllo WÖRLD").view(), "0..6 7..13", "(?i)\\w");
+  // \b and \B
+  expectStr(finds("\\b", "e\u0301x").view(), "0..0 4..4", "\\b: no boundary before a combining mark");
+  expectStr(finds("(?-u:\\b)", "e\u0301x").view(), "0..0 1..1 3..3 4..4", "(?-u:\\b) sees the mark's bytes");
+  expectStr(finds("\\B", "e\u0301").view(), "1..1", "\\B between a letter and its mark");
+  expectStr(finds("\\bfoo\\b", "日foo日 foo").view(), "10..13", "\\b next to CJK letters");
+  expectStr(finds("\\b\\w+\\b", "héllo wörld").view(), "0..6 7..13", "\\b\\w+\\b");
+  expectStr(finds("\\b", "").view(), "-", "\\b on empty text");
+  expectStr(finds("\\B", "").view(), "0..0", "\\B on empty text");
+  expectStr(finds("\\w\\b", "cafe\u0301 x").view(), "4..6 7..8", "\\w\\b after a letter and its mark");
+  // text from parseBytes: bytes that are not UTF-8 are no part of a word
+  match regex.Regex.parseBytes("\\w+") {
+    case let Ok(re) {
+      expectBool(re.isMatch("é"), true, "bytes mode accepts \\w");
+    }
+    case let Err(e) { expectBool(true, false, "parseBytes refused \\w"); }
+  }
+  // long texts: the DFA, the quit at a byte past ASCII, and the Pike VM
+  let ascii = repeated("foo_1 bar-baz ", 50);
+  both("\\b\\w+\\b", ascii.view(), 150);
+  both("\\w+", ascii.view(), 150);
+  both("\\d+", ascii.view(), 50);
+  both("\\B\\w", ascii.view(), 50 * (4 + 2 + 2));
+  let accents = repeated("naïve café 日本語 ", 60);
+  both("\\b\\w+\\b", accents.view(), 180);
+  both("\\w+", accents.view(), 180);
+  both("\\W+", accents.view(), 180);
+  var late = repeated("ab cd ", 100);
+  late.append("é fg");
+  both("\\b\\w+\\b", late.view(), 202);
+  var early = String.from("é ");
+  early.append(repeated("ab ", 300).view());
+  both("\\b\\w+\\b", early.view(), 301);
+  both("\\w+ing\\b", repeated("singing wörking ", 40).view(), 80);
+  done()
+}

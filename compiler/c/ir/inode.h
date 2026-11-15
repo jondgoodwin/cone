@@ -488,6 +488,9 @@ enum NodeTags {
 // the use is typed as the variant, a prefix of the variable's own bytes, which
 // generation reads where it loads the variable. 0x0800 is free on a name use.
 #define FlagNarrowed  0x0800        // NameUse: typed as one variant of the enum its variable is declared as
+// The member of a splice 'val.#f' of a '#each #f in #fields(T)' (fieldEachSplice): the field the loop described, which
+// '@reflect' on the type opens to this reflecting code. Plain 'val.name' never carries it. 0x0040 is free on a name use.
+#define FlagSplice    0x0040        // NameUse: the member of a '#f' splice
 // The hidden variable an arm of a match on a place binds from: the matched value
 // copied or moved into it as the arm begins (parseBoundMatch). Where the arm binds a
 // payload that is plain data, it holds the variant alone (castBindProject), so the

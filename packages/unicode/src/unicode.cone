@@ -15,6 +15,10 @@
 //   isAlphabetic   the Alphabetic property (letters, letter numbers, some marks)
 //   isNumeric      general category Nd, Nl or No
 //   isWhitespace   the White_Space property (the 25 code points; not U+200B)
+//   isWordChar / isDecimalDigit   the sets of a regex's Unicode '\w' (Alphabetic, marks, Nd,
+//                  Pc, Join_Control) and '\d' (Nd); '\s' is isWhitespace. classRanges(CharClass.Word,
+//                  Digit or Space) gives a class's code points as sorted ranges, for building
+//                  a regex class. The table is 1686 runs, 8.4 KB.
 //   isUpper        the Uppercase property;  isLower  the Lowercase property
 //   toUpperSimple / toLowerSimple   UnicodeData's simple one-to-one mapping; a
 //                  char with none is given back. U+00DF stays U+00DF in
@@ -78,6 +82,62 @@ pub fn isUpper(c: char) bool { (flags(c) & 2u8) != 0u8 }
 pub fn isLower(c: char) bool { (flags(c) & 4u8) != 0u8 }
 pub fn isWhitespace(c: char) bool { (flags(c) & 8u8) != 0u8 }
 pub fn isNumeric(c: char) bool { (flags(c) & 16u8) != 0u8 }
+
+// The regex classes (classStarts / classVals): bit 1 word, 2 decimal digit, 4 white space
+fn classBits(c: char) u8 {
+  classVals[runOf(&classStarts, code(c))]
+}
+
+// Whether c is a word character as UTS #18 Annex C and Rust's regex '\w' have it:
+// Alphabetic, a mark (general category M), Nd, Pc (connector punctuation such as '_')
+// or Join_Control (U+200C and U+200D)
+pub fn isWordChar(c: char) bool { (classBits(c) & 1u8) != 0u8 }
+
+// Whether c is a decimal digit: general category Nd, as Rust's regex '\d' (not Nl or No,
+// which isNumeric adds)
+pub fn isDecimalDigit(c: char) bool { (classBits(c) & 2u8) != 0u8 }
+
+// The classes whose code points classRanges gives
+pub enum CharClass {
+  // isWordChar: a regex's Unicode '\w'
+  Word;
+  // isDecimalDigit: '\d'
+  Digit;
+  // isWhitespace: '\s'
+  Space;
+}
+
+// An inclusive range of code points
+pub struct CodeRange {
+  pub lo: u32;
+  pub hi: u32;
+}
+
+fn runCount(starts: &Array[u32]) usize { starts.len() }
+
+// The code points of a class as sorted, inclusive ranges, adjacent ranges merged (the
+// surrogates are inside whatever range spans them). A new List for each call.
+pub fn classRanges(cls: CharClass) List[CodeRange] {
+  let bit = match cls {
+    case is Word { 1u8 }
+    case is Digit { 2u8 }
+    case is Space { 4u8 }
+  };
+  var out = List[CodeRange]();
+  let n = runCount(&classStarts);
+  var i = 0usize;
+  while i < n {
+    if (classVals[i] & bit) != 0u8 {
+      let lo = classStarts[i];
+      let hi = if i + 1 < n { classStarts[i + 1] - 1u32 } else { 0x10FFFFu32 };
+      let k = out.len();
+      if k > 0 && out[k - 1].hi + 1u32 == lo { out.set(k - 1, CodeRange(out[k - 1].lo, hi)); }
+      else { out.push(CodeRange(lo, hi)); }
+    }
+    i = i + 1;
+  }
+  out
+}
 
 fn shifted(x: u32, delta: i32) char {
   char.from(u32.from(i64.from(x) + i64.from(delta)))
