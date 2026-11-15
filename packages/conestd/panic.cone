@@ -50,6 +50,46 @@ fn thisThread() u64 {
   #if #os == .windows {u64.from(GetCurrentThreadId())} #else {pthread_self()}
 }
 
+// backtrace.c: whether CONE_BACKTRACE asks for frames; the calling thread's
+// frames (up to max, after skipping skip beyond the capture's own) into a
+// caller's array; the module holding an address (its base name into name,
+// the length returned) and the address's offset in it
+extern fn cone_backtraceOn() i32;
+extern fn cone_captureFrames(frames: *u64, max: u32, skip: u32) u32;
+extern fn cone_frameModule(addr: u64, name: *u8, cap: u32, offset: *u64) u32;
+
+// The frames of this thread's stack after the panic line: 'stack backtrace:'
+// then one line a frame, '  N: 0xADDRESS module+0xOFFSET', at most 64. The
+// frames sit in cone_panic's array and the lines go through its text, the way
+// the panic line does: nothing is allocated and no lock is taken
+fn printBacktrace(out: &mut Text, frames: &Array[u64, 64], count: u32) {
+  var name = Array[u8, 256]() <- fill 0u8;
+  out.text("stack backtrace:\n");
+  var i = 0u32;
+  while i < count {
+    let addr = frames[usize.from(i)];
+    var offset = 0u64;
+    let len = cone_frameModule(addr, &mut name[0usize] as *u8, 256u32, &mut offset as *u64);
+    out.text("  ");
+    out.decimal(u64.from(i));
+    out.text(": ");
+    out.hex(addr, 16u64);
+    out.text(" ");
+    if len > 0u32 {
+      out.text(&name[0usize..<usize.from(len)] as &str);
+      out.text("+");
+      out.hex(offset, 1u64);
+    }
+    else {
+      out.text("?");
+    }
+    out.text("\n");
+    i = i + 1u32;
+  }
+  out.write();
+  libc.fflush(libc.stderr());
+}
+
 pub fn cone_setPanicHook(hook: Hook) {
   panicHook.store(hook as usize);
 }
@@ -91,6 +131,12 @@ pub fn cone_panic(msg: &str, fileBytes: &Array[u8], line: u32) Never {
   out.text("\n");
   out.write();
   libc.fflush(libc.stderr());
+  if cone_backtraceOn() != 0i32 {
+    // The capture's skip of 1 leaves out this function's own frame
+    var frames = Array[u64, 64]() <- fill 0u64;
+    let count = cone_captureFrames(&mut frames[0usize] as *u64, 64u32, 1u32);
+    printBacktrace(&mut out, &frames, count);
+  }
 
   let hook = panicHook.load();
   if hook != 0usize {
