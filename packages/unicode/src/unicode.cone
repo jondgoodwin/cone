@@ -16,9 +16,9 @@
 //   isNumeric      general category Nd, Nl or No
 //   isWhitespace   the White_Space property (the 25 code points; not U+200B)
 //   isWordChar / isDecimalDigit   the sets of a regex's Unicode '\w' (Alphabetic, marks, Nd,
-//                  Pc, Join_Control) and '\d' (Nd); '\s' is isWhitespace. classRunCount /
-//                  classRunStart / classRunBits give the table's runs for building classes.
-//                  The table is 1686 runs, 8.4 KB.
+//                  Pc, Join_Control) and '\d' (Nd); '\s' is isWhitespace. classRanges(CharClass.Word,
+//                  Digit or Space) gives a class's code points as sorted ranges, for building
+//                  a regex class. The table is 1686 runs, 8.4 KB.
 //   isUpper        the Uppercase property;  isLower  the Lowercase property
 //   toUpperSimple / toLowerSimple   UnicodeData's simple one-to-one mapping; a
 //                  char with none is given back. U+00DF stays U+00DF in
@@ -97,13 +97,47 @@ pub fn isWordChar(c: char) bool { (classBits(c) & 1u8) != 0u8 }
 // which isNumeric adds)
 pub fn isDecimalDigit(c: char) bool { (classBits(c) & 2u8) != 0u8 }
 
-// The runs of the regex-class table, for a program that builds a range set from it: how
-// many there are, the first code point of run i, and its bits (1 word, 2 Nd, 4 White_Space,
-// as isWordChar, isDecimalDigit and isWhitespace answer). Run i ends before run i + 1.
-pub fn classRunCount() usize { runCount(&classStarts) }
+// The classes whose code points classRanges gives
+pub enum CharClass {
+  // isWordChar: a regex's Unicode '\w'
+  Word;
+  // isDecimalDigit: '\d'
+  Digit;
+  // isWhitespace: '\s'
+  Space;
+}
+
+// An inclusive range of code points
+pub struct CodeRange {
+  pub lo: u32;
+  pub hi: u32;
+}
+
 fn runCount(starts: &Array[u32]) usize { starts.len() }
-pub fn classRunStart(i: usize) u32 { classStarts[i] }
-pub fn classRunBits(i: usize) u8 { classVals[i] }
+
+// The code points of a class as sorted, inclusive ranges, adjacent ranges merged (the
+// surrogates are inside whatever range spans them). A new List for each call.
+pub fn classRanges(cls: CharClass) List[CodeRange] {
+  let bit = match cls {
+    case is Word { 1u8 }
+    case is Digit { 2u8 }
+    case is Space { 4u8 }
+  };
+  var out = List[CodeRange]();
+  let n = runCount(&classStarts);
+  var i = 0usize;
+  while i < n {
+    if (classVals[i] & bit) != 0u8 {
+      let lo = classStarts[i];
+      let hi = if i + 1 < n { classStarts[i + 1] - 1u32 } else { 0x10FFFFu32 };
+      let k = out.len();
+      if k > 0 && out[k - 1].hi + 1u32 == lo { out.set(k - 1, CodeRange(out[k - 1].lo, hi)); }
+      else { out.push(CodeRange(lo, hi)); }
+    }
+    i = i + 1;
+  }
+  out
+}
 
 fn shifted(x: u32, delta: i32) char {
   char.from(u32.from(i64.from(x) + i64.from(delta)))

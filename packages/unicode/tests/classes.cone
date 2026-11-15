@@ -67,26 +67,34 @@ fn main() i32 {
   expect(unicode.isDecimalDigit('7') && unicode.isDecimalDigit('٣') && unicode.isDecimalDigit('१') && unicode.isDecimalDigit('２'), "digits");
   expect(!unicode.isDecimalDigit('a') && !unicode.isDecimalDigit('²') && !unicode.isDecimalDigit('Ⅷ') && !unicode.isDecimalDigit('½'), "not digits (No, Nl)");
   // the runs give the same answer as the lookup, and the last run ends at U+10FFFF
+  var sorted = true;
   var runWord = 0u64; var runDigit = 0u64; var runWhite = 0u64;
-  var r = 0usize;
-  while r < unicode.classRunCount() {
-    let lo = unicode.classRunStart(r);
-    let hi = if r + 1 < unicode.classRunCount() { unicode.classRunStart(r + 1) } else { 0x110000u32 };
-    let bits = unicode.classRunBits(r);
-    var y = lo;
-    while y < hi {
-      if y < 0xD800u32 || y > 0xDFFFu32 {
-        if (bits & 1u8) != 0u8 { runWord = runWord + 1u64; }
-        if (bits & 2u8) != 0u8 { runDigit = runDigit + 1u64; }
-        if (bits & 4u8) != 0u8 { runWhite = runWhite + 1u64; }
+  var which = 0u32;
+  while which < 3u32 {
+    let rs = if which == 0u32 { unicode.classRanges(unicode.CharClass.Word) }
+      else if which == 1u32 { unicode.classRanges(unicode.CharClass.Digit) }
+      else { unicode.classRanges(unicode.CharClass.Space) };
+    var n = 0u64;
+    var r = 0usize;
+    while r < rs.len() {
+      let lo = rs[r].lo;
+      let hi = rs[r].hi;
+      // sorted, inclusive, and not touching the range before
+      if lo > hi || (r > 0 && rs[r - 1].hi + 1u32 >= lo) { sorted = false; }
+      var y = lo;
+      while y <= hi {
+        if y < 0xD800u32 || y > 0xDFFFu32 { n = n + 1u64; }
+        y = y + 1u32;
       }
-      y = y + 1u32;
+      r = r + 1;
     }
-    r = r + 1;
+    if which == 0u32 { runWord = n; } else if which == 1u32 { runDigit = n; } else { runWhite = n; }
+    which = which + 1u32;
   }
-  expectUInt(runWord, 162226u64, "word runs total");
-  expectUInt(runDigit, 770u64, "digit runs total");
-  expectUInt(runWhite, 25u64, "white space runs total");
+  expect(sorted, "classRanges are sorted and merged");
+  expectUInt(runWord, 162226u64, "word ranges total");
+  expectUInt(runDigit, 770u64, "digit ranges total");
+  expectUInt(runWhite, 25u64, "white space ranges total");
 
   // Every code point but the surrogates, against the generator's totals
   var wordN = 0u64; var digitN = 0u64;

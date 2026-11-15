@@ -195,20 +195,13 @@ fn hexValue(c: u8) u32 {
   else { u32.from(c) - 55 }
 }
 
-// The code points whose class bits (unicode.classRunBits: 1 word, 2 Nd, 4 White_Space) include 'bit',
-// as sorted ranges
-fn unicodeSet(bit: u8) List[Range] {
+// The code points of a Unicode class as sorted ranges (unicode.classRanges)
+fn unicodeSet(cls: unicode.CharClass) List[Range] {
   var r = List[Range]();
-  let n = unicode.classRunCount();
+  let src = unicode.classRanges(cls);
   var i = 0usize;
-  while i < n {
-    if (unicode.classRunBits(i) & bit) != 0u8 {
-      let lo = unicode.classRunStart(i);
-      let hi = if i + 1 < n { unicode.classRunStart(i + 1) - 1 } else { maxCodePoint };
-      let k = r.len();
-      if k > 0 && r[k - 1].hi + 1 == lo { r.set(k - 1, Range(r[k - 1].lo, hi)); }
-      else { r.push(Range(lo, hi)); }
-    }
+  while i < src.len() {
+    r.push(Range(src[i].lo, src[i].hi));
     i = i + 1;
   }
   r
@@ -510,8 +503,9 @@ struct Parser {
     let kind = perlClass(c);
     if flags.u {
       // \d is Nd, \s is White_Space, \w is Alphabetic, M, Nd, Pc and Join_Control
-      let bit = if kind == 1 || kind == 4 { 2u8 } else if kind == 2 || kind == 5 { 4u8 } else { 1u8 };
-      r = unicodeSet(bit);
+      if kind == 1 || kind == 4 { r = unicodeSet(unicode.CharClass.Digit); }
+      else if kind == 2 || kind == 5 { r = unicodeSet(unicode.CharClass.Space); }
+      else { r = unicodeSet(unicode.CharClass.Word); }
       if kind >= 4 { return negatedRanges(&r, maxCodePoint); }
       return r;
     }
