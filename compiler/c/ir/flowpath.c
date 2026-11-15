@@ -2645,7 +2645,9 @@ static int pwFieldHeldByValue(INode *fld) {
 // and for a variant of an enum, whose sibling variants share its storage. A value is the field of one
 // struct only, so a receiver that is a field of a struct other than the viewed value's owner is another
 // value than the one the view is into (reshapeCall, 'recvowner')
-static INode *pwReceiverFieldOwner(INode *recv) {
+// 'owning' counts a field holding an owning reference ('Uni', 'Rc') as held by the struct too: what it
+// points at is the struct's to free (a store over it)
+static INode *pwReceiverFieldOwner(INode *recv, int owning) {
     for (;;) {
         if (recv->tag == CastTag && !(recv->flags & FlagConvert))
             recv = ((CastNode *)recv)->exp;
@@ -2654,8 +2656,14 @@ static INode *pwReceiverFieldOwner(INode *recv) {
         else
             break;
     }
-    if (recv->tag != FldAccessTag || !pwFieldHeldByValue(recv))
+    if (recv->tag != FldAccessTag)
         return NULL;
+    if (!pwFieldHeldByValue(recv)) {
+        INode *ft = iexpGetTypeDcl(recv);
+        if (!owning || ft == NULL || (ft->tag != RefTag && ft->tag != VirtRefTag && ft->tag != ArrayRefTag)
+                || !((RefNode *)ft)->region || !regionIsOwning(((RefNode *)ft)->region))
+            return NULL;
+    }
     INode *parent = pwFieldParent(recv);
     INode *base = parent ? ((StructNode *)parent)->basetrait : NULL;
     if (base && reshapeIsSum(itypeGetTypeDcl(base)))
@@ -2835,7 +2843,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
     INode *ros[4];
     // The struct the receiver is a field of (a String held by value), the same for every loan asked
     // of this call; a loan is asked of it only where its own value is held by value in its owner
-    INode *recvfield = meth && nargs > 0 ? pwReceiverFieldOwner(nodesGet(call->args, 0)) : NULL;
+    INode *recvfield = meth && nargs > 0 ? pwReceiverFieldOwner(nodesGet(call->args, 0), 0) : NULL;
     ReshapeVerdict verdicts[4];
     uint8_t answers[4];
     uint32_t ncont = 0;
@@ -2961,14 +2969,14 @@ static PathSet *pwNarrowShared(CastNode *cast) {
 }
 
 // A store over a field of the container itself ('r.buf = String()' while a borrow into 'r's own
-// storage is held), where the field holds something that owns storage (a collection, a struct
-// holding one): the old value is freed, the very storage the borrow may be into. The container
+// storage is held), where the field holds something that owns storage (a collection, or a struct,
+// array, tuple or owning reference holding one: shapeStoredShaping): the old value is freed, the very storage the borrow may be into. The container
 // may be the trait a virtual reference names, then the field is of a type declaring it
 static int pwStoreOverField(INode *lval, INode *cont) {
     INode *stored = iexpGetTypeDcl(lval);
-    if (stored == NULL || stored->tag != StructTag || !shapeChanging((StructNode *)stored) || cont->tag != StructTag)
+    if (stored == NULL || !shapeStoredShaping(stored) || cont->tag != StructTag)
         return 0;
-    INode *owner = pwReceiverFieldOwner(lval);
+    INode *owner = pwReceiverFieldOwner(lval, 1);
     if (owner == NULL || owner->tag != StructTag)
         return 0;
     return owner == cont || itypeIsSame(owner, cont)
