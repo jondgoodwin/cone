@@ -1,0 +1,169 @@
+// unicode.graphemes, graphemeCount, nextGraphemeBoundary (Unicode 18.0.0): hand-checked
+// cases first (every non-ASCII char is a \U escape, so no editor can renormalize the
+// source): CR LF, combining marks, Hangul syllables and jamo, flags, emoji ZWJ sequences
+// and modifiers, Devanagari conjuncts, prepended marks. Then every line of
+// GraphemeBreakTest.txt (tests/data/graphemebreak.txt, cut from the 18.0.0 file by
+// tests/data/cut_graphemebreak.py: "/" is a break, "x" none, so the test runs offline).
+
+mod graphemes;
+
+import testing use *;
+import collections use *;
+import stdio use *;
+import fs;
+import path use Path;
+import unicode;
+
+// The clusters of s joined with '|'
+fn cut(s: &str) String {
+  var out = String();
+  var first = true;
+  each g in unicode.graphemes(s) {
+    if !first { out.appendByte(124u8); }
+    first = false;
+    out.appendBytes(g);
+  }
+  out
+}
+
+fn check(s: &str, want: &str, n: usize, label: &Array[u8]) bool {
+  let got = cut(s);
+  let ok = expectStr(got.view(), want, label);
+  expectUInt(u64.from(unicode.graphemeCount(s)), u64.from(n), label)
+}
+
+fn hexVal(b: u8) u32 {
+  if b >= 48u8 && b <= 57u8 { u32.from(b) - 48u32 }
+  else if b >= 65u8 && b <= 70u8 { u32.from(b) - 55u32 }
+  else { 0u32 }
+}
+
+fn encode(out: &mut String, x: u32) {
+  if x < 0x80u32 { out.appendByte(u8.from(x)); }
+  else if x < 0x800u32 {
+    out.appendByte(0xC0u8 | u8.from(x >> 6u32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+  else if x < 0x10000u32 {
+    out.appendByte(0xE0u8 | u8.from(x >> 12u32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+  else {
+    out.appendByte(0xF0u8 | u8.from(x >> 18u32));
+    out.appendByte(0x80u8 | u8.from((x >> 12u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+}
+
+fn readData() String {
+  let file = Path.fromString(String.from("../../../../../unicode/tests/data/graphemebreak.txt"));
+  var out = String();
+  match fs.readFile(&file) {
+    case var Ok(r) { out <-> r; }
+    case let Err(e) {}
+  }
+  out
+}
+
+fn main() i32 {
+  check("", "", 0usize, "empty");
+  check("abc", "a|b|c", 3usize, "ascii");
+  check("a\r\nb", "a|\r\n|b", 3usize, "CR LF is one cluster");
+  check("\n\r", "\n|\r", 2usize, "LF CR are two");
+  check("e\U00000301x", "e\U00000301|x", 2usize, "e and a combining acute");
+  check("\r\U00000301", "\r|\U00000301", 2usize, "a mark after a control is alone");
+  check("\U00000E01\U00000E33", "\U00000E01\U00000E33", 1usize, "thai sara am (spacing mark)");
+  check("\U00000600a", "\U00000600a", 1usize, "prepend joins the next");
+  // Hangul: syllables, and jamo
+  check("\U0000D55C\U0000AE00", "\U0000D55C|\U0000AE00", 2usize, "two syllables");
+  check("\U00001112\U00001161\U000011AB", "\U00001112\U00001161\U000011AB", 1usize, "L V T jamo make one");
+  check("\U00001100\U00001100\U00001161\U000011A8\U000011A8", "\U00001100\U00001100\U00001161\U000011A8\U000011A8", 1usize, "L L V T T");
+  check("\U0000AC00\U000011A8", "\U0000AC00\U000011A8", 1usize, "LV T");
+  check("\U0000AC01\U00001161", "\U0000AC01|\U00001161", 2usize, "LVT does not take a V");
+  check("\U000011A8\U00001100", "\U000011A8|\U00001100", 2usize, "T then L breaks");
+  // Flags: regional indicator pairs
+  check("\U0001F1FA\U0001F1F8", "\U0001F1FA\U0001F1F8", 1usize, "one flag");
+  check("\U0001F1FA\U0001F1F8\U0001F1E9\U0001F1EA", "\U0001F1FA\U0001F1F8|\U0001F1E9\U0001F1EA", 2usize, "two flags");
+  check("\U0001F1FA\U0001F1F8\U0001F1E9", "\U0001F1FA\U0001F1F8|\U0001F1E9", 2usize, "two flags and a lone indicator");
+  check("a\U0001F1FA\U0001F1F8\U0001F1E9\U0001F1EAb", "a|\U0001F1FA\U0001F1F8|\U0001F1E9\U0001F1EA|b", 4usize, "flags between letters");
+  // Emoji
+  check("\U0001F468\U0000200D\U0001F469\U0000200D\U0001F467\U0000200D\U0001F466", "\U0001F468\U0000200D\U0001F469\U0000200D\U0001F467\U0000200D\U0001F466", 1usize, "family: man ZWJ woman ZWJ girl ZWJ boy");
+  check("\U0001F44D\U0001F3FD", "\U0001F44D\U0001F3FD", 1usize, "thumbs up with skin tone");
+  check("\U0001F3F3\U0000FE0F\U0000200D\U0001F308", "\U0001F3F3\U0000FE0F\U0000200D\U0001F308", 1usize, "rainbow flag: variation selector then ZWJ");
+  check("\U0001F468\U0000200Da", "\U0001F468\U0000200D|a", 2usize, "ZWJ before a letter ends the emoji run");
+  check("a\U0000200D\U0001F468", "a\U0000200D|\U0001F468", 2usize, "ZWJ after a non-pictographic does not join");
+  check("\U0001F468\U0001F469", "\U0001F468|\U0001F469", 2usize, "two emoji");
+  // Indic conjuncts (GB9c)
+  check("\U00000915\U0000094D\U00000937", "\U00000915\U0000094D\U00000937", 1usize, "ka virama ssa is one conjunct");
+  check("\U00000915\U0000094D\U0000200D\U00000937", "\U00000915\U0000094D\U0000200D\U00000937", 1usize, "ka virama ZWJ ssa");
+  check("\U00000915\U0000094D", "\U00000915\U0000094D", 1usize, "ka virama alone");
+  check("\U00000915\U00000937", "\U00000915|\U00000937", 2usize, "two consonants break");
+  check("a\U0000094D\U00000937", "a\U0000094D\U00000937", 1usize, "18.0: a virama (Linker) before a consonant joins, even after a letter");
+  check("\U0000094D\U00000308\U00000937", "\U0000094D\U00000308\U00000937", 1usize, "linker, an Extend, consonant");
+  check("\U00000937\U00000308\U00000915", "\U00000937\U00000308|\U00000915", 2usize, "no linker: break before the consonant");
+
+  // nextGraphemeBoundary: from any cluster start, its end; the end of the text stays
+  let s = "a\r\ne\U00000301\U0001F1FA\U0001F1F8";
+  expectUInt(u64.from(unicode.nextGraphemeBoundary(s, 0usize)), 1u64, "a ends at 1");
+  expectUInt(u64.from(unicode.nextGraphemeBoundary(s, 1usize)), 3u64, "CR LF ends at 3");
+  expectUInt(u64.from(unicode.nextGraphemeBoundary(s, 3usize)), 6u64, "e and acute end at 6");
+  expectUInt(u64.from(unicode.nextGraphemeBoundary(s, 6usize)), 14u64, "the flag ends at 14");
+  expectUInt(u64.from(unicode.nextGraphemeBoundary(s, 14usize)), 14u64, "the end stays");
+  expectUInt(u64.from(unicode.nextGraphemeBoundary(s, 99usize)), 14u64, "past the end gives the end");
+  expectUInt(u64.from(unicode.nextGraphemeBoundary(s, 4usize)), 6u64, "from inside a cluster, on a char boundary: the rest");
+
+  // GraphemeBreakTest.txt: each line's code points and where the breaks are
+  let data = readData();
+  let d = data.view();
+  expectBool(d.len() > 10000usize, true, "the data file was read");
+  var lines = 0u64; var bad = 0u64; var badCount = 0u64;
+  var ls = 0usize;
+  var i = 0usize;
+  while i <= d.len() {
+    if i == d.len() || d[i] == 10u8 {
+      if i > ls {
+        var text = String();
+        var want = List[usize]();
+        var cur = 0u32;
+        var any = false;
+        var j = ls;
+        while j <= i {
+          if j == i || d[j] == 32u8 {
+            if any { encode(&mut text, cur); }
+            cur = 0u32; any = false;
+          }
+          else if d[j] == 47u8 { if text.len() > 0usize { want.push(text.len()); } }
+          else if d[j] == 120u8 || d[j] == 13u8 {}
+          else { cur = cur * 16u32 + hexVal(d[j]); any = true; }
+          j += 1usize;
+        }
+        let t = text.view();
+        let w = want.view();
+        lines += 1u64;
+        var pos = 0usize;
+        var k = 0usize;
+        var ok = true;
+        while pos < t.len() {
+          pos = unicode.nextGraphemeBoundary(t, pos);
+          if k >= w.len() || w[k] != pos { ok = false; }
+          k += 1usize;
+        }
+        if k != w.len() { ok = false; }
+        var n = 0usize;
+        var total = 0usize;
+        each g in unicode.graphemes(t) { n += 1usize; total += g.len(); }
+        if n != w.len() || total != t.len() { ok = false; }
+        if unicode.graphemeCount(t) != w.len() { badCount += 1u64; }
+        if !ok { bad += 1u64; }
+      }
+      ls = i + 1usize;
+    }
+    i += 1usize;
+  }
+  expectBool(lines > 800u64, true, "test lines read");
+  expectUInt(bad, 0u64, "GraphemeBreakTest lines with a wrong break");
+  expectUInt(badCount, 0u64, "GraphemeBreakTest lines with a wrong count");
+  done()
+}

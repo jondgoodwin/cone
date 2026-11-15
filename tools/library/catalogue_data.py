@@ -214,7 +214,7 @@ DOMAINS = [
  ]),
  ("text", "Text, formats and data", "Text, character data, encodings and file formats.", [
   ("Text", [
-   ("unicode", "Character properties, case mapping, full case folding and NFC/NFD normalization from the Unicode Character Database."),
+   ("unicode", "Character properties, case mapping, full case folding, NFC/NFD normalization and grapheme clusters from the Unicode Character Database."),
    ("format", "Options for one number in a text, as small typed values that are themselves writable."),
    ("regex", "Regular expressions compiled to a byte-level automaton."),
    ("textdiff", "The differences between two texts, line by line, and the unified diff."),
