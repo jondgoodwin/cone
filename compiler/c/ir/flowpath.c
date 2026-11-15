@@ -2879,7 +2879,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         uint32_t c = 0;
         // The answer is the same for the loans of one type, unless the loan's own locals
         // (or an argument's place) change what it is
-        INode *ro = owner && loanShapeOwnerByValue(loan) ? recvfield : NULL;
+        INode *ro = owner ? (loanShapeOwnerByValue(loan) ? recvfield : NULL) : recvfield;
         while (c < ncont && (conts[c] != cont || owners[c] != owner || ros[c] != ro || rus[c] != ru || gvs[c] != gv
                 || sks[c] != sk || local || nmine || anyapart))
             ++c;
@@ -2915,7 +2915,8 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         // (a borrow narrowed into an enum's variant freezes nothing, so a change of
         // variant through the same name is for this check to report)
         if ((verdicts[c].why == ReshapeReceiver || verdicts[c].why == ReshapeReceiverUnseen) && recvpl
-                && ((loanShapeFrozen(loan) && loanShapeSamePlace(loan, recvpl)) || loanShapeDisjoint(loan, recvpl)))
+                && (((loanShapeFrozen(loan) || (loanUniqAlias(loan) && !loanIsAliased(loan)))
+                        && loanShapeSamePlace(loan, recvpl)) || loanShapeDisjoint(loan, recvpl)))
             continue;
         Name *callee = verdicts[c].callee ? verdicts[c].callee->namesym : NULL;
         // The borrow handed to this very call, beside whatever could reshape its collection
@@ -2959,6 +2960,22 @@ static PathSet *pwNarrowShared(CastNode *cast) {
     return holds;
 }
 
+// A store over a field of the container itself ('r.buf = String()' while a borrow into 'r's own
+// storage is held), where the field holds something that owns storage (a collection, a struct
+// holding one): the old value is freed, the very storage the borrow may be into. The container
+// may be the trait a virtual reference names, then the field is of a type declaring it
+static int pwStoreOverField(INode *lval, INode *cont) {
+    INode *stored = iexpGetTypeDcl(lval);
+    if (stored == NULL || stored->tag != StructTag || !shapeChanging((StructNode *)stored) || cont->tag != StructTag)
+        return 0;
+    INode *owner = pwReceiverFieldOwner(lval);
+    if (owner == NULL || owner->tag != StructTag)
+        return 0;
+    return owner == cont || itypeIsSame(owner, cont)
+        || ((cont->flags & TraitType) && !(owner->flags & TraitType) && !reshapeIsSum(cont)
+            && structDeclaresTraitTree((StructNode *)owner, (StructNode *)cont, 0));
+}
+
 // A store over 'lval', or one side of a swap, while borrows into a shape-changing value
 // are held through paths others share (reshapeStoreHits): the whole of a collection or
 // an enum stored over, an owning element of a collection replaced ('m[0] = s' frees the
@@ -2990,7 +3007,7 @@ static void pwShapeStore(INode *lval, Place *pl) {
         // A store that reaches only other locals cannot change what the loan points into
         if (local && pl && !loanShapeReaches(loan, &reach))
             continue;
-        if (!reshapeStoreHits(lval, loanShapeContainer(loan)))
+        if (!reshapeStoreHits(lval, loanShapeContainer(loan)) && !pwStoreOverField(lval, loanShapeContainer(loan)))
             continue;
         if (pl && (loanShapeDisjoint(loan, pl) || (loanShapeFrozen(loan) && loanShapeSamePlace(loan, pl))))
             continue;

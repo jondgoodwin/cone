@@ -129,8 +129,10 @@ pub struct World {
     let b = self.bd(usize.from(id.index));
     b.layer = layer;
     b.mask = mask;
+    // Bug 93: a method's result lends the whole receiver, so a write to another field (bp) is refused while 'b' is held
+    let isStatic = b.motion == MotionStatic;
     bp.remove(id.index);
-    bp.add(id.index, self.bodyBox(usize.from(id.index), 0.), layer, mask, b.motion == MotionStatic);
+    bp.add(id.index, self.bodyBox(usize.from(id.index), 0.), layer, mask, isStatic);
   }
   pub fn setSensor(self: &mut, id: BodyId, sensor: bool) {
     match bodies.borrowMut(id) { case var Some(b) { b.sensor = sensor; } case is None {} }
@@ -1201,7 +1203,11 @@ pub struct World {
           let sh = &shapes[usize.from(b.shape)];
           let startXf = Rigid(b.startPos, b.startRot);
           let swept = sh.bounds(startXf).union(sh.bounds(now)).expand(0.01);
-          bp.queryBox(swept, b.mask, &mut cands);
+          // Bug 93: a method's result lends the whole receiver, so a write to another field (bp) is refused
+          // while 'b' is held: the mask is copied out and 'b' taken again after the query
+          let sweepMask = b.mask;
+          bp.queryBox(swept, sweepMask, &mut cands);
+          let b = self.bd(i);
           var bestT = 2.f;
           var k = 0usize;
           while k < cands.len() {
