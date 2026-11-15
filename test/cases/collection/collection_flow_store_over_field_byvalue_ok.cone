@@ -1,0 +1,89 @@
+// Bug 93 (row 341), accepted: the same shapes as collection_flow_store_over_field_byvalue, with a
+// view held through a reborrow while a scalar field of 'r' is stored over (nothing a view points
+// into is freed), and with the view ended before the field holding the String is stored over.
+// Prints the view's first byte ('0', 48) then the scalar after the store (7), for each of six shapes.
+
+mod collection_flow_store_over_field_byvalue_ok;
+
+import stdio use *;
+import collections use *;
+
+struct Inner { pub s: String; pub k: i32; }
+
+fn mkS() String { var s = String(); s.append("0123456789012345678901234567890123456789"); s }
+fn mk() Inner { Inner(mkS(), 1) }
+
+struct RdStruct { pub inner: Inner; pub n: i32;
+  pub fn view(self: &mut) &str { self.inner.s.view() } }
+struct RdArray { pub inner: Array[Inner, 2]; pub n: i32;
+  pub fn view(self: &mut) &str { self.inner[0usize].s.view() } }
+struct RdArrayStr { pub inner: Array[String, 2]; pub n: i32;
+  pub fn view(self: &mut) &str { self.inner[0usize].view() } }
+struct RdTuple { pub inner: (String, i32); pub n: i32;
+  pub fn view(self: &mut) &str { self.inner.0.view() } }
+struct RdUni { pub inner: Uni[Inner]; pub n: i32;
+  pub fn view(self: &mut) &str { self.inner.s.view() } }
+struct RdRc { pub inner: Rc[mut, Inner]; pub n: i32;
+  pub fn view(self: &mut) &str { self.inner.s.view() } }
+
+// A scalar field stored over while the view is held
+fn scalarStruct(r: &mut RdStruct) u8 {
+  let y: &mut RdStruct = r;
+  let v = y.view();
+  r.n = 7;
+  v[0usize]
+}
+fn scalarArray(r: &mut RdArray) u8 {
+  let y: &mut RdArray = r;
+  let v = y.view();
+  r.n = 7;
+  v[0usize]
+}
+fn scalarArrayStr(r: &mut RdArrayStr) u8 {
+  let y: &mut RdArrayStr = r;
+  let v = y.view();
+  r.n = 7;
+  v[0usize]
+}
+fn scalarTuple(r: &mut RdTuple) u8 {
+  let y: &mut RdTuple = r;
+  let v = y.view();
+  r.n = 7;
+  v[0usize]
+}
+fn scalarUni(r: &mut RdUni) u8 {
+  let y: &mut RdUni = r;
+  let v = y.view();
+  r.n = 7;
+  v[0usize]
+}
+fn scalarRc(r: &mut RdRc) u8 {
+  let y: &mut RdRc = r;
+  let v = y.view();
+  r.n = 7;
+  v[0usize]
+}
+
+// The view ended before the field holding the String is stored over
+fn viewEnds(r: &mut RdUni) u8 {
+  let y: &mut RdUni = r;
+  let first = y.view()[0usize];
+  r.inner = Uni[Inner](mk());
+  first
+}
+
+fn main() {
+  var a = RdStruct(mk(), 0);
+  print <- scalarStruct(&mut a), " ", a.n, "\n";
+  var b = RdArray([mk(), mk()], 0);
+  print <- scalarArray(&mut b), " ", b.n, "\n";
+  var c = RdArrayStr([mkS(), mkS()], 0);
+  print <- scalarArrayStr(&mut c), " ", c.n, "\n";
+  var d = RdTuple((mkS(), 1), 0);
+  print <- scalarTuple(&mut d), " ", d.n, "\n";
+  var e = RdUni(Uni[Inner](mk()), 0);
+  print <- scalarUni(&mut e), " ", e.n, "\n";
+  var f = RdRc(Rc[mut, Inner](mk()), 0);
+  print <- scalarRc(&mut f), " ", f.n, "\n";
+  print <- viewEnds(&mut e), "\n";
+}
