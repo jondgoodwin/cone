@@ -346,8 +346,9 @@ keeping a condition whose clauses each have a subject that is a type parameter
 (the function's own, or its generic type's) and a name that is a trait that is
 not generic, or an instance of a generic trait written with its type arguments,
 `Stack[T]` (`genericNamedGenericTrait`: a call whose head names a generic trait,
-given as many arguments as the trait has parameters, `ErrorArgCount`; not in a
-condition on an `is` entry), or a type that is neither a generic type nor a trait
+given as many arguments as the trait has parameters, `ErrorArgCount`; in a condition
+on an `is` entry too, `is Reads[Box[T]] if T is Reads[T]`, made at each instance's
+arguments as in a `where` clause), or a type that is neither a generic type nor a trait
 (`genericNamedType`): `where T is bool` [Jon 27 Sep], or a type written out as an
 instance (`genericIsTypeInstance`: a reference type, a call whose head names a
 generic type, or a region applied to a type, `Uni[str]`, whose declaration is asked
@@ -1004,7 +1005,9 @@ element said nothing, and a field
 read through a variable of `errorType` is not refused again
 (`fnCallTypeCheck`). A
 clause naming an instance of a generic trait says why the argument does not fit
-it (`genericFitWhy`): the first method the trait requires that the type lacks, or
+it: the false condition of an `is` entry that names the trait (`genericCondIsWhy`,
+"Box is Reads only where T is Reads[T], and that is false for T = Plain"), else
+(`genericFitWhy`) the first method the trait requires that the type lacks, or
 has only with another signature, each spelled as the instance's types come to
 (`genericSigCat`: `pop(self: &mut) Option[i64]`), then a field likewise; a non-struct
 is told only a struct fits by its methods. A method the type has only as a generic

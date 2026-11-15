@@ -1,0 +1,31 @@
+// An instance whose arguments do not meet a condition naming an instance of a generic trait lacks the
+// 'is' entry: it compiles while only built, and is refused where a Reads is required, naming the condition
+// and the arguments, as a non-generic trait's condition is. The same through core's Deserialize.
+
+mod generic_typecheck_trait_instance_cond;
+
+trait Reads[T] {
+  fn read(self: &) i64;
+}
+struct Plain { pub n: i64; }
+struct Box[T] is Reads[Box[T]] if T is Reads[T] {
+  pub v: T;
+  pub fn read(self: &) i64 where T is Reads[T] { v.read() + 100 }
+}
+fn need[X](x: &X) i64 where X is Reads[X] { 1 }
+
+struct Plain2 { pub a: i32; }
+struct Bag[T] is Deserialize[Bag[T]] if T is Deserialize[T] {
+  p: *T;
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[Bag[T], DataError] where T is Deserialize[T] {
+    Ok[Bag[T], DataError](Bag[T](null))
+  }
+}
+fn asks[X](x: &X) i64 where X is Deserialize[X] { 1 }
+
+fn main() {
+  var built = Box[Plain](Plain(1));
+  need(&built);               //~ ErrorWhereUnmet:7 "Box is Reads only where T is Reads[T], and that is false for T = Plain"
+  var bag = Bag[Plain2](null);
+  asks(&bag);                 //~ ErrorWhereUnmet:7 "Bag is Deserialize only where T is Deserialize[T], and that is false for T = Plain2"
+}
