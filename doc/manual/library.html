@@ -989,6 +989,47 @@ fn main() i32 {
 the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog
 </pre>
 
+	<h3 id="brotli">brotli</h3>
+	<p><span class="pre">brotli.decompress(data, expected)</span> answers a
+		<span class="pre">Result[List[u8], BrotliError]</span> for a stream held whole in memory;
+		<span class="pre">expected</span> is a size hint (the output's size if known, else 0), which only reserves
+		room. The error holds a <span class="pre">kind</span> (a bad stream or meta-block header, a prefix code or
+		context map that is not valid, a command that does not fit its meta-block, a distance that names no
+		dictionary word, a transform that does not exist, a cut stream, more output than allowed, a window past
+		the one allowed, the large-window extension), the input offset and a sentence. A
+		<span class="pre">Decompressor</span> sets <span class="pre">setLimit</span> (the most output, 1 GiB by
+		default, refused before the meta-block that passes it is written) and <span class="pre">setMaxWindow</span>
+		(the largest window the stream may ask for, 24 bits by default), then <span class="pre">run</span>s a
+		stream. Bytes after the last meta-block are not looked at.</p>
+	<p>Brotli's static dictionary (122,784 bytes of common words, with 121 ways to alter a word) is part of the
+		format, so it is part of every program that imports <span class="pre">brotli</span>: about 122 KB in the
+		program, and the rest of the package about 57 KB more. Both the dictionary and the context tables are
+		generated from RFC 7932's own text by <span class="pre">brotlitables.py</span>, which checks them against
+		the CRC-32 values the RFC states, and a test checks the compiled data against the same numbers. A run holds
+		a copy of the input, the whole output and the prefix tables of the meta-block in hand. Feeding input in
+		pieces and pulling output in pieces comes in a later change, and there is no compression.</p>
+<pre>
+mod unpack;
+
+import stdio use *;
+import collections use *;
+import brotli;
+
+fn main() i32 {
+  // the stream the Brotli command makes of the one byte "X"
+  let packed = [0x0Bu8, 0x00u8, 0x80u8, 0x58u8, 0x03u8];
+  match brotli.decompress(&amp;packed, 1usize) {
+    case let Ok(ok) { printStr(String.fromBytes(ok.view()).view()); printStr("\n"); }
+    case let Err(e) { printStr(e.reason.view()); return 1i32; }
+  }
+  0i32
+}
+</pre>
+	<p>prints:</p>
+<pre>
+X
+</pre>
+
 	<h3 id="tarfile">tarfile</h3>
 	<p>A <span class="pre">TarReader</span> works through an archive from its front, as a codec of
 		<span class="pre">streams</span> does: bytes in with <span class="pre">feed</span> (a copy, split anywhere) or
