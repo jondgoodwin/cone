@@ -1,0 +1,117 @@
+// Input larger than the buffer pool's bound (64 MiB) is a value, never a panic. A stream of 65 MiB is made of
+// stored (uncompressed) meta-blocks, so that the test needs no compressor:
+//   - 'decompress' (the whole buffer, which the pool does not hold) gives the data back;
+//   - 'feed' of one chunk over the bound fails the stream with TooLarge, and a feed or a pull after that does no
+//     harm;
+//   - the same stream fed in pieces of 1 MiB with a pull between is Done, and its output is the data.
+
+mod big;
+
+import testing use *;
+import collections use *;
+import brotli use *;
+import iobuf use IoBuf;
+
+struct Bits {
+  out: List[u8];
+  acc: u64;
+  n: u32;
+
+  fn put(self: &mut, value: u32, bits: u32) {
+    acc = acc | (u64.from(value) << u64.from(n));
+    n = n + bits;
+    while n >= 8u32 {
+      out.push(u8.from(acc & 255u64));
+      acc = acc >> 8u64;
+      n = n - 8u32;
+    }
+  }
+
+  fn align(self: &mut) {
+    if n > 0u32 { self.put(0u32, 8u32 - n); }
+  }
+}
+
+// WBITS 16, stored meta-blocks of 65536 bytes (the last the rest), then the empty last meta-block
+fn storedStream(data: &Array[u8]) List[u8] {
+  var w = Bits(List[u8](), 0u64, 0u32);
+  w.out.reserve(data.len + data.len / 8192usize + 16usize);
+  w.put(0u32, 1u32);
+  var at = 0usize;
+  while at < data.len {
+    let m = if data.len - at < 65536usize {data.len - at} else {65536usize};
+    w.put(0u32, 1u32);                  // not ISLAST
+    w.put(0u32, 2u32);                  // MNIBBLES 4
+    w.put(u32.from(m - 1usize), 16u32);
+    w.put(1u32, 1u32);                  // ISUNCOMPRESSED
+    w.align();
+    w.out.appendSlice(&data[at ..< at + m]);
+    at += m;
+  }
+  w.put(1u32, 1u32);
+  w.put(1u32, 1u32);
+  w.align();
+  var r = List[u8]();
+  r <-> w.out;
+  r
+}
+
+fn pullAll(x: &mut Decompressor, out: &mut List[u8]) Status {
+  var s = Status.MoreOutput;
+  while s == Status.MoreOutput {
+    var buf = IoBuf(1048576usize);
+    let pre = buf.capacity() - 1048576usize;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  }
+  s
+}
+
+fn main() i32 {
+  // 65 MiB
+  let n = 68157440usize;
+  var data = List[u8]();
+  data.reserve(n);
+  var i = 0usize;
+  while i < n { data.push(u8.from((i * 31usize + i / 251usize) % 256usize)); i += 1usize; }
+  let z = storedStream(data.view());
+  expect(z.len() > 67108864usize, "the stream is over the pool bound");
+
+  // The whole buffer
+  match decompress(z.view(), n) {
+    case var Ok(out) {
+      expectInt(i64.from(out.len()), i64.from(n), "decompress: all the bytes came out");
+      expect(out.view() == data.view(), "decompress: the bytes are the data");
+    }
+    case let Err(e) { expect(false, "decompress of a large stream"); }
+  }
+
+  // One chunk over the bound: Failed, TooLarge, and no panic; later calls do no harm
+  var one = Decompressor.make();
+  one.feed(z.view());
+  one.finish();
+  var sink = List[u8]();
+  expect(pullAll(&mut one, &mut sink) == Status.Failed, "a one-shot input over the bound fails");
+  expect(one.error().kind == ErrorKind.TooLarge, "the failure is TooLarge");
+  one.feed(z.view());
+  expect(pullAll(&mut one, &mut sink) == Status.Failed, "still failed after a feed");
+
+  // The same stream in pieces of 1 MiB with a pull between
+  var two = Decompressor.make();
+  var got = List[u8]();
+  got.reserve(n);
+  var at = 0usize;
+  var last = Status.NeedInput;
+  while at < z.len() {
+    let m = if z.len() - at < 1048576usize {z.len() - at} else {1048576usize};
+    two.feed(&z.view()[at ..< at + m]);
+    at += m;
+    if at == z.len() { two.finish(); }
+    last = pullAll(&mut two, &mut got);
+    if last == Status.Failed { break; }
+  }
+  expect(last == Status.Done, "fed in pieces, the stream is Done");
+  expect(got.view() == data.view(), "fed in pieces, the bytes are the data");
+  done()
+}

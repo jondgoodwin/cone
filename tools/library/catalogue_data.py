@@ -98,7 +98,7 @@ DOMAINS = [
  ]),
  ("regions", "Regions and collections", "Where values live and how they are kept: homogeneous collections and pools, and the regions that hold many kinds.", [
   ("Homogeneous: collections, pools and buffers", [
-   ("collections", "A growable list, an owned string, dictionaries, a set, a double-ended queue and a column-per-field SoaList."),
+   ("collections", "A growable list, an owned string, dictionaries, a set, a fixed-length bit set, a double-ended queue and a column-per-field SoaList."),
    ("pool", "A generational pool: values of one type in slots, handed back as Refs that go stale when the slot is reused."),
    ("pools", "Sets of records that holders elsewhere name by a handle; GenPool[T] is the default kind."),
    ("slots", "A compatibility shim: SlotTable and Slot are now aliases for pools' GenPool and Handle."),

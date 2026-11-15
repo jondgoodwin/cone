@@ -924,11 +924,12 @@ fn main() i32 {
 		anywhere and answering output in bounded pieces, beside one-call <span class="pre">decompress</span> and
 		<span class="pre">compress</span>. Written in Cone, with no C library.</td></tr>
 	<tr><td><span class="pre">brotli</span><br><span class="pre">import brotli;</span></td>
-		<td>Brotli (RFC 7932) decompressed from a stream held in memory (every meta-block form: compressed,
-		stored and metadata; block switching, context maps, the static dictionary and its 121 transforms), with
-		one call, <span class="pre">decompress</span>, and a <span class="pre">Decompressor</span> that sets a
-		limit on the output and on the window. Not yet streaming, and no compression. Written in Cone, with no C
-		library; <a href="#brotli">brotli</a> below.</td></tr>
+		<td>Brotli (RFC 7932) decompressed from a stream held in memory or fed in pieces (every meta-block form:
+		compressed, stored and metadata; block switching, context maps, the static dictionary and its 121
+		transforms), with one call, <span class="pre">decompress</span>, and a <span class="pre">Decompressor</span>
+		that sets a limit on the output and on the window and meets <span class="pre">streams</span>'s
+		<span class="pre">Transform</span>. No compression. Written in Cone, with no C library;
+		<a href="#brotli">brotli</a> below.</td></tr>
 	</table>
 
 	<h3 id="deflate">deflate</h3>
@@ -1001,14 +1002,32 @@ the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the 
 		default, refused before the meta-block that passes it is written) and <span class="pre">setMaxWindow</span>
 		(the largest window the stream may ask for, 24 bits by default), then <span class="pre">run</span>s a
 		stream. Bytes after the last meta-block are refused as <span class="pre">BadHeader</span>.</p>
+	<p>The same <span class="pre">Decompressor</span> decodes a stream that arrives in pieces, as
+		<span class="pre">deflate</span>'s <span class="pre">Inflater</span> and <span class="pre">zstd</span>'s
+		<span class="pre">Decompressor</span> do: <span class="pre">feed</span> a piece of any size (it is copied),
+		<span class="pre">pull(&amp;mut buf)</span> the output into a buffer's spare room, at most that much a time,
+		and <span class="pre">finish</span> when no more input will come. A pull answers <span class="pre">NeedInput</span>,
+		<span class="pre">MoreOutput</span>, <span class="pre">Done</span> or <span class="pre">Failed</span>;
+		<span class="pre">error()</span> and <span class="pre">failure()</span> say why it failed, and
+		<span class="pre">takeRest()</span> hands back the bytes after the last meta-block (which
+		<span class="pre">decompress</span> and <span class="pre">run</span> refuse). A piece may end anywhere: a unit the
+		input cuts short (a meta-block header as a whole, a command's symbol, a literal, a distance) is put back and
+		decoded when more arrives. A header that ends its input is looked at again only when the input held has
+		doubled, so a stream fed a byte at a time costs the header's decoding a few times over, not once a byte;
+		for the same reason a stream's last meta-block header may wait for <span class="pre">finish</span>. Held input
+		past the buffer pool's bound fails the stream with <span class="pre">TooLarge</span>, so feed in pieces and
+		pull between them. A <span class="pre">Decompressor</span> is a <span class="pre">streams.Transform</span>, so
+		<span class="pre">TransformStage[brotli.Decompressor]</span> puts it in a pipeline of stages.</p>
 	<p>Brotli's static dictionary (122,784 bytes of common words, with 121 ways to alter a word) is part of the
 		format, so it is part of every program that imports <span class="pre">brotli</span>: about 122 KB in the
 		program, and the rest of the package about 57 KB more. Both the dictionary and the context tables are
 		generated from RFC 7932's own text by <span class="pre">brotlitables.py</span>, which checks them against
 		the CRC-32 values the RFC states, and a hand-written test stream that names a word of every length with every
-		transform checks the compiled data. A run holds
-		a copy of the input, the whole output and the prefix tables of the meta-block in hand. Feeding input in
-		pieces and pulling output in pieces comes in a later change, and there is no compression.</p>
+		transform checks the compiled data. A one-call run holds
+		a copy of the input, the whole output and the prefix tables of the meta-block in hand. A stream fed in
+		pieces holds the input not yet used, the prefix tables, and a history of the output: the window the stream
+		asks for (up to 16 MiB), plus a quarter of it and 64 KiB, plus one pull's output (about 20 MiB and a pull at the
+		most; about 66 KB and a pull for a 10-bit window). There is no compression.</p>
 <pre>
 mod unpack;
 

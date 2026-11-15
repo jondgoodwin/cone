@@ -2,7 +2,10 @@
 // 5 times, checks the output against the original, and prints the best time as megabytes a second of the
 // output, with the sizes. Run it in release mode:
 //
-//   congo run --release packages/brotli/examples/bench.cone stream.br original
+//   congo run --release packages/brotli/examples/bench.cone stream.br original [pieces|bytes]
+//
+// With a third argument it also feeds the stream through a Decompressor (1 MiB pieces, or a byte at a time with
+// 'bytes') and prints that time.
 //
 // (Make the stream with the C 'brotli' command. The numbers in the package notes are from this program beside
 // 'brotli -d' on the same files.)
@@ -10,6 +13,7 @@
 mod bench;
 
 import collections use *;
+import iobuf use IoBuf;
 import brotli use *;
 import time use *;
 import fs;
@@ -48,6 +52,43 @@ fn main() i32 {
     let ns = t0.elapsed().nanos();
     if ns < best { best = ns; }
     run += 1;
+  }
+  if args.len() >= 4usize {
+    // The same stream fed to a Decompressor in pieces and pulled 1 MiB at a time: 1 MiB pieces, or with 'bytes'
+    // as the third argument a byte at a time (best of 3, output checked)
+    let step = if args[3usize].view() == "bytes" {1usize} else {1048576usize};
+    var bestS = 0x7FFFFFFFFFFFFFFFi64;
+    var runS = 0;
+    var buf = IoBuf(1048576usize);
+    while runS < 3 {
+      let t1 = Instant.now();
+      var dc = Decompressor.make();
+      var at = 0usize;
+      var got = 0usize;
+      var same = true;
+      while at < pb.len {
+        let m = if pb.len - at < step {pb.len - at} else {step};
+        dc.feed(&pb[at ..< at + m]);
+        at += m;
+        if at == pb.len { dc.finish(); }
+        var s = Status.MoreOutput;
+        while s == Status.MoreOutput {
+          buf.clear();
+          s = dc.pull(&mut buf);
+          if got + buf.len() > ob.len || buf.view() != &ob[got ..< got + buf.len()] { same = false; }
+          got += buf.len();
+        }
+      }
+      if !same || got != ob.len { printStr("STREAM MISMATCH\n"); }
+      let ns2 = t1.elapsed().nanos();
+      if ns2 < bestS { bestS = ns2; }
+      runS += 1;
+    }
+    printStr("streamed, best time in ms, MB/s of output: ");
+    printInt(bestS / 1000000i64);
+    printStr(" ");
+    printInt(if bestS > 0i64 {i64.from(ob.len) * 1000i64 / bestS} else {0i64});
+    printStr("\n");
   }
   printStr("stream bytes, output bytes, best time in ms, MB/s of output: ");
   printInt(i64.from(pb.len));

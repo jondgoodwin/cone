@@ -1,0 +1,184 @@
+// Bench: the coverage grids of autolod's 'dilateAtlas' (bake.cone) kept as a
+// 'List[bool]' (a byte a flag, copied element by element each step) and as a 'BitSet'
+// (a bit a flag, copied by 'unionWith'). Both run the same dilation over the same
+// synthetic atlas: 'cells' cells of f x f texels, 30% covered to begin with (a texel is
+// covered when (7x + 13y) mod 10 < 3), repeating the mean of the covered four-neighbours
+// into each empty texel for 4 steps; the colour is one byte a texel, integer, where
+// dilateAtlas keeps four floats of colour and four of normal, so the grid is a larger share of
+// this kernel than of the real one. Both print the sum of the atlas after (which must
+// agree) and the best of five runs in microseconds; then the bytes each grid holds.
+//
+// Build it optimised to measure:
+//
+//   congo run --release packages/collections/examples/bitsetbench.cone
+
+mod bitsetbench;
+
+import stdio use *;
+import time use Instant;
+import collections use *;
+
+const f = 128usize;
+const cells = 16usize;
+const steps = 4u32;
+
+fn atlasNew() List[u8] {
+  var px = List[u8].withCapacity(f * f);
+  var y = 0usize;
+  while y < f {
+    var x = 0usize;
+    while x < f {
+      px.push(if (7usize * x + 13usize * y) % 10usize < 3usize { u8.from((x + y) % 200usize + 50usize) } else { 0u8 });
+      x = x + 1usize;
+    }
+    y = y + 1usize;
+  }
+  px
+}
+
+fn dilateBytes(px: &mut List[u8]) {
+  var filled = List[bool].withCapacity(f * f);
+  var next = List[bool].withCapacity(f * f);
+  var y = 0usize;
+  while y < f {
+    var x = 0usize;
+    while x < f { filled.push(*px[y * f + x] > 0u8); x = x + 1usize; }
+    y = y + 1usize;
+  }
+  var step = 0u32;
+  while step < steps {
+    next.clear();
+    var k = 0usize;
+    while k < f * f { next.push(*filled[k]); k = k + 1usize; }
+    y = 0usize;
+    while y < f {
+      var x = 0usize;
+      while x < f {
+        if !*filled[y * f + x] {
+          var count = 0u32;
+          var sum = 0u32;
+          var n = 0usize;
+          while n < 4usize {
+            var sx = x;
+            var sy = y;
+            if n == 0usize { if x + 1usize < f { sx = x + 1usize; } }
+            if n == 1usize { if x > 0usize { sx = x - 1usize; } }
+            if n == 2usize { if y + 1usize < f { sy = y + 1usize; } }
+            if n == 3usize { if y > 0usize { sy = y - 1usize; } }
+            if (sx != x || sy != y) && *filled[sy * f + sx] {
+              sum = sum + u32.from(*px[sy * f + sx]);
+              count = count + 1u32;
+            }
+            n = n + 1usize;
+          }
+          if count > 0u32 {
+            px.set(y * f + x, u8.from((sum + count / 2u32) / count));
+            next.set(y * f + x, true);
+          }
+        }
+        x = x + 1usize;
+      }
+      y = y + 1usize;
+    }
+    filled.clear();
+    k = 0usize;
+    while k < f * f { filled.push(*next[k]); k = k + 1usize; }
+    step = step + 1u32;
+  }
+}
+
+fn dilateBits(px: &mut List[u8]) {
+  var filled = BitSet(f * f);
+  var next = BitSet(f * f);
+  var y = 0usize;
+  while y < f {
+    var x = 0usize;
+    while x < f { if *px[y * f + x] > 0u8 { filled.set(y * f + x); } x = x + 1usize; }
+    y = y + 1usize;
+  }
+  var step = 0u32;
+  while step < steps {
+    next.clearAll();
+    next.unionWith(&filled);
+    y = 0usize;
+    while y < f {
+      var x = 0usize;
+      while x < f {
+        if !filled.get(y * f + x) {
+          var count = 0u32;
+          var sum = 0u32;
+          var n = 0usize;
+          while n < 4usize {
+            var sx = x;
+            var sy = y;
+            if n == 0usize { if x + 1usize < f { sx = x + 1usize; } }
+            if n == 1usize { if x > 0usize { sx = x - 1usize; } }
+            if n == 2usize { if y + 1usize < f { sy = y + 1usize; } }
+            if n == 3usize { if y > 0usize { sy = y - 1usize; } }
+            if (sx != x || sy != y) && filled.get(sy * f + sx) {
+              sum = sum + u32.from(*px[sy * f + sx]);
+              count = count + 1u32;
+            }
+            n = n + 1usize;
+          }
+          if count > 0u32 {
+            px.set(y * f + x, u8.from((sum + count / 2u32) / count));
+            next.set(y * f + x);
+          }
+        }
+        x = x + 1usize;
+      }
+      y = y + 1usize;
+    }
+    filled.clearAll();
+    filled.unionWith(&next);
+    step = step + 1u32;
+  }
+}
+
+fn total(px: &List[u8]) u64 {
+  var s = 0u64;
+  var i = 0usize;
+  while i < px.len() { s = s + u64.from(*px[i]); i = i + 1usize; }
+  s
+}
+
+fn best(bits: bool) (i64, u64) {
+  var low = 0i64 - 1i64;
+  var sum = 0u64;
+  var run = 0usize;
+  while run < 5usize {
+    var s = 0u64;
+    let t = Instant.now();
+    var c = 0usize;
+    while c < cells {
+      var px = atlasNew();
+      if bits { dilateBits(&mut px); } else { dilateBytes(&mut px); }
+      s = s + total(&px);
+      c = c + 1usize;
+    }
+    let ns = t.elapsed().nanos();
+    if low < 0i64 || ns < low { low = ns; }
+    sum = s;
+    run = run + 1usize;
+  }
+  (low, sum)
+}
+
+fn main() i32 {
+  let a = best(false);
+  let b = best(true);
+  if a.1 != b.1 { printStr("SUMS DIFFER\n"); }
+  printStr("List[bool]: ");
+  printInt(a.0 / 1000i64);
+  printStr(" us, BitSet: ");
+  printInt(b.0 / 1000i64);
+  printStr(" us, sum ");
+  printUInt(a.1);
+  printStr("\ngrid bytes (two grids): List[bool] ");
+  printUInt(u64.from(2usize * f * f));
+  printStr(", BitSet ");
+  printUInt(u64.from(2usize * ((f * f + 63usize) / 64usize) * 8usize));
+  printStr("\n");
+  0i32
+}
