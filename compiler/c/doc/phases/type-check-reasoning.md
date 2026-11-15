@@ -280,7 +280,12 @@ requirement's is; a struct's slots are named apart wherever the requirement's
 are. A parameter is stored through only where another parameter could lend
 something to store, so a lone `self: &mut` is not (`lifeSigPromises`): a
 cursor's `next(self: &mut) Option[&'a T]` meets `Iterator[&T]`'s `next`, which
-names no lifetime and whose `Self` holds no borrow. So a method may return `'static`, or a longer lifetime, where the trait's
+names no lifetime and whose `Self` holds no borrow. Where a method has another
+parameter, the requirement's receiver stands as the implementor's in deciding
+that it is stored through (a trait's `&mut Self` holds no borrow to say so), and
+what may flow into it stays what the requirement writes: a lifetime-generic
+struct's method with an `i32` parameter meets the trait's, and one that stores
+its parameter does not meet one that stores nothing. So a method may return `'static`, or a longer lifetime, where the trait's
 result may hold its receiver, and take any borrow where the trait asks for a
 `'static` one, as Rust's more general impl may. What a signature promises is read part by part of each
 parameter -- its own reference's lifetime, and what that holds, by slot for a
