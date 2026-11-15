@@ -159,7 +159,6 @@ pub struct JsonDeserializer['a] is Deserializer {
   reader: Reader['a];
   has: bool;          // an event is peeked and not yet taken
   ev: Event;
-  bytesBuf: List[u8];
 
   // Where the last token read starts, in bytes
   pub fn offset(self: &) usize { self.reader.offset() }
@@ -246,11 +245,6 @@ pub struct JsonDeserializer['a] is Deserializer {
       else { Err[f64, DataError](self.wrong("expected a number")) }
     }
   }
-  pub fn readText(self: &mut) Result[&str, DataError] {
-    let ev = self.take()?;
-    if ev == Event.Text || ev == Event.Key { return Ok[&str, DataError](self.reader.text()); }
-    Err[&str, DataError](self.wrong("expected a string"))
-  }
   pub fn readTextInto(self: &mut, out: &uni TextOut) Result[void, DataError] {
     let ev = self.take()?;
     if ev == Event.Text || ev == Event.Key { out <- self.reader.text(); return Ok[void, DataError](nil); }
@@ -267,23 +261,6 @@ pub struct JsonDeserializer['a] is Deserializer {
       i = i + 1usize;
     }
     Ok[usize, DataError](found)
-  }
-  pub fn readBytes(self: &mut) Result[&Array[u8], DataError] {
-    if self.take()? != Event.StartArray { return Err[&Array[u8], DataError](self.wrong("expected an array of bytes")); }
-    self.bytesBuf.clear();
-    while true {
-      let ev = self.take()?;
-      if ev == Event.EndArray { break; }
-      if ev != Event.Number { return Err[&Array[u8], DataError](self.wrong("expected a byte")); }
-      match numberU64(self.reader.text()) {
-        case let Ok(n) {
-          if n > 255u64 { return Err[&Array[u8], DataError](self.located(DataError.range("the number does not fit a byte"))); }
-          self.bytesBuf.push(u8.from(n));
-        }
-        case is Err { return Err[&Array[u8], DataError](self.wrong("expected a byte")); }
-      }
-    }
-    Ok[&Array[u8], DataError](self.bytesBuf.view())
   }
   pub fn readNone(self: &mut) Result[bool, DataError] {
     if self.look()? == Event.Null {
@@ -324,7 +301,7 @@ pub struct JsonDeserializer['a] is Deserializer {
       self.has = false;
       return Ok[FieldKey, DataError](FieldKey.End);
     }
-    // The name stays peeked: 'readText' takes it
+    // The name stays peeked: 'matchField' or 'readTextInto' takes it
     Ok[FieldKey, DataError](FieldKey.Name)
   }
   pub fn beginVariant(self: &mut) Result[FieldKey, DataError] {
@@ -356,7 +333,7 @@ pub struct JsonDeserializer['a] is Deserializer {
 }
 
 pub fn jsonDeserializer(text: &'a Array[u8]) JsonDeserializer['a] {
-  JsonDeserializer(reader(text), false, Event.Done, List[u8]())
+  JsonDeserializer(reader(text), false, Event.Done)
 }
 
 // A value of type T read from JSON text, built on the heap: 'fromJson[Person](text)'. A failure is a

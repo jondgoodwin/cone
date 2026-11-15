@@ -5465,8 +5465,8 @@ pub struct DataError {
   }
 }
 
-// What a record or a variant read finds next: the end, a member by name (read the
-// name with readText), or a member by position (a format with no names)
+// What a record or a variant read finds next: the end, a member by name (it is
+// matched with 'matchField'), or a member by position (a format with no names)
 pub enum FieldKey {
   End;
   Name;
@@ -5522,9 +5522,11 @@ struct FieldNamesOf[T] is FieldNames {
 }
 
 // A format's reading side, asked by the type being read: the walk asks for what the
-// type is, and a positional format answers 'FieldKey.Index'. 'readText' answers a view
-// into the format's own buffer, good until the next call: the caller copies it out
-// (into a String in the region it was given) or compares it, at once.
+// type is, and a positional format answers 'FieldKey.Index'. No read lends a view of the
+// format's own buffer: text is written into a caller's 'TextOut' (readTextInto) or compared inside the reader
+// (matchField), so a reader may rewrite its buffer on every token and still keep the shape of what a caller
+// has borrowed (the bound '+ ShapeKeeping' on 'deserialize'). A zero-copy read would need a lending method
+// back, with a lifetime story.
 pub trait Deserializer {
   pub fn readBool(self: &mut) Result[bool, DataError];
   // A float where an integer is asked is a Type error; a number too big is a Range error
@@ -5532,16 +5534,13 @@ pub trait Deserializer {
   pub fn readUInt(self: &mut) Result[u64, DataError];
   // A number of any form is read as a float: a text format has one number type
   pub fn readFloat(self: &mut) Result[f64, DataError];
-  pub fn readText(self: &mut) Result[&str, DataError];
   // The text, written into 'out' (a String's 'textOut()'). The result borrows nothing, so a caller that
-  // builds a String uses this and not readText. Each reader writes it (a default over readText is refused:
-  // its Err arm would carry the Ok arm's borrow of the reader, row 333).
+  // builds a String uses this. Each reader writes it.
   pub fn readTextInto(self: &mut, out: &uni TextOut) Result[void, DataError];
   // The key 'nextField' announced as a Name is consumed and compared with 'names' inside the reader: the
   // index of the one that matches, or 'names.count()' for none (the caller then skips the member's value). A key
   // that is not text keeps the reader's own error. Nothing is copied and no view of the key escapes.
   pub fn matchField(self: &mut, names: &<FieldNames) Result[usize, DataError];
-  pub fn readBytes(self: &mut) Result[&Array[u8], DataError];
   // true: the value was the none, now consumed; false: a value is there, unread
   pub fn readNone(self: &mut) Result[bool, DataError];
   pub fn beginSeq(self: &mut) Result[void, DataError];

@@ -1,0 +1,40 @@
+// A trait with a method that lends a borrow from 'self' ('view'), and a type whose methods reshape storage it
+// owns ('Scratch.view' appends to its String and lends it back): behind '&<mut Source + ShapeKeeping' it is
+// refused, because a call through the reference could reshape what the caller holds a borrow into. This is the
+// refusal row 333's JsonDeserializer met while the Deserializer trait still had a lending 'readText'; the trait
+// no longer lends, so the pin has its own small trait. A type that reshapes its own storage but whose trait
+// lends nothing ('Quiet') is accepted.
+
+mod meta_shapekeeping_lending_trait_reject;
+
+import stdio use *;
+import collections use *;
+
+trait Source {
+  pub fn view(self: &mut) &str;
+  pub fn bump(self: &mut);
+}
+
+struct Scratch is Source {
+  pub buf: String;
+  pub fn view(self: &mut) &str { self.buf.append("k"); self.buf.view() }
+  pub fn bump(self: &mut) { self.buf.append("b"); }
+}
+
+trait Counter { pub fn bump(self: &mut); }
+
+struct Quiet is Counter {
+  pub buf: String;
+  pub fn bump(self: &mut) { self.buf.append("b"); }
+}
+
+fn tickSource(s: &<mut Source + ShapeKeeping) { s.bump(); }
+fn tickCounter(s: &<mut Counter + ShapeKeeping) { s.bump(); }
+
+fn main() {
+  var q = Quiet(String());
+  tickCounter(&mut q);
+  var d = Scratch(String());
+  tickSource(&mut d);   //~ ErrorNotShapeKeeping
+  print <- "done\n";
+}
