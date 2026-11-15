@@ -916,7 +916,12 @@ Every other question a clause asks is
   still being laid out is noted (`genericSendableNote`) and judged again once
   type check has finished (`genericSendableCheckAll`, from `conec.c`).
 - **A declaration**: the type's `is` list names the trait, or names a trait whose
-  own list does (`genericDeclares`).
+  own list does (`genericDeclares`). An instance's entry for an instance of a
+  generic trait (`Deserialize[List[T]] if T is Deserialize[T]`) reaches its list
+  only when its type check takes the placeholder in, so asking for such a trait of
+  an instance not yet checked lays it out first (`structTypeSettle`), unless an
+  argument is still being laid out. The struct field check for `Deserialize`
+  (`structFieldDeserializes`) reads the same list and must agree with this.
 - **Fitting it structurally**, only for a trait that requires something of a
   value — a method or a field. `structMatches` under `Monomorph` is the test, the
   one a trait's other uses are made by; `genericDemandMatch` first analyzes each

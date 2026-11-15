@@ -2035,6 +2035,23 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
     if (dcl->tag != StructTag)
         return 0;
     StructNode *strnode = (StructNode*)dcl;
+    // An instance of a generic trait ('Deserialize[List[i32]]') is taken into an instance's
+    // trait list when its type check takes the placeholder in, so an instance not yet checked
+    // does not list a conditional entry it meets. The type is laid out first, as the late
+    // 'where' does an argument, so that a nested instance answers as it does once the queue
+    // has run ('List[List[i32]]' met by a field, before 'List[i32]' was checked)
+    // (Not an instance with an argument still being laid out: it waits for the queue, as its
+    // members do (genericLateWhereNow).)
+    Nodes *settleargs = strnode->instnode ? itypeInstanceTypeArgs((INode*)strnode) : NULL;
+    if (settleargs && itypeInstanceTypeArgs((INode*)trait)
+        && !(strnode->flags & (TypeChecking | TypeChecked)) && !genericArgsUnsettled(settleargs)) {
+        TypeCheckState fresh;
+        fresh.typenode = NULL;
+        fresh.fn = NULL;
+        fresh.scope = 0;
+        fresh.extend = NULL;
+        structTypeSettle(&fresh, (INode*)strnode);
+    }
     if (strnode == trait || genericDeclares(strnode, trait, 0))
         return 1;
     if (genericTraitIsMarker(trait))

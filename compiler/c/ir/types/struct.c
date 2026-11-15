@@ -4782,6 +4782,9 @@ static void structCloneCheck(StructNode *node) {
 // deserialize, one returning an error value), so type check says nothing more of it.
 
 // Does a field of this type read itself: a number or bool, or a struct that declares Deserialize[itself]?
+// It must agree with the bound deserializeValue is checked by (genericTypeIsHow, 'is Deserialize[T]'),
+// which lays an instance out before reading its trait list, as a conditional entry of one
+// ('List[T] is Deserialize[List[T]] if T is Deserialize[T]') is listed there only once it is checked.
 static int structFieldDeserializes(INode *type) {
     INode *dcl = itypeGetTypeDcl(type);
     if (dcl->tag == IntNbrTag || dcl->tag == UintNbrTag || dcl->tag == FloatNbrTag)
