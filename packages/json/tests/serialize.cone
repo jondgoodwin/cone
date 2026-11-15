@@ -1,6 +1,7 @@
-// JSON through core's serialization: toJson and fromJson over structs of numbers, strings and nested
-// structs, and over List, Dict[String, V] and Deque, both ways; then malformed text and values of the
-// wrong kind, which give a DataError, and fromJsonAt which says where in the text.
+// JSON through core's serialization: toJson and fromJson over structs of numbers, bools, strings and
+// nested structs, both ways; then malformed text, values of the wrong kind and numbers out of range,
+// which give a DataError whose 'offset' says where in the text. (List fields are refused at compile
+// time until collections declare Serialize: test/cases/meta/meta_serialize_list_reject.cone.)
 
 mod serialize;
 
@@ -12,9 +13,7 @@ import json;
 struct Pt { pub x: i32; pub y: i32; }
 struct Nums { pub a: i8; pub b: u16; pub c: i64; pub d: u64; pub f: f32; pub g: f64; pub ok: bool; }
 struct Line { pub name: String; pub from: Pt; pub to: Pt; }
-struct Poly { pub label: String; pub pts: List[Pt]; pub tags: List[String]; }
-struct Bag { pub counts: Dict[String, i64]; pub q: Deque[i32]; }
-struct Grid { pub rows: List[List[i32]]; }
+struct Deep { pub tag: String; pub line: Line; pub n: u8; }
 
 fn text(r: Result[String, json.JsonError]) String {
   match r {
@@ -23,10 +22,22 @@ fn text(r: Result[String, json.JsonError]) String {
   }
 }
 
+// The DataError's text without its offset, which is checked on its own
 fn dataText[T](r: Result[T, DataError]) String {
   match r {
     case is Ok { String.from("ok") }
-    case let Err(e) { String() <- e }
+    case let Err(e) {
+      var plain = e;
+      plain.offset = 0usize;
+      String() <- plain
+    }
+  }
+}
+
+fn offsetOf[T](r: Result[T, DataError]) usize {
+  match r {
+    case is Ok { 9999usize }
+    case let Err(e) { e.offset }
   }
 }
 
@@ -47,6 +58,12 @@ fn main() i32 {
     }
     case let Err(e) { expectStr((String() <- e).view(), "<numbers>", "numbers read"); }
   }
+  let nf = text(json.toJson(&Nums(0i8, 0u16, 0i64, 0u64, 0.0f32, 0.0, false)));
+  expectStr(nf.view(), "{\"a\":0,\"b\":0,\"c\":0,\"d\":0,\"f\":0,\"g\":0,\"ok\":false}", "zeros and false written");
+  match json.fromJson[Nums](nf.view()) {
+    case let Ok(m) { expect(!m.ok, "false back"); }
+    case let Err(e) { expectStr((String() <- e).view(), "<zeros>", "zeros read"); }
+  }
 
   // Nested structs and strings, with escapes
   let line = Line(String.from("a \"b\"\n"), Pt(1, 2), Pt(-3, 4));
@@ -60,6 +77,29 @@ fn main() i32 {
     }
     case let Err(e) { expectStr((String() <- e).view(), "<line>", "line read"); }
   }
+  let deep = Deep(String.from("d"), line, 255u8);
+  let dt = text(json.toJson(&deep));
+  match json.fromJson[Deep](dt.view()) {
+    case let Ok(m) {
+      expectStr(m.line.name.view(), "a \"b\"\n", "a struct two deep, name");
+      expectInt(i64.from(m.line.to.y), 4i64, "a struct two deep, to.y");
+      expectInt(i64.from(m.n), 255i64, "u8 at its top");
+    }
+    case let Err(e) { expectStr((String() <- e).view(), "<deep>", "deep read"); }
+  }
+
+  // A non-ASCII string goes out as it is and comes back, escaped or not
+  let u = Line(String.from("héllo €"), Pt(0, 0), Pt(0, 0));
+  let ut = text(json.toJson(&u));
+  expectStr(ut.view(), "{\"name\":\"héllo €\",\"from\":{\"x\":0,\"y\":0},\"to\":{\"x\":0,\"y\":0}}", "non-ASCII written as UTF-8");
+  match json.fromJson[Line](ut.view()) {
+    case let Ok(m) { expectStr(m.name.view(), "héllo €", "non-ASCII back"); }
+    case let Err(e) { expectStr((String() <- e).view(), "<utf8>", "utf8 read"); }
+  }
+  match json.fromJson[Line]("{\"name\":\"h\\u00e9llo \\u20ac \\ud83d\\ude00\",\"from\":{\"x\":0,\"y\":0},\"to\":{\"x\":0,\"y\":0}}") {
+    case let Ok(m) { expectStr(m.name.view(), "héllo € 😀", "escapes (a surrogate pair too) back"); }
+    case let Err(e) { expectStr((String() <- e).view(), "<escapes>", "escapes read"); }
+  }
 
   // Members in another order, an unknown member (an object and an array nested in it) skipped
   match json.fromJson[Pt]("{\"zz\":{\"a\":[1,{\"b\":2}],\"c\":null},\"y\":5,\"x\":4,\"w\":[]}") {
@@ -70,75 +110,16 @@ fn main() i32 {
     case let Err(e) { expectStr((String() <- e).view(), "<reorder>", "reordered read"); }
   }
 
-  // A List of structs and a List of Strings, and the empty ones
-  var poly = Poly(String.from("tri"), List[Pt](), List[String]());
-  poly.pts.push(Pt(0, 0)); poly.pts.push(Pt(1, 0)); poly.pts.push(Pt(0, 1));
-  poly.tags.push(String.from("a")); poly.tags.push(String.from("b"));
-  let pt = text(json.toJson(&poly));
-  expectStr(pt.view(), "{\"label\":\"tri\",\"pts\":[{\"x\":0,\"y\":0},{\"x\":1,\"y\":0},{\"x\":0,\"y\":1}],\"tags\":[\"a\",\"b\"]}", "list written");
+  // Built in an arena's region
   var arena = Arena();
-  match json.fromJson[Poly](pt.view(), arena.region) {
-    case let Ok(m) {
-      expectUInt(u64.from(m.pts.len()), 3u64, "three points");
-      expectInt(i64.from(m.pts[2usize].y), 1i64, "last point y");
-      expectStr(m.tags[1usize].view(), "b", "second tag");
-      expectStr(m.label.view(), "tri", "label in the arena");
-    }
-    case let Err(e) { expectStr((String() <- e).view(), "<poly>", "poly read"); }
+  match json.fromJson[Line](lt.view(), arena.region) {
+    case let Ok(m) { expectStr(m.name.view(), "a \"b\"\n", "name in the arena"); }
+    case let Err(e) { expectStr((String() <- e).view(), "<arena>", "arena read"); }
   }
   expect(arena.blockCount() > 0usize, "the values were made in the arena's region");
-  let empty = Poly(String(), List[Pt](), List[String]());
-  expectStr(text(json.toJson(&empty)).view(), "{\"label\":\"\",\"pts\":[],\"tags\":[]}", "empty lists written");
-  match json.fromJson[Poly]("{\"label\":\"\",\"pts\":[],\"tags\":[]}") {
-    case let Ok(m) { expectUInt(u64.from(m.pts.len()), 0u64, "empty list back"); }
-    case let Err(e) { expectStr((String() <- e).view(), "<empty>", "empty read"); }
-  }
 
-  // A Dict[String, V] and a Deque, and a List of Lists
-  var bag = Bag(Dict[String, i64](), Deque[i32]());
-  bag.counts.insert(String.from("one"), 1i64);
-  bag.q.push(1); bag.q.push(2); bag.q.pushFront(0);
-  let bt = text(json.toJson(&bag));
-  expectStr(bt.view(), "{\"counts\":{\"one\":1},\"q\":[0,1,2]}", "dict and deque written");
-  bag.counts.insert(String.from("two"), 2i64);
-  let bt2 = text(json.toJson(&bag));
-  match json.fromJson[Bag](bt2.view()) {
-    case let Ok(m) {
-      expectUInt(u64.from(m.counts.len()), 2u64, "two entries back");
-      match m.counts.get("two") {
-        case let Some(v) { expectInt(*v, 2i64, "entry two"); }
-        case is None { expect(false, "entry two is there"); }
-      }
-      expectUInt(u64.from(m.q.len()), 3u64, "deque length back");
-      expectInt(i64.from(*m.q.get(0usize).unwrap()), 0i64, "deque front back");
-      expectInt(i64.from(*m.q.get(2usize).unwrap()), 2i64, "deque back back");
-    }
-    case let Err(e) { expectStr((String() <- e).view(), "<bag>", "bag read"); }
-  }
-  var grid = Grid(List[List[i32]]());
-  var r0 = List[i32](); r0.push(1); r0.push(2);
-  var r1 = List[i32]();
-  grid.rows.push(r0); grid.rows.push(r1);
-  expectStr(text(json.toJson(&grid)).view(), "{\"rows\":[[1,2],[]]}", "list of lists written");
-  match json.fromJson[Grid]("{\"rows\":[[1,2],[],[3]]}") {
-    case let Ok(m) {
-      expectUInt(u64.from(m.rows.len()), 3u64, "three rows back");
-      expectInt(i64.from(m.rows[2usize][0usize]), 3i64, "row two");
-    }
-    case let Err(e) { expectStr((String() <- e).view(), "<grid>", "grid read"); }
-  }
-
-  // A List at the top, and a lone number
-  var top = List[i32]();
-  top.push(7); top.push(8);
-  expectStr(text(json.toJson(&top)).view(), "[7,8]", "a list at the top");
-  match json.fromJson[List[i32]]("  [ 7 , 8 ]  ") {
-    case let Ok(m) { expectInt(i64.from(m[1usize]), 8i64, "top list back"); }
-    case let Err(e) { expectStr((String() <- e).view(), "<top>", "top list read"); }
-  }
+  // A lone number at the top, and the pretty form through WriteOptions
   expectStr(text(json.toJson(&42i32)).view(), "42", "a number at the top");
-
-  // The pretty form passes through WriteOptions
   let pretty = text(json.toJsonWith(&Pt(1, 2), &json.WriteOptions(2usize, false)));
   expectStr(pretty.view(), "{\n  \"x\": 1,\n  \"y\": 2\n}", "indented");
 
@@ -147,39 +128,32 @@ fn main() i32 {
   expectStr(dataText(json.fromJson[Line]("{\"name\":\"n\",\"from\":{\"x\":1},\"to\":{\"x\":1,\"y\":1}}")).view(), "from: the member is missing (y)", "missing nested member");
   expectStr(dataText(json.fromJson[Pt]("{\"x\":1.5,\"y\":1}")).view(), "x: expected a whole number", "a fraction for an integer");
   expectStr(dataText(json.fromJson[Pt]("{\"x\":\"1\",\"y\":1}")).view(), "x: expected a number", "text for a number");
-  expectStr(dataText(json.fromJson[Pt]("{\"x\":99999999999,\"y\":1}")).view(), "x: the number does not fit the type", "too big for i32");
   expectStr(dataText(json.fromJson[Pt]("{\"x\":1e3,\"y\":1}")).view(), "ok", "1e3 is a whole number");
   expectStr(dataText(json.fromJson[Pt]("[1,2]")).view(), "expected an object", "an array for a struct");
-  expectStr(dataText(json.fromJson[Poly]("{\"label\":\"x\",\"pts\":{},\"tags\":[]}")).view(), "pts: expected an array", "an object for a list");
-  expectStr(dataText(json.fromJson[Poly]("{\"label\":\"x\",\"pts\":[],\"tags\":[1]}")).view(), "tags: expected a string", "a number for a string");
-  expectStr(dataText(json.fromJson[Nums]("{\"a\":300,\"b\":1,\"c\":1,\"d\":1,\"f\":1,\"g\":1,\"ok\":true}")).view(), "a: the number does not fit the type", "300 for an i8");
-  expectStr(dataText(json.fromJson[Nums]("{\"a\":1,\"b\":-1,\"c\":1,\"d\":1,\"f\":1,\"g\":1,\"ok\":true}")).view(), "b: the number does not fit the type", "-1 for a u16");
+  expectStr(dataText(json.fromJson[Line]("{\"name\":1,\"from\":{\"x\":1,\"y\":1},\"to\":{\"x\":1,\"y\":1}}")).view(), "name: expected a string", "a number for a string");
   expectStr(dataText(json.fromJson[Nums]("{\"a\":1,\"b\":1,\"c\":1,\"d\":1,\"f\":1,\"g\":1,\"ok\":1}")).view(), "ok: expected true or false", "a number for a bool");
 
-  // Malformed text: Syntax, and fromJsonAt gives the offset, line and column
+  // A number out of range for its field: Range, naming the field
+  expectStr(dataText(json.fromJson[Pt]("{\"x\":99999999999,\"y\":1}")).view(), "x: the number does not fit the type", "too big for i32");
+  expectStr(dataText(json.fromJson[Nums]("{\"a\":300,\"b\":1,\"c\":1,\"d\":1,\"f\":1,\"g\":1,\"ok\":true}")).view(), "a: the number does not fit the type", "300 for an i8");
+  expectStr(dataText(json.fromJson[Nums]("{\"a\":1,\"b\":-1,\"c\":1,\"d\":1,\"f\":1,\"g\":1,\"ok\":true}")).view(), "b: the number does not fit the type", "-1 for a u16");
+  expectStr(dataText(json.fromJson[Nums]("{\"a\":1,\"b\":1,\"c\":1,\"d\":18446744073709551616,\"f\":1,\"g\":1,\"ok\":true}")).view(), "d: the number does not fit the type", "2^64 for a u64");
+  expectUInt(u64.from(offsetOf(json.fromJson[Pt]("{\"x\":99999999999,\"y\":1}"))), 5u64, "the offset of a number out of range");
+
+  // Malformed text: Syntax, with the offset of the bad byte
   expectStr(dataText(json.fromJson[Pt]("{\"x\":1,")).view(), "the text ends before the JSON value does", "text that ends");
   expectStr(dataText(json.fromJson[Pt]("{\"x\":1,\"y\":2} x")).view(), "text after the JSON value", "trailing text");
   expectStr(dataText(json.fromJson[Pt]("")).view(), "the text ends before the JSON value does", "empty text");
-  var why = json.JsonError.none();
-  let r1 = json.fromJsonAt[Pt]("{\"x\":1,\n \"y\":oops}", heapRegion(), &mut why);
-  expect(r1 is Err, "malformed text is an error");
-  expectUInt(u64.from(why.offset), 14u64, "offset of the bad byte");
-  expectUInt(u64.from(why.line), 2u64, "its line");
-  expectUInt(u64.from(why.column), 6u64, "its column");
-  let r2 = json.fromJsonAt[Pt]("{\"x\":1,\"y\":\"s\"}", heapRegion(), &mut why);
-  expect(r2 is Err, "a wrong kind is an error");
-  expectUInt(u64.from(why.offset), 13u64, "offset of the wrong value");
-  expectStr(why.reason.view(), "expected a number", "its reason");
-  let r3 = json.fromJsonAt[Pt]("{\"x\":1}", heapRegion(), &mut why);
-  expect(r3 is Err, "a missing member is an error");
-  expectStr(why.reason.view(), "the member is missing (y)", "its reason, with the member");
-  let r4 = json.fromJsonAt[Pt]("{\"x\":1,\"y\":2}   {", heapRegion(), &mut why);
-  expect(r4 is Err, "trailing text is an error");
-  expectUInt(u64.from(why.offset), 16u64, "offset of the trailing text");
+  expectStr(dataText(json.fromJson[Pt]("{\"x\":1,\n \"y\":oops}")).view(), "a character that cannot be here", "a bad byte");
+  expectUInt(u64.from(offsetOf(json.fromJson[Pt]("{\"x\":1,\n \"y\":oops}"))), 13u64, "offset of the bad byte");
+  expectUInt(u64.from(offsetOf(json.fromJson[Pt]("{\"x\":1,\"y\":\"s\"}"))), 11u64, "offset of the wrong value");
+  expectUInt(u64.from(offsetOf(json.fromJson[Pt]("{\"x\":1,\"y\":2}   {"))), 16u64, "offset of the trailing text");
+  expectUInt(u64.from(offsetOf(json.fromJson[Pt]("{\"x\":1}"))), 6u64, "offset of a missing member's object end");
+  // The offset prints with the error
+  match json.fromJson[Pt]("{\"x\":1,\"y\":\"s\"}") {
+    case is Ok { expect(false, "a string for a number is an error"); }
+    case let Err(e) { expectStr((String() <- e).view(), "y: expected a number at byte 11", "the error's text carries the offset"); }
+  }
 
-  // A map whose key is not text cannot be written as JSON
-  var odd = Dict[i32, i32]();
-  odd.insert(1, 2);
-  expectStr(text(json.toJson(&odd)).view(), "json: a map's key is not text: JSON names a member with a string", "a key that is not text");
   done()
 }
