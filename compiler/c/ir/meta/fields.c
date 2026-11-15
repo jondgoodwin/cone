@@ -174,7 +174,7 @@ FieldEachRun *fieldEachOpen(CloneState *cstate, FieldEach *fe, INode *errnode) {
     uint32_t cnt;
     for (nodelistFor(&st->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode*)*nodesp;
-        if (field->tag != FieldDclTag || field->hop || field->via)
+        if (field->tag != FieldDclTag || field->hop || field->via || (field->flags & IsMixin))
             continue;
         if (!sees && inodeIsPrivate((INode*)field)) {
             // Leaving it out would give a serializer or an 'equals' a wrong answer with no warning
