@@ -1,0 +1,77 @@
+// Bug 93 (row 345), accepted: the same holders as collection_flow_store_element_over_field, with a
+// view held through a reborrow while an element of a scalar collection field of 'r' is stored over
+// (nothing the view points into is freed), and with the view ended before the String element is
+// replaced. Prints the view's first byte ('0', 48) for each case, then 5 for the scalar store.
+
+mod collection_flow_store_element_over_field_ok;
+
+import stdio use *;
+import collections use *;
+
+struct Inner { pub s: String; pub k: i32; }
+
+fn mkS() String { var s = String(); s.append("0123456789012345678901234567890123456789"); s }
+fn mk() Inner { Inner(mkS(), 1) }
+
+struct RdString { pub items: List[String]; pub counts: List[i32]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].view() } }
+struct RdStruct { pub items: List[Inner]; pub counts: List[i32]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].s.view() } }
+struct RdArrField { pub arr: Array[String, 2]; pub counts: Array[i32, 2]; pub n: i32;
+  pub fn view(self: &mut) &str { self.arr[0usize].view() } }
+
+// A scalar element stored over while the view is held
+fn scalarString(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  r.counts[0usize] = 5;
+  v[0usize]
+}
+
+fn scalarStruct(r: &mut RdStruct) u8 {
+  let y: &mut RdStruct = r;
+  let v = y.view();
+  r.counts[0usize] = 5;
+  v[0usize]
+}
+
+fn scalarArrField(r: &mut RdArrField) u8 {
+  let y: &mut RdArrField = r;
+  let v = y.view();
+  r.counts[0usize] = 5;
+  v[0usize]
+}
+
+// The view ends before the String element is replaced
+fn endedString(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let first = y.view()[0usize];
+  r.items[0usize] = mkS();
+  first
+}
+
+fn endedStruct(r: &mut RdStruct) u8 {
+  let y: &mut RdStruct = r;
+  let first = y.view()[0usize];
+  r.items[0usize] = mk();
+  first
+}
+
+fn main() {
+  var a = List[String]();
+  a.push(mkS());
+  var ac = List[i32]();
+  ac.push(1);
+  var ra = RdString(a, ac, 1);
+  print <- scalarString(&mut ra), " ", ra.counts[0usize], "\n";
+  var b = List[Inner]();
+  b.push(mk());
+  var bc = List[i32]();
+  bc.push(1);
+  var rb = RdStruct(b, bc, 1);
+  print <- scalarStruct(&mut rb), " ", rb.counts[0usize], "\n";
+  var rc = RdArrField([mkS(), mkS()], [1, 2], 1);
+  print <- scalarArrField(&mut rc), " ", rc.counts[0usize], "\n";
+  print <- endedString(&mut ra), "\n";
+  print <- endedStruct(&mut rb), "\n";
+}

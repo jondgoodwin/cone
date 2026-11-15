@@ -1,0 +1,188 @@
+// ======== Prefix codes, built into two-level tables ========
+//
+// RFC 7932 section 3. Every prefix code of a stream (up to 256 literal codes, 256 distance codes, the
+// insert-and-copy codes, the block-switch codes, the code-length codes) lives in one list of u32 entries, and a
+// code is the index in it of its first entry. A code's table has a first level of 256 entries, indexed by the
+// next 8 bits of input (low bit first: Brotli sends a code's bits starting with its most significant, into a
+// stream read least significant bit first, so the table is indexed by the code with its bits reversed). An entry
+// is symbol * 256 + length for a code of 8 bits or fewer. For a longer code the entry is offset * 256 + 128 + k:
+// the code's other bits index a second-level table of 1 << k entries, 'offset' entries from the first level's
+// start, whose entries are symbol * 256 + (length - 8). A code of one symbol has no bits: every entry of its
+// first level is that symbol with length 0.
+
+// 'build' answers this when the lengths are not a valid code
+const NoTable = 4294967295usize;
+
+// Scratch for 'build'
+struct Builder is Default {
+  count: List[u32];
+  remain: List[u32];
+  start: List[u32];
+  sorted: List[u16];
+}
+
+fn reverseBits(code: u32, n: u32) u32 {
+  var r = 0u32;
+  var c = code;
+  var i = 0u32;
+  while i < n {
+    r = (r << 1u32) | (c & 1u32);
+    c = c >> 1u32;
+    i = i + 1u32;
+  }
+  r
+}
+
+// Appends the table of the code whose symbol 0 to n - 1 have the code lengths lens[0] to lens[n - 1] (0: not
+// in the code) to 'tab' and answers where it starts, or NoTable when the lengths are not a code: they must fill
+// the space of codes exactly (the sum of 32768 >> length is 32768), unless one symbol alone is coded.
+fn build(b: &mut Builder, tab: &mut List[u32], lens: &Array[u8], n: usize) usize {
+  b.count.clear();
+  b.remain.clear();
+  b.start.clear();
+  var i = 0usize;
+  while i < 16usize {
+    b.count.push(0u32);
+    b.remain.push(0u32);
+    b.start.push(0u32);
+    i = i + 1usize;
+  }
+  var total = 0usize;
+  i = 0usize;
+  while i < n {
+    let l = usize.from(lens[i]);
+    if l != 0usize {
+      b.count.set(l, *b.count[l] + 1u32);
+      total = total + 1usize;
+    }
+    i = i + 1usize;
+  }
+  if total == 0usize { return NoTable; }
+  let base = tab.len();
+  if total == 1usize {
+    var sym = 0usize;
+    i = 0usize;
+    while i < n {
+      if lens[i] != 0u8 { sym = i; }
+      i = i + 1usize;
+    }
+    tab.reserve(256usize);
+    i = 0usize;
+    while i < 256usize {
+      tab.push(u32.from(sym) << 8u32);
+      i = i + 1usize;
+    }
+    return base;
+  }
+  var space = 0u32;
+  var l = 1usize;
+  while l < 16usize {
+    space = space + (*b.count[l] << u32.from(15usize - l));
+    b.remain.set(l, *b.count[l]);
+    l = l + 1usize;
+  }
+  if space != 32768u32 { return NoTable; }
+  // The symbols in order of code length, then of value
+  var run = 0u32;
+  l = 1usize;
+  while l < 16usize {
+    b.start.set(l, run);
+    run = run + *b.count[l];
+    l = l + 1usize;
+  }
+  b.sorted.clear();
+  b.sorted.resize(total, 0u16);
+  i = 0usize;
+  while i < n {
+    let ln = usize.from(lens[i]);
+    if ln != 0usize {
+      let at = *b.start[ln];
+      b.sorted.set(usize.from(at), u16.from(i));
+      b.start.set(ln, at + 1u32);
+    }
+    i = i + 1usize;
+  }
+  tab.reserve(256usize + total);
+  i = 0usize;
+  while i < 256usize {
+    tab.push(0u32);
+    i = i + 1usize;
+  }
+  // The codes, in canonical order
+  var code = 0u32;
+  var si = 0usize;
+  var curRoot = 256usize;
+  var subBase = 0usize;
+  var subBits = 0u32;
+  l = 1usize;
+  while l < 16usize {
+    var c = *b.count[l];
+    while c > 0u32 {
+      let sym = u32.from(*b.sorted[si]);
+      si = si + 1usize;
+      let rev = reverseBits(code, u32.from(l));
+      if l <= 8usize {
+        let entry = (sym << 8u32) | u32.from(l);
+        var idx = usize.from(rev);
+        while idx < 256usize {
+          tab.set(base + idx, entry);
+          idx = idx + (1usize << l);
+        }
+      } else {
+        let rootIdx = usize.from(rev & 255u32);
+        if rootIdx != curRoot {
+          // A second-level table for the codes that start with these 8 bits: as large as the longest of them
+          var left = 1i32 << i32.from(l - 8usize);
+          var k = l;
+          while k < 15usize {
+            left = left - i32.from(*b.remain[k]);
+            if left <= 0i32 { break; }
+            k = k + 1usize;
+            left = left << 1i32;
+          }
+          subBits = u32.from(k - 8usize);
+          subBase = tab.len();
+          let sz = 1usize << usize.from(subBits);
+          tab.reserve(sz);
+          var j = 0usize;
+          while j < sz {
+            tab.push(0u32);
+            j = j + 1usize;
+          }
+          tab.set(base + rootIdx, (u32.from(subBase - base) << 8u32) | 128u32 | subBits);
+          curRoot = rootIdx;
+        }
+        let entry = (sym << 8u32) | u32.from(l - 8usize);
+        var idx = usize.from(rev >> 8u32);
+        let step = 1usize << (l - 8usize);
+        let sz = 1usize << usize.from(subBits);
+        while idx < sz {
+          tab.set(subBase + idx, entry);
+          idx = idx + step;
+        }
+      }
+      b.remain.set(l, *b.remain[l] - 1u32);
+      code = code + 1u32;
+      c = c - 1u32;
+    }
+    code = code << 1u32;
+    l = l + 1usize;
+  }
+  base
+}
+
+// Reads one symbol with the code at 'base' in 'tab'
+fn readSym(bi: &mut BitIn, tab: &Array[u32], base: usize) usize {
+  if bi.nbits < 15u32 { bi.refill(); }
+  var e = tab[base + usize.from(bi.bits & 255u64)];
+  var n = e & 255u32;
+  if n >= 128u32 {
+    let sb = n & 127u32;
+    let idx = base + usize.from(e >> 8u32) + usize.from((bi.bits >> 8u64) & ((1u64 << u64.from(sb)) - 1u64));
+    e = tab[idx];
+    n = (e & 255u32) + 8u32;
+  }
+  bi.bits = bi.bits >> u64.from(n);
+  bi.nbits = bi.nbits - n;
+  usize.from(e >> 8u32)
+}
