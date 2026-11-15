@@ -18,6 +18,7 @@
 //   FileSink                   a sink that appends the same lines to a file: 'is trace.Sink'
 //   FileLog                    the program's handle on an installed FileSink: 'failures()', 'path()'
 //   installFile(path, max)     opens the file for appending and installs a FileSink; the FsError if it cannot
+//   installRotatingFile(path, max, maxBytes, keep)   as installFile, rotating app.log to app.log.1 .. .keep by size
 //   formatLine(e, at, line)  the line layout as a pure function of an event and a time: what 'record' writes
 //
 // THE LINE. Time, level, target, text, then each field as name=value, separated by single spaces; one event is
@@ -68,7 +69,9 @@
 // later events are tried again, and 'FileLog.failures()' says how many have failed so far. A sink that is
 // already installed is an Err too (code EBUSY, op "installFile"), the file closed again.
 //
-// NOT HERE: rotation by size (later), colour, a stream other than standard output.
+// ROTATION. See 'installRotatingFile': by size, whole lines, under the same lock as the write.
+//
+// NOT HERE: rotation by time, colour, a stream other than standard output.
 //
 // The package imports trace, calendar, time, collections, stdio, fs, path, posix and sync.
 
@@ -98,10 +101,104 @@ pub struct ConsoleSink is trace.Sink {
   }
 }
 
-// What the file sink's lock guards: the file, and how many writes failed
+// Whether a file operation worked
+fn worked(r: Result[void, fs.FsError]) bool {
+  match r {
+    case is Ok { true }
+    case is Err { false }
+  }
+}
+
+// What the file sink's lock guards: the file, how many writes failed, and the rotation's books
 struct FileState {
   file: fs.File;
   failed: u64;
+  given: Path;       // the log's own path
+  limit: u64;        // bytes a file may hold before a line starts a new one; 0 = never rotate
+  keep: u64;         // old files kept: app.log.1 .. app.log.<keep>
+  size: u64;         // bytes in the open file
+  isOpen: bool;      // false only between a rotation's close and its reopen, or after a reopen failed
+  rotated: u64;
+  rotateFailed: u64;
+
+  // The numbered name: 'app.log' and 3 give 'app.log.3'
+  fn numbered(self: &, n: u64) Path {
+    var s = String.from(given.view());
+    s.append(".");
+    s.appendUInt(n);
+    Path.from(s.view())
+  }
+
+  // (Re)opens the log for appending and reads its size; false when the open failed
+  fn reopen(self: &mut) bool {
+    match fs.append(&given) {
+      case var Ok(f) {
+        self.file <-> f;
+        isOpen = true;
+        size = 0u64;
+        match fs.stat(&given) {
+          case let Ok(info) { size = u64.from(info.size); }
+          case is Err {}
+        }
+        true
+      }
+      case is Err { false }
+    }
+  }
+
+  // Moves the full file aside and starts a new one. It never loses lines: if the first rename fails (on Windows
+  // another process holds the file without share-delete; either OS may refuse for a permission), the old file
+  // is opened again and keeps taking lines, and the next line tries once more, with nothing older touched.
+  fn rotate(self: &mut) {
+    _ = self.file.close();
+    isOpen = false;
+    let aside = self.numbered(0u64);       // 'app.log.0': the full file's name while the older ones move up
+    _ = fs.removeFile(&aside);
+    var moved = false;
+    if keep == 0u64 {
+      moved = worked(fs.removeFile(&given));
+    } else {
+      moved = worked(fs.rename(&given, &aside));
+    }
+    if !moved {
+      rotateFailed = rotateFailed + 1u64;
+      self.reopen();
+      return;
+    }
+    if keep > 0u64 {
+      _ = fs.removeFile(&self.numbered(keep));
+      var i = keep - 1u64;
+      while i >= 1u64 {
+        let from = self.numbered(i);
+        let to = self.numbered(i + 1u64);
+        _ = fs.rename(&from, &to);
+        i = i - 1u64;
+      }
+      _ = fs.removeFile(&self.numbered(1u64));
+      _ = fs.rename(&aside, &self.numbered(1u64));
+    }
+    rotated = rotated + 1u64;
+    self.reopen();
+  }
+
+  fn put(self: &mut, line: &Array[u8]) {
+    let n = u64.from(line.len);
+    if !isOpen && !self.reopen() {
+      failed = failed + 1u64;
+      return;
+    }
+    if limit > 0u64 && size > 0u64 && size + n > limit {
+      self.rotate();
+      if !isOpen && !self.reopen() {
+        failed = failed + 1u64;
+        return;
+      }
+    }
+    match self.file.write(line) {
+      case is Ok { size = size + n; }
+      case is Err { failed = failed + 1u64; }
+    }
+  }
 }
 
 alias SharedFile = Arc[Mutex, FileState];
@@ -118,14 +215,12 @@ pub struct FileSink is trace.Sink {
     var line = String.withCapacity(160usize);
     formatLine(e, Timestamp.now(), &mut line);
     let st = &mut *state;
-    match st.file.write(line.view()) {
-      case is Ok {}
-      case is Err {st.failed = st.failed + 1u64;}
-    }
+    st.put(line.view());
   }
 
   pub fn flush(self: &) {
     let st = &mut *state;
+    if !st.isOpen { return; }
     match st.file.flush() {
       case is Ok {}
       case is Err {st.failed = st.failed + 1u64;}
@@ -143,16 +238,42 @@ pub struct FileLog {
     (&*state).failed
   }
 
+  // Rotations done so far
+  pub fn rotations(self: &) u64 {
+    (&*state).rotated
+  }
+
+  // Rotations given up on (the rename was refused), each retried at the next line; no line is lost by one
+  pub fn rotationFailures(self: &) u64 {
+    (&*state).rotateFailed
+  }
+
   pub fn path(self: &) &Path { &given }
 }
 
 // Opens 'path' for appending (made if missing, never emptied) and installs a FileSink wanting kinds up to 'max',
-// setting trace's default level to 'max' as 'install' does. Err: the FsError of the open, or EBUSY when a sink
-// was already installed (the file is closed again and the default level left alone).
+// setting trace's default level to 'max' as 'install' does. The file grows without limit. Err: the FsError of
+// the open, or EBUSY when a sink was already installed (the file is closed again and the default level left alone).
 pub fn installFile(path: &Path, max: Level) Result[FileLog, fs.FsError] {
+  installRotatingFile(path, max, 0u64, 0u64)
+}
+
+// As 'installFile', but the file is rotated by size: when a line would take the file past 'maxBytes', 'app.log'
+// is renamed 'app.log.1', 'app.log.1' becomes 'app.log.2' and so on up to 'app.log.<keep>', the one that would
+// be '<keep+1>' is deleted, and a fresh 'app.log' takes the line. A line is never split: one longer than
+// 'maxBytes' goes alone into a file by itself. 'keep' 0 keeps no old files (the full one is deleted); 'maxBytes'
+// 0 never rotates. An existing file's size counts from the start. A rename that is refused (Windows: another
+// process holds the file open without share-delete; any OS: permissions) leaves the old file in place and
+// writing to it, and is tried again at the next line ('FileLog.rotationFailures()' counts them).
+pub fn installRotatingFile(path: &Path, max: Level, maxBytes: u64, keep: u64) Result[FileLog, fs.FsError] {
   match fs.append(path) {
     case var Ok(f) {
-      let shared = SharedFile(FileState(f, 0u64));
+      var first = 0u64;
+      match fs.stat(path) {
+        case let Ok(info) { first = u64.from(info.size); }
+        case is Err {}
+      }
+      let shared = SharedFile(FileState(f, 0u64, path.clone(), maxBytes, keep, first, true, 0u64, 0u64));
       if !trace.install(Uni[FileSink](max, shared)) {
         return Err[FileLog, fs.FsError](fs.FsError(String.from("installFile"), path.clone(), Path.from(""), posix.EBUSY));
       }

@@ -1,0 +1,319 @@
+// Rotation of the file sink by size. Each case runs in a child process of this test (a trace sink installs once a
+// process), and the parent reads the files back after the child has ended.
+//
+// 1. keep all: 2 threads' actors emit 300 lines each, a 1000-byte limit and 200 files kept: every file is at most the
+//    limit, every line is whole and in the layout, none is lost, and each writer's lines run in order from the
+//    oldest file (app.log.N) to the newest (app.log).
+// 2. keep 2: the same 600 lines with 2 files kept: only app.log, app.log.1 and app.log.2 exist (no .0, no .3),
+//    each at most the limit and made of whole lines, and the child saw many rotations.
+// 3. long line: a line longer than the limit is written whole, alone, and is not lost.
+// 4. held (Windows only): another handle holds app.log open without share-delete, so the rename is refused; the
+//    lines keep going into the one file (none lost, rotationFailures() > 0, no rotation), and once the handle is
+//    closed the next line rotates. On Linux a rename of an open file works, so this case is Windows's only
+//    (expected output rotate.out is Windows's, rotate.linux.out Linux's, without the extra checks).
+//
+// The test uses no timing: the children are run to their end and the files read afterwards.
+
+mod rotate;
+
+import testing use *;
+import collections use *;
+import stdio use *;
+import actors;
+import time use Duration;
+import process;
+import fs;
+import path use Path;
+import trace use Level, Kind3;
+import logsink;
+
+const writers = 2u64;
+const perWriter = 300u64;
+const limit = 1000u64;
+const pad = "0123456789abcdefghij0123456789";
+
+let lineKind: Kind3[u64, u64, &str];
+
+fn @initpure init() {
+  lineKind = Kind3[u64, u64, &str].make("line", "w", Level.Info, "id", "seq", "pad");
+}
+
+actor Logger {
+  pub async fn go(self, id: u64) {
+    var i = 0u64;
+    while i < perWriter {
+      lineKind.emit(id, i, pad);
+      i = i + 1u64;
+    }
+  }
+}
+
+fn runActors(p: &Path, keep: u64) i32 {
+  initAll();
+  match logsink.installRotatingFile(p, Level.Info, limit, keep) {
+    case let Ok(log) {
+      var i = 0u64;
+      while i < writers {
+        let l = Logger();
+        l.go(i);
+        i = i + 1u64;
+      }
+      finalAll();
+      trace.flush();
+      if log.failures() != 0u64 { return 3i32; }
+      if log.rotationFailures() != 0u64 { return 6i32; }
+      if log.rotations() < 5u64 { return 7i32; }
+      0i32
+    }
+    case is Err { 1i32 }
+  }
+}
+
+fn bigPad(n: u32) String {
+  var s = String();
+  var i = 0u32;
+  while i < n {
+    s <- "0123456789";
+    i = i + 1u32;
+  }
+  s
+}
+
+fn childLong(p: &Path) i32 {
+  initAll();
+  match logsink.installRotatingFile(p, Level.Info, limit, 3u64) {
+    case let Ok(log) {
+      let wide = bigPad(300u32);
+      lineKind.emit(9u64, 0u64, pad);
+      lineKind.emit(9u64, 1u64, wide.view());
+      lineKind.emit(9u64, 2u64, pad);
+      trace.flush();
+      if log.failures() != 0u64 { return 3i32; }
+      // the long line was rotated to alone in a file, the one after it rotated again
+      if log.rotations() != 2u64 { return 6i32; }
+      0i32
+    }
+    case is Err { 1i32 }
+  }
+}
+
+fn childHeld(p: &Path) i32 {
+  initAll();
+  match logsink.installRotatingFile(p, Level.Info, limit, 3u64) {
+    case let Ok(log) {
+      var i = 0u64;
+      match fs.open(p) {
+        case var Ok(holder) {
+          while i < 60u64 {
+            lineKind.emit(5u64, i, pad);
+            i = i + 1u64;
+          }
+          if log.rotations() != 0u64 { return 4i32; }
+          if log.rotationFailures() == 0u64 { return 5i32; }
+          if log.failures() != 0u64 { return 3i32; }
+          _ = holder.close();
+        }
+        case is Err { return 8i32; }
+      }
+      lineKind.emit(5u64, i, pad);
+      trace.flush();
+      if log.rotations() != 1u64 { return 6i32; }
+      if log.failures() != 0u64 { return 3i32; }
+      0i32
+    }
+    case is Err { 1i32 }
+  }
+}
+
+fn child(mode: &str, p: &str) i32 {
+  let path = Path.from(p);
+  if mode == "all" { return runActors(&path, 200u64); }
+  if mode == "two" { return runActors(&path, 2u64); }
+  if mode == "long" { return childLong(&path); }
+  if mode == "held" { return childHeld(&path); }
+  2i32
+}
+
+fn ran(exe: &str, mode: &str, p: &str) process.Output {
+  var o = process.Output(0u32, 0u32, false, String(), String());
+  var c = List[String]();
+  c.push(String.from(exe));
+  c.push(String.from("--child"));
+  c.push(String.from(mode));
+  c.push(String.from(p));
+  match process.run(c.view(), process.Options(timeout: Duration.fromMillis(180000i64))) {
+    case var Ok(ok) { o <-> ok; }
+    case let Err(e) {
+      let m = String() <- e;
+      expectStr(m.view(), "<started>", mode);
+    }
+  }
+  o
+}
+
+fn after(part: &'a str, prefix: &str) Option[&'a str] {
+  if part.len() > prefix.len() && part.startsWith(prefix) {
+    Some(part.sliceFrom(prefix.len()))
+  } else {
+    None
+  }
+}
+
+fn numbered(p: &str, n: u64) Path {
+  var s = String.from(p);
+  s.append(".");
+  s.appendUInt(n);
+  Path.from(s.view())
+}
+
+// The file's text, and whether it is no more than 'most' bytes (or has a single line, whatever its size)
+fn readFile(p: &Path, most: u64, label: &str) String {
+  match fs.readFile(p) {
+    case let Ok(s) {
+      let n = u64.from(s.len());
+      let lines = List[&str].from(s.lines());
+      expect(n <= most || lines.len() == 1usize, label);
+      s
+    }
+    case is Err { require(false, label); String() }
+  }
+}
+
+// Reads 'name' then name.1 ... in order oldest first as one text, checking each file's size; 'count' files
+fn gather(name: &str, count: u64, most: u64, label: &str) String {
+  var all = String();
+  var i = count;
+  while i >= 1u64 {
+    all <- readFile(&numbered(name, i), most, label).view();
+    i = i - 1u64;
+  }
+  all <- readFile(&Path.from(name), most, label).view();
+  all
+}
+
+// Counts the lines of writer 'ids' in 'text' that are whole and in the layout and in order; each id from first
+fn check(text: &String, ids: u64, perId: u64, label: &str) {
+  var next = List[u64]();
+  var k = 0u64;
+  while k < ids {
+    next.push(0u64);
+    k = k + 1u64;
+  }
+  var good = 0u64;
+  var bad = 0u64;
+  var misordered = 0u64;
+  let all = List[&str].from(text.lines());
+  var li = 0usize;
+  while li < all.len() {
+    let parts = List[&str].from(all[li].splitOnChar(' '));
+    li = li + 1usize;
+    if !(parts.len() == 7usize && parts[1usize] == "INFO" && parts[2usize] == "w" && parts[3usize] == "line") {
+      bad = bad + 1u64;
+      continue;
+    }
+    var id = 0u64;
+    var seq = 0u64;
+    match after(parts[4usize], "id=") {
+      case let Some(v) { match u64.parse(v) { case let Ok(n) { id = n; } case is Err { bad = bad + 1u64; } } }
+      case is None { bad = bad + 1u64; }
+    }
+    match after(parts[5usize], "seq=") {
+      case let Some(v) { match u64.parse(v) { case let Ok(n) { seq = n; } case is Err { bad = bad + 1u64; } } }
+      case is None { bad = bad + 1u64; }
+    }
+    var padOk = false;
+    match after(parts[6usize], "pad=") {
+      case let Some(v) { padOk = v == pad; }
+      case is None {}
+    }
+    if id >= ids || !padOk {
+      bad = bad + 1u64;
+      continue;
+    }
+    let slot = usize.from(id);
+    if next[slot] != seq {
+      misordered = misordered + 1u64;
+    }
+    next[slot] = seq + 1u64;
+    good = good + 1u64;
+  }
+  expectUInt(bad, 0u64, label);
+  expectUInt(misordered, 0u64, label);
+  expectUInt(good, ids * perId, label);
+}
+
+// Which numbered files exist: .1 up to the first missing one
+fn oldCount(name: &str) u64 {
+  var n = 0u64;
+  while fs.exists(&numbered(name, n + 1u64)) {
+    n = n + 1u64;
+  }
+  n
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 4usize && a[1usize].equals("--child") {
+    return child(a[2usize].view(), a[3usize].view());
+  }
+  var exe = String();
+  match process.currentExe() {
+    case let Ok(e) { exe = String.from(e.view()); }
+    case is Err { require(false, "currentExe"); }
+  }
+  match fs.tempDir() {
+    case let Ok(dir) {
+      let log = dir.path().join("all.log");
+      let logText = String.from(log.view());
+      let r = ran(exe.view(), "all", logText.view());
+      expectUInt(u64.from(r.exitCode), 0u64, "keep all: the child exits 0");
+      let n = oldCount(logText.view());
+      expect(n >= 5u64, "keep all: the file was rotated several times");
+      expect(!fs.exists(&numbered(logText.view(), 0u64)), "keep all: no app.log.0 left behind");
+      check(&gather(logText.view(), n, limit, "keep all: every file within the limit"), writers, perWriter,
+        "keep all: no line split, lost or out of order across the files");
+
+      let two = dir.path().join("two.log");
+      let twoText = String.from(two.view());
+      let t = ran(exe.view(), "two", twoText.view());
+      expectUInt(u64.from(t.exitCode), 0u64, "keep 2: the child exits 0");
+      expectUInt(oldCount(twoText.view()), 2u64, "keep 2: exactly app.log.1 and app.log.2 are kept");
+      expect(!fs.exists(&numbered(twoText.view(), 3u64)), "keep 2: no app.log.3");
+      expect(!fs.exists(&numbered(twoText.view(), 0u64)), "keep 2: no app.log.0 left behind");
+      let tail = gather(twoText.view(), 2u64, limit, "keep 2: every file within the limit");
+      let tl = List[&str].from(tail.lines());
+      var whole = 0u64;
+      var li = 0usize;
+      while li < tl.len() {
+        let parts = List[&str].from(tl[li].splitOnChar(' '));
+        if parts.len() == 7usize && parts[1usize] == "INFO" && parts[6usize] == "pad=0123456789abcdefghij0123456789" {
+          whole = whole + 1u64;
+        }
+        li = li + 1usize;
+      }
+      expectUInt(whole, u64.from(tl.len()), "keep 2: every line left is whole");
+      expect(tl.len() > 10usize && u64.from(tl.len()) < writers * perWriter, "keep 2: older lines were dropped, newer kept");
+
+      let lg = dir.path().join("long.log");
+      let lgText = String.from(lg.view());
+      let l = ran(exe.view(), "long", lgText.view());
+      expectUInt(u64.from(l.exitCode), 0u64, "long line: the child exits 0");
+      let bigText = readFile(&numbered(lgText.view(), 1u64), 1000000u64, "long line: middle file");
+      let big = List[&str].from(bigText.lines());
+      expectUInt(u64.from(big.len()), 1u64, "long line: the long one is alone in its file");
+      expect(big[0usize].len() > 3000usize, "long line: and whole");
+      let firstText = readFile(&numbered(lgText.view(), 2u64), 1000000u64, "long line: oldest file");
+      let first = List[&str].from(firstText.lines());
+      expectUInt(u64.from(first.len()), 1u64, "long line: the line before it is alone too");
+
+      #if #os == .windows {
+        let hl = dir.path().join("held.log");
+        let hlText = String.from(hl.view());
+        let h = ran(exe.view(), "held", hlText.view());
+        expectUInt(u64.from(h.exitCode), 0u64, "held: a refused rename loses nothing, and the next line rotates once free");
+      }
+    }
+    case is Err { require(false, "tempDir"); }
+  }
+  done()
+}
