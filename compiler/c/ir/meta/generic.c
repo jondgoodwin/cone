@@ -1931,6 +1931,8 @@ static int genericIsTextOwner(RefNode *ref) {
         && itypeGetTypeDcl(ref->vtexp) == (INode*)strTypeDcl;
 }
 
+static int genericArgsUnsettled(Nodes *args);
+
 // Is the type 'trait', a borrow that lives for the whole program let cross as
 // 'how' says where the trait is Sendable?
 static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
@@ -2042,6 +2044,14 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
     // it compares is the type's members, so an instance's are decided first
     if (strnode->latewhere)
         genericLateWhereNow(strnode);
+    // An instance one of whose arguments is still being laid out
+    // ('Wrap[Box[Grouped]]' inside Grouped) has members not yet known to exist
+    // (those whose 'where' waits), and comparing them would lay the instance out
+    // inside that layout: it is no evidence of a fit, and fits only by declaring
+    // the trait. The queue decides its members later and asks again
+    Nodes *instargs = itypeInstanceTypeArgs(dcl);
+    if (strnode->latewhere || (instargs && genericArgsUnsettled(instargs)))
+        return 0;
     genericDemandMatch(trait, strnode);
     return structMatches(trait, dcl, Monomorph) != NoMatch;
 }
@@ -3970,6 +3980,63 @@ static int genericWhereNamesArg(Nodes *where, Nodes *parms, Nodes *args, uint32_
     return 0;
 }
 
+// Is 'trait' one genericTypeIsHow answers from a struct's layout, rather than
+// from what it declares or its methods? There is no shared predicate for it:
+// the compiler grants these in genericTypeIsHow itself, and this list is that
+// function's branches that read the layout, each listed for the one:
+//   Move, Copy       itypeIsMove: whether a field moves
+//   Clone            granted to every Copy type (itypeIsMove again)
+//   Sendable         itypeThreadBoundHow: whether a field is bound to its thread
+//   Shareable        itypeNotShareable: whether a field cannot be shared
+//   Sized, DynSized  itypeIsSized, itypeIsDynSized: the size of the fields
+// The other compiler-found marker, ShapeKeeping, is found from the methods a
+// virtual reference dispatches to, never from fields, and a type may not
+// declare it; 'T is ShapeKeeping' is answered by declaration here and reads no
+// layout. The number markers and Default, Hash, Serialize and Deserialize are
+// granted to number types, which have no waiting layout. A new grant that
+// reads a struct's fields belongs in this list.
+static int genericTraitReadsLayout(StructNode *trait) {
+    return trait == moveTrait || trait == copyTrait || coreIsCloneTrait((INode*)trait)
+        || trait == sendableTrait || trait == shareableTrait
+        || trait == sizedTrait || trait == dynSizedTrait;
+}
+
+// Does this condition of an 'is' entry ask about an argument's layout? A clause
+// 'T is Trait' asks whether the argument moves, crosses threads, has a size
+// when its trait is one the compiler grants from layout; any other named trait
+// is answered by what the argument declares (genericTypeIsHow), which an
+// instance with an argument still being laid out is answered by alone, so the
+// argument is not laid out first. Anything not a plain clause is taken to ask.
+static int genericCondReadsLayout(INode *cond) {
+    if (cond->tag == NotLogicTag)
+        return genericCondReadsLayout(((LogicNode*)cond)->lexp);
+    if (cond->tag == OrLogicTag || cond->tag == AndLogicTag)
+        return genericCondReadsLayout(((LogicNode*)cond)->lexp) || genericCondReadsLayout(((LogicNode*)cond)->rexp);
+    if (cond->tag != IsTag)
+        return 1;
+    StructNode *trait = genericNamedTrait(((CastNode*)cond)->typ);
+    return trait == NULL || genericTraitReadsLayout(trait);
+}
+
+// Does something the type's own members' conditions decide read an argument's
+// layout: a '#if' field, or an 'is' entry whose condition or trait asks for it?
+static int genericMembersReadLayout(StructNode *type) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&type->fields, cnt, nodesp)) {
+        if ((*nodesp)->tag == FieldDclTag && ((FieldDclNode*)*nodesp)->hashcond != NULL)
+            return 1;
+    }
+    if (type->condis) {
+        for (nodesFor(type->condis, cnt, nodesp)) {
+            FieldDclNode *entry = (FieldDclNode*)*nodesp;
+            if (genericNamedTrait(entry->vtype) == moveTrait || genericCondReadsLayout(entry->value))
+                return 1;
+        }
+    }
+    return 0;
+}
+
 // Does a condition the instance cannot wait for -- its own 'where', its
 // enum's, or an 'is' entry's -- read argument 'i' of the generic's instance?
 static int genericTypeReadsArg(INode *generic, GenericInfo *genericinfo, Nodes *args, uint32_t i) {
@@ -3977,13 +4044,13 @@ static int genericTypeReadsArg(INode *generic, GenericInfo *genericinfo, Nodes *
         return 1;
     StructNode *type = (StructNode*)generic;
     StructNode *owner = (type->flags & HasTagField) ? structGetBaseTrait(type) : NULL;
-    if (genericMembersConditioned(type, 1) || (owner && genericMembersConditioned(owner, 1)))
+    if (genericMembersReadLayout(type) || (owner && genericMembersReadLayout(owner)))
         return 1;
     if (owner && owner->derived) {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(owner->derived, cnt, nodesp))
-            if (genericMembersConditioned((StructNode*)*nodesp, 1))
+            if (genericMembersReadLayout((StructNode*)*nodesp))
                 return 1;
     }
     if (genericWhereReadsLayout(genericinfo->where)

@@ -1,0 +1,84 @@
+// A method's 'where' is a condition for the method to exist, so an instance whose arguments do not meet it lacks
+// the method: nothing of it is checked or generated (mod-generativity.html, "A method that exists only for some
+// instances"). That holds for an instance that appears inside its own argument's definition, where the argument
+// is still being laid out when the instance is asked about. 'Plain' declares nothing, so 'Cont[Plain]' and
+// 'Outer[Cont[Plain]]' lack 'tag' (their bodies call tag on a Plain, which would not compile) although the
+// instances sit inside Plain's own fields; 'Tagged' declares Tag, so they have it there, and it runs. 'Deep' is
+// the same through Option[List[T]], two levels below the argument.
+//
+// Checked by hand against the source:
+//   Tagged(1, [Tagged(2, [])] and a second child Tagged(4, [])): 1 + (2 + 4) = 7
+//   Deep: Plain-like, only compiles and constructs; printed 0 for its kid count
+
+mod meta_where_recursive_instance;
+
+import collections use *;
+import stdio use *;
+
+trait Tag { fn tag(self: &) i32; }
+
+struct Cont[T] is Tag if T is Tag {
+  pub items: List[T];
+  pub fn tag(self: &) i32 where T is Tag {
+    var n = 0;
+    var i = 0usize;
+    while i < self.items.len() { n = n + self.items[i].tag(); i = i + 1usize; }
+    n
+  }
+}
+
+struct Outer[V] is Tag if V is Tag {
+  pub v: Cont[V];
+  pub fn tag(self: &) i32 where V is Tag { self.v.tag() }
+}
+
+struct Opt[T] is Tag if T is Tag {
+  pub kids: Option[List[T]];
+  pub fn tag(self: &) i32 where T is Tag {
+    var n = 0;
+    if self.kids.isSome() {
+      var i = 0usize;
+      let ks = self.kids.unwrap();
+      while i < ks.len() { n = n + ks[i].tag(); i = i + 1usize; }
+    }
+    n
+  }
+}
+
+// Unmet: nothing here declares Tag
+struct Plain { pub name: String; pub groups: Outer[Cont[Plain]]; }
+struct Deep { pub name: String; pub below: Option[Opt[Outer[Deep]]]; }
+
+// Unmet, with the instance holding the type through an Option, whose layout waits inside Holder's own
+struct Holder { pub id: i64; pub kids: Cont[Option[Holder]]; }
+
+// Met
+struct Tagged is Tag {
+  pub n: i32;
+  pub groups: Outer[Cont[Tagged]];
+  pub fn tag(self: &) i32 { self.n + self.groups.tag() }
+}
+
+fn plainGroups() Outer[Cont[Plain]] {
+  Outer[Cont[Plain]](Cont[Cont[Plain]](List[Cont[Plain]]()))
+}
+
+fn emptyGroups() Outer[Cont[Tagged]] {
+  Outer[Cont[Tagged]](Cont[Cont[Tagged]](List[Cont[Tagged]]()))
+}
+
+fn main() {
+  var p = Plain(String(), plainGroups());
+  print <- "plain ", p.groups.v.items.len(), "\n";
+  var d = Deep(String(), None);
+  print <- "deep ", d.name.len(), "\n";
+  var h = Holder(5, Cont[Option[Holder]](List[Option[Holder]]()));
+  print <- "holder ", h.id, " ", h.kids.items.len(), "\n";
+  var kids = List[Tagged]();
+  kids.push(Tagged(2, emptyGroups()));
+  kids.push(Tagged(4, emptyGroups()));
+  var conts = List[Cont[Tagged]]();
+  conts.push(Cont[Tagged](kids));
+  let t = Tagged(1, Outer[Cont[Tagged]](Cont[Cont[Tagged]](conts)));
+  print <- "tagged ", t.tag(), "\n";
+}

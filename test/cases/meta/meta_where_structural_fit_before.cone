@@ -1,0 +1,63 @@
+// A type that has a trait's method but declares nothing fits the trait structurally. Whether it does must come out
+// the same when the type is asked about inside a recursive definition, where an instance's members are not yet
+// decided, as when asked late: a method under 'where T is Tag' on a collection is callable on such an element, and
+// a conditional 'is' entry over it ('Cont2[T] is Tag if T is Tag') meets a 'Tag' requirement, in either order of
+// declaration. 'Has' declares nothing; 'Node' holds a Cont[Option[Node]] and a Has; 'Loop' is its own element.
+// This file declares the element types before the collections; meta_where_structural_fit_after the reverse.
+//
+// Checked by hand against the source:
+//   n.below holds Has(4), Has(5): total() = 4 + 5 = 9
+//   n.below2 holds Has(4), Has(5): need() = tag of Cont2 = 4 + 5 = 9
+//   n.kids is empty: 0
+//   l.kids holds Loop(8), Loop(1): total() = 8 + 1 = 9
+
+mod meta_where_structural_fit_before;
+
+import collections use *;
+import stdio use *;
+
+trait Tag { fn tag(self: &) i32; }
+
+struct Has { pub n: i32; pub fn tag(self: &) i32 { self.n } }
+struct Node { pub id: i32; pub kids: Cont[Option[Node]]; pub h: Has; pub below: Cont[Has]; pub below2: Cont2[Has]; }
+struct Loop { pub n: i32; pub kids: Cont[Loop]; pub kids2: Cont2[Loop]; pub fn tag(self: &) i32 { self.n } }
+
+struct Cont[T] {
+  pub items: List[T];
+  pub fn total(self: &) i32 where T is Tag {
+    var n = 0;
+    var i = 0usize;
+    while i < self.items.len() { n = n + self.items[i].tag(); i = i + 1usize; }
+    n
+  }
+}
+
+struct Cont2[T] is Tag if T is Tag {
+  pub items: List[T];
+  pub fn tag(self: &) i32 where T is Tag {
+    var n = 0;
+    var i = 0usize;
+    while i < self.items.len() { n = n + self.items[i].tag(); i = i + 1usize; }
+    n
+  }
+}
+
+fn need[X](x: &X) i32 where X is Tag { x.tag() }
+
+fn main() {
+  var hs = List[Has]();
+  hs.push(Has(4));
+  hs.push(Has(5));
+  var hs2 = List[Has]();
+  hs2.push(Has(4));
+  hs2.push(Has(5));
+  let n = Node(1, Cont[Option[Node]](List[Option[Node]]()), Has(3), Cont[Has](hs), Cont2[Has](hs2));
+  print <- "below ", n.below.total(), "\n";
+  print <- "need ", need(&n.below2), "\n";
+  print <- "kids ", n.kids.items.len(), "\n";
+  var ls = List[Loop]();
+  ls.push(Loop(8, Cont[Loop](List[Loop]()), Cont2[Loop](List[Loop]())));
+  ls.push(Loop(1, Cont[Loop](List[Loop]()), Cont2[Loop](List[Loop]())));
+  let l = Loop(7, Cont[Loop](ls), Cont2[Loop](List[Loop]()));
+  print <- "loop ", l.kids.total(), "\n";
+}
