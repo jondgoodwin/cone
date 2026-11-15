@@ -1,0 +1,162 @@
+// tempFile and copyDir.
+//
+//   - tempFile makes a new absolute file, open for reading and writing: bytes
+//     written through 'file()' read back after a seek, the file is there while
+//     its owner lives and gone after, and two calls make two names;
+//   - copyDir copies a tree holding an empty folder, a nested file, a
+//     non-ASCII name and (POSIX) a link to a file and a dangling link, keeping
+//     the structure, the bytes and the links as links; the original stays;
+//   - 'to' already there (a folder or a file) is AlreadyExists naming 'to',
+//     a missing 'from' is NotFound, a file as 'from' is refused, a missing
+//     folder above 'to' is NotFound, and a failure part-way names its path.
+//
+// Everything is made inside a tempDir, so the test also uses it.
+
+mod tempfilecopydir;
+
+import testing use *;
+import collections use *;
+import ioerror use IoErrorKind;
+import libc;
+import posix;
+import path use Path;
+import fs;
+
+fn bytesOf(p: &Path) String {
+  match fs.readFile(p) {
+    case let Ok(s) { s }
+    case is Err { String.from("<unreadable>") }
+  }
+}
+
+fn tempFiles() {
+  var kept = Path.from("");
+  var other = Path.from("");
+  {
+    match fs.tempFile() {
+      case let Err(e) { expect(false, "tempFile makes a file"); }
+      case var Ok(t) {
+        kept = t.path().clone();
+        expect(fs.isFile(&kept), "the temp file is there");
+        expect(kept.isAbsolute(), "its path is absolute");
+        expect(kept.name().startsWith("cone-"), "its name starts 'cone-'");
+        {
+          let f = t.file();
+          expect(f.write("hello temp") is Ok, "write through file()");
+          expect(f.seek(0u64) is Ok, "seek to the start");
+          var buf = Array[u8, 64]() <- fill 0u8;
+          match f.read(&mut buf) {
+            case let Ok(n) {
+              expectUInt(u64.from(n), 10u64, "read gets all 10 bytes");
+              expectStr(mem.sliceFromParts(&[]buf as *u8, n), "hello temp", "and they are what was written");
+            }
+            case is Err { expect(false, "read works"); }
+          }
+        }
+        match fs.tempFile() {
+          case let Ok(u) {
+            other = u.path().clone();
+            expect(other.view() != kept.view(), "two calls make two names");
+            expect(fs.isFile(&other), "the second file is there");
+          }
+          case is Err { expect(false, "a second tempFile"); }
+        }
+        expect(!fs.exists(&other), "the second file went when its owner did");
+        expect(fs.exists(&kept), "the first is there while its owner lives");
+      }
+    }
+  }
+  expect(!fs.exists(&kept), "the temp file went with its owner");
+}
+
+// A link to a file by its text, as linkmodetime.cone makes one (POSIX)
+fn linkTo(text: &str, link: &Path) bool {
+  var command = String.from("ln -s '");
+  command.append(text);
+  command.append("' '");
+  command.append(link.view());
+  command.append("'");
+  libc.system(command.cstr()) == 0i32
+}
+
+fn copying() {
+  match fs.tempDir() {
+    case let Err(e) { expect(false, "tempDir makes a folder"); }
+    case let Ok(t) {
+      let dir = t.path();
+      let src = dir.join("src");
+      expect(fs.makeDirAll(&src.join("nested/deep")) is Ok, "make the tree");
+      expect(fs.makeDirAll(&src.join("empty")) is Ok, "make the empty folder");
+      expect(fs.writeFile(&src.join("top.txt"), "top") is Ok, "write top");
+      expect(fs.writeFile(&src.join("nested/deep/leaf.txt"), "leaf") is Ok, "write a nested file");
+      expect(fs.writeFile(&src.join("café.txt"), "accent") is Ok, "write a non-ASCII name");
+      #if #os != .windows {
+        expect(linkTo("top.txt", &src.join("alias")), "made a link to a file");
+        expect(linkTo("nowhere", &src.join("dangling")), "made a dangling link");
+      }
+
+      let dst = dir.join("dst");
+      expect(fs.copyDir(&src, &dst) is Ok, "copy the tree");
+      expect(fs.isDir(&dst), "the copy's folder is there");
+      expect(fs.isDir(&dst.join("empty")), "the empty folder is copied");
+      expect(fs.isDir(&dst.join("nested/deep")), "the nested folders are copied");
+      expect(bytesOf(&dst.join("top.txt")).view() == "top", "top.txt's bytes");
+      expect(bytesOf(&dst.join("nested/deep/leaf.txt")).view() == "leaf", "the nested file's bytes");
+      expect(bytesOf(&dst.join("café.txt")).view() == "accent", "the non-ASCII name's bytes");
+      match fs.readDir(&dst.join("empty")) {
+        case let Ok(l) { expect(l.len() == 0usize, "the empty folder stays empty"); }
+        case is Err { expect(false, "the empty folder can be listed"); }
+      }
+      expect(bytesOf(&src.join("top.txt")).view() == "top", "the original stays");
+      #if #os != .windows {
+        expect(fs.isLink(&dst.join("alias")), "a link is copied as a link");
+        expect(bytesOf(&dst.join("alias")).view() == "top", "and leads to the copied file");
+        expect(fs.isLink(&dst.join("dangling")), "a dangling link is copied as a link");
+        expect(!fs.exists(&dst.join("dangling")), "and still dangles");
+      }
+
+      // 'to' already there
+      match fs.copyDir(&src, &dst) {
+        case let Err(e) {
+          expect(e.kind() == IoErrorKind.AlreadyExists, "an existing 'to' is AlreadyExists");
+          expect(e.path.view() == dst.view(), "and names 'to'");
+        }
+        case is Ok { expect(false, "an existing 'to' fails"); }
+      }
+      let asFile = dir.join("plain");
+      expect(fs.writeFile(&asFile, "x") is Ok, "write a plain file");
+      match fs.copyDir(&src, &asFile) {
+        case let Err(e) { expect(e.kind() == IoErrorKind.AlreadyExists, "a file as 'to' is AlreadyExists"); }
+        case is Ok { expect(false, "a file as 'to' fails"); }
+      }
+      expect(bytesOf(&asFile).view() == "x", "the file is untouched");
+
+      // Bad 'from', bad 'to'
+      match fs.copyDir(&dir.join("missing"), &dir.join("m2")) {
+        case let Err(e) { expect(e.notFound(), "a missing 'from' is NotFound"); }
+        case is Ok { expect(false, "a missing 'from' fails"); }
+      }
+      match fs.copyDir(&asFile, &dir.join("m3")) {
+        case let Err(e) { expect(e.code == posix.ENOTDIR, "a file as 'from' is ENOTDIR"); }
+        case is Ok { expect(false, "a file as 'from' fails"); }
+      }
+      expect(!fs.exists(&dir.join("m3")), "nothing was made for it");
+      match fs.copyDir(&src, &dir.join("no/such/dst")) {
+        case let Err(e) { expect(e.notFound(), "a missing folder above 'to' is NotFound"); }
+        case is Ok { expect(false, "a missing folder above 'to' fails"); }
+      }
+
+      // The error is the copy's own
+      match fs.copyDir(&src, &dst) {
+        case let Err(e) { expect(e.op.view() == "copyDir", "the error's op is copyDir"); }
+        case is Ok { }
+      }
+    }
+  }
+}
+
+fn main() i32 {
+  tempFiles();
+  copying();
+  done()
+}

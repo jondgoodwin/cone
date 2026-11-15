@@ -169,7 +169,7 @@ DOMAINS = [
    ("url", "URLs as data (RFC 3986): read, resolved against a base, written back."),
   ]),
   ("Files and folders", [
-   ("fs", "Files and folders, synchronously: read, write, map, list, walk, remove."),
+   ("fs", "Files and folders, synchronously: read, write, map, list, walk, copy a folder, remove, temp files and folders."),
    ("path", "File paths taken apart and put together, as text; asks the file system nothing."),
   ]),
   ("Archives and compression", [
