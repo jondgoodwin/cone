@@ -1,0 +1,39 @@
+// '#fields(Self)' in a trait's default lists the struct's own fields, not the placeholders that earlier
+// traits of the 'is' list leave in it. Each library trait below prints the field names it sees.
+//
+//   two traits, in either order, on one struct:   "x y" from each        (A, B)
+//   a trait that requires a field, then one:      "q z" from the second  (C)
+//   a field-requiring trait after one (1098 allows the reverse only): not tested
+//   a trait with a default over a required-field trait: "q z" (D)
+//   SoA over a struct that is such a trait: columns q, z only: sum of q and z of 2 rows: 3 and 7, names "q z"
+//
+// Printed lines were checked by hand against the declarations.
+
+mod meta_fields_mixin;
+
+import stdio use *;
+import collections use *;
+
+trait ShowA { pub fn showA(self: &) i64 { #each #f in #fields(Self) { printStr(#f.name); printStr(" "); } printStr("\n"); 1 } }
+trait ShowB { pub fn showB(self: &) i64 { #each #f in #fields(Self) { printStr(#f.name); printStr(" "); } printStr("\n"); 1 } }
+trait NeedsQ { pub q: i32; pub fn getq(self: &) i32 { q } }
+
+struct A is ShowA, ShowB { pub x: i32; pub y: i32; }
+struct B is ShowB, ShowA { pub x: i32; pub y: i32; }
+struct C is NeedsQ, ShowA, ShowB { pub q: i32; pub z: i32; }
+struct D is Eq, ShowA, Clone, ShowB { pub q: i32; pub z: i32; }
+
+fn main() {
+  A(1, 2).showA(); A(1, 2).showB();
+  B(1, 2).showA(); B(1, 2).showB();
+  C(1, 2).showA(); C(1, 2).showB();
+  D(1, 2).showA(); D(1, 2).showB();
+  printInt(i64.from(C(5, 6).getq())); printStr("\n");
+  var ps = SoaList[C]();
+  ps.push(C(1, 2));
+  ps.push(C(3, 5));
+  var sq = 0i64; var sz = 0i64;
+  var i = 0usize;
+  while i < ps.len() { sq += i64.from(ps.q[i]); sz += i64.from(ps.z[i]); i += 1; }
+  printInt(sq); printStr(" "); printInt(sz); printStr("\n");
+}
