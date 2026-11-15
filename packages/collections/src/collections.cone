@@ -194,11 +194,19 @@ fn isHeap(r: *MemRegion) bool inline { r as usize == heapRegion() as usize }
 // 'splitOff', 'extend', 'drain(start, end)'), and the methods of Array that keep the
 // length (first, last, fill, rotate, copyFrom, copyWithin, windows, startsWith,
 // endsWith, position) are its own through its view.
-pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize if T is Serialize {
   ptr: *T;
   used: usize;
   cap: usize;
   region: *MemRegion;
+
+  // A sequence of its elements, serializable wherever the element is (core's Serialize)
+  pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping) where T is Serialize {
+    s.beginSeq(self.len());
+    var i = 0usize;
+    while i < self.len() { serializeValue[T](&self[i], s); i = i + 1usize; }
+    s.endSeq();
+  }
 
   // The methods of 'Array[T]', the body 'view' lends, are the list's too, as
   // 'str''s are a String's: its 'len', written once on the body. Each is reached
@@ -1325,7 +1333,20 @@ pub struct PriorityQueue[P, T] is Default, ShapeChanging, Sendable, CarriesRegio
 // Its values do not lie in one run of memory when they wrap round the block's
 // end, so there is no 'view' of them: walk them with 'items', or by position.
 // A borrow from a lookup or a cursor is good only until the deque next changes.
-pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize if T is Serialize {
+  // A sequence from front to back, serializable wherever the element is (core's Serialize)
+  pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping) where T is Serialize {
+    s.beginSeq(self.len());
+    var it = self.iter();
+    while true {
+      match it.next() {
+        case let Some(v) { serializeValue[T](v, s); }
+        case is None { break; }
+      }
+    }
+    s.endSeq();
+  }
+
   ptr: *T;
   head: usize;    // the slot of the first value
   used: usize;
@@ -2247,7 +2268,25 @@ fn capacityBuckets(n: usize) usize {
   b
 }
 
-pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize if K is Serialize && V is Serialize {
+  // A map, each key then its value in the table's order, serializable wherever both are (core's Serialize)
+  pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping) where K is Serialize && V is Serialize {
+    s.beginMap(self.len());
+    var it = self.iter();
+    while true {
+      match it.next() {
+        case let Some(kv) {
+          s.mapKey();
+          serializeValue[K](kv.0, s);
+          s.mapValue();
+          serializeValue[V](kv.1, s);
+        }
+        case is None { break; }
+      }
+    }
+    s.endMap();
+  }
+
   ctrl: *u8;
   slots: *DictEntry[K, V];
   mask: usize;       // the buckets, less one
