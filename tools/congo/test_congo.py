@@ -2251,6 +2251,46 @@ class Testing(unittest.TestCase):
         self.assertEqual((tests / "status.exit").read_text(), "3\n")
         self.congo("test", "status", cwd=pkg)
 
+    def test_a_test_has_its_own_time_limit_and_a_stopped_one_keeps_its_stderr(self):
+        """tests/<name>.timeout holds a test's seconds. A test that sleeps 4 s
+        under a 2 s limit is stopped, and its stderr is in Congo's output; the
+        same test passes under a 6 s limit; a .timeout that is no positive
+        whole number fails the test with its path."""
+        pkg = self.root / "sleepy"
+        write(pkg / "congo.toml",
+              '[package]\nname = "sleepy"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "sleepy.cone", "mod sleepy;\n\npub fn one() i64 {\n  1i64\n}\n")
+        write(pkg / "tests" / "nap.cone", """
+            mod nap;
+
+            import stdio use *;
+            import sleepy;
+            import thread;
+            import time;
+
+            fn main() i32 {
+              eprintStr("nap: about to sleep\\n");
+              thread.sleep(time.Duration.fromSeconds(4));
+              printInt(sleepy.one());
+              printStr("\\n");
+              0i32
+            }
+            """)
+        write(pkg / "tests" / "nap.out", "1\n")
+        write(pkg / "tests" / "nap.timeout", "2\n")
+        stopped = self.congo("test", "nap", cwd=pkg, ok=False)
+        self.assertNotEqual(stopped.returncode, 0)
+        self.assertIn("timed out after 2 seconds", stopped.stdout)
+        self.assertIn("nap: about to sleep", stopped.stdout)
+        write(pkg / "tests" / "nap.timeout", "6\n")
+        passed = self.congo("test", "nap", cwd=pkg)
+        self.assertIn("test nap ... ok", passed.stdout)
+        for bad in ("0\n", "2.5\n", "soon\n", ""):
+            write(pkg / "tests" / "nap.timeout", bad)
+            refused = self.congo("test", "nap", cwd=pkg, ok=False)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("nap.timeout must hold one positive whole number", refused.stdout)
+
     def halver(self, root: Path) -> Path:
         """A library whose one function checks its argument in a debug build
         only; a test of it that passes in either build, and one, marked
