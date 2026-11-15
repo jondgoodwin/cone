@@ -21,6 +21,9 @@ const lkStartLine = 2u32;
 const lkEndLine = 3u32;
 const lkWord = 4u32;
 const lkNotWord = 5u32;
+// The Unicode forms of \b and \B (word characters as unicode.isWordChar has them)
+const lkWordU = 6u32;
+const lkNotWordU = 7u32;
 
 const noNode = 0xFFFFFFFFu32;
 const noMax = 0xFFFFFFFFu32;
@@ -190,6 +193,18 @@ fn hexValue(c: u8) u32 {
   if c >= '0' && c <= '9' { u32.from(c) - 48 }
   else if c >= 'a' && c <= 'f' { u32.from(c) - 87 }
   else { u32.from(c) - 55 }
+}
+
+// The code points of a Unicode class as sorted ranges (unicode.classRanges)
+fn unicodeSet(cls: unicode.CharClass) List[Range] {
+  var r = List[Range]();
+  let src = unicode.classRanges(cls);
+  var i = 0usize;
+  while i < src.len() {
+    r.push(Range(src[i].lo, src[i].hi));
+    i = i + 1;
+  }
+  r
 }
 
 fn isWordByte(c: u8) bool {
@@ -453,8 +468,7 @@ struct Parser {
     if c == 'b' || c == 'B' {
       pos = pos + 1;
       if flags.u {
-        fail(ErrorKind.Unsupported, at, "a Unicode word boundary needs the Unicode tables, which are not built: write (?-u:\\b) for an ASCII one");
-        return noNode;
+        return addNode(nLook, false, if c == 'b' { lkWordU } else { lkNotWordU }, 0u32, 0u32, 0u32);
       }
       return addNode(nLook, false, if c == 'b' { lkWord } else { lkNotWord }, 0u32, 0u32, 0u32);
     }
@@ -486,11 +500,15 @@ struct Parser {
   // The set of \d \s \w (or the denial), in ASCII mode; Unicode mode refuses
   fn perlSet(self: &mut, c: u8, at: usize) List[Range] {
     var r = List[Range]();
+    let kind = perlClass(c);
     if flags.u {
-      fail(ErrorKind.Unsupported, at, "a Unicode \\d, \\s or \\w needs the Unicode tables, which are not built: write (?-u:\\w), or a class such as [0-9]");
+      // \d is Nd, \s is White_Space, \w is Alphabetic, M, Nd, Pc and Join_Control
+      if kind == 1 || kind == 4 { r = unicodeSet(unicode.CharClass.Digit); }
+      else if kind == 2 || kind == 5 { r = unicodeSet(unicode.CharClass.Space); }
+      else { r = unicodeSet(unicode.CharClass.Word); }
+      if kind >= 4 { return negatedRanges(&r, maxCodePoint); }
       return r;
     }
-    let kind = perlClass(c);
     if kind == 1 || kind == 4 { r.push(Range(48, 57)); }
     else if kind == 2 || kind == 5 {
       r.push(Range(9, 13));
@@ -509,6 +527,8 @@ struct Parser {
   fn perlNode(self: &mut, c: u8, at: usize) u32 {
     var r = perlSet(c, at);
     if failed { return noNode; }
+    // The Unicode sets are closed under case already
+    if flags.u { return classNode(r, false, at); }
     if flags.i { r = foldedAscii(&r); }
     classNode(r, true, at)
   }
@@ -791,7 +811,7 @@ struct Parser {
         let s = perlSet(c, at);
         if failed { return Decoded(0, 0); }
         var s2 = s;
-        if flags.i { s2 = foldedAscii(&s2); }
+        if flags.i && !flags.u { s2 = foldedAscii(&s2); }
         var k = 0usize;
         while k < s2.len() { dest.push(*s2[k]); k = k + 1; }
         return Decoded(0, 0);

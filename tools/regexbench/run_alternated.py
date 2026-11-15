@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 ROWS = ["p1-is", "p1-find", "p2-is", "p2-find", "p3-find", "p3-caps", "p4-find", "p4-caps", "p5-is", "p5-find",
-        "p6-find", "compile", "adv64k", "adv1m"]
+        "p6-find", "u1-find", "u2-find", "u3-find", "compile", "ucompile", "adv64k", "adv1m"]
 
 
 def run(cmd, shell):

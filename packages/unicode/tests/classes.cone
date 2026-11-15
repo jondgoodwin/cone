@@ -59,7 +59,45 @@ fn main() i32 {
   expect(!unicode.isAlphabetic('\u0000') && !unicode.isAlphabetic('\U0010FFFF') && !unicode.isNumeric('\U0010FFFF'), "ends");
   up('\U0010FFFF', 0x10FFFFu32, "last up"); lo('\u0000', 0u32, "first low");
 
+  // The regex classes (UTS #18 \w, \d): Alphabetic, marks, Nd, Pc and Join_Control; Nd alone
+  expect(unicode.isWordChar('a') && unicode.isWordChar('Z') && unicode.isWordChar('_') && unicode.isWordChar('9'), "word ascii");
+  expect(!unicode.isWordChar('-') && !unicode.isWordChar(' ') && !unicode.isWordChar('×') && !unicode.isWordChar('​'), "not word");
+  expect(unicode.isWordChar('é') && unicode.isWordChar('α') && unicode.isWordChar('日'), "word letters");
+  expect(unicode.isWordChar('́') && unicode.isWordChar('ः') && unicode.isWordChar('‍') && unicode.isWordChar('‿'), "word mark, Join_Control, Pc");
+  expect(unicode.isDecimalDigit('7') && unicode.isDecimalDigit('٣') && unicode.isDecimalDigit('१') && unicode.isDecimalDigit('２'), "digits");
+  expect(!unicode.isDecimalDigit('a') && !unicode.isDecimalDigit('²') && !unicode.isDecimalDigit('Ⅷ') && !unicode.isDecimalDigit('½'), "not digits (No, Nl)");
+  // the runs give the same answer as the lookup, and the last run ends at U+10FFFF
+  var sorted = true;
+  var runWord = 0u64; var runDigit = 0u64; var runWhite = 0u64;
+  var which = 0u32;
+  while which < 3u32 {
+    let rs = if which == 0u32 { unicode.classRanges(unicode.CharClass.Word) }
+      else if which == 1u32 { unicode.classRanges(unicode.CharClass.Digit) }
+      else { unicode.classRanges(unicode.CharClass.Space) };
+    var n = 0u64;
+    var r = 0usize;
+    while r < rs.len() {
+      let lo = rs[r].lo;
+      let hi = rs[r].hi;
+      // sorted, inclusive, and not touching the range before
+      if lo > hi || (r > 0 && rs[r - 1].hi + 1u32 >= lo) { sorted = false; }
+      var y = lo;
+      while y <= hi {
+        if y < 0xD800u32 || y > 0xDFFFu32 { n = n + 1u64; }
+        y = y + 1u32;
+      }
+      r = r + 1;
+    }
+    if which == 0u32 { runWord = n; } else if which == 1u32 { runDigit = n; } else { runWhite = n; }
+    which = which + 1u32;
+  }
+  expect(sorted, "classRanges are sorted and merged");
+  expectUInt(runWord, 162226u64, "word ranges total");
+  expectUInt(runDigit, 770u64, "digit ranges total");
+  expectUInt(runWhite, 25u64, "white space ranges total");
+
   // Every code point but the surrogates, against the generator's totals
+  var wordN = 0u64; var digitN = 0u64;
   var alpha = 0u64; var upper = 0u64; var lower = 0u64; var white = 0u64; var numeric = 0u64;
   var sumUp = 0u64; var sumLow = 0u64;
   var x = 0u32;
@@ -71,6 +109,8 @@ fn main() i32 {
       if unicode.isLower(c) { lower = lower + 1u64; }
       if unicode.isWhitespace(c) { white = white + 1u64; }
       if unicode.isNumeric(c) { numeric = numeric + 1u64; }
+      if unicode.isWordChar(c) { wordN = wordN + 1u64; }
+      if unicode.isDecimalDigit(c) { digitN = digitN + 1u64; }
       sumUp = sumUp + u64.from(u32.from(unicode.toUpperSimple(c)));
       sumLow = sumLow + u64.from(u32.from(unicode.toLowerSimple(c)));
     }
@@ -81,6 +121,8 @@ fn main() i32 {
   expectUInt(lower, 2740u64, "lowercase count");
   expectUInt(white, 25u64, "white space count");
   expectUInt(numeric, 2247u64, "numeric count");
+  expectUInt(wordN, 162226u64, "word count");
+  expectUInt(digitN, 770u64, "decimal digit count");
   expectUInt(sumUp, 620504297126u64, "toUpperSimple sum");
   expectUInt(sumLow, 620509398487u64, "toLowerSimple sum");
 

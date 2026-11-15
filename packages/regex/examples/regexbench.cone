@@ -8,7 +8,7 @@
 // prints `row us=<microseconds> count=<matches> sum=<checksum>`. The count and the
 // checksum (of every match's and group's offsets) must equal the twin's before any
 // time counts. The corpus is built before the clock starts. Rows: p1-is p1-find
-// p2-is p2-find p3-find p3-caps p4-find p4-caps p5-is p5-find p6-find compile
+// p2-is p2-find p3-find p3-caps p4-find p4-caps p5-is p5-find p6-find u1-find u2-find u3-find (the Unicode classes) compile
 // adv64k adv1m, and p7-find (no twin: 4 MiB of random a and b against `[ab]*a[ab]{12}`, a
 // pattern that needs 2^13 lazy-DFA states, to show the cache budget at work). An optional
 // third argument is the lazy DFA's cache budget in bytes (0: the Pike VM answers). An '-is' row asks isMatch of each line of the corpus in turn;
@@ -145,6 +145,10 @@ fn patternOf(row: &str) &str {
   else if row.startsWith("p4") { "(?-u)(GET|POST|PUT) /(\\w+)\\?x=(\\d+)" }
   else if row.startsWith("p5") { p5 }
   else if row.startsWith("p7") { "[ab]*a[ab]{12}" }
+  // The Unicode classes: u1 with a Unicode \b (the DFA quits at a byte past ASCII), u2 without, u3 a Unicode \d
+  else if row.startsWith("u1") { "\\w+ing\\b" }
+  else if row.startsWith("u2") { "\\w+ing" }
+  else if row.startsWith("u3") { "\\d{4}-\\d{2}-\\d{2}" }
   else { "(?-u)\\w+ing\\b" }
 }
 
@@ -242,6 +246,25 @@ fn compileRow(out: &mut RowOut) {
   out.sum = n;
 }
 
+// The three Unicode-class patterns, parsed and compiled 100 times
+fn ucompileRow(out: &mut RowOut) {
+  var n = 0u64;
+  var k = 0;
+  while k < 100 {
+    var p = 1;
+    while p <= 3 {
+      match regex.Regex.parse(patternOf(if p == 1 { "u1" } else if p == 2 { "u2" } else { "u3" })) {
+        case let Ok(re) { n = n + u64.from(re.groupCount()) + 1u64; }
+        case is Err { }
+      }
+      p = p + 1;
+    }
+    k = k + 1;
+  }
+  out.count = n;
+  out.sum = n;
+}
+
 fn adversarial(size: usize, out: &mut RowOut) {
   var hay = String.withCapacity(size);
   var i = 0usize;
@@ -266,6 +289,11 @@ fn main() i32 {
     compileRow(&mut out);
     us = t0.elapsed().micros();
   }
+  else if row == "ucompile" {
+    let t0 = Instant.now();
+    ucompileRow(&mut out);
+    us = t0.elapsed().micros();
+  }
   else if row == "adv64k" || row == "adv1m" {
     let t0 = Instant.now();
     adversarial(if row == "adv64k" { 65536usize } else { 1048576usize }, &mut out);
@@ -275,7 +303,7 @@ fn main() i32 {
     var text = String();
     var reps = 1;
     if row.startsWith("p5") { text = dictCorpus(); reps = 10; }
-    else if row.startsWith("p6") { text = textCorpus(); }
+    else if row.startsWith("p6") || row.startsWith("u1") || row.startsWith("u2") { text = textCorpus(); }
     else if row.startsWith("p7") {
       // 4 MiB of random a and b: the pattern needs 2^13 DFA states, which is what the cache budget is for
       var r = Rng(4u64);
