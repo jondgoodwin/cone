@@ -115,8 +115,11 @@ static _Unwind_Reason_Code visit(struct _Unwind_Context *ctx, void *arg) {
     if (w->anchor == 0) {
         if (index < 2) return _URC_NO_REASON;
     } else if (!w->passed) {
-        if ((uint64_t)_Unwind_GetCFA(ctx) > w->anchor) w->passed = 1;
-        return _URC_NO_REASON;
+        // libgcc's context holds, in the callback for a frame, the CFA of the frame it
+        // called: the first one above the anchor is already the frame after the one
+        // holding the anchor, which is the first to keep
+        if ((uint64_t)_Unwind_GetCFA(ctx) <= w->anchor) return _URC_NO_REASON;
+        w->passed = 1;
     }
     if (w->count >= w->max) return _URC_END_OF_STACK;
     w->frames[w->count++] = pc;
