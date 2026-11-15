@@ -1,0 +1,44 @@
+// Bug 93 (row 352), accepted: the control of collection_flow_put_reshape. A free function stores an
+// element of a scalar collection through its '&mut' parameter while a view into 'r' is held (nothing
+// the view points into is freed), and one stores a String element after the view ended. Prints the
+// view's first byte ('0', 48) and the stored 5, then 48 for the second.
+
+mod collection_flow_put_reshape_ok;
+
+import stdio use *;
+import collections use *;
+
+fn mkS() String { var s = String(); s.append("0123456789012345678901234567890123456789"); s }
+
+struct Rd { pub items: List[String]; pub counts: List[i32]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].view() } }
+
+fn putString(l: &mut List[String], i: usize, s: String) { l[i] = s; }
+fn putCount(l: &mut List[i32], i: usize, s: i32) { l[i] = s; }
+
+// A scalar element stored through the parameter while the view is held
+fn scalar(r: &mut Rd) u8 {
+  let y: &mut Rd = r;
+  let v = y.view();
+  putCount(&mut r.counts, 0usize, 5);
+  v[0usize]
+}
+
+// The view ended before the String element is replaced
+fn ended(r: &mut Rd) u8 {
+  let y: &mut Rd = r;
+  let v = y.view();
+  let b = v[0usize];
+  putString(&mut r.items, 0usize, String());
+  b
+}
+
+fn main() {
+  var l = List[String]();
+  l.push(mkS());
+  var c = List[i32]();
+  c.push(1);
+  var r = Rd(l, c, 1);
+  print <- scalar(&mut r), " ", r.counts[0usize], "\n";
+  print <- ended(&mut r), "\n";
+}
