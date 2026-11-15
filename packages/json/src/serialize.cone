@@ -17,7 +17,7 @@
 // its token starts at.
 
 // A text for each kind of JsonError that lives for the whole run, as DataError's reason must
-fn syntaxReason(kind: ErrorKind) &str {
+fn syntaxReason(kind: ErrorKind) &'static str {
   match kind {
     case is UnexpectedEnd { "the text ends before the JSON value does" }
     case is UnexpectedByte { "a character that cannot be here" }
@@ -194,7 +194,7 @@ pub struct JsonDeserializer['a] is Deserializer {
   }
 
   // A value of the wrong kind, at the token just taken
-  fn wrong(self: &, reason: &str) DataError {
+  fn wrong(self: &, reason: &'static str) DataError {
     self.located(DataError.mismatch(reason))
   }
 
@@ -250,6 +250,11 @@ pub struct JsonDeserializer['a] is Deserializer {
     let ev = self.take()?;
     if ev == Event.Text || ev == Event.Key { return Ok[&str, DataError](self.reader.text()); }
     Err[&str, DataError](self.wrong("expected a string"))
+  }
+  pub fn readTextInto(self: &mut, out: &uni TextOut) Result[void, DataError] {
+    let ev = self.take()?;
+    if ev == Event.Text || ev == Event.Key { out <- self.reader.text(); return Ok[void, DataError](nil); }
+    Err[void, DataError](self.wrong("expected a string"))
   }
   pub fn readBytes(self: &mut) Result[&Array[u8], DataError] {
     if self.take()? != Event.StartArray { return Err[&Array[u8], DataError](self.wrong("expected an array of bytes")); }

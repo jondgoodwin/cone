@@ -5432,30 +5432,30 @@ pub enum DataErrorKind {
 // knows the position, and it is 0 where it does not.
 pub struct DataError {
   pub kind: DataErrorKind;
-  pub reason: &str;
-  pub field: &str;
-  pub within: &str;
+  pub reason: &'static str;
+  pub field: &'static str;
+  pub within: &'static str;
   pub offset: usize;
 
-  pub fn missing(field: &str) DataError inline {
+  pub fn missing(field: &'static str) DataError inline {
     DataError(DataErrorKind.Missing, "the member is missing", field, "", 0usize)
   }
-  pub fn mismatch(reason: &str) DataError inline {
+  pub fn mismatch(reason: &'static str) DataError inline {
     DataError(DataErrorKind.Type, reason, "", "", 0usize)
   }
-  pub fn range(reason: &str) DataError inline {
+  pub fn range(reason: &'static str) DataError inline {
     DataError(DataErrorKind.Range, reason, "", "", 0usize)
   }
-  pub fn syntax(reason: &str) DataError inline {
+  pub fn syntax(reason: &'static str) DataError inline {
     DataError(DataErrorKind.Syntax, reason, "", "", 0usize)
   }
-  pub fn custom(reason: &str) DataError inline {
+  pub fn custom(reason: &'static str) DataError inline {
     DataError(DataErrorKind.Custom, reason, "", "", 0usize)
   }
 
   // The walk calls this as an error unwinds out of a record's field: the field it
   // was inside becomes the outermost one the error names
-  pub fn inside(self: &mut, name: &str) inline { self.within = name; }
+  pub fn inside(self: &mut, name: &'static str) inline { self.within = name; }
 
   pub fn toText(self: &, out: &uni TextOut) inline {
     if within.len() > 0usize { out <- within, ": "; }
@@ -5513,6 +5513,10 @@ pub trait Deserializer {
   // A number of any form is read as a float: a text format has one number type
   pub fn readFloat(self: &mut) Result[f64, DataError];
   pub fn readText(self: &mut) Result[&str, DataError];
+  // The text, written into 'out' (a String's 'textOut()'). The result borrows nothing, so a caller that
+  // builds a String uses this and not readText. Each reader writes it (a default over readText is refused:
+  // its Err arm would carry the Ok arm's borrow of the reader, row 333).
+  pub fn readTextInto(self: &mut, out: &uni TextOut) Result[void, DataError];
   pub fn readBytes(self: &mut) Result[&Array[u8], DataError];
   // true: the value was the none, now consumed; false: a value is there, unread
   pub fn readNone(self: &mut) Result[bool, DataError];
@@ -5588,7 +5592,7 @@ pub fn serializeValue[T](v: &T, s: &<mut Serializer + ShapeKeeping) {
   }
 }
 
-fn dataField[F](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion, name: &str) Result[F, DataError] {
+fn dataField[F](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion, name: &'static str) Result[F, DataError] {
   match deserializeValue[F](d, r) {
     case let Ok(v) { Ok[F, DataError](v) }
     case let Err(e) {
