@@ -194,7 +194,7 @@ fn isHeap(r: *MemRegion) bool inline { r as usize == heapRegion() as usize }
 // 'splitOff', 'extend', 'drain(start, end)'), and the methods of Array that keep the
 // length (first, last, fill, rotate, copyFrom, copyWithin, windows, startsWith,
 // endsWith, position) are its own through its view.
-pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize if T is Serialize {
+pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize if T is Serialize, Deserialize[List[T]] if T is Deserialize[T] {
   ptr: *T;
   used: usize;
   cap: usize;
@@ -206,6 +206,17 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     var i = 0usize;
     while i < self.len() { serializeValue[T](&self[i], s); i = i + 1usize; }
     s.endSeq();
+  }
+
+  // Reads a sequence into a list in region 'r', wherever the element reads (core's Deserialize)
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[List[T], DataError] where T is Deserialize[T] {
+    d.beginSeq()?;
+    var out = List[T](r);
+    while d.nextElement()? {
+      let v = deserializeValue[T](d, r)?;
+      out.push(v);
+    }
+    Ok[List[T], DataError](out)
   }
 
   // The methods of 'Array[T]', the body 'view' lends, are the list's too, as
@@ -1333,7 +1344,7 @@ pub struct PriorityQueue[P, T] is Default, ShapeChanging, Sendable, CarriesRegio
 // Its values do not lie in one run of memory when they wrap round the block's
 // end, so there is no 'view' of them: walk them with 'items', or by position.
 // A borrow from a lookup or a cursor is good only until the deque next changes.
-pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize if T is Serialize {
+pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize if T is Serialize, Deserialize[Deque[T]] if T is Deserialize[T] {
   // A sequence from front to back, serializable wherever the element is (core's Serialize)
   pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping) where T is Serialize {
     s.beginSeq(self.len());
@@ -1345,6 +1356,17 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
       }
     }
     s.endSeq();
+  }
+
+  // Reads a sequence into a deque in region 'r', wherever the element reads (core's Deserialize)
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[Deque[T], DataError] where T is Deserialize[T] {
+    d.beginSeq()?;
+    var out = Deque[T](r);
+    while d.nextElement()? {
+      let v = deserializeValue[T](d, r)?;
+      out.push(v);
+    }
+    Ok[Deque[T], DataError](out)
   }
 
   ptr: *T;
@@ -2268,7 +2290,7 @@ fn capacityBuckets(n: usize) usize {
   b
 }
 
-pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize if K is Serialize && V is Serialize {
+pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize if K is Serialize && V is Serialize, Deserialize[Dict[K, V]] if K is Deserialize[K] && V is Deserialize[V] {
   // A map, each key then its value in the table's order, serializable wherever both are (core's Serialize)
   pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping) where K is Serialize && V is Serialize {
     s.beginMap(self.len());
@@ -2285,6 +2307,18 @@ pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, 
       }
     }
     s.endMap();
+  }
+
+  // Reads a map into a dict in region 'r', wherever both key and value read (core's Deserialize)
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[Dict[K, V], DataError] where K is Deserialize[K] && V is Deserialize[V] {
+    d.beginMap()?;
+    var out = Dict[K, V](r);
+    while d.nextEntry()? {
+      let k = deserializeValue[K](d, r)?;
+      let v = deserializeValue[V](d, r)?;
+      out.insert(k, v);
+    }
+    Ok[Dict[K, V], DataError](out)
   }
 
   ctrl: *u8;

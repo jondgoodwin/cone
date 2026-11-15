@@ -1,7 +1,7 @@
 // Collections write as JSON wherever their elements are Serialize (row 333c): a List[i32], a List[Pt], a
 // List[List[f64]], a Deque[i32] and a Dict[String, i64] through toJson with no declaration from anyone but the
-// element's author, and a declared record holding a List[i32] and a Dict[String, Pt]. Reading them back waits for
-// 'Deserialize' conditions on generic traits (the compiler does not build 'T is Deserialize[T]' in an 'is' condition yet).
+// element's author, and a declared record holding a List[i32] and a Dict[String, Pt]; and each reads back through
+// fromJson where its elements read.
 
 mod collserial;
 
@@ -9,8 +9,8 @@ import testing use *;
 import collections use *;
 import json;
 
-struct Pt is Serialize { pub x: i32; pub y: i32; }
-struct Rec is Serialize { pub name: String; pub nums: List[i32]; pub pts: Dict[String, Pt]; }
+struct Pt is Serialize, Deserialize[Pt] { pub x: i32; pub y: i32; }
+struct Rec is Serialize, Deserialize[Rec] { pub name: String; pub nums: List[i32]; pub pts: Dict[String, Pt]; }
 
 fn text(r: Result[String, json.JsonError]) String {
   match r {
@@ -51,6 +51,46 @@ fn main() i32 {
   nums.push(5);
   let rec = Rec(String.from("r"), nums, pts);
   expectStr(text(json.toJson(&rec)).view(), "{\"name\":\"r\",\"nums\":[5],\"pts\":{\"o\":{\"x\":0,\"y\":1}}}", "a record with a List and a Dict field");
+
+  // Reading back
+  match json.fromJson[List[i32]]("[1,-2]") {
+    case let Ok(l) { expectInt(i64.from(l.len()), 2i64, "List[i32] len"); expectInt(i64.from(l[1]), -2i64, "List[i32] [1]"); }
+    case let Err(x) { expectStr((String() <- x).view(), "<list i32>", "List[i32] read"); }
+  }
+  match json.fromJson[List[Pt]]("[{\"x\":3,\"y\":4},{\"x\":5,\"y\":6}]") {
+    case let Ok(l) { expectInt(i64.from(l.len()), 2i64, "List[Pt] len"); expectInt(i64.from(l[1].y), 6i64, "List[Pt] [1].y"); }
+    case let Err(x) { expectStr((String() <- x).view(), "<list pt>", "List[Pt] read"); }
+  }
+  match json.fromJson[List[List[f64]]]("[[0.5],[],[1.5,2.5]]") {
+    case let Ok(l) {
+      expectInt(i64.from(l.len()), 3i64, "List[List[f64]] len");
+      expectInt(i64.from(l[2].len()), 2i64, "List[List[f64]] inner len");
+      expectFloat(l[2][1], 2.5, 0.0, "List[List[f64]] [2][1]");
+    }
+    case let Err(x) { expectStr((String() <- x).view(), "<nested list>", "List[List[f64]] read"); }
+  }
+  match json.fromJson[Deque[i32]]("[8,7]") {
+    case let Ok(q) { expectInt(i64.from(q.len()), 2i64, "Deque[i32] len"); }
+    case let Err(x) { expectStr((String() <- x).view(), "<deque>", "Deque[i32] read"); }
+  }
+  match json.fromJson[Dict[String, i64]]("{\"a\":9,\"b\":-1}") {
+    case let Ok(m) {
+      expectInt(i64.from(m.len()), 2i64, "Dict len");
+      match m.get("b") {
+        case let Some(v) { expectInt(*v, -1i64, "Dict b"); }
+        case is None { expect(false, "Dict b missing"); }
+      }
+    }
+    case let Err(x) { expectStr((String() <- x).view(), "<dict>", "Dict[String, i64] read"); }
+  }
+  match json.fromJson[Rec](text(json.toJson(&rec)).view()) {
+    case let Ok(r2) {
+      expectStr(r2.name.view(), "r", "Rec name back");
+      expectInt(i64.from(r2.nums[0]), 5i64, "Rec nums back");
+      expectInt(i64.from(r2.pts.len()), 1i64, "Rec pts back");
+    }
+    case let Err(x) { expectStr((String() <- x).view(), "<rec>", "Rec read"); }
+  }
 
   done()
 }
