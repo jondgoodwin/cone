@@ -1,0 +1,180 @@
+// The speed of JSON through core's serialization ('toJson' / 'fromJson') against the same records
+// written by hand in json's style (a Json tree built and encoded; a Json tree parsed and read back
+// with requireI64 and its kin). About 1 MB of records of numbers, a bool, a String and a nested
+// struct, in a top-level array the harness writes and reads by hand. Seven rounds, milliseconds.
+//
+//   congo run --release examples/serializebench.cone      (in packages/json)
+
+mod serializebench;
+
+import stdio use *;
+import collections use *;
+import trace;
+import json;
+
+const n = 15000usize;
+const rounds = 7usize;
+
+struct Pt { pub x: i32; pub y: i32; }
+struct Rec { pub id: i64; pub name: String; pub ok: bool; pub p: Pt; }
+
+fn makeRecs() List[Rec] {
+  var recs = List[Rec]();
+  var i = 0usize;
+  while i < n {
+    var name = String.from("item ");
+    name.appendUInt(u64.from(i));
+    recs.push(Rec(i64.from(i) * 7i64 - 5000i64, name, i % 3usize == 0usize, Pt(i32.from(i % 1000usize), -i32.from(i % 777usize))));
+    i = i + 1usize;
+  }
+  recs
+}
+
+// ---- derived: toJson / fromJson per record, the array by hand ----
+fn writeDerived(recs: &List[Rec]) String {
+  var out = String.from("[");
+  var i = 0usize;
+  while i < recs.len() {
+    if i > 0usize { out.append(","); }
+    match json.toJson(&*recs[i]) {
+      case let Ok(t) { out.append(t.view()); }
+      case is Err { }
+    }
+    i = i + 1usize;
+  }
+  out.append("]");
+  out
+}
+
+fn readDerived(text: &Array[u8]) usize {
+  var d = json.jsonDeserializer(text);
+  var count = 0usize;
+  match d.beginSeq() { case is Ok { } case is Err { return 0usize; } }
+  while true {
+    match d.nextElement() {
+      case let Ok(more) { if !more { break; } }
+      case is Err { return 0usize; }
+    }
+    match deserializeValue[Rec](&mut d, heapRegion()) {
+      case is Ok { count = count + 1usize; }
+      case is Err { return 0usize; }
+    }
+  }
+  count
+}
+
+// ---- by hand, in json's style ----
+fn recJson(r: &Rec) json.Json {
+  var p = json.Json.newObject();
+  p.set("x", json.Json.fromI64(i64.from(r.p.x)));
+  p.set("y", json.Json.fromI64(i64.from(r.p.y)));
+  var o = json.Json.newObject();
+  o.set("id", json.Json.fromI64(r.id));
+  o.set("name", json.Json.fromText(r.name.view()));
+  o.set("ok", json.Json.fromBool(r.ok));
+  o.set("p", p);
+  o
+}
+
+fn writeHand(recs: &List[Rec]) String {
+  var arr = json.Json.newArray();
+  var i = 0usize;
+  while i < recs.len() {
+    arr.push(recJson(&*recs[i]));
+    i = i + 1usize;
+  }
+  match arr.encode() {
+    case let Ok(t) { t }
+    case is Err { String() }
+  }
+}
+
+fn recFrom(j: &json.Json) Result[Rec, json.JsonError] {
+  let id = j.requireI64("id")?;
+  let name = j.requireText("name")?;
+  let ok = j.requireBool("ok")?;
+  let pj = j.require("p")?;
+  let x = pj.requireI64("x")?;
+  let y = pj.requireI64("y")?;
+  Ok[Rec, json.JsonError](Rec(id, name, ok, Pt(i32.from(x), i32.from(y))))
+}
+
+fn readHand(text: &Array[u8]) usize {
+  match json.parse(text) {
+    case let Ok(doc) {
+      var count = 0usize;
+      var i = 0usize;
+      while i < doc.len() {
+        match doc.at(i) {
+          case let Some(e) {
+            match recFrom(e) {
+              case is Ok { count = count + 1usize; }
+              case is Err { return 0usize; }
+            }
+          }
+          case is None { }
+        }
+        i = i + 1usize;
+      }
+      count
+    }
+    case is Err { 0usize }
+  }
+}
+
+fn ms(t0: u64, t1: u64) f64 {
+  f64.from(t1 - t0) * 1000.0 / f64.from(trace.clockFrequency())
+}
+
+fn sortMs(v: &mut List[f64]) {
+  var i = 1usize;
+  while i < v.len() {
+    var j = i;
+    while j > 0usize && *v[j - 1usize] > *v[j] {
+      let t = *v[j];
+      v[j] = *v[j - 1usize];
+      v[j - 1usize] = t;
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+fn report(name: &str, v: &mut List[f64], bytes: usize) {
+  sortMs(v);
+  print <- name, " min ", FloatText(*v[0]).text(), " median ", FloatText(*v[v.len() / 2usize]).text(), " max ", FloatText(*v[v.len() - 1usize]).text(), " ms (", bytes, " bytes)\n";
+}
+
+fn main() {
+  let recs = makeRecs();
+  let a = writeDerived(&recs);
+  let b = writeHand(&recs);
+  print <- "derived text ", a.len(), " bytes, hand text ", b.len(), " bytes\n";
+  var wd = List[f64]();
+  var wh = List[f64]();
+  var rd = List[f64]();
+  var rh = List[f64]();
+  var r = 0usize;
+  var checkD = 0usize;
+  var checkH = 0usize;
+  while r < rounds {
+    var t0 = trace.ticks();
+    let s1 = writeDerived(&recs);
+    wd.push(ms(t0, trace.ticks()));
+    t0 = trace.ticks();
+    let s2 = writeHand(&recs);
+    wh.push(ms(t0, trace.ticks()));
+    t0 = trace.ticks();
+    checkD = readDerived(a.view());
+    rd.push(ms(t0, trace.ticks()));
+    t0 = trace.ticks();
+    checkH = readHand(b.view());
+    rh.push(ms(t0, trace.ticks()));
+    r = r + 1usize;
+  }
+  print <- "records read: derived ", checkD, ", hand ", checkH, "\n";
+  report("toJson   ", &mut wd, a.len());
+  report("hand enc ", &mut wh, b.len());
+  report("fromJson ", &mut rd, a.len());
+  report("hand read", &mut rh, b.len());
+}

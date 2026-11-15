@@ -1,0 +1,162 @@
+// JSON through core's serialization: toJson and fromJson over structs of numbers, bools, strings and
+// nested structs, both ways; then malformed text, values of the wrong kind and numbers out of range,
+// which give a DataError whose 'offset' says where in the text. (List fields are refused at compile
+// time until collections declare Serialize: test/cases/meta/meta_serialize_list_reject.cone.)
+
+mod serialize;
+
+import testing use *;
+import collections use *;
+import arena use *;
+import json;
+
+struct Pt { pub x: i32; pub y: i32; }
+struct Nums { pub a: i8; pub b: u16; pub c: i64; pub d: u64; pub f: f32; pub g: f64; pub ok: bool; }
+struct Line { pub name: String; pub from: Pt; pub to: Pt; }
+struct Deep { pub tag: String; pub line: Line; pub n: u8; }
+
+fn text(r: Result[String, json.JsonError]) String {
+  match r {
+    case let Ok(s) { s }
+    case let Err(e) { String() <- e }
+  }
+}
+
+// The DataError's text without its offset, which is checked on its own
+fn dataText[T](r: Result[T, DataError]) String {
+  match r {
+    case is Ok { String.from("ok") }
+    case let Err(e) {
+      var plain = e;
+      plain.offset = 0usize;
+      String() <- plain
+    }
+  }
+}
+
+fn offsetOf[T](r: Result[T, DataError]) usize {
+  match r {
+    case is Ok { 9999usize }
+    case let Err(e) { e.offset }
+  }
+}
+
+fn main() i32 {
+  // Numbers, a bool, and the order of fields
+  let n = Nums(-3i8, 7u16, -9000000000i64, 18000000000000000000u64, 1.5f32, -0.25, true);
+  let nt = text(json.toJson(&n));
+  expectStr(nt.view(), "{\"a\":-3,\"b\":7,\"c\":-9000000000,\"d\":18000000000000000000,\"f\":1.5,\"g\":-0.25,\"ok\":true}", "numbers written");
+  match json.fromJson[Nums](nt.view()) {
+    case let Ok(m) {
+      expectInt(i64.from(m.a), -3i64, "a back");
+      expectInt(i64.from(m.b), 7i64, "b back");
+      expectInt(m.c, -9000000000i64, "c back");
+      expectUInt(m.d, 18000000000000000000u64, "d back");
+      expectFloat(f64.from(m.f), 1.5, 0.0, "f back");
+      expectFloat(m.g, -0.25, 0.0, "g back");
+      expect(m.ok, "ok back");
+    }
+    case let Err(e) { expectStr((String() <- e).view(), "<numbers>", "numbers read"); }
+  }
+  let nf = text(json.toJson(&Nums(0i8, 0u16, 0i64, 0u64, 0.0f32, 0.0, false)));
+  expectStr(nf.view(), "{\"a\":0,\"b\":0,\"c\":0,\"d\":0,\"f\":0,\"g\":0,\"ok\":false}", "zeros and false written");
+  match json.fromJson[Nums](nf.view()) {
+    case let Ok(m) { expect(!m.ok, "false back"); }
+    case let Err(e) { expectStr((String() <- e).view(), "<zeros>", "zeros read"); }
+  }
+
+  // Nested structs and strings, with escapes
+  let line = Line(String.from("a \"b\"\n"), Pt(1, 2), Pt(-3, 4));
+  let lt = text(json.toJson(&line));
+  expectStr(lt.view(), "{\"name\":\"a \\\"b\\\"\\n\",\"from\":{\"x\":1,\"y\":2},\"to\":{\"x\":-3,\"y\":4}}", "nested written");
+  match json.fromJson[Line](lt.view()) {
+    case let Ok(m) {
+      expectStr(m.name.view(), "a \"b\"\n", "name back");
+      expectInt(i64.from(m.to.x), -3i64, "to.x back");
+      expectInt(i64.from(m.from.y), 2i64, "from.y back");
+    }
+    case let Err(e) { expectStr((String() <- e).view(), "<line>", "line read"); }
+  }
+  let deep = Deep(String.from("d"), line, 255u8);
+  let dt = text(json.toJson(&deep));
+  match json.fromJson[Deep](dt.view()) {
+    case let Ok(m) {
+      expectStr(m.line.name.view(), "a \"b\"\n", "a struct two deep, name");
+      expectInt(i64.from(m.line.to.y), 4i64, "a struct two deep, to.y");
+      expectInt(i64.from(m.n), 255i64, "u8 at its top");
+    }
+    case let Err(e) { expectStr((String() <- e).view(), "<deep>", "deep read"); }
+  }
+
+  // A non-ASCII string goes out as it is and comes back, escaped or not
+  let u = Line(String.from("héllo €"), Pt(0, 0), Pt(0, 0));
+  let ut = text(json.toJson(&u));
+  expectStr(ut.view(), "{\"name\":\"héllo €\",\"from\":{\"x\":0,\"y\":0},\"to\":{\"x\":0,\"y\":0}}", "non-ASCII written as UTF-8");
+  match json.fromJson[Line](ut.view()) {
+    case let Ok(m) { expectStr(m.name.view(), "héllo €", "non-ASCII back"); }
+    case let Err(e) { expectStr((String() <- e).view(), "<utf8>", "utf8 read"); }
+  }
+  match json.fromJson[Line]("{\"name\":\"h\\u00e9llo \\u20ac \\ud83d\\ude00\",\"from\":{\"x\":0,\"y\":0},\"to\":{\"x\":0,\"y\":0}}") {
+    case let Ok(m) { expectStr(m.name.view(), "héllo € 😀", "escapes (a surrogate pair too) back"); }
+    case let Err(e) { expectStr((String() <- e).view(), "<escapes>", "escapes read"); }
+  }
+
+  // Members in another order, an unknown member (an object and an array nested in it) skipped
+  match json.fromJson[Pt]("{\"zz\":{\"a\":[1,{\"b\":2}],\"c\":null},\"y\":5,\"x\":4,\"w\":[]}") {
+    case let Ok(m) {
+      expectInt(i64.from(m.x), 4i64, "reordered x");
+      expectInt(i64.from(m.y), 5i64, "reordered y");
+    }
+    case let Err(e) { expectStr((String() <- e).view(), "<reorder>", "reordered read"); }
+  }
+
+  // Built in an arena's region
+  var arena = Arena();
+  match json.fromJsonIn[Line](lt.view(), arena.region) {
+    case let Ok(m) { expectStr(m.name.view(), "a \"b\"\n", "name in the arena"); }
+    case let Err(e) { expectStr((String() <- e).view(), "<arena>", "arena read"); }
+  }
+  expect(arena.blockCount() > 0usize, "the values were made in the arena's region");
+
+  // A lone number at the top, and the pretty form through WriteOptions
+  expectStr(text(json.toJson(&42i32)).view(), "42", "a number at the top");
+  let pretty = text(json.toJsonWith(&Pt(1, 2), &json.WriteOptions(2usize, false)));
+  expectStr(pretty.view(), "{\n  \"x\": 1,\n  \"y\": 2\n}", "indented");
+
+  // Wrong kinds and missing members: a DataError naming the member
+  expectStr(dataText(json.fromJson[Pt]("{\"x\":1}")).view(), "the member is missing (y)", "missing member");
+  expectStr(dataText(json.fromJson[Line]("{\"name\":\"n\",\"from\":{\"x\":1},\"to\":{\"x\":1,\"y\":1}}")).view(), "from: the member is missing (y)", "missing nested member");
+  expectStr(dataText(json.fromJson[Pt]("{\"x\":1.5,\"y\":1}")).view(), "x: expected a whole number", "a fraction for an integer");
+  expectStr(dataText(json.fromJson[Pt]("{\"x\":\"1\",\"y\":1}")).view(), "x: expected a number", "text for a number");
+  expectStr(dataText(json.fromJson[Pt]("{\"x\":1e3,\"y\":1}")).view(), "ok", "1e3 is a whole number");
+  expectStr(dataText(json.fromJson[Pt]("[1,2]")).view(), "expected an object", "an array for a struct");
+  expectStr(dataText(json.fromJson[Line]("{\"name\":1,\"from\":{\"x\":1,\"y\":1},\"to\":{\"x\":1,\"y\":1}}")).view(), "name: expected a string", "a number for a string");
+  expectStr(dataText(json.fromJson[Nums]("{\"a\":1,\"b\":1,\"c\":1,\"d\":1,\"f\":1,\"g\":1,\"ok\":1}")).view(), "ok: expected true or false", "a number for a bool");
+
+  // A number out of range for its field: Range, naming the field
+  expectStr(dataText(json.fromJson[Pt]("{\"x\":99999999999,\"y\":1}")).view(), "x: the number does not fit the type", "too big for i32");
+  expectStr(dataText(json.fromJson[Nums]("{\"a\":300,\"b\":1,\"c\":1,\"d\":1,\"f\":1,\"g\":1,\"ok\":true}")).view(), "a: the number does not fit the type", "300 for an i8");
+  expectStr(dataText(json.fromJson[Nums]("{\"a\":1,\"b\":-1,\"c\":1,\"d\":1,\"f\":1,\"g\":1,\"ok\":true}")).view(), "b: the number does not fit the type", "-1 for a u16");
+  expectStr(dataText(json.fromJson[Nums]("{\"a\":1,\"b\":1,\"c\":1,\"d\":18446744073709551616,\"f\":1,\"g\":1,\"ok\":true}")).view(), "d: the number does not fit the type", "2^64 for a u64");
+  expectUInt(u64.from(offsetOf(json.fromJson[Pt]("{\"x\":99999999999,\"y\":1}"))), 5u64, "the offset of a number out of range");
+
+  // Malformed text: Syntax, with the offset of the bad byte
+  expectStr(dataText(json.fromJson[Pt]("{\"x\":1,")).view(), "the text ends before the JSON value does", "text that ends");
+  expectStr(dataText(json.fromJson[Pt]("{\"x\":1,\"y\":2} x")).view(), "text after the JSON value", "trailing text");
+  expectStr(dataText(json.fromJson[Pt]("")).view(), "the text ends before the JSON value does", "empty text");
+  expectStr(dataText(json.fromJson[Pt]("{\"x\":1,\n \"y\":oops}")).view(), "y: a character that cannot be here", "a bad byte, in the member it was in");
+  expectUInt(u64.from(offsetOf(json.fromJson[Pt]("{\"x\":1,\n \"y\":oops}"))), 13u64, "offset of the bad byte");
+  expectUInt(u64.from(offsetOf(json.fromJson[Pt]("{\"x\":1,\"y\":\"s\"}"))), 11u64, "offset of the wrong value");
+  expectUInt(u64.from(offsetOf(json.fromJson[Pt]("{\"x\":1,\"y\":2}   {"))), 16u64, "offset of the trailing text");
+  expectUInt(u64.from(offsetOf(json.fromJson[Pt]("{\"x\":1}"))), 6u64, "offset of a missing member's object end");
+  // A key that is not a string keeps its syntax error and its offset (matchField takes the key's event)
+  expectStr(dataText(json.fromJson[Pt]("{x:1}")).view(), "a character that cannot be here", "a bare key");
+  expectUInt(u64.from(offsetOf(json.fromJson[Pt]("{x:1}"))), 1u64, "offset of a bare key");
+  // The offset prints with the error
+  match json.fromJson[Pt]("{\"x\":1,\"y\":\"s\"}") {
+    case is Ok { expect(false, "a string for a number is an error"); }
+    case let Err(e) { expectStr((String() <- e).view(), "y: expected a number at byte 11", "the error's text carries the offset"); }
+  }
+
+  done()
+}
