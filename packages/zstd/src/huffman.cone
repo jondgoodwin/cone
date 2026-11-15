@@ -98,7 +98,6 @@ struct HufTable is Default {
     let rest = (1u32 << bits) - total;
     if (rest & (rest - 1u32)) != 0u32 { return false; }
     weights.push(u8.from(highBit(rest) + 1u32));
-    maxBits = bits;
     // Where each weight's entries start: weight 1 (the longest codes) first
     rankStart.clear();
     var w = 0u32;
@@ -112,6 +111,8 @@ struct HufTable is Default {
       i = i + 1usize;
     }
     if ones < 2u32 || (ones & 1u32) != 0u32 { return false; }
+    // Accepted: only from here is the table rewritten, 'maxBits' and 'entries' together
+    maxBits = bits;
     // counts to starts
     var at = 0u32;
     w = 1u32;
@@ -192,9 +193,8 @@ struct HufTable is Default {
     // The raw table reads below are in range only if the table has exactly
     // 2^maxBits entries with maxBits in 1..maxHuffBits. 'build' establishes both
     // (bits = highBit(total) + 1 >= 1, refused above maxHuffBits, entries
-    // resized to 1 << bits) but sets maxBits before its last refusals, so a
-    // failed 'build' could leave the two out of step; this check, once per call,
-    // closes that (and the division by mb).
+    // resized to 1 << bits) and sets both only once the tree is accepted; this
+    // check, once per call, stays as a second guard (and for the division by mb).
     if mb == 0u32 || mb > maxHuffBits() || entries.len() != (1usize << usize.from(mb)) { return false; }
     let len4 = regen - 3usize * seg;
     let g = 56u32 / mb;
