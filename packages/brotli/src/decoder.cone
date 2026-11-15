@@ -534,15 +534,24 @@ struct Dec is Default {
       var p1 = if ol > 0usize {*out[ol - 1usize]} else {0u8};
       var p2 = if ol > 1usize {*out[ol - 2usize]} else {0u8};
       var k = 0usize;
-      while k < insLen {
-        if cl.left == 0u32 { cl.next(&mut bi, tab.view()); }
-        cl.left = cl.left - 1u32;
-        let ctx = literalContext(*modes[usize.from(cl.cur)], p1, p2);
-        let b = u8.from(readSym(&mut bi, tab.view(), usize.from(*cmapL[usize.from(cl.cur) * 64usize + ctx])));
-        out.push(b);
-        p2 = p1;
-        p1 = b;
-        k = k + 1usize;
+      if insLen > 0usize {
+        // The room for the whole meta-block was reserved, so the bytes are written in place and given to the
+        // list once, after the run
+        let bp = out.viewMut() as *u8;
+        let tv = tab.view();
+        let mv = modes.view();
+        let cv = cmapL.view();
+        while k < insLen {
+          if cl.left == 0u32 { cl.next(&mut bi, tv); }
+          cl.left = cl.left - 1u32;
+          let ctx = literalContext(mv[usize.from(cl.cur)], p1, p2);
+          let b = u8.from(readSym(&mut bi, tv, usize.from(cv[usize.from(cl.cur) * 64usize + ctx])));
+          mem.writeRaw[u8](bp + (ol + k), b);
+          p2 = p1;
+          p1 = b;
+          k = k + 1usize;
+        }
+        commit(&mut out, ol, insLen);
       }
       remaining = remaining - insLen;
       if bi.overrun() {
