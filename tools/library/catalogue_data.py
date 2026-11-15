@@ -175,6 +175,7 @@ DOMAINS = [
   ("Archives and compression", [
    ("deflate", "DEFLATE compression and decompression with zlib and gzip framing, Adler-32 and CRC-32, streaming."),
    ("zstd", "Zstandard decompression and compression (levels 1 to 3), with xxHash64, streaming."),
+   ("brotli", "Brotli (RFC 7932) decompression of a stream in memory, with the static dictionary built in."),
    ("zipfile", "ZIP archives read, written and extracted safely."),
    ("tarfile", "Tar archives (POSIX ustar) read as bytes arrive and written entry by entry."),
    ("archivestage", "A zip archive read as a stream between actors, each entry handed on as a stream."),
