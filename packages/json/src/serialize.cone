@@ -1,0 +1,383 @@
+// ======== JSON as a format of core's serialization ========
+//
+// 'JsonSerializer' is a Serializer over the Writer, and 'JsonDeserializer' a Deserializer over the
+// Reader, so a struct (and a List, Dict or Deque of what core's walk takes) goes to JSON and back
+// with no code of its own: 'toJson(&value)' and 'fromJson[T](text)'. Nothing is built between the
+// value and the text: the walk calls the Writer or the Reader for each piece.
+//
+// How the data model lands in JSON: a record and a map are objects, a sequence an array, a number
+// a number, a String a string, 'none' null, a unit variant a string of its name and a variant with
+// data an object of one member named for it (an array of its fields when it has other than one);
+// bytes are an array of numbers. A map's key must be text. A number read as an integer must be
+// whole and in range; any number reads as a float. A member of an object the type does not have is
+// skipped. Variants are written but not read yet.
+//
+// A DataError owns no text, so it cannot hold where in the text a failure was; 'fromJsonAt' says
+// that in the JsonError it fills.
+
+// A text for each kind of JsonError that lives for the whole run, as DataError's reason must
+fn syntaxReason(kind: ErrorKind) &str {
+  match kind {
+    case is UnexpectedEnd { "the text ends before the JSON value does" }
+    case is UnexpectedByte { "a character that cannot be here" }
+    case is BadNumber { "a number that is not JSON's" }
+    case is BadEscape { "a bad escape in a string" }
+    case is BadSurrogate { "a \\u surrogate that is not half of a pair" }
+    case is BadUtf8 { "text that is not UTF-8" }
+    case is ControlChar { "an unescaped control character in a string" }
+    case is TooDeep { "the text is nested too deep" }
+    case is TrailingText { "text after the JSON value" }
+    case is DuplicateKey { "a name repeated in an object" }
+    case is WriteOrder { "JSON written out of order" }
+    case is WriteValue { "a value JSON cannot hold" }
+    case is Shape { "the JSON is not of the shape asked for" }
+  }
+}
+
+// A JsonError as a DataError: Syntax, with the reason of its kind (the offset, line and column stay
+// in the JsonError)
+pub fn toDataError(e: &JsonError) DataError {
+  DataError.syntax(syntaxReason(e.kind))
+}
+
+// ---------------------------------------------------------------------------
+// Writing
+// ---------------------------------------------------------------------------
+
+// The writing side. One value, then 'finish' for the text or the first failure.
+pub struct JsonSerializer is Serializer {
+  w: Writer;
+  keyNext: bool;      // a map's key is to come: the next text is a name
+  bad: bool;          // a map's key was not text
+  wrapped: List[bool];  // each open variant: its fields went in an array
+
+  pub fn init(self: &new, opts: WriteOptions) {
+    *self = JsonSerializer(Writer(opts), false, false, List[bool]());
+  }
+
+  // True when a value of another kind than text came where a map's key belongs
+  fn notKey(self: &mut) bool {
+    if self.keyNext {
+      self.keyNext = false;
+      self.bad = true;
+      return true;
+    }
+    false
+  }
+
+  // The text, or the first failure. The serializer is given up.
+  pub fn finish(self) Result[String, JsonError] {
+    var me = self;
+    if me.bad {
+      return Err[String, JsonError](JsonError.shape("a map's key is not text: JSON names a member with a string"));
+    }
+    me.w.finish()
+  }
+
+  pub fn boolean(self: &mut, b: bool) { if self.notKey() { return; } self.w.boolean(b); }
+  pub fn int(self: &mut, n: i64) { if self.notKey() { return; } self.w.int(n); }
+  pub fn uint(self: &mut, n: u64) { if self.notKey() { return; } self.w.uint(n); }
+  pub fn float(self: &mut, x: f64) { if self.notKey() { return; } self.w.float(x); }
+  pub fn text(self: &mut, s: &str) {
+    if self.keyNext {
+      self.keyNext = false;
+      self.w.key(s);
+      return;
+    }
+    self.w.string(s);
+  }
+  pub fn bytes(self: &mut, b: &Array[u8]) {
+    if self.notKey() { return; }
+    self.w.beginArray();
+    var i = 0usize;
+    while i < b.len {
+      self.w.uint(u64.from(b[i]));
+      i = i + 1usize;
+    }
+    self.w.endArray();
+  }
+  pub fn none(self: &mut) { if self.notKey() { return; } self.w.nullValue(); }
+  pub fn beginSeq(self: &mut, len: usize) { if self.notKey() { return; } self.w.beginArray(); }
+  pub fn endSeq(self: &mut) { self.w.endArray(); }
+  pub fn beginMap(self: &mut, len: usize) { if self.notKey() { return; } self.w.beginObject(); }
+  pub fn mapKey(self: &mut) { self.keyNext = true; }
+  pub fn mapValue(self: &mut) { }
+  pub fn endMap(self: &mut) { self.w.endObject(); }
+  pub fn beginRecord(self: &mut, typeName: &str, len: usize) { if self.notKey() { return; } self.w.beginObject(); }
+  pub fn field(self: &mut, name: &str, index: usize) { self.w.key(name); }
+  pub fn endRecord(self: &mut) { self.w.endObject(); }
+  pub fn unitVariant(self: &mut, enumName: &str, index: u32, name: &str) {
+    if self.keyNext {
+      self.keyNext = false;
+      self.w.key(name);
+      return;
+    }
+    self.w.string(name);
+  }
+  pub fn beginVariant(self: &mut, enumName: &str, index: u32, name: &str, len: usize) {
+    if self.notKey() { return; }
+    self.w.beginObject();
+    self.w.key(name);
+    let inArray = len != 1usize;
+    if inArray { self.w.beginArray(); }
+    self.wrapped.push(inArray);
+  }
+  pub fn endVariant(self: &mut) {
+    if self.wrapped.len() == 0usize { return; }
+    let inArray = *self.wrapped[self.wrapped.len() - 1usize];
+    self.wrapped.pop();
+    if inArray { self.w.endArray(); }
+    self.w.endObject();
+  }
+}
+
+// The compact JSON text of a value: a struct of numbers, bools and Strings, or a List, Dict or Deque
+// of them, or a type that declares Serialize. A type the walk cannot take is refused at compile
+// time, where the walk meets it.
+pub fn toJson[T](v: &T) Result[String, JsonError] {
+  let opts = WriteOptions.standard();
+  toJsonWith(v, &opts)
+}
+
+// The same with the writer's options: 'WriteOptions(2usize, false)' indents by two spaces
+pub fn toJsonWith[T](v: &T, opts: &WriteOptions) Result[String, JsonError] {
+  var s = JsonSerializer(*opts);
+  serializeValue[T](v, &mut s);
+  s.finish()
+}
+
+// ---------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------
+
+// The reading side, over a Reader. Take one from 'jsonDeserializer(text)'.
+pub struct JsonDeserializer['a] is Deserializer {
+  reader: Reader['a];
+  has: bool;          // an event is peeked and not yet taken
+  ev: Event;
+  failed: bool;       // 'err' holds the first failure, from the text or from a value of the wrong kind
+  err: JsonError;
+  bytesBuf: List[u8];
+
+  // Whether a failure was met, and the JsonError (with its offset) for it
+  pub fn hasFailed(self: &) bool { self.failed }
+  pub fn failure(self: &) JsonError { self.err.clone() }
+  // Where the last token read starts, in bytes
+  pub fn offset(self: &) usize { self.reader.offset() }
+  pub fn line(self: &) u32 { self.reader.line() }
+  pub fn column(self: &) u32 { self.reader.column() }
+
+  // The next event from the Reader
+  fn pull(self: &mut) Result[Event, DataError] {
+    match self.reader.next() {
+      case let Ok(ev) { Ok[Event, DataError](ev) }
+      case let Err(e) {
+        let de = toDataError(&e);
+        if !self.failed { self.failed = true; self.err = e; }
+        Err[Event, DataError](de)
+      }
+    }
+  }
+  fn take(self: &mut) Result[Event, DataError] {
+    if self.has {
+      self.has = false;
+      return Ok[Event, DataError](self.ev);
+    }
+    self.pull()
+  }
+  fn look(self: &mut) Result[Event, DataError] {
+    if !self.has {
+      self.ev = self.pull()?;
+      self.has = true;
+    }
+    Ok[Event, DataError](self.ev)
+  }
+
+  // A value of the wrong kind, at the token just taken
+  fn wrong(self: &mut, reason: &str) DataError {
+    if !self.failed {
+      self.failed = true;
+      self.err = JsonError(ErrorKind.Shape, self.reader.offset(), self.reader.line(), self.reader.column(), String.from(reason));
+    }
+    DataError.mismatch(reason)
+  }
+
+  fn numberFailure(self: &mut, e: &NumberError) DataError {
+    match e {
+      case is OutOfRange { DataError.range("the number does not fit the type") }
+      case is NotInteger { self.wrong("expected a whole number") }
+      case is NotANumber { self.wrong("expected a number") }
+    }
+  }
+
+  pub fn readBool(self: &mut) Result[bool, DataError] {
+    match self.take()? {
+      case is True { Ok[bool, DataError](true) }
+      case is False { Ok[bool, DataError](false) }
+      else { Err[bool, DataError](self.wrong("expected true or false")) }
+    }
+  }
+  pub fn readInt(self: &mut) Result[i64, DataError] {
+    match self.take()? {
+      case is Number {
+        match numberI64(self.reader.text()) {
+          case let Ok(n) { Ok[i64, DataError](n) }
+          case let Err(e) { Err[i64, DataError](self.numberFailure(&e)) }
+        }
+      }
+      else { Err[i64, DataError](self.wrong("expected a number")) }
+    }
+  }
+  pub fn readUInt(self: &mut) Result[u64, DataError] {
+    match self.take()? {
+      case is Number {
+        match numberU64(self.reader.text()) {
+          case let Ok(n) { Ok[u64, DataError](n) }
+          case let Err(e) { Err[u64, DataError](self.numberFailure(&e)) }
+        }
+      }
+      else { Err[u64, DataError](self.wrong("expected a number")) }
+    }
+  }
+  pub fn readFloat(self: &mut) Result[f64, DataError] {
+    match self.take()? {
+      case is Number {
+        match numberF64(self.reader.text()) {
+          case let Ok(x) { Ok[f64, DataError](x) }
+          case let Err(e) { Err[f64, DataError](self.numberFailure(&e)) }
+        }
+      }
+      else { Err[f64, DataError](self.wrong("expected a number")) }
+    }
+  }
+  pub fn readText(self: &mut) Result[&str, DataError] {
+    let ev = self.take()?;
+    if ev == Event.Text || ev == Event.Key { return Ok[&str, DataError](self.reader.text()); }
+    Err[&str, DataError](self.wrong("expected a string"))
+  }
+  pub fn readBytes(self: &mut) Result[&Array[u8], DataError] {
+    if self.take()? != Event.StartArray { return Err[&Array[u8], DataError](self.wrong("expected an array of bytes")); }
+    self.bytesBuf.clear();
+    while true {
+      let ev = self.take()?;
+      if ev == Event.EndArray { break; }
+      if ev != Event.Number { return Err[&Array[u8], DataError](self.wrong("expected a byte")); }
+      match numberU64(self.reader.text()) {
+        case let Ok(n) {
+          if n > 255u64 { return Err[&Array[u8], DataError](DataError.range("the number does not fit a byte")); }
+          self.bytesBuf.push(u8.from(n));
+        }
+        case is Err { return Err[&Array[u8], DataError](self.wrong("expected a byte")); }
+      }
+    }
+    Ok[&Array[u8], DataError](self.bytesBuf.view())
+  }
+  pub fn readNone(self: &mut) Result[bool, DataError] {
+    if self.look()? == Event.Null {
+      self.has = false;
+      return Ok[bool, DataError](true);
+    }
+    Ok[bool, DataError](false)
+  }
+  pub fn beginSeq(self: &mut) Result[void, DataError] {
+    if self.take()? != Event.StartArray { return Err[void, DataError](self.wrong("expected an array")); }
+    Ok[void, DataError](nil)
+  }
+  pub fn nextElement(self: &mut) Result[bool, DataError] {
+    if self.look()? == Event.EndArray {
+      self.has = false;
+      return Ok[bool, DataError](false);
+    }
+    Ok[bool, DataError](true)
+  }
+  pub fn beginMap(self: &mut) Result[void, DataError] {
+    if self.take()? != Event.StartObject { return Err[void, DataError](self.wrong("expected an object")); }
+    Ok[void, DataError](nil)
+  }
+  pub fn nextEntry(self: &mut) Result[bool, DataError] {
+    if self.look()? == Event.EndObject {
+      self.has = false;
+      return Ok[bool, DataError](false);
+    }
+    Ok[bool, DataError](true)
+  }
+  pub fn beginRecord(self: &mut, typeName: &str) Result[void, DataError] {
+    if self.take()? != Event.StartObject { return Err[void, DataError](self.wrong("expected an object")); }
+    Ok[void, DataError](nil)
+  }
+  pub fn nextField(self: &mut) Result[FieldKey, DataError] {
+    let ev = self.look()?;
+    if ev == Event.EndObject {
+      self.has = false;
+      return Ok[FieldKey, DataError](FieldKey.End);
+    }
+    // The name stays peeked: 'readText' takes it
+    Ok[FieldKey, DataError](FieldKey.Name)
+  }
+  pub fn beginVariant(self: &mut) Result[FieldKey, DataError] {
+    Err[FieldKey, DataError](DataError.custom("JSON variants are written but not read yet"))
+  }
+  pub fn endVariant(self: &mut) Result[void, DataError] {
+    Err[void, DataError](DataError.custom("JSON variants are written but not read yet"))
+  }
+  pub fn skipValue(self: &mut) Result[void, DataError] {
+    var depth = 0usize;
+    while true {
+      let ev = self.take()?;
+      if ev == Event.StartObject || ev == Event.StartArray { depth = depth + 1usize; }
+      else if ev == Event.EndObject || ev == Event.EndArray {
+        if depth == 0usize { return Err[void, DataError](self.wrong("expected a value")); }
+        depth = depth - 1usize;
+      }
+      if depth == 0usize && ev != Event.Key { break; }
+    }
+    Ok[void, DataError](nil)
+  }
+
+  // After the value: nothing but white space may follow
+  pub fn finish(self: &mut) Result[void, DataError] {
+    let ev = self.take()?;
+    if ev != Event.Done { return Err[void, DataError](self.wrong("text after the JSON value")); }
+    Ok[void, DataError](nil)
+  }
+}
+
+pub fn jsonDeserializer(text: &'a Array[u8]) JsonDeserializer['a] {
+  JsonDeserializer(reader(text), false, Event.Done, false, JsonError.none(), List[u8]())
+}
+
+// A value of type T read from JSON text, built in 'region' (a String's block, a List's block):
+// 'fromJson[Person](text, arena.region)'. A failure is a DataError: Syntax for text that is not
+// JSON, Type for a value of the wrong kind, Range for a number that does not fit, Missing for a
+// member that is not there, with the field's name; where in the text is 'fromJsonAt'.
+pub fn fromJson[T](text: &Array[u8], region: *MemRegion = heapRegion()) Result[T, DataError] {
+  var failure = JsonError.none();
+  fromJsonAt[T](text, region, &mut failure)
+}
+
+// The same, and on a failure 'failure' says where in the text: its offset, line and column, and
+// its reason (the DataError's own text when the Reader found nothing wrong)
+pub fn fromJsonAt[T](text: &Array[u8], region: *MemRegion, failure: &mut JsonError) Result[T, DataError] {
+  var d = jsonDeserializer(text);
+  let r = deserializeValue[T](&mut d, region);
+  match r {
+    case let Ok(v) {
+      match d.finish() {
+        case is Ok { Ok[T, DataError](v) }
+        case let Err(e) {
+          *failure = d.failure();
+          Err[T, DataError](e)
+        }
+      }
+    }
+    case let Err(e) {
+      if d.hasFailed() {
+        *failure = d.failure();
+      } else {
+        // The walk's own complaint (a member missing, a number out of range): the token it was at
+        *failure = JsonError(ErrorKind.Shape, d.offset(), d.line(), d.column(), String() <- e);
+      }
+      Err[T, DataError](e)
+    }
+  }
+}

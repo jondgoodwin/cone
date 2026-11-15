@@ -194,7 +194,7 @@ fn isHeap(r: *MemRegion) bool inline { r as usize == heapRegion() as usize }
 // 'splitOff', 'extend', 'drain(start, end)'), and the methods of Array that keep the
 // length (first, last, fill, rotate, copyFrom, copyWithin, windows, startsWith,
 // endsWith, position) are its own through its view.
-pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize, Deserialize[List[T]] {
   ptr: *T;
   used: usize;
   cap: usize;
@@ -735,6 +735,28 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // A slice of every value it holds, for reading them now: a borrow of the
   // body 'Array[T]', whose methods the list folds in
   pub fn view(self: &) &Array[T] { mem.sliceFromParts(ptr, used) }
+
+  // A sequence of the data model (core's Serialize): each value goes through the walk, so a
+  // value the walk cannot take is refused where the list is walked. Read back into the region
+  // the caller names, which the list's block and its values' own storage come from
+  pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping) {
+    s.beginSeq(used);
+    var i = 0usize;
+    while i < used {
+      serializeValue[T]((ptr + i) as &T, s);
+      i = i + 1usize;
+    }
+    s.endSeq();
+  }
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[List[T], DataError] {
+    d.beginSeq()?;
+    var out = List[T](r);
+    while d.nextElement()? {
+      let v = deserializeValue[T](d, r)?;
+      out.push(v);
+    }
+    Ok[List[T], DataError](out)
+  }
 
   // A cursor over its values, front to back, which 'each x in list' walks: 'next'
   // gives a borrow of each in turn until it answers None. The list may not
@@ -1325,7 +1347,7 @@ pub struct PriorityQueue[P, T] is Default, ShapeChanging, Sendable, CarriesRegio
 // Its values do not lie in one run of memory when they wrap round the block's
 // end, so there is no 'view' of them: walk them with 'items', or by position.
 // A borrow from a lookup or a cursor is good only until the deque next changes.
-pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize, Deserialize[Deque[T]] {
   ptr: *T;
   head: usize;    // the slot of the first value
   used: usize;
@@ -1527,6 +1549,26 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
   pub fn items(self: &) DequeItems[T] { DequeItems[T](self, 0usize) }
 
   // The same cursor under the name 'each x in deque' walks it by
+  // A sequence of the data model, front to back (see List)
+  pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping) {
+    s.beginSeq(used);
+    var i = 0usize;
+    while i < used {
+      serializeValue[T]((ptr + self.slot(i)) as &T, s);
+      i = i + 1usize;
+    }
+    s.endSeq();
+  }
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[Deque[T], DataError] {
+    d.beginSeq()?;
+    var out = Deque[T](r);
+    while d.nextElement()? {
+      let v = deserializeValue[T](d, r)?;
+      out.push(v);
+    }
+    Ok[Deque[T], DataError](out)
+  }
+
   pub fn iter(self: &) DequeItems[T] { DequeItems[T](self, 0usize) }
 
   // The cursor 'each x in &mut deque' walks by: the same
@@ -2250,7 +2292,7 @@ fn capacityBuckets(n: usize) usize {
   b
 }
 
-pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize, Deserialize[Dict[K, V]] {
   ctrl: *u8;
   slots: *DictEntry[K, V];
   mask: usize;       // the buckets, less one
@@ -2457,6 +2499,29 @@ pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, 
 
   // A cursor over its pairs, which 'each k, v in dict' walks: 'next' gives a
   // pair of borrows, a key and its value, in the table's order
+  // A map of the data model (core's Serialize): each key, then its value, through the walk. A
+  // format that keys by text (JSON) refuses a key that is not text when it writes
+  pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping) {
+    s.beginMap(items);
+    each k, v in self {
+      s.mapKey();
+      serializeValue[K](k, s);
+      s.mapValue();
+      serializeValue[V](v, s);
+    }
+    s.endMap();
+  }
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[Dict[K, V], DataError] {
+    d.beginMap()?;
+    var out = Dict[K, V](r);
+    while d.nextEntry()? {
+      let k = deserializeValue[K](d, r)?;
+      let v = deserializeValue[V](d, r)?;
+      out.insert(k, v);
+    }
+    Ok[Dict[K, V], DataError](out)
+  }
+
   pub fn iter(self: &) DictPairs[K, V] { DictPairs[K, V](self, 0usize) }
 
   // The cursor 'each k, v in &mut dict' walks by: the
