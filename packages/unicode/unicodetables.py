@@ -62,6 +62,10 @@ that is not above the code point.
                              0 for general category Mn, Me, Cf and the controls Cc
                              (C0 and C1), else 1 (Ambiguous counts as 1, as terminals
                              do). Per code point: no grapheme clusters.
+  classStarts / classVals    the regex classes, a u8 for each run: 1 word (UTS #18 Annex C, as Rust's
+                             regex word class: Alphabetic, general category M (Mn, Mc, Me), Nd, Pc and
+                             Join_Control), 2 Nd (decimal digit), 4 White_Space. From
+                             UnicodeData.txt field 2, DerivedCoreProperties.txt and PropList.txt.
   graphemeStarts / graphemeVals   the grapheme-cluster properties of UAX #29, a u8 for each
                              run: bits 0-3 Grapheme_Cluster_Break (0 Other, 1 CR, 2 LF,
                              3 Control, 4 Extend, 5 ZWJ, 6 Regional_Indicator, 7 Prepend,
@@ -251,6 +255,25 @@ def read_grapheme(d, version):
     return out
 
 
+def read_classes(unidata, alphabetic, pl):
+    """Per code point a u8: 1 word, 2 Nd, 4 White_Space (see the header)."""
+    gc = ["Cn"] * N
+    first = None
+    for line in open(unidata, encoding="utf8"):
+        f = line.rstrip("\n").split(";")
+        c = int(f[0], 16)
+        if f[1].endswith(", First>"):
+            first = c
+            continue
+        for x in (range(first, c + 1) if f[1].endswith(", Last>") else [c]):
+            gc[x] = f[2]
+    out = [0] * N
+    for c in range(N):
+        word = alphabetic[c] or gc[c] in ("Mn", "Mc", "Me", "Nd", "Pc") or pl["Join_Control"][c]
+        out[c] = (1 if word else 0) | (2 if gc[c] == "Nd" else 0) | (4 if pl["White_Space"][c] else 0)
+    return out
+
+
 def runs(values):
     starts, vals = [], []
     for c, v in enumerate(values):
@@ -274,7 +297,7 @@ def main():
     d = sys.argv[1]
     version = re.search(r"PropList-([0-9.]+)\.txt", open(os.path.join(d, "PropList.txt"), encoding="utf8").readline()).group(1)
     dp = read_props(os.path.join(d, "DerivedCoreProperties.txt"), ["Alphabetic", "Uppercase", "Lowercase"])
-    pl = read_props(os.path.join(d, "PropList.txt"), ["White_Space"])
+    pl = read_props(os.path.join(d, "PropList.txt"), ["White_Space", "Join_Control"])
     numeric, upper, lower = read_unicodedata(os.path.join(d, "UnicodeData.txt"))
     special = read_special(os.path.join(d, "SpecialCasing.txt"))
     sv = re.search(r"SpecialCasing-([0-9.]+)\.txt", open(os.path.join(d, "SpecialCasing.txt"), encoding="utf8").readline()).group(1)
@@ -358,6 +381,10 @@ def main():
     gs, gv = runs(read_grapheme(d, version))
     out += emit("graphemeStarts", "u32", gs, "u32", 8, True)
     out += emit("graphemeVals", "u8", gv, "u8", 16, False)
+    cls_all = read_classes(os.path.join(d, "UnicodeData.txt"), dp["Alphabetic"], pl)
+    cls_s, cls_v = runs(cls_all)
+    out += emit("classStarts", "u32", cls_s, "u32", 8, True)
+    out += emit("classVals", "u8", cls_v, "u8", 16, False)
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "src", "unicodetables.cone"), "w", encoding="utf8", newline="\n") as f:
         f.write(out)
@@ -372,7 +399,9 @@ def main():
         sum(width[c] == 0 for c in nonsur), sum(width[c] == 2 for c in nonsur)))
     print("fold: C runs %d F entries %d; ccc runs %d; decomposable %d pool %d; composition pairs %d; nfc_qc runs %d" % (
         len(fs2), len(fold_f), len(cs), len(dkeys), len(dpool), len(pairs), len(qs)))
-    print("grapheme runs %d" % len(gs))
+    print("grapheme runs %d; class runs %d" % (len(gs), len(cls_s)))
+    print("class totals (tests/classes.cone): word %d digit %d" % (
+        sum(cls_all[c] & 1 != 0 for c in nonsur), sum(cls_all[c] & 2 != 0 for c in nonsur)))
     print("special: upper %d lower %d" % (len(sp_up), len(sp_lo)))
     print("Unicode", version, "width runs", len(ws), "flag runs", len(fs), "upper runs", len(us), "lower runs", len(ls))
 

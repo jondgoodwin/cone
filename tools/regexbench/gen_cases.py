@@ -273,6 +273,45 @@ for pat, text in BYTES:
 for pat, text in [("(?-u)(a)(\\xff)?", b"a\xff"), ("(?-u)(.)(.)", b"\xfe\xff")]:
     add("bcaps", pat, text)
 
+# --- Unicode classes: \d is Nd, \s is White_Space, \w is Alphabetic, M, Nd, Pc and Join_Control; \b follows \w
+finds("\\w+", "foo_bar-9 baz", "héllo wörld naïve", "αβγ δέλτα Ωμέγα", "日本語 テスト,漢字", "x१२३y", "कि का", "a\u200db", "")
+finds("\\d+", "a12b", "x१२३y४५ 12", "٠١٢ ٣", "²³ ½ Ⅷ", "１２３", "")
+finds("\\s+", "a b\t\nc", "a\u00a0b\u2003c\u3000d", "a\u200bb\u0085c", "\u2028x\u2029", "")
+finds("\\W+", "héllo, wörld!", "日本。語", "a b", "")
+finds("\\D+", "ab12cd", "a١٢b", "")
+finds("\\S+", "héllo wörld", "日本\u3000語", "")
+finds("[\\w-]+", "foo-bar baz", "日本-語 x", "")
+finds("[^\\w]", "é, ü!", "日 本", "")
+finds("[\\d\\s]+", "a1 \u0661\u3000b", "")
+finds("[\\w&&\\D]+", "ab1é٢ü", "")
+finds("[\\W\\d]+", "é1-٢ü", "")
+finds("(?i)\\w+", "Héllo WÖRLD", "")
+finds("\\w{3}", "αβγδε", "日本語テ", "")
+finds("\\bé", "é ée aé", "")
+finds("\\b", "ab cd", "é ü", "日本 x", "")
+finds("\\B", "ab", "éü", "日 本", "")
+finds("\\b\\w+\\b", "héllo wörld", "日本 語", "naïve_1 x", "")
+finds("\\bfoo\\b", "foo 日foo日 foo", "éfoo foo ", "foo\u0301 foo", "")
+finds("\\w\\b", "cafe\u0301 e\u0301", "e\u0301x", "")
+finds("e\\b", "cafe\u0301 cafe", "")
+finds("\\Be", "cafe\u0301 e", "")
+finds("\\bx\\B", "xé xa x", "")
+finds("\\w+ing\\b", "singing, héllo ing wörking", "")
+finds("(?-u:\\w+)é", "abé", "")
+finds("\\w+(?-u:\\b)", "ab é", "")
+finds("(?-u:\\b)\\w", "é ab", "")
+for pat in ["\\b\\w+\\b", "\\w+", "\\w+ing\\b", "\\d+", "\\s+\\S", "\\B\\w", "\\W+", "[\\w-]+@\\w+"]:
+    # 600 bytes or more: the lazy DFA answers an ASCII text, and gives way to the Pike VM at the first non-ASCII byte
+    add("find", pat, "foo bar_1 sing baz@qux 12\t " * 30)
+    add("find", pat, "foo bar_1 sing " * 40 + "héllo wörld singing x" * 3)
+    add("find", pat, "héllo wörld 日本語 sing ١٢٣ " * 25)
+    add("find", pat, "x" * 700 + " ending e\u0301 end")
+for pat in ["\\w+", "\\bfoo\\b"]:
+    add("caps", pat, "日本foo語 foo")
+# bytes mode: the Unicode classes are accepted, and bytes that are not UTF-8 are no part of a word
+for pat, text in [("\\w+", b"a\xe9b \xc3\xa9\xff"), ("\\b", b"a\xffb"), ("\\bé", "é".encode()), ("\\w+\\b", b"ab\xc3\xa9 \xc3")]:
+    add("bfind", pat, text)
+
 # Patterns where Python's `re` means something else; the Rust answer stands on its own
 KNOWN_PY_DIFFERENCES = "empty matches next to a match, \\z, (?-u), POSIX classes, \\x{..}, (?P<x>) in replacements, $-replacements"
 
@@ -404,8 +443,8 @@ HELPERS = r'''// The answer, asked of the pattern as written (the bounded backtr
 // compared, and is counted in 'padErrors'; 'main' prints the count and the .out pins it.
 // No case in this file is that big, so it is 0: a case added that is, shows as a changed
 // count, to be looked at, rather than as a silently skipped comparison.
-var padErrors = 0usize;
-var askCount = 0usize;
+var @threadlocal padErrors = 0usize;
+var @threadlocal askCount = 0usize;
 fn ask(kind: &str, pat: &str, text: &str, repl: &str) String {
   let a = askOne(kind, pat, text, repl);
   if a.view().startsWith("ERR") { return a; }
