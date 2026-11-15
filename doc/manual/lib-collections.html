@@ -24,7 +24,7 @@
 		built, after a value and after a construction. Each section below says what else is not built.</i></p>
 
 	<p>The <span class="pre">collections</span> package holds the growable collections: <a href="#list">List</a>,
-		<a href="#dict">Dict</a>, <a href="#ordereddict">OrderedDict</a>, <a href="#set">Set</a>,
+		<a href="#dict">Dict</a>, <a href="#ordereddict">OrderedDict</a>, <a href="#set">Set</a>, <a href="#bitset">BitSet</a>,
 		<a href="#deque">Deque</a>, <a href="#priorityqueue">PriorityQueue</a>, <a href="#soalist">SoaList</a> and <a href="#string">String</a>, all brought in by
 		<span class="pre">import collections use *;</span>. Under them are the language's own
 		<a href="#array">arrays</a>, whose size is fixed, and <a href="#slices">slices</a>, borrowed views of a run of
@@ -323,6 +323,50 @@ fn main() i32 {
 </pre>
 	<p>This prints <span class="pre">4 distinct, 2 repeats</span>, then <span class="pre">or is in</span>,
 		<span class="pre">or removed</span> and <span class="pre">or is out</span>.</p>
+
+	<h2 id="bitset">BitSet</h2>
+	<p><span class="pre">BitSet</span> is a fixed count of flags, a bit each (eight a byte, where a
+		<span class="pre">List[bool]</span> takes a byte each). <span class="pre">BitSet(n)</span> has
+		<span class="pre">n</span> flags, all clear; <span class="pre">BitSet.full(n)</span> has them all set. The count is
+		fixed when it is made, and the flags live in 64-bit words in a <span class="pre">List[u64]</span>, so they come from
+		the region the set is made in, as a list's block does (<span class="pre">BitSet(n, region)</span>).
+		<span class="pre">get(i)</span> answers a flag, <span class="pre">set(i)</span> and <span class="pre">clear(i)</span>
+		change one, <span class="pre">assign(i, on)</span> does either, <span class="pre">count()</span> is how many are set
+		(a popcount a word at a time), <span class="pre">len</span> is the count of flags, and there are
+		<span class="pre">isEmpty</span>, <span class="pre">clearAll</span> and <span class="pre">setAll</span>. Against another
+		set of the same length, <span class="pre">unionWith</span>, <span class="pre">intersectWith</span> and
+		<span class="pre">differenceWith</span> change this one in place, a word at a time; a different length is a panic
+		naming both. <span class="pre">iter()</span> is a cursor giving the index of each set flag, lowest first, by a
+		trailing-zero count (the set may not change while it is used). An index past <span class="pre">len</span> is a panic
+		at the caller's line, as a list's is. The bits of the last word past <span class="pre">len</span> are always zero, so
+		<span class="pre">count</span> and the cursor never see them. It does not grow: there is no
+		<span class="pre">push</span> or <span class="pre">resize</span>.</p>
+<pre>
+mod bitsetdemo;
+
+import stdio use *;
+import collections use *;
+
+fn main() i32 {
+  var a = BitSet(100usize);
+  var b = BitSet(100usize);
+  a.set(3usize); a.set(64usize); a.set(99usize);
+  b.set(64usize); b.set(70usize);
+  a.unionWith(&amp;b);                       // a is now {3, 64, 70, 99}
+  print &lt;- a.count();
+  print &lt;- " flags:";
+  var it = a.iter();
+  while true {
+    match it.next() {
+      case let Some(i) { print &lt;- " "; print &lt;- i; }
+      case is None { break; }
+    }
+  }
+  print &lt;- "\n";
+  0i32
+}
+</pre>
+	<p>This prints <span class="pre">4 flags: 3 64 70 99</span>.</p>
 
 	<h2 id="deque">Deque</h2>
 	<p><span class="pre">Deque[T]</span> is a double-ended queue, a
