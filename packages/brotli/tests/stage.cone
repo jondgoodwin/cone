@@ -1,0 +1,245 @@
+// Brotli through the stage interface: memory -> TransformStage[brotli.Decompressor] -> HashStage[Sha256] ->
+// a counting sink, three streams fed in chunks of 997, 64 KiB and 13 bytes (so the stream is cut inside
+// headers, commands and literals), and a fourth, cut in half, into the counting sink: the sink must hear
+// one Failed end and never a Finished one. After the actors are gone, every buffer is back in its pool.
+
+mod stage;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import fs;
+import path use Path;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import streams use *;
+import stages use *;
+import brotli;
+import cryptohash;
+
+struct Seen {
+  pub bytes: Atomic[u64];       // bytes the counting sink received
+  pub finished: Atomic[u64];    // 'end(Finished)' calls
+  pub failed: Atomic[u64];      // 'end(Failed)' calls
+  pub digests: Atomic[u64];     // digests received
+  pub digestOk: Atomic[u64];    // digests that equalled the expected one
+  pub digestErr: Atomic[u64];   // Err answers
+  pub early: Atomic[u64];       // chunks that arrived before the sink knew its source
+}
+
+fn newSeen() Seen {
+  Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+}
+
+let seen0: Seen;
+let seen1: Seen;
+let seen2: Seen;
+let seen3: Seen;
+
+fn @initpure init() {
+  seen0 = newSeen();
+  seen1 = newSeen();
+  seen2 = newSeen();
+  seen3 = newSeen();
+}
+
+fn seenOf(slot: usize) &Seen {
+  if slot == 0usize {&seen0} else if slot == 1usize {&seen1} else if slot == 2usize {&seen2} else {&seen3}
+}
+
+actor Counting is ChunkSink {
+  slot: usize;
+  up: Option[ChunkSource];
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, slot: usize, done: OneshotSender[u64]) {
+    *self = Self(slot: slot, up: None[ChunkSource], done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    let s = seenOf(slot);
+    s.bytes.add(u64.from(c.len()));
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None { s.early.add(1u64); }
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    let s = seenOf(slot);
+    match how {
+      case is Finished { s.finished.add(1u64); }
+      case let Failed(e) { s.failed.add(1u64); }
+    }
+    up = None[ChunkSource];
+    done.send(1u64);
+  }
+}
+
+actor Checker256 is DigestSink[Array[u8, 32]] {
+  slot: usize;
+  want: List[u8];
+
+  pub fn init(self: &new, slot: usize, want: List[u8]) {
+    *self = Self(slot: slot, want: want);
+  }
+
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {
+    let s = seenOf(slot);
+    s.digests.add(1u64);
+    match r {
+      case let Ok(d) { if &d == want.view() { s.digestOk.add(1u64); } }
+      case let Err(e) { s.digestErr.add(1u64); }
+    }
+  }
+}
+
+// Sends a list of bytes in chunks of 'piece' bytes through a link of four buffers
+actor MemorySource is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  data: List[u8];
+  piece: usize;
+  at: usize;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, data: List[u8], piece: usize) {
+    *self = Self(down: down, link: ChunkWindow.own(4usize * piece), data: data, piece: piece, at: 0usize, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {}
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if at >= data.len() {
+        over = true;
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        match link.take(piece) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let n = if data.len() - at < piece {data.len() - at} else {piece};
+            buf.append(&data.view()[at ..< at + n]);
+            at = at + n;
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
+fn dup(a: &Array[u8]) List[u8] {
+  var out = List[u8].withCapacity(a.len);
+  out.appendSlice(a);
+  out
+}
+
+fn read(rel: &str, out: &mut String) bool {
+  var name = String();
+  name.append("../../../../tests/data/");
+  name.append(rel);
+  let p = Path.from(name.view());
+  match fs.readFile(&p) {
+    case var Ok(ok) { *out <-> ok; true }
+    case let Err(e) { false }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var p0 = String();
+  var o0 = String();
+  var p1 = String();
+  var o1 = String();
+  var p2 = String();
+  var o2 = String();
+  if !read("own/manual.html.q5w16.br", &mut p0) || !read("own/manual.html", &mut o0)
+    || !read("own/conestd.bin.q11w10.br", &mut p1) || !read("own/conestd.bin", &mut o1)
+    || !read("own/dictwords.br", &mut p2) || !read("own/dictwords", &mut o2) {
+    expect(false, "the fixtures are there");
+    return done();
+  }
+  let h0 = dup(&cryptohash.sha256(o0.view().bytes()));
+  let h1 = dup(&cryptohash.sha256(o1.view().bytes()));
+  let h2 = dup(&cryptohash.sha256(o2.view().bytes()));
+  var tx0: OneshotSender[u64];
+  var rx0: OneshotReceiver[u64];
+  tx0, rx0 = Oneshot[u64].make();
+  var tx1: OneshotSender[u64];
+  var rx1: OneshotReceiver[u64];
+  tx1, rx1 = Oneshot[u64].make();
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+  var tx3: OneshotSender[u64];
+  var rx3: OneshotReceiver[u64];
+  tx3, rx3 = Oneshot[u64].make();
+  {
+    let count0 = Counting(0usize, tx0);
+    let hash0 = HashStage[cryptohash.Sha256](count0, cryptohash.Sha256.make(), Checker256(0usize, dup(h0.view())));
+    let dec0 = TransformStage[brotli.Decompressor](hash0, brotli.Decompressor.make());
+    let src0 = MemorySource(dec0, dup(p0.view().bytes()), 997usize);
+
+    let count1 = Counting(1usize, tx1);
+    let hash1 = HashStage[cryptohash.Sha256](count1, cryptohash.Sha256.make(), Checker256(1usize, dup(h1.view())));
+    let dec1 = TransformStage[brotli.Decompressor](hash1, brotli.Decompressor.make());
+    let src1 = MemorySource(dec1, dup(p1.view().bytes()), 65536usize);
+
+    let count2 = Counting(2usize, tx2);
+    let hash2 = HashStage[cryptohash.Sha256](count2, cryptohash.Sha256.make(), Checker256(2usize, dup(h2.view())));
+    let dec2 = TransformStage[brotli.Decompressor](hash2, brotli.Decompressor.make());
+    let src2 = MemorySource(dec2, dup(p2.view().bytes()), 13usize);
+
+    // 3. half a stream, into the sink directly
+    let count3 = Counting(3usize, tx3);
+    let dec3 = TransformStage[brotli.Decompressor](count3, brotli.Decompressor.make());
+    let half = dup(&p0.view().bytes()[0usize ..< p0.len() / 2usize]);
+    let src3 = MemorySource(dec3, half, 997usize);
+
+    src0.start();
+    src1.start();
+    src2.start();
+    src3.start();
+  }
+  rx0.recv();
+  rx1.recv();
+  rx2.recv();
+  rx3.recv();
+  finalAll();
+
+  expectUInt(seen0.bytes.load(), u64.from(o0.len()), "manual in 997-byte chunks: bytes");
+  expectUInt(seen0.finished.load(), 1u64, "manual: finished");
+  expectUInt(seen0.failed.load(), 0u64, "manual: not failed");
+  expectUInt(seen0.digestOk.load(), 1u64, "manual: the digest is the original's");
+  expectUInt(seen0.digestErr.load(), 0u64, "manual: no digest error");
+  expectUInt(seen1.bytes.load(), u64.from(o1.len()), "conestd in one chunk: bytes");
+  expectUInt(seen1.finished.load(), 1u64, "conestd: finished");
+  expectUInt(seen1.failed.load(), 0u64, "conestd: not failed");
+  expectUInt(seen1.digestOk.load(), 1u64, "conestd: the digest is the original's");
+  expectUInt(seen2.bytes.load(), u64.from(o2.len()), "dictwords in 13-byte chunks: bytes");
+  expectUInt(seen2.finished.load(), 1u64, "dictwords: finished");
+  expectUInt(seen2.failed.load(), 0u64, "dictwords: not failed");
+  expectUInt(seen2.digestOk.load(), 1u64, "dictwords: the digest is the original's");
+  expectUInt(seen3.finished.load(), 0u64, "a cut stream is never Finished");
+  expectUInt(seen3.failed.load(), 1u64, "a cut stream ends Failed, once");
+  expectUInt(seen0.early.load() + seen1.early.load() + seen2.early.load() + seen3.early.load(), 0u64, "no chunk arrived early");
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}

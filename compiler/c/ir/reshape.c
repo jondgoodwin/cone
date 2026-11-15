@@ -670,6 +670,27 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
         if (k == 0 && (call->flags & FlagVDisp) && at->tag == VirtRefTag && wt->tag == RefTag
                 && (permGetFlags(((RefNode *)wt)->perm) & MayWrite))
             wt = at;
+        // A borrow of a field of the container itself, lent for the callee to write through its
+        // parameter ('put(&mut r.items, ..)' while a borrow into 'r' is held): the callee reaches the
+        // container's own storage through a collection it holds, which no type of the parameter says,
+        // so it is asked as a method called on that field is (the receiver block above)
+        if ((ba->tag == BorrowTag || ba->tag == ArrayBorrowTag) && (at->tag == RefTag || at->tag == ArrayRefTag)
+                && (wt->tag == RefTag || wt->tag == ArrayRefTag)
+                && (permGetFlags(((RefNode *)wt)->perm) & MayWrite) && cont->tag == StructTag
+                && !(apart && k < 16 && apart[k])
+                && !reshapeUniqueLocalExcept(((RefNode *)ba)->vtexp, mine, nmine, cont)) {
+            INode *fo = pwReceiverFieldOwner(ba, 0);
+            if (fo && (fo == cont || itypeIsSame(fo, cont))) {
+                if (!visible) {
+                    verdict->why = ReshapeUnseen;
+                    return 1;
+                }
+                if (shapeParamReshapes(callee, k)) {
+                    verdict->why = ReshapeBody;
+                    return 1;
+                }
+            }
+        }
         unsigned bits;
         if (ba->tag == BorrowTag && at->tag == RefTag
                 && ((apart && k < 16 && apart[k]) || reshapeUniqueLocalExcept(((RefNode *)ba)->vtexp, mine, nmine, cont))) {
