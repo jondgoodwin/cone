@@ -3191,8 +3191,13 @@ static PathSet *pwCall(FnCallNode *call) {
         // where the place is reached through a path others may write by.
         if (recvloan && pathSetHasLoan(fromrecv, recvloan)) {
             INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
-            INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
-            if (container && container->tag == StructTag && shapeChanging((StructNode *)container)) {
+            INode *container = recvtype->tag == RefTag || recvtype->tag == VirtRefTag
+                ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
+            if (container && container->tag == StructTag
+                    && ((recvtype->tag == VirtRefTag
+                            // an owner lent as the receiver is followed as an owner (pwOwnerLent)
+                            && !(nodesGet(call->args, 0)->tag == CastTag && pwIsOwnedLent((CastNode *)nodesGet(call->args, 0))))
+                        || shapeChanging((StructNode *)container))) {
                 pwShapeLent(&recvpl, recvloan, container, 0);
                 int byvalue;
                 INode *vowner = pwViewOwner(nodesGet(call->args, 0), container, &byvalue);
