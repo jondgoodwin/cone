@@ -2126,6 +2126,10 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         && !(isNameUseNode(obj) && isExpNode(obj)
              && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)
         && !structSeesPrivate(pstate, objdereftype);
+    // The splice 'val.#f' of a type declared '@reflect' reaches the private field the loop described: the opt-in opens
+    // reflection to any code, not plain access ('val.name' stays refused). A write follows the field's own permission
+    if (notpublic && (methfld->flags & FlagSplice) && objdereftype->tag == StructTag && ((StructNode*)objdereftype)->reflect)
+        notpublic = 0;
     // A generic's body calls through its bound: a type that declares the bound's
     // trait with 'is' has asserted the fit, and meets it from every module, its
     // private member of that name included (the bound itself was decided so,

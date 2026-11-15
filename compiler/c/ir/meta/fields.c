@@ -69,6 +69,7 @@ INode *fieldEachSplice(NameUseNode *node) {
         return NULL;
     NameUseNode *member = newMemberUseNode(((NameUseNode*)hooked)->namesym);
     inodeLexCopy((INode*)member, (INode*)node);
+    member->flags |= FlagSplice;
     return (INode*)member;
 }
 
