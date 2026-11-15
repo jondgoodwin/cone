@@ -1,0 +1,101 @@
+// Bug 93 (row 341). A store over a field of 'r' while a view into 'r' is held and used frees what
+// the view points into, not only where the field is a String or a struct that changes shape by
+// the trait test: also where it is a struct, an array or a tuple holding a String by value, or an
+// owning reference ('Uni', 'Rc') to one. Each is refused, as the plain String field already was.
+// Found under ASan: each of these read freed memory.
+
+mod collection_flow_store_over_field_byvalue;
+
+import collections use *;
+
+struct Inner { pub s: String; pub k: i32; }
+
+fn mkS() String { var s = String(); s.append("0123456789012345678901234567890123456789"); s }
+fn mk() Inner { Inner(mkS(), 1) }
+
+struct RdStruct {
+  pub inner: Inner;
+  pub fn view(self: &mut) &str { self.inner.s.view() }
+}
+
+struct RdArray {
+  pub inner: Array[Inner, 2];
+  pub fn view(self: &mut) &str { self.inner[0usize].s.view() }
+}
+
+struct RdArrayStr {
+  pub inner: Array[String, 2];
+  pub fn view(self: &mut) &str { self.inner[0usize].view() }
+}
+
+struct RdTuple {
+  pub inner: (String, i32);
+  pub fn view(self: &mut) &str { self.inner.0.view() }
+}
+
+struct RdUni {
+  pub inner: Uni[Inner];
+  pub fn view(self: &mut) &str { self.inner.s.view() }
+}
+
+struct RdRc {
+  pub inner: Rc[mut, Inner];
+  pub fn view(self: &mut) &str { self.inner.s.view() }
+}
+
+fn byStruct(r: &mut RdStruct) u8 {
+  let y: &mut RdStruct = r;
+  let v = y.view();
+  r.inner = mk();                                       //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byArray(r: &mut RdArray) u8 {
+  let y: &mut RdArray = r;
+  let v = y.view();
+  r.inner = [mk(), mk()];                               //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byArrayStr(r: &mut RdArrayStr) u8 {
+  let y: &mut RdArrayStr = r;
+  let v = y.view();
+  r.inner = [mkS(), mkS()];                             //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byTuple(r: &mut RdTuple) u8 {
+  let y: &mut RdTuple = r;
+  let v = y.view();
+  r.inner = (String(), 1);                              //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byUni(r: &mut RdUni) u8 {
+  let y: &mut RdUni = r;
+  let v = y.view();
+  r.inner = Uni[Inner](mk());                           //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byRc(r: &mut RdRc) u8 {
+  let y: &mut RdRc = r;
+  let v = y.view();
+  r.inner = Rc[mut, Inner](mk());                       //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn main() {
+  var a = RdStruct(mk());
+  byStruct(&mut a);
+  var b = RdArray([mk(), mk()]);
+  byArray(&mut b);
+  var c = RdArrayStr([mkS(), mkS()]);
+  byArrayStr(&mut c);
+  var d = RdTuple((mkS(), 1));
+  byTuple(&mut d);
+  var e = RdUni(Uni[Inner](mk()));
+  byUni(&mut e);
+  var f = RdRc(Rc[mut, Inner](mk()));
+  byRc(&mut f);
+}
