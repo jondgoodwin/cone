@@ -1632,9 +1632,9 @@ static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *own
             ok = 0;
         }
     }
-    // A generic trait's instance, 'Stack[T]', is a constraint's to name; in a
-    // condition on an 'is' entry it is not built
-    else if (ownparms == NULL && genericNamedGenericTrait(clause->typ)) {
+    // A generic trait's instance, 'Stack[T]': made at each instance's arguments,
+    // in a 'where' clause and in a condition on an 'is' entry alike
+    else if (genericNamedGenericTrait(clause->typ)) {
         if (!genericTraitInstanceVet(clause->typ))
             ok = 0;
     }
@@ -1642,14 +1642,14 @@ static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *own
     // clause; in a condition on an 'is' entry it is not built
     else if (genericNamedTrait(clause->typ) == NULL && genericNamedType(clause->typ) == NULL
         && !(ownparms == NULL && genericIsTypeInstance(clause->typ))) {
-        StructNode *bare = ownparms ? NULL : genericNamedBareGenericTrait(clause->typ);
+        StructNode *bare = genericNamedBareGenericTrait(clause->typ);
         if (bare)
             errorMsgNode(clause->typ, ErrorWhereTrait,
                 "%s is a generic %s, and a constraint names an instance of it, with its type arguments: %s[T]. (A bare generic %s names no trait.)",
                 &bare->namesym->namestr, genericKindWord(bare), &bare->namesym->namestr, genericKindWord(bare));
         else if (!isNameUseNode(clause->typ) || ((NameUseNode*)clause->typ)->dclnode != NULL)
             errorMsgNode(clause->typ, ErrorWhereTrait, ownparms
-                ? "What a type parameter 'is' in a condition on an 'is' entry is a trait or a type, and this is neither. (A generic trait's or type's instance is not built in a condition yet.)"
+                ? "What a type parameter 'is' in a condition on an 'is' entry is a trait or a type, and this is neither. (A generic type's instance is not built in a condition yet.)"
                 : "What a type parameter 'is' in a 'where' clause is a trait or a type, and this is neither. (A generic type is named with its arguments: Option[i64].)");
         ok = 0;
     }
@@ -2969,7 +2969,9 @@ static void genericCondIsWhy(char *buf, size_t size, INode *arg, StructNode *tra
     uint32_t cnt;
     for (nodesFor(generic->condis, cnt, nodesp)) {
         FieldDclNode *entry = (FieldDclNode*)*nodesp;
-        if (genericNamedTrait(entry->vtype) != want)
+        // An instance of a generic trait is named by its template in the entry
+        StructNode *wanttmpl = trait == copyTrait ? NULL : genericTemplateOf(trait);
+        if (wanttmpl ? genericNamedGenericTrait(entry->vtype) != wanttmpl : genericNamedTrait(entry->vtype) != want)
             continue;
         int holds = genericEntryValue((INode*)generic, entry->value, generic->genericinfo->parms, args) == WhereTrue;
         if (holds != (trait == copyTrait))
@@ -3277,8 +3279,12 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
     }
     if (trait)
         genericCondIsWhy(why, sizeof(why), arg, trait);
-    else if (inst && !genericTraitIsMarker(inst))
-        genericFitWhy(why, sizeof(why), inst, arg, &layout);
+    else if (inst) {
+        // An 'is' entry's condition that is false at the arguments says why first
+        genericCondIsWhy(why, sizeof(why), arg, inst);
+        if (why[0] == '\0' && !genericTraitIsMarker(inst))
+            genericFitWhy(why, sizeof(why), inst, arg, &layout);
+    }
     if (inst == NULL)
         inst = trait;
     // A type whose method is the trait's but for a value held by value that is not
