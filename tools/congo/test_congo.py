@@ -3833,6 +3833,40 @@ class BuildCache(unittest.TestCase):
         self.assertEqual(compiled(self.congo("build", "--no-cache", cwd=kern)),
                          ["libc", "core", "scale", "kern", "kern for the GPU"])
 
+    def test_an_unreadable_source_stops_the_build_in_one_line(self) -> None:
+        """A source the build cannot read after a good build stops it with
+        'congo: error: readFile <path>: <reason>', not a traceback. (Overlaps
+        the Cone Congo's test of the same message; the two may be folded.)"""
+        if os.name != "nt" and os.geteuid() == 0:
+            self.skipTest("root can read a file whatever its mode")
+        app = self.chain()
+        self.congo("build", cwd=app)
+        leaf = self.root / "pkgs" / "leaf" / "src" / "leaf.cone"
+        handle = None
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            create = ctypes.windll.kernel32.CreateFileW
+            create.restype = wintypes.HANDLE
+            create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                               wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            handle = create(str(leaf), 0x80000000, 0, None, 3, 0x80, None)  # no sharing
+            self.assertNotEqual(handle, wintypes.HANDLE(-1).value)
+        else:
+            leaf.chmod(0)
+        try:
+            run = self.congo("build", cwd=app, ok=False)
+        finally:
+            if handle is not None:
+                ctypes.windll.kernel32.CloseHandle(handle)
+            else:
+                leaf.chmod(0o644)
+        self.assertNotEqual(run.returncode, 0)
+        lines = [l for l in run.stderr.splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1, run.stderr)
+        self.assertRegex(lines[0], r"^congo: error: readFile .*leaf\.cone: Permission denied$")
+        self.assertNotIn("Traceback", run.stderr)
+
 
 def clean_environment() -> dict[str, str]:
     """This process's environment as a plain console's would be: no Visual

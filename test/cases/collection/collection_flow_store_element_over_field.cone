@@ -1,0 +1,92 @@
+// Bug 93 (row 345). An element store into a collection field of 'r' ('r.items[0] = x') frees the
+// element it replaces, the very bytes a view into 'r' taken through a reborrow may point at. The
+// store is a call of the collection's index method, a place no assignment walk followed: it was
+// neither a write of storage through 'r' (so 'Rd' did not count as changing shape) nor a store
+// over a field of the container. Each of these read freed memory under ASan before the fix; the
+// element is a String, a struct holding one, an array, a tuple, a 'Uni' or an 'Rc', and an array
+// field replaced at an element.
+
+mod collection_flow_store_element_over_field;
+
+import collections use *;
+
+struct Inner { pub s: String; pub k: i32; }
+
+fn mkS() String { var s = String(); s.append("0123456789012345678901234567890123456789"); s }
+fn mk() Inner { Inner(mkS(), 1) }
+
+struct RdString { pub items: List[String]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].view() } }
+struct RdStruct { pub items: List[Inner]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].s.view() } }
+struct RdArray { pub items: List[Array[Inner, 2]]; pub n: i32;
+  pub fn view(self: &mut) &str { let a: &mut Array[Inner, 2] = &mut self.items[0usize]; a[0usize].s.view() } }
+struct RdArrayStr { pub items: List[Array[String, 2]]; pub n: i32;
+  pub fn view(self: &mut) &str { let a: &mut Array[String, 2] = &mut self.items[0usize]; a[0usize].view() } }
+struct RdTuple { pub items: List[(String, i32)]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].0.view() } }
+struct RdUni { pub items: List[Uni[Inner]]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].s.view() } }
+struct RdRc { pub items: List[Rc[mut, Inner]]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].s.view() } }
+struct RdArrField { pub arr: Array[String, 2]; pub n: i32;
+  pub fn view(self: &mut) &str { self.arr[0usize].view() } }
+
+fn byString(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  r.items[0usize] = String();                           //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byStruct(r: &mut RdStruct) u8 {
+  let y: &mut RdStruct = r;
+  let v = y.view();
+  r.items[0usize] = mk();                               //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byArray(r: &mut RdArray) u8 {
+  let y: &mut RdArray = r;
+  let v = y.view();
+  r.items[0usize] = [mk(), mk()];                       //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byArrayStr(r: &mut RdArrayStr) u8 {
+  let y: &mut RdArrayStr = r;
+  let v = y.view();
+  r.items[0usize] = [String(), String()];               //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byTuple(r: &mut RdTuple) u8 {
+  let y: &mut RdTuple = r;
+  let v = y.view();
+  r.items[0usize] = (String(), 1);                      //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byUni(r: &mut RdUni) u8 {
+  let y: &mut RdUni = r;
+  let v = y.view();
+  r.items[0usize] = Uni[Inner](mk());                   //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byRc(r: &mut RdRc) u8 {
+  let y: &mut RdRc = r;
+  let v = y.view();
+  r.items[0usize] = Rc[mut, Inner](mk());               //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn byArrField(r: &mut RdArrField) u8 {
+  let y: &mut RdArrField = r;
+  let v = y.view();
+  r.arr[0usize] = String();                             //~ ErrorShapeStore
+  v[0usize]
+}
+
+fn main() {
+}
