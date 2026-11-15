@@ -1,0 +1,71 @@
+// Bug 91: env.set, env.unset and env.get from several threads at once, on the
+// same names. Four threads each loop 20000 times: set one of two names to a
+// 64-byte value of one repeated letter (each thread its own letter), read it
+// back, and now and then unset it. libc's setenv may free or move the string
+// a concurrent getenv is reading; the package's one lock keeps that from
+// happening, and 'get' copies the value while it holds the lock. A read
+// answers None (just unset) or a value whose 64 bytes are all one of the four
+// letters; a torn value, or a crash (run under ASan on Linux), fails.
+//
+// Worked out by hand: every thread makes 20000 reads, each checked, so each
+// returns the number of bad reads, 0; the four sum to 0. The values set are
+// 64 bytes of 'a'..'d', so a good read has length 64 and its first byte
+// repeated throughout.
+
+mod threads;
+
+import testing use *;
+import thread;
+import env;
+
+fn letterValue(id: u64) &str {
+  if id == 0u64 { return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; }
+  if id == 1u64 { return "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; }
+  if id == 2u64 { return "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"; }
+  "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+}
+
+// 0 when the read is None or a whole 64-byte value of one allowed letter, else 1
+fn badRead(name: &str) u64 {
+  match env.get(name) {
+    case let Some(v) {
+      if v.len() != 64usize { return 1u64; }
+      let first = v[0usize];
+      if first < 'a' || first > 'd' { return 1u64; }
+      var i = 1usize;
+      while i < 64usize {
+        if v[i] != first { return 1u64; }
+        i = i + 1usize;
+      }
+      0u64
+    }
+    case is None { 0u64 }
+  }
+}
+
+fn work(id: u64) u64 {
+  var bad = 0u64;
+  var i = 0u32;
+  while i < 20000u32 {
+    let name = if i % 2u32 == 0u32 {"CONE_ENV_THREADS_A"} else {"CONE_ENV_THREADS_B"};
+    env.set(name, letterValue(id));
+    bad = bad + badRead(name);
+    bad = bad + badRead("CONE_ENV_THREADS_A");
+    if i % 7u32 == 0u32 { env.unset(name); }
+    bad = bad + badRead("CONE_ENV_THREADS_B");
+    i = i + 1u32;
+  }
+  bad
+}
+
+fn main() i32 {
+  let a = thread.start(0u64, &work);
+  let b = thread.start(1u64, &work);
+  let c = thread.start(2u64, &work);
+  let d = thread.start(3u64, &work);
+  expectUInt(a.join(), 0u64, "thread 0 read no torn value");
+  expectUInt(b.join(), 0u64, "thread 1 read no torn value");
+  expectUInt(c.join(), 0u64, "thread 2 read no torn value");
+  expectUInt(d.join(), 0u64, "thread 3 read no torn value");
+  done()
+}
