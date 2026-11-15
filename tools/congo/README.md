@@ -773,7 +773,7 @@ packages/geomath/
    the registries, so a package in no registry can be tested where it stands,
    and a test reaches the copy being tested. Each test is built in
    `build/<mode>/tests/<name>/` and run there, with no arguments and no input,
-   for at most 180 seconds. On Windows it runs as Congo's debuggee, so that a
+   for at most 180 seconds (`tests/<name>.timeout`, below, sets another). On Windows it runs as Congo's debuggee, so that a
    crash, a panic's fail-fast above all, ends at once with the exit status
    Windows would have given it, rather than being held by Windows Error
    Reporting, which takes many seconds when many programs crash at once
@@ -910,8 +910,12 @@ fixtures, setup and teardown; and mocks.
 
 ### When a test hangs
 
-A test that runs past its time (180 seconds) is stopped and fails with
-"timed out". With the environment variable `CONE_HANG_DIR` set to a folder,
+A test that runs past its time (180 seconds, or the seconds in its
+`tests/<name>.timeout`: one positive whole number, for a test that needs more,
+such as voicechat's `bargein`, which retries up to three runs of about 65 s) is
+stopped and fails with "timed out after N seconds", followed by the last 40
+lines of what it wrote to stderr, so that a log of the run says how far it got.
+With the environment variable `CONE_HANG_DIR` set to a folder,
 Congo first saves what the program was doing, so that a hang that cannot be
 repeated still leaves something to read. Unset, nothing changes. Files are
 named `<package>-<test>-<head>-<yyyymmdd-HHMMSS>`, the head being

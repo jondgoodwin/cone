@@ -2251,6 +2251,46 @@ class Testing(unittest.TestCase):
         self.assertEqual((tests / "status.exit").read_text(), "3\n")
         self.congo("test", "status", cwd=pkg)
 
+    def test_a_test_has_its_own_time_limit_and_a_stopped_one_keeps_its_stderr(self):
+        """tests/<name>.timeout holds a test's seconds. A test that sleeps 4 s
+        under a 2 s limit is stopped, and its stderr is in Congo's output; the
+        same test passes under a 6 s limit; a .timeout that is no positive
+        whole number fails the test with its path."""
+        pkg = self.root / "sleepy"
+        write(pkg / "congo.toml",
+              '[package]\nname = "sleepy"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "sleepy.cone", "mod sleepy;\n\npub fn one() i64 {\n  1i64\n}\n")
+        write(pkg / "tests" / "nap.cone", """
+            mod nap;
+
+            import stdio use *;
+            import sleepy;
+            import thread;
+            import time;
+
+            fn main() i32 {
+              eprintStr("nap: about to sleep\\n");
+              thread.sleep(time.Duration.fromSeconds(4));
+              printInt(sleepy.one());
+              printStr("\\n");
+              0i32
+            }
+            """)
+        write(pkg / "tests" / "nap.out", "1\n")
+        write(pkg / "tests" / "nap.timeout", "2\n")
+        stopped = self.congo("test", "nap", cwd=pkg, ok=False)
+        self.assertNotEqual(stopped.returncode, 0)
+        self.assertIn("timed out after 2 seconds", stopped.stdout)
+        self.assertIn("nap: about to sleep", stopped.stdout)
+        write(pkg / "tests" / "nap.timeout", "6\n")
+        passed = self.congo("test", "nap", cwd=pkg)
+        self.assertIn("test nap ... ok", passed.stdout)
+        for bad in ("0\n", "2.5\n", "soon\n", ""):
+            write(pkg / "tests" / "nap.timeout", bad)
+            refused = self.congo("test", "nap", cwd=pkg, ok=False)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("nap.timeout must hold one positive whole number", refused.stdout)
+
     def halver(self, root: Path) -> Path:
         """A library whose one function checks its argument in a debug build
         only; a test of it that passes in either build, and one, marked
@@ -3792,6 +3832,40 @@ class BuildCache(unittest.TestCase):
         self.assertEqual(entry_points(spv), ["halve"])
         self.assertEqual(compiled(self.congo("build", "--no-cache", cwd=kern)),
                          ["libc", "core", "scale", "kern", "kern for the GPU"])
+
+    def test_an_unreadable_source_stops_the_build_in_one_line(self) -> None:
+        """A source the build cannot read after a good build stops it with
+        'congo: error: readFile <path>: <reason>', not a traceback. (Overlaps
+        the Cone Congo's test of the same message; the two may be folded.)"""
+        if os.name != "nt" and os.geteuid() == 0:
+            self.skipTest("root can read a file whatever its mode")
+        app = self.chain()
+        self.congo("build", cwd=app)
+        leaf = self.root / "pkgs" / "leaf" / "src" / "leaf.cone"
+        handle = None
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            create = ctypes.windll.kernel32.CreateFileW
+            create.restype = wintypes.HANDLE
+            create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                               wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            handle = create(str(leaf), 0x80000000, 0, None, 3, 0x80, None)  # no sharing
+            self.assertNotEqual(handle, wintypes.HANDLE(-1).value)
+        else:
+            leaf.chmod(0)
+        try:
+            run = self.congo("build", cwd=app, ok=False)
+        finally:
+            if handle is not None:
+                ctypes.windll.kernel32.CloseHandle(handle)
+            else:
+                leaf.chmod(0o644)
+        self.assertNotEqual(run.returncode, 0)
+        lines = [l for l in run.stderr.splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1, run.stderr)
+        self.assertRegex(lines[0], r"^congo: error: readFile .*leaf\.cone: Permission denied$")
+        self.assertNotIn("Traceback", run.stderr)
 
 
 def clean_environment() -> dict[str, str]:
