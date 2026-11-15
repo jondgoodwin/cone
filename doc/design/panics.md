@@ -104,9 +104,13 @@ writes one line and aborts at once.
 `panic.cone`). Off unless the environment variable `CONE_BACKTRACE` is set to
 something other than empty or `0`; it is read at each panic, so a program may
 set it itself. When on, the panic line is followed by `stack backtrace:` and one
-line a frame, `  N: 0xADDRESS module+0xOFFSET`, at most 64, the panic's own
-frame left out, so frame 0 is the function that called `panic` (or the check
-that failed). The frames sit in a fixed array on the panicking thread's stack and
+line a frame, `  N: 0xADDRESS module+0xOFFSET`, at most 64, the panic
+machinery's frames left out, so frame 0 is the function that called `panic` (or
+whose check failed). Which frames are the machinery's does not depend on what the
+compiler inlined: each check's entry (`cone_panicIndex` and the others) records the
+address of a local in `panicAnchor`, `cone_panic` its own if none is set, and the
+walk drops every frame whose stack pointer is at or below that address, and the
+function holding it. The frames sit in a fixed array on the panicking thread's stack and
 go through the same text buffer as the panic line: nothing is allocated and no lock
 is taken, so the backtrace adds no deadlock path beside the console's (the #1180
 take-over). It is written before the hook runs. A panic inside a panic prints none.

@@ -36,14 +36,46 @@ int32_t cone_backtraceOn(void) {
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-// Up to max return addresses of the calling thread's stack, after skipping
-// 'skip' frames beyond this function's own; how many were found
-uint32_t cone_captureFrames(uint64_t *frames, uint32_t max, uint32_t skip) {
-    void *found[64];
-    if (max > 64) max = 64;
-    USHORT n = RtlCaptureStackBackTrace(1 + skip, max, found, NULL);
-    for (USHORT i = 0; i < n; i++) frames[i] = (uint64_t)(uintptr_t)found[i];
-    return n;
+// Up to max addresses of the calling thread's stack, one for each frame
+// above the panic machinery's, how many were found. The machinery is what
+// the panic's code runs in: every frame whose CFA (the stack pointer its
+// caller has when it calls) is at or below 'anchor', the address of a local of
+// the outermost machinery function, and the function holding that local. So
+// the answer does not depend on what the compiler inlined. With no anchor, the
+// frames of this function and its caller are skipped.
+//
+// The walk is by the unwind data, as RtlCaptureStackBackTrace does it, but
+// with RtlVirtualUnwind, which gives each frame's stack pointer too.
+uint32_t cone_captureFrames(uint64_t *frames, uint32_t max, uint64_t anchor) {
+    CONTEXT ctx;
+    uint32_t count = 0, index = 0;
+    int passed = 0;
+    RtlCaptureContext(&ctx);
+    for (int steps = 0; steps < 512 && count < max; steps++, index++) {
+        ULONG64 pc = ctx.Rip;
+        if (pc == 0) break;
+        ULONG64 base = 0;
+        PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(pc, &base, NULL);
+        if (rf == NULL) {
+            // a leaf with no unwind data: the return address is at the stack pointer
+            if (ctx.Rsp == 0) break;
+            ctx.Rip = *(ULONG64 *)ctx.Rsp;
+            ctx.Rsp += 8;
+        } else {
+            PVOID handler = NULL;
+            ULONG64 establisher = 0;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, pc, rf, &ctx, &handler, &establisher, NULL);
+        }
+        ULONG64 cfa = ctx.Rsp;
+        if (anchor == 0) {
+            if (index < 2) continue;
+        } else if (!passed) {
+            if (cfa > anchor) passed = 1;
+            continue;
+        }
+        frames[count++] = pc;
+    }
+    return count;
 }
 
 // The module holding addr: its file's base name into name (cap bytes, NUL
@@ -71,20 +103,28 @@ uint32_t cone_frameModule(uint64_t addr, uint8_t *name, uint32_t cap, uint64_t *
 #include <dlfcn.h>
 #include <unwind.h>
 
-struct walk { uint64_t *frames; uint32_t max, count, skip; };
+struct walk { uint64_t *frames; uint32_t max, count, index; uint64_t anchor; int passed; };
 
+// See the Windows half: the frames above the panic machinery's, by each
+// frame's CFA against the anchor (the address of a local of its outermost function)
 static _Unwind_Reason_Code visit(struct _Unwind_Context *ctx, void *arg) {
     struct walk *w = (struct walk *)arg;
     uintptr_t pc = (uintptr_t)_Unwind_GetIP(ctx);
     if (pc == 0) return _URC_END_OF_STACK;
-    if (w->skip > 0) { w->skip--; return _URC_NO_REASON; }
+    uint32_t index = w->index++;
+    if (w->anchor == 0) {
+        if (index < 2) return _URC_NO_REASON;
+    } else if (!w->passed) {
+        if ((uint64_t)_Unwind_GetCFA(ctx) > w->anchor) w->passed = 1;
+        return _URC_NO_REASON;
+    }
     if (w->count >= w->max) return _URC_END_OF_STACK;
     w->frames[w->count++] = pc;
     return _URC_NO_REASON;
 }
 
-uint32_t cone_captureFrames(uint64_t *frames, uint32_t max, uint32_t skip) {
-    struct walk w = { frames, max, 0, 1 + skip };
+uint32_t cone_captureFrames(uint64_t *frames, uint32_t max, uint64_t anchor) {
+    struct walk w = { frames, max, 0, 0, anchor, 0 };
     _Unwind_Backtrace(visit, &w);
     return w.count;
 }

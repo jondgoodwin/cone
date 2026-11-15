@@ -42,6 +42,13 @@ let panicHook: core.Atomic[usize];
 // Whether this thread is panicking already
 var @threadlocal panicking = false;
 
+// Where the panic machinery's frames end, for the backtrace: the address of a
+// local of the outermost function a panic runs through. A compiler check's
+// entry (cone_panicIndex and the others) sets it to its own; 0 means
+// cone_panic was called from elsewhere, and is itself the outermost. The
+// frames at and below that local are the machinery's, whatever was inlined
+var @threadlocal panicAnchor = 0usize;
+
 // The thread the program started on, which mainthread.c records before
 // 'main' runs: the one thing here Cone cannot do
 extern let cone_mainThread: u64;
@@ -56,11 +63,11 @@ fn thisThread() u64 {
 }
 
 // backtrace.c: whether CONE_BACKTRACE asks for frames; the calling thread's
-// frames (up to max, after skipping skip beyond the capture's own) into a
+// frames (up to max, above the anchor's function) into a
 // caller's array; the module holding an address (its base name into name,
 // the length returned) and the address's offset in it
 extern fn cone_backtraceOn() i32;
-extern fn cone_captureFrames(frames: *u64, max: u32, skip: u32) u32;
+extern fn cone_captureFrames(frames: *u64, max: u32, anchor: u64) u32;
 extern fn cone_frameModule(addr: u64, name: *u8, cap: u32, offset: *u64) u32;
 
 // The frames of this thread's stack after the panic line: 'stack backtrace:'
@@ -137,9 +144,13 @@ pub fn cone_panic(msg: &str, fileBytes: &Array[u8], line: u32) Never {
   out.write();
   libc.fflush(libc.stderr());
   if cone_backtraceOn() != 0i32 {
-    // The capture's skip of 1 leaves out this function's own frame
+    // The frames of the panic machinery are left out (panicAnchor): this
+    // function's own, or the check's entry that called it
     var frames = Array[u64, 64]() <- fill 0u64;
-    let count = cone_captureFrames(&mut frames[0usize] as *u64, 64u32, 1u32);
+    var here = 0u8;
+    var anchor = panicAnchor;
+    if anchor == 0usize { anchor = &mut here as *u8 as usize; }
+    let count = cone_captureFrames(&mut frames[0usize] as *u64, 64u32, u64.from(anchor));
     printBacktrace(&mut out, &frames, count);
   }
 
@@ -186,6 +197,8 @@ pub fn cone_mainErrorRecord(w: &uni core.TextOut) {
 
 pub fn cone_panicIndex(index: usize, count: usize, file: *u8, filelen: usize, line: u32) Never {
   var msg = newText(null);
+  var anchor = 0u8;
+  panicAnchor = &mut anchor as *u8 as usize;
   msg.text("index ");
   msg.decimal(u64.from(index));
   msg.text(" is out of bounds for a count of ");
@@ -195,6 +208,8 @@ pub fn cone_panicIndex(index: usize, count: usize, file: *u8, filelen: usize, li
 
 pub fn cone_panicSlice(start: usize, end: usize, count: usize, file: *u8, filelen: usize, line: u32) Never {
   var msg = newText(null);
+  var anchor = 0u8;
+  panicAnchor = &mut anchor as *u8 as usize;
   msg.text("slice ");
   msg.decimal(u64.from(start));
   msg.text("..<");
@@ -211,6 +226,8 @@ pub fn cone_panicSlice(start: usize, end: usize, count: usize, file: *u8, filele
 
 pub fn cone_panicAlloc(size: usize, file: *u8, filelen: usize, line: u32) Never {
   var msg = newText(null);
+  var anchor = 0u8;
+  panicAnchor = &mut anchor as *u8 as usize;
   msg.text("out of memory allocating ");
   msg.decimal(u64.from(size));
   msg.text(" bytes");
@@ -220,6 +237,8 @@ pub fn cone_panicAlloc(size: usize, file: *u8, filelen: usize, line: u32) Never 
 // A block was asked for with an alignment that is not a power of two
 pub fn cone_panicAlign(align: usize, file: *u8, filelen: usize, line: u32) Never {
   var msg = newText(null);
+  var anchor = 0u8;
+  panicAnchor = &mut anchor as *u8 as usize;
   msg.text("alignment ");
   msg.decimal(u64.from(align));
   msg.text(" is not a power of two");
@@ -229,6 +248,8 @@ pub fn cone_panicAlign(align: usize, file: *u8, filelen: usize, line: u32) Never
 // A second init after the program's final has run [Jon 6 Nov: init runs once per process]
 pub fn cone_panicInitAgain(file: *u8, filelen: usize, line: u32) Never {
   var msg = newText(null);
+  var anchor = 0u8;
+  panicAnchor = &mut anchor as *u8 as usize;
   msg.text("init runs once per process: init was called again after finalAll had run");
   cone_panic(msg.view(), core.mem.sliceFromParts[u8](file, filelen), line)
 }
@@ -237,6 +258,8 @@ pub fn cone_panicInitAgain(file: *u8, filelen: usize, line: u32) Never {
 // minimum of a signed type to divide by -1, whose quotient does not fit (what is 1)
 pub fn cone_panicDivide(what: usize, file: *u8, filelen: usize, line: u32) Never {
   var msg = newText(null);
+  var anchor = 0u8;
+  panicAnchor = &mut anchor as *u8 as usize;
   if what == 0usize {
     msg.text("attempt to divide by zero");
   }
