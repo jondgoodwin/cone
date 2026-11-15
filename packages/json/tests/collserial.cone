@@ -1,0 +1,56 @@
+// Collections write as JSON wherever their elements are Serialize (row 333c): a List[i32], a List[Pt], a
+// List[List[f64]], a Deque[i32] and a Dict[String, i64] through toJson with no declaration from anyone but the
+// element's author, and a declared record holding a List[i32] and a Dict[String, Pt]. Reading them back waits for
+// 'Deserialize' conditions on generic traits (the compiler does not build 'T is Deserialize[T]' in an 'is' condition yet).
+
+mod collserial;
+
+import testing use *;
+import collections use *;
+import json;
+
+struct Pt is Serialize { pub x: i32; pub y: i32; }
+struct Rec is Serialize { pub name: String; pub nums: List[i32]; pub pts: Dict[String, Pt]; }
+
+fn text(r: Result[String, json.JsonError]) String {
+  match r {
+    case let Ok(s) { s }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn main() i32 {
+  var a = List[i32]();
+  a.push(1);
+  a.push(-2);
+  expectStr(text(json.toJson(&a)).view(), "[1,-2]", "List[i32]");
+
+  var b = List[Pt]();
+  b.push(Pt(3, 4));
+  expectStr(text(json.toJson(&b)).view(), "[{\"x\":3,\"y\":4}]", "List[Pt]");
+
+  var inner = List[f64]();
+  inner.push(0.5);
+  var c = List[List[f64]]();
+  c.push(inner);
+  c.push(List[f64]());
+  expectStr(text(json.toJson(&c)).view(), "[[0.5],[]]", "List[List[f64]]");
+
+  var d = Deque[i32]();
+  d.push(7);
+  d.pushFront(8);
+  expectStr(text(json.toJson(&d)).view(), "[8,7]", "Deque front to back");
+
+  var e = Dict[String, i64]();
+  e.insert(String.from("a"), 9i64);
+  expectStr(text(json.toJson(&e)).view(), "{\"a\":9}", "Dict[String, i64]");
+
+  var pts = Dict[String, Pt]();
+  pts.insert(String.from("o"), Pt(0, 1));
+  var nums = List[i32]();
+  nums.push(5);
+  let rec = Rec(String.from("r"), nums, pts);
+  expectStr(text(json.toJson(&rec)).view(), "{\"name\":\"r\",\"nums\":[5],\"pts\":{\"o\":{\"x\":0,\"y\":1}}}", "a record with a List and a Dict field");
+
+  done()
+}

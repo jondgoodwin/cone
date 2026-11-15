@@ -1,0 +1,79 @@
+// Collections are serializable wherever their elements are: List, Deque and Dict declare 'Serialize if ...' (row 333c),
+// so a List[i32], a List[Pt] (Pt declaring Serialize), a List[List[f64]], a Deque[i32] and a Dict[String, i64] go through
+// serializeValue with no declaration from anyone but the element's author. A List of an enum nothing serializes still
+// compiles when it is only built. Checked by hand:
+//   List[i32] (1,2)       seq 2, int 1, int 2, endseq
+//   List[Pt] one Pt(3,4)  seq 1, a record of 2 fields, endseq
+//   List[List[f64]]       outer seq 2: [0.5] then []
+//   Deque[i32] (7,8)      pushFront(8) after push(7): front to back 8, 7
+//   Dict[String,i64] one  map 1, key, text a, value, int 9, endmap
+
+mod meta_serialize_collections_accept;
+
+import stdio use *;
+import collections use *;
+
+struct Recorder is Serializer { pub log: String;
+  pub fn boolean(self: &mut, b: bool) { self.log <- "bool ", b, "\n"; }
+  pub fn int(self: &mut, n: i64) { self.log <- "int ", n, "\n"; }
+  pub fn uint(self: &mut, n: u64) { self.log <- "uint ", n, "\n"; }
+  pub fn float(self: &mut, x: f64) { self.log <- "float ", x, "\n"; }
+  pub fn text(self: &mut, s: &str) { self.log <- "text ", s, "\n"; }
+  pub fn bytes(self: &mut, b: &Array[u8]) { self.log <- "bytes ", b.len(), "\n"; }
+  pub fn none(self: &mut) { self.log <- "none\n"; }
+  pub fn beginSeq(self: &mut, len: usize) { self.log <- "seq ", len, "\n"; }
+  pub fn endSeq(self: &mut) { self.log <- "endseq\n"; }
+  pub fn beginMap(self: &mut, len: usize) { self.log <- "map ", len, "\n"; }
+  pub fn mapKey(self: &mut) { self.log <- "key\n"; }
+  pub fn mapValue(self: &mut) { self.log <- "value\n"; }
+  pub fn endMap(self: &mut) { self.log <- "endmap\n"; }
+  pub fn beginRecord(self: &mut, typeName: &str, len: usize) { self.log <- "record ", len, "\n"; }
+  pub fn field(self: &mut, name: &str, index: usize) { self.log <- "field ", name, " ", index, "\n"; }
+  pub fn endRecord(self: &mut) { self.log <- "endrecord\n"; }
+  pub fn unitVariant(self: &mut, enumName: &str, index: u32, name: &str) { self.log <- "unit ", name, "\n"; }
+  pub fn beginVariant(self: &mut, enumName: &str, index: u32, name: &str, len: usize) { self.log <- "variant ", name, " ", index, "\n"; }
+  pub fn endVariant(self: &mut) { self.log <- "endvariant\n"; }
+}
+
+struct Pt is Serialize { pub x: i32; pub y: i32; }
+enum Kind { A; B(i32); }
+struct Holder { pub kinds: List[Kind]; pub q: Deque[Kind]; }
+
+fn show[T](title: &str, v: &T) where T is Serialize {
+  var rec = Recorder(String());
+  serializeValue(v, &mut rec);
+  print <- "== ", title, "\n";
+  printStr(rec.log.view());
+}
+
+fn main() {
+  var a = List[i32]();
+  a.push(1);
+  a.push(2);
+  show("List[i32]", &a);
+
+  var b = List[Pt]();
+  b.push(Pt(3, 4));
+  show("List[Pt]", &b);
+
+  var inner = List[f64]();
+  inner.push(0.5);
+  var c = List[List[f64]]();
+  c.push(inner);
+  c.push(List[f64]());
+  show("List[List[f64]]", &c);
+
+  var d = Deque[i32]();
+  d.push(7);
+  d.pushFront(8);
+  show("Deque[i32]", &d);
+
+  var e = Dict[String, i64]();
+  e.insert(String.from("a"), 9i64);
+  show("Dict[String, i64]", &e);
+
+  // Built and never serialized: Kind is not Serialize, and that is fine
+  var h = Holder(List[Kind](), Deque[Kind]());
+  h.kinds.push(Kind.A);
+  print <- "built ", h.kinds.len(), "\n";
+}
