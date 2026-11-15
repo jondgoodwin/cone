@@ -629,6 +629,30 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
         }
     }
 
+    // The receiver is a field of the container itself, held by value ('r.buf.append(..)' while a
+    // borrow into 'r.buf's storage is held, taken by a method of 'r' through a reference that
+    // reborrows it): a method that reshapes the field reshapes the container's own storage, the
+    // very value the borrow is into, through another name than the one the borrow was taken by
+    if (nargs > 0 && meth && recvowner && cont->tag == StructTag
+            && (recvowner == cont || itypeIsSame(recvowner, cont)
+                // the container is the trait a virtual reference names: the field's owner is a type declaring it
+                || (rcIsVirtualCont(cont) && recvowner->tag == StructTag && !(recvowner->flags & TraitType)
+                    && structDeclaresTraitTree((StructNode *)recvowner, (StructNode *)cont, 0)))) {
+        INode *t0 = iexpGetTypeDcl(nodesGet(call->args, 0));
+        if (t0->tag == RefTag && itypeGetTypeDcl(((RefNode *)t0)->vtexp) != cont) {
+            INode *selft = iexpGetTypeDcl(nodesGet(((FnSigNode *)meth->vtype)->parms, 0));
+            int writes = selft->tag == RefTag && (permGetFlags(((RefNode *)selft)->perm) & MayWrite) != 0;
+            if (writes && !recvunique && !visible) {
+                verdict->why = ReshapeReceiverUnseen;
+                return 1;
+            }
+            if (writes && !recvunique && shapeParamReshapes(callee, 0)) {
+                verdict->why = ReshapeReceiver;
+                return 1;
+            }
+        }
+    }
+
     // The other arguments: any that can reach the collection by a path the callee
     // may write by. A value this function owns whole (a local lent or handed
     // over) is not the shared one, but what it holds by reference still may be.
