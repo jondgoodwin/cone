@@ -1,0 +1,80 @@
+// Bug 93 (lane 465, row 339). A view taken through a reborrow of 'r' (a method called on 'y',
+// where 'y' is 'r' by another name) is tied to 'r''s storage, and a write to a field path of
+// 'r' (an append to 'r.buf', 'r.buf' replaced) can move or free what the view is into. The
+// reborrow's loans hold its source, so while the view is used a call or store that reshapes a
+// field the container holds by value is refused, as 'r.grow()' on the whole already was. Found
+// under ASan: the view read freed memory.
+
+mod collection_flow_reborrow_fieldpath;
+
+import collections use *;
+
+trait Viewer {
+  pub fn view(self: &mut) &str;
+  pub fn grow(self: &mut);
+}
+
+struct Rd is Viewer {
+  pub buf: String;
+  pub n: i32;
+  pub fn view(self: &mut) &str { self.buf.view() }
+  pub fn grow(self: &mut) { self.buf.append("0123456789012345678901234567890123456789"); }
+}
+
+// A reborrow, then a field of the original appended to
+fn append(r: &mut Rd) usize {
+  let y: &mut Rd = r;
+  let v = y.view();
+  r.buf.append("0123456789012345678901234567890123456789");  //~ ErrorShapeReshape
+  v.len
+}
+
+// The field replaced whole: the old String is freed
+fn replace(r: &mut Rd) usize {
+  let y: &mut Rd = r;
+  let v = y.view();
+  r.buf = String();                                          //~ ErrorShapeStore
+  v.len
+}
+
+// A virtual reference made from 'r', then 'r''s field written
+fn virt(r: &mut Rd) usize {
+  let x: &<mut Viewer = r;
+  let v = x.view();
+  r.buf.append("0123456789012345678901234567890123456789");  //~ ErrorShapeReshape
+  v.len
+}
+
+fn virtStore(r: &mut Rd) usize {
+  let x: &<mut Viewer = r;
+  let v = x.view();
+  r.buf = String();                                          //~ ErrorShapeStore
+  v.len
+}
+
+// A local, reborrowed by a name
+fn byLocal() usize {
+  var q = Rd(String(), 1);
+  let y: &mut Rd = &mut q;
+  let v = y.view();
+  q.buf.append("0123456789012345678901234567890123456789");  //~ ErrorShapeReshape
+  v.len
+}
+
+// Through a '&uni' reborrow: refused as it always was, by the freeze on the source
+fn viaUni(r: &uni Rd) usize {
+  let y: &uni Rd = r;
+  let v = y.view();
+  r.buf.append("0123456789012345678901234567890123456789");  //~ ErrorFrozen
+  v.len
+}
+
+fn main() {
+  var r = Rd(String(), 1);
+  append(&mut r);
+  replace(&mut r);
+  virt(&mut r);
+  virtStore(&mut r);
+  byLocal();
+  viaUni(&uni r);
+}
