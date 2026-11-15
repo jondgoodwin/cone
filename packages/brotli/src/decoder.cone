@@ -1,9 +1,14 @@
-// ======== The decoder: RFC 7932 over a whole buffer ========
+// ======== The decoder: RFC 7932, in units that can stop and go on ========
 //
-// A 'Dec' holds one stream's state while it is decoded from the first bit to the last. The input is complete, so
-// the decoder reads straight through: each meta-block's header, then its commands. Bits past the end of the input
-// read as zeros, and the decoder asks 'overrun' after every unit it reads (a header part, a command), so a cut
-// stream is refused as Truncated and never spins on the zeros.
+// A 'Dec' holds one stream's state from its first bit to its last, whether the input is all there
+// ('Decompressor.run') or comes in pieces ('feed'). It is one machine: decoding goes a unit at a time (the stream
+// header; a meta-block header as a whole; then a command's head, its run of literals, its distance, its copy), and
+// each unit is read through a 64-bit buffer that supplies zeros past the end of the input. After a unit the
+// decoder asks 'overrun': if bits past the end were taken, the unit is put back (the position, the buffer and the
+// block-switch state as they were) and the answer is NeedInput; if the input is finished it is a Truncated
+// failure instead. So no unit is half done, and the whole-buffer decode is the same loop with the input finished
+// from the start. A run of literals and a copy (or a dictionary word) also stop at the output limit of a pull and
+// go on from where they stopped; their progress is in the fields below.
 
 const ErrNone = 0u32;
 const ErrHeader = 1u32;
@@ -15,6 +20,22 @@ const ErrTruncated = 6u32;
 const ErrTooLarge = 7u32;
 const ErrWindow = 8u32;
 const ErrLargeWindow = 9u32;
+
+// Where the stream is: the stream header, a meta-block header, the commands of a meta-block, the bytes of a
+// stored one, the bytes of a metadata one, the end
+const StHead = 0u32;
+const StMeta = 1u32;
+const StCmds = 2u32;
+const StStored = 3u32;
+const StSkip = 4u32;
+const StEnd = 5u32;
+
+// Where in a command: its head, its literals, its distance, its copy, its dictionary word
+const PhStart = 0u32;
+const PhLits = 1u32;
+const PhDist = 2u32;
+const PhCopy = 3u32;
+const PhWord = 4u32;
 
 // Block-switching state of one block category (literals, insert-and-copy commands, distances; section 6)
 struct Cat is Default {
@@ -96,6 +117,35 @@ struct Dec is Default {
   limit: usize;
   maxWbits: u32;
   window: usize;
+  // The input bytes dropped from the front of 'bi.inp' so far; whether no more input will come; whether the whole
+  // output is kept in 'out' (a one-shot run) and not delivered and trimmed
+  inBase: u64;
+  finished: bool;
+  retain: bool;
+  // Where the stream is, and in a command; what a meta-block header said follows it
+  stage: u32;
+  phase: u32;
+  nextStage: u32;
+  isLast: bool;
+  // The meta-block's bytes not yet made (or, in a stored or metadata one, not yet passed)
+  remaining: usize;
+  // The command in hand: its symbol, the literals it still has to make, its copy length and what is left of the
+  // copy, its distance, and a dictionary word made for it with how much of it has been written
+  cmdSym: usize;
+  insLeft: usize;
+  copyLen: usize;
+  copyLeft: usize;
+  copyDist: usize;
+  word: List[u8];
+  wordAt: usize;
+  // A literal run was cut off by the end of the input (put back)
+  starved: bool;
+  // The output so far (all of it, so the distance limit is the window and not what the history holds); 'out' ends
+  // with the newest output, and 'mark' is how much of it has been delivered
+  outTotal: usize;
+  mark: usize;
+  // A meta-block header that ran out of input is tried again only when this many bytes are held
+  hdrTry: usize;
   // The last four distances, the last first
   r0: usize;
   r1: usize;
@@ -370,16 +420,113 @@ struct Dec is Default {
     true
   }
 
-  // One meta-block: 0 on a failure, 1 when another follows, 2 after the last
-  fn metaBlock(self: &mut) u32 {
-    let isLast = bi.getBits(1u32) == 1u32;
-    if isLast && bi.getBits(1u32) == 1u32 { return 2u32; }
+  // -------- the units --------
+
+  // After a unit read from the input: 0 if it stands; 1 if it ran past the input and more input may come, so it
+  // is to be put back (the failure it may have recorded is wiped); 2 if the stream has failed (a failure with
+  // bits really present, or a unit that ran past the end of input that is finished)
+  fn check(self: &mut, why: &str) u32 {
+    if errCode != ErrNone {
+      if errCode == ErrTruncated && !finished {
+        self.clearFail();
+        return 1u32;
+      }
+      return 2u32;
+    }
+    if bi.overrun() {
+      if finished {
+        self.fail(ErrTruncated, why);
+        return 2u32;
+      }
+      return 1u32;
+    }
+    0u32
+  }
+
+  fn clearFail(self: &mut) {
+    errCode = ErrNone;
+    errAt = 0usize;
+    errReason = String();
+  }
+
+  // The input ran out where more is needed: wait for more, or if there is no more, fail
+  fn starve(self: &mut, why: &str) Status {
+    if finished {
+      self.fail(ErrTruncated, why);
+      return Status.Failed;
+    }
+    Status.NeedInput
+  }
+
+  // The stream header, as a unit
+  fn headUnit(self: &mut) Status {
+    let s = takeBits(&bi);
+    let ok = self.streamHeader();
+    let c = self.check("the stream is empty");
+    if c == 1u32 {
+      goBackBits(&mut bi, &s);
+      return Status.NeedInput;
+    }
+    if c == 2u32 || !ok { return Status.Failed; }
+    stage = StMeta;
+    Status.Done
+  }
+
+  // A meta-block header, as one unit: put back whole when the input runs out inside it, and tried again only
+  // when the held input has at least doubled (or the input is finished), so that a header fed a byte at a
+  // time is parsed O(log n) times, O(n) bytes of work in all, and not once per byte
+  fn metaUnit(self: &mut) Status {
+    let startByte = bi.pos - usize.from(bi.nbits / 8u32);
+    let held = if bi.inp.len() > startByte {bi.inp.len() - startByte} else {0usize};
+    if !finished && held < hdrTry { return Status.NeedInput; }
+    let s = takeBits(&bi);
+    tab.clear();
+    let ok = self.metaHeader();
+    let c = self.check("the input ends inside a meta-block header");
+    if c == 1u32 {
+      goBackBits(&mut bi, &s);
+      hdrTry = if held == 0usize {1usize} else {held * 2usize};
+      return Status.NeedInput;
+    }
+    if c == 2u32 || !ok { return Status.Failed; }
+    hdrTry = 0usize;
+    stage = nextStage;
+    if stage == StEnd { return self.closeBits(); }
+    Status.Done
+  }
+
+  // The stream's end: the padding bits of the last byte must be zero; the whole bytes the buffer holds are
+  // handed back to the input
+  fn closeBits(self: &mut) Status {
+    if !bi.alignZero() {
+      self.fail(ErrHeader, "the padding bits after the last meta-block are not zero");
+      return Status.Failed;
+    }
+    bi.sync();
+    stage = StEnd;
+    Status.Done
+  }
+
+  // After a meta-block: the next header, or the end
+  fn blockDone(self: &mut) Status {
+    if isLast { return self.closeBits(); }
+    stage = StMeta;
+    Status.Done
+  }
+
+  // One meta-block header (section 9.2) into the fields; false on a failure. 'nextStage' says what follows it.
+  fn metaHeader(self: &mut) bool {
+    isLast = bi.getBits(1u32) == 1u32;
+    if isLast && bi.getBits(1u32) == 1u32 {
+      nextStage = StEnd;
+      return true;
+    }
     let nib = bi.getBits(2u32);
     if nib == 3u32 {
       // A metadata block: skipped
       if bi.getBits(1u32) != 0u32 {
         self.fail(ErrHeader, "a reserved bit is set");
-        return 0u32;
+        return false;
       }
       let sb = bi.getBits(2u32);
       var skip = 0usize;
@@ -387,62 +534,49 @@ struct Dec is Default {
         let v = bi.getBits(8u32 * sb);
         if sb > 1u32 && (v >> (8u32 * (sb - 1u32))) == 0u32 {
           self.fail(ErrHeader, "a metadata length has a zero last byte");
-          return 0u32;
+          return false;
         }
         skip = usize.from(v) + 1usize;
       }
-      if bi.overrun() {
-        self.fail(ErrTruncated, "the input ends inside a metadata block header");
-        return 0u32;
-      }
+      if bi.overrun() { return true; }
       if !bi.alignZero() {
         self.fail(ErrHeader, "the padding bits before metadata are not zero");
-        return 0u32;
+        return false;
       }
       bi.sync();
-      if bi.pos + skip > bi.inp.len() {
-        self.fail(ErrTruncated, "the input ends inside a metadata block");
-        return 0u32;
-      }
-      bi.pos = bi.pos + skip;
-      return if isLast {2u32} else {1u32};
+      remaining = skip;
+      nextStage = StSkip;
+      return true;
     }
     let nibbles = 4u32 + nib;
     let v = bi.getBits(nibbles * 4u32);
     if nibbles > 4u32 && (v >> ((nibbles - 1u32) * 4u32)) == 0u32 {
       self.fail(ErrHeader, "a meta-block length has a zero last nibble");
-      return 0u32;
+      return false;
     }
     let mlen = usize.from(v) + 1usize;
-    if bi.overrun() {
-      self.fail(ErrTruncated, "the input ends inside a meta-block header");
-      return 0u32;
-    }
-    if out.len() + mlen > limit {
+    if bi.overrun() { return true; }
+    if outTotal + mlen > limit {
       self.fail(ErrTooLarge, "the output would pass the limit");
-      return 0u32;
+      return false;
     }
     if !isLast && bi.getBits(1u32) == 1u32 {
       // Stored bytes
       if !bi.alignZero() {
         self.fail(ErrHeader, "the padding bits before stored bytes are not zero");
-        return 0u32;
+        return false;
       }
       bi.sync();
-      if bi.pos + mlen > bi.inp.len() {
-        self.fail(ErrTruncated, "the input ends inside stored bytes");
-        return 0u32;
-      }
-      out.appendSlice(&bi.inp.view()[bi.pos ..< bi.pos + mlen]);
-      bi.pos = bi.pos + mlen;
-      return 1u32;
+      remaining = mlen;
+      nextStage = StStored;
+      return true;
     }
     cl = self.readCategory();
-    if errCode != ErrNone { return 0u32; }
+    if errCode != ErrNone { return false; }
     ci = self.readCategory();
-    if errCode != ErrNone { return 0u32; }
+    if errCode != ErrNone { return false; }
     cd = self.readCategory();
-    if errCode != ErrNone { return 0u32; }
+    if errCode != ErrNone { return false; }
     npostfix = bi.getBits(2u32);
     ndirect = bi.getBits(4u32) << npostfix;
     modes.clear();
@@ -455,7 +589,7 @@ struct Dec is Default {
     let nTreesL = usize.from(self.varLen());
     let sizeL = 64usize * usize.from(cl.n);
     if nTreesL >= 2usize {
-      if !self.readContextMap(sizeL, nTreesL) { return 0u32; }
+      if !self.readContextMap(sizeL, nTreesL) { return false; }
     } else {
       cmap.clear();
       cmap.resize(sizeL, 0u8);
@@ -466,7 +600,7 @@ struct Dec is Default {
     let nTreesD = usize.from(self.varLen());
     let sizeD = 4usize * usize.from(cd.n);
     if nTreesD >= 2usize {
-      if !self.readContextMap(sizeD, nTreesD) { return 0u32; }
+      if !self.readContextMap(sizeD, nTreesD) { return false; }
     } else {
       cmap.clear();
       cmap.resize(sizeD, 0u8);
@@ -479,7 +613,7 @@ struct Dec is Default {
     var t = 0usize;
     while t < nTreesL {
       let b = self.readPrefix(256usize);
-      if b == NoTable { return 0u32; }
+      if b == NoTable { return false; }
       trees.push(u32.from(b));
       t = t + 1usize;
     }
@@ -489,7 +623,7 @@ struct Dec is Default {
     t = 0usize;
     while t < usize.from(ci.n) {
       let b = self.readPrefix(704usize);
-      if b == NoTable { return 0u32; }
+      if b == NoTable { return false; }
       cmdBase.push(u32.from(b));
       t = t + 1usize;
     }
@@ -498,146 +632,209 @@ struct Dec is Default {
     t = 0usize;
     while t < nTreesD {
       let b = self.readPrefix(distAlphabet);
-      if b == NoTable { return 0u32; }
+      if b == NoTable { return false; }
       trees.push(u32.from(b));
       t = t + 1usize;
     }
     i = 0u32;
     while usize.from(i) < sizeD { cmapD.set(usize.from(i), *trees[usize.from(*cmapD[usize.from(i)])]); i = i + 1u32; }
-    if bi.overrun() {
-      self.fail(ErrTruncated, "the input ends inside a meta-block header");
-      return 0u32;
-    }
-    if !self.commands(mlen) { return 0u32; }
-    if isLast { 2u32 } else { 1u32 }
-  }
-
-  // The commands of a meta-block of 'mlen' bytes
-  fn commands(self: &mut, mlen: usize) bool {
-    out.reserve(mlen + 64usize);
-    var remaining = mlen;
-    while remaining > 0usize {
-      if ci.left == 0u32 { ci.next(&mut bi, tab.view()); }
-      ci.left = ci.left - 1u32;
-      let sym = readSym(&mut bi, tab.view(), usize.from(*cmdBase[usize.from(ci.cur)]));
-      let cell = sym >> 6usize;
-      let ic = usize.from(cellInsert[cell]) + ((sym >> 3usize) & 7usize);
-      let cc = usize.from(cellCopy[cell]) + (sym & 7usize);
-      let insLen = usize.from(insertBase[ic] + bi.getBits(u32.from(insertBits[ic])));
-      let copyLen = usize.from(copyBase[cc] + bi.getBits(u32.from(copyBits[cc])));
-      if insLen > remaining {
-        self.fail(ErrCommand, "a command inserts more literals than the meta-block has left");
-        return false;
-      }
-      // The literals
-      let ol = out.len();
-      var p1 = if ol > 0usize {*out[ol - 1usize]} else {0u8};
-      var p2 = if ol > 1usize {*out[ol - 2usize]} else {0u8};
-      var k = 0usize;
-      if insLen > 0usize {
-        // The room for the whole meta-block was reserved, so the bytes are written in place and given to the
-        // list once, after the run
-        let bp = out.viewMut() as *u8;
-        let tv = tab.view();
-        let mv = modes.view();
-        let cv = cmapL.view();
-        while k < insLen {
-          if cl.left == 0u32 { cl.next(&mut bi, tv); }
-          cl.left = cl.left - 1u32;
-          let ctx = literalContext(mv[usize.from(cl.cur)], p1, p2);
-          let b = u8.from(readSym(&mut bi, tv, usize.from(cv[usize.from(cl.cur) * 64usize + ctx])));
-          mem.writeRaw[u8](bp + (ol + k), b);
-          p2 = p1;
-          p1 = b;
-          k = k + 1usize;
-        }
-        commit(&mut out, ol, insLen);
-      }
-      remaining = remaining - insLen;
-      if bi.overrun() {
-        self.fail(ErrTruncated, "the input ends inside the commands");
-        return false;
-      }
-      if remaining == 0usize { break; }
-      // The distance
-      var dist = r0;
-      var dcode = 0usize;
-      if sym >= 128usize {
-        if cd.left == 0u32 { cd.next(&mut bi, tab.view()); }
-        cd.left = cd.left - 1u32;
-        let dctx = if copyLen > 4usize {3usize} else {copyLen - 2usize};
-        dcode = readSym(&mut bi, tab.view(), usize.from(*cmapD[usize.from(cd.cur) * 4usize + dctx]));
-        if dcode < 16usize {
-          if dcode < 4usize {
-            dist = if dcode == 0usize {r0} else if dcode == 1usize {r1} else if dcode == 2usize {r2} else {r3};
-          } else {
-            let baseD = if dcode < 10usize {r0} else {r1};
-            let delta = shortDelta[if dcode < 10usize {dcode - 4usize} else {dcode - 10usize}];
-            let d = i64.from(baseD) + i64.from(delta);
-            if d <= 0i64 {
-              self.fail(ErrDistance, "a short distance code gives a distance of zero or less");
-              return false;
-            }
-            dist = usize.from(d);
-          }
-        } else if dcode < 16usize + usize.from(ndirect) {
-          dist = dcode - 15usize;
-        } else {
-          let nd = u32.from(dcode - 16usize - usize.from(ndirect));
-          let nbitsD = 1u32 + (nd >> (npostfix + 1u32));
-          let hcode = nd >> npostfix;
-          let lcode = nd & ((1u32 << npostfix) - 1u32);
-          let offset = ((2u32 + (hcode & 1u32)) << nbitsD) - 4u32;
-          let extra = bi.getBits(nbitsD);
-          dist = (usize.from(offset + extra) << usize.from(npostfix)) + usize.from(lcode) + usize.from(ndirect) + 1usize;
-        }
-      }
-      let at = out.len();
-      let maxDist = if at < window {at} else {window};
-      if dist <= maxDist {
-        if dcode != 0usize {
-          r3 = r2;
-          r2 = r1;
-          r1 = r0;
-          r0 = dist;
-        }
-        if copyLen > remaining {
-          self.fail(ErrCommand, "a copy is longer than the meta-block has left");
-          return false;
-        }
-        wideMatch(out.viewMut() as *u8, at, at - dist, copyLen);
-        commit(&mut out, at, copyLen);
-        remaining = remaining - copyLen;
-      } else {
-        // A word of the static dictionary
-        if copyLen < 4usize || copyLen > 24usize {
-          self.fail(ErrDistance, "a distance past the window does not name a dictionary word");
-          return false;
-        }
-        let wordId = dist - (maxDist + 1usize);
-        let bitsW = usize.from(dictBits[copyLen]);
-        let tid = wordId >> bitsW;
-        if tid > 120usize {
-          self.fail(ErrTransform, "a dictionary word's transform does not exist");
-          return false;
-        }
-        let n = self.dictWord(copyLen, wordId & ((1usize << bitsW) - 1usize), tid, remaining);
-        if n == NoTable {
-          self.fail(ErrCommand, "a dictionary word is longer than the meta-block has left");
-          return false;
-        }
-        remaining = remaining - n;
-      }
-      if bi.overrun() {
-        self.fail(ErrTruncated, "the input ends inside the commands");
-        return false;
-      }
-    }
+    remaining = mlen;
+    phase = PhStart;
+    nextStage = StCmds;
     true
   }
 
-  // Appends the word of 'len' bytes at 'index' with transform 'tid' to the output; answers its length, or
-  // NoTable if it is longer than 'room'
+  // Up to 'n' literals of the command in hand, written to the output. Answers how many were made: fewer than
+  // 'n' only when the input ran out inside a literal, which was put back ('starved' is then set).
+  fn literals(self: &mut, n: usize) usize {
+    out.reserve(n + 64usize);
+    let ol = out.len();
+    var p1 = if ol > 0usize {*out[ol - 1usize]} else {0u8};
+    var p2 = if ol > 1usize {*out[ol - 2usize]} else {0u8};
+    // The room was reserved, so the bytes are written in place and given to the list once, after the run
+    let bp = out.viewMut() as *u8;
+    let tv = tab.view();
+    let mv = modes.view();
+    let cv = cmapL.view();
+    var s = Snap();
+    var k = 0usize;
+    while k < n {
+      // Near the end of the input a literal may run past it: take a way back first. Further off, 32 bytes
+      // cover a block switch and a literal, so no zeros can be read and nothing is checked.
+      let near = bi.pos + 32usize > bi.inp.len();
+      if near { s = takeSnap(&bi, &cl); }
+      if cl.left == 0u32 { cl.next(&mut bi, tv); }
+      cl.left = cl.left - 1u32;
+      let ctx = literalContext(mv[usize.from(cl.cur)], p1, p2);
+      let b = u8.from(readSym(&mut bi, tv, usize.from(cv[usize.from(cl.cur) * 64usize + ctx])));
+      if near && bi.overrun() {
+        goBack(&mut bi, &mut cl, &s);
+        starved = true;
+        break;
+      }
+      mem.writeRaw[u8](bp + (ol + k), b);
+      p2 = p1;
+      p1 = b;
+      k = k + 1usize;
+    }
+    commit(&mut out, ol, k);
+    k
+  }
+
+  // The commands of the meta-block in hand, as far as the input and the room ('room' bytes of output) allow:
+  // Done at the meta-block's end, else NeedInput, MoreOutput or Failed. The command is the unit: its head (the
+  // insert-and-copy symbol), its literals (a run, which goes on where it stopped), its distance, and its copy
+  // (which also goes on where it stopped, as does a dictionary word). A unit that runs past the input is put
+  // back whole.
+  fn commands(self: &mut, room: &mut usize) Status {
+    while true {
+      if phase == PhStart {
+        if remaining == 0usize { return Status.Done; }
+        let s = takeSnap(&bi, &ci);
+        if ci.left == 0u32 { ci.next(&mut bi, tab.view()); }
+        ci.left = ci.left - 1u32;
+        let sym = readSym(&mut bi, tab.view(), usize.from(*cmdBase[usize.from(ci.cur)]));
+        let cell = sym >> 6usize;
+        let ic = usize.from(cellInsert[cell]) + ((sym >> 3usize) & 7usize);
+        let cc = usize.from(cellCopy[cell]) + (sym & 7usize);
+        let insLen = usize.from(insertBase[ic] + bi.getBits(u32.from(insertBits[ic])));
+        let copyV = usize.from(copyBase[cc] + bi.getBits(u32.from(copyBits[cc])));
+        if insLen > remaining {
+          self.fail(ErrCommand, "a command inserts more literals than the meta-block has left");
+        }
+        let c = self.check("the input ends inside the commands");
+        if c == 1u32 {
+          goBack(&mut bi, &mut ci, &s);
+          return Status.NeedInput;
+        }
+        if c == 2u32 { return Status.Failed; }
+        cmdSym = sym;
+        insLeft = insLen;
+        copyLen = copyV;
+        phase = PhLits;
+      } else if phase == PhLits {
+        if insLeft > 0usize {
+          if *room == 0usize { return Status.MoreOutput; }
+          let n = if insLeft < *room {insLeft} else {*room};
+          let k = self.literals(n);
+          insLeft = insLeft - k;
+          remaining = remaining - k;
+          outTotal = outTotal + k;
+          *room = *room - k;
+          if starved {
+            starved = false;
+            return self.starve("the input ends inside the commands");
+          }
+        }
+        if insLeft == 0usize {
+          phase = if remaining == 0usize {PhStart} else {PhDist};
+        }
+      } else if phase == PhDist {
+        let s = takeSnap(&bi, &cd);
+        var dist = r0;
+        var dcode = 0usize;
+        if cmdSym >= 128usize {
+          if cd.left == 0u32 { cd.next(&mut bi, tab.view()); }
+          cd.left = cd.left - 1u32;
+          let dctx = if copyLen > 4usize {3usize} else {copyLen - 2usize};
+          dcode = readSym(&mut bi, tab.view(), usize.from(*cmapD[usize.from(cd.cur) * 4usize + dctx]));
+          if dcode < 16usize {
+            if dcode < 4usize {
+              dist = if dcode == 0usize {r0} else if dcode == 1usize {r1} else if dcode == 2usize {r2} else {r3};
+            } else {
+              let baseD = if dcode < 10usize {r0} else {r1};
+              let delta = shortDelta[if dcode < 10usize {dcode - 4usize} else {dcode - 10usize}];
+              let d = i64.from(baseD) + i64.from(delta);
+              if d <= 0i64 {
+                self.fail(ErrDistance, "a short distance code gives a distance of zero or less");
+              } else {
+                dist = usize.from(d);
+              }
+            }
+          } else if dcode < 16usize + usize.from(ndirect) {
+            dist = dcode - 15usize;
+          } else {
+            let nd = u32.from(dcode - 16usize - usize.from(ndirect));
+            let nbitsD = 1u32 + (nd >> (npostfix + 1u32));
+            let hcode = nd >> npostfix;
+            let lcode = nd & ((1u32 << npostfix) - 1u32);
+            let offset = ((2u32 + (hcode & 1u32)) << nbitsD) - 4u32;
+            let extra = bi.getBits(nbitsD);
+            dist = (usize.from(offset + extra) << usize.from(npostfix)) + usize.from(lcode) + usize.from(ndirect) + 1usize;
+          }
+        }
+        let c = self.check("the input ends inside the commands");
+        if c == 1u32 {
+          goBack(&mut bi, &mut cd, &s);
+          return Status.NeedInput;
+        }
+        if c == 2u32 { return Status.Failed; }
+        // The distance reaches back over the output so far, but never past the window
+        let maxDist = if outTotal < window {outTotal} else {window};
+        if dist <= maxDist {
+          if dcode != 0usize {
+            r3 = r2;
+            r2 = r1;
+            r1 = r0;
+            r0 = dist;
+          }
+          if copyLen > remaining {
+            self.fail(ErrCommand, "a copy is longer than the meta-block has left");
+            return Status.Failed;
+          }
+          copyLeft = copyLen;
+          copyDist = dist;
+          phase = PhCopy;
+        } else {
+          // A word of the static dictionary
+          if copyLen < 4usize || copyLen > 24usize {
+            self.fail(ErrDistance, "a distance past the window does not name a dictionary word");
+            return Status.Failed;
+          }
+          let wordId = dist - (maxDist + 1usize);
+          let bitsW = usize.from(dictBits[copyLen]);
+          let tid = wordId >> bitsW;
+          if tid > 120usize {
+            self.fail(ErrTransform, "a dictionary word's transform does not exist");
+            return Status.Failed;
+          }
+          let n = self.dictWord(copyLen, wordId & ((1usize << bitsW) - 1usize), tid, remaining);
+          if n == NoTable {
+            self.fail(ErrCommand, "a dictionary word is longer than the meta-block has left");
+            return Status.Failed;
+          }
+          wordAt = 0usize;
+          phase = PhWord;
+        }
+      } else if phase == PhCopy {
+        if *room == 0usize { return Status.MoreOutput; }
+        let n = if copyLeft < *room {copyLeft} else {*room};
+        out.reserve(n + 64usize);
+        let at = out.len();
+        wideMatch(out.viewMut() as *u8, at, at - copyDist, n);
+        commit(&mut out, at, n);
+        copyLeft = copyLeft - n;
+        remaining = remaining - n;
+        outTotal = outTotal + n;
+        *room = *room - n;
+        if copyLeft == 0usize { phase = PhStart; }
+      } else {
+        if *room == 0usize { return Status.MoreOutput; }
+        let left = word.len() - wordAt;
+        let n = if left < *room {left} else {*room};
+        out.appendSlice(&word.view()[wordAt ..< wordAt + n]);
+        wordAt = wordAt + n;
+        remaining = remaining - n;
+        outTotal = outTotal + n;
+        *room = *room - n;
+        if wordAt == word.len() { phase = PhStart; }
+      }
+    }
+    Status.Done
+  }
+
+  // Makes the word of 'len' bytes at 'index' with transform 'tid' in 'word'; answers its length, or NoTable if
+  // it is longer than 'room'
   fn dictWord(self: &mut, len: usize, index: usize, tid: usize, room: usize) usize {
     if dict.len() == 0usize {
       dict.reserve(122784usize);
@@ -660,15 +857,16 @@ struct Dec is Default {
     let body = if skipFront + skipBack >= len {0usize} else {len - skipFront - skipBack};
     let total = pl + body + sl;
     if total > room { return NoTable; }
-    out.reserve(total + 16usize);
+    word.clear();
+    word.reserve(total + 16usize);
     let text = transformText.bytes();
     var j = 0usize;
     let po = usize.from(transformPrefixOff[tid]);
-    while j < pl { out.push(text[po + j]); j = j + 1usize; }
-    let start = out.len();
+    while j < pl { word.push(text[po + j]); j = j + 1usize; }
+    let start = word.len();
     let wo = *dictOff[len] + index * len + (if skipFront < len {skipFront} else {len});
     j = 0usize;
-    while j < body { out.push(*dict[wo + j]); j = j + 1usize; }
+    while j < body { word.push(*dict[wo + j]); j = j + 1usize; }
     if kind == 1usize {
       if body > 0usize { self.ferment(start, body, 0usize); }
     } else if kind == 2usize {
@@ -677,49 +875,97 @@ struct Dec is Default {
     }
     let so = usize.from(transformSuffixOff[tid]);
     j = 0usize;
-    while j < sl { out.push(text[so + j]); j = j + 1usize; }
+    while j < sl { word.push(text[so + j]); j = j + 1usize; }
     total
   }
 
-  // The case change of section 8 at byte 'p' of the 'n' bytes at out[start]; answers the bytes it covers
+  // The case change of section 8 at byte 'p' of the 'n' bytes at word[start]; answers the bytes it covers
   fn ferment(self: &mut, start: usize, n: usize, p: usize) usize {
-    let c = *out[start + p];
+    let c = *word[start + p];
     if c < 192u8 {
-      if c >= 97u8 && c <= 122u8 { out.set(start + p, c ^ 32u8); }
+      if c >= 97u8 && c <= 122u8 { word.set(start + p, c ^ 32u8); }
       return 1usize;
     }
     if c < 224u8 {
-      if p + 1usize < n { out.set(start + p + 1usize, *out[start + p + 1usize] ^ 32u8); }
+      if p + 1usize < n { word.set(start + p + 1usize, *word[start + p + 1usize] ^ 32u8); }
       return 2usize;
     }
-    if p + 2usize < n { out.set(start + p + 2usize, *out[start + p + 2usize] ^ 5u8); }
+    if p + 2usize < n { word.set(start + p + 2usize, *word[start + p + 2usize] ^ 5u8); }
     3usize
   }
 
-  // Decodes the whole stream. true if it ended well.
-  fn run(self: &mut) bool {
-    r0 = 4usize;
-    r1 = 11usize;
-    r2 = 15usize;
-    r3 = 16usize;
-    if !self.streamHeader() { return false; }
-    while true {
-      let r = self.metaBlock();
-      if r == 0u32 { return false; }
-      if r == 2u32 { break; }
-      if bi.overrun() {
-        self.fail(ErrTruncated, "the input ends before the last meta-block");
-        return false;
-      }
+  // Bytes of a stored or a metadata meta-block: as many as the input and (stored) the room allow
+  fn bytes(self: &mut, room: &mut usize, keep: bool) Status {
+    let avail = bi.inp.len() - bi.pos;
+    var n = if remaining < avail {remaining} else {avail};
+    if keep {
+      if n > *room { n = *room; }
+      out.appendSlice(&bi.inp.view()[bi.pos ..< bi.pos + n]);
+      outTotal = outTotal + n;
+      *room = *room - n;
     }
-    if bi.overrun() {
-      self.fail(ErrTruncated, "the input ends before the last meta-block");
-      return false;
-    }
-    if !bi.alignZero() {
-      self.fail(ErrHeader, "the padding bits after the last meta-block are not zero");
-      return false;
-    }
-    true
+    bi.pos = bi.pos + n;
+    remaining = remaining - n;
+    if remaining == 0usize { return self.blockDone(); }
+    if keep && *room == 0usize { return Status.MoreOutput; }
+    self.starve(if keep {"the input ends inside stored bytes"} else {"the input ends inside a metadata block"})
   }
+
+  // Runs the stream as far as the input and 'max' bytes of output allow: Done at its end, NeedInput, MoreOutput
+  // or Failed
+  fn advance(self: &mut, max: usize) Status {
+    var room = max;
+    while true {
+      var s = Status.Done;
+      if stage == StHead {
+        s = self.headUnit();
+      } else if stage == StMeta {
+        s = self.metaUnit();
+      } else if stage == StCmds {
+        s = self.commands(&mut room);
+        if s == Status.Done { s = self.blockDone(); }
+      } else if stage == StStored {
+        s = self.bytes(&mut room, true);
+      } else if stage == StSkip {
+        s = self.bytes(&mut room, false);
+      } else {
+        return Status.Done;
+      }
+      if s != Status.Done { return s; }
+    }
+    Status.Done
+  }
+}
+
+// Where in the input, so as to go back to it
+struct Snap is Default {
+  pos: usize;
+  bits: u64;
+  nbits: u32;
+  cur: u32;
+  prev: u32;
+  left: u32;
+}
+
+fn takeBits(bi: &BitIn) Snap {
+  Snap(bi.pos, bi.bits, bi.nbits, 0u32, 0u32, 0u32)
+}
+
+fn takeSnap(bi: &BitIn, c: &Cat) Snap {
+  Snap(bi.pos, bi.bits, bi.nbits, c.cur, c.prev, c.left)
+}
+
+// Back to a position: the bit reader, with the zeros it loaded past the input given back
+fn goBackBits(bi: &mut BitIn, s: &Snap) {
+  bi.pos = s.pos;
+  bi.bits = s.bits;
+  bi.nbits = s.nbits;
+  bi.unpad();
+}
+
+fn goBack(bi: &mut BitIn, c: &mut Cat, s: &Snap) {
+  goBackBits(bi, s);
+  c.cur = s.cur;
+  c.prev = s.prev;
+  c.left = s.left;
 }
