@@ -10,6 +10,7 @@ it prints from, not copied from a run.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -36,11 +37,11 @@ CONGO = [CONGO_EXE] if CONGO_EXE else [sys.executable, str(HERE / "congo.py")]
 IS_WINDOWS = congo.IS_WINDOWS
 
 
-def compiler_folder(env: dict[str, str]) -> str:
+def compiler_folder(env: dict[str, str], default: Path | None = None) -> str:
     """The folder a lone file's build keeps for the compiler the environment
     names (else the repository's): the first 8 hex digits of conec's content hash."""
     named = env.get("CONEC")
-    return congo.tool_hash(Path(named) if named else congo.REPO_CONEC)[:8]
+    return congo.tool_hash(Path(named) if named else default or congo.REPO_CONEC)[:8]
 
 
 def lone_out(test, stem: str, mode: str = "debug") -> Path:
@@ -3287,9 +3288,52 @@ class BuildCache(unittest.TestCase):
 
     setUp = Scenarios.setUp
     tearDown = Scenarios.tearDown
-    congo = Scenarios.congo
     program_output = Scenarios.program_output
     registry = Scenarios.registry
+
+    # Hermetic: the compiler, its runtime and the packages every build reads
+    # (libc, core, stdio) are copied once into a repository of this class's own,
+    # with a copy of the Congo under test, so that nothing another process does
+    # to the worktree (a merge, a relink of conestd, an edit in packages/) can
+    # change what a scenario builds against. Congo finds its repository from
+    # where it stands, so it is the copied one that it uses
+    FAKE_PACKAGES = ("libc", "core", "stdio")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.repo_tmp = tempfile.TemporaryDirectory()
+        repo = Path(cls.repo_tmp.name) / "repo"
+        for name in cls.FAKE_PACKAGES:
+            shutil.copytree(congo.REPO_PACKAGES / name, repo / "packages" / name,
+                            ignore=shutil.ignore_patterns("build", ".congo-shared"))
+        cls.conec = repo / "build" / "x64-release" / congo.REPO_CONEC.name
+        cls.conec.parent.mkdir(parents=True)
+        shutil.copyfile(congo.REPO_CONEC, cls.conec)
+        conestd = congo.conestd_path(congo.REPO_CONEC)
+        shutil.copyfile(conestd, cls.conec.parent / conestd.name)
+        if CONGO_EXE:
+            exe = repo / "tools" / "congo" / "build" / "debug" / Path(CONGO_EXE).name
+            exe.parent.mkdir(parents=True)
+            shutil.copyfile(CONGO_EXE, exe)
+            exe.chmod(0o755)
+            cls.CONGO = [str(exe)]
+        else:
+            script = repo / "tools" / "congo" / "congo.py"
+            script.parent.mkdir(parents=True)
+            shutil.copyfile(HERE / "congo.py", script)
+            cls.CONGO = [sys.executable, str(script)]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.repo_tmp.cleanup()
+
+    def congo(self, *args: str, cwd: Path, ok: bool = True) -> subprocess.CompletedProcess:
+        run = subprocess.run([*self.CONGO, *args], cwd=cwd, env=self.env,
+                             capture_output=True, text=True)
+        if ok and run.returncode != 0:
+            self.fail(f"congo {' '.join(args)} failed ({run.returncode}):\n"
+                      f"{run.stdout}{run.stderr}")
+        return run
 
     LEAF = """
         mod leaf;
@@ -3456,10 +3500,10 @@ class BuildCache(unittest.TestCase):
         app = self.chain()
         tools = self.root / "tools"
         tools.mkdir()
-        conec = tools / congo.REPO_CONEC.name
-        shutil.copyfile(congo.REPO_CONEC, conec)
-        conestd = tools / congo.conestd_path(congo.REPO_CONEC).name
-        shutil.copyfile(congo.conestd_path(congo.REPO_CONEC), conestd)
+        conec = tools / self.conec.name
+        shutil.copyfile(self.conec, conec)
+        conestd = tools / congo.conestd_path(self.conec).name
+        shutil.copyfile(congo.conestd_path(self.conec), conestd)
         self.env["CONEC"] = str(conec)
         self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
         self.assertEqual(self.run_app(app), ([], "20\n"))
@@ -3496,10 +3540,10 @@ class BuildCache(unittest.TestCase):
             """)
         tools = self.root / "tools"
         tools.mkdir()
-        other = tools / congo.REPO_CONEC.name
-        shutil.copyfile(congo.REPO_CONEC, other)
-        shutil.copyfile(congo.conestd_path(congo.REPO_CONEC),
-                        tools / congo.conestd_path(congo.REPO_CONEC).name)
+        other = tools / self.conec.name
+        shutil.copyfile(self.conec, other)
+        shutil.copyfile(congo.conestd_path(self.conec),
+                        tools / congo.conestd_path(self.conec).name)
         with other.open("ab") as file:      # another file by its content, doing what conec does
             file.write(b"\0")
         a, b = dict(self.env), dict(self.env, CONEC=str(other))
@@ -3516,8 +3560,8 @@ class BuildCache(unittest.TestCase):
         self.assertEqual(compiled(run(b)), [])
         self.assertEqual(self.program_output(run(a)), "twice\n")
         folders = sorted(p.name for p in next((self.root / "home" / "lone").glob("twice-*")).iterdir())
-        self.assertEqual(folders, sorted([compiler_folder(a), compiler_folder(b)]))
-        self.assertNotEqual(compiler_folder(a), compiler_folder(b))
+        self.assertEqual(folders, sorted([compiler_folder(a, self.conec), compiler_folder(b, self.conec)]))
+        self.assertNotEqual(compiler_folder(a, self.conec), compiler_folder(b, self.conec))
         # 'congo clean' on the file removes every compiler's build
         self.congo("clean", "twice.cone", cwd=self.root)
         self.assertEqual(list((self.root / "home" / "lone").iterdir()), [])
@@ -3533,7 +3577,7 @@ class BuildCache(unittest.TestCase):
             script = tools / "conec.bat"
             write(script, f"""
                 @echo off
-                "{congo.REPO_CONEC}" %*
+                "{self.conec}" %*
                 if not defined CONGO_TEST_CLOBBER exit /b %errorlevel%
                 echo half-written> "%CONGO_TEST_CLOBBER%"
                 if not defined CONGO_TEST_HANG exit /b 1
@@ -3550,7 +3594,7 @@ class BuildCache(unittest.TestCase):
             script = tools / "conec"
             write(script, f"""
                 #!/bin/sh
-                "{congo.REPO_CONEC}" "$@"
+                "{self.conec}" "$@"
                 status=$?
                 [ -z "$CONGO_TEST_CLOBBER" ] && exit $status
                 echo half-written > "$CONGO_TEST_CLOBBER"
@@ -3567,7 +3611,7 @@ class BuildCache(unittest.TestCase):
         app = self.chain()
         out = app / "build" / "debug"
         self.env["CONEC"] = str(self.wrapper())
-        self.env["CONESTD"] = str(congo.conestd_path(congo.REPO_CONEC))
+        self.env["CONESTD"] = str(congo.conestd_path(self.conec))
         self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
         self.assertTrue((out / "leaf.key").is_file())
         # conec ends with a failure, its object half-written: no key. With the
@@ -3589,7 +3633,7 @@ class BuildCache(unittest.TestCase):
         hang.mkdir()
         self.env["CONGO_TEST_CLOBBER"] = str(out / f"leaf{congo.OBJ_EXT}")
         self.env["CONGO_TEST_HANG"] = str(hang)
-        killed = subprocess.Popen([*CONGO, "run"], cwd=app, env=self.env,
+        killed = subprocess.Popen([*self.CONGO, "run"], cwd=app, env=self.env,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             until = time.monotonic() + 600
@@ -3609,6 +3653,61 @@ class BuildCache(unittest.TestCase):
         self.assertFalse((out / "leaf.key").exists())
         self.set_leaf(10)
         self.assertEqual(self.run_app(app), (["leaf"], "20\n"))
+        self.assertEqual(self.run_app(app), ([], "20\n"))
+
+    @staticmethod
+    @contextlib.contextmanager
+    def unreadable(path: Path):
+        """A file that exists, with its content as it was, that no other process
+        can read: held open without sharing on Windows, mode 000 elsewhere."""
+        if IS_WINDOWS:
+            import ctypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CreateFileW.restype = ctypes.c_void_p
+            kernel.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                                           ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                                           ctypes.c_void_p]
+            kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+            handle = kernel.CreateFileW(str(path), 0x80000000, 0, None, 3, 0, None)
+            if handle in (None, ctypes.c_void_p(-1).value):
+                raise OSError(f"cannot lock {path}")
+            try:
+                yield
+            finally:
+                kernel.CloseHandle(handle)
+        else:
+            mode = path.stat().st_mode
+            path.chmod(0)
+            try:
+                try:
+                    path.read_bytes()
+                except PermissionError:
+                    pass
+                else:
+                    raise unittest.SkipTest("this user reads a file of mode 000")
+                yield
+            finally:
+                path.chmod(mode)
+
+    def test_a_source_that_cannot_be_read_fails_the_build_not_a_cache_hit(self):
+        # A cache must never hit on content it did not see: a file Congo cannot
+        # read stops the build, naming the file and what the system said
+        app = self.chain()
+        out = app / "build" / "debug"
+        self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+        # leaf's include file, which mid and app compile against: Congo reads it
+        # for their keys alone, so it is the hash that finds it unreadable
+        leaf = out / "leaf.cone"
+        keys ={name: (out / f"{name}.key").read_bytes() for name in self.ALL}
+        with self.unreadable(leaf):
+            run = self.congo("run", cwd=app, ok=False)
+        self.assertNotEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("leaf.cone", run.stderr)
+        self.assertRegex(run.stderr, r"(?i)denied|being used|cannot access|permission")
+        self.assertNotIn("Running", run.stdout)       # no program run from a build that was not
+        self.assertEqual(compiled(run), [])
+        self.assertEqual({name: (out / f"{name}.key").read_bytes() for name in self.ALL}, keys)
+        # Readable again, unchanged: nothing compiled
         self.assertEqual(self.run_app(app), ([], "20\n"))
 
     def test_a_test_program_is_compiled_only_when_it_changes(self):
