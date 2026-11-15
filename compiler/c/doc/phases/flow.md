@@ -1720,6 +1720,16 @@ locals, which only a call that reaches one of them is asked of):
   reference was held to it where it became one (`shapeKeepsVia`, below), so a borrow into a
   collection survives the call. An unmarked one is the "body is not visible" case above, and its
   message says the mark would keep the borrow.
+- **A result tied to a virtual receiver (Bug 92, lane 461).** A method called through a virtual
+  reference whose result carries the receiver's loan (an elided or named return tied to `self`) is
+  lent like any receiver (`pwCall`, `pwShapeLent`), with the trait as the container
+  (`rcIsVirtualCont`, a trait that is no enum): the hidden type may change shape, so every later call
+  that is handed a value declaring the trait (`rcWalk`) or the reference itself is asked, and a
+  visible body cannot be judged against a trait (`ReshapeUnseen`). `+ ShapeKeeping` keeps what the
+  caller borrowed *elsewhere*, not the value's own state, so for a trait with such a method
+  `skAsk` asks the receiver's own state as shared (`skOwnShared`): a type whose method reshapes its
+  own storage is refused where it becomes the marked reference (1500). An owner lent as the receiver
+  keeps its own owner-lent walk. Tests: `collection_flow_virtual_return_tie`, `_ok`.
 - **A virtual reference held as a field, walked for what a type reaches** (`rcWalk`,
   `reshape.c`): unmarked, it reaches "anything" (`ReachVirtual | ReachBorrowed`: a trait is
   open, so an implementer may hold a shared owner of the very collection a borrow is into), so

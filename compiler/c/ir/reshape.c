@@ -99,6 +99,12 @@ static void rcMemoPut(INode *st, INode *want, int writable, int ind, unsigned bi
     ++rcMemoUsed;
 }
 
+// A trait that is no enum: what a virtual reference points at, a container whose type is not
+// known (a borrow into the value behind '&<mut Trait', tied to the receiver by a method's result)
+static int rcIsVirtualCont(INode *type) {
+    return type && type->tag == StructTag && (type->flags & TraitType) && !reshapeIsSum(type);
+}
+
 // Asked about an owner: does a reference or pointer point at the collection itself, or at an
 // array of it? Such a reference may point at the very value the borrow is into, whatever struct
 // holds it. A reference to a struct that holds one as a field does not, unless that struct is the
@@ -206,7 +212,10 @@ static void rcWalk(INode *type, int ind) {
     }
     case StructTag:
     {
-        if (type == rcWant) {
+        // A borrow into what a virtual reference points at (a trait is the container): a value
+        // of any type that complies with the trait may be that value
+        if (type == rcWant || (rcIsVirtualCont(rcWant)
+                && !(((StructNode *)type)->flags & TraitType) && structDeclaresTraitTree((StructNode *)type, (StructNode *)rcWant, 0))) {
             // Under a read-only view it is reached and not written
             if (!(ind & 2))
                 rcBits |= (ind & 1) ? (ReachBorrowed | ((ind & 4) ? 0 : ReachOwned)) : ReachContained;
@@ -656,7 +665,9 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
             writable = 1;
     }
     if (writable) {
-        if (!visible) {
+        // A trait as the container (the value behind a virtual reference): which type it is,
+        // and so what a body reshapes of it, is not known here
+        if (!visible || rcIsVirtualCont(cont)) {
             verdict->why = ReshapeUnseen;
             return 1;
         }

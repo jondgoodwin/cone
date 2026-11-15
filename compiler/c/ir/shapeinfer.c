@@ -1640,6 +1640,12 @@ static int skFrom(INode *start, int shared, StructNode **out, int n, int *full, 
     return n;
 }
 
+// Set while a type is asked to keep the shape of what a caller borrows (skAsk): the trait has a
+// method whose result is a borrow tied to its receiver, so the receiver's own state is what a
+// caller may hold a borrow into, through a name the call reaches the value by (a reference of
+// the trait), and what the value's methods reshape of it is shared with that caller
+static int skOwnShared = 0;
+
 static int skReached(FnDclNode *meth, StructNode **out, int *full, int *pending) {
     FnSigNode *sig = (FnSigNode *)meth->vtype;
     int n = 0;
@@ -1654,7 +1660,7 @@ static int skReached(FnDclNode *meth, StructNode **out, int *full, int *pending)
         INode *start = pt;
         if (pt->tag == RefTag && k == 0 && parm->namesym == selfName)
             start = itypeGetTypeDcl(((RefNode *)pt)->vtexp);
-        n = skFrom(start, 0, out, n, full, pending);
+        n = skFrom(start, k == 0 && start != pt ? skOwnShared : 0, out, n, full, pending);
     }
     // A global is reachable from every function, and shared by every holder of it
     for (uint32_t g = 0; g < reshapeGlobalCount(); ++g) {
@@ -1855,13 +1861,34 @@ static int skAsk(StructNode *impl, StructNode *trait, char *why, size_t size, in
     FnDclNode *meths[24];
     int nmeths = skMethods(impl, trait, meths, 24);
     int pending = 0;
+    // A method of the trait that returns a borrow carried from its receiver
+    int lends = 0;
+    INode **tnodesp;
+    uint32_t tcnt;
+    for (nodelistFor(&trait->nodelist, tcnt, tnodesp)) {
+        if ((*tnodesp)->tag != FnDclTag || !((*tnodesp)->flags & FlagMethFld))
+            continue;
+        FnSigNode *tsig = (FnSigNode *)((FnDclNode *)*tnodesp)->vtype;
+        if (tsig && tsig->tag == FnSigTag && tsig->parms->used > 0 && tsig->rettype
+                && ((VarDclNode *)nodesGet(tsig->parms, 0))->namesym == selfName
+                && itypeCarriesEndingBorrow(tsig->rettype))
+            lends = 1;
+    }
+    int savedshared = skOwnShared;
+    skOwnShared = lends;
+    int refused = 0;
     for (int mi = 0; mi < nmeths; ++mi) {
         int a = skMethod(meths[mi], impl, why, size, final);
-        if (a == ShapeKeepsNo)
-            return a;
+        if (a == ShapeKeepsNo) {
+            refused = 1;
+            break;
+        }
         if (a == ShapeKeepsPending)
             pending = 1;
     }
+    skOwnShared = savedshared;
+    if (refused)
+        return ShapeKeepsNo;
     return pending ? ShapeKeepsPending : ShapeKeepsYes;
 }
 
