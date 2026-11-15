@@ -239,6 +239,12 @@ int genericHashCondHolds(INode *cond);
 // declaration or by fitting it structurally
 int genericTypeIs(INode *type, StructNode *trait);
 
+// Does the generic 'inst' is an instance of declare, by an 'is' entry, that it is 'trait' of itself
+// ('List[T] is Deserialize[List[T]] if T is Deserialize[T]'), its condition holding at the instance's
+// arguments? Answered from the declaration, so it holds before the instance is type checked. Only the
+// generic trait 'trait' is an instance of is used, not its argument.
+int genericDeclaresSelfByEntry(StructNode *inst, StructNode *trait);
+
 // Judge again each instance whose 'T is Sendable' was met while a struct its
 // argument reaches was not yet laid out, and refuse one that is not after all.
 // Called once, when type check has finished.

@@ -1,0 +1,40 @@
+// A declared record's field of a nested instance type reads and writes as JSON: a List[List[i32]], a
+// Dict[String, List[Pt]] and a List[Pt]. The field check (the compiler's, at the record) and the bound
+// deserializeValue is held to agree, wherever the nested instance was first named: here its first mention
+// is the record's own field.
+
+mod nestedfield;
+
+import testing use *;
+import collections use *;
+import json;
+
+struct Pt is Serialize, Deserialize[Pt] { pub x: i32; pub y: i32; }
+struct Grid is Serialize, Deserialize[Grid] {
+  pub rows: List[List[i32]];
+  pub groups: Dict[String, List[Pt]];
+  pub pts: List[Pt];
+}
+
+fn text(r: Result[String, json.JsonError]) String {
+  match r {
+    case let Ok(s) { s }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn main() i32 {
+  let src = "{\"rows\":[[1,2],[],[3]],\"groups\":{\"a\":[{\"x\":1,\"y\":2}]},\"pts\":[{\"x\":5,\"y\":6}]}";
+  match json.fromJson[Grid](src) {
+    case let Ok(g) {
+      expectInt(i64.from(g.rows.len()), 3i64, "rows len");
+      expectInt(i64.from(g.rows[0][1]), 2i64, "rows[0][1]");
+      expectInt(i64.from(g.rows[2][0]), 3i64, "rows[2][0]");
+      expectInt(i64.from(g.groups.len()), 1i64, "groups len");
+      expectInt(i64.from(g.pts[0].y), 6i64, "pts[0].y");
+      expectStr(text(json.toJson(&g)).view(), "{\"rows\":[[1,2],[],[3]],\"groups\":{\"a\":[{\"x\":1,\"y\":2}]},\"pts\":[{\"x\":5,\"y\":6}]}", "round trip");
+    }
+    case let Err(x) { expectStr((String() <- x).view(), "<grid>", "Grid read"); }
+  }
+  done()
+}
