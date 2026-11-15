@@ -918,10 +918,12 @@ Every other question a clause asks is
 - **A declaration**: the type's `is` list names the trait, or names a trait whose
   own list does (`genericDeclares`). An instance's entry for an instance of a
   generic trait (`Deserialize[List[T]] if T is Deserialize[T]`) reaches its list
-  only when its type check takes the placeholder in, so asking for such a trait of
-  an instance not yet checked lays it out first (`structTypeSettle`), unless an
-  argument is still being laid out. The struct field check for `Deserialize`
-  (`structFieldDeserializes`) reads the same list and must agree with this.
+  only when its type check takes the placeholder in, so an instance not yet
+  checked is also answered from its generic's `is` entries
+  (`genericDeclaresSelfByEntry`): the entry names the trait of the generic itself
+  and its condition holds at the instance's arguments, decided with no layout.
+  The struct field check for `Deserialize` (`structFieldDeserializes`) asks the
+  same function and must agree with this.
 - **Fitting it structurally**, only for a trait that requires something of a
   value — a method or a field. `structMatches` under `Monomorph` is the test, the
   one a trait's other uses are made by; `genericDemandMatch` first analyzes each

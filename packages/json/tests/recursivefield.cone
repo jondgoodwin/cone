@@ -1,0 +1,32 @@
+// A recursive record whose field is a nested instance of itself (List[List[H]]) is accepted and round-trips, declared
+// before and after a user of it.
+
+mod recursivefield;
+
+import testing use *;
+import collections use *;
+import json;
+
+struct User is Serialize, Deserialize[User] { pub h: H; pub g: G; }
+struct H is Serialize, Deserialize[H] { pub id: i64; pub kids: List[List[H]]; }
+struct G is Serialize, Deserialize[G] { pub id: i64; pub kids: List[List[G]]; }
+
+fn text(r: Result[String, json.JsonError]) String {
+  match r {
+    case let Ok(s) { s }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn main() i32 {
+  let src = "{\"h\":{\"id\":1,\"kids\":[[{\"id\":2,\"kids\":[]}]]},\"g\":{\"id\":3,\"kids\":[[],[{\"id\":4,\"kids\":[]}]]}}";
+  match json.fromJson[User](src) {
+    case let Ok(u) {
+      expectInt(u.h.kids[0][0].id, 2i64, "H nested id");
+      expectInt(u.g.kids[1][0].id, 4i64, "G nested id");
+      expectStr(text(json.toJson(&u)).view(), src, "round trip");
+    }
+    case let Err(x) { expectStr((String() <- x).view(), "<user>", "User read"); }
+  }
+  done()
+}

@@ -4783,24 +4783,29 @@ static void structCloneCheck(StructNode *node) {
 
 // Does a field of this type read itself: a number or bool, or a struct that declares Deserialize[itself]?
 // It must agree with the bound deserializeValue is checked by (genericTypeIsHow, 'is Deserialize[T]'),
-// which lays an instance out before reading its trait list, as a conditional entry of one
-// ('List[T] is Deserialize[List[T]] if T is Deserialize[T]') is listed there only once it is checked.
-static int structFieldDeserializes(INode *type) {
+// which answers an unchecked instance from its generic's 'is' entries (genericDeclaresByEntry), as a
+// conditional entry ('List[T] is Deserialize[List[T]] if T is Deserialize[T]') is listed in the
+// instance's trait list only once the instance is checked. 'desertrait' is the struct's own
+// Deserialize[Self], standing for the trait.
+static int structFieldDeserializes(INode *type, StructNode *desertrait) {
     INode *dcl = itypeGetTypeDcl(type);
     if (dcl->tag == IntNbrTag || dcl->tag == UintNbrTag || dcl->tag == FloatNbrTag)
         return dcl != (INode*)charType;
-    if (dcl->tag != StructTag || ((StructNode*)dcl)->traits == NULL)
+    if (dcl->tag != StructTag)
         return 0;
     INode **traitp;
     uint32_t cnt;
-    for (nodesFor(((StructNode*)dcl)->traits, cnt, traitp)) {
-        if (!coreIsDeserializeTrait(*traitp))
-            continue;
-        Nodes *args = itypeInstanceTypeArgs(*traitp);
-        if (args && args->used == 1 && itypeGetTypeDcl(nodesGet(args, 0)) == dcl)
-            return 1;
+    if (((StructNode*)dcl)->traits) {
+        for (nodesFor(((StructNode*)dcl)->traits, cnt, traitp)) {
+            if (!coreIsDeserializeTrait(*traitp))
+                continue;
+            Nodes *args = itypeInstanceTypeArgs(*traitp);
+            if (args && args->used == 1 && itypeGetTypeDcl(nodesGet(args, 0)) == dcl)
+                return 1;
+        }
     }
-    return 0;
+    // an instance not yet checked lacks the entries its generic declares conditionally
+    return genericDeclaresSelfByEntry((StructNode*)dcl, desertrait);
 }
 
 // A generic function of core's, by name, or NULL
@@ -4891,7 +4896,7 @@ static void structSerializeCheck(StructNode *node) {
                     FieldDclNode *field = (FieldDclNode*)*nodesp;
                     if (field->flags & IsMixin)
                         continue;
-                    if (!structFieldDeserializes(field->vtype)) {
+                    if (!structFieldDeserializes(field->vtype, desertrait)) {
                         INode *fldtype = itypeGetTypeDcl(field->vtype);
                         errorMsgNode((INode*)field, ErrorSerializeField,
                             "%s declares Deserialize[%s] and writes no `deserialize`, and its field %s is %s, which does not declare Deserialize of itself. Declare it, or write a `deserialize` of your own.",
