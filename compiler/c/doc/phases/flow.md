@@ -1730,6 +1730,14 @@ locals, which only a call that reaches one of them is asked of):
   `skAsk` asks the receiver's own state as shared (`skOwnShared`): a type whose method reshapes its
   own storage is refused where it becomes the marked reference (1500). An owner lent as the receiver
   keeps its own owner-lent walk. Tests: `collection_flow_virtual_return_tie`, `_ok`.
+  **Only a store over a place that changes shape counts (row 340, lane 467).** Under `skOwnShared`
+  a field of the asked type written (`siTypeWriteHits`, the header branch) is a reshape only if the
+  place's type is, or holds by value or through an owning reference, a shape-changing type
+  (`siStoredShaping`, exported as `shapeStoredShaping`): `self.buf = String()` and
+  `self.texts[i] = s` still refuse, a `usize` cursor or a `bool` flag stored beside the lent list
+  does not (the manual: writing a field or an element is free). Appends and other reshaping calls
+  count as before. The answers are kept apart in the memo (`SiOwnKey`, a bit of the mode). Tests:
+  `collection_flow_skownshared_stores`, `_ok`.
 - **A virtual reference held as a field, walked for what a type reaches** (`rcWalk`,
   `reshape.c`): unmarked, it reaches "anything" (`ReachVirtual | ReachBorrowed`: a trait is
   open, so an implementer may hold a shared owner of the very collection a borrow is into), so

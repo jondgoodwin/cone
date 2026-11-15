@@ -114,6 +114,76 @@ static int siTypeHoldsStorage(INode *type) {
     return siHoldsStorage(type, &seen);
 }
 
+static int siSettle(StructNode *st, int demand);
+
+// Set while a type is asked to keep the shape of what a caller borrows (skAsk): the trait has a
+// method whose result is a borrow tied to its receiver, so the receiver's own state is what a
+// caller may hold a borrow into, through a name the call reaches the value by (a reference of
+// the trait), and what the value's methods reshape of it is shared with that caller. A store of
+// a field there reshapes only if the place stored over changes shape (siStoredShaping)
+static int skOwnShared = 0;
+
+// Is this type, or does it hold by value or through an owning reference ('Uni', 'Rc'), a type that
+// changes shape (a String, a List, a struct holding one)? Storing over a place of it frees storage a
+// borrow may point into. A number, a bool, a raw pointer or a borrowed reference is not (what a
+// pointer or borrow points at is not owned here). An answer not settled yet counts as yes
+static int siStoredShaping(INode *type, int depth) {
+    if (type == NULL || depth > 8)
+        return type != NULL;        // too deep to follow: taken as holding one
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? siStoredShaping(itypeGetTypeDcl(type), depth + 1) : 0;
+    case AliasDclTag:
+        return siStoredShaping(((AliasDclNode *)type)->target, depth + 1);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+    {
+        RefNode *ref = (RefNode *)type;
+        return ref->region != NULL && regionIsOwning(ref->region) && siStoredShaping(ref->vtexp, depth + 1);
+    }
+    case ArrayTag:
+        return siStoredShaping(arrayElemType(type), depth + 1);
+    case TTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (siStoredShaping(*nodesp, depth + 1))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag:
+    {
+        StructNode *st = (StructNode *)type;
+        if (siSettle(st, 0) != SiNo)
+            return 1;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&st->fields, cnt, nodesp)) {
+            if (!((*nodesp)->flags & IsTagField) && siStoredShaping(((IExpNode *)*nodesp)->vtype, depth + 1))
+                return 1;
+        }
+        if (st->derived) {
+            for (nodesFor(st->derived, cnt, nodesp)) {
+                if (siStoredShaping(*nodesp, depth + 1))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// The same question for other passes: a store over a place of this type frees storage a borrow may
+// point into (flowpath.c's pwStoreOverField asks it of the stored place's type)
+int shapeStoredShaping(INode *type) {
+    return siStoredShaping(type, 0);
+}
+
 // ---- Places ----------------------------------------------------------------
 
 VarDclNode *siNamedVar(INode *node) {
@@ -146,10 +216,12 @@ enum SiMode {
     SiModeTypeG,
     SiModeOutG
 };
+#define SiOwnKey 0x10   // a bit of the memo's mode, not a mode: asked under skOwnShared
 
 typedef struct {
     int mode;               // SiMode, SiModeTypeG and SiModeOutG as SiModeType and SiModeOut
     int opaque;             // asked in one of those: a call into unknown code is taken to write a global
+    int own;                // asked under skOwnShared: a store counts only over a place that changes shape
     INode *cont;            // type modes: the collection's type
     VarDclNode *parm;       // the parameter whose pointee is asked about
     int isref;              // it is a reference: a write through it reaches the caller's value
@@ -472,8 +544,12 @@ static int siTypeWriteHits(INode *lval, SiCtx *c) {
     // by value, or an element that owns what a borrow may point at (reshapeStoreHits);
     // or, for a collection, one of its header fields written. An enum's common field,
     // or a field of its variant, is written within the variant: no reshape
+    // Under skOwnShared a field of the container written is no reshape unless the place stored
+    // over is, or holds by value, a type that changes shape (the manual: writing a field or an
+    // element is free; only a reshape breaks the promise)
     if (!reshapeStoreHits(lval, c->cont)
-            && (reshapeIsSum(c->cont) || reshapeIsOwner(c->cont) || !siPlaceInCont(lval, c->cont)))
+            && (reshapeIsSum(c->cont) || reshapeIsOwner(c->cont) || !siPlaceInCont(lval, c->cont)
+                || (c->own && !siStoredShaping(iexpGetTypeDcl(lval), 0))))
         return 0;
     return c->mode != SiModeOut || siRooted(lval, c);
 }
@@ -855,6 +931,9 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
     FnSigNode *sig = (FnSigNode *)fn->vtype;
     int base = mode == SiModeTypeG ? SiModeType : mode == SiModeOutG ? SiModeOut : mode;
     int ofparm = base < SiModeType;
+    // Asked under skOwnShared: its own answers, kept apart (a bit of the memo's mode)
+    int own = skOwnShared && !ofparm;
+    mode |= own ? SiOwnKey : 0;
     if (ofparm && k >= sig->parms->used)
         return SiYes;
     if (!ofparm)
@@ -878,7 +957,8 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
     SiCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.mode = base;
-    ctx.opaque = mode >= SiModeTypeG;
+    ctx.own = own;
+    ctx.opaque = (mode & ~SiOwnKey) >= SiModeTypeG;
     ctx.cont = cont;
     if (ofparm) {
         ctx.parm = (VarDclNode *)nodesGet(sig->parms, k);
@@ -1642,12 +1722,6 @@ static int skFrom(INode *start, int shared, StructNode **out, int n, int *full, 
     }
     return n;
 }
-
-// Set while a type is asked to keep the shape of what a caller borrows (skAsk): the trait has a
-// method whose result is a borrow tied to its receiver, so the receiver's own state is what a
-// caller may hold a borrow into, through a name the call reaches the value by (a reference of
-// the trait), and what the value's methods reshape of it is shared with that caller
-static int skOwnShared = 0;
 
 static int skReached(FnDclNode *meth, StructNode **out, int *full, int *pending) {
     FnSigNode *sig = (FnSigNode *)meth->vtype;
