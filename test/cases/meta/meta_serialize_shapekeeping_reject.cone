@@ -1,0 +1,70 @@
+// A serializer that writes into a String it was handed a '&mut' of (not one it owns) reshapes storage the walk's caller may hold\n// a view of, so coercing it to '&<mut Serializer + ShapeKeeping' is refused (the coercion is checked); one that owns its output\n// (what every text format does) is accepted.
+
+mod meta_serialize_shapekeeping_reject;
+import collections use *;
+import stdio use *;
+
+struct Pt { pub name: String; pub n: i32; }
+
+// Writes into the String it owns: what every text format does
+struct OwnsOut is Serializer { pub out: String;
+  pub fn boolean(self: &mut, b: bool) {}
+  pub fn int(self: &mut, n: i64) { self.out.append("i"); }
+  pub fn uint(self: &mut, n: u64) {}
+  pub fn float(self: &mut, x: f64) {}
+  pub fn text(self: &mut, s: &str) { self.out.append(s); }
+  pub fn bytes(self: &mut, b: &Array[u8]) {}
+  pub fn none(self: &mut) {}
+  pub fn beginSeq(self: &mut, len: usize) {}
+  pub fn endSeq(self: &mut) {}
+  pub fn beginMap(self: &mut, len: usize) {}
+  pub fn mapKey(self: &mut) {}
+  pub fn mapValue(self: &mut) {}
+  pub fn endMap(self: &mut) {}
+  pub fn beginRecord(self: &mut, typeName: &str, len: usize) {}
+  pub fn field(self: &mut, name: &str, index: usize) {}
+  pub fn endRecord(self: &mut) {}
+  pub fn unitVariant(self: &mut, enumName: &str, index: u32, name: &str) {}
+  pub fn beginVariant(self: &mut, enumName: &str, index: u32, name: &str, len: usize) {}
+  pub fn endVariant(self: &mut) {}
+}
+
+// Writes into a String it was handed a '&mut' of: reshapes a String that is not its own
+struct HoldsOut is Serializer { pub out: &mut String;
+  pub fn boolean(self: &mut, b: bool) {}
+  pub fn int(self: &mut, n: i64) {}
+  pub fn uint(self: &mut, n: u64) {}
+  pub fn float(self: &mut, x: f64) {}
+  pub fn text(self: &mut, s: &str) { self.out.append(s); }
+  pub fn bytes(self: &mut, b: &Array[u8]) {}
+  pub fn none(self: &mut) {}
+  pub fn beginSeq(self: &mut, len: usize) {}
+  pub fn endSeq(self: &mut) {}
+  pub fn beginMap(self: &mut, len: usize) {}
+  pub fn mapKey(self: &mut) {}
+  pub fn mapValue(self: &mut) {}
+  pub fn endMap(self: &mut) {}
+  pub fn beginRecord(self: &mut, typeName: &str, len: usize) {}
+  pub fn field(self: &mut, name: &str, index: usize) {}
+  pub fn endRecord(self: &mut) {}
+  pub fn unitVariant(self: &mut, enumName: &str, index: u32, name: &str) {}
+  pub fn beginVariant(self: &mut, enumName: &str, index: u32, name: &str, len: usize) {}
+  pub fn endVariant(self: &mut) {}
+}
+
+fn writeOwned(v: &Pt) usize {
+  var s = OwnsOut(String());
+  serializeValue(v, &mut s);
+  s.out.len()
+}
+
+fn writeHeld(v: &Pt, out: &mut String) {
+  var s = HoldsOut(out);
+  serializeValue(v, &mut s);                    //~ ErrorNotShapeKeeping:21 "reshapes `String` storage reached through `HoldsOut.out`"
+}
+
+fn main() {
+  var o = String();
+  writeHeld(&Pt(String.from("a"), 1), &mut o);
+  let n = writeOwned(&Pt(String.from("b"), 2));
+}

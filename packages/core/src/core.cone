@@ -5394,3 +5394,285 @@ pub struct NumberConv[T] {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Serialization: the data model, and the walk that serves every format
+// ---------------------------------------------------------------------------
+//
+// A format (JSON, a binary layout) is a 'Serializer' and a 'Deserializer', and is
+// written once. 'serializeValue' and 'deserializeValue' walk any struct by its
+// fields ('#fields') and any bool or number by its kind, and call the format's
+// methods for each piece, so one compiled walk per type serves every format; the
+// call through the virtual reference costs one indirect call per leaf. A type with
+// a shape of its own (a collection, a String, an enum) declares
+// 'Serialize' and 'Deserialize' and writes them once, in terms of the same data
+// model, so they too serve every format.
+//
+// The walk reaches a type's fields as '#fields' does: a struct whose fields are
+// private to another module is refused there ('@reflect' on the struct opts in).
+// It handles a struct, a bool, a number and a type that declares Serialize and
+// Deserialize, and refuses anything else (an enum with no such declaration), so
+// the type declares them itself.
+
+// What was wrong with the data
+pub enum DataErrorKind {
+  Type;      // the data is of another kind than the type asks for
+  Missing;   // a member the type needs is not there
+  Unknown;   // a member the type does not have (a format may choose to report it)
+  Range;     // the number does not fit the type
+  Syntax;    // the text of the format is not well formed
+  Custom;    // anything else the format or a type's own shape has to say
+}
+
+// A failure to read or write data. 'reason' and the names are text that lives for
+// the whole run (a literal, or a field's '#f.name'): this struct owns no text,
+// because core has no owned string. 'field' is the member the failure is about, and
+// 'within' the outermost field the walk was inside when it unwound ("" when none).
+pub struct DataError {
+  pub kind: DataErrorKind;
+  pub reason: &str;
+  pub field: &str;
+  pub within: &str;
+
+  pub fn missing(field: &str) DataError inline {
+    DataError(DataErrorKind.Missing, "the member is missing", field, "")
+  }
+  pub fn mismatch(reason: &str) DataError inline {
+    DataError(DataErrorKind.Type, reason, "", "")
+  }
+  pub fn range(reason: &str) DataError inline {
+    DataError(DataErrorKind.Range, reason, "", "")
+  }
+  pub fn syntax(reason: &str) DataError inline {
+    DataError(DataErrorKind.Syntax, reason, "", "")
+  }
+  pub fn custom(reason: &str) DataError inline {
+    DataError(DataErrorKind.Custom, reason, "", "")
+  }
+
+  // The walk calls this as an error unwinds out of a record's field: the field it
+  // was inside becomes the outermost one the error names
+  pub fn inside(self: &mut, name: &str) inline { self.within = name; }
+
+  pub fn toText(self: &, out: &uni TextOut) inline {
+    if within.len() > 0usize { out <- within, ": "; }
+    out <- reason;
+    if field.len() > 0usize { out <- " (", field, ")"; }
+  }
+}
+
+// What a record or a variant read finds next: the end, a member by name (read the
+// name with readText), or a member by position (a format with no names)
+pub enum FieldKey {
+  End;
+  Name;
+  Index(usize);
+}
+
+// A format's writing side. The walk calls it in the order of the data. A method
+// cannot fail: a format remembers its error and answers it where it finishes, as a
+// text writer does. 'Some' is transparent: the walk writes the inner value, and
+// calls 'none' for a None.
+pub trait Serializer {
+  pub fn boolean(self: &mut, b: bool);
+  pub fn int(self: &mut, n: i64);
+  pub fn uint(self: &mut, n: u64);
+  pub fn float(self: &mut, x: f64);
+  pub fn text(self: &mut, s: &str);
+  pub fn bytes(self: &mut, b: &Array[u8]);
+  pub fn none(self: &mut);
+  pub fn beginSeq(self: &mut, len: usize);
+  pub fn endSeq(self: &mut);
+  pub fn beginMap(self: &mut, len: usize);
+  pub fn mapKey(self: &mut);
+  pub fn mapValue(self: &mut);
+  pub fn endMap(self: &mut);
+  // 'typeName' is "" until a format needs the type's name; 'len' counts the fields
+  pub fn beginRecord(self: &mut, typeName: &str, len: usize);
+  // Before each field's value; 'index' counts from 0
+  pub fn field(self: &mut, name: &str, index: usize);
+  pub fn endRecord(self: &mut);
+  pub fn unitVariant(self: &mut, enumName: &str, index: u32, name: &str);
+  pub fn beginVariant(self: &mut, enumName: &str, index: u32, name: &str, len: usize);
+  pub fn endVariant(self: &mut);
+}
+
+// A format's reading side, asked by the type being read: the walk asks for what the
+// type is, and a positional format answers 'FieldKey.Index'. 'readText' answers a view
+// into the format's own buffer, good until the next call: the caller copies it out
+// (into a String in the region it was given) or compares it, at once.
+pub trait Deserializer {
+  pub fn readBool(self: &mut) Result[bool, DataError];
+  // A float where an integer is asked is a Type error; a number too big is a Range error
+  pub fn readInt(self: &mut) Result[i64, DataError];
+  pub fn readUInt(self: &mut) Result[u64, DataError];
+  // A number of any form is read as a float: a text format has one number type
+  pub fn readFloat(self: &mut) Result[f64, DataError];
+  pub fn readText(self: &mut) Result[&str, DataError];
+  pub fn readBytes(self: &mut) Result[&Array[u8], DataError];
+  // true: the value was the none, now consumed; false: a value is there, unread
+  pub fn readNone(self: &mut) Result[bool, DataError];
+  pub fn beginSeq(self: &mut) Result[void, DataError];
+  // true: an element follows; false: the sequence ended (and is consumed)
+  pub fn nextElement(self: &mut) Result[bool, DataError];
+  pub fn beginMap(self: &mut) Result[void, DataError];
+  // true: a key then a value follow, each read as a value; false: the map ended
+  pub fn nextEntry(self: &mut) Result[bool, DataError];
+  pub fn beginRecord(self: &mut, typeName: &str) Result[void, DataError];
+  pub fn nextField(self: &mut) Result[FieldKey, DataError];
+  pub fn beginVariant(self: &mut) Result[FieldKey, DataError];
+  pub fn endVariant(self: &mut) Result[void, DataError];
+  // Reads past one value of any shape, for a member the type does not have
+  pub fn skipValue(self: &mut) Result[void, DataError];
+}
+
+// A type's own shape, written once for every format: the walk calls it, and does
+// not walk the type.
+pub trait Serialize {
+  pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping);
+}
+
+// The reading twin: a static function building the value in region 'r'. 'r' is a
+// raw '*MemRegion', as the last argument of every collection's 'init' is. Nothing
+// ties the value built to the region's life, so a value read into an Arena dangles
+// if the Arena dies first: the hole the collections already have (Backlog
+// regions.md, "a borrow held inside a value carrying its lifetime").
+pub trait Deserialize[T] {
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[T, DataError];
+}
+
+// One Option slot per field of T, each None until its member is read: the partly
+// built value of a record being read
+pub struct Partial[T] {
+  #each #f in #fields(T) {
+    pub #f: Option[#f.type];
+  }
+
+  pub fn blank() Partial[T] {
+    Partial[T](#each #f in #fields(T) { #f: None })
+  }
+}
+
+fn dataFieldCount[T]() usize {
+  var n = 0usize;
+  #each #f in #fields(T) { n = n + 1usize; }
+  n
+}
+
+// Writes a value through a serializer: a bool, a number, a type that is Serialize, or
+// a struct (each field in order, by name)
+pub fn serializeValue[T](v: &T, s: &<mut Serializer + ShapeKeeping) {
+  #if T == bool {
+    s.boolean(*v);
+  } #elif T is Float {
+    s.float(f64.from(*v));
+  } #elif T is Signed {
+    s.int(i64.from(*v));
+  } #elif T is Unsigned {
+    s.uint(u64.from(*v));
+  } #elif T is Serialize {
+    v.serialize(s);
+  } #else {
+    s.beginRecord("", dataFieldCount[T]());
+    var i = 0usize;
+    #each #f in #fields(T) {
+      s.field(#f.name, i);
+      serializeValue(&v.#f, s);
+      i = i + 1usize;
+    }
+    s.endRecord();
+  }
+}
+
+fn dataField[F](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion, name: &str) Result[F, DataError] {
+  match deserializeValue[F](d, r) {
+    case let Ok(v) { Ok[F, DataError](v) }
+    case let Err(e) {
+      var e2 = e;
+      e2.inside(name);
+      Err[F, DataError](e2)
+    }
+  }
+}
+
+// Reads a value through a deserializer into region 'r' (see Deserialize): a bool, a
+// number (out of range is a Range error, never a wrap), a type that is Deserialize,
+// or a struct (members in any order; a missing one is an error naming it; an unknown
+// member is skipped)
+pub fn deserializeValue[T](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[T, DataError] {
+  #if T == bool {
+    d.readBool()
+  } #elif T is Float {
+    match d.readFloat() {
+      case let Ok(x) { Ok[T, DataError](T.from(x)) }
+      case let Err(e) { Err[T, DataError](e) }
+    }
+  } #elif T is Signed {
+    match d.readInt() {
+      case let Ok(n) {
+        match T.tryFrom(n) {
+          case let Ok(x) { Ok[T, DataError](x) }
+          case is Err { Err[T, DataError](DataError.range("the number does not fit the type")) }
+        }
+      }
+      case let Err(e) { Err[T, DataError](e) }
+    }
+  } #elif T is Unsigned {
+    match d.readUInt() {
+      case let Ok(n) {
+        match T.tryFrom(n) {
+          case let Ok(x) { Ok[T, DataError](x) }
+          case is Err { Err[T, DataError](DataError.range("the number does not fit the type")) }
+        }
+      }
+      case let Err(e) { Err[T, DataError](e) }
+    }
+  } #elif T is Deserialize[T] {
+    T.deserialize(d, r)
+  } #else {
+    d.beginRecord("")?;
+    var p = Partial[T].blank();
+    var more = true;
+    while more {
+      match d.nextField()? {
+        case is End { more = false; }
+        case is Name {
+          // find the member first, so the name's view is dead before the value is read
+          // This is load-bearing until row 335 lands: the compiler does not tie the &str from readText to the
+          // deserializer across a later call (a deserializer that reshapes its own buffer, as an appending skip
+          // would, could leave it dangling), so the name is compared here, before any other deserializer call.
+          var which = 0usize;
+          {
+            let k = d.readText()?;
+            var i = 1usize;
+            #each #f in #fields(T) {
+              if which == 0usize && k == #f.name { which = i; }
+              i = i + 1usize;
+            }
+          }
+          var i = 1usize;
+          #each #f in #fields(T) {
+            if which == i { p.#f = Some[#f.type](dataField[#f.type](d, r, #f.name)?); }
+            i = i + 1usize;
+          }
+          if which == 0usize { d.skipValue()?; }
+        }
+        case let Index(at) {
+          var i = 0usize;
+          var found = false;
+          #each #f in #fields(T) {
+            if at == i { found = true; p.#f = Some[#f.type](dataField[#f.type](d, r, #f.name)?); }
+            i = i + 1usize;
+          }
+          if !found { d.skipValue()?; }
+        }
+      }
+    }
+    #each #f in #fields(T) {
+      if !p.#f.isTrue() {
+        return Err[T, DataError](DataError.missing(#f.name));
+      }
+    }
+    Ok[T, DataError](T(#each #f in #fields(T) { #f: p.#f.take().unwrap() }))
+  }
+}

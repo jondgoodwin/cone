@@ -1674,8 +1674,24 @@ pub struct DequeGcTraceItems['a, T] is Iterator[&mut T] {
 // the 'Bytes' forms ('fromBytes', 'appendBytes'), which look at no more than the
 // bytes. The methods of 'str' that a String has no reason to differ from, 'find'
 // and 'startsWith' among them, are the fold's.
-pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
+pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Deserialize[String] {
   buf: List[u8];
+
+  // Text is a leaf of the data model (core's Serialize): written as text, and read
+  // back into the region the caller names
+  pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping) {
+    s.text(self.view());
+  }
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[String, DataError] {
+    match d.readText() {
+      case let Ok(t) {
+        var out = String(r);
+        out.append(t);
+        Ok[String, DataError](out)
+      }
+      case let Err(e) { Err[String, DataError](e) }
+    }
+  }
 
   use str via view but len, isEmpty, cstr, `[]`, trim, eq, `==`, cmp, `<=>`, hash;
 
