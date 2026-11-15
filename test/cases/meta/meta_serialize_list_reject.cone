@@ -1,12 +1,14 @@
-// A struct that declares Serialize with a List field: collections do not declare Serialize yet (row 333c), so the
-// compiler's record walk cannot take it and says so at the field, naming it and its type. It is the case json's
-// toJson refuses at compile time.
+// Collections serialize where their elements do (row 333c), so a List[Plain] of an undeclared struct is refused. Refused:
+// a struct that declares Serialize with a List[Plain] field (at the field, naming it and its type), a Dict[String, Plain]
+// field the same way, and serializeValue of a List[Plain] (at the call, by the bound, naming Plain).
 
 mod meta_serialize_list_reject;
 
 import collections use *;
 
-struct Item is Serialize { pub id: i32; pub tags: List[i32]; }   //~ ErrorSerializeField "its field tags is List"
+struct Plain { pub a: i32; }
+struct Item is Serialize { pub id: i32; pub tags: List[Plain]; }   //~ ErrorSerializeField "its field tags is List"
+struct Item2 is Serialize { pub id: i32; pub m: Dict[String, Plain]; }   //~ ErrorSerializeField "its field m is Dict"
 
 struct Sink is Serializer { pub out: String;
   pub fn boolean(self: &mut, b: bool) {}
@@ -32,5 +34,5 @@ struct Sink is Serializer { pub out: String;
 
 fn main() {
   var s = Sink(String());
-  serializeValue(&Item(1, List[i32]()), &mut s);
+  serializeValue(&List[Plain](), &mut s);   //~ ErrorWhereUnmet "List is Serialize only where T is Serialize, and that is false for T = Plain"
 }
