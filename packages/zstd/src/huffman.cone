@@ -189,9 +189,17 @@ struct HufTable is Default {
     out.resize(regen, 0u8);
     let op = out.viewMut() as *u8;
     let mb = maxBits;
+    // The raw table reads below are in range only if the table has exactly
+    // 2^maxBits entries with maxBits in 1..maxHuffBits. 'build' establishes both
+    // (bits = highBit(total) + 1 >= 1, refused above maxHuffBits, entries
+    // resized to 1 << bits) but sets maxBits before its last refusals, so a
+    // failed 'build' could leave the two out of step; this check, once per call,
+    // closes that (and the division by mb).
+    if mb == 0u32 || mb > maxHuffBits() || entries.len() != (1usize << usize.from(mb)) { return false; }
     let len4 = regen - 3usize * seg;
     let g = 56u32 / mb;
     let sh = u64.from(64u32 - mb) & 63u64;
+    // Raw read: in range by the entries.len == 1 << maxBits check above
     let ep = entries.view() as *u16;
     let p1 = op;
     let p2 = op + seg;
