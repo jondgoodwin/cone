@@ -287,7 +287,18 @@ static int siRooted(INode *e, SiCtx *c) {
         case ArrIndexTag:
         {
             INode *obj = ((FnCallNode *)e)->objfn;
-            if (iexpGetTypeDcl(obj)->tag != ArrayTag)
+            INode *ot = iexpGetTypeDcl(obj);
+            // An array reached through a reference ('a[i]' of 'a: &mut Array[T, N]'): the element is
+            // in the pointee, as a field of a reference to a struct is
+            if (ot->tag == RefTag && ((RefNode *)ot)->vtexp != NULL) {
+                INode *pt = itypeGetTypeDcl(((RefNode *)ot)->vtexp);
+                if (pt != NULL && pt->tag == ArrayTag) {
+                    while (obj->tag == CastTag && !(obj->flags & FlagConvert))
+                        obj = ((CastNode *)obj)->exp;
+                    return siIsRoot(c, siNamedVar(obj));
+                }
+            }
+            if (ot->tag != ArrayTag)
                 return 0;
             e = obj;
             continue;
@@ -478,17 +489,26 @@ static int siWriteHits(INode *lval, SiCtx *c) {
     // An element of a collection the parameter's pointee holds, replaced through the collection's
     // index method ('r.items[0] = s', a store over what the call lent): the old element is
     // finalized in place, freeing what it owned, so it writes storage as a field would
-    // (asked of the storage mode only: siTypeHoldsStorage below keeps a scalar element free)
+    // (a scalar element stays free: both modes ask siTypeHoldsStorage of the element, the field mode,
+    // which a caller's call check asks of a callee's parameter, included. An element that is an enum
+    // holding no storage ('Option[i64]'), overwritten in place, is no reshape either)
     INode *place = lval;
-    if (c->mode == SiModeStorage) {
+    int element = 0;
+    if (c->mode == SiModeStorage || c->mode == SiModeField) {
         INode *under = place->tag == DerefTag ? ((StarNode *)place)->vtexp : NULL;
         while (under && under->tag == CastTag && !(under->flags & FlagConvert))
             under = ((CastNode *)under)->exp;
-        if (under && under->tag == FnCallTag && ((FnCallNode *)under)->args && ((FnCallNode *)under)->args->used > 0)
+        if (under && under->tag == FnCallTag && ((FnCallNode *)under)->args && ((FnCallNode *)under)->args->used > 0) {
             place = nodesGet(((FnCallNode *)under)->args, 0);
+            element = 1;
+        }
     }
     if (!siRooted(place, c))
         return 0;
+    if (element && c->mode == SiModeField) {
+        INode *et = iexpGetTypeDcl(lval);
+        return et != NULL && siTypeHoldsStorage(et);
+    }
     // Asked of an enum (a method taking it by reference): only storing over the whole
     // value reshapes it. A common field, or a field of a variant, is written within the
     // variant

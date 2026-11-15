@@ -167,5 +167,7 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
     int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv, const uint8_t *apart);
 // 'apart' (or NULL): per argument, a borrow of a place that diverges from the borrow's own (a sibling
 // field, loanShapeDisjointAt): a value this function owns whole, as a unique local is
+// The struct a field access (through borrows and conversions) is a field of, held by value; else NULL (flowpath.c)
+INode *pwReceiverFieldOwner(INode *recv, int owning);
 
 #endif
