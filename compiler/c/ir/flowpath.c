@@ -2647,7 +2647,7 @@ static int pwFieldHeldByValue(INode *fld) {
 // value than the one the view is into (reshapeCall, 'recvowner')
 // 'owning' counts a field holding an owning reference ('Uni', 'Rc') as held by the struct too: what it
 // points at is the struct's to free (a store over it)
-static INode *pwReceiverFieldOwner(INode *recv, int owning) {
+INode *pwReceiverFieldOwner(INode *recv, int owning) {
     for (;;) {
         if (recv->tag == CastTag && !(recv->flags & FlagConvert))
             recv = ((CastNode *)recv)->exp;
