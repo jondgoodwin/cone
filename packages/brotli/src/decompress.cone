@@ -40,7 +40,8 @@ pub struct Decompressor is Default {
 
   // Decompresses 'data', a whole Brotli stream, and answers the bytes. 'expected' is a size hint: the output
   // size if known (0 if not), which only reserves room (never more than 64 MiB up front); a wrong hint costs
-  // time, not correctness. Bytes after the stream's last meta-block are not looked at.
+  // time, not correctness. Bytes after the stream's last meta-block are refused as BadHeader (offset: where
+  // they start); the streaming Decompressor of the next change hands them back instead (takeRest).
   pub fn run(self: &mut, data: &Array[u8], expected: usize) Result[List[u8], BrotliError] {
     var d = Dec();
     d.bi.inp.reserve(data.len);
@@ -52,8 +53,12 @@ pub struct Decompressor is Default {
     if !d.run() {
       return Err[List[u8], BrotliError](BrotliError.make(kindOf(d.errCode), u64.from(d.errAt), d.errReason.view()));
     }
+    let usedBytes = (d.bi.taken() + 7usize) / 8usize;
+    if usedBytes < data.len {
+      return Err[List[u8], BrotliError](BrotliError.make(ErrorKind.BadHeader, u64.from(usedBytes), "bytes follow the last meta-block"));
+    }
     done = true;
-    used = u64.from((d.bi.taken() + 7usize) / 8usize);
+    used = u64.from(usedBytes);
     produced = u64.from(d.out.len());
     var res = List[u8]();
     res <-> d.out;
@@ -68,7 +73,7 @@ pub struct Decompressor is Default {
 
 // Decompress a Brotli stream (RFC 7932) held in memory. 'expected' is a size hint: the output size if known
 // (0 if not); it only reserves room, and the output is bounded by 1 GiB whatever it says. Bytes after the
-// stream's last meta-block are ignored.
+// stream's last meta-block are refused as BadHeader.
 pub fn decompress(data: &Array[u8], expected: usize) Result[List[u8], BrotliError] {
   var dc = Decompressor.make();
   dc.run(data, expected)

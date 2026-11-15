@@ -242,6 +242,18 @@ fn main() i32 {
   expectStr(show(big.view(), 1048576u64, 24u32).view(), "TooLarge", "a meta-block that claims 16 MiB, small limit");
   expectStr(show(big.view(), 1073741824u64, 24u32).view(), "Truncated", "a meta-block that claims 16 MiB and has no data");
 
+  // Bytes after the last meta-block are refused as BadHeader, by run and by decompress; a stream with none is fine
+  w = newBits();
+  w.put(0u32, 1u32); emptyLast(&mut w);
+  var tail = w.bytes();
+  expectStr(show(tail.view(), 1073741824u64, 24u32).view(), "ok:", "an empty stream");
+  tail.push(0u8);
+  expectStr(show(tail.view(), 1073741824u64, 24u32).view(), "BadHeader", "a byte after the last meta-block (run)");
+  match decompress(tail.view(), 0usize) {
+    case var Ok(out) { expect(false, "a byte after the last meta-block (decompress) is refused"); }
+    case let Err(e) { expectStr(kindName(&e.kind), "BadHeader", "a byte after the last meta-block (decompress)"); expectInt(i64.from(e.offset), 1i64, "where the extra bytes start"); }
+  }
+
   // Cut at every length, three real streams: always Truncated
   expectInt(i64.from(prefixesWrong("quickfox.compressed")), 0i64, "every prefix of quickfox is Truncated");
   expectInt(i64.from(prefixesWrong("monkey.compressed")), 0i64, "every prefix of monkey is Truncated");

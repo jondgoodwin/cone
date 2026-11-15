@@ -70,6 +70,16 @@ def main():
         if got != want:
             sys.exit("the C brotli command does not read dictwords.br as makedict.py expects")
         index.append("own/dictwords.br own/dictwords")
+    import makepostfix
+    stream, want = makepostfix.build()
+    with open(os.path.join(HERE, "own", "postfix2.br"), "wb") as f:
+        f.write(stream)
+    with open(os.path.join(HERE, "own", "postfix2"), "wb") as f:
+        f.write(want)
+    got = subprocess.run([CLI, "-d", "-c", os.path.join(HERE, "own", "postfix2.br")], capture_output=True).stdout
+    if got != want:
+        sys.exit("the C brotli command does not read postfix2.br as makepostfix.py expects")
+    index.append("own/postfix2.br own/postfix2")
     with open(os.path.join(HERE, "index.txt"), "w", newline="\n") as f:
         f.write("\n".join(index) + "\n")
     print(len(index), "streams")

@@ -10,8 +10,9 @@
 #   the dictionary   122,784 bytes, CRC-32 0x5136cb04 (Appendix A)
 #   the transforms   648 bytes of the serialization the RFC defines, CRC-32 0x3d965f81 (Appendix B)
 #   Lut0, Lut1, Lut2 256 bytes each, CRC-32 0x8e91efb7, 0xd01a32f4, 0x0dd7a0d6 (section 7.1)
-# and the dictionary's size against NDBITS (the sum of length << NDBITS[length] over 4..24). The test
-# 'tests/tables.cone' repeats the same CRC-32 checks on the compiled data.
+# and the dictionary's size against NDBITS (the sum of length << NDBITS[length] over 4..24). The compiled data is
+# checked by the test stream tests/data/own/dictwords.br, which names a word of every length with every transform
+# and must decompress to bytes made from the RFC's text.
 import ast, os, re, sys, zlib
 
 DICT_LEN, DICT_CRC = 122784, 0x5136CB04
