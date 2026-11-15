@@ -163,7 +163,7 @@ DOMAINS = [
    ("httpconn", "HTTP/1.1 and HTTP/2 connections over the completion loop, client and server."),
    ("httpclient", "HTTP fetched by URL in one call, with pooled connections."),
    ("actorhttp", "HTTP and HTTPS an actor awaits."),
-   ("httpdecode", "An HTTP body decoded as it arrives (gzip, deflate, zstd)."),
+   ("httpdecode", "An HTTP body decoded as it arrives (gzip, deflate, zstd, br)."),
    ("sse", "Server-sent events as bytes, sans-IO: a reader and a writer."),
    ("tls", "TLS 1.2 and 1.3 over OpenSSL 3, client and server, sans-IO."),
    ("url", "URLs as data (RFC 3986): read, resolved against a base, written back."),
@@ -175,7 +175,7 @@ DOMAINS = [
   ("Archives and compression", [
    ("deflate", "DEFLATE compression and decompression with zlib and gzip framing, Adler-32 and CRC-32, streaming."),
    ("zstd", "Zstandard decompression and compression (levels 1 to 3), with xxHash64, streaming."),
-   ("brotli", "Brotli (RFC 7932) decompression of a stream in memory, with the static dictionary built in."),
+   ("brotli", "Brotli (RFC 7932) decompression of a stream in memory or fed in pieces, with the static dictionary built in; its Decompressor is a Transform."),
    ("zipfile", "ZIP archives read, written and extracted safely."),
    ("tarfile", "Tar archives (POSIX ustar) read as bytes arrive and written entry by entry."),
    ("archivestage", "A zip archive read as a stream between actors, each entry handed on as a stream."),
