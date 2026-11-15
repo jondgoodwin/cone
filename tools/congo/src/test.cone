@@ -327,16 +327,17 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
   var code = 0u32;
   var stdout = String();
   var stderr = String();
+  var shownStderr = String();
   // A crash, a panic's above all, ends at once, not held while Windows
   // reports it (the process package's "A crash")
   match process.run(args.view(), process.Options(
-      timeout: time.Duration.fromSeconds(testTimeoutSeconds), crashReport: false), &dest) {
+      timeout: time.Duration.fromSeconds(testTimeoutSeconds), crashReport: false, env: backtraceEnv()), &dest) {
     case let Ok(ok) {
       if ok.timedOut {
         // What it wrote to stderr says how far it got: a panic's line, say,
         // before an end that never came
         var note = String.from("timed out after 180 seconds");
-        let err = utf8Decode(ok.stderr.view());
+        let err = showStderr(utf8Decode(ok.stderr.view()).view(), &exe);
         if !isStrippedAway(err.view()) {
           let shownErr = indent(err.view(), "  ");
           note <- "\nstderr:\n", shownErr.view();
@@ -345,7 +346,10 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
       }
       code = ok.exitCode;
       stdout = utf8Decode(ok.stdout.view());
-      stderr = utf8Decode(ok.stderr.view());
+      // The backtrace a panic writes holds addresses, so what is compared is
+      // stderr without it; what is shown has it named
+      shownStderr = utf8Decode(ok.stderr.view());
+      stderr = withoutBacktrace(shownStderr.view());
     }
     case let Err(e) { fail(processMessage(&e)); }
   }
@@ -446,7 +450,8 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
     }
   }
   if problems.len() > 0usize && !isStrippedAway(stderr.view()) && !errChecked {
-    let shownErr = indent(stderr.view(), "  ");
+    let namedErr = showStderr(shownStderr.view(), &exe);
+    let shownErr = indent(namedErr.view(), "  ");
     problems.push(cat("stderr:\n", shownErr.view()));
   }
   let passed = problems.len() == 0usize;

@@ -2933,7 +2933,8 @@ def symbolised_block(frames: list[str], exe: Path) -> list[str]:
         for k, (func, location) in enumerate(entries):
             tag = " (inlined)" if k < len(entries) - 1 else ""
             label = m.group(1) if k == 0 else " " * len(m.group(1))
-            out.append(f"  {label}: {func} at {tidy_location(location)}{tag}")
+            where = "" if location.startswith("??") else f" at {tidy_location(location)}"
+            out.append(f"  {label}: {func}{where}{tag}")
     if note:
         out.append(f"  (note: {note})")
     return out

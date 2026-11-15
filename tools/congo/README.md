@@ -793,6 +793,14 @@ packages/geomath/
    `tests/<name>.linux.out` (`windows` and `macos` likewise, and `.err`), which is
    compared in place of the plain one on that host: the compiler suite's rule.
    A mismatch prints a diff of the output, or both statuses.
+   **A panic's backtrace.** Congo sets `CONE_BACKTRACE=1` for each program it runs
+   (`congo run` too), unless the caller has set it, so a panic writes `stack
+   backtrace:` and its frames (`N: 0xADDRESS module+0xOFFSET`). The block is left out
+   of the `.err` comparison, since addresses cannot be pinned, and a failing test
+   (and `congo run`, in `congo.py`) shows it named by `llvm-symbolizer`, or
+   `addr2line` on Linux: `N: function at file:line`, an inlined call on a line of
+   its own, marked `(inlined)`. With neither tool, the raw lines stay and one note says so.
+   (The Cone Congo's `run` shares the program's stderr, so its frames stay raw.)
 4. **Builds each example**, `examples/<name>.cone`, the same way, and does not
    run it. An example that does not build is a failure.
 

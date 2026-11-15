@@ -92,12 +92,47 @@ package's source file and line, which the include file's line marks give it
 **The report** (`packages/conestd/panic.cone`): stdout is flushed; one line goes
 to stderr, `panic at <file>:<line>: <message>`, or `panic in thread <id> at
 ...` on a thread other than the one the program started on; the hook, if one
-is set, is called with the message and the location; then the C library's
+is set, is called with the message and the location (when `CONE_BACKTRACE` is
+on, the backtrace, below, comes between the line and the hook); then the C library's
 `abort` ends the program (SIGABRT; on Windows a fail-fast, exit status
 `0xC0000409`, where a debugger stops). The line is written before the hook
 runs, so a hook that fails cannot lose it. Setting the hook is atomic; the last
 one set is called. A panic on a thread already panicking — the hook's own —
 writes one line and aborts at once.
+
+**The backtrace** (`packages/conestd/backtrace.c`, `printBacktrace` in
+`panic.cone`). Off unless the environment variable `CONE_BACKTRACE` is set to
+something other than empty or `0`; it is read at each panic, so a program may
+set it itself. When on, the panic line is followed by `stack backtrace:` and one
+line a frame, `  N: 0xADDRESS module+0xOFFSET`, at most 64, the panic's own
+frame left out, so frame 0 is the function that called `panic` (or the check
+that failed). The frames sit in a fixed array on the panicking thread's stack and
+go through the same text buffer as the panic line: nothing is allocated and no lock
+is taken, so the backtrace adds no deadlock path beside the console's (the #1180
+take-over). It is written before the hook runs. A panic inside a panic prints none.
+Windows walks the stack by its unwind data (`.pdata`) with
+`RtlCaptureStackBackTrace`, naming the module with `RtlPcToFileHeader`; Linux
+walks `.eh_frame` with `_Unwind_Backtrace` (glibc's `backtrace()` may allocate on
+its first call) and names the module with `dladdr`. Neither needs a frame pointer,
+the compiler's `uwtable` or any change to generated code; a function marked
+`nounwind` is the one case a walk could stop at. Module and offset keep the frames
+valid under address randomisation; the offset is from the module's load base, so
+`llvm-symbolizer --obj=<exe> --relative-address` and `addr2line -e <exe>` take it,
+one byte less than the frame's return address (the call, not what follows it: a call to
+a function that never returns can end a function). The frames carry no names: debug
+information is the symbolizer's, and a release build has it unless it was built
+with `--strip`. Congo sets the variable for the programs it runs and names the frames
+(`congo run`, `congo test`; below). A frame is the physical frame: inlined calls
+show as lines of their own once symbolised. A task resumed from an `await` shows
+the resuming stack, not the awaiting caller's.
+
+Congo (`congo.py` and the Cone Congo) sets `CONE_BACKTRACE=1` for a program it
+runs unless the caller has set it, writes each block as `N: function at file:line`
+with `llvm-symbolizer` (or `addr2line` on Linux where that is absent; the frames
+of the program's own executable only), and leaves the raw lines with one note when
+neither is found. A test's `.err` comparison leaves the block out, since
+addresses cannot be pinned; a failing test shows it named. The Cone Congo's `congo run`
+sets the variable but its program's stderr is shared, so the frames stay raw.
 
 **The compiler's checks** (`genlPanic`) — an index at or past its count, a
 range not within its count, a region's `alloc` answering null — call conestd's
@@ -113,7 +148,10 @@ Everything above is built. Not built:
 - **Recovering from a panic** — Rust's `catch_unwind`, Go's `recover` — and
   therefore unwinding; and **per-actor failure isolation**, which waits on
   actors.
-- **Backtraces**, and the column in the location.
+- The column in the location. Of backtraces: one on demand (`core.backtrace()`),
+  frames in the hook's arguments, names in-process (no symbolizer needed),
+  other threads' stacks, stack overflow (no stack is left to run this), and
+  a trace through an `await` chain.
 - **`requires` and `ensures` contracts.** The manual first had `assert` as a
   test-build check and a `requires` statement as the always-on one; Jon's
   ruling of 27 Sep made `assert` the always-on check and `assertDebug` the
