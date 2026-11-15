@@ -39,7 +39,7 @@
 //   spec.positionals(name, help, min)   the positionals that take all the rest, at least 'min' of them
 //   spec.parse(&mut reader)        reads the reader to its end: Result[Matches, ArgError]
 //   spec.usage()  spec.helpText()  the usage line, and the whole help text
-//   Kind                           Flag, Int, Uint, Float, Text, or Choice(words); Kind.oneOf("a|b|c") makes a Choice
+//   Kind                           Flag, Int, Uint, Float, Text, or Choice("a|b|c"): one of those words, '|' between
 //   m.int(n) uint float text flag  the value of an option or positional by its name (the last one given, else its default)
 //   m.choice(n)                    a Picked: the chosen word and its index in the list
 //   m.list(n)  m.ints(n)           every value of a repeated option, as text and as numbers
@@ -390,17 +390,32 @@ pub enum Kind {
   Uint;                    // a u64
   Float;                   // an f64, not a NaN or an infinity
   Text;                    // any text
-  Choice(List[String]);    // one of these words: the Matches give back the word and its place in the list
-
-  // A Choice of the words in this text, separated by '|': Kind.oneOf("red|green|blue")
-  pub fn oneOf(words: &str) Kind {
-    Kind.Choice(List[String].from(words.splitOnChar('|').map(x => String.from(x))))
-  }
-
-  pub fn isFlag(self: &) bool { isFlagKind(self) }
+  Choice(&str);            // one of these words, separated by '|': Kind.Choice("red|green|blue"). The Matches give back
+                           // the word and its place in the list.
 }
 
-fn isFlagKind(k: &Kind) bool {
+// A Kind as the Spec keeps it: a Choice's words made into a list
+enum Ty {
+  Flag;
+  Int;
+  Uint;
+  Float;
+  Text;
+  Choice(List[String]);
+}
+
+fn toTy(k: &Kind) Ty {
+  match k {
+    case is Flag { Ty.Flag }
+    case is Int { Ty.Int }
+    case is Uint { Ty.Uint }
+    case is Float { Ty.Float }
+    case is Text { Ty.Text }
+    case let Choice(w) { Ty.Choice(List[String].from(w.splitOnChar('|').map(x => String.from(x)))) }
+  }
+}
+
+fn isFlagKind(k: &Ty) bool {
   match k {
     case is Flag { true }
     else { false }
@@ -420,7 +435,8 @@ pub struct Opt {
   pub short: char = '\0';          // its one-letter form, '\0' for none
   pub kind: Kind = Kind.Flag;
   pub help: &str = "";             // one line for the help text
-  pub default: &str = "";          // the value, written as the person would type it; "" means no default
+  pub default: &str = "";          // the value, written as the person would type it; "" means no default, so an
+                                   // empty-string default cannot be declared
   pub value: &str = "";            // what the help text calls the value (FILE): by default from the kind
   pub required: bool = false;      // an error if not given (and it has no default)
   pub many: bool = false;          // may be given more than once; the values come out as a list
@@ -430,7 +446,7 @@ pub struct Opt {
 struct Def {
   name: String;
   short: char;
-  kind: Kind;
+  kind: Ty;
   help: String;
   default: String;
   hasDefault: bool;
@@ -462,8 +478,7 @@ pub struct Spec {
   // Declares an option. '-h' and '--help' are the Spec's own unless an option takes the name or letter.
   pub fn add(self: &mut, o: Opt) {
     var opt = o;
-    var kind = Kind.Flag;
-    kind <-> opt.kind;
+    let kind = toTy(&opt.kind);
     let has = opt.default.len() > 0usize;
     opts.push(Def(String.from(opt.name), opt.short, kind, String.from(opt.help), String.from(opt.default),
                   has, String.from(opt.value), opt.required, opt.many));
@@ -541,7 +556,7 @@ pub struct Spec {
       return Err[bool, ArgError](ArgError.Repeated(String.from(shown)));
     }
     m.slots[i].given = m.slots[i].given + 1usize;
-    if !opts[i].kind.isFlag() {
+    if !isFlagKind(&opts[i].kind) {
       let v = readVal(&opts[i].kind, r, shown)?;
       m.slots[i].vals.push(v);
     }
@@ -657,7 +672,7 @@ pub struct Spec {
       let optional = !opts[i].required || opts[i].hasDefault;
       if optional { s <- "["; }
       s <- "--"; s <- opts[i].name.view();
-      if !opts[i].kind.isFlag() { s <- " <"; s <- self.placeholder(i).view(); s <- ">"; }
+      if !isFlagKind(&opts[i].kind) { s <- " <"; s <- self.placeholder(i).view(); s <- ">"; }
       if optional { s <- "]"; }
       if opts[i].many { s <- "..."; }
       i = i + 1usize;
@@ -703,7 +718,7 @@ pub struct Spec {
       var l = String.from("  ");
       if opts[i].short != '\0' { l <- "-"; l <- opts[i].short; l <- ", "; } else { l <- "    "; }
       l <- "--"; l <- opts[i].name.view();
-      if !opts[i].kind.isFlag() { l <- " <"; l <- self.placeholder(i).view(); l <- ">"; }
+      if !isFlagKind(&opts[i].kind) { l <- " <"; l <- self.placeholder(i).view(); l <- ">"; }
       lefts.push(l);
       var h = opts[i].help.clone();
       if opts[i].hasDefault {
@@ -785,7 +800,7 @@ enum Val {
 }
 
 // Reads the value of the option just read, as its kind says; 'shown' is the option as the person typed it
-fn readVal(kind: &Kind, r: &mut ArgReader, shown: &str) Result[Val, ArgError] {
+fn readVal(kind: &Ty, r: &mut ArgReader, shown: &str) Result[Val, ArgError] {
   match kind {
     case is Int { let n = r.int()?; Ok[Val, ArgError](Val.I(n)) }
     case is Uint { let n = r.uint()?; Ok[Val, ArgError](Val.U(n)) }
