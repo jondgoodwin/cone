@@ -532,7 +532,7 @@ def scan_header(path: Path) -> Header:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        raise CongoError(f"cannot read {path}: {exc}") from None
+        raise CongoError(f"readFile {path}: {exc.strerror or exc}") from None
     toks = HeaderTokens(text)
     mod = None
     extends = None
@@ -585,7 +585,7 @@ def holds_kernel(path: Path) -> bool:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        raise CongoError(f"cannot read {path}: {exc}") from None
+        raise CongoError(f"readFile {path}: {exc.strerror or exc}") from None
     toks = HeaderTokens(text)
     before = [("eof", ""), ("eof", "")]
     while True:
@@ -2003,9 +2003,14 @@ _TOOL_HASHES: dict[str, tuple[tuple[int, int], str]] = {}
 def content_hash(path: Path) -> str:
     """The SHA-256 of a file's content, in hex."""
     digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1 << 20), b""):
-            digest.update(chunk)
+    try:
+        with path.open("rb") as file:
+            for chunk in iter(lambda: file.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        # One line, as the Cone Congo's fsMessage says it; a file that cannot
+        # be read is never taken for a file that has not changed
+        raise CongoError(f"readFile {path}: {exc.strerror or exc}") from exc
     return digest.hexdigest()
 
 
