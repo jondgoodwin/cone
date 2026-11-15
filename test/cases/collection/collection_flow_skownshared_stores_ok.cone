@@ -1,0 +1,44 @@
+// Row 340 (lane 467): a cursor deserializer's own state is a list of Strings the view is lent from, a
+// usize cursor and a bool flag. Storing over the cursor and the flag frees nothing a view points
+// into, so the type goes behind '+ ShapeKeeping' of a trait that lends from its receiver, and the
+// borrow survives the next call through the reference. Prints b: the view taken at pos 1 still reads
+// "b" after the step (pos becomes 2, the flag is set).
+
+mod collection_flow_skownshared_stores_ok;
+
+import stdio use *;
+import collections use *;
+
+trait Peek {
+  pub fn view(self: &mut) &str;
+  pub fn step(self: &mut);
+  pub fn done(self: &mut) bool;
+}
+
+struct Cursor is Peek {
+  pub texts: List[String];
+  pub pos: usize;
+  pub fin: bool;
+  pub fn view(self: &mut) &str { self.texts[self.pos].view() }
+  pub fn step(self: &mut) {
+    self.pos = self.pos + 1usize;
+    if self.pos >= self.texts.len() { self.fin = true; }
+  }
+  pub fn done(self: &mut) bool { self.fin }
+  pub fn add(self: &mut, s: &str) { self.texts.push(String.from(s)); }
+}
+
+fn run(x: &<mut Peek + ShapeKeeping) {
+  let v = x.view();
+  x.step();
+  print <- v, "\n";
+  if !x.done() { print <- x.view(), "\n"; }
+}
+
+fn main() {
+  var c = Cursor(List[String](), 0usize, false);
+  c.add("a");
+  c.add("b");
+  c.step();
+  run(&mut c);
+}

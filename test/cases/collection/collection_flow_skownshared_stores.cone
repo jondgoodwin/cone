@@ -1,0 +1,50 @@
+// Row 340 (lane 467): '+ ShapeKeeping' on a trait that lends from its receiver (Bug 92, #1345) refuses a
+// type whose method reshapes the receiver's own state. A store counts as one only over a place that is,
+// or holds by value, a shape-changing type: 'self.buf = String()' frees the String a view may point
+// into, 'self.texts[i] = s' drops the String element; an append to the lent String (Bug 92's grow) is
+// a reshaping call. A store over a number or a bool (a cursor, a flag) frees nothing: the manual says
+// writing a field or an element is free (collection_flow_skownshared_stores_ok accepts those).
+
+mod collection_flow_skownshared_stores;
+
+import collections use *;
+
+trait Peek {
+  pub fn view(self: &mut) &str;
+  pub fn step(self: &mut);
+}
+
+// 'step' replaces the String the view points into
+struct Whole is Peek {
+  pub buf: String;
+  pub pos: usize;
+  pub fn view(self: &mut) &str { self.buf.view() }
+  pub fn step(self: &mut) { self.buf = String(); }
+}
+
+// 'step' replaces an element of the list of Strings the view points into
+struct Elems is Peek {
+  pub texts: List[String];
+  pub pos: usize;
+  pub fn view(self: &mut) &str { self.texts[self.pos].view() }
+  pub fn step(self: &mut) { self.texts[self.pos] = String(); }
+}
+
+// 'step' appends to the lent String (Bug 92's grow)
+struct Grows is Peek {
+  pub buf: String;
+  pub pos: usize;
+  pub fn view(self: &mut) &str { self.buf.view() }
+  pub fn step(self: &mut) { self.buf.append("0123456789012345678901234567890123456789"); }
+}
+
+fn marked(x: &<mut Peek + ShapeKeeping) usize { x.view().len }
+
+fn main() {
+  var w = Whole(String(), 0usize);
+  marked(&mut w);                                            //~ ErrorNotShapeKeeping
+  var e = Elems(List[String](), 0usize);
+  marked(&mut e);                                            //~ ErrorNotShapeKeeping
+  var g = Grows(String(), 0usize);
+  marked(&mut g);                                            //~ ErrorNotShapeKeeping
+}

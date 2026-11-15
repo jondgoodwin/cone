@@ -57,6 +57,11 @@
 // An answer not settled yet is taken as yes.
 int shapeChanging(StructNode *st);
 
+// Is this the type of a place whose store frees storage a borrow may point into: a type that
+// changes shape, or one holding such a type by value or through an owning reference? A number, a
+// bool, a raw pointer or a borrowed reference is not (a cursor or a flag is stored freely).
+int shapeStoredShaping(INode *type);
+
 // Called before the loan walk of 'fn': settle what the walk will ask, checking
 // the methods of the types it meets that are waiting to be (a demand, outside any
 // walk). 0 where something cannot be settled yet and 'maydefer' says the walk
