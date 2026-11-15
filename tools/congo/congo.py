@@ -532,7 +532,7 @@ def scan_header(path: Path) -> Header:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        raise CongoError(f"cannot read {path}: {exc}") from None
+        raise CongoError(f"readFile {path}: {exc.strerror or exc}") from None
     toks = HeaderTokens(text)
     mod = None
     extends = None
@@ -585,7 +585,7 @@ def holds_kernel(path: Path) -> bool:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        raise CongoError(f"cannot read {path}: {exc}") from None
+        raise CongoError(f"readFile {path}: {exc.strerror or exc}") from None
     toks = HeaderTokens(text)
     before = [("eof", ""), ("eof", "")]
     while True:
@@ -2003,9 +2003,14 @@ _TOOL_HASHES: dict[str, tuple[tuple[int, int], str]] = {}
 def content_hash(path: Path) -> str:
     """The SHA-256 of a file's content, in hex."""
     digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1 << 20), b""):
-            digest.update(chunk)
+    try:
+        with path.open("rb") as file:
+            for chunk in iter(lambda: file.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        # One line, as the Cone Congo's fsMessage says it; a file that cannot
+        # be read is never taken for a file that has not changed
+        raise CongoError(f"readFile {path}: {exc.strerror or exc}") from exc
     return digest.hexdigest()
 
 
@@ -2960,6 +2965,27 @@ def expected_exit(program: Path) -> int:
                          f" test ends with; it holds {text!r}") from None
 
 
+def test_timeout(program: Path) -> int:
+    """tests/<name>.timeout holds the seconds this test may run, where it needs
+    more than TEST_TIMEOUT: one positive whole number, as `.exit` holds one."""
+    path = program.with_suffix(".timeout")
+    if not path.is_file():
+        return TEST_TIMEOUT
+    text = path.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9]{1,6}", text) or int(text) == 0:
+        raise CongoError(f"{shown(path)} must hold one positive whole number, the"
+                         f" seconds the test may run; it holds {text!r}")
+    return int(text)
+
+
+def last_lines(text: str, count: int = 40) -> str:
+    """The last `count` lines of text, with a line saying how many came before."""
+    lines = text.rstrip("\n").split("\n")
+    if len(lines) <= count:
+        return "\n".join(lines)
+    return "\n".join([f"({len(lines) - count} earlier lines left out)"] + lines[-count:])
+
+
 def debug_only(program: Path) -> bool:
     """tests/<name>.debug, whatever it holds, marks a test debug-only: a test of
     a check made in a debug build alone (assertDebug, assertDebugMsg), which
@@ -3267,15 +3293,16 @@ def run_test(session: Session, file: Path, bless: bool, pkg: Package | None = No
     exe = build_program(session, file, into)
     # Run in its own build folder, so a file it writes by a relative name
     # lands there and not in the package's source
-    ran = run_program(exe, into, TEST_TIMEOUT,
+    limit = test_timeout(file)
+    ran = run_program(exe, into, limit,
                       f"{pkg.name}-{file.stem}" if pkg else file.stem,
                       pkg.root if pkg else None)
     if ran.returncode is None:
         # What it wrote to stderr says how far it got: a panic's line, say,
         # before an end that never came
         err = ran.stderr.decode("utf-8", errors="replace")
-        return False, (f"timed out after {TEST_TIMEOUT} seconds"
-                       + (f"\nstderr:\n{indent(err, '  ')}" if err.strip() else ""))
+        return False, (f"timed out after {limit} seconds"
+                       + (f"\nstderr:\n{indent(last_lines(err), '  ')}" if err.strip() else ""))
     # A program that could not start has nothing to compare, and this line is
     # how a person learns why (no dialog says so)
     not_started = dll_note(ran.returncode, exe)
