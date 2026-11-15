@@ -1,0 +1,62 @@
+// Bug 93 (row 353), accepted: the control of collection_flow_clear_reshape. A scalar collection
+// cleared, truncated, removed from and popped (inline, through a free function and through a method of
+// another type) while a view into a String element of another field of 'r' is held: nothing the view
+// points into is freed. And a String list cleared after the view ended. Prints the view's first byte
+// ('0', 48) for the first and the second, then the byte read before the clear.
+
+mod collection_flow_clear_reshape_ok;
+
+import stdio use *;
+import collections use *;
+
+fn mkS() String { var s = String(); s.append("0123456789012345678901234567890123456789"); s }
+
+struct Rd { pub items: List[String]; pub counts: List[i32]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].view() } }
+
+struct Clearer { pub k: i32;
+  pub fn clearAll(self: &Clearer, l: &mut List[i32]) { l.clear(); } }
+
+fn clearCounts(l: &mut List[i32]) { l.clear(); }
+
+fn scalar(r: &mut Rd) u8 {
+  let y: &mut Rd = r;
+  let v = y.view();
+  r.counts.truncate(2usize);
+  r.counts.remove(0usize);
+  r.counts.pop();
+  clearCounts(&mut r.counts);
+  let c = Clearer(1);
+  c.clearAll(&mut r.counts);
+  r.counts.clear();
+  v[0usize]
+}
+
+// Another type: its own String list is cleared, so it is one that changes shape, but only after
+// the view ended
+struct Rd2 { pub items: List[String]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].view() } }
+
+fn ended(r: &mut Rd2) u8 {
+  let y: &mut Rd2 = r;
+  let v = y.view();
+  let b = v[0usize];
+  r.items.clear();
+  b
+}
+
+fn main() {
+  var l = List[String]();
+  l.push(mkS());
+  var c = List[i32]();
+  c.push(1);
+  c.push(2);
+  c.push(3);
+  c.push(4);
+  var r = Rd(l, c, 1);
+  print <- scalar(&mut r), " ", r.counts.len(), "\n";
+  var l2 = List[String]();
+  l2.push(mkS());
+  var r2 = Rd2(l2, 1);
+  print <- ended(&mut r2), " ", r2.items.len(), "\n";
+}

@@ -1,4 +1,4 @@
-// ======== Decompressing a whole stream at once ========
+// ======== Decompressing: a whole stream at once, or in pieces ========
 
 fn kindOf(code: u32) ErrorKind {
   if code == ErrHeader { return ErrorKind.BadHeader; }
@@ -12,63 +12,234 @@ fn kindOf(code: u32) ErrorKind {
   ErrorKind.NeedsLargeWindow
 }
 
-// A decompressor's settings and, after a run, its totals. 'make' gives the defaults: a limit of 1 GiB of output
-// and a window of up to 16 MiB. PR 1 of the package decodes a whole buffer ('run'); feeding input in pieces and
-// pulling output in pieces is the next change.
-pub struct Decompressor is Default {
+fn defaultLimit() usize { 1073741824usize }
+
+// A decoder at the start of a stream, with a limit on the output and a largest window
+fn freshDec(limit: usize, maxWindow: u32) Dec {
+  var d = Dec();
+  d.limit = limit;
+  d.maxWbits = maxWindow;
+  d.r0 = 4usize;
+  d.r1 = 11usize;
+  d.r2 = 15usize;
+  d.r3 = 16usize;
+  d
+}
+
+// The error a decoder recorded, as the package's error value
+fn errorOf(d: &Dec) BrotliError {
+  BrotliError.make(kindOf(d.errCode), d.inBase + u64.from(d.errAt), d.errReason.view())
+}
+
+// A decompressor: its settings and, for a stream fed in pieces, the whole of that stream's state. Make one with
+// 'make', 'feed' it, 'finish' it when the input is over, 'pull' the output (a Transform of package streams):
+//
+//   mut dc = brotli.Decompressor.make();
+//   mut out = IoBuf(65536usize);
+//   dc.feed(chunk);                         // any size, split anywhere
+//   while true {
+//     out.clear();
+//     imm s = dc.pull(&mut out);            // at most the buffer's room at a time
+//     ... use out.view() ...
+//     if s != Status.MoreOutput { break; }
+//   }
+//   // NeedInput: feed the next chunk, or dc.finish() and pull once more
+//
+// 'make' gives the defaults: a limit of 1 GiB of output and a window of up to 16 MiB. 'run' decodes a whole
+// buffer in one call (the same decoder, with the input all there and finished).
+pub struct Decompressor {
+  d: Dec;
+  // The input fed and not yet taken into the decoder
+  rd: streams.Reader;
   limit: usize;
   maxWindow: u32;
-  used: u64;
-  produced: u64;
-  done: bool;
+  failed: bool;
+  err: BrotliError;
 
   pub fn make() Decompressor {
-    Decompressor(1073741824usize, 24u32, 0u64, 0u64, false)
+    Decompressor(freshDec(defaultLimit(), 24u32), streams.Reader.make(0xFFFFFFFFFFFFFFFFusize), defaultLimit(), 24u32,
+      false, BrotliError.make(ErrorKind.BadHeader, 0u64, ""))
   }
 
   // The most output a run may produce, in bytes; a stream that would make more is refused as TooLarge, before
   // it writes the meta-block that passes the limit
   pub fn setLimit(self: &mut, bytes: u64) {
     limit = usize.from(bytes);
+    d.limit = limit;
   }
 
   // The largest window, in bits (10 to 24), the stream may ask for; the window is also the most output a run
   // may need to look back over. A stream that asks for more is refused as WindowTooLarge.
   pub fn setMaxWindow(self: &mut, bits: u32) {
     maxWindow = if bits > 24u32 {24u32} else {bits};
+    d.maxWbits = maxWindow;
+  }
+
+  // Appends input. It is copied, so the caller's bytes are its own again at once. Feed in pieces of any size;
+  // pull until NeedInput before feeding the next, or the input piles up. The input held is in pool buffers, so
+  // held input past about the pool's bound fails the stream with TooLarge rather than panicking; feeding in
+  // pieces and pulling between keeps the held input small. After a failure, feed does nothing.
+  pub fn feed(self: &mut, chunk: &Array[u8]) {
+    if failed { return; }
+    // The room left in the last segment first, then buffers of at most 1 MiB for the rest
+    var at = rd.appendLast(chunk);
+    while at < chunk.len {
+      let want = if chunk.len - at < 1048576usize {chunk.len - at} else {1048576usize};
+      match IoBuf.tryMake(want) {
+        case var Some(b) {
+          at = at + b.append(&chunk[at ..< chunk.len]);
+          _ = rd.push(b);
+        }
+        case is None[IoBuf] {
+          d.errCode = ErrTooLarge;
+          d.errAt = d.bi.pos;
+          d.errReason = String.from("the input fed is more than the buffer pool will hold; feed it in pieces");
+          failed = true;
+          err = errorOf(&d);
+          rd = streams.Reader.make(0usize);
+          return;
+        }
+      }
+    }
+  }
+
+  // Says that no more input will come: what is still waiting in the decoder is decoded, and a stream that is not
+  // complete is then a Truncated failure
+  pub fn finish(self: &mut) { d.finished = true; }
+
+  // Why the stream failed; meaningful once a pull answered Failed
+  pub fn error(self: &) &BrotliError { &err }
+
+  // The Transform's 'failure': the error as an AnyError once a pull answered Failed, None before (a stage may
+  // ask at any time)
+  pub fn failure(self: &) Option[AnyError] {
+    if failed { Some[AnyError](AnyError.from(err.clone())) } else { None[AnyError] }
+  }
+
+  // Bytes of input used up to now (a byte whose bits are partly used counts)
+  pub fn totalIn(self: &) u64 {
+    d.inBase + u64.from(d.bi.pos - usize.from(d.bi.nbits / 8u32))
+  }
+
+  // Bytes of output produced up to now
+  pub fn totalOut(self: &) u64 { u64.from(d.outTotal) }
+
+  // Whether the stream is complete
+  pub fn isDone(self: &) bool { d.stage == StEnd && !failed }
+
+  // After Done: the input bytes that came after the stream's last meta-block, taken out
+  pub fn takeRest(self: &mut) List[u8] {
+    var rest = List[u8]();
+    if d.stage == StEnd && !failed {
+      self.drain();
+      let from = d.bi.pos;
+      rest.appendSlice(&d.bi.inp.view()[from ..< d.bi.inp.len()]);
+      d.inBase = d.inBase + u64.from(d.bi.inp.len());
+      d.bi.inp.clear();
+      d.bi.pos = 0usize;
+    }
+    rest
+  }
+
+  // Decodes into a buffer's spare room (the Transform of package streams), appending at most 'out.room()' bytes
+  // and lengthening 'out' by them, and answers what it is waiting for: NeedInput (all input used), MoreOutput
+  // (the room came first), Done, or Failed (and the decompressor stays failed). Anything pulled before a
+  // failure has been delivered and is good.
+  pub fn pullBuf overload pull(self: &mut, out: &mut IoBuf) Status {
+    if failed { return Status.Failed; }
+    self.drain();
+    let s = d.advance(out.room());
+    if d.errCode != ErrNone {
+      failed = true;
+      err = errorOf(&d);
+    } else {
+      d.bi.unpad();
+    }
+    d.mark = d.mark + out.append(&d.out.view()[d.mark ..< d.out.len()]);
+    self.trim();
+    self.dropUsed();
+    if failed { return Status.Failed; }
+    s
+  }
+
+  // Moves the fed input from its pool buffers to the decoder's own list, which the bit reader needs in one piece
+  fn drain(self: &mut) {
+    while rd.len() > 0usize {
+      var n = rd.contiguousLen();
+      if n == 0usize { n = rd.len(); }
+      match rd.peek(n) {
+        case let Some(v) { d.bi.inp.appendSlice(v); }
+        case is None[&Array[u8]] { return; }
+      }
+      rd.consume(n);
+    }
+  }
+
+  // The output is kept for matches back over the window: the history is trimmed to the window when it has grown
+  // a quarter of a window (and 64 KiB) past it, so memory is the window plus that and one pull's output
+  fn trim(self: &mut) {
+    if d.retain { return; }
+    let slack = d.window / 4usize + 65536usize;
+    if d.out.len() >= d.window + slack && d.mark == d.out.len() {
+      let drop = d.out.len() - d.window;
+      d.out.copyWithin(drop, d.out.len(), 0usize);
+      d.out.truncate(d.window);
+      d.mark = d.window;
+    }
+  }
+
+  // Drops the front of the held input that is used, when that is at least half of it
+  fn dropUsed(self: &mut) {
+    if failed {
+      d.bi.inp = List[u8]();
+      d.bi.pos = 0usize;
+      rd = streams.Reader.make(0usize);
+      return;
+    }
+    // (a byte whose bits are partly in the buffer stays, so that the bits taken never count below zero)
+    let used = d.bi.pos - usize.from((d.bi.nbits + 7u32) / 8u32);
+    let total = d.bi.inp.len();
+    if used > 0usize && used >= total - used {
+      d.bi.inp.copyWithin(used, total, 0usize);
+      d.bi.inp.truncate(total - used);
+      d.bi.pos = d.bi.pos - used;
+      d.inBase = d.inBase + u64.from(used);
+    }
   }
 
   // Decompresses 'data', a whole Brotli stream, and answers the bytes. 'expected' is a size hint: the output
   // size if known (0 if not), which only reserves room (never more than 64 MiB up front); a wrong hint costs
   // time, not correctness. Bytes after the stream's last meta-block are refused as BadHeader (offset: where
-  // they start); the streaming Decompressor of the next change hands them back instead (takeRest).
+  // they start); a stream fed in pieces hands them back instead (takeRest). 'run' starts a stream of its own
+  // and leaves the totals of it behind.
   pub fn run(self: &mut, data: &Array[u8], expected: usize) Result[List[u8], BrotliError] {
-    var d = Dec();
-    d.bi.inp.reserve(data.len);
-    d.bi.inp.appendSlice(data);
-    d.limit = limit;
-    d.maxWbits = maxWindow;
-    d.out.reserve(if expected < 67108864usize {expected} else {67108864usize});
-    done = false;
-    if !d.run() {
-      return Err[List[u8], BrotliError](BrotliError.make(kindOf(d.errCode), u64.from(d.errAt), d.errReason.view()));
-    }
-    let usedBytes = (d.bi.taken() + 7usize) / 8usize;
-    if usedBytes < data.len {
-      return Err[List[u8], BrotliError](BrotliError.make(ErrorKind.BadHeader, u64.from(usedBytes), "bytes follow the last meta-block"));
-    }
-    done = true;
-    used = u64.from(usedBytes);
-    produced = u64.from(d.out.len());
+    var dd = freshDec(limit, maxWindow);
+    dd.retain = true;
+    dd.finished = true;
+    dd.bi.inp.reserve(data.len);
+    dd.bi.inp.appendSlice(data);
+    dd.out.reserve(if expected < 67108864usize {expected} else {67108864usize});
+    let s = dd.advance(0xFFFFFFFFFFFFFFFFusize);
     var res = List[u8]();
-    res <-> d.out;
-    Ok[List[u8], BrotliError](res)
+    var result: Result[List[u8], BrotliError] = Err[List[u8], BrotliError](BrotliError.make(ErrorKind.Truncated, 0u64, ""));
+    failed = false;
+    if s != Status.Done {
+      if dd.errCode == ErrNone { dd.fail(ErrTruncated, "the input ends before the last meta-block"); }
+      err = errorOf(&dd);
+      failed = true;
+      result = Err[List[u8], BrotliError](err.clone());
+    } else if dd.bi.pos < data.len {
+      err = BrotliError.make(ErrorKind.BadHeader, u64.from(dd.bi.pos), "bytes follow the last meta-block");
+      failed = true;
+      result = Err[List[u8], BrotliError](err.clone());
+    } else {
+      res <-> dd.out;
+      result = Ok[List[u8], BrotliError](res);
+    }
+    d <-> dd;
+    rd = streams.Reader.make(0xFFFFFFFFFFFFFFFFusize);
+    result
   }
-
-  // The input bytes the last run used, the output bytes it made, and whether it ended well
-  pub fn totalIn(self: &) u64 { used }
-  pub fn totalOut(self: &) u64 { produced }
-  pub fn isDone(self: &) bool { done }
 }
 
 // Decompress a Brotli stream (RFC 7932) held in memory. 'expected' is a size hint: the output size if known

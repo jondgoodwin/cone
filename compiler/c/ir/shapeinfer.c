@@ -607,6 +607,13 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont);
 // element owned is freed: a borrow into a String element's bytes dangles), or when
 // it moves an element out of the storage. Writing an element in place, and moving
 // elements about within the storage (a swap, a sort), end none and move none out.
+// The same two tests count in SiModeStorage, which decides what type changes shape at all
+// (row 353): a type none of whose functions finalized or moved out an element was never
+// marked, so no borrow into it was held to the check ('r.items.clear()' while a view
+// into an element's bytes is held)
+static int siElementMode(SiCtx *c) {
+    return c->mode == SiModeField || c->mode == SiModeStorage;
+}
 
 // Which of the compiler's declared intrinsics (mem.finalize, mem.readRaw, ...) a
 // function is, or -1; its type argument comes back too
@@ -808,7 +815,7 @@ static void siCall(FnCallNode *call, SiCtx *c) {
         c->hit = 1;
         return;
     }
-    if (c->mode == SiModeField && siElementCall(call, callee, c) && c->hit)
+    if (siElementMode(c) && siElementCall(call, callee, c) && c->hit)
         return;
     int intrinsic = callee && ((callee->dclinfo.facts & DclIntrinsic) || (callee->value && callee->value->tag == IntrinsicTag));
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
@@ -878,7 +885,7 @@ static int siWalkNode(INode *node, void *vc) {
             c->hit = 1;
         break;
     case VarDclTag:
-        if (c->mode == SiModeField && ((VarDclNode *)node)->value)
+        if (siElementMode(c) && ((VarDclNode *)node)->value)
             siHoldElement((VarDclNode *)node, ((VarDclNode *)node)->value, c);
         if (notes)
             siNote((VarDclNode *)node, ((VarDclNode *)node)->value, c);
