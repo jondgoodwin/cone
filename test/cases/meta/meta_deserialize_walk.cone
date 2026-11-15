@@ -74,6 +74,17 @@ struct Script is Deserializer {
     out <- self.texts[at].view();
     Ok[void, DataError](nil)
   }
+  pub fn matchField(self: &mut, names: &<FieldNames) Result[usize, DataError] {
+    if self.kind() != 2 { return Err[usize, DataError](DataError.mismatch("expected a name")); }
+    let at = self.pos; self.pos = self.pos + 1usize;
+    let n = names.count();
+    var i = 0usize;
+    while i < n {
+      if self.texts[at].view() == names.at(i) { return Ok[usize, DataError](i); }
+      i = i + 1usize;
+    }
+    Ok[usize, DataError](n)
+  }
   pub fn readBytes(self: &mut) Result[&Array[u8], DataError] { Err[&Array[u8], DataError](DataError.custom("no bytes")) }
   pub fn readNone(self: &mut) Result[bool, DataError] {
     if self.kind() == 7 { self.pos = self.pos + 1usize; return Ok[bool, DataError](true); }
@@ -114,8 +125,9 @@ struct Small { pub k: i8; }
 struct Tag is Deserialize[Tag] {
   pub id: i32;
   pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[Tag, DataError] {
-    match d.readText() {
-      case let Ok(t) { Ok[Tag, DataError](Tag(if t == "t" { 7 } else { 0 })) }
+    var t = String(r);
+    match d.readTextInto(&uni t.textOut()) {
+      case is Ok { Ok[Tag, DataError](Tag(if t.view() == "t" { 7 } else { 0 })) }
       case let Err(e) { Err[Tag, DataError](e) }
     }
   }

@@ -5501,6 +5501,26 @@ pub trait Serializer {
   pub fn endVariant(self: &mut);
 }
 
+// The member names of a record, in order, for 'Deserializer.matchField'. A list cannot be written for a
+// generic T ('#each' makes statements and named arguments, not list elements), so the walk lends 'FieldNamesOf[T]'
+// and the reader asks for each name by position. Every name is a literal.
+pub trait FieldNames {
+  pub fn count(self: &) usize;
+  pub fn at(self: &, i: usize) &'static str;
+}
+
+pub struct FieldNamesOf[T] is FieldNames {
+  pub fn count(self: &) usize { dataFieldCount[T]() }
+  pub fn at(self: &, i: usize) &'static str {
+    var k = 0usize;
+    #each #f in #fields(T) {
+      if k == i { return #f.name; }
+      k = k + 1usize;
+    }
+    ""
+  }
+}
+
 // A format's reading side, asked by the type being read: the walk asks for what the
 // type is, and a positional format answers 'FieldKey.Index'. 'readText' answers a view
 // into the format's own buffer, good until the next call: the caller copies it out
@@ -5517,6 +5537,10 @@ pub trait Deserializer {
   // builds a String uses this and not readText. Each reader writes it (a default over readText is refused:
   // its Err arm would carry the Ok arm's borrow of the reader, row 333).
   pub fn readTextInto(self: &mut, out: &uni TextOut) Result[void, DataError];
+  // The key 'nextField' announced as a Name is consumed and compared with 'names' inside the reader: the
+  // index of the one that matches, or 'names.count()' for none (the caller then skips the member's value). A key
+  // that is not text keeps the reader's own error. Nothing is copied and no view of the key escapes.
+  pub fn matchField(self: &mut, names: &<FieldNames) Result[usize, DataError];
   pub fn readBytes(self: &mut) Result[&Array[u8], DataError];
   // true: the value was the none, now consumed; false: a value is there, unread
   pub fn readNone(self: &mut) Result[bool, DataError];
@@ -5645,25 +5669,17 @@ pub fn deserializeValue[T](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) 
       match d.nextField()? {
         case is End { more = false; }
         case is Name {
-          // find the member first, so the name's view is dead before the value is read
-          // This is load-bearing until row 335 lands: the compiler does not tie the &str from readText to the
-          // deserializer across a later call (a deserializer that reshapes its own buffer, as an appending skip
-          // would, could leave it dangling), so the name is compared here, before any other deserializer call.
-          var which = 0usize;
-          {
-            let k = d.readText()?;
-            var i = 1usize;
-            #each #f in #fields(T) {
-              if which == 0usize && k == #f.name { which = i; }
-              i = i + 1usize;
-            }
-          }
-          var i = 1usize;
+          // The deserializer compares the key with the member names where the key's bytes are: no copy, no
+          // view of the key escapes, and a bad key keeps its own syntax error and offset. An unknown key
+          // answers the count, and its value is skipped.
+          let fieldNames = FieldNamesOf[T]();
+          let which = d.matchField(&fieldNames)?;
+          var i = 0usize;
           #each #f in #fields(T) {
             if which == i { p.#f = Some[#f.type](dataField[#f.type](d, r, #f.name)?); }
             i = i + 1usize;
           }
-          if which == 0usize { d.skipValue()?; }
+          if which == dataFieldCount[T]() { d.skipValue()?; }
         }
         case let Index(at) {
           var i = 0usize;
