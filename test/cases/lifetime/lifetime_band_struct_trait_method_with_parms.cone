@@ -1,0 +1,58 @@
+// A struct declaring a lifetime implements a trait whose methods take a
+// parameter besides 'self': an 'i32', a '&i32' and a '&str', each also called
+// through a virtual reference to the trait on the struct. The same methods on
+// a struct with no lifetime meet the same trait.
+//
+// Verdict: accept; prints 8, 5, 3, 3, 14.
+// Basis: a requirement's receiver is the implementor, so what a call may
+// store through it is read from the implementor's receiver, which holds the
+// struct's lifetime, as the lifetimes of a trait's 'Self' are not; neither the
+// requirement nor the method stores its parameter, so they promise alike.
+// Master 7362a9f1: refused, ErrorInvType (1013) at the struct, for any method
+// with a parameter besides the receiver.
+
+mod lifetime_band_struct_trait_method_with_parms;
+
+import stdio use *;
+
+trait Tk {
+  pub fn num(self: &mut, k: i32) i32;
+  pub fn byref(self: &mut, k: &i32) i32;
+  pub fn text(self: &mut, name: &str) i32;
+}
+
+struct Plain is Tk {
+  pub n: i32;
+  pub fn num(self: &mut, k: i32) i32 { self.n + k }
+  pub fn byref(self: &mut, k: &i32) i32 { self.n + *k }
+  pub fn text(self: &mut, name: &str) i32 { self.n }
+}
+
+struct B['a] is Tk {
+  pub t: &'a Array[u8];
+  pub n: i32;
+  pub fn num(self: &mut, k: i32) i32 { self.n + k }
+  pub fn byref(self: &mut, k: &i32) i32 { self.n + *k }
+  pub fn text(self: &mut, name: &str) i32 { self.n }
+}
+
+fn viaTrait(t: &<mut Tk) i32 {
+  let k = 2;
+  t.num(3) + t.byref(&k) + t.text("abc")
+}
+
+fn main() {
+  let bytes: Array[u8, 2] = [1u8, 2u8];
+  var b = B(&[]bytes, 3);
+  var p = Plain(3);
+  printInt(b.num(5));
+  printStr("\n");
+  printInt(b.byref(&2));
+  printStr("\n");
+  printInt(b.text("abc"));
+  printStr("\n");
+  printInt(p.text("xyz"));
+  printStr("\n");
+  printInt(viaTrait(&mut b));
+  printStr("\n");
+}
