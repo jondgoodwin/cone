@@ -1262,20 +1262,28 @@ fn copyBits(c: &String, mode: u32) i32 {
 // 'walk' and 'copyFile': 'to' is made (its folder must exist; an existing 'to',
 // of any kind, is refused, AlreadyExists), every folder below 'from' is made
 // below it, and every file copied with its permission bits. Folders are made
-// with the default mode. On POSIX a symbolic link is copied as a link with the
-// same text, never followed, so a link loop cannot recurse and a dangling link
-// copies. 'walk' reports a link on Windows (a symbolic link, a directory
-// junction, a cloud placeholder) as a link and does not go into it; recreating
-// one needs the reparse data, which this package does not read, so there a
-// link is an error (EINVAL) naming it, as is anything that is neither folder,
-// file nor link (a device, a pipe). The first failure stops the copy and names
-// its path; what was copied before it stays.
+// with the default mode (a folder's permission bits are not copied). On POSIX a
+// symbolic link is copied as a link with the same text, never followed, so a
+// link loop cannot recurse and a dangling link copies. On Windows 'walk' reports
+// every reparse point as a link and does not go into it; copyDir reads the
+// reparse tag: a symbolic link or a directory junction stops the copy with an
+// error (EINVAL) naming it, since recreating one needs its reparse data, which
+// this package does not read; any other tag (OneDrive's cloud placeholders
+// above all) is an ordinary file or folder and is copied by reading it. Anything
+// that is neither folder, file nor link (a device, a pipe) is EINVAL too. The
+// first failure stops the copy and names its path; what was copied before it
+// stays.
 pub fn copyDir(from: &Path, to: &Path) Result[void, FsError] {
   if hasNul(from) || hasNul(to) { return fail[void]("copyDir", from, posix.EINVAL); }
   useUtf8();
   let kind = kindOf(from);
   if kind != posix.S_IFDIR { return fail[void]("copyDir", from, if kind == 0u16 {posix.ENOENT} else {posix.ENOTDIR}); }
   if linkKindOf(to) != 0u16 { return fail[void]("copyDir", to, posix.EEXIST); }
+  copyTree(from, to)
+}
+
+// 'copyDir' once 'from' is a folder and 'to' is free
+fn copyTree(from: &Path, to: &Path) Result[void, FsError] {
   match walk(from) {
     case var Err(e) {
       e.op = String.from("copyDir");
@@ -1316,8 +1324,47 @@ pub fn copyDir(from: &Path, to: &Path) Result[void, FsError] {
 fn copyEntry(entry: &DirEntry, dest: &Path) Result[void, FsError] {
   if entry.isDir { return makeDir(dest); }
   if entry.isFile { return copyFile(&entry.path, dest); }
-  if entry.isLink { return copyLink(&entry.path, dest); }
+  if entry.isLink {
+    #if #os == .windows {
+      let tag = reparseTag(&entry.path);
+      if tag == tagSymlink || tag == tagMountPoint { return fail[void]("copyDir", &entry.path, posix.EINVAL); }
+      // Another reparse point (a cloud placeholder) reads as what it stands for
+      if isDir(&entry.path) { return copyTree(&entry.path, dest); }
+      if isFile(&entry.path) { return copyFile(&entry.path, dest); }
+      return fail[void]("copyDir", &entry.path, posix.EINVAL);
+    } #else {
+      return copyLink(&entry.path, dest);
+    }
+  }
   fail[void]("copyDir", &entry.path, posix.EINVAL)
+}
+
+extern {
+  fn @c(system) FindFirstFileW(name: *u16, data: *u8) usize;
+  fn @c(system) FindClose(h: usize) i32;
+}
+
+const tagSymlink = 0xA000000Cu32;     // IO_REPARSE_TAG_SYMLINK
+const tagMountPoint = 0xA0000003u32;  // IO_REPARSE_TAG_MOUNT_POINT: a junction
+
+// A reparse point's tag, WIN32_FIND_DATAW's dwReserved0 (at byte 36 of its 592),
+// or 0 where it cannot be read (Windows)
+fn reparseTag(path: &Path) u32 {
+  var c = cText(path);
+  let n = MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, null, 0i32);
+  if n <= 0i32 { return 0u32; }
+  let wide = libc.malloc(usize.from(n) * 2usize) as *u16;
+  MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, wide, n);
+  let data = libc.malloc(592usize);
+  let h = FindFirstFileW(wide, data);
+  libc.free(wide as *u8);
+  var tag = 0u32;
+  if h != invalidHandle {
+    tag = *((data as usize + 36usize) as *u32);
+    FindClose(h);
+  }
+  libc.free(data);
+  tag
 }
 
 extern {
@@ -1727,7 +1774,8 @@ pub struct TempFile is Move {
 
 // Make a new, empty file, named as 'tempDir' names its folder, in the system's
 // temporary folder, made only if no file by that name is there (so two calls
-// never share one), open for reading and writing.
+// never share one), open for reading and writing. The file's mode is 0600 on
+// POSIX; Windows ignores the mode (the file is simply writable).
 pub fn tempFile() Result[TempFile, FsError] {
   let base = tempBase();
   var tries = 0i32;

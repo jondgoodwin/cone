@@ -155,8 +155,100 @@ fn copying() {
   }
 }
 
+// Windows: a link to a folder (a junction, 'mklink /J', which needs no
+// administrator) or, with 'file' set, a symbolic link to a file ('mklink', which
+// Windows allows only to an administrator or with developer mode on)
+fn mklink(link: &Path, target: &Path, file: bool) bool {
+  #if #os == .windows {
+    var paths = String.from(link.view());
+    paths.append("\" \"");
+    paths.append(target.view());
+    paths.replaceByte('/', '\\');
+    var command = String.from(if file {"mklink \""} else {"mklink /J \""});
+    command.append(paths.view());
+    command.append("\" >nul 2>nul");
+    libc.system(command.cstr()) == 0i32
+  } #else {
+    false
+  }
+}
+
+// Windows: a junction (and a symbolic link, where this account may make one)
+// stops copyDir with an error naming it; what came before it in the listing
+// stays and what came after is not made.
+// POSIX: a file nobody may read (chmod 000) stops the copy at that file, which
+// the error names; what sorted before it stays and what sorted after is not
+// made. Skipped for root, which reads any file, so there is nothing to fail on.
+fn failing() {
+  match fs.tempDir() {
+    case let Err(e) { expect(false, "tempDir makes a folder"); }
+    case let Ok(t) {
+      let dir = t.path();
+      let src = dir.join("src");
+      expect(fs.makeDirAll(&src) is Ok, "make the tree");
+      expect(fs.writeFile(&src.join("a.txt"), "before") is Ok, "write a file that sorts first");
+      #if #os == .windows {
+        let target = dir.join("target");
+        expect(fs.makeDirAll(&target) is Ok, "make a junction's target");
+        let junction = src.join("b-junction");
+        expect(mklink(&junction, &target, false), "made a junction");
+        expect(fs.writeFile(&src.join("c.txt"), "after") is Ok, "write a file that sorts last");
+        let dst = dir.join("dst");
+        match fs.copyDir(&src, &dst) {
+          case let Err(e) {
+            expect(e.path.view() == junction.view(), "a junction stops the copy, naming it");
+            expect(e.op.view() == "copyDir", "as copyDir's error");
+          }
+          case is Ok { expect(false, "a junction fails the copy"); }
+        }
+        expect(bytesOf(&dst.join("a.txt")).view() == "before", "what came before it stays");
+        expect(!fs.exists(&dst.join("c.txt")), "what came after is not made");
+        // A symbolic link, when this account may make one
+        let linked = dir.join("linked");
+        expect(fs.makeDirAll(&linked) is Ok, "make a second tree");
+        expect(fs.writeFile(&linked.join("f.txt"), "f") is Ok, "write in it");
+        let sym = linked.join("sym");
+        if mklink(&sym, &linked.join("f.txt"), true) {
+          match fs.copyDir(&linked, &dir.join("dst2")) {
+            case let Err(e) { expect(e.path.view() == sym.view(), "a symbolic link stops the copy, naming it"); }
+            case is Ok { expect(false, "a symbolic link fails the copy"); }
+          }
+        } else {
+          // No right to make one here (needs an administrator or developer mode): not tested
+          expect(true, "symbolic link refusal skipped: this account may not make one");
+        }
+      } #else {
+        let locked = src.join("locked");
+        expect(fs.writeFile(&locked, "secret") is Ok, "write the file to lock");
+        expect(fs.writeFile(&src.join("z.txt"), "after") is Ok, "write a file that sorts last");
+        expect(fs.chmod(&locked, 0u32) is Ok, "chmod 000");
+        // Root reads it anyway: then there is no failure to test
+        if fs.open(&locked) is Err {
+          let dst = dir.join("dst");
+          match fs.copyDir(&src, &dst) {
+            case let Err(e) {
+              expect(e.path.view() == locked.view(), "the error names the unreadable file");
+              expect(e.op.view() == "copyDir", "as copyDir's error");
+            }
+            case is Ok { expect(false, "an unreadable file fails the copy"); }
+          }
+          expect(bytesOf(&dst.join("a.txt")).view() == "before", "what was copied before it stays");
+          expect(!fs.exists(&dst.join("z.txt")), "what sorts after it is not made");
+        } else {
+          // Running as root: nothing fails, so there is nothing to test (the checks are counted so the output is the same)
+          expect(true, "skipped as root: the error names the unreadable file");
+          expect(true, "skipped as root: copyDir's error");
+          expect(true, "skipped as root: what was copied before it stays");
+          expect(true, "skipped as root: what sorts after it is not made");
+        }
+      }
+    }
+  }
+}
+
 fn main() i32 {
   tempFiles();
   copying();
+  failing();
   done()
 }
