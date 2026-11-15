@@ -42,7 +42,7 @@
 // SYNTAX. Rust's: literals; '.'; classes '[a-z0-9_]', '[^x]', nested classes and
 // the operators '&&', '--' and '~~' inside them; the POSIX names '[[:alpha:]]'; the
 // escapes '\n \t \r \f \v \a \xHH \x{H..} \uHHHH \u{H..} \UHHHHHHHH' and an escaped
-// punctuation mark; '\d \s \w \D \S \W \b \B' in ASCII mode (below); '^ $ \A \z';
+// punctuation mark; '\d \s \w \D \S \W \b \B' (Unicode, or ASCII with '(?-u)'; below); '^ $ \A \z';
 // '* + ? {n} {n,} {n,m}' and their lazy forms with a '?' after; groups '(..)',
 // '(?:..)', '(?P<name>..)', '(?<name>..)'; flags '(?imsxU)', '(?i:..)', '(?-u)'. A
 // pattern's text is a '&str'. Matching is leftmost-first: of the matches that begin
@@ -50,12 +50,19 @@
 // alternative that can match and, for a repetition, the most (or with a '?', the
 // fewest) copies that can.
 //
-// UNICODE. Rust's classes are Unicode by default: '\w' is every letter of every
-// script. That needs range tables this package does not have yet (they come from the
-// Unicode work). Until then nothing silently means less than Rust's meaning:
-// - A bare '\d \s \w \b' (and their capitals), '\p{..}', and '(?i)' on a letter in
-//   Unicode mode are refused with ErrorKind.Unsupported, and the reason names the
-//   way round: '(?-u:\w)' for ASCII, or a class such as '[0-9]'.
+// UNICODE. Rust's classes are Unicode by default, and so are these: '\d' is general
+// category Nd, '\s' is White_Space, '\w' is Alphabetic, M (marks), Nd, Pc and
+// Join_Control (UTS #18 Annex C), '\D \S \W' their complements, and '\b' and '\B' are
+// the edges of a run of '\w' characters. The sets come from the unicode package's class
+// table (unicode.classRanges) and a class is compiled to UTF-8 byte ranges
+// like any other, so the lazy DFA runs them. One exception: a pattern with a Unicode '\b'
+// or '\B' is run by the DFA only over ASCII; at the first byte past ASCII the DFA gives
+// the search to the Pike VM (as Rust's regex-automata does), since whether a position is
+// a word boundary depends on the whole character on either side. Nothing silently means
+// less than Rust's meaning:
+// - '\p{..}' and '(?i)' on a letter in Unicode mode are refused with
+//   ErrorKind.Unsupported (they need the general-category and case-folding tables as
+//   class sets).
 // - '(?-u)' turns Unicode mode off, and is accepted: then '\d \s \w \b' are ASCII
 //   and '(?i)' folds ASCII letters only. A pattern for text (Regex.parse) may not
 //   then match bytes past ASCII on their own: '(?-u).' and '(?-u)[^a]' are refused,
@@ -80,12 +87,14 @@
 // and a program at most 200000 states (the error is ErrorKind.TooBig).
 //
 // METHOD CHOICES. Left out for now, each to come as its own step: literal prefilters beyond a pattern's own leading literal (which is scanned for
-// with a plain loop), a reusable cache, a closure form of 'replaceAll', and
-// Unicode classes.
+// with a plain loop), a reusable cache, a closure form of 'replaceAll', '\p{..}' named
+// properties (they need the general-category and script tables as class sets) and Unicode
+// case-insensitive matching.
 
 mod regex;
 
 import collections use String, List, Dict;
+import unicode;
 
 // -------- failure --------
 

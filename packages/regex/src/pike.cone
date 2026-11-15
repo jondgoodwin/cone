@@ -373,11 +373,38 @@ fn holds(kind: u32, text: &Array[u8], at: usize) bool {
   else if kind == lkEndText { at == text.len }
   else if kind == lkStartLine { at == 0 || text[at - 1] == '\n' }
   else if kind == lkEndLine { at == text.len || text[at] == '\n' }
-  else {
+  else if kind == lkWord || kind == lkNotWord {
     let before = at > 0 && isWordAt(text, at - 1);
     let after = isWordAt(text, at);
     if kind == lkWord { before != after } else { before == after }
   }
+  else {
+    let before = wordCharBefore(text, at);
+    let after = wordCharAt(text, at);
+    if kind == lkWordU { before != after } else { before == after }
+  }
+}
+
+// Whether the character that begins at 'at' is a Unicode word character; a byte that does
+// not begin a whole UTF-8 character (text from parseBytes) is not
+fn wordCharAt(text: &Array[u8], at: usize) bool {
+  if at >= text.len { return false; }
+  let b = text[at];
+  if b < 0x80u8 { return isWordByte(b); }
+  let d = decodeUtf8(text, at);
+  d.width != 0 && unicode.isWordChar(char.from(d.cp))
+}
+
+// The same for the character that ends just before 'at'
+fn wordCharBefore(text: &Array[u8], at: usize) bool {
+  if at == 0 { return false; }
+  var j = at - 1;
+  let b = text[j];
+  if b < 0x80u8 { return isWordByte(b); }
+  var k = 0usize;
+  while k < 3 && j > 0 && (text[j] & 0xC0u8) == 0x80u8 { j = j - 1; k = k + 1; }
+  let d = decodeUtf8(text, j);
+  d.width != 0 && j + d.width == at && unicode.isWordChar(char.from(d.cp))
 }
 
 // Where the bytes of prefix next occur at or after from, or noPos

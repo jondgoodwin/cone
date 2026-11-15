@@ -145,6 +145,12 @@ fn pattern_of(row: &str) -> &'static str {
         "(?-u)(GET|POST|PUT) /(\\w+)\\?x=(\\d+)"
     } else if row.starts_with("p5") {
         P5
+    } else if row.starts_with("u1") {
+        "\\w+ing\\b"
+    } else if row.starts_with("u2") {
+        "\\w+ing"
+    } else if row.starts_with("u3") {
+        "\\d{4}-\\d{2}-\\d{2}"
     } else {
         "(?-u)\\w+ing\\b"
     }
@@ -251,11 +257,15 @@ pub fn run(args: &[String]) {
     let side = args[0].as_str();
     let row = args[1].as_str();
     let (us, count, sum);
-    if row == "compile" {
-        let pats: Vec<&str> = (1..=6).map(|p| pattern_of(["p1", "p2", "p3", "p4", "p5", "p6"][p - 1])).collect();
+    if row == "compile" || row == "ucompile" {
+        let pats: Vec<&str> = if row == "compile" {
+            (1..=6).map(|p| pattern_of(["p1", "p2", "p3", "p4", "p5", "p6"][p - 1])).collect()
+        } else {
+            ["u1", "u2", "u3"].iter().map(|r| pattern_of(r)).collect()
+        };
         let t0 = Instant::now();
         let mut n = 0u64;
-        for _ in 0..1000 {
+        for _ in 0..(if row == "compile" { 1000 } else { 100 }) {
             for p in &pats {
                 if side == "a" {
                     n += Regex::new(p).unwrap().captures_len() as u64;
@@ -284,7 +294,7 @@ pub fn run(args: &[String]) {
     } else {
         let (text, reps) = if row.starts_with("p5") {
             (dict_corpus(), 10)
-        } else if row.starts_with("p6") {
+        } else if row.starts_with("p6") || row.starts_with("u1") || row.starts_with("u2") {
             (text_corpus(), 1)
         } else {
             (log_corpus(), 1)
