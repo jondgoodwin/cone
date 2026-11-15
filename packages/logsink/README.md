@@ -17,5 +17,5 @@ output line by line.
 
 ## Not here
 
-Rotation, colour, another stream than standard output. (`installFile(path, max)` is the file sink: see the source's
+Rotation by time, colour, another stream than standard output. (`installFile(path, max)` is the file sink, `installRotatingFile(path, max, maxBytes, keep)` rotates it by size: see the source's
 header comment, "THE FILE SINK".) It also imports `fs`, `path`, `posix` and `sync`.

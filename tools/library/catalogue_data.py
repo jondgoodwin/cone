@@ -238,7 +238,7 @@ DOMAINS = [
   ("Testing and observing", [
    ("testing", "Checks for a package's tests, run by congo test."),
    ("trace", "The facade every package logs and traces through: kinds of event declared once, emitted through macros."),
-   ("logsink", "A console sink for trace: events written as one text line on standard output."),
+   ("logsink", "A sink for trace: events written as one text line on standard output or to a file, rotated by size."),
    ("actortrace", "Tracing the actors runtime, a first round: three ways of recording the same events."),
   ]),
   ("The compiler's own libraries", [
