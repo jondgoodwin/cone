@@ -1972,13 +1972,9 @@ static int skAsk(StructNode *impl, StructNode *trait, char *why, size_t size, in
     }
     // A type of a package whose include file is read here: the file left the bodies
     // out, and says what the package's own compile found of them (shapeKeepRecordable)
-    if (siIsRecorded(impl) && structDeclaresTrait(impl, shapeKeepingTrait))
-        return ShapeKeepsYes;
-    FnDclNode *meths[24];
-    int nmeths = skMethods(impl, trait, meths, 24);
-    int pending = 0;
     // A method of the trait that returns a borrow carried from its receiver
     int lends = 0;
+    const char *lender = NULL;
     INode **tnodesp;
     uint32_t tcnt;
     for (nodelistFor(&trait->nodelist, tcnt, tnodesp)) {
@@ -1988,8 +1984,26 @@ static int skAsk(StructNode *impl, StructNode *trait, char *why, size_t size, in
         if (tsig && tsig->tag == FnSigTag && tsig->parms->used > 0 && tsig->rettype
                 && ((VarDclNode *)nodesGet(tsig->parms, 0))->namesym == selfName
                 && itypeCarriesEndingBorrow(tsig->rettype))
+        {
             lends = 1;
+            lender = (const char *)&((FnDclNode *)*tnodesp)->namesym->namestr;
+        }
     }
+    // The file recorded ShapeKeeping from the methods read without the trait's lends: a type it also
+    // records as shape-changing (a method writes storage it owns, one lends a borrow of it) is refused
+    // here where the package's own compile refuses it (skOwnShared, below)
+    if (siIsRecorded(impl) && structDeclaresTrait(impl, shapeKeepingTrait)) {
+        if (lends && impl->lends == LendsShapeChanging) {
+            if (why)
+                snprintf(why, size, "%s is a type of a package whose include file records it as `ShapeChanging` (a method of it reshapes storage it owns, which a borrow it lends points into), and `%s` of `%s` lends a borrow from its `self`, so a call through it could reshape what the caller holds a borrow into",
+                    &impl->namesym->namestr, lender, &trait->namesym->namestr);
+            return ShapeKeepsNo;
+        }
+        return ShapeKeepsYes;
+    }
+    FnDclNode *meths[24];
+    int nmeths = skMethods(impl, trait, meths, 24);
+    int pending = 0;
     int savedshared = skOwnShared;
     skOwnShared = lends;
     int refused = 0;
@@ -2024,6 +2038,11 @@ int shapeKeepRecordable(StructNode *st) {
         if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld) || structIsWholeEnumMethod(*nodesp))
             continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
+        // The drop the compiler gives a type that owns something (a String field) is no method a
+        // trait dispatches to, and its body is not checked here: a value's own death frees its
+        // storage and no borrow of it outlives that (as the flow check treats it)
+        if (meth->namesym == typeDropName)
+            continue;
         if (meth->genericinfo || meth->where || (meth->flags & FlagInline) || inodeIsPrivate((INode *)meth)
             || meth->vtype == NULL || meth->vtype->tag != FnSigTag)
             continue;

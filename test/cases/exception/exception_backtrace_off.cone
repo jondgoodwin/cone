@@ -1,0 +1,39 @@
+// With CONE_BACKTRACE set to '0', a panic writes its line and no backtrace:
+// stderr is what it was before the switch existed.
+mod exception_backtrace_off;
+
+import stdio use *;
+
+#if #os == .windows {
+extern fn @c _putenv(setting: *u8) i32;
+} #else {
+extern fn @c putenv(setting: *u8) i32;
+}
+
+fn switchOn(setting: &Array[u8, 17]) {
+  #if #os == .windows {
+    _putenv(&setting[0usize] as *u8);
+  } #else {
+    putenv(&setting[0usize] as *u8);
+  }
+}
+
+fn third(n: i32) i32 {
+  if n > 0 { panic("three calls down"); }
+  n + 1
+}
+
+fn second(n: i32) i32 { third(n) + 1 }
+
+fn first(n: i32) i32 { second(n) + 1 }
+
+fn main() {
+  var setting = Array[u8, 17]() <- fill 0u8;
+  let text = "CONE_BACKTRACE=0";
+  let bytes: &Array[u8] = text;
+  var i = 0usize;
+  while i < bytes.len { setting[i] = bytes[i]; i = i + 1usize; }
+  switchOn(&setting);
+  printStr("before\n");
+  printInt(i64.from(first(1i32)));
+}
