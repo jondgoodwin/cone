@@ -475,7 +475,19 @@ static int siWriteHits(INode *lval, SiCtx *c) {
         }
         return 0;
     }
-    if (!siRooted(lval, c))
+    // An element of a collection the parameter's pointee holds, replaced through the collection's
+    // index method ('r.items[0] = s', a store over what the call lent): the old element is
+    // finalized in place, freeing what it owned, so it writes storage as a field would
+    // (asked of the storage mode only: siTypeHoldsStorage below keeps a scalar element free)
+    INode *place = lval;
+    if (c->mode == SiModeStorage) {
+        INode *under = place->tag == DerefTag ? ((StarNode *)place)->vtexp : NULL;
+        while (under && under->tag == CastTag && !(under->flags & FlagConvert))
+            under = ((CastNode *)under)->exp;
+        if (under && under->tag == FnCallTag && ((FnCallNode *)under)->args && ((FnCallNode *)under)->args->used > 0)
+            place = nodesGet(((FnCallNode *)under)->args, 0);
+    }
+    if (!siRooted(place, c))
         return 0;
     // Asked of an enum (a method taking it by reference): only storing over the whole
     // value reshapes it. A common field, or a field of a variant, is written within the

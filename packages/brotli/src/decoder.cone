@@ -1,0 +1,725 @@
+// ======== The decoder: RFC 7932 over a whole buffer ========
+//
+// A 'Dec' holds one stream's state while it is decoded from the first bit to the last. The input is complete, so
+// the decoder reads straight through: each meta-block's header, then its commands. Bits past the end of the input
+// read as zeros, and the decoder asks 'overrun' after every unit it reads (a header part, a command), so a cut
+// stream is refused as Truncated and never spins on the zeros.
+
+const ErrNone = 0u32;
+const ErrHeader = 1u32;
+const ErrTable = 2u32;
+const ErrCommand = 3u32;
+const ErrDistance = 4u32;
+const ErrTransform = 5u32;
+const ErrTruncated = 6u32;
+const ErrTooLarge = 7u32;
+const ErrWindow = 8u32;
+const ErrLargeWindow = 9u32;
+
+// Block-switching state of one block category (literals, insert-and-copy commands, distances; section 6)
+struct Cat is Default {
+  // The number of block types, the current and the previous type, the count of symbols left in this block
+  n: u32;
+  cur: u32;
+  prev: u32;
+  left: u32;
+  // The codes for block types and for block counts
+  typeBase: usize;
+  cntBase: usize;
+
+  // A category with one block type, whose only block never ends
+  fn single(self: &mut) {
+    n = 1u32;
+    cur = 0u32;
+    prev = 1u32;
+    left = 16777216u32;
+  }
+
+  // The next block: its type, then its count
+  fn next(self: &mut, bi: &mut BitIn, tab: &Array[u32]) {
+    let s = readSym(bi, tab, typeBase);
+    var t = if s == 0usize {prev} else if s == 1usize {cur + 1u32} else {u32.from(s) - 2u32};
+    if t >= n { t = t - n; }
+    prev = cur;
+    cur = t;
+    left = readBlockCount(bi, tab, cntBase);
+  }
+}
+
+fn readBlockCount(bi: &mut BitIn, tab: &Array[u32], base: usize) u32 {
+  let s = readSym(bi, tab, base);
+  blockLenBase[s] + bi.getBits(u32.from(blockLenBits[s]))
+}
+
+// The context of a literal from the two bytes before it (section 7.1)
+fn literalContext(mode: u8, p1: u8, p2: u8) usize {
+  if mode == 0u8 { return usize.from(p1 & 63u8); }
+  if mode == 1u8 { return usize.from(p1 >> 2u8); }
+  if mode == 2u8 { return usize.from(lut0[usize.from(p1)] | lut1[usize.from(p2)]); }
+  usize.from((lut2[usize.from(p1)] << 3u8) | lut2[usize.from(p2)])
+}
+
+// The dictionary string of words of one length
+fn dictChunk(n: usize) &'static str {
+  if n == 4usize { return dict4; }
+  if n == 5usize { return dict5; }
+  if n == 6usize { return dict6; }
+  if n == 7usize { return dict7; }
+  if n == 8usize { return dict8; }
+  if n == 9usize { return dict9; }
+  if n == 10usize { return dict10; }
+  if n == 11usize { return dict11; }
+  if n == 12usize { return dict12; }
+  if n == 13usize { return dict13; }
+  if n == 14usize { return dict14; }
+  if n == 15usize { return dict15; }
+  if n == 16usize { return dict16; }
+  if n == 17usize { return dict17; }
+  if n == 18usize { return dict18; }
+  if n == 19usize { return dict19; }
+  if n == 20usize { return dict20; }
+  if n == 21usize { return dict21; }
+  if n == 22usize { return dict22; }
+  if n == 23usize { return dict23; }
+  dict24
+}
+
+struct Dec is Default {
+  bi: BitIn;
+  out: List[u8];
+  tab: List[u32];
+  bld: Builder;
+  lens: List[u8];
+  clens: List[u8];
+  syms: List[u32];
+  // The output allowed, the largest window the caller accepts and the stream's own
+  limit: usize;
+  maxWbits: u32;
+  window: usize;
+  // The last four distances, the last first
+  r0: usize;
+  r1: usize;
+  r2: usize;
+  r3: usize;
+  // The first failure
+  errCode: u32;
+  errAt: usize;
+  errReason: String;
+  // The dictionary as one list, built when the first word is wanted; where each length's words start in it
+  dict: List[u8];
+  dictOff: List[usize];
+  // The meta-block in hand
+  cl: Cat;
+  ci: Cat;
+  cd: Cat;
+  modes: List[u8];
+  cmapL: List[u32];
+  cmapD: List[u32];
+  cmdBase: List[u32];
+  cmap: List[u8];
+  npostfix: u32;
+  ndirect: u32;
+
+  fn fail(self: &mut, code: u32, reason: &str) {
+    if errCode == ErrNone {
+      // Whatever looked wrong after bits were taken past the end of the input may be the zeros' doing
+      errCode = if bi.overrun() {ErrTruncated} else {code};
+      errAt = bi.taken() / 8usize;
+      if errAt > bi.inp.len() { errAt = bi.inp.len(); }
+      errReason = String.from(reason);
+    }
+  }
+
+  // The next block-type or tree-count number of a meta-block header (section 9.2): 1 to 256
+  fn varLen(self: &mut) u32 {
+    if bi.getBits(1u32) == 0u32 { return 1u32; }
+    let n = bi.getBits(3u32);
+    if n == 0u32 { return 2u32; }
+    let x = bi.getBits(n);
+    (1u32 << n) + 1u32 + x
+  }
+
+  // Reads a prefix code over 'alphabet' symbols (section 3) into the tables; answers its base, or NoTable after
+  // a failure
+  fn readPrefix(self: &mut, alphabet: usize) usize {
+    let hskip = bi.getBits(2u32);
+    lens.clear();
+    lens.resize(alphabet, 0u8);
+    if hskip == 1u32 {
+      let nsym = usize.from(bi.getBits(2u32)) + 1usize;
+      var maxBits = 0u32;
+      var t = alphabet - 1usize;
+      while t > 0usize {
+        maxBits = maxBits + 1u32;
+        t = t >> 1usize;
+      }
+      syms.clear();
+      var i = 0usize;
+      while i < nsym {
+        let v = bi.getBits(maxBits);
+        if usize.from(v) >= alphabet || syms.contains(&v) {
+          self.fail(ErrTable, "a simple prefix code names a symbol twice or outside its alphabet");
+          return NoTable;
+        }
+        syms.push(v);
+        i = i + 1usize;
+      }
+      var tsel = 0u32;
+      if nsym == 4usize { tsel = bi.getBits(1u32); }
+      if nsym == 1usize {
+        lens.set(usize.from(*syms[0usize]), 1u8);
+      } else if nsym == 2usize {
+        lens.set(usize.from(*syms[0usize]), 1u8);
+        lens.set(usize.from(*syms[1usize]), 1u8);
+      } else if nsym == 3usize {
+        lens.set(usize.from(*syms[0usize]), 1u8);
+        lens.set(usize.from(*syms[1usize]), 2u8);
+        lens.set(usize.from(*syms[2usize]), 2u8);
+      } else if tsel == 0u32 {
+        i = 0usize;
+        while i < 4usize { lens.set(usize.from(*syms[i]), 2u8); i = i + 1usize; }
+      } else {
+        lens.set(usize.from(*syms[0usize]), 1u8);
+        lens.set(usize.from(*syms[1usize]), 2u8);
+        lens.set(usize.from(*syms[2usize]), 3u8);
+        lens.set(usize.from(*syms[3usize]), 3u8);
+      }
+      let r = build(&mut bld, &mut tab, lens.view(), alphabet);
+      if r == NoTable { self.fail(ErrTable, "a simple prefix code is not valid"); }
+      return r;
+    }
+    // A complex code: the code-length code first
+    clens.clear();
+    clens.resize(18usize, 0u8);
+    var space = 32i32;
+    var numCodes = 0u32;
+    var k = usize.from(hskip);
+    while k < 18usize {
+      if bi.nbits < 4u32 { bi.refill(); }
+      let v = usize.from(bi.bits & 15u64);
+      let nb = u32.from(clCodeBits[v]);
+      bi.bits = bi.bits >> u64.from(nb);
+      bi.nbits = bi.nbits - nb;
+      let ln = clCodeValue[v];
+      clens.set(usize.from(clOrder[k]), ln);
+      if ln != 0u8 {
+        space = space - (32i32 >> i32.from(ln));
+        numCodes = numCodes + 1u32;
+        if space <= 0i32 { break; }
+      }
+      k = k + 1usize;
+    }
+    if !(numCodes == 1u32 || space == 0i32) {
+      self.fail(ErrTable, "the code-length code is not a valid prefix code");
+      return NoTable;
+    }
+    let mark = tab.len();
+    let cb = build(&mut bld, &mut tab, clens.view(), 18usize);
+    if cb == NoTable {
+      self.fail(ErrTable, "the code-length code is not a valid prefix code");
+      return NoTable;
+    }
+    var symbol = 0usize;
+    var prevLen = 8u8;
+    var repeat = 0u32;
+    var repeatLen = 0u8;
+    var sp = 32768i32;
+    while symbol < alphabet && sp > 0i32 {
+      let s = readSym(&mut bi, tab.view(), cb);
+      if s < 16usize {
+        repeat = 0u32;
+        if s != 0usize {
+          lens.set(symbol, u8.from(s));
+          prevLen = u8.from(s);
+          sp = sp - (32768i32 >> i32.from(s));
+        }
+        symbol = symbol + 1usize;
+      } else {
+        let extra = if s == 16usize {2u32} else {3u32};
+        let newLen = if s == 16usize {prevLen} else {0u8};
+        if repeatLen != newLen {
+          repeat = 0u32;
+          repeatLen = newLen;
+        }
+        let old = repeat;
+        if repeat > 0u32 { repeat = (repeat - 2u32) << extra; }
+        repeat = repeat + bi.getBits(extra) + 3u32;
+        let delta = usize.from(repeat - old);
+        if symbol + delta > alphabet {
+          self.fail(ErrTable, "a repeat of code lengths runs past the alphabet");
+          return NoTable;
+        }
+        var j = 0usize;
+        while j < delta {
+          lens.set(symbol + j, repeatLen);
+          j = j + 1usize;
+        }
+        symbol = symbol + delta;
+        if repeatLen != 0u8 { sp = sp - (i32.from(delta) << i32.from(15u8 - repeatLen)); }
+      }
+    }
+    tab.truncate(mark);
+    if sp != 0i32 {
+      self.fail(ErrTable, "the code lengths do not make a complete prefix code");
+      return NoTable;
+    }
+    let r = build(&mut bld, &mut tab, lens.view(), alphabet);
+    if r == NoTable { self.fail(ErrTable, "the code lengths do not make a prefix code"); }
+    r
+  }
+
+  // A context map of 'size' entries over 'nTrees' trees (section 7.3), into 'cmap'
+  fn readContextMap(self: &mut, size: usize, nTrees: usize) bool {
+    cmap.clear();
+    var rleMax = 0u32;
+    if bi.getBits(1u32) == 1u32 { rleMax = bi.getBits(4u32) + 1u32; }
+    let mark = tab.len();
+    let base = self.readPrefix(nTrees + usize.from(rleMax));
+    if base == NoTable { return false; }
+    while cmap.len() < size {
+      let s = u32.from(readSym(&mut bi, tab.view(), base));
+      if s == 0u32 {
+        cmap.push(0u8);
+      } else if s <= rleMax {
+        let run = usize.from((1u32 << s) + bi.getBits(s));
+        if cmap.len() + run > size {
+          self.fail(ErrTable, "a run in a context map is longer than the map");
+          return false;
+        }
+        var j = 0usize;
+        while j < run { cmap.push(0u8); j = j + 1usize; }
+      } else {
+        cmap.push(u8.from(s - rleMax));
+      }
+      if bi.overrun() {
+        self.fail(ErrTruncated, "the input ends inside a context map");
+        return false;
+      }
+    }
+    if bi.getBits(1u32) == 1u32 {
+      // The inverse move-to-front transform
+      var mtf = List[u8].withCapacity(256usize);
+      var i = 0usize;
+      while i < 256usize { mtf.push(u8.from(i)); i = i + 1usize; }
+      i = 0usize;
+      while i < size {
+        var index = usize.from(*cmap[i]);
+        let value = *mtf[index];
+        cmap.set(i, value);
+        while index > 0usize {
+          mtf.set(index, *mtf[index - 1usize]);
+          index = index - 1usize;
+        }
+        mtf.set(0usize, value);
+        i = i + 1usize;
+      }
+    }
+    tab.truncate(mark);
+    true
+  }
+
+  // Reads the type count, the block-switch codes and the first block count of one category (section 9.2); a
+  // category of one type has no codes. Check 'errCode' after it.
+  fn readCategory(self: &mut) Cat {
+    var c = Cat();
+    c.n = self.varLen();
+    c.cur = 0u32;
+    c.prev = 1u32;
+    c.left = 16777216u32;
+    if c.n >= 2u32 {
+      c.typeBase = self.readPrefix(usize.from(c.n) + 2usize);
+      if c.typeBase == NoTable { return c; }
+      c.cntBase = self.readPrefix(26usize);
+      if c.cntBase == NoTable { return c; }
+      c.left = readBlockCount(&mut bi, tab.view(), c.cntBase);
+    }
+    if bi.overrun() {
+      self.fail(ErrTruncated, "the input ends inside a meta-block header");
+    }
+    c
+  }
+
+  // The stream header: the window size (section 9.1). false on a failure.
+  fn streamHeader(self: &mut) bool {
+    var wb = 16u32;
+    if bi.getBits(1u32) == 1u32 {
+      let n = bi.getBits(3u32);
+      if n != 0u32 {
+        wb = 17u32 + n;
+      } else {
+        let m = bi.getBits(3u32);
+        if m == 0u32 {
+          wb = 17u32;
+        } else if m == 1u32 {
+          self.fail(ErrLargeWindow, "the stream uses the large-window extension, which is not in RFC 7932");
+          return false;
+        } else {
+          wb = 8u32 + m;
+        }
+      }
+    }
+    if bi.overrun() {
+      self.fail(ErrTruncated, "the stream is empty");
+      return false;
+    }
+    if wb > maxWbits {
+      self.fail(ErrWindow, "the stream's window is larger than the window allowed");
+      return false;
+    }
+    window = (1usize << usize.from(wb)) - 16usize;
+    true
+  }
+
+  // One meta-block: 0 on a failure, 1 when another follows, 2 after the last
+  fn metaBlock(self: &mut) u32 {
+    let isLast = bi.getBits(1u32) == 1u32;
+    if isLast && bi.getBits(1u32) == 1u32 { return 2u32; }
+    let nib = bi.getBits(2u32);
+    if nib == 3u32 {
+      // A metadata block: skipped
+      if bi.getBits(1u32) != 0u32 {
+        self.fail(ErrHeader, "a reserved bit is set");
+        return 0u32;
+      }
+      let sb = bi.getBits(2u32);
+      var skip = 0usize;
+      if sb > 0u32 {
+        let v = bi.getBits(8u32 * sb);
+        if sb > 1u32 && (v >> (8u32 * (sb - 1u32))) == 0u32 {
+          self.fail(ErrHeader, "a metadata length has a zero last byte");
+          return 0u32;
+        }
+        skip = usize.from(v) + 1usize;
+      }
+      if bi.overrun() {
+        self.fail(ErrTruncated, "the input ends inside a metadata block header");
+        return 0u32;
+      }
+      if !bi.alignZero() {
+        self.fail(ErrHeader, "the padding bits before metadata are not zero");
+        return 0u32;
+      }
+      bi.sync();
+      if bi.pos + skip > bi.inp.len() {
+        self.fail(ErrTruncated, "the input ends inside a metadata block");
+        return 0u32;
+      }
+      bi.pos = bi.pos + skip;
+      return if isLast {2u32} else {1u32};
+    }
+    let nibbles = 4u32 + nib;
+    let v = bi.getBits(nibbles * 4u32);
+    if nibbles > 4u32 && (v >> ((nibbles - 1u32) * 4u32)) == 0u32 {
+      self.fail(ErrHeader, "a meta-block length has a zero last nibble");
+      return 0u32;
+    }
+    let mlen = usize.from(v) + 1usize;
+    if bi.overrun() {
+      self.fail(ErrTruncated, "the input ends inside a meta-block header");
+      return 0u32;
+    }
+    if out.len() + mlen > limit {
+      self.fail(ErrTooLarge, "the output would pass the limit");
+      return 0u32;
+    }
+    if !isLast && bi.getBits(1u32) == 1u32 {
+      // Stored bytes
+      if !bi.alignZero() {
+        self.fail(ErrHeader, "the padding bits before stored bytes are not zero");
+        return 0u32;
+      }
+      bi.sync();
+      if bi.pos + mlen > bi.inp.len() {
+        self.fail(ErrTruncated, "the input ends inside stored bytes");
+        return 0u32;
+      }
+      out.appendSlice(&bi.inp.view()[bi.pos ..< bi.pos + mlen]);
+      bi.pos = bi.pos + mlen;
+      return 1u32;
+    }
+    cl = self.readCategory();
+    if errCode != ErrNone { return 0u32; }
+    ci = self.readCategory();
+    if errCode != ErrNone { return 0u32; }
+    cd = self.readCategory();
+    if errCode != ErrNone { return 0u32; }
+    npostfix = bi.getBits(2u32);
+    ndirect = bi.getBits(4u32) << npostfix;
+    modes.clear();
+    var i = 0u32;
+    while i < cl.n {
+      modes.push(u8.from(bi.getBits(2u32)));
+      i = i + 1u32;
+    }
+    // The literal context map, then the distance context map
+    let nTreesL = usize.from(self.varLen());
+    let sizeL = 64usize * usize.from(cl.n);
+    if nTreesL >= 2usize {
+      if !self.readContextMap(sizeL, nTreesL) { return 0u32; }
+    } else {
+      cmap.clear();
+      cmap.resize(sizeL, 0u8);
+    }
+    cmapL.clear();
+    i = 0u32;
+    while usize.from(i) < sizeL { cmapL.push(u32.from(*cmap[usize.from(i)])); i = i + 1u32; }
+    let nTreesD = usize.from(self.varLen());
+    let sizeD = 4usize * usize.from(cd.n);
+    if nTreesD >= 2usize {
+      if !self.readContextMap(sizeD, nTreesD) { return 0u32; }
+    } else {
+      cmap.clear();
+      cmap.resize(sizeD, 0u8);
+    }
+    cmapD.clear();
+    i = 0u32;
+    while usize.from(i) < sizeD { cmapD.push(u32.from(*cmap[usize.from(i)])); i = i + 1u32; }
+    // The trees, and in the context maps the base of each one's tree in place of its number
+    var trees = List[u32]();
+    var t = 0usize;
+    while t < nTreesL {
+      let b = self.readPrefix(256usize);
+      if b == NoTable { return 0u32; }
+      trees.push(u32.from(b));
+      t = t + 1usize;
+    }
+    i = 0u32;
+    while usize.from(i) < sizeL { cmapL.set(usize.from(i), *trees[usize.from(*cmapL[usize.from(i)])]); i = i + 1u32; }
+    cmdBase.clear();
+    t = 0usize;
+    while t < usize.from(ci.n) {
+      let b = self.readPrefix(704usize);
+      if b == NoTable { return 0u32; }
+      cmdBase.push(u32.from(b));
+      t = t + 1usize;
+    }
+    trees.clear();
+    let distAlphabet = 16usize + usize.from(ndirect) + (48usize << usize.from(npostfix));
+    t = 0usize;
+    while t < nTreesD {
+      let b = self.readPrefix(distAlphabet);
+      if b == NoTable { return 0u32; }
+      trees.push(u32.from(b));
+      t = t + 1usize;
+    }
+    i = 0u32;
+    while usize.from(i) < sizeD { cmapD.set(usize.from(i), *trees[usize.from(*cmapD[usize.from(i)])]); i = i + 1u32; }
+    if bi.overrun() {
+      self.fail(ErrTruncated, "the input ends inside a meta-block header");
+      return 0u32;
+    }
+    if !self.commands(mlen) { return 0u32; }
+    if isLast { 2u32 } else { 1u32 }
+  }
+
+  // The commands of a meta-block of 'mlen' bytes
+  fn commands(self: &mut, mlen: usize) bool {
+    out.reserve(mlen + 64usize);
+    var remaining = mlen;
+    while remaining > 0usize {
+      if ci.left == 0u32 { ci.next(&mut bi, tab.view()); }
+      ci.left = ci.left - 1u32;
+      let sym = readSym(&mut bi, tab.view(), usize.from(*cmdBase[usize.from(ci.cur)]));
+      let cell = sym >> 6usize;
+      let ic = usize.from(cellInsert[cell]) + ((sym >> 3usize) & 7usize);
+      let cc = usize.from(cellCopy[cell]) + (sym & 7usize);
+      let insLen = usize.from(insertBase[ic] + bi.getBits(u32.from(insertBits[ic])));
+      let copyLen = usize.from(copyBase[cc] + bi.getBits(u32.from(copyBits[cc])));
+      if insLen > remaining {
+        self.fail(ErrCommand, "a command inserts more literals than the meta-block has left");
+        return false;
+      }
+      // The literals
+      let ol = out.len();
+      var p1 = if ol > 0usize {*out[ol - 1usize]} else {0u8};
+      var p2 = if ol > 1usize {*out[ol - 2usize]} else {0u8};
+      var k = 0usize;
+      if insLen > 0usize {
+        // The room for the whole meta-block was reserved, so the bytes are written in place and given to the
+        // list once, after the run
+        let bp = out.viewMut() as *u8;
+        let tv = tab.view();
+        let mv = modes.view();
+        let cv = cmapL.view();
+        while k < insLen {
+          if cl.left == 0u32 { cl.next(&mut bi, tv); }
+          cl.left = cl.left - 1u32;
+          let ctx = literalContext(mv[usize.from(cl.cur)], p1, p2);
+          let b = u8.from(readSym(&mut bi, tv, usize.from(cv[usize.from(cl.cur) * 64usize + ctx])));
+          mem.writeRaw[u8](bp + (ol + k), b);
+          p2 = p1;
+          p1 = b;
+          k = k + 1usize;
+        }
+        commit(&mut out, ol, insLen);
+      }
+      remaining = remaining - insLen;
+      if bi.overrun() {
+        self.fail(ErrTruncated, "the input ends inside the commands");
+        return false;
+      }
+      if remaining == 0usize { break; }
+      // The distance
+      var dist = r0;
+      var dcode = 0usize;
+      if sym >= 128usize {
+        if cd.left == 0u32 { cd.next(&mut bi, tab.view()); }
+        cd.left = cd.left - 1u32;
+        let dctx = if copyLen > 4usize {3usize} else {copyLen - 2usize};
+        dcode = readSym(&mut bi, tab.view(), usize.from(*cmapD[usize.from(cd.cur) * 4usize + dctx]));
+        if dcode < 16usize {
+          if dcode < 4usize {
+            dist = if dcode == 0usize {r0} else if dcode == 1usize {r1} else if dcode == 2usize {r2} else {r3};
+          } else {
+            let baseD = if dcode < 10usize {r0} else {r1};
+            let delta = shortDelta[if dcode < 10usize {dcode - 4usize} else {dcode - 10usize}];
+            let d = i64.from(baseD) + i64.from(delta);
+            if d <= 0i64 {
+              self.fail(ErrDistance, "a short distance code gives a distance of zero or less");
+              return false;
+            }
+            dist = usize.from(d);
+          }
+        } else if dcode < 16usize + usize.from(ndirect) {
+          dist = dcode - 15usize;
+        } else {
+          let nd = u32.from(dcode - 16usize - usize.from(ndirect));
+          let nbitsD = 1u32 + (nd >> (npostfix + 1u32));
+          let hcode = nd >> npostfix;
+          let lcode = nd & ((1u32 << npostfix) - 1u32);
+          let offset = ((2u32 + (hcode & 1u32)) << nbitsD) - 4u32;
+          let extra = bi.getBits(nbitsD);
+          dist = (usize.from(offset + extra) << usize.from(npostfix)) + usize.from(lcode) + usize.from(ndirect) + 1usize;
+        }
+      }
+      let at = out.len();
+      let maxDist = if at < window {at} else {window};
+      if dist <= maxDist {
+        if dcode != 0usize {
+          r3 = r2;
+          r2 = r1;
+          r1 = r0;
+          r0 = dist;
+        }
+        if copyLen > remaining {
+          self.fail(ErrCommand, "a copy is longer than the meta-block has left");
+          return false;
+        }
+        wideMatch(out.viewMut() as *u8, at, at - dist, copyLen);
+        commit(&mut out, at, copyLen);
+        remaining = remaining - copyLen;
+      } else {
+        // A word of the static dictionary
+        if copyLen < 4usize || copyLen > 24usize {
+          self.fail(ErrDistance, "a distance past the window does not name a dictionary word");
+          return false;
+        }
+        let wordId = dist - (maxDist + 1usize);
+        let bitsW = usize.from(dictBits[copyLen]);
+        let tid = wordId >> bitsW;
+        if tid > 120usize {
+          self.fail(ErrTransform, "a dictionary word's transform does not exist");
+          return false;
+        }
+        let n = self.dictWord(copyLen, wordId & ((1usize << bitsW) - 1usize), tid, remaining);
+        if n == NoTable {
+          self.fail(ErrCommand, "a dictionary word is longer than the meta-block has left");
+          return false;
+        }
+        remaining = remaining - n;
+      }
+      if bi.overrun() {
+        self.fail(ErrTruncated, "the input ends inside the commands");
+        return false;
+      }
+    }
+    true
+  }
+
+  // Appends the word of 'len' bytes at 'index' with transform 'tid' to the output; answers its length, or
+  // NoTable if it is longer than 'room'
+  fn dictWord(self: &mut, len: usize, index: usize, tid: usize, room: usize) usize {
+    if dict.len() == 0usize {
+      dict.reserve(122784usize);
+      dictOff.clear();
+      dictOff.resize(26usize, 0usize);
+      var n = 4usize;
+      while n <= 24usize {
+        dictOff.set(n, dict.len());
+        dict.appendSlice(dictChunk(n).bytes());
+        n = n + 1usize;
+      }
+    }
+    let kind = usize.from(transformKind[tid]);
+    let pl = usize.from(transformPrefixLen[tid]);
+    let sl = usize.from(transformSuffixLen[tid]);
+    var skipFront = 0usize;
+    var skipBack = 0usize;
+    if kind >= 3usize && kind <= 11usize { skipFront = kind - 2usize; }
+    if kind >= 12usize { skipBack = kind - 11usize; }
+    let body = if skipFront + skipBack >= len {0usize} else {len - skipFront - skipBack};
+    let total = pl + body + sl;
+    if total > room { return NoTable; }
+    out.reserve(total + 16usize);
+    let text = transformText.bytes();
+    var j = 0usize;
+    let po = usize.from(transformPrefixOff[tid]);
+    while j < pl { out.push(text[po + j]); j = j + 1usize; }
+    let start = out.len();
+    let wo = *dictOff[len] + index * len + (if skipFront < len {skipFront} else {len});
+    j = 0usize;
+    while j < body { out.push(*dict[wo + j]); j = j + 1usize; }
+    if kind == 1usize {
+      if body > 0usize { self.ferment(start, body, 0usize); }
+    } else if kind == 2usize {
+      var i = 0usize;
+      while i < body { i = i + self.ferment(start, body, i); }
+    }
+    let so = usize.from(transformSuffixOff[tid]);
+    j = 0usize;
+    while j < sl { out.push(text[so + j]); j = j + 1usize; }
+    total
+  }
+
+  // The case change of section 8 at byte 'p' of the 'n' bytes at out[start]; answers the bytes it covers
+  fn ferment(self: &mut, start: usize, n: usize, p: usize) usize {
+    let c = *out[start + p];
+    if c < 192u8 {
+      if c >= 97u8 && c <= 122u8 { out.set(start + p, c ^ 32u8); }
+      return 1usize;
+    }
+    if c < 224u8 {
+      if p + 1usize < n { out.set(start + p + 1usize, *out[start + p + 1usize] ^ 32u8); }
+      return 2usize;
+    }
+    if p + 2usize < n { out.set(start + p + 2usize, *out[start + p + 2usize] ^ 5u8); }
+    3usize
+  }
+
+  // Decodes the whole stream. true if it ended well.
+  fn run(self: &mut) bool {
+    r0 = 4usize;
+    r1 = 11usize;
+    r2 = 15usize;
+    r3 = 16usize;
+    if !self.streamHeader() { return false; }
+    while true {
+      let r = self.metaBlock();
+      if r == 0u32 { return false; }
+      if r == 2u32 { break; }
+      if bi.overrun() {
+        self.fail(ErrTruncated, "the input ends before the last meta-block");
+        return false;
+      }
+    }
+    if bi.overrun() {
+      self.fail(ErrTruncated, "the input ends before the last meta-block");
+      return false;
+    }
+    if !bi.alignZero() {
+      self.fail(ErrHeader, "the padding bits after the last meta-block are not zero");
+      return false;
+    }
+    true
+  }
+}

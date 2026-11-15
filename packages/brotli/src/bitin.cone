@@ -1,0 +1,73 @@
+// ======== The bit reader ========
+//
+// Copied from package deflate's BitIn (its inflate.cone), which is private there, and cut down to a whole
+// buffer: the input is held, in full, as a list of its own. Brotli packs its elements into bytes starting at the
+// least significant bit, as DEFLATE does, so the reader is the same: a 64-bit buffer topped up eight bytes at a
+// time, the oldest bit in the lowest place, zeros supplied past the end of the input ('overrun' tells whether
+// any of those were taken, which the decoder asks after each unit it reads).
+
+struct BitIn is Default {
+  // The whole input
+  inp: List[u8];
+  // The next byte to load into the buffer; it may run past the input's end (zeros are loaded there)
+  pos: usize;
+  bits: u64;
+  nbits: u32;
+
+  // Top up the bit buffer to at least 57 bits
+  fn refill(self: &mut) {
+    let n = inp.len();
+    if pos + 8usize <= n {
+      let w = mem.readRaw[u64]((inp.view() as *u8 + pos) as *u64);
+      let k = (64u32 - nbits) / 8u32;
+      let take = k * 8u32;
+      let m = if take >= 64u32 {18446744073709551615u64} else {(1u64 << u64.from(take)) - 1u64};
+      bits = bits | ((w & m) << u64.from(nbits));
+      pos = pos + usize.from(k);
+      nbits = nbits + take;
+      return;
+    }
+    while nbits <= 56u32 {
+      let b = if pos < n {u64.from(*inp[pos])} else {0u64};
+      bits = bits | (b << u64.from(nbits));
+      pos = pos + 1usize;
+      nbits = nbits + 8u32;
+    }
+  }
+
+  // Take n (0 to 32) bits
+  fn getBits(self: &mut, n: u32) u32 {
+    if nbits < n { self.refill(); }
+    let v = u32.from(bits & ((1u64 << u64.from(n)) - 1u64));
+    bits = bits >> u64.from(n);
+    nbits = nbits - n;
+    v
+  }
+
+  // How many bits of the input have been taken (zeros past the end counted)
+  fn taken(self: &) usize {
+    pos * 8usize - usize.from(nbits)
+  }
+
+  // Whether bits past the end of the input were taken
+  fn overrun(self: &) bool {
+    self.taken() > inp.len() * 8usize
+  }
+
+  // Drops the bits of a partly used byte: false if any of them was not zero
+  fn alignZero(self: &mut) bool {
+    let part = nbits % 8u32;
+    let v = bits & ((1u64 << u64.from(part)) - 1u64);
+    bits = bits >> u64.from(part);
+    nbits = nbits - part;
+    v == 0u64
+  }
+
+  // After alignZero: hands the whole bytes the buffer holds back to the input, so that 'pos' is the next byte
+  // not used
+  fn sync(self: &mut) {
+    pos = pos - usize.from(nbits / 8u32);
+    bits = 0u64;
+    nbits = 0u32;
+  }
+}
