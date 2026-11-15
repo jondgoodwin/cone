@@ -1,6 +1,6 @@
 // The collections package: a growable list, an owned string, a dictionary of
 // any keys that are Hash (and an ordered one, which visits in insertion order),
-// a set, a double-ended queue, and a list held as one column per field of its element
+// a set, a fixed-length bit set ('BitSet': a flag a bit, in 64-bit words), a double-ended queue, and a list held as one column per field of its element
 // ('SoaList'), each holding its elements in one block of memory (a 'SoaList', one block for
 // each column) that it gets, grows and gives back through a region it points to (core's
 // 'MemRegion'; the heap's, which calls the C allocator, unless it is made in
@@ -3682,4 +3682,165 @@ pub fn debugDict[K, V](self: &Dict[K, V], out: &uni TextOut) {
 // A list in the debug form, '[a, b, c]' (the compiler's rewrite of 'list.toDebug(out)')
 pub fn debugList[T](self: &List[T], out: &uni TextOut) {
   debugArray[T](self.view(), out);
+}
+
+// A fixed count of flags, a bit each, the way a 'List[bool]' of that length would hold them
+// in a byte each: 'BitSet(100)' is 100 flags, all clear; 'BitSet.full(100)' all set. The
+// count is fixed when it is made. The flags live in 64-bit words in a 'List[u64]', so they
+// come from the region the set is made in (see List), and a flag test, set or clear is a
+// shift and a mask on one word, while 'count', the set operations and the cursor go a word
+// at a time (a popcount for 'count', a trailing-zero count for the cursor).
+//
+//   var seen = BitSet(1000usize);
+//   seen.set(7usize);
+//   seen.unionWith(&other);            // other: a BitSet of the same length
+//   var it = seen.iter();              // the indexes of the set flags, ascending
+//
+// THE TAIL. The bits of the last word past 'len' are zero after every operation, so
+// 'count' and the cursor never see them. An index past 'len' panics at its caller's line,
+// as a List index does; so does a set operation against a set of another length.
+pub struct BitSet is Sendable, CarriesRegion {
+  words: List[u64];
+  nbits: usize;
+
+  // All clear: 'BitSet(n)'. The last argument of every init is the region the words
+  // come from, which a construction that names none leaves out and is handed the heap's
+  pub fn initClear overload init(self: &new, n: usize, region: *MemRegion) {
+    var w = List[u64](region);
+    w.resize((n + 63usize) >> 6usize, 0u64);
+    *self = BitSet(w, n);
+  }
+
+  // All set: 'BitSet.full(n)' in the heap
+  pub fn full(n: usize) BitSet {
+    var b = BitSet(n);
+    b.setAll();
+    b
+  }
+
+  // The mask of the bits of the last word that are inside the count (all of them
+  // when the count fills the word, and when it is 0 there is no last word)
+  fn tailMask(self: &) u64 {
+    let r = nbits & 63usize;
+    if r == 0usize { return 0xFFFFFFFFFFFFFFFFu64; }
+    (1u64 << u64.from(r)) - 1u64
+  }
+
+  pub fn len(self: &) usize { nbits }
+
+  pub fn get(self: &, i: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) bool {
+    if i >= nbits { outOfRange(i, nbits, file, line); }
+    let v = words.view();
+    ((v[i >> 6usize] >> u64.from(i & 63usize)) & 1u64) != 0u64
+  }
+
+  pub fn set(self: &mut, i: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if i >= nbits { outOfRange(i, nbits, file, line); }
+    let v = words.viewMut();
+    let k = i >> 6usize;
+    v[k] = v[k] | (1u64 << u64.from(i & 63usize));
+  }
+
+  pub fn clear(self: &mut, i: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if i >= nbits { outOfRange(i, nbits, file, line); }
+    let v = words.viewMut();
+    let k = i >> 6usize;
+    v[k] = v[k] & ~(1u64 << u64.from(i & 63usize));
+  }
+
+  // Set the flag at i to on, or clear it
+  pub fn assign(self: &mut, i: usize, on: bool, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if on { self.set(i, file, line); } else { self.clear(i, file, line); }
+  }
+
+  // How many flags are set
+  pub fn count(self: &) usize {
+    let v = words.view();
+    var n = 0usize;
+    var k = 0usize;
+    while k < v.len {
+      n = n + usize.from(v[k].countOnes());
+      k = k + 1usize;
+    }
+    n
+  }
+
+  pub fn isEmpty(self: &) bool { self.count() == 0usize }
+
+  pub fn clearAll(self: &mut) {
+    let v = words.viewMut();
+    var k = 0usize;
+    while k < v.len { v[k] = 0u64; k = k + 1usize; }
+  }
+
+  pub fn setAll(self: &mut) {
+    let v = words.viewMut();
+    var k = 0usize;
+    while k < v.len { v[k] = 0xFFFFFFFFFFFFFFFFu64; k = k + 1usize; }
+    if v.len > 0usize { v[v.len - 1usize] = v[v.len - 1usize] & self.tailMask(); }
+  }
+
+  // The panic of a set operation against a set of another length, naming both
+  fn sameLen(self: &, other: &BitSet, file: &Array[u8], line: u32) {
+    if other.nbits != nbits {
+      var msg = String.from("collections: BitSet lengths differ, ");
+      msg.appendUInt(u64.from(nbits));
+      msg.append(" and ");
+      msg.appendUInt(u64.from(other.nbits));
+      panic(msg.view(), file, line);
+    }
+  }
+
+  // This set becomes the flags set in it or in other (same length)
+  pub fn unionWith(self: &mut, other: &BitSet, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.sameLen(other, file, line);
+    let v = words.viewMut();
+    let o = other.words.view();
+    var k = 0usize;
+    while k < v.len { v[k] = v[k] | o[k]; k = k + 1usize; }
+  }
+
+  // This set becomes the flags set in both it and other (same length)
+  pub fn intersectWith(self: &mut, other: &BitSet, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.sameLen(other, file, line);
+    let v = words.viewMut();
+    let o = other.words.view();
+    var k = 0usize;
+    while k < v.len { v[k] = v[k] & o[k]; k = k + 1usize; }
+  }
+
+  // This set becomes the flags set in it and not in other (same length)
+  pub fn differenceWith(self: &mut, other: &BitSet, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.sameLen(other, file, line);
+    let v = words.viewMut();
+    let o = other.words.view();
+    var k = 0usize;
+    while k < v.len { v[k] = v[k] & ~o[k]; k = k + 1usize; }
+  }
+
+  // A cursor over the indexes of the set flags, ascending. The set may not change
+  // while it is used
+  pub fn iter(self: &) BitSetIter {
+    let v = words.view();
+    BitSetIter(v, 0usize, if v.len > 0usize { v[0usize] } else { 0u64 })
+  }
+}
+
+// A cursor over a BitSet's set flags: 'next' gives the index of each, lowest first, by
+// clearing the lowest bit of the word it is in
+pub struct BitSetIter['a] is Iterator[usize] {
+  view: &'a Array[u64];
+  word: usize;
+  cur: u64;
+
+  pub fn next(self: &mut) Option[usize] {
+    while cur == 0u64 {
+      if word + 1usize >= view.len { return None; }
+      word = word + 1usize;
+      cur = view[word];
+    }
+    let bit = usize.from(cur.trailingZeros());
+    cur = cur & (cur - 1u64);
+    Some[usize](word * 64usize + bit)
+  }
 }

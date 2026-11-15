@@ -773,7 +773,7 @@ packages/geomath/
    the registries, so a package in no registry can be tested where it stands,
    and a test reaches the copy being tested. Each test is built in
    `build/<mode>/tests/<name>/` and run there, with no arguments and no input,
-   for at most 180 seconds. On Windows it runs as Congo's debuggee, so that a
+   for at most 180 seconds (`tests/<name>.timeout`, below, sets another). On Windows it runs as Congo's debuggee, so that a
    crash, a panic's fail-fast above all, ends at once with the exit status
    Windows would have given it, rather than being held by Windows Error
    Reporting, which takes many seconds when many programs crash at once
@@ -793,6 +793,14 @@ packages/geomath/
    `tests/<name>.linux.out` (`windows` and `macos` likewise, and `.err`), which is
    compared in place of the plain one on that host: the compiler suite's rule.
    A mismatch prints a diff of the output, or both statuses.
+   **A panic's backtrace.** Congo sets `CONE_BACKTRACE=1` for each program it runs
+   (`congo run` too), unless the caller has set it, so a panic writes `stack
+   backtrace:` and its frames (`N: 0xADDRESS module+0xOFFSET`). The block is left out
+   of the `.err` comparison, since addresses cannot be pinned, and a failing test
+   (and `congo run`, in `congo.py`) shows it named by `llvm-symbolizer`, or
+   `addr2line` on Linux: `N: function at file:line`, an inlined call on a line of
+   its own, marked `(inlined)`. With neither tool, the raw lines stay and one note says so.
+   (The Cone Congo's `run` shares the program's stderr, so its frames stay raw.)
 4. **Builds each example**, `examples/<name>.cone`, the same way, and does not
    run it. An example that does not build is a failure.
 
@@ -910,8 +918,12 @@ fixtures, setup and teardown; and mocks.
 
 ### When a test hangs
 
-A test that runs past its time (180 seconds) is stopped and fails with
-"timed out". With the environment variable `CONE_HANG_DIR` set to a folder,
+A test that runs past its time (180 seconds, or the seconds in its
+`tests/<name>.timeout`: one positive whole number, for a test that needs more,
+such as voicechat's `bargein`, which retries up to three runs of about 65 s) is
+stopped and fails with "timed out after N seconds", followed by the last 40
+lines of what it wrote to stderr, so that a log of the run says how far it got.
+With the environment variable `CONE_HANG_DIR` set to a folder,
 Congo first saves what the program was doing, so that a hang that cannot be
 repeated still leaves something to read. Unset, nothing changes. Files are
 named `<package>-<test>-<head>-<yyyymmdd-HHMMSS>`, the head being

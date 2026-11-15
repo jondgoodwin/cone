@@ -922,14 +922,15 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(self.program_output(run), "42\n7\n")
         out = lone_out(self, "good")
         included = (out / "shapes.cone").read_text()
-        self.assertIn("pub struct Bag is ShapeChanging {", included)
-        self.assertIn("pub struct Shelf is Sendable, ShapeChanging {", included)
+        # Bag and Shelf push to a list they own: shape-changing, and (the push is no reshape of what a
+        # caller lends, absent a trait lending from self) recorded as keeping the shape as well
+        self.assertIn("pub struct Bag is ShapeChanging, ShapeKeeping {", included)
+        self.assertIn("pub struct Shelf is Sendable, ShapeChanging, ShapeKeeping {", included)
         # Not shape-changing, and its methods reshape nothing a caller borrows: recorded as
-        # keeping the shape. Bag and Shelf push to a list, so they are not
+        # keeping the shape alone
         self.assertIn("pub struct Gauge is ShapeKeeping {", included)
         self.assertNotIn("Gauge is ShapeChanging", included)
         self.assertNotIn("ShapeKeeping, ShapeChanging", included)
-        self.assertNotIn("ShapeChanging, ShapeKeeping", included)
         self.assertNotIn("Pt is", included)
         for name, spelling in (("bag", "shapes.Bag"), ("shelf", "shapes.Shelf")):
             write(self.root / f"{name}.cone", f"""
@@ -2251,6 +2252,46 @@ class Testing(unittest.TestCase):
         self.assertEqual((tests / "status.exit").read_text(), "3\n")
         self.congo("test", "status", cwd=pkg)
 
+    def test_a_test_has_its_own_time_limit_and_a_stopped_one_keeps_its_stderr(self):
+        """tests/<name>.timeout holds a test's seconds. A test that sleeps 4 s
+        under a 2 s limit is stopped, and its stderr is in Congo's output; the
+        same test passes under a 6 s limit; a .timeout that is no positive
+        whole number fails the test with its path."""
+        pkg = self.root / "sleepy"
+        write(pkg / "congo.toml",
+              '[package]\nname = "sleepy"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "sleepy.cone", "mod sleepy;\n\npub fn one() i64 {\n  1i64\n}\n")
+        write(pkg / "tests" / "nap.cone", """
+            mod nap;
+
+            import stdio use *;
+            import sleepy;
+            import thread;
+            import time;
+
+            fn main() i32 {
+              eprintStr("nap: about to sleep\\n");
+              thread.sleep(time.Duration.fromSeconds(4));
+              printInt(sleepy.one());
+              printStr("\\n");
+              0i32
+            }
+            """)
+        write(pkg / "tests" / "nap.out", "1\n")
+        write(pkg / "tests" / "nap.timeout", "2\n")
+        stopped = self.congo("test", "nap", cwd=pkg, ok=False)
+        self.assertNotEqual(stopped.returncode, 0)
+        self.assertIn("timed out after 2 seconds", stopped.stdout)
+        self.assertIn("nap: about to sleep", stopped.stdout)
+        write(pkg / "tests" / "nap.timeout", "6\n")
+        passed = self.congo("test", "nap", cwd=pkg)
+        self.assertIn("test nap ... ok", passed.stdout)
+        for bad in ("0\n", "2.5\n", "soon\n", ""):
+            write(pkg / "tests" / "nap.timeout", bad)
+            refused = self.congo("test", "nap", cwd=pkg, ok=False)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("nap.timeout must hold one positive whole number", refused.stdout)
+
     def halver(self, root: Path) -> Path:
         """A library whose one function checks its argument in a debug build
         only; a test of it that passes in either build, and one, marked
@@ -2321,6 +2362,58 @@ class Testing(unittest.TestCase):
         self.assertIn("halver: 1 test: 0 passed, 0 failed, 1 skipped (debug only);",
                       run.stdout)
         self.assertNotIn("no test or example has", run.stderr)
+
+    def test_a_panics_backtrace_is_named_and_not_compared(self):
+        # Congo sets CONE_BACKTRACE for each test it runs, so a panic writes a
+        # 'stack backtrace:' block. Its addresses are no part of what a .err
+        # file pins, so the panic's line alone passes; where a test fails, the
+        # block is shown with the functions named
+        pkg = self.root / "boomer"
+        write(pkg / "congo.toml",
+              '[package]\nname = "boomer"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "boomer.cone", "mod boomer;\n\npub fn one() i64 { 1i64 }\n")
+        write(pkg / "tests" / "deep.cone", """
+            mod deep;
+
+            import stdio use *;
+
+            fn third(n: i32) i32 {
+              if n > 0 { panic("three calls down"); }
+              n + 1
+            }
+
+            fn second(n: i32) i32 { third(n) + 1 }
+
+            fn first(n: i32) i32 { second(n) + 1 }
+
+            fn main() {
+              printStr("before\\n");
+              printInt(i64.from(first(1i32)));
+            }
+            """)
+        write(pkg / "tests" / "deep.out", "before\n")
+        # Nothing yet says it should end this way: it fails, and says where
+        run = self.congo("test", cwd=pkg, ok=False)
+        self.assertIn("test deep ... FAILED", run.stdout)
+        self.assertIn("panic at deep.cone:6: three calls down", run.stdout)
+        self.assertIn("stack backtrace:", run.stdout)
+        symbolised = re.findall(r"^\s+\d+: (\w+) at deep\.cone:\d+", run.stdout, re.M)
+        if symbolised:
+            for name in ("third", "second", "first"):
+                self.assertIn(name, symbolised)
+        else:
+            # No symbolizer here: the frames are raw, and one note says why
+            self.assertRegex(run.stdout, r"\d+: 0x[0-9a-f]+ \S+\+0x[0-9a-f]+")
+            self.assertIn("no symbolizer", run.stdout)
+        # Blessed, it has its status; with the panic's line pinned it passes,
+        # the frames not being compared
+        (pkg / "tests" / "deep.out").unlink()
+        self.congo("test", "--bless", cwd=pkg)
+        self.assertTrue((pkg / "tests" / "deep.exit").is_file())
+        write(pkg / "tests" / "deep.err", "panic at deep.cone:6: three calls down\n")
+        run = self.congo("test", cwd=pkg)
+        self.assertIn("test deep ... ok", run.stdout)
+        self.assertNotIn("stack backtrace", run.stdout)
 
     def test_a_package_of_debug_only_tests(self):
         # Every test debug-only: in a release test, each is skipped and the

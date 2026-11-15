@@ -1599,6 +1599,14 @@ taking the type `&mut` is not counted as a writer (a method that hands storage
 to one is). `siDemandMethods` asks for the module's candidates to be checked as it
 asks for the methods.
 
+What counts as writing storage includes ending an element: a `mem.finalize` of an element
+that needs one, and a `mem.readRaw` that moves such an element out and does not put it back
+(`siElementCall`, `siElementMode`). Both the field mode, which a call's check asks, and the
+storage mode, which decides whether a type changes shape at all, count them (row 353). Before,
+only the field mode did, so a type whose one reshaping function was `clear`, `truncate`, `remove`
+or `pop` of a list of Strings was never marked, no borrow into it was held to the check, and
+`r.items.clear()` while a view into an element's bytes was held read freed memory.
+
 A callee the compiler cannot read counts as writing (`siVisible`): an
 `extern` function, a call through a trait or a function pointer, a function
 whose body its package's include file left out, an intrinsic given a writable
@@ -1619,6 +1627,7 @@ The drop the compiler gives a type that owns a `String` or a list (`typeDropName
 its body unchecked when the file is written) is not asked there: asked, it answered "not read", and a
 text format owning a `String` was never recorded (row 354, lane 489; tests
 `meta_serialize_shapekeeping_include`, `_include_reject`).
+A type the file records both `ShapeChanging` and `ShapeKeeping` is still refused (`ErrorNotShapeKeeping`, from `skAsk`) behind `+ ShapeKeeping` of a trait with a method lending from `self`, as the package's own compile refuses it: the file's `ShapeKeeping` was found without that trait's lends, and `ShapeChanging` says the type writes storage it owns and lends a borrow of it (tests `meta_shapekeeping_lends_include`, `_include_reject`, `meta_shapekeeping_lends_store_include_reject`).
 
 The answer is read from typed bodies, and type check is demand-driven, so a
 body the question needs may not be checked yet, or may be suspended further up

@@ -2794,6 +2794,165 @@ def cmd_build(args: argparse.Namespace) -> int:
     return 0
 
 
+BACKTRACE_HEADER = "stack backtrace:"
+# One frame a panic wrote (conestd's backtrace.c and panic.cone): '  N: 0xADDR module+0xOFF'
+BACKTRACE_FRAME = re.compile(r"^\s*(\d+): (0x[0-9a-fA-F]+) (\S+)\+0x([0-9a-fA-F]+)\s*$")
+_symbolizer_cache: list = []
+
+
+def child_env() -> dict[str, str]:
+    """The environment a program Congo runs gets: CONE_BACKTRACE on (unless the
+    caller set it), so a panic writes the frames Congo then names."""
+    env = dict(os.environ)
+    env.setdefault("CONE_BACKTRACE", "1")
+    return env
+
+
+def find_symbolizer() -> tuple[str, str] | None:
+    """('llvm-symbolizer' or 'addr2line', its path), or None."""
+    if _symbolizer_cache:
+        return _symbolizer_cache[0]
+    found = None
+    names = ("llvm-symbolizer", "llvm-symbolizer-23")
+    for name in names:
+        path = shutil.which(name)
+        if path:
+            found = ("llvm-symbolizer", path)
+            break
+    if not found:
+        homes = sorted(Path("C:/LLVM").glob("*/bin"), reverse=True) if IS_WINDOWS else \
+            sorted(Path("/usr/lib").glob("llvm-*/bin"), reverse=True)
+        for home in homes:
+            for name in names:
+                for ext in ("", ".exe"):
+                    if (home / (name + ext)).is_file():
+                        found = ("llvm-symbolizer", str(home / (name + ext)))
+                        break
+                if found:
+                    break
+            if found:
+                break
+    if not found:
+        path = shutil.which("addr2line")
+        if path:
+            found = ("addr2line", path)
+    _symbolizer_cache.append(found)
+    return found
+
+
+def backtrace_blocks(lines: list[str]) -> list[tuple[int, int]]:
+    """The (first, end) line indexes of each backtrace block a panic wrote: its
+    header line and the frame lines after it."""
+    blocks = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip() == BACKTRACE_HEADER:
+            j = i + 1
+            while j < len(lines) and BACKTRACE_FRAME.match(lines[j]):
+                j += 1
+            blocks.append((i, j))
+            i = j
+        else:
+            i += 1
+    return blocks
+
+
+def without_backtrace(text: str) -> str:
+    """Stderr without its backtrace blocks, as a test's .err file is compared:
+    frames hold addresses, which no file can pin."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    for first, end in reversed(backtrace_blocks(lines)):
+        del lines[first:end]
+    return "\n".join(lines)
+
+
+def symbolize(exe: Path, offsets: list[int]) -> list[list[tuple[str, str]]] | None:
+    """For each offset (an address in exe, relative to its load base) the
+    (function, 'file:line') entries, innermost inlined one first; or None
+    when no symboliser worked."""
+    tool = find_symbolizer()
+    if not tool:
+        return None
+    kind, path = tool
+    try:
+        if kind == "llvm-symbolizer":
+            cmd = [path, f"--obj={exe}", "--relative-address", "-f", "-i", "-C"]
+            done = subprocess.run(cmd, input="".join(f"0x{a:x}\n" for a in offsets),
+                                  capture_output=True, text=True, timeout=120)
+            if done.returncode != 0:
+                return None
+            groups = done.stdout.replace("\r\n", "\n").split("\n\n")
+            result = []
+            for group in groups[:len(offsets)]:
+                rows = group.strip("\n").split("\n")
+                result.append([(rows[k], rows[k + 1]) for k in range(0, len(rows) - 1, 2)
+                               if rows[k] and not rows[k].startswith("?? ")])
+            return result if len(result) == len(offsets) else None
+        result = []
+        for a in offsets:
+            done = subprocess.run([path, "-f", "-i", "-C", "-e", str(exe), f"0x{a:x}"],
+                                  capture_output=True, text=True, timeout=60)
+            if done.returncode != 0:
+                return None
+            rows = done.stdout.replace("\r\n", "\n").strip("\n").split("\n")
+            result.append([(rows[k], rows[k + 1]) for k in range(0, len(rows) - 1, 2)
+                           if rows[k] != "??"])
+        return result
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def tidy_location(location: str) -> str:
+    """'file:line' as a symboliser prints it, with no column and only the
+    file's own name."""
+    m = re.match(r"^(.*?):(\d+)(?::\d+)?$", location)
+    if not m:
+        return location
+    return f"{m.group(1).replace(chr(92), '/').rsplit('/', 1)[-1]}:{m.group(2)}"
+
+
+def symbolised_block(frames: list[str], exe: Path) -> list[str]:
+    """A backtrace block's lines, 'stack backtrace:' first, with each frame of
+    exe written 'N: function at file:line' (the frames inlined into it follow,
+    the inlined ones marked) and the rest as the program wrote them. With no
+    symboliser that works, the raw lines and one note."""
+    parsed = [BACKTRACE_FRAME.match(line) for line in frames]
+    ours = [m for m in parsed if m and m.group(3).lower() == exe.name.lower()]
+    note = None
+    named: dict[int, list[tuple[str, str]]] = {}
+    if ours:
+        # A frame is a return address: the call itself is the byte before
+        found = symbolize(exe, [max(int(m.group(4), 16) - 1, 0) for m in ours])
+        if found is None:
+            note = ("no symbolizer worked (llvm-symbolizer, or addr2line on Linux),"
+                    " so the frames are raw")
+        else:
+            for m, entries in zip(ours, found):
+                named[int(m.group(1))] = entries
+    out = [BACKTRACE_HEADER]
+    for line, m in zip(frames, parsed):
+        entries = named.get(int(m.group(1))) if m else None
+        if not entries:
+            out.append(line.rstrip())
+            continue
+        for k, (func, location) in enumerate(entries):
+            tag = " (inlined)" if k < len(entries) - 1 else ""
+            label = m.group(1) if k == 0 else " " * len(m.group(1))
+            where = "" if location.startswith("??") else f" at {tidy_location(location)}"
+            out.append(f"  {label}: {func}{where}{tag}")
+    if note:
+        out.append(f"  (note: {note})")
+    return out
+
+
+def show_stderr(text: str, exe: Path) -> str:
+    """A program's stderr as shown to a person: each backtrace block named."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    for first, end in reversed(backtrace_blocks(lines)):
+        lines[first:end] = symbolised_block(lines[first + 1:end], exe)
+    return "\n".join(lines)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     pkg = lone_package(Path(args.file)) if args.file else current_package()
     if pkg.output != "executable":
@@ -2801,7 +2960,29 @@ def cmd_run(args: argparse.Namespace) -> int:
                          f" 'congo build' builds it")
     exe = build(pkg, "release" if args.release else "debug")
     say("Running", shown(exe))
-    code = subprocess.run([str(exe), *args.args]).returncode
+    # Its stderr passes through as it comes, except a panic's backtrace block,
+    # which is held until it ends and written named
+    proc = subprocess.Popen([str(exe), *args.args], env=child_env(), stderr=subprocess.PIPE)
+    block: list[str] | None = None
+
+    def flush_block() -> None:
+        nonlocal block
+        if block is not None:
+            print("\n".join(symbolised_block(block, exe)), file=sys.stderr, flush=True)
+            block = None
+
+    for raw in proc.stderr:
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        if block is not None and BACKTRACE_FRAME.match(line):
+            block.append(line)
+            continue
+        flush_block()
+        if line.strip() == BACKTRACE_HEADER:
+            block = []
+            continue
+        print(line, file=sys.stderr, flush=True)
+    flush_block()
+    code = proc.wait()
     note = dll_note(code, exe)
     if note:
         print(note.lstrip("\n"), file=sys.stderr)
@@ -2963,6 +3144,27 @@ def expected_exit(program: Path) -> int:
     except ValueError:
         raise CongoError(f"{shown(path)} must hold one integer, the exit status the"
                          f" test ends with; it holds {text!r}") from None
+
+
+def test_timeout(program: Path) -> int:
+    """tests/<name>.timeout holds the seconds this test may run, where it needs
+    more than TEST_TIMEOUT: one positive whole number, as `.exit` holds one."""
+    path = program.with_suffix(".timeout")
+    if not path.is_file():
+        return TEST_TIMEOUT
+    text = path.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9]{1,6}", text) or int(text) == 0:
+        raise CongoError(f"{shown(path)} must hold one positive whole number, the"
+                         f" seconds the test may run; it holds {text!r}")
+    return int(text)
+
+
+def last_lines(text: str, count: int = 40) -> str:
+    """The last `count` lines of text, with a line saying how many came before."""
+    lines = text.rstrip("\n").split("\n")
+    if len(lines) <= count:
+        return "\n".join(lines)
+    return "\n".join([f"({len(lines) - count} earlier lines left out)"] + lines[-count:])
 
 
 def debug_only(program: Path) -> bool:
@@ -3229,7 +3431,8 @@ def run_program(exe: Path, cwd: Path, timeout: float, label: str = "",
     (Debuggee), so that a crash, a panic's above all, ends at once."""
     if not IS_WINDOWS:
         proc = subprocess.Popen([str(exe)], cwd=cwd, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=child_env())
         try:
             out, err = proc.communicate(timeout=timeout)
             return subprocess.CompletedProcess([str(exe)], proc.returncode, out, err)
@@ -3240,7 +3443,7 @@ def run_program(exe: Path, cwd: Path, timeout: float, label: str = "",
             return subprocess.CompletedProcess([str(exe)], None, out or b"", err or b"")
     process = subprocess.Popen([str(exe)], cwd=cwd, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               env=dict(os.environ, **Debuggee.ENVIRONMENT),
+                               env=dict(child_env(), **Debuggee.ENVIRONMENT),
                                creationflags=Debuggee.DEBUG_ONLY_THIS_PROCESS)
     debugger = Debuggee(process)
     # Its outputs are read on a thread of their own, both at once, while this
@@ -3272,22 +3475,26 @@ def run_test(session: Session, file: Path, bless: bool, pkg: Package | None = No
     exe = build_program(session, file, into)
     # Run in its own build folder, so a file it writes by a relative name
     # lands there and not in the package's source
-    ran = run_program(exe, into, TEST_TIMEOUT,
+    limit = test_timeout(file)
+    ran = run_program(exe, into, limit,
                       f"{pkg.name}-{file.stem}" if pkg else file.stem,
                       pkg.root if pkg else None)
     if ran.returncode is None:
         # What it wrote to stderr says how far it got: a panic's line, say,
         # before an end that never came
-        err = ran.stderr.decode("utf-8", errors="replace")
-        return False, (f"timed out after {TEST_TIMEOUT} seconds"
-                       + (f"\nstderr:\n{indent(err, '  ')}" if err.strip() else ""))
+        err = show_stderr(ran.stderr.decode("utf-8", errors="replace"), exe)
+        return False, (f"timed out after {limit} seconds"
+                       + (f"\nstderr:\n{indent(last_lines(err), '  ')}" if err.strip() else ""))
     # A program that could not start has nothing to compare, and this line is
     # how a person learns why (no dialog says so)
     not_started = dll_note(ran.returncode, exe)
     if not_started:
         return False, not_started.lstrip("\n")
     stdout = ran.stdout.decode("utf-8", errors="replace")
-    stderr = ran.stderr.decode("utf-8", errors="replace")
+    shown_stderr = ran.stderr.decode("utf-8", errors="replace")
+    # The backtrace a panic writes holds addresses, so what is compared is
+    # stderr without it; what is shown has it named
+    stderr = without_backtrace(shown_stderr)
     # A test that exits with SKIP_STATUS (testing.skip) ran no checks, so it is
     # neither passed nor failed, and nothing is compared or blessed: None, and
     # why, the last line it printed. A test whose .exit holds the status, a
@@ -3342,7 +3549,7 @@ def run_test(session: Session, file: Path, bless: bool, pkg: Package | None = No
                                         tofile="actual", lineterm="", n=2)
             problems.append("stderr differs:\n" + indent("\n".join(diff), "  "))
     if problems and stderr.strip() and not err_checked:
-        problems.append("stderr:\n" + indent(stderr, "  "))
+        problems.append("stderr:\n" + indent(show_stderr(shown_stderr, exe), "  "))
     return not problems, "\n".join(problems)
 
 
