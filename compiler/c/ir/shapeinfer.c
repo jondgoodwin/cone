@@ -1985,6 +1985,11 @@ int shapeKeepRecordable(StructNode *st) {
         if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld) || structIsWholeEnumMethod(*nodesp))
             continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
+        // The drop the compiler gives a type that owns something (a String field) is no method a
+        // trait dispatches to, and its body is not checked here: a value's own death frees its
+        // storage and no borrow of it outlives that (as the flow check treats it)
+        if (meth->namesym == typeDropName)
+            continue;
         if (meth->genericinfo || meth->where || (meth->flags & FlagInline) || inodeIsPrivate((INode *)meth)
             || meth->vtype == NULL || meth->vtype->tag != FnSigTag)
             continue;
