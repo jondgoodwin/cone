@@ -1,0 +1,86 @@
+// Bug 92 (lane 461, row 335). A method's result borrowed from its receiver, called through a
+// virtual reference ('&<mut Trait'), is tied to the value behind the reference like any elided
+// return (Jon's elision model, the same rule as a call on a plain '&mut' receiver). While the
+// result is held, a call that may reshape that value is refused: the String it views may be
+// moved or freed. The trait hides the type, so a value that might change shape is assumed. A
+// reference marked '+ ShapeKeeping' keeps what the caller borrowed elsewhere, but cannot keep a
+// borrow into the value's own state: the type is refused at the coercion if the trait lends from
+// its receiver and a method of the type reshapes the receiver's own state.
+
+mod collection_flow_virtual_return_tie;
+
+import collections use *;
+
+trait Viewer {
+  pub fn view(self: &mut) &str;
+  pub fn grow(self: &mut);
+}
+
+struct Rd is Viewer {
+  pub buf: String;
+  pub fn view(self: &mut) &str { self.buf.view() }
+  pub fn grow(self: &mut) { self.buf.append("0123456789012345678901234567890123456789"); }
+}
+
+// A plain '&mut' receiver: refused (the base case this rule extends)
+fn plain(x: &mut Rd) usize {
+  let v = x.view();
+  x.grow();                                                  //~ ErrorShapeReshape
+  v.len
+}
+
+// The same through '&<mut Viewer'
+fn virt(x: &<mut Viewer) usize {
+  let v = x.view();
+  x.grow();                                                  //~ ErrorShapeReshape
+  v.len
+}
+
+// A virtual reference made from a '&mut Rd', the value still reached by its own name
+fn byName(r: &mut Rd) usize {
+  let x: &<mut Viewer = r;
+  let v = x.view();
+  r.grow();                                                  //~ ErrorShapeReshape
+  v.len
+}
+
+// The result is not used after the call: accepted
+fn done(x: &<mut Viewer) usize {
+  let n = x.view().len;
+  x.grow();
+  n
+}
+
+// A generic over the trait, called through a '&mut': refused at the instance
+fn generic[S: Viewer](x: &mut S) usize {
+  let v = x.view();
+  x.grow();                                                  //~ ErrorShapeReshape
+  v.len
+}
+
+// '+ ShapeKeeping' on a trait that lends from its receiver: a type that reshapes its own state
+// is refused where it becomes the reference
+trait Peek {
+  pub fn view(self: &mut) &str;
+  pub fn grow(self: &mut);
+}
+struct Rd2 is Peek {
+  pub buf: String;
+  pub fn view(self: &mut) &str { self.buf.view() }
+  pub fn grow(self: &mut) { self.buf.append("0123456789012345678901234567890123456789"); }
+}
+fn marked(x: &<mut Peek + ShapeKeeping) usize { x.view().len }
+fn makeMarked() usize {
+  var r = Rd2(String());
+  marked(&mut r)                                             //~ ErrorNotShapeKeeping
+}
+
+fn main() {
+  var r = Rd(String());
+  plain(&mut r);
+  virt(&mut r);
+  byName(&mut r);
+  done(&mut r);
+  generic(&mut r);
+  makeMarked();
+}
