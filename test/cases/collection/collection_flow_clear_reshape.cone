@@ -1,0 +1,118 @@
+// Bug 93 (row 353). 'clear', 'truncate', 'remove', 'pop' and 'swapRemove' of a collection finalize
+// the elements they drop, or move one out to a caller that may drop it, freeing the bytes a view
+// into 'r' taken through a reborrow may point at. None of them writes a field of the collection,
+// so a type none of whose functions did was never marked as one that changes shape, and the call
+// was accepted: each of these read freed memory under ASan before the fix, written inline on the
+// field, through a free function handed '&mut r.items', and through a method of another type.
+
+mod collection_flow_clear_reshape;
+
+import collections use *;
+
+struct Inner { pub s: String; pub k: i32; }
+
+fn mkS() String { var s = String(); s.append("0123456789012345678901234567890123456789"); s }
+
+struct RdString { pub items: List[String]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].view() } }
+struct RdLast { pub items: List[String]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[1usize].view() } }
+struct RdInner { pub items: List[Inner]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].s.view() } }
+struct RdDict { pub m: Dict[String, String]; pub n: i32;
+  pub fn view(self: &mut) &str { self.m.get("k").unwrap().view() } }
+
+struct Clearer { pub k: i32;
+  pub fn clearAll(self: &Clearer, l: &mut List[String]) { l.clear(); } }
+
+fn clearList(l: &mut List[String]) { l.clear(); }
+fn truncList(l: &mut List[String]) { l.truncate(0usize); }
+fn clearDict(d: &mut Dict[String, String]) { d.clear(); }
+
+fn inlineClear(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  r.items.clear();                                      //~ ErrorShapeReshape "'clear' reshapes the 'RdString' it is called on"
+  v[0usize]
+}
+
+fn inlineClearInner(r: &mut RdInner) u8 {
+  let y: &mut RdInner = r;
+  let v = y.view();
+  r.items.clear();                                      //~ ErrorShapeReshape "'clear' reshapes the 'RdInner' it is called on"
+  v[0usize]
+}
+
+fn freeClear(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  clearList(&mut r.items);                              //~ ErrorShapeReshape "'clearList' is handed something that reaches a 'RdString'"
+  v[0usize]
+}
+
+fn methClear(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  let c = Clearer(1);
+  c.clearAll(&mut r.items);                             //~ ErrorShapeReshape "'clearAll' is handed something that reaches a 'RdString'"
+  v[0usize]
+}
+
+fn inlineTruncate(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  r.items.truncate(0usize);                             //~ ErrorShapeReshape "'truncate' reshapes the 'RdString' it is called on"
+  v[0usize]
+}
+
+fn freeTruncate(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  truncList(&mut r.items);                              //~ ErrorShapeReshape "'truncList' is handed something that reaches a 'RdString'"
+  v[0usize]
+}
+
+fn inlineRemove(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  r.items.remove(0usize);                               //~ ErrorShapeReshape "'removeOne' reshapes the 'RdString' it is called on"
+  v[0usize]
+}
+
+fn inlineRemoveRange(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  r.items.remove(0usize, 1usize);                       //~ ErrorShapeReshape "'removeRange' reshapes the 'RdString' it is called on"
+  v[0usize]
+}
+
+fn inlineSwapRemove(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  r.items.swapRemove(0usize);                           //~ ErrorShapeReshape "'swapRemove' reshapes the 'RdString' it is called on"
+  v[0usize]
+}
+
+fn inlinePop(r: &mut RdLast) u8 {
+  let y: &mut RdLast = r;
+  let v = y.view();
+  r.items.pop();                                        //~ ErrorShapeReshape "'pop' reshapes the 'RdLast' it is called on"
+  v[0usize]
+}
+
+fn inlineDictClear(r: &mut RdDict) u8 {
+  let y: &mut RdDict = r;
+  let v = y.view();
+  r.m.clear();                                          //~ ErrorShapeReshape "'clear' reshapes the 'RdDict' it is called on"
+  v[0usize]
+}
+
+fn freeDictClear(r: &mut RdDict) u8 {
+  let y: &mut RdDict = r;
+  let v = y.view();
+  clearDict(&mut r.m);                                  //~ ErrorShapeReshape "'clearDict' is handed something that reaches a 'RdDict'"
+  v[0usize]
+}
+
+fn main() {
+}
