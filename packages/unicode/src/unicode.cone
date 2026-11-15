@@ -15,6 +15,10 @@
 //   isAlphabetic   the Alphabetic property (letters, letter numbers, some marks)
 //   isNumeric      general category Nd, Nl or No
 //   isWhitespace   the White_Space property (the 25 code points; not U+200B)
+//   isWordChar / isDecimalDigit   the sets of a regex's Unicode '\w' (Alphabetic, marks, Nd,
+//                  Pc, Join_Control) and '\d' (Nd); '\s' is isWhitespace. classRunCount /
+//                  classRunStart / classRunBits give the table's runs for building classes.
+//                  The table is 1686 runs, 8.4 KB.
 //   isUpper        the Uppercase property;  isLower  the Lowercase property
 //   toUpperSimple / toLowerSimple   UnicodeData's simple one-to-one mapping; a
 //                  char with none is given back. U+00DF stays U+00DF in
@@ -78,6 +82,28 @@ pub fn isUpper(c: char) bool { (flags(c) & 2u8) != 0u8 }
 pub fn isLower(c: char) bool { (flags(c) & 4u8) != 0u8 }
 pub fn isWhitespace(c: char) bool { (flags(c) & 8u8) != 0u8 }
 pub fn isNumeric(c: char) bool { (flags(c) & 16u8) != 0u8 }
+
+// The regex classes (classStarts / classVals): bit 1 word, 2 decimal digit, 4 white space
+fn classBits(c: char) u8 {
+  classVals[runOf(&classStarts, code(c))]
+}
+
+// Whether c is a word character as UTS #18 Annex C and Rust's regex '\w' have it:
+// Alphabetic, a mark (general category M), Nd, Pc (connector punctuation such as '_')
+// or Join_Control (U+200C and U+200D)
+pub fn isWordChar(c: char) bool { (classBits(c) & 1u8) != 0u8 }
+
+// Whether c is a decimal digit: general category Nd, as Rust's regex '\d' (not Nl or No,
+// which isNumeric adds)
+pub fn isDecimalDigit(c: char) bool { (classBits(c) & 2u8) != 0u8 }
+
+// The runs of the regex-class table, for a program that builds a range set from it: how
+// many there are, the first code point of run i, and its bits (1 word, 2 Nd, 4 White_Space,
+// as isWordChar, isDecimalDigit and isWhitespace answer). Run i ends before run i + 1.
+pub fn classRunCount() usize { runCount(&classStarts) }
+fn runCount(starts: &Array[u32]) usize { starts.len() }
+pub fn classRunStart(i: usize) u32 { classStarts[i] }
+pub fn classRunBits(i: usize) u8 { classVals[i] }
 
 fn shifted(x: u32, delta: i32) char {
   char.from(u32.from(i64.from(x) + i64.from(delta)))
