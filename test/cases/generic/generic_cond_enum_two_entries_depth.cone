@@ -1,0 +1,35 @@
+// An enum with two conditional 'is' entries, the second naming an instance of a generic trait, in a chain that
+// does not stop on its own ('lift' makes Wrap[Opt[R]] from Wrap[R] and 'deep' recurses): ErrorInstDepth refuses it
+// where the second entry's instance would nest past the limit, and that is the only refusal. The first entry,
+// taken in after it (the walk is backwards), used to be left behind as a field holding its trait by value, and the
+// refused instance was reported as unsized as well (ErrorNoSize, "Opt has no size because its field _ has type Tg").
+mod generic_cond_enum_two_entries_depth;
+import stdio use *;
+
+trait Tg { fn tg(self: &Self) i64; }
+trait Dz[X] { fn dz(n: i64) Result[X, i64]; }   //~ ErrorInstDepth:35 "nested more than 256 deep"
+pub enum Opt[T] is Tg if T is Tg, Dz[Opt[T]] if T is Dz[T] { Sm(T); No;
+  pub fn tg(self: &Opt[T]) i64 where T is Tg { 1 }
+  pub fn dz(n: i64) Result[Opt[T], i64] where T is Dz[T] { Ok[Opt[T], i64](No[T]) }
+}
+struct S is Dz[S], Tg { pub a: i64;
+  pub fn dz(n: i64) Result[S, i64] { Ok[S, i64](S(1)) }
+  pub fn tg(self: &S) i64 { 1 }
+}
+
+struct Wrap[R] {
+  v: R;
+
+  pub fn lift(self: &Wrap[R]) Wrap[Opt[R]] {
+    Wrap[Opt[R]](Opt.Sm[R](self.v))
+  }
+
+  pub fn deep(self: &Wrap[R]) i64 {
+    self.lift().deep()
+  }
+}
+
+fn main() {
+  let w = Wrap[S](S(5));
+  printInt(w.deep());
+}

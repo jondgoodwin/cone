@@ -1,0 +1,119 @@
+// A generic enum with a conditional 'is' entry, 'is Tag if T is Tag', whose trait asks for a method, held
+// by value inside a recursive layout through an argument that is still being laid out. The entry's
+// condition on such an argument is answered by what the argument declares: laying the argument out
+// to compare its methods, inside the layout asking, found the layout in flight (ErrorNoSize, "infinite size").
+//   - a struct holding a List of an Opt of itself, and an owning reference to an Opt of a List of Opt of it;
+//   - a struct holding an Opt of a List of the enum whose variant holds that struct, written struct-first and
+//     enum-first (the argument was laid out in the middle of the struct's layout in the first order);
+// and where nothing is in flight the entry is decided in full: Opt[Leaf] is Tag (Leaf declares it) and
+// Opt[Plain] is not (Plain does not), so 'need' takes the first and its 'tag' exists only there. Checked by hand:
+//   Node tree: root holds Sm(one), No, Sm(two) and one holds No: 3 present nodes, 2 absent slots
+//   each of the two enum shapes holds two Lf(7) leaves, summing 7 + 7 = 14
+//   need(Opt[Leaf]) is Opt.tag = 5 (the written body); the Opt[Plain] is only read: its payload 3
+
+mod generic_cond_enum_recursive_layout;
+
+import stdio use *;
+import collections use *;
+
+trait Tag { fn tag(self: &Self) i64; }
+
+pub enum Opt[T] is Tag if T is Tag {
+  Sm(T);
+  No;
+  pub fn tag(self: &Opt[T]) i64 where T is Tag { 5 }
+}
+use Opt;
+
+struct Node {
+  pub id: i64;
+  pub kids: List[Opt[Node]];
+}
+
+fn present(n: &Node) i64 {
+  var s = 1i64;
+  each k in &n.kids {
+    match k {
+      case let Sm(c) { s = s + present(c); }
+      else { }
+    }
+  }
+  s
+}
+
+fn absent(n: &Node) i64 {
+  var s = 0i64;
+  each k in &n.kids {
+    match k {
+      case let Sm(c) { s = s + absent(c); }
+      else { s = s + 1; }
+    }
+  }
+  s
+}
+
+// the struct written above its enum, then below it
+struct OptW1 { pub maybe: Opt[List[W1]]; }
+enum W1 { Lf1(i64); Hold1(OptW1); }
+use W1;
+
+enum W2 { Lf2(i64); Hold2(OptW2); }
+struct OptW2 { pub maybe: Opt[List[W2]]; }
+use W2;
+
+fn sum1(w: &W1) i64 {
+  match w {
+    case let Lf1(n) { *n }
+    case let Hold1(o) {
+      match &o.maybe {
+        case let Sm(l) { var s = 0i64; each x in &*l { s = s + sum1(x); } s }
+        else { 0 }
+      }
+    }
+  }
+}
+
+fn sum2(w: &W2) i64 {
+  match w {
+    case let Lf2(n) { *n }
+    case let Hold2(o) {
+      match &o.maybe {
+        case let Sm(l) { var s = 0i64; each x in &*l { s = s + sum2(x); } s }
+        else { 0 }
+      }
+    }
+  }
+}
+
+struct Leaf is Tag { pub a: i64; pub fn tag(self: &Leaf) i64 { a } }
+struct Plain { pub a: i64; }
+
+fn need[X](x: &X) i64 where X is Tag { x.tag() }
+
+fn main() {
+  var root = Node(1, List[Opt[Node]]());
+  var one = Node(11, List[Opt[Node]]());
+  one.kids.push(No);
+  root.kids.push(Sm(one));
+  root.kids.push(No);
+  root.kids.push(Sm(Node(2, List[Opt[Node]]())));
+  printInt(present(&root)); printStr(" present, ");
+  printInt(absent(&root)); printStr(" absent\n");
+
+  var l1 = List[W1]();
+  l1.push(Lf1(7));
+  l1.push(Lf1(7));
+  let w1 = Hold1(OptW1(Sm(l1)));
+  printInt(sum1(&w1)); printStr("\n");
+  var l2 = List[W2]();
+  l2.push(Lf2(7));
+  l2.push(Lf2(7));
+  let w2 = Hold2(OptW2(Sm(l2)));
+  printInt(sum2(&w2)); printStr("\n");
+
+  let ol: Opt[Leaf] = Sm(Leaf(3));
+  printInt(need(&ol)); printStr("\n");
+  let op: Opt[Plain] = Sm(Plain(3));
+  match &op { case let Sm[Plain](p) { printInt(p.a); } else { } }
+  printStr("\n");
+}

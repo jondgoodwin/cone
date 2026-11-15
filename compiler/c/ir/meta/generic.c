@@ -2041,15 +2041,19 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
         return 0;
     // Fitting it: 'structMatches' is the structural subtype test a trait's
     // uses are made by, under the constraint monomorphization asks for. What
-    // it compares is the type's members, so an instance's are decided first
-    if (strnode->latewhere)
+    // it compares is the type's members, so an instance's are decided first --
+    // but not while a layout is in flight and an argument is unsettled: deciding
+    // them lays that argument out (genericLateWhereNow), inside the layout, and
+    // an argument that holds the layout's own type finds it in flight
+    // ('Opt[List[W]]' inside the struct a variant of W holds)
+    Nodes *instargs = itypeInstanceTypeArgs(dcl);
+    if (strnode->latewhere && !(structLayoutInFlight() && instargs && genericArgsUnsettled(instargs)))
         genericLateWhereNow(strnode);
     // An instance one of whose arguments is still being laid out
     // ('Wrap[Box[Grouped]]' inside Grouped) has members not yet known to exist
     // (those whose 'where' waits), and comparing them would lay the instance out
     // inside that layout: it is no evidence of a fit, and fits only by declaring
     // the trait. The queue decides its members later and asks again
-    Nodes *instargs = itypeInstanceTypeArgs(dcl);
     if (strnode->latewhere || (instargs && genericArgsUnsettled(instargs)))
         return 0;
     genericDemandMatch(trait, strnode);
