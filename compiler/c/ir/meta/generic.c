@@ -1842,6 +1842,11 @@ static int genericTraitIsMarker(StructNode *trait) {
 }
 
 // Does this type's 'is' list name the trait, or name a trait that names it?
+static int genericDeclaresByEntry(StructNode *inst, StructNode *trait) {
+    Nodes *targs = itypeInstanceTypeArgs((INode*)trait);
+    return targs && targs->used == 1 && itypeGetTypeDcl(nodesGet(targs, 0)) == (INode*)inst
+        && genericDeclaresSelfByEntry(inst, trait);
+}
 static int genericDeclares(StructNode *type, StructNode *trait, int depth) {
     if (type->traits == NULL || depth > 8)
         return 0;
@@ -2036,6 +2041,11 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
         return 0;
     StructNode *strnode = (StructNode*)dcl;
     if (strnode == trait || genericDeclares(strnode, trait, 0))
+        return 1;
+    // An instance's entry for an instance of a generic trait joins its trait list only when its
+    // type check takes the placeholder in, so an instance not yet checked is answered from its
+    // generic's 'is' entries instead, by declaration
+    if (genericDeclaresByEntry(strnode, trait))
         return 1;
     if (genericTraitIsMarker(trait))
         return 0;
@@ -2479,6 +2489,36 @@ static WhereValue genericEntryValue(INode *generic, INode *cond, Nodes *parms, N
     WhereValue value = genericConditionValue(cond, parms, args, 0);
     genericAskerLeave(&asker);
     return value;
+}
+
+// Does this instance's generic declare, by an 'is' entry, that the instance is the instance of a
+// generic trait 'trait' is, of itself ('List[T] is Deserialize[List[T]] if T is Deserialize[T]')
+// where the entry's condition holds at the instance's arguments? Answered from the declaration
+// alone, with no layout, so it does not depend on whether the instance has been checked yet.
+int genericDeclaresSelfByEntry(StructNode *inst, StructNode *trait) {
+    StructNode *tmpl = genericTemplateOf(inst);
+    StructNode *traittmpl = genericTemplateOf(trait);
+    Nodes *args = itypeInstanceTypeArgs((INode*)inst);
+    if (tmpl == NULL || tmpl->condis == NULL || traittmpl == NULL || args == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(tmpl->condis, cnt, nodesp)) {
+        FieldDclNode *entry = (FieldDclNode*)*nodesp;
+        if (genericNamedGenericTrait(entry->vtype) != traittmpl)
+            continue;
+        // The entry names the trait of the generic itself, 'Deserialize[List[T]]'
+        Nodes *eargs = ((FnCallNode*)entry->vtype)->args;
+        if (eargs == NULL || eargs->used != 1)
+            continue;
+        INode *earg = nodesGet(eargs, 0);
+        INode *ehead = earg->tag == FnCallTag ? ((FnCallNode*)earg)->objfn : earg;
+        if (!isNameUseNode(ehead) || nameUseGetDcl((NameUseNode*)ehead) != (INode*)tmpl)
+            continue;
+        if (genericEntryValue((INode*)tmpl, entry->value, tmpl->genericinfo->parms, args) == WhereTrue)
+            return 1;
+    }
+    return 0;
 }
 
 // Whether the condition of a type-fact '#if' holds, once a clone has put the

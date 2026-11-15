@@ -1,0 +1,24 @@
+// A declared record's field of a nested instance type is Deserialize where the bound deserializeValue is checked by
+// says so, wherever the nested instance was first named: List[List[i32]], Dict[String, List[Pt]] and List[Pt] are
+// accepted as fields (the field check once refused them, 1341, when the inner instance was not yet checked). A field
+// whose element is not Deserialize (List[Plain]) is still refused, naming the field.
+
+mod meta_deserialize_nested_field;
+
+import collections use *;
+
+struct Plain { pub a: i32; }
+struct Pt is Serialize, Deserialize[Pt] { pub x: i32; pub y: i32; }
+
+struct Nested is Serialize, Deserialize[Nested] {
+  pub grid: List[List[i32]];
+  pub groups: Dict[String, List[Pt]];
+  pub pts: List[Pt];
+}
+
+struct Bad is Deserialize[Bad] { pub xs: List[Plain]; }   //~ ErrorSerializeField "its field xs is List"
+
+// recursive: a nested instance of the record itself, declared before and after a user of it
+struct User is Serialize, Deserialize[User] { pub h: H; pub g: G; }
+struct H is Serialize, Deserialize[H] { pub id: i64; pub kids: List[List[H]]; }
+struct G is Serialize, Deserialize[G] { pub id: i64; pub kids: List[List[G]]; }
