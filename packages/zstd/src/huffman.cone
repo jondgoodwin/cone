@@ -191,30 +191,52 @@ struct HufTable is Default {
     let mb = maxBits;
     let len4 = regen - 3usize * seg;
     let g = 56u32 / mb;
-    let sh = u64.from(64u32 - mb);
+    let sh = u64.from(64u32 - mb) & 63u64;
+    let ep = entries.view() as *u16;
+    let p1 = op;
+    let p2 = op + seg;
+    let p3 = op + 2usize * seg;
+    let p4 = op + 3usize * seg;
     var i = 0usize;
     while i + usize.from(g) <= len4 {
       s1.refillSeq(src);
       s2.refillSeq(src);
       s3.refillSeq(src);
       s4.refillSeq(src);
+      // 'acc' stays as it is through a group; only the counts of held bits move
+      let a1 = s1.acc;
+      let a2 = s2.acc;
+      let a3 = s3.acc;
+      let a4 = s4.acc;
+      // k = 64 - n, the bits of 'acc' already taken (n is 8 to 63 here), so
+      // 'acc << k' puts the next bit on top; the '& 63' only tells the compiler
+      // the shift is in range. The index is the top maxBits bits of a 64-bit
+      // value, so below 2^maxBits = entries.len.
+      var k1 = 64u64 - u64.from(s1.n);
+      var k2 = 64u64 - u64.from(s2.n);
+      var k3 = 64u64 - u64.from(s3.n);
+      var k4 = 64u64 - u64.from(s4.n);
       var j = 0u32;
       while j < g {
-        let e1 = *entries[usize.from(u32.from((s1.acc << u64.from(64u32 - s1.n)) >> sh))];
-        let e2 = *entries[usize.from(u32.from((s2.acc << u64.from(64u32 - s2.n)) >> sh))];
-        let e3 = *entries[usize.from(u32.from((s3.acc << u64.from(64u32 - s3.n)) >> sh))];
-        let e4 = *entries[usize.from(u32.from((s4.acc << u64.from(64u32 - s4.n)) >> sh))];
-        s1.n = s1.n - u32.from(e1 >> 8u16);
-        s2.n = s2.n - u32.from(e2 >> 8u16);
-        s3.n = s3.n - u32.from(e3 >> 8u16);
-        s4.n = s4.n - u32.from(e4 >> 8u16);
-        mem.writeRaw[u8](op + i, u8.from(e1 & 0xFFu16));
-        mem.writeRaw[u8](op + (seg + i), u8.from(e2 & 0xFFu16));
-        mem.writeRaw[u8](op + (2usize * seg + i), u8.from(e3 & 0xFFu16));
-        mem.writeRaw[u8](op + (3usize * seg + i), u8.from(e4 & 0xFFu16));
+        let e1 = u64.from(mem.readRaw[u16](ep + usize.from((a1 << (k1 & 63u64)) >> sh)));
+        let e2 = u64.from(mem.readRaw[u16](ep + usize.from((a2 << (k2 & 63u64)) >> sh)));
+        let e3 = u64.from(mem.readRaw[u16](ep + usize.from((a3 << (k3 & 63u64)) >> sh)));
+        let e4 = u64.from(mem.readRaw[u16](ep + usize.from((a4 << (k4 & 63u64)) >> sh)));
+        k1 = k1 + (e1 >> 8u64);
+        k2 = k2 + (e2 >> 8u64);
+        k3 = k3 + (e3 >> 8u64);
+        k4 = k4 + (e4 >> 8u64);
+        mem.writeRaw[u8](p1 + i, u8.from(e1 & 0xFFu64));
+        mem.writeRaw[u8](p2 + i, u8.from(e2 & 0xFFu64));
+        mem.writeRaw[u8](p3 + i, u8.from(e3 & 0xFFu64));
+        mem.writeRaw[u8](p4 + i, u8.from(e4 & 0xFFu64));
         i = i + 1usize;
         j = j + 1u32;
       }
+      s1.n = u32.from(64u64 - k1);
+      s2.n = u32.from(64u64 - k2);
+      s3.n = u32.from(64u64 - k3);
+      s4.n = u32.from(64u64 - k4);
     }
     if !self.finish(src, &mut s1, op, 0usize, i, seg) { return false; }
     if !self.finish(src, &mut s2, op, seg, i, seg) { return false; }
