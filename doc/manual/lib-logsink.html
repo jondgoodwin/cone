@@ -16,7 +16,7 @@
 	<p>The <span class="pre">logsink</span> package is a <a href="lib-trace.html">trace</a> sink that writes each event
 		as one line of text on standard output. It is the quickest way to see what a program logs: install it, and the
 		kinds and log lines your packages emit appear, filtered by level. It writes to the console, or, through
-		<span class="pre">logsink.installFile(path, max)</span>, to a file. There is no rotation and no colour.</p>
+		<span class="pre">logsink.installFile(path, max)</span>, to a file, rotated by size if you ask. There is no colour.</p>
 
 	<h2 id="example">An example</h2>
 <pre>
@@ -90,6 +90,18 @@ fn main() i32 {
 		so a crash loses at most the event in flight. <span class="pre">trace.flush()</span> asks the disk to take the
 		bytes (fsync). A write that fails after the install (disk full) loses its event, is counted, and later events are
 		tried again; <span class="pre">FileLog.failures()</span> says how many have failed.</p>
+
+	<p><span class="pre">installRotatingFile(path, max, maxBytes, keep)</span> is the same sink with rotation by size. When a
+		line would take <span class="pre">app.log</span> past <span class="pre">maxBytes</span>, the file is renamed
+		<span class="pre">app.log.1</span>, <span class="pre">app.log.1</span> becomes <span class="pre">app.log.2</span> and so
+		on up to <span class="pre">app.log.&lt;keep&gt;</span>, the oldest beyond that is deleted, and a fresh
+		<span class="pre">app.log</span> takes the line. A line is never split across files: one longer than
+		<span class="pre">maxBytes</span> goes alone into a file. <span class="pre">keep</span> 0 keeps no old files and
+		<span class="pre">maxBytes</span> 0 never rotates (<span class="pre">installFile</span> is that case). The rotation
+		happens under the write's mutex, so threads never see a half-rotated log. If the rename is refused (on Windows,
+		another process holds the file open without share-delete) nothing is lost: the file is opened again and keeps
+		taking lines, and the next line tries the rotation again; <span class="pre">FileLog.rotationFailures()</span>
+		counts the refusals and <span class="pre">FileLog.rotations()</span> the rotations done.</p>
 
 	<h2>Comes back in</h2>
 	<ul>
