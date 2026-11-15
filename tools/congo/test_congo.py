@@ -2363,6 +2363,58 @@ class Testing(unittest.TestCase):
                       run.stdout)
         self.assertNotIn("no test or example has", run.stderr)
 
+    def test_a_panics_backtrace_is_named_and_not_compared(self):
+        # Congo sets CONE_BACKTRACE for each test it runs, so a panic writes a
+        # 'stack backtrace:' block. Its addresses are no part of what a .err
+        # file pins, so the panic's line alone passes; where a test fails, the
+        # block is shown with the functions named
+        pkg = self.root / "boomer"
+        write(pkg / "congo.toml",
+              '[package]\nname = "boomer"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "boomer.cone", "mod boomer;\n\npub fn one() i64 { 1i64 }\n")
+        write(pkg / "tests" / "deep.cone", """
+            mod deep;
+
+            import stdio use *;
+
+            fn third(n: i32) i32 {
+              if n > 0 { panic("three calls down"); }
+              n + 1
+            }
+
+            fn second(n: i32) i32 { third(n) + 1 }
+
+            fn first(n: i32) i32 { second(n) + 1 }
+
+            fn main() {
+              printStr("before\\n");
+              printInt(i64.from(first(1i32)));
+            }
+            """)
+        write(pkg / "tests" / "deep.out", "before\n")
+        # Nothing yet says it should end this way: it fails, and says where
+        run = self.congo("test", cwd=pkg, ok=False)
+        self.assertIn("test deep ... FAILED", run.stdout)
+        self.assertIn("panic at deep.cone:6: three calls down", run.stdout)
+        self.assertIn("stack backtrace:", run.stdout)
+        symbolised = re.findall(r"^\s+\d+: (\w+) at deep\.cone:\d+", run.stdout, re.M)
+        if symbolised:
+            for name in ("third", "second", "first"):
+                self.assertIn(name, symbolised)
+        else:
+            # No symbolizer here: the frames are raw, and one note says why
+            self.assertRegex(run.stdout, r"\d+: 0x[0-9a-f]+ \S+\+0x[0-9a-f]+")
+            self.assertIn("no symbolizer", run.stdout)
+        # Blessed, it has its status; with the panic's line pinned it passes,
+        # the frames not being compared
+        (pkg / "tests" / "deep.out").unlink()
+        self.congo("test", "--bless", cwd=pkg)
+        self.assertTrue((pkg / "tests" / "deep.exit").is_file())
+        write(pkg / "tests" / "deep.err", "panic at deep.cone:6: three calls down\n")
+        run = self.congo("test", cwd=pkg)
+        self.assertIn("test deep ... ok", run.stdout)
+        self.assertNotIn("stack backtrace", run.stdout)
+
     def test_a_package_of_debug_only_tests(self):
         # Every test debug-only: in a release test, each is skipped and the
         # run succeeds, for the package and for a folder of packages

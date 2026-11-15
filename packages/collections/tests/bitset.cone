@@ -1,0 +1,137 @@
+// BitSet: a fixed count of flags in 64-bit words. Every expected value is worked
+// out by hand:
+// - BitSet(130) has 3 words (130 / 64 rounded up); flags 0, 63, 64, 65 and 129 sit
+//   at the ends and across the word boundary: five set, summing 0+63+64+65+129 = 321;
+// - setAll on 130 flags counts 130, not 192 (the tail of the last word stays zero),
+//   and the indexes 0..129 sum to 129*130/2 = 8385;
+// - a = {1, 64, 100} and b = {1, 2, 100, 129}: the union is {1, 2, 64, 100, 129}
+//   (5 flags, sum 296), the intersection {1, 100} (2, sum 101), the difference
+//   a - b = {64} (1, sum 64).
+
+mod bitset;
+
+import testing use *;
+import collections use *;
+
+fn total(b: &BitSet) u64 {
+  var it = b.iter();
+  var sum = 0u64;
+  while true {
+    match it.next() {
+      case let Some(i) { sum = sum + u64.from(i); }
+      case is None { return sum; }
+    }
+  }
+  sum
+}
+
+fn howMany(b: &BitSet) usize {
+  var it = b.iter();
+  var n = 0usize;
+  while true {
+    match it.next() {
+      case let Some(i) { n = n + 1usize; }
+      case is None { return n; }
+    }
+  }
+  n
+}
+
+fn main() i32 {
+  var a = BitSet(130usize);
+  expectUInt(u64.from(a.len()), 130, "length");
+  expectUInt(u64.from(a.count()), 0, "new is clear");
+  expectBool(a.isEmpty(), true, "new is empty");
+  expectUInt(u64.from(howMany(&a)), 0, "no flags to visit");
+
+  // The boundaries
+  a.set(0usize); a.set(63usize); a.set(64usize); a.set(65usize); a.set(129usize);
+  expectUInt(u64.from(a.count()), 5, "five set");
+  expectBool(a.get(0usize), true, "0");
+  expectBool(a.get(63usize), true, "63");
+  expectBool(a.get(64usize), true, "64");
+  expectBool(a.get(65usize), true, "65");
+  expectBool(a.get(129usize), true, "len-1");
+  expectBool(a.get(1usize), false, "1");
+  expectBool(a.get(62usize), false, "62");
+  expectBool(a.get(66usize), false, "66");
+  expectBool(a.get(128usize), false, "128");
+  expectUInt(total(&a), 321, "ascending visit sums to 321");
+  expectUInt(u64.from(howMany(&a)), 5, "five visited");
+  // Visited in ascending order
+  var it = a.iter();
+  var want = List[usize]();
+  want.push(0usize); want.push(63usize); want.push(64usize); want.push(65usize); want.push(129usize);
+  var k = 0usize;
+  while true {
+    match it.next() {
+      case let Some(i) { expectUInt(u64.from(i), u64.from(*want[k]), "order"); k = k + 1usize; }
+      case is None { break; }
+    }
+  }
+  expectUInt(u64.from(k), 5, "visited all in order");
+
+  a.clear(64usize);
+  expectUInt(u64.from(a.count()), 4, "one cleared");
+  expectBool(a.get(64usize), false, "64 cleared");
+  a.assign(64usize, true);
+  expectUInt(u64.from(a.count()), 5, "assigned on");
+  a.assign(0usize, false);
+  expectUInt(u64.from(a.count()), 4, "assigned off");
+  a.clearAll();
+  expectUInt(u64.from(a.count()), 0, "clearAll");
+
+  // The tail stays zero after setAll, for lengths at and around a word
+  a.setAll();
+  expectUInt(u64.from(a.count()), 130, "setAll counts 130, not 192");
+  expectUInt(total(&a), 8385, "setAll visits 0 to 129");
+  var lens = List[usize]();
+  lens.push(1usize); lens.push(63usize); lens.push(64usize); lens.push(65usize); lens.push(127usize); lens.push(128usize); lens.push(129usize);
+  var j = 0usize;
+  while j < lens.len() {
+    let n = *lens[j];
+    var s = BitSet(n);
+    s.setAll();
+    expectUInt(u64.from(s.count()), u64.from(n), "setAll count");
+    expectUInt(u64.from(howMany(&s)), u64.from(n), "setAll visits n");
+    let f = BitSet.full(n);
+    expectUInt(u64.from(f.count()), u64.from(n), "full count");
+    j = j + 1usize;
+  }
+
+  // Empty
+  var e = BitSet(0usize);
+  e.setAll();
+  expectUInt(u64.from(e.count()), 0, "empty setAll");
+  expectUInt(u64.from(howMany(&e)), 0, "empty visits none");
+  expectUInt(u64.from(BitSet.full(0usize).count()), 0, "empty full");
+
+  // The set operations
+  var x = BitSet(130usize);
+  x.set(1usize); x.set(64usize); x.set(100usize);
+  var y = BitSet(130usize);
+  y.set(1usize); y.set(2usize); y.set(100usize); y.set(129usize);
+  var u = BitSet(130usize);
+  u.unionWith(&x); u.unionWith(&y);
+  expectUInt(u64.from(u.count()), 5, "union count");
+  expectUInt(total(&u), 296, "union sum");
+  var n = BitSet(130usize);
+  n.unionWith(&x);
+  n.intersectWith(&y);
+  expectUInt(u64.from(n.count()), 2, "intersection count");
+  expectUInt(total(&n), 101, "intersection sum");
+  var d = BitSet(130usize);
+  d.unionWith(&x);
+  d.differenceWith(&y);
+  expectUInt(u64.from(d.count()), 1, "difference count");
+  expectUInt(total(&d), 64, "difference sum");
+
+  // The tail stays zero through the operations against a full set
+  let full = BitSet.full(130usize);
+  var t = BitSet(130usize);
+  t.unionWith(&full);
+  expectUInt(u64.from(t.count()), 130, "union with full");
+  t.differenceWith(&full);
+  expectUInt(u64.from(t.count()), 0, "difference with full");
+  done()
+}

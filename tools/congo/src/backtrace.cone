@@ -1,0 +1,294 @@
+// The backtrace a panic writes when CONE_BACKTRACE is on (conestd's panic.cone):
+// 'stack backtrace:' and one frame a line, '  N: 0xADDRESS module+0xOFFSET'.
+// Congo turns the variable on for the programs it runs (congo.py's child_env),
+// leaves the block out of what a test's .err file is compared with, since
+// addresses cannot be pinned, and shows it named, 'N: function at file:line',
+// with llvm-symbolizer (congo.py's symbolised_block). Where no symbolizer
+// is found the frames stay raw, with one note.
+
+// The variables a program Congo runs is given beyond Congo's own: CONE_BACKTRACE=1,
+// unless the caller set it
+fn backtraceEnv() Option[process.EnvVars] {
+  var vars = process.EnvVars();
+  if !envHas("CONE_BACKTRACE") {
+    vars.push(process.EnvVar(String.from("CONE_BACKTRACE"), String.from("1")));
+  }
+  Some[process.EnvVars](vars)
+}
+
+// A frame line's module and offset, the offset in hexadecimal, and its number as
+// written; false if the line is no frame
+fn parseFrame(line: &str, number: &mut String, module: &mut String, offset: &mut u64) bool {
+  let t = line.trim();
+  let colon = findByte(t, ':', 0usize);
+  if colon == 0usize || colon >= t.len() { return false; }
+  var i = 0usize;
+  while i < colon {
+    if t[i] < '0' || t[i] > '9' { return false; }
+    i = i + 1usize;
+  }
+  let afterColon = &t[colon + 1usize..];
+  let rest = afterColon.trim();
+  if !rest.startsWith("0x") { return false; }
+  let space = findByte(rest, ' ', 0usize);
+  if space >= rest.len() { return false; }
+  let afterSpace = &rest[space + 1usize..];
+  let place = afterSpace.trim();
+  var plus = place.len();
+  var k = 0usize;
+  while k + 2usize < place.len() {
+    if place[k] == '+' && place[k + 1usize] == '0' && place[k + 2usize] == 'x' { plus = k; }
+    k = k + 1usize;
+  }
+  if plus >= place.len() { return false; }
+  var value = 0u64;
+  var j = plus + 3usize;
+  if j >= place.len() { return false; }
+  while j < place.len() {
+    let c = place[j];
+    var d = 0u64;
+    if c >= '0' && c <= '9' { d = u64.from(c - '0'); }
+    else if c >= 'a' && c <= 'f' { d = u64.from(c - 'a') + 10u64; }
+    else if c >= 'A' && c <= 'F' { d = u64.from(c - 'A') + 10u64; }
+    else { return false; }
+    value = value * 16u64 + d;
+    j = j + 1usize;
+  }
+  *number = String.from(&t[..<colon]);
+  *module = String.from(&place[..<plus]);
+  *offset = value;
+  true
+}
+
+fn isFrameLine(line: &str) bool {
+  var n = String();
+  var m = String();
+  var o = 0u64;
+  parseFrame(line, &mut n, &mut m, &mut o)
+}
+
+// The (first, end) line numbers of each backtrace block in lines: the header
+// and the frames after it
+fn backtraceBlocks(lines: &List[String]) List[usize] {
+  var spans = List[usize]();
+  var i = 0usize;
+  while i < lines.len() {
+    if lines[i].view().trim() == "stack backtrace:" {
+      var j = i + 1usize;
+      while j < lines.len() && isFrameLine(lines[j].view()) { j = j + 1usize; }
+      spans.push(i);
+      spans.push(j);
+      i = j;
+    }
+    else { i = i + 1usize; }
+  }
+  spans
+}
+
+// Stderr without its backtrace blocks, as a test's .err is compared
+fn withoutBacktrace(text: &str) String {
+  let unix = newlines(text);
+  let lines = List[String].from(unix.splitOnChar('\n').map(x => String.from(x)));
+  let spans = backtraceBlocks(&lines);
+  var out = List[String]();
+  var i = 0usize;
+  var s = 0usize;
+  while i < lines.len() {
+    if s < spans.len() && i == spans[s] { i = spans[s + 1usize]; s = s + 2usize; }
+    else { out.push(lines[i].clone()); i = i + 1usize; }
+  }
+  String.join(out.view(), "\n")
+}
+
+// llvm-symbolizer on the PATH, or in the newest LLVM folder under C:\LLVM; the
+// empty path when none
+fn findSymbolizer() Path {
+  let onPath = which("llvm-symbolizer.exe", envOr("PATH", "").view());
+  if !onPath.isEmpty() { return onPath; }
+  let p = Path.from("C:\\LLVM\\23\\bin\\llvm-symbolizer.exe");
+  if fs.isFile(&p) { return p; }
+  Path.from("")
+}
+
+// A symbolizer's 'file:line:column' as 'file:line', the file by its own name
+fn tidyLocation(location: &str) String {
+  var end = location.len();
+  // drop ':column' when two numbers end the text
+  var p = end;
+  while p > 0usize && location[p - 1usize] >= '0' && location[p - 1usize] <= '9' { p = p - 1usize; }
+  if p > 0usize && p < end && location[p - 1usize] == ':' {
+    let colon = p - 1usize;
+    var r = colon;
+    while r > 0usize && location[r - 1usize] >= '0' && location[r - 1usize] <= '9' { r = r - 1usize; }
+    if r < colon && r > 0usize && location[r - 1usize] == ':' { end = colon; }
+  }
+  var start = 0usize;
+  var i = 0usize;
+  while i < end {
+    if location[i] == '\\' || location[i] == '/' { start = i + 1usize; }
+    i = i + 1usize;
+  }
+  String.from(&location[start..<end])
+}
+
+// A backtrace block's frames (not its header) shown named: each frame of exe as
+// 'N: function at file:line', the frames inlined into it after, those inlined
+// marked; the rest as written. Raw, with a note, where no symbolizer works
+fn symbolisedBlock(frames: &List[String], exe: &Path) List[String] {
+  var out = List[String]();
+  out.push(String.from("stack backtrace:"));
+  let exeName = String.from(exe.name());
+  var numbers = List[String]();
+  var offsets = List[u64]();
+  var ours = List[bool]();
+  var i = 0usize;
+  while i < frames.len() {
+    var n = String();
+    var m = String();
+    var o = 0u64;
+    var mine = false;
+    if parseFrame(frames[i].view(), &mut n, &mut m, &mut o) {
+      var a = String.from(m.view());
+      a.lowerAscii();
+      var b = String.from(exeName.view());
+      b.lowerAscii();
+      mine = a.equals(b.view());
+    }
+    numbers.push(n);
+    offsets.push(o);
+    ours.push(mine);
+    i = i + 1usize;
+  }
+  var args = List[String]();
+  let tool = findSymbolizer();
+  var named = false;
+  var groups = List[List[String]]();
+  var any = false;
+  i = 0usize;
+  while i < frames.len() { if ours[i] { any = true; } i = i + 1usize; }
+  var note = String();
+  if any {
+    if tool.isEmpty() {
+      note = String.from("no llvm-symbolizer found, so the frames are raw");
+    }
+    else {
+      args.push(native(&tool));
+      let objArg = cat("--obj=", native(exe).view());
+      args.push(objArg);
+      args.push(String.from("--relative-address"));
+      args.push(String.from("-f"));
+      args.push(String.from("-i"));
+      args.push(String.from("-C"));
+      i = 0usize;
+      while i < frames.len() {
+        if ours[i] {
+          // a frame is a return address: the call itself is the byte before
+          var before = offsets[i];
+          if before > 0u64 { before = before - 1u64; }
+          var text = String.from("0x");
+          text <- hexOf(before).view();
+          args.push(text);
+        }
+        i = i + 1usize;
+      }
+      match process.run(args.view(), process.Options()) {
+        case let Ok(ok) {
+          if ok.exitCode == 0u32 {
+            let said = utf8Decode(ok.stdout.view());
+            let rows = splitLines(said.view());
+            var group = List[String]();
+            var r = 0usize;
+            while r < rows.len() {
+              if rows[r].len() == 0usize {
+                groups.push(group.clone());
+                group = List[String]();
+              }
+              else { group.push(rows[r].clone()); }
+              r = r + 1usize;
+            }
+            if group.len() > 0usize { groups.push(group.clone()); }
+            named = true;
+          }
+        }
+        case is Err {}
+      }
+      if !named { note = String.from("llvm-symbolizer failed, so the frames are raw"); }
+    }
+  }
+  var g = 0usize;
+  i = 0usize;
+  while i < frames.len() {
+    var done = false;
+    if ours[i] && named && g < groups.len() {
+      let rows = &groups[g];
+      g = g + 1usize;
+      var made = List[String]();
+      var r = 0usize;
+      while r + 1usize < rows.len() {
+        if !rows[r].startsWith("??") {
+          if rows[r + 1usize].startsWith("??") { made.push(rows[r].clone()); }
+          else { made.push(cat(rows[r].view(), " at ", tidyLocation(rows[r + 1usize].view()).view())); }
+        }
+        r = r + 2usize;
+      }
+      var k = 0usize;
+      while k < made.len() {
+        var label = String();
+        if k == 0usize { label = numbers[i].clone(); }
+        else { label = String.from(""); label.padStart(numbers[i].len()); }
+        var line = cat("  ", label.view(), ": ", made[k].view());
+        if k + 1usize < made.len() { line <- " (inlined)"; }
+        out.push(line);
+        k = k + 1usize;
+        done = true;
+      }
+    }
+    if !done { out.push(frames[i].clone()); }
+    i = i + 1usize;
+  }
+  if note.len() > 0usize { out.push(cat("  (note: ", note.view(), ")")); }
+  out
+}
+
+// n in lower-case hexadecimal
+fn hexOf(n: u64) String {
+  if n == 0u64 { return String.from("0"); }
+  let alphabet = "0123456789abcdef";
+  var digits = List[usize]();
+  var rest = n;
+  while rest > 0u64 {
+    digits.push(usize.from(rest % 16u64));
+    rest = rest / 16u64;
+  }
+  var out = String();
+  var i = digits.len();
+  while i > 0usize {
+    i = i - 1usize;
+    out.append(&alphabet[digits[i]..<digits[i] + 1usize]);
+  }
+  out
+}
+
+// A program's stderr as shown to a person: each backtrace block named
+fn showStderr(text: &str, exe: &Path) String {
+  let unix = newlines(text);
+  let lines = List[String].from(unix.splitOnChar('\n').map(x => String.from(x)));
+  let spans = backtraceBlocks(&lines);
+  var out = List[String]();
+  var i = 0usize;
+  var s = 0usize;
+  while i < lines.len() {
+    if s < spans.len() && i == spans[s] {
+      var frames = List[String]();
+      var j = i + 1usize;
+      while j < spans[s + 1usize] { frames.push(lines[j].clone()); j = j + 1usize; }
+      let block = symbolisedBlock(&frames, exe);
+      var b = 0usize;
+      while b < block.len() { out.push(block[b].clone()); b = b + 1usize; }
+      i = spans[s + 1usize];
+      s = s + 2usize;
+    }
+    else { out.push(lines[i].clone()); i = i + 1usize; }
+  }
+  String.join(out.view(), "\n")
+}
