@@ -1,8 +1,8 @@
 // An HTTP body decoded as it arrives: two plain functions over actorhttp's BodyStream.
 // 'request' asks for the encodings this can decode; 'to' reads the response's head
 // and sends the body to the caller's sink, with the stage the head's Content-Encoding
-// names (gzip, deflate or zstd: 'TransformStage[deflate.Inflater]' or
-// 'TransformStage[zstd.Decompressor]') put between the body and the sink, or none for a
+// names (gzip, deflate, zstd or br: 'TransformStage[deflate.Inflater]',
+// 'TransformStage[zstd.Decompressor]' or 'TransformStage[brotli.Decompressor]') put between the body and the sink, or none for a
 // body that is not encoded. What reaches the caller's sink is the decoded bytes, chunk
 // by chunk, and the one 'end'.
 //
@@ -11,7 +11,8 @@
 //   httpdecode.to(body, sink, actorhttp.defaultMaxBody);          // reads the head, sends the body on
 //
 // WHY A PACKAGE OF ITS OWN. A codec stage needs its codec, and a program that
-// imports actorhttp should not link deflate and zstd unless it decodes. So this
+// imports actorhttp should not link deflate, zstd and brotli (whose static dictionary is 122 KB)
+// unless it decodes. So this
 // package, which imports both, sits over actorhttp and stages; neither imports it.
 //
 // THE CREDIT is still the fetch's one window: 'body.to' attaches the decoder stage
@@ -30,7 +31,7 @@
 // corrupt or oversized stream ends the sink Failed (the codec's own error, message
 // and typed error intact), and the failed stage's stop ends the fetch, so the
 // server's remaining bytes are not read. A Content-Encoding this package cannot
-// decode (br, several codings listed) ends the sink Failed("httpdecode: unsupported
+// decode (several codings listed, or one not named here) ends the sink Failed("httpdecode: unsupported
 // Content-Encoding") at once, with no 'attach' and no chunk, and the body is dropped,
 // which cancels the fetch. A failure before the head is the caller's Err from
 // 'client.stream': the caller still has the sink and 'to' was never called, so the
@@ -45,15 +46,17 @@ import actorhttp use BodyStream;
 import stages use ChunkSink, Ending, TransformStage;
 import deflate;
 import zstd;
+import brotli;
 
 // What 'request' asks for with Accept-Encoding, unless the request has its own
-pub const acceptEncoding = "gzip, deflate, zstd";
+pub const acceptEncoding = "gzip, deflate, zstd, br";
 
 enum Coding {
   Identity;
   Gzip;
   Zlib;
   Zstd;
+  Brotli;
   Other;
 }
 
@@ -69,6 +72,7 @@ fn codingOf(h: &Headers) Coding {
       if h.hasToken("Content-Encoding", "gzip") || h.hasToken("Content-Encoding", "x-gzip") {Coding.Gzip}
       else if h.hasToken("Content-Encoding", "deflate") {Coding.Zlib}
       else if h.hasToken("Content-Encoding", "zstd") {Coding.Zstd}
+      else if h.hasToken("Content-Encoding", "br") {Coding.Brotli}
       else if h.hasToken("Content-Encoding", "identity") {Coding.Identity}
       else {Coding.Other}
     }
@@ -103,6 +107,10 @@ pub fn to(body: BodyStream, sink: ChunkSink, limit: usize) {
     var t = zstd.Decompressor.make();
     t.setLimit(lim);
     body.to(TransformStage[zstd.Decompressor](sink, t));
+  } else if c == Coding.Brotli {
+    var t = brotli.Decompressor.make();
+    t.setLimit(lim);
+    body.to(TransformStage[brotli.Decompressor](sink, t));
   } else if c == Coding.Identity {
     body.to(sink);
   } else {

@@ -2,11 +2,15 @@
 // against a loopback server of the test's own. GET /<coding>/<N> answers N bytes
 // (byte i being i % 251) compressed as 'coding' with Content-Encoding to match;
 // /zeros/<coding>/<N> answers N zero bytes compressed (a bomb); /bad/gzip/<N> is
-// a gzip stream with a byte of its deflate data changed; /br/<N> claims a coding
-// that cannot be decoded. Checked: gzip, deflate, zstd and an unencoded body each
+// a gzip stream with a byte of its deflate data changed; /xz/<N> claims a coding
+// that cannot be decoded. Brotli has no compressor here, so a br body is a file of
+// tests/data made by the C brotli command (pat<N>.br: N bytes, byte i being i % 251;
+// zeros<N>.br: N zero bytes), and /small/br/<N> sends one in 7-byte writes.
+// Checked: gzip, deflate, zstd, br and an unencoded body each
 // arrive whole and exact, the sink's one end Finished, every buffer home;
 // a bomb of each codec is refused (Failed, the codec's own message, far short of
-// the zeros); a corrupt gzip body ends Failed; an unsupported coding ends Failed.
+// the zeros); a corrupt gzip or br body ends Failed; an unsupported coding ends Failed;
+// the default Accept-Encoding names br, and a caller's own is left alone.
 
 mod decode;
 
@@ -23,8 +27,11 @@ import actors;
 import aio;
 import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, BodyHead;
 import stages use ChunkSink, ChunkSource, Ending, linkWindow;
+import fs;
+import path use Path;
 import deflate;
 import zstd;
+import brotli;
 import httpdecode;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -81,6 +88,11 @@ fn oneShotHash(coding: &str, n: usize) u64 {
       case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
       else {}
     }
+  } else if coding == "br" {
+    match brotli.decompress(packed.view(), n) {
+      case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
+      else {}
+    }
   } else {
     match zstd.decompress(packed.view(), n) {
       case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
@@ -120,6 +132,13 @@ fn allHome() bool {
 // The server
 // ---------------------------------------------------------------------------
 
+fn acceptOf(h: &Headers) String {
+  match h.get("Accept-Encoding") {
+    case let Some(v) {String.fromBytes(v)}
+    case is None[&Array[u8]] {String.from("(none)")}
+  }
+}
+
 fn number(s: &str) u64 { u64.parse(s) || 0u64 }
 
 // The path's segments after the first '/', split at '/'
@@ -136,8 +155,23 @@ fn segments(p: &str) List[String] {
   out
 }
 
+// A br body from tests/data, made by the C brotli command (empty if the file is missing)
+fn brBody(zeros: bool, n: usize) List[u8] {
+  var name = String.from("../../../../tests/data/");
+  name.append(if zeros {"zeros"} else {"pat"});
+  name.appendUInt(u64.from(n));
+  name.append(".br");
+  var out = List[u8]();
+  match fs.readFile(&Path.from(name.view())) {
+    case let Ok(ok) {out.appendSlice(ok.view().bytes());}
+    case let Err(e) {}
+  }
+  out
+}
+
 fn compress(coding: &str, raw: &Array[u8]) List[u8] {
-  if coding == "gzip" {deflate.gzipCompress(raw, 6i32)}
+  if coding == "br" {brBody(false, raw.len)}
+  else if coding == "gzip" {deflate.gzipCompress(raw, 6i32)}
   else if coding == "deflate" {deflate.zlibCompress(raw, 6i32)}
   else if coding == "zstd" {zstd.compress(raw, 3i32)}
   else {
@@ -157,10 +191,12 @@ actor Handler {
     var zeros = false;
     var bad = false;
     var rand = false;
+    var small = false;
     var k = 0usize;
     if segs[k].view() == "zeros" {zeros = true; k = k + 1usize;}
     if segs[k].view() == "bad" {bad = true; k = k + 1usize;}
     if segs[k].view() == "rand" {rand = true; k = k + 1usize;}
+    if segs[k].view() == "small" {small = true; k = k + 1usize;}
     let coding = String.from(segs[k].view());
     let n = number(segs[k + 1usize].view());
     var raw = List[u8].withCapacity(usize.from(n));
@@ -176,7 +212,7 @@ actor Handler {
       }
       i = i + 1u64;
     }
-    var body = compress(coding.view(), raw.view());
+    var body = if coding.view() == "br" && zeros {brBody(true, usize.from(n))} else {compress(coding.view(), raw.view())};
     if bad && rand {
       // the gzip magic: refused by the first chunk
       body.set(0usize, body[0usize] ^ 255u8);
@@ -191,7 +227,8 @@ actor Handler {
     var going = true;
     while going && at < body.len() {
       let left = body.len() - at;
-      let m = if left < 65536usize {left} else {65536usize};
+      let piece = if small {7usize} else {65536usize};
+      let m = if left < piece {left} else {piece};
       let w = await ex.write(String.fromBytes(&body.view()[at ..< at + m]));
       match w {
         case is Ok { at = at + m; tally.sent.add(u64.from(m)); }
@@ -360,6 +397,7 @@ fn main() i32 {
     names.push(String.from("gzip"));
     names.push(String.from("deflate"));
     names.push(String.from("zstd"));
+    names.push(String.from("br"));
     var j = 0usize;
     while j < names.len() {
       let name = &names[j];
@@ -393,6 +431,7 @@ fn main() i32 {
     names.push(String.from("/zeros/gzip/67108864"));
     names.push(String.from("/zeros/deflate/67108864"));
     names.push(String.from("/zeros/zstd/67108864"));
+    names.push(String.from("/zeros/br/67108864"));
     j = 0usize;
     while j < names.len() {
       let p = &names[j];
@@ -422,7 +461,15 @@ fn main() i32 {
     printStr(", the codec says: ");
     printStr(c.view());
     printStr("\n");
-    let u = fetch(port, "/br/1000", false, 16777216usize, &mut mrx, mtx.clone());
+    let cb = fetch(port, "/bad/br/200000", true, 16777216usize, &mut mrx, mtx.clone());
+    printStr("a corrupt br body: ends failed ");
+    printUInt(tally.failed.load());
+    printStr(" finished ");
+    printUInt(tally.finished.load());
+    printStr(", the codec says: ");
+    printStr(cb.view());
+    printStr("\n");
+    let u = fetch(port, "/xz/1000", false, 16777216usize, &mut mrx, mtx.clone());
     printStr("an unsupported coding: ends failed ");
     printUInt(tally.failed.load());
     printStr(" finished ");
@@ -466,6 +513,9 @@ fn main() i32 {
     names.push(String.from("/plain/100"));
     names.push(String.from("/gzip/100"));
     names.push(String.from("/zstd/1"));
+    names.push(String.from("/br/100"));
+    names.push(String.from("/br/1"));
+    names.push(String.from("/small/br/100"));
     j = 0usize;
     while j < names.len() {
       let p = &names[j];
@@ -496,7 +546,7 @@ fn main() i32 {
     names.push(String.from("/rand/gzip/16777216"));
     names.push(String.from("/rand/deflate/16777216"));
     names.push(String.from("/rand/zstd/16777216"));
-    names.push(String.from("/br/16777216"));
+    names.push(String.from("/xz/16777216"));
     j = 0usize;
     while j < names.len() {
       let p = &names[j];
@@ -514,6 +564,17 @@ fn main() i32 {
     }
     printStr("...every buffer home: ");
     printStr(yes(allHome()));
+    printStr("\n");
+    // Accept-Encoding: the default names every coding 'to' decodes; a caller's own is kept
+    let dflt = httpdecode.request(Request.get("http://127.0.0.1/"));
+    printStr("default Accept-Encoding: ");
+    printStr(acceptOf(&dflt.headers).view());
+    printStr("\n");
+    var own = Request.get("http://127.0.0.1/");
+    own.headers.add("Accept-Encoding", "identity");
+    let kept = httpdecode.request(own);
+    printStr("caller's Accept-Encoding: ");
+    printStr(acceptOf(&kept.headers).view());
     printStr("\n");
     plain.stop();
   }
