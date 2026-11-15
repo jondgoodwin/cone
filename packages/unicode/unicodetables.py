@@ -62,6 +62,17 @@ that is not above the code point.
                              0 for general category Mn, Me, Cf and the controls Cc
                              (C0 and C1), else 1 (Ambiguous counts as 1, as terminals
                              do). Per code point: no grapheme clusters.
+  graphemeStarts / graphemeVals   the grapheme-cluster properties of UAX #29, a u8 for each
+                             run: bits 0-3 Grapheme_Cluster_Break (0 Other, 1 CR, 2 LF,
+                             3 Control, 4 Extend, 5 ZWJ, 6 Regional_Indicator, 7 Prepend,
+                             8 SpacingMark, 9 L, 10 V, 11 T, 12 LV, 13 LVT), 16 is
+                             Extended_Pictographic, bits 5-6 Indic_Conjunct_Break (0 None,
+                             1 Consonant, 2 Linker, 3 Extend). From GraphemeBreakProperty.txt
+                             (ucd/auxiliary/), emoji-data.txt (ucd/emoji/) and the InCB lines of
+                             DerivedCoreProperties.txt, same version (headers checked, 18.0.0,
+                             from https://www.unicode.org/Public/UCD/latest/ucd/ on 14 Nov 2026).
+                             GraphemeBreakTest.txt (ucd/auxiliary/) is what tests/data/graphemebreak.txt
+                             is cut from (tests/data/cut_graphemebreak.py), and is version-checked too.
 """
 
 import os
@@ -203,6 +214,43 @@ def read_normprops(path):
     return excl, qc
 
 
+GCB = {"Other": 0, "CR": 1, "LF": 2, "Control": 3, "Extend": 4, "ZWJ": 5, "Regional_Indicator": 6,
+       "Prepend": 7, "SpacingMark": 8, "L": 9, "V": 10, "T": 11, "LV": 12, "LVT": 13}
+INCB = {"Consonant": 1, "Linker": 2, "Extend": 3}
+
+
+def read_grapheme(d, version):
+    """Per code point a u8: GCB in bits 0-3, 16 Extended_Pictographic, InCB in bits 5-6 (32, 64)."""
+    for fn in ("GraphemeBreakProperty", "GraphemeBreakTest"):
+        fv = re.search(fn + r"-([0-9.]+)\.txt", open(os.path.join(d, fn + ".txt"), encoding="utf8").readline()).group(1)
+        if fv != version:
+            sys.exit("%s is %s but PropList is %s" % (fn, fv, version))
+    ev = re.search(r"# Version: ([0-9.]+)", open(os.path.join(d, "emoji-data.txt"), encoding="utf8").read()).group(1)
+    if ev != version:
+        sys.exit("emoji-data is %s but PropList is %s" % (ev, version))
+    out = [0] * N
+
+    def fields(name):
+        for line in open(os.path.join(d, name), encoding="utf8"):
+            line = line.split("#")[0].strip()
+            if line:
+                f = [x.strip() for x in line.split(";")]
+                lo, _, hi = f[0].partition("..")
+                yield range(int(lo, 16), int(hi or lo, 16) + 1), f
+    for r, f in fields("GraphemeBreakProperty.txt"):
+        for c in r:
+            out[c] |= GCB[f[1]]
+    for r, f in fields("emoji-data.txt"):
+        if f[1] == "Extended_Pictographic":
+            for c in r:
+                out[c] |= 16
+    for r, f in fields("DerivedCoreProperties.txt"):
+        if f[1] == "InCB":
+            for c in r:
+                out[c] |= INCB[f[2]] << 5
+    return out
+
+
 def runs(values):
     starts, vals = [], []
     for c, v in enumerate(values):
@@ -307,6 +355,9 @@ def main():
     qs, qv = runs(qc)
     out += emit("nfcQcStarts", "u32", qs, "u32", 8, True)
     out += emit("nfcQcVals", "u8", qv, "u8", 16, False)
+    gs, gv = runs(read_grapheme(d, version))
+    out += emit("graphemeStarts", "u32", gs, "u32", 8, True)
+    out += emit("graphemeVals", "u8", gv, "u8", 16, False)
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "src", "unicodetables.cone"), "w", encoding="utf8", newline="\n") as f:
         f.write(out)
@@ -321,6 +372,7 @@ def main():
         sum(width[c] == 0 for c in nonsur), sum(width[c] == 2 for c in nonsur)))
     print("fold: C runs %d F entries %d; ccc runs %d; decomposable %d pool %d; composition pairs %d; nfc_qc runs %d" % (
         len(fs2), len(fold_f), len(cs), len(dkeys), len(dpool), len(pairs), len(qs)))
+    print("grapheme runs %d" % len(gs))
     print("special: upper %d lower %d" % (len(sp_up), len(sp_lo)))
     print("Unicode", version, "width runs", len(ws), "flag runs", len(fs), "upper runs", len(us), "lower runs", len(ls))
 
