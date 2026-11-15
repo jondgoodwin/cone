@@ -520,6 +520,11 @@ category = "run"
 description = "serializeValue through a recording Serializer: a bool, signed and unsigned integers, floats and a String as their kinds, a struct as a record of its fields in order with its index, a nested struct, an Option (Some transparent, None as none), and a type's own Serialize called instead of the walk"
 tags = ["typecheck", "genllvm", "runtime"]
 
+[scenario.meta_serialize_optin_accept]
+category = "run"
+description = "Opt-in serialization: a struct that declares 'is Serialize' and writes nothing is walked as a record (nested too); numbers, bool and String are Serialize by grant, so a conditional 'Wrap[T] is Serialize if T is Serialize' holds for Wrap[i32] and Wrap[Pt]"
+tags = ["typecheck", "genllvm", "runtime"]
+
 [scenario.meta_deserialize_walk]
 category = "run"
 description = "deserializeValue through a scripted Deserializer: members in any order, an unknown member skipped, a missing member an error naming it, a missing Option None, an out-of-range number a Range error, an integer read into a float field, a String made in the arena's region, and a type's own Deserialize called instead of the walk"
@@ -530,33 +535,19 @@ category = "reject"
 description = "A serializer that appends to a String it holds through a '&mut' field, coerced to '&<mut Serializer + ShapeKeeping' by serializeValue: ErrorNotShapeKeeping naming the method, the call and the field (the coercion is checked); a serializer that owns its output String is accepted"
 tags = ["typecheck"]
 
-# A struct with an enum field is refused inside core's walk (twice: the field count and the loop), so neither
-# refusal can carry an annotation; the chain naming the field 'kind' is pinned in the message.
+# A struct declaring Serialize with an enum field is refused at the field by the record walk the compiler supplies
 [scenario.meta_serialize_enum_reject]
 category = "reject"
-description = "serializeValue of a struct with an enum field: ErrorMetaFieldsType from the walk, its chain naming the field (kind); an enum is serialized through its own Serialize"
+description = "A struct that declares Serialize and writes no serialize, with an enum (and an Option) field: ErrorSerializeField at the field, naming it and its type; an enum is serialized through its own Serialize"
 tags = ["typecheck"]
-notes = ["in pass 2 of 2 of this '#each', where #f is kind", "where #f is extra"]
 
-[[scenario.meta_serialize_enum_reject.unlocated]]
-code = "ErrorMetaFieldsType"
-path = "packages/core/src/core.cone"
-message = "describes the fields of a struct"
-
-[[scenario.meta_serialize_enum_reject.unlocated]]
-code = "ErrorMetaFieldsType"
-path = "packages/core/src/core.cone"
-message = "describes the fields of a struct"
-
-[[scenario.meta_serialize_enum_reject.unlocated]]
-code = "ErrorMetaFieldsType"
-path = "packages/core/src/core.cone"
-message = "describes the fields of a struct"
-
-[[scenario.meta_serialize_enum_reject.unlocated]]
-code = "ErrorMetaFieldsType"
-path = "packages/core/src/core.cone"
-message = "describes the fields of a struct"
+# The opt-in, refused where it was not made: an undeclared struct is refused at the call by the ordinary bound, naming
+# it; an undeclared struct inside a declared one is refused at the field, naming the field and the inner type; a
+# conditional type's refusal names the condition that failed; Deserialize[X] with X not itself, and no body, is refused
+[scenario.meta_serialize_optin_reject]
+category = "reject"
+description = "Opt-in serialization refusals: an undeclared struct at serializeValue and deserializeValue (ErrorWhereUnmet naming it), an undeclared struct inside a declared one (ErrorSerializeField), a conditional instance whose element fails (the condition named), Deserialize[X] for another X (ErrorDeserializeSelf), a number as Deserialize[String] (the grant is the number itself only)"
+tags = ["typecheck"]
 
 # The walk is core's, so it reflects as another module does. An Account (private field, no '@reflect') is refused at
 # both loops (the count and the walk), raised in core.cone, so neither can carry an annotation. An Open ('@reflect')
@@ -603,18 +594,8 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # json's toJson/fromJson give a record with a List field.
 [scenario.meta_serialize_list_reject]
 category = "reject"
-description = "serializeValue of a struct with a List field: ErrorMetaFieldsPrivate from core's walk naming List's private field (once for the count, once for the walk); until collections declare Serialize (row 333c)"
+description = "A struct that declares Serialize with a List field: ErrorSerializeField at the field, naming it and List[i32]; until collections declare Serialize (row 333c)"
 tags = ["typecheck"]
-
-[[scenario.meta_serialize_list_reject.unlocated]]
-code = "ErrorMetaFieldsPrivate"
-path = "packages/core/src/core.cone"
-message = "cannot describe the private field 'ptr' of 'List'"
-
-[[scenario.meta_serialize_list_reject.unlocated]]
-code = "ErrorMetaFieldsPrivate"
-path = "packages/core/src/core.cone"
-message = "cannot describe the private field 'ptr' of 'List'"
 
 # A package whose type keeps shape: its own compile finds that every method reshapes nothing a caller borrows
 # and writes ShapeKeeping into the include file, so a program of another package can hand a value of it to

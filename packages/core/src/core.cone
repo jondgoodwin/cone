@@ -5557,8 +5557,16 @@ pub trait Deserializer {
   pub fn skipValue(self: &mut) Result[void, DataError];
 }
 
-// A type's own shape, written once for every format: the walk calls it, and does
-// not walk the type.
+// A type's own shape, written once for every format. Serialization is opt-in, as Eq, Hash
+// and Clone are: a type says it is serializable with 'is Serialize'. A struct that declares it
+// and writes no 'serialize' is given one by the compiler (structSerializeCheck, as structHashCheck
+// gives a 'hash'): the record walk below, each field in order, by name. A field that is not
+// Serialize is refused there, naming the field and its type. An undeclared type has no 'serialize',
+// so it is refused where it is serialized, naming it. Every number type and bool is Serialize,
+// floats included, by the compiler's grant (as every integer and bool is Hash): their bodies
+// are serializeValue's number branches, so 'x.serialize(s)' is not a call on a number, 'serializeValue'
+// is. String writes its own. A generic type says 'is Serialize if T is Serialize'. The compiler
+// knows the trait by its name and this package (compiler/c/ir/stmt/intrinsic.c, coreIsSerializeTrait).
 pub trait Serialize {
   pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping);
 }
@@ -5568,6 +5576,10 @@ pub trait Serialize {
 // ties the value built to the region's life, so a value read into an Arena dangles
 // if the Arena dies first: the hole the collections already have (Backlog
 // regions.md, "a borrow held inside a value carrying its lifetime").
+// A struct that declares 'Deserialize[Self]' and writes no 'deserialize' is given one by the compiler
+// (structSerializeCheck): the record read below. Declaring Deserialize[X] for any other X, with no
+// 'deserialize' written, is refused: the body is supplied only for Deserialize[Self]. Every number type
+// and bool is Deserialize[Self] (and no other) by the compiler's grant (see Serialize).
 pub trait Deserialize[T] {
   pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[T, DataError];
 }
@@ -5590,9 +5602,23 @@ fn dataFieldCount[T]() usize {
   n
 }
 
-// Writes a value through a serializer: a bool, a number, a type that is Serialize, or
-// a struct (each field in order, by name)
-pub fn serializeValue[T](v: &T, s: &<mut Serializer + ShapeKeeping) {
+// The record walk the compiler supplies as the 'serialize' of a struct that declares Serialize and writes none: each
+// field in order, by name. Public only so that a package built against core's include file can reach it; call
+// serializeValue, not this.
+pub fn serializeRecord[T](v: &T, s: &<mut Serializer + ShapeKeeping) {
+  s.beginRecord("", dataFieldCount[T]());
+  var i = 0usize;
+  #each #f in #fields(T) {
+    s.field(#f.name, i);
+    serializeValue(&v.#f, s);
+    i = i + 1usize;
+  }
+  s.endRecord();
+}
+
+// Writes a value through a serializer: a bool, a number, or a type that is Serialize (a type is
+// refused here, naming it, if it is not)
+pub fn serializeValue[T](v: &T, s: &<mut Serializer + ShapeKeeping) where T is Serialize {
   #if T == bool {
     s.boolean(*v);
   } #elif T is Float {
@@ -5601,21 +5627,12 @@ pub fn serializeValue[T](v: &T, s: &<mut Serializer + ShapeKeeping) {
     s.int(i64.from(*v));
   } #elif T is Unsigned {
     s.uint(u64.from(*v));
-  } #elif T is Serialize {
-    v.serialize(s);
   } #else {
-    s.beginRecord("", dataFieldCount[T]());
-    var i = 0usize;
-    #each #f in #fields(T) {
-      s.field(#f.name, i);
-      serializeValue(&v.#f, s);
-      i = i + 1usize;
-    }
-    s.endRecord();
+    v.serialize(s);
   }
 }
 
-fn dataField[F](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion, name: &'static str) Result[F, DataError] {
+fn dataField[F](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion, name: &'static str) Result[F, DataError] where F is Deserialize[F] {
   match deserializeValue[F](d, r) {
     case let Ok(v) { Ok[F, DataError](v) }
     case let Err(e) {
@@ -5630,7 +5647,7 @@ fn dataField[F](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion, name: &'sta
 // number (out of range is a Range error, never a wrap), a type that is Deserialize,
 // or a struct (members in any order; a missing one is an error naming it; an unknown
 // member is skipped)
-pub fn deserializeValue[T](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[T, DataError] {
+pub fn deserializeValue[T](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[T, DataError] where T is Deserialize[T] {
   #if T == bool {
     d.readBool()
   } #elif T is Float {
@@ -5658,44 +5675,48 @@ pub fn deserializeValue[T](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) 
       }
       case let Err(e) { Err[T, DataError](e) }
     }
-  } #elif T is Deserialize[T] {
-    T.deserialize(d, r)
   } #else {
-    d.beginRecord("")?;
-    var p = Partial[T].blank();
-    var more = true;
-    while more {
-      match d.nextField()? {
-        case is End { more = false; }
-        case is Name {
-          // The deserializer compares the key with the member names where the key's bytes are: no copy, no
-          // view of the key escapes, and a bad key keeps its own syntax error and offset. An unknown key
-          // answers the count, and its value is skipped.
-          let fieldNames = FieldNamesOf[T]();
-          let which = d.matchField(&fieldNames)?;
-          var i = 0usize;
-          #each #f in #fields(T) {
-            if which == i { p.#f = Some[#f.type](dataField[#f.type](d, r, #f.name)?); }
-            i = i + 1usize;
-          }
-          if which == dataFieldCount[T]() { d.skipValue()?; }
-        }
-        case let Index(at) {
-          var i = 0usize;
-          var found = false;
-          #each #f in #fields(T) {
-            if at == i { found = true; p.#f = Some[#f.type](dataField[#f.type](d, r, #f.name)?); }
-            i = i + 1usize;
-          }
-          if !found { d.skipValue()?; }
-        }
-      }
-    }
-    #each #f in #fields(T) {
-      if !p.#f.isTrue() {
-        return Err[T, DataError](DataError.missing(#f.name));
-      }
-    }
-    Ok[T, DataError](T(#each #f in #fields(T) { #f: p.#f.take().unwrap() }))
+    T.deserialize(d, r)
   }
+}
+
+// The record read the compiler supplies as the 'deserialize' of a struct that declares Deserialize[Self] and writes none
+// (public for the reason serializeRecord is; call deserializeValue, not this)
+pub fn deserializeRecord[T](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[T, DataError] {
+  d.beginRecord("")?;
+  var p = Partial[T].blank();
+  var more = true;
+  while more {
+    match d.nextField()? {
+      case is End { more = false; }
+      case is Name {
+        // The deserializer compares the key with the member names where the key's bytes are: no copy, no
+        // view of the key escapes, and a bad key keeps its own syntax error and offset. An unknown key
+        // answers the count, and its value is skipped.
+        let fieldNames = FieldNamesOf[T]();
+        let which = d.matchField(&fieldNames)?;
+        var i = 0usize;
+        #each #f in #fields(T) {
+          if which == i { p.#f = Some[#f.type](dataField[#f.type](d, r, #f.name)?); }
+          i = i + 1usize;
+        }
+        if which == dataFieldCount[T]() { d.skipValue()?; }
+      }
+      case let Index(at) {
+        var i = 0usize;
+        var found = false;
+        #each #f in #fields(T) {
+          if at == i { found = true; p.#f = Some[#f.type](dataField[#f.type](d, r, #f.name)?); }
+          i = i + 1usize;
+        }
+        if !found { d.skipValue()?; }
+      }
+    }
+  }
+  #each #f in #fields(T) {
+    if !p.#f.isTrue() {
+      return Err[T, DataError](DataError.missing(#f.name));
+    }
+  }
+  Ok[T, DataError](T(#each #f in #fields(T) { #f: p.#f.take().unwrap() }))
 }

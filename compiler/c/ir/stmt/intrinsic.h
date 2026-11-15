@@ -307,6 +307,12 @@ int coreIsCloneTrait(INode *dcl);
 // grant (genericTypeIs): `T()` is 0 or false. A struct that declares it is made by
 // `T()` from its fields' defaults or their types' own `T()` (structDefaultCheck)
 int coreIsDefaultTrait(INode *dcl);
+// Core's Serialize trait and Deserialize[T] (any instance of it), known the same way; every number
+// type except char, and bool, meet them by grant (genericTypeIs), their bodies being serializeValue's
+// and deserializeValue's number branches. A struct that declares them and writes no body gets the
+// trait's default (the record walk)
+int coreIsSerializeTrait(INode *dcl);
+int coreIsDeserializeTrait(INode *dcl);
 // Core's Iterator trait, known by its name and its package; the compiler keeps the
 // declaration it met (coreIteratorTrait) to say, of a type that has a `next` and
 // does not declare it, that the shared methods come with the declaration

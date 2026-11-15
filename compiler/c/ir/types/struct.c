@@ -760,7 +760,11 @@ static void structInheritTrait(StructNode *node, uint32_t fldpos, StructNode *tr
         // and nothing that dispatches it: it stays the trait's own, reached as
         // 'Trait.name'. Copying it gave every implementer a symbol no name could
         // reach, since a qualified name on the implementer does not find it either.
-        if (!((*nodesp)->flags & FlagMethFld))
+        // (One exception: core's Deserialize[T], whose static 'deserialize' a struct that declares
+        // it and writes none is given the record read for, structSerializeCheck. The requirement is
+        // inherited bodiless to carry it.)
+        if (!((*nodesp)->flags & FlagMethFld)
+            && !(coreIsDeserializeTrait((INode*)trait) && !(node->flags & (TraitType | EnumType))))
             continue;
         FnDclNode *traitmeth = (FnDclNode*)*nodesp;
         // An enum's method whose receiver names the enum is one function over it,
@@ -4767,6 +4771,150 @@ static void structCloneCheck(StructNode *node) {
     nodesAdd(&block->stmts, (INode*)ret);
 }
 
+// Core's Serialize and Deserialize[T] are opt-in as Hash is, and the compiler gives a struct that
+// declares one and writes no body of its own the record walk (core's serializeRecord, deserializeRecord),
+// which serializeValue and deserializeValue reach through the type's own method. The trait methods stay
+// bodiless, so a type that declares neither lacks them and is refused at the bound.
+//
+// A field that is not Serialize is refused here, naming the field and its type. For Deserialize the
+// field must declare Deserialize of itself (or be a number or bool, granted), and the body is supplied
+// only for Deserialize[Self]: any other X is refused. A refused struct gets an empty body (for a
+// deserialize, one returning an error value), so type check says nothing more of it.
+
+// Does a field of this type read itself: a number or bool, or a struct that declares Deserialize[itself]?
+static int structFieldDeserializes(INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag == IntNbrTag || dcl->tag == UintNbrTag || dcl->tag == FloatNbrTag)
+        return dcl != (INode*)charType;
+    if (dcl->tag != StructTag || ((StructNode*)dcl)->traits == NULL)
+        return 0;
+    INode **traitp;
+    uint32_t cnt;
+    for (nodesFor(((StructNode*)dcl)->traits, cnt, traitp)) {
+        if (!coreIsDeserializeTrait(*traitp))
+            continue;
+        Nodes *args = itypeInstanceTypeArgs(*traitp);
+        if (args && args->used == 1 && itypeGetTypeDcl(nodesGet(args, 0)) == dcl)
+            return 1;
+    }
+    return 0;
+}
+
+// A generic function of core's, by name, or NULL
+static INode *structCoreFn(INode *trait, const char *fname) {
+    ModuleNode *core = dclInfoGetModule(trait);
+    INode *fn = core ? namespaceFind(&core->namespace, nametblFind((char*)fname, strlen(fname))) : NULL;
+    return fn && fn->tag == FnDclTag ? fn : NULL;
+}
+
+static void structSerializeCheck(StructNode *node) {
+    if ((node->flags & (TraitType | EnumType)) || node->traits == NULL)
+        return;
+    INode **traitp;
+    uint32_t cnt;
+    StructNode *sertrait = NULL;
+    StructNode *desertrait = NULL;
+    for (nodesFor(node->traits, cnt, traitp)) {
+        if (coreIsSerializeTrait(*traitp))
+            sertrait = (StructNode*)*traitp;
+        else if (coreIsDeserializeTrait(*traitp))
+            desertrait = (StructNode*)*traitp;
+    }
+    char *name = &node->namesym->namestr;
+    INode **nodesp;
+
+    if (sertrait) {
+        INode *binding = namespaceFind(&node->namespace, nametblFind("serialize", 9));
+        INode *recfn = structCoreFn((INode*)sertrait, "serializeRecord");
+        if (binding && binding->tag == FnDclTag && ((FnDclNode*)binding)->value == NULL
+            && !(binding->flags & FlagExtern) && recfn) {
+            FnDclNode *serfn = (FnDclNode*)binding;
+            int refused = 0;
+            for (nodelistFor(&node->fields, cnt, nodesp)) {
+                FieldDclNode *field = (FieldDclNode*)*nodesp;
+                if (field->flags & IsMixin)
+                    continue;
+                if (!genericTypeIs(field->vtype, sertrait)) {
+                    INode *fldtype = itypeGetTypeDcl(field->vtype);
+                    errorMsgNode((INode*)field, ErrorSerializeField,
+                        "%s declares Serialize and writes no `serialize`, and its field %s is %s, which is not Serialize. Declare it Serialize, or write a `serialize` of your own.",
+                        name, &field->namesym->namestr, fldtype->tag == PtrTag ? "a pointer" : itypeName(fldtype));
+                    refused = 1;
+                }
+            }
+            BlockNode *block = newBlockNode();
+            inodeLexCopy((INode*)block, (INode*)node);
+            serfn->value = (INode*)block;
+            if (!refused) {
+                // serializeRecord(self, s)
+                FnSigNode *sig = (FnSigNode*)serfn->vtype;
+                FnCallNode *call = newFnCallNode(newNameUseFromDclNode(recfn, (INode*)node), 0);
+                inodeLexCopy((INode*)call, (INode*)node);
+                call->args = newNodes(2);
+                nodesAdd(&call->args, newNameUseFromDclNode(nodesGet(sig->parms, 0), (INode*)node));
+                nodesAdd(&call->args, newNameUseFromDclNode(nodesGet(sig->parms, 1), (INode*)node));
+                nodesAdd(&block->stmts, (INode*)call);
+            }
+        }
+    }
+
+    if (desertrait) {
+        INode *binding = namespaceFind(&node->namespace, nametblFind("deserialize", 11));
+        INode *recfn = structCoreFn((INode*)desertrait, "deserializeRecord");
+        if (binding && binding->tag == FnDclTag && ((FnDclNode*)binding)->value == NULL
+            && !(binding->flags & FlagExtern) && recfn) {
+            FnDclNode *desfn = (FnDclNode*)binding;
+            int refused = 0;
+            Nodes *targs = itypeInstanceTypeArgs((INode*)desertrait);
+            if (targs == NULL || targs->used != 1 || itypeGetTypeDcl(nodesGet(targs, 0)) != (INode*)node) {
+                errorMsgNode((INode*)node, ErrorDeserializeSelf,
+                    "%s declares Deserialize[%s] and writes no `deserialize`: the compiler supplies the body only for Deserialize[%s]. Write a `deserialize` of your own.",
+                    name, targs && targs->used == 1 ? itypeName(nodesGet(targs, 0)) : "another type", name);
+                refused = 1;
+            }
+            else {
+                for (nodelistFor(&node->fields, cnt, nodesp)) {
+                    FieldDclNode *field = (FieldDclNode*)*nodesp;
+                    if (field->flags & IsMixin)
+                        continue;
+                    if (!structFieldDeserializes(field->vtype)) {
+                        INode *fldtype = itypeGetTypeDcl(field->vtype);
+                        errorMsgNode((INode*)field, ErrorSerializeField,
+                            "%s declares Deserialize[%s] and writes no `deserialize`, and its field %s is %s, which does not declare Deserialize of itself. Declare it, or write a `deserialize` of your own.",
+                            name, name, &field->namesym->namestr, fldtype->tag == PtrTag ? "a pointer" : itypeName(fldtype));
+                        refused = 1;
+                    }
+                }
+            }
+            BlockNode *block = newBlockNode();
+            inodeLexCopy((INode*)block, (INode*)node);
+            desfn->value = (INode*)block;
+            INode *result;
+            if (refused)
+                result = (INode*)newULitNodeTC(0, (INode*)errorType);
+            else {
+                // deserializeRecord[Self](d, r): the type argument is spelled as the parser spells 'f[T]'
+                FnSigNode *sig = (FnSigNode*)desfn->vtype;
+                FnCallNode *inst = newFnCallNode(newNameUseFromDclNode(recfn, (INode*)node), 0);
+                inodeLexCopy((INode*)inst, (INode*)node);
+                inst->flags |= FlagIndex;
+                inst->args = newNodes(1);
+                nodesAdd(&inst->args, newNameUseFromDclNode((INode*)node, (INode*)node));
+                FnCallNode *call = newFnCallNode((INode*)inst, 0);
+                inodeLexCopy((INode*)call, (INode*)node);
+                call->args = newNodes(2);
+                nodesAdd(&call->args, newNameUseFromDclNode(nodesGet(sig->parms, 0), (INode*)node));
+                nodesAdd(&call->args, newNameUseFromDclNode(nodesGet(sig->parms, 1), (INode*)node));
+                result = (INode*)call;
+            }
+            inodeLexCopy(result, (INode*)node);
+            BreakRetNode *ret = newReturnNodeExp(result);
+            inodeLexCopy((INode*)ret, (INode*)node);
+            nodesAdd(&block->stmts, (INode*)ret);
+        }
+    }
+}
+
 // The core Default trait this struct declares, or NULL
 static StructNode *structDeclaredDefault(StructNode *node) {
     if ((node->flags & (TraitType | EnumType)) || node->traits == NULL)
@@ -5553,6 +5701,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     structEqCheck(node);
     // and one declaring core's Clone has a 'clone' it is given from its fields
     structCloneCheck(node);
+    // and one declaring core's Serialize or Deserialize[Self] has the record walk it is given
+    structSerializeCheck(node);
     // and one declaring core's Default has a field with a value for `T()`
     structDefaultCheck(node);
 
