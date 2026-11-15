@@ -3308,7 +3308,7 @@ class BuildCache(unittest.TestCase):
                             ignore=shutil.ignore_patterns("build", ".congo-shared"))
         cls.conec = repo / "build" / "x64-release" / congo.REPO_CONEC.name
         cls.conec.parent.mkdir(parents=True)
-        shutil.copyfile(congo.REPO_CONEC, cls.conec)
+        shutil.copy(congo.REPO_CONEC, cls.conec)       # with its mode: it must run on Linux
         conestd = congo.conestd_path(congo.REPO_CONEC)
         shutil.copyfile(conestd, cls.conec.parent / conestd.name)
         if CONGO_EXE:
@@ -3501,7 +3501,7 @@ class BuildCache(unittest.TestCase):
         tools = self.root / "tools"
         tools.mkdir()
         conec = tools / self.conec.name
-        shutil.copyfile(self.conec, conec)
+        shutil.copy(self.conec, conec)
         conestd = tools / congo.conestd_path(self.conec).name
         shutil.copyfile(congo.conestd_path(self.conec), conestd)
         self.env["CONEC"] = str(conec)
@@ -3541,7 +3541,7 @@ class BuildCache(unittest.TestCase):
         tools = self.root / "tools"
         tools.mkdir()
         other = tools / self.conec.name
-        shutil.copyfile(self.conec, other)
+        shutil.copy(self.conec, other)
         shutil.copyfile(congo.conestd_path(self.conec),
                         tools / congo.conestd_path(self.conec).name)
         with other.open("ab") as file:      # another file by its content, doing what conec does
