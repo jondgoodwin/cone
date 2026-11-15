@@ -1,0 +1,86 @@
+// Every stream of tests/data (listed in index.txt with the original it must decompress to) decompresses to
+// exactly its original's bytes: the 36 small streams and variants from the Brotli repository's own test data
+// (tests/data/google, MIT licence) and 27 of our own inputs made by the C brotli 1.2.0 command at qualities
+// 0, 5 and 11 and windows of 10, 16 and 24 bits (tests/data/own; makefixtures.py there says how). Each is
+// decompressed with a size hint of 0, with the exact size, and with a hint a tenth of it (a wrong hint costs
+// time, never correctness), and by a Decompressor, which must say how many input bytes it used and how many
+// bytes it made.
+
+mod fixtures;
+
+import testing use *;
+import collections use *;
+import brotli use *;
+import fs;
+import path use Path;
+
+fn readRel(rel: &str, out: &mut String) bool {
+  let p = Path.from(rel);
+  match fs.readFile(&p) {
+    case var Ok(ok) { *out <-> ok; true }
+    case let Err(e) { false }
+  }
+}
+
+fn main() i32 {
+  var index = String();
+  if !readRel("../../../../tests/data/index.txt", &mut index) {
+    expect(false, "the index is there");
+    return done();
+  }
+  let ib = index.view().bytes();
+  var at = 0usize;
+  var count = 0usize;
+  var bad = String();
+  var total = 0usize;
+  while at < ib.len {
+    var e = at;
+    while e < ib.len && ib[e] != 10u8 { e += 1usize; }
+    var sp = at;
+    while sp < e && ib[sp] != 32u8 { sp += 1usize; }
+    var sname = String();
+    sname.append("../../../../tests/data/");
+    sname.append(index.sub(at, sp).view());
+    var oname = String();
+    oname.append("../../../../tests/data/");
+    oname.append(index.sub(sp + 1usize, e).view());
+    at = e + 1usize;
+    var packed = String();
+    var orig = String();
+    if !readRel(sname.view(), &mut packed) || !readRel(oname.view(), &mut orig) {
+      expect(false, "a fixture file is there");
+      continue;
+    }
+    let pb = packed.view().bytes();
+    let ob = orig.view().bytes();
+    var ok = true;
+    var hint = 0usize;
+    while hint < 3usize {
+      let h = if hint == 0usize {0usize} else if hint == 1usize {ob.len} else {ob.len / 10usize};
+      match decompress(pb, h) {
+        case var Ok(out) { if out.view() != ob { ok = false; } }
+        case let Err(e2) { ok = false; }
+      }
+      hint += 1usize;
+    }
+    var dc = Decompressor.make();
+    match dc.run(pb, ob.len) {
+      case var Ok(out) {
+        if out.view() != ob || dc.totalOut() != u64.from(ob.len) || !dc.isDone() { ok = false; }
+        // Whole bytes of the stream, none of them past its end
+        if dc.totalIn() > u64.from(pb.len) { ok = false; }
+      }
+      case let Err(e2) { ok = false; }
+    }
+    if !ok {
+      bad.append(sname.view());
+      bad.append(" ");
+    }
+    count += 1usize;
+    total += ob.len;
+  }
+  expectStr(bad.view(), "", "streams that did not decompress to their originals");
+  expectInt(i64.from(count), 62i64, "streams in the index");
+  expect(total > 1000000usize, "the originals are a megabyte or more");
+  done()
+}

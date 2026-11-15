@@ -1,0 +1,42 @@
+// ======== Failure ========
+
+// What kind of thing was wrong with a compressed stream
+pub enum ErrorKind is Sendable {
+  // The stream header or a meta-block header is wrong, or a reserved bit or a padding bit is not zero
+  BadHeader;
+  // A prefix code, a context map, a code-length code or a block-switch table that is not valid
+  BadTable;
+  // A command whose lengths do not fit: more literals or copied bytes than the meta-block holds, a symbol outside its alphabet
+  BadCommand;
+  // A backward distance past the window that does not name a dictionary word (a copy length outside 4 to 24)
+  BadDistance;
+  // A dictionary word whose transform does not exist (an index past the 121)
+  BadTransform;
+  // The input ended before the stream did
+  Truncated;
+  // More output than a limit allows (setLimit)
+  TooLarge;
+  // A window larger than setMaxWindow allows
+  WindowTooLarge;
+  // The large-window extension, which is not part of RFC 7932
+  NeedsLargeWindow;
+}
+
+// Why a stream could not be decompressed: what kind, how many bytes of input had been used when it was
+// noticed, and a sentence. Sendable, so that it crosses between actors inside an AnyError.
+pub struct BrotliError is Error, Sendable {
+  pub kind: ErrorKind;
+  pub offset: u64;
+  pub reason: String;
+
+  pub fn make(kind: ErrorKind, offset: u64, reason: &str) BrotliError {
+    BrotliError(kind, offset, String.from(reason))
+  }
+
+  // The reason, as one line for a person
+  pub fn toText(self: &, out: &uni TextOut) { out <- reason.view(); }
+
+  pub fn clone(self: &) BrotliError {
+    BrotliError(kind, offset, reason.clone())
+  }
+}

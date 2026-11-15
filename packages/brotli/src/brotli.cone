@@ -1,0 +1,48 @@
+// The brotli package: Brotli (RFC 7932) decompression of a whole stream held in memory. Written in Cone, with no
+// C library and no call of the OS's.
+//
+//   mod unpack;
+//   import stdio use *;
+//   import brotli;
+//
+//   fn main() i32 {
+//     let packed = [0x0Bu8, 0x01u8, 0x80u8, 0x78u8, 0x03u8];     // the stream for the one byte "x"
+//     match brotli.decompress(&packed, 1usize) {
+//       case imm ok Ok { printInt(i64.from(ok.len())); }              // 1
+//       case imm e Err { printStr(e.reason.view()); return 1i32; }
+//     }
+//     0i32;
+//   }
+//
+// WHAT IS HERE
+//
+//   ONE CALL         the stream in memory, the answer out
+//     decompress(data, expected) Result[List[u8], BrotliError]
+//   'expected' is a size hint: the output size if known (0 if not). It only reserves room, so a wrong hint
+//   costs time and never correctness; the output is bounded by a limit of 1 GiB (setLimit, below).
+//
+//   A SETTINGS VALUE   for a run with other limits
+//     Decompressor.make()
+//       setLimit(bytes)        the most output allowed; more is refused as TooLarge
+//       setMaxWindow(bits)     the largest window the stream may ask for (10 to 24, default 24: 16 MiB)
+//       run(data, expected)    as decompress
+//       totalIn(), totalOut(), isDone()   after a run
+//
+//   FAILURE          BrotliError {kind, offset, reason}; ErrorKind is BadHeader, BadTable, BadCommand,
+//                    BadDistance, BadTransform, Truncated, TooLarge, WindowTooLarge, NeedsLargeWindow
+//
+// THE DICTIONARY. Brotli's static dictionary (122,784 bytes) and its 121 transforms are part of the format, and
+// are linked into every program that imports this package. They are generated from RFC 7932's own Appendices A
+// and B by brotlitables.py, which checks them against the CRC-32 values the RFC states.
+//
+// MEMORY. A run holds a copy of the input, the whole output, the prefix tables of the current meta-block (up to
+// about 256 literal codes and 256 distance codes, a few hundred KB at the most) and, once a stream names a
+// dictionary word, a 122,784-byte copy of the dictionary. The window the stream states (up to 16 MiB) is not
+// allocated: the output is kept whole.
+//
+// NOT HERE (yet): input fed in pieces and output pulled in pieces (a Decompressor that meets streams.Transform).
+// Not in RFC 7932 and refused: the large-window extension (NeedsLargeWindow) and shared dictionaries.
+
+mod brotli;
+
+import collections use *;

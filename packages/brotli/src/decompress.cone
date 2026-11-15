@@ -1,0 +1,75 @@
+// ======== Decompressing a whole stream at once ========
+
+fn kindOf(code: u32) ErrorKind {
+  if code == ErrHeader { return ErrorKind.BadHeader; }
+  if code == ErrTable { return ErrorKind.BadTable; }
+  if code == ErrCommand { return ErrorKind.BadCommand; }
+  if code == ErrDistance { return ErrorKind.BadDistance; }
+  if code == ErrTransform { return ErrorKind.BadTransform; }
+  if code == ErrTruncated { return ErrorKind.Truncated; }
+  if code == ErrTooLarge { return ErrorKind.TooLarge; }
+  if code == ErrWindow { return ErrorKind.WindowTooLarge; }
+  ErrorKind.NeedsLargeWindow
+}
+
+// A decompressor's settings and, after a run, its totals. 'make' gives the defaults: a limit of 1 GiB of output
+// and a window of up to 16 MiB. PR 1 of the package decodes a whole buffer ('run'); feeding input in pieces and
+// pulling output in pieces is the next change.
+pub struct Decompressor is Default {
+  limit: usize;
+  maxWindow: u32;
+  used: u64;
+  produced: u64;
+  done: bool;
+
+  pub fn make() Decompressor {
+    Decompressor(1073741824usize, 24u32, 0u64, 0u64, false)
+  }
+
+  // The most output a run may produce, in bytes; a stream that would make more is refused as TooLarge, before
+  // it writes the meta-block that passes the limit
+  pub fn setLimit(self: &mut, bytes: u64) {
+    limit = usize.from(bytes);
+  }
+
+  // The largest window, in bits (10 to 24), the stream may ask for; the window is also the most output a run
+  // may need to look back over. A stream that asks for more is refused as WindowTooLarge.
+  pub fn setMaxWindow(self: &mut, bits: u32) {
+    maxWindow = if bits > 24u32 {24u32} else {bits};
+  }
+
+  // Decompresses 'data', a whole Brotli stream, and answers the bytes. 'expected' is a size hint: the output
+  // size if known (0 if not), which only reserves room (never more than 64 MiB up front); a wrong hint costs
+  // time, not correctness. Bytes after the stream's last meta-block are not looked at.
+  pub fn run(self: &mut, data: &Array[u8], expected: usize) Result[List[u8], BrotliError] {
+    var d = Dec();
+    d.bi.inp.reserve(data.len);
+    d.bi.inp.appendSlice(data);
+    d.limit = limit;
+    d.maxWbits = maxWindow;
+    d.out.reserve(if expected < 67108864usize {expected} else {67108864usize});
+    done = false;
+    if !d.run() {
+      return Err[List[u8], BrotliError](BrotliError.make(kindOf(d.errCode), u64.from(d.errAt), d.errReason.view()));
+    }
+    done = true;
+    used = u64.from((d.bi.taken() + 7usize) / 8usize);
+    produced = u64.from(d.out.len());
+    var res = List[u8]();
+    res <-> d.out;
+    Ok[List[u8], BrotliError](res)
+  }
+
+  // The input bytes the last run used, the output bytes it made, and whether it ended well
+  pub fn totalIn(self: &) u64 { used }
+  pub fn totalOut(self: &) u64 { produced }
+  pub fn isDone(self: &) bool { done }
+}
+
+// Decompress a Brotli stream (RFC 7932) held in memory. 'expected' is a size hint: the output size if known
+// (0 if not); it only reserves room, and the output is bounded by 1 GiB whatever it says. Bytes after the
+// stream's last meta-block are ignored.
+pub fn decompress(data: &Array[u8], expected: usize) Result[List[u8], BrotliError] {
+  var dc = Decompressor.make();
+  dc.run(data, expected)
+}
