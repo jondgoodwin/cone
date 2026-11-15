@@ -2976,7 +2976,23 @@ static int pwStoreOverField(INode *lval, INode *cont) {
     INode *stored = iexpGetTypeDcl(lval);
     if (stored == NULL || !shapeStoredShaping(stored) || cont->tag != StructTag)
         return 0;
-    INode *owner = pwReceiverFieldOwner(lval, 1);
+    // An element of a collection or array the container holds in a field ('r.items[0] = ..'): the
+    // old element is freed in place, as a field of that type would be, so the field is asked of
+    INode *place = lval;
+    while (place->tag == CastTag && !(place->flags & FlagConvert))
+        place = ((CastNode *)place)->exp;
+    INode *under = place->tag == DerefTag ? ((StarNode *)place)->vtexp : place;
+    int indexed = 0;
+    if (under->tag == ArrIndexTag) {
+        indexed = 1;
+        place = ((FnCallNode *)under)->objfn;
+    }
+    else if (under->tag == FnCallTag && ((FnCallNode *)under)->args && ((FnCallNode *)under)->args->used > 0) {
+        // a collection's index method, handed the collection it indexes
+        indexed = 1;
+        place = nodesGet(((FnCallNode *)under)->args, 0);
+    }
+    INode *owner = pwReceiverFieldOwner(place, !indexed);
     if (owner == NULL || owner->tag != StructTag)
         return 0;
     return owner == cont || itypeIsSame(owner, cont)
