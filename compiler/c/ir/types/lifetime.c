@@ -1355,7 +1355,15 @@ static void lifePromiseParts(LifePromises *out, FnSigNode *sig, INode *parm, INo
 // points at are named apart. 'anon' reads it as if no lifetime were written.
 // A call is checked against nothing else, so two signatures promising the
 // same agree. Where 'kinds' is given, it gets what each digit says.
-static char *lifeSigPromises(FnSigNode *sig, int anon, int detail, char **kinds) {
+//
+// 'recvtype', where given, is the type that stands as the first parameter in
+// deciding whether a call may store through it: a requirement's receiver is the
+// implementor (lifeSigBrandsAgree reads it the same way), so it is stored
+// through where the implementor's is, though a trait's '&mut Self' holds no
+// lifetime to say so. What may flow into it is still what the requirement
+// writes ('Self' takes in nothing), so a method that stores its parameter does
+// not meet one that stores nothing.
+static char *lifeSigPromises(FnSigNode *sig, int anon, int detail, char **kinds, INode *recvtype) {
     uint32_t nparms = sig->parms->used;
     size_t size = (nparms + 1) * (nparms + 1) * (LifeMaxSlots + 3) + 1;
     char *promises = memAllocStr(NULL, size);
@@ -1364,7 +1372,7 @@ static char *lifeSigPromises(FnSigNode *sig, int anon, int detail, char **kinds)
         INode *parmtype = ((IExpNode *)nodesGet(sig->parms, i))->vtype;
         // A call can store only what another parameter lends, so a lone
         // parameter, a cursor's 'self: &mut', is never stored through
-        int stores = nparms > 1 && lifeParmStores(parmtype);
+        int stores = nparms > 1 && lifeParmStores(i == 0 && recvtype ? recvtype : parmtype);
         lifePromiseParts(&out, sig, parmtype, sig->rettype, anon,
             (!anon && lifeIsStatic(parmtype) ? 2 : 0) + (stores ? 4 : 0), LifePromiseParm, detail);
         if (!stores)
@@ -1412,8 +1420,9 @@ int lifeSigsAgree(FnSigNode *a, FnSigNode *b, int recv) {
         return 1;
     if (a->parms->used != b->parms->used)
         return 0;
+    INode *recvtype = recv && a->parms->used > 0 ? ((IExpNode *)nodesGet(a->parms, 0))->vtype : NULL;
     int detail = strcmp(lifeSigShape(a), lifeSigShape(b)) == 0;
-    return strcmp(lifeSigPromises(a, !a->lifenamed, detail, NULL), lifeSigPromises(b, !b->lifenamed, detail, NULL)) == 0;
+    return strcmp(lifeSigPromises(a, !a->lifenamed, detail, NULL, NULL), lifeSigPromises(b, !b->lifenamed, detail, NULL, recvtype)) == 0;
 }
 
 // A call made through 'req' carries what 'req' says may flow, and is checked
@@ -1433,10 +1442,11 @@ int lifeSigMeets(FnSigNode *impl, FnSigNode *req, int recv) {
         return 1;
     if (impl->parms->used != req->parms->used)
         return 0;
+    INode *recvtype = recv && impl->parms->used > 0 ? ((IExpNode *)nodesGet(impl->parms, 0))->vtype : NULL;
     int detail = strcmp(lifeSigShape(impl), lifeSigShape(req)) == 0;
     char *ikinds, *rkinds;
-    char *ip = lifeSigPromises(impl, !impl->lifenamed, detail, &ikinds);
-    char *rp = lifeSigPromises(req, !req->lifenamed, detail, &rkinds);
+    char *ip = lifeSigPromises(impl, !impl->lifenamed, detail, &ikinds, NULL);
+    char *rp = lifeSigPromises(req, !req->lifenamed, detail, &rkinds, recvtype);
     if (strcmp(ikinds, rkinds) != 0)
         return 0;
     for (size_t i = 0; ip[i]; ++i) {
@@ -1463,8 +1473,8 @@ int lifeSigMeets(FnSigNode *impl, FnSigNode *req, int recv) {
 char *lifeSigSpell(char *bufp, FnSigNode *sig) {
     if (!sig->lifenamed)
         return bufp;
-    char *promises = lifeSigPromises(sig, 0, 1, NULL);
-    if (strcmp(promises, lifeSigPromises(sig, 1, 1, NULL)) == 0)
+    char *promises = lifeSigPromises(sig, 0, 1, NULL, NULL);
+    if (strcmp(promises, lifeSigPromises(sig, 1, 1, NULL, NULL)) == 0)
         return bufp;
     *bufp++ = 'G';
     size_t len = strlen(promises);
