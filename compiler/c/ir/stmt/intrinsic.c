@@ -465,6 +465,26 @@ int coreIsCloneTrait(INode *dcl) {
         && intrinsicModuleIsCore(strnode->dclinfo.owner);
 }
 
+// Core's Serialize and Deserialize[T] traits, known as Hash is. Deserialize is generic, so its
+// instances ('Deserialize[i32]') are told by name and package alone
+int coreIsSerializeTrait(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == serializeTraitName && strnode->genericinfo == NULL
+        && (strnode->flags & TraitType) && !(strnode->flags & EnumType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
+int coreIsDeserializeTrait(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == deserializeTraitName
+        && (strnode->flags & TraitType) && !(strnode->flags & EnumType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
 INode *coreIteratorTrait = NULL;
 
 int coreIsIteratorTrait(INode *dcl) {

@@ -1,0 +1,56 @@
+// Serialization is opt-in. Refused: an undeclared struct at the call (by the ordinary bound, naming it), an undeclared struct
+// inside a declared one (at the field, naming the field and the inner type), a conditional instance whose element is not
+// Serialize (the failing condition named), Deserialize[X] with X not the type itself and no 'deserialize' written, and a
+// number read as another type's Deserialize (the compiler's grant is Deserialize[itself] only).
+
+mod meta_serialize_optin_reject;
+
+import collections use *;
+
+struct Plain { pub a: i32; }
+struct Outer is Serialize { pub n: i32; pub inner: Plain; }   //~ ErrorSerializeField "its field inner is Plain"
+struct Odd is Deserialize[Plain] { pub a: i32; }   //~ ErrorDeserializeSelf "supplies the body only for Deserialize[Odd]"
+
+struct Bag[T] is Serialize if T is Serialize {
+  pub v: T;
+  pub fn serialize(self: &, s: &<mut Serializer + ShapeKeeping) where T is Serialize {
+    s.beginSeq(1usize);
+    serializeValue(&self.v, s);
+    s.endSeq();
+  }
+}
+
+struct Sink is Serializer { pub out: String;
+  pub fn boolean(self: &mut, b: bool) {}
+  pub fn int(self: &mut, n: i64) {}
+  pub fn uint(self: &mut, n: u64) {}
+  pub fn float(self: &mut, x: f64) {}
+  pub fn text(self: &mut, s: &str) {}
+  pub fn bytes(self: &mut, b: &Array[u8]) {}
+  pub fn none(self: &mut) {}
+  pub fn beginSeq(self: &mut, len: usize) {}
+  pub fn endSeq(self: &mut) {}
+  pub fn beginMap(self: &mut, len: usize) {}
+  pub fn mapKey(self: &mut) {}
+  pub fn mapValue(self: &mut) {}
+  pub fn endMap(self: &mut) {}
+  pub fn beginRecord(self: &mut, typeName: &str, len: usize) {}
+  pub fn field(self: &mut, name: &str, index: usize) {}
+  pub fn endRecord(self: &mut) {}
+  pub fn unitVariant(self: &mut, enumName: &str, index: u32, name: &str) {}
+  pub fn beginVariant(self: &mut, enumName: &str, index: u32, name: &str, len: usize) {}
+  pub fn endVariant(self: &mut) {}
+}
+
+fn readsString[T](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) where T is Deserialize[String] {}
+
+fn main() {
+  var s = Sink(String());
+  serializeValue(&Plain(1), &mut s);   //~ ErrorWhereUnmet "serializeValue requires T is Serialize, and Plain is not Serialize"
+  serializeValue(&Bag[Plain](Plain(2)), &mut s);   //~ ErrorWhereUnmet "Bag is Serialize only where T is Serialize, and that is false for T = Plain"
+}
+
+fn viaDeserializer(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) {
+  readsString[i32](d, r);   //~ ErrorWhereUnmet "i32 is not Deserialize[String]"
+  let p = deserializeValue[Plain](d, r);   //~ ErrorWhereUnmet "Plain is not Deserialize[Plain]"
+}

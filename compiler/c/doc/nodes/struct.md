@@ -1534,6 +1534,28 @@ name and package (`coreIsCloneTrait`), as `Eq` is.
   is Clone) and the dictionaries' `getCopy` are present where `T` is Clone.
 - `=` never clones; no copy or move calls a `clone`.
 
+### Serialize and Deserialize, granted to the numbers
+
+Core's `Serialize` and `Deserialize[T]` (`coreIsSerializeTrait`, `coreIsDeserializeTrait`, by
+name and package; the second is told in any instance) are opt-in as `Hash` is. The trait methods
+are bodiless and required. A struct that declares `is Serialize` and writes no `serialize` is
+given one (`structSerializeCheck`, beside `structHashCheck`) that calls core's `serializeRecord`,
+the record walk over `#fields`; one that declares `Deserialize[Self]` and writes no `deserialize`
+is given a call of `deserializeRecord[Self]`. (A static `deserialize` is not inherited like a
+method, so `structInheritTrait` makes the exception for this trait.) A field that is not
+`Serialize` (for the read: that does not declare `Deserialize` of itself, or is not a number or
+bool) is refused at the field, `ErrorSerializeField`, naming it and its type, and the struct gets
+an empty body. `Deserialize[X]` with X not the struct, and no `deserialize` written, is
+`ErrorDeserializeSelf`. A type that declares neither lacks the method.
+The one grant (`genericTypeIsHow`, beside Hash's) is to every number type, floats included,
+and `bool`, not `char`: `Serialize` always, `Deserialize[X]` only where X is the number itself.
+It has no method of its own, so a generic reaches a number through core's `serializeValue` /
+`deserializeValue`, whose number branches are the bodies, never through `x.serialize(s)`.
+`serializeValue` and `deserializeValue` take `where T is Serialize` / `Deserialize[T]`, so a
+type that declares neither is refused at the call by the ordinary bound; a conditional
+instance's refusal names the condition (`Bag is Serialize only where T is Serialize, and that
+is false for T = Plain`).
+
 ### Default, and the `T()` it supplies
 
 Core's `Default` (`pub trait Default {}`, no method) is known by name and package

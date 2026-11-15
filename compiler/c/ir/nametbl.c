@@ -242,6 +242,8 @@ void nametblInit() {
     eqTraitName = nametblFind("Eq", 2);
     cloneTraitName = nametblFind("Clone", 5);
     defaultTraitName = nametblFind("Default", 7);
+    serializeTraitName = nametblFind("Serialize", 9);
+    deserializeTraitName = nametblFind("Deserialize", 11);
     hasherName = nametblFind("Hasher", 6);
     iteratorTraitName = nametblFind("Iterator", 8);
     writeU64Name = nametblFind("writeU64", 8);

@@ -93,6 +93,8 @@ Name *hashName;
 Name *hashTraitName;
 Name *eqTraitName;
 Name *cloneTraitName;
+Name *serializeTraitName;
+Name *deserializeTraitName;
 Name *defaultTraitName;
 Name *iteratorTraitName;
 Name *hasherName;

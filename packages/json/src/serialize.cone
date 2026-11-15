@@ -1,8 +1,8 @@
 // ======== JSON as a format of core's serialization ========
 //
 // 'JsonSerializer' is a Serializer over the Writer, and 'JsonDeserializer' a Deserializer over the
-// Reader, so a struct of numbers, bools, Strings and structs of them goes to JSON and back with no
-// code of its own: 'toJson(&value)' and 'fromJson[T](text)'. Nothing is built between the value and
+// Reader, so a struct that declares 'is Serialize' and 'is Deserialize[T]' (and whose fields are numbers, bools,
+// Strings and such structs) goes to JSON and back with no code of its own: 'toJson(&value)' and 'fromJson[T](text)'. Nothing is built between the value and
 // the text: the walk calls the Writer or the Reader for each piece.
 //
 // How the data model lands in JSON: a record and a map are objects, a sequence an array, a number
@@ -135,16 +135,16 @@ pub struct JsonSerializer is Serializer {
   }
 }
 
-// The compact JSON text of a value: a struct of numbers, bools, Strings and structs of them, or a
-// type that declares Serialize. A type the walk cannot take (a struct with a List field, an enum)
-// is refused at compile time, where the walk meets it.
-pub fn toJson[T](v: &T) Result[String, JsonError] {
+// The compact JSON text of a value of a type that is Serialize: a number, a bool, a String, or a
+// type that declares 'is Serialize' (a struct that writes nothing more is walked field by field).
+// Any other type is refused at the call, naming it.
+pub fn toJson[T](v: &T) Result[String, JsonError] where T is Serialize {
   let opts = WriteOptions.standard();
   toJsonWith(v, &opts)
 }
 
 // The same with the writer's options: 'WriteOptions(2usize, false)' indents by two spaces
-pub fn toJsonWith[T](v: &T, opts: &WriteOptions) Result[String, JsonError] {
+pub fn toJsonWith[T](v: &T, opts: &WriteOptions) Result[String, JsonError] where T is Serialize {
   var s = JsonSerializer(*opts);
   serializeValue[T](v, &mut s);
   s.finish()
@@ -340,12 +340,12 @@ pub fn jsonDeserializer(text: &'a Array[u8]) JsonDeserializer['a] {
 // DataError: Syntax for text that is not JSON, Type for a value of the wrong kind, Range for a
 // number that does not fit, Missing for a member that is not there, with the field's name. Its
 // 'offset' is the byte of the text where it was found.
-pub fn fromJson[T](text: &Array[u8]) Result[T, DataError] {
+pub fn fromJson[T](text: &Array[u8]) Result[T, DataError] where T is Deserialize[T] {
   fromJsonIn[T](text, heapRegion())
 }
 
 // The same, built in 'region' (a String's block): 'fromJsonIn[Person](text, arena.region)'
-pub fn fromJsonIn[T](text: &Array[u8], region: *MemRegion) Result[T, DataError] {
+pub fn fromJsonIn[T](text: &Array[u8], region: *MemRegion) Result[T, DataError] where T is Deserialize[T] {
   var d = jsonDeserializer(text);
   match deserializeValue[T](&mut d, region) {
     case let Ok(v) {

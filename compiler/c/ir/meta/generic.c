@@ -1986,6 +1986,19 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
     // equal to 0, so no hash of a float's bits agrees with its '=='
     if ((dcl->tag == IntNbrTag || dcl->tag == UintNbrTag) && coreIsHashTrait((INode*)trait))
         return 1;
+    // core's Serialize and Deserialize[T] are granted to every number type and bool, floats
+    // included (they serialize, though they are not Hash): serializeValue and deserializeValue
+    // carry their bodies. Not to a char, which is no number and has no data-model form
+    if ((dcl->tag == IntNbrTag || dcl->tag == UintNbrTag || dcl->tag == FloatNbrTag)
+        && dcl != (INode*)charType) {
+        if (coreIsSerializeTrait((INode*)trait))
+            return 1;
+        // Deserialize[X] only where X is the number itself
+        if (coreIsDeserializeTrait((INode*)trait)) {
+            Nodes *targs = itypeInstanceTypeArgs((INode*)trait);
+            return targs && targs->used == 1 && itypeGetTypeDcl(nodesGet(targs, 0)) == dcl;
+        }
+    }
     // and to an owner of text, Uni[str] and Rc[str]: its '==' compares the
     // bytes, and the 'hash' a call on it reaches is str's, which feeds them
     if (dcl->tag == RefTag && coreIsHashTrait((INode*)trait) && genericIsTextOwner((RefNode*)dcl))

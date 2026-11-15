@@ -575,6 +575,10 @@ enum ErrorCode {
     // 'each' over cursors (ir/exp/each.c)
     ErrorEachItem = 1340,       // What an 'each' takes out of its cursor cannot be given to its variables: a 'next' that does not answer an Option, an 'iter' giving something with no 'next', variables that do not unpack the tuple item, or an item that moves
 
+    // Serialization: core's Serialize and Deserialize[T], and the record walk the compiler supplies for a struct declaring them
+    ErrorSerializeField = 1341, // A struct declaring Serialize or Deserialize[Self] with no body of its own has a field that does not declare it, so the compiler's record walk cannot reach it
+    ErrorDeserializeSelf = 1342, // A struct declaring Deserialize[X] with X not itself and no 'deserialize' of its own: the compiler supplies the record read only for Deserialize[Self]
+
     // Generators (ir/exp/yield.c, parser/parsegen.c)
     ErrorYieldPlace = 1350,     // 'yield' outside the body of a function declared with 'yields'
     ErrorYieldReturn = 1351,    // A 'return' with a value in a generator, which gives its caller values only by 'yield'
