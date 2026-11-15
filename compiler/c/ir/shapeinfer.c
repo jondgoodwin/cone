@@ -1731,7 +1731,10 @@ static int skFrom(INode *start, int shared, StructNode **out, int n, int *full, 
         StructNode *st = (StructNode *)w->seen[i];
         if (!w->shared[i])
             continue;
-        int shaping = siSettle(st, 0);
+        // Its methods are demanded (checked now if not yet), so the answer does not wait
+        // on the order bodies happen to be checked in: a method copied into each variant
+        // of an enum is one nothing else reaches
+        int shaping = siSettle(st, 1);
         if (shaping == SiNo)
             continue;
         // Whether it changes shape is not settled yet (a method of its module not

@@ -1,7 +1,11 @@
-// The args package: a small lexer for a program's command line, so a program
-// does not write its own flag loop. It reads the list 'env.args()' gives and
-// hands out the options and the other arguments one at a time; what each
-// option means stays the program's: a loop and a 'match'.
+// The args package: a program's command line, in two layers.
+//
+// The declared parser (Spec) is for a program that wants its options listed once and the usage, the help, the
+// defaults, the typed values and the errors that name an option done for it. The reader (ArgReader) is the
+// layer under it: a lexer that hands out the options and the other arguments one at a time, for a program
+// that wants its own loop and a 'match'.
+//
+// **The declared parser.**
 //
 //   mod tool;
 //   import stdio use *;
@@ -9,31 +13,67 @@
 //   import args use *;
 //
 //   fn run() Result[u64, ArgError] {
-//     var frames = 60i64;
-//     var headless = false;
-//     var files = List[String]();
-//     var r = ArgReader.fromEnv();                 // skips the program's name
-//     while true {
-//       match r.next()? {
-//         case let Some(arg) {
-//           match arg {
-//             case let Long(n) if n == "frames" { frames = r.int()?; }
-//             case let Long(n) if n == "headless" { headless = true; }
-//             case let Short(c) if c == 'f' { frames = r.int()?; }
-//             case let Value(v) { files.push(v); }
-//             else { return Err[u64, ArgError](arg.unexpected()); }
-//           }
-//         }
-//         case is None { break; }
-//       }
-//     }
-//     Ok[u64, ArgError](u64.from(frames) + u64.from(files.len()))
+//     var spec = Spec.from("tool", "Counts frames and files.");
+//     spec.add(Opt(name: "frames", short: 'f', kind: Kind.Int, default: "60", help: "frames to render"));
+//     spec.add(Opt(name: "headless", kind: Kind.Flag, help: "no window"));
+//     spec.positionals("FILE", "files to count", 0usize);
+//     let m = spec.parse(&mut ArgReader.fromEnv())?;
+//     Ok[u64, ArgError](u64.from(m.int("frames")) + u64.from(m.rest().len()))
 //   }
 //
 //   fn main() i32 {
 //     match run() {
 //       case let Ok(n) { print <- n; print <- "\n"; 0i32 }
-//       case let Err(e) { print <- toText(&e); print <- "\nUsage: tool [--frames N] [--headless] FILE...\n"; 2i32 }
+//       case let Err(e) {
+//         match e {
+//           case let Help(text) { print <- text.view(); 0i32 }      // -h or --help: print the help, exit 0
+//           else { print <- toText(&e); print <- "\n"; 2i32 }
+//         }
+//       }
+//     }
+//   }
+//
+//   Spec.from(name, about)         a Spec for the program (or a command) of this name
+//   spec.add(Opt(...))             an option: name, short, kind, help, default, value, required, many
+//   spec.positional(name, help)    a positional that must be given; declare them in order
+//   spec.positionals(name, help, min)   the positionals that take all the rest, at least 'min' of them
+//   spec.parse(&mut reader)        reads the reader to its end: Result[Matches, ArgError]
+//   spec.usage()  spec.helpText()  the usage line, and the whole help text
+//   Kind                           Flag, Int, Uint, Float, Text, or Choice("a|b|c"): one of those words, '|' between
+//   m.int(n) uint float text flag  the value of an option or positional by its name (the last one given, else its default)
+//   m.choice(n)                    a Picked: the chosen word and its index in the list
+//   m.list(n)  m.ints(n)           every value of a repeated option, as text and as numbers
+//   m.has(n)  m.count(n)           whether, and how many times, the command line gave it (a default is not given)
+//   m.rest()                       every positional argument, in order
+//
+// The forms are the reader's (below). '-h' and '--help' are the Spec's own unless an option takes the name
+// (or, for '-h', the letter): 'parse' then answers Err(ArgError.Help(text)), with the full help text built.
+// The library never prints and never ends the process: the program prints the text and exits as it likes (Go's
+// flag.ErrHelp shape). The help is the about line, the usage, the positionals, and the options aligned with
+// their text and "[default: ...]". An error names the option as the person typed it ("-f wants a whole
+// number, got 'x'"); an unknown long option names the nearest declared one when one is close; a repeated option
+// that is not 'many' is "--frames was given more than once"; a required option or positional not given is
+// "--out is required". A default is read as if typed ('--frames=60'), so a bad default fails at the first run.
+// A name a getter is asked for that no Spec declared, or a getter of the wrong kind, stops the program: it is the
+// program's mistake, not the user's. An option the command line did not give and with no default reads as 0, 0.0,
+// "" or false.
+//
+// **Subcommands** are by hand: read the first value with the reader, 'match' it, and give each command a Spec of
+// its own that parses the same reader (examples/commands.cone).
+//
+// **The reader.** A program may skip the Spec and loop on the reader:
+//
+//   var r = ArgReader.fromEnv();                 // skips the program's name
+//   while true {
+//     match r.next()? {
+//       case let Some(arg) {
+//         match arg {
+//           case let Long(n) if n == "frames" { frames = r.int()?; }
+//           case let Value(v) { files.push(v); }
+//           else { return Err[u64, ArgError](arg.unexpected()); }
+//         }
+//       }
+//       case is None { break; }
 //     }
 //   }
 //
@@ -138,6 +178,13 @@ pub enum ArgError is Error {
     pub option: String;
     pub got: String;
   }
+  MissingRequired(String);                // the option (--out) or positional (FILE) a Spec requires, not given
+  Repeated(String);                       // the option (--frames) given twice that a Spec does not let repeat
+  struct DidYouMean {                     // an option the Spec does not have, and the declared name nearest it
+    pub option: String;
+    pub near: String;
+  }
+  Help(String);                           // -h or --help was given: the whole help text, for the program to print
 
   // One line saying what was wrong
   pub fn toText(self: &, out: &uni TextOut) { self.say(out); }
@@ -151,6 +198,10 @@ pub enum ArgError is Error {
         out <- b.option.view(); out <- " wants "; out <- b.wants.view(); out <- ", got '"; out <- b.got.view(); out <- "'";
       }
       case let OutOfRange(b) { out <- b.option.view(); out <- " is out of range: '"; out <- b.got.view(); out <- "'"; }
+      case let MissingRequired(o) { out <- o.view(); out <- " is required"; }
+      case let Repeated(o) { out <- o.view(); out <- " was given more than once"; }
+      case let DidYouMean(b) { out <- "unknown option "; out <- b.option.view(); out <- ", did you mean "; out <- b.near.view(); out <- "?"; }
+      case let Help(text) { out <- text.view(); }
     }
   }
 }
@@ -324,5 +375,598 @@ fn firstChar(s: &str) Head {
       }
     }
     case is None { Head('?', 0usize) }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The declared parser. A Spec lists the options and positionals a program has; 'parse' reads an
+// ArgReader against it and answers the values as Matches, or the error that names what was wrong.
+// Help is built from the same list.
+
+// What an option's value is. A Flag takes none.
+pub enum Kind {
+  Flag;                    // present or absent
+  Int;                     // an i64
+  Uint;                    // a u64
+  Float;                   // an f64, not a NaN or an infinity
+  Text;                    // any text
+  Choice(&str);            // one of these words, separated by '|': Kind.Choice("red|green|blue"). The Matches give back
+                           // the word and its place in the list.
+}
+
+// A Kind as the Spec keeps it: a Choice's words made into a list
+enum Ty {
+  Flag;
+  Int;
+  Uint;
+  Float;
+  Text;
+  Choice(List[String]);
+}
+
+fn toTy(k: &Kind) Ty {
+  match k {
+    case is Flag { Ty.Flag }
+    case is Int { Ty.Int }
+    case is Uint { Ty.Uint }
+    case is Float { Ty.Float }
+    case is Text { Ty.Text }
+    case let Choice(w) { Ty.Choice(List[String].from(w.splitOnChar('|').map(x => String.from(x)))) }
+  }
+}
+
+fn isFlagKind(k: &Ty) bool {
+  match k {
+    case is Flag { true }
+    else { false }
+  }
+}
+
+// A chosen word and its place in the Choice's list
+pub struct Picked {
+  pub word: String;
+  pub index: usize;
+}
+
+// One option a Spec has, declared by naming the fields it needs:
+//   Opt(name: "frames", short: 'f', kind: Kind.Int, default: "60", help: "frames to render")
+pub struct Opt {
+  pub name: &str;                  // the long name, without the dashes
+  pub short: char = '\0';          // its one-letter form, '\0' for none
+  pub kind: Kind = Kind.Flag;
+  pub help: &str = "";             // one line for the help text
+  pub default: &str = "";          // the value, written as the person would type it; "" means no default, so an
+                                   // empty-string default cannot be declared
+  pub value: &str = "";            // what the help text calls the value (FILE): by default from the kind
+  pub required: bool = false;      // an error if not given (and it has no default)
+  pub many: bool = false;          // may be given more than once; the values come out as a list
+}
+
+// An Opt as the Spec keeps it
+struct Def {
+  name: String;
+  short: char;
+  kind: Ty;
+  help: String;
+  default: String;
+  hasDefault: bool;
+  value: String;
+  required: bool;
+  many: bool;
+}
+
+// A positional argument
+struct Pos {
+  name: String;
+  help: String;
+  many: bool;
+  min: usize;
+}
+
+// The options and positionals of a program or one of its commands
+pub struct Spec {
+  name: String;
+  about: String;
+  opts: List[Def];
+  pos: List[Pos];
+
+  // A Spec for the program (or command) of this name, with this one line about it
+  pub fn from(name: &str, about: &str) Spec {
+    Spec(String.from(name), String.from(about), List[Def](), List[Pos]())
+  }
+
+  // Declares an option. '-h' and '--help' are the Spec's own unless an option takes the name or letter.
+  pub fn add(self: &mut, o: Opt) {
+    var opt = o;
+    let kind = toTy(&opt.kind);
+    let has = opt.default.len() > 0usize;
+    opts.push(Def(String.from(opt.name), opt.short, kind, String.from(opt.help), String.from(opt.default),
+                  has, String.from(opt.value), opt.required, opt.many));
+  }
+
+  // Declares a positional argument that must be given; declare them in order
+  pub fn positional(self: &mut, name: &str, help: &str) {
+    pos.push(Pos(String.from(name), String.from(help), false, 1usize));
+  }
+
+  // Declares the positionals that take all the rest, at least 'min' of them. Declare it after the single ones.
+  pub fn positionals(self: &mut, name: &str, help: &str, min: usize) {
+    pos.push(Pos(String.from(name), String.from(help), true, min));
+  }
+
+  // Reads the reader's arguments, from where it is to its end, against this Spec
+  pub fn parse(self: &, r: &mut ArgReader) Result[Matches, ArgError] {
+    var m = Matches(List[Slot](), List[String]());
+    var i = 0usize;
+    while i < opts.len() { m.slots.push(Slot(opts[i].name.clone(), List[Val](), 0usize)); i = i + 1usize; }
+    i = 0usize;
+    while i < pos.len() { m.slots.push(Slot(pos[i].name.clone(), List[Val](), 0usize)); i = i + 1usize; }
+    while true {
+      match r.next()? {
+        case let Some(arg) {
+          match arg {
+            case let Long(n) {
+              var shown = String.from("--");
+              shown <- n.view();
+              let at = self.findLong(n.view());
+              if at < opts.len() { self.take(r, at, shown.view(), &mut m)?; }
+              else if n.view() == "help" && !self.hasLong("help") {
+                return Err[Matches, ArgError](ArgError.Help(self.helpText()));
+              }
+              else { return Err[Matches, ArgError](self.unknownLong(n.view())); }
+            }
+            case let Short(c) {
+              var shown = String.from("-");
+              shown <- c;
+              let at = self.findShort(c);
+              if at < opts.len() { self.take(r, at, shown.view(), &mut m)?; }
+              else if c == 'h' && !self.hasLong("help") {
+                return Err[Matches, ArgError](ArgError.Help(self.helpText()));
+              }
+              else { return Err[Matches, ArgError](ArgError.UnknownOption(shown)); }
+            }
+            case let Value(v) { self.place(v, &mut m)?; }
+          }
+        }
+        case is None { break; }
+      }
+    }
+    self.finish(&mut m)?;
+    Ok[Matches, ArgError](m)
+  }
+
+  // The index of the option with this long name, or the count of options when none has
+  fn findLong(self: &, n: &str) usize {
+    var i = 0usize;
+    while i < opts.len() { if opts[i].name.view() == n { return i; } i = i + 1usize; }
+    opts.len()
+  }
+
+  fn hasLong(self: &, n: &str) bool { self.findLong(n) < opts.len() }
+
+  fn findShort(self: &, c: char) usize {
+    var i = 0usize;
+    while i < opts.len() { if opts[i].short == c { return i; } i = i + 1usize; }
+    opts.len()
+  }
+
+  // An option with this index was read: take its value, if it has one
+  fn take(self: &, r: &mut ArgReader, i: usize, shown: &str, m: &mut Matches) Result[bool, ArgError] {
+    if m.slots[i].given > 0usize && !opts[i].many {
+      return Err[bool, ArgError](ArgError.Repeated(String.from(shown)));
+    }
+    m.slots[i].given = m.slots[i].given + 1usize;
+    if !isFlagKind(&opts[i].kind) {
+      let v = readVal(&opts[i].kind, r, shown)?;
+      m.slots[i].vals.push(v);
+    }
+    Ok[bool, ArgError](true)
+  }
+
+  // A positional argument: the first declared one with room
+  fn place(self: &, v: String, m: &mut Matches) Result[bool, ArgError] {
+    var j = 0usize;
+    while j < pos.len() {
+      let at = opts.len() + j;
+      if pos[j].many || m.slots[at].given == 0usize {
+        m.slots[at].given = m.slots[at].given + 1usize;
+        m.slots[at].vals.push(Val.T(v.clone()));
+        m.extras.push(v);
+        return Ok[bool, ArgError](true);
+      }
+      j = j + 1usize;
+    }
+    Err[bool, ArgError](ArgError.UnexpectedArgument(v))
+  }
+
+  // The end of the arguments: what is required, then the defaults
+  fn finish(self: &, m: &mut Matches) Result[bool, ArgError] {
+    var i = 0usize;
+    while i < opts.len() {
+      if m.slots[i].given == 0usize {
+        if opts[i].hasDefault {
+          // the default is read as if it were typed: '--name=text'
+          var line = String.from("--");
+          line <- opts[i].name.view();
+          line <- "=";
+          line <- opts[i].default.view();
+          var one = List[String]();
+          one.push(line);
+          var dr = ArgReader.from(one);
+          dr.next()?;
+          var shown = String.from("--");
+          shown <- opts[i].name.view();
+          let v = readVal(&opts[i].kind, &mut dr, shown.view())?;
+          m.slots[i].vals.push(v);
+        }
+        else if opts[i].required {
+          var shown = String.from("--");
+          shown <- opts[i].name.view();
+          return Err[bool, ArgError](ArgError.MissingRequired(shown));
+        }
+      }
+      i = i + 1usize;
+    }
+    var j = 0usize;
+    while j < pos.len() {
+      if m.slots[opts.len() + j].given < pos[j].min {
+        return Err[bool, ArgError](ArgError.MissingRequired(pos[j].name.clone()));
+      }
+      j = j + 1usize;
+    }
+    Ok[bool, ArgError](true)
+  }
+
+  // The error for an option this Spec lacks, with the nearest name it has when one is close
+  fn unknownLong(self: &, n: &str) ArgError {
+    var shown = String.from("--");
+    shown <- n;
+    var best = 3usize;
+    var near = String();
+    var i = 0usize;
+    while i < opts.len() {
+      let d = editDistance(n, opts[i].name.view());
+      if d < best { best = d; near = opts[i].name.clone(); }
+      i = i + 1usize;
+    }
+    if !self.hasLong("help") {
+      let d = editDistance(n, "help");
+      if d < best { best = d; near = String.from("help"); }
+    }
+    if best <= 2usize && best < n.len() {
+      var hint = String.from("--");
+      hint <- near.view();
+      return ArgError.DidYouMean(shown, hint);
+    }
+    ArgError.UnknownOption(shown)
+  }
+
+  // What the help text calls an option's value
+  fn placeholder(self: &, i: usize) String {
+    if opts[i].value.len() > 0usize { return opts[i].value.clone(); }
+    match &opts[i].kind {
+      case is Int { String.from("N") }
+      case is Uint { String.from("N") }
+      case is Float { String.from("NUM") }
+      case let Choice(words) {
+        var s = String();
+        var k = 0usize;
+        while k < words.len() {
+          if k > 0usize { s <- "|"; }
+          s <- words[k].view();
+          k = k + 1usize;
+        }
+        s
+      }
+      else { String.from("TEXT") }
+    }
+  }
+
+  // The usage line: "Usage: tool [--frames <N>] [--headless] FILE..."
+  pub fn usage(self: &) String {
+    var s = String.from("Usage: ");
+    s <- name.view();
+    var i = 0usize;
+    while i < opts.len() {
+      s <- " ";
+      let optional = !opts[i].required || opts[i].hasDefault;
+      if optional { s <- "["; }
+      s <- "--"; s <- opts[i].name.view();
+      if !isFlagKind(&opts[i].kind) { s <- " <"; s <- self.placeholder(i).view(); s <- ">"; }
+      if optional { s <- "]"; }
+      if opts[i].many { s <- "..."; }
+      i = i + 1usize;
+    }
+    var j = 0usize;
+    while j < pos.len() {
+      s <- " ";
+      let optional = pos[j].min == 0usize;
+      if optional { s <- "["; }
+      s <- pos[j].name.view();
+      if optional { s <- "]"; }
+      if pos[j].many { s <- "..."; }
+      j = j + 1usize;
+    }
+    s
+  }
+
+  // The whole help text: what the program is, the usage, the positionals and the options with their
+  // text and defaults, ending in a newline
+  pub fn helpText(self: &) String {
+    var s = String();
+    if about.len() > 0usize { s <- about.view(); s <- "\n\n"; }
+    s <- self.usage().view();
+    s <- "\n";
+    if pos.len() > 0usize {
+      var lefts = List[String]();
+      var rights = List[String]();
+      var j = 0usize;
+      while j < pos.len() {
+        var l = String.from("  ");
+        l <- pos[j].name.view();
+        lefts.push(l);
+        rights.push(pos[j].help.clone());
+        j = j + 1usize;
+      }
+      s <- "\nArguments:\n";
+      table(&mut s, &lefts, &rights);
+    }
+    var lefts = List[String]();
+    var rights = List[String]();
+    var i = 0usize;
+    while i < opts.len() {
+      var l = String.from("  ");
+      if opts[i].short != '\0' { l <- "-"; l <- opts[i].short; l <- ", "; } else { l <- "    "; }
+      l <- "--"; l <- opts[i].name.view();
+      if !isFlagKind(&opts[i].kind) { l <- " <"; l <- self.placeholder(i).view(); l <- ">"; }
+      lefts.push(l);
+      var h = opts[i].help.clone();
+      if opts[i].hasDefault {
+        if h.len() > 0usize { h <- " "; }
+        h <- "[default: "; h <- opts[i].default.view(); h <- "]";
+      }
+      rights.push(h);
+      i = i + 1usize;
+    }
+    if !self.hasLong("help") {
+      var l = String.from("      --help");
+      if self.findShort('h') == opts.len() { l = String.from("  -h, --help"); }
+      lefts.push(l);
+      rights.push(String.from("show this help"));
+    }
+    s <- "\nOptions:\n";
+    table(&mut s, &lefts, &rights);
+    s
+  }
+}
+
+// Left and right columns, the right one aligned two spaces after the longest left; a line with nothing on
+// the right has no trailing spaces
+fn table(out: &mut String, lefts: &List[String], rights: &List[String]) {
+  var width = 0usize;
+  var i = 0usize;
+  while i < lefts.len() { if lefts[i].len() > width { width = lefts[i].len(); } i = i + 1usize; }
+  i = 0usize;
+  while i < lefts.len() {
+    var l = lefts[i].clone();
+    if rights[i].len() > 0usize {
+      l.padEnd(width + 2usize);
+      l <- rights[i].view();
+    }
+    *out <- l.view();
+    *out <- "\n";
+    i = i + 1usize;
+  }
+}
+
+// How many single-letter edits turn one text into the other
+fn editDistance(a: &str, b: &str) usize {
+  var x = List[char]();
+  var it = a.chars();
+  while true { match it.next() { case let Some(c) { x.push(c); } case is None { break; } } }
+  var y = List[char]();
+  var jt = b.chars();
+  while true { match jt.next() { case let Some(c) { y.push(c); } case is None { break; } } }
+  var prev = List[usize]();
+  var k = 0usize;
+  while k <= y.len() { prev.push(k); k = k + 1usize; }
+  var i = 0usize;
+  while i < x.len() {
+    var cur = List[usize]();
+    cur.push(i + 1usize);
+    var j = 0usize;
+    while j < y.len() {
+      var cost = 1usize;
+      if x[i] == y[j] { cost = 0usize; }
+      var best = prev[j] + cost;
+      if prev[j + 1usize] + 1usize < best { best = prev[j + 1usize] + 1usize; }
+      if cur[j] + 1usize < best { best = cur[j] + 1usize; }
+      cur.push(best);
+      j = j + 1usize;
+    }
+    prev = cur;
+    i = i + 1usize;
+  }
+  prev[y.len()]
+}
+
+// One value read for an option
+enum Val {
+  I(i64);
+  U(u64);
+  F(f64);
+  T(String);
+  C(Picked);
+}
+
+// Reads the value of the option just read, as its kind says; 'shown' is the option as the person typed it
+fn readVal(kind: &Ty, r: &mut ArgReader, shown: &str) Result[Val, ArgError] {
+  match kind {
+    case is Int { let n = r.int()?; Ok[Val, ArgError](Val.I(n)) }
+    case is Uint { let n = r.uint()?; Ok[Val, ArgError](Val.U(n)) }
+    case is Float { let x = r.float()?; Ok[Val, ArgError](Val.F(x)) }
+    case let Choice(words) {
+      let got = r.value()?;
+      var i = 0usize;
+      while i < words.len() {
+        if words[i].view() == got.view() { return Ok[Val, ArgError](Val.C(Picked(words[i].clone(), i))); }
+        i = i + 1usize;
+      }
+      var wants = String.from("one of ");
+      i = 0usize;
+      while i < words.len() {
+        if i > 0usize { wants <- ", "; }
+        wants <- words[i].view();
+        i = i + 1usize;
+      }
+      Err[Val, ArgError](ArgError.BadValue(String.from(shown), wants, got))
+    }
+    else { let t = r.value()?; Ok[Val, ArgError](Val.T(t)) }
+  }
+}
+
+// What one option or positional was given
+struct Slot {
+  name: String;
+  vals: List[Val];
+  given: usize;           // how many times it was on the command line (defaults not counted)
+}
+
+// What parse found. Each getter takes the name a Spec declared (the option's long name, or the positional's
+// name) and stops the program with a message when there is no such name or the option is of another kind:
+// that is the program's mistake, not the user's.
+pub struct Matches {
+  slots: List[Slot];
+  extras: List[String];       // the positionals, in order
+
+  fn at(self: &, name: &str) usize {
+    var i = 0usize;
+    while i < slots.len() { if slots[i].name.view() == name { return i; } i = i + 1usize; }
+    panic("args: Matches: no option or positional of that name was declared")
+  }
+
+  // The last value of option 's', if it has one
+  fn last(self: &, s: usize) Option[usize] {
+    if slots[s].vals.len() == 0usize { return None; }
+    Some[usize](slots[s].vals.len() - 1usize)
+  }
+
+  // Whether the command line gave it (a default does not count)
+  pub fn has(self: &, name: &str) bool { slots[self.at(name)].given > 0usize }
+
+  // How many times the command line gave it
+  pub fn count(self: &, name: &str) usize { slots[self.at(name)].given }
+
+  // A flag: given at least once
+  pub fn flag(self: &, name: &str) bool { slots[self.at(name)].given > 0usize }
+
+  // The value of an Int option: the last one given, else its default, else 0
+  pub fn int(self: &, name: &str) i64 {
+    let s = self.at(name);
+    match self.last(s) {
+      case let Some(k) {
+        match &slots[s].vals[k] {
+          case let I(n) { *n }
+          else { panic("args: Matches.int: that option is not an Int") }
+        }
+      }
+      case is None { 0i64 }
+    }
+  }
+
+  pub fn uint(self: &, name: &str) u64 {
+    let s = self.at(name);
+    match self.last(s) {
+      case let Some(k) {
+        match &slots[s].vals[k] {
+          case let U(n) { *n }
+          else { panic("args: Matches.uint: that option is not a Uint") }
+        }
+      }
+      case is None { 0u64 }
+    }
+  }
+
+  pub fn float(self: &, name: &str) f64 {
+    let s = self.at(name);
+    match self.last(s) {
+      case let Some(k) {
+        match &slots[s].vals[k] {
+          case let F(x) { *x }
+          else { panic("args: Matches.float: that option is not a Float") }
+        }
+      }
+      case is None { 0.0 }
+    }
+  }
+
+  // The text of a Text option or a positional; the chosen word of a Choice. "" when there is none.
+  pub fn text(self: &, name: &str) String {
+    let s = self.at(name);
+    match self.last(s) {
+      case let Some(k) {
+        match &slots[s].vals[k] {
+          case let T(t) { t.clone() }
+          case let C(p) { p.word.clone() }
+          else { panic("args: Matches.text: that option is not Text") }
+        }
+      }
+      case is None { String() }
+    }
+  }
+
+  // The word of a Choice option and its place in the list; ("", 0) when it was not given and has no default
+  pub fn choice(self: &, name: &str) Picked {
+    let s = self.at(name);
+    match self.last(s) {
+      case let Some(k) {
+        match &slots[s].vals[k] {
+          case let C(p) { Picked(p.word.clone(), p.index) }
+          else { panic("args: Matches.choice: that option is not a Choice") }
+        }
+      }
+      case is None { Picked(String(), 0usize) }
+    }
+  }
+
+  // Every value of a repeated option or a positional, as text (a number as written back, a Choice as its word)
+  pub fn list(self: &, name: &str) List[String] {
+    let s = self.at(name);
+    var out = List[String]();
+    var k = 0usize;
+    while k < slots[s].vals.len() {
+      match &slots[s].vals[k] {
+        case let T(t) { out.push(t.clone()); }
+        case let C(p) { out.push(p.word.clone()); }
+        case let I(n) { var t = String(); t.appendInt(*n); out.push(t); }
+        case let U(n) { var t = String(); t.appendUInt(*n); out.push(t); }
+        case let F(x) { var t = String(); t.appendF64(*x); out.push(t); }
+      }
+      k = k + 1usize;
+    }
+    out
+  }
+
+  // Every value of a repeated Int option
+  pub fn ints(self: &, name: &str) List[i64] {
+    let s = self.at(name);
+    var out = List[i64]();
+    var k = 0usize;
+    while k < slots[s].vals.len() {
+      match &slots[s].vals[k] {
+        case let I(n) { out.push(*n); }
+        else { panic("args: Matches.ints: that option is not an Int"); }
+      }
+      k = k + 1usize;
+    }
+    out
+  }
+
+  // Every positional argument given, in order
+  pub fn rest(self: &) List[String] {
+    var out = List[String]();
+    var k = 0usize;
+    while k < extras.len() { out.push(extras[k].clone()); k = k + 1usize; }
+    out
   }
 }

@@ -121,7 +121,7 @@ DOMAINS = [
   ]),
   ("The program and its machine", [
    ("env", "The process's environment: its arguments and environment variables, read, set and removed."),
-   ("args", "A small lexer for a program's command line: options and other arguments, one at a time."),
+   ("args", "A program's command line: a declared parser (options, typed values, defaults, generated help and errors) over a small lexer."),
    ("process", "Run another program and wait for it with its output captured; this program's own arguments and path."),
    ("signals", "Ctrl-C and terminate as a flag the program looks at, so it can shut down cleanly (Windows and Linux)."),
   ]),
@@ -169,12 +169,13 @@ DOMAINS = [
    ("url", "URLs as data (RFC 3986): read, resolved against a base, written back."),
   ]),
   ("Files and folders", [
-   ("fs", "Files and folders, synchronously: read, write, map, list, walk, remove."),
+   ("fs", "Files and folders, synchronously: read, write, map, list, walk, copy a folder, remove, temp files and folders."),
    ("path", "File paths taken apart and put together, as text; asks the file system nothing."),
   ]),
   ("Archives and compression", [
    ("deflate", "DEFLATE compression and decompression with zlib and gzip framing, Adler-32 and CRC-32, streaming."),
    ("zstd", "Zstandard decompression and compression (levels 1 to 3), with xxHash64, streaming."),
+   ("brotli", "Brotli (RFC 7932) decompression of a stream in memory, with the static dictionary built in."),
    ("zipfile", "ZIP archives read, written and extracted safely."),
    ("tarfile", "Tar archives (POSIX ustar) read as bytes arrive and written entry by entry."),
    ("archivestage", "A zip archive read as a stream between actors, each entry handed on as a stream."),
