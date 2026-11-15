@@ -121,7 +121,7 @@ DOMAINS = [
   ]),
   ("The program and its machine", [
    ("env", "The process's environment: its arguments and environment variables, read, set and removed."),
-   ("args", "A small lexer for a program's command line: options and other arguments, one at a time."),
+   ("args", "A program's command line: a declared parser (options, typed values, defaults, generated help and errors) over a small lexer."),
    ("process", "Run another program and wait for it with its output captured; this program's own arguments and path."),
    ("signals", "Ctrl-C and terminate as a flag the program looks at, so it can shut down cleanly (Windows and Linux)."),
   ]),

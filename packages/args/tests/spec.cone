@@ -1,0 +1,256 @@
+// Spec: the declared parser. Each case is a command line written with '|' between the arguments, parsed
+// against a Spec and shown as one line of what 'parse' found, or "ERR: " and the error's text. The help text and
+// the error texts are pinned exactly.
+
+mod spec;
+
+import testing use *;
+import collections use *;
+import args use *;
+
+fn parts(line: &str) List[String] {
+  if line.len() == 0usize { return List[String](); }
+  List[String].from(line.splitOnChar('|').map(x => String.from(x)))
+}
+
+// The program of the header's examples: a number with a default, a flag, a repeated text, a number without a
+// default, a choice with a default, a counted flag, a float, and files
+fn tool() Spec {
+  var s = Spec.from("tool", "Counts frames and files.");
+  s.add(Opt(name: "frames", short: 'f', kind: Kind.Int, default: "60", help: "frames to render"));
+  s.add(Opt(name: "headless", kind: Kind.Flag, help: "no window"));
+  s.add(Opt(name: "tag", kind: Kind.Text, many: true, help: "label, repeatable"));
+  s.add(Opt(name: "level", short: 'l', kind: Kind.Uint));
+  s.add(Opt(name: "color", short: 'c', kind: Kind.oneOf("red|green|blue"), default: "green", help: "paint"));
+  s.add(Opt(name: "verbose", short: 'v', kind: Kind.Flag, many: true, help: "more output"));
+  s.add(Opt(name: "ratio", kind: Kind.Float, default: "0.5"));
+  s.positionals("FILE", "files to read", 0usize);
+  s
+}
+
+fn join(items: &List[String]) String {
+  var s = String();
+  var i = 0usize;
+  while i < items.len() {
+    if i > 0usize { s <- ","; }
+    s <- items[i].view();
+    i = i + 1usize;
+  }
+  s
+}
+
+fn showTool(m: &Matches) String {
+  var s = String.from("frames=");
+  s.appendInt(m.int("frames"));
+  s <- " headless="; s <- if m.flag("headless") { "yes" } else { "no" };
+  s <- " tag=["; s <- join(&m.list("tag")).view(); s <- "]";
+  s <- " level="; s.appendUInt(m.uint("level"));
+  if m.has("level") { s <- "!"; }
+  let c = m.choice("color");
+  s <- " color="; s <- c.word.view(); s <- "/"; s.appendUInt(u64.from(c.index));
+  s <- " v="; s.appendUInt(u64.from(m.count("verbose")));
+  s <- " ratio="; s.appendInt(i64.from(m.float("ratio") * 100.0));
+  s <- " files=["; s <- join(&m.rest()).view(); s <- "]";
+  s
+}
+
+fn run(spec: &Spec, line: &str) String {
+  var r = ArgReader.from(parts(line));
+  match spec.parse(&mut r) {
+    case let Ok(m) { showTool(&m) }
+    case let Err(e) { var s = String.from("ERR: "); s <- toText(&e); s }
+  }
+}
+
+fn check(line: &str, want: &str) {
+  let spec = tool();
+  let got = run(&spec, line);
+  expectStr(got.view(), want, line);
+}
+
+// The help text when the command line asks for it, else "not help"
+fn helpOf(spec: &Spec, line: &str) String {
+  var r = ArgReader.from(parts(line));
+  match spec.parse(&mut r) {
+    case let Ok(m) { String.from("not help: parsed") }
+    case let Err(e) {
+      match e {
+        case let Help(text) { text }
+        else { String.from("not help: an error") }
+      }
+    }
+  }
+}
+
+fn toolHelp() String {
+  var s = String.from("Counts frames and files.\n\n");
+  s <- "Usage: tool [--frames <N>] [--headless] [--tag <TEXT>]... [--level <N>] [--color <red|green|blue>]";
+  s <- " [--verbose]... [--ratio <NUM>] [FILE]...\n";
+  s <- "\nArguments:\n";
+  s <- "  FILE  files to read\n";
+  s <- "\nOptions:\n";
+  s <- "  -f, --frames <N>              frames to render [default: 60]\n";
+  s <- "      --headless                no window\n";
+  s <- "      --tag <TEXT>              label, repeatable\n";
+  s <- "  -l, --level <N>\n";
+  s <- "  -c, --color <red|green|blue>  paint [default: green]\n";
+  s <- "  -v, --verbose                 more output\n";
+  s <- "      --ratio <NUM>             [default: 0.5]\n";
+  s <- "  -h, --help                    show this help\n";
+  s
+}
+
+// Two positionals, a required option, and a value named FILE
+fn copy() Spec {
+  var s = Spec.from("copy", "");
+  s.add(Opt(name: "out", short: 'o', kind: Kind.Text, required: true, value: "FILE", help: "where it goes"));
+  s.positional("SRC", "");
+  s.positional("DST", "");
+  s
+}
+
+fn runCopy(line: &str) String {
+  let spec = copy();
+  var r = ArgReader.from(parts(line));
+  match spec.parse(&mut r) {
+    case let Ok(m) {
+      var s = String.from("out="); s <- m.text("out").view();
+      s <- " src="; s <- m.text("SRC").view();
+      s <- " dst="; s <- m.text("DST").view();
+      s
+    }
+    case let Err(e) { var s = String.from("ERR: "); s <- toText(&e); s }
+  }
+}
+
+fn checkCopy(line: &str, want: &str) {
+  let got = runCopy(line);
+  expectStr(got.view(), want, line);
+}
+
+fn main() i32 {
+  // an empty command line: the defaults
+  check("", "frames=60 headless=no tag=[] level=0 color=green/1 v=0 ratio=50 files=[]");
+  // an integer option, by every form
+  check("--frames=5", "frames=5 headless=no tag=[] level=0 color=green/1 v=0 ratio=50 files=[]");
+  check("--frames|5", "frames=5 headless=no tag=[] level=0 color=green/1 v=0 ratio=50 files=[]");
+  check("-f5", "frames=5 headless=no tag=[] level=0 color=green/1 v=0 ratio=50 files=[]");
+  check("-f|5", "frames=5 headless=no tag=[] level=0 color=green/1 v=0 ratio=50 files=[]");
+  check("-f|-5", "frames=-5 headless=no tag=[] level=0 color=green/1 v=0 ratio=50 files=[]");
+  // flags: alone, grouped, counted
+  check("--headless", "frames=60 headless=yes tag=[] level=0 color=green/1 v=0 ratio=50 files=[]");
+  check("-vvv", "frames=60 headless=no tag=[] level=0 color=green/1 v=3 ratio=50 files=[]");
+  check("-v|-v|--verbose", "frames=60 headless=no tag=[] level=0 color=green/1 v=3 ratio=50 files=[]");
+  check("-vf7", "frames=7 headless=no tag=[] level=0 color=green/1 v=1 ratio=50 files=[]");
+  // an unsigned and a float option; 'has' tells given from defaulted
+  check("--level=3", "frames=60 headless=no tag=[] level=3! color=green/1 v=0 ratio=50 files=[]");
+  check("-l0", "frames=60 headless=no tag=[] level=0! color=green/1 v=0 ratio=50 files=[]");
+  check("--ratio|2.25", "frames=60 headless=no tag=[] level=0 color=green/1 v=0 ratio=225 files=[]");
+  // a repeated option comes out as a list
+  check("--tag=a|--tag|b", "frames=60 headless=no tag=[a,b] level=0 color=green/1 v=0 ratio=50 files=[]");
+  // positionals, and '--' before something that looks like an option
+  check("a|b", "frames=60 headless=no tag=[] level=0 color=green/1 v=0 ratio=50 files=[a,b]");
+  check("a|--headless|b", "frames=60 headless=yes tag=[] level=0 color=green/1 v=0 ratio=50 files=[a,b]");
+  check("--|--headless|-f", "frames=60 headless=no tag=[] level=0 color=green/1 v=0 ratio=50 files=[--headless,-f]");
+  check("-f|3|--|-x", "frames=3 headless=no tag=[] level=0 color=green/1 v=0 ratio=50 files=[-x]");
+  check("-", "frames=60 headless=no tag=[] level=0 color=green/1 v=0 ratio=50 files=[-]");
+  // a choice: its word and its place in the list
+  check("--color=blue", "frames=60 headless=no tag=[] level=0 color=blue/2 v=0 ratio=50 files=[]");
+  check("-c|red", "frames=60 headless=no tag=[] level=0 color=red/0 v=0 ratio=50 files=[]");
+  check("--color=pink", "ERR: --color wants one of red, green, blue, got 'pink'");
+  check("-c|", "ERR: -c wants one of red, green, blue, got ''");
+  check("-c", "ERR: -c wants a value");
+  // errors name the option
+  check("--frames=x", "ERR: --frames wants a whole number, got 'x'");
+  check("-f|x", "ERR: -f wants a whole number, got 'x'");
+  check("--level=-1", "ERR: --level wants a whole number, 0 or more, got '-1'");
+  check("--frames=99999999999999999999", "ERR: --frames is out of range: '99999999999999999999'");
+  check("--ratio=nan", "ERR: --ratio wants a number, got 'nan'");
+  check("--frames", "ERR: --frames wants a value");
+  check("--headless=yes", "ERR: --headless takes no value");
+  // unknown options, with and without a nearest-name hint
+  check("--frmes=3", "ERR: unknown option --frmes, did you mean --frames?");
+  check("--headles", "ERR: unknown option --headles, did you mean --headless?");
+  check("--hlep", "ERR: unknown option --hlep, did you mean --help?");
+  check("--zzzzzz", "ERR: unknown option --zzzzzz");
+  check("--x", "ERR: unknown option --x");
+  check("-x", "ERR: unknown option -x");
+  check("-vx", "ERR: unknown option -x");
+  // a non-repeatable option given twice, in each form
+  check("--frames=1|--frames=2", "ERR: --frames was given more than once");
+  check("-f1|--frames=2", "ERR: --frames was given more than once");
+  check("--headless|--headless", "ERR: --headless was given more than once");
+  check("-f1|-f2", "ERR: -f was given more than once");
+  // a bad default is found the first time the Spec runs
+  {
+    var s = Spec.from("bad", "");
+    s.add(Opt(name: "n", kind: Kind.Int, default: "x"));
+    expectStr(runErr(&s, "").view(), "ERR: --n wants a whole number, got 'x'", "a default that is not a number");
+  }
+
+  // help is returned, in full; the library neither prints nor exits
+  {
+    let spec = tool();
+    expectStr(helpOf(&spec, "--help").view(), toolHelp().view(), "--help");
+    expectStr(helpOf(&spec, "-h").view(), toolHelp().view(), "-h");
+    expectStr(helpOf(&spec, "a|-vh|b").view(), toolHelp().view(), "-h in a group, after other arguments");
+    expectStr(helpOf(&spec, "--frames=bad|--help").view(), "not help: an error", "an error before --help comes first");
+    expectStr(helpOf(&spec, "--|--help").view(), "not help: parsed", "--help after '--' is a positional");
+    expectStr(spec.usage().view(),
+      "Usage: tool [--frames <N>] [--headless] [--tag <TEXT>]... [--level <N>] [--color <red|green|blue>] [--verbose]... [--ratio <NUM>] [FILE]...",
+      "usage line");
+    var r = ArgReader.from(parts("--help"));
+    match spec.parse(&mut r) {
+      case let Err(e) { expectStr(say(&e).view(), toolHelp().view(), "toText of Help is the help text"); }
+      case let Ok(m) { expect(false, "--help is an error"); }
+    }
+  }
+  // the help of a Spec with a required option, no about line, no positional help, and its own -h
+  {
+    let spec = copy();
+    var w = String.from("Usage: copy --out <FILE> SRC DST\n");
+    w <- "\nArguments:\n  SRC\n  DST\n";
+    w <- "\nOptions:\n  -o, --out <FILE>  where it goes\n  -h, --help        show this help\n";
+    expectStr(helpOf(&spec, "--help").view(), w.view(), "help of copy");
+    var t = Spec.from("t", "");
+    t.add(Opt(name: "host", short: 'h', kind: Kind.Text, default: "localhost"));
+    var u = String.from("Usage: t [--host <TEXT>]\n");
+    u <- "\nOptions:\n  -h, --host <TEXT>  [default: localhost]\n      --help         show this help\n";
+    expectStr(helpOf(&t, "--help").view(), u.view(), "help when an option has -h");
+    expectStr(runErr(&t, "-h|x").view(), "ok", "-h taken by an option is not help");
+  }
+
+  // required options and positionals
+  checkCopy("-o|x|a|b", "out=x src=a dst=b");
+  checkCopy("a|b", "ERR: --out is required");
+  checkCopy("--out=x|a", "ERR: DST is required");
+  checkCopy("--out=x", "ERR: SRC is required");
+  checkCopy("--out=x|a|b|c", "ERR: unexpected argument 'c'");
+  checkCopy("--out=x|--|a|b", "out=x src=a dst=b");
+  checkCopy("--out=x|--|--out|b", "out=x src=--out dst=b");
+  // at least one positional
+  {
+    var s = Spec.from("cat", "");
+    s.positionals("FILE", "", 1usize);
+    expectStr(runErr(&s, "").view(), "ERR: FILE is required", "a positional that needs one");
+    expectStr(spec2(&s).view(), "Usage: cat FILE...\n\nArguments:\n  FILE\n\nOptions:\n  -h, --help  show this help\n", "at least one");
+  }
+  done()
+}
+
+fn spec2(s: &Spec) String { s.helpText() }
+
+fn say(e: &ArgError) String {
+  var s = String();
+  s <- toText(e);
+  s
+}
+
+// "ok", or the error's line, for a Spec whose Matches the case does not look at
+fn runErr(spec: &Spec, line: &str) String {
+  var r = ArgReader.from(parts(line));
+  match spec.parse(&mut r) {
+    case let Ok(m) { String.from("ok") }
+    case let Err(e) { var s = String.from("ERR: "); s <- toText(&e); s }
+  }
+}
