@@ -1088,7 +1088,11 @@ argument no layout has reached, as the queue would, and decides them when no
 argument is still unsettled, the instance no longer pointing at what waited, so
 the queued check finds nothing to do. An argument in flight cannot be answered
 yet, and an instance's own members are not changed while it is laid out; then
-they stay undecided until the queue. The `is` entries are not deferred: they are the layout. A call on the instance
+they stay undecided until the queue. `genericTypeIsHow` does not lay out an
+unsettled argument while a layout is in flight, so an `is` entry's condition
+naming a trait with methods, 'T is Tag', asked of such an instance inside a
+layout ('Opt[List[W]]' inside the struct a variant of W holds) is answered by
+what the instance declares, as for a marker trait. The `is` entries are not deferred: they are the layout. A call on the instance
 that finds nothing asks `genericReportAbsent`, from `fnCallLowerMethod`, which
 finds the template through the instance's memo entry and reports
 `ErrorWhereAbsent` naming the unmet condition, as a requirement names it. A
@@ -1101,7 +1105,10 @@ condition is not true at the arguments (an unknown counts as not true), and
 `cloneStructNode` gives the instance a placeholder for each entry not listed: an
 `IsMixin` field whose `vtype` is the clone of the entry's, appended to `fields`,
 which the instance's type check takes in as it takes an instance of a generic
-trait (`structInheritTrait`: default methods copied, requirements checked). A
+trait (`structInheritTrait`: default methods copied, requirements checked); an
+entry whose own type fails there (reported already) is dropped and the others
+are still taken in, since the walk is backwards and a placeholder left behind
+would be a field holding a trait by value. A
 trait that is a declaration is recorded in the instance's `traits` at once, and
 `Move` or `AtomicValue` marks it `MoveType` at once, as name resolution marks a
 declared one, so a type or a constraint asking before the instance is laid out

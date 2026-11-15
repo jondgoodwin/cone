@@ -5615,8 +5615,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             continue;
         }
         if (itypeTypeCheck(pstate, &field->vtype) == 0) {
-            pstate->typenode = svtypenode;
-            return;
+            // Already reported. The entries before this one are still taken in
+            // (the walk is backwards), else their placeholders stay behind as
+            // fields holding a trait by value, and the type reports it has no size
+            nodelistMakeSpace(&node->fields, fldpos, -1);
+            continue;
         }
         StructNode *trait = (StructNode*)itypeGetTypeDcl(field->vtype);
         if (trait->tag != StructTag || !(trait->flags & TraitType)) {
