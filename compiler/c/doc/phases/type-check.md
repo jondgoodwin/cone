@@ -347,7 +347,10 @@ as a field of Node, a `Result[Option[Node], E]`, an array or a tuple of it are
 refused as before. A `where` that reads the argument's layout cannot wait for it:
 a condition on the generic, its enum or an `is` entry still lays out the
 argument it reads first (`genericTypeReadsArg`), so it is refused at the cycle
-it would close.
+it would close. An `is` entry's condition on an instance of a generic trait
+(`if T is Deserialize[T]`) reads no layout: no generic trait is a layout fact,
+so it is answered by declaration and the argument waits
+(`genericCondReadsLayout`).
 
 **Every check that reads a target's layout waits too**, and runs once no
 layout is in flight (`structWorkQueues`), after the waiting layouts and before

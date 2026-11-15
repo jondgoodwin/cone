@@ -1,0 +1,34 @@
+// A generic trait's instance in an 'is' condition, 'is Reads[Box[T]] if T is Reads[T]', is answered by declaration,
+// as a non-generic trait is: no generic trait is a layout fact, so naming Reads[Option[Holder]] does not lay
+// Option[Holder] out inside Holder's own layout. A struct holding a Box (which holds its T by pointer) of an
+// Option of itself, at one level and at two, compiles (Option is no Reads, so the entry is lacked there and the
+// instances are only built), and the condition is still decided where it is asked. Checked by hand:
+//   Holder.id + Outer.id = 7 + 8                                                                  15
+//   Box[Num] meets Reads, read() is 100                                                           100
+
+mod generic_trait_cond_recursive;
+
+import stdio use *;
+
+trait Reads[T] {
+  fn read(self: &) i64;
+}
+struct Num is Reads[Num] {
+  pub n: i64;
+  pub fn read(self: &) i64 { n }
+}
+struct Box[T] is Reads[Box[T]] if T is Reads[T] {
+  pub p: *T;
+  pub fn read(self: &) i64 where T is Reads[T] { 100 }
+}
+fn need[X](x: &X) i64 where X is Reads[X] { x.read() }
+
+struct Holder { pub id: i64; pub kids: Box[Option[Holder]]; }
+struct Outer { pub id: i64; pub kids: Box[Option[Box[Outer]]]; }
+
+fn main() {
+  var h = Holder(7, Box[Option[Holder]](null));
+  var o = Outer(8, Box[Option[Box[Outer]]](null));
+  printInt(h.id + o.id); printStr("\n");
+  printInt(need(&Box[Num](null))); printStr("\n");
+}

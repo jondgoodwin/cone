@@ -4014,7 +4014,14 @@ static int genericCondReadsLayout(INode *cond) {
         return genericCondReadsLayout(((LogicNode*)cond)->lexp) || genericCondReadsLayout(((LogicNode*)cond)->rexp);
     if (cond->tag != IsTag)
         return 1;
-    StructNode *trait = genericNamedTrait(((CastNode*)cond)->typ);
+    INode *typ = ((CastNode*)cond)->typ;
+    // An instance of a generic trait, 'T is Deserialize[T]', is answered by
+    // declaration like any other named trait. No generic trait is a layout
+    // fact (genericTraitReadsLayout lists only non-generic ones); a future
+    // generic layout trait must be tested for here, by its template.
+    if (genericNamedGenericTrait(typ) != NULL)
+        return 0;
+    StructNode *trait = genericNamedTrait(typ);
     return trait == NULL || genericTraitReadsLayout(trait);
 }
 
