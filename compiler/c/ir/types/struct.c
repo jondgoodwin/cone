@@ -4807,6 +4807,17 @@ static INode *structCoreFn(INode *trait, const char *fname) {
     return fn && fn->tag == FnDclTag ? fn : NULL;
 }
 
+// Does the generic this instance is of write `name` (under a 'where', say) though this
+// instance lacks it, its arguments not meeting that 'where'? Then it is written, not left
+// for the compiler to supply.
+static int structTemplateWrites(StructNode *node, const char *name) {
+    StructNode *tmpl = genericTypeTemplate(node);
+    if (tmpl == NULL)
+        return 0;
+    INode *binding = namespaceFind(&tmpl->namespace, nametblFind((char*)name, strlen(name)));
+    return binding && binding->tag == FnDclTag && ((FnDclNode*)binding)->value != NULL;
+}
+
 static void structSerializeCheck(StructNode *node) {
     if ((node->flags & (TraitType | EnumType)) || node->traits == NULL)
         return;
@@ -4827,7 +4838,7 @@ static void structSerializeCheck(StructNode *node) {
         INode *binding = namespaceFind(&node->namespace, nametblFind("serialize", 9));
         INode *recfn = structCoreFn((INode*)sertrait, "serializeRecord");
         if (binding && binding->tag == FnDclTag && ((FnDclNode*)binding)->value == NULL
-            && !(binding->flags & FlagExtern) && recfn) {
+            && !(binding->flags & FlagExtern) && recfn && !structTemplateWrites(node, "serialize")) {
             FnDclNode *serfn = (FnDclNode*)binding;
             int refused = 0;
             for (nodelistFor(&node->fields, cnt, nodesp)) {
@@ -4862,7 +4873,7 @@ static void structSerializeCheck(StructNode *node) {
         INode *binding = namespaceFind(&node->namespace, nametblFind("deserialize", 11));
         INode *recfn = structCoreFn((INode*)desertrait, "deserializeRecord");
         if (binding && binding->tag == FnDclTag && ((FnDclNode*)binding)->value == NULL
-            && !(binding->flags & FlagExtern) && recfn) {
+            && !(binding->flags & FlagExtern) && recfn && !structTemplateWrites(node, "deserialize")) {
             FnDclNode *desfn = (FnDclNode*)binding;
             int refused = 0;
             Nodes *targs = itypeInstanceTypeArgs((INode*)desertrait);

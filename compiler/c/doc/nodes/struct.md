@@ -1541,7 +1541,9 @@ name and package; the second is told in any instance) are opt-in as `Hash` is. T
 are bodiless and required. A struct that declares `is Serialize` and writes no `serialize` is
 given one (`structSerializeCheck`, beside `structHashCheck`) that calls core's `serializeRecord`,
 the record walk over `#fields`; one that declares `Deserialize[Self]` and writes no `deserialize`
-is given a call of `deserializeRecord[Self]`. (A static `deserialize` is not inherited like a
+is given a call of `deserializeRecord[Self]`. A method the generic writes under a `where` its
+instance does not meet is written all the same (`structTemplateWrites`): no body is supplied
+for it. (A static `deserialize` is not inherited like a
 method, so `structInheritTrait` makes the exception for this trait.) A field that is not
 `Serialize` (for the read: that does not declare `Deserialize` of itself, or is not a number or
 bool) is refused at the field, `ErrorSerializeField`, naming it and its type, and the struct gets

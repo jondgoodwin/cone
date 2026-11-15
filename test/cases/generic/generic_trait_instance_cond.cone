@@ -1,0 +1,51 @@
+// A condition on an 'is' entry that names an instance of a generic trait, 'is Reads[Box[T]] if T is Reads[T]':
+// the instance of Reads is made at each instance's arguments, as a 'where' clause's is, and the entry is held
+// by the instance where its argument meets it. Box[Num] is Reads[Box[Num]] because Num is Reads[Num]; Box[Box[Num]]
+// because Box[Num] is. Checked by hand:
+//   need(&Box[Num](Num(5)))            Box.read is v.read() + 100 = 5 + 100                  105
+//   need(&Box[Box[Num]](...Num(5)))    (5 + 100) + 100                                       205
+// And core's Deserialize through a Bag[T]: Bag[Pt] meets Deserialize[Bag[Pt]] since Pt declares Deserialize[Pt]
+// (asks answers 1). Wide[Plain] is built though its 'deserialize' exists only where T is Deserialize[T],
+// which Plain does not meet: the method written under a 'where' is written, so the compiler supplies no body for it.
+
+mod generic_trait_instance_cond;
+
+import stdio use *;
+
+trait Reads[T] {
+  fn read(self: &) i64;
+}
+struct Num is Reads[Num] {
+  pub n: i64;
+  pub fn read(self: &) i64 { n }
+}
+struct Box[T] is Reads[Box[T]] if T is Reads[T] {
+  pub v: T;
+  pub fn read(self: &) i64 where T is Reads[T] { v.read() + 100 }
+}
+fn need[X](x: &X) i64 where X is Reads[X] { x.read() }
+
+struct Pt is Deserialize[Pt] { pub x: i32; pub y: i32; }
+struct Plain { pub a: i32; }
+
+struct Bag[T] is Deserialize[Bag[T]] if T is Deserialize[T] {
+  p: *T;
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[Bag[T], DataError] where T is Deserialize[T] {
+    Ok[Bag[T], DataError](Bag[T](null))
+  }
+}
+fn asks[X](x: &X) i64 where X is Deserialize[X] { 1 }
+
+struct Wide[T] is Deserialize[Wide[T]] {
+  p: *T;
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[Wide[T], DataError] where T is Deserialize[T] {
+    Ok[Wide[T], DataError](Wide[T](null))
+  }
+}
+
+fn main() {
+  printInt(need(&Box[Num](Num(5)))); printStr("\n");
+  printInt(need(&Box[Box[Num]](Box[Num](Num(5))))); printStr("\n");
+  printInt(asks(&Bag[Pt](null))); printStr("\n");
+  var w = Wide[Plain](null);
+}
