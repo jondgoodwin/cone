@@ -1,0 +1,48 @@
+// A conditional 'is' entry over a marker the compiler grants is answered inside a recursive definition without
+// laying the argument out inside its own layout where it need not be. 'T is ShapeKeeping' is found by the compiler
+// from methods a virtual reference dispatches to, never from fields, and a type may not declare it, so here it is
+// unmet by declaration and 'Cont[Option[Node]]' inside Node is no layout cycle. 'T is Clone' is granted from a
+// type's layout (every Copy type is Clone), so a method under it on 'Cont2[Leaf]' inside Leaf is asked late.
+//
+// Checked by hand against the source:
+//   n.kids is empty: 0
+//   c.items holds 6 and 7: 6 + 7 = 13
+
+mod meta_where_recursive_marker_entry;
+
+import collections use *;
+import stdio use *;
+
+trait Tag { fn tag(self: &) i32; }
+
+struct Cont[T] is Tag if T is ShapeKeeping {
+  pub items: List[T];
+  pub fn tag(self: &) i32 where T is ShapeKeeping { 1 }
+}
+
+struct Node { pub id: i32; pub kids: Cont[Option[Node]]; }
+
+struct Cont2[T] { pub items: List[T];
+  pub fn sum(self: &) i32 where T is Clone {
+    var n = 0;
+    var i = 0usize;
+    while i < self.items.len() { n = n + self.items[i].clone().v; i = i + 1usize; }
+    n
+  }
+}
+
+struct Leaf { pub v: i32; pub more: Cont2[Leaf]; }
+
+struct Cell { pub v: i32; }
+
+fn main() {
+  let n = Node(1, Cont[Option[Node]](List[Option[Node]]()));
+  print <- "kids ", n.kids.items.len(), "\n";
+  var cs = List[Cell]();
+  cs.push(Cell(6));
+  cs.push(Cell(7));
+  let c = Cont2[Cell](cs);
+  print <- "sum ", c.items[0].v + c.items[1].v, "\n";
+  let lf = Leaf(2, Cont2[Leaf](List[Leaf]()));
+  print <- "leaf ", lf.v, " ", lf.more.items.len(), "\n";
+}

@@ -3974,6 +3974,27 @@ static int genericWhereNamesArg(Nodes *where, Nodes *parms, Nodes *args, uint32_
     return 0;
 }
 
+// Is 'trait' one genericTypeIsHow answers from a struct's layout, rather than
+// from what it declares or its methods? There is no shared predicate for it:
+// the compiler grants these in genericTypeIsHow itself, and this list is that
+// function's branches that read the layout, each listed for the one:
+//   Move, Copy       itypeIsMove: whether a field moves
+//   Clone            granted to every Copy type (itypeIsMove again)
+//   Sendable         itypeThreadBoundHow: whether a field is bound to its thread
+//   Shareable        itypeNotShareable: whether a field cannot be shared
+//   Sized, DynSized  itypeIsSized, itypeIsDynSized: the size of the fields
+// The other compiler-found marker, ShapeKeeping, is found from the methods a
+// virtual reference dispatches to, never from fields, and a type may not
+// declare it; 'T is ShapeKeeping' is answered by declaration here and reads no
+// layout. The number markers and Default, Hash, Serialize and Deserialize are
+// granted to number types, which have no waiting layout. A new grant that
+// reads a struct's fields belongs in this list.
+static int genericTraitReadsLayout(StructNode *trait) {
+    return trait == moveTrait || trait == copyTrait || coreIsCloneTrait((INode*)trait)
+        || trait == sendableTrait || trait == shareableTrait
+        || trait == sizedTrait || trait == dynSizedTrait;
+}
+
 // Does this condition of an 'is' entry ask about an argument's layout? A clause
 // 'T is Trait' asks whether the argument moves, crosses threads, has a size
 // when its trait is one the compiler grants from layout; any other named trait
@@ -3988,8 +4009,7 @@ static int genericCondReadsLayout(INode *cond) {
     if (cond->tag != IsTag)
         return 1;
     StructNode *trait = genericNamedTrait(((CastNode*)cond)->typ);
-    return trait == NULL || trait == moveTrait || trait == copyTrait || trait == sendableTrait
-        || trait == shareableTrait || trait == sizedTrait || trait == dynSizedTrait;
+    return trait == NULL || genericTraitReadsLayout(trait);
 }
 
 // Does something the type's own members' conditions decide read an argument's
