@@ -1623,6 +1623,11 @@ type of the package that has a method a trait could dispatch to and all of whose
 such methods the package's compile found to reshape nothing a caller borrows
 (`skMethod`, below); an importer takes the type from the include file as it
 says (`skAsk`), and `structCheck` lets a generated include file declare the marker.
+The drop the compiler gives a type that owns a `String` or a list (`typeDropName`: no trait's method,
+its body unchecked when the file is written) is not asked there: asked, it answered "not read", and a
+text format owning a `String` was never recorded (row 354, lane 489; tests
+`meta_serialize_shapekeeping_include`, `_include_reject`).
+A type the file records both `ShapeChanging` and `ShapeKeeping` is still refused (`ErrorNotShapeKeeping`, from `skAsk`) behind `+ ShapeKeeping` of a trait with a method lending from `self`, as the package's own compile refuses it: the file's `ShapeKeeping` was found without that trait's lends, and `ShapeChanging` says the type writes storage it owns and lends a borrow of it (tests `meta_shapekeeping_lends_include`, `_include_reject`, `meta_shapekeeping_lends_store_include_reject`).
 
 The answer is read from typed bodies, and type check is demand-driven, so a
 body the question needs may not be checked yet, or may be suspended further up

@@ -922,14 +922,15 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(self.program_output(run), "42\n7\n")
         out = lone_out(self, "good")
         included = (out / "shapes.cone").read_text()
-        self.assertIn("pub struct Bag is ShapeChanging {", included)
-        self.assertIn("pub struct Shelf is Sendable, ShapeChanging {", included)
+        # Bag and Shelf push to a list they own: shape-changing, and (the push is no reshape of what a
+        # caller lends, absent a trait lending from self) recorded as keeping the shape as well
+        self.assertIn("pub struct Bag is ShapeChanging, ShapeKeeping {", included)
+        self.assertIn("pub struct Shelf is Sendable, ShapeChanging, ShapeKeeping {", included)
         # Not shape-changing, and its methods reshape nothing a caller borrows: recorded as
-        # keeping the shape. Bag and Shelf push to a list, so they are not
+        # keeping the shape alone
         self.assertIn("pub struct Gauge is ShapeKeeping {", included)
         self.assertNotIn("Gauge is ShapeChanging", included)
         self.assertNotIn("ShapeKeeping, ShapeChanging", included)
-        self.assertNotIn("ShapeChanging, ShapeKeeping", included)
         self.assertNotIn("Pt is", included)
         for name, spelling in (("bag", "shapes.Bag"), ("shelf", "shapes.Shelf")):
             write(self.root / f"{name}.cone", f"""

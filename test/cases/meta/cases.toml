@@ -597,3 +597,40 @@ diagnostics = 2
 category = "run"
 description = "'#fields(Self)' in two or more trait defaults on one struct, after a field-requiring trait, among core traits, and SoaList over that struct: each lists only the struct's own fields"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# A package whose type keeps shape: its own compile finds that every method reshapes nothing a caller borrows
+# and writes ShapeKeeping into the include file, so a program of another package can hand a value of it to
+# serializeValue behind '&<mut Serializer + ShapeKeeping'
+[scenario.meta_serialize_shapekeeping_include]
+category = "run"
+description = "A type of another package that appends to a String it owns (a text format) goes behind '&<mut Serializer + ShapeKeeping': the package's include file records ShapeKeeping for it"
+tags = ["typecheck", "genllvm", "runtime"]
+link = ["q/q.conebuild", "coll/collections.conebuild"]
+include = ["include/q.cone"]
+
+# The reject half: the include file is q's generated one (the case above pins it byte for byte), a copy, because
+# a reject scenario does not link
+[scenario.meta_serialize_shapekeeping_include_reject]
+category = "reject"
+description = "A type of another package that appends to a String it was handed a '&mut' of is refused behind '&<mut Serializer + ShapeKeeping' (ErrorNotShapeKeeping), as it is in one package: its include file does not record ShapeKeeping"
+tags = ["typecheck"]
+
+# A type of a package that changes shape (it writes storage it owns and lends a borrow of it) is recorded in the
+# include file as ShapeChanging; behind '+ ShapeKeeping' of a trait that does NOT lend from self it is accepted, as
+# in one package. The reject twins below pin the other half.
+[scenario.meta_shapekeeping_lends_include]
+category = "run"
+description = "A shape-changing type of another package goes behind '+ ShapeKeeping' of a trait that lends nothing from self, as it does in one package"
+tags = ["typecheck", "genllvm", "runtime"]
+link = ["q/q.conebuild", "coll/collections.conebuild"]
+include = ["include/q.cone"]
+
+[scenario.meta_shapekeeping_lends_include_reject]
+category = "reject"
+description = "A shape-changing type of another package (its include file records ShapeChanging) is refused behind '+ ShapeKeeping' of a trait that lends from self (ErrorNotShapeKeeping), as it is in one package"
+tags = ["typecheck"]
+
+[scenario.meta_shapekeeping_lends_store_include_reject]
+category = "reject"
+description = "A type of another package that stores over a String it owns and lends a view of it is refused behind '+ ShapeKeeping' of a trait that lends from self (ErrorNotShapeKeeping), as it is in one package"
+tags = ["typecheck"]
