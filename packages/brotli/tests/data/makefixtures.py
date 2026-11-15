@@ -1,7 +1,8 @@
 # MAKES: the compressed test streams of the brotli package and their index (index.txt), and copies the originals
 # beside them. Needed ONLY to regenerate; the tests read the committed files and never call anything.
 # RUN (in this folder), with the reference compressor and a checkout of github.com/google/brotli (MIT licence):
-#   python makefixtures.py <brotli-repo> [<conestd.lib>]
+#   python makefixtures.py <brotli-repo> <conestd.lib> <rfc7932.txt>
+# (the last two are optional; without the RFC's text the dictionary-words stream of makedict.py is left out)
 #
 # Two sources, both listed in index.txt as "stream original" pairs (paths relative to this folder):
 #   google/   files copied from the Brotli repository's tests/testdata (its LICENSE is in google/LICENSE): the
@@ -58,6 +59,17 @@ def main():
                 out = os.path.join(HERE, "own", "%s.q%dw%d.br" % (name, q, w))
                 subprocess.run([CLI, "-q", str(q), "-w", str(w), "-f", "-c", p], stdout=open(out, "wb"), check=True)
                 index.append("own/%s.q%dw%d.br own/%s" % (name, q, w, name))
+    if len(sys.argv) > 3:
+        import makedict
+        stream, want = makedict.build(sys.argv[3])
+        with open(os.path.join(HERE, "own", "dictwords.br"), "wb") as f:
+            f.write(stream)
+        with open(os.path.join(HERE, "own", "dictwords"), "wb") as f:
+            f.write(want)
+        got = subprocess.run([CLI, "-d", "-c", os.path.join(HERE, "own", "dictwords.br")], capture_output=True).stdout
+        if got != want:
+            sys.exit("the C brotli command does not read dictwords.br as makedict.py expects")
+        index.append("own/dictwords.br own/dictwords")
     with open(os.path.join(HERE, "index.txt"), "w", newline="\n") as f:
         f.write("\n".join(index) + "\n")
     print(len(index), "streams")

@@ -155,4 +155,5 @@ def main():
     print("wrote dictionary.cone and contextluts.cone; all CRC-32 checks passed")
 
 
-main()
+if __name__ == "__main__":
+    main()

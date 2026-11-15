@@ -1,0 +1,49 @@
+// The generated tables, as the compiled package holds them, against the lengths and CRC-32 values RFC 7932
+// states for them (the numbers below are typed from the RFC's text, not from the generator): the static
+// dictionary (Appendix A: 122,784 bytes, 0x5136cb04), the 121 transforms in the RFC's serialization (Appendix B:
+// 648 bytes, 0x3d965f81) and the three context lookup tables (section 7.1: 256 bytes each, 0x8e91efb7,
+// 0xd01a32f4, 0x0dd7a0d6). The CRC-32 is the RFC's Appendix C function.
+
+mod tables;
+
+import testing use *;
+import collections use *;
+import brotli use *;
+
+fn crc32(v: &Array[u8]) u32 {
+  var crc = 0xFFFFFFFFu32;
+  var i = 0usize;
+  while i < v.len {
+    var c = (crc ^ u32.from(v[i])) & 0xFFu32;
+    var k = 0u32;
+    while k < 8u32 {
+      c = if (c & 1u32) != 0u32 {0xEDB88320u32 ^ (c >> 1u32)} else {c >> 1u32};
+      k += 1u32;
+    }
+    crc = c ^ (crc >> 8u32);
+    i += 1usize;
+  }
+  crc ^ 0xFFFFFFFFu32
+}
+
+fn main() i32 {
+  let dict = rfcData(0u32);
+  expectInt(i64.from(dict.len()), 122784i64, "the dictionary's length");
+  expect(crc32(dict.view()) == 0x5136CB04u32, "the dictionary's CRC-32");
+  let trans = rfcData(1u32);
+  expectInt(i64.from(trans.len()), 648i64, "the transforms' serialization's length");
+  expect(crc32(trans.view()) == 0x3D965F81u32, "the transforms' CRC-32");
+  let l0 = rfcData(2u32);
+  let l1 = rfcData(3u32);
+  let l2 = rfcData(4u32);
+  expectInt(i64.from(l0.len()), 256i64, "Lut0's length");
+  expect(crc32(l0.view()) == 0x8E91EFB7u32, "Lut0's CRC-32");
+  expectInt(i64.from(l1.len()), 256i64, "Lut1's length");
+  expect(crc32(l1.view()) == 0xD01A32F4u32, "Lut1's CRC-32");
+  expectInt(i64.from(l2.len()), 256i64, "Lut2's length");
+  expect(crc32(l2.view()) == 0x0DD7A0D6u32, "Lut2's CRC-32");
+  expectInt(i64.from(rfcData(5u32).len()), 0i64, "no table 5");
+  // The first word of the dictionary, as Appendix A spells it
+  expect(dict[0usize] == 116u8 && dict[1usize] == 105u8 && dict[2usize] == 109u8 && dict[3usize] == 101u8, "the first word is 'time'");
+  done()
+}
