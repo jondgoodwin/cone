@@ -1,0 +1,70 @@
+// Subcommands by hand: read the first argument, match it, and give each command a Spec of its own that
+// parses the same reader.
+//
+//   congo run packages/args/examples/commands.cone -- build --release --jobs 4 app
+//   congo run packages/args/examples/commands.cone -- clean -n
+//   congo run packages/args/examples/commands.cone -- build --help
+
+mod commands;
+
+import stdio use *;
+import collections use *;
+import args use *;
+
+fn buildSpec() Spec {
+  var s = Spec.from("tool build", "Builds a target.");
+  s.add(Opt(name: "release", short: 'r', kind: Kind.Flag, help: "optimize"));
+  s.add(Opt(name: "jobs", short: 'j', kind: Kind.Uint, default: "1", help: "parallel jobs"));
+  s.positional("TARGET", "what to build");
+  s
+}
+
+fn cleanSpec() Spec {
+  var s = Spec.from("tool clean", "Removes what a build made.");
+  s.add(Opt(name: "dry-run", short: 'n', kind: Kind.Flag, help: "say what would go, remove nothing"));
+  s
+}
+
+const topHelp = "Usage: tool <build|clean> [options]\n\nCommands:\n  build  Builds a target.\n  clean  Removes what a build made.\n\nTry 'tool <command> --help'.\n";
+
+fn run() Result[String, ArgError] {
+  var r = ArgReader.fromEnv();                    // skips the program's name
+  // The first argument names the command; an option there ('--help') or none at all is the top-level help
+  var first = String();
+  match r.next()? {
+    case let Some(arg) {
+      match arg {
+        case let Value(v) { first = v; }
+        case let Long(n) if n == "help" { return Err[String, ArgError](ArgError.Help(String.from(topHelp))); }
+        case let Short(c) if c == 'h' { return Err[String, ArgError](ArgError.Help(String.from(topHelp))); }
+        else { return Err[String, ArgError](arg.unexpected()); }
+      }
+    }
+    case is None { return Err[String, ArgError](ArgError.Help(String.from(topHelp))); }
+  }
+  var said = String();
+  if first.view() == "build" {
+    let m = buildSpec().parse(&mut r)?;
+    said <- "building "; said <- m.text("TARGET").view();
+    if m.flag("release") { said <- " (release)"; }
+    said <- " with "; said.appendUInt(m.uint("jobs")); said <- " job(s)";
+  } else if first.view() == "clean" {
+    let m = cleanSpec().parse(&mut r)?;
+    if m.flag("dry-run") { said <- "would clean"; } else { said <- "cleaned"; }
+  } else {
+    return Err[String, ArgError](ArgError.UnexpectedArgument(first));
+  }
+  Ok[String, ArgError](said)
+}
+
+fn main() i32 {
+  match run() {
+    case let Ok(said) { print <- said.view(); print <- "\n"; 0i32 }
+    case let Err(e) {
+      match e {
+        case let Help(text) { print <- text.view(); 0i32 }
+        else { print <- toText(&e); print <- "\n"; 2i32 }
+      }
+    }
+  }
+}
