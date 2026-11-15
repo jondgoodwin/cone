@@ -1,0 +1,61 @@
+// Bug 93 (row 352). A free function (or a method of another type) that stores an element through
+// its own '&mut' collection parameter ('l[i] = s', or 'a[i] = s' of a '&mut Array') frees the element
+// it replaces, the very bytes a view into 'r' taken through a reborrow may point at. The call checked
+// 'put(&mut r.items, ..)' by whether the parameter's type could reach 'Rd', which a list or an array
+// held as a field cannot, and the callee's own summary did not count the element store. Each of these
+// read freed memory under ASan before the fix: a list of Strings, a list of a struct holding one, a
+// by-value array field handed on as '&mut Array[String, 2]', and a method of another type.
+
+mod collection_flow_put_reshape;
+
+import collections use *;
+
+struct Inner { pub s: String; pub k: i32; }
+
+fn mkS() String { var s = String(); s.append("0123456789012345678901234567890123456789"); s }
+
+struct RdString { pub items: List[String]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].view() } }
+struct RdStruct { pub items: List[Inner]; pub n: i32;
+  pub fn view(self: &mut) &str { self.items[0usize].s.view() } }
+struct RdArray { pub arr: Array[String, 2]; pub n: i32;
+  pub fn view(self: &mut) &str { self.arr[0usize].view() } }
+
+struct Setter { pub k: i32;
+  pub fn put(self: &Setter, l: &mut List[String], i: usize, s: String) { l[i] = s; } }
+
+fn putString(l: &mut List[String], i: usize, s: String) { l[i] = s; }
+fn putInner(l: &mut List[Inner], i: usize, s: Inner) { l[i] = s; }
+fn putArray(a: &mut Array[String, 2], i: usize, s: String) { a[i] = s; }
+
+fn byString(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  putString(&mut r.items, 0usize, String());            //~ ErrorShapeReshape "'putString' is handed something that reaches a 'RdString'"
+  v[0usize]
+}
+
+fn byStruct(r: &mut RdStruct) u8 {
+  let y: &mut RdStruct = r;
+  let v = y.view();
+  putInner(&mut r.items, 0usize, Inner(String(), 1));   //~ ErrorShapeReshape "'putInner' is handed something that reaches a 'RdStruct'"
+  v[0usize]
+}
+
+fn byArray(r: &mut RdArray) u8 {
+  let y: &mut RdArray = r;
+  let v = y.view();
+  putArray(&mut r.arr, 0usize, String());               //~ ErrorShapeReshape "'putArray' is handed something that reaches a 'RdArray'"
+  v[0usize]
+}
+
+fn byMethod(r: &mut RdString) u8 {
+  let y: &mut RdString = r;
+  let v = y.view();
+  let st = Setter(1);
+  st.put(&mut r.items, 0usize, String());               //~ ErrorShapeReshape "'put' is handed something that reaches a 'RdString'"
+  v[0usize]
+}
+
+fn main() {
+}

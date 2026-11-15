@@ -489,9 +489,9 @@ static int siWriteHits(INode *lval, SiCtx *c) {
     // An element of a collection the parameter's pointee holds, replaced through the collection's
     // index method ('r.items[0] = s', a store over what the call lent): the old element is
     // finalized in place, freeing what it owned, so it writes storage as a field would
-    // (a scalar element stays free: the storage mode asks siTypeHoldsStorage below; the field mode,
-    // which a caller's call check asks of a callee's parameter, asks siStoredShaping of the element,
-    // the line pwStoreOverField draws at a store in the caller's own body)
+    // (a scalar element stays free: both modes ask siTypeHoldsStorage of the element, the field mode,
+    // which a caller's call check asks of a callee's parameter, included. An element that is an enum
+    // holding no storage ('Option[i64]'), overwritten in place, is no reshape either)
     INode *place = lval;
     int element = 0;
     if (c->mode == SiModeStorage || c->mode == SiModeField) {
@@ -507,7 +507,7 @@ static int siWriteHits(INode *lval, SiCtx *c) {
         return 0;
     if (element && c->mode == SiModeField) {
         INode *et = iexpGetTypeDcl(lval);
-        return et != NULL && siStoredShaping(et, 0);
+        return et != NULL && siTypeHoldsStorage(et);
     }
     // Asked of an enum (a method taking it by reference): only storing over the whole
     // value reshapes it. A common field, or a field of a variant, is written within the
