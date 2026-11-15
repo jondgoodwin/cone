@@ -1,0 +1,66 @@
+// ======== Wide writes ========
+//
+// Copied from package deflate's inflate.cone, which copied them from package zstd's block.cone (#1277): the
+// helpers are private in both. This is the third copy; the three are identical.
+
+
+// Gives 'hist' the n bytes already written at its end, past its length, in
+// room it reserved: 'appendSlice' of exactly those bytes (a copy of them onto
+// themselves, a block move, where growing the list by 'resize' or 'push'
+// writes a byte at a time)
+fn commit(hist: &mut List[u8], at: usize, n: usize) {
+  let p = hist.viewMut() as *u8;
+  hist.appendSlice(mem.sliceFromParts[u8](p + at, n));
+}
+
+// Writes 'ml' bytes at b[at] as if copied one at a time from b[from],
+// b[from + 1], ...: when the source runs on into the bytes being written (the
+// match is longer than its offset, from + ml > at), the last 'at - from' bytes
+// repeat. The caller has checked 0 < at - from and that b has room to at + ml
+// plus 16 bytes of slack, which the last step may write into.
+fn wideMatch(b: *u8, at: usize, from: usize, ml: usize) {
+  var a = at;
+  var f = from;
+  var n = ml;
+  let off = at - from;
+  if off < 8usize {
+    if ml <= 8usize {
+      var k = 0usize;
+      while k < ml {
+        mem.writeRaw[u8](b + (at + k), mem.readRaw[u8](b + (from + k)));
+        k = k + 1usize;
+      }
+      return;
+    }
+    // The first eight bytes one at a time (each reads what the one before
+    // wrote); the output is then periodic with period 'off', so the rest can
+    // be read from d bytes behind the write, d a multiple of 'off' in 8 to 14
+    // (the table: 8 8 9 8 10 12 14 for off 1 to 7), a distance the word steps
+    // below handle
+    var k = 0usize;
+    while k < 8usize {
+      mem.writeRaw[u8](b + (at + k), mem.readRaw[u8](b + (from + k)));
+      k = k + 1usize;
+    }
+    let d = usize.from((0x0E0C0A0809080800u64 >> u64.from(off << 3usize)) & 0xFFu64);
+    a = at + 8usize;
+    f = a - d;
+    n = ml - 8usize;
+  } else if off >= n && n > 64usize {
+    mem.moveRaw[u8](b + a, b + f, n);
+    return;
+  }
+  // Here a - f >= 8. Two words a step, the second read after the first
+  // written: the bytes a step reads are all written before it reads them, since
+  // each is at least 8 behind its own target and the steps go in order. The
+  // last step may write up to 15 bytes past the match, into the slack, from
+  // bytes it reads that are not yet written (inside the allocation, and they
+  // reach only those bytes past the match: byte j of a step comes from j - d
+  // behind it, so the bytes of the match itself never depend on them).
+  var k = 0usize;
+  while k < n {
+    mem.writeRaw[u64]((b + (a + k)) as *u64, mem.readRaw[u64]((b + (f + k)) as *u64));
+    mem.writeRaw[u64]((b + (a + (k + 8usize))) as *u64, mem.readRaw[u64]((b + (f + (k + 8usize))) as *u64));
+    k = k + 16usize;
+  }
+}

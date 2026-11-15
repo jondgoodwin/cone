@@ -1,0 +1,262 @@
+// Streams written bit by bit by the test, so that each carries exactly the one thing it is named for: a
+// meta-block with prefix codes of one symbol each (which take no bits, so the commands are only their extra
+// bits), a stored (uncompressed) meta-block, a metadata block, an empty stream; and the refusals, each with its
+// ErrorKind: a stream cut short (at every length of three real streams), a reserved bit, padding that is not
+// zero, the large-window extension, a window past setMaxWindow, a duplicate symbol in a simple code, a command
+// that overruns its meta-block, a distance past the window that names no dictionary word, a transform that
+// does not exist, output past setLimit (a meta-block that claims 16 MiB included).
+
+mod handmade;
+
+import testing use *;
+import collections use *;
+import brotli use *;
+import fs;
+import path use Path;
+
+struct Bits {
+  out: List[u8];
+  acc: u64;
+  n: u32;
+
+  fn put(self: &mut, value: u32, bits: u32) {
+    acc = acc | (u64.from(value) << u64.from(n));
+    n = n + bits;
+    while n >= 8u32 {
+      out.push(u8.from(acc & 255u64));
+      acc = acc >> 8u64;
+      n = n - 8u32;
+    }
+  }
+
+  // Zero bits up to the next byte boundary
+  fn align(self: &mut) {
+    if n > 0u32 { self.put(0u32, 8u32 - n); }
+  }
+
+  fn bytes(self: &mut) List[u8] {
+    self.align();
+    var r = List[u8]();
+    r <-> out;
+    r
+  }
+}
+
+fn newBits() Bits { Bits(List[u8](), 0u64, 0u32) }
+
+// The header of a last meta-block of 'mlen' bytes (up to 65536) and its parts down to the prefix codes, each
+// code of one symbol: a literal 'lit', an insert-and-copy symbol 'cmd' and a distance symbol 'dist'
+fn oneSymbolBlock(w: &mut Bits, mlen: u32, lit: u32, cmd: u32, dist: u32) {
+  w.put(0u32, 1u32);          // WBITS 16
+  w.put(1u32, 1u32);          // ISLAST
+  w.put(0u32, 1u32);          // not ISLASTEMPTY
+  w.put(0u32, 2u32);          // MNIBBLES 4
+  w.put(mlen - 1u32, 16u32);
+  w.put(0u32, 1u32);          // one literal block type
+  w.put(0u32, 1u32);          // one insert-and-copy block type
+  w.put(0u32, 1u32);          // one distance block type
+  w.put(0u32, 2u32);          // NPOSTFIX 0
+  w.put(0u32, 4u32);          // NDIRECT 0
+  w.put(0u32, 2u32);          // the literal context mode
+  w.put(0u32, 1u32);          // one literal tree
+  w.put(0u32, 1u32);          // one distance tree
+  w.put(1u32, 2u32); w.put(0u32, 2u32); w.put(lit, 8u32);    // a simple code of one symbol
+  w.put(1u32, 2u32); w.put(0u32, 2u32); w.put(cmd, 10u32);
+  w.put(1u32, 2u32); w.put(0u32, 2u32); w.put(dist, 6u32);
+}
+
+// The insert-and-copy symbol of cell 2 (a distance follows) for insert code 'ic' and copy code 'cc' (each 0 to 7)
+fn cmdSym(ic: u32, cc: u32) u32 { 128u32 + (ic << 3u32) + cc }
+
+fn emptyLast(w: &mut Bits) {
+  w.put(1u32, 1u32);
+  w.put(1u32, 1u32);
+}
+
+fn kindName(k: &ErrorKind) &'static str {
+  if k == ErrorKind.BadHeader { return "BadHeader"; }
+  if k == ErrorKind.BadTable { return "BadTable"; }
+  if k == ErrorKind.BadCommand { return "BadCommand"; }
+  if k == ErrorKind.BadDistance { return "BadDistance"; }
+  if k == ErrorKind.BadTransform { return "BadTransform"; }
+  if k == ErrorKind.Truncated { return "Truncated"; }
+  if k == ErrorKind.TooLarge { return "TooLarge"; }
+  if k == ErrorKind.WindowTooLarge { return "WindowTooLarge"; }
+  "NeedsLargeWindow"
+}
+
+// "ok:" and the bytes as text, or the kind of the failure
+fn show(data: &Array[u8], limit: u64, maxWindow: u32) String {
+  var dc = Decompressor.make();
+  dc.setLimit(limit);
+  dc.setMaxWindow(maxWindow);
+  var r = String();
+  match dc.run(data, 0usize) {
+    case var Ok(out) {
+      r.append("ok:");
+      var i = 0usize;
+      while i < out.len() { r.appendInt(i64.from(*out[i])); r.append(","); i += 1usize; }
+    }
+    case let Err(e) { r.append(kindName(&e.kind)); }
+  }
+  r
+}
+
+fn run(w: &mut Bits) String {
+  let b = w.bytes();
+  show(b.view(), 1073741824u64, 24u32)
+}
+
+fn readRel(rel: &str, out: &mut String) bool {
+  let p = Path.from(rel);
+  match fs.readFile(&p) {
+    case var Ok(ok) { *out <-> ok; true }
+    case let Err(e) { false }
+  }
+}
+
+// Every strict prefix of the stream must be refused as Truncated; the number that were not
+fn prefixesWrong(name: &str) usize {
+  var s = String();
+  var rel = String();
+  rel.append("../../../../tests/data/google/");
+  rel.append(name);
+  if !readRel(rel.view(), &mut s) { return 1000000usize; }
+  let b = s.view().bytes();
+  var wrong = 0usize;
+  var k = 0usize;
+  while k < b.len {
+    let r = show(&b[0usize ..< k], 1073741824u64, 24u32);
+    if r != String.from("Truncated") { wrong += 1usize; }
+    k += 1usize;
+  }
+  wrong
+}
+
+fn main() i32 {
+  // A command stream: "aaaa" then a copy of 5 from distance 4
+  var w = newBits();
+  oneSymbolBlock(&mut w, 9u32, 97u32, cmdSym(4u32, 3u32), 0u32);
+  expectStr(run(&mut w).view(), "ok:97,97,97,97,97,97,97,97,97,", "four literals and a copy of five at distance four");
+
+  // A copy that is longer than the meta-block has left
+  w = newBits();
+  oneSymbolBlock(&mut w, 7u32, 97u32, cmdSym(4u32, 3u32), 0u32);
+  expectStr(run(&mut w).view(), "BadCommand", "a copy past the meta-block's end");
+
+  // More literals than the meta-block holds
+  w = newBits();
+  oneSymbolBlock(&mut w, 2u32, 97u32, cmdSym(3u32, 0u32), 0u32);
+  expectStr(run(&mut w).view(), "BadCommand", "more literals than the meta-block holds");
+
+  // The last literals fill the meta-block: the copy that follows is ignored (whatever its length)
+  w = newBits();
+  oneSymbolBlock(&mut w, 3u32, 98u32, cmdSym(3u32, 7u32), 0u32);
+  expectStr(run(&mut w).view(), "ok:98,98,98,", "a copy ignored at the end of the meta-block");
+
+  // A distance past the window with a copy length of 3: no dictionary word is that short
+  w = newBits();
+  oneSymbolBlock(&mut w, 4u32, 97u32, cmdSym(1u32, 1u32), 20u32);
+  w.put(0u32, 3u32);
+  expectStr(run(&mut w).view(), "BadDistance", "a distance past the window, copy length 3");
+
+  // A dictionary word with a transform past the 121: distance symbol 63, 24 extra bits
+  w = newBits();
+  oneSymbolBlock(&mut w, 5u32, 97u32, cmdSym(1u32, 2u32), 63u32);
+  w.put(0u32, 24u32);
+  expectStr(run(&mut w).view(), "BadTransform", "a transform that does not exist");
+
+  // A word of 4 bytes, the first word, transform 0, as 'time'; distance = 1 + max distance (1) + 0
+  // is distance code 16 with 1 extra bit: offset (2 << 1) - 4 = 0, so dextra 1 gives distance 2
+  w = newBits();
+  oneSymbolBlock(&mut w, 5u32, 97u32, cmdSym(1u32, 2u32), 16u32);
+  w.put(1u32, 1u32);
+  expectStr(run(&mut w).view(), "ok:97,116,105,109,101,", "the dictionary's first word");
+
+  // A simple prefix code that names a symbol twice
+  w = newBits();
+  w.put(0u32, 1u32); w.put(1u32, 1u32); w.put(0u32, 1u32); w.put(0u32, 2u32); w.put(2u32, 16u32);
+  w.put(0u32, 3u32); w.put(0u32, 6u32); w.put(0u32, 2u32); w.put(0u32, 2u32);
+  w.put(1u32, 2u32); w.put(1u32, 2u32); w.put(97u32, 8u32); w.put(97u32, 8u32);
+  expectStr(run(&mut w).view(), "BadTable", "a duplicate symbol in a simple code");
+
+  // A stored meta-block, then the last (empty) one
+  w = newBits();
+  w.put(0u32, 1u32);           // WBITS 16
+  w.put(0u32, 1u32);           // not ISLAST
+  w.put(0u32, 2u32);           // MNIBBLES 4
+  w.put(4u32, 16u32);          // 5 bytes
+  w.put(1u32, 1u32);           // ISUNCOMPRESSED
+  w.align();
+  w.put(104u32, 8u32); w.put(101u32, 8u32); w.put(108u32, 8u32); w.put(108u32, 8u32); w.put(111u32, 8u32);
+  emptyLast(&mut w);
+  let stored = w.bytes();
+  expectStr(show(stored.view(), 1073741824u64, 24u32).view(), "ok:104,101,108,108,111,", "a stored meta-block");
+  expectStr(show(stored.view(), 5u64, 24u32).view(), "ok:104,101,108,108,111,", "a limit of exactly the output");
+  expectStr(show(stored.view(), 4u64, 24u32).view(), "TooLarge", "output past the limit");
+  expectStr(show(&stored.view()[0usize ..< 5usize], 1073741824u64, 24u32).view(), "Truncated", "stored bytes cut short");
+
+  // A metadata block of 3 bytes, then the last (empty) one: nothing comes out
+  w = newBits();
+  w.put(0u32, 1u32);
+  w.put(0u32, 1u32);           // not ISLAST
+  w.put(3u32, 2u32);           // MNIBBLES 0: metadata
+  w.put(0u32, 1u32);           // reserved
+  w.put(1u32, 2u32);           // one byte of length
+  w.put(2u32, 8u32);           // 3 bytes
+  w.align();
+  w.put(255u32, 8u32); w.put(0u32, 8u32); w.put(7u32, 8u32);
+  emptyLast(&mut w);
+  expectStr(run(&mut w).view(), "ok:", "a metadata block is skipped");
+
+  // A reserved bit set in a metadata block
+  w = newBits();
+  w.put(0u32, 1u32); w.put(0u32, 1u32); w.put(3u32, 2u32); w.put(1u32, 1u32); w.put(0u32, 2u32);
+  expectStr(run(&mut w).view(), "BadHeader", "a reserved bit set");
+
+  // The empty stream (one meta-block that is the last and empty) and padding that is not zero
+  w = newBits();
+  w.put(0u32, 1u32); emptyLast(&mut w);
+  expectStr(run(&mut w).view(), "ok:", "an empty stream");
+  w = newBits();
+  w.put(0u32, 1u32); emptyLast(&mut w); w.put(1u32, 1u32);
+  expectStr(run(&mut w).view(), "BadHeader", "padding that is not zero");
+  expectStr(show(&stored.view()[0usize ..< 0usize], 1073741824u64, 24u32).view(), "Truncated", "no bytes at all");
+
+  // The windows: the large-window extension is refused; a window past setMaxWindow too
+  w = newBits();
+  w.put(17u32, 7u32); emptyLast(&mut w);
+  expectStr(run(&mut w).view(), "NeedsLargeWindow", "the large-window extension");
+  w = newBits();
+  w.put(11u32, 4u32); emptyLast(&mut w);      // WBITS 22
+  let w22 = w.bytes();
+  expectStr(show(w22.view(), 1073741824u64, 24u32).view(), "ok:", "a window of 22 bits");
+  expectStr(show(w22.view(), 1073741824u64, 20u32).view(), "WindowTooLarge", "a window past setMaxWindow");
+  expectStr(show(w22.view(), 1073741824u64, 22u32).view(), "ok:", "a window of exactly setMaxWindow");
+
+  // A meta-block that claims 16 MiB and has no data: TooLarge under a small limit, else Truncated
+  w = newBits();
+  w.put(0u32, 1u32); w.put(1u32, 1u32); w.put(0u32, 1u32); w.put(2u32, 2u32);    // ISLAST, MNIBBLES 6
+  w.put(16777215u32, 24u32);
+  let big = w.bytes();
+  expectStr(show(big.view(), 1048576u64, 24u32).view(), "TooLarge", "a meta-block that claims 16 MiB, small limit");
+  expectStr(show(big.view(), 1073741824u64, 24u32).view(), "Truncated", "a meta-block that claims 16 MiB and has no data");
+
+  // Bytes after the last meta-block are refused as BadHeader, by run and by decompress; a stream with none is fine
+  w = newBits();
+  w.put(0u32, 1u32); emptyLast(&mut w);
+  var tail = w.bytes();
+  expectStr(show(tail.view(), 1073741824u64, 24u32).view(), "ok:", "an empty stream");
+  tail.push(0u8);
+  expectStr(show(tail.view(), 1073741824u64, 24u32).view(), "BadHeader", "a byte after the last meta-block (run)");
+  match decompress(tail.view(), 0usize) {
+    case var Ok(out) { expect(false, "a byte after the last meta-block (decompress) is refused"); }
+    case let Err(e) { expectStr(kindName(&e.kind), "BadHeader", "a byte after the last meta-block (decompress)"); expectInt(i64.from(e.offset), 1i64, "where the extra bytes start"); }
+  }
+
+  // Cut at every length, three real streams: always Truncated
+  expectInt(i64.from(prefixesWrong("quickfox.compressed")), 0i64, "every prefix of quickfox is Truncated");
+  expectInt(i64.from(prefixesWrong("monkey.compressed")), 0i64, "every prefix of monkey is Truncated");
+  expectInt(i64.from(prefixesWrong("x.compressed.03")), 0i64, "every prefix of x.compressed.03 is Truncated");
+  done()
+}
