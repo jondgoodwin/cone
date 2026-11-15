@@ -3146,6 +3146,27 @@ def expected_exit(program: Path) -> int:
                          f" test ends with; it holds {text!r}") from None
 
 
+def test_timeout(program: Path) -> int:
+    """tests/<name>.timeout holds the seconds this test may run, where it needs
+    more than TEST_TIMEOUT: one positive whole number, as `.exit` holds one."""
+    path = program.with_suffix(".timeout")
+    if not path.is_file():
+        return TEST_TIMEOUT
+    text = path.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9]{1,6}", text) or int(text) == 0:
+        raise CongoError(f"{shown(path)} must hold one positive whole number, the"
+                         f" seconds the test may run; it holds {text!r}")
+    return int(text)
+
+
+def last_lines(text: str, count: int = 40) -> str:
+    """The last `count` lines of text, with a line saying how many came before."""
+    lines = text.rstrip("\n").split("\n")
+    if len(lines) <= count:
+        return "\n".join(lines)
+    return "\n".join([f"({len(lines) - count} earlier lines left out)"] + lines[-count:])
+
+
 def debug_only(program: Path) -> bool:
     """tests/<name>.debug, whatever it holds, marks a test debug-only: a test of
     a check made in a debug build alone (assertDebug, assertDebugMsg), which
@@ -3454,15 +3475,16 @@ def run_test(session: Session, file: Path, bless: bool, pkg: Package | None = No
     exe = build_program(session, file, into)
     # Run in its own build folder, so a file it writes by a relative name
     # lands there and not in the package's source
-    ran = run_program(exe, into, TEST_TIMEOUT,
+    limit = test_timeout(file)
+    ran = run_program(exe, into, limit,
                       f"{pkg.name}-{file.stem}" if pkg else file.stem,
                       pkg.root if pkg else None)
     if ran.returncode is None:
         # What it wrote to stderr says how far it got: a panic's line, say,
         # before an end that never came
         err = show_stderr(ran.stderr.decode("utf-8", errors="replace"), exe)
-        return False, (f"timed out after {TEST_TIMEOUT} seconds"
-                       + (f"\nstderr:\n{indent(err, '  ')}" if err.strip() else ""))
+        return False, (f"timed out after {limit} seconds"
+                       + (f"\nstderr:\n{indent(last_lines(err), '  ')}" if err.strip() else ""))
     # A program that could not start has nothing to compare, and this line is
     # how a person learns why (no dialog says so)
     not_started = dll_note(ran.returncode, exe)

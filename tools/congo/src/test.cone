@@ -261,6 +261,48 @@ fn expectedExit(program: &Path) Result[String, String] {
     written.view()))
 }
 
+// tests/<name>.timeout holds the seconds this test may run, where it needs more
+// than testTimeoutSeconds: one positive whole number, as .exit holds one
+fn testTimeout(program: &Path) Result[i64, String] {
+  let file = withSuffix(program, ".timeout");
+  if !fs.isFile(&file) { return Ok[i64, String](testTimeoutSeconds); }
+  let raw = readAll(&file);
+  let text = stripped(raw.view());
+  var value = 0i64;
+  var good = text.len() > 0usize && text.len() <= 6usize;
+  var i = 0usize;
+  while good && i < text.len() {
+    let b = text[i];
+    if b >= '0' && b <= '9' { value = value * 10i64 + (i64.from(b) - 48i64); }
+    else { good = false; }
+    i = i + 1usize;
+  }
+  if good && value > 0i64 { return Ok[i64, String](value); }
+  let place = shown(&file);
+  let written = pyRepr(text.view());
+  Err[i64, String](cat(place.view(), " must hold one positive whole number, the seconds the test may run; it holds ",
+    written.view()))
+}
+
+// The last count lines of text, with a line saying how many came before
+fn lastLines(text: &str, count: usize) String {
+  var end = text.len();
+  while end > 0usize && text[end - 1usize] == '\n' { end = end - 1usize; }
+  let lines = splitText(&text[..<end], '\n');
+  var out = String();
+  var i = 0usize;
+  if lines.len() > count {
+    i = lines.len() - count;
+    out <- "("; out <- u64.from(i); out <- " earlier lines left out)\n";
+  }
+  while i < lines.len() {
+    out <- lines[i].view();
+    if i + 1usize < lines.len() { out <- "\n"; }
+    i = i + 1usize;
+  }
+  out
+}
+
 // tests/<name>.debug, whatever it holds, marks a test debug-only: a test of a
 // check made in a debug build alone (assertDebug, assertDebugMsg), which has
 // nothing to say in a release build. A release test skips it
@@ -320,6 +362,11 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
     case var Ok(ok) { exe <-> ok; }
     case let Err(e) { return verdictOf(false, e.clone()); }
   }
+  var limit = testTimeoutSeconds;
+  match testTimeout(file) {
+    case let Ok(n) { limit = n; }
+    case let Err(e) { return verdictOf(false, e.clone()); }
+  }
   // Run in its own build folder, so a file it writes by a relative name
   // lands there and not in the package's source
   var args = List[String]();
@@ -331,15 +378,17 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
   // A crash, a panic's above all, ends at once, not held while Windows
   // reports it (the process package's "A crash")
   match process.run(args.view(), process.Options(
-      timeout: time.Duration.fromSeconds(testTimeoutSeconds), crashReport: false, env: backtraceEnv()), &dest) {
+      timeout: time.Duration.fromSeconds(limit), crashReport: false, env: backtraceEnv()), &dest) {
     case let Ok(ok) {
       if ok.timedOut {
         // What it wrote to stderr says how far it got: a panic's line, say,
         // before an end that never came
-        var note = String.from("timed out after 180 seconds");
+        var note = String.from("timed out after ");
+        note <- limit; note <- " seconds";
         let err = showStderr(utf8Decode(ok.stderr.view()).view(), &exe);
         if !isStrippedAway(err.view()) {
-          let shownErr = indent(err.view(), "  ");
+          let lastErr = lastLines(err.view(), 40usize);
+          let shownErr = indent(lastErr.view(), "  ");
           note <- "\nstderr:\n", shownErr.view();
         }
         return verdictOf(false, note);

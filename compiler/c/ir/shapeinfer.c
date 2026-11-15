@@ -287,7 +287,18 @@ static int siRooted(INode *e, SiCtx *c) {
         case ArrIndexTag:
         {
             INode *obj = ((FnCallNode *)e)->objfn;
-            if (iexpGetTypeDcl(obj)->tag != ArrayTag)
+            INode *ot = iexpGetTypeDcl(obj);
+            // An array reached through a reference ('a[i]' of 'a: &mut Array[T, N]'): the element is
+            // in the pointee, as a field of a reference to a struct is
+            if (ot->tag == RefTag && ((RefNode *)ot)->vtexp != NULL) {
+                INode *pt = itypeGetTypeDcl(((RefNode *)ot)->vtexp);
+                if (pt != NULL && pt->tag == ArrayTag) {
+                    while (obj->tag == CastTag && !(obj->flags & FlagConvert))
+                        obj = ((CastNode *)obj)->exp;
+                    return siIsRoot(c, siNamedVar(obj));
+                }
+            }
+            if (ot->tag != ArrayTag)
                 return 0;
             e = obj;
             continue;
@@ -478,17 +489,26 @@ static int siWriteHits(INode *lval, SiCtx *c) {
     // An element of a collection the parameter's pointee holds, replaced through the collection's
     // index method ('r.items[0] = s', a store over what the call lent): the old element is
     // finalized in place, freeing what it owned, so it writes storage as a field would
-    // (asked of the storage mode only: siTypeHoldsStorage below keeps a scalar element free)
+    // (a scalar element stays free: both modes ask siTypeHoldsStorage of the element, the field mode,
+    // which a caller's call check asks of a callee's parameter, included. An element that is an enum
+    // holding no storage ('Option[i64]'), overwritten in place, is no reshape either)
     INode *place = lval;
-    if (c->mode == SiModeStorage) {
+    int element = 0;
+    if (c->mode == SiModeStorage || c->mode == SiModeField) {
         INode *under = place->tag == DerefTag ? ((StarNode *)place)->vtexp : NULL;
         while (under && under->tag == CastTag && !(under->flags & FlagConvert))
             under = ((CastNode *)under)->exp;
-        if (under && under->tag == FnCallTag && ((FnCallNode *)under)->args && ((FnCallNode *)under)->args->used > 0)
+        if (under && under->tag == FnCallTag && ((FnCallNode *)under)->args && ((FnCallNode *)under)->args->used > 0) {
             place = nodesGet(((FnCallNode *)under)->args, 0);
+            element = 1;
+        }
     }
     if (!siRooted(place, c))
         return 0;
+    if (element && c->mode == SiModeField) {
+        INode *et = iexpGetTypeDcl(lval);
+        return et != NULL && siTypeHoldsStorage(et);
+    }
     // Asked of an enum (a method taking it by reference): only storing over the whole
     // value reshapes it. A common field, or a field of a variant, is written within the
     // variant
@@ -587,6 +607,13 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont);
 // element owned is freed: a borrow into a String element's bytes dangles), or when
 // it moves an element out of the storage. Writing an element in place, and moving
 // elements about within the storage (a swap, a sort), end none and move none out.
+// The same two tests count in SiModeStorage, which decides what type changes shape at all
+// (row 353): a type none of whose functions finalized or moved out an element was never
+// marked, so no borrow into it was held to the check ('r.items.clear()' while a view
+// into an element's bytes is held)
+static int siElementMode(SiCtx *c) {
+    return c->mode == SiModeField || c->mode == SiModeStorage;
+}
 
 // Which of the compiler's declared intrinsics (mem.finalize, mem.readRaw, ...) a
 // function is, or -1; its type argument comes back too
@@ -788,7 +815,7 @@ static void siCall(FnCallNode *call, SiCtx *c) {
         c->hit = 1;
         return;
     }
-    if (c->mode == SiModeField && siElementCall(call, callee, c) && c->hit)
+    if (siElementMode(c) && siElementCall(call, callee, c) && c->hit)
         return;
     int intrinsic = callee && ((callee->dclinfo.facts & DclIntrinsic) || (callee->value && callee->value->tag == IntrinsicTag));
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
@@ -858,7 +885,7 @@ static int siWalkNode(INode *node, void *vc) {
             c->hit = 1;
         break;
     case VarDclTag:
-        if (c->mode == SiModeField && ((VarDclNode *)node)->value)
+        if (siElementMode(c) && ((VarDclNode *)node)->value)
             siHoldElement((VarDclNode *)node, ((VarDclNode *)node)->value, c);
         if (notes)
             siNote((VarDclNode *)node, ((VarDclNode *)node)->value, c);
