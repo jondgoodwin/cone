@@ -1,0 +1,320 @@
+// The streaming promises, one at a time, over every stream of tests/data (the same 64 as fixtures.cone):
+//
+//   - fed whole and pulled in pieces of any size, the output is the original, exactly;
+//   - fed one byte at a time (a pull between each), the same;
+//   - fed in two pieces split at EVERY offset of a small stream, the same (every unit is put back at every
+//     place it can be cut);
+//   - pulled one byte at a time (a copy, a dictionary word and a run of literals each cut by the output limit
+//     and gone on with), the same;
+//   - no pull gives more than the room it was given;
+//   - the counts, 'totalIn' and 'totalOut', and 'isDone' are right;
+//   - what follows the stream is left for 'takeRest', and 'decompress' still refuses it;
+//   - a failure (a cut stream, a reserved bit, a limit) is a Failed, with its kind, and later calls do no harm;
+//   - damaged streams (the fuzz test's) streamed in two pieces end the way the whole-buffer decode ends, with
+//     the same kind of failure at the same offset.
+
+mod streaming;
+
+import testing use *;
+import collections use *;
+import brotli use *;
+import iobuf use IoBuf;
+import fs;
+import path use Path;
+
+fn readRel(rel: &str, out: &mut String) bool {
+  let p = Path.from(rel);
+  match fs.readFile(&p) {
+    case var Ok(ok) { *out <-> ok; true }
+    case let Err(e) { false }
+  }
+}
+
+// One pull into 'buf' with exactly 'room' bytes of room (a pool block may be larger, so the front of it is called
+// filled); the bytes made are appended to 'out'. 'over' counts pulls that gave more than the room.
+fn pullRoom(dc: &mut Decompressor, buf: &mut IoBuf, out: &mut List[u8], room: usize, over: &mut usize) Status {
+  buf.clear();
+  let pre = buf.capacity() - room;
+  buf.setLen(pre);
+  let s = dc.pull(buf);
+  if buf.len() - pre > room { *over += 1usize; }
+  out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  s
+}
+
+// Pulls while the answer is MoreOutput
+fn pullAll(dc: &mut Decompressor, buf: &mut IoBuf, out: &mut List[u8], room: usize, over: &mut usize) Status {
+  var s = Status.MoreOutput;
+  while s == Status.MoreOutput { s = pullRoom(dc, buf, out, room, over); }
+  s
+}
+
+// Feeds s[0, split), pulls to NeedInput, feeds the rest, finishes, pulls to the end. true if it ended Done with
+// 'want' made, the counts right and no pull over its room.
+fn splitRun(s: &Array[u8], split: usize, room: usize, want: &Array[u8], buf: &mut IoBuf) bool {
+  var dc = Decompressor.make();
+  var out = List[u8]();
+  var over = 0usize;
+  var st = Status.NeedInput;
+  if split > 0usize {
+    dc.feed(&s[0usize ..< split]);
+    st = pullAll(&mut dc, buf, &mut out, room, &mut over);
+    if st == Status.Failed { return false; }
+  }
+  if split < s.len { dc.feed(&s[split ..< s.len]); }
+  dc.finish();
+  st = pullAll(&mut dc, buf, &mut out, room, &mut over);
+  st == Status.Done && out.view() == want && over == 0usize && dc.isDone()
+    && dc.totalIn() == u64.from(s.len) && dc.totalOut() == u64.from(want.len)
+}
+
+// Fed one byte at a time with a pull after each, then finished
+fn byteRun(s: &Array[u8], want: &Array[u8], buf: &mut IoBuf) bool {
+  var dc = Decompressor.make();
+  var out = List[u8]();
+  var over = 0usize;
+  var i = 0usize;
+  while i < s.len {
+    dc.feed(&s[i ..< i + 1usize]);
+    let st = pullAll(&mut dc, buf, &mut out, 1048576usize, &mut over);
+    if st == Status.Failed { return false; }
+    i += 1usize;
+  }
+  dc.finish();
+  let st = pullAll(&mut dc, buf, &mut out, 1048576usize, &mut over);
+  st == Status.Done && out.view() == want && over == 0usize && dc.totalIn() == u64.from(s.len)
+}
+
+fn checkFixture(name: &str, s: &Array[u8], want: &Array[u8], buf: &mut IoBuf, bad: &mut String) {
+  var ok = true;
+  var why = String();
+  // Whole, pulled in big pieces and in pieces of 1000 bytes
+  if !splitRun(s, 0usize, 1048576usize, want, buf) { ok = false; why.append("whole,"); }
+  if !splitRun(s, s.len / 2usize, 1000usize, want, buf) { ok = false; why.append("half,"); }
+  // A byte at a time
+  if !byteRun(s, want, buf) { ok = false; why.append("bytes,"); }
+  // Pulled one byte at a time (the largest originals in pieces of 7: the same cuts, sooner)
+  if !splitRun(s, s.len / 3usize, if want.len <= 120000usize {1usize} else {7usize}, want, buf) { ok = false; why.append("tiny,"); }
+  // Split at every offset, for the small streams
+  if s.len <= 1500usize {
+    var at = 0usize;
+    while at <= s.len {
+      if !splitRun(s, at, 5usize, want, buf) { ok = false; why.append("split,"); }
+      at += 1usize;
+    }
+  }
+  if !ok {
+    bad.append(name);
+    bad.append(":");
+    bad.append(why.view());
+    bad.append(" ");
+  }
+}
+
+// xorshift64
+fn next(s: &mut u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+// What a decode came to: "ok:" and the length and a checksum, or the kind and offset of the failure
+fn okOutcome(out: &Array[u8]) String {
+  var sum = 0u64;
+  var i = 0usize;
+  while i < out.len { sum = sum * 31u64 + u64.from(out[i]); i += 1usize; }
+  var r = String();
+  r.append("ok ");
+  r.appendInt(i64.from(out.len));
+  r.append(" ");
+  r.appendInt(i64.from(sum & 0xFFFFFFFFu64));
+  r
+}
+
+fn failOutcome(kind: &ErrorKind, offset: u64) String {
+  var r = String();
+  r.append("failed ");
+  r.appendInt(if kind == ErrorKind.BadHeader {0i64} else if kind == ErrorKind.BadTable {1i64}
+    else if kind == ErrorKind.BadCommand {2i64} else if kind == ErrorKind.BadDistance {3i64}
+    else if kind == ErrorKind.BadTransform {4i64} else if kind == ErrorKind.Truncated {5i64}
+    else if kind == ErrorKind.TooLarge {6i64} else if kind == ErrorKind.WindowTooLarge {7i64} else {8i64});
+  r.append(" ");
+  r.appendInt(i64.from(offset));
+  r
+}
+
+// A damaged stream decoded whole, and streamed in two pieces with small pulls: the same ending. Answers whether
+// they differ.
+fn fuzzOne(name: &str, seed: u64, rounds: usize, buf: &mut IoBuf) usize {
+  var s = String();
+  var rel = String();
+  rel.append("../../../../tests/data/");
+  rel.append(name);
+  if !readRel(rel.view(), &mut s) { return 1000000usize; }
+  let b = s.view().bytes();
+  var differ = 0usize;
+  var rng = seed;
+  var r = 0usize;
+  while r < rounds {
+    var d = List[u8]();
+    d.appendSlice(b);
+    var k = 1u64 + next(&mut rng) % 4u64;
+    while k > 0u64 {
+      let at = usize.from(next(&mut rng) % u64.from(d.len()));
+      d.set(at, u8.from(next(&mut rng) & 255u64));
+      k -= 1u64;
+    }
+    var whole = Decompressor.make();
+    whole.setLimit(64000000u64);
+    var a = String();
+    match whole.run(d.view(), 0usize) {
+      case let Ok(out) { a = okOutcome(out.view()); }
+      case let Err(e) { a = failOutcome(&e.kind, e.offset); }
+    }
+    var dc = Decompressor.make();
+    dc.setLimit(64000000u64);
+    let split = usize.from(next(&mut rng) % u64.from(d.len() + 1usize));
+    var out = List[u8]();
+    var over = 0usize;
+    dc.feed(&d.view()[0usize ..< split]);
+    var st = pullAll(&mut dc, buf, &mut out, 1000usize, &mut over);
+    if st != Status.Failed {
+      dc.feed(&d.view()[split ..< d.len()]);
+      dc.finish();
+      st = pullAll(&mut dc, buf, &mut out, 1000usize, &mut over);
+    }
+    var c = String();
+    if st == Status.Done {
+      // The whole-buffer run refuses bytes after the stream; a stream fed in pieces hands them back
+      if dc.totalIn() < u64.from(d.len()) { c = failOutcome(&ErrorKind.BadHeader, dc.totalIn()); }
+      else { c = okOutcome(out.view()); }
+    } else if st == Status.Failed {
+      c = failOutcome(&dc.error().kind, dc.error().offset);
+    } else {
+      c = String.from("stuck");
+    }
+    if a.view() != c.view() || over != 0usize { differ += 1usize; }
+    r += 1usize;
+  }
+  differ
+}
+
+fn main() i32 {
+  var buf = IoBuf(1048576usize);
+  var index = String();
+  if !readRel("../../../../tests/data/index.txt", &mut index) {
+    expect(false, "the index is there");
+    return done();
+  }
+  let ib = index.view().bytes();
+  var at = 0usize;
+  var count = 0usize;
+  var bad = String();
+  while at < ib.len {
+    var e = at;
+    while e < ib.len && ib[e] != 10u8 { e += 1usize; }
+    var sp = at;
+    while sp < e && ib[sp] != 32u8 { sp += 1usize; }
+    var sname = String();
+    sname.append("../../../../tests/data/");
+    sname.append(index.sub(at, sp).view());
+    var oname = String();
+    oname.append("../../../../tests/data/");
+    oname.append(index.sub(sp + 1usize, e).view());
+    let label = index.sub(at, sp);
+    at = e + 1usize;
+    var packed = String();
+    var orig = String();
+    if !readRel(sname.view(), &mut packed) || !readRel(oname.view(), &mut orig) {
+      expect(false, "a fixture file is there");
+      continue;
+    }
+    checkFixture(label.view(), packed.view().bytes(), orig.view().bytes(), &mut buf, &mut bad);
+    count += 1usize;
+  }
+  expectStr(bad.view(), "", "streams that did not stream to their originals");
+  expectInt(i64.from(count), 64i64, "streams in the index");
+
+  // What follows the stream: a stream, then 5 bytes of something else
+  var s = String();
+  if readRel("../../../../tests/data/google/quickfox.compressed", &mut s) {
+    var withTail = List[u8]();
+    withTail.appendSlice(s.view().bytes());
+    let tail: Array[u8, 5] = [1u8, 2u8, 3u8, 4u8, 5u8];
+    withTail.appendSlice(&tail);
+    var dc = Decompressor.make();
+    var out = List[u8]();
+    var over = 0usize;
+    dc.feed(&withTail.view()[0usize ..< withTail.len() - 2usize]);
+    dc.feed(&withTail.view()[withTail.len() - 2usize ..< withTail.len()]);
+    dc.finish();
+    let st = pullAll(&mut dc, &mut buf, &mut out, 1048576usize, &mut over);
+    expect(st == Status.Done, "a stream with bytes after it is Done");
+    expectInt(i64.from(dc.totalIn()), i64.from(s.view().bytes().len), "totalIn stops at the stream's end");
+    let rest = dc.takeRest();
+    expect(rest.view() == &tail, "takeRest answers the bytes after the stream");
+    expectInt(i64.from(dc.takeRest().len()), 0i64, "a second takeRest answers nothing");
+    match decompress(withTail.view(), 0usize) {
+      case let Ok(o) { expect(false, "decompress refuses bytes after the stream"); }
+      case let Err(e) { expect(e.kind == ErrorKind.BadHeader, "decompress: BadHeader for bytes after the stream"); }
+    }
+    // The stream's last bytes arrive after a pull said NeedInput, and nothing is waited for from 'finish'
+    var dd = Decompressor.make();
+    dd.feed(&withTail.view()[0usize ..< withTail.len() - 5usize]);
+    let s1 = pullAll(&mut dd, &mut buf, &mut out, 1048576usize, &mut over);
+    expect(s1 == Status.Done, "a stream whose last byte is fed is Done without finish");
+    expect(dd.isDone(), "isDone");
+  } else {
+    expect(false, "quickfox is there");
+  }
+
+  // Failures: a cut stream, a reserved bit (a metadata block's), a limit
+  if readRel("../../../../tests/data/own/inflate.cone.q5w16.br", &mut s) {
+    let sb = s.view().bytes();
+    var over = 0usize;
+    var out = List[u8]();
+    var cut = Decompressor.make();
+    cut.feed(&sb[0usize ..< sb.len / 2usize]);
+    cut.finish();
+    expect(pullAll(&mut cut, &mut buf, &mut out, 1048576usize, &mut over) == Status.Failed, "a cut stream fails");
+    expect(cut.error().kind == ErrorKind.Truncated, "a cut stream is Truncated");
+    expect(cut.failure().isTrue(), "failure says why");
+    cut.feed(sb);
+    expect(pullAll(&mut cut, &mut buf, &mut out, 1048576usize, &mut over) == Status.Failed, "still failed after a feed");
+    var early = Decompressor.make();
+    expect(!early.failure().isTrue(), "no failure before a pull says so");
+    early.feed(&sb[0usize ..< sb.len / 2usize]);
+    expect(pullAll(&mut early, &mut buf, &mut out, 1048576usize, &mut over) == Status.NeedInput, "half a stream: NeedInput");
+    var lim = Decompressor.make();
+    lim.setLimit(1000u64);
+    lim.feed(sb);
+    lim.finish();
+    expect(pullAll(&mut lim, &mut buf, &mut out, 1048576usize, &mut over) == Status.Failed, "past the limit fails");
+    expect(lim.error().kind == ErrorKind.TooLarge, "past the limit is TooLarge");
+    var win = Decompressor.make();
+    win.setMaxWindow(10u32);
+    win.feed(sb);
+    expect(pullAll(&mut win, &mut buf, &mut out, 1048576usize, &mut over) == Status.Failed, "a window past the maximum fails");
+    expect(win.error().kind == ErrorKind.WindowTooLarge, "WindowTooLarge");
+  } else {
+    expect(false, "inflate.cone.q5w16.br is there");
+  }
+  var empty = Decompressor.make();
+  empty.finish();
+  var out0 = List[u8]();
+  var over0 = 0usize;
+  expect(pullAll(&mut empty, &mut buf, &mut out0, 1048576usize, &mut over0) == Status.Failed, "no input at all fails");
+  expect(empty.error().kind == ErrorKind.Truncated, "no input at all is Truncated");
+
+  // Damaged streams: streamed, they end as the whole-buffer decode does
+  expectInt(i64.from(fuzzOne("google/monkey.compressed", 11u64, 150usize, &mut buf)), 0i64, "damaged monkey");
+  expectInt(i64.from(fuzzOne("google/cp852-utf8.compressed", 12u64, 150usize, &mut buf)), 0i64, "damaged cp852-utf8");
+  expectInt(i64.from(fuzzOne("own/inflate.cone.q11w16.br", 13u64, 150usize, &mut buf)), 0i64, "damaged source, quality 11");
+  expectInt(i64.from(fuzzOne("own/manual.html.q5w24.br", 14u64, 150usize, &mut buf)), 0i64, "damaged page, quality 5");
+  expectInt(i64.from(fuzzOne("own/conestd.bin.q11w10.br", 15u64, 150usize, &mut buf)), 0i64, "damaged binary, quality 11");
+  expectInt(i64.from(fuzzOne("own/dictwords.br", 16u64, 150usize, &mut buf)), 0i64, "damaged dictionary words");
+  done()
+}
