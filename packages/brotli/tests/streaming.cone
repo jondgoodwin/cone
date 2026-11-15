@@ -111,6 +111,21 @@ fn checkFixture(name: &str, s: &Array[u8], want: &Array[u8], buf: &mut IoBuf, ba
   }
 }
 
+// Pseudo-random words (tests/data/makewords.py makes the same bytes)
+fn words(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8]();
+  var s = 3u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let piece = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < piece.len { d.push(piece[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
 // xorshift64
 fn next(s: &mut u64) u64 {
   var x = *s;
@@ -308,6 +323,34 @@ fn main() i32 {
   var over0 = 0usize;
   expect(pullAll(&mut empty, &mut buf, &mut out0, 1048576usize, &mut over0) == Status.Failed, "no input at all fails");
   expect(empty.error().kind == ErrorKind.Truncated, "no input at all is Truncated");
+
+  // A window much smaller than the output (400,000 bytes through windows of 10 and 16 bits): the history is
+  // trimmed to the window several times, and matches and dictionary words still reach back correctly
+  let want = words(400000usize);
+  var wbits = 10usize;
+  while wbits <= 16usize {
+    var ws = String();
+    var wn = String();
+    wn.append("own/words.w");
+    wn.appendInt(i64.from(wbits));
+    wn.append(".br");
+    var rel = String();
+    rel.append("../../../../tests/data/");
+    rel.append(wn.view());
+    if readRel(rel.view(), &mut ws) {
+      let wb = ws.view().bytes();
+      expect(splitRun(wb, wb.len / 2usize, 4096usize, want.view(), &mut buf), "words: pulled in 4 KiB pieces");
+      expect(splitRun(wb, wb.len / 3usize, 77usize, want.view(), &mut buf), "words: pulled in 77-byte pieces");
+      expect(byteRun(wb, want.view(), &mut buf), "words: fed a byte at a time");
+      match decompress(wb, 0usize) {
+        case let Ok(o) { expect(o.view() == want.view(), "words: the whole-buffer decode"); }
+        case let Err(e) { expect(false, "words: the whole-buffer decode"); }
+      }
+    } else {
+      expect(false, "a words stream is there");
+    }
+    wbits += 6usize;
+  }
 
   // Damaged streams: streamed, they end as the whole-buffer decode does
   expectInt(i64.from(fuzzOne("google/monkey.compressed", 11u64, 150usize, &mut buf)), 0i64, "damaged monkey");
