@@ -1258,6 +1258,141 @@ fn copyBits(c: &String, mode: u32) i32 {
   }
 }
 
+// Copy a folder and everything in it to a path that is not there yet, built on
+// 'walk' and 'copyFile': 'to' is made (its folder must exist; an existing 'to',
+// of any kind, is refused, AlreadyExists), every folder below 'from' is made
+// below it, and every file copied with its permission bits. Folders are made
+// with the default mode (a folder's permission bits are not copied). On POSIX a
+// symbolic link is copied as a link with the same text, never followed, so a
+// link loop cannot recurse and a dangling link copies. On Windows 'walk' reports
+// every reparse point as a link and does not go into it; copyDir reads the
+// reparse tag: a symbolic link or a directory junction stops the copy with an
+// error (EINVAL) naming it, since recreating one needs its reparse data, which
+// this package does not read; any other tag (OneDrive's cloud placeholders
+// above all) is an ordinary file or folder and is copied by reading it. Anything
+// that is neither folder, file nor link (a device, a pipe) is EINVAL too. The
+// first failure stops the copy and names its path; what was copied before it
+// stays.
+pub fn copyDir(from: &Path, to: &Path) Result[void, FsError] {
+  if hasNul(from) || hasNul(to) { return fail[void]("copyDir", from, posix.EINVAL); }
+  useUtf8();
+  let kind = kindOf(from);
+  if kind != posix.S_IFDIR { return fail[void]("copyDir", from, if kind == 0u16 {posix.ENOENT} else {posix.ENOTDIR}); }
+  if linkKindOf(to) != 0u16 { return fail[void]("copyDir", to, posix.EEXIST); }
+  copyTree(from, to)
+}
+
+// 'copyDir' once 'from' is a folder and 'to' is free
+fn copyTree(from: &Path, to: &Path) Result[void, FsError] {
+  match walk(from) {
+    case var Err(e) {
+      e.op = String.from("copyDir");
+      return Err[void, FsError](e);
+    }
+    case let Ok(listed) {
+      match makeDir(to) {
+        case var Err(e) {
+          e.op = String.from("copyDir");
+          return Err[void, FsError](e);
+        }
+        case is Ok { }
+      }
+      let entries = &listed;
+      let cut = from.view().len;
+      var i = 0usize;
+      while i < entries.len() {
+        let entry = &entries[i];
+        // The entry's path below 'from', and the same below 'to'
+        var rel = entry.path.view().sliceFrom(cut);
+        var skip = 0usize;
+        while skip < rel.len && isSepByte(rel[skip]) { skip = skip + 1usize; }
+        rel = rel.sliceFrom(skip);
+        match copyEntry(entry, &to.join(rel)) {
+          case var Err(e) {
+            e.op = String.from("copyDir");
+            return Err[void, FsError](e);
+          }
+          case is Ok { }
+        }
+        i = i + 1usize;
+      }
+    }
+  }
+  succeeded()
+}
+
+fn copyEntry(entry: &DirEntry, dest: &Path) Result[void, FsError] {
+  if entry.isDir { return makeDir(dest); }
+  if entry.isFile { return copyFile(&entry.path, dest); }
+  if entry.isLink {
+    #if #os == .windows {
+      let tag = reparseTag(&entry.path);
+      if tag == tagSymlink || tag == tagMountPoint { return fail[void]("copyDir", &entry.path, posix.EINVAL); }
+      // Another reparse point (a cloud placeholder) reads as what it stands for
+      if isDir(&entry.path) { return copyTree(&entry.path, dest); }
+      if isFile(&entry.path) { return copyFile(&entry.path, dest); }
+      return fail[void]("copyDir", &entry.path, posix.EINVAL);
+    } #else {
+      return copyLink(&entry.path, dest);
+    }
+  }
+  fail[void]("copyDir", &entry.path, posix.EINVAL)
+}
+
+extern {
+  fn @c(system) FindFirstFileW(name: *u16, data: *u8) usize;
+  fn @c(system) FindClose(h: usize) i32;
+}
+
+const tagSymlink = 0xA000000Cu32;     // IO_REPARSE_TAG_SYMLINK
+const tagMountPoint = 0xA0000003u32;  // IO_REPARSE_TAG_MOUNT_POINT: a junction
+
+// A reparse point's tag, WIN32_FIND_DATAW's dwReserved0 (at byte 36 of its 592),
+// or 0 where it cannot be read (Windows)
+fn reparseTag(path: &Path) u32 {
+  var c = cText(path);
+  let n = MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, null, 0i32);
+  if n <= 0i32 { return 0u32; }
+  let wide = libc.malloc(usize.from(n) * 2usize) as *u16;
+  MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, wide, n);
+  let data = libc.malloc(592usize);
+  let h = FindFirstFileW(wide, data);
+  libc.free(wide as *u8);
+  var tag = 0u32;
+  if h != invalidHandle {
+    tag = *((data as usize + 36usize) as *u32);
+    FindClose(h);
+  }
+  libc.free(data);
+  tag
+}
+
+extern {
+  fn @c("readlink") posixReadlink(path: cstr, buf: *u8, n: usize) i64;
+  fn @c("symlink") posixSymlink(target: cstr, link: cstr) i32;
+}
+
+const linkTextMax = 4096usize;
+const eNameTooLong = 36i32;   // ENAMETOOLONG on Linux, the only system that reads a link here
+
+// Make 'to' a link with the text 'from' holds (POSIX); on Windows a link is an error
+fn copyLink(from: &Path, to: &Path) Result[void, FsError] {
+  #if #os == .windows {
+    fail[void]("copyDir", from, posix.EINVAL)
+  } #else {
+    var a = cText(from);
+    var buf = Array[u8, 4097]() <- fill 0u8;
+    let bp: *u8 = &[]buf as *u8;
+    let n = posixReadlink(a.cstr(), bp, linkTextMax);
+    if n < 0i64 { return fail[void]("copyDir", from, lastErrno()); }
+    if usize.from(n) >= linkTextMax { return fail[void]("copyDir", from, eNameTooLong); }
+    buf[usize.from(n)] = 0u8;
+    var b = cText(to);
+    if posixSymlink(cstr.fromPtr(bp), b.cstr()) != 0i32 { return fail[void]("copyDir", to, lastErrno()); }
+    succeeded()
+  }
+}
+
 // -------- temporary folders --------
 
 extern {
@@ -1311,29 +1446,40 @@ fn hexText(n: u64) String {
   out
 }
 
+// The path of a candidate temporary name, 'cone-' and the process and the
+// time in hex, in base; 'tries' moves the time so a taken name is not offered
+// twice. 'tempDir' and 'tempFile' both draw their names here.
+fn tempCandidate(base: &Path, tries: i32) Path {
+  let pid = #if #os == .windows {_getpid()} #else {getpid()};
+  var name = String.from("cone-");
+  name.append(hexText(u64.from(pid)).view());
+  name.append("-");
+  name.append(hexText(u64.from(time.Instant.now().nanos()) + u64.from(tries)).view());
+  base.join(name.view())
+}
+
+// The absolute form of a path just made, so a later change of the current
+// folder does not move it
+fn madeAbsolute(candidate: &Path) Path {
+  match absolute(candidate) {
+    case let Ok(a) { return a; }
+    case is Err { }
+  }
+  candidate.clone()
+}
+
 // Make a new folder, named 'cone-' and the process and the time in hex, in
 // the system's temporary folder. A name already taken is tried again, so two
 // calls never share a folder.
 pub fn tempDir() Result[TempDir, FsError] {
   let base = tempBase();
   var tries = 0i32;
-  let pid = #if #os == .windows {_getpid()} #else {getpid()};
   while true {
-    var name = String.from("cone-");
-    name.append(hexText(u64.from(pid)).view());
-    name.append("-");
-    name.append(hexText(u64.from(time.Instant.now().nanos()) + u64.from(tries)).view());
-    let candidate = base.join(name.view());
+    let candidate = tempCandidate(&base, tries);
     useUtf8();
     var c = cText(&candidate);
     if posix.mkdir(c.cstr(), 0x1C0u32) == 0i32 {
-      // Absolute, so a later change of the current folder does not move it
-      var made = candidate.clone();
-      match absolute(&candidate) {
-        case let Ok(a) { made = a; }
-        case is Err { }
-      }
-      return Ok[TempDir, FsError](TempDir(made));
+      return Ok[TempDir, FsError](TempDir(madeAbsolute(&candidate)));
     }
     let code = lastErrno();
     tries = tries + 1i32;
@@ -1425,13 +1571,19 @@ const oneChunk = 0x40000000usize;   // the most one call is asked for: _read/_wr
 // O_APPEND: every write goes to the end of the file
 fn appendFlag() i32 { #if #os == .windows { 0x8i32 } #else { 0x400i32 } }
 
+// O_EXCL: with O_CREAT, fail if the path is there (CREATE_NEW on Windows)
+fn exclusiveFlag() i32 { #if #os == .windows { 0x400i32 } #else { 0x80i32 } }
+
 // O_CREAT
 fn createFlag() i32 { #if #os == .windows { 0x100i32 } #else { 0x40i32 } }
 
 // _O_BINARY | _O_NOINHERIT on Windows (no line-end changes, not passed to child programs); O_CLOEXEC on Linux
 fn plainFlags() i32 { #if #os == .windows { 0x8080i32 } #else { 0x80000i32 } }
 
-fn openFd(path: &Path, flags: i32) i32 {
+fn openFd(path: &Path, flags: i32) i32 { openFdMode(path, flags, 0x1B6u32) }
+
+// 'openFd' with the mode a new file is made with (before the umask)
+fn openFdMode(path: &Path, flags: i32, mode: u32) i32 {
   var c = cText(path);
   // A new file's mode: 0o666 (less the umask) on Linux; Windows reads only whether it may be written
   #if #os == .windows {
@@ -1440,13 +1592,13 @@ fn openFd(path: &Path, flags: i32) i32 {
     if n <= 0i32 { *libc.errno() = posix.EINVAL; return -1i32; }
     let wide = libc.malloc(usize.from(n) * 2usize) as *u16;
     MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, wide, n);
-    let fd = _wopen(wide, flags | plainFlags(), 0x180i32);
+    let fd = _wopen(wide, flags | plainFlags(), 0x180i32);  // the mode's owner-write bit alone is read; a mode without it would make a read-only file, which no caller here asks for
     let saved = lastErrno();
     libc.free(wide as *u8);
     *libc.errno() = saved;
     fd
   }
-  #else { posixOpen(c.cstr(), flags | plainFlags(), 0x1B6u32) }
+  #else { posixOpen(c.cstr(), flags | plainFlags(), mode) }
 }
 
 fn rawRead(fd: i32, p: *u8, n: usize) i64 {
@@ -1592,6 +1744,54 @@ pub fn create(path: &Path) Result[File, FsError] {
 // (EBADF).
 pub fn append(path: &Path) Result[File, FsError] {
   openWith("append", path, openWriteOnly | createFlag() | appendFlag())
+}
+
+// -------- temporary files --------
+
+// A file made new in the system's temporary folder (where 'tempDir' makes its
+// folders), open for reading and writing, and removed when its owner dies. One
+// owner, moved, never copied; readable and writable by its owner alone on
+// POSIX. As with 'TempDir', removal at death is best effort: a failure is not
+// reported, and leaves the file behind. Its handle is closed first.
+pub struct TempFile is Move {
+  given: Path;
+  handle: File;
+
+  // The file's absolute path, good while this owner lives
+  pub fn path(self: &) &Path { &given }
+
+  // The open file, positioned where the last read or write left it (at the
+  // start when new): write, 'seek(0)', read back
+  pub fn file(self: &mut) &mut File { &mut handle }
+
+  fn final(self: &uni) {
+    if !given.isEmpty() {
+      _ = handle.close();
+      _ = removeFile(&given);
+    }
+  }
+}
+
+// Make a new, empty file, named as 'tempDir' names its folder, in the system's
+// temporary folder, made only if no file by that name is there (so two calls
+// never share one), open for reading and writing. The file's mode is 0600 on
+// POSIX; Windows ignores the mode (the file is simply writable).
+pub fn tempFile() Result[TempFile, FsError] {
+  let base = tempBase();
+  var tries = 0i32;
+  while true {
+    let candidate = tempCandidate(&base, tries);
+    useUtf8();
+    let fd = openFdMode(&candidate, openReadWrite | createFlag() | exclusiveFlag(), 0x180u32);
+    if fd >= 0i32 {
+      let made = madeAbsolute(&candidate);
+      return Ok[TempFile, FsError](TempFile(made.clone(), File(fd, made)));
+    }
+    let code = openErrno(&candidate);
+    tries = tries + 1i32;
+    if code != posix.EEXIST || tries >= 100i32 { return fail[TempFile]("tempFile", &candidate, code); }
+  }
+  fail[TempFile]("tempFile", &base, posix.EINVAL)
 }
 
 // -------- lines --------

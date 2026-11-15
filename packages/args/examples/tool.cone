@@ -1,6 +1,8 @@
-// The sample in the args package's header: a program with a number option, a flag and files.
+// The sample in the args package's header: a program with a number option, a flag, a choice and files,
+// declared once; the usage and the help come from the declaration.
 //
-//   congo run packages/args/examples/tool.cone -- --frames 3 -f 4 --headless a.txt b.txt
+//   congo run packages/args/examples/tool.cone -- -f 4 --speed fast a.txt b.txt
+//   congo run packages/args/examples/tool.cone -- --help
 
 mod tool;
 
@@ -8,31 +10,33 @@ import stdio use *;
 import collections use *;
 import args use *;
 
-fn run() Result[u64, ArgError] {
-  var frames = 60i64;
-  var headless = false;
-  var files = List[String]();
-  var r = ArgReader.fromEnv();                 // skips the program's name
-  while true {
-    match r.next()? {
-      case let Some(arg) {
-        match arg {
-          case let Long(n) if n == "frames" { frames = r.int()?; }
-          case let Long(n) if n == "headless" { headless = true; }
-          case let Short(c) if c == 'f' { frames = r.int()?; }
-          case let Value(v) { files.push(v); }
-          else { return Err[u64, ArgError](arg.unexpected()); }
-        }
-      }
-      case is None { break; }
-    }
-  }
-  Ok[u64, ArgError](u64.from(frames) + u64.from(files.len()))
+fn spec() Spec {
+  var s = Spec.from("tool", "Counts frames and files.");
+  s.add(Opt(name: "frames", short: 'f', kind: Kind.Int, default: "60", help: "frames to render"));
+  s.add(Opt(name: "headless", kind: Kind.Flag, help: "no window"));
+  s.add(Opt(name: "speed", kind: Kind.Choice("slow|fast"), default: "slow", help: "how hard to push"));
+  s.positionals("FILE", "files to count", 0usize);
+  s
+}
+
+fn run(s: &Spec) Result[u64, ArgError] {
+  var r = ArgReader.fromEnv();                    // skips the program's name
+  let m = s.parse(&mut r)?;
+  let frames = m.int("frames");
+  let files = m.rest();
+  let speed = u64.from(m.choice("speed").index) + 1u64;
+  Ok[u64, ArgError](u64.from(frames) * speed + u64.from(files.len()))
 }
 
 fn main() i32 {
-  match run() {
+  let s = spec();
+  match run(&s) {
     case let Ok(n) { print <- n; print <- "\n"; 0i32 }
-    case let Err(e) { print <- toText(&e); print <- "\nUsage: tool [--frames N] [--headless] FILE...\n"; 2i32 }
+    case let Err(e) {
+      match e {
+        case let Help(text) { print <- text.view(); 0i32 }       // the library returns the help; the program prints it
+        else { print <- toText(&e); print <- "\n"; 2i32 }
+      }
+    }
   }
 }
