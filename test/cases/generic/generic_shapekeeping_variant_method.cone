@@ -1,0 +1,51 @@
+// The ShapeKeeping promise does not depend on the order bodies are checked in. 'World'
+// holds a field of the user enum 'Slot[i64]', and 'Slot' declares a method with a
+// 'self: &' receiver, which is copied into each variant; nothing calls it, so no
+// walk checks those copies. 'FieldScorer' is coerced to '&<mut Scorer + ShapeKeeping'
+// with an element borrowed across the call: its 'bump' reaches 'Slot[i64]' through
+// 'w', and the promise is asked at the end of type check, where the variants' methods
+// are checked on demand, not left unread ("could not be read"). 'bump' only writes
+// fields and an element in place, so the promise holds and the earlier-borrowed
+// element is read after the call.
+
+mod generic_shapekeeping_variant_method;
+
+import collections use *;
+import stdio use *;
+
+enum Slot[T] {
+  Empty;
+  Full(T);
+
+  pub fn present(self: &) bool inline { true }
+}
+
+struct Entity { pub hp: i64; }
+struct World { pub score: i64; pub slot: Slot[i64]; pub entities: List[Entity]; }
+
+trait Scorer { pub fn bump(self: &mut, w: &mut World); }
+
+fn throughTrait(w: &mut World, s: &<mut Scorer + ShapeKeeping) i64 {
+  let e = &w.entities[0usize];
+  s.bump(w);
+  e.hp
+}
+
+struct FieldScorer {
+  pub n: i64;
+  pub fn bump(self: &mut, w: &mut World) {
+    w.score = w.score + n;
+    w.entities[0usize].hp = 7;
+  }
+}
+
+fn main() {
+  var es = List[Entity](4);
+  es.push(Entity(5));
+  var w = World(1, Slot.Empty[i64], es);
+  var f = FieldScorer(10);
+  printInt(throughTrait(&mut w, &mut f));
+  printStr("\n");
+  printInt(w.score);
+  printStr("\n");
+}
