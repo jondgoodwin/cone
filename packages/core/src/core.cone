@@ -1846,13 +1846,22 @@ pub struct @opaque Array[T] is GcTraceElements {
     let p = self as *T;
     let bias = if orEqual { 1i32 } else { 0i32 };
     var l = 0usize;
-    var i = 0usize;
-    while i < n {
-      let goLeft = order((p + i) as &T, pivot as &T) < bias;
-      let dst = if goLeft { l } else { n - 1usize - (i - l) };
-      mem.moveRaw(buf + dst, p + i, 1usize);
+    // Bounds, by construction: for the k-th element (k from 0, k < n) 'src' is p + k and, after
+    // its step, 'back' is buf + (n - 1 - k); 'l' counts the elements sent to the front so far
+    // (l <= k). A front write goes to buf + l, in buf[0..n) as l <= k < n. A back write goes to
+    // back + l = buf + (n - 1 - (k - l)), in buf[l..n) since k <= n - 1. After k + 1 elements the
+    // front holds buf[0..l) and the back buf[n - (k + 1 - l)..n), which do not overlap as
+    // k + 1 <= n. So every write is inside the n elements of 'buf'
+    var src = p;
+    let end = p + n;
+    var back = buf + n;
+    while src != end {
+      back = back - 1usize;
+      let goLeft = order(src as &T, pivot as &T) < bias;
+      let dst = if goLeft { buf + l } else { back + l };
+      mem.moveRaw(dst, src, 1usize);
       l = l + (if goLeft { 1usize } else { 0usize });
-      i = i + 1usize;
+      src = src + 1usize;
     }
     mem.moveRaw(p, buf, l);
     var j = 0usize;
