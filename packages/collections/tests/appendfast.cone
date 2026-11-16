@@ -1,0 +1,61 @@
+// String.appendBytes copies a short append (8 bytes or fewer) in place when the
+// block has room for the bytes and the NUL, and takes the general path
+// otherwise. Every length 0 to 11 is appended, again and again, to Strings of
+// every starting capacity 0 to 20, so each append lands once with room to
+// spare, once exactly filling the block (the NUL then makes it grow) and once
+// across it. The reference is the same bytes added one at a time by appendByte.
+// After each append the length, the bytes and the NUL's place are checked.
+
+mod appendfast;
+
+import testing use *;
+import collections use *;
+import libc;
+
+fn main() i32 {
+  let src: &Array[u8] = "abcdefghijk";
+  var bad = 0;
+  var total = 0usize;
+  var cap = 0usize;
+  while cap < 21usize {
+    var s = String.withCapacity(cap);
+    var r = String();
+    var step = 0usize;
+    while step < 36usize {
+      let n = step % 12usize;
+      let from = step % (12usize - n);
+      s.appendBytes(&src[from..<(from + n)]);
+      var j = 0usize;
+      while j < n { r.appendByte(src[from + j]); j = j + 1usize; }
+      total = total + n;
+      if s.len() != total { bad = bad + 1; }
+      if libc.strlen(s.cstr()) != total { bad = bad + 1; }
+      if !s.equals(r.view()) { bad = bad + 1; }
+      step = step + 1usize;
+    }
+    cap = cap + 1usize;
+    total = 0usize;
+  }
+  expectInt(i64.from(bad), 0, "short, exact-fill and long appends, every capacity, no mismatch");
+
+  // an empty append to a String with no block, then to one with a block
+  var e = String();
+  e.appendBytes(&src[3usize..<3usize]);
+  expectUInt(u64.from(e.len()), 0, "empty append to an empty String");
+  e.appendBytes(&src[0usize..<3usize]);
+  e.appendBytes(&src[5usize..<5usize]);
+  expectBool(e.equals("abc"), true, "empty append leaves the text");
+  expectUInt(u64.from(libc.strlen(e.cstr())), 3, "and the NUL after it");
+
+  // eight bytes, then nine, then thirty
+  var m = String.from("x");
+  m.appendBytes(&src[0usize..<8usize]);
+  expectBool(m.equals("xabcdefgh"), true, "eight bytes");
+  m.appendBytes(&src[0usize..<9usize]);
+  m.appendBytes(&src[0usize..<8usize]);
+  m.appendBytes(&src[0usize..<8usize]);
+  m.appendBytes(&src[0usize..<4usize]);
+  expectBool(m.equals("xabcdefghabcdefghiabcdefghabcdefghabcd"), true, "nine bytes and more");
+  expectUInt(u64.from(libc.strlen(m.cstr())), 38, "the NUL after all of them");
+  done()
+}
