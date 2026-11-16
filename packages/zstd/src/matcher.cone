@@ -100,11 +100,23 @@ struct SeqOut {
 // repeat where one fits, by RFC 8878 section 3.1.1.5, which shifts the
 // repeats by one when there are no literals) and the repeats are moved
 // exactly as the decoder will move them.
-fn emit(src: &Array[u8], anchor: usize, ll: usize, off: u32, ml: usize, reps: &mut Reps, so: &mut SeqOut) {
+//
+// Inline, since a call per sequence (1.3 M in 32 MiB of binary at level 1) cost the matchers' loops their registers
+// around it. Up to 16 literals are copied as two 8-byte words (as libzstd's wild copy does), not by a 'memmove' call.
+fn emit(src: &Array[u8], anchor: usize, ll: usize, off: u32, ml: usize, reps: &mut Reps, so: &mut SeqOut) inline {
   if ll > 0usize {
     let from = &src[anchor ..< anchor + ll];
     if so.nl + ll > so.litCap { panic("zstd: literals overflow their array"); }
-    mem.moveRaw[u8](so.lits + so.nl, from as *u8, ll);
+    if ll <= 16usize && so.nl + 16usize <= so.litCap && anchor + 16usize <= src.len {
+      // up to 16 bytes: two 8-byte copies, the extra bytes landing beyond 'nl + ll' where the next literals overwrite them
+      // (or past the count, where the array is stale by design). Both 16-byte ranges are inside their arrays (checked above)
+      let d = so.lits + so.nl;
+      let f = from as *u8;
+      mem.writeRaw[u64](d as *u64, mem.readRaw[u64](f as *u64));
+      mem.writeRaw[u64]((d + 8usize) as *u64, mem.readRaw[u64]((f + 8usize) as *u64));
+    } else {
+      mem.moveRaw[u8](so.lits + so.nl, from as *u8, ll);
+    }
     so.nl += ll;
   }
   if so.ns >= so.seqCap { panic("zstd: sequences overflow their arrays"); }
