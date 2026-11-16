@@ -387,6 +387,55 @@ struct HufEnc is Default {
   wcount: List[u32];
   wnorm: List[i16];
   wfse: FseEnc;
+  // The table the decoder holds after the last block written with a tree of its
+  // own (its 'pk' form and longest code), for treeless literals; 'pending' when
+  // this block's tree is that, to be kept once the block is known to be coded
+  prevPk: List[u32];
+  prevLog: u32;
+  prevOk: bool;
+  pending: bool;
+
+  // Bytes the counted literals take under the last kept table (the
+  // reference's HUF_estimateCompressedSize), or all ones when it has no code
+  // for a symbol that is present (its HUF_validateCTable) or there is none
+  fn oldCost(self: &) u64 {
+    let none = 0xFFFFFFFFFFFFFFFFu64;
+    if !prevOk { return none; }
+    var bits = 0u64;
+    var s = 0usize;
+    while s <= maxSym {
+      let c = *count[s];
+      if c > 0u32 {
+        let l = *prevPk[s] >> 16u32;
+        if l == 0u32 { return none; }
+        bits = bits + u64.from(c) * u64.from(l);
+      }
+      s += 1usize;
+    }
+    bits >> 3u64
+  }
+
+  // Bytes the counted literals take under the table just built
+  fn newCost(self: &) u64 {
+    var bits = 0u64;
+    var s = 0usize;
+    while s <= maxSym {
+      bits = bits + u64.from(*count[s]) * u64.from(*lens[s]);
+      s += 1usize;
+    }
+    bits >> 3u64
+  }
+
+  // The block just written is kept: if it carried a tree, that is now the table to repeat
+  fn keep(self: &mut) {
+    if pending {
+      prevPk.clear();
+      prevPk.appendSlice(pk.view());
+      prevLog = tableLog;
+      prevOk = true;
+      pending = false;
+    }
+  }
 
   // Counts the bytes of 'lits'; answers how many distinct ones there are
   fn histogram(self: &mut, lits: &Array[u8]) usize {
@@ -689,14 +738,14 @@ struct HufEnc is Default {
 
   // Appends one Huffman stream of lits[from, to): the last literal first,
   // so the decoder, reading backward, meets the first one first
-  fn encodeStream(self: &, lits: &Array[u8], from: usize, to: usize, out: &mut List[u8]) {
+  fn encodeStream(self: &, lits: &Array[u8], from: usize, to: usize, out: &mut List[u8], tbl: &List[u32], log: u32) {
     if from > to || to > lits.len { panic("zstd: a literal stream lies outside the literals"); }
     // The table is read by pointer: a byte indexes it, so the 256 entries, checked here once, cover every access
-    if pk.len() != 256usize { panic("zstd: the literal code table is not 256 entries"); }
+    if tbl.len() != 256usize { panic("zstd: the literal code table is not 256 entries"); }
     // The stores below write 64 bits at a time: 7 held bits and 5 codes fit only while no code is over 11 bits,
     // and the bytes stay inside BitRun's reservation only then. tableLog is the longest code length (assignCodes)
-    if tableLog > maxHuffBits() { panic("zstd: a literal code is longer than 11 bits"); }
-    let t = pk.view() as *u32 as *u8;
+    if log > maxHuffBits() { panic("zstd: a literal code is longer than 11 bits"); }
+    let t = tbl.view() as *u32 as *u8;
     let src = lits as *u8;
     let cnt = to - from;
     var bw = BitRun.open(out, cnt + cnt / 2usize + 16usize);
