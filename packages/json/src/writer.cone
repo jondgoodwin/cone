@@ -8,7 +8,7 @@
 //   w.key("name");  w.string("hello");
 //   w.key("tags");  w.beginArray();  w.int(1i64);  w.boolean(true);  w.endArray();
 //   w.endObject();
-//   match w.finish() { case imm ok Ok { ... ok ... } case imm e Err { ... } }
+//   match w.finish() { case let Ok(ok) { ... ok ... } case let Err(e) { ... } }
 //
 // writes {"name":"hello","tags":[1,true]}. A call out of order (a value where
 // a key belongs, an end with nothing open, a second top-level value) or a
@@ -57,39 +57,53 @@ pub struct Writer {
   // Before a value: the comma, the line break, and the check that a value
   // belongs here. False if not.
   fn beforeValue(self: &mut) bool {
-    if self.failed { return false; }
+    let r = self.lead();
+    if r == 2usize { self.out.append(","); }
+    r != 0usize
+  }
+
+  // 'beforeValue', except that a comma owed with no indentation is not written: 0 when no
+  // value belongs here, 1 when one does, 2 when one does and its comma is still to be written.
+  // A value that writes the comma along with its first bytes saves a call.
+  fn lead(self: &mut) usize {
+    if self.failed { return 0usize; }
     if self.open.len() == 0usize {
       if self.wrote {
         self.fail(ErrorKind.WriteOrder, "a second value at the top level: the text holds one value");
-        return false;
+        return 0usize;
       }
       self.wrote = true;
-      return true;
+      return 1usize;
     }
     let top = self.open.len() - 1usize;
     if self.open[top].isObject {
       if !self.open[top].owed {
         self.fail(ErrorKind.WriteOrder, "a value was written where an object's key belongs");
-        return false;
+        return 0usize;
       }
       self.open[top].owed = false;
-      return true;
+      return 1usize;
     }
-    if self.open[top].count > 0usize { self.out.appendByte(','); }
+    var r = 1usize;
+    if self.open[top].count > 0usize {
+      if self.opts.indent == 0usize { r = 2usize; } else { self.out.append(","); }
+    }
     self.lineBreak(self.open.len());
     self.open[top].count = self.open[top].count + 1usize;
-    true
+    r
   }
 
   pub fn beginObject(self: &mut) {
-    if !self.beforeValue() { return; }
-    self.out.appendByte('{');
+    let r = self.lead();
+    if r == 0usize { return; }
+    self.out.append(if r == 2usize { ",{" } else { "{" });
     self.open.push(OpenFrame(true, 0usize, false));
   }
 
   pub fn beginArray(self: &mut) {
-    if !self.beforeValue() { return; }
-    self.out.appendByte('[');
+    let r = self.lead();
+    if r == 0usize { return; }
+    self.out.append(if r == 2usize { ",[" } else { "[" });
     self.open.push(OpenFrame(false, 0usize, false));
   }
 
@@ -112,7 +126,7 @@ pub struct Writer {
     let count = self.open[top].count;
     self.open.pop();
     if count > 0usize { self.lineBreak(self.open.len()); }
-    if isObject { self.out.appendByte('}'); } else { self.out.appendByte(']'); }
+    if isObject { self.out.append("}"); } else { self.out.append("]"); }
   }
 
   // An object's next name
@@ -127,18 +141,26 @@ pub struct Writer {
       self.fail(ErrorKind.WriteOrder, "a key was written where its predecessor's value is owed");
       return;
     }
-    if self.open[top].count > 0usize { self.out.appendByte(','); }
+    // With no indentation the comma goes in with the quote that opens the name, and the colon
+    // with the quote that closes it
+    var comma = false;
+    if self.open[top].count > 0usize {
+      if self.opts.indent == 0usize { comma = true; } else { self.out.append(","); }
+    }
     self.lineBreak(self.open.len());
-    if !self.quoted(name) { return; }
-    self.out.appendByte(':');
-    if self.opts.indent > 0usize { self.out.appendByte(' '); }
+    let open = if comma { ",\"" } else { "\"" };
+    let close = if self.opts.indent > 0usize { "\": " } else { "\":" };
+    if !self.quotedWith(name, open, close) { return; }
     self.open[top].count = self.open[top].count + 1usize;
     self.open[top].owed = true;
   }
 
   // s as a string in quotes; false, having failed, when it is not UTF-8
-  fn quoted(self: &mut, s: &Array[u8]) bool {
-    match appendQuoted(&mut self.out, s, self.opts.asciiOnly) {
+  fn quoted(self: &mut, s: &Array[u8]) bool { self.quotedWith(s, "\"", "\"") }
+
+  // The same, with the text that opens it and the text that closes it
+  fn quotedWith(self: &mut, s: &Array[u8], open: &str, close: &str) bool {
+    match appendQuoted(&mut self.out, s, self.opts.asciiOnly, open, close) {
       case let Some(at) {
         var m = String.from("a string is not valid UTF-8 at its byte ");
         m.appendUInt(u64.from(at));
@@ -150,8 +172,9 @@ pub struct Writer {
   }
 
   pub fn string(self: &mut, s: &str) {
-    if !self.beforeValue() { return; }
-    self.quoted(s);
+    let r = self.lead();
+    if r == 0usize { return; }
+    self.quotedWith(s, if r == 2usize { ",\"" } else { "\"" }, "\"");
   }
 
   // A number given as its text, which must be RFC 8259's grammar
@@ -166,13 +189,15 @@ pub struct Writer {
   }
 
   pub fn int(self: &mut, n: i64) {
-    if !self.beforeValue() { return; }
-    self.out.appendInt(n);
+    let r = self.lead();
+    if r == 0usize { return; }
+    appendDecimal(&mut self.out, r == 2usize, n < 0i64, if n < 0i64 { 0u64 - u64.from(n) } else { u64.from(n) });
   }
 
   pub fn uint(self: &mut, n: u64) {
-    if !self.beforeValue() { return; }
-    self.out.appendUInt(n);
+    let r = self.lead();
+    if r == 0usize { return; }
+    appendDecimal(&mut self.out, r == 2usize, false, n);
   }
 
   // x in the shortest text that reads back as x. NaN and infinity fail.
@@ -247,14 +272,29 @@ pub struct Writer {
   }
 }
 
-// s in double quotes, escaped, appended to out. None when it is written;
+// s escaped and put between the text 'open' and the text 'close' (the quote, with a comma or a
+// colon along with it when there is one), appended to out. None when it is written;
 // Some(offset) of the first byte that is not well-formed UTF-8, with out
 // holding whatever was written before it.
-fn appendQuoted(out: &mut String, s: &Array[u8], ascii: bool) Option[usize] {
-  out.appendByte('"');
+fn appendQuoted(out: &mut String, s: &Array[u8], ascii: bool, open: &str, close: &str) Option[usize] {
+  out.append(open);
   var i = 0usize;
+  // The bytes from 'from' up to i are written as they are, and not yet appended: a run
+  // of plain bytes goes in with one call
+  var from = 0usize;
   while i < s.len {
     let b = s[i];
+    if b >= 0x20u8 && b < 0x80u8 && b != '"' && b != '\\' { i = i + 1usize; continue; }
+    if b >= 0x80u8 && !ascii {
+      let len = utf8Length(s, i);
+      if len == 0usize {
+        if i > from { out.appendBytes(&s[from..<i]); }
+        return Some[usize](i);
+      }
+      i = i + len;
+      continue;
+    }
+    if i > from { appendRun(out, s, from, i); }
     if b == '"' { out.append("\\\""); i = i + 1usize; }
     else if b == '\\' { out.append("\\\\"); i = i + 1usize; }
     else if b < 0x20u8 {
@@ -269,32 +309,67 @@ fn appendQuoted(out: &mut String, s: &Array[u8], ascii: bool) Option[usize] {
       }
       i = i + 1usize;
     }
-    else if b < 0x80u8 { out.appendByte(b); i = i + 1usize; }
     else {
+      // Not ASCII, and written as \u escapes ('ascii' is set)
       let len = utf8Length(s, i);
       if len == 0usize { return Some[usize](i); }
-      if !ascii {
-        out.appendBytes(&s[i..<i + len]);
+      let cp = utf8Decode(s, i, len);
+      if cp >= 0x10000u32 {
+        let v = cp - 0x10000u32;
+        out.append("\\u");
+        out.appendHex(u64.from(0xD800u32 + (v >> 10u32)), 4usize);
+        out.append("\\u");
+        out.appendHex(u64.from(0xDC00u32 + (v & 0x3FFu32)), 4usize);
       }
       else {
-        let cp = utf8Decode(s, i, len);
-        if cp >= 0x10000u32 {
-          let v = cp - 0x10000u32;
-          out.append("\\u");
-          out.appendHex(u64.from(0xD800u32 + (v >> 10u32)), 4usize);
-          out.append("\\u");
-          out.appendHex(u64.from(0xDC00u32 + (v & 0x3FFu32)), 4usize);
-        }
-        else {
-          out.append("\\u");
-          out.appendHex(u64.from(cp), 4usize);
-        }
+        out.append("\\u");
+        out.appendHex(u64.from(cp), 4usize);
       }
       i = i + len;
     }
+    from = i;
   }
-  out.appendByte('"');
+  if i > from { appendRun(out, s, from, i); }
+  out.append(close);
   None
+}
+
+// The decimal text of a magnitude, with a '-' before it when negative, appended with one call:
+// the digits are set down from the right end of a small array
+fn appendDecimal(out: &mut String, comma: bool, negative: bool, magnitude: u64) {
+  var digits = Array[u8, 22]() <- fill 0u8;
+  var at = 22usize;
+  var rest = magnitude;
+  var going = true;
+  while going {
+    at = at - 1usize;
+    digits[at] = u8.from(rest % 10u64) + '0';
+    rest = rest / 10u64;
+    going = rest > 0u64;
+  }
+  if negative {
+    at = at - 1usize;
+    digits[at] = '-';
+  }
+  if comma {
+    at = at - 1usize;
+    digits[at] = ',';
+  }
+  appendRun(out, &digits, at, 22usize);
+}
+
+// The bytes of b from 'from' up to 'to', appended. 'String.appendBytes' stores in place only
+// up to 8 bytes (and copies a block past that, which costs more than a short run is worth), so a
+// run of up to 24 goes in as pieces of 8.
+fn appendRun(out: &mut String, b: &Array[u8], from: usize, to: usize) {
+  var p = from;
+  if to - from <= 24usize {
+    while to - p > 8usize {
+      out.appendBytes(&b[p..<p + 8usize]);
+      p = p + 8usize;
+    }
+  }
+  out.appendBytes(&b[p..<to]);
 }
 
 // The character of the len-byte UTF-8 sequence at pos, which is well-formed
