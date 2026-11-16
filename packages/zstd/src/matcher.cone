@@ -417,59 +417,93 @@ fn matchDouble(src: &Array[u8], start: usize, end: usize, window: usize, longLog
   var so = SeqOut.open(seqs);
   let shiftL = (64u64 - u64.from(longLog)) & 63u64;
   let shiftS = (64u64 - u64.from(shortLog)) & 63u64;
+  if start > end || end > src.len { panic("zstd: a matcher's range is outside its input"); }
+  let sp = src as *u8;
   var ip = start;
   var anchor = start;
   while ip + 9usize <= end {
-    let w = rd64(src, ip);
-    let w32 = low32(w);
-    let tag = tagOf(w32);
-    let candL = slot(lt, lg, prod8(w), shiftL, tag, ip, ip);
-    let candS = slot(st, sg, prod5(w), shiftS, tag, ip, ip);
-    let r = reps.r1;
-    if repFits(ip + 1usize, r, window) && low32(w >> 8u64) == rd32(src, ip + 1usize - usize.from(r)) {
-      let ml = 4usize + matchLen(src, ip + 5usize, ip + 5usize - usize.from(r), end);
-      emit(src, anchor, ip + 1usize - anchor, r, ml, reps, &mut so);
-      ip = ip + 1usize + ml;
-      anchor = ip;
-    } else {
-      var ml = 0usize;
-      var s = ip;
-      var c = 0usize;
-      if candL < ip && ip - candL <= window && rd64(src, candL) == w {
-        ml = 8usize + matchLen(src, ip + 8usize, candL + 8usize, end);
-        c = candL;
-      } else if candS < ip && ip - candS <= window && rd32(src, candS) == w32 {
-        let next = ip + 1usize;
-        let w1 = rd64(src, next);
-        let candL1 = slot(lt, lg, prod8(w1), shiftL, tagOf(low32(w1)), next, next);
-        if candL1 < next && next - candL1 <= window && rd64(src, candL1) == w1 {
-          ml = 8usize + matchLen(src, next + 8usize, candL1 + 8usize, end);
-          s = next;
-          c = candL1;
-        } else {
-          ml = 4usize + matchLen(src, ip + 4usize, candS + 4usize, end);
-          c = candS;
-        }
-      } else {
-        ip += ((ip - anchor) >> 8usize) + 1usize;
-        continue;
+    // libzstd's doubleFast loop: the position p is probed in both tables, a repeat is tried at p + 1, then the long
+    // match at p, then the short match at p (which tries the long match at p + 1 before it is taken). A miss moves
+    // to p + step; the step starts at 1 and grows by one every 128 bytes from the start of the run.
+    var p = ip;
+    var step = 1usize;
+    var nextStep = ip + 128usize;
+    var kind = 0u32;
+    var ms = 0usize;
+    var mc = 0usize;
+    var ml = 0usize;
+    // BOUNDS: the loop condition 'p + step + 8 <= end' covers the 8 bytes at p, at p + 1 and at p + step. A
+    // candidate is read only below the position it is tried for, so its bytes end by that position + 8 <= end.
+    while p + step + 8usize <= end {
+      let p1 = p + step;
+      let w = mem.readRaw[u64]((sp + p) as *u64);
+      let w32 = low32(w);
+      let tag = tagOf(w32);
+      let candL = slot(lt, lg, prod8(w), shiftL, tag, p, p);
+      let candS = slot(st, sg, prod5(w), shiftS, tag, p, p);
+      let r = reps.r1;
+      if repFits(p + 1usize, r, window) && low32(w >> 8u64) == mem.readRaw[u32]((sp + (p + 1usize - usize.from(r))) as *u32) {
+        ml = 4usize + matchLen(src, p + 5usize, p + 5usize - usize.from(r), end);
+        ms = p + 1usize;
+        kind = 1u32;
+        break;
       }
-      let off = u32.from(s - c);
+      if candL < p && p - candL <= window && mem.readRaw[u64]((sp + candL) as *u64) == w {
+        ml = 8usize + matchLen(src, p + 8usize, candL + 8usize, end);
+        ms = p;
+        mc = candL;
+        kind = 2u32;
+      } else if candS < p && p - candS <= window && mem.readRaw[u32]((sp + candS) as *u32) == w32 {
+        let next = p + 1usize;
+        let w1 = mem.readRaw[u64]((sp + next) as *u64);
+        let candL1 = slot(lt, lg, prod8(w1), shiftL, tagOf(low32(w1)), next, next);
+        if candL1 < next && next - candL1 <= window && mem.readRaw[u64]((sp + candL1) as *u64) == w1 {
+          ml = 8usize + matchLen(src, next + 8usize, candL1 + 8usize, end);
+          ms = next;
+          mc = candL1;
+        } else {
+          ml = 4usize + matchLen(src, p + 4usize, candS + 4usize, end);
+          ms = p;
+          mc = candS;
+        }
+        kind = 2u32;
+      }
+      if kind == 2u32 {
+        // libzstd's next-position entry: while the step is short, p + step enters the long table before the match is taken
+        if step < 4usize {
+          let wn = mem.readRaw[u64]((sp + p1) as *u64);
+          slot(lt, lg, prod8(wn), shiftL, tagOf(low32(wn)), p1, p1);
+        }
+        break;
+      }
+      p = p1;
+      if p >= nextStep {
+        step += 1usize;
+        nextStep += 128usize;
+      }
+    }
+    if kind == 0u32 { break; }
+    let at = p;
+    if kind == 1u32 {
+      emit(src, anchor, ms - anchor, reps.r1, ml, reps, &mut so);
+      ip = ms + ml;
+    } else {
+      var s = ms;
+      var c = mc;
       while s > anchor && c > 0usize && src[s - 1usize] == src[c - 1usize] {
         s -= 1usize;
         c -= 1usize;
         ml += 1usize;
       }
-      emit(src, anchor, s - anchor, off, ml, reps, &mut so);
-      let at = ip;
+      emit(src, anchor, s - anchor, u32.from(ms - mc), ml, reps, &mut so);
       ip = s + ml;
-      anchor = ip;
-      if ip + 8usize <= end {
-        putTag(src, lt, lg, prod8(rd64(src, at + 2usize)), shiftL, at + 2usize);
-        putTag(src, lt, lg, prod8(rd64(src, ip - 2usize)), shiftL, ip - 2usize);
-        putTag(src, st, sg, prod5(rd64(src, at + 2usize)), shiftS, at + 2usize);
-        putTag(src, st, sg, prod5(rd64(src, ip - 1usize)), shiftS, ip - 1usize);
-      }
+    }
+    anchor = ip;
+    if ip + 8usize <= end {
+      putTag(src, lt, lg, prod8(rd64(src, at + 2usize)), shiftL, at + 2usize);
+      putTag(src, lt, lg, prod8(rd64(src, ip - 2usize)), shiftL, ip - 2usize);
+      putTag(src, st, sg, prod5(rd64(src, at + 2usize)), shiftS, at + 2usize);
+      putTag(src, st, sg, prod5(rd64(src, ip - 1usize)), shiftS, ip - 1usize);
     }
     while ip + 8usize <= end && repFits(ip, reps.r2, window)
         && rd32(src, ip) == rd32(src, ip - usize.from(reps.r2)) {
