@@ -46,14 +46,17 @@ struct BlockEnc {
   mlCodes: List[u8];
   llSmall: List[u8];
   mlSmall: List[u8];
-  cnt: List[u32];
+  // How often each code occurs in the block (128 slots each: a code is under 68), counted as the codes are derived
+  cntLl: List[u32];
+  cntOf: List[u32];
+  cntMl: List[u32];
   norm: List[i16];
   desc: List[u8];
 
   fn make() BlockEnc {
     BlockEnc(HufEnc(), FseEnc(), FseEnc(), FseEnc(), List[u8](),
       List[u8](), List[u8](), smallCodes(&llBase, 0u32, 64usize), smallCodes(&mlBase, 3u32, 128usize),
-      List[u32](), List[i16](), List[u8]())
+      List[u32](), List[u32](), List[u32](), List[i16](), List[u8]())
   }
 }
 
@@ -152,26 +155,83 @@ fn writeLiterals(lits: &Array[u8], huf: &mut HufEnc, out: &mut List[u8]) {
   }
 }
 
-// The code of a literal length or of a match length (its value less 3)
-fn lengthCode(small: &List[u8], v: u32, delta: u32) u8 {
-  if usize.from(v) < small.len() { return *small[usize.from(v)]; }
+// The code of a literal length or of a match length (its value less 3):
+// 'small' holds the codes of the values below n, 'delta' is the code of 1
+// less its highest bit
+fn lengthCode(small: *u8, n: usize, v: u32, delta: u32) u8 inline {
+  if usize.from(v) < n { return mem.readRaw[u8](small + usize.from(v)); }
   u8.from(highBit(v) + delta)
+}
+
+// One pass over the sequences: the three arrays of codes, and how often each
+// code occurs. The raw stores and loads are inside bounds fixed here: the
+// three sequence arrays are checked to hold 'nb' entries and the code arrays
+// are sized to 'nb' before the loop; a small table is read only below its
+// length (checked); a code is under 68 (a u32's highest bit is at most 31,
+// plus 36), so its count's slot (128 to each) is in the list.
+fn deriveCodes(seqs: &Seqs, enc: &mut BlockEnc) {
+  let nb = seqs.nseq;
+  if seqs.ll.len() < nb || seqs.ml.len() < nb || seqs.off.len() < nb { panic("zstd: fewer sequences than counted"); }
+  enc.llCodes.resize(nb, 0u8);
+  enc.ofCodes.resize(nb, 0u8);
+  enc.mlCodes.resize(nb, 0u8);
+  enc.cntLl.clear();
+  enc.cntLl.resize(128usize, 0u32);
+  enc.cntOf.clear();
+  enc.cntOf.resize(128usize, 0u32);
+  enc.cntMl.clear();
+  enc.cntMl.resize(128usize, 0u32);
+  if enc.llSmall.len() != 64usize || enc.mlSmall.len() != 128usize { panic("zstd: a code table has the wrong size"); }
+  let llS = enc.llSmall.view() as *u8;
+  let mlS = enc.mlSmall.view() as *u8;
+  let llIn = seqs.ll.view() as *u32 as *u8;
+  let mlIn = seqs.ml.view() as *u32 as *u8;
+  let ofIn = seqs.off.view() as *u32 as *u8;
+  let llOut = enc.llCodes.viewMut() as *u8;
+  let ofOut = enc.ofCodes.viewMut() as *u8;
+  let mlOut = enc.mlCodes.viewMut() as *u8;
+  let llC = enc.cntLl.viewMut() as *u32 as *u8;
+  let ofC = enc.cntOf.viewMut() as *u32 as *u8;
+  let mlC = enc.cntMl.viewMut() as *u32 as *u8;
+  var i = 0usize;
+  while i < nb {
+    let lc = lengthCode(llS, 64usize, mem.readRaw[u32]((llIn + 4usize * i) as *u32), 19u32);
+    let mc = lengthCode(mlS, 128usize, mem.readRaw[u32]((mlIn + 4usize * i) as *u32) - 3u32, 36u32);
+    let oc = u8.from(highBit(mem.readRaw[u32]((ofIn + 4usize * i) as *u32)));
+    mem.writeRaw[u8](llOut + i, lc);
+    mem.writeRaw[u8](mlOut + i, mc);
+    mem.writeRaw[u8](ofOut + i, oc);
+    let pl = (llC + 4usize * (usize.from(lc) & 127usize)) as *u32;
+    mem.writeRaw[u32](pl, mem.readRaw[u32](pl) + 1u32);
+    let pm = (mlC + 4usize * (usize.from(mc) & 127usize)) as *u32;
+    mem.writeRaw[u32](pm, mem.readRaw[u32](pm) + 1u32);
+    let po = (ofC + 4usize * (usize.from(oc) & 127usize)) as *u32;
+    mem.writeRaw[u32](po, mem.readRaw[u32](po) + 1u32);
+    i += 1usize;
+  }
+  // A code at or past its alphabet would have counted into a slot no table reads
+  var s = 36usize;
+  while s < 128usize {
+    if *enc.cntLl[s] != 0u32 { panic("zstd: a literal-length code is past its alphabet"); }
+    s += 1usize;
+  }
+  s = 32usize;
+  while s < 128usize {
+    if *enc.cntOf[s] != 0u32 { panic("zstd: an offset code is past its alphabet"); }
+    s += 1usize;
+  }
+  s = 53usize;
+  while s < 128usize {
+    if *enc.cntMl[s] != 0u32 { panic("zstd: a match-length code is past its alphabet"); }
+    s += 1usize;
+  }
 }
 
 // The table for one of the three codes, by cost: appends its description
 // (an RLE symbol, or FSE counts) to 'desc', builds 't', answers the mode
 // (0 predefined, 1 RLE, 2 FSE)
-fn chooseTable(codes: &List[u8], alphabet: usize, defaults: &Array[i16], defaultLog: u32, maxLog: u32,
-    cnt: &mut List[u32], norm: &mut List[i16], desc: &mut List[u8], t: &mut FseEnc) u8 {
-  let nb = codes.len();
-  cnt.clear();
-  cnt.resize(alphabet, 0u32);
-  var i = 0usize;
-  while i < nb {
-    let c = usize.from(*codes[i]);
-    cnt.set(c, *cnt[c] + 1u32);
-    i += 1usize;
-  }
+fn chooseTable(nb: usize, cnt: &List[u32], alphabet: usize, defaults: &Array[i16], defaultLog: u32, maxLog: u32,
+    norm: &mut List[i16], desc: &mut List[u8], t: &mut FseEnc) u8 {
   var maxSym = 0usize;
   var distinct = 0usize;
   var s = 0usize;
@@ -242,20 +302,12 @@ fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
     out.push(u8.from((nb - 0x7F00usize) >> 8usize));
   }
   if nb == 0usize { return; }
-  enc.llCodes.clear();
-  enc.ofCodes.clear();
-  enc.mlCodes.clear();
-  var i = 0usize;
-  while i < nb {
-    enc.llCodes.push(lengthCode(&enc.llSmall, *seqs.ll[i], 19u32));
-    enc.mlCodes.push(lengthCode(&enc.mlSmall, *seqs.ml[i] - 3u32, 36u32));
-    enc.ofCodes.push(u8.from(highBit(*seqs.off[i])));
-    i += 1usize;
-  }
+  deriveCodes(seqs, enc);
   enc.desc.clear();
-  let llMode = chooseTable(&enc.llCodes, 36usize, &llDefault, 6u32, 9u32, &mut enc.cnt, &mut enc.norm, &mut enc.desc, &mut enc.ll);
-  let ofMode = chooseTable(&enc.ofCodes, 32usize, &ofDefault, 5u32, 8u32, &mut enc.cnt, &mut enc.norm, &mut enc.desc, &mut enc.of);
-  let mlMode = chooseTable(&enc.mlCodes, 53usize, &mlDefault, 6u32, 9u32, &mut enc.cnt, &mut enc.norm, &mut enc.desc, &mut enc.ml);
+  let llMode = chooseTable(nb, &enc.cntLl, 36usize, &llDefault, 6u32, 9u32, &mut enc.norm, &mut enc.desc, &mut enc.ll);
+  let ofMode = chooseTable(nb, &enc.cntOf, 32usize, &ofDefault, 5u32, 8u32, &mut enc.norm, &mut enc.desc, &mut enc.of);
+  let mlMode = chooseTable(nb, &enc.cntMl, 53usize, &mlDefault, 6u32, 9u32, &mut enc.norm, &mut enc.desc, &mut enc.ml);
+  var i = 0usize;
   out.push((llMode << 6u8) | (ofMode << 4u8) | (mlMode << 2u8));
   out.reserve(enc.desc.len());
   i = 0usize;
