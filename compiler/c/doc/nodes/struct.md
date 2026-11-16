@@ -1554,8 +1554,6 @@ own (`inline`: an enum's non-inline generic method is not emitted for another mo
 The record read fills a field its text never gave from core's private `MissingField`
 deserializer: `readNone` answers true and every other read the Missing `DataError`, so an
 `Option` field becomes `None` and no field type is tested by name.
-[differs] A record field whose type has an instance as its argument (`List[List[i32]]`, `Option[List[i32]]`)
-is refused by `structFieldDeserializes` unless the inner instance was built earlier in the program.
 The one grant (`genericTypeIsHow`, beside Hash's) is to every number type, floats included,
 and `bool`, not `char`: `Serialize` always, `Deserialize[X]` only where X is the number itself.
 It has no method of its own, so a generic reaches a number through core's `serializeValue` /
