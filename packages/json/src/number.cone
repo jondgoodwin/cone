@@ -152,16 +152,38 @@ fn decMagnitude(d: &Dec) Result[u64, NumberError] {
   Ok[u64, NumberError](n)
 }
 
+// The magnitude of a number text that scanNumber accepted, and whether it has a
+// '-'. The common text, a '-' and 1 to 19 digits (no point, no exponent), is
+// added up in a u64 (19 digits cannot pass one) with no Dec; any other text
+// takes the exact decimal, which answers the same for the texts the first
+// takes.
+fn numberMagnitude(text: &Array[u8], neg: &mut bool) Result[u64, NumberError] {
+  var i = 0usize;
+  *neg = false;
+  if text[0usize] == '-' { *neg = true; i = 1usize; }
+  let nd = text.len - i;
+  if nd <= 19usize {
+    var n = 0u64;
+    var j = i;
+    while j < text.len && isDigit(text[j]) {
+      n = n * 10u64 + u64.from(text[j] - '0');
+      j = j + 1usize;
+    }
+    if j == text.len { return Ok[u64, NumberError](n); }
+  }
+  var d = decNew();
+  decOfNumber(text, &mut d, neg);
+  decMagnitude(&d)
+}
+
 // The number text as an i64: NotANumber for text that is not a JSON number,
 // NotInteger for one with a fraction that is not zero (or an exponent that
 // leaves one), OutOfRange past i64's range
 pub fn numberI64(text: &Array[u8]) Result[i64, NumberError] {
   let s = scanNumber(text, 0usize);
   if s.problem != numOk || s.end != text.len { return Err[i64, NumberError](NumberError.NotANumber); }
-  var d = decNew();
   var neg = false;
-  decOfNumber(text, &mut d, &mut neg);
-  let m = decMagnitude(&d)?;
+  let m = numberMagnitude(text, &mut neg)?;
   if !neg {
     if m > 9223372036854775807u64 { return Err[i64, NumberError](NumberError.OutOfRange); }
     return Ok[i64, NumberError](i64.from(m));
@@ -176,10 +198,8 @@ pub fn numberI64(text: &Array[u8]) Result[i64, NumberError] {
 pub fn numberU64(text: &Array[u8]) Result[u64, NumberError] {
   let s = scanNumber(text, 0usize);
   if s.problem != numOk || s.end != text.len { return Err[u64, NumberError](NumberError.NotANumber); }
-  var d = decNew();
   var neg = false;
-  decOfNumber(text, &mut d, &mut neg);
-  let m = decMagnitude(&d)?;
+  let m = numberMagnitude(text, &mut neg)?;
   if neg && m != 0u64 { return Err[u64, NumberError](NumberError.OutOfRange); }
   Ok[u64, NumberError](m)
 }
