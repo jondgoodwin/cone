@@ -371,6 +371,16 @@ pub struct Compressor {
         off += drop;
         self.slid(drop, zeroTag(&data[off ..< data.len]));
       }
+      if result.capacity() == 0usize && n > 0usize {
+        // The first block's output as a fraction of its input, over the whole input, and an eighth more: the
+        // result's room is taken once, where growing it by doubling copies it again and again (5 ms of 100 at
+        // level 1 on the binary 32 MiB). A block that went in raw is the worst case, so the estimate stops at
+        // the input and its framing; a later block that codes worse only grows the list from there, as before.
+        let est = out.len() * data.len / n;
+        let most = data.len + (data.len >> 14usize) + 64usize;
+        let want = est + (est >> 3usize) + 64usize;
+        result.reserve(if want < most {want} else {most});
+      }
       if !self.drainAll(result) { return false; }
     }
     true
