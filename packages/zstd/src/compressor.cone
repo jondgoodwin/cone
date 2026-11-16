@@ -307,6 +307,69 @@ pub struct Compressor {
     blocks = blocks + 1u64;
   }
 
+  // 'block' for the one-shot path: the block's bytes go straight into
+  // 'result' (the frame so far, 'out' being empty), written once. Room for a
+  // block's worst case (3-byte header, the bytes, 1/256 more and the stream
+  // overhang) is reserved first, so the coders push into it without growing;
+  // a block not worth keeping is cut back to 'at' and sent raw. The bytes are
+  // those 'block' makes.
+  fn blockInto(self: &mut, src: &Array[u8], n: usize, last: bool, result: &mut List[u8]) {
+    // The frame so far is swapped into 'blk' (a field: handing the coders a parameter that might alias seqs is error 1339) and back at the end
+    *result <-> blk;
+    let start = cur;
+    let end = cur + n;
+    let lastBit = u64.from(if last {1u32} else {0u32});
+    if n > 0usize && blocks > 0u64 && allSame(src, start, end) {
+      let h = (u64.from(n) << 3u64) | 2u64 | lastBit;
+      blk.reserve(4usize);
+      blk.push(u8.from(h & 255u64));
+      blk.push(u8.from((h >> 8u64) & 255u64));
+      blk.push(u8.from((h >> 16u64) & 255u64));
+      blk.push(src[start]);
+    } else {
+      let at = blk.len();
+      var coded = false;
+      if n > 0usize {
+        work = Reps(reps.r1, reps.r2, reps.r3);
+        seqs.clear();
+        let window = 1usize << usize.from(par.windowLog);
+        if par.longLog == 0u32 {
+          matchFast(src, start, end, window, par.shortLog, par.minMatch, &mut shortT, &mut shortG, &mut work, &mut seqs);
+        } else {
+          matchDouble(src, start, end, window, par.longLog, par.shortLog, &mut longT, &mut shortT,
+            &mut longG, &mut shortG, &mut work, &mut seqs);
+        }
+        blk.reserve(n + (n >> 8usize) + 128usize);
+        blk.push(0u8);
+        blk.push(0u8);
+        blk.push(0u8);
+        writeLiterals(&seqs.lits.view()[0usize ..< seqs.nlit], &mut enc.huf, &mut blk);
+        writeSequences(&seqs, &mut enc, &mut blk);
+        let size = blk.len() - at - 3usize;
+        if size + minGain(n) < n {
+          coded = true;
+          reps = Reps(work.r1, work.r2, work.r3);
+          enc.huf.keep();
+          let h = (u64.from(size) << 3u64) | 4u64 | lastBit;
+          blk.set(at, u8.from(h & 255u64));
+          blk.set(at + 1usize, u8.from((h >> 8u64) & 255u64));
+          blk.set(at + 2usize, u8.from((h >> 16u64) & 255u64));
+        }
+      }
+      if !coded {
+        blk.truncate(at);
+        blk.reserve(3usize + n);
+        let h = (u64.from(n) << 3u64) | lastBit;
+        blk.push(u8.from(h & 255u64));
+        blk.push(u8.from((h >> 8u64) & 255u64));
+        blk.push(u8.from((h >> 16u64) & 255u64));
+        blk.appendSlice(&src[start..<end]);
+      }
+    }
+    cur = end;
+    blocks = blocks + 1u64;
+    *result <-> blk;
+  }
   // Drop input no match can reach any more (all but the window before
   // 'cur'), once that is at least as much as is kept, so each byte is moved
   // at most once; the tables' positions move down with it (a position
@@ -361,10 +424,11 @@ pub struct Compressor {
       if !started {
         self.tables(zeroTag(&data[off ..< data.len]));
         self.header();
+        if !self.drainAll(result) { return false; }
       }
       let n = if avail < blockSizeMax() {avail} else {blockSizeMax()};
       let last = avail <= blockSizeMax();
-      self.block(&data[off ..< data.len], n, last);
+      self.blockInto(&data[off ..< data.len], n, last, result);
       self.endBlock(last);
       let drop = self.slideDrop(len);
       if drop > 0usize {
