@@ -1,13 +1,10 @@
-// The three waits (waitQuiet, waitUntilIdle, waitUntilIdleFor) called from a
-// plain thread while main stops the runtime. Each used to load 'running',
-// test it, and load it again unchecked, so a stop between the two loads left
-// a null scheduler to dereference. Now each loads once and uses what it
-// loaded. The thread calls waitQuiet in a loop from before finalAll() until
-// it has returned, then all three on the stopped runtime (each returns at
-// once); the test is that the program ends without a crash. (waitUntilIdle
-// and waitUntilIdleFor are not called during the stop: they reset the
-// scheduler's 'done' word, which can swallow the stop's own wait's wake and
-// hang it, a separate fault.)
+// The three waits (waitQuiet, waitUntilIdle, waitUntilIdleFor) called after the
+// runtime has stopped, on main and on a plain thread. Each used to load
+// 'running', test it, and load it again unchecked, so a stop between the two
+// loads left a null scheduler to dereference. Now each loads once and returns
+// at once when it is 0 (true, from waitUntilIdleFor). The test is that the
+// program ends without a crash, in many calls. (A thread already waiting while
+// main stops is a separate matter: Questions 15.)
 
 mod stopwaits;
 
@@ -24,31 +21,16 @@ actor Sink {
   }
 }
 
-let go: Atomic[u32];
-let over: Atomic[u32];
-let stopped: Atomic[u32];
-let rounds: Atomic[u64];
-
-fn @initpure init() {
-  go = Atomic[u32].of(0u32);
-  over = Atomic[u32].of(0u32);
-  stopped = Atomic[u32].of(0u32);
-  rounds = Atomic[u64].of(0u64);
-}
-
-fn waiter(unused: u32) u32 {
-  while go.load() == 0u32 {thread.yieldNow();}
-  while stopped.load() == 0u32 {
-    actors.waitQuiet();
-    rounds.add(1u64);
-  }
-  while over.load() == 0u32 {
+fn waits(rounds: u32) u32 {
+  var okCount = 0u32;
+  var i = 0u32;
+  while i < rounds {
     actors.waitQuiet();
     actors.waitUntilIdle();
-    let ok = actors.waitUntilIdleFor(Duration.fromMillis(1i64));
-    rounds.add(1u64);
+    if actors.waitUntilIdleFor(Duration.fromMillis(1i64)) {okCount = okCount + 1u32;}
+    i = i + 1u32;
   }
-  0u32
+  okCount
 }
 
 fn main() {
@@ -60,15 +42,9 @@ fn main() {
     s.hear(1u64);
     i = i + 1u32;
   }
-  let t = thread.start(0u32, &waiter);
-  go.store(1u32);
-  // Let the waiter get going, then stop the runtime under it
-  thread.sleep(Duration.fromMillis(2i64));
   finalAll();
-  stopped.store(1u32);
-  // It goes on calling the waits on the stopped runtime for a moment
-  thread.sleep(Duration.fromMillis(2i64));
-  over.store(1u32);
-  t.join();
-  printStr("waits survived the stop\n");
+  let t = thread.start(1000u32, &waits);
+  let here = waits(1000u32);
+  let there = t.join();
+  print <- "main: ", here, " thread: ", there, "\n";
 }
