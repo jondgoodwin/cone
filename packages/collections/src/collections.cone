@@ -1893,6 +1893,21 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
   // are UTF-8 (see 'fromBytes')
   pub fn appendBytes(self: &mut, b: &Array[u8]) {
     let n = b.len;
+    // A short append that fits in the room already reserved, the bytes and the
+    // NUL both: stores in place, no reserve, no block copy, no seal. (A String
+    // with no block has cap 0 and takes the general path below.)
+    if n <= 8usize && n < buf.cap - buf.used {
+      let src = b as *u8;
+      let dst = buf.ptr + buf.used;
+      var i = 0usize;
+      while i < n {
+        mem.writeRaw(dst + i, mem.readRaw(src + i));
+        i = i + 1usize;
+      }
+      mem.writeRaw(dst + n, 0u8);
+      buf.used = buf.used + n;
+      return;
+    }
     buf.reserve(n + 1usize);
     if n > 0usize {
       // One block copy, as List.appendSliceCopy does; the reserve has room
