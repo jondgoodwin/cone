@@ -1,0 +1,73 @@
+// '===' and '!==' on two owning references (Bug 94). Identity asks which place the
+// two name, as the borrows of them would: it neither takes nor copies an owner.
+// Handed over as they were, both owners were moved into the comparison, which
+// drops nothing, so every comparison leaked what both pointed at -- about 48 bytes
+// a call, 100 MB across two million of deltablue's.
+//
+// Each case makes its owners, compares them in a function, and lets them go; the
+// payload's 'final' counts the ones that die, so the live count after a hundred
+// calls is what leaked. Every line must read 0. The answers are printed once at
+// the end (the same Rc copied: true; two Rcs: false; two Unis: false).
+mod ref_identity_owners;
+
+import stdio use *;
+
+var @threadlocal live = 0i64;
+
+struct P {
+  pub n: i64;
+  fn final(self: &uni) { live -= 1; }
+  pub fn area(self: &) i64 { n }
+}
+
+trait Shape { pub fn area(self: &) i64; }
+struct Sq {
+  pub n: i64;
+  fn final(self: &uni) { live -= 1; }
+  pub fn area(self: &) i64 { n }
+}
+
+fn mkRc() Rc[mut, P] { live += 1; Rc[mut, P](1) }
+fn mkShape() Rc[mut, Shape] { live += 1; Rc[mut, Sq](1) }
+fn mkUni() Uni[P] { live += 1; Uni[P](1) }
+
+fn rcCopy() bool { let x = mkRc(); let y = x; x === y }
+fn rcCopyNe() bool { let x = mkRc(); let y = x; x !== y }
+fn rcTwo() bool { let x = mkRc(); let y = mkRc(); x === y }
+fn rcTwoNe() bool { let x = mkRc(); let y = mkRc(); x !== y }
+fn rcBorrows() bool { let x = mkRc(); let y = x; let r = &x; r === &y }
+fn rcIf() i64 { let x = mkRc(); let y = x; if x === y { 1 } else { 2 } }
+fn rcWhile() i64 { let x = mkRc(); let y = x; var k = 0; while (x === y) && k < 2 { k += 1; } k }
+fn rcMatch() i64 { let x = mkRc(); let y = x; match x === y { case true { 1 } else { 2 } } }
+fn rcValue() i64 { let x = mkRc(); let y = x; let b = x === y; if b { x.area() + y.area() } else { 0 } }
+fn rcTemps() bool { mkRc() === mkRc() }
+fn rcTempAndOwner() bool { let x = mkRc(); x === mkRc() }
+fn shapeCopy() bool { let x = mkShape(); let y = x; x === y }
+fn shapeNe() bool { let x = mkShape(); let y = x; x !== y }
+fn uniTwo() bool { let x = mkUni(); let y = mkUni(); x === y }
+fn uniNe() bool { let x = mkUni(); let y = mkUni(); x !== y }
+fn uniBorrows() bool { let x = mkUni(); let y = mkUni(); &x === &y }
+
+fn check(name: &str, before: i64) { let l = live; print <- name, " ", l - before, "\n"; }
+
+fn main() {
+  var b = live;
+  var i = 0;
+  while i < 100 { rcCopy(); i += 1; } check("rcCopy", b); b = live; i = 0;
+  while i < 100 { rcCopyNe(); i += 1; } check("rcCopyNe", b); b = live; i = 0;
+  while i < 100 { rcTwo(); i += 1; } check("rcTwo", b); b = live; i = 0;
+  while i < 100 { rcTwoNe(); i += 1; } check("rcTwoNe", b); b = live; i = 0;
+  while i < 100 { rcBorrows(); i += 1; } check("rcBorrows", b); b = live; i = 0;
+  while i < 100 { rcIf(); i += 1; } check("rcIf", b); b = live; i = 0;
+  while i < 100 { rcWhile(); i += 1; } check("rcWhile", b); b = live; i = 0;
+  while i < 100 { rcMatch(); i += 1; } check("rcMatch", b); b = live; i = 0;
+  while i < 100 { rcValue(); i += 1; } check("rcValue", b); b = live; i = 0;
+  while i < 100 { rcTemps(); i += 1; } check("rcTemps", b); b = live; i = 0;
+  while i < 100 { rcTempAndOwner(); i += 1; } check("rcTempAndOwner", b); b = live; i = 0;
+  while i < 100 { shapeCopy(); i += 1; } check("shapeCopy", b); b = live; i = 0;
+  while i < 100 { shapeNe(); i += 1; } check("shapeNe", b); b = live; i = 0;
+  while i < 100 { uniTwo(); i += 1; } check("uniTwo", b); b = live; i = 0;
+  while i < 100 { uniNe(); i += 1; } check("uniNe", b); b = live; i = 0;
+  while i < 100 { uniBorrows(); i += 1; } check("uniBorrows", b); b = live; i = 0;
+  print <- rcCopy(), " ", rcCopyNe(), " ", rcTwo(), " ", rcTwoNe(), " ", shapeCopy(), " ", uniTwo(), " ", uniNe(), " ", rcValue(), "\n";
+}
