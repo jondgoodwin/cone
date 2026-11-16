@@ -24,9 +24,24 @@ import libc pub use malloc;
 
 // A variant declared as a type, 'Some(T);', holds that type itself: it has no
 // field name, and a pattern that binds it ('case imm n Some') gets the T
-pub enum Option[T] {
+pub enum Option[T] is Serialize if T is Serialize, Deserialize[Option[T]] if T is Deserialize[T] {
   None;
   Some(T);
+
+  // None is written as the format's none and Some as the value it holds ('Some' is transparent); read back,
+  // the format's none gives None and anything else a T. A missing record member is read through MissingField,
+  // which answers that none (below)
+  pub fn serialize(self: &Option[T], s: &<mut Serializer + ShapeKeeping) inline where T is Serialize {
+    match self {
+      case let Some(v) { serializeValue[T](v, s); }
+      case is None { s.none(); }
+    }
+  }
+  pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[Option[T], DataError] inline where T is Deserialize[T] {
+    if d.readNone()? { return Ok[Option[T], DataError](None[T]); }
+    let v = deserializeValue[T](d, r)?;
+    Ok[Option[T], DataError](Some[T](v))
+  }
 
   // THE HELPERS. Each takes the whole Option (its receiver names the enum), so it
   // is called on an Option or on a Some or None alike. Those that take 'self' by
@@ -5680,6 +5695,32 @@ pub fn deserializeValue[T](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) 
   }
 }
 
+// What a record read asks of a member the document never gave: the field's own type reads from this, so the type
+// decides, by what it asks for. 'readNone' answers true, which an Option reads as None; every other read answers
+// the member-is-missing error naming the field. No field type is tested by name.
+struct MissingField[F] is Deserializer {
+  name: &'static str;
+
+  fn gone[V](self: &) Result[V, DataError] { Err[V, DataError](DataError.missing(self.name)) }
+
+  pub fn readBool(self: &mut) Result[bool, DataError] { self.gone[bool]() }
+  pub fn readInt(self: &mut) Result[i64, DataError] { self.gone[i64]() }
+  pub fn readUInt(self: &mut) Result[u64, DataError] { self.gone[u64]() }
+  pub fn readFloat(self: &mut) Result[f64, DataError] { self.gone[f64]() }
+  pub fn readTextInto(self: &mut, out: &uni TextOut) Result[void, DataError] { self.gone[void]() }
+  pub fn matchField(self: &mut, names: &<FieldNames) Result[usize, DataError] { self.gone[usize]() }
+  pub fn readNone(self: &mut) Result[bool, DataError] { Ok[bool, DataError](true) }
+  pub fn beginSeq(self: &mut) Result[void, DataError] { self.gone[void]() }
+  pub fn nextElement(self: &mut) Result[bool, DataError] { self.gone[bool]() }
+  pub fn beginMap(self: &mut) Result[void, DataError] { self.gone[void]() }
+  pub fn nextEntry(self: &mut) Result[bool, DataError] { self.gone[bool]() }
+  pub fn beginRecord(self: &mut, typeName: &str) Result[void, DataError] { self.gone[void]() }
+  pub fn nextField(self: &mut) Result[FieldKey, DataError] { self.gone[FieldKey]() }
+  pub fn beginVariant(self: &mut) Result[FieldKey, DataError] { self.gone[FieldKey]() }
+  pub fn endVariant(self: &mut) Result[void, DataError] { self.gone[void]() }
+  pub fn skipValue(self: &mut) Result[void, DataError] { self.gone[void]() }
+}
+
 // The record read the compiler supplies as the 'deserialize' of a struct that declares Deserialize[Self] and writes none
 // (public for the reason serializeRecord is; call deserializeValue, not this)
 pub fn deserializeRecord[T](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[T, DataError] inline {
@@ -5715,7 +5756,8 @@ pub fn deserializeRecord[T](d: &<mut Deserializer + ShapeKeeping, r: *MemRegion)
   }
   #each #f in #fields(T) {
     if !p.#f.isTrue() {
-      return Err[T, DataError](DataError.missing(#f.name));
+      var gap = MissingField[#f.type](#f.name);
+      p.#f = Some[#f.type](deserializeValue[#f.type](&mut gap, r)?);
     }
   }
   Ok[T, DataError](T(#each #f in #fields(T) { #f: p.#f.take().unwrap() }))

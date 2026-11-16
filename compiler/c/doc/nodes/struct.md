@@ -1549,6 +1549,11 @@ method, so `structInheritTrait` makes the exception for this trait.) A field tha
 bool) is refused at the field, `ErrorSerializeField`, naming it and its type, and the struct gets
 an empty body. `Deserialize[X]` with X not the struct, and no `deserialize` written, is
 `ErrorDeserializeSelf`. A type that declares neither lacks the method.
+Core's `Option[T]` declares both under `if T is Serialize` / `Deserialize[T]`, with bodies of its
+own (`inline`: an enum's non-inline generic method is not emitted for another module's instance).
+The record read fills a field its text never gave from core's private `MissingField`
+deserializer: `readNone` answers true and every other read the Missing `DataError`, so an
+`Option` field becomes `None` and no field type is tested by name.
 The one grant (`genericTypeIsHow`, beside Hash's) is to every number type, floats included,
 and `bool`, not `char`: `Serialize` always, `Deserialize[X]` only where X is the number itself.
 It has no method of its own, so a generic reaches a number through core's `serializeValue` /

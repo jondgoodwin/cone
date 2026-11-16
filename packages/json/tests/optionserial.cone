@@ -1,0 +1,112 @@
+// Option through core's serialization (row 333b): Some writes the value and None writes null, both read back;
+// a record member missing from the document reads as None where its type is an Option and is refused, naming
+// it, where it is any other type; an Option[Pt] member and an Option[List[Pt]] value work; a null given for a
+// member that is not an Option is a Type error.
+
+mod optionserial;
+
+import testing use *;
+import collections use *;
+import json;
+
+struct Pt is Serialize, Deserialize[Pt] { pub x: i32; pub y: i32; }
+struct Rec is Serialize, Deserialize[Rec] { pub id: i32; pub email: Option[String]; pub at: Option[Pt]; }
+
+fn text(r: Result[String, json.JsonError]) String {
+  match r {
+    case let Ok(s) { s }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn dataText[T](r: Result[T, DataError]) String {
+  match r {
+    case is Ok { String.from("ok") }
+    case let Err(e) {
+      var plain = e;
+      plain.offset = 0usize;
+      String() <- plain
+    }
+  }
+}
+
+fn emailOf(r: &Rec) String {
+  match &r.email {
+    case let Some(e) { e.clone() }
+    case is None { String.from("<none>") }
+  }
+}
+
+fn atOf(r: &Rec) i64 {
+  match &r.at {
+    case let Some(p) { i64.from(p.x) * 10i64 + i64.from(p.y) }
+    case is None { -1i64 }
+  }
+}
+
+fn main() i32 {
+  // Some and None, alone, both ways
+  var a: Option[i32] = Some[i32](5);
+  var b: Option[i32] = None;
+  expectStr(text(json.toJson(&a)).view(), "5", "Some writes the value");
+  expectStr(text(json.toJson(&b)).view(), "null", "None writes null");
+  match json.fromJson[Option[i32]]("5") {
+    case let Ok(o) { expectInt(i64.from(o.unwrap()), 5i64, "5 reads as Some"); }
+    case is Err { expect(false, "Some read"); }
+  }
+  match json.fromJson[Option[i32]]("null") {
+    case let Ok(o) { expect(!o.isTrue(), "null reads as None"); }
+    case is Err { expect(false, "None read"); }
+  }
+
+  // An Option of a list of records, as a value
+  var pts = List[Pt]();
+  pts.push(Pt(1, 2));
+  pts.push(Pt(3, 4));
+  var lp: Option[List[Pt]] = Some[List[Pt]](pts);
+  let lt = text(json.toJson(&lp));
+  expectStr(lt.view(), "[{\"x\":1,\"y\":2},{\"x\":3,\"y\":4}]", "Some(list) written");
+  match json.fromJson[Option[List[Pt]]](lt.view()) {
+    case let Ok(o) {
+      match o {
+        case let Some(l) { expectInt(i64.from(l.len()), 2i64, "two points back"); expectInt(i64.from(l[1usize].y), 4i64, "second point"); }
+        case is None { expect(false, "list read as None"); }
+      }
+    }
+    case is Err { expect(false, "list read"); }
+  }
+
+  // A record with Option members, whole
+  let full = Rec(7, Some[String](String.from("a@b")), Some[Pt](Pt(1, 2)));
+  let ft = text(json.toJson(&full));
+  expectStr(ft.view(), "{\"id\":7,\"email\":\"a@b\",\"at\":{\"x\":1,\"y\":2}}", "a whole record written");
+  match json.fromJson[Rec](ft.view()) {
+    case let Ok(r) {
+      expectStr(emailOf(&r).view(), "a@b", "email back");
+      expectInt(atOf(&r), 12i64, "point back");
+    }
+    case is Err { expect(false, "record read"); }
+  }
+
+  // None members write null and read back
+  let empty = Rec(8, None, None);
+  let et = text(json.toJson(&empty));
+  expectStr(et.view(), "{\"id\":8,\"email\":null,\"at\":null}", "None members written as null");
+  match json.fromJson[Rec](et.view()) {
+    case let Ok(r) { expectStr(emailOf(&r).view(), "<none>", "null email"); expectInt(atOf(&r), -1i64, "null at"); }
+    case is Err { expect(false, "null read"); }
+  }
+
+  // A key that is not in the document: an Option member is None
+  match json.fromJson[Rec]("{\"id\":9}") {
+    case let Ok(r) { expectStr(emailOf(&r).view(), "<none>", "missing email"); expectInt(atOf(&r), -1i64, "missing at"); }
+    case is Err { expect(false, "missing Option keys"); }
+  }
+  // and one that is any other type is refused, naming it
+  expectStr(dataText(json.fromJson[Rec]("{\"email\":\"x\"}")).view(), "the member is missing (id)", "missing i32 refused");
+  expectStr(dataText(json.fromJson[Pt]("{\"x\":1}")).view(), "the member is missing (y)", "missing member of a plain record");
+  // a null for a member that is not an Option is a Type error
+  expectStr(dataText(json.fromJson[Rec]("{\"id\":null}")).view(), "id: expected a number", "null for an i32");
+
+  done()
+}
