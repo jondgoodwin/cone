@@ -350,6 +350,94 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
   mem.moveRaw[u64](ct, ent.ll.seq.view() as *u64, llSize);
   mem.moveRaw[u64](ct + 512usize, ent.of.seq.view() as *u64, ofSize);
   mem.moveRaw[u64](ct + 1024usize, ent.ml.seq.view() as *u64, mlSize);
+  // The fast loop: while the frame has no dictionary, at least two sequences
+  // are left and at least 24 input bytes are left below the stream's read
+  // point. A sequence takes at most three refills (before the match length,
+  // before the states, at its end), each of at most 7 bytes, so at most 21
+  // bytes: every eight-byte load in it lies inside the stream (the read point is
+  // at 'start + 10' or more before the third, 'start + 17' before the second), and 'refillWide' tests
+  // neither the stream's end nor its pad. The sequence after the one that is
+  // not the last always has its states read, so that test goes too, and with
+  // no dictionary a match reaches only the frame's own output: the offset is
+  // checked against 'limit' (at most 'pos') and the frame's start, and the
+  // dictionary branch is gone. The careful loop below takes whatever is left.
+  if dictLen == 0usize {
+    while left > 1usize && bits.pos >= bits.start + 24usize {
+      let llc = mem.readRaw[u64](ct + (usize.from(llState) & 511usize));
+      let ofc = mem.readRaw[u64](ct + (512usize + (usize.from(ofState) & 511usize)));
+      let mlc = mem.readRaw[u64](ct + (1024usize + (usize.from(mlState) & 511usize)));
+      let ofX = u32.from((ofc >> 32u64) & 0xFFu64);
+      let mlX = u32.from((mlc >> 32u64) & 0xFFu64);
+      let llX = u32.from((llc >> 32u64) & 0xFFu64);
+      let wide = ofX + mlX + llX >= 31u32;
+      let ofValue = (ofc & 0xFFFFFFFFu64) + u64.from(bits.readFast(ofX));
+      if wide && bits.n < 56u32 { bits.refillWide(src); }
+      let ml = usize.from(u32.from(mlc & 0xFFFFFFFFu64) + bits.readFast(mlX));
+      let ll = usize.from(u32.from(llc & 0xFFFFFFFFu64) + bits.readFast(llX));
+      var off = 0u64;
+      if ofValue > 3u64 {
+        off = ofValue - 3u64;
+        r3 = r2;
+        r2 = r1;
+        r1 = off;
+      } else {
+        let idx = ofValue - 1u64 + (if ll == 0usize {1u64} else {0u64});
+        if idx == 0u64 {
+          off = r1;
+        } else if idx == 1u64 {
+          off = r2;
+          r2 = r1;
+          r1 = off;
+        } else if idx == 2u64 {
+          off = r3;
+          r3 = r2;
+          r2 = r1;
+          r1 = off;
+        } else {
+          off = r1 - 1u64;
+          if off == 0u64 { return Fault.OffsetZero; }
+          r3 = r2;
+          r2 = r1;
+          r1 = off;
+        }
+      }
+      if wide && bits.n < 56u32 { bits.refillWide(src); }
+      llState = u32.from(llc >> 48u64) + bits.readFast(u32.from((llc >> 40u64) & 0xFFu64));
+      mlState = u32.from(mlc >> 48u64) + bits.readFast(u32.from((mlc >> 40u64) & 0xFFu64));
+      ofState = u32.from(ofc >> 48u64) + bits.readFast(u32.from((ofc >> 40u64) & 0xFFu64));
+      if bits.n < 56u32 { bits.refillWide(src); }
+      // Execute: the literals, then the match (bounds as in the careful loop)
+      if ll > litsLeft { return Fault.LitOverrun; }
+      if w + ll + ml > roomEnd { return Fault.BlockTooBig; }
+      if ll <= 16usize {
+        mem.writeRaw[u64]((bp + w) as *u64, mem.readRaw[u64](lc as *u64));
+        mem.writeRaw[u64]((bp + (w + 8usize)) as *u64, mem.readRaw[u64]((lc + 8usize) as *u64));
+      } else {
+        copyWords(bp + w, lc, ll);
+      }
+      w = w + ll;
+      lc = lc + ll;
+      litsLeft = litsLeft - ll;
+      let pos = reach.out + u64.from(w - blockStart);
+      let limit = if pos < reach.window {pos} else {reach.window};
+      if off > limit { return Fault.OffsetFar; }
+      let o = usize.from(off);
+      if o > w - reach.base { return Fault.OffsetFar; }
+      if o >= 16usize && ml <= 64usize {
+        // Bound: as the careful loop's inline match copy
+        var k = 0usize;
+        while k < ml {
+          mem.writeRaw[u64]((bp + (w + k)) as *u64, mem.readRaw[u64]((bp + (w - o + k)) as *u64));
+          mem.writeRaw[u64]((bp + (w + k + 8usize)) as *u64, mem.readRaw[u64]((bp + (w - o + k + 8usize)) as *u64));
+          k = k + 16usize;
+        }
+      } else {
+        copyMatch(bp, w, w - o, ml);
+      }
+      w = w + ml;
+      left = left - 1usize;
+    }
+  }
   while left > 0usize {
     let llc = mem.readRaw[u64](ct + (usize.from(llState) & 511usize));
     let ofc = mem.readRaw[u64](ct + (512usize + (usize.from(ofState) & 511usize)));
