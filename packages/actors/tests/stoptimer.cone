@@ -1,0 +1,41 @@
+// The cancel timers' thread (cancelgroups) ends with the runtime. A group with
+// a deadline arms the timer, a thread of the package's own; the actors stop
+// joins it before the scheduler is freed (it fires a cancel, which may wake
+// actors), so it can no longer reach a stopped runtime. Armed here: a group
+// whose deadline passes while main is stopping, and one that falls well after
+// the stop. The stop drops timers still armed, so the later one, which would
+// have fired 100 ms after finalAll(), has not fired 400 ms after it; a cancel by
+// hand still works. A group armed after the stop never fires either. No panic.
+
+mod stoptimer;
+
+import stdio use *;
+import actors;
+import thread;
+import time use Instant, Duration;
+import cancelgroups use CancelGroup;
+
+actor Sink {
+  n: u64 = 0u64;
+
+  pub async fn hear(self, x: u64) {
+    n = n + x;
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let s = Sink();
+  s.hear(1u64);
+  actors.waitQuiet();
+  let soon = CancelGroup.until(Instant.now() + Duration.fromMillis(1i64));
+  let later = CancelGroup.until(Instant.now() + Duration.fromMillis(150i64));
+  finalAll();
+  thread.sleep(Duration.fromMillis(400i64));
+  let after = CancelGroup.until(Instant.now() + Duration.fromMillis(10i64));
+  thread.sleep(Duration.fromMillis(100i64));
+  print <- "later fired: ", later.isCancelled(), "\n";
+  print <- "after fired: ", after.isCancelled(), "\n";
+  print <- "a cancel by hand works: ", later.cancel(), " ", later.isCancelled(), "\n";
+}
