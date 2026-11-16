@@ -2589,6 +2589,24 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     // These compiler-declared signatures are generic over the pointer/reference's
     // value type, so only a concretely typed parameter takes part in coercion.
     Nodes *parms = ((FnSigNode *)selected->vtype)->parms;
+    // '===' and '!==' on two owning references (an 'Rc', a 'Uni', an owning virtual
+    // reference) ask which place they name, as the borrows of them would: they
+    // neither take nor copy the owner. Handed over as they are, flow analysis moved
+    // each owner into the comparison, which drops nothing, so both leaked (Bug 94).
+    // Selection above has already required the two to be of one type, so this
+    // accepts nothing it did not.
+    if ((methsym == sameName || methsym == notSameName) && callnode->args->used == 2) {
+        for (int argi = 0; argi < 2; ++argi) {
+            INode **argp = &nodesGet(callnode->args, argi);
+            INode *argtype = iexpGetTypeDcl(*argp);
+            if ((argtype->tag == RefTag || argtype->tag == VirtRefTag)
+                && itypeGetTypeDcl(((RefNode*)argtype)->region) != (INode*)borrowRef) {
+                RefNode *lent = newRefNodeFull(argtype->tag, *argp, borrowRef,
+                    newPermUseNode(roPerm), ((RefNode*)argtype)->vtexp);
+                iexpCoerce(argp, (INode*)lent);
+            }
+        }
+    }
     // A '&uni' slice held in a place and taken as the slice a method borrows
     // ('s.len()') is borrowed from, as it is when a user's method takes it
     // (iexpCoerce): handed over as it is, it would be moved, and the second
