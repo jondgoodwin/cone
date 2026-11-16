@@ -322,10 +322,26 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
   let dp = dict.view() as *u8;
   var w = blockStart;
   var i = 0usize;
+  // The tables' cells, read through raw pointers at a state masked to its
+  // table's size: a state is a base plus bits read, below the size in any table
+  // 'buildSeq' made, and the mask keeps a read inside the list whatever the
+  // input. The list is checked to hold that many cells (it holds 1 << log).
+  let llMask = (1usize << usize.from(ent.ll.log)) - 1usize;
+  let ofMask = (1usize << usize.from(ent.of.log)) - 1usize;
+  let mlMask = (1usize << usize.from(ent.ml.log)) - 1usize;
+  if ent.ll.seq.len() <= llMask || ent.of.seq.len() <= ofMask || ent.ml.seq.len() <= mlMask {
+    return Fault.FseTable;
+  }
+  // The sequence loop below never touches 'ent' or its tables, so this length
+  // check holds for the whole block. Code that rebuilds or resizes a table
+  // inside the loop must take these pointers and re-check after it.
+  let llt = ent.ll.seq.view() as *u64;
+  let oft = ent.of.seq.view() as *u64;
+  let mlt = ent.ml.seq.view() as *u64;
   while i < nseq {
-    let llc = *ent.ll.seq[usize.from(llState)];
-    let ofc = *ent.of.seq[usize.from(ofState)];
-    let mlc = *ent.ml.seq[usize.from(mlState)];
+    let llc = mem.readRaw[u64](llt + (usize.from(llState) & llMask));
+    let ofc = mem.readRaw[u64](oft + (usize.from(ofState) & ofMask));
+    let mlc = mem.readRaw[u64](mlt + (usize.from(mlState) & mlMask));
     let ofX = u32.from((ofc >> 32u64) & 0xFFu64);
     let mlX = u32.from((mlc >> 32u64) & 0xFFu64);
     let llX = u32.from((llc >> 32u64) & 0xFFu64);
