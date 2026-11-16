@@ -50,6 +50,53 @@ fn chainMatchLen(bp: *u8, ci: usize, ib: usize, n: usize) usize inline {
   l
 }
 
+// The hash of the three bytes at 'ib' (the caller has seen ib + 3 <= n), as 'hash3' of compress.cone
+fn hash3p(bp: *u8, ib: usize) usize inline {
+  // Bounds: ib + 3 <= n at every call
+  usize.from(((u32.from(mem.readRaw[u8](bp + ib)) << 10u32) ^ (u32.from(mem.readRaw[u8](bp + (ib + 1usize))) << 5u32)
+    ^ u32.from(mem.readRaw[u8](bp + (ib + 2usize)))) & 32767u32)
+}
+
+// Enter position 'p' (the byte at 'pb', pb + 3 <= n) in the chains: 'prev' links back to the slot's old head
+// entry, and the head entry becomes 'p'. 'hp' is the 'head' block, which 'make' fills with 32768 entries
+// and nothing ever resizes; the hash is under 32768.
+fn enterPos(bp: *u8, hp: *u32, prev: &mut Array[u16, 32768], p: i64, pb: usize) inline {
+  let h = hash3p(bp, pb);
+  prev[usize.from(p & 32767i64)] = linkOf(mem.readRaw[u32](hp + h), p);
+  mem.writeRaw(hp + h, headOf(p));
+}
+
+// Enter the positions 'p0' up to (not including) 'end' that have three bytes to hash, the byte at
+// 'pb0' being p0's. The hash of the next position is the last one shifted by 5 with the new byte
+// xored in (the first byte's part leaves under the mask), so a position costs one byte read.
+fn enterRun(bp: *u8, hp: *u32, prev: &mut Array[u16, 32768], n: usize, p0: i64, pb0: usize, end: i64) inline {
+  var p = p0;
+  var pb = pb0;
+  if p < end && pb + 3usize <= n {
+    var h = hash3p(bp, pb);
+    while true {
+      prev[usize.from(p & 32767i64)] = linkOf(mem.readRaw[u32](hp + h), p);
+      mem.writeRaw(hp + h, headOf(p));
+      p += 1i64;
+      pb += 1usize;
+      if p >= end || pb + 3usize > n { break; }
+      // Bounds: pb + 3 <= n
+      h = ((h << 5usize) ^ usize.from(mem.readRaw[u8](bp + (pb + 2usize)))) & 32767usize;
+    }
+  }
+}
+
+// Make room in 'tokens' for two more tokens past the first 'nt' (a position writes at most two).
+// 'tokens' is a sized buffer: its length is the room, 'nt' (a field of the Deflater) how many are
+// in use, so the matcher stores a token with one write and no call.
+fn tokenRoom(tokens: &mut List[u32], nt: usize, maxTokens: usize) {
+  let len = tokens.len();
+  var want = if len == 0usize {1024usize} else {len * 2usize};
+  if want > maxTokens + 2usize { want = maxTokens + 2usize; }
+  if want < nt + 2usize { want = nt + 2usize; }
+  tokens.resize(want, 0u32);
+}
+
 // The matcher: from position '*cur' (absolute, the byte at 'base' is buf[0]),
 // turn bytes into tokens (a literal byte, or 0x80000000 | length << 16 |
 // distance) until the data runs out (answers false; with 'final' false it
@@ -79,20 +126,31 @@ fn linkOf(old: u32, p: i64) u16 {
 }
 
 fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[u32], prev: &mut Array[u16, 32768], tokens: &mut List[u32],
-  chainLimit: usize, insertAll: bool, maxTokens: usize, final: bool) bool {
+  ntok: &mut usize, chainLimit: usize, insertAll: bool, maxTokens: usize, final: bool) bool {
   let n = buf.len;
   let bp = buf as *u8;
+  let hp = head.view() as *u32;
   let endPos = base + i64.from(n);
-  while *cur < endPos {
-    if !final && endPos - *cur < lookAhead() { return false; }
-    if tokens.len() >= maxTokens { return true; }
-    let i = *cur;
+  var c = *cur;
+  var nt = *ntok;
+  var tlen = tokens.len();
+  var tp = tokens.view() as *u32;
+  var more = false;
+  while c < endPos {
+    if !final && endPos - c < lookAhead() { break; }
+    if nt >= maxTokens { more = true; break; }
+    if nt + 2usize > tlen {
+      tokenRoom(tokens, nt, maxTokens);
+      tlen = tokens.len();
+      tp = tokens.view() as *u32;
+    }
+    let i = c;
     let ib = usize.from(i - base);
     var bestLen = 0usize;
     var bestDist = 0usize;
     if ib + 3usize <= n {
-      let h = hash3(buf, ib);
-      let dist0 = distOf(*head[h], i);
+      let h = hash3p(bp, ib);
+      let dist0 = distOf(mem.readRaw[u32](hp + h), i);
       // The candidates left to try (ib + 3 <= n here, so the data does not end at bestLen 0)
       if dist0 > 0i64 && chainLimit > 0usize {
         let r = chainWalk(bp, prev, ib - usize.from(dist0), usize.from((i - dist0) & 32767i64), ib, n, chainLimit, 0usize);
@@ -101,31 +159,24 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[u32], prev:
       }
     }
     if bestLen >= 3usize {
-      tokens.push(0x80000000u32 | (u32.from(bestLen) << 16u32) | u32.from(bestDist));
+      // Room for two tokens was made above
+      mem.writeRaw(tp + nt, 0x80000000u32 | (u32.from(bestLen) << 16u32) | u32.from(bestDist));
+      nt += 1usize;
       // Insert the positions the match covers: all of them, or just its first
       let covered = if insertAll {bestLen} else {1usize};
-      var k = 0usize;
-      while k < covered {
-        if ib + k + 3usize <= n {
-          let h = hash3(buf, ib + k);
-          let p = i + i64.from(k);
-          prev[usize.from(p & 32767i64)] = linkOf(*head[h], p);
-          head.set(h, headOf(p));
-        }
-        k += 1usize;
-      }
-      *cur = i + i64.from(bestLen);
+      enterRun(bp, hp, prev, n, i, ib, i + i64.from(covered));
+      c = i + i64.from(bestLen);
     } else {
-      tokens.push(u32.from(buf[ib]));
-      if ib + 3usize <= n {
-        let h = hash3(buf, ib);
-        prev[usize.from(i & 32767i64)] = linkOf(*head[h], i);
-        head.set(h, headOf(i));
-      }
-      *cur = i + 1i64;
+      // ib < n: the loop runs while c < endPos
+      mem.writeRaw(tp + nt, u32.from(mem.readRaw[u8](bp + ib)));
+      nt += 1usize;
+      if ib + 3usize <= n { enterPos(bp, hp, prev, i, ib); }
+      c = i + 1i64;
     }
   }
-  false
+  *cur = c;
+  *ntok = nt;
+  more
 }
 
 // The chain walk of the lazy matcher, in a function of its own so its few values stay in
@@ -181,26 +232,41 @@ fn chainWalk(bp: *u8, prev: &Array[u16, 32768], ci0: usize, slot0: usize, ib: us
 // position cur - 1; they live in the Deflater between calls, so a call may stop
 // for want of look-ahead with a match held. Otherwise as 'lzScan'.
 fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[u32], prev: &mut Array[u16, 32768], tokens: &mut List[u32],
-  chainLimit: usize, savedLen: &mut usize, savedDist: &mut usize, maxTokens: usize, final: bool) bool {
+  ntok: &mut usize, chainLimit: usize, savedLen: &mut usize, savedDist: &mut usize, maxTokens: usize, final: bool) bool {
   let n = buf.len;
   let bp = buf as *u8;
+  let hp = head.view() as *u32;
   let endPos = base + i64.from(n);
-  while *cur < endPos {
-    if !final && endPos - *cur < lookAhead() { return false; }
-    if tokens.len() >= maxTokens { return true; }
-    let i = *cur;
+  // The state in locals, stored back at the end, so the loop does not go through memory for it
+  var c = *cur;
+  var sl = *savedLen;
+  var sd = *savedDist;
+  var nt = *ntok;
+  var tlen = tokens.len();
+  var tp = tokens.view() as *u32;
+  var more = false;
+  while c < endPos {
+    if !final && endPos - c < lookAhead() { break; }
+    if nt >= maxTokens { more = true; break; }
+    if nt + 2usize > tlen {
+      tokenRoom(tokens, nt, maxTokens);
+      tlen = tokens.len();
+      tp = tokens.view() as *u32;
+    }
+    let i = c;
     let ib = usize.from(i - base);
-    let held = *savedLen > 0usize;
-    var bestLen = *savedLen;
+    let held = sl > 0usize;
+    var bestLen = sl;
     var bestDist = 0usize;
     if ib + 3usize <= n {
-      let h = hash3(buf, ib);
+      let h = hash3p(bp, ib);
+      let hv = mem.readRaw[u32](hp + h);
       var limit = chainLimit;
       if bestLen >= 32usize {
         limit = chainLimit >> 2usize;
         if limit == 0usize { limit = 1usize; }
       }
-      let dist0 = distOf(*head[h], i);
+      let dist0 = distOf(hv, i);
       // The candidates left to try; none when the data already ends at the held match's length
       var left = if ib + bestLen < n {limit} else {0usize};
       if dist0 > 0i64 && left > 0usize {
@@ -208,60 +274,54 @@ fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[u32], p
         bestLen = usize.from(r >> 32u64);
         bestDist = usize.from(r & 0xFFFFFFFFu64);
       }
-      prev[usize.from(i & 32767i64)] = linkOf(*head[h], i);
-      head.set(h, headOf(i));
+      prev[usize.from(i & 32767i64)] = linkOf(hv, i);
+      mem.writeRaw(hp + h, headOf(i));
     }
     // The match found here, if it is a usable one (and, when one is held, longer)
     var newLen = if bestDist > 0usize && bestLen >= 3usize {bestLen} else {0usize};
     if newLen == 3usize && bestDist >= 8192usize { newLen = 0usize; }
-    if held && newLen <= *savedLen {
+    // Room for two tokens was made above
+    if held && newLen <= sl {
       // The held match (found at i - 1) goes out; i is already in the chain
-      tokens.push(0x80000000u32 | (u32.from(*savedLen) << 16u32) | u32.from(*savedDist));
-      let end = i - 1i64 + i64.from(*savedLen);
-      var p = i + 1i64;
-      while p < end {
-        let pb = usize.from(p - base);
-        if pb + 3usize <= n {
-          let h = hash3(buf, pb);
-          prev[usize.from(p & 32767i64)] = linkOf(*head[h], p);
-          head.set(h, headOf(p));
-        }
-        p += 1i64;
-      }
-      *cur = end;
-      *savedLen = 0usize;
-      *savedDist = 0usize;
+      mem.writeRaw(tp + nt, 0x80000000u32 | (u32.from(sl) << 16u32) | u32.from(sd));
+      nt += 1usize;
+      let end = i - 1i64 + i64.from(sl);
+      enterRun(bp, hp, prev, n, i + 1i64, ib + 1usize, end);
+      c = end;
+      sl = 0usize;
+      sd = 0usize;
     } else {
       // A literal for the held match's byte (i - 1), or for this one when
-      // nothing is held and nothing found
-      if held { tokens.push(u32.from(buf[ib - 1usize])); }
+      // nothing is held and nothing found. ib < n (the loop runs while c < endPos), and a held match
+      // was found at i - 1, which lies in the buffer
+      if held {
+        mem.writeRaw(tp + nt, u32.from(mem.readRaw[u8](bp + (ib - 1usize))));
+        nt += 1usize;
+      }
       if newLen == 0usize {
-        tokens.push(u32.from(buf[ib]));
-        *cur = i + 1i64;
+        mem.writeRaw(tp + nt, u32.from(mem.readRaw[u8](bp + ib)));
+        nt += 1usize;
+        c = i + 1i64;
       } else if newLen >= 128usize {
-        tokens.push(0x80000000u32 | (u32.from(newLen) << 16u32) | u32.from(bestDist));
+        mem.writeRaw(tp + nt, 0x80000000u32 | (u32.from(newLen) << 16u32) | u32.from(bestDist));
+        nt += 1usize;
         let end = i + i64.from(newLen);
-        var p = i + 1i64;
-        while p < end {
-          let pb = usize.from(p - base);
-          if pb + 3usize <= n {
-            let h = hash3(buf, pb);
-            prev[usize.from(p & 32767i64)] = linkOf(*head[h], p);
-            head.set(h, headOf(p));
-          }
-          p += 1i64;
-        }
-        *cur = end;
-        *savedLen = 0usize;
-        *savedDist = 0usize;
+        enterRun(bp, hp, prev, n, i + 1i64, ib + 1usize, end);
+        c = end;
+        sl = 0usize;
+        sd = 0usize;
       } else {
-        *savedLen = newLen;
-        *savedDist = bestDist;
-        *cur = i + 1i64;
+        sl = newLen;
+        sd = bestDist;
+        c = i + 1i64;
       }
     }
   }
-  false
+  *cur = c;
+  *savedLen = sl;
+  *savedDist = sd;
+  *ntok = nt;
+  more
 }
 
 // The gzip header of RFC 1952 section 2.3 for 'h': flags for the text mark,
@@ -368,7 +428,9 @@ pub struct Deflater {
   cur: i64;
   head: List[u32];
   prev: Option[Uni[Array[u16, 32768]]];
+  // The matcher's tokens: a sized buffer, of which the first 'ntok' are in use
   tokens: List[u32];
+  ntok: usize;
   // Levels 4 to 9: the lazy matcher's held match, found at position cur - 1
   // (length 0 for none) and not yet written
   savedLen: usize;
@@ -414,7 +476,7 @@ pub struct Deflater {
     let table = if format == Format.Gzip {Crc32.make()} else {Crc32(List[u32]())};
     var gz = GzipHeader.plain();
     gz.xfl = xflOf(lv);
-    Deflater(format, lv, List[u8](), 0i64, 0i64, head, prev, List[u32](), 0usize, 0usize,
+    Deflater(format, lv, List[u8](), 0i64, 0i64, head, prev, List[u32](), 0usize, 0usize, 0usize,
       BitWriter(streams.Writer.tryEmpty(65536usize), 0u64, 0u32), false, false, DeflateError.make(ErrorKind.TooLarge, 0u64, ""), false, false, false,
       Code(List[u8](), List[u32]()), Code(List[u8](), List[u32]()), false,
       Adler32.start(), table, 0u32, 0u64, gz, 0u64)
@@ -522,7 +584,7 @@ pub struct Deflater {
     failed = true;
     err = DeflateError.make(ErrorKind.TooLarge, inTotal, "the compressed output is more than the buffer pool will hold; pull it in smaller pieces");
     self.release();
-    tokens.clear();
+    ntok = 0usize;
   }
 
   // The output's pool buffers go back at the end of the stream, not when the
@@ -540,10 +602,10 @@ pub struct Deflater {
     match &mut prev {
       case var &mut Some(pv) {
         full = if level >= 4 {
-          lzScanLazy(buf.view(), base, &mut cur, &mut head, &mut **pv, &mut tokens, chainLimitOf(level), &mut savedLen, &mut savedDist,
+          lzScanLazy(buf.view(), base, &mut cur, &mut head, &mut **pv, &mut tokens, &mut ntok, chainLimitOf(level), &mut savedLen, &mut savedDist,
             blockTokens(), finishing)
         } else {
-          lzScan(buf.view(), base, &mut cur, &mut head, &mut **pv, &mut tokens, chainLimitOf(level), level > 1,
+          lzScan(buf.view(), base, &mut cur, &mut head, &mut **pv, &mut tokens, &mut ntok, chainLimitOf(level), level > 1,
             if level == 1 {fixedFlushTokens()} else {blockTokens()}, finishing)
         };
       }
@@ -620,11 +682,11 @@ pub struct Deflater {
         bw.put(1u32, 2u32);
         fixedOpen = true;
       }
-      writeTokenCodes(&mut bw, tokens.view(), 0usize, tokens.len(), &fixLit, &fixDist);
+      writeTokenCodes(&mut bw, tokens.view(), 0usize, ntok, &fixLit, &fixDist);
     } else {
-      writeDynamicBlock(&mut bw, tokens.view(), 0usize, tokens.len(), false);
+      writeDynamicBlock(&mut bw, tokens.view(), 0usize, ntok, false);
     }
-    tokens.clear();
+    ntok = 0usize;
   }
 
   // The last block, the padding, the trailer
@@ -636,11 +698,11 @@ pub struct Deflater {
         bw.put(1u32, 2u32);
         fixedOpen = true;
       }
-      writeTokens(&mut bw, tokens.view(), 0usize, tokens.len(), &fixLit, &fixDist);
+      writeTokens(&mut bw, tokens.view(), 0usize, ntok, &fixLit, &fixDist);
     } else {
-      writeDynamicBlock(&mut bw, tokens.view(), 0usize, tokens.len(), true);
+      writeDynamicBlock(&mut bw, tokens.view(), 0usize, ntok, true);
     }
-    tokens.clear();
+    ntok = 0usize;
     self.finishTrailer();
   }
 

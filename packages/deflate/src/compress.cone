@@ -234,17 +234,47 @@ fn hash3(d: &Array[u8], i: usize) usize {
 // Write tokens [from, to) with the codes
 // The bit accumulator is held in locals and the output filled four bytes at a time
 // (a match needs at most 20 bits, then 28, so 32 bits are flushed before each part);
-// the codes are stored bit-reversed (see makeCode). Symbol lookups are by table:
-// lsym by length, dsym by distance (d - 1 up to 256, then 256 + (d - 1) / 128, since
-// every distance code over 256 starts at a multiple of 128 plus one).
+// the codes are stored bit-reversed (see makeCode). The block's codes are copied into tables of
+// the loop's own, indexed so that no index can pass the table (a mask), a symbol's code and length
+// in one word: 'lc' by literal/length symbol, 'dc' by distance symbol. A match length's code and
+// its extra bits come as one value, 'lt' by length: the bits in the low 24, their count above.
+// A distance goes by 'didx' (d - 1 up to 256, then 256 + (d - 1) / 128, since every distance code
+// over 256 starts at a multiple of 128 plus one): 'dsym' gives its symbol, 'dbase' the symbol's
+// first distance.
 fn writeTokenCodes(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usize, lit: &Code, dist: &Code) {
-  var lsym = Array[u8, 259]() <- fill 0u8;
-  var q = 3usize;
-  while q < 259usize { lsym[q] = u8.from(lengthSymbol(q)); q += 1usize; }
+  var lc = Array[u32, 512]() <- fill 0u32;
+  var q = 0usize;
+  while q < lit.codes.len() && q < 512usize {
+    lc[q] = *lit.codes[q] | (u32.from(*lit.lens[q]) << 16u32);
+    q += 1usize;
+  }
+  var dc = Array[u32, 64]() <- fill 0u32;
+  q = 0usize;
+  while q < dist.codes.len() && q < 30usize {
+    dc[q] = *dist.codes[q] | (u32.from(*dist.lens[q]) << 16u32) | (u32.from(distExtra[q]) << 24u32);
+    q += 1usize;
+  }
+  // Length symbols climb with the length: 's' is the highest whose base is at most the length
+  var lt = Array[u32, 512]() <- fill 0u32;
+  var s = 0usize;
+  q = 3usize;
+  while q < 259usize {
+    while s < 28usize && usize.from(lenBase[s + 1usize]) <= q { s += 1usize; }
+    let e = lc[(257usize + s) & 511usize];
+    let clen = e >> 16u32;
+    let bits = clen + u32.from(lenExtra[s]);
+    lt[q] = (e & 0xFFFFu32) | (u32.from(q - usize.from(lenBase[s])) << clen) | (bits << 24u32);
+    q += 1usize;
+  }
   var dsym = Array[u8, 512]() <- fill 0u8;
+  var dbase = Array[u32, 512]() <- fill 0u32;
+  s = 0usize;
   q = 0usize;
   while q < 512usize {
-    dsym[q] = u8.from(distSymbol(if q < 256usize {q + 1usize} else {((q - 256usize) << 7u32) + 1usize}));
+    let d = if q < 256usize {q + 1usize} else {((q - 256usize) << 7u32) + 1usize};
+    while s < 29usize && usize.from(distBase[s + 1usize]) <= d { s += 1usize; }
+    dsym[q] = u8.from(s);
+    dbase[q] = u32.from(distBase[s]);
     q += 1usize;
   }
   var acc = w.acc;
@@ -257,25 +287,26 @@ fn writeTokenCodes(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usiz
       acc = acc >> 32u64; n -= 32u64;
     }
     if (t & 0x80000000u32) == 0u32 {
-      acc = acc | (u64.from(*lit.codes[usize.from(t)]) << n);
-      n += u64.from(*lit.lens[usize.from(t)]);
+      let e = lc[usize.from(t) & 511usize];
+      acc = acc | (u64.from(e & 0xFFFFu32) << (n & 63u64));
+      n += u64.from(e >> 16u32);
     } else {
       let len = usize.from((t >> 16u32) & 0x7FFFu32);
       let d = usize.from(t & 0xFFFFu32);
-      let ls = usize.from(lsym[len]);
-      acc = acc | (u64.from(*lit.codes[257usize + ls]) << n);
-      n += u64.from(*lit.lens[257usize + ls]);
-      acc = acc | (u64.from(len - usize.from(lenBase[ls])) << n);
-      n += u64.from(lenExtra[ls]);
+      let e = lt[len & 511usize];
+      acc = acc | (u64.from(e & 0xFFFFFFu32) << (n & 63u64));
+      n += u64.from(e >> 24u32);
       if n >= 32u64 {
         w.out.putLE[u32](u32.from(acc & 0xFFFFFFFFu64));
         acc = acc >> 32u64; n -= 32u64;
       }
-      let ds = usize.from(dsym[if d <= 256usize {d - 1usize} else {256usize + ((d - 1usize) >> 7u32)}]);
-      acc = acc | (u64.from(*dist.codes[ds]) << n);
-      n += u64.from(*dist.lens[ds]);
-      acc = acc | (u64.from(d - usize.from(distBase[ds])) << n);
-      n += u64.from(distExtra[ds]);
+      let di = (if d <= 256usize {d - 1usize} else {256usize + ((d - 1usize) >> 7u32)}) & 511usize;
+      let ds = usize.from(dsym[di]) & 63usize;
+      let f = dc[ds];
+      acc = acc | (u64.from(f & 0xFFFFu32) << (n & 63u64));
+      n += u64.from((f >> 16u32) & 0xFFu32);
+      acc = acc | (u64.from(u32.from(d) - dbase[di]) << (n & 63u64));
+      n += u64.from(f >> 24u32);
     }
     i += 1usize;
   }
