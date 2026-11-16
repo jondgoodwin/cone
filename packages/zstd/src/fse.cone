@@ -88,12 +88,21 @@ struct BackBits {
     if n < 56u32 && pos >= start + 8usize {
       let w = mem.readRaw[u64](((src as *u8) + (pos - 8usize)) as *u64);
       let m = u64.from((63u32 - n) >> 3u32);
-      acc = (acc << (8u64 * m)) | (w >> (64u64 - 8u64 * m));
+      // 8 * m is 8 to 56 (m is 1 to 7), so both amounts are inside 0 to 63 and
+      // the masks only tell the compiler so
+      acc = (acc << ((8u64 * m) & 63u64)) | (w >> ((64u64 - 8u64 * m) & 63u64));
       pos = pos - usize.from(m);
       n = n + u32.from(8u64 * m);
       return;
     }
-    self.refillSlow(src);
+    // The slow path works on a copy, so 'self' is never passed by reference
+    // and the sequence loop can keep its fields in registers
+    var t = BackBits(start, pos, acc, n, over, pad);
+    t.refillSlow(src);
+    pos = t.pos;
+    acc = t.acc;
+    n = t.n;
+    pad = t.pad;
   }
 
   // The end of 'refillSeq': fewer than eight bytes left, or n >= 56
@@ -116,7 +125,10 @@ struct BackBits {
   // 8 <= n <= 64 (the bits are the k below the top n of 'acc', which the
   // two-step shift takes right for k = 0 and n = 64 as well)
   fn readFast(self: &mut, k: u32) u32 inline {
-    let v = ((acc << u64.from(64u32 - n)) >> 1u64) >> u64.from(63u32 - k);
+    // Both amounts are masked to 0 to 63, where they already are (64 - n is 0
+    // to 56 given 8 <= n <= 64; 63 - k is 32 to 63 given k <= 31), so no test
+    // for an amount of 64 or more is needed
+    let v = ((acc << (u64.from(64u32 - n) & 63u64)) >> 1u64) >> (u64.from(63u32 - k) & 63u64);
     n = n - k;
     u32.from(v)
   }
@@ -156,7 +168,7 @@ struct BackBits {
   fn overflowed(self: &) bool { over > 0u32 }
 
   // Whether every bit was read, and no more
-  fn exact(self: &) bool { over == 0u32 && n == pad && pos == start }
+  fn exact(self: &) bool inline { over == 0u32 && n == pad && pos == start }
 }
 
 // -------- FSE --------
