@@ -1,0 +1,33 @@
+// The one-call compress reserves its result from the first block's ratio. An input whose first block is random and
+// the rest zeros makes that estimate far too big; the result handed back must not hold more than twice its length.
+
+mod resultslack;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+
+fn main() i32 {
+  let n = 4194304usize;
+  var d = List[u8]();
+  var s = 12345u64;
+  var i = 0usize;
+  while i < n {
+    if i < 131072usize {
+      s = s * 6364136223846793005u64 + 1442695040888963407u64;
+      d.push(u8.from(s >> 56u64));
+    } else {
+      d.push(0u8);
+    }
+    i += 1usize;
+  }
+  let z = compress(d.view(), 1);
+  expect(z.len() > 131072usize, "the random block is kept");
+  expect(z.len() < 200000usize, "the zeros are small");
+  expect(z.capacity() <= 2usize * z.len(), "the result holds at most twice its length");
+  match decompress(z.view(), 0usize) {
+    case let Ok(out) { expectInt(i64.from(out.len()), i64.from(n), "round trip length"); expect(out.view() == d.view(), "round trip bytes"); }
+    case let Err(e) { expect(false, "decompress"); }
+  }
+  done()
+}
