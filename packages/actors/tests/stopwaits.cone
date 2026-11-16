@@ -1,0 +1,50 @@
+// The three waits (waitQuiet, waitUntilIdle, waitUntilIdleFor) called after the
+// runtime has stopped, on main and on a plain thread. Each used to load
+// 'running', test it, and load it again unchecked, so a stop between the two
+// loads left a null scheduler to dereference. Now each loads once and returns
+// at once when it is 0 (true, from waitUntilIdleFor). The test is that the
+// program ends without a crash, in many calls. (A thread already waiting while
+// main stops is a separate matter: Questions 15.)
+
+mod stopwaits;
+
+import stdio use *;
+import actors;
+import thread;
+import time use Duration;
+
+actor Sink {
+  n: u64 = 0u64;
+
+  pub async fn hear(self, x: u64) {
+    n = n + x;
+  }
+}
+
+fn waits(rounds: u32) u32 {
+  var okCount = 0u32;
+  var i = 0u32;
+  while i < rounds {
+    actors.waitQuiet();
+    actors.waitUntilIdle();
+    if actors.waitUntilIdleFor(Duration.fromMillis(1i64)) {okCount = okCount + 1u32;}
+    i = i + 1u32;
+  }
+  okCount
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let s = Sink();
+  var i = 0u32;
+  while i < 200u32 {
+    s.hear(1u64);
+    i = i + 1u32;
+  }
+  finalAll();
+  let t = thread.start(1000u32, &waits);
+  let here = waits(1000u32);
+  let there = t.join();
+  print <- "main: ", here, " thread: ", there, "\n";
+}

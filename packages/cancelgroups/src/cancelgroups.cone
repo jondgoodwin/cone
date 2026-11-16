@@ -56,7 +56,10 @@
 // request's group that finished in time leaves nothing behind. The timer is
 // the wheel's (package timewheel), up to a millisecond late and never early.
 // 'deadline()' stays the tighter of the group's own and its parent's, for
-// the loops that apply it to their own operations.
+// the loops that apply it to their own operations. The actors runtime stops
+// the timer thread, joined, as it stops (stopTimer): a timer armed at or after
+// the runtime's stop does not fire, and timers still armed then are dropped
+// unfired.
 //
 // WAKING LOOPS. A loop that blocks (iocore's poll) is told by a posted
 // message, never by a callback the canceller runs: 'watch' gives the group a
@@ -88,6 +91,10 @@ let timerLock: Mutex;
 let timerWake: Condvar;
 let timersAt: Atomic[usize];
 let timerStarted: Atomic[u32];
+// The timer thread's handle (a malloc'd Thread[u32], 0 until started or once
+// stopped), and whether it is to end (set under timerLock)
+let timerThread: Atomic[usize];
+let timerStop: Atomic[u32];
 
 // What 'timerLock' guards, in one block the program never frees: reached by a
 // raw pointer, so that the checker does not see a global reaching the Arc of
@@ -113,6 +120,8 @@ fn @initpure init() {
     List[Expiry]()));
   timersAt = Atomic[usize].of(t as usize);
   timerStarted = Atomic[u32].of(0u32);
+  timerThread = Atomic[usize].of(0usize);
+  timerStop = Atomic[u32].of(0u32);
 }
 
 // An instant that never comes: the deadline of a group that has none
@@ -431,7 +440,9 @@ struct TimerArg is Sendable {
 fn arm(a: Arc[imm, GroupState], deadline: Instant) Option[Arc[imm, TimerGuard]] {
   if timerStarted.compareSwap(0u32, 1u32).1 {
     let t = thread.startWith(thread.Options(name: "cancel timers"), TimerArg(0u32), &timerMain);
-    t.detach();
+    let hp = libc.malloc(mem.sizeof[thread.Thread[u32]]()) as *thread.Thread[u32];
+    mem.writeRaw[thread.Thread[u32]](hp, t);
+    timerThread.store(hp as usize);
   }
   let tm = timers();
   timerLock.lock();
@@ -486,11 +497,11 @@ fn collectDue(firing: &mut List[Arc[imm, GroupState]]) {
   tm.due.clear();
 }
 
-fn timerMain(a: TimerArg) {
+fn timerMain(a: TimerArg) u32 {
   var firing = List[Arc[imm, GroupState]]();
   let tm = timers();
   timerLock.lock();
-  while true {
+  while timerStop.load() == 0u32 {
     let now = Instant.now();
     tm.wheel.expired(now, &mut tm.due);
     if tm.due.len() > 0usize {
@@ -514,6 +525,39 @@ fn timerMain(a: TimerArg) {
       }
     }
   }
+  timerLock.unlock();
+  0u32
+}
+
+// Stop the timer thread and join it, so that no thread of this package runs
+// after it returns: the actors runtime calls it as it stops, before it frees
+// its scheduler, as a firing timer wakes actors. Timers still armed are
+// dropped unfired, and one armed afterwards never fires. Nothing if the thread
+// never started or has been stopped; a timer being fired is finished first.
+// From any thread but the timer's own (a cancel callback must not call it).
+// Public only because the actors package calls it from its stop (no hook in
+// the runtime lets a package register one): it is the runtime's, not for
+// programs
+pub fn stopTimer() {
+  if timerStarted.load() == 0u32 {
+    return;
+  }
+  // The 'arm' that started the thread may not have stored its handle yet
+  while timerThread.load() == 0usize {
+    if timerStop.load() != 0u32 {return;}
+    thread.yieldNow();
+  }
+  let hp = timerThread.swap(0usize) as *thread.Thread[u32];
+  if hp as usize == 0usize {
+    return;
+  }
+  timerLock.lock();
+  timerStop.store(1u32);
+  timerLock.unlock();
+  timerWake.notifyAll();
+  let t = mem.readRaw[thread.Thread[u32]](hp);
+  t.join();
+  libc.free(hp as *u8);
 }
 
 // How many timers are armed now (groups with a deadline that has neither

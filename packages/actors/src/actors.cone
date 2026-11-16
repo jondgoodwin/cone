@@ -960,7 +960,7 @@ import libc;
 import sync use Arc;
 import thread;
 import time;
-import cancelgroups use CancelGroup, Cancelled, Cause;
+import cancelgroups use CancelGroup, Cancelled, Cause, stopTimer;
 import collections use List, Deque;
 
 // ---------------------------------------------------------------------------
@@ -5490,13 +5490,15 @@ fn quiesce(s: *Sched) {
 // still awaited. Nothing if no actor started the workers; a panic on one of
 // them, which would wait for itself
 pub fn waitQuiet() {
-  if running.load() == 0usize {
+  // Loaded once: a second load could meet the stop's store of 0
+  let s = running.load() as *Sched;
+  if s as usize == 0usize {
     return;
   }
   if me != 0usize {
     die("actors: waitQuiet called on one of the runtime's own workers, which would wait for itself");
   }
-  quiesce(running.load() as *Sched);
+  quiesce(s);
 }
 
 // Awaited operations: how many have been started (by startAwait), and how
@@ -5545,13 +5547,13 @@ fn idleNow(s: *Sched) bool {
 // panic on one of them, which would wait for itself. Messages sent from
 // threads other than main while it waits may arrive after it returns
 pub fn waitUntilIdle() {
-  if running.load() == 0usize {
+  let s = running.load() as *Sched;
+  if s as usize == 0usize {
     return;
   }
   if me != 0usize {
     die("actors: waitUntilIdle called on one of the runtime's own workers, which would wait for itself");
   }
-  let s = running.load() as *Sched;
   (*s).done.store(1u32);
   while true {
     let q = (*s).quiet.load();
@@ -5570,13 +5572,13 @@ pub fn waitUntilIdle() {
 // is still parked is freed and its finalizers do not run. A limit of zero or
 // less only looks once
 pub fn waitUntilIdleFor(limit: time.Duration) bool {
-  if running.load() == 0usize {
+  let s = running.load() as *Sched;
+  if s as usize == 0usize {
     return true;
   }
   if me != 0usize {
     die("actors: waitUntilIdleFor called on one of the runtime's own workers, which would wait for itself");
   }
-  let s = running.load() as *Sched;
   let start = time.Instant.now();
   (*s).done.store(1u32);
   var ok = false;
@@ -5603,6 +5605,10 @@ fn stopWorkers() {
   }
   let s = running.load() as *Sched;
   quiesce(s);
+  // The cancel timers' thread (cancelgroups) ends here, joined, while the workers still run:
+  // a timer that fires wakes actors, so none may fire once the scheduler is freed. Armed
+  // timers are dropped unfired from here on
+  stopTimer();
   // The console's owner drains here, before any parked table is dropped, so
   // what the dropped frames' finalizers print goes through a console that is
   // still there; it stays up to the end of the process (console.cone)
