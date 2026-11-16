@@ -71,10 +71,14 @@ struct Entropy {
   rep3: u64;
   norm: List[i16];
   lits: List[u8];
+  // The three sequence tables' cells of the block being decoded, side by side
+  // in 512-cell regions (literal lengths, offsets, match lengths), so the
+  // sequence loop reads all three through one pointer
+  cells: List[u64];
 
   fn make() Entropy {
     Entropy(HufTable(), false, FseTable(), FseTable(), FseTable(), false,
-      1u64, 4u64, 8u64, List[i16](), List[u8]())
+      1u64, 4u64, 8u64, List[i16](), List[u8](), List[u64]())
   }
 
   // A frame's start: no tables, the first repeat offsets
@@ -302,7 +306,6 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
   var r1 = ent.rep1;
   var r2 = ent.rep2;
   var r3 = ent.rep3;
-  var litPos = 0usize;
   let dictLen = dict.len();
   // The block's own output may not pass the block maximum
   let room = reach.blockMax;
@@ -318,30 +321,39 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
   // (everything checked against 'room' and the literals' length first), 'w'
   // the next byte; 'hist' gets its new length once, at the end
   let bp = hist.viewMut() as *u8;
-  let lp = ent.lits.view() as *u8;
   let dp = dict.view() as *u8;
   var w = blockStart;
-  var i = 0usize;
-  // The tables' cells, read through raw pointers at a state masked to its
-  // table's size: a state is a base plus bits read, below the size in any table
-  // 'buildSeq' made, and the mask keeps a read inside the list whatever the
-  // input. The list is checked to hold that many cells (it holds 1 << log).
-  let llMask = (1usize << usize.from(ent.ll.log)) - 1usize;
-  let ofMask = (1usize << usize.from(ent.of.log)) - 1usize;
-  let mlMask = (1usize << usize.from(ent.ml.log)) - 1usize;
-  if ent.ll.seq.len() <= llMask || ent.of.seq.len() <= ofMask || ent.ml.seq.len() <= mlMask {
+  // The block's output may not reach 'roomEnd' (the same as (w - blockStart)
+  // staying within 'room'); the literals not yet copied are 'litsLeft' bytes
+  // at 'lc'; 'left' counts the sequences still to do
+  let roomEnd = blockStart + room;
+  var lc = ent.lits.view() as *u8;
+  var litsLeft = nlits;
+  var left = nseq;
+  // The three tables' cells are copied side by side into 'ent.cells', 512 cells
+  // a table (literal lengths at 0, offsets at 512, match lengths at 1024), and
+  // read through that one pointer at a state masked to 0..511. A state is a base
+  // plus bits read, below the table's size in any table 'buildSeq' made, so the
+  // mask changes no read of a built table, and it keeps every read inside the
+  // 1536 cells whatever the input. Each table holds 1 << log cells (the list is
+  // checked to hold them) and its log is at most 9 (ll, ml) or 8 (of): checked
+  // here, since 'readNCount' bounds them but this copy relies on it.
+  let llSize = 1usize << usize.from(ent.ll.log);
+  let ofSize = 1usize << usize.from(ent.of.log);
+  let mlSize = 1usize << usize.from(ent.ml.log);
+  if ent.ll.seq.len() < llSize || ent.of.seq.len() < ofSize || ent.ml.seq.len() < mlSize {
     return Fault.FseTable;
   }
-  // The sequence loop below never touches 'ent' or its tables, so this length
-  // check holds for the whole block. Code that rebuilds or resizes a table
-  // inside the loop must take these pointers and re-check after it.
-  let llt = ent.ll.seq.view() as *u64;
-  let oft = ent.of.seq.view() as *u64;
-  let mlt = ent.ml.seq.view() as *u64;
-  while i < nseq {
-    let llc = mem.readRaw[u64](llt + (usize.from(llState) & llMask));
-    let ofc = mem.readRaw[u64](oft + (usize.from(ofState) & ofMask));
-    let mlc = mem.readRaw[u64](mlt + (usize.from(mlState) & mlMask));
+  if llSize > 512usize || ofSize > 512usize || mlSize > 512usize { return Fault.FseTable; }
+  if ent.cells.len() < 1536usize { ent.cells.resize(1536usize, 0u64); }
+  let ct = ent.cells.viewMut() as *u64;
+  mem.moveRaw[u64](ct, ent.ll.seq.view() as *u64, llSize);
+  mem.moveRaw[u64](ct + 512usize, ent.of.seq.view() as *u64, ofSize);
+  mem.moveRaw[u64](ct + 1024usize, ent.ml.seq.view() as *u64, mlSize);
+  while left > 0usize {
+    let llc = mem.readRaw[u64](ct + (usize.from(llState) & 511usize));
+    let ofc = mem.readRaw[u64](ct + (512usize + (usize.from(ofState) & 511usize)));
+    let mlc = mem.readRaw[u64](ct + (1024usize + (usize.from(mlState) & 511usize)));
     let ofX = u32.from((ofc >> 32u64) & 0xFFu64);
     let mlX = u32.from((mlc >> 32u64) & 0xFFu64);
     let llX = u32.from((llc >> 32u64) & 0xFFu64);
@@ -377,7 +389,7 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
         r1 = off;
       }
     }
-    if i + 1usize < nseq {
+    if left > 1usize {
       if wide && bits.n < 56u32 { bits.refillSeq(src); }
       llState = u32.from(llc >> 48u64) + bits.readFast(u32.from((llc >> 40u64) & 0xFFu64));
       mlState = u32.from(mlc >> 48u64) + bits.readFast(u32.from((mlc >> 40u64) & 0xFFu64));
@@ -385,11 +397,21 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
       if bits.n < 56u32 { bits.refillSeq(src); }
     }
     // Execute: the literals, then the match
-    if ll > nlits - litPos { return Fault.LitOverrun; }
-    if (w - blockStart) + ll + ml > room { return Fault.BlockTooBig; }
-    copyWords(bp + w, lp + litPos, ll);
+    if ll > litsLeft { return Fault.LitOverrun; }
+    if w + ll + ml > roomEnd { return Fault.BlockTooBig; }
+    if ll <= 16usize {
+      // Sixteen bytes in two words: reads up to 15 past the literals' end and
+      // writes up to 15 past the run's, inside the 16 bytes of slack both
+      // buffers have ('decodeLiterals' reserves it for the literals, 'reserve'
+      // above for the output), the run itself having passed both checks
+      mem.writeRaw[u64]((bp + w) as *u64, mem.readRaw[u64](lc as *u64));
+      mem.writeRaw[u64]((bp + (w + 8usize)) as *u64, mem.readRaw[u64]((lc + 8usize) as *u64));
+    } else {
+      copyWords(bp + w, lc, ll);
+    }
     w = w + ll;
-    litPos = litPos + ll;
+    lc = lc + ll;
+    litsLeft = litsLeft - ll;
     // The frame's output so far, and how far back a match may reach: the
     // window, or while the output is no longer than the window, all of it
     // and the dictionary before it
@@ -401,7 +423,23 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
       // From the frame's own output
       let o = usize.from(off);
       if o > w - reach.base { return Fault.OffsetFar; }
-      copyMatch(bp, w, w - o, ml);
+      if o >= 16usize && ml <= 64usize {
+        // A short match from at least 16 bytes behind: sixteen bytes a step,
+        // inline. Every step reads bytes 16 or more behind its own write, so
+        // all are written before they are read. Bound: the check above on
+        // (w - blockStart) + ll + ml against 'room' puts the match inside
+        // 'room', and the last step writes at most 15 bytes past it, into the
+        // 16 bytes of slack 'reserve' made; the reads start at w - o, which
+        // the check above keeps at or past the frame's start.
+        var k = 0usize;
+        while k < ml {
+          mem.writeRaw[u64]((bp + (w + k)) as *u64, mem.readRaw[u64]((bp + (w - o + k)) as *u64));
+          mem.writeRaw[u64]((bp + (w + k + 8usize)) as *u64, mem.readRaw[u64]((bp + (w - o + k + 8usize)) as *u64));
+          k = k + 16usize;
+        }
+      } else {
+        copyMatch(bp, w, w - o, ml);
+      }
     } else {
       // From the dictionary, then on into the frame's output
       let back = usize.from(off - pos);
@@ -410,15 +448,15 @@ fn decodeSequences(src: &Array[u8], p0: usize, end: usize, ent: &mut Entropy, hi
       if ml > first { copyMatch(bp, w + first, reach.base, ml - first); }
     }
     w = w + ml;
-    i = i + 1usize;
+    left = left - 1usize;
   }
   if !bits.exact() { return Fault.SeqStream; }
   ent.rep1 = r1;
   ent.rep2 = r2;
   ent.rep3 = r3;
-  let rest = nlits - litPos;
-  if (w - blockStart) + rest > room { return Fault.BlockTooBig; }
-  copyWords(bp + w, lp + litPos, rest);
+  let rest = litsLeft;
+  if w + rest > roomEnd { return Fault.BlockTooBig; }
+  copyWords(bp + w, lc, rest);
   w = w + rest;
   commit(hist, blockStart, w - blockStart);
   Fault.Ok
