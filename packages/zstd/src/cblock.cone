@@ -284,21 +284,92 @@ fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
   bw.put(u64.from(*seqs.ll[last] - llBase[llc]), llBits[llc]);
   bw.put(u64.from(*seqs.ml[last] - mlBase[mlc]), mlBits[mlc]);
   bw.put(u64.from(*seqs.off[last]), u32.from(ofc));
+  // The loop below reads the code lists, the sequence lists and the three
+  // tables through raw pointers, with the lengths checked here once: nothing
+  // in the loop appends to, resizes or rebuilds any of them. A code is below
+  // 64 in every list (a literal length and a match length code are 35 and 52
+  // at most for a block, an offset code is a bit index below 32), and a cell
+  // list holds 64 cells ('FseEnc.build' and 'setRle' pad it), so a code
+  // masked to 63 is in bounds. A state goes into 'states' at an index below
+  // 1 << log (a base the construction keeps in the table, plus the bits
+  // shifted out), masked to that size, which 'states' holds (an RLE table
+  // holds one state, 0, and has log 0). The bit writer's fields are locals
+  // here, and an RLE table goes through the same code (a cell of no bits
+  // that leads back to state 0), so the loop tests for RLE nowhere.
+  let llMask = (1usize << usize.from(enc.ll.log)) - 1usize;
+  let ofMask = (1usize << usize.from(enc.of.log)) - 1usize;
+  let mlMask = (1usize << usize.from(enc.ml.log)) - 1usize;
+  if enc.llCodes.len() < nb || enc.ofCodes.len() < nb || enc.mlCodes.len() < nb
+      || seqs.ll.len() < nb || seqs.ml.len() < nb || seqs.off.len() < nb
+      || enc.ll.cell.len() < 64usize || enc.of.cell.len() < 64usize || enc.ml.cell.len() < 64usize
+      || enc.ll.states.len() <= llMask || enc.of.states.len() <= ofMask || enc.ml.states.len() <= mlMask {
+    panic("zstd: a sequence list or table is shorter than the writer needs");
+  }
+  let llcp = enc.llCodes.view() as *u8;
+  let ofcp = enc.ofCodes.view() as *u8;
+  let mlcp = enc.mlCodes.view() as *u8;
+  let llp = seqs.ll.view() as *u32;
+  let mlp = seqs.ml.view() as *u32;
+  let offp = seqs.off.view() as *u32;
+  let llCell = enc.ll.cell.view() as *u64;
+  let ofCell = enc.of.cell.view() as *u64;
+  let mlCell = enc.ml.cell.view() as *u64;
+  let llSt = enc.ll.states.view() as *u16;
+  let ofSt = enc.of.states.view() as *u16;
+  let mlSt = enc.ml.states.view() as *u16;
+  let bias = usize.from(cellBias);
+  var acc = bw.acc;
+  var bn = bw.n;
+  var w = bw.w;
   var n = last;
   while n > 0usize {
     n -= 1usize;
-    llc = usize.from(*enc.llCodes[n]);
-    ofc = usize.from(*enc.ofCodes[n]);
-    mlc = usize.from(*enc.mlCodes[n]);
-    ofState = enc.of.encodeRun(&mut bw, ofState, ofc);
-    mlState = enc.ml.encodeRun(&mut bw, mlState, mlc);
-    llState = enc.ll.encodeRun(&mut bw, llState, llc);
-    bw.add(u64.from(*seqs.ll[n] - llBase[llc]), llBits[llc]);
-    bw.flush();
-    bw.add(u64.from(*seqs.ml[n] - mlBase[mlc]), mlBits[mlc]);
-    bw.add(u64.from(*seqs.off[n]), u32.from(ofc));
-    bw.flush();
+    llc = usize.from(mem.readRaw[u8](llcp + n));
+    ofc = usize.from(mem.readRaw[u8](ofcp + n));
+    mlc = usize.from(mem.readRaw[u8](mlcp + n));
+    // offset code
+    let oc = mem.readRaw[u64](ofCell + (ofc & 63usize));
+    let onb = (ofState + u32.from(oc & 0xFFFFFFFFu64)) >> 16u32;
+    acc = acc | ((u64.from(ofState) & ((1u64 << (u64.from(onb) & 63u64)) - 1u64)) << (u64.from(bn) & 63u64));
+    bn = bn + onb;
+    let oi = (usize.from(u64.from(ofState >> (onb & 31u32)) + (oc >> 32u64)) - bias) & ofMask;
+    ofState = u32.from(mem.readRaw[u16](ofSt + oi));
+    // match length code
+    let mc = mem.readRaw[u64](mlCell + (mlc & 63usize));
+    let mnb = (mlState + u32.from(mc & 0xFFFFFFFFu64)) >> 16u32;
+    acc = acc | ((u64.from(mlState) & ((1u64 << (u64.from(mnb) & 63u64)) - 1u64)) << (u64.from(bn) & 63u64));
+    bn = bn + mnb;
+    let mi = (usize.from(u64.from(mlState >> (mnb & 31u32)) + (mc >> 32u64)) - bias) & mlMask;
+    mlState = u32.from(mem.readRaw[u16](mlSt + mi));
+    // literal length code
+    let lc = mem.readRaw[u64](llCell + (llc & 63usize));
+    let lnb = (llState + u32.from(lc & 0xFFFFFFFFu64)) >> 16u32;
+    acc = acc | ((u64.from(llState) & ((1u64 << (u64.from(lnb) & 63u64)) - 1u64)) << (u64.from(bn) & 63u64));
+    bn = bn + lnb;
+    let li = (usize.from(u64.from(llState >> (lnb & 31u32)) + (lc >> 32u64)) - bias) & llMask;
+    llState = u32.from(mem.readRaw[u16](llSt + li));
+    // the literal length's extra bits, then flush
+    let lbits = llBits[llc];
+    acc = acc | ((u64.from(mem.readRaw[u32](llp + n) - llBase[llc]) & ((1u64 << (u64.from(lbits) & 63u64)) - 1u64)) << (u64.from(bn) & 63u64));
+    bn = bn + lbits;
+    mem.writeRaw[u64](w as *u64, acc);
+    w = w + usize.from(bn >> 3u32);
+    acc = acc >> (u64.from(bn & 248u32) & 63u64);
+    bn = bn & 7u32;
+    // the match length's and the offset's extra bits, then flush
+    let mbits = mlBits[mlc];
+    acc = acc | ((u64.from(mem.readRaw[u32](mlp + n) - mlBase[mlc]) & ((1u64 << (u64.from(mbits) & 63u64)) - 1u64)) << (u64.from(bn) & 63u64));
+    bn = bn + mbits;
+    acc = acc | ((u64.from(mem.readRaw[u32](offp + n)) & ((1u64 << (ofc & 63usize)) - 1u64)) << (u64.from(bn) & 63u64));
+    bn = bn + u32.from(ofc);
+    mem.writeRaw[u64](w as *u64, acc);
+    w = w + usize.from(bn >> 3u32);
+    acc = acc >> (u64.from(bn & 248u32) & 63u64);
+    bn = bn & 7u32;
   }
+  bw.acc = acc;
+  bw.n = bn;
+  bw.w = w;
   enc.ml.flushRun(&mut bw, mlState);
   enc.of.flushRun(&mut bw, ofState);
   enc.ll.flushRun(&mut bw, llState);
