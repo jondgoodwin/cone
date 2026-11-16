@@ -1,0 +1,50 @@
+// String.appendByte stores the byte and the NUL in place when the block has room
+// for both, and takes the general path otherwise (no block, or the byte would
+// leave no room for the NUL). Bytes are appended one at a time to Strings of
+// every starting capacity 0 to 20, up to 45 bytes, so each fill level is met,
+// including the append that exactly fills the block (the NUL then makes it grow)
+// and the one that crosses it. After each append the length, the bytes and the
+// NUL's place are checked against a model kept in a List.
+
+mod appendbyte;
+
+import testing use *;
+import collections use *;
+import libc;
+
+fn main() i32 {
+  var bad = 0;
+  var cap = 0usize;
+  while cap < 21usize {
+    var s = String.withCapacity(cap);
+    var model = List[u8]();
+    var k = 0usize;
+    while k < 45usize {
+      let b = u8.from(97usize + (k * 7usize + cap) % 26usize);
+      s.appendByte(b);
+      model.push(b);
+      if s.len() != model.len() { bad = bad + 1; }
+      if libc.strlen(s.cstr()) != model.len() { bad = bad + 1; }
+      var j = 0usize;
+      while j < model.len() {
+        if s.view()[j] != model[j] { bad = bad + 1; }
+        j = j + 1usize;
+      }
+      k = k + 1usize;
+    }
+    cap = cap + 1usize;
+  }
+  expectInt(i64.from(bad), 0, "appends at every fill level, every capacity, no mismatch");
+
+  // into a String with no block, then one byte at a time past two growths
+  var e = String();
+  e.appendByte('a');
+  expectBool(e.equals("a"), true, "first byte into a blockless String");
+  expectUInt(u64.from(libc.strlen(e.cstr())), 1, "and its NUL");
+  var n = String.from("xy");
+  n.appendByte(0u8);
+  expectUInt(u64.from(n.len()), 3, "a zero byte counts");
+  n.appendByte('z');
+  expectUInt(u64.from(n.len()), 4, "and the byte after it");
+  done()
+}
