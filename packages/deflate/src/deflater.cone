@@ -92,38 +92,12 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[u32], prev:
     var bestDist = 0usize;
     if ib + 3usize <= n {
       let h = hash3(buf, ib);
-      var dist = distOf(*head[h], i);
+      let dist0 = distOf(*head[h], i);
       // The candidates left to try (ib + 3 <= n here, so the data does not end at bestLen 0)
-      var left = chainLimit;
-      // The byte pair compared first: the two ending at bestLen (the first two while bestLen is 0)
-      var off = 0usize;
-      while dist > 0i64 && left > 0usize {
-        let ci = ib - usize.from(dist);
-        // Quick reject, as miniz's find_match does: a candidate longer than bestLen agrees with this
-        // position at every byte up to and including bestLen, so the byte at bestLen (and the one
-        // before it), then the first two, refuse most candidates before the compare. A refused candidate
-        // would have had l <= bestLen: output is the same.
-        // Bounds of the raw reads: ib + bestLen < n (kept by the break below once a match reaches the
-        // end of the data, after which no candidate can win) and ci < ib, so the two bytes at
-        // bestLen - 1 (bestLen >= 1) and bestLen lie inside the input for both; the first
-        // two bytes lie inside as ib + 3 <= n
-        if mem.readRaw[u16]((bp + (ci + off)) as *u16) == mem.readRaw[u16]((bp + (ib + off)) as *u16)
-            && mem.readRaw[u16]((bp + ci) as *u16) == mem.readRaw[u16]((bp + ib) as *u16) {
-          // Match length at this candidate (the first two bytes are equal)
-          let l = chainMatchLen(bp, ci, ib, n);
-          if l > bestLen {
-            bestLen = l;
-            bestDist = usize.from(dist);
-            if l == 258usize || ib + bestLen >= n { break; }
-            off = bestLen - 1usize;
-          }
-        }
-        left -= 1usize;
-        if left == 0usize { break; }
-        let dl = prev[usize.from((i - dist) & 32767i64)];
-        if dl == 0u16 { break; }
-        dist += i64.from(dl);
-        if dist > 32768i64 { break; }
+      if dist0 > 0i64 && chainLimit > 0usize {
+        let r = chainWalk(bp, prev, ib - usize.from(dist0), usize.from((i - dist0) & 32767i64), ib, n, chainLimit, 0usize);
+        bestLen = usize.from(r >> 32u64);
+        bestDist = usize.from(r & 0xFFFFFFFFu64);
       }
     }
     if bestLen >= 3usize {
@@ -152,6 +126,46 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[u32], prev:
     }
   }
   false
+}
+
+// The chain walk of the lazy matcher, in a function of its own so its few values stay in
+// registers: from the candidate at 'ci' (its 'prev' slot is 'slot'), at most 'left' candidates,
+// the best match longer than 'bestLen' for the bytes at 'ib'. Answers the best length << 32 |
+// its distance (distance 0 when none beat 'bestLen', the length then 'bestLen'). The chain is
+// walked by position, not by distance, so a step is one 'prev' load and two subtractions; the
+// first two bytes here and the pair ending at bestLen are constants until bestLen grows.
+fn chainWalk(bp: *u8, prev: &Array[u16, 32768], ci0: usize, slot0: usize, ib: usize, n: usize, left0: usize, best0: usize) u64 {
+  var ci = ci0;
+  var slot = slot0;
+  var left = left0;
+  var bestLen = best0;
+  var bestDist = 0usize;
+  var off = if bestLen > 0usize {bestLen - 1usize} else {0usize};
+  let first = mem.readRaw[u16]((bp + ib) as *u16);
+  var tail = mem.readRaw[u16]((bp + (ib + off)) as *u16);
+  while true {
+    // Only a candidate that agrees at bestLen can beat bestLen
+    // Bounds of the raw reads: as in 'lzScan'; with bestLen 0 the two bytes tested are the first two
+    if mem.readRaw[u16]((bp + (ci + off)) as *u16) == tail && mem.readRaw[u16]((bp + ci) as *u16) == first {
+      let l = chainMatchLen(bp, ci, ib, n);
+      if l > bestLen {
+        bestLen = l;
+        bestDist = ib - ci;
+        if l == 258usize || ib + bestLen >= n { break; }
+        off = bestLen - 1usize;
+        tail = mem.readRaw[u16]((bp + (ib + off)) as *u16);
+      }
+    }
+    left -= 1usize;
+    if left == 0usize { break; }
+    let dl = usize.from(prev[slot]);
+    if dl == 0usize { break; }
+    // dist > 32768: the window's edge
+    if ib + dl > ci + 32768usize { break; }
+    ci -= dl;
+    slot = (slot + 65536usize - dl) & 32767usize;
+  }
+  (u64.from(bestLen) << 32u64) | u64.from(bestDist)
 }
 
 // The lazy matcher of levels 4 to 9, after miniz_oxide's compress_normal. Where
@@ -186,30 +200,13 @@ fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[u32], p
         limit = chainLimit >> 2usize;
         if limit == 0usize { limit = 1usize; }
       }
-      var dist = distOf(*head[h], i);
+      let dist0 = distOf(*head[h], i);
       // The candidates left to try; none when the data already ends at the held match's length
       var left = if ib + bestLen < n {limit} else {0usize};
-      var off = if bestLen > 0usize {bestLen - 1usize} else {0usize};
-      while dist > 0i64 && left > 0usize {
-        let ci = ib - usize.from(dist);
-        // Only a candidate that agrees at bestLen can beat bestLen
-        // Bounds of the raw reads: as in 'lzScan'; with bestLen 0 the two bytes tested are the first two
-        if mem.readRaw[u16]((bp + (ci + off)) as *u16) == mem.readRaw[u16]((bp + (ib + off)) as *u16)
-            && mem.readRaw[u16]((bp + ci) as *u16) == mem.readRaw[u16]((bp + ib) as *u16) {
-          let l = chainMatchLen(bp, ci, ib, n);
-          if l > bestLen {
-            bestLen = l;
-            bestDist = usize.from(dist);
-            if l == 258usize || ib + bestLen >= n { break; }
-            off = bestLen - 1usize;
-          }
-        }
-        left -= 1usize;
-        if left == 0usize { break; }
-        let dl = prev[usize.from((i - dist) & 32767i64)];
-        if dl == 0u16 { break; }
-        dist += i64.from(dl);
-        if dist > 32768i64 { break; }
+      if dist0 > 0i64 && left > 0usize {
+        let r = chainWalk(bp, prev, ib - usize.from(dist0), usize.from((i - dist0) & 32767i64), ib, n, left, bestLen);
+        bestLen = usize.from(r >> 32u64);
+        bestDist = usize.from(r & 0xFFFFFFFFu64);
       }
       prev[usize.from(i & 32767i64)] = linkOf(*head[h], i);
       head.set(h, headOf(i));
