@@ -272,6 +272,27 @@ pub struct Writer {
   }
 }
 
+// How each byte is written: 0 as it is, 1 a byte of a multibyte character, otherwise the letter
+// that follows the backslash ('u' for \u00XX)
+let escapeKind: Array[u8, 256] = [
+  117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 98u8, 116u8, 110u8, 117u8, 102u8, 114u8, 117u8, 117u8,
+  117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8, 117u8,
+  0u8, 0u8, 34u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+  0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+  0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+  0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 92u8, 0u8, 0u8, 0u8,
+  0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+  0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+  1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8,
+  1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8,
+  1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8,
+  1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8,
+  1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8,
+  1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8,
+  1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8,
+  1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8, 1u8
+];
+
 // s escaped and put between the text 'open' and the text 'close' (the quote, with a comma or a
 // colon along with it when there is one), appended to out. None when it is written;
 // Some(offset) of the first byte that is not well-formed UTF-8, with out
@@ -282,10 +303,33 @@ fn appendQuoted(out: &mut String, s: &Array[u8], ascii: bool, open: &str, close:
   // The bytes from 'from' up to i are written as they are, and not yet appended: a run
   // of plain bytes goes in with one call
   var from = 0usize;
+  let base = s as *u8;
+  // Plain bytes seen in a row; after 8 of them the scan goes a word at a time
+  var plainRun = 0usize;
   while i < s.len {
     let b = s[i];
-    if b >= 0x20u8 && b < 0x80u8 && b != '"' && b != '\\' { i = i + 1usize; continue; }
-    if b >= 0x80u8 && !ascii {
+    let k = escapeKind[usize.from(b)];
+    if k == 0u8 {
+      i = i + 1usize;
+      plainRun = plainRun + 1usize;
+      if plainRun >= 8usize {
+        // Eight plain bytes at a time: none below 0x20, no quote, no backslash, none past 0x7F.
+        // Each subtraction sets a byte's top bit when that byte is below the amount taken (a
+        // borrow into the next byte comes only after such a byte); a top bit already set in w is
+        // a byte past 0x7F. A word that hits goes on a byte at a time, which decides
+        while i + 8usize <= s.len {
+          let w = mem.readRaw[u64]((base + i) as *u64);
+          let hit = ((w - 0x2020202020202020u64) | ((w ^ 0x2222222222222222u64) - 0x0101010101010101u64)
+            | ((w ^ 0x5C5C5C5C5C5C5C5Cu64) - 0x0101010101010101u64) | w) & 0x8080808080808080u64;
+          if hit != 0u64 { break; }
+          i = i + 8usize;
+        }
+        plainRun = 0usize;
+      }
+      continue;
+    }
+    plainRun = 0usize;
+    if k == 1u8 && !ascii {
       let len = utf8Length(s, i);
       if len == 0usize {
         if i > from { out.appendBytes(&s[from..<i]); }
@@ -295,18 +339,16 @@ fn appendQuoted(out: &mut String, s: &Array[u8], ascii: bool, open: &str, close:
       continue;
     }
     if i > from { appendRun(out, s, from, i); }
-    if b == '"' { out.append("\\\""); i = i + 1usize; }
-    else if b == '\\' { out.append("\\\\"); i = i + 1usize; }
-    else if b < 0x20u8 {
-      if b == 8u8 { out.append("\\b"); }
-      else if b == 12u8 { out.append("\\f"); }
-      else if b == '\n' { out.append("\\n"); }
-      else if b == '\r' { out.append("\\r"); }
-      else if b == '\t' { out.append("\\t"); }
-      else {
-        out.append("\\u");
-        out.appendHex(u64.from(b), 4usize);
-      }
+    if k == 'u' {
+      out.append("\\u");
+      out.appendHex(u64.from(b), 4usize);
+      i = i + 1usize;
+    }
+    else if k != 1u8 {
+      var two = Array[u8, 2]() <- fill 0u8;
+      two[0] = '\\';
+      two[1] = k;
+      out.appendBytes(&two);
       i = i + 1usize;
     }
     else {

@@ -1,0 +1,125 @@
+// The escape scan, byte for byte: a special byte at every position of a 24-byte string (so it
+// falls in each place of an 8-byte word and in the byte steps before and after), for each byte
+// that is escaped and each neighbour of one that is not; a character beyond ASCII in the same
+// places, plain and ASCII-only; a bad byte in the same places; and short and dense strings.
+
+mod writerscan;
+
+import testing use *;
+import collections use *;
+import json;
+
+fn textOf(r: Result[String, json.JsonError]) String {
+  match r {
+    case let Ok(s) { s }
+    case let Err(e) { String() <- e }
+  }
+}
+
+// How one byte is written, spelled out by hand
+fn written(c: u8) String {
+  if c == 0u8 { return String.from("\\u0000"); }
+  if c == 8u8 { return String.from("\\b"); }
+  if c == 9u8 { return String.from("\\t"); }
+  if c == 10u8 { return String.from("\\n"); }
+  if c == 12u8 { return String.from("\\f"); }
+  if c == 13u8 { return String.from("\\r"); }
+  if c == 0x1Fu8 { return String.from("\\u001f"); }
+  if c == 0x22u8 { return String.from("\\\""); }
+  if c == 0x5Cu8 { return String.from("\\\\"); }
+  var s = String();
+  s.appendByte(c);
+  s
+}
+
+// 24 'a's with the text mid put in before the one at position pos; or, for wanted, the text
+// written, with its quotes
+fn around(pos: usize, mid: &str, quotes: bool) String {
+  var p = String();
+  if quotes { p.append("\""); }
+  var i = 0usize;
+  while i < 24usize {
+    if i == pos { p.append(mid); }
+    p.appendByte('a');
+    i = i + 1usize;
+  }
+  if quotes { p.append("\""); }
+  p
+}
+
+fn writtenStd(s: &str) String {
+  var w = json.Writer(json.WriteOptions.standard());
+  w.string(s);
+  textOf(w.finish())
+}
+
+fn writtenAscii(s: &str) String {
+  var w = json.Writer(json.WriteOptions(0usize, true));
+  w.string(s);
+  textOf(w.finish())
+}
+
+fn main() i32 {
+  let specials: Array[u8, 16] = [0u8, 8u8, 9u8, 10u8, 12u8, 13u8, 0x1Fu8, 0x20u8, 0x21u8, 0x22u8, 0x23u8, 0x5Bu8, 0x5Cu8, 0x5Du8, 0x7Eu8, 0x7Fu8];
+  var si = 0usize;
+  while si < 16usize {
+    let c = specials[si];
+    var one = String();
+    one.appendByte(c);
+    let wr = written(c);
+    var allSame = true;
+    var pos = 0usize;
+    while pos < 24usize {
+      let got = writtenStd(around(pos, one.view(), false).view());
+      let want = around(pos, wr.view(), true);
+      if !bytesEqual(got.view(), want.view()) { allSame = false; }
+      pos = pos + 1usize;
+    }
+    var name = String.from("byte ");
+    name.appendHex(u64.from(c), 2usize);
+    name.append(" at every position");
+    expect(allSame, name.view());
+    si = si + 1usize;
+  }
+
+  // a two-byte and a four-byte character at every position: as they are, then ASCII only
+  var plainSame = true;
+  var asciiSame = true;
+  var pos2 = 0usize;
+  while pos2 < 24usize {
+    let two = around(pos2, "\xC3\xA9", false);
+    if !bytesEqual(writtenStd(two.view()).view(), around(pos2, "\xC3\xA9", true).view()) { plainSame = false; }
+    if !bytesEqual(writtenAscii(two.view()).view(), around(pos2, "\\u00e9", true).view()) { asciiSame = false; }
+    let four = around(pos2, "\xF0\x9F\x98\x80", false);
+    if !bytesEqual(writtenStd(four.view()).view(), around(pos2, "\xF0\x9F\x98\x80", true).view()) { plainSame = false; }
+    if !bytesEqual(writtenAscii(four.view()).view(), around(pos2, "\\ud83d\\ude00", true).view()) { asciiSame = false; }
+    pos2 = pos2 + 1usize;
+  }
+  expect(plainSame, "a multibyte character at every position, as it is");
+  expect(asciiSame, "a multibyte character at every position, ASCII only");
+
+  // a byte that is not UTF-8 at every position: the failure names it
+  var namedSame = true;
+  var pos3 = 0usize;
+  while pos3 < 24usize {
+    let got = writtenStd(around(pos3, "\xFF", false).view());
+    var want = String.from("not valid UTF-8 at its byte ");
+    if pos3 >= 10usize { want.appendByte('0' + u8.from(pos3 / 10usize)); }
+    want.appendByte('0' + u8.from(pos3 % 10usize));
+    if !got.view().contains(want.view()) { namedSame = false; }
+    pos3 = pos3 + 1usize;
+  }
+  expect(namedSame, "a bad byte at every position is named");
+
+  // dense and short strings
+  var w4 = json.Writer(json.WriteOptions.standard());
+  w4.beginArray();
+  w4.string("\n\n\n\n\n\n\n\n\n\n");
+  w4.string("a\"b\\c\td\re\x01f\x1Fg\x7Fh");
+  w4.string("abcdefg");
+  w4.string("abcdefghabcdefgh\"abcdefghabcdefghabcdefgh\\");
+  w4.endArray();
+  expectStr(textOf(w4.finish()).view(), "[\"\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\",\"a\\\"b\\\\c\\td\\re\\u0001f\\u001fg\x7Fh\",\"abcdefg\",\"abcdefghabcdefgh\\\"abcdefghabcdefghabcdefgh\\\\\"]", "dense and short strings");
+
+  done()
+}
