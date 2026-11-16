@@ -100,50 +100,56 @@ fn huffmanOnce(freq: &Array[u32], n: usize) List[u8] {
   var lens = List[u8].withCapacity(n);
   var i = 0usize;
   while i < n { lens.push(0u8); i += 1usize; }
-  // Nodes: leaves 0..n-1, then internal ones; weight, parent, alive
-  var weight = List[u64]();
+  // Nodes: leaves 0..n-1, then internal ones in the order made. The leaves are
+  // sorted by (weight, index); the internal nodes come out of the merge in
+  // nondecreasing weight, so the two lightest alive nodes are always at the
+  // front of one of these two queues, ties to the lower index (a leaf
+  // before an internal node): the same choice as scanning every node.
   var parent = List[i32]();
-  var alive = List[bool]();
-  var used = 0usize;
+  var keys = List[u64]();
   i = 0usize;
   while i < n {
-    weight.push(u64.from(freq[i]));
     parent.push(-1i32);
-    alive.push(freq[i] > 0u32);
-    if freq[i] > 0u32 { used += 1usize; }
+    if freq[i] > 0u32 { keys.push((u64.from(freq[i]) << 16u64) | u64.from(i)); }
     i += 1usize;
   }
+  let used = keys.len();
   if used == 0usize { lens.set(0usize, 1u8); return lens; }
   if used == 1usize {
     i = 0usize;
     while i < n { if freq[i] > 0u32 { lens.set(i, 1u8); } i += 1usize; }
     return lens;
   }
+  keys.sort();
+  var iw = List[u64]();
+  var li = 0usize;
+  var qi = 0usize;
   var left = used;
   while left > 1usize {
-    // The two lightest alive nodes (ties to the lowest index: deterministic)
-    var a = -1i32;
-    var b = -1i32;
-    var j = 0usize;
-    while j < weight.len() {
-      if *alive[j] {
-        if a < 0i32 || *weight[j] < *weight[usize.from(a)] {
-          b = a;
-          a = i32.from(j);
-        } else if b < 0i32 || *weight[j] < *weight[usize.from(b)] {
-          b = i32.from(j);
-        }
+    var first = 0usize;
+    var second = 0usize;
+    var pw = 0u64;
+    var m = 0usize;
+    while m < 2usize {
+      var id = 0usize;
+      var w = 0u64;
+      if li < used && (qi >= iw.len() || (*keys[li] >> 16u64) <= *iw[qi]) {
+        id = usize.from(*keys[li] & 0xFFFFu64);
+        w = *keys[li] >> 16u64;
+        li += 1usize;
+      } else {
+        id = n + qi;
+        w = *iw[qi];
+        qi += 1usize;
       }
-      j += 1usize;
+      if m == 0usize { first = id; pw = w; } else { second = id; pw = pw + w; }
+      m += 1usize;
     }
-    let id = i32.from(weight.len());
-    weight.push(*weight[usize.from(a)] + *weight[usize.from(b)]);
+    let nid = i32.from(n + iw.len());
+    iw.push(pw);
     parent.push(-1i32);
-    alive.push(true);
-    alive.set(usize.from(a), false);
-    alive.set(usize.from(b), false);
-    parent.set(usize.from(a), id);
-    parent.set(usize.from(b), id);
+    parent.set(first, nid);
+    parent.set(second, nid);
     left -= 1usize;
   }
   // A leaf's length is its depth

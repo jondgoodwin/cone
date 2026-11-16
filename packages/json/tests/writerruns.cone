@@ -1,0 +1,127 @@
+// The Writer's text, byte for byte, where it appends in runs: a comma that goes in with the
+// quote or the first digit that follows it, a key's colon with its closing quote, a string's plain
+// stretches copied whole (none, one byte, 8, 9, 24, 25 and 300 bytes long) between escapes,
+// integers at their widest, the indented form, and a string that is not UTF-8 partway.
+
+mod writerruns;
+
+import testing use *;
+import collections use *;
+import json;
+
+fn textOf(r: Result[String, json.JsonError]) String {
+  match r {
+    case let Ok(s) { s }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn repeated(c: u8, n: usize) String {
+  var s = String();
+  var i = 0usize;
+  while i < n { s.appendByte(c); i = i + 1usize; }
+  s
+}
+
+fn main() i32 {
+  // -------- numbers in an array: the comma goes in with the digits --------
+  var w = json.Writer(json.WriteOptions.standard());
+  w.beginArray();
+  w.int(1i64);
+  w.int(-2i64);
+  w.int(300i64);
+  w.int(0i64);
+  w.uint(18446744073709551615u64);
+  w.int(-9223372036854775807i64 - 1i64);
+  w.int(9223372036854775807i64);
+  w.endArray();
+  let a = textOf(w.finish());
+  expectStr(a.view(), "[1,-2,300,0,18446744073709551615,-9223372036854775808,9223372036854775807]", "numbers in an array");
+
+  // -------- strings: plain runs of every length between escapes --------
+  var w2 = json.Writer(json.WriteOptions.standard());
+  w2.beginArray();
+  w2.string("");
+  w2.string("a");
+  w2.string("abcdefgh");
+  w2.string("abcdefghi");
+  w2.string("a\"b");
+  w2.string("\\x\n\t\x01y");
+  let x24 = repeated('x', 24usize);
+  let y25 = repeated('y', 25usize);
+  w2.string(x24.view());
+  w2.string(y25.view());
+  w2.endArray();
+  let b = textOf(w2.finish());
+  var want = String.from("[\"\",\"a\",\"abcdefgh\",\"abcdefghi\",\"a\\\"b\",\"\\\\x\\n\\t\\u0001y\",\"");
+  want.append(x24.view());
+  want.append("\",\"");
+  want.append(y25.view());
+  want.append("\"]");
+  expectStr(b.view(), want.view(), "strings in an array");
+
+  // A long plain run, an escape, and a long plain run again
+  let long = repeated('z', 300usize);
+  var mixed = String.from(long.view());
+  mixed.append("\n");
+  mixed.append(long.view());
+  var w3 = json.Writer(json.WriteOptions.standard());
+  w3.string(mixed.view());
+  let c = textOf(w3.finish());
+  var wantC = String.from("\"");
+  wantC.append(long.view());
+  wantC.append("\\n");
+  wantC.append(long.view());
+  wantC.append("\"");
+  expectStr(c.view(), wantC.view(), "a long string with one escape");
+
+  // -------- an object: the comma with the key's quote, the colon with its end --------
+  var w4 = json.Writer(json.WriteOptions.standard());
+  w4.beginObject();
+  w4.key("a"); w4.int(1i64);
+  w4.key("b\"c"); w4.string("x\ny");
+  w4.key("d"); w4.beginArray(); w4.int(1i64); w4.string("s"); w4.beginArray(); w4.endArray(); w4.beginObject(); w4.endObject(); w4.boolean(true); w4.nullValue(); w4.endArray();
+  w4.key("e"); w4.beginObject(); w4.endObject();
+  w4.endObject();
+  let d = textOf(w4.finish());
+  expectStr(d.view(), "{\"a\":1,\"b\\\"c\":\"x\\ny\",\"d\":[1,\"s\",[],{},true,null],\"e\":{}}", "an object");
+
+  // -------- indented: commas and colons as before the change --------
+  var w5 = json.Writer(json.WriteOptions(2usize, false));
+  w5.beginObject();
+  w5.key("a"); w5.int(1i64);
+  w5.key("b"); w5.beginArray(); w5.int(-1i64); w5.string("x"); w5.beginObject(); w5.key("k"); w5.uint(7u64); w5.endObject(); w5.endArray();
+  w5.endObject();
+  let e = textOf(w5.finish());
+  expectStr(e.view(), "{\n  \"a\": 1,\n  \"b\": [\n    -1,\n    \"x\",\n    {\n      \"k\": 7\n    }\n  ]\n}", "indented");
+
+  // -------- ASCII only: the runs end at every character beyond ASCII --------
+  var w6 = json.Writer(json.WriteOptions(0usize, true));
+  w6.beginArray();
+  w6.string("abcdefghijk \xC3\xA9 lmnop \xF0\x9F\x98\x80");
+  w6.string("plain");
+  w6.endArray();
+  let f = textOf(w6.finish());
+  expectStr(f.view(), "[\"abcdefghijk \\u00e9 lmnop \\ud83d\\ude00\",\"plain\"]", "ascii only");
+
+  // -------- not UTF-8 partway: a failure naming the byte --------
+  var w7 = json.Writer(json.WriteOptions.standard());
+  w7.beginArray();
+  w7.string("ab\xFFcd");
+  w7.endArray();
+  let g = textOf(w7.finish());
+  expect(g.view().contains("not valid UTF-8 at its byte 2"), "bad byte named");
+  var w8 = json.Writer(json.WriteOptions.standard());
+  w8.string("caf\xC3\xA9 ok \xC3");
+  let h = textOf(w8.finish());
+  expect(h.view().contains("not valid UTF-8 at its byte 9"), "a cut sequence at the end named");
+
+  // -------- a value where a key belongs, and a second top-level value, still fail --------
+  var w9 = json.Writer(json.WriteOptions.standard());
+  w9.beginObject();
+  w9.int(1i64);
+  let i = textOf(w9.finish());
+  expect(i.view().contains("key belongs"), "a number where a key belongs");
+
+  done()
+}
