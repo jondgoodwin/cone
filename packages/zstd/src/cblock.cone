@@ -2,8 +2,10 @@
 //
 // RFC 8878 section 3.1.1.3, the writing side of block.cone. Every choice is
 // made for the block alone, by its size: no table is carried from the block
-// before ("treeless" literals and the "repeat" table mode are never written),
-// so a block written raw instead costs nothing but its repeat offsets.
+// before except the Huffman code of the literals ("treeless" literals repeat
+// the last one kept, when that is no worse; the "repeat" table mode of the
+// sequences is never written), so a block written raw instead costs nothing
+// but its repeat offsets (the code is kept only once a block is coded).
 //
 //   literals    raw when there are fewer than 64 (as the reference does) or
 //               Huffman does not save at least 1/64 of them and 2 bytes; RLE
@@ -87,8 +89,14 @@ fn writeRawLiterals(out: &mut List[u8], lits: &Array[u8]) {
 }
 
 // Appends the literals section for 'lits' (the block's literals: the first 'nlit' of the Seqs' array)
+//
+// A block's Huffman code is its own, or, as the reference does, the code of the last block kept
+// with one (treeless literals) when that is no worse: the literals cost under it no more than
+// under a new code plus its description (HUF_compress_internal; its preferRepeat for
+// 1024 literals or fewer is left out, as it can cost bytes). 'huf.pending' says the block carries a new code.
 fn writeLiterals(lits: &Array[u8], huf: &mut HufEnc, out: &mut List[u8]) {
   let n = lits.len;
+  huf.pending = false;
   if n < 64usize {
     writeRawLiterals(out, lits);
     return;
@@ -108,14 +116,29 @@ fn writeLiterals(lits: &Array[u8], huf: &mut HufEnc, out: &mut List[u8]) {
     out.push(0u8);
     k += 1usize;
   }
-  if !huf.writeTree(out) {
-    out.truncate(mark);
-    writeRawLiterals(out, lits);
-    return;
+  let old = huf.oldCost();
+  let canReuse = old != 0xFFFFFFFFFFFFFFFFu64;
+  let fresh = huf.newCost();
+  var reuse = canReuse && old <= fresh;
+  if !reuse {
+    let at = out.len();
+    if huf.writeTree(out) {
+      if canReuse && (old <= u64.from(out.len() - at) + fresh || out.len() - at + 12usize >= n) {
+        out.truncate(at);
+        reuse = true;
+      }
+    } else if canReuse {
+      reuse = true;
+    } else {
+      out.truncate(mark);
+      writeRawLiterals(out, lits);
+      return;
+    }
   }
   let single = n < 256usize;
   if single {
-    huf.encodeStream(lits, 0usize, n, out);
+    if reuse { huf.encodeStream(lits, 0usize, n, out, &huf.prevPk, huf.prevLog); }
+    else { huf.encodeStream(lits, 0usize, n, out, &huf.pk, huf.tableLog); }
   } else {
     // A jump table of the first three streams' sizes, then the four
     let jump = out.len();
@@ -130,7 +153,8 @@ fn writeLiterals(lits: &Array[u8], huf: &mut HufEnc, out: &mut List[u8]) {
       let from = i * seg;
       let to = if i == 3usize {n} else {from + seg};
       let at = out.len();
-      huf.encodeStream(lits, from, to, out);
+      if reuse { huf.encodeStream(lits, from, to, out, &huf.prevPk, huf.prevLog); }
+      else { huf.encodeStream(lits, from, to, out, &huf.pk, huf.tableLog); }
       if i < 3usize {
         let size = out.len() - at;
         out.set(jump + 2usize * i, u8.from(size & 255usize));
@@ -145,9 +169,11 @@ fn writeLiterals(lits: &Array[u8], huf: &mut HufEnc, out: &mut List[u8]) {
     writeRawLiterals(out, lits);
     return;
   }
+  huf.pending = !reuse;
   let sf = if single {0u64} else if hs == 3usize {1u64} else if hs == 4usize {2u64} else {3u64};
   let sizeBits = if hs == 3usize {10u64} else if hs == 4usize {14u64} else {18u64};
-  let h = 2u64 | (sf << 2u64) | (u64.from(n) << 4u64) | (u64.from(csize) << (4u64 + sizeBits));
+  let kind = if reuse {3u64} else {2u64};
+  let h = kind | (sf << 2u64) | (u64.from(n) << 4u64) | (u64.from(csize) << (4u64 + sizeBits));
   k = 0usize;
   while k < hs {
     out.set(mark + k, u8.from((h >> u64.from(8usize * k)) & 255u64));
