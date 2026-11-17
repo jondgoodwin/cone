@@ -12,7 +12,7 @@ allocation API only. **Off by default:** nothing links it unless a program asks.
 | `src/cnmalloc.cone` | The heap (a C-named module: no prelude, no core, no globals, nothing from Cone's runtime). Its header comment is the design: the page pool and reservation interfaces, the lock order, the concurrency rule. |
 | `shim/cn_shim.c` | The C part (language gaps, below): the one global heap pointer, the lazy compare-and-swap start, the `malloc`/`free`/... names, the `__imp_` pointers, the exit-time statistics hook. |
 | `shim/build-cn.ps1` | Builds `cn.lib` (the package's release object plus `cn_shim.c`). |
-| `tests/` | `edges` (class table, aligned to 1 MiB, API edges, large grow/shrink, foreign blocks, struct layout), `dirty` (the dirty-page test under each give-back setting), `stress` (threads, cross-thread frees, realloc, pattern checks), `idle` (give-back by the timer when the process goes quiet). |
+| `tests/` | `edges` (class table, aligned to 1 MiB, API edges, large grow/shrink, foreign blocks, struct layout), `dirty` (the dirty-page test under each give-back setting), `stress` (threads, cross-thread frees, realloc, pattern checks), `idle` (give-back by the timer when the process goes quiet), `cache` (the workers' cache, through the C runtime's malloc family: checks only when linked with `cn.lib` and `CNMALLOC=cache=<n>`; `CNCACHE_SECS`, `CNCACHE_THREADS`, `CNCACHE_MODE=random\|pc`), and `edges`' batch checks. |
 
 ## Linking it
 
@@ -37,13 +37,38 @@ powershell -File packages\cnmalloc\shim\build-cn.ps1 -Out <dir>        # writes 
 | `reserve=<n>[k\|m\|g]` | `64g` | The address space for small-block pages (64 MiB to 1 TiB). |
 | `largecap=<n>[k\|m\|g]` | `64m` | Committed bytes of freed large blocks kept for reuse. |
 | `stats` | off | Print the counters to stderr at exit (no allocation). |
+| `cache=<n>` | `0` (off) | Row 426: blocks per size class that a worker thread may keep in its own cache (see below). 0 touches no thread-local. |
+| `cache_max=<bytes>` | `1024` | Only requests up to this size, and their classes, are cached (at most 32768). |
+
+## The workers' cache (row 426)
+
+Only a thread the runtime declares a worker has one; every other thread goes straight to the shared heap. A free on a
+worker pushes the block on a short LIFO list for its class, with no lock; an allocate pops. Over the cap, the older
+half of the list goes back to the heap under one take of the class lock; on an empty list, one take of the class lock
+fills the list to half the cap. A cached block is dirty, so `calloc` clears it. Large blocks and classes above
+`cache_max` are never cached. The slack is bounded in bytes: with the default `cache_max`, about 240 KiB per worker at
+`cache=7` and 1.1 MiB at `cache=32`.
+
+**A cached block stays counted as used.** Taking a cell from the heap adds one to its page's used count (under the
+class lock) and only the batch free subtracts it (under the class lock, retiring the page if that was the last live
+cell). The cache never touches a page's used count, free list or bitmap, so a page with a cell in some cache cannot
+retire, and retiring is exactly the heap's. A cached cell counts in the class's `live`; the per-class allocation and
+free counters count heap takes and gives, not cache hits.
+
+The runtime's three calls are exported from the program's own module when `cn.lib` is linked: `cnmalloc_workerBegin()`
+(this thread is a worker), `cnmalloc_workerPark()` (empty the cache, then `cnm_collect`: give back what is due; the
+heap's timer handles what falls due later) and `cnmalloc_workerEnd()` (empty the cache, free the worker's slot). The
+actors runtime finds them by `GetProcAddress` on its own module when each worker starts, so a program without cnmalloc
+calls nothing. A thread that ends without `workerEnd` keeps its cached cells counted as used for good. Up to 512
+workers are cached at once; more run uncached.
 
 ## Counters
 
 `cnm_stats(heap, buffer, max)` copies 64-bit counters out: per class (72): allocations, frees, live cells, active
 pages, lock waits (a lock take whose first try failed); then the pool (committed bytes, empty pages, decommitted
 pages, pages reused, commit calls, decommit calls); then large blocks (live, committed bytes, in-place grows, moves,
-cache hits, system calls); then foreign blocks forwarded. `CNMALLOC=stats` prints them at exit; `cn_print_lock_waits()`
+cache hits, system calls); then foreign blocks forwarded; then the workers' caches (bytes held now, hits, misses,
+batch returns, batch fills; published by the shim when the counters are read). `CNMALLOC=stats` prints them at exit; `cn_print_lock_waits()`
 prints the lock-wait lines the benchmark runner collects.
 
 ## Language gaps (what is in C and why)
@@ -59,3 +84,8 @@ prints the lock-wait lines the benchmark runner collects.
    through a `cstr` parameter of an extern with another C name (`strncpy`), and the settings parser compares with `strncmp`.
 7. A module trait (`Os`) cannot be chosen by anything but naming the conforming module (`oswin`) in the code that
    uses it: there is no way yet to select the implementation by a build setting.
+8. (Row 426) The workers' cache is a C thread-local: a C-named module has no globals, so no thread-locals. The calls
+   into the heap that the cache needs (`cnm_cell_class`, `cnm_batch_alloc`, `cnm_batch_free`) are Cone.
+9. (Row 426) The actors runtime reaches the three worker calls by `GetProcAddress` on the program's own module (the
+   shim's `__declspec(dllexport)`), not by a weak symbol: a Cone package has no way to declare an extern that may be
+   absent at link time.

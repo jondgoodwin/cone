@@ -2,7 +2,9 @@
 // _msize, _expand, _recalloc and the _aligned_ family, which shim/cn_shim.c exports over the functions here).
 // It is off by default: nothing links it unless a program asks (shim/README.md, "Linking it").
 //
-// The heap has no per-thread state. Everything a thread touches is under a lock or is read-only.
+// The heap has no per-thread state. Everything a thread touches is under a lock or is read-only. (Row 426's
+// optional workers' cache is the one per-thread thing, and it is in shim/cn_shim.c, outside the heap: a cached
+// cell stays counted as used here, see "The workers' cache" below.)
 //
 // THE FOUR PARTS
 //   OS layer     os.cone is the interface (reserve, commit, decommit, release), oswin.cone the Windows
@@ -141,6 +143,13 @@ pub struct Heap {
   foreign: u64;       // foreign frees and reallocs forwarded (counted under the pool lock)
   descReserve: usize;
   metaReserve: usize;
+  cacheCap: usize;    // row 426: blocks per size class a worker may cache; 0 turns the cache off
+  cacheMax: usize;    // row 426: only requests up to this many bytes are cached
+  cBytes: u64;        // row 426: the C shim's per-worker caches, published to the counters (cnm_set_cache_stats)
+  cHits: u64;
+  cMisses: u64;
+  cReturns: u64;
+  cFills: u64;
 }
 
 pub struct Pool {
@@ -589,6 +598,14 @@ fn retirePage(h: *Heap, c: *Class, page: usize, d: *Desc) {
 fn smallAlloc(h: *Heap, cl: usize, fresh: *u32) usize {
   let c = classAt(h, cl);
   lockClass(h, c);
+  let a = takeCell(h, c, cl, fresh);
+  oswin.unlock(c as usize);
+  a
+}
+
+// The body of smallAlloc, with c's lock held and left held (the caller unlocks); the batch allocate (row 426)
+// calls it once per cell under one take of the lock.
+fn takeCell(h: *Heap, c: *Class, cl: usize, fresh: *u32) usize {
   if c.cur == none {
     var q = btFirst(h, cl);
     if q == none {
@@ -601,7 +618,7 @@ fn smallAlloc(h: *Heap, cl: usize, fresh: *u32) usize {
         btSet(h, cl, q);
       } else {
         q = poolTake(h, c.commit);
-        if q == none { oswin.unlock(c as usize); return 0usize; }
+        if q == none { return 0usize; }
         let nd = descOf(h, q);
         nd.cls = u32.from(cl);          // written before any cell of the page is handed out (see freeSmall)
         nd.state = stActive;
@@ -636,7 +653,6 @@ fn smallAlloc(h: *Heap, cl: usize, fresh: *u32) usize {
     btClear(h, cl, page);
     c.cur = none;
   }
-  oswin.unlock(c as usize);
   a
 }
 
@@ -652,6 +668,15 @@ fn freeSmall(h: *Heap, a: usize) {
   let cl = usize.from(d.cls);
   let c = classAt(h, cl);
   lockClass(h, c);
+  let waiting = putCell(h, c, cl, page, d, a);
+  oswin.unlock(c as usize);
+  if waiting { armIfWaiting(h); }
+}
+
+// The body of freeSmall, with c's lock held and left held: push a onto its page's free list, and retire the page
+// if that was its last live cell. Returns whether a page was retired (the caller arms the timer, after unlocking).
+// The batch free (row 426) calls it once per cell under one take of the lock.
+fn putCell(h: *Heap, c: *Class, cl: usize, page: usize, d: *Desc, a: usize) bool {
   let full = d.freeHead == 0usize && usize.from(d.bump) + c.size > usize.from(d.limit);
   wr(a, u64.from(d.freeHead));
   d.freeHead = a;
@@ -671,8 +696,7 @@ fn freeSmall(h: *Heap, a: usize) {
   } else if c.cur != none && page < c.cur {
     c.cur = page;
   }
-  oswin.unlock(c as usize);
-  if waiting { armIfWaiting(h); }
+  waiting
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,15 +1099,20 @@ pub struct Settings {
   delayMs: u64;
   largeCap: usize;
   stats: usize;
+  cacheCap: usize;
+  cacheMax: usize;
 }
 
-// the defaults: 64 GiB of address space, give-back after 1000 ms, 64 MiB of large blocks kept
+// the defaults: 64 GiB of address space, give-back after 1000 ms, 64 MiB of large blocks kept, no cache
+// (row 426: cache=<n> blocks per class per worker, 0 = off; cache_max=<bytes>, 1024)
 pub fn cnm_defaults(s: *Settings) {
   s.reserve = 68719476736usize;
   s.mode = modeDelay;
   s.delayMs = 1000u64;
   s.largeCap = 67108864usize;
   s.stats = 0usize;
+  s.cacheCap = 0usize;
+  s.cacheMax = 1024usize;
 }
 
 // Reads CNMALLOC (for example "giveback=now,reserve=32g,largecap=16m,stats") into s. buf is 1024 bytes of scratch.
@@ -1105,6 +1134,12 @@ pub fn cnm_readEnv(s: *Settings, buf: usize) {
       s.reserve = parseNum(a + 8usize, z);
     } else if len >= 9usize && strncmp(a as *u8, "largecap=", 9usize) == 0i32 {
       s.largeCap = parseNum(a + 9usize, z);
+    } else if len >= 6usize && strncmp(a as *u8, "cache=", 6usize) == 0i32 {
+      s.cacheCap = parseNum(a + 6usize, z);
+      if s.cacheCap > 1024usize { s.cacheCap = 1024usize; }
+    } else if len >= 10usize && strncmp(a as *u8, "cache_max=", 10usize) == 0i32 {
+      s.cacheMax = parseNum(a + 10usize, z);
+      if s.cacheMax > maxSmall { s.cacheMax = maxSmall; }
     } else if len >= 5usize && strncmp(a as *u8, "stats", 5usize) == 0i32 {
       s.stats = 1usize;
     }
@@ -1154,6 +1189,8 @@ pub fn cnm_create(s: *Settings) usize {
   h.delayMs = s.delayMs;
   h.largeCap = s.largeCap;
   h.stats = s.stats;
+  h.cacheCap = s.cacheCap;
+  h.cacheMax = s.cacheMax;
   var c = 0usize;
   while c < nClasses {
     let k = classAt(h, c);
@@ -1186,13 +1223,13 @@ pub fn cnm_create(s: *Settings) usize {
 
 // A heap with the given settings (mode: 0 now, 1 delay, 2 never), for tests and tools that make their own.
 pub fn cnm_make(reserve: usize, mode: usize, delayMs: u64, largeCap: usize) usize {
-  var s = Settings(reserve, mode, delayMs, largeCap, 0usize);
+  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize);
   cnm_create(&mut s)
 }
 
 // A heap from the CNMALLOC environment variable. This is the process's: shim/cn_shim.c calls it once.
 pub fn cnm_boot() usize {
-  var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize);
+  var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize, 0usize, 1024usize);
   cnm_defaults(&mut s);
   // the settings text is read into a scratch area, so the heap's own region is not made yet: a small
   // reservation holds it for the moment
@@ -1413,6 +1450,87 @@ pub fn cnm_aligned_msize(hh: usize, p: *u8, align: usize, off: usize) usize {
 }
 
 // ---------------------------------------------------------------------------
+// The workers' cache (row 426): the heap's half
+//
+// The cache itself (a short LIFO list of cells per class, per worker, in a C thread-local) is in shim/cn_shim.c,
+// because a C-named Cone module has no globals and so no thread-locals. This is what that file needs of the heap.
+// A CACHED CELL STAYS COUNTED AS USED: nothing here changes d.used, c.live or a page's free list when a cell goes
+// into a cache or comes out of one. A cell leaves the heap only through takeCell (d.used + 1, under the class
+// lock) and returns only through putCell (d.used - 1, under the class lock, retiring the page if that was its
+// last live cell), exactly as an uncached allocate and free do. So a page with a cell in some worker's cache has
+// used >= 1 and cannot retire, and retiring is untouched: it still happens only in putCell, under the class lock.
+// ---------------------------------------------------------------------------
+
+// the cache settings, read once by the shim
+pub fn cnm_cache_cap(hh: usize) usize { (hh as *Heap).cacheCap }
+pub fn cnm_cache_max(hh: usize) usize { (hh as *Heap).cacheMax }
+
+// the class of a request of n bytes, or none when n is over the largest small class
+pub fn cnm_class_of(hh: usize, n: usize) usize {
+  if n > maxSmall { return none; }
+  classOf(hh as *Heap, n)
+}
+
+pub fn cnm_class_size(hh: usize, cl: usize) usize { classAt(hh as *Heap, cl).size }
+
+// the class of a block of ours that lives in a page, or none (a large or foreign block). Read without the lock,
+// on the same argument as freeSmall's: the caller holds a live block.
+pub fn cnm_cell_class(hh: usize, p: *u8) usize {
+  let h = hh as *Heap;
+  let a = p as usize;
+  if (a - h.base) >= h.size { return none; }
+  usize.from(descOf(h, (a - h.base) >> pageShift).cls)
+}
+
+// Up to n cells of class cl, taken under one take of the class's lock, chained through their first words (the
+// last has 0). *got says how many (fewer only when the heap is out of memory). The cells are not zeroed.
+pub fn cnm_batch_alloc(hh: usize, cl: usize, n: usize, got: *usize) usize {
+  let h = hh as *Heap;
+  let c = classAt(h, cl);
+  var head = 0usize;
+  var k = 0usize;
+  var fresh = 0u32;
+  lockClass(h, c);
+  while k < n {
+    let a = takeCell(h, c, cl, &mut fresh);
+    if a == 0usize { break; }
+    wr(a, u64.from(head));
+    head = a;
+    k = k + 1usize;
+  }
+  oswin.unlock(c as usize);
+  *got = k;
+  head
+}
+
+// n cells of class cl, chained through their first words, given back under one take of the class's lock. Every
+// cell goes through putCell, so pages that empty retire exactly as they do for single frees.
+pub fn cnm_batch_free(hh: usize, cl: usize, head: usize, n: usize) {
+  let h = hh as *Heap;
+  let c = classAt(h, cl);
+  var waiting = false;
+  var a = head;
+  var k = 0usize;
+  lockClass(h, c);
+  while a != 0usize && k < n {
+    let nx = usize.from(rd(a));       // before putCell overwrites the cell's first word
+    let page = (a - h.base) >> pageShift;
+    if putCell(h, c, cl, page, descOf(h, page), a) { waiting = true; }
+    a = nx;
+    k = k + 1usize;
+  }
+  oswin.unlock(c as usize);
+  if waiting { armIfWaiting(h); }
+}
+
+// The shim publishes its caches' totals before the counters are read or printed: bytes held now, hits, misses
+// (an allocate that found its list empty), batch returns (a push over the cap) and batch fills (= misses that got cells).
+pub fn cnm_set_cache_stats(hh: usize, bytes: u64, hits: u64, misses: u64, returns: u64, fills: u64) {
+  let h = hh as *Heap;
+  h.cBytes = bytes; h.cHits = hits; h.cMisses = misses; h.cReturns = returns; h.cFills = fills;
+}
+
+// ---------------------------------------------------------------------------
 // Counters
 // ---------------------------------------------------------------------------
 
@@ -1442,6 +1560,12 @@ pub fn cnm_stats(hh: usize, out: *u64, max: usize) usize {
     wr(o + 72usize, l.moves); wr(o + 80usize, l.cacheHits); wr(o + 88usize, l.sysCalls);
     wr(o + 96usize, h.foreign);
     n = n + 13usize;
+    // row 426: the workers' caches, as last published by the shim: bytes held, hits, misses, batch returns, batch fills
+    if n + 5usize <= max {
+      wr(o + 104usize, h.cBytes); wr(o + 112usize, h.cHits); wr(o + 120usize, h.cMisses);
+      wr(o + 128usize, h.cReturns); wr(o + 136usize, h.cFills);
+      n = n + 5usize;
+    }
   }
   n
 }
@@ -1507,6 +1631,18 @@ pub fn cnm_print_stats(hh: usize) {
   n = putStr(buf, n, " syscalls ", 10usize); n = putNum(buf, n, l.sysCalls);
   n = putStr(buf, n, "\n", 1usize);
   oswin.writeErr(buf, n);
+  if h.cacheCap != 0usize {
+    n = putStr(buf, 0usize, "cnmalloc cache cap ", 19usize);
+    n = putNum(buf, n, u64.from(h.cacheCap));
+    n = putStr(buf, n, " max ", 5usize); n = putNum(buf, n, u64.from(h.cacheMax));
+    n = putStr(buf, n, " bytes ", 7usize); n = putNum(buf, n, h.cBytes);
+    n = putStr(buf, n, " hits ", 6usize); n = putNum(buf, n, h.cHits);
+    n = putStr(buf, n, " misses ", 8usize); n = putNum(buf, n, h.cMisses);
+    n = putStr(buf, n, " batchreturns ", 14usize); n = putNum(buf, n, h.cReturns);
+    n = putStr(buf, n, " batchfills ", 12usize); n = putNum(buf, n, h.cFills);
+    n = putStr(buf, n, "\n", 1usize);
+    oswin.writeErr(buf, n);
+  }
 }
 
 // what the runner collects: one line per class that was ever contended, and the total

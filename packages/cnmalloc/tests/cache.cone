@@ -1,0 +1,354 @@
+// The workers' cache (row 426), exercised through the C runtime's own malloc family, which is cnmalloc's only
+// when the program is linked with cn.lib (shim\README.md, "Linking it") and CNMALLOC=cache=<n> asks for a cache.
+// Under a plain 'congo test' nothing is linked and this runs on the C runtime's malloc: the program's logic is
+// checked and the cache is not (the checks pass either way). The real runs:
+//   $env:_LINK_ = '"<dir>\cn.lib"'; $env:CNMALLOC = 'cache=7,giveback=now,stats'; (delete build\ first)
+//   CNCACHE_SECS=600 CNCACHE_THREADS=16 CNCACHE_MODE=random|pc   then 'congo test cache'.
+//
+// RANDOM: N threads, each a registered worker (the three calls the actors runtime makes: begin, park, end),
+// share a table of block slots. A step swaps a block out of a random slot (usually made by ANOTHER thread) and
+// frees it, reallocates it or puts it back, or finds the slot empty and allocates a new block: sizes weighted to the
+// cached classes (up to 1024 bytes), some larger, a few large; every block is filled with a pattern made from its
+// address and size and checked at every take. Every so often a thread 'parks' (its cache goes back to the heap),
+// at random. Some of the allocations are calloc, checked to be zero.
+// PC (producer-consumer, Pegasus's frame pattern: the view actor builds a snapshot, the render actor frees it):
+// one worker allocates blocks and passes them through a ring, another frees them. The freeing worker's cache fills
+// and returns half to the heap in batches; the allocating worker's list is always empty and fills in batches.
+
+mod cache;
+
+import testing use *;
+import thread;
+import libc;
+import collections use List;
+
+extern {
+  fn @c(system) GetTickCount64() u64;
+  fn @c("strlen") strlen(s: cstr) usize;
+  fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
+  fn @c(system) GetStdHandle(n: u32) usize;
+  fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
+  fn @c(system) GetModuleHandleA(name: *u8) usize;
+  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
+}
+
+alias Call = &fn @c ();
+
+const slotsN = 8192usize;
+const ringN = 1024usize;
+
+struct Job {
+  slots: usize;      // slotsN words
+  errs: usize;       // word 0: errors, word 1: ops, 2: produced, 3: consumed
+  endTick: u64;
+  begin: usize;
+  park: usize;
+  end: usize;
+  ring: usize;       // ringN words
+  mode: usize;
+}
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+
+fn cas(slot: *usize, from: usize, to: usize) bool {
+  var o = 0usize;
+  var ok = false;
+  o, ok = mem.atomicCompareSwap[usize](slot, from, to, MemOrder.SeqCst, MemOrder.SeqCst);
+  ok
+}
+
+fn next(s: *u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+fn pick(r: u64) usize {
+  let k = r % 1000u64;
+  let m = r >> 20u64;
+  if k < 800u64 { usize.from(16u64 + m % 1008u64) }
+  else if k < 950u64 { usize.from(1025u64 + m % 3000u64) }
+  else if k < 998u64 { usize.from(4096u64 + m % 28600u64) }
+  else { usize.from(40000u64 + m % 100000u64) }
+}
+
+fn pat(addr: usize, size: usize, i: usize) u8 { u8.from((addr >> 4usize) + size + i * 31usize) }
+
+fn stamp(p: *u8, size: usize) {
+  *(p as *usize) = size;
+  var i = 8usize;
+  while i < size { *at(p, i) = pat(p as usize, size, i); i = i + 1usize; }
+}
+
+fn check(p: *u8, was: usize, size: usize, upto: usize) bool {
+  if *(p as *usize) != size { return false; }
+  var i = 8usize;
+  while i < upto { if *at(p, i) != pat(was, size, i) { return false; } i = i + 1usize; }
+  true
+}
+
+fn zeroed(p: *u8, size: usize) bool {
+  var i = 0usize;
+  while i < size { if *at(p, i) != 0u8 { return false; } i = i + 1usize; }
+  true
+}
+
+fn call(a: usize) {
+  if a != 0usize {
+    let f = a as *u8 as Call;
+    f();
+  }
+}
+
+fn randomWorker(arg: usize) u64 {
+  let job = arg as *Job;
+  var seed = 88172645463325252u64;
+  let tid = usize.from(mem.atomicAdd[usize](word(job.errs, 7usize), 1usize, MemOrder.SeqCst));
+  seed = seed ^ (u64.from(tid + 1usize) * 2685821657736338717u64);
+  call(job.begin);
+  var ops = 0usize;
+  var errs = 0usize;
+  while GetTickCount64() < job.endTick {
+    var burst = 0usize;
+    while burst < 200usize {
+      burst = burst + 1usize;
+      ops = ops + 1usize;
+      if next(&mut seed) % 64u64 == 0u64 { call(job.park); }
+      let idx = usize.from(next(&mut seed) % u64.from(slotsN));
+      let slot = word(job.slots, idx);
+      let cur = mem.atomicSwap[usize](slot, 0usize, MemOrder.SeqCst);
+      if cur != 0usize {
+        let p = cur as *u8;
+        let size = *(p as *usize);
+        if size < 8usize || size > 1000000usize { errs = errs + 1usize; continue; }
+        if !check(p, cur, size, size) { errs = errs + 1usize; }
+        let r = next(&mut seed) % 4u64;
+        if r < 2u64 {
+          libc.free(p);
+        } else if r == 2u64 {
+          let ns = pick(next(&mut seed));
+          let nsz = if ns < 8usize { 8usize } else { ns };
+          let q = libc.realloc(p, nsz);
+          if q as usize == 0usize { errs = errs + 1usize; continue; }
+          let keep = if nsz < size { nsz } else { size };
+          var i = 8usize;
+          var ok = true;
+          while i < keep { if *at(q, i) != pat(cur, size, i) { ok = false; break; } i = i + 1usize; }
+          if !ok { errs = errs + 1usize; }
+          stamp(q, nsz);
+          if !cas(slot, 0usize, q as usize) {
+            if !check(q, q as usize, nsz, nsz) { errs = errs + 1usize; }
+            libc.free(q);
+          }
+        } else {
+          if !cas(slot, 0usize, cur) { libc.free(p); }
+        }
+      } else {
+        let sz = pick(next(&mut seed));
+        let size = if sz < 8usize { 8usize } else { sz };
+        var p = 0usize as *u8;
+        if next(&mut seed) % 5u64 == 0u64 {
+          p = libc.calloc(1usize, size);
+          if p as usize != 0usize && !zeroed(p, size) { errs = errs + 1usize; }
+        } else {
+          p = libc.malloc(size);
+        }
+        if p as usize == 0usize { errs = errs + 1usize; continue; }
+        stamp(p, size);
+        if !cas(slot, 0usize, p as usize) {
+          if !check(p, p as usize, size, size) { errs = errs + 1usize; }
+          libc.free(p);
+        }
+      }
+    }
+  }
+  call(job.end);
+  mem.atomicAdd[usize](word(job.errs, 0usize), errs, MemOrder.SeqCst);
+  mem.atomicAdd[usize](word(job.errs, 1usize), ops, MemOrder.SeqCst);
+  u64.from(tid)
+}
+
+// the producer: allocates into a ring of slots; the consumer frees from it
+fn producer(arg: usize) u64 {
+  let job = arg as *Job;
+  var seed = 1234567891011u64;
+  call(job.begin);
+  var i = 0usize;
+  var errs = 0usize;
+  var made = 0usize;
+  while GetTickCount64() < job.endTick {
+    let slot = word(job.ring, i % ringN);
+    if *slot == 0usize {
+      let size = 16usize + usize.from(next(&mut seed) % 1009u64);
+      let p = libc.malloc(size);
+      if p as usize == 0usize { errs = errs + 1usize; continue; }
+      stamp(p, size);
+      mem.atomicSwap[usize](slot, p as usize, MemOrder.SeqCst);
+      made = made + 1usize;
+      i = i + 1usize;
+      if made % 4096usize == 0usize { call(job.park); }
+    } else {
+      thread.yieldNow();
+    }
+  }
+  call(job.end);
+  mem.atomicAdd[usize](word(job.errs, 0usize), errs, MemOrder.SeqCst);
+  mem.atomicAdd[usize](word(job.errs, 2usize), made, MemOrder.SeqCst);
+  0u64
+}
+
+fn consumer(arg: usize) u64 {
+  let job = arg as *Job;
+  call(job.begin);
+  var i = 0usize;
+  var errs = 0usize;
+  var got = 0usize;
+  var idle = 0usize;
+  while true {
+    let slot = word(job.ring, i % ringN);
+    let cur = mem.atomicSwap[usize](slot, 0usize, MemOrder.SeqCst);
+    if cur != 0usize {
+      let p = cur as *u8;
+      let size = *(p as *usize);
+      if size < 16usize || size > 1100usize || !check(p, cur, size, size) { errs = errs + 1usize; }
+      libc.free(p);
+      got = got + 1usize;
+      i = i + 1usize;
+      idle = 0usize;
+      if got % 4096usize == 0usize { call(job.park); }
+    } else {
+      if GetTickCount64() > job.endTick + 200u64 { break; }
+      idle = idle + 1usize;
+      thread.yieldNow();
+    }
+  }
+  call(job.end);
+  mem.atomicAdd[usize](word(job.errs, 0usize), errs, MemOrder.SeqCst);
+  mem.atomicAdd[usize](word(job.errs, 3usize), got, MemOrder.SeqCst);
+  0u64
+}
+
+fn envNum(name: cstr, dflt: usize) usize {
+  let p = libc.getenv(name);
+  if p as usize == 0usize { return dflt; }
+  var v = 0usize;
+  var i = 0usize;
+  while true {
+    let c = usize.from(*at(p, i));
+    if c < 48usize || c > 57usize { break; }
+    v = v * 10usize + (c - 48usize);
+    i = i + 1usize;
+  }
+  if i == 0usize { dflt } else { v }
+}
+
+fn newJob(secs: usize, mode: usize) *Job {
+  let job = libc.calloc(1usize, 128usize) as *Job;
+  job.slots = libc.calloc(slotsN, 8usize) as usize;
+  job.errs = libc.calloc(16usize, 8usize) as usize;
+  job.ring = libc.calloc(ringN, 8usize) as usize;
+  job.endTick = GetTickCount64() + u64.from(secs) * 1000u64;
+  job.mode = mode;
+  let m = GetModuleHandleA(null);
+  job.begin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
+  job.park = GetProcAddress(m, &"cnmalloc_workerPark" as *u8);
+  job.end = GetProcAddress(m, &"cnmalloc_workerEnd" as *u8);
+  job
+}
+
+fn runRandom(secs: usize, nthreads: usize) {
+  let job = newJob(secs, 0usize);
+  var ts = List[thread.Thread[u64]]();
+  var t = 0usize;
+  while t < nthreads { ts.push(thread.start[usize, u64](job as usize, &randomWorker)); t = t + 1usize; }
+  while ts.len() > 0usize { ts.pop().unwrap().join(); }
+  var errs = *word(job.errs, 0usize);
+  var i = 0usize;
+  while i < slotsN {
+    let cur = *word(job.slots, i);
+    if cur != 0usize {
+      let p = cur as *u8;
+      let size = *(p as *usize);
+      if !check(p, cur, size, size) { errs = errs + 1usize; }
+      libc.free(p);
+    }
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(errs), 0, "random: no corrupted block, no failed realloc, calloc blocks zero");
+  expect(*word(job.errs, 1usize) > 1000usize, "random: the threads did real work");
+}
+
+fn putNum(buf: *u8, pos: usize, v: usize) usize {
+  var digits = 1usize;
+  var t = v;
+  while t >= 10usize { t = t / 10usize; digits = digits + 1usize; }
+  var x = v;
+  var i = digits;
+  while i > 0usize { i = i - 1usize; *at(buf, pos + i) = u8.from(48usize + x % 10usize); x = x / 10usize; }
+  pos + digits
+}
+
+fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
+  let buf = libc.malloc(256usize);
+  var n = 0usize;
+  n = putStr(buf, n, label); n = putNum(buf, n, a);
+  n = putStr(buf, n, mid); n = putNum(buf, n, b);
+  n = putStr(buf, n, tail); n = putNum(buf, n, c);
+  *at(buf, n) = 10u8;
+  var w = 0u32;
+  WriteFile(GetStdHandle(0xFFFFFFF4u32), buf, u32.from(n + 1usize), &mut w, 0usize);
+  libc.free(buf);
+}
+
+fn putStr(buf: *u8, pos: usize, s: cstr) usize {
+  let n = strlen(s);
+  copyLit(at(buf, pos), s, n);
+  pos + n
+}
+
+fn runPc(secs: usize) {
+  let job = newJob(secs, 1usize);
+  let t0 = GetTickCount64();
+  let a = thread.start[usize, u64](job as usize, &producer);
+  let b = thread.start[usize, u64](job as usize, &consumer);
+  a.join();
+  b.join();
+  let ms = GetTickCount64() - t0;
+  var errs = *word(job.errs, 0usize);
+  // anything left in the ring is intact, and frees
+  var i = 0usize;
+  while i < ringN {
+    let cur = *word(job.ring, i);
+    if cur != 0usize {
+      let p = cur as *u8;
+      let size = *(p as *usize);
+      if !check(p, cur, size, size) { errs = errs + 1usize; }
+      libc.free(p);
+    }
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(errs), 0, "pc: no corrupted block");
+  expect(*word(job.errs, 2usize) > 100usize, "pc: the producer did real work");
+  expect(*word(job.errs, 2usize) >= *word(job.errs, 3usize), "pc: nothing consumed that was not produced");
+  // the throughput goes to stderr, outside the blessed output
+  errLine("pc produced ", *word(job.errs, 2usize), " consumed ", *word(job.errs, 3usize), " ms ", usize.from(ms));
+}
+
+fn main() i32 {
+  let secs = envNum("CNCACHE_SECS", 2usize);
+  let nthreads = envNum("CNCACHE_THREADS", 8usize);
+  let only = libc.getenv("CNCACHE_MODE");
+  if only as usize == 0usize {
+    runRandom(secs, nthreads);
+    runPc(secs);
+  } else if *only == 114u8 {
+    runRandom(secs, nthreads);
+  } else {
+    runPc(secs);
+  }
+  done()
+}
