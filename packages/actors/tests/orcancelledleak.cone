@@ -1,0 +1,221 @@
+// An orCancelled await whose group can never be cancelled again (row 470). The await keeps its own copy
+// of the group and the group keeps the await's cancel arm: a reference cycle, which once the callee had
+// dropped its reply (and so could not complete the await either) kept the awaiting actor for ever.
+// A group with no holder left (no handle but the awaits' own copies, cancelgroups.cone HOLDERS) drops its
+// cancel arms. An await with no arm left is abandoned like a plain await whose reply was dropped:
+// its actor is released, no behaviour goes on. An await with its other arm pending keeps waiting on it.
+//
+// 1. One group, five awaits on operations that keep their envelopes: the envelopes dropped, then the
+//    group's handle: all five actors die, no behaviour goes on.
+// 2. The same with a group of its own for each of 40 actors, the handle dropped before the envelopes
+//    (the other order of the two events).
+// 3. A group whose last holder is dropped while the callee is still working: the await keeps waiting
+//    on the callee and goes on Ok when it answers.
+// 4. A child group of a held parent: the child dropped, the envelope dropped, the parent still holds
+//    the await's other arm: its cancel still wakes it.
+
+mod orcancelledleak;
+
+import testing use *;
+import libc;
+import actors;
+import cancelgroups use *;
+import thread;
+import time use Instant, Duration;
+
+let wentOn: Atomic[u64];     // behaviours that went on after the await
+let parked: Atomic[u64];     // hung operations started
+let died: Atomic[u64];       // awaiting actors that died
+let gate: Atomic[u64];       // lets the slow callee answer
+let okSeen: Atomic[u64];
+let errSeen: Atomic[u64];
+
+fn @initpure init() {
+  wentOn = Atomic[u64].of(0u64);
+  parked = Atomic[u64].of(0u64);
+  died = Atomic[u64].of(0u64);
+  gate = Atomic[u64].of(0u64);
+  okSeen = Atomic[u64].of(0u64);
+  errSeen = Atomic[u64].of(0u64);
+}
+
+struct Mark is Move {
+  pub n: u64;
+  fn final(self: &uni) {died.add(1u64);}
+}
+
+// An operation's record: the Reply the seam gave, kept until the record is dropped
+struct Rec {
+  pub reply: actors.Reply;
+}
+
+fn runStore(ctx: *u8, rp: actors.Reply) {
+  mem.writeRaw[Rec](ctx as *Rec, Rec(rp));
+  parked.add(1u64);
+}
+
+fn dropIt(ctx: *u8) {}
+
+fn hungOp(r: *Rec) actors.Awaitable[u64] {actors.Awaitable[u64].of(r as *u8, &runStore, &dropIt)}
+
+actor Hanger {
+  mark: Mark;
+
+  pub fn init(self: &new) {
+    *self = Self(mark: Mark(0u64));
+  }
+
+  pub async fn hold(self, rec: usize) {
+    match await actors.orCancelledOp(hungOp(rec as *Rec)) {
+      case let Ok(v) {wentOn.add(1u64);}
+      case let Err(c) {wentOn.add(1u64);}
+    }
+  }
+}
+
+actor Slow {
+  pub async fn answer(self, n: u64) u64 {
+    let limit = Instant.now() + Duration.fromMillis(5000i64);
+    while gate.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+    n
+  }
+}
+
+actor Waiter {
+  mark: Mark;
+
+  pub fn init(self: &new) {
+    *self = Self(mark: Mark(0u64));
+  }
+
+  pub async fn viaFuture(self, slow: Slow) {
+    match await actors.orCancelled(slow.answer(9u64)) {
+      case let Ok(v) {okSeen.add(1u64);}
+      case let Err(c) {errSeen.add(1u64);}
+    }
+  }
+}
+
+fn waitDied(n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(5000i64);
+  while died.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(1i64));}
+}
+
+fn waitParked(n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(5000i64);
+  while parked.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(1i64));}
+}
+
+const nMany = 40usize;
+
+// A group in a block of its own, dropped by the test (a local would be dropped again at the end)
+fn mk(g: CancelGroup) *CancelGroup {
+  let p = libc.malloc(mem.sizeof[CancelGroup]()) as *CancelGroup;
+  mem.writeRaw[CancelGroup](p, g);
+  p
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+
+  // 1. several awaits in one group
+  let recs = libc.malloc(mem.sizeof[Rec]() * nMany) as *Rec;
+  let g = mk(CancelGroup.make());
+  var i = 0usize;
+  while i < 5usize {
+    let h = Hanger();
+    let r = recs + i;
+    actors.withGroup(&*g, fn() [h, r] { h.hold(r as usize); });
+    i = i + 1usize;
+  }
+  waitParked(5u64);
+  i = 0usize;
+  while i < 5usize {
+    mem.finalize[Rec](recs + i);
+    i = i + 1usize;
+  }
+  actors.waitQuiet();
+  expectUInt(died.load(), 0u64, "1: the group is held: the awaits wait for its cancel");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 5u64, "1: ... five of them");
+  mem.finalize[CancelGroup](g);
+  waitDied(5u64);
+  expectUInt(died.load(), 5u64, "1: its last holder gone: all five actors died");
+  expectUInt(wentOn.load(), 0u64, "1: ... and no behaviour went on");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "1: ... and no await is parked");
+
+  // 2. a group each, the holder dropped first
+  let groups = libc.malloc(mem.sizeof[CancelGroup]() * nMany) as *CancelGroup;
+  let base = parked.load();
+  i = 0usize;
+  while i < nMany {
+    mem.writeRaw[CancelGroup](groups + i, CancelGroup.make());
+    let h = Hanger();
+    let r = recs + i;
+    actors.withGroup(&*(groups + i), fn() [h, r] { h.hold(r as usize); });
+    i = i + 1usize;
+  }
+  waitParked(base + u64.from(nMany));
+  i = 0usize;
+  while i < nMany {
+    mem.finalize[CancelGroup](groups + i);
+    i = i + 1usize;
+  }
+  actors.waitQuiet();
+  expectUInt(u64.from(actors.groupAwaitsLive()), u64.from(nMany), "2: group handles dropped, the callees still hold their replies");
+  i = 0usize;
+  while i < nMany {
+    mem.finalize[Rec](recs + i);
+    i = i + 1usize;
+  }
+  waitDied(5u64 + u64.from(nMany));
+  expectUInt(died.load(), 5u64 + u64.from(nMany), "2: every actor died");
+  expectUInt(wentOn.load(), 0u64, "2: ... and no behaviour went on");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "2: ... and no await is parked");
+  expectUInt(u64.from(actors.liveSegments()), 0u64, "2: ... and no mailbox segment is held");
+
+  // 3. the last holder drops while the callee works
+  let g3 = mk(CancelGroup.make());
+  let slow = Slow();
+  let w3 = Waiter();
+  actors.withGroup(&*g3, fn() [w3, slow] { w3.viaFuture(slow); });
+  thread.sleep(Duration.fromMillis(20i64));
+  mem.finalize[CancelGroup](g3);
+  thread.sleep(Duration.fromMillis(20i64));
+  expectUInt(okSeen.load() + errSeen.load(), 0u64, "3: no holder left, the callee still working: waiting");
+  gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(okSeen.load(), 1u64, "3: the callee's answer completes it");
+  expectUInt(errSeen.load(), 0u64, "3: ... not Err");
+
+  // 4. a held parent's cancel still wakes an await whose own child group is dropped
+  parked.store(0u64);
+  let before = died.load();
+  let recs4 = libc.malloc(mem.sizeof[Rec]()) as *Rec;
+  let parent = mk(CancelGroup.make());
+  let pr = &*parent;
+  let child = mk(pr.child());
+  let h4 = Hanger();
+  actors.withGroup(&*child, fn() [h4, recs4] { h4.hold(recs4 as usize); });
+  waitParked(1u64);
+  mem.finalize[CancelGroup](child);
+  mem.finalize[Rec](recs4);
+  actors.waitQuiet();
+  expectUInt(died.load(), before, "4: the parent is held: the await waits");
+  pr.cancelWith(Cause.Cancelled);
+  waitDied(before + 1u64);
+  expectUInt(died.load(), before + 1u64, "4: the parent's cancel woke it");
+  expectUInt(wentOn.load(), 1u64, "4: ... and the behaviour went on once");
+  mem.finalize[CancelGroup](parent);
+  libc.free(g as *u8);
+  libc.free(g3 as *u8);
+  libc.free(parent as *u8);
+  libc.free(child as *u8);
+
+  expectUInt(u64.from(actors.liveFutures()), 0u64, "no future is left alive");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "no await is parked");
+  libc.free(recs as *u8);
+  libc.free(recs4 as *u8);
+  libc.free(groups as *u8);
+  done()
+}
