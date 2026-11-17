@@ -1,0 +1,64 @@
+// Real collections through the sink: 3 lists of 100 u64 (make at capacity 4, then grows 8, 16, 32, 64, 128, and a
+// drop with length 100 and capacity 128 each), one deque of 10 (make 4, grow 8, grow 16, drop length 10 cap 16),
+// and one dict of 5 entries. The totals block's keys are printed.
+mod lists;
+
+import testing use *;
+import stdio use *;
+import collections use List, Deque, Dict;
+import memtrace;
+import trace;
+import env;
+import fs;
+import path use Path;
+
+fn build() {
+  var round = 0u64;
+  while round < 3u64 {
+    var l = List[u64]();
+    var i = 0u64;
+    while i < 100u64 {
+      l.push(i);
+      i = i + 1u64;
+    }
+    round = round + 1u64;
+  }
+  var d = Deque[u32]();
+  var j = 0u32;
+  while j < 10u32 {
+    d.push(j);
+    j = j + 1u32;
+  }
+  var m = Dict[u64, u64]();
+  var k = 0u64;
+  while k < 5u64 {
+    m.insert(k, k);
+    k = k + 1u64;
+  }
+}
+
+fn main() i32 {
+  env.set("MEMTRACE_OUT", "memtrace-lists.json");
+  if !memtrace.install() {
+    print <- "no install\n";
+    return 1i32;
+  }
+  trace.setLevel("memory", trace.Level.Debug);
+  build();
+  trace.flush();
+  match fs.readFile(&Path.from("memtrace-lists.json")) {
+    case let Ok(text) {
+      let lines = List[&str].from(text.lines());
+      var li = 0usize;
+      var inTotal = false;
+      while li < lines.len() {
+        let line = lines[li];
+        li = li + 1usize;
+        if line.startsWith("{\"s\":\"total") {inTotal = true;}
+        if inTotal && line.startsWith("{\"k\"") {print <- line, "\n";}
+      }
+    }
+    case is Err {print <- "unreadable\n";}
+  }
+  0i32
+}

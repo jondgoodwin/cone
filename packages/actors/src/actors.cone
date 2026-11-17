@@ -962,6 +962,21 @@ import thread;
 import time;
 import cancelgroups use CancelGroup, Cancelled, Cause, stopTimer;
 import collections use List, Deque;
+import trace use Level, Kind4;
+
+// TRACE CONTEXT AND MEMORY EVENTS. When the workers start, the runtime registers the trace package's context
+// provider: an event emitted on a worker carries that worker's index and, as its cause, the number (tid) of the
+// actor whose behaviour is running (0 between messages, and on a thread that is not a worker, which has
+// trace.noWorker). Memory tracing (target "memory"; schema in packages/memtrace/README.md) adds msg.make, when a
+// message is sent, and msg.drop, when a worker has run one (Trace; elem: the message type's bytes, n: 1). The
+// actor in the sink's key is the sender for a make and the receiver for a drop, which is what shows the imbalance.
+let msgMake: Kind4[u64, u64, u64, u64];
+let msgDrop: Kind4[u64, u64, u64, u64];
+
+// What the trace package asks of the runtime for each event: the worker running and the actor it runs for
+fn traceContext() trace.Context {
+  trace.Context(workerIndex(), u64.from(traceActorNow()))
+}
 
 // ---------------------------------------------------------------------------
 // A yield, for the waits that spin (a stalled sender's, a loop's caller's),
@@ -2212,6 +2227,7 @@ fn sendNow[M: Sendable](h: *Header, msg: M) {
   if running.load() == 0usize {
     die("actors: a message sent after the runtime stopped");
   }
+  msgMake.emit(u64.from(mem.sizeof[M]()), 1u64, 0u64, 0u64);
   // a sender working in a cancel group sends a pair (THE GROUP TRAVELS)
   let gp = curGroup;
   if gp != 0usize {
@@ -2468,6 +2484,9 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
     }
     if tracing {
       traceRunEnd(h, cause, bhv);
+    }
+    if kind == kindMsg || kind == kindMsgGroup {
+      msgDrop.emit(u64.from(mem.sizeof[M]()), 1u64, 0u64, 0u64);
     }
     ringDone(h);
     if kind == kindMsgGroup {
@@ -5295,6 +5314,8 @@ let statWorkers: Atomic[u32];   // how many slots; 0 before the workers have sta
 let taskStealsTotal: Atomic[u64];   // pieces stealTask took (Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
 
 fn @initpure init() {
+  msgMake = Kind4[u64, u64, u64, u64].make("msg.make", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  msgDrop = Kind4[u64, u64, u64, u64].make("msg.drop", "memory", Level.Trace, "elem", "n", "inst", "aux");
   segAllocs = Atomic[u64].of(0u64);
   boxAllocs = Atomic[u64].of(0u64);
   waiterAllocs = Atomic[u64].of(0u64);
@@ -5405,6 +5426,7 @@ fn ensureRunning() {
 
 // Start the workers as configure said, once
 fn startWorkers() {
+  trace.setContextProvider(&traceContext);
   // A group's carrier slot holds a CancelGroup in its payload (THE GROUP TRAVELS)
   if mem.sizeof[CancelGroup]() > 16usize || mem.alignof[CancelGroup]() > 8usize {
     die("actors: a CancelGroup no longer fits a slot's smallest payload");

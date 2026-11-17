@@ -109,6 +109,36 @@
 mod collections;
 
 import libc;
+import trace use Level, Kind4;
+
+// MEMORY TRACING (the trace package, target "memory"; the schema is in packages/memtrace/README.md). Each region
+// kind here emits three events, all Debug: <kind>.make when an instance first gets a block (n: its capacity),
+// <kind>.grow when its block is replaced by a bigger one (n: capacity after, aux: capacity before), and
+// <kind>.drop when an instance that holds a block dies (n: its length, aux: its capacity). elem is the size of
+// one element (a Dict's, of one entry) and inst the instance's address. A String's buffer is a List[u8]: its
+// events are the list's, with elem 1. There is no event per push or remove: no check sits on List.push. Off, an
+// event is one load and a compare, and its arguments are not evaluated.
+let listMake: Kind4[u64, u64, u64, u64];
+let listGrow: Kind4[u64, u64, u64, u64];
+let listDrop: Kind4[u64, u64, u64, u64];
+let dequeMake: Kind4[u64, u64, u64, u64];
+let dequeGrow: Kind4[u64, u64, u64, u64];
+let dequeDrop: Kind4[u64, u64, u64, u64];
+let dictMake: Kind4[u64, u64, u64, u64];
+let dictGrow: Kind4[u64, u64, u64, u64];
+let dictDrop: Kind4[u64, u64, u64, u64];
+
+fn @initpure init() {
+  listMake = Kind4[u64, u64, u64, u64].make("list.make", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  listGrow = Kind4[u64, u64, u64, u64].make("list.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  listDrop = Kind4[u64, u64, u64, u64].make("list.drop", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dequeMake = Kind4[u64, u64, u64, u64].make("deque.make", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dequeGrow = Kind4[u64, u64, u64, u64].make("deque.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dequeDrop = Kind4[u64, u64, u64, u64].make("deque.drop", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dictMake = Kind4[u64, u64, u64, u64].make("dict.make", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dictGrow = Kind4[u64, u64, u64, u64].make("dict.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dictDrop = Kind4[u64, u64, u64, u64].make("dict.drop", "memory", Level.Debug, "elem", "n", "inst", "aux");
+}
 
 // A String's own method is named 'cstr', which hides the type of that name
 // inside String's declaration; this is the type, for there
@@ -243,6 +273,7 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
       // The floor is written out because the answer comes from an indirect call, and
       // the optimizer needs this fact to drop bounds checks.
       self.cap = if room > n {room} else {n};
+      listMake.emit(u64.from(mem.sizeof[T]()), u64.from(self.cap), 0u64, 0u64);
     }
   }
 
@@ -260,6 +291,7 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
       let room = blockRoom[T](region, n);
       ptr = blockGrow[T](region, ptr, 0usize, n);
       cap = room;
+      listMake.emit(u64.from(mem.sizeof[T]()), u64.from(room), u64.from(self as usize), 0u64);
     }
   }
 
@@ -319,8 +351,14 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
       if want < first { want = first; }
     }
     let room = blockRoom[T](region, want);
+    let was = cap;
     ptr = blockGrow[T](region, ptr, cap, want);
     cap = room;
+    if was == 0usize {
+      listMake.emit(u64.from(mem.sizeof[T]()), u64.from(room), u64.from(self as usize), 0u64);
+    } else {
+      listGrow.emit(u64.from(mem.sizeof[T]()), u64.from(room), u64.from(self as usize), u64.from(was));
+    }
   }
 
   // Move a value in at the end
@@ -974,6 +1012,9 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // to its region
   fn final(self: &uni) {
     self.finalizeAll();
+    if cap != 0usize {
+      listDrop.emit(u64.from(mem.sizeof[T]()), u64.from(used), u64.from(self as usize), u64.from(cap));
+    }
     blockFree[T](region, ptr, cap);
   }
 }
@@ -1388,6 +1429,7 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
       let room = blockRoom[T](region, n);
       self.ptr = blockNew[T](region, n);
       self.cap = room;
+      dequeMake.emit(u64.from(mem.sizeof[T]()), u64.from(room), 0u64, 0u64);
     }
   }
 
@@ -1605,10 +1647,16 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
       mem.moveRaw(fresh, ptr + head, firstRun);
       mem.moveRaw(fresh + firstRun, ptr, used - firstRun);
     }
+    let was = cap;
     blockFree[T](region, ptr, cap);
     ptr = fresh;
     head = 0usize;
     cap = room;
+    if was == 0usize {
+      dequeMake.emit(u64.from(mem.sizeof[T]()), u64.from(room), u64.from(self as usize), 0u64);
+    } else {
+      dequeGrow.emit(u64.from(mem.sizeof[T]()), u64.from(room), u64.from(self as usize), u64.from(was));
+    }
   }
 
   fn finalizeAll(self: &mut) {
@@ -1625,6 +1673,9 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
   // to its region
   fn final(self: &uni) {
     self.finalizeAll();
+    if cap != 0usize {
+      dequeDrop.emit(u64.from(mem.sizeof[T]()), u64.from(used), u64.from(self as usize), u64.from(cap));
+    }
     blockFree[T](region, ptr, cap);
   }
 }
@@ -2677,16 +2728,23 @@ pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, 
       }
       (region as &MemRegion).release(slots as *u8, self.tableBytes(mask + 1usize));
     }
+    let wasBuckets = if ctrl == null {0usize} else {mask + 1usize};
     ctrl = fresh;
     slots = freshSlots;
     mask = freshMask;
     left = bucketsCapacity(buckets) - items;
+    if wasBuckets == 0usize {
+      dictMake.emit(u64.from(entrySize), u64.from(bucketsCapacity(buckets)), u64.from(self as usize), 0u64);
+    } else {
+      dictGrow.emit(u64.from(entrySize), u64.from(bucketsCapacity(buckets)), u64.from(self as usize), u64.from(bucketsCapacity(wasBuckets)));
+    }
   }
 
   // Its death: each entry's key and value, first bucket to last, then the block,
   // given back to its region
   fn final(self: &uni) {
     if ctrl != null {
+      dictDrop.emit(u64.from(mem.sizeof[DictEntry[K, V]]()), u64.from(items), u64.from(self as usize), u64.from(items + left));
       if mem.needsFinal[DictEntry[K, V]]() {
         var i = 0usize;
         while i <= mask {

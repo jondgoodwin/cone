@@ -166,6 +166,19 @@
 mod arena;
 
 import libc;
+import trace use Level, Kind4;
+
+// MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md), light: arena.grow for each chunk the
+// arena takes from the raw blocks (Debug; elem: the chunk's room in bytes, n: its room again, so sums are bytes),
+// and arena.drop for each chunk freed at its death (elem 0, n 1). An arena's blocks are carved without a free, so
+// the demand per block is not seen here, only the supply of chunks.
+let arenaGrow: Kind4[u64, u64, u64, u64];
+let arenaDrop: Kind4[u64, u64, u64, u64];
+
+fn @initpure init() {
+  arenaGrow = Kind4[u64, u64, u64, u64].make("arena.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  arenaDrop = Kind4[u64, u64, u64, u64].make("arena.drop", "memory", Level.Debug, "elem", "n", "inst", "aux");
+}
 
 // The header before each value that needs finalizing
 struct FinalNode {
@@ -355,6 +368,7 @@ struct ArenaCore is GcTraceElements {
     while blocks as usize != 0usize {
       let blk = blocks;
       blocks = (blk as &Block).prev;
+      arenaDrop.emit(0u64, 1u64, 0u64, 0u64);
       RawBlocks.release(blk as *u8);
     }
   }
@@ -532,6 +546,7 @@ fn newBlock(prev: *Block, room: usize) *Block {
   let blk = RawBlocks.alloc(mem.sizeof[Block]() + room, 16usize) as *Block;
   if blk as usize == 0usize { panic("arena: out of memory for a block"); }
   mem.writeRaw(blk, Block(prev));
+  arenaGrow.emit(u64.from(room), u64.from(room), 0u64, 0u64);
   blk
 }
 

@@ -1,0 +1,52 @@
+// The sink adds events up by key and writes a sample stream and a totals block. The test installs it (MEMTRACE_OUT
+// names the file), emits, flushes and prints that the file is there.
+mod basic;
+
+import testing use *;
+import stdio use *;
+import collections use List;
+import trace use Level, Kind4, Kind1;
+import memtrace;
+import env;
+import fs;
+import path use Path;
+
+let growK: Kind4[u64, u64, u64, u64];
+
+fn @initpure init() {
+  growK = Kind4[u64, u64, u64, u64].make("list.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+}
+
+fn main() i32 {
+  env.set("MEMTRACE_OUT", "memtrace-basic.json");
+  if !memtrace.install() {
+    print <- "no install\n";
+    return 1i32;
+  }
+  trace.setLevel("memory", Level.Trace);
+  var i = 0u64;
+  while i < 10u64 {
+    growK.emit(8u64, 16u64 * (i + 1u64), 1000u64, 8u64 * (i + 1u64));
+    i = i + 1u64;
+  }
+  memtrace.phase("second");
+  growK.emit(4u64, 7u64, 1000u64, 3u64);
+  trace.flush();
+  match fs.readFile(&Path.from("memtrace-basic.json")) {
+    case let Ok(text) {
+      var seenTotal = false;
+      let lines = List[&str].from(text.lines());
+      var li = 0usize;
+      while li < lines.len() {
+        let line = lines[li];
+        li = li + 1usize;
+        if line.startsWith("{\"s\":\"total") {seenTotal = true;}
+        if line.startsWith("{\"k\"") {print <- line, "\n";}
+        if line.startsWith("{\"s\":\"phase") {print <- "phase mark\n";}
+      }
+      print <- "total: ", seenTotal, "\n";
+    }
+    case is Err {print <- "unreadable\n";}
+  }
+  0i32
+}
