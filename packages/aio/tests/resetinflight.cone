@@ -1,0 +1,134 @@
+// Socket.reset with work on the socket (the package's header, SOCKET CONTROLS):
+// a write in flight (its peer reads nothing, the 32 MiB cannot all be taken by
+// the buffers) and a read queued behind it, both started before the reset. The
+// reset consumes the Socket; each of the two operations is answered exactly
+// once (a second answer is a panic in actors), and as Cancelled or with its real
+// result (a write that finished first: Ok; the connection's own error), never
+// anything else, never hung. Then no record is in use and no buffer is lent.
+//
+// What each 'await' found is kept in Got, checked by main once Holder is done.
+
+mod resetinflight;
+
+import testing use *;
+import thread;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf, stats;
+import iocore use SocketAddr, IoError;
+import ioerror use IoErrorKind;
+import actors;
+import aio use Socket;
+
+const bigWrite = 33554432usize;
+
+struct Got {
+  pub wDone: Atomic[u64];         // 1 if the write in flight was answered
+  pub wCancelled: Atomic[u64];    // 1 if it was answered Cancelled
+  pub wOther: Atomic[u64];        // 1 if it was answered an Err that is not Cancelled (or Ok)
+  pub rDone: Atomic[u64];         // 1 if the read queued was answered
+  pub rCancelled: Atomic[u64];    // 1 if it was answered Cancelled
+  pub rOther: Atomic[u64];        // 1 if it was answered any other Err
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket { r || Socket.none() }
+
+fn filled(n: usize) IoBuf {
+  var b = IoBuf(n);
+  b.setLen(n);
+  b
+}
+
+actor Holder {
+  a: Socket;
+  b: Socket;
+
+  pub async fn start(self, done: OneshotSender[u64]) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    a = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    b = socketOf(await ls.accept());
+    selfactor.writer();
+    selfactor.reader();
+    selfactor.resetter(done);
+  }
+
+  pub async fn writer(self) {
+    let r = await a.write(filled(bigWrite));
+    match r {
+      case let Err(e) {
+        if aio.isCancelled(e) {got.wCancelled.store(1u64);} else {got.wOther.store(1u64);}
+      }
+      else {}
+    }
+    got.wDone.store(1u64);
+  }
+
+  pub async fn reader(self) {
+    let r = await a.read(IoBuf(64usize));
+    match r {
+      case let Err(e) {
+        if aio.isCancelled(e) {got.rCancelled.store(1u64);} else {got.rOther.store(1u64);}
+      }
+      else {}
+    }
+    got.rDone.store(1u64);
+  }
+
+  // Busy, with no await: the write and the read are in flight; then the reset,
+  // and the finish once both are answered
+  pub async fn resetter(self, done: OneshotSender[u64]) {
+    thread.sleep(Duration.fromMillis(300i64));
+    var s = Socket.none();
+    s <-> a;
+    s.reset();
+    var waited = 0i64;
+    while (got.wDone.load() == 0u64 || got.rDone.load() == 0u64) && waited < 5000i64 {
+      thread.sleep(Duration.fromMillis(10i64));
+      waited = waited + 10i64;
+    }
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let h = Holder(Socket.none(), Socket.none());
+    h.start(tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the holder said it was done");}
+    else {}
+  }
+  var waited = 0i64;
+  while aio.opStats().inUse > 0u64 && waited < 5000i64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 10i64;
+  }
+  let left = aio.opStats().inUse;
+  finalAll();
+  expectUInt(got.wDone.load(), 1u64, "the write in flight was answered");
+  expectUInt(got.wOther.load(), 0u64, "...Cancelled or its real result, no other error");
+  expectUInt(got.rDone.load(), 1u64, "the read queued was answered");
+  expectUInt(got.rCancelled.load(), 1u64, "...Cancelled (nothing was ever sent to it)");
+  expectUInt(got.rOther.load(), 0u64, "...and no other error");
+  expectUInt(left, 0u64, "every record is dissolved");
+  expectUInt(stats().lent, 0u64, "every buffer is home");
+  done()
+}
