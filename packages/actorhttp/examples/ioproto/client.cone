@@ -1,0 +1,340 @@
+// ioproto client: the load for server.cone (row 456, lane 616). HTTP/1.1 clients on threads of their own, each with
+// its own Loop and httpconn Driver (the client of httpconn\examples\load.cone), in a process of their own.
+//
+//   client.cone -- <port> <conns> <secs> <threads> [intervalMs [perConn]]
+//
+// The connections are split over the threads; all are connected first, then every thread starts together and each
+// connection makes GETs one after another (no pipelining) for <secs> seconds. With an intervalMs, each connection
+// instead sends a request every intervalMs (the light-load run), perConn of them. A connection's last request
+// carries 'Connection: close', so the server closes first and the client's ports do not sit in TIME_WAIT.
+//
+// Output (the runner reads it):
+//   MARK go / MARK end      printed when the timed part starts and ends (the runner samples the server's threads then)
+//   STATS0 / STATS1 <line>  the server's /_stats line just before the start and just after the end
+//   RESULT conns=.. threads=.. sent=.. done=.. bad=.. secs=.. rps=.. p50us=.. p99us=.. maxus=.. meanus=..
+// 'sent' is the requests asked for and 'done' those answered with a 200: they must be equal.
+
+mod ioprotoclient;
+
+import stdio use *;
+import process;
+import thread;
+import sync use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import diag use Histogram;
+import http use *;
+import httpconn use *;
+
+const tokConn = 0x20000000u64;        // a connection's: + its number
+const tokReq = 0x30000000u64;         // a request's: + its connection's number
+
+struct CArgs {
+  pub port: u16;
+  pub conns: u64;
+  pub secs: u64;
+  pub intervalMs: u64;
+  pub perConn: u64;
+  pub nthreads: u64;
+  pub ready: Arc[imm, Atomic[u64]];
+  pub go: Arc[imm, Atomic[u64]];
+}
+
+struct CRes {
+  pub sent: u64;
+  pub done: u64;
+  pub bad: u64;
+  pub took: u64;          // nanoseconds, from the start to the last answer
+  pub lat: Histogram;
+}
+
+fn lastHead(last: bool) RequestHead {
+  var h = RequestHead.get("/x", "127.0.0.1");
+  if last {h.headers.add("Connection", "close");}
+  h
+}
+
+fn worker(a: CArgs) CRes {
+  var lp = Loop.mustMake();
+  var cfg = Config.make();
+  cfg.acceptDepth = 64u32;
+  var drv = Driver.make(cfg);
+  var res = CRes(0u64, 0u64, 0u64, 0u64, Histogram.make());
+  var cs = List[ConnId]();
+  var made = List[u64]();
+  var closing = List[bool]();
+  var events = List[Event]();
+  var connected = 0u64;
+  let paced = a.intervalMs > 0u64;
+  // 1. connect, a batch at a time
+  while connected < a.conns {
+    if u64.from(cs.len()) < a.conns && u64.from(cs.len()) < connected + 64u64 {
+      let k = u64.from(cs.len());
+      cs.push(drv.connect(&mut lp, "127.0.0.1", a.port, Sink.Here(tokConn + k)));
+      made.push(0u64);
+      closing.push(false);
+      continue;
+    }
+    drv.poll(&mut lp, forever(), &uni events);
+    var j = 0usize;
+    while j < events.len() {
+      let e = &mut events[j];
+      j = j + 1usize;
+      if e.kind == EventKind.Connected {connected = connected + 1u64;}
+      else if e.kind == EventKind.Closed {
+        res.bad = res.bad + 1u64;
+        connected = connected + 1u64;
+      }
+    }
+    events.clear();
+  }
+  // 2. wait for every thread
+  a.ready.add(1u64);
+  while a.go.load() == 0u64 {drv.poll(&mut lp, Instant.now() + Duration.fromMillis(2i64), &uni events); events.clear();}
+  let t0 = Instant.now();
+  let deadline = t0 + Duration.fromSeconds(i64.from(a.secs));
+  var finished = 0u64;
+  var nextAt = t0;
+  // the first request of every connection (paced: sent on schedule below)
+  if !paced {
+    var k = 0usize;
+    while k < cs.len() {
+      drv.request(&mut lp, *cs[k], lastHead(false), BodyLength(), Sink.Here(tokReq + u64.from(k)));
+      made.set(k, 1u64);
+      res.sent = res.sent + 1u64;
+      k = k + 1usize;
+    }
+  }
+  var lastDone = t0;
+  while finished < a.conns {
+    var until = forever();
+    if paced {
+      // each connection's next request is due at t0 + made * interval
+      let now = Instant.now();
+      var k = 0usize;
+      while k < cs.len() {
+        if !*closing[k] && *made[k] < a.perConn {
+          let due = t0 + Duration.fromMillis(i64.from(a.intervalMs * *made[k]));
+          if now >= due {
+            let last = *made[k] + 1u64 == a.perConn;
+            drv.request(&mut lp, *cs[k], lastHead(last), BodyLength(), Sink.Here(tokReq + u64.from(k)));
+            made.set(k, *made[k] + 1u64);
+            res.sent = res.sent + 1u64;
+            if last {closing.set(k, true);}
+          } else if until == forever() || due < until {
+            until = due;
+          }
+        }
+        k = k + 1usize;
+      }
+    }
+    drv.poll(&mut lp, until, &uni events);
+    var j = 0usize;
+    while j < events.len() {
+      let e = &mut events[j];
+      j = j + 1usize;
+      if e.token >= tokReq {
+        let k = usize.from(e.token - tokReq);
+        if e.kind == EventKind.Data {
+          drv.release(e.req, e.buf.len());
+        } else if e.kind == EventKind.Done || e.isTerminal() {
+          if e.kind == EventKind.Done {
+            res.lat.record((e.timing.ended - e.timing.submitted).nanos());
+            res.done = res.done + 1u64;
+          } else {
+            res.bad = res.bad + 1u64;
+            closing.set(k, true);
+          }
+          lastDone = Instant.now();
+          if *closing[k] {
+            finished = finished + 1u64;
+          } else if !paced {
+            // the next one; the one after the deadline is the last
+            let last = Instant.now() >= deadline;
+            drv.request(&mut lp, *cs[k], lastHead(last), BodyLength(), Sink.Here(tokReq + u64.from(k)));
+            made.set(k, *made[k] + 1u64);
+            res.sent = res.sent + 1u64;
+            if last {closing.set(k, true);}
+          }
+        }
+      }
+    }
+    events.clear();
+  }
+  res.took = u64.from((lastDone - t0).nanos());
+  drv.abortAll(&mut lp);
+  drv.pump(&mut lp, &uni events);
+  res
+}
+
+// The server's /_stats line, got over a connection of its own
+fn statsLine(port: u16) String {
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make());
+  var events = List[Event]();
+  let c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
+  var h = RequestHead.get("/_stats", "127.0.0.1");
+  h.headers.add("Connection", "close");
+  drv.request(&mut lp, c, h, BodyLength(), Sink.Here(tokReq));
+  var out = String();
+  var fin = false;
+  let until = Instant.now() + Duration.fromSeconds(10i64);
+  while !fin && Instant.now() < until {
+    drv.poll(&mut lp, until, &uni events);
+    var j = 0usize;
+    while j < events.len() {
+      let e = &mut events[j];
+      j = j + 1usize;
+      if e.token == tokReq {
+        if e.kind == EventKind.Data {
+          out.appendBytes(e.buf.view());
+          drv.release(e.req, e.buf.len());
+        } else if e.kind == EventKind.Done || e.isTerminal() {fin = true;}
+      }
+    }
+    events.clear();
+  }
+  drv.abortAll(&mut lp);
+  drv.pump(&mut lp, &uni events);
+  out
+}
+
+fn arg(args: &List[String], i: usize, dflt: u64) u64 {
+  if args.len() <= i {return dflt;}
+  match u64.parse(args[i].view()) {
+    case let Ok(p) {p}
+    case is Err {dflt}
+  }
+}
+
+// A comma-separated list of numbers
+fn numbers(s: &str) List[u64] {
+  var out = List[u64]();
+  var v = 0u64;
+  var any = false;
+  let b = s as &Array[u8];
+  var i = 0usize;
+  while i < b.len {
+    let c = b[i];
+    if c >= '0' && c <= '9' {
+      v = v * 10u64 + u64.from(c - '0');
+      any = true;
+    } else {
+      if any {out.push(v);}
+      v = 0u64;
+      any = false;
+    }
+    i = i + 1usize;
+  }
+  if any {out.push(v);}
+  out
+}
+
+// One timed test of the server at port: conns connections over threads, secs seconds (or perConn paced requests)
+fn runTest(port: u16, conns: u64, secs: u64, threadsWanted: u64, intervalMs: u64, perConn: u64) {
+  var nthreads = threadsWanted;
+  if nthreads > conns {nthreads = conns;}
+  printStr("TEST port=");
+  printUInt(u64.from(port));
+  printStr(" conns=");
+  printUInt(conns);
+  printStr("\n");
+  let ready = Arc[imm, Atomic[u64]](Atomic[u64].of(0u64));
+  let go = Arc[imm, Atomic[u64]](Atomic[u64].of(0u64));
+  var ths = List[thread.Thread[CRes]]();
+  var t = 0u64;
+  while t < nthreads {
+    let share = conns / nthreads + (if t < conns % nthreads {1u64} else {0u64});
+    ths.push(thread.start(CArgs(port, share, secs, intervalMs, perConn, nthreads, ready, go), &worker));
+    t = t + 1u64;
+  }
+  while ready.load() < nthreads {thread.sleep(Duration.fromMillis(5i64));}
+  let s0 = statsLine(port);
+  printStr("STATS0 ");
+  printStr(s0.view());
+  printStr("\nMARK go ");
+  printUInt(u64.from(port));
+  printStr("\n");
+  go.store(1u64);
+  var all = CRes(0u64, 0u64, 0u64, 0u64, Histogram.make());
+  var k = 0usize;
+  while k < ths.len() {
+    var th = ths.pop();
+    match th {
+      case var Some(x) {
+        let r = x.join();
+        all.sent = all.sent + r.sent;
+        all.done = all.done + r.done;
+        all.bad = all.bad + r.bad;
+        if r.took > all.took {all.took = r.took;}
+        all.lat.merge(&r.lat);
+      }
+      else {}
+    }
+    k = k + 1usize;
+  }
+  printStr("MARK end ");
+  printUInt(u64.from(port));
+  printStr("\n");
+  let s1 = statsLine(port);
+  printStr("STATS1 ");
+  printStr(s1.view());
+  printStr("\nRESULT port=");
+  printUInt(u64.from(port));
+  printStr(" conns=");
+  printUInt(conns);
+  printStr(" threads=");
+  printUInt(nthreads);
+  printStr(" sent=");
+  printUInt(all.sent);
+  printStr(" done=");
+  printUInt(all.done);
+  printStr(" bad=");
+  printUInt(all.bad);
+  printStr(" tookms=");
+  printUInt(all.took / 1000000u64);
+  printStr(" rps=");
+  if all.took > 0u64 {printUInt(all.done * 1000000000u64 / all.took);}
+  printStr(" p50us=");
+  printUInt(all.lat.percentile(0.5) / 1000u64);
+  printStr(" p99us=");
+  printUInt(all.lat.percentile(0.99) / 1000u64);
+  printStr(" maxus=");
+  printUInt(all.lat.max() / 1000u64);
+  printStr(" meanus=");
+  printUInt(all.lat.mean() / 1000u64);
+  printStr("\n");
+}
+
+fn main() i32 {
+  let args = process.args();
+  if args.len() < 8usize {
+    printStr("usage: client <secs> <threads> <intervalMs> <perConn> <reps> <conns,..> <port,..>\n");
+    return 2i32;
+  }
+  let secs = arg(&args, 1usize, 5u64);
+  let nthreads = arg(&args, 2usize, 4u64);
+  let intervalMs = arg(&args, 3usize, 0u64);
+  let perConn = arg(&args, 4usize, 2000u64);
+  let reps = arg(&args, 5usize, 1u64);
+  let connList = numbers(args[6usize].view());
+  let ports = numbers(args[7usize].view());
+  // for each connection count, each rep, every server in turn (the order rotated by the rep)
+  var ci = 0usize;
+  while ci < connList.len() {
+    var r = 0u64;
+    while r < reps {
+      var j = 0usize;
+      while j < ports.len() {
+        let p = *ports[(j + usize.from(r)) % ports.len()];
+        runTest(u16.from(p), *connList[ci], secs, nthreads, intervalMs, perConn);
+        j = j + 1usize;
+      }
+      r = r + 1u64;
+    }
+    ci = ci + 1usize;
+  }
+  0i32
+}
