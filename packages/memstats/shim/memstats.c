@@ -71,7 +71,7 @@ typedef struct {
   u64 life[MAXK][NLIFE];                          // lifetime at free, by bit length of ticks
   u64 elem[MAXK][NSC];                            // allocations by bit length of the element size asked
   u64 grown[MAXK], moved[MAXK], copied[MAXK], nrealloc[MAXK];
-  u64 foreignFree, foreignRealloc, bigSkipped;
+  u64 foreignFree, foreignRealloc, bigSkipped, bigSkippedB;
   u64 strayLost;
   StrayRec stray[NSTRAY];
 } TS;
@@ -212,7 +212,7 @@ static void* alloc_aligned(size_t n, size_t align, void* ra) {
   INIT();
   if (align == 0 || (align & (align - 1))) return NULL;
   if (align <= 16) return alloc_plain(n, 0, ra);
-  if (n >= MAXSIZE || align > ((size_t)1 << 19)) return r_amalloc(n, align);
+  if (n >= MAXSIZE || align > ((size_t)1 << 19)) { TS* b = ts(); b->bigSkipped++; b->bigSkippedB += n; return r_amalloc(n, align); }
   ts();
   char* raw = (char*)r_malloc(n + align + TAGSZ);
   if (!raw) return NULL;
@@ -493,7 +493,7 @@ static void write_totals(void) {
   static u64 xan[MAXK], xab[MAXK], xwn[MAXK], xwb[MAXK], life[MAXK][NLIFE], elem[MAXK][NSC];
   static u64 grown[MAXK], moved[MAXK], copied[MAXK], nre[MAXK];
   static StrayRec stray[NSTRAY * 4];
-  u64 foreign = 0, foreignRe = 0, lost = 0;
+  u64 foreign = 0, foreignRe = 0, lost = 0, bigN = 0, bigB = 0;
   int nstray = 0;
   for (int i = 0; i < nthreads(); i++) {
     TS* s = slots[i]; if (!s) continue;
@@ -509,6 +509,7 @@ static void write_totals(void) {
       grown[k] += s->grown[k]; moved[k] += s->moved[k]; copied[k] += s->copied[k]; nre[k] += s->nrealloc[k];
     }
     foreign += s->foreignFree; foreignRe += s->foreignRealloc; lost += s->strayLost;
+    bigN += s->bigSkipped; bigB += s->bigSkippedB;
     for (int j = 0; j < NSTRAY; j++) {
       StrayRec* r = &s->stray[j]; if (!r->ra[0]) continue;
       int f = 0;
@@ -521,8 +522,8 @@ static void write_totals(void) {
   odest = tofile ? out_file : GetStdHandle(STD_ERROR_HANDLE);
   olen = 0;
   if (!tofile && GetEnvironmentVariableA("MEMSTATS_OUT", path, sizeof path) == 0) {}
-  oprintf("{\"totals\":true,\"freq\":%lld,\"start\":%llu,\"end\":%llu,\"base\":%llu,\"threads\":%d,\"foreign_frees\":%llu,\"foreign_reallocs\":%llu,\"stray_lost\":%llu,\"kinds\":[",
-          (long long)qpf.QuadPart, start_ticks, now(), (u64)(uintptr_t)GetModuleHandleA(NULL), nthreads(), foreign, foreignRe, lost);
+  oprintf("{\"totals\":true,\"freq\":%lld,\"start\":%llu,\"end\":%llu,\"base\":%llu,\"threads\":%d,\"foreign_frees\":%llu,\"foreign_reallocs\":%llu,\"stray_lost\":%llu,\"large_aligned\":[%llu,%llu],\"kinds\":[",
+          (long long)qpf.QuadPart, start_ticks, now(), (u64)(uintptr_t)GetModuleHandleA(NULL), nthreads(), foreign, foreignRe, lost, bigN, bigB);
   int firstk = 1;
   for (int k = 0; k < MAXK; k++) {
     int any = 0;
