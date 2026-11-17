@@ -43,6 +43,9 @@ for k in totals["kinds"]:
     print(f"{k['k']:>3} {name:<10}{na:>10}{ba:>13}{nf:>10}{k['freed_other_actor'][0]:>12}{k['freed_other_worker'][0]:>10}"
           f"{k['reallocs']:>9}{k['moved']:>8}{p50:>12.1f}")
 print(f"{'all':<14}{tot_a:>10}{tot_b:>13}")
+la = totals.get("large_aligned", [0, 0])
+print(f"large aligned (untagged, alignment over ~512 KiB): {la[0]} blocks, {la[1]} bytes; "
+      f"foreign frees {totals['foreign_frees']}, foreign reallocs {totals.get('foreign_reallocs', 0)}")
 strays = sorted(totals["strays"], key=lambda s: -s[1])
 print(f"stray blocks (kind 0): {len(strays)} sites by return address, load base {totals['base']:#x}; the largest ten "
       f"(count, bytes, then the call into malloc and three callers above it, as offsets from the base; "

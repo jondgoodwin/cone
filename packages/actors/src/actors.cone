@@ -996,6 +996,9 @@ extern fn @c sched_yield() i32;
 // thread, so a block it allocates is tagged with it. In a MEMSTATS build only.
 #if #defined("MEMSTATS") {
   extern fn @c("memstats_actor") memstatsActor(header: usize);
+  // "Who is asking" (kinds.toml: 17 Futures, 19 ActorRegion, 20 ActorMessage): set around the call that
+  // obtains memory, cleared after, as core does. Used by this package's files in MEMSTATS builds only.
+  extern fn @c("memstats_asking") msAsk(kind: u32, elem: usize);
 }
 
 fn yieldProcessor() {
@@ -1316,7 +1319,9 @@ fn segAlloc(h: *Header, count: u32) *Seg {
   // recycled segment holds the sequences of earlier positions, which no later
   // position equals, but fresh memory may hold anything
   let bytes = segBytesOf(h, count);
+  #if #defined("MEMSTATS") { msAsk(20u32, bytes); }
   let s = libc.calloc(1usize, bytes) as *Seg;
+  #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
   if s as usize == 0usize {
     die("actors: out of memory for a mailbox segment");
   }
@@ -2166,7 +2171,9 @@ fn finalizeState[S, M: Sendable](h: *Header) {
 // in it finalized.
 pub fn makeActor[S, M: Sendable](dispatch: &fn(s: &uni S, m: *M)) *S {
   ensureRunning();
+  #if #defined("MEMSTATS") { msAsk(19u32, mem.sizeof[S]() + 1usize); }
   let room = libc.malloc(mem.sizeof[S]() + 1usize);
+  #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
   if room as usize == 0usize {
     die("actors: out of memory for an actor");
   }
@@ -3190,7 +3197,9 @@ fn replyPrepLent(r: &Reply, lent: *u8, release: *u8) Put {
     } else {
       var size = usize.from(r.meta / 16u64);
       if size == 0usize {size = 1usize;}
+      #if #defined("MEMSTATS") { msAsk(20u32, size); }
       let box = libc.malloc(size);
+      #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
       if box as usize == 0usize {
         die("actors: out of memory for a reply");
       }
@@ -3951,7 +3960,14 @@ fn takeBlock(total: usize) *u8 {
     }
   }
   blocksTaken.addOrdered(1u64, MemOrder.Relaxed);
-  libc.malloc(total)
+  #if #defined("MEMSTATS") {
+    msAsk(20u32, total);
+    let p = libc.malloc(total);
+    msAsk(0u32, 0usize);
+    p
+  } #else {
+    libc.malloc(total)
+  }
 }
 
 // A record's block given back (its values moved out): kept if there is room

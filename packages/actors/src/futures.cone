@@ -73,7 +73,16 @@
 // region is the futures' alone, and is allocated only here
 struct Futures is RegionRef, ThreadSafe {
   cnt: usize;
-  fn alloc(size: usize) *u8 inline {libc.malloc(size)}
+  fn alloc(size: usize) *u8 inline {
+    #if #defined("MEMSTATS") {
+      msAsk(17u32, size);
+      let p = libc.malloc(size);
+      msAsk(0u32, 0usize);
+      p
+    } #else {
+      libc.malloc(size)
+    }
+  }
   fn init(self: &new) inline {*self = Futures(1usize);}
   fn aliasRef(self: &uni Futures) inline {
     mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed);
@@ -164,7 +173,9 @@ fn cellOffset[T]() usize {
 pub fn futureFor[T, M: Sendable](mb: &opaq Mailbox[M]) Future[T] {
   let off = cellOffset[T]();
   let voff = roundUp(mem.sizeof[FutureCell[T]](), mem.alignof[T]());
+  #if #defined("MEMSTATS") { msAsk(17u32, off + voff + mem.sizeof[T]()); }
   let block = libc.malloc(off + voff + mem.sizeof[T]());
+  #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
   if block as usize == 0usize {
     die("actors: out of memory for a future");
   }
@@ -278,7 +289,9 @@ pub fn futureRegister(fut: *u8, rp: Reply) bool {
   if head as usize == waitersClosed {
     return false;
   }
+  #if #defined("MEMSTATS") { msAsk(17u32, mem.sizeof[Waiter]()); }
   let w = libc.malloc(mem.sizeof[Waiter]()) as *Waiter;
+  #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
   if w as usize == 0usize {
     die("actors: out of memory for a waiter");
   }

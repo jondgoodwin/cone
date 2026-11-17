@@ -1,0 +1,32 @@
+mod alloc;
+
+// The allocator interface: the general set. A module meets it with 'mod name is Alloc;'. Two implementations:
+// package allocheap (calls cnmalloc's heap directly, past the C names) and package alloccrt (forwards to the C runtime).
+// A module trait is chosen by naming the conforming module (manual: mod-substitution, "Module traits"), so the
+// choice is made where a program imports one of the two.
+//
+// Cone's callers know the size and the alignment of what they hold, so release takes both. 'align' is a power
+// of two; an alignment of 16 or less gets a 16-aligned block.
+//
+// THE SECOND SET, NAMED AND NOT BUILT (pages and slabs for pools):
+//   obtainRun(pages) -> a run of whole 64 KiB pages, committed, aligned to a page
+//   giveRun(addr, pages) -> hands the run back
+//   pageOf(block) -> the page a block lies in (its start address)
+// What each would take from cnmalloc's layers:
+//   obtainRun   the page pool's poolTake, which hands one page at a time today; a run needs it to find 'count'
+//               adjacent pages (the pool's three-level bitmaps find the lowest page; a run search is the same
+//               find-first-set over a window), or a large block's own reservation (largeAlloc), which already is a run.
+//   giveRun     poolPut per page (one at a time today), or largeFree for a reservation.
+//   pageOf      free's own test: (p - base) >> 16 and descOf(page) for small blocks; largeFind for large ones.
+//               Both exist, but private to the heap: they would need an exported entry.
+// The crt implementation can supply none of these: the C runtime has no page the program may name. The second
+// set would be its own module trait, which only the cnmalloc implementation conforms to.
+pub mod trait Alloc {
+  // A block of 'bytes' bytes at an address that is a multiple of 'align'; null when there is none
+  pub fn allocate(bytes: usize, align: usize) *u8;
+  // The block grown or shrunk to 'newBytes', its first min(old, new) bytes kept, same alignment; null when there
+  // is none (the old block then stands). A null block is an allocate
+  pub fn resize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8;
+  // Gives a block back, with the size and alignment it was allocated or resized to. A null block is nothing
+  pub fn release(block: *u8, bytes: usize, align: usize);
+}
