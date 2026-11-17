@@ -13,6 +13,11 @@
 //    on the callee and goes on Ok when it answers.
 // 4. A child group of a held parent: the child dropped, the envelope dropped, the parent still holds
 //    the await's other arm: its cancel still wakes it.
+// 5. Every external handle dropped, the awaits' replies dropped, a sibling still running (its message holds
+//    the group) cancels: all three parked awaits wake Cancelled.
+// 6. The same, the sibling parked on a plain await with its reply pending, which resumes and cancels.
+// 7. Two awaits, one reply dropped, the handle dropped: both wait, the second awaiting reply being pending;
+//    when it is dropped too, both are released.
 
 mod orcancelledleak;
 
@@ -29,8 +34,12 @@ let died: Atomic[u64];       // awaiting actors that died
 let gate: Atomic[u64];       // lets the slow callee answer
 let okSeen: Atomic[u64];
 let errSeen: Atomic[u64];
+let gate2: Atomic[u64];      // lets the running sibling cancel
+let gate3: Atomic[u64];      // lets the second slow callee answer
 
 fn @initpure init() {
+  gate2 = Atomic[u64].of(0u64);
+  gate3 = Atomic[u64].of(0u64);
   wentOn = Atomic[u64].of(0u64);
   parked = Atomic[u64].of(0u64);
   died = Atomic[u64].of(0u64);
@@ -78,6 +87,29 @@ actor Slow {
     let limit = Instant.now() + Duration.fromMillis(5000i64);
     while gate.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
     n
+  }
+}
+
+actor Slow2 {
+  pub async fn answerC(self, n: u64) u64 {
+    let limit = Instant.now() + Duration.fromMillis(5000i64);
+    while gate3.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+    n
+  }
+}
+
+// A sibling in the group, still running (a behaviour from a message holds the group), that cancels it
+actor Sibling {
+  pub async fn spinCancel(self) {
+    let limit = Instant.now() + Duration.fromMillis(5000i64);
+    while gate2.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+    actors.currentGroup().cancel();
+  }
+
+  // ... parked on a plain await with a reply arm pending, resumed, then cancelling
+  pub async fn viaSlow(self, slow: Slow2) {
+    let v = await slow.answerC(3u64);
+    actors.currentGroup().cancel();
   }
 }
 
@@ -172,6 +204,7 @@ fn main() i32 {
   expectUInt(died.load(), 5u64 + u64.from(nMany), "2: every actor died");
   expectUInt(wentOn.load(), 0u64, "2: ... and no behaviour went on");
   expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "2: ... and no await is parked");
+  actors.waitQuiet();
   expectUInt(u64.from(actors.liveSegments()), 0u64, "2: ... and no mailbox segment is held");
 
   // 3. the last holder drops while the callee works
@@ -211,6 +244,86 @@ fn main() i32 {
   libc.free(g3 as *u8);
   libc.free(parent as *u8);
   libc.free(child as *u8);
+
+  // 5. every external handle dropped, a sibling still running cancels: the parked awaits wake Cancelled
+  let w0 = wentOn.load();
+  var d0 = died.load();
+  var p0 = parked.load();
+  let g5 = mk(CancelGroup.make());
+  i = 0usize;
+  while i < 3usize {
+    let h = Hanger();
+    let r = recs + i;
+    actors.withGroup(&*g5, fn() [h, r] { h.hold(r as usize); });
+    i = i + 1usize;
+  }
+  let sib5 = Sibling();
+  actors.withGroup(&*g5, fn() [sib5] { sib5.spinCancel(); });
+  waitParked(p0 + 3u64);
+  i = 0usize;
+  while i < 3usize {
+    mem.finalize[Rec](recs + i);
+    i = i + 1usize;
+  }
+  mem.finalize[CancelGroup](g5);
+  thread.sleep(Duration.fromMillis(30i64));
+  expectUInt(died.load(), d0, "5: the sibling still runs: the group is held, the awaits wait");
+  gate2.store(1u64);
+  waitDied(d0 + 3u64);
+  expectUInt(died.load(), d0 + 3u64, "5: the sibling's cancel woke all three");
+  expectUInt(wentOn.load(), w0 + 3u64, "5: ... each with the cancel, once");
+
+  // 6. a sibling parked on a plain await with its reply pending resumes and cancels
+  d0 = died.load();
+  p0 = parked.load();
+  let g6 = mk(CancelGroup.make());
+  i = 0usize;
+  while i < 3usize {
+    let h = Hanger();
+    let r = recs + i;
+    actors.withGroup(&*g6, fn() [h, r] { h.hold(r as usize); });
+    i = i + 1usize;
+  }
+  let slow2 = Slow2();
+  let sib6 = Sibling();
+  actors.withGroup(&*g6, fn() [sib6, slow2] { sib6.viaSlow(slow2); });
+  waitParked(p0 + 3u64);
+  i = 0usize;
+  while i < 3usize {
+    mem.finalize[Rec](recs + i);
+    i = i + 1usize;
+  }
+  mem.finalize[CancelGroup](g6);
+  thread.sleep(Duration.fromMillis(30i64));
+  expectUInt(died.load(), d0, "6: the sibling is parked on a pending reply: the group is held");
+  gate3.store(1u64);
+  waitDied(d0 + 3u64);
+  expectUInt(died.load(), d0 + 3u64, "6: the sibling resumed and cancelled: all three woke");
+
+  // 7. the other arm dies second: the group is held by the await whose reply is pending, until that dies
+  d0 = died.load();
+  p0 = parked.load();
+  let w7 = wentOn.load();
+  let g7 = mk(CancelGroup.make());
+  i = 0usize;
+  while i < 2usize {
+    let h = Hanger();
+    let r = recs + i;
+    actors.withGroup(&*g7, fn() [h, r] { h.hold(r as usize); });
+    i = i + 1usize;
+  }
+  waitParked(p0 + 2u64);
+  mem.finalize[Rec](recs);
+  mem.finalize[CancelGroup](g7);
+  thread.sleep(Duration.fromMillis(30i64));
+  expectUInt(died.load(), d0, "7: one reply still pending: both wait");
+  mem.finalize[Rec](recs + 1usize);
+  waitDied(d0 + 2u64);
+  expectUInt(died.load(), d0 + 2u64, "7: the second reply dropped: both released");
+  expectUInt(wentOn.load(), w7, "7: ... no behaviour went on");
+  libc.free(g5 as *u8);
+  libc.free(g6 as *u8);
+  libc.free(g7 as *u8);
 
   expectUInt(u64.from(actors.liveFutures()), 0u64, "no future is left alive");
   expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "no await is parked");
