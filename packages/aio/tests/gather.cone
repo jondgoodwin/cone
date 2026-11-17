@@ -20,7 +20,7 @@ mod gather;
 import testing use *;
 import sync use Oneshot, OneshotSender, OneshotReceiver, Channel, Sender, Receiver;
 import thread;
-import time use Duration;
+import time use Instant, Duration;
 import iobuf use IoBuf, Chain, stats;
 import iocore use SocketAddr, IoError, CancelGroup;
 import actors;
@@ -38,13 +38,14 @@ struct Got {
   pub bigRead: Atomic[u64];      // bytes the slow reader took
   pub wrong: Atomic[u64];        // 1 + the first byte not as sent, or 0
   pub cancelled: Atomic[u64];    // 1 if the gather in the group answered Cancelled
+  pub extra: Atomic[u64];        // bytes that arrived after the 8 MiB's last
 }
 
 let got: Got;
 
 fn @initpure init() {
   got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn pattern(i: usize) u8 {u8.from(i % 251usize)}
@@ -115,6 +116,14 @@ actor Reader {
       }
     }
     got.bigRead.store(u64.from(at));
+    // The stream is then empty: nothing more arrives before the deadline
+    // (the sender's end stays open, so an end of stream does not come)
+    let extra = await s.readIn(IoBuf(65536usize),
+      IoLimits.until(Instant.now() + Duration.fromMillis(300i64)));
+    match extra {
+      case let Ok(b) {if b.len() > 0usize {got.extra.store(u64.from(b.len()));}}
+      else {}
+    }
     var d = done;
     d.send(1u64);
   }
@@ -234,6 +243,7 @@ fn main() i32 {
   expectUInt(got.big.load(), u64.from(bigSegs * bigPer), "the 8 MiB gather answered every byte");
   expectUInt(got.bigRead.load(), u64.from(bigSegs * bigPer), "the slow reader took every byte");
   expectUInt(got.wrong.load(), 0u64, "each in its place: none lost, none sent twice");
+  expectUInt(got.extra.load(), 0u64, "no byte arrived after the 8 MiB's last");
   expectUInt(got.cancelled.load(), 1u64, "a gather in a cancelled group answered Cancelled");
   expectUInt(stats().lent, 0u64, "every buffer came home, the cancelled chain's among them");
   expectUInt(aio.opStats().inUse, 0u64, "every record dissolved");

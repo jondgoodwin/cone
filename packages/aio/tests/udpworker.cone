@@ -45,6 +45,7 @@ struct Got {
   pub waited: Atomic[u64];        // 1 if a deadline that fell while waiting answered TimedOut
   pub grouped: Atomic[u64];       // 1 if a pending receive in a cancelled group answered Cancelled
   pub dropped: Atomic[u64];       // 1 if a pending receive of a dropped socket answered Cancelled
+  pub badBytes: Atomic[u64];      // datagram bytes received not as sent (position pattern), all phases
 }
 
 let got: Got;
@@ -52,7 +53,7 @@ let got: Got;
 fn @initpure init() {
   got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
@@ -72,13 +73,27 @@ fn portOf(r: Result[SocketAddr, IoError]) u16 {
   }
 }
 
-// n bytes, the first of them the number i
+// Byte j of datagram number i: a position pattern, so a shifted, swapped or
+// stale byte shows
+fn patternByte(i: u8, j: usize) u8 {u8.from((usize.from(i) * 7usize + j) % 251usize)}
+
+// Check a received datagram's bytes against patternByte; bad bytes are counted
+fn checkDatagram(b: &IoBuf, i: u8) {
+  let q = b.view();
+  var j = 0usize;
+  while j < b.len() {
+    if q[j] != patternByte(i, j) {got.badBytes.store(got.badBytes.load() + 1u64);}
+    j = j + 1usize;
+  }
+}
+
+// n bytes, byte j being patternByte(i, j)
 fn datagram(n: usize, i: u8) IoBuf {
   var b = IoBuf(64usize);
   let w = b.whole();
   var j = 0usize;
   while j < n {
-    w[j] = i;
+    w[j] = patternByte(i, j);
     j = j + 1usize;
   }
   b.setLen(n);
@@ -122,7 +137,8 @@ actor Peer {
       match &mut r {
         case var &mut Ok(ok) {
           if ok.buf.len() == 10usize + usize.from(i) && ok.from.port() == pa
-              && ok.buf.view()[0usize] == u8.from(i) {got.recvOk.store(got.recvOk.load() + 1u64);}
+              && ok.buf.view()[0usize] == patternByte(u8.from(i), 0usize) {got.recvOk.store(got.recvOk.load() + 1u64);}
+          checkDatagram(&ok.buf, u8.from(i));
         }
         else {}
       }
@@ -136,7 +152,7 @@ actor Peer {
     let pend = await b.recvFrom(IoBuf(4096usize));
     var seen = 0u64;
     match pend {
-      case let Ok(ok) {seen = u64.from(ok.buf.len());}
+      case let Ok(ok) {seen = u64.from(ok.buf.len()); checkDatagram(&ok.buf, 9u8);}
       else {}
     }
     got.late.store(seen);
@@ -154,7 +170,7 @@ actor Peer {
     let sentNext = await c.sendTo(to, datagram(12usize, 4u8));
     var next = await b.recvFrom(IoBuf(4096usize));
     match &mut next {
-      case var &mut Ok(ok) {got.whole.store(u64.from(ok.buf.len()));}
+      case var &mut Ok(ok) {got.whole.store(u64.from(ok.buf.len())); checkDatagram(&ok.buf, 4u8);}
       else {}
     }
 
@@ -219,6 +235,7 @@ fn main() i32 {
   expectUInt(got.bound.load(), 1u64, "two sockets bound");
   expectUInt(got.sentOk.load(), count, "every send answered its count");
   expectUInt(got.recvOk.load(), count, "every receive answered whole, in order, from A");
+  expectUInt(got.badBytes.load(), 0u64, "every byte of every datagram received as sent");
   expect(got.recvHere.load() >= 90u64, "at least 90 of the 100 receives were answered on the worker");
   expect(got.sendHere.load() >= 90u64, "at least 90 of the 100 sends were answered on the worker");
   expectUInt(got.late.load(), 7u64, "a receive with nothing waiting was answered when a datagram came");
