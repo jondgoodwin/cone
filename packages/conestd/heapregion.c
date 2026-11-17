@@ -51,9 +51,31 @@ static void heapRelease(struct ConeRegion *r, void *block, size_t bytes) {
     cone_rawBlockRelease(block);
 }
 
-// The heap gives exactly what is asked
+// The heap gives exactly what is asked, unless the trial setting CONE_HEAP_CLASS_SIZE=1 is in the environment
+// (read once, off by default) and the program links cnmalloc: then the answer is the size of the cell cnmalloc's
+// malloc hands out for that request (its small classes; larger requests and 0 answer as asked). That is within
+// core's 'size' promise: at least 'bytes', stable, idempotent (a class size is its own class's size) and never
+// falling. cnmalloc exports 'cnmalloc_sizeFor' from the executable (shim/cn_shim.c), found by GetProcAddress as
+// the actors runtime finds its worker calls; a program without cnmalloc finds nothing and stays exact (row 451).
+#ifdef _WIN32
+__declspec(dllimport) void *__stdcall GetModuleHandleA(const char *name);
+__declspec(dllimport) void *__stdcall GetProcAddress(void *module, const char *name);
+__declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(const char *name, char *buf, unsigned long n);
+#endif
+static volatile int sizeState;                       // 0 not looked yet, 1 settled
+static size_t (*volatile classSizeFn)(size_t);
+
 static size_t heapSize(struct ConeRegion *r, size_t bytes, size_t align) {
     (void)r; (void)align;
+#ifdef _WIN32
+    if (!sizeState) {
+        char v[8];
+        if (GetEnvironmentVariableA("CONE_HEAP_CLASS_SIZE", v, sizeof v) == 1 && v[0] == '1')
+            classSizeFn = (size_t (*)(size_t))GetProcAddress(GetModuleHandleA(0), "cnmalloc_sizeFor");
+        sizeState = 1;
+    }
+    if (classSizeFn) return classSizeFn(bytes);
+#endif
     return bytes;
 }
 
