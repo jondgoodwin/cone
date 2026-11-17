@@ -628,6 +628,11 @@ import process;
 import actors;
 import diag;
 
+// "Who is asking" for the memstats shim (kinds.toml: 33 HostJob, the blocks of jobs posted to the I/O thread); MEMSTATS builds only
+#if #defined("MEMSTATS") {
+  extern fn @c("memstats_asking") msAsk(kind: u32, elem: usize);
+}
+
 fn @initpure init() {
   ioLock = Mutex.make();
   noShared = Shared.none();
@@ -981,7 +986,9 @@ struct AwaitJob[J] {
 // An awaited job's block for the hosted service S at 'host', its body moved
 // in, its reply still to come
 fn newHostAwaitJob[S, J, R](host: *HostHead, body: J) *u8 {
+  #if #defined("MEMSTATS") { msAsk(33u32, mem.sizeof[AwaitJob[J]]()); }
   let p = libc.malloc(mem.sizeof[AwaitJob[J]]()) as *AwaitJob[J];
+  #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
   if p as usize == 0usize {
     die("aio: out of memory for an operation");
   }
@@ -1028,7 +1035,9 @@ fn dropStartedAwaitJob[J](job: *u8) {
 }
 
 fn jobBlock[J](body: J, run: &fn(job: *u8, lp: &mut Loop, at: *u8), host: *HostHead) *u8 {
+  #if #defined("MEMSTATS") { msAsk(33u32, mem.sizeof[Job[J]]()); }
   let p = libc.malloc(mem.sizeof[Job[J]]()) as *Job[J];
+  #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
   if p as usize == 0usize {
     die("aio: out of memory for an operation");
   }

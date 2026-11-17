@@ -25,8 +25,8 @@ def literals(text):
 found = {"core": literals(src), "sync": literals(sync)}
 want_core = sorted([number["RawBlocks"], number["Uni"], number["Rc"], number["MemRegion"]])
 want_sync = [number["Arc"]]
-if sorted(found["core"]) != want_core:
-    print("core.cone markers use", sorted(found["core"]), "but kinds.toml says", want_core)
+if sorted(set(found["core"])) != want_core:    # a kind may be written twice (alloc and resize)
+    print("core.cone markers use", sorted(set(found["core"])), "but kinds.toml says", want_core)
     failed = 1
 if found["sync"] != want_sync:
     print("sync.cone markers use", found["sync"], "but kinds.toml says", want_sync)
@@ -35,5 +35,13 @@ for k, v in kinds.items():
     if v.get("who") == "core" and not any(n == int(k) for n in found["core"] + found["sync"]):
         print("kinds.toml names", v["name"], "as marked in core, but no marker writes", k)
         failed = 1
+# the markers of packages that write a literal of their own kind: aio (HostJob) and memtrace (Instrument)
+for pkg, name in (("aio/src/aio.cone", "HostJob"), ("memtrace/src/memtrace.cone", "Instrument")):
+    text = (root.parent / pkg).read_text(encoding="utf-8")
+    used = {int(m) for m in re.findall(r"msAsk\((\d+)u32, ", text) if int(m) != 0}
+    if used != {number[name]}:
+        print(pkg, "markers use", sorted(used), "but kinds.toml gives", name, number[name])
+        failed = 1
+
 print("kinds.toml and the markers agree" if not failed else "MISMATCH")
 sys.exit(failed)

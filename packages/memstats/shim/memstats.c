@@ -198,7 +198,9 @@ static void* tag_block(char* raw, char* user, size_t n, void* ra) {
 
 static void* alloc_plain(size_t n, int zero, void* ra) {
   INIT();
-  if (n >= MAXSIZE) return zero ? r_calloc(1, n) : r_malloc(n);
+  // kind 34 (the instrument's own memory, memtrace's tables): straight from the C runtime, untagged and uncounted,
+  // so no report has it among the strays (a free or realloc of it finds no tag and is forwarded)
+  if (n >= MAXSIZE || tl_kind == 34) return zero ? r_calloc(1, n) : r_malloc(n);
   ts();
   char* raw = (char*)(zero ? r_calloc(1, n + TAGSZ) : r_malloc(n + TAGSZ));
   if (!raw) return NULL;

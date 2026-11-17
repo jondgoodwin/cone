@@ -256,6 +256,11 @@ import sync use Arc, Mutex;
 import bufpool;
 import trace use Level, Kind4;
 
+// "Who is asking" for the memstats shim (kinds.toml: 12 Chain, the ring of a chain's segments); MEMSTATS builds only
+#if #defined("MEMSTATS") {
+  extern fn @c("memstats_asking") msAsk(kind: u32, elem: usize);
+}
+
 // MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md): iobuf.take and iobuf.return, Trace, one
 // per buffer. elem is the block's size (its size class's, or whole pages when oversize); n the buffers out at once
 // after the event (counted only while the events are on, so a buffer taken before they were turned on and returned
@@ -778,7 +783,9 @@ pub struct Chain is Move, Sendable {
   // Twice the slots, the segments moved to the front in order
   fn grow(self: &mut) {
     let want = if slots == 0usize {4usize} else {slots * 2usize};
+    #if #defined("MEMSTATS") { msAsk(12u32, mem.sizeof[IoBuf]()); }
     let fresh = libc.malloc(want * mem.sizeof[IoBuf]()) as *IoBuf;
+    #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     if fresh as usize == 0usize {panic("iobuf: out of memory for a chain's ring");}
     var k = 0usize;
     while k < count {

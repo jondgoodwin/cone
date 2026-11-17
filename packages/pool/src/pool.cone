@@ -121,6 +121,11 @@ mod pool;
 import libc;
 import trace use Level, Kind4;
 
+// "Who is asking" for the memstats shim (kinds.toml: 6 Pool); MEMSTATS builds only
+#if #defined("MEMSTATS") {
+  extern fn @c("memstats_asking") msAsk(kind: u32, elem: usize);
+}
+
 // MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md): pool.take and pool.return (Trace; n: live
 // slots after, aux: slots ever used less live), pool.make and pool.grow (Debug; n: capacity after, aux: before);
 // elem is the slot's size, inst the pool's address.
@@ -350,12 +355,16 @@ pub struct Pool[T] is Default, ShapeChanging, CarriesRegion, GcTraceElements {
     if usize.from(want) > (0usize - 1usize) / size { outOfMemory(); }
     let r = region as &MemRegion;
     if dying == 0u32 {
+      #if #defined("MEMSTATS") { msAsk(6u32, size); }
       let fresh = r.resize(slots as *u8, usize.from(cap) * size, usize.from(want) * size, mem.alignof[Slot[T]]());
+      #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
       if fresh as usize == 0usize { outOfMemory(); }
       slots = fresh as *Slot[T];
     }
     else {
+      #if #defined("MEMSTATS") { msAsk(6u32, size); }
       let fresh = r.allocate(usize.from(want) * size, mem.alignof[Slot[T]]());
+      #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
       let node = libc.malloc(mem.sizeof[Stale]()) as *Stale;
       if fresh as usize == 0usize || node as usize == 0usize { outOfMemory(); }
       libc.memcpy(fresh, slots as *u8, usize.from(cap) * size);
