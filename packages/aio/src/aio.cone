@@ -295,7 +295,7 @@
 // workers never wait on I/O (they could not: an actor's
 // behaviour runs to its 'await' and returns). An 'await' on a socket's read
 // into a buffer (read(buf), readIn(buf, lim)) or a write first ISSUES it on its
-// own worker, through the Loop's shared table (iocore's WORKER-SIDE ISSUE),
+// own worker (recvFrom and sendTo of a UdpSocket too), through the Loop's shared table (iocore's WORKER-SIDE ISSUE),
 // the socket's entry locked across the issue and what follows: done at once
 // (every send that fits the socket, a read whose bytes are there), it is
 // answered there and the actor goes on in the same batch, nothing crossing to
@@ -478,7 +478,9 @@
 // delivery, so the answer says the system took the datagram. A datagram too
 // large for the network fails (the same number, of the kind Other). One receive at a time per
 // socket is the supported use, as iocore says; datagrams that arrive while none
-// is outstanding wait in the socket's buffer, which the OS bounds.
+// is outstanding wait in the socket's buffer, which the OS bounds. Both are
+// tried first on the awaiting actor's worker (THE I/O THREAD): a datagram
+// waiting, or a send the socket takes, is answered there, nothing crossing.
 //
 // A FILE is the same for a file the I/O thread's Loop holds: plain data that
 // moves, and dropping it closes the file, behind the operations queued before
@@ -796,7 +798,7 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
   let c = hereCounts();
   bump(&mut (*c).started as *u64);
   let w = a.what;
-  if w == opRecv || w == opSend {
+  if w == opRecv || w == opSend || w == opRecvFrom || w == opSendTo {
     let sh = sharedNow();
     let h = (*(ctx as *OpCore)).handle;
     if sh.lock(h) {
@@ -805,7 +807,7 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
         sh.unlock(h);
         bump(&mut (*c).here as *u64);
         answerRec(ctx as *OpRec[Ask]);
-        if w == opSend {
+        if w == opSend || w == opSendTo {
           askPass();
         }
         return;
