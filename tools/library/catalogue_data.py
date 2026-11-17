@@ -109,6 +109,7 @@ DOMAINS = [
    ("arena", "A dynamic region: values allocated one after another and freed all together, finalizers newest first."),
    ("rcweak", "Reference counting with weak references, beside core's Rc."),
    ("collector", "Gc, a garbage-collected region, and its collector."),
+   ("cnmalloc", "One shared heap for a process, in Cone over an OS layer, that replaces the C runtime's malloc family at the link; off unless a program links it."),
   ]),
  ]),
  ("core", "Core and the basics", "The prelude and runtime, the operating system, time, numbers, threads and actors.", [

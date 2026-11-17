@@ -1,0 +1,238 @@
+// cnmalloc unit tests: the class table (every size 0 to 64 KiB gets a block at least that big, the waste
+// above 128 bytes stays under 12.5%), aligned requests at every power of two to 1 MiB, the standard API's
+// edges (malloc(0), realloc(NULL/0), calloc overflow, _expand, _recalloc), large blocks growing and
+// shrinking in place, and a block the C runtime made going through free, realloc and _msize.
+// Each test makes its own heap (a 1 GiB reservation) and destroys it, so nothing here touches the
+// program's own malloc.
+
+mod edges;
+
+import testing use *;
+import libc;
+import cnmalloc;
+
+fn heap(mode: usize, delay: u64) usize {
+  cnmalloc.cnm_make(1073741824usize, mode, delay, 67108864usize)
+}
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+
+fn fill(p: *u8, n: usize, v: u8) {
+  var i = 0usize;
+  while i < n { *at(p, i) = v; i = i + 1usize; }
+}
+
+fn same(p: *u8, n: usize, v: u8) bool {
+  var i = 0usize;
+  while i < n { if *at(p, i) != v { return false; } i = i + 1usize; }
+  true
+}
+
+fn classTable() {
+  let h = heap(1usize, 1000u64);
+  var bad = 0i64;
+  var tooBig = 0i64;
+  var n = 0usize;
+  while n <= 65536usize {
+    let p = cnmalloc.cnm_malloc(h, n);
+    if p as usize == 0usize { bad = bad + 1i64; n = n + 1usize; continue; }
+    let u = cnmalloc.cnm_usable(h, p);
+    if u < n { bad = bad + 1i64; }
+    if n > 128usize && n <= 32768usize && u * 8usize > n * 9usize { tooBig = tooBig + 1i64; }
+    if n > 0usize { *at(p, n - 1usize) = 7u8; *p = 7u8; }
+    cnmalloc.cnm_free(h, p);
+    n = n + 1usize;
+  }
+  expectInt(bad, 0, "every size 0 to 64 KiB gets a block at least that big");
+  expectInt(tooBig, 0, "above 128 bytes the block is under 12.5% bigger than the request");
+  // the classes: 16-byte steps to 128
+  expectUInt(u64.from(cnmalloc.cnm_usable(h, cnmalloc.cnm_malloc(h, 1usize))), 16, "1 byte: the 16-byte class");
+  expectUInt(u64.from(cnmalloc.cnm_usable(h, cnmalloc.cnm_malloc(h, 128usize))), 128, "128 bytes: its own class");
+  expectUInt(u64.from(cnmalloc.cnm_usable(h, cnmalloc.cnm_malloc(h, 129usize))), 144, "129 bytes: the next, 144");
+  expectUInt(u64.from(cnmalloc.cnm_usable(h, cnmalloc.cnm_malloc(h, 32768usize))), 32768, "32 KiB: the largest small class");
+  expectUInt(u64.from(cnmalloc.cnm_usable(h, cnmalloc.cnm_malloc(h, 32769usize))), 32769, "over 32 KiB: a large block, its own size");
+  // two malloc(0) are two blocks
+  let a = cnmalloc.cnm_malloc(h, 0usize);
+  let b = cnmalloc.cnm_malloc(h, 0usize);
+  expect(a as usize != 0usize && b as usize != 0usize && a as usize != b as usize, "malloc(0): two unique blocks");
+  expectUInt(u64.from(cnmalloc.cnm_usable(h, a)), 16, "malloc(0): the smallest class");
+  cnmalloc.cnm_destroy(h);
+}
+
+fn aligned() {
+  let h = heap(1usize, 1000u64);
+  var bad = 0i64;
+  var a = 1usize;
+  while a <= 1048576usize {
+    var round = 0usize;
+    while round < 4usize {
+      let n = if round == 0usize { 1usize } else if round == 1usize { 100usize } else if round == 2usize { 5000usize } else { 70000usize };
+      let p = cnmalloc.cnm_aligned(h, a, n);
+      if p as usize == 0usize { bad = bad + 1i64; }
+      else {
+        if (p as usize) % a != 0usize { bad = bad + 1i64; }
+        if cnmalloc.cnm_usable(h, p) < n { bad = bad + 1i64; }
+        fill(p, n, 0x5Au8);
+        cnmalloc.cnm_free(h, p);
+      }
+      round = round + 1usize;
+    }
+    a = a * 2usize;
+  }
+  expectInt(bad, 0, "aligned blocks at every power of two to 1 MiB, four sizes each");
+  expect(cnmalloc.cnm_aligned(h, 24usize, 10usize) as usize == 0usize, "an alignment that is not a power of two: null");
+  cnmalloc.cnm_destroy(h);
+}
+
+fn apiEdges() {
+  let h = heap(1usize, 1000u64);
+  // realloc(NULL, n) is malloc(n)
+  let p = cnmalloc.cnm_realloc(h, 0usize as *u8, 50usize);
+  expect(p as usize != 0usize && cnmalloc.cnm_usable(h, p) >= 50usize, "realloc(NULL, 50) is a malloc");
+  fill(p, 50usize, 0x11u8);
+  // same class: same pointer
+  let q = cnmalloc.cnm_realloc(h, p, 60usize);
+  expect(q as usize == p as usize, "realloc within the class: the same pointer");
+  // bigger: moves, prefix survives
+  let r = cnmalloc.cnm_realloc(h, q, 5000usize);
+  expect(r as usize != 0usize && same(r, 50usize, 0x11u8), "realloc to a bigger class: the prefix survives");
+  // smaller
+  let s = cnmalloc.cnm_realloc(h, r, 20usize);
+  expect(s as usize != 0usize && same(s, 20usize, 0x11u8), "realloc to a smaller class: the prefix survives");
+  // realloc(p, 0) frees and answers null
+  expect(cnmalloc.cnm_realloc(h, s, 0usize) as usize == 0usize, "realloc(p, 0) answers null");
+  cnmalloc.cnm_free(h, 0usize as *u8);
+  expect(true, "free(NULL) does nothing");
+  // calloc: overflow is null, and the block is zero even when reused dirty
+  expect(cnmalloc.cnm_calloc(h, 0x8000000000000000usize, 4usize) as usize == 0usize, "calloc: count * size overflowing gives null");
+  var zeroBad = 0i64;
+  var round = 0usize;
+  while round < 50usize {
+    let d = cnmalloc.cnm_malloc(h, 300usize);
+    fill(d, 300usize, 0xFFu8);
+    cnmalloc.cnm_free(h, d);
+    let z = cnmalloc.cnm_calloc(h, 10usize, 30usize);
+    if !same(z, 300usize, 0u8) { zeroBad = zeroBad + 1i64; }
+    cnmalloc.cnm_free(h, z);
+    round = round + 1usize;
+  }
+  expectInt(zeroBad, 0, "calloc from a block freed dirty is zero");
+  // _expand: in place or null
+  let e = cnmalloc.cnm_malloc(h, 100usize);
+  expect(cnmalloc.cnm_expand(h, e, 112usize) as usize == e as usize, "_expand within the cell: the same pointer");
+  expect(cnmalloc.cnm_expand(h, e, 10000usize) as usize == 0usize, "_expand that would not fit: null");
+  // _recalloc: grows zero-filled
+  let rc = cnmalloc.cnm_recalloc(h, 0usize as *u8, 10usize, 10usize);
+  expect(rc as usize != 0usize && same(rc, 100usize, 0u8), "_recalloc(NULL, 10, 10) is a zeroed 100");
+  fill(rc, 100usize, 0x22u8);
+  let rc2 = cnmalloc.cnm_recalloc(h, rc, 100usize, 10usize);
+  expect(rc2 as usize != 0usize && same(rc2, 100usize, 0x22u8) && same(at(rc2, 100usize), 900usize, 0u8), "_recalloc grows: prefix kept, the rest zero");
+  cnmalloc.cnm_destroy(h);
+}
+
+fn largeBlocks() {
+  let h = heap(1usize, 1000u64);
+  let p = cnmalloc.cnm_malloc(h, 100000usize);
+  fill(p, 100000usize, 0xABu8);
+  expectUInt(u64.from(cnmalloc.cnm_usable(h, p)), 100000, "a large block's size is what was asked");
+  let g = cnmalloc.cnm_realloc(h, p, 200000usize);
+  expect(g as usize == p as usize, "a large block grows in place when its reservation has room");
+  expect(same(g, 100000usize, 0xABu8), "grown in place: the prefix is intact");
+  fill(g, 200000usize, 0xCDu8);
+  let s = cnmalloc.cnm_realloc(h, g, 70000usize);
+  expect(s as usize == g as usize && same(s, 70000usize, 0xCDu8), "a large block shrinks in place (tail of 64 KiB or more decommitted)");
+  expectUInt(u64.from(cnmalloc.cnm_usable(h, s)), 70000, "and reports the new size");
+  // growing past its reservation moves it and keeps the data
+  let big = cnmalloc.cnm_realloc(h, s, 300000000usize);
+  expect(big as usize != 0usize && same(big, 70000usize, 0xCDu8), "growing past the reservation moves it, the prefix intact");
+  // down to a small class: moves to a cell
+  let sm = cnmalloc.cnm_realloc(h, big, 100usize);
+  expect(sm as usize != 0usize && same(sm, 100usize, 0xCDu8) && cnmalloc.cnm_usable(h, sm) == 112usize, "a large block realloc'd small becomes a cell");
+  cnmalloc.cnm_free(h, sm);
+  // a freed large block is reused (kept committed) by the next that fits
+  let a = cnmalloc.cnm_malloc(h, 1000000usize);
+  cnmalloc.cnm_free(h, a);
+  let b = cnmalloc.cnm_malloc(h, 900000usize);
+  expect(b as usize == a as usize, "a freed large reservation is reused by a later block that fits");
+  expect(same(cnmalloc.cnm_calloc(h, 1usize, 900000usize), 900000usize, 0u8), "calloc of a large block is zero");
+  // many large blocks: the table grows
+  var live = 0usize;
+  var ptrs = libc.calloc(5000usize, 8usize) as *usize;
+  var i = 0usize;
+  while i < 5000usize {
+    let x = cnmalloc.cnm_malloc(h, 40000usize + i);
+    if x as usize != 0usize { *((ptrs as usize + i * 8usize) as *usize) = x as usize; live = live + 1usize; }
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(live), 5000, "5000 large blocks at once (the table grows by doubling)");
+  var ok = 0i64;
+  i = 0usize;
+  while i < 5000usize {
+    let x = *((ptrs as usize + i * 8usize) as *usize);
+    if cnmalloc.cnm_usable(h, x as *u8) == 40000usize + i { ok = ok + 1i64; }
+    cnmalloc.cnm_free(h, x as *u8);
+    i = i + 1usize;
+  }
+  expectInt(ok, 5000, "each found by address, each its own size, all freed");
+  libc.free(ptrs as *u8);
+  cnmalloc.cnm_destroy(h);
+}
+
+fn foreign() {
+  let h = heap(1usize, 1000u64);
+  var q = libc.malloc(100usize);
+  fill(q, 100usize, 0x33u8);
+  expect(!cnmalloc.cnm_owns(h, q as usize), "a block the C runtime made is not ours");
+  expect(cnmalloc.cnm_usable(h, q) >= 100usize, "_msize of a foreign block is forwarded");
+  q = cnmalloc.cnm_realloc(h, q, 400usize);
+  expect(!cnmalloc.cnm_owns(h, q as usize) && same(q, 100usize, 0x33u8), "realloc of a foreign block stays foreign, data intact");
+  cnmalloc.cnm_free(h, q);
+  expect(true, "free of a foreign block is forwarded, no crash");
+  let mine = cnmalloc.cnm_malloc(h, 100usize);
+  expect(cnmalloc.cnm_owns(h, mine as usize), "our own block is ours");
+  cnmalloc.cnm_free(h, mine);
+  cnmalloc.cnm_destroy(h);
+}
+
+extern {
+  fn @c(system) GetModuleHandleA(name: cstr) usize;
+  fn @c(system) GetProcAddress(module: usize, name: cstr) usize;
+}
+
+// a block from ucrtbase's own _aligned_malloc must be freed and sized by ucrtbase's aligned functions (plain free would corrupt its heap)
+fn foreignAligned() {
+  let h = heap(1usize, 1000u64);
+  let m = GetModuleHandleA("ucrtbase.dll");
+  let am = GetProcAddress(m, "_aligned_malloc") as &fn @c (n: usize, a: usize) *u8;
+  let p = am(100usize, 64usize);
+  expect(p as usize != 0usize && !cnmalloc.cnm_owns(h, p as usize), "a block from the C runtime's _aligned_malloc is foreign");
+  fill(p, 100usize, 0x44u8);
+  expect(cnmalloc.cnm_aligned_msize(h, p, 64usize, 0usize) >= 100usize, "_aligned_msize of a foreign aligned block asks the C runtime (with its alignment)");
+  cnmalloc.cnm_aligned_free(h, p);
+  expect(true, "_aligned_free of a foreign aligned block goes to the C runtime's _aligned_free, no crash");
+  let mine = cnmalloc.cnm_aligned(h, 64usize, 100usize);
+  expect(cnmalloc.cnm_aligned_msize(h, mine, 64usize, 0usize) >= 100usize, "_aligned_msize of our own block");
+  cnmalloc.cnm_aligned_free(h, mine);
+  cnmalloc.cnm_destroy(h);
+}
+
+fn layout() {
+  expectUInt(u64.from(mem.sizeof[cnmalloc.Desc]()), 64, "a page descriptor is 64 bytes");
+  expect(mem.sizeof[cnmalloc.Class]() <= 128usize, "a class fits its 128-byte stride");
+  expect(mem.sizeof[cnmalloc.Heap]() <= 1024usize, "the heap header fits its 1 KiB");
+  expect(mem.sizeof[cnmalloc.Pool]() <= 1024usize, "the pool fits its 1 KiB");
+  expect(mem.sizeof[cnmalloc.Large]() <= 512usize, "the large table's header fits its 512 bytes");
+  expectUInt(u64.from(mem.sizeof[cnmalloc.LEntry]()), 48, "a large entry is 48 bytes");
+  expect(mem.sizeof[cnmalloc.Timer]() <= 512usize, "the timer's state fits its 512 bytes");
+}
+
+fn main() i32 {
+  layout();
+  classTable();
+  aligned();
+  apiEdges();
+  largeBlocks();
+  foreign();
+  foreignAligned();
+  done()
+}
