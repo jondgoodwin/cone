@@ -1,0 +1,72 @@
+// The contract between the events and the transmits: Closed ends the events,
+// and whatever pollTransmit still holds is to be sent before the connection
+// is dropped. A server that was asked 'Connection: close' queues its answer;
+// pollEvent then gives Closed (before the answer has gone), and the whole
+// answer is still there in pollTransmit; once taken, shouldClose says so.
+
+mod closedtransmit;
+
+import testing use *;
+import collections use String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+fn main() i32 {
+  let t = Instant.fromNanos(1000000000i64);
+  let text = "GET / HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n";
+  var c = Connection.server(Config.make(), t);
+  var b = IoBuf(4096usize);
+  let n = b.append(text);
+  c.handleInput(b, t);
+
+  // the request, read to its end
+  var sawEnd = false;
+  var going = true;
+  while going {
+    match c.pollEvent() {
+      case is Request {}
+      case is End {sawEnd = true;}
+      case is NeedData {going = false;}
+      case is Paused {going = false;}
+      case is Failed {going = false;}
+      case is Closed {going = false;}
+      case var Data(d) {c.release(d.buf.len());}
+      case is Response {}
+      case is Interim {}
+    }
+  }
+  expect(sawEnd, "the request was read to its end");
+
+  // the answer, queued
+  c.sendResponse(ResponseHead.make(200u16), BodyLength.sized(2u64));
+  var d = IoBuf(2usize);
+  d.append("ok");
+  c.sendData(d);
+  c.finish();
+
+  // Closed ends the events at once ...
+  var closed = false;
+  match c.pollEvent() {
+    case is Closed {closed = true;}
+    else {}
+  }
+  expect(closed, "the next event is Closed, with the answer still queued");
+  expect(!c.shouldClose(), "...and the connection is not to be dropped yet");
+
+  // ... and the whole answer is still in pollTransmit
+  var s = String();
+  var ch = c.pollTransmit(t);
+  while true {
+    match ch.popFront() {
+      case var Some(x) {s.appendBytes(x.view());}
+      else {break;}
+    }
+  }
+  expectStr(s.view(), "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+    "the whole answer is taken after Closed");
+  expect(c.shouldClose(), "once it is taken, the connection is to be dropped");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}
