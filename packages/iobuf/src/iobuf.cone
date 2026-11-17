@@ -254,6 +254,30 @@ mod iobuf;
 import libc;
 import sync use Arc, Mutex;
 import bufpool;
+import trace use Level, Kind4;
+
+// MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md): iobuf.take and iobuf.return, Trace, one
+// per buffer. elem is the block's size (its size class's, or whole pages when oversize); n the buffers out at once
+// after the event (counted only while the events are on, so a buffer taken before they were turned on and returned
+// after counts as -1, wrapped: the report clamps); aux the bytes asked for on a take, the bytes held on a return.
+// The actor in the sink's key is the context's: the actor that took, and the one that returned. A buffer handed
+// to a home's give callback is a return too. The pool's own blocks (slabs) are VirtualAlloc, which row 423's
+// supply side counts at the call site.
+let iobufTake: Kind4[u64, u64, u64, u64];
+let iobufReturn: Kind4[u64, u64, u64, u64];
+let outCount: Atomic[u64];
+
+fn @initpure init() {
+  outCount = Atomic[u64].of(0u64);
+  iobufTake = Kind4[u64, u64, u64, u64].make("iobuf.take", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  iobufReturn = Kind4[u64, u64, u64, u64].make("iobuf.return", "memory", Level.Trace, "elem", "n", "inst", "aux");
+}
+
+// The count of buffers out after adding delta (1, or -1 as a wrapped add)
+fn outNow(delta: u64) u64 {
+  let before = mem.atomicAdd[u64](&outCount as *u64, delta, MemOrder.Relaxed);
+  before + delta
+}
 
 // ---------------------------------------------------------------------------
 // The pool, and its counters: the buffer pool is bufpool's. These wrappers keep
@@ -325,6 +349,7 @@ fn acquire(size: usize, file: &Array[u8], line: u32) IoBuf {
   let room = pool.sizeFor(size, page);
   let b = pool.allocate(size, page);
   if b as usize == 0usize {outOfMemory(file, line);}
+  iobufTake.emit(u64.from(room), outNow(1u64), 0u64, u64.from(size));
   IoBuf(b, 0usize, room, 0usize)
 }
 
@@ -452,6 +477,7 @@ pub struct IoBuf is Default, Move, Sendable {
     let room = (bufpool.bufferPool() as &MemRegion).sizeFor(size, page);
     let b = bufpool.tryAllocate(size);
     if b as usize == 0usize {return None[IoBuf];}
+    iobufTake.emit(u64.from(room), outNow(1u64), 0u64, u64.from(size));
     Some[IoBuf](IoBuf(b, 0usize, room, 0usize))
   }
 
@@ -539,6 +565,7 @@ pub struct IoBuf is Default, Move, Sendable {
       }
       homeRelease(r);
     } else if data as usize != 0usize {
+      iobufReturn.emit(u64.from(cap), outNow(0xFFFFFFFFFFFFFFFFu64), 0u64, u64.from(used));
       (bufpool.bufferPool() as &MemRegion).release(data, cap);
     }
   }

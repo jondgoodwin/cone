@@ -109,6 +109,79 @@
 mod collections;
 
 import libc;
+import trace use Level, Kind4;
+
+// MEMORY TRACING (the trace package, target "memory"; the schema is in packages/memtrace/README.md). IN A MEMSTATS
+// BUILD ONLY: every emit below sits under '#if #defined("MEMSTATS")', so a normal build carries not even the check
+// (the off cost on havlak, hashstr and cd was measurable, #1405). Each region kind (list, string, deque, dict) emits
+// three events, all Debug, tied together by the BLOCK's address, not the collection's (a collection moves; its
+// block is what the region gave): <kind>.make when a collection first gets a block (elem: bytes of one element,
+// n: capacity, inst: the block's address), <kind>.grow when its block is replaced by a bigger one (n: capacity
+// after, inst: the old block's address, aux: the new block's address; the sink knows the old capacity and the
+// birth time by the old address, and "moved" is old != new), and <kind>.drop when a collection that holds a block
+// dies (n: its length, inst: the block's address, aux: its capacity). A String's buffer is a List[u8]: the String's
+// own operations set 'inString' around the buffer's, so its events are string.*, not list.*. There is no event per
+// push or remove: no check sits on List.push.
+let listMake: Kind4[u64, u64, u64, u64];
+let listGrow: Kind4[u64, u64, u64, u64];
+let listDrop: Kind4[u64, u64, u64, u64];
+let stringMake: Kind4[u64, u64, u64, u64];
+let stringGrow: Kind4[u64, u64, u64, u64];
+let stringDrop: Kind4[u64, u64, u64, u64];
+let dequeMake: Kind4[u64, u64, u64, u64];
+let dequeGrow: Kind4[u64, u64, u64, u64];
+let dequeDrop: Kind4[u64, u64, u64, u64];
+let dictMake: Kind4[u64, u64, u64, u64];
+let dictGrow: Kind4[u64, u64, u64, u64];
+let dictDrop: Kind4[u64, u64, u64, u64];
+var @threadlocal inString = false;     // a String's operation is running on its buffer (MEMSTATS builds)
+var @threadlocal quietDrop = 0usize;   // the block a String's death has already reported, so the buffer's does not (MEMSTATS)
+
+fn @initpure init() {
+  listMake = Kind4[u64, u64, u64, u64].make("list.make", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  listGrow = Kind4[u64, u64, u64, u64].make("list.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  listDrop = Kind4[u64, u64, u64, u64].make("list.drop", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  stringMake = Kind4[u64, u64, u64, u64].make("string.make", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  stringGrow = Kind4[u64, u64, u64, u64].make("string.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  stringDrop = Kind4[u64, u64, u64, u64].make("string.drop", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dequeMake = Kind4[u64, u64, u64, u64].make("deque.make", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dequeGrow = Kind4[u64, u64, u64, u64].make("deque.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dequeDrop = Kind4[u64, u64, u64, u64].make("deque.drop", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dictMake = Kind4[u64, u64, u64, u64].make("dict.make", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dictGrow = Kind4[u64, u64, u64, u64].make("dict.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  dictDrop = Kind4[u64, u64, u64, u64].make("dict.drop", "memory", Level.Debug, "elem", "n", "inst", "aux");
+}
+
+// The three events of a List's block, as a String's when it is the String's buffer
+fn memListMake(elem: usize, cap: usize, at: usize) {
+  if inString {
+    stringMake.emit(u64.from(elem), u64.from(cap), u64.from(at), 0u64);
+  } else {
+    listMake.emit(u64.from(elem), u64.from(cap), u64.from(at), 0u64);
+  }
+}
+fn memListGrow(elem: usize, cap: usize, old: usize, at: usize) {
+  if inString {
+    stringGrow.emit(u64.from(elem), u64.from(cap), u64.from(old), u64.from(at));
+  } else {
+    listGrow.emit(u64.from(elem), u64.from(cap), u64.from(old), u64.from(at));
+  }
+}
+fn memListDrop(elem: usize, len: usize, cap: usize, at: usize) {
+  if quietDrop == at {
+    quietDrop = 0usize;
+    return;
+  }
+  listDrop.emit(u64.from(elem), u64.from(len), u64.from(at), u64.from(cap));
+}
+
+// A String's operation on its buffer begins and ends (a MEMSTATS build only: nothing otherwise)
+fn strOn() inline {
+  #if #defined("MEMSTATS") { inString = true; }
+}
+fn strOff() inline {
+  #if #defined("MEMSTATS") { inString = false; }
+}
 
 // A String's own method is named 'cstr', which hides the type of that name
 // inside String's declaration; this is the type, for there
@@ -243,6 +316,7 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
       // The floor is written out because the answer comes from an indirect call, and
       // the optimizer needs this fact to drop bounds checks.
       self.cap = if room > n {room} else {n};
+      #if #defined("MEMSTATS") { memListMake(mem.sizeof[T](), self.cap, self.ptr as usize); }
     }
   }
 
@@ -260,6 +334,7 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
       let room = blockRoom[T](region, n);
       ptr = blockGrow[T](region, ptr, 0usize, n);
       cap = room;
+      #if #defined("MEMSTATS") { memListMake(mem.sizeof[T](), room, ptr as usize); }
     }
   }
 
@@ -319,8 +394,20 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
       if want < first { want = first; }
     }
     let room = blockRoom[T](region, want);
-    ptr = blockGrow[T](region, ptr, cap, want);
-    cap = room;
+    #if #defined("MEMSTATS") {
+      let was = cap;
+      let oldAt = ptr as usize;
+      ptr = blockGrow[T](region, ptr, cap, want);
+      cap = room;
+      if was == 0usize {
+        memListMake(mem.sizeof[T](), room, ptr as usize);
+      } else {
+        memListGrow(mem.sizeof[T](), room, oldAt, ptr as usize);
+      }
+    } #else {
+      ptr = blockGrow[T](region, ptr, cap, want);
+      cap = room;
+    }
   }
 
   // Move a value in at the end
@@ -974,6 +1061,7 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // to its region
   fn final(self: &uni) {
     self.finalizeAll();
+    #if #defined("MEMSTATS") { if cap != 0usize { memListDrop(mem.sizeof[T](), used, cap, ptr as usize); } }
     blockFree[T](region, ptr, cap);
   }
 }
@@ -1388,6 +1476,7 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
       let room = blockRoom[T](region, n);
       self.ptr = blockNew[T](region, n);
       self.cap = room;
+      #if #defined("MEMSTATS") { dequeMake.emit(u64.from(mem.sizeof[T]()), u64.from(room), u64.from(self.ptr as usize), 0u64); }
     }
   }
 
@@ -1605,10 +1694,19 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
       mem.moveRaw(fresh, ptr + head, firstRun);
       mem.moveRaw(fresh + firstRun, ptr, used - firstRun);
     }
+    let was = cap;
+    let oldAt = ptr as usize;
     blockFree[T](region, ptr, cap);
     ptr = fresh;
     head = 0usize;
     cap = room;
+    #if #defined("MEMSTATS") {
+      if was == 0usize {
+        dequeMake.emit(u64.from(mem.sizeof[T]()), u64.from(room), u64.from(ptr as usize), 0u64);
+      } else {
+        dequeGrow.emit(u64.from(mem.sizeof[T]()), u64.from(room), u64.from(oldAt), u64.from(ptr as usize));
+      }
+    }
   }
 
   fn finalizeAll(self: &mut) {
@@ -1625,6 +1723,9 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
   // to its region
   fn final(self: &uni) {
     self.finalizeAll();
+    #if #defined("MEMSTATS") {
+      if cap != 0usize { dequeDrop.emit(u64.from(mem.sizeof[T]()), u64.from(used), u64.from(ptr as usize), u64.from(cap)); }
+    }
     blockFree[T](region, ptr, cap);
   }
 }
@@ -1745,13 +1846,26 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
   // An empty String with room for n bytes (and the NUL after them), 'String(100)'
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     if n == 0usize { *self = String(List[u8](region)); }
-    else { *self = String(List[u8](n + 1usize, region)); }
+    else { strOn(); *self = String(List[u8](n + 1usize, region)); strOff(); }
   }
 
   // An empty String with room for n bytes (and the NUL after them)
   pub fn withCapacity(n: usize) String {
     if n == 0usize { return String(); }
-    String(List[u8].withCapacity(n + 1usize))
+    strOn();
+    let made = String(List[u8].withCapacity(n + 1usize));
+    strOff();
+    made
+  }
+
+  // Its death, in a MEMSTATS build: string.drop for the buffer, which the List's own final is then told to skip
+  #if #defined("MEMSTATS") {
+    fn final(self: &uni) {
+      if buf.cap != 0usize {
+        stringDrop.emit(1u64, u64.from(buf.used), u64.from(buf.ptr as usize), u64.from(buf.cap));
+        quietDrop = buf.ptr as usize;
+      }
+    }
   }
 
   // A String holding a copy of this text
@@ -1797,7 +1911,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
   // block has nothing to terminate: its view is the static empty literal.
   fn seal(self: &mut) {
     if buf.ptr == null { return; }
-    if buf.used >= buf.cap { buf.reserve(1usize); }
+    if buf.used >= buf.cap { strOn(); buf.reserve(1usize); strOff(); }
     mem.writeRaw(buf.ptr + buf.used, 0u8);
   }
 
@@ -1908,7 +2022,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
       buf.used = buf.used + n;
       return;
     }
-    buf.reserve(n + 1usize);
+    strOn(); buf.reserve(n + 1usize); strOff();
     if n > 0usize {
       // One block copy, as List.appendSliceCopy does; the reserve has room
       // for the bytes and the NUL, so seal() finds the NUL's room
@@ -1919,7 +2033,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
   }
 
   pub fn appendByte(self: &mut, b: u8) {
-    buf.push(b);
+    strOn(); buf.push(b); strOff();
     self.seal();
   }
 
@@ -1927,7 +2041,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
   // a number is written by its own 'toText', through textOut.)
   pub fn appendInt(self: &mut, n: i64) {
     if n < 0i64 {
-      buf.push('-');
+      strOn(); buf.push('-'); strOff();
       // The magnitude as a u64, which holds even the most negative i64's
       self.appendUInt(0u64 - u64.from(n));
     }
@@ -1949,7 +2063,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
     }
     while count > 0usize {
       count = count - 1usize;
-      buf.push(digits[count]);
+      strOn(); buf.push(digits[count]); strOff();
     }
     self.seal();
   }
@@ -1972,7 +2086,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
     while d > 0usize {
       d = d - 1usize;
       let nibble = u8.from((n >> u64.from(d * 4usize)) & 15u64);
-      buf.push(if nibble < 10u8 {'0' + nibble} else {'a' + nibble - 10u8});
+      strOn(); buf.push(if nibble < 10u8 {'0' + nibble} else {'a' + nibble - 10u8}); strOff();
     }
     self.seal();
   }
@@ -1987,7 +2101,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
     let text: &Array[u8] = s;
     if text.len == 0usize { return; }
     let old = buf.used;
-    buf.reserve(text.len + 1usize);
+    strOn(); buf.reserve(text.len + 1usize); strOff();
     mem.moveRaw(buf.ptr + index + text.len, buf.ptr + index, old - index);
     var i = 0usize;
     while i < text.len { mem.writeRaw(buf.ptr + index + i, text[i]); i = i + 1usize; }
@@ -2071,7 +2185,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
   // The same, put after its bytes: "ab" padded to 4 is "ab  ", which
   // left-aligns it
   pub fn padEnd(self: &mut, width: usize, fill: u8 = ' ') {
-    while buf.used < width { buf.push(fill); }
+    while buf.used < width { strOn(); buf.push(fill); strOff(); }
     self.seal();
   }
 
@@ -2172,7 +2286,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
 fn stringTextSpill(w: &uni TextOut, need: usize) {
   let me = w.ownerOf() as &mut String;
   me.buf.used = w.used();
-  me.buf.reserve(need + 1usize);
+  strOn(); me.buf.reserve(need + 1usize); strOff();
   w.setBuffer(me.buf.ptr, me.buf.cap);
 }
 
@@ -2677,16 +2791,26 @@ pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, 
       }
       (region as &MemRegion).release(slots as *u8, self.tableBytes(mask + 1usize));
     }
+    let wasBuckets = if ctrl == null {0usize} else {mask + 1usize};
+    let oldAt = slots as usize;
     ctrl = fresh;
     slots = freshSlots;
     mask = freshMask;
     left = bucketsCapacity(buckets) - items;
+    #if #defined("MEMSTATS") {
+      if wasBuckets == 0usize {
+        dictMake.emit(u64.from(entrySize), u64.from(bucketsCapacity(buckets)), u64.from(slots as usize), 0u64);
+      } else {
+        dictGrow.emit(u64.from(entrySize), u64.from(bucketsCapacity(buckets)), u64.from(oldAt), u64.from(slots as usize));
+      }
+    }
   }
 
   // Its death: each entry's key and value, first bucket to last, then the block,
   // given back to its region
   fn final(self: &uni) {
     if ctrl != null {
+      #if #defined("MEMSTATS") { dictDrop.emit(u64.from(mem.sizeof[DictEntry[K, V]]()), u64.from(items), u64.from(slots as usize), u64.from(items + left)); }
       if mem.needsFinal[DictEntry[K, V]]() {
         var i = 0usize;
         while i <= mask {

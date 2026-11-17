@@ -1,0 +1,65 @@
+// The actors' trace context and message events through the sink: one actor is sent 10 messages from main; the
+// totals hold 10 msg.make (sent by main, actor 0: no actor runs there) and 10 msg.drop under the actor's own number
+// (the context's cause), so msg.drop is never under actor 0.
+mod actorsum;
+
+import testing use *;
+import stdio use *;
+import collections use List;
+import actors;
+import memtrace;
+import trace;
+import env;
+import fs;
+import path use Path;
+
+actor Echo {
+  heard: u64 = 0u64;
+
+  pub async fn hear(self, n: u64) {
+    heard = heard + n;
+  }
+}
+
+fn main() i32 {
+  initAll();
+  env.set("MEMTRACE_OUT", "memtrace-actors.json");
+  if !memtrace.install() {
+    print <- "no install\n";
+    return 1i32;
+  }
+  trace.setLevel("memory", trace.Level.Trace);
+  let e = Echo();
+  var i = 0u64;
+  while i < 10u64 {
+    e.hear(i);
+    i = i + 1u64;
+  }
+  finalAll();
+  trace.flush();
+  match fs.readFile(&Path.from("memtrace-actors.json")) {
+    case let Ok(text) {
+      let lines = List[&str].from(text.lines());
+      var li = 0usize;
+      var inTotal = false;
+      var drops = 0u32;
+      var dropsOfActorZero = 0u32;
+      var makes = 0u32;
+      while li < lines.len() {
+        let line = lines[li];
+        li = li + 1usize;
+        if line.startsWith("{\"s\":\"total") {inTotal = true;}
+        if inTotal && line.startsWith("{\"k\":\"msg.drop\"") {
+          drops = drops + 1u32;
+          if line.startsWith("{\"k\":\"msg.drop\",\"e\":") && line.find("\"a\":0,") != None {dropsOfActorZero = dropsOfActorZero + 1u32;}
+        }
+        if inTotal && line.startsWith("{\"k\":\"msg.make\"") {makes = makes + 1u32;}
+      }
+      print <- "msg.make keys ", makes, "\n";
+      print <- "msg.drop keys ", drops, "\n";
+      print <- "msg.drop under actor 0: ", dropsOfActorZero, "\n";
+    }
+    case is Err {print <- "unreadable\n";}
+  }
+  done()
+}

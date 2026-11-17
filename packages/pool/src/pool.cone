@@ -119,6 +119,22 @@
 mod pool;
 
 import libc;
+import trace use Level, Kind4;
+
+// MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md): pool.take and pool.return (Trace; n: live
+// slots after, aux: slots ever used less live), pool.make and pool.grow (Debug; n: capacity after, aux: before);
+// elem is the slot's size, inst the pool's address.
+let poolTake: Kind4[u64, u64, u64, u64];
+let poolReturn: Kind4[u64, u64, u64, u64];
+let poolMake: Kind4[u64, u64, u64, u64];
+let poolGrow: Kind4[u64, u64, u64, u64];
+
+fn @initpure init() {
+  poolTake = Kind4[u64, u64, u64, u64].make("pool.take", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  poolReturn = Kind4[u64, u64, u64, u64].make("pool.return", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  poolMake = Kind4[u64, u64, u64, u64].make("pool.make", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  poolGrow = Kind4[u64, u64, u64, u64].make("pool.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+}
 
 // One slot of a pool's block. 'gen' is odd while the slot holds a value and
 // even while it does not; 'next' is the next free slot while it is free.
@@ -247,6 +263,7 @@ pub struct Pool[T] is Default, ShapeChanging, CarriesRegion, GcTraceElements {
     s.gen = s.gen + 1u32;
     mem.writeRaw(&mut s.value as *T, value);
     live = live + 1u32;
+    poolTake.emit(u64.from(mem.sizeof[Slot[T]]()), u64.from(live), u64.from(self as usize), u64.from(high - live));
     Ref[T].of(i, s.gen)
   }
 
@@ -291,6 +308,7 @@ pub struct Pool[T] is Default, ShapeChanging, CarriesRegion, GcTraceElements {
     // Gone from here on, to anything its finalizer asks the pool
     s.gen = s.gen + 1u32;
     live = live - 1u32;
+    poolReturn.emit(u64.from(mem.sizeof[Slot[T]]()), u64.from(live), u64.from(self as usize), u64.from(high - live));
     if mem.needsFinal[T]() {
       dying = dying + 1u32;
       mem.finalize(&mut s.value as *T);
@@ -345,7 +363,13 @@ pub struct Pool[T] is Default, ShapeChanging, CarriesRegion, GcTraceElements {
       stale = node;
       slots = fresh as *Slot[T];
     }
+    let was = cap;
     cap = want;
+    if was == 0u32 {
+      poolMake.emit(u64.from(size), u64.from(want), u64.from(self as usize), 0u64);
+    } else {
+      poolGrow.emit(u64.from(size), u64.from(want), u64.from(self as usize), u64.from(was));
+    }
   }
 
   // Free the blocks kept for finalizers that have now returned
