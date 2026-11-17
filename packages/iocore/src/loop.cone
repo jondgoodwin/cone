@@ -357,13 +357,7 @@ pub struct Loop {
   pub fn peerAddr(self: &, h: Handle) Result[SocketAddr, IoError] {
     let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return Err[SocketAddr, IoError](IoError(noSuchHandle()));}
-    var a = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
-    var len = 28i32;
-    if getpeername(raw, &mut a as *u8, &mut len) != 0i32 {
-      return Err[SocketAddr, IoError](IoError(wsaError()));
-    }
-    a.size = len;
-    Ok[SocketAddr, IoError](a)
+    rawPeerAddr(raw)
   }
 
   // TCP keepalive on a connected socket (KeepAlive says what), set now: 0,
@@ -372,26 +366,7 @@ pub struct Loop {
   pub fn setKeepAlive(self: &mut, h: Handle, ka: KeepAlive) u32 {
     let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return noSuchHandle();}
-    let on = ka.probes > 0u32;
-    var flag = if on {1i32} else {0i32};
-    let sol = #if #os == .windows {solSocket} #else {solSocketLx};
-    let opt = #if #os == .windows {soKeepAlive} #else {soKeepAliveLx};
-    if setsockopt(raw, sol, opt, &mut flag as *u8, 4i32) != 0i32 {return wsaError();}
-    if !on {return 0u32;}
-    var idle = keepSeconds(ka.idle);
-    var every = keepSeconds(ka.interval);
-    var count = i32.from(ka.probes);
-    let idleOpt = #if #os == .windows {tcpKeepIdle} #else {tcpKeepIdleLx};
-    let everyOpt = #if #os == .windows {tcpKeepIntvl} #else {tcpKeepIntvlLx};
-    let countOpt = #if #os == .windows {tcpKeepCnt} #else {tcpKeepCntLx};
-    if setsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, 4i32) != 0i32 {return wsaError();}
-    if setsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, 4i32) != 0i32 {return wsaError();}
-    if setsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, 4i32) != 0i32 {return wsaError();}
-    if (#if #os != .windows {ka.userTimeout > Duration.zero()} #else {false}) {
-      var ms = i32.from(ka.userTimeout.millis());
-      if setsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, 4i32) != 0i32 {return wsaError();}
-    }
-    0u32
+    rawSetKeepAlive(raw, ka)
   }
 
   // A connected socket's TCP keepalive, as the OS reads it back: probes 0
@@ -399,31 +374,7 @@ pub struct Loop {
   pub fn keepAlive(self: &, h: Handle) Result[KeepAlive, IoError] {
     let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return Err[KeepAlive, IoError](IoError(noSuchHandle()));}
-    let sol = #if #os == .windows {solSocket} #else {solSocketLx};
-    let opt = #if #os == .windows {soKeepAlive} #else {soKeepAliveLx};
-    var flag = 0i32;
-    var len = 4i32;
-    if getsockopt(raw, sol, opt, &mut flag as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
-    if flag == 0i32 {return Ok[KeepAlive, IoError](KeepAlive.off());}
-    var idle = 0i32;
-    var every = 0i32;
-    var count = 0i32;
-    var ms = 0i32;
-    let idleOpt = #if #os == .windows {tcpKeepIdle} #else {tcpKeepIdleLx};
-    let everyOpt = #if #os == .windows {tcpKeepIntvl} #else {tcpKeepIntvlLx};
-    let countOpt = #if #os == .windows {tcpKeepCnt} #else {tcpKeepCntLx};
-    len = 4i32;
-    if getsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
-    len = 4i32;
-    if getsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
-    len = 4i32;
-    if getsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
-    #if #os != .windows {
-      len = 4i32;
-      if getsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
-    }
-    Ok[KeepAlive, IoError](KeepAlive(Duration.fromSeconds(i64.from(idle)), Duration.fromSeconds(i64.from(every)),
-      u32.from(count), Duration.fromMillis(i64.from(ms))))
+    rawKeepAlive(raw)
   }
 
   // A file, for ReadAt and WriteAt
@@ -581,8 +532,7 @@ pub struct Loop {
   pub fn shutdown(self: &mut, h: Handle) u32 {
     let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return noSuchHandle();}
-    if iocore.shutdown(raw, sdSend) != 0i32 {return wsaError();}
-    0u32
+    rawShutdownSend(raw)
   }
 
   // Close a connected socket abortively: its peer sees the connection
@@ -2509,4 +2459,82 @@ pub struct Loop {
     // the loop's own hold is let go, as the field is dropped after this
     // returns, and the last holder to let go frees it (shared.cone, ITS LIFE)
   }
+}
+
+// ---------------------------------------------------------------------------
+// A connected socket's controls, on its OS handle: the Loop's own methods call
+// them after finding the handle, and so does the shared table (Shared's
+// shutdownSend, peerAddr, setKeepAlive, keepAlive: SOCKET CONTROLS) with the
+// entry's lock held
+// ---------------------------------------------------------------------------
+
+// The socket's sending side finished: 0, or the system's error number
+fn rawShutdownSend(raw: usize) u32 {
+  if iocore.shutdown(raw, sdSend) != 0i32 {return wsaError();}
+  0u32
+}
+
+// The address of the socket's peer
+fn rawPeerAddr(raw: usize) Result[SocketAddr, IoError] {
+  var a = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
+  var len = 28i32;
+  if getpeername(raw, &mut a as *u8, &mut len) != 0i32 {
+    return Err[SocketAddr, IoError](IoError(wsaError()));
+  }
+  a.size = len;
+  Ok[SocketAddr, IoError](a)
+}
+
+// TCP keepalive set on the socket: 0, or the system's error number of the
+// option the OS refused
+fn rawSetKeepAlive(raw: usize, ka: KeepAlive) u32 {
+  let on = ka.probes > 0u32;
+  var flag = if on {1i32} else {0i32};
+  let sol = #if #os == .windows {solSocket} #else {solSocketLx};
+  let opt = #if #os == .windows {soKeepAlive} #else {soKeepAliveLx};
+  if setsockopt(raw, sol, opt, &mut flag as *u8, 4i32) != 0i32 {return wsaError();}
+  if !on {return 0u32;}
+  var idle = keepSeconds(ka.idle);
+  var every = keepSeconds(ka.interval);
+  var count = i32.from(ka.probes);
+  let idleOpt = #if #os == .windows {tcpKeepIdle} #else {tcpKeepIdleLx};
+  let everyOpt = #if #os == .windows {tcpKeepIntvl} #else {tcpKeepIntvlLx};
+  let countOpt = #if #os == .windows {tcpKeepCnt} #else {tcpKeepCntLx};
+  if setsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, 4i32) != 0i32 {return wsaError();}
+  if setsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, 4i32) != 0i32 {return wsaError();}
+  if setsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, 4i32) != 0i32 {return wsaError();}
+  if (#if #os != .windows {ka.userTimeout > Duration.zero()} #else {false}) {
+    var ms = i32.from(ka.userTimeout.millis());
+    if setsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, 4i32) != 0i32 {return wsaError();}
+  }
+  0u32
+}
+
+// The socket's TCP keepalive as the OS reads it back: probes 0 when it is off
+fn rawKeepAlive(raw: usize) Result[KeepAlive, IoError] {
+  let sol = #if #os == .windows {solSocket} #else {solSocketLx};
+  let opt = #if #os == .windows {soKeepAlive} #else {soKeepAliveLx};
+  var flag = 0i32;
+  var len = 4i32;
+  if getsockopt(raw, sol, opt, &mut flag as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
+  if flag == 0i32 {return Ok[KeepAlive, IoError](KeepAlive.off());}
+  var idle = 0i32;
+  var every = 0i32;
+  var count = 0i32;
+  var ms = 0i32;
+  let idleOpt = #if #os == .windows {tcpKeepIdle} #else {tcpKeepIdleLx};
+  let everyOpt = #if #os == .windows {tcpKeepIntvl} #else {tcpKeepIntvlLx};
+  let countOpt = #if #os == .windows {tcpKeepCnt} #else {tcpKeepCntLx};
+  len = 4i32;
+  if getsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
+  len = 4i32;
+  if getsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
+  len = 4i32;
+  if getsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
+  #if #os != .windows {
+    len = 4i32;
+    if getsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
+  }
+  Ok[KeepAlive, IoError](KeepAlive(Duration.fromSeconds(i64.from(idle)), Duration.fromSeconds(i64.from(every)),
+    u32.from(count), Duration.fromMillis(i64.from(ms))))
 }

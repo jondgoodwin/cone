@@ -22,6 +22,18 @@
 // processor, so a holder that was preempted is not spun on for a whole quantum.
 // The Loop's thread holds no other lock while it takes one.
 //
+// CONTROLS. A connected socket's half-close, peer address and keepalive are
+// each one system call on its OS handle, which the entry holds. With h's entry
+// locked ('sh.lock(h)') a thread other than the Loop's may make them:
+// 'sh.shutdownSend(h)', 'sh.peerAddr(h)', 'sh.setKeepAlive(h, ka)' and
+// 'sh.keepAlive(h)' do what the Loop's 'shutdown', 'peerAddr', 'setKeepAlive'
+// and 'keepAlive' do (the same functions of the OS handle, loop.cone), and are
+// refused as those are for a handle that is no connected socket; also for an
+// entry whose close has been asked (the OS handle may be closed any moment
+// after the lock is let go, so nothing is done on it). The Loop unpublishes an
+// entry under its lock before it closes the OS handle, so the call is never on
+// a closed one. A handle with no published entry is the Loop's to do.
+//
 // ITS LIFE. The table outlives its Loop: a thread that holds a Shared may look
 // at it (a lock, a generation check) after the Loop has died, and finds every
 // entry unpublished, so nothing is issued. So the table is counted, one count
@@ -152,6 +164,47 @@ pub struct Shared is Move, Sendable {
   // locked by this thread
   pub fn markClosing(self: &, h: Handle) {
     (*self.entry(h.index)).closing = 1u32;
+  }
+
+  // The OS handle of h's entry, which is a connected socket not closing; else
+  // invalidHandle. h is locked by this thread (CONTROLS)
+  fn socketRaw(self: &, h: Handle) usize {
+    let e = self.entry(h.index);
+    if e as usize == 0usize || (*e).closing != 0u32 || (*e).kind != hSocket {return invalidHandle;}
+    (*e).raw
+  }
+
+  // h's sending side finished (Loop.shutdown's work): 0, or the system's
+  // number; noSuchHandle() for an entry closing or not a connected socket.
+  // h is locked by this thread (CONTROLS)
+  pub fn shutdownSend(self: &, h: Handle) u32 {
+    let raw = self.socketRaw(h);
+    if raw == invalidHandle {return noSuchHandle();}
+    rawShutdownSend(raw)
+  }
+
+  // h's peer (Loop.peerAddr's work); as shutdownSend for a handle that is not
+  // a usable connected socket
+  pub fn peerAddr(self: &, h: Handle) Result[SocketAddr, IoError] {
+    let raw = self.socketRaw(h);
+    if raw == invalidHandle {return Err[SocketAddr, IoError](IoError(noSuchHandle()));}
+    rawPeerAddr(raw)
+  }
+
+  // TCP keepalive set on h (Loop.setKeepAlive's work): 0, or the system's
+  // number; as shutdownSend for a handle that is not a usable connected socket
+  pub fn setKeepAlive(self: &, h: Handle, ka: KeepAlive) u32 {
+    let raw = self.socketRaw(h);
+    if raw == invalidHandle {return noSuchHandle();}
+    rawSetKeepAlive(raw, ka)
+  }
+
+  // h's TCP keepalive as the system reads it back (Loop.keepAlive's work);
+  // as shutdownSend for a handle that is not a usable connected socket
+  pub fn keepAlive(self: &, h: Handle) Result[KeepAlive, IoError] {
+    let raw = self.socketRaw(h);
+    if raw == invalidHandle {return Err[KeepAlive, IoError](IoError(noSuchHandle()));}
+    rawKeepAlive(raw)
   }
 
   fn acquire(self: &, e: *SEntry) {
