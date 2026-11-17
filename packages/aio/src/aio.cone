@@ -51,6 +51,8 @@
 //                                                                (READS WITH NO BUFFER)
 //   s.write(buf)            all of buf, an IoBuf moved in         Result[usize, IoError]
 //   s.localAddr()           the address s is bound to            Result[SocketAddr, IoError]
+//   s.reset()               s closed abortively, the Socket consumed: the peer sees a
+//                           reset                                (SOCKET CONTROLS)
 //   aio.openFile(path, access)  a file, opened with iocore's Access   Result[File, IoError]
 //   f.readAt(at, buf)       what is in the file from byte offset at, appended to buf
 //                                                                Result[IoBuf, IoError]
@@ -674,6 +676,7 @@ const opClose = 15u32;        // a handle's close, its Socket, File or UdpSocket
 const opPipeRead = 16u32;     // a pipe's read: Result[IoBuf, IoError]
 const opPipeWrite = 17u32;    // a pipe's write: Result[IoBuf, IoError]
 const opWaitChild = 18u32;    // a child's end: Result[ChildExit, IoError]
+const opReset = 19u32;        // a socket's abortive close, its Socket consumed by 'reset': no answer
 
 // What aio keeps in a record with the operation, after iocore's OpCore: the
 // reply the awaiting behaviour's answer goes back in (put in by the 'await';
@@ -2079,6 +2082,16 @@ fn startOne(lp: &mut Loop, p: *OpCore) {
     let gone = dissolveAt(p as *u8);
     return;
   }
+  if w == opReset {
+    // iocore's reset does nothing for a handle that is not a connected socket
+    // (a listener): the Socket is gone, so close it, or it would never be
+    let h = (*p).handle;
+    if !lp.reset(h) {
+      lp.close(h);
+    }
+    let gone = dissolveAt(p as *u8);
+    return;
+  }
   if w == opRecvAny {
     // A pool that refuses the buffer (iobuf's tryMake) leaves the read to wait
     // without one, as a read on a socket that is not calm does: its bytes, when
@@ -2700,6 +2713,24 @@ fn closeHandle(h: Handle) {
   }
 }
 
+// A handle closed abortively (Socket.reset): as closeHandle, with opReset, which
+// the I/O thread turns into iocore's reset. Nothing awaits it
+fn resetHandle(h: Handle) {
+  if h.isNone() {
+    return;
+  }
+  let p = takeRec(opReset, 0u32, h, IoLimits.none()) as *OpCore;
+  let sh = sharedNow();
+  let held = sh.lock(h);
+  if held {
+    sh.markClosing(h);
+  }
+  enqueueRec(p);
+  if held {
+    sh.unlock(h);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Sockets
 // ---------------------------------------------------------------------------
@@ -2793,6 +2824,19 @@ pub struct Socket is Move, Sendable {
   // The same for every write in flight
   pub fn cancelWrite(self: &) {
     cancelSide(h, true);
+  }
+
+  // Close the connection abortively and consume the Socket: the peer sees the
+  // connection reset, and what was not yet sent is dropped. Every operation in
+  // flight on it is answered Cancelled, as a close's are, and one queued before
+  // this is started first. No answer, from any thread; no later call can reach
+  // the socket, the Socket being gone. A listening socket is closed as usual
+  // (the package's header, SOCKET CONTROLS)
+  pub fn reset(self) {
+    var me = self;
+    let hh = me.h;
+    me.h = Handle.none();
+    resetHandle(hh);
   }
 
   // The address the socket is bound to: a listening socket's port, where the
