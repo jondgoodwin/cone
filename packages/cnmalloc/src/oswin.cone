@@ -1,0 +1,57 @@
+mod oswin is Os;
+
+import os use Os;
+
+// The Windows implementation of the OS layer, and the few other system calls the heap makes: the clock, the
+// SRW lock (a pointer-sized word, static, zero is unlocked, never allocates), the thread-pool timer and
+// stderr. All of them live in kernel32 or ntdll; none calls the C runtime's malloc.
+
+pub alias TimerCb = &fn @c (inst: usize, ctx: usize, timer: usize);
+
+extern {
+  fn @c(system) VirtualAlloc(addr: usize, size: usize, kind: u32, prot: u32) usize;
+  fn @c(system) VirtualFree(addr: usize, size: usize, kind: u32) i32;
+  fn @c(system) GetTickCount64() u64;
+  fn @c(system) AcquireSRWLockExclusive(l: usize);
+  fn @c(system) ReleaseSRWLockExclusive(l: usize);
+  fn @c(system) TryAcquireSRWLockExclusive(l: usize) u8;
+  fn @c(system) CreateThreadpoolTimer(cb: TimerCb, ctx: usize, env: usize) usize;
+  fn @c(system) SetThreadpoolTimer(timer: usize, due: *i64, period: u32, window: u32);
+  fn @c(system) WaitForThreadpoolTimerCallbacks(timer: usize, cancelPending: i32);
+  fn @c(system) CloseThreadpoolTimer(timer: usize);
+  fn @c(system) GetStdHandle(which: u32) usize;
+  fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
+  fn @c(system) ExitProcess(code: u32);
+}
+
+pub fn reserve(bytes: usize) usize { VirtualAlloc(0usize, bytes, 0x2000u32, 4u32) }   // MEM_RESERVE, PAGE_READWRITE
+pub fn commit(addr: usize, bytes: usize) bool { VirtualAlloc(addr, bytes, 0x1000u32, 4u32) != 0usize }   // MEM_COMMIT
+pub fn decommit(addr: usize, bytes: usize) { VirtualFree(addr, bytes, 0x4000u32); }   // MEM_DECOMMIT
+pub fn release(addr: usize) { VirtualFree(addr, 0usize, 0x8000u32); }                 // MEM_RELEASE
+
+// Milliseconds since boot (15 ms granularity, plenty for a give-back delay)
+pub fn tick() u64 { GetTickCount64() }
+
+pub fn lock(l: usize) { AcquireSRWLockExclusive(l); }
+pub fn tryLock(l: usize) bool { TryAcquireSRWLockExclusive(l) != 0u8 }
+pub fn unlock(l: usize) { ReleaseSRWLockExclusive(l); }
+
+// A one-shot thread-pool timer: created once (ntdll's own heap allocates it, not the C runtime's), armed for
+// 'ms' milliseconds from now. The callback runs on a pool thread.
+pub fn timerCreate(cb: TimerCb, ctx: usize) usize { CreateThreadpoolTimer(cb, ctx, 0usize) }
+pub fn timerArm(timer: usize, ms: u64) {
+  var due: i64 = 0i64 - i64.from(ms) * 10000i64;   // negative: relative, in 100 ns
+  SetThreadpoolTimer(timer, &mut due, 0u32, 0u32);
+}
+pub fn timerClose(timer: usize) {
+  SetThreadpoolTimer(timer, null, 0u32, 0u32);   // a null due time cancels
+  WaitForThreadpoolTimerCallbacks(timer, 1i32);
+  CloseThreadpoolTimer(timer);
+}
+
+pub fn writeErr(buf: usize, n: usize) {
+  var w: u32 = 0u32;
+  WriteFile(GetStdHandle(0xFFFFFFF4u32), buf as *u8, u32.from(n), &mut w, 0usize);
+}
+
+pub fn fatal() { ExitProcess(3u32); }

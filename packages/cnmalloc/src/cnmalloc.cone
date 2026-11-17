@@ -1,0 +1,1506 @@
+// cnmalloc: one shared heap for a process, standard C allocation API only (malloc, calloc, realloc, free,
+// _msize, _expand, _recalloc and the _aligned_ family, which shim/cn_shim.c exports over the functions here).
+// It is off by default: nothing links it unless a program asks (shim/README.md, "Linking it").
+//
+// The heap has no per-thread state. Everything a thread touches is under a lock or is read-only.
+//
+// THE FOUR PARTS
+//   OS layer     os.cone is the interface (reserve, commit, decommit, release), oswin.cone the Windows
+//                implementation (VirtualAlloc, VirtualFree). It is the only code that asks the system for memory.
+//   Reservation  "reserve with room, commit as it grows": a large block's own OS reservation, with address space
+//                to grow in place (largeAlloc, largeResize below). INTERFACE: largeAlloc(n, align) -> block,
+//                largeResize(p, n) -> grows or shrinks in place when it can, largeFree(p). The second API set
+//                hands this to pools as a capacity that grows (Jon's declared-capacity idea).
+//   Page pool    64 KiB pages carved from one reservation; INTERFACE: poolTake(need) -> a page whose first 'need'
+//                bytes are committed (lowest address first, committed-empty before decommitted before fresh
+//                address), poolPut(page) -> an empty page comes back (it may be decommitted at once or later),
+//                giveRun / cnm_collect -> the give-back. The second API set hands runs of pages to pools as slabs;
+//                this version's interface is one page at a time, which is what the size classes use.
+//   Size classes the first client of both: one lock per class, cells cut from pages, no header anywhere.
+//
+// LOCK ORDER (the whole of it)
+//   a class lock, THEN the pool lock, then (inside giveRun) nothing; never the reverse. The large table's lock
+//   is taken alone (it never holds a class or pool lock, and takes none while held). The timer's lock is taken
+//   alone and never while any other cnmalloc lock is held. Operating-system calls (commit, decommit) may happen
+//   while a class lock and the pool lock are held in this version; they are counted (the pool's commitCalls and
+//   decommitCalls, the large table's sysCalls).
+//
+// THE CONCURRENCY RULE
+//   Everything about a page that holds cells of class c (its descriptor, its cells' free list, its bit in c's
+//   bitmap) is read and written only under c's lock. The one exception is free()'s read of the descriptor's
+//   class (see freeSmall). A page's class is changed only by the pool, under the pool lock, while the page is
+//   empty and in no class's hands. No atomics, no lock-free path.
+//
+// ADDRESS SPACE
+//   One reservation (size a setting, default 64 GiB) holds every small-block page. (p - base) < size is the
+//   ownership test. A page is (p - base) >> 16. Descriptors (64 bytes each) are in a second reservation, one per
+//   page, committed 4 KiB at a time as pages come into use; nothing is in a page but cells. The classes' and
+//   the pool's bitmaps (three levels, so the lowest page with a free cell is three find-first-set operations)
+//   are in a third reservation, committed in 4 KiB chunks as bits are first set.
+//
+// This package is C-named ('mod @c'): no prelude, no core, no globals, no runtime of Cone's. Each function takes
+// the heap, an address made by cnm_create; shim/cn_shim.c holds the one global that points at the process's heap
+// and the start-up, and the names malloc and free. A heap is also a plain value to a test: it can make several.
+mod @c cnmalloc;
+
+// ---------------------------------------------------------------------------
+// Constants and layout
+// ---------------------------------------------------------------------------
+
+const pageShift = 16usize;
+const pageSize = 65536usize;
+const nClasses = 72usize;
+const nTrees = 74usize;             // one per class, then the pool's empty-committed and decommitted sets
+const treeEmpty = 72usize;
+const treeDecommitted = 73usize;
+const none = 0xFFFFFFFFFFFFFFFFusize;
+const maxSmall = 32768usize;
+const allOnes = 0xFFFFFFFFFFFFFFFFu64;
+
+// where each part sits in the heap's own region (all of it committed at once, never freed)
+const poolOff = 1024usize;
+const largeOff = 2048usize;
+const timerOff = 2560usize;
+const cacheOff = 3072usize;         // 16 freed large reservations, 48 bytes each
+const cacheSlots = 16usize;
+const sizeMapOff = 3840usize;       // 65 bytes
+const classOff = 4096usize;         // 72 classes, 128 bytes each
+const classStride = 128usize;
+const scratchOff = 13312usize;      // 3072 bytes: settings text, a line of statistics
+const flagsOff = 16384usize;        // one byte per 4 KiB chunk of each tree
+const regionBytes = 81920usize;
+
+// page states
+const stUnused = 0u32;
+const stActive = 1u32;
+const stEmpty = 2u32;
+const stDecommitted = 3u32;
+
+// give-back modes
+const modeNow = 0usize;
+const modeDelay = 1usize;
+const modeNever = 2usize;
+
+pub struct Desc {
+  cls: u32;
+  state: u32;
+  used: u32;
+  bump: u32;          // offset in the page of the next never-used cell
+  dirty: u32;         // high-water mark: nothing at or above it has been written since the last commit
+  limit: u32;         // end of the cell area (cells never straddle it)
+  commit: u32;        // bytes of the page committed from its start
+  pad: u32;
+  freeHead: usize;    // LIFO list of freed cells, linked through their first word; 0 for none
+  since: u64;         // when the page became empty (ms)
+  p1: u64;
+  p2: u64;
+}
+
+pub struct Class {
+  lock: usize;        // an SRWLOCK: first field, so the class's address is the lock's
+  cur: usize;         // the lowest page with a free cell, or none
+  spare: usize;       // one empty page kept, or none
+  idx: usize;
+  size: usize;        // cell size
+  limit: usize;       // bytes of cells in a page: (65536 / size) * size
+  commit: usize;      // limit rounded up to 4 KiB: what a page of this class commits
+  allocs: u64;
+  frees: u64;
+  live: u64;
+  pages: u64;
+  waits: u64;         // lock takes whose first try failed
+  retired: u64;
+  spareHits: u64;
+}
+
+pub struct Heap {
+  region: usize;
+  base: usize;
+  size: usize;
+  npages: usize;
+  descBase: usize;
+  metaBase: usize;
+  flags: usize;
+  treeStride: usize;
+  firstBytes: usize;
+  firstChunks: usize;
+  chunksPerTree: usize;
+  l0w: usize;
+  l1w: usize;
+  l2w: usize;
+  mode: usize;
+  delayMs: u64;
+  largeCap: usize;
+  stats: usize;
+  ucfree: usize;
+  ucrealloc: usize;
+  ucmsize: usize;
+  ucafree: usize;
+  ucarealloc: usize;
+  ucamsize: usize;
+  foreign: u64;       // foreign frees and reallocs forwarded (counted under the pool lock)
+  descReserve: usize;
+  metaReserve: usize;
+}
+
+pub struct Pool {
+  lock: usize;
+  fresh: usize;       // pages below this have been handed out at least once
+  descDone: usize;    // bytes of descriptors committed
+  nEmpty: u64;
+  nDecommitted: u64;
+  committedBytes: u64;
+  reused: u64;
+  commitCalls: u64;
+  decommitCalls: u64;
+  taken: u64;
+}
+
+pub struct LEntry {
+  addr: usize;        // the block
+  base: usize;        // where its reservation starts (before addr when over-aligned)
+  reserved: usize;    // bytes reserved from base
+  committed: usize;   // bytes committed from addr
+  size: usize;        // the size the caller asked for
+  stamp: u64;
+}
+
+pub struct Large {
+  lock: usize;
+  table: usize;       // open addressing, keyed by address, 48-byte entries
+  cap: usize;         // entries, a power of two
+  bits: usize;
+  count: usize;
+  tableBytes: usize;
+  cachedBytes: usize;
+  live: u64;
+  bytes: u64;
+  grows: u64;
+  moves: u64;
+  cacheHits: u64;
+  sysCalls: u64;
+}
+
+pub struct Timer {
+  lock: usize;
+  armed: usize;
+  handle: usize;
+  fired: u64;
+}
+
+extern {
+  fn memset(p: *u8, v: i32, n: usize) *u8;
+  fn memcpy(d: *u8, s: *u8, n: usize) *u8;
+  fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
+  fn strncmp(a: *u8, b: cstr, n: usize) i32;
+  fn @c(system) GetModuleHandleA(name: cstr) usize;
+  fn @c(system) LoadLibraryA(name: cstr) usize;
+  fn @c(system) GetProcAddress(module: usize, name: cstr) usize;
+  fn @c(system) GetEnvironmentVariableA(name: cstr, buf: *u8, size: u32) u32;
+}
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+
+fn at(h: usize, off: usize) usize { h + off }
+fn poolOf(h: *Heap) *Pool { ((h as usize) + poolOff) as *Pool }
+fn largeOf(h: *Heap) *Large { ((h as usize) + largeOff) as *Large }
+fn timerOf(h: *Heap) *Timer { ((h as usize) + timerOff) as *Timer }
+fn classAt(h: *Heap, c: usize) *Class { ((h as usize) + classOff + c * classStride) as *Class }
+fn descOf(h: *Heap, page: usize) *Desc { (h.descBase + page * 64usize) as *Desc }
+fn pageAddr(h: *Heap, page: usize) usize { h.base + (page << pageShift) }
+fn cacheAt(h: *Heap, i: usize) *LEntry { ((h as usize) + cacheOff + i * 48usize) as *LEntry }
+fn roundUp(x: usize, a: usize) usize { (x + a - 1usize) & ~(a - 1usize) }
+fn lowMask(b: usize) u64 { if b >= 63usize { allOnes } else { (1u64 << u64.from(b + 1usize)) - 1u64 } }
+fn hiBit(v: u64) usize { 63usize - usize.from(v.leadingZeros()) }
+fn loBit(v: u64) usize { usize.from(v.trailingZeros()) }
+fn rd(a: usize) u64 { *(a as *u64) }
+fn wr(a: usize, v: u64) { *(a as *u64) = v; }
+
+// ---------------------------------------------------------------------------
+// Size classes: 16-byte steps to 128, then 8 classes per doubling to 32 KiB (72 in all)
+// ---------------------------------------------------------------------------
+
+fn classSizeOf(c: usize) usize {
+  if c < 8usize {
+    (c + 1usize) * 16usize
+  } else {
+    let k = (c - 8usize) >> 3usize;
+    let j = (c - 8usize) & 7usize;
+    (16usize << k) * (9usize + j)
+  }
+}
+
+// the class of a size over 128, up to 32 KiB, by a leading-zero count
+fn classOfBig(n: usize) usize {
+  let t = n - 1usize;
+  let msb = 63usize - usize.from(t.leadingZeros());
+  8usize + (msb - 7usize) * 8usize + ((t >> (msb - 3usize)) & 7usize)
+}
+
+// the class that holds a request of n bytes, n up to 32 KiB (0 gets the smallest)
+fn classOf(h: *Heap, n: usize) usize {
+  if n <= 1024usize {
+    return usize.from(*(((h as usize) + sizeMapOff + ((n + 15usize) >> 4usize)) as *u8));
+  }
+  classOfBig(n)
+}
+
+// ---------------------------------------------------------------------------
+// The bitmaps: three levels. Level 0 has a bit per page, level 1 a bit per level-0 word that is not zero,
+// level 2 a bit per level-1 word that is not zero. A tree is a page of its class's, or one of the pool's sets.
+// Every use is under the lock of what the tree belongs to.
+// ---------------------------------------------------------------------------
+
+fn treeAddr(h: *Heap, ti: usize) usize { h.metaBase + ti * h.treeStride }
+fn flagPtr(h: *Heap, ti: usize, k: usize) *u8 { (h.flags + ti * h.chunksPerTree + k) as *u8 }
+
+fn ensureFirst(h: *Heap, ti: usize) {
+  let f = flagPtr(h, ti, 0usize);
+  if *f == 0u8 {
+    if !oswin.commit(treeAddr(h, ti), h.firstBytes) { oswin.fatal(); }
+    *f = 1u8;
+  }
+}
+
+fn btSet(h: *Heap, ti: usize, i: usize) {
+  ensureFirst(h, ti);
+  let t = treeAddr(h, ti);
+  let w0 = i >> 6usize;
+  let k = w0 >> 9usize;
+  let f = flagPtr(h, ti, h.firstChunks + k);
+  if *f == 0u8 {
+    if !oswin.commit(t + h.firstBytes + k * 4096usize, 4096usize) { oswin.fatal(); }
+    *f = 1u8;
+  }
+  let a0 = t + h.firstBytes + w0 * 8usize;
+  wr(a0, rd(a0) | (1u64 << u64.from(i & 63usize)));
+  let w1 = w0 >> 6usize;
+  let a1 = t + h.l2w * 8usize + w1 * 8usize;
+  wr(a1, rd(a1) | (1u64 << u64.from(w0 & 63usize)));
+  let a2 = t + (w1 >> 6usize) * 8usize;
+  wr(a2, rd(a2) | (1u64 << u64.from(w1 & 63usize)));
+}
+
+// the level-0 word, zero when its chunk was never committed
+fn l0word(h: *Heap, ti: usize, w0: usize) u64 {
+  if *flagPtr(h, ti, h.firstChunks + (w0 >> 9usize)) == 0u8 { return 0u64; }
+  rd(treeAddr(h, ti) + h.firstBytes + w0 * 8usize)
+}
+
+fn btClear(h: *Heap, ti: usize, i: usize) {
+  if *flagPtr(h, ti, 0usize) == 0u8 { return; }
+  let t = treeAddr(h, ti);
+  let w0 = i >> 6usize;
+  if *flagPtr(h, ti, h.firstChunks + (w0 >> 9usize)) == 0u8 { return; }
+  let a0 = t + h.firstBytes + w0 * 8usize;
+  let v0 = rd(a0) & ~(1u64 << u64.from(i & 63usize));
+  wr(a0, v0);
+  if v0 == 0u64 {
+    let w1 = w0 >> 6usize;
+    let a1 = t + h.l2w * 8usize + w1 * 8usize;
+    let v1 = rd(a1) & ~(1u64 << u64.from(w0 & 63usize));
+    wr(a1, v1);
+    if v1 == 0u64 {
+      let a2 = t + (w1 >> 6usize) * 8usize;
+      wr(a2, rd(a2) & ~(1u64 << u64.from(w1 & 63usize)));
+    }
+  }
+}
+
+fn btTest(h: *Heap, ti: usize, i: usize) bool {
+  if *flagPtr(h, ti, 0usize) == 0u8 { return false; }
+  (l0word(h, ti, i >> 6usize) & (1u64 << u64.from(i & 63usize))) != 0u64
+}
+
+// the lowest set bit, or none: three find-first-set steps
+fn btFirst(h: *Heap, ti: usize) usize {
+  if *flagPtr(h, ti, 0usize) == 0u8 { return none; }
+  let t = treeAddr(h, ti);
+  var j = 0usize;
+  while j < h.l2w {
+    let v2 = rd(t + j * 8usize);
+    if v2 != 0u64 {
+      let w1 = j * 64usize + loBit(v2);
+      let v1 = rd(t + h.l2w * 8usize + w1 * 8usize);
+      let w0 = w1 * 64usize + loBit(v1);
+      let v0 = rd(t + h.firstBytes + w0 * 8usize);
+      return w0 * 64usize + loBit(v0);
+    }
+    j = j + 1usize;
+  }
+  none
+}
+
+// the highest set bit below i, or none
+fn btLastBelow(h: *Heap, ti: usize, i: usize) usize {
+  if i == 0usize { return none; }
+  if *flagPtr(h, ti, 0usize) == 0u8 { return none; }
+  let t = treeAddr(h, ti);
+  let j0 = i - 1usize;
+  let w0 = j0 >> 6usize;
+  let v0 = l0word(h, ti, w0) & lowMask(j0 & 63usize);
+  if v0 != 0u64 { return w0 * 64usize + hiBit(v0); }
+  if w0 == 0usize { return none; }
+  let j1 = w0 - 1usize;
+  let w1 = j1 >> 6usize;
+  let v1 = rd(t + h.l2w * 8usize + w1 * 8usize) & lowMask(j1 & 63usize);
+  if v1 != 0u64 {
+    let x0 = w1 * 64usize + hiBit(v1);
+    return x0 * 64usize + hiBit(l0word(h, ti, x0));
+  }
+  if w1 == 0usize { return none; }
+  let j2 = w1 - 1usize;
+  var w2 = j2 >> 6usize;
+  var v2 = rd(t + w2 * 8usize) & lowMask(j2 & 63usize);
+  while true {
+    if v2 != 0u64 {
+      let x1 = w2 * 64usize + hiBit(v2);
+      let x0 = x1 * 64usize + hiBit(rd(t + h.l2w * 8usize + x1 * 8usize));
+      return x0 * 64usize + hiBit(l0word(h, ti, x0));
+    }
+    if w2 == 0usize { return none; }
+    w2 = w2 - 1usize;
+    v2 = rd(t + w2 * 8usize);
+  }
+  none
+}
+
+// ---------------------------------------------------------------------------
+// Settings and statistics helpers
+// ---------------------------------------------------------------------------
+
+fn bumpForeign(h: *Heap) {
+  let p = poolOf(h);
+  oswin.lock(p as usize);
+  h.foreign = h.foreign + 1u64;
+  oswin.unlock(p as usize);
+}
+
+fn fatalNow() { oswin.fatal(); }
+
+// ---------------------------------------------------------------------------
+// The page pool. Its lock is taken under a class's lock, never the other way round. Pages are in one of
+// four conditions: fresh address (>= fresh), empty and committed (tree 72), decommitted (tree 73), or in a
+// class's hands (active, or that class's spare).
+// ---------------------------------------------------------------------------
+
+fn ensureDesc(h: *Heap, p: *Pool, page: usize) {
+  while p.descDone < (page + 1usize) * 64usize {
+    if !oswin.commit(h.descBase + p.descDone, 4096usize) { oswin.fatal(); }
+    p.descDone = p.descDone + 4096usize;
+  }
+}
+
+fn pageDue(d: *Desc, now: u64, delay: u64) bool { now - d.since >= delay }
+
+// Decommits pages lo .. lo+count-1, all empty and committed (in tree 72), in ONE system call. Pool lock held.
+fn decommitRun(h: *Heap, p: *Pool, lo: usize, count: usize) {
+  oswin.decommit(pageAddr(h, lo), count << pageShift);
+  p.decommitCalls = p.decommitCalls + 1u64;
+  var i = lo;
+  while i < lo + count {
+    let d = descOf(h, i);
+    p.committedBytes = p.committedBytes - u64.from(d.commit);
+    d.state = stDecommitted;
+    d.commit = 0u32;
+    d.dirty = 0u32;
+    btClear(h, treeEmpty, i);
+    btSet(h, treeDecommitted, i);
+    i = i + 1usize;
+  }
+  p.nEmpty = p.nEmpty - u64.from(count);
+  p.nDecommitted = p.nDecommitted + u64.from(count);
+}
+
+// Decommits one contiguous run of empty pages, highest address first, that have been empty at least 'delay'
+// ms. At most maxPages pages and a scan of at most maxScan empty pages. Pool lock held. Returns the pages done.
+fn giveRun(h: *Heap, p: *Pool, now: u64, delay: u64, maxPages: usize, maxScan: usize) usize {
+  var q = btLastBelow(h, treeEmpty, h.npages);
+  var scanned = 0usize;
+  while q != none {
+    if pageDue(descOf(h, q), now, delay) { break; }
+    scanned = scanned + 1usize;
+    if scanned >= maxScan { return 0usize; }
+    q = btLastBelow(h, treeEmpty, q);
+  }
+  if q == none { return 0usize; }
+  var lo = q;
+  var count = 1usize;
+  while lo > 0usize && count < maxPages && btTest(h, treeEmpty, lo - 1usize) && pageDue(descOf(h, lo - 1usize), now, delay) {
+    lo = lo - 1usize;
+    count = count + 1usize;
+  }
+  decommitRun(h, p, lo, count);
+  count
+}
+
+// a page for a class: the lowest committed-empty one, else the lowest decommitted one, else fresh address.
+// The first 'need' bytes of it are committed. Called under a class lock; takes the pool lock.
+fn poolTake(h: *Heap, need: usize) usize {
+  let p = poolOf(h);
+  oswin.lock(p as usize);
+  var page = btFirst(h, treeEmpty);
+  if page != none {
+    btClear(h, treeEmpty, page);
+    p.nEmpty = p.nEmpty - 1u64;
+    p.reused = p.reused + 1u64;
+  } else {
+    page = btFirst(h, treeDecommitted);
+    if page != none {
+      btClear(h, treeDecommitted, page);
+      p.nDecommitted = p.nDecommitted - 1u64;
+    } else if p.fresh < h.npages {
+      page = p.fresh;
+      p.fresh = p.fresh + 1usize;
+      ensureDesc(h, p, page);
+    }
+  }
+  if page != none {
+    let d = descOf(h, page);
+    let have = usize.from(d.commit);
+    if have < need {
+      if !oswin.commit(pageAddr(h, page) + have, need - have) {
+        // out of memory: the page goes back as it was
+        if have == 0usize { d.state = stDecommitted; btSet(h, treeDecommitted, page); p.nDecommitted = p.nDecommitted + 1u64; }
+        else { btSet(h, treeEmpty, page); p.nEmpty = p.nEmpty + 1u64; }
+        oswin.unlock(p as usize);
+        return none;
+      }
+      p.commitCalls = p.commitCalls + 1u64;
+      p.committedBytes = p.committedBytes + u64.from(need - have);
+      d.commit = u32.from(need);
+    }
+    p.taken = p.taken + 1u64;
+  }
+  if h.mode == modeDelay {
+    // a bounded amount of give-back: at most 16 pages, one run
+    giveRun(h, p, oswin.tick(), h.delayMs, 16usize, 64usize);
+  }
+  oswin.unlock(p as usize);
+  page
+}
+
+// an empty page comes back. Called under a class lock; takes the pool lock. With give-back 'now' it is
+// decommitted at once.
+fn poolPut(h: *Heap, page: usize, now: u64) {
+  let p = poolOf(h);
+  oswin.lock(p as usize);
+  let d = descOf(h, page);
+  d.state = stEmpty;
+  d.cls = 0xFFFFFFFFu32;
+  d.since = now;
+  btSet(h, treeEmpty, page);
+  p.nEmpty = p.nEmpty + 1u64;
+  if h.mode == modeNow {
+    decommitRun(h, p, page, 1usize);
+  } else if h.mode == modeDelay {
+    giveRun(h, p, now, h.delayMs, 16usize, 64usize);
+  }
+  oswin.unlock(p as usize);
+}
+
+// ---------------------------------------------------------------------------
+// The timer: gives back when the process goes quiet. One OS thread-pool timer, created once, armed only while
+// something waits. Its lock is leaf: nothing else of ours is held when it is taken.
+// ---------------------------------------------------------------------------
+
+fn timerFired(inst: usize, ctx: usize, timer: usize) {
+  let h = ctx as *Heap;
+  let t = timerOf(h);
+  oswin.lock(t as usize);
+  t.armed = 0usize;
+  t.fired = t.fired + 1u64;
+  oswin.unlock(t as usize);
+  let ms = cnm_collect(ctx, false);
+  if ms > 0u64 { armTimer(h, ms); }
+}
+
+fn armTimer(h: *Heap, ms: u64) {
+  let t = timerOf(h);
+  oswin.lock(t as usize);
+  if t.armed == 0usize {
+    if t.handle == 0usize { t.handle = oswin.timerCreate(&timerFired, h as usize); }
+    if t.handle != 0usize {
+      t.armed = 1usize;
+      oswin.timerArm(t.handle, ms);
+    }
+  }
+  oswin.unlock(t as usize);
+}
+
+// called with no cnmalloc lock held, after something was left waiting
+fn armIfWaiting(h: *Heap) {
+  if h.mode == modeDelay && timerOf(h).armed == 0usize { armTimer(h, h.delayMs); }
+}
+
+// ---------------------------------------------------------------------------
+// Classes: allocate and free
+// ---------------------------------------------------------------------------
+
+// retire a class's spare to the pool when it has been empty past the delay. Class lock held.
+fn checkSpare(h: *Heap, c: *Class) {
+  if h.mode == modeDelay {
+    let now = oswin.tick();
+    let d = descOf(h, c.spare);
+    if now - d.since >= h.delayMs {
+      let page = c.spare;
+      c.spare = none;
+      poolPut(h, page, now);
+    }
+  }
+}
+
+fn lockClass(h: *Heap, c: *Class) {
+  if !oswin.tryLock(c as usize) {
+    oswin.lock(c as usize);
+    c.waits = c.waits + 1u64;
+  }
+  if c.spare != none { checkSpare(h, c); }
+}
+
+// An empty page gives its class a spare (when none is kept and give-back is not 'now'), else goes to the pool.
+// Class lock held; the page has no live cell and no bit in the class's tree.
+fn retirePage(h: *Heap, c: *Class, page: usize, d: *Desc) {
+  d.freeHead = 0usize;          // the free list is dropped: the next class may have another cell size
+  d.bump = 0u32;                // ... and the bump starts again. The dirty mark stays.
+  if c.cur == page { c.cur = none; }
+  c.pages = c.pages - 1u64;
+  c.retired = c.retired + 1u64;
+  let now = oswin.tick();
+  if h.mode != modeNow {
+    if c.spare == none {
+      c.spare = page; d.state = stEmpty; d.since = now;
+      return;
+    }
+    if page < c.spare {
+      // keep the lower page, so the top empties
+      let old = c.spare;
+      c.spare = page; d.state = stEmpty; d.since = now;
+      poolPut(h, old, descOf(h, old).since);
+      return;
+    }
+  }
+  poolPut(h, page, now);
+}
+
+// A cell of class cl. Returns its address, or 0. *fresh is 1 when the cell is memory still zero from its commit.
+fn smallAlloc(h: *Heap, cl: usize, fresh: *u32) usize {
+  let c = classAt(h, cl);
+  lockClass(h, c);
+  if c.cur == none {
+    var q = btFirst(h, cl);
+    if q == none {
+      if c.spare != none {
+        q = c.spare;
+        c.spare = none;
+        c.spareHits = c.spareHits + 1u64;
+        descOf(h, q).state = stActive;
+        c.pages = c.pages + 1u64;
+        btSet(h, cl, q);
+      } else {
+        q = poolTake(h, c.commit);
+        if q == none { oswin.unlock(c as usize); return 0usize; }
+        let nd = descOf(h, q);
+        nd.cls = u32.from(cl);          // written before any cell of the page is handed out (see freeSmall)
+        nd.state = stActive;
+        nd.used = 0u32;
+        nd.freeHead = 0usize;
+        nd.bump = 0u32;
+        nd.limit = u32.from(c.limit);
+        c.pages = c.pages + 1u64;
+        btSet(h, cl, q);
+      }
+    }
+    c.cur = q;
+  }
+  let page = c.cur;
+  let d = descOf(h, page);
+  var a = 0usize;
+  if d.freeHead != 0usize {
+    a = d.freeHead;
+    d.freeHead = usize.from(rd(a));
+    *fresh = 0u32;
+  } else {
+    let off = usize.from(d.bump);
+    a = pageAddr(h, page) + off;
+    d.bump = u32.from(off + c.size);
+    if usize.from(d.dirty) <= off { *fresh = 1u32; } else { *fresh = 0u32; }
+    if off + c.size > usize.from(d.dirty) { d.dirty = u32.from(off + c.size); }
+  }
+  d.used = d.used + 1u32;
+  c.allocs = c.allocs + 1u64;
+  c.live = c.live + 1u64;
+  if d.freeHead == 0usize && usize.from(d.bump) + c.size > usize.from(d.limit) {
+    btClear(h, cl, page);
+    c.cur = none;
+  }
+  oswin.unlock(c as usize);
+  a
+}
+
+fn freeSmall(h: *Heap, a: usize) {
+  let page = (a - h.base) >> pageShift;
+  let d = descOf(h, page);
+  // Reading the class WITHOUT the lock is safe because a is live: its page is active, and the page's class is
+  // written only before the first cell of the page is handed out (smallAlloc, under the class's lock, then
+  // published to whoever got the cell through whatever handed the pointer over: a lock, a queue, a thread
+  // start) and never rewritten while any cell of the page is live or cached. A page's class changes only
+  // when its used count has fallen to 0 and the page has gone to the pool and come back. So the value read
+  // here is the class the page had when a was allocated, and it stays so until this very free is done.
+  let cl = usize.from(d.cls);
+  let c = classAt(h, cl);
+  lockClass(h, c);
+  let full = d.freeHead == 0usize && usize.from(d.bump) + c.size > usize.from(d.limit);
+  wr(a, u64.from(d.freeHead));
+  d.freeHead = a;
+  d.used = d.used - 1u32;
+  c.frees = c.frees + 1u64;
+  c.live = c.live - 1u64;
+  var waiting = false;
+  if d.used == 0u32 {
+    // Retiring is safe because it happens under c's lock: no thread can be allocating from this page,
+    // since allocation needs the same lock, and no cell of it is live.
+    if !full { btClear(h, cl, page); }
+    retirePage(h, c, page, d);
+    waiting = true;
+  } else if full {
+    btSet(h, cl, page);
+    if c.cur != none && page < c.cur { c.cur = page; }
+  } else if c.cur != none && page < c.cur {
+    c.cur = page;
+  }
+  oswin.unlock(c as usize);
+  if waiting { armIfWaiting(h); }
+}
+
+// ---------------------------------------------------------------------------
+// Large blocks: each its own reservation, with room to grow in place
+// ---------------------------------------------------------------------------
+
+fn hashSlot(l: *Large, addr: usize) usize {
+  ((addr >> 16usize) * 11400714819323198485usize) >> (64usize - l.bits)
+}
+
+fn entryAt(l: *Large, i: usize) *LEntry { (l.table + i * 48usize) as *LEntry }
+
+fn capOf(e: *LEntry) usize { e.base + e.reserved - e.addr }
+
+// find the slot of a block, or none. Large lock held.
+fn largeFind(l: *Large, addr: usize) usize {
+  if l.table == 0usize { return none; }
+  var i = hashSlot(l, addr);
+  while true {
+    let e = entryAt(l, i);
+    if e.addr == addr { return i; }
+    if e.addr == 0usize { return none; }
+    i = (i + 1usize) & (l.cap - 1usize);
+  }
+  none
+}
+
+fn largeInsertRaw(l: *Large, src: *LEntry) {
+  var i = hashSlot(l, src.addr);
+  while entryAt(l, i).addr != 0usize { i = (i + 1usize) & (l.cap - 1usize); }
+  let e = entryAt(l, i);
+  e.addr = src.addr; e.base = src.base; e.reserved = src.reserved;
+  e.committed = src.committed; e.size = src.size; e.stamp = src.stamp;
+}
+
+// false when the table cannot grow
+fn largeInsert(l: *Large, src: *LEntry) bool {
+  if l.table == 0usize || (l.count + 1usize) * 2usize > l.cap {
+    let ncap = if l.table == 0usize { 1024usize } else { l.cap * 2usize };
+    let bytes = ncap * 48usize;
+    let r = oswin.reserve(bytes);
+    if r == 0usize { return false; }
+    if !oswin.commit(r, bytes) { oswin.release(r); return false; }
+    let oldT = l.table;
+    let oldCap = l.cap;
+    let oldBytes = l.tableBytes;
+    l.table = r;
+    l.cap = ncap;
+    l.bits = 63usize - usize.from(ncap.leadingZeros());
+    l.tableBytes = bytes;
+    l.sysCalls = l.sysCalls + 2u64;
+    var j = 0usize;
+    while j < oldCap {
+      let e = (oldT + j * 48usize) as *LEntry;
+      if e.addr != 0usize { largeInsertRaw(l, e); }
+      j = j + 1usize;
+    }
+    if oldT != 0usize { oswin.release(oldT); l.sysCalls = l.sysCalls + 1u64; }
+  }
+  largeInsertRaw(l, src);
+  l.count = l.count + 1usize;
+  true
+}
+
+// backward-shift deletion, so lookups need no tombstones
+fn largeRemoveAt(l: *Large, slot: usize) {
+  let mask = l.cap - 1usize;
+  var i = slot;
+  var j = slot;
+  while true {
+    j = (j + 1usize) & mask;
+    let e = entryAt(l, j);
+    if e.addr == 0usize { break; }
+    let home = hashSlot(l, e.addr);
+    // e may move into the hole at i only when its home is not in the (cyclic) range (i, j]
+    var inRange = false;
+    if i <= j { inRange = home > i && home <= j; } else { inRange = home > i || home <= j; }
+    if !inRange {
+      let t = entryAt(l, i);
+      t.addr = e.addr; t.base = e.base; t.reserved = e.reserved;
+      t.committed = e.committed; t.size = e.size; t.stamp = e.stamp;
+      i = j;
+    }
+  }
+  entryAt(l, i).addr = 0usize;
+  l.count = l.count - 1usize;
+}
+
+fn cacheCount(h: *Heap, decommitted: bool) usize {
+  var n = 0usize;
+  var i = 0usize;
+  while i < cacheSlots {
+    let e = cacheAt(h, i);
+    if e.addr != 0usize && ((e.committed == 0usize) == decommitted) { n = n + 1usize; }
+    i = i + 1usize;
+  }
+  n
+}
+
+fn cacheRelease(h: *Heap, l: *Large, i: usize) {
+  let e = cacheAt(h, i);
+  l.cachedBytes = l.cachedBytes - e.committed;
+  oswin.release(e.base);
+  l.sysCalls = l.sysCalls + 1u64;
+  e.addr = 0usize;
+}
+
+// release the oldest decommitted entry (or the oldest of all when none is decommitted)
+fn cacheEvict(h: *Heap, l: *Large, wantDecommitted: bool) {
+  var best = none;
+  var i = 0usize;
+  while i < cacheSlots {
+    let e = cacheAt(h, i);
+    if e.addr != 0usize && (!wantDecommitted || e.committed == 0usize) {
+      if best == none || e.stamp < cacheAt(h, best).stamp { best = i; }
+    }
+    i = i + 1usize;
+  }
+  if best != none { cacheRelease(h, l, best); }
+}
+
+fn cacheDecommit(l: *Large, e: *LEntry) {
+  if e.committed != 0usize {
+    oswin.decommit(e.addr, e.committed);
+    l.sysCalls = l.sysCalls + 1u64;
+    l.cachedBytes = l.cachedBytes - e.committed;
+    e.committed = 0usize;
+  }
+}
+
+// *fresh is 1 when the block is zero memory. Returns the block or 0. align is 0 for the natural 64 KiB.
+fn largeAlloc(h: *Heap, n: usize, align: usize, fresh: *u32) usize {
+  let l = largeOf(h);
+  let rounded = roundUp(if n == 0usize { 1usize } else { n }, pageSize);
+  let commitBytes = roundUp(if n == 0usize { 1usize } else { n }, 4096usize);
+  oswin.lock(l as usize);
+  // a freed reservation that fits (the smallest one), kept for reuse
+  if align <= pageSize {
+    var best = none;
+    var i = 0usize;
+    while i < cacheSlots {
+      let e = cacheAt(h, i);
+      if e.addr != 0usize && capOf(e) >= rounded && (best == none || capOf(e) < capOf(cacheAt(h, best))) { best = i; }
+      i = i + 1usize;
+    }
+    if best != none {
+      let e = cacheAt(h, best);
+      var ent = *e;
+      // the entry leaves the cache: its committed bytes leave the cache's count
+      l.cachedBytes = l.cachedBytes - ent.committed;
+      e.addr = 0usize;
+      var ok = true;
+      if ent.committed < commitBytes {
+        ok = oswin.commit(ent.addr + ent.committed, commitBytes - ent.committed);
+        l.sysCalls = l.sysCalls + 1u64;
+        if ok { ent.committed = commitBytes; }
+      } else if ent.committed >= commitBytes + pageSize {
+        oswin.decommit(ent.addr + commitBytes, ent.committed - commitBytes);
+        l.sysCalls = l.sysCalls + 1u64;
+        ent.committed = commitBytes;
+      }
+      ent.size = n;
+      ent.stamp = 0u64;
+      if ok && largeInsert(l, &mut ent) {
+        l.live = l.live + 1u64;
+        l.bytes = l.bytes + u64.from(ent.committed);
+        l.cacheHits = l.cacheHits + 1u64;
+        oswin.unlock(l as usize);
+        *fresh = 0u32;
+        return ent.addr;
+      }
+      oswin.release(ent.base);
+      l.sysCalls = l.sysCalls + 1u64;
+      oswin.unlock(l as usize);
+      return 0usize;
+    }
+  }
+  var reserved = rounded + (if rounded < 67108864usize { rounded } else { 67108864usize });
+  if align > pageSize { reserved = reserved + align; }
+  let r = oswin.reserve(reserved);
+  l.sysCalls = l.sysCalls + 1u64;
+  if r == 0usize { oswin.unlock(l as usize); return 0usize; }
+  let addr = if align > pageSize { roundUp(r, align) } else { r };
+  if !oswin.commit(addr, commitBytes) {
+    oswin.release(r);
+    l.sysCalls = l.sysCalls + 2u64;
+    oswin.unlock(l as usize);
+    return 0usize;
+  }
+  l.sysCalls = l.sysCalls + 1u64;
+  var ent = LEntry(addr, r, reserved, commitBytes, n, 0u64);
+  if !largeInsert(l, &mut ent) {
+    oswin.release(r);
+    oswin.unlock(l as usize);
+    return 0usize;
+  }
+  l.live = l.live + 1u64;
+  l.bytes = l.bytes + u64.from(commitBytes);
+  oswin.unlock(l as usize);
+  *fresh = 1u32;
+  addr
+}
+
+// Frees a large block into the cache (or releases it). Returns true if it was found.
+fn largeFree(h: *Heap, a: usize) bool {
+  let l = largeOf(h);
+  oswin.lock(l as usize);
+  let slot = largeFind(l, a);
+  if slot == none { oswin.unlock(l as usize); return false; }
+  var ent = *entryAt(l, slot);
+  largeRemoveAt(l, slot);
+  l.live = l.live - 1u64;
+  l.bytes = l.bytes - u64.from(ent.committed);
+  let now = oswin.tick();
+  ent.stamp = now;
+  ent.size = 0usize;
+  var keep = true;
+  if h.mode == modeNow {
+    oswin.decommit(ent.addr, ent.committed);
+    l.sysCalls = l.sysCalls + 1u64;
+    ent.committed = 0usize;
+  } else if h.mode == modeDelay && l.cachedBytes + ent.committed > h.largeCap {
+    oswin.decommit(ent.addr, ent.committed);
+    l.sysCalls = l.sysCalls + 1u64;
+    ent.committed = 0usize;
+  }
+  // a slot for it: a full cache gives up its oldest
+  var slotFree = none;
+  var tries = 0usize;
+  while slotFree == none && tries < 2usize {
+    var i = 0usize;
+    while i < cacheSlots { if cacheAt(h, i).addr == 0usize { slotFree = i; break; } i = i + 1usize; }
+    if slotFree == none { cacheEvict(h, l, false); }
+    tries = tries + 1usize;
+  }
+  if slotFree == none { keep = false; }
+  if keep {
+    let e = cacheAt(h, slotFree);
+    e.addr = ent.addr; e.base = ent.base; e.reserved = ent.reserved;
+    e.committed = ent.committed; e.size = 0usize; e.stamp = ent.stamp;
+    l.cachedBytes = l.cachedBytes + ent.committed;
+    // more than 8 decommitted reservations held: the oldest is released
+    while cacheCount(h, true) > 8usize { cacheEvict(h, l, true); }
+  } else {
+    oswin.release(ent.base);
+    l.sysCalls = l.sysCalls + 1u64;
+  }
+  oswin.unlock(l as usize);
+  armIfWaiting(h);
+  true
+}
+
+// the size of a large block, or none when a is not one
+fn largeSize(h: *Heap, a: usize) usize {
+  let l = largeOf(h);
+  oswin.lock(l as usize);
+  let slot = largeFind(l, a);
+  var r = none;
+  if slot != none { r = entryAt(l, slot).size; }
+  oswin.unlock(l as usize);
+  r
+}
+
+// grows or shrinks a large block in place when it can. 0 = could not, 1 = done. none when a is not large.
+fn largeResize(h: *Heap, a: usize, n: usize) usize {
+  let l = largeOf(h);
+  oswin.lock(l as usize);
+  let slot = largeFind(l, a);
+  if slot == none { oswin.unlock(l as usize); return none; }
+  let e = entryAt(l, slot);
+  let want = roundUp(if n == 0usize { 1usize } else { n }, 4096usize);
+  var r = 0usize;
+  if want <= capOf(e) {
+    r = 1usize;
+    if want > e.committed {
+      if oswin.commit(e.addr + e.committed, want - e.committed) {
+        l.sysCalls = l.sysCalls + 1u64;
+        l.bytes = l.bytes + u64.from(want - e.committed);
+        e.committed = want;
+        l.grows = l.grows + 1u64;
+      } else { r = 0usize; }
+    } else if e.committed - want >= pageSize {
+      oswin.decommit(e.addr + want, e.committed - want);
+      l.sysCalls = l.sysCalls + 1u64;
+      l.bytes = l.bytes - u64.from(e.committed - want);
+      e.committed = want;
+    }
+    if r == 1usize { e.size = n; }
+  }
+  oswin.unlock(l as usize);
+  r
+}
+
+// ---------------------------------------------------------------------------
+// Giving back: collect
+// ---------------------------------------------------------------------------
+
+fn minDue(cur: u64, d: u64) u64 { if cur == 0u64 || d < cur { d } else { cur } }
+
+// Does everything due under the delay (everything, when force), one run per take of the pool lock. Returns the
+// milliseconds until the next empty page, spare or large block falls due, or 0 when nothing waits.
+pub fn cnm_collect(hh: usize, force: bool) u64 {
+  let h = hh as *Heap;
+  let delay = if force { 0u64 } else { h.delayMs };
+  var due = 0u64;
+  let giving = force || h.mode == modeDelay;
+  var cl = 0usize;
+  while cl < nClasses {
+    let c = classAt(h, cl);
+    if c.spare != none {
+      oswin.lock(c as usize);
+      if c.spare != none {
+        let now = oswin.tick();
+        let d = descOf(h, c.spare);
+        let age = now - d.since;
+        if giving && age >= delay {
+          let page = c.spare;
+          c.spare = none;
+          poolPut(h, page, now);
+        } else if h.mode == modeDelay {
+          due = minDue(due, delay - age);
+        }
+      }
+      oswin.unlock(c as usize);
+    }
+    cl = cl + 1usize;
+  }
+  let p = poolOf(h);
+  if giving {
+    while true {
+      oswin.lock(p as usize);
+      let n = giveRun(h, p, oswin.tick(), delay, 1usize << 20usize, 1usize << 30usize);
+      oswin.unlock(p as usize);
+      if n == 0usize { break; }
+    }
+  }
+  if h.mode == modeDelay && !force {
+    oswin.lock(p as usize);
+    let now = oswin.tick();
+    var q = btLastBelow(h, treeEmpty, h.npages);
+    while q != none {
+      let age = now - descOf(h, q).since;
+      due = minDue(due, if age >= delay { 1u64 } else { delay - age });
+      q = btLastBelow(h, treeEmpty, q);
+    }
+    oswin.unlock(p as usize);
+  }
+  // large blocks held for reuse
+  let l = largeOf(h);
+  oswin.lock(l as usize);
+  let now = oswin.tick();
+  var i = 0usize;
+  while i < cacheSlots {
+    let e = cacheAt(h, i);
+    if e.addr != 0usize && e.committed != 0usize {
+      let age = now - e.stamp;
+      if giving && age >= delay {
+        cacheDecommit(l, e);
+      } else if h.mode == modeDelay {
+        due = minDue(due, delay - age);
+      }
+    }
+    i = i + 1usize;
+  }
+  while cacheCount(h, true) > 8usize { cacheEvict(h, l, true); }
+  if force {
+    var k = 0usize;
+    while k < cacheSlots { if cacheAt(h, k).addr != 0usize { cacheRelease(h, l, k); } k = k + 1usize; }
+  }
+  oswin.unlock(l as usize);
+  if due != 0u64 && due < 1u64 { due = 1u64; }
+  due
+}
+
+// ---------------------------------------------------------------------------
+// Creating a heap, settings
+// ---------------------------------------------------------------------------
+
+fn parseNum(a: usize, end: usize) usize {
+  var v = 0usize;
+  var i = a;
+  while i < end {
+    let ch = usize.from(*(i as *u8));
+    if ch >= 48usize && ch <= 57usize { v = v * 10usize + (ch - 48usize); } else { break; }
+    i = i + 1usize;
+  }
+  // a suffix: k, m, g
+  if i < end {
+    let s = usize.from(*(i as *u8));
+    if s == 107usize || s == 75usize { v = v << 10usize; }
+    else if s == 109usize || s == 77usize { v = v << 20usize; }
+    else if s == 103usize || s == 71usize { v = v << 30usize; }
+  }
+  v
+}
+
+pub struct Settings {
+  reserve: usize;
+  mode: usize;
+  delayMs: u64;
+  largeCap: usize;
+  stats: usize;
+}
+
+// the defaults: 64 GiB of address space, give-back after 1000 ms, 64 MiB of large blocks kept
+pub fn cnm_defaults(s: *Settings) {
+  s.reserve = 68719476736usize;
+  s.mode = modeDelay;
+  s.delayMs = 1000u64;
+  s.largeCap = 67108864usize;
+  s.stats = 0usize;
+}
+
+// Reads CNMALLOC (for example "giveback=now,reserve=32g,largecap=16m,stats") into s. buf is 1024 bytes of scratch.
+pub fn cnm_readEnv(s: *Settings, buf: usize) {
+  let n = usize.from(GetEnvironmentVariableA("CNMALLOC", buf as *u8, 1000u32));
+  if n == 0usize || n >= 1000usize { return; }
+  let end = buf + n;
+  var a = buf;
+  while a < end {
+    var z = a;
+    while z < end && *(z as *u8) != 44u8 { z = z + 1usize; }
+    let len = z - a;
+    if len >= 9usize && strncmp(a as *u8, "giveback=", 9usize) == 0i32 {
+      let v = a + 9usize;
+      if strncmp(v as *u8, "now", 3usize) == 0i32 { s.mode = modeNow; }
+      else if strncmp(v as *u8, "never", 5usize) == 0i32 { s.mode = modeNever; }
+      else if strncmp(v as *u8, "delay:", 6usize) == 0i32 { s.mode = modeDelay; s.delayMs = u64.from(parseNum(v + 6usize, z)); }
+    } else if len >= 8usize && strncmp(a as *u8, "reserve=", 8usize) == 0i32 {
+      s.reserve = parseNum(a + 8usize, z);
+    } else if len >= 9usize && strncmp(a as *u8, "largecap=", 9usize) == 0i32 {
+      s.largeCap = parseNum(a + 9usize, z);
+    } else if len >= 5usize && strncmp(a as *u8, "stats", 5usize) == 0i32 {
+      s.stats = 1usize;
+    }
+    a = z + 1usize;
+  }
+}
+
+// Makes a heap: its own region, its three reservations, its classes. Returns its address, or 0.
+pub fn cnm_create(s: *Settings) usize {
+  let region = oswin.reserve(regionBytes);
+  if region == 0usize { return 0usize; }
+  if !oswin.commit(region, regionBytes) { oswin.release(region); return 0usize; }
+  let h = region as *Heap;
+  h.region = region;
+  var size = roundUp(s.reserve, pageSize);
+  if size < 67108864usize { size = 67108864usize; }
+  if size > 1099511627776usize { size = 1099511627776usize; }
+  var base = oswin.reserve(size);
+  while base == 0usize && size > 67108864usize {
+    size = size >> 1usize;
+    base = oswin.reserve(size);
+  }
+  if base == 0usize { oswin.release(region); return 0usize; }
+  h.base = base;
+  h.size = size;
+  h.npages = size >> pageShift;
+  h.l0w = (h.npages + 63usize) >> 6usize;
+  h.l1w = (h.l0w + 63usize) >> 6usize;
+  h.l2w = (h.l1w + 63usize) >> 6usize;
+  h.firstBytes = roundUp((h.l2w + h.l1w) * 8usize, 4096usize);
+  h.firstChunks = h.firstBytes >> 12usize;
+  h.treeStride = h.firstBytes + roundUp(h.l0w * 8usize, 4096usize);
+  h.chunksPerTree = h.treeStride >> 12usize;
+  h.flags = region + flagsOff;
+  h.metaReserve = nTrees * h.treeStride;
+  h.descReserve = h.npages * 64usize;
+  h.metaBase = oswin.reserve(h.metaReserve);
+  h.descBase = oswin.reserve(h.descReserve);
+  if h.metaBase == 0usize || h.descBase == 0usize {
+    if h.metaBase != 0usize { oswin.release(h.metaBase); }
+    if h.descBase != 0usize { oswin.release(h.descBase); }
+    oswin.release(base);
+    oswin.release(region);
+    return 0usize;
+  }
+  h.mode = s.mode;
+  h.delayMs = s.delayMs;
+  h.largeCap = s.largeCap;
+  h.stats = s.stats;
+  var c = 0usize;
+  while c < nClasses {
+    let k = classAt(h, c);
+    k.idx = c;
+    k.size = classSizeOf(c);
+    k.limit = (pageSize / k.size) * k.size;
+    k.commit = roundUp(k.limit, 4096usize);
+    k.cur = none;
+    k.spare = none;
+    c = c + 1usize;
+  }
+  var i = 0usize;
+  while i <= 64usize {
+    let n = i * 16usize;
+    var cl = 0usize;
+    if i == 0usize { cl = 0usize; } else if n <= 128usize { cl = i - 1usize; } else { cl = classOfBig(n); }
+    *((region + sizeMapOff + i) as *u8) = u8.from(cl);
+    i = i + 1usize;
+  }
+  var m = GetModuleHandleA("ucrtbase.dll");
+  if m == 0usize { m = LoadLibraryA("ucrtbase.dll"); }
+  h.ucfree = GetProcAddress(m, "free");
+  h.ucrealloc = GetProcAddress(m, "realloc");
+  h.ucmsize = GetProcAddress(m, "_msize");
+  h.ucafree = GetProcAddress(m, "_aligned_free");
+  h.ucarealloc = GetProcAddress(m, "_aligned_realloc");
+  h.ucamsize = GetProcAddress(m, "_aligned_msize");
+  region
+}
+
+// A heap from the CNMALLOC environment variable. This is the process's: shim/cn_shim.c calls it once.
+pub fn cnm_boot() usize {
+  var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize);
+  cnm_defaults(&mut s);
+  // the settings text is read into a scratch area, so the heap's own region is not made yet: a small
+  // reservation holds it for the moment
+  let tmp = oswin.reserve(65536usize);
+  if tmp == 0usize { return 0usize; }
+  if !oswin.commit(tmp, 4096usize) { oswin.release(tmp); return 0usize; }
+  cnm_readEnv(&mut s, tmp);
+  oswin.release(tmp);
+  cnm_create(&mut s)
+}
+
+// Gives every reservation back (tests only: a process's heap is never destroyed)
+pub fn cnm_destroy(hh: usize) {
+  let h = hh as *Heap;
+  let t = timerOf(h);
+  if t.handle != 0usize { oswin.timerClose(t.handle); }
+  let l = largeOf(h);
+  var i = 0usize;
+  while i < cacheSlots { if cacheAt(h, i).addr != 0usize { oswin.release(cacheAt(h, i).base); } i = i + 1usize; }
+  var j = 0usize;
+  while l.table != 0usize && j < l.cap {
+    let e = entryAt(l, j);
+    if e.addr != 0usize { oswin.release(e.base); }
+    j = j + 1usize;
+  }
+  if l.table != 0usize { oswin.release(l.table); }
+  oswin.release(h.metaBase);
+  oswin.release(h.descBase);
+  oswin.release(h.base);
+  oswin.release(h.region);
+}
+
+// ---------------------------------------------------------------------------
+// The standard API
+// ---------------------------------------------------------------------------
+
+// the ownership test: one subtract and one compare
+pub fn cnm_owns(hh: usize, p: usize) bool {
+  let h = hh as *Heap;
+  (p - h.base) < h.size
+}
+
+// CNMALLOC=stats was set: the C file prints the counters at exit
+pub fn cnm_wants_stats(hh: usize) bool { (hh as *Heap).stats != 0usize }
+
+fn doMalloc(h: *Heap, n: usize, zero: bool) usize {
+  if n <= maxSmall {
+    var fresh = 0u32;
+    let cl = classOf(h, n);
+    let a = smallAlloc(h, cl, &mut fresh);
+    if a != 0usize && zero && fresh == 0u32 { memset(a as *u8, 0i32, classAt(h, cl).size); }
+    return a;
+  }
+  var fresh = 0u32;
+  let a = largeAlloc(h, n, 0usize, &mut fresh);
+  if a != 0usize && zero && fresh == 0u32 { memset(a as *u8, 0i32, n); }
+  a
+}
+
+pub fn cnm_malloc(hh: usize, n: usize) *u8 { doMalloc(hh as *Heap, n, false) as *u8 }
+
+pub fn cnm_calloc(hh: usize, count: usize, size: usize) *u8 {
+  if count != 0usize && size > 0xFFFFFFFFFFFFFFFFusize / count { return 0usize as *u8; }
+  doMalloc(hh as *Heap, count * size, true) as *u8
+}
+
+// the usable size of a block that is ours (small or large), or none when it is neither
+fn sizeOfMine(h: *Heap, a: usize) usize {
+  if (a - h.base) < h.size {
+    let d = descOf(h, (a - h.base) >> pageShift);
+    return classAt(h, usize.from(d.cls)).size;
+  }
+  largeSize(h, a)
+}
+
+pub fn cnm_usable(hh: usize, p: *u8) usize {
+  let h = hh as *Heap;
+  let a = p as usize;
+  let s = sizeOfMine(h, a);
+  if s != none { return s; }
+  bumpForeign(h);
+  if h.ucmsize == 0usize { return 0usize; }
+  let f = h.ucmsize as &fn @c (p: *u8) usize;
+  f(p)
+}
+
+pub fn cnm_free(hh: usize, p: *u8) {
+  let a = p as usize;
+  if a == 0usize { return; }
+  let h = hh as *Heap;
+  if (a - h.base) < h.size { freeSmall(h, a); return; }
+  if largeFree(h, a) { return; }
+  bumpForeign(h);
+  let f = h.ucfree as &fn @c (p: *u8);
+  f(p);
+}
+
+pub fn cnm_realloc(hh: usize, p: *u8, n: usize) *u8 {
+  let h = hh as *Heap;
+  let a = p as usize;
+  if a == 0usize { return doMalloc(h, n, false) as *u8; }
+  if (a - h.base) < h.size {
+    if n == 0usize { freeSmall(h, a); return 0usize as *u8; }
+    let d = descOf(h, (a - h.base) >> pageShift);
+    let old = classAt(h, usize.from(d.cls)).size;
+    if n <= maxSmall && classOf(h, n) == usize.from(d.cls) { return p; }
+    let q = doMalloc(h, n, false);
+    if q == 0usize { return 0usize as *u8; }
+    memcpy(q as *u8, p, if n < old { n } else { old });
+    freeSmall(h, a);
+    return q as *u8;
+  }
+  let sz = largeSize(h, a);
+  if sz != none {
+    if n == 0usize { largeFree(h, a); return 0usize as *u8; }
+    if n > maxSmall {
+      if largeResize(h, a, n) == 1usize { return p; }
+    }
+    let q = doMalloc(h, n, false);
+    if q == 0usize { return 0usize as *u8; }
+    memcpy(q as *u8, p, if n < sz { n } else { sz });
+    largeFree(h, a);
+    let l = largeOf(h);
+    oswin.lock(l as usize);
+    l.moves = l.moves + 1u64;
+    oswin.unlock(l as usize);
+    return q as *u8;
+  }
+  bumpForeign(h);
+  let f = h.ucrealloc as &fn @c (p: *u8, n: usize) *u8;
+  f(p, n)   // a foreign block stays foreign
+}
+
+// grows or shrinks in place only; null when it cannot
+pub fn cnm_expand(hh: usize, p: *u8, n: usize) *u8 {
+  let h = hh as *Heap;
+  let a = p as usize;
+  if a == 0usize { return 0usize as *u8; }
+  if (a - h.base) < h.size {
+    let d = descOf(h, (a - h.base) >> pageShift);
+    if n <= classAt(h, usize.from(d.cls)).size && n != 0usize { return p; }
+    return 0usize as *u8;
+  }
+  if largeSize(h, a) != none {
+    if n > maxSmall && largeResize(h, a, n) == 1usize { return p; }
+    return 0usize as *u8;
+  }
+  0usize as *u8
+}
+
+pub fn cnm_recalloc(hh: usize, p: *u8, count: usize, size: usize) *u8 {
+  if count != 0usize && size > 0xFFFFFFFFFFFFFFFFusize / count { return 0usize as *u8; }
+  let n = count * size;
+  let old = if p as usize == 0usize { 0usize } else { cnm_usable(hh, p) };
+  let q = cnm_realloc(hh, p, n);
+  if q as usize != 0usize && n > old && n != 0usize { memset((q as usize + old) as *u8, 0i32, n - old); }
+  q
+}
+
+// Aligned blocks. A power-of-two alignment up to 64 KiB uses the smallest class whose cell size is a multiple
+// of it: cells are at page base + k * size and pages are 64 KiB aligned. Otherwise (or when no class fits) a
+// large block, placed at the alignment.
+pub fn cnm_aligned(hh: usize, align: usize, n: usize) *u8 {
+  let h = hh as *Heap;
+  if align == 0usize || (align & (align - 1usize)) != 0usize { return 0usize as *u8; }
+  if align <= 16usize { return doMalloc(h, n, false) as *u8; }
+  if n <= maxSmall && align <= maxSmall {
+    var cl = classOf(h, n);
+    while cl < nClasses && (classAt(h, cl).size & (align - 1usize)) != 0usize { cl = cl + 1usize; }
+    if cl < nClasses {
+      var fresh = 0u32;
+      return smallAlloc(h, cl, &mut fresh) as *u8;
+    }
+  }
+  var fresh = 0u32;
+  largeAlloc(h, n, align, &mut fresh) as *u8
+}
+
+pub fn cnm_aligned_realloc(hh: usize, p: *u8, n: usize, align: usize) *u8 {
+  if p as usize == 0usize { return cnm_aligned(hh, align, n); }
+  let h = hh as *Heap;
+  let a = p as usize;
+  let sz = sizeOfMine(h, a);
+  if sz == none {
+    bumpForeign(h);
+    let f = h.ucarealloc as &fn @c (p: *u8, n: usize, a: usize) *u8;
+    return f(p, n, align);
+  }
+  let q = cnm_aligned(hh, align, n);
+  if q as usize == 0usize { return q; }
+  memcpy(q, p, if n < sz { n } else { sz });
+  cnm_free(hh, p);
+  q
+}
+
+pub fn cnm_aligned_msize(hh: usize, p: *u8) usize { cnm_usable(hh, p) }
+
+// ---------------------------------------------------------------------------
+// Counters
+// ---------------------------------------------------------------------------
+
+// Copies the counters out, 64-bit each, in this order, and returns how many. Per class (72 times):
+// allocs, frees, live, pages, lock waits. Then the pool: committed bytes, empty pages, decommitted pages,
+// pages reused, commit calls, decommit calls. Then large: live blocks, committed bytes, in-place grows,
+// moves, cache hits, system calls. Then foreign blocks forwarded. Taken without the locks: a snapshot, not
+// a transaction.
+pub fn cnm_stats(hh: usize, out: *u64, max: usize) usize {
+  let h = hh as *Heap;
+  var n = 0usize;
+  var c = 0usize;
+  while c < nClasses && n + 5usize <= max {
+    let k = classAt(h, c);
+    let o = out as usize + n * 8usize;
+    wr(o, k.allocs); wr(o + 8usize, k.frees); wr(o + 16usize, k.live); wr(o + 24usize, k.pages); wr(o + 32usize, k.waits);
+    n = n + 5usize;
+    c = c + 1usize;
+  }
+  if n + 19usize <= max {
+    let p = poolOf(h);
+    let l = largeOf(h);
+    let o = out as usize + n * 8usize;
+    wr(o, p.committedBytes); wr(o + 8usize, p.nEmpty); wr(o + 16usize, p.nDecommitted);
+    wr(o + 24usize, p.reused); wr(o + 32usize, p.commitCalls); wr(o + 40usize, p.decommitCalls);
+    wr(o + 48usize, l.live); wr(o + 56usize, l.bytes); wr(o + 64usize, l.grows);
+    wr(o + 72usize, l.moves); wr(o + 80usize, l.cacheHits); wr(o + 88usize, l.sysCalls);
+    wr(o + 96usize, h.foreign);
+    n = n + 13usize;
+  }
+  n
+}
+
+// ---- printing, with no allocation: lines are built in the heap's own scratch area -----------------------
+
+fn putStr(buf: usize, pos: usize, s: cstr, len: usize) usize {
+  copyLit((buf + pos) as *u8, s, len);
+  pos + len
+}
+
+fn putNum(buf: usize, pos: usize, v: u64) usize {
+  var digits = 1usize;
+  var t = v;
+  while t >= 10u64 { t = t / 10u64; digits = digits + 1usize; }
+  var x = v;
+  var i = digits;
+  while i > 0usize {
+    i = i - 1usize;
+    *((buf + pos + i) as *u8) = u8.from(48u64 + x % 10u64);
+    x = x / 10u64;
+  }
+  pos + digits
+}
+
+// one line per class that was used, then the pool and the large table; to stderr
+pub fn cnm_print_stats(hh: usize) {
+  let h = hh as *Heap;
+  let buf = h.region + scratchOff;
+  var c = 0usize;
+  while c < nClasses {
+    let k = classAt(h, c);
+    if k.allocs != 0u64 {
+      var n = putStr(buf, 0usize, "cnmalloc class ", 15usize);
+      n = putNum(buf, n, u64.from(k.size));
+      n = putStr(buf, n, " allocs ", 8usize); n = putNum(buf, n, k.allocs);
+      n = putStr(buf, n, " frees ", 7usize); n = putNum(buf, n, k.frees);
+      n = putStr(buf, n, " live ", 6usize); n = putNum(buf, n, k.live);
+      n = putStr(buf, n, " pages ", 7usize); n = putNum(buf, n, k.pages);
+      n = putStr(buf, n, " lockwaits ", 11usize); n = putNum(buf, n, k.waits);
+      n = putStr(buf, n, "\n", 1usize);
+      oswin.writeErr(buf, n);
+    }
+    c = c + 1usize;
+  }
+  let p = poolOf(h);
+  let l = largeOf(h);
+  var n = putStr(buf, 0usize, "cnmalloc pool committed ", 24usize);
+  n = putNum(buf, n, p.committedBytes);
+  n = putStr(buf, n, " empty ", 7usize); n = putNum(buf, n, p.nEmpty);
+  n = putStr(buf, n, " decommitted ", 13usize); n = putNum(buf, n, p.nDecommitted);
+  n = putStr(buf, n, " reused ", 8usize); n = putNum(buf, n, p.reused);
+  n = putStr(buf, n, " commitcalls ", 13usize); n = putNum(buf, n, p.commitCalls);
+  n = putStr(buf, n, " decommitcalls ", 15usize); n = putNum(buf, n, p.decommitCalls);
+  n = putStr(buf, n, "\n", 1usize);
+  oswin.writeErr(buf, n);
+  n = putStr(buf, 0usize, "cnmalloc large live ", 20usize);
+  n = putNum(buf, n, l.live);
+  n = putStr(buf, n, " bytes ", 7usize); n = putNum(buf, n, l.bytes);
+  n = putStr(buf, n, " grows ", 7usize); n = putNum(buf, n, l.grows);
+  n = putStr(buf, n, " moves ", 7usize); n = putNum(buf, n, l.moves);
+  n = putStr(buf, n, " foreign ", 9usize); n = putNum(buf, n, h.foreign);
+  n = putStr(buf, n, " syscalls ", 10usize); n = putNum(buf, n, l.sysCalls);
+  n = putStr(buf, n, "\n", 1usize);
+  oswin.writeErr(buf, n);
+}
+
+// what the runner collects: one line per class that was ever contended, and the total
+pub fn cnm_print_lock_waits_of(hh: usize) {
+  let h = hh as *Heap;
+  let buf = h.region + scratchOff;
+  var total = 0u64;
+  var c = 0usize;
+  while c < nClasses {
+    let k = classAt(h, c);
+    total = total + k.waits;
+    if k.waits != 0u64 {
+      var n = putStr(buf, 0usize, "lockwaits class ", 16usize);
+      n = putNum(buf, n, u64.from(k.size));
+      n = putStr(buf, n, " ", 1usize); n = putNum(buf, n, k.waits);
+      n = putStr(buf, n, "\n", 1usize);
+      oswin.writeErr(buf, n);
+    }
+    c = c + 1usize;
+  }
+  var n = putStr(buf, 0usize, "lockwaits total ", 16usize);
+  n = putNum(buf, n, total);
+  n = putStr(buf, n, "\n", 1usize);
+  oswin.writeErr(buf, n);
+}
