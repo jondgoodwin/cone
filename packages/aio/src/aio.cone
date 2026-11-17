@@ -51,6 +51,9 @@
 //   s.read(room)            the same, the buffer with room for at least 'room' bytes (a usize)
 //                                                                (READS WITH NO BUFFER)
 //   s.write(buf)            all of buf, an IoBuf moved in         Result[usize, IoError]
+//   s.write(chain)          every byte of an iobuf Chain, in order, in one operation (a gather);
+//                           the chain moved in, home once sent; an empty one: Ok(0)
+//                                                                Result[usize, IoError]
 //   s.localAddr()           the address s is bound to            Result[SocketAddr, IoError]
 //   s.reset()               s closed abortively, the Socket consumed: the peer sees a
 //                           reset                                (SOCKET CONTROLS)
@@ -338,7 +341,7 @@
 // workers never wait on I/O (they could not: an actor's
 // behaviour runs to its 'await' and returns). An 'await' on a socket's read
 // into a buffer (read(buf), readIn(buf, lim)) or a write first ISSUES it on its
-// own worker, through the Loop's shared table (iocore's WORKER-SIDE ISSUE),
+// own worker (a gather write of a chain, and recvFrom and sendTo of a UdpSocket, too), through the Loop's shared table (iocore's WORKER-SIDE ISSUE),
 // the socket's entry locked across the issue and what follows: done at once
 // (every send that fits the socket, a read whose bytes are there), it is
 // answered there and the actor goes on in the same batch, nothing crossing to
@@ -521,7 +524,9 @@
 // delivery, so the answer says the system took the datagram. A datagram too
 // large for the network fails (the same number, of the kind Other). One receive at a time per
 // socket is the supported use, as iocore says; datagrams that arrive while none
-// is outstanding wait in the socket's buffer, which the OS bounds.
+// is outstanding wait in the socket's buffer, which the OS bounds. Both are
+// tried first on the awaiting actor's worker (THE I/O THREAD): a datagram
+// waiting, or a send the socket takes, is answered there, nothing crossing.
 //
 // A FILE is the same for a file the I/O thread's Loop holds: plain data that
 // moves, and dropping it closes the file, behind the operations queued before
@@ -670,7 +675,7 @@ import libc;
 import thread;
 import sync use Mutex;
 import collections use List, String;
-import iobuf use IoBuf;
+import iobuf use IoBuf, Chain;
 import time use Instant, Duration;
 import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending;
 import path use Path;
@@ -804,6 +809,12 @@ fn setBuf(p: *OpCore, b: Option[IoBuf]) {
   c.buf = b;
 }
 
+// A gather's chain, moved into the record out of line (as iocore's SendChain does)
+fn setChain(p: *OpCore, bufs: Chain) {
+  let c = p as &mut OpCore;
+  c.bufs = Some[Uni[Chain]](Uni[Chain](bufs));
+}
+
 // A record taken for an operation on h (Handle.none() for one that names no
 // handle), what it is doing and the kind of iocore operation, limited by lim:
 // any thread
@@ -849,7 +860,7 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
   let c = hereCounts();
   bump(&mut (*c).started as *u64);
   let w = a.what;
-  if w == opRecv || w == opSend {
+  if w == opRecv || w == opSend || w == opRecvFrom || w == opSendTo {
     let sh = sharedNow();
     let h = (*(ctx as *OpCore)).handle;
     if sh.lock(h) {
@@ -858,7 +869,7 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
         sh.unlock(h);
         bump(&mut (*c).here as *u64);
         answerRec(ctx as *OpRec[Ask]);
-        if w == opSend {
+        if w == opSend || w == opSendTo {
           askPass();
         }
         return;
@@ -3021,14 +3032,30 @@ pub struct Socket is Move, Sendable {
   }
 
   // All of buf, which is moved in and goes home once sent: the count
-  pub fn write(self: &, buf: IoBuf) actors.Awaitable[Result[usize, IoError]] {
-    self.writeIn(buf, IoLimits.none())
+  pub fn writeBuf overload write(self: &, buf: IoBuf) actors.Awaitable[Result[usize, IoError]] {
+    self.writeBufIn(buf, IoLimits.none())
   }
 
   // A write ended if lim says so, part of buf perhaps sent
-  pub fn writeIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
+  pub fn writeBufIn overload writeIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
     let p = takeRec(opSend, diag.kindSend, h, lim);
     setBuf(p as *OpCore, Some[IoBuf](buf));
+    recAwaitable[Result[usize, IoError]](p)
+  }
+
+  // Every byte of the chain's segments, in order, in one operation (a gather
+  // send): the count. The chain is moved in and goes home once sent, whatever
+  // the answer, as write's buffer does. An empty chain answers Ok(0). Cancel,
+  // deadline, close and cancelWrite behave as for write. (Name proposed: the
+  // overload write(chain); the alternative is a name of its own, writeChain)
+  pub fn writeChain overload write(self: &, bufs: Chain) actors.Awaitable[Result[usize, IoError]] {
+    self.writeChainIn(bufs, IoLimits.none())
+  }
+
+  // A gather ended if lim says so, part of the chain perhaps sent
+  pub fn writeChainIn overload writeIn(self: &, bufs: Chain, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
+    let p = takeRec(opSend, diag.kindSend, h, lim);
+    setChain(p as *OpCore, bufs);
     recAwaitable[Result[usize, IoError]](p)
   }
 

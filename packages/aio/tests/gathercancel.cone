@@ -1,0 +1,175 @@
+// A gather write cancelled while it is pending: write(Chain) of 1 MiB chains in
+// a cancel group, to a peer that does not read, until one cannot finish (the
+// answered count stops rising). The group is then cancelled; the pending
+// gather answers Cancelled and its chain goes home. Then the peer's end is
+// read to the end of the stream and every byte is checked against the pattern,
+// by position: the bytes that arrived are exactly the first R of the stream,
+// so what was sent is the whole chains answered Ok plus a prefix of the
+// cancelled one (0 to 1 MiB), and nothing of it arrived twice or out of order.
+// The prefix and the sent total are written to stderr, for the record.
+//
+// At the end every buffer is home (lent == 0) and every record dissolved.
+
+mod gathercancel;
+
+import testing use *;
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import thread;
+import time use Duration;
+import iobuf use IoBuf, Chain, stats;
+import iocore use SocketAddr, IoError, CancelGroup;
+import actors;
+import aio use Socket, IoLimits;
+
+const segs = 4usize;
+const per = 262144usize;
+const chainLen = 1048576usize;   // segs * per
+
+struct Got {
+  pub completed: Atomic[u64];    // gathers answered Ok(chainLen)
+  pub cancelled: Atomic[u64];    // 1 if the pending gather answered Cancelled
+  pub arrived: Atomic[u64];      // bytes the peer read to the end of the stream
+  pub wrong: Atomic[u64];        // 1 + the first byte not as sent, or 0
+  pub short: Atomic[u64];        // 1 if a gather answered Ok with other than chainLen
+  pub issued: Atomic[u64];       // 1 once the first gather is issued
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn pattern(i: usize) u8 {u8.from(i % 251usize)}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn dropSocket(s: Socket) {}
+
+// The chain of chain number k: the stream's bytes from k * chainLen on
+fn makeChain(k: usize) Chain {
+  var c = Chain.make(0xFFFFFFFFusize);
+  var s = 0usize;
+  while s < segs {
+    var b = IoBuf(per);
+    let p = b.base();
+    var i = 0usize;
+    while i < per {
+      *(p + i) = pattern(k * chainLen + s * per + i);
+      i = i + 1usize;
+    }
+    b.setLen(per);
+    let refused = c.push(b);
+    s = s + 1usize;
+  }
+  c
+}
+
+actor Run {
+  pub async fn go(self, g: CancelGroup, done: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let a = socketOf(await ls.accept());
+
+    // Gathers until one is cancelled while pending (the controller cancels
+    // the group when the completed count has stopped rising)
+    var k = 0usize;
+    var more = true;
+    while more {
+      got.issued.store(1u64);
+      let w = await c.writeIn(makeChain(k), IoLimits.within(g));
+      match w {
+        case let Ok(m) {
+          if m != chainLen {got.short.store(1u64);}
+          got.completed.store(got.completed.load() + 1u64);
+          k = k + 1usize;
+        }
+        case let Err(x) {
+          if aio.isCancelled(x) {got.cancelled.store(1u64);}
+          more = false;
+        }
+      }
+    }
+
+    // Close the sending end, then read the peer's end to the end of the stream
+    dropSocket(c);
+    var at = 0usize;
+    var reading = true;
+    while reading {
+      let r = await a.read(IoBuf(65536usize));
+      match r {
+        case let Ok(b) {
+          let q = b.base();
+          var j = 0usize;
+          while j < b.len() {
+            if *(q + j) != pattern(at + j) && got.wrong.load() == 0u64 {
+              got.wrong.store(u64.from(at + j) + 1u64);
+            }
+            j = j + 1usize;
+          }
+          if b.len() == 0usize {reading = false;}
+          at = at + b.len();
+        }
+        else {reading = false;}
+      }
+    }
+    got.arrived.store(u64.from(at));
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  let g = CancelGroup.make();
+  {
+    let r = Run();
+    r.go(g, tx);
+  }
+  // Wait until the completed count has stopped rising for a second, then cancel
+  var last = 0u64;
+  var still = 0;
+  while still < 20 {
+    thread.sleep(Duration.fromMillis(50i64));
+    let now = got.completed.load();
+    if now == last && got.issued.load() == 1u64 {still = still + 1;} else {still = 0;}
+    last = now;
+  }
+  expect(g.cancel(), "the group was live");
+  rx.recv();
+  finalAll();
+  let whole = got.completed.load() * u64.from(chainLen);
+  let part = got.arrived.load() - whole;
+  eprintStr("completed gathers: "); eprintUInt(got.completed.load());
+  eprintStr(", whole bytes: "); eprintUInt(whole);
+  eprintStr(", arrived: "); eprintUInt(got.arrived.load());
+  eprintStr(", cancelled gather's prefix sent: "); eprintUInt(part); eprintStr("\n");
+  expectUInt(got.cancelled.load(), 1u64, "the pending gather answered Cancelled");
+  expectUInt(got.short.load(), 0u64, "every other gather answered its whole count");
+  expect(got.completed.load() > 0u64, "some gathers completed first");
+  expect(got.arrived.load() >= whole, "every byte of the answered gathers arrived");
+  expect(got.arrived.load() <= whole + u64.from(chainLen), "no more than the cancelled chain's own bytes besides");
+  expectUInt(got.wrong.load(), 0u64, "the arrived bytes are the first of the stream, each in its place");
+  expectUInt(stats().lent, 0u64, "every buffer came home, the cancelled chain's among them");
+  expectUInt(aio.opStats().inUse, 0u64, "every record dissolved");
+  done()
+}

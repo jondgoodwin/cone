@@ -44,7 +44,9 @@
 // look, lock or issue.
 //
 // ISSUE. 'sh.issue(p)', with the entry of p's handle locked, tries a receive or
-// a send of record p on the calling thread. Windows: WSARecv/WSASend on a
+// a send of record p on the calling thread (Recv, and Send of one buffer or a
+// gather of a chain's segments, on a socket; an empty gather is the Loop's; RecvFrom
+// and SendTo, one datagram each and never partial, on a UDP handle). Windows: WSARecv/WSASend on a
 // socket whose completions skip the port on success; an answer at once fills
 // the record (issueDone: the Loop never sees it), a pending one leaves the
 // record the kernel's (issuePending: its caller hands it to the Loop with
@@ -234,11 +236,15 @@ pub struct Shared is Move, Sendable {
   pub fn issue(self: &, p: *OpCore) u32 {
     let r = p as &mut OpCore;
     let e = self.entry(r.handle.index);
-    if e as usize == 0usize || (*e).closing != 0u32 || (*e).kind != hSocket {return issueNot;}
+    if e as usize == 0usize || (*e).closing != 0u32 {return issueNot;}
     let k = r.kind;
-    if k != diag.kindRecv && k != diag.kindSend {return issueNot;}
-    if k == diag.kindSend && r.isGather() {return issueNot;}
-    if k == diag.kindRecv && r.bufRoom() == 0usize {return issueNot;}
+    let hk = (*e).kind;
+    let tcp = hk == hSocket && (k == diag.kindRecv || k == diag.kindSend);
+    let udp = hk == hDatagram && (k == diag.kindRecvFrom || k == diag.kindSendTo);
+    if !tcp && !udp {return issueNot;}
+    // An empty gather is the Loop's (its zero-length send answers Done(0))
+    if k == diag.kindSend && r.isGather() && r.gatherSegments() == 0usize {return issueNot;}
+    if (k == diag.kindRecv || k == diag.kindRecvFrom) && r.bufRoom() == 0usize {return issueNot;}
     #if #os == .windows { if (*e).skip == 0u32 {return issueNot;} }
     // A deadline or a group done with is answered by the Loop, as at a start
     let now = Instant.now();
@@ -349,18 +355,36 @@ fn answeredHere(p: *OpCore, status: u32, n: usize, code: u32) u32 {
 #if #os == .windows {
 fn winIssue(p: *OpCore, raw: usize, now: Instant) u32 {
   let r = p as &mut OpCore;
+  if r.kind == diag.kindSend && r.isGather() {return winIssueGather(p, raw, now);}
   var data = null as *u8;
   var len = 0usize;
   if r.kind == diag.kindSend {
     data, len = sendData(r);
     if len > 0xFFFFFFFFusize {return issueNot;}
+  } else if r.kind == diag.kindSendTo {
+    if r.bufLen() > 0xFFFFFFFFusize {return issueNot;}
   }
   stampIssued(p, now);
   r.raw = raw;
   r.link = linkTransit;
   var got = 0u32;
   var rc = 0i32;
-  if r.kind == diag.kindRecv {
+  let from = r.sockAddr();
+  if r.kind == diag.kindRecvFrom {
+    // One datagram, the sender into the record's address area
+    let room = r.bufRoom();
+    r.wsa.len = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32} else {u32.from(room)};
+    r.wsa.buf = r.bufBase() + r.bufLen();
+    r.flags = 0u32;
+    (*from).size = 28i32;
+    rc = WSARecvFrom(raw, &mut r.wsa as *WsaBuf, 1u32, &mut got as *u32, &mut r.flags, from as *u8,
+        &mut (*from).size, p as *u8, null);
+  } else if r.kind == diag.kindSendTo {
+    r.wsa.len = u32.from(r.bufLen());
+    r.wsa.buf = r.bufBase();
+    rc = WSASendTo(raw, &mut r.wsa as *WsaBuf, 1u32, &mut got as *u32, 0u32, from as *u8, (*from).size,
+        p as *u8, null);
+  } else if r.kind == diag.kindRecv {
     let room = r.bufRoom();
     r.wsa.len = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32} else {u32.from(room)};
     r.wsa.buf = r.bufBase() + r.bufLen();
@@ -374,12 +398,62 @@ fn winIssue(p: *OpCore, raw: usize, now: Instant) u32 {
   if rc == 0i32 {
     // Done at once, and no packet will come: the port is skipped on success
     r.dequeued = Instant.now();
-    if r.kind == diag.kindRecv {r.bufGrow(usize.from(got));}
+    if r.kind == diag.kindRecv || r.kind == diag.kindRecvFrom {r.bufGrow(usize.from(got));}
     return answeredHere(p, diag.outcomeDone, usize.from(got), 0u32);
   }
   let code = wsaError();
   if code == errorIoPending {return issuePending;}
   // Refused at once: no packet either, the same answer the Loop's start gives
+  answeredHere(p, diag.outcomeFailed, 0usize, code)
+}
+}
+
+// Windows: a gather, one WSASend over a WSABUF for each segment of the chain
+// (the Loop's startGather). Winsock captures the array when the overlapped
+// call is made, so it lives only for the call: on the stack up to 16 segments,
+// else in a block freed after it. A gather over 0xFFFFFFFF bytes, or one the
+// block cannot be had for, is issueNot
+#if #os == .windows {
+fn winIssueGather(p: *OpCore, raw: usize, now: Instant) u32 {
+  let r = p as &mut OpCore;
+  if r.gatherLen() > 0xFFFFFFFFusize {return issueNot;}
+  let segs = r.gatherSegments();
+  var spansHere = Array[Span, 16]() <- fill Span(null, 0usize);
+  var wsaHere = Array[WsaBuf, 16]() <- fill WsaBuf(0u32, null);
+  var spans = &mut spansHere as *Span;
+  var bufs = &mut wsaHere as *WsaBuf;
+  let big = segs > 16usize;
+  if big {
+    spans = libc.malloc(segs * mem.sizeof[Span]()) as *Span;
+    bufs = libc.malloc(segs * mem.sizeof[WsaBuf]()) as *WsaBuf;
+    if spans as usize == 0usize || bufs as usize == 0usize {
+      libc.free(spans as *u8);
+      libc.free(bufs as *u8);
+      return issueNot;
+    }
+  }
+  let n = r.gatherSpans(0usize, spans, segs);
+  var k = 0usize;
+  while k < n {
+    (*(bufs + k)).len = u32.from((*(spans + k)).len);
+    (*(bufs + k)).buf = (*(spans + k)).base;
+    k = k + 1usize;
+  }
+  stampIssued(p, now);
+  r.raw = raw;
+  r.link = linkTransit;
+  var got = 0u32;
+  let rc = WSASend(raw, bufs, u32.from(n), &mut got as *u32, 0u32, p as *u8, null);
+  let code = if rc == 0i32 {0u32} else {wsaError()};
+  if big {
+    libc.free(spans as *u8);
+    libc.free(bufs as *u8);
+  }
+  if rc == 0i32 {
+    r.dequeued = Instant.now();
+    return answeredHere(p, diag.outcomeDone, usize.from(got), 0u32);
+  }
+  if code == errorIoPending {return issuePending;}
   answeredHere(p, diag.outcomeFailed, 0usize, code)
 }
 }
@@ -399,6 +473,71 @@ fn lxIssue(p: *OpCore, raw: usize, now: Instant) u32 {
       return answeredHere(p, diag.outcomeDone, usize.from(n), 0u32);
     }
     return answeredHere(p, diag.outcomeFailed, 0usize, u32.from(lastErrno()));
+  }
+  if r.kind == diag.kindRecvFrom {
+    // One datagram. MSG_TRUNC makes the answer its whole length, so a cut one
+    // is told from one that fitted exactly
+    let room = r.bufRoom();
+    let from = r.sockAddr();
+    (*from).size = 28i32;
+    var n = sysRecvfrom(fd, r.bufBase() + r.bufLen(), room, msgTrunc, from as *u8, &mut (*from).size as *u32);
+    while n < 0i64 && lastErrno() == eintr {
+      (*from).size = 28i32;
+      n = sysRecvfrom(fd, r.bufBase() + r.bufLen(), room, msgTrunc, from as *u8, &mut (*from).size as *u32);
+    }
+    if n < 0i64 && lastErrno() == eagain {return issueNot;}
+    stampIssued(p, now);
+    if n < 0i64 {return answeredHere(p, diag.outcomeFailed, 0usize, u32.from(lastErrno()));}
+    if usize.from(n) > room {
+      r.bufGrow(room);
+      return answeredHere(p, diag.outcomeFailed, 0usize, datagramCut());
+    }
+    r.bufGrow(usize.from(n));
+    return answeredHere(p, diag.outcomeDone, usize.from(n), 0u32);
+  }
+  if r.kind == diag.kindSendTo {
+    // One datagram, whole or not at all
+    let to = r.sockAddr();
+    let len = r.bufLen();
+    var n = sysSendto(fd, r.bufBase(), len, msgNoSignal, to as *u8, u32.from((*to).size));
+    while n < 0i64 && lastErrno() == eintr {
+      n = sysSendto(fd, r.bufBase(), len, msgNoSignal, to as *u8, u32.from((*to).size));
+    }
+    if n < 0i64 && lastErrno() == eagain {return issueNot;}
+    stampIssued(p, now);
+    if n < 0i64 {return answeredHere(p, diag.outcomeFailed, 0usize, u32.from(lastErrno()));}
+    return answeredHere(p, diag.outcomeDone, usize.from(n), 0u32);
+  }
+  if r.isGather() {
+    // A gather: sendmsg over the segments until the socket has taken them all
+    // or would block (the Loop's lxTry). Nothing sent and would block: not
+    // issued. Part sent: 'done' keeps it, and the Loop goes on from there
+    let glen = r.gatherLen();
+    var spans = Array[Span, 64]() <- fill Span(null, 0usize);
+    var sentg = 0usize;
+    var failedg = 0i32;
+    while sentg < glen && failedg == 0i32 {
+      let cnt = r.gatherSpans(sentg, &mut spans as *Span, gatherBatch);
+      var msg = MsgHdrLx(null, 0u32, 0u32, &mut spans as *Span, cnt, null, 0usize, 0i32, 0i32);
+      let n = sysSendmsg(fd, &mut msg as *MsgHdrLx, msgNoSignal);
+      if n >= 0i64 {
+        sentg = sentg + usize.from(n);
+      } else {
+        let e = lastErrno();
+        if e != eintr {failedg = e;}
+      }
+    }
+    if failedg == eagain && sentg == 0usize {return issueNot;}
+    stampIssued(p, now);
+    r.done = sentg;
+    if failedg == eagain {
+      r.link = linkTransit;
+      return issuePending;
+    }
+    if failedg != 0i32 {
+      return answeredHere(p, diag.outcomeFailed, 0usize, u32.from(failedg));
+    }
+    return answeredHere(p, diag.outcomeDone, glen, 0u32);
   }
   var data = null as *u8;
   var len = 0usize;
