@@ -27,6 +27,10 @@ Part 1, K01-K22). Per-object kinds are `Trace`; make, grow, drop and phase are `
 | `deque.make/grow/drop` | Debug | K03 | as list | as list | as list | as list |
 | `dict.make/grow/drop` | Debug | K04 Dict and Set | bytes of one entry | capacity in entries | as list | as list |
 
+**Region names against `packages/memstats/kinds.toml`'s numbers:** `list` 1, `string` 2, `deque` 3, `dict` 4, `pool` 6,
+`genpool` 7, `densepool` 8, `bufpool` 10 (IoBufSlab), `iobuf` 11, `arc` 15, `arena` 18, `msg` 20 (ActorMessage), `gc` 21.
+(`pool.*` kinds also stand for Ref's Pool; no kind here for 5, 9, 12-14, 16, 17, 19, 22: see "Not emitted".)
+
 **The collections' events exist only in a build with `-D MEMSTATS`** (every emit is under `#if #defined("MEMSTATS")`, so a
 normal build carries not even the check: the off cost was measurable on havlak, hashstr and cd). They need no shim
 (only core's own markers do, #1404); pools, iobuf, bufpool, arena, collector, actors and sync stay on `trace` with
