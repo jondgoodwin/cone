@@ -7,6 +7,11 @@
 // 'congo test' runs two seconds under each give-back setting, 8 threads. For the long runs set
 //   CNSTRESS_SECS=600  CNSTRESS_THREADS=16  CNSTRESS_MODE=now|delay|never  (one setting; without it, now then delay)
 // and run it with 'congo test stress'.
+//
+// The second design (row 454): its common paths are in the shim, so a heap made here (cnm_make) is always the lock design.
+// With CNTEST_GLOBAL=1, when the program is linked with cn.lib and CNMALLOC=design=2, the test runs on the PROCESS's heap
+// (the shim exports it as cnmalloc_heap) instead: the same calls, now through the second design; the leak check by class
+// counters is the lock design's and is skipped there, and the heap is not destroyed.
 
 mod stress;
 
@@ -18,6 +23,22 @@ import collections use List;
 
 extern {
   fn @c(system) GetTickCount64() u64;
+  fn @c(system) GetModuleHandleA(name: *u8) usize;
+  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
+}
+
+alias HeapFn = &fn @c () usize;
+alias DesignFn = &fn @c () i32;
+
+// the process's heap when CNSTRESS_GLOBAL=1 and it is the second design's; else 0
+fn globalHeap() usize {
+  if libc.getenv("CNTEST_GLOBAL") as usize == 0usize { return 0usize; }
+  let m = GetModuleHandleA(null);
+  let hf = GetProcAddress(m, &"cnmalloc_heap" as *u8);
+  let df = GetProcAddress(m, &"cnmalloc_design" as *u8);
+  if hf == 0usize || df == 0usize { return 0usize; }
+  if (df as *u8 as DesignFn)() != 2i32 { return 0usize; }
+  (hf as *u8 as HeapFn)()
 }
 
 const slotsN = 8192usize;
@@ -158,7 +179,8 @@ fn envNum(name: cstr, dflt: usize) usize {
 }
 
 fn run(mode: usize, label: &Array[u8], secs: usize, nthreads: usize) {
-  let h = cnmalloc.cnm_make(8589934592usize, mode, 1000u64, 67108864usize);
+  let g = globalHeap();
+  let h = if g != 0usize { g } else { cnmalloc.cnm_make(8589934592usize, mode, 1000u64, 67108864usize) };
   let job = libc.calloc(1usize, 64usize) as *Job;
   job.h = h;
   job.slots = libc.calloc(slotsN, 8usize) as usize;
@@ -191,9 +213,10 @@ fn run(mode: usize, label: &Array[u8], secs: usize, nthreads: usize) {
   var c = 0usize;
   while c < 72usize { live = live + *((out as usize + (c * 5usize + 2usize) * 8usize) as *u64); c = c + 1usize; }
   live = live + *((out as usize + 366usize * 8usize) as *u64);   // large: live blocks
+  if g != 0usize { live = 0u64; }                               // the second design keeps no live count per class
   expectUInt(live, 0, "no cell or large block left live after the drain");
   expect(*word(job.errs, 1usize) > 1000usize, "the threads did real work");
-  cnmalloc.cnm_destroy(h);
+  if g == 0usize { cnmalloc.cnm_destroy(h); }
 }
 
 fn main() i32 {

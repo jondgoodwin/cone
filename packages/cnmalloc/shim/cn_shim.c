@@ -611,6 +611,7 @@ __declspec(dllexport) int64_t cnmalloc_lfTotal(int which) {
   return t;
 }
 __declspec(dllexport) int cnmalloc_design(void) { H(); return g_lf ? 2 : 1; }
+__declspec(dllexport) uintptr_t cnmalloc_heap(void) { return H(); }       // the process's heap, for tests that call cnm_* on it
 __declspec(dllexport) uint64_t cnmalloc_collect(int force) { return cnm_collect(H(), force != 0); }
 __declspec(dllexport) int cnmalloc_lfActive(int cl) { H(); return g_lf ? (int)g_lfc[cl].active : 0; }
 #ifdef CN_HOOKS

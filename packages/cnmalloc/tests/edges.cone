@@ -11,7 +11,32 @@ import testing use *;
 import libc;
 import cnmalloc;
 
+// Row 454: with CNTEST_GLOBAL=1, when the program is linked with cn.lib and CNMALLOC=design=2, the tests that can run on
+// the PROCESS's heap do (the shim exports it as cnmalloc_heap), so the API's edges are checked through the second design. The
+// lock design's own internals (batches, the large-reserve setting's own heaps, layout) are skipped then, and no heap is destroyed.
+extern {
+  fn @c("GetModuleHandleA") selfModule(name: *u8) usize;
+}
+alias HeapFn = &fn @c () usize;
+alias DesignFn = &fn @c () i32;
+
+fn globalHeap() usize {
+  if libc.getenv("CNTEST_GLOBAL") as usize == 0usize { return 0usize; }
+  let m = selfModule(null);
+  let hf = GetProcAddress(m, "cnmalloc_heap");
+  let df = GetProcAddress(m, "cnmalloc_design");
+  if hf == 0usize || df == 0usize { return 0usize; }
+  if (df as *u8 as DesignFn)() != 2i32 { return 0usize; }
+  (hf as *u8 as HeapFn)()
+}
+
+fn drop(h: usize) {
+  if h != globalHeap() { cnmalloc.cnm_destroy(h); }
+}
+
 fn heap(mode: usize, delay: u64) usize {
+  let g = globalHeap();
+  if g != 0usize { return g; }
   cnmalloc.cnm_make(1073741824usize, mode, delay, 67108864usize)
 }
 
@@ -56,7 +81,7 @@ fn classTable() {
   let b = cnmalloc.cnm_malloc(h, 0usize);
   expect(a as usize != 0usize && b as usize != 0usize && a as usize != b as usize, "malloc(0): two unique blocks");
   expectUInt(u64.from(cnmalloc.cnm_usable(h, a)), 16, "malloc(0): the smallest class");
-  cnmalloc.cnm_destroy(h);
+  drop(h);
 }
 
 fn aligned() {
@@ -81,7 +106,7 @@ fn aligned() {
   }
   expectInt(bad, 0, "aligned blocks at every power of two to 1 MiB, four sizes each");
   expect(cnmalloc.cnm_aligned(h, 24usize, 10usize) as usize == 0usize, "an alignment that is not a power of two: null");
-  cnmalloc.cnm_destroy(h);
+  drop(h);
 }
 
 fn apiEdges() {
@@ -127,7 +152,7 @@ fn apiEdges() {
   fill(rc, 100usize, 0x22u8);
   let rc2 = cnmalloc.cnm_recalloc(h, rc, 100usize, 10usize);
   expect(rc2 as usize != 0usize && same(rc2, 100usize, 0x22u8) && same(at(rc2, 100usize), 900usize, 0u8), "_recalloc grows: prefix kept, the rest zero");
-  cnmalloc.cnm_destroy(h);
+  drop(h);
 }
 
 fn largeBlocks() {
@@ -175,7 +200,7 @@ fn largeBlocks() {
   }
   expectInt(ok, 5000, "each found by address, each its own size, all freed");
   libc.free(ptrs as *u8);
-  cnmalloc.cnm_destroy(h);
+  drop(h);
 }
 
 fn foreign() {
@@ -191,7 +216,7 @@ fn foreign() {
   let mine = cnmalloc.cnm_malloc(h, 100usize);
   expect(cnmalloc.cnm_owns(h, mine as usize), "our own block is ours");
   cnmalloc.cnm_free(h, mine);
-  cnmalloc.cnm_destroy(h);
+  drop(h);
 }
 
 extern {
@@ -213,7 +238,7 @@ fn foreignAligned() {
   let mine = cnmalloc.cnm_aligned(h, 64usize, 100usize);
   expect(cnmalloc.cnm_aligned_msize(h, mine, 64usize, 0usize) >= 100usize, "_aligned_msize of our own block");
   cnmalloc.cnm_aligned_free(h, mine);
-  cnmalloc.cnm_destroy(h);
+  drop(h);
 }
 
 // row 446: a block doubled from 64 KiB to 64 MiB (11 sizes, 10 reallocs). At the default reserve of 2 it
@@ -238,7 +263,7 @@ fn doubling(reserveN: usize) *u64 {
   var out = libc.calloc(400usize, 8usize) as *u64;
   cnmalloc.cnm_stats(h, out, 400usize);
   cnmalloc.cnm_free(h, p);
-  cnmalloc.cnm_destroy(h);
+  drop(h);
   out
 }
 
@@ -329,17 +354,18 @@ fn batches() {
   expectUInt(u64.from(got), 1, "a batch of one");
   cnmalloc.cnm_free(h, one as *u8);
   expectUInt(liveCount(h, cl), 0, "a batched cell freed singly");
-  cnmalloc.cnm_destroy(h);
+  drop(h);
 }
 
 fn main() i32 {
+  let g = globalHeap();
   layout();
-  batches();
+  if g == 0usize { batches(); }
   classTable();
   aligned();
   apiEdges();
   largeBlocks();
-  largeReserveSetting();
+  if g == 0usize { largeReserveSetting(); }
   foreign();
   foreignAligned();
   done()
