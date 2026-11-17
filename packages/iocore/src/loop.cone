@@ -53,11 +53,6 @@ fn writes(k: u32) bool {
     || k == diag.kindPipeWrite
 }
 
-// A write to a stream (a socket's, a gather's, a pipe's): its answer, when it is
-// not Done, carries the bytes of it that reached the stream before it ended (an
-// exact prefix of what it was given) in the record's 'n'. Done's 'n' is the whole
-fn streamWrite(k: u32) bool {k == diag.kindSend || k == diag.kindPipeWrite}
-
 // What a handle is (a free cell of the handle table holds no entry at all)
 const hSocket = 1u32;
 const hListener = 2u32;
@@ -806,12 +801,6 @@ pub struct Loop {
     let r = p as &mut OpCore;
     r.status = status;
     r.n = n;
-    // A stream write that did not finish: the bytes sent so far. Linux keeps
-    // them in 'done' (a cancel, a deadline and a failure all leave them there);
-    // Windows' finish gives the kernel's count as n
-    #if #os != .windows {
-      if status != diag.outcomeDone && streamWrite(r.kind) {r.n = r.done;}
-    }
     r.code = code;
     r.early = false;
     if r.state == stDecided {return;}
@@ -2030,13 +2019,11 @@ pub struct Loop {
         closesocket(r.newSock);
         r.newSock = invalidHandle;
       }
-      // A stream write that ended in error keeps what the kernel moved before it did
-      let sent = if streamWrite(r.kind) {n} else {0usize};
       if status == statusCancelled {
         if r.asked == askedDeadline {
-          self.decide(p, diag.outcomeTimedOut, sent, 0u32);
+          self.decide(p, diag.outcomeTimedOut, 0usize, 0u32);
         } else {
-          self.decide(p, diag.outcomeCancelled, sent, 0u32);
+          self.decide(p, diag.outcomeCancelled, 0usize, 0u32);
         }
       } else if status == statusEndOfFile || (status == statusPipeBroken && r.kind == diag.kindPipeRead) {
         self.decide(p, diag.outcomeDone, 0usize, 0u32);
@@ -2044,7 +2031,7 @@ pub struct Loop {
         // A datagram larger than UDP carries: what Winsock's own call calls WSAEMSGSIZE
         self.decide(p, diag.outcomeFailed, 0usize, errorMsgSize);
       } else {
-        self.decide(p, diag.outcomeFailed, sent, RtlNtStatusToDosError(u32.from(status)));
+        self.decide(p, diag.outcomeFailed, 0usize, RtlNtStatusToDosError(u32.from(status)));
       }
     }
   }

@@ -33,14 +33,13 @@ struct Got {
   pub wrong: Atomic[u64];        // 1 + the first byte not as sent, or 0
   pub short: Atomic[u64];        // 1 if a gather answered Ok with other than chainLen
   pub issued: Atomic[u64];       // 1 once the first gather is issued
-  pub sent: Atomic[u64];         // the cancelled gather's 'sent'
 }
 
 let got: Got;
 
 fn @initpure init() {
   got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn pattern(i: usize) u8 {u8.from(i % 251usize)}
@@ -102,8 +101,7 @@ actor Run {
           k = k + 1usize;
         }
         case let Err(x) {
-          if x.isCancelled() {got.cancelled.store(1u64);}
-          got.sent.store(u64.from(x.sent));
+          if aio.isCancelled(x) {got.cancelled.store(1u64);}
           more = false;
         }
       }
@@ -171,12 +169,6 @@ fn main() i32 {
   expect(got.arrived.load() >= whole, "every byte of the answered gathers arrived");
   expect(got.arrived.load() <= whole + u64.from(chainLen), "no more than the cancelled chain's own bytes besides");
   expectUInt(got.wrong.load(), 0u64, "the arrived bytes are the first of the stream, each in its place");
-  #if #os == .windows {
-    // Windows' kernel keeps going with a gather it was asked to cancel: 'sent' is a lower bound there
-    expect(got.sent.load() <= part, "the cancelled gather's 'sent' is no more than the prefix the peer read");
-  } #else {
-    expectUInt(got.sent.load(), part, "the cancelled gather's 'sent' is exactly the prefix the peer read");
-  }
   expectUInt(stats().lent, 0u64, "every buffer came home, the cancelled chain's among them");
   expectUInt(aio.opStats().inUse, 0u64, "every record dissolved");
   done()
