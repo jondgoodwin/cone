@@ -4947,6 +4947,7 @@ fn idle(w: *Worker) bool {
     parkHoldHere(s, w, 2u32);
   }
   tally(&(*(*w).stat).parks, 1u64);
+  cnWorkerPark();
   while true {
     sync.futexWait(&(*w).park, parkParked);
     if pk.load() != parkParked {
@@ -5190,6 +5191,56 @@ fn monitorPause(timer: usize, d: time.Duration) {
   thread.sleep(d);
 }
 
+// cnmalloc's worker calls (cnmalloc row 426). A program that links cnmalloc's library (packages/cnmalloc, shim)
+// has three functions exported from its own module: cnmalloc_workerBegin (this thread is a worker, so it gets
+// a small capped cache of freed blocks, when the CNMALLOC setting cache=<n> asks for one), cnmalloc_workerPark
+// (the worker is about to sleep: its cache goes back to the shared heap, then whatever give-back is due is
+// done) and cnmalloc_workerEnd (the worker is ending: its cache goes back). THE CHOICE, LOOKUP OVER BUILD FACT:
+// each worker looks the three up once, by GetProcAddress on the program's own module, when it starts. A build
+// fact (a weak default for each name, which the library's definition would replace) needs a C file or a linker
+// option in this package, which is Cone alone; the lookup costs three table searches per worker start, and
+// finds nothing, and so calls nothing, in a program that did not link cnmalloc (the default). Windows only,
+// as cnmalloc is.
+alias CnCall = &fn @c ();
+var @threadlocal cnPark: usize = 0usize;
+var @threadlocal cnEnd: usize = 0usize;
+
+#if #os == .windows {
+  extern {
+    fn @c(system) GetModuleHandleA(name: *u8) usize;
+    fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
+  }
+}
+
+fn cnWorkerBegin() {
+  #if #os == .windows {
+    let m = GetModuleHandleA(null);
+    cnPark = GetProcAddress(m, &"cnmalloc_workerPark" as *u8);
+    cnEnd = GetProcAddress(m, &"cnmalloc_workerEnd" as *u8);
+    let b = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
+    if b != 0usize {
+      let f = b as *u8 as CnCall;
+      f();
+    }
+  }
+}
+
+fn cnWorkerPark() {
+  if cnPark != 0usize {
+    let f = cnPark as *u8 as CnCall;
+    f();
+  }
+}
+
+fn cnWorkerEnd() {
+  if cnEnd != 0usize {
+    let f = cnEnd as *u8 as CnCall;
+    f();
+    cnEnd = 0usize;
+    cnPark = 0usize;
+  }
+}
+
 // What a worker thread is handed
 struct WorkerArg is Sendable {
   pub w: *Worker;
@@ -5198,6 +5249,7 @@ struct WorkerArg is Sendable {
 fn workerMain(arg: WorkerArg) u32 {
   let w = arg.w;
   me = w as usize;
+  cnWorkerBegin();
   let s = (*w).sched;
   while true {
     // The order (parallel.cone, WHERE TASKS WAIT): the loop pieces on top of this
@@ -5238,6 +5290,7 @@ fn workerMain(arg: WorkerArg) u32 {
     }
   }
   keepRelease();
+  cnWorkerEnd();
   me = 0usize;
   0u32
 }

@@ -226,8 +226,73 @@ fn layout() {
   expect(mem.sizeof[cnmalloc.Timer]() <= 512usize, "the timer's state fits its 512 bytes");
 }
 
+// row 426: the batch calls the workers' cache uses. Cells taken in a batch stay counted as used (live, and their
+// pages active) until a batch free gives them back, and a page retires only when its last cell comes back.
+fn pageCount(h: usize, cl: usize) u64 {
+  let out = libc.calloc(400usize, 8usize) as *u64;
+  cnmalloc.cnm_stats(h, out, 400usize);
+  let v = *((out as usize + (cl * 5usize + 3usize) * 8usize) as *u64);
+  libc.free(out as *u8);
+  v
+}
+
+fn liveCount(h: usize, cl: usize) u64 {
+  let out = libc.calloc(400usize, 8usize) as *u64;
+  cnmalloc.cnm_stats(h, out, 400usize);
+  let v = *((out as usize + (cl * 5usize + 2usize) * 8usize) as *u64);
+  libc.free(out as *u8);
+  v
+}
+
+fn batches() {
+  let h = heap(0usize, 1000u64);                  // giveback=now: a page retires the moment it empties
+  let cl = cnmalloc.cnm_class_of(h, 1024usize);
+  expectUInt(u64.from(cnmalloc.cnm_class_size(h, cl)), 1024, "the 1024-byte class");
+  expectUInt(u64.from(cnmalloc.cnm_class_of(h, 40000usize) + 1usize), 0, "a size over 32 KiB has no class");
+  var got = 0usize;
+  let chain = cnmalloc.cnm_batch_alloc(h, cl, 200usize, &mut got);
+  expectUInt(u64.from(got), 200, "a batch of 200 cells");
+  expectUInt(liveCount(h, cl), 200, "the batch's cells are counted as used");
+  expectUInt(pageCount(h, cl), 4, "200 cells of 1024 bytes need 4 pages (64 a page)");
+  // walk the chain: 200 distinct cells, each writable end to end
+  var n = 0usize;
+  var a = chain;
+  var distinct = true;
+  while a != 0usize && n < 300usize {
+    let nx = *(a as *usize);
+    fill(at(a as *u8, 8usize), 1016usize, 5u8);   // all but the link word
+    if cnmalloc.cnm_cell_class(h, a as *u8) != cl { distinct = false; }
+    a = nx;
+    n = n + 1usize;
+  }
+  expectUInt(u64.from(n), 200, "the chain holds 200 cells");
+  expect(distinct, "every cell of the batch reports the batch's class");
+  // give back the first 150 and then the rest: the live count follows, the pages retire only when empty
+  var rest = chain;
+  var i = 0usize;
+  while i < 150usize { rest = *(rest as *usize); i = i + 1usize; }
+  // the 150th cell's link must be cut before the first part goes back (the free overwrites first words)
+  var cut = chain;
+  i = 1usize;
+  while i < 150usize { cut = *(cut as *usize); i = i + 1usize; }
+  *(cut as *usize) = 0usize;
+  cnmalloc.cnm_batch_free(h, cl, chain, 150usize);
+  expectUInt(liveCount(h, cl), 50, "150 given back: 50 still used");
+  expect(pageCount(h, cl) >= 1u64, "a page holding a cell still used is not retired");
+  cnmalloc.cnm_batch_free(h, cl, rest, 50usize);
+  expectUInt(liveCount(h, cl), 0, "all given back");
+  expectUInt(pageCount(h, cl), 0, "every page retired once its last cell is back");
+  // a batch free of a plain malloc'd block and a plain free of a batched one mix
+  let one = cnmalloc.cnm_batch_alloc(h, cl, 1usize, &mut got);
+  expectUInt(u64.from(got), 1, "a batch of one");
+  cnmalloc.cnm_free(h, one as *u8);
+  expectUInt(liveCount(h, cl), 0, "a batched cell freed singly");
+  cnmalloc.cnm_destroy(h);
+}
+
 fn main() i32 {
   layout();
+  batches();
   classTable();
   aligned();
   apiEdges();
