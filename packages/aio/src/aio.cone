@@ -43,6 +43,7 @@
 //   aio.listen(addr)        a TCP socket listening at addr       Result[Socket, IoError]
 //   aio.connect(addr)       a TCP socket connected to addr       Result[Socket, IoError]
 //   s.accept()              the next connection on a listening s  Result[Socket, IoError]
+//   s.acceptFrom()          the same, with the peer's address     Result[Accepted, IoError]
 //   s.read(buf)             what arrives, appended to buf, an IoBuf moved in
 //                                                                Result[IoBuf, IoError]
 //   s.read()                what arrives, in a buffer the I/O side takes: none is
@@ -51,6 +52,12 @@
 //                                                                (READS WITH NO BUFFER)
 //   s.write(buf)            all of buf, an IoBuf moved in         Result[usize, IoError]
 //   s.localAddr()           the address s is bound to            Result[SocketAddr, IoError]
+//   s.reset()               s closed abortively, the Socket consumed: the peer sees a
+//                           reset                                (SOCKET CONTROLS)
+//   s.closeWrite()          the sending side finished (half-close) Result[void, IoError]
+//   s.peerAddr()            the address of the other end        Result[SocketAddr, IoError]
+//   s.setKeepAlive(ka)      TCP keepalive set, iocore's KeepAlive  Result[void, IoError]
+//   s.keepAlive()           the keepalive as the system reads it  Result[KeepAlive, IoError]
 //   aio.openFile(path, access)  a file, opened with iocore's Access   Result[File, IoError]
 //   f.readAt(at, buf)       what is in the file from byte offset at, appended to buf
 //                                                                Result[IoBuf, IoError]
@@ -97,6 +104,9 @@
 //   aio.resolveIn(host, port, lim)  aio.statIn(path, lim)  aio.runIn(args, opts, dir, lim)
 //   aio.runLineIn(line, opts, dir, lim)
 //                           the same four, limited by lim                  (THE BLOCKING POOL'S WORK)
+//   aio.onPool(lane, work, arg, buf)  a work function run on a lane of the blocking pool:
+//                           the count it returned and the buffer   Result[CallDone, IoError]
+//   aio.onPoolIn(lane, work, arg, buf, lim)   the same, limited by lim   (THE BLOCKING POOL'S WORK)
 //   aio.isCancelled(e)  aio.isTimedOut(e)  aio.isTruncated(e)
 //                           what an IoError says of how an operation ended
 //   Hosted (a trait)  aio.host[S](maker)  h.end()  h.post[J](job)
@@ -222,6 +232,39 @@
 // 'await') when the cancel reaches the I/O thread: there is nothing yet to end
 // in one that has only been made; a group or a deadline reaches those. With
 // no operation in flight a cancel does nothing.
+//
+// SOCKET CONTROLS. A connected Socket's half-close, peer address and keepalive,
+// and its abortive close:
+//
+// - 's.closeWrite()' finishes the sending side: what was sent goes, then TCP's
+//   FIN, so the peer's read ends at the clean end of the stream while s still
+//   reads; a write after it fails (the system's error). aio does not order it
+//   behind a write in flight: the caller's rule is to await its last write
+//   first, as one write pump does. A write still held then: on Linux the part
+//   the kernel has not taken is refused and the write fails; on Windows a
+//   send is taken whole into the kernel's buffers long before (tests/
+//   halfclose.cone measured it), so the question did not arise. Reads in
+//   flight go on.
+// - 's.peerAddr()', 's.setKeepAlive(ka)' and 's.keepAlive()' are iocore's own
+//   (Loop.peerAddr, setKeepAlive, keepAlive). 'KeepAlive' is iocore's:
+//   'import iocore use KeepAlive'. The three and 'closeWrite' are made on the
+//   CALLING WORKER, with the handle's entry in iocore's shared table locked
+//   (Shared.shutdownSend, peerAddr, setKeepAlive, keepAlive): one system call,
+//   no crossing to the I/O thread, the answer given there ('opStats' counts
+//   them started and answered here). A handle with no published entry goes to
+//   the I/O thread as a job. A listening socket or a Socket naming nothing
+//   answers an Err of kind InvalidInput.
+// - 's.acceptFrom()' is 'accept' answering also the peer's address
+//   ('Accepted {sock, peer}'): iocore reads it from the new socket when it
+//   adopts it (OpCore.peer, an accept's record now names it). 'Accepted.peer'
+//   is empty (size 0, port 0) when the peer reset before the accept completed.
+// - 's.reset()' CONSUMES the Socket: the connection is closed abortively (the
+//   peer's read fails ConnectionReset, and what was not yet sent is dropped),
+//   every operation in flight on it is answered Cancelled, one queued before it
+//   is started first. It is a small record (opReset) queued like a close, with
+//   no answer; the I/O thread does iocore's 'reset', and closes as usual a
+//   handle that is no connected socket (a listener). Because the Socket is
+//   consumed, no later call can reach it.
 //
 // ONE RECORD PER OPERATION. Every awaited operation (a socket's, a datagram
 // socket's and a file's, a connect, a sleep, a lookup, a file's metadata, a
@@ -529,6 +572,13 @@
 // home with the answer. A run's request and its answer are in its record,
 // which the pool's thread works on while it is away.
 //
+// 'onPool(lane, work, arg, buf)' is the same for work of the caller's own: iocore's
+// Op.Call, 'work' an '&fn(arg u64, buf &mut IoBuf) Outcome' run on a thread of
+// 'lane' with the buffer moved to it. Done(n) answers Ok(CallDone(n, buf));
+// the work's Failed(code) the error of that system number; the buffer goes home
+// on any Err. It is started on the I/O thread, as 'resolve' is: no worker-side
+// try.
+//
 // 'resolve(host, port)' is iocore's 'resolveOp' (getaddrinfo, the stream socket
 // type): 'host' is a name or an address as text, and every address found is a
 // SocketAddr with 'port' (its default 0): IPv4 and IPv6 as the system gives
@@ -612,7 +662,7 @@
 // many at once, at any offsets), names, file metadata and child processes. Not
 // here: 'fileio', the file service with classes and a queue-depth governor (a
 // package of its own, to come), a file's metadata by its handle, a child's
-// pipes while it runs (above), and a socket's half-close.
+// pipes while it runs (above).
 
 mod aio;
 
@@ -622,7 +672,7 @@ import sync use Mutex;
 import collections use List, String;
 import iobuf use IoBuf;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, Outcome, Lane, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending;
 import path use Path;
 import process;
 import actors;
@@ -669,11 +719,14 @@ const opConnect = 9u32;       // Result[Socket, IoError]
 const opSleep = 10u32;        // Result[void, IoError]
 const opResolve = 11u32;      // Result[List[SocketAddr], IoError]
 const opStat = 12u32;         // Result[FileStat, IoError]
+const opCall = 13u32;         // onPool: Result[CallDone, IoError]
 const opCancel = 14u32;       // cancelRead, cancelWrite: no answer
 const opClose = 15u32;        // a handle's close, its Socket, File or UdpSocket dropped: no answer
 const opPipeRead = 16u32;     // a pipe's read: Result[IoBuf, IoError]
 const opPipeWrite = 17u32;    // a pipe's write: Result[IoBuf, IoError]
 const opWaitChild = 18u32;    // a child's end: Result[ChildExit, IoError]
+const opAcceptFrom = 21u32;   // accept with the peer's address: Result[Accepted, IoError] (20 is kept for recvMany)
+const opReset = 19u32;      // a socket's abortive close, its Socket consumed by 'reset': no answer
 
 // What aio keeps in a record with the operation, after iocore's OpCore: the
 // reply the awaiting behaviour's answer goes back in (put in by the 'await';
@@ -2079,6 +2132,16 @@ fn startOne(lp: &mut Loop, p: *OpCore) {
     let gone = dissolveAt(p as *u8);
     return;
   }
+  if w == opReset {
+    // iocore's reset does nothing for a handle that is not a connected socket
+    // (a listener): the Socket is gone, so close it, or it would never be
+    let h = (*p).handle;
+    if !lp.reset(h) {
+      lp.close(h);
+    }
+    let gone = dissolveAt(p as *u8);
+    return;
+  }
   if w == opRecvAny {
     // A pool that refuses the buffer (iobuf's tryMake) leaves the read to wait
     // without one, as a read on a socket that is not calm does: its bytes, when
@@ -2293,6 +2356,10 @@ fn answerRec(rp: *OpRec[Ask]) {
     actors.answerLentIn[Result[ChildExit, IoError]](back, rp as *Result[ChildExit, IoError], &takeExit);
   } else if w == opAccept || w == opConnect {
     actors.answerLentIn[Result[Socket, IoError]](back, rp as *Result[Socket, IoError], &takeSocket);
+  } else if w == opAcceptFrom {
+    actors.answerLentIn[Result[Accepted, IoError]](back, rp as *Result[Accepted, IoError], &takeAccepted);
+  } else if w == opCall {
+    actors.answerLentIn[Result[CallDone, IoError]](back, rp as *Result[CallDone, IoError], &takeCall);
   } else if w == opRecvFrom {
     actors.answerLentIn[Result[Datagram, IoError]](back, rp as *Result[Datagram, IoError], &takeDatagram);
   } else if w == opSleep {
@@ -2319,6 +2386,10 @@ fn answerTimedOut(rp: *OpRec[Ask]) {
     actors.answerNowIn[Result[ChildExit, IoError]](back, Err[ChildExit, IoError](e));
   } else if w == opAccept || w == opConnect {
     actors.answerNowIn[Result[Socket, IoError]](back, Err[Socket, IoError](e));
+  } else if w == opAcceptFrom {
+    actors.answerNowIn[Result[Accepted, IoError]](back, Err[Accepted, IoError](e));
+  } else if w == opCall {
+    actors.answerNowIn[Result[CallDone, IoError]](back, Err[CallDone, IoError](e));
   } else if w == opRecvFrom {
     actors.answerNowIn[Result[Datagram, IoError]](back, Err[Datagram, IoError](e));
   } else if w == opSleep {
@@ -2370,6 +2441,18 @@ fn takeRead(p: *u8, to: *u8) {
   let code = core.code;
   let buf = core.(buf);
   mem.writeRaw[Result[IoBuf, IoError]](to as *Result[IoBuf, IoError], readResult(kind, status, code, buf));
+}
+
+// acceptFrom's: the connection and its peer's address, which the Loop read
+// from the new socket when it adopted it
+fn takeAccepted(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  var v = Err[Accepted, IoError](errorOf(core.kind, core.status, core.code));
+  if core.status == diag.outcomeDone {
+    v = Ok[Accepted, IoError](Accepted(newSocket(core.newHandle), core.peer()));
+  }
+  mem.writeRaw[Result[Accepted, IoError]](to as *Result[Accepted, IoError], v);
 }
 
 // Accept's and connect's: the new Socket
@@ -2471,6 +2554,23 @@ fn takeStat(p: *u8, to: *u8) {
   let code = core.code;
   let buf = core.(buf);
   mem.writeRaw[Result[FileStat, IoError]](to as *Result[FileStat, IoError], statResult(status, code, buf));
+}
+
+// A pool call's: Done, the count the work answered and its buffer; any other
+// end is an error, and the buffer goes home with the rest of the record
+fn takeCall(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  let status = core.status;
+  let kind = core.kind;
+  let code = core.code;
+  let n = core.n;
+  let buf = core.(buf);
+  var v = Err[CallDone, IoError](errorOf(kind, status, code));
+  if status == diag.outcomeDone {
+    v = Ok[CallDone, IoError](CallDone(n, bufOf(buf)));
+  }
+  mem.writeRaw[Result[CallDone, IoError]](to as *Result[CallDone, IoError], v);
 }
 
 // What the records have done so far (opStats)
@@ -2638,6 +2738,121 @@ struct LocalAddrJob {
   }
 }
 
+// ---------------------------------------------------------------------------
+// A connected socket's controls (the package's header, SOCKET CONTROLS): a
+// job each, which the 'await' first tries on its own worker through iocore's
+// shared table (startControl), and otherwise hands to the I/O thread. Each has
+// 'here', the worker's try, and 'run', the I/O thread's
+// ---------------------------------------------------------------------------
+
+fn unitResult(code: u32) Result[void, IoError] {
+  if code == 0u32 {
+    return Ok[void, IoError](nil);
+  }
+  Err[void, IoError](IoError(code))
+}
+
+// A socket's sending side finished
+struct ShutdownJob {
+  pub h: Handle;
+  pub reply: actors.Reply;
+
+  fn here(self: &mut, sh: &Shared) bool {
+    if !sh.lock(h) {return false;}
+    let code = sh.shutdownSend(h);
+    sh.unlock(h);
+    actors.answerNowIn[Result[void, IoError]](&mut reply, unitResult(code));
+    true
+  }
+
+  fn run(self, lp: &mut Loop) {
+    let h, rp = self.(h, reply);
+    actors.answerNow[Result[void, IoError]](rp, unitResult(lp.shutdown(h)));
+  }
+}
+
+// A socket's peer
+struct PeerAddrJob {
+  pub h: Handle;
+  pub reply: actors.Reply;
+
+  fn here(self: &mut, sh: &Shared) bool {
+    if !sh.lock(h) {return false;}
+    let r = sh.peerAddr(h);
+    sh.unlock(h);
+    actors.answerNowIn[Result[SocketAddr, IoError]](&mut reply, r);
+    true
+  }
+
+  fn run(self, lp: &mut Loop) {
+    let h, rp = self.(h, reply);
+    actors.answerNow[Result[SocketAddr, IoError]](rp, lp.peerAddr(h));
+  }
+}
+
+// A socket's keepalive set
+struct SetKeepAliveJob {
+  pub h: Handle;
+  pub ka: KeepAlive;
+  pub reply: actors.Reply;
+
+  fn here(self: &mut, sh: &Shared) bool {
+    if !sh.lock(h) {return false;}
+    let code = sh.setKeepAlive(h, ka);
+    sh.unlock(h);
+    actors.answerNowIn[Result[void, IoError]](&mut reply, unitResult(code));
+    true
+  }
+
+  fn run(self, lp: &mut Loop) {
+    let h, ka, rp = self.(h, ka, reply);
+    actors.answerNow[Result[void, IoError]](rp, unitResult(lp.setKeepAlive(h, ka)));
+  }
+}
+
+// A socket's keepalive read back
+struct KeepAliveJob {
+  pub h: Handle;
+  pub reply: actors.Reply;
+
+  fn here(self: &mut, sh: &Shared) bool {
+    if !sh.lock(h) {return false;}
+    let r = sh.keepAlive(h);
+    sh.unlock(h);
+    actors.answerNowIn[Result[KeepAlive, IoError]](&mut reply, r);
+    true
+  }
+
+  fn run(self, lp: &mut Loop) {
+    let h, rp = self.(h, reply);
+    actors.answerNow[Result[KeepAlive, IoError]](rp, lp.keepAlive(h));
+  }
+}
+
+// The seam starts a control: the reply goes into the job, which is tried on
+// this worker (its 'here': the handle's entry locked, the system call made,
+// the answer given, nothing crossing to the I/O thread); a handle with no
+// published entry goes to the I/O thread as any job does. Counted in opStats
+// as an operation started, answered here or handed over
+fn startControl[J](ctx: *u8, rp: actors.Reply) {
+  let p = ctx as *Job[J];
+  (*p).body.reply = rp;
+  let c = hereCounts();
+  bump(&mut (*c).started as *u64);
+  if (*p).body.here(sharedNow()) {
+    bump(&mut (*c).here as *u64);
+    dropHead(ctx as *JobHead);
+    return;
+  }
+  bump(&mut (*c).over as *u64);
+  enqueue(ctx);
+}
+
+// A control awaited: as 'awaitable', its start tries the worker first
+fn controlAwaitable[J, R](body: J) actors.Awaitable[R] {
+  actors.Awaitable[R].of(newJob[J](body), &startControl[J], &dropJobAt)
+}
+
 // The values the module's handles are made into
 fn newSocket(h: Handle) Socket {
   if h.isNone() {
@@ -2700,9 +2915,33 @@ fn closeHandle(h: Handle) {
   }
 }
 
+// A handle closed abortively (Socket.reset): as closeHandle, with opReset, which
+// the I/O thread turns into iocore's reset. Nothing awaits it
+fn resetHandle(h: Handle) {
+  if h.isNone() {
+    return;
+  }
+  let p = takeRec(opReset, 0u32, h, IoLimits.none()) as *OpCore;
+  let sh = sharedNow();
+  let held = sh.lock(h);
+  if held {
+    sh.markClosing(h);
+  }
+  enqueueRec(p);
+  if held {
+    sh.unlock(h);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Sockets
 // ---------------------------------------------------------------------------
+
+// What acceptFrom answers: the connection, and the address of its other end
+pub struct Accepted {
+  pub sock: Socket;
+  pub peer: SocketAddr;
+}
 
 // A TCP socket the I/O thread holds (the package's header, A SOCKET): it
 // moves, and dropping it closes the socket
@@ -2727,6 +2966,17 @@ pub struct Socket is Move, Sendable {
   // AND DEADLINES)
   pub fn acceptIn(self: &, lim: IoLimits) actors.Awaitable[Result[Socket, IoError]] {
     recAwaitable[Result[Socket, IoError]](takeRec(opAccept, diag.kindAccept, h, lim))
+  }
+
+  // The next connection and its peer's address, which costs nothing more at
+  // the caller (the package's header, SOCKET CONTROLS)
+  pub fn acceptFrom(self: &) actors.Awaitable[Result[Accepted, IoError]] {
+    self.acceptFromIn(IoLimits.none())
+  }
+
+  // The next connection and its peer, ended if lim says so
+  pub fn acceptFromIn(self: &, lim: IoLimits) actors.Awaitable[Result[Accepted, IoError]] {
+    recAwaitable[Result[Accepted, IoError]](takeRec(opAcceptFrom, diag.kindAccept, h, lim))
   }
 
   // What arrives, appended to buf, which is moved in and comes back in the
@@ -2795,10 +3045,55 @@ pub struct Socket is Move, Sendable {
     cancelSide(h, true);
   }
 
+  // Close the connection abortively and consume the Socket: the peer sees the
+  // connection reset, and what was not yet sent is dropped. Every operation in
+  // flight on it is answered Cancelled, as a close's are, and one queued before
+  // this is started first. No answer, from any thread; no later call can reach
+  // the socket, the Socket being gone. A listening socket is closed as usual
+  // (the package's header, SOCKET CONTROLS)
+  pub fn reset(self) {
+    var me = self;
+    let hh = me.h;
+    me.h = Handle.none();
+    resetHandle(hh);
+  }
+
   // The address the socket is bound to: a listening socket's port, where the
   // system chose it
   pub fn localAddr(self: &) actors.Awaitable[Result[SocketAddr, IoError]] {
     awaitable[LocalAddrJob, Result[SocketAddr, IoError]](LocalAddrJob(h, actors.Reply()))
+  }
+
+  // The sending side finished (a half-close): what was sent goes, then TCP's
+  // FIN, so that the peer's read ends at the clean end of the stream while
+  // this side still reads. Call it once the last write is answered: aio does
+  // not order it behind a write in flight (the package's header, SOCKET
+  // CONTROLS). A later write fails with the system's error. Err: the system's,
+  // InvalidInput for a listening socket or a Socket naming nothing. Done on
+  // the calling worker, nothing crossing to the I/O thread
+  pub fn closeWrite(self: &) actors.Awaitable[Result[void, IoError]] {
+    controlAwaitable[ShutdownJob, Result[void, IoError]](ShutdownJob(h, actors.Reply()))
+  }
+
+  // The address of the connected socket's other end. Err: InvalidInput for a
+  // listening socket or a Socket naming nothing; the system's for a peer that
+  // has gone. Done on the calling worker
+  pub fn peerAddr(self: &) actors.Awaitable[Result[SocketAddr, IoError]] {
+    controlAwaitable[PeerAddrJob, Result[SocketAddr, IoError]](PeerAddrJob(h, actors.Reply()))
+  }
+
+  // TCP keepalive on the connected socket, as iocore's KeepAlive says (probes
+  // 0, KeepAlive.off(), turns it off). Err: the system's number of the option
+  // refused, InvalidInput for a listening socket or a Socket naming nothing.
+  // Windows has no userTimeout and ignores it. Done on the calling worker
+  pub fn setKeepAlive(self: &, ka: KeepAlive) actors.Awaitable[Result[void, IoError]] {
+    controlAwaitable[SetKeepAliveJob, Result[void, IoError]](SetKeepAliveJob(h, ka, actors.Reply()))
+  }
+
+  // The socket's keepalive as the system reads it back (probes 0 when off).
+  // Errors as setKeepAlive's
+  pub fn keepAlive(self: &) actors.Awaitable[Result[KeepAlive, IoError]] {
+    controlAwaitable[KeepAliveJob, Result[KeepAlive, IoError]](KeepAliveJob(h, actors.Reply()))
   }
 
   fn final(self: &uni) {
@@ -3168,6 +3463,32 @@ pub fn statIn(path: &Path, lim: IoLimits) actors.Awaitable[Result[FileStat, IoEr
   let p = takeRec(opStat, diag.kindCall, Handle.none(), lim);
   fillCall(&mut (*p).core, statOp(path, Lane.general(), IoBuf(roomFor(path.view()))));
   recAwaitable[Result[FileStat, IoError]](p)
+}
+
+// What a pool call answers when its work is Done: the count its work returned
+// and the buffer, as the work left it
+pub struct CallDone {
+  pub n: usize;
+  pub buf: IoBuf;
+}
+
+// 'work(arg, &mut buf)' run on a thread of the blocking pool's 'lane' (iocore's
+// Op.Call; the package's header, THE BLOCKING POOL'S WORK), the buffer moved to
+// it and back. Done(n) answers Ok(CallDone(n, buf)); the work's Failed(code) is
+// the error of that system number; a lane whose queue is full answers
+// ResourceBusy at once. On any Err the buffer goes home
+pub fn onPool(lane: Lane, work: WorkFn, arg: u64, buf: IoBuf) actors.Awaitable[Result[CallDone, IoError]] {
+  onPoolIn(lane, work, arg, buf, IoLimits.none())
+}
+
+// A pool call ended if lim says so: one still queued is taken out by a cancel
+// or a deadline (Cancelled, TimedOut: it never runs); one running cannot be
+// stopped, and a deadline past the grace answers TimedOut while the work goes
+// on, its answer dropped
+pub fn onPoolIn(lane: Lane, work: WorkFn, arg: u64, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[CallDone, IoError]] {
+  let p = takeRec(opCall, diag.kindCall, Handle.none(), lim);
+  fillCall(&mut (*p).core, Op.Call(lane, work, arg, buf));
+  recAwaitable[Result[CallDone, IoError]](p)
 }
 
 fn copyArgs(args: &Array[String]) List[String] {

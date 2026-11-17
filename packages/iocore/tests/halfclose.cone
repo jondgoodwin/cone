@@ -11,10 +11,15 @@
 // 4. close with received bytes left unread: Windows resets the connection
 //    rather than finishing it, so the peer's receive fails the same way.
 // 5. close with nothing unread: the peer sees the end of the stream.
+// 6. The same controls through the shared table, from a second thread, with
+//    the entry locked (Shared's CONTROLS): peerAddr, setKeepAlive and
+//    keepAlive, then shutdownSend, which ends the stream for the peer; a
+//    listener is refused (InvalidInput); an entry marked closing is refused.
 
 mod halfclose;
 
 import testing use *;
+import thread;
 import collections use List;
 import time use Instant, Duration;
 import iobuf use *;
@@ -83,6 +88,43 @@ fn send(lp: &mut Loop, h: Handle, text: &Array[u8], tok: u64) Got {
 fn recv(lp: &mut Loop, h: Handle, tok: u64) Got {
   lp.submit(Op.Recv(h, IoBuf(4096usize)), Target.Here(tok));
   await1(lp, tok)
+}
+
+struct ControlArg is Sendable {
+  pub sh: Shared;
+  pub c: Handle;
+  pub l: Handle;
+  pub port: u16;
+}
+
+// Case 6, on a second thread: one bit of the answer for each thing that held
+fn controls(a: ControlArg) u32 {
+  let sh = &a.sh;
+  var bits = 0u32;
+  if !sh.lock(a.c) {return bits;}
+  match sh.peerAddr(a.c) {
+    case let Ok(p) {if p.port() == a.port {bits = bits | 1u32;}}
+    case let Err(e) {}
+  }
+  let ka = KeepAlive(Duration.fromSeconds(30i64), Duration.fromSeconds(5i64), 4u32, Duration.zero());
+  if sh.setKeepAlive(a.c, ka) == 0u32 {bits = bits | 2u32;}
+  match sh.keepAlive(a.c) {
+    case let Ok(k) {
+      if k.idle.millis() == 30000i64 && k.interval.millis() == 5000i64 && k.probes == 4u32 {bits = bits | 4u32;}
+    }
+    case let Err(e) {}
+  }
+  if sh.shutdownSend(a.c) == 0u32 {bits = bits | 8u32;}
+  sh.unlock(a.c);
+  if sh.lock(a.l) {
+    if IoError(sh.shutdownSend(a.l)).kind() == IoErrorKind.InvalidInput {bits = bits | 16u32;}
+    match sh.peerAddr(a.l) {
+      case is Err {bits = bits | 32u32;}
+      else {}
+    }
+    sh.unlock(a.l);
+  }
+  bits
 }
 
 fn main() i32 {
@@ -159,6 +201,32 @@ fn main() i32 {
     let g6 = await1(&mut lp, 40u64);
     expect(g6.status == diag.outcomeDone && g6.n == 0usize, "5: close with nothing unread: the end of the stream");
     lp.close(c);
+
+    // 6. The controls through the shared table, from a second thread
+    c, s = pair(&mut lp, l, port);
+    {
+      let sh = lp.share();
+      let t = thread.start(ControlArg(lp.share(), c, l, port), &controls);
+      let bits = t.join();
+      expectUInt(u64.from(bits & 1u32), 1u64, "6: peerAddr through the table is the listener's port");
+      expectUInt(u64.from(bits & 2u32), 2u64, "6: setKeepAlive through the table");
+      expectUInt(u64.from(bits & 4u32), 4u64, "6: keepAlive reads it back");
+      expectUInt(u64.from(bits & 8u32), 8u64, "6: shutdownSend through the table");
+      expectUInt(u64.from(bits & 16u32), 16u64, "6: a listener's shutdownSend is InvalidInput");
+      expectUInt(u64.from(bits & 32u32), 32u64, "6: and its peerAddr an error");
+      let g7 = recv(&mut lp, s, 50u64);
+      expect(g7.status == diag.outcomeDone && g7.n == 0usize, "6: the peer sees the end of the stream");
+      if sh.lock(s) {
+        sh.markClosing(s);
+        expect(sh.shutdownSend(s) != 0u32, "6: an entry marked closing is refused");
+        expect(sh.peerAddr(s) is Err, "6: ... for its peer address too");
+        sh.unlock(s);
+      } else {
+        expect(false, "6: the server's entry is published");
+      }
+    }
+    lp.close(c);
+    lp.close(s);
   }
   expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   done()
