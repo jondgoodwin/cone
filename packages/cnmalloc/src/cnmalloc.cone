@@ -133,6 +133,8 @@ pub struct Heap {
   mode: usize;
   delayMs: u64;
   largeCap: usize;
+  largeReserve: usize;     // row 446: a large block reserves this many times its size ...
+  largeReserveCap: usize;  // ... and at most this many bytes more than its size
   stats: usize;
   ucfree: usize;
   ucrealloc: usize;
@@ -188,6 +190,11 @@ pub struct Large {
   moves: u64;
   cacheHits: u64;
   sysCalls: u64;
+  copied: u64;        // row 446: bytes copied by moves
+  nReserve: u64;      // row 446: sysCalls split by kind
+  nCommit: u64;
+  nDecommit: u64;
+  nRelease: u64;
 }
 
 pub struct Timer {
@@ -747,14 +754,14 @@ fn largeInsert(l: *Large, src: *LEntry) bool {
     l.cap = ncap;
     l.bits = 63usize - usize.from(ncap.leadingZeros());
     l.tableBytes = bytes;
-    l.sysCalls = l.sysCalls + 2u64;
+    cReserve(l, 1u64); cCommit(l, 1u64);
     var j = 0usize;
     while j < oldCap {
       let e = (oldT + j * 48usize) as *LEntry;
       if e.addr != 0usize { largeInsertRaw(l, e); }
       j = j + 1usize;
     }
-    if oldT != 0usize { oswin.release(oldT); l.sysCalls = l.sysCalls + 1u64; }
+    if oldT != 0usize { oswin.release(oldT); cRelease(l, 1u64); }
   }
   largeInsertRaw(l, src);
   l.count = l.count + 1usize;
@@ -796,11 +803,17 @@ fn cacheCount(h: *Heap, decommitted: bool) usize {
   n
 }
 
+// row 446: each large-block system call is counted in sysCalls and in its own kind
+fn cReserve(l: *Large, k: u64) { l.sysCalls = l.sysCalls + k; l.nReserve = l.nReserve + k; }
+fn cCommit(l: *Large, k: u64) { l.sysCalls = l.sysCalls + k; l.nCommit = l.nCommit + k; }
+fn cDecommit(l: *Large, k: u64) { l.sysCalls = l.sysCalls + k; l.nDecommit = l.nDecommit + k; }
+fn cRelease(l: *Large, k: u64) { l.sysCalls = l.sysCalls + k; l.nRelease = l.nRelease + k; }
+
 fn cacheRelease(h: *Heap, l: *Large, i: usize) {
   let e = cacheAt(h, i);
   l.cachedBytes = l.cachedBytes - e.committed;
   oswin.release(e.base);
-  l.sysCalls = l.sysCalls + 1u64;
+  cRelease(l, 1u64);
   e.addr = 0usize;
 }
 
@@ -821,7 +834,7 @@ fn cacheEvict(h: *Heap, l: *Large, wantDecommitted: bool) {
 fn cacheDecommit(l: *Large, e: *LEntry) {
   if e.committed != 0usize {
     oswin.decommit(e.addr, e.committed);
-    l.sysCalls = l.sysCalls + 1u64;
+    cDecommit(l, 1u64);
     l.cachedBytes = l.cachedBytes - e.committed;
     e.committed = 0usize;
   }
@@ -851,11 +864,11 @@ fn largeAlloc(h: *Heap, n: usize, align: usize, fresh: *u32) usize {
       var ok = true;
       if ent.committed < commitBytes {
         ok = oswin.commit(ent.addr + ent.committed, commitBytes - ent.committed);
-        l.sysCalls = l.sysCalls + 1u64;
+        cCommit(l, 1u64);
         if ok { ent.committed = commitBytes; }
       } else if ent.committed >= commitBytes + pageSize {
         oswin.decommit(ent.addr + commitBytes, ent.committed - commitBytes);
-        l.sysCalls = l.sysCalls + 1u64;
+        cDecommit(l, 1u64);
         ent.committed = commitBytes;
       }
       ent.size = n;
@@ -869,24 +882,26 @@ fn largeAlloc(h: *Heap, n: usize, align: usize, fresh: *u32) usize {
         return ent.addr;
       }
       oswin.release(ent.base);
-      l.sysCalls = l.sysCalls + 1u64;
+      cRelease(l, 1u64);
       oswin.unlock(l as usize);
       return 0usize;
     }
   }
-  var reserved = rounded + (if rounded < 67108864usize { rounded } else { 67108864usize });
+  // row 446: the reservation is largeReserve times the request, at most largeReserveCap more than it (2 and 64 MiB: as before)
+  let extraWant = rounded * (h.largeReserve - 1usize);
+  var reserved = rounded + (if extraWant < h.largeReserveCap { extraWant } else { h.largeReserveCap });
   if align > pageSize { reserved = reserved + align; }
   let r = oswin.reserve(reserved);
-  l.sysCalls = l.sysCalls + 1u64;
+  cReserve(l, 1u64);
   if r == 0usize { oswin.unlock(l as usize); return 0usize; }
   let addr = if align > pageSize { roundUp(r, align) } else { r };
   if !oswin.commit(addr, commitBytes) {
     oswin.release(r);
-    l.sysCalls = l.sysCalls + 2u64;
+    cCommit(l, 1u64); cRelease(l, 1u64);
     oswin.unlock(l as usize);
     return 0usize;
   }
-  l.sysCalls = l.sysCalls + 1u64;
+  cCommit(l, 1u64);
   var ent = LEntry(addr, r, reserved, commitBytes, n, 0u64);
   if !largeInsert(l, &mut ent) {
     oswin.release(r);
@@ -916,11 +931,11 @@ fn largeFree(h: *Heap, a: usize) bool {
   var keep = true;
   if h.mode == modeNow {
     oswin.decommit(ent.addr, ent.committed);
-    l.sysCalls = l.sysCalls + 1u64;
+    cDecommit(l, 1u64);
     ent.committed = 0usize;
   } else if h.mode == modeDelay && l.cachedBytes + ent.committed > h.largeCap {
     oswin.decommit(ent.addr, ent.committed);
-    l.sysCalls = l.sysCalls + 1u64;
+    cDecommit(l, 1u64);
     ent.committed = 0usize;
   }
   // a slot for it: a full cache gives up its oldest
@@ -942,7 +957,7 @@ fn largeFree(h: *Heap, a: usize) bool {
     while cacheCount(h, true) > 8usize { cacheEvict(h, l, true); }
   } else {
     oswin.release(ent.base);
-    l.sysCalls = l.sysCalls + 1u64;
+    cRelease(l, 1u64);
   }
   oswin.unlock(l as usize);
   armIfWaiting(h);
@@ -973,14 +988,14 @@ fn largeResize(h: *Heap, a: usize, n: usize) usize {
     r = 1usize;
     if want > e.committed {
       if oswin.commit(e.addr + e.committed, want - e.committed) {
-        l.sysCalls = l.sysCalls + 1u64;
+        cCommit(l, 1u64);
         l.bytes = l.bytes + u64.from(want - e.committed);
         e.committed = want;
         l.grows = l.grows + 1u64;
       } else { r = 0usize; }
     } else if e.committed - want >= pageSize {
       oswin.decommit(e.addr + want, e.committed - want);
-      l.sysCalls = l.sysCalls + 1u64;
+      cDecommit(l, 1u64);
       l.bytes = l.bytes - u64.from(e.committed - want);
       e.committed = want;
     }
@@ -1101,6 +1116,8 @@ pub struct Settings {
   stats: usize;
   cacheCap: usize;
   cacheMax: usize;
+  largeReserve: usize;     // row 446: CNMALLOC=largereserve=<n>, 1 to 64, default 2
+  largeReserveCap: usize;  // row 446: CNMALLOC=largereservecap=<bytes>, 1 MiB to 64 GiB, default 64 MiB
 }
 
 // the defaults: 64 GiB of address space, give-back after 1000 ms, 64 MiB of large blocks kept, no cache
@@ -1113,6 +1130,8 @@ pub fn cnm_defaults(s: *Settings) {
   s.stats = 0usize;
   s.cacheCap = 0usize;
   s.cacheMax = 1024usize;
+  s.largeReserve = 2usize;
+  s.largeReserveCap = 67108864usize;
 }
 
 // Reads CNMALLOC (for example "giveback=now,reserve=32g,largecap=16m,stats") into s. buf is 1024 bytes of scratch.
@@ -1134,6 +1153,14 @@ pub fn cnm_readEnv(s: *Settings, buf: usize) {
       s.reserve = parseNum(a + 8usize, z);
     } else if len >= 9usize && strncmp(a as *u8, "largecap=", 9usize) == 0i32 {
       s.largeCap = parseNum(a + 9usize, z);
+    } else if len >= 13usize && strncmp(a as *u8, "largereserve=", 13usize) == 0i32 {
+      s.largeReserve = parseNum(a + 13usize, z);
+      if s.largeReserve < 1usize { s.largeReserve = 1usize; }
+      if s.largeReserve > 64usize { s.largeReserve = 64usize; }
+    } else if len >= 16usize && strncmp(a as *u8, "largereservecap=", 16usize) == 0i32 {
+      s.largeReserveCap = parseNum(a + 16usize, z);
+      if s.largeReserveCap < 1048576usize { s.largeReserveCap = 1048576usize; }
+      if s.largeReserveCap > 68719476736usize { s.largeReserveCap = 68719476736usize; }
     } else if len >= 6usize && strncmp(a as *u8, "cache=", 6usize) == 0i32 {
       s.cacheCap = parseNum(a + 6usize, z);
       if s.cacheCap > 1024usize { s.cacheCap = 1024usize; }
@@ -1188,6 +1215,8 @@ pub fn cnm_create(s: *Settings) usize {
   h.mode = s.mode;
   h.delayMs = s.delayMs;
   h.largeCap = s.largeCap;
+  h.largeReserve = s.largeReserve;
+  h.largeReserveCap = s.largeReserveCap;
   h.stats = s.stats;
   h.cacheCap = s.cacheCap;
   h.cacheMax = s.cacheMax;
@@ -1222,14 +1251,20 @@ pub fn cnm_create(s: *Settings) usize {
 }
 
 // A heap with the given settings (mode: 0 now, 1 delay, 2 never), for tests and tools that make their own.
+// row 446: the same with a large-block reserve factor (1 to 64; the cap on the extra stays 64 MiB). For tests.
+pub fn cnm_make_lr(reserve: usize, mode: usize, delayMs: u64, largeCap: usize, largeReserve: usize) usize {
+  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, largeReserve, 67108864usize);
+  cnm_create(&mut s)
+}
+
 pub fn cnm_make(reserve: usize, mode: usize, delayMs: u64, largeCap: usize) usize {
-  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize);
+  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, 2usize, 67108864usize);
   cnm_create(&mut s)
 }
 
 // A heap from the CNMALLOC environment variable. This is the process's: shim/cn_shim.c calls it once.
 pub fn cnm_boot() usize {
-  var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize, 0usize, 1024usize);
+  var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize, 0usize, 1024usize, 2usize, 67108864usize);
   cnm_defaults(&mut s);
   // the settings text is read into a scratch area, so the heap's own region is not made yet: a small
   // reservation holds it for the moment
@@ -1350,11 +1385,13 @@ pub fn cnm_realloc(hh: usize, p: *u8, n: usize) *u8 {
     }
     let q = doMalloc(h, n, false);
     if q == 0usize { return 0usize as *u8; }
-    memcpy(q as *u8, p, if n < sz { n } else { sz });
+    let cp = if n < sz { n } else { sz };
+    memcpy(q as *u8, p, cp);
     largeFree(h, a);
     let l = largeOf(h);
     oswin.lock(l as usize);
     l.moves = l.moves + 1u64;
+    l.copied = l.copied + u64.from(cp);
     oswin.unlock(l as usize);
     return q as *u8;
   }
@@ -1565,6 +1602,12 @@ pub fn cnm_stats(hh: usize, out: *u64, max: usize) usize {
       wr(o + 104usize, h.cBytes); wr(o + 112usize, h.cHits); wr(o + 120usize, h.cMisses);
       wr(o + 128usize, h.cReturns); wr(o + 136usize, h.cFills);
       n = n + 5usize;
+      // row 446: bytes copied by moves, then system calls by kind: reserve, commit, decommit, release
+      if n + 5usize <= max {
+        wr(o + 144usize, l.copied); wr(o + 152usize, l.nReserve); wr(o + 160usize, l.nCommit);
+        wr(o + 168usize, l.nDecommit); wr(o + 176usize, l.nRelease);
+        n = n + 5usize;
+      }
     }
   }
   n
@@ -1629,6 +1672,12 @@ pub fn cnm_print_stats(hh: usize) {
   n = putStr(buf, n, " moves ", 7usize); n = putNum(buf, n, l.moves);
   n = putStr(buf, n, " foreign ", 9usize); n = putNum(buf, n, h.foreign);
   n = putStr(buf, n, " syscalls ", 10usize); n = putNum(buf, n, l.sysCalls);
+  n = putStr(buf, n, " cachehits ", 11usize); n = putNum(buf, n, l.cacheHits);
+  n = putStr(buf, n, " copied ", 8usize); n = putNum(buf, n, l.copied);
+  n = putStr(buf, n, " reserves ", 10usize); n = putNum(buf, n, l.nReserve);
+  n = putStr(buf, n, " commits ", 9usize); n = putNum(buf, n, l.nCommit);
+  n = putStr(buf, n, " decommits ", 11usize); n = putNum(buf, n, l.nDecommit);
+  n = putStr(buf, n, " releases ", 10usize); n = putNum(buf, n, l.nRelease);
   n = putStr(buf, n, "\n", 1usize);
   oswin.writeErr(buf, n);
   if h.cacheCap != 0usize {
