@@ -1,0 +1,214 @@
+// The stress test. N threads share a table of block slots. Each step a thread picks a slot and swaps its block
+// out (so the block it frees, checks or reallocates was usually made by ANOTHER thread) or, finding it empty,
+// allocates a new block into it: a random size (weighted small, some up to 32 KiB, a few large), filled with a
+// pattern made from the block's address and size. Every block is checked end to end when it is taken out; a
+// quarter of the blocks taken are reallocated, checking the prefix survives, and put back.
+//
+// 'congo test' runs two seconds under each give-back setting, 8 threads. For the long runs set
+//   CNSTRESS_SECS=600  CNSTRESS_THREADS=16  CNSTRESS_MODE=now|delay|never  (one setting; without it, now then delay)
+// and run it with 'congo test stress'.
+
+mod stress;
+
+import testing use *;
+import thread;
+import libc;
+import cnmalloc;
+import collections use List;
+
+extern {
+  fn @c(system) GetTickCount64() u64;
+}
+
+const slotsN = 8192usize;
+
+struct Job {
+  h: usize;
+  slots: usize;      // slotsN words
+  errs: usize;       // one word per thread
+  ops: usize;        // one word per thread
+  endTick: u64;
+}
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+
+fn cas(slot: *usize, from: usize, to: usize) bool {
+  var o = 0usize;
+  var ok = false;
+  o, ok = mem.atomicCompareSwap[usize](slot, from, to, MemOrder.SeqCst, MemOrder.SeqCst);
+  ok
+}
+
+fn next(s: *u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+fn pick(r: u64) usize {
+  let k = r % 1000u64;
+  let m = r >> 20u64;
+  if k < 700u64 { usize.from(16u64 + m % 240u64) }
+  else if k < 900u64 { usize.from(256u64 + m % 3840u64) }
+  else if k < 997u64 { usize.from(4096u64 + m % 28600u64) }
+  else { usize.from(40000u64 + m % 260000u64) }
+}
+
+// byte i of a block: from its address and size
+fn pat(addr: usize, size: usize, i: usize) u8 { u8.from((addr >> 4usize) + size + i * 31usize) }
+
+fn stamp(p: *u8, size: usize) {
+  *(p as *usize) = size;
+  var i = 8usize;
+  while i < size { *at(p, i) = pat(p as usize, size, i); i = i + 1usize; }
+}
+
+// checks bytes 8 .. upto of a block that was stamped at address 'was' with size 'size'
+fn check(p: *u8, was: usize, size: usize, upto: usize) bool {
+  if *(p as *usize) != size { return false; }
+  var i = 8usize;
+  while i < upto { if *at(p, i) != pat(was, size, i) { return false; } i = i + 1usize; }
+  true
+}
+
+fn worker(arg: usize) u64 {
+  let job = arg as *Job;
+  // arg's thread number is passed in the low bits of a second word: see run(); here a counter
+  var me = 0usize;
+  var seed = 88172645463325252u64;
+  let h = job.h;
+  let tid = usize.from(mem.atomicAdd[usize](word(job.ops, 4095usize), 1usize, MemOrder.SeqCst));
+  me = tid;
+  seed = seed ^ (u64.from(tid + 1usize) * 2685821657736338717u64);
+  var ops = 0usize;
+  var errs = 0usize;
+  while GetTickCount64() < job.endTick {
+    var burst = 0usize;
+    while burst < 200usize {
+      burst = burst + 1usize;
+      ops = ops + 1usize;
+      let idx = usize.from(next(&mut seed) % u64.from(slotsN));
+      let slot = word(job.slots, idx);
+      let cur = mem.atomicSwap[usize](slot, 0usize, MemOrder.SeqCst);
+      if cur != 0usize {
+        let p = cur as *u8;
+        let size = *(p as *usize);
+        if size < 8usize || size > 1000000usize { errs = errs + 1usize; continue; }
+        if !check(p, cur, size, size) { errs = errs + 1usize; }
+        let r = next(&mut seed) % 4u64;
+        if r < 2u64 {
+          cnmalloc.cnm_free(h, p);
+        } else if r == 2u64 {
+          let ns = pick(next(&mut seed));
+          let q = cnmalloc.cnm_realloc(h, p, if ns < 8usize { 8usize } else { ns });
+          let nsz = if ns < 8usize { 8usize } else { ns };
+          if q as usize == 0usize { errs = errs + 1usize; continue; }
+          // the prefix survives (the size word is the first 8 bytes of it, rewritten by stamp below)
+          let keep = if nsz < size { nsz } else { size };
+          var i = 8usize;
+          var ok = true;
+          while i < keep { if *at(q, i) != pat(cur, size, i) { ok = false; break; } i = i + 1usize; }
+          if !ok { errs = errs + 1usize; }
+          stamp(q, nsz);
+          let put = cas(slot, 0usize, q as usize);
+          if !put {
+            if !check(q, q as usize, nsz, nsz) { errs = errs + 1usize; }
+            cnmalloc.cnm_free(h, q);
+          }
+        } else {
+          let put = cas(slot, 0usize, cur);
+          if !put { cnmalloc.cnm_free(h, p); }
+        }
+      } else {
+        let sz = pick(next(&mut seed));
+        let size = if sz < 8usize { 8usize } else { sz };
+        let p = cnmalloc.cnm_malloc(h, size);
+        if p as usize == 0usize { errs = errs + 1usize; continue; }
+        if cnmalloc.cnm_usable(h, p) < size { errs = errs + 1usize; }
+        stamp(p, size);
+        let put = cas(slot, 0usize, p as usize);
+        if !put {
+          if !check(p, p as usize, size, size) { errs = errs + 1usize; }
+          cnmalloc.cnm_free(h, p);
+        }
+      }
+    }
+  }
+  mem.atomicAdd[usize](word(job.errs, 0usize), errs, MemOrder.SeqCst);
+  mem.atomicAdd[usize](word(job.errs, 1usize), ops, MemOrder.SeqCst);
+  u64.from(me)
+}
+
+fn envNum(name: cstr, dflt: usize) usize {
+  let p = libc.getenv(name);
+  if p as usize == 0usize { return dflt; }
+  var v = 0usize;
+  var i = 0usize;
+  while true {
+    let c = usize.from(*at(p, i));
+    if c < 48usize || c > 57usize { break; }
+    v = v * 10usize + (c - 48usize);
+    i = i + 1usize;
+  }
+  if i == 0usize { dflt } else { v }
+}
+
+fn run(mode: usize, label: &Array[u8], secs: usize, nthreads: usize) {
+  let h = cnmalloc.cnm_make(8589934592usize, mode, 1000u64, 67108864usize);
+  let job = libc.calloc(1usize, 64usize) as *Job;
+  job.h = h;
+  job.slots = libc.calloc(slotsN, 8usize) as usize;
+  job.errs = libc.calloc(4usize, 8usize) as usize;
+  job.ops = libc.calloc(4096usize, 8usize) as usize;
+  job.endTick = GetTickCount64() + u64.from(secs) * 1000u64;
+  var ts = List[thread.Thread[u64]]();
+  var t = 0usize;
+  while t < nthreads { ts.push(thread.start[usize, u64](job as usize, &worker)); t = t + 1usize; }
+  var joined = 0usize;
+  while ts.len() > 0usize { ts.pop().unwrap().join(); joined = joined + 1usize; }
+  var errs = *word(job.errs, 0usize);
+  // drain: every block still in the table is intact, and frees
+  var i = 0usize;
+  while i < slotsN {
+    let cur = *word(job.slots, i);
+    if cur != 0usize {
+      let p = cur as *u8;
+      let size = *(p as *usize);
+      if !check(p, cur, size, size) { errs = errs + 1usize; }
+      cnmalloc.cnm_free(h, p);
+    }
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(errs), 0, label);
+  // no leaks: every class's live count is zero, and no large block remains
+  var out = libc.calloc(400usize, 8usize) as *u64;
+  let n = cnmalloc.cnm_stats(h, out, 400usize);
+  var live = 0u64;
+  var c = 0usize;
+  while c < 72usize { live = live + *((out as usize + (c * 5usize + 2usize) * 8usize) as *u64); c = c + 1usize; }
+  live = live + *((out as usize + 366usize * 8usize) as *u64);   // large: live blocks
+  expectUInt(live, 0, "no cell or large block left live after the drain");
+  expect(*word(job.errs, 1usize) > 1000usize, "the threads did real work");
+  cnmalloc.cnm_destroy(h);
+}
+
+fn main() i32 {
+  let secs = envNum("CNSTRESS_SECS", 2usize);
+  let nthreads = envNum("CNSTRESS_THREADS", 8usize);
+  let only = libc.getenv("CNSTRESS_MODE");
+  if only as usize == 0usize {
+    run(0usize, "giveback=now: no corrupted block, no failed realloc, no bad size", secs, nthreads);
+    run(1usize, "giveback=delay: no corrupted block, no failed realloc, no bad size", secs, nthreads);
+  } else if *only == 110u8 && *at(only, 1usize) == 111u8 {
+    run(0usize, "giveback=now: no corrupted block, no failed realloc, no bad size", secs, nthreads);
+  } else if *only == 100u8 {
+    run(1usize, "giveback=delay: no corrupted block, no failed realloc, no bad size", secs, nthreads);
+  } else {
+    run(2usize, "giveback=never: no corrupted block, no failed realloc, no bad size", secs, nthreads);
+  }
+  done()
+}

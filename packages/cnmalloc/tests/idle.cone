@@ -1,0 +1,82 @@
+// The idle test. 16 threads allocate about 400 MB in 4 KiB blocks and free them, then every thread is gone and the
+// process goes quiet. Three seconds later the process's committed memory (its private bytes) is read: under the
+// default give-back (delay 1000 ms) it is back near where it started, because the one-shot timer gave the pages
+// back with no thread left to reach a slow path; under give-back 'never' it is not.
+
+mod idle;
+
+import testing use *;
+import thread;
+import libc;
+import cnmalloc;
+import collections use List;
+
+extern {
+  fn @c(system) Sleep(ms: u32);
+  fn @c(system) GetCurrentProcess() usize;
+  fn @c(system) K32GetProcessMemoryInfo(p: usize, counters: *u8, cb: u32) i32;
+}
+
+struct Job {
+  h: usize;
+  next: usize;      // thread numbering
+  peak: usize;
+}
+
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+
+fn privateBytes() usize {
+  let buf = libc.calloc(1usize, 128usize);
+  K32GetProcessMemoryInfo(GetCurrentProcess(), buf, 80u32);
+  let v = *word(buf as usize, 9usize);     // PrivateUsage, at offset 72
+  libc.free(buf);
+  v
+}
+
+fn worker(arg: usize) u64 {
+  let job = arg as *Job;
+  let per = 6000usize;
+  let mine = libc.calloc(per, 8usize) as usize;
+  var i = 0usize;
+  while i < per {
+    let p = cnmalloc.cnm_malloc(job.h, 4000usize);
+    *(p as *u64) = 0x1234u64;
+    *word(mine, i) = p as usize;
+    i = i + 1usize;
+  }
+  mem.atomicAdd[usize](&mut job.peak, 1usize, MemOrder.SeqCst);
+  // wait until every thread has allocated, so the peak is all of them at once
+  while mem.atomicLoad[usize](&mut job.peak, MemOrder.SeqCst) < 16usize { Sleep(5u32); }
+  i = 0usize;
+  while i < per { cnmalloc.cnm_free(job.h, *word(mine, i) as *u8); i = i + 1usize; }
+  libc.free(mine as *u8);
+  0u64
+}
+
+fn run(mode: usize, wantBack: bool, label: &Array[u8]) {
+  let before = privateBytes();
+  let h = cnmalloc.cnm_make(8589934592usize, mode, 1000u64, 67108864usize);
+  let job = libc.calloc(1usize, 64usize) as *Job;
+  job.h = h;
+  var ts = List[thread.Thread[u64]]();
+  var t = 0usize;
+  while t < 16usize { ts.push(thread.start[usize, u64](job as usize, &worker)); t = t + 1usize; }
+  while ts.len() > 0usize { ts.pop().unwrap().join(); }
+  let afterFree = privateBytes();
+  Sleep(3000u32);
+  let idle = privateBytes();
+  expect(afterFree > before + 300000000usize, "the 16 threads held about 400 MB between them");
+  if wantBack {
+    expect(idle < before + 40000000usize, label);
+  } else {
+    expect(idle > before + 300000000usize, label);
+  }
+  libc.free(job as *u8);
+  cnmalloc.cnm_destroy(h);
+}
+
+fn main() i32 {
+  run(1usize, true, "default give-back (delay 1000): idle at 3 s, committed memory is back near its start");
+  run(2usize, false, "give-back never: idle at 3 s, the memory is still committed");
+  done()
+}

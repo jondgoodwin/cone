@@ -1,0 +1,68 @@
+// The dirty-page test. A class fills two pages with a pattern and frees every cell, so both pages retire: the
+// lower is kept as the class's spare, the other goes to the page pool, committed and dirty. Another class then
+// callocs until it gets that page back, and every byte of every calloc'd block must be zero (the dirty mark, not
+// the fact the page was reused, decides what calloc clears). Run under each give-back setting: now (the page is
+// decommitted, so zero by the OS), delay and never (the page stays committed with the old pattern in it).
+
+mod dirty;
+
+import testing use *;
+import cnmalloc;
+import libc;
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+
+fn fill(p: *u8, n: usize, v: u8) {
+  var i = 0usize;
+  while i < n { *at(p, i) = v; i = i + 1usize; }
+}
+
+fn get(a: *usize, i: usize) usize { *(((a as usize) + i * 8usize) as *usize) }
+fn set(a: *usize, i: usize, v: usize) { *(((a as usize) + i * 8usize) as *usize) = v; }
+
+fn zeroCount(p: *u8, n: usize) usize {
+  var bad = 0usize;
+  var i = 0usize;
+  while i < n { if *at(p, i) != 0u8 { bad = bad + 1usize; } i = i + 1usize; }
+  bad
+}
+
+// size 1000 -> the 1024-byte class: 64 cells a page; size 2000 -> the 2048 class: 32 cells a page
+fn run(mode: usize, label: &Array[u8]) {
+  let h = cnmalloc.cnm_make(1073741824usize, mode, 1000u64, 67108864usize);
+  let cells = libc.calloc(128usize, 8usize) as *usize;
+  var i = 0usize;
+  while i < 128usize {
+    let p = cnmalloc.cnm_malloc(h, 1000usize);
+    fill(p, 1000usize, 0xEEu8);
+    set(cells, i, p as usize);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < 128usize { cnmalloc.cnm_free(h, get(cells, i) as *u8); i = i + 1usize; }
+  // which pages were they? the two pages' base addresses
+  let pageA = get(cells, 0usize) & ~65535usize;
+  let pageB = get(cells, 127usize) & ~65535usize;
+  // now calloc from the 2048 class; it takes pages from the pool (and the other class's spare is not touched)
+  var bad = 0usize;
+  var reused = 0usize;
+  i = 0usize;
+  while i < 64usize {
+    let z = cnmalloc.cnm_calloc(h, 1usize, 2000usize);
+    let page = (z as usize) & ~65535usize;
+    if page == pageA || page == pageB { reused = reused + 1usize; }
+    bad = bad + zeroCount(z, 2000usize);
+    fill(z, 2000usize, 0xDDu8);   // dirty it too, for the next
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(bad), 0, label);
+  expect(reused > 0usize, "the retired page was reused by the other class");
+  cnmalloc.cnm_destroy(h);
+}
+
+fn main() i32 {
+  run(2usize, "never: every byte of every calloc from a reused dirty page is zero");
+  run(1usize, "delay: every byte of every calloc from a reused dirty page is zero");
+  run(0usize, "now: every byte of every calloc from a reused page is zero");
+  done()
+}
