@@ -26,6 +26,8 @@ extern {
   fn @c(system) SwitchToThread() i32;
   fn @c(system) GetStdHandle(n: u32) usize;
   fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
+  fn @c(system) CreateFileA(name: *u8, access: u32, share: u32, sec: usize, disp: u32, flags: u32, tmpl: usize) usize;
+  fn @c(system) CloseHandle(h: usize) i32;
   fn @c(system) GetModuleHandleA(name: *u8) usize;
   fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
   fn @c("strlen") strlen(s: cstr) usize;
@@ -134,6 +136,12 @@ fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
   *at(buf, n) = 10u8;
   var w = 0u32;
   WriteFile(GetStdHandle(0xFFFFFFF4u32), buf, u32.from(n + 1usize), &mut w, 0usize);
+  // CNTEST_LOG=<file>: the same line appended there, since congo shows a passing test's stderr to nobody
+  let lf = libc.getenv("CNTEST_LOG");
+  if lf as usize != 0usize {
+    let fh = CreateFileA(lf, 4u32, 3u32, 0usize, 4u32, 128u32, 0usize);
+    if fh != 0xFFFFFFFFFFFFFFFFusize { WriteFile(fh, buf, u32.from(n + 1usize), &mut w, 0usize); CloseHandle(fh); }
+  }
   libc.free(buf);
 }
 
