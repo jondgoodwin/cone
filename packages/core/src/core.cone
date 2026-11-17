@@ -3691,8 +3691,17 @@ pub struct @opaque RawBlocks {
   } #else {
     pub fn @noalias alloc(bytes: usize, align: usize) *u8 inline {rawBlockAlloc(bytes, align)}
   }
-  pub fn resize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 inline {
-    rawBlockResize(block, oldBytes, newBytes, align)
+  #if #defined("MEMSTATS") {
+    pub fn resize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 inline {
+      memstatsAsking(22u32, newBytes);
+      let p = rawBlockResize(block, oldBytes, newBytes, align);
+      memstatsAsking(0u32, 0usize);
+      p
+    }
+  } #else {
+    pub fn resize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 inline {
+      rawBlockResize(block, oldBytes, newBytes, align)
+    }
   }
   pub fn release(block: *u8) inline {rawBlockRelease(block);}
   pub fn allocAligned(bytes: usize, align: usize) AlignedBlock inline {
@@ -3905,9 +3914,19 @@ pub struct MemRegion {
       f(self as *MemRegion, bytes, align)
     }
   }
-  pub fn resize(self: &, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 inline {
-    let f = resizeFn;
-    f(self as *MemRegion, block, oldBytes, newBytes, align)
+  #if #defined("MEMSTATS") {
+    pub fn resize(self: &, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 inline {
+      let f = resizeFn;
+      memstatsAsking(32u32, newBytes);
+      let p = f(self as *MemRegion, block, oldBytes, newBytes, align);
+      memstatsAsking(0u32, 0usize);
+      p
+    }
+  } #else {
+    pub fn resize(self: &, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 inline {
+      let f = resizeFn;
+      f(self as *MemRegion, block, oldBytes, newBytes, align)
+    }
   }
   pub fn release(self: &, block: *u8, bytes: usize) inline {
     let f = releaseFn;

@@ -71,6 +71,11 @@ mod pools;
 import libc;
 import trace use Level, Kind4;
 
+// "Who is asking" for the memstats shim (kinds.toml: 7 GenPool, 8 DensePool, 9 IdPool); MEMSTATS builds only
+#if #defined("MEMSTATS") {
+  extern fn @c("memstats_asking") msAsk(kind: u32, elem: usize);
+}
+
 // MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md). Per instance, since a pool is few and
 // long-lived: genpool.take and genpool.return (Trace; n: live cells after, aux: cells ever used less live, the
 // free-list depth, retired cells included; the high-water mark is the max of n over takes), genpool.make and
@@ -183,7 +188,9 @@ pub struct GenPool[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements
     if cap >= 0xFFFFFFF0u32 {poolTooMany();}
     let want = if cap == 0u32 {16usize} else {usize.from(cap) * 2usize};
     let size = mem.sizeof[Cell[T]]();
+    #if #defined("MEMSTATS") { msAsk(7u32, size); }
     let p = (region as &MemRegion).resize(cells as *u8, usize.from(cap) * size, want * size, mem.alignof[Cell[T]]()) as *Cell[T];
+    #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     if p as usize == 0usize {poolFailed();}
     let was = cap;
     cells = p;
@@ -512,8 +519,10 @@ struct RowBlock[T] is Move, GcTraceElements {
   fn grow(self: &mut) {
     let nc = if cap == 0usize {8usize} else {cap * 2usize};
     let r = region as &MemRegion;
+    #if #defined("MEMSTATS") { msAsk(8u32, mem.sizeof[T]()); }
     vals = r.resize(vals as *u8, cap * mem.sizeof[T](), nc * mem.sizeof[T](), mem.alignof[T]()) as *T;
     cells = r.resize(cells as *u8, cap * mem.sizeof[u32](), nc * mem.sizeof[u32](), mem.alignof[u32]()) as *u32;
+    #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     if vals as usize == 0usize || cells as usize == 0usize {
       panic("pools: out of memory for rows");
     }

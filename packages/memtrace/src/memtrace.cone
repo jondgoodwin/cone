@@ -36,6 +36,12 @@ mod memtrace;
 import trace;
 import libc;
 
+// "Who is asking" for the memstats shim: kind 34 is the instrument's own memory, which the shim passes to the C
+// runtime untagged and uncounted (kinds.toml); MEMSTATS builds only
+#if #defined("MEMSTATS") {
+  extern fn @c("memstats_asking") msAsk(kind: u32, elem: usize);
+}
+
 const maxKinds = 256usize;
 const maxThreads = 256usize;
 const slots = 2048usize;
@@ -331,13 +337,16 @@ pub fn install() bool {
     return false;
   }
   (*st).file = f;
+  #if #defined("MEMSTATS") { msAsk(34u32, 0usize); }
   (*st).buf = RawBlocks.alloc(bufBytes, 16usize);
   (*st).merged = RawBlocks.alloc(mergedSlots * mem.sizeof[Entry](), 16usize) as *Entry;
   if (*st).buf == null || (*st).merged == null {
+    #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     return false;
   }
   libc.memset((*st).merged as *u8, 0i32, mergedSlots * mem.sizeof[Entry]());
   (*st).addrs = libc.calloc(addrSlots, mem.sizeof[AddrEntry]()) as *AddrEntry;
+  #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
   (*st).period = trace.clockFrequency() / 10u64;
   if !trace.install(Uni[MemSink](MemSink(0u32))) {
     return false;
@@ -467,8 +476,10 @@ fn localTable(st: *State) *Local {
   if myLocal != 0usize {
     return myLocal as *Local;
   }
+  #if #defined("MEMSTATS") { msAsk(34u32, 0usize); }
   let l = RawBlocks.alloc(mem.sizeof[Local](), 16usize) as *Local;
   let t = RawBlocks.alloc(slots * mem.sizeof[Entry](), 16usize) as *Entry;
+  #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
   if l == null || t == null {
     return null as *Local;
   }
