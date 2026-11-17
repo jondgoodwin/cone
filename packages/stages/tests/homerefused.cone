@@ -1,0 +1,112 @@
+// A homed buffer dies inside a message the runtime refuses (THE STOP'S GATE, actors.cone): after finalAll() a
+// plain thread sends a Holder a message carrying the buffer. The send is refused and the message dropped on the
+// sending thread, which drops the buffer; its home would send 'giveBack' to the source, and that send is
+// refused too, or never made (actors.isRunning() is false, so the home's direct path is taken). Either way the
+// block ends in its pool exactly once: none is lent after, none was lent twice (a second return would take the
+// lent count below zero), and the source is never sent a giveBack (it ran none).
+//
+//   1. while the runtime runs, one homed buffer is sent to the Holder and dies there: giveBack runs once;
+//   2. after finalAll(), 100 homed buffers are each sent to the Holder from a plain thread: every send is
+//      refused and counted (actors.stats().refused), no giveBack runs, no block is lent, nothing panics.
+
+mod homerefused;
+
+import testing use *;
+import thread;
+import collections use List;
+import iobuf use IoBuf;
+import actors;
+import stages use *;
+
+struct Seen {
+  pub back: Atomic[u64];       // giveBack calls
+  pub held: Atomic[u64];       // hold messages that ran
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Src is ChunkSource {
+  n: u64;
+
+  pub fn init(self: &new) {
+    *self = Self(n: 0u64);
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    n = n + 1u64;
+    seen.back.add(1u64);
+  }
+
+  pub async fn stop(self, why: Ending) {}
+}
+
+actor Holder {
+  n: u64;
+
+  pub fn init(self: &new) {
+    *self = Self(n: 0u64);
+  }
+
+  // The buffer dies at the end of the message
+  pub async fn hold(self, b: IoBuf) {
+    n = n + 1u64;
+    seen.held.add(1u64);
+  }
+}
+
+// A buffer homed to a source whose only handle the home holds
+fn lend() IoBuf {
+  var b = IoBuf(4096usize);
+  let h = chunkHome(Src());
+  b.setHome(&h);
+  b
+}
+
+struct Job {
+  pub holder: Holder;
+  pub bufs: List[IoBuf];
+}
+
+fn sendAll(job: Job) u64 {
+  var j = job;
+  var n = 0u64;
+  while j.bufs.len() > 0usize {
+    j.holder.hold(j.bufs.remove(j.bufs.len() - 1usize));
+    n = n + 1u64;
+  }
+  n
+}
+
+fn main() i32 {
+  initAll();
+  let holder = Holder();
+
+  // 1. running: the buffer dies in the message, the credit goes back
+  holder.hold(lend());
+  actors.waitUntilIdle();
+  expectUInt(seen.held.load(), 1u64, "1. the message ran");
+  expectUInt(seen.back.load(), 1u64, "1. the buffer's home gave the credit back, once");
+  expectUInt(iobuf.stats().lent, 0u64, "1. no block lent");
+
+  // 2. stopped: every send refused, every buffer dropped on the sender, every block home once
+  var bufs = List[IoBuf]();
+  var i = 0u64;
+  while i < 100u64 {
+    bufs.push(lend());
+    i = i + 1u64;
+  }
+  finalAll();
+  expect(!actors.isRunning(), "2. the runtime has stopped");
+  let refused0 = actors.stats().refused;
+  let t = thread.start(Job(holder, bufs), &sendAll);
+  expectUInt(t.join(), 100u64, "2. the thread sent a hundred");
+  expectUInt(actors.stats().refused - refused0, 100u64, "2. every send was refused and counted");
+  expectUInt(seen.held.load(), 1u64, "2. no refused message ran");
+  expectUInt(seen.back.load(), 1u64, "2. no giveBack was made or run for a refused buffer");
+  expectUInt(iobuf.stats().lent, 0u64, "2. every block home, exactly once");
+  done()
+}

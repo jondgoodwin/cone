@@ -1421,7 +1421,8 @@ the line after it is line 24 of `loc.cone`. The generator keeps, for each stretc
 of the text, where in which source file it was copied from (`IncAnchor`), and a
 line's first copied byte decides which line it is; a line of the generator's
 own, a block's closing brace or a blank line, needs none, and none goes inside
-a string or block comment. A file is named by its path from the root's folder,
+a string or block comment. Source text is copied with each CRLF line end as LF
+(`incBufPutSrc`), so the file is the same whether the source has LF or CRLF. A file is named by its path from the root's folder,
 `vec/vec.cone`, which is its name alone beside the root, so the file is the same
 wherever the package is built. The mark is a comment to every other reader;
 **the lexer reads it only in a generated include file** — the file
