@@ -43,6 +43,7 @@
 //   aio.listen(addr)        a TCP socket listening at addr       Result[Socket, IoError]
 //   aio.connect(addr)       a TCP socket connected to addr       Result[Socket, IoError]
 //   s.accept()              the next connection on a listening s  Result[Socket, IoError]
+//   s.acceptFrom()          the same, with the peer's address     Result[Accepted, IoError]
 //   s.read(buf)             what arrives, appended to buf, an IoBuf moved in
 //                                                                Result[IoBuf, IoError]
 //   s.read()                what arrives, in a buffer the I/O side takes: none is
@@ -250,6 +251,9 @@
 //   them started and answered here). A handle with no published entry goes to
 //   the I/O thread as a job. A listening socket or a Socket naming nothing
 //   answers an Err of kind InvalidInput.
+// - 's.acceptFrom()' is 'accept' answering also the peer's address
+//   ('Accepted {sock, peer}'): iocore reads it from the new socket when it
+//   adopts it (OpCore.peer, an accept's record now names it).
 // - 's.reset()' CONSUMES the Socket: the connection is closed abortively (the
 //   peer's read fails ConnectionReset, and what was not yet sent is dropped),
 //   every operation in flight on it is answered Cancelled, one queued before it
@@ -709,7 +713,8 @@ const opClose = 15u32;        // a handle's close, its Socket, File or UdpSocket
 const opPipeRead = 16u32;     // a pipe's read: Result[IoBuf, IoError]
 const opPipeWrite = 17u32;    // a pipe's write: Result[IoBuf, IoError]
 const opWaitChild = 18u32;    // a child's end: Result[ChildExit, IoError]
-const opReset = 19u32;        // a socket's abortive close, its Socket consumed by 'reset': no answer
+const opAcceptFrom = 21u32;   // accept with the peer's address: Result[Accepted, IoError] (20 is kept for recvMany)
+const opReset = 19u32;      // a socket's abortive close, its Socket consumed by 'reset': no answer
 
 // What aio keeps in a record with the operation, after iocore's OpCore: the
 // reply the awaiting behaviour's answer goes back in (put in by the 'await';
@@ -2339,6 +2344,8 @@ fn answerRec(rp: *OpRec[Ask]) {
     actors.answerLentIn[Result[ChildExit, IoError]](back, rp as *Result[ChildExit, IoError], &takeExit);
   } else if w == opAccept || w == opConnect {
     actors.answerLentIn[Result[Socket, IoError]](back, rp as *Result[Socket, IoError], &takeSocket);
+  } else if w == opAcceptFrom {
+    actors.answerLentIn[Result[Accepted, IoError]](back, rp as *Result[Accepted, IoError], &takeAccepted);
   } else if w == opRecvFrom {
     actors.answerLentIn[Result[Datagram, IoError]](back, rp as *Result[Datagram, IoError], &takeDatagram);
   } else if w == opSleep {
@@ -2365,6 +2372,8 @@ fn answerTimedOut(rp: *OpRec[Ask]) {
     actors.answerNowIn[Result[ChildExit, IoError]](back, Err[ChildExit, IoError](e));
   } else if w == opAccept || w == opConnect {
     actors.answerNowIn[Result[Socket, IoError]](back, Err[Socket, IoError](e));
+  } else if w == opAcceptFrom {
+    actors.answerNowIn[Result[Accepted, IoError]](back, Err[Accepted, IoError](e));
   } else if w == opRecvFrom {
     actors.answerNowIn[Result[Datagram, IoError]](back, Err[Datagram, IoError](e));
   } else if w == opSleep {
@@ -2419,6 +2428,18 @@ fn takeRead(p: *u8, to: *u8) {
 }
 
 // Accept's and connect's: the new Socket
+// acceptFrom's: the connection and its peer's address, which the Loop read
+// from the new socket when it adopted it
+fn takeAccepted(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  var v = Err[Accepted, IoError](errorOf(core.kind, core.status, core.code));
+  if core.status == diag.outcomeDone {
+    v = Ok[Accepted, IoError](Accepted(newSocket(core.newHandle), core.peer()));
+  }
+  mem.writeRaw[Result[Accepted, IoError]](to as *Result[Accepted, IoError], v);
+}
+
 fn takeSocket(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
@@ -2883,6 +2904,12 @@ fn resetHandle(h: Handle) {
 // Sockets
 // ---------------------------------------------------------------------------
 
+// What acceptFrom answers: the connection, and the address of its other end
+pub struct Accepted {
+  pub sock: Socket;
+  pub peer: SocketAddr;
+}
+
 // A TCP socket the I/O thread holds (the package's header, A SOCKET): it
 // moves, and dropping it closes the socket
 pub struct Socket is Move, Sendable {
@@ -2906,6 +2933,17 @@ pub struct Socket is Move, Sendable {
   // AND DEADLINES)
   pub fn acceptIn(self: &, lim: IoLimits) actors.Awaitable[Result[Socket, IoError]] {
     recAwaitable[Result[Socket, IoError]](takeRec(opAccept, diag.kindAccept, h, lim))
+  }
+
+  // The next connection and its peer's address, which costs nothing more at
+  // the caller (the package's header, SOCKET CONTROLS)
+  pub fn acceptFrom(self: &) actors.Awaitable[Result[Accepted, IoError]] {
+    self.acceptFromIn(IoLimits.none())
+  }
+
+  // The next connection and its peer, ended if lim says so
+  pub fn acceptFromIn(self: &, lim: IoLimits) actors.Awaitable[Result[Accepted, IoError]] {
+    recAwaitable[Result[Accepted, IoError]](takeRec(opAcceptFrom, diag.kindAccept, h, lim))
   }
 
   // What arrives, appended to buf, which is moved in and comes back in the

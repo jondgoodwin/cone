@@ -35,6 +35,8 @@ struct Got {
   pub listenSet: Atomic[u64];     // 1 if a listener's setKeepAlive was InvalidInput
   pub listenGet: Atomic[u64];     // 1 if a listener's keepAlive was InvalidInput
   pub here: Atomic[u64];          // answeredHere before the controls, then after (difference)
+  pub acceptPeer: Atomic[u64];    // 1 if acceptFrom named the client's own port
+  pub acceptSame: Atomic[u64];    // 1 if the accepted socket's peerAddr agrees
 }
 
 let got: Got;
@@ -42,7 +44,8 @@ let got: Got;
 fn @initpure init() {
   got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64));
 }
 
 fn socketOf(r: Result[Socket, IoError]) Socket {
@@ -84,6 +87,17 @@ actor Peer {
     if portOf(await b.peerAddr()) == aport && aport != 0u16 {got.sport.store(1u64);}
     if invalid(await ls.peerAddr()) {got.listenPeer.store(1u64);}
     if invalid(await Socket.none().peerAddr()) {got.nonePeer.store(1u64);}
+
+    // acceptFrom: the accepted connection's peer is the client's own port
+    let a2 = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let a2port = portOf(await a2.localAddr());
+    match await ls.acceptFrom() {
+      case let Ok(x) {
+        if x.peer.port() == a2port && a2port != 0u16 {got.acceptPeer.store(1u64);}
+        if portOf(await x.sock.peerAddr()) == a2port {got.acceptSame.store(1u64);}
+      }
+      else {}
+    }
 
     // 2. The keepalive
     var ka = KeepAlive(Duration.fromSeconds(30i64), Duration.fromSeconds(5i64), 4u32, Duration.zero());
@@ -155,7 +169,9 @@ fn main() i32 {
   expectUInt(got.offOk.load(), 1u64, "KeepAlive.off() reads back probes 0");
   expectUInt(got.listenSet.load(), 1u64, "a listener's setKeepAlive is InvalidInput");
   expectUInt(got.listenGet.load(), 1u64, "and its keepAlive");
-  expectUInt(got.here.load(), 9u64, "nine of the ten controls were answered on the calling worker (Socket.none()'s has no entry)");
+  expectUInt(got.here.load(), 10u64, "ten of the eleven controls were answered on the calling worker (Socket.none()'s has no entry)");
+  expectUInt(got.acceptPeer.load(), 1u64, "acceptFrom names the client's own port as the peer");
+  expectUInt(got.acceptSame.load(), 1u64, "and the accepted socket's peerAddr agrees");
   expectUInt(left, 0u64, "every record is dissolved");
   expectUInt(stats().lent, 0u64, "every buffer is home");
   done()

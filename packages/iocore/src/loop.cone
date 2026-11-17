@@ -2094,6 +2094,7 @@ pub struct Loop {
       }
       noDelay(s);
       r.newHandle = self.register(s, hSocket, r.family);
+      if r.kind == diag.kindAccept {setAcceptPeer(r, s);}
       0u32
     } #else {
       badParameter()
@@ -2537,4 +2538,14 @@ fn rawKeepAlive(raw: usize) Result[KeepAlive, IoError] {
   }
   Ok[KeepAlive, IoError](KeepAlive(Duration.fromSeconds(i64.from(idle)), Duration.fromSeconds(i64.from(every)),
     u32.from(count), Duration.fromMillis(i64.from(ms))))
+}
+
+// A finished accept's record names the connection's peer (OpCore.peer): the
+// new socket's own, read now, so a caller need not ask for it. Size 0 (no
+// address) if the system would not say
+fn setAcceptPeer(r: &mut OpCore, raw: usize) {
+  match rawPeerAddr(raw) {
+    case let Ok(a) {r.setPeer(a);}
+    case let Err(e) {r.setPeer(SocketAddr(Array[u8, 28]() <- fill 0u8, 0i32));}
+  }
 }
