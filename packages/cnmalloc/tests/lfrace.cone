@@ -6,8 +6,8 @@
 // with a first word of 64 free bits, so that a stale compare-and-swap can succeed on the page's next life), stamps each
 // with the class's size, the thread's number and a count, checks the stamp and _msize at the free, and frees. Group 2
 // allocates a few hundred cells of the 1024 class (filling several pages, so that pages are detached from their slots)
-// and then frees every one, so those pages become wholly free and are retired. Group 3 does the same with the 512 and
-// 2048 classes, so a retired page comes back as another class's page, under threads that loaded its old pointer.
+// and then frees every one, so those pages become wholly free and are retired. Group 3 does the same with the 512, 256 and
+// 1024 classes, so a retired page comes back as another class's page, under threads that loaded its old pointer.
 // A HOOK delays a thread between its load of a word of the page and its compare-and-swap (the test hook of the shim's
 // lf_alloc, in cnd.lib), at random: yield, or sleep a millisecond.
 //
@@ -17,7 +17,7 @@
 //
 // Needs the second design linked: cnd.lib (the shim with -DCN_HOOKS -DCN_DEBUG) and CNMALLOC=design=2,stats,giveback=now:
 //   $env:_LINK_ = '"<dir>\cnd.lib"'; $env:CNMALLOC = 'design=2,stats,giveback=now'   (delete build\ first), then 'congo test lfrace'.
-//   CNRACE_UNDOS=<n> the target (3000), CNRACE_MAXSECS=<s> the limit on the run (180), CNRACE_THREADS=<n> per group (default 4, 4, 4; group 1 gets twice).
+//   CNRACE_UNDOS=<n> the target (3000), CNRACE_MAXSECS=<s> the limit on the run (900), CNRACE_THREADS=<n> (default 4; groups 1 and 2 get twice that, group 3 that many).
 // Under a plain 'congo test' nothing is linked: the hook and the counters are not found and the test passes without testing.
 
 mod lfrace;
@@ -40,7 +40,7 @@ extern {
   fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
 }
 
-alias SetHooks = &fn @c (pre: usize, detach: usize, retire: usize);
+alias SetHooks = &fn @c (pre: usize, detach: usize, retire: usize, claim: usize);
 alias Total = &fn @c (which: i32) i64;
 alias DesignFn = &fn @c () i32;
 
@@ -59,11 +59,27 @@ fn next(s: *u64) u64 {
 }
 
 // the delay: called by the shim between a thread's load of a word of the page and its compare-and-swap
-fn @c hookPre(cl: usize) {
+// A compare-and-swap that finds the word as the thread saw it succeeds even on another life of the page, which is the
+// case Rule G exists for; a page's word is the same in every life when it is wholly free (all ones: a page of 64 cells or
+// more), so a thread that read a wholly free word is the one to hold, most often, for long enough for the page to go round.
+fn @c hookPre(cl: usize, old: u64) {
   if hseed == 0u64 { hseed = 88172645463325252u64 ^ (GetTickCount64() * 2685821657736338717u64) ^ u64.from(cl + 1usize); }
   let r = next(&mut hseed);
-  if r % 16u64 == 0u64 { SwitchToThread(); }
-  else if r % 128u64 == 1u64 { Sleep(1u32); }
+  if old == 0xFFFFFFFFFFFFFFFFu64 {
+    if r % 4u64 < 2u64 { Sleep(1u32); }
+    else if r % 4u64 == 2u64 { SwitchToThread(); }
+  } else if r % 64u64 == 0u64 {
+    SwitchToThread();
+  }
+}
+
+// inside a retire, after the page was found wholly free and before its words are claimed (under the class lock): lets the
+// threads that loaded the page's pointer earlier allocate from it, so some claims fail and the retire is abandoned
+fn @c hookClaim(cl: usize) {
+  if hseed == 0u64 { hseed = 88172645463325252u64 ^ (GetTickCount64() * 2685821657736338717u64) ^ u64.from(cl + 1usize); }
+  let r = next(&mut hseed);
+  if r % 2u64 == 0u64 { SwitchToThread(); }
+  else if r % 16u64 == 1u64 { Sleep(1u32); }
 }
 
 struct Job {
@@ -92,7 +108,7 @@ fn checkCell(p: *u8, size: usize, stamp: usize) bool {
 fn pickSize(group: usize, r: u64) usize {
   if group == 0usize { if r % 2u64 == 0u64 { 1024usize } else { 512usize } }
   else if group == 1usize { 1024usize }
-  else { let k = r % 3u64; if k == 0u64 { 512usize } else if k == 1u64 { 2048usize } else { 1024usize } }
+  else { let k = r % 3u64; if k == 0u64 { 512usize } else if k == 1u64 { 256usize } else { 1024usize } }
 }
 
 // groups 0 (short lives) and the other two (many cells held, then all freed)
@@ -228,10 +244,10 @@ fn main() i32 {
     return done();
   }
   let target = envNum("CNRACE_UNDOS", 3000usize);
-  let maxSecs = envNum("CNRACE_MAXSECS", 180usize);
+  let maxSecs = envNum("CNRACE_MAXSECS", 900usize);
   let per = envNum("CNRACE_THREADS", 4usize);
   let hooks = setHooks as *u8 as SetHooks;
-  hooks(&hookPre as *u8 as usize, 0usize, 0usize);
+  hooks(&hookPre as *u8 as usize, 0usize, 0usize, &hookClaim as *u8 as usize);
   let errs = libc.calloc(16usize, 8usize) as usize;
   let jobs = libc.calloc(3usize, 16usize) as usize;
   var ts = List[thread.Thread[u64]]();
@@ -240,7 +256,7 @@ fn main() i32 {
     let job = (jobs + g * 16usize) as *Job;
     job.errs = errs;
     job.mode = g;
-    let n = if g == 0usize { per * 2usize } else { per };
+    let n = if g == 2usize { per } else { per * 2usize };
     var t = 0usize;
     while t < n { ts.push(thread.start[usize, u64](job as usize, &worker)); t = t + 1usize; }
     g = g + 1usize;
@@ -254,7 +270,7 @@ fn main() i32 {
   }
   mem.atomicStore[usize](word(errs, 3usize), 1usize, MemOrder.SeqCst);
   while ts.len() > 0usize { ts.pop().unwrap().join(); }
-  hooks(0usize, 0usize, 0usize);
+  hooks(0usize, 0usize, 0usize, 0usize);
   let undos = tot(9i32);
   errLine("lfrace: undos ", usize.from(undos), " retires abandoned ", usize.from(tot(8i32)), " pages retired ", usize.from(tot(7i32)));
   errLine("lfrace: pages attached ", usize.from(tot(5i32)), " listed ", usize.from(tot(6i32)), " collisions ", usize.from(tot(2i32)));

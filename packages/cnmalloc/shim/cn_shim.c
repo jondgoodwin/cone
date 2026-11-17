@@ -56,7 +56,7 @@ extern size_t cnm_lf_attach(uintptr_t h, size_t cl, size_t tnum, uintptr_t seen)
 extern void cnm_lf_after_free(uintptr_t h, uintptr_t d2, uint64_t g);
 extern void cnm_lf_grow(uintptr_t h, size_t cl);
 extern void cnm_lf_set(uintptr_t h, void* alloc, void* free);
-extern void cnm_lf_set_hooks(uintptr_t h, void* detach, void* retire);
+extern void cnm_lf_set_hooks(uintptr_t h, void* detach, void* retire, void* claim);
 extern void cnm_lf_set_counts(uintptr_t h, uint64_t callocs, uint64_t callocBytes, uint64_t nonWorker);
 extern uint64_t cnm_park_ms(uintptr_t h);
 
@@ -114,10 +114,10 @@ static uint8_t g_lfmap[65];              // (n + 15) >> 4 -> class, for n up to 
 static __declspec(thread) LfTls t_lf;
 static volatile LONG64 g_callocs, g_callocBytes, g_nonWorker;
 #ifdef CN_HOOKS
-static void (*g_hookPre)(size_t cl);
-#define LF_HOOK(c) do { void (*hk)(size_t) = g_hookPre; if (hk) hk(c); } while (0)
+static void (*g_hookPre)(size_t cl, uint64_t old);
+#define LF_HOOK(c, old) do { void (*hk)(size_t, uint64_t) = g_hookPre; if (hk) hk(c, old); } while (0)
 #else
-#define LF_HOOK(c) do { } while (0)
+#define LF_HOOK(c, old) do { } while (0)
 #endif
 #ifdef CN_DEBUG
 static void (*g_dfHandler)(void* cell);
@@ -202,7 +202,7 @@ restart:;
           unsigned long b;
           _BitScanForward64(&b, old);
           uint64_t bit = 1ull << b;
-          LF_HOOK(c);
+          LF_HOOK(c, old);
           if ((uint64_t)_InterlockedCompareExchange64((volatile LONG64*)&P->bits[j], (LONG64)(old & ~bit), (LONG64)old) != old) {
             lost = collided = 1;                        // note one collision on class c; move to the next word
             if (g_stats) lf_count(&L->st[2]);
@@ -615,12 +615,13 @@ __declspec(dllexport) uintptr_t cnmalloc_heap(void) { return H(); }       // the
 __declspec(dllexport) uint64_t cnmalloc_collect(int force) { return cnm_collect(H(), force != 0); }
 __declspec(dllexport) int cnmalloc_lfActive(int cl) { H(); return g_lf ? (int)g_lfc[cl].active : 0; }
 #ifdef CN_HOOKS
-// pre: called in lf_alloc between a thread's page load and its compare-and-swap, with the class; detach: inside a
-// detach, between the state exchange and the scan; retire: inside a retire, after RETIRED and before the generation rises
-__declspec(dllexport) void cnmalloc_lfSetHooks(void (*pre)(size_t), void (*detach)(size_t), void (*retire)(size_t)) {
+// pre: called in lf_alloc between a thread's page load and its compare-and-swap, with the class and the word value the swap will expect; detach: inside a
+// detach, between the state exchange and the scan; retire: inside a retire, after RETIRED and before the generation
+// rises; claim: inside a retire, after the page was found wholly free and before its words are claimed
+__declspec(dllexport) void cnmalloc_lfSetHooks(void (*pre)(size_t, uint64_t), void (*detach)(size_t), void (*retire)(size_t), void (*claim)(size_t)) {
   uintptr_t h = H();
   g_hookPre = pre;
-  cnm_lf_set_hooks(h, (void*)detach, (void*)retire);
+  cnm_lf_set_hooks(h, (void*)detach, (void*)retire, (void*)claim);
 }
 #endif
 #ifdef CN_DEBUG

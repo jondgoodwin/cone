@@ -133,3 +133,16 @@ prints the lock-wait lines the benchmark runner collects.
 9. (Row 426) The actors runtime reaches the three worker calls by `GetProcAddress` on the program's own module (the
    shim's `__declspec(dllexport)`), not by a weak symbol: a Cone package has no way to declare an extern that may be
    absent at link time.
+10. (Row 454) The second design's common paths are C: `lf_alloc` (section 3, with Rule G), `lf_free` and `lf_release`
+    (section 4), `lf_classof`, `lf_cellclass`, `lf_setup`, `lf_take_class`, `lf_realloc_small`, `cn_lf_give_chain`, and, in the
+    debug and hook builds, `lf_double_free` and the `LF_HOOK` calls. They are C because they keep a thread-local (a number for the
+    thread, and where it started in each class's page: gap 8 again) and because the test hooks must cost nothing in the library
+    that ships. The atomic operations themselves are not a gap: a C-named module gets `mem.atomicLoad`, `atomicSwap`, `atomicOr`
+    and `atomicCompareSwap` by `import core use mem, MemOrder;` (found building row 454; core adds no symbol to `cnmalloc.obj`),
+    and the second design's slow paths, which are all under the class lock, are Cone and use them. Gap 2 (the lazy start) is
+    unchanged. The worker cache's changes (a fill sized to demand, small `realloc`/`_recalloc`/aligned cells through the cache) are in
+    `cn_cache_alloc_cl`, `cn_cache_free` and `cn_cache_flush`.
+11. (Row 454) The shim's exports for tests and for the actors scheduler, found by `GetProcAddress` on the program's own module
+    as gap 9: `cnmalloc_workerParkMs` (the park timeout, 0 unless the second design is on), and for the tests only `cnmalloc_design`,
+    `cnmalloc_heap`, `cnmalloc_collect`, `cnmalloc_lfTotal`, `cnmalloc_lfActive`, and in `cnd.lib` `cnmalloc_lfSetHooks` and
+    `cnmalloc_setDoubleFreeHandler`.
