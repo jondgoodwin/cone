@@ -3240,7 +3240,11 @@ fn replyPrepLent(r: &Reply, lent: *u8, release: *u8) Put {
 
 // The value is written: publish the slot. The count the envelope held becomes
 // the scheduler's owner when the publication takes the idle mark, as a
-// send's own would; otherwise it is let go
+// send's own would; otherwise it is let go.
+// ONLY THE DISPATCHER (a worker) MAY CALL THIS, and 'answered' below, which
+// reaches it: neither passes the stop's gate (the value is already written, so
+// a refusal here would leak it). A plain thread answers through answerNowIn or
+// answerLentIn, which pass the gate before the slot is claimed
 fn replyFinish(h: *Header, p: Put) {
   if running.load() == 0usize {
     die("actors: a reply sent after the runtime stopped");
@@ -3495,7 +3499,9 @@ pub fn answerTo(slot: &mut Answer) *u8 {
   slot.put.at
 }
 
-// The value is where answerTo said: the reply is sent, and the slot emptied
+// The value is where answerTo said: the reply is sent, and the slot emptied.
+// Only the dispatcher may call it: it reaches replyFinish, which does not pass
+// the stop's gate (see there)
 pub fn answered(slot: &mut Answer) {
   slot.held = 0u8;
   if slot.claimed != 0u8 {

@@ -8,7 +8,8 @@
 // cancels, and the thread goes on cancelling after it. Then the hung operations' records are dropped, as an
 // owner would (after the stop, so this runs the drop of a reply on a plain thread too). The test is that the
 // program does not crash or hang, that no behaviour went on more than once per actor, and that every actor
-// that went on died. It does not check that an actor parked on an orCancelledOp await that was never cancelled
+// that went on died; and then that nothing leaks (no future alive, every actor dead or the known parked one,
+// and only those hold a mailbox segment). It does not check that an actor parked on an orCancelledOp await that was never cancelled
 // dies: it does not, on master either (a record and group dropped before any stop leave it alive), which is
 // not what this row changes.
 
@@ -109,6 +110,11 @@ fn main() i32 {
   }
   expect(wentOn.load() <= u64.from(nGroups), "no behaviour went on twice");
   expect(died.load() >= wentOn.load(), "every actor that went on died");
+  // Nothing leaks beyond the one known leak (below). A future left alive, an actor neither dead nor
+  // the known parked kind, or a segment of an actor that died, makes a count differ.
+  expectUInt(u64.from(actors.liveFutures()), 0u64, "no future is left alive");
+  expectUInt(died.load() + u64.from(actors.groupAwaitsLive()), u64.from(nGroups), "each actor died or is the known never-woken parked one");
+  expectUInt(u64.from(actors.liveSegments()), u64.from(actors.groupAwaitsLive()), "only the parked actors still hold a mailbox segment");
   libc.free(recs as *u8);
   libc.free(groups as *u8);
   done()
