@@ -1,0 +1,69 @@
+// The Alloc trait both ways: the same checks through allocheap (cnmalloc's heap) and alloccrt (the C runtime).
+// Allocate at several alignments, fill, resize up and down (the kept bytes survive), release.
+
+mod alloctest;
+
+import testing use *;
+import allocheap;
+import alloccrt;
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+fn fill(p: *u8, n: usize, v: u8) {
+  var i = 0usize;
+  while i < n { *at(p, i) = v; i = i + 1usize; }
+}
+fn same(p: *u8, n: usize, v: u8) bool {
+  var i = 0usize;
+  while i < n { if *at(p, i) != v { return false; } i = i + 1usize; }
+  true
+}
+
+fn heapSet() {
+  var al = 8usize;
+  while al <= 4096usize {
+    let p = allocheap.allocate(100usize, al);
+    expect(p as usize != 0usize, "heap: allocate");
+    expect((p as usize) % al == 0usize, "heap: aligned");
+    fill(p, 100usize, 5u8);
+    let q = allocheap.resize(p, 100usize, 70000usize, al);
+    expect(q as usize != 0usize && (q as usize) % al == 0usize, "heap: resize up, aligned");
+    expect(same(q, 100usize, 5u8), "heap: resize up keeps the bytes");
+    fill(q, 70000usize, 6u8);
+    let r = allocheap.resize(q, 70000usize, 40usize, al);
+    expect(same(r, 40usize, 6u8), "heap: resize down keeps the bytes");
+    allocheap.release(r, 40usize, al);
+    al = al * 2usize;
+  }
+  let n = allocheap.resize(0usize as *u8, 0usize, 64usize, 16usize);
+  expect(n as usize != 0usize, "heap: resize of null allocates");
+  allocheap.release(n, 64usize, 16usize);
+  allocheap.release(0usize as *u8, 0usize, 16usize);
+}
+
+fn crtSet() {
+  var al = 8usize;
+  while al <= 4096usize {
+    let p = alloccrt.allocate(100usize, al);
+    expect(p as usize != 0usize, "crt: allocate");
+    expect((p as usize) % al == 0usize, "crt: aligned");
+    fill(p, 100usize, 5u8);
+    let q = alloccrt.resize(p, 100usize, 70000usize, al);
+    expect(q as usize != 0usize && (q as usize) % al == 0usize, "crt: resize up, aligned");
+    expect(same(q, 100usize, 5u8), "crt: resize up keeps the bytes");
+    fill(q, 70000usize, 6u8);
+    let r = alloccrt.resize(q, 70000usize, 40usize, al);
+    expect(same(r, 40usize, 6u8), "crt: resize down keeps the bytes");
+    alloccrt.release(r, 40usize, al);
+    al = al * 2usize;
+  }
+  let n = alloccrt.resize(0usize as *u8, 0usize, 64usize, 16usize);
+  expect(n as usize != 0usize, "crt: resize of null allocates");
+  alloccrt.release(n, 64usize, 16usize);
+  alloccrt.release(0usize as *u8, 0usize, 16usize);
+}
+
+fn main() i32 {
+  heapSet();
+  crtSet();
+  done()
+}

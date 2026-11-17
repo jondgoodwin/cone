@@ -110,6 +110,9 @@ DOMAINS = [
    ("rcweak", "Reference counting with weak references, beside core's Rc."),
    ("collector", "Gc, a garbage-collected region, and its collector."),
    ("cnmalloc", "One shared heap for a process, in Cone over an OS layer, that replaces the C runtime's malloc family at the link; off unless a program links it."),
+   ("alloc", "The Alloc module trait: allocate, resize and release, with size and alignment."),
+   ("allocheap", "Alloc over cnmalloc's heap, called directly."),
+   ("alloccrt", "Alloc over the C runtime's malloc and aligned family.")
   ]),
  ]),
  ("core", "Core and the basics", "The prelude and runtime, the operating system, time, numbers, threads and actors.", [

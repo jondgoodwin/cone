@@ -1,0 +1,31 @@
+mod alloccrt is Alloc;
+
+import alloc use Alloc;
+import libc;
+
+// Alloc forwarding to the C runtime. An alignment of 16 or less is malloc, realloc and free; more is the runtime's
+// aligned family (libc.alignedAlloc, libc.alignedFree), whose blocks free never takes.
+const plain = 16usize;
+
+fn copy(d: *u8, s: *u8, n: usize) {
+  var i = 0usize;
+  while i < n { *((d as usize + i) as *u8) = *((s as usize + i) as *u8); i = i + 1usize; }
+}
+
+pub fn allocate(bytes: usize, align: usize) *u8 {
+  if align <= plain { libc.malloc(bytes) } else { libc.alignedAlloc(bytes, align) }
+}
+
+pub fn resize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
+  if align <= plain { return libc.realloc(block, newBytes); }
+  if block as usize == 0usize { return libc.alignedAlloc(newBytes, align); }
+  let q = libc.alignedAlloc(newBytes, align);
+  if q as usize == 0usize { return q; }
+  copy(q, block, if oldBytes < newBytes { oldBytes } else { newBytes });
+  libc.alignedFree(block);
+  q
+}
+
+pub fn release(block: *u8, bytes: usize, align: usize) {
+  if align <= plain { libc.free(block); } else { libc.alignedFree(block); }
+}
