@@ -125,7 +125,8 @@ if (-not $srvProc) { throw 'run.ps1: no streamserver.exe under the server run' }
 $serverPid = [int]$srvProc.ProcessId
 
 $t0 = Get-Date
-$cli = Start-Congo 'client.cone' "$port $Conns $Sustain $Idle $Burst $Seed $($shares -join ' ') $Think" $cliLog
+$cli = Start-Congo 'client.cone' "$port $Conns $Sustain $Idle $Burst $Seed $($shares -join ' ') $Think 1 `"$Out`"" $cliLog
+Get-ChildItem $Out -Filter 'ack-*' | Remove-Item -ErrorAction SilentlyContinue
 $cliProc = $null
 $samples = New-Object System.Collections.ArrayList
 [void]$samples.Add((Sample $serverPid 0 'start' $t0))
@@ -138,6 +139,7 @@ while (-not $cli.HasExited) {
     while ($seen -lt $lines.Count) {
       $s = Sample $serverPid $clientPid ($lines[$seen].Substring(5)) $t0
       if ($s -and $s.workingSetMB -gt 0) { [void]$samples.Add($s) }   # the last mark can come as the server ends
+      New-Item -ItemType File -Force (Join-Path $Out ('ack-' + $lines[$seen].Substring(5))) | Out-Null   # the client waits for this
       $seen++
     }
   }

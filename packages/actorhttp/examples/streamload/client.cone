@@ -34,6 +34,8 @@ import iobuf use IoBuf;
 import http use *;
 import httpclient use Request;
 import sse;
+import fs;
+import path use Path;
 import actors;
 import aio;
 import actorhttp use Client, FetchError;
@@ -329,7 +331,8 @@ fn waitCall(capMs: u64) {
   while calls.load() < 1u64 && Instant.now() < limit { thread.sleep(Duration.fromMillis(5i64)); }
 }
 
-fn mark(caller: &Caller, port: u64, name: &str) {
+// 'ackDir': where run.ps1 acknowledges each mark's sample ("": no waiting)
+fn mark(caller: &Caller, port: u64, name: &str, ackDir: &String) {
   var url = String.from("http://127.0.0.1:");
   url.appendUInt(port);
   url.append("/_phase?name=");
@@ -340,6 +343,16 @@ fn mark(caller: &Caller, port: u64, name: &str) {
   printStr("MARK ");
   printStr(name);
   printStr("\n");
+  // with an ack folder, the client goes no further until run.ps1 has sampled the server and made <folder>\ack-<name>
+  // (up to 5 s), so no sample lags into the next phase
+  if ackDir.len() > 0usize {
+    var f = String.from(ackDir.view());
+    f.append("\\ack-");
+    f.append(name);
+    let p = Path.fromString(f);
+    let limit = Instant.now() + Duration.fromMillis(5000i64);
+    while !fs.exists(&p) && Instant.now() < limit { thread.sleep(Duration.fromMillis(5i64)); }
+  }
 }
 
 fn quitServer(caller: &Caller, port: u64) {
@@ -352,8 +365,8 @@ fn quitServer(caller: &Caller, port: u64) {
 }
 
 // one load phase: every worker until 'secs' have gone; returns its length in ms
-fn burst(workers: &List[Worker], secs: u64, name: &str, port: u64, caller: &Caller, midName: &str) u64 {
-  mark(caller, port, name);
+fn burst(workers: &List[Worker], secs: u64, name: &str, port: u64, caller: &Caller, midName: &str, ack: &String) u64 {
+  mark(caller, port, name, ack);
   done.store(0u64);
   let t0 = nowNs();
   let end = t0 + secs * 1000000000u64;
@@ -362,11 +375,11 @@ fn burst(workers: &List[Worker], secs: u64, name: &str, port: u64, caller: &Call
   var midDone = false;
   let n = u64.from(workers.len());
   while done.load() < n && nowNs() < end + 120000000000u64 {
-    if !midDone && nowNs() >= t0 + secs * 500000000u64 { midDone = true; mark(caller, port, midName); }
+    if !midDone && nowNs() >= t0 + secs * 500000000u64 { midDone = true; mark(caller, port, midName, ack); }
     thread.sleep(Duration.fromMillis(20i64));
   }
   let ms = (nowNs() - t0) / 1000000u64;
-  if !midDone { mark(caller, port, midName); }
+  if !midDone { mark(caller, port, midName, ack); }
   ms
 }
 
@@ -378,7 +391,7 @@ fn main() i32 {
   initAll();
   let args = process.args();
   if args.len() < 11usize {
-    printStr("usage: client <port> <conns> <sustainS> <idleS> <burstS> <seed> <pctSmall> <pctSse> <pctUp> <pctDown> [<thinkPct> [<quit 0|1>]]\n");
+    printStr("usage: client <port> <conns> <sustainS> <idleS> <burstS> <seed> <pctSmall> <pctSse> <pctUp> <pctDown> [<thinkPct> [<quit 0|1> [<ackDir>]]]\n");
     return 2i32;
   }
   let port = digitsOf(&args[1usize]);
@@ -392,6 +405,8 @@ fn main() i32 {
   let p2 = p1 + digitsOf(&args[9usize]);
   let think = if args.len() > 11usize {digitsOf(&args[11usize])} else {100u64};
   let quits = !(args.len() > 12usize && digitsOf(&args[12usize]) == 0u64);
+  var ack = String();
+  if args.len() > 13usize { ack = String.from(args[13usize].view()); }
   actors.configure(actors.Options(workers: 4u32));
   var cfg = httpclient.Config.make();
   cfg.maxPerOrigin = u32.from(conns) + 16u32;
@@ -411,31 +426,34 @@ fn main() i32 {
   let caller = Caller(client.clone());
 
   let wall0 = nowNs();
-  let ms1 = burst(&workers, sustain, "sustain-start", port, &caller, "mid-load");
+  let ms1 = burst(&workers, sustain, "sustain-start", port, &caller, "mid-load", &ack);
   var c1 = Array[u64, 4]() <- fill 0u64;
   var k = 0usize;
   while k < kinds { c1[k] = count[k].load(); k = k + 1usize; }
 
-  mark(&caller, port, "idle-start");
+  mark(&caller, port, "idle-start", &ack);
+  let idle0 = nowNs();           // the marks are at these offsets from here, whatever the sampling took
   var waited = 0u64;
   var marks = Array[u64, 3]() <- fill 0u64;
   marks[0usize] = 1u64; marks[1usize] = 10u64; marks[2usize] = 30u64;
   var mi = 0usize;
   while mi < 3usize {
     if marks[mi] <= idle {
-      sleepMs((marks[mi] - waited) * 1000u64);
+      let due = idle0 + marks[mi] * 1000000000u64;
+      if due > nowNs() { sleepMs((due - nowNs()) / 1000000u64); }
       waited = marks[mi];
       var nm = String.from("idle-");
       nm.appendUInt(marks[mi]);
       nm.append("s");
-      mark(&caller, port, nm.view());
+      mark(&caller, port, nm.view(), &ack);
     }
     mi = mi + 1usize;
   }
-  if idle > waited { sleepMs((idle - waited) * 1000u64); }
+  let idleEnd = idle0 + idle * 1000000000u64;
+  if idleEnd > nowNs() { sleepMs((idleEnd - nowNs()) / 1000000u64); }
 
-  let ms2 = burst(&workers, burst2, "burst2-start", port, &caller, "mid-burst2");
-  mark(&caller, port, "end");
+  let ms2 = burst(&workers, burst2, "burst2-start", port, &caller, "mid-burst2", &ack);
+  mark(&caller, port, "end", &ack);
   let wallMs = (nowNs() - wall0) / 1000000u64;
   let allMs = if ms1 + ms2 == 0u64 {1u64} else {ms1 + ms2};
 
