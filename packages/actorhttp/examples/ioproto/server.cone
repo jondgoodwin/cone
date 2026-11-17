@@ -38,6 +38,7 @@ import actors;
 import actorhttp use Server, ServerConfig, Exchange;
 
 const modeNew = 0u32;
+const modeNewBuf = 3u32;           // S-new with a buffer given to each read (a variant, to see what the buffer-less read costs)
 const modeNext = 1u32;
 const modeToday = 2u32;
 const readRoom = 16384usize;       // the most a connection reads at once (less when the core's credit is less)
@@ -174,7 +175,9 @@ actor Conn {
       let credit = core.readCredit();
       if credit > 0usize {
         let room = if credit < readRoom {credit} else {readRoom};
-        var r = await sock.read(room);
+        // newbuf: a buffer goes in with the read; otherwise aio takes a buffer only when bytes have arrived
+        let pending = if mode == modeNewBuf {sock.read(IoBuf(room))} else {sock.read(room)};
+        var r = await pending;
         match &mut r {
           case var &mut Ok(ok) {
             var b = IoBuf();
@@ -188,7 +191,7 @@ actor Conn {
       while more {
         match core.pollEvent() {
           case var Request(e) {
-            if mode == modeNew {
+            if mode != modeNext {
               var text = control(e.head.target.view());
               if text.len() == 0usize {text = body64();}
               core.sendResponse(ResponseHead.make(200u16), BodyLength.sized(u64.from(text.len())));
@@ -348,6 +351,7 @@ fn main() i32 {
   if args.len() >= 2usize {
     let m = args[1usize].view();
     if m == "new" {mode = modeNew;}
+    else if m == "newbuf" {mode = modeNewBuf;}
     else if m == "next" {mode = modeNext;}
     else if m == "today" {mode = modeToday;}
     else {
