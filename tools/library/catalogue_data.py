@@ -241,6 +241,7 @@ DOMAINS = [
    ("trace", "The facade every package logs and traces through: kinds of event declared once, emitted through macros."),
    ("logsink", "A sink for trace: events written as one text line on standard output or to a file, rotated by size."),
    ("actortrace", "Tracing the actors runtime, a first round: three ways of recording the same events."),
+   ("memstats", "Memory instrumentation, off by default: a tagging link shim and core's who-is-asking markers, built with -D MEMSTATS."),
   ]),
   ("The compiler's own libraries", [
    ("llvmc", "LLVM's C API declared by hand, groundwork for a code generator written in Cone."),
