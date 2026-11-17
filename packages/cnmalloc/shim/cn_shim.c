@@ -26,7 +26,8 @@ extern void* cnm_expand(uintptr_t h, void* p, size_t n);
 extern void* cnm_recalloc(uintptr_t h, void* p, size_t c, size_t n);
 extern void* cnm_aligned(uintptr_t h, size_t align, size_t n);
 extern void* cnm_aligned_realloc(uintptr_t h, void* p, size_t n, size_t align);
-extern size_t cnm_aligned_msize(uintptr_t h, void* p);
+extern size_t cnm_aligned_msize(uintptr_t h, void* p, size_t align, size_t off);
+extern void cnm_aligned_free(uintptr_t h, void* p);
 extern void cnm_print_stats(uintptr_t h);
 extern void cnm_print_lock_waits_of(uintptr_t h);
 extern uint64_t cnm_collect(uintptr_t h, _Bool force);
@@ -64,9 +65,9 @@ size_t __cdecl _msize(void* p) { return cnm_usable(H(), p); }
 void* __cdecl _recalloc(void* p, size_t c, size_t n) { return cnm_recalloc(H(), p, c, n); }
 void* __cdecl _expand(void* p, size_t n) { return cnm_expand(H(), p, n); }
 void* __cdecl _aligned_malloc(size_t n, size_t a) { return cnm_aligned(H(), a, n); }
-void __cdecl _aligned_free(void* p) { if (p) cnm_free(H(), p); }
+void __cdecl _aligned_free(void* p) { if (p) cnm_aligned_free(H(), p); }
 void* __cdecl _aligned_realloc(void* p, size_t n, size_t a) { return cnm_aligned_realloc(H(), p, n, a); }
-size_t __cdecl _aligned_msize(void* p, size_t a, size_t off) { (void)a; (void)off; return cnm_aligned_msize(H(), p); }
+size_t __cdecl _aligned_msize(void* p, size_t a, size_t off) { return cnm_aligned_msize(H(), p, a, off); }
 
 // Callers compiled with dllimport reference __imp_<name>, which pulls ucrt.lib's import member and collides with
 // the definitions above (LNK2005). Defining the pointers keeps those members out and swaps those callers too.

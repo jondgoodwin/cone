@@ -1343,6 +1343,9 @@ pub fn cnm_expand(hh: usize, p: *u8, n: usize) *u8 {
   0usize as *u8
 }
 
+// _recalloc zeroes what the block grew by, counted from the old block's usable size (_msize), which is how MSVC
+// defines it: the bytes between the caller's old count and the class's cell size are not cleared when a block
+// that came from malloc grows. Accepted, as the C runtime's contract; a block from calloc/_recalloc is zero there.
 pub fn cnm_recalloc(hh: usize, p: *u8, count: usize, size: usize) *u8 {
   if count != 0usize && size > 0xFFFFFFFFFFFFFFFFusize / count { return 0usize as *u8; }
   let n = count * size;
@@ -1388,7 +1391,26 @@ pub fn cnm_aligned_realloc(hh: usize, p: *u8, n: usize, align: usize) *u8 {
   q
 }
 
-pub fn cnm_aligned_msize(hh: usize, p: *u8) usize { cnm_usable(hh, p) }
+// A block from the C runtime's own _aligned_malloc is foreign: its free and its size go to ucrtbase's aligned
+// functions (the plain free would corrupt its heap). Ours go the ordinary way.
+pub fn cnm_aligned_free(hh: usize, p: *u8) {
+  let h = hh as *Heap;
+  let a = p as usize;
+  if a == 0usize { return; }
+  if (a - h.base) < h.size || largeSize(h, a) != none { cnm_free(hh, p); return; }
+  bumpForeign(h);
+  let f = h.ucafree as &fn @c (p: *u8);
+  f(p);
+}
+
+pub fn cnm_aligned_msize(hh: usize, p: *u8, align: usize, off: usize) usize {
+  let h = hh as *Heap;
+  let s = sizeOfMine(h, p as usize);
+  if s != none { return s; }
+  bumpForeign(h);
+  let f = h.ucamsize as &fn @c (p: *u8, a: usize, o: usize) usize;
+  f(p, align, off)
+}
 
 // ---------------------------------------------------------------------------
 // Counters
