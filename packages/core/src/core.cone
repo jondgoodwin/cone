@@ -3679,7 +3679,18 @@ pub extern {
 // for a block (Bug 80). A caller that can go without the block (the arena's, the
 // actors' collector's) still tests for null, which now never comes.
 pub struct @opaque RawBlocks {
-  pub fn @noalias alloc(bytes: usize, align: usize) *u8 inline {rawBlockAlloc(bytes, align)}
+  // (A MEMSTATS build's 'alloc' is not '@noalias': its value must be the call itself
+  // and the marker clears after it. The shim's tags change the layout anyway.)
+  #if #defined("MEMSTATS") {
+    pub fn alloc(bytes: usize, align: usize) *u8 inline {
+      memstatsAsking(22u32, bytes);
+      let p = rawBlockAlloc(bytes, align);
+      memstatsAsking(0u32, 0usize);
+      p
+    }
+  } #else {
+    pub fn @noalias alloc(bytes: usize, align: usize) *u8 inline {rawBlockAlloc(bytes, align)}
+  }
   pub fn resize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 inline {
     rawBlockResize(block, oldBytes, newBytes, align)
   }
@@ -3705,6 +3716,15 @@ pub struct AlignedBlock is Move {
   }
 }
 
+// "Who is asking", for the memstats shim (packages/memstats; the kind numbers are
+// its kinds.toml, from the region-kind table of the allocation inventory): the
+// region sets the kind just before it calls down and clears it after. The
+// outermost kind set wins, so RawBlocks (22) names a block only when no region
+// above it did. In a MEMSTATS build only; a normal build has none of this.
+#if #defined("MEMSTATS") {
+  extern fn @c("memstats_asking") memstatsAsking(kind: u32, elem: usize);
+}
+
 extern {
   fn @noalias @c("cone_rawBlockAlloc") rawBlockAlloc(bytes: usize, align: usize) *u8;
   fn @c("cone_rawBlockResize") rawBlockResize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8;
@@ -3725,7 +3745,16 @@ extern {
 // 'free'. A region ref declaring neither 'Move' nor 'aliasRef' would share its
 // references freely, and its owners' going would do nothing.
 pub struct Uni is RegionRef, Move {
-  fn @noalias alloc(size: usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
+  #if #defined("MEMSTATS") {
+    fn alloc(size: usize) *u8 inline {
+      memstatsAsking(13u32, size);
+      let p = RawBlocks.alloc(size, 16usize);
+      memstatsAsking(0u32, 0usize);
+      p
+    }
+  } #else {
+    fn @noalias alloc(size: usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
+  }
   fn free(self: &uni Uni) inline {RawBlocks.release(self as *u8);}
 }
 
@@ -3738,7 +3767,16 @@ pub struct Uni is RegionRef, Move {
 pub struct Rc is RegionRef {
   cnt: u32;
   seen: u32;
-  fn @noalias alloc(size: usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
+  #if #defined("MEMSTATS") {
+    fn alloc(size: usize) *u8 inline {
+      memstatsAsking(14u32, size);
+      let p = RawBlocks.alloc(size, 16usize);
+      memstatsAsking(0u32, 0usize);
+      p
+    }
+  } #else {
+    fn @noalias alloc(size: usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
+  }
   fn init(self: &new) inline {*self = Rc(1u32, 0u32);}
   fn aliasRef(self: &uni Rc) inline {
     if cnt == 4294967295u32 {panic("Rc: more than 4294967295 owners of one value");}
@@ -3853,9 +3891,19 @@ pub struct MemRegion {
   pub releaseFn: &fn(r: *MemRegion, block: *u8, bytes: usize);
   pub sizeFn: &fn(r: *MemRegion, bytes: usize, align: usize) usize;
 
-  pub fn @noalias allocate(self: &, bytes: usize, align: usize) *u8 inline {
-    let f = allocFn;
-    f(self as *MemRegion, bytes, align)
+  #if #defined("MEMSTATS") {
+    pub fn allocate(self: &, bytes: usize, align: usize) *u8 inline {
+      let f = allocFn;
+      memstatsAsking(32u32, bytes);
+      let p = f(self as *MemRegion, bytes, align);
+      memstatsAsking(0u32, 0usize);
+      p
+    }
+  } #else {
+    pub fn @noalias allocate(self: &, bytes: usize, align: usize) *u8 inline {
+      let f = allocFn;
+      f(self as *MemRegion, bytes, align)
+    }
   }
   pub fn resize(self: &, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 inline {
     let f = resizeFn;

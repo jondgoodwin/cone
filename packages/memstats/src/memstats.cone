@@ -1,0 +1,31 @@
+// The memstats package: memory instrumentation, the supply side (work item B1).
+//
+// WHAT IT IS
+//   A tagging link shim (shim/memstats.c) that takes over malloc, calloc, realloc, free,
+//   _msize, _recalloc, _expand and the _aligned_ functions, putting a 32-byte tag in front
+//   of every block (region kind, size asked, time, actor, worker, first-allocation time,
+//   growth count) and counting per thread; plus markers in core, sync and the actors
+//   package that tell the shim who is asking. A sampler thread writes one JSON line
+//   every 100 ms to the file MEMSTATS_OUT names, and a totals line at exit.
+//
+// HOW A PROGRAM IS BUILT WITH IT ON
+//   One setting, one script:
+//
+//       powershell packages\memstats\memstats.ps1 run -- <congo arguments>
+//       e.g.  memstats.ps1 run --release packages\actorhttp\examples\readerbench.cone -- flood 1000 1 100
+//
+//   It builds shim\out\memstats.lib when missing, sets LINK so the shim comes ahead of the
+//   C runtime, sets MEMSTATS_OUT (default memstats.jsonl in the directory it runs from),
+//   and runs congo with -D MEMSTATS. By hand: build the library with shim\build.ps1, put
+//   its path in the LINK environment variable, and give congo -D MEMSTATS. A normal build
+//   has none of this: the markers sit in `#if #defined("MEMSTATS")` and the shim is not linked.
+//   Instrumented runs are never timed (a tag changes the layout, and the scheduling).
+//
+// The files: README.md (the output, the kinds), kinds.toml (the kind numbers, one place),
+// shim\ (the C shim, its test), check_kinds.py.
+mod memstats;
+
+// Whether this program was built with -D MEMSTATS (the markers are in it).
+pub fn enabled() bool {
+  #if #defined("MEMSTATS") {true} #else {false}
+}
