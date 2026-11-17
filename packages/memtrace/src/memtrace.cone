@@ -58,7 +58,21 @@ struct Entry {
   lastAux: u64;
   lastT: u64;
   prev: u64;                // the count at the last sample that wrote the key (the merged table's)
+  ex1: u64;                 // a collection's grow: how many moved its block
+  ex2: u64;                 // ... the old capacities of those that moved (what the copy moved)
+  ex3: u64;                 // a collection's drop: the ticks it lived, summed (born at its make, by its block's address)
+  ex4: u64;                 // ... its growths, summed
 }
+
+// A collection's live block, by address: its capacity, when it was made, and how often it has grown
+struct AddrEntry {
+  addr: u64;                // 0 empty, 1 removed
+  cap: u64;
+  birth: u64;
+  grows: u64;
+}
+
+const addrSlots = 1048576usize;
 
 struct Local {
   entries: *Entry;
@@ -74,6 +88,11 @@ struct State {
   kinds: Array[usize, 256]; // each kind's &Info, as an address, by its id
   perInst: Array[u8, 256];
   isPhase: Array[u8, 256];
+  tie: Array[u8, 256];      // 1, 2, 3: a collection's make, grow, drop (tied by block address); else 0
+  addrs: *AddrEntry;
+  addrLock: u32;            // atomic
+  addrLive: u32;
+  addrDropped: u64;
   locals: Array[usize, 256];
   merged: *Entry;
   mergedFilled: u32;
@@ -167,6 +186,13 @@ pub struct MemSink is trace.Sink {
     (*st).kinds[id] = k as usize;
     (*st).isPhase[id] = if k.name == "memory.phase" {1u8} else {0u8};
     (*st).perInst[id] = if startsWith(k.name, "pool.") || startsWith(k.name, "genpool.") || startsWith(k.name, "densepool.") || startsWith(k.name, "bufpool.cache") {1u8} else {0u8};
+    var t = 0u8;
+    if startsWith(k.name, "list.") || startsWith(k.name, "string.") || startsWith(k.name, "deque.") || startsWith(k.name, "dict.") {
+      if endsWith(k.name, ".make") {t = 1u8;}
+      if endsWith(k.name, ".grow") {t = 2u8;}
+      if endsWith(k.name, ".drop") {t = 3u8;}
+    }
+    (*st).tie[id] = t;
     true
   }
 
@@ -202,6 +228,96 @@ fn startsWith(s: &str, head: &str) bool {
   true
 }
 
+fn endsWith(s: &str, tail: &str) bool {
+  let a: &Array[u8] = s;
+  let b: &Array[u8] = tail;
+  if a.len < b.len {
+    return false;
+  }
+  var i = 0usize;
+  while i < b.len {
+    if a[a.len - b.len + i] != b[i] {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+// --- the live blocks, by address (a collection's lifetime is its block's; under one lock, since a collection
+// that travels is dropped on another thread than it was made on) ---
+
+fn lockAddr(st: *State) {
+  while true {
+    var seen = 0u32;
+    var taken = false;
+    seen, taken = mem.atomicCompareSwap[u32](&(*st).addrLock as *u32, 0u32, 1u32, MemOrder.Acquire, MemOrder.Relaxed);
+    if taken {
+      return;
+    }
+  }
+}
+
+fn unlockAddr(st: *State) {
+  mem.atomicStore[u32](&(*st).addrLock as *u32, 0u32, MemOrder.Release);
+}
+
+fn addrHash(at: u64) usize {
+  var h = (at >> 4u64) * 0x9E3779B97F4A7C15u64;
+  h = h ^ (h >> 31u64);
+  usize.from(h % u64.from(addrSlots))
+}
+
+// The live entry of a block's address, or null
+fn addrFind(st: *State, at: u64) *AddrEntry {
+  if (*st).addrs == null {
+    return null as *AddrEntry;
+  }
+  var i = addrHash(at);
+  var probes = 0usize;
+  while probes < addrSlots {
+    let e = (*st).addrs + i;
+    if (*e).addr == at {
+      return e;
+    }
+    if (*e).addr == 0u64 {
+      return null as *AddrEntry;
+    }
+    i = i + 1usize;
+    if i == addrSlots {
+      i = 0usize;
+    }
+    probes = probes + 1usize;
+  }
+  null as *AddrEntry
+}
+
+// A block made or moved to an address: the first free or removed slot (the table, filled over a half, drops it)
+fn addrPut(st: *State, at: u64, cap: u64, birth: u64, grows: u64) {
+  if (*st).addrs == null || (*st).addrLive > u32.from(addrSlots / 2usize) {
+    (*st).addrDropped = (*st).addrDropped + 1u64;
+    return;
+  }
+  var i = addrHash(at);
+  while true {
+    let e = (*st).addrs + i;
+    if (*e).addr == 0u64 || (*e).addr == 1u64 || (*e).addr == at {
+      if (*e).addr != at {
+        (*st).addrLive = (*st).addrLive + 1u32;
+      }
+      (*e).addr = at;
+      (*e).cap = cap;
+      (*e).birth = birth;
+      (*e).grows = grows;
+      return;
+    }
+    i = i + 1usize;
+    if i == addrSlots {
+      i = 0usize;
+    }
+  }
+}
+
 // Opens the file MEMTRACE_OUT names and installs the sink: false when it is not set, the file will not open, or
 // a sink is installed already. It makes no events itself; CONE_TRACE (or trace.setLevel("memory", ..)) turns them on
 pub fn install() bool {
@@ -221,6 +337,7 @@ pub fn install() bool {
     return false;
   }
   libc.memset((*st).merged as *u8, 0i32, mergedSlots * mem.sizeof[Entry]());
+  (*st).addrs = libc.calloc(addrSlots, mem.sizeof[AddrEntry]()) as *AddrEntry;
   (*st).period = trace.clockFrequency() / 10u64;
   if !trace.install(Uni[MemSink](MemSink(0u32))) {
     return false;
@@ -384,8 +501,47 @@ fn recordEvent(e: &trace.Event) {
   }
   let elem = u64At(e, 0usize);
   let n = u64At(e, 1usize);
-  let aux = u64At(e, 3usize);
+  var aux = u64At(e, 3usize);
   let inst = if (*st).perInst[id] != 0u8 {u64At(e, 2usize)} else {0u64};
+  // A collection's make, grow and drop are tied by its block's address (inst; a grow's aux is the new address)
+  var ex1 = 0u64;
+  var ex2 = 0u64;
+  var ex3 = 0u64;
+  var ex4 = 0u64;
+  let tie = (*st).tie[id];
+  if tie != 0u8 {
+    let at = u64At(e, 2usize);
+    lockAddr(st);
+    if tie == 1u8 {
+      addrPut(st, at, n, e.time, 0u64);
+      aux = 0u64;
+    } else if tie == 2u8 {
+      let newAt = u64At(e, 3usize);
+      let old = addrFind(st, at);
+      var born = e.time;
+      var grows = 0u64;
+      aux = 0u64;
+      if old != null {
+        aux = (*old).cap;
+        born = (*old).birth;
+        grows = (*old).grows;
+        (*old).addr = 1u64; (*st).addrLive = (*st).addrLive - 1u32;
+      }
+      addrPut(st, newAt, n, born, grows + 1u64);
+      if newAt != at {
+        ex1 = 1u64;
+        ex2 = aux;
+      }
+    } else {
+      let old = addrFind(st, at);
+      if old != null {
+        ex3 = e.time - (*old).birth;
+        ex4 = (*old).grows;
+        (*old).addr = 1u64; (*st).addrLive = (*st).addrLive - 1u32;
+      }
+    }
+    unlockAddr(st);
+  }
   var who = e.ctx.cause;
   if usize.from((*l).filled) * 4usize > slots * 3usize {
     who = overflowActor;
@@ -406,6 +562,10 @@ fn recordEvent(e: &trace.Event) {
   }
   (*s).lastAux = aux;
   (*s).lastT = e.time;
+  (*s).ex1 = (*s).ex1 + ex1;
+  (*s).ex2 = (*s).ex2 + ex2;
+  (*s).ex3 = (*s).ex3 + ex3;
+  (*s).ex4 = (*s).ex4 + ex4;
   // the time of the next sample
   let due = mem.atomicLoad[u64](&(*st).nextSample as *u64, MemOrder.Relaxed);
   if due == 0u64 {
@@ -480,6 +640,10 @@ fn doSample(st: *State, now: u64, all: bool) {
     (*e).maxAux = 0u64;
     (*e).lastAux = 0u64;
     (*e).lastT = 0u64;
+    (*e).ex1 = 0u64;
+    (*e).ex2 = 0u64;
+    (*e).ex3 = 0u64;
+    (*e).ex4 = 0u64;
     i = i + 1usize;
   }
   var dropped = 0u64;
@@ -504,6 +668,10 @@ fn doSample(st: *State, now: u64, all: bool) {
           if (*src).maxN > (*d).maxN {
             (*d).maxN = (*src).maxN;
           }
+          (*d).ex1 = (*d).ex1 + (*src).ex1;
+          (*d).ex2 = (*d).ex2 + (*src).ex2;
+          (*d).ex3 = (*d).ex3 + (*src).ex3;
+          (*d).ex4 = (*d).ex4 + (*src).ex4;
           (*d).sumAux = (*d).sumAux + (*src).sumAux;
           if (*src).maxAux > (*d).maxAux {
             (*d).maxAux = (*src).maxAux;
@@ -554,6 +722,16 @@ fn doSample(st: *State, now: u64, all: bool) {
       putU64(st, (*e).maxAux);
       putStr(st, ",\"xl\":");
       putU64(st, (*e).lastAux);
+      if (*e).ex1 != 0u64 || (*e).ex2 != 0u64 || (*e).ex3 != 0u64 || (*e).ex4 != 0u64 {
+        putStr(st, ",\"mv\":");
+        putU64(st, (*e).ex1);
+        putStr(st, ",\"mc\":");
+        putU64(st, (*e).ex2);
+        putStr(st, ",\"lf\":");
+        putU64(st, (*e).ex3);
+        putStr(st, ",\"gr\":");
+        putU64(st, (*e).ex4);
+      }
       putByte(st, 125u8);
       (*e).prev = (*e).count;
     }

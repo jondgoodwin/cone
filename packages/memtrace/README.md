@@ -20,11 +20,23 @@ Part 1, K01-K22). Per-object kinds are `Trace`; make, grow, drop and phase are `
 
 | Kind | Level | Region (row 421) | elem | n | inst | aux |
 |---|---|---|---|---|---|---|
-| `list.make` | Debug | K01 List (K02 String's buffer is a `List[u8]`: elem 1) | bytes of one element | capacity after | instance address (0 when made in an init) | 0 |
-| `list.grow` | Debug | K01 | element bytes | capacity after | instance address | capacity before |
-| `list.drop` | Debug | K01 | element bytes | length at end | instance address | capacity at end |
+| `list.make` | Debug | K01 List | bytes of one element | capacity after | **the block's address** | 0 |
+| `list.grow` | Debug | K01 | element bytes | capacity after | the OLD block's address | the NEW block's address |
+| `list.drop` | Debug | K01 | element bytes | length at end | the block's address (current) | capacity at end |
+| `string.make/grow/drop` | Debug | K02 String (its buffer is a `List[u8]`; the String's own operations tag it) | 1 | as list | as list | as list |
 | `deque.make/grow/drop` | Debug | K03 | as list | as list | as list | as list |
-| `dict.make/grow/drop` | Debug | K04 Dict and Set | bytes of one entry | capacity (entries before a regrow) | as list | make: 0; grow: capacity before; drop: capacity |
+| `dict.make/grow/drop` | Debug | K04 Dict and Set | bytes of one entry | capacity in entries | as list | as list |
+
+**The collections' events exist only in a build with `-D MEMSTATS`** (every emit is under `#if #defined("MEMSTATS")`, so a
+normal build carries not even the check: the off cost was measurable on havlak, hashstr and cd). They need no shim
+(only core's own markers do, #1404); pools, iobuf, bufpool, arena, collector, actors and sync stay on `trace` with
+no rebuild. A collection moves, its block does not: the block's address is what ties its events. The **sink keeps,
+per live block address, its capacity, birth time and growth count**: a grow finds its old address (so the old
+capacity is known, and "moved" is old != new), re-keys the entry to the new address, and a drop finds the current
+address and so the lifetime and the growths. The sink's stats for these kinds carry extra fields: `mv` (growths that
+moved the block), `mc` (their summed old capacities, what the copy moved), and on a drop `lf` (summed lifetime
+ticks) and `gr` (summed growths); on a grow, `x` sums the old capacities. A block made before tracing began has no
+entry (its drop adds nothing to `lf`/`gr`).
 | `genpool.take` | Trace | K07 GenPool (also a DensePool's sparse index, elem 4) | cell bytes | live cells after | pool address | free-list depth (cells ever used less live) |
 | `genpool.return` | Trace | K07 | as take | live cells after | pool address | free-list depth |
 | `genpool.make`, `genpool.grow` | Debug | K07 | cell bytes | capacity after | pool address | 0; capacity before |

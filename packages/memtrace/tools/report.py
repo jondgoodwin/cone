@@ -25,6 +25,7 @@ from collections import defaultdict
 # (kind number, shape, travel, growth, path)
 ATTRS = {
     "list":      ("K01", "homogeneous", "travels", "moving", "region"),
+    "string":    ("K02", "homogeneous", "stays", "moving", "region"),
     "deque":     ("K03", "homogeneous", "travels", "moving", "region"),
     "dict":      ("K04", "homogeneous", "travels", "moving", "region"),
     "genpool":   ("K07", "homogeneous", "travels", "moving", "region"),
@@ -107,7 +108,7 @@ def load(paths):
             r.t0 = rec["t"] if r.t0 is None else r.t0
         elif s in ("sample", "total"):
             for k in rec["keys"]:
-                r.cum[key_of(k)] = {f: k[f] for f in ("c", "n", "nx", "x", "xx", "xl")}
+                r.cum[key_of(k)] = {f: k.get(f, 0) for f in ("c", "n", "nx", "x", "xx", "xl", "mv", "mc", "lf", "gr")}
             r.t1 = rec["t"]
             if r.t0 is None:
                 r.t0 = rec["t"]
@@ -134,7 +135,8 @@ def diff(a, b):
             out[k] = dict(v)
         else:
             out[k] = {"c": v["c"] - o["c"], "n": v["n"] - o["n"], "nx": v["nx"], "x": v["x"] - o["x"],
-                      "xx": v["xx"], "xl": v["xl"]}
+                      "xx": v["xx"], "xl": v["xl"], "mv": v["mv"] - o["mv"], "mc": v["mc"] - o["mc"],
+                      "lf": v["lf"] - o["lf"], "gr": v["gr"] - o["gr"]}
     return {k: v for k, v in out.items() if v["c"] != 0}
 
 
@@ -196,10 +198,12 @@ def table(title, head, rows):
 
 def by_region(delta):
     """(region, elem) -> {op: {c, n, nx, x, xx, xl}} with actors and instances added."""
-    out = defaultdict(lambda: defaultdict(lambda: {"c": 0, "n": 0, "nx": 0, "x": 0, "xx": 0}))
+    out = defaultdict(lambda: defaultdict(lambda: {"c": 0, "n": 0, "nx": 0, "x": 0, "xx": 0, "mv": 0, "mc": 0, "lf": 0, "gr": 0}))
     for (kind, elem, who, inst), v in delta.items():
         region, op = split(kind)
         d = out[(region, elem)][op]
+        for f in ("mv", "mc", "lf", "gr"):
+            d[f] += v[f]
         d["c"] += v["c"]
         d["n"] += v["n"]
         d["x"] += v["x"]
@@ -208,16 +212,21 @@ def by_region(delta):
     return out
 
 
-def region_row(region, elem, ops, secs, series_stats):
+COLLECTIONS = ("list", "string", "deque", "dict")
+
+
+def region_row(region, elem, ops, secs, series_stats, hz=1):
     mk = sum(ops[o]["c"] for o in OPS_MAKE if o in ops)
     gr = ops["grow"]["c"] if "grow" in ops else 0
     dr = sum(ops[o]["c"] for o in OPS_DROP if o in ops)
     # bytes the region asked its supply for: block capacity made and grown, in elements, times the element size
     # (per-object kinds: one element each)
-    if region in ("list", "deque", "dict", "genpool", "densepool", "pool"):
+    if region in ("list", "string", "deque", "dict", "genpool", "densepool", "pool"):
         made = sum(ops[o]["n"] for o in ("make", "grow") if o in ops)
         asked = made * elem
-        copied = (ops["grow"]["x"] * elem) if "grow" in ops else 0
+        # a collection's growth that moved its block copied the old capacity (mc); a pool's, its old capacity too
+        copied = (ops["grow"]["mc"] * elem) if "grow" in ops and region in COLLECTIONS \
+            else ((ops["grow"]["x"] * elem) if "grow" in ops else 0)
     else:
         asked = mk * elem
         copied = 0
@@ -229,8 +238,14 @@ def region_row(region, elem, ops, secs, series_stats):
     turnover = ""
     if mean and secs:
         turnover = f"{asked / secs / (mean * elem):.2f}" if elem else ""
-    return [f"{region}", elem, fmt(mk), fmt(gr), fmt(dr), fmt(live_now),
-            f"{mean:.1f}", fmt(peak), f"{spread:.1f}", fmt(asked), fmt(copied), fmt(slack), turnover]
+    moved = ops["grow"]["mv"] if "grow" in ops else 0
+    life = ""
+    per = ""
+    if "drop" in ops and ops["drop"]["c"]:
+        life = f"{ops['drop']['lf'] / hz / ops['drop']['c'] * 1000:.2f}"
+        per = f"{ops['drop']['gr'] / ops['drop']['c']:.2f}"
+    return [f"{region}", elem, fmt(mk), fmt(gr), fmt(moved), fmt(dr), fmt(live_now),
+            f"{mean:.1f}", fmt(peak), f"{spread:.1f}", fmt(asked), fmt(copied), fmt(slack), turnover, life, per]
 
 
 def series_for(r, t_lo, t_hi):
@@ -288,10 +303,10 @@ def report(r, only=None, show_actors=True):
         for (region, elem), ops in sorted(reg.items()):
             if region in ("memory", "bufpool"):
                 continue
-            rows.append(region_row(region, elem, ops, secs, st.get((region, elem), (0, 0, 0))))
-        table("per region and element size",
-              ["region", "elem", "made", "grown", "dropped", "live end", "live mean", "live peak", "spread",
-               "bytes asked", "bytes copied", "slack bytes", "turnover/s"], rows)
+            rows.append(region_row(region, elem, ops, secs, st.get((region, elem), (0, 0, 0)), r.hz))
+        table("per region and element size (collections are tied by block address: moved, mean lifetime, growths per drop)",
+              ["region", "elem", "made", "grown", "moved", "dropped", "live end", "live mean", "live peak", "spread",
+               "bytes asked", "bytes copied", "slack bytes", "turnover/s", "life ms", "grows/drop"], rows)
         # 3. pools, per instance
         rows = []
         inst_ops = defaultdict(lambda: defaultdict(lambda: {"c": 0, "n": 0, "nx": 0, "xl": 0, "xx": 0}))
@@ -372,7 +387,7 @@ def report(r, only=None, show_actors=True):
                 mk = sum(ops[o]["c"] for o in OPS_MAKE if o in ops)
                 gr = ops["grow"]["c"] if "grow" in ops else 0
                 dr = sum(ops[o]["c"] for o in OPS_DROP if o in ops)
-                if region in ("list", "deque", "dict", "genpool", "densepool", "pool"):
+                if region in ("list", "string", "deque", "dict", "genpool", "densepool", "pool"):
                     asked = sum(ops[o]["n"] for o in ("make", "grow") if o in ops) * elem
                 else:
                     asked = mk * elem
