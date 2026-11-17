@@ -219,6 +219,11 @@ mod collector use Gc;
 import libc;
 import trace use Level, Kind4;
 
+// "Who is asking" for the memstats shim (kinds.toml: 21 Gc), set around the object allocation. MEMSTATS builds only.
+#if #defined("MEMSTATS") {
+  extern fn @c("memstats_asking") msAsk(kind: u32, elem: usize);
+}
+
 // MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md): gc.make for each object the collector
 // allocates and gc.free for each it frees, Trace. elem is the object's bytes (header included); n the collector's
 // live bytes after; aux its live objects after. The collector is per thread, so no inst.
@@ -427,7 +432,14 @@ pub struct Gc is RegionRef, Traced {
     if maxBytes != 0usize && totalBytes + bytes > maxBytes {
       return null;
     }
-    libc.malloc(bytes)
+    #if #defined("MEMSTATS") {
+      msAsk(21u32, bytes);
+      let p = libc.malloc(bytes);
+      msAsk(0u32, 0usize);
+      p
+    } #else {
+      libc.malloc(bytes)
+    }
   }
 
   // n rounded up to a multiple of align, a power of two

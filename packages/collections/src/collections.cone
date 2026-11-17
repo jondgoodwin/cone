@@ -137,6 +137,14 @@ let dictDrop: Kind4[u64, u64, u64, u64];
 var @threadlocal inString = false;     // a String's operation is running on its buffer (MEMSTATS builds)
 var @threadlocal quietDrop = 0usize;   // the block a String's death has already reported, so the buffer's does not (MEMSTATS)
 
+// "Who is asking" for the memstats shim (packages/memstats; kinds.toml numbers: 1 List, 2 String, 3 Deque,
+// 4 Dict/Set, 5 OrderedDict). MEMSTATS builds only: the call that obtains or grows a block is bracketed by
+// msAsk(kind, element bytes) and msAsk(0, 0). A String's buffer is a List, told apart by 'inString'.
+#if #defined("MEMSTATS") {
+  extern fn @c("memstats_asking") msAsk(kind: u32, elem: usize);
+  fn msListKind() u32 inline { if inString {2u32} else {1u32} }
+}
+
 fn @initpure init() {
   listMake = Kind4[u64, u64, u64, u64].make("list.make", "memory", Level.Debug, "elem", "n", "inst", "aux");
   listGrow = Kind4[u64, u64, u64, u64].make("list.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
@@ -312,7 +320,9 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     *self = List(null, 0usize, 0usize, region);
     if n > 0usize {
       let room = blockRoom[T](region, n);
+      #if #defined("MEMSTATS") { msAsk(msListKind(), mem.sizeof[T]()); }
       self.ptr = blockNew[T](region, n);
+      #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
       // The floor is written out because the answer comes from an indirect call, and
       // the optimizer needs this fact to drop bounds checks.
       self.cap = if room > n {room} else {n};
@@ -332,7 +342,9 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   fn exact(self: &mut, n: usize) {
     if n > 0usize {
       let room = blockRoom[T](region, n);
+      #if #defined("MEMSTATS") { msAsk(msListKind(), mem.sizeof[T]()); }
       ptr = blockGrow[T](region, ptr, 0usize, n);
+      #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
       cap = room;
       #if #defined("MEMSTATS") { memListMake(mem.sizeof[T](), room, ptr as usize); }
     }
@@ -397,7 +409,9 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     #if #defined("MEMSTATS") {
       let was = cap;
       let oldAt = ptr as usize;
+      msAsk(msListKind(), mem.sizeof[T]());
       ptr = blockGrow[T](region, ptr, cap, want);
+      msAsk(0u32, 0usize);
       cap = room;
       if was == 0usize {
         memListMake(mem.sizeof[T](), room, ptr as usize);
@@ -834,7 +848,9 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     if !isHeap(region) { return; }
     let room = blockRoom[T](region, used);
     if room >= cap { return; }
+    #if #defined("MEMSTATS") { msAsk(msListKind(), mem.sizeof[T]()); }
     ptr = blockGrow[T](region, ptr, cap, used);
+    #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     cap = room;
   }
 
@@ -928,10 +944,14 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     let keep = if bytes == 0usize {1usize} else {bytes};
     var p = null as *T;
     if isHeap(me.region) {
+      #if #defined("MEMSTATS") { msAsk(1u32, mem.sizeof[T]()); }
       p = RawBlocks.resize(me.ptr as *u8, me.cap * mem.sizeof[T](), keep, mem.alignof[T]()) as *T;
+      #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     }
     else {
+      #if #defined("MEMSTATS") { msAsk(1u32, mem.sizeof[T]()); }
       p = RawBlocks.alloc(keep, mem.alignof[T]()) as *T;
+      #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
       // Into a fresh block this same container owns, so the elements were reachable from its state when it
       // was scanned; the stores that matter for the new owner are covered by Bug 29's fix (#860, the frozen-array owner walk).
       if n > 0usize { mem.moveRaw(p, me.ptr, n); }
@@ -962,7 +982,9 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // pieces end at the same time.
   pub fn depositPiece(self: &, bag: &mut PieceBag, lo: usize, piece: List[T]) {
     if piece.used == 0usize { return; }
+    #if #defined("MEMSTATS") { msAsk(1u32, mem.sizeof[PieceNode[T]]()); }
     let node = libc.malloc(mem.sizeof[PieceNode[T]]()) as *PieceNode[T];
+    #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     mem.writeRaw(node, PieceNode[T](0usize, lo, piece));
     let headp = &mut bag.head as *usize;
     var seen = 0usize;
@@ -1474,7 +1496,9 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
     *self = Deque(null, 0usize, 0usize, 0usize, region);
     if n > 0usize {
       let room = blockRoom[T](region, n);
+      #if #defined("MEMSTATS") { msAsk(3u32, mem.sizeof[T]()); }
       self.ptr = blockNew[T](region, n);
+      #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
       self.cap = room;
       #if #defined("MEMSTATS") { dequeMake.emit(u64.from(mem.sizeof[T]()), u64.from(room), u64.from(self.ptr as usize), 0u64); }
     }
@@ -1686,7 +1710,9 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
   // from 'head' to the block's end, and from its start round to the last value
   fn regrow(self: &mut, want: usize) {
     let room = blockRoom[T](region, want);
+    #if #defined("MEMSTATS") { msAsk(3u32, mem.sizeof[T]()); }
     let fresh = blockNew[T](region, want);
+    #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     if used > 0usize {
       let firstRun = if head + used <= cap {used} else {cap - head};
       // Into a fresh block owned by this same container: the elements were reachable from its state when it
@@ -1966,10 +1992,14 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion, Serialize, Des
     let n = me.buf.used;
     var p = null as *u8;
     if isHeap(me.buf.region) {
+      #if #defined("MEMSTATS") { msAsk(2u32, 1usize); }
       p = RawBlocks.resize(me.buf.ptr as *u8, me.buf.cap, n + 1usize, 1usize);
+      #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     }
     else {
+      #if #defined("MEMSTATS") { msAsk(2u32, 1usize); }
       p = RawBlocks.alloc(n + 1usize, 1usize);
+      #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
       // Into a fresh block owned by the same container (bytes here, holding no reference); the stores that
       // matter for the new owner are covered by Bug 29's fix (#860, the frozen-array owner walk).
       if n > 0usize { mem.moveRaw(p, me.buf.ptr, n); }
@@ -2770,7 +2800,9 @@ pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, 
   // A new block of this many buckets, every entry moved into it by its hash
   fn resize(self: &mut, buckets: usize) {
     let entrySize = mem.sizeof[DictEntry[K, V]]();
+    #if #defined("MEMSTATS") { msAsk(4u32, entrySize); }
     let base = (region as &MemRegion).allocate(self.tableBytes(buckets), mem.alignof[DictEntry[K, V]]());
+    #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     if base == null { tableFailed(); }
     let fresh = base + buckets * entrySize;
     libc.memset(fresh, 255i32, buckets + 8usize);
@@ -3363,7 +3395,9 @@ pub struct OrderedDict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesR
   // entries, in the same order; the entries array grows with it
   fn resize(self: &mut, buckets: usize) {
     if buckets > 4294967296usize { panic("collections: OrderedDict is past 2^32 buckets", srcFile(), srcLine()); }
+    #if #defined("MEMSTATS") { msAsk(5u32, mem.sizeof[OrderedEntry[K, V]]()); }
     let base = (region as &MemRegion).allocate(buckets * 5usize + 8usize, mem.alignof[u32]());
+    #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     if base == null { tableFailed(); }
     let fresh = base + buckets * 4usize;
     libc.memset(fresh, 255i32, buckets + 8usize);
@@ -3380,7 +3414,9 @@ pub struct OrderedDict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesR
     let oldCap = if ctrl == null {0usize} else {bucketsCapacity(mask + 1usize)};
     let newCap = bucketsCapacity(buckets);
     if newCap != oldCap {
+      #if #defined("MEMSTATS") { msAsk(5u32, mem.sizeof[OrderedEntry[K, V]]()); }
       dense = blockGrow[OrderedEntry[K, V]](region, dense, oldCap, newCap);
+      #if #defined("MEMSTATS") { msAsk(0u32, 0usize); }
     }
     if ctrl != null { (region as &MemRegion).release(index as *u8, (mask + 1usize) * 5usize + 8usize); }
     ctrl = fresh;
