@@ -93,17 +93,28 @@ at least 1002 messages handled so far
 		(interim; the same section). A program that calls
 		<span class="pre">finalAll()</span> itself, as programs did before the entry was built, waits at that call, and
 		handles still held in its locals are not let go by then: it starts its actors in a block that ends before the call.
-		The runtime is not started again: starting an actor or sending a message once the workers have stopped is a panic,
-		since nothing would run the message. Quiescence assumes that once the finalizer has begun every message comes from an
-		actor: another thread that goes on sending is joined first.</p>
+		The runtime is not started again: starting an actor once the workers have stopped is a panic.</p>
+	<p>A thread the runtime does not join (an OS thread the program started) is owed this when the stop begins: a send
+		from it, and a <span class="pre">waitQuiet</span>, <span class="pre">waitUntilIdle</span> or
+		<span class="pre">waitUntilIdleFor</span> call from it, is never lost, never a panic, and never touches the freed
+		scheduler. The stop first waits for the workers to go quiet, then closes a gate, then waits for every send and wait
+		already inside it, then goes on to abandon what is parked and join the workers. A send that arrives once the gate
+		has closed, or after the stop is over, is refused quietly: the message is not delivered and is dropped on the sending
+		thread (a buffer in it goes back to its pool, a handle is let go), and nothing tells the sender, except that the
+		refusal is counted (<span class="pre">actors.stats().refused</span>, and the event <span class="pre">msg.refused</span>
+		in the memory trace). A wait that arrives once the gate has closed returns at once, and one already inside it is
+		woken and returns. Sends from the runtime's own workers, and from the thread that stops the runtime, are not gated, so
+		what the stop's own finalizers send is delivered. A message accepted before the gate closes is run, as quiescence
+		always promised. Joining the program's own threads before <span class="pre">main</span> returns is still the way to
+		have their last messages delivered.</p>
 	<p><span class="pre">actors.stats()</span> answers what the workers have done so far (<span class="pre">Stats</span>:
 		<span class="pre">workers</span>, <span class="pre">messages</span> handled, <span class="pre">activations</span> or
 		turns, <span class="pre">steals</span>, and <span class="pre">taskSteals</span>, loop pieces stolen), without stopping
 		them, and the run's totals once they have stopped. <span class="pre">actors.workerIndex()</span> is the index of the
 		worker running the caller, or <span class="pre">actors.noWorker</span>. <span class="pre">actors.isRunning()</span> says
-		whether the runtime runs now: false before the first actor and after the stop. A finalizer or a hook that may run
-		after the stop checks it before it sends, because a send then panics. The check narrows that race and does not
-		close it: a thread that passes it just before the stop can still panic in the send.</p>
+		whether the runtime runs now: false before the first actor, and from the moment the stop closes its gate (before the
+		workers are joined), so it is how an unjoined thread learns to end its loop, and how a finalizer that would send
+		takes its direct path instead. A send made anyway is refused and dropped, as above, never a panic.</p>
 	<p>An actor's own <span class="pre">final</span> runs exactly once, on whichever thread drops its last handle: a
 		worker, when that worker ran its last message, or another thread, such as aio's I/O thread when a buffer's home
 		holds the last handle. So keep an actor's <span class="pre">final</span> short and non-blocking: one that blocks

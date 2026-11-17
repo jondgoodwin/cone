@@ -207,9 +207,10 @@
 // 'buf.clearHome()' makes it plain again (a buffer handed back by hand must be cleared first, or its credit
 // returns twice). The home is counted: each homed buffer holds one count, as does the IoHome, and the
 // lender's ctx is dropped (its 'final' is the release) when the last is gone. A plain buffer pays one test of its home word in
-// 'final'. A 'give' must be quick and must not panic; one that sends to an actor checks 'actors.isRunning()'
-// first, which NARROWS the race with the runtime stopping but does not close it (a death on another thread
-// can pass the check just before the stop and still panic in the send). stages.chunkHome is the lender for a ChunkSource.
+// 'final'. A 'give' must be quick and must not panic; one that sends to an actor may check 'actors.isRunning()'
+// first, which is false from the moment the runtime's stop closes its gate; a send made anyway from a thread that is not a
+// worker, after that, is refused inside the send and its message dropped (so a buffer in it goes to its pool), never a
+// panic, never lost in a mailbox. stages.chunkHome is the lender for a ChunkSource.
 //
 // SHARED BYTES. 'buf.freeze()' moves a filled buffer into Bytes: its bytes,
 // read-only, shared by any number of owners on any number of threads, as one
@@ -381,8 +382,8 @@ fn outOfMemory(file: &Array[u8], line: u32) {
 // back, and if it only drops it the block goes to the pool. ctx is only ever borrowed by the callbacks and
 // never leaves the record, so safe code cannot hand a home a dangling pointer. 'give' runs on another
 // thread, so it must be quick (a send from a thread that is not a worker takes the actors' inject-queue
-// mutex, briefly) and must not panic. A send to an actor from it can still panic if the runtime stops
-// between a check of actors.isRunning() and the send (see HOMES in the package header)
+// mutex, briefly) and must not panic. A send to an actor from it, once the runtime's stop has begun,
+// is refused and its message dropped, not queued and not a panic (see HOMES in the package header)
 pub struct IoHome is Move, Sendable {
   rec: *HomeRec;
 
