@@ -1430,7 +1430,7 @@ pub struct Loop {
       }
       return self.startSend(p, r.handle, r.bufBase(), r.bufLen());
     }
-    if k == diag.kindRecvFrom {return self.startRecvFrom(p, r.handle);}
+    if k == diag.kindRecvFrom || k == diag.kindRecvMany {return self.startRecvFrom(p, r.handle);}
     if k == diag.kindSendTo {return self.startSendTo(p, r.handle);}
     if k == diag.kindWaitChild {return self.startWait(p, r.handle);}
     if k == diag.kindReadAt {return self.startFile(p, r.handle, r.at, false);}
@@ -1633,7 +1633,8 @@ pub struct Loop {
   }
 
   // One datagram into the buffer's room, the sender into the record's
-  // address area
+  // address area. A RecvMany is this on Windows, into its first buffer (no
+  // recvmmsg there: the answer holds one datagram); on Linux it is queued
   fn startRecvFrom(self: &mut, p: *OpCore, sock: Handle) u32 {
     let r = p as &mut OpCore;
     #if #os == .windows {
@@ -1950,12 +1951,19 @@ pub struct Loop {
         let k = r.kind;
         if !r.own && (r.ov.internal & 0xFFFFFFFFusize) == statusSuccess
             && (k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom || k == diag.kindPipeRead
-              || k == diag.kindSend || k == diag.kindSendTo || k == diag.kindWriteAt || k == diag.kindPipeWrite) {
+              || k == diag.kindSend || k == diag.kindSendTo || k == diag.kindWriteAt || k == diag.kindPipeWrite
+              || k == diag.kindRecvMany) {
           let got = usize.from(bytes);
-          if k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom || k == diag.kindPipeRead {r.bufGrow(got);}
+          if k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom || k == diag.kindPipeRead
+              || k == diag.kindRecvMany {r.bufGrow(got);}
           r.status = diag.outcomeDone;
           r.n = got;
           r.code = 0u32;
+          // A late datagram is the batch's one
+          if k == diag.kindRecvMany {
+            r.batchOne(false);
+            r.n = 1usize;
+          }
         }
         self.ended(p, true);
         return;
@@ -1994,6 +2002,14 @@ pub struct Loop {
         return;
       }
       let n = usize.from(bytes);
+      if r.kind == diag.kindRecvMany && (status == statusSuccess || status == statusBufferOverflow) {
+        // Windows' batch of one: the datagram, cut to the room or whole, is the
+        // answer; its sender is in the address area
+        r.bufGrow(n);
+        r.batchOne(status == statusBufferOverflow);
+        self.decide(p, diag.outcomeDone, 1usize, 0u32);
+        return;
+      }
       if status == statusBufferOverflow && r.kind == diag.kindRecvFrom {
         // The datagram was longer than the buffer's room: the room is filled,
         // the rest of it is lost, and the answer says so (WSAEMSGSIZE)
