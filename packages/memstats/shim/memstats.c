@@ -95,7 +95,7 @@ static LARGE_INTEGER qpf;
 static TS* volatile slots[MAXT];
 static volatile LONG nslots;
 static __declspec(thread) TS* tl_ts;
-static __declspec(thread) u32 tl_kind, tl_worker;
+static __declspec(thread) u32 tl_kind, tl_worker, tl_depth;
 static __declspec(thread) size_t tl_elem;
 static __declspec(thread) u32 tl_actor;
 
@@ -393,9 +393,10 @@ static void start_sampler(void) {
 void __cdecl memstats_asking(u32 kind, size_t elemSize) {
   if (kind != 0) {
     if (sampler_state == 0) start_sampler();
-    if (tl_kind == 0) { tl_kind = kind; tl_elem = elemSize; }   // the outermost asker wins
+    // markers nest: the outermost asker (depth 0) names the block, and only its clear ends the marker
+    if (tl_depth++ == 0) { tl_kind = kind; tl_elem = elemSize; }
   } else {
-    tl_kind = 0; tl_elem = 0;
+    if (tl_depth > 0 && --tl_depth == 0) { tl_kind = 0; tl_elem = 0; }
   }
 }
 void __cdecl memstats_actor(size_t header) { tl_actor = (u32)(header >> 4); }

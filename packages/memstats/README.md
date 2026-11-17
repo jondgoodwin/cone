@@ -39,7 +39,8 @@ It builds `shim\out\memstats.lib` when missing (`shim\build.ps1`, VS 2022 x64), 
 ## Known limits
 
 - conestd's own Cone code (compiled when the compiler is built, without `-D`) carries no markers; `rawblocks.cone`'s C-named functions and `heapregion.c` are below the markers. So the markers for raw blocks sit in core's inline `RawBlocks.resize` (22) and `MemRegion.resize` (32), which the collections reach through the heap region; Pool (6), GenPool (7), DensePool (8) and IdPool (9) mark their own resizes, the IoBuf chain's ring is Chain (12), and the jobs posted to the I/O thread are HostJob (33).
-- **The instrument is not counted.** Kind 34 (memtrace's own tables) is passed to the C runtime untagged and uncounted: it appears in no kind, no stray row, and only in `unaccounted`. A marker's `memstats_asking(0, 0)` clears whatever kind is set, nested or not, so a kind meant to cover several calls is set again before each.
+- **The instrument is not counted.** Kind 34 (memtrace's own tables) is passed to the C runtime untagged and uncounted: it appears in no kind, no stray row, and only in `unaccounted`.
+- **Markers nest.** The shim keeps a per-thread depth: a non-zero `memstats_asking` takes the kind only at depth 0, and a `memstats_asking(0, 0)` ends the marker only when it brings the depth back to 0. So one set and one clear may bracket several calls, each of which sets and clears inside; every set needs exactly one clear on every path (a clear at depth 0 is ignored).
 - Beyond 2048 threads the last counter slot is shared and its plain increments may lose counts.
 - A `realloc` of an aligned block counts as an allocation plus a free, and a move.
 - `RawBlocks.allocAligned` goes through `cone_alignedAlloc` (`_aligned_malloc` on Windows), which the shim tags with the thread's kind like the others.
