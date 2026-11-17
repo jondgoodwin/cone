@@ -541,7 +541,9 @@ fn armTimer(h: *Heap, ms: u64) {
 
 // called with no cnmalloc lock held, after something was left waiting
 fn armIfWaiting(h: *Heap) {
-  if h.mode == modeDelay && timerOf(h).armed == 0usize { armTimer(h, h.delayMs); }
+  if timerOf(h).armed != 0usize { return; }
+  if h.mode == modeDelay { armTimer(h, h.delayMs); }
+  else if h.mode == modeNow { armTimer(h, 1u64); }   // 1 ms: the shortest the thread-pool timer takes
 }
 
 // ---------------------------------------------------------------------------
@@ -569,7 +571,8 @@ fn lockClass(h: *Heap, c: *Class) {
   if c.spare != none { checkSpare(h, c); }
 }
 
-// An empty page gives its class a spare (when none is kept and give-back is not 'now'), else goes to the pool.
+// An empty page gives its class a spare (when none is kept; at 'now' too, which hands it back at the next collect:
+// a worker's park or the timer, never here), else goes to the pool.
 // Class lock held; the page has no live cell and no bit in the class's tree.
 fn retirePage(h: *Heap, c: *Class, page: usize, d: *Desc) {
   d.freeHead = 0usize;          // the free list is dropped: the next class may have another cell size
@@ -578,18 +581,16 @@ fn retirePage(h: *Heap, c: *Class, page: usize, d: *Desc) {
   c.pages = c.pages - 1u64;
   c.retired = c.retired + 1u64;
   let now = oswin.tick();
-  if h.mode != modeNow {
-    if c.spare == none {
-      c.spare = page; d.state = stEmpty; d.since = now;
-      return;
-    }
-    if page < c.spare {
-      // keep the lower page, so the top empties
-      let old = c.spare;
-      c.spare = page; d.state = stEmpty; d.since = now;
-      poolPut(h, old, descOf(h, old).since);
-      return;
-    }
+  if c.spare == none {
+    c.spare = page; d.state = stEmpty; d.since = now;
+    return;
+  }
+  if page < c.spare {
+    // keep the lower page, so the top empties
+    let old = c.spare;
+    c.spare = page; d.state = stEmpty; d.since = now;
+    poolPut(h, old, descOf(h, old).since);
+    return;
   }
   poolPut(h, page, now);
 }
@@ -1012,12 +1013,17 @@ pub fn cnm_collect(hh: usize, force: bool) u64 {
         let now = oswin.tick();
         let d = descOf(h, c.spare);
         let age = now - d.since;
-        if giving && age >= delay {
+        // at 'now' the spare goes back at a collect once the tick has moved on since it was kept (a loop that
+        // frees and re-takes one block keeps stamping it, so a timer firing mid-loop leaves it alone)
+        let nowDue = h.mode == modeNow && (force || age >= 1u64);
+        if (giving && age >= delay) || nowDue {
           let page = c.spare;
           c.spare = none;
           poolPut(h, page, now);
         } else if h.mode == modeDelay {
           due = minDue(due, delay - age);
+        } else if h.mode == modeNow {
+          due = minDue(due, 1u64);
         }
       }
       oswin.unlock(c as usize);
