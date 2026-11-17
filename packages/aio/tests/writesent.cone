@@ -1,0 +1,257 @@
+// A stream write that ends in an error says how much of it reached the stream
+// (the WriteError's 'sent'): an exact prefix of what it was given, which the
+// peer then reads. Six scenarios, each against a peer that does not read until
+// the write has stalled:
+//   0  gather (write(Chain)) cancelled while pending, by its group
+//   1  a single buffer cancelled while pending, by its group
+//   2  a single buffer ended by its deadline (TimedOut)
+//   3  a gather ended by its deadline (TimedOut)
+//   4  as 2, then the caller sends the rest of the unit from 'sent' and two more
+//      units, and the peer's bytes, read to the end, match the stream by content
+//   5  as 3, the rest sent from 'sent' as a buffer
+// The stream is a pattern by position, in units of 1 MiB. For scenarios 0 to 3
+// the peer's total is the whole units answered Ok plus 'sent', every byte in its
+// place; for 4 and 5 it is the stream whole.
+//
+// At the end every buffer is home (lent == 0) and every record dissolved.
+
+mod writesent;
+
+import testing use *;
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import thread;
+import time use Duration, Instant;
+import iobuf use IoBuf, Chain, stats;
+import iocore use SocketAddr, IoError, WriteError, CancelGroup;
+import actors;
+import aio use Socket, IoLimits;
+
+const segs = 4usize;
+const per = 262144usize;
+const unit = 1048576usize;   // segs * per
+
+struct Got {
+  pub completed: Atomic[u64];    // writes answered Ok(unit)
+  pub issued: Atomic[u64];       // 1 once the first write is issued
+  pub errKind: Atomic[u64];      // the failed write's: 1 cancelled, 2 timed out, 3 other, 0 none
+  pub sent: Atomic[u64];         // its 'sent'
+  pub errUnit: Atomic[u64];      // the number of the unit it was writing
+  pub short: Atomic[u64];        // 1 if a write answered Ok with other than its length
+  pub resent: Atomic[u64];       // 1 if the resent rest and the units after it all answered Ok
+  pub arrived: Atomic[u64];      // bytes the peer read to the end of the stream
+  pub wrong: Atomic[u64];        // 1 + the first byte not as sent, or 0
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn clear() {
+  got.completed.store(0u64); got.issued.store(0u64); got.errKind.store(0u64); got.sent.store(0u64);
+  got.errUnit.store(0u64); got.short.store(0u64); got.resent.store(0u64); got.arrived.store(0u64);
+  got.wrong.store(0u64);
+}
+
+fn pattern(i: usize) u8 {u8.from(i % 251usize)}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn dropSocket(s: Socket) {}
+
+// The stream's bytes from 'from' on, len of them
+fn makeBuf(from: usize, len: usize) IoBuf {
+  var b = IoBuf(len);
+  let p = b.base();
+  var i = 0usize;
+  while i < len {
+    *(p + i) = pattern(from + i);
+    i = i + 1usize;
+  }
+  b.setLen(len);
+  b
+}
+
+// Unit number k as a chain of segs segments
+fn makeChain(k: usize) Chain {
+  var c = Chain.make(0xFFFFFFFFusize);
+  var s = 0usize;
+  while s < segs {
+    let refused = c.push(makeBuf(k * unit + s * per, per));
+    s = s + 1usize;
+  }
+  c
+}
+
+// Record a write's answer; true if it was Ok (the stream goes on)
+fn tally(w: Result[usize, WriteError], k: usize) bool {
+  match w {
+    case let Ok(m) {
+      if m != unit {got.short.store(1u64);}
+      got.completed.store(got.completed.load() + 1u64);
+      true
+    }
+    case let Err(x) {
+      var kind = 3u64;
+      if x.isCancelled() {kind = 1u64;} else if x.isTimedOut() {kind = 2u64;}
+      got.errKind.store(kind);
+      got.sent.store(u64.from(x.sent));
+      got.errUnit.store(u64.from(k));
+      false
+    }
+  }
+}
+
+// Count the resent writes that did not answer their whole length
+fn resentOk(w: Result[usize, WriteError], want: usize) {
+  match w {
+    case let Ok(m) {if m != want {got.short.store(1u64);}}
+    else {got.short.store(1u64);}
+  }
+}
+
+actor Reader {
+  pub async fn drain(self, a: Socket, done: OneshotSender[u64]) {
+    var at = 0usize;
+    var reading = true;
+    while reading {
+      let r = await a.read(IoBuf(65536usize));
+      match r {
+        case let Ok(b) {
+          let q = b.base();
+          var j = 0usize;
+          while j < b.len() {
+            if *(q + j) != pattern(at + j) && got.wrong.load() == 0u64 {
+              got.wrong.store(u64.from(at + j) + 1u64);
+            }
+            j = j + 1usize;
+          }
+          if b.len() == 0usize {reading = false;}
+          at = at + b.len();
+        }
+        else {reading = false;}
+      }
+    }
+    got.arrived.store(u64.from(at));
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+actor Run {
+  pub async fn go(self, mode: u32, g: CancelGroup, done: OneshotSender[u64]) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let a = socketOf(await ls.accept());
+    let gather = mode == 0u32 || mode == 3u32 || mode == 5u32;
+    let cancelMode = mode < 2u32;
+
+    // Writes until one cannot finish: the controller cancels the group once
+    // the answered count has stopped rising, or the deadline ends the write
+    var k = 0usize;
+    var more = true;
+    while more {
+      got.issued.store(1u64);
+      var lim = IoLimits.within(g);
+      if !cancelMode {lim = IoLimits.until(Instant.now() + Duration.fromMillis(300i64));}
+      if gather {more = tally(await c.writeIn(makeChain(k), lim), k);}
+      else {more = tally(await c.writeIn(makeBuf(k * unit, unit), lim), k);}
+      if more {k = k + 1usize;}
+    }
+
+    if mode < 4u32 {
+      // End the stream, then the peer reads it to its end
+      dropSocket(c);
+      Reader().drain(a, done);
+      return;
+    }
+    // The peer starts reading; the rest of the unit goes from 'sent', then two more units
+    Reader().drain(a, done);
+    let sent = usize.from(got.sent.load());
+    resentOk(await c.write(makeBuf(k * unit + sent, unit - sent)), unit - sent);
+    resentOk(await c.write(makeBuf((k + 1usize) * unit, unit)), unit);
+    resentOk(await c.write(makeBuf((k + 2usize) * unit, unit)), unit);
+    dropSocket(c);
+  }
+}
+
+fn scenario(mode: u32) {
+  clear();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  let g = CancelGroup.make();
+  {
+    let r = Run();
+    r.go(mode, g, tx);
+  }
+  if mode < 2u32 {
+    // Wait until the completed count has stopped rising for a second, then cancel
+    var last = 0u64;
+    var still = 0;
+    while still < 20 {
+      thread.sleep(Duration.fromMillis(50i64));
+      let now = got.completed.load();
+      if now == last && got.issued.load() == 1u64 {still = still + 1;} else {still = 0;}
+      last = now;
+    }
+    expect(g.cancel(), "the group was live");
+  }
+  rx.recv();
+  let whole = got.completed.load() * u64.from(unit);
+  let sent = got.sent.load();
+  eprintStr("scenario "); eprintUInt(u64.from(mode));
+  eprintStr(": completed "); eprintUInt(got.completed.load());
+  eprintStr(", whole bytes "); eprintUInt(whole);
+  eprintStr(", sent "); eprintUInt(sent);
+  eprintStr(", arrived "); eprintUInt(got.arrived.load()); eprintStr("\n");
+  expectUInt(got.errKind.load(), if mode < 2u32 {1u64} else {2u64}, "the stalled write ended Cancelled (0, 1) or TimedOut (2 to 5)");
+  expectUInt(got.short.load(), 0u64, "every other write answered its whole count");
+  expect(got.completed.load() > 0u64, "some writes completed first");
+  expect(sent < u64.from(unit), "sent is short of the unit");
+  expectUInt(got.errUnit.load(), got.completed.load(), "the failed write was the next unit");
+  expectUInt(got.wrong.load(), 0u64, "the arrived bytes are the stream's, each in its place");
+  if mode < 4u32 {
+    #if #os == .windows {
+      // Windows' kernel keeps a write it was asked to cancel, or that passed its deadline,
+      // going (the whole unit arrived in the measured runs, 'sent' 0): its count is a lower bound
+      expect(sent <= got.arrived.load() - whole, "'sent' is no more than the peer read of the failed unit");
+    } #else {
+      expectUInt(got.arrived.load(), whole + sent, "the peer read the answered units and exactly 'sent' of the failed one");
+    }
+  } else {
+    expectUInt(got.arrived.load(), whole + 3u64 * u64.from(unit), "the peer read the stream whole: the failed unit's rest was sent from 'sent', and two more");
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var m = 0u32;
+  // The rest-from-'sent' scenarios (4, 5) need an exact 'sent': Linux's
+  var last = 6u32;
+  #if #os == .windows {last = 4u32;}
+  while m < last {
+    scenario(m);
+    m = m + 1u32;
+  }
+  finalAll();
+  expectUInt(stats().lent, 0u64, "every buffer came home, the failed writes' among them");
+  expectUInt(aio.opStats().inUse, 0u64, "every record dissolved");
+  done()
+}

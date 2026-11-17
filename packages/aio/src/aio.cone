@@ -50,10 +50,10 @@
 //                           held while it waits                   Result[IoBuf, IoError]
 //   s.read(room)            the same, the buffer with room for at least 'room' bytes (a usize)
 //                                                                (READS WITH NO BUFFER)
-//   s.write(buf)            all of buf, an IoBuf moved in         Result[usize, IoError]
+//   s.write(buf)            all of buf, an IoBuf moved in         Result[usize, WriteError]
 //   s.write(chain)          every byte of an iobuf Chain, in order, in one operation (a gather);
 //                           the chain moved in, home once sent; an empty one: Ok(0)
-//                                                                Result[usize, IoError]
+//                                                                Result[usize, WriteError]
 //   s.localAddr()           the address s is bound to            Result[SocketAddr, IoError]
 //   s.reset()               s closed abortively, the Socket consumed: the peer sees a
 //                           reset                                (SOCKET CONTROLS)
@@ -201,7 +201,17 @@
 // the system's own timeout (a connect that timed out) TimedOut, each with the
 // system's number. (Truncated is a datagram cut to the
 // room, UDP's.) The buffer a
-// read or a write was given goes home to its pool. What limits an operation is
+// read or a write was given goes home to its pool. A write that ends in an
+// error may have put a prefix of its bytes on the stream, and the error says how
+// many: a stream write's error is iocore's WriteError (the IoError in 'error',
+// and 'sent', the bytes of this call that reached the stream, an exact prefix of
+// what it was given, for a Socket's write, with or without a Chain, and a pipe's
+// write, on a Cancelled, a TimedOut or any other end). A caller that will not
+// send the rest, from 'sent', must drop the connection, because the peer has seen
+// part of a message. (A datagram's send is whole or nothing, and a file's
+// writeAt is positional, so repeating it is harmless: both keep IoError. On
+// Windows a write answered TimedOut past its grace while the kernel still holds
+// its buffer says sent 0, which is not known: drop the connection.) What limits an operation is
 // a IoLimits, given to the 'In' form of the call: a cancel group (iocore's
 // CancelGroup, a value that is copied, sent to other actors or threads, and
 // whose one 'cancel()' ends every operation in it) and an absolute deadline
@@ -677,7 +687,7 @@ import sync use Mutex;
 import collections use List, String;
 import iobuf use IoBuf, Chain;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, answerWriteError, WriteError, threadTimes, Shared, issueDone, issuePending;
 import path use Path;
 import process;
 import actors;
@@ -715,7 +725,7 @@ fn die(msg: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Never {
 const opRecv = 1u32;          // read(buf): Result[IoBuf, IoError]
 const opRecvAny = 2u32;       // read(), read(room): the same, with a buffer the I/O thread takes
 const opAccept = 3u32;        // Result[Socket, IoError]
-const opSend = 4u32;          // write(buf): Result[usize, IoError]
+const opSend = 4u32;          // write(buf): Result[usize, WriteError]
 const opReadAt = 5u32;        // a file's read: Result[IoBuf, IoError]
 const opWriteAt = 6u32;       // a file's write: Result[IoBuf, IoError]
 const opRecvFrom = 7u32;      // a datagram: Result[Datagram, IoError]
@@ -728,7 +738,7 @@ const opCall = 13u32;         // onPool: Result[CallDone, IoError]
 const opCancel = 14u32;       // cancelRead, cancelWrite: no answer
 const opClose = 15u32;        // a handle's close, its Socket, File or UdpSocket dropped: no answer
 const opPipeRead = 16u32;     // a pipe's read: Result[IoBuf, IoError]
-const opPipeWrite = 17u32;    // a pipe's write: Result[IoBuf, IoError]
+const opPipeWrite = 17u32;    // a pipe's write: Result[IoBuf, WriteError]
 const opWaitChild = 18u32;    // a child's end: Result[ChildExit, IoError]
 const opAcceptFrom = 21u32;   // accept with the peer's address: Result[Accepted, IoError] (20 is kept for recvMany)
 const opReset = 19u32;      // a socket's abortive close, its Socket consumed by 'reset': no answer
@@ -2361,8 +2371,12 @@ fn answerRec(rp: *OpRec[Ask]) {
   }
   let w = (*rp).ask.what;
   let back = &mut (*rp).ask.reply;
-  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt || w == opPipeRead || w == opPipeWrite {
+  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt || w == opPipeRead {
     actors.answerLentIn[Result[IoBuf, IoError]](back, rp as *Result[IoBuf, IoError], &takeRead);
+  } else if w == opPipeWrite {
+    actors.answerLentIn[Result[IoBuf, WriteError]](back, rp as *Result[IoBuf, WriteError], &takePipeWrite);
+  } else if w == opSend {
+    actors.answerLentIn[Result[usize, WriteError]](back, rp as *Result[usize, WriteError], &takeSent);
   } else if w == opWaitChild {
     actors.answerLentIn[Result[ChildExit, IoError]](back, rp as *Result[ChildExit, IoError], &takeExit);
   } else if w == opAccept || w == opConnect {
@@ -2391,8 +2405,13 @@ fn answerTimedOut(rp: *OpRec[Ask]) {
   let w = (*rp).ask.what;
   let back = &mut (*rp).ask.reply;
   let e = IoError.timedOut();
-  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt || w == opPipeRead || w == opPipeWrite {
+  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt || w == opPipeRead {
     actors.answerNowIn[Result[IoBuf, IoError]](back, Err[IoBuf, IoError](e));
+  } else if w == opPipeWrite {
+    // Early: the kernel still holds the buffer, so how much it sends is not known (0 here)
+    actors.answerNowIn[Result[IoBuf, WriteError]](back, Err[IoBuf, WriteError](WriteError(e, 0usize)));
+  } else if w == opSend {
+    actors.answerNowIn[Result[usize, WriteError]](back, Err[usize, WriteError](WriteError(e, 0usize)));
   } else if w == opWaitChild {
     actors.answerNowIn[Result[ChildExit, IoError]](back, Err[ChildExit, IoError](e));
   } else if w == opAccept || w == opConnect {
@@ -2498,7 +2517,36 @@ fn takeDatagram(p: *u8, to: *u8) {
   mem.writeRaw[Result[Datagram, IoError]](to as *Result[Datagram, IoError], datagramResult(kind, status, code, from, buf));
 }
 
-// A write's: the count, all of the buffer, which goes home
+// A stream write's: the count, all of the buffer, which goes home; an error
+// carries the bytes that reached the stream before it ended
+fn takeSent(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  var v = Err[usize, WriteError](answerWriteError(core.kind, core.status, core.code, core.n));
+  if core.status == diag.outcomeDone {
+    v = Ok[usize, WriteError](core.n);
+  }
+  mem.writeRaw[Result[usize, WriteError]](to as *Result[usize, WriteError], v);
+}
+
+// A pipe write's: the buffer, written whole and back; an error carries the bytes
+// that reached the pipe, and the buffer goes home with the rest of the record
+fn takePipeWrite(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  let kind = core.kind;
+  let status = core.status;
+  let code = core.code;
+  let n = core.n;
+  let buf = core.(buf);
+  var v = Err[IoBuf, WriteError](answerWriteError(kind, status, code, n));
+  if status == diag.outcomeDone {
+    v = Ok[IoBuf, WriteError](bufOf(buf));
+  }
+  mem.writeRaw[Result[IoBuf, WriteError]](to as *Result[IoBuf, WriteError], v);
+}
+
+// A datagram's send: the count
 fn takeCount(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
@@ -3032,15 +3080,16 @@ pub struct Socket is Move, Sendable {
   }
 
   // All of buf, which is moved in and goes home once sent: the count
-  pub fn writeBuf overload write(self: &, buf: IoBuf) actors.Awaitable[Result[usize, IoError]] {
+  pub fn writeBuf overload write(self: &, buf: IoBuf) actors.Awaitable[Result[usize, WriteError]] {
     self.writeBufIn(buf, IoLimits.none())
   }
 
-  // A write ended if lim says so, part of buf perhaps sent
-  pub fn writeBufIn overload writeIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
+  // A write ended if lim says so, part of buf perhaps sent: the error's 'sent'
+  // says how much reached the stream
+  pub fn writeBufIn overload writeIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, WriteError]] {
     let p = takeRec(opSend, diag.kindSend, h, lim);
     setBuf(p as *OpCore, Some[IoBuf](buf));
-    recAwaitable[Result[usize, IoError]](p)
+    recAwaitable[Result[usize, WriteError]](p)
   }
 
   // Every byte of the chain's segments, in order, in one operation (a gather
@@ -3048,15 +3097,16 @@ pub struct Socket is Move, Sendable {
   // the answer, as write's buffer does. An empty chain answers Ok(0). Cancel,
   // deadline, close and cancelWrite behave as for write. (Name proposed: the
   // overload write(chain); the alternative is a name of its own, writeChain)
-  pub fn writeChain overload write(self: &, bufs: Chain) actors.Awaitable[Result[usize, IoError]] {
+  pub fn writeChain overload write(self: &, bufs: Chain) actors.Awaitable[Result[usize, WriteError]] {
     self.writeChainIn(bufs, IoLimits.none())
   }
 
-  // A gather ended if lim says so, part of the chain perhaps sent
-  pub fn writeChainIn overload writeIn(self: &, bufs: Chain, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
+  // A gather ended if lim says so, part of the chain perhaps sent: the error's
+  // 'sent' says how much reached the stream
+  pub fn writeChainIn overload writeIn(self: &, bufs: Chain, lim: IoLimits) actors.Awaitable[Result[usize, WriteError]] {
     let p = takeRec(opSend, diag.kindSend, h, lim);
     setChain(p as *OpCore, bufs);
-    recAwaitable[Result[usize, IoError]](p)
+    recAwaitable[Result[usize, WriteError]](p)
   }
 
   // Ask every read (and accept) in flight on this socket to end (the package's
@@ -3299,14 +3349,15 @@ pub struct Pipe is Move, Sendable {
   }
 
   // All of buf, which is moved in; buf comes back in the answer once written. A failed write's buffer goes home
-  pub fn write(self: &, buf: IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
+  pub fn write(self: &, buf: IoBuf) actors.Awaitable[Result[IoBuf, WriteError]] {
     self.writeIn(buf, IoLimits.none())
   }
 
-  pub fn writeIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
+  // A failed write's error says in 'sent' how much of buf reached the pipe
+  pub fn writeIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, WriteError]] {
     let p = takeRec(opPipeWrite, diag.kindPipeWrite, h, lim);
     setBuf(p as *OpCore, Some[IoBuf](buf));
-    recAwaitable[Result[IoBuf, IoError]](p)
+    recAwaitable[Result[IoBuf, WriteError]](p)
   }
 
   // Ask every read (write) in flight on this pipe to end

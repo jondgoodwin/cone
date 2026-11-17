@@ -31,7 +31,7 @@ import collections use List, String;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
 import time use Duration;
 import iobuf use IoBuf;
-import iocore use SocketAddr, IoError, Access, FileStat;
+import iocore use SocketAddr, IoError, WriteError, Access, FileStat;
 import process;
 import actors;
 import aio use Socket, UdpSocket, File;
@@ -148,6 +148,13 @@ fn isOk[T](r: &Result[T, IoError]) bool {
   }
 }
 
+fn isWritten(r: &Result[usize, WriteError]) bool {
+  match r {
+    case is &Err {false}
+    else {true}
+  }
+}
+
 actor Counter {
   pub async fn run(self, done: OneshotSender[u64]) {
     let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
@@ -205,7 +212,7 @@ actor Counter {
             before = allocs();
             let w = await a.write(buf);
             n = n + (allocs() - before);
-            if !isOk[usize](&w) {wrong.add(1u64);}
+            if !isWritten(&w) {wrong.add(1u64);}
             let r = await b.read(IoBuf(4096usize));
           } else if k == kAccept || k == kConnect {
             // The connect's answer is dropped before the accept is awaited: held
