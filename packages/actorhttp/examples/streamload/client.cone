@@ -1,0 +1,487 @@
+// streamload client: the load half of the streaming scenario (row 429, work item D2), a Cone program
+// (httpclient through actorhttp.Client) in a process of its own. Many connections, each a worker actor with a
+// fixed role, run at once against server.cone:
+//
+//   small  POST /small/N with a 100-2000 byte body, N 500-8000 bytes back (keep-alive request pairs)
+//   sse    GET /sse/2000: an event flood, read to its end
+//   up     POST /up, a body of 1-16 MiB streamed from a source actor
+//   down   GET /down/BYTES, 1-64 MiB, read to its end
+//
+// The mix is by connection: pctSmall, pctSse, pctUp and pctDown of the workers (default 70/10/10/10), each worker
+// drawing its sizes from its own generator seeded from 'seed' and its number, so a run is the same run. The shape
+// in time: a sustained phase, an idle gap, a second burst. At each change, and at fixed points inside, the client
+// calls the server's /_phase and prints "MARK <name>" after it (run.ps1 samples the server's memory at the marks).
+// At the end it prints its measures as one JSON line, "RESULT {...}".
+//
+//   congo run --release packages/actorhttp/examples/streamload/client.cone -- <port> <conns> <sustainS> <idleS>
+//        <burstS> <seed> <pctSmall> <pctSse> <pctUp> <pctDown> [<thinkPct> [<quit 0|1>]]
+//
+// Each worker rests between its requests (think time: small 10-30 ms, sse 0.5-1.5 s, up and down 2-4 s), so the
+// offered load is the scenario's, not whatever the machine and the client can move flat out; thinkPct scales it
+// (default 100; 0 is flat out). The last argument 0 leaves the server running (a second client beside this one).
+//
+// Response times are from the request's start to its end (the first event for sse), in a histogram of four steps
+// to the octave, so a percentile is the lower edge of its step (within 25%). Never a test (see server.cone).
+
+mod streamclient;
+
+import stdio use *;
+import thread;
+import process;
+import collections use List, String, AnyError;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import http use *;
+import httpclient use Request;
+import sse;
+import fs;
+import path use Path;
+import actors;
+import aio;
+import actorhttp use Client, FetchError;
+import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
+
+const kinds = 4usize;
+const buckets = 176usize;
+const window = 262144usize;
+
+let hist: Array[Atomic[u64], 704];        // kinds * buckets
+let count: Array[Atomic[u64], 4];         // requests answered
+let failed: Array[Atomic[u64], 4];
+let bytes: Array[Atomic[u64], 4];         // body bytes moved (up and down) or events (sse)
+let done: Atomic[u64];                    // workers that have ended their phase
+let calls: Atomic[u64];                   // marks answered
+
+fn @initpure init() {
+  hist = Array[Atomic[u64], 704]() <- fill Atomic[u64].of(0u64);
+  count = Array[Atomic[u64], 4]() <- fill Atomic[u64].of(0u64);
+  failed = Array[Atomic[u64], 4]() <- fill Atomic[u64].of(0u64);
+  bytes = Array[Atomic[u64], 4]() <- fill Atomic[u64].of(0u64);
+  done = Atomic[u64].of(0u64);
+  calls = Atomic[u64].of(0u64);
+}
+
+fn nowNs() u64 { u64.from(Instant.now().nanos()) }
+
+// ---- the response-time histogram ----
+
+fn bucketOf(us: u64) usize {
+  if us < 4u64 { return usize.from(us); }
+  var m = 2u64;
+  while m < 60u64 && (us >> (m + 1u64)) != 0u64 { m = m + 1u64; }
+  let sub = (us >> (m - 2u64)) & 3u64;
+  let b = usize.from(m * 4u64 + sub);
+  if b >= buckets { buckets - 1usize } else { b }
+}
+
+fn edgeOf(b: usize) u64 {
+  if b < 4usize { return u64.from(b); }
+  let m = u64.from(b / 4usize);
+  let sub = u64.from(b % 4usize);
+  (4u64 + sub) << (m - 2u64)
+}
+
+fn record(kind: usize, startNs: u64) {
+  let us = (nowNs() - startNs) / 1000u64;
+  hist[kind * buckets + bucketOf(us)].add(1u64);
+}
+
+// the lower edge, in microseconds, of the bucket that holds the per-mille'th sample of 'kind'
+fn percentile(kind: usize, permille: u64) u64 {
+  var total = 0u64;
+  var i = 0usize;
+  while i < buckets { total = total + hist[kind * buckets + i].load(); i = i + 1usize; }
+  if total == 0u64 { return 0u64; }
+  var need = (total * permille + 999u64) / 1000u64;
+  if need == 0u64 { need = 1u64; }
+  var seen = 0u64;
+  i = 0usize;
+  while i < buckets {
+    seen = seen + hist[kind * buckets + i].load();
+    if seen >= need { return edgeOf(i); }
+    i = i + 1usize;
+  }
+  edgeOf(buckets - 1usize)
+}
+
+// ---- the generator: splitmix64 ----
+
+fn nextRand(s: &mut u64) u64 {
+  *s = *s + 0x9e3779b97f4a7c15u64;
+  var z = *s;
+  z = (z ^ (z >> 30u64)) * 0xbf58476d1ce4e5b9u64;
+  z = (z ^ (z >> 27u64)) * 0x94d049bb133111ebu64;
+  z ^ (z >> 31u64)
+}
+
+fn between(s: &mut u64, lo: u64, hi: u64) u64 { lo + nextRand(s) % (hi - lo + 1u64) }
+
+fn filler(n: usize) String {
+  var s = String();
+  while s.len() < n { s.append("abcdefghijklmnopqrstuvwxyz0123456789 "); }
+  var piece = List[u8].withCapacity(n);
+  var i = 0usize;
+  let b = s.view() as &Array[u8];
+  while i < n { piece.push(b[i]); i = i + 1usize; }
+  String.fromBytes(piece.view())
+}
+
+// ---- the upload source: a body of 'total' bytes in 64 KiB chunks, lent from a window ----
+
+actor Gen is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  table: List[u8];
+  total: u64;
+  sent: u64;
+  chunk: usize;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, total: u64, chunk: usize) {
+    var t = List[u8].withCapacity(chunk);
+    var i = 0usize;
+    while i < chunk {
+      t.push(u8.from(u64.from(i) % 251u64));
+      i = i + 1usize;
+    }
+    *self = Self(down: down, link: ChunkWindow.own(window), table: t, total: total, sent: 0u64, chunk: chunk, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {
+    if !over {
+      over = true;
+      down.end(why);
+    }
+  }
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if sent >= total {
+        over = true;
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        let left = total - sent;
+        let n = if left < u64.from(chunk) {usize.from(left)} else {chunk};
+        match link.take(n) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let all = table.view();
+            buf.append(&all[0usize ..< n]);
+            sent = sent + u64.from(n);
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---- a worker: one connection's loop ----
+
+actor Worker {
+  client: Client;
+  base: String;
+  role: usize;       // 0 small, 1 sse, 2 up, 3 down
+  rng: u64;
+  think: u64;        // think-time scale in percent (0: flat out)
+
+  pub async fn run(self, endNs: u64) {
+    while nowNs() < endNs {
+      let t0 = nowNs();
+      if role == 0usize {
+        var url = String.from(base.view());
+        url.append("/small/");
+        url.appendUInt(between(&mut rng, 500u64, 8000u64));
+        var req = Request.make("POST", url.view());
+        req.body = filler(usize.from(between(&mut rng, 100u64, 2000u64)));
+        let r = await client.send(req);
+        match r {
+          case let Ok(ok) { record(0usize, t0); bytes[0usize].add(u64.from(ok.body.len())); count[0usize].add(1u64); }
+          case is Err { failed[0usize].add(1u64); }
+        }
+      } else if role == 1usize {
+        var url = String.from(base.view());
+        url.append("/sse/2000");
+        let r = await client.events(Request.get(url.view()));
+        var ok = false;
+        match r {
+          case let Ok(es) {
+            var going = true;
+            var first = true;
+            while going {
+              let n = await es.next();
+              match n {
+                case let Ok(o) {
+                  match o {
+                    case let Some(e) {
+                      if first { record(1usize, t0); first = false; }
+                      bytes[1usize].add(1u64);
+                    }
+                    case is None[sse.Event] { going = false; ok = true; }
+                  }
+                }
+                case is Err { going = false; }
+              }
+            }
+          }
+          case is Err {}
+        }
+        if ok { count[1usize].add(1u64); } else { failed[1usize].add(1u64); }
+      } else if role == 2usize {
+        let total = between(&mut rng, 1048576u64, 16777216u64);
+        var url = String.from(base.view());
+        url.append("/up");
+        let up = client.upload(Request.make("POST", url.view()), BodyLength.sized(total));
+        let g = Gen(up.sink(), total, 65536usize);
+        g.start();
+        let r = await up.stream();
+        var ok = false;
+        match r {
+          case let Ok(bs) {
+            var going = true;
+            while going {
+              let n = await bs.read();
+              match n {
+                case let Ok(o) {
+                  match o {
+                    case let Some(piece) {}
+                    case is None[String] { going = false; ok = true; }
+                  }
+                }
+                case is Err { going = false; }
+              }
+            }
+          }
+          case is Err {}
+        }
+        if ok { record(2usize, t0); count[2usize].add(1u64); bytes[2usize].add(total); } else { failed[2usize].add(1u64); }
+      } else {
+        let total = between(&mut rng, 1048576u64, 67108864u64);
+        var url = String.from(base.view());
+        url.append("/down/");
+        url.appendUInt(total);
+        let r = await client.stream(Request.get(url.view()));
+        var got = 0u64;
+        var ok = false;
+        match r {
+          case let Ok(bs) {
+            var going = true;
+            while going {
+              let n = await bs.read();
+              match n {
+                case let Ok(o) {
+                  match o {
+                    case let Some(piece) { got = got + u64.from(piece.len()); }
+                    case is None[String] { going = false; ok = got == total; }
+                  }
+                }
+                case is Err { going = false; }
+              }
+            }
+          }
+          case is Err {}
+        }
+        if ok { record(3usize, t0); count[3usize].add(1u64); bytes[3usize].add(got); } else { failed[3usize].add(1u64); }
+      }
+      // the think time between one request and the next, in ms by role (small 10-30, sse 500-1500, up and down
+      // 2000-4000), scaled by 'think' percent; 0 percent is flat out
+      if think > 0u64 {
+        let lo = if role == 0usize {10u64} else if role == 1usize {500u64} else {2000u64};
+        let hi = if role == 0usize {30u64} else if role == 1usize {1500u64} else {4000u64};
+        let ms = between(&mut rng, lo, hi) * think / 100u64;
+        if ms > 0u64 { let s = await aio.sleep(Duration.fromMillis(i64.from(ms))); }
+      }
+    }
+    done.add(1u64);
+  }
+}
+
+// one GET, answered or not
+actor Caller {
+  client: Client;
+
+  pub async fn mark(self, url: String) {
+    let r = await client.send(Request.get(url.view()));
+    calls.add(1u64);
+  }
+}
+
+fn digitsOf(a: &String) u64 {
+  match u64.parse(a.view()) {
+    case let Ok(v) { v }
+    case is Err { 0u64 }
+  }
+}
+
+fn sleepMs(ms: u64) { thread.sleep(Duration.fromMillis(i64.from(ms))); }
+
+fn waitCall(capMs: u64) {
+  let limit = Instant.now() + Duration.fromMillis(i64.from(capMs));
+  while calls.load() < 1u64 && Instant.now() < limit { thread.sleep(Duration.fromMillis(5i64)); }
+}
+
+// 'ackDir': where run.ps1 acknowledges each mark's sample ("": no waiting)
+fn mark(caller: &Caller, port: u64, name: &str, ackDir: &String) {
+  var url = String.from("http://127.0.0.1:");
+  url.appendUInt(port);
+  url.append("/_phase?name=");
+  url.append(name);
+  calls.store(0u64);
+  caller.mark(url);
+  waitCall(10000u64);
+  printStr("MARK ");
+  printStr(name);
+  printStr("\n");
+  // with an ack folder, the client goes no further until run.ps1 has sampled the server and made <folder>\ack-<name>
+  // (up to 5 s), so no sample lags into the next phase
+  if ackDir.len() > 0usize {
+    var f = String.from(ackDir.view());
+    f.append("\\ack-");
+    f.append(name);
+    let p = Path.fromString(f);
+    let limit = Instant.now() + Duration.fromMillis(5000i64);
+    while !fs.exists(&p) && Instant.now() < limit { thread.sleep(Duration.fromMillis(5i64)); }
+  }
+}
+
+fn quitServer(caller: &Caller, port: u64) {
+  var url = String.from("http://127.0.0.1:");
+  url.appendUInt(port);
+  url.append("/_quit");
+  calls.store(0u64);
+  caller.mark(url);
+  waitCall(5000u64);
+}
+
+// one load phase: every worker until 'secs' have gone; returns its length in ms
+fn burst(workers: &List[Worker], secs: u64, name: &str, port: u64, caller: &Caller, midName: &str, ack: &String) u64 {
+  mark(caller, port, name, ack);
+  done.store(0u64);
+  let t0 = nowNs();
+  let end = t0 + secs * 1000000000u64;
+  var i = 0usize;
+  while i < workers.len() { workers[i].run(end); i = i + 1usize; }
+  var midDone = false;
+  let n = u64.from(workers.len());
+  while done.load() < n && nowNs() < end + 120000000000u64 {
+    if !midDone && nowNs() >= t0 + secs * 500000000u64 { midDone = true; mark(caller, port, midName, ack); }
+    thread.sleep(Duration.fromMillis(20i64));
+  }
+  let ms = (nowNs() - t0) / 1000000u64;
+  if !midDone { mark(caller, port, midName, ack); }
+  ms
+}
+
+fn kindName(k: usize) &str {
+  if k == 0usize { "small" } else if k == 1usize { "sse" } else if k == 2usize { "up" } else { "down" }
+}
+
+fn main() i32 {
+  initAll();
+  let args = process.args();
+  if args.len() < 11usize {
+    printStr("usage: client <port> <conns> <sustainS> <idleS> <burstS> <seed> <pctSmall> <pctSse> <pctUp> <pctDown> [<thinkPct> [<quit 0|1> [<ackDir>]]]\n");
+    return 2i32;
+  }
+  let port = digitsOf(&args[1usize]);
+  let conns = usize.from(digitsOf(&args[2usize]));
+  let sustain = digitsOf(&args[3usize]);
+  let idle = digitsOf(&args[4usize]);
+  let burst2 = digitsOf(&args[5usize]);
+  let seed = digitsOf(&args[6usize]);
+  let p0 = digitsOf(&args[7usize]);
+  let p1 = p0 + digitsOf(&args[8usize]);
+  let p2 = p1 + digitsOf(&args[9usize]);
+  let think = if args.len() > 11usize {digitsOf(&args[11usize])} else {100u64};
+  let quits = !(args.len() > 12usize && digitsOf(&args[12usize]) == 0u64);
+  var ack = String();
+  if args.len() > 13usize { ack = String.from(args[13usize].view()); }
+  actors.configure(actors.Options(workers: 4u32));
+  var cfg = httpclient.Config.make();
+  cfg.maxPerOrigin = u32.from(conns) + 16u32;
+  cfg.maxTotal = u32.from(conns) + 16u32;
+  cfg.idleTimeout = Duration.fromSeconds(600i64);
+  let client = Client.make(cfg, 67108864usize);
+  var base = String.from("http://127.0.0.1:");
+  base.appendUInt(port);
+  var workers = List[Worker]();
+  var i = 0usize;
+  while i < conns {
+    let pc = u64.from(i) * 100u64 / u64.from(conns);
+    let role = if pc < p0 {0usize} else if pc < p1 {1usize} else if pc < p2 {2usize} else {3usize};
+    workers.push(Worker(client.clone(), String.from(base.view()), role, seed * 1000003u64 + u64.from(i) + 1u64, think));
+    i = i + 1usize;
+  }
+  let caller = Caller(client.clone());
+
+  let wall0 = nowNs();
+  let ms1 = burst(&workers, sustain, "sustain-start", port, &caller, "mid-load", &ack);
+  var c1 = Array[u64, 4]() <- fill 0u64;
+  var k = 0usize;
+  while k < kinds { c1[k] = count[k].load(); k = k + 1usize; }
+
+  mark(&caller, port, "idle-start", &ack);
+  let idle0 = nowNs();           // the marks are at these offsets from here, whatever the sampling took
+  var waited = 0u64;
+  var marks = Array[u64, 3]() <- fill 0u64;
+  marks[0usize] = 1u64; marks[1usize] = 10u64; marks[2usize] = 30u64;
+  var mi = 0usize;
+  while mi < 3usize {
+    if marks[mi] <= idle {
+      let due = idle0 + marks[mi] * 1000000000u64;
+      if due > nowNs() { sleepMs((due - nowNs()) / 1000000u64); }
+      waited = marks[mi];
+      var nm = String.from("idle-");
+      nm.appendUInt(marks[mi]);
+      nm.append("s");
+      mark(&caller, port, nm.view(), &ack);
+    }
+    mi = mi + 1usize;
+  }
+  let idleEnd = idle0 + idle * 1000000000u64;
+  if idleEnd > nowNs() { sleepMs((idleEnd - nowNs()) / 1000000u64); }
+
+  let ms2 = burst(&workers, burst2, "burst2-start", port, &caller, "mid-burst2", &ack);
+  mark(&caller, port, "end", &ack);
+  let wallMs = (nowNs() - wall0) / 1000000u64;
+  let allMs = if ms1 + ms2 == 0u64 {1u64} else {ms1 + ms2};
+
+  printStr("RESULT {\"conns\":"); printUInt(u64.from(conns));
+  printStr(",\"seed\":"); printUInt(seed);
+  printStr(",\"phaseMs\":["); printUInt(ms1); printStr(","); printUInt(ms2); printStr("]");
+  printStr(",\"wallMs\":"); printUInt(wallMs);
+  printStr(",\"traffic\":{");
+  k = 0usize;
+  while k < kinds {
+    if k > 0usize { printStr(","); }
+    let n1 = c1[k];
+    let n2 = count[k].load() - c1[k];
+    printStr("\""); printStr(kindName(k)); printStr("\":{\"requests\":"); printUInt(count[k].load());
+    printStr(",\"failed\":"); printUInt(failed[k].load());
+    printStr(",\"perSecBurst1\":"); printUInt(n1 * 1000u64 / (if ms1 == 0u64 {1u64} else {ms1}));
+    printStr(",\"perSecBurst2\":"); printUInt(n2 * 1000u64 / (if ms2 == 0u64 {1u64} else {ms2}));
+    printStr(",\"perSecAll\":"); printUInt(count[k].load() * 1000u64 / allMs);
+    printStr(",\"bytesOrEvents\":"); printUInt(bytes[k].load());
+    printStr(",\"bytesOrEventsPerSecAll\":"); printUInt(bytes[k].load() * 1000u64 / allMs);
+    printStr(",\"usP50\":"); printUInt(percentile(k, 500u64));
+    printStr(",\"usP99\":"); printUInt(percentile(k, 990u64));
+    printStr(",\"usP999\":"); printUInt(percentile(k, 999u64));
+    printStr("}");
+    k = k + 1usize;
+  }
+  printStr("}}\n");
+  if quits { quitServer(&caller, port); }
+  finalAll();
+  0i32
+}

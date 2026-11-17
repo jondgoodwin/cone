@@ -977,6 +977,12 @@ extern {
 }
 extern fn @c sched_yield() i32;
 
+// The memstats shim's actor mark (packages/memstats): which actor runs on this
+// thread, so a block it allocates is tagged with it. In a MEMSTATS build only.
+#if #defined("MEMSTATS") {
+  extern fn @c("memstats_actor") memstatsActor(header: usize);
+}
+
 fn yieldProcessor() {
   #if #os == .windows {SwitchToThread();} #else {sched_yield();}
 }
@@ -2420,6 +2426,7 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
   let st = stateOf[S, M](h);
   let rec = mem.typeRecord[S]();
   curActor = h as usize;
+  #if #defined("MEMSTATS") { memstatsActor(h as usize); }
   var n = 0u32;
   // A 'parallel each' this actor's behaviour left has finished: the rest of the
   // behaviour runs first, ahead of whatever the mailbox holds
@@ -2437,6 +2444,7 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
     let slot = ringPeek(h);
     if slot as usize == 0usize {
       curActor = 0usize;
+      #if #defined("MEMSTATS") { memstatsActor(0usize); }
       reclaim(h);
       return n;
     }
@@ -2477,6 +2485,7 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
     afterMessage(h, st as *u8, rec);
   }
   curActor = 0usize;
+  #if #defined("MEMSTATS") { memstatsActor(0usize); }
   reclaim(h);
   n
 }
