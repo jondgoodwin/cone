@@ -1,0 +1,131 @@
+// Socket.reset: the abortive close, consuming the Socket (the package's header,
+// SOCKET CONTROLS). One actor makes loopback pairs; a second actor resets a
+// socket a little later, so what the first awaits is in flight when it comes.
+//
+// 1. A resets: B's read in flight answers an Err of kind ConnectionReset.
+// 2. A read in flight on the socket that is reset answers Cancelled.
+// 3. A reset of a Socket that names nothing does nothing.
+// 4. A reset of a listening socket closes it: a later connect to its port is
+//    refused.
+//
+// What each 'await' found is kept in Got, checked by main once Peer is done.
+
+mod reset;
+
+import testing use *;
+import thread;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf, stats;
+import iocore use SocketAddr, IoError;
+import ioerror use IoErrorKind;
+import actors;
+import aio use Socket, IoLimits;
+
+struct Got {
+  pub peerReset: Atomic[u64];     // 1 if B's read answered ConnectionReset
+  pub cancelled: Atomic[u64];     // 1 if A's own read in flight answered Cancelled
+  pub noneOk: Atomic[u64];        // 1 if a reset of Socket.none() came back
+  pub refused: Atomic[u64];       // 1 if a connect to the reset listener failed
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+// Resets a socket a little later, from an actor of its own
+actor Other {
+  pub async fn resetSoon(self, s: Socket) {
+    let z = await aio.sleep(Duration.fromMillis(150i64));
+    s.reset();
+  }
+}
+
+actor Peer {
+
+  pub async fn run(self, done: OneshotSender[u64], other: Other) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+
+    // 1. The peer's read in flight, then A reset
+    let a = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let b = socketOf(await ls.accept());
+    let reading = b.read(IoBuf(64usize));
+    other.resetSoon(a);
+    match await reading {
+      case let Err(e) {if e.kind() == IoErrorKind.ConnectionReset {got.peerReset.store(1u64);}}
+      else {}
+    }
+
+    // 2. A read in flight on the socket that is reset
+    let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let d = socketOf(await ls.accept());
+    let own = c.read(IoBuf(64usize));
+    other.resetSoon(c);
+    match await own {
+      case let Err(e) {if aio.isCancelled(e) {got.cancelled.store(1u64);}}
+      else {}
+    }
+
+    // 3. Nothing to reset
+    Socket.none().reset();
+    got.noneOk.store(1u64);
+
+    // 4. A listener, reset
+    ls.reset();
+    let z = await aio.sleep(Duration.fromMillis(200i64));
+    match await aio.connect(SocketAddr.localhost(port)) {
+      case is Err {got.refused.store(1u64);}
+      else {}
+    }
+    var dn = done;
+    dn.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let o = Other();
+    let peer = Peer();
+    peer.run(tx, o);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the peer said it was done");}
+    else {}
+  }
+  // The sockets dropped are closed on the I/O thread: give it time
+  var waited = 0i64;
+  while aio.opStats().inUse > 0u64 && waited < 5000i64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 10i64;
+  }
+  let left = aio.opStats().inUse;
+  finalAll();
+  expectUInt(got.peerReset.load(), 1u64, "the peer's read in flight answers ConnectionReset");
+  expectUInt(got.cancelled.load(), 1u64, "a read in flight on the reset socket answers Cancelled");
+  expectUInt(got.noneOk.load(), 1u64, "a reset of Socket.none() does nothing");
+  expectUInt(got.refused.load(), 1u64, "a connect to a reset listener is refused");
+  expectUInt(left, 0u64, "every record is dissolved");
+  expectUInt(stats().lent, 0u64, "every buffer is home");
+  done()
+}

@@ -64,6 +64,8 @@
 //   forever()                           an 'until' that never comes
 //   threadTimes()                       the calling thread's user and kernel nanoseconds (DIAGNOSTICS)
 //   lp.share()  Shared: sh.lock(h) sh.issue(p) sh.unlock(h) sh.markClosing(h) sh.contended() sh.isNone() sh.clone()
+//     sh.shutdownSend(h) sh.peerAddr(h) sh.setKeepAlive(h, ka) sh.keepAlive(h)
+//                      a connected socket's controls, h locked (shared.cone, CONTROLS)
 //     sharedTables()   tables made and not yet freed
 //     Shared.none()  issueNot issueDone issuePending    a receive or send issued off the loop's thread
 //     core.isIssued()                                    (WORKER-SIDE ISSUE)//
@@ -202,6 +204,9 @@
 // OS choose one; 'localAddr' tells it), a Handle of its own kind: the stream
 // operations fail on it as on a handle that names nothing (ERROR_INVALID_HANDLE,
 // EBADF: InvalidInput), as the datagram ones do on a TCP socket. It is not connected; each datagram names its other end.
+// RecvFrom and SendTo can also be issued on another thread through the shared
+// table (WORKER-SIDE ISSUE): a datagram waiting, or a send the socket takes,
+// is answered there with the same answers as below.
 // - RecvFrom(sock, buf): ONE datagram, into buf's room (a buffer with no room
 //   is refused, as Recv's is); Done(n), the n bytes added to its length, and
 //   the sender in the answer's 'c.peer', a SocketAddr. A datagram of no bytes
@@ -567,8 +572,10 @@
 // loop's handles as any thread sees them, found with a load and a generation
 // check, each entry with a lock. On another
 // thread, 'sh.lock(h)' (false: h names nothing there), then 'sh.issue(p)' tries
-// record p's receive or send (Recv into a buffer, a Send of one buffer) on that
-// thread: issueDone, answered there, its outcome in the record (state done,
+// record p's receive or send (Recv into a buffer, a Send of one buffer or a gather of a
+// chain's segments; RecvFrom and SendTo on a UDP handle, one datagram each, a cut datagram
+// answered Failed with the cut number as the Loop's own start answers it) on
+// that thread: issueDone, answered there, its outcome in the record (state done,
 // let go: the loop never sees it, and its counters do not count it);
 // issuePending, in flight, which the caller hands to the loop's thread, whose
 // 'lp.start(p)' LINKS it (counted, on its handle's list, in its group, its
