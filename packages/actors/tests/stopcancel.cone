@@ -1,0 +1,121 @@
+// THE STOP'S GATE for a cancel (orcancelled.cone, OrWake.signal, row 469): a thread the runtime does not join
+// cancels groups, each with an actor awaiting a hung operation with orCancelled, while main stops the runtime.
+// A cancel wakes the awaiting actor with Err(Cancelled) by answering its reply; once the stop has begun that is
+// not done (signal returns at the gate), and the actor is abandoned at the end as any parked one is.
+//
+// 40 awaiting actors, each in a group of its own, the hung operation's envelope kept in a record. A plain thread
+// cancels the groups one a millisecond; main calls finalAll() 3 ms after it starts, so the stop begins among the
+// cancels, and the thread goes on cancelling after it. Then the hung operations' records are dropped, as an
+// owner would (after the stop, so this runs the drop of a reply on a plain thread too). The test is that the
+// program does not crash or hang, that no behaviour went on more than once per actor, and that every actor
+// that went on died; and then that nothing leaks (no future alive, every actor dead or the known parked one,
+// and only those hold a mailbox segment). It does not check that an actor parked on an orCancelledOp await that was never cancelled
+// dies: it does not, on master either (a record and group dropped before any stop leave it alive), which is
+// not what this row changes.
+
+mod stopcancel;
+
+import testing use *;
+import libc;
+import actors;
+import cancelgroups use *;
+import thread;
+import time use Duration;
+
+let wentOn: Atomic[u64];     // behaviours that went on after their cancel
+let parked: Atomic[u64];     // hung operations started
+let died: Atomic[u64];       // awaiting actors that died
+
+fn @initpure init() {
+  wentOn = Atomic[u64].of(0u64);
+  parked = Atomic[u64].of(0u64);
+  died = Atomic[u64].of(0u64);
+}
+
+struct Mark is Move {
+  pub n: u64;
+  fn final(self: &uni) {died.add(1u64);}
+}
+
+// An operation's record: the Reply the seam gave, kept until the record is dropped
+struct Rec {
+  pub reply: actors.Reply;
+}
+
+fn runStore(ctx: *u8, rp: actors.Reply) {
+  mem.writeRaw[Rec](ctx as *Rec, Rec(rp));
+  parked.add(1u64);
+}
+
+fn dropIt(ctx: *u8) {}
+
+fn hungOp(r: *Rec) actors.Awaitable[u64] {actors.Awaitable[u64].of(r as *u8, &runStore, &dropIt)}
+
+actor Hanger {
+  mark: Mark;
+
+  pub fn init(self: &new) {
+    *self = Self(mark: Mark(0u64));
+  }
+
+  pub async fn hold(self, rec: usize) {
+    match await actors.orCancelledOp(hungOp(rec as *Rec)) {
+      case let Ok(v) {}
+      case let Err(c) {
+        wentOn.add(1u64);
+      }
+    }
+  }
+}
+
+const nGroups = 40usize;
+
+fn canceller(groups: usize) u32 {
+  var i = 0usize;
+  while i < nGroups {
+    let g = &*((groups as *CancelGroup) + i);
+    g.cancelWith(Cause.Cancelled);
+    thread.sleep(Duration.fromMillis(1i64));
+    i = i + 1usize;
+  }
+  0u32
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let recs = libc.malloc(mem.sizeof[Rec]() * nGroups) as *Rec;
+  let groups = libc.malloc(mem.sizeof[CancelGroup]() * nGroups) as *CancelGroup;
+  var i = 0usize;
+  while i < nGroups {
+    mem.writeRaw[CancelGroup](groups + i, CancelGroup.make());
+    let h = Hanger();
+    let r = recs + i;
+    actors.withGroup(&*(groups + i), fn() [h, r] { h.hold(r as usize); });
+    i = i + 1usize;
+  }
+  while parked.load() < u64.from(nGroups) {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  let t = thread.start(groups as usize, &canceller);
+  thread.sleep(Duration.fromMillis(3i64));
+  finalAll();
+  t.join();
+  // the hung operations' envelopes dropped unanswered, as their owner would
+  i = 0usize;
+  while i < nGroups {
+    mem.finalize[Rec](recs + i);
+    mem.finalize[CancelGroup](groups + i);
+    i = i + 1usize;
+  }
+  expect(wentOn.load() <= u64.from(nGroups), "no behaviour went on twice");
+  expect(died.load() >= wentOn.load(), "every actor that went on died");
+  // Nothing leaks beyond the one known leak (below). A future left alive, an actor neither dead nor
+  // the known parked kind, or a segment of an actor that died, makes a count differ.
+  expectUInt(u64.from(actors.liveFutures()), 0u64, "no future is left alive");
+  expectUInt(died.load() + u64.from(actors.groupAwaitsLive()), u64.from(nGroups), "each actor died or is the known never-woken parked one");
+  expectUInt(u64.from(actors.liveSegments()), u64.from(actors.groupAwaitsLive()), "only the parked actors still hold a mailbox segment");
+  libc.free(recs as *u8);
+  libc.free(groups as *u8);
+  done()
+}
