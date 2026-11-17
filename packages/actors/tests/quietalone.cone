@@ -1,0 +1,55 @@
+// A lone waitQuiet on a plain thread while main stops the runtime, with no sender (Bug 95, #1416's review,
+// finding A, part ii). An actor's turn runs for a while; the thread enters waitQuiet and sleeps on the scheduler's
+// 'quiet' word, then main enters finalAll, whose quiesce #1 sleeps on the same word. When the turn ends the last
+// worker to park wakes 'quiet': a wake of one woke the thread, which returned, and left main asleep for good
+// with every worker parked. The wake is of all. The test is that the program ends and the thread returns. The
+// timeout stands for a hang.
+
+mod quietalone;
+
+import stdio use *;
+import actors;
+import thread;
+import time use Duration;
+
+let started: Atomic[u32];   // the actor's turn has begun
+let entered: Atomic[u32];   // the thread is about to call waitQuiet
+
+fn @initpure init() {
+  started = Atomic[u32].of(0u32);
+  entered = Atomic[u32].of(0u32);
+}
+
+actor Busy {
+  pub async fn work(self) {
+    started.store(1u32);
+    thread.sleep(Duration.fromMillis(150i64));
+  }
+}
+
+fn waiter(x: u32) u32 {
+  entered.store(1u32);
+  actors.waitQuiet();
+  1u32
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  {
+    let b = Busy();
+    b.work();
+  }
+  while started.load() == 0u32 {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  let t = thread.start(0u32, &waiter);
+  while entered.load() == 0u32 {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  // The thread is asleep in waitQuiet, then main sleeps in the stop's first quiesce
+  thread.sleep(Duration.fromMillis(20i64));
+  finalAll();
+  let r = t.join();
+  print <- "waitQuiet returned: ", r == 1u32, "\n";
+}
