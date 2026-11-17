@@ -45,6 +45,10 @@
 // and the start-up, and the names malloc and free. A heap is also a plain value to a test: it can make several.
 mod @c cnmalloc;
 
+// Row 454: the second design's slow paths use the atomic operations (core's intrinsics, which compile to the machine's
+// atomic instructions and call nothing). A C-named module has no prelude: core is imported for these two names alone.
+import core use mem, MemOrder;
+
 // ---------------------------------------------------------------------------
 // Constants and layout
 // ---------------------------------------------------------------------------
@@ -913,24 +917,31 @@ fn lfDetach(h: *Heap, c: *Class, cl: usize, page: usize, d2: usize) bool {
 // bit (a page found full is set UNLISTED by the same exchange-then-scan and skipped), else the class's spare, else a
 // page from the pool. The page is ready and out of the tree; the caller attaches it. none when out of memory.
 fn lfPick(h: *Heap, c: *Class, cl: usize) usize {
-  while true {
-    let q = btFirst(h, cl);
-    if q == none { break; }
-    let d2 = d2Of(h, q);
+  var q = none;
+  var found = false;
+  while !found {
+    let t = btFirst(h, cl);
+    if t == none { break; }
+    let d2 = d2Of(h, t);
     var r = lfScan(d2);
     if r == 0usize {
       aXchg(d2 + 8usize, lfUnlisted);
       r = lfScan(d2);
       if r == 0usize {
-        btClear(h, cl, q);
-        continue;
+        btClear(h, cl, t);
+      } else {
+        aSt(d2 + 8usize, lfListed);     // a free landed between: it has a free bit after all
+        found = true;
       }
-      aSt(d2 + 8usize, lfListed);     // a free landed between: it has a free bit after all
+    } else {
+      found = true;
     }
-    btClear(h, cl, q);
-    return q;
+    if found {
+      btClear(h, cl, t);
+      q = t;
+    }
   }
-  var q = none;
+  if found { return q; }
   if c.spare != none {
     q = c.spare;
     c.spare = none;
