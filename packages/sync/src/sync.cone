@@ -417,9 +417,19 @@ fn die(msg: &str, file: &str = srcFile(), line: u32 = srcLine()) Never {
 // the region itself.
 pub struct Arc is RegionRef, ThreadSafe {
   cnt: usize;
-  fn @noalias alloc(size: usize) *u8 inline {
-    arcMake.emit(u64.from(size), 1u64, 0u64, 0u64);
-    RawBlocks.alloc(size, 16usize)
+  #if #defined("MEMSTATS") {
+    fn alloc(size: usize) *u8 inline {
+      arcMake.emit(u64.from(size), 1u64, 0u64, 0u64);
+      memstatsAsking(15u32, size);
+      let p = RawBlocks.alloc(size, 16usize);
+      memstatsAsking(0u32, 0usize);
+      p
+    }
+  } #else {
+    fn @noalias alloc(size: usize) *u8 inline {
+      arcMake.emit(u64.from(size), 1u64, 0u64, 0u64);
+      RawBlocks.alloc(size, 16usize)
+    }
   }
   fn init(self: &new) inline {*self = Arc(1usize);}
   fn aliasRef(self: &uni Arc) inline {
@@ -454,6 +464,12 @@ pub struct Arc is RegionRef, ThreadSafe {
 // function only the other system's branch calls is not part of the program;
 // every extern is declared on every platform.
 // ---------------------------------------------------------------------------
+
+// The memstats shim's "who is asking" (packages/memstats, kinds.toml): an Arc's
+// allocation is kind 15. In a MEMSTATS build only.
+#if #defined("MEMSTATS") {
+  extern fn @c("memstats_asking") memstatsAsking(kind: u32, elem: usize);
+}
 
 extern {
   fn @c(system) WaitOnAddress(address: *u32, compare: *u32, size: usize, ms: u32) i32;
