@@ -1,0 +1,217 @@
+// The second design's full-page test (row 454; WI\cnmalloc-second-design-spec.md, section 12, test 3): FILL A PAGE,
+// DETACH IT, FREE ONE CELL FROM ANOTHER THREAD WHILE THE DETACH RUNS, and check that the page is listed afterwards,
+// every time. This is the Dekker rule of section 5 (a detach exchanges the page's state and only then scans its bits; a
+// free ORs its bit and only then reads the state), and the "after a free" slow path that lists a page that was full.
+//
+// One class (1024-byte cells, 64 to a page). Each round starts clean (a forced collect, twice, retires every empty page and
+// drops the slot), then the main thread allocates the 64 cells of one page, so the page is full and ATTACHED. It frees one
+// of them (the target) from a second thread, timed against its own 65th allocation, which finds the page full and detaches
+// it. Two timings, at random offsets: the second thread is started by a hook that runs inside the detach (between the state
+// exchange and the scan), and it is started just before the allocation, so the free lands before, inside or after the
+// detach. When the 65th allocation returns a cell from a new page, the page was detached with the target's bit set or
+// not: the new page is filled to the end, and the next allocation must find the OLD page listed and return exactly the
+// target (the lowest page of the class's tree). If the free landed before the detach, the 65th allocation is the target itself.
+//
+// Needs cnd.lib (-DCN_HOOKS -DCN_DEBUG) and CNMALLOC=design=2 (stats optional); see lfrace.cone for the link. CNPAGE_ROUNDS=<n> (default 3000).
+
+mod lfpage;
+
+import testing use *;
+import thread;
+import libc;
+
+extern {
+  fn @c(system) GetTickCount64() u64;
+  fn @c(system) Sleep(ms: u32);
+  fn @c(system) SwitchToThread() i32;
+  fn @c(system) GetStdHandle(n: u32) usize;
+  fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
+  fn @c(system) GetModuleHandleA(name: *u8) usize;
+  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
+  fn @c("strlen") strlen(s: cstr) usize;
+  fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
+}
+
+alias SetHooks = &fn @c (pre: usize, detach: usize, retire: usize);
+alias Collect = &fn @c (force: i32) u64;
+alias DesignFn = &fn @c () i32;
+
+// words of the control block
+const cGo = 0usize;
+const cDone = 1usize;
+const cTarget = 2usize;
+const cDelay = 3usize;
+const cArmed = 4usize;
+const cStop = 5usize;
+const cHookDelay = 6usize;
+const cFired = 7usize;
+
+var @threadlocal ctl: usize = 0usize;
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+fn ld(base: usize, i: usize) usize { mem.atomicLoad[usize](word(base, i), MemOrder.SeqCst) }
+fn st(base: usize, i: usize, v: usize) { mem.atomicStore[usize](word(base, i), v, MemOrder.SeqCst); }
+
+fn next(s: *u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+// a delay of about n steps that the compiler cannot remove
+fn spin(base: usize, n: usize) {
+  var i = 0usize;
+  while i < n { ld(base, cStop); i = i + 1usize; }
+}
+
+// runs inside the detach (between the state exchange and the scan) on the thread that allocates: starts the freeing thread
+fn @c hookDetach(cl: usize) {
+  let c = ctl;
+  if c != 0usize && ld(c, cArmed) == 1usize {
+    st(c, cArmed, 0usize);
+    st(c, cFired, ld(c, cFired) + 1usize);
+    st(c, cGo, 1usize);
+    spin(c, ld(c, cHookDelay));
+  }
+}
+
+// the other thread: when told, waits a little, then frees the target
+fn freer(arg: usize) u64 {
+  let c = arg;
+  while ld(c, cStop) == 0usize {
+    if ld(c, cGo) == 1usize {
+      spin(c, ld(c, cDelay));
+      libc.free(ld(c, cTarget) as *u8);
+      st(c, cGo, 0usize);
+      st(c, cDone, 1usize);
+    } else {
+      SwitchToThread();
+    }
+  }
+  0u64
+}
+
+fn envNum(name: cstr, dflt: usize) usize {
+  let p = libc.getenv(name);
+  if p as usize == 0usize { return dflt; }
+  var v = 0usize;
+  var i = 0usize;
+  while true {
+    let c = usize.from(*at(p, i));
+    if c < 48usize || c > 57usize { break; }
+    v = v * 10usize + (c - 48usize);
+    i = i + 1usize;
+  }
+  if i == 0usize { dflt } else { v }
+}
+
+fn putStr(buf: *u8, pos: usize, s: cstr) usize {
+  let n = strlen(s);
+  copyLit(at(buf, pos), s, n);
+  pos + n
+}
+
+fn putNum(buf: *u8, pos: usize, v: usize) usize {
+  var digits = 1usize;
+  var t = v;
+  while t >= 10usize { t = t / 10usize; digits = digits + 1usize; }
+  var x = v;
+  var i = digits;
+  while i > 0usize { i = i - 1usize; *at(buf, pos + i) = u8.from(48usize + x % 10usize); x = x / 10usize; }
+  pos + digits
+}
+
+fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
+  let buf = libc.malloc(256usize);
+  var n = 0usize;
+  n = putStr(buf, n, label); n = putNum(buf, n, a);
+  n = putStr(buf, n, mid); n = putNum(buf, n, b);
+  n = putStr(buf, n, tail); n = putNum(buf, n, c);
+  *at(buf, n) = 10u8;
+  var w = 0u32;
+  WriteFile(GetStdHandle(0xFFFFFFF4u32), buf, u32.from(n + 1usize), &mut w, 0usize);
+  libc.free(buf);
+}
+
+fn skipped() {
+  expectUInt(0u64, 0, "lfpage: the page was listed after every free that raced its detach");
+  expect(true, "lfpage: the rounds did race a free against a detach");
+  expect(true, "lfpage: the freeing thread finished every round");
+}
+
+fn main() i32 {
+  let m = GetModuleHandleA(null);
+  let setHooks = GetProcAddress(m, &"cnmalloc_lfSetHooks" as *u8);
+  let collect = GetProcAddress(m, &"cnmalloc_collect" as *u8);
+  let design = GetProcAddress(m, &"cnmalloc_design" as *u8);
+  if setHooks == 0usize || collect == 0usize || design == 0usize { skipped(); return done(); }
+  if (design as *u8 as DesignFn)() != 2i32 { skipped(); return done(); }
+  let rounds = envNum("CNPAGE_ROUNDS", 3000usize);
+  let hooks = setHooks as *u8 as SetHooks;
+  let coll = collect as *u8 as Collect;
+  let c = libc.calloc(16usize, 8usize) as usize;
+  ctl = c;
+  hooks(0usize, &hookDetach as *u8 as usize, 0usize);
+  let ft = thread.start[usize, u64](c, &freer);
+  let cells = libc.calloc(130usize, 8usize) as usize;
+  var seed = 88172645463325252u64 ^ GetTickCount64();
+  var errs = 0usize;
+  var stuck = 0usize;
+  var before = 0usize;     // the free landed before the detach: the 65th allocation was the target
+  var listed = 0usize;     // the page was listed, found by the 129th allocation
+  var inHook = 0usize;
+  var round = 0usize;
+  while round < rounds {
+    coll(1i32); coll(1i32);                      // retire every empty page, drop the slot: the next allocation starts a page
+    var n = 0usize;
+    while n < 64usize { *word(cells, n) = libc.malloc(1024usize) as usize; n = n + 1usize; }
+    let k = usize.from(next(&mut seed) % 64u64);
+    let target = *word(cells, k);
+    *word(cells, k) = 0usize;
+    st(c, cTarget, target);
+    st(c, cDone, 0usize);
+    st(c, cDelay, usize.from(next(&mut seed) % 3000u64));
+    st(c, cHookDelay, usize.from(next(&mut seed) % 3000u64));
+    let fired0 = ld(c, cFired);
+    if round % 2usize == 0usize { st(c, cArmed, 1usize); } else { st(c, cGo, 1usize); }
+    let p65 = libc.malloc(1024usize) as usize;
+    st(c, cArmed, 0usize);
+    var waited = 0usize;
+    while ld(c, cDone) == 0usize && waited < 5000usize { Sleep(1u32); waited = waited + 1usize; }
+    if ld(c, cDone) == 0usize { stuck = stuck + 1usize; errs = errs + 1usize; }
+    var p129 = 0usize;
+    if p65 == target {
+      before = before + 1usize;
+    } else {
+      *word(cells, 64usize) = p65;
+      var j = 65usize;
+      while j < 128usize { *word(cells, j) = libc.malloc(1024usize) as usize; j = j + 1usize; }
+      p129 = libc.malloc(1024usize) as usize;
+      if p129 != target { errs = errs + 1usize; } else { listed = listed + 1usize; }
+      if ld(c, cFired) != fired0 { inHook = inHook + 1usize; }
+    }
+    var f = 0usize;
+    while f < 129usize {
+      let cur = *word(cells, f);
+      if cur != 0usize { libc.free(cur as *u8); *word(cells, f) = 0usize; }
+      f = f + 1usize;
+    }
+    if p65 == target { libc.free(p65 as *u8); }
+    else if p129 != 0usize { libc.free(p129 as *u8); }
+    round = round + 1usize;
+  }
+  st(c, cStop, 1usize);
+  ft.join();
+  hooks(0usize, 0usize, 0usize);
+  ctl = 0usize;
+  errLine("lfpage: rounds ", rounds, " freed before the detach ", before, " page listed ", listed);
+  errLine("lfpage: free started inside the detach ", inHook, " wrong ", errs, " stuck ", stuck);
+  expectUInt(u64.from(errs), 0, "lfpage: the page was listed after every free that raced its detach");
+  expect(listed * 4usize >= rounds, "lfpage: the rounds did race a free against a detach");
+  expectUInt(u64.from(stuck), 0, "lfpage: the freeing thread finished every round");
+  done()
+}

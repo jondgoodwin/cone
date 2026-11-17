@@ -4947,9 +4947,23 @@ fn idle(w: *Worker) bool {
     parkHoldHere(s, w, 2u32);
   }
   tally(&(*(*w).stat).parks, 1u64);
-  cnWorkerPark();
+  // cnmalloc's second design (row 454): the worker sleeps for the give-back delay, and only if that passes with no work
+  // does it empty its cache and collect; then it sleeps without a limit. Without that design (no cnmalloc, or the
+  // lock design) the park is exactly as it was: the cache is emptied now, and the sleep has no limit
+  let parkMs = cnParkMsVal;
+  if parkMs == 0u32 {
+    cnWorkerPark();
+  }
+  var timed = parkMs != 0u32;
   while true {
-    sync.futexWait(&(*w).park, parkParked);
+    if timed {
+      if !sync.futexWaitTimeout(&(*w).park, parkParked, time.Duration.fromMillis(i64.from(parkMs))) && pk.load() == parkParked {
+        cnWorkerPark();
+        timed = false;
+      }
+    } else {
+      sync.futexWait(&(*w).park, parkParked);
+    }
     if pk.load() != parkParked {
       break;
     }
@@ -5202,6 +5216,8 @@ fn monitorPause(timer: usize, d: time.Duration) {
 // finds nothing, and so calls nothing, in a program that did not link cnmalloc (the default). Windows only,
 // as cnmalloc is.
 alias CnCall = &fn @c ();
+alias CnCallMs = &fn @c () u32;
+var @threadlocal cnParkMsVal: u32 = 0u32;     // the milliseconds a worker sleeps before it empties its cache; 0 unless cnmalloc's second design is on (row 454)
 var @threadlocal cnPark: usize = 0usize;
 var @threadlocal cnEnd: usize = 0usize;
 
@@ -5217,6 +5233,11 @@ fn cnWorkerBegin() {
     let m = GetModuleHandleA(null);
     cnPark = GetProcAddress(m, &"cnmalloc_workerPark" as *u8);
     cnEnd = GetProcAddress(m, &"cnmalloc_workerEnd" as *u8);
+    let pm = GetProcAddress(m, &"cnmalloc_workerParkMs" as *u8);
+    if pm != 0usize {
+      let g = pm as *u8 as CnCallMs;
+      cnParkMsVal = g();
+    }
     let b = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
     if b != 0usize {
       let f = b as *u8 as CnCall;
@@ -5238,6 +5259,7 @@ fn cnWorkerEnd() {
     f();
     cnEnd = 0usize;
     cnPark = 0usize;
+    cnParkMsVal = 0u32;
   }
 }
 
