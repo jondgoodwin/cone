@@ -1,0 +1,74 @@
+// Pools through the sink: a GenPool of 20 entries (make at 16 cells, one grow to 32, 20 takes, 5 returns) and a Pool
+// of 3 (make, 3 takes, 1 return). A pool's key holds its address, so the test prints which kinds the totals block
+// has, not their numbers (the numbers are pinned by the report script's own test over a real run).
+mod poolsum;
+
+import testing use *;
+import stdio use *;
+import collections use List;
+import pools use GenPool, DensePool, Handle;
+import pool use Pool;
+import memtrace;
+import trace;
+import env;
+import fs;
+import path use Path;
+
+fn build() {
+  var g = GenPool[u64]();
+  var hs = List[Handle]();
+  var i = 0u64;
+  while i < 20u64 {
+    hs.push(g.add(i));
+    i = i + 1u64;
+  }
+  var k = 0usize;
+  while k < 5usize {
+    g.remove(hs[k]);
+    k = k + 1usize;
+  }
+  var p = Pool[u64]();
+  let a = p.add(1u64);
+  p.add(2u64);
+  p.add(3u64);
+  p.remove(a);
+  var d = DensePool[u64]();
+  d.add(7u64);
+}
+
+fn seen(text: &str, kind: &str) bool {
+  var found = false;
+  let lines = List[&str].from(text.lines());
+  var li = 0usize;
+  while li < lines.len() {
+    let line = lines[li];
+    li = li + 1usize;
+    if line.startsWith("{\"k\":\"") && line.startsWith(kind) {found = true;}
+  }
+  found
+}
+
+fn main() i32 {
+  env.set("MEMTRACE_OUT", "memtrace-pools.json");
+  if !memtrace.install() {
+    print <- "no install\n";
+    return 1i32;
+  }
+  trace.setLevel("memory", trace.Level.Trace);
+  build();
+  trace.flush();
+  match fs.readFile(&Path.from("memtrace-pools.json")) {
+    case let Ok(text) {
+      let t: &str = text.view();
+      print <- "genpool.make ", seen(t, "{\"k\":\"genpool.make\",\"e\":"), "\n";
+      print <- "genpool.grow ", seen(t, "{\"k\":\"genpool.grow\",\"e\":"), "\n";
+      print <- "genpool.take ", seen(t, "{\"k\":\"genpool.take\",\"e\":"), "\n";
+      print <- "genpool.return ", seen(t, "{\"k\":\"genpool.return\",\"e\":"), "\n";
+      print <- "pool.take ", seen(t, "{\"k\":\"pool.take\",\"e\":"), "\n";
+      print <- "pool.return ", seen(t, "{\"k\":\"pool.return\",\"e\":"), "\n";
+      print <- "densepool.take ", seen(t, "{\"k\":\"densepool.take\",\"e\":"), "\n";
+    }
+    case is Err {print <- "unreadable\n";}
+  }
+  0i32
+}

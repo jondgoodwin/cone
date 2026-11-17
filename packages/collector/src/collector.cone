@@ -217,6 +217,18 @@
 mod collector use Gc;
 
 import libc;
+import trace use Level, Kind4;
+
+// MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md): gc.make for each object the collector
+// allocates and gc.free for each it frees, Trace. elem is the object's bytes (header included); n the collector's
+// live bytes after; aux its live objects after. The collector is per thread, so no inst.
+let gcMake: Kind4[u64, u64, u64, u64];
+let gcFree: Kind4[u64, u64, u64, u64];
+
+fn @initpure init() {
+  gcMake = Kind4[u64, u64, u64, u64].make("gc.make", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  gcFree = Kind4[u64, u64, u64, u64].make("gc.free", "memory", Level.Trace, "elem", "n", "inst", "aux");
+}
 
 // The colour bits: two whites, whose meanings swap at each flip, black, and
 // finalized. Gray is neither white nor black. Two more: kept, black only
@@ -346,6 +358,7 @@ pub struct Gc is RegionRef, Traced {
     if fin { finobj = p as usize; } else { allgc = p as usize; }
     totalBytes = totalBytes + bytes;
     nobjects = nobjects + 1usize;
+    gcMake.emit(u64.from(bytes), u64.from(totalBytes), 0u64, u64.from(nobjects));
     p
   }
 
@@ -664,6 +677,7 @@ pub struct Gc is RegionRef, Traced {
       // reference the roots or the barrier missed reads 0xDD bytes, not
       // its old value
       if stressOn { libc.memset(at as *u8, 221i32, bytes); }
+      gcFree.emit(u64.from(bytes), u64.from(totalBytes), 0u64, u64.from(nobjects));
       libc.free(at as *u8);
     }
     else {

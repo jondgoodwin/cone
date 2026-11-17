@@ -69,6 +69,33 @@
 mod pools;
 
 import libc;
+import trace use Level, Kind4;
+
+// MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md). Per instance, since a pool is few and
+// long-lived: genpool.take and genpool.return (Trace; n: live cells after, aux: cells ever used less live, the
+// free-list depth, retired cells included; the high-water mark is the max of n over takes), genpool.make and
+// genpool.grow (Debug; n: capacity after, aux: capacity before), and densepool.make / densepool.grow for its rows'
+// two blocks. elem is the cell's size; inst the pool's address. A DensePool's sparse index is a GenPool[u32], so
+// its events appear under genpool with elem 4, beside densepool.take and densepool.return (Trace) for the rows.
+let genTake: Kind4[u64, u64, u64, u64];
+let genReturn: Kind4[u64, u64, u64, u64];
+let genMake: Kind4[u64, u64, u64, u64];
+let genGrow: Kind4[u64, u64, u64, u64];
+let denseTake: Kind4[u64, u64, u64, u64];
+let denseReturn: Kind4[u64, u64, u64, u64];
+let denseMake: Kind4[u64, u64, u64, u64];
+let denseGrow: Kind4[u64, u64, u64, u64];
+
+fn @initpure init() {
+  genTake = Kind4[u64, u64, u64, u64].make("genpool.take", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  genReturn = Kind4[u64, u64, u64, u64].make("genpool.return", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  genMake = Kind4[u64, u64, u64, u64].make("genpool.make", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  genGrow = Kind4[u64, u64, u64, u64].make("genpool.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  denseTake = Kind4[u64, u64, u64, u64].make("densepool.take", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  denseReturn = Kind4[u64, u64, u64, u64].make("densepool.return", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  denseMake = Kind4[u64, u64, u64, u64].make("densepool.make", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  denseGrow = Kind4[u64, u64, u64, u64].make("densepool.grow", "memory", Level.Debug, "elem", "n", "inst", "aux");
+}
 
 pub const noCell = 0xFFFFFFFFu32;
 const liveMark = 0xFFFFFFFEu32;      // a cell's 'next' while it holds a live entry
@@ -158,8 +185,14 @@ pub struct GenPool[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements
     let size = mem.sizeof[Cell[T]]();
     let p = (region as &MemRegion).resize(cells as *u8, usize.from(cap) * size, want * size, mem.alignof[Cell[T]]()) as *Cell[T];
     if p as usize == 0usize {poolFailed();}
+    let was = cap;
     cells = p;
     cap = cellRoom[T](region, want);
+    if was == 0u32 {
+      genMake.emit(u64.from(size), u64.from(cap), u64.from(self as usize), 0u64);
+    } else {
+      genGrow.emit(u64.from(size), u64.from(cap), u64.from(self as usize), u64.from(was));
+    }
   }
 
   // v moved into a free cell: its Handle
@@ -177,6 +210,7 @@ pub struct GenPool[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements
     (*c).next = liveMark;
     mem.writeRaw[T](&(*c).value as *T, v);
     live = live + 1u32;
+    genTake.emit(u64.from(mem.sizeof[Cell[T]]()), u64.from(live), u64.from(self as usize), u64.from(top - live));
     Handle(i, (*c).gen)
   }
   // The entry h names, or null if it is gone (or h names nothing). Private; the checked
@@ -284,6 +318,7 @@ pub struct GenPool[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements
     mem.finalize[T](&(*c).value as *T);
     live = live - 1u32;
     self.release(i, c);
+    genReturn.emit(u64.from(mem.sizeof[Cell[T]]()), u64.from(live), u64.from(self as usize), u64.from(top - live));
   }
 
   // The live entry in cell i is dead to every handle, not finalized, and its
@@ -294,6 +329,7 @@ pub struct GenPool[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements
     if (*c).next != liveMark {return false;}
     (*c).next = retiredMark;
     live = live - 1u32;
+    genReturn.emit(u64.from(mem.sizeof[Cell[T]]()), u64.from(live), u64.from(self as usize), u64.from(top - live));
     true
   }
 
@@ -329,6 +365,7 @@ pub struct GenPool[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements
     let v = mem.readRaw[T](&(*c).value as *T);
     live = live - 1u32;
     self.release(h.index, c);
+    genReturn.emit(u64.from(mem.sizeof[Cell[T]]()), u64.from(live), u64.from(self as usize), u64.from(top - live));
     Some[T](v)
   }
 
@@ -480,7 +517,13 @@ struct RowBlock[T] is Move, GcTraceElements {
     if vals as usize == 0usize || cells as usize == 0usize {
       panic("pools: out of memory for rows");
     }
+    let was = cap;
     cap = nc;
+    if was == 0usize {
+      denseMake.emit(u64.from(mem.sizeof[T]()), u64.from(nc), u64.from(self as usize), 0u64);
+    } else {
+      denseGrow.emit(u64.from(mem.sizeof[T]()), u64.from(nc), u64.from(self as usize), u64.from(was));
+    }
   }
 
   // Room for at least n rows
@@ -544,6 +587,7 @@ pub struct DensePool[T] is ShapeChanging, Sendable, CarriesRegion {
   pub fn add(self: &mut, v: T) Handle {
     let h = index.add(u32.from(block.n));
     block.push(v, h.index);
+    denseTake.emit(u64.from(mem.sizeof[T]()), u64.from(block.n), u64.from(&block as usize), u64.from(block.cap));
     h
   }
 
@@ -605,6 +649,7 @@ pub struct DensePool[T] is ShapeChanging, Sendable, CarriesRegion {
       *moved = u32.from(r);
     }
     index.remove(h);
+    denseReturn.emit(u64.from(mem.sizeof[T]()), u64.from(block.n), u64.from(&block as usize), u64.from(block.cap));
   }
 
   // Finalize the entry h names and take it out: true if there was one

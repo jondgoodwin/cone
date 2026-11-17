@@ -350,6 +350,18 @@ mod sync;
 
 import libc;
 import time;
+import trace use Level, Kind4;
+
+// MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md): arc.make for each Arc block allocated
+// (elem: the block's bytes, header included; n: 1) and arc.drop for each freed (elem 0: the free is not given the
+// size; n: 1). Trace level, per object.
+let arcMake: Kind4[u64, u64, u64, u64];
+let arcDrop: Kind4[u64, u64, u64, u64];
+
+fn @initpure init() {
+  arcMake = Kind4[u64, u64, u64, u64].make("arc.make", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  arcDrop = Kind4[u64, u64, u64, u64].make("arc.drop", "memory", Level.Trace, "elem", "n", "inst", "aux");
+}
 
 // A lock misused, a channel's memory exhausted: a panic, reported at the line calling 'die'. Each message ends in
 // a line end, which the panic's own line leaves off
@@ -407,13 +419,17 @@ pub struct Arc is RegionRef, ThreadSafe {
   cnt: usize;
   #if #defined("MEMSTATS") {
     fn alloc(size: usize) *u8 inline {
+      arcMake.emit(u64.from(size), 1u64, 0u64, 0u64);
       memstatsAsking(15u32, size);
       let p = RawBlocks.alloc(size, 16usize);
       memstatsAsking(0u32, 0usize);
       p
     }
   } #else {
-    fn @noalias alloc(size: usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
+    fn @noalias alloc(size: usize) *u8 inline {
+      arcMake.emit(u64.from(size), 1u64, 0u64, 0u64);
+      RawBlocks.alloc(size, 16usize)
+    }
   }
   fn init(self: &new) inline {*self = Arc(1usize);}
   fn aliasRef(self: &uni Arc) inline {
@@ -424,7 +440,10 @@ pub struct Arc is RegionRef, ThreadSafe {
     if last {mem.atomicLoad[usize](self as *usize, MemOrder.Acquire);}
     last
   }
-  fn free(self: &uni Arc) inline {RawBlocks.release(self as *u8);}
+  fn free(self: &uni Arc) inline {
+    arcDrop.emit(0u64, 1u64, 0u64, 0u64);
+    RawBlocks.release(self as *u8);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,756 @@
+// The memtrace package: the memory sink. It is a trace.Sink that wants the target "memory" and ADDS EVENTS UP BY
+// KEY in memory; it never writes an event by itself. Every 100 ms (by the clock of the events it is given) it
+// writes one JSON line, a sample, and at the program's end a totals block, to the file MEMTRACE_OUT names.
+// The schema of the kinds it takes is at the top of README.md; the report is tools/report.py.
+//
+//   import memtrace;
+//   memtrace.install();            // does nothing unless MEMTRACE_OUT is set; CONE_TRACE=memory=trace turns events on
+//
+// With MEMTRACE_OUT set the package also installs itself when the program starts, so a program need only import it.
+//
+// THE KEY. (kind, elem, actor, inst): the kind's id, the event's elem field, the actor the event happened in (the
+// context's cause, which the actors package sets to the actor's number; 0 outside an actor), and inst, which is
+// the event's inst field for a kind whose name begins "pool." or "genpool." or "densepool." and 0 for every other
+// kind (a collection's instances are many and short-lived: their lifetimes come from the make, grow and drop
+// counts, not from tracking each). Under each key it keeps: count, sum and max of n, sum and max and last of aux
+// (with the time of the last).
+//
+// PER THREAD. Each thread that records owns a table of 2048 slots, made on its first event and never freed (a
+// thread's counts outlive it). 'record' touches only its own table: no lock, no atomic read-modify-write. A
+// slot's key is written before its 'used' flag is stored (release), so the sampler, which sums every thread's
+// table into one merged table, never reads a half-made key; counters it reads while the owner adds to them may
+// be a moment old, which a sample is. A thread's table that fills (above three quarters) folds new keys' actor
+// into one overflow actor (all ones); one still full counts the event as dropped (the totals say how many).
+//
+// ITS OWN STORAGE CANNOT EMIT. Its tables, its merged table and its output buffer are RawBlocks blocks and the C
+// library's stdio, which are below every region, and trace itself (which it imports, with core and libc) emits
+// nothing in the memory target. So no call it makes can reach a region's emit site. A thread-local flag also
+// stops 'record' being re-entered.
+//
+// ONE SAMPLER. The first 'record' that sees its event's time past the next sample's takes the sample lock and
+// writes the sample; the others carry on. A sample holds each key whose count changed since the last. With no
+// events there are no samples; the totals block, at the end, holds every key.
+
+mod memtrace;
+
+import trace;
+import libc;
+
+const maxKinds = 256usize;
+const maxThreads = 256usize;
+const slots = 2048usize;
+const mergedSlots = 16384usize;
+const bufBytes = 65536usize;
+const overflowActor = 0xFFFFFFFFFFFFFFFFu64;
+
+// Under one key: the numbers added up
+struct Entry {
+  used: u32;
+  kind: u32;
+  elem: u64;
+  who: u64;
+  inst: u64;
+  count: u64;
+  sumN: u64;
+  maxN: u64;
+  sumAux: u64;
+  maxAux: u64;
+  lastAux: u64;
+  lastT: u64;
+  prev: u64;                // the count at the last sample that wrote the key (the merged table's)
+  ex1: u64;                 // a collection's grow: how many moved its block
+  ex2: u64;                 // ... the old capacities of those that moved (what the copy moved)
+  ex3: u64;                 // a collection's drop: the ticks it lived, summed (born at its make, by its block's address)
+  ex4: u64;                 // ... its growths, summed
+}
+
+// A collection's live block, by address: its capacity, when it was made, and how often it has grown
+struct AddrEntry {
+  addr: u64;                // 0 empty, 1 removed
+  cap: u64;
+  birth: u64;
+  grows: u64;
+}
+
+const addrSlots = 1048576usize;
+
+struct Local {
+  entries: *Entry;
+  filled: u32;
+  dropped: u64;
+}
+
+struct State {
+  nthreads: u32;            // atomic
+  sampleLock: u32;          // atomic
+  nextSample: u64;          // atomic: the time of the next sample, or 0 before the first event
+  period: u64;
+  kinds: Array[usize, 256]; // each kind's &Info, as an address, by its id
+  perInst: Array[u8, 256];
+  isPhase: Array[u8, 256];
+  tie: Array[u8, 256];      // 1, 2, 3: a collection's make, grow, drop (tied by block address); else 0
+  addrs: *AddrEntry;
+  addrLock: u32;            // atomic
+  addrLive: u32;
+  addrDropped: u64;
+  locals: Array[usize, 256];
+  merged: *Entry;
+  mergedFilled: u32;
+  mergedDropped: u64;
+  file: *libc.FILE;
+  buf: *u8;
+  bufUsed: usize;
+  samples: u64;
+  failed: bool;
+}
+
+let theState: Atomic[usize];
+let phaseKind: trace.Kind1[&str];
+
+// A phase mark, which a scenario writes where a phase of the run begins ("load", "idle", "second burst"): the
+// sink writes a sample first, so each phase's numbers end at its mark, then the mark; the report cuts by them.
+// Debug level, target "memory".
+pub fn phase(text: &str) {
+  phaseKind.emit(text);
+}
+var @threadlocal myLocal: usize = 0usize;
+var @threadlocal inside = false;
+
+extern fn @c _wgetenv(name: *u16) *u16;
+
+fn @initpure init() {
+  let size = mem.sizeof[State]();
+  let p = RawBlocks.alloc(size, 16usize);
+  if p == null {
+    panic("memtrace: out of memory");
+  }
+  libc.memset(p, 0i32, size);
+  theState = Atomic[usize].of(p as usize);
+  phaseKind = trace.Kind1[&str].make("memory.phase", "memory", trace.Level.Debug, "text");
+  if wantedByEnv() {
+    install();
+  }
+}
+
+fn state() *State {
+  theState.loadOrdered(MemOrder.Relaxed) as *State
+}
+
+// MEMTRACE_OUT's value, NUL-ended, in buf: its length, or 0 when it is not set. On Windows it is read from the
+// wide environment (as trace reads CONE_TRACE); a character past ASCII becomes 0xFF
+fn readOut(buf: &mut Array[u8, 1024]) usize {
+  var n = 0usize;
+  #if #os == .windows {
+    let name = [77u16, 69u16, 77u16, 84u16, 82u16, 65u16, 67u16, 69u16, 95u16, 79u16, 85u16, 84u16, 0u16];
+    let v = _wgetenv(&name as *u16);
+    if v == null {
+      return 0usize;
+    }
+    while n < 1023usize && *(v + n) != 0u16 {
+      let c = *(v + n);
+      buf[n] = if c < 128u16 {u8.from(c)} else {255u8};
+      n = n + 1usize;
+    }
+  } #else {
+    let v = libc.getenv("MEMTRACE_OUT");
+    if v == null {
+      return 0usize;
+    }
+    while n < 1023usize && *(v + n) != 0u8 {
+      buf[n] = *(v + n);
+      n = n + 1usize;
+    }
+  }
+  buf[n] = 0u8;
+  n
+}
+
+fn wantedByEnv() bool {
+  var buf = Array[u8, 1024]() <- fill 0u8;
+  readOut(&mut buf) > 0usize
+}
+
+// The sink
+pub struct MemSink is trace.Sink {
+  pub tag: u32;
+
+  pub fn enabled(self: &, k: &trace.Info) bool {
+    if k.target != "memory" {
+      return false;
+    }
+    let id = usize.from(k.id());
+    if id >= maxKinds {
+      return false;
+    }
+    let st = state();
+    (*st).kinds[id] = k as usize;
+    (*st).isPhase[id] = if k.name == "memory.phase" {1u8} else {0u8};
+    (*st).perInst[id] = if startsWith(k.name, "pool.") || startsWith(k.name, "genpool.") || startsWith(k.name, "densepool.") || startsWith(k.name, "bufpool.cache") {1u8} else {0u8};
+    var t = 0u8;
+    if startsWith(k.name, "list.") || startsWith(k.name, "string.") || startsWith(k.name, "deque.") || startsWith(k.name, "dict.") {
+      if endsWith(k.name, ".make") {t = 1u8;}
+      if endsWith(k.name, ".grow") {t = 2u8;}
+      if endsWith(k.name, ".drop") {t = 3u8;}
+    }
+    (*st).tie[id] = t;
+    true
+  }
+
+  pub fn record(self: &, e: &trace.Event) {
+    if inside {
+      return;
+    }
+    inside = true;
+    recordEvent(e);
+    inside = false;
+  }
+
+  pub fn flush(self: &) {
+    inside = true;
+    finish();
+    inside = false;
+  }
+}
+
+fn startsWith(s: &str, head: &str) bool {
+  let a: &Array[u8] = s;
+  let b: &Array[u8] = head;
+  if a.len < b.len {
+    return false;
+  }
+  var i = 0usize;
+  while i < b.len {
+    if a[i] != b[i] {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+fn endsWith(s: &str, tail: &str) bool {
+  let a: &Array[u8] = s;
+  let b: &Array[u8] = tail;
+  if a.len < b.len {
+    return false;
+  }
+  var i = 0usize;
+  while i < b.len {
+    if a[a.len - b.len + i] != b[i] {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+// --- the live blocks, by address (a collection's lifetime is its block's; under one lock, since a collection
+// that travels is dropped on another thread than it was made on) ---
+
+fn lockAddr(st: *State) {
+  while true {
+    var seen = 0u32;
+    var taken = false;
+    seen, taken = mem.atomicCompareSwap[u32](&(*st).addrLock as *u32, 0u32, 1u32, MemOrder.Acquire, MemOrder.Relaxed);
+    if taken {
+      return;
+    }
+  }
+}
+
+fn unlockAddr(st: *State) {
+  mem.atomicStore[u32](&(*st).addrLock as *u32, 0u32, MemOrder.Release);
+}
+
+fn addrHash(at: u64) usize {
+  var h = (at >> 4u64) * 0x9E3779B97F4A7C15u64;
+  h = h ^ (h >> 31u64);
+  usize.from(h % u64.from(addrSlots))
+}
+
+// The live entry of a block's address, or null
+fn addrFind(st: *State, at: u64) *AddrEntry {
+  if (*st).addrs == null {
+    return null as *AddrEntry;
+  }
+  var i = addrHash(at);
+  var probes = 0usize;
+  while probes < addrSlots {
+    let e = (*st).addrs + i;
+    if (*e).addr == at {
+      return e;
+    }
+    if (*e).addr == 0u64 {
+      return null as *AddrEntry;
+    }
+    i = i + 1usize;
+    if i == addrSlots {
+      i = 0usize;
+    }
+    probes = probes + 1usize;
+  }
+  null as *AddrEntry
+}
+
+// A block made or moved to an address: the first free or removed slot (the table, filled over a half, drops it)
+fn addrPut(st: *State, at: u64, cap: u64, birth: u64, grows: u64) {
+  if (*st).addrs == null || (*st).addrLive > u32.from(addrSlots / 2usize) {
+    (*st).addrDropped = (*st).addrDropped + 1u64;
+    return;
+  }
+  var i = addrHash(at);
+  while true {
+    let e = (*st).addrs + i;
+    if (*e).addr == 0u64 || (*e).addr == 1u64 || (*e).addr == at {
+      if (*e).addr != at {
+        (*st).addrLive = (*st).addrLive + 1u32;
+      }
+      (*e).addr = at;
+      (*e).cap = cap;
+      (*e).birth = birth;
+      (*e).grows = grows;
+      return;
+    }
+    i = i + 1usize;
+    if i == addrSlots {
+      i = 0usize;
+    }
+  }
+}
+
+// Opens the file MEMTRACE_OUT names and installs the sink: false when it is not set, the file will not open, or
+// a sink is installed already. It makes no events itself; CONE_TRACE (or trace.setLevel("memory", ..)) turns them on
+pub fn install() bool {
+  var buf = Array[u8, 1024]() <- fill 0u8;
+  if readOut(&mut buf) == 0usize {
+    return false;
+  }
+  let st = state();
+  let f = libc.fopen(cstr.fromPtr(&buf as *u8), "wb");
+  if f == null {
+    return false;
+  }
+  (*st).file = f;
+  (*st).buf = RawBlocks.alloc(bufBytes, 16usize);
+  (*st).merged = RawBlocks.alloc(mergedSlots * mem.sizeof[Entry](), 16usize) as *Entry;
+  if (*st).buf == null || (*st).merged == null {
+    return false;
+  }
+  libc.memset((*st).merged as *u8, 0i32, mergedSlots * mem.sizeof[Entry]());
+  (*st).addrs = libc.calloc(addrSlots, mem.sizeof[AddrEntry]()) as *AddrEntry;
+  (*st).period = trace.clockFrequency() / 10u64;
+  if !trace.install(Uni[MemSink](MemSink(0u32))) {
+    return false;
+  }
+  putStr(st, "{\"s\":\"start\",\"hz\":");
+  putU64(st, trace.clockFrequency());
+  putStr(st, ",\"t\":");
+  putU64(st, trace.ticks());
+  putStr(st, "}\n");
+  true
+}
+
+// --- the output buffer: appended under the sample lock only ---
+
+fn putByte(st: *State, b: u8) {
+  if (*st).bufUsed == bufBytes {
+    drain(st);
+  }
+  *((*st).buf + (*st).bufUsed) = b;
+  (*st).bufUsed = (*st).bufUsed + 1usize;
+}
+
+fn putStr(st: *State, s: &str) {
+  let a: &Array[u8] = s;
+  var i = 0usize;
+  while i < a.len {
+    putByte(st, a[i]);
+    i = i + 1usize;
+  }
+}
+
+fn putU64(st: *State, n: u64) {
+  if n == 0u64 {
+    putByte(st, 48u8);
+    return;
+  }
+  var digits = Array[u8, 20]() <- fill 0u8;
+  var k = 0usize;
+  var v = n;
+  while v > 0u64 {
+    digits[k] = 48u8 + u8.from(v % 10u64);
+    v = v / 10u64;
+    k = k + 1usize;
+  }
+  while k > 0usize {
+    k = k - 1usize;
+    putByte(st, digits[k]);
+  }
+}
+
+fn putText(st: *State, s: &str) {
+  let a: &Array[u8] = s;
+  var i = 0usize;
+  while i < a.len {
+    let c = a[i];
+    if c == 34u8 || c == 92u8 {
+      putByte(st, 92u8);
+      putByte(st, c);
+    } else if c < 32u8 {
+      putByte(st, 32u8);
+    } else {
+      putByte(st, c);
+    }
+    i = i + 1usize;
+  }
+}
+
+fn drain(st: *State) {
+  if (*st).bufUsed > 0usize && (*st).file != null {
+    let wrote = libc.fwrite((*st).buf, 1usize, (*st).bufUsed, (*st).file);
+    if wrote != (*st).bufUsed {
+      (*st).failed = true;
+    }
+  }
+  (*st).bufUsed = 0usize;
+}
+
+// --- the tables ---
+
+fn hashKey(kind: u32, elem: u64, who: u64, inst: u64) u64 {
+  var h = u64.from(kind) * 0x9E3779B97F4A7C15u64;
+  h = (h ^ elem) * 0xBF58476D1CE4E5B9u64;
+  h = (h ^ who) * 0x94D049BB133111EBu64;
+  h = (h ^ inst) * 0x9E3779B97F4A7C15u64;
+  h ^ (h >> 29u64)
+}
+
+// The slot of a key in a table of n slots, made if it is not there; null when the table is full
+fn slotFor(t: *Entry, n: usize, filled: *u32, kind: u32, elem: u64, who: u64, inst: u64) *Entry {
+  var i = usize.from(hashKey(kind, elem, who, inst) % u64.from(n));
+  var probes = 0usize;
+  while probes < n {
+    let e = t + i;
+    if mem.atomicLoad[u32](&(*e).used as *u32, MemOrder.Acquire) == 0u32 {
+      (*e).kind = kind;
+      (*e).elem = elem;
+      (*e).who = who;
+      (*e).inst = inst;
+      *filled = *filled + 1u32;
+      mem.atomicStore[u32](&(*e).used as *u32, 1u32, MemOrder.Release);
+      return e;
+    }
+    if (*e).kind == kind && (*e).elem == elem && (*e).who == who && (*e).inst == inst {
+      return e;
+    }
+    i = i + 1usize;
+    if i == n {
+      i = 0usize;
+    }
+    probes = probes + 1usize;
+  }
+  null as *Entry
+}
+
+fn u64At(e: &trace.Event, i: usize) u64 {
+  if i >= e.values.len {
+    return 0u64;
+  }
+  match e.values[i] {
+    case let U64(v) {v}
+    case let I64(v) {u64.from(v)}
+    else {0u64}
+  }
+}
+
+fn localTable(st: *State) *Local {
+  if myLocal != 0usize {
+    return myLocal as *Local;
+  }
+  let l = RawBlocks.alloc(mem.sizeof[Local](), 16usize) as *Local;
+  let t = RawBlocks.alloc(slots * mem.sizeof[Entry](), 16usize) as *Entry;
+  if l == null || t == null {
+    return null as *Local;
+  }
+  libc.memset(t as *u8, 0i32, slots * mem.sizeof[Entry]());
+  (*l).entries = t;
+  (*l).filled = 0u32;
+  (*l).dropped = 0u64;
+  let at = mem.atomicAdd[u32](&(*st).nthreads as *u32, 1u32, MemOrder.AcqRel);
+  if usize.from(at) >= maxThreads {
+    return null as *Local;
+  }
+  (*st).locals[usize.from(at)] = l as usize;
+  myLocal = l as usize;
+  l
+}
+
+fn recordEvent(e: &trace.Event) {
+  let st = state();
+  let id = usize.from(e.kind.id());
+  if id >= maxKinds {
+    return;
+  }
+  if (*st).isPhase[id] != 0u8 {
+    phaseMark(st, e);
+    return;
+  }
+  let l = localTable(st);
+  if l == null {
+    return;
+  }
+  let elem = u64At(e, 0usize);
+  let n = u64At(e, 1usize);
+  var aux = u64At(e, 3usize);
+  let inst = if (*st).perInst[id] != 0u8 {u64At(e, 2usize)} else {0u64};
+  // A collection's make, grow and drop are tied by its block's address (inst; a grow's aux is the new address)
+  var ex1 = 0u64;
+  var ex2 = 0u64;
+  var ex3 = 0u64;
+  var ex4 = 0u64;
+  let tie = (*st).tie[id];
+  if tie != 0u8 {
+    let at = u64At(e, 2usize);
+    lockAddr(st);
+    if tie == 1u8 {
+      addrPut(st, at, n, e.time, 0u64);
+      aux = 0u64;
+    } else if tie == 2u8 {
+      let newAt = u64At(e, 3usize);
+      let old = addrFind(st, at);
+      var born = e.time;
+      var grows = 0u64;
+      aux = 0u64;
+      if old != null {
+        aux = (*old).cap;
+        born = (*old).birth;
+        grows = (*old).grows;
+        (*old).addr = 1u64; (*st).addrLive = (*st).addrLive - 1u32;
+      }
+      addrPut(st, newAt, n, born, grows + 1u64);
+      if newAt != at {
+        ex1 = 1u64;
+        ex2 = aux;
+      }
+    } else {
+      let old = addrFind(st, at);
+      if old != null {
+        ex3 = e.time - (*old).birth;
+        ex4 = (*old).grows;
+        (*old).addr = 1u64; (*st).addrLive = (*st).addrLive - 1u32;
+      }
+    }
+    unlockAddr(st);
+  }
+  var who = e.ctx.cause;
+  if usize.from((*l).filled) * 4usize > slots * 3usize {
+    who = overflowActor;
+  }
+  let s = slotFor((*l).entries, slots, &mut (*l).filled as *u32, u32.from(id), elem, who, inst);
+  if s == null {
+    (*l).dropped = (*l).dropped + 1u64;
+    return;
+  }
+  (*s).count = (*s).count + 1u64;
+  (*s).sumN = (*s).sumN + n;
+  if n > (*s).maxN {
+    (*s).maxN = n;
+  }
+  (*s).sumAux = (*s).sumAux + aux;
+  if aux > (*s).maxAux {
+    (*s).maxAux = aux;
+  }
+  (*s).lastAux = aux;
+  (*s).lastT = e.time;
+  (*s).ex1 = (*s).ex1 + ex1;
+  (*s).ex2 = (*s).ex2 + ex2;
+  (*s).ex3 = (*s).ex3 + ex3;
+  (*s).ex4 = (*s).ex4 + ex4;
+  // the time of the next sample
+  let due = mem.atomicLoad[u64](&(*st).nextSample as *u64, MemOrder.Relaxed);
+  if due == 0u64 {
+    var seen = 0u64;
+    var took = false;
+    seen, took = mem.atomicCompareSwap[u64](&(*st).nextSample as *u64, 0u64, e.time + (*st).period, MemOrder.AcqRel, MemOrder.Relaxed);
+    return;
+  }
+  if e.time >= due {
+    sample(st, e.time, false);
+  }
+}
+
+// A phase mark: a sample first, so each phase's numbers end at its mark, then the mark itself
+fn phaseMark(st: *State, e: &trace.Event) {
+  lockSample(st);
+  doSample(st, e.time, false);
+  putStr(st, "{\"s\":\"phase\",\"t\":");
+  putU64(st, e.time);
+  putStr(st, ",\"name\":\"");
+  if e.values.len > 0usize {
+    match e.values[0] {
+      case let Text(v) {putText(st, v);}
+      else {}
+    }
+  }
+  putStr(st, "\"}\n");
+  unlockSample(st);
+}
+
+fn lockSample(st: *State) {
+  while true {
+    var seen = 0u32;
+    var taken = false;
+    seen, taken = mem.atomicCompareSwap[u32](&(*st).sampleLock as *u32, 0u32, 1u32, MemOrder.Acquire, MemOrder.Relaxed);
+    if taken {
+      return;
+    }
+  }
+}
+
+fn unlockSample(st: *State) {
+  mem.atomicStore[u32](&(*st).sampleLock as *u32, 0u32, MemOrder.Release);
+}
+
+// A sample by whoever is first; another thread already writing one is enough
+fn sample(st: *State, now: u64, all: bool) {
+  var seen = 0u32;
+  var taken = false;
+  seen, taken = mem.atomicCompareSwap[u32](&(*st).sampleLock as *u32, 0u32, 1u32, MemOrder.Acquire, MemOrder.Relaxed);
+  if !taken {
+    return;
+  }
+  doSample(st, now, all);
+  unlockSample(st);
+}
+
+fn doSample(st: *State, now: u64, all: bool) {
+  if (*st).file == null {
+    return;
+  }
+  mem.atomicStore[u64](&(*st).nextSample as *u64, now + (*st).period, MemOrder.Relaxed);
+  // sum every thread's table into the merged one
+  let m = (*st).merged;
+  var i = 0usize;
+  while i < mergedSlots {
+    let e = m + i;
+    (*e).count = 0u64;
+    (*e).sumN = 0u64;
+    (*e).maxN = 0u64;
+    (*e).sumAux = 0u64;
+    (*e).maxAux = 0u64;
+    (*e).lastAux = 0u64;
+    (*e).lastT = 0u64;
+    (*e).ex1 = 0u64;
+    (*e).ex2 = 0u64;
+    (*e).ex3 = 0u64;
+    (*e).ex4 = 0u64;
+    i = i + 1usize;
+  }
+  var dropped = 0u64;
+  var nth = usize.from(mem.atomicLoad[u32](&(*st).nthreads as *u32, MemOrder.Acquire));
+  if nth > maxThreads {
+    nth = maxThreads;
+  }
+  var t = 0usize;
+  while t < nth {
+    let l = (*st).locals[t] as *Local;
+    dropped = dropped + (*l).dropped;
+    var j = 0usize;
+    while j < slots {
+      let src = (*l).entries + j;
+      if mem.atomicLoad[u32](&(*src).used as *u32, MemOrder.Acquire) != 0u32 {
+        let d = slotFor(m, mergedSlots, &mut (*st).mergedFilled as *u32, (*src).kind, (*src).elem, (*src).who, (*src).inst);
+        if d == null {
+          (*st).mergedDropped = (*st).mergedDropped + 1u64;
+        } else {
+          (*d).count = (*d).count + (*src).count;
+          (*d).sumN = (*d).sumN + (*src).sumN;
+          if (*src).maxN > (*d).maxN {
+            (*d).maxN = (*src).maxN;
+          }
+          (*d).ex1 = (*d).ex1 + (*src).ex1;
+          (*d).ex2 = (*d).ex2 + (*src).ex2;
+          (*d).ex3 = (*d).ex3 + (*src).ex3;
+          (*d).ex4 = (*d).ex4 + (*src).ex4;
+          (*d).sumAux = (*d).sumAux + (*src).sumAux;
+          if (*src).maxAux > (*d).maxAux {
+            (*d).maxAux = (*src).maxAux;
+          }
+          if (*src).lastT >= (*d).lastT {
+            (*d).lastT = (*src).lastT;
+            (*d).lastAux = (*src).lastAux;
+          }
+        }
+      }
+      j = j + 1usize;
+    }
+    t = t + 1usize;
+  }
+  (*st).samples = (*st).samples + 1u64;
+  putStr(st, if all {"{\"s\":\"total\",\"t\":"} else {"{\"s\":\"sample\",\"t\":"});
+  putU64(st, now);
+  putStr(st, ",\"dropped\":");
+  putU64(st, dropped + (*st).mergedDropped);
+  putStr(st, ",\"keys\":[");
+  var first = true;
+  i = 0usize;
+  while i < mergedSlots {
+    let e = m + i;
+    if (*e).used != 0u32 && (*e).count != 0u64 && (all || (*e).count != (*e).prev) {
+      if !first {
+        putByte(st, 44u8);
+      }
+      first = false;
+      putStr(st, "\n{\"k\":\"");
+      let info = (*st).kinds[usize.from((*e).kind)] as &trace.Info;
+      putText(st, info.name);
+      putStr(st, "\",\"e\":");
+      putU64(st, (*e).elem);
+      putStr(st, ",\"a\":");
+      putU64(st, (*e).who);
+      putStr(st, ",\"i\":");
+      putU64(st, (*e).inst);
+      putStr(st, ",\"c\":");
+      putU64(st, (*e).count);
+      putStr(st, ",\"n\":");
+      putU64(st, (*e).sumN);
+      putStr(st, ",\"nx\":");
+      putU64(st, (*e).maxN);
+      putStr(st, ",\"x\":");
+      putU64(st, (*e).sumAux);
+      putStr(st, ",\"xx\":");
+      putU64(st, (*e).maxAux);
+      putStr(st, ",\"xl\":");
+      putU64(st, (*e).lastAux);
+      if (*e).ex1 != 0u64 || (*e).ex2 != 0u64 || (*e).ex3 != 0u64 || (*e).ex4 != 0u64 {
+        putStr(st, ",\"mv\":");
+        putU64(st, (*e).ex1);
+        putStr(st, ",\"mc\":");
+        putU64(st, (*e).ex2);
+        putStr(st, ",\"lf\":");
+        putU64(st, (*e).ex3);
+        putStr(st, ",\"gr\":");
+        putU64(st, (*e).ex4);
+      }
+      putByte(st, 125u8);
+      (*e).prev = (*e).count;
+    }
+    i = i + 1usize;
+  }
+  putStr(st, "]}\n");
+}
+
+// At the program's end: the totals block, the buffer written, the file closed
+fn finish() {
+  let st = state();
+  if (*st).file == null {
+    return;
+  }
+  lockSample(st);
+  doSample(st, trace.ticks(), true);
+  drain(st);
+  libc.fflush((*st).file);
+  libc.fclose((*st).file);
+  (*st).file = null as *libc.FILE;
+  unlockSample(st);
+}

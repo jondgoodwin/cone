@@ -148,6 +148,31 @@ mod bufpool;
 
 import libc;
 import sync use Mutex;
+import trace use Level, Kind4;
+
+// MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md). The pool takes its memory from the OS
+// (VirtualAlloc, mmap), which no malloc shim sees, so it counts its own supply: bufpool.reserve (address space
+// asked for, n bytes), bufpool.commit (memory made usable, n bytes), bufpool.release (given back, n bytes; there
+// is no partial decommit), all Debug, one per slab or oversize block (elem 2 MiB slab, or 0 oversize), and
+// bufpool.cache (Trace): the bytes one thread's cache holds after a batch moved between it and the stock (a
+// refill or a spill; the per-block fast paths carry no check): inst is the cache's address (a key of its
+// own, so the report sums the last aux of each cache at each sample): n its misses so far, aux the bytes held.
+let bufReserve: Kind4[u64, u64, u64, u64];
+let bufCommit: Kind4[u64, u64, u64, u64];
+let bufRelease: Kind4[u64, u64, u64, u64];
+let bufCache: Kind4[u64, u64, u64, u64];
+
+// The bytes this cache holds in its lines
+fn cacheHeld(tc: *ThreadCache) u64 {
+  let g = glob();
+  var total = 0u64;
+  var c = 0usize;
+  while c < (*g).nClasses {
+    total = total + u64.from((*lineAt(tc, c)).count) * u64.from((*classAt(g, c)).blockSize);
+    c = c + 1usize;
+  }
+  total
+}
 
 // ---------------------------------------------------------------------------
 // The slabs come from the OS: VirtualAlloc and VirtualFree on Windows, mmap
@@ -205,6 +230,8 @@ fn osAllocSlab() *u8, *u8 {
     }
     liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
     liveBytes.addOrdered(u64.from(slabBytes), MemOrder.Relaxed);
+    bufReserve.emit(u64.from(slabBytes), u64.from(total), 0u64, 0u64);
+    bufCommit.emit(u64.from(slabBytes), u64.from(slabBytes + page), 0u64, 0u64);
     return aligned as *u8, r;
   } #else {
     let p = mmap(null, total, protReadWrite, mapPrivateAnonymous, 0i32 - 1i32, 0i64);
@@ -216,6 +243,8 @@ fn osAllocSlab() *u8, *u8 {
     if tail > 0usize {munmap((aligned + slabBytes) as *u8, tail);}
     liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
     liveBytes.addOrdered(u64.from(slabBytes), MemOrder.Relaxed);
+    bufReserve.emit(u64.from(slabBytes), u64.from(total), 0u64, 0u64);
+    bufCommit.emit(u64.from(slabBytes), u64.from(slabBytes + page), 0u64, 0u64);
     aligned as *u8, (aligned - page) as *u8
   }
 }
@@ -226,6 +255,7 @@ fn osFreeSlab(osBase: *u8) {
   #if #os == .windows {VirtualFree(osBase, 0usize, memRelease);} #else {munmap(osBase, slabBytes + page);}
   liveBlocks.subOrdered(1u64, MemOrder.Relaxed);
   liveBytes.subOrdered(u64.from(slabBytes), MemOrder.Relaxed);
+  bufRelease.emit(u64.from(slabBytes), u64.from(slabBytes + page), 0u64, u64.from(slabBytes + slabBytes + page));
 }
 
 // An oversize block of size bytes (whole pages), page-aligned and of its own
@@ -240,6 +270,8 @@ fn osAlloc(size: usize) *u8 {
   if b as usize != 0usize {
     liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
     liveBytes.addOrdered(u64.from(size), MemOrder.Relaxed);
+    bufReserve.emit(0u64, u64.from(size), 0u64, 0u64);
+    bufCommit.emit(0u64, u64.from(size), 0u64, 0u64);
   }
   b
 }
@@ -248,6 +280,7 @@ fn osFree(block: *u8, size: usize) {
   #if #os == .windows {VirtualFree(block, 0usize, memRelease);} #else {munmap(block, size);}
   liveBlocks.subOrdered(1u64, MemOrder.Relaxed);
   liveBytes.subOrdered(u64.from(size), MemOrder.Relaxed);
+  bufRelease.emit(0u64, u64.from(size), 0u64, u64.from(size));
 }
 
 // What the pool holds from the OS now: slabs and oversize blocks, and their bytes
@@ -497,6 +530,7 @@ fn refill(tc: *ThreadCache, c: usize, ln: *CacheLine) *u8 {
     return null;
   }
   (*ln).count = got - 1u32;
+  bufCache.emit(0u64, (*tc).misses, u64.from(tc as usize), cacheHeld(tc));
   *(slotsOf(ln) + usize.from(got - 1u32))
 }
 
@@ -532,6 +566,7 @@ fn spill(tc: *ThreadCache, c: usize, ln: *CacheLine) {
   stockPut(g, cs, slotsOf(ln), k);
   mem.moveRaw[*u8](slotsOf(ln), slotsOf(ln) + usize.from(k), usize.from(n - k));
   (*ln).count = n - k;
+  bufCache.emit(0u64, (*tc).misses, u64.from(tc as usize), cacheHeld(tc));
 }
 
 // All of this thread's cache back to the stock, and its record retired for
@@ -1069,6 +1104,10 @@ fn poolSize(r: *MemRegion, bytes: usize, align: usize) usize {
 }
 
 fn @initpure init() {
+  bufReserve = Kind4[u64, u64, u64, u64].make("bufpool.reserve", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  bufCommit = Kind4[u64, u64, u64, u64].make("bufpool.commit", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  bufRelease = Kind4[u64, u64, u64, u64].make("bufpool.release", "memory", Level.Debug, "elem", "n", "inst", "aux");
+  bufCache = Kind4[u64, u64, u64, u64].make("bufpool.cache", "memory", Level.Trace, "elem", "n", "inst", "aux");
   liveBlocks = Atomic[u64].of(0u64);
   liveBytes = Atomic[u64].of(0u64);
   gAddr = Atomic[usize].of(0usize);
