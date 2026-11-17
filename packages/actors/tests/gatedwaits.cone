@@ -1,0 +1,80 @@
+// THE STOP'S GATE, two waits asleep as it closes (Bug 95, #1416's review, finding A). An actor awaits an
+// operation that is never answered, so the runtime is quiet but never idle: a plain thread in waitUntilIdle and
+// another in waitUntilIdleFor (a long limit) both sleep on the scheduler's 'quiet' word. Main then stops the
+// runtime (finalAll): its quiesce #1 returns at once, the gate closes, and the stop wakes the sleepers and spins
+// until both have left. A wake of one sleeper left the other asleep and the stop spinning for good; the wake
+// is of all. The test is that both threads return, the second one true, and the program ends. The timeout
+// stands for a hang.
+
+mod gatedwaits;
+
+import stdio use *;
+import libc;
+import actors;
+import thread;
+import time use Duration;
+
+// An operation's record: the Reply the seam gave
+struct Rec {
+  pub reply: actors.Reply;
+}
+
+let started: Atomic[u32];   // the operation has begun (the actor is parked on it)
+let entered: Atomic[u32];   // threads about to call their wait
+
+fn @initpure init() {
+  started = Atomic[u32].of(0u32);
+  entered = Atomic[u32].of(0u32);
+}
+
+// Never answers: the Reply waits in its record
+fn runNever(ctx: *u8, rp: actors.Reply) {
+  mem.writeRaw[Rec](ctx as *Rec, Rec(rp));
+  started.store(1u32);
+}
+
+fn dropIt(ctx: *u8) {}
+
+fn neverOp(r: *Rec) actors.Awaitable[u64] {actors.Awaitable[u64].of(r as *u8, &runNever, &dropIt)}
+
+actor Lost {
+  pub async fn go(self, rec: usize) {
+    let v = await neverOp(rec as *Rec);
+  }
+}
+
+fn plain(x: u32) u32 {
+  entered.add(1u32);
+  actors.waitUntilIdle();
+  1u32
+}
+
+fn timed(x: u32) u32 {
+  entered.add(1u32);
+  if actors.waitUntilIdleFor(Duration.fromMillis(60000i64)) {1u32} else {0u32}
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let rec = libc.malloc(mem.sizeof[Rec]());
+  {
+    let l = Lost();
+    l.go(rec as usize);
+  }
+  while started.load() == 0u32 {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  let t1 = thread.start(0u32, &plain);
+  let t2 = thread.start(0u32, &timed);
+  while entered.load() < 2u32 {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  // Let both reach their sleep
+  thread.sleep(Duration.fromMillis(30i64));
+  finalAll();
+  let a = t1.join();
+  let b = t2.join();
+  print <- "waitUntilIdle returned: ", a == 1u32, "\n";
+  print <- "waitUntilIdleFor returned true: ", b == 1u32, "\n";
+}
