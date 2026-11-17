@@ -2856,20 +2856,25 @@ pub struct Reply is Sendable {
   // it is told so. An operation's, sent or never sent, is spent here: it is no
   // longer outstanding (waitUntilIdle)
   fn final(self: &uni) {
-    if to as usize != 0usize {
-      // a reply never answered: the group noted at its await goes with it
-      if (id & groupBit) != 0u64 {
-        groupForget(usize.from(id ^ groupBit) as *GNode);
-      }
-      let release = (*to).release;
-      release(to);
-    }
-    else if cell as usize != 0usize {
-      futureEnd(cell, futAbandoned);
-    }
+    letGoReply(to, id, cell);
     if (meta & replyOp) != 0u64 {
       opSpent();
     }
+  }
+}
+
+// What a reply owes when it goes unanswered: for one to an awaiting actor, the group noted at its await goes
+// with it and the actor's count is let go; a future's is abandoned. (The operation count is the caller's.)
+fn letGoReply(to: *Header, id: u64, cell: *u8) {
+  if to as usize != 0usize {
+    if (id & groupBit) != 0u64 {
+      groupForget(usize.from(id ^ groupBit) as *GNode);
+    }
+    let release = (*to).release;
+    release(to);
+  }
+  else if cell as usize != 0usize {
+    futureEnd(cell, futAbandoned);
   }
 }
 
@@ -3235,7 +3240,11 @@ fn replyPrepLent(r: &Reply, lent: *u8, release: *u8) Put {
 
 // The value is written: publish the slot. The count the envelope held becomes
 // the scheduler's owner when the publication takes the idle mark, as a
-// send's own would; otherwise it is let go
+// send's own would; otherwise it is let go.
+// ONLY THE DISPATCHER (a worker) MAY CALL THIS, and 'answered' below, which
+// reaches it: neither passes the stop's gate (the value is already written, so
+// a refusal here would leak it). A plain thread answers through answerNowIn or
+// answerLentIn, which pass the gate before the slot is claimed
 fn replyFinish(h: *Header, p: Put) {
   if running.load() == 0usize {
     die("actors: a reply sent after the runtime stopped");
@@ -3292,10 +3301,30 @@ pub fn answerNowIn[R](rp: &mut Reply, v: R) {
     return;
   }
   let h = rp.to;
+  // THE STOP'S GATE: a plain thread's answer to an actor is refused once the stop has begun, before its
+  // value is written: the value is dropped here, and the reply let go unanswered (refuseReply)
+  let plain = me == 0usize && stopperHere == 0usize;
+  if plain && !gateEnter() {
+    refuseReply(rp, u64.from(mem.sizeof[R]()));
+    return;
+  }
   let p = replyPrep(rp);
   mem.writeRaw[R](p.at as *R, v);
   spend(rp);
   replyFinish(h, p);
+  if plain {
+    gateLeave();
+  }
+}
+
+// An answer the gate refused (the stop has begun, and this thread is neither a worker nor the stopper): counted
+// as a refused send is, and the reply let go as one dropped unanswered is, its awaiting actor abandoned as at
+// the end, and left spent. A reply of an operation is counted spent by its own drop, afterwards, as ever. The
+// caller drops the value
+fn refuseReply(rp: &mut Reply, elem: u64) {
+  refuseSend(elem);
+  letGoReply(rp.to, rp.id, null);
+  spend(rp);
 }
 
 // A reply answered twice is a program error
@@ -3350,16 +3379,7 @@ pub fn answerLentIn[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
   notSpent(rp);
   let op = (rp.meta & replyOp) != 0u64;
   if !wanted(rp) {
-    let tmp = libc.malloc(mem.sizeof[R]() + 16usize);
-    if tmp as usize == 0usize {
-      die("actors: out of memory for a reply");
-    }
-    spend(rp);
-    opHold(op);
-    take(p as *u8, tmp);
-    mem.finalize[R](tmp as *R);
-    libc.free(tmp);
-    opRelease(op);
+    dropLent[R](rp, p, take, op);
     return;
   }
   if rp.cell as usize != 0usize {
@@ -3373,12 +3393,23 @@ pub fn answerLentIn[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
     return;
   }
   let h = rp.to;
+  // THE STOP'S GATE, as answerNowIn's: refused, the value is taken and dropped, the reply let go unanswered
+  let plain = me == 0usize && stopperHere == 0usize;
+  if plain && !gateEnter() {
+    refuseSend(u64.from(mem.sizeof[R]()));
+    letGoReply(rp.to, rp.id, null);
+    dropLent[R](rp, p, take, op);
+    return;
+  }
   if (rp.meta & replyBoxed) != 0u64 && mem.sizeof[R]() <= lentMax && mem.alignof[R]() <= 8usize {
     var tk = take;
     let takep = mem.readRaw[*u8](&mut tk as *(*u8));
     let put = replyPrepLent(rp, p as *u8, takep);
     spend(rp);
     replyFinish(h, put);
+    if plain {
+      gateLeave();
+    }
     return;
   }
   let put = replyPrep(rp);
@@ -3386,6 +3417,24 @@ pub fn answerLentIn[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
   opHold(op);
   take(p as *u8, put.at);
   replyFinish(h, put);
+  opRelease(op);
+  if plain {
+    gateLeave();
+  }
+}
+
+// The lent value at p, taken by the answerer's 'take' into a scratch place and dropped there, the reply spent
+// first: an answer nobody wants (answerLentIn)
+fn dropLent[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8), op: bool) {
+  let tmp = libc.malloc(mem.sizeof[R]() + 16usize);
+  if tmp as usize == 0usize {
+    die("actors: out of memory for a reply");
+  }
+  spend(rp);
+  opHold(op);
+  take(p as *u8, tmp);
+  mem.finalize[R](tmp as *R);
+  libc.free(tmp);
   opRelease(op);
 }
 
@@ -3450,7 +3499,9 @@ pub fn answerTo(slot: &mut Answer) *u8 {
   slot.put.at
 }
 
-// The value is where answerTo said: the reply is sent, and the slot emptied
+// The value is where answerTo said: the reply is sent, and the slot emptied.
+// Only the dispatcher may call it: it reaches replyFinish, which does not pass
+// the stop's gate (see there)
 pub fn answered(slot: &mut Answer) {
   slot.held = 0u8;
   if slot.claimed != 0u8 {
@@ -4280,8 +4331,11 @@ let running: Atomic[usize];
 // shut returns at once; one inside it is woken by the stop and returns (waitLoop). The stop wakes ALL the
 // sleepers on 'quiet' (futexWakeAll, as does every other wake of it): it must wait for every wait inside the
 // gate, and the waits and quiesce all sleep on that one word. 'isRunning' is false from the gate's closing.
-// NOT YET GATED: replyFinish, pushFuture, a startActor whose init sent, parallelEach/parallelRange from a plain
-// thread, opSpent and orcancelled.signal; a thread that calls them must be joined before the stop.
+// Gated too, from a plain thread: an answer to an awaiting actor (answerNowIn, answerLentIn: refused, the value
+// dropped and the reply let go unanswered), a future's waiter's push (pushFuture: refused, abandoned as at the
+// end), the wake of opSpent, and orcancelled.signal. Each refusal of a reply or a push is counted with the
+// refused sends. NOT YET GATED: a startActor whose init sent, and parallelEach/parallelRange from a plain
+// thread; a thread that calls them must be joined before the stop.
 let gateClosed: Atomic[u32];
 let gateInflight: Atomic[usize];
 let refusedSends: Atomic[u64];
@@ -4868,6 +4922,11 @@ fn spin(w: *Worker) bool {
 }
 
 // ---- A TEST HOOK: a worker held on its way to park ----
+//
+// These hooks (holdNextPark, parkHeld, parkHeldWorker, releaseParkTo, releasePark, pokeParked, and the
+// monitor's, monitorParked and monitorTick) are not gated (THE STOP'S GATE) and are not part of the API: a
+// test calls them from its main thread before the stop. Called from a plain thread during or after the stop
+// they read the Sched the stop frees; releasePark spins until a worker it has not held goes on.
 //
 // The next worker to leave THE SPIN for the park stops at one of three places
 // ('at'). 1, holdNextPark: after the spin's last look and before it publishes
@@ -5739,6 +5798,13 @@ let opsEnded: Atomic[u64];
 // idle to look again
 fn opSpent() {
   opsEnded.addOrdered(1u64, MemOrder.SeqCst);
+  // The wake touches the Sched, which the stop frees: from a plain thread it passes THE STOP'S GATE. Shut, no
+  // wait needs it (the stop has woken every sleeper, and the waits return at once); the count above is outside
+  // the Sched and is made either way
+  let plain = me == 0usize && stopperHere == 0usize;
+  if plain && !gateEnter() {
+    return;
+  }
   let s = running.load() as *Sched;
   if s as usize != 0usize {
     // Only the end that leaves none outstanding can make a waiter's look succeed (the
@@ -5749,6 +5815,9 @@ fn opSpent() {
       (*s).quiet.add(1u32);
       sync.futexWakeAll(&(*s).quiet);   // all: see the last sleeper's wake in park
     }
+  }
+  if plain {
+    gateLeave();
   }
 }
 
