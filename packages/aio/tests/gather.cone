@@ -1,0 +1,241 @@
+// A gather write: write(Chain) sends every segment of an iobuf Chain, in
+// order, in one operation, and answers the count. It is tried on the awaiting
+// actor's worker like any send (iocore's WORKER-SIDE ISSUE): sent whole there
+// or, when the socket takes only part, handed on in flight.
+//
+// 1. Chains of 1, 3, 20 (over Windows' 16 on-stack buffers) and 100 (over
+//    Linux's 64 spans a call) segments: each answers its byte count and the
+//    peer reads every byte back, in order. The small ones are answered on the
+//    worker (opStats().answeredHere rises by at least 3 of the 4).
+// 2. An empty chain answers Ok(0).
+// 3. 8 MiB in 16 segments to a reader that waits and then reads slowly: the
+//    send goes partial or pending, and every byte still arrives once, in order.
+// 4. A gather in a cancel group already cancelled is answered Cancelled, with
+//    its chain home.
+//
+// At the end every buffer is home (lent == 0) and every record dissolved.
+
+mod gather;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver, Channel, Sender, Receiver;
+import thread;
+import time use Duration;
+import iobuf use IoBuf, Chain, stats;
+import iocore use SocketAddr, IoError, CancelGroup;
+import actors;
+import aio use Socket, IoLimits;
+
+const bigSegs = 16usize;
+const bigPer = 524288usize;
+
+struct Got {
+  pub counts: Atomic[u64];       // the small gathers answered their byte count
+  pub readBack: Atomic[u64];     // the small gathers read back whole and in order
+  pub empty: Atomic[u64];        // 1 if the empty chain answered Ok(0)
+  pub here: Atomic[u64];         // answeredHere's rise over the small gathers
+  pub big: Atomic[u64];          // the 8 MiB gather's count
+  pub bigRead: Atomic[u64];      // bytes the slow reader took
+  pub wrong: Atomic[u64];        // 1 + the first byte not as sent, or 0
+  pub cancelled: Atomic[u64];    // 1 if the gather in the group answered Cancelled
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn pattern(i: usize) u8 {u8.from(i % 251usize)}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+// A chain of segs segments of per bytes: the stream's bytes from offset off on
+fn makeChain(segs: usize, per: usize, off: usize) Chain {
+  var c = Chain.make(0xFFFFFFFFusize);
+  var s = 0usize;
+  while s < segs {
+    var b = IoBuf(per);
+    let p = b.base();
+    var i = 0usize;
+    while i < per {
+      *(p + i) = pattern(off + s * per + i);
+      i = i + 1usize;
+    }
+    b.setLen(per);
+    let refused = c.push(b);
+    s = s + 1usize;
+  }
+  c
+}
+
+// Check b's bytes against the stream from offset at; the length (0: the end)
+fn checkBytes(b: &IoBuf, at: usize) usize {
+  let q = b.base();
+  var k = 0usize;
+  while k < b.len() {
+    if *(q + k) != pattern(at + k) && got.wrong.load() == 0u64 {
+      got.wrong.store(u64.from(at + k) + 1u64);
+    }
+    k = k + 1usize;
+  }
+  b.len()
+}
+
+actor Reader {
+  pub async fn go(self, s: Socket, done: OneshotSender[u64]) {
+    // The write fills the socket before anything is read, then reads are slow
+    let z = await aio.sleep(Duration.fromMillis(100i64));
+    let total = bigSegs * bigPer;
+    var at = 0usize;
+    var more = true;
+    var reads = 0u64;
+    while more && at < total {
+      let r = await s.read(IoBuf(65536usize));
+      match r {
+        case let Ok(b) {
+          let n = checkBytes(&b, at);
+          if n == 0usize {more = false;}
+          at = at + n;
+        }
+        else {more = false;}
+      }
+      reads = reads + 1u64;
+      if reads % 8u64 == 0u64 {
+        let y = await aio.sleep(Duration.fromMillis(1i64));
+      }
+    }
+    got.bigRead.store(u64.from(at));
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+actor Run {
+  pub async fn go(self, g: CancelGroup, ready: Sender[u64], rdone: OneshotSender[u64], done: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let a = socketOf(await ls.accept());
+
+    // 1. Chains of 1, 3, 20 and 100 segments
+    let h0 = aio.opStats().answeredHere;
+    var segs = Array[usize, 4]() <- fill 0usize;
+    segs[0usize] = 1usize;
+    segs[1usize] = 3usize;
+    segs[2usize] = 20usize;
+    segs[3usize] = 100usize;
+    var off = 0usize;
+    var k = 0usize;
+    while k < 4usize {
+      let per = 37usize;
+      let n = segs[k] * per;
+      let w = await c.write(makeChain(segs[k], per, off));
+      match w {
+        case let Ok(m) {if m == n {got.counts.store(got.counts.load() + 1u64);}}
+        else {}
+      }
+      var at = 0usize;
+      var more = true;
+      while more && at < n {
+        let r = await a.read(IoBuf(65536usize));
+        match r {
+          case let Ok(b) {
+            // The stream's bytes: this round's start is off
+            let q = b.base();
+            var j = 0usize;
+            while j < b.len() {
+              if *(q + j) != pattern(off + at + j) && got.wrong.load() == 0u64 {
+                got.wrong.store(u64.from(off + at + j) + 1u64);
+              }
+              j = j + 1usize;
+            }
+            if b.len() == 0usize {more = false;}
+            at = at + b.len();
+          }
+          else {more = false;}
+        }
+      }
+      if at == n {got.readBack.store(got.readBack.load() + 1u64);}
+      off = off + n;
+      k = k + 1usize;
+    }
+    got.here.store(aio.opStats().answeredHere - h0);
+
+    // 2. An empty chain
+    let e = await c.write(Chain.make(16usize));
+    match e {
+      case let Ok(m) {if m == 0usize {got.empty.store(1u64);}}
+      else {}
+    }
+
+    // 3. 8 MiB to a slow reader
+    let rd = Reader();
+    rd.go(a, rdone);
+    let w3 = await c.write(makeChain(bigSegs, bigPer, 0usize));
+    match w3 {
+      case let Ok(m) {got.big.store(u64.from(m));}
+      else {}
+    }
+
+    // 4. A gather in a group already cancelled: issued on the worker it is
+    // refused, the Loop answers Cancelled, and the chain goes home. (A
+    // gather cancelled while pending cannot be arranged on loopback: the
+    // system takes tens of MiB with no reader.)
+    ready.send(1u64);
+    let w4 = await c.writeIn(makeChain(5usize, 4096usize, 0usize), IoLimits.within(g));
+    match w4 {
+      case let Err(x) {if aio.isCancelled(x) {got.cancelled.store(1u64);}}
+      else {}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  var rdtx: OneshotSender[u64];
+  var rdrx: OneshotReceiver[u64];
+  rdtx, rdrx = Oneshot[u64].make();
+  var rtx: Sender[u64];
+  var rrx: Receiver[u64];
+  rtx, rrx = Channel[u64].make();
+  let g = CancelGroup.make();
+  {
+    let r = Run();
+    expect(g.cancel(), "the group was live");
+    r.go(g, rtx, rdtx, tx);
+  }
+  rx.recv();
+  rdrx.recv();
+  finalAll();
+  expectUInt(got.counts.load(), 4u64, "each small gather answered its byte count");
+  expectUInt(got.readBack.load(), 4u64, "and the peer read every byte of each");
+  expect(got.here.load() >= 3u64, "at least 3 of the 4 small gathers were answered on the worker");
+  expectUInt(got.empty.load(), 1u64, "an empty chain answered Ok(0)");
+  expectUInt(got.big.load(), u64.from(bigSegs * bigPer), "the 8 MiB gather answered every byte");
+  expectUInt(got.bigRead.load(), u64.from(bigSegs * bigPer), "the slow reader took every byte");
+  expectUInt(got.wrong.load(), 0u64, "each in its place: none lost, none sent twice");
+  expectUInt(got.cancelled.load(), 1u64, "a gather in a cancelled group answered Cancelled");
+  expectUInt(stats().lent, 0u64, "every buffer came home, the cancelled chain's among them");
+  expectUInt(aio.opStats().inUse, 0u64, "every record dissolved");
+  done()
+}

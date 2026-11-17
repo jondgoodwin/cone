@@ -106,6 +106,24 @@ fn sendToOn(pool: &OpPool[Ask], h: Handle, to: SocketAddr, text: &Array[u8]) *Op
   r as *OpCore
 }
 
+// A send of a chain of segs segments of 5 bytes each
+fn gatherOn(pool: &OpPool[Ask], h: Handle, segs: usize) *OpCore {
+  let r = pool.take(Ask(5u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindSend;
+  c.handle = h;
+  var ch = Chain.make(1048576usize);
+  var k = 0usize;
+  while k < segs {
+    var b = IoBuf(64usize);
+    b.append("abcde");
+    _ = ch.push(b);
+    k = k + 1usize;
+  }
+  c.bufs = Some[Uni[Chain]](Uni[Chain](ch));
+  r as *OpCore
+}
+
 fn portOf(lp: &mut Loop, h: Handle) u16 {
   match lp.localAddr(h) {
     case let Ok(x) {x.port()}
@@ -229,6 +247,22 @@ fn main() i32 {
   let gone7 = bytesOf(&pool, r7);
   lp.close(u);
   lp.close(v);
+
+  // 6. A gather: twenty segments (over Windows' sixteen on the stack) done at
+  // once and read back whole; an empty chain is not issued (the loop answers
+  // Done(0))
+  let g6 = gatherOn(&pool, b, 20usize);
+  expectUInt(u64.from(issueOn(&sh, b, g6)), u64.from(issueDone), "a gather is done where it is issued");
+  expectUInt(u64.from((g6 as &OpCore).count()), 100u64, "all hundred bytes");
+  expect((g6 as &OpCore).isLetGo(), "and let go");
+  let gone8 = bytesOf(&pool, g6);
+  thread.sleep(Duration.fromMillis(20i64));
+  let r8 = recvOn(&pool, a);
+  expectUInt(u64.from(issueOn(&sh, a, r8)), u64.from(issueDone), "the peer's receive finds them");
+  expectUInt(u64.from(bytesOf(&pool, r8)), 100u64, "all hundred, in one receive");
+  let g9 = gatherOn(&pool, b, 0usize);
+  expectUInt(u64.from(issueOn(&sh, b, g9)), u64.from(issueNot), "an empty gather is not issued");
+  let gone9 = bytesOf(&pool, g9);
 
   // 4. Closing, and closed
   expect(sh.lock(b), "b is in the table");
