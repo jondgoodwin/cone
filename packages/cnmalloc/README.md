@@ -51,7 +51,8 @@ prints the lock-wait lines the benchmark runner collects.
 1. A plain mutable global (the process's heap pointer): error 1626.
 2. The compare-and-swap lazy start: no atomics in a prelude-less (C-named) module.
 3. The `__imp_<name>` pointers: a data symbol holding a function's address has no spelling.
-4. A hook in the CRT terminator table (`.CRT$XTU`) for the exit-time statistics.
+4. The exit-time statistics hook (`atexit`, registered only when `CNMALLOC=stats`): Cone has no spelling for handing
+   a function to the C runtime's exit table from a prelude-less module.
 5. Not a gap but a choice: the C names `malloc` and friends are defined in the C file too, so the library has one place
    that decides what a standard-API call does. Cone's C-named module could export them.
 6. Found while building: a string literal cannot be cast to `*u8` (1013), so literals reach `memcpy`-like code

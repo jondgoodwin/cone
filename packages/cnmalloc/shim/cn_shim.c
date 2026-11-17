@@ -3,7 +3,7 @@
 //   1. the one mutable global (the process's heap pointer), error 1626 in a C-named module;
 //   2. the compare-and-swap lazy start (no atomics in a prelude-less module);
 //   3. the __imp_ pointers (data symbols whose value is a function's address);
-//   4. the exit-time statistics hook (a function pointer in the CRT's terminator table).
+//   4. the exit-time statistics hook (atexit, only under CNMALLOC=stats).
 // Everything else (the names malloc, calloc, ... included) could be exported from Cone; they are here too so the
 // library has one place that decides what a standard-API call does. Nothing here calls malloc or anything that does.
 //
@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 // the Cone package's exports (all take the heap's address first)
 extern uintptr_t cnm_boot(void);
@@ -35,11 +36,9 @@ static volatile uintptr_t g_heap;
 static volatile LONG g_state;       // 0 not started, 1 starting, 2 ready
 static int g_stats;
 
-// the CRT calls the terminators in .CRT$XT? at exit: a pointer here prints the counters without registering with atexit
+// CNMALLOC=stats: the counters are printed at exit. atexit is the exe's own CRT's and keeps its table in the C
+// runtime's internal heap (not through the exported malloc this file replaces), so registering allocates nothing of ours.
 static void __cdecl cn_at_exit(void) { if (g_stats && g_heap) cnm_print_stats(g_heap); }
-typedef void(__cdecl* term_fn)(void);
-#pragma section(".CRT$XTU", read)
-__declspec(allocate(".CRT$XTU")) static term_fn cn_term = cn_at_exit;
 
 static uintptr_t cn_start(void) {
   if (InterlockedCompareExchange(&g_state, 1, 0) == 0) {
@@ -47,6 +46,7 @@ static uintptr_t cn_start(void) {
     if (!h) ExitProcess(3);   // nothing sane to do without a heap
     g_heap = h;
     g_stats = cnm_wants_stats(h) ? 1 : 0;   // CNMALLOC=stats
+    if (g_stats) atexit(cn_at_exit);
     InterlockedExchange(&g_state, 2);
   } else {
     while (g_state != 2) YieldProcessor();
