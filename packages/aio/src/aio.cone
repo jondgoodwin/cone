@@ -104,6 +104,9 @@
 //   aio.resolveIn(host, port, lim)  aio.statIn(path, lim)  aio.runIn(args, opts, dir, lim)
 //   aio.runLineIn(line, opts, dir, lim)
 //                           the same four, limited by lim                  (THE BLOCKING POOL'S WORK)
+//   aio.onPool(lane, work, arg, buf)  a work function run on a lane of the blocking pool:
+//                           the count it returned and the buffer   Result[CallDone, IoError]
+//   aio.onPoolIn(lane, work, arg, buf, lim)   the same, limited by lim   (THE BLOCKING POOL'S WORK)
 //   aio.isCancelled(e)  aio.isTimedOut(e)  aio.isTruncated(e)
 //                           what an IoError says of how an operation ended
 //   Hosted (a trait)  aio.host[S](maker)  h.end()  h.post[J](job)
@@ -568,6 +571,13 @@
 // home with the answer. A run's request and its answer are in its record,
 // which the pool's thread works on while it is away.
 //
+// 'onPool(lane, work, arg, buf)' is the same for work of the caller's own: iocore's
+// Op.Call, 'work' an '&fn(arg u64, buf &mut IoBuf) Outcome' run on a thread of
+// 'lane' with the buffer moved to it. Done(n) answers Ok(CallDone(n, buf));
+// the work's Failed(code) the error of that system number; the buffer goes home
+// on any Err. It is started on the I/O thread, as 'resolve' is: no worker-side
+// try.
+//
 // 'resolve(host, port)' is iocore's 'resolveOp' (getaddrinfo, the stream socket
 // type): 'host' is a name or an address as text, and every address found is a
 // SocketAddr with 'port' (its default 0): IPv4 and IPv6 as the system gives
@@ -661,7 +671,7 @@ import sync use Mutex;
 import collections use List, String;
 import iobuf use IoBuf;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending;
 import path use Path;
 import process;
 import actors;
@@ -708,6 +718,7 @@ const opConnect = 9u32;       // Result[Socket, IoError]
 const opSleep = 10u32;        // Result[void, IoError]
 const opResolve = 11u32;      // Result[List[SocketAddr], IoError]
 const opStat = 12u32;         // Result[FileStat, IoError]
+const opCall = 13u32;         // onPool: Result[CallDone, IoError]
 const opCancel = 14u32;       // cancelRead, cancelWrite: no answer
 const opClose = 15u32;        // a handle's close, its Socket, File or UdpSocket dropped: no answer
 const opPipeRead = 16u32;     // a pipe's read: Result[IoBuf, IoError]
@@ -2346,6 +2357,8 @@ fn answerRec(rp: *OpRec[Ask]) {
     actors.answerLentIn[Result[Socket, IoError]](back, rp as *Result[Socket, IoError], &takeSocket);
   } else if w == opAcceptFrom {
     actors.answerLentIn[Result[Accepted, IoError]](back, rp as *Result[Accepted, IoError], &takeAccepted);
+  } else if w == opCall {
+    actors.answerLentIn[Result[CallDone, IoError]](back, rp as *Result[CallDone, IoError], &takeCall);
   } else if w == opRecvFrom {
     actors.answerLentIn[Result[Datagram, IoError]](back, rp as *Result[Datagram, IoError], &takeDatagram);
   } else if w == opSleep {
@@ -2374,6 +2387,8 @@ fn answerTimedOut(rp: *OpRec[Ask]) {
     actors.answerNowIn[Result[Socket, IoError]](back, Err[Socket, IoError](e));
   } else if w == opAcceptFrom {
     actors.answerNowIn[Result[Accepted, IoError]](back, Err[Accepted, IoError](e));
+  } else if w == opCall {
+    actors.answerNowIn[Result[CallDone, IoError]](back, Err[CallDone, IoError](e));
   } else if w == opRecvFrom {
     actors.answerNowIn[Result[Datagram, IoError]](back, Err[Datagram, IoError](e));
   } else if w == opSleep {
@@ -2427,7 +2442,6 @@ fn takeRead(p: *u8, to: *u8) {
   mem.writeRaw[Result[IoBuf, IoError]](to as *Result[IoBuf, IoError], readResult(kind, status, code, buf));
 }
 
-// Accept's and connect's: the new Socket
 // acceptFrom's: the connection and its peer's address, which the Loop read
 // from the new socket when it adopted it
 fn takeAccepted(p: *u8, to: *u8) {
@@ -2440,6 +2454,7 @@ fn takeAccepted(p: *u8, to: *u8) {
   mem.writeRaw[Result[Accepted, IoError]](to as *Result[Accepted, IoError], v);
 }
 
+// Accept's and connect's: the new Socket
 fn takeSocket(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
@@ -2538,6 +2553,23 @@ fn takeStat(p: *u8, to: *u8) {
   let code = core.code;
   let buf = core.(buf);
   mem.writeRaw[Result[FileStat, IoError]](to as *Result[FileStat, IoError], statResult(status, code, buf));
+}
+
+// A pool call's: Done, the count the work answered and its buffer; any other
+// end is an error, and the buffer goes home with the rest of the record
+fn takeCall(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  let status = core.status;
+  let kind = core.kind;
+  let code = core.code;
+  let n = core.n;
+  let buf = core.(buf);
+  var v = Err[CallDone, IoError](errorOf(kind, status, code));
+  if status == diag.outcomeDone {
+    v = Ok[CallDone, IoError](CallDone(n, bufOf(buf)));
+  }
+  mem.writeRaw[Result[CallDone, IoError]](to as *Result[CallDone, IoError], v);
 }
 
 // What the records have done so far (opStats)
@@ -3430,6 +3462,32 @@ pub fn statIn(path: &Path, lim: IoLimits) actors.Awaitable[Result[FileStat, IoEr
   let p = takeRec(opStat, diag.kindCall, Handle.none(), lim);
   fillCall(&mut (*p).core, statOp(path, Lane.general(), IoBuf(roomFor(path.view()))));
   recAwaitable[Result[FileStat, IoError]](p)
+}
+
+// What a pool call answers when its work is Done: the count its work returned
+// and the buffer, as the work left it
+pub struct CallDone {
+  pub n: usize;
+  pub buf: IoBuf;
+}
+
+// 'work(arg, &mut buf)' run on a thread of the blocking pool's 'lane' (iocore's
+// Op.Call; the package's header, THE BLOCKING POOL'S WORK), the buffer moved to
+// it and back. Done(n) answers Ok(CallDone(n, buf)); the work's Failed(code) is
+// the error of that system number; a lane whose queue is full answers
+// ResourceBusy at once. On any Err the buffer goes home
+pub fn onPool(lane: Lane, work: WorkFn, arg: u64, buf: IoBuf) actors.Awaitable[Result[CallDone, IoError]] {
+  onPoolIn(lane, work, arg, buf, IoLimits.none())
+}
+
+// A pool call ended if lim says so: one still queued is taken out by a cancel
+// or a deadline (Cancelled, TimedOut: it never runs); one running cannot be
+// stopped, and a deadline past the grace answers TimedOut while the work goes
+// on, its answer dropped
+pub fn onPoolIn(lane: Lane, work: WorkFn, arg: u64, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[CallDone, IoError]] {
+  let p = takeRec(opCall, diag.kindCall, Handle.none(), lim);
+  fillCall(&mut (*p).core, Op.Call(lane, work, arg, buf));
+  recAwaitable[Result[CallDone, IoError]](p)
 }
 
 fn copyArgs(args: &Array[String]) List[String] {
