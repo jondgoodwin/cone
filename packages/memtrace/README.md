@@ -37,7 +37,7 @@ Part 1, K01-K22). Per-object kinds are `Trace`; make, grow, drop and phase are `
 | `bufpool.reserve` | Debug | K10 IoBuf slabs and oversize blocks (VirtualAlloc / mmap: no malloc shim sees them) | slab bytes (2 MiB), or 0 for an oversize block | bytes of address space asked for | 0 | 0 |
 | `bufpool.commit` | Debug | K10 | as reserve | bytes made usable (a slab: slab + header page) | 0 | 0 |
 | `bufpool.release` | Debug | K10 | as reserve | bytes given back (no partial decommit exists) | 0 | the reservation's bytes |
-| `bufpool.cache` | Trace | K10 per-thread caches | 0 | bytes this cache holds after a batch refill or spill (no check on the per-block fast paths) | the cache's address (a key of its own: the report sums each cache's last value at each sample) | the cache's misses so far |
+| `bufpool.cache` | Trace | K10 per-thread caches | 0 | the cache's misses so far | the cache's address (a key of its own) | bytes this cache holds after a batch refill or spill (no check on the per-block fast paths); the report sums each cache's last aux at each sample |
 | `arena.grow`, `arena.drop` | Debug | K18 Arena chunks | chunk room in bytes (drop: 0) | same (drop: 1) | 0 | 0 |
 | `gc.make`, `gc.free` | Trace | K21 Gc objects | object bytes | collector live bytes after | 0 | live objects after |
 | `msg.make`, `msg.drop` | Trace | K20 actor messages (sent / run) | message bytes | 1 | 0 | 0 |

@@ -155,8 +155,8 @@ import trace use Level, Kind4;
 // asked for, n bytes), bufpool.commit (memory made usable, n bytes), bufpool.release (given back, n bytes; there
 // is no partial decommit), all Debug, one per slab or oversize block (elem 2 MiB slab, or 0 oversize), and
 // bufpool.cache (Trace): the bytes one thread's cache holds after a batch moved between it and the stock (a
-// refill or a spill; the per-block fast paths carry no check): n bytes, inst the cache's address (a key of its
-// own, so the report sums the last value of each cache at each sample), aux its misses so far.
+// refill or a spill; the per-block fast paths carry no check): inst is the cache's address (a key of its
+// own, so the report sums the last aux of each cache at each sample): n its misses so far, aux the bytes held.
 let bufReserve: Kind4[u64, u64, u64, u64];
 let bufCommit: Kind4[u64, u64, u64, u64];
 let bufRelease: Kind4[u64, u64, u64, u64];
@@ -530,7 +530,7 @@ fn refill(tc: *ThreadCache, c: usize, ln: *CacheLine) *u8 {
     return null;
   }
   (*ln).count = got - 1u32;
-  bufCache.emit(0u64, cacheHeld(tc), u64.from(tc as usize), (*tc).misses);
+  bufCache.emit(0u64, (*tc).misses, u64.from(tc as usize), cacheHeld(tc));
   *(slotsOf(ln) + usize.from(got - 1u32))
 }
 
@@ -566,7 +566,7 @@ fn spill(tc: *ThreadCache, c: usize, ln: *CacheLine) {
   stockPut(g, cs, slotsOf(ln), k);
   mem.moveRaw[*u8](slotsOf(ln), slotsOf(ln) + usize.from(k), usize.from(n - k));
   (*ln).count = n - k;
-  bufCache.emit(0u64, cacheHeld(tc), u64.from(tc as usize), (*tc).misses);
+  bufCache.emit(0u64, (*tc).misses, u64.from(tc as usize), cacheHeld(tc));
 }
 
 // All of this thread's cache back to the stock, and its record retired for

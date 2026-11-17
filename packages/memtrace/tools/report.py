@@ -286,7 +286,7 @@ def report(r, only=None, show_actors=True):
         reg = by_region(delta)
         rows = []
         for (region, elem), ops in sorted(reg.items()):
-            if region == "memory":
+            if region in ("memory", "bufpool"):
                 continue
             rows.append(region_row(region, elem, ops, secs, st.get((region, elem), (0, 0, 0))))
         table("per region and element size",
