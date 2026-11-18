@@ -1,0 +1,752 @@
+// THE WORKERS' TIMERS (row 483; the spec is "aio and http"'s worker-timers
+// spec, 18 Nov 2026). A scheduler service: a timer awaited on a worker is a
+// CELL in that worker's own store, armed in that worker's own timewheel, and
+// fired by that worker between its turns, its answer going to its own queue.
+// Nothing crosses to aio's I/O thread and nothing is locked across workers on
+// the common path. aio's sleeps are its one user (timerAwaitable); the
+// re-armable timer (row 500) will build on the same cells.
+//
+// A STORE, one per worker index, made by the worker at its first timer and
+// never freed (a group that outlives the runtime may still signal a cell's
+// Wakeup, which must then find the cell's generation moved, not freed memory;
+// aio's record pool lives the same way). It holds:
+//   - the cells, in chunks of cellsPerChunk, never unmapped, and the owner's
+//     free list of them (no lock: only the owner takes and frees);
+//   - the wheel (timewheel.Wheel), an entry per armed cell, its token the
+//     cell's address (the low three bits are clear: a later kind bit's room);
+//     the owner's alone (row 485's deputy will take it under a word lock);
+//   - the RETIRE STACK, an atomic head: a cell resolved or let go on another
+//     thread is pushed there (one CAS) and the owner frees it at its next step;
+//   - 'armed', the cells armed now, which any thread lowers by its winning CAS;
+//   - 'sweep', set by the worker's own Wakeup when an ANCESTOR of a cell's group
+//     is cancelled (cancelgroups' watchWorkerAbove): the owner then looks at
+//     every armed cell's group;
+//   - 'due', the instant the owner must wake at, published while it parks, for
+//     THE MONITOR, which keeps time for parked workers and wakes the due one by
+//     name.
+// The step (timersStep) is the store's one entry for the owner: the retired
+// cells freed, a sweep if asked, and the due cells fired; or, once the stop has
+// begun, every armed cell dropped.
+//
+// A CELL'S WORD is its generation (above the low 8 bits) and its state:
+//   Free -> Ready (made by an Awaitable, not yet awaited: it holds the asking)
+//   Ready -> Armed (awaited on its owner: it holds the await's Reply, is in the
+//            wheel and registered in its group)
+//   Armed -> Taken (by ONE compare-and-swap, whoever makes it: the owner's fire,
+//            the owner's sweep, the stop's drop, or a cancel on any thread)
+//   Ready -> Dead (the Awaitable dropped off its owner, or awaited on another
+//            worker, which takes a fresh cell of its own)
+//   and back to Free, generation moved, by the owner alone.
+// EXACTLY ONCE: the Reply is taken only by the CAS out of Armed, so it is
+// answered or let go once; the loser of the CAS does nothing to it. The winner
+// has the cell to itself until it frees it (the owner) or pushes it on the
+// retire stack (any other thread), which the owner drains. A cell's Wakeup in
+// its group's registry names it by address and the word it was armed with, so
+// one that outlives the arming finds the word moved and does nothing ('isGone'
+// is true, and watchHere's sweep drops it).
+//
+// THE ANSWERS, as aio's sleeps have always given them: due at its time, Done;
+// a deadline (the IoLimits' or its group's, the tighter) before that, TimedOut
+// at the deadline; the group's cancel, Cancelled at once (TimedOut if the cause
+// is TimedOut, the group's deadline); one already cancelled, or due already,
+// answered in the start itself, in the same batch. The answer is made by the
+// caller's function (aio's), told timerDone, timerCancelled or timerTimedOut.
+//
+// WHO ANSWERS: the fire and the sweep, the owner, onto its own queue; a cancel,
+// the cancelling thread (choice 5), as orCancelled's does. The actor cannot
+// end with a live cell: the Reply holds a count of it.
+//
+// THE PARK. A worker with armed cells parks with futexWaitTimeout until its
+// earliest one (precise on Linux, whole milliseconds on Windows), and publishes
+// it in 'due' first; the monitor, which does not park while any 'due' is set,
+// pauses no longer than to the earliest and then wakes that worker by name: so
+// a parked worker's cell is late by at most a wheel tick, the monitor's beat
+// and the wake. A runtime with no monitor (one worker, or
+// Options.monitorMicros 0) takes no cells: timerAwaitable says None, and aio
+// keeps its I/O thread's timer, whose bound that is today.
+//
+// THE STOP. stopWorkers sets timersStopped first: from then no cell fires, no
+// cancel answers one, and a timer started is let go unanswered at once, as aio
+// abandons what is still awaited at its end. Each worker with armed cells is
+// woken and drops them at its step, the Replies let go unanswered (the awaiting
+// behaviour abandoned, as at the end); the stop waits until every store's
+// 'armed' is 0, the workers still running, before it goes on. The runtime is
+// never started again, so the stores are not reused.
+
+// A cell's states, the low 8 bits of its word
+// (Free is 0: cellFree, the function, leaves a free cell's state 0)
+const cellReady = 1u64;
+const cellArmed = 2u64;
+const cellTaken = 3u64;
+const cellDead = 4u64;
+const cellStateMask = 0xFFu64;
+const cellGenStep = 0x100u64;
+
+// A cell's flags
+const cellRelative = 1u32;     // 'at' is nanoseconds counted from the await, not an instant
+const cellLapses = 2u32;       // its due is a deadline before its time: it answers TimedOut
+
+const cellsPerChunk = 64usize;
+
+// What a timer's answer function is told (timerAwaitable)
+const timerDone = 0u32;
+const timerCancelled = 1u32;
+const timerTimedOut = 2u32;
+
+// No instant: a store with nothing armed
+const noDue = 0x7FFFFFFFFFFFFFFFi64;
+
+struct TimerCell {
+  word: Atomic[u64];          // generation and state (above)
+  free: *TimerCell;           // the owner's free list
+  retired: *TimerCell;        // the retire stack
+  store: *TimerStore;         // the owner's store
+  entry: TimerId;             // its wheel entry while armed (the owner's)
+  at: i64;                    // the instant asked for, in nanoseconds; with cellRelative, the wait from the await
+  limit: i64;                 // the IoLimits' deadline, in nanoseconds
+  flags: u32;
+  reply: Reply;               // the await's, while Armed
+  group: Option[CancelGroup]; // the IoLimits' group, from Ready until freed
+  answer: &fn(rp: &mut Reply, outcome: u32);
+}
+
+struct TimerChunk {
+  next: *TimerChunk;
+  cells: *TimerCell;
+}
+
+struct TimerStore {
+  before: Array[u8, 64];
+  retire: Atomic[usize];      // the retire stack's head: pushed by any thread, taken whole by the owner
+  sweep: Atomic[u32];         // an ancestor's cancel reached this worker
+  index: u32;
+  armed: Atomic[u64];         // cells Armed now
+  due: Atomic[i64];           // the owner's earliest instant, published while it parks; 0 none
+  gap: Array[u8, 32];
+  wheel: Wheel;               // the owner's
+  free: *TimerCell;           // the owner's
+  chunks: *TimerChunk;        // every chunk, newest first (the sweep's and the drop's walk)
+  next: i64;                  // when the owner must next call its wheel's expired: noDue when it is empty
+  expiries: List[Expiry];     // the owner's scratch
+  arms: Atomic[u64];          // counts, the owner's (Relaxed), for timerStats
+  fires: Atomic[u64];
+  cancels: Atomic[u64];       // answered Cancelled or TimedOut by a cancel or a sweep, any thread
+  dropped: Atomic[u64];       // let go unanswered at the stop
+}
+
+// The stores, by worker index: an array of addresses made at startWorkers, never freed
+let timerTable: Atomic[usize];
+let timerTableLen: Atomic[u32];
+// 1 from the stop's first step (THE STOP, above)
+let timersStopped: Atomic[u32];
+// This worker's store, or 0
+var @threadlocal myTimers: usize = 0usize;
+
+fn noAnswer(rp: &mut Reply, outcome: u32) {}
+
+// The table for n workers, at startWorkers
+fn timerTableMake(n: u32) {
+  let t = libc.calloc(usize.from(n), mem.sizeof[usize]()) as usize;
+  if t == 0usize {
+    die("actors: out of memory for the runtime");
+  }
+  timerTableLen.store(0u32);
+  timerTable.store(t);
+  timerTableLen.store(n);
+}
+
+// Worker i's store, or 0 if it has made none (any thread)
+fn timerStoreOf(i: u32) *TimerStore {
+  if i >= timerTableLen.load() {
+    return null;
+  }
+  let t = timerTable.load();
+  mem.atomicLoad[usize]((t + usize.from(i) * mem.sizeof[usize]()) as *usize, MemOrder.Acquire) as *TimerStore
+}
+
+// This worker's store, made at its first timer; 0 off the workers
+fn timersHere() *TimerStore {
+  if myTimers != 0usize {
+    return myTimers as *TimerStore;
+  }
+  let w = me as *Worker;
+  if w as usize == 0usize || (*w).index >= timerTableLen.load() {
+    return null;
+  }
+  let ts = libc.calloc(1usize, mem.sizeof[TimerStore]()) as *TimerStore;
+  if ts as usize == 0usize {
+    die("actors: out of memory for a worker's timers");
+  }
+  (*ts).retire = Atomic[usize].of(0usize);
+  (*ts).sweep = Atomic[u32].of(0u32);
+  (*ts).index = (*w).index;
+  (*ts).armed = Atomic[u64].of(0u64);
+  (*ts).due = Atomic[i64].of(0i64);
+  mem.writeRaw[Wheel](&(*ts).wheel as *Wheel, Wheel.make(time.Instant.now()));
+  (*ts).free = null;
+  (*ts).chunks = null;
+  (*ts).next = noDue;
+  mem.writeRaw[List[Expiry]](&(*ts).expiries as *List[Expiry], List[Expiry]());
+  (*ts).arms = Atomic[u64].of(0u64);
+  (*ts).fires = Atomic[u64].of(0u64);
+  (*ts).cancels = Atomic[u64].of(0u64);
+  (*ts).dropped = Atomic[u64].of(0u64);
+  let t = timerTable.load();
+  mem.atomicStore[usize]((t + usize.from((*w).index) * mem.sizeof[usize]()) as *usize, ts as usize, MemOrder.Release);
+  myTimers = ts as usize;
+  ts
+}
+
+// A Ready cell from the owner's free list (a new chunk when it is empty)
+fn cellTake(ts: *TimerStore) *TimerCell {
+  if (*ts).free as usize == 0usize {
+    let size = mem.sizeof[TimerCell]();
+    let block = libc.malloc(cellsPerChunk * size) as *TimerCell;
+    let ch = libc.malloc(mem.sizeof[TimerChunk]()) as *TimerChunk;
+    if block as usize == 0usize || ch as usize == 0usize {
+      die("actors: out of memory for a worker's timers");
+    }
+    var i = cellsPerChunk;
+    while i > 0usize {
+      i = i - 1usize;
+      let c = block + i;
+      mem.writeRaw[TimerCell](c, TimerCell(Atomic[u64].of(cellGenStep), (*ts).free, null, ts,
+        TimerId.none(), 0i64, 0i64, 0u32, Reply(), None, &noAnswer));
+      (*ts).free = c;
+    }
+    (*ch).next = (*ts).chunks;
+    (*ch).cells = block;
+    (*ts).chunks = ch;
+  }
+  let c = (*ts).free;
+  (*ts).free = (*c).free;
+  (*c).free = null;
+  (*c).word.store(((*c).word.load() & ~cellStateMask) | cellReady);
+  c
+}
+
+// The cell back on the owner's free list, its group let go and its generation
+// moved (the owner)
+fn cellFree(ts: *TimerStore, c: *TimerCell) {
+  if !(*c).entry.isNone() {
+    let wh = &mut (*ts).wheel;
+    wh.cancel((*c).entry);
+    (*c).entry = TimerId.none();
+  }
+  let g = mem.readRaw[Option[CancelGroup]](&(*c).group as *Option[CancelGroup]);
+  mem.writeRaw[Option[CancelGroup]](&(*c).group as *Option[CancelGroup], None[CancelGroup]);
+  let w = (*c).word.load();
+  (*c).word.store((w & ~cellStateMask) + cellGenStep);
+  (*c).free = (*ts).free;
+  (*ts).free = c;
+}
+
+// The await's Reply out of the cell, which keeps a blank (the CAS's winner)
+fn cellReply(c: *TimerCell) Reply {
+  let r = mem.readRaw[Reply](&(*c).reply as *Reply);
+  mem.writeRaw[Reply](&(*c).reply as *Reply, Reply());
+  r
+}
+
+// A cell resolved or let go off its owner: on the retire stack, for the owner
+// to free. The caller has the cell to itself and does not touch it after
+fn cellRetire(c: *TimerCell) {
+  let ts = (*c).store;
+  while true {
+    let h = (*ts).retire.load();
+    (*c).retired = h as *TimerCell;
+    let seen, ok = (*ts).retire.compareSwap(h, c as usize);
+    if ok {
+      return;
+    }
+  }
+}
+
+// What a cancel answers: TimedOut when the cause is the group's deadline, else Cancelled
+fn cancelOutcome(g: &Option[CancelGroup]) u32 {
+  match *g {
+    case let Some(x) {
+      match x.cause() {
+        case let Some(c) {
+          match c {
+            case Cause.TimedOut {return timerTimedOut;}
+            else {}
+          }
+        }
+        else {}
+      }
+    }
+    else {}
+  }
+  timerCancelled
+}
+
+// Whether the cell's group is cancelled (an ancestor's included)
+fn cellCancelled(c: *TimerCell) bool {
+  match (*c).group {
+    case let Some(g) {g.isCancelled()}
+    else {false}
+  }
+}
+
+// A cell's Wakeup in its own group (cancelgroups' watchHere): the cancel, on
+// whatever thread it runs and under the group's lock, takes the cell's Reply
+// by the CAS out of Armed and answers it there (choice 5), then retires the
+// cell to its owner. Sendable on trust: it names the cell, which is never
+// freed, and the word it was armed with
+struct CellWake is Sendable {
+  cell: *TimerCell;
+  word: u64;
+
+  pub fn signal(self: &) bool {
+    if timersStopped.load() != 0u32 {
+      return false;
+    }
+    let c = cell;
+    let seen, ok = (*c).word.compareSwap(word, (word & ~cellStateMask) | cellTaken);
+    if !ok {
+      return false;
+    }
+    let ts = (*c).store;
+    (*ts).armed.sub(1u64);
+    (*ts).cancels.addOrdered(1u64, MemOrder.Relaxed);
+    let o = cancelOutcome(&(*c).group);
+    var r = cellReply(c);
+    let f = (*c).answer;
+    f(&mut r, o);
+    cellRetire(c);
+    true
+  }
+
+  pub fn isGone(self: &) bool {(*cell).word.load() != word}
+}
+
+// A worker's Wakeup in the ancestors of its cells' groups (cancelgroups'
+// watchWorkerAbove): one per worker index for the life of the process, as
+// watchWorker asks. The cancel asks the worker to sweep, and wakes it if it is
+// parked; never gone
+struct WorkerWake is Sendable {
+  index: u32;
+
+  pub fn signal(self: &) bool {
+    if timersStopped.load() != 0u32 {
+      return false;
+    }
+    let ts = timerStoreOf(index);
+    if ts as usize == 0usize {
+      return false;
+    }
+    (*ts).sweep.store(1u32);
+    wakeWorkerAt(index);
+    true
+  }
+
+  pub fn isGone(self: &) bool {false}
+}
+
+// Wake worker i if it is parked: its bit claimed, its word PARKED to NOTIFIED,
+// as wakeOne does for whichever worker. Any thread; a plain one passes THE
+// STOP'S GATE, as opSpent's wake does. A worker not parked sees what the caller
+// stored before this, SeqCst, at its look after it publishes its park (idle)
+fn wakeWorkerAt(i: u32) {
+  let plain = me == 0usize && stopperHere == 0usize;
+  if plain && !gateEnter() {
+    return;
+  }
+  let s = running.load() as *Sched;
+  if s as usize != 0usize && i < (*s).nworkers {
+    wakeNamed(s, workerAt(s, i));
+  }
+  if plain {
+    gateLeave();
+  }
+}
+
+fn wakeNamed(s: *Sched, w: *Worker) {
+  let wp = parkedWord(s, (*w).index / 64u32);
+  let bit = parkedBit(w);
+  if (mem.atomicAnd[u64](wp, ~bit, MemOrder.SeqCst) & bit) != 0u64 {
+    let seen, marked = (*w).park.compareSwap(parkParked, parkNotified);
+    if marked {
+      sync.futexWake(&(*w).park);
+    }
+  }
+}
+
+// THE RUNTIME'S, not for programs (public because aio calls it from its own
+// package, as answerNowIn and workerHooks are): a timer awaited on the worker
+// that awaits it, as a CELL of that worker's (THE WORKERS' TIMERS, timers.cone).
+// 'when' is an instant in nanoseconds, or, if 'relative', nanoseconds counted
+// from the await; 'group' and 'limit' are the IoLimits' (copied); 'answer' is
+// called once with the await's Reply and timerDone (0), timerCancelled (1) or
+// timerTimedOut (2), on the thread that decides it, and answers R through
+// answerNowIn. None, the caller to keep its own timer, off the workers, in a
+// runtime with no monitor, and once the stop has begun
+pub fn timerAwaitable[R](when: i64, relative: bool, group: &Option[CancelGroup], limit: time.Instant,
+    answer: &fn(rp: &mut Reply, outcome: u32)) Option[Awaitable[R]] {
+  let w = me as *Worker;
+  if w as usize == 0usize || (*(*w).sched).monitorMicros == 0u32 || timersStopped.load() != 0u32 {
+    return None;
+  }
+  let ts = timersHere();
+  if ts as usize == 0usize {
+    return None;
+  }
+  let c = cellTake(ts);
+  (*c).at = when;
+  (*c).limit = limit.nanos();
+  (*c).flags = if relative {cellRelative} else {0u32};
+  mem.writeRaw[Option[CancelGroup]](&(*c).group as *Option[CancelGroup], *group);
+  (*c).answer = answer;
+  Some[Awaitable[R]](Awaitable[R].of(c as *u8, &timerStart, &timerDrop))
+}
+
+// An Awaitable's cell let go unawaited: freed by its owner, or retired to it
+fn timerDrop(ctx: *u8) {
+  let c = ctx as *TimerCell;
+  cellLetGo(c);
+}
+
+// A Ready cell let go by its one holder: on the owner, freed; elsewhere its
+// group let go here and the cell retired Dead
+fn cellLetGo(c: *TimerCell) {
+  let ts = (*c).store;
+  if myTimers == ts as usize {
+    cellFree(ts, c);
+    return;
+  }
+  let g = mem.readRaw[Option[CancelGroup]](&(*c).group as *Option[CancelGroup]);
+  mem.writeRaw[Option[CancelGroup]](&(*c).group as *Option[CancelGroup], None[CancelGroup]);
+  (*c).word.store(((*c).word.load() & ~cellStateMask) | cellDead);
+  cellRetire(c);
+}
+
+// The await: the cell armed on this worker (a fresh one of its own if the
+// Awaitable was made on another), or answered at once
+fn timerStart(ctx: *u8, rp: Reply) {
+  var c = ctx as *TimerCell;
+  var r = rp;
+  let ts = timersHere();
+  if ts as usize == 0usize || timersStopped.load() != 0u32 {
+    // Off the workers (no await runs there), or the stop has begun: let go
+    // unanswered, as aio abandons an operation after its end
+    cellLetGo(c);
+    return;
+  }
+  if (*c).store as usize != ts as usize {
+    // Made on another worker: a cell of this one's, the old one retired
+    let n = cellTake(ts);
+    (*n).at = (*c).at;
+    (*n).limit = (*c).limit;
+    (*n).flags = (*c).flags;
+    (*n).answer = (*c).answer;
+    mem.writeRaw[Option[CancelGroup]](&(*n).group as *Option[CancelGroup],
+      mem.readRaw[Option[CancelGroup]](&(*c).group as *Option[CancelGroup]));
+    mem.writeRaw[Option[CancelGroup]](&(*c).group as *Option[CancelGroup], None[CancelGroup]);
+    (*c).word.store(((*c).word.load() & ~cellStateMask) | cellDead);
+    cellRetire(c);
+    c = n;
+  }
+  let now = time.Instant.now().nanos();
+  var at = (*c).at;
+  if ((*c).flags & cellRelative) != 0u32 {
+    at = if at > noDue - now {noDue} else {now + at};
+  }
+  var dl = (*c).limit;
+  match (*c).group {
+    case let Some(g) {
+      if g.deadline().nanos() < dl {dl = g.deadline().nanos();}
+    }
+    else {}
+  }
+  var due = at;
+  var lapses = false;
+  if dl < at {
+    due = dl;
+    lapses = true;
+  }
+  let f = (*c).answer;
+  if cellCancelled(c) {
+    let o = cancelOutcome(&(*c).group);
+    cellFree(ts, c);
+    f(&mut r, o);
+    return;
+  }
+  if due <= now {
+    cellFree(ts, c);
+    f(&mut r, if lapses {timerTimedOut} else {timerDone});
+    return;
+  }
+  (*c).flags = if lapses {(*c).flags | cellLapses} else {(*c).flags & ~cellLapses};
+  mem.writeRaw[Reply](&(*c).reply as *Reply, r);
+  let armedWord = ((*c).word.load() & ~cellStateMask) | cellArmed;
+  (*ts).armed.add(1u64);
+  (*c).word.store(armedWord);
+  let wh = &mut (*ts).wheel;
+  if wh.isEmpty() {
+    // Its now brought up to date, so that "within a tick" is judged from here
+    wh.expired(time.Instant.fromNanos(now), &mut (*ts).expiries);
+    (*ts).expiries.clear();
+  }
+  (*c).entry = wh.insert(time.Instant.fromNanos(due), u64.from(c as usize));
+  if due < (*ts).next {
+    match wh.nextExpiry() {
+      case let Some(t) {(*ts).next = t.nanos();}
+      else {(*ts).next = due;}
+    }
+  }
+  tally(&(*ts).arms, 1u64);
+  // The Reply is the cell's from the store of the Armed word: 'f' and 'r' are
+  // not used after it
+  match (*c).group {
+    case let Some(g) {
+      g.watchHere(&CellWake(c, armedWord));
+      g.watchWorkerAbove((*ts).index, &WorkerWake((*ts).index));
+      // After the registrations: a cancel before them is seen here, one after
+      // reaches the cell's Wakeup or the worker's
+      if g.isCancelled() {
+        let seen, ok = (*c).word.compareSwap(armedWord, (armedWord & ~cellStateMask) | cellTaken);
+        if ok {
+          cellCancelHere(ts, c);
+        }
+      }
+    }
+    else {}
+  }
+}
+
+// The owner has taken an armed cell for its group's cancel: answered, freed
+fn cellCancelHere(ts: *TimerStore, c: *TimerCell) {
+  (*ts).armed.sub(1u64);
+  (*ts).cancels.addOrdered(1u64, MemOrder.Relaxed);
+  let o = cancelOutcome(&(*c).group);
+  var r = cellReply(c);
+  let f = (*c).answer;
+  cellFree(ts, c);
+  f(&mut r, o);
+}
+
+// Whether the owner's step has anything to do (workerMain asks between turns)
+fn timersPending(ts: *TimerStore) bool {
+  (*ts).next != noDue || (*ts).retire.loadOrdered(MemOrder.Relaxed) != 0usize
+    || (*ts).sweep.loadOrdered(MemOrder.Relaxed) != 0u32
+}
+
+// THE STEP, the owner's, between turns and before it parks: the retired cells
+// freed; once the stop has begun, every armed cell dropped; a sweep if an
+// ancestor's cancel asked; the due cells fired. True if it answered anything
+fn timersStep(ts: *TimerStore) bool {
+  if (*ts).retire.loadOrdered(MemOrder.Relaxed) != 0usize {
+    timersDrain(ts);
+  }
+  if timersStopped.load() != 0u32 {
+    timersDropAll(ts);
+    return false;
+  }
+  var any = false;
+  if (*ts).sweep.loadOrdered(MemOrder.Relaxed) != 0u32 {
+    (*ts).sweep.store(0u32);
+    any = timersSweep(ts);
+  }
+  if (*ts).next != noDue {
+    let now = time.Instant.now();
+    if now.nanos() >= (*ts).next {
+      any = timersFire(ts, now) || any;
+    }
+  }
+  any
+}
+
+// The retire stack, taken whole and freed
+fn timersDrain(ts: *TimerStore) {
+  var c = (*ts).retire.swap(0usize) as *TimerCell;
+  while c as usize != 0usize {
+    let nx = (*c).retired;
+    (*c).retired = null;
+    cellFree(ts, c);
+    c = nx;
+  }
+}
+
+// The due cells: each taken by the CAS out of Armed and answered, Done or, for
+// a deadline before its time, TimedOut. One a cancel took first is left to the
+// retire stack
+fn timersFire(ts: *TimerStore, now: time.Instant) bool {
+  let wh = &mut (*ts).wheel;
+  wh.expired(now, &mut (*ts).expiries);
+  var any = false;
+  var k = 0usize;
+  while k < (*ts).expiries.len() {
+    let c = usize.from((*ts).expiries[k].token) as *TimerCell;
+    let id = (*ts).expiries[k].id;
+    k = k + 1usize;
+    if (*c).entry != id {
+      continue;
+    }
+    (*c).entry = TimerId.none();
+    let w = (*c).word.load();
+    if (w & cellStateMask) != cellArmed {
+      continue;
+    }
+    let seen, ok = (*c).word.compareSwap(w, (w & ~cellStateMask) | cellTaken);
+    if !ok {
+      continue;
+    }
+    (*ts).armed.sub(1u64);
+    tally(&(*ts).fires, 1u64);
+    let o = if ((*c).flags & cellLapses) != 0u32 {timerTimedOut} else {timerDone};
+    var r = cellReply(c);
+    let f = (*c).answer;
+    cellFree(ts, c);
+    f(&mut r, o);
+    any = true;
+  }
+  (*ts).expiries.clear();
+  match wh.nextExpiry() {
+    case let Some(t) {(*ts).next = t.nanos();}
+    else {(*ts).next = noDue;}
+  }
+  any
+}
+
+// Every armed cell whose group is cancelled (an ancestor's cancel), answered
+fn timersSweep(ts: *TimerStore) bool {
+  var any = false;
+  var ch = (*ts).chunks;
+  while ch as usize != 0usize {
+    var i = 0usize;
+    while i < cellsPerChunk {
+      let c = (*ch).cells + i;
+      i = i + 1usize;
+      let w = (*c).word.load();
+      if (w & cellStateMask) == cellArmed && cellCancelled(c) {
+        let seen, ok = (*c).word.compareSwap(w, (w & ~cellStateMask) | cellTaken);
+        if ok {
+          cellCancelHere(ts, c);
+          any = true;
+        }
+      }
+    }
+    ch = (*ch).next;
+  }
+  any
+}
+
+// The stop's drop: every armed cell taken and its Reply let go unanswered
+fn timersDropAll(ts: *TimerStore) {
+  if (*ts).armed.load() == 0u64 {
+    return;
+  }
+  var ch = (*ts).chunks;
+  while ch as usize != 0usize {
+    var i = 0usize;
+    while i < cellsPerChunk {
+      let c = (*ch).cells + i;
+      i = i + 1usize;
+      let w = (*c).word.load();
+      if (w & cellStateMask) == cellArmed {
+        let seen, ok = (*c).word.compareSwap(w, (w & ~cellStateMask) | cellTaken);
+        if ok {
+          (*ts).armed.sub(1u64);
+          (*ts).dropped.addOrdered(1u64, MemOrder.Relaxed);
+          let r = cellReply(c);
+          cellFree(ts, c);
+        }
+      }
+    }
+    ch = (*ch).next;
+  }
+  (*ts).next = noDue;
+}
+
+// THE STOP's part (stopWorkers, first): no cell fires or is answered from now
+// on, and every worker with armed cells drops them, woken for it; this returns
+// once none is armed. The workers still run
+fn timersStop(s: *Sched) {
+  timersStopped.store(1u32);
+  var i = 0u32;
+  while i < (*s).nworkers {
+    let ts = timerStoreOf(i);
+    if ts as usize != 0usize {
+      while (*ts).armed.load() != 0u64 {
+        wakeNamed(s, workerAt(s, i));
+        thread.sleep(time.Duration.fromMicros(50i64));
+      }
+    }
+    i = i + 1u32;
+  }
+}
+
+// The earliest instant this worker must wake at, for its park; noDue if none
+fn timersNext() i64 {
+  if myTimers == 0usize {
+    return noDue;
+  }
+  (*(myTimers as *TimerStore)).next
+}
+
+// THE MONITOR's part: wake each parked worker whose published 'due' has come,
+// by name, and say the earliest still to come (noDue if none is set)
+fn timersWakeDue(s: *Sched) i64 {
+  let now = time.Instant.now().nanos();
+  var soonest = noDue;
+  var i = 0u32;
+  while i < (*s).nworkers {
+    let ts = timerStoreOf(i);
+    if ts as usize != 0usize {
+      let d = (*ts).due.load();
+      if d != 0i64 {
+        if d <= now {
+          wakeNamed(s, workerAt(s, i));
+        } else if d < soonest {
+          soonest = d;
+        }
+      }
+    }
+    i = i + 1u32;
+  }
+  soonest
+}
+
+// Whether any worker has published a 'due' (the monitor's park, SeqCst after
+// its own publication)
+fn timersAnyDue(s: *Sched) bool {
+  var i = 0u32;
+  while i < (*s).nworkers {
+    let ts = timerStoreOf(i);
+    if ts as usize != 0usize && (*ts).due.load() != 0i64 {
+      return true;
+    }
+    i = i + 1u32;
+  }
+  false
+}
+
+// A TEST HOOK, not part of the API (aio's worker-timer tests): the workers'
+// timer counts summed: cells armed now, arms, fires, cancels (and sweeps)
+// answered, and cells dropped at the stop
+pub struct TimerStats {
+  pub armed: u64;
+  pub arms: u64;
+  pub fires: u64;
+  pub cancels: u64;
+  pub dropped: u64;
+}
+
+pub fn timerStats() TimerStats {
+  var st = TimerStats(0u64, 0u64, 0u64, 0u64, 0u64);
+  let n = timerTableLen.load();
+  var i = 0u32;
+  while i < n {
+    let ts = timerStoreOf(i);
+    if ts as usize != 0usize {
+      st.armed = st.armed + (*ts).armed.load();
+      st.arms = st.arms + (*ts).arms.loadOrdered(MemOrder.Relaxed);
+      st.fires = st.fires + (*ts).fires.loadOrdered(MemOrder.Relaxed);
+      st.cancels = st.cancels + (*ts).cancels.loadOrdered(MemOrder.Relaxed);
+      st.dropped = st.dropped + (*ts).dropped.loadOrdered(MemOrder.Relaxed);
+    }
+    i = i + 1u32;
+  }
+  st
+}

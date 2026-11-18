@@ -99,7 +99,10 @@
 // bit in the group (128 bits, in two words) with no lock and no walk. The bit
 // is set after the ancestors are registered, so it says the whole chain is. A
 // worker's entry is never swept as a dead loop's is, and is told once per
-// cancel however many timers it has.
+// cancel however many timers it has. The actors runtime's cells call
+// 'watchWorkerAbove', which is 'watchWorker' on the parent: the group's own
+// cancel then tells only its cells' Wakeups, and the worker hears only of the
+// ancestors' (row 483).
 
 mod cancelgroups;
 
@@ -623,6 +626,20 @@ pub struct CancelGroup {
   pub fn watchWorker[W: Wakeup + Sendable](self: &, worker: u32, w: &W) {
     if s.workerSeen(worker) {return;}
     self.watchWorkerChain(worker, w);
+  }
+
+  // THE RUNTIME'S, not for programs (as 'watchWorker'). 'watchWorker' for this
+  // group's ancestors up to a shield, and not for this group itself: the call
+  // beside 'watchHere', whose cell's own entry stands for this group, so that
+  // this group's cancel tells its cells and not the worker as well (each time
+  // the worker is told, it looks at all of its cells). Nothing for a shield or
+  // a group with no parent. The fast path is the parent's bit
+  pub fn watchWorkerAbove[W: Wakeup + Sendable](self: &, worker: u32, w: &W) {
+    if s.shield {return;}
+    match s.parent {
+      case let Some(p) {p.watchWorker(worker, w);}
+      else {}
+    }
   }
 
   fn watchWorkerChain[W: Wakeup + Sendable](self: &, worker: u32, w: &W) {
