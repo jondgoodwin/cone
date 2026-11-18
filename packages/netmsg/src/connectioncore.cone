@@ -54,6 +54,12 @@ pub const maxStreams = 64usize;
 const disconnectCopies = 5usize;
 
 const msNs = 1000000i64;
+
+// A packet may go this much before its scheduled slot, so an update that arrives
+// just early is sent at once instead of waiting on a timer. The next slot is
+// counted from this slot, not from the send, so the long-run rate stays exactly
+// the configured one.
+const sendSlackNs = 1000000i64;
 const secNs = 1000000000i64;
 const notFound = 0xFFFFFFFFusize;
 
@@ -520,7 +526,7 @@ pub struct ConnectionCore {
         id = id + 1u16;
       }
     }
-    if want < nextSendAt {want = nextSendAt;}
+    if want < nextSendAt - sendSlackNs {want = nextSendAt - sendSlackNs;}
     if want < at {at = want;}
     Instant.fromNanos(at)
   }
@@ -552,10 +558,14 @@ pub struct ConnectionCore {
       return;
     }
     self.updateMode(t);
-    if t < nextSendAt {return;}
+    if t < nextSendAt - sendSlackNs {return;}
     if self.hasWork(t) || t - lastSend >= cfg.keepAliveMs * msNs {
       out.push(self.buildPacket(t));
-      nextSendAt = t + self.interval();
+      // Time the next send from this slot; after a long idle (a whole
+      // interval behind or more) start afresh, so there is no catch-up burst
+      var slot = nextSendAt + self.interval();
+      if slot <= t {slot = t + self.interval();}
+      nextSendAt = slot;
       lastSend = t;
       ackDirty = false;
     }
