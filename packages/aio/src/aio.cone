@@ -72,9 +72,10 @@
 //   aio.bindUdp(addr)      a UDP socket bound to addr            Result[UdpSocket, IoError]
 //   u.recvFrom(buf)        one datagram, appended to buf, an IoBuf moved in, and its sender
 //                                                                Result[Datagram, IoError]
-//   u.recvMany(bufs)       the next datagram and every other already waiting, each appended to
-//                          a buffer of bufs (a List[IoBuf], moved in, at most 64 used), with its sender
-//                                                                Result[Datagrams, IoError]
+//   u.recvMany(batch)      the next datagram and every other already waiting, each appended to
+//                          a slot's buffer of batch (a Uni[DatagramBatch], moved in and back: the
+//                          receiver's own, kept for life, at most 64 slots), with its sender
+//                                          Result[Uni[DatagramBatch], RecvFailed]
 //   u.sendTo(addr, buf)    all of buf as one datagram to addr    Result[usize, IoError]
 //   u.localAddr()          the address u is bound to             Result[SocketAddr, IoError]
 //   u.sender()             a UdpSender: u's sending side, copied to many holders; it never
@@ -82,7 +83,7 @@
 //   UdpSender              .sendTo(addr, buf)  .sendToIn(addr, buf, lim)  .none()  .isNone()  .handle()
 //   aio.connectIn(addr, lim)  s.acceptIn(lim)  s.readIn(buf, lim)  s.writeIn(buf, lim)
 //   f.readAtIn(at, buf, lim)  f.writeAtIn(at, buf, lim)
-//   u.recvFromIn(buf, lim)  u.sendToIn(addr, buf, lim)  u.recvManyIn(bufs, lim)
+//   u.recvFromIn(buf, lim)  u.sendToIn(addr, buf, lim)  u.recvManyIn(batch, lim)
 //                           the same nine, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
 //   s.readIn(lim)  s.readIn(room, lim)
 //                           the two reads with no buffer, limited by lim
@@ -129,9 +130,12 @@
 //                           a Socket, File or UdpSocket naming nothing: to swap one out of a Result
 //   s.isNone()  s.handle()  f.isNone()  f.handle()  u.isNone()  u.handle()
 //   Datagram {buf, from}    what a recvFrom answers: the datagram's bytes and its sender
-//   Datagrams {got, cut, spare}
-//                           what a recvMany answers: the Datagrams received, in arrival order; bit k of
-//                           'cut' set when got[k] was cut to its buffer's room; the buffers not used
+//   DatagramBatch {slots}   what a recvMany is given and answers (iocore's, re-exported here): a fixed block of
+//                           slots, each a DatagramSlot {buf, from}. DatagramBatch.make(slots, room), .count(),
+//                           .wasCut(k), .from(k), .swapOut(k, fresh), .bufAt(k); at most 64 slots (the width of its cut bits)
+//   RecvFailed {error, batch, slot}
+//                           what a failed recvMany answers: the IoError, the batch back (None only in the one
+//                           bad case, below), and for a refusal the first slot with no room
 //
 // Each of the operations (and each sleep) makes an OPERATION, an actors.Awaitable[R], which
 // does nothing until an 'await' in a behaviour starts it; the 'await''s value
@@ -534,17 +538,23 @@
 // datagram longer than the room fails with an IoError of the kind Truncated
 // ('aio.isTruncated'; its code the system's, WSAEMSGSIZE or EMSGSIZE): the rest of it is lost, the next
 // one is whole, and the buffer, as a failed read's, goes home to its pool, the
-// bytes that fitted with it. 'recvMany' is iocore's RecvMany: the caller's List of
-// buffers in (at most 64 used), the answer a Datagrams: 'got', the datagrams in
-// arrival order, each in a buffer with its sender; 'cut', bit k set when got[k]
-// was longer than its room and holds its first bytes (it is in the answer, not
-// the error Truncated, and does not end the batch); 'spare', the buffers not
-// used. It waits for one datagram and takes the others already waiting, never
-// waiting for a second: Linux takes every one waiting in one call (recvmmsg),
-// Windows one a call, behind the same answer. Once a datagram is taken the
-// answer is Ok; an empty list or a first buffer with no room is InvalidInput, a
-// later one with no room ends the batch; every buffer goes home or comes back
-// on every path. 'sendTo' is iocore's SendTo: all of the buffer as
+// bytes that fitted with it. 'recvMany' is iocore's RecvMany: the receiver's own
+// DatagramBatch, a fixed block of up to 64 slots made once and kept for life, moved
+// in (a Uni: the receive ends later on another thread) and moved back, the
+// answer the same batch: its first count() slots each hold a datagram, appended
+// to the slot's buffer, with its sender (from(k)) in arrival order; wasCut(k)
+// when that one was longer than its room and holds its first bytes (it is in the
+// answer, not the error Truncated, and does not end the batch). The owner then
+// takes each filled buffer out with swapOut(k, fresh), leaving a fresh one in the
+// slot; nothing slides and no list is made. It waits for one datagram and takes
+// the others already waiting, never waiting for a second: Linux takes every one
+// waiting in one call (recvmmsg), Windows one a call, behind the same answer.
+// Once a datagram is taken the answer is Ok; a batch with a used slot that has
+// no room (a forgotten refill) is refused, InvalidInput, naming the slot. The
+// batch comes back on every failure too (RecvFailed's 'batch'), so the owner never
+// loses its block; the one exception is the bad case below, where the kernel
+// still holds it and the answer is TimedOut with 'batch' None (Windows only: a
+// Linux loop holds no socket operation's buffer in the kernel). 'sendTo' is iocore's SendTo: all of the buffer as
 // ONE datagram, the buffer going home; the count is its length; UDP promises no
 // delivery, so the answer says the system took the datagram. A datagram too
 // large for the network fails (the same number, of the kind Other). One receive at a time per
@@ -702,7 +712,8 @@ import sync use Mutex;
 import collections use List, String;
 import iobuf use IoBuf, Chain;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending, RecvBatch;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending;
+pub import iocore use DatagramBatch, DatagramSlot;
 import path use Path;
 import process;
 import actors;
@@ -756,7 +767,7 @@ const opPipeRead = 16u32;     // a pipe's read: Result[IoBuf, IoError]
 const opPipeWrite = 17u32;    // a pipe's write: Result[IoBuf, IoError]
 const opWaitChild = 18u32;    // a child's end: Result[ChildExit, IoError]
 const opAcceptFrom = 21u32;   // accept with the peer's address: Result[Accepted, IoError]
-const opRecvMany = 20u32;     // recvMany: Result[Datagrams, IoError]
+const opRecvMany = 20u32;     // recvMany: Result[Uni[DatagramBatch], RecvFailed]
 const opReset = 19u32;      // a socket's abortive close, its Socket consumed by 'reset': no answer
 
 // What aio keeps in a record with the operation, after iocore's OpCore: the
@@ -841,10 +852,13 @@ fn setChain(p: *OpCore, bufs: Chain) {
   c.bufs = Some[Uni[Chain]](Uni[Chain](bufs));
 }
 
-// A recvMany's buffers, moved into the record out of line
-fn setBatch(p: *OpCore, bufs: List[IoBuf]) {
+// A recvMany's batch, cleared of the last receive's count and cut bits, moved
+// into the record: the same block, by pointer, nothing copied
+fn setBatch(p: *OpCore, batch: Uni[DatagramBatch]) {
   let c = p as &mut OpCore;
-  c.batch = Some[Uni[RecvBatch]](Uni[RecvBatch](RecvBatch(bufs, List[SocketAddr](), 0usize, 0u64)));
+  var b = batch;
+  b.clear();
+  c.batch = Some[Uni[DatagramBatch]](b);
 }
 
 // A record taken for an operation on h (Handle.none() for one that names no
@@ -2406,7 +2420,7 @@ fn answerRec(rp: *OpRec[Ask]) {
   } else if w == opRecvFrom {
     actors.answerLentIn[Result[Datagram, IoError]](back, rp as *Result[Datagram, IoError], &takeDatagram);
   } else if w == opRecvMany {
-    actors.answerLentIn[Result[Datagrams, IoError]](back, rp as *Result[Datagrams, IoError], &takeDatagrams);
+    actors.answerLentIn[Result[Uni[DatagramBatch], RecvFailed]](back, rp as *Result[Uni[DatagramBatch], RecvFailed], &takeDatagrams);
   } else if w == opSleep {
     actors.answerLentIn[Result[void, IoError]](back, rp as *Result[void, IoError], &takeSleep);
   } else if w == opResolve {
@@ -2438,7 +2452,8 @@ fn answerTimedOut(rp: *OpRec[Ask]) {
   } else if w == opRecvFrom {
     actors.answerNowIn[Result[Datagram, IoError]](back, Err[Datagram, IoError](e));
   } else if w == opRecvMany {
-    actors.answerNowIn[Result[Datagrams, IoError]](back, Err[Datagrams, IoError](e));
+    // The kernel still holds the batch: it cannot come back with this answer
+    actors.answerNowIn[Result[Uni[DatagramBatch], RecvFailed]](back, Err[Uni[DatagramBatch], RecvFailed](RecvFailed(e, None, 0xFFFFFFFFu32)));
   } else if w == opSleep {
     actors.answerNowIn[Result[void, IoError]](back, Err[void, IoError](e));
   } else if w == opResolve {
@@ -2534,34 +2549,29 @@ fn takeDatagram(p: *u8, to: *u8) {
   mem.writeRaw[Result[Datagram, IoError]](to as *Result[Datagram, IoError], datagramResult(kind, status, code, from, buf));
 }
 
-// A recvMany's: the datagrams, each in its buffer with its sender, in arrival
-// order, which of them were cut (bit k of 'cut' for got[k]), and the buffers
-// not used. A cut datagram is in the answer (unlike recvFrom's, where it is the
-// error Truncated); a failed receive's buffers go home with the record
+// A recvMany's: the batch the record carried, by pointer, with its count, its
+// senders and its cut bits as the system filled them. A cut datagram is in the
+// answer (unlike recvFrom's, where it is the error Truncated). A failed
+// receive's answer carries the batch too, so its owner keeps its block (a refused
+// batch names its first slot with no room)
 fn takeDatagrams(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
   let kind, status, code, batch = core.(kind, status, code, batch);
-  var v = Err[Datagrams, IoError](errorOf(kind, status, code));
-  if status == diag.outcomeDone {
-    match batch {
-      case var Some(bt) {
-        let rb = *bt;
-        let n, cut, from, bufs = rb.(got, cut, from, bufs);
-        var rest = bufs;
-        var seen = List[Datagram]();
-        var k = 0usize;
-        while k < n {
-          let b = rest.remove(0usize);
-          seen.push(Datagram(b, from[k]));
-          k = k + 1usize;
-        }
-        v = Ok[Datagrams, IoError](Datagrams(seen, cut, rest));
+  let e = errorOf(kind, status, code);
+  var v = Err[Uni[DatagramBatch], RecvFailed](RecvFailed(e, None, 0xFFFFFFFFu32));
+  match batch {
+    case var Some(bt) {
+      if status == diag.outcomeDone {
+        v = Ok[Uni[DatagramBatch], RecvFailed](bt);
+      } else {
+        let slot = bt.firstWithoutRoom();
+        v = Err[Uni[DatagramBatch], RecvFailed](RecvFailed(e, Some[Uni[DatagramBatch]](bt), slot));
       }
-      else {}
     }
+    else {}
   }
-  mem.writeRaw[Result[Datagrams, IoError]](to as *Result[Datagrams, IoError], v);
+  mem.writeRaw[Result[Uni[DatagramBatch], RecvFailed]](to as *Result[Uni[DatagramBatch], RecvFailed], v);
 }
 
 // A write's: the count, all of the buffer, which goes home
@@ -3205,14 +3215,15 @@ pub struct Datagram {
   pub from: SocketAddr;
 }
 
-// What one recvMany answers: the datagrams received, in arrival order, each in
-// one of the buffers given and with its sender; bit k of 'cut' set when got[k]
-// was longer than its buffer's room, its first bytes all that is there; and
-// the buffers not used, in the order given, each as it came
-pub struct Datagrams {
-  pub got: List[Datagram];
-  pub cut: u64;
-  pub spare: List[IoBuf];
+// What a failed recvMany answers: why ('error'), and the batch it was given,
+// back with the answer so that its owner never loses its block ('batch': None
+// only in the one bad case, where the kernel still holds it, Windows' alone).
+// 'slot' is, for the refusal of a batch (InvalidInput), its first used slot with
+// no room; u32's maximum otherwise
+pub struct RecvFailed is Sendable {
+  pub error: IoError;
+  pub batch: Option[Uni[DatagramBatch]];
+  pub slot: u32;
 }
 
 // A UDP socket the I/O thread holds (the package's header, A UDP SOCKET): a
@@ -3249,24 +3260,28 @@ pub struct UdpSocket is Move, Sendable {
   }
 
   // The next datagram to arrive and every other one already waiting, up to
-  // bufs.len() and at most 64, each appended to a buffer of bufs, which is moved
-  // in and comes back: the buffers used in 'got' (in arrival order, each with
-  // its sender), the rest in 'spare'. It waits for one datagram and never for a
-  // second. A datagram longer than its buffer's room is in 'got' cut to it, its
-  // bit set in 'cut': it does not end the batch, nor is it an error as recvFrom's
-  // is. An empty list, or a first buffer with no room, fails (InvalidInput); a
-  // later buffer with no room ends the batch there. Once a datagram is taken
-  // the answer is Ok. Windows answers one datagram a call (the same answer
-  // type; a caller's loop is the same on both systems)
-  pub fn recvMany(self: &, bufs: List[IoBuf]) actors.Awaitable[Result[Datagrams, IoError]] {
-    self.recvManyIn(bufs, IoLimits.none())
+  // the batch's slots (at most 64), each appended to a slot's buffer. The
+  // batch, the receiver's own kept for life, is moved in and comes back, the
+  // same block by pointer: its first count() slots hold one datagram each (in
+  // arrival order, the sender in from(k)); the owner swaps each filled buffer
+  // out (swapOut) and sends it on. It waits for one datagram and never for a
+  // second. A datagram longer than its buffer's room is there cut to it,
+  // wasCut(k) true: it does not end the batch, nor is it an error as
+  // recvFrom's is. A batch with a used slot that has no room fails
+  // (InvalidInput, 'slot' naming it). Once a datagram is taken the answer is
+  // Ok. The batch comes back on failure too (RecvFailed's 'batch'; None only
+  // in the Windows bad case). Made and not awaited, the receive drops the
+  // batch. Windows answers one datagram a call (the same answer type; a
+  // caller's loop is the same on both systems)
+  pub fn recvMany(self: &, batch: Uni[DatagramBatch]) actors.Awaitable[Result[Uni[DatagramBatch], RecvFailed]] {
+    self.recvManyIn(batch, IoLimits.none())
   }
 
-  // A receive ended if lim says so; then every buffer goes home to its pool
-  pub fn recvManyIn(self: &, bufs: List[IoBuf], lim: IoLimits) actors.Awaitable[Result[Datagrams, IoError]] {
+  // A receive ended if lim says so; the batch comes back in the answer
+  pub fn recvManyIn(self: &, batch: Uni[DatagramBatch], lim: IoLimits) actors.Awaitable[Result[Uni[DatagramBatch], RecvFailed]] {
     let p = takeRec(opRecvMany, diag.kindRecvMany, h, lim);
-    setBatch(p as *OpCore, bufs);
-    recAwaitable[Result[Datagrams, IoError]](p)
+    setBatch(p as *OpCore, batch);
+    recAwaitable[Result[Uni[DatagramBatch], RecvFailed]](p)
   }
 
   // All of buf as one datagram to addr, buf moved in and going home once sent:
