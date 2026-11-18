@@ -451,8 +451,9 @@
 //
 // Quiescence is judged on the assumption that, once the finalizer has begun,
 // every message is sent by an actor: a thread other than main that goes on
-// sending must be joined first, or its message may be the one that arrives
-// after the workers have stopped. Main sends nothing while it waits. The aio
+// sending should be joined first to have its last messages delivered; one that
+// is not is safe but unserved, its message refused and dropped once the stop's
+// gate has closed (THE STOP'S GATE, at 'running'). Main sends nothing while it waits. The aio
 // package's I/O thread sends replies too; its own finalizer, which finalAll()
 // runs before this one, waits for quiet (waitQuiet), ends the I/O, and joins
 // the thread.
@@ -2237,8 +2238,26 @@ fn sendTo[M: Sendable](h: *Header, msg: M) {
   sendNow[M](h, msg);
 }
 
-// The message pushed on the mailbox now
+// The message pushed on the mailbox now. A send from a thread that is not one of the runtime's workers
+// passes THE STOP'S GATE (below, with 'running'): refused and dropped here, on this thread, once the stop has
+// begun, else counted in flight until its push is done, so the stop waits for it. A worker's send, and the
+// stopping thread's own, bypass it: the workers are joined only after the last quiesce, and the stop's
+// finalizers must still deliver.
 fn sendNow[M: Sendable](h: *Header, msg: M) {
+  if me == 0usize && stopperHere == 0usize {
+    if !gateEnter() {
+      refuseSend(u64.from(mem.sizeof[M]()));
+      return;
+    }
+    sendLive[M](h, msg);
+    gateLeave();
+    return;
+  }
+  sendLive[M](h, msg);
+}
+
+// The send itself, past the gate
+fn sendLive[M: Sendable](h: *Header, msg: M) {
   if running.load() == 0usize {
     die("actors: a message sent after the runtime stopped");
   }
@@ -2837,20 +2856,25 @@ pub struct Reply is Sendable {
   // it is told so. An operation's, sent or never sent, is spent here: it is no
   // longer outstanding (waitUntilIdle)
   fn final(self: &uni) {
-    if to as usize != 0usize {
-      // a reply never answered: the group noted at its await goes with it
-      if (id & groupBit) != 0u64 {
-        groupForget(usize.from(id ^ groupBit) as *GNode);
-      }
-      let release = (*to).release;
-      release(to);
-    }
-    else if cell as usize != 0usize {
-      futureEnd(cell, futAbandoned);
-    }
+    letGoReply(to, id, cell);
     if (meta & replyOp) != 0u64 {
       opSpent();
     }
+  }
+}
+
+// What a reply owes when it goes unanswered: for one to an awaiting actor, the group noted at its await goes
+// with it and the actor's count is let go; a future's is abandoned. (The operation count is the caller's.)
+fn letGoReply(to: *Header, id: u64, cell: *u8) {
+  if to as usize != 0usize {
+    if (id & groupBit) != 0u64 {
+      groupForget(usize.from(id ^ groupBit) as *GNode);
+    }
+    let release = (*to).release;
+    release(to);
+  }
+  else if cell as usize != 0usize {
+    futureEnd(cell, futAbandoned);
   }
 }
 
@@ -3076,6 +3100,8 @@ fn groupNote(h: *Header, w: u64, gp: usize) u64 {
   (*n).magic = gMagic;
   (*n).h = h;
   (*n).w = w;
+  // The await's copy is a holder of the group (cancelgroups.cone, HOLDERS), until its
+  // orCancelled await has no other arm than the cancel (orcancelled.cone, groupDemote)
   mem.writeRaw[CancelGroup](&(*n).g as *CancelGroup, *(gp as &CancelGroup));
   gL();
   if gTable.loadOrdered(MemOrder.Relaxed) == 0usize {
@@ -3216,7 +3242,11 @@ fn replyPrepLent(r: &Reply, lent: *u8, release: *u8) Put {
 
 // The value is written: publish the slot. The count the envelope held becomes
 // the scheduler's owner when the publication takes the idle mark, as a
-// send's own would; otherwise it is let go
+// send's own would; otherwise it is let go.
+// ONLY THE DISPATCHER (a worker) MAY CALL THIS, and 'answered' below, which
+// reaches it: neither passes the stop's gate (the value is already written, so
+// a refusal here would leak it). A plain thread answers through answerNowIn or
+// answerLentIn, which pass the gate before the slot is claimed
 fn replyFinish(h: *Header, p: Put) {
   if running.load() == 0usize {
     die("actors: a reply sent after the runtime stopped");
@@ -3273,10 +3303,30 @@ pub fn answerNowIn[R](rp: &mut Reply, v: R) {
     return;
   }
   let h = rp.to;
+  // THE STOP'S GATE: a plain thread's answer to an actor is refused once the stop has begun, before its
+  // value is written: the value is dropped here, and the reply let go unanswered (refuseReply)
+  let plain = me == 0usize && stopperHere == 0usize;
+  if plain && !gateEnter() {
+    refuseReply(rp, u64.from(mem.sizeof[R]()));
+    return;
+  }
   let p = replyPrep(rp);
   mem.writeRaw[R](p.at as *R, v);
   spend(rp);
   replyFinish(h, p);
+  if plain {
+    gateLeave();
+  }
+}
+
+// An answer the gate refused (the stop has begun, and this thread is neither a worker nor the stopper): counted
+// as a refused send is, and the reply let go as one dropped unanswered is, its awaiting actor abandoned as at
+// the end, and left spent. A reply of an operation is counted spent by its own drop, afterwards, as ever. The
+// caller drops the value
+fn refuseReply(rp: &mut Reply, elem: u64) {
+  refuseSend(elem);
+  letGoReply(rp.to, rp.id, null);
+  spend(rp);
 }
 
 // A reply answered twice is a program error
@@ -3331,16 +3381,7 @@ pub fn answerLentIn[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
   notSpent(rp);
   let op = (rp.meta & replyOp) != 0u64;
   if !wanted(rp) {
-    let tmp = libc.malloc(mem.sizeof[R]() + 16usize);
-    if tmp as usize == 0usize {
-      die("actors: out of memory for a reply");
-    }
-    spend(rp);
-    opHold(op);
-    take(p as *u8, tmp);
-    mem.finalize[R](tmp as *R);
-    libc.free(tmp);
-    opRelease(op);
+    dropLent[R](rp, p, take, op);
     return;
   }
   if rp.cell as usize != 0usize {
@@ -3354,12 +3395,23 @@ pub fn answerLentIn[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
     return;
   }
   let h = rp.to;
+  // THE STOP'S GATE, as answerNowIn's: refused, the value is taken and dropped, the reply let go unanswered
+  let plain = me == 0usize && stopperHere == 0usize;
+  if plain && !gateEnter() {
+    refuseSend(u64.from(mem.sizeof[R]()));
+    letGoReply(rp.to, rp.id, null);
+    dropLent[R](rp, p, take, op);
+    return;
+  }
   if (rp.meta & replyBoxed) != 0u64 && mem.sizeof[R]() <= lentMax && mem.alignof[R]() <= 8usize {
     var tk = take;
     let takep = mem.readRaw[*u8](&mut tk as *(*u8));
     let put = replyPrepLent(rp, p as *u8, takep);
     spend(rp);
     replyFinish(h, put);
+    if plain {
+      gateLeave();
+    }
     return;
   }
   let put = replyPrep(rp);
@@ -3367,6 +3419,24 @@ pub fn answerLentIn[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
   opHold(op);
   take(p as *u8, put.at);
   replyFinish(h, put);
+  opRelease(op);
+  if plain {
+    gateLeave();
+  }
+}
+
+// The lent value at p, taken by the answerer's 'take' into a scratch place and dropped there, the reply spent
+// first: an answer nobody wants (answerLentIn)
+fn dropLent[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8), op: bool) {
+  let tmp = libc.malloc(mem.sizeof[R]() + 16usize);
+  if tmp as usize == 0usize {
+    die("actors: out of memory for a reply");
+  }
+  spend(rp);
+  opHold(op);
+  take(p as *u8, tmp);
+  mem.finalize[R](tmp as *R);
+  libc.free(tmp);
   opRelease(op);
 }
 
@@ -3431,7 +3501,9 @@ pub fn answerTo(slot: &mut Answer) *u8 {
   slot.put.at
 }
 
-// The value is where answerTo said: the reply is sent, and the slot emptied
+// The value is where answerTo said: the reply is sent, and the slot emptied.
+// Only the dispatcher may call it: it reaches replyFinish, which does not pass
+// the stop's gate (see there)
 pub fn answered(slot: &mut Answer) {
   slot.held = 0u8;
   if slot.claimed != 0u8 {
@@ -4208,7 +4280,7 @@ struct Sched {
   pub sleepers: Atomic[u32];    // workers in the idle path, asleep or about to be
   pub searching: Atomic[u32];   // 1 while a woken worker looks for work
   pub quiet: Atomic[u32];       // the futex word the stop sleeps on
-  pub done: Atomic[u32];        // 1 once the stop has begun
+  pub done: Atomic[u32];        // how many threads wait for quiet (quiesce, the idle waits): while nonzero, the last worker to sleep wakes them
   pub stopping: Atomic[u32];    // 1 once the workers are to stop
   pub spinning: Atomic[u32];    // workers in THE SPIN now, at most spinCap
   pub monitor: Atomic[u32];     // THE MONITOR's park word: 0 running (or none), 1 parked; beside the sleepers' count, which a worker has just written when it reads this
@@ -4243,6 +4315,72 @@ struct Sched {
 // writes it (startWorkers) and the stop does (stopWorkers): an atomic held by an
 // 'let' global, set to 0 in the module's 'init' (below)
 let running: Atomic[usize];
+
+// THE STOP'S GATE. 'running' alone cannot tell a sender whether the stop will wait for it: a send is two steps
+// (check, then queue and wake) and the stop is several, so a send checked before the stop's last step and queued
+// after it lands in a mailbox no worker will run (a block lent in it is lost), or meets the freed scheduler.
+// The gate makes the check and the send one step against the stop. A send or a wait from a thread that is not
+// a worker or the stopping thread does 'gateInflight.add(1)' and then reads 'gateClosed'; the stop does
+// 'gateClosed.store(1)' and then reads 'gateInflight' until it is 0 (all SeqCst). With SeqCst on all four,
+// store buffering is excluded: either the sender reads closed and refuses, having queued nothing, or the stop
+// reads the sender's count and waits for its 'sub' (Release; the stop's load is the Acquire), which follows
+// its push. So every send accepted is pushed before the stop's next quiesce, with the workers alive to run it
+// and whatever it releases; none is accepted after, so after the last quiesce no mailbox grows from a
+// non-worker thread; and 'running' is still set through every accepted send, so the panic in sendLive is
+// unreachable from one. A refused send drops its message on the sending thread (a block goes to its pool, a
+// handle is let go) and is counted: 'stats().refused', and 'msg.refused' in the memory trace. The gate stays
+// closed once shut, so a send after the stop is refused too, where it used to panic. A wait that finds the gate
+// shut returns at once; one inside it is woken by the stop and returns (waitLoop). The stop wakes ALL the
+// sleepers on 'quiet' (futexWakeAll, as does every other wake of it): it must wait for every wait inside the
+// gate, and the waits and quiesce all sleep on that one word. 'isRunning' is false from the gate's closing.
+// Gated too, from a plain thread: an answer to an awaiting actor (answerNowIn, answerLentIn: refused, the value
+// dropped and the reply let go unanswered), a future's waiter's push (pushFuture: refused, abandoned as at the
+// end), the wake of opSpent, and orcancelled.signal. Each refusal of a reply or a push is counted with the
+// refused sends. NOT YET GATED: a startActor whose init sent, and parallelEach/parallelRange from a plain
+// thread; a thread that calls them must be joined before the stop.
+let gateClosed: Atomic[u32];
+let gateInflight: Atomic[usize];
+let refusedSends: Atomic[u64];
+let msgRefused: Kind4[u64, u64, u64, u64];
+
+// Nonzero on the thread running stopWorkers, which bypasses the gate
+var @threadlocal stopperHere: usize = 0usize;
+
+// Enter the gate: true if the caller may send or wait (and must gateLeave after), false if the stop has
+// begun. The stopping thread passes without a count
+fn gateEnter() bool {
+  if stopperHere != 0usize {
+    return true;
+  }
+  if gateClosed.load() != 0u32 {
+    return false;
+  }
+  gateInflight.add(1usize);
+  if gateClosed.load() != 0u32 {
+    gateInflight.sub(1usize);
+    return false;
+  }
+  true
+}
+
+// Leave the gate, after the last touch of the scheduler. Release: the stop's load of 0 sees every push before it
+fn gateLeave() {
+  if stopperHere != 0usize {
+    return;
+  }
+  gateInflight.subOrdered(1usize, MemOrder.Release);
+}
+
+// Whether the gate is shut to this thread: the stop has begun and this thread is not the stopping one
+fn gateShut() bool {
+  gateClosed.load() != 0u32 && stopperHere == 0usize
+}
+
+// A send the gate refused: counted and traced; the caller drops the message
+fn refuseSend(elem: u64) {
+  refusedSends.addOrdered(1u64, MemOrder.Relaxed);
+  msgRefused.emit(elem, 1u64, 0u64, 0u64);
+}
 
 // The worker this thread is, or 0
 var @threadlocal me: usize = 0usize;
@@ -4787,6 +4925,11 @@ fn spin(w: *Worker) bool {
 
 // ---- A TEST HOOK: a worker held on its way to park ----
 //
+// These hooks (holdNextPark, parkHeld, parkHeldWorker, releaseParkTo, releasePark, pokeParked, and the
+// monitor's, monitorParked and monitorTick) are not gated (THE STOP'S GATE) and are not part of the API: a
+// test calls them from its main thread before the stop. Called from a plain thread during or after the stop
+// they read the Sched the stop frees; releasePark spins until a worker it has not held goes on.
+//
 // The next worker to leave THE SPIN for the park stops at one of three places
 // ('at'). 1, holdNextPark: after the spin's last look and before it publishes
 // itself a sleeper, the one place where a push finds no sleeper and no
@@ -4941,7 +5084,9 @@ fn idle(w: *Worker) bool {
   }
   if asleep == (*s).nworkers && (*s).done.load() != 0u32 {
     (*s).quiet.add(1u32);
-    sync.futexWake(&(*s).quiet);
+    // All the sleepers on 'quiet' (quiesce, the three waits), not one: each looks again and sleeps again if
+    // its own condition is not met, and the one that is woken may not be the one that can proceed
+    sync.futexWakeAll(&(*s).quiet);
   }
   if (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
     parkHoldHere(s, w, 2u32);
@@ -5373,6 +5518,7 @@ pub struct Stats {
   pub marksSpent: u64 = 0u64;   // times a notify chose a worker already leaving the park with work seen: it woke nobody new
   pub monitorFinds: u64 = 0u64; // the monitor's finds: times it found a worker holding one turn for a whole tick with actors waiting in its queue, and moved the queue to the inject queue (THE MONITOR)
   pub monitorMoved: u64 = 0u64; // the actors those moves took off the queues
+  pub refused: u64 = 0u64;      // sends from threads other than the workers refused because the stop had begun (THE STOP'S GATE); their messages were dropped by the senders
 }
 
 // What configure set, read when the workers start: atomics, since 'configure'
@@ -5424,6 +5570,10 @@ let taskStealsTotal: Atomic[u64];   // pieces stealTask took (Relaxed): the olde
 fn @initpure init() {
   msgMake = Kind4[u64, u64, u64, u64].make("msg.make", "memory", Level.Trace, "elem", "n", "inst", "aux");
   msgDrop = Kind4[u64, u64, u64, u64].make("msg.drop", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  msgRefused = Kind4[u64, u64, u64, u64].make("msg.refused", "memory", Level.Trace, "elem", "n", "inst", "aux");
+  gateClosed = Atomic[u32].of(0u32);
+  gateInflight = Atomic[usize].of(0usize);
+  refusedSends = Atomic[u64].of(0u64);
   segAllocs = Atomic[u64].of(0u64);
   boxAllocs = Atomic[u64].of(0u64);
   waiterAllocs = Atomic[u64].of(0u64);
@@ -5604,7 +5754,7 @@ fn startWorkers() {
 // Wait until s is quiescent. 'done' says the stop has begun, so that the
 // last worker to go to sleep wakes this thread to look again
 fn quiesce(s: *Sched) {
-  (*s).done.store(1u32);
+  (*s).done.add(1u32);
   while true {
     let q = (*s).quiet.load();
     if quiescent(s) {
@@ -5612,23 +5762,53 @@ fn quiesce(s: *Sched) {
     }
     sync.futexWait(&(*s).quiet, q);
   }
+  (*s).done.sub(1u32);
+}
+
+// The gate's waits: enter the gate and load the scheduler, 0 if the stop has begun or no runtime runs (the
+// caller returns at once, having left nothing to leave). Loaded once: a second load could meet the stop's
+// store of 0. With a scheduler, the caller must waitLeave after its last touch of it
+fn waitEnter() *Sched {
+  if !gateEnter() {
+    return 0usize as *Sched;
+  }
+  let s = running.load() as *Sched;
+  if s as usize == 0usize {
+    gateLeave();
+  }
+  s
+}
+
+// Whether a wait on s should end: the wait's own condition holds, or the stop has begun (the gate is shut to
+// this thread). The stop, having shut the gate, bumps 'quiet' and wakes it, so a wait asleep on it looks again
+fn waitOver(s: *Sched, idle: bool) bool {
+  (if idle {idleNow(s)} else {quiescent(s)}) || gateShut()
 }
 
 // Wait until no actor is queued or running, as the module's finalizer does
 // before it stops the workers: for a package whose own finalizer runs before
 // this one's and acts once all is quiet -- aio's, which then ends the I/O
 // still awaited. Nothing if no actor started the workers; a panic on one of
-// them, which would wait for itself
+// them, which would wait for itself. Returns at once, or when the stop begins,
+// if the runtime is stopping (THE STOP'S GATE)
 pub fn waitQuiet() {
-  // Loaded once: a second load could meet the stop's store of 0
-  let s = running.load() as *Sched;
+  let s = waitEnter();
   if s as usize == 0usize {
     return;
   }
   if me != 0usize {
     die("actors: waitQuiet called on one of the runtime's own workers, which would wait for itself");
   }
-  quiesce(s);
+  (*s).done.add(1u32);
+  while true {
+    let q = (*s).quiet.load();
+    if waitOver(s, false) {
+      break;
+    }
+    sync.futexWait(&(*s).quiet, q);
+  }
+  (*s).done.sub(1u32);
+  gateLeave();
 }
 
 // Awaited operations: how many have been started (by startAwait), and how
@@ -5644,6 +5824,13 @@ let opsEnded: Atomic[u64];
 // idle to look again
 fn opSpent() {
   opsEnded.addOrdered(1u64, MemOrder.SeqCst);
+  // The wake touches the Sched, which the stop frees: from a plain thread it passes THE STOP'S GATE. Shut, no
+  // wait needs it (the stop has woken every sleeper, and the waits return at once); the count above is outside
+  // the Sched and is made either way
+  let plain = me == 0usize && stopperHere == 0usize;
+  if plain && !gateEnter() {
+    return;
+  }
   let s = running.load() as *Sched;
   if s as usize != 0usize {
     // Only the end that leaves none outstanding can make a waiter's look succeed (the
@@ -5652,8 +5839,11 @@ fn opSpent() {
     // other half of idleness, quiescence, is signalled by the park path
     if opsStarted.loadOrdered(MemOrder.SeqCst) == opsEnded.loadOrdered(MemOrder.SeqCst) {
       (*s).quiet.add(1u32);
-      sync.futexWake(&(*s).quiet);
+      sync.futexWakeAll(&(*s).quiet);   // all: see the last sleeper's wake in park
     }
+  }
+  if plain {
+    gateLeave();
   }
 }
 
@@ -5677,22 +5867,23 @@ fn idleNow(s: *Sched) bool {
 // panic on one of them, which would wait for itself. Messages sent from
 // threads other than main while it waits may arrive after it returns
 pub fn waitUntilIdle() {
-  let s = running.load() as *Sched;
+  let s = waitEnter();
   if s as usize == 0usize {
     return;
   }
   if me != 0usize {
     die("actors: waitUntilIdle called on one of the runtime's own workers, which would wait for itself");
   }
-  (*s).done.store(1u32);
+  (*s).done.add(1u32);
   while true {
     let q = (*s).quiet.load();
-    if idleNow(s) {
+    if waitOver(s, true) {
       break;
     }
     sync.futexWait(&(*s).quiet, q);
   }
-  (*s).done.store(0u32);
+  (*s).done.sub(1u32);
+  gateLeave();
 }
 
 // The deadline form of waitUntilIdle: wait at most 'limit', and say whether
@@ -5702,7 +5893,7 @@ pub fn waitUntilIdle() {
 // is still parked is freed and its finalizers do not run. A limit of zero or
 // less only looks once
 pub fn waitUntilIdleFor(limit: time.Duration) bool {
-  let s = running.load() as *Sched;
+  let s = waitEnter();
   if s as usize == 0usize {
     return true;
   }
@@ -5710,11 +5901,11 @@ pub fn waitUntilIdleFor(limit: time.Duration) bool {
     die("actors: waitUntilIdleFor called on one of the runtime's own workers, which would wait for itself");
   }
   let start = time.Instant.now();
-  (*s).done.store(1u32);
+  (*s).done.add(1u32);
   var ok = false;
   while true {
     let q = (*s).quiet.load();
-    if idleNow(s) {
+    if waitOver(s, true) {
       ok = true;
       break;
     }
@@ -5724,7 +5915,8 @@ pub fn waitUntilIdleFor(limit: time.Duration) bool {
     }
     sync.futexWaitTimeout(&(*s).quiet, q, left);
   }
-  (*s).done.store(0u32);
+  (*s).done.sub(1u32);
+  gateLeave();
   ok
 }
 
@@ -5743,6 +5935,19 @@ fn stopWorkers() {
   // what the dropped frames' finalizers print goes through a console that is
   // still there; it stays up to the end of the process (console.cone)
   consoleDrain();
+  // THE STOP'S GATE closes here, the workers still running: a send or a wait from a thread that is not a worker is
+  // refused from now on, the waits asleep are woken to return, and the stop waits for every send and wait that got
+  // in. This thread bypasses the gate, so what the stop's own finalizers send still goes. Then one more quiesce,
+  // for the accepted sends and what they started
+  stopperHere = 1usize;
+  gateClosed.store(1u32);
+  (*s).quiet.add(1u32);
+  // All: every wait inside the gate must be woken for the spin below to end
+  sync.futexWakeAll(&(*s).quiet);
+  while gateInflight.load() != 0usize {
+    yieldProcessor();
+  }
+  quiesce(s);
   // Then the parked records of every actor still alive are dropped (ABANDONING
   // AT THE END), the workers still running
   abandonParked(s);
@@ -5780,6 +5985,7 @@ fn stopWorkers() {
   libc.free((*s).threads as *u8);
   libc.free((*s).workers as *u8);
   libc.free(s as *u8);
+  stopperHere = 0usize;
 }
 
 // What the workers have done so far, read without stopping them: all 0
@@ -5789,7 +5995,9 @@ fn stopWorkers() {
 pub fn stats() Stats {
   let n = statWorkers.load();
   if n == 0u32 {
-    return Stats(0u32, 0u64, 0u64, 0u64, 0u64);
+    var none = Stats(0u32, 0u64, 0u64, 0u64, 0u64);
+    none.refused = refusedSends.loadOrdered(MemOrder.Relaxed);
+    return none;
   }
   let slots = statSlots.load();
   var st = Stats(n, 0u64, 0u64, 0u64, taskStealsTotal.loadOrdered(MemOrder.Relaxed));
@@ -5807,16 +6015,19 @@ pub fn stats() Stats {
     st.marksSpent = st.marksSpent + (*slot).marksSpent.loadOrdered(MemOrder.Relaxed);
     i = i + 1u32;
   }
+  st.refused = refusedSends.loadOrdered(MemOrder.Relaxed);
   st.monitorFinds = monitorFindsTotal.loadOrdered(MemOrder.Relaxed);
   st.monitorMoved = monitorMovedTotal.loadOrdered(MemOrder.Relaxed);
   st
 }
 
-// Whether the runtime is running now: false before the first actor and after the stop (finalAll). A
-// 'final' or a hook that may run after the stop checks it before it sends, as a send then panics. This
-// narrows the race, it does not close it: the check and the send are two steps, so a death on another thread
-// that passes the check just before the stop can still panic in the send
-pub fn isRunning() bool {running.load() != 0usize}
+// Whether the runtime is running now: false before the first actor, and from the moment the stop (finalAll)
+// closes THE STOP'S GATE, which is before its workers are joined. A thread the runtime does not join reads it
+// to learn to end its loop, and a 'final' or a hook that may run during or after the stop takes its direct path
+// when it is false. A send needs no such check to be safe: one from a non-worker thread once the gate is
+// closed is refused and dropped inside the send, never queued and never a panic. The stopping thread itself reads
+// false too, its own sends still delivered
+pub fn isRunning() bool {running.load() != 0usize && gateClosed.load() == 0u32}
 
 // The index of the worker running the caller, 0 up to the number of workers
 // less 1; noWorker on any other thread

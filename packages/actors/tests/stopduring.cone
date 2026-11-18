@@ -1,0 +1,73 @@
+// THE STOP'S GATE (actors.cone): threads the runtime does not join send and wait while main stops it. One
+// sends in a loop, one calls each of the three waits in a loop, each until actors.isRunning() reads false,
+// which it does from the gate's closing, before the workers are joined. Each then does one more call after that:
+// the send is refused (counted in stats().refused) and the waits return at once. The test is that the program
+// ends with no panic, no crash and no hang, and that the refusals were counted. (stopwaits covers the calls
+// made after the stop has completed.)
+
+mod stopduring;
+
+import stdio use *;
+import actors;
+import thread;
+import time use Duration;
+
+actor Sink {
+  n: u64 = 0u64;
+
+  pub async fn hear(self, x: u64) {
+    n = n + x;
+  }
+}
+
+// How many of the two threads have gone round their loop once, so main stops the runtime among them
+let going: Atomic[u32];
+
+fn @initpure init() {
+  going = Atomic[u32].of(0u32);
+}
+
+fn sender(s: Sink) u64 {
+  var sent = 0u64;
+  while actors.isRunning() {
+    s.hear(1u64);
+    sent = sent + 1u64;
+    if sent == 1u64 {going.add(1u32);}
+  }
+  s.hear(1u64);
+  sent
+}
+
+fn waiter(rounds: u32) u32 {
+  var n = 0u32;
+  while actors.isRunning() {
+    actors.waitQuiet();
+    actors.waitUntilIdle();
+    actors.waitUntilIdleFor(Duration.fromMillis(1i64));
+    n = n + 1u32;
+    if n == 1u32 {going.add(1u32);}
+  }
+  actors.waitQuiet();
+  actors.waitUntilIdle();
+  actors.waitUntilIdleFor(Duration.fromMillis(1i64));
+  n
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let s = Sink();
+  s.hear(1u64);
+  let t1 = thread.start(s, &sender);
+  let t2 = thread.start(0u32, &waiter);
+  while going.load() < 2u32 {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  thread.sleep(Duration.fromMillis(20i64));
+  finalAll();
+  let sent = t1.join();
+  let rounds = t2.join();
+  print <- "sender sent some: ", sent > 0u64, "\n";
+  print <- "waiter looped some: ", rounds > 0u32, "\n";
+  print <- "late send refused and counted: ", actors.stats().refused >= 1u64, "\n";
+}

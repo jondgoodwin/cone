@@ -1,0 +1,186 @@
+// aio.onPool: work run on a lane of the blocking pool, awaited (the package's
+// header, THE BLOCKING POOL'S WORK).
+//
+// 1. A work function that writes "hello" into its buffer and returns Done(arg):
+//    Ok(CallDone(n, buf)) with n = arg and the bytes.
+// 2. One that returns Failed(5): an Err whose code is 5.
+// 3. A lane of one thread and a queue of one. A holding work keeps the
+//    thread; a second call queues behind it (in a cancel group); a third
+//    answers ResourceBusy at once. The group's cancel answers the queued one
+//    Cancelled, and its work never runs; the first, released, answers Ok.
+// 4. A deadline on a running job answers TimedOut, and the job still ends
+//    (its answer dropped, its buffer home).
+// 5. Every record dissolved, every buffer home.
+//
+// What each 'await' found is kept in Got, checked by main once Peer is done.
+
+mod poolcall;
+
+import testing use *;
+import thread;
+import time use Duration, Instant;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf, stats;
+import iocore use IoError, CancelGroup, Lane, Outcome, addLane, LaneConfig;
+import ioerror use IoErrorKind;
+import actors;
+import aio use IoLimits, CallDone;
+
+struct Got {
+  pub hello: Atomic[u64];         // 1 if work 1 answered Ok with n = 7 and "hello"
+  pub failCode: Atomic[u64];      // the code of work 2's error, plus 1000 (0 if it was Ok)
+  pub busy: Atomic[u64];          // 1 if the third call answered ResourceBusy
+  pub queued: Atomic[u64];        // the queued call's end: 1 Ok, 2 Cancelled, 3 another error
+  pub first: Atomic[u64];         // the first holding call's end, as 'queued'
+  pub timed: Atomic[u64];         // 1 if the call with a deadline answered TimedOut
+}
+
+let got: Got;
+
+// The held work's counts: started, ended, and the gate it waits at
+let started: Atomic[u32];
+let ended: Atomic[u32];
+let gate: Atomic[u32];
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+  started = Atomic[u32].of(0u32);
+  ended = Atomic[u32].of(0u32);
+  gate = Atomic[u32].of(0u32);
+}
+
+fn helloWork(arg: u64, buf: &mut IoBuf) Outcome {
+  buf.append("hello");
+  Outcome.Done(usize.from(arg))
+}
+
+fn failWork(arg: u64, buf: &mut IoBuf) Outcome {
+  Outcome.Failed(5u32)
+}
+
+// Says it has started, holds until the gate is opened (or 10 seconds, so a
+// broken test ends), says it has ended
+fn heldWork(arg: u64, buf: &mut IoBuf) Outcome {
+  started.add(1u32);
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while gate.load() == 0u32 && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  buf.append("held");
+  ended.add(1u32);
+  Outcome.Done(4usize)
+}
+
+fn endOf(r: Result[CallDone, IoError]) u64 {
+  match r {
+    case let Ok(d) {1u64}
+    case let Err(e) {if aio.isCancelled(e) {2u64} else {3u64}}
+  }
+}
+
+// A call that holds a lane's thread, or queues behind it, from an actor of its own
+actor Holder {
+  pub async fn hold(self, lane: Lane, g: CancelGroup, useGroup: bool, first: bool) {
+    let lim = if useGroup {IoLimits.within(g)} else {IoLimits.none()};
+    let e = endOf(await aio.onPoolIn(lane, &heldWork, 0u64, IoBuf(64usize), lim));
+    if first {got.first.store(e);} else {got.queued.store(e);}
+  }
+}
+
+actor Peer {
+
+  pub async fn run(self, done: OneshotSender[u64], holders: Holder, queuer: Holder) {
+    // 1. Work done
+    match await aio.onPool(Lane.general(), &helloWork, 7u64, IoBuf(64usize)) {
+      case let Ok(d) {
+        if d.n == 7usize && d.buf.view() == "hello" {got.hello.store(1u64);}
+      }
+      else {}
+    }
+
+    // 2. Work failed
+    match await aio.onPool(Lane.general(), &failWork, 0u64, IoBuf(64usize)) {
+      case let Err(e) {got.failCode.store(1000u64 + u64.from(e.code));}
+      else {}
+    }
+
+    // 3. A full lane
+    let one = addLane(LaneConfig(name: "aiocall", maxThreads: 1u32, queueBound: 1u32));
+    let g = CancelGroup.make();
+    holders.hold(one, g, false, true);
+    var waited = 0u32;
+    while started.load() < 1u32 && waited < 500u32 {
+      let z = await aio.sleep(Duration.fromMillis(10i64));
+      waited = waited + 1u32;
+    }
+    queuer.hold(one, g, true, false);
+    let z1 = await aio.sleep(Duration.fromMillis(100i64));
+    match await aio.onPool(one, &heldWork, 0u64, IoBuf(64usize)) {
+      case let Err(e) {if e.kind() == IoErrorKind.ResourceBusy {got.busy.store(1u64);}}
+      else {}
+    }
+    g.cancel();
+    waited = 0u32;
+    while got.queued.load() == 0u64 && waited < 500u32 {
+      let z = await aio.sleep(Duration.fromMillis(10i64));
+      waited = waited + 1u32;
+    }
+    gate.store(1u32);
+    waited = 0u32;
+    while got.first.load() == 0u64 && waited < 500u32 {
+      let z = await aio.sleep(Duration.fromMillis(10i64));
+      waited = waited + 1u32;
+    }
+
+    // 4. A deadline on a running job
+    gate.store(0u32);
+    let r = await aio.onPoolIn(one, &heldWork, 0u64, IoBuf(64usize), IoLimits.until(Instant.now() + Duration.fromMillis(300i64)));
+    match r {
+      case let Err(e) {if aio.isTimedOut(e) {got.timed.store(1u64);}}
+      else {}
+    }
+    gate.store(1u32);
+    waited = 0u32;
+    while ended.load() < 2u32 && waited < 500u32 {
+      let z = await aio.sleep(Duration.fromMillis(10i64));
+      waited = waited + 1u32;
+    }
+    var dn = done;
+    dn.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let h = Holder();
+    let q = Holder();
+    let peer = Peer();
+    peer.run(tx, h, q);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the peer said it was done");}
+    else {}
+  }
+  var waited = 0i64;
+  while aio.opStats().inUse > 0u64 && waited < 5000i64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 10i64;
+  }
+  let left = aio.opStats().inUse;
+  finalAll();
+  expectUInt(got.hello.load(), 1u64, "a call's work ran with its arg and wrote into the buffer: Ok(7, \"hello\")");
+  expectUInt(got.failCode.load(), 1005u64, "a failed work's number is the error's code");
+  expectUInt(got.busy.load(), 1u64, "a call to a full lane answers ResourceBusy");
+  expectUInt(got.queued.load(), 2u64, "a queued call cancelled by its group answers Cancelled");
+  expectUInt(u64.from(ended.load()), 2u64, "its work never ran: only the first and the deadline's ended");
+  expectUInt(got.first.load(), 1u64, "the first, released, answers Ok");
+  expectUInt(got.timed.load(), 1u64, "a deadline on a running job answers TimedOut");
+  expectUInt(left, 0u64, "every record is dissolved");
+  expectUInt(stats().lent, 0u64, "every buffer is home");
+  done()
+}

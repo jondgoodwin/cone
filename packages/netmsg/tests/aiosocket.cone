@@ -8,6 +8,9 @@
 //    second shutdown() is harmless.
 // 3. Many endpoints at once (they share aio's one I/O thread, no thread each): 12
 //    servers and a client of each all join, and all shut down.
+// 4. A burst of 200 oversized datagrams (the receive takes datagrams in batches,
+//    the long ones cut) beside 200 of a client's reliable messages: every
+//    message arrives once, in order.
 
 mod aiosocket;
 
@@ -205,8 +208,65 @@ fn many() {
   }
 }
 
+fn interleaved() {
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  let cfg = NetConfig.defaults();
+  let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+  let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+  var cs = List[Connection]();
+  var cc = List[Connection]();
+  expectStr(next(&mut rxS, &mut cs).view(), "J", "the server takes the client");
+  expectStr(next(&mut rxC, &mut cc).view(), "J", "and the client joins");
+  require(cs.len() == 1usize && cc.len() == 1usize, "both have a connection");
+  var txB: OneshotSender[u32];
+  var rxB: OneshotReceiver[u32];
+  txB, rxB = Oneshot[u32].make();
+  {
+    let blaster = Blaster();
+    blaster.blast(server.port, 200u32, 9000usize, txB);
+  }
+  var i = 0usize;
+  while i < 200usize {
+    var one = List[u8]();
+    one.push(u8.from(i));
+    cc[0usize].sendReliable(copyPacket(one.view()).freeze());
+    i = i + 1usize;
+  }
+  var inOrder = 0usize;
+  var extra = 0usize;
+  var more = true;
+  while more {
+    match rxS.recvTimeout(Duration.fromSeconds(3i64)) {
+      case let Some(e) {
+        match e {
+          case let Message(m) {
+            if m.data.len() == 1usize && usize.from(m.data.view()[0usize]) == inOrder {inOrder = inOrder + 1usize;} else {extra = extra + 1usize;}
+            if inOrder == 200usize {more = false;}
+          }
+          else {}
+        }
+      }
+      case is None[NetEvent] {more = false;}
+    }
+  }
+  match rxB.recv() {
+    case let Some(n) { expectUInt(u64.from(n), 200u64, "200 oversized datagrams were sent"); }
+    case is None[u32] { expect(false, "the blaster finished"); }
+  }
+  expectUInt(u64.from(inOrder), 200u64, "all 200 messages arrived, in order");
+  expectUInt(u64.from(extra), 0u64, "and nothing else arrived as a message");
+  client.endpoint.shutdown();
+  server.endpoint.shutdown();
+}
+
 fn main() i32 {
   flood();
+  interleaved();
   released();
   many();
   done()

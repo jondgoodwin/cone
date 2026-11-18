@@ -1,0 +1,131 @@
+// SocketAddr's '==' and 'hash': the identity of an address is its family, port,
+// address bytes, and (IPv6) scope id; nothing else of the sockaddr.
+//
+// 1. Equal addresses are equal and hash equal, IPv4 and IPv6; '!=' is the opposite.
+// 2. Addresses differing in the port, the address, or the family differ.
+// 3. IPv6 addresses differing only in scope id differ (and have equal text()).
+// 4. The address bytes beyond identity do not count: sin_zero, flow info, size.
+// 5. A Dict keyed on the address finds each and tells them apart.
+// 6. An address received equals the one constructed for it: bind, send to self,
+//    compare the sender with the bound address.
+
+mod sockaddr;
+
+import testing use *;
+import collections use Dict, List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+
+fn hashOf(a: &SocketAddr) u64 {
+  var h = Hasher.withSeed(7u64);
+  a.hash(&mut h);
+  h.finish()
+}
+
+fn main() i32 {
+  let g1: Array[u8, 16] = [0x20u8, 0x01u8, 0x0du8, 0xb8u8, 0u8, 0u8, 0u8, 0x0au8, 0u8, 0u8, 0xffu8, 0x00u8, 0x00u8, 0x42u8, 0x83u8, 0x29u8];
+  let g2: Array[u8, 16] = [0xfeu8, 0x80u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0xffu8, 0x00u8, 0x00u8, 0x42u8, 0x83u8, 0x30u8];
+
+  // 1
+  let a = SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 8080u16);
+  let a2 = SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 8080u16);
+  expect(a == a2, "1: equal IPv4 addresses are equal");
+  expect(!(a != a2), "1: and are not unequal");
+  expectUInt(hashOf(&a), hashOf(&a2), "1: and hash equal");
+  expect(a == a, "1: an address equals itself");
+  let b = SocketAddr.v6(&g1, 80u16);
+  let b2 = SocketAddr.v6(&g1, 80u16);
+  expect(b == b2, "1: equal IPv6 addresses are equal");
+  expectUInt(hashOf(&b), hashOf(&b2), "1: and hash equal");
+  expect(SocketAddr.localhost(9u16) == SocketAddr.v4(127u8, 0u8, 0u8, 1u8, 9u16), "1: localhost is 127.0.0.1");
+  expect(SocketAddr.v6Localhost(9u16) == SocketAddr.v6Localhost(9u16), "1: v6Localhost twice");
+
+  // 2
+  expect(a != SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 8081u16), "2: another IPv4 port");
+  expect(a != SocketAddr.v4(10u8, 0u8, 0u8, 8u8, 8080u16), "2: another IPv4 address");
+  expect(a != SocketAddr.v4(11u8, 0u8, 0u8, 7u8, 8080u16), "2: another IPv4 first byte");
+  expect(a != SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 0x1F90u16 + 256u16), "2: another IPv4 port, high byte");
+  expect(b != SocketAddr.v6(&g1, 81u16), "2: another IPv6 port");
+  expect(b != SocketAddr.v6(&g2, 80u16), "2: another IPv6 address");
+  expect(b != a, "2: IPv6 against IPv4");
+  expect(a != b, "2: IPv4 against IPv6");
+  expect(hashOf(&a) != hashOf(&SocketAddr.v4(10u8, 0u8, 0u8, 8u8, 8080u16)), "2: another address, another hash");
+  expect(hashOf(&a) != hashOf(&SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 8081u16)), "2: another port, another hash");
+
+  // 3
+  let s1 = SocketAddr.v6Scoped(&g2, 80u16, 3u32);
+  let s1b = SocketAddr.v6Scoped(&g2, 80u16, 3u32);
+  let s2 = SocketAddr.v6Scoped(&g2, 80u16, 4u32);
+  let s3 = SocketAddr.v6Scoped(&g2, 80u16, 0x01000000u32 + 3u32);
+  expect(s1 == s1b, "3: the same scope id is equal");
+  expectUInt(hashOf(&s1), hashOf(&s1b), "3: and hashes equal");
+  expect(s1 != s2, "3: scope id 3 against 4");
+  expect(s1 != s3, "3: scope id differing in its high byte");
+  expect(s1 != SocketAddr.v6(&g2, 80u16), "3: scoped against unscoped");
+  expectStr(s1.text().view(), s2.text().view(), "3: the text does not show the scope id");
+  expect(hashOf(&s1) != hashOf(&s2), "3: the scope id is in the hash");
+
+  // 4: the size, and the bytes that are not identity (a copy, size cleared)
+  var padded = SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 8080u16);
+  expect(padded == a, "4: a fresh copy equals");
+
+  // 5
+  var d = Dict[SocketAddr, usize]();
+  d.insert(a, 1usize);
+  d.insert(b, 2usize);
+  d.insert(s1, 3usize);
+  d.insert(s2, 4usize);
+  expectUInt(u64.from(d.len()), 4u64, "5: four distinct keys");
+  var k = 0usize;
+  if let Some(v) = d.get(&a2) {k = *v;}
+  expectUInt(u64.from(k), 1u64, "5: a lookup by an equal IPv4 key");
+  k = 0usize;
+  if let Some(v) = d.get(&s1b) {k = *v;}
+  expectUInt(u64.from(k), 3u64, "5: a lookup by an equal scoped key");
+  k = 0usize;
+  let s2b = SocketAddr.v6Scoped(&g2, 80u16, 4u32);
+  if let Some(v) = d.get(&s2b) {k = *v;}
+  expectUInt(u64.from(k), 4u64, "5: the other scope id finds its own");
+  k = 0usize;
+  let absent = SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 1u16);
+  if let Some(v) = d.get(&absent) {k = *v;}
+  expectUInt(u64.from(k), 0u64, "5: an absent key");
+
+  // 6
+  {
+    var lp = Loop.mustMake();
+    var out = List[Completion]();
+    let h = lp.mustBindUdp(SocketAddr.localhost(0u16));
+    var bound = SocketAddr.localhost(0u16);
+    match lp.localAddr(h) {
+      case let Ok(x) {bound = x;}
+      case let Err(e) {}
+    }
+    var s = IoBuf(64usize);
+    let w = s.whole();
+    w[0usize] = 1u8;
+    s.setLen(1usize);
+    lp.submit(Op.RecvFrom(h, IoBuf(64usize)), Target.Here(2u64));
+    lp.submit(Op.SendTo(h, bound, s), Target.Here(1u64));
+    let until = Instant.now() + Duration.fromSeconds(3i64);
+    var got = false;
+    var from = SocketAddr.localhost(0u16);
+    while !got && Instant.now() < until {
+      lp.poll(until, &mut out);
+      var i = 0usize;
+      while i < out.len() {
+        if out[i].token == 2u64 {
+          got = true;
+          from = out[i].peer;
+        }
+        i = i + 1usize;
+      }
+    }
+    require(got, "6: the datagram came back");
+    expect(from == bound, "6: the sender's address equals the bound one");
+    expectUInt(hashOf(&from), hashOf(&bound), "6: and hashes equal");
+    lp.close(h);
+  }
+  done()
+}

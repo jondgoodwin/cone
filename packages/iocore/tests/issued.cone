@@ -85,6 +85,52 @@ fn sendOn(pool: &OpPool[Ask], h: Handle, text: &Array[u8]) *OpCore {
   r as *OpCore
 }
 
+fn recvFromOn(pool: &OpPool[Ask], h: Handle) *OpCore {
+  let r = pool.take(Ask(3u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindRecvFrom;
+  c.handle = h;
+  c.buf = Some[IoBuf](IoBuf(64usize));
+  r as *OpCore
+}
+
+fn sendToOn(pool: &OpPool[Ask], h: Handle, to: SocketAddr, text: &Array[u8]) *OpCore {
+  let r = pool.take(Ask(4u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindSendTo;
+  c.handle = h;
+  c.setPeer(to);
+  var b = IoBuf(64usize);
+  b.append(text);
+  c.buf = Some[IoBuf](b);
+  r as *OpCore
+}
+
+// A send of a chain of segs segments of 5 bytes each
+fn gatherOn(pool: &OpPool[Ask], h: Handle, segs: usize) *OpCore {
+  let r = pool.take(Ask(5u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindSend;
+  c.handle = h;
+  var ch = Chain.make(1048576usize);
+  var k = 0usize;
+  while k < segs {
+    var b = IoBuf(64usize);
+    b.append("abcde");
+    _ = ch.push(b);
+    k = k + 1usize;
+  }
+  c.bufs = Some[Uni[Chain]](Uni[Chain](ch));
+  r as *OpCore
+}
+
+fn portOf(lp: &mut Loop, h: Handle) u16 {
+  match lp.localAddr(h) {
+    case let Ok(x) {x.port()}
+    case let Err(e) {0u16}
+  }
+}
+
 // Issue p on h through sh: what issue said
 fn issueOn(sh: &Shared, h: Handle, p: *OpCore) u32 {
   if !sh.lock(h) {return 99u32;}
@@ -177,6 +223,46 @@ fn main() i32 {
   }
   let c = lp.counters();
   expectUInt(c.submitted, c.delivered + c.inFlight, "submitted = delivered + in flight");
+
+  // 5. UDP: a datagram sent and received through the table, and the kinds
+  // that do not belong to the handle's kind
+  let u = lp.mustBindUdp(SocketAddr.localhost(0u16));
+  let v = lp.mustBindUdp(SocketAddr.localhost(0u16));
+  let uport = portOf(&mut lp, u);
+  let vport = portOf(&mut lp, v);
+  let s5 = sendToOn(&pool, u, SocketAddr.localhost(vport), "ping");
+  expectUInt(u64.from(issueOn(&sh, u, s5)), u64.from(issueDone), "a SendTo on a UDP handle is done where it is issued");
+  expectUInt(u64.from((s5 as &OpCore).count()), 4u64, "all four bytes, one datagram");
+  let gone5 = bytesOf(&pool, s5);
+  thread.sleep(Duration.fromMillis(20i64));
+  let r5 = recvFromOn(&pool, v);
+  expectUInt(u64.from(issueOn(&sh, v, r5)), u64.from(issueDone), "a RecvFrom with its datagram there is done at once");
+  expect(uport != 0u16 && (r5 as &OpCore).peer().port() == uport, "the sender's address is in the record");
+  expectUInt(u64.from(bytesOf(&pool, r5)), 4u64, "with the bytes");
+  let r6 = recvOn(&pool, v);
+  expectUInt(u64.from(issueOn(&sh, v, r6)), u64.from(issueNot), "a Recv on a UDP handle is not issued");
+  let gone6 = bytesOf(&pool, r6);
+  let r7 = recvFromOn(&pool, a);
+  expectUInt(u64.from(issueOn(&sh, a, r7)), u64.from(issueNot), "a RecvFrom on a TCP handle is not issued");
+  let gone7 = bytesOf(&pool, r7);
+  lp.close(u);
+  lp.close(v);
+
+  // 6. A gather: twenty segments (over Windows' sixteen on the stack) done at
+  // once and read back whole; an empty chain is not issued (the loop answers
+  // Done(0))
+  let g6 = gatherOn(&pool, b, 20usize);
+  expectUInt(u64.from(issueOn(&sh, b, g6)), u64.from(issueDone), "a gather is done where it is issued");
+  expectUInt(u64.from((g6 as &OpCore).count()), 100u64, "all hundred bytes");
+  expect((g6 as &OpCore).isLetGo(), "and let go");
+  let gone8 = bytesOf(&pool, g6);
+  thread.sleep(Duration.fromMillis(20i64));
+  let r8 = recvOn(&pool, a);
+  expectUInt(u64.from(issueOn(&sh, a, r8)), u64.from(issueDone), "the peer's receive finds them");
+  expectUInt(u64.from(bytesOf(&pool, r8)), 100u64, "all hundred, in one receive");
+  let g9 = gatherOn(&pool, b, 0usize);
+  expectUInt(u64.from(issueOn(&sh, b, g9)), u64.from(issueNot), "an empty gather is not issued");
+  let gone9 = bytesOf(&pool, g9);
 
   // 4. Closing, and closed
   expect(sh.lock(b), "b is in the table");
