@@ -14,22 +14,24 @@ mod stopping;
 import testing use *;
 import thread;
 import sync use *;
+import time use Duration;
 import iobuf use *;
 
-struct Gates {
-  pub go: Receiver[u64];
-  pub ready: Sender[u64];
+let ready: Atomic[u64];
+
+fn @initpure init() {
+  ready = Atomic[u64].of(0u64);
 }
 
-fn late(g: Gates) u64 {
-  var r = g.go;
+fn late(go: Receiver[u64]) u64 {
+  var r = go;
   var k = 0u64;
   while k < 8u64 {
     var b = IoBuf(100usize);
     b.append("before");
     k = k + 1u64;
   }
-  g.ready.send(1u64);
+  ready.store(1u64);
   match r.recv() {
     case let Some(v) {}
     case is None[u64] {}
@@ -47,14 +49,8 @@ fn main() i32 {
   var goTx: Sender[u64];
   var goRx: Receiver[u64];
   goTx, goRx = Channel[u64].make();
-  var readyTx: Sender[u64];
-  var readyRx: Receiver[u64];
-  readyTx, readyRx = Channel[u64].make();
-  let t = thread.start(Gates(goRx, readyTx), &late);
-  match readyRx.recv() {
-    case let Some(v) {}
-    case is None[u64] {}
-  }
+  let t = thread.start(goRx, &late);
+  while ready.load() == 0u64 {thread.sleep(Duration.fromMillis(1i64));}
   expect(stats().cachedBytes > 0usize, "the thread holds a cache");
   finalAll();
   expectUInt(u64.from(stats().cachedBytes), 0u64, "the final flushed every cache");
