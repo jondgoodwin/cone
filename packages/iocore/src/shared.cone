@@ -240,11 +240,11 @@ pub struct Shared is Move, Sendable {
     let k = r.kind;
     let hk = (*e).kind;
     let tcp = hk == hSocket && (k == diag.kindRecv || k == diag.kindSend);
-    let udp = hk == hDatagram && (k == diag.kindRecvFrom || k == diag.kindSendTo);
+    let udp = hk == hDatagram && (k == diag.kindRecvFrom || k == diag.kindSendTo || k == diag.kindRecvMany);
     if !tcp && !udp {return issueNot;}
     // An empty gather is the Loop's (its zero-length send answers Done(0))
     if k == diag.kindSend && r.isGather() && r.gatherSegments() == 0usize {return issueNot;}
-    if (k == diag.kindRecv || k == diag.kindRecvFrom) && r.bufRoom() == 0usize {return issueNot;}
+    if (k == diag.kindRecv || k == diag.kindRecvFrom || k == diag.kindRecvMany) && r.bufRoom() == 0usize {return issueNot;}
     #if #os == .windows { if (*e).skip == 0u32 {return issueNot;} }
     // A deadline or a group done with is answered by the Loop, as at a start
     let now = Instant.now();
@@ -370,8 +370,9 @@ fn winIssue(p: *OpCore, raw: usize, now: Instant) u32 {
   var got = 0u32;
   var rc = 0i32;
   let from = r.sockAddr();
-  if r.kind == diag.kindRecvFrom {
-    // One datagram, the sender into the record's address area
+  if r.kind == diag.kindRecvFrom || r.kind == diag.kindRecvMany {
+    // One datagram, the sender into the record's address area (a RecvMany's
+    // is Windows' batch of one, into its first buffer)
     let room = r.bufRoom();
     r.wsa.len = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32} else {u32.from(room)};
     r.wsa.buf = r.bufBase() + r.bufLen();
@@ -398,12 +399,20 @@ fn winIssue(p: *OpCore, raw: usize, now: Instant) u32 {
   if rc == 0i32 {
     // Done at once, and no packet will come: the port is skipped on success
     r.dequeued = Instant.now();
-    if r.kind == diag.kindRecv || r.kind == diag.kindRecvFrom {r.bufGrow(usize.from(got));}
+    if r.kind == diag.kindRecv || r.kind == diag.kindRecvFrom || r.kind == diag.kindRecvMany {r.bufGrow(usize.from(got));}
+    if r.kind == diag.kindRecvMany {
+      r.batchOne(false);
+      return answeredHere(p, diag.outcomeDone, 1usize, 0u32);
+    }
     return answeredHere(p, diag.outcomeDone, usize.from(got), 0u32);
   }
   let code = wsaError();
   if code == errorIoPending {return issuePending;}
   // Refused at once: no packet either, the same answer the Loop's start gives
+  if code == errorMsgSize && r.kind == diag.kindRecvMany {
+    r.batchCutAtOnce();
+    return answeredHere(p, diag.outcomeDone, 1usize, 0u32);
+  }
   answeredHere(p, diag.outcomeFailed, 0usize, code)
 }
 }
@@ -494,6 +503,15 @@ fn lxIssue(p: *OpCore, raw: usize, now: Instant) u32 {
     }
     r.bufGrow(usize.from(n));
     return answeredHere(p, diag.outcomeDone, usize.from(n), 0u32);
+  }
+  if r.kind == diag.kindRecvMany {
+    // Every datagram waiting, up to the buffers given (the Loop's lxTry)
+    let n = lxRecvMany(fd, r);
+    if n < 0i64 && lastErrno() == eagain {return issueNot;}
+    stampIssued(p, now);
+    if n >= 1i64 {return answeredHere(p, diag.outcomeDone, usize.from(n), 0u32);}
+    if n == 0i64 {return answeredHere(p, diag.outcomeFailed, 0usize, noRoom());}
+    return answeredHere(p, diag.outcomeFailed, 0usize, u32.from(lastErrno()));
   }
   if r.kind == diag.kindSendTo {
     // One datagram, whole or not at all
