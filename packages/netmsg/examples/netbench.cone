@@ -1,0 +1,376 @@
+// netbench: one update to many clients over netmsg UDP, the server in one process and the clients in one or more
+// others (this machine or another). Run it in a release build, by tools/netbench/run.ps1 (several client processes,
+// the CPU of each beside the server's) or by hand:
+//   congo run --release examples/netbench.cone -- server <port> <clients> <seconds> <bytes> [workers] [bindIPv4]
+//        the server: waits for the clients, then sends every client one update of <bytes> a tick, 30 ticks a
+//        second. It raises maxClients, maxPerAddress and admitRate (0, unlimited) so every client gets in
+//   congo run --release examples/netbench.cone -- clients <port> <clients> <seconds> [workers] [serverIPv4]
+//        <clients> connections in this process, each noting when each tick arrives (the server is 127.0.0.1 unless
+//        given). Start several of these, each with its share of the clients: one process saturates near 5,000
+//        connections (row 522)
+// The update carries its tick number and the steady-clock time the tick began. A clients' process gives, for each
+// tick, the time from the tick's start to the arrival of the first and of the last of its copies (meaningful only on
+// the server's machine: another machine's clock differs), and how many updates it heard. The server's gives how long
+// the tick's sends took to queue (the sendLatest loop) and how late each tick began against its schedule.
+
+mod netbench;
+
+import stdio use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import thread;
+import process;
+import iocore use SocketAddr;
+import iobuf use Bytes;
+import actors;
+import aio;
+import netmsg use *;
+
+let joined: Atomic[u64];
+
+fn @initpure init() {
+  joined = Atomic[u64].of(0u64);
+}
+
+fn sorted(v: &List[i64]) List[i64] {
+  var s = List[i64]();
+  var q = 0usize;
+  while q < v.len() {
+    s.push(*v[q]);
+    q = q + 1usize;
+  }
+  var i = 1usize;
+  while i < s.len() {
+    var j = i;
+    while j > 0usize && *s[j - 1usize] > *s[j] {
+      s.swap(j - 1usize, j);
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+  s
+}
+
+fn pct(s: &List[i64], q: usize) i64 {
+  if s.len() == 0usize {return 0i64;}
+  let at = s.len() * q / 100usize;
+  *s[if at >= s.len() {s.len() - 1usize} else {at}]
+}
+
+fn line(name: &str, v: &List[i64]) {
+  let s = sorted(v);
+  printStr(name);
+  printStr(" n="); printUInt(u64.from(s.len()));
+  printStr(" p50_us="); printInt(pct(&s, 50usize) / 1000i64);
+  printStr(" p99_us="); printInt(pct(&s, 99usize) / 1000i64);
+  printStr(" max_us="); printInt(pct(&s, 100usize) / 1000i64);
+  printStr("\n");
+}
+
+// ---------------------------- the server ----------------------------
+
+actor Hub {
+  seats: List[Connection];
+  size: usize;
+  refused: u32;
+  limit: usize;
+  spans: List[i64];
+  lags: List[i64];
+
+  pub fn init(self: &new, size: usize) {
+    *self = Self(seats: List[Connection](), size: size, refused: 0u32, limit: 0usize, spans: List[i64](), lags: List[i64]());
+  }
+
+  pub async fn onNet(self, ev: NetEvent) {
+    match ev {
+      case let Joined(j) {
+        seats.push(j.conn);
+        joined.store(u64.from(seats.len()));
+      }
+      case let Left(l) {}
+      case let Message(m) {}
+      case let Update(u) {}
+      case let Refused(r) { refused = refused + 1u32; limit = r.limit; }
+    }
+  }
+
+  pub async fn tick(self, k: u32, targetNs: i64) {
+    let t0 = Instant.now();
+    lags.push(t0.nanos() - targetNs);
+    var p = List[u8]();
+    putU32(&mut p, k);
+    putU64(&mut p, u64.from(t0.nanos()));
+    while p.len() < size { p.push(7u8); }
+    var s = 0usize;
+    while s < seats.len() {
+      seats[s].sendLatest(1u16, copyPacket(p.view()).freeze());
+      s = s + 1usize;
+    }
+    spans.push(Instant.now().nanos() - t0.nanos());
+  }
+
+  pub async fn report(self, done: Sender[u64]) {
+    printStr("SERVER seats="); printUInt(u64.from(seats.len()));
+    printStr(" refused="); printUInt(u64.from(refused));
+    printStr(" refusalLimit="); printUInt(u64.from(limit));
+    printStr("\n");
+    line("SERVER queueing (sendLatest loop per tick)", &spans);
+    line("SERVER tick start lag vs schedule", &lags);
+    done.send(1u64);
+  }
+}
+
+fn handlerOf(h: Hub) EventHandler {
+  eventHandler(Uni[fn(ev: NetEvent) + Sendable](fn(ev: NetEvent) [h] { h.onNet(ev); }))
+}
+
+fn snap(label: &str) {
+  let os = aio.opStats();
+  let st = actors.stats();
+  printStr("SNAP "); printStr(label);
+  printStr(" messages="); printUInt(st.messages);
+  printStr(" handedOver="); printUInt(os.handedOver);
+  printStr(" answeredHere="); printUInt(os.answeredHere);
+  printStr(" contended="); printUInt(os.contended);
+  printStr("\n");
+}
+
+// "a.b.c.d" and a port as an address; anything unreadable is 127.0.0.1
+fn addrOf(text: &str, port: u16) SocketAddr {
+  var parts = Array[u8, 4]() <- fill 0u8;
+  var at = 0usize;
+  var cur = 0u32;
+  var i = 0usize;
+  let b = text.bytes();
+  while i < b.len {
+    let c = b[i];
+    if c == 46u8 {
+      if at >= 3usize {return SocketAddr.localhost(port);}
+      parts[at] = u8.from(cur);
+      at = at + 1usize;
+      cur = 0u32;
+    } else if c >= 48u8 && c <= 57u8 {
+      cur = cur * 10u32 + u32.from(c - 48u8);
+      if cur > 255u32 {return SocketAddr.localhost(port);}
+    } else {
+      return SocketAddr.localhost(port);
+    }
+    i = i + 1usize;
+  }
+  if at != 3usize {return SocketAddr.localhost(port);}
+  parts[3usize] = u8.from(cur);
+  SocketAddr.v4(parts[0usize], parts[1usize], parts[2usize], parts[3usize], port)
+}
+
+fn pick(text: &str, port: u16) SocketAddr {
+  if text.len() == 0usize {SocketAddr.localhost(port)} else {addrOf(text, port)}
+}
+
+fn server(port: u16, n: usize, secs: i64, bytes: usize, bind: &str) {
+  var cfg = NetConfig.defaults();
+  cfg.maxClients = n + 16usize;
+  // Every client comes from 127.0.0.1 and joins at once: the per-address and admission limits (row 497) are raised with maxClients, so the table stays comparable with row 478's
+  cfg.maxPerAddress = n + 16usize;
+  cfg.admitRate = 0u32;   // 0 is no limit (the default is 50 a second); maxPerAddress above is past the default 32
+  let hub = Hub(bytes);
+  let srv = mustListen(pick(bind, port), cfg, handlerOf(hub));
+  printStr("LISTENING "); printUInt(u64.from(srv.port)); printStr("\n");
+  var waited = 0i64;
+  while joined.load() < u64.from(n) && waited < 120000i64 {
+    thread.sleep(Duration.fromMillis(100i64));
+    waited = waited + 100i64;
+  }
+  printStr("JOINED "); printUInt(joined.load()); printStr(" after ms "); printInt(waited); printStr("\n");
+  thread.sleep(Duration.fromMillis(500i64));
+  let steps = secs * 30i64;
+  let start = Instant.now();
+  var k = 0i64;
+  snap("start");
+  printStr("RUNSTART\n");
+  while k < steps {
+    let target = start.nanos() + k * 33333333i64;
+    let rest = target - Instant.now().nanos();
+    if rest > 0i64 { thread.sleep(Duration.fromNanos(rest)); }
+    hub.tick(u32.from(k), target);
+    k = k + 1i64;
+  }
+  snap("end");
+  printStr("RUNEND\n");
+  thread.sleep(Duration.fromMillis(500i64));
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  hub.report(tx);
+  rx.recv();
+  srv.endpoint.shutdown();
+  thread.sleep(Duration.fromMillis(300i64));
+}
+
+// ---------------------------- the clients ----------------------------
+
+actor Collector {
+  first: List[i64];
+  last: List[i64];
+  heard: u64;
+
+  pub fn init(self: &new, ticks: usize) {
+    var a = List[i64]();
+    var b = List[i64]();
+    var i = 0usize;
+    while i < ticks { a.push(0i64); b.push(0i64); i = i + 1usize; }
+    *self = Self(first: a, last: b, heard: 0u64);
+  }
+
+  pub async fn onNet(self, ev: NetEvent) {
+    match ev {
+      case let Joined(j) { joined.add(1u64); }
+      case let Left(l) {}
+      case let Message(m) {}
+      case let Update(u) {
+        let now = Instant.now().nanos();
+        var c = PacketReader.start();
+        let tick = usize.from(c.rdU32(u.data.view()));
+        let sent = i64.from(c.rdU64(u.data.view()));
+        if tick < last.len() {
+          let d = now - sent;
+          heard = heard + 1u64;
+          if d > *last[tick] { last[tick] = d; }
+          if *first[tick] == 0i64 || d < *first[tick] { first[tick] = d; }
+        }
+      }
+      case let Refused(r) {}
+    }
+  }
+
+  pub async fn report(self, done: Sender[List[i64]], doneFirst: Sender[List[i64]], count: Sender[u64]) {
+    done.send(last.clone());
+    doneFirst.send(first.clone());
+    count.send(heard);
+  }
+}
+
+fn handlerOfC(h: Collector) EventHandler {
+  eventHandler(Uni[fn(ev: NetEvent) + Sendable](fn(ev: NetEvent) [h] { h.onNet(ev); }))
+}
+
+fn clients(port: u16, n: usize, secs: i64, host: &str) {
+  let ticks = usize.from(secs * 30i64) + 30usize;
+  var cols = List[Collector]();
+  var c = 0usize;
+  while c < 8usize { cols.push(Collector(ticks)); c = c + 1usize; }
+  let cfg = NetConfig.defaults();
+  var conns = List[BoundEndpoint]();
+  var i = 0usize;
+  while i < n {
+    conns.push(mustConnect(pick(host, port), cfg, handlerOfC(cols[i % 8usize].clone())));
+    if i % 50usize == 49usize { thread.sleep(Duration.fromMillis(20i64)); }
+    i = i + 1usize;
+  }
+  var waited = 0i64;
+  while joined.load() < u64.from(n) && waited < 120000i64 {
+    thread.sleep(Duration.fromMillis(100i64));
+    waited = waited + 100i64;
+  }
+  printStr("CLIENTS joined "); printUInt(joined.load()); printStr(" of "); printUInt(u64.from(n)); printStr("\n");
+  thread.sleep(Duration.fromSeconds(secs + 3i64));
+  var lastAll = List[i64]();
+  var firstAll = List[i64]();
+  var k = 0usize;
+  while k < ticks { lastAll.push(0i64); firstAll.push(0i64); k = k + 1usize; }
+  var total = 0u64;
+  var m = 0usize;
+  while m < 8usize {
+    var tx: Sender[List[i64]];
+    var rx: Receiver[List[i64]];
+    tx, rx = Channel[List[i64]].make();
+    var tx2: Sender[List[i64]];
+    var rx2: Receiver[List[i64]];
+    tx2, rx2 = Channel[List[i64]].make();
+    var tx3: Sender[u64];
+    var rx3: Receiver[u64];
+    tx3, rx3 = Channel[u64].make();
+    cols[m].report(tx, tx2, tx3);
+    let l = rx.recv() || List[i64]();
+    let f = rx2.recv() || List[i64]();
+    total = total + (rx3.recv() || 0u64);
+    var t = 0usize;
+    while t < ticks && t < l.len() {
+      if *l[t] > *lastAll[t] { lastAll[t] = *l[t]; }
+      if *f[t] != 0i64 && (*firstAll[t] == 0i64 || *f[t] < *firstAll[t]) { firstAll[t] = *f[t]; }
+      t = t + 1usize;
+    }
+    m = m + 1usize;
+  }
+  // ticks with at least one arrival, in the middle of the run (the first and last second skipped)
+  var lastMid = List[i64]();
+  var firstMid = List[i64]();
+  var u = 30usize;
+  while u + 30usize < ticks && u < usize.from(secs * 30i64) {
+    if *lastAll[u] != 0i64 { lastMid.push(*lastAll[u]); firstMid.push(*firstAll[u]); }
+    u = u + 1usize;
+  }
+  printStr("CLIENTS updates heard="); printUInt(total);
+  printStr(" expected~="); printUInt(u64.from(n) * u64.from(secs * 30i64)); printStr("\n");
+  line("CLIENTS first copy arrival after tick start", &firstMid);
+  line("CLIENTS last copy arrival after tick start", &lastMid);
+  var q = 0usize;
+  while q < conns.len() { conns[q].endpoint.shutdown(); q = q + 1usize; }
+  thread.sleep(Duration.fromMillis(500i64));
+}
+
+fn main() i32 {
+  initAll();
+  iobuf.setLimits(1073741824usize, 268435456usize);
+  let args = process.args();
+  var rc = 2i32;
+  // optional last arguments: the workers, then an IPv4 address (server: after bytes; clients: after seconds)
+  let isSrv = args.len() >= 6usize && args[1usize].view() == "server";
+  let isCli = args.len() >= 5usize && args[1usize].view() == "clients";
+  let wAt = if isSrv {6usize} else {5usize};
+  if (isSrv || isCli) && args.len() > wAt {
+    actors.configure(actors.Options(workers: u32.from(u64.parse(args[wAt].view()) || 4u64)));
+  }
+  let extra = if (isSrv || isCli) && args.len() > wAt + 1usize {args[wAt + 1usize].view()} else {""};
+  if isSrv {
+    let p = u64.parse(args[2usize].view()) || 0u64;
+    let n = u64.parse(args[3usize].view()) || 0u64;
+    let s = u64.parse(args[4usize].view()) || 0u64;
+    let b = u64.parse(args[5usize].view()) || 0u64;
+    server(u16.from(p), usize.from(n), i64.from(s), usize.from(b), extra);
+    rc = 0i32;
+  } else if isCli {
+    let p = u64.parse(args[2usize].view()) || 0u64;
+    let n = u64.parse(args[3usize].view()) || 0u64;
+    let s = u64.parse(args[4usize].view()) || 0u64;
+    clients(u16.from(p), usize.from(n), i64.from(s), extra);
+    rc = 0i32;
+  } else {
+    printStr("usage: netbench server <port> <clients> <seconds> <bytes> [workers] [bindIPv4] | clients <port> <clients> <seconds> [workers] [serverIPv4]\n");
+  }
+  finalAll();
+  let st = actors.stats();
+  printStr("ACTORSTATS workers="); printUInt(u64.from(st.workers));
+  printStr(" messages="); printUInt(st.messages);
+  printStr(" activations="); printUInt(st.activations);
+  printStr(" steals="); printUInt(st.steals);
+  printStr(" parks="); printUInt(st.parks);
+  printStr("\n");
+  let tt = aio.ioThreadTimes();
+  printStr("IOTIMES user_ms="); printUInt(tt.userNs / 1000000u64);
+  printStr(" kernel_ms="); printUInt(tt.kernelNs / 1000000u64);
+  printStr(" wall_ms="); printUInt(tt.wallNs / 1000000u64);
+  printStr("\n");
+  let os = aio.opStats();
+  printStr("OPSTATS started="); printUInt(os.started);
+  printStr(" answeredHere="); printUInt(os.answeredHere);
+  printStr(" handedOver="); printUInt(os.handedOver);
+  printStr(" queued="); printUInt(os.queued);
+  printStr(" loopDone="); printUInt(os.loopDone);
+  printStr(" workerDone="); printUInt(os.workerDone);
+  printStr(" takenAway="); printUInt(os.takenAway);
+  printStr(" contended="); printUInt(os.contended);
+  printStr("\n");
+  aio.ioCounters().print("IOCOUNT ");
+  rc
+}
