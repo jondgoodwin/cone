@@ -58,6 +58,7 @@ pub actor Connection is ValueSource {
   slots: Deque[PendingUpdate];  // the latest-wins lane
   staleOut: u64;                // values replaced in a slot before they were sent
   sendErrors: u64;              // sends the socket answered with an error
+  slotsRefused: u64;            // updates dropped for a stream beyond the 'slots' limit
   peer: ConnectionCore;
   open: bool;
   forced: bool;                 // the reason it ended is not the peer's
@@ -81,7 +82,7 @@ pub actor Connection is ValueSource {
   fn init(self: &new, kind: u32, id: u32, handler: EventHandler, cfg: NetConfig, session: u64, addr: SocketAddr,
       ep: Option[Endpoint], tx: UdpSender, parent: CancelGroup, link: LinkConfig, seed: u64) {
     *self = Self(kind: kind, id: id, handler: handler, window: 0u32, avail: 0u32,
-      outbox: Deque[NetEvent](), waiting: 0usize, slots: Deque[PendingUpdate](), staleOut: 0u64, sendErrors: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
+      outbox: Deque[NetEvent](), waiting: 0usize, slots: Deque[PendingUpdate](), staleOut: 0u64, sendErrors: 0u64, slotsRefused: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
       open: true, forced: false, forcedReason: CloseReason.Local,
       addr: addr, ep: ep, tx: tx, outq: Deque[IoBuf](), parent: parent,
       timer: parent.child(), timerGen: 0u32, armed: -1i64, tickQueued: false,
@@ -177,6 +178,7 @@ pub actor Connection is ValueSource {
     var s = peer.stats();
     s.latestStale = s.latestStale + staleOut;
     s.sendErrors = sendErrors;
+    s.streamsRefused = s.streamsRefused + slotsRefused;
     s
   }
 
@@ -327,6 +329,14 @@ pub actor Connection is ValueSource {
             return;
           }
           i = i + 1usize;
+        }
+        // One entry a stream, and at most maxStreams of them: a handler that
+        // takes no updates holds at most that many buffers. The core keeps an
+        // incoming stream to the same limit; this bounds the in-process kind,
+        // which has no core between the ends
+        if slots.len() >= maxStreams {
+          slotsRefused = slotsRefused + 1u64;
+          return;
         }
         slots.push(PendingUpdate(stream, d));
       }

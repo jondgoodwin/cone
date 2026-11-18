@@ -1,0 +1,128 @@
+// A listen on port 0 with HTTP/3 offered finds a port free for UDP too (Bug 96, row 518).
+// actorhttp.listen binds TCP on a port the system picks, then UDP on that same number; UDP and TCP ports are
+// separate, so when another process holds that UDP port the UDP bind failed ("address in use") and the listen
+// with it, about once in 270 gate runs (h3driver's reqbody printed "listen failed" and then waited out 20 scenarios).
+// ListenJob now starts over on a fresh port, up to 16 tries, when the port asked for is 0.
+//
+// Here the test holds UDP sockets on pseudo-random ports of 127.0.0.1 in 49152..60999 (4,000 on Windows; 700 on Linux,
+// where the default limit of 1,024 descriptors must leave the service its own, so only a few listens fail
+// there without the retry) and listens 300 times on port 0; every listen must succeed.
+// Without the retry a third of the 300 fail with 4,000 held (a mutant run, listenAttempts = 1u32: 102 and 108). A port the caller
+// names is not retried: a listen on a TCP port that is free but whose UDP twin is held must fail, and does.
+
+mod listenretry;
+
+import stdio use *;
+import path use Path;
+import collections use List, String, AnyError;
+import iocore use Loop, Handle, SocketAddr;
+import sync use Channel, Sender, Receiver;
+import tls;
+import h3driver;
+import actors;
+import actorhttp use Server, ServerConfig;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+actor Once {
+  server: Server;
+
+  pub async fn open(self, addr: SocketAddr, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(addr, cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok; ports.send(server.port());}
+      case let &mut Err(e) {ports.send(0u16);}
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+fn config(certFile: &Path, keyFile: &Path) ServerConfig {
+  ServerConfig.make().streamBodies().secure(tls.ServerConfig.make(certFile, keyFile)).offerHttp2()
+    .offerHttp3(&h3driver.plugin)
+}
+
+fn main() i32 {
+  initAll();
+  var lp = Loop.mustMake();
+  var held = List[Handle]();
+  var heldPorts = List[u16]();
+  // Ports spread over 49152..60999 (in both Windows' and Linux's ephemeral ranges) by a fixed generator, as a
+  // set of other processes' sockets would be; a port that cannot be bound (taken, reserved, no descriptors
+  // left) is skipped
+  var seed = 88172645463325252u64;
+  var tries = 0u32;
+  let want = #if #os == .windows {4000usize} #else {700usize};
+  while held.len() < want && tries < 12000u32 {
+    tries = tries + 1u32;
+    seed = seed ^ (seed << 13u64);
+    seed = seed ^ (seed >> 7u64);
+    seed = seed ^ (seed << 17u64);
+    let port = u16.from(49152u64 + (seed >> 11u64) % 11848u64);
+    match lp.bindUdp(SocketAddr.localhost(port)) {
+      case let Ok(h) {
+        held.push(h);
+        heldPorts.push(port);
+      }
+      case let Err(e) {}
+    }
+  }
+  printStr("held at least 300 UDP ports: ");
+  printStr(if held.len() >= 300usize {"yes"} else {"no"});
+  printStr("\n");
+
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var ok = 0u64;
+  var bad = 0u64;
+  var named = 0u64;
+  {
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    var i = 0u64;
+    while i < 300u64 {
+      let o = Once(Server.none());
+      o.open(SocketAddr.localhost(0u16), config(&certFile, &keyFile), ptx.clone());
+      let port = prx.recv() || 0u16;
+      if port != 0u16 {ok = ok + 1u64; o.stop();} else {bad = bad + 1u64;}
+      i = i + 1u64;
+    }
+    // A port the caller names is theirs: its UDP twin held, the listen fails and is not moved
+    if heldPorts.len() > 0usize && heldPorts[0usize] != 0u16 {
+      let o = Once(Server.none());
+      o.open(SocketAddr.localhost(heldPorts[0usize]), config(&certFile, &keyFile), ptx.clone());
+      let port = prx.recv() || 0u16;
+      if port == 0u16 {named = 1u64;} else {o.stop();}
+    }
+  }
+  printStr("listens on port 0 succeeded: ");
+  printStr(if bad == 0u64 {"all"} else {"not all"});
+  printStr("\n");
+  printStr("a named port whose UDP twin is held is refused: ");
+  printStr(if named == 1u64 {"yes"} else {"no"});
+  printStr("\n");
+  if bad != 0u64 {
+    printStr("failed listens: ");
+    printUInt(bad);
+    printStr(" of ");
+    printUInt(ok + bad);
+    printStr("\n");
+  }
+  var k = 0usize;
+  while k < held.len() {
+    lp.close(held[k]);
+    k = k + 1usize;
+  }
+  actors.waitQuiet();
+  finalAll();
+  if bad == 0u64 && named == 1u64 {0i32} else {1i32}
+}

@@ -1,0 +1,201 @@
+// The bound on latest-wins streams, on the receiving side. A connection carries
+// at most maxStreams (64) of them each way; the sending side has refused a 65th
+// from the start. A peer that names 65,536 streams must not make the receiver
+// keep 65,536 entries, scan them for each item, or hold their buffers:
+//   - the core keeps the first 64 streams it hears of, drops an update on any
+//     other and counts it (stats.streamsRefused), and the connection goes on;
+//   - a connection whose application takes no updates (it gives no credit)
+//     holds at most 64 waiting, one a stream, and counts the rest.
+// Ordinary traffic under the limit is as it was: all 64 streams deliver, none
+// is counted, and a 65th does not stop the 64 from updating.
+
+mod streamlimit;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import actors;
+import stages use ValueSink, ValueSource, Ending;
+import iobuf use Bytes;
+import netmsg use *;
+
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+// A payload packet of session 'session' as a hostile peer writes it: sequence
+// 'seq', and one latest-wins item for each of the 'n' streams from 'first' on,
+// each of sequence 'lseq' and one byte long
+fn hostile(session: u64, seq: u16, first: usize, n: usize, lseq: u16) Bytes {
+  var b = List[u8]();
+  putU32(&mut b, protocolId);
+  putU8(&mut b, kindPayload);
+  putU64(&mut b, session);
+  putU16(&mut b, seq);
+  putU16(&mut b, 65535u16);
+  putU32(&mut b, 0u32);
+  putU8(&mut b, 0u8);
+  putU8(&mut b, u8.from(n));
+  var i = 0usize;
+  while i < n {
+    putU16(&mut b, u16.from(first + i));
+    putU16(&mut b, lseq);
+    putU16(&mut b, 1u16);
+    putU8(&mut b, 65u8);
+    i = i + 1usize;
+  }
+  fz(b.view())
+}
+
+// How many events are Latest
+fn latestIn(evs: &List[CoreEvent]) u64 {
+  var n = 0u64;
+  var i = 0usize;
+  while i < evs.len() {
+    match &evs[i] {
+      case is Latest { n = n + 1u64; }
+      else {}
+    }
+    i = i + 1usize;
+  }
+  n
+}
+
+// A handler that never gives its connection credit, so no update reaches it
+// until the test gives some
+actor Stingy is ValueSink[NetEvent] {
+  tx: Sender[NetEvent];
+
+  fn init(self: &new, tx: Sender[NetEvent]) {
+    *self = Self(tx: tx);
+  }
+
+  pub async fn attach(self, up: ValueSource) {}
+  pub async fn accept(self, ev: NetEvent) { tx.send(ev); }
+  pub async fn end(self, how: Ending) {}
+}
+
+actor Prober {
+  pub async fn ask(self, c: Connection, out: Sender[ConnectionStats]) {
+    let s = await c.stats();
+    out.send(s);
+  }
+}
+
+fn statsOf(c: Connection) ConnectionStats {
+  var tx: Sender[ConnectionStats];
+  var rx: Receiver[ConnectionStats];
+  tx, rx = Channel[ConnectionStats].make();
+  let prober = Prober();
+  prober.ask(c, tx);
+  match rx.recvTimeout(Duration.fromSeconds(5i64)) {
+    case let Some(st) { return st; }
+    case is None[ConnectionStats] {}
+  }
+  panic("the stats did not come")
+}
+
+fn main() i32 {
+  let session = 0x9999u64;
+
+  // A peer names all 65,536 streams, 255 items to a packet
+  {
+    var b = ConnectionCore.make(NetConfig.defaults(), session, at(0i64));
+    var delivered = 0u64;
+    var packets = 0u64;
+    var first = 0usize;
+    var allTaken = true;
+    while first < 65536usize {
+      var n = 65536usize - first;
+      if n > 255usize {n = 255usize;}
+      var evs = List[CoreEvent]();
+      if !b.receive(&hostile(session, u16.from(packets), first, n, 1u16), at(1i64), &mut evs) {allTaken = false;}
+      delivered = delivered + latestIn(&evs);
+      first = first + n;
+      packets = packets + 1u64;
+    }
+    expect(allTaken, "every packet is taken: the peer is not closed for its streams");
+    expect(b.isActive(), "and the connection is open");
+    expectUInt(delivered, 64u64, "the first 64 streams delivered, no more");
+    let st = b.stats();
+    expectUInt(st.latestDelivered, 64u64, "the stats say the same");
+    expectUInt(st.streamsRefused, 65536u64 - 64u64, "every update on another stream is counted refused");
+    expectUInt(st.packetsReceived, packets, "each packet counted as received");
+    expectUInt(st.packetsInvalid, 0u64, "none invalid");
+
+    // The streams it has still update
+    var evs2 = List[CoreEvent]();
+    b.receive(&hostile(session, u16.from(packets), 0usize, 64usize, 2u16), at(2i64), &mut evs2);
+    expectUInt(latestIn(&evs2), 64u64, "the 64 streams it has take a newer value");
+    expectUInt(b.stats().streamsRefused, 65536u64 - 64u64, "and none of that is refused");
+  }
+
+  // Under the limit: 64 streams all deliver and none is counted; the 65th is
+  // the first refused, and does not stop the others
+  {
+    var b = ConnectionCore.make(NetConfig.defaults(), session, at(0i64));
+    var evs = List[CoreEvent]();
+    b.receive(&hostile(session, 0u16, 0usize, 64usize, 1u16), at(1i64), &mut evs);
+    expectUInt(latestIn(&evs), 64u64, "64 streams deliver");
+    expectUInt(b.stats().streamsRefused, 0u64, "none refused at the limit");
+    var evs2 = List[CoreEvent]();
+    b.receive(&hostile(session, 1u16, 64usize, 1usize, 1u16), at(2i64), &mut evs2);
+    expectUInt(latestIn(&evs2), 0u64, "a 65th stream delivers nothing");
+    expectUInt(b.stats().streamsRefused, 1u64, "and is counted");
+    var evs3 = List[CoreEvent]();
+    b.receive(&hostile(session, 2u16, 63usize, 1usize, 2u16), at(3i64), &mut evs3);
+    expectUInt(latestIn(&evs3), 1u64, "the last of the 64 still takes a newer value");
+    expectUInt(b.stats().streamsRefused, 1u64, "and that adds nothing to the count");
+  }
+
+  // An application that takes no updates, offered 10,000 streams: 64 wait
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    let slow: EventHandler = Stingy(txB);
+    let pair = pairInProcess(channelHandler(txA), 1u32, slow, 2u32);
+    var k = 0usize;
+    while k < 10000usize {
+      pair.a.sendLatest(u16.from(k), copyPacket("x").freeze());
+      k = k + 1usize;
+    }
+    // b has been offered all of them once its count says so
+    var refused = 0u64;
+    let limit = Instant.now() + Duration.fromSeconds(10i64);
+    while refused < 10000u64 - 64u64 && Instant.now() < limit {
+      refused = statsOf(pair.b).streamsRefused;
+    }
+    expectUInt(refused, 10000u64 - 64u64, "all but 64 of the 10,000 streams are counted refused");
+    // Give it credit: exactly the 64 that waited are delivered, the first 64 streams
+    pair.b.credit(100000u32);
+    var updates = 0u64;
+    var firstStream = 65535u32;
+    var lastStream = 0u32;
+    var more = true;
+    while more {
+      match rxB.recvTimeout(Duration.fromMillis(500i64)) {
+        case let Some(e) {
+          match &e {
+            case let &Update(u) {
+              if updates == 0u64 {firstStream = u32.from(u.stream);}
+              lastStream = u32.from(u.stream);
+              updates = updates + 1u64;
+            }
+            else {}
+          }
+        }
+        case is None[NetEvent] { more = false; }
+      }
+    }
+    expectUInt(updates, 64u64, "64 waiting updates delivered when credit comes");
+    expectUInt(u64.from(firstStream), 0u64, "the first of them is stream 0");
+    expectUInt(u64.from(lastStream), 63u64, "the last stream 63");
+    pair.a.close();
+  }
+  done()
+}

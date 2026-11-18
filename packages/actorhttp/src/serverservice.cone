@@ -719,90 +719,130 @@ fn closeServer(srv: &mut SrvRec, lp: &mut Loop) {
 // The jobs
 // ---------------------------------------------------------------------------
 
-// A server made on the service thread, for the reply the 'await' gives
+// How many times a listen on port 0 with HTTP/3 offered starts over, on a fresh port, when the UDP bind finds
+// the TCP port's number taken (a UDP port and a TCP port of one number are separate, and another process may hold the
+// UDP one: Bug 96). With a quarter of the ephemeral UDP ports held, 16 tries all failing is under 1 in 10^9
+const listenAttempts = 16u32;
+
+// A TLS config as the TCP listener takes it: a copy whose ALPN names include the ones the server offers
+fn tcpTls(given: &tls.ServerConfig, http2: bool) tls.ServerConfig {
+  var t = tls.ServerConfig.make(&given.certFile, &given.keyFile);
+  t.alpn = serverAlpn(&given.alpn, http2);
+  t.minVersion = given.minVersion;
+  t.maxVersion = given.maxVersion;
+  t.backend = given.backend;
+  t
+}
+
+// One try at the listen: the answer for the caller, or None when 'retry' is true and the UDP bind of HTTP/3 found
+// the TCP port's number in use (the TCP listener is closed by then, and the caller tries again; on port 0 that is a
+// fresh port)
+fn listenOnce(lp: &mut Loop, sv: &mut Service, addr: SocketAddr, cfg: &ServerConfig, retry: bool) Option[Result[Server, ServerError]] {
+  let conn, maxBody, maxPending, http2, http3, streamBodies = cfg.(conn, maxBody, maxPending, http2, http3, bodiesStreamed);
+  var h3on = false;
+  match http3 {
+    case let Some(mk) {h3on = true;}
+    else {}
+  }
+  var drv = httpconn.Driver.make(conn);
+  var res: Result[httpconn.ListenerId, IoError] = Err[httpconn.ListenerId, IoError](IoError.cancelled());
+  var secure = false;
+  // HTTP/3's certificate and key: the TLS config's
+  var h3tls: Option[tls.ServerConfig] = None;
+  match &cfg.tlsConfig {
+    case let &Some(given) {
+      if h3on {h3tls = Some[tls.ServerConfig](tls.ServerConfig.make(&given.certFile, &given.keyFile));}
+      let t = tcpTls(given, http2);
+      match tls.Server.make(t) {
+        case let Ok(s) {
+          secure = true;
+          res = drv.listenWith(lp, addr, Uni[TlsMaker](TlsMaker(s)), httpconn.Sink.Here(0u64));
+        }
+        case let Err(x) {
+          return Some[Result[Server, ServerError]](Err[Server, ServerError](
+            ServerError.failed(x.osError, (String() <- x).view())));
+        }
+      }
+    }
+    else {res = drv.listen(lp, addr, httpconn.Sink.Here(0u64));}
+  }
+  match res {
+    case let Ok(l) {
+      var bound = addr;
+      match drv.localAddr(lp, l) {
+        case let Ok(a) {bound = a;}
+        case let Err(e) {}
+      }
+      // HTTP/3 beside it: UDP on the same address and port
+      var h3 = httpclient.http3From(http3, &tls.ClientConfig.make());
+      var h3listener = 0u64;
+      var altSvc = String();
+      if h3on {
+        var why = String();
+        var code = 0u32;
+        match &h3tls {
+          case let &Some(ht) {
+            match h3.listen(lp, bound, ht, 0u64) {
+              case let Ok(hl) {h3listener = hl;}
+              case let Err(f) {
+                why = String() <- f;
+                code = f.code;
+              }
+            }
+          }
+          else {why = String.from("HTTP/3 needs TLS: ServerConfig.secure");}
+        }
+        if why.len() > 0usize {
+          drv.stopListening(lp, l);
+          drv.abortAll(lp);
+          if retry && IoError(code).kind() == IoErrorKind.AddressInUse {
+            return None[Result[Server, ServerError]];
+          }
+          return Some[Result[Server, ServerError]](Err[Server, ServerError](ServerError.failed(code, why.view())));
+        }
+        altSvc = String.from("h3=\":");
+        altSvc.appendUInt(u64.from(bound.port()));
+        altSvc.append("\"; ma=86400");
+      }
+      let id = newId();
+      sv.srvs.add(SrvRec(id, 1u32, false, false, secure, maxBody, maxPending, streamBodies, drv, l,
+        Exchanges(16usize), Dict[u64, usize](), Dict[u64, Request](),
+        Deque[ReadyEx](), Deque[actors.ReplyOf[Result[Exchange, ServerError]]](), 0usize, h3, h3on, h3listener, altSvc,
+        Dict[QKey, u64](), 1u64, Deque[actors.ReplyOf[bool]]()));
+      Some[Result[Server, ServerError]](Ok[Server, ServerError](Server(id, bound, secure, h3on)))
+    }
+    case let Err(e) {
+      Some[Result[Server, ServerError]](Err[Server, ServerError](
+        ServerError.failed(e.code, "could not listen")))
+    }
+  }
+}
+
+// A server made on the service thread, for the reply the 'await' gives. On port 0 with HTTP/3 offered, a UDP bind
+// that finds the TCP port's number taken starts the listen over on a fresh port, up to listenAttempts tries; a port
+// the caller named is never changed
 struct ListenJob {
   pub addr: SocketAddr;
   pub cfg: ServerConfig;
 
   pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[Server, ServerError]]) {
     let addr, cfg = self.(addr, cfg);
-    let conn, maxBody, maxPending, tcfg, http2, http3, streamBodies = cfg.(conn, maxBody, maxPending, tlsConfig, http2, http3, bodiesStreamed);
     var h3on = false;
-    match http3 {
-      case let Some(mk) {h3on = true;}
+    match &cfg.http3 {
+      case let &Some(mk) {h3on = true;}
       else {}
     }
-    var drv = httpconn.Driver.make(conn);
-    var res: Result[httpconn.ListenerId, IoError] = Err[httpconn.ListenerId, IoError](IoError.cancelled());
-    var secure = false;
-    // HTTP/3's certificate and key: the TLS config's
-    var h3tls: Option[tls.ServerConfig] = None;
-    match tcfg {
-      case let Some(given) {
-        var t = given;
-        if h3on {h3tls = Some[tls.ServerConfig](tls.ServerConfig.make(&t.certFile, &t.keyFile));}
-        t.alpn = serverAlpn(&t.alpn, http2);
-        match tls.Server.make(t) {
-          case let Ok(s) {
-            secure = true;
-            res = drv.listenWith(lp, addr, Uni[TlsMaker](TlsMaker(s)), httpconn.Sink.Here(0u64));
-          }
-          case let Err(x) {
-            rp.answer(Err[Server, ServerError](
-              ServerError.failed(x.osError, (String() <- x).view())));
-            return;
-          }
+    let mayRetry = h3on && addr.port() == 0u16;
+    var tries = 1u32;
+    while true {
+      match listenOnce(lp, sv, addr, &cfg, mayRetry && tries < listenAttempts) {
+        case var Some(r) {
+          rp.answer(r);
+          return;
         }
+        else {}
       }
-      else {res = drv.listen(lp, addr, httpconn.Sink.Here(0u64));}
-    }
-    match res {
-      case let Ok(l) {
-        var bound = addr;
-        match drv.localAddr(lp, l) {
-          case let Ok(a) {bound = a;}
-          case let Err(e) {}
-        }
-        // HTTP/3 beside it: UDP on the same address and port
-        var h3 = httpclient.http3From(http3, &tls.ClientConfig.make());
-        var h3listener = 0u64;
-        var altSvc = String();
-        if h3on {
-          var why = String();
-          var code = 0u32;
-          match &h3tls {
-            case let &Some(ht) {
-              match h3.listen(lp, bound, ht, 0u64) {
-                case let Ok(hl) {h3listener = hl;}
-                case let Err(f) {
-                  why = String() <- f;
-                  code = f.code;
-                }
-              }
-            }
-            else {why = String.from("HTTP/3 needs TLS: ServerConfig.secure");}
-          }
-          if why.len() > 0usize {
-            drv.stopListening(lp, l);
-            drv.abortAll(lp);
-            rp.answer(Err[Server, ServerError](ServerError.failed(code, why.view())));
-            return;
-          }
-          altSvc = String.from("h3=\":");
-          altSvc.appendUInt(u64.from(bound.port()));
-          altSvc.append("\"; ma=86400");
-        }
-        let id = newId();
-        sv.srvs.add(SrvRec(id, 1u32, false, false, secure, maxBody, maxPending, streamBodies, drv, l,
-          Exchanges(16usize), Dict[u64, usize](), Dict[u64, Request](),
-          Deque[ReadyEx](), Deque[actors.ReplyOf[Result[Exchange, ServerError]]](), 0usize, h3, h3on, h3listener, altSvc,
-          Dict[QKey, u64](), 1u64, Deque[actors.ReplyOf[bool]]()));
-        rp.answer(Ok[Server, ServerError](Server(id, bound, secure, h3on)));
-      }
-      case let Err(e) {
-        rp.answer(Err[Server, ServerError](
-          ServerError.failed(e.code, "could not listen")));
-      }
+      tries = tries + 1u32;
     }
   }
 }
