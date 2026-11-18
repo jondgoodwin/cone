@@ -14,7 +14,7 @@
 //     free list of them (no lock: only the owner takes and frees);
 //   - the wheel (timewheel.Wheel), an entry per armed cell, its token the
 //     cell's address (the low three bits are clear: a later kind bit's room);
-//     the owner's alone (row 485's deputy will take it under a word lock);
+//     the owner's, under THE WHEEL WORD (below);
 //   - the RETIRE STACK, an atomic head: a cell resolved or let go on another
 //     thread is pushed there (one CAS) and the owner frees it at its next step;
 //   - 'armed', the cells armed now, which any thread lowers by its winning CAS;
@@ -44,6 +44,27 @@
 // its group's registry names it by address and the word it was armed with, so
 // one that outlives the arming finds the word moved and does nothing ('isGone'
 // is true, and watchHere's sweep drops it).
+//
+// THE WHEEL WORD (row 485) is a one-word lock ('lock') round every operation on
+// the wheel and on 'next': the owner takes it uncontended (one compare-and-swap
+// a side, about 10-20 ns), and the monitor takes it only by try-lock, for THE
+// DEPUTY. The owner waits if it finds it held, which is only while the deputy
+// has the wheel's overdue entries out: a bounded pass with no answer inside it.
+//
+// THE DEPUTY. A worker in a long turn fires nothing, so its cells are late by
+// the rest of the turn, which today's I/O-thread timers never are. The monitor
+// already finds a worker that has held one turn for a whole tick (THE MONITOR),
+// and then looks at its store (timersDeputy): if the worker is not parked (its
+// 'due' is 0: a parked worker is woken by name and fires its own) and its
+// 'next' has passed, the monitor try-locks the wheel and takes the due entries
+// out; each cell is taken by the same CAS out of Armed as every fire, so a
+// cancel racing the deputy answers once, whichever wins. With the lock let go,
+// the monitor answers the cells it won from its own thread (the answer goes to
+// the inject queue, as a cancel's does from a plain thread, and any worker
+// runs it) and retires them to the owner, which frees them at its next step:
+// only the owner touches the free list. A deputy's fires are counted apart
+// ('deputyFires') and added to 'fires' by timerStats. A stuck worker's cell is
+// late by at most the wheel's tick and the monitor's own (spec section 6).
 //
 // THE ANSWERS, as aio's sleeps have always given them: due at its time, Done;
 // a deadline (the IoLimits' or its group's, the tighter) before that, TimedOut
@@ -126,10 +147,12 @@ struct TimerStore {
   wheel: Wheel;               // the owner's
   free: *TimerCell;           // the owner's
   chunks: *TimerChunk;        // every chunk, newest first (the sweep's and the drop's walk)
-  next: i64;                  // when the owner must next call its wheel's expired: noDue when it is empty
+  lock: Atomic[u32];          // THE WHEEL WORD: 1 while the wheel and 'next' are held
+  next: Atomic[i64];          // when the owner must next call its wheel's expired: noDue when it is empty (set under the lock; the monitor reads it)
   expiries: List[Expiry];     // the owner's scratch
   arms: Atomic[u64];          // counts, the owner's (Relaxed), for timerStats
   fires: Atomic[u64];
+  deputyFires: Atomic[u64];   // fired by the monitor as the owner's deputy (its Relaxed add)
   cancels: Atomic[u64];       // answered Cancelled or TimedOut by a cancel or a sweep, any thread
   dropped: Atomic[u64];       // let go unanswered at the stop
 }
@@ -185,10 +208,12 @@ fn timersHere() *TimerStore {
   mem.writeRaw[Wheel](&(*ts).wheel as *Wheel, Wheel.make(time.Instant.now()));
   (*ts).free = null;
   (*ts).chunks = null;
-  (*ts).next = noDue;
+  (*ts).lock = Atomic[u32].of(0u32);
+  (*ts).next = Atomic[i64].of(noDue);
   mem.writeRaw[List[Expiry]](&(*ts).expiries as *List[Expiry], List[Expiry]());
   (*ts).arms = Atomic[u64].of(0u64);
   (*ts).fires = Atomic[u64].of(0u64);
+  (*ts).deputyFires = Atomic[u64].of(0u64);
   (*ts).cancels = Atomic[u64].of(0u64);
   (*ts).dropped = Atomic[u64].of(0u64);
   let t = timerTable.load();
@@ -225,14 +250,62 @@ fn cellTake(ts: *TimerStore) *TimerCell {
   c
 }
 
+// THE WHEEL WORD: the owner waits for it (the deputy holds it for a bounded
+// pass and answers nothing inside); the monitor only tries
+fn wheelLock(ts: *TimerStore) {
+  var spins = 0u32;
+  while true {
+    let seen, ok = (*ts).lock.compareSwap(0u32, 1u32);
+    if ok {
+      return;
+    }
+    spins = spins + 1u32;
+    if spins < 200u32 {
+      yieldProcessor();
+    } else {
+      thread.sleep(time.Duration.fromMicros(20i64));
+    }
+  }
+}
+
+fn wheelTry(ts: *TimerStore) bool {
+  let seen, ok = (*ts).lock.compareSwap(0u32, 1u32);
+  ok
+}
+
+fn wheelUnlock(ts: *TimerStore) {
+  (*ts).lock.store(0u32);
+}
+
+// When the owner must next call its wheel's expired
+fn nextOf(ts: *TimerStore) i64 {
+  (*ts).next.loadOrdered(MemOrder.Relaxed)
+}
+
+// 'next' from the wheel's own earliest, noDue when it is empty (the lock held)
+fn nextSet(ts: *TimerStore) {
+  let wh = &(*ts).wheel;
+  match wh.nextExpiry() {
+    case let Some(t) {(*ts).next.storeOrdered(t.nanos(), MemOrder.Relaxed);}
+    else {(*ts).next.storeOrdered(noDue, MemOrder.Relaxed);}
+  }
+}
+
 // The cell back on the owner's free list, its group let go and its generation
 // moved (the owner)
 fn cellFree(ts: *TimerStore, c: *TimerCell) {
+  wheelLock(ts);
   if !(*c).entry.isNone() {
     let wh = &mut (*ts).wheel;
     wh.cancel((*c).entry);
     (*c).entry = TimerId.none();
   }
+  wheelUnlock(ts);
+  cellRecycle(ts, c);
+}
+
+// The same for a cell in no wheel (its entry none)
+fn cellRecycle(ts: *TimerStore, c: *TimerCell) {
   let g = mem.readRaw[Option[CancelGroup]](&(*c).group as *Option[CancelGroup]);
   mem.writeRaw[Option[CancelGroup]](&(*c).group as *Option[CancelGroup], None[CancelGroup]);
   let w = (*c).word.load();
@@ -483,6 +556,7 @@ fn timerStart(ctx: *u8, rp: Reply) {
   let armedWord = ((*c).word.load() & ~cellStateMask) | cellArmed;
   (*ts).armed.add(1u64);
   (*c).word.store(armedWord);
+  wheelLock(ts);
   let wh = &mut (*ts).wheel;
   if wh.isEmpty() {
     // Its now brought up to date, so that "within a tick" is judged from here
@@ -490,12 +564,13 @@ fn timerStart(ctx: *u8, rp: Reply) {
     (*ts).expiries.clear();
   }
   (*c).entry = wh.insert(time.Instant.fromNanos(due), u64.from(c as usize));
-  if due < (*ts).next {
+  if due < nextOf(ts) {
     match wh.nextExpiry() {
-      case let Some(t) {(*ts).next = t.nanos();}
-      else {(*ts).next = due;}
+      case let Some(t) {(*ts).next.storeOrdered(t.nanos(), MemOrder.Relaxed);}
+      else {(*ts).next.storeOrdered(due, MemOrder.Relaxed);}
     }
   }
+  wheelUnlock(ts);
   tally(&(*ts).arms, 1u64);
   // The Reply is the cell's from the store of the Armed word: 'f' and 'r' are
   // not used after it
@@ -529,7 +604,7 @@ fn cellCancelHere(ts: *TimerStore, c: *TimerCell) {
 
 // Whether the owner's step has anything to do (workerMain asks between turns)
 fn timersPending(ts: *TimerStore) bool {
-  (*ts).next != noDue || (*ts).retire.loadOrdered(MemOrder.Relaxed) != 0usize
+  nextOf(ts) != noDue || (*ts).retire.loadOrdered(MemOrder.Relaxed) != 0usize
     || (*ts).sweep.loadOrdered(MemOrder.Relaxed) != 0u32
 }
 
@@ -549,9 +624,9 @@ fn timersStep(ts: *TimerStore) bool {
     (*ts).sweep.store(0u32);
     any = timersSweep(ts);
   }
-  if (*ts).next != noDue {
+  if nextOf(ts) != noDue {
     let now = time.Instant.now();
-    if now.nanos() >= (*ts).next {
+    if now.nanos() >= nextOf(ts) {
       any = timersFire(ts, now) || any;
     }
   }
@@ -574,7 +649,9 @@ fn timersDrain(ts: *TimerStore) {
 // retire stack
 fn timersFire(ts: *TimerStore, now: time.Instant) bool {
   let wh = &mut (*ts).wheel;
+  wheelLock(ts);
   wh.expired(now, &mut (*ts).expiries);
+  wheelUnlock(ts);
   var any = false;
   var k = 0usize;
   while k < (*ts).expiries.len() {
@@ -598,16 +675,84 @@ fn timersFire(ts: *TimerStore, now: time.Instant) bool {
     let o = if ((*c).flags & cellLapses) != 0u32 {timerTimedOut} else {timerDone};
     var r = cellReply(c);
     let f = (*c).answer;
-    cellFree(ts, c);
+    cellRecycle(ts, c);
     f(&mut r, o);
     any = true;
   }
   (*ts).expiries.clear();
-  match wh.nextExpiry() {
-    case let Some(t) {(*ts).next = t.nanos();}
-    else {(*ts).next = noDue;}
-  }
+  wheelLock(ts);
+  nextSet(ts);
+  wheelUnlock(ts);
   any
+}
+
+// THE DEPUTY (row 485), the monitor's: one overdue worker's due cells fired in
+// its stead. 'now' is the monitor's reading; 'sc' its scratch (the owner's is
+// the owner's). True if it answered anything. Not for a stopped runtime, a
+// parked worker (its wake fires its cells) or a wheel the owner holds this
+// instant (the owner is running and will fire what is due; the monitor looks
+// again at its next beat)
+fn timersDeputy(ts: *TimerStore, now: time.Instant, sc: &mut DeputyScratch) bool {
+  if timersStopped.load() != 0u32 || (*ts).due.load() != 0i64 {
+    return false;
+  }
+  let nx = nextOf(ts);
+  if nx == noDue || now.nanos() < nx {
+    return false;
+  }
+  if !wheelTry(ts) {
+    return false;
+  }
+  sc.expiries.clear();
+  sc.won.clear();
+  let wh = &mut (*ts).wheel;
+  wh.expired(now, &mut sc.expiries);
+  var k = 0usize;
+  while k < sc.expiries.len() {
+    let c = usize.from(sc.expiries[k].token) as *TimerCell;
+    let id = sc.expiries[k].id;
+    k = k + 1usize;
+    if (*c).entry != id {
+      continue;
+    }
+    // Out of the wheel now: the owner's free of it, if a cancel took it, need not look
+    (*c).entry = TimerId.none();
+    let w = (*c).word.load();
+    if (w & cellStateMask) != cellArmed {
+      continue;
+    }
+    let seen, ok = (*c).word.compareSwap(w, (w & ~cellStateMask) | cellTaken);
+    if !ok {
+      continue;
+    }
+    (*ts).armed.sub(1u64);
+    sc.won.push(c as usize);
+  }
+  nextSet(ts);
+  wheelUnlock(ts);
+  // The lock is let go before any answer: the cells won are this thread's alone
+  k = 0usize;
+  while k < sc.won.len() {
+    let c = sc.won[k] as *TimerCell;
+    k = k + 1usize;
+    (*ts).deputyFires.addOrdered(1u64, MemOrder.Relaxed);
+    let o = if ((*c).flags & cellLapses) != 0u32 {timerTimedOut} else {timerDone};
+    var r = cellReply(c);
+    let f = (*c).answer;
+    f(&mut r, o);
+    cellRetire(c);
+  }
+  sc.won.len() != 0usize
+}
+
+// The monitor's scratch for THE DEPUTY
+struct DeputyScratch {
+  expiries: List[Expiry];
+  won: List[usize];
+}
+
+fn deputyScratch() DeputyScratch {
+  DeputyScratch(List[Expiry](), List[usize]())
 }
 
 // Every armed cell whose group is cancelled (an ancestor's cancel), answered
@@ -657,7 +802,9 @@ fn timersDropAll(ts: *TimerStore) {
     }
     ch = (*ch).next;
   }
-  (*ts).next = noDue;
+  wheelLock(ts);
+  (*ts).next.storeOrdered(noDue, MemOrder.Relaxed);
+  wheelUnlock(ts);
 }
 
 // THE STOP's part (stopWorkers, first): no cell fires or is answered from now
@@ -683,11 +830,13 @@ fn timersNext() i64 {
   if myTimers == 0usize {
     return noDue;
   }
-  (*(myTimers as *TimerStore)).next
+  nextOf(myTimers as *TimerStore)
 }
 
 // THE MONITOR's part: wake each parked worker whose published 'due' has come,
-// by name, and say the earliest still to come (noDue if none is set)
+// by name, and say the earliest still to come (noDue if none is set). A worker
+// that is not parked but has cells armed (the deputy's concern) counts by its
+// 'next', so the monitor keeps its beat while one is there to rescue
 fn timersWakeDue(s: *Sched) i64 {
   let now = time.Instant.now().nanos();
   var soonest = noDue;
@@ -701,6 +850,11 @@ fn timersWakeDue(s: *Sched) i64 {
           wakeNamed(s, workerAt(s, i));
         } else if d < soonest {
           soonest = d;
+        }
+      } else {
+        let nx = nextOf(ts);
+        if nx < soonest {
+          soonest = nx;
         }
       }
     }
@@ -743,7 +897,7 @@ pub fn timerStats() TimerStats {
     if ts as usize != 0usize {
       st.armed = st.armed + (*ts).armed.load();
       st.arms = st.arms + (*ts).arms.loadOrdered(MemOrder.Relaxed);
-      st.fires = st.fires + (*ts).fires.loadOrdered(MemOrder.Relaxed);
+      st.fires = st.fires + (*ts).fires.loadOrdered(MemOrder.Relaxed) + (*ts).deputyFires.loadOrdered(MemOrder.Relaxed);
       st.cancels = st.cancels + (*ts).cancels.loadOrdered(MemOrder.Relaxed);
       st.dropped = st.dropped + (*ts).dropped.loadOrdered(MemOrder.Relaxed);
     }
