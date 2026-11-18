@@ -19,6 +19,9 @@
 //   $env:_LINK_ = '"<dir>\cnd.lib"'; $env:CNMALLOC = 'design=lockfree,stats,giveback=now'   (delete build\ first), then 'congo test lfrace'.
 //   CNRACE_UNDOS=<n> the target (3000), CNRACE_MAXSECS=<s> the limit on the run (900), CNRACE_THREADS=<n> (default 4; groups 1 and 2 get twice that, group 3 that many).
 // Under a plain 'congo test' nothing is linked: the hook and the counters are not found and the test passes without testing.
+// CNRACE_WORKERS=1 (row 506, with CNMALLOC cache=<n>, e.g. cache=7): every thread is a worker with a cache, so its allocations
+// are multi-bit fills (lf_fill, the hook delaying them before their compare-and-swap) and its frees go back by the grouped
+// return; the multi-bit fills' own Rule G undos must then be counted, more than none.
 
 mod lfrace;
 
@@ -84,9 +87,13 @@ fn @c hookClaim(cl: usize) {
   else if r % 16u64 == 1u64 { Sleep(1u32); }
 }
 
+alias Call = &fn @c ();
+
 struct Job {
   errs: usize;       // words: 0 errors, 1 ops, 2 thread counter, 3 stop flag
   mode: usize;
+  begin: usize;      // CNRACE_WORKERS: cnmalloc_workerBegin and cnmalloc_workerEnd, called by each thread; else 0
+  end: usize;
 }
 
 // the first word is the size, the second the stamp, then words of stamp + i, the last the stamp
@@ -116,6 +123,7 @@ fn pickSize(group: usize, r: u64) usize {
 // groups 0 (short lives) and the other two (many cells held, then all freed)
 fn worker(arg: usize) u64 {
   let job = arg as *Job;
+  if job.begin != 0usize { (job.begin as *u8 as Call)(); }
   let tid = usize.from(mem.atomicAdd[usize](word(job.errs, 2usize), 1usize, MemOrder.SeqCst));
   var seed = 88172645463325252u64 ^ (u64.from(tid + 1usize) * 2685821657736338717u64);
   let group = job.mode;
@@ -175,6 +183,7 @@ fn worker(arg: usize) u64 {
     i = i + 1usize;
   }
   libc.free(mine as *u8);
+  if job.end != 0usize { (job.end as *u8 as Call)(); }
   mem.atomicAdd[usize](word(job.errs, 0usize), errs, MemOrder.SeqCst);
   mem.atomicAdd[usize](word(job.errs, 1usize), ops, MemOrder.SeqCst);
   u64.from(tid)
@@ -233,6 +242,7 @@ fn skipped() {
   expectUInt(0u64, 0, "lfrace: no cell seen with another thread's stamp, the wrong size or a wrong _msize");
   expect(true, "lfrace: the threads did real work");
   expect(true, "lfrace: Rule G undos were counted (the race was really exercised)");
+  expect(true, "lfrace: with CNRACE_WORKERS, multi-bit fills' Rule G undos were counted on their own");
 }
 
 fn main() i32 {
@@ -257,13 +267,17 @@ fn main() i32 {
   let hooks = setHooks as *u8 as SetHooks;
   hooks(&hookPre as *u8 as usize, 0usize, 0usize, &hookClaim as *u8 as usize, 0usize, 0usize);
   let errs = libc.calloc(16usize, 8usize) as usize;
-  let jobs = libc.calloc(3usize, 16usize) as usize;
+  let jobs = libc.calloc(3usize, 32usize) as usize;
+  let workers = envNum("CNRACE_WORKERS", 0usize) != 0usize;
+  let wbegin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
+  let wend = GetProcAddress(m, &"cnmalloc_workerEnd" as *u8);
   var ts = List[thread.Thread[u64]]();
   var g = 0usize;
   while g < 3usize {
-    let job = (jobs + g * 16usize) as *Job;
+    let job = (jobs + g * 32usize) as *Job;
     job.errs = errs;
     job.mode = g;
+    if workers { job.begin = wbegin; job.end = wend; }
     let n = if g == 2usize { per } else { per * 2usize };
     var t = 0usize;
     while t < n { ts.push(thread.start[usize, u64](job as usize, &worker)); t = t + 1usize; }
@@ -286,5 +300,7 @@ fn main() i32 {
   expectUInt(u64.from(*word(errs, 0usize)), 0, "lfrace: no cell seen with another thread's stamp, the wrong size or a wrong _msize");
   expect(*word(errs, 1usize) > 100000usize, "lfrace: the threads did real work");
   expect(undos >= i64.from(target), "lfrace: Rule G undos were counted (the race was really exercised)");
+  errLine("lfrace: multi-bit fill undos ", usize.from(tot(10i32)), " workers ", if workers { 1usize } else { 0usize }, " ", 0usize);
+  expect(!workers || tot(10i32) > 0i64, "lfrace: with CNRACE_WORKERS, multi-bit fills' Rule G undos were counted on their own");
   done()
 }
