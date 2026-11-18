@@ -33,8 +33,10 @@ trap 'rm -rf "$W"' EXIT
 rm -rf "$W"
 git clone -q --reference "$HOME/cone-full-master" --dissociate https://github.com/jondgoodwin/cone.git "$W" || exit 1
 cd "$W" && git checkout -q "$H" || exit 1
-export CONEC=$HOME/cone-full-master/build/x64-release/conec CONESTD=$HOME/cone-full-master/build/x64-release/conestd.lib
-[ -f "$CONESTD" ] || export CONESTD=$(ls $HOME/cone-full-master/build/x64-release/*conestd* | head -1)
+# the compiler is built as zz-linuxone.sh builds it (the prebuilt one in cone-full-master is older than the packages)
+$CAP cmake -S . -B build/x64-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR=/usr/lib/llvm-23/lib/cmake/llvm >/dev/null 2>&1
+timeout 1800 $CAP cmake --build build/x64-release -j 2 >"$W/build-compiler.txt" 2>&1 || { echo "compiler build failed"; tail -n 5 "$W/build-compiler.txt"; exit 1; }
+echo "compiler built $(date +%T)"
 SRC=$W/packages/netmsg/examples/netbench.cone
 R=$W/build/nb; mkdir -p "$R"
 run() { # role, args: runs one copy under the caps, logs to $R/<role>.log
