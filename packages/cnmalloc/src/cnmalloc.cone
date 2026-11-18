@@ -181,6 +181,7 @@ pub struct Heap {
   hookDetach: usize;  // design 2, tests: called between a detach's state exchange and its scan
   hookRetire: usize;  // design 2, tests: called between a retire's claims and its generation raise
   hookClaim: usize;   // design 2, tests: called after a page was found wholly free and before the retire claims its words
+  hookAfter: usize;   // design 2, tests: called in "after a free", under the class lock, after the state load and before the scan
   lfDebug: usize;     // design 2: non-zero in the shim's debug build; the slot rule is then asserted (cnm_lf_attach)
   nonWorker: u64;     // design 2: small allocations made by threads that are not workers (statistics run)
   callocs: u64;
@@ -1036,6 +1037,7 @@ pub fn cnm_lf_after_free(hh: usize, d2: usize, g: u64) {
     return;
   }
   let st = aLd(d2 + 8usize);
+  hookCall(h.hookAfter, cl);
   if st == lfAttached {
     oswin.unlock(c as usize);
     return;
@@ -1135,12 +1137,14 @@ pub fn cnm_lf_set(hh: usize, alloc: usize, free: usize, debug: usize) {
   h.lfFree = free;
 }
 // tests only: functions called inside a detach (between the exchange and the scan), inside a retire after the page was
-// found wholly free and before its words are claimed, and inside a retire after the page is RETIRED, before its generation rises
-pub fn cnm_lf_set_hooks(hh: usize, detach: usize, retire: usize, claim: usize) {
+// found wholly free and before its words are claimed, inside a retire after the page is RETIRED, before its generation rises, and
+// in "after a free" past the generation test (class lock held, page state loaded, nothing scanned yet)
+pub fn cnm_lf_set_hooks(hh: usize, detach: usize, retire: usize, claim: usize, after: usize) {
   let h = hh as *Heap;
   h.hookDetach = detach;
   h.hookRetire = retire;
   h.hookClaim = claim;
+  h.hookAfter = after;
 }
 pub fn cnm_design(hh: usize) usize { (hh as *Heap).design }
 // the header the shim reads: page base, descriptor base, heap size, the first class record, the statistics flag
