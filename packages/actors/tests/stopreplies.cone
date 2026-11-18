@@ -1,0 +1,202 @@
+// THE STOP'S GATE for replies (actors.cone, row 469): a thread the runtime does not join answers awaiting
+// actors' replies, and drops them, while main stops the runtime. Each of 67 awaiting actors holds an awaited
+// operation whose Reply sits in a record the test keeps (as the aio package keeps one), or a future that only
+// the plain thread fills:
+//
+//   - 24 are answered by answerNowIn with a Mortal (a value with a finalizer);
+//   - 24 are answered by answerLentIn with a Mortal;
+//   - 8 are dropped unanswered (the record's Reply let go: its drop counts the operation spent, which touches
+//     the scheduler: opSpent);
+//   - 8 are awaiting a Future that the plain thread fills with a Mortal (answerNowIn on the future's Reply,
+//     whose end pushes the waiting actor: pushFuture);
+//   - then, once actors.isRunning() reads false (the gate has closed), one more of the first, second and
+//     fourth kinds is answered: these are refused for certain.
+//
+// The plain thread starts answering while the runtime runs, one a millisecond, and main calls finalAll() after
+// the first, so the stop begins among the answers. An answer made before the gate closed is delivered and the
+// awaiting actor resumes; one made after is refused (counted in stats().refused), its value dropped on the
+// answering thread and its awaiting actor let go. The test is that, whichever way each fell: no panic and no
+// crash; each answer either resumed its actor or was counted refused, never both and never neither
+// (resumed + refused == 59); every Mortal ever made was finalized exactly once (a refused or lost answer
+// leaks one, a double drop finalizes one twice); every one of the 67 actors died (a refused answer that kept
+// the actor's count would leave it alive); and the refused count has at least the three certain ones.
+
+mod stopreplies;
+
+import testing use *;
+import libc;
+import actors;
+import thread;
+import sync use Arc;
+import time use Duration;
+
+let made: Atomic[u64];       // Mortals made
+let dropped: Atomic[u64];    // ... finalized
+let resumed: Atomic[u64];    // awaiting behaviours that went on with a Mortal
+let parked: Atomic[u64];     // awaited operations started, their Replies in the records
+let died: Atomic[u64];       // awaiting actors that died (their state finalized)
+let began: Atomic[u64];      // answers made by the plain thread
+
+fn @initpure init() {
+  made = Atomic[u64].of(0u64);
+  dropped = Atomic[u64].of(0u64);
+  resumed = Atomic[u64].of(0u64);
+  parked = Atomic[u64].of(0u64);
+  died = Atomic[u64].of(0u64);
+  began = Atomic[u64].of(0u64);
+}
+
+struct Mortal is Move {
+  pub n: u64;
+  fn final(self: &uni) {dropped.add(1u64);}
+}
+
+fn mortal() Mortal {
+  made.add(1u64);
+  Mortal(1u64)
+}
+
+// A mark an awaiting actor's state holds, to count its deaths
+struct Mark is Move {
+  pub n: u64;
+  fn final(self: &uni) {died.add(1u64);}
+}
+
+// An operation's record: the Reply the seam gave, and a place for the lent value (raw, so that the record's
+// own drop does not finalize a value 'take' has already moved)
+struct Rec {
+  pub reply: actors.Reply;
+  pub raw: u64;
+}
+
+fn takeMortal(p: *u8, to: *u8) {
+  mem.writeRaw[Mortal](to as *Mortal, mem.readRaw[Mortal](p as *Mortal));
+}
+
+fn runStore(ctx: *u8, rp: actors.Reply) {
+  let r = ctx as *Rec;
+  mem.writeRaw[Rec](r, Rec(rp, 0u64));
+  parked.add(1u64);
+}
+
+fn dropIt(ctx: *u8) {}
+
+fn op(r: *Rec) actors.Awaitable[Mortal] {actors.Awaitable[Mortal].of(r as *u8, &runStore, &dropIt)}
+
+actor Waiter {
+  mark: Mark;
+
+  pub fn init(self: &new) {
+    *self = Self(mark: Mark(0u64));
+  }
+
+  pub async fn hold(self, rec: usize) {
+    let m = await op(rec as *Rec);
+    resumed.add(1u64);
+  }
+
+  // Awaits a future that a plain thread fills: its Waiter is pushed to this actor when the value arrives
+  pub async fn fut(self, f: actors.Future[Mortal]) {
+    parked.add(1u64);
+    let m = await f;
+    resumed.add(1u64);
+  }
+}
+
+// A future that nothing produces but the plain thread: owed by the actor w, whose mailbox the handle holds as
+// its one field (the same for every message type: futureset.cone's layoutIsMFree), and the Reply that fills it
+fn newFuture(w: &Waiter, rec: *Rec) actors.Future[Mortal] {
+  let mb = mem.readRaw[Arc[opaq, actors.Mailbox[u8]]](w as *Waiter as *Arc[opaq, actors.Mailbox[u8]]);
+  let f = actors.futureFor[Mortal, u8](mb);
+  mem.writeRaw[Rec](rec, Rec(actors.futureReply[Mortal](&f), 0u64));
+  var away = 0usize;
+  mem.writeRaw[Arc[opaq, actors.Mailbox[u8]]](&mut away as *(Arc[opaq, actors.Mailbox[u8]]), mb);
+  f
+}
+
+const nNow = 24usize;
+const nLent = 24usize;
+const nDrop = 8usize;
+const nFut = 8usize;
+const nEarly = 64usize;      // the four kinds, in blocks
+const nOps = 67usize;        // and the three answered after the gate has closed
+
+// Record i's kind: 0 answerNowIn, 1 answerLentIn, 2 dropped, 3 into a future; the last three (64 to 66) are
+// the late 0, 1 and 3
+fn kindOf(i: usize) usize {
+  if i >= nEarly {
+    if i == nEarly + 2usize {return 3usize;}
+    return i - nEarly;
+  }
+  if i < nNow {return 0usize;}
+  if i < nNow + nLent {return 1usize;}
+  if i < nNow + nLent + nDrop {return 2usize;}
+  3usize
+}
+
+fn answerOne(recs: usize, i: usize) {
+  let r = (recs as *Rec) + i;
+  let k = kindOf(i);
+  if k == 0usize {
+    actors.answerNowIn[Mortal](&mut (*r).reply, mortal());
+  } else if k == 1usize {
+    mem.writeRaw[Mortal]((&mut (*r).raw) as *Mortal, mortal());
+    actors.answerLentIn[Mortal](&mut (*r).reply, (&mut (*r).raw) as *Mortal, &takeMortal);
+  } else if k == 3usize {
+    actors.answerNowIn[Mortal](&mut (*r).reply, mortal());
+  }
+  // the record let go: a spent Reply counts its operation spent; an unanswered one is dropped
+  mem.finalize[Rec](r);
+}
+
+fn answerer(recs: usize) u32 {
+  var i = 0usize;
+  while i < nEarly {
+    answerOne(recs, i);
+    began.add(1u64);
+    thread.sleep(Duration.fromMillis(1i64));
+    i = i + 1usize;
+  }
+  while actors.isRunning() {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  answerOne(recs, nEarly);
+  answerOne(recs, nEarly + 1usize);
+  answerOne(recs, nEarly + 2usize);
+  0u32
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let recs = libc.malloc(mem.sizeof[Rec]() * nOps) as usize;
+  // an awaiting actor for each record, in the order the answerer takes them: four blocks by kind, then the late three
+  var i = 0usize;
+  while i < nOps {
+    let w = Waiter();
+    let rec = (recs as *Rec) + i;
+    if kindOf(i) == 3usize {
+      w.fut(newFuture(&w, rec));
+    } else {
+      w.hold(rec as usize);
+    }
+    i = i + 1usize;
+  }
+  while parked.load() < u64.from(nOps) {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  let t = thread.start(recs, &answerer);
+  while began.load() < 1u64 {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  finalAll();
+  t.join();
+  let refused = actors.stats().refused;
+  expect(refused >= 3u64, "the three late answers were refused and counted");
+  expectUInt(resumed.load() + refused, u64.from(nNow + nLent + nFut + 3usize), "each answer resumed its actor or was refused, not both, not neither");
+  expectUInt(made.load(), u64.from(nNow + nLent + nFut + 3usize), "every answer made its Mortal");
+  expectUInt(dropped.load(), made.load(), "every Mortal was finalized exactly once");
+  expectUInt(died.load(), u64.from(nOps), "every awaiting actor died");
+  libc.free(recs as *u8);
+  done()
+}

@@ -75,6 +75,22 @@ struct MsgHdrLx {
   pub pad1: i32;
 }
 
+// struct mmsghdr on x86-64, for recvmmsg: a struct msghdr (MsgHdrLx above, 56
+// bytes, 8-aligned: name, namelen, iov, iovlen, control, controllen, flags),
+// then the 4-byte msg_len the kernel fills with the datagram's length, padded
+// to the next multiple of 8: 64 bytes, as the kernel's array stride is. (sizeof
+// is not asserted at compile time; a wrong stride would put datagram 1 on the
+// wrong entry, which iocore's tests of recvMany read by content)
+struct MmsgHdrLx {
+  pub hdr: MsgHdrLx;
+  pub len: u32;
+  pub pad: u32;
+}
+
+// The most datagrams one recvmmsg is given: the width of a RecvBatch's 'cut'
+// mask, and the size of the arrays it is given from the stack
+const recvBatch = 64usize;
+
 // The most segments one sendmsg is given (Linux's own bound, IOV_MAX, is
 // 1,024): a gather of more goes on from where the call left it, as a partial
 // send does
@@ -112,6 +128,7 @@ extern {
   fn @c("recvfrom") sysRecvfrom(fd: i32, buf: *u8, n: usize, flags: i32, addr: *u8, len: *u32) i64;
   fn @c("sendto") sysSendto(fd: i32, buf: *u8, n: usize, flags: i32, addr: *u8, len: u32) i64;
   fn @c("sendmsg") sysSendmsg(fd: i32, msg: *MsgHdrLx, flags: i32) i64;
+  fn @c("recvmmsg") sysRecvmmsg(fd: i32, msgs: *MmsgHdrLx, vlen: u32, flags: i32, timeout: *u8) i32;
   fn @c("open") sysOpen(path: *u8, flags: i32, mode: u32) i32;
   fn @c("fcntl") sysFcntl(fd: i32, cmd: i32, arg: i32) i32;
   fn @c("syscall") sysSyscall(n: i64, a: i64, b: i64) i64;
@@ -157,7 +174,8 @@ const tcpKeepCntLx = 6i32;                          // TCP_KEEPCNT
 const tcpUserTimeoutLx = 18i32;                     // TCP_USER_TIMEOUT, milliseconds
 const msgNoSignal = 0x4000i32;
 const msgPeek = 2i32;
-const msgTrunc = 0x20i32;                           // recvfrom answers the datagram's whole length, even when it was cut
+const msgDontwait = 0x40i32;                        // this call never blocks (recvmmsg's flags)
+const msgTrunc = 0x20i32;                          // recvfrom answers the datagram's whole length, even when it was cut
 const shutWr = 1i32;
 const inprogress = 115i32;
 
@@ -329,7 +347,7 @@ fn lxOpen() u32, usize, usize, usize {
 fn socketKind(k: u32) bool {
   k == diag.kindConnect || k == diag.kindAccept || k == diag.kindRecv
     || k == diag.kindRecvReady || k == diag.kindSend || k == diag.kindRecvFrom || k == diag.kindSendTo
-    || k == diag.kindWaitChild
+    || k == diag.kindRecvMany || k == diag.kindWaitChild
     || k == diag.kindPipeRead || k == diag.kindPipeWrite
 }
 
@@ -382,6 +400,53 @@ fn lxAdopt(lp: &mut Loop, fd: usize, kind: u32, family: u16) u32, Handle {
     return code, Handle.none();
   }
   0u32, h
+  }
+}
+
+// A RecvMany's one recvmmsg, on the non-blocking descriptor fd, over as many of
+// the record's buffers as have room (at most recvBatch), the arrays on the
+// stack: the datagrams already waiting, each into its own buffer, and no wait
+// for more (the descriptor is non-blocking, and recvmmsg stops at the first
+// receive that would block once it has one). Each datagram is put in the
+// record's batch (batchPut): its bytes appended, its sender, its cut bit.
+// MSG_TRUNC makes each msg_len the datagram's whole length, so a cut one is
+// told from one that fitted exactly. The count taken (at least 1); 0 when no
+// buffer has room; or -1 with errno set (EAGAIN when none is waiting)
+fn lxRecvMany(fd: i32, r: &mut OpCore) i64 {
+  #if #os == .windows {-1i64} #else {
+  var spans = Array[Span, 64]() <- fill Span(null, 0usize);
+  var names = Array[SocketAddr, 64]() <- fill SocketAddr(Array[u8, 28]() <- fill 0u8, 0i32);
+  var msgs = Array[MmsgHdrLx, 64]() <- fill MmsgHdrLx(MsgHdrLx(null, 0u32, 0u32, null, 0usize, null, 0usize, 0i32, 0i32), 0u32, 0u32);
+  let sp = &mut spans as *Span;
+  let np = &mut names as *SocketAddr;
+  let mp = &mut msgs as *MmsgHdrLx;
+  let cnt = r.batchSpans(sp, recvBatch);
+  if cnt == 0usize {return 0i64;}
+  var k = 0usize;
+  while k < cnt {
+    (*(mp + k)).hdr.name = (np + k) as *u8;
+    (*(mp + k)).hdr.namelen = 28u32;
+    (*(mp + k)).hdr.iov = sp + k;
+    (*(mp + k)).hdr.iovlen = 1usize;
+    k = k + 1usize;
+  }
+  var n = sysRecvmmsg(fd, mp, u32.from(cnt), msgTrunc | msgDontwait, null);
+  while n < 0i32 && lastErrno() == eintr {
+    n = sysRecvmmsg(fd, mp, u32.from(cnt), msgTrunc | msgDontwait, null);
+  }
+  if n < 1i32 {return -1i64;}
+  let got = usize.from(n);
+  var j = 0usize;
+  while j < got {
+    let len = usize.from((*(mp + j)).len);
+    let room = (*(sp + j)).len;
+    let cut = len > room;
+    var from = *(np + j);
+    from.size = i32.from((*(mp + j)).hdr.namelen);
+    r.batchPut(j, if cut {room} else {len}, cut, from);
+    j = j + 1usize;
+  }
+  i64.from(n)
   }
 }
 
@@ -579,6 +644,21 @@ fn lxTry(lp: &mut Loop, p: *OpCore, at: Instant) u32 {
     r.dequeued = at;
     lp.unlinkSide(p);
     lp.decide(p, diag.outcomeFailed, 0usize, u32.from(e));
+    return triedDone;
+  }
+  if k == diag.kindRecvMany {
+    // Every datagram waiting, up to the buffers given, in one call
+    let n = lxRecvMany(fd, r);
+    if n < 0i64 && lastErrno() == eagain {return triedWait;}
+    r.dequeued = at;
+    lp.unlinkSide(p);
+    if n >= 1i64 {
+      lp.decide(p, diag.outcomeDone, usize.from(n), 0u32);
+    } else if n == 0i64 {
+      lp.decide(p, diag.outcomeFailed, 0usize, noRoom());
+    } else {
+      lp.decide(p, diag.outcomeFailed, 0usize, u32.from(lastErrno()));
+    }
     return triedDone;
   }
   if k == diag.kindSendTo {

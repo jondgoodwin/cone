@@ -102,10 +102,23 @@ static void incBufAnchor(IncBuf *buf, size_t at, size_t len, Lexer *lexer, char 
     anchor->src = src;
 }
 
-// Put 'n' bytes of 'lexer''s source, from 'src'
+// Put 'n' bytes of 'lexer''s source, from 'src'. A CRLF line end is copied as
+// LF, so the file is the same whichever line ends the source has (the lexer
+// takes the two alike, and counts the line on the LF). Each stretch between
+// dropped carriage returns is anchored on its own, since the copy is no longer
+// the source's bytes end to end
 static void incBufPutSrc(IncBuf *buf, Lexer *lexer, char *src, size_t n) {
-    incBufAnchor(buf, buf->len, n, lexer, src);
-    incBufPutn(buf, src, n);
+    char *end = src + n;
+    char *start = src;
+    for (char *p = src; p + 1 < end; ++p) {
+        if (p[0] == '\r' && p[1] == '\n') {
+            incBufAnchor(buf, buf->len, p - start, lexer, start);
+            incBufPutn(buf, start, p - start);
+            start = p + 1;
+        }
+    }
+    incBufAnchor(buf, buf->len, end - start, lexer, start);
+    incBufPutn(buf, start, end - start);
 }
 
 // Put the bytes [start, end) of another text, and where they came from
