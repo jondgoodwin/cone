@@ -5612,6 +5612,62 @@ struct FieldNamesOf[T] is FieldNames {
   }
 }
 
+// The variant names of an enum, in declaration order, for 'Deserializer.matchVariant'. 'hasPayload'
+// says whether a variant holds a value (a unit variant does not), so a reader can tell a bare name
+// from one that carries data. The compiler writes the table with the enum's 'deserialize'
+// (parsetype.c, parseEnumSupply) as a 'VariantTable'.
+pub trait VariantNames {
+  // The enum's own name: what an unknown variant is reported against
+  pub fn enumName(self: &) &'static str;
+  pub fn count(self: &) usize;
+  pub fn at(self: &, i: usize) &str;
+  pub fn hasPayload(self: &, i: usize) bool;
+}
+
+// The compiler's 'VariantNames': the names joined by '|' in one literal, each led by '+' where the
+// variant holds a value ("None|+Some"). A literal is all a generated body can write for a list of
+// names, as '#each' makes no list elements.
+pub struct VariantTable is VariantNames {
+  pub name: &'static str;
+  pub text: &'static str;
+
+  pub fn enumName(self: &) &'static str inline { self.name }
+  pub fn count(self: &) usize inline {
+    let b = self.text.bytes();
+    var n = 1usize;
+    var k = 0usize;
+    while k < b.len {
+      if b[k] == 124u8 { n = n + 1usize; }
+      k = k + 1usize;
+    }
+    n
+  }
+  // Where entry i starts, at its '+' if it has one
+  fn entryStart(self: &, i: usize) usize inline {
+    let b = self.text.bytes();
+    var seen = 0usize;
+    var k = 0usize;
+    while seen < i && k < b.len {
+      if b[k] == 124u8 { seen = seen + 1usize; }
+      k = k + 1usize;
+    }
+    k
+  }
+  pub fn hasPayload(self: &, i: usize) bool inline {
+    let b = self.text.bytes();
+    let k = self.entryStart(i);
+    k < b.len && b[k] == 43u8
+  }
+  pub fn at(self: &, i: usize) &str inline {
+    let b = self.text.bytes();
+    var k = self.entryStart(i);
+    if k < b.len && b[k] == 43u8 { k = k + 1usize; }
+    var e = k;
+    while e < b.len && b[e] != 124u8 { e = e + 1usize; }
+    self.text.slice(k, e)
+  }
+}
+
 // A format's reading side, asked by the type being read: the walk asks for what the
 // type is, and a positional format answers 'FieldKey.Index'. No read lends a view of the
 // format's own buffer: text is written into a caller's 'TextOut' (readTextInto) or compared inside the reader
@@ -5642,7 +5698,14 @@ pub trait Deserializer {
   pub fn nextEntry(self: &mut) Result[bool, DataError];
   pub fn beginRecord(self: &mut, typeName: &str) Result[void, DataError];
   pub fn nextField(self: &mut) Result[FieldKey, DataError];
+  // Opens a variant: a variant's name follows, to be matched with 'matchVariant', and then its value
+  // (when it has one), then 'endVariant'
   pub fn beginVariant(self: &mut) Result[FieldKey, DataError];
+  // Consumes the name 'beginVariant' announced and compares it with 'names' inside the reader, as
+  // 'matchField' does: the index of the variant. A name no variant has is an Unknown DataError
+  // ("unknown variant", the enum's name as the field, the name's byte position as the offset); a variant
+  // holding a value written as a bare name, or one holding none written with a value, is a Type error.
+  pub fn matchVariant(self: &mut, names: &<VariantNames) Result[usize, DataError];
   pub fn endVariant(self: &mut) Result[void, DataError];
   // Reads past one value of any shape, for a member the type does not have
   pub fn skipValue(self: &mut) Result[void, DataError];
@@ -5793,6 +5856,7 @@ struct MissingField[F] is Deserializer {
   pub fn beginRecord(self: &mut, typeName: &str) Result[void, DataError] { self.gone[void]() }
   pub fn nextField(self: &mut) Result[FieldKey, DataError] { self.gone[FieldKey]() }
   pub fn beginVariant(self: &mut) Result[FieldKey, DataError] { self.gone[FieldKey]() }
+  pub fn matchVariant(self: &mut, names: &<VariantNames) Result[usize, DataError] { self.gone[usize]() }
   pub fn endVariant(self: &mut) Result[void, DataError] { self.gone[void]() }
   pub fn skipValue(self: &mut) Result[void, DataError] { self.gone[void]() }
 }

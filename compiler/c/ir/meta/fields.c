@@ -175,7 +175,8 @@ FieldEachRun *fieldEachOpen(CloneState *cstate, FieldEach *fe, INode *errnode) {
     uint32_t cnt;
     for (nodelistFor(&st->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode*)*nodesp;
-        if (field->tag != FieldDclTag || field->hop || field->via || (field->flags & IsMixin))
+        // A variant's discriminant is the enum's, not a field its author wrote
+        if (field->tag != FieldDclTag || field->hop || field->via || (field->flags & (IsMixin | IsTagField)))
             continue;
         if (!sees && inodeIsPrivate((INode*)field)) {
             // Leaving it out would give a serializer or an 'equals' a wrong answer with no warning

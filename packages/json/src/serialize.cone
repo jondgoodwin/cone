@@ -10,7 +10,9 @@
 // data an object of one member named for it (an array of its fields when it has other than one);
 // bytes are an array of numbers. A map's key must be text. A number read as an integer must be
 // whole and in range; any number reads as a float. A member of an object the type does not have is
-// skipped. Variants are written but not read yet. Collections (List, Dict, Deque) do not declare
+// skipped. An enum that declares Serialize and Deserialize[Self] is given both by the compiler: a variant
+// that holds a record is an object of one member whose value is the record's object, and a variant name
+// the enum does not have reads as an Unknown error at the name's byte. Collections (List, Dict, Deque) do not declare
 // Serialize yet (row 333c), so a field of one is refused at compile time.
 //
 // A failure of reading is a DataError, and its 'offset' says where in the text it was: the byte
@@ -52,10 +54,10 @@ pub struct JsonSerializer is Serializer {
   w: Writer;
   keyNext: bool;      // a map's key is to come: the next text is a name
   bad: bool;          // a map's key was not text
-  wrapped: List[bool];  // each open variant: its fields went in an array
+  wrapped: List[u8];  // each open variant: 0 its value follows its name, 1 its fields went in an array, 2 it stood for a map's key and opened nothing
 
   pub fn init(self: &new, opts: WriteOptions) {
-    *self = JsonSerializer(Writer(opts), false, false, List[bool]());
+    *self = JsonSerializer(Writer(opts), false, false, List[u8]());
   }
 
   // True when a value of another kind than text came where a map's key belongs
@@ -119,18 +121,21 @@ pub struct JsonSerializer is Serializer {
     self.w.string(name);
   }
   pub fn beginVariant(self: &mut, enumName: &str, index: u32, name: &str, len: usize) {
-    if self.notKey() { return; }
+    // A variant standing for a map's key opens nothing; the 2 keeps its endVariant from closing the
+    // variant around it
+    if self.notKey() { self.wrapped.push(2u8); return; }
     self.w.beginObject();
     self.w.key(name);
     let inArray = len != 1usize;
     if inArray { self.w.beginArray(); }
-    self.wrapped.push(inArray);
+    self.wrapped.push(if inArray { 1u8 } else { 0u8 });
   }
   pub fn endVariant(self: &mut) {
     if self.wrapped.len() == 0usize { return; }
-    let inArray = *self.wrapped[self.wrapped.len() - 1usize];
+    let how = *self.wrapped[self.wrapped.len() - 1usize];
     self.wrapped.pop();
-    if inArray { self.w.endArray(); }
+    if how == 2u8 { return; }
+    if how == 1u8 { self.w.endArray(); }
     self.w.endObject();
   }
 }
@@ -159,6 +164,7 @@ pub struct JsonDeserializer['a] is Deserializer {
   reader: Reader['a];
   has: bool;          // an event is peeked and not yet taken
   ev: Event;
+  objects: List[bool];  // each open variant: written as an object (it holds a value), not a bare name
 
   // Where the last token read starts, in bytes
   pub fn offset(self: &) usize { self.reader.offset() }
@@ -304,11 +310,51 @@ pub struct JsonDeserializer['a] is Deserializer {
     // The name stays peeked: 'matchField' or 'readTextInto' takes it
     Ok[FieldKey, DataError](FieldKey.Name)
   }
+  // A variant is a bare string (a variant that holds nothing) or an object of one member named for it,
+  // whose value is what it holds. Which one is seen is kept for 'matchVariant' and 'endVariant'
   pub fn beginVariant(self: &mut) Result[FieldKey, DataError] {
-    Err[FieldKey, DataError](DataError.custom("JSON variants are written but not read yet"))
+    let ev = self.look()?;
+    if ev == Event.Text {
+      self.objects.push(false);
+      return Ok[FieldKey, DataError](FieldKey.Name);
+    }
+    if ev == Event.StartObject {
+      self.has = false;
+      self.objects.push(true);
+      return Ok[FieldKey, DataError](FieldKey.Name);
+    }
+    self.take()?;
+    Err[FieldKey, DataError](self.wrong("expected a variant: a name or an object of one member"))
+  }
+  pub fn matchVariant(self: &mut, names: &<VariantNames) Result[usize, DataError] {
+    let ev = self.take()?;
+    let object = self.objects.len() != 0usize && *self.objects[self.objects.len() - 1usize];
+    let want = if object { Event.Key } else { Event.Text };
+    if ev != want {
+      return Err[usize, DataError](self.wrong("expected a variant name"));
+    }
+    let n = names.count();
+    var i = 0usize;
+    while i < n {
+      if self.reader.text() == names.at(i) {
+        if object != names.hasPayload(i) {
+          let why = if object { "the variant holds no value" } else { "the variant holds a value" };
+          return Err[usize, DataError](self.wrong(why));
+        }
+        return Ok[usize, DataError](i);
+      }
+      i = i + 1usize;
+    }
+    Err[usize, DataError](self.located(DataError(DataErrorKind.Unknown, "unknown variant", names.enumName(), "", 0usize)))
   }
   pub fn endVariant(self: &mut) Result[void, DataError] {
-    Err[void, DataError](DataError.custom("JSON variants are written but not read yet"))
+    if self.objects.len() == 0usize { return Ok[void, DataError](nil); }
+    let object = *self.objects[self.objects.len() - 1usize];
+    self.objects.pop();
+    if object && self.take()? != Event.EndObject {
+      return Err[void, DataError](self.wrong("expected the end of the variant"));
+    }
+    Ok[void, DataError](nil)
   }
   pub fn skipValue(self: &mut) Result[void, DataError] {
     var depth = 0usize;
@@ -333,7 +379,7 @@ pub struct JsonDeserializer['a] is Deserializer {
 }
 
 pub fn jsonDeserializer(text: &'a Array[u8]) JsonDeserializer['a] {
-  JsonDeserializer(reader(text), false, Event.Done)
+  JsonDeserializer(reader(text), false, Event.Done, List[bool]())
 }
 
 // A value of type T read from JSON text, built on the heap: 'fromJson[Person](text)'. A failure is a
