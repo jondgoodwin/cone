@@ -1,0 +1,58 @@
+// A thread's cache goes back to the stock when the thread ends, with no
+// flushThread() (Bug 97, row 513; bufpool's header, THREADS).
+//
+// 1. 1,200 threads, one after another, each take 8 IoBufs of 4 KiB (a take
+//    pulls a batch of 16 into the thread's cache) and drop them, and none
+//    flushes. Before the exit hook every dead thread kept 64 KiB counted as
+//    cached, and the 64 MiB bound panicked near the 1,000th (lane 680's probe
+//    a). Now, after every 200: nothing cached, nothing lent, one slab held, and
+//    one record on the registry, which each thread in turn reuses.
+// 2. The trap a flush had: 200 threads flush while their buffers are still
+//    alive (a Chain that dies at the end of the function, after the flush), so
+//    their last drops make a fresh cache after it. The thread's end gives that
+//    one back too.
+
+mod exitflush;
+
+import testing use *;
+import thread;
+import iobuf use *;
+import bufpool;
+
+fn work(flushEarly: usize) u64 {
+  var c = Chain.make(8388608usize);
+  var k = 0usize;
+  while k < 8usize {
+    var b = IoBuf(1usize);
+    b.append("x");
+    c.push(b);
+    k = k + 1usize;
+  }
+  if flushEarly == 1usize {flushThread();}
+  8u64
+}   // the chain, and its eight buffers, die here
+
+fn rounds(count: usize, flushEarly: usize) {
+  var k = 0usize;
+  while k < count {
+    let t = thread.start(flushEarly, &work);
+    t.join();
+    k = k + 1usize;
+    if k % 200usize == 0usize {
+      let s = stats();
+      expectUInt(u64.from(s.cachedBytes), 0u64, "nothing cached once the threads have ended");
+      expectUInt(s.lent, 0u64, "nothing lent");
+      expectUInt(u64.from(s.slabs), 1u64, "one slab held");
+      expectUInt(u64.from(s.heldBytes), 2097152u64, "2 MiB held");
+      expectUInt(u64.from(bufpool.blockStats().threads), 1u64, "one record, reused by each thread in turn");
+    }
+  }
+}
+
+fn main() i32 {
+  rounds(1200usize, 0usize);
+  rounds(200usize, 1usize);
+  let s = stats();
+  expectUInt(s.takes, 1400u64 * 8u64, "every take counted");
+  done()
+}

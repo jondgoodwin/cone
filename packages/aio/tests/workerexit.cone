@@ -1,0 +1,69 @@
+// A worker of the actors runtime gives its buffer cache back when its thread
+// ends, with no change to actors (row 513): the runtime's stop ends the
+// workers, and the pool's thread-exit callback runs on each.
+//
+// 64 actors take and drop IoBufs on the workers. Main then runs the finals
+// itself (finalAll(), as a program that calls it does), which stops and joins
+// the workers. This program imports iobuf before actors, so the pool's module
+// starts first and is finalized last: the workers end before the pool is
+// stopping. Each worker that held a cache retired its record as it ended, so
+// a plain thread started after the stop reuses one of those records, and the
+// registry's count does not grow; a worker that kept its record (no exit
+// callback) would leave the new thread to make one more.
+//
+// The runtime is not started again in a process (actors.cone: starting an
+// actor after the finalizer stopped the workers is a panic), so one stop is
+// what a program can do.
+
+mod workerexit;
+
+import iobuf use *;
+import bufpool;
+import testing use *;
+import thread;
+import actors;
+
+let dropped: Atomic[u64];
+
+fn @initpure init() {
+  dropped = Atomic[u64].of(0u64);
+}
+
+actor Dropper {
+  pub async fn go(self, n: u32) {
+    var i = 0u32;
+    while i < n {
+      var b = IoBuf(100usize);
+      b.append("worker");
+      i = i + 1u32;
+    }
+    dropped.add(1u64);
+  }
+}
+
+fn plain(x: u64) u64 {
+  var b = IoBuf(100usize);
+  b.append("plain");
+  x
+}
+
+fn main() i32 {
+  {
+    var k = 0u32;
+    while k < 64u32 {
+      let d = Dropper();
+      d.go(50u32);
+      k = k + 1u32;
+    }
+    actors.waitQuiet();
+  }
+  expectUInt(dropped.load(), 64u64, "every actor ran");
+  let before = bufpool.blockStats().threads;
+  expect(before >= 1usize, "the workers made caches");
+  expect(stats().cachedBytes > 0usize, "the workers hold caches while they run");
+  finalAll();
+  expectUInt(u64.from(stats().cachedBytes), 0u64, "nothing cached after the stop");
+  expectUInt(thread.start(7u64, &plain).join(), 7u64, "a plain thread ran after the stop");
+  expectUInt(u64.from(bufpool.blockStats().threads), u64.from(before), "it reused a record a worker retired as it ended");
+  done()
+}
