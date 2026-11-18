@@ -15,6 +15,9 @@
 #include "lexer.h"
 
 #include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 #include <inttypes.h>
 
@@ -806,6 +809,28 @@ static void parseVariantTagPin(StructNode *substruct) {
     lexNextToken();
 }
 
+// The source text of the type a type-variant holds ('T' of 'Some(T)'), kept beside the
+// variant for parseEnumSupply, which writes the bodies of an enum that declares Serialize
+// or Deserialize as text. A growing list, searched by variant: an enum has few.
+typedef struct VariantText {
+    StructNode *variant;
+    char *start;
+    size_t len;
+} VariantText;
+static VariantText *variantTexts = NULL;
+static size_t variantTextCnt = 0, variantTextCap = 0;
+
+static void parseVariantTextNote(StructNode *variant, char *start, char *end) {
+    if (variantTextCnt == variantTextCap) {
+        variantTextCap = variantTextCap ? variantTextCap * 2 : 64;
+        variantTexts = (VariantText*)realloc(variantTexts, variantTextCap * sizeof(VariantText));
+    }
+    variantTexts[variantTextCnt].variant = variant;
+    variantTexts[variantTextCnt].start = start;
+    variantTexts[variantTextCnt].len = (size_t)(end - start);
+    variantTextCnt++;
+}
+
 // Parse one variant of an enum's variant list, with the lexer just past its name
 // and 'substruct' built for it. A bare name holds nothing; a name and a type in
 // parentheses, 'Ok(i32)', is a variant that holds that type itself, with no name
@@ -828,7 +853,9 @@ static void parseVariantItem(ParseState *parse, StructNode *strnode, StructNode 
         contents->flags |= FlagMethFld | FlagPub;
         StructNode *svlifestruct = parse->lifestruct;
         parse->lifestruct = lifeowner;
+        char *payloadp = lex->tokp;
         contents->vtype = parseTypeReq(parse, "'(' of a variant");
+        parseVariantTextNote(substruct, payloadp, lex->prevend);
         parse->lifestruct = svlifestruct;
         parseCloseTok(RParenToken);
         structAddField(substruct, contents);
@@ -1332,6 +1359,240 @@ static void parseStructItems(ParseState *parse, StructItems *it) {
     }
 }
 
+// ---- The Serialize and Deserialize an enum is given, written as text ----
+//
+// An enum that declares core's Serialize or Deserialize[Self] and writes no 'serialize'
+// or 'deserialize' is given one, as a struct is (structSerializeCheck). A struct's body
+// is a call of a generic walk over '#fields'; an enum's is a match over its variants,
+// which no generic can write without a way to list them (design chat, 17 Nov 2026: the
+// compiler writes the body, and no '#variants' fact is added). So the method is written
+// here, where the variants are known, as the Cone an author would write, and read by the
+// parser as if it stood in the enum's braces. Everything after is the path of a method
+// written by hand.
+
+typedef struct SupplyBuf {
+    char *text;
+    size_t len;
+    size_t cap;
+} SupplyBuf;
+
+static void supplyAdd(SupplyBuf *b, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char piece[1024];
+    int n = vsnprintf(piece, sizeof(piece), fmt, ap);
+    va_end(ap);
+    if (n < 0)
+        return;
+    if (n >= (int)sizeof(piece))
+        n = (int)sizeof(piece) - 1;
+    if (b->len + (size_t)n + 1 > b->cap) {
+        b->cap = (b->len + (size_t)n + 1) * 2;
+        b->text = (char*)realloc(b->text, b->cap);
+    }
+    memcpy(b->text + b->len, piece, (size_t)n);
+    b->len += (size_t)n;
+    b->text[b->len] = '\0';
+}
+
+static void supplyAddText(SupplyBuf *b, const char *src, size_t len) {
+    if (b->len + len + 1 > b->cap) {
+        b->cap = (b->len + len + 1) * 2;
+        b->text = (char*)realloc(b->text, b->cap);
+    }
+    memcpy(b->text + b->len, src, len);
+    b->len += len;
+    b->text[b->len] = '\0';
+}
+
+// Is this 'is' entry the trait of this name: 'Serialize', or 'Deserialize[...]'?
+static int supplyIsTrait(INode *entry, const char *name) {
+    if (entry != NULL && entry->tag == FnCallTag)
+        entry = ((FnCallNode*)entry)->objfn;
+    if (entry == NULL || entry->tag != NameUseTag)
+        return 0;
+    return strcmp(&((NameUseNode*)entry)->namesym->namestr, name) == 0;
+}
+
+// Does the enum's 'is' list, unconditional or conditional, name the trait?
+static int supplyDeclares(StructNode *en, const char *name) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&en->fields, cnt, nodesp))
+        if (((*nodesp)->flags & IsMixin) && (*nodesp)->tag == FieldDclTag
+            && supplyIsTrait(((FieldDclNode*)*nodesp)->vtype, name))
+            return 1;
+    if (en->condis)
+        for (nodesFor(en->condis, cnt, nodesp))
+            if (supplyIsTrait(((FieldDclNode*)*nodesp)->vtype, name))
+                return 1;
+    return 0;
+}
+
+// Has the enum's body a method of this name (written by the author)?
+static int supplyHasMethod(StructNode *en, const char *name) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&en->nodelist, cnt, nodesp))
+        if ((*nodesp)->tag == FnDclTag && strcmp(&((FnDclNode*)*nodesp)->namesym->namestr, name) == 0)
+            return 1;
+    return 0;
+}
+
+// How a variant holds its data: nothing, one type (declared 'V(T)'), or named fields
+typedef enum { SupplyUnit, SupplyType, SupplyRecord } SupplyKind;
+
+static SupplyKind supplyKind(StructNode *variant) {
+    if (structIsTypeVariant(variant))
+        return SupplyType;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&variant->fields, cnt, nodesp))
+        if (!((*nodesp)->flags & (IsTagField | IsMixin)))
+            return SupplyRecord;
+    return SupplyUnit;
+}
+
+static VariantText *supplyPayloadText(StructNode *variant) {
+    for (size_t i = 0; i < variantTextCnt; ++i)
+        if (variantTexts[i].variant == variant)
+            return &variantTexts[i];
+    return NULL;
+}
+
+static void supplyWhere(SupplyBuf *b, StructNode *en, const char *trait, int ofself) {
+    if (en->genericinfo == NULL || en->genericinfo->parms == NULL || en->genericinfo->parms->used == 0)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    supplyAdd(b, " where ");
+    int first = 1;
+    for (nodesFor(en->genericinfo->parms, cnt, nodesp)) {
+        char *pname = &inodeGetName(*nodesp)->namestr;
+        if (!first)
+            supplyAdd(b, ", ");
+        first = 0;
+        if (ofself)
+            supplyAdd(b, "%s is %s[%s]", pname, trait, pname);
+        else
+            supplyAdd(b, "%s is %s", pname, trait);
+    }
+}
+
+// The enum's own type as written inside it, 'E' or 'E[T, U]', and the same for naming
+// a variant of it as a value ('None[T]')
+static void supplyTypeArgs(SupplyBuf *b, StructNode *en) {
+    if (en->genericinfo == NULL || en->genericinfo->parms == NULL || en->genericinfo->parms->used == 0)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    int first = 1;
+    supplyAdd(b, "[");
+    for (nodesFor(en->genericinfo->parms, cnt, nodesp)) {
+        supplyAdd(b, first ? "%s" : ", %s", &inodeGetName(*nodesp)->namestr);
+        first = 0;
+    }
+    supplyAdd(b, "]");
+}
+
+// Write the text of the methods an enum is owed, and read it as the enum's items.
+// Not for an enum with fields in common, one that extends another, or one with
+// lifetimes: those keep to a body of the author's own.
+static void parseEnumSupply(ParseState *parse, StructItems *items) {
+    StructNode *en = items->strnode;
+    if (en->derived == NULL || en->extendsbase || en->lifeparms)
+        return;
+    int wantser = supplyDeclares(en, "Serialize") && !supplyHasMethod(en, "serialize");
+    int wantdes = supplyDeclares(en, "Deserialize") && !supplyHasMethod(en, "deserialize");
+    if (!wantser && !wantdes)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&en->fields, cnt, nodesp))
+        if (!((*nodesp)->flags & (IsTagField | IsMixin)))
+            return;
+    char *ename = &en->namesym->namestr;
+    SupplyBuf b = {NULL, 0, 0};
+    SupplyBuf tn = {NULL, 0, 0};       // 'E' or 'E[T]'
+    supplyAdd(&tn, "%s", ename);
+    supplyTypeArgs(&tn, en);
+
+    if (wantser) {
+        supplyAdd(&b, "pub fn serialize(self: &%s, s: &<mut Serializer + ShapeKeeping) inline", tn.text);
+        supplyWhere(&b, en, "Serialize", 0);
+        supplyAdd(&b, " {\n  match self {\n");
+        uint32_t index = 0;
+        for (nodesFor(en->derived, cnt, nodesp)) {
+            StructNode *v = (StructNode*)*nodesp;
+            char *vname = &v->namesym->namestr;
+            switch (supplyKind(v)) {
+            case SupplyUnit:
+                supplyAdd(&b, "    case is %s { s.unitVariant(\"%s\", %uu32, \"%s\"); }\n", vname, ename, index, vname);
+                break;
+            case SupplyType:
+                supplyAdd(&b, "    case let %s(v) { s.beginVariant(\"%s\", %uu32, \"%s\", 1usize); serializeValue(v, s); s.endVariant(); }\n",
+                    vname, ename, index, vname);
+                break;
+            case SupplyRecord:
+                supplyAdd(&b, "    case let %s(v) { s.beginVariant(\"%s\", %uu32, \"%s\", 1usize); serializeRecord(v, s); s.endVariant(); }\n",
+                    vname, ename, index, vname);
+                break;
+            }
+            index++;
+        }
+        supplyAdd(&b, "  }\n}\n");
+    }
+
+    if (wantdes) {
+        supplyAdd(&b, "pub fn deserialize(d: &<mut Deserializer + ShapeKeeping, r: *MemRegion) Result[%s, DataError] inline", tn.text);
+        supplyWhere(&b, en, "Deserialize", 1);
+        supplyAdd(&b, " {\n  d.beginVariant()?;\n  let table = VariantTable(\"%s\", \"", ename);
+        int first = 1;
+        for (nodesFor(en->derived, cnt, nodesp)) {
+            StructNode *v = (StructNode*)*nodesp;
+            supplyAdd(&b, "%s%s%s", first ? "" : "|", supplyKind(v) == SupplyUnit ? "" : "+", &v->namesym->namestr);
+            first = 0;
+        }
+        supplyAdd(&b, "\");\n  let which = d.matchVariant(&table)?;\n");
+        uint32_t index = 0;
+        for (nodesFor(en->derived, cnt, nodesp)) {
+            StructNode *v = (StructNode*)*nodesp;
+            char *vname = &v->namesym->namestr;
+            supplyAdd(&b, "  if which == %uusize {\n", index);
+            switch (supplyKind(v)) {
+            case SupplyUnit:
+                supplyAdd(&b, "    d.endVariant()?;\n    return Ok[%s, DataError](%s", tn.text, vname);
+                supplyTypeArgs(&b, en);
+                supplyAdd(&b, ");\n");
+                break;
+            case SupplyType: {
+                VariantText *pt = supplyPayloadText(v);
+                supplyAdd(&b, "    let v = deserializeValue[");
+                if (pt)
+                    supplyAddText(&b, pt->start, pt->len);
+                supplyAdd(&b, "](d, r)?;\n    d.endVariant()?;\n    return Ok[%s, DataError](%s", tn.text, vname);
+                supplyTypeArgs(&b, en);
+                supplyAdd(&b, "(v));\n");
+                break;
+            }
+            case SupplyRecord:
+                supplyAdd(&b, "    let v = deserializeRecord[%s](d, r)?;\n    d.endVariant()?;\n    let e: %s = v;\n    return Ok[%s, DataError](e);\n",
+                    vname, tn.text, tn.text);
+                break;
+            }
+            supplyAdd(&b, "  }\n");
+            index++;
+        }
+        supplyAdd(&b, "  Err[%s, DataError](DataError.custom(\"the variant read is not one the enum has\"))\n}\n", tn.text);
+    }
+    supplyAdd(&b, "}\n");
+
+    // Read it as items of the enum's braces, then return to the lexer in use
+    lexPush(lexNew(b.text, "<supplied by the compiler>"));
+    parseStructItems(parse, items);
+    lexPop();
+}
+
 // Parse a struct, a trait or an enum. They are one node, and what tells them
 // apart is in 'strflags': see the flag block in ir/inode.h.
 INode *parseStruct(ParseState *parse, uint16_t strflags) {
@@ -1672,6 +1933,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     if (parseHasBlock()) {
         parseBlockStart();
         parseStructItems(parse, &items);
+        if (isenum && !isvariant)
+            parseEnumSupply(parse, &items);
     }
     else
         parseEndOfStatement();

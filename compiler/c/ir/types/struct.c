@@ -4841,6 +4841,10 @@ static void structSerializeCheck(StructNode *node) {
     }
     char *name = &node->namesym->namestr;
     INode **nodesp;
+    // A variant takes its enum's 'is' list, and its enum's 'deserialize' is static, so not given to it:
+    // the enum's own body (written by the author, or by parseEnumSupply) is the one that reads it
+    if (desertrait && node->basetrait && structBaseTraitDcl(node)->flags & EnumType)
+        desertrait = NULL;
 
     if (sertrait) {
         INode *binding = namespaceFind(&node->namespace, nametblFind("serialize", 9));

@@ -1,0 +1,117 @@
+// Enums through core's serialization: an enum that declares Serialize and Deserialize[Self] and writes no body is
+// given both by the compiler, and JSON carries every shape both ways. A variant that holds nothing is a string of its
+// name, a variant with a value an object of one member named for it, a record variant's value the ordinary object of
+// its fields: {"Dot"} is not JSON, so "Dot", {"Circle":1.5} and {"Rect":{"w":3,"h":-4}}. An unknown name is an Unknown
+// DataError at the name's byte; a name written the wrong way (a bare name for a variant that holds a value, an object
+// for one that holds none) is a Type error.
+
+mod enumserial;
+
+import testing use *;
+import collections use *;
+import json;
+
+enum Status is Serialize, Deserialize[Status] { Active, Idle, Gone }
+
+enum Shape is Serialize, Deserialize[Shape] {
+  Dot,
+  Circle(f32);
+  pub struct Rect { pub w: i32; pub h: i32; }
+}
+
+enum Maybe[T] is Serialize if T is Serialize, Deserialize[Maybe[T]] if T is Deserialize[T] {
+  Nothing,
+  Just(T);
+}
+
+struct Rec is Serialize, Deserialize[Rec] { pub id: i32; pub status: Status; pub shape: Shape; pub note: Maybe[String]; }
+
+fn text(r: Result[String, json.JsonError]) String {
+  match r {
+    case let Ok(s) { s }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn dataText[T](r: Result[T, DataError]) String {
+  match r {
+    case is Ok { String.from("ok") }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn statusIs(r: Result[Status, DataError], want: &str, what: &str) {
+  match r {
+    case let Ok(s) {
+      let got = match s {
+        case is Active { "Active" }
+        case is Idle { "Idle" }
+        case is Gone { "Gone" }
+      };
+      expectStr(got, want, what);
+    }
+    case let Err(e) { expectStr((String() <- e).view(), "<status>", what); }
+  }
+}
+
+fn main() i32 {
+  // A unit-only enum is a string of its name, and reads back
+  expectStr(text(json.toJson(&Status.Idle)).view(), "\"Idle\"", "a unit variant is its name");
+  statusIs(json.fromJson[Status]("\"Gone\""), "Gone", "a name reads back");
+
+  // The three shapes of one enum
+  expectStr(text(json.toJson(&Shape.Dot)).view(), "\"Dot\"", "Dot");
+  expectStr(text(json.toJson(&Shape.Circle(1.5f32))).view(), "{\"Circle\":1.5}", "a type variant is an object of one member");
+  expectStr(text(json.toJson(&Shape.Rect(3, -4))).view(), "{\"Rect\":{\"w\":3,\"h\":-4}}", "a record variant nests its record");
+  match json.fromJson[Shape]("{\"Rect\":{\"w\":3,\"h\":-4}}") {
+    case let Ok(s) {
+      match s {
+        case let Rect(r) { expectInt(i64.from(r.w) * 10i64 + i64.from(r.h), 26i64, "Rect reads back"); }
+        else { expect(false, "Rect read as another variant"); }
+      }
+    }
+    case let Err(e) { expectStr((String() <- e).view(), "<rect>", "Rect read"); }
+  }
+  match json.fromJson[Shape]("{\"Circle\":2.5}") {
+    case let Ok(s) {
+      match s {
+        case let Circle(c) { expect(c == 2.5f32,"Circle reads back"); }
+        else { expect(false, "Circle read as another variant"); }
+      }
+    }
+    case let Err(e) { expectStr((String() <- e).view(), "<circle>", "Circle read"); }
+  }
+  match json.fromJson[Shape]("\"Dot\"") {
+    case let Ok(s) { expect(s is Dot, "Dot reads back"); }
+    case let Err(e) { expectStr((String() <- e).view(), "<dot>", "Dot read"); }
+  }
+
+  // A generic enum, and enums as the members of a record
+  let j: Maybe[String] = Maybe.Just[String](String.from("hi"));
+  expectStr(text(json.toJson(&j)).view(), "{\"Just\":\"hi\"}", "Maybe[String] Just");
+  let rec = Rec(1, Status.Active, Shape.Circle(0.5f32), j);
+  let written = text(json.toJson(&rec));
+  expectStr(written.view(), "{\"id\":1,\"status\":\"Active\",\"shape\":{\"Circle\":0.5},\"note\":{\"Just\":\"hi\"}}", "a record of enums");
+  match json.fromJson[Rec](written.view()) {
+    case let Ok(r) {
+      expectStr(text(json.toJson(&r)).view(), written.view(), "a record of enums reads back to the same text");
+    }
+    case let Err(e) { expectStr((String() <- e).view(), "<rec>", "Rec read"); }
+  }
+
+  // An unknown name: Unknown, the enum's name as the field, and the byte of the name
+  // (a DataError prints its offset only when it is not 0: the bare name starts at byte 0)
+  expectStr(dataText(json.fromJson[Status]("\"Sleeping\"")).view(), "unknown variant (Status)", "an unknown bare name");
+  expectStr(dataText(json.fromJson[Shape]("{\"Square\":1}")).view(), "unknown variant (Shape) at byte 1", "an unknown object name");
+  // Written the wrong way
+  expectStr(dataText(json.fromJson[Shape]("\"Circle\"")).view(), "the variant holds a value", "a bare name for a variant that holds a value is refused");
+  expectStr(dataText(json.fromJson[Status]("{\"Idle\":null}")).view(), "the variant holds no value at byte 1", "an object for a variant that holds nothing is refused");
+  expectStr(dataText(json.fromJson[Status]("7")).view(), "expected a variant: a name or an object of one member", "a number is no variant");
+  // Library enums that declare it, reached through their package's include file
+  expectStr(text(json.toJson(&json.ErrorKind.BadNumber)).view(), "\"BadNumber\"", "json's ErrorKind");
+  match json.fromJson[json.ErrorKind]("\"BadEscape\"") {
+    case let Ok(k) { expect(k is BadEscape, "ErrorKind reads back"); }
+    case let Err(e) { expectStr((String() <- e).view(), "<kind>", "ErrorKind read"); }
+  }
+  done()
+}

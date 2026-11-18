@@ -1551,6 +1551,19 @@ an empty body. `Deserialize[X]` with X not the struct, and no `deserialize` writ
 `ErrorDeserializeSelf`. A type that declares neither lacks the method.
 Core's `Option[T]` declares both under `if T is Serialize` / `Deserialize[T]`, with bodies of its
 own (`inline`: an enum's non-inline generic method is not emitted for another module's instance).
+**An enum that declares them and writes no body is given one as source text** (design chat's
+ruling, 17 Nov 2026: the compiler writes the body, and no `#variants` fact is added).
+`parseEnumSupply` (`parser/parsetype.c`), run once an enum's braces are read, writes `serialize`
+(a `match self` calling `unitVariant`, or `beginVariant(.., 1)` then `serializeValue` of what a
+`V(T)` variant holds, or `serializeRecord` of a record variant's fields, then `endVariant`) and
+`deserialize` (`beginVariant`, `matchVariant` over a core `VariantTable` of the names joined
+by `|`, `+` leading a variant that holds a value, then each variant's read) as an author would write
+them, and reads that text as items of the enum's braces, so the rest of the compiler meets a method
+written by hand. A generic enum's methods carry `where T is Serialize` (`Deserialize[T]`) for each
+parameter. It supplies nothing for an enum that writes the method itself, that has fields in common
+or lifetimes, or that extends another. The trait is found by its name in the `is` list, as the
+supplied text names core's functions. Variant text for a `V(T)` payload type is kept as written
+(`parseVariantTextNote`). The text read is `<supplied by the compiler>` in a diagnostic.
 The record read fills a field its text never gave from core's private `MissingField`
 deserializer: `readNone` answers true and every other read the Missing `DataError`, so an
 `Option` field becomes `None` and no field type is tested by name.
