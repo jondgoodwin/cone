@@ -54,6 +54,9 @@
 //   s.write(chain)          every byte of an iobuf Chain, in order, in one operation (a gather);
 //                           the chain moved in, home once sent; an empty one: Ok(0)
 //                                                                Result[usize, IoError]
+//                           A stream write that ends in any error may have put some or all of its
+//                           bytes on the stream, and how many is not knowable on every system: the
+//                           stream's framing is then unknown, so drop the connection.
 //   s.localAddr()           the address s is bound to            Result[SocketAddr, IoError]
 //   s.reset()               s closed abortively, the Socket consumed: the peer sees a
 //                           reset                                (SOCKET CONTROLS)
@@ -69,6 +72,9 @@
 //   aio.bindUdp(addr)      a UDP socket bound to addr            Result[UdpSocket, IoError]
 //   u.recvFrom(buf)        one datagram, appended to buf, an IoBuf moved in, and its sender
 //                                                                Result[Datagram, IoError]
+//   u.recvMany(bufs)       the next datagram and every other already waiting, each appended to
+//                          a buffer of bufs (a List[IoBuf], moved in, at most 64 used), with its sender
+//                                                                Result[Datagrams, IoError]
 //   u.sendTo(addr, buf)    all of buf as one datagram to addr    Result[usize, IoError]
 //   u.localAddr()          the address u is bound to             Result[SocketAddr, IoError]
 //   u.sender()             a UdpSender: u's sending side, copied to many holders; it never
@@ -76,8 +82,8 @@
 //   UdpSender              .sendTo(addr, buf)  .sendToIn(addr, buf, lim)  .none()  .isNone()
 //   aio.connectIn(addr, lim)  s.acceptIn(lim)  s.readIn(buf, lim)  s.writeIn(buf, lim)
 //   f.readAtIn(at, buf, lim)  f.writeAtIn(at, buf, lim)
-//   u.recvFromIn(buf, lim)  u.sendToIn(addr, buf, lim)
-//                           the same eight, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
+//   u.recvFromIn(buf, lim)  u.sendToIn(addr, buf, lim)  u.recvManyIn(bufs, lim)
+//                           the same nine, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
 //   s.readIn(lim)  s.readIn(room, lim)
 //                           the two reads with no buffer, limited by lim
 //   aio.setReadQuiet(d)     how long a read with no buffer may hold one (2 ms)
@@ -123,6 +129,9 @@
 //                           a Socket, File or UdpSocket naming nothing: to swap one out of a Result
 //   s.isNone()  s.handle()  f.isNone()  f.handle()  u.isNone()  u.handle()
 //   Datagram {buf, from}    what a recvFrom answers: the datagram's bytes and its sender
+//   Datagrams {got, cut, spare}
+//                           what a recvMany answers: the Datagrams received, in arrival order; bit k of
+//                           'cut' set when got[k] was cut to its buffer's room; the buffers not used
 //
 // Each of the operations (and each sleep) makes an OPERATION, an actors.Awaitable[R], which
 // does nothing until an 'await' in a behaviour starts it; the 'await''s value
@@ -204,7 +213,10 @@
 // the system's own timeout (a connect that timed out) TimedOut, each with the
 // system's number. (Truncated is a datagram cut to the
 // room, UDP's.) The buffer a
-// read or a write was given goes home to its pool. What limits an operation is
+// read or a write was given goes home to its pool. A stream write that ends in
+// any error may have put some or all of its bytes on the stream, and how many is
+// not knowable on every system: the stream's framing is then unknown, so drop
+// the connection. What limits an operation is
 // a IoLimits, given to the 'In' form of the call: a cancel group (iocore's
 // CancelGroup, a value that is copied, sent to other actors or threads, and
 // whose one 'cancel()' ends every operation in it) and an absolute deadline
@@ -344,7 +356,7 @@
 // workers never wait on I/O (they could not: an actor's
 // behaviour runs to its 'await' and returns). An 'await' on a socket's read
 // into a buffer (read(buf), readIn(buf, lim)) or a write first ISSUES it on its
-// own worker (a gather write of a chain, and recvFrom and sendTo of a UdpSocket, too), through the Loop's shared table (iocore's WORKER-SIDE ISSUE),
+// own worker (a gather write of a chain, and recvFrom, recvMany and sendTo of a UdpSocket, too), through the Loop's shared table (iocore's WORKER-SIDE ISSUE),
 // the socket's entry locked across the issue and what follows: done at once
 // (every send that fits the socket, a read whose bytes are there), it is
 // answered there and the actor goes on in the same batch, nothing crossing to
@@ -522,7 +534,17 @@
 // datagram longer than the room fails with an IoError of the kind Truncated
 // ('aio.isTruncated'; its code the system's, WSAEMSGSIZE or EMSGSIZE): the rest of it is lost, the next
 // one is whole, and the buffer, as a failed read's, goes home to its pool, the
-// bytes that fitted with it. 'sendTo' is iocore's SendTo: all of the buffer as
+// bytes that fitted with it. 'recvMany' is iocore's RecvMany: the caller's List of
+// buffers in (at most 64 used), the answer a Datagrams: 'got', the datagrams in
+// arrival order, each in a buffer with its sender; 'cut', bit k set when got[k]
+// was longer than its room and holds its first bytes (it is in the answer, not
+// the error Truncated, and does not end the batch); 'spare', the buffers not
+// used. It waits for one datagram and takes the others already waiting, never
+// waiting for a second: Linux takes every one waiting in one call (recvmmsg),
+// Windows one a call, behind the same answer. Once a datagram is taken the
+// answer is Ok; an empty list or a first buffer with no room is InvalidInput, a
+// later one with no room ends the batch; every buffer goes home or comes back
+// on every path. 'sendTo' is iocore's SendTo: all of the buffer as
 // ONE datagram, the buffer going home; the count is its length; UDP promises no
 // delivery, so the answer says the system took the datagram. A datagram too
 // large for the network fails (the same number, of the kind Other). One receive at a time per
@@ -680,7 +702,7 @@ import sync use Mutex;
 import collections use List, String;
 import iobuf use IoBuf, Chain;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending, RecvBatch;
 import path use Path;
 import process;
 import actors;
@@ -733,7 +755,8 @@ const opClose = 15u32;        // a handle's close, its Socket, File or UdpSocket
 const opPipeRead = 16u32;     // a pipe's read: Result[IoBuf, IoError]
 const opPipeWrite = 17u32;    // a pipe's write: Result[IoBuf, IoError]
 const opWaitChild = 18u32;    // a child's end: Result[ChildExit, IoError]
-const opAcceptFrom = 21u32;   // accept with the peer's address: Result[Accepted, IoError] (20 is kept for recvMany)
+const opAcceptFrom = 21u32;   // accept with the peer's address: Result[Accepted, IoError]
+const opRecvMany = 20u32;     // recvMany: Result[Datagrams, IoError]
 const opReset = 19u32;      // a socket's abortive close, its Socket consumed by 'reset': no answer
 
 // What aio keeps in a record with the operation, after iocore's OpCore: the
@@ -818,6 +841,12 @@ fn setChain(p: *OpCore, bufs: Chain) {
   c.bufs = Some[Uni[Chain]](Uni[Chain](bufs));
 }
 
+// A recvMany's buffers, moved into the record out of line
+fn setBatch(p: *OpCore, bufs: List[IoBuf]) {
+  let c = p as &mut OpCore;
+  c.batch = Some[Uni[RecvBatch]](Uni[RecvBatch](RecvBatch(bufs, List[SocketAddr](), 0usize, 0u64)));
+}
+
 // A record taken for an operation on h (Handle.none() for one that names no
 // handle), what it is doing and the kind of iocore operation, limited by lim:
 // any thread
@@ -863,7 +892,7 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
   let c = hereCounts();
   bump(&mut (*c).started as *u64);
   let w = a.what;
-  if w == opRecv || w == opSend || w == opRecvFrom || w == opSendTo {
+  if w == opRecv || w == opSend || w == opRecvFrom || w == opSendTo || w == opRecvMany {
     let sh = sharedNow();
     let h = (*(ctx as *OpCore)).handle;
     if sh.lock(h) {
@@ -2376,6 +2405,8 @@ fn answerRec(rp: *OpRec[Ask]) {
     actors.answerLentIn[Result[CallDone, IoError]](back, rp as *Result[CallDone, IoError], &takeCall);
   } else if w == opRecvFrom {
     actors.answerLentIn[Result[Datagram, IoError]](back, rp as *Result[Datagram, IoError], &takeDatagram);
+  } else if w == opRecvMany {
+    actors.answerLentIn[Result[Datagrams, IoError]](back, rp as *Result[Datagrams, IoError], &takeDatagrams);
   } else if w == opSleep {
     actors.answerLentIn[Result[void, IoError]](back, rp as *Result[void, IoError], &takeSleep);
   } else if w == opResolve {
@@ -2406,6 +2437,8 @@ fn answerTimedOut(rp: *OpRec[Ask]) {
     actors.answerNowIn[Result[CallDone, IoError]](back, Err[CallDone, IoError](e));
   } else if w == opRecvFrom {
     actors.answerNowIn[Result[Datagram, IoError]](back, Err[Datagram, IoError](e));
+  } else if w == opRecvMany {
+    actors.answerNowIn[Result[Datagrams, IoError]](back, Err[Datagrams, IoError](e));
   } else if w == opSleep {
     actors.answerNowIn[Result[void, IoError]](back, Err[void, IoError](e));
   } else if w == opResolve {
@@ -2499,6 +2532,36 @@ fn takeDatagram(p: *u8, to: *u8) {
   let from = core.peer();
   let buf = core.(buf);
   mem.writeRaw[Result[Datagram, IoError]](to as *Result[Datagram, IoError], datagramResult(kind, status, code, from, buf));
+}
+
+// A recvMany's: the datagrams, each in its buffer with its sender, in arrival
+// order, which of them were cut (bit k of 'cut' for got[k]), and the buffers
+// not used. A cut datagram is in the answer (unlike recvFrom's, where it is the
+// error Truncated); a failed receive's buffers go home with the record
+fn takeDatagrams(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  let kind, status, code, batch = core.(kind, status, code, batch);
+  var v = Err[Datagrams, IoError](errorOf(kind, status, code));
+  if status == diag.outcomeDone {
+    match batch {
+      case var Some(bt) {
+        let rb = *bt;
+        let n, cut, from, bufs = rb.(got, cut, from, bufs);
+        var rest = bufs;
+        var seen = List[Datagram]();
+        var k = 0usize;
+        while k < n {
+          let b = rest.remove(0usize);
+          seen.push(Datagram(b, from[k]));
+          k = k + 1usize;
+        }
+        v = Ok[Datagrams, IoError](Datagrams(seen, cut, rest));
+      }
+      else {}
+    }
+  }
+  mem.writeRaw[Result[Datagrams, IoError]](to as *Result[Datagrams, IoError], v);
 }
 
 // A write's: the count, all of the buffer, which goes home
@@ -3142,6 +3205,16 @@ pub struct Datagram {
   pub from: SocketAddr;
 }
 
+// What one recvMany answers: the datagrams received, in arrival order, each in
+// one of the buffers given and with its sender; bit k of 'cut' set when got[k]
+// was longer than its buffer's room, its first bytes all that is there; and
+// the buffers not used, in the order given, each as it came
+pub struct Datagrams {
+  pub got: List[Datagram];
+  pub cut: u64;
+  pub spare: List[IoBuf];
+}
+
 // A UDP socket the I/O thread holds (the package's header, A UDP SOCKET): a
 // kind of its own beside Socket and File, so that a stream operation on it, or
 // a datagram operation on a TCP socket, does not compile. It moves, and
@@ -3173,6 +3246,27 @@ pub struct UdpSocket is Move, Sendable {
     let p = takeRec(opRecvFrom, diag.kindRecvFrom, h, lim);
     setBuf(p as *OpCore, Some[IoBuf](buf));
     recAwaitable[Result[Datagram, IoError]](p)
+  }
+
+  // The next datagram to arrive and every other one already waiting, up to
+  // bufs.len() and at most 64, each appended to a buffer of bufs, which is moved
+  // in and comes back: the buffers used in 'got' (in arrival order, each with
+  // its sender), the rest in 'spare'. It waits for one datagram and never for a
+  // second. A datagram longer than its buffer's room is in 'got' cut to it, its
+  // bit set in 'cut': it does not end the batch, nor is it an error as recvFrom's
+  // is. An empty list, or a first buffer with no room, fails (InvalidInput); a
+  // later buffer with no room ends the batch there. Once a datagram is taken
+  // the answer is Ok. Windows answers one datagram a call (the same answer
+  // type; a caller's loop is the same on both systems)
+  pub fn recvMany(self: &, bufs: List[IoBuf]) actors.Awaitable[Result[Datagrams, IoError]] {
+    self.recvManyIn(bufs, IoLimits.none())
+  }
+
+  // A receive ended if lim says so; then every buffer goes home to its pool
+  pub fn recvManyIn(self: &, bufs: List[IoBuf], lim: IoLimits) actors.Awaitable[Result[Datagrams, IoError]] {
+    let p = takeRec(opRecvMany, diag.kindRecvMany, h, lim);
+    setBatch(p as *OpCore, bufs);
+    recAwaitable[Result[Datagrams, IoError]](p)
   }
 
   // All of buf as one datagram to addr, buf moved in and going home once sent:

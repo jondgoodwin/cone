@@ -1,0 +1,498 @@
+// The wire, captured. A recording relay (an actor on two UDP sockets, as
+// relay.cone is, with no loss, delay or reordering) sits between a client and a
+// server on loopback. A fixed script runs through it: connect, 20 reliable
+// messages each way, 20 values each way on each of two latest-wins streams,
+// the client closes, the server shuts down. Every datagram the relay saw is
+// parsed with the layout packets.cone checks: protocol id, kind, then for a
+// payload packet the header's fields and counts and every message and value
+// in it, to the last byte.
+//
+// This test is the "before" for the netmsg-on-UDP rework: its .out must not
+// change in any later row. So it prints only what the protocol fixes, and
+// normalises everything a run varies:
+//   - the handshake's sequence of kinds and lengths, exactly (cookies, salts and
+//     sessions are not printed; their bytes vary, their lengths do not);
+//   - per direction, which kinds appeared (yes or no, never a count: keep-alives,
+//     resends, pure acknowledgements and the number of Disconnect copies depend
+//     on timing), that every payload packet parsed whole, and which reliable ids
+//     and latest-wins streams crossed the wire (as sets);
+//   - what each side's application received: the 20 messages in order, and the
+//     last value of each stream (how many intermediate values arrive is timing);
+//   - ports are never printed (the relay's sockets are bound on port 0).
+
+mod wirecapture;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import iocore use SocketAddr, IoError, CancelGroup;
+import aio use UdpSocket, IoLimits;
+import actors;
+import stdio;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+const room = 2048usize;
+const protoId = 0x4E4D5331u64;
+const count = 20u64;
+
+fn say(s: &str) {
+  stdio.printStr(s);
+  stdio.printStr("\n");
+}
+
+fn at(b: &IoBuf, i: usize) u64 {
+  if i < b.len() {u64.from(b.view()[i])} else {0u64}
+}
+
+fn be16(b: &IoBuf, i: usize) u64 {at(b, i) * 256u64 + at(b, i + 1usize)}
+
+// One datagram, as the relay parsed it
+struct Rec {
+  pub up: bool;             // client to server
+  pub kind: u64;
+  pub len: u64;
+  pub payload: bool;        // a payload packet that parsed to its last byte
+  pub magic: bool;
+}
+
+// What the relay saw
+struct Report {
+  pub recs: List[Rec];
+  pub relUp: List[u64];     // reliable ids seen client to server (each once)
+  pub relDown: List[u64];
+  pub latUp: List[u64];     // latest-wins streams seen (each once)
+  pub latDown: List[u64];
+}
+
+fn addOnce(xs: &mut List[u64], v: u64) {
+  var i = 0usize;
+  while i < xs.len() {
+    if xs[i] == v {return;}
+    i = i + 1usize;
+  }
+  xs.push(v);
+}
+
+actor Tap {
+  server: SocketAddr;
+  front: UdpSocket;
+  leg: UdpSocket;
+  client: SocketAddr;
+  haveClient: bool;
+  group: CancelGroup;
+  stopped: bool;
+  recs: List[Rec];
+  relUp: List[u64];
+  relDown: List[u64];
+  latUp: List[u64];
+  latDown: List[u64];
+
+  fn init(self: &new, server: SocketAddr) {
+    *self = Self(server: server, front: UdpSocket.none(), leg: UdpSocket.none(),
+      client: SocketAddr.localhost(0u16), haveClient: false, group: CancelGroup.make(),
+      stopped: false, recs: List[Rec](), relUp: List[u64](), relDown: List[u64](),
+      latUp: List[u64](), latDown: List[u64]());
+  }
+
+  async fn open(self, up: OneshotSender[u16]) {
+    var tx = up;
+    let a = await aio.bindUdp(SocketAddr.localhost(0u16));
+    let b = await aio.bindUdp(SocketAddr.localhost(0u16));
+    match a {
+      case let Ok(s) { front = s; }
+      case let Err(e) { tx.send(0u16); return; }
+    }
+    match b {
+      case let Ok(s) { leg = s; }
+      case let Err(e) { tx.send(0u16); return; }
+    }
+    var port = 0u16;
+    let la = await front.localAddr();
+    match &la {
+      case let &Ok(x) { port = x.port(); }
+      else {}
+    }
+    tx.send(port);
+    selfactor.fromClient();
+    selfactor.fromServer();
+  }
+
+  async fn stop(self, done: OneshotSender[u32]) {
+    var tx = done;
+    stopped = true;
+    let c = group.cancel();
+    tx.send(1u32);
+  }
+
+  async fn report(self, out: OneshotSender[Report]) {
+    var tx = out;
+    var r = Report(List[Rec](), List[u64](), List[u64](), List[u64](), List[u64]());
+    r.recs <-> recs;
+    r.relUp <-> relUp;
+    r.relDown <-> relDown;
+    r.latUp <-> latUp;
+    r.latDown <-> latDown;
+    tx.send(r);
+  }
+
+  fn note(self, up: bool, d: &IoBuf) {
+    let magic = at(d, 0usize) * 16777216u64 + at(d, 1usize) * 65536u64 + at(d, 2usize) * 256u64 + at(d, 3usize) == protoId;
+    let kind = at(d, 4usize);
+    var whole = false;
+    if magic && kind == 4u64 && d.len() >= 23usize {
+      // 4 id, 1 kind, 8 session, 2 seq, 2 ack, 4 ack bits, 1 + 1 counts
+      var p = 23usize;
+      var ok = true;
+      var i = 0u64;
+      while i < at(d, 21usize) && ok {
+        if p + 4usize > d.len() {
+          ok = false;
+        } else {
+          let l = be16(d, p + 2usize);
+          if (l / 16384u64) != 0u64 || p + 4usize + usize.from(l) > d.len() {
+            ok = false;
+          } else {
+            if up {addOnce(&mut relUp, be16(d, p));} else {addOnce(&mut relDown, be16(d, p));}
+            p = p + 4usize + usize.from(l);
+          }
+        }
+        i = i + 1u64;
+      }
+      i = 0u64;
+      while i < at(d, 22usize) && ok {
+        if p + 6usize > d.len() {
+          ok = false;
+        } else {
+          let l = be16(d, p + 4usize);
+          if (l / 16384u64) != 0u64 || p + 6usize + usize.from(l) > d.len() {
+            ok = false;
+          } else {
+            if up {addOnce(&mut latUp, be16(d, p));} else {addOnce(&mut latDown, be16(d, p));}
+            p = p + 6usize + usize.from(l);
+          }
+        }
+        i = i + 1u64;
+      }
+      whole = ok && p == d.len();
+    }
+    recs.push(Rec(up, kind, u64.from(d.len()), whole, magic));
+  }
+
+  async fn fromClient(self) {
+    var failures = 0u32;
+    while !stopped && failures <= 1000u32 {
+      let r = await front.recvFromIn(IoBuf(room), IoLimits.within(group));
+      match r {
+        case let Ok(dg) {
+          failures = 0u32;
+          let buf, from = dg.(buf, from);
+          client = from;
+          haveClient = true;
+          self.note(true, &buf);
+          let s = await leg.sendTo(server, buf);
+        }
+        case let Err(e) {
+          if aio.isCancelled(e) {return;}
+          if !aio.isTruncated(e) {failures = failures + 1u32;}
+        }
+      }
+    }
+  }
+
+  async fn fromServer(self) {
+    var failures = 0u32;
+    while !stopped && failures <= 1000u32 {
+      let r = await leg.recvFromIn(IoBuf(room), IoLimits.within(group));
+      match r {
+        case let Ok(dg) {
+          failures = 0u32;
+          let buf = dg.(buf);
+          if haveClient {
+            self.note(false, &buf);
+            let s = await front.sendTo(client, buf);
+          }
+        }
+        case let Err(e) {
+          if aio.isCancelled(e) {return;}
+          if !aio.isTruncated(e) {failures = failures + 1u32;}
+        }
+      }
+    }
+  }
+}
+
+fn bytes(s: &str) Bytes {
+  var b = List[u8]();
+  putBytes(&mut b, s);
+  copyPacket(b.view()).freeze()
+}
+
+fn numbered(n: u64) Bytes {
+  var s = String();
+  s.appendUInt(n);
+  bytes(s.view())
+}
+
+// What one side's application received
+struct Heard {
+  pub msgs: u64;            // reliable messages
+  pub inOrder: bool;
+  pub last1: u64;           // the last value on stream 1, 2 (100 + n, 200 + n, or 0)
+  pub last2: u64;
+  pub backwards: bool;      // a value older than one already delivered
+}
+
+fn heardNew() Heard {Heard(0u64, true, 0u64, 0u64, false)}
+
+fn parseNum(d: &Bytes) u64 {
+  var n = 0u64;
+  let v = d.view();
+  var i = 0usize;
+  while i < v.len {
+    n = n * 10u64 + (u64.from(v[i]) - 48u64);
+    i = i + 1usize;
+  }
+  n
+}
+
+// Take events until all 20 messages and both last values are in, or 8 s pass
+fn drain(rx: &mut Receiver[NetEvent], h: &mut Heard) {
+  let until = Instant.now() + Duration.fromSeconds(8i64);
+  while Instant.now() < until && !(h.msgs >= count && h.last1 == 119u64 && h.last2 == 219u64) {
+    match rx.recvTimeout(Duration.fromMillis(100i64)) {
+      case let Some(e) {
+        match e {
+          case let Message(m) {
+            if parseNum(&m.data) != h.msgs {h.inOrder = false;}
+            h.msgs = h.msgs + 1u64;
+          }
+          case let Update(u) {
+            let v = parseNum(&u.data);
+            if u.stream == 1u16 {
+              if v < h.last1 {h.backwards = true;}
+              h.last1 = v;
+            }
+            if u.stream == 2u16 {
+              if v < h.last2 {h.backwards = true;}
+              h.last2 = v;
+            }
+          }
+          else {}
+        }
+      }
+      case is None[NetEvent] {}
+    }
+  }
+}
+
+fn kindName(k: u64) &str {
+  if k == 0u64 {"request"}
+  else if k == 1u64 {"challenge"}
+  else if k == 2u64 {"response"}
+  else if k == 3u64 {"accept"}
+  else if k == 4u64 {"payload"}
+  else if k == 5u64 {"disconnect"}
+  else if k == 6u64 {"denied"}
+  else {"unknown"}
+}
+
+fn has(xs: &List[u64], v: u64) bool {
+  var i = 0usize;
+  while i < xs.len() {
+    if xs[i] == v {return true;}
+    i = i + 1usize;
+  }
+  false
+}
+
+fn sayDirection(r: &Report, up: bool, name: &str, rel: &List[u64], lat: &List[u64]) {
+  var seen = List[bool]();
+  var k = 0u64;
+  while k < 7u64 {
+    seen.push(false);
+    k = k + 1u64;
+  }
+  var allWhole = true;
+  var allMagic = true;
+  var i = 0usize;
+  while i < r.recs.len() {
+    let x = &r.recs[i];
+    if x.up == up {
+      if x.kind < 7u64 {seen[usize.from(x.kind)] = true;}
+      if !x.magic {allMagic = false;}
+      if x.kind == 4u64 && !x.payload {allWhole = false;}
+    }
+    i = i + 1usize;
+  }
+  var line = String.from(name);
+  line.append(" kinds:");
+  k = 0u64;
+  while k < 7u64 {
+    if seen[usize.from(k)] {
+      line.append(" ");
+      line.append(kindName(k));
+    }
+    k = k + 1u64;
+  }
+  say(line.view());
+  expect(allMagic, "every datagram carries the protocol id");
+  expect(allWhole, "every payload packet parsed to its last byte");
+  var ids = 0u64;
+  var j = 0u64;
+  while j < count {
+    if has(rel, j) {ids = ids + 1u64;}
+    j = j + 1u64;
+  }
+  line = String.from(name);
+  line.append(" reliable ids 0..19 seen: ");
+  line.appendUInt(ids);
+  line.append(", others: ");
+  line.appendUInt(u64.from(rel.len()) - ids);
+  line.append(", streams 1,2 seen: ");
+  var s1 = 0u64;
+  var s2 = 0u64;
+  var other = 0u64;
+  j = 0u64;
+  while j < u64.from(lat.len()) {
+    let v = lat[usize.from(j)];
+    if v == 1u64 {s1 = 1u64;}
+    else if v == 2u64 {s2 = 1u64;}
+    else {other = other + 1u64;}
+    j = j + 1u64;
+  }
+  line.appendUInt(s1);
+  line.append(",");
+  line.appendUInt(s2);
+  line.append(", other streams: ");
+  line.appendUInt(other);
+  say(line.view());
+}
+
+fn sayHeard(name: &str, h: &Heard) {
+  var line = String.from(name);
+  line.append(" heard ");
+  line.appendUInt(h.msgs);
+  line.append(" messages, in order: ");
+  line.append(if h.inOrder {"yes"} else {"NO"});
+  line.append("; last values ");
+  line.appendUInt(h.last1);
+  line.append(" ");
+  line.appendUInt(h.last2);
+  line.append("; values went backwards: ");
+  line.append(if h.backwards {"YES"} else {"no"});
+  say(line.view());
+}
+
+fn main() i32 {
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  let cfg = NetConfig.defaults();
+  let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+  let tap = Tap(SocketAddr.localhost(server.port));
+  var txT: OneshotSender[u16];
+  var rxT: OneshotReceiver[u16];
+  txT, rxT = Oneshot[u16].make();
+  tap.open(txT);
+  let tapPort = rxT.recv() || 0u16;
+  require(tapPort != 0u16, "the relay bound its front socket");
+  let client = mustConnect(SocketAddr.localhost(tapPort), cfg, channelHandler(txC));
+
+  var hs = heardNew();
+  var hc = heardNew();
+  var cs = List[Connection]();
+  var cc = List[Connection]();
+  // Wait for both Joined events
+  let until = Instant.now() + Duration.fromSeconds(5i64);
+  while (cs.len() == 0usize || cc.len() == 0usize) && Instant.now() < until {
+    match rxS.recvTimeout(Duration.fromMillis(50i64)) {
+      case let Some(e) {
+        match e {
+          case let Joined(j) { cs.push(j.conn); }
+          else {}
+        }
+      }
+      case is None[NetEvent] {}
+    }
+    match rxC.recvTimeout(Duration.fromMillis(50i64)) {
+      case let Some(e) {
+        match e {
+          case let Joined(j) { cc.push(j.conn); }
+          else {}
+        }
+      }
+      case is None[NetEvent] {}
+    }
+  }
+  require(cs.len() == 1usize && cc.len() == 1usize, "both sides joined");
+
+  // The script: 20 reliable messages each way, 20 values each way on streams 1 and 2
+  var i = 0u64;
+  while i < count {
+    cc[0usize].sendReliable(numbered(i));
+    cs[0usize].sendReliable(numbered(i));
+    cc[0usize].sendLatest(1u16, numbered(100u64 + i));
+    cc[0usize].sendLatest(2u16, numbered(200u64 + i));
+    cs[0usize].sendLatest(1u16, numbered(100u64 + i));
+    cs[0usize].sendLatest(2u16, numbered(200u64 + i));
+    i = i + 1u64;
+  }
+  drain(&mut rxS, &mut hs);
+  drain(&mut rxC, &mut hc);
+
+  client.endpoint.shutdown();
+  // The server hears the client leave
+  var left = false;
+  let until2 = Instant.now() + Duration.fromSeconds(5i64);
+  while !left && Instant.now() < until2 {
+    match rxS.recvTimeout(Duration.fromMillis(100i64)) {
+      case let Some(e) {
+        match e {
+          case let Left(l) { left = true; }
+          else {}
+        }
+      }
+      case is None[NetEvent] {}
+    }
+  }
+  expect(left, "the server is told the client left");
+  server.endpoint.shutdown();
+
+  var txR: OneshotSender[Report];
+  var rxR: OneshotReceiver[Report];
+  txR, rxR = Oneshot[Report].make();
+  tap.report(txR);
+  let rep = rxR.recv() || Report(List[Rec](), List[u64](), List[u64](), List[u64](), List[u64]());
+  var txD: OneshotSender[u32];
+  var rxD: OneshotReceiver[u32];
+  txD, rxD = Oneshot[u32].make();
+  tap.stop(txD);
+  rxD.recv();
+
+  // The handshake, exactly: the datagrams that are neither payload nor disconnect
+  say("handshake:");
+  var n = 0usize;
+  while n < rep.recs.len() {
+    let x = &rep.recs[n];
+    if x.kind != 4u64 && x.kind != 5u64 {
+      var line = String.from(if x.up {"  client to server "} else {"  server to client "});
+      line.append(kindName(x.kind));
+      line.append(" ");
+      line.appendUInt(x.len);
+      say(line.view());
+    }
+    n = n + 1usize;
+  }
+  sayDirection(&rep, true, "client to server", &rep.relUp, &rep.latUp);
+  sayDirection(&rep, false, "server to client", &rep.relDown, &rep.latDown);
+  sayHeard("server", &hs);
+  sayHeard("client", &hc);
+  expectUInt(hs.msgs, count, "the server heard all 20 messages");
+  expectUInt(hc.msgs, count, "the client heard all 20 messages");
+  done()
+}
