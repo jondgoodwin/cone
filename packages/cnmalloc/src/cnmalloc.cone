@@ -31,7 +31,9 @@
 //   Everything about a page that holds cells of class c (its descriptor, its cells' free list, its bit in c's
 //   bitmap) is read and written only under c's lock. The one exception is free()'s read of the descriptor's
 //   class (see freeSmall). A page's class is changed only by the pool, under the pool lock, while the page is
-//   empty and in no class's hands. No atomics, no lock-free path.
+//   empty and in no class's hands. No atomics, no lock-free path. (That is the lock design, the default. The second
+//   design, CNMALLOC=design=lockfree (row 454), keeps the lock for everything but a page's cells, which are bits in a
+//   second descriptor taken and given by one atomic operation each: "THE SECOND DESIGN" below has its rules.)
 //
 // ADDRESS SPACE
 //   One reservation (size a setting, default 64 GiB) holds every small-block page. (p - base) < size is the
@@ -44,6 +46,10 @@
 // the heap, an address made by cnm_create; shim/cn_shim.c holds the one global that points at the process's heap
 // and the start-up, and the names malloc and free. A heap is also a plain value to a test: it can make several.
 mod @c cnmalloc;
+
+// Row 454: the second design's slow paths use the atomic operations (core's intrinsics, which compile to the machine's
+// atomic instructions and call nothing). A C-named module has no prelude: core is imported for these two names alone.
+import core use mem, MemOrder;
 
 // ---------------------------------------------------------------------------
 // Constants and layout
@@ -71,6 +77,17 @@ const classStride = 128usize;
 const scratchOff = 13312usize;      // 3072 bytes: settings text, a line of statistics
 const flagsOff = 16384usize;        // one byte per 4 KiB chunk of each tree
 const regionBytes = 81920usize;
+
+// the second design (row 454): a page descriptor's layout and the states of a page (see "THE SECOND DESIGN" below)
+const d2Stride = 576usize;          // per page: 64 bytes of header, then 64 words of bits
+const lfClsStride = 512usize;       // per class: slots, flags, counters (see lfc)
+const lfHeadBytes = 4096usize;
+const lfMaxSlots = 8usize;
+const lfAttached = 1u64;
+const lfListed = 2u64;
+const lfUnlisted = 3u64;
+const lfRetired = 0u64;
+const lfRetireBatch = 16usize;      // listed pages that collect tries to retire, per class per call
 
 // page states
 const stUnused = 0u32;
@@ -152,6 +169,23 @@ pub struct Heap {
   cMisses: u64;
   cReturns: u64;
   cFills: u64;
+  design: usize;      // row 454: 1 the lock design (the default), 2 the second design (lock-free shared pages)
+  lf: usize;          // design 2: the area holding its header and per-class records (0 under design 1)
+  d2Base: usize;      // design 2: the page descriptors, 576 bytes each
+  d2Reserve: usize;
+  d2Done: usize;      // bytes of them committed
+  slotCap: usize;     // design 2: the most slots a class may hold
+  collLimit: usize;   // design 2: collisions since the last change that add a slot
+  lfAlloc: usize;     // design 2: the shim's allocate and free of a small cell, for the calls that come through Cone
+  lfFree: usize;
+  hookDetach: usize;  // design 2, tests: called between a detach's state exchange and its scan
+  hookRetire: usize;  // design 2, tests: called between a retire's claims and its generation raise
+  hookClaim: usize;   // design 2, tests: called after a page was found wholly free and before the retire claims its words
+  hookAfter: usize;   // design 2, tests: called in "after a free", under the class lock, after the state load and before the scan
+  lfDebug: usize;     // design 2: non-zero in the shim's debug build; the slot rule is then asserted (cnm_lf_attach)
+  nonWorker: u64;     // design 2: small allocations made by threads that are not workers (statistics run)
+  callocs: u64;
+  callocBytes: u64;
 }
 
 pub struct Pool {
@@ -213,6 +247,7 @@ extern {
   fn @c(system) LoadLibraryA(name: cstr) usize;
   fn @c(system) GetProcAddress(module: usize, name: cstr) usize;
   fn @c(system) GetEnvironmentVariableA(name: cstr, buf: *u8, size: u32) u32;
+  fn @c(system) GetActiveProcessorCount(group: u16) u32;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +268,10 @@ fn hiBit(v: u64) usize { 63usize - usize.from(v.leadingZeros()) }
 fn loBit(v: u64) usize { usize.from(v.trailingZeros()) }
 fn rd(a: usize) u64 { *(a as *u64) }
 fn wr(a: usize, v: u64) { *(a as *u64) = v; }
+fn rd32(a: usize) u32 { *(a as *u32) }
+fn wr32(a: usize, v: u32) { *(a as *u32) = v; }
+fn rd8(a: usize) u8 { *(a as *u8) }
+fn wr8(a: usize, v: u8) { *(a as *u8) = v; }
 
 // ---------------------------------------------------------------------------
 // Size classes: 16-byte steps to 128, then 8 classes per doubling to 32 KiB (72 in all)
@@ -406,6 +445,13 @@ fn ensureDesc(h: *Heap, p: *Pool, page: usize) {
   while p.descDone < (page + 1usize) * 64usize {
     if !oswin.commit(h.descBase + p.descDone, 4096usize) { oswin.fatal(); }
     p.descDone = p.descDone + 4096usize;
+  }
+  // design 2: the page's second descriptor (header and bits), committed for good (Rule D) as the page first comes into use
+  if h.design == 2usize {
+    while h.d2Done < (page + 1usize) * d2Stride {
+      if !oswin.commit(h.d2Base + h.d2Done, 4096usize) { oswin.fatal(); }
+      h.d2Done = h.d2Done + 4096usize;
+    }
   }
 }
 
@@ -604,6 +650,12 @@ fn retirePage(h: *Heap, c: *Class, page: usize, d: *Desc) {
 
 // A cell of class cl. Returns its address, or 0. *fresh is 1 when the cell is memory still zero from its commit.
 fn smallAlloc(h: *Heap, cl: usize, fresh: *u32) usize {
+  if h.design == 2usize {
+    // the second design's cell comes from the shim's lock-free path, and is dirty: the caller fills what it needs
+    *fresh = 0u32;
+    let f = h.lfAlloc as &fn @c (cl: usize) usize;
+    return f(cl);
+  }
   let c = classAt(h, cl);
   lockClass(h, c);
   let a = takeCell(h, c, cl, fresh);
@@ -665,6 +717,11 @@ fn takeCell(h: *Heap, c: *Class, cl: usize, fresh: *u32) usize {
 }
 
 fn freeSmall(h: *Heap, a: usize) {
+  if h.design == 2usize {
+    let f = h.lfFree as &fn @c (p: usize);
+    f(a);
+    return;
+  }
   let page = (a - h.base) >> pageShift;
   let d = descOf(h, page);
   // Reading the class WITHOUT the lock is safe because a is live: its page is active, and the page's class is
@@ -705,6 +762,405 @@ fn putCell(h: *Heap, c: *Class, cl: usize, page: usize, d: *Desc, a: usize) bool
     c.cur = page;
   }
   waiting
+}
+
+// ---------------------------------------------------------------------------
+// THE SECOND DESIGN (row 454; WI\cnmalloc-second-design-spec.md, sections 1, 2, 5, 6 and 8): lock-free shared pages.
+// Off unless CNMALLOC=design=lockfree. The common paths (allocate: one compare-and-swap; free: one fetch_or) are C, in
+// shim/cn_shim.c (lf_alloc, lf_free, lf_release); this is everything that is under a class lock: attaching a page to a
+// slot, listing a page that has room again, retiring a wholly free page, adding and dropping slots.
+//
+// A page's SECOND DESCRIPTOR (d2Of; 576 bytes, in its own reservation, committed for good as the page first comes
+// into use, so a stale pointer to it is always readable: Rule D) holds
+//     +0   genclass  the class in the low 8 bits, a generation above; written only under the class lock
+//     +8   state     ATTACHED, LISTED, UNLISTED or RETIRED; written only under the class lock
+//     +16  ncells    the page's cell count in its present life (written before its bits are set)
+//     +24  base      the page's address (never changes)
+//     +64  bits      64 words, one bit per cell, SET MEANS FREE; every word is zero while the page is RETIRED (Rule Z)
+// A class's record (lfc; 512 bytes) holds its slots (8 words, each the address of an ATTACHED page's second
+// descriptor or 0), the count of active slots, the per-slot "used" flags and idle stamps, the collision count and
+// the class's counters.
+//
+// WHO WRITES WHAT: the lock holder writes the slots, the states and genclass, with the atomic operations below
+// (sequentially consistent: the Dekker rule of section 5 needs the exchange of a state to come before the scan of
+// its bits, and a free's fetch_or to come before its read of the state). Any thread may compare-and-swap or
+// fetch_or a bits word at any time. Everything else here is plain.
+// ---------------------------------------------------------------------------
+
+fn d2Of(h: *Heap, page: usize) usize { h.d2Base + page * d2Stride }
+fn lfc(h: *Heap, cl: usize) usize { h.lf + lfHeadBytes + cl * lfClsStride }
+fn d2Page(h: *Heap, d2: usize) usize { (usize.from(rd(d2 + 24usize)) - h.base) >> pageShift }
+fn bitsAt(d2: usize, j: usize) usize { d2 + 64usize + j * 8usize }
+fn nwOf(ncells: usize) usize { (ncells + 63usize) >> 6usize }
+// the valid bits of word j of a page of n cells
+fn maskOf(n: usize, j: usize) u64 {
+  let full = n >> 6usize;
+  if j < full { return allOnes; }
+  if j == full && (n & 63usize) != 0usize { return (1u64 << u64.from(n & 63usize)) - 1u64; }
+  0u64
+}
+fn lfBump(L: usize, k: usize) { wr(L + 256usize + k * 8usize, rd(L + 256usize + k * 8usize) + 1u64); }   // class lock held
+
+// the atomic operations (all sequentially consistent)
+fn aLd(a: usize) u64 { mem.atomicLoad[u64](a as *u64, MemOrder.SeqCst) }
+fn aSt(a: usize, v: u64) { mem.atomicStore[u64](a as *u64, v, MemOrder.SeqCst); }
+fn aXchg(a: usize, v: u64) u64 { mem.atomicSwap[u64](a as *u64, v, MemOrder.SeqCst) }
+fn aOr(a: usize, v: u64) u64 { mem.atomicOr[u64](a as *u64, v, MemOrder.SeqCst) }
+fn aCas(a: usize, from: u64, to: u64) bool {
+  var o = 0u64;
+  var ok = false;
+  o, ok = mem.atomicCompareSwap[u64](a as *u64, from, to, MemOrder.SeqCst, MemOrder.SeqCst);
+  ok
+}
+
+// What a page's words say: 0 no bit is set (no free cell), 1 some are, 2 every word equals its mask (wholly free)
+fn lfScan(d2: usize) usize {
+  let n = usize.from(rd(d2 + 16usize));
+  let nw = nwOf(n);
+  var any = false;
+  var all = true;
+  var j = 0usize;
+  while j < nw {
+    let v = aLd(bitsAt(d2, j));
+    if v != 0u64 { any = true; }
+    if v != maskOf(n, j) { all = false; }
+    j = j + 1usize;
+  }
+  if all { 2usize } else if any { 1usize } else { 0usize }
+}
+
+fn hookCall(f: usize, cl: usize) {
+  if f != 0usize {
+    let g = f as &fn @c (cl: usize);
+    g(cl);
+  }
+}
+
+// Makes a page of class cl ready (section 5, step 4): genclass first, then each word of bits = its mask. Class lock
+// held, and the page is out of the pool or is the class's spare, so nothing can act on it but a stale pointer (Rule G).
+fn lfReady(h: *Heap, cl: usize, page: usize, size: usize) {
+  let d2 = d2Of(h, page);
+  let n = pageSize / size;
+  wr(d2 + 16usize, u64.from(n));
+  wr(d2 + 24usize, u64.from(pageAddr(h, page)));
+  let g = rd(d2);
+  aSt(d2, ((g >> 8u64) << 8u64) | u64.from(cl));
+  descOf(h, page).cls = u32.from(cl);
+  var j = 0usize;
+  let nw = nwOf(n);
+  while j < nw {
+    aSt(bitsAt(d2, j), maskOf(n, j));
+    j = j + 1usize;
+  }
+}
+
+// Retires a page (section 6): LISTED or UNLISTED, class lock held. Claims every word by compare-and-swap from its mask
+// to 0; if one fails the claimed words are put back with fetch_or and the page stays as it was. Otherwise the
+// retirer holds every cell: the page leaves the tree, becomes RETIRED, its generation rises by one, and it is the
+// class's spare or goes to the pool. Returns whether it retired.
+fn lfRetire(h: *Heap, c: *Class, cl: usize, page: usize, d2: usize) bool {
+  let L = lfc(h, cl);
+  let n = usize.from(rd(d2 + 16usize));
+  let nw = nwOf(n);
+  hookCall(h.hookClaim, cl);
+  var k = 0usize;
+  while k < nw {
+    if !aCas(bitsAt(d2, k), maskOf(n, k), 0u64) {
+      var j = 0usize;
+      while j < k {
+        aOr(bitsAt(d2, j), maskOf(n, j));
+        j = j + 1usize;
+      }
+      lfBump(L, 8usize);
+      return false;
+    }
+    k = k + 1usize;
+  }
+  if aLd(d2 + 8usize) == lfListed { btClear(h, cl, page); }
+  aSt(d2 + 8usize, lfRetired);
+  hookCall(h.hookRetire, cl);
+  let g = aLd(d2);
+  aSt(d2, (((g >> 8u64) + 1u64) << 8u64) | (g & 255u64));
+  lfBump(L, 7usize);
+  c.pages = c.pages - 1u64;
+  c.retired = c.retired + 1u64;
+  let d = descOf(h, page);
+  let now = oswin.tick();
+  if c.spare == none {
+    c.spare = page; d.state = stEmpty; d.since = now;
+    return true;
+  }
+  if page < c.spare {
+    let old = c.spare;
+    c.spare = page; d.state = stEmpty; d.since = now;
+    poolPut(h, old, descOf(h, old).since);
+    return true;
+  }
+  poolPut(h, page, now);
+  true
+}
+
+// Takes a page out of a slot (section 5, step 2): the state is exchanged to UNLISTED, and only then are its words
+// scanned (the Dekker rule: a free that ORed its bit before the exchange is seen by the scan; one that ORs after it
+// reads a state other than ATTACHED and comes to the lock). Wholly free: tries to retire. Some bit set: LISTED and in
+// the tree. None: stays UNLISTED. Class lock held; the slot no longer names the page. Returns whether it retired.
+fn lfDetach(h: *Heap, c: *Class, cl: usize, page: usize, d2: usize) bool {
+  aXchg(d2 + 8usize, lfUnlisted);
+  hookCall(h.hookDetach, cl);
+  let r = lfScan(d2);
+  if r == 2usize {
+    if lfRetire(h, c, cl, page, d2) { return true; }
+  }
+  if r != 0usize {
+    aSt(d2 + 8usize, lfListed);
+    btSet(h, cl, page);
+    lfBump(lfc(h, cl), 6usize);
+  }
+  false
+}
+
+// The next page for a slot (section 5, step 3): the lowest page in the class's tree confirmed by a scan to have a free
+// bit (a page found full is set UNLISTED by the same exchange-then-scan and skipped), else the class's spare, else a
+// page from the pool. The page is ready and out of the tree; the caller attaches it. none when out of memory.
+fn lfPick(h: *Heap, c: *Class, cl: usize) usize {
+  var q = none;
+  var found = false;
+  while !found {
+    let t = btFirst(h, cl);
+    if t == none { break; }
+    let d2 = d2Of(h, t);
+    var r = lfScan(d2);
+    if r == 0usize {
+      aXchg(d2 + 8usize, lfUnlisted);
+      r = lfScan(d2);
+      if r == 0usize {
+        btClear(h, cl, t);
+      } else {
+        aSt(d2 + 8usize, lfListed);     // a free landed between: it has a free bit after all
+        found = true;
+      }
+    } else {
+      found = true;
+    }
+    if found {
+      btClear(h, cl, t);
+      q = t;
+    }
+  }
+  if found { return q; }
+  if c.spare != none {
+    q = c.spare;
+    c.spare = none;
+    c.spareHits = c.spareHits + 1u64;
+    descOf(h, q).state = stActive;
+  } else {
+    q = poolTake(h, c.commit);
+    if q == none { return none; }
+    let nd = descOf(h, q);
+    nd.state = stActive;
+    nd.limit = u32.from(c.limit);
+  }
+  c.pages = c.pages + 1u64;
+  lfReady(h, cl, q, c.size);
+  q
+}
+
+// Debug builds only (section 2's slot rule): while the class lock is free, a slot is null or names a page ATTACHED to this
+// class. Class lock held. A violation names the class and the page's state and genclass, and ends the process.
+fn lfSlotRule(h: *Heap, cl: usize, d2: usize) {
+  let g = aLd(d2);
+  let st = aLd(d2 + 8usize);
+  if st == lfAttached && usize.from(g & 255u64) == cl { return; }
+  let buf = h.region + scratchOff;
+  var n = putStr(buf, 0usize, "cnmalloc: slot rule broken, class ", 34usize);
+  n = putNum(buf, n, u64.from(cl));
+  n = putStr(buf, n, " state ", 7usize); n = putNum(buf, n, st);
+  n = putStr(buf, n, " genclass ", 10usize); n = putNum(buf, n, g);
+  n = putStr(buf, n, "\n", 1usize);
+  oswin.writeErr(buf, n);
+  oswin.fatal();
+}
+
+// "A slot's page has no free bit" (section 5), called by the shim's allocate with the thread's number and the page
+// pointer it saw in its slot (0 for none). Returns 1 when the caller should retry the common path, 0 when the heap is
+// out of memory.
+pub fn cnm_lf_attach(hh: usize, cl: usize, tnum: usize, seen: usize) usize {
+  let h = hh as *Heap;
+  let c = classAt(h, cl);
+  let L = lfc(h, cl);
+  lockClass(h, c);
+  let act = usize.from(rd32(L + 64usize));
+  let si = tnum % act;
+  let cur = usize.from(rd(L + si * 8usize));
+  if h.lfDebug != 0usize && cur != 0usize { lfSlotRule(h, cl, cur); }
+  if cur != seen {
+    oswin.unlock(c as usize);
+    return 1usize;
+  }
+  var waiting = false;
+  if cur != 0usize {
+    // the same page: its words may have read as zero to this thread only because another lock holder was retiring it or
+    // making it ready, and the same page can come back to the same slot (row 455's F2). A set bit sends the thread round.
+    if lfScan(cur) != 0usize {
+      oswin.unlock(c as usize);
+      return 1usize;
+    }
+    wr(L + si * 8usize, 0u64);
+    waiting = lfDetach(h, c, cl, d2Page(h, cur), cur);
+  }
+  let q = lfPick(h, c, cl);
+  if q == none {
+    oswin.unlock(c as usize);
+    if waiting { armIfWaiting(h); }
+    return 0usize;
+  }
+  let d2 = d2Of(h, q);
+  aXchg(d2 + 8usize, lfAttached);
+  wr(L + si * 8usize, u64.from(d2));
+  wr8(L + 80usize + si, 1u8);
+  lfBump(L, 5usize);
+  oswin.unlock(c as usize);
+  armIfWaiting(h);
+  1usize
+}
+
+// "After a free" (section 5): g is the page's genclass as the freer read it BEFORE its fetch_or. Under the lock of
+// class(g): if the page's genclass is no longer g it was retired after the free and belongs to another life; whoever
+// retired it has dealt with it. While the lock is held and genclass == g the page cannot retire.
+pub fn cnm_lf_after_free(hh: usize, d2: usize, g: u64) {
+  let h = hh as *Heap;
+  let cl = usize.from(g & 255u64);
+  let c = classAt(h, cl);
+  lockClass(h, c);
+  if aLd(d2) != g {
+    oswin.unlock(c as usize);
+    return;
+  }
+  let st = aLd(d2 + 8usize);
+  hookCall(h.hookAfter, cl);
+  if st == lfAttached {
+    oswin.unlock(c as usize);
+    return;
+  }
+  var waiting = false;
+  let r = lfScan(d2);
+  var done = false;
+  if r == 2usize {
+    waiting = lfRetire(h, c, cl, d2Page(h, d2), d2);
+    done = waiting;
+  }
+  if !done && r != 0usize && st == lfUnlisted {
+    aSt(d2 + 8usize, lfListed);
+    btSet(h, cl, d2Page(h, d2));
+    lfBump(lfc(h, cl), 6usize);
+  }
+  oswin.unlock(c as usize);
+  if waiting { armIfWaiting(h); }
+}
+
+// The class has seen enough collisions: one more slot, up to the cap (section 8)
+pub fn cnm_lf_grow(hh: usize, cl: usize) {
+  let h = hh as *Heap;
+  let c = classAt(h, cl);
+  let L = lfc(h, cl);
+  lockClass(h, c);
+  let act = usize.from(rd32(L + 64usize));
+  if act < h.slotCap {
+    wr(L + 128usize + act * 8usize, u64.from(oswin.tick()));
+    wr8(L + 80usize + act, 1u8);
+    wr32(L + 64usize, u32.from(act + 1usize));
+    lfBump(L, 3usize);
+  }
+  wr32(L + 192usize, 0u32);
+  oswin.unlock(c as usize);
+}
+
+// Collect's share (section 5, last paragraph, and section 8): a slot not used for the give-back delay is dropped (its
+// page detached; the active count lowered, down to 1; slot 0 keeps its page unless it is wholly free), and a bounded
+// number of listed pages are tried for retirement. Returns the milliseconds until something here falls due, or 0.
+fn lfCollect(h: *Heap, force: bool, delay: u64) u64 {
+  var due = 0u64;
+  let period = if delay < 2u64 { 2u64 } else { delay };
+  var cl = 0usize;
+  while cl < nClasses {
+    let c = classAt(h, cl);
+    if c.pages != 0u64 || rd32(lfc(h, cl) + 64usize) > 1u32 {
+      let L = lfc(h, cl);
+      lockClass(h, c);
+      let now = oswin.tick();
+      var k = usize.from(rd32(L + 64usize));
+      if delay >= 0xFFFFFFFFFFFFFFu64 { k = 0usize; }     // giveback=never: no slot is dropped
+      while k > 0usize {
+        k = k - 1usize;
+        if rd8(L + 80usize + k) != 0u8 {
+          wr8(L + 80usize + k, 0u8);
+          wr(L + 128usize + k * 8usize, u64.from(now));
+          due = minDue(due, period);
+        } else {
+          let age = now - rd(L + 128usize + k * 8usize);
+          if force || age >= delay {
+            let P = usize.from(rd(L + k * 8usize));
+            if P != 0usize && (k >= 1usize || lfScan(P) == 2usize) {
+              wr(L + k * 8usize, 0u64);
+              lfDetach(h, c, cl, d2Page(h, P), P);
+            }
+            if k >= 1usize && k == usize.from(rd32(L + 64usize)) - 1usize && rd(L + k * 8usize) == 0u64 {
+              wr32(L + 64usize, u32.from(k));
+              wr32(L + 192usize, 0u32);
+              lfBump(L, 4usize);
+            }
+          } else {
+            due = minDue(due, delay - age);
+          }
+        }
+      }
+      var q = btLastBelow(h, cl, h.npages);
+      var n = 0usize;
+      while q != none && n < lfRetireBatch {
+        let d2 = d2Of(h, q);
+        if lfScan(d2) == 2usize { lfRetire(h, c, cl, q, d2); }
+        q = btLastBelow(h, cl, q);
+        n = n + 1usize;
+      }
+      oswin.unlock(c as usize);
+    }
+    cl = cl + 1usize;
+  }
+  due
+}
+
+// the shim hands the heap its two small-cell functions (for the calls that come through Cone: a large block shrinking to a small one, aligned cells)
+pub fn cnm_lf_set(hh: usize, alloc: usize, free: usize, debug: usize) {
+  let h = hh as *Heap;
+  h.lfDebug = debug;
+  h.lfAlloc = alloc;
+  h.lfFree = free;
+}
+// tests only: functions called inside a detach (between the exchange and the scan), inside a retire after the page was
+// found wholly free and before its words are claimed, inside a retire after the page is RETIRED, before its generation rises, and
+// in "after a free" past the generation test (class lock held, page state loaded, nothing scanned yet)
+pub fn cnm_lf_set_hooks(hh: usize, detach: usize, retire: usize, claim: usize, after: usize) {
+  let h = hh as *Heap;
+  h.hookDetach = detach;
+  h.hookRetire = retire;
+  h.hookClaim = claim;
+  h.hookAfter = after;
+}
+pub fn cnm_design(hh: usize) usize { (hh as *Heap).design }
+// the header the shim reads: page base, descriptor base, heap size, the first class record, the statistics flag
+pub fn cnm_lf_info(hh: usize) usize { (hh as *Heap).lf }
+pub fn cnm_lf_collision_limit(hh: usize) usize { (hh as *Heap).collLimit }
+// the park timeout the actors scheduler uses under design 2: the give-back delay in milliseconds (at least 1), 0 under design 1
+pub fn cnm_park_ms(hh: usize) u64 {
+  let h = hh as *Heap;
+  if h.design != 2usize { return 0u64; }
+  if h.mode == modeDelay { if h.delayMs < 1u64 { return 1u64; } return h.delayMs; }
+  1u64
+}
+// statistics the shim keeps for the heap: calloc calls and bytes filled, small allocations by threads that are not workers
+pub fn cnm_lf_set_counts(hh: usize, callocs: u64, callocBytes: u64, nonWorker: u64) {
+  let h = hh as *Heap;
+  h.callocs = callocs; h.callocBytes = callocBytes; h.nonWorker = nonWorker;
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,6 +1475,12 @@ pub fn cnm_collect(hh: usize, force: bool) u64 {
   let delay = if force { 0u64 } else { h.delayMs };
   var due = 0u64;
   let giving = force || h.mode == modeDelay;
+  if h.design == 2usize {
+    // the delay a slot or a listed page must have gone unused: 0 at 'now' and when forced, the setting under 'delay', never under 'never'
+    var lfDelay = 0xFFFFFFFFFFFFFFu64;
+    if force || h.mode == modeNow { lfDelay = 0u64; } else if h.mode == modeDelay { lfDelay = h.delayMs; }
+    due = lfCollect(h, force, lfDelay);
+  }
   var cl = 0usize;
   while cl < nClasses {
     let c = classAt(h, cl);
@@ -1124,6 +1586,9 @@ pub struct Settings {
   cacheMax: usize;
   largeReserve: usize;     // row 446: CNMALLOC=largereserve=<n>, 1 to 64, default 2
   largeReserveCap: usize;  // row 446: CNMALLOC=largereservecap=<bytes>, 1 MiB to 64 GiB, default 64 MiB
+  design: usize;           // row 454: CNMALLOC=design=lockfree chooses the lock-free shared pages; 1 (default, also design=lock) the lock design
+  slotCap: usize;          // row 454: CNMALLOC=slots=<n>, the most slots a class may hold (1 to 8, default 8)
+  collLimit: usize;        // row 454: CNMALLOC=collisions=<n>, collisions that add a slot (default 64)
 }
 
 // the defaults: 64 GiB of address space, give-back after 1000 ms, 64 MiB of large blocks kept, no cache
@@ -1138,6 +1603,9 @@ pub fn cnm_defaults(s: *Settings) {
   s.cacheMax = 1024usize;
   s.largeReserve = 2usize;
   s.largeReserveCap = 67108864usize;
+  s.design = 1usize;
+  s.slotCap = 8usize;
+  s.collLimit = 64usize;
 }
 
 // Reads CNMALLOC (for example "giveback=now,reserve=32g,largecap=16m,stats") into s. buf is 1024 bytes of scratch.
@@ -1167,6 +1635,17 @@ pub fn cnm_readEnv(s: *Settings, buf: usize) {
       s.largeReserveCap = parseNum(a + 16usize, z);
       if s.largeReserveCap < 1048576usize { s.largeReserveCap = 1048576usize; }
       if s.largeReserveCap > 68719476736usize { s.largeReserveCap = 68719476736usize; }
+    } else if len >= 15usize && strncmp(a as *u8, "design=lockfree", 15usize) == 0i32 {
+      s.design = 2usize;
+    } else if len >= 11usize && strncmp(a as *u8, "design=lock", 11usize) == 0i32 {
+      s.design = 1usize;
+    } else if len >= 6usize && strncmp(a as *u8, "slots=", 6usize) == 0i32 {
+      s.slotCap = parseNum(a + 6usize, z);
+      if s.slotCap < 1usize { s.slotCap = 1usize; }
+      if s.slotCap > lfMaxSlots { s.slotCap = lfMaxSlots; }
+    } else if len >= 11usize && strncmp(a as *u8, "collisions=", 11usize) == 0i32 {
+      s.collLimit = parseNum(a + 11usize, z);
+      if s.collLimit < 1usize { s.collLimit = 1usize; }
     } else if len >= 6usize && strncmp(a as *u8, "cache=", 6usize) == 0i32 {
       s.cacheCap = parseNum(a + 6usize, z);
       if s.cacheCap > 1024usize { s.cacheCap = 1024usize; }
@@ -1226,6 +1705,38 @@ pub fn cnm_create(s: *Settings) usize {
   h.stats = s.stats;
   h.cacheCap = s.cacheCap;
   h.cacheMax = s.cacheMax;
+  h.design = s.design;
+  if s.design == 2usize {
+    // the second design's descriptors and records: the lock design never reserves them
+    h.d2Reserve = h.npages * d2Stride;
+    h.d2Base = oswin.reserve(h.d2Reserve);
+    let lfBytes = lfHeadBytes + nClasses * lfClsStride;
+    h.lf = oswin.reserve(lfBytes);
+    if h.d2Base == 0usize || h.lf == 0usize || !oswin.commit(h.lf, lfBytes) {
+      if h.d2Base != 0usize { oswin.release(h.d2Base); }
+      if h.lf != 0usize { oswin.release(h.lf); }
+      oswin.release(h.metaBase);
+      oswin.release(h.descBase);
+      oswin.release(base);
+      oswin.release(region);
+      return 0usize;
+    }
+    var cap = s.slotCap;
+    let np = usize.from(GetActiveProcessorCount(0xFFFFu16));
+    if cap > np { cap = np; }
+    if cap < 1usize { cap = 1usize; }
+    h.slotCap = cap;
+    h.collLimit = s.collLimit;
+    // the header the shim reads: page base, descriptor base, the heap's size, the first class record, the statistics flag
+    wr(h.lf, u64.from(h.base)); wr(h.lf + 8usize, u64.from(h.d2Base)); wr(h.lf + 16usize, u64.from(h.size));
+    wr(h.lf + 24usize, u64.from(h.lf + lfHeadBytes)); wr(h.lf + 32usize, u64.from(h.stats));
+    var k = 0usize;
+    while k < nClasses {
+      let L = lfc(h, k);
+      wr32(L + 64usize, 1u32); wr32(L + 68usize, u32.from(cap)); wr32(L + 72usize, u32.from(s.collLimit));
+      k = k + 1usize;
+    }
+  }
   var c = 0usize;
   while c < nClasses {
     let k = classAt(h, c);
@@ -1260,18 +1771,18 @@ pub fn cnm_create(s: *Settings) usize {
 // For tests and tools: a heap as cnm_make makes, with a large-block reserve factor (1 to 64) and the cap on the
 // extra left at 64 MiB. Programs set these through CNMALLOC=largereserve=<n>,largereservecap=<n> instead.
 pub fn cnm_make_lr(reserve: usize, mode: usize, delayMs: u64, largeCap: usize, largeReserve: usize) usize {
-  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, largeReserve, 67108864usize);
+  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, largeReserve, 67108864usize, 1usize, 8usize, 64usize);
   cnm_create(&mut s)
 }
 
 pub fn cnm_make(reserve: usize, mode: usize, delayMs: u64, largeCap: usize) usize {
-  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, 2usize, 67108864usize);
+  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, 2usize, 67108864usize, 1usize, 8usize, 64usize);
   cnm_create(&mut s)
 }
 
 // A heap from the CNMALLOC environment variable. This is the process's: shim/cn_shim.c calls it once.
 pub fn cnm_boot() usize {
-  var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize, 0usize, 1024usize, 2usize, 67108864usize);
+  var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize, 0usize, 1024usize, 2usize, 67108864usize, 1usize, 8usize, 64usize);
   cnm_defaults(&mut s);
   // the settings text is read into a scratch area, so the heap's own region is not made yet: a small
   // reservation holds it for the moment
@@ -1298,6 +1809,7 @@ pub fn cnm_destroy(hh: usize) {
     j = j + 1usize;
   }
   if l.table != 0usize { oswin.release(l.table); }
+  if h.design == 2usize { oswin.release(h.d2Base); oswin.release(h.lf); }
   oswin.release(h.metaBase);
   oswin.release(h.descBase);
   oswin.release(h.base);
@@ -1614,6 +2126,24 @@ pub fn cnm_stats(hh: usize, out: *u64, max: usize) usize {
         wr(o + 144usize, l.copied); wr(o + 152usize, l.nReserve); wr(o + 160usize, l.nCommit);
         wr(o + 168usize, l.nDecommit); wr(o + 176usize, l.nRelease);
         n = n + 5usize;
+        // row 454, design 2 only: calloc calls, bytes filled, small allocations by non-workers; then per class (72 times):
+        // allocs, frees, collisions, slots added, slots dropped, pages attached, pages listed, pages retired, retires
+        // abandoned, Rule G undos (the first three counted by the shim's common paths, only in a statistics run)
+        if h.design == 2usize && n + 3usize + nClasses * 10usize <= max {
+          let o2 = out as usize + n * 8usize;
+          wr(o2, h.callocs); wr(o2 + 8usize, h.callocBytes); wr(o2 + 16usize, h.nonWorker);
+          n = n + 3usize;
+          var k = 0usize;
+          while k < nClasses {
+            var m = 0usize;
+            while m < 10usize {
+              wr(out as usize + n * 8usize, rd(lfc(h, k) + 256usize + m * 8usize));
+              n = n + 1usize;
+              m = m + 1usize;
+            }
+            k = k + 1usize;
+          }
+        }
       }
     }
   }
@@ -1696,6 +2226,46 @@ pub fn cnm_print_stats(hh: usize) {
     n = putStr(buf, n, " misses ", 8usize); n = putNum(buf, n, h.cMisses);
     n = putStr(buf, n, " batchreturns ", 14usize); n = putNum(buf, n, h.cReturns);
     n = putStr(buf, n, " batchfills ", 12usize); n = putNum(buf, n, h.cFills);
+    n = putStr(buf, n, "\n", 1usize);
+    oswin.writeErr(buf, n);
+  }
+  if h.design == 2usize {
+    var cls = 0usize;
+    var wholly = 0u64;
+    while cls < nClasses {
+      let L = lfc(h, cls);
+      let act = usize.from(rd32(L + 64usize));
+      let allocs = rd(L + 256usize);
+      let attached = rd(L + 296usize);
+      var s = 0usize;
+      while s < act {
+        let P = usize.from(rd(L + s * 8usize));
+        if P != 0usize && lfScan(P) == 2usize { wholly = wholly + 1u64; }
+        s = s + 1usize;
+      }
+      if allocs != 0u64 || attached != 0u64 {
+        n = putStr(buf, 0usize, "cnmalloc lf class ", 18usize);
+        n = putNum(buf, n, u64.from(classAt(h, cls).size));
+        n = putStr(buf, n, " allocs ", 8usize); n = putNum(buf, n, allocs);
+        n = putStr(buf, n, " frees ", 7usize); n = putNum(buf, n, rd(L + 264usize));
+        n = putStr(buf, n, " collisions ", 12usize); n = putNum(buf, n, rd(L + 272usize));
+        n = putStr(buf, n, " activeslots ", 13usize); n = putNum(buf, n, u64.from(act));
+        n = putStr(buf, n, " slotsadded ", 12usize); n = putNum(buf, n, rd(L + 280usize));
+        n = putStr(buf, n, " slotsdropped ", 14usize); n = putNum(buf, n, rd(L + 288usize));
+        n = putStr(buf, n, " attached ", 10usize); n = putNum(buf, n, attached);
+        n = putStr(buf, n, " listed ", 8usize); n = putNum(buf, n, rd(L + 304usize));
+        n = putStr(buf, n, " retired ", 9usize); n = putNum(buf, n, rd(L + 312usize));
+        n = putStr(buf, n, " retiresabandoned ", 18usize); n = putNum(buf, n, rd(L + 320usize));
+        n = putStr(buf, n, " ruleGundos ", 12usize); n = putNum(buf, n, rd(L + 328usize));
+        n = putStr(buf, n, "\n", 1usize);
+        oswin.writeErr(buf, n);
+      }
+      cls = cls + 1usize;
+    }
+    n = putStr(buf, 0usize, "cnmalloc lf calloccalls ", 24usize); n = putNum(buf, n, h.callocs);
+    n = putStr(buf, n, " callocbytes ", 13usize); n = putNum(buf, n, h.callocBytes);
+    n = putStr(buf, n, " nonworkersmall ", 16usize); n = putNum(buf, n, h.nonWorker);
+    n = putStr(buf, n, " attachedwhollyfree ", 20usize); n = putNum(buf, n, wholly);
     n = putStr(buf, n, "\n", 1usize);
     oswin.writeErr(buf, n);
   }

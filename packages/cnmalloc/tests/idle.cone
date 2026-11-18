@@ -11,7 +11,23 @@ import libc;
 import cnmalloc;
 import collections use List;
 
+// Row 454: with CNTEST_GLOBAL=1 and the program linked with cn.lib and CNMALLOC=design=lockfree, the test runs on the process's heap
+alias HeapFn = &fn @c () usize;
+alias DesignFn = &fn @c () i32;
+
+fn globalHeap() usize {
+  if libc.getenv("CNTEST_GLOBAL") as usize == 0usize { return 0usize; }
+  let m = selfModule(null);
+  let hf = GetProcAddress(m, "cnmalloc_heap");
+  let df = GetProcAddress(m, "cnmalloc_design");
+  if hf == 0usize || df == 0usize { return 0usize; }
+  if (df as *u8 as DesignFn)() != 2i32 { return 0usize; }
+  (hf as *u8 as HeapFn)()
+}
+
 extern {
+  fn @c("GetModuleHandleA") selfModule(name: *u8) usize;
+  fn @c(system) GetProcAddress(module: usize, name: cstr) usize;
   fn @c(system) Sleep(ms: u32);
   fn @c(system) GetCurrentProcess() usize;
   fn @c(system) K32GetProcessMemoryInfo(p: usize, counters: *u8, cb: u32) i32;
@@ -55,7 +71,8 @@ fn worker(arg: usize) u64 {
 
 fn run(mode: usize, wantBack: bool, label: &Array[u8]) {
   let before = privateBytes();
-  let h = cnmalloc.cnm_make(8589934592usize, mode, 1000u64, 67108864usize);
+  let g = globalHeap();
+  let h = if g != 0usize { g } else { cnmalloc.cnm_make(8589934592usize, mode, 1000u64, 67108864usize) };
   let job = libc.calloc(1usize, 64usize) as *Job;
   job.h = h;
   var ts = List[thread.Thread[u64]]();
@@ -72,10 +89,19 @@ fn run(mode: usize, wantBack: bool, label: &Array[u8]) {
     expect(idle > before + 300000000usize, label);
   }
   libc.free(job as *u8);
-  cnmalloc.cnm_destroy(h);
+  if g == 0usize { cnmalloc.cnm_destroy(h); }
 }
 
 fn main() i32 {
+  if globalHeap() != 0usize {
+    // the second design (CNTEST_GLOBAL=1): the process's heap and its give-back setting from CNMALLOC; CNIDLE_NEVER=1 when that is giveback=never
+    if libc.getenv("CNIDLE_NEVER") as usize != 0usize {
+      run(2usize, false, "give-back never: idle at 3 s, the memory is still committed");
+    } else {
+      run(1usize, true, "the second design, default give-back: idle at 3 s, committed memory is back near its start");
+    }
+    return done();
+  }
   run(1usize, true, "default give-back (delay 1000): idle at 3 s, committed memory is back near its start");
   run(2usize, false, "give-back never: idle at 3 s, the memory is still committed");
   done()

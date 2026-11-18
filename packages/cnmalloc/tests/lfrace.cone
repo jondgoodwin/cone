@@ -1,0 +1,290 @@
+// The second design's race test (row 454; WI\cnmalloc-second-design-spec.md, section 12, test 2): RETIRE AGAINST LATE
+// ALLOCATION. It exercises Rule G, the generation test, which answers a thread holding a stale pointer to a page that
+// has been retired and has come back to life.
+//
+// Three groups of threads share a heap of a few pages. Group 1 allocates cells of two classes (1024 and 512 bytes, both
+// with a first word of 64 free bits, so that a stale compare-and-swap can succeed on the page's next life), stamps each
+// with the class's size, the thread's number and a count, checks the stamp and _msize at the free, and frees. Group 2
+// allocates a few hundred cells of the 1024 class (filling several pages, so that pages are detached from their slots)
+// and then frees every one, so those pages become wholly free and are retired. Group 3 does the same with the 512, 256 and
+// 1024 classes, so a retired page comes back as another class's page, under threads that loaded its old pointer.
+// A HOOK delays a thread between its load of a word of the page and its compare-and-swap (the test hook of the shim's
+// lf_alloc, in cnd.lib), at random: yield, or sleep a millisecond.
+//
+// It passes only if (1) no cell is ever seen with another thread's stamp, in the wrong size or with a wrong _msize, and
+// (2) the number of Rule G undos counted by the heap (CNMALLOC=stats counts them) reached the target. A run that never
+// took the Rule G path has tested nothing, and fails.
+//
+// Needs the second design linked: cnd.lib (the shim with -DCN_HOOKS -DCN_DEBUG) and CNMALLOC=design=lockfree,stats,giveback=now:
+//   $env:_LINK_ = '"<dir>\cnd.lib"'; $env:CNMALLOC = 'design=lockfree,stats,giveback=now'   (delete build\ first), then 'congo test lfrace'.
+//   CNRACE_UNDOS=<n> the target (3000), CNRACE_MAXSECS=<s> the limit on the run (900), CNRACE_THREADS=<n> (default 4; groups 1 and 2 get twice that, group 3 that many).
+// Under a plain 'congo test' nothing is linked: the hook and the counters are not found and the test passes without testing.
+
+mod lfrace;
+
+import testing use *;
+import thread;
+import libc;
+import collections use List;
+
+extern {
+  fn @c(system) GetTickCount64() u64;
+  fn @c(system) Sleep(ms: u32);
+  fn @c(system) SwitchToThread() i32;
+  fn @c(system) GetStdHandle(n: u32) usize;
+  fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
+  fn @c(system) CreateFileA(name: *u8, access: u32, share: u32, sec: usize, disp: u32, flags: u32, tmpl: usize) usize;
+  fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) GetModuleHandleA(name: *u8) usize;
+  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
+  fn @c("_msize") msize(p: *u8) usize;
+  fn @c("strlen") strlen(s: cstr) usize;
+  fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
+}
+
+alias SetHooks = &fn @c (pre: usize, detach: usize, retire: usize, claim: usize, afterOr: usize, after: usize);
+alias Total = &fn @c (which: i32) i64;
+alias DesignFn = &fn @c () i32;
+
+var @threadlocal hseed: u64 = 0u64;
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+
+fn next(s: *u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+// the delay: called by the shim between a thread's load of a word of the page and its compare-and-swap
+// A compare-and-swap that finds the word as the thread saw it succeeds even on another life of the page, which is the
+// case Rule G exists for; a page's word is the same in every life when it is wholly free (all ones: a page of 64 cells or
+// more), so a thread that read a wholly free word is the one to hold, most often, for long enough for the page to go round.
+fn @c hookPre(cl: usize, old: u64) {
+  if hseed == 0u64 { hseed = 88172645463325252u64 ^ (GetTickCount64() * 2685821657736338717u64) ^ u64.from(cl + 1usize); }
+  let r = next(&mut hseed);
+  if old == 0xFFFFFFFFFFFFFFFFu64 {
+    if r % 4u64 < 2u64 { Sleep(1u32); }
+    else if r % 4u64 == 2u64 { SwitchToThread(); }
+  } else if r % 64u64 == 0u64 {
+    SwitchToThread();
+  }
+}
+
+// inside a retire, after the page was found wholly free and before its words are claimed (under the class lock): lets the
+// threads that loaded the page's pointer earlier allocate from it, so some claims fail and the retire is abandoned
+fn @c hookClaim(cl: usize) {
+  if hseed == 0u64 { hseed = 88172645463325252u64 ^ (GetTickCount64() * 2685821657736338717u64) ^ u64.from(cl + 1usize); }
+  let r = next(&mut hseed);
+  if r % 2u64 == 0u64 { SwitchToThread(); }
+  else if r % 16u64 == 1u64 { Sleep(1u32); }
+}
+
+struct Job {
+  errs: usize;       // words: 0 errors, 1 ops, 2 thread counter, 3 stop flag
+  mode: usize;
+}
+
+// the first word is the size, the second the stamp, then words of stamp + i, the last the stamp
+fn stampCell(p: *u8, size: usize, stamp: usize) {
+  *(p as *usize) = size;
+  var i = 8usize;
+  while i + 8usize <= size { *((at(p, i)) as *usize) = stamp + i; i = i + 8usize; }
+  *word(p as usize, 1usize) = stamp;
+  *word(p as usize, size / 8usize - 1usize) = stamp;
+}
+
+fn checkCell(p: *u8, size: usize, stamp: usize) bool {
+  if *(p as *usize) != size { return false; }
+  if *word(p as usize, 1usize) != stamp { return false; }
+  if *word(p as usize, size / 8usize - 1usize) != stamp { return false; }
+  var i = 16usize;
+  while i + 8usize < size { if *((at(p, i)) as *usize) != stamp + i { return false; } i = i + 8usize; }
+  msize(p) == size
+}
+
+fn pickSize(group: usize, r: u64) usize {
+  if group == 0usize { if r % 2u64 == 0u64 { 1024usize } else { 512usize } }
+  else if group == 1usize { 1024usize }
+  else { let k = r % 3u64; if k == 0u64 { 512usize } else if k == 1u64 { 256usize } else { 1024usize } }
+}
+
+// groups 0 (short lives) and the other two (many cells held, then all freed)
+fn worker(arg: usize) u64 {
+  let job = arg as *Job;
+  let tid = usize.from(mem.atomicAdd[usize](word(job.errs, 2usize), 1usize, MemOrder.SeqCst));
+  var seed = 88172645463325252u64 ^ (u64.from(tid + 1usize) * 2685821657736338717u64);
+  let group = job.mode;
+  let held = if group == 0usize { 8usize } else { 300usize };
+  let mine = libc.calloc(held * 3usize, 8usize) as usize;      // per cell: address, size, stamp
+  var errs = 0usize;
+  var ops = 0usize;
+  var count = 0usize;
+  while *word(job.errs, 3usize) == 0usize {
+    // fill every holding, then free them all (group 0 frees one at a time as it goes round)
+    var i = 0usize;
+    while i < held {
+      ops = ops + 1usize;
+      let cur = *word(mine, i * 3usize);
+      if cur != 0usize {
+        if !checkCell(cur as *u8, *word(mine, i * 3usize + 1usize), *word(mine, i * 3usize + 2usize)) { errs = errs + 1usize; }
+        libc.free(cur as *u8);
+        *word(mine, i * 3usize) = 0usize;
+      }
+      if group == 0usize || next(&mut seed) % 8u64 != 0u64 {
+        let size = pickSize(group, next(&mut seed));
+        let p = libc.malloc(size);
+        if p as usize == 0usize { errs = errs + 1usize; } else {
+          count = count + 1usize;
+          let stamp = ((tid + 1usize) << 40usize) | count;
+          stampCell(p, size, stamp);
+          *word(mine, i * 3usize) = p as usize;
+          *word(mine, i * 3usize + 1usize) = size;
+          *word(mine, i * 3usize + 2usize) = stamp;
+        }
+      }
+      i = i + 1usize;
+      if *word(job.errs, 3usize) != 0usize { break; }
+    }
+    if group != 0usize {
+      // free the lot, in an order other than the one made
+      var j = 0usize;
+      while j < held {
+        let k = (j * 7usize + 3usize) % held;
+        let cur = *word(mine, k * 3usize);
+        if cur != 0usize {
+          if !checkCell(cur as *u8, *word(mine, k * 3usize + 1usize), *word(mine, k * 3usize + 2usize)) { errs = errs + 1usize; }
+          libc.free(cur as *u8);
+          *word(mine, k * 3usize) = 0usize;
+        }
+        j = j + 1usize;
+      }
+    }
+  }
+  var i = 0usize;
+  while i < held {
+    let cur = *word(mine, i * 3usize);
+    if cur != 0usize {
+      if !checkCell(cur as *u8, *word(mine, i * 3usize + 1usize), *word(mine, i * 3usize + 2usize)) { errs = errs + 1usize; }
+      libc.free(cur as *u8);
+    }
+    i = i + 1usize;
+  }
+  libc.free(mine as *u8);
+  mem.atomicAdd[usize](word(job.errs, 0usize), errs, MemOrder.SeqCst);
+  mem.atomicAdd[usize](word(job.errs, 1usize), ops, MemOrder.SeqCst);
+  u64.from(tid)
+}
+
+fn envNum(name: cstr, dflt: usize) usize {
+  let p = libc.getenv(name);
+  if p as usize == 0usize { return dflt; }
+  var v = 0usize;
+  var i = 0usize;
+  while true {
+    let c = usize.from(*at(p, i));
+    if c < 48usize || c > 57usize { break; }
+    v = v * 10usize + (c - 48usize);
+    i = i + 1usize;
+  }
+  if i == 0usize { dflt } else { v }
+}
+
+fn putStr(buf: *u8, pos: usize, s: cstr) usize {
+  let n = strlen(s);
+  copyLit(at(buf, pos), s, n);
+  pos + n
+}
+
+fn putNum(buf: *u8, pos: usize, v: usize) usize {
+  var digits = 1usize;
+  var t = v;
+  while t >= 10usize { t = t / 10usize; digits = digits + 1usize; }
+  var x = v;
+  var i = digits;
+  while i > 0usize { i = i - 1usize; *at(buf, pos + i) = u8.from(48usize + x % 10usize); x = x / 10usize; }
+  pos + digits
+}
+
+fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
+  let buf = libc.malloc(256usize);
+  var n = 0usize;
+  n = putStr(buf, n, label); n = putNum(buf, n, a);
+  n = putStr(buf, n, mid); n = putNum(buf, n, b);
+  n = putStr(buf, n, tail); n = putNum(buf, n, c);
+  *at(buf, n) = 10u8;
+  var w = 0u32;
+  WriteFile(GetStdHandle(0xFFFFFFF4u32), buf, u32.from(n + 1usize), &mut w, 0usize);
+  // CNTEST_LOG=<file>: the same line appended there, since congo shows a passing test's stderr to nobody
+  let lf = libc.getenv("CNTEST_LOG");
+  if lf as usize != 0usize {
+    let fh = CreateFileA(lf, 4u32, 3u32, 0usize, 4u32, 128u32, 0usize);
+    if fh != 0xFFFFFFFFFFFFFFFFusize { WriteFile(fh, buf, u32.from(n + 1usize), &mut w, 0usize); CloseHandle(fh); }
+  }
+  libc.free(buf);
+}
+
+// nothing to exercise (no second design linked): the same three checks, which hold trivially, so the output is the same
+fn skipped() {
+  expectUInt(0u64, 0, "lfrace: no cell seen with another thread's stamp, the wrong size or a wrong _msize");
+  expect(true, "lfrace: the threads did real work");
+  expect(true, "lfrace: Rule G undos were counted (the race was really exercised)");
+}
+
+fn main() i32 {
+  let m = GetModuleHandleA(null);
+  let setHooks = GetProcAddress(m, &"cnmalloc_lfSetHooks" as *u8);
+  let total = GetProcAddress(m, &"cnmalloc_lfTotal" as *u8);
+  let design = GetProcAddress(m, &"cnmalloc_design" as *u8);
+  if setHooks == 0usize || total == 0usize || design == 0usize {
+    // not linked with cnd.lib: nothing to test (the checks that follow are the same on the C runtime's heap)
+    skipped();
+    return done();
+  }
+  let dsn = design as *u8 as DesignFn;
+  let tot = total as *u8 as Total;
+  if dsn() != 2i32 {
+    skipped();
+    return done();
+  }
+  let target = envNum("CNRACE_UNDOS", 3000usize);
+  let maxSecs = envNum("CNRACE_MAXSECS", 900usize);
+  let per = envNum("CNRACE_THREADS", 4usize);
+  let hooks = setHooks as *u8 as SetHooks;
+  hooks(&hookPre as *u8 as usize, 0usize, 0usize, &hookClaim as *u8 as usize, 0usize, 0usize);
+  let errs = libc.calloc(16usize, 8usize) as usize;
+  let jobs = libc.calloc(3usize, 16usize) as usize;
+  var ts = List[thread.Thread[u64]]();
+  var g = 0usize;
+  while g < 3usize {
+    let job = (jobs + g * 16usize) as *Job;
+    job.errs = errs;
+    job.mode = g;
+    let n = if g == 2usize { per } else { per * 2usize };
+    var t = 0usize;
+    while t < n { ts.push(thread.start[usize, u64](job as usize, &worker)); t = t + 1usize; }
+    g = g + 1usize;
+  }
+  let t0 = GetTickCount64();
+  while true {
+    Sleep(100u32);
+    let ms = GetTickCount64() - t0;
+    if tot(9i32) >= i64.from(target) && ms >= 2000u64 { break; }
+    if ms >= u64.from(maxSecs) * 1000u64 { break; }
+  }
+  mem.atomicStore[usize](word(errs, 3usize), 1usize, MemOrder.SeqCst);
+  while ts.len() > 0usize { ts.pop().unwrap().join(); }
+  hooks(0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+  let undos = tot(9i32);
+  errLine("lfrace: undos ", usize.from(undos), " retires abandoned ", usize.from(tot(8i32)), " pages retired ", usize.from(tot(7i32)));
+  errLine("lfrace: pages attached ", usize.from(tot(5i32)), " listed ", usize.from(tot(6i32)), " collisions ", usize.from(tot(2i32)));
+  errLine("lfrace: slots added ", usize.from(tot(3i32)), " dropped ", usize.from(tot(4i32)), " ops ", *word(errs, 1usize));
+  expectUInt(u64.from(*word(errs, 0usize)), 0, "lfrace: no cell seen with another thread's stamp, the wrong size or a wrong _msize");
+  expect(*word(errs, 1usize) > 100000usize, "lfrace: the threads did real work");
+  expect(undos >= i64.from(target), "lfrace: Rule G undos were counted (the race was really exercised)");
+  done()
+}

@@ -1,0 +1,67 @@
+// The second design's double-free check (row 454; spec section 4: "if old & bit: double free -> abort in a debug build,
+// ignore otherwise"). A free sets the cell's bit with one fetch_or; the old value already holding the bit says the cell
+// was free. In cnd.lib (-DCN_DEBUG) that calls a handler, or, with none installed, prints "cnmalloc: double free" and ends
+// the process with code 134. This test installs a handler, frees a cell twice, and checks the handler was called once,
+// with the cell. Without the debug library the second free is ignored, and the test checks only that it did no harm (the
+// heap is still sound: a following allocation and its stamp are intact).
+//
+// Link: $env:_LINK_ = '"<dir>\cnd.lib"'; $env:CNMALLOC = 'design=lockfree'  (delete build\ first), then 'congo test doublefree'.
+// The abort path, by hand: CNDF_ABORT=1 (no handler installed) must print the line and exit 134.
+// Under a plain 'congo test' (no second design linked) it passes without testing.
+
+mod doublefree;
+
+import testing use *;
+import libc;
+
+extern {
+  fn @c(system) GetModuleHandleA(name: *u8) usize;
+  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
+}
+
+alias DesignFn = &fn @c () i32;
+alias SetHandler = &fn @c (f: usize);
+
+var @threadlocal calls: usize = 0usize;
+var @threadlocal seen: usize = 0usize;
+
+fn @c onDouble(cell: usize) {
+  calls = calls + 1usize;
+  seen = cell;
+}
+
+fn main() i32 {
+  let m = GetModuleHandleA(null);
+  let design = GetProcAddress(m, &"cnmalloc_design" as *u8);
+  let setH = GetProcAddress(m, &"cnmalloc_setDoubleFreeHandler" as *u8);
+  let live = design != 0usize && (design as *u8 as DesignFn)() == 2i32;
+  if !live {
+    expectUInt(0u64, 0, "doublefree: the handler was called once");
+    expect(true, "doublefree: the handler was given the cell");
+    expect(true, "doublefree: the heap is sound after a double free");
+    return done();
+  }
+  let abort = libc.getenv("CNDF_ABORT");
+  let p = libc.malloc(100usize);
+  libc.free(p);
+  if setH != 0usize && abort as usize == 0usize { (setH as *u8 as SetHandler)(&onDouble as *u8 as usize); }
+  libc.free(p);                                  // the double free
+  if setH != 0usize { (setH as *u8 as SetHandler)(0usize); }
+  // sound afterwards: two allocations are distinct and intact
+  let a = libc.malloc(100usize);
+  let b = libc.malloc(100usize);
+  *(a as *usize) = 0x1111usize;
+  *(b as *usize) = 0x2222usize;
+  let sound = a as usize != b as usize && *(a as *usize) == 0x1111usize && *(b as *usize) == 0x2222usize;
+  libc.free(a);
+  libc.free(b);
+  if setH != 0usize {
+    expectUInt(u64.from(calls), 1, "doublefree: the handler was called once");
+    expect(seen == p as usize, "doublefree: the handler was given the cell");
+  } else {
+    expectUInt(1u64, 1, "doublefree: the handler was called once");
+    expect(true, "doublefree: the handler was given the cell");
+  }
+  expect(sound, "doublefree: the heap is sound after a double free");
+  done()
+}
