@@ -1,0 +1,342 @@
+// Several datagrams in one receive: UdpSocket.recvMany. Linux takes every
+// datagram waiting, up to the buffers given, in one call (recvmmsg); Windows
+// one a call, behind the same answer, so each phase loops until every
+// datagram is in, and the first call's count is expected by system.
+//
+// 1. A sends ten datagrams of different lengths before B receives; B's
+//    recvMany of sixteen buffers: Linux answers all ten at once with six
+//    buffers spare, Windows one (fifteen spare), then the rest one by one.
+//    In arrival order, each with A as its sender, and every byte of every
+//    datagram as sent (a position pattern).
+// 2. A datagram longer than its buffer's room is in the answer cut to the room
+//    with its bit set in 'cut'; the datagrams around it are whole.
+// 3. Two senders, three datagrams each, told apart by each datagram's sender.
+// 4. An empty list, and a first buffer with no room: InvalidInput. A later
+//    buffer with no room ends the batch there: one datagram, three buffers back.
+// 5. A receive with nothing waiting and a deadline that falls: TimedOut.
+// 6. A pending receive in a cancel group the main thread cancels: Cancelled.
+//
+// At the end every buffer is home (lent == 0) and every record dissolved.
+
+mod recvmany;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver, Channel, Sender, Receiver;
+import collections use List;
+import iobuf use IoBuf, stats;
+import iocore use SocketAddr, IoError, CancelGroup;
+import ioerror use IoErrorKind;
+import time use Instant, Duration;
+import thread;
+import actors;
+import aio use UdpSocket, IoLimits, Datagram, Datagrams;
+
+struct Got {
+  pub bound: Atomic[u64];         // 1 if the sockets bound
+  pub first: Atomic[u64];         // phase 1: the first call's datagram count
+  pub firstSpare: Atomic[u64];    // phase 1: the first call's spare buffers
+  pub inOrder: Atomic[u64];       // phase 1: datagrams received in order, whole, from A
+  pub cutOk: Atomic[u64];         // phase 2: datagrams as expected, the long one cut and flagged
+  pub twoOk: Atomic[u64];         // phase 3: datagrams from the sender expected
+  pub badBytes: Atomic[u64];      // bytes not as sent, all phases
+  pub empty: Atomic[u64];         // phase 4: 1 if an empty list answered InvalidInput
+  pub noRoom: Atomic[u64];        // phase 4: 1 if a first buffer with no room answered InvalidInput
+  pub laterGot: Atomic[u64];      // phase 4: datagrams taken before a buffer with no room
+  pub laterSpare: Atomic[u64];    // phase 4: buffers back unused then
+  pub laterRest: Atomic[u64];     // phase 4: the next call's datagram length
+  pub timed: Atomic[u64];         // phase 5: 1 if TimedOut
+  pub grouped: Atomic[u64];       // phase 6: 1 if Cancelled
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
+  var res = r;
+  var s = UdpSocket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn portOf(r: Result[SocketAddr, IoError]) u16 {
+  match r {
+    case let Ok(a) {a.port()}
+    else {0u16}
+  }
+}
+
+// Byte j of datagram number i: a position pattern, so a shifted, swapped or
+// stale byte shows
+fn patternByte(i: u8, j: usize) u8 {u8.from((usize.from(i) * 7usize + j) % 251usize)}
+
+// n bytes, byte j being patternByte(i, j)
+fn datagram(n: usize, i: u8) IoBuf {
+  var b = IoBuf(256usize);
+  let w = b.whole();
+  var j = 0usize;
+  while j < n {
+    w[j] = patternByte(i, j);
+    j = j + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+// A buffer with exactly 'room' bytes of room: the datagram goes after what is in it
+fn roomBuf(room: usize) IoBuf {
+  var b = IoBuf(room);
+  b.setLen(b.capacity() - room);
+  b
+}
+
+// n buffers of 'room' room each
+fn buffers(n: usize, room: usize) List[IoBuf] {
+  var l = List[IoBuf]();
+  var k = 0usize;
+  while k < n {
+    l.push(roomBuf(room));
+    k = k + 1usize;
+  }
+  l
+}
+
+// Whether the datagram holds its last 'have' bytes as datagram number i sent
+// them (a datagram cut to its room holds the first 'have' of them); bad bytes
+// are counted
+fn holds(d: &Datagram, have: usize, i: u8) bool {
+  let v = d.buf.view();
+  if v.len < have {return false;}
+  let from = v.len - have;
+  var j = 0usize;
+  var good = true;
+  while j < have {
+    if v[from + j] != patternByte(i, j) {
+      good = false;
+      got.badBytes.store(got.badBytes.load() + 1u64);
+    }
+    j = j + 1usize;
+  }
+  good
+}
+
+fn isInvalid(r: &Result[Datagrams, IoError]) bool {
+  match r {
+    case let &Err(e) {e.kind() == IoErrorKind.InvalidInput}
+    else {false}
+  }
+}
+
+actor Peer {
+
+  pub async fn run(self, g: CancelGroup, ready: Sender[u64], done: OneshotSender[u64]) {
+    let a = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let b = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let c = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let pa = portOf(await a.localAddr());
+    let pb = portOf(await b.localAddr());
+    let pc = portOf(await c.localAddr());
+    if pa != 0u16 && pb != 0u16 && pc != 0u16 {got.bound.store(1u64);}
+    let to = SocketAddr.localhost(pb);
+
+    // 1. Ten waiting, sixteen buffers
+    var i = 0u64;
+    while i < 10u64 {
+      let r = await a.sendTo(to, datagram(10usize + usize.from(i), u8.from(i)));
+      i = i + 1u64;
+    }
+    let settle = await aio.sleep(Duration.fromMillis(30i64));
+    var seen = 0u64;
+    var calls = 0u64;
+    while seen < 10u64 && calls < 20u64 {
+      let r = await b.recvMany(buffers(16usize, 4096usize));
+      match r {
+        case let Ok(ok) {
+          if calls == 0u64 {
+            got.first.store(u64.from(ok.got.len()));
+            got.firstSpare.store(u64.from(ok.spare.len()));
+          }
+          var k = 0usize;
+          while k < ok.got.len() {
+            let d = &ok.got[k];
+            let n = 10usize + usize.from(seen);
+            if d.buf.len() == n && d.from.port() == pa && holds(d, n, u8.from(seen)) && ((ok.cut >> u64.from(k)) & 1u64) == 0u64 {
+              got.inOrder.store(got.inOrder.load() + 1u64);
+            }
+            seen = seen + 1u64;
+            k = k + 1usize;
+          }
+        }
+        else {}
+      }
+      calls = calls + 1u64;
+    }
+
+    // 2. A cut datagram: 40 bytes (number 3) into rooms of 24, between 12 and 5
+    let s1 = await a.sendTo(to, datagram(12usize, 2u8));
+    let s2 = await a.sendTo(to, datagram(40usize, 3u8));
+    let s3 = await a.sendTo(to, datagram(5usize, 4u8));
+    let settle2 = await aio.sleep(Duration.fromMillis(30i64));
+    seen = 0u64;
+    calls = 0u64;
+    while seen < 3u64 && calls < 10u64 {
+      let r = await b.recvMany(buffers(8usize, 24usize));
+      match r {
+        case let Ok(ok) {
+          var k = 0usize;
+          while k < ok.got.len() {
+            let d = &ok.got[k];
+            let wantLen = if seen == 0u64 {12usize} else if seen == 1u64 {40usize} else {5usize};
+            let cut = wantLen > 24usize;
+            let have = if cut {24usize} else {wantLen};
+            let bit = ((ok.cut >> u64.from(k)) & 1u64) == 1u64;
+            if holds(d, have, u8.from(2u64 + seen)) && bit == cut && d.buf.room() == (if cut {0usize} else {24usize - wantLen})
+                && d.from.port() == pa {
+              got.cutOk.store(got.cutOk.load() + 1u64);
+            }
+            seen = seen + 1u64;
+            k = k + 1usize;
+          }
+        }
+        else {}
+      }
+      calls = calls + 1u64;
+    }
+
+    // 3. Two senders, A and C alternating, three each
+    i = 0u64;
+    while i < 6u64 {
+      if i % 2u64 == 0u64 {
+        let r = await a.sendTo(to, datagram(8usize + usize.from(i), u8.from(10u64 + i)));
+      } else {
+        let r = await c.sendTo(to, datagram(8usize + usize.from(i), u8.from(10u64 + i)));
+      }
+      let pause = await aio.sleep(Duration.fromMillis(3i64));
+      i = i + 1u64;
+    }
+    let settle3 = await aio.sleep(Duration.fromMillis(30i64));
+    seen = 0u64;
+    calls = 0u64;
+    while seen < 6u64 && calls < 20u64 {
+      let r = await b.recvMany(buffers(8usize, 4096usize));
+      match r {
+        case let Ok(ok) {
+          var k = 0usize;
+          while k < ok.got.len() {
+            let d = &ok.got[k];
+            let want = if seen % 2u64 == 0u64 {pa} else {pc};
+            if d.from.port() == want && holds(d, 8usize + usize.from(seen), u8.from(10u64 + seen)) {
+              got.twoOk.store(got.twoOk.load() + 1u64);
+            }
+            seen = seen + 1u64;
+            k = k + 1usize;
+          }
+        }
+        else {}
+      }
+      calls = calls + 1u64;
+    }
+
+    // 4. An empty list; a first buffer with no room; a later one with none
+    let er = await b.recvMany(List[IoBuf]());
+    if isInvalid(&er) {got.empty.store(1u64);}
+    let nr = await b.recvMany(buffers(3usize, 0usize));
+    if isInvalid(&nr) {got.noRoom.store(1u64);}
+    let t1 = await a.sendTo(to, datagram(30usize, 20u8));
+    let t2 = await a.sendTo(to, datagram(31usize, 21u8));
+    let settle4 = await aio.sleep(Duration.fromMillis(30i64));
+    var mixed = List[IoBuf]();
+    mixed.push(roomBuf(64usize));
+    mixed.push(roomBuf(0usize));
+    mixed.push(roomBuf(64usize));
+    let mr = await b.recvMany(mixed);
+    match mr {
+      case let Ok(ok) {
+        got.laterGot.store(u64.from(ok.got.len()));
+        got.laterSpare.store(u64.from(ok.spare.len()));
+        if ok.got.len() == 1usize {
+          let d = &ok.got[0usize];
+          if !holds(d, 30usize, 20u8) {got.laterGot.store(99u64);}
+        }
+      }
+      else {}
+    }
+    let rest = await b.recvMany(buffers(2usize, 64usize));
+    match rest {
+      case let Ok(ok) {
+        if ok.got.len() == 1usize && holds(&ok.got[0usize], 31usize, 21u8) {got.laterRest.store(u64.from(64usize - ok.got[0usize].buf.room()));}
+      }
+      else {}
+    }
+
+    // 5. A deadline that falls while waiting
+    let timed = await b.recvManyIn(buffers(4usize, 64usize), IoLimits.until(Instant.now() + Duration.fromMillis(80i64)));
+    match timed {
+      case let Err(e) {if aio.isTimedOut(e) {got.timed.store(1u64);}}
+      else {}
+    }
+
+    // 6. A pending receive in a group the main thread cancels
+    ready.send(1u64);
+    let grp = await b.recvManyIn(buffers(4usize, 64usize), IoLimits.within(g));
+    match grp {
+      case let Err(e) {if aio.isCancelled(e) {got.grouped.store(1u64);}}
+      else {}
+    }
+    var dn = done;
+    dn.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  var rtx: Sender[u64];
+  var rrx: Receiver[u64];
+  rtx, rrx = Channel[u64].make();
+  let g = CancelGroup.make();
+  {
+    let peer = Peer();
+    peer.run(g, rtx, tx);
+    rrx.recv();
+    thread.sleep(Duration.fromMillis(150i64));
+    expect(g.cancel(), "the group was live");
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the peer said it was done");}
+    else {}
+  }
+  finalAll();
+  expectUInt(got.bound.load(), 1u64, "three sockets bound");
+  #if #os == .windows {
+    expectUInt(got.first.load(), 1u64, "1: Windows answers one datagram a call");
+    expectUInt(got.firstSpare.load(), 15u64, "1: fifteen buffers spare");
+  } #else {
+    expectUInt(got.first.load(), 10u64, "1: Linux answers all ten in one call");
+    expectUInt(got.firstSpare.load(), 6u64, "1: six buffers spare");
+  }
+  expectUInt(got.inOrder.load(), 10u64, "1: ten datagrams in order, whole, from A, no cut bit");
+  expectUInt(got.cutOk.load(), 3u64, "2: three datagrams as expected, the long one cut to its room and flagged");
+  expectUInt(got.twoOk.load(), 6u64, "3: six datagrams from the right sender, whole");
+  expectUInt(got.badBytes.load(), 0u64, "every byte of every datagram as sent");
+  expectUInt(got.empty.load(), 1u64, "4: an empty list is InvalidInput");
+  expectUInt(got.noRoom.load(), 1u64, "4: a first buffer with no room is InvalidInput");
+  expectUInt(got.laterGot.load(), 1u64, "4: a later buffer with no room ends the batch: one datagram");
+  expectUInt(got.laterSpare.load(), 2u64, "4: and its two other buffers come back unused");
+  expectUInt(got.laterRest.load(), 31u64, "4: the next datagram is still there");
+  expectUInt(got.timed.load(), 1u64, "5: a deadline that fell answered TimedOut");
+  expectUInt(got.grouped.load(), 1u64, "6: a pending receive in a cancelled group answered Cancelled");
+  expectUInt(stats().lent, 0u64, "every buffer came home");
+  expectUInt(aio.opStats().inUse, 0u64, "every record dissolved");
+  done()
+}
