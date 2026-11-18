@@ -1,0 +1,407 @@
+// ioproto server: a prototype of candidate A of the I/O re-architecture (WI io-http-rearchitecture, section 8),
+// measured beside today's server (row 456, lane 616). EXAMPLE CODE, NOT FOR MERGE: no runtime package changes.
+//
+// One program, three servers answering the same request (GET, 200, a 64-byte body), chosen by the first argument:
+//
+//   new     S-new: each accepted aio.Socket goes into a connection actor (Conn) that owns it and an
+//           http1.Connection.server core. The actor reads with 'await sock.read(...)' when the core has credit,
+//           handleInput, drains pollEvent, answers a request in its own turn, and sends what pollTransmit gives with
+//           'await sock.write(...)'. Keep-alive, no pipelining, no timers, no TLS.
+//   next    S-new-next: the same Conn, but today's public shape kept: the Conn sends each parsed request to one Hub
+//           actor (the server actor); a pool of Handler actors (as many as workers) each ask the Hub for the next
+//           request, build the 200 and its 64-byte body, and send it back to the Conn by message, which writes it.
+//   today   S-today: actorhttp's public API as it is on master (examples\serve.cone's shape): a Front actor awaits
+//           Server.next(), a Handler actor per exchange, the Service on aio's I/O thread.
+//
+//   server.cone -- <new|next|today> [workers [port]]     (port 0 picks one; "LISTENING <port>" says which)
+//
+// Control paths, answered by every mode (they cost the other requests one string compare):
+//   GET /_stats   the counters now: aio.opStats() and actors.stats(), one line of name=value
+//   GET /_quit    answers ok and ends the program; the I/O thread's own times are then printed ("IOTHREAD ...")
+//
+// Run by run.ps1; by hand: congo run --release packages/actorhttp/examples/ioproto/server.cone -- new 4
+// Never a test: congo builds only the programs directly in examples/, and this one is in a folder of its own.
+
+mod ioprotoserver;
+
+import stdio use *;
+import thread;
+import process;
+import collections use List, String, Deque;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import http use *;
+import http1;
+import aio use Socket;
+import actors;
+import actorhttp use Server, ServerConfig, Exchange;
+
+const modeNew = 0u32;
+const modeNewBuf = 3u32;           // S-new with a buffer given to each read (a variant, to see what the buffer-less read costs)
+const modeNext = 1u32;
+const modeToday = 2u32;
+const readRoom = 16384usize;       // the most a connection reads at once (less when the core's credit is less)
+
+let quit: Atomic[u64];
+
+fn @initpure init() {
+  quit = Atomic[u64].of(0u64);
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn kv(s: &mut String, name: &str, v: u64) {
+  s.append(name);
+  s.append("=");
+  s.appendUInt(v);
+  s.append(" ");
+}
+
+// The counters now, as one line
+fn statsText() String {
+  let o = aio.opStats();
+  let a = actors.stats();
+  var s = String();
+  kv(&mut s, "started", o.started);
+  kv(&mut s, "answeredHere", o.answeredHere);
+  kv(&mut s, "handedOver", o.handedOver);
+  kv(&mut s, "loopDone", o.loopDone);
+  kv(&mut s, "workerDone", o.workerDone);
+  kv(&mut s, "queued", o.queued);
+  kv(&mut s, "takenAway", o.takenAway);
+  kv(&mut s, "inUse", o.inUse);
+  kv(&mut s, "messages", a.messages);
+  kv(&mut s, "turns", a.activations);
+  kv(&mut s, "steals", a.steals);
+  kv(&mut s, "parks", a.parks);
+  s
+}
+
+// What a request for a control path answers, or "" for an ordinary request
+fn control(target: &str) String {
+  if target == "/_stats" {return statsText();}
+  if target == "/_quit" {
+    quit.store(1u64);
+    return String.from("ok");
+  }
+  String()
+}
+
+// The ordinary answer's body: 64 bytes
+fn body64() String {
+  var s = String();
+  while s.len() < 64usize {s.append("0123456789abcdef");}
+  s
+}
+
+fn bufOf(s: &String) IoBuf {
+  var b = IoBuf(s.len() + 1usize);
+  b.append(s.view() as &Array[u8]);
+  b
+}
+
+// ---------------------------------------------------------------------------
+// S-new and S-new-next: the connection actor
+// ---------------------------------------------------------------------------
+
+// The server actor of S-new-next: the one point every request passes through. Requests wait here until a handler
+// asks for one, and handlers wait here until a request comes (each in the order it came)
+actor Hub {
+  conns: Deque[Conn];
+  heads: Deque[RequestHead];
+  idle: Deque[Handler];
+
+  // A connection's parsed request
+  pub async fn submit(self, c: Conn, head: RequestHead) {
+    match idle.popFront() {
+      case var Some(h) {h.handle(c, head, h);}
+      else {
+        conns.push(c);
+        heads.push(head);
+      }
+    }
+  }
+
+  // A handler's ask for the next request
+  pub async fn want(self, h: Handler) {
+    match conns.popFront() {
+      case var Some(c) {
+        match heads.popFront() {
+          case var Some(head) {h.handle(c, head, h);}
+          else {}
+        }
+      }
+      else {idle.push(h);}
+    }
+  }
+}
+
+// S-new-next's handler: asks the Hub for a request, builds the 200, sends it to the connection, asks again
+actor Handler {
+  hub: Hub;
+
+  pub async fn start(self, me: Handler) {hub.want(me);}
+
+  pub async fn handle(self, c: Conn, head: RequestHead, me: Handler) {
+    var text = control(head.target.view());
+    if text.len() == 0usize {text = body64();}
+    c.respond(ResponseHead.make(200u16), bufOf(&text));
+    hub.want(me);
+  }
+}
+
+// One connection: its socket, its protocol core and what they need, in one actor. The only thing that touches them.
+actor Conn {
+  sock: Socket;
+  hub: Hub;
+  mode: u32;
+  core: http1.Connection;
+
+  // The connection's life: read when the core has credit, hand the bytes to the core, act on what it says, send
+  // what it has ready. 'm' is this actor's own handle, for the Hub to name in its asks
+  pub async fn run(self, m: Conn) {
+    var open = true;
+    var ending = false;
+    while open {
+      let credit = core.readCredit();
+      if credit > 0usize {
+        let room = if credit < readRoom {credit} else {readRoom};
+        // newbuf: a buffer goes in with the read; otherwise aio takes a buffer only when bytes have arrived
+        let pending = if mode == modeNewBuf {sock.read(IoBuf(room))} else {sock.read(room)};
+        var r = await pending;
+        match &mut r {
+          case var &mut Ok(ok) {
+            var b = IoBuf();
+            b <-> *ok;
+            core.handleInput(b, Instant.now());
+          }
+          case is Err {open = false;}
+        }
+      }
+      var more = open;
+      while more {
+        match core.pollEvent() {
+          case var Request(e) {
+            if mode != modeNext {
+              var text = control(e.head.target.view());
+              if text.len() == 0usize {text = body64();}
+              core.sendResponse(ResponseHead.make(200u16), BodyLength.sized(u64.from(text.len())));
+              core.sendData(bufOf(&text));
+              core.finish();
+            } else {
+              var h = RequestHead();
+              h <-> e.head;
+              hub.submit(m, h);
+            }
+          }
+          case var Data(d) {core.release(d.buf.len());}
+          case is NeedData {more = false;}
+          case is Paused {more = false;}
+          case is Closed {
+            ending = true;
+            more = false;
+          }
+          else {}
+        }
+      }
+      // what the core has ready: written one buffer at a time (aio has no gather write for a Chain)
+      var ch = core.pollTransmit(Instant.now());
+      var wrote = open;
+      while wrote {
+        match ch.popFront() {
+          case var Some(b) {
+            let w = await sock.write(b);
+            match w {
+              case is Err {
+                open = false;
+                wrote = false;
+              }
+              else {}
+            }
+          }
+          else {break;}
+        }
+      }
+      if ending || core.shouldClose() {open = false;}
+    }
+  }
+
+  // S-new-next: the handler's answer, written here
+  pub async fn respond(self, head: ResponseHead, body: IoBuf) {
+    if core.isClosed() {return;}
+    core.sendResponse(head, BodyLength.sized(u64.from(body.len())));
+    core.sendData(body);
+    core.finish();
+    var ch = core.pollTransmit(Instant.now());
+    var ok = true;
+    while ok {
+      match ch.popFront() {
+        case var Some(b) {
+          let w = await sock.write(b);
+          match w {
+            case is Err {ok = false;}
+            else {}
+          }
+        }
+        else {break;}
+      }
+    }
+    // the answer was 'Connection: close': end the read 'run' is waiting in, so the connection ends and closes here first
+    if core.shouldClose() {sock.cancelRead();}
+  }
+}
+
+// Accepts connections and gives each to a Conn actor of its own
+actor Listener {
+  hub: Hub;
+  mode: u32;
+
+  pub async fn run(self, port: u16) {
+    let l = await aio.listen(SocketAddr.localhost(port));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    match a {
+      case let Ok(addr) {
+        printStr("LISTENING ");
+        printUInt(u64.from(addr.port()));
+        printStr("\n");
+        printFlush();
+      }
+      else {quit.store(2u64); return;}
+    }
+    var going = true;
+    while going {
+      var r = await ls.accept();
+      match &mut r {
+        case var &mut Ok(ok) {
+          var s = Socket.none();
+          s <-> *ok;
+          let c = Conn(s, hub, mode, http1.Connection.server(http1.Config.make(), Instant.now()));
+          c.run(c);
+        }
+        case is Err {going = false;}
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// S-today: actorhttp's public API, as examples\serve.cone uses it
+// ---------------------------------------------------------------------------
+
+actor TodayHandler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let text = control(path.view());
+    if text.len() == 0usize {
+      ex.respond(ResponseHead.make(200u16), body64());
+    } else {
+      ex.respond(ResponseHead.make(200u16), text);
+    }
+  }
+}
+
+actor TodayFront {
+  server: Server;
+
+  pub async fn run(self, port: u16) {
+    let r = await actorhttp.listen(SocketAddr.localhost(port), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {
+        quit.store(2u64);
+        return;
+      }
+    }
+    printStr("LISTENING ");
+    printUInt(u64.from(server.port()));
+    printStr("\n");
+    printFlush();
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = TodayHandler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  let args = process.args();
+  var mode = modeNew;
+  var workers = 4u32;
+  var port = 0u16;
+  if args.len() >= 2usize {
+    let m = args[1usize].view();
+    if m == "new" {mode = modeNew;}
+    else if m == "newbuf" {mode = modeNewBuf;}
+    else if m == "next" {mode = modeNext;}
+    else if m == "today" {mode = modeToday;}
+    else {
+      printStr("usage: server <new|next|today> [workers [port]]\n");
+      return 2i32;
+    }
+  } else {
+    printStr("usage: server <new|next|today> [workers [port]]\n");
+    return 2i32;
+  }
+  if args.len() >= 3usize {
+    match u64.parse(args[2usize].view()) {
+      case let Ok(p) {workers = u32.from(p);}
+      case is Err {}
+    }
+  }
+  if args.len() >= 4usize {
+    match u64.parse(args[3usize].view()) {
+      case let Ok(p) {port = u16.from(p);}
+      case is Err {}
+    }
+  }
+  actors.configure(actors.Options(workers: workers));
+  if mode == modeToday {
+    let front = TodayFront(Server.none());
+    front.run(port);
+  } else {
+    let hub = Hub(Deque[Conn](), Deque[RequestHead](), Deque[Handler]());
+    if mode == modeNext {
+      var i = 0u32;
+      while i < workers {
+        let h = Handler(hub);
+        h.start(h);
+        i = i + 1u32;
+      }
+    }
+    let l = Listener(hub, mode);
+    l.run(port);
+  }
+  while quit.load() == 0u64 {thread.sleep(Duration.fromMillis(50i64));}
+  thread.sleep(Duration.fromMillis(200i64));
+  finalAll();
+  let t = aio.ioThreadTimes();
+  printStr("IOTHREAD user_ns=");
+  printUInt(t.userNs);
+  printStr(" kernel_ns=");
+  printUInt(t.kernelNs);
+  printStr(" wall_ns=");
+  printUInt(t.wallNs);
+  printStr("\n");
+  if quit.load() == 2u64 {return 1i32;}
+  0i32
+}
