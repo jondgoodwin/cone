@@ -24,6 +24,11 @@
 //   $env:_LINK_ = '"<dir>\cnd.lib"'; $env:CNMALLOC = 'design=lockfree,giveback=now,slots=1,stats'   (delete build\ first), then 'congo test lfstale'.
 //   CNSTALE_ROUNDS=<n> the rounds (default 20). Under a plain 'congo test' nothing is linked and the test passes without testing.
 // tests/mutants.ps1 runs it against the mutated shim (mutant b must fail it).
+//
+// CNSTALE_GROUPED=1 (row 506; row 460's rules, RT-G, and mutant m4; needs CNMALLOC cache=<n>): the same rounds with the freer a
+// worker whose free goes into its cache and back to the heap by the grouped return (cnmalloc_workerFlush, a test build's
+// export): the first park point is then the one right after the group's fetch_or (LF_HOOK_GROUP). A return that read the
+// group's genclass after its fetch_or fails exactly as mutant b does.
 
 mod lfstale;
 
@@ -66,6 +71,11 @@ const cReused = 12usize;
 const cErrs = 13usize;
 const cStale = 14usize;     // visits to the second park point in rounds where the freer's generation was stale
 const cControl = 15usize;   // control rounds that visited it once
+const cGrouped = 16usize;   // CNSTALE_GROUPED: cnmalloc_workerBegin and cnmalloc_workerFlush, else 0
+const cFlush = 17usize;
+
+alias SetMulti = &fn @c (take: usize, group: usize);
+alias Call = &fn @c ();
 
 // the freer thread's own copy of the control block's address (0 on every other thread, so the hooks act on the freer only)
 var @threadlocal fctl: usize = 0usize;
@@ -105,10 +115,13 @@ fn @c hookAfter(cl: usize) {
 fn freer(arg: usize) u64 {
   let c = arg;
   fctl = c;
+  let grouped = ld(c, cGrouped) != 0usize;
+  if grouped { (ld(c, cGrouped) as *u8 as Call)(); }
   while ld(c, cStop) == 0usize {
     if ld(c, cCmd) == 1usize {
       st(c, cCmd, 0usize);
       libc.free(ld(c, cTarget) as *u8);
+      if grouped { (ld(c, cFlush) as *u8 as Call)(); }       // the cache (the one cell) back to the heap, grouped
       st(c, cDone, 1usize);
     } else {
       SwitchToThread();
@@ -263,8 +276,16 @@ fn main() i32 {
   let rounds = envNum("CNSTALE_ROUNDS", 20usize);
   let hooks = setHooks as *u8 as SetHooks;
   let coll = collect as *u8 as Collect;
-  let c = libc.calloc(16usize, 8usize) as usize;
+  let c = libc.calloc(20usize, 8usize) as usize;
   hooks(0usize, 0usize, 0usize, 0usize, &hookOr as *u8 as usize, &hookAfter as *u8 as usize);
+  let setMulti = GetProcAddress(m, &"cnmalloc_lfSetMultiHooks" as *u8);
+  let begin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
+  let flush = GetProcAddress(m, &"cnmalloc_workerFlush" as *u8);
+  if envNum("CNSTALE_GROUPED", 0usize) != 0usize && setMulti != 0usize && begin != 0usize && flush != 0usize {
+    st(c, cGrouped, begin);
+    st(c, cFlush, flush);
+    (setMulti as *u8 as SetMulti)(0usize, &hookOr as *u8 as usize);   // the first park point: after the group's fetch_or
+  }
   let ft = thread.start[usize, u64](c, &freer);
   let cells = libc.calloc(130usize, 8usize) as usize;
   var k = 0usize;
@@ -274,6 +295,7 @@ fn main() i32 {
   st(c, cStop, 1usize);
   ft.join();
   hooks(0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+  if setMulti != 0usize { (setMulti as *u8 as SetMulti)(0usize, 0usize); }
   errLine("lfstale: rounds ", rounds, " freer parked ", ld(c, cParkedRounds), " page reused by the other class ", ld(c, cReused) / 2usize);
   errLine("lfstale: stale freer past the generation test ", ld(c, cStale), " control rounds ok ", ld(c, cControl), " errors ", ld(c, cErrs));
   expectUInt(u64.from(ld(c, cStale)), 0, "lfstale: a freer with a stale generation never passed the generation test");

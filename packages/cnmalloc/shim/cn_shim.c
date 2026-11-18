@@ -790,6 +790,8 @@ __declspec(dllexport) void cnmalloc_lfSetMultiHooks(void (*take)(size_t, uint64_
   g_hookTake = take;
   g_hookGroup = group;
 }
+// (row 506) a worker's cache goes back to the heap (grouped), as at a park but with no collect after it
+__declspec(dllexport) void cnmalloc_workerFlush(void) { if (g_cap && t_c.slot) cn_cache_flush(); }
 // (row 506) a look at the page holding address p: 0 to 63 its word of bits 'which', 64 its genclass, 65 its state
 // (ATTACHED 1, LISTED 2, UNLISTED 3, RETIRED 0); all ones for an address outside the small pages
 __declspec(dllexport) uint64_t cnmalloc_lfPeek(uintptr_t p, int which) {
