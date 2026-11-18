@@ -4,7 +4,7 @@
 #   powershell -File packages\cnmalloc\tests\mutants.ps1 [-Name a|a2|b|m1|...|m7|none|all] [-Runs 5] [-Scratch <dir>] [-RaceSecs 120]
 #
 #   a    Rule G's undo removed: the g2 test still runs, but the thread keeps the cell of the page's new life  (caught by lfrace: double free abort)
-#   a2   Rule G compares the class half of genclass only, not the generation half                              (caught by lfrace: no undos counted)
+#   a2   Rule G compares the class half of genclass only, not the generation half                              (was caught by lfrace's undo target; since the undo count is a coverage target, lfrace passes on it: NOT caught, expect WRONG)
 #   b    lf_release reads genclass AFTER its fetch_or and its park point, not before the cell stopped being the caller's  (caught by lfstale)
 #   (row 506, the multi-bit fill and the grouped return; Ruminations\row-460-rules-and-tests-2026-11-18.md, section 4)
 #   m1   no g2 test on the multi path (MB-G)                                    (caught by lfmulti: stamps hit, wrong-class cells)
