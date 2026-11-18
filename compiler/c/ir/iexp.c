@@ -1065,8 +1065,13 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
         return lvalvar;
     }
 
-    // No other node is an lval
+    // No other node is an lval. The root of a place reached through a call's
+    // result or a raw pointer holds no variable, so nothing says how long the
+    // place lives: it may live as long as the program, the global scope (0), so
+    // a borrow stored into it must be global. Every caller reads the scope, and
+    // the arms above that go through a reference overwrite it.
     default:
+        *scope = 0;
         return NULL;
     }
 }

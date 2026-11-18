@@ -463,7 +463,7 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
     int lvalIsName = isNameUseNode(lval) && isExpNode(lval);
 
     // Ensure lval is either mutable or var in need of initialization or mutable.
-    uint16_t lvalscope;
+    uint16_t lvalscope = 0;
     INode *lvalperm;
     INode *lvalvar = iexpGetStoreLvalInfo(lval, &lvalperm, &lvalscope);
     if (!(MayWrite & permGetFlags(lvalperm)) &&
