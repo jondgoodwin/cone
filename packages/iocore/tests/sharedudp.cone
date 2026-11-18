@@ -12,7 +12,9 @@
 //    an issue), and at once binds a new socket v. On Linux the lowest free
 //    descriptor is the one u had, so v reuses it; Winsock reuses a closed
 //    handle's value as it pleases.
-// 3. Nothing a thread issued may reach v: no datagram may arrive at the sink
+// 3. No call may be made on a handle closed under it (every issue under the
+//    lock is Done: a call on a closed descriptor or socket would Fail), and
+//    nothing a thread issued may reach v: no datagram may arrive at the sink
 //    from v's port (that would be a sendto on v's descriptor), and a datagram
 //    sent to v (the canary) must arrive at v (a recvfrom on v's descriptor
 //    would take it).
@@ -45,6 +47,7 @@ const tokCanarySend = 3u64;
 // What the workers did, and what to look for: atomics held by 'let' globals,
 // set in 'init'
 let issued: Atomic[u32];      // issues answered where they were made
+let failed: Atomic[u32];      // issues answered where they were made, but Failed (none expected)
 let pending: Atomic[u32];     // issues left in flight (none expected)
 let notIssued: Atomic[u32];   // issues the Loop would have had (a receive that would block)
 let timedOut: Atomic[u32];    // workers that gave up waiting to be refused
@@ -52,6 +55,7 @@ let watch: Atomic[u32];       // the port of the socket nothing may reach (0: no
 
 fn @initpure init() {
   issued = Atomic[u32].of(0u32);
+  failed = Atomic[u32].of(0u32);
   pending = Atomic[u32].of(0u32);
   notIssued = Atomic[u32].of(0u32);
   timedOut = Atomic[u32].of(0u32);
@@ -124,7 +128,9 @@ fn worker(w: Work) u32 {
     let got = w.sh.issue(p);
     w.sh.unlockShared(w.h);
     if got == issueDone {
-      issued.add(1u32);
+      // Done, or Failed: a call on a handle closed or reused under it fails
+      // (WSAENOTSOCK, EBADF), and the lock is what keeps it open for the call
+      if (p as &OpCore).isDone() {issued.add(1u32);} else {failed.add(1u32);}
     } else if got == issuePending {
       pending.add(1u32);
     } else {
@@ -138,6 +144,9 @@ fn worker(w: Work) u32 {
       break;
     }
   }
+  // Its buffers' cache goes back to the stock: nothing finalizes a '@threadlocal'
+  // yet, and a thread a round would otherwise leave its cache behind
+  flushThread();
   n
 }
 
@@ -237,9 +246,9 @@ fn main() i32 {
   expect(issued.load() >= rounds * 16u32, "the workers issued sends and receives, all done where they were issued");
   expect(st.sinkGot > 0u64, "the sink received the workers' datagrams");
   expectUInt(u64.from(pending.load()), 0u64, "no issue was left in flight: concurrent calls on one socket answered at once");
+  expectUInt(u64.from(failed.load()), 0u64, "no call was made on a handle closed under it");
   expectUInt(u64.from(timedOut.load()), 0u64, "every worker was refused once its handle closed");
   expectUInt(st.escapes, 0u64, "no datagram left a socket that reused a closed descriptor");
   expectUInt(u64.from(stolen), 0u64, "no datagram sent to the new socket was taken by a worker");
-  expect(sharedTables() == 1u32, "the table is live");
-  done()
+  expect(sharedTables() == 1u32, "the table is live");  done()
 }
