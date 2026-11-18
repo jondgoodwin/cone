@@ -214,20 +214,21 @@ actor Big {
   }
 }
 
-// A child of about a second, one of many at once
+// A child of about two seconds, one of many at once (two seconds, so that the
+// budget below holds under load: Bug 9, aio child)
 actor Crowd {
   pub async fn go(self, out: Sender[u64]) {
-    let r = await aio.runLine(slowLine(1u64).view());
+    let r = await aio.runLine(slowLine(2u64).view());
     let how = endedBy(&r);
     let o = outputOf(r);
     out.send(b(how == 1u64 && o.exitCode == 0u32));
   }
 }
 
-// A 'crashReport: false' child of about a second, one of many at once
+// A 'crashReport: false' child of about two seconds, one of many at once
 actor QuietCrowd {
   pub async fn go(self, out: Sender[u64]) {
-    let r = await aio.runLine(slowLine(1u64).view(), process.Options(crashReport: false));
+    let r = await aio.runLine(slowLine(2u64).view(), process.Options(crashReport: false));
     let how = endedBy(&r);
     let o = outputOf(r);
     out.send(b(how == 1u64 && o.exitCode == 0u32));
@@ -323,7 +324,7 @@ fn main() i32 {
       k = k + 1u64;
     }
     expectUInt(all, 12u64, "twelve children at once: each Done");
-    expect(ms(t) < 2500u64, "...together, not four at a time");
+    expect(ms(t) < 5000u64, "...together, not four at a time (about 2 s together; 6 s or more four at a time)");
   }
 
   // 1 MiB on each stream
@@ -378,7 +379,7 @@ fn main() i32 {
       k = k + 1u64;
     }
     expectUInt(all, 12u64, "twelve crashReport:false children at once: each Done");
-    expect(ms(t) < 2500u64, "...together, not four at a time");
+    expect(ms(t) < 5000u64, "...together, not four at a time (about 2 s together; 6 s or more four at a time)");
   }
 
   // Four 'crashReport: false' children stopped by their timeouts, and a fifth running in a group main cancels
