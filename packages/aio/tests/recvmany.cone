@@ -30,12 +30,12 @@ import testing use *;
 import sync use Oneshot, OneshotSender, OneshotReceiver, Channel, Sender, Receiver;
 import collections use List;
 import iobuf use IoBuf, stats;
-import iocore use SocketAddr, IoError, CancelGroup;
+import iocore use SocketAddr, IoError, CancelGroup, DatagramBatch;
 import ioerror use IoErrorKind;
 import time use Instant, Duration;
 import thread;
 import actors;
-import aio use UdpSocket, IoLimits, DatagramBatch, RecvFailed;
+import aio use UdpSocket, IoLimits, RecvFailed;
 
 struct Got {
   pub bound: Atomic[u64];         // 1 if the sockets bound
@@ -301,7 +301,7 @@ actor Peer {
     match er {
       case var Err(f) {
         if isInvalid(&f) {got.empty.store(1u64);}
-        let back = f.batch;
+        let eb, back = f.(error, batch);
         match back {
           case let Some(x) {if x.size() == 0u32 {got.emptyBack.store(1u64);}}
           else {}
@@ -316,7 +316,7 @@ actor Peer {
       case var Err(f) {
         if isInvalid(&f) {got.noRoom.store(1u64);}
         got.noRoomSlot.store(u64.from(f.slot));
-        let back = f.batch;
+        let eb, back = f.(error, batch);
         match back {
           case var Some(x) {
             if x.size() == 3u32 && x.bufAt(0u32).room() == 64usize && x.bufAt(1u32).room() == 0usize && x.bufAt(2u32).room() == 64usize {
@@ -364,7 +364,7 @@ actor Peer {
     match timed {
       case var Err(f) {
         if aio.isTimedOut(f.error) {got.timed.store(1u64);}
-        let back = f.batch;
+        let eb, back = f.(error, batch);
         match back {
           case var Some(x) {
             if intact(&*x, 4u32, 64usize) {got.timedBack.store(1u64);}
@@ -382,7 +382,7 @@ actor Peer {
     match grp {
       case var Err(f) {
         if aio.isCancelled(f.error) {got.grouped.store(1u64);}
-        let back = f.batch;
+        let eb, back = f.(error, batch);
         match back {
           case let Some(x) {if intact(&*x, 4u32, 64usize) {got.groupedBack.store(1u64);}}
           else {}
