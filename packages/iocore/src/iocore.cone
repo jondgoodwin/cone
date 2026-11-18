@@ -942,7 +942,7 @@ pub enum Access {
 fn afInet6Tag() u8 {#if #os == .windows {23u8} #else {10u8}}
 
 // An IPv4 or IPv6 address and a port, as the OS's sockaddr holds them
-pub struct SocketAddr {
+pub struct SocketAddr is Eq, Hash {
   raw: Array[u8, 28];
   size: i32;
 
@@ -975,6 +975,18 @@ pub struct SocketAddr {
     s
   }
 
+  // [addr%scope]:port: an IPv6 address with its scope id (the interface a
+  // link-local address is on), as the OS's sockaddr_in6 holds it, in the
+  // machine's byte order (little-endian on every system Cone runs on)
+  pub fn v6Scoped(addr: &Array[u8], port: u16, scope: u32) SocketAddr {
+    var s = SocketAddr.v6(addr, port);
+    s.raw[24usize] = u8.from(scope & 255u32);
+    s.raw[25usize] = u8.from((scope >> 8u32) & 255u32);
+    s.raw[26usize] = u8.from((scope >> 16u32) & 255u32);
+    s.raw[27usize] = u8.from((scope >> 24u32) & 255u32);
+    s
+  }
+
   // [::1]:port
   pub fn v6Localhost(port: u16) SocketAddr {
     var s = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
@@ -1000,6 +1012,54 @@ pub struct SocketAddr {
       i = i + 1usize;
     }
     raw[23usize] == 1u8
+  }
+
+  // Two addresses are equal when they have the same family, the same port and
+  // the same address bytes: for IPv4 the four of the address; for IPv6 the
+  // sixteen of the address and the scope id. The rest of the sockaddr (IPv4's
+  // sin_zero, IPv6's flow info, and the size) is not identity. So equal
+  // addresses have equal 'text()', except two IPv6 addresses that differ only
+  // in scope id, which 'text()' does not show
+  //
+  // The family is read from raw[0] only, here and in 'hash': right for Windows
+  // and Linux. A BSD or macOS port, where sa_len comes first, must revisit it.
+  pub fn `==`(self: &, o: &SocketAddr) bool {
+    if raw[0usize] != o.raw[0usize] || raw[2usize] != o.raw[2usize] || raw[3usize] != o.raw[3usize] {return false;}
+    if self.isV6() {
+      var i = 8usize;
+      while i < 28usize {
+        if raw[i] != o.raw[i] {return false;}
+        i = i + 1usize;
+      }
+      return true;
+    }
+    if raw[0usize] == 2u8 {
+      var i = 4usize;
+      while i < 8usize {
+        if raw[i] != o.raw[i] {return false;}
+        i = i + 1usize;
+      }
+    }
+    true
+  }
+
+  // Feeds the same fields '==' compares, never the raw bytes
+  pub fn hash(self: &, h: &mut Hasher) {
+    h.writeU8(raw[0usize]);
+    h.writeU16(self.port());
+    if self.isV6() {
+      var i = 8usize;
+      while i < 28usize {
+        h.writeU8(raw[i]);
+        i = i + 1usize;
+      }
+    } else if raw[0usize] == 2u8 {
+      var i = 4usize;
+      while i < 8usize {
+        h.writeU8(raw[i]);
+        i = i + 1usize;
+      }
+    }
   }
 
   fn setPort(self: &mut, port: u16) {
