@@ -12,8 +12,8 @@
 //
 // Build: /D_ACRTIMP= (else a C caller's malloc is dllimport and the swap silently does not happen), /MD.
 // Variants (shim/build-cn.ps1): -DCN_HOOKS adds the test hooks of the second design (a function called between a
-// thread's page load and its compare-and-swap, and inside a detach and a retire); -DCN_DEBUG makes a double free abort
-// (or call the handler a test installs).
+// thread's page load and its compare-and-swap, after a fill's compare-and-swap, after a fetch_or, and inside a detach and
+// a retire) and a peek at a page's words; -DCN_DEBUG makes a double free abort (or call the handler a test installs).
 #include <windows.h>
 #include <intrin.h>
 #include <stddef.h>
@@ -113,14 +113,21 @@ static uint64_t g_lfrecip[CN_MAXCLS];    // ceil(2^32 / size): offset * recip >>
 static uint8_t g_lfmap[65];              // (n + 15) >> 4 -> class, for n up to 1024
 static __declspec(thread) LfTls t_lf;
 static volatile LONG64 g_callocs, g_callocBytes, g_nonWorker;
+static volatile LONG64 g_mbUndos;        // (row 506) Rule G undos of a multi-bit fill, also counted in st[9]; a statistics run only
 #ifdef CN_HOOKS
 static void (*g_hookPre)(size_t cl, uint64_t old);
 #define LF_HOOK(c, old) do { void (*hk)(size_t, uint64_t) = g_hookPre; if (hk) hk(c, old); } while (0)
 static void (*g_hookOr)(size_t cl);
 #define LF_HOOK_OR(c) do { void (*hk)(size_t) = g_hookOr; if (hk) hk(c); } while (0)
+static void (*g_hookTake)(size_t cl, uint64_t want);
+#define LF_HOOK_TAKE(c, want) do { void (*hk)(size_t, uint64_t) = g_hookTake; if (hk) hk(c, want); } while (0)
+static void (*g_hookGroup)(size_t cl);
+#define LF_HOOK_GROUP(c) do { void (*hk)(size_t) = g_hookGroup; if (hk) hk(c); } while (0)
 #else
 #define LF_HOOK(c, old) do { } while (0)
 #define LF_HOOK_OR(c) do { } while (0)
+#define LF_HOOK_TAKE(c, want) do { } while (0)
+#define LF_HOOK_GROUP(c) do { } while (0)
 #endif
 #ifdef CN_DEBUG
 static void (*g_dfHandler)(void* cell);
@@ -226,6 +233,93 @@ restart:;
           if (ask) cnm_lf_grow(g_heap, c);
           if (g_stats) lf_count(&L->st[0]);
           return (void*)(P->base + ((size_t)j * 64 + b) * g_lfsize[c]);
+        }
+        if (!lost) break;
+      }
+    }
+  }
+  if (ask) cnm_lf_grow(g_heap, c);
+  if (!cnm_lf_attach(g_heap, c, tn, (uintptr_t)P)) return NULL;     // the slow path, under the class lock
+  goto restart;
+}
+
+// (row 506) a fill's cells, the taken bits 'want' of word j, linked through their first words, the lowest first. This is
+// the first write to them, so it is called only after the g2 test has passed (MB-W): before it, the addresses would be
+// computed with class(g1)'s size on a page that may already hold another class's cells.
+static void* lf_link(LfD2* P, size_t c, uint32_t j, uint64_t want, size_t* got) {
+  size_t sz = g_lfsize[c];
+  uintptr_t base = P->base + (size_t)j * 64 * sz;
+  void* head = NULL;
+  size_t n = 0;
+  while (want) {
+    unsigned long b;
+    _BitScanReverse64(&b, want);
+    want &= ~(1ull << b);
+    void* q = (void*)(base + (size_t)b * sz);
+    *(void**)q = head;
+    head = q;
+    n++;
+  }
+  *got = n;
+  return head;
+}
+
+// (row 506; Ruminations\row-460-rules-and-tests-2026-11-18.md, B1) the multi-bit take: a fill of up to k cells of class c
+// with one compare-and-swap on one word. As lf_alloc: the slot's page, genclass before the swap (g1) and after it (g2),
+// the thread's start word, a lost swap noted as one collision and the next word taken (never a retry of the same word
+// with a stale old), up to four passes, and the slow path when no word has a free bit. The take is the lowest
+// min(k, popcount(old)) set bits of the one word; a fill never goes to a second word to make up the count (a short fill
+// only brings the next miss sooner). MB-G: the g2 test follows the swap and compares the whole genclass; if it fails,
+// every taken bit goes back in one fetch_or passing g2 (the life the bits were taken from, so that "after a free" takes
+// the right class's lock if the undo leaves the word wholly free) and the fill starts again. MB-W: no cell is written
+// before the test has passed (lf_link). Returns the cells as a chain, *got of them, at least one; NULL when out of memory.
+static void* lf_fill(size_t c, size_t k, size_t* got) {
+  LfCls* L = &g_lfc[c];
+  LfTls* T = &t_lf;
+restart:;
+  uint32_t tn = T->tnum;
+  if (!tn) tn = T->tnum = (uint32_t)InterlockedIncrement(&g_tnum);
+  uint32_t si = tn % L->active;
+  LfD2* P = (LfD2*)L->slot[si];
+  int ask = 0;
+  if (P) {
+    uint64_t g1 = P->genclass;
+    if ((g1 & 0xFF) == c) {
+      if (!L->used[si]) L->used[si] = 1;
+      uint32_t nw = g_lfnw[c];
+      uint32_t w = T->startPage[c] == (uintptr_t)P ? T->start[c] : 0;
+      int collided = 0;
+      for (int pass = 0; pass < 4; pass++) {
+        int lost = 0;
+        for (uint32_t n = 0; n < nw; n++) {
+          uint32_t j = w + n;
+          if (j >= nw) j -= nw;
+          uint64_t old = P->bits[j];
+          if (!old) continue;
+          uint64_t want = 0, rest = old;
+          for (size_t i = 0; i < k && rest; i++) { want |= rest & (0 - rest); rest &= rest - 1; }
+          LF_HOOK(c, old);
+          if ((uint64_t)_InterlockedCompareExchange64((volatile LONG64*)&P->bits[j], (LONG64)(old & ~want), (LONG64)old) != old) {
+            lost = collided = 1;                        // note one collision on class c; move to the next word
+            if (g_stats) lf_count(&L->st[2]);
+            if ((uint32_t)_InterlockedIncrement(&L->collisions) == L->collLimit) {
+              if (L->active < L->cap) ask = 1; else L->collisions = 0;
+            }
+            continue;
+          }
+          LF_HOOK_TAKE(c, want);                        // tests only (CN_HOOKS): a park point between the swap and g2
+          uint64_t g2 = P->genclass;
+          if (g2 != g1) {                               // MB-G: the page changed life; every taken bit back in one fetch_or
+            if (g_stats) { lf_count(&L->st[9]); lf_count(&g_mbUndos); }
+            lf_release(P, g2, j, want);
+            if (ask) cnm_lf_grow(g_heap, c);
+            goto restart;
+          }
+          if (collided) { T->start[c] = (uint8_t)j; T->startPage[c] = (uintptr_t)P; }
+          if (ask) cnm_lf_grow(g_heap, c);
+          void* head = lf_link(P, c, j, want, got);     // MB-W: the cells' first touch, only now
+          if (g_stats) _InterlockedExchangeAdd64((volatile LONG64*)&L->st[0], (LONG64)*got);
+          return head;
         }
         if (!lost) break;
       }
@@ -357,21 +451,16 @@ static void* cn_cache_alloc_cl(size_t cl, int zero) {
     s->hits++;
     s->bytes -= (int64_t)g_csize[cl];
   } else if (g_lf) {
-    // the second design: no lock to take, so the fill is sized to demand (2 cells, then doubling up to half the cap)
+    // the second design: no lock to take, so the fill is sized to demand (2 cells, then doubling up to half the cap),
+    // and it is one compare-and-swap on one word (lf_fill): up to 'want' cells, fewer when the word has fewer free
     size_t want = t->fill[cl] ? t->fill[cl] : 2;
     if (want > g_fill) want = g_fill;
     s->misses++;
-    p = lf_alloc(cl);
+    size_t got = 0;
+    p = lf_fill(cl, want, &got);
     if (!p) return NULL;
-    size_t got = 1;
-    while (got < want) {
-      void* q = lf_alloc(cl);
-      if (!q) break;
-      *(void**)q = t->head[cl];
-      t->head[cl] = q;
-      t->count[cl]++;
-      got++;
-    }
+    t->head[cl] = *(void**)p;           // the rest of the chain is the worker's list (it was empty)
+    t->count[cl] = (uint16_t)(got - 1);
     s->bytes += (int64_t)((got - 1) * g_csize[cl]);
     s->fills++;
     t->fill[cl] = (uint16_t)(want * 2 > g_fill ? g_fill : want * 2);
@@ -394,12 +483,60 @@ static void* cn_cache_alloc_cl(size_t cl, int zero) {
 }
 static void* cn_cache_alloc(size_t n, int zero) { return cn_cache_alloc_cl(g_cls[(n + 15) >> 4], zero); }
 
-// give a chain of cells (linked through their first words) back to the heap, one release each (design 2)
-static void cn_lf_give_chain(void* p, size_t n) {
-  while (p && n--) {
-    void* next = *(void**)p;            // before the release: once the bit is set the cell may be anyone's
-    lf_free(p);
-    p = next;
+// (row 506; row 460's rules, B2) the grouped return: one fetch_or per (page, word). One group: mask is the OR of its
+// cells' bits in word j of P. RT-G: genclass is read before this group's fetch_or, while its cells are still this
+// thread's (a read after an earlier group's release is fine: this thread still holds this group's bits, so the page
+// cannot retire). RT-D: the double-free test is on every bit of the group. Then section 4's two tests on the word as it
+// was, exactly as a single free's (lf_release). A double free in a build without CN_DEBUG is ignored, and the tests still
+// run for the group's other bits.
+static void lf_give_group(LfD2* P, uint32_t j, uint64_t mask) {
+  uint64_t g = P->genclass;                           // RT-G: before this group's fetch_or
+  uint64_t old = (uint64_t)_InterlockedOr64((volatile LONG64*)&P->bits[j], (LONG64)mask);
+  LF_HOOK_GROUP(g & 0xFF);                            // tests only (CN_HOOKS): a park point after a group's fetch_or
+  if (old & mask) {                                   // RT-D: double free (any bit of the group)
+#ifdef CN_DEBUG
+    lf_double_free(P, j, old & mask, g);
+#endif
+  }
+  if (g_stats) _InterlockedExchangeAdd64((volatile LONG64*)&g_lfc[g & 0xFF].st[1], (LONG64)__popcnt64(mask));
+  if ((old == 0 || (old | mask) == lf_mask(g & 0xFF, j)) && P->state != LF_ATTACHED)
+    cnm_lf_after_free(g_heap, (uintptr_t)P, g);        // a full page has room again, or a page may be wholly free
+}
+
+// one batch of a worker's cells of class cl, every link already read: grouped by (page, word) in the order a group's
+// first cell appears, each group given back with one fetch_or
+static void lf_give_cells(void** a, size_t m, size_t cl) {
+  for (size_t i = 0; i < m; i++) {
+    uintptr_t q = (uintptr_t)a[i];
+    if (!q) continue;                                 // already in an earlier group
+    uintptr_t off = q - g_pbase, page = off >> 16;
+    uint32_t idx = (uint32_t)(((uint64_t)(off & 0xFFFF) * g_lfrecip[cl]) >> 32);
+    uint32_t j = idx >> 6;
+    uint64_t mask = 1ull << (idx & 63);
+    for (size_t r = i + 1; r < m; r++) {
+      if (!a[r]) continue;
+      uintptr_t o2 = (uintptr_t)a[r] - g_pbase;
+      if ((o2 >> 16) != page) continue;
+      uint32_t i2 = (uint32_t)(((uint64_t)(o2 & 0xFFFF) * g_lfrecip[cl]) >> 32);
+      if ((i2 >> 6) != j) continue;
+      mask |= 1ull << (i2 & 63);
+      a[r] = NULL;
+    }
+    lf_give_group((LfD2*)(g_d2base + page * sizeof(LfD2)), j, mask);
+  }
+}
+
+// give a chain of n cells of class cl (linked through their first words) back to the heap, grouped (design 2). RT-L: the
+// links of a whole batch are read before any of its groups is released, since once a group's bits are set its cells may
+// be anyone's and their first words overwritten, and the cells of one word may sit anywhere in the chain. Batches of
+// LF_RBATCH cells keep the stack small; each batch obeys RT-L on its own.
+#define LF_RBATCH 256
+static void cn_lf_give_chain(void* p, size_t n, size_t cl) {
+  void* a[LF_RBATCH];
+  while (p && n) {
+    size_t m = 0;
+    while (p && n && m < LF_RBATCH) { a[m++] = p; p = *(void**)p; n--; }    // RT-L: the batch's links, all read first
+    lf_give_cells(a, m, cl);
   }
 }
 
@@ -424,7 +561,7 @@ static void cn_cache_free(size_t cl, void* p) {
     t->count[cl] = (uint16_t)keep;
     s->bytes -= (int64_t)(ret * g_csize[cl]);
     s->returns++;
-    if (g_lf) cn_lf_give_chain(chain, ret);
+    if (g_lf) cn_lf_give_chain(chain, ret, cl);
     else cnm_batch_free(g_heap, cl, chain, ret);
   }
 }
@@ -439,7 +576,7 @@ static void cn_cache_flush(void) {
       void* head = t->head[cl];
       t->head[cl] = NULL;
       t->count[cl] = 0;
-      if (g_lf) cn_lf_give_chain(head, n);
+      if (g_lf) cn_lf_give_chain(head, n, cl);
       else cnm_batch_free(g_heap, cl, head, n);
     }
     t->fill[cl] = 0;                    // design 2: the next miss fills 2 again
@@ -620,11 +757,13 @@ __declspec(dllexport) void cnmalloc_workerEnd(void) {
 
 // ---- for the tests (row 454) -----------------------------------------------------------------------------------------
 // The second design's counters summed over the classes: 0 allocs, 1 frees, 2 collisions, 3 slots added, 4 slots dropped,
-// 5 pages attached, 6 listed, 7 retired, 8 retires abandoned, 9 Rule G undos (0, 1, 2 and 9 only in a statistics run).
+// 5 pages attached, 6 listed, 7 retired, 8 retires abandoned, 9 Rule G undos (0, 1, 2 and 9 only in a statistics run);
+// 10 (row 506) the Rule G undos of multi-bit fills alone (a statistics run only; they are in 9 too).
 // -1 when the second design is off. And which design this heap is.
 __declspec(dllexport) int64_t cnmalloc_lfTotal(int which) {
   H();
-  if (!g_lf || which < 0 || which > 9) return -1;
+  if (!g_lf || which < 0 || which > 10) return -1;
+  if (which == 10) return g_mbUndos;
   int64_t t = 0;
   for (int c = 0; c < CN_MAXCLS; c++) t += g_lfc[c].st[which];
   return t;
@@ -643,6 +782,21 @@ __declspec(dllexport) void cnmalloc_lfSetHooks(void (*pre)(size_t, uint64_t), vo
   g_hookPre = pre;
   g_hookOr = afterOr;
   cnm_lf_set_hooks(h, (void*)detach, (void*)retire, (void*)claim, (void*)after);
+}
+// (row 506) take: in lf_fill, after a successful multi-bit compare-and-swap and before the g2 load, with the class and
+// the bits taken; group: in a grouped return, right after each group's fetch_or
+__declspec(dllexport) void cnmalloc_lfSetMultiHooks(void (*take)(size_t, uint64_t), void (*group)(size_t)) {
+  H();
+  g_hookTake = take;
+  g_hookGroup = group;
+}
+// (row 506) a look at the page holding address p: 0 to 63 its word of bits 'which', 64 its genclass, 65 its state
+// (ATTACHED 1, LISTED 2, UNLISTED 3, RETIRED 0); all ones for an address outside the small pages
+__declspec(dllexport) uint64_t cnmalloc_lfPeek(uintptr_t p, int which) {
+  H();
+  if (!g_lf || !lf_owned(p) || which < 0 || which > 65) return ~0ull;
+  LfD2* P = (LfD2*)(g_d2base + ((p - g_pbase) >> 16) * sizeof(LfD2));
+  return which < 64 ? P->bits[which] : which == 64 ? P->genclass : P->state;
 }
 #endif
 #ifdef CN_DEBUG
