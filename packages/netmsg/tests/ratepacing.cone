@@ -1,0 +1,44 @@
+// Send pacing: a packet may go up to 1 ms before its slot, and the next slot is
+// counted from this slot, not from the send, so the rate over a long run is
+// exactly the configured one (30 a second: 300 in 10 s), though the clock here
+// moves in whole milliseconds and 1/30 s is 33.33 ms.
+
+mod ratepacing;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant, Clock;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
+
+fn main() i32 {
+  var clock = Clock.synth();
+  var p = SimPair.make(NetConfig.defaults(), LinkConfig.lossy(0u32, 20i64, 0i64), LinkConfig.lossy(0u32, 20i64, 0i64), 1u64, clock.now());
+
+  // Always a fresh value waiting
+  var i = 0i64;
+  while i < 3000i64 {
+    clock.advance(Duration.fromMillis(1i64));
+    i = i + 1i64;
+    p.a.sendLatest(1u16, fz("v"));
+    p.step(clock.now());
+    p.eventsA.clear();
+    p.eventsB.clear();
+  }
+  expect(p.a.isGood(), "good");
+  let sent1 = p.a.stats().packetsSent;
+  i = 0i64;
+  while i < 10000i64 {
+    clock.advance(Duration.fromMillis(1i64));
+    i = i + 1i64;
+    p.a.sendLatest(1u16, fz("v"));
+    p.step(clock.now());
+    p.eventsA.clear();
+    p.eventsB.clear();
+  }
+  let n = p.a.stats().packetsSent - sent1;
+  expect(n >= 299u64 && n <= 301u64, "300 packets in 10 s, not 294 from the millisecond grid");
+  done()
+}
