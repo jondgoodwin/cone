@@ -77,6 +77,9 @@
 //                                                                Result[Datagrams, IoError]
 //   u.sendTo(addr, buf)    all of buf as one datagram to addr    Result[usize, IoError]
 //   u.localAddr()          the address u is bound to             Result[SocketAddr, IoError]
+//   u.sender()             a UdpSender: u's sending side, copied to many holders; it never
+//                          closes u, and a send after u is dropped answers InvalidInput
+//   UdpSender              .sendTo(addr, buf)  .sendToIn(addr, buf, lim)  .none()  .isNone()  .handle()
 //   aio.connectIn(addr, lim)  s.acceptIn(lim)  s.readIn(buf, lim)  s.writeIn(buf, lim)
 //   f.readAtIn(at, buf, lim)  f.writeAtIn(at, buf, lim)
 //   u.recvFromIn(buf, lim)  u.sendToIn(addr, buf, lim)  u.recvManyIn(bufs, lim)
@@ -3275,18 +3278,21 @@ pub struct UdpSocket is Move, Sendable {
 
   // A send ended if lim says so
   pub fn sendToIn(self: &, addr: SocketAddr, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
-    let p = takeRec(opSendTo, diag.kindSendTo, h, lim);
-    setBuf(p as *OpCore, Some[IoBuf](buf));
-    (*p).core.setPeer(addr);
-    recAwaitable[Result[usize, IoError]](p)
+    sendToOn(h, addr, buf, lim)
   }
+
+  // This socket's sending side, a UdpSender: plain data, copied to as many
+  // holders as want to send. It does not own the socket and never closes it;
+  // this UdpSocket does, when dropped. UdpSender.none() for a UdpSocket.none()
+  pub fn sender(self: &) UdpSender {UdpSender(h)}
 
   // Ask every receive in flight on this socket to end, as Socket's cancelRead
   pub fn cancelRead(self: &) {
     cancelSide(h, false);
   }
 
-  // The same for every send in flight
+  // The same for every send in flight, those through a UdpSender of this
+  // socket included (they name the same handle)
   pub fn cancelWrite(self: &) {
     cancelSide(h, true);
   }
@@ -3298,6 +3304,43 @@ pub struct UdpSocket is Move, Sendable {
 
   fn final(self: &uni) {
     closeHandle(h);
+  }
+}
+
+// A datagram send on handle h, as UdpSocket.sendToIn and UdpSender.sendToIn
+// make it. A handle closed since is never reached again, even where the system
+// reuses its number or the table its slot: iocore checks the handle's
+// generation, and the send answers InvalidInput
+fn sendToOn(h: Handle, addr: SocketAddr, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
+  let p = takeRec(opSendTo, diag.kindSendTo, h, lim);
+  setBuf(p as *OpCore, Some[IoBuf](buf));
+  (*p).core.setPeer(addr);
+  recAwaitable[Result[usize, IoError]](p)
+}
+
+// A UdpSocket's sending side, for many holders: plain data, copied freely as a
+// Handle is. It does not own the socket and never closes it; the UdpSocket it
+// came from (u.sender()) does, when dropped. A send after that close answers
+// InvalidInput, whatever else has been bound since
+pub struct UdpSender is Sendable {
+  h: Handle;
+
+  // A UdpSender naming nothing: every send through it answers InvalidInput
+  pub fn none() UdpSender {UdpSender(Handle.none())}
+
+  pub fn isNone(self: &) bool {h.isNone()}
+
+  // The iocore handle it names, as UdpSocket.handle
+  pub fn handle(self: &) Handle {h}
+
+  // All of buf as one datagram to addr, as UdpSocket.sendTo
+  pub fn sendTo(self: &, addr: SocketAddr, buf: IoBuf) actors.Awaitable[Result[usize, IoError]] {
+    sendToOn(h, addr, buf, IoLimits.none())
+  }
+
+  // A send ended if lim says so
+  pub fn sendToIn(self: &, addr: SocketAddr, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
+    sendToOn(h, addr, buf, lim)
   }
 }
 
