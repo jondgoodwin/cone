@@ -221,9 +221,12 @@ fn futureEnd(c: *u8, s: u32) {
   while w as usize != 0usize {
     let next = (*w).next;
     let to = (*w).to;
+    var pushed = false;
     if s == futArrived || (*w).keep {
-      pushFuture(w);
-    } else {
+      pushed = pushFuture(w);
+    }
+    if !pushed {
+      // abandoned, or a push THE STOP'S GATE refused
       release(c);
       let letgo = (*to).release;
       letgo(to);
@@ -239,8 +242,15 @@ fn futureEnd(c: *u8, s: u32) {
 // consumer's reference to the future, which the second half opens the value
 // out of. The count the waiter held becomes the scheduler's owner when the
 // publication takes the idle mark, else is let go
-fn pushFuture(w: *Waiter) {
+fn pushFuture(w: *Waiter) bool {
   let h = (*w).to;
+  // THE STOP'S GATE: from a plain thread, refused once the stop has begun (counted with the refused sends); the
+  // caller then abandons the waiter as futureEnd does one whose future will not arrive. True: pushed
+  let plain = me == 0usize && stopperHere == 0usize;
+  if plain && !gateEnter() {
+    refuseSend(0u64);
+    return false;
+  }
   if running.load() == 0usize {
     die("actors: a reply sent after the runtime stopped");
   }
@@ -263,6 +273,10 @@ fn pushFuture(w: *Waiter) {
     let release = (*h).release;
     release(h);
   }
+  if plain {
+    gateLeave();
+  }
+  true
 }
 
 // The payload of the future lying at fut

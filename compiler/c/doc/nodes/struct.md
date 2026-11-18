@@ -2477,7 +2477,11 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   refuses a receiver naming another instance (`ErrorInvType`). A generic method
   (`map[U]`) is read the same way: its own type parameters do not change what its
   receiver names, so it is not copied into the variants, and a variant's value
-  reaches it in the enum.
+  reaches it in the enum. In an include file a non-generic enum's whole-enum
+  method is cut to `extern` (one function, the package's object defines it), but
+  a generic enum's goes in whole (`incMemberFnCarried`, incfile.c): each object
+  that uses an instance defines it, so an importer's instance needs the body
+  (test `module_build_generic_enum`).
   **A by-value receiver that names no enum is the other half**
   (`structTakesSelfByValue`: a method with a body whose `self` is not a reference;
   one naming the enum is whole-enum above): each variant's clone has its own

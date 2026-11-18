@@ -357,13 +357,7 @@ pub struct Loop {
   pub fn peerAddr(self: &, h: Handle) Result[SocketAddr, IoError] {
     let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return Err[SocketAddr, IoError](IoError(noSuchHandle()));}
-    var a = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
-    var len = 28i32;
-    if getpeername(raw, &mut a as *u8, &mut len) != 0i32 {
-      return Err[SocketAddr, IoError](IoError(wsaError()));
-    }
-    a.size = len;
-    Ok[SocketAddr, IoError](a)
+    rawPeerAddr(raw)
   }
 
   // TCP keepalive on a connected socket (KeepAlive says what), set now: 0,
@@ -372,26 +366,7 @@ pub struct Loop {
   pub fn setKeepAlive(self: &mut, h: Handle, ka: KeepAlive) u32 {
     let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return noSuchHandle();}
-    let on = ka.probes > 0u32;
-    var flag = if on {1i32} else {0i32};
-    let sol = #if #os == .windows {solSocket} #else {solSocketLx};
-    let opt = #if #os == .windows {soKeepAlive} #else {soKeepAliveLx};
-    if setsockopt(raw, sol, opt, &mut flag as *u8, 4i32) != 0i32 {return wsaError();}
-    if !on {return 0u32;}
-    var idle = keepSeconds(ka.idle);
-    var every = keepSeconds(ka.interval);
-    var count = i32.from(ka.probes);
-    let idleOpt = #if #os == .windows {tcpKeepIdle} #else {tcpKeepIdleLx};
-    let everyOpt = #if #os == .windows {tcpKeepIntvl} #else {tcpKeepIntvlLx};
-    let countOpt = #if #os == .windows {tcpKeepCnt} #else {tcpKeepCntLx};
-    if setsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, 4i32) != 0i32 {return wsaError();}
-    if setsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, 4i32) != 0i32 {return wsaError();}
-    if setsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, 4i32) != 0i32 {return wsaError();}
-    if (#if #os != .windows {ka.userTimeout > Duration.zero()} #else {false}) {
-      var ms = i32.from(ka.userTimeout.millis());
-      if setsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, 4i32) != 0i32 {return wsaError();}
-    }
-    0u32
+    rawSetKeepAlive(raw, ka)
   }
 
   // A connected socket's TCP keepalive, as the OS reads it back: probes 0
@@ -399,31 +374,7 @@ pub struct Loop {
   pub fn keepAlive(self: &, h: Handle) Result[KeepAlive, IoError] {
     let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return Err[KeepAlive, IoError](IoError(noSuchHandle()));}
-    let sol = #if #os == .windows {solSocket} #else {solSocketLx};
-    let opt = #if #os == .windows {soKeepAlive} #else {soKeepAliveLx};
-    var flag = 0i32;
-    var len = 4i32;
-    if getsockopt(raw, sol, opt, &mut flag as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
-    if flag == 0i32 {return Ok[KeepAlive, IoError](KeepAlive.off());}
-    var idle = 0i32;
-    var every = 0i32;
-    var count = 0i32;
-    var ms = 0i32;
-    let idleOpt = #if #os == .windows {tcpKeepIdle} #else {tcpKeepIdleLx};
-    let everyOpt = #if #os == .windows {tcpKeepIntvl} #else {tcpKeepIntvlLx};
-    let countOpt = #if #os == .windows {tcpKeepCnt} #else {tcpKeepCntLx};
-    len = 4i32;
-    if getsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
-    len = 4i32;
-    if getsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
-    len = 4i32;
-    if getsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
-    #if #os != .windows {
-      len = 4i32;
-      if getsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
-    }
-    Ok[KeepAlive, IoError](KeepAlive(Duration.fromSeconds(i64.from(idle)), Duration.fromSeconds(i64.from(every)),
-      u32.from(count), Duration.fromMillis(i64.from(ms))))
+    rawKeepAlive(raw)
   }
 
   // A file, for ReadAt and WriteAt
@@ -581,8 +532,7 @@ pub struct Loop {
   pub fn shutdown(self: &mut, h: Handle) u32 {
     let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return noSuchHandle();}
-    if iocore.shutdown(raw, sdSend) != 0i32 {return wsaError();}
-    0u32
+    rawShutdownSend(raw)
   }
 
   // Close a connected socket abortively: its peer sees the connection
@@ -1414,6 +1364,9 @@ pub struct Loop {
     let code = self.launch(p);
     if code == errorHandleEof {
       self.decide(p, diag.outcomeDone, 0usize, 0u32);
+    } else if code == errorMsgSize && r.kind == diag.kindRecvMany {
+      r.batchCutAtOnce();
+      self.decide(p, diag.outcomeDone, 1usize, 0u32);
     } else if code != 0u32 {
       stats.atSubmit = stats.atSubmit + 1u64;
       self.decide(p, diag.outcomeFailed, 0usize, code);
@@ -1480,7 +1433,7 @@ pub struct Loop {
       }
       return self.startSend(p, r.handle, r.bufBase(), r.bufLen());
     }
-    if k == diag.kindRecvFrom {return self.startRecvFrom(p, r.handle);}
+    if k == diag.kindRecvFrom || k == diag.kindRecvMany {return self.startRecvFrom(p, r.handle);}
     if k == diag.kindSendTo {return self.startSendTo(p, r.handle);}
     if k == diag.kindWaitChild {return self.startWait(p, r.handle);}
     if k == diag.kindReadAt {return self.startFile(p, r.handle, r.at, false);}
@@ -1683,7 +1636,8 @@ pub struct Loop {
   }
 
   // One datagram into the buffer's room, the sender into the record's
-  // address area
+  // address area. A RecvMany is this on Windows, into its first buffer (no
+  // recvmmsg there: the answer holds one datagram); on Linux it is queued
   fn startRecvFrom(self: &mut, p: *OpCore, sock: Handle) u32 {
     let r = p as &mut OpCore;
     #if #os == .windows {
@@ -2000,12 +1954,19 @@ pub struct Loop {
         let k = r.kind;
         if !r.own && (r.ov.internal & 0xFFFFFFFFusize) == statusSuccess
             && (k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom || k == diag.kindPipeRead
-              || k == diag.kindSend || k == diag.kindSendTo || k == diag.kindWriteAt || k == diag.kindPipeWrite) {
+              || k == diag.kindSend || k == diag.kindSendTo || k == diag.kindWriteAt || k == diag.kindPipeWrite
+              || k == diag.kindRecvMany) {
           let got = usize.from(bytes);
-          if k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom || k == diag.kindPipeRead {r.bufGrow(got);}
+          if k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom || k == diag.kindPipeRead
+              || k == diag.kindRecvMany {r.bufGrow(got);}
           r.status = diag.outcomeDone;
           r.n = got;
           r.code = 0u32;
+          // A late datagram is the batch's one
+          if k == diag.kindRecvMany {
+            r.batchOne(false);
+            r.n = 1usize;
+          }
         }
         self.ended(p, true);
         return;
@@ -2044,6 +2005,14 @@ pub struct Loop {
         return;
       }
       let n = usize.from(bytes);
+      if r.kind == diag.kindRecvMany && (status == statusSuccess || status == statusBufferOverflow) {
+        // Windows' batch of one: the datagram, cut to the room or whole, is the
+        // answer; its sender is in the address area
+        r.bufGrow(n);
+        r.batchOne(status == statusBufferOverflow);
+        self.decide(p, diag.outcomeDone, 1usize, 0u32);
+        return;
+      }
       if status == statusBufferOverflow && r.kind == diag.kindRecvFrom {
         // The datagram was longer than the buffer's room: the room is filled,
         // the rest of it is lost, and the answer says so (WSAEMSGSIZE)
@@ -2144,6 +2113,7 @@ pub struct Loop {
       }
       noDelay(s);
       r.newHandle = self.register(s, hSocket, r.family);
+      if r.kind == diag.kindAccept {setAcceptPeer(r, s);}
       0u32
     } #else {
       badParameter()
@@ -2508,5 +2478,94 @@ pub struct Loop {
     // it (workers are not joined before a loop dies), so it is not freed here:
     // the loop's own hold is let go, as the field is dropped after this
     // returns, and the last holder to let go frees it (shared.cone, ITS LIFE)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A connected socket's controls, on its OS handle: the Loop's own methods call
+// them after finding the handle, and so does the shared table (Shared's
+// shutdownSend, peerAddr, setKeepAlive, keepAlive: SOCKET CONTROLS) with the
+// entry's lock held
+// ---------------------------------------------------------------------------
+
+// The socket's sending side finished: 0, or the system's error number
+fn rawShutdownSend(raw: usize) u32 {
+  if iocore.shutdown(raw, sdSend) != 0i32 {return wsaError();}
+  0u32
+}
+
+// The address of the socket's peer
+fn rawPeerAddr(raw: usize) Result[SocketAddr, IoError] {
+  var a = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
+  var len = 28i32;
+  if getpeername(raw, &mut a as *u8, &mut len) != 0i32 {
+    return Err[SocketAddr, IoError](IoError(wsaError()));
+  }
+  a.size = len;
+  Ok[SocketAddr, IoError](a)
+}
+
+// TCP keepalive set on the socket: 0, or the system's error number of the
+// option the OS refused
+fn rawSetKeepAlive(raw: usize, ka: KeepAlive) u32 {
+  let on = ka.probes > 0u32;
+  var flag = if on {1i32} else {0i32};
+  let sol = #if #os == .windows {solSocket} #else {solSocketLx};
+  let opt = #if #os == .windows {soKeepAlive} #else {soKeepAliveLx};
+  if setsockopt(raw, sol, opt, &mut flag as *u8, 4i32) != 0i32 {return wsaError();}
+  if !on {return 0u32;}
+  var idle = keepSeconds(ka.idle);
+  var every = keepSeconds(ka.interval);
+  var count = i32.from(ka.probes);
+  let idleOpt = #if #os == .windows {tcpKeepIdle} #else {tcpKeepIdleLx};
+  let everyOpt = #if #os == .windows {tcpKeepIntvl} #else {tcpKeepIntvlLx};
+  let countOpt = #if #os == .windows {tcpKeepCnt} #else {tcpKeepCntLx};
+  if setsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, 4i32) != 0i32 {return wsaError();}
+  if setsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, 4i32) != 0i32 {return wsaError();}
+  if setsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, 4i32) != 0i32 {return wsaError();}
+  // A userTimeout of 0 is set too (TCP_USER_TIMEOUT 0 is the system's default), so it clears an earlier one
+  #if #os != .windows {
+    var ms = i32.from(ka.userTimeout.millis());
+    if setsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, 4i32) != 0i32 {return wsaError();}
+  }
+  0u32
+}
+
+// The socket's TCP keepalive as the OS reads it back: probes 0 when it is off
+fn rawKeepAlive(raw: usize) Result[KeepAlive, IoError] {
+  let sol = #if #os == .windows {solSocket} #else {solSocketLx};
+  let opt = #if #os == .windows {soKeepAlive} #else {soKeepAliveLx};
+  var flag = 0i32;
+  var len = 4i32;
+  if getsockopt(raw, sol, opt, &mut flag as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
+  if flag == 0i32 {return Ok[KeepAlive, IoError](KeepAlive.off());}
+  var idle = 0i32;
+  var every = 0i32;
+  var count = 0i32;
+  var ms = 0i32;
+  let idleOpt = #if #os == .windows {tcpKeepIdle} #else {tcpKeepIdleLx};
+  let everyOpt = #if #os == .windows {tcpKeepIntvl} #else {tcpKeepIntvlLx};
+  let countOpt = #if #os == .windows {tcpKeepCnt} #else {tcpKeepCntLx};
+  len = 4i32;
+  if getsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
+  len = 4i32;
+  if getsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
+  len = 4i32;
+  if getsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
+  #if #os != .windows {
+    len = 4i32;
+    if getsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
+  }
+  Ok[KeepAlive, IoError](KeepAlive(Duration.fromSeconds(i64.from(idle)), Duration.fromSeconds(i64.from(every)),
+    u32.from(count), Duration.fromMillis(i64.from(ms))))
+}
+
+// A finished accept's record names the connection's peer (OpCore.peer): the
+// new socket's own, read now, so a caller need not ask for it. Size 0 (no
+// address) if the system would not say
+fn setAcceptPeer(r: &mut OpCore, raw: usize) {
+  match rawPeerAddr(raw) {
+    case let Ok(a) {r.setPeer(a);}
+    case let Err(e) {r.setPeer(SocketAddr(Array[u8, 28]() <- fill 0u8, 0i32));}
   }
 }

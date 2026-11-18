@@ -117,13 +117,39 @@ pub struct Event {
 
   // The bytes a server sends for it
   pub fn encode(self: &) String {
-    var out = String();
-    self.encodeInto(&mut out);
+    var out = String.withCapacity(self.encodedSize());
+    self.encodeFields(&mut out);
+    // out is this function's own String, so the lines go straight into it, with no String of theirs
+    appendLines(&mut out, "data", data.view() as &Array[u8]);
+    out.appendByte(lf);
     out
+  }
+
+  // How many bytes encodeInto appends, so that encode builds its String at that size
+  fn encodedSize(self: &) usize {
+    var n = 1usize;                // the empty line after the event
+    if name.len() > 0usize {n = n + 8usize + cleanedLen(name.view(), false);}
+    if id.len() > 0usize {n = n + 5usize + cleanedLen(id.view(), true);}
+    if retry >= 0i64 {
+      n = n + 8usize;              // "retry: " and the line feed, then the digits
+      var r = u64.from(retry);
+      while r >= 10u64 {r = r / 10u64; n = n + 1usize;}
+      n = n + 1usize;
+    }
+    n + linesSize(4usize, data.view() as &Array[u8])
   }
 
   // The same, appended to out
   pub fn encodeInto(self: &, out: &mut String) {
+    self.encodeFields(out);
+    // out may be, for all the checker knows, the very String the data is in, so the lines are made apart
+    let lines = linesOf("data", data.view());
+    out.append(lines.view());
+    out.appendByte(lf);
+  }
+
+  // The event's name, id and retry lines
+  fn encodeFields(self: &, out: &mut String) {
     if name.len() > 0usize {
       let clean = cleaned(name.view(), false);
       out.append("event: ");
@@ -141,9 +167,6 @@ pub struct Event {
       out.appendUInt(u64.from(retry));
       out.appendByte(lf);
     }
-    let lines = linesOf("data", data.view());
-    out.append(lines.view());
-    out.appendByte(lf);
   }
 }
 
@@ -159,9 +182,47 @@ fn cleaned(text: &Array[u8], dropNul: bool) String {
   out
 }
 
+// How many bytes cleaned(text, dropNul) keeps
+fn cleanedLen(text: &Array[u8], dropNul: bool) usize {
+  var n = 0usize;
+  var i = 0usize;
+  while i < text.len {
+    let c = text[i];
+    if c != lf && c != cr && !(dropNul && c == 0u8) {n = n + 1usize;}
+    i = i + 1usize;
+  }
+  n
+}
+
 // One 'field: line' line for each line of text (at least one)
 fn linesOf(field: &str, text: &Array[u8]) String {
-  var out = String();
+  var out = String.withCapacity(linesSize(field.len(), text));
+  appendLines(&mut out, field, text);
+  out
+}
+
+// The bytes appendLines adds for text, with a field of fieldLen bytes
+fn linesSize(fieldLen: usize, text: &Array[u8]) usize {
+  var total = 0usize;
+  var start = 0usize;
+  var i = 0usize;
+  while true {
+    if i >= text.len || text[i] == lf || text[i] == cr {
+      total = total + fieldLen + 2usize + (i - start);
+      if i > start {total = total + 1usize;}
+      if i >= text.len {break;}
+      if text[i] == cr && i + 1usize < text.len && text[i + 1usize] == lf {i = i + 1usize;}
+      i = i + 1usize;
+      start = i;
+    } else {
+      i = i + 1usize;
+    }
+  }
+  total
+}
+
+// Appends one 'field: line' line to out for each line of text (at least one)
+fn appendLines(out: &mut String, field: &str, text: &Array[u8]) {
   var start = 0usize;
   var i = 0usize;
   while true {
@@ -181,7 +242,6 @@ fn linesOf(field: &str, text: &Array[u8]) String {
       i = i + 1usize;
     }
   }
-  out
 }
 
 // A comment block (see the package's header, COMMENTS): ':' lines and an empty line

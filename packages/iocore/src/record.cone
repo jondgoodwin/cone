@@ -94,6 +94,7 @@ pub struct OpCore {
   pub buf: Option[IoBuf] = None;
   pub bytes: Option[Bytes] = None;
   pub bufs: Option[Uni[Chain]] = None;   // a gather's buffers (SendChain): out of line, 8 bytes here
+  pub batch: Option[Uni[RecvBatch]] = None;   // a recvMany's buffers and answers (kindRecvMany): out of line, 8 bytes here
   pub group: Option[CancelGroup] = None;
   // The promise: the Loop's thread only
   state: u32 = stFree;
@@ -202,28 +203,45 @@ pub struct OpCore {
   // datagram (a truncated one did)
   pub fn peer(self: &) SocketAddr {
     let a = *(&addr as *SocketAddr);
-    let named = kind == diag.kindConnect || kind == diag.kindSendTo
+    let named = kind == diag.kindConnect || kind == diag.kindSendTo || kind == diag.kindAccept
       || (kind == diag.kindRecvFrom && (status == diag.outcomeDone || code == datagramCut()));
     if named && a.size > 0i32 {a} else {SocketAddr(Array[u8, 28]() <- fill 0u8, 0i32)}
   }
 
-  // The buffer's bytes, its length and room: null and 0 with none
+  // The buffer's bytes, its length and room: null and 0 with none. A
+  // kindRecvMany's buffer is its batch's first, so the one-datagram receive
+  // (Windows') reads and grows it as a RecvFrom's own
   fn bufBase(self: &) *u8 {
     match &buf {
       case let &Some(b) {b.base()}
-      else {null}
+      else {
+        match &batch {
+          case let &Some(t) {if t.bufs.isEmpty() {null} else {t.bufs[0usize].base()}}
+          else {null}
+        }
+      }
     }
   }
   fn bufLen(self: &) usize {
     match &buf {
       case let &Some(b) {b.len()}
-      else {0usize}
+      else {
+        match &batch {
+          case let &Some(t) {if t.bufs.isEmpty() {0usize} else {t.bufs[0usize].len()}}
+          else {0usize}
+        }
+      }
     }
   }
   fn bufRoom(self: &) usize {
     match &buf {
       case let &Some(b) {b.room()}
-      else {0usize}
+      else {
+        match &batch {
+          case let &Some(t) {if t.bufs.isEmpty() {0usize} else {t.bufs[0usize].room()}}
+          else {0usize}
+        }
+      }
     }
   }
 
@@ -231,8 +249,72 @@ pub struct OpCore {
   fn bufGrow(self: &mut, n: usize) {
     match &mut buf {
       case var &mut Some(b) {b.setLen(b.len() + n);}
+      else {
+        match &mut batch {
+          case var &mut Some(t) {
+            if !t.bufs.isEmpty() {
+              let b = &mut t.bufs[0usize];
+              b.setLen(b.len() + n);
+            }
+          }
+          else {}
+        }
+      }
+    }
+  }
+
+  // A recvMany's buffers, offered to the kernel: the first 'max' that have
+  // room, in order, as spans (a buffer with none ends the run: it and those
+  // after it stay unused), into 'out'; how many
+  fn batchSpans(self: &mut, out: *Span, max: usize) usize {
+    var filled = 0usize;
+    match &mut batch {
+      case var &mut Some(t) {
+        let total = t.bufs.len();
+        var k = 0usize;
+        while k < total && k < max {
+          let b = &mut t.bufs[k];
+          if b.room() == 0usize {break;}
+          (*(out + k)).base = b.base() + b.len();
+          (*(out + k)).len = b.room();
+          k = k + 1usize;
+        }
+        filled = k;
+      }
       else {}
     }
+    filled
+  }
+
+  // Datagram k arrived: n of its bytes are now buffer k's own, its sender is
+  // 'from', and 'cut' says it was longer than the room it had (n is then the
+  // room, all of it). Datagrams are put in order, so 'got' becomes k + 1
+  fn batchPut(self: &mut, k: usize, n: usize, cut: bool, from: SocketAddr) {
+    match &mut batch {
+      case var &mut Some(t) {
+        let b = &mut t.bufs[k];
+        b.setLen(b.len() + n);
+        t.from.push(from);
+        t.got = k + 1usize;
+        if cut {t.cut = t.cut | (1u64 << u64.from(k));}
+      }
+      else {}
+    }
+  }
+
+  // The one datagram a one-datagram receive (Windows') took into the first
+  // buffer, its sender in the address area: put in the batch
+  fn batchOne(self: &mut, cut: bool) {
+    let from = *(&addr as *SocketAddr);
+    self.batchPut(0usize, 0usize, cut, from);
+  }
+
+  // A RecvMany's one datagram the system refused at once as too long
+  // (WSAEMSGSIZE): the room is filled and the datagram counts, cut, as the
+  // completion path answers it
+  fn batchCutAtOnce(self: &mut) {
+    self.bufGrow(self.bufRoom());
+    self.batchOne(true);
   }
 
   // The SocketAddr at the address area's start
@@ -307,6 +389,19 @@ pub struct OpCore {
 struct Span {
   pub base: *u8;
   pub len: usize;
+}
+
+// What a kindRecvMany record carries, out of line: the asker's buffers going
+// in (each one's room is where a datagram goes), and the answer coming out:
+// the first 'got' buffers hold one datagram each, appended, with that one's
+// sender in 'from[k]' and bit k of 'cut' set when it was longer than its
+// buffer's room (cut to it: Done, not an error); the buffers from 'got' on
+// are unused. The record's answer is Done(got), at least 1
+pub struct RecvBatch is Sendable {
+  pub bufs: List[IoBuf];
+  pub from: List[SocketAddr];
+  pub got: usize;
+  pub cut: u64;
 }
 
 // A record: the Loop's part, then the asker's (aio: the reply and its policy

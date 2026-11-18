@@ -1,0 +1,189 @@
+// Socket.peerAddr and the keepalive option (setKeepAlive, keepAlive), the
+// socket controls of the package's header, SOCKET CONTROLS, on a loopback pair.
+//
+// 1. Each end's peerAddr port equals the other end's localAddr port; a
+//    listener's peerAddr is Err of kind InvalidInput; so is Socket.none()'s.
+// 2. setKeepAlive(30 s, 5 s, 4 probes) reads back equal (idle, interval,
+//    probes); on Linux a userTimeout of 2000 ms reads back too;
+//    KeepAlive.off() reads back probes 0; a listener's setKeepAlive and
+//    keepAlive are InvalidInput.
+// 3. The controls were answered on the calling worker: opStats().answeredHere
+//    rose by the number of controls made.
+// 4. Every record dissolved.
+
+mod peer;
+
+import testing use *;
+import thread;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use stats;
+import iocore use SocketAddr, IoError, KeepAlive;
+import ioerror use IoErrorKind;
+import actors;
+import aio use Socket;
+
+struct Got {
+  pub cport: Atomic[u64];         // 1 if the client's peer port is the listener's
+  pub sport: Atomic[u64];         // 1 if the accepted socket's peer port is the client's local port
+  pub listenPeer: Atomic[u64];    // 1 if a listener's peerAddr was InvalidInput
+  pub nonePeer: Atomic[u64];      // 1 if Socket.none()'s peerAddr was InvalidInput
+  pub setOk: Atomic[u64];         // 1 if setKeepAlive answered Ok
+  pub readBack: Atomic[u64];      // 1 if idle, interval and probes read back as set
+  pub userTimeout: Atomic[u64];   // 1 if a userTimeout set read back (set on Linux only)
+  pub offOk: Atomic[u64];         // 1 if off() read back probes 0
+  pub listenSet: Atomic[u64];     // 1 if a listener's setKeepAlive was InvalidInput
+  pub listenGet: Atomic[u64];     // 1 if a listener's keepAlive was InvalidInput
+  pub here: Atomic[u64];          // answeredHere before the controls, then after (difference)
+  pub acceptPeer: Atomic[u64];    // 1 if acceptFrom named the client's own port
+  pub acceptSame: Atomic[u64];    // 1 if the accepted socket's peerAddr agrees
+  pub utCleared: Atomic[u64];     // 1 if a second setKeepAlive with userTimeout 0 read back 0
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn portOf(r: Result[SocketAddr, IoError]) u16 {
+  match r {
+    case let Ok(a) {a.port()}
+    else {0u16}
+  }
+}
+
+fn invalid(r: Result[SocketAddr, IoError]) bool {
+  match r {
+    case let Err(e) {e.kind() == IoErrorKind.InvalidInput}
+    else {false}
+  }
+}
+
+actor Peer {
+
+  pub async fn run(self, done: OneshotSender[u64]) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let port = portOf(await ls.localAddr());
+    let a = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let b = socketOf(await ls.accept());
+    let aport = portOf(await a.localAddr());
+    let before = aio.opStats().answeredHere;
+
+    // 1. The peers
+    if portOf(await a.peerAddr()) == port && port != 0u16 {got.cport.store(1u64);}
+    if portOf(await b.peerAddr()) == aport && aport != 0u16 {got.sport.store(1u64);}
+    if invalid(await ls.peerAddr()) {got.listenPeer.store(1u64);}
+    if invalid(await Socket.none().peerAddr()) {got.nonePeer.store(1u64);}
+
+    // acceptFrom: the accepted connection's peer is the client's own port
+    let a2 = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let a2port = portOf(await a2.localAddr());
+    match await ls.acceptFrom() {
+      case let Ok(x) {
+        if x.peer.port() == a2port && a2port != 0u16 {got.acceptPeer.store(1u64);}
+        if portOf(await x.sock.peerAddr()) == a2port {got.acceptSame.store(1u64);}
+      }
+      else {}
+    }
+
+    // 2. The keepalive
+    var ka = KeepAlive(Duration.fromSeconds(30i64), Duration.fromSeconds(5i64), 4u32, Duration.zero());
+    #if #os != .windows {
+      ka = KeepAlive(Duration.fromSeconds(30i64), Duration.fromSeconds(5i64), 4u32, Duration.fromMillis(2000i64));
+    }
+    match await a.setKeepAlive(ka) {
+      case is Ok {got.setOk.store(1u64);}
+      else {}
+    }
+    match await a.keepAlive() {
+      case let Ok(k) {
+        if k.idle.millis() == 30000i64 && k.interval.millis() == 5000i64 && k.probes == 4u32 {
+          got.readBack.store(1u64);
+        }
+        if k.userTimeout.millis() == ka.userTimeout.millis() {got.userTimeout.store(1u64);}
+      }
+      else {}
+    }
+    // a userTimeout of 0 clears the earlier one (Linux's TCP_USER_TIMEOUT)
+    match await a.setKeepAlive(KeepAlive(Duration.fromSeconds(30i64), Duration.fromSeconds(5i64), 4u32, Duration.zero())) {
+      case is Ok {}
+      else {}
+    }
+    match await a.keepAlive() {
+      case let Ok(k) {if k.userTimeout.millis() == 0i64 && k.probes == 4u32 {got.utCleared.store(1u64);}}
+      else {}
+    }
+    match await a.setKeepAlive(KeepAlive.off()) {
+      case is Ok {}
+      else {}
+    }
+    match await a.keepAlive() {
+      case let Ok(k) {if k.probes == 0u32 {got.offOk.store(1u64);}}
+      else {}
+    }
+    match await ls.setKeepAlive(ka) {
+      case let Err(e) {if e.kind() == IoErrorKind.InvalidInput {got.listenSet.store(1u64);}}
+      else {}
+    }
+    match await ls.keepAlive() {
+      case let Err(e) {if e.kind() == IoErrorKind.InvalidInput {got.listenGet.store(1u64);}}
+      else {}
+    }
+    got.here.store(aio.opStats().answeredHere - before);
+    var dn = done;
+    dn.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let peer = Peer();
+    peer.run(tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the peer said it was done");}
+    else {}
+  }
+  var waited = 0i64;
+  while aio.opStats().inUse > 0u64 && waited < 5000i64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 10i64;
+  }
+  let left = aio.opStats().inUse;
+  finalAll();
+  expectUInt(got.cport.load(), 1u64, "the client's peer port is the listener's");
+  expectUInt(got.sport.load(), 1u64, "the accepted socket's peer port is the client's own port");
+  expectUInt(got.listenPeer.load(), 1u64, "a listener's peerAddr is InvalidInput");
+  expectUInt(got.nonePeer.load(), 1u64, "so is Socket.none()'s");
+  expectUInt(got.setOk.load(), 1u64, "setKeepAlive answers Ok");
+  expectUInt(got.readBack.load(), 1u64, "idle, interval and probes read back as set");
+  expectUInt(got.userTimeout.load(), 1u64, "userTimeout reads back as set (0 on Windows, which has none)");
+  expectUInt(got.offOk.load(), 1u64, "KeepAlive.off() reads back probes 0");
+  expectUInt(got.listenSet.load(), 1u64, "a listener's setKeepAlive is InvalidInput");
+  expectUInt(got.listenGet.load(), 1u64, "and its keepAlive");
+  expectUInt(got.utCleared.load(), 1u64, "a userTimeout of 0 clears an earlier one (0 on Windows, which has none)");
+  expectUInt(got.here.load(), 12u64, "twelve of the thirteen controls were answered on the calling worker (Socket.none()'s has no entry)");
+  expectUInt(got.acceptPeer.load(), 1u64, "acceptFrom names the client's own port as the peer");
+  expectUInt(got.acceptSame.load(), 1u64, "and the accepted socket's peerAddr agrees");
+  expectUInt(left, 0u64, "every record is dissolved");
+  expectUInt(stats().lent, 0u64, "every buffer is home");
+  done()
+}

@@ -1,0 +1,96 @@
+// A server with 200 idle clients for 3 seconds: every connection stays up (each
+// keeps itself alive with its own deadline, a keep-alive about every 100 ms,
+// ratecontrol.cone), and the work handed to the I/O thread stays bounded. Each
+// connection arms a timer and sends its keep-alives on its own worker, so what
+// reaches the I/O thread is the timer records: opStats().handedOver, per
+// connection-second, must stay under 100. A "connection" here is one of the
+// server's 200: the count takes in its client's end too, as both run in this
+// process.
+//
+// Measured (Windows, debug, 18 Nov 2026, on a loaded machine: CPU about 50 %,
+// another lane's stream runs going): 31, 32, 31 handed over per connection-second
+// in three runs. The bound, 100, is about three times that, so a change that made
+// each connection arm a timer per datagram received as well would be seen, and a
+// loaded machine is not.
+
+mod udpidle;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import thread;
+import iocore use SocketAddr;
+import aio;
+import netmsg use *;
+
+const clients = 200usize;
+const seconds = 3u64;
+
+// Events of a channel, counted: the Joined and the Left ones
+fn count(rx: &mut Receiver[NetEvent], joined: &mut usize, left: &mut usize) {
+  while true {
+    match rx.tryRecv() {
+      case let Some(e) {
+        match e {
+          case is Joined { *joined = *joined + 1usize; }
+          case is Left { *left = *left + 1usize; }
+          else {}
+        }
+      }
+      case is None[NetEvent] { break; }
+    }
+  }
+}
+
+fn main() i32 {
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  {
+    var cfg = NetConfig.defaults();
+    cfg.maxClients = 300usize;
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    var made = List[BoundEndpoint]();
+    var i = 0usize;
+    while i < clients {
+      made.push(mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC.clone())));
+      i = i + 1usize;
+    }
+    var sj = 0usize;
+    var sl = 0usize;
+    var cj = 0usize;
+    var cl = 0usize;
+    let until = Instant.now() + Duration.fromSeconds(20i64);
+    while (sj < clients || cj < clients) && Instant.now() < until {
+      thread.sleep(Duration.fromMillis(50i64));
+      count(&mut rxS, &mut sj, &mut sl);
+      count(&mut rxC, &mut cj, &mut cl);
+    }
+    expectUInt(u64.from(sj), u64.from(clients), "the server has all its clients");
+    expectUInt(u64.from(cj), u64.from(clients), "every client is connected");
+
+    // Idle: 3 seconds with nothing sent
+    let before = aio.opStats();
+    thread.sleep(Duration.fromSeconds(i64.from(seconds)));
+    let after = aio.opStats();
+    count(&mut rxS, &mut sj, &mut sl);
+    count(&mut rxC, &mut cj, &mut cl);
+    expectUInt(u64.from(sl), 0u64, "no connection ended on the server");
+    expectUInt(u64.from(cl), 0u64, "none on a client");
+
+    let perConnSecond = (after.handedOver - before.handedOver) / (u64.from(clients) * seconds);
+    expect(perConnSecond < 100u64, "under 100 records a connection-second reach the I/O thread");
+
+    i = 0usize;
+    while i < made.len() {
+      made[i].endpoint.shutdown();
+      i = i + 1usize;
+    }
+    server.endpoint.shutdown();
+  }
+  done()
+}

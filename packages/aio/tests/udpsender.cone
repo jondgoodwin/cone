@@ -1,0 +1,241 @@
+// UdpSender: a send-only, copyable view of a UdpSocket that never closes it.
+//
+// 1. Eight actors, each given u.sender(), send 100 datagrams each to a receiver;
+//    all 800 arrive from the owner's address, every byte as sent, and most sends
+//    were answered on the worker (opStats().answeredHere rises by at least 700).
+// 2. The owner drops its UdpSocket while senders are held: its port binds again
+//    at once (a sender keeps nothing open), and a send through a held sender then
+//    answers InvalidInput.
+// 3. A sender kept after its socket closed can never reach a different socket
+//    that reused the slot: the next socket bound takes the same table slot (the
+//    test checks it did, so the case is real) under a later generation; a send
+//    through the old sender answers InvalidInput and nothing arrives at its
+//    target, while the new socket's own sender gets through.
+// 4. UdpSender.none() and UdpSocket.none().sender() answer InvalidInput.
+//
+// At the end every buffer is home (lent == 0) and every record dissolved.
+
+mod udpsender;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf, stats;
+import iocore use SocketAddr, IoError;
+import ioerror use IoErrorKind;
+import time use Instant, Duration;
+import actors;
+import aio use UdpSocket, UdpSender, IoLimits;
+
+const senders = 8u64;
+const perSender = 100u64;
+
+struct Got {
+  pub bound: Atomic[u64];
+  pub arrived: Atomic[u64];      // datagrams received from the owner's address, bytes as sent
+  pub bad: Atomic[u64];          // datagrams not as sent, or from elsewhere
+  pub here: Atomic[u64];         // answeredHere's rise over phase 1
+  pub rebound: Atomic[u64];      // 1 if the dropped socket's port bound again
+  pub afterClose: Atomic[u64];   // 1 if a send through a held sender after the drop was InvalidInput
+  pub sameSlot: Atomic[u64];     // 1 if the new socket took the dropped one's slot
+  pub newGen: Atomic[u64];       // 1 if under a different generation
+  pub staleSend: Atomic[u64];    // 1 if the old sender's send answered InvalidInput
+  pub strayed: Atomic[u64];      // datagrams that reached the target by the old sender (must be 0)
+  pub viaNew: Atomic[u64];       // 1 if the new socket's own sender got through, from its address
+  pub noneSend: Atomic[u64];     // 1 if UdpSender.none() answered InvalidInput
+  pub noneSock: Atomic[u64];     // 1 if UdpSocket.none().sender() answered InvalidInput
+  pub isNone: Atomic[u64];       // 1 if both said isNone
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
+  var res = r;
+  var s = UdpSocket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn portOf(r: Result[SocketAddr, IoError]) u16 {
+  match r {
+    case let Ok(a) {a.port()}
+    else {0u16}
+  }
+}
+
+fn patternByte(i: u8, j: usize) u8 {u8.from((usize.from(i) * 7usize + j) % 251usize)}
+
+// 12 bytes, byte j being patternByte(i, j)
+fn datagram(i: u8) IoBuf {
+  var b = IoBuf(64usize);
+  let w = b.whole();
+  var j = 0usize;
+  while j < 12usize {
+    w[j] = patternByte(i, j);
+    j = j + 1usize;
+  }
+  b.setLen(12usize);
+  b
+}
+
+fn isInvalid(r: Result[usize, IoError]) bool {
+  match r {
+    case let Err(e) {e.kind() == IoErrorKind.InvalidInput}
+    else {false}
+  }
+}
+
+// Whether the 12 bytes are one of the datagrams sent: some number i below
+// perSender has patternByte(i, 0) as its first byte, and every byte j is then
+// patternByte(i, j)
+fn sentPattern(b: &IoBuf) bool {
+  let w = b.view();
+  var i = 0u64;
+  while i < perSender {
+    if w[0usize] == patternByte(u8.from(i), 0usize) {
+      var j = 1usize;
+      while j < 12usize {
+        if w[j] != patternByte(u8.from(i), j) {return false;}
+        j = j + 1usize;
+      }
+      return true;
+    }
+    i = i + 1u64;
+  }
+  false
+}
+
+actor Blaster {
+  // Sends each datagrams through tx to `to`, number i being patternByte-d by i
+  pub async fn run(self, tx: UdpSender, to: SocketAddr) u64 {
+    var i = 0u64;
+    var ok = 0u64;
+    while i < perSender {
+      let r = await tx.sendTo(to, datagram(u8.from(i)));
+      match r {
+        case let Ok(n) {if n == 12usize {ok = ok + 1u64;}}
+        else {}
+      }
+      i = i + 1u64;
+    }
+    ok
+  }
+}
+
+actor Closer {
+  // Takes the socket and lets it go at the end of the call
+  pub async fn close(self, s: UdpSocket) u64 {1u64}
+}
+
+actor Peer {
+
+  pub async fn run(self, done: OneshotSender[u64]) {
+    // 1. Eight senders of one socket
+    let a = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let b = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let pa = portOf(await a.localAddr());
+    let pb = portOf(await b.localAddr());
+    if pa != 0u16 && pb != 0u16 {got.bound.store(1u64);}
+    let to = SocketAddr.localhost(pb);
+    let h0 = aio.opStats().answeredHere;
+    var k = 0u64;
+    while k < senders {
+      let bl = Blaster();
+      bl.run(a.sender(), to);
+      k = k + 1u64;
+    }
+    var n = 0u64;
+    while n < senders * perSender {
+      var r = await b.recvFromIn(IoBuf(4096usize), IoLimits.until(Instant.now() + Duration.fromMillis(5000i64)));
+      match &mut r {
+        case var &mut Ok(ok) {
+          // the sequence number is the datagram's first byte pattern; check shape and sender
+          if ok.buf.len() == 12usize && ok.from.port() == pa && sentPattern(&ok.buf) {got.arrived.store(got.arrived.load() + 1u64);}
+          else {got.bad.store(got.bad.load() + 1u64);}
+        }
+        else {n = senders * perSender;}
+      }
+      n = n + 1u64;
+    }
+    got.here.store(aio.opStats().answeredHere - h0);
+
+    // 2. The owner drops a; its senders are still held
+    let held = a.sender();
+    let dropper = Closer();
+    await dropper.close(a);
+    if isInvalid(await held.sendTo(to, datagram(1u8))) {got.afterClose.store(1u64);}
+
+    // 3. The same port bound again: the new socket takes a's slot; the old sender must not reach it
+    let c = udpOf(await aio.bindUdp(SocketAddr.localhost(pa)));
+    let pc = portOf(await c.localAddr());
+    if pc == pa {got.rebound.store(1u64);}
+    if c.handle().slot() == held.handle().slot() {got.sameSlot.store(1u64);}
+    if c.handle().generation() != held.handle().generation() {got.newGen.store(1u64);}
+    if isInvalid(await held.sendTo(to, datagram(2u8))) {got.staleSend.store(1u64);}
+    let stray = await b.recvFromIn(IoBuf(4096usize), IoLimits.until(Instant.now() + Duration.fromMillis(200i64)));
+    match stray {
+      case let Ok(ok) {got.strayed.store(got.strayed.load() + 1u64);}
+      else {}
+    }
+    let csend = c.sender();
+    let via = await csend.sendTo(to, datagram(3u8));
+    var r2 = await b.recvFromIn(IoBuf(4096usize), IoLimits.until(Instant.now() + Duration.fromMillis(5000i64)));
+    match &mut r2 {
+      case var &mut Ok(ok) {if ok.from.port() == pc && ok.buf.len() == 12usize {got.viaNew.store(1u64);}}
+      else {}
+    }
+
+    // 4. Senders naming nothing
+    let none = UdpSender.none();
+    if isInvalid(await none.sendTo(to, datagram(4u8))) {got.noneSend.store(1u64);}
+    let nosock = UdpSocket.none();
+    let ns = nosock.sender();
+    if isInvalid(await ns.sendTo(to, datagram(5u8))) {got.noneSock.store(1u64);}
+    if none.isNone() && ns.isNone() {got.isNone.store(1u64);}
+
+    var dn = done;
+    dn.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let peer = Peer();
+    peer.run(tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the peer said it was done");}
+    else {}
+  }
+  finalAll();
+  expectUInt(got.bound.load(), 1u64, "two sockets bound");
+  expectUInt(got.arrived.load(), senders * perSender, "all 800 datagrams arrived from the owner's address");
+  expectUInt(got.bad.load(), 0u64, "no datagram wrong in length or sender");
+  expect(got.here.load() >= 700u64, "at least 700 of the 800 sends were answered on the worker");
+  expectUInt(got.rebound.load(), 1u64, "the dropped socket's port bound again at once");
+  expectUInt(got.afterClose.load(), 1u64, "a send through a held sender after the drop was InvalidInput");
+  expectUInt(got.sameSlot.load(), 1u64, "the next socket took the dropped one's slot");
+  expectUInt(got.newGen.load(), 1u64, "under a different generation");
+  expectUInt(got.staleSend.load(), 1u64, "the old sender's send into the reused slot was InvalidInput");
+  expectUInt(got.strayed.load(), 0u64, "nothing reached the target by the old sender");
+  expectUInt(got.viaNew.load(), 1u64, "the new socket's own sender got through, from its address");
+  expectUInt(got.noneSend.load(), 1u64, "UdpSender.none() answered InvalidInput");
+  expectUInt(got.noneSock.load(), 1u64, "UdpSocket.none().sender() answered InvalidInput");
+  expectUInt(got.isNone.load(), 1u64, "both said isNone");
+  expectUInt(stats().lent, 0u64, "every buffer came home");
+  expectUInt(aio.opStats().inUse, 0u64, "every record dissolved");
+  done()
+}
