@@ -84,6 +84,29 @@ fn classTable() {
   drop(h);
 }
 
+// Row 451: the answer the heap region gives under CONE_HEAP_CLASS_SIZE=1 (shim's 'cnmalloc_sizeFor': the class
+// size of the request) keeps core's 'size' promise and is the cell malloc hands out.
+fn sizeAnswer() {
+  let h = heap(1usize, 1000u64);
+  var bad = 0i64;      // an answer under the request, not idempotent, falling, or not the cell malloc gives
+  var prev = 0usize;
+  var n = 1usize;
+  while n <= 32768usize {
+    let s = cnmalloc.cnm_class_size(h, cnmalloc.cnm_class_of(h, n));
+    if s < n { bad = bad + 1i64; }
+    if cnmalloc.cnm_class_size(h, cnmalloc.cnm_class_of(h, s)) != s { bad = bad + 1i64; }
+    if s < prev { bad = bad + 1i64; }
+    prev = s;
+    let p = cnmalloc.cnm_malloc(h, n);
+    if cnmalloc.cnm_usable(h, p) != s { bad = bad + 1i64; }
+    cnmalloc.cnm_free(h, p);
+    n = n + 1usize;
+  }
+  expectInt(bad, 0, "the class size of a request: at least it, its own answer again, never falling, the malloc cell");
+  expectUInt(u64.from(cnmalloc.cnm_class_size(h, cnmalloc.cnm_class_of(h, 93usize))), 96, "93 bytes: 96");
+  cnmalloc.cnm_destroy(h);
+}
+
 fn aligned() {
   let h = heap(1usize, 1000u64);
   var bad = 0i64;
@@ -363,6 +386,7 @@ fn main() i32 {
   layout();
   if g == 0usize { batches(); }
   classTable();
+  sizeAnswer();
   aligned();
   apiEdges();
   largeBlocks();

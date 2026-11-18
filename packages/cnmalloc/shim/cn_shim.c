@@ -563,6 +563,17 @@ size_t(__cdecl* __imp__aligned_msize)(void*, size_t, size_t) = _aligned_msize;
 // what the benchmark runner calls at the end of a run (row 428): one line per contended class, then the total
 void cn_print_lock_waits(void) { if (g_state == 2) cnm_print_lock_waits_of(g_heap); }
 
+// row 451: the size of the cell malloc(n) hands out, for the heap region's trial setting (CONE_HEAP_CLASS_SIZE=1;
+// conestd's heapregion.c finds this by GetProcAddress). 0 and requests over the small classes answer n.
+__declspec(dllexport) size_t cnmalloc_sizeFor(size_t n) {
+  if (n == 0 || n > 32768) return n;
+  uintptr_t h = H();
+  size_t cl = cnm_class_of(h, n);
+  if (cl == (size_t)-1) return n;
+  size_t s = cnm_class_size(h, cl);
+  return s < n ? n : s;
+}
+
 // for the process's own tools: give back what is due (force: everything), the counters
 uint64_t cn_collect(int force) { return cnm_collect(H(), force); }
 uint64_t cn_stats(uint64_t* out, size_t max) { uintptr_t h = H(); cn_publish(); return cnm_stats(h, out, max); }

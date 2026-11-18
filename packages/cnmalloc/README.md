@@ -45,6 +45,11 @@ powershell -File packages\cnmalloc\shim\build-cn.ps1 -Out <dir>        # writes 
 | `cache=<n>` | `0` (off) | Row 426: blocks per size class that a worker thread may keep in its own cache (see below). 0 touches no thread-local. |
 | `cache_max=<bytes>` | `1024` | Only requests up to this size, and their classes, are cached (at most 32768). |
 
+`CONE_HEAP_CLASS_SIZE=1`, a separate environment variable and not one of the `CNMALLOC` settings, is read by conestd's
+heap region (`packages/conestd/heapregion.c`), not by cnmalloc: with it set, and cnmalloc linked, the heap answers a
+size request with cnmalloc's class size (the shim's `cnmalloc_sizeFor`), so a collection made at an exact fit grows into
+its cell before it moves. Off by default; Windows only; a trial.
+
 ## The workers' cache (row 426)
 
 Only a thread the runtime declares a worker has one; every other thread goes straight to the shared heap. A free on a
