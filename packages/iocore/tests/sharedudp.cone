@@ -1,0 +1,254 @@
+// Datagrams issued on one UDP socket by several threads at once, while the
+// socket is closed under them, over and over (shared.cone: a datagram's issue
+// holds the entry's lock SHARED, the Loop's unpublish inside lp.close takes it
+// EXCLUSIVE). The silent failure is a descriptor closed and then reused under a
+// sendto or recvfrom: the datagram leaves from, or is taken off, an unrelated
+// socket. So each round:
+//
+// 1. A UDP socket u is bound, and four threads issue on it as fast as they can
+//    (SendTo to the sink, SendTo to u itself, RecvFrom on u) through the shared
+//    table, each issue under 'lockShared', until the table refuses the handle.
+// 2. The Loop's thread closes u (its unpublish waits for every thread inside
+//    an issue), and at once binds a new socket v. On Linux the lowest free
+//    descriptor is the one u had, so v reuses it; Winsock reuses a closed
+//    handle's value as it pleases.
+// 3. No call may be made on a handle closed under it (every issue under the
+//    lock is Done: a call on a closed descriptor or socket would Fail), and
+//    nothing a thread issued may reach v: no datagram may arrive at the sink
+//    from v's port (that would be a sendto on v's descriptor), and a datagram
+//    sent to v (the canary) must arrive at v (a recvfrom on v's descriptor
+//    would take it).
+//
+// The workers' sends and receives go on through every round and are all done
+// where they are issued, none in flight (Windows: the overlapped calls on one
+// socket skip the port on success, so several threads call WSASendTo and
+// WSARecvFrom on the one socket at once).
+
+mod sharedudp;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+struct Ask {
+  tag: u64;
+}
+
+const rounds = 300u32;
+const workers = 4u32;
+const tokSink = 1u64;
+const tokCanaryRecv = 2u64;
+const tokCanarySend = 3u64;
+
+// What the workers did, and what to look for: atomics held by 'let' globals,
+// set in 'init'
+let issued: Atomic[u32];      // issues answered where they were made
+let failed: Atomic[u32];      // issues answered where they were made, but Failed (none expected)
+let pending: Atomic[u32];     // issues left in flight (none expected)
+let notIssued: Atomic[u32];   // issues the Loop would have had (a receive that would block)
+let timedOut: Atomic[u32];    // workers that gave up waiting to be refused
+let watch: Atomic[u32];       // the port of the socket nothing may reach (0: none)
+
+fn @initpure init() {
+  issued = Atomic[u32].of(0u32);
+  failed = Atomic[u32].of(0u32);
+  pending = Atomic[u32].of(0u32);
+  notIssued = Atomic[u32].of(0u32);
+  timedOut = Atomic[u32].of(0u32);
+  watch = Atomic[u32].of(0u32);
+}
+
+struct Work is Sendable {
+  sh: Shared;
+  h: Handle;
+  sink: u16;       // the sink's port
+  me: u16;         // the socket's own port
+}
+
+struct Seen {
+  sinkGot: u64;    // datagrams the sink received
+  escapes: u64;    // of them, from the watched port
+  canaries: u64;   // canaries that arrived at the new socket
+}
+
+fn recvFromOn(pool: &OpPool[Ask], h: Handle) *OpCore {
+  let r = pool.take(Ask(3u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindRecvFrom;
+  c.handle = h;
+  c.buf = Some[IoBuf](IoBuf(64usize));
+  r as *OpCore
+}
+
+fn sendToOn(pool: &OpPool[Ask], h: Handle, to: SocketAddr, text: &Array[u8]) *OpCore {
+  let r = pool.take(Ask(4u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindSendTo;
+  c.handle = h;
+  c.setPeer(to);
+  var b = IoBuf(64usize);
+  b.append(text);
+  c.buf = Some[IoBuf](b);
+  r as *OpCore
+}
+
+fn portOf(lp: &Loop, h: Handle) u16 {
+  var port = 0u16;
+  match lp.localAddr(h) {
+    case let Ok(a) {port = a.port();}
+    case let Err(e) {}
+  }
+  port
+}
+
+// Issue on w.h until the table refuses it. Every issue is under the shared lock
+fn worker(w: Work) u32 {
+  let pool = OpPool[Ask].make();
+  let toSink = SocketAddr.localhost(w.sink);
+  let toMe = SocketAddr.localhost(w.me);
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  var n = 0u32;
+  while true {
+    if !w.sh.lockShared(w.h) {break;}
+    n = n + 1u32;
+    // A receive always follows a send to the socket itself, so one is waiting
+    let step = n % 4u32;
+    var p = null as *OpCore;
+    if step == 2u32 {
+      p = recvFromOn(&pool, w.h);
+    } else if step == 1u32 {
+      p = sendToOn(&pool, w.h, toMe, "me");
+    } else {
+      p = sendToOn(&pool, w.h, toSink, "ping");
+    }
+    let got = w.sh.issue(p);
+    w.sh.unlockShared(w.h);
+    if got == issueDone {
+      // Done, or Failed: a call on a handle closed or reused under it fails
+      // (WSAENOTSOCK, EBADF), and the lock is what keeps it open for the call
+      if (p as &OpCore).isDone() {issued.add(1u32);} else {failed.add(1u32);}
+    } else if got == issuePending {
+      pending.add(1u32);
+    } else {
+      notIssued.add(1u32);
+    }
+    if got != issuePending {
+      let rec = pool.dissolve(p as *OpRec[Ask]);
+    }
+    if n % 64u32 == 0u32 && Instant.now() > limit {
+      timedOut.add(1u32);
+      break;
+    }
+  }
+  // Its buffers' cache goes back to the stock: nothing finalizes a '@threadlocal'
+  // yet, and a thread a round would otherwise leave its cache behind
+  flushThread();
+  n
+}
+
+// Take what the Loop has answered: the sink's datagrams, counted and checked
+// against the watched port, and the sink's receive armed again; the canary's
+fn take(lp: &mut Loop, out: &mut List[Completion], sink: Handle, st: &mut Seen) {
+  var k = 0usize;
+  while k < out.len() {
+    let c = &mut out[k];
+    if c.token == tokSink {
+      if c.isDone() {
+        st.sinkGot = st.sinkGot + 1u64;
+        let wp = watch.load();
+        if wp != 0u32 && u32.from(c.peer.port()) == wp {st.escapes = st.escapes + 1u64;}
+      }
+      lp.submit(Op.RecvFrom(sink, IoBuf(64usize)), Target.Here(tokSink));
+    } else if c.token == tokCanaryRecv && c.isDone() {
+      st.canaries = st.canaries + 1u64;
+    }
+    k = k + 1usize;
+  }
+  out.clear();
+}
+
+// Run the Loop for ms, taking its answers
+fn pump(lp: &mut Loop, out: &mut List[Completion], sink: Handle, st: &mut Seen, ms: i64) {
+  let until = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < until {
+    lp.poll(until, out);
+    take(lp, out, sink, st);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var lp = Loop.mustMake();
+  let sh = lp.share();
+  var out = List[Completion]();
+  var st = Seen(0u64, 0u64, 0u64);
+  let sink = lp.mustBindUdp(SocketAddr.localhost(0u16));
+  let sinkPort = portOf(&lp, sink);
+  lp.submit(Op.RecvFrom(sink, IoBuf(64usize)), Target.Here(tokSink));
+
+  var stolen = 0u32;
+  var r = 0u32;
+  while r < rounds {
+    r = r + 1u32;
+    watch.store(0u32);
+    var u = lp.mustBindUdp(SocketAddr.localhost(0u16));
+    let uport = portOf(&lp, u);
+    let before = issued.load();
+    let t0 = thread.start(Work(sh.clone(), u, sinkPort, uport), &worker);
+    let t1 = thread.start(Work(sh.clone(), u, sinkPort, uport), &worker);
+    let t2 = thread.start(Work(sh.clone(), u, sinkPort, uport), &worker);
+    let t3 = thread.start(Work(sh.clone(), u, sinkPort, uport), &worker);
+    // The workers are going: let them run a little, the sink taking what comes
+    let limit = Instant.now() + Duration.fromSeconds(5i64);
+    while issued.load() < before + 16u32 && Instant.now() < limit {
+      lp.poll(Instant.now() + Duration.fromMillis(1i64), &mut out);
+      take(&mut lp, &mut out, sink, &mut st);
+    }
+    // Close u under them, and bind a new socket at once: on Linux its
+    // descriptor is the one just closed
+    lp.close(u);
+    var v = lp.mustBindUdp(SocketAddr.localhost(0u16));
+    var vport = portOf(&lp, v);
+    while vport == uport {
+      lp.close(v);
+      v = lp.mustBindUdp(SocketAddr.localhost(0u16));
+      vport = portOf(&lp, v);
+    }
+    watch.store(u32.from(vport));
+    // The canary: a datagram to v, which only v's own receive may take
+    let canariesBefore = st.canaries;
+    lp.submit(Op.RecvFrom(v, IoBuf(64usize)), Target.Here(tokCanaryRecv));
+    var cb = IoBuf(64usize);
+    cb.append("canary");
+    lp.submit(Op.SendTo(sink, SocketAddr.localhost(vport), cb), Target.Here(tokCanarySend));
+    let until = Instant.now() + Duration.fromMillis(500i64);
+    while st.canaries == canariesBefore && Instant.now() < until {
+      lp.poll(until, &mut out);
+      take(&mut lp, &mut out, sink, &mut st);
+    }
+    if st.canaries == canariesBefore {stolen = stolen + 1u32;}
+    pump(&mut lp, &mut out, sink, &mut st, 2i64);
+    let n0 = t0.join();
+    let n1 = t1.join();
+    let n2 = t2.join();
+    let n3 = t3.join();
+    // What the workers sent before they were refused, drained before the next
+    // round changes what is watched
+    pump(&mut lp, &mut out, sink, &mut st, 2i64);
+    watch.store(0u32);
+    lp.close(v);
+  }
+  expectUInt(u64.from(r), u64.from(rounds), "every round ran");
+  expect(issued.load() >= rounds * 16u32, "the workers issued sends and receives, all done where they were issued");
+  expect(st.sinkGot > 0u64, "the sink received the workers' datagrams");
+  expectUInt(u64.from(pending.load()), 0u64, "no issue was left in flight: concurrent calls on one socket answered at once");
+  expectUInt(u64.from(failed.load()), 0u64, "no call was made on a handle closed under it");
+  expectUInt(u64.from(timedOut.load()), 0u64, "every worker was refused once its handle closed");
+  expectUInt(st.escapes, 0u64, "no datagram left a socket that reused a closed descriptor");
+  expectUInt(u64.from(stolen), 0u64, "no datagram sent to the new socket was taken by a worker");
+  expect(sharedTables() == 1u32, "the table is live");  done()
+}
