@@ -19,8 +19,13 @@ $env:LIB = "C:\libs\SDL3-3.4.16\lib\x64;$($env:CONE_DEPS)\openssl;$($env:CONE_DE
 if (-not $env:CONEC) { $env:CONEC = 'C:\src\cone\build\x64-release\conec.exe' }
 if (-not $env:CONESTD) { $env:CONESTD = 'C:\src\cone\build\x64-release\conestd.lib' }
 $congo = "$repo\tools\congo\congo.py"
-$prog = "$repo\packages\netmsg\examples\netbench.cone"
-function Start-Congo([string]$a, [string]$log) {
+$src = "$repo\packages\netmsg\examples\netbench.cone"
+# Each process runs its own copy of the file: congo names its build folder after the file's path, and a second
+# process linking over the exe of a running one fails (Access is denied)
+function Start-Congo([string]$a, [string]$log, [string]$role = 'srv') {
+  New-Item -ItemType Directory -Force "$out\$role" | Out-Null
+  Copy-Item $src "$out\$role\netbench.cone" -Force
+  $prog = "$out\$role\netbench.cone"
   $line = "`"$vcvars`" >nul && python `"$congo`" run --release `"$prog`" -- $a"
   Start-Process -FilePath cmd -ArgumentList '/c', "`"$line`"" -WorkingDirectory "$repo\packages" -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru -WindowStyle Hidden
 }
@@ -51,7 +56,7 @@ function ReadLog([string]$f) {
 }
 $idle = (Get-Counter '\Processor(_Total)\% Idle Time' -SampleInterval 1 -MaxSamples 3 | ForEach-Object { $_.CounterSamples[0].CookedValue } | Measure-Object -Average).Average
 $srvLog = "$out\srv.log"
-$s = Start-Congo "server $Port $N $Seconds $Bytes $W" $srvLog
+$s = Start-Congo "server $Port $N $Seconds $Bytes $W" $srvLog 'srv'
 $srvPid = Find-Exe $s.Id
 for ($i = 0; $i -lt 400; $i++) { if ((ReadLog $srvLog) -match 'LISTENING') { break }; Start-Sleep -Milliseconds 250 }
 Start-Sleep 1
@@ -60,7 +65,7 @@ $left = $N
 for ($k = 0; $k -lt $Procs; $k++) {
   $share = [int][math]::Floor($left / ($Procs - $k)); $left -= $share
   $log = "$out\cli$k.log"
-  $c = Start-Congo "clients $Port $share $Seconds $CW" $log
+  $c = Start-Congo "clients $Port $share $Seconds $CW" $log "cli$k"
   $cli += [pscustomobject]@{ k = $k; share = $share; log = $log; proc = $c; pid = (Find-Exe $c.Id) }
 }
 $ids = @($srvPid) + @($cli | ForEach-Object { $_.pid })

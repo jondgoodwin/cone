@@ -28,9 +28,11 @@ import aio;
 import netmsg use *;
 
 let joined: Atomic[u64];
+let finalSeen: Atomic[u64];   // a client process: set when a copy of the server's last tick arrives
 
 fn @initpure init() {
   joined = Atomic[u64].of(0u64);
+  finalSeen = Atomic[u64].of(0u64);
 }
 
 fn sorted(v: &List[i64]) List[i64] {
@@ -177,7 +179,7 @@ fn server(port: u16, n: usize, secs: i64, bytes: usize, bind: &str) {
   let srv = mustListen(pick(bind, port), cfg, handlerOf(hub));
   printStr("LISTENING "); printUInt(u64.from(srv.port)); printStr("\n");
   var waited = 0i64;
-  while joined.load() < u64.from(n) && waited < 120000i64 {
+  while joined.load() < u64.from(n) && waited < 300000i64 {
     thread.sleep(Duration.fromMillis(100i64));
     waited = waited + 100i64;
   }
@@ -232,6 +234,7 @@ actor Collector {
         var c = PacketReader.start();
         let tick = usize.from(c.rdU32(u.data.view()));
         let sent = i64.from(c.rdU64(u.data.view()));
+        if tick + 31usize >= last.len() { finalSeen.store(1u64); }
         if tick < last.len() {
           let d = now - sent;
           heard = heard + 1u64;
@@ -268,12 +271,18 @@ fn clients(port: u16, n: usize, secs: i64, host: &str) {
     i = i + 1usize;
   }
   var waited = 0i64;
-  while joined.load() < u64.from(n) && waited < 120000i64 {
+  while joined.load() < u64.from(n) && waited < 300000i64 {
     thread.sleep(Duration.fromMillis(100i64));
     waited = waited + 100i64;
   }
   printStr("CLIENTS joined "); printUInt(joined.load()); printStr(" of "); printUInt(u64.from(n)); printStr("\n");
-  thread.sleep(Duration.fromSeconds(secs + 3i64));
+  // the server starts when every client process has joined, which may be long after this one: wait for its last tick
+  var run = 0i64;
+  while finalSeen.load() == 0u64 && run < 600000i64 {
+    thread.sleep(Duration.fromMillis(100i64));
+    run = run + 100i64;
+  }
+  thread.sleep(Duration.fromSeconds(2i64));
   var lastAll = List[i64]();
   var firstAll = List[i64]();
   var k = 0usize;
