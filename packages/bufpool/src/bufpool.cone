@@ -380,7 +380,7 @@ struct Globals {
   bigBytes: Atomic[u64];     // and their bytes
   bigTakes: Atomic[u64];     // oversize blocks ever lent
   refused: Atomic[u64];      // tryAllocate's refusals
-  flushHook: &fn();          // test-only (setFlushHook): called in flushCache, 0 in a program
+  flushHook: usize;          // test-only (setFlushHook): the address of a hook flushCache calls, 0 in a program
 }
 
 pub const defaultMaxBytes = 67108864usize;     // 64 MiB held from the OS at most
@@ -679,7 +679,17 @@ pub fn flushThread() {
 // another thread trims. f does nothing on a thread the test did not mean (the
 // test marks its own thread). No program sets it
 pub fn setFlushHook(f: &fn()) {
-  (*glob()).flushHook = f;
+  var held = f;    // kept as an address: a borrowed reference cannot be stored in a global's field
+  (*glob()).flushHook = mem.readRaw[usize](&mut held as *usize);
+}
+
+// The test-only park point, called with the line's count read and not yet emptied
+fn runFlushHook(g: *Globals) {
+  var p = (*g).flushHook;
+  if p != 0usize {
+    let hook = mem.readRaw[&fn()](&mut p as *(&fn()));
+    hook();
+  }
 }
 
 // Every block of tc's lines back to the stock
@@ -690,8 +700,7 @@ fn flushCache(tc: *ThreadCache) {
     let ln = lineAt(tc, c);
     let n = (*ln).count;
     if n != 0u32 {
-      let hook = (*g).flushHook;
-      if hook as usize != 0usize {hook();}    // test-only park point: n is read, the line is not yet emptied
+      runFlushHook(g);    // test-only park point: n is read, the line is not yet emptied
       (*ln).count = 0u32;
       stockPut(g, classAt(g, c), slotsOf(ln), n);
     }
