@@ -28,7 +28,7 @@
 //   trim()                give every idle slab back to the OS
 //   setLimits(maxBytes, keepBytes)  the process-wide bounds
 //   trimAll()             trim after flushing every thread's cache
-//   flushThread()         this thread's cache goes back to the stock
+//   flushThread()         this thread's cache goes back to the stock now, not at its end
 //   classSize(c), page, largestClass, classCount        (SIZE CLASSES)
 //   osBlocks(), osBytes() what the pool holds from the OS now
 //
@@ -189,14 +189,18 @@
 // just filled is warm in a core's cache, and a deep cache hands a thread older,
 // colder blocks than the one just returned (measured: aio's 16 KiB stream
 // lost a fifth of its throughput with 8). A buffer that dies goes to the cache of the thread it dies
-// on, whichever took it. A thread of Cone's own that is about to end calls
-// 'flushThread()', which gives its cache back to the stock; the I/O blocking
-// pool's threads do. NOTHING FINALIZES A '@threadlocal' YET when its thread
-// ends (a language gap, mod-globals says so), so the cache is a record found
-// through one '@threadlocal' pointer and kept on a registry for good: a thread
-// that ends without flushing, one the program started through the OS or a
-// worker that ends with the process, leaves its blocks in its record, counted
-// in the stats as cached and given back at 'trimAll()' and in the pool's 'final'.
+// on, whichever took it. WHEN A THREAD ENDS its cache goes back to the stock by
+// itself, whoever started the thread (Cone's 'thread.start', the actors
+// runtime's workers, a thread pool's, one made by C code): the pool registers
+// with the process's thread-exit slot (conestd's threadexit.c) and arms it on a
+// thread's first take or return. A buffer dropped on the thread after that (by
+// another exit callback) goes straight to the stock. 'flushThread()' gives the
+// cache back early, for a thread that will live on idle with blocks the others
+// could use; it is never needed before a thread ends. Once the pool's 'final'
+// has begun, or the process is ending, a thread's end gives nothing back:
+// 'trimAll()' and the final do. Not covered: a buffer held in a '@threadlocal'
+// (NOTHING FINALIZES A '@threadlocal' YET when its thread ends, a language gap,
+// mod-globals says so), which keeps its block, and a thread killed outright.
 //
 // HOMES. A buffer may be lent: 'buf.setHome(&home)' (home an IoHome, made by the lender with
 // 'IoHome.make(ctx, give)', which owns the Sendable ctx) makes its death, instead of releasing the
@@ -311,7 +315,7 @@ pub fn osBytes() u64 {bufpool.osBytes()}
 // end of a program)
 pub fn trimAll() {bufpool.trimEverything();}
 
-// This thread's cache back to the stock
+// This thread's cache back to the stock now (its end does it too)
 pub fn flushThread() {bufpool.flushThread();}
 
 // The process-wide bounds, in bytes held from the OS and idle bytes kept. A

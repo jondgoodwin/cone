@@ -1,0 +1,88 @@
+// The process ends, through C's exit and so with no finals, while threads hold
+// caches and others are taking and returning: it ends cleanly, and nothing is
+// given back on the way out (conestd's threadexit.c).
+//
+// On Windows the process's end stops every other thread where it stands, with
+// no callback, and then runs the exit callback of the thread that ends it, under
+// the loader lock (lane 687's probe). A stopped thread may hold the pool's
+// registry lock or a class's lock, and a callback that took either would wait
+// for ever. So four threads here take a buffer, drop it and flush, without a
+// pause, taking those locks all the time; two more hold caches and wait; main
+// holds a cache of its own and calls exit. The callback must give nothing back
+// while the process is ending (RtlDllShutdownInProgress): if it did, the test
+// would hang on a lock a stopped thread held (most runs), and fail by timeout.
+// On Linux exit() runs no key destructors, so the same program checks only that
+// it ends.
+
+mod exitlive;
+
+import stdio use *;
+import thread;
+import sync use *;
+import time use Duration;
+import iobuf use *;
+
+extern {
+  fn @c exit(code: i32);
+}
+
+let spins: Atomic[u64];
+
+fn @initpure init() {
+  spins = Atomic[u64].of(0u64);
+}
+
+fn spinner(n: u64) u64 {
+  while true {
+    var b = IoBuf(100usize);
+    b.append("spin");
+    var m = IoBuf(2000000usize);    // oversize: the bound's atomics
+    m.append("spin");
+    var h = IoBuf(1000000usize);    // 1 MiB: no cache, the stock's lock on each take and return
+    h.append("spin");
+    flushThread();
+    spins.add(1u64);
+  }
+  n
+}
+
+fn holder(rx: Receiver[u64]) u64 {
+  var r = rx;
+  var k = 0u64;
+  while k < 8u64 {
+    var b = IoBuf(100usize);
+    b.append("held");
+    k = k + 1u64;
+  }
+  match r.recv() {
+    case let Some(v) {}
+    case is None[u64] {}
+  }
+  k
+}
+
+fn main() i32 {
+  var tx0: Sender[u64];
+  var rx0: Receiver[u64];
+  tx0, rx0 = Channel[u64].make();
+  var tx1: Sender[u64];
+  var rx1: Receiver[u64];
+  tx1, rx1 = Channel[u64].make();
+  let s0 = thread.start(0u64, &spinner);
+  let s1 = thread.start(1u64, &spinner);
+  let s2 = thread.start(2u64, &spinner);
+  let s3 = thread.start(3u64, &spinner);
+  let h0 = thread.start(rx0, &holder);
+  let h1 = thread.start(rx1, &holder);
+  var k = 0u64;
+  while k < 8u64 {
+    var b = IoBuf(100usize);
+    b.append("main");
+    k = k + 1u64;
+  }
+  while spins.load() < 1000u64 {thread.sleep(Duration.fromMillis(1i64));}
+  printStr("exiting with threads running\n");
+  printFlush();
+  exit(0i32);
+  0i32
+}

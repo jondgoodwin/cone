@@ -49,7 +49,7 @@
 //   registerClass(blockSize, cacheBlocks)    a class; during init       (CLASSES)
 //   blockTake(c)         a block of class c; null when the bound or the OS refuses
 //   blockPut(c, b)       a block comes home
-//   flushThread()        this thread's cache goes back to the stock             (THREADS)
+//   flushThread()        this thread's cache goes back to the stock now; its end does too (THREADS)
 //   trimStock()          every idle slab goes back to the OS                    (THE OS)
 //   trimEverything()     the same after every thread's cache is flushed
 //   setLimits(maxBytes, keepBytes)  the process-wide bounds
@@ -92,13 +92,19 @@
 // The cache is a malloc'd record found through one '@threadlocal' pointer,
 // not stored in the '@threadlocal' itself, because nothing finalizes a thread's
 // copy of a '@threadlocal' yet when its thread ends (the manual's mod-globals
-// says so). Every record is on a registry. A thread of Cone's own that is
-// about to end calls flushThread, which gives its blocks back to the stock and
-// retires the record for the next thread to reuse. A thread that ends without
-// doing so (one the program started through the OS, or a worker that ends
-// with the process) leaves its record, and the blocks in it, on the registry:
-// counted in the stats as cached bytes, not lost, and given back when the
-// module finalizes, or by trimEverything.
+// says so). Every record is on a registry. WHEN A THREAD ENDS, whoever started
+// it, its blocks go back to the stock and its record is retired for the next
+// thread to reuse: the module's init registers bufpoolThreadEnded with conestd's
+// thread-exit slot (threadexit.c: a fiber-local slot's callback on Windows, a
+// pthread key's destructor on Linux), and a thread's first record arms it, so a
+// thread that never takes or returns a block pays nothing. After its exit flush
+// the thread is FINISHED: its 'myCache' is the late record, every line's cap 0,
+// so a block taken or returned on it later (by another exit callback) goes
+// straight to the stock, counted apart, and no record is made that nobody would
+// flush. Once the module's final has begun ('stopping'), and while the process
+// is ending (threadexit.c asks), a thread's end gives nothing back; the final's
+// trimEverything does. flushThread does the same early, for a thread that lives
+// on idle.
 //
 // THE STOCK. For each class, a lock and a list of slabs; each slab has its own
 // free list of returned blocks and a bump mark for the blocks never yet
@@ -185,6 +191,9 @@ extern {
   fn @c(system) VirtualFree(addr: *u8, size: usize, kind: u32) i32;
   fn @c mmap(addr: *u8, size: usize, protect: i32, flags: i32, fd: i32, offset: i64) *u8;
   fn @c munmap(addr: *u8, size: usize) i32;
+  // conestd's threadexit.c: the process's one thread-exit slot (THREADS)
+  fn @c cone_threadExitAdd(callback: &fn @c ()) u32;
+  fn @c cone_threadExitArm(id: u32);
 }
 
 const memCommit = 0x1000u32;
@@ -327,6 +336,8 @@ struct ClassState {
   partialTail: *SlabRec;
   slabs: usize;
   idleBlocks: usize;       // blocks in free lists: returned, idle in the stock
+  lateTakes: Atomic[u64];  // takes and returns on finished threads, which count in no record
+  lateReturns: Atomic[u64];
 }
 
 // One thread's stack of idle blocks of a class
@@ -353,6 +364,9 @@ struct Globals {
   regLock: Mutex;
   regHead: *ThreadCache;
   freeRecs: *ThreadCache;
+  lateRec: *ThreadCache;     // a finished thread's 'myCache': every line's cap 0, on no registry
+  exitId: u32;               // the pool's number in conestd's thread-exit slot, or 0 when it has none
+  stopping: u32;             // 1 once the module's final has begun; under regLock
   nClasses: usize;
   maxBytes: Atomic[u64];
   keepBytes: Atomic[u64];
@@ -387,7 +401,14 @@ fn blocksInit() {
   var c = 0usize;
   while c < maxClasses {
     (*classAt(g, c)).lock = Mutex.make();
+    (*classAt(g, c)).lateTakes = Atomic[u64].of(0u64);
+    (*classAt(g, c)).lateReturns = Atomic[u64].of(0u64);
     c = c + 1usize;
+  }
+  // calloc'd: every line's count and cap are 0, so it caches nothing
+  (*g).lateRec = libc.calloc(1usize, mem.sizeof[ThreadCache]()) as *ThreadCache;
+  if (*g).lateRec as usize == 0usize {
+    panic("bufpool: out of memory for the block stock");
   }
   (*g).maxBytes = Atomic[u64].of(u64.from(defaultMaxBytes));
   (*g).keepBytes = Atomic[u64].of(u64.from(defaultKeepBytes));
@@ -496,7 +517,56 @@ fn makeCache() *ThreadCache {
   }
   (*g).regLock.unlock();
   myCache = tc;
+  cone_threadExitArm((*g).exitId);    // so bufpoolThreadEnded runs when this thread ends
   tc
+}
+
+// The thread is ending: conestd's thread-exit slot calls this on it, while its
+// thread-locals are still there. Its cache goes back to the stock and its record
+// is retired, as flushThread does, but under the registry's lock, so that
+// trimEverything (the module's final) cannot flush the same lines at the same
+// moment. Then the thread is FINISHED: its 'myCache' is the late record, whose
+// lines hold nothing, so a block dropped on it after this (by another exit
+// callback, or a thread-local's destructor) goes straight to the stock and no
+// cache is made that nobody would flush. Once the module's final has begun
+// ('stopping') nothing is given back: the record stays on the registry for the
+// final's own flush
+fn @c bufpoolThreadEnded() {
+  let g = glob();
+  let tc = myCache;
+  myCache = (*g).lateRec;
+  if tc as usize == 0usize || tc == (*g).lateRec {
+    return;
+  }
+  (*g).regLock.lock();
+  if (*g).stopping == 0u32 {
+    flushCache(tc);
+    (*tc).live = 0u32;
+    (*tc).nextFree = (*g).freeRecs;
+    (*g).freeRecs = tc;
+  }
+  (*g).regLock.unlock();
+}
+
+// A take on a finished thread: one block from the stock, through a slot on the
+// stack (the late record is shared by every finished thread, so nothing of it is
+// written but its counts, which no total reads)
+fn lateTake(g: *Globals, c: usize) *u8 {
+  let cs = classAt(g, c);
+  var one = null as *u8;
+  if stockTake(g, cs, 1u32, &one) == 0u32 {
+    return null;
+  }
+  (*cs).lateTakes.add(1u64);
+  one
+}
+
+// A return on a finished thread: straight to the stock
+fn lateReturn(g: *Globals, c: usize, b: *u8) {
+  let cs = classAt(g, c);
+  var one = b;
+  stockPut(g, cs, &one, 1u32);
+  (*cs).lateReturns.add(1u64);
 }
 
 // ---------------------------------------------------------------------------
@@ -519,8 +589,11 @@ pub fn blockTake(c: usize) *u8 {
 
 // The cache is empty: a batch from the stock, one block of it answered
 fn refill(tc: *ThreadCache, c: usize, ln: *CacheLine) *u8 {
-  (*tc).misses = (*tc).misses + 1u64;
   let g = glob();
+  if tc == (*g).lateRec {
+    return lateTake(g, c);
+  }
+  (*tc).misses = (*tc).misses + 1u64;
   let cs = classAt(g, c);
   let want = if (*ln).cap == 0u32 {1u32} else {(*cs).batch};
   let got = stockTake(g, cs, want, slotsOf(ln));
@@ -541,6 +614,10 @@ pub fn blockPut(c: usize, b: *u8) {
   *r = *r + 1u64;
   let ln = lineAt(tc, c);
   if (*ln).count >= (*ln).cap {
+    if tc == (*glob()).lateRec {
+      lateReturn(glob(), c, b);
+      return;
+    }
     spill(tc, c, ln);
     if (*ln).cap == 0u32 {
       // no cache: the block goes straight to the stock
@@ -570,10 +647,11 @@ fn spill(tc: *ThreadCache, c: usize, ln: *CacheLine) {
 }
 
 // All of this thread's cache back to the stock, and its record retired for
-// the next thread. A thread of Cone's own calls it before it ends
+// the next thread: early, before the thread ends, which does the same itself
+// (THREADS)
 pub fn flushThread() {
   let tc = myCache;
-  if tc as usize == 0usize {
+  if tc as usize == 0usize || tc == (*glob()).lateRec {
     return;
   }
   flushCache(tc);
@@ -952,6 +1030,8 @@ pub fn blockStats() BlockStats {
       cached = cached + usize.from((*lineAt(tc, c)).count);
       tc = (*tc).nextReg;
     }
+    t = t + (*cs).lateTakes.load();
+    r = r + (*cs).lateReturns.load();
     takes = takes + t;
     let out = if t > r {t - r} else {0u64};
     lent = lent + out;
@@ -1122,12 +1202,18 @@ fn @initpure init() {
     bank = bank + 1u32;
   }
   poolRegion = MemRegion(&poolAlloc, &poolResize, &poolRelease, &poolSize);
+  (*glob()).exitId = cone_threadExitAdd(&bufpoolThreadEnded);
 }
 
 // The pool's end: every cache flushed and every slab with all its blocks home
 // given back to the OS. After every module that uses the pool has finalized, no
 // block is lent; one still lent (a leak) keeps its slab, which 'osBlocks()' would
-// show
+// show. From here on a thread that ends gives nothing back ('stopping'). The
+// stock itself is never freed, so a block returned later still has a home
 fn final() {
+  let g = glob();
+  (*g).regLock.lock();
+  (*g).stopping = 1u32;
+  (*g).regLock.unlock();
   trimEverything();
 }

@@ -1,0 +1,57 @@
+// A thread that never takes or returns a buffer arms nothing: the pool's
+// thread-exit slot is made once, at the pool module's start, and a thread sets
+// its value only with its first cache (bufpool's makeCache). Reading the pool's
+// counters makes no cache.
+//
+// Each thread counts the system's thread-exit slots holding a value on it
+// (Windows: fiber-local slots 0 to 255, FlsGetValue; Linux: pthread keys 0 to
+// 255, pthread_getspecific; an index not in use reads null on both). A thread
+// that does nothing, and one that only reads stats(), hold as many as each
+// other; a thread that takes and drops a buffer holds exactly one more.
+
+mod untouched;
+
+import testing use *;
+import thread;
+import iobuf use *;
+
+extern {
+  fn @c(system) FlsGetValue(slot: u32) *u8;
+  fn @c pthread_getspecific(key: u32) *u8;
+}
+
+fn armedSlots() u64 {
+  var n = 0u64;
+  var i = 0u32;
+  while i < 256u32 {
+    #if #os == .windows {
+      if FlsGetValue(i) as usize != 0usize {n = n + 1u64;}
+    } #else {
+      if pthread_getspecific(i) as usize != 0usize {n = n + 1u64;}
+    }
+    i = i + 1u32;
+  }
+  n
+}
+
+fn idle(x: u64) u64 {armedSlots()}
+
+fn reader(x: u64) u64 {
+  let s = stats();
+  armedSlots() + u64.from(s.slabs) * 0u64
+}
+
+fn user(x: u64) u64 {
+  var b = IoBuf(100usize);
+  b.append("x");
+  armedSlots()
+}
+
+fn main() i32 {
+  let a = thread.start(0u64, &idle).join();
+  let r = thread.start(0u64, &reader).join();
+  let u = thread.start(0u64, &user).join();
+  expectUInt(r, a, "reading the counters arms nothing");
+  expectUInt(u, a + 1u64, "the first buffer arms the one slot");
+  done()
+}
