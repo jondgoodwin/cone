@@ -5105,8 +5105,11 @@ fn idle(w: *Worker) bool {
     parkHoldHere(s, w, 4u32);
   }
   // An ancestor's cancel asks for a sweep (WorkerWake): stored before its claim
-  // of this worker's bit, so it is seen here or the claim finds the bit
-  if anyWork(s) || (ts as usize != 0usize && (*ts).sweep.load() != 0u32) {
+  // of this worker's bit, so it is seen here or the claim finds the bit. Not once the timers have
+  // stopped: the step no longer sweeps, so a flag left set (an ask that came just before the
+  // stop, or one that raced it) would send this worker round again for ever, never reaching
+  // the 'stopping' check below (the hang of row 531: stopWorkers joining a worker spinning here)
+  if anyWork(s) || (ts as usize != 0usize && timersStopped.load() == 0u32 && (*ts).sweep.load() != 0u32) {
     if (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
       parkHoldHere(s, w, 3u32);
     }
