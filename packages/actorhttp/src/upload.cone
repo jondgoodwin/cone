@@ -116,6 +116,7 @@ fn upStop(s: &StreamRec, u: &ChunkSource) {
 // chunks held go back. fin: Finished, else Failed with kind and failure (unless the service ended it)
 fn upSettle(s: &mut StreamRec, fin: bool, kind: httpclient.EventKind, failure: httpclient.Failure) {
   if !s.up.on || s.up.settled {return;}
+  dbg(if fin {"SETTLE fin"} else {"SETTLE fail"}, kindNum(kind));
   s.up.settled = true;
   s.up.fin = fin;
   s.up.endKind = kind;
@@ -290,6 +291,7 @@ struct UploadOpenJob {
 
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let id, sid, req, reader, group, framing = self.(id, sid, req, reader, group, framing);
+    dbg("OPEN", sid);
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {
       reader.end(Ending.Failed(AnyError.from(FetchError.cancelled())));
@@ -317,6 +319,7 @@ struct UploadAttachJob {
 
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let client, sid, up = self.(client, sid, up);
+    dbg("ATTACH", sid);
     let loc = upLocate(sv, client, sid);
     if loc.s as usize == 0usize {
       up.stop(Ending.Failed(AnyError.from(FetchError.cancelled())));
@@ -375,6 +378,7 @@ struct UploadEndJob {
     if loc.s as usize == 0usize {return;}
     let rec = loc.rec as &mut ClientRec;
     let s = loc.s as &mut StreamRec;
+    dbg("SRCEND", sid);
     s.up.srcEnd = true;
     if s.up.settled || s.up.ended {return;}
     match how {
@@ -491,6 +495,7 @@ struct UploadDropJob {
     let s = loc.s as &mut StreamRec;
     if s.up.called {return;}
     s.up.dropped = true;
+    dbg("DROP, settled", if s.up.settled {1u64} else {0u64});
     let slot = rec.ups.getCopy(&sid) || 0u32;
     var err: Option[FetchError] = None;
     err <-> s.up.err;
@@ -512,4 +517,16 @@ struct UploadDropJob {
       }
     }
   }
+}
+
+fn kindNum(k: httpclient.EventKind) u64 {
+  if k == httpclient.EventKind.Response {return 1u64;}
+  if k == httpclient.EventKind.Data {return 2u64;}
+  if k == httpclient.EventKind.End {return 3u64;}
+  if k == httpclient.EventKind.BodyRoom {return 4u64;}
+  if k == httpclient.EventKind.BodyEnded {return 5u64;}
+  if k == httpclient.EventKind.Done {return 6u64;}
+  if k == httpclient.EventKind.Failed {return 7u64;}
+  if k == httpclient.EventKind.Cancelled {return 8u64;}
+  9u64
 }
