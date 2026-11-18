@@ -54,6 +54,12 @@ pub const maxStreams = 64usize;
 const disconnectCopies = 5usize;
 
 const msNs = 1000000i64;
+
+// A packet may go this much before its scheduled slot, so an update that arrives
+// just early is sent at once instead of waiting on a timer. The next slot is
+// counted from this slot, not from the send, so the long-run rate stays exactly
+// the configured one.
+const sendSlackNs = 1000000i64;
 const secNs = 1000000000i64;
 const notFound = 0xFFFFFFFFusize;
 
@@ -86,7 +92,8 @@ pub enum CloseReason {
   TimedOut,    // no packet arrived for the timeout
   Overflow,    // too many reliable messages were waiting: to be sent, or for the local application to take
   Refused,     // a connection attempt was refused: the server was full
-  NoAnswer    // a connection attempt got no answer in time
+  NoAnswer,   // a connection attempt got no answer in time
+  SendFailed  // the socket failed a send (anything but a full send buffer): it cannot be trusted with more
 }
 
 // What happened that the application should hear of
@@ -110,6 +117,7 @@ pub struct ConnectionStats {
   pub latestSent: u64;
   pub latestDelivered: u64;
   pub latestStale: u64;           // arrived late: an older value than one already delivered
+  pub sendErrors: u64;            // datagrams the socket refused (a full send buffer, or a failure that ended the connection)
   pub rttMs: i64;                 // smoothed round trip time; 0 before the first sample
   pub rttVarMs: i64;
   pub lossPermille: u32;          // of our packets, in a thousand, that never got acknowledged
@@ -320,7 +328,7 @@ pub struct ConnectionCore {
       List[StreamOut](), List[StreamIn](),
       t, t - cfg.keepAliveMs * msNs, t, false, false,
       false, 0i64, 0i64, 0i64, true, -1i64, 4i64 * secNs, t,
-      ConnectionStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0i64, 0u32, true))
+      ConnectionStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0i64, 0u32, true))
   }
 
   pub fn sessionId(self: &) u64 {session}
@@ -520,7 +528,7 @@ pub struct ConnectionCore {
         id = id + 1u16;
       }
     }
-    if want < nextSendAt {want = nextSendAt;}
+    if want < nextSendAt - sendSlackNs {want = nextSendAt - sendSlackNs;}
     if want < at {at = want;}
     Instant.fromNanos(at)
   }
@@ -552,10 +560,14 @@ pub struct ConnectionCore {
       return;
     }
     self.updateMode(t);
-    if t < nextSendAt {return;}
+    if t < nextSendAt - sendSlackNs {return;}
     if self.hasWork(t) || t - lastSend >= cfg.keepAliveMs * msNs {
       out.push(self.buildPacket(t));
-      nextSendAt = t + self.interval();
+      // Time the next send from this slot; after a long idle (a whole
+      // interval behind or more) start afresh, so there is no catch-up burst
+      var slot = nextSendAt + self.interval();
+      if slot <= t {slot = t + self.interval();}
+      nextSendAt = slot;
       lastSend = t;
       ackDirty = false;
     }

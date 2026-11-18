@@ -41,6 +41,12 @@ struct PendingUpdate {
 // others of its server, so it sends no 'end' to it: Left is the end of a
 // connection's events. The handler's one 'end' (Ending.Finished) comes from the
 // Endpoint at its shutdown, after the Left of every connection it held.
+// The system's error numbers for a full send buffer: Winsock's WSAEWOULDBLOCK
+// and WSAENOBUFS, Linux's EAGAIN and ENOBUFS
+fn bufferFull(code: u32) bool {
+  #if #os == .windows {code == 10035u32 || code == 10055u32} #else {code == 11u32 || code == 105u32}
+}
+
 pub actor Connection is ValueSource {
   kind: u32;
   id: u32;
@@ -51,6 +57,7 @@ pub actor Connection is ValueSource {
   waiting: usize;               // the data events (Message) in outbox
   slots: Deque[PendingUpdate];  // the latest-wins lane
   staleOut: u64;                // values replaced in a slot before they were sent
+  sendErrors: u64;              // sends the socket answered with an error
   peer: ConnectionCore;
   open: bool;
   forced: bool;                 // the reason it ended is not the peer's
@@ -74,7 +81,7 @@ pub actor Connection is ValueSource {
   fn init(self: &new, kind: u32, id: u32, handler: EventHandler, cfg: NetConfig, session: u64, addr: SocketAddr,
       ep: Option[Endpoint], tx: UdpSender, parent: CancelGroup, link: LinkConfig, seed: u64) {
     *self = Self(kind: kind, id: id, handler: handler, window: 0u32, avail: 0u32,
-      outbox: Deque[NetEvent](), waiting: 0usize, slots: Deque[PendingUpdate](), staleOut: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
+      outbox: Deque[NetEvent](), waiting: 0usize, slots: Deque[PendingUpdate](), staleOut: 0u64, sendErrors: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
       open: true, forced: false, forcedReason: CloseReason.Local,
       addr: addr, ep: ep, tx: tx, outq: Deque[IoBuf](), parent: parent,
       timer: parent.child(), timerGen: 0u32, armed: -1i64, tickQueued: false,
@@ -114,7 +121,7 @@ pub actor Connection is ValueSource {
     }
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -158,7 +165,7 @@ pub actor Connection is ValueSource {
     self.closeNow();
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -169,7 +176,15 @@ pub actor Connection is ValueSource {
   pub async fn stats(self) ConnectionStats {
     var s = peer.stats();
     s.latestStale = s.latestStale + staleOut;
+    s.sendErrors = sendErrors;
     s
+  }
+
+  // As if the socket had answered a send with the system's error number 'code'.
+  // For tests: a full send buffer, or a socket closed under the connection,
+  // cannot be made to happen on demand
+  pub async fn sendAnswered(self, code: u32) {
+    self.sendFailed(IoError(code));
   }
 
   // The handler has used n events: n more may be sent (ValueSource)
@@ -188,7 +203,7 @@ pub actor Connection is ValueSource {
     self.closeNow();
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -203,7 +218,7 @@ pub actor Connection is ValueSource {
     self.closeNow();
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -226,7 +241,7 @@ pub actor Connection is ValueSource {
     self.run();
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -239,7 +254,7 @@ pub actor Connection is ValueSource {
     self.run();
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -258,7 +273,7 @@ pub actor Connection is ValueSource {
       }
       while true {
         match outq.popFront() {
-          case let Some(p) { let r2 = await tx.sendTo(addr, p); }
+          case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
           else { break; }
         }
       }
@@ -399,6 +414,25 @@ pub actor Connection is ValueSource {
     forcedReason = reason;
     peer.close();
     self.run();
+  }
+
+  // What the socket answered to a datagram: an error is counted in the stats
+  // (ConnectionStats.sendErrors), and any but a full send buffer ends the
+  // connection with CloseReason.SendFailed (once: finish ignores a second call).
+  // A full buffer is a datagram lost, as the network may lose it; the protocol
+  // resends what matters
+  fn sendDone(self, r: Result[usize, IoError]) {
+    match r {
+      case let Err(e) { self.sendFailed(e); }
+      else {}
+    }
+  }
+
+  fn sendFailed(self, e: IoError) {
+    sendErrors = sendErrors + 1u64;
+    if !bufferFull(e.code) {
+      self.finish(CloseReason.SendFailed);
+    }
   }
 
   // Poll the protocol: send what it has, tell the application what happened
