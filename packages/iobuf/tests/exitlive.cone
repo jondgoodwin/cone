@@ -13,6 +13,15 @@
 // would hang on a lock a stopped thread held (most runs), and fail by timeout.
 // On Linux exit() runs no key destructors, so the same program checks only that
 // it ends.
+//
+// The spinners only sometimes leave a lock held when the process is stopped, so
+// a callback that took the lock would mostly get it and the test pass by luck.
+// So one more thread holds the registry's lock on purpose: it ends with blocks
+// in its cache, and bufpool's test-only flush hook parks it in its exit flush,
+// which runs under the registry's lock. Main then calls exit() with that lock
+// held for good. With the guard the exiting thread's callback returns at once
+// and the process ends; without it the callback waits for the lock and the run
+// hangs until its .timeout.
 
 mod exitlive;
 
@@ -21,15 +30,44 @@ import thread;
 import sync use *;
 import time use Duration;
 import iobuf use *;
+import bufpool;
 
 extern {
   fn @c exit(code: i32);
 }
 
 let spins: Atomic[u64];
+let armed: Atomic[u64];       // 1: the target thread's next flush parks
+let target: Atomic[u32];      // the id of the thread to park
+let parked: Atomic[u64];
 
 fn @initpure init() {
   spins = Atomic[u64].of(0u64);
+  armed = Atomic[u64].of(0u64);
+  target = Atomic[u32].of(0u32);
+  parked = Atomic[u64].of(0u64);
+}
+
+// bufpool's flush hook: parks for good, holding whatever the flush holds, the
+// target thread's first flush after 'armed' is set
+fn parkHook() {
+  if thread.current().id() == target.load() && armed.swap(0u64) == 1u64 {
+    parked.store(1u64);
+    while true {thread.sleep(Duration.fromMillis(1000i64));}
+  }
+}
+
+// ends holding blocks in its cache: its exit flush parks in the hook
+fn dying(n: u64) u64 {
+  target.store(thread.current().id());
+  armed.store(1u64);
+  var k = 0u64;
+  while k < 6u64 {
+    var b = IoBuf(100usize);
+    b.append("x");
+    k = k + 1u64;
+  }
+  n
 }
 
 fn spinner(n: u64) u64 {
@@ -81,6 +119,18 @@ fn main() i32 {
     k = k + 1u64;
   }
   while spins.load() < 1000u64 {thread.sleep(Duration.fromMillis(1i64));}
+  bufpool.setFlushHook(&parkHook);
+  let d = thread.start(0u64, &dying);
+  var waited = 0u32;
+  while parked.load() == 0u64 && waited < 10000u32 {
+    thread.sleep(Duration.fromMillis(1i64));
+    waited = waited + 1u32;
+  }
+  if parked.load() == 0u64 {
+    printStr("the dying thread never parked\n");
+    printFlush();
+    return 1i32;
+  }
   printStr("exiting with threads running\n");
   printFlush();
   exit(0i32);

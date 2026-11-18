@@ -12,6 +12,17 @@
 // twice, its slab's count of blocks out would wrap, and that slab would never
 // go back to the OS: at the end every slab must be back, nothing lent, nothing
 // cached.
+//
+// The 50 rounds only sometimes put a trim inside the window between an exit
+// flush reading a line and emptying it, so a flush that did not hold the
+// registry's lock (a mutant) mostly survives them. So first, in parkPhase, the
+// window is held open: bufpool's test-only flush hook parks a dying thread
+// right there (it has read a line's count, the line is not yet emptied) while
+// another thread runs trimAll(). With the lock the trim waits behind the parked
+// thread; without it the trim would flush the same line, and when the thread is
+// released the same blocks reach the stock twice. Main holds a buffer of each
+// class, so no slab goes back to the OS inside the window and the doubled
+// blocks show at the end as a slab that never comes home.
 
 mod exitrace;
 
@@ -19,16 +30,99 @@ import testing use *;
 import thread;
 import time use Duration;
 import iobuf use *;
+import bufpool;
 
 const perRound = 16u64;
 const rounds = 50u64;
+const parkRounds = 3u64;
 
 let gate: Atomic[u64];
 let waiting: Atomic[u64];
+let armed: Atomic[u64];       // 1: the next flush that reads a line parks
+let parked: Atomic[u64];
+let release: Atomic[u64];
+let trimDone: Atomic[u64];
 
 fn @initpure init() {
   gate = Atomic[u64].of(0u64);
   waiting = Atomic[u64].of(0u64);
+  armed = Atomic[u64].of(0u64);
+  parked = Atomic[u64].of(0u64);
+  release = Atomic[u64].of(0u64);
+  trimDone = Atomic[u64].of(0u64);
+}
+
+// bufpool's flush hook: the one flush that finds 'armed' set parks until released
+fn parkHook() {
+  if armed.swap(0u64) == 1u64 {
+    parked.store(1u64);
+    while release.load() == 0u64 {thread.yieldNow();}
+  }
+}
+
+// A thread that ends holding blocks of two classes in its cache
+fn dying(n: u64) u64 {
+  var k = 0u64;
+  while k < 6u64 {
+    var b = IoBuf(100usize);
+    b.append("x");
+    var m = IoBuf(10000usize);
+    m.append("y");
+    k = k + 1u64;
+  }
+  n
+}
+
+fn trimmer(n: u64) u64 {
+  trimAll();
+  trimDone.store(1u64);
+  n
+}
+
+// waits up to ms milliseconds for flag to be 1; answers whether it is
+fn waitFor(flag: &Atomic[u64], ms: u32) bool {
+  var i = 0u32;
+  while i < ms {
+    if flag.load() == 1u64 {
+      return true;
+    }
+    thread.sleep(Duration.fromMillis(1i64));
+    i = i + 1u32;
+  }
+  false
+}
+
+fn parkPhase() {
+  var keepA = IoBuf(100usize);
+  keepA.append("a");
+  var keepB = IoBuf(10000usize);
+  keepB.append("b");
+  bufpool.setFlushHook(&parkHook);
+  var r = 0u64;
+  var sawParked = 0u64;
+  var trimmedEarly = 0u64;
+  while r < parkRounds {
+    parked.store(0u64);
+    release.store(0u64);
+    trimDone.store(0u64);
+    armed.store(1u64);
+    let d = thread.start(r, &dying);
+    if waitFor(&parked, 5000u32) {
+      sawParked = sawParked + 1u64;
+    }
+    let t = thread.start(r, &trimmer);
+    // with the lock the trimmer cannot finish while the dying thread is parked;
+    // without it, it finishes inside the window
+    if waitFor(&trimDone, 300u32) {
+      trimmedEarly = trimmedEarly + 1u64;
+    }
+    release.store(1u64);
+    d.join();
+    t.join();
+    r = r + 1u64;
+  }
+  expectUInt(sawParked, parkRounds, "the dying thread parked in its exit flush every round");
+  expectUInt(trimmedEarly, 0u64, "a trim waits behind a parked exit flush: they do not flush at once");
 }
 
 fn work(round: u64) u64 {
@@ -46,6 +140,9 @@ fn work(round: u64) u64 {
 }
 
 fn main() i32 {
+  parkPhase();
+  trimAll();
+  expectUInt(osBlocks(), 0u64, "after the parked rounds every slab is back with the OS");
   var r = 0u64;
   var ran = 0u64;
   while r < rounds {

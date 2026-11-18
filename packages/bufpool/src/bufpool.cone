@@ -380,6 +380,7 @@ struct Globals {
   bigBytes: Atomic[u64];     // and their bytes
   bigTakes: Atomic[u64];     // oversize blocks ever lent
   refused: Atomic[u64];      // tryAllocate's refusals
+  flushHook: &fn();          // test-only (setFlushHook): called in flushCache, 0 in a program
 }
 
 pub const defaultMaxBytes = 67108864usize;     // 64 MiB held from the OS at most
@@ -671,6 +672,16 @@ pub fn flushThread() {
   myCache = null;
 }
 
+// A test-only hook, a slow-path field (never read by a take or a return): f is
+// called by every flushCache (a thread's end, flushThread, trimStock,
+// trimEverything), on the flushing thread, after it has read a line's count and
+// before it empties the line, so a test can hold a dying thread there while
+// another thread trims. f does nothing on a thread the test did not mean (the
+// test marks its own thread). No program sets it
+pub fn setFlushHook(f: &fn()) {
+  (*glob()).flushHook = f;
+}
+
 // Every block of tc's lines back to the stock
 fn flushCache(tc: *ThreadCache) {
   let g = glob();
@@ -679,6 +690,8 @@ fn flushCache(tc: *ThreadCache) {
     let ln = lineAt(tc, c);
     let n = (*ln).count;
     if n != 0u32 {
+      let hook = (*g).flushHook;
+      if hook as usize != 0usize {hook();}    // test-only park point: n is read, the line is not yet emptied
       (*ln).count = 0u32;
       stockPut(g, classAt(g, c), slotsOf(ln), n);
     }
