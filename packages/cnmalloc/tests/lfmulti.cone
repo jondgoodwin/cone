@@ -164,6 +164,13 @@ fn waitFor(c: usize, i: usize, want: usize) bool {
   ld(c, i) == want
 }
 
+// (row 532) until word i or word j is set: a round that can tell "no park point reached" from the thread finishing, without
+// waitFor's full time-out (5000 Sleep(1)s, about 78 s at Windows' default 15.6 ms timer)
+fn waitEither(c: usize, i: usize, j: usize) {
+  var w = 0usize;
+  while ld(c, i) == 0usize && ld(c, j) == 0usize && w < 5000usize { Sleep(1u32); w = w + 1usize; }
+}
+
 fn cleanup(coll: Collect) { coll(1i32); coll(1i32); }
 
 fn stamp(p: usize, size: usize, v: usize) {
@@ -371,11 +378,14 @@ fn singleRound(t: usize, k: usize, cells: usize, coll: Collect, tot: Total, pk: 
     let extra = libc.malloc(1024usize) as usize;
     if pk(x0, 65i32) != 3u64 { bump(k, kErr); }
     release(t, cRelTake);
-    if waitFor(t, cParkedOr, 1usize) {
+    // the undo's park point, or the taker done without it: a taker parked there cannot finish, so whichever comes first
+    // decides (a2s: the taker kept the cell and finished, with no undo)
+    waitEither(t, cParkedOr, cDone);
+    if ld(t, cParkedOr) == 1usize {
       if pk(x0, 0i32) == expectOld { bump(k, kSUndo); }
       release(t, cRelOr);
     } else {
-      bump(k, kErr);                                // no undo (a2s: the taker kept the cell)
+      bump(k, kErr);
     }
     if !waitFor(t, cDone, 1usize) { bump(k, kErr); }
     if pk(x0, 0i32) == expectOld { bump(k, kSRestored); }
