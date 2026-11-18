@@ -49,12 +49,15 @@
 
 // A connection an endpoint holds
 struct ConnectionSlot {
-  key: String;             // the other end's address as text
+  addr: SocketAddr;        // the other end's address
   id: u32;
   conn: Connection;
   session: u64;
   due: i64;                // when the connection asked to be ticked (steady-clock ns)
 }
+
+// Where each connection's slot is in 'slots', by the other end's address
+alias SlotsByAddr = Dict[SocketAddr, usize];
 
 // The deadline of a connection that has not asked for one
 const farFuture = 0x7FFFFFFFFFFFFFFFi64;
@@ -85,6 +88,7 @@ pub actor Endpoint {
   inflight: usize;              // datagrams handed to the socket and not yet sent
   gate: ChallengeGate;
   slots: List[ConnectionSlot];
+  byAddr: SlotsByAddr;          // the slot's index in 'slots', for each slot's address
   nextId: u32;
   armed: i64;                   // the instant the timer will next wake us; -1 none
   stopped: bool;
@@ -93,7 +97,6 @@ pub actor Endpoint {
   dialer: ClientHandshake;
   dialing: bool;
   remote: SocketAddr;
-  remoteKey: String;
 
   fn init(self: &new, server: bool, cfg: NetConfig, handler: EventHandler, remote: SocketAddr, seed: u64) {
     var rng = Rng.make(seed);
@@ -102,10 +105,10 @@ pub actor Endpoint {
     let g = CancelGroup.make();
     *self = Self(server: server, cfg: cfg, handler: handler, sock: UdpSocket.none(),
       group: g, timer: g.child(), timerGen: 0u32, inflight: 0usize,
-      gate: ChallengeGate.make(gateSeed), slots: List[ConnectionSlot](), nextId: 1u32,
+      gate: ChallengeGate.make(gateSeed), slots: List[ConnectionSlot](), byAddr: SlotsByAddr(), nextId: 1u32,
       armed: -1i64, stopped: false,
       dialer: ClientHandshake.make(cfg, salt, Instant.now()), dialing: !server,
-      remote: remote, remoteKey: remote.text());
+      remote: remote);
   }
 
   // How many connections are open now
@@ -250,15 +253,12 @@ pub actor Endpoint {
   }
 
   // A connection has ended
-  async fn gone(self, id: u32) {
-    var i = 0usize;
-    while i < slots.len() {
-      if slots[i].id == id {
-        slots.swap(i, slots.len() - 1usize);
-        slots.pop();
-        return;
-      }
-      i = i + 1usize;
+  // (a connection that its address's new session replaced is already out of
+  // the table: its id is not the slot's, and the new one stays)
+  async fn gone(self, id: u32, addr: SocketAddr) {
+    let k = self.find(&addr);
+    if k != notFound && slots[k].id == id {
+      self.removeSlot(k);
     }
   }
 
@@ -269,11 +269,10 @@ pub actor Endpoint {
   // A datagram arrived, from 'from'
   fn onDatagram(self, from: SocketAddr, data: IoBuf) {
     if stopped {return;}
-    let key = from.text();
-    if !server && key != remoteKey {return;}
+    if !server && from != remote {return;}
     let kind = if data.len() > 4usize {data.view()[4usize]} else {255u8};
     if kind == kindPayload || kind == kindDisconnect {
-      let k = self.find(key.view());
+      let k = self.find(&from);
       if dialing {
         // Not both at once in practice (a dial that connects ends the dialing),
         // so the copy for the connection is never made on the way a game runs
@@ -293,11 +292,13 @@ pub actor Endpoint {
       return;
     }
     var reply = streams.Writer.make(32usize);
+    // The gate keeps its state by the address's text; only a handshake makes it
+    let key = from.text();
     let verdict = gate.handle(key.view(), data.view(), Instant.now(), &mut reply);
     match verdict {
       case is Ignore {}
       case is Reply { self.transmit(from, reply.intoBuf()); }
-      case let Accept(a) { self.admit(from, key.view(), a.session, reply.intoBuf(), data.view()); }
+      case let Accept(a) { self.admit(from, a.session, reply.intoBuf(), data.view()); }
     }
   }
 
@@ -328,13 +329,27 @@ pub actor Endpoint {
     self.rearm();
   }
 
-  fn find(self: &, key: &str) usize {
-    var i = 0usize;
-    while i < slots.len() {
-      if slots[i].key == key {return i;}
-      i = i + 1usize;
+  fn find(self: &, addr: &SocketAddr) usize {
+    match byAddr.getCopy(addr) {
+      case let Some(k) { return k; }
+      else {}
     }
     notFound
+  }
+
+  // Take slot k out of the table: the last slot moves into its place (the
+  // order of 'slots' is otherwise kept) and its entry is re-pointed
+  fn removeSlot(self, k: usize) {
+    let dropped = byAddr.remove(&slots[k].addr);
+    let last = slots.len() - 1usize;
+    if k != last {
+      slots.swap(k, last);
+    }
+    slots.pop();
+    if k != last {
+      let moved = slots[k].addr;
+      byAddr.insert(moved, k);
+    }
   }
 
   // Queue a datagram for the socket (a message to ourselves, as a connection's are)
@@ -366,8 +381,8 @@ pub actor Endpoint {
 
   // A client proved it receives at its address: open its connection, or
   // answer a Response that has already been taken
-  fn admit(self, from: SocketAddr, key: &str, session: u64, accept: IoBuf, response: &Array[u8]) {
-    let k = self.find(key);
+  fn admit(self, from: SocketAddr, session: u64, accept: IoBuf, response: &Array[u8]) {
+    let k = self.find(&from);
     if k != notFound {
       if slots[k].session == session {
         // The Accept was lost; say it again
@@ -376,8 +391,7 @@ pub actor Endpoint {
       }
       // The same address, a new session: the old connection is dead
       slots[k].conn.close();
-      slots.swap(k, slots.len() - 1usize);
-      slots.pop();
+      self.removeSlot(k);
     } else if slots.len() >= cfg.maxClients {
       self.transmit(from, ChallengeGate.denied(ChallengeGate.saltOf(response)));
       return;
@@ -386,7 +400,8 @@ pub actor Endpoint {
     nextId = nextId + 1u32;
     let conn = Connection(connUdp, id, handler, cfg, session, from,
       Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
-    slots.push(ConnectionSlot(String.from(key), id, conn, session, Instant.now().nanos()));
+    byAddr.insert(from, slots.len());
+    slots.push(ConnectionSlot(from, id, conn, session, Instant.now().nanos()));
     self.transmit(from, accept);
   }
 
@@ -398,7 +413,8 @@ pub actor Endpoint {
         let id = 1u32;
         let conn = Connection(connUdp, id, handler, cfg, dialer.sessionId(), remote,
           Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
-        slots.push(ConnectionSlot(String.from(remoteKey.view()), id, conn, dialer.sessionId(), Instant.now().nanos()));
+        byAddr.insert(remote, slots.len());
+        slots.push(ConnectionSlot(remote, id, conn, dialer.sessionId(), Instant.now().nanos()));
         dialing = false;
         // The datagram that connected us may be a payload packet
         conn.packet(data);
