@@ -24,7 +24,7 @@ static void tags(void) {
   // outermost asker wins
   memstats_asking(9, 8); memstats_asking(22, 1);
   void* q = calloc(4, 10);
-  memstats_asking(0, 0);
+  memstats_asking(0, 0); memstats_asking(0, 0);   // markers nest: one clear per set
   CHECK(memstats_peek(q, &i) && i.kind == 9 && i.size == 40);
   for (int k = 0; k < 40; k++) CHECK(((char*)q)[k] == 0);
   free(q);

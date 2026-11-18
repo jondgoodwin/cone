@@ -2505,7 +2505,7 @@ static int structEnumIsTagOnly(StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&node->fields, cnt, nodesp)) {
-        if (!((*nodesp)->flags & IsTagField))
+        if (!((*nodesp)->flags & (IsTagField | IsMixin)))
             return 0;
     }
     if (node->derived == NULL)
