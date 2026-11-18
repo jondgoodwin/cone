@@ -51,24 +51,27 @@ if [ "$SRV" = local ]; then
   until grep -q LISTENING "$R/srv.log" 2>/dev/null; do sleep 2; done
 fi
 left=$N
+declare -A PID A B
 for k in $(seq 0 $((P - 1))); do
   share=$((left / (P - k))); left=$((left - share))
   run cli$k clients $PORT $share $SECS $CW $SRV
   echo $share > "$R/cli$k.share"
-done
-tick() { awk '{print $14+$15}' /proc/$1/stat 2>/dev/null; }  # utime+stime, clock ticks
-# the client exes' pids: the netbench processes whose command line holds the client's folder, found after they start
-sleep 5
-declare -A PID A B
-for k in $(seq 0 $((P - 1))); do
+  # one client's compile at a time (two compiling at once corrupted a read of core.cone, 18 Nov): wait for its exe
   for t in $(seq 1 600); do
     PID[$k]=$(pgrep -f "nb/cli$k/" | while read q; do [ -n "$(ls -l /proc/$q/exe 2>/dev/null | grep netbench)" ] && echo $q; done | head -1)
     [ -n "${PID[$k]}" ] && break; sleep 1
   done
 done
-until [ $(grep -l "CLIENTS joined" $R/cli*.log 2>/dev/null | wc -l) -ge $P ]; do sleep 1; done
+tick() { awk '{print $14+$15}' /proc/$1/stat 2>/dev/null; }  # utime+stime, clock ticks
+waited=0
+until [ $(grep -l "CLIENTS joined" $R/cli*.log 2>/dev/null | wc -l) -ge $P ]; do
+  sleep 1; waited=$((waited + 1)); [ $waited -ge 1800 ] && { echo "clients never joined"; exit 1; }
+done
 t0=$(date +%s.%N); for k in $(seq 0 $((P - 1))); do A[$k]=$(tick ${PID[$k]}); done
-until [ $(grep -l "CLIENTS updates heard" $R/cli*.log 2>/dev/null | wc -l) -ge $P ]; do sleep 1; done
+waited=0
+until [ $(grep -l "CLIENTS updates heard" $R/cli*.log 2>/dev/null | wc -l) -ge $P ]; do
+  sleep 1; waited=$((waited + 1)); [ $waited -ge 1800 ] && { echo "clients never finished"; exit 1; }
+done
 t1=$(date +%s.%N); for k in $(seq 0 $((P - 1))); do B[$k]=$(tick ${PID[$k]}); done
 win=$(echo "$t1 - $t0" | bc -l); hz=$(getconf CLK_TCK)
 echo "netbench clients on the Linux box: N=$N procs=$P seconds=$SECS window=${win}s (joined to heard; includes the wait for the server; box shared, CPU approximate)"
