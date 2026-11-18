@@ -1,20 +1,26 @@
-// Several datagrams in one receive: UdpSocket.recvMany. Linux takes every
-// datagram waiting, up to the buffers given, in one call (recvmmsg); Windows
+// Several datagrams in one receive: UdpSocket.recvMany, into a DatagramBatch the
+// receiver keeps for life and lends to each receive. Linux takes every
+// datagram waiting, up to the batch's slots, in one call (recvmmsg); Windows
 // one a call, behind the same answer, so each phase loops until every
-// datagram is in, and the first call's count is expected by system.
+// datagram is in, and the first call's count is expected by system. The one
+// batch of a phase serves every call of it: each filled buffer is swapped out
+// for a fresh one, and nothing else moves.
 //
 // 1. A sends ten datagrams of different lengths before B receives; B's
-//    recvMany of sixteen buffers: Linux answers all ten at once with six
-//    buffers spare, Windows one (fifteen spare), then the rest one by one.
+//    recvMany of a sixteen-slot batch: Linux answers all ten at once with six
+//    slots untouched, Windows one (fifteen untouched), then the rest one by one.
 //    In arrival order, each with A as its sender, and every byte of every
 //    datagram as sent (a position pattern).
-// 2. A datagram longer than its buffer's room is in the answer cut to the room
-//    with its bit set in 'cut'; the datagrams around it are whole.
+// 2. A datagram longer than its slot's room is in the answer cut to the room
+//    with its bit set (wasCut); the datagrams around it are whole.
 // 3. Two senders, three datagrams each, told apart by each datagram's sender.
-// 4. An empty list, and a first buffer with no room: InvalidInput. A later
-//    buffer with no room ends the batch there: one datagram, three buffers back.
-// 5. A receive with nothing waiting and a deadline that falls: TimedOut.
-// 6. A pending receive in a cancel group the main thread cancels: Cancelled.
+// 4. A batch of no slots, and a batch whose middle slot has no room: InvalidInput,
+//    the second naming slot 1, and each batch back in the answer, intact. The
+//    refused batch, its slot refilled, then takes two waiting datagrams.
+// 5. A receive with nothing waiting and a deadline that falls: TimedOut, the
+//    batch back with every slot as it was.
+// 6. The same batch, in a pending receive in a cancel group the main thread
+//    cancels: Cancelled, the batch back with every slot as it was.
 //
 // At the end every buffer is home (lent == 0) and every record dissolved.
 
@@ -24,34 +30,39 @@ import testing use *;
 import sync use Oneshot, OneshotSender, OneshotReceiver, Channel, Sender, Receiver;
 import collections use List;
 import iobuf use IoBuf, stats;
-import iocore use SocketAddr, IoError, CancelGroup;
+import iocore use SocketAddr, IoError, CancelGroup, DatagramBatch;
 import ioerror use IoErrorKind;
 import time use Instant, Duration;
 import thread;
 import actors;
-import aio use UdpSocket, IoLimits, Datagram, Datagrams;
+import aio use UdpSocket, IoLimits, RecvFailed;
 
 struct Got {
   pub bound: Atomic[u64];         // 1 if the sockets bound
   pub first: Atomic[u64];         // phase 1: the first call's datagram count
-  pub firstSpare: Atomic[u64];    // phase 1: the first call's spare buffers
+  pub firstSpare: Atomic[u64];    // phase 1: the first call's slots untouched
   pub inOrder: Atomic[u64];       // phase 1: datagrams received in order, whole, from A
   pub cutOk: Atomic[u64];         // phase 2: datagrams as expected, the long one cut and flagged
   pub twoOk: Atomic[u64];         // phase 3: datagrams from the sender expected
   pub badBytes: Atomic[u64];      // bytes not as sent, all phases
-  pub empty: Atomic[u64];         // phase 4: 1 if an empty list answered InvalidInput
-  pub noRoom: Atomic[u64];        // phase 4: 1 if a first buffer with no room answered InvalidInput
-  pub laterGot: Atomic[u64];      // phase 4: datagrams taken before a buffer with no room
-  pub laterSpare: Atomic[u64];    // phase 4: buffers back unused then
-  pub laterRest: Atomic[u64];     // phase 4: the next call's datagram length
+  pub empty: Atomic[u64];         // phase 4: 1 if a batch of no slots answered InvalidInput
+  pub emptyBack: Atomic[u64];     // phase 4: 1 if that answer carried the batch back
+  pub noRoom: Atomic[u64];        // phase 4: 1 if a slot with no room answered InvalidInput
+  pub noRoomSlot: Atomic[u64];    // phase 4: the slot that answer named
+  pub noRoomBack: Atomic[u64];    // phase 4: 1 if that answer carried the batch back, its other slots as they were
+  pub laterFirst: Atomic[u64];    // phase 4: the refused batch's first call's datagram count
+  pub laterOk: Atomic[u64];       // phase 4: datagrams in order and whole across its calls
   pub timed: Atomic[u64];         // phase 5: 1 if TimedOut
+  pub timedBack: Atomic[u64];     // phase 5: 1 if the batch came back, every slot as it was
   pub grouped: Atomic[u64];       // phase 6: 1 if Cancelled
+  pub groupedBack: Atomic[u64];   // phase 6: 1 if the batch came back, every slot as it was
 }
 
 let got: Got;
 
 fn @initpure init() {
   got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64));
@@ -98,22 +109,55 @@ fn roomBuf(room: usize) IoBuf {
   b
 }
 
-// n buffers of 'room' room each
-fn buffers(n: usize, room: usize) List[IoBuf] {
-  var l = List[IoBuf]();
-  var k = 0usize;
+// A batch of n slots, each with exactly 'room' bytes of room
+fn batchOf(n: u32, room: usize) Uni[DatagramBatch] {
+  var b = DatagramBatch.make(n, 64usize);
+  var k = 0u32;
   while k < n {
-    l.push(roomBuf(room));
-    k = k + 1usize;
+    let old = b.swapOut(k, roomBuf(room));
+    k = k + 1u32;
   }
-  l
+  b
 }
 
-// Whether the datagram holds its last 'have' bytes as datagram number i sent
+// The batch with each slot the last receive filled swapped for a fresh one of
+// 'room' (the filled buffers go home)
+fn renewed(batch: Uni[DatagramBatch], room: usize) Uni[DatagramBatch] {
+  var b = batch;
+  let cnt = b.count();
+  var k = 0u32;
+  while k < cnt {
+    let old = b.swapOut(k, roomBuf(room));
+    k = k + 1u32;
+  }
+  b
+}
+
+// The batch a failed receive handed back (a new one where none came)
+fn kept(f: RecvFailed, n: u32, room: usize) Uni[DatagramBatch] {
+  let e, back = f.(error, batch);
+  match back {
+    case var Some(b) {b}
+    else {batchOf(n, room)}
+  }
+}
+
+// Whether every one of the batch's n slots still has exactly 'room' of room
+fn intact(b: &DatagramBatch, n: u32, room: usize) bool {
+  if b.size() != n {return false;}
+  var k = 0u32;
+  while k < n {
+    if b.bufAt(k).room() != room {return false;}
+    k = k + 1u32;
+  }
+  true
+}
+
+// Whether the buffer holds its last 'have' bytes as datagram number i sent
 // them (a datagram cut to its room holds the first 'have' of them); bad bytes
 // are counted
-fn holds(d: &Datagram, have: usize, i: u8) bool {
-  let v = d.buf.view();
+fn holds(d: &IoBuf, have: usize, i: u8) bool {
+  let v = d.view();
   if v.len < have {return false;}
   let from = v.len - have;
   var j = 0usize;
@@ -128,12 +172,7 @@ fn holds(d: &Datagram, have: usize, i: u8) bool {
   good
 }
 
-fn isInvalid(r: &Result[Datagrams, IoError]) bool {
-  match r {
-    case let &Err(e) {e.kind() == IoErrorKind.InvalidInput}
-    else {false}
-  }
-}
+fn isInvalid(f: &RecvFailed) bool {f.error.kind() == IoErrorKind.InvalidInput}
 
 actor Peer {
 
@@ -147,7 +186,7 @@ actor Peer {
     if pa != 0u16 && pb != 0u16 && pc != 0u16 {got.bound.store(1u64);}
     let to = SocketAddr.localhost(pb);
 
-    // 1. Ten waiting, sixteen buffers
+    // 1. Ten waiting, sixteen slots
     var i = 0u64;
     while i < 10u64 {
       let r = await a.sendTo(to, datagram(10usize + usize.from(i), u8.from(i)));
@@ -156,26 +195,30 @@ actor Peer {
     let settle = await aio.sleep(Duration.fromMillis(30i64));
     var seen = 0u64;
     var calls = 0u64;
+    var batch = batchOf(16u32, 4096usize);
     while seen < 10u64 && calls < 20u64 {
-      let r = await b.recvMany(buffers(16usize, 4096usize));
+      let r = await b.recvMany(batch);
       match r {
-        case let Ok(ok) {
+        case var Ok(ok) {
+          batch = ok;
+          let cnt = batch.count();
           if calls == 0u64 {
-            got.first.store(u64.from(ok.got.len()));
-            got.firstSpare.store(u64.from(ok.spare.len()));
+            got.first.store(u64.from(cnt));
+            got.firstSpare.store(u64.from(batch.size() - cnt));
           }
-          var k = 0usize;
-          while k < ok.got.len() {
-            let d = &ok.got[k];
+          var k = 0u32;
+          while k < cnt {
+            let d = batch.bufAt(k);
             let n = 10usize + usize.from(seen);
-            if d.buf.len() == n && d.from.port() == pa && holds(d, n, u8.from(seen)) && ((ok.cut >> u64.from(k)) & 1u64) == 0u64 {
+            if d.len() == n && batch.from(k).port() == pa && holds(d, n, u8.from(seen)) && !batch.wasCut(k) {
               got.inOrder.store(got.inOrder.load() + 1u64);
             }
             seen = seen + 1u64;
-            k = k + 1usize;
+            k = k + 1u32;
           }
+          batch = renewed(batch, 4096usize);
         }
-        else {}
+        case var Err(f) {batch = kept(f, 16u32, 4096usize);}
       }
       calls = calls + 1u64;
     }
@@ -187,26 +230,29 @@ actor Peer {
     let settle2 = await aio.sleep(Duration.fromMillis(30i64));
     seen = 0u64;
     calls = 0u64;
+    batch = batchOf(8u32, 24usize);
     while seen < 3u64 && calls < 10u64 {
-      let r = await b.recvMany(buffers(8usize, 24usize));
+      let r = await b.recvMany(batch);
       match r {
-        case let Ok(ok) {
-          var k = 0usize;
-          while k < ok.got.len() {
-            let d = &ok.got[k];
+        case var Ok(ok) {
+          batch = ok;
+          let cnt = batch.count();
+          var k = 0u32;
+          while k < cnt {
+            let d = batch.bufAt(k);
             let wantLen = if seen == 0u64 {12usize} else if seen == 1u64 {40usize} else {5usize};
             let cut = wantLen > 24usize;
             let have = if cut {24usize} else {wantLen};
-            let bit = ((ok.cut >> u64.from(k)) & 1u64) == 1u64;
-            if holds(d, have, u8.from(2u64 + seen)) && bit == cut && d.buf.room() == (if cut {0usize} else {24usize - wantLen})
-                && d.from.port() == pa {
+            if holds(d, have, u8.from(2u64 + seen)) && batch.wasCut(k) == cut && d.room() == (if cut {0usize} else {24usize - wantLen})
+                && batch.from(k).port() == pa {
               got.cutOk.store(got.cutOk.load() + 1u64);
             }
             seen = seen + 1u64;
-            k = k + 1usize;
+            k = k + 1u32;
           }
+          batch = renewed(batch, 24usize);
         }
-        else {}
+        case var Err(f) {batch = kept(f, 8u32, 24usize);}
       }
       calls = calls + 1u64;
     }
@@ -225,71 +271,124 @@ actor Peer {
     let settle3 = await aio.sleep(Duration.fromMillis(30i64));
     seen = 0u64;
     calls = 0u64;
+    batch = batchOf(8u32, 4096usize);
     while seen < 6u64 && calls < 20u64 {
-      let r = await b.recvMany(buffers(8usize, 4096usize));
+      let r = await b.recvMany(batch);
       match r {
-        case let Ok(ok) {
-          var k = 0usize;
-          while k < ok.got.len() {
-            let d = &ok.got[k];
+        case var Ok(ok) {
+          batch = ok;
+          let cnt = batch.count();
+          var k = 0u32;
+          while k < cnt {
+            let d = batch.bufAt(k);
             let want = if seen % 2u64 == 0u64 {pa} else {pc};
-            if d.from.port() == want && holds(d, 8usize + usize.from(seen), u8.from(10u64 + seen)) {
+            if batch.from(k).port() == want && holds(d, 8usize + usize.from(seen), u8.from(10u64 + seen)) {
               got.twoOk.store(got.twoOk.load() + 1u64);
             }
             seen = seen + 1u64;
-            k = k + 1usize;
+            k = k + 1u32;
           }
+          batch = renewed(batch, 4096usize);
         }
-        else {}
+        case var Err(f) {batch = kept(f, 8u32, 4096usize);}
       }
       calls = calls + 1u64;
     }
 
-    // 4. An empty list; a first buffer with no room; a later one with none
-    let er = await b.recvMany(List[IoBuf]());
-    if isInvalid(&er) {got.empty.store(1u64);}
-    let nr = await b.recvMany(buffers(3usize, 0usize));
-    if isInvalid(&nr) {got.noRoom.store(1u64);}
-    let t1 = await a.sendTo(to, datagram(30usize, 20u8));
-    let t2 = await a.sendTo(to, datagram(31usize, 21u8));
-    let settle4 = await aio.sleep(Duration.fromMillis(30i64));
-    var mixed = List[IoBuf]();
-    mixed.push(roomBuf(64usize));
-    mixed.push(roomBuf(0usize));
-    mixed.push(roomBuf(64usize));
-    let mr = await b.recvMany(mixed);
-    match mr {
-      case let Ok(ok) {
-        got.laterGot.store(u64.from(ok.got.len()));
-        got.laterSpare.store(u64.from(ok.spare.len()));
-        if ok.got.len() == 1usize {
-          let d = &ok.got[0usize];
-          if !holds(d, 30usize, 20u8) {got.laterGot.store(99u64);}
+    // 4. A batch of no slots; a middle slot with no room (the batch back, the
+    // slot named); the refused batch, its slot refilled, taking two datagrams
+    let er = await b.recvMany(batchOf(0u32, 64usize));
+    match er {
+      case var Err(f) {
+        if isInvalid(&f) {got.empty.store(1u64);}
+        let eb, back = f.(error, batch);
+        match back {
+          case let Some(x) {if x.size() == 0u32 {got.emptyBack.store(1u64);}}
+          else {}
         }
       }
       else {}
     }
-    let rest = await b.recvMany(buffers(2usize, 64usize));
-    match rest {
-      case let Ok(ok) {
-        if ok.got.len() == 1usize && holds(&ok.got[0usize], 31usize, 21u8) {got.laterRest.store(u64.from(64usize - ok.got[0usize].buf.room()));}
+    var three = batchOf(3u32, 64usize);
+    let nothing = three.swapOut(1u32, IoBuf());
+    let nr = await b.recvMany(three);
+    match nr {
+      case var Err(f) {
+        if isInvalid(&f) {got.noRoom.store(1u64);}
+        got.noRoomSlot.store(u64.from(f.slot));
+        let eb, back = f.(error, batch);
+        match back {
+          case var Some(x) {
+            if x.size() == 3u32 && x.bufAt(0u32).room() == 64usize && x.bufAt(1u32).room() == 0usize && x.bufAt(2u32).room() == 64usize {
+              got.noRoomBack.store(1u64);
+            }
+            let old = x.swapOut(1u32, roomBuf(64usize));
+            batch = x;
+          }
+          else {batch = batchOf(3u32, 64usize);}
+        }
       }
-      else {}
+      case var Ok(ok) {batch = ok;}
+    }
+    let t1 = await a.sendTo(to, datagram(30usize, 20u8));
+    let t2 = await a.sendTo(to, datagram(31usize, 21u8));
+    let settle4 = await aio.sleep(Duration.fromMillis(30i64));
+    seen = 0u64;
+    calls = 0u64;
+    while seen < 2u64 && calls < 10u64 {
+      let mr = await b.recvMany(batch);
+      match mr {
+        case var Ok(ok) {
+          batch = ok;
+          let cnt = batch.count();
+          if calls == 0u64 {got.laterFirst.store(u64.from(cnt));}
+          var k = 0u32;
+          while k < cnt {
+            let n = 30usize + usize.from(seen);
+            if holds(batch.bufAt(k), n, u8.from(20u64 + seen)) {
+              got.laterOk.store(got.laterOk.load() + 1u64);
+            }
+            seen = seen + 1u64;
+            k = k + 1u32;
+          }
+          batch = renewed(batch, 64usize);
+        }
+        case var Err(f) {batch = kept(f, 3u32, 64usize);}
+      }
+      calls = calls + 1u64;
     }
 
-    // 5. A deadline that falls while waiting
-    let timed = await b.recvManyIn(buffers(4usize, 64usize), IoLimits.until(Instant.now() + Duration.fromMillis(80i64)));
+    // 5. A deadline that falls while waiting: the batch comes back as it went
+    batch = batchOf(4u32, 64usize);
+    let timed = await b.recvManyIn(batch, IoLimits.until(Instant.now() + Duration.fromMillis(80i64)));
     match timed {
-      case let Err(e) {if aio.isTimedOut(e) {got.timed.store(1u64);}}
-      else {}
+      case var Err(f) {
+        if aio.isTimedOut(f.error) {got.timed.store(1u64);}
+        let eb, back = f.(error, batch);
+        match back {
+          case var Some(x) {
+            if intact(&*x, 4u32, 64usize) {got.timedBack.store(1u64);}
+            batch = x;
+          }
+          else {batch = batchOf(4u32, 64usize);}
+        }
+      }
+      case var Ok(ok) {batch = ok;}
     }
 
-    // 6. A pending receive in a group the main thread cancels
+    // 6. A pending receive in a group the main thread cancels, on the same batch
     ready.send(1u64);
-    let grp = await b.recvManyIn(buffers(4usize, 64usize), IoLimits.within(g));
+    let grp = await b.recvManyIn(batch, IoLimits.within(g));
     match grp {
-      case let Err(e) {if aio.isCancelled(e) {got.grouped.store(1u64);}}
-      else {}
+      case var Err(f) {
+        if aio.isCancelled(f.error) {got.grouped.store(1u64);}
+        let eb, back = f.(error, batch);
+        match back {
+          case let Some(x) {if intact(&*x, 4u32, 64usize) {got.groupedBack.store(1u64);}}
+          else {}
+        }
+      }
+      case var Ok(ok) {batch = ok;}
     }
     var dn = done;
     dn.send(1u64);
@@ -320,22 +419,27 @@ fn main() i32 {
   expectUInt(got.bound.load(), 1u64, "three sockets bound");
   #if #os == .windows {
     expectUInt(got.first.load(), 1u64, "1: Windows answers one datagram a call");
-    expectUInt(got.firstSpare.load(), 15u64, "1: fifteen buffers spare");
+    expectUInt(got.firstSpare.load(), 15u64, "1: fifteen slots untouched");
+    expectUInt(got.laterFirst.load(), 1u64, "4: Windows answers one datagram a call");
   } #else {
     expectUInt(got.first.load(), 10u64, "1: Linux answers all ten in one call");
-    expectUInt(got.firstSpare.load(), 6u64, "1: six buffers spare");
+    expectUInt(got.firstSpare.load(), 6u64, "1: six slots untouched");
+    expectUInt(got.laterFirst.load(), 2u64, "4: Linux answers both waiting datagrams in one call");
   }
   expectUInt(got.inOrder.load(), 10u64, "1: ten datagrams in order, whole, from A, no cut bit");
   expectUInt(got.cutOk.load(), 3u64, "2: three datagrams as expected, the long one cut to its room and flagged");
   expectUInt(got.twoOk.load(), 6u64, "3: six datagrams from the right sender, whole");
   expectUInt(got.badBytes.load(), 0u64, "every byte of every datagram as sent");
-  expectUInt(got.empty.load(), 1u64, "4: an empty list is InvalidInput");
-  expectUInt(got.noRoom.load(), 1u64, "4: a first buffer with no room is InvalidInput");
-  expectUInt(got.laterGot.load(), 1u64, "4: a later buffer with no room ends the batch: one datagram");
-  expectUInt(got.laterSpare.load(), 2u64, "4: and its two other buffers come back unused");
-  expectUInt(got.laterRest.load(), 31u64, "4: the next datagram is still there");
+  expectUInt(got.empty.load(), 1u64, "4: a batch of no slots is InvalidInput");
+  expectUInt(got.emptyBack.load(), 1u64, "4: and comes back in the answer");
+  expectUInt(got.noRoom.load(), 1u64, "4: a slot with no room is InvalidInput");
+  expectUInt(got.noRoomSlot.load(), 1u64, "4: and the answer names slot 1");
+  expectUInt(got.noRoomBack.load(), 1u64, "4: and the batch comes back, its other slots as they were");
+  expectUInt(got.laterOk.load(), 2u64, "4: the refused batch, refilled, takes both datagrams in order");
   expectUInt(got.timed.load(), 1u64, "5: a deadline that fell answered TimedOut");
+  expectUInt(got.timedBack.load(), 1u64, "5: and the batch came back, every slot as it was");
   expectUInt(got.grouped.load(), 1u64, "6: a pending receive in a cancelled group answered Cancelled");
+  expectUInt(got.groupedBack.load(), 1u64, "6: and the batch came back, every slot as it was");
   expectUInt(stats().lent, 0u64, "every buffer came home");
   expectUInt(aio.opStats().inUse, 0u64, "every record dissolved");
   done()
