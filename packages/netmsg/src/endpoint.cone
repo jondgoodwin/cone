@@ -14,9 +14,9 @@
 // does its I/O by awaiting, as any actor does. Nothing of the protocol is in
 // that; it moves bytes and time between the socket and the connections:
 //
-//   receive   one behaviour that loops: 'await sock.recvManyIn(bufs, ...)' (the
+//   receive   one behaviour that loops: 'await sock.recvManyIn(batch, ...)' (the
 //             next datagram and any already waiting, up to 64 for a server, 8
-//             for a client), then each datagram is handled in place
+//             for a client, into the one DatagramBatch the endpoint keeps), then each datagram is handled in place
 //             (onDatagram). It is paused at the await, so the actor handles its
 //             other messages meanwhile.
 //   send      each connection sends its own datagrams, through a UdpSender (this
@@ -39,7 +39,7 @@
 // their caller until the socket is bound, as they did while the pump thread
 // started; called from a behaviour they need a second worker to bind on, and
 // panic with one worker rather than deadlock). A datagram longer than
-// recvRoom arrives cut (its bit in recvMany's 'cut'): it is dropped, and does
+// recvRoom arrives cut (recvMany's wasCut): it is dropped, and does
 // not count toward the failures that end the receive. 1000 failures in a row end the
 // receive, as they ended the pump. A program that ends in the instant it
 // calls shutdown() (without waiting for the peers to hear it) may lose the
@@ -71,8 +71,8 @@ const recvRoom = 2048usize;
 
 // How many datagrams one receive may take at once: a server has many peers, a
 // client one (aio takes at most 64)
-const serverBatch = 64usize;
-const clientBatch = 8usize;
+const serverBatch = 64u32;
+const clientBatch = 8u32;
 
 // The most receives that fail one after the other before the endpoint stops receiving
 const maxFailures = 1000u32;
@@ -185,36 +185,42 @@ pub actor Endpoint {
 
   // Receive datagrams until shutdown cancels the receive: the next one to arrive
   // and any already waiting (up to the batch), each handled in place in arrival
-  // order. A datagram longer than recvRoom comes cut (its bit in 'cut') and is
-  // dropped: its first bytes alone would look like a packet
+  // order. A datagram longer than recvRoom comes cut (wasCut) and is
+  // dropped: its first bytes alone would look like a packet. The endpoint makes
+  // one DatagramBatch and keeps it for its life: each receive is lent it and
+  // answers it, and each filled buffer is swapped out of its slot for a fresh
+  // one and sent on (nothing slides; a failed receive hands the batch back too)
   async fn receive(self) {
     let n = if server {serverBatch} else {clientBatch};
     var failures = 0u32;
-    var bufs = List[IoBuf]();
+    var batch = DatagramBatch.make(n, recvRoom);
     while !stopped && failures <= maxFailures {
-      while bufs.len() < n {
-        bufs.push(IoBuf(recvRoom));
-      }
-      // The buffers go to the socket and come back in the answer, used or spare
-      let r = await sock.recvManyIn(bufs, IoLimits.within(group));
-      bufs = List[IoBuf]();
+      // The batch goes to the socket and comes back in the answer
+      let r = await sock.recvManyIn(batch, IoLimits.within(group));
       match r {
         case var Ok(ok) {
           failures = 0u32;
-          bufs <-> ok.spare;   // bufs is empty here
-          let cut = ok.cut;
-          var k = 0usize;
-          each dg in ok.got.drain() {
-            let isCut = ((cut >> u64.from(k)) & 1u64) == 1u64;
-            k = k + 1usize;
-            if !isCut {
-              // The buffer the socket filled goes on to the connection as it is
-              let buf, from = dg.(buf, from);
+          batch = ok;
+          let cnt = batch.count();
+          var k = 0u32;
+          while k < cnt {
+            let from = batch.from(k);
+            // The buffer the socket filled goes on to the connection as it is
+            let buf = batch.swapOut(k, IoBuf(recvRoom));
+            if !batch.wasCut(k) {
               self.onDatagram(from, buf);
             }
+            k = k + 1u32;
           }
         }
-        case let Err(e) {
+        case var Err(f) {
+          // The batch comes back with the failure (None only where the kernel
+          // still holds it: then a new one is made)
+          let e, back = f.(error, batch);
+          match back {
+            case var Some(b) {batch = b;}
+            else {batch = DatagramBatch.make(n, recvRoom);}
+          }
           if aio.isCancelled(e) {return;}
           if !aio.isTruncated(e) {failures = failures + 1u32;}
         }

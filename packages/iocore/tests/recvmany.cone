@@ -15,7 +15,8 @@
 //    answer still Done, the datagrams around it whole.
 // 4. Two senders, told apart by each datagram's sender.
 // 5. An empty list, and a first buffer with no room: refused (InvalidInput),
-//    every buffer home; a later buffer with no room is left unused.
+//    the batch in the answer; a middle slot with no room refuses the whole batch
+//    (nothing taken, the datagrams still waiting).
 // 6. A receive on a silent socket, cancelled: Cancelled, every buffer home. The
 //    same with a deadline: TimedOut. And one that waits, answered by a
 //    datagram sent afterwards: Done.
@@ -98,13 +99,13 @@ fn batchOn(pool: &OpPool[Ask], h: Handle, nbufs: usize, room: usize) *OpCore {
   let c = &mut (*r).core;
   c.kind = diag.kindRecvMany;
   c.handle = h;
-  var bufs = List[IoBuf]();
+  var b = DatagramBatch.make(u32.from(nbufs), 64usize);
   var k = 0usize;
   while k < nbufs {
-    bufs.push(roomBuf(room));
+    let old = b.swapOut(u32.from(k), roomBuf(room));
     k = k + 1usize;
   }
-  c.batch = Some[Uni[RecvBatch]](Uni[RecvBatch](RecvBatch(bufs, List[SocketAddr](), 0usize, 0u64)));
+  c.batch = Some[Uni[DatagramBatch]](b);
   r as *OpCore
 }
 
@@ -126,18 +127,17 @@ fn checkRec(pool: &OpPool[Ask], p: *OpCore, nbufs: usize, room: usize, first: u6
   var got = 0usize;
   match batch {
     case var Some(bt) {
-      got = bt.got;
+      got = usize.from(bt.count());
       if status == diag.outcomeDone {
         expect(got >= 1usize && got == n, what);
-        expectUInt(u64.from(bt.bufs.len()), u64.from(nbufs), what);
-        expectUInt(u64.from(bt.from.len()), u64.from(got), what);
+        expectUInt(u64.from(bt.size()), u64.from(nbufs), what);
         var k = 0usize;
         while k < got {
           let s = first + u64.from(k);
           let want = lenOf(s);
           let cut = want > room;
-          let b = &bt.bufs[k];
-          let bit = (bt.cut >> u64.from(k)) & 1u64;
+          let b = bt.bufAt(u32.from(k));
+          let bit = if bt.wasCut(u32.from(k)) {1u64} else {0u64};
           expectUInt(bit, if cut {1u64} else {0u64}, what);
           let have = if cut {room} else {want};
           let v = b.view();
@@ -150,12 +150,12 @@ fn checkRec(pool: &OpPool[Ask], p: *OpCore, nbufs: usize, room: usize, first: u6
             j = j + 1usize;
           }
           expect(same, what);
-          expectUInt(u64.from(bt.from[k].port()), u64.from(ports[usize.from(s - base)]), what);
+          expectUInt(u64.from(bt.from(u32.from(k)).port()), u64.from(ports[usize.from(s - base)]), what);
           k = k + 1usize;
         }
-        // The buffers after them untouched
+        // The slots after them untouched
         while k < nbufs {
-          expectUInt(u64.from(bt.bufs[k].room()), u64.from(room), what);
+          expectUInt(u64.from(bt.bufAt(u32.from(k)).room()), u64.from(room), what);
           k = k + 1usize;
         }
       }
@@ -317,43 +317,40 @@ fn main() i32 {
     expect(answerError(diag.kindRecvMany, s2.status, s2.code).kind() == IoErrorKind.InvalidInput, "5: InvalidInput too");
     got.clear();
 
-    // A second buffer with no room: only the first is filled, the rest unused
+    // A middle slot with no room refuses the whole batch: nothing is taken, the
+    // datagrams stay waiting, the batch is in the answer with its slots as given
     sendNum(&pool, &sh, u, vport, 400u64, 0usize);
     sendNum(&pool, &sh, u, vport, 401u64, 0usize);
     thread.sleep(Duration.fromMillis(30i64));
-    let p3 = pool.take(Ask(6u64));
-    (*p3).core.kind = diag.kindRecvMany;
-    (*p3).core.handle = v;
-    var bufs = List[IoBuf]();
-    bufs.push(roomBuf(64usize));
-    bufs.push(roomBuf(0usize));
-    bufs.push(roomBuf(64usize));
-    (*p3).core.batch = Some[Uni[RecvBatch]](Uni[RecvBatch](RecvBatch(bufs, List[SocketAddr](), 0usize, 0u64)));
-    lp.start(p3 as *OpCore);
+    let p3 = batchOn(&pool, v, 3usize, 64usize);
+    match &mut (*(p3 as *OpRec[Ask])).core.batch {
+      case var &mut Some(bt) {let old = bt.swapOut(1u32, roomBuf(0usize));}
+      else {expect(false, "5: a batch");}
+    }
+    expectUInt(u64.from(issueOnly(&sh, v, p3)), u64.from(issueNot), "5: a middle slot with no room is not issued");
+    lp.start(p3);
     waitDone(&mut lp, &mut got, 1usize);
     requireUInt(u64.from(got.len()), 1u64, "5: answered");
-    let rec = pool.dissolve(p3);
+    let rec = pool.dissolve(p3 as *OpRec[Ask]);
     let core, ask = rec.(core, ask);
-    expectUInt(u64.from(core.status), u64.from(diag.outcomeDone), "5: Done");
-    expectUInt(u64.from(core.n), 1u64, "5: one datagram: the buffer with no room ends the batch");
+    expectUInt(u64.from(core.status), u64.from(diag.outcomeFailed), "5: a middle slot with no room fails");
+    expect(answerError(diag.kindRecvMany, core.status, core.code).kind() == IoErrorKind.InvalidInput, "5: InvalidInput, whole batch refused");
     let batch = core.(batch);
     match batch {
       case var Some(bt) {
-        expectUInt(u64.from(bt.got), 1u64, "5: got 1");
-        expectUInt(u64.from(bt.bufs.len()), 3u64, "5: all three buffers still in the batch");
+        expectUInt(u64.from(bt.count()), 0u64, "5: nothing counted");
+        expectUInt(u64.from(bt.size()), 3u64, "5: all three slots still in the batch");
+        expectUInt(u64.from(bt.firstWithoutRoom()), 1u64, "5: slot 1 is the one with no room");
+        expectUInt(u64.from(bt.bufAt(0u32).room()), 64u64, "5: slot 0 as given");
+        expectUInt(u64.from(bt.bufAt(2u32).room()), 64u64, "5: slot 2 as given");
       }
-      else {expect(false, "5: a batch");}
+      else {expect(false, "5: the batch came back");}
     }
-    // The second datagram is still waiting: take it
-    let p4 = batchOn(&pool, v, 2usize, 64usize);
-    lp.start(p4);
-    got.clear();
-    waitDone(&mut lp, &mut got, 1usize);
-    requireUInt(u64.from(got.len()), 1u64, "5: the rest answered");
+    // The two datagrams are still waiting: take them
     var ports2 = List[u16]();
     ports2.push(uport);
-    let s4 = checkRec(&pool, p4, 2usize, 64usize, 401u64, 401u64, &ports2, "5: the second datagram");
-    expectUInt(u64.from(s4.got), 1u64, "5: one more");
+    ports2.push(uport);
+    let s4 = recvAll(&mut lp, &sh, &pool, v, 2usize, 2usize, 64usize, 400u64, &ports2, false, "5: the two datagrams after the refusal");
   }
 
   // 6. Cancelled, timed out, and answered after waiting (receiver w: nothing waiting)

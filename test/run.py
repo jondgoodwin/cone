@@ -2108,6 +2108,7 @@ DEMANGLE_BASIC_TYPES = {
     "a": "i8", "s": "i16", "l": "i32", "x": "i64", "n": "i128",
     "h": "u8", "t": "u16", "m": "u32", "y": "u64", "o": "u128",
     "f": "f32", "d": "f64", "b": "bool", "u": "void", "i": "isize", "j": "usize",
+    "w": "char",
 }
 
 # Itanium's codes where Itanium has the operator, Cone's own where it does not.
