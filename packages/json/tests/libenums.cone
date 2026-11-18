@@ -1,0 +1,54 @@
+// json's own enums through its serialization: the reader's Event is the string of its name, and the Json tree is
+// serialized as an enum like any other: "Null", {"Text":"hi"}, {"Array":[...]}, {"Object":[{"key":..,"value":..}]}.
+// Each reads back to the same text.
+
+mod libenums;
+
+import testing use *;
+import collections use *;
+import json;
+
+fn text[T](v: &T) String where T is Serialize {
+  match json.toJson(v) {
+    case let Ok(s) { s }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn trip[T](v: &T, want: &str, label: &str) where T is Serialize && T is Deserialize[T] {
+  expectStr(text(v).view(), want, label);
+  match json.fromJson[T](want) {
+    case let Ok(back) { expectStr(text(&back).view(), want, label); }
+    case let Err(e) { expectStr((String() <- e).view(), "<read>", label); }
+  }
+}
+
+fn main() i32 {
+  trip[json.Event](&json.Event.StartObject, "\"StartObject\"", "StartObject");
+  trip[json.Event](&json.Event.EndObject, "\"EndObject\"", "EndObject");
+  trip[json.Event](&json.Event.StartArray, "\"StartArray\"", "StartArray");
+  trip[json.Event](&json.Event.EndArray, "\"EndArray\"", "EndArray");
+  trip[json.Event](&json.Event.Key, "\"Key\"", "Key");
+  trip[json.Event](&json.Event.Text, "\"Text\"", "Text");
+  trip[json.Event](&json.Event.Number, "\"Number\"", "Number");
+  trip[json.Event](&json.Event.True, "\"True\"", "True");
+  trip[json.Event](&json.Event.False, "\"False\"", "False");
+  trip[json.Event](&json.Event.Null, "\"Null\"", "Null");
+  trip[json.Event](&json.Event.Done, "\"Done\"", "Done");
+  expectStr((String() <- (match json.fromJson[json.Event]("\"Maybe\"") { case is Ok { String.from("ok") } case let Err(e) { String() <- e } })).view(),
+    "unknown variant (Event)", "an unknown event name");
+
+  // The tree
+  trip[json.Json](&json.Json.Null, "\"Null\"", "Json Null");
+  trip[json.Json](&json.Json.Bool(true), "{\"Bool\":true}", "Json Bool");
+  trip[json.Json](&json.Json.fromI64(42i64), "{\"Number\":\"42\"}", "Json Number holds its text");
+  trip[json.Json](&json.Json.fromText("hi"), "{\"Text\":\"hi\"}", "Json Text");
+  var arr = json.Json.newArray();
+  arr.push(json.Json.fromText("a"));
+  arr.push(json.Json.Null);
+  trip(&arr, "{\"Array\":[{\"Text\":\"a\"},\"Null\"]}", "Json Array of Json");
+  var obj = json.Json.newObject();
+  obj.set("k", json.Json.fromBool(false));
+  trip(&obj, "{\"Object\":[{\"key\":\"k\",\"value\":{\"Bool\":false}}]}", "Json Object of Members");
+  done()
+}
