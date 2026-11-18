@@ -187,7 +187,29 @@ fn main() {
 		the smallest IPv6 path), <span class="pre">goodRate</span> (30 packets a second) and <span class="pre">badRate</span> (10),
 		<span class="pre">badRttMs</span> (250), <span class="pre">keepAliveMs</span> (100), <span class="pre">timeoutMs</span> (10,000),
 		<span class="pre">resendMinMs</span> (40), <span class="pre">connectRetryMs</span> (250), <span class="pre">connectTimeoutMs</span>
-		(5,000) and a server's <span class="pre">maxClients</span> (64).</p>
+		(5,000), and the limits a server puts on its peers (below).</p>
+
+	<h3 id="limits">Limits on a misbehaving peer</h3>
+	<p>A server spends memory and work on each connection and each handshake, so it bounds what one peer, or one
+		address, can make it spend. A client past a limit hears what it hears at <span class="pre">maxClients</span>:
+		<span class="pre">Left</span> with <span class="pre">Refused</span>, and the server hears nothing.</p>
+	<ul>
+	<li><span class="pre">maxClients</span> (64): connections a server holds.</li>
+	<li><span class="pre">maxPerAddress</span> (32): of those, from one IP address. An IPv6 address counts by its /64 (its
+		first four groups), and an IPv4-mapped IPv6 address by the IPv4 address in it. The default is not lower because
+		carrier-grade NAT puts many users behind one IPv4 address, and a proxy in front of the server does the same.</li>
+	<li><span class="pre">admitRate</span> (50): new connections admitted a second across the whole server, from a bucket
+		that holds twice that, so a burst of 100 gets in at once and the rest as it refills. 0 is no limit.</li>
+	<li>A new session from a socket address (IP and port) that already has a connection replaces it (a reconnect), taking no place and no
+		admission, but at most once a second for one socket address; a replacement sooner is denied and the old connection stays.</li>
+	<li>Latest-wins streams: 64 a connection each way (<span class="pre">maxStreams</span>). An update on a 65th stream from the
+		peer, or one waiting for a handler that gives no credit, is dropped and counted in
+		<span class="pre">ConnectionStats.streamsRefused</span>; the connection is not closed for it.</li>
+	</ul>
+	<p>The handshake's cookie key is 128 bits from the operating system's random source. A server whose clients share an
+		address (a benchmark's, all on 127.0.0.1) or arrive in a crowd raises <span class="pre">maxPerAddress</span> and
+		<span class="pre">admitRate</span> beside <span class="pre">maxClients</span>; the defaults suit a server on the
+		internet, and loopback has no exemption.</p>
 
 	<h2 id="protocol">The protocol</h2>
 	<p>Every number is written most significant byte first. Every datagram begins with the four bytes
@@ -243,7 +265,7 @@ fn main() {
 		is the salt xor the cookie; the server opens the connection and answers Accept, and every later packet in either
 		direction carries the session, a packet with another being dropped. A spoofed source address therefore never gets
 		a connection, and a server cannot be used to amplify an attack: the replies are a sixtieth of what asked
-		for them. A full server answers Denied. A client whose Accept is lost connects on the first payload packet the
+		for them. A server that is full, or past a limit above, answers Denied. A client whose Accept is lost connects on the first payload packet the
 		server sends. The connection attempt fails after <span class="pre">connectTimeoutMs</span>.</p>
 	<p>There is no encryption: the session is a shared secret, and anyone who can read the packets can read the data and
 		forge packets. The place for it is the handshake (a key agreed there) and the payload packet (where it would be
