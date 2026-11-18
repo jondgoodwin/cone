@@ -137,11 +137,13 @@ struct OrCell is Sendable {
 
   // The callee ended without answering. If the cancel has the envelope, the
   // answer that was owed will not come
-  fn markGone(self: &) {
+  // True if the await was open: it now has no arm but the cancel
+  fn markGone(self: &) bool {
     let seen, ok = state.compareSwap(orOpen, orGone);
     if !ok && (seen == orWoken || seen == orAnswered) {
       lateSub();
     }
+    ok
   }
 }
 
@@ -156,8 +158,9 @@ struct OrWake[R] is Sendable {
   // Err(Cancelled); the answer is dispatched to the awaiting actor
   pub fn signal(self: &) bool {
     // A cancel after the runtime has stopped has no behaviour to wake: the
-    // parked ones were abandoned at the end
-    if running.load() == 0usize {
+    // parked ones were abandoned at the end. Once the stop has begun (THE STOP'S GATE) the same holds, and
+    // the cancel does not claim the wake it could then not deliver
+    if running.load() == 0usize || gateShut() {
       return false;
     }
     if !self.cell.claimWake(true) {
@@ -211,6 +214,31 @@ fn groupCopy(h: *Header, w: u64) Option[CancelGroup] {
   }
   gU();
   out
+}
+
+// The await at (h, w) has no arm but the cancel: its table entry's copy of the group is let
+// go as a holder (it keeps the state, not the cancel arms), which may be the group's last. A
+// member is a holder of its group unless it is parked in its own orCancelled await with no
+// other live arm. The copy is let go outside the table's lock: the drop may free what takes it
+fn groupDemote(h: *Header, w: u64) {
+  if (w & groupBit) == 0u64 {return;}
+  let key = w ^ groupBit;
+  var old: Option[CancelGroup] = None;
+  gL();
+  if gTable.loadOrdered(MemOrder.Relaxed) != 0usize {
+    var n = *((gTable.loadOrdered(MemOrder.Relaxed) as *usize) + gBucket(h, key)) as *GNode;
+    while n as usize != 0usize {
+      if (*n).h as usize == h as usize && u64.from(n as usize) == key {
+        let g = mem.readRaw[CancelGroup](&(*n).g as *CancelGroup);
+        let inn = g.inner();
+        mem.writeRaw[CancelGroup](&(*n).g as *CancelGroup, inn);
+        old = Some[CancelGroup](g);
+        break;
+      }
+      n = (*n).next;
+    }
+  }
+  gU();
 }
 
 // The cell as a word, another owner counted, for a Waiter's id; and back, the
@@ -289,7 +317,10 @@ fn orDeliver[R](cell: &Arc[imm, OrCell], at: *u8) {
       release(payload);
     }
   } else {
-    cell.markGone();
+    if cell.markGone() {
+      // The await's one arm left is the cancel: it holds its group no more (cancelgroups.cone, HOLDERS)
+      groupDemote(cell.to, cell.id);
+    }
     release(payload);
   }
 }

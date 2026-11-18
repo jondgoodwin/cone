@@ -1,0 +1,212 @@
+// Socket.closeWrite, the half-close of the sending side (the package's header,
+// SOCKET CONTROLS): an actor pair over loopback.
+//
+// 1. A writes "x", awaits it, awaits closeWrite() -> Ok. B reads "x", then the
+//    clean end of the stream (an empty buffer). B writes "yz"; A still reads it.
+//    A write by A after the shutdown answers Err.
+// 2. closeWrite() on a listening Socket -> Err of kind InvalidInput; on
+//    Socket.none() likewise.
+// 3. A write of 8 MiB to a peer that does not read, not awaited to its end,
+//    then closeWrite() from another actor: the write is answered (a deadline
+//    of 3 s stands behind it, so nothing hangs). On Linux the answer is an
+//    error (the part not yet taken is refused); on Windows what the system
+//    does with a WSASend it holds at a shutdown is not known, so the line
+//    printed records it (halfclose.out; halfclose.linux.out has no line).
+//    Measured on Windows (17 Nov, 8 MiB and 64 MiB, loopback): the kernel
+//    takes the whole send into its buffers within the 300 ms before the
+//    shutdown, the write is answered Ok, and so none was in flight at it.
+// 4. At the end every buffer is home and every record dissolved.
+//
+// What each 'await' found is kept in Got, checked by main once Peer is done.
+
+mod halfclose;
+
+import testing use *;
+import stdio use *;
+import thread;
+import time use Duration, Instant;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf, stats;
+import iocore use SocketAddr, IoError;
+import ioerror use IoErrorKind;
+import actors;
+import aio use Socket, IoLimits;
+
+const bigWrite = 8388608usize;
+
+struct Got {
+  pub shutOk: Atomic[u64];        // 1 if closeWrite answered Ok
+  pub gotX: Atomic[u64];          // B's first read: the length
+  pub gotEnd: Atomic[u64];        // 1 if B's second read was the clean end (empty)
+  pub back: Atomic[u64];          // A's read of "yz": the length
+  pub late: Atomic[u64];          // 1 if A's write after the shutdown was an Err
+  pub listener: Atomic[u64];      // 1 if closeWrite on a listener was InvalidInput
+  pub none: Atomic[u64];          // 1 if closeWrite on Socket.none() was InvalidInput
+  pub big: Atomic[u64];           // 1 if the 8 MiB write was answered
+  pub bigErr: Atomic[u64];        // 1 if that answer was an Err
+  pub bigTimed: Atomic[u64];      // 1 if it was TimedOut
+  pub bigShut: Atomic[u64];       // 1 if the closeWrite beside it was answered Ok
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn lenOf(r: Result[IoBuf, IoError]) u64 {
+  match r {
+    case let Ok(b) {u64.from(b.len())}
+    case let Err(e) {1000000u64 + u64.from(e.code)}
+  }
+}
+
+fn text(s: &Array[u8]) IoBuf {
+  var b = IoBuf(64usize);
+  b.append(s);
+  b
+}
+
+fn filled(n: usize) IoBuf {
+  var b = IoBuf(n);
+  b.setLen(n);
+  b
+}
+
+actor Other {
+  keep: Socket;
+
+  // s's sending side finished a little later, and s kept (not closed) after
+  pub async fn shutSoon(self, s: Socket) {
+    let z = await aio.sleep(Duration.fromMillis(300i64));
+    let r = await s.closeWrite();
+    match r {
+      case is Ok {got.bigShut.store(1u64);}
+      else {}
+    }
+    keep = s;
+  }
+
+  pub async fn letGo(self) {
+    keep = Socket.none();
+  }
+}
+
+actor Peer {
+
+  pub async fn run(self, done: OneshotSender[u64], other: Other) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+
+    // 1. A half-close, then the other direction
+    let a = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let b = socketOf(await ls.accept());
+    let w = await a.write(text("x"));
+    match await a.closeWrite() {
+      case is Ok {got.shutOk.store(1u64);}
+      else {}
+    }
+    got.gotX.store(lenOf(await b.read(IoBuf(64usize))));
+    if lenOf(await b.read(IoBuf(64usize))) == 0u64 {got.gotEnd.store(1u64);}
+    let w2 = await b.write(text("yz"));
+    got.back.store(lenOf(await a.read(IoBuf(64usize))));
+    match await a.write(text("late")) {
+      case is Err {got.late.store(1u64);}
+      else {}
+    }
+
+    // 2. A listener, and nothing
+    match await ls.closeWrite() {
+      case let Err(e) {if e.kind() == IoErrorKind.InvalidInput {got.listener.store(1u64);}}
+      else {}
+    }
+    match await Socket.none().closeWrite() {
+      case let Err(e) {if e.kind() == IoErrorKind.InvalidInput {got.none.store(1u64);}}
+      else {}
+    }
+
+    // 3. A write in flight at the shutdown
+    let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let d = socketOf(await ls.accept());
+    let writing = c.writeIn(filled(bigWrite), IoLimits.until(Instant.now() + Duration.fromSeconds(3i64)));
+    other.shutSoon(c);
+    let r = await writing;
+    got.big.store(1u64);
+    match r {
+      case let Err(e) {
+        got.bigErr.store(1u64);
+        if aio.isTimedOut(e) {got.bigTimed.store(1u64);}
+      }
+      else {}
+    }
+    other.letGo();
+    var dn = done;
+    dn.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let o = Other(Socket.none());
+    let peer = Peer();
+    peer.run(tx, o);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the peer said it was done");}
+    else {}
+  }
+  var waited = 0i64;
+  while aio.opStats().inUse > 0u64 && waited < 5000i64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 10i64;
+  }
+  let left = aio.opStats().inUse;
+  finalAll();
+  #if #os == .windows {
+    printStr("windows: the write held at the shutdown ended: ");
+    if got.bigErr.load() == 0u64 {printStr("Ok");}
+    else if got.bigTimed.load() == 1u64 {printStr("TimedOut");}
+    else {printStr("Err");}
+    printStr("\n");
+  }
+  expectUInt(got.shutOk.load(), 1u64, "closeWrite answers Ok");
+  expectUInt(got.gotX.load(), 1u64, "B reads the one byte sent before it");
+  expectUInt(got.gotEnd.load(), 1u64, "...then the clean end of the stream");
+  expectUInt(got.back.load(), 2u64, "A, half-closed, still reads what B sends");
+  expectUInt(got.late.load(), 1u64, "a write after the shutdown answers Err");
+  expectUInt(got.listener.load(), 1u64, "closeWrite on a listener: InvalidInput");
+  expectUInt(got.none.load(), 1u64, "closeWrite on Socket.none(): InvalidInput");
+  #if #os != .windows {
+    expectUInt(got.bigTimed.load(), 0u64, "linux: the write held at the shutdown was refused, not timed out");
+  }
+  expectUInt(got.big.load(), 1u64, "the write held at the shutdown was answered (nothing hung)");
+  expectUInt(got.bigShut.load(), 1u64, "the closeWrite beside it was answered Ok");
+  #if #os != .windows {
+    expectUInt(got.bigErr.load(), 1u64, "on Linux the write not yet taken is refused: an error");
+  } #else {
+    expect(true, "on Windows the line above records what the system did");
+  }
+  expectUInt(left, 0u64, "every record is dissolved");
+  expectUInt(stats().lent, 0u64, "every buffer is home");
+  done()
+}
