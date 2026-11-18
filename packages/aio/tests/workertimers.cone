@@ -1,0 +1,347 @@
+// aio's sleeps on the workers' own timers (row 483: actors' timer service,
+// timers.cone). Four workers, so the runtime has its monitor and sleeps
+// awaited on a worker are that worker's cells.
+//
+// 1. (spec test 2) 100,000 sleeps, 200 actors of 500 each, random waits of
+//    0-3 ms: every one answers once, Done, and none before its time.
+// 2. (spec test 3) A group cancelled while the sleep waits: by a message to the
+//    sleeper itself (its own worker's cancel), by another actor, by main (a
+//    plain thread); a parent cancelled, the sleep in its child (the worker's
+//    sweep); a grandparent of it; a shield between, which the parent's cancel
+//    does not cross (Done); a group already cancelled; a group's own deadline
+//    and an IoLimits deadline (TimedOut at the deadline); an instant already
+//    past (Done at once). Each says how it ended and whether it was in time.
+// 3. (spec test 6) An Awaitable dropped unawaited (no answer, no cell left);
+//    one made on a worker and awaited after a request whose answer may resume
+//    the actor on another: every one answers once and in time, and some are
+//    seen to cross; a sleep made off the workers (main) and dropped.
+// 4. At the end no cell is armed, the cells' counts add up, and the runtime
+//    goes idle (every operation spent).
+
+mod workertimers;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import iocore use IoError, CancelGroup;
+import actors;
+import aio use IoLimits;
+
+const sleepers = 200u64;
+const perSleeper = 500u64;
+
+let early: Atomic[u64];        // sleeps answered before their time
+let answered: Atomic[u64];     // sleeps answered
+let notDone: Atomic[u64];      // sleeps answered with anything but Done (in part 1)
+let crossed: Atomic[u64];      // part 3's awaits made on one worker and awaited on another
+let late: Atomic[u64];         // part 3's sleeps answered more than a second late
+
+fn @initpure init() {
+  early = Atomic[u64].of(0u64);
+  answered = Atomic[u64].of(0u64);
+  notDone = Atomic[u64].of(0u64);
+  crossed = Atomic[u64].of(0u64);
+  late = Atomic[u64].of(0u64);
+}
+
+// How a sleep ended: 1 done, 2 cancelled, 3 timed out, 4 failed
+fn ended(r: Result[void, IoError]) u64 {
+  match r {
+    case let Err(e) {
+      if aio.isCancelled(e) {2u64}
+      else if aio.isTimedOut(e) {3u64}
+      else {4u64}
+    }
+    else {1u64}
+  }
+}
+
+fn take(rx: &mut Receiver[u64]) u64 { rx.recv() || 999u64 }
+
+actor Many {
+  seed: u64;
+  done: Sender[u64];
+
+  pub async fn run(self) {
+    var x = seed;
+    var i = 0u64;
+    while i < perSleeper {
+      x = x * 6364136223846793005u64 + 1442695040888963407u64;
+      let us = i64.from((x >> 33u64) % 3000u64);
+      let d = Duration.fromMicros(us);
+      let t = Instant.now();
+      let r = await aio.sleep(d);
+      if t.elapsed() < d {early.add(1u64);}
+      if ended(r) != 1u64 {notDone.add(1u64);}
+      answered.add(1u64);
+      i = i + 1u64;
+    }
+    done.send(1u64);
+  }
+}
+
+actor Canceller {
+  pub async fn cancelIt(self, g: CancelGroup) {
+    g.cancel();
+  }
+}
+
+actor Echo {
+  pub async fn ping(self, v: u64) u64 {v + 1u64}
+
+  pub async fn spin(self) {
+    let t = Instant.now();
+    while t.elapsed() < Duration.fromMicros(1500i64) {}
+  }
+}
+
+// Part 3's other half: a sleep made by one behaviour, kept in the state, and
+// awaited by the next, each sent from main (so each is run by whichever worker
+// takes it from the inject queue)
+actor Holder {
+  held: Option[actors.Awaitable[Result[void, IoError]]];
+  made: u32;
+  at: Instant;
+  out: Sender[u64];
+
+  pub async fn make(self) {
+    held = Some[actors.Awaitable[Result[void, IoError]]](aio.sleep(Duration.fromMicros(300i64)));
+    made = actors.workerIndex();
+    at = Instant.now();
+    out.send(1u64);
+  }
+
+  pub async fn awaitIt(self) {
+    var h = None[actors.Awaitable[Result[void, IoError]]];
+    h <-> held;
+    if actors.workerIndex() != made {crossed.add(1u64);}
+    match h {
+      case let Some(a) {
+        let r = await a;
+        if at.elapsed() < Duration.fromMicros(300i64) {early.add(1u64);}
+        if ended(r) != 1u64 {notDone.add(1u64);}
+        answered.add(1u64);
+      }
+      else {notDone.add(1u64);}
+    }
+    out.send(2u64);
+  }
+}
+
+actor Sleeper {
+  out: Sender[u64];
+  own: CancelGroup;
+
+  pub async fn cancelOwn(self) {
+    own.cancel();
+  }
+
+  // Each case reports how it ended and 1 if its time was right (in time for
+  // a cancel or a deadline, no sooner than due for Done)
+  fn report(self, r: Result[void, IoError], ok: bool) {
+    out.send(ended(r));
+    out.send(if ok {1u64} else {0u64});
+  }
+
+  pub async fn cases(self, other: Canceller, mainG: CancelGroup, parent: CancelGroup, grand: CancelGroup,
+      shieldParent: CancelGroup) {
+    let hour = Duration.fromSeconds(3600i64);
+    let sec = Duration.fromSeconds(1i64);
+    {
+      // Its own worker: a message to itself, run while the behaviour waits
+      self.cancelOwn();
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.within(own));
+      self.report(r, t.elapsed() < sec);
+    }
+    {
+      let g = CancelGroup.make();
+      other.cancelIt(g);
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.within(g));
+      self.report(r, t.elapsed() < sec);
+    }
+    {
+      out.send(77u64);
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.within(mainG));
+      self.report(r, t.elapsed() < sec);
+    }
+    {
+      let c = parent.child();
+      out.send(78u64);
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.within(c));
+      self.report(r, t.elapsed() < sec);
+    }
+    {
+      let c = grand.child().child();
+      out.send(79u64);
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.within(c));
+      self.report(r, t.elapsed() < sec);
+    }
+    {
+      // A shield's parent cancelled: the sleep inside it is not
+      let sh = shieldParent.shield(Instant.now() + hour).child();
+      out.send(80u64);
+      let t = Instant.now();
+      let r = await aio.sleepIn(Duration.fromMillis(300i64), IoLimits.within(sh));
+      self.report(r, t.elapsed() >= Duration.fromMillis(300i64));
+    }
+    {
+      let g = CancelGroup.make();
+      g.cancel();
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.within(g));
+      self.report(r, t.elapsed() < sec);
+    }
+    {
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.within(CancelGroup.until(t + Duration.fromMillis(60i64))));
+      self.report(r, t.elapsed() >= Duration.fromMillis(60i64) && t.elapsed() < sec);
+    }
+    {
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.until(t + Duration.fromMillis(60i64)));
+      self.report(r, t.elapsed() >= Duration.fromMillis(60i64) && t.elapsed() < sec);
+    }
+    {
+      let t = Instant.now();
+      let r = await aio.sleepUntil(t - Duration.fromSeconds(5i64));
+      self.report(r, t.elapsed() < sec);
+    }
+    {
+      // Dropped unawaited: nothing answers, no cell stays
+      let a = aio.sleep(Duration.fromMillis(1i64));
+      let b = aio.sleepIn(hour, IoLimits.within(CancelGroup.make()));
+    }
+    out.send(81u64);
+  }
+
+  // Part 3: each Awaitable made before a request and awaited after its answer
+  pub async fn crossing(self, echo: Echo, spinner: Echo, n: u64) {
+    var i = 0u64;
+    while i < n {
+      let d = Duration.fromMicros(300i64);
+      let t = Instant.now();
+      let a = aio.sleep(d);
+      let before = actors.workerIndex();
+      // An actor's answer. Every eighth round a turn of 1.5 ms is queued on
+      // this worker ahead of the request, so that the monitor moves the request
+      // to another worker, whose answer resumes this actor there
+      if i % 8u64 == 1u64 {spinner.spin();}
+      let v = await echo.ping(i);
+      let r = await a;
+      if t.elapsed() < d {early.add(1u64);}
+      if t.elapsed() > Duration.fromSeconds(1i64) {late.add(1u64);}
+      if ended(r) != 1u64 {notDone.add(1u64);}
+      answered.add(1u64);
+      i = i + 1u64;
+    }
+    out.send(82u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  // 1
+  {
+    var tx: Sender[u64];
+    var rx: Receiver[u64];
+    tx, rx = Channel[u64].make();
+    var k = 0u64;
+    while k < sleepers {
+      let m = Many(k * 7919u64 + 1u64, tx.clone());
+      m.run();
+      k = k + 1u64;
+    }
+    var got = 0u64;
+    k = 0u64;
+    while k < sleepers {
+      got = got + take(&mut rx);
+      k = k + 1u64;
+    }
+    expect(got == sleepers, "every sleeper finished");
+    expect(answered.load() == sleepers * perSleeper, "100,000 sleeps answered, each once");
+    expect(notDone.load() == 0u64, "every one Done");
+    expect(early.load() == 0u64, "none before its time");
+  }
+  // 2
+  {
+    var tx: Sender[u64];
+    var rx: Receiver[u64];
+    tx, rx = Channel[u64].make();
+    let mainG = CancelGroup.make();
+    let parent = CancelGroup.make();
+    let grand = CancelGroup.make();
+    let shieldParent = CancelGroup.make();
+    let s = Sleeper(tx.clone(), CancelGroup.make());
+    let c = Canceller();
+    s.cases(c, mainG, parent, grand, shieldParent);
+    let names = ["own worker", "another actor", "main", "a parent", "a grandparent", "a shield's parent",
+      "cancelled already", "the group's deadline", "the limits' deadline", "an instant past"];
+    let wants = [2u64, 2u64, 2u64, 2u64, 2u64, 1u64, 2u64, 3u64, 3u64, 1u64];
+    var k = 0usize;
+    while k < 10usize {
+      if k == 2usize || k == 3usize || k == 4usize || k == 5usize {
+        let m = take(&mut rx);
+        expect(m == 77u64 + u64.from(k) - 2u64, "the sleeper is about to wait");
+        thread.sleep(Duration.fromMillis(30i64));
+        if k == 2usize {mainG.cancel();}
+        if k == 3usize {parent.cancel();}
+        if k == 4usize {grand.cancel();}
+        if k == 5usize {shieldParent.cancel();}
+      }
+      let how = take(&mut rx);
+      let inTime = take(&mut rx);
+      expect(how == wants[k], names[k]);
+      expect(inTime == 1u64, "...in time");
+      k = k + 1usize;
+    }
+    expect(take(&mut rx) == 81u64, "the dropped ones did not answer");
+    // 3
+    answered.store(0u64);
+    let e = Echo();
+    s.crossing(e, Echo(), 2000u64);
+    expect(take(&mut rx) == 82u64, "every crossing await answered");
+    expect(answered.load() == 2000u64, "...each once");
+    expect(early.load() == 0u64 && notDone.load() == 0u64, "...Done, none before its time");
+    expect(late.load() == 0u64, "...none a second late");
+    // Made by one behaviour, awaited by the next
+    var htx: Sender[u64];
+    var hrx: Receiver[u64];
+    htx, hrx = Channel[u64].make();
+    let h = Holder(None[actors.Awaitable[Result[void, IoError]]], 0u32, Instant.now(), htx.clone());
+    answered.store(0u64);
+    var j = 0u64;
+    let busy = Echo();
+    while j < 2000u64 {
+      // A send from main wakes the lowest parked worker: every fourth round
+      // that one is kept busy while the sleep is made, and is free again by
+      // the time it is awaited
+      if j % 4u64 == 0u64 {busy.spin();}
+      h.make();
+      let m1 = take(&mut hrx);
+      if j % 4u64 == 0u64 {thread.sleep(Duration.fromMillis(3i64));}
+      h.awaitIt();
+      let m2 = take(&mut hrx);
+      j = j + 1u64;
+    }
+    expect(answered.load() == 2000u64, "a sleep made by one behaviour and awaited by the next: each answered once");
+    expect(early.load() == 0u64 && notDone.load() == 0u64, "...Done, none before its time");
+    expect(crossed.load() > 0u64, "...some made on one worker and awaited on another");
+    // Off the workers: a record of aio's I/O thread, dropped
+    let off = aio.sleep(Duration.fromMillis(5i64));
+  }
+  // 4
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  let st = actors.timerStats();
+  expect(st.armed == 0u64, "no cell armed");
+  expect(st.arms == st.fires + st.cancels, "every cell armed fired or was cancelled");
+  expect(st.fires >= 100000u64, "the sleeps were the workers' cells");
+  done()
+}
