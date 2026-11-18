@@ -4,8 +4,9 @@
 // with it, about once in 270 gate runs (h3driver's reqbody printed "listen failed" and then waited out 20 scenarios).
 // ListenJob now starts over on a fresh port, up to 16 tries, when the port asked for is 0.
 //
-// Here the test holds UDP sockets on pseudo-random ports of 127.0.0.1 in 49152..60999 (up to 4,000; fewer where the
-// descriptor limit stops it, Linux's 1,024 default) and listens 300 times on port 0; every listen must succeed.
+// Here the test holds UDP sockets on pseudo-random ports of 127.0.0.1 in 49152..60999 (4,000 on Windows; 700 on Linux,
+// where the default limit of 1,024 descriptors must leave the service its own, so only a few listens fail
+// there without the retry) and listens 300 times on port 0; every listen must succeed.
 // Without the retry a third of the 300 fail with 4,000 held (a mutant run, listenAttempts = 1u32: 102 and 108). A port the caller
 // names is not retried: a listen on a TCP port that is free but whose UDP twin is held must fail, and does.
 
@@ -59,7 +60,8 @@ fn main() i32 {
   // left) is skipped
   var seed = 88172645463325252u64;
   var tries = 0u32;
-  while held.len() < 4000usize && tries < 12000u32 {
+  let want = #if #os == .windows {4000usize} #else {700usize};
+  while held.len() < want && tries < 12000u32 {
     tries = tries + 1u32;
     seed = seed ^ (seed << 13u64);
     seed = seed ^ (seed >> 7u64);
