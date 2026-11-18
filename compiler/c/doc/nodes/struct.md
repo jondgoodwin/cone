@@ -753,6 +753,10 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   first `tag`-typed field where one is written — because a variant copies the enum's
   fields as soon as it is name resolved, before the enum is type checked; type check
   validates the mark and refuses a second one.
+  **Tag only** (`structEnumIsTagOnly`) means an enum whose own fields are just that discriminant and
+  its `is` entries (`IsMixin`) and whose variants hold nothing: such an enum compares with
+  `TagEqIntrinsic`/`TagNeIntrinsic` and gets no `-eq` function, so declaring a trait does not
+  change how it compares.
 - **`tag` is recognized only where a field's type is written**, so it is not a
   reserved word and `pub tag: i32` still declares a field named `tag`. Written on
   anything but an enum it is refused here, which is what keeps the type-check rule
@@ -1564,6 +1568,10 @@ parameter. It supplies nothing for an enum that writes the method itself, that h
 or lifetimes, or that extends another. The trait is found by its name in the `is` list, as the
 supplied text names core's functions. Variant text for a `V(T)` payload type is kept as written
 (`parseVariantTextNote`). The text read is `<supplied by the compiler>` in a diagnostic.
+The library enums that declare both: json `ErrorKind`, `Event` (the reader's) and `Json` (with its
+`Member`), http `Method`, `Version`, `BodyKind`, `ErrorKind`, `ErrorScope`. Core's
+`DataErrorKind` does not: declaring it breaks `collection_bounds_fixed` and `module_build_lib`. Quic's
+`Event` does not: its `Data` variant holds an `IoBuf`, which is neither `Serialize` nor `Deserialize`.
 The record read fills a field its text never gave from core's private `MissingField`
 deserializer: `readNone` answers true and every other read the Missing `DataError`, so an
 `Option` field becomes `None` and no field type is tested by name.
