@@ -1,0 +1,55 @@
+// DataErrorKind, core's own enum of what was wrong with the data, declares Serialize and Deserialize[Self] and so
+// travels as its variant's name: every variant is a string of its name, written and read back; an unknown name is an
+// refused.
+
+mod dataerrorkind;
+
+import testing use *;
+import collections use *;
+import json;
+
+fn text(r: Result[String, json.JsonError]) String {
+  match r {
+    case let Ok(s) { s }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn back(name: &str, want: i32, what: &str) {
+  match json.fromJson[DataErrorKind](name) {
+    case let Ok(k) {
+      let n = match k {
+        case is Type { 0 }
+        case is Missing { 1 }
+        case is Unknown { 2 }
+        case is Range { 3 }
+        case is Syntax { 4 }
+        case is Custom { 5 }
+      };
+      expectInt(i64.from(n), i64.from(want), what);
+    }
+    case let Err(e) { expectStr((String() <- e).view(), "<kind>", what); }
+  }
+}
+
+fn main() i32 {
+  expectStr(text(json.toJson(&DataErrorKind.Type)).view(), "\"Type\"", "Type is its name");
+  expectStr(text(json.toJson(&DataErrorKind.Missing)).view(), "\"Missing\"", "Missing is its name");
+  expectStr(text(json.toJson(&DataErrorKind.Unknown)).view(), "\"Unknown\"", "Unknown is its name");
+  expectStr(text(json.toJson(&DataErrorKind.Range)).view(), "\"Range\"", "Range is its name");
+  expectStr(text(json.toJson(&DataErrorKind.Syntax)).view(), "\"Syntax\"", "Syntax is its name");
+  expectStr(text(json.toJson(&DataErrorKind.Custom)).view(), "\"Custom\"", "Custom is its name");
+  back("\"Type\"", 0, "Type reads back");
+  back("\"Missing\"", 1, "Missing reads back");
+  back("\"Unknown\"", 2, "Unknown reads back");
+  back("\"Range\"", 3, "Range reads back");
+  back("\"Syntax\"", 4, "Syntax reads back");
+  back("\"Custom\"", 5, "Custom reads back");
+  match json.fromJson[DataErrorKind]("\"Nope\"") {
+    case is Ok { expect(false, "an unknown name was accepted"); }
+    case is Err { expect(true, "an unknown name is refused"); }
+  }
+  expect(DataErrorKind.Range == DataErrorKind.Range, "== still compares the tag");
+  done()
+}
+
