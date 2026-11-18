@@ -216,6 +216,48 @@ fn foreignAligned() {
   cnmalloc.cnm_destroy(h);
 }
 
+// row 446: a block doubled from 64 KiB to 64 MiB (11 sizes, 10 reallocs). At the default reserve of 2 it
+// outgrows its reservation on every second doubling: 5 moves (copying 128K+512K+2M+8M+32M = 44695552 bytes)
+// and 5 grows in place. At 32 its first reservation is 2 MiB, so 128K..2M grow in place (5), the 4 MiB move
+// takes a reservation of 4M + 64M (the cap), and the rest grow in place: 1 move (2097152 bytes) and 9 grows.
+fn word(out: *u64, i: usize) u64 { *((out as usize + i * 8usize) as *u64) }
+
+fn doubling(reserveN: usize) *u64 {
+  let h = cnmalloc.cnm_make_lr(1073741824usize, 1usize, 1000u64, 67108864usize, reserveN);
+  var p = cnmalloc.cnm_malloc(h, 65536usize);
+  fill(p, 65536usize, 0x5Au8);
+  var sz = 65536usize;
+  var ok = true;
+  while sz < 67108864usize {
+    p = cnmalloc.cnm_realloc(h, p, sz * 2usize);
+    if p as usize == 0usize || !same(p, sz, 0x5Au8) { ok = false; break; }
+    fill(p, sz * 2usize, 0x5Au8);
+    sz = sz * 2usize;
+  }
+  expect(ok && sz == 67108864usize, "doubling to 64 MiB keeps the data");
+  var out = libc.calloc(400usize, 8usize) as *u64;
+  cnmalloc.cnm_stats(h, out, 400usize);
+  cnmalloc.cnm_free(h, p);
+  cnmalloc.cnm_destroy(h);
+  out
+}
+
+fn largeReserveSetting() {
+  let a = doubling(2usize);
+  expectUInt(word(a, 368usize), 5, "reserve 2: 5 grows in place");
+  expectUInt(word(a, 369usize), 5, "reserve 2: 5 moves");
+  expectUInt(word(a, 378usize), 44695552, "reserve 2: bytes copied by moves");
+  expectUInt(word(a, 371usize), word(a, 379usize) + word(a, 380usize) + word(a, 381usize) + word(a, 382usize), "syscalls = reserve + commit + decommit + release");
+  expect(word(a, 379usize) >= 6u64, "reserve 2: reserve calls counted (first block and each move, plus the table)");
+  let b = doubling(32usize);
+  expectUInt(word(b, 368usize), 9, "reserve 32: 9 grows in place");
+  expectUInt(word(b, 369usize), 1, "reserve 32: 1 move");
+  expectUInt(word(b, 378usize), 2097152, "reserve 32: bytes copied by moves");
+  expectUInt(word(b, 371usize), word(b, 379usize) + word(b, 380usize) + word(b, 381usize) + word(b, 382usize), "reserve 32: syscalls add up by kind");
+  libc.free(a as *u8);
+  libc.free(b as *u8);
+}
+
 fn layout() {
   expectUInt(u64.from(mem.sizeof[cnmalloc.Desc]()), 64, "a page descriptor is 64 bytes");
   expect(mem.sizeof[cnmalloc.Class]() <= 128usize, "a class fits its 128-byte stride");
@@ -297,6 +339,7 @@ fn main() i32 {
   aligned();
   apiEdges();
   largeBlocks();
+  largeReserveSetting();
   foreign();
   foreignAligned();
   done()
