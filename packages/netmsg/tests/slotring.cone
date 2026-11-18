@@ -1,0 +1,226 @@
+// The latest-wins values waiting for credit: one entry for each stream, found
+// by the stream's position (a fixed table of 64), sent in the order the streams
+// began waiting. Over an in-process pair, with a sink that grants one credit at
+// a time:
+//  (a) values of three streams wait; a newer value of a waiting stream replaces
+//      it in place and keeps its turn; they are sent in the order they began waiting
+//  (b) two streams, both with a new value before each credit, interleaved, one
+//      credit at a time: they are served by turns, so the stream that came
+//      second is not starved by the one that came first
+//  (c) a stream sent after its earlier value went waits behind the ones already
+//      waiting
+//  (d) 64 streams wait, then a 65th is refused and counted (the in-process
+//      connection keeps its own table of streams), and the 64 are sent in order
+
+mod slotring;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration;
+import actors;
+import stages use ValueSink, ValueSource, Ending;
+import iobuf use Bytes;
+import netmsg use *;
+
+// An update as text: U<id>:<stream>:<text>; anything else by its first letter
+fn describe(e: NetEvent) String {
+  var s = String();
+  match e {
+    case let Update(u) {
+      s.append("U"); s.appendUInt(u64.from(u.id)); s.append(":"); s.appendUInt(u64.from(u.stream));
+      s.append(":"); s.append(String.fromBytes(u.data.view()).view());
+    }
+    case let Joined(j) { s.append("J"); s.appendUInt(u64.from(j.id)); }
+    else { s.append("?"); }
+  }
+  s
+}
+
+fn next(rx: &mut Receiver[NetEvent], ms: i64) String {
+  match rx.recvTimeout(Duration.fromMillis(ms)) {
+    case let Some(e) { return describe(e); }
+    case is None[NetEvent] {}
+  }
+  String.from("none")
+}
+
+fn bytes(s: &str) Bytes {
+  var b = List[u8]();
+  putBytes(&mut b, s);
+  copyPacket(b.view()).freeze()
+}
+
+// A sink that grants credit only as told: one unit when attached
+actor OneAtATime is ValueSink[NetEvent] {
+  tx: Sender[NetEvent];
+  up: Option[ValueSource];
+
+  pub fn init(self: &new, tx: Sender[NetEvent]) {
+    *self = Self(tx: tx, up: None[ValueSource]);
+  }
+
+  pub async fn attach(self, source: ValueSource) {
+    up = Some[ValueSource](source);
+    source.credit(1u32);
+  }
+
+  pub async fn accept(self, ev: NetEvent) {
+    tx.send(ev);
+  }
+
+  pub async fn end(self, how: Ending) {}
+
+  pub async fn give(self, n: u32) {
+    match &up {
+      case let &Some(u) { u.credit(n); }
+      else {}
+    }
+  }
+}
+
+actor Prober {
+  pub async fn ask(self, c: Connection, out: Sender[ConnectionStats]) {
+    let s = await c.stats();
+    out.send(s);
+  }
+}
+
+// A pair whose b end's sink grants one credit, which a value of stream 99 uses
+// up, so that what follows waits
+fn start(txA: Sender[NetEvent], rxB: &mut Receiver[NetEvent], sink: OneAtATime) ConnectionPair {
+  let h: EventHandler = sink;
+  let pair = pairInProcess(channelHandler(txA), 1u32, h, 7u32);
+  expectStr(next(rxB, 1000i64).view(), "J7", "joined");
+  pair.a.sendLatest(99u16, bytes("first"));
+  expectStr(next(rxB, 1000i64).view(), "U7:99:first", "the one credit goes to the first value");
+  pair
+}
+
+fn main() i32 {
+  // (a) and (c)
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    let sink = OneAtATime(txB);
+    let pair = start(txA, &mut rxB, sink);
+    pair.a.sendLatest(20u16, bytes("a1"));
+    pair.a.sendLatest(10u16, bytes("b1"));
+    pair.a.sendLatest(20u16, bytes("a2"));
+    pair.a.sendLatest(30u16, bytes("c1"));
+    pair.a.sendLatest(10u16, bytes("b2"));
+    actors.waitQuiet();
+    expectStr(next(&mut rxB, 200i64).view(), "none", "nothing goes without credit");
+    sink.give(1u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "U7:20:a2", "the stream that began waiting first goes first, with its newest value");
+    sink.give(1u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "U7:10:b2", "then the second, newest value");
+    // Stream 20 sends again while 30 and the rest of the ring wait: it goes behind 30
+    pair.a.sendLatest(20u16, bytes("a3"));
+    actors.waitQuiet();
+    sink.give(1u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "U7:30:c1", "a stream's later value goes behind those already waiting");
+    sink.give(1u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "U7:20:a3", "and then it goes");
+    sink.give(1u32);
+    expectStr(next(&mut rxB, 200i64).view(), "none", "nothing is left");
+    var txP: Sender[ConnectionStats];
+    var rxP: Receiver[ConnectionStats];
+    txP, rxP = Channel[ConnectionStats].make();
+    Prober().ask(pair.b, txP);
+    var stale = 0u64;
+    match rxP.recvTimeout(Duration.fromMillis(2000i64)) {
+      case let Some(st) { stale = st.latestStale; }
+      case is None[ConnectionStats] {}
+    }
+    expectUInt(stale, 2u64, "two values were replaced while they waited (a1, b1)");
+  }
+
+  // (b) two streams, a new value of each before every credit
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    let sink = OneAtATime(txB);
+    let pair = start(txA, &mut rxB, sink);
+    var low = 0u32;
+    var high = 0u32;
+    var inTurn = true;
+    var round = 0usize;
+    while round < 60usize {
+      // Stream 5 is the first the connection hears of, then stream 6; the order they arrive in varies
+      if round % 3usize == 2usize {
+        pair.a.sendLatest(6u16, bytes("y"));
+        pair.a.sendLatest(5u16, bytes("x"));
+      } else {
+        pair.a.sendLatest(5u16, bytes("x"));
+        pair.a.sendLatest(6u16, bytes("y"));
+      }
+      actors.waitQuiet();
+      sink.give(1u32);
+      let got = next(&mut rxB, 1000i64);
+      if got.view() == "U7:5:x" { low = low + 1u32; }
+      else if got.view() == "U7:6:y" { high = high + 1u32; }
+      else { inTurn = false; }
+      round = round + 1usize;
+    }
+    expect(inTurn, "every credit sent a value of one of the two");
+    expect(low >= 25u32 && low <= 35u32, "stream 5 got about half of the credits");
+    expect(high >= 25u32 && high <= 35u32, "and the later stream 6 the other half: not starved");
+  }
+
+  // (d) 64 streams wait; a 65th is refused and counted
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    let sink = OneAtATime(txB);
+    let h: EventHandler = sink;
+    let pair = pairInProcess(channelHandler(txA), 1u32, h, 7u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "J7", "joined");
+    // The one credit goes to stream 0, which is the first of the 64
+    var s = 0u16;
+    while s < 66u16 {
+      pair.a.sendLatest(200u16 + 66u16 - s, bytes("v"));
+      s = s + 1u16;
+    }
+    actors.waitQuiet();
+    var txP: Sender[ConnectionStats];
+    var rxP: Receiver[ConnectionStats];
+    txP, rxP = Channel[ConnectionStats].make();
+    Prober().ask(pair.b, txP);
+    var refused = 0u64;
+    match rxP.recvTimeout(Duration.fromMillis(2000i64)) {
+      case let Some(st) { refused = st.streamsRefused; }
+      case is None[ConnectionStats] {}
+    }
+    expectUInt(refused, 2u64, "the 65th and 66th streams were refused and counted");
+    // Stream 266 went first, with the credit it came with; the next 63 wait in the order they came
+    expectStr(next(&mut rxB, 1000i64).view(), "U7:266:v", "the first stream took the credit it came with");
+    var ordered = true;
+    var k = 1u16;
+    while k < 64u16 {
+      sink.give(1u32);
+      let want = String.from("U7:");
+      var w = want;
+      w.appendUInt(u64.from(266u16 - k));
+      w.append(":v");
+      if next(&mut rxB, 1000i64).view() != w.view() { ordered = false; }
+      k = k + 1u16;
+    }
+    expect(ordered, "the other 63 went in the order they began waiting");
+    sink.give(1u32);
+    expectStr(next(&mut rxB, 200i64).view(), "none", "and the refused streams never come");
+  }
+  done()
+}
