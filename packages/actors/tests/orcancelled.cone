@@ -27,6 +27,7 @@
 mod orcancelled;
 
 import testing use *;
+import stdio use *;
 import libc;
 import thread;
 import actors;
@@ -84,6 +85,7 @@ actor Slow {
   }
 
   pub async fn quick(self, n: u64) Token {
+    seen.held.add(1u64);
     seen.made.add(1u64);
     Token(n + 1u64)
   }
@@ -215,6 +217,11 @@ fn waitFor(a: &Atomic[u64], n: u64) {
   while a.load() < n && Instant.now() < limit {thread.yieldNow();}
 }
 
+fn waitHeld(n: u64) {
+  let limit = bounded(60000i64);
+  while seen.held.load() < n && Instant.now() < limit {thread.yieldNow();}
+}
+
 fn waitMade(n: u64) {
   let limit = bounded(60000i64);
   while seen.made.load() < n && Instant.now() < limit {thread.yieldNow();}
@@ -333,6 +340,9 @@ fn main() i32 {
   var errs = 0u64;
   while round < 4u64 {
     reset();
+    var bandSend = 0u64;
+    var bandHeld = 0u64;
+    var bandMade = 0u64;
     var k = 0u64;
     while k < 300u64 {
       let kk = k;
@@ -340,12 +350,20 @@ fn main() i32 {
       actors.withGroup(&gi, fn() [a, slow, kk] { a.viaQuick(slow, kk); });
       // the cancel at a different moment each time, from the send to well after the answer.
       // The moment is paced by what the actors have done, not by 24,000 yields (a yield
-      // costs a scheduling quantum when the machine is busy): 'rests' under 8 cancels
-      // after that many cheap loads, straight after the send; otherwise the cancel waits
-      // until the answer to this request is made, then follows after 'rests % 8' loads
+      // costs a scheduling quantum when the machine is busy). Three bands: 'rests' 0-7,
+      // a few cheap loads after the send; 8-23, once the callee holds this request
+      // (before its answer), then 'rests % 8' loads; 24-39, once its answer is made,
+      // then 'rests % 8' loads
       var rests = (kk * 7u64 + round * 3u64) % 40u64;
-      if rests >= 8u64 {
+      if rests < 8u64 {
+        bandSend += 1u64;
+      } else if rests < 24u64 {
+        waitHeld(kk + 1u64);
+        bandHeld += 1u64;
+        rests = rests % 8u64;
+      } else {
         waitMade(kk + 1u64);
+        bandMade += 1u64;
         rests = rests % 8u64;
       }
       while rests > 0u64 {
@@ -356,6 +374,9 @@ fn main() i32 {
       k += 1u64;
     }
     actors.waitQuiet();
+    print <- "5: round ", round, " cancels: after the send ", bandSend, ", callee holding ", bandHeld, ", after the answer ", bandMade, "\n";
+    expectUInt(bandSend + bandHeld + bandMade, 300u64, "5: every cancel was in a band");
+    expectBool(bandSend > 0u64 && bandHeld > 0u64 && bandMade > 0u64, true, "5: all three bands were hit");
     expectUInt(seen.ok.load() + seen.err.load(), 300u64, "5: every await ended once");
     expectUInt(seen.made.load(), 300u64, "5: every request was answered");
     expectUInt(seen.drops.load(), 300u64, "5: every Token finalized exactly once");
