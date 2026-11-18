@@ -94,6 +94,26 @@ fn isInvalid(r: Result[usize, IoError]) bool {
   }
 }
 
+// Whether the 12 bytes are one of the datagrams sent: some number i below
+// perSender has patternByte(i, 0) as its first byte, and every byte j is then
+// patternByte(i, j)
+fn sentPattern(b: &IoBuf) bool {
+  let w = b.view();
+  var i = 0u64;
+  while i < perSender {
+    if w[0usize] == patternByte(u8.from(i), 0usize) {
+      var j = 1usize;
+      while j < 12usize {
+        if w[j] != patternByte(u8.from(i), j) {return false;}
+        j = j + 1usize;
+      }
+      return true;
+    }
+    i = i + 1u64;
+  }
+  false
+}
+
 actor Blaster {
   // Sends each datagrams through tx to `to`, number i being patternByte-d by i
   pub async fn run(self, tx: UdpSender, to: SocketAddr) u64 {
@@ -139,7 +159,7 @@ actor Peer {
       match &mut r {
         case var &mut Ok(ok) {
           // the sequence number is the datagram's first byte pattern; check shape and sender
-          if ok.buf.len() == 12usize && ok.from.port() == pa {got.arrived.store(got.arrived.load() + 1u64);}
+          if ok.buf.len() == 12usize && ok.from.port() == pa && sentPattern(&ok.buf) {got.arrived.store(got.arrived.load() + 1u64);}
           else {got.bad.store(got.bad.load() + 1u64);}
         }
         else {n = senders * perSender;}
