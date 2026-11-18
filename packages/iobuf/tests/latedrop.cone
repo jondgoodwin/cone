@@ -1,0 +1,91 @@
+// A buffer taken and dropped on a thread AFTER the pool's exit flush goes to
+// the stock, and leaves no cache behind (bufpool's header, THREADS: the thread
+// is finished, and its 'myCache' is the late record).
+//
+// The test makes a thread-exit slot of its own (a fiber-local slot's callback on
+// Windows, a pthread key's destructor on Linux) after the pool's module has made
+// the process's, so on each thread its callback runs after the pool's: both
+// systems call them in the order they were made (on Windows measured by lane
+// 687's probe; glibc runs keys in order). 300 threads, one after another, each
+// take and drop buffers (arming the pool), set the test's slot, and end. The
+// test's callback then takes a 4 KiB and a 256 KiB buffer (classes with a
+// cache) and drops them. Every callback ran; afterwards nothing is cached,
+// nothing lent, the takes and returns on finished threads are counted, and the
+// registry holds one record: a late take that made a fresh cache would leave
+// one record more, and its blocks cached, for every thread.
+//
+// A drop before the pool's callback (a callback made before the pool's) is the
+// ordinary case: the thread's cache takes it and the exit flush gives it back
+// (exitflush).
+
+mod latedrop;
+
+import testing use *;
+import thread;
+import iobuf use *;
+import bufpool;
+
+extern {
+  fn @c(system) FlsAlloc(callback: &fn @c (v: *u8)) u32;
+  fn @c(system) FlsSetValue(slot: u32, v: *u8) i32;
+  fn @c pthread_key_create(key: *u32, destructor: &fn @c (v: *u8)) i32;
+  fn @c pthread_setspecific(key: u32, v: *u8) i32;
+}
+
+const threads = 300u64;
+
+let slot: Atomic[u32];
+let ran: Atomic[u64];
+
+fn @initpure init() {
+  slot = Atomic[u32].of(0u32);
+  ran = Atomic[u64].of(0u64);
+}
+
+// The test's own exit callback, on the ending thread, after the pool's
+fn @c latedropEnded(v: *u8) {
+  var small = IoBuf(4096usize);
+  small.append("late");
+  var big = IoBuf(200000usize);
+  big.append("late");
+  ran.add(1u64);
+}   // both die here, on a finished thread
+
+fn work(n: u64) u64 {
+  var k = 0u64;
+  while k < 4u64 {
+    var b = IoBuf(100usize);
+    b.append("x");
+    k = k + 1u64;
+  }
+  #if #os == .windows {
+    FlsSetValue(slot.load(), 1usize as *u8);
+  } #else {
+    pthread_setspecific(slot.load(), 1usize as *u8);
+  }
+  n
+}
+
+fn main() i32 {
+  #if #os == .windows {
+    slot.store(FlsAlloc(&latedropEnded));
+  } #else {
+    var key = 0u32;
+    pthread_key_create(&key, &latedropEnded);
+    slot.store(key);
+  }
+  var k = 0u64;
+  while k < threads {
+    let t = thread.start(k, &work);
+    t.join();
+    k = k + 1u64;
+  }
+  let s = stats();
+  expectUInt(ran.load(), threads, "the test's callback ran on every thread");
+  expectUInt(u64.from(s.cachedBytes), 0u64, "nothing cached: the late buffers went to the stock");
+  expectUInt(s.lent, 0u64, "nothing lent: the late returns are counted");
+  expectUInt(s.takes, threads * 6u64, "every take counted, the late ones too");
+  expectUInt(u64.from(bufpool.blockStats().threads), 1u64, "one record: no late take made a cache");
+  expectUInt(u64.from(s.slabs), 2u64, "a slab of each class used");
+  done()
+}
