@@ -102,10 +102,23 @@ static void incBufAnchor(IncBuf *buf, size_t at, size_t len, Lexer *lexer, char 
     anchor->src = src;
 }
 
-// Put 'n' bytes of 'lexer''s source, from 'src'
+// Put 'n' bytes of 'lexer''s source, from 'src'. A CRLF line end is copied as
+// LF, so the file is the same whichever line ends the source has (the lexer
+// takes the two alike, and counts the line on the LF). Each stretch between
+// dropped carriage returns is anchored on its own, since the copy is no longer
+// the source's bytes end to end
 static void incBufPutSrc(IncBuf *buf, Lexer *lexer, char *src, size_t n) {
-    incBufAnchor(buf, buf->len, n, lexer, src);
-    incBufPutn(buf, src, n);
+    char *end = src + n;
+    char *start = src;
+    for (char *p = src; p + 1 < end; ++p) {
+        if (p[0] == '\r' && p[1] == '\n') {
+            incBufAnchor(buf, buf->len, p - start, lexer, start);
+            incBufPutn(buf, start, p - start);
+            start = p + 1;
+        }
+    }
+    incBufAnchor(buf, buf->len, end - start, lexer, start);
+    incBufPutn(buf, start, end - start);
 }
 
 // Put the bytes [start, end) of another text, and where they came from
@@ -765,12 +778,22 @@ static void incWalkType(IncGen *g, INode *type) {
     }
 }
 
+// Whether a member's body travels in the include file: any body an importer
+// expands, and the whole-enum methods of a generic enum, which fnDclIsExpanded
+// leaves out as one function in one place. An instance of a generic enum is made,
+// and its methods defined, by every object that uses it, so no object's symbol
+// is there to call: the importer needs the body, as it does for a generic struct.
+static int incMemberFnCarried(INode *fn, StructNode *type) {
+    return fnDclIsExpanded((FnDclNode*)fn, (INode*)type)
+        || (type->genericinfo && (type->flags & TraitType) && structIsWholeEnumMethod(fn));
+}
+
 // Whether a member function of an included type goes in: whole where its body
 // travels, and as 'extern' where the object exports it or it is the type's
 // 'final' or 'clone', which say what a value of the type does when dropped or
 // copied wherever it is
 static int incMemberFnWanted(IncGen *g, StructNode *type, INode *fn) {
-    return fnDclIsExpanded((FnDclNode*)fn, (INode*)type)
+    return incMemberFnCarried(fn, type)
         || fnIsTypeLifecycle(fn) || dclIsExported(g->root, fn);
 }
 
@@ -1194,7 +1217,7 @@ static void incEditType(IncGen *g, IncMod *m, StructNode *strnode, char *floor) 
         if (node && span->kind == SpanDcl) {
             switch (node->tag) {
             case FnDclTag:
-                if (fnDclIsExpanded((FnDclNode*)node, (INode*)strnode))
+                if (incMemberFnCarried(node, strnode))
                     break;
                 if (!incMemberFnWanted(g, strnode, node))
                     incDelete(g, span, floor);

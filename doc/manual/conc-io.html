@@ -15,7 +15,8 @@
 
 	<p style="margin-left: 40px;"><i>Note: <span class="pre">aio</span>, <span class="pre">actorhttp</span>, the HTTP and
 		TLS packages, and <span class="pre">iocore</span> and <span class="pre">iobuf</span> beneath them run on Windows and
-		on Linux. Batching of datagrams (many in one call) is not built yet.</i></p>
+		on Linux. Several datagrams in one call (<span class="pre">recvMany</span>) is one system call on Linux and one
+		datagram a call on Windows; <span class="pre">sendmmsg</span> is not built.</i></p>
 
 	<p>A program that talks to the world spends most of its time waiting: for a connection, for bytes from a peer, for a
 		disk, for a clock. A thread that blocks while it waits is a core doing nothing. In Cone an actor's behaviour
@@ -218,7 +219,9 @@ end of stream 5
 		goes home to its pool.</li>
 	<li><span class="pre">conn.read()</span>: the same, with no buffer given: the I/O side takes one when bytes have come
 		(<a href="#await-io-readany">Reading with no buffer</a>).</li>
-	<li><span class="pre">conn.write(buf)</span>: the count written, which is all of the buffer; the buffer goes home.</li>
+	<li><span class="pre">conn.write(buf)</span>: the count written, which is all of the buffer; the buffer goes home. A stream write
+		that ends in any error may have put some or all of its bytes on the stream, and how many is not knowable on every
+		system: the stream's framing is then unknown, so drop the connection.</li>
 	<li><span class="pre">s.localAddr()</span>: the address the socket is bound to.</li>
 	<li><span class="pre">aio.openFile(path, access)</span>: a <span class="pre">File</span>, out of the
 		<span class="pre">Result</span> by a swap as a <span class="pre">Socket</span> is.
@@ -418,11 +421,21 @@ actor Reader {
 		too long, <span class="pre">WSAEMSGSIZE</span> or <span class="pre">EMSGSIZE</span>). The rest of the datagram is
 		lost, the next one is whole, and
 		the buffer goes home to its pool as a failed read's does, the bytes that fitted with it.</li>
+	<li><span class="pre">u.recvMany(bufs)</span>: the next datagram and every other one already waiting, up to the
+		buffers given (a <span class="pre">List[IoBuf]</span>, moved in; at most 64 are used). The answer is a
+		<span class="pre">Datagrams</span>: <span class="pre">got</span>, the datagrams in arrival order, each in one of the
+		buffers with its sender; <span class="pre">cut</span>, in which bit <i>k</i> is set when <span class="pre">got[k]</span>
+		was longer than its buffer's room and holds only its first bytes (it is in the answer, not an error, and does not end
+		the batch); and <span class="pre">spare</span>, the buffers not used. It waits for one datagram and never for a
+		second. An empty list, or a first buffer with no room, fails (<span class="pre">InvalidInput</span>); a later
+		buffer with no room ends the batch there. Linux takes every waiting datagram in one system call; Windows
+		answers one datagram a call, so a caller loops until it has what it wants and its code is the same on both.</li>
 	<li><span class="pre">u.sendTo(addr, buf)</span>: all of the buffer as one datagram to <span class="pre">addr</span>,
 		the count its length, the buffer going home. UDP promises no delivery: the answer says the system took the datagram.
 		One too large for the network fails with the same number, of the kind <span class="pre">Other</span>.</li>
 	</ul>
-	<p>Both take <span class="pre">In</span> forms, <span class="pre">u.recvFromIn(buf, lim)</span> and
+	<p>All three take <span class="pre">In</span> forms, <span class="pre">u.recvFromIn(buf, lim)</span>,
+		<span class="pre">u.recvManyIn(bufs, lim)</span> and
 		<span class="pre">u.sendToIn(addr, buf, lim)</span>, and answer exactly once. A <span class="pre">UdpSocket</span>
 		moves and closes when dropped, as a <span class="pre">Socket</span> does. One receive at a time per socket is the
 		supported use; datagrams that arrive while none is outstanding wait in the socket's buffer, which the operating

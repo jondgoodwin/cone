@@ -1,0 +1,34 @@
+// The size an event is built at (one reserve for the data lines) changes no byte:
+// events of 0, 1 and many data lines, with every line-break form, after a prefix
+// and into a String that already has room, encode as they always did.
+
+mod sizes;
+
+import testing use *;
+import collections use String;
+import sse use Event, comment;
+
+fn main() i32 {
+  expectStr(Event.message("").encode().view(), "data:\n\n", "0 lines of text");
+  expectStr(Event.message("a").encode().view(), "data: a\n\n", "1 line");
+  expectStr(Event.message("\n").encode().view(), "data:\ndata:\n\n", "a lone line feed");
+  expectStr(Event.message("\r\n").encode().view(), "data:\ndata:\n\n", "a lone CRLF");
+  expectStr(Event.message("a\nb\n\nc\r\n\r\nd\re\r").encode().view(),
+    "data: a\ndata: b\ndata:\ndata: c\ndata:\ndata: d\ndata: e\ndata:\n\n", "many lines, empty ones, every break");
+  expectStr(Event.named("t", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10").withId("i").withRetry(0i64).encode().view(),
+    "event: t\nid: i\nretry: 0\ndata: 1\ndata: 2\ndata: 3\ndata: 4\ndata: 5\ndata: 6\ndata: 7\ndata: 8\ndata: 9\ndata: 10\n\n",
+    "ten lines with every field");
+  var out = String.withCapacity(2usize);
+  out.append("xy");
+  Event.message("a\nb").encodeInto(&mut out);
+  Event.message("c").encodeInto(&mut out);
+  expectStr(out.view(), "xydata: a\ndata: b\n\ndata: c\n\n", "appended after a prefix, twice");
+  expectStr(comment("a\nb\n").view(), ": a\n: b\n:\n\n", "comments keep their lines");
+  var big = String();
+  var i = 0usize;
+  while i < 50usize {big.append("line of text\n"); i = i + 1usize;}
+  let enc = Event.message(big.view()).encode();
+  expect(enc.len() == 50usize * 19usize + 6usize + 1usize, "fifty-one lines have their size");
+  expectStr(Event.message("é\n✓").encode().view(), "data: é\ndata: ✓\n\n", "multi-byte text");
+  done()
+}
