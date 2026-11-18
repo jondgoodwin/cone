@@ -55,7 +55,7 @@ extern uintptr_t cnm_lf_info(uintptr_t h);
 extern size_t cnm_lf_attach(uintptr_t h, size_t cl, size_t tnum, uintptr_t seen);
 extern void cnm_lf_after_free(uintptr_t h, uintptr_t d2, uint64_t g);
 extern void cnm_lf_grow(uintptr_t h, size_t cl);
-extern void cnm_lf_set(uintptr_t h, void* alloc, void* free);
+extern void cnm_lf_set(uintptr_t h, void* alloc, void* free, size_t debug);
 extern void cnm_lf_set_hooks(uintptr_t h, void* detach, void* retire, void* claim);
 extern void cnm_lf_set_counts(uintptr_t h, uint64_t callocs, uint64_t callocBytes, uint64_t nonWorker);
 extern uint64_t cnm_park_ms(uintptr_t h);
@@ -65,7 +65,7 @@ static volatile LONG g_state;       // 0 not started, 1 starting, 2 ready
 static int g_stats;
 
 // ---- THE SECOND DESIGN (row 454; WI\cnmalloc-second-design-spec.md) ------------------------------------------------
-// Off unless CNMALLOC=design=2 (g_lf is 0, and nothing below this banner is reached). The page descriptors and the
+// Off unless CNMALLOC=design=lockfree (g_lf is 0, and nothing below this banner is reached). The page descriptors and the
 // per-class records are the Cone package's (src/cnmalloc.cone, "THE SECOND DESIGN" has the layout and the rules for
 // who writes what); this file reads and compare-and-swaps them on the common paths of section 3 (allocate) and
 // section 4 (free). Static asserts pin the layout both sides agree on.
@@ -325,7 +325,11 @@ static uintptr_t cn_start(void) {
     }
     if (cnm_design(h) == 2) {
       lf_setup(h);
-      cnm_lf_set(h, (void*)lf_alloc, (void*)lf_free);
+#ifdef CN_DEBUG
+      cnm_lf_set(h, (void*)lf_alloc, (void*)lf_free, 1);
+#else
+      cnm_lf_set(h, (void*)lf_alloc, (void*)lf_free, 0);
+#endif
       MemoryBarrier();
       g_lf = 1;
     }

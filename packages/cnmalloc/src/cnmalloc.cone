@@ -32,7 +32,7 @@
 //   bitmap) is read and written only under c's lock. The one exception is free()'s read of the descriptor's
 //   class (see freeSmall). A page's class is changed only by the pool, under the pool lock, while the page is
 //   empty and in no class's hands. No atomics, no lock-free path. (That is the lock design, the default. The second
-//   design, CNMALLOC=design=2 (row 454), keeps the lock for everything but a page's cells, which are bits in a
+//   design, CNMALLOC=design=lockfree (row 454), keeps the lock for everything but a page's cells, which are bits in a
 //   second descriptor taken and given by one atomic operation each: "THE SECOND DESIGN" below has its rules.)
 //
 // ADDRESS SPACE
@@ -181,6 +181,7 @@ pub struct Heap {
   hookDetach: usize;  // design 2, tests: called between a detach's state exchange and its scan
   hookRetire: usize;  // design 2, tests: called between a retire's claims and its generation raise
   hookClaim: usize;   // design 2, tests: called after a page was found wholly free and before the retire claims its words
+  lfDebug: usize;     // design 2: non-zero in the shim's debug build; the slot rule is then asserted (cnm_lf_attach)
   nonWorker: u64;     // design 2: small allocations made by threads that are not workers (statistics run)
   callocs: u64;
   callocBytes: u64;
@@ -764,7 +765,7 @@ fn putCell(h: *Heap, c: *Class, cl: usize, page: usize, d: *Desc, a: usize) bool
 
 // ---------------------------------------------------------------------------
 // THE SECOND DESIGN (row 454; WI\cnmalloc-second-design-spec.md, sections 1, 2, 5, 6 and 8): lock-free shared pages.
-// Off unless CNMALLOC=design=2. The common paths (allocate: one compare-and-swap; free: one fetch_or) are C, in
+// Off unless CNMALLOC=design=lockfree. The common paths (allocate: one compare-and-swap; free: one fetch_or) are C, in
 // shim/cn_shim.c (lf_alloc, lf_free, lf_release); this is everything that is under a class lock: attaching a page to a
 // slot, listing a page that has room again, retiring a wholly free page, adding and dropping slots.
 //
@@ -963,6 +964,22 @@ fn lfPick(h: *Heap, c: *Class, cl: usize) usize {
   q
 }
 
+// Debug builds only (section 2's slot rule): while the class lock is free, a slot is null or names a page ATTACHED to this
+// class. Class lock held. A violation names the class and the page's state and genclass, and ends the process.
+fn lfSlotRule(h: *Heap, cl: usize, d2: usize) {
+  let g = aLd(d2);
+  let st = aLd(d2 + 8usize);
+  if st == lfAttached && usize.from(g & 255u64) == cl { return; }
+  let buf = h.region + scratchOff;
+  var n = putStr(buf, 0usize, "cnmalloc: slot rule broken, class ", 34usize);
+  n = putNum(buf, n, u64.from(cl));
+  n = putStr(buf, n, " state ", 7usize); n = putNum(buf, n, st);
+  n = putStr(buf, n, " genclass ", 10usize); n = putNum(buf, n, g);
+  n = putStr(buf, n, "\n", 1usize);
+  oswin.writeErr(buf, n);
+  oswin.fatal();
+}
+
 // "A slot's page has no free bit" (section 5), called by the shim's allocate with the thread's number and the page
 // pointer it saw in its slot (0 for none). Returns 1 when the caller should retry the common path, 0 when the heap is
 // out of memory.
@@ -974,12 +991,19 @@ pub fn cnm_lf_attach(hh: usize, cl: usize, tnum: usize, seen: usize) usize {
   let act = usize.from(rd32(L + 64usize));
   let si = tnum % act;
   let cur = usize.from(rd(L + si * 8usize));
+  if h.lfDebug != 0usize && cur != 0usize { lfSlotRule(h, cl, cur); }
   if cur != seen {
     oswin.unlock(c as usize);
     return 1usize;
   }
   var waiting = false;
   if cur != 0usize {
+    // the same page: its words may have read as zero to this thread only because another lock holder was retiring it or
+    // making it ready, and the same page can come back to the same slot (row 455's F2). A set bit sends the thread round.
+    if lfScan(cur) != 0usize {
+      oswin.unlock(c as usize);
+      return 1usize;
+    }
     wr(L + si * 8usize, 0u64);
     waiting = lfDetach(h, c, cl, d2Page(h, cur), cur);
   }
@@ -1104,8 +1128,9 @@ fn lfCollect(h: *Heap, force: bool, delay: u64) u64 {
 }
 
 // the shim hands the heap its two small-cell functions (for the calls that come through Cone: a large block shrinking to a small one, aligned cells)
-pub fn cnm_lf_set(hh: usize, alloc: usize, free: usize) {
+pub fn cnm_lf_set(hh: usize, alloc: usize, free: usize, debug: usize) {
   let h = hh as *Heap;
+  h.lfDebug = debug;
   h.lfAlloc = alloc;
   h.lfFree = free;
 }
@@ -1557,7 +1582,7 @@ pub struct Settings {
   cacheMax: usize;
   largeReserve: usize;     // row 446: CNMALLOC=largereserve=<n>, 1 to 64, default 2
   largeReserveCap: usize;  // row 446: CNMALLOC=largereservecap=<bytes>, 1 MiB to 64 GiB, default 64 MiB
-  design: usize;           // row 454: CNMALLOC=design=2 chooses the lock-free shared pages; 1 (default) the lock design
+  design: usize;           // row 454: CNMALLOC=design=lockfree chooses the lock-free shared pages; 1 (default, also design=lock) the lock design
   slotCap: usize;          // row 454: CNMALLOC=slots=<n>, the most slots a class may hold (1 to 8, default 8)
   collLimit: usize;        // row 454: CNMALLOC=collisions=<n>, collisions that add a slot (default 64)
 }
@@ -1606,8 +1631,10 @@ pub fn cnm_readEnv(s: *Settings, buf: usize) {
       s.largeReserveCap = parseNum(a + 16usize, z);
       if s.largeReserveCap < 1048576usize { s.largeReserveCap = 1048576usize; }
       if s.largeReserveCap > 68719476736usize { s.largeReserveCap = 68719476736usize; }
-    } else if len >= 8usize && strncmp(a as *u8, "design=2", 8usize) == 0i32 {
+    } else if len >= 15usize && strncmp(a as *u8, "design=lockfree", 15usize) == 0i32 {
       s.design = 2usize;
+    } else if len >= 11usize && strncmp(a as *u8, "design=lock", 11usize) == 0i32 {
+      s.design = 1usize;
     } else if len >= 6usize && strncmp(a as *u8, "slots=", 6usize) == 0i32 {
       s.slotCap = parseNum(a + 6usize, z);
       if s.slotCap < 1usize { s.slotCap = 1usize; }
