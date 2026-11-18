@@ -11,12 +11,14 @@
 // coarse, and the bound is 2 ms until it is finer. On a loaded machine (a gate
 // running) one pass can miss it by a long way (p99 5 ms and more), so the test
 // makes up to three passes and needs one inside the bound: a lateness the
-// timer service itself adds shows in every pass. 'show' true makes the
-// distribution of the last pass print (p50, p99, worst, in microseconds) as
-// failing checks, for measuring before the bound is moved.
+// timer service itself adds shows in every pass. With CONE_LONESLEEP_SHOW set
+// in the environment the distribution of the last pass prints (p50, p99,
+// worst, in microseconds) as failing checks, for measuring before the bound is
+// moved (that run is meant to fail).
 mod lonesleep;
 
 import testing use *;
+import env;
 import thread;
 import time use Duration, Instant;
 import sync use Channel, Sender, Receiver;
@@ -28,7 +30,6 @@ const passes = 3u32;
 const bucketUs = 250u64;
 const nBuckets = 20usize;       // 0 to 5 ms in 250 us; the last one holds anything later
 const boundUs = 2000u64;
-const show = false;
 
 actor Sleeper {
   seed: u64;
@@ -52,6 +53,11 @@ actor Sleeper {
 
 fn main() i32 {
   initAll();
+  var show = false;
+  match env.get("CONE_LONESLEEP_SHOW") {
+    case let Some(v) {show = true;}
+    else {}
+  }
   actors.configure(actors.Options(workers: 4u32));
   var tx: Sender[u64];
   var rx: Receiver[u64];
