@@ -1,0 +1,120 @@
+// One worker: no worker cells (row 483, the one-worker half of judgement call
+// (a): cells only in a runtime with a monitor). A runtime of one worker has no
+// monitor, so actors' timerAwaitable says None and aio keeps its sleeps on the
+// I/O thread's timer, as before row 483. The sleeps still work (never early,
+// each answered once, Done), a cancel and a deadline still end a long one, and
+// the workers' timer counts stay at zero. (workertimers is the other half: four
+// workers, the sleeps are cells.)
+mod timerone;
+
+import testing use *;
+import thread;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import iocore use IoError, CancelGroup;
+import actors;
+import aio use IoLimits;
+
+const sleepers = 8u64;
+const perSleeper = 60u64;
+
+let early: Atomic[u64];
+let answered: Atomic[u64];
+let notDone: Atomic[u64];
+
+fn @initpure init() {
+  early = Atomic[u64].of(0u64);
+  answered = Atomic[u64].of(0u64);
+  notDone = Atomic[u64].of(0u64);
+}
+
+fn ended(r: Result[void, IoError]) u64 {
+  match r {
+    case let Err(e) {
+      if aio.isCancelled(e) {2u64}
+      else if aio.isTimedOut(e) {3u64}
+      else {4u64}
+    }
+    else {1u64}
+  }
+}
+
+fn take(rx: &mut Receiver[u64]) u64 { rx.recv() || 999u64 }
+
+actor Many {
+  seed: u64;
+  done: Sender[u64];
+
+  pub async fn run(self) {
+    var x = seed;
+    var i = 0u64;
+    while i < perSleeper {
+      x = x * 6364136223846793005u64 + 1442695040888963407u64;
+      let us = i64.from((x >> 33u64) % 3000u64);
+      let d = Duration.fromMicros(us);
+      let t = Instant.now();
+      let r = await aio.sleep(d);
+      if t.elapsed() < d {early.add(1u64);}
+      if ended(r) != 1u64 {notDone.add(1u64);}
+      answered.add(1u64);
+      i = i + 1u64;
+    }
+    done.send(1u64);
+  }
+}
+
+// An hour's sleep in a group: 'cancelled' in one main cancels, 'deadline' in
+// one with a deadline 40 ms away. Each reports how it ended (ended above)
+actor Long {
+  out: Sender[u64];
+
+  pub async fn cancelled(self, g: CancelGroup) {
+    let r = await aio.sleepIn(Duration.fromSeconds(3600i64), IoLimits.within(g));
+    out.send(ended(r));
+  }
+
+  pub async fn deadline(self) {
+    let t = Instant.now() + Duration.fromMillis(40i64);
+    let r = await aio.sleepIn(Duration.fromSeconds(3600i64), IoLimits.within(CancelGroup.until(t)));
+    out.send(ended(r));
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 1u32));
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  var k = 0u64;
+  while k < sleepers {
+    let m = Many(k * 7919u64 + 1u64, tx.clone());
+    m.run();
+    k = k + 1u64;
+  }
+  var got = 0u64;
+  k = 0u64;
+  while k < sleepers {
+    got = got + take(&mut rx);
+    k = k + 1u64;
+  }
+  expect(got == sleepers, "every sleeper finished");
+  expect(answered.load() == sleepers * perSleeper, "480 sleeps answered, each once");
+  expect(notDone.load() == 0u64, "every one Done");
+  expect(early.load() == 0u64, "none before its time");
+  // A cancel and a deadline end an hour's sleep
+  let l = Long(tx.clone());
+  let g = CancelGroup.make();
+  l.cancelled(g);
+  l.deadline();
+  thread.sleep(Duration.fromMillis(20i64));
+  g.cancel();
+  let a = take(&mut rx);
+  let b = take(&mut rx);
+  expect((a == 2u64 && b == 3u64) || (a == 3u64 && b == 2u64), "a cancel ends one sleep (Cancelled), a deadline the other (TimedOut)");
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  let st = actors.timerStats();
+  expect(st.arms == 0u64 && st.fires == 0u64 && st.cancels == 0u64 && st.armed == 0u64,
+    "no worker cell was armed: the sleeps were the I/O thread's");
+  done()
+}

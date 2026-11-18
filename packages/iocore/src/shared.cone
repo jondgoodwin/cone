@@ -76,6 +76,10 @@ pub const issueNot = 0u32;       // nothing: the record goes the Loop's way, as 
 pub const issueDone = 1u32;      // answered here: the record is the caller's, its outcome in it
 pub const issuePending = 2u32;   // in flight: the caller hands it to the Loop (lp.start)
 
+const tryPublic = 0u32;      // issueAt's modes
+const tryWaiting = 1u32;
+const tryRetry = 2u32;
+
 const shChunk = 256u32;          // entries a chunk
 const shChunks = 4096u32;        // chunks at most: 1,048,576 handles
 const shSpins = 64u32;           // looks at a held lock before each yield
@@ -90,9 +94,14 @@ struct SEntry {
   closing: u32;            // its close has been asked: nothing is issued on it (under the lock)
   kind: u32;               // hSocket, ...
   skip: u32;               // Windows: its completions skip the port on success
+  worker: u32;             // a UDP socket whose waits are the worker port's, not the Loop's (UDP ON THE WORKER PORT)
+  hold: u32;               // tests: datagram sends are answered as if the socket would block (holdSends)
   spare: u32;
   raw: usize;              // the OS handle
-  pad: Array[u8, 32];
+  rwait: *OpCore;          // under the EXCLUSIVE lock: the receives waiting worker-side, oldest first (hnext, hprev)
+  swait: *OpCore;          // likewise the sends: Linux, those the socket would not take, tried in order at an
+                           // EPOLLOUT edge; Windows, those the kernel holds
+  pad: Array[u8, 8];
 }
 
 // The table: the chunk directory, the contended count, and how many hold it
@@ -344,8 +353,24 @@ pub struct Shared is Move, Sendable {
   }
 
   // Try record p's receive or send here (ISSUE above). The entry of p's
-  // handle is locked by this thread. issueNot, issueDone or issuePending
-  pub fn issue(self: &, p: *OpCore) u32 {
+  // handle is locked by this thread. issueNot, issueDone or issuePending. It
+  // never answers issuePending for a worker-side socket (UDP ON THE WORKER
+  // PORT): a datagram is never partial, so on Linux it is answered or issueNot,
+  // and on Windows every datagram operation answers issueNot; 'issueWaiting'
+  // is what starts and lists those, and so answers issuePending itself
+  pub fn issue(self: &, p: *OpCore) u32 {self.issueAt(p, tryPublic)}
+
+  // 'issue' in one of three modes, which differ for a worker-side socket
+  // (UDP ON THE WORKER PORT). A datagram send waits behind the sends already
+  // waiting on it (Linux: the socket's EPOLLOUT edge tries them in order, and
+  // a send tried past them would overtake): every mode but the edge's own
+  // retry of the head, tryRetry. A datagram operation on Windows, a send as
+  // much as a receive, is never started under the entry's shared lock (its
+  // kernel operation may go pending, and the record must then be listed with
+  // no gap in which its completion could come first, and where a deadline or
+  // a cancel finds it): tryPublic, which is 'issue', says issueNot, and
+  // issueWaiting starts it under the exclusive lock, tryWaiting
+  fn issueAt(self: &, p: *OpCore, mode: u32) u32 {
     let r = p as &mut OpCore;
     let e = self.entry(r.handle.index);
     if e as usize == 0usize || (*e).closing != 0u32 {return issueNot;}
@@ -358,24 +383,266 @@ pub struct Shared is Move, Sendable {
     if k == diag.kindSend && r.isGather() && r.gatherSegments() == 0usize {return issueNot;}
     if (k == diag.kindRecv || k == diag.kindRecvFrom || k == diag.kindRecvMany) && r.bufRoom() == 0usize {return issueNot;}
     #if #os == .windows { if (*e).skip == 0u32 {return issueNot;} }
+    // A send on a worker-side socket that is held, or has sends waiting ahead of it, is not tried. The
+    // entry's wait lists change only under the exclusive lock, which no shared holder shares
+    if udp && (*e).worker != 0u32 {
+      #if #os == .windows {
+        // Every datagram operation: started under the exclusive lock, so that a pending one is listed with no gap
+        if mode == tryPublic {return issueNot;}
+      } #else {
+        if k == diag.kindSendTo {
+          if (*e).hold != 0u32 {return issueNot;}
+          if mode != tryRetry && (*e).swait as usize != 0usize {return issueNot;}
+        }
+      }
+    }
     // A deadline or a group done with is answered by the Loop, as at a start
     let now = Instant.now();
-    var dl = r.deadline;
-    var cancelled = false;
-    match r.group {
-      case let Some(s) {
-        if s.deadline() < dl {dl = s.deadline();}
-        cancelled = s.isCancelled();
-      }
-      else {}
-    }
-    if cancelled || dl <= now {return issueNot;}
+    if dueOutcome(r, now) != 0u32 {return issueNot;}
     #if #os == .windows {
-      winIssue(p, (*e).raw, now)
+      winIssue(p, (*e).raw, now, (*e).worker != 0u32)
     } #else {
       lxIssue(p, (*e).raw, now)
     }
   }
+
+  // UDP ON THE WORKER PORT. A datagram operation on a socket bound with the
+  // Loop's worker port switched on (lp.setWorkerPort) never waits on the
+  // Loop: the Loop answers it Failed, invalid handle. A try that finds nothing
+  // to do (a receive with no datagram, a send the socket will not take) is
+  // given to 'issueWaiting', with no lock held. It takes the entry EXCLUSIVE
+  // (the wait lists change only then), tries once more (an edge that came
+  // between is not missed), and lists the record: issuePending, the record is
+  // the table's, and one of 'udpReady' (Linux: readiness), 'udpCompleted'
+  // (Windows: the kernel's completion) or 'endWaiting' answers it, once, into
+  // the list its caller gives. Anything it can answer at once is answered
+  // there (issueDone: a handle that names nothing or is closing, no room for
+  // a receive, a group cancelled, a deadline past, or the second try's own
+  // datagram). issueNot: not a datagram operation, or no worker-side socket:
+  // the Loop's way. The caller holds neither lock
+  pub fn issueWaiting(self: &, p: *OpCore) u32 {
+    let r = p as &mut OpCore;
+    let k = r.kind;
+    if k != diag.kindRecvFrom && k != diag.kindRecvMany && k != diag.kindSendTo {return issueNot;}
+    let h = r.handle;
+    let now = Instant.now();
+    if !self.lock(h) {
+      stampIssued(p, now);
+      return answeredHere(p, diag.outcomeFailed, 0usize, noSuchHandle());
+    }
+    let e = self.entry(h.index);
+    if (*e).worker == 0u32 || (*e).kind != hDatagram {
+      self.unlock(h);
+      return issueNot;
+    }
+    var got = issueNot;
+    let due = dueOutcome(r, now);
+    if (*e).closing != 0u32 {
+      stampIssued(p, now);
+      got = answeredHere(p, diag.outcomeFailed, 0usize, noSuchHandle());
+    } else if k != diag.kindSendTo && r.bufRoom() == 0usize {
+      stampIssued(p, now);
+      got = answeredHere(p, diag.outcomeFailed, 0usize, noRoom());
+    } else if due != 0u32 {
+      stampIssued(p, now);
+      got = answeredHere(p, due, 0usize, 0u32);
+    } else {
+      got = self.issueAt(p, tryWaiting);
+      if got == issueNot {
+        // Nothing to take, or a send held: not stamped yet (the try stamps what it answers)
+        stampIssued(p, now);
+        listWait(e, p);
+        got = issuePending;
+      } else if got == issuePending {
+        // Windows: the kernel holds it, and its completion comes to the worker port, never to the
+        // Loop. Its completion's answer waits for this entry's lock, which is held until it is listed
+        listWait(e, p);
+      }
+    }
+    self.unlock(h);
+    got
+  }
+
+  // For tests, Linux only (a no-op on Windows): while 'on', every datagram
+  // send on h's worker-side socket answers as a send the socket would not take
+  // (EAGAIN), so a send can be held waiting on a loopback socket that never
+  // would. The sends it held go on at the next 'udpReady' with the EPOLLOUT bit
+  pub fn holdSends(self: &, h: Handle, on: bool) {
+    #if #os == .windows {return;} #else {
+    if !self.lock(h) {return;}
+    (*self.entry(h.index)).hold = if on {1u32} else {0u32};
+    self.unlock(h);
+    }
+  }
+
+  // Linux: the worker port's epoll reported 'events' for the entry and
+  // generation its datum held. The receives waiting on it try again, in order
+  // while they take a datagram, and so do the sends, in order while the
+  // socket takes them (readiness is edge-triggered: each list is tried until
+  // it would block). Every record answered is appended to out, to be answered
+  // on by the caller; the others stay listed. A stale datum (the handle is
+  // gone) does nothing. Any thread; takes the entry exclusive. A no-op on Windows
+  pub fn udpReady(self: &, index: u32, gen: u32, events: u32, out: &mut List[*OpCore]) {
+    #if #os == .windows {return;} #else {
+    let h = Handle(index, gen);
+    if !self.lock(h) {return;}
+    let e = self.entry(index);
+    if (*e).worker != 0u32 && (*e).closing == 0u32 {
+      if (events & (epollIn | epollErr | epollHup | epollRdHup)) != 0u32 {self.drainWaits(e, true, out);}
+      if (events & (epollOut | epollErr | epollHup)) != 0u32 {self.drainWaits(e, false, out);}
+    }
+    self.unlock(h);
+    }
+  }
+
+  // Entry e's receives (or sends) tried in order, until one would block; e
+  // held exclusive (Linux)
+  fn drainWaits(self: &, e: *SEntry, reads: bool, out: &mut List[*OpCore]) {
+    while true {
+      let p = if reads {(*e).rwait} else {(*e).swait};
+      if p as usize == 0usize {break;}
+      let r = p as &mut OpCore;
+      let sub = r.submitted;
+      let now = Instant.now();
+      let due = dueOutcome(r, now);
+      var got = issueDone;
+      if due != 0u32 {
+        // Its group was cancelled or its deadline passed while it waited
+        answeredHere(p, due, 0usize, 0u32);
+      } else {
+        got = self.issueAt(p, tryRetry);
+      }
+      if got != issueDone {break;}
+      // Answered by this try: its first stamp is its submit time
+      r.submitted = sub;
+      unlistWait(e, p);
+      out.push(p);
+    }
+  }
+
+  // Windows: the worker port's completion for record p (its OVERLAPPED is the
+  // record, the port's key is the socket's), with the bytes it moved. The
+  // record leaves its entry's list (a handle already closed has none) and is
+  // answered, as the Loop answers a completion: a deadline's or a cancel's
+  // abort completion is TimedOut or Cancelled, the record whole with its
+  // buffer and its batch; a completion that came first is Done. Appended to
+  // out. A no-op on Linux
+  pub fn udpCompleted(self: &, p: *OpCore, bytes: u32, out: &mut List[*OpCore]) {
+    #if #os == .windows {
+    let r = p as &mut OpCore;
+    let h = r.handle;
+    if self.lock(h) {
+      unlistWait(self.entry(h.index), p);
+      self.unlock(h);
+    }
+    r.dequeued = Instant.now();
+    let status = r.ov.internal & 0xFFFFFFFFusize;
+    let n = usize.from(bytes);
+    if r.kind == diag.kindRecvMany && (status == statusSuccess || status == statusBufferOverflow) {
+      r.bufGrow(n);
+      r.batchOne(status == statusBufferOverflow);
+      answeredHere(p, diag.outcomeDone, 1usize, 0u32);
+    } else if status == statusBufferOverflow && r.kind == diag.kindRecvFrom {
+      r.bufGrow(n);
+      answeredHere(p, diag.outcomeFailed, 0usize, errorMsgSize);
+    } else if status == statusSuccess {
+      if r.kind == diag.kindRecvFrom {r.bufGrow(n);}
+      answeredHere(p, diag.outcomeDone, n, 0u32);
+    } else if status == statusCancelled {
+      answeredHere(p, if r.asked == askedDeadline {diag.outcomeTimedOut} else {diag.outcomeCancelled}, 0usize, 0u32);
+    } else if status == statusInvalidBufferSize && r.kind == diag.kindSendTo {
+      answeredHere(p, diag.outcomeFailed, 0usize, errorMsgSize);
+    } else {
+      answeredHere(p, diag.outcomeFailed, 0usize, RtlNtStatusToDosError(u32.from(status)));
+    }
+    out.push(p);
+    } #else {}
+  }
+
+  // End record p, which waits on h's worker-side socket and has the id 'id'
+  // (its core's), because its deadline came (why = diag.outcomeTimedOut)
+  // or it was cancelled (anything else): false if it is no longer waiting there,
+  // answered or its handle gone. Linux: it leaves the list and is answered at
+  // once, with its buffer and batch, appended to out. Windows: the kernel is
+  // asked to abort it (CancelIoEx on this operation alone) and true is
+  // answered; the abort's completion comes to the worker port, and
+  // 'udpCompleted' answers it then, so the batch always comes back (a
+  // completion that beat the abort is Done). Any thread; takes the entry exclusive
+  pub fn endWaiting(self: &, h: Handle, p: *OpCore, id: OpId, why: u32, out: &mut List[*OpCore]) bool {
+    if !self.lock(h) {return false;}
+    let e = self.entry(h.index);
+    let r = p as &mut OpCore;
+    let waiting = inFlightAt(p, id.gen) && r.side != onNone && r.handle == h;
+    if !waiting {
+      self.unlock(h);
+      return false;
+    }
+    let outcome = if why == diag.outcomeTimedOut {diag.outcomeTimedOut} else {diag.outcomeCancelled};
+    #if #os == .windows {
+      if r.asked == askedNone {r.asked = if outcome == diag.outcomeTimedOut {askedDeadline} else {askedCancel};}
+      CancelIoEx((*e).raw, p as *u8);
+    } #else {
+      unlistWait(e, p);
+      answeredHere(p, outcome, 0usize, 0u32);
+      out.push(p);
+    }
+    self.unlock(h);
+    true
+  }
+}
+
+// What a record's group and deadline say at 'now': diag.outcomeCancelled for a
+// group cancelled, diag.outcomeTimedOut for a deadline (its own or its
+// group's) reached, else 0
+fn dueOutcome(r: &mut OpCore, now: Instant) u32 {
+  var dl = r.deadline;
+  var cancelled = false;
+  match r.group {
+    case let Some(s) {
+      if s.deadline() < dl {dl = s.deadline();}
+      cancelled = s.isCancelled();
+    }
+    else {}
+  }
+  if cancelled {return diag.outcomeCancelled;}
+  if dl <= now {return diag.outcomeTimedOut;}
+  0u32
+}
+
+// Record p listed last among entry e's waiting receives, or sends; e is held
+// exclusive. The record's own links serve, as a Loop's handle lists do
+fn listWait(e: *SEntry, p: *OpCore) {
+  let r = p as &mut OpCore;
+  let reads = r.kind != diag.kindSendTo;
+  r.side = if reads {onReads} else {onWrites};
+  r.hnext = null;
+  r.hprev = null;
+  var last = if reads {(*e).rwait} else {(*e).swait};
+  if last as usize == 0usize {
+    if reads {(*e).rwait = p;} else {(*e).swait = p;}
+    return;
+  }
+  while (*last).hnext as usize != 0usize {last = (*last).hnext;}
+  (*last).hnext = p;
+  r.hprev = last;
+}
+
+// Record p taken off the list of entry e it is on, if it is on one; e is held
+// exclusive
+fn unlistWait(e: *SEntry, p: *OpCore) {
+  let r = p as &mut OpCore;
+  if r.side == onNone {return;}
+  let prev = r.hprev;
+  let next = r.hnext;
+  if prev as usize == 0usize {
+    if r.side == onReads {(*e).rwait = next;} else {(*e).swait = next;}
+  } else {
+    (*prev).hnext = next;
+  }
+  if next as usize != 0usize {(*next).hprev = prev;}
+  r.side = onNone;
+  r.hprev = null;
+  r.hnext = null;
 }
 
 // A new table, its directory empty, the Loop its one holder; none if there is
@@ -401,7 +668,7 @@ fn makeShared() Shared {
 // the directory and of an entry's fields): its fields first, then its
 // generation, released. A cell no chunk could be made for stays unpublished,
 // and its operations go the Loop's way
-fn publishEntry(sh: &Shared, i: u32, gen: u32, raw: usize, kind: u32, skip: u32) {
+fn publishEntry(sh: &Shared, i: u32, gen: u32, raw: usize, kind: u32, skip: u32, worker: u32) {
   let ci = i / shChunk;
   if ci >= shChunks {return;}
   let slot = (*(sh.at as *Slab)).dir + usize.from(ci);
@@ -415,19 +682,52 @@ fn publishEntry(sh: &Shared, i: u32, gen: u32, raw: usize, kind: u32, skip: u32)
   (*e).raw = raw;
   (*e).kind = kind;
   (*e).skip = skip;
+  (*e).worker = worker;
+  (*e).hold = 0u32;
+  (*e).rwait = null;
+  (*e).swait = null;
   (*e).closing = 0u32;
   mem.atomicStore[u32](&(*e).gen as *u32, gen, MemOrder.Release);
 }
 
-// Cell i unpublished, under its lock: a thread issuing on it has finished
-// (and queued what follows) before this returns, and none starts after
-fn unpublishEntry(sh: &Shared, i: u32) {
+// A worker-side socket's entry is one: set by the Loop's thread, on the entry
+// of cell i, before any other thread knows the handle
+fn markWorkerEntry(sh: &Shared, i: u32) {
   let e = sh.entry(i);
   if e as usize == 0usize {return;}
-  if mem.atomicLoad[u32](&(*e).gen as *u32, MemOrder.Relaxed) == 0u32 {return;}
+  (*e).worker = 1u32;
+}
+
+// Cell i unpublished, under its lock: a thread issuing on it has finished
+// (and queued what follows) before this returns, and none starts after. The
+// records waiting worker-side on it (UDP ON THE WORKER PORT) leave its lists
+// with it: the first of them, chained on 'hnext' (receives, then sends), is
+// answered, or let go, by the caller; null when none waits
+fn unpublishEntry(sh: &Shared, i: u32) *OpCore {
+  let e = sh.entry(i);
+  if e as usize == 0usize {return null;}
+  if mem.atomicLoad[u32](&(*e).gen as *u32, MemOrder.Relaxed) == 0u32 {return null;}
   sh.acquire(e);
   mem.atomicStore[u32](&(*e).gen as *u32, 0u32, MemOrder.Release);
+  var head = (*e).rwait;
+  var last = head;
+  if last as usize != 0usize {
+    while (*last).hnext as usize != 0usize {last = (*last).hnext;}
+    (*last).hnext = (*e).swait;
+  } else {
+    head = (*e).swait;
+  }
+  (*e).rwait = null;
+  (*e).swait = null;
+  (*e).worker = 0u32;
+  var q = head;
+  while q as usize != 0usize {
+    (*q).side = onNone;
+    (*q).hprev = null;
+    q = (*q).hnext;
+  }
   sh.release(e);
+  head
 }
 
 // Record p in flight from now, stamped as the Loop's 'stamp' does, but not
@@ -468,7 +768,7 @@ fn answeredHere(p: *OpCore, status: u32, n: usize, code: u32) u32 {
 // success. Pending: the record is the kernel's, marked in transit BEFORE the
 // call, and nothing of it is touched here after
 #if #os == .windows {
-fn winIssue(p: *OpCore, raw: usize, now: Instant) u32 {
+fn winIssue(p: *OpCore, raw: usize, now: Instant, worker: bool) u32 {
   let r = p as &mut OpCore;
   if r.kind == diag.kindSend && r.isGather() {return winIssueGather(p, raw, now);}
   var data = null as *u8;
@@ -481,7 +781,9 @@ fn winIssue(p: *OpCore, raw: usize, now: Instant) u32 {
   }
   stampIssued(p, now);
   r.raw = raw;
-  r.link = linkTransit;
+  // A worker-side socket's completion comes to the worker port, whose waiter
+  // answers it; the Loop never holds the record, so it is not in transit
+  r.link = if worker {linkNone} else {linkTransit};
   var got = 0u32;
   var rc = 0i32;
   let from = r.sockAddr();

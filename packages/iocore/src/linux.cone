@@ -390,11 +390,14 @@ fn sendData(r: &mut OpCore) *u8, usize {
 
 // A socket made, closed with the loop's entry for it: a descriptor adopted
 // into the handle table and watched. 0 and the handle, or the error number
-// (the descriptor is then closed)
-fn lxAdopt(lp: &mut Loop, fd: usize, kind: u32, family: u16) u32, Handle {
+// (the descriptor is then closed). 'worker', not 0, is the epoll instance of the
+// worker port (UDP ON THE WORKER PORT, shared.cone): the descriptor is watched
+// there, and not by this loop's
+fn lxAdopt(lp: &mut Loop, fd: usize, kind: u32, family: u16, worker: usize = 0usize) u32, Handle {
   #if #os == .windows {errorInvalidParameter, Handle.none()} #else {
   let h = lp.register(fd, kind, family);
-  let code = lxWatch(lp.portHandle, fd, h.index, h.gen);
+  if worker != 0usize {lp.markWorker(h);}
+  let code = lxWatch(if worker != 0usize {worker} else {lp.portHandle}, fd, h.index, h.gen);
   if code != 0u32 {
     lp.close(h);
     return code, Handle.none();
