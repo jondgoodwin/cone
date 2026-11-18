@@ -743,6 +743,11 @@ class Check:
     # The stem of a 'link' entry whose object the check reads, in place of the
     # scenario's own: what a package compiled on its own generated
     object: str | None = None
+    # A line's text: the check reads only the lines holding it, and for an IR
+    # 'define' line, that function's body too. A direct compile builds core into
+    # the program, so a check on the test's own symbols names them here rather
+    # than reading every line of the module.
+    within: str | None = None
 
 
 @dataclass(frozen=True)
@@ -959,7 +964,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
 
         checks = []
         for entry in table.get("check", []):
-            _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object"})
+            _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object", "within"})
             if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta", "trust"):
                 raise SuiteError(
                     f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta', 'stdout' or 'trust'")
@@ -987,6 +992,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                 contains=tuple(entry.get("contains", [])),
                 excludes=tuple(entry.get("excludes", [])),
                 object=entry.get("object"),
+                within=entry.get("within"),
             ))
 
         scenario = Scenario(
@@ -3276,6 +3282,8 @@ class Runner:
                 text = normalize(found[0].read_text(encoding="utf-8", errors="replace"))
             else:
                 text = result.program_stdout or ""
+            if check.within is not None:
+                text = within_lines(text, check.within)
             for needle in check.contains:
                 if needle not in text:
                     result.status = FAIL
@@ -3288,6 +3296,21 @@ class Runner:
                     result.problems.append(
                         f"check {check.name!r} ({check.target}): expected not to contain "
                         f"{needle!r}")
+
+
+def within_lines(text: str, marker: str) -> str:
+    """The lines of 'text' holding 'marker'; for a 'define' line, through the
+    closing '}' of that function."""
+    out: list[str] = []
+    body = False
+    for line in text.split("\n"):
+        if body:
+            out.append(line)
+            body = line != "}"
+        elif marker in line:
+            out.append(line)
+            body = line.startswith("define") and line.rstrip().endswith("{")
+    return "\n".join(out)
 
 
 def trimmed(text: str) -> list[str]:
