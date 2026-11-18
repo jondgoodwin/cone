@@ -4,7 +4,7 @@
 #   powershell -File packages\cnmalloc\tests\mutants.ps1 [-Name a|a2|b|m1|...|m7|none|all] [-Runs 5] [-Scratch <dir>] [-RaceSecs 120]
 #
 #   a    Rule G's undo removed: the g2 test still runs, but the thread keeps the cell of the page's new life  (caught by lfrace: double free abort)
-#   a2   Rule G compares the class half of genclass only, not the generation half                              (was caught by lfrace's undo target; since the undo count is a coverage target, lfrace passes on it: NOT caught, expect WRONG)
+#   a2   Rule G compares the class half of genclass only, not the generation half (in lf_alloc and in lf_fill's MB-G; the test drives the fill)                            (caught by lfmulti's same-class rounds: the page returns as the same class with a new generation; lfrace's undo count is a coverage target and does not catch it)
 #   b    lf_release reads genclass AFTER its fetch_or and its park point, not before the cell stopped being the caller's  (caught by lfstale)
 #   (row 506, the multi-bit fill and the grouped return; Ruminations\row-460-rules-and-tests-2026-11-18.md, section 4)
 #   m1   no g2 test on the multi path (MB-G)                                    (caught by lfmulti: stamps hit, wrong-class cells)
@@ -43,7 +43,9 @@ $obj = Join-Path $pkg 'build\release\cnmalloc.obj'
 # each mutant: pairs of (exact text, replacement); every anchor must occur exactly once in cn_shim.c
 $mutants = @{
   'a'  = @(, @(("            lf_release(P, g2, j, bit);`n            if (ask) cnm_lf_grow(g_heap, c);`n            goto restart;"), '            (void)g2;'))
-  'a2' = @(, @('if (g2 != g1) {                               // Rule G:', 'if ((g2 & 0xFF) != (g1 & 0xFF)) {               // Rule G:'))
+  'a2' = @(
+    @('if (g2 != g1) {                               // Rule G:', 'if ((g2 & 0xFF) != (g1 & 0xFF)) {               // Rule G:'),
+    @('if (g2 != g1) {                               // MB-G:', 'if ((g2 & 0xFF) != (g1 & 0xFF)) {               // MB-G:'))
   'b'  = @(, @('LF_HOOK_OR(g & 0xFF);                               // tests only (CN_HOOKS): a park point after the fetch_or', ('LF_HOOK_OR(g & 0xFF);' + "`n" + '  g = P->genclass;')))
   'm1' = @(, @('if (g2 != g1) {                               // MB-G', 'if (0) {                               // MB-G'))
   'm2' = @(, @('lf_release(P, g2, j, want);', 'lf_release(P, g2, j, want & (0 - want));'))
@@ -131,7 +133,7 @@ function Check([string]$what, [bool]$ok) { $script:verdicts += [pscustomobject]@
 
 # each mutant's catching test, with the variant that catches it
 $plan = @{
-  'a' = @('lfrace', @{}); 'a2' = @('lfrace', @{}); 'b' = @('lfstale', @{})
+  'a' = @('lfrace', @{}); 'a2' = @('lfmulti', @{}); 'b' = @('lfstale', @{})
   'm1' = @('lfmulti', @{}); 'm2' = @('lfmulti', @{}); 'm3' = @('lfmulti', @{}); 'm4' = @('lfstale', @{ CNSTALE_GROUPED = '1' })
   'm5' = @('lfreturn', @{}); 'm6' = @('lfmulti', @{}); 'm7' = @('doublefree', @{})
 }

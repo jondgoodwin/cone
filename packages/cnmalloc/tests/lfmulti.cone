@@ -20,6 +20,10 @@
 //     slot and takes "after a free", which must take the 512 class's lock (the life the bits came from) and list the page.
 //     An undo that passed g1 would take the 1024 class's lock, fail the generation test and leave the page UNLISTED with
 //     free bits: lost, with no crash. So the round ends by checking that the page is LISTED with every bit restored.
+// Same-class rounds (row 701; they catch mutant a2, whose Rule G compares the class half of genclass only): the whole-word
+//   shape, but the retired page comes back as the SAME 1024 class with a new generation (CNMULTI_SAME rounds, default 10).
+//   The whole genclass differs, so the swap must be undone: the count rises by one, every bit is restored, no stamp is hit.
+//   Under a2 the filler keeps 8 cells of the page's earlier life, so the word is not restored and the count does not rise.
 // Three control rounds (the page does not change) must take 8 cells of one page normally, with no undo. At the end, with
 // every cell freed and the filler's cache emptied, allocations equal frees.
 //
@@ -42,6 +46,7 @@ extern {
   fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
   fn @c(system) CreateFileA(name: *u8, access: u32, share: u32, sec: usize, disp: u32, flags: u32, tmpl: usize) usize;
   fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) ExitProcess(code: u32);
   fn @c(system) GetModuleHandleA(name: *u8) usize;
   fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
   fn @c("_msize") msize(p: *u8) usize;
@@ -126,6 +131,21 @@ fn filler(arg: usize) u64 {
   0u64
 }
 
+const cStop = 31usize;      // set by main when the test is over; the watchdog ends on it
+
+// a mutant that corrupts a free list can hang the allocator itself (row 701: a2); the watchdog turns that into a failure
+fn watchdog(c: usize) u64 {
+  var t = 0usize;
+  while t < 240usize {
+    if ld(c, cStop) == 1usize { return 0u64; }
+    Sleep(500u32);
+    t = t + 1usize;
+  }
+  errLine("lfmulti: WATCHDOG: no end after seconds ", 120usize, "; stuck cell chain? round state ", 0usize, " ", 0usize);
+  ExitProcess(3u32);
+  0u64
+}
+
 fn waitFor(c: usize, i: usize, want: usize) bool {
   var w = 0usize;
   while ld(c, i) != want && w < 5000usize { Sleep(1u32); w = w + 1usize; }
@@ -197,9 +217,11 @@ fn controlRound(c: usize, k: usize, coll: Collect, tot: Total) {
 }
 
 // one stale round; whole: the filler takes a whole word (8 of 8 free) and the page is detached under it
-fn staleRound(c: usize, k: usize, cells: usize, coll: Collect, tot: Total, pk: Peek, round: usize, whole: bool) {
+// same (whole only): the page comes back as the SAME class (1024) with a new generation, not as the 512 class (row 701; a2)
+fn staleRound(c: usize, k: usize, cells: usize, coll: Collect, tot: Total, pk: Peek, round: usize, whole: bool, same: bool) {
   cleanup(coll);
   resetParks(c);
+  let nsz = if same { 1024usize } else { 512usize };
   // the 1024 page, as the filler will load its word: wholly free (partial) or with its 8 highest cells free (whole word)
   let keep = if whole { 56usize } else { 1usize };
   var n = 0usize;
@@ -218,13 +240,13 @@ fn staleRound(c: usize, k: usize, cells: usize, coll: Collect, tot: Total, pk: P
   cleanup(coll);
   // partial: cell 64 (in word 1) stays held, so the page cannot retire under the checks (the give-back timer retires a
   // wholly free page at any moment under giveback=now, and may decommit it); whole word: 120 cells stay held
-  let nb = if whole { 128usize } else { 65usize };
+  let nb = if same { 64usize } else if whole { 128usize } else { 65usize };
   n = 0usize;
   var onPage = 0usize;
   while n < nb {
-    let b = libc.malloc(512usize) as usize;
+    let b = libc.malloc(nsz) as usize;
     *word(cells, n) = b;
-    stamp(b, 512usize, 7000000usize + round * 1000usize + n);
+    stamp(b, nsz,7000000usize + round * 1000usize + n);
     if b >> 16usize == x0 >> 16usize { onPage = onPage + 1usize; }
     n = n + 1usize;
   }
@@ -246,8 +268,8 @@ fn staleRound(c: usize, k: usize, cells: usize, coll: Collect, tot: Total, pk: P
     var extra = 0usize;
     if whole {
       // another thread's allocation finds the page full and detaches it: the page is UNLISTED under the parked filler
-      extra = libc.malloc(512usize) as usize;
-      stamp(extra, 512usize, 1usize);
+      extra = libc.malloc(nsz) as usize;
+      stamp(extra, nsz, 1usize);
       if pk(x0, 65i32) != 3u64 { bump(k, kErr); }
     }
     release(c, cRelTake);
@@ -268,7 +290,7 @@ fn staleRound(c: usize, k: usize, cells: usize, coll: Collect, tot: Total, pk: P
   // MB-W: every stamp of the new life is intact (free cells and held ones alike)
   n = 0usize;
   while n < nb {
-    if !stampOk(*word(cells, n), 512usize, 7000000usize + round * 1000usize + n) { bump(k, kStamp); }
+    if !stampOk(*word(cells, n), nsz, 7000000usize + round * 1000usize + n) { bump(k, kStamp); }
     n = n + 1usize;
   }
   if whole {
@@ -355,6 +377,7 @@ fn main() i32 {
   if (design as *u8 as DesignFn)() != 2i32 { skipped(); return done(); }
   let rounds = envNum("CNMULTI_ROUNDS", 20usize);
   let wholes = envNum("CNMULTI_WHOLE", 10usize);
+  let sames = envNum("CNMULTI_SAME", 10usize);
   let coll = collect as *u8 as Collect;
   let tot = total as *u8 as Total;
   let pk = peek as *u8 as Peek;
@@ -365,7 +388,8 @@ fn main() i32 {
   st(c, cEnd, end);
   (setHooks as *u8 as SetHooks)(&hookPre as *u8 as usize, 0usize, 0usize, 0usize, &hookOr as *u8 as usize, 0usize);
   (setMulti as *u8 as SetMulti)(&hookTake as *u8 as usize, 0usize);
-  let live0 = tot(0i32) - tot(1i32);           // cells live before the filler starts (the control block, the counts, cells)
+  let live0 = tot(0i32) - tot(1i32);         // cells live before the filler starts (the control block, the counts, cells)
+  let wd = thread.start[usize, u64](c, &watchdog);
   let ft = thread.start[usize, u64](c, &filler);
   // warm up: 14 cells, so the filler's fills grow 2, 4, 8 and its cache is empty again; each round's 8 cells are then
   // exactly one fill of 8, whose first allocation is the miss
@@ -379,21 +403,25 @@ fn main() i32 {
   var r = 0usize;
   while r < 3usize { controlRound(c, k, coll, tot); r = r + 1usize; }
   r = 0usize;
-  while r < rounds { staleRound(c, k, cells, coll, tot, pk, r, false); r = r + 1usize; }
+  while r < rounds { staleRound(c, k, cells, coll, tot, pk, r, false, false); r = r + 1usize; }
   r = 0usize;
-  while r < wholes { staleRound(c, k, cells, coll, tot, pk, rounds + r, true); r = r + 1usize; }
+  while r < wholes { staleRound(c, k, cells, coll, tot, pk, rounds + r, true, false); r = r + 1usize; }
+  r = 0usize;
+  while r < sames { staleRound(c, k, cells, coll, tot, pk, rounds + wholes + r, true, true); r = r + 1usize; }
   st(c, cDone, 0usize);
   st(c, cCmd, 2usize);
   waitFor(c, cDone, 1usize);
   ft.join();
+  st(c, cStop, 1usize);
+  wd.join();
   (setHooks as *u8 as SetHooks)(0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
   (setMulti as *u8 as SetMulti)(0usize, 0usize);
   libc.free(cells as *u8);
   cleanup(coll);
   let allocs = tot(0i32);
   let frees = tot(1i32);
-  let all = rounds + wholes;
-  errLine("lfmulti: rounds ", rounds, " whole-word rounds ", wholes, " multi-bit undos ", usize.from(tot(10i32)));
+  let all = rounds + wholes + sames;
+  errLine("lfmulti: rounds ", rounds, " whole-word rounds ", wholes + sames," multi-bit undos ", usize.from(tot(10i32)));
   errLine("lfmulti: one-swap takes ", *word(k, kTake), " one-fetch_or undos ", *word(k, kUndo), " stamps hit ", *word(k, kStamp));
   errLine("lfmulti: restored ", *word(k, kRestored), " listed ", *word(k, kListed), " reused ", *word(k, kReused));
   errLine("lfmulti: allocs ", usize.from(allocs), " frees ", usize.from(frees), " errors ", *word(k, kErr));
@@ -403,7 +431,7 @@ fn main() i32 {
   expect(*word(k, kRestored) == all, "lfmulti: every round ended with the word's bits restored");
   expect(*word(k, kCount) == all, "lfmulti: the multi-bit undo count rose by one each round");
   expect(*word(k, kReused) == all, "lfmulti: the retired page came back as the other class's page every round");
-  expect(*word(k, kListed) == wholes, "lfmulti: every whole-word round ended with the page listed");
+  expect(*word(k, kListed) == wholes + sames, "lfmulti: every whole-word round ended with the page listed");
   expect(*word(k, kControl) == 3usize, "lfmulti: the control rounds took their cells normally");
   expect(allocs - frees == live0 - 1i64, "lfmulti: allocations equal frees at the end");
   expectUInt(u64.from(*word(k, kErr)), 0, "lfmulti: no wrong cell, no stuck thread");
