@@ -1,0 +1,285 @@
+// The second design's stale-freer test (row 454; WI\cnmalloc-second-design-spec.md, section 12; the review's mutant b):
+// A FREER THAT LOST THE RACE TO A RETIRE MUST NOT ACT ON THE PAGE'S NEXT LIFE. The freer reads the page's genclass
+// BEFORE its fetch_or (lf_free); "after a free" compares it to the page's genclass under the class lock, so a page that was
+// retired in between (its generation raised) is left alone, even when it has come back as another class's page. A freer that
+// read the genclass after its fetch_or would take the new life's genclass as its own and pass the test; this test is the one
+// that tells the two apart, and it needs no luck, because every step is driven.
+//
+// One round: the main thread fills one page with 64 cells of the 1024 class and frees all but the first. A second thread (the
+// freer) frees the first and is PARKED by a hook at the shim's park point, right after its fetch_or: the page is now wholly
+// free, and the freer has not yet read the page's state or called "after a free". The main thread then makes the heap
+// retire the page (a forced collect twice: the slot is dropped, the page retires, and goes to the pool). The freer is released
+// to its second park point, inside "after a free", past the generation test, under the 1024 class's lock (a hook field of
+// the heap, on the slow path only): the real code never reaches it here, since the generation no longer matches. The main
+// thread then allocates a cell of the 512 class (which takes the same page from the pool, readies it for the 512 class,
+// attaches it) and frees it, so that every word of the page reads as wholly free again, and releases the freer. A freer
+// that had passed the generation test now finds the page wholly free, retires it under the wrong class's lock and leaves
+// the 512 class's slot naming a RETIRED page: the next 512 allocation ends the process with the debug slot rule ("slot rule
+// broken", exit 3); the test also counts the second park point's visits, which must be none.
+//
+// A control round (the freer's free is the last of a page that is NOT attached, so that "after a free" is legitimately entered)
+// must visit the second park point exactly once, so the hook is known to work.
+//
+// Needs the second design linked: cnd.lib (the shim with -DCN_HOOKS -DCN_DEBUG) and CNMALLOC=design=lockfree,giveback=now,slots=1,stats:
+//   $env:_LINK_ = '"<dir>\cnd.lib"'; $env:CNMALLOC = 'design=lockfree,giveback=now,slots=1,stats'   (delete build\ first), then 'congo test lfstale'.
+//   CNSTALE_ROUNDS=<n> the rounds (default 20). Under a plain 'congo test' nothing is linked and the test passes without testing.
+// tests/mutants.ps1 runs it against the mutated shim (mutant b must fail it).
+
+mod lfstale;
+
+import testing use *;
+import thread;
+import libc;
+
+extern {
+  fn @c(system) Sleep(ms: u32);
+  fn @c(system) SwitchToThread() i32;
+  fn @c(system) GetStdHandle(n: u32) usize;
+  fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
+  fn @c(system) CreateFileA(name: *u8, access: u32, share: u32, sec: usize, disp: u32, flags: u32, tmpl: usize) usize;
+  fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) GetModuleHandleA(name: *u8) usize;
+  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
+  fn @c("_msize") msize(p: *u8) usize;
+  fn @c("strlen") strlen(s: cstr) usize;
+  fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
+}
+
+alias SetHooks = &fn @c (pre: usize, detach: usize, retire: usize, claim: usize, afterOr: usize, after: usize);
+alias Collect = &fn @c (force: i32) u64;
+alias DesignFn = &fn @c () i32;
+
+// words of the control block
+const cCmd = 0usize;        // the main thread tells the freer to free cTarget
+const cDone = 1usize;       // the freer's free returned
+const cTarget = 2usize;
+const cStop = 3usize;
+const cArmOr = 4usize;      // the freer's next visit to the first park point parks
+const cParkedOr = 5usize;
+const cRelOr = 6usize;
+const cArmAfter = 7usize;   // the freer's next visit to the second park point parks
+const cParkedAfter = 8usize;
+const cRelAfter = 9usize;
+const cReached = 10usize;   // visits of the freer to the second park point
+const cParkedRounds = 11usize;
+const cReused = 12usize;
+const cErrs = 13usize;
+const cStale = 14usize;     // visits to the second park point in rounds where the freer's generation was stale
+const cControl = 15usize;   // control rounds that visited it once
+
+// the freer thread's own copy of the control block's address (0 on every other thread, so the hooks act on the freer only)
+var @threadlocal fctl: usize = 0usize;
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+fn ld(base: usize, i: usize) usize { mem.atomicLoad[usize](word(base, i), MemOrder.SeqCst) }
+fn st(base: usize, i: usize, v: usize) { mem.atomicStore[usize](word(base, i), v, MemOrder.SeqCst); }
+
+fn spinUntil(c: usize, i: usize) {
+  while ld(c, i) == 0usize { SwitchToThread(); }
+}
+
+// the shim's park point, right after lf_release's fetch_or (only the freer thread, only when armed)
+fn @c hookOr(cl: usize) {
+  let c = fctl;
+  if c != 0usize && ld(c, cArmOr) == 1usize {
+    st(c, cArmOr, 0usize);
+    st(c, cParkedOr, 1usize);
+    spinUntil(c, cRelOr);
+  }
+}
+
+// the heap's hook: "after a free", past the generation test, under the class lock, before the scan
+fn @c hookAfter(cl: usize) {
+  let c = fctl;
+  if c != 0usize {
+    st(c, cReached, ld(c, cReached) + 1usize);
+    if ld(c, cArmAfter) == 1usize {
+      st(c, cArmAfter, 0usize);
+      st(c, cParkedAfter, 1usize);
+      spinUntil(c, cRelAfter);
+    }
+  }
+}
+
+fn freer(arg: usize) u64 {
+  let c = arg;
+  fctl = c;
+  while ld(c, cStop) == 0usize {
+    if ld(c, cCmd) == 1usize {
+      st(c, cCmd, 0usize);
+      libc.free(ld(c, cTarget) as *u8);
+      st(c, cDone, 1usize);
+    } else {
+      SwitchToThread();
+    }
+  }
+  0u64
+}
+
+fn waitFor(c: usize, i: usize, want: usize) bool {
+  var w = 0usize;
+  while ld(c, i) != want && w < 5000usize { Sleep(1u32); w = w + 1usize; }
+  ld(c, i) == want
+}
+
+fn cleanup(coll: Collect) { coll(1i32); coll(1i32); }
+
+fn stamp(p: *u8, size: usize, v: usize) {
+  *(p as *usize) = size;
+  *word(p as usize, size / 8usize - 1usize) = v;
+}
+
+fn cellOk(p: *u8, size: usize, v: usize) bool {
+  *(p as *usize) == size && *word(p as usize, size / 8usize - 1usize) == v && msize(p) == size
+}
+
+// a 512-class cell, stamped, checked and freed; whether it is on the page 'page' (an address >> 16)
+fn takeB(c: usize, page: usize, v: usize) {
+  let b = libc.malloc(512usize);
+  if b as usize == 0usize { st(c, cErrs, ld(c, cErrs) + 1usize); return; }
+  stamp(b, 512usize, v);
+  if !cellOk(b, 512usize, v) { st(c, cErrs, ld(c, cErrs) + 1usize); }
+  if (b as usize) >> 16usize == page { st(c, cReused, ld(c, cReused) + 1usize); }
+  libc.free(b);
+}
+
+fn violationRound(c: usize, cells: usize, coll: Collect, round: usize) {
+  cleanup(coll);
+  var n = 0usize;
+  while n < 64usize { *word(cells, n) = libc.malloc(1024usize) as usize; n = n + 1usize; }
+  let x0 = *word(cells, 0usize);
+  n = 1usize;
+  while n < 64usize { libc.free(*word(cells, n) as *u8); n = n + 1usize; }
+  st(c, cTarget, x0);
+  st(c, cDone, 0usize);
+  st(c, cParkedOr, 0usize); st(c, cRelOr, 0usize);
+  st(c, cParkedAfter, 0usize); st(c, cRelAfter, 0usize);
+  st(c, cArmAfter, 0usize);
+  st(c, cArmOr, 1usize);
+  st(c, cCmd, 1usize);
+  if !waitFor(c, cParkedOr, 1usize) {
+    st(c, cErrs, ld(c, cErrs) + 1usize);
+    st(c, cArmOr, 0usize); st(c, cRelOr, 1usize);
+    waitFor(c, cDone, 1usize);
+    return;
+  }
+  st(c, cParkedRounds, ld(c, cParkedRounds) + 1usize);
+  cleanup(coll);                                  // the page is wholly free: it retires and goes to the pool
+  let before = ld(c, cReached);
+  st(c, cArmAfter, 1usize);
+  st(c, cRelOr, 1usize);
+  var w = 0usize;
+  while ld(c, cParkedAfter) == 0usize && ld(c, cDone) == 0usize && w < 5000usize { Sleep(1u32); w = w + 1usize; }
+  // the freer is at its second park point (a freer that passed the generation test) or has finished (the right code)
+  takeB(c, x0 >> 16usize, 1000usize + round);     // takes the page from the pool for the 512 class, readies and attaches it
+  st(c, cRelAfter, 1usize);
+  if !waitFor(c, cDone, 1usize) { st(c, cErrs, ld(c, cErrs) + 1usize); }
+  st(c, cArmAfter, 0usize);
+  st(c, cStale, ld(c, cStale) + (ld(c, cReached) - before));
+  takeB(c, x0 >> 16usize, 2000usize + round);     // with a retired page in the slot this ends the process (the slot rule)
+}
+
+fn controlRound(c: usize, cells: usize, coll: Collect) {
+  cleanup(coll);
+  var n = 0usize;
+  while n < 128usize { *word(cells, n) = libc.malloc(1024usize) as usize; n = n + 1usize; }   // page 1 full and detached, page 2 attached
+  n = 1usize;
+  while n < 64usize { libc.free(*word(cells, n) as *u8); n = n + 1usize; }
+  let before = ld(c, cReached);
+  st(c, cTarget, *word(cells, 0usize));
+  st(c, cDone, 0usize);
+  st(c, cArmOr, 0usize); st(c, cArmAfter, 0usize);
+  st(c, cCmd, 1usize);
+  if !waitFor(c, cDone, 1usize) { st(c, cErrs, ld(c, cErrs) + 1usize); }
+  if ld(c, cReached) - before == 1usize { st(c, cControl, ld(c, cControl) + 1usize); }
+  n = 64usize;
+  while n < 128usize { libc.free(*word(cells, n) as *u8); n = n + 1usize; }
+}
+
+fn envNum(name: cstr, dflt: usize) usize {
+  let p = libc.getenv(name);
+  if p as usize == 0usize { return dflt; }
+  var v = 0usize;
+  var i = 0usize;
+  while true {
+    let c = usize.from(*at(p, i));
+    if c < 48usize || c > 57usize { break; }
+    v = v * 10usize + (c - 48usize);
+    i = i + 1usize;
+  }
+  if i == 0usize { dflt } else { v }
+}
+
+fn putStr(buf: *u8, pos: usize, s: cstr) usize {
+  let n = strlen(s);
+  copyLit(at(buf, pos), s, n);
+  pos + n
+}
+
+fn putNum(buf: *u8, pos: usize, v: usize) usize {
+  var digits = 1usize;
+  var t = v;
+  while t >= 10usize { t = t / 10usize; digits = digits + 1usize; }
+  var x = v;
+  var i = digits;
+  while i > 0usize { i = i - 1usize; *at(buf, pos + i) = u8.from(48usize + x % 10usize); x = x / 10usize; }
+  pos + digits
+}
+
+fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
+  let buf = libc.malloc(256usize);
+  var n = 0usize;
+  n = putStr(buf, n, label); n = putNum(buf, n, a);
+  n = putStr(buf, n, mid); n = putNum(buf, n, b);
+  n = putStr(buf, n, tail); n = putNum(buf, n, c);
+  *at(buf, n) = 10u8;
+  var w = 0u32;
+  WriteFile(GetStdHandle(0xFFFFFFF4u32), buf, u32.from(n + 1usize), &mut w, 0usize);
+  // CNTEST_LOG=<file>: the same line appended there, since congo shows a passing test's stderr to nobody
+  let lf = libc.getenv("CNTEST_LOG");
+  if lf as usize != 0usize {
+    let fh = CreateFileA(lf, 4u32, 3u32, 0usize, 4u32, 128u32, 0usize);
+    if fh != 0xFFFFFFFFFFFFFFFFusize { WriteFile(fh, buf, u32.from(n + 1usize), &mut w, 0usize); CloseHandle(fh); }
+  }
+  libc.free(buf);
+}
+
+fn skipped() {
+  expectUInt(0u64, 0, "lfstale: a freer with a stale generation never passed the generation test");
+  expect(true, "lfstale: every freer was parked after its fetch_or on a wholly free page");
+  expect(true, "lfstale: the retired page came back as the other class's page every round");
+  expect(true, "lfstale: the control round entered the slow path legitimately");
+  expectUInt(0u64, 0, "lfstale: no wrong cell, no stuck thread");
+}
+
+fn main() i32 {
+  let m = GetModuleHandleA(null);
+  let setHooks = GetProcAddress(m, &"cnmalloc_lfSetHooks" as *u8);
+  let collect = GetProcAddress(m, &"cnmalloc_collect" as *u8);
+  let design = GetProcAddress(m, &"cnmalloc_design" as *u8);
+  if setHooks == 0usize || collect == 0usize || design == 0usize { skipped(); return done(); }
+  if (design as *u8 as DesignFn)() != 2i32 { skipped(); return done(); }
+  let rounds = envNum("CNSTALE_ROUNDS", 20usize);
+  let hooks = setHooks as *u8 as SetHooks;
+  let coll = collect as *u8 as Collect;
+  let c = libc.calloc(16usize, 8usize) as usize;
+  hooks(0usize, 0usize, 0usize, 0usize, &hookOr as *u8 as usize, &hookAfter as *u8 as usize);
+  let ft = thread.start[usize, u64](c, &freer);
+  let cells = libc.calloc(130usize, 8usize) as usize;
+  var k = 0usize;
+  while k < 3usize { controlRound(c, cells, coll); k = k + 1usize; }
+  var round = 0usize;
+  while round < rounds { violationRound(c, cells, coll, round); round = round + 1usize; }
+  st(c, cStop, 1usize);
+  ft.join();
+  hooks(0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+  errLine("lfstale: rounds ", rounds, " freer parked ", ld(c, cParkedRounds), " page reused by the other class ", ld(c, cReused) / 2usize);
+  errLine("lfstale: stale freer past the generation test ", ld(c, cStale), " control rounds ok ", ld(c, cControl), " errors ", ld(c, cErrs));
+  expectUInt(u64.from(ld(c, cStale)), 0, "lfstale: a freer with a stale generation never passed the generation test");
+  expect(ld(c, cParkedRounds) == rounds, "lfstale: every freer was parked after its fetch_or on a wholly free page");
+  expect(ld(c, cReused) == rounds * 2usize, "lfstale: the retired page came back as the other class's page every round");
+  expect(ld(c, cControl) == 3usize, "lfstale: the control round entered the slow path legitimately");
+  expectUInt(u64.from(ld(c, cErrs)), 0, "lfstale: no wrong cell, no stuck thread");
+  done()
+}
