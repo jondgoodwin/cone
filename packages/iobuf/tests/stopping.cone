@@ -1,0 +1,61 @@
+// Once the pool's final has begun, a thread's end gives nothing back
+// (bufpool's header, THREADS: 'stopping'). The final flushes every cache
+// itself, and a thread that ends after it must not reach a pool being torn
+// down: the stock stays, but nothing goes to it from a thread's end.
+//
+// A thread takes and drops buffers, then waits; main runs the finals
+// (finalAll(), as a program that calls it itself does), which flush that
+// thread's cache with the rest; the thread then takes and drops more and ends.
+// Its cache from after the final is still counted as cached: given nothing back.
+// Before the final, the same thread's end would have given it back (exitflush).
+
+mod stopping;
+
+import testing use *;
+import thread;
+import sync use *;
+import time use Duration;
+import iobuf use *;
+
+let ready: Atomic[u64];
+
+fn @initpure init() {
+  ready = Atomic[u64].of(0u64);
+}
+
+fn late(go: Receiver[u64]) u64 {
+  var r = go;
+  var k = 0u64;
+  while k < 8u64 {
+    var b = IoBuf(100usize);
+    b.append("before");
+    k = k + 1u64;
+  }
+  ready.store(1u64);
+  match r.recv() {
+    case let Some(v) {}
+    case is None[u64] {}
+  }
+  k = 0u64;
+  while k < 8u64 {
+    var b = IoBuf(100usize);
+    b.append("after");
+    k = k + 1u64;
+  }
+  k
+}
+
+fn main() i32 {
+  var goTx: Sender[u64];
+  var goRx: Receiver[u64];
+  goTx, goRx = Channel[u64].make();
+  let t = thread.start(goRx, &late);
+  while ready.load() == 0u64 {thread.sleep(Duration.fromMillis(1i64));}
+  expect(stats().cachedBytes > 0usize, "the thread holds a cache");
+  finalAll();
+  expectUInt(u64.from(stats().cachedBytes), 0u64, "the final flushed every cache");
+  goTx.send(1u64);
+  expectUInt(t.join(), 8u64, "the thread ended after the final");
+  expect(stats().cachedBytes > 0usize, "a thread that ended once the final had begun gave nothing back");
+  done()
+}

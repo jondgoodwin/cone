@@ -1,9 +1,10 @@
 // The leak check, made through the region as a collection would: eight threads
 // take and release blocks of every class and oversize through the region's
 // functions, some blocks handed to another thread to be released there; half the
-// threads flush their caches as they end and half do not. At the end every block
-// is home (nothing lent, takes and returns equal) and, once the caches are
-// flushed, every slab is back with the OS. A List in the pool is made and dropped
+// threads flush their caches before they end and half leave it to the thread's
+// end, which gives the cache back too. At the end every block is home (nothing
+// lent, takes and returns equal), nothing is cached, and once the stock is
+// trimmed every slab is back with the OS. A List in the pool is made and dropped
 // on each thread too.
 
 mod leak;
@@ -129,7 +130,7 @@ fn main() i32 {
   let st = blockStats();
   expectUInt(st.lent, 0u64, "every block home");
   expect(st.takes >= threads * perThread, "every take counted");
-  expect(st.cachedBytes > 0usize, "the threads that did not flush left their blocks cached, counted");
+  expectUInt(u64.from(st.cachedBytes), 0u64, "the threads that did not flush gave their caches back as they ended");
   trimEverything();
   let t = blockStats();
   expectUInt(u64.from(t.cachedBytes), 0u64, "every cache flushed");
