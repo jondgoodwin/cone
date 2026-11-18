@@ -583,18 +583,25 @@
 // system that iocore does not hold in flight, so there is nothing to cancel
 // once it has started; the two operations on a file have theirs.
 //
-// SLEEPING. 'sleep(d)' and 'sleepUntil(at)' are iocore's timers awaited (a
-// record of diag.kindTimer): the behaviour pauses, and the I/O thread's Loop answers
-// when the time comes. 'd' counts from the moment the I/O thread starts the
-// timer, a moment after the 'await'; 'at' is absolute, and one already past is
-// answered at once. The success holds nothing (Result[void, IoError]). The 'In'
+// SLEEPING. A sleep made on one of the actors runtime's workers is a timer of
+// that worker's own (actors.timerAwaitable, the runtime's THE WORKERS' TIMERS):
+// the behaviour pauses, and the worker that awaited it answers between its
+// turns when the time comes, nothing crossing to the I/O thread; a cancel is
+// answered by the thread that cancels. 'd' counts from the 'await'. Made off
+// the workers, in a runtime with no monitor (one worker, or monitorMicros 0),
+// or after aio's end, it is iocore's timer awaited (a record of
+// diag.kindTimer), which the I/O thread's Loop answers, 'd' counted from the
+// moment the I/O thread starts it. Either way 'at' is absolute, and one
+// already past is answered at once. The success holds nothing (Result[void, IoError]). The 'In'
 // forms take an IoLimits as the other operations do, and honour the group's
 // deadline as iocore's 'afterIn' does: a sleep due after the deadline (lim's,
 // or its group's, the tighter) is answered TimedOut at the deadline, one due
 // at or before it is Done at its time; the group's cancel answers Cancelled,
-// at once if the group is cancelled already. lim's deadline is given to the
-// timer as a group of its own (a child of lim's group, or a new one, which
-// allocates), since iocore's timer takes a group alone. Dropped unawaited, a
+// at once if the group is cancelled already (a worker's timer answers a cancel
+// whose cause is TimedOut, the group's deadline, TimedOut). On the I/O thread
+// lim's deadline is given to the timer as a group of its own (a child of lim's
+// group, or a new one, which allocates), since iocore's timer takes a group
+// alone; a worker's timer takes the deadline itself. Dropped unawaited, a
 // sleep does nothing.
 //
 // THE BLOCKING POOL'S WORK. 'resolve', 'stat' and 'run' are the three things
@@ -2668,7 +2675,9 @@ fn takeCall(p: *u8, to: *u8) {
 
 // What the records have done so far (opStats)
 pub struct OpStats {
-  pub inUse: u64;          // records taken and not yet dissolved: an operation each, made, in flight or answered and not taken
+  pub inUse: u64;          // records taken and not yet dissolved: an operation each, made, in flight or answered and not taken.
+                           // A sleep on a worker is a cell of that worker's timer service (actors, row 483), not a record, so it is
+                           // not counted here (actors.timerStats counts the cells)
   pub made: u64;           // records the pool has made (chunks of 64), free or taken
   pub cancelsAsked: u64;   // operations cancelRead and cancelWrite have asked to end
   pub takenAway: u64;      // answers taken, their records dissolved, on another thread than the I/O thread's
@@ -3575,11 +3584,29 @@ pub fn sleep(d: Duration) actors.Awaitable[Result[void, IoError]] {
 
 // A sleep ended if lim says so (the package's header, SLEEPING)
 pub fn sleepIn(d: Duration, lim: IoLimits) actors.Awaitable[Result[void, IoError]] {
+  let ns = d.nanos();
+  let pause = if ns > 0i64 {ns} else {0i64};
+  if !ended.load() {
+    match actors.timerAwaitable[Result[void, IoError]](pause, true, &lim.group, lim.deadline, &answerSleepCell) {
+      case let Some(a) {return a;}
+      else {}
+    }
+  }
   let p = takeRec(opSleep, diag.kindTimer, Handle.none(), lim);
   (*p).ask.stage = sleepAfter;
-  let ns = d.nanos();
-  (*p).ask.arg = if ns > 0i64 {u64.from(ns)} else {0u64};
+  (*p).ask.arg = u64.from(pause);
   recAwaitable[Result[void, IoError]](p)
+}
+
+// A sleep's answer from the worker's timer cell (actors.timerAwaitable): the
+// value the I/O thread's record would have given for the same outcome
+fn answerSleepCell(rp: &mut actors.Reply, outcome: u32) {
+  if outcome == 0u32 {
+    actors.answerNowIn[Result[void, IoError]](rp, Ok[void, IoError](nil));
+  } else {
+    let status = if outcome == 1u32 {diag.outcomeCancelled} else {diag.outcomeTimedOut};
+    actors.answerNowIn[Result[void, IoError]](rp, Err[void, IoError](errorOf(diag.kindTimer, status, 0u32)));
+  }
 }
 
 // Pauses until the instant 'at' (one already past is Ok at once): Ok(nil)
@@ -3589,6 +3616,12 @@ pub fn sleepUntil(at: Instant) actors.Awaitable[Result[void, IoError]] {
 
 // A sleepUntil ended if lim says so (the package's header, SLEEPING)
 pub fn sleepUntilIn(at: Instant, lim: IoLimits) actors.Awaitable[Result[void, IoError]] {
+  if !ended.load() {
+    match actors.timerAwaitable[Result[void, IoError]](at.nanos(), false, &lim.group, lim.deadline, &answerSleepCell) {
+      case let Some(a) {return a;}
+      else {}
+    }
+  }
   let p = takeRec(opSleep, diag.kindTimer, Handle.none(), lim);
   (*p).ask.stage = sleepAt;
   (*p).core.deadline = at;
