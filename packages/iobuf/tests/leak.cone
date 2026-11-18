@@ -1,8 +1,9 @@
 // The leak check: a mixed load of every size class and oversize, taken and
 // dropped by eight threads at once, some of the buffers sent to another thread
 // to die there; half the threads flush their caches as they end and half do
-// not. At the end every block is home (nothing lent, takes and returns equal)
-// and, once the caches are flushed, every slab is back with the OS.
+// not (the exit hook gives back the caches of those that do not, so once the
+// threads are joined nothing is cached either way). At the end every block is
+// home (nothing lent, takes and returns equal) and every slab is back with the OS.
 
 mod leak;
 
@@ -96,7 +97,7 @@ fn main() i32 {
   expectUInt(st.takes, threads * perThread, "every take counted");
   expectUInt(st.lent, 0u64, "every buffer home");
   expectUInt(st.refused, 0u64, "none refused");
-  expect(st.cachedBytes > 0usize, "the threads that did not flush left their blocks cached, counted");
+  expectUInt(u64.from(st.cachedBytes), 0u64, "the threads that did not flush gave their blocks back at their end");
   trimAll();
   let t = stats();
   expectUInt(u64.from(t.cachedBytes), 0u64, "every cache flushed");

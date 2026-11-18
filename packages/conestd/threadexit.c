@@ -63,15 +63,24 @@ typedef void (*cone_ThreadExitFn)(void);
 #define maxExitFns 16
 
 static cone_ThreadExitFn exitFns[maxExitFns];
-static volatile uint32_t exitCount = 0;     // entries of exitFns written
-static int slotState = 0;                   // 0 not made, 1 made, -1 refused
+static volatile uint32_t exitCount = 0;     // entries of exitFns published; written only by Add, with release
+static int slotState = 0;                   // 0 not made, 1 made, -1 refused (under the Add lock)
+
+// The table is read WITHOUT a lock by a thread's end: at exit() that callback
+// runs holding the loader lock, and any lock of ours inside it would add a
+// lock-order edge nothing needs. So Add writes an entry first and then
+// publishes the count with a release store; the callback reads the count with
+// an acquire load, and takes only entries below it. The lock only serialises
+// Add against Add.
+static void publishCount(uint32_t n);
+static uint32_t loadCount(void);
 
 // Run the armed functions of the thread ending: each bit of 'mask' is one
 static void runArmed(uintptr_t mask) {
-    for (uint32_t i = 0; i < maxExitFns; i++) {
-        cone_ThreadExitFn fn = exitFns[i];
-        if ((mask & ((uintptr_t)1 << i)) && fn != NULL)
-            fn();
+    uint32_t n = loadCount();
+    for (uint32_t i = 0; i < n && i < maxExitFns; i++) {
+        if (mask & ((uintptr_t)1 << i))
+            exitFns[i]();
     }
 }
 
@@ -101,6 +110,11 @@ static int makeSlot(void) {
     return exitSlot == FLS_OUT_OF_INDEXES ? -1 : 1;
 }
 
+// x64 and arm64 Windows: an Interlocked exchange is a full barrier (so it
+// releases), and a compare-exchange with Acquire semantics reads with acquire
+static void publishCount(uint32_t n) { InterlockedExchange((volatile LONG *)&exitCount, (LONG)n); }
+static uint32_t loadCount(void) { return (uint32_t)InterlockedCompareExchangeAcquire((volatile LONG *)&exitCount, 0, 0); }
+
 static void lockAdd(void) { AcquireSRWLockExclusive(&addLock); }
 static void unlockAdd(void) { ReleaseSRWLockExclusive(&addLock); }
 
@@ -128,6 +142,9 @@ static int makeSlot(void) {
     return pthread_key_create(&exitKey, exitCallback) == 0 ? 1 : -1;
 }
 
+static void publishCount(uint32_t n) { __atomic_store_n(&exitCount, n, __ATOMIC_RELEASE); }
+static uint32_t loadCount(void) { return __atomic_load_n(&exitCount, __ATOMIC_ACQUIRE); }
+
 static void lockAdd(void) { pthread_mutex_lock(&addMutex); }
 static void unlockAdd(void) { pthread_mutex_unlock(&addMutex); }
 
@@ -146,10 +163,11 @@ uint32_t cone_threadExitAdd(cone_ThreadExitFn fn) {
     lockAdd();
     if (slotState == 0)
         slotState = makeSlot();
-    if (slotState == 1 && exitCount < maxExitFns && fn != NULL) {
-        exitFns[exitCount] = fn;
-        exitCount = exitCount + 1;   // under the lock; a thread arms only an id it was given
-        id = exitCount;
+    uint32_t n = exitCount;          // only Add writes it, and Add holds the lock
+    if (slotState == 1 && n < maxExitFns && fn != NULL) {
+        exitFns[n] = fn;             // the entry first,
+        publishCount(n + 1);         // then the count, with release: a thread arms only an id it was given
+        id = n + 1;
     }
     unlockAdd();
     return id;

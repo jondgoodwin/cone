@@ -104,7 +104,10 @@
 // flush. Once the module's final has begun ('stopping'), and while the process
 // is ending (threadexit.c asks), a thread's end gives nothing back; the final's
 // trimEverything does. flushThread does the same early, for a thread that lives
-// on idle.
+// on idle. If the slot is not to be had (cone_threadExitAdd answers 0: its table
+// is full, or the system refused the slot), nothing is armed, a thread's end
+// gives nothing back, and flushThread is the pool's only give-back from a
+// thread; the pool otherwise works as ever and does not panic for it.
 //
 // THE STOCK. For each class, a lock and a list of slabs; each slab has its own
 // free list of returned blocks and a bump mark for the blocks never yet
@@ -366,7 +369,7 @@ struct Globals {
   freeRecs: *ThreadCache;
   lateRec: *ThreadCache;     // a finished thread's 'myCache': every line's cap 0, on no registry
   exitId: u32;               // the pool's number in conestd's thread-exit slot, or 0 when it has none
-  stopping: u32;             // 1 once the module's final has begun; under regLock
+  stopping: Atomic[u32];     // 1 once the module's final has begun; set under regLock, read first by a thread's end
   nClasses: usize;
   maxBytes: Atomic[u64];
   keepBytes: Atomic[u64];
@@ -410,6 +413,7 @@ fn blocksInit() {
   if (*g).lateRec as usize == 0usize {
     panic("bufpool: out of memory for the block stock");
   }
+  (*g).stopping = Atomic[u32].of(0u32);
   (*g).maxBytes = Atomic[u64].of(u64.from(defaultMaxBytes));
   (*g).keepBytes = Atomic[u64].of(u64.from(defaultKeepBytes));
   (*g).held = Atomic[u64].of(0u64);
@@ -533,13 +537,16 @@ fn makeCache() *ThreadCache {
 // final's own flush
 fn @c bufpoolThreadEnded() {
   let g = glob();
+  if (*g).stopping.load() != 0u32 {    // first of all: the final has begun, give nothing back
+    return;
+  }
   let tc = myCache;
   myCache = (*g).lateRec;
   if tc as usize == 0usize || tc == (*g).lateRec {
     return;
   }
   (*g).regLock.lock();
-  if (*g).stopping == 0u32 {
+  if (*g).stopping.load() == 0u32 {   // again: the final may have begun since the first look
     flushCache(tc);
     (*tc).live = 0u32;
     (*tc).nextFree = (*g).freeRecs;
@@ -1213,7 +1220,7 @@ fn @initpure init() {
 fn final() {
   let g = glob();
   (*g).regLock.lock();
-  (*g).stopping = 1u32;
+  (*g).stopping.store(1u32);
   (*g).regLock.unlock();
   trimEverything();
 }
