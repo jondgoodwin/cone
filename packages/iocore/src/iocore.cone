@@ -64,6 +64,7 @@
 //   forever()                           an 'until' that never comes
 //   threadTimes()                       the calling thread's user and kernel nanoseconds (DIAGNOSTICS)
 //   lp.share()  Shared: sh.lock(h) sh.issue(p) sh.unlock(h) sh.markClosing(h) sh.contended() sh.isNone() sh.clone()
+//     sh.lockShared(h) sh.unlockShared(h)     the entry shared, for a datagram's issue
 //     sh.shutdownSend(h) sh.peerAddr(h) sh.setKeepAlive(h, ka) sh.keepAlive(h)
 //                      a connected socket's controls, h locked (shared.cone, CONTROLS)
 //     sharedTables()   tables made and not yet freed
@@ -603,15 +604,18 @@
 // 'lp.start(p)' LINKS it (counted, on its handle's list, in its group, its
 // deadline armed) -- the kernel's completion may come first, and is kept until
 // the record is linked, so it is answered once; or issueNot, nothing done, the
-// record started on the loop as ever. Then 'sh.unlock(h)'. Windows issues only
+// record started on the loop as ever. Then 'sh.unlock(h)'. A RecvFrom, SendTo or
+// RecvMany on a UDP handle may be issued under 'sh.lockShared(h)' instead (then
+// 'sh.unlockShared(h)'): any number of threads issue on one UDP socket at once,
+// and every exclusive taker below waits for them. Windows issues only
 // on a socket that skips the port on success; Linux tries the non-blocking
 // recv/send, and one that would block before moving a byte is issueNot, a send
 // that moved part of its bytes is issuePending and goes on from them. A cancel
 // or a close of h queued under the lock is ordered against an issue under it;
 // 'sh.markClosing(h)' (under the lock) stops any issue on h after it, so an
 // operation awaited behind a close fails as it does without the table. The
-// loop unpublishes a handle, under its lock, before it closes it. A lock found
-// held spins a while and then yields; 'sh.contended()' counts those. The table
+// loop unpublishes a handle, under its lock, before it closes it. A lock that has
+// to be waited for spins a while and then yields; 'sh.contended()' counts those. The table
 // outlives its loop for as long as a Shared is held (a thread that looks after
 // the loop died finds every entry unpublished), and the last holder to let go
 // frees it; 'sharedTables()' is how many are made and not yet freed.
@@ -740,6 +744,7 @@ fn timedOut(g: &CancelGroup) bool {
 fn @initpure init() {
   poolsLive = Atomic[u32].of(0u32);
   sharedLive = Atomic[u32].of(0u32);
+  stripeNext = Atomic[u32].of(0u32);
   // Winsock started, and the blocking pool's default lanes made, before any
   // thread of the program can reach them
   let ws = startWinsock();

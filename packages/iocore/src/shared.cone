@@ -10,21 +10,34 @@
 // OS handle. Any thread finds an entry with a load and a generation check: no
 // lock is taken to look.
 //
-// Each entry has a one-word LOCK, held across an operation's issue and the
-// queueing of what follows it, and taken by a handle's cancel and close
-// (aio's cancelSide and closeHandle), so those keep their order against an
-// operation issued here: a cancel or close queued after the issue finds the
-// operation on the Loop, one queued before it is ahead of it (a close marks
-// the entry 'closing' under the lock, and nothing is issued on it then: the
-// operation goes the Loop's way, behind the close, and is answered as today).
-// It is uncontended in the common case (one exchange, one store); a contended
-// acquisition is counted (Shared.contended), spins a while and then yields its
-// processor, so a holder that was preempted is not spun on for a whole quantum.
-// The Loop's thread holds no other lock while it takes one.
+// Each entry has a one-word LOCK, shared or exclusive, held across an
+// operation's issue and the queueing of what follows it. A datagram's issue
+// (RecvFrom, SendTo, RecvMany on a UDP handle) holds it SHARED ('lockShared'):
+// any number of threads issue on one UDP socket at once, as the kernel lets
+// them. Every other taker holds it EXCLUSIVE ('lock'): a TCP issue (its whole
+// partial-send loop is one send, so two actors' bytes never interleave), a
+// handle's cancel and close (aio's cancelSide and closeHandle), the controls,
+// and the Loop's unpublish. An exclusive taker sets the exclusive bit first, so
+// no shared holder enters after it, and then waits for those inside to finish:
+// a stream of sends cannot starve a close, and a close never goes on while a
+// thread is in a system call on the handle. So the orders the lock gives are
+// kept: a cancel or close queued after the issue finds the operation on the
+// Loop, one queued before it is ahead of it (a close marks the entry 'closing'
+// under the lock, and nothing is issued on it then: the operation goes the
+// Loop's way, behind the close, and is answered as today).
+// The word: bit 31 is the exclusive bit (held, or wanted and waiting for the
+// shared holders to go), bits 0-30 count the shared holders (a shared taker
+// that finds the exclusive bit set takes its count back out and waits, so the
+// count may be briefly above the true holders). It is uncontended in the common
+// case (one atomic operation to take, one to let go); an acquisition that had
+// to wait is counted (Shared.contended: each thread counts in a stripe of the
+// table of its own, so the counting shares no cache line), spins a while and
+// then yields its processor, so a holder that was preempted is not spun on for
+// a whole quantum. The Loop's thread holds no other lock while it takes one.
 //
 // CONTROLS. A connected socket's half-close, peer address and keepalive are
 // each one system call on its OS handle, which the entry holds. With h's entry
-// locked ('sh.lock(h)') a thread other than the Loop's may make them:
+// locked ('sh.lock(h)', exclusive) a thread other than the Loop's may make them:
 // 'sh.shutdownSend(h)', 'sh.peerAddr(h)', 'sh.setKeepAlive(h, ka)' and
 // 'sh.keepAlive(h)' do what the Loop's 'shutdown', 'peerAddr', 'setKeepAlive'
 // and 'keepAlive' do (the same functions of the OS handle, loop.cone), and are
@@ -66,11 +79,14 @@ pub const issuePending = 2u32;   // in flight: the caller hands it to the Loop (
 const shChunk = 256u32;          // entries a chunk
 const shChunks = 4096u32;        // chunks at most: 1,048,576 handles
 const shSpins = 64u32;           // looks at a held lock before each yield
+const exBit = 0x80000000u32;     // the lock word's exclusive bit: held, or wanted
+const shMask = 0x7FFFFFFFu32;    // its shared holders
+const stripes = 64u32;           // the contended count's stripes (8 words, a cache line, each)
 
 // One handle's entry: 64 bytes, so two handles' locks are not one cache line
 struct SEntry {
   gen: u32;                // the Handle's generation while published; 0 while not (atomic)
-  lock: u32;               // 1 while a thread holds the entry (atomic)
+  lock: u32;               // the lock word: exclusive bit, shared holders (atomic)
   closing: u32;            // its close has been asked: nothing is issued on it (under the lock)
   kind: u32;               // hSocket, ...
   skip: u32;               // Windows: its completions skip the port on success
@@ -82,12 +98,17 @@ struct SEntry {
 // The table: the chunk directory, the contended count, and how many hold it
 struct Slab {
   dir: *usize;
-  contended: u64;
+  cont: *u64;              // the contended count: 'stripes' stripes of 8 words (atomic)
   holders: u64;            // the Loop and every Shared handed out (atomic)
 }
 
 // How many tables are made and not yet freed: for tests, and for finding leaks
 let sharedLive: Atomic[u32];
+
+// Which stripe of a table's contended count a thread counts in: handed out in
+// turn at its first count (stripeAt is that stripe plus one; 0 until then)
+let stripeNext: Atomic[u32];
+var @threadlocal stripeAt = 0u32;
 
 pub fn sharedTables() u32 {sharedLive.load()}
 
@@ -123,14 +144,30 @@ pub struct Shared is Move, Sendable {
       ci = ci + 1u32;
     }
     libc.free((*s).dir as *u8);
+    libc.free((*s).cont as *u8);
     libc.free(s as *u8);
     sharedLive.sub(1u32);
   }
 
-  // The lock acquisitions that found the lock held, since the table was made
+  // The lock acquisitions that had to wait for the lock, since the table was
+  // made: the sum of every thread's stripe
   pub fn contended(self: &) u64 {
     if at == 0usize {return 0u64;}
-    mem.atomicLoad[u64](&(*(at as *Slab)).contended as *u64, MemOrder.Relaxed)
+    let c = (*(at as *Slab)).cont;
+    var sum = 0u64;
+    var k = 0u32;
+    while k < stripes {
+      sum = sum + mem.atomicLoad[u64](c + usize.from(k * 8u32), MemOrder.Relaxed);
+      k = k + 1u32;
+    }
+    sum
+  }
+
+  // One more acquisition that had to wait, counted in the calling thread's stripe
+  fn countWait(self: &) {
+    if stripeAt == 0u32 {stripeAt = stripeNext.add(1u32) % stripes + 1u32;}
+    let p = (*(at as *Slab)).cont + usize.from((stripeAt - 1u32) * 8u32);
+    mem.atomicStore[u64](p, mem.atomicLoad[u64](p, MemOrder.Relaxed) + 1u64, MemOrder.Relaxed);
   }
 
   // The entry for cell i, or null when no chunk holds it yet
@@ -142,8 +179,9 @@ pub struct Shared is Move, Sendable {
     (c as *SEntry) + usize.from(i % shChunk)
   }
 
-  // h's entry locked, from any thread: true if h is published (its entry then
-  // held until unlock); false, and nothing held, if it names nothing here
+  // h's entry locked EXCLUSIVE, from any thread: true if h is published (its
+  // entry then held until unlock); false, and nothing held, if it names
+  // nothing here
   pub fn lock(self: &, h: Handle) bool {
     if at == 0usize || h.isNone() {return false;}
     let e = self.entry(h.index);
@@ -160,6 +198,29 @@ pub struct Shared is Move, Sendable {
   // h's entry let go: h was locked by this thread
   pub fn unlock(self: &, h: Handle) {
     self.release(self.entry(h.index));
+  }
+
+  // h's entry locked SHARED, for a datagram's issue (RecvFrom, SendTo or
+  // RecvMany on a UDP handle): it reads the entry and makes one system call on
+  // its OS handle, and any number of threads may do so at once; no exclusive
+  // taker is in while one is. As 'lock' otherwise: false, and nothing held, if
+  // h names nothing here
+  pub fn lockShared(self: &, h: Handle) bool {
+    if at == 0usize || h.isNone() {return false;}
+    let e = self.entry(h.index);
+    if e as usize == 0usize {return false;}
+    if mem.atomicLoad[u32](&(*e).gen as *u32, MemOrder.Acquire) != h.gen {return false;}
+    self.acquireShared(e);
+    if mem.atomicLoad[u32](&(*e).gen as *u32, MemOrder.Acquire) != h.gen {
+      self.releaseShared(e);
+      return false;
+    }
+    true
+  }
+
+  // h's entry let go: h was locked shared by this thread
+  pub fn unlockShared(self: &, h: Handle) {
+    self.releaseShared(self.entry(h.index));
   }
 
   // h's close has been asked: nothing is issued on it from now on. h is
@@ -209,15 +270,38 @@ pub struct Shared is Move, Sendable {
     rawKeepAlive(raw)
   }
 
+  // Exclusive: claim the exclusive bit (no shared taker enters after it), then
+  // wait for the shared holders already in to let go: one system call's wait.
+  // The bit is claimed by a compare-and-swap, so two exclusive takers are
+  // never both in
   fn acquire(self: &, e: *SEntry) {
     let lk = &(*e).lock as *u32;
-    if mem.atomicSwap[u32](lk, 1u32, MemOrder.Acquire) == 0u32 {return;}
-    mem.atomicAdd[u64](&(*(at as *Slab)).contended as *u64, 1u64, MemOrder.Relaxed);
+    var waited = false;
     var spins = 0u32;
     while true {
-      if mem.atomicLoad[u32](lk, MemOrder.Relaxed) == 0u32
-          && mem.atomicSwap[u32](lk, 1u32, MemOrder.Acquire) == 0u32 {
-        return;
+      let v = mem.atomicLoad[u32](lk, MemOrder.Relaxed);
+      if v & exBit == 0u32 {
+        let old, ok = mem.atomicCompareSwap[u32](lk, v, v | exBit, MemOrder.Acquire, MemOrder.Relaxed);
+        if ok {break;}
+      } else {
+        if !waited {
+          waited = true;
+          self.countWait();
+        }
+        spins = spins + 1u32;
+        if spins >= shSpins {
+          spins = 0u32;
+          thread.yieldNow();
+        }
+      }
+    }
+    // The bit is ours. A shared taker that finds it set takes its count back
+    // out, so the count falls to nothing
+    spins = 0u32;
+    while mem.atomicLoad[u32](lk, MemOrder.Acquire) & shMask != 0u32 {
+      if !waited {
+        waited = true;
+        self.countWait();
       }
       spins = spins + 1u32;
       if spins >= shSpins {
@@ -227,8 +311,36 @@ pub struct Shared is Move, Sendable {
     }
   }
 
+  // Not a store: a shared taker may be backing its count out as this goes
   fn release(self: &, e: *SEntry) {
-    mem.atomicStore[u32](&(*e).lock as *u32, 0u32, MemOrder.Release);
+    mem.atomicSub[u32](&(*e).lock as *u32, exBit, MemOrder.Release);
+  }
+
+  // Shared: take a count at once; if the exclusive bit was set, take the count
+  // back out, wait for the bit to clear, and try again
+  fn acquireShared(self: &, e: *SEntry) {
+    let lk = &(*e).lock as *u32;
+    var waited = false;
+    var spins = 0u32;
+    while true {
+      if mem.atomicAdd[u32](lk, 1u32, MemOrder.Acquire) & exBit == 0u32 {return;}
+      mem.atomicSub[u32](lk, 1u32, MemOrder.Release);
+      if !waited {
+        waited = true;
+        self.countWait();
+      }
+      while mem.atomicLoad[u32](lk, MemOrder.Relaxed) & exBit != 0u32 {
+        spins = spins + 1u32;
+        if spins >= shSpins {
+          spins = 0u32;
+          thread.yieldNow();
+        }
+      }
+    }
+  }
+
+  fn releaseShared(self: &, e: *SEntry) {
+    mem.atomicSub[u32](&(*e).lock as *u32, 1u32, MemOrder.Release);
   }
 
   // Try record p's receive or send here (ISSUE above). The entry of p's
@@ -271,12 +383,15 @@ pub struct Shared is Move, Sendable {
 fn makeShared() Shared {
   let s = libc.calloc(1usize, mem.sizeof[Slab]()) as *Slab;
   let d = libc.calloc(usize.from(shChunks), mem.sizeof[usize]()) as *usize;
-  if s as usize == 0usize || d as usize == 0usize {
+  let c = libc.calloc(usize.from(stripes * 8u32), mem.sizeof[u64]()) as *u64;
+  if s as usize == 0usize || d as usize == 0usize || c as usize == 0usize {
     libc.free(s as *u8);
     libc.free(d as *u8);
+    libc.free(c as *u8);
     return Shared.none();
   }
   (*s).dir = d;
+  (*s).cont = c;
   (*s).holders = 1u64;
   sharedLive.add(1u32);
   Shared(s as usize)
