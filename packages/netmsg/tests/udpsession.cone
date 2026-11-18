@@ -1,0 +1,179 @@
+// One address, two sessions. A raw UDP socket on one fixed port runs the
+// client handshake against a server twice, with different salts (so different
+// sessions). The server tells connections apart by the peer's address, so the
+// second session replaces the first: its handler hears the first connection's
+// Left and a second Joined. A datagram of the first session that arrives late
+// is routed to the address's connection, the second, which refuses it (the
+// wrong session): nothing happens. A datagram of the second session does reach
+// it, which shows the address still routes.
+
+mod udpsession;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import iocore use SocketAddr;
+import aio use UdpSocket, IoLimits;
+import actors;
+import streams;
+import iobuf use IoBuf;
+import netmsg use *;
+
+actor Raw {
+  sock: UdpSocket;
+
+  fn init(self: &new) {
+    *self = Self(sock: UdpSocket.none());
+  }
+
+  // Bind the one socket; say its port (0 if it could not)
+  async fn open(self, up: OneshotSender[u16]) {
+    var tx = up;
+    let made = await aio.bindUdp(SocketAddr.localhost(0u16));
+    match made {
+      case let Ok(s) { sock = s; }
+      case let Err(e) { tx.send(0u16); return; }
+    }
+    var port = 0u16;
+    let la = await sock.localAddr();
+    match &la {
+      case let &Ok(x) { port = x.port(); }
+      else {}
+    }
+    tx.send(port);
+  }
+
+  // The client handshake with 'salt' to the server; say the session made
+  // (0 if the handshake did not complete in 5 s)
+  async fn handshake(self, server: SocketAddr, salt: u64, up: OneshotSender[u64]) {
+    var tx = up;
+    var hs = ClientHandshake.make(NetConfig.defaults(), salt, Instant.now());
+    let limit = Instant.now() + Duration.fromSeconds(5i64);
+    while Instant.now() < limit {
+      var out = Packets();
+      hs.poll(Instant.now(), &mut out);
+      var ps = List[IoBuf]();
+      each p in out.drain() { ps.push(p); }
+      while ps.len() > 0usize {
+        match ps.pop() {
+          case let Some(p) { let s = await sock.sendTo(server, p); }
+          case is None[IoBuf] {}
+        }
+      }
+      let r = await sock.recvFromIn(IoBuf(2048usize), IoLimits.until(Instant.now() + Duration.fromMillis(50i64)));
+      match r {
+        case let Ok(dg) {
+          let ev = hs.receive(dg.buf.view());
+          if hs.isConnected() {
+            tx.send(hs.sessionId());
+            return;
+          }
+        }
+        else {}
+      }
+    }
+    tx.send(0u64);
+  }
+
+  // Send one Disconnect datagram of 'session' to the server, from the same socket
+  async fn disconnect(self, server: SocketAddr, session: u64, up: OneshotSender[u32]) {
+    var tx = up;
+    var w = streams.Writer.make(13usize);
+    w.putBE[u32](protocolId);
+    w.putByte(kindDisconnect);
+    w.putBE[u64](session);
+    let s = await sock.sendTo(server, w.intoBuf());
+    tx.send(1u32);
+  }
+}
+
+fn reasonText(r: CloseReason) &str {
+  match r {
+    case is Local {"local"}
+    case is Remote {"remote"}
+    case is TimedOut {"timeout"}
+    case is Overflow {"overflow"}
+    case is Refused {"refused"}
+    case is NoAnswer {"noanswer"}
+  }
+}
+
+// The next event as text (J2, L1:reason), or "none" if none comes in 'ms'
+fn next(rx: &mut Receiver[NetEvent], ms: i64, conns: &mut List[Connection]) String {
+  var s = String();
+  match rx.recvTimeout(Duration.fromMillis(ms)) {
+    case let Some(e) {
+      match &e {
+        case let &Joined(j) { s.append("J"); s.appendUInt(u64.from(j.id)); conns.push(j.conn); }
+        case let &Left(l) { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
+        case let &Refused(r) { s.append("R"); s.appendUInt(u64.from(r.id)); }
+        case let &Message(m) { s.append("M"); s.appendUInt(u64.from(m.id)); }
+        case let &Update(u) { s.append("U"); s.appendUInt(u64.from(u.id)); }
+      }
+      return s;
+    }
+    case is None[NetEvent] {}
+  }
+  String.from("none")
+}
+
+fn handshakeWith(raw: Raw, server: SocketAddr, salt: u64) u64 {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  raw.handshake(server, salt, tx);
+  rx.recv() || 0u64
+}
+
+fn sendDisconnect(raw: Raw, server: SocketAddr, session: u64) {
+  var tx: OneshotSender[u32];
+  var rx: OneshotReceiver[u32];
+  tx, rx = Oneshot[u32].make();
+  raw.disconnect(server, session, tx);
+  rx.recv();
+}
+
+fn main() i32 {
+  var dump = List[Connection]();
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  let cfg = NetConfig.defaults();
+  let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+  let to = SocketAddr.localhost(server.port);
+
+  let raw = Raw();
+  var txP: OneshotSender[u16];
+  var rxP: OneshotReceiver[u16];
+  txP, rxP = Oneshot[u16].make();
+  raw.open(txP);
+  let rawPort = rxP.recv() || 0u16;
+  require(rawPort != 0u16, "the raw socket bound");
+
+  let s1 = handshakeWith(raw, to, 0x1111111111111111u64);
+  require(s1 != 0u64, "the first session's handshake completed");
+  expectStr(next(&mut rxS, 3000i64, &mut dump).view(), "J1", "the first session joins as connection 1");
+
+  let s2 = handshakeWith(raw, to, 0x2222222222222222u64);
+  require(s2 != 0u64, "the second session's handshake completed");
+  expect(s1 != s2, "the sessions differ (different salts)");
+
+  // The old connection ends and the new one joins; two actors send these, so either may come first
+  let a = next(&mut rxS, 3000i64, &mut dump);
+  let b = next(&mut rxS, 3000i64, &mut dump);
+  let joinedFirst = a.view() == "J2";
+  expectStr(if joinedFirst {b.view()} else {a.view()}, "L1:local", "the first connection is closed by the replacement");
+  expectStr(if joinedFirst {a.view()} else {b.view()}, "J2", "the second session joins as connection 2");
+
+  // A late datagram of the first session reaches the address's connection, which is the second: refused
+  sendDisconnect(raw, to, s1);
+  expectStr(next(&mut rxS, 700i64, &mut dump).view(), "none", "a late datagram of the first session does not end the second");
+
+  // The second session's own datagram routes to it
+  sendDisconnect(raw, to, s2);
+  expectStr(next(&mut rxS, 3000i64, &mut dump).view(), "L2:remote", "a datagram of the second session does reach it");
+
+  server.endpoint.shutdown();
+  done()
+}
