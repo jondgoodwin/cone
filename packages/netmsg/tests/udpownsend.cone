@@ -1,0 +1,122 @@
+// Each connection sends its own datagrams, through a UdpSender on its own worker:
+// the sends are answered where they are issued, not handed to the I/O thread. A
+// server and a client on loopback; the server's connection sends 100 reliable
+// messages, one every 5 ms (so most go out as a packet of their own), and the
+// client hears them all, in order. The server's packets sent in that time are
+// read from its connection's stats, and aio.opStats().answeredHere must have
+// risen by at least that many less a tenth.
+
+mod udpownsend;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import thread;
+import actors;
+import iocore use SocketAddr;
+import aio;
+import iobuf use Bytes;
+import netmsg use *;
+
+actor Prober {
+  pub async fn ask(self, c: Connection, out: Sender[ConnectionStats]) {
+    let s = await c.stats();
+    out.send(s);
+  }
+}
+
+fn statsOf(c: Connection) ConnectionStats {
+  var tx: Sender[ConnectionStats];
+  var rx: Receiver[ConnectionStats];
+  tx, rx = Channel[ConnectionStats].make();
+  let prober = Prober();
+  prober.ask(c, tx);
+  match rx.recvTimeout(Duration.fromSeconds(5i64)) {
+    case let Some(st) { return st; }
+    case is None[ConnectionStats] {}
+  }
+  panic("the stats did not come")
+}
+
+fn numbered(n: u64) Bytes {
+  var s = String();
+  s.appendUInt(n);
+  var b = List[u8]();
+  putBytes(&mut b, s.view());
+  copyPacket(b.view()).freeze()
+}
+
+fn main() i32 {
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  {
+    let cfg = NetConfig.defaults();
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+    var sconn = List[Connection]();
+    var until = Instant.now() + Duration.fromSeconds(5i64);
+    while sconn.len() == 0usize && Instant.now() < until {
+      match rxS.recvTimeout(Duration.fromMillis(200i64)) {
+        case let Some(e) {
+          match e {
+            case let Joined(j) { sconn.push(j.conn); }
+            else {}
+          }
+        }
+        case is None[NetEvent] {}
+      }
+    }
+    require(sconn.len() == 1usize, "the server has a client");
+    let sc = *sconn[0usize];
+    let sentBefore = statsOf(sc).packetsSent;
+    let opsBefore = aio.opStats();
+
+    var i = 0u64;
+    while i < 100u64 {
+      sc.sendReliable(numbered(i));
+      thread.sleep(Duration.fromMillis(5i64));
+      i = i + 1u64;
+    }
+
+    // The client hears all 100 messages in order (its Joined comes first)
+    var got = 0u64;
+    var inOrder = true;
+    until = Instant.now() + Duration.fromSeconds(10i64);
+    while got < 100u64 && Instant.now() < until {
+      match rxC.recvTimeout(Duration.fromMillis(200i64)) {
+        case let Some(e) {
+          match e {
+            case let Message(m) {
+              if String.fromBytes(m.data.view()).view() != numberText(got).view() {inOrder = false;}
+              got = got + 1u64;
+            }
+            else {}
+          }
+        }
+        case is None[NetEvent] {}
+      }
+    }
+    expectUInt(got, 100u64, "the client heard 100 messages");
+    expect(inOrder, "in order");
+
+    let sent = statsOf(sc).packetsSent - sentBefore;
+    let here = aio.opStats().answeredHere - opsBefore.answeredHere;
+    expect(sent >= 10u64, "the server sent at least 10 packets (the rate is 30 a second)");
+    expect(here >= sent - sent / 10u64, "its sends were answered on the worker");
+
+    client.endpoint.shutdown();
+    server.endpoint.shutdown();
+  }
+  done()
+}
+
+fn numberText(n: u64) String {
+  var s = String();
+  s.appendUInt(n);
+  s
+}

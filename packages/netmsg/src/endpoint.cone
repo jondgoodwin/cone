@@ -19,15 +19,19 @@
 //             for a client), then each datagram is handled in place
 //             (onDatagram). It is paused at the await, so the actor handles its
 //             other messages meanwhile.
-//   send      a message to the endpoint (Connection.run sends one per packet):
-//             'await sock.sendTo(addr, buf)'. Several are in flight at once.
-//   timer     'wake(at)': 'await aio.sleepUntil(at)', then the due connections
-//             are ticked. At most one timer is armed: the earliest deadline any
-//             connection (or the dialer) has asked for; asking for an earlier
-//             one cancels the armed one's cancel group.
-//   shutdown  closes the connections, waits (300 ms at most) for the datagrams
-//             handed to the socket, cancels 'group' (which ends the receive and
-//             the timer) and drops the socket, which closes it.
+//   send      each connection sends its own datagrams, through a UdpSender (this
+//             socket's sending side) that it holds, awaited on its own worker. The
+//             endpoint sends only its own handshake datagrams (Challenge, Accept,
+//             Denied, and a client's Request and Response): 'sendOwn', a message to
+//             itself, 'await sock.sendTo(addr, buf)'.
+//   timer     only a client's dialing has one here: 'wake(at)', 'await
+//             aio.sleepUntil(at)', then the dialer is polled. Each connection keeps its
+//             own deadline with its own timer, in a cancel group under 'group'.
+//   shutdown  closes the connections (each answers when its own datagrams are handed
+//             to the socket), waits (300 ms at most) for the endpoint's own, cancels
+//             'group' (which ends the receive and every timer) and drops the socket,
+//             which closes it; a send through a connection's UdpSender then answers
+//             InvalidInput and is dropped.
 //
 // DEFAULTS CHOSEN HERE (the move from a thread of its own per endpoint, which
 // had its own iocore Loop, to aio): the socket is bound by a first message,
@@ -53,7 +57,6 @@ struct ConnectionSlot {
   id: u32;
   conn: Connection;
   session: u64;
-  due: i64;                // when the connection asked to be ticked (steady-clock ns)
 }
 
 // Where each connection's slot is in 'slots', by the other end's address
@@ -219,8 +222,8 @@ pub actor Endpoint {
     }
   }
 
-  // A packet to send: one datagram to 'addr'
-  async fn send(self, addr: SocketAddr, data: IoBuf) {
+  // One of the endpoint's own datagrams to send (a handshake's), to 'addr'
+  async fn sendOwn(self, addr: SocketAddr, data: IoBuf) {
     if sock.isNone() {return;}
     inflight = inflight + 1usize;
     let r = await sock.sendTo(addr, data);
@@ -228,7 +231,7 @@ pub actor Endpoint {
   }
 
   // The timer 'g' of generation 'gen' is for the instant 'at': when it comes,
-  // the connections and the dialer that are due are ticked
+  // the dialer is polled
   async fn wake(self, at: i64, gen: u32, g: CancelGroup) {
     let r = await aio.sleepUntilIn(Instant.fromNanos(at), IoLimits.within(g));
     if slept(r) && gen == timerGen && !stopped {
@@ -239,18 +242,6 @@ pub actor Endpoint {
   // ------------------------------------------------------------------
   // From the connections
   // ------------------------------------------------------------------
-
-  // A connection says when it next needs a tick
-  async fn deadline(self, id: u32, at: i64) {
-    var i = 0usize;
-    while i < slots.len() {
-      if slots[i].id == id {
-        slots[i].due = at;
-      }
-      i = i + 1usize;
-    }
-    self.rearm();
-  }
 
   // A connection has ended
   // (a connection that its address's new session replaced is already out of
@@ -302,7 +293,7 @@ pub actor Endpoint {
     }
   }
 
-  // The timer is due: some connection, or the dialer, is due
+  // The timer is due: the dialer is
   fn fire(self) {
     armed = -1i64;
     let now = Instant.now();
@@ -316,15 +307,6 @@ pub actor Endpoint {
         // in 'dial', which ends the dialing), and a server never dials
         handler.accept(NetEvent.Left(1u32, if dialer.wasRefused() {CloseReason.Refused} else {CloseReason.NoAnswer}));
       }
-    }
-    var i = 0usize;
-    while i < slots.len() {
-      let s = &mut slots[i];
-      if s.due <= now.nanos() {
-        s.due = farFuture;
-        s.conn.tick();
-      }
-      i = i + 1usize;
     }
     self.rearm();
   }
@@ -352,24 +334,16 @@ pub actor Endpoint {
     }
   }
 
-  // Queue a datagram for the socket (a message to ourselves, as a connection's are)
+  // Queue one of the endpoint's own datagrams for the socket (a message to ourselves)
   fn transmit(self, to: SocketAddr, data: IoBuf) {
-    selfactor.send(to, data);
+    selfactor.sendOwn(to, data);
   }
 
-  // Arm the timer for the earliest deadline there is, if it is earlier than
-  // the one armed: the armed one's group is cancelled
+  // Arm the timer for the dialer's deadline, if it is earlier than the one
+  // armed: the armed one's group is cancelled. Nothing to do when not dialing
   fn rearm(self) {
-    if stopped {return;}
-    var at = farFuture;
-    if dialing {
-      at = dialer.nextDeadline().nanos();
-    }
-    var i = 0usize;
-    while i < slots.len() {
-      if slots[i].due < at {at = slots[i].due;}
-      i = i + 1usize;
-    }
+    if stopped || !dialing {return;}
+    let at = dialer.nextDeadline().nanos();
     if at != farFuture && (armed < 0i64 || at < armed) {
       armed = at;
       let c = timer.cancel();
@@ -399,9 +373,9 @@ pub actor Endpoint {
     let id = nextId;
     nextId = nextId + 1u32;
     let conn = Connection(connUdp, id, handler, cfg, session, from,
-      Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
+      Some[Endpoint](selfactor), sock.sender(), group.child(), LinkConfig.perfect(), 0u64);
     byAddr.insert(from, slots.len());
-    slots.push(ConnectionSlot(from, id, conn, session, Instant.now().nanos()));
+    slots.push(ConnectionSlot(from, id, conn, session));
     self.transmit(from, accept);
   }
 
@@ -412,9 +386,9 @@ pub actor Endpoint {
       case is Connected {
         let id = 1u32;
         let conn = Connection(connUdp, id, handler, cfg, dialer.sessionId(), remote,
-          Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
+          Some[Endpoint](selfactor), sock.sender(), group.child(), LinkConfig.perfect(), 0u64);
         byAddr.insert(remote, slots.len());
-        slots.push(ConnectionSlot(remote, id, conn, dialer.sessionId(), Instant.now().nanos()));
+        slots.push(ConnectionSlot(remote, id, conn, dialer.sessionId()));
         dialing = false;
         // The datagram that connected us may be a payload packet
         conn.packet(data);
