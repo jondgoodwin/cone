@@ -1,0 +1,411 @@
+// The multi-bit fill's Rule G test (row 506; Ruminations\row-460-rules-and-tests-2026-11-18.md, B1 and section 4 test 1;
+// the model check's m1, m2, m3 and m6): A FILL WHOSE COMPARE-AND-SWAP SUCCEEDS ON THE PAGE'S NEXT LIFE MUST GIVE EVERY
+// TAKEN BIT BACK IN ONE FETCH_OR, PASSING THE LIFE IT TOOK THEM FROM, AND MUST WRITE NO CELL. Every step is driven.
+//
+// A worker thread (the filler; cnmalloc_workerBegin, CNMALLOC cache=16, so its fills grow 2, 4, 8 and stay at 8) fills from
+// the 1024-byte class (64 cells, one word of bits a page; slots=1). Its fill is parked by the shim's first park point, after
+// it loaded the word and before its compare-and-swap. The main thread then makes the page wholly free, retires it (a forced
+// collect, twice), takes it back from the pool as a 512-byte page and stamps that life's cells (first and last word), and
+// arranges that the word reads as the filler loaded it. The filler is released: its swap succeeds on the new life, and it is
+// parked again between its swap and its g2 load (LF_HOOK_TAKE), where the word must show the whole take gone in one swap;
+// then once more right after the undo's fetch_or, where the word must show every taken bit back. Afterwards no stamp may be
+// overwritten (MB-W: no link written with the old class's size), every bit is restored, and the multi-bit undo count rose
+// by one.
+// Two kinds of round:
+//   partial: the page was wholly free when the filler loaded the word, so it takes 8 of 64; the undo cannot leave the word
+//     wholly free on an attached page, so the slow path is not entered.
+//   whole word (m6's shape, the model's mbs4): the filler loaded a word with exactly 8 free bits and takes all of them, so
+//     the new life's word is 0 after its swap. While it is parked between the swap and g2, the main thread allocates a
+//     512-byte cell, finds the page full and detaches it (UNLISTED). The undo then finds old == 0 on a page that is not in a
+//     slot and takes "after a free", which must take the 512 class's lock (the life the bits came from) and list the page.
+//     An undo that passed g1 would take the 1024 class's lock, fail the generation test and leave the page UNLISTED with
+//     free bits: lost, with no crash. So the round ends by checking that the page is LISTED with every bit restored.
+// Three control rounds (the page does not change) must take 8 cells of one page normally, with no undo. At the end, with
+// every cell freed and the filler's cache emptied, allocations equal frees.
+//
+// Needs cnd.lib (-DCN_HOOKS -DCN_DEBUG) and CNMALLOC=design=lockfree,giveback=now,slots=1,stats,cache=16:
+//   $env:_LINK_ = '"<dir>\cnd.lib"'; $env:CNMALLOC = 'design=lockfree,giveback=now,slots=1,stats,cache=16'   (delete build\ first),
+//   then 'congo test lfmulti'. CNMULTI_ROUNDS=<n> partial rounds (default 20), CNMULTI_WHOLE=<n> whole-word rounds (default 10).
+// Under a plain 'congo test' nothing is linked and the test passes without testing. tests/mutants.ps1 runs it against m1, m2,
+// m3 and m6, each of which must fail it.
+
+mod lfmulti;
+
+import testing use *;
+import thread;
+import libc;
+
+extern {
+  fn @c(system) Sleep(ms: u32);
+  fn @c(system) SwitchToThread() i32;
+  fn @c(system) GetStdHandle(n: u32) usize;
+  fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
+  fn @c(system) CreateFileA(name: *u8, access: u32, share: u32, sec: usize, disp: u32, flags: u32, tmpl: usize) usize;
+  fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) GetModuleHandleA(name: *u8) usize;
+  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
+  fn @c("_msize") msize(p: *u8) usize;
+  fn @c("strlen") strlen(s: cstr) usize;
+  fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
+}
+
+alias SetHooks = &fn @c (pre: usize, detach: usize, retire: usize, claim: usize, afterOr: usize, after: usize);
+alias SetMulti = &fn @c (take: usize, group: usize);
+alias Collect = &fn @c (force: i32) u64;
+alias DesignFn = &fn @c () i32;
+alias Total = &fn @c (which: i32) i64;
+alias Peek = &fn @c (p: usize, which: i32) u64;
+alias Begin = &fn @c ();
+
+// words of the control block
+const cCmd = 0usize;        // 1: the filler takes 8 cells (cOut..); 2: it ends its worker cache and stops
+const cDone = 1usize;
+const cBegin = 2usize;      // cnmalloc_workerBegin and cnmalloc_workerEnd
+const cEnd = 3usize;
+const cArmPre = 4usize;     // the filler's next visit to a park point parks there
+const cParkedPre = 5usize;
+const cRelPre = 6usize;
+const cArmTake = 7usize;
+const cParkedTake = 8usize;
+const cRelTake = 9usize;
+const cArmOr = 10usize;
+const cParkedOr = 11usize;
+const cRelOr = 12usize;
+const cSeenOld = 13usize;   // the word the filler loaded (first park point)
+const cSeenWant = 14usize;  // the bits it took (LF_HOOK_TAKE)
+const cN = 15usize;         // how many cells command 1 takes
+const cOut = 16usize;       // the filler's cells (8 a round)
+const cWords = 32usize;
+
+const ones = 0xFFFFFFFFFFFFFFFFu64;
+
+var @threadlocal fctl: usize = 0usize;
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+fn ld(base: usize, i: usize) usize { mem.atomicLoad[usize](word(base, i), MemOrder.SeqCst) }
+fn st(base: usize, i: usize, v: usize) { mem.atomicStore[usize](word(base, i), v, MemOrder.SeqCst); }
+
+fn spinUntil(c: usize, i: usize) {
+  while ld(c, i) == 0usize { SwitchToThread(); }
+}
+
+fn park(c: usize, arm: usize, seen: usize, v: usize) {
+  if c != 0usize && ld(c, arm) == 1usize {
+    st(c, arm, 0usize);
+    if seen != 0usize { st(c, seen, v); }
+    st(c, arm + 1usize, 1usize);
+    spinUntil(c, arm + 2usize);
+  }
+}
+
+// the shim's park points, on the filler only: before a fill's swap; between a fill's swap and its g2 load; after a fetch_or
+fn @c hookPre(cl: usize, old: u64) { park(fctl, cArmPre, cSeenOld, usize.from(old)); }
+fn @c hookTake(cl: usize, want: u64) { park(fctl, cArmTake, cSeenWant, usize.from(want)); }
+fn @c hookOr(cl: usize) { park(fctl, cArmOr, 0usize, 0usize); }
+
+fn filler(arg: usize) u64 {
+  let c = arg;
+  fctl = c;
+  (ld(c, cBegin) as *u8 as Begin)();
+  while true {
+    let cmd = ld(c, cCmd);
+    if cmd == 1usize {
+      st(c, cCmd, 0usize);
+      var i = 0usize;
+      while i < ld(c, cN) { st(c, cOut + i, libc.malloc(1024usize) as usize); i = i + 1usize; }
+      st(c, cDone, 1usize);
+    } else if cmd == 2usize {
+      (ld(c, cEnd) as *u8 as Begin)();
+      st(c, cDone, 1usize);
+      break;
+    } else {
+      SwitchToThread();
+    }
+  }
+  0u64
+}
+
+fn waitFor(c: usize, i: usize, want: usize) bool {
+  var w = 0usize;
+  while ld(c, i) != want && w < 5000usize { Sleep(1u32); w = w + 1usize; }
+  ld(c, i) == want
+}
+
+fn cleanup(coll: Collect) { coll(1i32); coll(1i32); }
+
+fn stamp(p: usize, size: usize, v: usize) {
+  *word(p, 0usize) = size;
+  *word(p, size / 8usize - 1usize) = v;
+}
+
+fn stampOk(p: usize, size: usize, v: usize) bool {
+  *word(p, 0usize) == size && *word(p, size / 8usize - 1usize) == v
+}
+
+// the filler takes 8 cells (each round's fill); false when it did not finish
+fn fill8(c: usize) bool {
+  st(c, cDone, 0usize);
+  st(c, cCmd, 1usize);
+  waitFor(c, cDone, 1usize)
+}
+
+// the filler's 8 cells: all of the 1024 class, distinct, on one page; then freed by the main thread (not a worker)
+fn checkFree8(c: usize) usize {
+  var errs = 0usize;
+  let p0 = ld(c, cOut);
+  var i = 0usize;
+  while i < 8usize {
+    let p = ld(c, cOut + i);
+    if p == 0usize || msize(p as *u8) != 1024usize || p >> 16usize != p0 >> 16usize { errs = errs + 1usize; }
+    var k = 0usize;
+    while k < i { if ld(c, cOut + k) == p { errs = errs + 1usize; } k = k + 1usize; }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < 8usize { let p = ld(c, cOut + i); if p != 0usize { libc.free(p as *u8); } i = i + 1usize; }
+  errs
+}
+
+fn release(c: usize, rel: usize) { st(c, rel, 1usize); }
+
+fn resetParks(c: usize) {
+  var i = cArmPre;
+  while i <= cRelOr { st(c, i, 0usize); i = i + 1usize; }
+}
+
+// counts kept by the rounds
+const kErr = 0usize;        // anything wrong at all (each check that failed)
+const kTake = 1usize;       // rounds whose swap took the expected bits in one compare-and-swap
+const kUndo = 2usize;       // rounds whose undo restored every taken bit in its one fetch_or
+const kStamp = 3usize;      // stamps overwritten
+const kRestored = 4usize;   // rounds that ended with every bit of the word restored
+const kCount = 5usize;      // rounds where the multi-bit undo count rose by exactly one
+const kReused = 6usize;     // rounds where the retired page came back as the 512 class's
+const kListed = 7usize;     // whole-word rounds whose page ended LISTED
+const kControl = 8usize;    // control rounds that took 8 cells of one page with no undo
+
+fn bump(k: usize, i: usize) { *word(k, i) = *word(k, i) + 1usize; }
+
+fn controlRound(c: usize, k: usize, coll: Collect, tot: Total) {
+  cleanup(coll);
+  resetParks(c);
+  let u0 = tot(10i32);
+  if !fill8(c) { bump(k, kErr); return; }
+  let e = checkFree8(c);
+  if e == 0usize && tot(10i32) == u0 { bump(k, kControl); } else { *word(k, kErr) = *word(k, kErr) + e; }
+}
+
+// one stale round; whole: the filler takes a whole word (8 of 8 free) and the page is detached under it
+fn staleRound(c: usize, k: usize, cells: usize, coll: Collect, tot: Total, pk: Peek, round: usize, whole: bool) {
+  cleanup(coll);
+  resetParks(c);
+  // the 1024 page, as the filler will load its word: wholly free (partial) or with its 8 highest cells free (whole word)
+  let keep = if whole { 56usize } else { 1usize };
+  var n = 0usize;
+  while n < keep { *word(cells, n) = libc.malloc(1024usize) as usize; n = n + 1usize; }
+  let x0 = *word(cells, 0usize);
+  if !whole { libc.free(x0 as *u8); }
+  let expectOld = if whole { 0xFF00000000000000u64 } else { ones };
+  let g1 = pk(x0, 64i32);
+  st(c, cArmPre, 1usize);
+  st(c, cDone, 0usize);
+  st(c, cCmd, 1usize);
+  if !waitFor(c, cParkedPre, 1usize) { bump(k, kErr); st(c, cRelPre, 1usize); waitFor(c, cDone, 1usize); return; }
+  if u64.from(ld(c, cSeenOld)) != expectOld { bump(k, kErr); }
+  // the page goes round: wholly free, retired, back from the pool as the 512 class's
+  if whole { n = 0usize; while n < keep { libc.free(*word(cells, n) as *u8); n = n + 1usize; } }
+  cleanup(coll);
+  // partial: cell 64 (in word 1) stays held, so the page cannot retire under the checks (the give-back timer retires a
+  // wholly free page at any moment under giveback=now, and may decommit it); whole word: 120 cells stay held
+  let nb = if whole { 128usize } else { 65usize };
+  n = 0usize;
+  var onPage = 0usize;
+  while n < nb {
+    let b = libc.malloc(512usize) as usize;
+    *word(cells, n) = b;
+    stamp(b, 512usize, 7000000usize + round * 1000usize + n);
+    if b >> 16usize == x0 >> 16usize { onPage = onPage + 1usize; }
+    n = n + 1usize;
+  }
+  if onPage == nb && pk(x0, 64i32) != g1 { bump(k, kReused); }
+  // the word as the filler loaded it: all 64 cells of word 0 free (partial), or its 8 highest (whole word)
+  n = 0usize;
+  if whole { n = 56usize; }
+  while n < 64usize { libc.free(*word(cells, n) as *u8); n = n + 1usize; }
+  if pk(x0, 0i32) != expectOld { bump(k, kErr); }
+  let u0 = tot(10i32);
+  st(c, cArmTake, 1usize);
+  st(c, cArmOr, 1usize);
+  release(c, cRelPre);
+  if !waitFor(c, cParkedTake, 1usize) {
+    bump(k, kErr);                                  // the swap failed or no g2 test followed it
+  } else {
+    let want = if whole { expectOld } else { 0xFFu64 };
+    if u64.from(ld(c, cSeenWant)) == want && pk(x0, 0i32) == (expectOld & (want ^ ones)) { bump(k, kTake); }
+    var extra = 0usize;
+    if whole {
+      // another thread's allocation finds the page full and detaches it: the page is UNLISTED under the parked filler
+      extra = libc.malloc(512usize) as usize;
+      stamp(extra, 512usize, 1usize);
+      if pk(x0, 65i32) != 3u64 { bump(k, kErr); }
+    }
+    release(c, cRelTake);
+    if waitFor(c, cParkedOr, 1usize) {
+      if pk(x0, 0i32) == expectOld { bump(k, kUndo); }
+      release(c, cRelOr);
+    } else {
+      bump(k, kErr);
+    }
+    if !waitFor(c, cDone, 1usize) { bump(k, kErr); }
+    if pk(x0, 0i32) == expectOld { bump(k, kRestored); }
+    if whole && pk(x0, 65i32) == 2u64 { bump(k, kListed); }
+    if tot(10i32) == u0 + 1i64 { bump(k, kCount); }
+    if extra != 0usize { libc.free(extra as *u8); }
+  }
+  release(c, cRelTake); release(c, cRelOr);
+  waitFor(c, cDone, 1usize);
+  // MB-W: every stamp of the new life is intact (free cells and held ones alike)
+  n = 0usize;
+  while n < nb {
+    if !stampOk(*word(cells, n), 512usize, 7000000usize + round * 1000usize + n) { bump(k, kStamp); }
+    n = n + 1usize;
+  }
+  if whole {
+    n = 0usize;
+    while n < 56usize { libc.free(*word(cells, n) as *u8); n = n + 1usize; }
+  }
+  n = 64usize;
+  while n < nb { libc.free(*word(cells, n) as *u8); n = n + 1usize; }
+  *word(k, kErr) = *word(k, kErr) + checkFree8(c);
+}
+
+fn envNum(name: cstr, dflt: usize) usize {
+  let p = libc.getenv(name);
+  if p as usize == 0usize { return dflt; }
+  var v = 0usize;
+  var i = 0usize;
+  while true {
+    let c = usize.from(*at(p, i));
+    if c < 48usize || c > 57usize { break; }
+    v = v * 10usize + (c - 48usize);
+    i = i + 1usize;
+  }
+  if i == 0usize { dflt } else { v }
+}
+
+fn putStr(buf: *u8, pos: usize, s: cstr) usize {
+  let n = strlen(s);
+  copyLit(at(buf, pos), s, n);
+  pos + n
+}
+
+fn putNum(buf: *u8, pos: usize, v: usize) usize {
+  var digits = 1usize;
+  var t = v;
+  while t >= 10usize { t = t / 10usize; digits = digits + 1usize; }
+  var x = v;
+  var i = digits;
+  while i > 0usize { i = i - 1usize; *at(buf, pos + i) = u8.from(48usize + x % 10usize); x = x / 10usize; }
+  pos + digits
+}
+
+fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
+  let buf = libc.malloc(256usize);
+  var n = 0usize;
+  n = putStr(buf, n, label); n = putNum(buf, n, a);
+  n = putStr(buf, n, mid); n = putNum(buf, n, b);
+  n = putStr(buf, n, tail); n = putNum(buf, n, c);
+  *at(buf, n) = 10u8;
+  var w = 0u32;
+  WriteFile(GetStdHandle(0xFFFFFFF4u32), buf, u32.from(n + 1usize), &mut w, 0usize);
+  // CNTEST_LOG=<file>: the same line appended there, since congo shows a passing test's stderr to nobody
+  let lf = libc.getenv("CNTEST_LOG");
+  if lf as usize != 0usize {
+    let fh = CreateFileA(lf, 4u32, 3u32, 0usize, 4u32, 128u32, 0usize);
+    if fh != 0xFFFFFFFFFFFFFFFFusize { WriteFile(fh, buf, u32.from(n + 1usize), &mut w, 0usize); CloseHandle(fh); }
+  }
+  libc.free(buf);
+}
+
+fn skipped() {
+  expect(true, "lfmulti: every stale swap took its bits in one compare-and-swap");
+  expect(true, "lfmulti: every undo gave every taken bit back in one fetch_or");
+  expectUInt(0u64, 0, "lfmulti: no stamp of the page's new life was overwritten");
+  expect(true, "lfmulti: every round ended with the word's bits restored");
+  expect(true, "lfmulti: the multi-bit undo count rose by one each round");
+  expect(true, "lfmulti: the retired page came back as the other class's page every round");
+  expect(true, "lfmulti: every whole-word round ended with the page listed");
+  expect(true, "lfmulti: the control rounds took their cells normally");
+  expect(true, "lfmulti: allocations equal frees at the end");
+  expectUInt(0u64, 0, "lfmulti: no wrong cell, no stuck thread");
+}
+
+fn main() i32 {
+  let m = GetModuleHandleA(null);
+  let setHooks = GetProcAddress(m, &"cnmalloc_lfSetHooks" as *u8);
+  let setMulti = GetProcAddress(m, &"cnmalloc_lfSetMultiHooks" as *u8);
+  let collect = GetProcAddress(m, &"cnmalloc_collect" as *u8);
+  let design = GetProcAddress(m, &"cnmalloc_design" as *u8);
+  let total = GetProcAddress(m, &"cnmalloc_lfTotal" as *u8);
+  let peek = GetProcAddress(m, &"cnmalloc_lfPeek" as *u8);
+  let begin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
+  let end = GetProcAddress(m, &"cnmalloc_workerEnd" as *u8);
+  if setHooks == 0usize || setMulti == 0usize || collect == 0usize || design == 0usize || total == 0usize || peek == 0usize || begin == 0usize { skipped(); return done(); }
+  if (design as *u8 as DesignFn)() != 2i32 { skipped(); return done(); }
+  let rounds = envNum("CNMULTI_ROUNDS", 20usize);
+  let wholes = envNum("CNMULTI_WHOLE", 10usize);
+  let coll = collect as *u8 as Collect;
+  let tot = total as *u8 as Total;
+  let pk = peek as *u8 as Peek;
+  let c = libc.calloc(cWords, 8usize) as usize;
+  let k = libc.calloc(16usize, 8usize) as usize;
+  let cells = libc.calloc(130usize, 8usize) as usize;
+  st(c, cBegin, begin);
+  st(c, cEnd, end);
+  (setHooks as *u8 as SetHooks)(&hookPre as *u8 as usize, 0usize, 0usize, 0usize, &hookOr as *u8 as usize, 0usize);
+  (setMulti as *u8 as SetMulti)(&hookTake as *u8 as usize, 0usize);
+  let live0 = tot(0i32) - tot(1i32);           // cells live before the filler starts (the control block, the counts, cells)
+  let ft = thread.start[usize, u64](c, &filler);
+  // warm up: 14 cells, so the filler's fills grow 2, 4, 8 and its cache is empty again; each round's 8 cells are then
+  // exactly one fill of 8, whose first allocation is the miss
+  st(c, cN, 14usize);
+  st(c, cDone, 0usize);
+  st(c, cCmd, 1usize);
+  waitFor(c, cDone, 1usize);
+  var i = 0usize;
+  while i < 14usize { libc.free(ld(c, cOut + i) as *u8); i = i + 1usize; }
+  st(c, cN, 8usize);
+  var r = 0usize;
+  while r < 3usize { controlRound(c, k, coll, tot); r = r + 1usize; }
+  r = 0usize;
+  while r < rounds { staleRound(c, k, cells, coll, tot, pk, r, false); r = r + 1usize; }
+  r = 0usize;
+  while r < wholes { staleRound(c, k, cells, coll, tot, pk, rounds + r, true); r = r + 1usize; }
+  st(c, cDone, 0usize);
+  st(c, cCmd, 2usize);
+  waitFor(c, cDone, 1usize);
+  ft.join();
+  (setHooks as *u8 as SetHooks)(0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+  (setMulti as *u8 as SetMulti)(0usize, 0usize);
+  libc.free(cells as *u8);
+  cleanup(coll);
+  let allocs = tot(0i32);
+  let frees = tot(1i32);
+  let all = rounds + wholes;
+  errLine("lfmulti: rounds ", rounds, " whole-word rounds ", wholes, " multi-bit undos ", usize.from(tot(10i32)));
+  errLine("lfmulti: one-swap takes ", *word(k, kTake), " one-fetch_or undos ", *word(k, kUndo), " stamps hit ", *word(k, kStamp));
+  errLine("lfmulti: restored ", *word(k, kRestored), " listed ", *word(k, kListed), " reused ", *word(k, kReused));
+  errLine("lfmulti: allocs ", usize.from(allocs), " frees ", usize.from(frees), " errors ", *word(k, kErr));
+  expect(*word(k, kTake) == all, "lfmulti: every stale swap took its bits in one compare-and-swap");
+  expect(*word(k, kUndo) == all, "lfmulti: every undo gave every taken bit back in one fetch_or");
+  expectUInt(u64.from(*word(k, kStamp)), 0, "lfmulti: no stamp of the page's new life was overwritten");
+  expect(*word(k, kRestored) == all, "lfmulti: every round ended with the word's bits restored");
+  expect(*word(k, kCount) == all, "lfmulti: the multi-bit undo count rose by one each round");
+  expect(*word(k, kReused) == all, "lfmulti: the retired page came back as the other class's page every round");
+  expect(*word(k, kListed) == wholes, "lfmulti: every whole-word round ended with the page listed");
+  expect(*word(k, kControl) == 3usize, "lfmulti: the control rounds took their cells normally");
+  expect(allocs - frees == live0 - 1i64, "lfmulti: allocations equal frees at the end");
+  expectUInt(u64.from(*word(k, kErr)), 0, "lfmulti: no wrong cell, no stuck thread");
+  done()
+}
