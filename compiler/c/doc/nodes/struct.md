@@ -753,6 +753,10 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   first `tag`-typed field where one is written — because a variant copies the enum's
   fields as soon as it is name resolved, before the enum is type checked; type check
   validates the mark and refuses a second one.
+  **Tag only** (`structEnumIsTagOnly`) means an enum whose own fields are just that discriminant and
+  its `is` entries (`IsMixin`) and whose variants hold nothing: such an enum compares with
+  `TagEqIntrinsic`/`TagNeIntrinsic` and gets no `-eq` function, so declaring a trait does not
+  change how it compares.
 - **`tag` is recognized only where a field's type is written**, so it is not a
   reserved word and `pub tag: i32` still declares a field named `tag`. Written on
   anything but an enum it is refused here, which is what keeps the type-check rule
