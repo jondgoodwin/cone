@@ -12,7 +12,7 @@ allocation API only. **Off by default:** nothing links it unless a program asks.
 | `src/cnmalloc.cone` | The heap (a C-named module: no prelude, no core, no globals, nothing from Cone's runtime). Its header comment is the design: the page pool and reservation interfaces, the lock order, the concurrency rule. |
 | `shim/cn_shim.c` | The C part (language gaps, below): the one global heap pointer, the lazy compare-and-swap start, the `malloc`/`free`/... names, the `__imp_` pointers, the exit-time statistics hook. |
 | `shim/build-cn.ps1` | Builds `cn.lib` (the package's release object plus `cn_shim.c`). |
-| `tests/` | `edges` (class table, aligned to 1 MiB, API edges, large grow/shrink, foreign blocks, struct layout), `dirty` (the dirty-page test under each give-back setting), `stress` (threads, cross-thread frees, realloc, pattern checks), `idle` (give-back by the timer when the process goes quiet), `cache` (the workers' cache, through the C runtime's malloc family: checks only when linked with `cn.lib` and `CNMALLOC=cache=<n>`; `CNCACHE_SECS`, `CNCACHE_THREADS`, `CNCACHE_MODE=random\|pc`), and `edges`' batch checks. |
+| `tests/` | `edges` (class table, aligned to 1 MiB, API edges, large grow/shrink, foreign blocks, struct layout), `dirty` (the dirty-page test under each give-back setting), `stress` (threads, cross-thread frees, realloc, pattern checks), `idle` (give-back by the timer when the process goes quiet), `spare` (at `giveback=now`, a one-block loop makes no system calls and the page goes back after a quiet gap), `cache` (the workers' cache, through the C runtime's malloc family: checks only when linked with `cn.lib` and `CNMALLOC=cache=<n>`; `CNCACHE_SECS`, `CNCACHE_THREADS`, `CNCACHE_MODE=random\|pc`), and `edges`' batch checks. |
 
 ## Linking it
 
@@ -33,7 +33,7 @@ powershell -File packages\cnmalloc\shim\build-cn.ps1 -Out <dir>        # writes 
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `giveback=now` / `delay:<ms>` / `never` | `delay:1000` | When empty pages and freed large blocks are decommitted. Address space is never released (but see Large blocks). |
+| `giveback=now` / `delay:<ms>` / `never` | `delay:1000` | When empty pages and freed large blocks are decommitted. Address space is never released (but see Large blocks). At `now`, memory no live block uses goes back at the next collect (a worker's park, or a 1 ms timer, the shortest the thread-pool timer takes), within a few milliseconds of the process going quiet, not on the free itself. Each class keeps its last empty page until then, so a loop that allocates and frees one block makes no commit or decommit calls after its first pair. That is at most one page per class beyond a delay of 0: 72 x 64 KiB at worst. |
 | `reserve=<n>[k\|m\|g]` | `64g` | The address space for small-block pages (64 MiB to 1 TiB). |
 | `largecap=<n>[k\|m\|g]` | `64m` | Committed bytes of freed large blocks kept for reuse. |
 | `largereserve=<n>` | `2` | Row 446: a large block's own reservation is n times its size (n from 1 to 64; out of range is clamped), so a block that grows stays in place until it outgrows that. At 2 the reservation is the size plus the size, as it always was. |
