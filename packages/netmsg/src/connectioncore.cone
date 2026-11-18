@@ -46,7 +46,10 @@ const ringSize = 1024usize;
 // Reliable messages queued or unacknowledged at once
 pub const reliableWindow = 1024usize;
 
-// Latest-wins streams one connection carries
+// Latest-wins streams one connection carries, each way: a send for a 65th
+// stream is refused (TooManyStreams); an update from the peer on a 65th, or one
+// waiting for the application on a 65th, is dropped and counted
+// (ConnectionStats.streamsRefused)
 pub const maxStreams = 64usize;
 
 // Disconnect packets sent when a connection closes, so one of them gets
@@ -67,7 +70,26 @@ const notFound = 0xFFFFFFFFusize;
 // Configuration, events, statistics
 // ---------------------------------------------------------------------------
 
-// The knobs of a connection, the same on both ends
+// The knobs of a connection, the same on both ends, and the limits a server puts
+// on its peers. The limits are what a misbehaving peer can make a server spend:
+//   maxClients     connections a server holds at once (64)
+//   maxPerAddress  of those, from one IP address (4); an IPv6 address counts by
+//                  its /64 (its first four groups), and an IPv4-mapped IPv6
+//                  address by the IPv4 address in it
+//   admitRate      new connections admitted a second across the whole server
+//                  (50), in a bucket that holds twice that many, so a burst of
+//                  100 gets in at once and the rest as it refills
+//   a session from an address that already has a connection replaces it (a
+//   reconnect); replacements from one IP address are held to one a second
+//   maxStreams     latest-wins streams one connection carries each way (64)
+// A client past a limit hears the same refusal as at maxClients (Left, Refused).
+// A server that raises maxClients to thousands must raise the others beside it
+// when its clients share addresses: netbench's all come from 127.0.0.1, and
+// at 50 a second 1,000 to 5,000 of them would take 20 to 100 seconds to join, so
+// netbench, and any measurement that starts clients from one machine, sets
+// maxPerAddress and admitRate wherever it sets maxClients. The defaults stay
+// for a server on the internet: a limit that tests never meet is one a server
+// behind a proxy meets first, so loopback has no exemption.
 pub struct NetConfig {
   pub maxPacket: usize;       // the largest datagram sent, bytes (1200)
   pub goodRate: u32;          // packets a second sent in good conditions (30)
@@ -79,9 +101,11 @@ pub struct NetConfig {
   pub connectRetryMs: i64;    // a handshake packet is repeated this often (250)
   pub connectTimeoutMs: i64;  // a handshake that takes this long has failed (5000)
   pub maxClients: usize;      // a server's connections (64)
+  pub maxPerAddress: usize;   // a server's connections from one IP address, IPv6 by its /64 (4)
+  pub admitRate: u32;         // new connections a server admits a second, with a burst of twice that (50)
 
   pub fn defaults() NetConfig {
-    NetConfig(1200usize, 30u32, 10u32, 250i64, 100i64, 10000i64, 40i64, 250i64, 5000i64, 64usize)
+    NetConfig(1200usize, 30u32, 10u32, 250i64, 100i64, 10000i64, 40i64, 250i64, 5000i64, 64usize, 4usize, 50u32)
   }
 }
 
@@ -118,6 +142,7 @@ pub struct ConnectionStats {
   pub latestDelivered: u64;
   pub latestStale: u64;           // arrived late: an older value than one already delivered
   pub sendErrors: u64;            // datagrams the socket refused (a full send buffer, or a failure that ended the connection)
+  pub streamsRefused: u64;        // updates dropped for a latest-wins stream past the maxStreams a connection carries (the peer's, or ones waiting for the application)
   pub rttMs: i64;                 // smoothed round trip time; 0 before the first sample
   pub rttVarMs: i64;
   pub lossPermille: u32;          // of our packets, in a thousand, that never got acknowledged
@@ -328,7 +353,7 @@ pub struct ConnectionCore {
       List[StreamOut](), List[StreamIn](),
       t, t - cfg.keepAliveMs * msNs, t, false, false,
       false, 0i64, 0i64, 0i64, true, -1i64, 4i64 * secNs, t,
-      ConnectionStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0i64, 0u32, true))
+      ConnectionStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0i64, 0u32, true))
   }
 
   pub fn sessionId(self: &) u64 {session}
@@ -805,6 +830,13 @@ pub struct ConnectionCore {
     each item in pk.lat.drain() {
       var j = self.findIn(item.stream);
       if j == notFound {
+        // A peer may name any of 65,536 streams: past the limit a new one is
+        // dropped and counted (the same limit the sending side keeps), and the
+        // connection stays open
+        if ins.len() >= maxStreams {
+          st.streamsRefused = st.streamsRefused + 1u64;
+          continue;
+        }
         ins.push(StreamIn(item.stream, item.seq - 1u16));
         j = ins.len() - 1usize;
       }
