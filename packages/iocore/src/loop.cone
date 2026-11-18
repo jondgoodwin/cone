@@ -652,18 +652,20 @@ pub struct Loop {
   // answered Cancelled here, as what waits on the Loop's own lists is by
   // lxCancelAll (its asker has had its chance to end them first). Windows: the
   // kernel holds them; closing the socket aborts them, and their completions
-  // reach the worker port's waiter, which answers them Cancelled
+  // reach the worker port's waiter, which answers them Cancelled. On both
+  // systems the chain's 'hnext' links are cut here, so no record keeps a stale
+  // one into a list that is gone
   fn unpublish(self: &mut, i: u32) {
     if shared.isNone() {return;}
     var p = unpublishEntry(&shared, i);
-    #if #os != .windows {
-      while p as usize != 0usize {
-        let next = (*p).hnext;
-        (*p).hnext = null;
+    while p as usize != 0usize {
+      let next = (*p).hnext;
+      (*p).hnext = null;
+      #if #os != .windows {
         stats.submit();
         self.decide(p, diag.outcomeCancelled, 0usize, 0u32);
-        p = next;
       }
+      p = next;
     }
   }
 

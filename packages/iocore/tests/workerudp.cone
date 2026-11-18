@@ -19,7 +19,10 @@
 //    holdSends), a second behind it though the socket would take it, and the
 //    edge sends them in order, so the receiver sees them in order. (Windows
 //    has no such wait: its kernel orders overlapped sends, and the two are
-//    sent in turn.)
+//    sent in turn. Its shared try answers issueNot to a worker-side send, as
+//    to a receive, so that one that pends is started and listed under the
+//    exclusive lock: the test checks that, and that the start is Done; a
+//    send that pends cannot be forced on loopback.)
 // 7. A close while a receive waits: Cancelled, the batch back (Linux: the
 //    Loop's unpublish answers it; Windows: the abort completion).
 // 8. A stale datum, and a handle gone, do nothing. The Loop does not start a
@@ -298,6 +301,7 @@ fn main() i32 {
     #if #os == .windows {
       let a = sendToOn(&pool, tx, rxPort, "first");
       let b = sendToOn(&pool, tx, rxPort, "second");
+      expectUInt(u64.from(tryIssue(&sh, tx, a)), u64.from(issueNot), "6: the shared try never starts a worker-side send (it is started under the exclusive lock, to be listed if it pends)");
       expectUInt(u64.from(start(&sh, tx, a)), u64.from(issueDone), "6: the first send is done at once");
       expectUInt(u64.from(start(&sh, tx, b)), u64.from(issueDone), "6: the second is done at once, behind it in the kernel");
       expectUInt(u64.from((a as &OpCore).count()), 5u64, "6: five bytes");

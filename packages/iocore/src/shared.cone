@@ -353,18 +353,23 @@ pub struct Shared is Move, Sendable {
   }
 
   // Try record p's receive or send here (ISSUE above). The entry of p's
-  // handle is locked by this thread. issueNot, issueDone or issuePending
+  // handle is locked by this thread. issueNot, issueDone or issuePending. It
+  // never answers issuePending for a worker-side socket (UDP ON THE WORKER
+  // PORT): a datagram is never partial, so on Linux it is answered or issueNot,
+  // and on Windows every datagram operation answers issueNot; 'issueWaiting'
+  // is what starts and lists those, and so answers issuePending itself
   pub fn issue(self: &, p: *OpCore) u32 {self.issueAt(p, tryPublic)}
 
   // 'issue' in one of three modes, which differ for a worker-side socket
   // (UDP ON THE WORKER PORT). A datagram send waits behind the sends already
   // waiting on it (Linux: the socket's EPOLLOUT edge tries them in order, and
   // a send tried past them would overtake): every mode but the edge's own
-  // retry of the head, tryRetry. A receive on Windows is never started under
-  // the entry's shared lock (its kernel operation may go pending, and the
-  // record must then be listed with no gap in which its completion could come
-  // first): tryPublic, which is 'issue', says issueNot, and issueWaiting
-  // starts it under the exclusive lock, tryWaiting
+  // retry of the head, tryRetry. A datagram operation on Windows, a send as
+  // much as a receive, is never started under the entry's shared lock (its
+  // kernel operation may go pending, and the record must then be listed with
+  // no gap in which its completion could come first, and where a deadline or
+  // a cancel finds it): tryPublic, which is 'issue', says issueNot, and
+  // issueWaiting starts it under the exclusive lock, tryWaiting
   fn issueAt(self: &, p: *OpCore, mode: u32) u32 {
     let r = p as &mut OpCore;
     let e = self.entry(r.handle.index);
@@ -381,13 +386,14 @@ pub struct Shared is Move, Sendable {
     // A send on a worker-side socket that is held, or has sends waiting ahead of it, is not tried. The
     // entry's wait lists change only under the exclusive lock, which no shared holder shares
     if udp && (*e).worker != 0u32 {
-      if k == diag.kindSendTo {
-        #if #os != .windows {
+      #if #os == .windows {
+        // Every datagram operation: started under the exclusive lock, so that a pending one is listed with no gap
+        if mode == tryPublic {return issueNot;}
+      } #else {
+        if k == diag.kindSendTo {
           if (*e).hold != 0u32 {return issueNot;}
           if mode != tryRetry && (*e).swait as usize != 0usize {return issueNot;}
         }
-      } else {
-        #if #os == .windows { if mode == tryPublic {return issueNot;} }
       }
     }
     // A deadline or a group done with is answered by the Loop, as at a start
