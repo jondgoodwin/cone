@@ -18,10 +18,13 @@
 //      each reader saw        the last version, 300000, and the last value
 //      main's own reader      the same, after the threads are joined
 //
-// A reader stands still for longer than a put takes only now and then, so a
-// torn copy is rare for the real code (it is caught and retried, which is what
-// is tested), and the mutants of the tests' build notes (a plain store for each
-// Release; a plain load for each Acquire) are what show this test can see one.
+// Before the writer starts, each reader also waits for the first version with a
+// loop on version() alone, no call in it. That is the one check an ordering
+// mutant is caught by in a release build: with a plain load in place of the
+// Acquire (cellLoad in sync.cone), the optimizer takes the load out of the loop
+// and no reader ever sees the first put (8 of 8 readers, 5 runs of 5). A plain
+// store in place of each Release is not caught on x86, where the hardware keeps
+// stores in order and the compiler has nothing here to move them past.
 
 mod latestcellthreads;
 
@@ -29,9 +32,17 @@ import testing use *;
 import thread;
 import sync use *;
 import collections use List;
+import time use Duration;
 
 const lastVersion = 300000u64;
 const readers = 8usize;
+
+// Readers waiting at the start, before the writer is let go
+let armed: Atomic[u64];
+
+fn @initpure init() {
+  armed = Atomic[u64].of(0u64);
+}
 
 fn lenOf(v: u64) usize {
   1usize + usize.from((v * 733u64) % 1024u64)
@@ -52,6 +63,7 @@ struct Totals {
   pub lapped: u64;                 // None answers while nothing new was in the way
   pub last: u64;
   pub lastOk: bool;
+  pub waited: bool;                // saw the first version while spinning on version()
 }
 
 fn write(w: LatestWriter) u64 {
@@ -79,7 +91,16 @@ fn take(rd: Reading) Totals {
   let r = rd.reader;
   var out = List[u8]();
   out.resize(1024usize, 0u8);
-  var t = Totals(0u64, 0u64, 0u64, 0u64, 0u64, false);
+  var t = Totals(0u64, 0u64, 0u64, 0u64, 0u64, false, false);
+  // Wait for the writer's first put on version() alone, no call in the loop
+  // (the bound is far past any real wait): a load that is not an Acquire is
+  // one the optimizer may take out of the loop, and the wait never ends
+  armed.add(1u64);
+  var spins = 0u64;
+  while r.version() == 0u64 && spins < 3000000000u64 {
+    spins = spins + 1u64;
+  }
+  t.waited = r.version() != 0u64;
   var seen = 0u64;
   while seen < lastVersion {
     let g = r.readNewer(seen, out.viewMut());
@@ -123,6 +144,10 @@ fn main() i32 {
     hands.push(thread.start(Reading(w.reader()), &take));
     k = k + 1usize;
   }
+  while armed.load() < u64.from(readers) {
+    thread.yieldNow();
+  }
+  thread.sleep(Duration.fromMillis(30));
   let wt = thread.start(w, &write);
   let refused = wt.join();
   expectUInt(refused, 0u64, "no put refused");
@@ -131,6 +156,7 @@ fn main() i32 {
   var reads = 0u64;
   var short = 0u64;
   var badLast = 0u64;
+  var unwaited = 0u64;
   while !hands.isEmpty() {
     let t = hands.pop().unwrap().join();
     torn = torn + t.torn;
@@ -138,9 +164,11 @@ fn main() i32 {
     reads = reads + t.reads;
     if t.last != lastVersion {short = short + 1u64;}
     if !t.lastOk {badLast = badLast + 1u64;}
+    if !t.waited {unwaited = unwaited + 1u64;}
   }
   expectUInt(torn, 0u64, "no torn value on any reader");
   expectUInt(disorder, 0u64, "no version out of order");
+  expectUInt(unwaited, 0u64, "every reader that waited on version() saw the first put");
   expectUInt(short, 0u64, "every reader saw the last version");
   expectUInt(badLast, 0u64, "and the last value it took was whole");
   expectBool(reads >= u64.from(readers), true, "every reader took values");

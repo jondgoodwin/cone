@@ -2,9 +2,10 @@
 // holds 'Arc', the region whose owners of one value several threads may
 // hold; the futex, the one way a thread sleeps until another wakes it; the
 // locks built on the futex: Mutex, Rwlock, Condvar, Semaphore and Once, the first two
-// also lock permissions, 'Arc[Mutex, T]'; and the
+// also lock permissions, 'Arc[Mutex, T]'; the
 // channel, a pipe of values from any number of threads to one, unbounded or
-// bounded, or from one thread to one. On Windows and on Linux: the futex's
+// bounded, or from one thread to one; and the latest-value cell, one writer's
+// newest value read whole by readers on any threads. On Windows and on Linux: the futex's
 // three functions, a yield and a flush of every processor's stores are the
 // package's only calls to the OS. Every timeout is a Duration of the time
 // package, whose steady clock (time.Instant) the channels measure by.
@@ -25,6 +26,8 @@
 //   Channel[T]     values sent by many threads, or one, taken by one
 //                                                                (CHANNELS)
 //   Oneshot[T]     one value, sent once, from one thread to one (ONE-SHOTS)
+//   latestCell(n)  LatestWriter, LatestReader: the newest value of up to n
+//                  bytes, read whole by any number of readers  (LATEST-VALUE CELLS)
 //
 // THE FUTEX. The foundation every lock here is built on, and what the thread
 // package's parking is built on: a 32-bit atomic word that threads sleep on
@@ -2760,8 +2763,11 @@ pub struct LatestWriter is Move, Sendable {
 pub struct LatestReader is Sendable {
   store: Arc[imm, CellStore];
 
-  // The newest complete version: 0 when nothing has been put
-  pub fn version(self: &) u64 {
+  // The newest complete version: 0 when nothing has been put. Inline, so a
+  // caller's loop that waits on it holds the Acquire load itself, which the
+  // optimizer may not take out of the loop (the threads test's mutant of a
+  // plain load is caught by that).
+  pub fn version(self: &) u64 inline {
     cellLoad(store.words)
   }
 
