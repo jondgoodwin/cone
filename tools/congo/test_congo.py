@@ -2134,7 +2134,13 @@ class Testing(unittest.TestCase):
         # An expected file already there is compared, never rewritten
         self.assertIn("test wrong ... FAILED", run.stdout)
         self.assertEqual((pkg / "tests" / "wrong.out").read_text(), "5\n")
-        self.congo("test", "doubles", cwd=pkg)
+        # ... and says so, once per kept file
+        self.assertIn("kept the existing expected file", run.stdout)
+        self.assertIn("wrong.out; delete it to re-bless", run.stdout)
+        self.assertNotIn("doubles.out; delete it", run.stdout)
+        # Without --bless nothing is said
+        run = self.congo("test", "doubles", cwd=pkg)
+        self.assertNotIn("kept the existing", run.stdout)
 
     def quiet_packages(self, root: Path) -> Path:
         """A folder of two packages: qone has a test 'steady' and a quiet one,
