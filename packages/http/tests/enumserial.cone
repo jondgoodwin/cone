@@ -1,0 +1,67 @@
+// The package's enums declare Serialize and Deserialize[Self]: each is the string of its variant's name through
+// json's toJson, and reads back to the same variant. Pinned for every variant of each, so a variant added or
+// renamed fails here.
+
+mod enumserial;
+
+import testing use *;
+import collections use String;
+import http use *;
+import json;
+
+fn text[T](v: &T) String where T is Serialize {
+  match json.toJson(v) {
+    case let Ok(s) { s }
+    case let Err(e) { String() <- e }
+  }
+}
+
+// Writes v, checks the text, reads it back and writes again: the same text means the same variant
+fn trip[T](v: &T, want: &str, label: &str) where T is Serialize && T is Deserialize[T] {
+  expectStr(text(v).view(), want, label);
+  match json.fromJson[T](want) {
+    case let Ok(back) { expectStr(text(&back).view(), want, label); }
+    case let Err(e) { expectStr((String() <- e).view(), "<read>", label); }
+  }
+}
+
+fn main() i32 {
+  trip[Method](&Method.Get, "\"Get\"", "Get");
+  trip[Method](&Method.Head, "\"Head\"", "Head");
+  trip[Method](&Method.Post, "\"Post\"", "Post");
+  trip[Method](&Method.Put, "\"Put\"", "Put");
+  trip[Method](&Method.Delete, "\"Delete\"", "Delete");
+  trip[Method](&Method.Connect, "\"Connect\"", "Connect");
+  trip[Method](&Method.Options, "\"Options\"", "Options");
+  trip[Method](&Method.Trace, "\"Trace\"", "Trace");
+  trip[Method](&Method.Patch, "\"Patch\"", "Patch");
+  trip[Method](&Method.Other, "\"Other\"", "Other");
+
+  trip[Version](&Version.Http10, "\"Http10\"", "Http10");
+  trip[Version](&Version.Http11, "\"Http11\"", "Http11");
+  trip[Version](&Version.Http2, "\"Http2\"", "Http2");
+  trip[Version](&Version.Http3, "\"Http3\"", "Http3");
+
+  trip[BodyKind](&BodyKind.Empty, "\"Empty\"", "Empty");
+  trip[BodyKind](&BodyKind.Sized, "\"Sized\"", "Sized");
+  trip[BodyKind](&BodyKind.Unsized, "\"Unsized\"", "Unsized");
+
+  trip[ErrorKind](&ErrorKind.Malformed, "\"Malformed\"", "Malformed");
+  trip[ErrorKind](&ErrorKind.TooLarge, "\"TooLarge\"", "TooLarge");
+  trip[ErrorKind](&ErrorKind.Unsupported, "\"Unsupported\"", "Unsupported");
+  trip[ErrorKind](&ErrorKind.Closed, "\"Closed\"", "Closed");
+  trip[ErrorKind](&ErrorKind.TimedOut, "\"TimedOut\"", "TimedOut");
+  trip[ErrorKind](&ErrorKind.Refused, "\"Refused\"", "Refused");
+  trip[ErrorKind](&ErrorKind.Reset, "\"Reset\"", "Reset");
+  trip[ErrorKind](&ErrorKind.Overloaded, "\"Overloaded\"", "Overloaded");
+
+  trip[ErrorScope](&ErrorScope.Stream, "\"Stream\"", "Stream");
+  trip[ErrorScope](&ErrorScope.Connection, "\"Connection\"", "Connection");
+
+  // A name no variant has is an error, not a guess
+  match json.fromJson[Method]("\"Brew\"") {
+    case is Ok { expect(false, "an unknown method name was accepted"); }
+    case let Err(e) { expectStr((String() <- e).view(), "unknown variant (Method)", "unknown method name"); }
+  }
+  done()
+}
