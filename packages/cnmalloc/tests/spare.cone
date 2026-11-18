@@ -1,0 +1,53 @@
+// The 'now' spare test. At give-back 'now' a class keeps its last empty page until the next collect (a worker's
+// park, or the 1 ms timer), never on the free itself. A loop that allocates and frees one block makes no commit
+// or decommit calls after its first pair; after a quiet gap the timer has given the page back and the pool's
+// committed bytes are down to the floor.
+
+mod spare;
+
+import testing use *;
+import cnmalloc;
+import libc;
+
+extern {
+  fn @c(system) Sleep(ms: u32);
+}
+
+fn word(a: *u64, i: usize) u64 { *(((a as usize) + i * 8usize) as *u64) }
+
+// stats layout: 72 classes x 5, then the pool's committed bytes, empty, decommitted, reused, commit calls, decommit calls
+fn committed(s: *u64) u64 { word(s, 360usize) }
+fn commits(s: *u64) u64 { word(s, 364usize) }
+fn decommits(s: *u64) u64 { word(s, 365usize) }
+
+fn main() i32 {
+  let h = cnmalloc.cnm_make(1073741824usize, 0usize, 1000u64, 67108864usize);
+  let s = libc.calloc(512usize, 8usize) as *u64;
+  cnmalloc.cnm_stats(h, s, 512usize);
+  let floor = committed(s);
+
+  cnmalloc.cnm_free(h, cnmalloc.cnm_malloc(h, 100usize));     // the first pair
+  cnmalloc.cnm_stats(h, s, 512usize);
+  let c0 = commits(s);
+  let d0 = decommits(s);
+  expect(c0 >= 1u64, "the first allocation committed a page");
+
+  var i = 0usize;
+  while i < 200000usize {
+    cnmalloc.cnm_free(h, cnmalloc.cnm_malloc(h, 100usize));
+    i = i + 1usize;
+  }
+  cnmalloc.cnm_stats(h, s, 512usize);
+  // a timer firing across a tick edge mid-loop may take the page once; the loop itself takes none
+  expect(commits(s) - c0 <= 2u64, "one-block loop at now: no commit calls after the first pair");
+  expect(decommits(s) - d0 <= 2u64, "one-block loop at now: no decommit calls after the first pair");
+
+  Sleep(200u32);
+  cnmalloc.cnm_stats(h, s, 512usize);
+  expectUInt(committed(s), floor, "after a quiet gap the committed bytes are back to the floor");
+  expect(decommits(s) > d0, "the page was given back by a decommit");
+
+  libc.free(s as *u8);
+  cnmalloc.cnm_destroy(h);
+  done()
+}
