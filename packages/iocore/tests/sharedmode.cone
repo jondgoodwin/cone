@@ -1,0 +1,196 @@
+// The shared table's entry lock is shared/exclusive (shared.cone, the header):
+// a datagram's issue holds it SHARED ('lockShared'), everything else EXCLUSIVE
+// ('lock', and the Loop's unpublish inside 'lp.close'). Each order below is
+// forced by the threads' own handshakes, never by sleeping, so a failure is the
+// lock's:
+//
+// 1. Any number of shared takers are in at once (two on this thread), and an
+//    exclusive taker is in after them.
+// 2. An exclusive taker waits for a shared holder to let go.
+// 3. An exclusive taker that is waiting keeps new shared takers out: a shared
+//    taker that comes after the writer began waiting enters after the writer,
+//    so a stream of sends cannot starve a close.
+// 4. A shared taker waits for an exclusive holder to let go.
+// 5. The Loop's unpublish (lp.close) waits for a shared holder to let go, and
+//    a handle closed is refused by both takers.
+// 6. Waits are counted: the count rises for each acquisition that had to wait,
+//    and not for one that did not.
+
+mod sharedmode;
+
+import testing use *;
+import thread;
+import time use Instant, Duration;
+import iocore use *;
+
+// The handshakes between this thread and the others: atomics held by 'let'
+// globals, set in 'init'
+let holding: Atomic[u32];    // a thread is inside (shared or exclusive)
+let letGo: Atomic[u32];      // the holder is about to let go
+let seq: Atomic[u32];        // a count of who got in, in turn
+let writerAt: Atomic[u32];   // the number the writer got
+let readerAt: Atomic[u32];   // the number the late shared taker got
+let sawLetGo: Atomic[u32];   // what letGo was when the thread got in
+
+fn @initpure init() {
+  holding = Atomic[u32].of(0u32);
+  letGo = Atomic[u32].of(0u32);
+  seq = Atomic[u32].of(0u32);
+  writerAt = Atomic[u32].of(0u32);
+  readerAt = Atomic[u32].of(0u32);
+  sawLetGo = Atomic[u32].of(0u32);
+}
+
+struct Work is Sendable {
+  sh: Shared;
+  h: Handle;
+}
+
+fn reset() {
+  holding.store(0u32);
+  letGo.store(0u32);
+  seq.store(0u32);
+  writerAt.store(0u32);
+  readerAt.store(0u32);
+  sawLetGo.store(0u32);
+}
+
+// Wait until the table has counted more than c waits (or 5 s pass)
+fn waitCounted(sh: &Shared, c: u64) bool {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while sh.contended() <= c && Instant.now() < limit {thread.yieldNow();}
+  sh.contended() > c
+}
+
+fn waitFlag(f: &Atomic[u32]) bool {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while f.load() == 0u32 && Instant.now() < limit {thread.yieldNow();}
+  f.load() != 0u32
+}
+
+// Holds the entry shared until told to let go
+fn sharedHolder(w: Work) u32 {
+  if !w.sh.lockShared(w.h) {return 0u32;}
+  holding.store(1u32);
+  waitFlag(&letGo);
+  w.sh.unlockShared(w.h);
+  1u32
+}
+
+// Takes the entry exclusive, and notes whether the holder had let go
+fn writer(w: Work) u32 {
+  if !w.sh.lock(w.h) {return 0u32;}
+  sawLetGo.store(letGo.load());
+  writerAt.store(seq.add(1u32) + 1u32);
+  w.sh.unlock(w.h);
+  1u32
+}
+
+// Takes the entry shared, and notes its turn
+fn lateReader(w: Work) u32 {
+  if !w.sh.lockShared(w.h) {return 0u32;}
+  sawLetGo.store(letGo.load());
+  readerAt.store(seq.add(1u32) + 1u32);
+  w.sh.unlockShared(w.h);
+  1u32
+}
+
+// Holds the entry exclusive until told to let go
+fn exclusiveHolder(w: Work) u32 {
+  if !w.sh.lock(w.h) {return 0u32;}
+  holding.store(1u32);
+  waitFlag(&letGo);
+  w.sh.unlock(w.h);
+  1u32
+}
+
+// Holds the entry shared until the table has counted a wait (the Loop's
+// unpublish, on the main thread), then lets go
+fn holdUntilUnpublishWaits(w: Work) u32 {
+  if !w.sh.lockShared(w.h) {return 0u32;}
+  holding.store(1u32);
+  let c = w.sh.contended();
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while w.sh.contended() <= c && Instant.now() < limit {thread.yieldNow();}
+  letGo.store(1u32);
+  w.sh.unlockShared(w.h);
+  1u32
+}
+
+fn main() i32 {
+  initAll();
+  var lp = Loop.mustMake();
+  let sh = lp.share();
+  let u = lp.mustBindUdp(SocketAddr.localhost(0u16));
+
+  // 1. Shared takers together, then an exclusive one
+  expect(sh.lockShared(u), "a shared taker is in");
+  expect(sh.lockShared(u), "a second shared taker is in beside it");
+  sh.unlockShared(u);
+  sh.unlockShared(u);
+  expect(sh.lock(u), "an exclusive taker is in after both let go");
+  sh.unlock(u);
+  expect(sh.lockShared(u), "and a shared one after that");
+  sh.unlockShared(u);
+  expectUInt(sh.contended(), 0u64, "nothing waited, nothing counted");
+
+  // 2. An exclusive taker waits for a shared holder
+  reset();
+  {
+    let t1 = thread.start(Work(sh.clone(), u), &sharedHolder);
+    expect(waitFlag(&holding), "2: the shared holder is in");
+    let c = sh.contended();
+    let t2 = thread.start(Work(sh.clone(), u), &writer);
+    expect(waitCounted(&sh, c), "2: the exclusive taker is waiting, and counted");
+    expectUInt(u64.from(writerAt.load()), 0u64, "2: and not in");
+    letGo.store(1u32);
+    expectUInt(u64.from(t1.join()), 1u64, "2: the shared holder let go");
+    expectUInt(u64.from(t2.join()), 1u64, "2: the exclusive taker got in");
+    expectUInt(u64.from(sawLetGo.load()), 1u64, "2: after the holder let go");
+  }
+
+  // 3. A waiting exclusive taker keeps later shared takers out
+  reset();
+  {
+    let t1 = thread.start(Work(sh.clone(), u), &sharedHolder);
+    expect(waitFlag(&holding), "3: the shared holder is in");
+    let c = sh.contended();
+    let t2 = thread.start(Work(sh.clone(), u), &writer);
+    expect(waitCounted(&sh, c), "3: the exclusive taker is waiting");
+    let c2 = sh.contended();
+    let t3 = thread.start(Work(sh.clone(), u), &lateReader);
+    expect(waitCounted(&sh, c2), "3: the late shared taker is kept out, and counted");
+    expectUInt(u64.from(readerAt.load()), 0u64, "3: not in");
+    letGo.store(1u32);
+    expectUInt(u64.from(t1.join() + t2.join() + t3.join()), 3u64, "3: all three got in");
+    expectUInt(u64.from(writerAt.load()), 1u64, "3: the exclusive taker first");
+    expectUInt(u64.from(readerAt.load()), 2u64, "3: the late shared taker after it");
+  }
+
+  // 4. A shared taker waits for an exclusive holder
+  reset();
+  {
+    let t1 = thread.start(Work(sh.clone(), u), &exclusiveHolder);
+    expect(waitFlag(&holding), "4: the exclusive holder is in");
+    let c = sh.contended();
+    let t2 = thread.start(Work(sh.clone(), u), &lateReader);
+    expect(waitCounted(&sh, c), "4: the shared taker is waiting, and counted");
+    expectUInt(u64.from(readerAt.load()), 0u64, "4: and not in");
+    letGo.store(1u32);
+    expectUInt(u64.from(t1.join() + t2.join()), 2u64, "4: both got in");
+    expectUInt(u64.from(sawLetGo.load()), 1u64, "4: the shared taker after the holder let go");
+  }
+
+  // 5. The Loop's unpublish waits for a shared holder
+  reset();
+  {
+    let t1 = thread.start(Work(sh.clone(), u), &holdUntilUnpublishWaits);
+    expect(waitFlag(&holding), "5: the shared holder is in");
+    lp.close(u);
+    expectUInt(u64.from(letGo.load()), 1u64, "5: the close went on only after the holder let go");
+    expectUInt(u64.from(t1.join()), 1u64, "5: the holder was in");
+    expect(!sh.lockShared(u), "5: a closed handle is refused to a shared taker");
+    expect(!sh.lock(u), "5: and to an exclusive one");
+  }
+  done()
+}
