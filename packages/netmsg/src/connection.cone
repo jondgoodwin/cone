@@ -2,8 +2,10 @@
 // whose events arrive at its EventHandler. The same actor serves the three ways a
 // connection can be made, so an application is written once:
 //
-//   over UDP        a ConnectionCore drives the protocol; its packets go out through the
-//                   endpoint's socket and arrive from it
+//   over UDP        a ConnectionCore drives the protocol; its packets go out through its
+//                   own UdpSender (the endpoint's socket's sending side), awaited by the
+//                   connection's own worker, and arrive from the endpoint; it keeps its
+//                   own deadline with a timer of its own
 //   in-process      two Connections handed each other's handle deliver the
 //                   messages directly: no socket, no packets, no latency. This
 //                   is single player: the server and the player in one process
@@ -56,19 +58,26 @@ pub actor Connection is ValueSource {
 
   // over UDP
   addr: SocketAddr;
-  ep: Option[Endpoint];         // its packets go out through the endpoint's socket
-  reported: i64;                // the deadline the endpoint was last told of
+  ep: Option[Endpoint];         // told when the connection has ended
+  tx: UdpSender;                // the endpoint's socket's sending side (none for the other kinds)
+  outq: Deque[IoBuf];           // packets polled and not yet handed to the socket
+  parent: CancelGroup;          // the endpoint's group (a fresh one for the other kinds)
+  timer: CancelGroup;           // the armed timer's group, a child of 'parent'
+  timerGen: u32;                // which timer is the armed one
+  armed: i64;                   // the instant the timer will wake us; -1 none
+  tickQueued: bool;             // a tick for a deadline already due waits in our queue
 
   // in-process and simulated
   partner: Option[Connection];
   sim: LinkSim;                 // simulated: the link to the partner
 
   fn init(self: &new, kind: u32, id: u32, handler: EventHandler, cfg: NetConfig, session: u64, addr: SocketAddr,
-      ep: Option[Endpoint], link: LinkConfig, seed: u64) {
+      ep: Option[Endpoint], tx: UdpSender, parent: CancelGroup, link: LinkConfig, seed: u64) {
     *self = Self(kind: kind, id: id, handler: handler, window: 0u32, avail: 0u32,
       outbox: Deque[NetEvent](), waiting: 0usize, slots: Deque[PendingUpdate](), staleOut: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
       open: true, forced: false, forcedReason: CloseReason.Local,
-      addr: addr, ep: ep, reported: -1i64,
+      addr: addr, ep: ep, tx: tx, outq: Deque[IoBuf](), parent: parent,
+      timer: parent.child(), timerGen: 0u32, armed: -1i64, tickQueued: false,
       partner: None[Connection], sim: LinkSim.make(link, seed));
     if kind == connUdp {
       self.announce();
@@ -100,9 +109,15 @@ pub actor Connection is ValueSource {
     }
     if !peer.sendReliable(data) {
       self.fail(CloseReason.Overflow);
-      return;
+    } else {
+      self.reschedule();
     }
-    self.reschedule();
+    while true {
+      match outq.popFront() {
+        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        else { break; }
+      }
+    }
   }
 
   // The newest value of a latest-wins stream: sent in the next packet with
@@ -141,6 +156,12 @@ pub actor Connection is ValueSource {
   // End the connection: the other end is told
   pub async fn close(self) {
     self.closeNow();
+    while true {
+      match outq.popFront() {
+        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        else { break; }
+      }
+    }
   }
 
   // What the connection has measured: round trip time, loss, packets. All
@@ -165,6 +186,12 @@ pub actor Connection is ValueSource {
   // The handler wants no more events: end the connection (ValueSource)
   pub async fn stop(self, why: Ending) {
     self.closeNow();
+    while true {
+      match outq.popFront() {
+        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        else { break; }
+      }
+    }
   }
 
   // ------------------------------------------------------------------
@@ -174,6 +201,12 @@ pub actor Connection is ValueSource {
   // End it now and answer when the disconnect packets are handed to the socket
   async fn closeAndWait(self) u32 {
     self.closeNow();
+    while true {
+      match outq.popFront() {
+        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        else { break; }
+      }
+    }
     0u32
   }
 
@@ -191,12 +224,45 @@ pub actor Connection is ValueSource {
     peer.receive(&dg, Instant.now(), &mut evs);
     self.dispatch(evs);
     self.run();
+    while true {
+      match outq.popFront() {
+        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        else { break; }
+      }
+    }
   }
 
-  // Time to look at the connection (the endpoint's timer, or the simulation's)
+  // Time to look at the connection: a deadline already due (reschedule's message
+  // to itself), or the simulation's clock
   async fn tick(self) {
-    reported = -1i64;
+    tickQueued = false;
     self.run();
+    while true {
+      match outq.popFront() {
+        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        else { break; }
+      }
+    }
+  }
+
+  // The timer 'g' of generation 'gen' is for the instant 'at': when it comes, the
+  // protocol is polled if its deadline is due, or the timer is set again
+  async fn wake(self, at: i64, gen: u32, g: CancelGroup) {
+    let r = await aio.sleepUntilIn(Instant.fromNanos(at), IoLimits.within(g));
+    if slept(r) && gen == timerGen && open {
+      armed = -1i64;
+      if peer.nextDeadline().nanos() <= Instant.now().nanos() {
+        self.run();
+      } else {
+        self.reschedule();
+      }
+      while true {
+        match outq.popFront() {
+          case let Some(p) { let r2 = await tx.sendTo(addr, p); }
+          else { break; }
+        }
+      }
+    }
   }
 
   async fn inMessage(self, data: Bytes) {
@@ -346,10 +412,7 @@ pub actor Connection is ValueSource {
       if kind == connSim {
         sim.send(now, p);
       } else {
-        match &ep {
-          case let &Some[Endpoint](e) { e.send(addr, p); }
-          else {}
-        }
+        outq.push(p);
       }
     }
     if kind == connSim {
@@ -389,16 +452,24 @@ pub actor Connection is ValueSource {
     }
   }
 
-  // Tell the endpoint when the connection next needs a tick
+  // Keep the connection's own deadline: a deadline already due is a message to
+  // ourselves (behind those waiting; no timer); one later than the armed timer
+  // needs nothing, because the timer finds it when it comes; otherwise the
+  // armed timer is let go and one is armed for the earlier instant
   fn reschedule(self) {
     if kind != connUdp || !open {return;}
     let at = peer.nextDeadline().nanos();
-    if at != reported {
-      reported = at;
-      match &ep {
-        case let &Some[Endpoint](e) { e.deadline(id, at); }
-        else {}
+    if at <= Instant.now().nanos() {
+      if !tickQueued {
+        tickQueued = true;
+        selfactor.tick();
       }
+    } else if armed < 0i64 || at < armed {
+      let c = timer.cancel();
+      timer = parent.child();
+      timerGen = timerGen + 1u32;
+      armed = at;
+      selfactor.wake(at, timerGen, timer);
     }
   }
 
@@ -406,6 +477,7 @@ pub actor Connection is ValueSource {
   fn finish(self, reason: CloseReason) {
     if !open {return;}
     open = false;
+    let c = timer.cancel();
     // A value still waiting for credit is dropped: nothing follows Left
     while slots.len() > 0usize {
       slots.popFront();
@@ -437,8 +509,8 @@ pub struct ConnectionPair {
 pub fn pairInProcess(ha: EventHandler, idA: u32, hb: EventHandler, idB: u32) ConnectionPair {
   let cfg = NetConfig.defaults();
   let none = SocketAddr.localhost(0u16);
-  let a = Connection(connDirect, idA, ha, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
-  let b = Connection(connDirect, idB, hb, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
+  let a = Connection(connDirect, idA, ha, cfg, 0u64, none, None[Endpoint], UdpSender.none(), CancelGroup.make(), LinkConfig.perfect(), 0u64);
+  let b = Connection(connDirect, idB, hb, cfg, 0u64, none, None[Endpoint], UdpSender.none(), CancelGroup.make(), LinkConfig.perfect(), 0u64);
   a.link(b);
   b.link(a);
   ConnectionPair(a, b)
@@ -489,8 +561,8 @@ fn simMain(var x: SimArgs) u32 {
 pub fn pairSimulated(cfg: NetConfig, toB: LinkConfig, toA: LinkConfig, seed: u64, ha: EventHandler, idA: u32, hb: EventHandler, idB: u32) SimulatedPair {
   let none = SocketAddr.localhost(0u16);
   let session = 0x5151515151515151u64;
-  let a = Connection(connSim, idA, ha, cfg, session, none, None[Endpoint], toB, seed);
-  let b = Connection(connSim, idB, hb, cfg, session, none, None[Endpoint], toA, seed ^ 0xA5A5A5A5A5A5A5A5u64);
+  let a = Connection(connSim, idA, ha, cfg, session, none, None[Endpoint], UdpSender.none(), CancelGroup.make(), toB, seed);
+  let b = Connection(connSim, idB, hb, cfg, session, none, None[Endpoint], UdpSender.none(), CancelGroup.make(), toA, seed ^ 0xA5A5A5A5A5A5A5A5u64);
   a.link(b);
   b.link(a);
   var stopTx: Sender[u32];
