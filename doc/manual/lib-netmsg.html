@@ -204,7 +204,10 @@ fn main() {
 		admission, but at most once a second for one socket address; a replacement sooner is denied and the old connection stays.</li>
 	<li>Latest-wins streams: 64 a connection each way (<span class="pre">maxStreams</span>). An update on a 65th stream from the
 		peer, or one waiting for a handler that gives no credit, is dropped and counted in
-		<span class="pre">ConnectionStats.streamsRefused</span>; the connection is not closed for it.</li>
+		<span class="pre">ConnectionStats.streamsRefused</span>; the connection is not closed for it. The tables are fixed
+		arrays of 64 inside the connection, so a stream's first value allocates nothing; a stream keeps its place in them for the
+		connection's life (a connection that is in-process, with no core, counts the streams it has heard of the same way, so a
+		65th stream ever heard of is refused even if the handler has taken the others' values).</li>
 	</ul>
 	<p>The handshake's cookie key is 128 bits from the operating system's random source. A server whose clients share an
 		address (a benchmark's, all on 127.0.0.1) or arrive in a crowd raises <span class="pre">maxPerAddress</span> and
@@ -280,7 +283,7 @@ fn main() {
 		malformed); <span class="pre">poll(now, out, events)</span> appends the packets to send (<span class="pre">Packets</span>, a list of IoBufs, each one datagram) and the events that happened;
 		<span class="pre">nextDeadline()</span> says when to call <span class="pre">poll</span> next; and
 		<span class="pre">rtt()</span>, <span class="pre">lossPermille()</span>, <span class="pre">stats()</span>, <span class="pre">close()</span>. The
-		events are <span class="pre">CoreEvent.Reliable{data}</span>, <span class="pre">CoreEvent.Latest{stream, data}</span> and
+		events are <span class="pre">CoreEvent.Reliable{data}</span>, <span class="pre">CoreEvent.Latest{stream, data, pos}</span> (<span class="pre">pos</span>: the stream's place among those the connection has heard of, fixed for its life) and
 		<span class="pre">CoreEvent.Closed{reason}</span>. <span class="pre">ChallengeGate</span> is the server's side of the handshake
 		(<span class="pre">handle(addr, datagram, now, reply)</span> answers a <span class="pre">GateVerdict</span> and puts the datagram to send back into the <span class="pre">streams.Writer</span> <span class="pre">reply</span>) and
 		<span class="pre">ClientHandshake</span> the client's. <span class="pre">SimPair</span> joins two ConnectionCores across two
