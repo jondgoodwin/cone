@@ -2608,3 +2608,222 @@ pub struct OneshotReceiver[T: Sendable] is Sendable {
     oneRelease[T](slot);
   }
 }
+
+// ---------------------------------------------------------------------------
+// LATEST-VALUE CELLS: one writer keeps replacing a value of bytes, and readers
+// on any threads take the newest, never an older one and never a torn one.
+//
+//   var w: LatestWriter;
+//   var r: LatestReader;
+//   w, r = latestCell(1024usize);      // values of at most 1024 bytes
+//   w.put(bytes);                      // false, and nothing stored, if longer
+//   var out = Array[u8, 1024]() <- fill 0u8;
+//   match r.readNewer(seen, &mut out) { // newer than 'seen', copied into 'out'
+//     case let Some(got) { seen = got.version; /* out[0 .. got.len] */ }
+//     case is None[CellRead] {}
+//   }
+//
+// What it is for: state that is only ever wanted fresh (a world's state sent to
+// each of thousands of connections, a newest frame, an audio level). A writer
+// never waits for a reader, and a reader never waits for the writer or another
+// reader. A value no reader took before the next put is simply never seen:
+// latest wins, as a channel's would not.
+//
+// How: two slots, written alternately, each guarded by a sequence number, as
+// the Linux kernel's seqlock is. Version v goes in slot v & 1, the one not
+// holding the newest. 'put' stores the slot's seq as 2v - 1 (odd: being
+// written), then the length, the time and the data, then 2v, then the cell's
+// 'latest' as v. A reader loads 'latest' = v, the slot's seq, which must be
+// 2v, copies, and loads the seq again: if it is not the same, a put reached
+// the slot during the copy (it takes two puts after the reader began, so only
+// a reader that stood still for two ticks sees it), and the reader starts
+// again. After three tries it answers None; the value is still there for the
+// next call.
+//
+// The memory: every shared word is an atomic u64, stored with Release and
+// loaded with Acquire, which is what makes the copy safe without a fence (core
+// has no fence intrinsic): a reader that has loaded any word of a newer put
+// synchronises with that word's Release store, which follows the odd seq
+// store, so its second seq load sees a different seq and it retries. The data
+// is copied a word at a time for that reason, 8 bytes in little-endian order,
+// the last word padded with zero. On x86 the Release stores and Acquire loads
+// are plain moves; they still stop the compiler reordering or merging them.
+//
+// The pieces: 'LatestWriter' (Move; Sendable, so a zone handoff moves it) and
+// 'LatestReader' (copyable: each copy is an owner of the cell, as an 'Arc' is;
+// 'LatestWriter.reader()' makes another). They share one 'Arc' of a block
+// allocated once, 2 * (capacity + 24) bytes, rounded to words, and freed when
+// the last of them goes: no value is ever freed while a reader holds it.
+// ---------------------------------------------------------------------------
+
+// What a successful readNewer found: the version (1, 2, ... counting puts),
+// the length of the value now in 'out', and when its writer stored it
+pub struct CellRead {
+  pub version: u64;
+  pub len: usize;
+  pub writtenAt: time.Instant;
+}
+
+// Every shared word of a cell goes through these two. The orderings are the
+// whole proof of the copy, and the tests' mutants change exactly these bodies.
+fn cellStore(p: *u64, v: u64) inline {
+  mem.atomicStore[u64](p, v, MemOrder.Release);
+}
+fn cellLoad(p: *u64) u64 inline {
+  mem.atomicLoad[u64](p, MemOrder.Acquire)
+}
+
+// The block: word 0 is 'latest'; then two slots of 3 + dw words, each its
+// seq, its length, the writer's Instant in nanoseconds, and dw data words
+struct CellStore {
+  words: *u64;
+  cap: usize;
+  dw: usize;                       // data words in a slot: cap rounded up to 8s, over 8
+
+  fn make(capacity: usize) CellStore {
+    let dw = (capacity + 7usize) / 8usize;
+    let n = 1usize + 2usize * (3usize + dw);
+    let p = libc.calloc(n, 8usize) as *u64;
+    if p as usize == 0usize {
+      die("sync: out of memory for a latest-value cell\n");
+    }
+    CellStore(p, capacity, dw)
+  }
+
+  // The first word of slot s (0 or 1)
+  fn slot(self: &, s: u64) *u64 {
+    ((words as *u8) + 8usize * (1usize + usize.from(s) * (3usize + dw))) as *u64
+  }
+
+  fn word(base: *u64, i: usize) *u64 {
+    ((base as *u8) + 8usize * i) as *u64
+  }
+
+  fn final(self: &uni) {
+    libc.free(words as *u8);
+  }
+}
+
+// The writer's end: one, and a move type, so there is one writer
+pub struct LatestWriter is Move, Sendable {
+  store: Arc[imm, CellStore];
+  ver: u64;
+
+  // Store a new value, which readers can have from now on: false, and nothing
+  // stored, when it is longer than the capacity. Never waits, never allocates.
+  pub fn put(self: &mut, data: &Array[u8]) bool {
+    let n = data.len();
+    if n > store.cap {
+      return false;
+    }
+    let v = ver + 1u64;
+    let base = store.slot(v & 1u64);
+    cellStore(CellStore.word(base, 0usize), 2u64 * v - 1u64);
+    cellStore(CellStore.word(base, 1usize), u64.from(n));
+    cellStore(CellStore.word(base, 2usize), u64.from(time.Instant.now().nanos()));
+    var i = 0usize;
+    var w = 0usize;
+    while i < n {
+      var x = 0u64;
+      var j = 0usize;
+      while j < 8usize && i + j < n {
+        x = x | (u64.from(data[i + j]) << u64.from(8usize * j));
+        j = j + 1usize;
+      }
+      cellStore(CellStore.word(base, 3usize + w), x);
+      w = w + 1usize;
+      i = i + 8usize;
+    }
+    cellStore(CellStore.word(base, 0usize), 2u64 * v);
+    cellStore(store.words, v);
+    ver = v;
+    true
+  }
+
+  // Another reader of this cell
+  pub fn reader(self: &) LatestReader {
+    LatestReader(store)
+  }
+
+  // The newest version put: 0 before any
+  pub fn version(self: &) u64 {
+    ver
+  }
+
+  // The longest value 'put' takes, in bytes
+  pub fn capacity(self: &) usize {
+    store.cap
+  }
+}
+
+// A reader's end: copyable, each copy an owner of the cell, on any thread
+pub struct LatestReader is Sendable {
+  store: Arc[imm, CellStore];
+
+  // The newest complete version: 0 when nothing has been put
+  pub fn version(self: &) u64 {
+    cellLoad(store.words)
+  }
+
+  // The newest value, copied into 'out', if its version is newer than 'seen'.
+  // None when nothing is newer; when 'out' is shorter than the value; or when
+  // the writer put twice during each of three tries at the copy (call again).
+  // 'out' holds scratch after a None, and its first 'len' bytes after a Some.
+  pub fn readNewer(self: &, seen: u64, out: &mut Array[u8]) Option[CellRead] {
+    var tries = 0u32;
+    var res = None[CellRead];
+    while tries < 3u32 {
+      tries = tries + 1u32;
+      let v = cellLoad(store.words);
+      if v <= seen {
+        return None[CellRead];
+      }
+      let base = store.slot(v & 1u64);
+      let s1 = cellLoad(CellStore.word(base, 0usize));
+      if s1 != 2u64 * v {
+        continue;
+      }
+      let len = usize.from(cellLoad(CellStore.word(base, 1usize)));
+      let at = cellLoad(CellStore.word(base, 2usize));
+      let fits = len <= store.cap;
+      let room = len <= out.len();
+      if fits && room {
+        var i = 0usize;
+        var w = 0usize;
+        while i < len {
+          let x = cellLoad(CellStore.word(base, 3usize + w));
+          var j = 0usize;
+          while j < 8usize && i + j < len {
+            out[i + j] = u8.from((x >> u64.from(8usize * j)) & 255u64);
+            j = j + 1usize;
+          }
+          w = w + 1usize;
+          i = i + 8usize;
+        }
+      }
+      let s2 = cellLoad(CellStore.word(base, 0usize));
+      if s2 != s1 {
+        continue;
+      }
+      if !fits || !room {
+        // Not torn (the seq held), so the length is the value's own: the
+        // value is longer than the caller's room
+        return None[CellRead];
+      }
+      res = Some[CellRead](CellRead(v, len, time.Instant.fromNanos(i64.from(at))));
+      tries = 3u32;
+    }
+    res
+  }
+
+  // The longest value the cell takes, in bytes
+  pub fn capacity(self: &) usize {
+    store.cap
+  }
+}
+
+// A new cell holding values of at most 'capacity' bytes: its writer, and a reader
+pub fn latestCell(capacity: usize) LatestWriter, LatestReader {
+  let store = Arc[imm, CellStore](CellStore.make(capacity));
+  LatestWriter(store, 0u64), LatestReader(store)
+}
