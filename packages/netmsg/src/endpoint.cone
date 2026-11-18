@@ -59,22 +59,22 @@ struct ConnectionSlot {
   conn: Connection;
   session: u64;
   ip: String;              // the address its peer counts under (ipGroup)
+  replacedAt: i64;         // when this connection replaced one of the same socket address; -1 it did not
 }
 
 // Where each connection's slot is in 'slots', by the other end's address
 alias SlotsByAddr = Dict[SocketAddr, usize];
 
-// What a server holds of one IP address (ipGroup): its connections, and when it
-// last replaced one with a new session (-1 never)
+// What a server holds of one IP address (ipGroup): its connections
 struct AddrState {
   conns: u32;
-  replacedAt: i64;
 }
 
 // The AddrState of each IP address that has a connection
 alias AddrStates = Dict[String, AddrState];
 
-// Replacements of a connection by a new session, from one IP address, are this far apart
+// Replacements of a connection by a new session, from one socket address (IP and
+// port: clients behind one NAT have addresses of their own), are this far apart
 const replaceGapNs = 1000000000i64;
 
 // The admission bucket holds this many seconds of NetConfig.admitRate (50 a second, a burst of 100)
@@ -178,7 +178,7 @@ pub actor Endpoint {
   gate: ChallengeGate;
   slots: List[ConnectionSlot];
   byAddr: SlotsByAddr;          // the slot's index in 'slots', for each slot's address
-  byIp: AddrStates;             // each IP address's connections and last replacement
+  byIp: AddrStates;             // each IP address's connection count
   tokens: i64;                  // the admission bucket, in thousandths of a connection
   refilled: i64;                // the instant 'tokens' was last brought up to date
   nextId: u32;
@@ -454,7 +454,7 @@ pub actor Endpoint {
   // A client proved it receives at its address: open its connection, or
   // answer a Response that has already been taken
   // (a new session from an address that has a connection replaces it, at most
-  // once a second for an IP address; a new address is admitted under maxClients,
+  // once a second for a socket address; a new address is admitted under maxClients,
   // maxPerAddress and the admission rate, or told it is denied)
   fn admit(self, from: SocketAddr, session: u64, accept: IoBuf, response: &Array[u8]) {
     let now = Instant.now().nanos();
@@ -470,7 +470,8 @@ pub actor Endpoint {
       // The same address, a new session: the old connection is dead, if the
       // address has not just replaced one (the old one stays, and the client
       // asks again)
-      if !self.mayReplace(ip.view(), now) {
+      let last = slots[k].replacedAt;
+      if last >= 0i64 && now - last < replaceGapNs {
         self.transmit(from, ChallengeGate.denied(ChallengeGate.saltOf(response)));
         return;
       }
@@ -485,22 +486,19 @@ pub actor Endpoint {
     nextId = nextId + 1u32;
     let conn = Connection(connUdp, id, handler, cfg, session, from,
       Some[Endpoint](selfactor), sock.sender(), group.child(), LinkConfig.perfect(), 0u64);
-    self.addSlot(from, id, conn, session, ip.view());
-    if replaced {
-      self.markReplaced(ip.view(), now);
-    }
+    self.addSlot(from, id, conn, session, ip.view(), if replaced {now} else {-1i64});
     self.transmit(from, accept);
   }
 
   // Put a connection in the table, and count it against its IP address
-  fn addSlot(self, addr: SocketAddr, id: u32, conn: Connection, session: u64, ip: &str) {
+  fn addSlot(self, addr: SocketAddr, id: u32, conn: Connection, session: u64, ip: &str, replacedAt: i64) {
     byAddr.insert(addr, slots.len());
-    slots.push(ConnectionSlot(addr, id, conn, session, String.from(ip)));
+    slots.push(ConnectionSlot(addr, id, conn, session, String.from(ip), replacedAt));
     match byIp.getMut(ip) {
       case let Some(a) { a.conns = a.conns + 1u32; return; }
       else {}
     }
-    byIp.insert(String.from(ip), AddrState(1u32, -1i64));
+    byIp.insert(String.from(ip), AddrState(1u32));
   }
 
   // A connection of this IP address has gone: its entry goes with the last one
@@ -528,27 +526,12 @@ pub actor Endpoint {
     0usize
   }
 
-  // Whether this IP address may replace a connection now: not within a second of its last replacement
-  fn mayReplace(self: &, ip: &str, now: i64) bool {
-    match byIp.get(ip) {
-      case let Some(a) { return a.replacedAt < 0i64 || now - a.replacedAt >= replaceGapNs; }
-      else {}
-    }
-    true
-  }
-
-  // Note that this IP address has just replaced a connection
-  fn markReplaced(self, ip: &str, now: i64) {
-    match byIp.getMut(ip) {
-      case let Some(a) { a.replacedAt = now; }
-      else {}
-    }
-  }
-
   // Take one connection's worth from the admission bucket, refilled by the time
   // since it was last looked at at NetConfig.admitRate a second and holding no
-  // more than burstSeconds of it. False when it holds less than one
+  // more than burstSeconds of it. False when it holds less than one. A rate of 0
+  // is no limit: always true
   fn takeToken(self, now: i64) bool {
+    if cfg.admitRate == 0u32 {return true;}
     let per = i64.from(cfg.admitRate);
     let longest = burstSeconds * 1000000000i64;
     let gap = now - refilled;
@@ -580,7 +563,7 @@ pub actor Endpoint {
         let conn = Connection(connUdp, id, handler, cfg, dialer.sessionId(), remote,
           Some[Endpoint](selfactor), sock.sender(), group.child(), LinkConfig.perfect(), 0u64);
         let ip = ipGroup(&remote);
-        self.addSlot(remote, id, conn, dialer.sessionId(), ip.view());
+        self.addSlot(remote, id, conn, dialer.sessionId(), ip.view(), -1i64);
         dialing = false;
         // The datagram that connected us may be a payload packet
         conn.packet(data);

@@ -1,20 +1,24 @@
 // What one address, or a crowd, can make a server spend. A server holds at most
-// NetConfig.maxPerAddress (4) connections from one IP address, admits at most
-// NetConfig.admitRate (50) new connections a second in a bucket of twice that,
-// and lets one IP address replace a connection with a new session (a reconnect)
-// once a second. Past a limit a client hears the refusal it hears at maxClients
-// (Left, Refused) and the server hears nothing. Over real sockets on loopback:
-// every client comes from 127.0.0.1 (or ::1), told apart by port, which is what
-// netbench's do.
+// NetConfig.maxPerAddress (32) connections from one IP address, admits at most
+// NetConfig.admitRate (50, and 0 is no limit) new connections a second in a
+// bucket of twice that, and lets one socket address (IP and port) replace a
+// connection with a new session (a reconnect) once a second. Past a limit a
+// client hears the refusal it hears at maxClients (Left, Refused) and the
+// server hears nothing. Over real sockets on loopback: every client comes from
+// 127.0.0.1 (or ::1), told apart by port, which is what netbench's do. The
+// tests set maxPerAddress to 4 to meet it with few clients.
 //   - a fifth client from one address is refused, and a place is free again
 //     when one of the four leaves;
 //   - the same over IPv6 loopback;
 //   - with admitRate 1 (a burst of 2), a crowd of clients is admitted two and
 //     a second's worth at a time, and a pause refills the bucket;
+//   - with admitRate 0, the crowd is all admitted;
 //   - a reconnecting client replaces its old connection once, a second
 //     reconnect at once is denied and leaves the connection it would have
 //     replaced alone, a later one is let in, and a reconnect gets in when the
 //     admission bucket is empty;
+//   - the replacement limit is by socket address: another port on the same IP
+//     replaces its own connection at once;
 //   - two servers have different cookie keys: the same client address and
 //     salt earn different sessions.
 
@@ -180,9 +184,10 @@ fn main() i32 {
     var txS: Sender[NetEvent];
     var rxS: Receiver[NetEvent];
     txS, rxS = Channel[NetEvent].make();
-    let cfg = NetConfig.defaults();
-    expectUInt(u64.from(cfg.maxPerAddress), 4u64, "the default is four connections from one address");
+    var cfg = NetConfig.defaults();
+    expectUInt(u64.from(cfg.maxPerAddress), 32u64, "the default is 32 connections from one address (carrier-grade NAT, proxies)");
     expectUInt(u64.from(cfg.admitRate), 50u64, "and 50 admissions a second");
+    cfg.maxPerAddress = 4usize;
     let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
     let to = SocketAddr.localhost(server.port);
     var held = List[BoundEndpoint]();
@@ -214,7 +219,8 @@ fn main() i32 {
     var txS: Sender[NetEvent];
     var rxS: Receiver[NetEvent];
     txS, rxS = Channel[NetEvent].make();
-    let cfg = NetConfig.defaults();
+    var cfg = NetConfig.defaults();
+    cfg.maxPerAddress = 4usize;
     let server = mustListen(SocketAddr.v6Localhost(0u16), cfg, channelHandler(txS));
     let to = SocketAddr.v6Localhost(server.port);
     var held = List[BoundEndpoint]();
@@ -307,6 +313,55 @@ fn main() i32 {
     oldLeft.append(":local");
     expect(joinedWhenLeft(c.view(), d.view(), oldLeft.view()).len() > 0usize, "the connection the denied one met was alive until this replaced it");
     shutAll(&mut held);
+    server.endpoint.shutdown();
+  }
+
+  // admitRate 0 is no limit: the crowd is all admitted
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    var cfg = NetConfig.defaults();
+    cfg.maxPerAddress = 100usize;
+    cfg.admitRate = 0u32;
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.localhost(server.port);
+    var held = List[BoundEndpoint]();
+    var joined = 0u32;
+    var i = 0usize;
+    while i < 12usize {
+      if dial(to, cfg, &mut held).view() == "J1" {joined = joined + 1u32;}
+      i = i + 1usize;
+    }
+    expectUInt(u64.from(joined), 12u64, "with admitRate 0 all 12 clients are admitted");
+    shutAll(&mut held);
+    server.endpoint.shutdown();
+  }
+
+  // The replacement limit is by socket address: two ports of one IP address each
+  // replace their own connection at once, and one port not twice
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    let cfg = NetConfig.defaults();
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.localhost(server.port);
+    let rawA = newRaw();
+    let rawB = newRaw();
+    require(handshakeWith(rawA, to, 0x1111111111111111u64) != 0u64, "the first port's session");
+    expectStr(next(&mut rxS, 3000i64).view(), "J1", "joins");
+    require(handshakeWith(rawB, to, 0x2222222222222222u64) != 0u64, "the second port's session");
+    expectStr(next(&mut rxS, 3000i64).view(), "J2", "joins");
+    expect(handshakeWith(rawA, to, 0x3333333333333333u64) != 0u64, "the first port replaces its connection");
+    let a = next(&mut rxS, 3000i64);
+    let b = next(&mut rxS, 3000i64);
+    expect(joinedWhenLeft(a.view(), b.view(), "L1:local").view() == "J3", "the first is replaced by the third");
+    expect(handshakeWith(rawB, to, 0x4444444444444444u64) != 0u64, "the second port replaces its own at once: it is another socket address");
+    let c = next(&mut rxS, 3000i64);
+    let d = next(&mut rxS, 3000i64);
+    expect(joinedWhenLeft(c.view(), d.view(), "L2:local").view() == "J4", "the second is replaced by the fourth");
+    expectUInt(handshakeWith(rawA, to, 0x5555555555555555u64), 0u64, "the first port again within a second is denied");
     server.endpoint.shutdown();
   }
 

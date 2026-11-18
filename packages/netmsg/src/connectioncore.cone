@@ -73,24 +73,27 @@ const notFound = 0xFFFFFFFFusize;
 // The knobs of a connection, the same on both ends, and the limits a server puts
 // on its peers. The limits are what a misbehaving peer can make a server spend:
 //   maxClients     connections a server holds at once (64)
-//   maxPerAddress  of those, from one IP address (4); an IPv6 address counts by
+//   maxPerAddress  of those, from one IP address (32); an IPv6 address counts by
 //                  its /64 (its first four groups), and an IPv4-mapped IPv6
-//                  address by the IPv4 address in it
+//                  address by the IPv4 address in it. It is not lower because
+//                  carrier-grade NAT puts many users behind one IPv4 address,
+//                  and a proxy in front of the server does the same
 //   admitRate      new connections admitted a second across the whole server
 //                  (50), in a bucket that holds twice that many, so a burst of
-//                  100 gets in at once and the rest as it refills; 0 admits
-//                  nobody (a server that wants no limit sets a large rate)
-//   a session from an address that already has a connection replaces it (a
-//   reconnect); replacements from one IP address are held to one a second
+//                  100 gets in at once and the rest as it refills; 0 is no
+//                  limit
+//   a session from a socket address (IP and port) that already has a connection
+//   replaces it (a reconnect); replacements from one socket address are held to
+//   one a second. A replacement takes no place and no admission
 //   maxStreams     latest-wins streams one connection carries each way (64)
 // A client past a limit hears the same refusal as at maxClients (Left, Refused).
 // A server that raises maxClients to thousands must raise the others beside it
 // when its clients share addresses: netbench's all come from 127.0.0.1, and
 // at 50 a second 1,000 to 5,000 of them would take 20 to 100 seconds to join, so
 // netbench, and any measurement that starts clients from one machine, sets
-// maxPerAddress and admitRate wherever it sets maxClients. The defaults stay
-// for a server on the internet: a limit that tests never meet is one a server
-// behind a proxy meets first, so loopback has no exemption.
+// maxPerAddress (to its client count or more) and admitRate (to 0) wherever it
+// sets maxClients. A limit that tests never meet is one a server behind a proxy
+// meets first, so loopback has no exemption.
 pub struct NetConfig {
   pub maxPacket: usize;       // the largest datagram sent, bytes (1200)
   pub goodRate: u32;          // packets a second sent in good conditions (30)
@@ -102,11 +105,11 @@ pub struct NetConfig {
   pub connectRetryMs: i64;    // a handshake packet is repeated this often (250)
   pub connectTimeoutMs: i64;  // a handshake that takes this long has failed (5000)
   pub maxClients: usize;      // a server's connections (64)
-  pub maxPerAddress: usize;   // a server's connections from one IP address, IPv6 by its /64 (4)
+  pub maxPerAddress: usize;   // a server's connections from one IP address, IPv6 by its /64 (32)
   pub admitRate: u32;         // new connections a server admits a second, with a burst of twice that (50)
 
   pub fn defaults() NetConfig {
-    NetConfig(1200usize, 30u32, 10u32, 250i64, 100i64, 10000i64, 40i64, 250i64, 5000i64, 64usize, 4usize, 50u32)
+    NetConfig(1200usize, 30u32, 10u32, 250i64, 100i64, 10000i64, 40i64, 250i64, 5000i64, 64usize, 32usize, 50u32)
   }
 }
 
