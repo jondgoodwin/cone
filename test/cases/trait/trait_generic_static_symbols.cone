@@ -1,0 +1,37 @@
+// A generic trait's instance has a symbol for a static only when something
+// defines or calls it. 'Maker[T].make' is a requirement with no body: nothing
+// defines it, so no 'declare' stands for it in the object (the implementers'
+// own 'make' are what run). 'Maker[T].dflt' has a default body, is the trait's
+// own, and is generated and run. A bodiless static was once declared for every
+// instance of a generic trait.
+//
+// Verdict: run. Basis: compiler/c/genllvm/genllvm.c, genlTraitSkips.
+
+mod trait_generic_static_symbols;
+
+import stdio use *;
+
+trait Maker[T] {
+  fn make() T;
+  fn dflt() i32 { 7i32 }
+}
+
+struct Num is Maker[Num] {
+  v: i32;
+  fn make() Num { Num(40i32) }
+}
+
+struct Duo[T] is Maker[Duo[T]] if T is Maker[T] {
+  a: T;
+  b: T;
+  fn make() Duo[T] where T is Maker[T] { Duo[T](T.make(), T.make()) }
+}
+
+fn build[T]() T where T is Maker[T] { T.make() }
+fn viaDefault[T]() i32 where T is Maker[T] { Maker[T].dflt() }
+
+fn main() {
+  let d = build[Duo[Num]]();
+  print <- "made ", d.a.v + d.b.v, "\n";
+  print <- "default ", viaDefault[Num](), "\n";
+}

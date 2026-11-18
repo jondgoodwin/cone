@@ -3550,6 +3550,11 @@ def run_test(session: Session, file: Path, bless: bool, pkg: Package | None = No
             problems.append("stderr differs:\n" + indent("\n".join(diff), "  "))
     if problems and stderr.strip() and not err_checked:
         problems.append("stderr:\n" + indent(show_stderr(shown_stderr, exe), "  "))
+    if bless:
+        # Said, not silent: --bless writes only what is missing
+        kept = (f"kept the existing expected file {shown(expected_path)};"
+                f" delete it to re-bless")
+        return not problems, "\n".join([kept] + problems)
     return not problems, "\n".join(problems)
 
 
