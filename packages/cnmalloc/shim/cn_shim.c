@@ -12,7 +12,7 @@
 //
 // Build: /D_ACRTIMP= (else a C caller's malloc is dllimport and the swap silently does not happen), /MD.
 // Variants (shim/build-cn.ps1): -DCN_HOOKS adds the test hooks of the second design (a function called between a
-// thread's page load and its compare-and-swap, after a fill's compare-and-swap, after a fetch_or, and inside a detach and
+// thread's page load and its compare-and-swap, after an allocation's or a fill's compare-and-swap, after a fetch_or, and inside a detach and
 // a retire) and a peek at a page's words; -DCN_DEBUG makes a double free abort (or call the handler a test installs).
 #include <windows.h>
 #include <intrin.h>
@@ -222,6 +222,7 @@ restart:;
             }
             continue;
           }
+          LF_HOOK_TAKE(c, bit);                         // tests only (CN_HOOKS; row 532): a park point between the swap and g2
           uint64_t g2 = P->genclass;
           if (g2 != g1) {                               // Rule G: the page changed life; give the bit back, start again
             if (g_stats) lf_count(&L->st[9]);
@@ -784,7 +785,8 @@ __declspec(dllexport) void cnmalloc_lfSetHooks(void (*pre)(size_t, uint64_t), vo
   cnm_lf_set_hooks(h, (void*)detach, (void*)retire, (void*)claim, (void*)after);
 }
 // (row 506) take: in lf_fill, after a successful multi-bit compare-and-swap and before the g2 load, with the class and
-// the bits taken; group: in a grouped return, right after each group's fetch_or
+// the bits taken; (row 532) also in lf_alloc, after its single-cell compare-and-swap and before its g2 load, with the one
+// bit taken; group: in a grouped return, right after each group's fetch_or
 __declspec(dllexport) void cnmalloc_lfSetMultiHooks(void (*take)(size_t, uint64_t), void (*group)(size_t)) {
   H();
   g_hookTake = take;
