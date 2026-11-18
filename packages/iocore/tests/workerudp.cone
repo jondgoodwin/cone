@@ -1,0 +1,384 @@
+// UDP waiting on the worker side (shared.cone, UDP ON THE WORKER PORT), behind
+// the Loop's switch 'setWorkerPort', with a port of the test's own and no
+// actors: the test is the waiter on the port, as the actors runtime's poller will
+// be, and hands what it takes to the table ('udpReady' on Linux, an epoll
+// event; 'udpCompleted' on Windows, a completion). Sockets bound after the
+// switch are registered with the test's port, and a datagram operation that
+// has to wait is listed in the table, never on the Loop.
+//
+// 1. A receive that finds nothing waits (issueWaiting); the datagram sent
+//    afterwards answers it, once, with the sender and the bytes.
+// 2. The same for a batch receive: the answer holds the batch.
+// 3. A receive whose datagram is already there is answered where it is issued.
+// 4. A deadline on a batch receive that nothing meets: endWaiting at the
+//    deadline answers TimedOut with the batch back (Windows: after the abort's
+//    completion, no grace: the batch comes back on every path); a second end
+//    finds it answered.
+// 5. A cancel: Cancelled, the buffer back.
+// 6. Send order after EAGAIN: a send held waiting (Linux; the seam
+//    holdSends), a second behind it though the socket would take it, and the
+//    edge sends them in order, so the receiver sees them in order. (Windows
+//    has no such wait: its kernel orders overlapped sends, and the two are
+//    sent in turn. Its shared try answers issueNot to a worker-side send, as
+//    to a receive, so that one that pends is started and listed under the
+//    exclusive lock: the test checks that, and that the start is Done; a
+//    send that pends cannot be forced on loopback.)
+// 7. A close while a receive waits: Cancelled, the batch back (Linux: the
+//    Loop's unpublish answers it; Windows: the abort completion).
+// 8. A stale datum, and a handle gone, do nothing. The Loop does not start a
+//    datagram operation on a worker-side socket (Failed, InvalidInput).
+// 9. With the switch off (the default) nothing is worker-side: issueWaiting
+//    says issueNot. Every buffer is home at the end.
+
+mod workerudp;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import ioerror use IoErrorKind;
+import diag;
+
+struct Ask {
+  tag: u64;
+}
+
+// Linux's struct epoll_event: the events and the 64-bit datum as two words
+struct Ev {
+  events: u32;
+  lo: u32;
+  hi: u32;
+}
+
+extern {
+  fn @c epoll_create1(flags: i32) i32;
+  fn @c epoll_wait(epfd: i32, events: *Ev, max: i32, timeout: i32) i32;
+  fn @c close(fd: i32) i32;
+  fn @c(system) CreateIoCompletionPort(h: usize, port: usize, key: usize, threads: u32) usize;
+  fn @c(system) GetQueuedCompletionStatus(port: usize, bytes: *u32, key: *usize, ov: *usize, ms: u32) i32;
+  fn @c(system) CloseHandle(h: usize) i32;
+}
+
+// The test's port: Linux's epoll instance, Windows' completion port
+fn openPort() usize {
+  #if #os == .windows {
+    CreateIoCompletionPort(0xFFFFFFFFFFFFFFFFusize, 0usize, 0usize, 1u32)
+  } #else {
+    usize.from(epoll_create1(0i32))
+  }
+}
+
+fn closePort(port: usize) {
+  #if #os == .windows {
+    CloseHandle(port);
+  } #else {
+    close(i32.from(port));
+  }
+}
+
+// Wait up to ms for the port's next event and give it to the table; what it
+// answers is appended to out. False when nothing came
+fn pollPort(port: usize, sh: &Shared, ms: u32, out: &mut List[*OpCore]) bool {
+  #if #os == .windows {
+    var bytes = 0u32;
+    var key = 0usize;
+    var ovp = 0usize;
+    GetQueuedCompletionStatus(port, &mut bytes as *u32, &mut key as *usize, &mut ovp as *usize, ms);
+    if ovp == 0usize {return false;}
+    sh.udpCompleted(ovp as *OpCore, bytes, out);
+    true
+  } #else {
+    var ev = Ev(0u32, 0u32, 0u32);
+    let n = epoll_wait(i32.from(port), &mut ev as *Ev, 1i32, i32.from(ms));
+    if n < 1i32 {return false;}
+    sh.udpReady(ev.lo, ev.hi, ev.events, out);
+    true
+  }
+}
+
+// Until out holds n records, taking the port's events, and the Loop's own
+// answers (a close answers on the Loop on Linux); ms at most
+fn waitFor(lp: &mut Loop, port: usize, sh: &Shared, out: &mut List[*OpCore], n: usize, ms: i64) {
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  var comps = List[Completion]();
+  while out.len() < n && Instant.now() < limit {
+    pollPort(port, sh, 2u32, out);
+    lp.poll(Instant.now() + Duration.fromMillis(1i64), &mut comps);
+    lp.takeDone(out);
+    comps.clear();
+  }
+}
+
+fn at(l: &List[*OpCore], k: usize) *OpCore {*l[k]}
+
+fn portOf(lp: &mut Loop, h: Handle) u16 {
+  match lp.localAddr(h) {
+    case let Ok(x) {x.port()}
+    case let Err(e) {0u16}
+  }
+}
+
+fn recvFromOn(pool: &OpPool[Ask], h: Handle) *OpCore {
+  let r = pool.take(Ask(1u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindRecvFrom;
+  c.handle = h;
+  c.buf = Some[IoBuf](IoBuf(64usize));
+  r as *OpCore
+}
+
+// A batch receive, n buffers of 64 bytes of room
+fn recvManyOn(pool: &OpPool[Ask], h: Handle, n: usize) *OpCore {
+  let r = pool.take(Ask(2u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindRecvMany;
+  c.handle = h;
+  var b = DatagramBatch.make(u32.from(n), 64usize);
+  var k = 0usize;
+  while k < n {
+    let old = b.swapOut(u32.from(k), IoBuf(64usize));
+    k = k + 1usize;
+  }
+  c.batch = Some[Uni[DatagramBatch]](b);
+  r as *OpCore
+}
+
+fn sendToOn(pool: &OpPool[Ask], h: Handle, port: u16, text: &Array[u8]) *OpCore {
+  let r = pool.take(Ask(3u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindSendTo;
+  c.handle = h;
+  c.setPeer(SocketAddr.localhost(port));
+  var b = IoBuf(64usize);
+  b.append(text);
+  c.buf = Some[IoBuf](b);
+  r as *OpCore
+}
+
+// A try under the shared lock, as a worker's first
+fn tryIssue(sh: &Shared, h: Handle, p: *OpCore) u32 {
+  if !sh.lockShared(h) {return 99u32;}
+  let got = sh.issue(p);
+  sh.unlockShared(h);
+  got
+}
+
+// What a worker does with a datagram operation: the shared try, then, if it
+// found nothing to do, the waiting one
+fn start(sh: &Shared, h: Handle, p: *OpCore) u32 {
+  let got = tryIssue(sh, h, p);
+  if got == issueNot {return sh.issueWaiting(p);}
+  got
+}
+
+// The record, dissolved: the bytes its buffer holds, and its batch's slots
+// and datagrams counted (0 and 0 when it has none)
+struct Held {
+  bytes: usize;
+  slots: u64;
+  datagrams: u64;
+  hasBatch: bool;
+}
+
+fn gone(pool: &OpPool[Ask], p: *OpCore) Held {
+  let rec = pool.dissolve(p as *OpRec[Ask]);
+  let core, ask = rec.(core, ask);
+  let buf, batch = core.(buf, batch);
+  var held = Held(0usize, 0u64, 0u64, false);
+  match buf {
+    case var Some(b) {held.bytes = b.len();}
+    else {}
+  }
+  match batch {
+    case var Some(bt) {
+      held.hasBatch = true;
+      held.slots = u64.from(bt.size());
+      held.datagrams = u64.from(bt.count());
+    }
+    else {}
+  }
+  held
+}
+
+fn main() i32 {
+  initAll();
+  let port = openPort();
+  var lp = Loop.mustMake();
+  lp.setWorkerPort(port);
+  let sh = lp.share();
+  let pool = OpPool[Ask].make();
+  var out = List[*OpCore]();
+  let rx = lp.mustBindUdp(SocketAddr.localhost(0u16));
+  let tx = lp.mustBindUdp(SocketAddr.localhost(0u16));
+  let rxPort = portOf(&mut lp, rx);
+  let txPort = portOf(&mut lp, tx);
+  expect(rxPort != 0u16 && txPort != 0u16, "two sockets, two ports");
+
+  // 1. A receive waits; a datagram sent afterwards answers it
+  {
+    let r = recvFromOn(&pool, rx);
+    expectUInt(u64.from(start(&sh, rx, r)), u64.from(issuePending), "1: a receive that finds nothing waits, listed in the table");
+    let s = sendToOn(&pool, tx, rxPort, "hello");
+    expectUInt(u64.from(start(&sh, tx, s)), u64.from(issueDone), "1: the send is done where it is issued");
+    let sg = gone(&pool, s);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "1: the datagram answers the receive, once");
+    expect(out.len() == 1usize && at(&out, 0usize) as usize == r as usize, "1: the record that waited");
+    expect((r as &OpCore).isDone(), "1: Done");
+    expectUInt(u64.from((r as &OpCore).count()), 5u64, "1: five bytes");
+    expectUInt(u64.from((r as &OpCore).peer().port()), u64.from(txPort), "1: from the sender");
+    let g = gone(&pool, r);
+    expectUInt(u64.from(g.bytes), 5u64, "1: in the buffer");
+    out.clear();
+  }
+
+  // 2. The same for a batch receive: the batch is in the answer
+  {
+    let r = recvManyOn(&pool, rx, 4usize);
+    expectUInt(u64.from(start(&sh, rx, r)), u64.from(issuePending), "2: a batch receive that finds nothing waits");
+    let s = sendToOn(&pool, tx, rxPort, "batch");
+    expectUInt(u64.from(start(&sh, tx, s)), u64.from(issueDone), "2: the send is done");
+    let sg = gone(&pool, s);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "2: answered once");
+    expect((r as &OpCore).isDone(), "2: Done");
+    let g = gone(&pool, r);
+    expect(g.hasBatch && g.slots == 4u64, "2: the batch is in the answer, its four slots");
+    expectUInt(g.datagrams, 1u64, "2: with the datagram");
+    out.clear();
+  }
+
+  // 3. A receive whose datagram is already there
+  {
+    let s = sendToOn(&pool, tx, rxPort, "early");
+    expectUInt(u64.from(start(&sh, tx, s)), u64.from(issueDone), "3: the send is done");
+    let sg = gone(&pool, s);
+    thread.sleep(Duration.fromMillis(30i64));
+    let r = recvFromOn(&pool, rx);
+    expectUInt(u64.from(start(&sh, rx, r)), u64.from(issueDone), "3: a datagram already there answers the receive where it is issued");
+    expectUInt(u64.from((r as &OpCore).count()), 5u64, "3: five bytes");
+    let g = gone(&pool, r);
+  }
+
+  // 4. A deadline that nothing meets: the batch comes back, on every path
+  {
+    let r = recvManyOn(&pool, rx, 3usize);
+    (*r).deadline = Instant.now() + Duration.fromMillis(30i64);
+    let id = (r as &OpCore).id();
+    let began = Instant.now();
+    expectUInt(u64.from(start(&sh, rx, r)), u64.from(issuePending), "4: a receive with a deadline waits");
+    thread.sleep(Duration.fromMillis(35i64));
+    expect(sh.endWaiting(rx, r, id, diag.outcomeTimedOut, &mut out), "4: its deadline ends it");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "4: answered once");
+    expect(Instant.now() - began < Duration.fromSeconds(1i64), "4: within the timer's bound");
+    expectUInt(u64.from((r as &OpCore).status), u64.from(diag.outcomeTimedOut), "4: TimedOut");
+    expect(!sh.endWaiting(rx, r, id, diag.outcomeTimedOut, &mut out), "4: a second end finds it answered");
+    let g = gone(&pool, r);
+    expect(g.hasBatch && g.slots == 3u64, "4: the batch is back, its three slots");
+    expectUInt(g.datagrams, 0u64, "4: nothing counted in it");
+    out.clear();
+  }
+
+  // 5. A cancel
+  {
+    let r = recvFromOn(&pool, rx);
+    let id = (r as &OpCore).id();
+    expectUInt(u64.from(start(&sh, rx, r)), u64.from(issuePending), "5: a receive waits");
+    expect(sh.endWaiting(rx, r, id, diag.outcomeCancelled, &mut out), "5: a cancel ends it");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "5: answered once");
+    expectUInt(u64.from((r as &OpCore).status), u64.from(diag.outcomeCancelled), "5: Cancelled");
+    let g = gone(&pool, r);
+    expectUInt(u64.from(g.bytes), 0u64, "5: the buffer back, empty");
+    out.clear();
+  }
+
+  // 6. Send order after EAGAIN
+  {
+    #if #os == .windows {
+      let a = sendToOn(&pool, tx, rxPort, "first");
+      let b = sendToOn(&pool, tx, rxPort, "second");
+      expectUInt(u64.from(tryIssue(&sh, tx, a)), u64.from(issueNot), "6: the shared try never starts a worker-side send (it is started under the exclusive lock, to be listed if it pends)");
+      expectUInt(u64.from(start(&sh, tx, a)), u64.from(issueDone), "6: the first send is done at once");
+      expectUInt(u64.from(start(&sh, tx, b)), u64.from(issueDone), "6: the second is done at once, behind it in the kernel");
+      expectUInt(u64.from((a as &OpCore).count()), 5u64, "6: five bytes");
+      expectUInt(u64.from((b as &OpCore).count()), 6u64, "6: six bytes");
+      let ag = gone(&pool, a);
+      let bg = gone(&pool, b);
+    } #else {
+      sh.holdSends(tx, true);
+      let a = sendToOn(&pool, tx, rxPort, "first");
+      expectUInt(u64.from(tryIssue(&sh, tx, a)), u64.from(issueNot), "6: the shared try does not send while the socket is held");
+      expectUInt(u64.from(start(&sh, tx, a)), u64.from(issuePending), "6: a send the socket will not take waits");
+      sh.holdSends(tx, false);
+      let b = sendToOn(&pool, tx, rxPort, "second");
+      expectUInt(u64.from(tryIssue(&sh, tx, b)), u64.from(issueNot), "6: a second send is not tried past it, though the socket would take it");
+      expectUInt(u64.from(sh.issueWaiting(b)), u64.from(issuePending), "6: it waits behind the first");
+      sh.udpReady(tx.slot(), tx.generation(), 4u32, &mut out);
+      expect(out.len() == 2usize && at(&out, 0usize) as usize == a as usize && at(&out, 1usize) as usize == b as usize, "6: the edge answers them in the order they were sent");
+      let ag = gone(&pool, a);
+      let bg = gone(&pool, b);
+      out.clear();
+    }
+    // The receiver sees them in that order
+    let r1 = recvFromOn(&pool, rx);
+    expectUInt(u64.from(start(&sh, rx, r1)), u64.from(issueDone), "6: the first datagram is there");
+    let r2 = recvFromOn(&pool, rx);
+    expectUInt(u64.from(start(&sh, rx, r2)), u64.from(issueDone), "6: the second is there");
+    expectUInt(u64.from((r1 as &OpCore).count()), 5u64, "6: first, 'first'");
+    expectUInt(u64.from((r2 as &OpCore).count()), 6u64, "6: second, 'second'");
+    let g1 = gone(&pool, r1);
+    let g2 = gone(&pool, r2);
+  }
+
+  // 7. A close while a receive waits
+  {
+    let z = lp.mustBindUdp(SocketAddr.localhost(0u16));
+    let r = recvManyOn(&pool, z, 2usize);
+    expectUInt(u64.from(start(&sh, z, r)), u64.from(issuePending), "7: a receive waits");
+    lp.close(z);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "7: answered once");
+    expectUInt(u64.from((r as &OpCore).status), u64.from(diag.outcomeCancelled), "7: Cancelled");
+    let g = gone(&pool, r);
+    expect(g.hasBatch && g.slots == 2u64, "7: the batch is back");
+    out.clear();
+    // 8. A stale datum and a gone handle do nothing
+    sh.udpReady(z.slot(), z.generation(), 1u32, &mut out);
+    expectUInt(u64.from(out.len()), 0u64, "8: a stale datum answers nothing");
+    let q = recvFromOn(&pool, rx);
+    let qid = (q as &OpCore).id();
+    expect(!sh.endWaiting(z, q, qid, diag.outcomeCancelled, &mut out), "8: no end on a handle gone");
+    let qg = gone(&pool, q);
+    // The Loop does not start a datagram operation on a worker-side socket
+    let l = recvFromOn(&pool, rx);
+    lp.start(l);
+    var got = List[*OpCore]();
+    waitFor(&mut lp, port, &sh, &mut got, 1usize, 2000i64);
+    expectUInt(u64.from(got.len()), 1u64, "8: the Loop answers it");
+    expectUInt(u64.from((l as &OpCore).status), u64.from(diag.outcomeFailed), "8: Failed");
+    expect(answerError(diag.kindRecvFrom, (l as &OpCore).status, (l as &OpCore).code).kind() == IoErrorKind.InvalidInput, "8: InvalidInput");
+    let lg = gone(&pool, l);
+  }
+
+  // 9. With the switch off nothing is worker-side
+  {
+    var lp2 = Loop.mustMake();
+    let sh2 = lp2.share();
+    let u = lp2.mustBindUdp(SocketAddr.localhost(0u16));
+    let r = recvFromOn(&pool, u);
+    expect(!sh2.isNone(), "9: the second Loop's table is made");
+    expectUInt(u64.from(sh2.issueWaiting(r)), u64.from(issueNot), "9: switch off: issueWaiting leaves the receive the Loop's");
+    let g = gone(&pool, r);
+    lp2.close(u);
+  }
+
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  lp.close(rx);
+  lp.close(tx);
+  closePort(port);
+  done()
+}

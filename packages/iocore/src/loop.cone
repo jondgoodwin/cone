@@ -81,6 +81,7 @@ struct HEntry {
   pub writesTail: *OpCore;
   pub skip: u32;           // Windows: a socket whose completions skip the port on success: one done at once posts none
   pub waited: u32 = 0u32;  // Windows: a child some WaitChild has answered for (a second fails, as Linux's reaping makes it)
+  pub worker: u32 = 0u32;  // a UDP socket bound onto the worker port: its waits are not this Loop's (shared.cone, UDP ON THE WORKER PORT)
 }
 
 // An answer a full channel held back, and the channel's sender (a clone of
@@ -144,6 +145,7 @@ pub struct Loop {
   sub: diag.Subscriber;
   subscribed: bool;
   shared: Shared;          // the handles as other threads see them, once share() has made it (shared.cone)
+  workerPort: usize;       // the port UDP sockets are bound onto (setWorkerPort); 0: none, the switch is off
 
   // A new loop for the calling thread, or the reason there is none
   pub fn make() Result[Loop, IoError] {
@@ -203,7 +205,8 @@ pub struct Loop {
       wheel: Wheel.make(Instant.now()), expiries: List[Expiry](),
       entries: entries, events: events, timer: timer, packet: packet, associated: false,
       armedFor: Instant(), woken: false, dying: false, grace: Duration.fromMillis(1i64),
-      stats: diag.Counters.zero(), sub: &diag.noSubscriber, subscribed: false, shared: Shared.none())
+      stats: diag.Counters.zero(), sub: &diag.noSubscriber, subscribed: false, shared: Shared.none(),
+      workerPort: 0usize)
   }
 
   // Its id, unique in the process, as its diagnostics records name it
@@ -312,6 +315,19 @@ pub struct Loop {
       var off = 0i32;
       var got = 0u32;
       WSAIoctl(s, sioUdpConnReset, &mut off as *u8, 4u32, null, 0u32, &mut got, null, null);
+      // With the worker port switched on, the socket's completions go there, if
+      // it skips the port on success (as a worker-side socket must); else to this
+      // Loop's port as ever
+      if workerPort != 0usize && skipOnSuccess(s) {
+        if CreateIoCompletionPort(s, workerPort, keyUdp, 0u32) == 0usize {
+          let code = GetLastError();
+          closesocket(s);
+          return Err[Handle, IoError](IoError(code));
+        }
+        let h = self.register(s, hDatagram, addr.family());
+        self.markWorker(h);
+        return Ok[Handle, IoError](h);
+      }
       if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
         let code = GetLastError();
         closesocket(s);
@@ -321,10 +337,26 @@ pub struct Loop {
     } #else {
       var code = 0u32;
       var h = Handle.none();
-      code, h = lxAdopt(self, s, hDatagram, addr.family());
+      code, h = lxAdopt(self, s, hDatagram, addr.family(), workerPort);
       if code != 0u32 {return Err[Handle, IoError](IoError(code));}
       Ok[Handle, IoError](h)
     }
+  }
+
+  // The switch for UDP ON THE WORKER PORT (shared.cone): a UDP socket bound
+  // after this call is registered with 'port' (Linux: an epoll descriptor;
+  // Windows: a completion port), not with this Loop's, and its datagram
+  // operations are issued and answered through the shared table alone. 0
+  // switches it off, which is the default. The port is the caller's: it
+  // outlives every socket bound onto it, and it waits on it. On the Loop's thread
+  pub fn setWorkerPort(self: &mut, port: usize) {workerPort = port;}
+
+  // h, just made, is a worker-side socket: its entry and the shared table's
+  // say so, before any other thread knows h
+  fn markWorker(self: &mut, h: Handle) {
+    let e = handles.borrowMut(HEntryId(h.index, h.gen)).unwrap();
+    e.worker = 1u32;
+    if !shared.isNone() {markWorkerEntry(&shared, h.index);}
   }
 
   // A bound UDP socket; a panic, at the caller's line, if there can be none
@@ -563,6 +595,14 @@ pub struct Loop {
     Handle(s.index, s.gen)
   }
 
+  // Whether h is a worker-side UDP socket (setWorkerPort)
+  fn isWorker(self: &, h: Handle) bool {
+    match handles.borrow(HEntryId(h.index, h.gen)) {
+      case let Some(e) {e.worker != 0u32}
+      case None {false}
+    }
+  }
+
   // Whether h's completions skip the port on success
   fn skips(self: &, h: Handle) bool {
     match handles.borrow(HEntryId(h.index, h.gen)) {
@@ -603,14 +643,30 @@ pub struct Loop {
       case let Some(v) {v}
       case None {return;}
     };
-    publishEntry(&shared, i, handles.slotAt(i).gen, e.raw, e.kind, e.skip);
+    publishEntry(&shared, i, handles.slotAt(i).gen, e.raw, e.kind, e.skip, e.worker);
   }
 
   // Cell i's handle no longer published: under its entry's lock, so no thread
-  // is issuing on it once this returns. Before its OS handle is closed
-  fn unpublish(self: &, i: u32) {
+  // is issuing on it once this returns. Before its OS handle is closed.
+  // Linux: a receive or send still waiting worker-side on it (shared.cone) is
+  // answered Cancelled here, as what waits on the Loop's own lists is by
+  // lxCancelAll (its asker has had its chance to end them first). Windows: the
+  // kernel holds them; closing the socket aborts them, and their completions
+  // reach the worker port's waiter, which answers them Cancelled. On both
+  // systems the chain's 'hnext' links are cut here, so no record keeps a stale
+  // one into a list that is gone
+  fn unpublish(self: &mut, i: u32) {
     if shared.isNone() {return;}
-    unpublishEntry(&shared, i);
+    var p = unpublishEntry(&shared, i);
+    while p as usize != 0usize {
+      let next = (*p).hnext;
+      (*p).hnext = null;
+      #if #os != .windows {
+        stats.submit();
+        self.decide(p, diag.outcomeCancelled, 0usize, 0u32);
+      }
+      p = next;
+    }
   }
 
   // Record p, issued on another thread and handed over in flight (shared.cone):
@@ -1359,6 +1415,13 @@ pub struct Loop {
     if dl <= r.submitted {
       stats.atSubmit = stats.atSubmit + 1u64;
       self.decide(p, diag.outcomeTimedOut, 0usize, 0u32);
+      return;
+    }
+    // A datagram operation on a worker-side socket is never the Loop's: its
+    // waits are the worker port's (shared.cone). Answered as on a handle that names nothing
+    if (r.kind == diag.kindRecvFrom || r.kind == diag.kindSendTo || r.kind == diag.kindRecvMany) && self.isWorker(r.handle) {
+      stats.atSubmit = stats.atSubmit + 1u64;
+      self.decide(p, diag.outcomeFailed, 0usize, noSuchHandle());
       return;
     }
     let code = self.launch(p);

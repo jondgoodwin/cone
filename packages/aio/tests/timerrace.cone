@@ -1,0 +1,110 @@
+// A cancel racing a worker timer's fire (row 483, the spec's test 4): a
+// million rounds, each a sleep of 0-40 us in a fresh group that another actor
+// (most often on another worker) or main (a plain thread) cancels at about
+// the same moment. The fire and the cancel each try the one compare-and-swap
+// out of Armed; exactly one wins and answers. Every round must answer exactly
+// once (Done or Cancelled, nothing else), and at the end no cell is armed and
+// every operation is spent (the runtime goes idle). A cell answered twice
+// would panic ("a reply answered twice") or count twice; one answered by
+// neither would leave its sleeper waiting and the runtime not idle.
+
+mod timerrace;
+
+import testing use *;
+import thread;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import iocore use IoError, CancelGroup;
+import actors;
+import aio use IoLimits;
+
+const pairs = 8u64;
+const rounds = 125000u64;        // a pair's: a million in all
+const plainEvery = 16u64;        // every this many rounds main cancels instead
+
+let doneN: Atomic[u64];
+let cancelledN: Atomic[u64];
+let otherN: Atomic[u64];
+let plainQueue: Atomic[u64];     // groups handed to main, a count only
+
+fn @initpure init() {
+  doneN = Atomic[u64].of(0u64);
+  cancelledN = Atomic[u64].of(0u64);
+  otherN = Atomic[u64].of(0u64);
+  plainQueue = Atomic[u64].of(0u64);
+}
+
+actor Canceller {
+  pub async fn cancelIt(self, g: CancelGroup) {
+    g.cancel();
+  }
+}
+
+actor Racer {
+  seed: u64;
+  other: Canceller;
+  plain: Sender[CancelGroup];
+  done: Sender[u64];
+
+  pub async fn run(self) {
+    var x = seed;
+    var i = 0u64;
+    while i < rounds {
+      x = x * 6364136223846793005u64 + 1442695040888963407u64;
+      let us = i64.from((x >> 33u64) % 41u64);
+      let g = CancelGroup.make();
+      if i % plainEvery == 0u64 {
+        plain.send(g);
+      } else {
+        other.cancelIt(g);
+      }
+      let r = await aio.sleepIn(Duration.fromMicros(us), IoLimits.within(g));
+      match r {
+        case let Err(e) {
+          if aio.isCancelled(e) {cancelledN.add(1u64);} else {otherN.add(1u64);}
+        }
+        else {doneN.add(1u64);}
+      }
+      i = i + 1u64;
+    }
+    done.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  var gtx: Sender[CancelGroup];
+  var grx: Receiver[CancelGroup];
+  gtx, grx = Channel[CancelGroup].make();
+  var dtx: Sender[u64];
+  var drx: Receiver[u64];
+  dtx, drx = Channel[u64].make();
+  var k = 0u64;
+  while k < pairs {
+    let r = Racer(k * 104729u64 + 3u64, Canceller(), gtx.clone(), dtx.clone());
+    r.run();
+    k = k + 1u64;
+  }
+  // Main cancels its share as they come, until every racer has finished
+  let want = pairs * ((rounds + plainEvery - 1u64) / plainEvery);
+  var plainDone = 0u64;
+  while plainDone < want {
+    match grx.recv() {
+      case let Some(g) {g.cancel();}
+      else {}
+    }
+    plainDone = plainDone + 1u64;
+  }
+  var finished = 0u64;
+  while finished < pairs {
+    finished = finished + (drx.recv() || 0u64);
+  }
+  let total = doneN.load() + cancelledN.load();
+  expect(total == pairs * rounds, "a million rounds, each answered exactly once");
+  expect(otherN.load() == 0u64, "...Done or Cancelled, nothing else");
+  expect(doneN.load() > 0u64 && cancelledN.load() > 0u64, "...both sides won some");
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  expect(actors.timerStats().armed == 0u64, "no cell armed");
+  done()
+}

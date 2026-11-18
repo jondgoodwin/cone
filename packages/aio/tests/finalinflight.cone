@@ -200,14 +200,16 @@ fn main() {
   // before the actors have claimed their records (measured on Linux: 3 on
   // reading, 6 after one yield; Windows sometimes 5). The operations parked are
   // six: Sleeper's sleep, Reader's read, three Callee sleeps and Quick's sleep.
+  // Since row 483 the five sleeps are cells of their workers' timer services,
+  // not aio records: the six are the read's record plus the cells armed.
   // Wait, bounded, until all six are claimed: a condition, not a sleep.
   let wait0 = Instant.now();
-  while aio.opStats().inUse - before.inUse < 6u64 && wait0.elapsed() < Duration.fromSeconds(20i64) {
+  while aio.opStats().inUse - before.inUse + actors.timerStats().armed < 6u64 && wait0.elapsed() < Duration.fromSeconds(20i64) {
     thread.yieldNow();
   }
   let mid = aio.opStats();
   let midBufs = iobuf.stats().lent;
-  printStr("parked: records in use at least 4: "); printStr(if mid.inUse - before.inUse >= 4u64 {"yes"} else {"no"});
+  printStr("parked: records in use at least 4: "); printStr(if mid.inUse - before.inUse + actors.timerStats().armed >= 4u64 {"yes"} else {"no"});
   printStr(", buffers lent "); printUInt(midBufs);
   printStr(", futures live "); printUInt(u64.from(actors.liveFutures()));
   printStr("\n");
