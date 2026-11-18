@@ -1,0 +1,123 @@
+// Threads the program did not make through Cone give their caches back when
+// they end too, since the hook is the system's, not the thread package's.
+//
+// Windows: a private thread pool of one to four threads runs 64 work callbacks
+// (TrySubmitThreadpoolCallback), each taking and dropping buffers on a pool
+// thread; the pool is closed, its threads retire, and their caches come back.
+// Then 50 threads made by kernel32's CreateThread, one after another.
+// Linux: 50 threads made by pthread_create directly, one after another.
+// Afterwards nothing is cached and nothing lent. While the pool's threads
+// retire (asynchronously, after CloseThreadpool) the test waits, up to 20 s.
+
+mod foreign;
+
+import testing use *;
+import thread;
+import time use Duration, Instant;
+import iobuf use *;
+import bufpool;
+
+// TP_CALLBACK_ENVIRON_V3, as winbase.h's InitializeThreadpoolEnvironment fills it
+struct TpEnv {
+  pub version: u32;
+  pub pool: *u8;
+  pub cleanup: *u8;
+  pub cancel: *u8;
+  pub raceDll: *u8;
+  pub actCtx: *u8;
+  pub finalization: *u8;
+  pub flags: u32;
+  pub priority: u32;
+  pub size: u32;
+}
+
+extern {
+  fn @c(system) CreateThreadpool(reserved: *u8) *u8;
+  fn @c(system) SetThreadpoolThreadMaximum(pool: *u8, most: u32);
+  fn @c(system) SetThreadpoolThreadMinimum(pool: *u8, least: u32) i32;
+  fn @c(system) CloseThreadpool(pool: *u8);
+  fn @c(system) TrySubmitThreadpoolCallback(callback: &fn @c (inst: *u8, ctx: *u8), ctx: *u8, env: *TpEnv) i32;
+  fn @c(system) CreateThread(attrs: *u8, stack: usize, start: &fn @c (arg: *u8) u32, arg: *u8, flags: u32, id: *u32) usize;
+  fn @c(system) WaitForSingleObject(handle: usize, ms: u32) u32;
+  fn @c(system) CloseHandle(handle: usize) i32;
+  fn @c pthread_create(t: *usize, attrs: *u8, start: &fn @c (arg: *u8) *u8, arg: *u8) i32;
+  fn @c pthread_join(t: usize, result: *u8) i32;
+}
+
+const poolWork = 64u64;
+const plain = 50u64;
+
+let worked: Atomic[u64];
+
+fn @initpure init() {
+  worked = Atomic[u64].of(0u64);
+}
+
+fn churn() {
+  var k = 0u64;
+  while k < 8u64 {
+    var b = IoBuf(100usize);
+    b.append("x");
+    var m = IoBuf(20000usize);
+    m.append("y");
+    k = k + 1u64;
+  }
+  worked.add(1u64);
+}
+
+fn @c foreignPoolWork(inst: *u8, ctx: *u8) {churn();}
+fn @c foreignWinThread(arg: *u8) u32 {churn(); 0u32}
+fn @c foreignPosixThread(arg: *u8) *u8 {churn(); null}
+
+// Wait until nothing is cached, or 20 s
+fn settled() bool {
+  let start = Instant.now();
+  while stats().cachedBytes != 0usize {
+    if start.elapsed().millis() > 20000i64 {return false;}
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  true
+}
+
+fn main() i32 {
+  #if #os == .windows {
+    let pool = CreateThreadpool(null);
+    SetThreadpoolThreadMaximum(pool, 4u32);
+    SetThreadpoolThreadMinimum(pool, 1u32);
+    var env = TpEnv(3u32, pool, null, null, null, null, null, 0u32, 1u32, 0u32);
+    env.size = u32.from(mem.sizeof[TpEnv]());
+    expectUInt(u64.from(env.size), 72u64, "the environment's layout is winbase.h's");
+    var k = 0u64;
+    while k < poolWork {
+      TrySubmitThreadpoolCallback(&foreignPoolWork, null, &env);
+      k = k + 1u64;
+    }
+    while worked.load() < poolWork {thread.sleep(Duration.fromMillis(1i64));}
+    expect(stats().cachedBytes > 0usize, "the pool's threads hold caches while they live");
+    CloseThreadpool(pool);
+    expect(settled(), "the pool's threads gave their caches back as they retired");
+    var j = 0u64;
+    while j < plain {
+      var id = 0u32;
+      let h = CreateThread(null, 0usize, &foreignWinThread, null, 0u32, &id);
+      WaitForSingleObject(h, 0xFFFFFFFFu32);
+      CloseHandle(h);
+      j = j + 1u64;
+    }
+    expectUInt(worked.load(), poolWork + plain, "every piece of work ran");
+  } #else {
+    var j = 0u64;
+    while j < plain {
+      var t = 0usize;
+      pthread_create(&t, null, &foreignPosixThread, null);
+      pthread_join(t, null);
+      j = j + 1u64;
+    }
+    expectUInt(worked.load(), plain, "every piece of work ran");
+  }
+  let s = stats();
+  expectUInt(u64.from(s.cachedBytes), 0u64, "nothing cached once the threads have ended");
+  expectUInt(s.lent, 0u64, "nothing lent");
+  expect(bufpool.blockStats().threads <= 4usize, "a record for each pool thread at most, reused by the plain threads");
+  done()
+}
