@@ -46,10 +46,12 @@ struct PendingUpdate {
 // others of its server, so it sends no 'end' to it: Left is the end of a
 // connection's events. The handler's one 'end' (Ending.Finished) comes from the
 // Endpoint at its shutdown, after the Left of every connection it held.
-// The system's error numbers for a full send buffer: Winsock's WSAEWOULDBLOCK
-// and WSAENOBUFS, Linux's EAGAIN and ENOBUFS
-fn bufferFull(code: u32) bool {
-  #if #os == .windows {code == 10035u32 || code == 10055u32} #else {code == 11u32 || code == 105u32}
+// A full send buffer: the kind NoBufferSpace (WSAENOBUFS, ENOBUFS), or the
+// system's number for a full non-blocking socket, which has no kind: Winsock's
+// WSAEWOULDBLOCK, Linux's EAGAIN
+fn bufferFull(e: IoError) bool {
+  if e.kind() == IoErrorKind.NoBufferSpace {return true;}
+  #if #os == .windows {e.code == 10035u32} #else {e.code == 11u32}
 }
 
 pub actor Connection is ValueSource {
@@ -477,7 +479,7 @@ pub actor Connection is ValueSource {
 
   fn sendFailed(self, e: IoError) {
     sendErrors = sendErrors + 1u64;
-    if !bufferFull(e.code) {
+    if !bufferFull(e) {
       self.finish(CloseReason.SendFailed);
     }
   }

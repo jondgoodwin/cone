@@ -14,7 +14,7 @@
 //     if k == IoErrorKind.ConnectionRefused {print <- toText(&k);}
 //   }
 //
-//   IoErrorKind                  NotFound, PermissionDenied, ..., Cancelled, TimedOut, Truncated, Other
+//   IoErrorKind                  NotFound, PermissionDenied, ..., Cancelled, TimedOut, Truncated, NoBufferSpace, Other
 //   toText(&k)  String() <- k    a kind's words, for a person
 //   osKind(code)                 the kind of the system's own error number: Windows' error number
 //                                (GetLastError's, Winsock's, an NTSTATUS turned into one) on
@@ -35,7 +35,9 @@
 // ERROR_ADDRESS_ALREADY_ASSOCIATED); a handle that names nothing
 // (ERROR_INVALID_HANDLE, EBADF), a buffer with no room
 // (ERROR_INSUFFICIENT_BUFFER) and a path that is not UTF-8
-// (ERROR_NO_UNICODE_TRANSLATION) are InvalidInput; an operation aborted
+// (ERROR_NO_UNICODE_TRANSLATION) are InvalidInput; a system with no buffer for a
+// send just now (WSAENOBUFS, ENOBUFS) is NoBufferSpace, which is not a full
+// non-blocking socket (EAGAIN, WSAEWOULDBLOCK: a wait for readiness, no kind here); an operation aborted
 // (ERROR_OPERATION_ABORTED, ECANCELED) is Cancelled, as iocore's own cancel
 // is; a host name with no address (WSAHOST_NOT_FOUND, WSANO_DATA, EAI_NONAME,
 // EAI_NODATA) is NotFound. A number no kind names is Other.
@@ -74,6 +76,7 @@ pub enum IoErrorKind {
   Truncated,            // a datagram cut to the room of the buffer that took it
   InvalidInput,         // a handle that names nothing, a buffer with no room, a bad argument
   OutOfMemory,
+  NoBufferSpace,        // the system had no buffer for it just now (ENOBUFS): lost, or try later; not a full non-blocking socket
   Unsupported,
   Other;
 
@@ -108,6 +111,7 @@ pub enum IoErrorKind {
       case Truncated {"truncated"}
       case InvalidInput {"invalid input"}
       case OutOfMemory {"out of memory"}
+      case NoBufferSpace {"no buffer space"}
       case Unsupported {"unsupported"}
       case Other {"other"}
     }
@@ -150,6 +154,7 @@ fn winKind(code: u32) IoErrorKind {
   else if code == 87u32 || code == 10022u32 {IoErrorKind.InvalidInput}         // INVALID_PARAMETER, WSAEINVAL
   else if code == 6u32 || code == 122u32 || code == 1113u32 {IoErrorKind.InvalidInput}  // INVALID_HANDLE, INSUFFICIENT_BUFFER, NO_UNICODE_TRANSLATION
   else if code == 8u32 || code == 14u32 {IoErrorKind.OutOfMemory}              // NOT_ENOUGH_MEMORY, OUTOFMEMORY
+  else if code == 10055u32 {IoErrorKind.NoBufferSpace}                         // WSAENOBUFS
   else if code == 50u32 || code == 120u32 {IoErrorKind.Unsupported}            // NOT_SUPPORTED, CALL_NOT_IMPLEMENTED
   else {IoErrorKind.Other}
 }
@@ -206,6 +211,7 @@ pub fn errnoKind(e: i32) IoErrorKind {
       else if e == 101i32 {IoErrorKind.NetworkUnreachable}         // ENETUNREACH
       else if e == 100i32 {IoErrorKind.NetworkDown}                // ENETDOWN
       else if e == 110i32 {IoErrorKind.TimedOut}                   // ETIMEDOUT
+      else if e == 105i32 {IoErrorKind.NoBufferSpace}              // ENOBUFS
       else {IoErrorKind.Other}
     }
   }
