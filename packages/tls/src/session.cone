@@ -76,6 +76,9 @@ pub struct Session is Move {
   endTold: bool;       // ...or the end without one has been reported
   sentClose: bool;
   err: TlsError;
+  recHave: usize;      // the ciphertext's current record: the bytes of it that have come, header included
+  recNeed: usize;      // ...its whole length once its 5-byte header is in, else 0
+  recHdr: Array[u8, 5];
 
   fn blank(core: Core, st: Shared, server: bool) Session {
     let kind = core.kind;
@@ -94,8 +97,36 @@ pub struct Session is Move {
       events: 0u32, verifyWanted: false, ownError: false, noBuffer: false, verifyAt: Instant(),
       verifyTime: Duration.zero(), begun: false, begunAt: Instant(), handshakeTime: Duration.zero(),
       wasOpen: false, mayRead: false, eof: false, gotClose: false,
-      endTold: false, sentClose: false, err: TlsError.none())
+      endTold: false, sentClose: false, err: TlsError.none(), recHave: 0usize, recNeed: 0usize,
+      recHdr: Array[u8, 5]() <- fill 0u8)
   }
+
+  // Follow the ciphertext's records as bytes come, to know whether one is
+  // part-way (see 'partialRecord')
+  fn trackRecords(self: &mut, cipher: &Array[u8]) {
+    var i = 0usize;
+    while i < cipher.len {
+      if recNeed == 0usize {
+        recHdr[recHave] = cipher[i];
+        recHave = recHave + 1usize;
+        i = i + 1usize;
+        if recHave == 5usize {recNeed = 5usize + (usize.from(recHdr[3usize]) << 8usize) + usize.from(recHdr[4usize]);}
+      } else {
+        var take = recNeed - recHave;
+        if take > cipher.len - i {take = cipher.len - i;}
+        recHave = recHave + take;
+        i = i + take;
+        if recHave == recNeed {
+          recHave = 0usize;
+          recNeed = 0usize;
+        }
+      }
+    }
+  }
+
+  // A record has begun to arrive and not finished: bytes OpenSSL will need more
+  // of before it can give any plaintext
+  fn partialRecord(self: &) bool {recHave != 0usize}
 
   fn client(core: Core, st: Shared, serverName: &str) Session {
     var s = Session.blank(core, st, false);
@@ -135,6 +166,7 @@ pub struct Session is Move {
   pub fn feed(self: &mut, cipher: &Array[u8]) usize {
     if cipher.len == 0usize || phase == pFailed {return cipher.len;}
     self.begin();
+    self.trackRecords(cipher);
     var put = 0usize;
     BIO_write_ex(rbio, &cipher[0usize] as *u8, cipher.len, &mut put);
     mayRead = true;
