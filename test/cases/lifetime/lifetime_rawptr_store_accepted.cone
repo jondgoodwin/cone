@@ -1,0 +1,42 @@
+// What stays accepted beside the refusals: a borrow of a global stored through a pointer variable (its
+// lifetime is the place's), a value that is not a borrow stored through one, and a place rooted in a local
+// struct with no dereference on its path, which keeps today's rules (a shorter borrow may be stored there; the
+// loan walk checks its use).
+//
+// Verdict: accept; prints 1, 7, 3, 4.
+// Basis: Jon, 18 Nov 2026: the place's type decides, and a global borrow outlives any place. Lane 735 (row 536).
+
+mod lifetime_rawptr_store_accepted;
+
+import stdio use *;
+
+struct Cell { r: &i32; n: i32; }
+struct Holder { p: *Cell; }
+
+let ONE: i32 = 1;
+
+fn putGlobal(p: *Cell) { (*p).r = &ONE; }
+fn putNumber(p: *Cell, v: i32) { (*p).n = v; }
+fn putViaField(h: Holder) { h.p.n = 3; }
+fn putLocal(x: &i32) i32 {
+  var c = Cell(&ONE, 0);
+  c.r = x;
+  *c.r
+}
+
+fn main() i32 {
+  var c = Cell(&ONE, 0);
+  putGlobal(&c as *Cell);
+  printInt(*c.r);
+  printStr("\n");
+  putNumber(&c as *Cell, 7);
+  printInt(c.n);
+  printStr("\n");
+  putViaField(Holder(&c as *Cell));
+  printInt(c.n);
+  printStr("\n");
+  let four = 4;
+  printInt(putLocal(&four));
+  printStr("\n");
+  0
+}

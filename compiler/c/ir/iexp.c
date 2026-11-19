@@ -179,10 +179,23 @@ INode *iexpMutDclEnum(INode *perm, INode **valuep) {
 }
 
 // Is this the type of a borrowed reference, whose scope is a lifetime? A key's
-// invariant lifetime is no scope: it goes anywhere.
+// invariant lifetime is no scope: it goes anywhere. A reference to a function has
+// no scope: it is global (iexpIsFnRef).
 int iexpIsBorrowType(INode *type) {
     return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
-        && ((RefNode*)type)->region == borrowRef && !lifeIsInvariant(((RefNode*)type)->lifename);
+        && ((RefNode*)type)->region == borrowRef && !lifeIsInvariant(((RefNode*)type)->lifename)
+        && !iexpIsFnRef(type);
+}
+
+// Is this the type of a reference to a function ('&fn(...)', not a closure's '&<fn')?
+// What it refers to is a function of a compiled program, which exists for the whole
+// program, so the reference has the global lifetime wherever it came from: a
+// parameter, a local, a field, a call's result (Jon, 19 Nov 2026; design-principles
+// section 7). Code made at run time and later freed would not have that, and will
+// need a lifetime when Cone can express one.
+int iexpIsFnRef(INode *type) {
+    return type->tag == RefTag && ((RefNode*)type)->region == borrowRef && ((RefNode*)type)->vtexp
+        && isTypeNode(((RefNode*)type)->vtexp) && itypeGetTypeDcl(((RefNode*)type)->vtexp)->tag == FnSigTag;
 }
 
 // A copy of the borrowed-reference type 'typedcl' carrying the lifetime 'scope'.
@@ -833,6 +846,19 @@ static void iexpScopeThroughRef(INode *refexp, INode *lvalvar, RefNode *reftype,
     }
 }
 
+// A store into a place reached through a raw pointer, whether the pointer is a
+// variable, a parameter, a field of one or a call's result: the holder is what the
+// pointer points at, not the variable that holds the pointer, and nothing the
+// pointer's type says ties that to a lifetime of this function. A type that names
+// no lifetime is read as global (Jon, 18 Nov 2026), so the place is held for the
+// global scope (0) and a borrow stored there must be global, as for a place with no
+// variable at its root. A borrow of the place (not a store) keeps the scope the
+// path gave it.
+static void iexpScopeThroughPtr(uint16_t *scope, int stored) {
+    if (stored)
+        *scope = 0;
+}
+
 // Is this place reached through a borrowed reference, a slice or a virtual
 // reference: the value it holds is where a loan points, and what is lent of it
 // is held to that loan's permission? An owner whose own permission is shared
@@ -993,8 +1019,10 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
                 *lvalperm = itypeGetTypeDcl(vtype->region) == (INode*)borrowRef ? iexpViewpointPerm(refexp, vtype->perm) : vtype->perm;
             iexpScopeThroughRef(refexp, lvalvar, vtype, scope, stored);
         }
-        else if (vtype->tag == PtrTag)
+        else if (vtype->tag == PtrTag) {
             *lvalperm = (INode*)mutPerm;
+            iexpScopeThroughPtr(scope, stored);
+        }
         return lvalvar;
     }
 
@@ -1016,8 +1044,10 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
                 ? iexpViewpointPerm(element->objfn, ((RefNode*)objtype)->perm) : ((RefNode*)objtype)->perm;
             iexpScopeThroughRef(element->objfn, lvalvar, (RefNode*)objtype, scope, stored);
         }
-        else if (objtype->tag == PtrTag)
+        else if (objtype->tag == PtrTag) {
             *lvalperm = (INode*)mutPerm;
+            iexpScopeThroughPtr(scope, stored);
+        }
         return lvalvar;
     }
 

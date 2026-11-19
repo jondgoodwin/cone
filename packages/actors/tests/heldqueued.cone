@@ -1,0 +1,81 @@
+// A held timer's next() on a deadline already passed, with a move queued to
+// the actor ahead of its answer (row 500; the spec's section 6, a move racing
+// the fire). The behaviour sends itself a message, sets a deadline already
+// passed and awaits next(): the message runs before the resume does, and moves
+// the deadline later (or clears it). The resume must come at or after the
+// deadline set last, or not at all while there is none: never true at once.
+
+mod heldqueued;
+
+import testing use *;
+import thread;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import actors use Timer;
+
+fn nowNs() i64 {Instant.now().nanos()}
+
+const later = 100000000i64;      // 100 ms on
+
+actor Holder {
+  timer: Timer;
+  last: i64;
+  done: Sender[i64];
+
+  // A move later queued ahead of next()'s answer: the resume comes at or
+  // after it. Sends how early the resume came (0 if not early), or -1 for false
+  pub async fn runLater(self) {
+    self.moveLater();
+    last = nowNs() - 1000i64;
+    timer.set(Instant.fromNanos(last));
+    let ok = await timer.next();
+    if !ok {
+      done.send(-1i64);
+      return;
+    }
+    let early = last - nowNs();
+    done.send(if early > 0i64 {early} else {0i64});
+  }
+
+  pub async fn moveLater(self) {
+    last = nowNs() + later;
+    timer.set(Instant.fromNanos(last));
+  }
+
+  // A clear queued ahead of next()'s answer: it stays parked, and the stop
+  // answers false. Sends 1 for true, 0 for false
+  pub async fn runCleared(self) {
+    self.clearIt();
+    timer.set(Instant.fromNanos(nowNs() - 1000i64));
+    let ok = await timer.next();
+    done.send(if ok {1i64} else {0i64});
+  }
+
+  pub async fn clearIt(self) {
+    timer.clear();
+  }
+
+  pub async fn stopIt(self) {
+    timer.stop();
+  }
+}
+
+fn main() i32 {
+  actors.configure(actors.Options(workers: 2u32));
+  var tx: Sender[i64];
+  var rx: Receiver[i64];
+  tx, rx = Channel[i64].make();
+  let a = Holder(Timer.make(), 0i64, tx.clone());
+  a.runLater();
+  let early = rx.recv() || -2i64;
+  expect(early >= 0i64, "a move later queued ahead: next() resumes true");
+  expect(early == 0i64, "a move later queued ahead: no resume before the deadline set last");
+  let b = Holder(Timer.make(), 0i64, tx.clone());
+  b.runCleared();
+  thread.sleep(Duration.fromMillis(50i64));
+  b.stopIt();
+  let got = rx.recv() || -2i64;
+  expect(got == 0i64, "a clear queued ahead: next() stays parked, and the stop answers false");
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  done()
+}

@@ -13,6 +13,9 @@
 // target (the lowest page of the class's tree). If the free landed before the detach, the 65th allocation is the target itself.
 //
 // Needs cnd.lib (-DCN_HOOKS -DCN_DEBUG) and CNMALLOC=design=lockfree (stats optional); see lfrace.cone for the link. CNPAGE_ROUNDS=<n> (default 3000).
+// CNPAGE_GROUPED=1 (row 506; needs CNMALLOC cache=<n>): the freer is a worker that holds two cells of the page (the target and
+// another of the same word) in its cache and gives them back as one group by the grouped return (cnmalloc_workerFlush, a test
+// build's export), so the group's fetch_or races the detach; the lower of the two is the cell the page must yield.
 
 mod lfpage;
 
@@ -47,6 +50,13 @@ const cArmed = 4usize;
 const cStop = 5usize;
 const cHookDelay = 6usize;
 const cFired = 7usize;
+const cFlush = 8usize;      // CNPAGE_GROUPED: cnmalloc_workerFlush, else 0
+const cBegin = 9usize;
+const cTarget2 = 10usize;
+const cPrep = 11usize;      // the freer pushes both targets into its cache
+const cPrepped = 12usize;
+
+alias Call = &fn @c ();
 
 var @threadlocal ctl: usize = 0usize;
 
@@ -84,10 +94,18 @@ fn @c hookDetach(cl: usize) {
 // the other thread: when told, waits a little, then frees the target
 fn freer(arg: usize) u64 {
   let c = arg;
+  let grouped = ld(c, cFlush) != 0usize;
+  if grouped { (ld(c, cBegin) as *u8 as Call)(); }
   while ld(c, cStop) == 0usize {
-    if ld(c, cGo) == 1usize {
+    if ld(c, cPrep) == 1usize {
+      st(c, cPrep, 0usize);
+      libc.free(ld(c, cTarget) as *u8);          // into the cache: the bits stay clear
+      libc.free(ld(c, cTarget2) as *u8);
+      st(c, cPrepped, 1usize);
+    } else if ld(c, cGo) == 1usize {
       spin(c, ld(c, cDelay));
-      libc.free(ld(c, cTarget) as *u8);
+      if grouped { (ld(c, cFlush) as *u8 as Call)(); }      // both targets back in one group, one fetch_or
+      else { libc.free(ld(c, cTarget) as *u8); }
       st(c, cGo, 0usize);
       st(c, cDone, 1usize);
     } else {
@@ -162,6 +180,10 @@ fn main() i32 {
   let hooks = setHooks as *u8 as SetHooks;
   let coll = collect as *u8 as Collect;
   let c = libc.calloc(16usize, 8usize) as usize;
+  let flush = GetProcAddress(m, &"cnmalloc_workerFlush" as *u8);
+  let begin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
+  let grouped = envNum("CNPAGE_GROUPED", 0usize) != 0usize && flush != 0usize && begin != 0usize;
+  if grouped { st(c, cFlush, flush); st(c, cBegin, begin); }
   ctl = c;
   hooks(0usize, &hookDetach as *u8 as usize, 0usize, 0usize, 0usize, 0usize);
   let ft = thread.start[usize, u64](c, &freer);
@@ -178,9 +200,22 @@ fn main() i32 {
     var n = 0usize;
     while n < 64usize { *word(cells, n) = libc.malloc(1024usize) as usize; n = n + 1usize; }
     let k = usize.from(next(&mut seed) % 64u64);
-    let target = *word(cells, k);
+    var target = *word(cells, k);
     *word(cells, k) = 0usize;
     st(c, cTarget, target);
+    if grouped {
+      // a second target in the same word; the freer holds both in its cache and returns them as one group. The lower of
+      // the two is the cell the next allocation from the page must return.
+      let k2 = (k + 1usize + usize.from(next(&mut seed) % 63u64)) % 64usize;
+      let t2 = *word(cells, k2);
+      *word(cells, k2) = 0usize;
+      st(c, cTarget2, t2);
+      st(c, cPrepped, 0usize);
+      st(c, cPrep, 1usize);
+      var pw = 0usize;
+      while ld(c, cPrepped) == 0usize && pw < 5000usize { Sleep(1u32); pw = pw + 1usize; }
+      if t2 < target { target = t2; }
+    }
     st(c, cDone, 0usize);
     st(c, cDelay, usize.from(next(&mut seed) % 3000u64));
     st(c, cHookDelay, usize.from(next(&mut seed) % 3000u64));
