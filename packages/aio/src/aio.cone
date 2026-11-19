@@ -138,8 +138,10 @@
 //                           slots, each a DatagramSlot {buf, from}. DatagramBatch.make(slots, room), .count(),
 //                           .wasCut(k), .from(k), .swapOut(k, fresh), .bufAt(k); at most 64 slots (the width of its cut bits)
 //   RecvFailed {error, batch, slot}
-//                           what a failed recvMany answers: the IoError, the batch back (None only in the one
-//                           bad case, below), and for a refusal the first slot with no room
+//                           what a failed recvMany answers: the IoError, the batch back (never None for a socket
+//                           that waits on the worker port, which is every UDP socket the runtime can register
+//                           there; None only in the one bad case, below, of a socket the Loop holds), and for a
+//                           refusal the first slot with no room
 //
 // Each of the operations (and each sleep) makes an OPERATION, an actors.Awaitable[R], which
 // does nothing until an 'await' in a behaviour starts it; the 'await''s value
@@ -370,7 +372,8 @@
 // (every send that fits the socket, a read whose bytes are there), it is
 // answered there and the actor goes on in the same batch, nothing crossing to
 // the I/O thread; in flight, the record goes to the I/O thread, which links it
-// on the Loop. A cancel and a close are queued under the same lock, so they
+// on the Loop (a datagram operation that finds nothing to do does not: it waits
+// in its socket's entry for the worker port, UDP ON THE WORKER PORT, below). A cancel and a close are queued under the same lock, so they
 // keep their order against an issue, and a socket dropped marks its entry
 // closing first: an operation awaited after the drop goes behind the close and
 // fails as before. Any other 'await', and one that could not be issued (a
@@ -559,7 +562,9 @@
 // batch comes back on every failure too (RecvFailed's 'batch'), so the owner never
 // loses its block; the one exception is the bad case below, where the kernel
 // still holds it and the answer is TimedOut with 'batch' None (Windows only: a
-// Linux loop holds no socket operation's buffer in the kernel). 'sendTo' is iocore's SendTo: all of the buffer as
+// Linux loop holds no socket operation's buffer in the kernel). A UDP socket's
+// waits are the worker port's (UDP ON THE WORKER PORT, below), where a deadline waits
+// for the aborted receive's completion, so the bad case is met only by a socket the Loop holds. 'sendTo' is iocore's SendTo: all of the buffer as
 // ONE datagram, the buffer going home; the count is its length; UDP promises no
 // delivery, so the answer says the system took the datagram. A datagram too
 // large for the network fails (the same number, of the kind Other). One receive at a time per
@@ -724,7 +729,7 @@ import sync use Mutex;
 import collections use List, String;
 import iobuf use IoBuf, Chain;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending, DatagramBatch;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending, issueNot, DatagramBatch, OpId;
 import path use Path;
 import process;
 import actors;
@@ -746,6 +751,8 @@ fn @initpure init() {
   takenAway = Atomic[u64].of(0u64);
   ioEndAt = Atomic[usize].of(0usize);
   countsAt = Atomic[usize].of(0usize);
+  udpOn = Atomic[bool].of(false);
+  udpWaiting = Atomic[u64].of(0u64);
 }
 
 // A panic, reported at the line calling 'die'
@@ -791,7 +798,8 @@ struct Ask is Sendable {
   stage: u32;                   // a read with no buffer: stageReady ...; a sleep: sleepAt or sleepAfter
   ours: bool;                   // a read with no buffer: its deadline now is the quiet time's, tighter than the caller's
   write: bool;                  // a cancel's direction
-  since: i64;                   // a read with no buffer: when its stage was started (the steady clock)
+  udp: bool;                    // a datagram operation counted as waiting on the worker port (UDP ON THE WORKER PORT): its answer uncounts it
+  since: i64;                  // a read with no buffer: when its stage was started (the steady clock)
   arg: u64;                     // a read with no buffer: the room of the buffer it takes; a relative sleep's nanoseconds
   limit: Instant;               // the caller's deadline (lim's), the whole of a read with no buffer
 }
@@ -876,7 +884,7 @@ fn setBatch(p: *OpCore, batch: Uni[DatagramBatch]) {
 // handle), what it is doing and the kind of iocore operation, limited by lim:
 // any thread
 fn takeRec(what: u32, kind: u32, h: Handle, lim: IoLimits) *OpRec[Ask] {
-  let p = thePool().take(Ask(actors.Reply(), what, 0u32, false, false, 0i64, 0u64, forever()));
+  let p = thePool().take(Ask(actors.Reply(), what, 0u32, false, false, false, 0i64, 0u64, forever()));
   let c = &mut (*p).core;
   c.kind = kind;
   c.handle = h;
@@ -932,7 +940,8 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
         if dgram {sh.unlockShared(h);} else {sh.unlock(h);}
         bump(&mut (*c).here as *u64);
         answerRec(ctx as *OpRec[Ask]);
-        if w == opSend || w == opSendTo {
+        // A UDP send needs no pass once UDP's completions go to the worker port, never to the Loop's
+        if w == opSend || (w == opSendTo && !udpOn.load()) {
           askPass();
         }
         return;
@@ -944,10 +953,206 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
         return;
       }
       if dgram {sh.unlockShared(h);} else {sh.unlock(h);}
+      // A datagram operation the try left, on a socket bound onto the worker port: it waits there, in
+      // its entry, and never on the Loop
+      if dgram && got == issueNot && udpOn.load() && waitHere(ctx as *OpRec[Ask], c) {
+        return;
+      }
     }
   }
   bump(&mut (*c).over as *u64);
   enqueueRec(ctx as *OpCore);
+}
+
+// UDP ON THE WORKER PORT (iocore's shared.cone; the actors runtime's poller.cone, THE WORKER PORT AND
+// THE POLLER). At the first bindUdp the Loop is given the runtime's worker port, so every UDP socket
+// bound from then on is registered there, and the one worker in the port at a time (the poller)
+// answers what its entries say: a datagram for a waiting receive costs one wake, and nothing of UDP
+// crosses to the I/O thread. TCP and files stay on the Loop.
+//
+// A datagram operation tries on its own worker, as ever (the shared try, under the entry's shared
+// lock). If it finds nothing to do, 'waitHere' hands it to iocore's issueWaiting (no lock held),
+// which lists it in the socket's entry, or answers it at once. It is then ended, once, by whichever
+// comes first: the port's event or completion (portEvents, on the worker that took it: the same hook
+// the park's poller calls), a cancel of its group or the group's deadline (UdpWake, told by
+// cancelgroups, on the cancelling thread), a cancelRead or cancelWrite of its handle or a close
+// (the Loop's, which iocore's cancelHandle and unpublish answer there). Every answer is made by
+// answerRec: the same typed answer, its buffer and its batch in it, on every path, so
+// RecvFailed.batch is never None for UDP with the switch on (it is None only for the Loop's own
+// grace, which a UDP receive of a socket the Loop holds can still meet: a socket that is not
+// worker-side, Windows' that cannot skip the port on success, or no port).
+//
+// A DEADLINE of the operation's own (IoLimits.until) tighter than its group's is given a group of its
+// own (a child of the caller's, ended by its own deadline), kept in the record, so one path ends a
+// waiting record: its group, cancelled by the caller or by the clock (cancelgroups' timer). The
+// actors runtime's timer cells hold the Reply of an await, which a record's wait does not make.
+//
+// THE END. Linux: the Loop's death unpublishes every handle and answers what waits on it, its answers
+// abandoned. Windows: the kernel holds each waiting record until its completion comes to the port;
+// the Loop's death closes the sockets (aborting them), and the I/O thread waits (waitUdpHome) until
+// the poller has taken them all, each abandoned, its buffer home, before it ends.
+
+// Switch the Loop's UDP onto the worker port: once, on the I/O thread, before the first UDP socket is
+// bound. Nothing if the runtime has no port to give
+fn udpSwitch(lp: &mut Loop) {
+  if udpOn.load() {
+    return;
+  }
+  let port = actors.workerPort();
+  if port == 0usize {
+    return;
+  }
+  actors.workerEvents(&portEvents);
+  lp.setWorkerPort(port);
+  udpOn.store(true);
+}
+
+// The wait of record rp, a datagram operation the shared try left (issueNot), on a socket that may be
+// worker-side: listed, or answered at once, or the Loop's way. True when it was handled here, listed
+// or answered; false: not worker-side, the record untouched and uncounted, to go to the Loop. Nothing
+// of the record is touched once it is listed: another thread may answer it
+fn waitHere(rp: *OpRec[Ask], c: *HereCounts) bool {
+  let core = rp as *OpCore;
+  let r = core as &mut OpCore;
+  let reg = udpGroupOf(r);
+  let id = r.id();
+  let h = r.handle;
+  (*rp).ask.udp = true;
+  udpWaiting.add(1u64);
+  actors.workerPortWaits(true);
+  let got = sharedNow().issueWaiting(core);
+  if got == issueDone {
+    bump(&mut (*c).here as *u64);
+    answerRec(rp);
+    return true;
+  }
+  if got == issuePending {
+    bump(&mut (*c).here as *u64);
+    udpWatch(reg, core, id, h);
+    return true;
+  }
+  udpEnded(rp);
+  false
+}
+
+// The group a waiting record is ended through: its own, with its own deadline given a group when that is
+// tighter than the group's (kept in the record, so the timer lives as long as it)
+fn udpGroupOf(r: &mut OpCore) Option[CancelGroup] {
+  let d = r.deadline;
+  if d < forever() && d > Instant.now() {
+    var made: Option[CancelGroup] = None;
+    match r.group {
+      case let Some(g) {
+        if d < g.deadline() {
+          made = Some[CancelGroup](g.childUntil(d));
+        }
+      }
+      else {
+        made = Some[CancelGroup](CancelGroup.until(d));
+      }
+    }
+    match made {
+      case let Some(n) {r.group = Some[CancelGroup](n);}
+      else {}
+    }
+  }
+  r.group
+}
+
+// The record's group told when it is cancelled or ends by its deadline (cancelgroups' watch, in the group
+// and every ancestor): a cancel that came before the registration is seen here
+fn udpWatch(reg: Option[CancelGroup], core: *OpCore, id: OpId, h: Handle) {
+  match reg {
+    case let Some(g) {
+      let w = UdpWake(core as usize, id, h);
+      g.watch(udpWatchBit | id.number(), &w);
+      if g.isCancelled() {
+        w.signal();
+      }
+    }
+    else {}
+  }
+}
+
+// A waiting record's Wakeup in its group: on the cancelling thread, under the group's lock, the record
+// is ended (iocore's endWaiting: Linux, answered here; Windows, the kernel asked to abort it, and the
+// completion answers it at the port), unless it was answered already. Sendable on trust: it names the
+// record, whose memory is the pool's for the life of the process, and the id it had
+struct UdpWake is Sendable {
+  at: usize;
+  id: OpId;
+  h: Handle;
+
+  pub fn signal(self: &) bool {
+    var out = List[*OpCore]();
+    if sharedNow().endWaiting(h, at as *OpCore, id, diag.outcomeCancelled, &mut out) {
+      udpAnswered(&mut out);
+    }
+    true
+  }
+
+  pub fn isGone(self: &) bool {
+    ((at as *OpCore) as &OpCore).id() != id
+  }
+}
+
+// The port's entry for a UDP socket, taken by the worker that waited in it (actors' workerEvents; under
+// the runtime's inHook): Linux, the epoll event (a = its bits, b = the entry and generation of the
+// socket); Windows, a completion (b = its OVERLAPPED, the record, n = the bytes). What it answers goes
+// to the awaiting actors. True when it answered anything
+fn portEvents(a: usize, b: usize, n: u32) bool {
+  var out = List[*OpCore]();
+  let sh = sharedNow();
+  #if #os == .windows {
+    if b == 0usize {
+      return false;
+    }
+    sh.udpCompleted(b as *OpCore, n, &mut out);
+  } #else {
+    let datum = u64.from(b);
+    sh.udpReady(u32.from(datum & 0xFFFFFFFFu64), u32.from(datum >> 32u64), u32.from(u64.from(a)), &mut out);
+  }
+  udpAnswered(&mut out)
+}
+
+// The records a worker-side wait ended are answered, or, once the program is ending, abandoned (each
+// reply dropped unsent, its buffer home), as the Loop's death abandons its own. True if there were any
+fn udpAnswered(out: &mut List[*OpCore]) bool {
+  let ending = ended.load();
+  var k = 0usize;
+  while k < out.len() {
+    let p = *out[k];
+    if ending {
+      udpEnded(p as *OpRec[Ask]);
+      let gone = dissolveAt(p as *u8);
+    } else {
+      answerRec(p as *OpRec[Ask]);
+    }
+    k = k + 1usize;
+  }
+  out.len() != 0usize
+}
+
+// Record rp's wait on the worker port is over (it is answered or abandoned): uncounted, once
+fn udpEnded(rp: *OpRec[Ask]) {
+  if (*rp).ask.udp {
+    (*rp).ask.udp = false;
+    udpWaiting.sub(1u64);
+    actors.workerPortWaits(false);
+  }
+}
+
+// The I/O thread's end, Windows: the Loop's death has closed every socket, aborting what waits on it, and
+// the poller takes the aborted completions, each record answered abandoned. Wait for them, so that no
+// record or buffer is the kernel's when the program goes on. Bounded: with no poller to take them, they
+// stay (their memory is the pool's, never freed)
+fn waitUdpHome() {
+  #if #os == .windows {
+    let limit = Instant.now() + Duration.fromMillis(5000i64);
+    while udpWaiting.load() != 0u64 && Instant.now() < limit {
+      thread.sleep(Duration.fromMillis(1i64));
+    }
+  }
 }
 
 // The I/O thread's Loop's handles as any thread sees them (none before the
@@ -1080,6 +1285,21 @@ let io: Atomic[usize];
 // The program is ending: nothing is taken from the queues from now on (under
 // ioLock). An atomic held by a 'let' global, set in 'init'
 let ended: Atomic[bool];
+
+// UDP ON THE WORKER PORT is on: the Loop has been given the actors runtime's worker port (udpSwitch,
+// at the first bindUdp), so a UDP socket bound from then on waits there (iocore's shared.cone) and no
+// datagram operation waits on the Loop. False if the runtime has no port to give. An atomic held by a
+// 'let' global, set in 'init'
+let udpOn: Atomic[bool];
+
+// The datagram operations listed as waiting on the worker port and not yet answered (counted by
+// waitHere, uncounted by the answer or the abandon): the Windows end waits for it to reach 0, the
+// kernel holding those records until the aborted completions come to the port
+let udpWaiting: Atomic[u64];
+
+// A waiting record's group wake is registered under an id of its own (cancelgroups' watch, once per
+// loop id): this bit, over the record's id, keeps clear of every loop's id and of a worker's
+const udpWatchBit = 0x4000000000000000u64;
 
 // The Loop's counters as they stood when the I/O thread was told to end: a
 // block the thread allocates then and nothing frees, 0 until it does. An
@@ -1627,6 +1847,7 @@ fn ioMain(arg: IoArg) u32 {
     let dyingHosts = mem.readRaw[List[*HostHead]](&(*me).hosts as *List[*HostHead]);
   }
   pool.flushHere();
+  waitUdpHome();
   0u32
 }
 
@@ -2422,6 +2643,7 @@ fn answerRec(rp: *OpRec[Ask]) {
   if !(rp as *OpCore as &OpCore).isLetGo() {
     die("aio: a record lent while its Loop still holds it");
   }
+  udpEnded(rp);
   let w = (*rp).ask.what;
   let back = &mut (*rp).ask.reply;
   if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt || w == opPipeRead || w == opPipeWrite {
@@ -2772,6 +2994,7 @@ struct BindUdpJob {
 
   fn run(self, lp: &mut Loop) {
     let addr, rp = self.(addr, reply);
+    udpSwitch(lp);
     match lp.bindUdp(addr) {
       case let Ok(ok) {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](newUdp(ok)));}
       case let Err(e) {actors.answerNow[Result[UdpSocket, IoError]](rp, Err[UdpSocket, IoError](e));}

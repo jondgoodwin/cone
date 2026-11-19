@@ -560,8 +560,8 @@ pub struct Shared is Move, Sendable {
   }
 
   // End record p, which waits on h's worker-side socket and has the id 'id'
-  // (its core's), because its deadline came (why = diag.outcomeTimedOut)
-  // or it was cancelled (anything else): false if it is no longer waiting there,
+  // (its core's), because its deadline came (why = diag.outcomeTimedOut, or its
+  // group ended by its deadline) or it was cancelled (anything else): false if it is no longer waiting there,
   // answered or its handle gone. Linux: it leaves the list and is answered at
   // once, with its buffer and batch, appended to out. Windows: the kernel is
   // asked to abort it (CancelIoEx on this operation alone) and true is
@@ -577,7 +577,13 @@ pub struct Shared is Move, Sendable {
       self.unlock(h);
       return false;
     }
-    let outcome = if why == diag.outcomeTimedOut {diag.outcomeTimedOut} else {diag.outcomeCancelled};
+    // A group that ended by its deadline ends its operations TimedOut, as the Loop's own timers do
+    var byDeadline = why == diag.outcomeTimedOut;
+    match r.group {
+      case let Some(g) {if timedOut(&g) {byDeadline = true;}}
+      else {}
+    }
+    let outcome = if byDeadline {diag.outcomeTimedOut} else {diag.outcomeCancelled};
     #if #os == .windows {
       if r.asked == askedNone {r.asked = if outcome == diag.outcomeTimedOut {askedDeadline} else {askedCancel};}
       CancelIoEx((*e).raw, p as *u8);
@@ -643,6 +649,42 @@ fn unlistWait(e: *SEntry, p: *OpCore) {
   r.side = onNone;
   r.hprev = null;
   r.hnext = null;
+}
+
+// Entry h's waiting receives (or sends) asked to end, for the Loop's cancelHandle (UDP ON THE WORKER
+// PORT): Linux, they are taken off the entry's list under its exclusive lock, and the chain (linked by
+// hnext, the side marks cleared) is returned for the Loop to answer Cancelled, as 'unpublish' answers
+// what waits on a closed handle; Windows, the kernel is asked to abort each (CancelIoEx on that
+// operation alone), they stay listed, and each abort's completion comes to the worker port and
+// answers it ('udpCompleted'). 'n' is how many were asked. A handle that names nothing: null
+fn askWaiting(sh: &Shared, h: Handle, write: bool, n: &mut usize) *OpCore {
+  if !sh.lock(h) {return null;}
+  let e = sh.entry(h.index);
+  var head = if write {(*e).swait} else {(*e).rwait};
+  #if #os == .windows {
+    var q = head;
+    while q as usize != 0usize {
+      let r = q as &mut OpCore;
+      if r.asked == askedNone {
+        r.asked = askedCancel;
+        CancelIoEx((*e).raw, q as *u8);
+        *n = *n + 1usize;
+      }
+      q = (*q).hnext;
+    }
+    head = null;
+  } #else {
+    if write {(*e).swait = null;} else {(*e).rwait = null;}
+    var q = head;
+    while q as usize != 0usize {
+      (*q).side = onNone;
+      (*q).hprev = null;
+      *n = *n + 1usize;
+      q = (*q).hnext;
+    }
+  }
+  sh.unlock(h);
+  head
 }
 
 // A new table, its directory empty, the Loop its one holder; none if there is

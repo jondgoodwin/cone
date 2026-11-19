@@ -25,9 +25,11 @@
 //             endpoint sends only its own handshake datagrams (Challenge, Accept,
 //             Denied, and a client's Request and Response): 'sendOwn', a message to
 //             itself, 'await sock.sendTo(addr, buf)'.
-//   timer     only a client's dialing has one here: 'wake(at)', 'await
-//             aio.sleepUntil(at)', then the dialer is polled. Each connection keeps its
-//             own deadline with its own timer, in a cancel group under 'group'.
+//   timer     only a client's dialing has one here: an actors.Timer held for the
+//             endpoint's life, set to the dialer's deadline, which 'clock' waits on
+//             ('await timer.next()'), then the dialer is polled. It ends with the
+//             dialing, or with 'group'. Each connection keeps its own deadline in
+//             an actors.Timer of its own, ended by 'group' too.
 //   shutdown  closes the connections (each answers when its own datagrams are handed
 //             to the socket), waits (300 ms at most) for the endpoint's own, cancels
 //             'group' (which ends the receive and every timer) and drops the socket,
@@ -186,8 +188,7 @@ pub actor Endpoint {
   handler: EventHandler;
   sock: UdpSocket;             // bound by 'open'; UdpSocket.none() before, and after shutdown
   group: CancelGroup;           // cancelled by shutdown: ends the receive and the timer
-  timer: CancelGroup;           // the armed timer's group, a child of 'group'
-  timerGen: u32;                // which timer is the armed one
+  timer: actors.Timer;          // a client's dialing deadline, held for the endpoint's life: 'clock' waits on it; ended by 'group' or when the dialing ends
   inflight: usize;              // datagrams handed to the socket and not yet sent
   gate: ChallengeGate;
   slots: ConnSlots;             // room kept at make for maxClients up to slotsReserved (a client's for one), so the common sizes never regrow; past that it grows by doubling, since a very high limit often means "no limit"
@@ -196,7 +197,6 @@ pub actor Endpoint {
   tokens: i64;                  // the admission bucket, in thousandths of a connection
   refilled: i64;                // the instant 'tokens' was last brought up to date
   nextId: u32;
-  armed: i64;                   // the instant the timer will next wake us; -1 none
   stopped: bool;
   refused: EndpointStats;       // admissions refused, by kind
 
@@ -211,10 +211,10 @@ pub actor Endpoint {
     let g = CancelGroup.make();
     let now = Instant.now().nanos();
     *self = Self(server: server, cfg: cfg, handler: handler, sock: UdpSocket.none(),
-      group: g, timer: g.child(), timerGen: 0u32, inflight: 0usize,
+      group: g, timer: actors.Timer.within(&g), inflight: 0usize,
       gate: ChallengeGate.fromOs(), slots: ConnSlots.withCapacity(if !server {1usize} else if cfg.maxClients < slotsReserved {cfg.maxClients} else {slotsReserved}), byAddr: SlotsByAddr(), byIp: AddrStates(), nextId: 1u32,
       tokens: burstSeconds * 1000i64 * i64.from(cfg.admitRate), refilled: now,
-      armed: -1i64, stopped: false, refused: EndpointStats(0u64, 0u64, 0u64),
+      stopped: false, refused: EndpointStats(0u64, 0u64, 0u64),
       dialer: ClientHandshake.make(cfg, salt, Instant.now()), dialing: !server,
       remote: remote);
   }
@@ -288,6 +288,7 @@ pub actor Endpoint {
     }
     tx.send(Ok[SocketAddr, IoError](bound));
     if !server {
+      selfactor.clock();
       self.rearm();   // a client starts dialing
     }
     selfactor.receive();
@@ -324,8 +325,10 @@ pub actor Endpoint {
           }
         }
         case var Err(f) {
-          // The batch comes back with the failure (None only where the kernel
-          // still holds it: then a new one is made)
+          // The batch comes back with the failure: always, for a socket that waits on the
+          // worker port (every one the runtime can register there, a deadline's or a
+          // cancel's included). None only for a socket the I/O thread's Loop holds, where
+          // the kernel may still hold it: then a new one is made
           let e, back = f.(error, batch);
           match back {
             case var Some(b) {batch = b;}
@@ -346,11 +349,12 @@ pub actor Endpoint {
     inflight = inflight - 1usize;
   }
 
-  // The timer 'g' of generation 'gen' is for the instant 'at': when it comes,
-  // the dialer is polled
-  async fn wake(self, at: i64, gen: u32, g: CancelGroup) {
-    let r = await aio.sleepUntilIn(Instant.fromNanos(at), IoLimits.within(g));
-    if slept(r) && gen == timerGen && !stopped {
+  // A client's dialing deadline, while it dials: each time the timer's deadline
+  // comes, the dialer is polled. Ends when the timer does (the dialing ended, or
+  // shutdown cancelled 'group')
+  async fn clock(self) {
+    while await timer.next() {
+      if stopped {break;}
       self.fire();
     }
   }
@@ -411,7 +415,6 @@ pub actor Endpoint {
 
   // The timer is due: the dialer is
   fn fire(self) {
-    armed = -1i64;
     let now = Instant.now();
     if dialing {
       var out = Packets();
@@ -419,6 +422,7 @@ pub actor Endpoint {
       each p in out.drain() { self.transmit(remote, p); }
       if dialer.isFailed() {
         dialing = false;
+        timer.stop();
         // Id 1 is no live connection: only a dial that connects makes one (with id 1,
         // in 'dial', which ends the dialing), and a server never dials
         handler.accept(NetEvent.Left(1u32, if dialer.wasRefused() {CloseReason.Refused} else {CloseReason.NoAnswer}));
@@ -457,17 +461,15 @@ pub actor Endpoint {
     selfactor.sendOwn(to, data);
   }
 
-  // Arm the timer for the dialer's deadline, if it is earlier than the one
-  // armed: the armed one's group is cancelled. Nothing to do when not dialing
+  // Set the timer to the dialer's deadline (none: cleared). Nothing to do when
+  // not dialing
   fn rearm(self) {
     if stopped || !dialing {return;}
     let at = dialer.nextDeadline().nanos();
-    if at != farFuture && (armed < 0i64 || at < armed) {
-      armed = at;
-      let c = timer.cancel();
-      timer = group.child();
-      timerGen = timerGen + 1u32;
-      selfactor.wake(at, timerGen, timer);
+    if at != farFuture {
+      timer.set(Instant.fromNanos(at));
+    } else {
+      timer.clear();
     }
   }
 
@@ -599,24 +601,18 @@ pub actor Endpoint {
         let ip = ipGroup(&remote);
         self.addSlot(remote, id, conn, dialer.sessionId(), ip.view(), -1i64);
         dialing = false;
+        timer.stop();
         // The datagram that connected us may be a payload packet
         conn.packet(data);
       }
       case is Refused {
         dialing = false;
+        timer.stop();
         // As in 'fire': dialing was on, so id 1 is no live connection
         handler.accept(NetEvent.Left(1u32, CloseReason.Refused));
       }
       case is Nothing {}
     }
-  }
-}
-
-// Whether a timer ran its course: not cancelled, and not failed
-fn slept(r: Result[void, IoError]) bool {
-  match r {
-    case let Err(e) {false}
-    else {true}
   }
 }
 

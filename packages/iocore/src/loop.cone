@@ -1892,6 +1892,7 @@ pub struct Loop {
   pub fn cancelHandle(self: &mut, h: Handle, write: bool) usize {
     let i = self.handleIndex(h);
     if i == noEntry {return 0usize;}
+    if self.isWorker(h) {return self.cancelWaiting(h, write);}
     let e = handles.borrowAt(i).unwrap();
     var p = if write {e.writes} else {e.reads};
     var n = 0usize;
@@ -1905,6 +1906,26 @@ pub struct Loop {
       // An operation may have closed it (Linux: a connect that failed on its
       // try): its lists went with it
       if handles.borrow(HEntryId(h.index, h.gen)) is None {break;}
+      p = next;
+    }
+    n
+  }
+
+  // The receives (or sends) waiting on h's worker-side socket (shared.cone, UDP ON THE WORKER PORT)
+  // asked to end, as cancelHandle asks the Loop's own. Linux: answered Cancelled here, as an
+  // unpublish answers them; Windows: the kernel is asked, and the abort's completion answers each
+  // at the worker port
+  fn cancelWaiting(self: &mut, h: Handle, write: bool) usize {
+    var n = 0usize;
+    var p = askWaiting(&shared, h, write, &mut n);
+    while p as usize != 0usize {
+      let next = (*p).hnext;
+      (*p).hnext = null;
+      #if #os != .windows {
+        stats.cancelsAsked = stats.cancelsAsked + 1u64;
+        stats.submit();
+        self.decide(p, diag.outcomeCancelled, 0usize, 0u32);
+      }
       p = next;
     }
     n
