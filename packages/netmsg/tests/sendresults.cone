@@ -15,7 +15,8 @@ import sync use *;
 import time use Duration, Instant;
 import thread;
 import actors;
-import iocore use SocketAddr;
+import iocore use SocketAddr, IoError;
+import ioerror use IoErrorKind;
 import iobuf use Bytes;
 import netmsg use *;
 
@@ -39,7 +40,8 @@ fn statsOf(c: Connection) ConnectionStats {
   panic("the stats did not come")
 }
 
-// The system's error number for a full send buffer, and for an invalid handle
+// The system's error number for a full send buffer (WSAENOBUFS, ENOBUFS: the
+// kind NoBufferSpace), and for an invalid handle
 fn fullCode() u32 {
   #if #os == .windows {10055u32} #else {105u32}
 }
@@ -106,6 +108,7 @@ fn main() i32 {
     var sMsgs = 0u32;
     var sLefts = 0u32;
     var sFailed = false;
+    expect(IoError(fullCode()).kind() == IoErrorKind.NoBufferSpace, "the full-buffer number is NoBufferSpace");
     sc.sendAnswered(fullCode());
     sc.sendAnswered(fullCode());
     hear(&mut rxS, 300i64, &mut sMsgs, &mut sLefts, &mut sFailed);
