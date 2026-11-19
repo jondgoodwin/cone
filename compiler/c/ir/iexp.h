@@ -61,6 +61,7 @@ INode *iexpMutDclEnum(INode *perm, INode **valuep);
 INode *iexpCoerceType(INode *from, INode *totypedcl);
 
 // Is this the type of a borrowed reference, whose scope is a lifetime?
+int iexpIsFnRef(INode *type);
 int iexpIsBorrowType(INode *type);
 
 // A copy of the borrowed-reference type 'typedcl' carrying the lifetime 'scope'

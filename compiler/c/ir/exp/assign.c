@@ -595,7 +595,7 @@ void assignBorrowLifetimeCheck(INode *lval, uint16_t lvalscope, INode *rtype) {
     RefNode* lvaltype = (RefNode *)((IExpNode*)lval)->vtype;
     if ((rvaltype->tag == RefTag || rvaltype->tag == ArrayRefTag || rvaltype->tag == VirtRefTag)
         && (lvaltype->tag == RefTag || lvaltype->tag == ArrayRefTag || lvaltype->tag == VirtRefTag)
-        && lvaltype->region == borrowRef && !assignIsLocalPlace(lval)) {
+        && lvaltype->region == borrowRef && !iexpIsFnRef((INode*)rvaltype) && !assignIsLocalPlace(lval)) {
         if (lvalscope < rvaltype->scope) {
             errorMsgNode(lval, ErrorInvType, "lval outlives the borrowed reference you are storing");
         }

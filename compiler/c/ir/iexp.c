@@ -179,10 +179,23 @@ INode *iexpMutDclEnum(INode *perm, INode **valuep) {
 }
 
 // Is this the type of a borrowed reference, whose scope is a lifetime? A key's
-// invariant lifetime is no scope: it goes anywhere.
+// invariant lifetime is no scope: it goes anywhere. A reference to a function has
+// no scope: it is global (iexpIsFnRef).
 int iexpIsBorrowType(INode *type) {
     return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
-        && ((RefNode*)type)->region == borrowRef && !lifeIsInvariant(((RefNode*)type)->lifename);
+        && ((RefNode*)type)->region == borrowRef && !lifeIsInvariant(((RefNode*)type)->lifename)
+        && !iexpIsFnRef(type);
+}
+
+// Is this the type of a reference to a function ('&fn(...)', not a closure's '&<fn')?
+// What it refers to is a function of a compiled program, which exists for the whole
+// program, so the reference has the global lifetime wherever it came from: a
+// parameter, a local, a field, a call's result (Jon, 19 Nov 2026; design-principles
+// section 7). Code made at run time and later freed would not have that, and will
+// need a lifetime when Cone can express one.
+int iexpIsFnRef(INode *type) {
+    return type->tag == RefTag && ((RefNode*)type)->region == borrowRef && ((RefNode*)type)->vtexp
+        && isTypeNode(((RefNode*)type)->vtexp) && itypeGetTypeDcl(((RefNode*)type)->vtexp)->tag == FnSigTag;
 }
 
 // A copy of the borrowed-reference type 'typedcl' carrying the lifetime 'scope'.

@@ -263,7 +263,12 @@ Per target:
    pointer, and a type that names no lifetime is read as global (Jon, 18 Nov
    2026; lane 735). `(*p).r = x` with `p: *Cell` and a borrowed `x` is refused
    as `(*cell()).r = x` was. A borrow of such a place, not a store, keeps the
-   scope its path gave it. `swapFlow` applies the same check to both sides.
+   scope its path gave it. A reference to a function (`&fn`, not a closure's
+   `&<fn`) has no scope at all, `iexpIsFnRef`: what it refers to exists for the
+   whole program, so it is global wherever it came from and
+   `assignBorrowLifetimeCheck` never refuses storing one (Jon, 19 Nov 2026;
+   design principles, section 7; lane 749). `swapFlow` applies the same check to
+   both sides.
 
 `assignMultRetFlow` runs `assignlvalrtype` per lval, then the same
 `flowHandleMoveOrCopy` on the one rval: a destructured call result is a
