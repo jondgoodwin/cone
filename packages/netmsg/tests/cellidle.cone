@@ -1,0 +1,90 @@
+// The slot that finds nothing. A cell cannot tell its connection it changed, so
+// while a cell is bound the connection asks to be called at every send slot
+// (nextDeadline). A slot that finds nothing new must move the next look on an
+// interval, or the deadline stays in the past and whoever calls at the deadline
+// (the connection's clock) calls again at once, for ever. Two things are
+// checked on a synthetic clock, driving the core by its own deadline as the
+// connection's timer does:
+//   - idle for 10 s with a bound cell never written: every deadline after a
+//     poll is in the future, and the polls are about one a send slot (30 a
+//     second), not thousands;
+//   - and a value put at any time in that idle is sent at the next deadline the
+//     core had asked for before the put, which is within one send interval of
+//     it: not skipped for good, and not left waiting for a keep-alive.
+
+mod cellidle;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant, Clock;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+fn text(s: &str) List[u8] {
+  var d = List[u8]();
+  putBytes(&mut d, s);
+  d
+}
+
+fn main() i32 {
+  let cfg = NetConfig.defaults();
+  var clock = Clock.synth();
+  var p = SimPair.make(cfg, LinkConfig.perfect(), LinkConfig.perfect(), 1u64, clock.now());
+  var w: LatestWriter;
+  var r: LatestReader;
+  w, r = latestCell(64usize);
+  expect(p.a.bindLatest(4u16, r, 1u32), "bound");
+
+  // 10 s idle, by the core's own deadline: poll, ask, wait for it
+  let start = clock.now().nanos();
+  var turns = 0u64;
+  var notFuture = 0u64;
+  while clock.now().nanos() - start < 10000000000i64 && turns < 5000u64 {
+    p.step(clock.now());
+    turns = turns + 1u64;
+    let d = p.a.nextDeadline().nanos();
+    let e = p.b.nextDeadline().nanos();
+    let next = if d < e {d} else {e};
+    if next <= clock.now().nanos() {
+      notFuture = notFuture + 1u64;
+      clock.advance(Duration.fromMillis(1i64));
+    } else {
+      clock.advance(Duration.fromNanos(next - clock.now().nanos()));
+    }
+  }
+  expectUInt(notFuture, 0u64, "after a poll, the next deadline is never already due");
+  expect(turns < 700u64, "about one turn a send slot over 10 s (300), not a spin");
+  expect(turns > 250u64, "and a turn at every slot: the cell is looked at");
+  expectUInt(u64.from(p.eventsB.len()), 0u64, "idle: nothing was sent on the stream");
+  p.eventsB.clear();
+  p.eventsA.clear();
+
+  // Puts at times spread over the interval before the deadline the core holds:
+  // each goes at that deadline
+  var k = 0u64;
+  var heard = 0u64;
+  while k < 12u64 {
+    p.step(clock.now());
+    p.eventsA.clear();
+    p.eventsB.clear();
+    let held = p.a.nextDeadline().nanos();
+    let lead = (held - clock.now().nanos()) * i64.from(k) / 12i64;
+    clock.advance(Duration.fromNanos(lead));
+    w.put(text("value").view());
+    clock.advance(Duration.fromNanos(held - clock.now().nanos()));
+    p.step(clock.now());
+    p.step(clock.now());
+    var got = 0u64;
+    each ev in p.eventsB.drain() {
+      match ev {
+        case is Latest { got = got + 1u64; }
+        else {}
+      }
+    }
+    if got == 1u64 {heard = heard + 1u64;}
+    k = k + 1u64;
+  }
+  expectUInt(heard, 12u64, "each value put is sent at the next slot the core had asked for");
+  done()
+}
