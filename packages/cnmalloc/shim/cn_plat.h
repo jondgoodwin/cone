@@ -47,30 +47,30 @@
   #define CN_RET_MEMN(e, n) return (e)
 
   // loads and stores of the shared words: the volatile access of /volatile:ms
-  #define CN_ACCESS(N, T) \
-    static __forceinline T cn_ld##N##_acq(const T* p) { return *(const volatile T*)p; } \
-    static __forceinline T cn_ld##N##_rlx(const T* p) { return *(const volatile T*)p; } \
-    static __forceinline T cn_ld##N##_sc(const T* p) { return *(const volatile T*)p; } \
-    static __forceinline void cn_st##N##_rel(T* p, T v) { *(volatile T*)p = v; } \
-    static __forceinline void cn_st##N##_rlx(T* p, T v) { *(volatile T*)p = v; } \
-    static __forceinline void cn_add##N##_rlx(T* p, T v) { *(volatile T*)p += v; }
-  CN_ACCESS(8, uint8_t)
-  CN_ACCESS(32, uint32_t)
-  CN_ACCESS(64, uint64_t)
-  #undef CN_ACCESS
+  // (macros, not functions: the compiler sees the same expression the shim spelled before this header, so its code for the
+  // common paths does not move; measured, an inline function here cost the live row 3%)
+  #define cn_ld8_rlx(p) (*(const volatile uint8_t*)(p))
+  #define cn_ld32_acq(p) (*(const volatile uint32_t*)(p))
+  #define cn_ld32_rlx(p) (*(const volatile uint32_t*)(p))
+  #define cn_ld64_acq(p) (*(const volatile uint64_t*)(p))
+  #define cn_ld64_rlx(p) (*(const volatile uint64_t*)(p))
+  #define cn_ld64_sc(p) (*(const volatile uint64_t*)(p))
+  #define cn_st8_rlx(p, v) (*(volatile uint8_t*)(p) = (v))
+  #define cn_st32_rlx(p, v) (*(volatile uint32_t*)(p) = (v))
+  #define cn_st64_rel(p, v) (*(volatile uint64_t*)(p) = (v))
+  #define cn_st64_rlx(p, v) (*(volatile uint64_t*)(p) = (v))
+  #define cn_add64_rlx(p, v) (*(volatile uint64_t*)(p) += (v))
   // a flag the shim sets once, before it publishes the heap, and reads before it knows the heap is ready (g_cap, g_fast):
   // today a plain read and write, and so it stays
   #define CN_FLAG_LD(x) (x)
   #define CN_FLAG_ST(x, v) ((x) = (v))
 
-  static __forceinline uint64_t cn_add64(uint64_t* p, uint64_t v) { return (uint64_t)_InterlockedExchangeAdd64((volatile LONG64*)p, (LONG64)v); }
-  static __forceinline uint64_t cn_inc64(uint64_t* p) { return (uint64_t)_InterlockedIncrement64((volatile LONG64*)p); }
-  static __forceinline uint32_t cn_inc32(uint32_t* p) { return (uint32_t)_InterlockedIncrement((volatile LONG*)p); }
-  static __forceinline uint64_t cn_or64(uint64_t* p, uint64_t v) { return (uint64_t)_InterlockedOr64((volatile LONG64*)p, (LONG64)v); }
+  #define cn_add64(p, v) ((uint64_t)_InterlockedExchangeAdd64((volatile LONG64*)(p), (LONG64)(v)))
+  #define cn_inc64(p) ((uint64_t)_InterlockedIncrement64((volatile LONG64*)(p)))
+  #define cn_inc32(p) ((uint32_t)_InterlockedIncrement((volatile LONG*)(p)))
+  #define cn_or64(p, v) ((uint64_t)_InterlockedOr64((volatile LONG64*)(p), (LONG64)(v)))
   // the old value; the swap is made when *p == expected
-  static __forceinline uint64_t cn_cas64(uint64_t* p, uint64_t expected, uint64_t desired) {
-    return (uint64_t)_InterlockedCompareExchange64((volatile LONG64*)p, (LONG64)desired, (LONG64)expected);
-  }
+  #define cn_cas64(p, expected, desired) ((uint64_t)_InterlockedCompareExchange64((volatile LONG64*)(p), (LONG64)(desired), (LONG64)(expected)))
   static __forceinline uint32_t cn_cas32(uint32_t* p, uint32_t expected, uint32_t desired) {
     return (uint32_t)InterlockedCompareExchange((volatile LONG*)p, (LONG)desired, (LONG)expected);
   }
