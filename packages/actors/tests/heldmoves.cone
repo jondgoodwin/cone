@@ -1,0 +1,169 @@
+// A held timer's moves racing its fire (row 500; the spec's section 6, and its
+// tests 2 and 3). Eight racers each keep one Timer, and a loop parked on
+// 'while await timer.next()'; pokers on other actors send them 400,000 pokes
+// in all, each a move of the deadline to now plus 0-60 us or 0.2-2 ms, earlier
+// or later than the one set, while the actor runs wherever the scheduler puts it, so
+// its entry is in its own wheel (moved in place) or in another worker's (a
+// new entry here, the old one dead there), and a fire is often under way on
+// one worker while a poke moves the deadline on another. Every resume must
+// find the deadline set last before it come (never stale), each park must be
+// resumed exactly once (a doubled one would panic, "a reply answered twice",
+// or count twice; a lost one would leave a racer parked and the runtime not
+// idle), and at the end no cell is held and no entry left in any wheel.
+
+mod heldmoves;
+
+import testing use *;
+import thread;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import actors use Timer;
+
+const racers = 8u64;
+const pokers = 8u64;
+const pokesEach = 50000u64;      // a poker's: 400,000 in all
+const batch = 2u64;              // a poker's pokes a turn: few, so that a racer goes idle between and the
+                                 // next poke wakes it on the poker's worker (it moves)
+
+let parks: Atomic[u64];
+let resumes: Atomic[u64];
+let fires: Atomic[u64];
+let stale: Atomic[u64];
+
+fn @initpure init() {
+  parks = Atomic[u64].of(0u64);
+  resumes = Atomic[u64].of(0u64);
+  fires = Atomic[u64].of(0u64);
+  stale = Atomic[u64].of(0u64);
+}
+
+fn nowNs() i64 {Instant.now().nanos()}
+
+actor Racer {
+  timer: Timer;
+  last: i64;                     // the deadline set last
+  done: Sender[u64];
+
+  // The loop: each resume must come at or after the deadline set last
+  pub async fn clock(self) {
+    timer.set(Instant.fromNanos(nowNs() + 20000i64));
+    last = nowNs() + 20000i64;
+    timer.set(Instant.fromNanos(last));
+    parks.add(1u64);
+    while await timer.next() {
+      resumes.add(1u64);
+      fires.add(1u64);
+      if nowNs() < last {stale.add(1u64);}
+      last = nowNs() + 30000i64;
+      timer.set(Instant.fromNanos(last));
+      parks.add(1u64);
+    }
+    resumes.add(1u64);
+    done.send(1u64);
+  }
+
+  // A move to now plus us microseconds
+  pub async fn poke(self, us: u64) {
+    last = nowNs() + i64.from(us) * 1000i64;
+    timer.set(Instant.fromNanos(last));
+  }
+
+  pub async fn stopIt(self) {
+    timer.stop();
+  }
+}
+
+actor Poker {
+  seed: u64;
+  left: u64;
+  targets: Racers;
+  done: Sender[u64];
+
+  pub async fn go(self) {
+    var k = 0u64;
+    while k < batch && left > 0u64 {
+      seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+      let r = (seed >> 33u64) % racers;
+      // half of them now plus microseconds, racing the fire; half 0.2-2 ms, so
+      // that the entry is often still filed on another worker
+      let us = if ((seed >> 7u64) & 1u64) == 0u64 {(seed >> 13u64) % 61u64} else {200u64 + (seed >> 13u64) % 1800u64};
+      targets.at(r).poke(us);
+      left = left - 1u64;
+      k = k + 1u64;
+    }
+    if left > 0u64 {
+      self.go();
+    } else {
+      done.send(1u64);
+    }
+  }
+}
+
+// The racers' handles, for the pokers (a Sendable copy each)
+struct Racers {
+  a: Racer; b: Racer; c: Racer; d: Racer; e: Racer; f: Racer; g: Racer; h: Racer;
+
+  pub fn at(self: &, i: u64) &Racer {
+    if i == 0u64 {&a} else if i == 1u64 {&b} else if i == 2u64 {&c} else if i == 3u64 {&d}
+    else if i == 4u64 {&e} else if i == 5u64 {&f} else if i == 6u64 {&g} else {&h}
+  }
+}
+
+fn runAll() {
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let rs = Racers(Racer(Timer.make(), 0i64, tx.clone()), Racer(Timer.make(), 0i64, tx.clone()),
+    Racer(Timer.make(), 0i64, tx.clone()), Racer(Timer.make(), 0i64, tx.clone()),
+    Racer(Timer.make(), 0i64, tx.clone()), Racer(Timer.make(), 0i64, tx.clone()),
+    Racer(Timer.make(), 0i64, tx.clone()), Racer(Timer.make(), 0i64, tx.clone()));
+  var i = 0u64;
+  while i < racers {
+    rs.at(i).clock();
+    i = i + 1u64;
+  }
+  i = 0u64;
+  while i < pokers {
+    let p = Poker(i * 7919u64 + 17u64, pokesEach, rs, tx.clone());
+    p.go();
+    i = i + 1u64;
+  }
+  var n = 0u64;
+  while n < pokers {
+    n = n + (rx.recv() || 0u64);
+  }
+  // Let the loops run on a while unpoked, then stop each
+  thread.sleep(Duration.fromMillis(30i64));
+  i = 0u64;
+  while i < racers {
+    rs.at(i).stopIt();
+    i = i + 1u64;
+  }
+  n = 0u64;
+  while n < racers {
+    n = n + (rx.recv() || 0u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  runAll();
+  expect(stale.load() == 0u64, "no resume before the deadline set last");
+  expect(parks.load() == resumes.load(), "every park resumed exactly once");
+  expect(fires.load() > 0u64, "the timers fired");
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  var waited = 0u64;
+  while (actors.timerStats().held != 0u64 || actors.timerStats().heldEntries != 0u64) && waited < 500u64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u64;
+  }
+  let st = actors.timerStats();
+  expect(st.held == 0u64, "no cell held once the racers have gone");
+  expect(st.heldEntries == 0u64, "no entry left in a wheel, the dead ones discarded");
+  expect(st.movesInPlace > 0u64, "earlier moves in place");
+  expect(st.movesAcross > 0u64, "earlier moves across workers");
+  expect(st.refiles > 0u64, "later moves refiled");
+  expect(st.deadEntries > 0u64, "dead entries discarded");
+  done()
+}

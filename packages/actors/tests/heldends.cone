@@ -1,0 +1,131 @@
+// A held timer's end racing its fire (row 500; the spec's section 6, and its
+// test 4). Eight racers run 50,000 rounds each, 400,000 in all; each round a
+// fresh Timer in a fresh group, due in 0-40 us, and, at about the same moment,
+// one of: the group cancelled by another actor (most often on another worker),
+// the group cancelled by main (a plain thread), the Timer dropped by its own
+// actor at another actor's word (the old timer's final, while its next() is
+// parked or its arrive is in flight), or nothing. Each park must be resumed
+// exactly once, true or false (a doubled resume would panic, "a reply answered
+// twice", or count twice; a lost one would leave a racer parked and the
+// runtime not idle); both must happen; and at the end no cell is held and no
+// entry left in any wheel.
+
+mod heldends;
+
+import testing use *;
+import thread;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import cancelgroups use CancelGroup;
+import actors use Timer;
+
+const racers = 8u64;
+const rounds = 50000u64;         // a racer's: 400,000 in all
+const plainEvery = 16u64;        // every this many rounds main cancels
+
+let parks: Atomic[u64];
+let resumes: Atomic[u64];
+let trues: Atomic[u64];
+let falses: Atomic[u64];
+
+fn @initpure init() {
+  parks = Atomic[u64].of(0u64);
+  resumes = Atomic[u64].of(0u64);
+  trues = Atomic[u64].of(0u64);
+  falses = Atomic[u64].of(0u64);
+}
+
+actor Other {
+  pub async fn cancelIt(self, g: CancelGroup) {
+    g.cancel();
+  }
+
+  pub async fn dropFor(self, r: Racer) {
+    r.dropTimer();
+  }
+}
+
+actor Racer {
+  seed: u64;
+  timer: Timer;
+  other: Other;
+  plain: Sender[CancelGroup];
+  done: Sender[u64];
+
+  pub async fn run(self, me: Racer) {
+    var x = seed;
+    var i = 0u64;
+    while i < rounds {
+      x = x * 6364136223846793005u64 + 1442695040888963407u64;
+      let us = i64.from((x >> 33u64) % 41u64);
+      let g = CancelGroup.make();
+      timer = Timer.within(&g);
+      timer.set(Instant.fromNanos(Instant.now().nanos() + us * 1000i64));
+      let kind = (x >> 20u64) % 4u64;
+      if i % plainEvery == 0u64 {
+        plain.send(g);
+      } else if kind == 0u64 {
+        other.cancelIt(g);
+      } else if kind == 1u64 {
+        other.dropFor(me);
+      }
+      parks.add(1u64);
+      if await timer.next() {trues.add(1u64);} else {falses.add(1u64);}
+      resumes.add(1u64);
+      i = i + 1u64;
+    }
+    timer = Timer.make();
+    done.send(1u64);
+  }
+
+  pub async fn dropTimer(self) {
+    timer = Timer.make();
+  }
+}
+
+fn runAll() {
+  var gtx: Sender[CancelGroup];
+  var grx: Receiver[CancelGroup];
+  gtx, grx = Channel[CancelGroup].make();
+  var dtx: Sender[u64];
+  var drx: Receiver[u64];
+  dtx, drx = Channel[u64].make();
+  var k = 0u64;
+  while k < racers {
+    let r = Racer(k * 104729u64 + 3u64, Timer.make(), Other(), gtx.clone(), dtx.clone());
+    r.run(r);
+    k = k + 1u64;
+  }
+  let want = racers * ((rounds + plainEvery - 1u64) / plainEvery);
+  var plainDone = 0u64;
+  while plainDone < want {
+    match grx.recv() {
+      case let Some(g) {g.cancel();}
+      else {}
+    }
+    plainDone = plainDone + 1u64;
+  }
+  var finished = 0u64;
+  while finished < racers {
+    finished = finished + (drx.recv() || 0u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  runAll();
+  expect(parks.load() == racers * rounds && resumes.load() == parks.load(), "every park resumed exactly once");
+  expect(trues.load() + falses.load() == resumes.load(), "...true or false");
+  expect(trues.load() > 0u64 && falses.load() > 0u64, "...both fires and ends won some");
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  var waited = 0u64;
+  while (actors.timerStats().held != 0u64 || actors.timerStats().heldEntries != 0u64) && waited < 500u64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u64;
+  }
+  let st = actors.timerStats();
+  expect(st.held == 0u64, "no cell held once the racers have gone");
+  expect(st.heldEntries == 0u64, "no entry left in a wheel");
+  done()
+}
