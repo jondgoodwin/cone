@@ -735,7 +735,7 @@ fn tcpTls(given: &tls.ServerConfig, http2: bool) tls.ServerConfig {
 }
 
 // One try at the listen: the answer for the caller, or None when 'retry' is true and the UDP bind of HTTP/3 found
-// the TCP port's number in use (the TCP listener is closed by then, and the caller tries again; on port 0 that is a
+// the TCP port's number in use or refused (the TCP listener is closed by then, and the caller tries again; on port 0 that is a
 // fresh port)
 fn listenOnce(lp: &mut Loop, sv: &mut Service, addr: SocketAddr, cfg: &ServerConfig, retry: bool) Option[Result[Server, ServerError]] {
   let conn, maxBody, maxPending, http2, http3, streamBodies = cfg.(conn, maxBody, maxPending, http2, http3, bodiesStreamed);
@@ -795,7 +795,9 @@ fn listenOnce(lp: &mut Loop, sv: &mut Service, addr: SocketAddr, cfg: &ServerCon
         if why.len() > 0usize {
           drv.stopListening(lp, l);
           drv.abortAll(lp);
-          if retry && IoError(code).kind() == IoErrorKind.AddressInUse {
+          // AddressInUse, or the OS refusing the number (WSAEACCES, EACCES): on port 0 TCP chose it (Bug 101)
+          let kind = IoError(code).kind();
+          if retry && (kind == IoErrorKind.AddressInUse || kind == IoErrorKind.PermissionDenied) {
             return None[Result[Server, ServerError]];
           }
           return Some[Result[Server, ServerError]](Err[Server, ServerError](ServerError.failed(code, why.view())));
@@ -819,7 +821,8 @@ fn listenOnce(lp: &mut Loop, sv: &mut Service, addr: SocketAddr, cfg: &ServerCon
 }
 
 // A server made on the service thread, for the reply the 'await' gives. On port 0 with HTTP/3 offered, a UDP bind
-// that finds the TCP port's number taken starts the listen over on a fresh port, up to listenAttempts tries; a port
+// that finds the TCP port's number taken or refused (access denied) starts the listen over on a fresh port, up to
+// listenAttempts tries; a port
 // the caller named is never changed
 struct ListenJob {
   pub addr: SocketAddr;

@@ -3554,6 +3554,41 @@ class BuildCache(unittest.TestCase):
         # congo clean deletes the keys with the build folder
         self.congo("clean", cwd=app)
         self.assertEqual(self.run_app(app), (self.ALL, "23\n"))
+        # A body a dependent carries is part of what the dependent reads: an
+        # inline body and a generic body travel whole in the include file, so
+        # changing either compiles mid, which uses them, again; a plain body
+        # does not (above). Only the include file in the key makes that so
+        def bodies(inline: int, generic: int) -> str:
+            return (f"\npub fn inl(x: i64) i64 inline {{\n  x + {inline}i64\n}}\n"
+                    f"\npub fn gen[T](v: T, k: i64) i64 {{\n  k + {generic}i64\n}}\n")
+        write(self.root / "pkgs" / "mid" / "src" / "mid.cone", """
+            mod mid;
+
+            import leaf;
+
+            pub fn twice() i64 {
+              leaf.value() * 2i64
+            }
+
+            pub fn bodies() i64 {
+              leaf.inl(1i64) + leaf.gen(5i64, 2i64)
+            }
+            """)
+        (self.root / "pkgs" / "mid" / "src" / "more.cone").unlink()
+        self.set_leaf(11, bodies(10, 100))
+        self.set_app(" + mid.bodies()")
+        self.run_app(app)
+        self.assertEqual(self.run_app(app), ([], "135\n"))
+        # The inline body changed: leaf, mid, whose object holds a copy, and
+        # app, whose key holds the include file of every package it reaches
+        self.set_leaf(11, bodies(20, 100))
+        self.assertEqual(self.run_app(app), (["leaf", "mid", "app"], "145\n"))
+        # The generic body changed: the same
+        self.set_leaf(11, bodies(20, 200))
+        self.assertEqual(self.run_app(app), (["leaf", "mid", "app"], "245\n"))
+        # A plain body, for contrast: leaf alone
+        self.set_leaf(12, bodies(20, 200))
+        self.assertEqual(self.run_app(app), (["leaf"], "247\n"))
 
     def test_each_mode_and_each_set_of_defines(self):
         app = self.chain()
