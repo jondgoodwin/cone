@@ -1,0 +1,156 @@
+// A listen on port 0 with HTTP/3 offered also starts over when the UDP bind answers access-denied (Bug 101, row 548).
+// On Windows, a UDP socket that holds a port with SO_EXCLUSIVEADDRUSE on the wildcard address makes another socket's
+// plain bind of that port on 127.0.0.1 answer WSAEACCES (10013), not WSAEADDRINUSE (10048) (lane 757's scratch run).
+// Row 546's step 0 saw 9 failed listens in 12,000, each a UDP bind refused 10013 at the number TCP chose. The retry
+// took only AddressInUse; it now takes PermissionDenied too (EACCES on Linux), within the same 16 tries.
+//
+// Here the test holds 4,000 such exclusive UDP sockets on pseudo-random ports in 49152..60999 and listens 300 times on
+// port 0; every listen must succeed. Without the fix about a third fail with 10013. A port the caller names is still
+// not retried: a listen on a TCP port that is free but whose UDP twin is held that way must fail, and does. Linux has
+// no equivalent refusal to arrange, so there the test only says so.
+
+mod listenaccess;
+
+import stdio use *;
+import path use Path;
+import collections use List, String, AnyError;
+import iocore use Loop, Handle, SocketAddr;
+import sync use Channel, Sender, Receiver;
+import tls;
+import h3driver;
+import actors;
+import actorhttp use Server, ServerConfig;
+
+#if #os == .windows {
+extern {
+  fn @c(system) @initpure WSASocketW(af: i32, kind: i32, proto: i32, info: *u8, g: u32, flags: u32) usize;
+  fn @c(system) @initpure closesocket(s: usize) i32;
+  fn @c(system) bind(s: usize, addr: *u8, len: i32) i32;
+  fn @c(system) setsockopt(s: usize, level: i32, name: i32, val: *u8, len: i32) i32;
+}
+
+// A UDP socket on the wildcard address, port 'port', that no other socket may share (SO_EXCLUSIVEADDRUSE): its
+// descriptor, or 0 when the port cannot be had
+fn holdExclusive(port: u16) usize {
+  let s = WSASocketW(2i32, 2i32, 17i32, null, 0u32, 0u32);
+  if s == 0xFFFFFFFFFFFFFFFFusize {return 0usize;}
+  var one = 1i32;
+  setsockopt(s, 0xFFFFi32, -5i32, &mut one as *u8, 4i32);
+  // SOCKADDR_IN: family 2, the port in network order, the address 0.0.0.0
+  var sa = Array[u8, 16]() <- fill 0u8;
+  sa[0usize] = 2u8;
+  sa[2usize] = u8.from(port >> 8u16);
+  sa[3usize] = u8.from(port & 255u16);
+  if bind(s, &mut sa as *u8, 16i32) != 0i32 {
+    closesocket(s);
+    return 0usize;
+  }
+  s
+}
+}
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+actor Once {
+  server: Server;
+
+  pub async fn open(self, addr: SocketAddr, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(addr, cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok; ports.send(server.port());}
+      case let &mut Err(e) {ports.send(0u16);}
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+fn config(certFile: &Path, keyFile: &Path) ServerConfig {
+  ServerConfig.make().streamBodies().secure(tls.ServerConfig.make(certFile, keyFile)).offerHttp2()
+    .offerHttp3(&h3driver.plugin)
+}
+
+#if #os == .windows {
+fn main() i32 {
+  initAll();
+  var lp = Loop.mustMake();
+  var held = List[usize]();
+  var heldPorts = List[u16]();
+  var seed = 88172645463325252u64;
+  var tries = 0u32;
+  while held.len() < 4000usize && tries < 12000u32 {
+    tries = tries + 1u32;
+    seed = seed ^ (seed << 13u64);
+    seed = seed ^ (seed >> 7u64);
+    seed = seed ^ (seed << 17u64);
+    let port = u16.from(49152u64 + (seed >> 11u64) % 11848u64);
+    let s = holdExclusive(port);
+    if s != 0usize {
+      held.push(s);
+      heldPorts.push(port);
+    }
+  }
+  printStr("held at least 300 exclusive UDP ports: ");
+  printStr(if held.len() >= 300usize {"yes"} else {"no"});
+  printStr("\n");
+
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var ok = 0u64;
+  var bad = 0u64;
+  var named = 0u64;
+  {
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    var i = 0u64;
+    while i < 300u64 {
+      let o = Once(Server.none());
+      o.open(SocketAddr.localhost(0u16), config(&certFile, &keyFile), ptx.clone());
+      let port = prx.recv() || 0u16;
+      if port != 0u16 {ok = ok + 1u64; o.stop();} else {bad = bad + 1u64;}
+      i = i + 1u64;
+    }
+    // A port the caller names is theirs: its UDP twin held, the listen fails and is not moved
+    if heldPorts.len() > 0usize && heldPorts[0usize] != 0u16 {
+      let o = Once(Server.none());
+      o.open(SocketAddr.localhost(heldPorts[0usize]), config(&certFile, &keyFile), ptx.clone());
+      let port = prx.recv() || 0u16;
+      if port == 0u16 {named = 1u64;} else {o.stop();}
+    }
+  }
+  printStr("listens on port 0 succeeded: ");
+  printStr(if bad == 0u64 {"all"} else {"not all"});
+  printStr("\n");
+  printStr("a named port whose UDP twin is held is refused: ");
+  printStr(if named == 1u64 {"yes"} else {"no"});
+  printStr("\n");
+  if bad != 0u64 {
+    printStr("failed listens: ");
+    printUInt(bad);
+    printStr(" of ");
+    printUInt(ok + bad);
+    printStr("\n");
+  }
+  var k = 0usize;
+  while k < held.len() {
+    closesocket(held[k]);
+    k = k + 1usize;
+  }
+  actors.waitQuiet();
+  finalAll();
+  if bad == 0u64 && named == 1u64 {0i32} else {1i32}
+}
+} #else {
+fn main() i32 {
+  printStr("skipped: needs Windows' SO_EXCLUSIVEADDRUSE\n");
+  0i32
+}
+}
