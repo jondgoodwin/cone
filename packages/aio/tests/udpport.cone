@@ -1,0 +1,394 @@
+// UDP waiting on the worker port (aio's UDP ON THE WORKER PORT; iocore's shared.cone, the actors runtime's
+// poller.cone), the switch turned on. Every receive and send that has to wait is listed in its socket's
+// entry and ended there: nothing of UDP waits on the I/O thread.
+//
+// 1. A receive that waits is answered by the datagram that comes, and no record of the phase is handed to the
+//    I/O thread (opStats().handedOver does not move).
+// 2. A recvMany with a deadline that nothing meets: TimedOut, and the batch comes back in the answer
+//    (RecvFailed.batch is Some, every slot as it was), on both systems (Windows: the abort's completion).
+// 3. A recvMany in a group cancelled from a plain thread, and another cancelled from an actor on a worker:
+//    Cancelled, each batch back. A group that ends by its own deadline: TimedOut, the batch back.
+// 4. cancelRead ends the receive waiting on the socket, Cancelled, the batch back; the socket receives the
+//    next datagram as ever.
+// 5. 256 sockets, each with a receive waiting, each sent one datagram at once: every receive is answered
+//    exactly once, with its own datagram, and the records of the phase are not handed to the I/O thread.
+// 6. Every worker busy in long turns while a datagram comes for a waiting receive: it is answered (the busy
+//    workers' polls and the monitor cover the moments with no poller).
+// 7. The program ends with a receive still waiting: it is abandoned, its batch and record home
+//    (lent == 0 and inUse == 0 after the end).
+
+mod udpport;
+
+import testing use *;
+import stdio use printStr, printUInt;
+import sync use Oneshot, OneshotSender, OneshotReceiver, Channel, Sender, Receiver;
+import collections use List;
+import iobuf use IoBuf, stats;
+import iocore use SocketAddr, IoError, CancelGroup, DatagramBatch;
+import time use Instant, Duration;
+import thread;
+import actors;
+import aio use UdpSocket, UdpSender, IoLimits, RecvFailed;
+
+const manySockets = 256u32;
+
+struct Got {
+  pub bound: Atomic[u64];         // 1 if the sockets bound
+  pub woke: Atomic[u64];          // 1: the waiting receive answered with the datagram
+  pub crossed: Atomic[u64];       // 1: records handed to the I/O thread over that phase
+  pub timed: Atomic[u64];         // 2: 1 if TimedOut
+  pub timedBack: Atomic[u64];     // 2: 1 if the batch came back whole, every slot as it was
+  pub plain: Atomic[u64];         // 3: 1 if a group cancelled from a plain thread answered Cancelled, batch back
+  pub fromWorker: Atomic[u64];    // 3: the same cancelled by an actor
+  pub byDeadline: Atomic[u64];    // 3: 1 if a group ending by its deadline answered TimedOut, batch back
+  pub sideCancel: Atomic[u64];    // 4: 1 if cancelRead answered Cancelled, batch back
+  pub afterCancel: Atomic[u64];   // 4: bytes of the datagram the next receive took
+  pub own: Atomic[u64];           // 5: receives answered with their own datagram
+  pub taken: Atomic[u64];         // 5: receives answered at all
+  pub spread: Atomic[u64];        // 5: crossings over the phase
+  pub busy: Atomic[u64];          // 6: the datagram's bytes, answered while every worker was busy
+  pub late: Atomic[u64];          // 6: milliseconds it took (a bound check)
+  pub hung: Atomic[u64];          // 7: 1 once the receive that stays waiting at the end has started
+  pub ownPort: Atomic[u64];       // 4: the port of the owner's socket
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
+  var res = r;
+  var s = UdpSocket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {
+      printStr("udpOf failed: code ");
+      printUInt(u64.from(e.code));
+      printStr("\n");
+      panic("udpOf: the operation failed");
+    }
+  }
+  s
+}
+
+fn portOf(r: Result[SocketAddr, IoError]) u16 {
+  match r {
+    case let Ok(a) {a.port()}
+    else {0u16}
+  }
+}
+
+fn datagram(n: usize, fill: u8) IoBuf {
+  var b = IoBuf(64usize);
+  let w = b.whole();
+  var j = 0usize;
+  while j < n {
+    w[j] = u8.from((usize.from(fill) + j) % 256usize);
+    j = j + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+// A batch of n slots of 64 bytes of room
+fn batchOf(n: u32) Uni[DatagramBatch] {DatagramBatch.make(n, 64usize)}
+
+// The room of each slot of a fresh batch
+fn slotRoom() usize {
+  let b = batchOf(1u32);
+  b.bufAt(0u32).room()
+}
+
+// Whether a failed receive carries its batch back, whole: n slots, each with its room as it went
+fn backWhole(f: &RecvFailed, n: u32) bool {
+  match &f.batch {
+    case let Some(x) {
+      var whole = x.size() == n;
+      var k = 0u32;
+      while whole && k < n {
+        if x.bufAt(k).room() != slotRoom() {whole = false;}
+        k = k + 1u32;
+      }
+      whole
+    }
+    else {false}
+  }
+}
+
+fn handedOver() u64 {aio.opStats().handedOver}
+
+actor Helper {
+  // One datagram of 7 bytes to port, after ms
+  pub async fn send(self, s: UdpSender, port: u16, ms: i64) {
+    let r = await aio.sleep(Duration.fromMillis(ms));
+    let sent = await s.sendTo(SocketAddr.localhost(port), datagram(7usize, 9u8));
+  }
+
+  // The group cancelled after ms, from a worker
+  pub async fn cancelAfter(self, g: CancelGroup, ms: i64) {
+    let r = await aio.sleep(Duration.fromMillis(ms));
+    g.cancel();
+  }
+
+  // One datagram to each of the first n ports, at once
+  pub async fn spray(self, s: UdpSender, ports: List[u16], ms: i64) {
+    let r = await aio.sleep(Duration.fromMillis(ms));
+    var i = 0usize;
+    while i < ports.len() {
+      let sent = await s.sendTo(SocketAddr.localhost(*ports[i]), datagram(3usize, u8.from(i)));
+      i = i + 1usize;
+    }
+  }
+}
+
+// Receives one datagram on a socket: its first byte says which socket it was meant for
+actor Rx {
+  pub async fn take(self, s: UdpSocket, idx: u32) {
+    var r = await s.recvFrom(IoBuf(64usize));
+    match &mut r {
+      case var &mut Ok(ok) {
+        if u32.from(ok.buf.view()[0usize]) == idx && ok.buf.len() == 3usize {
+          got.own.add(1u64);
+        } else {
+          printStr("rx wrong: idx ");
+          printUInt(u64.from(idx));
+          printStr(" first ");
+          printUInt(u64.from(ok.buf.view()[0usize]));
+          printStr(" len ");
+          printUInt(u64.from(ok.buf.len()));
+          printStr("\n");
+        }
+      }
+      case let &mut Err(e) {
+        printStr("rx err: idx ");
+        printUInt(u64.from(idx));
+        printStr(" code ");
+        printUInt(u64.from(e.code));
+        printStr("\n");
+      }
+    }
+    got.taken.add(1u64);
+  }
+}
+
+// Holds a worker for ms of busy turn
+actor Spin {
+  pub async fn burn(self, ms: i64, turns: u32) {
+    var k = 0u32;
+    while k < turns {
+      let until = Instant.now() + Duration.fromMillis(ms);
+      while Instant.now() < until {}
+      // A turn ends at an await: a sleep of nothing
+      let r = await aio.sleep(Duration.fromMillis(1i64));
+      k = k + 1u32;
+    }
+  }
+}
+
+// A socket and its receive, which a second behaviour ends with cancelRead while the first waits on it
+actor Owner {
+  sock: UdpSocket;
+
+  pub async fn start(self) {
+    sock = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    got.ownPort.store(u64.from(portOf(await sock.localAddr())));
+    let cr = await sock.recvManyIn(batchOf(2u32), IoLimits.none());
+    match cr {
+      case var Err(f) {if aio.isCancelled(f.error) && backWhole(&f, 2u32) {got.sideCancel.store(1u64);}}
+      else {}
+    }
+    let nx = await sock.recvFrom(IoBuf(64usize));
+    match nx {
+      case let Ok(ok) {got.afterCancel.store(u64.from(ok.buf.len()));}
+      else {}
+    }
+  }
+
+  pub async fn stop(self) {
+    sock.cancelRead();
+  }
+}
+
+// A receive that is never answered: it is still waiting when the program ends
+actor Hang {
+  pub async fn park(self, s: UdpSocket) {
+    got.hung.store(1u64);
+    let r = await s.recvMany(batchOf(4u32));
+  }
+}
+
+actor Peer {
+
+  pub async fn run(self, plainG: CancelGroup, ready: Sender[u64], done: OneshotSender[u64]) {
+    let a = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let b = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let pa = portOf(await a.localAddr());
+    let pb = portOf(await b.localAddr());
+    if pa != 0u16 && pb != 0u16 {got.bound.store(1u64);}
+    let help = Helper();
+
+    // 1. A receive that waits, answered by the datagram that comes
+    let h0 = handedOver();
+    help.send(a.sender(), pb, 40i64);
+    let r1 = await b.recvFrom(IoBuf(64usize));
+    match r1 {
+      case let Ok(ok) {if ok.buf.len() == 7usize && ok.from.port() == pa {got.woke.store(1u64);}}
+      else {}
+    }
+    got.crossed.store(handedOver() - h0);
+
+    // 2. A deadline nothing meets: TimedOut, the batch back
+    let t = await b.recvManyIn(batchOf(3u32), IoLimits.until(Instant.now() + Duration.fromMillis(60i64)));
+    match t {
+      case var Err(f) {
+        if aio.isTimedOut(f.error) {got.timed.store(1u64);}
+        if backWhole(&f, 3u32) {got.timedBack.store(1u64);}
+      }
+      else {}
+    }
+
+    // 3. A group cancelled from a plain thread (the main thread), then from a worker, then by its deadline
+    ready.send(1u64);
+    let pg = await b.recvManyIn(batchOf(2u32), IoLimits.within(plainG));
+    match pg {
+      case var Err(f) {if aio.isCancelled(f.error) && backWhole(&f, 2u32) {got.plain.store(1u64);}}
+      else {}
+    }
+    let wg = CancelGroup.make();
+    help.cancelAfter(wg, 40i64);
+    let wr = await b.recvManyIn(batchOf(2u32), IoLimits.within(wg));
+    match wr {
+      case var Err(f) {if aio.isCancelled(f.error) && backWhole(&f, 2u32) {got.fromWorker.store(1u64);}}
+      else {}
+    }
+    let dg = CancelGroup.until(Instant.now() + Duration.fromMillis(60i64));
+    let dr = await b.recvManyIn(batchOf(2u32), IoLimits.within(dg));
+    match dr {
+      case var Err(f) {if aio.isTimedOut(f.error) && backWhole(&f, 2u32) {got.byDeadline.store(1u64);}}
+      else {}
+    }
+
+    // 4. cancelRead ends the receive (the owner's second behaviour, while its first is paused on it); the
+    // socket then receives as ever
+    let owner = Owner(UdpSocket.none());
+    owner.start();
+    var spins = 0u32;
+    while got.ownPort.load() == 0u64 && spins < 400u32 {
+      let nap = await aio.sleep(Duration.fromMillis(5i64));
+      spins = spins + 1u32;
+    }
+    let settle = await aio.sleep(Duration.fromMillis(40i64));
+    owner.stop();
+    let after = await aio.sleep(Duration.fromMillis(40i64));
+    help.send(a.sender(), u16.from(got.ownPort.load()), 5i64);
+    spins = 0u32;
+    while got.afterCancel.load() == 0u64 && spins < 400u32 {
+      let nap = await aio.sleep(Duration.fromMillis(5i64));
+      spins = spins + 1u32;
+    }
+
+    // 5. Many sockets, a receive waiting on each, one datagram to each at once
+    let h5 = handedOver();
+    var socks = List[UdpSocket]();
+    var ports = List[u16]();
+    var i = 0u32;
+    while i < manySockets {
+      let s = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+      ports.push(portOf(await s.localAddr()));
+      socks.push(s);
+      i = i + 1u32;
+    }
+    var rxs = List[Rx]();
+    while socks.len() > 0usize {
+      // Each socket is moved to a receiver of its own; its index is its place in 'ports'
+      let idx = u32.from(socks.len() - 1usize);
+      match socks.pop() {
+        case var Some(s) {
+          let r = Rx();
+          r.take(s, idx);
+          rxs.push(r);
+        }
+        else {}
+      }
+    }
+    help.spray(a.sender(), ports, 60i64);
+    var polls = 0u32;
+    while got.taken.load() < u64.from(manySockets) && polls < 1000u32 {
+      let nap = await aio.sleep(Duration.fromMillis(5i64));
+      polls = polls + 1u32;
+    }
+    got.spread.store(handedOver() - h5);
+
+    // 6. Every worker busy while a datagram comes for a waiting receive
+    var spinners = List[Spin]();
+    i = 0u32;
+    while i < 24u32 {
+      let sp = Spin();
+      sp.burn(8i64, 12u32);
+      spinners.push(sp);
+      i = i + 1u32;
+    }
+    let t6 = Instant.now();
+    help.send(a.sender(), pb, 30i64);
+    let r6 = await b.recvFrom(IoBuf(64usize));
+    match r6 {
+      case let Ok(ok) {got.busy.store(u64.from(ok.buf.len()));}
+      else {}
+    }
+    got.late.store(u64.from((Instant.now() - t6).millis()));
+
+    // 7. A receive left waiting at the program's end
+    let hang = Hang();
+    hang.park(b);
+    var dn = done;
+    dn.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  var rtx: Sender[u64];
+  var rrx: Receiver[u64];
+  rtx, rrx = Channel[u64].make();
+  let g = CancelGroup.make();
+  {
+    let peer = Peer();
+    peer.run(g, rtx, tx);
+    rrx.recv();
+    thread.sleep(Duration.fromMillis(80i64));
+    expect(g.cancel(), "the group was live");
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the peer said it was done");}
+    else {}
+  }
+  thread.sleep(Duration.fromMillis(100i64));
+  expectUInt(got.hung.load(), 1u64, "the receive that stays waiting had started");
+  finalAll();
+  expectUInt(got.bound.load(), 1u64, "two sockets bound");
+  expectUInt(got.woke.load(), 1u64, "1: a receive that waited was answered by the datagram that came");
+  expectUInt(got.crossed.load(), 0u64, "1: nothing was handed to the I/O thread");
+  expectUInt(got.timed.load(), 1u64, "2: a deadline that fell answered TimedOut");
+  expectUInt(got.timedBack.load(), 1u64, "2: and the batch came back, every slot as it was");
+  expectUInt(got.plain.load(), 1u64, "3: a group cancelled from a plain thread answered Cancelled, its batch back");
+  expectUInt(got.fromWorker.load(), 1u64, "3: a group cancelled from a worker answered Cancelled, its batch back");
+  expectUInt(got.byDeadline.load(), 1u64, "3: a group ended by its deadline answered TimedOut, its batch back");
+  expectUInt(got.sideCancel.load(), 1u64, "4: cancelRead answered the receive Cancelled, its batch back");
+  expectUInt(got.afterCancel.load(), 7u64, "4: the socket received the next datagram");
+  expectUInt(got.own.load(), u64.from(manySockets), "5: every receive was answered with its own datagram");
+  expectUInt(got.taken.load(), u64.from(manySockets), "5: every receive was answered, and once");
+  expectUInt(got.spread.load(), 0u64, "5: nothing was handed to the I/O thread");
+  expectUInt(got.busy.load(), 7u64, "6: a datagram was answered while every worker was busy");
+  expect(got.late.load() < 3000u64, "6: and within three seconds");
+  expectUInt(stats().lent, 0u64, "every buffer came home");
+  expectUInt(aio.opStats().inUse, 0u64, "every record dissolved");
+  done()
+}
