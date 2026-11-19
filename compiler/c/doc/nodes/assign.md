@@ -255,8 +255,15 @@ Per target:
    its root (reached through a call's result or a raw pointer) is the global
    scope, 0: `iexpLvalInfo` writes it for every such root, so a borrowed
    parameter is refused there, the same on every platform (an unwritten scope
-   was read as stack garbage until lane 710). `swapFlow` applies the same check
-   to both sides.
+   was read as stack garbage until lane 710). So is a place whose path crosses
+   a raw-pointer dereference (a `*p`, a field or element of one, or a field
+   access through a pointer, whether `p` is a parameter, a local, a field or
+   another pointer): `iexpScopeThroughPtr` sets it for a store, since the
+   holder is what the pointer points at, not the variable that holds the
+   pointer, and a type that names no lifetime is read as global (Jon, 18 Nov
+   2026; lane 735). `(*p).r = x` with `p: *Cell` and a borrowed `x` is refused
+   as `(*cell()).r = x` was. A borrow of such a place, not a store, keeps the
+   scope its path gave it. `swapFlow` applies the same check to both sides.
 
 `assignMultRetFlow` runs `assignlvalrtype` per lval, then the same
 `flowHandleMoveOrCopy` on the one rval: a destructured call result is a
