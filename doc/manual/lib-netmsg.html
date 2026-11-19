@@ -172,6 +172,17 @@ fn main() {
 		<span class="pre">flushCells()</span> is called.</li>
 	<li><span class="pre">unbindLatest(stream)</span>: lets go of the stream's cell; the stream is
 		<span class="pre">sendLatest</span>'s again.</li>
+	<li><span class="pre">bindIncoming(stream, cell)</span>: the stream's newest incoming value goes into a
+		<span class="pre">sync.LatestWriter</span> instead of to the handler, so the receiver (the world, reading every
+		player's input each tick) reads it from the cell's reader with no event and no message. The protocol's sequence rules
+		have already run, so an older value never follows a newer one. A value longer than the cell's capacity is dropped and
+		counted in <span class="pre">ConnectionStats.cellRefused</span>. Binding a stream already bound lets go of the old
+		cell, which keeps what it held; later values go to the new cell only. A value that arrived before the bind was an
+		<span class="pre">Update</span> and stays one, even if it still waits for the handler's credit; a stream not bound is
+		<span class="pre">Update</span>s as before. It works on every kind, in-process included, where the value goes into the
+		cell as the sender's call is handled, before any message sent after it.</li>
+	<li><span class="pre">unbindIncoming(stream)</span>: lets go of the stream's cell; its values are
+		<span class="pre">Update</span>s again. A stream not bound is a no-op.</li>
 	<li><span class="pre">flushCells()</span>: in-process, delivers each bound cell's newest now, in order with the messages sent
 		before and after the call (lockstep single player: the frame's requests, the state, the frame's end); over UDP and
 		on the simulated pair it looks at the cells now rather than at the next send slot, and sends what is newer when the

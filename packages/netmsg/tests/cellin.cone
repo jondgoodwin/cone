@@ -1,0 +1,232 @@
+// Incoming streams bound to cells (bindIncoming), in-process and over the
+// simulated link. A bound stream's newest value goes into the receiver's cell,
+// not to the handler (no Update); a stream not bound, and a value that came
+// before the bind, are Updates as before; a value longer than the cell takes is
+// dropped and counted (cellRefused); rebinding puts later values in the new
+// cell only; unbindIncoming gives Updates back. Reliable messages sent between
+// the values arrive in order, once each.
+
+mod cellin;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration;
+import thread;
+import actors;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+fn describe(e: NetEvent) String {
+  var s = String();
+  match e {
+    case let Joined(j) { s.append("J"); s.appendUInt(u64.from(j.id)); }
+    case let Left(l) { s.append("L"); s.appendUInt(u64.from(l.id)); }
+    case let Message(m) {
+      s.append("M"); s.appendUInt(u64.from(m.id)); s.append(":");
+      s.append(String.fromBytes(m.data.view()).view());
+    }
+    case let Update(u) {
+      s.append("U"); s.appendUInt(u64.from(u.id)); s.append(":"); s.appendUInt(u64.from(u.stream));
+      s.append(":"); s.append(String.fromBytes(u.data.view()).view());
+    }
+    case let Refused(r) { s.append("R"); s.appendUInt(u64.from(r.id)); }
+  }
+  s
+}
+
+fn nextWithin(rx: &mut Receiver[NetEvent], ms: i64) String {
+  match rx.recvTimeout(Duration.fromMillis(ms)) {
+    case let Some(e) { return describe(e); }
+    case is None[NetEvent] {}
+  }
+  String.from("none")
+}
+
+fn next(rx: &mut Receiver[NetEvent]) String {nextWithin(rx, 1000i64)}
+
+fn bytes(s: &str) Bytes {
+  var b = List[u8]();
+  putBytes(&mut b, s);
+  copyPacket(b.view()).freeze()
+}
+
+// The newest value a reader holds, as "version:text" ("none" before any)
+fn held(r: &LatestReader) String {
+  var buf = IoBuf(if r.capacity() > 0usize {r.capacity()} else {1usize});
+  var s = String();
+  match r.readNewer(0u64, buf.spare()) {
+    case let Some(got) {
+      buf.setLen(got.len);
+      s.appendUInt(got.version);
+      s.append(":");
+      s.append(String.fromBytes(buf.freeze().view()).view());
+    }
+    else { s.append("none"); }
+  }
+  s
+}
+
+// What the reader holds once it holds 'want', or after 2 s what it holds (a packet's
+// messages are given before its values, so a message can arrive first)
+fn heldBy(r: &LatestReader, want: &str) String {
+  var t = 0i64;
+  var s = held(r);
+  while s.view() != want && t < 2000i64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    t = t + 10i64;
+    s = held(r);
+  }
+  s
+}
+
+actor Prober {
+  pub async fn refused(self, c: Connection, out: Sender[u64]) {
+    let s = await c.stats();
+    out.send(s.cellRefused);
+  }
+}
+
+fn refusedOf(c: Connection) u64 {
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let prober = Prober();
+  prober.refused(c, tx);
+  match rx.recvTimeout(Duration.fromSeconds(5i64)) {
+    case let Some(v) { return v; }
+    case is None[u64] {}
+  }
+  999999u64
+}
+
+fn main() i32 {
+  var txA: Sender[NetEvent];
+  var rxA: Receiver[NetEvent];
+  txA, rxA = Channel[NetEvent].make();
+  var txB: Sender[NetEvent];
+  var rxB: Receiver[NetEvent];
+  txB, rxB = Channel[NetEvent].make();
+  {
+    let pair = pairInProcess(channelHandler(txA), 1u32, channelHandler(txB), 7u32);
+    expectStr(next(&mut rxA).view(), "J1", "a joined");
+    expectStr(next(&mut rxB).view(), "J7", "b joined");
+
+    // Input before the bind is an Update
+    pair.a.sendLatest(3u16, bytes("early"));
+    expectStr(next(&mut rxB).view(), "U7:3:early", "a value before the bind is an Update");
+
+    var w: LatestWriter;
+    var r: LatestReader;
+    w, r = latestCell(8usize);
+    pair.b.bindIncoming(3u16, w);
+    refusedOf(pair.b);
+    pair.a.sendLatest(3u16, bytes("in1"));
+    pair.a.sendReliable(bytes("m1"));
+    expectStr(next(&mut rxB).view(), "M7:m1", "no Update for a bound stream: the next event is the message");
+    expectStr(held(&r).view(), "1:in1", "the receiver reads the value from the cell");
+    pair.a.sendLatest(3u16, bytes("in2"));
+    pair.a.sendLatest(3u16, bytes("in3"));
+    pair.a.sendReliable(bytes("m2"));
+    expectStr(next(&mut rxB).view(), "M7:m2", "still no Update");
+    expectStr(held(&r).view(), "3:in3", "the cell holds the newest");
+
+    // Another stream is not bound
+    pair.a.sendLatest(9u16, bytes("other"));
+    expectStr(next(&mut rxB).view(), "U7:9:other", "a stream not bound is an Update");
+    expectStr(held(&r).view(), "3:in3", "and the cell is untouched by it");
+
+    // A value longer than the cell: dropped, counted, the cell keeps its value
+    expectUInt(refusedOf(pair.b), 0u64, "nothing refused yet");
+    pair.a.sendLatest(3u16, bytes("123456789"));
+    pair.a.sendReliable(bytes("m3"));
+    expectStr(next(&mut rxB).view(), "M7:m3", "an over-long value is no Update either");
+    expectStr(held(&r).view(), "3:in3", "it is not stored");
+    expectUInt(refusedOf(pair.b), 1u64, "it is counted in cellRefused");
+
+    // Rebinding: later values go to the new cell only
+    var w2: LatestWriter;
+    var r2: LatestReader;
+    w2, r2 = latestCell(8usize);
+    pair.b.bindIncoming(3u16, w2);
+    refusedOf(pair.b);
+    pair.a.sendLatest(3u16, bytes("n1"));
+    pair.a.sendReliable(bytes("m4"));
+    expectStr(next(&mut rxB).view(), "M7:m4", "after a rebind, still no Update");
+    expectStr(held(&r2).view(), "1:n1", "the new cell holds the new value, from its own version 1");
+    expectStr(held(&r).view(), "3:in3", "the old cell is not written any more, nor given the new one's value");
+
+    // Unbind: Updates again, the cells untouched
+    pair.b.unbindIncoming(3u16);
+    refusedOf(pair.b);
+    pair.a.sendLatest(3u16, bytes("u1"));
+    expectStr(next(&mut rxB).view(), "U7:3:u1", "after unbindIncoming the value is an Update");
+    expectStr(held(&r2).view(), "1:n1", "the let-go cell is not written");
+
+    // Bound again after an unbind
+    var w3: LatestWriter;
+    var r3: LatestReader;
+    w3, r3 = latestCell(8usize);
+    pair.b.bindIncoming(3u16, w3);
+    refusedOf(pair.b);
+    pair.a.sendLatest(3u16, bytes("b1"));
+    pair.a.sendReliable(bytes("m5"));
+    expectStr(next(&mut rxB).view(), "M7:m5", "bound again, no Update");
+    expectStr(held(&r3).view(), "1:b1", "the new binding gets only its own values");
+    expectStr(held(&r2).view(), "1:n1", "and not the one let go before it");
+
+    // Reliable messages sent around the values: in order, once each
+    var i = 0u32;
+    while i < 5u32 {
+      var s = String.from("r");
+      s.appendUInt(u64.from(i));
+      pair.a.sendLatest(3u16, bytes("x"));
+      pair.a.sendReliable(bytes(s.view()));
+      i = i + 1u32;
+    }
+    i = 0u32;
+    while i < 5u32 {
+      var s = String.from("M7:r");
+      s.appendUInt(u64.from(i));
+      expectStr(next(&mut rxB).view(), s.view(), "reliable messages arrive in order");
+      i = i + 1u32;
+    }
+    expectStr(nextWithin(&mut rxB, 100i64).view(), "none", "and no more");
+    expectStr(held(&r3).view(), "6:x", "the cell took the five values");
+
+    pair.a.close();
+    expectStr(next(&mut rxA).view(), "L1", "closed");
+    expectStr(next(&mut rxB).view(), "L7", "and b hears it");
+  }
+
+  // The simulated pair: a value crosses the protocol into the cell
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  var txD: Sender[NetEvent];
+  var rxD: Receiver[NetEvent];
+  txD, rxD = Channel[NetEvent].make();
+  {
+    var sp = pairSimulated(NetConfig.defaults(), LinkConfig.perfect(), LinkConfig.perfect(), 3u64,
+      channelHandler(txC), 1u32, channelHandler(txD), 7u32);
+    expectStr(next(&mut rxC).view(), "J1", "a joined");
+    expectStr(next(&mut rxD).view(), "J7", "b joined");
+    var w: LatestWriter;
+    var r: LatestReader;
+    w, r = latestCell(16usize);
+    sp.b.bindIncoming(5u16, w);
+    refusedOf(sp.b);
+    sp.a.sendLatest(5u16, bytes("sim1"));
+    sp.a.sendReliable(bytes("sm"));
+    expectStr(next(&mut rxD).view(), "M7:sm", "the message crosses, and no Update for the bound stream");
+    expectStr(heldBy(&r, "1:sim1").view(), "1:sim1", "the value crossed the simulated link into the cell");
+    sp.a.sendLatest(5u16, bytes("sim2"));
+    sp.a.sendReliable(bytes("sn"));
+    expectStr(next(&mut rxD).view(), "M7:sn", "second message");
+    expectStr(heldBy(&r, "2:sim2").view(), "2:sim2", "the newest value follows");
+    expectStr(nextWithin(&mut rxD, 100i64).view(), "none", "no Update came");
+    sp.stop();
+    sp.a.close();
+  }
+  done()
+}

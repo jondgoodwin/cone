@@ -62,6 +62,13 @@ struct CellBind {
   seen: u64;
 }
 
+// A stream whose incoming values go into a cell (bindIncoming). The protocol's
+// own sequence rules (newest only) have already run when a value reaches it
+struct InBind {
+  stream: u16;
+  cell: Option[LatestWriter];
+}
+
 pub actor Connection is ValueSource {
   kind: u32;
   id: u32;
@@ -86,6 +93,8 @@ pub actor Connection is ValueSource {
   // In-process: the streams bound to cells (bindLatest), in the order bound
   binds: Array[CellBind, 64];
   nBinds: usize;
+  inBinds: List[InBind];        // the incoming streams bound to cells (bindIncoming); an unbound entry has no cell
+  cellRefusedIn: u64;           // incoming values longer than their cell takes
   cellSkippedOut: u64;          // in-process: cell versions passed over between two flushCells
   staleOut: u64;                // values replaced in a slot before they were sent
   sendErrors: u64;              // sends the socket answered with an error
@@ -114,7 +123,7 @@ pub actor Connection is ValueSource {
       pend: Array[PendingUpdate, 64]() <- fill PendingUpdate(0u16, None[Bytes], false),
       ring: Array[usize, 64]() <- fill 0usize, ringHead: 0usize, ringLen: 0usize,
       directIds: Array[u16, 64]() <- fill 0u16, nDirect: 0usize,
-      binds: Array[CellBind, 64]() <- fill CellBind(0u16, None[LatestReader], 0u64), nBinds: 0usize, cellSkippedOut: 0u64,
+      binds: Array[CellBind, 64]() <- fill CellBind(0u16, None[LatestReader], 0u64), nBinds: 0usize, inBinds: List[InBind](), cellRefusedIn: 0u64, cellSkippedOut: 0u64,
       staleOut: 0u64, sendErrors: 0u64, slotsRefused: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
       open: true, forced: false, forcedReason: CloseReason.Local,
       addr: addr, ep: ep, tx: tx, outq: Deque[IoBuf](), parent: parent,
@@ -235,6 +244,37 @@ pub actor Connection is ValueSource {
     }
   }
 
+  // This stream's newest incoming value goes into the cell, not to the handler
+  // (no Update event): the receiver reads it from the cell's reader. A value
+  // longer than the cell's capacity is dropped and counted in
+  // ConnectionStats.cellRefused. A stream already bound is rebound: the old cell
+  // is let go and keeps what it held, the new cell gets only values that arrive
+  // from now on. A value that arrived before the bind was an Update and stays
+  // one, even when it still waits for the handler's credit. The stream's
+  // sequence is the protocol's, so an older value never follows a newer one.
+  pub async fn bindIncoming(self, stream: u16, cell: LatestWriter) {
+    if !open {return;}
+    var k = 0usize;
+    while k < inBinds.len() && inBinds[k].stream != stream {k = k + 1usize;}
+    if k == inBinds.len() {
+      if k >= maxStreams {
+        self.refuse(false, stream, RefusalKind.TooManyStreams, cell.capacity(), maxStreams);
+        return;
+      }
+      inBinds.push(InBind(stream, Some[LatestWriter](cell)));
+      return;
+    }
+    inBinds[k].cell = Some[LatestWriter](cell);
+  }
+
+  // Let go of an incoming stream's cell: its values are Updates again. An
+  // unbound stream is a no-op
+  pub async fn unbindIncoming(self, stream: u16) {
+    var k = 0usize;
+    while k < inBinds.len() && inBinds[k].stream != stream {k = k + 1usize;}
+    if k < inBinds.len() {inBinds[k].cell = None[LatestWriter];}
+  }
+
   // Send what the bound cells hold now. In-process, each bound cell newer than
   // the last one delivered is delivered at once as an Update, in order with the
   // messages sent before and after it (one frame of lockstep single player: state,
@@ -284,6 +324,7 @@ pub actor Connection is ValueSource {
     s.sendErrors = sendErrors;
     s.streamsRefused = s.streamsRefused + slotsRefused;
     s.cellSkipped = s.cellSkipped + cellSkippedOut;
+    s.cellRefused = s.cellRefused + cellRefusedIn;
     s
   }
 
@@ -458,6 +499,7 @@ pub actor Connection is ValueSource {
   // The newest value of a stream, at its position: it replaces the value
   // waiting there, or begins to wait, last in the ring
   fn emitUpdate(self, pos: usize, stream: u16, d: Bytes) {
+    if self.intoCell(stream, d) {return;}
     let s = &mut pend[pos];
     if s.waiting {
       s.data = Some[Bytes](d);
@@ -470,6 +512,26 @@ pub actor Connection is ValueSource {
       ringLen = ringLen + 1usize;
     }
     self.flush();
+  }
+
+  // An incoming value on a stream bound to a cell goes into it (true), or is
+  // dropped and counted when it is longer than the cell takes; false when the
+  // stream is not bound
+  fn intoCell(self, stream: u16, d: Bytes) bool {
+    var k = 0usize;
+    while k < inBinds.len() {
+      if inBinds[k].stream == stream {
+        match &mut inBinds[k].cell {
+          case let &mut Some[LatestWriter](w) {
+            if !w.put(d.view()) {cellRefusedIn = cellRefusedIn + 1u64;}
+            return true;
+          }
+          else { return false; }
+        }
+      }
+      k = k + 1usize;
+    }
+    false
   }
 
   // Send what the credit allows: the reliable lane in order, a control event
@@ -676,6 +738,11 @@ pub actor Connection is ValueSource {
     while c < nBinds {
       binds[c].cell = None[LatestReader];
       c = c + 1usize;
+    }
+    var ib = 0usize;
+    while ib < inBinds.len() {
+      inBinds[ib].cell = None[LatestWriter];
+      ib = ib + 1usize;
     }
     // A value still waiting for credit is dropped: nothing follows Left
     while ringLen > 0usize {

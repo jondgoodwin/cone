@@ -130,5 +130,19 @@ fn main() i32 {
   sentOne(&mut p, &mut clock, &mut vals);
   let slot = p.a.nextDeadline().nanos() - clock.now().nanos();
   expect(slot > 0i64 && slot <= 34000000i64, "a bound cell asks for the next send slot, a future one");
+
+  // The same stream bound again after the unbind: its cell is sent, and the cell
+  // let go before it (y, which held y3) is not handed to the new binding
+  let before = vals.len();
+  wz.put(text("z1").view());
+  go(&mut p, &mut clock, 150i64, &mut vals);
+  expectUInt(u64.from(vals.len()) - u64.from(before), 1u64, "a value put in the rebound cell is sent once");
+  expectStr(vals[vals.len() - 1usize].view(), "4:z1", "it is z's value, not y's");
+  wy.put(text("y4").view());
+  wz.put(text("z2").view());
+  go(&mut p, &mut clock, 150i64, &mut vals);
+  expectUInt(u64.from(vals.len()) - u64.from(before), 2u64, "and y, let go, sends nothing after the rebind");
+  expectStr(vals[vals.len() - 1usize].view(), "4:z2", "z goes on");
+  expectUInt(p.b.stats().latestStale, 0u64, "in sequence across unbind and rebind");
   done()
 }
