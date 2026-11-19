@@ -138,8 +138,10 @@
 //                           slots, each a DatagramSlot {buf, from}. DatagramBatch.make(slots, room), .count(),
 //                           .wasCut(k), .from(k), .swapOut(k, fresh), .bufAt(k); at most 64 slots (the width of its cut bits)
 //   RecvFailed {error, batch, slot}
-//                           what a failed recvMany answers: the IoError, the batch back (None only in the one
-//                           bad case, below), and for a refusal the first slot with no room
+//                           what a failed recvMany answers: the IoError, the batch back (never None for a socket
+//                           that waits on the worker port, which is every UDP socket the runtime can register
+//                           there; None only in the one bad case, below, of a socket the Loop holds), and for a
+//                           refusal the first slot with no room
 //
 // Each of the operations (and each sleep) makes an OPERATION, an actors.Awaitable[R], which
 // does nothing until an 'await' in a behaviour starts it; the 'await''s value
@@ -370,7 +372,8 @@
 // (every send that fits the socket, a read whose bytes are there), it is
 // answered there and the actor goes on in the same batch, nothing crossing to
 // the I/O thread; in flight, the record goes to the I/O thread, which links it
-// on the Loop. A cancel and a close are queued under the same lock, so they
+// on the Loop (a datagram operation that finds nothing to do does not: it waits
+// in its socket's entry for the worker port, UDP ON THE WORKER PORT, below). A cancel and a close are queued under the same lock, so they
 // keep their order against an issue, and a socket dropped marks its entry
 // closing first: an operation awaited after the drop goes behind the close and
 // fails as before. Any other 'await', and one that could not be issued (a
@@ -559,7 +562,9 @@
 // batch comes back on every failure too (RecvFailed's 'batch'), so the owner never
 // loses its block; the one exception is the bad case below, where the kernel
 // still holds it and the answer is TimedOut with 'batch' None (Windows only: a
-// Linux loop holds no socket operation's buffer in the kernel). 'sendTo' is iocore's SendTo: all of the buffer as
+// Linux loop holds no socket operation's buffer in the kernel). A UDP socket's
+// waits are the worker port's (UDP ON THE WORKER PORT, below), where a deadline waits
+// for the aborted receive's completion, so the bad case is met only by a socket the Loop holds. 'sendTo' is iocore's SendTo: all of the buffer as
 // ONE datagram, the buffer going home; the count is its length; UDP promises no
 // delivery, so the answer says the system took the datagram. A datagram too
 // large for the network fails (the same number, of the kind Other). One receive at a time per
