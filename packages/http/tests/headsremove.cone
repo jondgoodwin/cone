@@ -1,0 +1,98 @@
+// Headers.remove (first, middle, last, repeated, absent, case), the 100-field cap,
+// and refilling a kept head with no allocation.
+
+mod headsremove;
+
+import testing use *;
+import collections use String;
+import http use *;
+
+fn listing(h: &Headers) String {
+  var s = String();
+  var i = 0usize;
+  while i < h.len() {
+    s.append(h.nameAt(i));
+    s.append("=");
+    s.appendBytes(h.valueAt(i));
+    s.append(";");
+    i = i + 1usize;
+  }
+  s
+}
+
+fn abc() Headers {
+  var h = Headers();
+  h.add("A", "one");
+  h.add("B", "two");
+  h.add("C", "three");
+  h
+}
+
+fn main() i32 {
+  var h = abc();
+  expectUInt(u64.from(h.remove("A")), 1u64, "first removed");
+  expectStr(listing(&h).view(), "B=two;C=three;", "first gone, the rest in order and intact");
+
+  h = abc();
+  expectUInt(u64.from(h.remove("B")), 1u64, "middle removed");
+  expectStr(listing(&h).view(), "A=one;C=three;", "middle gone");
+
+  h = abc();
+  expectUInt(u64.from(h.remove("C")), 1u64, "last removed");
+  expectStr(listing(&h).view(), "A=one;B=two;", "last gone");
+
+  h = Headers();
+  h.add("X", "1");
+  h.add("Y", "keep");
+  h.add("x", "22");
+  h.add("Z", "z");
+  h.add("X", "333");
+  expectUInt(u64.from(h.remove("X")), 3u64, "repeated and mixed case: three removed");
+  expectStr(listing(&h).view(), "Y=keep;Z=z;", "only the others remain");
+  expectUInt(u64.from(h.remove("X")), 0u64, "removing again finds none");
+
+  h = abc();
+  expectUInt(u64.from(h.remove("Nope")), 0u64, "absent: none");
+  expectStr(listing(&h).view(), "A=one;B=two;C=three;", "absent: unchanged");
+  expectUInt(u64.from(h.remove("b")), 1u64, "name's case ignored");
+  expectStr(listing(&h).view(), "A=one;C=three;", "case: gone");
+  h.add("D", "four");
+  expectStr(listing(&h).view(), "A=one;C=three;D=four;", "an add after a remove lands after the rest");
+  h.remove("A"); h.remove("C"); h.remove("D");
+  expectUInt(u64.from(h.len()), 0u64, "all removed");
+  h.add("E", "e");
+  expectStr(listing(&h).view(), "E=e;", "refilled after emptying");
+
+  // set replaces, at the end
+  h = abc();
+  expect(h.set("a", "uno"), "set");
+  expectStr(listing(&h).view(), "B=two;C=three;a=uno;", "set drops the old and adds at the end");
+
+  // a clone is its own
+  var c = h.clone();
+  c.remove("B");
+  expectStr(listing(&h).view(), "B=two;C=three;a=uno;", "the original is unchanged by its clone's remove");
+  expectStr(listing(&c).view(), "C=three;a=uno;", "the clone lost B");
+
+  // the cap: 100 fields; the 101st is refused and nothing changes
+  var f = Headers();
+  var i = 0u64;
+  while i < 100u64 {
+    var n = String.from("H");
+    n.appendUInt(i);
+    expect(f.addUInt(n.view(), i), "within the cap");
+    i = i + 1u64;
+  }
+  expectUInt(u64.from(f.len()), 100u64, "100 fields");
+  expect(!f.add("Over", "x"), "the 101st is refused");
+  expect(!f.addUInt("Over", 1u64), "addUInt refused too");
+  expect(!f.set("Over", "x"), "set of a new name at the cap refused");
+  expect(!f.has("Over"), "nothing was added");
+  expectUInt(u64.from(f.len()), 100u64, "still 100");
+  expect(f.set("H7", "seven"), "set of a name already there fits at the cap");
+  expectUInt(u64.from(f.len()), 100u64, "still 100 after the replace");
+  expectStr(String.fromBytes(f.get("H7").unwrap()).view(), "seven", "replaced");
+  expectUInt(u64.from(f.remove("H0")), 1u64, "one removed");
+  expect(f.add("Over", "x"), "room again");
+  done()
+}

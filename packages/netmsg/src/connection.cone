@@ -54,6 +54,14 @@ fn bufferFull(e: IoError) bool {
   #if #os == .windows {e.code == 10035u32} #else {e.code == 11u32}
 }
 
+// An in-process stream bound to a cell (bindLatest): the in-process kind has no
+// core to hold it, so the Connection does. 'seen' is the cell version last delivered
+struct CellBind {
+  stream: u16;
+  cell: Option[LatestReader];
+  seen: u64;
+}
+
 pub actor Connection is ValueSource {
   kind: u32;
   id: u32;
@@ -75,6 +83,10 @@ pub actor Connection is ValueSource {
   // first came; never removed, so a position is fixed for the connection's life
   directIds: Array[u16, 64];
   nDirect: usize;
+  // In-process: the streams bound to cells (bindLatest), in the order bound
+  binds: Array[CellBind, 64];
+  nBinds: usize;
+  cellSkippedOut: u64;          // in-process: cell versions passed over between two flushCells
   staleOut: u64;                // values replaced in a slot before they were sent
   sendErrors: u64;              // sends the socket answered with an error
   slotsRefused: u64;            // updates dropped for an in-process stream beyond the maxStreams a connection carries
@@ -101,7 +113,9 @@ pub actor Connection is ValueSource {
       outbox: Deque[NetEvent](), waiting: 0usize,
       pend: Array[PendingUpdate, 64]() <- fill PendingUpdate(0u16, None[Bytes], false),
       ring: Array[usize, 64]() <- fill 0usize, ringHead: 0usize, ringLen: 0usize,
-      directIds: Array[u16, 64]() <- fill 0u16, nDirect: 0usize, staleOut: 0u64, sendErrors: 0u64, slotsRefused: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
+      directIds: Array[u16, 64]() <- fill 0u16, nDirect: 0usize,
+      binds: Array[CellBind, 64]() <- fill CellBind(0u16, None[LatestReader], 0u64), nBinds: 0usize, cellSkippedOut: 0u64,
+      staleOut: 0u64, sendErrors: 0u64, slotsRefused: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
       open: true, forced: false, forcedReason: CloseReason.Local,
       addr: addr, ep: ep, tx: tx, outq: Deque[IoBuf](), parent: parent,
       timer: actors.Timer.within(&parent),
@@ -171,6 +185,77 @@ pub actor Connection is ValueSource {
     self.reschedule();
   }
 
+  // Bind a stream to a cell: from now the stream's value is the cell's newest,
+  // taken at each send slot (the packet copies it from the cell, under the
+  // stream's 'weight' like a sendLatest stream) and sent when newer than the
+  // last one sent. A value waiting from sendLatest on this stream is dropped; a
+  // stream already bound is rebound: the old cell is let go and nothing more
+  // of it is sent, the new cell is sent from its first value on. The stream
+  // keeps its sequence. A cell that takes values over maxLatestBytes, or a 65th
+  // stream, is refused as a sendLatest is (NetEvent.Refused). In-process, a bound
+  // cell's newest is delivered when flushCells is called, and has no weight.
+  pub async fn bindLatest(self, stream: u16, cell: LatestReader, weight: u32) {
+    if !open {return;}
+    if cell.capacity() > peer.maxLatest() {
+      self.refuse(false, stream, RefusalKind.TooLarge, cell.capacity(), peer.maxLatest());
+      return;
+    }
+    if kind == connDirect {
+      var k = 0usize;
+      while k < nBinds && binds[k].stream != stream {k = k + 1usize;}
+      if k == nBinds {
+        if nBinds >= maxStreams {
+          self.refuse(false, stream, RefusalKind.TooManyStreams, cell.capacity(), maxStreams);
+          return;
+        }
+        nBinds = nBinds + 1usize;
+      }
+      binds[k] = CellBind(stream, Some[LatestReader](cell), 0u64);
+      return;
+    }
+    if !peer.bindLatest(stream, cell, weight) {
+      self.refuse(false, stream, RefusalKind.TooManyStreams, cell.capacity(), maxStreams);
+      return;
+    }
+    self.reschedule();
+  }
+
+  // Let go of a stream's cell: nothing more of the cell is sent, and the stream
+  // is sendLatest's again
+  pub async fn unbindLatest(self, stream: u16) {
+    if !open {return;}
+    if kind == connDirect {
+      var k = 0usize;
+      while k < nBinds && binds[k].stream != stream {k = k + 1usize;}
+      if k < nBinds {binds[k].cell = None[LatestReader];}
+      return;
+    }
+    if peer.unbindLatest(stream) {
+      self.reschedule();
+    }
+  }
+
+  // Send what the bound cells hold now. In-process, each bound cell newer than
+  // the last one delivered is delivered at once as an Update, in order with the
+  // messages sent before and after it (one frame of lockstep single player: state,
+  // then the frame's end). Over UDP and simulated, it looks at the cells now rather
+  // than at the next send slot, and what is newer goes in a packet when the
+  // pacing allows
+  pub async fn flushCells(self) {
+    if !open {return;}
+    if kind == connDirect {
+      self.deliverCells();
+      return;
+    }
+    self.run();
+    while true {
+      match outq.popFront() {
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
+        else { break; }
+      }
+    }
+  }
+
   // How much a stream's waiting value counts when a packet cannot carry all of
   // them: its priority grows by 'weight' each packet it waits, and the highest
   // goes first (default 1)
@@ -198,6 +283,7 @@ pub actor Connection is ValueSource {
     s.latestStale = s.latestStale + staleOut;
     s.sendErrors = sendErrors;
     s.streamsRefused = s.streamsRefused + slotsRefused;
+    s.cellSkipped = s.cellSkipped + cellSkippedOut;
     s
   }
 
@@ -426,6 +512,45 @@ pub actor Connection is ValueSource {
     }
   }
 
+  // In-process: deliver each bound cell's newest, if newer than the last
+  // delivered, as an Update on its stream, in the order the streams were bound
+  fn deliverCells(self) {
+    var k = 0usize;
+    while k < nBinds && open {
+      let b = &mut binds[k];
+      k = k + 1usize;
+      var data = None[Bytes];
+      match &b.cell {
+        case let &Some[LatestReader](r) {
+          if r.version() > b.seen {
+            var buf = IoBuf(if r.capacity() > 0usize {r.capacity()} else {1usize});
+            match r.readNewer(b.seen, buf.spare()) {
+              case let Some(got) {
+                buf.setLen(got.len);
+                if b.seen > 0u64 && got.version > b.seen + 1u64 {
+                  cellSkippedOut = cellSkippedOut + (got.version - b.seen - 1u64);
+                }
+                b.seen = got.version;
+                data = Some[Bytes](buf.freeze());
+              }
+              else {}
+            }
+          }
+        }
+        else {}
+      }
+      match data {
+        case let Some(d) {
+          match &partner {
+            case let &Some[Connection](q) { q.inUpdate(binds[k - 1usize].stream, d); }
+            else {}
+          }
+        }
+        else {}
+      }
+    }
+  }
+
   // The application is not keeping up: too many messages wait for it
   fn overflow(self) {
     if kind == connDirect {
@@ -546,6 +671,12 @@ pub actor Connection is ValueSource {
     if !open {return;}
     open = false;
     timer.stop();
+    // The cells' readers are let go
+    var c = 0usize;
+    while c < nBinds {
+      binds[c].cell = None[LatestReader];
+      c = c + 1usize;
+    }
     // A value still waiting for credit is dropped: nothing follows Left
     while ringLen > 0usize {
       let s = &mut pend[ring[ringHead]];

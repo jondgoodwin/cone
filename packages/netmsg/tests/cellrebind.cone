@@ -1,0 +1,134 @@
+// Rebinding a stream to another cell, and letting go of a cell. A stream keeps
+// its wire sequence for the connection's life, so the receiver (which keeps the
+// newest sequence of each stream) takes the new cell's first value as newer than
+// the old one's last, though the new cell's version is 1 and the old one's was
+// higher. The old cell is let go: nothing put in it later is sent. After
+// unbindLatest the stream is sendLatest's again, and the connection is idle
+// again (a bound cell asks for a look every send slot; an unbound one must not).
+
+mod cellrebind;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant, Clock;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
+
+fn text(s: &str) List[u8] {
+  var d = List[u8]();
+  putBytes(&mut d, s);
+  d
+}
+
+// Values b has heard, as "stream:text"
+fn absorb(evs: &mut List[CoreEvent], vals: &mut List[String]) {
+  each e in evs.drain() {
+    match e {
+      case let Latest(l) {
+        var s = String();
+        s.appendUInt(u64.from(l.stream));
+        s.append(":");
+        s.append(String.fromBytes(l.data.view()).view());
+        vals.push(s);
+      }
+      else {}
+    }
+  }
+}
+
+fn go(p: &mut SimPair, clock: &mut Clock, ms: i64, vals: &mut List[String]) {
+  var i = 0i64;
+  while i < ms {
+    clock.advance(Duration.fromMillis(1i64));
+    p.step(clock.now());
+    absorb(&mut p.eventsB, vals);
+    p.eventsA.clear();
+    i = i + 1i64;
+  }
+}
+
+// Step until a has built a packet, then stop at that instant
+fn sentOne(p: &mut SimPair, clock: &mut Clock, vals: &mut List[String]) {
+  let before = p.a.stats().packetsSent;
+  var i = 0i64;
+  while i < 300i64 && p.a.stats().packetsSent == before {
+    clock.advance(Duration.fromMillis(1i64));
+    p.step(clock.now());
+    absorb(&mut p.eventsB, vals);
+    p.eventsA.clear();
+    i = i + 1i64;
+  }
+}
+
+fn main() i32 {
+  let cfg = NetConfig.defaults();
+  var clock = Clock.synth();
+  var p = SimPair.make(cfg, LinkConfig.perfect(), LinkConfig.perfect(), 1u64, clock.now());
+  var vals = List[String]();
+
+  var wx: LatestWriter;
+  var rx: LatestReader;
+  wx, rx = latestCell(64usize);
+  expect(p.a.bindLatest(4u16, rx, 1u32), "bound to cell x");
+  var n = 1u32;
+  while n <= 5u32 {
+    wx.put(text("x").view());
+    go(&mut p, &mut clock, 40i64, &mut vals);
+    n = n + 1u32;
+  }
+  expectUInt(u64.from(vals.len()), 5u64, "five values of x sent, x at version 5");
+  expectUInt(wx.version(), 5u64, "x is at version 5");
+
+  // Rebind to a fresh cell y: its version 1 goes though x's 5 was the last sent
+  var wy: LatestWriter;
+  var ry: LatestReader;
+  wy, ry = latestCell(64usize);
+  wy.put(text("y1").view());
+  expect(p.a.bindLatest(4u16, ry, 1u32), "rebound to cell y");
+  go(&mut p, &mut clock, 100i64, &mut vals);
+  expectUInt(u64.from(vals.len()), 6u64, "y's first value is sent");
+  expectStr(vals[5usize].view(), "4:y1", "it is y's value, on the same stream");
+  expectUInt(p.b.stats().latestStale, 0u64, "and the receiver took it as newer: the stream's sequence went on");
+  expectUInt(p.a.stats().cellSkipped, 0u64, "no version of y was counted skipped");
+
+  // x is let go: its later values are never sent
+  wx.put(text("x6").view());
+  wx.put(text("x7").view());
+  go(&mut p, &mut clock, 200i64, &mut vals);
+  expectUInt(u64.from(vals.len()), 6u64, "a put in the old cell sends nothing");
+  wy.put(text("y2").view());
+  go(&mut p, &mut clock, 100i64, &mut vals);
+  expectStr(vals[6usize].view(), "4:y2", "y goes on");
+
+  // Unbind: the stream is sendLatest's again, y's puts are not sent
+  p.a.unbindLatest(4u16);
+  wy.put(text("y3").view());
+  go(&mut p, &mut clock, 200i64, &mut vals);
+  expectUInt(u64.from(vals.len()), 7u64, "after unbindLatest a put in y sends nothing");
+  p.a.sendLatest(4u16, fz("plain"));
+  go(&mut p, &mut clock, 100i64, &mut vals);
+  expectStr(vals[7usize].view(), "4:plain", "sendLatest sends on the stream");
+  expectUInt(p.b.stats().latestStale, 0u64, "in sequence");
+  go(&mut p, &mut clock, 200i64, &mut vals);
+  expectUInt(u64.from(vals.len()), 8u64, "and the let-go cell does not come back after it");
+
+  // Idle again: nothing is waiting, so the connection asks to be called when a
+  // keep-alive is due (100 ms), not at every send slot (33 ms)
+  sentOne(&mut p, &mut clock, &mut vals);
+  let asked = p.a.nextDeadline().nanos() - clock.now().nanos();
+  expect(asked >= 90000000i64, "an unbound connection is idle: its next deadline is a keep-alive's, not a send slot's");
+  expect(!p.a.unbindLatest(4u16), "unbinding a stream not bound says so");
+
+  // Bound again, the connection looks every slot
+  var wz: LatestWriter;
+  var rz: LatestReader;
+  wz, rz = latestCell(64usize);
+  expect(p.a.bindLatest(4u16, rz, 1u32), "bound to z");
+  sentOne(&mut p, &mut clock, &mut vals);
+  let slot = p.a.nextDeadline().nanos() - clock.now().nanos();
+  expect(slot > 0i64 && slot <= 34000000i64, "a bound cell asks for the next send slot, a future one");
+  done()
+}

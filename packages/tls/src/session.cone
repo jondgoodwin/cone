@@ -51,10 +51,10 @@ pub struct Session is Move {
   rbio: *u8;           // the network's bytes, for OpenSSL to read
   wbio: *u8;           // OpenSSL's bytes, for the network
   arrivals: *u8;       // a resuming client's: sessions OpenSSL handed over, not yet cached
-  state: Shared;
+  core: Core;          // the context's immutable half, shared with no lock (pins are read from it)
+  state: Shared;       // the context's cache: a client's only, a server's sessions never take its lock
   isServer: bool;
   kind: VerifyKind;
-  pins: List[u8];
   resume: bool;
   lane: Lane;
   offline: bool;
@@ -76,36 +76,60 @@ pub struct Session is Move {
   endTold: bool;       // ...or the end without one has been reported
   sentClose: bool;
   err: TlsError;
+  recHave: usize;      // the ciphertext's current record: the bytes of it that have come, header included
+  recNeed: usize;      // ...its whole length once its 5-byte header is in, else 0
+  recHdr: Array[u8, 5];
 
-  fn blank(st: Shared, server: bool) Session {
-    let s = &*st;
-    var pins = List[u8]();
-    var k = 0usize;
-    while k < s.pins.len() {
-      pins.push(*s.pins[k]);
-      k = k + 1usize;
-    }
-    let kind = s.kind;
-    let resume = s.resume;
-    let lane = s.lane;
-    let offline = s.offline;
-    let ctx = s.ctx;
+  fn blank(core: Core, st: Shared, server: bool) Session {
+    let kind = core.kind;
+    let resume = core.resume;
+    let lane = core.lane;
+    let offline = core.offline;
+    let ctx = core.ctx;
     ERR_clear_error();
     let ssl = SSL_new(ctx);
     if ssl as usize == 0usize {panic("tls: SSL_new failed: out of memory");}
     let r = BIO_new(BIO_s_mem());
     let w = BIO_new(BIO_s_mem());
     SSL_set_bio(ssl, r, w);
-    Session(ssl: ssl, rbio: r, wbio: w, arrivals: null, state: st, isServer: server, kind: kind, pins: pins,
+    Session(ssl: ssl, rbio: r, wbio: w, arrivals: null, core: core, state: st, isServer: server, kind: kind,
       resume: resume, lane: lane, offline: offline, host: String(), phase: pHandshake,
       events: 0u32, verifyWanted: false, ownError: false, noBuffer: false, verifyAt: Instant(),
       verifyTime: Duration.zero(), begun: false, begunAt: Instant(), handshakeTime: Duration.zero(),
       wasOpen: false, mayRead: false, eof: false, gotClose: false,
-      endTold: false, sentClose: false, err: TlsError.none())
+      endTold: false, sentClose: false, err: TlsError.none(), recHave: 0usize, recNeed: 0usize,
+      recHdr: Array[u8, 5]() <- fill 0u8)
   }
 
-  fn client(st: Shared, serverName: &str) Session {
-    var s = Session.blank(st, false);
+  // Follow the ciphertext's records as bytes come, to know whether one is
+  // part-way (see 'partialRecord')
+  fn trackRecords(self: &mut, cipher: &Array[u8]) {
+    var i = 0usize;
+    while i < cipher.len {
+      if recNeed == 0usize {
+        recHdr[recHave] = cipher[i];
+        recHave = recHave + 1usize;
+        i = i + 1usize;
+        if recHave == 5usize {recNeed = 5usize + (usize.from(recHdr[3usize]) << 8usize) + usize.from(recHdr[4usize]);}
+      } else {
+        var take = recNeed - recHave;
+        if take > cipher.len - i {take = cipher.len - i;}
+        recHave = recHave + take;
+        i = i + take;
+        if recHave == recNeed {
+          recHave = 0usize;
+          recNeed = 0usize;
+        }
+      }
+    }
+  }
+
+  // A record has begun to arrive and not finished: bytes OpenSSL will need more
+  // of before it can give any plaintext
+  fn partialRecord(self: &) bool {recHave != 0usize}
+
+  fn client(core: Core, st: Shared, serverName: &str) Session {
+    var s = Session.blank(core, st, false);
     s.host = String.from(serverName);
     SSL_set_connect_state(s.ssl);
     var name = String.from(serverName);
@@ -128,8 +152,8 @@ pub struct Session is Move {
     s
   }
 
-  fn server(st: Shared) Session {
-    var s = Session.blank(st, true);
+  fn server(core: Core, st: Shared) Session {
+    var s = Session.blank(core, st, true);
     SSL_set_accept_state(s.ssl);
     s
   }
@@ -142,6 +166,7 @@ pub struct Session is Move {
   pub fn feed(self: &mut, cipher: &Array[u8]) usize {
     if cipher.len == 0usize || phase == pFailed {return cipher.len;}
     self.begin();
+    self.trackRecords(cipher);
     var put = 0usize;
     BIO_write_ex(rbio, &cipher[0usize] as *u8, cipher.len, &mut put);
     mayRead = true;
@@ -205,7 +230,12 @@ pub struct Session is Move {
     if phase != pOpen || gotClose || out.len == 0usize {return 0usize;}
     ERR_clear_error();
     var got = 0usize;
-    if SSL_read_ex(ssl, &mut out[0usize] as *u8, out.len, &mut got) == 1i32 {return got;}
+    if SSL_read_ex(ssl, &mut out[0usize] as *u8, out.len, &mut got) == 1i32 {
+      // Nothing more is waiting, in OpenSSL or on the wire: the next read would
+      // find none, so none is made (canRead is false until bytes come)
+      if !eof && BIO_ctrl_pending(rbio) == 0usize && SSL_pending(ssl) == 0i32 {mayRead = false;}
+      return got;
+    }
     let e = SSL_get_error(ssl, 0i32);
     if e == sslErrorWantRead || e == sslErrorWantWrite {
       mayRead = false;
@@ -350,11 +380,11 @@ pub struct Session is Move {
     if chain as usize != 0usize && OPENSSL_sk_num(chain) > 0i32 {
       if spkiSha256(OPENSSL_sk_value(chain, 0i32), &mut hash) {
         var k = 0usize;
-        while k + 32usize <= pins.len() {
+        while k + 32usize <= core.pins.len() {
           var same = true;
           var j = 0usize;
           while j < 32usize {
-            if *pins[k + j] != hash[j] {same = false;}
+            if *core.pins[k + j] != hash[j] {same = false;}
             j = j + 1usize;
           }
           if same {found = true;}

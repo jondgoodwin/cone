@@ -1,0 +1,114 @@
+// The wire of sendLatest streams, byte for byte. Two connection cores on a
+// synthetic clock, with a fixed script (reliable messages, three latest-wins
+// streams of different sizes and weights that cannot all fit a packet, values
+// every few milliseconds, every seventh packet lost): every packet either core
+// built is folded into one checksum of its bytes, in order. A packet of this
+// script is the same bytes in any build, so the numbers below were taken on the
+// master before bindLatest (stream cells) was built and must not change with it:
+// binding cells to streams must add nothing to the packets of streams that are
+// not bound.
+
+mod cellwire;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant, Clock;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+const modulus = 1000000007u64;
+
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
+
+// A value of n bytes whose content depends on the stream and the step
+fn value(n: usize, stream: u64, step: u64) Bytes {
+  var d = List[u8]();
+  var i = 0usize;
+  while i < n {
+    d.push(u8.from((stream * 31u64 + step * 7u64 + u64.from(i)) % 251u64));
+    i = i + 1usize;
+  }
+  fz(d.view())
+}
+
+// Fold a packet's bytes into a checksum: packets are folded in the order built
+fn fold(h: u64, p: &IoBuf) u64 {
+  var r = (h * 131u64 + u64.from(p.len())) % modulus;
+  let v = p.view();
+  var i = 0usize;
+  while i < v.len {
+    r = (r * 131u64 + u64.from(v[i]) + 1u64) % modulus;
+    i = i + 1usize;
+  }
+  r
+}
+
+fn main() i32 {
+  let cfg = NetConfig.defaults();
+  var clock = Clock.synth();
+  var a = ConnectionCore.make(cfg, 0x1122334455667788u64, clock.now());
+  var b = ConnectionCore.make(cfg, 0x1122334455667788u64, clock.now());
+  var evA = List[CoreEvent]();
+  var evB = List[CoreEvent]();
+  var hashA = 0u64;
+  var hashB = 0u64;
+  var nA = 0u64;
+  var nB = 0u64;
+  var lostCount = 0u64;
+  a.setStreamWeight(1u16, 1u32);
+  a.setStreamWeight(2u16, 3u32);
+  a.setStreamWeight(3u16, 10u32);
+  var step = 0u64;
+  while step < 600u64 {
+    clock.advance(Duration.fromMillis(1i64));
+    let now = clock.now();
+    if step % 40u64 == 0u64 {
+      a.sendReliable(value(300usize + usize.from(step % 5u64) * 200usize, 9u64, step));
+    }
+    if step % 3u64 == 0u64 {
+      a.sendLatest(1u16, value(500usize, 1u64, step));
+      a.sendLatest(2u16, value(700usize, 2u64, step));
+    }
+    if step % 5u64 == 0u64 {
+      a.sendLatest(3u16, value(100usize + usize.from(step % 7u64) * 10usize, 3u64, step));
+      b.sendLatest(5u16, value(200usize, 5u64, step));
+    }
+    if step % 70u64 == 35u64 {
+      b.sendReliable(value(90usize, 8u64, step));
+    }
+    var out = Packets();
+    a.poll(now, &mut out, &mut evA);
+    each p in out.drain() {
+      hashA = fold(hashA, &p);
+      nA = nA + 1u64;
+      if nA % 7u64 == 0u64 {
+        lostCount = lostCount + 1u64;
+      } else {
+        let d = p.freeze();
+        b.receive(&d, now, &mut evB);
+      }
+    }
+    b.poll(now, &mut out, &mut evB);
+    each p in out.drain() {
+      hashB = fold(hashB, &p);
+      nB = nB + 1u64;
+      if nB % 7u64 == 0u64 {
+        lostCount = lostCount + 1u64;
+      } else {
+        let d = p.freeze();
+        a.receive(&d, now, &mut evA);
+      }
+    }
+    evA.clear();
+    evB.clear();
+    step = step + 1u64;
+  }
+  expectUInt(nA, 19u64, "packets a built");
+  expectUInt(nB, 19u64, "packets b built");
+  expectUInt(hashA, 561379064u64, "checksum of a's packets");
+  expectUInt(hashB, 181432289u64, "checksum of b's packets");
+  expectUInt(lostCount, 4u64, "lost on the way");
+  expectUInt(a.stats().latestSent, 36u64, "values a sent");
+  expectUInt(b.stats().latestSent, 19u64, "values b sent");
+  done()
+}

@@ -1,0 +1,73 @@
+// A kept head refilled: after the first fill, 'clear' and fill again allocates
+// nothing, the program's own malloc, calloc and realloc counted (as aio's alloc test does).
+
+mod headsrefill;
+
+import testing use *;
+import collections use String;
+import http use *;
+
+var mallocs: Atomic[u64];
+
+fn @initpure init() {mallocs = Atomic[u64].of(0u64);}
+
+#if #os == .windows {
+  extern {
+    fn @c("_malloc_base") winMalloc(size: usize) *u8;
+    fn @c("_calloc_base") winCalloc(n: usize, size: usize) *u8;
+    fn @c("_realloc_base") winRealloc(p: *u8, size: usize) *u8;
+  }
+} #else {
+  extern {
+    fn @c("__libc_malloc") lxMalloc(size: usize) *u8;
+    fn @c("__libc_calloc") lxCalloc(n: usize, size: usize) *u8;
+    fn @c("__libc_realloc") lxRealloc(p: *u8, size: usize) *u8;
+  }
+}
+
+pub fn @c("malloc") countMalloc(size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winMalloc(size)} #else {lxMalloc(size)}
+}
+
+pub fn @c("calloc") countCalloc(n: usize, size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winCalloc(n, size)} #else {lxCalloc(n, size)}
+}
+
+pub fn @c("realloc") countRealloc(p: *u8, size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winRealloc(p, size)} #else {lxRealloc(p, size)}
+}
+
+// A typical request's headers, into a kept head
+fn fill(h: &mut Headers, round: u64) {
+  h.add("Host", "example.com");
+  h.add("User-Agent", "probe/1.0");
+  h.add("Accept", "*/*");
+  h.add("Accept-Encoding", "gzip, deflate");
+  h.add("Connection", "keep-alive");
+  h.addUInt("Content-Length", round % 10u64);
+  h.add("Cookie", "session=abcdef0123456789");
+  h.set("X-Request", "r");
+  h.remove("Accept-Encoding");
+}
+
+fn main() i32 {
+  var h = Headers();
+  fill(&mut h, 0u64);
+  h.clear();
+  fill(&mut h, 1u64);     // warmed: the block and table are at their largest
+  h.clear();
+  let before = mallocs.load();
+  var i = 0u64;
+  while i < 1000u64 {
+    fill(&mut h, i);
+    expectUInt(u64.from(h.len()), 7u64, "seven fields");
+    h.clear();
+    i = i + 1u64;
+  }
+  let used = mallocs.load() - before;
+  expectUInt(used, 0u64, "1000 refills of a kept head allocate nothing");
+  done()
+}

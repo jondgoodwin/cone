@@ -1,0 +1,193 @@
+// plainOut's scratch buffer (the HTTP server's stage 3, S3). A Stream took a
+// 16 KiB buffer from the pool on every plainOut call that found a record
+// readable, and dropped it again when the read found no whole record: a
+// record that came in pieces cost a take for each piece, and the end of a
+// burst one more. Now the buffer is kept until a record is handed out in it:
+// one take for each record delivered, none for a call that finds nothing.
+//
+// A client Stream is given one 3,000-byte record of plaintext's worth of wire
+// bytes in 100-byte pieces, plainOut called after each (the record is whole
+// only at the last), then a stream of 40 records a piece at a time, and last
+// 1,000 calls with nothing to read. The pool's takes are counted over each
+// (iobuf's stats): the pieces and the wire bytes are made beforehand.
+
+mod plainscratch;
+
+import stdio use *;
+import testing use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import iobuf use *;
+import time use Instant;
+import tls;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("cannot read a certificate file")
+}
+
+fn clientOf() tls.Client {
+  var cfg = tls.ClientConfig.make();
+  cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.offline = true;
+  match tls.Client.make(cfg) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("the client context could not be made")
+}
+
+fn serverOf() tls.Server {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  let cfg = tls.ServerConfig.make(&certFile, &keyFile);
+  match tls.Server.make(cfg) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("the server context could not be made")
+}
+
+// What a has to send, moved to b whole, until neither has any
+fn settle(a: &mut tls.Stream, b: &mut tls.Stream) {
+  var moved = true;
+  while moved {
+    moved = false;
+    let x = a.wireOut(Instant.now());
+    if x.len() > 0usize {
+      b.wireIn(x, Instant.now());
+      moved = true;
+    }
+    let y = b.wireOut(Instant.now());
+    if y.len() > 0usize {
+      a.wireIn(y, Instant.now());
+      moved = true;
+    }
+    var p = a.plainOut();
+    while p.len() > 0usize {p = a.plainOut();}
+    var q = b.plainOut();
+    while q.len() > 0usize {q = b.plainOut();}
+  }
+}
+
+fn bytesOf(n: usize) IoBuf {
+  var b = IoBuf(n);
+  var k = 0usize;
+  let sp = b.spare();
+  while k < n {
+    sp[k] = u8.from(k % 251usize);
+    k = k + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+// The server's wire output for one plaintext of n bytes, taken from its stream
+// into 'pieces' of at most 'size' bytes each
+fn wireOf(srv: &mut tls.Stream, n: usize, size: usize, pieces: &mut List[IoBuf]) {
+  srv.plainIn(bytesOf(n));
+  var out = srv.wireOut(Instant.now());
+  while out.len() > 0usize {
+    var at = 0usize;
+    while at < out.len() {
+      let take = if out.len() - at < size {out.len() - at} else {size};
+      var piece = IoBuf(take);
+      let sp = piece.spare();
+      let src = out.view();
+      var j = 0usize;
+      while j < take {
+        sp[j] = src[at + j];
+        j = j + 1usize;
+      }
+      piece.setLen(take);
+      pieces.push(piece);
+      at = at + take;
+    }
+    out = srv.wireOut(Instant.now());
+  }
+}
+
+fn main() i32 {
+  let base = stats().lent;
+  let cl = clientOf();
+  let srv = serverOf();
+  var c = cl.stream("localhost");
+  var s = srv.stream();
+  settle(&mut c, &mut s);
+  require(c.isOpen() && s.isOpen(), "both open");
+
+  // One record, in pieces of 100 bytes
+  var pieces = List[IoBuf]();
+  wireOf(&mut s, 3000usize, 100usize, &mut pieces);
+  let n = pieces.len();
+  require(n > 20usize, "the record comes in many pieces");
+  var delivered = 0u64;
+  var got = 0usize;
+  let t0 = stats().takes;
+  var k = 0usize;
+  while k < n {
+    c.wireIn(pieces.remove(0usize), Instant.now());
+    var p = c.plainOut();
+    while p.len() > 0usize {
+      delivered = delivered + 1u64;
+      got = got + p.len();
+      p = c.plainOut();
+    }
+    k = k + 1usize;
+  }
+  let t1 = stats().takes;
+  expectUInt(u64.from(got), 3000u64, "a record in pieces: every byte delivered");
+  expectUInt(delivered, 1u64, "a record in pieces: delivered once");
+  expect(t1 - t0 <= delivered, "a record in pieces: at most one take for the one delivery");
+
+  // Forty records of 16,000 bytes, a record's bytes at a time
+  var more = List[IoBuf]();
+  var r = 0usize;
+  while r < 40usize {
+    wireOf(&mut s, 16000usize, 20000usize, &mut more);
+    r = r + 1usize;
+  }
+  delivered = 0u64;
+  got = 0usize;
+  let u0 = stats().takes;
+  while more.len() > 0usize {
+    c.wireIn(more.remove(0usize), Instant.now());
+    var p = c.plainOut();
+    while p.len() > 0usize {
+      delivered = delivered + 1u64;
+      got = got + p.len();
+      p = c.plainOut();
+    }
+  }
+  let u1 = stats().takes;
+  expectUInt(u64.from(got), 640000u64, "forty records: every byte delivered");
+  expect(u1 - u0 <= delivered, "forty records: at most one take for each delivery, none for the empty read after");
+
+  // The burst over, an idle connection keeps no buffer: the read after the last
+  // record is not made, so none is taken for it and kept
+  expectUInt(stats().lent, base, "after a burst the idle streams hold no buffer");
+
+  // Nothing to read
+  let v0 = stats().takes;
+  var q = 0u32;
+  while q < 1000u32 {
+    let e = c.plainOut();
+    expect(e.len() == 0usize, "nothing to read");
+    q = q + 1u32;
+  }
+  expectUInt(stats().takes - v0, 0u64, "1000 calls with nothing to read: no take");
+  c.closeSend();
+  settle(&mut c, &mut s);
+  0i32
+}
