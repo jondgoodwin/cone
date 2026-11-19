@@ -64,6 +64,27 @@ fn text(s: &str) List[u8] {
   d
 }
 
+// An application actor reading a connection's measurements, with 'await'
+actor Prober {
+  pub async fn skipped(self, c: Connection, out: Sender[u64]) {
+    let s = await c.stats();
+    out.send(s.cellSkipped);
+  }
+}
+
+fn skippedOf(c: Connection) u64 {
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let prober = Prober();
+  prober.skipped(c, tx);
+  match rx.recvTimeout(Duration.fromSeconds(5i64)) {
+    case let Some(v) { return v; }
+    case is None[u64] {}
+  }
+  999999u64
+}
+
 fn main() i32 {
   var txA: Sender[NetEvent];
   var rxA: Receiver[NetEvent];
@@ -107,7 +128,7 @@ fn main() i32 {
     pair.a.flushCells();
     expectStr(next(&mut rxB).view(), "U7:6:state4", "two puts between flushes deliver the newer");
     expectStr(nextWithin(&mut rxB, 100i64).view(), "none", "and only it");
-    expectUInt(pair.a.stats().cellSkipped, 1u64, "state3 is counted skipped");
+    expectUInt(skippedOf(pair.a), 1u64, "state3 is counted skipped");
 
     // Rebinding: the old cell is let go, the new one's first value goes
     var wn: LatestWriter;
