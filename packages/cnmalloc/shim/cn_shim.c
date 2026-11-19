@@ -63,6 +63,7 @@ extern uint64_t cnm_park_ms(uintptr_t h);
 static volatile uintptr_t g_heap;
 static volatile LONG g_state;       // 0 not started, 1 starting, 2 ready
 static int g_stats;
+static int g_fast;                  // (row 519) the lock-free design is on and nothing else is: no worker cache, no statistics. Set once, in cn_start, before g_state is 2
 
 // ---- THE SECOND DESIGN (row 454; WI\cnmalloc-second-design-spec.md) ------------------------------------------------
 // Off unless CNMALLOC=design=lockfree (g_lf is 0, and nothing below this banner is reached). The page descriptors and the
@@ -161,7 +162,10 @@ static void lf_double_free(LfD2* P, uint32_t j, uint64_t bit, uint64_t g) {
 
 // Section 4's release: one fetch_or, never retried. g is the page's genclass as read BEFORE the cell stopped being
 // the caller's (free reads it first; an allocation's undo passes g2, read while the thread held the bit).
-static void lf_release(LfD2* P, uint64_t g, uint32_t j, uint64_t bit) {
+// (row 519) The test after the fetch_or, "the word was empty, or is now every valid bit", is the same as before and is
+// written to reach the answer without lf_mask on the common path: a word that is not all ones can only be the page's last,
+// partly valid word, so its mask is read only when the word is that one.
+static __forceinline void lf_release_i(LfD2* P, uint64_t g, uint32_t j, uint64_t bit) {
   uint64_t old = (uint64_t)_InterlockedOr64((volatile LONG64*)&P->bits[j], (LONG64)bit);
   LF_HOOK_OR(g & 0xFF);                               // tests only (CN_HOOKS): a park point after the fetch_or
   if (old & bit) {                                  // double free: abort in a debug build, ignore otherwise
@@ -170,19 +174,26 @@ static void lf_release(LfD2* P, uint64_t g, uint32_t j, uint64_t bit) {
 #endif
     return;
   }
-  if ((old == 0 || (old | bit) == lf_mask(g & 0xFF, j)) && P->state != LF_ATTACHED)
+  uint64_t now = old | bit;
+  int edge;
+  if (old == 0) edge = 1;
+  else if (now == ~0ull) edge = j < g_lfnfull[g & 0xFF];
+  else edge = j == g_lfnfull[g & 0xFF] && now == g_lflastmask[g & 0xFF];
+  if (edge && P->state != LF_ATTACHED)
     cnm_lf_after_free(g_heap, (uintptr_t)P, g);        // a full page has room again, or a page may be wholly free
 }
+static __declspec(noinline) void lf_release(LfD2* P, uint64_t g, uint32_t j, uint64_t bit) { lf_release_i(P, g, j, bit); }
 
-static void lf_free(void* p) {
+static __forceinline void lf_free_i(void* p, int stats) {
   uintptr_t off = (uintptr_t)p - g_pbase;
   LfD2* P = (LfD2*)(g_d2base + (off >> 16) * sizeof(LfD2));
   uint64_t g = P->genclass;                           // read while the cell is still the caller's
   size_t c = g & 0xFF;
   uint32_t idx = (uint32_t)(((uint64_t)(off & 0xFFFF) * g_lfrecip[c]) >> 32);
-  if (g_stats) lf_count(&g_lfc[c].st[1]);
-  lf_release(P, g, idx >> 6, 1ull << (idx & 63));
+  if (stats) lf_count(&g_lfc[c].st[1]);
+  lf_release_i(P, g, idx >> 6, 1ull << (idx & 63));
 }
+static void lf_free(void* p) { lf_free_i(p, g_stats); }
 
 // Section 3's allocate. One compare-and-swap on the common path; the page's genclass is read before it and after it
 // (Rule G). Where a thread starts: word 0, or the word it last moved to after a collision on this page. A pass that
@@ -431,6 +442,8 @@ static uintptr_t cn_start(void) {
 #endif
       MemoryBarrier();
       g_lf = 1;
+      MemoryBarrier();
+      g_fast = (!g_cap && !g_stats) ? 1 : 0;
     }
     InterlockedExchange(&g_state, 2);
   } else {
@@ -593,6 +606,7 @@ static void* lf_take_class(size_t cl) {
 }
 
 void* __cdecl malloc(size_t n) {
+  if (g_fast && n <= 32768) return lf_alloc(lf_classof(n));   // (row 519) the common path: one word says nothing else is on
   if (g_cap && n <= g_max && t_c.slot) return cn_cache_alloc(n, 0);
   uintptr_t h = H();
   if (g_lf && n <= 32768) return lf_take_class(lf_classof(n));
@@ -613,6 +627,7 @@ void* __cdecl calloc(size_t c, size_t n) {
   return cnm_calloc(h, c, n);
 }
 void __cdecl free(void* p) {
+  if (g_fast && lf_owned((uintptr_t)p)) { lf_free_i(p, 0); return; }   // (row 519) a null is never owned; g_fast means no statistics
   if (!p) return;
   if (g_cap && t_c.slot) {
     size_t cl = g_lf ? lf_cellclass((uintptr_t)p) : cnm_cell_class(g_heap, p);    // none (all ones) for a large or foreign block
