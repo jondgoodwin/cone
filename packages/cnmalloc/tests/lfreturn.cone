@@ -24,16 +24,9 @@ mod lfreturn;
 import testing use *;
 import thread;
 import libc;
+import cnmalloc;
 
 extern {
-  fn @c(system) Sleep(ms: u32);
-  fn @c(system) SwitchToThread() i32;
-  fn @c(system) GetStdHandle(n: u32) usize;
-  fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
-  fn @c(system) CreateFileA(name: *u8, access: u32, share: u32, sec: usize, disp: u32, flags: u32, tmpl: usize) usize;
-  fn @c(system) CloseHandle(h: usize) i32;
-  fn @c(system) GetModuleHandleA(name: *u8) usize;
-  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
   fn @c("strlen") strlen(s: cstr) usize;
   fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
 }
@@ -74,7 +67,7 @@ fn @c hookGroup(cl: usize) {
     if ld(c, cArm) == 1usize {
       st(c, cArm, 0usize);
       st(c, cParked, 1usize);
-      while ld(c, cRel) == 0usize { SwitchToThread(); }
+      while ld(c, cRel) == 0usize { cnmalloc.cnm_hostYield(); }
     }
   }
 }
@@ -99,7 +92,7 @@ fn returner(arg: usize) u64 {
       st(c, cDone, 1usize);
       break;
     } else {
-      SwitchToThread();
+      cnmalloc.cnm_hostYield();
     }
   }
   0u64
@@ -107,7 +100,7 @@ fn returner(arg: usize) u64 {
 
 fn waitFor(c: usize, i: usize, want: usize) bool {
   var w = 0usize;
-  while ld(c, i) != want && w < 5000usize { Sleep(1u32); w = w + 1usize; }
+  while ld(c, i) != want && w < 5000usize { cnmalloc.cnm_hostSleepMs(1u32); w = w + 1usize; }
   ld(c, i) == want
 }
 
@@ -211,7 +204,7 @@ fn round(c: usize, k: usize, cells: usize, coll: Collect, pk: Peek, parked: bool
       bump(k, kEnd);
       break;
     }
-    Sleep(1u32);
+    cnmalloc.cnm_hostSleepMs(1u32);
     tries = tries + 1usize;
   }
 }
@@ -253,38 +246,29 @@ fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
   n = putStr(buf, n, mid); n = putNum(buf, n, b);
   n = putStr(buf, n, tail); n = putNum(buf, n, c);
   *at(buf, n) = 10u8;
-  var w = 0u32;
-  WriteFile(GetStdHandle(0xFFFFFFF4u32), buf, u32.from(n + 1usize), &mut w, 0usize);
+  cnmalloc.cnm_hostErr(buf as usize, n + 1usize);
   // CNTEST_LOG=<file>: the same line appended there, since congo shows a passing test's stderr to nobody
   let lf = libc.getenv("CNTEST_LOG");
   if lf as usize != 0usize {
-    let fh = CreateFileA(lf, 4u32, 3u32, 0usize, 4u32, 128u32, 0usize);
-    if fh != 0xFFFFFFFFFFFFFFFFusize { WriteFile(fh, buf, u32.from(n + 1usize), &mut w, 0usize); CloseHandle(fh); }
+    cnmalloc.cnm_hostAppend(lf as *u8, buf as usize, n + 1usize);
   }
   libc.free(buf);
 }
 
-fn skipped() {
-  expect(true, "lfreturn: the first group released word 2's cells, all of them");
-  expect(true, "lfreturn: the later groups released exactly the stocked cells of words 0 and 1");
-  expect(true, "lfreturn: no wild link was followed (the main thread's cells stayed allocated)");
-  expect(true, "lfreturn: one fetch_or per group, three groups");
-  expect(true, "lfreturn: every bit ended set (or the page retired)");
-  expect(true, "lfreturn: the control rounds gave back all 24 cells in three groups");
-  expectUInt(0u64, 0, "lfreturn: no wrong cell, no stuck thread");
-}
-
 fn main() i32 {
-  let m = GetModuleHandleA(null);
-  let setMulti = GetProcAddress(m, &"cnmalloc_lfSetMultiHooks" as *u8);
-  let collect = GetProcAddress(m, &"cnmalloc_collect" as *u8);
-  let design = GetProcAddress(m, &"cnmalloc_design" as *u8);
-  let peek = GetProcAddress(m, &"cnmalloc_lfPeek" as *u8);
-  let begin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
-  let wpark = GetProcAddress(m, &"cnmalloc_workerPark" as *u8);
-  let end = GetProcAddress(m, &"cnmalloc_workerEnd" as *u8);
-  if setMulti == 0usize || collect == 0usize || design == 0usize || peek == 0usize || begin == 0usize { skipped(); return done(); }
-  if (design as *u8 as DesignFn)() != 2i32 { skipped(); return done(); }
+  let setMulti = cnmalloc.cnm_hostSym("cnmalloc_lfSetMultiHooks");
+  if setMulti == 0usize { return testing.skip("lfreturn: the cnmalloc shim is not linked: cnmalloc_lfSetMultiHooks was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let collect = cnmalloc.cnm_hostSym("cnmalloc_collect");
+  if collect == 0usize { return testing.skip("lfreturn: the cnmalloc shim is not linked: cnmalloc_collect was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let design = cnmalloc.cnm_hostSym("cnmalloc_design");
+  if design == 0usize { return testing.skip("lfreturn: the cnmalloc shim is not linked: cnmalloc_design was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let peek = cnmalloc.cnm_hostSym("cnmalloc_lfPeek");
+  if peek == 0usize { return testing.skip("lfreturn: the cnmalloc shim is not linked: cnmalloc_lfPeek was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let begin = cnmalloc.cnm_hostSym("cnmalloc_workerBegin");
+  if begin == 0usize { return testing.skip("lfreturn: the cnmalloc shim is not linked: cnmalloc_workerBegin was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let wpark = cnmalloc.cnm_hostSym("cnmalloc_workerPark");
+  let end = cnmalloc.cnm_hostSym("cnmalloc_workerEnd");
+  if (design as *u8 as DesignFn)() != 2i32 { return testing.skip("lfreturn: the cnmalloc shim is linked but the second design is off (CNMALLOC=design=lockfree is needed)"); }
   let rounds = envNum("CNRETURN_ROUNDS", 20usize);
   let coll = collect as *u8 as Collect;
   let pk = peek as *u8 as Peek;

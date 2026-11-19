@@ -14,17 +14,13 @@ import cnmalloc;
 // Row 454: with CNTEST_GLOBAL=1, when the program is linked with cn.lib and CNMALLOC=design=lockfree, the tests that can run on
 // the PROCESS's heap do (the shim exports it as cnmalloc_heap), so the API's edges are checked through the second design. The
 // lock design's own internals (batches, the large-reserve setting's own heaps, layout) are skipped then, and no heap is destroyed.
-extern {
-  fn @c(system) GetModuleHandleW(name: *u8) usize;
-}
 alias HeapFn = &fn @c () usize;
 alias DesignFn = &fn @c () i32;
 
 fn globalHeap() usize {
   if libc.getenv("CNTEST_GLOBAL") as usize == 0usize { return 0usize; }
-  let m = GetModuleHandleW(null);
-  let hf = GetProcAddress(m, "cnmalloc_heap");
-  let df = GetProcAddress(m, "cnmalloc_design");
+  let hf = cnmalloc.cnm_hostSym("cnmalloc_heap");
+  let df = cnmalloc.cnm_hostSym("cnmalloc_design");
   if hf == 0usize || df == 0usize { return 0usize; }
   if (df as *u8 as DesignFn)() != 2i32 { return 0usize; }
   (hf as *u8 as HeapFn)()
@@ -229,9 +225,8 @@ fn largeBlocks() {
 
 fn foreign() {
   let h = heap(1usize, 1000u64);
-  // the C runtime's own malloc, by name, so the block is ucrtbase's even when the program links cn.lib (libc.malloc is then the shim's)
-  let ucm = GetProcAddress(GetModuleHandleA("ucrtbase.dll"), "malloc") as &fn @c (n: usize) *u8;
-  var q = ucm(100usize);
+  // the C runtime's own malloc, so the block is the C runtime's even when the program links cn.lib (libc.malloc is then the shim's)
+  var q = cnmalloc.cnm_hostForeignMalloc(100usize) as *u8;
   fill(q, 100usize, 0x33u8);
   expect(!cnmalloc.cnm_owns(h, q as usize), "a block the C runtime made is not ours");
   expect(cnmalloc.cnm_usable(h, q) >= 100usize, "_msize of a foreign block is forwarded");
@@ -245,17 +240,10 @@ fn foreign() {
   drop(h);
 }
 
-extern {
-  fn @c(system) GetModuleHandleA(name: cstr) usize;
-  fn @c(system) GetProcAddress(module: usize, name: cstr) usize;
-}
-
 // a block from ucrtbase's own _aligned_malloc must be freed and sized by ucrtbase's aligned functions (plain free would corrupt its heap)
 fn foreignAligned() {
   let h = heap(1usize, 1000u64);
-  let m = GetModuleHandleA("ucrtbase.dll");
-  let am = GetProcAddress(m, "_aligned_malloc") as &fn @c (n: usize, a: usize) *u8;
-  let p = am(100usize, 64usize);
+  let p = cnmalloc.cnm_hostForeignAligned(100usize, 64usize) as *u8;
   expect(p as usize != 0usize && !cnmalloc.cnm_owns(h, p as usize), "a block from the C runtime's _aligned_malloc is foreign");
   fill(p, 100usize, 0x44u8);
   expect(cnmalloc.cnm_aligned_msize(h, p, 64usize, 0usize) >= 100usize, "_aligned_msize of a foreign aligned block asks the C runtime (with its alignment)");
