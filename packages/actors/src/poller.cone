@@ -140,6 +140,7 @@ struct WorkerPort {
   deputyFires: Atomic[u64];   // parked workers' cells fired by the poller
   gapWakes: Atomic[u64];      // the monitor's wakes of a parked owner with no poller
   busyPolls: Atomic[u64];     // polls without waiting, by a busy worker or the monitor
+  timerEntries: Atomic[u64];  // the timer's expiries taken
 }
 
 // The port, or 0 before it is made and once the stop has closed it; and the
@@ -413,6 +414,10 @@ fn portArm(p: *WorkerPort, until: i64, now: i64) u32 {
   #if #os == .windows {
     if (*p).packet != 0usize {
       if (*p).associated.load() == 0u32 || (*p).armedFor.loadOrdered(MemOrder.Relaxed) != until {
+        // Relative, in 100 ns units: negative. Not asked short of the instant as
+        // the monitor's pause is: tried, it added a third more waits (back
+        // early, then again for the rest) and no lateness was saved (mean
+        // 1.02 ms either way, 3 ms sleeps, 4 workers, row 493)
         var due = 0i64 - (left + 99i64) / 100i64;
         SetWaitableTimer((*p).timer, &mut due as *i64, 0i32, null, null, 0i32);
         (*p).armedFor.storeOrdered(until, MemOrder.Relaxed);
@@ -473,6 +478,7 @@ fn portTake(p: *WorkerPort, got: u32, holder: bool) bool {
       } else if key == portKeyTimer {
         (*p).associated.store(0u32);
         (*p).armedFor.storeOrdered(0i64, MemOrder.Relaxed);
+        (*p).timerEntries.addOrdered(1u64, MemOrder.Relaxed);
         own = true;
       } else {
         answered = portHook(key, (*e).ov as usize, (*e).bytes) || answered;
@@ -488,6 +494,7 @@ fn portTake(p: *WorkerPort, got: u32, holder: bool) bool {
         var expirations = 0u64;
         portSysRead(i32.from((*p).timer), &mut expirations as *u8, 8usize);
         (*p).armedFor.storeOrdered(0i64, MemOrder.Relaxed);
+        (*p).timerEntries.addOrdered(1u64, MemOrder.Relaxed);
         own = true;
       } else {
         answered = portHook(usize.from((*e).events), usize.from((*e).lo) | (usize.from((*e).hi) << 32usize), 0u32) || answered;
@@ -717,16 +724,20 @@ pub struct PollerStats {
   pub deputyFires: u64;    // parked workers' cells fired by the poller
   pub gapWakes: u64;       // the monitor's wakes with nobody holding the role
   pub busyPolls: u64;      // polls without waiting
+  pub timerEntries: u64;   // the port's own timer's expiries taken
   pub batch: u32;          // pollBatch
+  pub fineTimer: bool;     // the port has its high-resolution timer (Linux: always)
 }
 
 pub fn pollerStats() PollerStats {
   let p = portEver.load() as *WorkerPort;
   if p as usize == 0usize {
-    return PollerStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u32);
+    return PollerStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u32, false);
   }
+  let fine = #if #os == .windows {(*p).packet != 0usize} #else {true};
   PollerStats((*p).waits.loadOrdered(MemOrder.Relaxed), (*p).entries.loadOrdered(MemOrder.Relaxed),
     (*p).fullBatches.loadOrdered(MemOrder.Relaxed), (*p).breaks.loadOrdered(MemOrder.Relaxed),
     (*p).deputyFires.loadOrdered(MemOrder.Relaxed), (*p).gapWakes.loadOrdered(MemOrder.Relaxed),
-    (*p).busyPolls.loadOrdered(MemOrder.Relaxed), (*p).batch)
+    (*p).busyPolls.loadOrdered(MemOrder.Relaxed), (*p).timerEntries.loadOrdered(MemOrder.Relaxed),
+    (*p).batch, fine)
 }
