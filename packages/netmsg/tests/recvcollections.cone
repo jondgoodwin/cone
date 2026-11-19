@@ -1,0 +1,245 @@
+// What a received packet costs, and how out-of-order reliable messages are
+// kept. The core keeps the lists a packet parses into and reuses them, and
+// keeps the messages that arrive before the ones ahead of them in a ring of
+// 1,024 slots by id, as the sending side keeps its own.
+//   - 100,000 packets (each a reliable message and a value) received by one
+//     connection: after a warm-up, not one allocation inside 'receive' (the
+//     program's own malloc, calloc and realloc each pass through a counter
+//     here to the C library's, as aio's recvbatch does), and every message and
+//     value is delivered
+//   - reliable messages that arrive with gaps of 1 to 1,023 ids before the one
+//     that fills them are delivered in order, once each (a repeat of a parked
+//     message is dropped), both when the parked arrive nearest-last first and
+//     nearest first
+//   - the same across the wrap of the 16-bit ids
+//   - a message 1,024 ahead of the next in order is refused, not parked: it
+//     is delivered once when its turn comes and it is sent again, and a
+//     message 1,023 ahead is kept
+
+mod recvcollections;
+
+import testing use *;
+import collections use *;
+import time use Instant;
+import netmsg use *;
+import iobuf use Bytes;
+
+var mallocs: Atomic[u64];
+
+fn @initpure init() {
+  mallocs = Atomic[u64].of(0u64);
+}
+
+#if #os == .windows {
+  extern {
+    fn @c("_malloc_base") winMalloc(size: usize) *u8;
+    fn @c("_calloc_base") winCalloc(n: usize, size: usize) *u8;
+    fn @c("_realloc_base") winRealloc(p: *u8, size: usize) *u8;
+  }
+} #else {
+  extern {
+    fn @c("__libc_malloc") lxMalloc(size: usize) *u8;
+    fn @c("__libc_calloc") lxCalloc(n: usize, size: usize) *u8;
+    fn @c("__libc_realloc") lxRealloc(p: *u8, size: usize) *u8;
+  }
+}
+
+pub fn @c("malloc") countMalloc(size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winMalloc(size)} #else {lxMalloc(size)}
+}
+
+pub fn @c("calloc") countCalloc(n: usize, size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winCalloc(n, size)} #else {lxCalloc(n, size)}
+}
+
+pub fn @c("realloc") countRealloc(p: *u8, size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winRealloc(p, size)} #else {lxRealloc(p, size)}
+}
+
+fn allocs() u64 {mallocs.load()}
+
+// A copy of some bytes, frozen: what the core takes to send
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+fn fresh() ConnectionCore {ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64))}
+
+// A packet from a connection with one reliable message of two bytes and one
+// value of one byte, on stream 7. The layout is the header (23 bytes: protocol
+// 4, kind 1, session 8, sequence at 13, ack 2, bits 4, two counts), then the
+// message (id at 23, length, body at 27), then the value (stream at 29,
+// sequence at 31, length, body)
+fn template() List[u8] {
+  var a = fresh();
+  a.sendReliable(fz("ab"));
+  a.sendLatest(7u16, fz("v"));
+  var pk = Packets();
+  var evs = List[CoreEvent]();
+  a.poll(at(5i64), &mut pk, &mut evs);
+  var r = List[u8]();
+  match pk.pop() {
+    case let Some(p) { r = copyBytes(p.view()); }
+    else {}
+  }
+  r
+}
+
+fn put16(l: &mut List[u8], pos: usize, v: u16) {
+  l[pos] = u8.from(v >> 8u16);
+  l[pos + 1usize] = u8.from(v & 255u16);
+}
+
+// The template as packet 'seq', carrying message 'id' (its body is the id) and
+// value sequence 'lseq'
+fn datagram(t: &List[u8], seq: u16, id: u16, lseq: u16) Bytes {
+  var l = copyBytes(t.view());
+  put16(&mut l, 13usize, seq);
+  put16(&mut l, 23usize, id);
+  put16(&mut l, 27usize, id);
+  put16(&mut l, 31usize, lseq);
+  fz(l.view())
+}
+
+// A connection being fed packets, and the ids of the messages it has delivered
+struct Feed {
+  b: ConnectionCore;
+  t: List[u8];
+  seq: u16;
+  evs: List[CoreEvent];
+  got: List[u16];
+}
+
+fn makeFeed() Feed {
+  Feed(fresh(), template(), 0u16, List[CoreEvent](), List[u16]())
+}
+
+// Receive message 'id' in a packet of its own; the ids delivered by it are
+// added to 'got'
+fn give(f: &mut Feed, id: u16) {
+  let dg = datagram(&f.t, f.seq, id, f.seq + 1u16);
+  f.seq = f.seq + 1u16;
+  f.evs.clear();
+  expect(f.b.receive(&dg, at(10i64), &mut f.evs), "the packet is taken");
+  each e in f.evs.drain() {
+    match e {
+      case let Reliable(r) {
+        let v = r.data.view();
+        f.got.push((u16.from(v[0usize]) << 8u16) | u16.from(v[1usize]));
+      }
+      else {}
+    }
+  }
+}
+
+// The ids delivered since 'got' was last cleared are 'n' ids from 'from', in order
+fn inOrder(f: &Feed, from: u16, n: usize) bool {
+  if f.got.len() != n {return false;}
+  var i = 0usize;
+  while i < n {
+    if f.got[i] != from + u16.from(i & 0xFFFFusize) {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+fn main() i32 {
+  // 100,000 packets, each one reliable message and one value
+  let t = template();
+  expectUInt(u64.from(t.len()), 23u64 + 6u64 + 7u64, "the template is the size the layout says");
+  var b = fresh();
+  var evs = List[CoreEvent]();
+  var used = 0u64;
+  var delivered = 0u64;
+  var refused = 0u64;
+  var i = 0u32;
+  while i < 100100u32 {
+    let dg = datagram(&t, u16.from(i & 0xFFFFu32), u16.from(i & 0xFFFFu32), u16.from((i + 1u32) & 0xFFFFu32));
+    evs.clear();
+    let before = allocs();
+    let ok = b.receive(&dg, at(10i64), &mut evs);
+    let after = allocs();
+    if !ok {refused = refused + 1u64;}
+    // the first hundred warm the lists, the rest are counted
+    if i >= 100u32 {used = used + (after - before);}
+    delivered = delivered + u64.from(evs.len());
+    i = i + 1u32;
+  }
+  expectUInt(refused, 0u64, "every packet is taken");
+  expectUInt(delivered, 200200u64, "every message and every value is delivered");
+  expectUInt(b.stats().reliableDelivered, 100100u64, "in order");
+  expectUInt(used, 0u64, "no allocation in 100,000 received packets");
+
+  // Gaps of 1 to 1,023 ids
+  var gaps = List[u16]();
+  gaps.push(1u16); gaps.push(2u16); gaps.push(3u16); gaps.push(17u16); gaps.push(100u16);
+  gaps.push(511u16); gaps.push(512u16); gaps.push(1000u16); gaps.push(1022u16); gaps.push(1023u16);
+  var down = true;
+  var up = true;
+  var again = true;
+  each g in gaps.drain() {
+    // the farthest first, then nearer: 0 comes last, and fills the gap; the
+    // farthest is sent twice
+    var f = makeFeed();
+    give(&mut f, g);
+    give(&mut f, g);
+    var k = g - 1u16;
+    while k >= 1u16 {give(&mut f, k); k = k - 1u16;}
+    if f.got.len() != 0usize {down = false;}
+    give(&mut f, 0u16);
+    if !inOrder(&f, 0u16, usize.from(g) + 1usize) {down = false;}
+
+    // nearest first
+    var h = makeFeed();
+    var j = 1u16;
+    while j <= g {give(&mut h, j); j = j + 1u16;}
+    if h.got.len() != 0usize {up = false;}
+    give(&mut h, 0u16);
+    if !inOrder(&h, 0u16, usize.from(g) + 1usize) {up = false;}
+    // a repeat of any of them now is dropped
+    give(&mut h, g);
+    if h.got.len() != usize.from(g) + 1usize {again = false;}
+  }
+  expect(down, "gaps of 1 to 1,023, the farthest parked first: delivered once each, in order");
+  expect(up, "gaps of 1 to 1,023, the nearest parked first: delivered once each, in order");
+  expect(again, "a message already delivered is not delivered again");
+
+  // Across the wrap of the ids: 65,530 delivered in order, then 65,535, 0, 1
+  // and 2 wait for 65,530 to 65,534
+  var w = makeFeed();
+  var n = 0u32;
+  while n < 65530u32 {give(&mut w, u16.from(n & 0xFFFFu32)); n = n + 1u32;}
+  expectUInt(u64.from(w.got.len()), 65530u64, "65,530 in order");
+  w.got.clear();
+  give(&mut w, 65535u16);
+  give(&mut w, 0u16);
+  give(&mut w, 1u16);
+  give(&mut w, 2u16);
+  expectUInt(u64.from(w.got.len()), 0u64, "four wait, across the wrap");
+  var m = 65530u16;
+  while m < 65535u16 {give(&mut w, m); m = m + 1u16;}
+  expectUInt(u64.from(w.got.len()), 9u64, "and are delivered with the five that fill the gap");
+  expectUInt(u64.from(w.got[0usize]), 65530u64, "from 65530");
+  expectUInt(u64.from(w.got[5usize]), 65535u64, "through 65535");
+  expectUInt(u64.from(w.got[6usize]), 0u64, "then 0");
+  expectUInt(u64.from(w.got[8usize]), 2u64, "to 2");
+
+  // The window: 1,024 ahead is refused, 1,023 ahead is kept
+  var r = makeFeed();
+  give(&mut r, 1024u16);
+  give(&mut r, 1023u16);
+  expectUInt(u64.from(r.got.len()), 0u64, "both wait or are refused");
+  give(&mut r, 0u16);
+  expect(inOrder(&r, 0u16, 1usize), "0 is delivered alone: 1,024 was refused");
+  r.got.clear();
+  var q = 1u16;
+  while q < 1023u16 {give(&mut r, q); q = q + 1u16;}
+  expect(inOrder(&r, 1u16, 1023usize), "1 to 1,022 fill it, and the kept 1,023 comes with them");
+  r.got.clear();
+  give(&mut r, 1024u16);
+  expect(inOrder(&r, 1024u16, 1usize), "1,024 is delivered when it comes again, in its turn");
+  done()
+}

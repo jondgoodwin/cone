@@ -128,6 +128,11 @@ fn main() {
 		closes the socket. Call it before the program ends; a program that ends in the very instant it calls it may lose
 		the disconnect datagrams (an actor paused on I/O does not hold the program open), and the peers then time out.
 		<span class="pre">endpoint.connections()</span> answers how many connections are open.</li>
+	<li><span class="pre">await endpoint.stats()</span> answers an <span class="pre">EndpointStats</span>, what the endpoint has
+		refused to admit, by the limit that refused it: <span class="pre">refusedFull</span> (<span class="pre">maxClients</span>),
+		<span class="pre">refusedPerAddress</span> (<span class="pre">maxPerAddress</span>) and <span class="pre">refusedRate</span>
+		(<span class="pre">admitRate</span>, and a replacement within a second of the last for its socket address). Each refusal
+		counts once, under the first limit it met; all zero for a client.</li>
 	</ul>
 
 	<h2 id="connection">A connection</h2>
@@ -247,14 +252,16 @@ fn main() {
 		round trip plus four times its deviation, not under <span class="pre">resendMinMs</span>, 100 ms before there is a
 		measurement). Due messages go first, oldest first, while they fit. The receiver keeps messages that arrive early
 		in a ring and gives the application each in order once its predecessors have come; a message it has already
-		delivered, or one more than 1,024 ahead, is ignored. At most 1,024 messages are queued or unacknowledged.</p>
+		delivered, or one 1,024 or more ahead, is ignored. At most 1,024 messages are queued or unacknowledged.</p>
 	<h3>Latest-wins values</h3>
 	<p>Each stream numbers its values; the receiver delivers a value only if its number is newer than the last delivered
 		on that stream. After the reliable messages, the streams that have a value waiting are added to the packet by
 		priority until the next would not fit; the sender then forgets the values it sent.</p>
 	<h3>Rate</h3>
-	<p>A connection sends at most 30 packets a second, and 10 when the smoothed round trip is over 250 ms (Fiedler's
-		two-state controller): it goes back to 30 only after the round trip has stayed under the limit for a penalty time,
+	<p>A connection sends 30 packets a second on average, and 10 when the smoothed round trip is over 250 ms (Fiedler's
+		two-state controller). The pace is a token bucket: a token comes back every interval (1/30 s or 1/10 s) and the
+		bucket holds two, so a packet that finds a token goes at once, and in any window a connection sends at most the
+		window over the interval, plus two. It goes back to 30 only after the round trip has stayed under the limit for a penalty time,
 		which starts at 4 s, doubles (up to a minute) when it goes bad again soon after being good, and halves (down to a
 		second) for every ten seconds spent good. A packet is sent when there is something to say: a message due, a value
 		waiting, or a reliable message to acknowledge; otherwise a keep-alive every 100 ms, which carries

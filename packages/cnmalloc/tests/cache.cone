@@ -4,6 +4,8 @@
 // checked and the cache is not (the checks pass either way). The real runs:
 //   $env:_LINK_ = '"<dir>\cn.lib"'; $env:CNMALLOC = 'cache=7,giveback=now,stats'; (delete build\ first)
 //   CNCACHE_SECS=600 CNCACHE_THREADS=16 CNCACHE_MODE=random|pc   then 'congo test cache'.
+//   CNCACHE_NONWORKERS=8 makes the first 8 random-mode threads plain threads (no begin, park or end, so no cache: like a
+//   thread the actors runtime did not start); the default 0 keeps every thread a worker.
 //
 // RANDOM: N threads, each a registered worker (the three calls the actors runtime makes: begin, park, end),
 // share a table of block slots. A step swaps a block out of a random slot (usually made by ANOTHER thread) and
@@ -46,6 +48,7 @@ struct Job {
   end: usize;
   ring: usize;       // ringN words
   mode: usize;
+  nonworkers: usize; // the first CNCACHE_NONWORKERS threads of the random mode never call begin, park or end
 }
 
 fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
@@ -109,7 +112,8 @@ fn randomWorker(arg: usize) u64 {
   var seed = 88172645463325252u64;
   let tid = usize.from(mem.atomicAdd[usize](word(job.errs, 7usize), 1usize, MemOrder.SeqCst));
   seed = seed ^ (u64.from(tid + 1usize) * 2685821657736338717u64);
-  call(job.begin);
+  let worker = tid >= job.nonworkers;
+  if worker { call(job.begin); }
   var ops = 0usize;
   var errs = 0usize;
   while GetTickCount64() < job.endTick {
@@ -117,7 +121,7 @@ fn randomWorker(arg: usize) u64 {
     while burst < 200usize {
       burst = burst + 1usize;
       ops = ops + 1usize;
-      if next(&mut seed) % 64u64 == 0u64 { call(job.park); }
+      if next(&mut seed) % 64u64 == 0u64 && worker { call(job.park); }
       let idx = usize.from(next(&mut seed) % u64.from(slotsN));
       let slot = word(job.slots, idx);
       let cur = mem.atomicSwap[usize](slot, 0usize, MemOrder.SeqCst);
@@ -166,7 +170,7 @@ fn randomWorker(arg: usize) u64 {
       }
     }
   }
-  call(job.end);
+  if worker { call(job.end); }
   mem.atomicAdd[usize](word(job.errs, 0usize), errs, MemOrder.SeqCst);
   mem.atomicAdd[usize](word(job.errs, 1usize), ops, MemOrder.SeqCst);
   u64.from(tid)
@@ -253,6 +257,7 @@ fn newJob(secs: usize, mode: usize) *Job {
   job.ring = libc.calloc(ringN, 8usize) as usize;
   job.endTick = GetTickCount64() + u64.from(secs) * 1000u64;
   job.mode = mode;
+  job.nonworkers = envNum("CNCACHE_NONWORKERS", 0usize);
   let m = GetModuleHandleA(null);
   job.begin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
   job.park = GetProcAddress(m, &"cnmalloc_workerPark" as *u8);

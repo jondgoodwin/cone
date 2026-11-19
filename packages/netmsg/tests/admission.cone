@@ -20,7 +20,11 @@
 //   - the replacement limit is by socket address: another port on the same IP
 //     replaces its own connection at once;
 //   - two servers have different cookie keys: the same client address and
-//     salt earn different sessions.
+//     salt earn different sessions;
+//   - the endpoint counts its refusals by kind (Endpoint.stats()): the fifth
+//     from one address is refusedPerAddress, a third client at maxClients 2 is
+//     refusedFull, and the crowd's refusals, with a denied replacement, are
+//     refusedRate.
 
 mod admission;
 
@@ -169,6 +173,34 @@ fn newRaw() Raw {
   raw
 }
 
+// An application actor reading an endpoint's refusal counts, with 'await'
+actor Prober {
+  pub async fn ask(self, e: Endpoint, out: Sender[EndpointStats]) {
+    let s = await e.stats();
+    out.send(s);
+  }
+}
+
+// The endpoint's refusal counts, as "full/perAddress/rate"
+fn counts(e: Endpoint) String {
+  var tx: Sender[EndpointStats];
+  var rx: Receiver[EndpointStats];
+  tx, rx = Channel[EndpointStats].make();
+  Prober().ask(e, tx);
+  var s = String();
+  match rx.recvTimeout(Duration.fromMillis(3000i64)) {
+    case let Some(st) {
+      s.appendUInt(st.refusedFull);
+      s.append("/");
+      s.appendUInt(st.refusedPerAddress);
+      s.append("/");
+      s.appendUInt(st.refusedRate);
+    }
+    case is None[EndpointStats] { s.append("none"); }
+  }
+  s
+}
+
 fn shutAll(held: &mut List[BoundEndpoint]) {
   while held.len() > 0usize {
     match held.pop() {
@@ -199,7 +231,9 @@ fn main() i32 {
       expectStr(next(&mut rxS, 3000i64).view(), want.view(), "and the server has it");
       i = i + 1usize;
     }
+    expectStr(counts(server.endpoint).view(), "0/0/0", "nothing has been refused yet");
     expectStr(dial(to, cfg, &mut held).view(), "L1:refused", "the fifth is refused");
+    expectStr(counts(server.endpoint).view(), "0/1/0", "and counted as refused for its address");
     expectStr(next(&mut rxS, 300i64).view(), "none", "and the server hears nothing of it");
     // One of the four leaves
     match held.get(0usize) {
@@ -260,6 +294,9 @@ fn main() i32 {
     expect(joined >= 2u32, "the burst of 2 is admitted");
     expect(i64.from(joined) <= 3i64 + seconds, "no more than the burst and what refilled in the time it took");
     expect(refused >= 1u32 || seconds >= 5i64, "the rest are refused (unless the machine was too slow to say)");
+    var want = String.from("0/0/");
+    want.appendUInt(u64.from(refused));
+    expectStr(counts(server.endpoint).view(), want.view(), "each one refused by the rate is counted as refusedRate");
     // A pause refills it
     pause(2200i64);
     expectStr(dial(to, cfg, &mut held).view(), "J1", "after two seconds a client is admitted");
@@ -302,6 +339,7 @@ fn main() i32 {
     let s3 = handshakeWith(raw, to, 0x3333333333333333u64);
     expectUInt(s3, 0u64, "a second reconnect within a second is denied");
     expectStr(next(&mut rxS, 700i64).view(), "none", "and the connection it would have replaced is left alone");
+    expectStr(counts(server.endpoint).view(), "0/0/2", "the empty bucket's refusal and the denied replacement both count as refusedRate");
     pause(500i64);
     // A second after the first replacement it is let in, and only then does the old one end
     let s4 = handshakeWith(raw, to, 0x4444444444444444u64);
@@ -362,6 +400,41 @@ fn main() i32 {
     let d = next(&mut rxS, 3000i64);
     expect(joinedWhenLeft(c.view(), d.view(), "L2:local").view() == "J4", "the second is replaced by the fourth");
     expectUInt(handshakeWith(rawA, to, 0x5555555555555555u64), 0u64, "the first port again within a second is denied");
+    server.endpoint.shutdown();
+  }
+
+  // maxClients 2: a third client is refused for the full server
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    var cfg = NetConfig.defaults();
+    cfg.maxClients = 2usize;
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.localhost(server.port);
+    var held = List[BoundEndpoint]();
+    expectStr(dial(to, cfg, &mut held).view(), "J1", "the first client joins");
+    expectStr(dial(to, cfg, &mut held).view(), "J1", "and the second");
+    expectStr(dial(to, cfg, &mut held).view(), "L1:refused", "the third is refused");
+    expectStr(counts(server.endpoint).view(), "1/0/0", "and counted as refusedFull");
+    shutAll(&mut held);
+    server.endpoint.shutdown();
+  }
+
+  // maxClients 1 << 40 (a limit meaning "no limit"): listen reserves only its first room, so it succeeds, and a client
+  // joins and leaves as usual
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    var cfg = NetConfig.defaults();
+    cfg.maxClients = 1usize << 40usize;
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.localhost(server.port);
+    var held = List[BoundEndpoint]();
+    expectStr(dial(to, cfg, &mut held).view(), "J1", "a client joins a server whose limit is 1 << 40");
+    expectStr(counts(server.endpoint).view(), "0/0/0", "and nothing was refused");
+    shutAll(&mut held);
     server.endpoint.shutdown();
   }
 

@@ -58,11 +58,13 @@ const disconnectCopies = 5usize;
 
 const msNs = 1000000i64;
 
-// A packet may go this much before its scheduled slot, so an update that arrives
-// just early is sent at once instead of waiting on a timer. The next slot is
-// counted from this slot, not from the send, so the long-run rate stays exactly
-// the configured one.
-const sendSlackNs = 1000000i64;
+// Sends are paced by a token bucket: a token comes back every interval (the good
+// or bad rate's) and the bucket holds burstTokens at most. A packet takes a
+// token. A connection that sends rarely finds the bucket full, so an update
+// goes at once with no timer; one that sends at the rate waits for the next
+// token. In any window the packets sent are at most the window over the
+// interval, plus burstTokens.
+const burstTokens = 2i64;
 const secNs = 1000000000i64;
 const notFound = 0xFFFFFFFFusize;
 
@@ -237,43 +239,65 @@ fn putData(p: &mut streams.Writer, d: &Option[Bytes]) {
   }
 }
 
-// The rest of a payload packet, after its prefix, parsed whole: None when it
-// is short, malformed, or has bytes left over
-fn parseBody(c: &mut streams.ByteCursor, dg: &Bytes) Option[Parsed] {
-  let seq = c.getBE[u16]()?;
-  let ack = c.getBE[u16]()?;
-  let bits = c.getBE[u32]()?;
-  var pk = Parsed(seq, ack, bits, List[RelRecv](), List[LatestItem]());
-  let nRel = c.getByte()?;
-  let nLat = c.getByte()?;
+// The rest of a payload packet, after its prefix, parsed whole into 'pk': false
+// when it is short, malformed, or has bytes left over, and then 'pk' holds no
+// messages or values. 'pk' is the core's own, kept from packet to packet: its
+// two lists are cleared here and refilled, and keep their room, so a packet
+// costs no allocation once the lists have held a packet's most (255 each)
+fn parseBody(c: &mut streams.ByteCursor, dg: &Bytes, pk: &mut Parsed) bool {
+  pk.rel.clear();
+  pk.lat.clear();
+  if !parseInto(c, dg, pk) {
+    pk.rel.clear();
+    pk.lat.clear();
+    return false;
+  }
+  true
+}
+
+fn parseInto(c: &'a mut streams.ByteCursor, dg: &Bytes, pk: &mut Parsed) bool {
+  let Some(seq) = c.getBE[u16]() else {return false;};
+  let Some(ack) = c.getBE[u16]() else {return false;};
+  let Some(bits) = c.getBE[u32]() else {return false;};
+  pk.seq = seq;
+  pk.ack = ack;
+  pk.bits = bits;
+  let Some(nRel) = c.getByte() else {return false;};
+  let Some(nLat) = c.getByte() else {return false;};
   var i = 0u8;
   while i < nRel {
-    let id = c.getBE[u16]()?;
-    let lf = c.getBE[u16]()?;
+    let Some(id) = c.getBE[u16]() else {return false;};
+    let Some(lf) = c.getBE[u16]() else {return false;};
     // The top two bits are reserved for fragmentation (not built): a
     // message that sets either is refused
-    if (lf >> 14u16) != 0u16 {return None[Parsed];}
+    if (lf >> 14u16) != 0u16 {return false;}
     let from = c.pos();
-    let body = c.getBytes(usize.from(lf & 0x3FFFu16))?;
+    let Some(body) = c.getBytes(usize.from(lf & 0x3FFFu16)) else {return false;};
     pk.rel.push(RelRecv(id, dg.slice(from, from + body.len)));
     i = i + 1u8;
   }
   i = 0u8;
   while i < nLat {
-    let stream = c.getBE[u16]()?;
-    let lseq = c.getBE[u16]()?;
-    let lf = c.getBE[u16]()?;
-    if (lf >> 14u16) != 0u16 {return None[Parsed];}
+    let Some(stream) = c.getBE[u16]() else {return false;};
+    let Some(lseq) = c.getBE[u16]() else {return false;};
+    let Some(lf) = c.getBE[u16]() else {return false;};
+    if (lf >> 14u16) != 0u16 {return false;}
     let from = c.pos();
-    let body = c.getBytes(usize.from(lf & 0x3FFFu16))?;
+    let Some(body) = c.getBytes(usize.from(lf & 0x3FFFu16)) else {return false;};
     pk.lat.push(LatestItem(stream, lseq, dg.slice(from, from + body.len)));
     i = i + 1u8;
   }
-  if !c.isEmpty() {return None[Parsed];}
-  Some[Parsed](pk)
+  c.isEmpty()
 }
 
-// What one packet carries, parsed before any of it is acted on
+// The reliable messages that arrived before the ones ahead of them: a ring of
+// ringSize slots, message id in slot id % ringSize, each holding the message's
+// own copy or None. The window is reliableWindow ids ahead of the next one to
+// give out, and equals ringSize, so no two ids waiting share a slot
+alias RecvRing = List[Option[List[u8]]];
+
+// What one packet carries, parsed before any of it is acted on. The core keeps
+// one, and each packet is parsed into it in turn
 struct Parsed {
   seq: u16;
   ack: u16;
@@ -313,8 +337,9 @@ pub struct ConnectionCore {
   rel: List[RelSlot];
   relOldest: u16;             // the oldest id not yet acknowledged
   relNext: u16;               // the id the next message gets
-  recv: Dict[u16, List[u8]]; // received out of order, by id, waiting for the ones before them (own copies, see takeReliable)
+  recv: RecvRing;             // received out of order, waiting for the ones before them: id's slot is id % ringSize (own copies, see takeReliable)
   relDeliver: u16;            // the next id to give the application
+  parsed: Parsed;             // the packet being received, its two lists kept from packet to packet
 
   // latest-wins streams: two tables inside the core, each of maxStreams (64;
   // an Array's size is a literal) entries, the first nOuts and nIns in use, in
@@ -331,7 +356,7 @@ pub struct ConnectionCore {
   // time
   lastRecv: i64;
   lastSend: i64;
-  nextSendAt: i64;
+  fullAt: i64;                // when the send bucket is full again; at or before now, it is full
   ackDirty: bool;             // a reliable message arrived that no packet of ours has acknowledged
   closeSent: bool;
 
@@ -351,17 +376,19 @@ pub struct ConnectionCore {
     var sent = List[SentSlot].withCapacity(ringSize);
     var seen = List[u32].withCapacity(ringSize);
     var rel = List[RelSlot].withCapacity(ringSize);
+    var recv = RecvRing.withCapacity(ringSize);
     var i = 0usize;
     while i < ringSize {
       sent.push(SentSlot(0u16, false, false, 0i64, List[u16]()));
       seen.push(0u32);
+      recv.push(None[List[u8]]);
       rel.push(RelSlot(0u16, false, false, -1i64, None[Bytes], List[u8](), false));
       i = i + 1usize;
     }
     let t = now.nanos();
     ConnectionCore(cfg, session, CoreState.Active, CloseReason.Local,
       0u16, sent, seen, 65535u16, false, 0u16, 0u16, false,
-      rel, 0u16, 0u16, Dict[u16, List[u8]](), 0u16,
+      rel, 0u16, 0u16, recv, 0u16, Parsed(0u16, 0u16, 0u32, List[RelRecv](), List[LatestItem]()),
       Array[StreamOut, 64]() <- fill StreamOut(0u16, 1u32, 0u32, 0u16, false, None[Bytes]), 0usize, 0usize,
       Array[StreamIn, 64]() <- fill StreamIn(0u16, 0u16), 0usize,
       t, t - cfg.keepAliveMs * msNs, t, false, false,
@@ -514,6 +541,11 @@ pub struct ConnectionCore {
     d
   }
 
+  // The earliest instant a packet may go: when the bucket next holds a token
+  fn tokenAt(self: &) i64 {
+    fullAt - (burstTokens - 1i64) * self.interval()
+  }
+
   fn interval(self: &) i64 {
     var rate = if good {cfg.goodRate} else {cfg.badRate};
     if rate == 0u32 {rate = 1u32;}
@@ -560,7 +592,8 @@ pub struct ConnectionCore {
         id = id + 1u16;
       }
     }
-    if want < nextSendAt - sendSlackNs {want = nextSendAt - sendSlackNs;}
+    let tok = self.tokenAt();
+    if want < tok {want = tok;}
     if want < at {at = want;}
     Instant.fromNanos(at)
   }
@@ -592,14 +625,14 @@ pub struct ConnectionCore {
       return;
     }
     self.updateMode(t);
-    if t < nextSendAt - sendSlackNs {return;}
+    if t < self.tokenAt() {return;}
     if self.hasWork(t) || t - lastSend >= cfg.keepAliveMs * msNs {
       out.push(self.buildPacket(t));
-      // Time the next send from this slot; after a long idle (a whole
-      // interval behind or more) start afresh, so there is no catch-up burst
-      var slot = nextSendAt + self.interval();
-      if slot <= t {slot = t + self.interval();}
-      nextSendAt = slot;
+      // Take a token: one interval more to refill, counted from now if the
+      // bucket was already full
+      var base = fullAt;
+      if base < t {base = t;}
+      fullAt = base + self.interval();
       lastSend = t;
       ackDirty = false;
     }
@@ -808,47 +841,47 @@ pub struct ConnectionCore {
       events.push(CoreEvent.Closed(CloseReason.Remote));
       return true;
     }
-    var pk = match parseBody(&mut c, dg) {
-      case var Some(p) {p}
-      else {
-        st.packetsInvalid = st.packetsInvalid + 1u64;
-        return false;
-      }
-    };
+    if !parseBody(&mut c, dg, &mut parsed) {
+      st.packetsInvalid = st.packetsInvalid + 1u64;
+      return false;
+    }
+    let pseq = parsed.seq;
 
     // It is ours
     let t = now.nanos();
     lastRecv = t;
-    let slot = usize.from(pk.seq) % ringSize;
-    if seen[slot] == u32.from(pk.seq) + 1u32 {
+    let slot = usize.from(pseq) % ringSize;
+    if seen[slot] == u32.from(pseq) + 1u32 {
       st.packetsDuplicate = st.packetsDuplicate + 1u64;
+      self.dropParsed();
       return true;
     }
-    if gotAny && seqNewer(remoteSeq, pk.seq) && seqAhead(remoteSeq, pk.seq) >= u16.from(ringSize) {
+    if gotAny && seqNewer(remoteSeq, pseq) && seqAhead(remoteSeq, pseq) >= u16.from(ringSize) {
       // So old that its slot belongs to a newer packet
       st.packetsDuplicate = st.packetsDuplicate + 1u64;
+      self.dropParsed();
       return true;
     }
-    seen[slot] = u32.from(pk.seq) + 1u32;
-    if !gotAny || seqNewer(pk.seq, remoteSeq) {
-      remoteSeq = pk.seq;
+    seen[slot] = u32.from(pseq) + 1u32;
+    if !gotAny || seqNewer(pseq, remoteSeq) {
+      remoteSeq = pseq;
       gotAny = true;
     }
     st.packetsReceived = st.packetsReceived + 1u64;
     st.bytesReceived = st.bytesReceived + u64.from(data.len);
 
-    self.acknowledge(pk.ack, pk.bits, t);
+    self.acknowledge(parsed.ack, parsed.bits, t);
 
     // Reliable messages: kept by id, given out in order. They arrive in
     // order, so each is usually delivered at once, still a slice of the datagram
-    each m in pk.rel.drain() {
+    each m in parsed.rel.drain() {
       let id, body = m.(id, data);
       self.takeReliable(id, body, events);
       ackDirty = true;
     }
 
     // Latest-wins values: only a newer one than any delivered gets through
-    each item in pk.lat.drain() {
+    each item in parsed.lat.drain() {
       var j = self.findIn(item.stream);
       if j == notFound {
         // A peer may name any of 65,536 streams: past the limit a new one is
@@ -883,24 +916,26 @@ pub struct ConnectionCore {
   fn takeReliable(self: &mut, id: u16, data: Bytes, events: &mut List[CoreEvent]) {
     let ahead = usize.from(id - relDeliver);
     if ahead >= reliableWindow {return;}
-    match recv.get(&id) {
-      case is None {}
-      else {return;}
-    }
     if id == relDeliver {
       events.push(CoreEvent.Reliable(data));
       st.reliableDelivered = st.reliableDelivered + 1u64;
       relDeliver = relDeliver + 1u16;
       self.deliverReliable(events);
     } else {
-      recv.insert(id, copyBytes(data.view()));
+      // The ids waiting are all inside the window, which is the ring's size,
+      // so a slot that is taken is this id's own copy, already kept
+      let slot = &mut recv[usize.from(id) % ringSize];
+      match slot {
+        case is None { *slot = Some[List[u8]](copyBytes(data.view())); }
+        else {}
+      }
     }
   }
 
   // Give the application every reliable message that is next in order
   fn deliverReliable(self: &mut, events: &mut List[CoreEvent]) {
     while true {
-      match recv.remove(&relDeliver) {
+      match recv[usize.from(relDeliver) % ringSize].take() {
         case let Some(d) {
           events.push(CoreEvent.Reliable(copyPacket(d.view()).freeze()));
           st.reliableDelivered = st.reliableDelivered + 1u64;
@@ -909,6 +944,13 @@ pub struct ConnectionCore {
         case is None {return;}
       }
     }
+  }
+
+  // Let go of what a packet that is not acted on carried: its lists hold slices
+  // of its datagram, which would keep the buffer until the next packet
+  fn dropParsed(self: &mut) {
+    parsed.rel.clear();
+    parsed.lat.clear();
   }
 
   // The peer says it has received packet 'ack' and those 'bits' selects
