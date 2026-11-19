@@ -95,43 +95,71 @@ pub fn listHas(list: &Array[u8], token: &str) bool {
 // Headers
 // ---------------------------------------------------------------------------
 
-// One field: its name as written, and its value
-pub struct Field {
-  fname: String;
-  fvalue: String;
-
-  pub fn name(self: &) &str {fname.view()}
-  pub fn value(self: &) &Array[u8] {fvalue.view()}
+// Where one field sits in a Headers' byte block: its name's and its value's
+// byte ranges
+struct Span {
+  ns: u32;
+  ne: u32;
+  vs: u32;
+  ve: u32;
 }
 
+// removeIf's test: a field 'remove' marked for dropping (its name range is empty,
+// which no field's is)
+fn spanDead(x: &Span) bool {x.ns == x.ne}
+
 // A message's header or trailer fields, in order (see the package's header,
-// FIELDS)
+// FIELDS). The names and values are one byte block, and a table of u32 ranges
+// into it says where each field's are, so a head kept and 'clear'ed is refilled
+// with no allocation once its block and table have grown to its largest.
+// A message has at most 100 fields (the parser's limit): 'add' past it is refused.
 pub struct Headers is Default {
-  fields: List[Field];
+  bytes: String;
+  spans: List[Span];
 
   // No fields: 'Headers()'
-  pub fn initEmpty overload init(self: &new) {*self = Headers(List[Field]());}
+  pub fn initEmpty overload init(self: &new) {*self = Headers(String(), List[Span]());}
 
-  pub fn len(self: &) usize {fields.len()}
-  pub fn isEmpty(self: &) bool {fields.len() == 0usize}
-  pub fn nameAt(self: &, i: usize) &str {fields[i].fname.view()}
-  pub fn valueAt(self: &, i: usize) &Array[u8] {fields[i].fvalue.view()}
+  pub fn len(self: &) usize {spans.len()}
+  pub fn isEmpty(self: &) bool {spans.len() == 0usize}
+  pub fn nameAt(self: &, i: usize) &str {
+    let sp = &spans[i];
+    &bytes.view()[usize.from(sp.ns) ..< usize.from(sp.ne)]
+  }
+  pub fn valueAt(self: &, i: usize) &Array[u8] {
+    let sp = &spans[i];
+    &bytes.view()[usize.from(sp.vs) ..< usize.from(sp.ve)]
+  }
 
   // Add a field after the others: false, and nothing added, when the name is
-  // not a token or the value, its spaces and tabs at either end dropped, is
-  // not a field value
+  // not a token, or the value, its spaces and tabs at either end dropped, is
+  // not a field value, or the message already has 100 fields
   pub fn add(self: &mut, name: &str, value: &Array[u8]) bool {
     let v = trimOws(value);
     if !checkFieldName(name).isEmpty() || !checkFieldValue(v).isEmpty() {return false;}
-    fields.push(Field(String.from(name), String.fromBytes(v)));
+    if spans.len() >= 100usize {return false;}
+    self.push(name, v);
     true
+  }
+
+  // Append a checked field
+  fn push(self: &mut, name: &str, v: &Array[u8]) {
+    let ns = bytes.len();
+    bytes.appendBytes(name);
+    let ne = bytes.len();
+    bytes.appendBytes(v);
+    spans.push(Span(u32.from(ns), u32.from(ne), u32.from(ne), u32.from(bytes.len())));
   }
 
   // Add a field whose value is a number written in decimal
   pub fn addUInt(self: &mut, name: &str, n: u64) bool {
-    var s = String();
-    s.appendUInt(n);
-    self.add(name, s.view())
+    if !checkFieldName(name).isEmpty() || spans.len() >= 100usize {return false;}
+    let ns = bytes.len();
+    bytes.appendBytes(name);
+    let ne = bytes.len();
+    bytes.appendUInt(n);
+    spans.push(Span(u32.from(ns), u32.from(ne), u32.from(ne), u32.from(bytes.len())));
+    true
   }
 
   // Replace every field of this name with one holding value: false, and
@@ -139,38 +167,55 @@ pub struct Headers is Default {
   pub fn set(self: &mut, name: &str, value: &Array[u8]) bool {
     let v = trimOws(value);
     if !checkFieldName(name).isEmpty() || !checkFieldValue(v).isEmpty() {return false;}
+    if spans.len() - self.count(name) >= 100usize {return false;}
     self.remove(name);
-    fields.push(Field(String.from(name), String.fromBytes(v)));
+    self.push(name, v);
     true
   }
 
-  // Remove every field of this name: how many
+  // Remove every field of this name: how many. No scratch list: the fields are
+  // marked, their bytes closed up in the block, and the table's removeIf drops them.
   pub fn remove(self: &mut, name: &str) usize {
     var gone = 0usize;
-    var rev = List[Field]();
-    while fields.len() > 0usize {
-      match fields.pop() {
-        case let Some(f) {
-          if eqIgnoreCase(f.fname.view(), name) {gone = gone + 1usize;}
-          else {rev.push(f);}
-        }
-        case is None[Field] {}
+    var i = 0usize;
+    while i < spans.len() {
+      if eqIgnoreCase(self.nameAt(i), name) {
+        spans.set(i, Span(spans[i].ns, spans[i].ns, 0u32, 0u32));
+        gone = gone + 1usize;
       }
+      i = i + 1usize;
     }
-    while rev.len() > 0usize {
-      match rev.pop() {
-        case let Some(f) {fields.push(f);}
-        case is None[Field] {}
+    if gone == 0usize {return 0usize;}
+    // Close up the kept fields' bytes, in order (each moves down, never up)
+    var w = 0usize;
+    i = 0usize;
+    while i < spans.len() {
+      if !spanDead(&spans[i]) {
+        let sns = spans[i].ns;
+        let sne = spans[i].ne;
+        let svs = spans[i].vs;
+        let sve = spans[i].ve;
+        let ns = usize.from(sns);
+        let ln = usize.from(sve) - ns;
+        let m = bytes.viewMut();
+        var k = 0usize;
+        while k < ln {m[w + k] = m[ns + k]; k = k + 1usize;}
+        let shift = u32.from(ns - w);
+        spans.set(i, Span(sns - shift, sne - shift, svs - shift, sve - shift));
+        w = w + ln;
       }
+      i = i + 1usize;
     }
+    bytes.truncate(w);
+    spans.removeIf(&spanDead);
     gone
   }
 
   // The first value of a field of this name, or None
   pub fn get(self: &, name: &str) Option[&Array[u8]] {
     var i = 0usize;
-    while i < fields.len() {
-      if eqIgnoreCase(fields[i].fname.view(), name) {return Some[&Array[u8]](fields[i].fvalue.view());}
+    while i < spans.len() {
+      if eqIgnoreCase(self.nameAt(i), name) {return Some[&Array[u8]](self.valueAt(i));}
       i = i + 1usize;
     }
     None
@@ -180,8 +225,8 @@ pub struct Headers is Default {
   pub fn count(self: &, name: &str) usize {
     var n = 0usize;
     var i = 0usize;
-    while i < fields.len() {
-      if eqIgnoreCase(fields[i].fname.view(), name) {n = n + 1usize;}
+    while i < spans.len() {
+      if eqIgnoreCase(self.nameAt(i), name) {n = n + 1usize;}
       i = i + 1usize;
     }
     n
@@ -193,8 +238,8 @@ pub struct Headers is Default {
   // members, ignoring case: 'hasToken("Connection", "close")'
   pub fn hasToken(self: &, name: &str, token: &str) bool {
     var i = 0usize;
-    while i < fields.len() {
-      if eqIgnoreCase(fields[i].fname.view(), name) && listHas(fields[i].fvalue.view(), token) {return true;}
+    while i < spans.len() {
+      if eqIgnoreCase(self.nameAt(i), name) && listHas(self.valueAt(i), token) {return true;}
       i = i + 1usize;
     }
     false
@@ -206,10 +251,10 @@ pub struct Headers is Default {
     var out = String();
     var first = true;
     var i = 0usize;
-    while i < fields.len() {
-      if eqIgnoreCase(fields[i].fname.view(), name) {
+    while i < spans.len() {
+      if eqIgnoreCase(self.nameAt(i), name) {
         if !first {out.append(", ");}
-        out.appendBytes(fields[i].fvalue.view());
+        out.appendBytes(self.valueAt(i));
         first = false;
       }
       i = i + 1usize;
@@ -220,13 +265,15 @@ pub struct Headers is Default {
   // Another Headers holding the same fields
   pub fn clone(self: &) Headers {
     var h = Headers();
+    h.bytes.appendBytes(bytes.view());
     var i = 0usize;
-    while i < fields.len() {
-      h.fields.push(Field(fields[i].fname.clone(), fields[i].fvalue.clone()));
+    while i < spans.len() {
+      h.spans.push(spans[i]);
       i = i + 1usize;
     }
     h
   }
 
-  pub fn clear(self: &mut) {fields.clear();}
+  // No fields; the block and table keep their room
+  pub fn clear(self: &mut) {bytes.clear(); spans.clear();}
 }
