@@ -443,7 +443,8 @@ fn wakeNamed(s: *Sched, w: *Worker) {
   if (mem.atomicAnd[u64](wp, ~bit, MemOrder.SeqCst) & bit) != 0u64 {
     let seen, marked = (*w).park.compareSwap(parkParked, parkNotified);
     if marked {
-      sync.futexWake(&(*w).park);
+      // Its futex word, or a break if it waits in the port (poller.cone)
+      wakeMarked(w);
     }
   }
 }
@@ -457,11 +458,18 @@ fn wakeNamed(s: *Sched, w: *Worker) {
 // called once with the await's Reply and timerDone (0), timerCancelled (1) or
 // timerTimedOut (2), on the thread that decides it, and answers R through
 // answerNowIn. None, the caller to keep its own timer, off the workers, in a
-// runtime with no monitor, and once the stop has begun
+// runtime of several workers with no monitor (Options.monitorMicros 0), and
+// once the stop has begun. A runtime of one worker has cells (row 493 (b)): its
+// one worker always holds the poller's role when it parks, and keeps its own
+// time in the port
 pub fn timerAwaitable[R](when: i64, relative: bool, group: &Option[CancelGroup], limit: time.Instant,
     answer: &fn(rp: &mut Reply, outcome: u32)) Option[Awaitable[R]] {
   let w = me as *Worker;
-  if w as usize == 0usize || (*(*w).sched).monitorMicros == 0u32 || timersStopped.load() != 0u32 {
+  if w as usize == 0usize || timersStopped.load() != 0u32 {
+    return None;
+  }
+  let s = (*w).sched;
+  if (*s).monitorMicros == 0u32 && (*s).nworkers != 1u32 {
     return None;
   }
   let ts = timersHere();
@@ -691,22 +699,23 @@ fn timersFire(ts: *TimerStore, now: time.Instant) bool {
   any
 }
 
-// THE DEPUTY (row 485), the monitor's: one overdue worker's due cells fired in
-// its stead. 'now' is the monitor's reading; 'sc' its scratch (the owner's is
-// the owner's). True if it answered anything. Not for a stopped runtime, a
-// parked worker (its wake fires its cells) or a wheel the owner holds this
-// instant (the owner is running and will fire what is due; the monitor looks
-// again at its next beat)
-fn timersDeputy(ts: *TimerStore, now: time.Instant, sc: &mut DeputyScratch) bool {
-  if timersStopped.load() != 0u32 || (*ts).due.load() != 0i64 {
-    return false;
+// THE DEPUTY (row 485): one overdue worker's due cells fired in its stead,
+// by the monitor for a worker stuck in a turn (not 'parked'), or by the poller
+// for a parked one ('parked': its 'due' published, poller.cone). 'now' is the
+// deputy's reading; 'sc' its scratch (the owner's is the owner's). How many it
+// answered. Not for a stopped runtime, a worker whose 'due' says the other
+// case, or a wheel the owner holds this instant (the owner is running and will
+// fire what is due; the deputy looks again at its next beat)
+fn timersDeputy(ts: *TimerStore, now: time.Instant, sc: &mut DeputyScratch, parked: bool) u64 {
+  if timersStopped.load() != 0u32 || ((*ts).due.load() != 0i64) != parked {
+    return 0u64;
   }
   let nx = nextOf(ts);
   if nx == noDue || now.nanos() < nx {
-    return false;
+    return 0u64;
   }
   if !wheelTry(ts) {
-    return false;
+    return 0u64;
   }
   sc.expiries.clear();
   sc.won.clear();
@@ -747,7 +756,7 @@ fn timersDeputy(ts: *TimerStore, now: time.Instant, sc: &mut DeputyScratch) bool
     f(&mut r, o);
     cellRetire(c);
   }
-  sc.won.len() != 0usize
+  u64.from(sc.won.len())
 }
 
 // The monitor's scratch for THE DEPUTY
@@ -838,50 +847,24 @@ fn timersNext() i64 {
   nextOf(myTimers as *TimerStore)
 }
 
-// THE MONITOR's part: wake each parked worker whose published 'due' has come,
-// by name, and say the earliest still to come (noDue if none is set). A worker
-// that is not parked but has cells armed (the deputy's concern) is not in that
-// answer: its earliest 'next' goes to 'running' (noDue if no such worker), for
-// the monitor to pace itself by, no faster than its base tick
-fn timersWakeDue(s: *Sched, running: *i64) i64 {
-  let now = time.Instant.now().nanos();
-  var soonest = noDue;
-  *running = noDue;
+// THE MONITOR's part: the earliest 'next' of a worker that is not parked but
+// has cells armed (the deputy's concern; noDue if no such worker), for the
+// monitor to pace itself by, no faster than its base tick. A parked worker's
+// cells are the poller's (poller.cone, KEEPING TIME)
+fn timersRunningNext(s: *Sched) i64 {
+  var running = noDue;
   var i = 0u32;
   while i < (*s).nworkers {
     let ts = timerStoreOf(i);
-    if ts as usize != 0usize {
-      let d = (*ts).due.load();
-      if d != 0i64 {
-        if d <= now {
-          wakeNamed(s, workerAt(s, i));
-        } else if d < soonest {
-          soonest = d;
-        }
-      } else {
-        let nx = nextOf(ts);
-        if nx < *running {
-          *running = nx;
-        }
+    if ts as usize != 0usize && (*ts).due.load() == 0i64 {
+      let nx = nextOf(ts);
+      if nx < running {
+        running = nx;
       }
     }
     i = i + 1u32;
   }
-  soonest
-}
-
-// Whether any worker has published a 'due' (the monitor's park, SeqCst after
-// its own publication)
-fn timersAnyDue(s: *Sched) bool {
-  var i = 0u32;
-  while i < (*s).nworkers {
-    let ts = timerStoreOf(i);
-    if ts as usize != 0usize && (*ts).due.load() != 0i64 {
-      return true;
-    }
-    i = i + 1u32;
-  }
-  false
+  running
 }
 
 // A TEST HOOK, not part of the API (aio's worker-timer tests): the workers'
