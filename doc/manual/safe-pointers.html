@@ -176,16 +176,20 @@ trust {                    // Not built yet: today, write the line without trust
 		<a href="safe-intrinsics.html#writeraw"><span class="pre">mem.writeRaw</span></a> is for.</p>
 
 	<p>A pointer's own checks are gone, but a borrow stored through one is still lifetime-checked, by the type of the
-		place. Where the pointer comes from a function's result, a type that names no lifetime is read as global, so a
-		borrow stored through a <span class="pre">*Globals</span> must be global; see
+		place, wherever the pointer is held or comes from. A type that names no lifetime is read as global, so a
+		borrow stored through a <span class="pre">*Globals</span> must be global. A <span class="pre">&amp;fn</span> is
+		always global, since a compiled program's functions exist for the whole program; a closure reference
+		<span class="pre">&amp;&lt;fn</span> is a borrow. <span class="pre">trust</span> would vouch for the pointer, not
+		for how long what is stored lasts (not built yet). See
 		<a href="mem-lifetimes.html#rawstore">storing through a raw pointer</a>:</p>
 <pre>
-struct Globals { n: i32; r: &amp;i32; }
+struct Globals { n: i32; r: &amp;i32; hook: &amp;fn(); }
 let ONE: i32 = 1;
 fn glob() *Globals { null as *Globals }
 
-fn keep(x: &amp;i32) {
+fn keep(x: &amp;i32, f: &amp;fn()) {
   (*glob()).r = &amp;ONE;      // Ok: a global
+  (*glob()).hook = f;       // Ok: a &amp;fn is global
   (*glob()).r = x;          // **ERROR** 1013: lval outlives the borrowed reference you are storing
 }
 </pre>
