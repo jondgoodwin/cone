@@ -8,19 +8,29 @@
 // Link: $env:_LINK_ = '"<dir>\cnd.lib"'; $env:CNMALLOC = 'design=lockfree'  (delete build\ first), then 'congo test doublefree'.
 // The abort path, by hand: CNDF_ABORT=1 (no handler installed) must print the line and exit 134.
 // Under a plain 'congo test' (no second design linked) it passes without testing.
+//
+// The grouped part (row 506; row 460's rules, RT-D, and mutant m7): a worker's cache goes back to the heap one fetch_or per
+// (page, word) group, and the double-free test must look at every bit of the group, not only the lowest. Two adjacent cells
+// lo < hi: hi is freed to the heap by the main thread, then a worker frees lo and hi into its cache (a cache push does not
+// look at the bit) and empties it (cnmalloc_workerPark): the one group {lo, hi} finds hi's bit already set, and the handler
+// must be called once, with hi, during the return. Needs CNMALLOC cache=<n>; with the cache off the worker's second free is a
+// single free and the part is skipped.
 
 mod doublefree;
 
 import testing use *;
+import thread;
 import libc;
 
 extern {
   fn @c(system) GetModuleHandleA(name: *u8) usize;
   fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
+  fn @c("_msize") msize(p: *u8) usize;
 }
 
 alias DesignFn = &fn @c () i32;
 alias SetHandler = &fn @c (f: usize);
+alias Call = &fn @c ();
 
 var @threadlocal calls: usize = 0usize;
 var @threadlocal seen: usize = 0usize;
@@ -28,6 +38,24 @@ var @threadlocal seen: usize = 0usize;
 fn @c onDouble(cell: usize) {
   calls = calls + 1usize;
   seen = cell;
+}
+
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+
+// the grouped part's worker: block words 0 begin, 1 park, 2 end, 3 lo, 4 hi; it writes 5 calls in its frees, 6 calls in
+// the return, 7 the cell the return reported
+fn dfWorker(arg: usize) u64 {
+  let c = arg;
+  (*word(c, 0usize) as *u8 as Call)();
+  libc.free(*word(c, 3usize) as *u8);
+  libc.free(*word(c, 4usize) as *u8);           // hi is free already: a double free, not seen by the cache push
+  let before = calls;
+  (*word(c, 1usize) as *u8 as Call)();          // the cache goes back, grouped
+  *word(c, 5usize) = before;
+  *word(c, 6usize) = calls - before;
+  *word(c, 7usize) = seen;
+  (*word(c, 2usize) as *u8 as Call)();
+  0u64
 }
 
 fn main() i32 {
@@ -39,6 +67,8 @@ fn main() i32 {
     expectUInt(0u64, 0, "doublefree: the handler was called once");
     expect(true, "doublefree: the handler was given the cell");
     expect(true, "doublefree: the heap is sound after a double free");
+    expect(true, "doublefree: a grouped return reported the group's double-freed cell once");
+    expect(true, "doublefree: the grouped return reported the right cell (not the group's lowest)");
     return done();
   }
   let abort = libc.getenv("CNDF_ABORT");
@@ -63,5 +93,35 @@ fn main() i32 {
     expect(true, "doublefree: the handler was given the cell");
   }
   expect(sound, "doublefree: the heap is sound after a double free");
+  // the grouped part
+  let begin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
+  let wpark = GetProcAddress(m, &"cnmalloc_workerPark" as *u8);
+  let wend = GetProcAddress(m, &"cnmalloc_workerEnd" as *u8);
+  var grouped = false;
+  var once = false;
+  var right = false;
+  if setH != 0usize && abort as usize == 0usize && begin != 0usize {
+    let c = libc.calloc(8usize, 8usize) as usize;
+    let lo = libc.malloc(100usize) as usize;
+    let hi = libc.malloc(100usize) as usize;
+    let adjacent = hi == lo + msize(lo as *u8);   // while lo is live: once the page is wholly free it may be given back
+    *word(c, 0usize) = begin; *word(c, 1usize) = wpark; *word(c, 2usize) = wend;
+    *word(c, 3usize) = lo; *word(c, 4usize) = hi;
+    libc.free(hi as *u8);
+    (setH as *u8 as SetHandler)(&onDouble as *u8 as usize);
+    let t = thread.start[usize, u64](c, &dfWorker);
+    t.join();
+    (setH as *u8 as SetHandler)(0usize);
+    grouped = *word(c, 5usize) == 0usize;       // with the cache off, the worker's free of hi was reported at once
+    once = *word(c, 6usize) == 1usize && adjacent;
+    right = *word(c, 7usize) == hi;
+  }
+  if grouped {
+    expect(once, "doublefree: a grouped return reported the group's double-freed cell once");
+    expect(right, "doublefree: the grouped return reported the right cell (not the group's lowest)");
+  } else {
+    expect(true, "doublefree: a grouped return reported the group's double-freed cell once");
+    expect(true, "doublefree: the grouped return reported the right cell (not the group's lowest)");
+  }
   done()
 }

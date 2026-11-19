@@ -5,7 +5,7 @@
 //   - a trivial loop of 8 items runs entirely inline: each item is its own body
 //     call, none runs on a worker, and the workers were never started (so no
 //     push and no wake, which need them)
-//   - a loop of costly items splits: workers run some of them
+//   - a loop of costly items splits: more than one piece, and some reach other threads
 //   - a loop whose first items are fast and whose later ones are slow splits as
 //     soon as the slow part shows
 //   - in an actor's behaviour (the form cut at the loop's end) a trivial loop
@@ -19,11 +19,12 @@ import testing use *;
 import collections use *;
 import libc;
 import actors;
+import thread;
 
 fn cost(i: u64) u64 {
   var x = i + 1u64;
   var k = 0u64;
-  while k < 100000u64 {
+  while k < 400000u64 {
     x = x * 6364136223846793005u64 + k;
     k = k + 1u64;
   }
@@ -183,13 +184,46 @@ fn main() i32 {
   expectUInt(onWorkers, 0u64, "8 trivial items: none ran on a worker");
   expectUInt(actors.stats().steals - before, 0u64, "8 trivial items: no task was stolen");
 
-  // Costly items split
+  // Costly items split: the guard's decision is that the loop made more than one
+  // piece, which holds on any machine. Whether the pieces then reach other threads
+  // depends on the CPUs: "more than one pool worker" needs the caller and two
+  // workers running at once, so it is asked only with 4 or more CPUs. On a smaller
+  // box (2 vCPUs), after one warm-up loop (the first costly loop starts the worker
+  // threads, and the caller can run all of it), at least one piece in 5 loops must
+  // run on a thread other than the caller (workerIndex() is noWorker on the
+  // caller, so its bit is never set in 'ran').
+  let big = thread.parallelism() >= 4u32;
+  runOf(64usize, 0usize, "warm-up loop of 64 costly items, each once");
   let heavy = runOf(64usize, 0usize, "64 costly items, each once");
-  expect(bits(heavy.ran.load()) > 1u64, "64 costly items reach more than one worker");
+  expect(heavy.pieces.load() > 1u64, "64 costly items split into more than one piece");
+  var heavyRan = heavy.ran.load();
+  var rep2 = 0usize;
+  while rep2 < 4usize {
+    let h = runOf(64usize, 0usize, "64 costly items again, each once");
+    heavyRan = heavyRan | h.ran.load();
+    rep2 = rep2 + 1usize;
+  }
+  if big {
+    expect(bits(heavy.ran.load()) > 1u64, "64 costly items reach more than one worker");
+  } else {
+    expect(heavyRan != 0u64, "64 costly items: a piece ran off the caller in 5 loops");
+  }
 
   // Fast first, slow later: splits once the slow part shows
   let mixed = runOf(64usize, 4usize, "4 fast then 60 slow items, each once");
-  expect(bits(mixed.ran.load()) > 1u64, "4 fast then 60 slow items reach more than one worker");
+  expect(mixed.pieces.load() > 1u64, "4 fast then 60 slow items split into more than one piece");
+  var mixedRan = mixed.ran.load();
+  rep2 = 0usize;
+  while rep2 < 4usize {
+    let m = runOf(64usize, 4usize, "4 fast then 60 slow items again, each once");
+    mixedRan = mixedRan | m.ran.load();
+    rep2 = rep2 + 1usize;
+  }
+  if big {
+    expect(bits(mixed.ran.load()) > 1u64, "4 fast then 60 slow items reach more than one worker");
+  } else {
+    expect(mixedRan != 0u64, "4 fast then 60 slow items: a piece ran off the caller in 5 loops");
+  }
 
   // In a behaviour
   {
