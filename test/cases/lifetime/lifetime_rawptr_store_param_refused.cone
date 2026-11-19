@@ -1,0 +1,32 @@
+// A borrow stored into a place reached through a raw pointer held by a parameter is refused: what the pointer
+// points at is held to the global lifetime (a type naming no lifetime is read as global), and a borrowed
+// parameter's is the caller's. The pointer's own variable says nothing about how long what it points at lives.
+//
+// Verdict: refuse, ErrorInvType (1013) at each store.
+// Basis: Jon's ruling, 18 Nov 2026 (decisions.csv; Questions/16-lifetime-through-raw-pointer.md): a borrow
+// stored into a place reached through a raw pointer is checked by the place's type, as Rust does. The invariant
+// (doc/design/references-and-regions.md, "Lifetimes: one invariant"): whatever holds a borrow must not outlive
+// its referent; the holder is the pointee. Lane 735 (row 536): #1463 built it only where the place has no
+// variable at its root, so these compiled. The same on every platform.
+
+mod lifetime_rawptr_store_param_refused;
+
+struct Cell { r: &i32; n: i32; }
+
+pub fn viaDeref(p: *Cell, x: &i32) {
+  (*p).r = x;   //~ ErrorInvType
+}
+
+pub fn viaAutoDeref(p: *Cell, x: &i32) {
+  p.r = x;   //~ ErrorInvType
+}
+
+pub fn viaElement(p: *Array[&i32, 2], x: &i32) {
+  (*p)[0] = x;   //~ ErrorInvType
+}
+
+pub fn viaWhole(p: *&i32, x: &i32) {
+  *p = x;   //~ ErrorInvType
+}
+
+fn main() i32 { 0 }

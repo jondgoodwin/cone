@@ -1,0 +1,40 @@
+// A closure reference (&<fn) is a borrow, unlike a plain function reference (&fn): it refers to a closure the
+// caller owns, which may die first. Stored through a pointer into a place that may outlive it, it is refused,
+// in every shape a borrowed reference is: through a call's result, a pointer parameter, a pointer local, a
+// field of a holder, and by swap.
+//
+// Verdict: refuse, ErrorInvType (1013) at each store.
+// Reason (Jon, 19 Nov 2026; Incubator/Cone/design-principles.md section 7): a &fn is global because what it
+// refers to exists for the whole program; a closure does not, so a reference to one keeps its caller-band
+// lifetime and the raw-pointer store rule (Jon, 18 Nov 2026) holds it. Lane 749 (row 536).
+
+mod lifetime_rawptr_store_closure_refused;
+
+struct Cell { f: &<fn(); n: i32; }
+struct Holder { p: *Cell; }
+
+fn cell() *Cell { null as *Cell }
+
+pub fn viaCall(c: &<fn()) {
+  (*cell()).f = c;   //~ ErrorInvType
+}
+
+pub fn viaParam(p: *Cell, c: &<fn()) {
+  (*p).f = c;   //~ ErrorInvType
+}
+
+pub fn viaLocal(c: &<fn()) {
+  let p = cell();
+  (*p).f = c;   //~ ErrorInvType
+}
+
+pub fn viaField(h: Holder, c: &<fn()) {
+  h.p.f = c;   //~ ErrorInvType
+}
+
+pub fn viaSwap(p: *Cell, c: &<fn()) {
+  var mine = c;
+  mine <-> (*p).f;   //~ ErrorInvType
+}
+
+fn main() i32 { 0 }

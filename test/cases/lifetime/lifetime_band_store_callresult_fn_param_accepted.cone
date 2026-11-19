@@ -1,0 +1,51 @@
+// A function reference (&fn) handed in as a parameter may be stored into a place reached through a call's
+// result, a pointer held by a parameter, a pointer held by a local, or a field of a local pointer holder.
+//
+// Verdict: accept; prints hk, hk2, hk3, hk4.
+// Reason (Jon, 19 Nov 2026; Incubator/Cone/design-principles.md section 7): a reference has the global
+// lifetime when what it refers to is known at compile time to exist for the whole program. Globals and a
+// statically compiled program's functions have that, so a &fn is global wherever it came from (a parameter, a
+// local, a field, a call's result) and may be held by a place of any lifetime. Code made at run time (parsed
+// into memory and later freed) would not have that, and will need a lifetime when Cone can express one.
+// Lane 710 made a place reached through a call's result global, which refused this store; lane 749 (row 536)
+// gives every &fn the global scope, so it is accepted, as it is through a pointer variable.
+
+mod lifetime_band_store_callresult_fn_param_accepted;
+
+import stdio use *;
+
+struct Globals { n: i32; hook: &fn(); }
+struct Holder { p: *Globals; }
+
+fn hk() { printStr("hk\n"); }
+fn hk2() { printStr("hk2\n"); }
+fn hk3() { printStr("hk3\n"); }
+fn hk4() { printStr("hk4\n"); }
+
+fn at(p: *Globals) *Globals { p }
+
+pub fn setViaCall(p: *Globals, f: &fn()) { (*at(p)).hook = f; }
+pub fn setViaParam(p: *Globals, f: &fn()) { (*p).hook = f; }
+pub fn setViaLocal(p: *Globals, f: &fn()) {
+  let q = at(p);
+  (*q).hook = f;
+}
+pub fn setViaLocalFn(p: *Globals, f: &fn()) {
+  let g = f;
+  (*p).hook = g;
+}
+pub fn setViaField(h: Holder, f: &fn()) { h.p.hook = f; }
+
+fn main() i32 {
+  var g = Globals(0, &hk);
+  setViaCall(&g as *Globals, &hk);
+  g.hook();
+  setViaParam(&g as *Globals, &hk2);
+  g.hook();
+  setViaLocal(&g as *Globals, &hk3);
+  g.hook();
+  setViaLocalFn(&g as *Globals, &hk4);
+  g.hook();
+  setViaField(Holder(&g as *Globals), &hk4);
+  0
+}
