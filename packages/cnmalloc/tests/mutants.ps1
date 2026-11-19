@@ -4,7 +4,7 @@
 #   powershell -File packages\cnmalloc\tests\mutants.ps1 [-Name a|a2m|a2s|b|m1|...|m7|none|all] [-Runs 5] [-Scratch <dir>] [-RaceSecs 120]
 #
 #   a    Rule G's undo removed: the g2 test still runs, but the thread keeps the cell of the page's new life  (caught by lfrace: double free abort)
-#   a2m  the multi-bit fill's Rule G compare (MB-G) tests the class half of genclass only, not the generation half  (caught by lfmulti's same-class rounds, deterministically: the allocator hangs and lfmulti's 120 s watchdog fires)
+#   a2m  the multi-bit fill's Rule G compare (MB-G) tests the class half of genclass only, not the generation half  (caught by lfmulti's same-class rounds, deterministically: the allocator hangs, lfmulti's waitFor gives up after 5 s and its checks fail; the 120 s watchdog does not fire)
 #   a2s  lf_alloc's single-cell Rule G compare tests the class half only  (caught by lfmulti's single-cell rounds (row 532), deterministically by its checks: a non-worker's lf_alloc is parked at LF_HOOK_TAKE while the page comes back as the same class; the taker keeps the cell, so its bit is not restored, Rule G's count does not rise and the page stays UNLISTED)
 #   b    lf_release reads genclass AFTER its fetch_or and its park point, not before the cell stopped being the caller's  (caught by lfstale)
 #   (row 506, the multi-bit fill and the grouped return; Ruminations\row-460-rules-and-tests-2026-11-18.md, section 4)

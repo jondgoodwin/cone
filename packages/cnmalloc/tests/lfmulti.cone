@@ -52,6 +52,8 @@ import libc;
 extern {
   fn @c(system) Sleep(ms: u32);
   fn @c(system) SwitchToThread() i32;
+  fn @c(system) QueryPerformanceCounter(t: *i64) i32;
+  fn @c(system) QueryPerformanceFrequency(f: *i64) i32;
   fn @c(system) GetStdHandle(n: u32) usize;
   fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
   fn @c(system) CreateFileA(name: *u8, access: u32, share: u32, sec: usize, disp: u32, flags: u32, tmpl: usize) usize;
@@ -158,17 +160,28 @@ fn watchdog(c: usize) u64 {
   0u64
 }
 
+// the monotonic clock (QueryPerformanceCounter), in milliseconds
+fn nowMs() i64 {
+  var f = 0i64;
+  var t = 0i64;
+  QueryPerformanceFrequency(&mut f);
+  QueryPerformanceCounter(&mut t);
+  (t / f) * 1000i64 + ((t % f) * 1000i64) / f
+}
+
+// (row 532) until word i is `want`, or about 5 s of the monotonic clock have passed (false: the caller's check fails).
+// Counting Sleep(1)s was ~78 s at Windows' 15.6 ms tick, so a hung mutant was caught only by the 120 s watchdog.
 fn waitFor(c: usize, i: usize, want: usize) bool {
-  var w = 0usize;
-  while ld(c, i) != want && w < 5000usize { Sleep(1u32); w = w + 1usize; }
+  let end = nowMs() + 5000i64;
+  while ld(c, i) != want && nowMs() < end { Sleep(1u32); }
   ld(c, i) == want
 }
 
 // (row 532) until word i or word j is set: a round that can tell "no park point reached" from the thread finishing, without
 // waitFor's full time-out (5000 Sleep(1)s, about 78 s at Windows' default 15.6 ms timer)
 fn waitEither(c: usize, i: usize, j: usize) {
-  var w = 0usize;
-  while ld(c, i) == 0usize && ld(c, j) == 0usize && w < 5000usize { Sleep(1u32); w = w + 1usize; }
+  let end = nowMs() + 5000i64;
+  while ld(c, i) == 0usize && ld(c, j) == 0usize && nowMs() < end { Sleep(1u32); }
 }
 
 fn cleanup(coll: Collect) { coll(1i32); coll(1i32); }
