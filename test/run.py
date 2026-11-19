@@ -748,6 +748,10 @@ class Check:
     # the program, so a check on the test's own symbols names them here rather
     # than reading every line of the module.
     within: str | None = None
+    # (regex, count) pairs: exactly 'count' lines of the text (after 'within')
+    # must match the regex, by re.search. A count pins an instruction by shape,
+    # with no value names in it: six release stores, whatever they are called.
+    matches: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -817,6 +821,31 @@ def _require_keys(where: str, table: dict, allowed: set[str]) -> None:
     unknown = sorted(set(table) - allowed)
     if unknown:
         raise SuiteError(f"{where}: unknown key(s) {', '.join(unknown)}")
+
+
+def parse_matches(where: str, raw: object) -> tuple[tuple[str, int], ...]:
+    """A check's 'matches': a list of { pattern = "<regex>", count = <n> }."""
+    if not isinstance(raw, list):
+        raise SuiteError(f"{where}: 'matches' is a list of {{ pattern, count }} tables")
+    out = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"pattern", "count"}:
+            raise SuiteError(f"{where}: each 'matches' entry is a table with exactly 'pattern' and 'count'")
+        pattern, count = item["pattern"], item["count"]
+        if not isinstance(pattern, str) or isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise SuiteError(f"{where}: 'matches' needs a string 'pattern' and a whole-number 'count' of 0 or more")
+        try:
+            re.compile(pattern)
+        except re.error as bad:
+            raise SuiteError(f"{where}: 'matches' pattern {pattern!r} is not a regex: {bad}")
+        out.append((pattern, count))
+    return tuple(out)
+
+
+def count_matching_lines(text: str, pattern: str) -> int:
+    """How many lines of 'text' hold a match of the regex 'pattern'."""
+    rx = re.compile(pattern)
+    return sum(1 for line in text.split("\n") if rx.search(line))
 
 
 def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
@@ -964,7 +993,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
 
         checks = []
         for entry in table.get("check", []):
-            _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object", "within"})
+            _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object", "within", "matches"})
             if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta", "trust"):
                 raise SuiteError(
                     f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta', 'stdout' or 'trust'")
@@ -986,6 +1015,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             if entry["target"] in ("llvmir", "preir", "symbols", "asm", "trust") and category not in ("compile", "run"):
                 raise SuiteError(
                     f"{where}.check: a {category!r} scenario reaches no code generation")
+            matches = parse_matches(f"{where}.check", entry.get("matches", []))
             checks.append(Check(
                 name=entry["name"],
                 target=entry["target"],
@@ -993,6 +1023,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                 excludes=tuple(entry.get("excludes", [])),
                 object=entry.get("object"),
                 within=entry.get("within"),
+                matches=matches,
             ))
 
         scenario = Scenario(
@@ -2440,6 +2471,46 @@ def demangle_selftest() -> None:
         raise SuiteError("the demangler disagrees with the worked examples:\n" + "\n".join(wrong))
 
 
+def matches_selftest() -> int:
+    """A check's 'matches': the count is exact (too few and too many both fail),
+    only 'within' lines are counted, and a malformed entry is refused.
+
+    Returns how many checks ran. Runs before any case, like the others."""
+    wrong = []
+    ir = ("define internal void @f() {\n  store atomic i64 %v1, ptr %p1 release, align 8\n"
+          "  store atomic i64 %v2, ptr %p2 release, align 8\n  store atomic i64 %v3, ptr %p3 monotonic, align 8\n}\n"
+          "define internal void @g() {\n  store atomic i64 %v9, ptr %p9 release, align 8\n}\n")
+    rel = r"store atomic i64 .* release"
+    checks = 0
+    for text, count in ((within_lines(ir, "define internal void @f("), 2),
+                        (within_lines(ir, "define internal void @g("), 1),
+                        (ir, 3)):
+        checks += 1
+        if count_matching_lines(text, rel) != count:
+            wrong.append(f"  {rel!r} counted {count_matching_lines(text, rel)}, expected {count}")
+    # The check's rule is equality, so a short and a long count both differ
+    f_body = within_lines(ir, "define internal void @f(")
+    for want, ok in ((2, True), (1, False), (3, False)):
+        checks += 1
+        if (count_matching_lines(f_body, rel) == want) != ok:
+            wrong.append(f"  count {want} against two matching lines: expected {'a pass' if ok else 'a failure'}")
+    checks += 1
+    if parse_matches("t", [{"pattern": rel, "count": 6}]) != ((rel, 6),):
+        wrong.append("  parse: a good entry was misread")
+    for bad in ([{"pattern": rel}], [{"pattern": rel, "count": -1}], [{"pattern": rel, "count": True}],
+                [{"pattern": "(", "count": 1}], [{"pattern": 3, "count": 1}], "x"):
+        checks += 1
+        try:
+            parse_matches("t", bad)
+        except SuiteError:
+            pass
+        else:
+            wrong.append(f"  parse: accepted {bad!r}, expected a refusal")
+    if wrong:
+        raise SuiteError("'matches' disagrees with its worked examples:\n" + "\n".join(wrong))
+    return checks
+
+
 def forbidden_selftest() -> int:
     """``//~!``: read from source, absent text passes, present text is reported.
 
@@ -3297,6 +3368,13 @@ class Runner:
                     result.problems.append(
                         f"check {check.name!r} ({check.target}): expected not to contain "
                         f"{needle!r}")
+            for pattern, count in check.matches:
+                found = count_matching_lines(text, pattern)
+                if found != count:
+                    result.status = FAIL
+                    result.problems.append(
+                        f"check {check.name!r} ({check.target}): expected {count} line(s) "
+                        f"matching {pattern!r}, found {found}")
 
 
 def within_lines(text: str, marker: str) -> str:
@@ -4118,9 +4196,11 @@ def main(argv: list[str]) -> int:
         demangle_selftest()
         timeout_checks = timeout_selftest()
         forbid_checks = forbidden_selftest()
+        matches_checks = matches_selftest()
         if args.selftest:
             print(f"//~! forbidden text: {forbid_checks} checks hold")
             print(f"demangler: {len(DEMANGLE_EXAMPLES)} worked examples read as the scheme says")
+            print(f"check 'matches': {matches_checks} checks of the count and its refusals hold")
             print(f"scenario timeout: {timeout_checks} checks of the key and the limit it chooses hold")
             return 0
         codes = parse_error_codes(ERROR_H)
