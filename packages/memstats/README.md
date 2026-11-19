@@ -2,6 +2,8 @@
 
 Memory instrumentation, the supply side (work item B1; lane-queue row 423). Permanent in the source, off by default: a normal build has none of it in its binary. Design: `Incubator\Cone\Backlog\cnmalloc-foundation.md`, Track B.
 
+**Platforms:** `congo.toml` declares no `os`, which means Windows and Linux, but only the Cone package alone builds and passes its test on Linux. The tagging shim (`shim\memstats.c`, `build.ps1`) is Windows only: it takes over UCRT names (`_msize`, `_aligned_*`) and reads `QueryPerformanceCounter`, so the instrumentation does nothing on Linux `[differs: Windows only for the shim; the declaration says both]`.
+
 ## What it records
 
 Every block that reaches `malloc`, tagged with who asked. A link shim (`shim\memstats.c`) takes over `malloc`, `calloc`, `realloc`, `free`, `_msize`, `_recalloc`, `_expand`, the `_aligned_*` functions and the C runtime's `_malloc_base` family, forwards each to `ucrtbase`'s own, and puts a **32-byte tag** in front of every block:
