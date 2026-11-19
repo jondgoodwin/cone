@@ -115,6 +115,28 @@ fn main() i32 {
   go(&mut p, &mut clock, 200i64, &mut vals);
   expectUInt(u64.from(vals.len()), 8u64, "and the let-go cell does not come back after it");
 
+  // The same stream bound again right after the unbind (before anything else
+  // touches the stream): the new cell is sent, and the cell let go before it (y,
+  // which held y3) is not handed to the new binding. A cell left in the table by
+  // the unbind would hide here: the stream would count as still bound, so the
+  // rebind would not be counted, and the connection would never look at the new cell
+  var wv: LatestWriter;
+  var rv: LatestReader;
+  wv, rv = latestCell(64usize);
+  expect(p.a.bindLatest(4u16, rv, 1u32), "bound again to v after the unbind");
+  wv.put(text("v1").view());
+  go(&mut p, &mut clock, 150i64, &mut vals);
+  expectUInt(u64.from(vals.len()), 9u64, "a value put in the rebound cell is sent once");
+  expectStr(vals[8usize].view(), "4:v1", "it is v's value, not y's");
+  wy.put(text("y4").view());
+  wv.put(text("v2").view());
+  go(&mut p, &mut clock, 150i64, &mut vals);
+  expectUInt(u64.from(vals.len()), 10u64, "and y, let go, sends nothing after the rebind");
+  expectStr(vals[9usize].view(), "4:v2", "v goes on");
+  expectUInt(p.b.stats().latestStale, 0u64, "in sequence across unbind and rebind");
+  expect(p.a.unbindLatest(4u16), "and v is unbound again");
+  go(&mut p, &mut clock, 100i64, &mut vals);
+
   // Idle again: nothing is waiting, so the connection asks to be called when a
   // keep-alive is due (100 ms), not at every send slot (33 ms)
   sentOne(&mut p, &mut clock, &mut vals);
@@ -130,19 +152,5 @@ fn main() i32 {
   sentOne(&mut p, &mut clock, &mut vals);
   let slot = p.a.nextDeadline().nanos() - clock.now().nanos();
   expect(slot > 0i64 && slot <= 34000000i64, "a bound cell asks for the next send slot, a future one");
-
-  // The same stream bound again after the unbind: its cell is sent, and the cell
-  // let go before it (y, which held y3) is not handed to the new binding
-  let before = vals.len();
-  wz.put(text("z1").view());
-  go(&mut p, &mut clock, 150i64, &mut vals);
-  expectUInt(u64.from(vals.len()) - u64.from(before), 1u64, "a value put in the rebound cell is sent once");
-  expectStr(vals[vals.len() - 1usize].view(), "4:z1", "it is z's value, not y's");
-  wy.put(text("y4").view());
-  wz.put(text("z2").view());
-  go(&mut p, &mut clock, 150i64, &mut vals);
-  expectUInt(u64.from(vals.len()) - u64.from(before), 2u64, "and y, let go, sends nothing after the rebind");
-  expectStr(vals[vals.len() - 1usize].view(), "4:z2", "z goes on");
-  expectUInt(p.b.stats().latestStale, 0u64, "in sequence across unbind and rebind");
   done()
 }
