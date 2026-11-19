@@ -17,7 +17,7 @@ LIB = os.path.join(ROOT, "doc", "library")
 PK = os.path.join(ROOT, "packages")
 LINK = re.compile(r'href="https://github\.com/jondgoodwin/cone/(?:tree|blob)/master/packages/([^/"]+)')
 sys.path.insert(0, HERE)
-from catalogue_data import DOMAINS
+from catalogue_data import DOMAINS, systems_text
 
 
 def is_package(d):
@@ -31,12 +31,17 @@ def is_package(d):
 folders = {d for d in os.listdir(PK) if is_package(d)}
 
 seen = {}
+tagged = {}   # package -> the systems the page prints beside it
+TAG = re.compile(r'packages/([^/"]+)[^\n]*?</a> <span class="os">\[([^\]]*)\]</span>')
 for f in sorted(os.listdir(LIB)):
     if not f.endswith(".html") or f == "index.html":
         continue
     with open(os.path.join(LIB, f), encoding="utf-8") as fh:
-        for name in LINK.findall(fh.read()):
+        text = fh.read()
+        for name in LINK.findall(text):
             seen.setdefault(name, []).append(f)
+        for name, tag in TAG.findall(text):
+            tagged[name] = tag
 
 data = {}
 for page_id, _title, _scope, groups in DOMAINS:
@@ -65,6 +70,11 @@ for name, pages in sorted(data.items()):
 for name in sorted(set(seen) - set(data)):
     if name in folders:
         bad.append(f"page only: {name} is on {seen[name][0]} but not in catalogue_data.py, so a rebuild drops it")
+for name in sorted(folders & set(seen)):
+    want = systems_text(os.path.dirname(PK), name)
+    if tagged.get(name) != want:
+        bad.append(f"platform: {name}'s page says [{tagged.get(name)}] but its congo.toml os says [{want}]"
+                   " (run build_catalogue.py)")
 for b in bad:
     print(b)
 print(f"{len(folders)} packages, {len(seen)} on pages, {len(data)} in the data, {len(bad)} problem(s)")

@@ -15,6 +15,7 @@ struct Package {
   pub runtime: List[String];    // [link] runtime: DLLs, bare names
   pub gpu: bool;                // [package] targets names "gpu": it may be compiled for the GPU
   pub quiet: List[String];      // [package] quiet: tests that run alone, after all the others
+  pub os: List[String];         // [package] os: the systems it claims; empty where not written: windows and linux
 
   // What the build's tables are keyed by: a package's name, but for a lone
   // file, a program. Its module is named by its own 'mod' line and may be
@@ -40,7 +41,7 @@ struct Package {
 
 fn emptyPackage() Package {
   Package(String(), String(), String(), Path.from(""), Path.from(""),
-    false, List[String](), List[Path](), List[String](), false, List[String]())
+    false, List[String](), List[Path](), List[String](), false, List[String](), List[String]())
 }
 
 fn copyStrings(from: &List[String]) List[String] {
@@ -139,6 +140,32 @@ fn manifestError(file: &Path, m: String) Result[Package, String] {
 // macos
 fn hostSystem() &str {
   #if #os == .windows { "windows" } #elif #os == .linux { "linux" } #else { "macos" }
+}
+
+// Whether [package] os names the system Congo runs on; a package that does not
+// write os claims windows and linux
+fn claimsHost(pkg: &Package) bool {
+  let host = hostSystem();
+  if pkg.os.len() == 0usize { return host == "windows" || host == "linux"; }
+  var i = 0usize;
+  while i < pkg.os.len() {
+    if pkg.os[i].view() == host { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+// The systems [package] os names, as one line of text
+fn osList(pkg: &Package) String {
+  if pkg.os.len() == 0usize { return String.from("windows, linux"); }
+  var out = String();
+  var i = 0usize;
+  while i < pkg.os.len() {
+    if i > 0usize { out = cat(out.view(), ", "); }
+    out = cat(out.view(), pkg.os[i].view());
+    i = i + 1usize;
+  }
+  out
 }
 
 fn isSystemName(key: &str) bool {
@@ -348,8 +375,8 @@ fn readManifest(file: &Path) Result[Package, String] {
   i = 0usize;
   while i < keys.len() {
     let key = keys[i].view();
-    if key != "name" && key != "version" && key != "output" && key != "targets" && key != "quiet" {
-      return manifestError(file, cat("'", key, "' is not a [package] key; the keys are name, version, output, targets and quiet"));
+    if key != "name" && key != "version" && key != "output" && key != "targets" && key != "quiet" && key != "os" {
+      return manifestError(file, cat("'", key, "' is not a [package] key; the keys are name, version, output, targets, quiet and os"));
     }
     i = i + 1usize;
   }
@@ -358,7 +385,7 @@ fn readManifest(file: &Path) Result[Package, String] {
   while i < names.len() {
     let parts = splitText(names[i].view(), '.');
     if parts.len() > 1usize && parts[0usize].equals("package") {
-      return manifestError(file, cat("'", parts[1usize].view(), "' is not a [package] key; the keys are name, version, output, targets and quiet"));
+      return manifestError(file, cat("'", parts[1usize].view(), "' is not a [package] key; the keys are name, version, output, targets, quiet and os"));
     }
     i = i + 1usize;
   }
@@ -396,6 +423,21 @@ fn readManifest(file: &Path) Result[Package, String] {
       case is None {
         return manifestError(file, String.from("[package] quiet must be a list of test names, such as [\"pipeline\"]"));
       }
+    }
+  }
+  if table.has("os") {
+    match table.getStrings("os") {
+      case var Some(o) { pkg.os <-> o; }
+      case is None {}
+    }
+    var okOs = pkg.os.len() > 0usize;
+    var k = 0usize;
+    while k < pkg.os.len() {
+      if !isSystemName(pkg.os[k].view()) { okOs = false; }
+      k = k + 1usize;
+    }
+    if !okOs {
+      return manifestError(file, String.from("[package] os must be a list of the systems the package runs on, from \"windows\", \"linux\" and \"macos\", such as [\"windows\"]"));
     }
   }
   if doc.root.has("link") {

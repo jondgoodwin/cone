@@ -10,7 +10,7 @@ import html, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
-from catalogue_data import DOMAINS
+from catalogue_data import DOMAINS, systems_text
 
 BASE = "https://github.com/jondgoodwin/cone"
 OUT = os.path.join(ROOT, "doc", "library")
@@ -63,7 +63,7 @@ for pid, title, scope, subs in DOMAINS:
         body.append(f"      <h4>{html.escape(stitle)}</h4>")
         body.append("      <ul>")
         for name, purpose in pkgs:
-            body.append(f'      <li><a href="{link(name)}"><code>{name}</code></a>: {html.escape(purpose)}</li>')
+            body.append(f'      <li><a href="{link(name)}"><code>{name}</code></a> <span class="os">[{systems_text(ROOT, name)}]</span>: {html.escape(purpose)}</li>')
         body.append("      </ul>")
     body.append('      <p><a href="index.html">All domains</a></p>')
     write(pid + ".html", page(title, "The Cone library", "\n".join(body)))

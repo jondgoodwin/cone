@@ -135,6 +135,7 @@ output = "executable"
 | `version` | `MAJOR.MINOR.PATCH`. Recorded and checked for form; never compared yet |
 | `output` | `"executable"` or `"library"`: what the package builds into |
 | `quiet` | a list of the package's test names (`quiet = ["pipeline"]`) that depend on timing and fail when the machine is loaded. `congo test` runs them last, one at a time, with nothing else running (below, "Testing a package"). Optional; each name must be a file in `tests/` |
+| `os` | the systems the package runs on, from `"windows"`, `"linux"` and `"macos"` (`os = ["windows"]`). Optional: `["windows", "linux"]` where it is not written. `congo test` on a system the list leaves out prints `<name>: skipped, [package] os is ...` as its Result line and runs nothing, counting it neither passed nor failed; the nightly Linux run lists such packages as skipped, with the comment above the `os` line as the reason; the library catalogue prints the systems beside each package; and `tools/platforms/package_platforms.py static` fails a package that claims Linux but has `@c(system)` externs with no `#os` guard, or imports a package that does not claim Linux |
 | `targets` | what the package may be compiled for: `"native"`, the machine Congo runs on, and `"gpu"`. `["native", "gpu"]` marks a library for the GPU, all of it (below, "Kernels for the GPU"); a package with GPU code beside the rest puts it in its `gpu/` folder instead, and names no target for it. Optional: `["native"]` where it is not written |
 
 A package that needs C libraries linked adds a `[link]` table (below, "C
