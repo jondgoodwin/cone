@@ -973,7 +973,7 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
 // THE POLLER). At the first bindUdp the Loop is given the runtime's worker port, so every UDP socket
 // bound from then on is registered there, and the one worker in the port at a time (the poller)
 // answers what its entries say: a datagram for a waiting receive costs one wake, and nothing of UDP
-// crosses to the I/O thread. TCP and files stay on the Loop.
+// crosses to the I/O thread. Files stay on the Loop; TCP is the next section.
 //
 // A datagram operation tries on its own worker, as ever (the shared try, under the entry's shared
 // lock). If it finds nothing to do, 'waitHere' hands it to iocore's issueWaiting (no lock held),
@@ -996,6 +996,20 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
 // abandoned. Windows: the kernel holds each waiting record until its completion comes to the port;
 // the Loop's death closes the sockets (aborting them), and the I/O thread waits (waitUdpHome) until
 // the poller has taken them all, each abandoned, its buffer home, before it ends.
+//
+// TCP ON THE WORKER PORT (iocore's shared.cone, the same name). With the port on, a listener (ListenJob)
+// and a connect (connectIn) are made 'worker' sockets: the sockets they give (accepted, connected)
+// are worker-side, and so is a UDP socket bound here (BindUdpJob). A read (with a buffer, or with none:
+// opRecvAny), a write and a half-close on such a socket then go the way a datagram's does: tried on the
+// caller's worker, and if it cannot finish, listed in the socket's entry (waitHere) and answered at the
+// port, so a kept-alive exchange costs no hand-over to the I/O thread (opStats().handedOver stays put).
+// What stays on the I/O thread: accept, connect, reset and close (a close and a reset are queued control
+// records, counted in 'queued'), so a connect or close flood still crosses once per connection.
+// A read with no buffer (readAnyHere) holds none while it waits: on Linux it first tries a receive into a
+// pool buffer and gives it back if it would block, then waits as a zero-byte read (RecvReady) whose
+// answer (readAnyNext) takes the bytes into a buffer with the same record. It has no calm hint or quiet
+// stage on such a socket. A close racing the ready answer shows the read Failed (invalid handle), not
+// Cancelled. After a send there is no ask pass (askPass) while the worker port is on.
 
 // Switch the Loop's UDP onto the worker port: once, on the I/O thread, before the first UDP socket is
 // bound. Nothing if the runtime has no port to give

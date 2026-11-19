@@ -35,6 +35,22 @@
 // then yields its processor, so a holder that was preempted is not spun on for
 // a whole quantum. The Loop's thread holds no other lock while it takes one.
 //
+// TCP ON THE WORKER PORT. A stream socket is worker-side (the entry's 'worker' is 1) when it came from a
+// listener made with worker (accepted sockets: 'adopt' joins them to the worker port) or from a connect
+// asked with worker (entry 'worker' 2 while it connects: Linux moves the fd from the Loop's epoll to the
+// worker's when the connect succeeds, lxToWorker; Windows associates the socket with the worker port
+// before connecting, and 'udpCompleted' posts the connect's completion on to the Loop's port, 'loopPort').
+// Recv, RecvReady (a zero-byte receive on Windows, a MSG_PEEK on Linux) and Send (one buffer or a gather)
+// on it are issued like a datagram's: 'issue' tries under the entry's lock, 'issueWaiting' lists what is
+// left, the port's 'udpReady' / 'udpCompleted' answers it, and all of these (and the end of a record, an
+// unpublish, a cancel) hold the entry EXCLUSIVE, since a stream's partial send and its order are one
+// socket's. ORDERS. Linux: a new receive or send does not try while others wait on the socket (rwait,
+// swait), so none overtakes; a send the socket took in part is kept (state stFlight, 'done' moved) and
+// continues from there, never handed to the Loop. Windows: no such rule, because a listed record is held
+// by the kernel and a record listed with no kernel operation would never be answered; the kernel's
+// order is the order. A record is answered when its completion is taken, so a buffer is never freed
+// under a pending read. Accept, connect, reset and close stay on the Loop.
+//
 // CONTROLS. A connected socket's half-close, peer address and keepalive are
 // each one system call on its OS handle, which the entry holds. With h's entry
 // locked ('sh.lock(h)', exclusive) a thread other than the Loop's may make them:
