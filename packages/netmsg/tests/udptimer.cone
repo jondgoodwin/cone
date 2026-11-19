@@ -1,0 +1,116 @@
+// A connection's deadline is an actors.Timer held for its life (row 502): its
+// fires resume 'clock', its re-arms are stores or moves of one wheel entry, and
+// its end (finish, the endpoint's group) leaves no cell and no entry behind.
+// The races that matter here, a re-arm against the fire and an end against the
+// fire, are driven by volume: 100 idle connections each fire about every 100 ms
+// (a keep-alive, ratecontrol.cone), half of them ending while the rest's timers
+// go on firing, then the rest. A double resume would run the protocol twice for
+// one fire (a panic in the held timer's arrive, or a doubled packet the
+// protocol answers); a lost one would let an idle connection time out (the
+// first part checks none ends); a cell or entry left behind shows in the held
+// counts at the end.
+
+mod udptimer;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import thread;
+import iocore use SocketAddr;
+import actors;
+import netmsg use *;
+
+const clients = 100usize;
+
+// Events of a channel, counted: the Joined and the Left ones
+fn count(rx: &mut Receiver[NetEvent], joined: &mut usize, left: &mut usize) {
+  while true {
+    match rx.tryRecv() {
+      case let Some(e) {
+        match e {
+          case is Joined { *joined = *joined + 1usize; }
+          case is Left { *left = *left + 1usize; }
+          else {}
+        }
+      }
+      case is None[NetEvent] { break; }
+    }
+  }
+}
+
+fn main() i32 {
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  {
+    var cfg = NetConfig.defaults();
+    cfg.maxClients = 200usize;
+    cfg.maxPerAddress = 200usize;
+    cfg.admitRate = 0u32;
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    var made = List[BoundEndpoint]();
+    var i = 0usize;
+    while i < clients {
+      made.push(mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC.clone())));
+      i = i + 1usize;
+    }
+    var sj = 0usize;
+    var sl = 0usize;
+    var cj = 0usize;
+    var cl = 0usize;
+    let until = Instant.now() + Duration.fromSeconds(20i64);
+    while (sj < clients || cj < clients) && Instant.now() < until {
+      thread.sleep(Duration.fromMillis(50i64));
+      count(&mut rxS, &mut sj, &mut sl);
+      count(&mut rxC, &mut cj, &mut cl);
+    }
+    expectUInt(u64.from(sj), u64.from(clients), "the server has all its clients");
+    expectUInt(u64.from(cj), u64.from(clients), "every client is connected");
+
+    // Idle for 2 seconds: each connection's timer fires on its own, and none ends
+    let before = actors.timerStats();
+    thread.sleep(Duration.fromSeconds(2i64));
+    let after = actors.timerStats();
+    count(&mut rxS, &mut sj, &mut sl);
+    count(&mut rxC, &mut cj, &mut cl);
+    expectUInt(u64.from(sl), 0u64, "no connection ended on the server");
+    expectUInt(u64.from(cl), 0u64, "none on a client");
+    expect(after.held >= u64.from(clients), "the connections hold their cells");
+    expect(after.fires - before.fires >= u64.from(clients), "the timers fired");
+
+    // Half the clients end while the rest's timers go on firing
+    i = 0usize;
+    while i < clients / 2usize {
+      made[i].endpoint.shutdown();
+      i = i + 1usize;
+    }
+    thread.sleep(Duration.fromMillis(500i64));
+    count(&mut rxS, &mut sj, &mut sl);
+    count(&mut rxC, &mut cj, &mut cl);
+    expectUInt(u64.from(sl), u64.from(clients / 2usize), "the server's end of each ended client went");
+    expectUInt(u64.from(cl), u64.from(clients / 2usize), "and the ended clients' own");
+
+    // Then the rest, and the server
+    while i < clients {
+      made[i].endpoint.shutdown();
+      i = i + 1usize;
+    }
+    server.endpoint.shutdown();
+  }
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  // Each connection's last entry (a keep-alive or the idle limit) comes up and is
+  // discarded within its own deadline; the cells go as their actors do
+  var waited = 0u64;
+  while (actors.timerStats().held != 0u64 || actors.timerStats().heldEntries != 0u64) && waited < 1500u64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u64;
+  }
+  let st = actors.timerStats();
+  expectUInt(st.held, 0u64, "no cell held once the connections have gone");
+  expectUInt(st.heldEntries, 0u64, "no entry left in a wheel");
+  done()
+}
