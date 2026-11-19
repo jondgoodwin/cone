@@ -421,6 +421,23 @@ fn main() i32 {
     server.endpoint.shutdown();
   }
 
+  // maxClients 1 << 40 (a limit meaning "no limit"): listen reserves only its first room, so it succeeds, and a client
+  // joins and leaves as usual
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    var cfg = NetConfig.defaults();
+    cfg.maxClients = 1usize << 40usize;
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.localhost(server.port);
+    var held = List[BoundEndpoint]();
+    expectStr(dial(to, cfg, &mut held).view(), "J1", "a client joins a server whose limit is 1 << 40");
+    expectStr(counts(server.endpoint).view(), "0/0/0", "and nothing was refused");
+    shutAll(&mut held);
+    server.endpoint.shutdown();
+  }
+
   // Each server has a key of its own: one address and salt, different sessions
   {
     var txA: Sender[NetEvent];
