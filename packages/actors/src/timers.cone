@@ -71,7 +71,9 @@
 // woken and drops them at its step, the Replies let go unanswered (the awaiting
 // behaviour abandoned, as at the end); the stop waits until every store's
 // 'armed' is 0, the workers still running, before it goes on. The runtime is
-// never started again, so the stores are not reused.
+// never started again, so the stores are not reused. A sweep asked for and not yet made is let go as well (the
+// step clears it, and idle does not count it as work once the timers have stopped): a worker must reach its
+// 'stopping' check, which a standing ask would otherwise keep it from for ever (row 531).
 
 // A cell's states, the low 8 bits of its word
 // (Free is 0: cellFree, the function, leaves a free cell's state 0)
@@ -541,6 +543,9 @@ fn timersStep(ts: *TimerStore) bool {
     timersDrain(ts);
   }
   if timersStopped.load() != 0u32 {
+    // A sweep asked for is not made once the stop has begun, and the ask is let go (idle looks at
+    // 'sweep' too, and does not leave it standing: row 531)
+    (*ts).sweep.store(0u32);
     timersDropAll(ts);
     return false;
   }
@@ -750,4 +755,14 @@ pub fn timerStats() TimerStats {
     i = i + 1u32;
   }
   st
+}
+
+// A TEST HOOK, not part of the API (tests/sweepatstop.cone): ask worker i for a sweep as WorkerWake.signal does,
+// without waking it, so that a test can leave the ask standing where a race would (row 531). Nothing if worker i
+// has made no store
+pub fn askSweep(i: u32) {
+  let ts = timerStoreOf(i);
+  if ts as usize != 0usize {
+    (*ts).sweep.store(1u32);
+  }
 }
