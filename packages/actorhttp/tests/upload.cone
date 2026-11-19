@@ -492,7 +492,7 @@ fn client() {
   printStr("\n");
 }
 
-fn scenarios(secure: bool, port: u16, holePort: u16, label: &str) {
+fn scenarios(secure: bool, port: u16, holePort: u16, dropHolePort: u16, label: &str) {
   printStr("== ");
   printStr(label);
   printStr("\n");
@@ -588,8 +588,8 @@ fn scenarios(secure: bool, port: u16, holePort: u16, label: &str) {
   reset();
   {
     let d = Drop(newClient(secure));
-    // Plain HTTP goes to the never-reads server: /sink answers 413 at the head (maxBody 16 MiB) and can settle the source Finished before the drop (row 524).
-    let dropPort = if secure { port } else { holePort };
+    // Plain HTTP goes to a never-reads server of its own: /sink answers 413 at the head (maxBody 16 MiB) and can settle the source Finished before the drop (row 524). Its own, because a Hole takes one connection and closes its listener, and the never-reads scenario below needs another.
+    let dropPort = if secure { port } else { dropHolePort };
     d.run(url(secure, dropPort, "/sink"), 67108864u64);
     waitFor(&tally.ended, 1u64);
     waitFor(&tally.endsSent, 1u64);
@@ -666,11 +666,14 @@ fn main() i32 {
     let hole = Hole(None[aio.Socket]);
     hole.open(ptx.clone());
     let hport = prx.recv() || 0u16;
+    let dropHole = Hole(None[aio.Socket]);
+    dropHole.open(ptx.clone());
+    let dport = prx.recv() || 0u16;
     printStr("three servers listen: ");
-    printStr(yes(port != 0u16 && sport != 0u16 && hport != 0u16));
+    printStr(yes(port != 0u16 && sport != 0u16 && hport != 0u16 && dport != 0u16));
     printStr("\n");
-    scenarios(false, port, hport, "HTTP/1.1");
-    scenarios(true, sport, hport, "HTTP/2 over TLS");
+    scenarios(false, port, hport, dport, "HTTP/1.1");
+    scenarios(true, sport, hport, dport, "HTTP/2 over TLS");
     plain.stop();
     secure.stop();
   }
