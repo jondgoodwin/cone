@@ -480,6 +480,22 @@ represented; this section is what they must add up to.
   fn put(h: &mut Host['h], l: &'l mut List[Pt]) where 'l >= 'h { h.r = &l[0usize]; }
   ```
 
+- **A store through a raw pointer or a call's result.** A place reached that
+  way, through a pointer expression that is not a variable, has no variable at its root, so nothing says how long it lives, and its
+  lifetime is the one its type names, as in Rust. A type that names no lifetime
+  (`*Globals`, `&Globals`) is read as global, so a borrow stored there must be
+  global, and a shorter-lived one is refused (1013). `trust` covers whether the
+  pointer is valid, not how long what is stored through it lasts, so it does not
+  change this.
+
+  ```
+  struct Globals { n: i32; hook: &fn(); }
+  fn glob() *Globals { null as *Globals }
+  fn hk() {}
+  fn set(f: &fn()) { (*glob()).hook = f; }    // refused, 1013: f's lifetime is the caller's
+  fn set2() { (*glob()).hook = &hk; }         // accepted: a named function is global
+  ```
+
 - **A return** is a store into the caller's result. The signature names which
   input the result borrows from, and the caller may hold the result no longer
   than that input (decided 5 Nov: lifetimes on the inputs, and the return says

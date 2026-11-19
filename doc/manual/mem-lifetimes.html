@@ -307,6 +307,26 @@ fn mine() i64 {
 		says: <span class="pre">struct Pin['a] { at: &amp;'a i64; }</span>. A borrow of a global the arguments carried
 		is still carried, so the global is not changed while the value is used.</p>
 
+	<h3 id="rawstore">Storing through a raw pointer</h3>
+	<p>A place reached through a raw pointer that is not held in a variable (a function's result, say), has no variable
+		of the function at its root, so nothing says how long it lives. Its lifetime is the one its type names, and a type that names none, like
+		<span class="pre">Globals</span> below, is read as <span class="pre">'static</span>. A borrow stored there must
+		be global, so a borrow the caller lent is refused. Wrapping the store in
+		<a href="safe-trust.html"><span class="pre">trust</span></a> vouches that the pointer is valid, not that what is
+		stored through it lasts, so it does not lift the check:</p>
+<pre>
+struct Globals { n: i32; hook: &amp;fn(); }
+fn glob() *Globals { null as *Globals }
+fn hk() {}
+
+fn set(f: &amp;fn()) {
+  (*glob()).hook = f;      // **ERROR** 1013: lval outlives the borrowed reference you are storing
+}
+fn set2() {
+  (*glob()).hook = &amp;hk;    // Ok: a named function is global
+}
+</pre>
+
 	<h3 id="traitimpl">Implementing a trait</h3>
 	<p>A trait's implementation may promise more than the trait does: a result of <span class="pre">'static</span> or
 		of a longer lifetime, and a parameter of any lifetime where the trait's is <span class="pre">'static</span>. A call
