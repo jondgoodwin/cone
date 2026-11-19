@@ -1,7 +1,7 @@
 # mutants.ps1: the second design's mutation check (rows 454 and 506). Each mutant is cn_shim.c with one safety rule broken; the
 # test that is meant to catch it must FAIL on it, and the same tests must PASS on the unmutated shim. Run it again after any change
 # to the shim's common paths (lf_alloc, lf_free, lf_release, lf_fill, the grouped return) or to "after a free" (cnm_lf_after_free).
-#   powershell -File packages\cnmalloc\tests\mutants.ps1 [-Name a|a2m|a2s|b|m1|...|m7|none|all] [-Runs 5] [-Scratch <dir>] [-RaceSecs 120]
+#   powershell -File packages\cnmalloc\tests\mutants.ps1 [-Name a|a2m|a2s|b|m1|...|m7|h1|none|all] [-Runs 5] [-Scratch <dir>] [-RaceSecs 120]
 #
 #   a    Rule G's undo removed: the g2 test still runs, but the thread keeps the cell of the page's new life  (caught by lfrace: double free abort)
 #   a2m  the multi-bit fill's Rule G compare (MB-G) tests the class half of genclass only, not the generation half  (caught by lfmulti's same-class rounds, deterministically: the allocator hangs, lfmulti's waitFor gives up after 5 s and its checks fail; the 120 s watchdog does not fire)
@@ -15,6 +15,8 @@
 #   m5   a cell's link read after its group's release (RT-L)                     (caught by lfreturn: a wild link followed)
 #   m6   the multi-bit undo passes g1, not g2                                    (caught by lfmulti's whole-word rounds: page left UNLISTED)
 #   m7   the grouped return's double-free test on the group's lowest bit only (RT-D)  (caught by doublefree's grouped part)
+#   (row 539, the scan's start word)
+#   h1   the start word's key names the page but not its generation: a retired page's next life starts at the old life's word  (caught by lfmulti: its filler's word is not the one the round set up; found 19 Nov when the key was the page alone)
 #   none the unmutated shim: doublefree, lfpage (single and grouped), lfrace (plain and with fills), lfstale (single and grouped),
 #        lfmulti and lfreturn must pass
 # Everything is built and run under <Scratch> (default %TEMP%\cnmalloc-mutants); nothing in the tree changes. A mutant's test
@@ -57,6 +59,7 @@ $mutants = @{
                 ("    a[m++] = p; n--;`n    lf_give_cells(a, m, cl);`n    p = *(void**)a[0];")))
   'm6' = @(, @('lf_release(P, g2, j, want);', 'lf_release(P, g1, j, want);'))
   'm7' = @(, @('if (old & mask) {                                   // RT-D', 'if (old & mask & (0 - mask)) {                      // RT-D'))
+  'h1' = @(, @('#define LF_KEY(P, g) ((uintptr_t)(P) ^ ((uintptr_t)((g) >> 8) << 48))', '#define LF_KEY(P, g) ((uintptr_t)(P))'))
 }
 
 function Build-Mutant([string]$m) {
@@ -115,7 +118,7 @@ function Run-Test([string]$libdir, [string]$test, [string]$tag, [hashtable]$extr
     $env:CNTEST_LOG = Join-Path $Scratch "numbers-$test-$tag.txt"
     foreach ($k in $extra.Keys) { Set-Item "Env:$k" $extra[$k] }
     $ErrorActionPreference = 'Continue'      # congo writes a failing test's report to stderr
-    python $congo test $test *> $log
+    python $congo test --no-cache $test *> $log
     $code = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
   } finally {
@@ -134,9 +137,9 @@ function Check([string]$what, [bool]$ok) { $script:verdicts += [pscustomobject]@
 $plan = @{
   'a' = @('lfrace', @{}); 'a2m' = @('lfmulti', @{}); 'a2s' = @('lfmulti', @{}); 'b' = @('lfstale', @{})
   'm1' = @('lfmulti', @{}); 'm2' = @('lfmulti', @{}); 'm3' = @('lfmulti', @{}); 'm4' = @('lfstale', @{ CNSTALE_GROUPED = '1' })
-  'm5' = @('lfreturn', @{}); 'm6' = @('lfmulti', @{}); 'm7' = @('doublefree', @{})
+  'm5' = @('lfreturn', @{}); 'm6' = @('lfmulti', @{}); 'm7' = @('doublefree', @{}); 'h1' = @('lfmulti', @{})
 }
-$names = if ($Name -eq 'all') { @('a', 'a2m', 'a2s', 'b', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'none') } else { $Name.Split(',') }
+$names = if ($Name -eq 'all') { @('a', 'a2m', 'a2s', 'b', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'h1', 'none') } else { $Name.Split(',') }
 foreach ($m in $names) {
   if ($m -eq 'none') {
     foreach ($t in 'doublefree', 'lfpage', 'lfrace', 'lfstale', 'lfmulti', 'lfreturn') {
