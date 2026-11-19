@@ -234,6 +234,7 @@ class Package:
     runtime: list[str] = field(default_factory=list)      # [link] runtime: DLLs, bare names
     gpu: bool = False     # [package] targets names "gpu": it may be compiled for the GPU
     quiet: list[str] = field(default_factory=list)       # [package] quiet: tests run alone, last
+    os: list[str] = field(default_factory=lambda: list(DEFAULT_OS))  # [package] os: the systems it claims
 
     @property
     def hand_include(self) -> Path:
@@ -262,6 +263,7 @@ LIBRARY_SUFFIXES = (".lib", ".a", ".so", ".dylib", ".dll")
 
 LINK_KEYS = ("libraries", "paths", "runtime")
 LINK_SYSTEMS = ("windows", "linux", "macos")
+DEFAULT_OS = ("windows", "linux")      # [package] os where it is not written
 
 
 def read_link_keys(path: Path, table: dict,
@@ -348,9 +350,9 @@ def read_manifest(path: Path) -> Package:
         raise CongoError(f"{path}: the manifest needs a [package] table with name,"
                          " version and output")
     for key in table:
-        if key not in ("name", "version", "output", "targets", "quiet"):
+        if key not in ("name", "version", "output", "targets", "quiet", "os"):
             raise CongoError(f"{path}: '{key}' is not a [package] key; the keys are"
-                             " name, version, output, targets and quiet")
+                             " name, version, output, targets, quiet and os")
     name, version, output = table.get("name"), table.get("version"), table.get("output")
     if not isinstance(name, str) or not NAME_RE.match(name):
         raise CongoError(f"{path}: [package] name must be a Cone name, such as \"hello\"")
@@ -366,12 +368,18 @@ def read_manifest(path: Path) -> Package:
     if not isinstance(quiet, list) or not all(isinstance(q, str) for q in quiet):
         raise CongoError(f"{path}: [package] quiet must be a list of test names, such as"
                          " [\"pipeline\"]")
+    systems = table.get("os", list(DEFAULT_OS))
+    if (not isinstance(systems, list) or not systems
+            or not all(isinstance(o, str) and o in LINK_SYSTEMS for o in systems)):
+        raise CongoError(f"{path}: [package] os must be a list of the systems the package"
+                         " runs on, from \"windows\", \"linux\" and \"macos\", such as"
+                         " [\"windows\"]")
     libraries, link_paths, runtime = (read_link(path, data["link"]) if "link" in data
                                       else ([], [], []))
     root = path.parent.resolve()
     return Package(name, version, output, root, root / "src" / f"{name}.cone",
                    libraries=libraries, link_paths=link_paths, runtime=runtime, gpu=gpu,
-                   quiet=list(quiet))
+                   quiet=list(quiet), os=list(systems))
 
 
 def read_targets(path: Path, targets: object, output: str) -> bool:
@@ -3618,6 +3626,16 @@ def prepare_package(pkg: Package, mode: str, shared: Path | None,
     return session
 
 
+def skip_for_host(pkg: Package) -> bool:
+    """A package whose [package] os does not name the system Congo runs on is not
+    tested here: its Result line says so, and it adds nothing to the counts, so a
+    Windows-only package is listed as skipped on Linux, never as passed or failed."""
+    if HOST_OS in pkg.os:
+        return False
+    say("Result", f"{pkg.name}: skipped, [package] os is {', '.join(pkg.os)} and this is {HOST_OS}")
+    return True
+
+
 def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
                  later: list | None = None, shared: Path | None = None) -> Tally:
     """Build the package, then run each test and build each example. A test the
@@ -3626,6 +3644,8 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
     caller to run, alone, after every package's other tests. Where `shared` is a
     folder, every package of the build but this one is compiled there (Session.home)."""
     tally = Tally()
+    if skip_for_host(pkg):
+        return tally
     session = prepare_package(pkg, mode, shared, tally)
     if session is not None:
         run_package(pkg, session, mode, name_filter, bless, later, tally)
@@ -3787,6 +3807,8 @@ def run_packages_in_parallel(manifests: list[Path], jobs: int, mode: str,
     prepared: list[tuple[Package, Session, Tally]] = []
     for manifest in manifests:
         pkg = read_manifest(manifest)
+        if skip_for_host(pkg):
+            continue
         tally = Tally()
         session = prepare_package(pkg, mode, shared, tally)
         if session is None:
