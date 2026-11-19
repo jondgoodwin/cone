@@ -92,7 +92,7 @@ void swapFlow(FlowState *fstate, SwapNode **nodep) {
     SwapNode *node = *nodep;
 
     uint16_t lvalscope = 0;
-    INode *lvalperm;
+    INode *lvalperm = (INode*)immPerm;
     INode *lvalvar = iexpGetStoreLvalInfo(node->lval, &lvalperm, &lvalscope);
     if (!(MayWrite & permGetFlags(lvalperm))) {
         if (permIsLock(lvalperm))
@@ -105,6 +105,7 @@ void swapFlow(FlowState *fstate, SwapNode **nodep) {
     }
 
     uint16_t rvalscope = 0;
+    lvalperm = (INode*)immPerm;
     INode *rvalvar = iexpGetStoreLvalInfo(node->rval, &lvalperm, &rvalscope);
     if (!(MayWrite & permGetFlags(lvalperm))) {
         if (permIsLock(lvalperm))
