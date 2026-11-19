@@ -61,6 +61,13 @@ static void heapRelease(struct ConeRegion *r, void *block, size_t bytes) {
 __declspec(dllimport) void *__stdcall GetModuleHandleA(const char *name);
 __declspec(dllimport) void *__stdcall GetProcAddress(void *module, const char *name);
 __declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(const char *name, char *buf, unsigned long n);
+#else
+// Linux (cnmalloc row 550): the same lookup as dlsym(RTLD_DEFAULT = 0, ...), which finds the executable's own export when
+// congo's link exports the shim's cnmalloc_* names (--dynamic-list). Looked up only when the setting is on, and the name
+// is there when the shim is linked, so a lookup that would make glibc allocate is made only by a program that has the
+// setting on without the shim (one allocation, through glibc's own malloc).
+#include <stdlib.h>
+void *dlsym(void *handle, const char *name);
 #endif
 static volatile int sizeState;                       // 0 not looked yet, 1 settled
 static size_t (*volatile classSizeFn)(size_t);
@@ -72,6 +79,14 @@ static size_t heapSize(struct ConeRegion *r, size_t bytes, size_t align) {
         char v[8];
         if (GetEnvironmentVariableA("CONE_HEAP_CLASS_SIZE", v, sizeof v) == 1 && v[0] == '1')
             classSizeFn = (size_t (*)(size_t))GetProcAddress(GetModuleHandleA(0), "cnmalloc_sizeFor");
+        sizeState = 1;
+    }
+    if (classSizeFn) return classSizeFn(bytes);
+#else
+    if (!sizeState) {
+        const char *v = getenv("CONE_HEAP_CLASS_SIZE");
+        if (v && v[0] == '1' && v[1] == 0)
+            classSizeFn = (size_t (*)(size_t))dlsym(0, "cnmalloc_sizeFor");
         sizeState = 1;
     }
     if (classSizeFn) return classSizeFn(bytes);

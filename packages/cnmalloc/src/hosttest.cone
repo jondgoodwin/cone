@@ -1,0 +1,161 @@
+// What the package's tests ask of the system, in one place (row 550). A file with no 'mod' line is part of the root module, so
+// these are cnmalloc.cnm_host* to a test that imports cnmalloc. Windows and Linux each answer them with their own calls; a
+// test names none of the system's functions itself. They belong to the tests: nothing in the heap calls them.
+//   cnm_hostSleepMs(ms)          sleep
+//   cnm_hostYield()              give up the processor
+//   cnm_hostTickMs()             milliseconds on a clock that never goes back (coarse: 15 ms on Windows, 4 ms on Linux)
+//   cnm_hostMonoMs()             the same on the finest clock, in milliseconds
+//   cnm_hostErr(buf, n)          write n bytes to stderr
+//   cnm_hostAppend(path, buf, n) append n bytes to a file, making it when it is not there
+//   cnm_hostExit(code)           end the process at once
+//   cnm_hostSym(name)            the address of an exported name of the running program (the shim's cnmalloc_* names), 0
+//                                when there is none: the shim is not linked, or (Linux) it is linked but not exported
+//   cnm_hostMsize(p)             the usable size of a block (_msize, malloc_usable_size), through the program's own names
+//   cnm_hostSetenv(name, value)  set an environment variable of this process
+//   cnm_hostPrivateBytes()       the process's committed (Windows) or resident (Linux) private memory
+//   cnm_hostForeignMalloc(n)     a block from the C library's own allocator, not the shim's (the block a foreign free is for)
+//   cnm_hostForeignAligned(n, a) the same, aligned (Windows' _aligned_malloc, Linux's memalign)
+#if #os == .windows {
+
+extern {
+  fn @c(system) Sleep(ms: u32);
+  fn @c(system) SwitchToThread() i32;
+  fn @c(system) GetTickCount64() u64;
+  fn @c(system) QueryPerformanceCounter(t: *i64) i32;
+  fn @c(system) QueryPerformanceFrequency(f: *i64) i32;
+  fn @c(system) GetStdHandle(n: u32) usize;
+  fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
+  fn @c(system) CreateFileA(name: *u8, access: u32, share: u32, sec: usize, disp: u32, flags: u32, tmpl: usize) usize;
+  fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) ExitProcess(code: u32);
+  fn @c(system) GetModuleHandleA(name: cstr) usize;
+  fn @c(system) GetModuleHandleW(name: *u8) usize;
+  fn @c(system) GetProcAddress(module: usize, name: cstr) usize;
+  fn @c(system) GetCurrentProcess() usize;
+  fn @c(system) K32GetProcessMemoryInfo(p: usize, counters: *u8, cb: u32) i32;
+  fn @c("_msize") hostMsize(p: *u8) usize;
+  fn @c("_putenv_s") hostPutenv(name: cstr, v: cstr) i32;
+  fn @c("calloc") hostCalloc(n: usize, size: usize) *u8;
+  fn @c("free") hostFree(p: *u8);
+}
+
+pub fn cnm_hostSleepMs(ms: u32) { Sleep(ms); }
+pub fn cnm_hostYield() { SwitchToThread(); }
+pub fn cnm_hostTickMs() u64 { GetTickCount64() }
+pub fn cnm_hostMonoMs() u64 {
+  var f = 0i64;
+  var t = 0i64;
+  QueryPerformanceFrequency(&mut f);
+  QueryPerformanceCounter(&mut t);
+  u64.from(t) * 1000u64 / u64.from(f)
+}
+pub fn cnm_hostErr(buf: usize, n: usize) {
+  var w = 0u32;
+  WriteFile(GetStdHandle(0xFFFFFFF4u32), buf as *u8, u32.from(n), &mut w, 0usize);
+}
+pub fn cnm_hostAppend(path: *u8, buf: usize, n: usize) {
+  var w = 0u32;
+  let fh = CreateFileA(path, 4u32, 3u32, 0usize, 4u32, 128u32, 0usize);   // FILE_APPEND_DATA, share read and write, OPEN_ALWAYS
+  if fh != 0xFFFFFFFFFFFFFFFFusize {
+    WriteFile(fh, buf as *u8, u32.from(n), &mut w, 0usize);
+    CloseHandle(fh);
+  }
+}
+pub fn cnm_hostExit(code: u32) { ExitProcess(code); }
+pub fn cnm_hostSym(name: cstr) usize { GetProcAddress(GetModuleHandleW(null), name) }
+pub fn cnm_hostMsize(p: usize) usize { hostMsize(p as *u8) }
+pub fn cnm_hostSetenv(name: cstr, value: cstr) { hostPutenv(name, value); }
+pub fn cnm_hostPrivateBytes() usize {
+  let buf = hostCalloc(1usize, 128usize);
+  K32GetProcessMemoryInfo(GetCurrentProcess(), buf, 80u32);
+  let v = *((buf as usize + 72usize) as *usize);     // PrivateUsage, at offset 72
+  hostFree(buf);
+  v
+}
+pub fn cnm_hostForeignMalloc(n: usize) usize {
+  let m = GetModuleHandleA("ucrtbase.dll");
+  let f = GetProcAddress(m, "malloc") as &fn @c (n: usize) *u8;
+  f(n) as usize
+}
+pub fn cnm_hostForeignAligned(n: usize, a: usize) usize {
+  let m = GetModuleHandleA("ucrtbase.dll");
+  let f = GetProcAddress(m, "_aligned_malloc") as &fn @c (n: usize, a: usize) *u8;
+  f(n, a) as usize
+}
+
+} #else {
+
+extern {
+  fn usleep(us: u32) i32;
+  fn sched_yield() i32;
+  fn clock_gettime(clock: i32, ts: *HostTs) i32;
+  fn @c("calloc") hostCalloc(n: usize, size: usize) *u8;
+  fn @c("free") hostFree(p: *u8);
+  fn write(fd: i32, buf: *u8, n: usize) isize;
+  fn open(path: *u8, flags: i32, mode: u32) i32;
+  fn read(fd: i32, buf: *u8, n: usize) isize;
+  fn close(fd: i32) i32;
+  fn _exit(code: i32);
+  fn dlsym(handle: usize, name: cstr) usize;
+  fn setenv(name: cstr, v: cstr, overwrite: i32) i32;
+  fn malloc_usable_size(p: *u8) usize;
+  fn __libc_malloc(n: usize) *u8;
+  fn __libc_memalign(a: usize, n: usize) *u8;
+}
+
+pub fn cnm_hostSleepMs(ms: u32) { usleep(ms * 1000u32); }
+pub fn cnm_hostYield() { sched_yield(); }
+struct HostTs {
+  sec: i64;
+  nsec: i64;
+}
+fn hostClock(clock: i32) u64 {
+  var ts = HostTs(0i64, 0i64);
+  clock_gettime(clock, &mut ts);
+  u64.from(ts.sec) * 1000u64 + u64.from(ts.nsec) / 1000000u64
+}
+pub fn cnm_hostTickMs() u64 { hostClock(6i32) }       // CLOCK_MONOTONIC_COARSE
+pub fn cnm_hostMonoMs() u64 { hostClock(1i32) }       // CLOCK_MONOTONIC
+pub fn cnm_hostErr(buf: usize, n: usize) { write(2i32, buf as *u8, n); }
+pub fn cnm_hostAppend(path: *u8, buf: usize, n: usize) {
+  let fd = open(path, 0x441i32, 0x1A4u32);            // O_WRONLY | O_CREAT | O_APPEND, 0644
+  if fd >= 0i32 {
+    write(fd, buf as *u8, n);
+    close(fd);
+  }
+}
+pub fn cnm_hostExit(code: u32) { _exit(i32.from(code)); }
+pub fn cnm_hostSym(name: cstr) usize { dlsym(0usize, name) }     // RTLD_DEFAULT
+pub fn cnm_hostMsize(p: usize) usize { malloc_usable_size(p as *u8) }
+pub fn cnm_hostSetenv(name: cstr, value: cstr) { setenv(name, value, 1i32); }
+pub fn cnm_hostPrivateBytes() usize {
+  // /proc/self/statm: size resident shared ... in pages; the resident ones, less the shared
+  let buf = hostCalloc(1usize, 128usize);
+  let fd = open(&"/proc/self/statm" as *u8, 0i32, 0u32);
+  if fd < 0i32 { hostFree(buf); return 0usize; }
+  let n = usize.from(read(fd, buf, 127usize));
+  close(fd);
+  var i = 0usize;
+  var field = 0usize;
+  var cur = 0usize;
+  var resident = 0usize;
+  var shared = 0usize;
+  while i <= n {
+    let c = if i < n { *((buf as usize + i) as *u8) } else { 32u8 };
+    if c >= 48u8 && c <= 57u8 {
+      cur = cur * 10usize + usize.from(c - 48u8);
+    } else {
+      if field == 1usize { resident = cur; }
+      if field == 2usize { shared = cur; }
+      field = field + 1usize;
+      cur = 0usize;
+    }
+    i = i + 1usize;
+  }
+  hostFree(buf);
+  (resident - shared) * 4096usize
+}
+pub fn cnm_hostForeignMalloc(n: usize) usize { __libc_malloc(n) as usize }
+pub fn cnm_hostForeignAligned(n: usize, a: usize) usize { __libc_memalign(a, n) as usize }
+
+}

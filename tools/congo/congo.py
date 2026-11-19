@@ -71,6 +71,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1882,9 +1883,19 @@ class Linker:
                     "legacy_stdio_definitions.lib",
                     *(["/OPT:REF,ICF"] if release else []),
                     *(["/DEBUG"] if not strip else [])]
-        return [self.tool, *map(str, objs), str(self.conestd),
+        # Linux only (cnmalloc, row 550): CONGO_LINK_EXTRA names files (objects, archives; split like a shell line) that go on
+        # the link line after the program's objects, as Windows' _LINK_ does; a program that links cnmalloc's shim names
+        # its object there. The shim is a plain object, never an archive member or a shared library (its names have to win
+        # over the C library's, and its thread-locals are initial-exec). And the executable exports the shim's own names,
+        # cnmalloc_*, to dlsym(RTLD_DEFAULT) (the actors runtime and conestd's heap region look them up), through
+        # --dynamic-list: not --export-dynamic, which would export every symbol of every program. No program has such a
+        # name unless it links the shim, so the list is harmless to the rest.
+        extra = shlex.split(os.environ.get("CONGO_LINK_EXTRA", ""))
+        dynamic = exe.with_name(exe.name + ".dynlist")
+        dynamic.write_text("{\n  cnmalloc_*;\n};\n")
+        return [self.tool, *map(str, objs), *extra, str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
-                "-o", str(exe), "-lm", "-lpthread"]
+                f"-Wl,--dynamic-list={dynamic}", "-o", str(exe), "-lm", "-lpthread", "-ldl"]   # -ldl: dlsym, in libc itself since glibc 2.34 (heapregion.c, actors)
 
 
 # ---------------------------------------------------------------------------
