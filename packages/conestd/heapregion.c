@@ -55,8 +55,8 @@ static void heapRelease(struct ConeRegion *r, void *block, size_t bytes) {
 // (read once, off by default) and the program links cnmalloc: then the answer is the size of the cell cnmalloc's
 // malloc hands out for that request (its small classes; larger requests and 0 answer as asked). That is within
 // core's 'size' promise: at least 'bytes', stable, idempotent (a class size is its own class's size) and never
-// falling. cnmalloc exports 'cnmalloc_sizeFor' from the executable (shim/cn_shim.c), found by GetProcAddress (Windows only, as cnmalloc
-// is) as the actors runtime finds its worker calls; a program without cnmalloc finds nothing and stays exact (row 451).
+// falling. cnmalloc exports 'cnmalloc_sizeFor' from the executable (shim/cn_shim.c), found by GetProcAddress (Windows) or
+// dlsym(RTLD_DEFAULT) (Linux, row 550) as the actors runtime finds its worker calls; a program without cnmalloc finds nothing and stays exact (row 451).
 #ifdef _WIN32
 __declspec(dllimport) void *__stdcall GetModuleHandleA(const char *name);
 __declspec(dllimport) void *__stdcall GetProcAddress(void *module, const char *name);
