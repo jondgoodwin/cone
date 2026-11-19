@@ -89,10 +89,7 @@ pub actor Connection is ValueSource {
   tx: UdpSender;                // the endpoint's socket's sending side (none for the other kinds)
   outq: Deque[IoBuf];           // packets polled and not yet handed to the socket
   parent: CancelGroup;          // the endpoint's group (a fresh one for the other kinds)
-  timer: CancelGroup;           // the armed timer's group, a child of 'parent'
-  timerGen: u32;                // which timer is the armed one
-  armed: i64;                   // the instant the timer will wake us; -1 none
-  tickQueued: bool;             // a tick for a deadline already due waits in our queue
+  timer: actors.Timer;          // the connection's own deadline, held for its life (UDP): 'clock' waits on it; ended by 'parent' or finish
 
   // in-process and simulated
   partner: Option[Connection];
@@ -107,7 +104,7 @@ pub actor Connection is ValueSource {
       directIds: Array[u16, 64]() <- fill 0u16, nDirect: 0usize, staleOut: 0u64, sendErrors: 0u64, slotsRefused: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
       open: true, forced: false, forcedReason: CloseReason.Local,
       addr: addr, ep: ep, tx: tx, outq: Deque[IoBuf](), parent: parent,
-      timer: parent.child(), timerGen: 0u32, armed: -1i64, tickQueued: false,
+      timer: actors.Timer.within(&parent),
       partner: None[Connection], sim: LinkSim.make(link, seed));
     if kind == connUdp {
       self.announce();
@@ -271,10 +268,8 @@ pub actor Connection is ValueSource {
     }
   }
 
-  // Time to look at the connection: a deadline already due (reschedule's message
-  // to itself), or the simulation's clock
+  // Time to look at the connection: the simulation's clock
   async fn tick(self) {
-    tickQueued = false;
     self.run();
     while true {
       match outq.popFront() {
@@ -284,12 +279,13 @@ pub actor Connection is ValueSource {
     }
   }
 
-  // The timer 'g' of generation 'gen' is for the instant 'at': when it comes, the
-  // protocol is polled if its deadline is due, or the timer is set again
-  async fn wake(self, at: i64, gen: u32, g: CancelGroup) {
-    let r = await aio.sleepUntilIn(Instant.fromNanos(at), IoLimits.within(g));
-    if slept(r) && gen == timerGen && open {
-      armed = -1i64;
+  // The connection's deadline, for its life (over UDP): each time the timer's
+  // deadline comes, the protocol is polled if its deadline is due, or the
+  // deadline is set again. It ends when the timer does (finish, or the
+  // endpoint's group)
+  async fn clock(self) {
+    while await timer.next() {
+      if !open {break;}
       if peer.nextDeadline().nanos() <= Instant.now().nanos() {
         self.run();
       } else {
@@ -347,6 +343,7 @@ pub actor Connection is ValueSource {
   fn announce(self) {
     handler.attach(selfactor);
     self.emit(NetEvent.Joined(id, selfactor));
+    if kind == connUdp {selfactor.clock();}
     self.reschedule();
   }
 
@@ -535,32 +532,20 @@ pub actor Connection is ValueSource {
     }
   }
 
-  // Keep the connection's own deadline: a deadline already due is a message to
-  // ourselves (behind those waiting; no timer); one later than the armed timer
-  // needs nothing, because the timer finds it when it comes; otherwise the
-  // armed timer is let go and one is armed for the earlier instant
+  // Keep the connection's own deadline: the timer is set to the protocol's next
+  // one. A later one is a store (the timer finds it when it comes), an earlier
+  // one moves the timer's entry, and one already due fires at this worker's
+  // next step
   fn reschedule(self) {
     if kind != connUdp || !open {return;}
-    let at = peer.nextDeadline().nanos();
-    if at <= Instant.now().nanos() {
-      if !tickQueued {
-        tickQueued = true;
-        selfactor.tick();
-      }
-    } else if armed < 0i64 || at < armed {
-      let c = timer.cancel();
-      timer = parent.child();
-      timerGen = timerGen + 1u32;
-      armed = at;
-      selfactor.wake(at, timerGen, timer);
-    }
+    timer.set(peer.nextDeadline());
   }
 
   // It has ended: the application hears once, the endpoint lets it go
   fn finish(self, reason: CloseReason) {
     if !open {return;}
     open = false;
-    let c = timer.cancel();
+    timer.stop();
     // A value still waiting for credit is dropped: nothing follows Left
     while ringLen > 0usize {
       let s = &mut pend[ring[ringHead]];
