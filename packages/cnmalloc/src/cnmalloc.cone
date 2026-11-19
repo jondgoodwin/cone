@@ -20,6 +20,14 @@
 //                this version's interface is one page at a time, which is what the size classes use.
 //   Size classes the first client of both: one lock per class, cells cut from pages, no header anywhere.
 //
+// LARGE BLOCKS AND THEIR COMMIT (row 547)
+//   A freed large block (above 32 KiB) stays committed in the cache, under largecap and the give-back delay. When a
+//   request takes it, the block keeps at most (request rounded up to 4 KiB) + largeSlack committed bytes while it
+//   lives; the rest is decommitted. THE BOUND: a live large block never holds more than request + largeSlack
+//   committed (default 256 KiB, CNMALLOC=largeslack=<bytes>; 0 keeps only the request). Beyond the bound nothing
+//   changes: the cached bytes stay under largecap and the delay. The slack exists because the block usually grows
+//   again at once (a List's realloc), and a tail decommitted and committed again faults every page twice.
+//
 // LOCK ORDER (the whole of it)
 //   a class lock, THEN the pool lock, then (inside giveRun) nothing; never the reverse. The large table's lock
 //   is taken alone (it never holds a class or pool lock, and takes none while held). The timer's lock is taken
@@ -150,6 +158,7 @@ pub struct Heap {
   mode: usize;
   delayMs: u64;
   largeCap: usize;
+  largeSlack: usize;       // row 547: bytes a reused large block may keep committed beyond its request (multiple of 4 KiB)
   largeReserve: usize;     // row 446: a large block reserves this many times its size ...
   largeReserveCap: usize;  // ... and at most this many bytes more than its size
   stats: usize;
@@ -1324,9 +1333,14 @@ fn largeAlloc(h: *Heap, n: usize, align: usize, fresh: *u32) usize {
         cCommit(l, 1u64);
         if ok { ent.committed = commitBytes; }
       } else if ent.committed >= commitBytes + pageSize {
-        oswin.decommit(ent.addr + commitBytes, ent.committed - commitBytes);
-        cDecommit(l, 1u64);
-        ent.committed = commitBytes;
+        // row 547: a live block keeps at most commitBytes + largeSlack committed (the bound); the rest goes back.
+        // The program usually grows the block again (a List's realloc), and the tail it still holds is not faulted a second time.
+        let keep = commitBytes + h.largeSlack;
+        if ent.committed > keep {
+          oswin.decommit(ent.addr + keep, ent.committed - keep);
+          cDecommit(l, 1u64);
+          ent.committed = keep;
+        }
       }
       ent.size = n;
       ent.stamp = 0u64;
@@ -1589,6 +1603,7 @@ pub struct Settings {
   design: usize;           // row 454: CNMALLOC=design=lockfree chooses the lock-free shared pages; 1 (default, also design=lock) the lock design
   slotCap: usize;          // row 454: CNMALLOC=slots=<n>, the most slots a class may hold (1 to 8, default 8)
   collLimit: usize;        // row 454: CNMALLOC=collisions=<n>, collisions that add a slot (default 64)
+  largeSlack: usize;       // row 547: CNMALLOC=largeslack=<bytes>, default 256 KiB; 0 trims a reused block to its request
 }
 
 // the defaults: 64 GiB of address space, give-back after 1000 ms, 64 MiB of large blocks kept, no cache
@@ -1606,6 +1621,7 @@ pub fn cnm_defaults(s: *Settings) {
   s.design = 1usize;
   s.slotCap = 8usize;
   s.collLimit = 64usize;
+  s.largeSlack = 262144usize;
 }
 
 // Reads CNMALLOC (for example "giveback=now,reserve=32g,largecap=16m,stats") into s. buf is 1024 bytes of scratch.
@@ -1623,6 +1639,8 @@ pub fn cnm_readEnv(s: *Settings, buf: usize) {
       if strncmp(v as *u8, "now", 3usize) == 0i32 { s.mode = modeNow; }
       else if strncmp(v as *u8, "never", 5usize) == 0i32 { s.mode = modeNever; }
       else if strncmp(v as *u8, "delay:", 6usize) == 0i32 { s.mode = modeDelay; s.delayMs = u64.from(parseNum(v + 6usize, z)); }
+    } else if len >= 11usize && strncmp(a as *u8, "largeslack=", 11usize) == 0i32 {
+      s.largeSlack = parseNum(a + 11usize, z);
     } else if len >= 8usize && strncmp(a as *u8, "reserve=", 8usize) == 0i32 {
       s.reserve = parseNum(a + 8usize, z);
     } else if len >= 9usize && strncmp(a as *u8, "largecap=", 9usize) == 0i32 {
@@ -1700,6 +1718,7 @@ pub fn cnm_create(s: *Settings) usize {
   h.mode = s.mode;
   h.delayMs = s.delayMs;
   h.largeCap = s.largeCap;
+  h.largeSlack = roundUp(s.largeSlack, 4096usize);
   h.largeReserve = s.largeReserve;
   h.largeReserveCap = s.largeReserveCap;
   h.stats = s.stats;
@@ -1771,18 +1790,18 @@ pub fn cnm_create(s: *Settings) usize {
 // For tests and tools: a heap as cnm_make makes, with a large-block reserve factor (1 to 64) and the cap on the
 // extra left at 64 MiB. Programs set these through CNMALLOC=largereserve=<n>,largereservecap=<n> instead.
 pub fn cnm_make_lr(reserve: usize, mode: usize, delayMs: u64, largeCap: usize, largeReserve: usize) usize {
-  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, largeReserve, 67108864usize, 1usize, 8usize, 64usize);
+  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, largeReserve, 67108864usize, 1usize, 8usize, 64usize, 262144usize);
   cnm_create(&mut s)
 }
 
 pub fn cnm_make(reserve: usize, mode: usize, delayMs: u64, largeCap: usize) usize {
-  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, 2usize, 67108864usize, 1usize, 8usize, 64usize);
+  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, 2usize, 67108864usize, 1usize, 8usize, 64usize, 262144usize);
   cnm_create(&mut s)
 }
 
 // A heap from the CNMALLOC environment variable. This is the process's: shim/cn_shim.c calls it once.
 pub fn cnm_boot() usize {
-  var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize, 0usize, 1024usize, 2usize, 67108864usize, 1usize, 8usize, 64usize);
+  var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize, 0usize, 1024usize, 2usize, 67108864usize, 1usize, 8usize, 64usize, 262144usize);
   cnm_defaults(&mut s);
   // the settings text is read into a scratch area, so the heap's own region is not made yet: a small
   // reservation holds it for the moment

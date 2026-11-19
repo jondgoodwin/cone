@@ -1,0 +1,93 @@
+// The large-block slack test (row 547). A big block is freed, so it sits in the cache fully committed; a smaller large
+// request then takes it. THE BOUND: the live block holds at most request (rounded to 4 KiB) + largeslack committed bytes;
+// largeslack=0 keeps only the request, and a request that is within the slack of the cached block keeps all of it.
+// The large table's live committed bytes are read from the statistics (the word after the pool's six).
+
+mod slack;
+
+import testing use *;
+import cnmalloc;
+import libc;
+
+fn word(a: *u64, i: usize) u64 { *(((a as usize) + i * 8usize) as *u64) }
+
+// stats layout: 72 classes x 5, then the pool's six words, then large: live blocks, committed bytes of live blocks
+fn largeLive(h: usize) u64 {
+  let s = libc.calloc(512usize, 8usize) as *u64;
+  cnmalloc.cnm_stats(h, s, 512usize);
+  let b = word(s, 367usize);
+  libc.free(s as *u8);
+  b
+}
+
+extern {
+  fn @c("_putenv_s") putenv(name: cstr, v: cstr) i32;
+}
+
+// a heap whose settings come from CNMALLOC, as a program's do (cnm_boot); the setting text is the slack's
+fn heapWith(text: cstr) usize {
+  putenv("CNMALLOC", text);
+  let h = cnmalloc.cnm_boot();
+  putenv("CNMALLOC", "");
+  h
+}
+
+fn touch(p: *u8, n: usize) {
+  var i = 0usize;
+  while i < n { *((p as usize + i) as *u8) = 7u8; i = i + 4096usize; }
+}
+
+fn roundUp4k(n: usize) usize { (n + 4095usize) / 4096usize * 4096usize }
+
+// frees a block of bigN bytes (all touched), then takes one of smallN; returns the live committed bytes
+fn reuse(h: usize, bigN: usize, smallN: usize) u64 {
+  let a = cnmalloc.cnm_malloc(h, bigN);
+  touch(a, bigN);
+  cnmalloc.cnm_free(h, a);
+  let b = cnmalloc.cnm_malloc(h, smallN);
+  expect(b as usize == a as usize, "the small request took the freed block");
+  let live = largeLive(h);
+  cnmalloc.cnm_free(h, b);
+  live
+}
+
+fn main() i32 {
+  // today's rule: slack 0 keeps only the request
+  let h0 = heapWith("giveback=never,reserve=1g,largeslack=0");
+  expectUInt(reuse(h0, 8388608usize, 100000usize), u64.from(roundUp4k(100000usize)), "slack 0: the live block holds its request only");
+
+  // a slack of 256 KiB: the live block holds request + 256 KiB, no more, however big the freed block was
+  let h1 = heapWith("giveback=never,reserve=1g,largeslack=256k");
+  expectUInt(reuse(h1, 8388608usize, 100000usize), u64.from(roundUp4k(100000usize) + 262144usize), "slack 256 KiB: request + slack (the bound)");
+  // the block now holds 100 KB + slack; a bigger request commits up to its own size, within the bound
+  expect(reuse(h1, 8388608usize, 1000000usize) <= u64.from(roundUp4k(1000000usize) + 262144usize), "slack 256 KiB: a second reuse stays within the bound");
+
+  // the cached block's tail is within the slack: all of it stays, and it is still within the bound
+  let h2 = heapWith("giveback=never,reserve=1g,largeslack=262144");
+  expectUInt(reuse(h2, 4194304usize, 4194304usize - 200000usize), 4194304u64, "excess inside the slack: the block keeps its commit");
+
+  // the default is 256 KiB, from cnm_make and from CNMALLOC without the setting alike
+  let h3 = cnmalloc.cnm_make(1073741824usize, 2usize, 1000u64, 67108864usize);
+  expectUInt(reuse(h3, 8388608usize, 70000usize), u64.from(roundUp4k(70000usize) + 262144usize), "cnm_make heap: request + 256 KiB");
+  let h5 = heapWith("giveback=never,reserve=1g");
+  expectUInt(reuse(h5, 8388608usize, 70000usize), u64.from(roundUp4k(70000usize) + 262144usize), "CNMALLOC without the setting: request + 256 KiB");
+  cnmalloc.cnm_destroy(h5);
+
+  // the bound over many sizes
+  let h4 = heapWith("giveback=never,reserve=1g,largeslack=64k");
+  var n = 40000usize;
+  var bad = 0usize;
+  while n < 3000000usize {
+    let live = reuse(h4, 6291456usize, n);
+    if live > u64.from(roundUp4k(n) + 65536usize) { bad = bad + 1usize; }
+    n = n * 2usize + 12345usize;
+  }
+  expectUInt(u64.from(bad), 0u64, "request + 64 KiB bound held for every size");
+
+  cnmalloc.cnm_destroy(h0);
+  cnmalloc.cnm_destroy(h1);
+  cnmalloc.cnm_destroy(h2);
+  cnmalloc.cnm_destroy(h3);
+  cnmalloc.cnm_destroy(h4);
+  done()
+}
