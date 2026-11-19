@@ -1,0 +1,163 @@
+// A client's dialing deadline, the endpoint's own timer (actors.Timer, row 502):
+// it retransmits the request at connectRetryMs and gives up at connectTimeoutMs.
+//
+// 1. A client of a socket that never answers: the handshake fails with NoAnswer,
+//    not before connectTimeoutMs (a timer that fired early would give up early)
+//    and not much after it, and the retransmissions went out (the silent socket
+//    counted at least 3 datagrams in 600 ms at a 100 ms retry).
+// 2. A client whose first requests find no server: the server starts at the same
+//    port 450 ms later, and the client's retransmission joins it.
+// 3. At the end no cell is held and no entry is left in a wheel: the endpoint's
+//    timer ended with the dialing (NoAnswer, Joined) or with shutdown.
+
+mod udpdial;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import thread;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use UdpSocket;
+import netmsg use *;
+
+fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
+  var res = r;
+  var s = UdpSocket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+// A socket that takes datagrams and never answers: its port, and how many came
+actor Silent {
+  sock: UdpSocket;
+  seen: u32;
+
+  pub async fn open(self, up: OneshotSender[u16]) {
+    var tx = up;
+    sock = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    var p = 0u16;
+    let la = await sock.localAddr();
+    match &la {
+      case let &Ok(a) { p = a.port(); }
+      else {}
+    }
+    tx.send(p);
+    selfactor.listen();
+  }
+
+  async fn listen(self) {
+    var batch = iocore.DatagramBatch.make(8u32, 2048usize);
+    while !sock.isNone() {
+      let r = await sock.recvMany(batch);
+      match r {
+        case var Ok(ok) {
+          seen = seen + ok.count();
+          batch = ok;
+        }
+        case var Err(f) {
+          let e, back = f.(error, batch);
+          match back {
+            case var Some(b) {batch = b;}
+            else {batch = iocore.DatagramBatch.make(8u32, 2048usize);}
+          }
+          if aio.isCancelled(e) {return;}
+        }
+      }
+    }
+  }
+
+  pub async fn count(self, done: OneshotSender[u32]) {
+    var tx = done;
+    tx.send(seen);
+  }
+
+  pub async fn close(self) {
+    sock = UdpSocket.none();
+  }
+}
+
+fn leftReason(rx: &mut Receiver[NetEvent], limit: Duration) String {
+  match rx.recvTimeout(limit) {
+    case let Some(e) {
+      match e {
+        case let Left(l) {
+          match l.reason {
+            case is NoAnswer {String.from("noanswer")}
+            else {String.from("other")}
+          }
+        }
+        case is Joined {String.from("joined")}
+        else {String.from("event")}
+      }
+    }
+    case is None[NetEvent] {String.from("none")}
+  }
+}
+
+fn main() i32 {
+  var cfg = NetConfig.defaults();
+  cfg.connectRetryMs = 100i64;
+  cfg.connectTimeoutMs = 600i64;
+  {
+    // 1. nothing answers
+    var txP: OneshotSender[u16];
+    var rxP: OneshotReceiver[u16];
+    txP, rxP = Oneshot[u16].make();
+    let silent = Silent(UdpSocket.none(), 0u32);
+    silent.open(txP);
+    let port = rxP.recvTimeout(Duration.fromSeconds(5i64)) || 1u16;
+    var txC: Sender[NetEvent];
+    var rxC: Receiver[NetEvent];
+    txC, rxC = Channel[NetEvent].make();
+    let t0 = Instant.now();
+    let client = mustConnect(SocketAddr.localhost(port), cfg, channelHandler(txC));
+    expectStr(leftReason(&mut rxC, Duration.fromSeconds(5i64)).view(), "noanswer", "a dial nobody answers fails with NoAnswer");
+    let took = Instant.now().nanos() - t0.nanos();
+    expect(took >= 600000000i64, "not before the connect timeout");
+    expect(took < 3000000000i64, "and soon after it");
+    var txN: OneshotSender[u32];
+    var rxN: OneshotReceiver[u32];
+    txN, rxN = Oneshot[u32].make();
+    silent.count(txN);
+    let n = rxN.recvTimeout(Duration.fromSeconds(5i64)) || 0u32;
+    expect(n >= 3u32, "the request was sent again at the retry interval");
+    client.endpoint.shutdown();
+    silent.close();
+  }
+  {
+    // 2. the server comes up while the client dials
+    var txQ: Sender[NetEvent];
+    var rxQ: Receiver[NetEvent];
+    txQ, rxQ = Channel[NetEvent].make();
+    let probe = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txQ));
+    let port = probe.port;
+    probe.endpoint.shutdown();
+    var txC: Sender[NetEvent];
+    var rxC: Receiver[NetEvent];
+    txC, rxC = Channel[NetEvent].make();
+    let client = mustConnect(SocketAddr.localhost(port), cfg, channelHandler(txC));
+    thread.sleep(Duration.fromMillis(250i64));
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    let server = mustListen(SocketAddr.localhost(port), cfg, channelHandler(txS));
+    expectStr(leftReason(&mut rxC, Duration.fromSeconds(5i64)).view(), "joined", "a client whose first requests found no server joins once it is up");
+    client.endpoint.shutdown();
+    server.endpoint.shutdown();
+  }
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  var waited = 0u64;
+  while (actors.timerStats().held != 0u64 || actors.timerStats().heldEntries != 0u64) && waited < 1500u64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u64;
+  }
+  let st = actors.timerStats();
+  expectUInt(st.held, 0u64, "no cell held once the endpoints have gone");
+  expectUInt(st.heldEntries, 0u64, "no entry left in a wheel");
+  done()
+}

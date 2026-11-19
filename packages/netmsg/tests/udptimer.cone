@@ -23,13 +23,51 @@ import netmsg use *;
 
 const clients = 100usize;
 
+// An application actor reading a connection's measurements, with 'await'
+actor Prober {
+  pub async fn ask(self, c: Connection, idx: usize, out: Sender[u64]) {
+    let s = await c.stats();
+    out.send((u64.from(idx) << 32u64) | s.packetsSent);
+  }
+}
+
+// The packets each of 'conns' has sent so far, by position
+fn sample(conns: &List[Connection]) List[u64] {
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let prober = Prober();
+  var k = 0usize;
+  while k < conns.len() {
+    prober.ask(*conns[k], k, tx.clone());
+    k = k + 1usize;
+  }
+  var out = List[u64]();
+  k = 0usize;
+  while k < conns.len() {
+    out.push(0u64);
+    k = k + 1usize;
+  }
+  var got = 0usize;
+  while got < conns.len() {
+    match rx.recvTimeout(Duration.fromSeconds(5i64)) {
+      case let Some(v) {
+        out[usize.from(v >> 32u64)] = v & 4294967295u64;
+        got = got + 1usize;
+      }
+      case is None[u64] { break; }
+    }
+  }
+  out
+}
+
 // Events of a channel, counted: the Joined and the Left ones
-fn count(rx: &mut Receiver[NetEvent], joined: &mut usize, left: &mut usize) {
+fn count(rx: &mut Receiver[NetEvent], joined: &mut usize, left: &mut usize, conns: &mut List[Connection]) {
   while true {
     match rx.tryRecv() {
       case let Some(e) {
         match e {
-          case is Joined { *joined = *joined + 1usize; }
+          case let Joined(j) { *joined = *joined + 1usize; conns.push(j.conn); }
           case is Left { *left = *left + 1usize; }
           else {}
         }
@@ -51,6 +89,9 @@ fn main() i32 {
     cfg.maxClients = 200usize;
     cfg.maxPerAddress = 200usize;
     cfg.admitRate = 0u32;
+    // A connection that hears nothing for 600 ms ends: it lives through 2 idle seconds only if every end's
+    // timer fires its keep-alive (every 100 ms), again and again
+    cfg.timeoutMs = 600i64;
     let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
     var made = List[BoundEndpoint]();
     var i = 0usize;
@@ -62,25 +103,35 @@ fn main() i32 {
     var sl = 0usize;
     var cj = 0usize;
     var cl = 0usize;
+    var conns = List[Connection]();
     let until = Instant.now() + Duration.fromSeconds(20i64);
     while (sj < clients || cj < clients) && Instant.now() < until {
       thread.sleep(Duration.fromMillis(50i64));
-      count(&mut rxS, &mut sj, &mut sl);
-      count(&mut rxC, &mut cj, &mut cl);
+      count(&mut rxS, &mut sj, &mut sl, &mut conns);
+      count(&mut rxC, &mut cj, &mut cl, &mut conns);
     }
     expectUInt(u64.from(sj), u64.from(clients), "the server has all its clients");
     expectUInt(u64.from(cj), u64.from(clients), "every client is connected");
 
     // Idle for 2 seconds: each connection's timer fires on its own, and none ends
-    let before = actors.timerStats();
+    let base = sample(&conns);
+    var k = 0usize;
     thread.sleep(Duration.fromSeconds(2i64));
+    let now = sample(&conns);
     let after = actors.timerStats();
-    count(&mut rxS, &mut sj, &mut sl);
-    count(&mut rxC, &mut cj, &mut cl);
+    count(&mut rxS, &mut sj, &mut sl, &mut conns);
+    count(&mut rxC, &mut cj, &mut cl, &mut conns);
+    // 2 s at a keep-alive every 100 ms is about 20 packets sent by each end: every one sent at least 8
+    var quiet = 0usize;
+    k = 0usize;
+    while k < base.len() {
+      if now[k] - base[k] < 8u64 {quiet = quiet + 1usize;}
+      k = k + 1usize;
+    }
+    expectUInt(u64.from(quiet), 0u64, "every connection sent its keep-alives, on its own timer");
     expectUInt(u64.from(sl), 0u64, "no connection ended on the server");
     expectUInt(u64.from(cl), 0u64, "none on a client");
     expect(after.held >= u64.from(clients), "the connections hold their cells");
-    expect(after.fires - before.fires >= u64.from(clients), "the timers fired");
 
     // Half the clients end while the rest's timers go on firing
     i = 0usize;
@@ -89,8 +140,8 @@ fn main() i32 {
       i = i + 1usize;
     }
     thread.sleep(Duration.fromMillis(500i64));
-    count(&mut rxS, &mut sj, &mut sl);
-    count(&mut rxC, &mut cj, &mut cl);
+    count(&mut rxS, &mut sj, &mut sl, &mut conns);
+    count(&mut rxC, &mut cj, &mut cl, &mut conns);
     expectUInt(u64.from(sl), u64.from(clients / 2usize), "the server's end of each ended client went");
     expectUInt(u64.from(cl), u64.from(clients / 2usize), "and the ended clients' own");
 
