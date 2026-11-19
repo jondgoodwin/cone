@@ -408,7 +408,10 @@ actor Reader {
 	<h3 id="await-io-udp">UDP sockets</h3>
 	<p><span class="pre">aio.bindUdp(addr)</span> binds a UDP socket on the I/O thread (port 0 has the system choose one,
 		which <span class="pre">u.localAddr()</span> tells) and answers a <span class="pre">UdpSocket</span>, out of the
-		<span class="pre">Result</span> by a swap as a <span class="pre">Socket</span> is. A <span class="pre">UdpSocket</span>
+		<span class="pre">Result</span> by a swap as a <span class="pre">Socket</span> is. The socket's receives and sends
+		that have to wait do so in the actor runtime's own wait (one worker at a time in it), not on the I/O thread: a
+		datagram for a waiting receive costs one wake and nothing crosses to the I/O thread (TCP and files stay there).
+		A <span class="pre">UdpSocket</span>
 		is a kind of its own beside <span class="pre">Socket</span> and <span class="pre">File</span>:
 		<span class="pre">read</span>, <span class="pre">write</span> and <span class="pre">accept</span> are not on it, and
 		<span class="pre">recvFrom</span> and <span class="pre">sendTo</span> are not on the others, so a call of the wrong
@@ -437,8 +440,10 @@ actor Reader {
 		leaves <span class="pre">fresh</span> in its slot, and sends it on; nothing slides and no list is made. A
 		failed receive answers a <span class="pre">RecvFailed</span> (<span class="pre">error</span>,
 		<span class="pre">batch</span>, <span class="pre">slot</span>) that carries the batch back too, so the owner
-		never loses its block (in one case only, Windows' rare late answer, where the system still holds the batch,
-		<span class="pre">batch</span> is <span class="pre">None</span>). It waits for one datagram and never for a
+		never loses its block: a deadline or a cancel answers with the batch back on both systems (Windows asks the
+		system to abort the receive and answers when it has). <span class="pre">batch</span> is
+		<span class="pre">None</span> only for a socket the worker wait could not take (Windows' rare late answer, where the
+		I/O thread's grace ran out with the system still holding the batch). It waits for one datagram and never for a
 		second. A batch with a used slot that has no room (a forgotten refill) fails
 		(<span class="pre">InvalidInput</span>, <span class="pre">slot</span> naming it). Linux takes every waiting datagram
 		in one system call; Windows answers one datagram a call, so a caller loops until it has what it wants and its
