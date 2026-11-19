@@ -835,11 +835,13 @@ fn timersNext() i64 {
 
 // THE MONITOR's part: wake each parked worker whose published 'due' has come,
 // by name, and say the earliest still to come (noDue if none is set). A worker
-// that is not parked but has cells armed (the deputy's concern) counts by its
-// 'next', so the monitor keeps its beat while one is there to rescue
-fn timersWakeDue(s: *Sched) i64 {
+// that is not parked but has cells armed (the deputy's concern) is not in that
+// answer: its earliest 'next' goes to 'running' (noDue if no such worker), for
+// the monitor to pace itself by, no faster than its base tick
+fn timersWakeDue(s: *Sched, running: *i64) i64 {
   let now = time.Instant.now().nanos();
   var soonest = noDue;
+  *running = noDue;
   var i = 0u32;
   while i < (*s).nworkers {
     let ts = timerStoreOf(i);
@@ -853,8 +855,8 @@ fn timersWakeDue(s: *Sched) i64 {
         }
       } else {
         let nx = nextOf(ts);
-        if nx < soonest {
-          soonest = nx;
+        if nx < *running {
+          *running = nx;
         }
       }
     }

@@ -5306,8 +5306,13 @@ pub fn monitorTick() u32 {
 // the DEPUTY of a stuck worker's timers: a worker whose activation count has
 // not moved for a whole base tick, with cells overdue, has them fired by the
 // monitor under the wheel's word (THE WORKERS' TIMERS, timers.cone); while a
-// worker has cells armed the monitor keeps its base tick and paces to the
-// earliest.
+// worker has cells armed the monitor does not park, and paces to the earliest
+// of them. A parked worker's 'due' keeps the base tick (a new, nearer due
+// published while the monitor sleeps is seen at the next tick, so the tick is
+// the lateness it adds), and the pause is cut to the due, to monitorLeastPause
+// at the least. A running worker's 'next' sets the pause, never shorter than the
+// base tick nor longer than the back-off's longest, so a far timer on a worker
+// (a connection's idle timeout) does not hold the monitor at the base tick.
 fn monitorMain(arg: WorkerArg) u32 {
   let s = (*arg.w).sched;
   let n = (*s).nworkers;
@@ -5336,10 +5341,14 @@ fn monitorMain(arg: WorkerArg) u32 {
   while (*s).stopping.load() == 0u32 {
     monitorPause(timer, time.Duration.fromNanos(pause));
     // THE WORKERS' TIMERS: a parked worker whose cell is due is woken by name;
-    // while any worker has one to come the monitor neither parks nor backs
-    // off, and pauses no longer than to the earliest
-    let soonest = timersWakeDue(s);
-    let timing = soonest != noDue || timersAnyDue(s);
+    // while one has a cell to come the monitor neither parks nor backs off, and
+    // pauses no longer than to the earliest. A worker that is running with cells
+    // armed sets the pace instead (below): the monitor keeps from parking, but
+    // pauses to that worker's earliest, within its base tick and its longest
+    var running = noDue;
+    let soonest = timersWakeDue(s, &mut running as *i64);
+    let parkedTiming = soonest != noDue || timersAnyDue(s);
+    let timing = parkedTiming || running != noDue;
     if (*s).sleepers.load() == n && !timing {
       quiet = quiet + 1u32;
     } else {
@@ -5400,7 +5409,7 @@ fn monitorMain(arg: WorkerArg) u32 {
       }
       i = i + 1u32;
     }
-    if found || timing {
+    if found || parkedTiming {
       calm = 0u32;
       micros = base;
     } else {
@@ -5419,6 +5428,14 @@ fn monitorMain(arg: WorkerArg) u32 {
       if left < pause {
         pause = if left > monitorLeastPause {left} else {monitorLeastPause};
       }
+    } else if running != noDue && !found {
+      // Only running workers have cells armed, and nothing was found: the
+      // pause is the time to the earliest, never shorter than the base tick
+      // (a stuck worker is judged by whole ticks) nor longer than the longest
+      let left = running - time.Instant.now().nanos();
+      let lo = i64.from(base) * 1000i64;
+      let hi = i64.from(longest) * 1000i64;
+      pause = if left < lo {lo} else if left > hi {hi} else {left};
     }
   }
   monitorTimerFree(timer);
