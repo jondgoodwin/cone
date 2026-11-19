@@ -191,12 +191,14 @@ static __forceinline void lf_free_i(void* p, int stats) {
   size_t c = g & 0xFF;
   uint32_t idx = (uint32_t)(((uint64_t)(off & 0xFFFF) * g_lfrecip[c]) >> 32);
   if (stats) lf_count(&g_lfc[c].st[1]);
+  { LfTls* T = &t_lf; uint32_t hw = idx >> 6;                  // the hint: the next allocate starts at the word of this thread's last free
+    if (T->start[c] != hw || T->startPage[c] != (uintptr_t)P) { T->start[c] = (uint8_t)hw; T->startPage[c] = (uintptr_t)P; } }
   lf_release_i(P, g, idx >> 6, 1ull << (idx & 63));
 }
 static void lf_free(void* p) { lf_free_i(p, g_stats); }
 
 // Section 3's allocate. One compare-and-swap on the common path; the page's genclass is read before it and after it
-// (Rule G). Where a thread starts: word 0, or the word it last moved to after a collision on this page. A pass that
+// (Rule G). Where a thread starts: the word it last took from, or last freed into, on this page (word 0 on any other). A pass that
 // found no free bit but lost a compare-and-swap is repeated (up to four passes) before the slot's page is given up.
 static void* lf_alloc(size_t c) {
   LfCls* L = &g_lfc[c];
@@ -241,7 +243,7 @@ restart:;
             if (ask) cnm_lf_grow(g_heap, c);
             goto restart;
           }
-          if (collided) { T->start[c] = (uint8_t)j; T->startPage[c] = (uintptr_t)P; }
+          if (j != w || T->startPage[c] != (uintptr_t)P) { T->start[c] = (uint8_t)j; T->startPage[c] = (uintptr_t)P; }   // the cursor: stay at the word last taken from
           if (ask) cnm_lf_grow(g_heap, c);
           if (g_stats) lf_count(&L->st[0]);
           return (void*)(P->base + ((size_t)j * 64 + b) * g_lfsize[c]);
@@ -327,7 +329,7 @@ restart:;
             if (ask) cnm_lf_grow(g_heap, c);
             goto restart;
           }
-          if (collided) { T->start[c] = (uint8_t)j; T->startPage[c] = (uintptr_t)P; }
+          if (j != w || T->startPage[c] != (uintptr_t)P) { T->start[c] = (uint8_t)j; T->startPage[c] = (uintptr_t)P; }   // the cursor: stay at the word last taken from
           if (ask) cnm_lf_grow(g_heap, c);
           void* head = lf_link(P, c, j, want, got);     // MB-W: the cells' first touch, only now
           if (g_stats) _InterlockedExchangeAdd64((volatile LONG64*)&L->st[0], (LONG64)*got);

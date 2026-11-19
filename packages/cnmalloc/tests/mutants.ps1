@@ -115,7 +115,7 @@ function Run-Test([string]$libdir, [string]$test, [string]$tag, [hashtable]$extr
     $env:CNTEST_LOG = Join-Path $Scratch "numbers-$test-$tag.txt"
     foreach ($k in $extra.Keys) { Set-Item "Env:$k" $extra[$k] }
     $ErrorActionPreference = 'Continue'      # congo writes a failing test's report to stderr
-    python $congo test $test *> $log
+    python $congo test --no-cache $test *> $log
     $code = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
   } finally {
