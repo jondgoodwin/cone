@@ -739,13 +739,21 @@ fn timersDeputy(ts: *TimerStore, now: time.Instant, sc: &mut DeputyScratch) bool
   }
   sc.expiries.clear();
   sc.won.clear();
+  sc.held.clear();
   let wh = &mut (*ts).wheel;
   wh.expired(now, &mut sc.expiries);
   var k = 0usize;
   while k < sc.expiries.len() {
-    let c = usize.from(sc.expiries[k].token) as *TimerCell;
+    let tok = sc.expiries[k].token;
+    let c = usize.from(tok) as *TimerCell;
     let id = sc.expiries[k].id;
     k = k + 1usize;
+    if (tok & heldBit) != 0u64 {
+      // a held cell's entry (THE HELD TIMER): heldFire, once the word is let go
+      // (a refile inserts in this wheel)
+      sc.held.push(tok);
+      continue;
+    }
     if (*c).entry != id {
       continue;
     }
@@ -776,17 +784,26 @@ fn timersDeputy(ts: *TimerStore, now: time.Instant, sc: &mut DeputyScratch) bool
     f(&mut r, o);
     cellRetire(c);
   }
-  sc.won.len() != 0usize
+  // The held entries, by the same per-entry step as the owner's (THE HELD TIMER)
+  var any = sc.won.len() != 0usize;
+  k = 0usize;
+  while k < sc.held.len() {
+    let tok = sc.held[k];
+    k = k + 1usize;
+    any = heldFire(ts, tok, now.nanos()) || any;
+  }
+  any
 }
 
 // The monitor's scratch for THE DEPUTY
 struct DeputyScratch {
   expiries: List[Expiry];
   won: List[usize];
+  held: List[u64];
 }
 
 fn deputyScratch() DeputyScratch {
-  DeputyScratch(List[Expiry](), List[usize]())
+  DeputyScratch(List[Expiry](), List[usize](), List[u64]())
 }
 
 // Every armed cell whose group is cancelled (an ancestor's cancel), answered
@@ -1009,8 +1026,13 @@ pub fn timerStats() TimerStats {
 // that to timerArrive). Dead entries and a stale Wakeup find the cell's
 // generation or life moved, and cells are never unmapped. At THE STOP each
 // store's walk lets its parked waiters go unanswered, as it does armed sleeps.
-// Every wheel operation here runs on the wheel's owner: the wheels are their
-// owners' alone.
+// Every wheel operation here runs on the wheel's owner, under THE WHEEL WORD,
+// except THE DEPUTY's (row 485): for a worker stuck in one turn the monitor
+// takes the due entries out and calls heldFire for the held ones, with the word
+// let go, so a refile there inserts in the stuck worker's wheel from the
+// monitor's thread. So every change the owner makes to a filed entry in its own
+// wheel first takes the entry by a CAS of 'hword' (hBusy, or clearing hFiled),
+// as a fire does, and the counts both add to are atomic adds.
 const hFiled = 1u64;       // an entry of the current move generation is in the filer's wheel
 const hWaiter = 2u64;      // a next() is parked: the cell holds its Reply
 const hInflight = 4u64;    // an arrive slot is on its way to the actor: the cell holds the Reply still
@@ -1100,30 +1122,42 @@ fn heldRelease(c: *TimerCell) {
 
 // An entry for the cell in this wheel, its token naming the move generation
 // 'gen'. 'fresh': not inside the fire step, so an empty wheel's now may be
-// brought up to date first (as timerStart does)
+// brought up to date first (as timerStart does; the owner's alone, since it
+// uses the owner's scratch). Under THE WHEEL WORD: the deputy refiles here too
 fn heldInsert(ts: *TimerStore, c: *TimerCell, at: i64, gen: u64, fresh: bool) u64 {
+  wheelLock(ts);
   let wh = &mut (*ts).wheel;
   if fresh && wh.isEmpty() {
     wh.expired(time.Instant.now(), &mut (*ts).expiries);
     (*ts).expiries.clear();
   }
   let id = wh.insert(time.Instant.fromNanos(at), u64.from(c as usize) | (gen << 48u64) | heldBit);
-  if at < (*ts).next {
+  if at < nextOf(ts) {
     match wh.nextExpiry() {
-      case let Some(t) {(*ts).next = t.nanos();}
-      else {(*ts).next = at;}
+      case let Some(t) {(*ts).next.storeOrdered(t.nanos(), MemOrder.Relaxed);}
+      else {(*ts).next.storeOrdered(at, MemOrder.Relaxed);}
     }
   }
-  tally(&(*ts).heldIn, 1u64);
+  wheelUnlock(ts);
+  heldCount(&(*ts).heldIn);
   idWord(id)
 }
 
-// A held entry cancelled in this wheel
+// A held entry cancelled in this wheel (under THE WHEEL WORD)
 fn heldCancelIn(ts: *TimerStore, idw: u64) {
+  wheelLock(ts);
   let wh = &mut (*ts).wheel;
-  if wh.cancel(idOfWord(idw)) {
-    tally(&(*ts).heldOut, 1u64);
+  let out = wh.cancel(idOfWord(idw));
+  wheelUnlock(ts);
+  if out {
+    heldCount(&(*ts).heldOut);
   }
+}
+
+// One more on a held count that the owner and the deputy both add to (an
+// atomic add, so neither's is lost; tally is the owner's alone)
+fn heldCount(n: &Atomic[u64]) {
+  n.addOrdered(1u64, MemOrder.Relaxed);
 }
 
 // The filer's part once it holds hBusy (its CAS made it the filer, or refiled
@@ -1197,19 +1231,29 @@ fn heldSet(xs: *TimerStore, c: *TimerCell, at: i64) {
       // later: the filer refiles when the old entry comes up
       return;
     }
-    if filerOf(w) == mine {
-      // earlier, in place: cancel and insert in this wheel
-      heldCancelIn(xs, (*c).hentry.load());
-      let id = heldInsert(xs, c, at, genOf(w), true);
-      (*c).hentry.store(id);
-      tally(&(*xs).movesInPlace, 1u64);
-      return;
-    }
     if (w & hBusy) != 0u64 {
-      // the filer is filing it now: it looks at 'want' again before it lets go
+      // the filer is filing it now (another worker, or the deputy refiling in
+      // this wheel): it looks at 'want' again before it lets go
       let seen, ok = (*c).hword.compareSwap(w, w | hMoved);
       if ok {
-        tally(&(*xs).movesAcross, 1u64);
+        if filerOf(w) == mine {
+          tally(&(*xs).movesInPlace, 1u64);
+        } else {
+          tally(&(*xs).movesAcross, 1u64);
+        }
+        return;
+      }
+      continue;
+    }
+    if filerOf(w) == mine {
+      // earlier, in place: cancel and insert in this wheel. The entry is taken
+      // first (hBusy, and a new move generation), since the deputy may fire this
+      // wheel's entries meanwhile: one it has out already is then dead
+      let seen, ok = (*c).hword.compareSwap(w, genBumped(w) | hBusy);
+      if ok {
+        heldCancelIn(xs, (*c).hentry.load());
+        tally(&(*xs).movesInPlace, 1u64);
+        heldInstall(xs, c, at, true);
         return;
       }
       continue;
@@ -1338,25 +1382,25 @@ fn heldDrop(c: *TimerCell) {
   }
 }
 
-// THE FIRE for one held entry that came up in this wheel (the owner's step; a
-// deputy under the wheel's lock is to call the same). Dead (an old filer, move
-// generation or life): discarded. Ended or no deadline: nothing filed. Moved
-// later: filed again here. Due with a waiter: the arrive slot published. Due
-// with none: nothing filed, and the next next() answers at once. True if it
-// published
+// THE FIRE for one held entry that came up in this wheel (the owner's step, and
+// THE DEPUTY's for a stuck owner, each with the wheel's word let go). Dead (an
+// old filer, move generation or life): discarded. Ended or no deadline: nothing
+// filed. Moved later: filed again here. Due with a waiter: the arrive slot
+// published. Due with none: nothing filed, and the next next() answers at once.
+// True if it published
 fn heldFire(ts: *TimerStore, tok: u64, now: i64) bool {
-  tally(&(*ts).heldOut, 1u64);
+  heldCount(&(*ts).heldOut);
   let c = usize.from(tok & heldAddrMask) as *TimerCell;
   let tg = tok >> 48u64;
   let mine = u64.from((*ts).index);
   if ((*c).word.load() & cellStateMask) != cellHeld {
-    tally(&(*ts).deadEntries, 1u64);
+    heldCount(&(*ts).deadEntries);
     return false;
   }
   while true {
     let w = (*c).hword.load();
     if (w & hFiled) == 0u64 || (w & hBusy) != 0u64 || filerOf(w) != mine || genOf(w) != tg {
-      tally(&(*ts).deadEntries, 1u64);
+      heldCount(&(*ts).deadEntries);
       return false;
     }
     let want = (*c).want.load();
@@ -1368,7 +1412,7 @@ fn heldFire(ts: *TimerStore, tok: u64, now: i64) bool {
     } else if want > now {
       let seen, ok = (*c).hword.compareSwap(w, genBumped(w) | hBusy);
       if ok {
-        tally(&(*ts).refiles, 1u64);
+        heldCount(&(*ts).refiles);
         heldInstall(ts, c, want, false);
         return false;
       }
@@ -1576,8 +1620,9 @@ fn heldFinal(c: *TimerCell) {
   var flying = false;
   while true {
     let w = (*c).hword.load();
-    if (w & hBusy) != 0u64 && filerOf(w) != mine {
-      // another worker is writing the entry: a few instructions
+    if (w & hBusy) != 0u64 {
+      // another worker, or the deputy refiling in this wheel, is writing the
+      // entry: a few instructions (the cell must not be freed under it)
       yieldProcessor();
       continue;
     }
