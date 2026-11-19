@@ -1508,8 +1508,8 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
             // through an index, is lent mutably to a method that writes it
             if (perms[i] == mutPerm || perms[i] == uniPerm) {
                 INode *lvalperm = (INode*)immPerm;
-                uint16_t scope;
-                iexpGetLvalInfo(obj, &lvalperm, &scope);
+                uint16_t scope = 0;
+                iexpGetLvalInfo(obj,&lvalperm, &scope);
                 if (!(permGetFlags(lvalperm) & MayWrite))
                     fnCallPlaceAsMut(pstate, &callnode->objfn);
             }
@@ -1571,8 +1571,8 @@ PermNode *fnCallAppendBorrowPerm(INode *lval, INode *colltype) {
         return mutPerm;
     if (wantsmut) {
         INode *lvalperm = (INode*)immPerm;
-        uint16_t scope;
-        iexpGetLvalInfo(lval, &lvalperm, &scope);
+        uint16_t scope = 0;
+        iexpGetLvalInfo(lval,&lvalperm, &scope);
         if (permGetFlags(lvalperm) & MayWrite)
             return mutPerm;
     }
@@ -1744,7 +1744,7 @@ static INode *fnCallMutIndex(TypeCheckState *pstate, FnCallNode *index) {
     }
     else {
         INode *lvalperm = (INode*)immPerm;
-        uint16_t scope;
+        uint16_t scope = 0;
         // (a place reached through an element's borrow has no variable at its root)
         if (!iexpIsLval(recv))
             return NULL;

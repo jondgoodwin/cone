@@ -1,0 +1,101 @@
+// Row 531: a worker's sweep ask left standing when the runtime stops must not keep the worker from ending.
+//
+// The hang it pins (netmsg's udpv6 on Linux, about 1 run in 20 on a debug build, found 18 Nov 2026): an
+// ancestor's cancel asks a worker for a sweep (WorkerWake.signal sets the store's 'sweep' and wakes it), and
+// the stop begins before the worker's step has made it. From then the step no longer sweeps (the timers have
+// stopped) and does not clear the flag, and 'idle' took the flag for work at its look after publishing its
+// park, before its 'stopping' check: the worker left the park, came back, and left again for ever, a worker
+// at 100% CPU that stopWorkers' join of it never saw end.
+//
+// Forced: two workers, each having armed a cell (a worker has a timer store only once it has), all parked.
+// One is held after it publishes its park and before its look (holdNextPark 4) and is asked for a sweep (the
+// test hook askSweep, which sets the flag as the signal does). Main stops the runtime; a thread of the
+// test lets the held worker go 500 ms later, well after the stop has set 'stopping'. Fixed, the worker looks,
+// sees the timers stopped, finds 'stopping' and ends; unfixed, it spins and the stop never returns (the test
+// times out at 30 s).
+//
+// The check at the end is that the stop returned.
+
+mod sweepatstop;
+
+import testing use *;
+import thread;
+import time use Duration, Instant;
+import actors;
+import aio;
+
+struct Flags {
+  pub seen0: Atomic[u32];      // 1 once a behaviour has begun a sleep on worker 0
+  pub seen1: Atomic[u32];
+  pub go: Atomic[u32];         // 1 when the helper thread may count down to the release
+}
+
+let flags: Flags;
+
+fn @initpure init() {
+  flags = Flags(Atomic[u32].of(0u32), Atomic[u32].of(0u32), Atomic[u32].of(0u32));
+}
+
+actor Napper {
+  pub async fn poke(self) {}
+
+  pub async fn nap(self, n: u32) {
+    var i = 0u32;
+    while i < n {
+      if actors.workerIndex() == 0u32 {
+        flags.seen0.store(1u32);
+      } else {
+        flags.seen1.store(1u32);
+      }
+      let r = await aio.sleep(Duration.fromMillis(2i64));
+      i = i + 1u32;
+    }
+  }
+}
+
+// After 'go', lets the held worker go on 500 ms later (the stop has begun long before)
+fn releaser(a: u32) u32 {
+  while flags.go.load() == 0u32 {
+    thread.yieldNow();
+  }
+  thread.sleep(Duration.fromMillis(500i64));
+  actors.releasePark();
+  0u32
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let rel = thread.start(0u32, &releaser);
+  {
+    let a = Napper();
+    let b = Napper();
+    let c = Napper();
+    let d = Napper();
+    // Both workers arm a cell (each makes its timer store at its first)
+    let t0 = Instant.now();
+    while (flags.seen0.load() == 0u32 || flags.seen1.load() == 0u32) && t0.elapsed() < Duration.fromSeconds(5i64) {
+      a.nap(5u32);
+      b.nap(5u32);
+      c.nap(5u32);
+      d.nap(5u32);
+      actors.waitUntilIdle();
+    }
+    require(flags.seen0.load() == 1u32 && flags.seen1.load() == 1u32, "both workers began a sleep, within 5 s");
+    // One worker held after publishing its park, before its look
+    actors.holdNextPark(4u32);
+    a.poke();
+    let t1 = Instant.now();
+    while !actors.parkHeld() && t1.elapsed() < Duration.fromSeconds(2i64) {
+      thread.yieldNow();
+    }
+    require(actors.parkHeld(), "a worker is held between publishing its park and its look, within 2 s");
+    // The ask the stop is to meet standing, and the release after the stop has begun
+    actors.askSweep(actors.parkHeldWorker());
+    flags.go.store(1u32);
+  }
+  finalAll();
+  expect(true, "the stop returned with a sweep ask standing on a worker");
+  let r = rel.join();
+  done()
+}
