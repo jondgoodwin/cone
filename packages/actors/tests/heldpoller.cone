@@ -1,0 +1,154 @@
+// A held timer fired by THE POLLER for a parked worker (row 541, the last
+// build condition of row 493 after row 500; #1475's "what held cells need from
+// row 493's poller").
+//
+// Two workers, so the runtime has no monitor-free parking: the one that finds
+// the worker port's role free takes it and waits in the port, the other parks on
+// its own futex word with no bound (a port keeps every parked worker's time).
+// Each round, with both workers parked, a Holder is sent a message: notify
+// wakes the worker that is not the poller (the poller's bit is tried last), the
+// holder sets its Timer for 15 ms on and parks on next(). Its entry is now in
+// the wheel of a worker that sleeps with no timeout, and only the poller can
+// fire it: from the port's wait, which the parker's break moved up to the cell's
+// time, as the parked worker's deputy (timersDeputy, parked), that hands a
+// held entry to heldFire after letting go of the wheel's word.
+//
+// 1. Every next() answers true, never before the deadline, and within the
+//    bound (10 ms late; a round under a loaded machine may miss, so 3 in 40
+//    may be late and none may be early). A held token met as a cell's address
+//    would crash or leave the holder parked for ever (the receive times out).
+// 2. The poller fired them: pollerStats().deputyFires grew in at least half
+//    the rounds (the rounds in which the holder ran on the poller itself, or
+//    another worker took the message, fire from the owner's own step).
+// 3. Moves racing the poller: a later move after the entry is filed (set 40 ms,
+//    then 60 ms on at 5 ms) makes the poller refile what it took out
+//    (heldFire's refile, in the parked worker's wheel, which must break the
+//    poller's wait for the new time). Each such next() answers true, never
+//    before the later deadline.
+// 4. At the end no cell is held and no entry is left in any wheel.
+
+mod heldpoller;
+
+import testing use *;
+import thread;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import actors use Timer;
+
+const rounds = 40u64;
+const moveRounds = 20u64;
+const boundUs = 10000u64;
+const lateAllowed = 3u64;
+
+let early: Atomic[u64];
+let other: Atomic[u64];
+let moveTo: Atomic[u64];
+
+fn @initpure init() {
+  moveTo = Atomic[u64].of(0u64);
+  early = Atomic[u64].of(0u64);
+  other = Atomic[u64].of(0u64);
+}
+
+fn afterUs(us: i64) Instant {Instant.fromNanos(Instant.now().nanos() + us * 1000i64)}
+
+actor Holder {
+  timer: Timer;
+  out: Sender[u64];
+
+  // set to 'ms', parked on next(): the lateness in microseconds (capped) is sent
+  pub async fn waitFor(self, ms: u64) {
+    let d = Duration.fromMillis(i64.from(ms));
+    let t = Instant.now();
+    timer.set(Instant.fromNanos(t.nanos() + d.nanos()));
+    let ok = await timer.next();
+    let late = (t.elapsed() - d).nanos() / 1000i64;
+    if !ok {
+      other.add(1u64);
+    } else if late < 0i64 {
+      early.add(1u64);
+    }
+    out.send(if late < 0i64 {0u64} else if late > 9999999i64 {9999999u64} else {u64.from(late)});
+  }
+
+  // the entry filed for 40 ms, then moved later (by 'later', a turn that comes
+  // while this one waits) to about 65 ms: the poller takes the first out of the
+  // wheel at 40 ms and files it again
+  pub async fn moved(self) {
+    timer.set(afterUs(40000i64));
+    let ok = await timer.next();
+    let at = i64.from(moveTo.load());
+    let late = (Instant.now().nanos() - at) / 1000i64;
+    if !ok {
+      other.add(1u64);
+    } else if late < 0i64 {
+      early.add(1u64);
+    }
+    out.send(if late < 0i64 {0u64} else if late > 9999999i64 {9999999u64} else {u64.from(late)});
+  }
+
+  pub async fn later(self) {
+    let at = afterUs(60000i64);
+    moveTo.store(u64.from(at.nanos()));
+    timer.set(at);
+  }
+}
+
+fn take(rx: &mut Receiver[u64]) u64 {
+  match rx.recvTimeout(Duration.fromSeconds(5i64)) {
+    case let Some(v) {v}
+    else {7777777777u64}
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let h = Holder(Timer.make(), tx.clone());
+  // 1 and 2
+  var late = 0u64;
+  var polled = 0u64;
+  var r = 0u64;
+  while r < rounds {
+    expect(actors.waitUntilIdleFor(Duration.fromSeconds(5i64)), "both workers parked before the round");
+    let before = actors.pollerStats().deputyFires;
+    h.waitFor(15u64);
+    let l = take(&mut rx);
+    expect(l != 7777777777u64, "the held timer fired (the receive did not time out)");
+    if l > boundUs {late = late + 1u64;}
+    if actors.pollerStats().deputyFires > before {polled = polled + 1u64;}
+    r = r + 1u64;
+  }
+  expect(early.load() == 0u64, "none resumed before its deadline");
+  expect(other.load() == 0u64, "none answered false");
+  expect(late <= lateAllowed, "the poller fired within 10 ms of the deadline");
+  expect(polled * 2u64 >= rounds, "the poller fired a parked worker's held cell in at least half the rounds");
+  // 3
+  r = 0u64;
+  while r < moveRounds {
+    expect(actors.waitUntilIdleFor(Duration.fromSeconds(5i64)), "both workers parked before the moved round");
+    h.moved();
+    // once the holder has filed its entry, a turn moves the deadline later
+    thread.sleep(Duration.fromMillis(5i64));
+    h.later();
+    let l = take(&mut rx);
+    expect(l != 7777777777u64, "the moved timer fired (the receive did not time out)");
+    r = r + 1u64;
+  }
+  expect(early.load() == 0u64, "none resumed before the later deadline");
+  expect(other.load() == 0u64, "none answered false after a move");
+  // 4
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  var waited = 0u64;
+  while (actors.timerStats().held != 0u64 || actors.timerStats().heldEntries != 0u64) && waited < 500u64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u64;
+  }
+  let st = actors.timerStats();
+  expect(st.heldEntries == 0u64, "no entry left in a wheel");
+  expect(st.refiles > 0u64, "the poller refiled a moved entry");
+  done()
+}
