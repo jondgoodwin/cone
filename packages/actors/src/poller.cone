@@ -101,6 +101,8 @@ extern {
     fn @c(system) GetQueuedCompletionStatusEx(port: usize, entries: *PortEntry, count: u32,
         removed: *u32, ms: u32, alertable: i32) i32;
     fn @c(system) PostQueuedCompletionStatus(port: usize, bytes: u32, key: usize, ov: *u8) i32;
+    fn @c(system) SetThreadPriority(thread: usize, priority: i32) i32;
+    fn @c(system) GetCurrentThread() usize;
   }
 }
 
@@ -116,6 +118,8 @@ const portCloexec = 0x80000i32;
 const portNonBlock = 0x800i32;
 const portClockMonotonic = 1i32;
 const portInfinite = 0xFFFFFFFFu32;
+const threadPriorityNormal = 0i32;
+const threadPriorityHighest = 2i32;
 
 struct WorkerPort {
   before: Array[u8, 64];
@@ -141,6 +145,8 @@ struct WorkerPort {
   gapWakes: Atomic[u64];      // the monitor's wakes of a parked owner with no poller
   busyPolls: Atomic[u64];     // polls without waiting, by a busy worker or the monitor
   timerEntries: Atomic[u64];  // the timer's expiries taken
+  timeouts: Atomic[u64];      // timed waits back with nothing: the wait's own timeout, the timer's packet not come
+  lateMax: Atomic[i64];       // the latest a timed wait came back past its instant, ns (the role holder's)
 }
 
 // The port, or 0 before it is made and once the stop has closed it; and the
@@ -652,9 +658,32 @@ fn pollerPark(s: *Sched, w: *Worker, p: *WorkerPort, parkMs: u32) bool {
     }
     let ms = portArm(p, until, now);
     (*p).waits.addOrdered(1u64, MemOrder.Relaxed);
+    // Windows: a timed wait is waited at THREAD_PRIORITY_HIGHEST, put back to
+    // normal the moment it returns, before anything runs. Measured (row 493, 600
+    // sleeps of 1-8 ms, 4 workers, the machine at 94-100% from other lanes): at
+    // normal priority the port's wait came back up to 12-18 ms past its instant
+    // (the timer's packet in time, the thread not run: 18-54 sleeps over 2 ms
+    // late); raised, at most 1.1-2.8 ms (0-3 over 2 ms). A futex wake, the path
+    // before the port, gets the scheduler's wake boost; a completion port's does not
+    #if #os == .windows {
+      if until != noDue {SetThreadPriority(GetCurrentThread(), threadPriorityHighest);}
+    }
     let got = portWait(p, ms);
+    #if #os == .windows {
+      if until != noDue {SetThreadPriority(GetCurrentThread(), threadPriorityNormal);}
+    }
     if (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
       parkHoldHere(s, w, 5u32);
+    }
+    // How late the wait came back past the instant it was armed for (pollerStats)
+    if until != noDue {
+      let lateBy = time.Instant.now().nanos() - until;
+      if lateBy > (*p).lateMax.loadOrdered(MemOrder.Relaxed) {
+        (*p).lateMax.storeOrdered(lateBy, MemOrder.Relaxed);
+      }
+      if got == 0u32 {
+        (*p).timeouts.addOrdered(1u64, MemOrder.Relaxed);
+      }
     }
     // The first store after the wait: actor turns run only after it
     roleDrop(p);
@@ -725,6 +754,8 @@ pub struct PollerStats {
   pub gapWakes: u64;       // the monitor's wakes with nobody holding the role
   pub busyPolls: u64;      // polls without waiting
   pub timerEntries: u64;   // the port's own timer's expiries taken
+  pub timeouts: u64;       // timed waits back with nothing (the wait's own timeout, not the timer's packet)
+  pub lateMax: i64;        // the latest a timed wait came back past its instant, in nanoseconds
   pub batch: u32;          // pollBatch
   pub fineTimer: bool;     // the port has its high-resolution timer (Linux: always)
 }
@@ -732,12 +763,13 @@ pub struct PollerStats {
 pub fn pollerStats() PollerStats {
   let p = portEver.load() as *WorkerPort;
   if p as usize == 0usize {
-    return PollerStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u32, false);
+    return PollerStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0u32, false);
   }
   let fine = #if #os == .windows {(*p).packet != 0usize} #else {true};
   PollerStats((*p).waits.loadOrdered(MemOrder.Relaxed), (*p).entries.loadOrdered(MemOrder.Relaxed),
     (*p).fullBatches.loadOrdered(MemOrder.Relaxed), (*p).breaks.loadOrdered(MemOrder.Relaxed),
     (*p).deputyFires.loadOrdered(MemOrder.Relaxed), (*p).gapWakes.loadOrdered(MemOrder.Relaxed),
     (*p).busyPolls.loadOrdered(MemOrder.Relaxed), (*p).timerEntries.loadOrdered(MemOrder.Relaxed),
+    (*p).timeouts.loadOrdered(MemOrder.Relaxed), (*p).lateMax.loadOrdered(MemOrder.Relaxed),
     (*p).batch, fine)
 }
