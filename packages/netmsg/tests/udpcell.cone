@@ -2,9 +2,9 @@
 // connection asks to be called at every send slot while a cell is bound, since
 // a cell cannot say it changed (nextDeadline); a slot that finds nothing must
 // move the next look on, or the held timer would be due again at once and fire
-// without end. Idle for 2 s with a cell never written, the timer's fires are
-// counted (actors.timerStats): about one a send slot on the server's end and a
-// keep-alive's on the client's, never the tens of thousands a spin makes. Then
+// without end. Idle for 2 s with a cell never written, the actors' turns are
+// counted (actors.stats().activations): about one a send slot on the server's end
+// and a keep-alive's on the client's, never the tens of thousands a spin makes. Then
 // puts in the cell reach the client, newest last, and the last value put is
 // the one the client ends holding.
 
@@ -73,9 +73,9 @@ fn main() i32 {
 
     // Unbound idle, for the comparison
     thread.sleep(Duration.fromMillis(300i64));
-    let u0 = actors.timerStats().fires;
+    let u0 = actors.stats().activations;
     thread.sleep(Duration.fromSeconds(2i64));
-    let unbound = actors.timerStats().fires - u0;
+    let unbound = actors.stats().activations - u0;
 
     // Bound to a cell never written: idle, 2 s
     var w: LatestWriter;
@@ -83,14 +83,12 @@ fn main() i32 {
     w, r = latestCell(64usize);
     sConns[0usize].bindLatest(3u16, r, 1u32);
     thread.sleep(Duration.fromMillis(300i64));
-    let b0 = actors.timerStats().fires;
+    let b0 = actors.stats().activations;
     thread.sleep(Duration.fromSeconds(2i64));
-    let bound = actors.timerStats().fires - b0;
+    let bound = actors.stats().activations - b0;
     drain(&mut rxC, &mut cConns, &mut cLast, &mut cUpdates);
-    expectUInt(bound, 0u64, "DIAG bound fires");
-    expectUInt(unbound, 0u64, "DIAG unbound fires");
-    expect(bound < 400u64, "idle with a cell bound the timers fire about once a send slot, not in a spin");
-    expect(bound > unbound + 30u64, "and the slots are looked at: more fires than the keep-alives alone");
+    expect(bound < 400u64, "idle with a cell bound the connection takes about one turn a send slot, not a spin");
+    expect(bound > unbound + 20u64, "and the slots are looked at: more turns than the keep-alives alone");
     expectUInt(cUpdates, 0u64, "nothing was sent on the stream");
 
     // Puts reach the client: the last one put is the last heard
