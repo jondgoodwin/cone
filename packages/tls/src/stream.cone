@@ -14,9 +14,12 @@ pub struct Stream is Move {
   waiting: Chain;        // the protocol's bytes, until the handshake is done
   closeAsked: bool;
   noBuffer: bool;        // plainOut or wireOut was refused a buffer by the pool (maxBytes): the stream has failed
+  scratch: IoBuf;        // plainOut's buffer, kept while a read finds no record whole and handed out only when it holds one
+  wireLimit: usize;      // the ciphertext this connection may hold unread: its share of the window (wireBound until the driver gives one)
 
   pub fn make(s: Session) Stream {
-    Stream(s: s, waiting: Chain.make(0xFFFFFFFFFFFFFFFFusize), closeAsked: false, noBuffer: false)
+    Stream(s: s, waiting: Chain.make(0xFFFFFFFFFFFFFFFFusize), closeAsked: false, noBuffer: false,
+      scratch: IoBuf(), wireLimit: wireBound)
   }
 
   // Its session: its info, its error
@@ -54,7 +57,7 @@ pub struct Stream is Move {
   // How many more wire bytes it will take now
   pub fn wireRoom(self: &) usize {
     let held = BIO_ctrl_pending(s.rbio);
-    if held >= wireBound {0usize} else {wireBound - held}
+    if held >= wireLimit {0usize} else {wireLimit - held}
   }
 
   // The protocol's bytes to send: protected at once when the session is
@@ -73,17 +76,24 @@ pub struct Stream is Move {
     if !s.canRead() || noBuffer {return IoBuf();}
     // A pool within its reserve of maxBytes gives no buffer: the record stays in
     // the session, and the stream fails (failed()), rather than the pool panicking
-    var b = match IoBuf.tryMake(recordPlain) {
-      case var Some(got) {got}
-      else {
-        noBuffer = true;
-        return IoBuf();
+    // The buffer is taken once and kept: a read that finds no whole record
+    // (bytes came, but a record is still part-way; or the record read was the
+    // last) leaves it here for the next, where it was dropped and taken again
+    if scratch.spare().len == 0usize {
+      match IoBuf.tryMake(recordPlain) {
+        case var Some(got) {scratch = got;}
+        else {
+          noBuffer = true;
+          return IoBuf();
+        }
       }
-    };
-    let got = s.read(b.spare());
+    }
+    let got = s.read(scratch.spare());
     if got == 0usize {return IoBuf();}
-    b.setLen(got);
-    b
+    scratch.setLen(got);
+    var out = IoBuf();
+    out <-> scratch;
+    out
   }
 
   // Bytes it holds that are ready to go out on the wire. The protocol's
