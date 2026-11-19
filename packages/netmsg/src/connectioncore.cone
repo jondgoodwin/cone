@@ -58,11 +58,13 @@ const disconnectCopies = 5usize;
 
 const msNs = 1000000i64;
 
-// A packet may go this much before its scheduled slot, so an update that arrives
-// just early is sent at once instead of waiting on a timer. The next slot is
-// counted from this slot, not from the send, so the long-run rate stays exactly
-// the configured one.
-const sendSlackNs = 1000000i64;
+// Sends are paced by a token bucket: a token comes back every interval (the good
+// or bad rate's) and the bucket holds burstTokens at most. A packet takes a
+// token. A connection that sends rarely finds the bucket full, so an update
+// goes at once with no timer; one that sends at the rate waits for the next
+// token. In any window the packets sent are at most the window over the
+// interval, plus burstTokens.
+const burstTokens = 2i64;
 const secNs = 1000000000i64;
 const notFound = 0xFFFFFFFFusize;
 
@@ -354,7 +356,7 @@ pub struct ConnectionCore {
   // time
   lastRecv: i64;
   lastSend: i64;
-  nextSendAt: i64;
+  fullAt: i64;                // when the send bucket is full again; at or before now, it is full
   ackDirty: bool;             // a reliable message arrived that no packet of ours has acknowledged
   closeSent: bool;
 
@@ -539,6 +541,11 @@ pub struct ConnectionCore {
     d
   }
 
+  // The earliest instant a packet may go: when the bucket next holds a token
+  fn tokenAt(self: &) i64 {
+    fullAt - (burstTokens - 1i64) * self.interval()
+  }
+
   fn interval(self: &) i64 {
     var rate = if good {cfg.goodRate} else {cfg.badRate};
     if rate == 0u32 {rate = 1u32;}
@@ -585,7 +592,8 @@ pub struct ConnectionCore {
         id = id + 1u16;
       }
     }
-    if want < nextSendAt - sendSlackNs {want = nextSendAt - sendSlackNs;}
+    let tok = self.tokenAt();
+    if want < tok {want = tok;}
     if want < at {at = want;}
     Instant.fromNanos(at)
   }
@@ -617,14 +625,14 @@ pub struct ConnectionCore {
       return;
     }
     self.updateMode(t);
-    if t < nextSendAt - sendSlackNs {return;}
+    if t < self.tokenAt() {return;}
     if self.hasWork(t) || t - lastSend >= cfg.keepAliveMs * msNs {
       out.push(self.buildPacket(t));
-      // Time the next send from this slot; after a long idle (a whole
-      // interval behind or more) start afresh, so there is no catch-up burst
-      var slot = nextSendAt + self.interval();
-      if slot <= t {slot = t + self.interval();}
-      nextSendAt = slot;
+      // Take a token: one interval more to refill, counted from now if the
+      // bucket was already full
+      var base = fullAt;
+      if base < t {base = t;}
+      fullAt = base + self.interval();
       lastSend = t;
       ackDirty = false;
     }
