@@ -86,6 +86,23 @@
 // lock: either the cancel sees the loop and tells it, or the loop sees the
 // flag set. A loop that has gone is dropped from the list at the next
 // registration.
+//
+// FOR A WORKER'S TIMERS (the runtime's, not for programs: 'watchHere' and
+// 'watchWorker' are public only because the actors runtime and aio call them
+// from their packages). A timer's cell on a worker is told of a cancel of ITS
+// OWN group, and not of an ancestor's: 'watchHere' puts its Wakeup in this
+// group's registry alone, each call a new entry, so that arming a sleep in a
+// group costs one lock of that group and nothing up the chain. The ancestors
+// are told through the worker: 'watchWorker' registers the worker's own Wakeup
+// (one per worker index, for good) in the group and its ancestors up to a
+// shield the first time, and every later call from that worker is a test of one
+// bit in the group (128 bits, in two words) with no lock and no walk. The bit
+// is set after the ancestors are registered, so it says the whole chain is. A
+// worker's entry is never swept as a dead loop's is, and is told once per
+// cancel however many timers it has. The actors runtime's cells call
+// 'watchWorkerAbove', which is 'watchWorker' on the parent: the group's own
+// cancel then tells only its cells' Wakeups, and the worker hears only of the
+// ancestors' (row 483).
 
 mod cancelgroups;
 
@@ -171,6 +188,22 @@ pub struct Cancelled is Error, Sendable {
   }
 }
 
+// The ids the registry keeps beside each Wakeup. A loop's own id is its loop's
+// (diag.nextLoopId, or orcancelled's own ticket). A worker's is workerIdBit
+// with its index, so 'watchWorker' finds its own entry; a cell's (watchHere)
+// is 'hereId', which no loop has and nothing looks for: each cell is its own
+// entry
+const workerIdBit = 0x2000000000000000u64;
+const hereId = 0u64;
+// The worker indexes 'watchWorker' tests without the lock: 128, in two words
+const workerBitsPerWord = 64u32;
+const workerBitsMax = 128u32;
+// The registry length at which 'watchHere' first sweeps out the cells that have
+// gone, and the least it waits again after a sweep, so that a group with many
+// sleeps through its life neither grows a registry of dead ones nor sweeps at
+// every arm
+const sweepFirst = 8usize;
+
 const codeLive = 0u32;
 const codeCancelled = 1u32;
 const codeTimedOut = 2u32;
@@ -227,11 +260,35 @@ pub struct GroupState is Sendable, Move {
   gid: u64;
   orphaned: Atomic[u32];     // 1 once no holder outside the operations' own copies is left (see HOLDERS); under 'lock'
   timed: bool;               // it has a timer of its own, which may yet cancel it
+  workers0: Atomic[u64];     // bit i: worker i is registered here and in every ancestor up to a shield (watchWorker); workers 0-63
+  workers1: Atomic[u64];     // the same for workers 64-127
 
   // Its state changed under its lock through a shared reference
   fn lists(self: &) &mut GroupState {
     let p = self as *GroupState;
     p as &mut GroupState
+  }
+
+  // Whether worker 'worker' has registered here and in the ancestors a cancel
+  // of theirs would come through: a lock-free read. False for a worker beyond
+  // the bits, which then takes the locked path every time
+  fn workerSeen(self: &, worker: u32) bool {
+    if worker < workerBitsPerWord {
+      return ((workers0.loadOrdered(MemOrder.Acquire) >> u64.from(worker)) & 1u64) != 0u64;
+    }
+    if worker < workerBitsMax {
+      return ((workers1.loadOrdered(MemOrder.Acquire) >> u64.from(worker - workerBitsPerWord)) & 1u64) != 0u64;
+    }
+    false
+  }
+
+  // Record that worker 'worker' is registered here and above (see workerSeen)
+  fn markWorker(self: &, worker: u32) {
+    if worker < workerBitsPerWord {
+      workers0.bitOr(1u64 << u64.from(worker));
+    } else if worker < workerBitsMax {
+      workers1.bitOr(1u64 << u64.from(worker - workerBitsPerWord));
+    }
   }
 
   // The loops this group tells, made empty on the first call. The ONE place
@@ -249,7 +306,7 @@ pub struct GroupState is Sendable, Move {
     let st = self.lists();
     if st.reg as usize == 0usize {
       let block = libc.malloc(mem.sizeof[Registry]()) as *Registry;
-      mem.writeRaw[Registry](block, Registry(List[u64](), List[Uni[Wakeup + Sendable + ShapeKeeping]]()));
+      mem.writeRaw[Registry](block, emptyRegistry());
       st.reg = block;
     }
     st.reg as &mut Registry
@@ -265,11 +322,11 @@ pub struct GroupState is Sendable, Move {
     let st = self.lists();
     st.lock.lock();
     st.orphaned.store(1u32);
-    var old = Registry(List[u64](), List[Uni[Wakeup + Sendable + ShapeKeeping]]());
+    var old = emptyRegistry();
     if st.reg as usize != 0usize {
       let r = self.registry();
       old = mem.readRaw[Registry](r as *Registry);
-      mem.writeRaw[Registry](r as *Registry, Registry(List[u64](), List[Uni[Wakeup + Sendable + ShapeKeeping]]()));
+      mem.writeRaw[Registry](r as *Registry, emptyRegistry());
     }
     st.first.store(0u64);
     st.lock.unlock();
@@ -308,6 +365,11 @@ pub struct GroupState is Sendable, Move {
 struct Registry {
   loops: List[u64];                     // the loops registered: their ids...
   wakers: List[Uni[Wakeup + Sendable + ShapeKeeping]]; // ...and how to tell them
+  sweepAt: usize;                       // the length at which 'watchHere' next sweeps out the cells that have gone
+}
+
+fn emptyRegistry() Registry {
+  Registry(List[u64](), List[Uni[Wakeup + Sendable + ShapeKeeping]](), sweepFirst)
 }
 
 struct TimerRef is Sendable {
@@ -379,7 +441,8 @@ pub struct CancelGroup {
       shield: shield, parent: parent, lock: Mutex.make(),
       reg: 0usize as *Registry,
       gid: groupSeq.add(1u64) + 1u64,
-      orphaned: Atomic[u32].of(0u32), timed: own && deadline < forever()));
+      orphaned: Atomic[u32].of(0u32), timed: own && deadline < forever(),
+      workers0: Atomic[u64].of(0u64), workers1: Atomic[u64].of(0u64)));
     var g: Option[Arc[imm, TimerGuard]] = None;
     if own && deadline < forever() {g = arm(a, deadline);}
     CancelGroup(a, Some[Arc[imm, TimerGuard]](Arc[imm, TimerGuard](TimerGuard(None, Some[Arc[imm, GroupState]](a), g))))
@@ -477,8 +540,9 @@ pub struct CancelGroup {
       if *r.loops[k] == loopId {
         found = true;
         k = k + 1usize;
-      } else if r.wakers[k].isGone() {
-        // A loop that has died: its entry goes, last into its place
+      } else if (*r.loops[k] & workerIdBit) == 0u64 && r.wakers[k].isGone() {
+        // A loop that has died: its entry goes, last into its place. A worker's
+        // never goes: its bit in the group would then claim it registered
         let last = r.loops.len() - 1usize;
         r.loops.swap(k, last);
         r.wakers.swap(k, last);
@@ -505,6 +569,111 @@ pub struct CancelGroup {
         else {}
       }
     }
+  }
+
+  // THE RUNTIME'S, not for programs (public because the actors runtime, and
+  // aio over it, call it from their own packages, as 'stopTimer' is). Tell 'w'
+  // when THIS group is cancelled, and not when an ancestor is: the one entry
+  // for one timer's cell on a worker (the worker's own 'watchWorker' entry
+  // stands for the ancestors). Every call adds an entry, however often the
+  // same 'w' comes: each cell is its own. It leaves the group's 'first' alone.
+  // The caller reads 'isCancelled' (a flag walk up the chain) after this, as
+  // after 'watch': a cancel before the entry is seen there, one after reaches
+  // 'w'. A Wakeup whose 'isGone' says true is dropped by a later call, in a
+  // sweep that runs when the registry has doubled since the last (at 8
+  // first), so a call is not O(entries). Nothing for an orphaned group
+  pub fn watchHere[W: Wakeup + Sendable](self: &, w: &W) {
+    let st = s.lists();
+    st.lock.lock();
+    if st.orphaned.load() == 0u32 {
+      let r = st.registry();
+      if r.loops.len() >= r.sweepAt {
+        var k = 0usize;
+        while k < r.loops.len() {
+          if (*r.loops[k] & workerIdBit) == 0u64 && r.wakers[k].isGone() {
+            let last = r.loops.len() - 1usize;
+            r.loops.swap(k, last);
+            r.wakers.swap(k, last);
+            r.loops.pop();
+            r.wakers.pop();
+          } else {
+            k = k + 1usize;
+          }
+        }
+        r.sweepAt = r.loops.len() * 2usize;
+        if r.sweepAt < sweepFirst {r.sweepAt = sweepFirst;}
+      }
+      r.loops.push(hereId);
+      let u = Uni[W](*w);
+      r.wakers.push(u);
+    }
+    st.lock.unlock();
+  }
+
+  // THE RUNTIME'S, not for programs (as 'watchHere'). Tell worker 'worker'
+  // (its index; 'w' is the Wakeup that stands for that worker) when this group
+  // or an ancestor up to a shield is cancelled: the 'watch' of a worker, with
+  // the group's own test of whether it is done. The first call for a worker
+  // registers it here and in each ancestor; every call after is one atomic
+  // load of a bit, no lock, no walk. The bit is set only once the ancestors are
+  // registered, so it stands for the whole chain. 'w' must stand for that
+  // worker index for the life of the process, never reporting 'isGone', and is
+  // copied in only the first time: the bit outlives a stop and restart of the
+  // runtime, so the worker's Wakeup must be the same one after. A group's
+  // worker entries are never swept. Only the first 128 worker indexes have the
+  // bit; a higher one is registered correctly and takes the lock each call.
+  // The caller reads 'isCancelled' after this, as after 'watch'
+  pub fn watchWorker[W: Wakeup + Sendable](self: &, worker: u32, w: &W) {
+    if s.workerSeen(worker) {return;}
+    self.watchWorkerChain(worker, w);
+  }
+
+  // THE RUNTIME'S, not for programs (as 'watchWorker'). 'watchWorker' for this
+  // group's ancestors up to a shield, and not for this group itself: the call
+  // beside 'watchHere', whose cell's own entry stands for this group, so that
+  // this group's cancel tells its cells and not the worker as well (each time
+  // the worker is told, it looks at all of its cells). Nothing for a shield or
+  // a group with no parent. The fast path is the parent's bit.
+  // WHAT IT IS FOR: a group that cancels its own work often (netmsg's
+  // connections: ~30 cancels a connection-second) registers its worker on the
+  // PARENT, so that its own cancels do not make the worker walk all its cells
+  // (only an ancestor's cancel does); it is called beside 'watchHere' by each
+  // cell the actors runtime arms (timers.cone), not by programs
+  pub fn watchWorkerAbove[W: Wakeup + Sendable](self: &, worker: u32, w: &W) {
+    if s.shield {return;}
+    match s.parent {
+      case let Some(p) {p.watchWorker(worker, w);}
+      else {}
+    }
+  }
+
+  fn watchWorkerChain[W: Wakeup + Sendable](self: &, worker: u32, w: &W) {
+    if s.workerSeen(worker) {return;}
+    let id = workerIdBit | u64.from(worker);
+    let st = s.lists();
+    st.lock.lock();
+    if st.orphaned.load() == 0u32 {
+      let r = st.registry();
+      var found = false;
+      var k = 0usize;
+      while k < r.loops.len() {
+        if *r.loops[k] == id {found = true;}
+        k = k + 1usize;
+      }
+      if !found {
+        r.loops.push(id);
+        let u = Uni[W](*w);
+        r.wakers.push(u);
+      }
+    }
+    st.lock.unlock();
+    if !s.shield {
+      match s.parent {
+        case let Some(p) {p.watchWorkerChain(worker, w);}
+        else {}
+      }
+    }
+    s.markWorker(worker);
   }
 }
 

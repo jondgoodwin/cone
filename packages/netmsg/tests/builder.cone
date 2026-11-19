@@ -1,0 +1,207 @@
+// The packet builder takes the waiting latest-wins values in order of priority
+// with one sort a packet. Before, it made a full pass over the streams for each
+// value placed, taking the highest priority of those that still fit (the earlier
+// stream of equals). This test keeps that rule as a model beside a core, drives
+// both with the same randomised streams, sizes, weights and packet budgets, and
+// compares the values each packet carries, stream by stream and in order:
+//  - the sort takes the same choices only if it is stable (ties go to the
+//    earlier stream) and a stream's priority does not change while one packet is
+//    built; a few weights, so that ties are common, and many packets test both
+//  - a count of the waiting values (what nextDeadline reads) agrees with the
+//    streams that have one: a core with none asks for the keep-alive time, and
+//    one with a value waiting is ready to send now
+
+mod builder;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant, Clock;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
+
+fn filled(n: usize, b: u8) List[u8] {
+  var d = List[u8]();
+  var i = 0usize;
+  while i < n {
+    d.push(b);
+    i = i + 1usize;
+  }
+  d
+}
+
+// xorshift64
+struct XRand {
+  s: u64;
+
+  fn next(self: &mut) u64 {
+    s = s ^ (s << 13u64);
+    s = s ^ (s >> 7u64);
+    s = s ^ (s << 17u64);
+    s
+  }
+
+  // 0 to n - 1
+  fn below(self: &mut, n: u64) u64 {self.next() % n}
+}
+
+// The model's view of one stream, in the order it was first used
+struct M {
+  key: u16;
+  weight: u32;
+  acc: u32;
+  pending: bool;
+  size: usize;
+}
+
+fn findM(ms: &List[M], key: u16) usize {
+  var i = 0usize;
+  while i < ms.len() {
+    if ms[i].key == key {return i;}
+    i = i + 1usize;
+  }
+  ms.len()
+}
+
+fn be16(v: &Array[u8], at: usize) u16 {(u16.from(v[at]) << 8u16) | u16.from(v[at + 1usize])}
+
+// The streams of the values a packet carries, in order. The packets here carry
+// no reliable messages, so the values start after the 23 bytes of header
+fn carried(d: &Bytes) List[u16] {
+  let v = d.view();
+  var out = List[u16]();
+  let n = usize.from(v[22usize]);
+  var at = 23usize;
+  var i = 0usize;
+  while i < n {
+    out.push(be16(v, at));
+    at = at + 6usize + usize.from(be16(v, at + 4usize));
+    i = i + 1usize;
+  }
+  out
+}
+
+// What the old builder would put in the next packet: a pass over the streams
+// for each value, the highest priority of those that fit, the earlier of equals
+fn oldBuilder(ms: &mut List[M], budget0: usize) List[u16] {
+  var out = List[u16]();
+  var i = 0usize;
+  while i < ms.len() {
+    if ms[i].pending {ms[i].acc = ms[i].acc + ms[i].weight;}
+    i = i + 1usize;
+  }
+  var budget = budget0;
+  while out.len() < 255usize {
+    var best = ms.len();
+    i = 0usize;
+    while i < ms.len() {
+      if ms[i].pending && 6usize + ms[i].size <= budget {
+        if best == ms.len() || ms[i].acc > ms[best].acc {best = i;}
+      }
+      i = i + 1usize;
+    }
+    if best == ms.len() {break;}
+    out.push(ms[best].key);
+    budget = budget - (6usize + ms[best].size);
+    ms[best].pending = false;
+    ms[best].acc = 0u32;
+  }
+  out
+}
+
+fn main() i32 {
+  var rng = XRand(0x9E3779B97F4A7C15u64);
+  var packets = 0u64;
+  var multi = 0u64;
+  var dropped = 0u64;
+  var mismatched = 0u64;
+  var round = 0u32;
+  while round < 40u32 {
+    // A budget: from 60 bytes (37 for values) to the default 1200
+    var cfg = NetConfig.defaults();
+    let sizes = [60usize, 100usize, 200usize, 400usize, 1200usize];
+    cfg.maxPacket = sizes[usize.from(rng.below(5u64))];
+    var clock = Clock.synth();
+    var core = ConnectionCore.make(cfg, 0x1122334455667788u64, clock.now());
+    var ms = List[M]();
+    let nStreams = 2u64 + rng.below(30u64);
+    let maxSize = core.maxLatest();
+    var pk = 0u32;
+    var sentLast = false;
+    while pk < 60u32 {
+      // Some streams get a value, a few get a new weight (1 to 3: ties are common)
+      let calls = rng.below(8u64);
+      var c = 0u64;
+      while c < calls {
+        let key = u16.from(1000u64 + rng.below(nStreams));
+        var k = findM(&ms, key);
+        if rng.below(4u64) == 0u64 {
+          let w = u32.from(1u64 + rng.below(3u64));
+          core.setStreamWeight(key, w);
+          if k == ms.len() {ms.push(M(key, 1u32, 0u32, false, 0usize));}
+          k = findM(&ms, key);
+          ms[k].weight = w;
+        } else {
+          // Sizes cluster, so that some values fit in a gap and some do not
+          let size = usize.from(rng.below(u64.from(maxSize) + 1u64)) / (1usize + usize.from(rng.below(6u64)));
+          let ok = core.sendLatest(key, fz(filled(size, 1u8).view()));
+          expect(ok, "a value for one of at most 31 streams");
+          if k == ms.len() {ms.push(M(key, 1u32, 0u32, false, 0usize));}
+          k = findM(&ms, key);
+          ms[k].pending = true;
+          ms[k].size = size;
+        }
+        c = c + 1u64;
+      }
+      var waiting = false;
+      var j = 0usize;
+      while j < ms.len() {
+        if ms[j].pending {waiting = true;}
+        j = j + 1usize;
+      }
+      clock.advance(Duration.fromMillis(40i64));
+      // The next send time, as the count of waiting values reports it
+      let due = core.nextDeadline().nanos();
+      if waiting {
+        expect(due <= clock.now().nanos(), "with a value waiting, a packet may go at once");
+      } else if sentLast {
+        expect(due > clock.now().nanos(), "with none, the connection waits (for the keep-alive)");
+      }
+      sentLast = false;
+      var out = Packets();
+      var evs = List[CoreEvent]();
+      core.poll(clock.now(), &mut out, &mut evs);
+      each p in out.drain() {
+        sentLast = true;
+        let d = p.freeze();
+        let got = carried(&d);
+        let want = oldBuilder(&mut ms, cfg.maxPacket - 23usize);
+        packets = packets + 1u64;
+        if want.len() > 1usize {multi = multi + 1u64;}
+        // Some values did not fit, and wait for a later packet
+        var left = 0usize;
+        j = 0usize;
+        while j < ms.len() {
+          if ms[j].pending {left = left + 1usize;}
+          j = j + 1usize;
+        }
+        if left > 0usize {dropped = dropped + 1u64;}
+        var same = got.len() == want.len();
+        j = 0usize;
+        while same && j < got.len() {
+          if got[j] != want[j] {same = false;}
+          j = j + 1usize;
+        }
+        if !same {mismatched = mismatched + 1u64;}
+      }
+      pk = pk + 1u32;
+    }
+    round = round + 1u32;
+  }
+  expectUInt(mismatched, 0u64, "every packet carries the values the old builder chose, in its order");
+  expect(packets >= 1500u64, "many packets were compared");
+  expect(multi >= 300u64, "many of them carried more than one value");
+  expect(dropped >= 300u64, "and many left a value waiting for want of room");
+  done()
+}

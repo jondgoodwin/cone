@@ -93,8 +93,9 @@ fn main() {
 	<li><span class="pre">NetEvent</span> has five variants. <span class="pre">Joined{id, conn}</span>: the connection is open,
 		and <span class="pre">conn</span> is the actor to send through. <span class="pre">Left{id, reason}</span>: it has ended, for a
 		<span class="pre">CloseReason</span> (<span class="pre">Local</span>, <span class="pre">Remote</span>,
-		<span class="pre">TimedOut</span>, <span class="pre">Overflow</span>, <span class="pre">Refused</span> or
-		<span class="pre">NoAnswer</span>); nothing more arrives for that id. <span class="pre">Message{id, data}</span>: a reliable
+		<span class="pre">TimedOut</span>, <span class="pre">Overflow</span>, <span class="pre">Refused</span>,
+		<span class="pre">NoAnswer</span> or <span class="pre">SendFailed</span>, the socket failing a send for any reason but a full
+		send buffer; every datagram the socket refused is counted in <span class="pre">ConnectionStats.sendErrors</span>); nothing more arrives for that id. <span class="pre">Message{id, data}</span>: a reliable
 		message. <span class="pre">Update{id, stream, data}</span>: the newest value of a stream. Both carry <span class="pre">data</span> as
 		<span class="pre">iobuf.Bytes</span>, read with <span class="pre">data.view()</span>: a message that arrives in order is a slice of the datagram it came in,
 		copied by no one, and it keeps that datagram's buffer alive for as long as it is held (an application that keeps many for long copies the few bytes it needs).
@@ -127,6 +128,11 @@ fn main() {
 		closes the socket. Call it before the program ends; a program that ends in the very instant it calls it may lose
 		the disconnect datagrams (an actor paused on I/O does not hold the program open), and the peers then time out.
 		<span class="pre">endpoint.connections()</span> answers how many connections are open.</li>
+	<li><span class="pre">await endpoint.stats()</span> answers an <span class="pre">EndpointStats</span>, what the endpoint has
+		refused to admit, by the limit that refused it: <span class="pre">refusedFull</span> (<span class="pre">maxClients</span>),
+		<span class="pre">refusedPerAddress</span> (<span class="pre">maxPerAddress</span>) and <span class="pre">refusedRate</span>
+		(<span class="pre">admitRate</span>, and a replacement within a second of the last for its socket address). Each refusal
+		counts once, under the first limit it met; all zero for a client.</li>
 	</ul>
 
 	<h2 id="connection">A connection</h2>
@@ -186,7 +192,32 @@ fn main() {
 		the smallest IPv6 path), <span class="pre">goodRate</span> (30 packets a second) and <span class="pre">badRate</span> (10),
 		<span class="pre">badRttMs</span> (250), <span class="pre">keepAliveMs</span> (100), <span class="pre">timeoutMs</span> (10,000),
 		<span class="pre">resendMinMs</span> (40), <span class="pre">connectRetryMs</span> (250), <span class="pre">connectTimeoutMs</span>
-		(5,000) and a server's <span class="pre">maxClients</span> (64).</p>
+		(5,000), and the limits a server puts on its peers (below).</p>
+
+	<h3 id="limits">Limits on a misbehaving peer</h3>
+	<p>A server spends memory and work on each connection and each handshake, so it bounds what one peer, or one
+		address, can make it spend. A client past a limit hears what it hears at <span class="pre">maxClients</span>:
+		<span class="pre">Left</span> with <span class="pre">Refused</span>, and the server hears nothing.</p>
+	<ul>
+	<li><span class="pre">maxClients</span> (64): connections a server holds.</li>
+	<li><span class="pre">maxPerAddress</span> (32): of those, from one IP address. An IPv6 address counts by its /64 (its
+		first four groups), and an IPv4-mapped IPv6 address by the IPv4 address in it. The default is not lower because
+		carrier-grade NAT puts many users behind one IPv4 address, and a proxy in front of the server does the same.</li>
+	<li><span class="pre">admitRate</span> (50): new connections admitted a second across the whole server, from a bucket
+		that holds twice that, so a burst of 100 gets in at once and the rest as it refills. 0 is no limit.</li>
+	<li>A new session from a socket address (IP and port) that already has a connection replaces it (a reconnect), taking no place and no
+		admission, but at most once a second for one socket address; a replacement sooner is denied and the old connection stays.</li>
+	<li>Latest-wins streams: 64 a connection each way (<span class="pre">maxStreams</span>). An update on a 65th stream from the
+		peer, or one waiting for a handler that gives no credit, is dropped and counted in
+		<span class="pre">ConnectionStats.streamsRefused</span>; the connection is not closed for it. The tables are fixed
+		arrays of 64 inside the connection, so a stream's first value allocates nothing; a stream keeps its place in them for the
+		connection's life (a connection that is in-process, with no core, counts the streams it has heard of the same way, so a
+		65th stream ever heard of is refused even if the handler has taken the others' values).</li>
+	</ul>
+	<p>The handshake's cookie key is 128 bits from the operating system's random source. A server whose clients share an
+		address (a benchmark's, all on 127.0.0.1) or arrive in a crowd raises <span class="pre">maxPerAddress</span> and
+		<span class="pre">admitRate</span> beside <span class="pre">maxClients</span>; the defaults suit a server on the
+		internet, and loopback has no exemption.</p>
 
 	<h2 id="protocol">The protocol</h2>
 	<p>Every number is written most significant byte first. Every datagram begins with the four bytes
@@ -242,7 +273,7 @@ fn main() {
 		is the salt xor the cookie; the server opens the connection and answers Accept, and every later packet in either
 		direction carries the session, a packet with another being dropped. A spoofed source address therefore never gets
 		a connection, and a server cannot be used to amplify an attack: the replies are a sixtieth of what asked
-		for them. A full server answers Denied. A client whose Accept is lost connects on the first payload packet the
+		for them. A server that is full, or past a limit above, answers Denied. A client whose Accept is lost connects on the first payload packet the
 		server sends. The connection attempt fails after <span class="pre">connectTimeoutMs</span>.</p>
 	<p>There is no encryption: the session is a shared secret, and anyone who can read the packets can read the data and
 		forge packets. The place for it is the handshake (a key agreed there) and the payload packet (where it would be
@@ -257,7 +288,7 @@ fn main() {
 		malformed); <span class="pre">poll(now, out, events)</span> appends the packets to send (<span class="pre">Packets</span>, a list of IoBufs, each one datagram) and the events that happened;
 		<span class="pre">nextDeadline()</span> says when to call <span class="pre">poll</span> next; and
 		<span class="pre">rtt()</span>, <span class="pre">lossPermille()</span>, <span class="pre">stats()</span>, <span class="pre">close()</span>. The
-		events are <span class="pre">CoreEvent.Reliable{data}</span>, <span class="pre">CoreEvent.Latest{stream, data}</span> and
+		events are <span class="pre">CoreEvent.Reliable{data}</span>, <span class="pre">CoreEvent.Latest{stream, data, pos}</span> (<span class="pre">pos</span>: the stream's place among those the connection has heard of, fixed for its life) and
 		<span class="pre">CoreEvent.Closed{reason}</span>. <span class="pre">ChallengeGate</span> is the server's side of the handshake
 		(<span class="pre">handle(addr, datagram, now, reply)</span> answers a <span class="pre">GateVerdict</span> and puts the datagram to send back into the <span class="pre">streams.Writer</span> <span class="pre">reply</span>) and
 		<span class="pre">ClientHandshake</span> the client's. <span class="pre">SimPair</span> joins two ConnectionCores across two

@@ -520,6 +520,16 @@ Some facts belong to the file rather than a line:
   `inf` and `nan` are refused, with a message naming the scenario. Say why on
   the same line: a raised limit hides a slowdown, so the key is for a cost
   that varies with the machine's load, not for one that has grown.
+- **A longer limit for the compiler alone**, `compile_timeout = <seconds>`, read
+  as `timeout` is, on the scenario or on one `run` entry (the entry's wins, so a
+  scenario whose release compile is the slow one raises only that mode). It
+  bounds each `conec` process of the run (each linked package's compile, the
+  scenario's own, `--report-trust`, the LTO link, a driver's invocation) and
+  nothing else: the C compiler, the link and the program stay on `timeout`, so a
+  slow compile gets time and a hung program gets none. An explicit
+  `--compile-timeout` acts as `--timeout` does for it (the larger of it and the
+  key); without one, `--timeout` lengthens it the same way. Size it from the
+  compile's measured time under load, with several times of margin.
 
 ### Two choices, for lowering and codegen defects
 
@@ -545,6 +555,15 @@ excludes = ["Point.add "]
 ```
 
 The name is what failure output reports and what selection matches.
+
+A check may also carry `within = "<text>"`, which narrows the artifact to the
+lines holding the text (a `define` line brings its whole body), and
+`matches = [{ pattern = "<regex>", count = <n> }]`, which requires exactly `n`
+lines (by `re.search`, after `within`) to match the regex. Use `matches` to pin
+an instruction by shape and number with no LLVM value names in it, so an
+unrelated edit or another platform's numbering leaves the check alone; too few
+and too many both fail. `test/run.py --selftest` checks the counting and the
+refusal of a malformed entry.
 
 A bug fix lands with a scenario that fails without the fix.
 
@@ -658,7 +677,9 @@ scenarios then check conec's encoder against the demangler on the symbols it
 actually emits; `struct_methods` is where a punycoded name does so. The same
 start-up check covers the `timeout` key (`timeout_selftest`): what is accepted,
 each refusal, the limit chosen against `--timeout`, and the key read through a
-`cases.toml` for every category.
+`cases.toml` for every category; and `compile_timeout`: read on a scenario and on
+a run entry, each refusal, and the compiler's limit against both command-line
+options.
 
 ### `cases.toml` keys
 
@@ -685,6 +706,12 @@ stderr_mask  = ['(?<=panic in thread )\d+']  # each match compared as '<masked>'
 [scenario.concurrency_actors_fanin]
 category = "run"
 timeout  = 60                # seconds per process, where the default 20 is too few under load
+
+[scenario.concurrency_await_manual]
+category = "run"
+[[scenario.concurrency_await_manual.run]]
+name = "release"
+compile_timeout = 60         # seconds for each conec of this run only; the program keeps 'timeout'
 
 [scenario.module_build_link]
 category    = "run"

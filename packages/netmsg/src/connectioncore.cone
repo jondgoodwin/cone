@@ -46,7 +46,10 @@ const ringSize = 1024usize;
 // Reliable messages queued or unacknowledged at once
 pub const reliableWindow = 1024usize;
 
-// Latest-wins streams one connection carries
+// Latest-wins streams one connection carries, each way: a send for a 65th
+// stream is refused (TooManyStreams); an update from the peer on a 65th, or one
+// waiting for the application on a 65th, is dropped and counted
+// (ConnectionStats.streamsRefused)
 pub const maxStreams = 64usize;
 
 // Disconnect packets sent when a connection closes, so one of them gets
@@ -67,7 +70,30 @@ const notFound = 0xFFFFFFFFusize;
 // Configuration, events, statistics
 // ---------------------------------------------------------------------------
 
-// The knobs of a connection, the same on both ends
+// The knobs of a connection, the same on both ends, and the limits a server puts
+// on its peers. The limits are what a misbehaving peer can make a server spend:
+//   maxClients     connections a server holds at once (64)
+//   maxPerAddress  of those, from one IP address (32); an IPv6 address counts by
+//                  its /64 (its first four groups), and an IPv4-mapped IPv6
+//                  address by the IPv4 address in it. It is not lower because
+//                  carrier-grade NAT puts many users behind one IPv4 address,
+//                  and a proxy in front of the server does the same
+//   admitRate      new connections admitted a second across the whole server
+//                  (50), in a bucket that holds twice that many, so a burst of
+//                  100 gets in at once and the rest as it refills; 0 is no
+//                  limit
+//   a session from a socket address (IP and port) that already has a connection
+//   replaces it (a reconnect); replacements from one socket address are held to
+//   one a second. A replacement takes no place and no admission
+//   maxStreams     latest-wins streams one connection carries each way (64)
+// A client past a limit hears the same refusal as at maxClients (Left, Refused).
+// A server that raises maxClients to thousands must raise the others beside it
+// when its clients share addresses: netbench's all come from 127.0.0.1, and
+// at 50 a second 1,000 to 5,000 of them would take 20 to 100 seconds to join, so
+// netbench, and any measurement that starts clients from one machine, sets
+// maxPerAddress (to its client count or more) and admitRate (to 0) wherever it
+// sets maxClients. A limit that tests never meet is one a server behind a proxy
+// meets first, so loopback has no exemption.
 pub struct NetConfig {
   pub maxPacket: usize;       // the largest datagram sent, bytes (1200)
   pub goodRate: u32;          // packets a second sent in good conditions (30)
@@ -79,9 +105,11 @@ pub struct NetConfig {
   pub connectRetryMs: i64;    // a handshake packet is repeated this often (250)
   pub connectTimeoutMs: i64;  // a handshake that takes this long has failed (5000)
   pub maxClients: usize;      // a server's connections (64)
+  pub maxPerAddress: usize;   // a server's connections from one IP address, IPv6 by its /64 (32)
+  pub admitRate: u32;         // new connections a server admits a second, with a burst of twice that (50)
 
   pub fn defaults() NetConfig {
-    NetConfig(1200usize, 30u32, 10u32, 250i64, 100i64, 10000i64, 40i64, 250i64, 5000i64, 64usize)
+    NetConfig(1200usize, 30u32, 10u32, 250i64, 100i64, 10000i64, 40i64, 250i64, 5000i64, 64usize, 32usize, 50u32)
   }
 }
 
@@ -92,13 +120,14 @@ pub enum CloseReason {
   TimedOut,    // no packet arrived for the timeout
   Overflow,    // too many reliable messages were waiting: to be sent, or for the local application to take
   Refused,     // a connection attempt was refused: the server was full
-  NoAnswer    // a connection attempt got no answer in time
+  NoAnswer,   // a connection attempt got no answer in time
+  SendFailed  // the socket failed a send (anything but a full send buffer): it cannot be trusted with more
 }
 
 // What happened that the application should hear of
 pub enum CoreEvent {
   pub struct Reliable {pub data: Bytes;}                        // a reliable message, in order
-  pub struct Latest {pub stream: u16; pub data: Bytes;}        // the newest value of a stream
+  pub struct Latest {pub stream: u16; pub data: Bytes; pub pos: usize;}  // the newest value of a stream, and the stream's position among those heard of (never changes)
   pub struct Closed {pub reason: CloseReason;}                   // the connection ended
 }
 
@@ -116,6 +145,8 @@ pub struct ConnectionStats {
   pub latestSent: u64;
   pub latestDelivered: u64;
   pub latestStale: u64;           // arrived late: an older value than one already delivered
+  pub sendErrors: u64;            // datagrams the socket refused (a full send buffer, or a failure that ended the connection)
+  pub streamsRefused: u64;        // updates dropped for a latest-wins stream past the maxStreams a connection carries (the peer's, or ones waiting for the application)
   pub rttMs: i64;                 // smoothed round trip time; 0 before the first sample
   pub rttVarMs: i64;
   pub lossPermille: u32;          // of our packets, in a thousand, that never got acknowledged
@@ -285,9 +316,17 @@ pub struct ConnectionCore {
   recv: Dict[u16, List[u8]]; // received out of order, by id, waiting for the ones before them (own copies, see takeReliable)
   relDeliver: u16;            // the next id to give the application
 
-  // latest-wins streams
-  outs: List[StreamOut];
-  ins: List[StreamIn];
+  // latest-wins streams: two tables inside the core, each of maxStreams (64;
+  // an Array's size is a literal) entries, the first nOuts and nIns in use, in
+  // the order the streams were first used or heard of. Nothing removes an
+  // entry, so an entry's position is the same for the connection's life: an
+  // incoming stream's position goes up with each of its values
+  // (CoreEvent.Latest.pos) and the Connection keeps its waiting values by it
+  outs: Array[StreamOut, 64];
+  nOuts: usize;
+  waitingOuts: usize;         // outs entries whose value waits for a packet
+  ins: Array[StreamIn, 64];
+  nIns: usize;
 
   // time
   lastRecv: i64;
@@ -323,10 +362,11 @@ pub struct ConnectionCore {
     ConnectionCore(cfg, session, CoreState.Active, CloseReason.Local,
       0u16, sent, seen, 65535u16, false, 0u16, 0u16, false,
       rel, 0u16, 0u16, Dict[u16, List[u8]](), 0u16,
-      List[StreamOut](), List[StreamIn](),
+      Array[StreamOut, 64]() <- fill StreamOut(0u16, 1u32, 0u32, 0u16, false, None[Bytes]), 0usize, 0usize,
+      Array[StreamIn, 64]() <- fill StreamIn(0u16, 0u16), 0usize,
       t, t - cfg.keepAliveMs * msNs, t, false, false,
       false, 0i64, 0i64, 0i64, true, -1i64, 4i64 * secNs, t,
-      ConnectionStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0i64, 0u32, true))
+      ConnectionStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0i64, 0u32, true))
   }
 
   pub fn sessionId(self: &) u64 {session}
@@ -384,13 +424,17 @@ pub struct ConnectionCore {
     if state != CoreState.Active || data.len() > self.maxLatest() {return false;}
     var k = self.findOut(stream);
     if k == notFound {
-      if outs.len() >= maxStreams {return false;}
-      outs.push(StreamOut(stream, 1u32, 0u32, 0u16, false, None[Bytes]));
-      k = outs.len() - 1usize;
+      if nOuts >= maxStreams {return false;}
+      outs[nOuts] = StreamOut(stream, 1u32, 0u32, 0u16, false, None[Bytes]);
+      k = nOuts;
+      nOuts = nOuts + 1usize;
     }
     let s = &mut outs[k];
     s.data = Some[Bytes](data);
-    s.pending = true;
+    if !s.pending {
+      s.pending = true;
+      waitingOuts = waitingOuts + 1usize;
+    }
     true
   }
 
@@ -400,8 +444,9 @@ pub struct ConnectionCore {
   pub fn setStreamWeight(self: &mut, stream: u16, weight: u32) {
     var k = self.findOut(stream);
     if k == notFound {
-      if outs.len() >= maxStreams {return;}
-      outs.push(StreamOut(stream, weight, 0u32, 0u16, false, None[Bytes]));
+      if nOuts >= maxStreams {return;}
+      outs[nOuts] = StreamOut(stream, weight, 0u32, 0u16, false, None[Bytes]);
+      nOuts = nOuts + 1usize;
       return;
     }
     outs[k].weight = weight;
@@ -409,7 +454,7 @@ pub struct ConnectionCore {
 
   fn findOut(self: &, stream: u16) usize {
     var i = 0usize;
-    while i < outs.len() {
+    while i < nOuts {
       if outs[i].key == stream {return i;}
       i = i + 1usize;
     }
@@ -418,7 +463,7 @@ pub struct ConnectionCore {
 
   fn findIn(self: &, stream: u16) usize {
     var i = 0usize;
-    while i < ins.len() {
+    while i < nIns {
       if ins[i].key == stream {return i;}
       i = i + 1usize;
     }
@@ -481,12 +526,7 @@ pub struct ConnectionCore {
 
   // Whether there is anything to put in a packet now
   fn hasWork(self: &, t: i64) bool {
-    if ackDirty {return true;}
-    var i = 0usize;
-    while i < outs.len() {
-      if outs[i].pending {return true;}
-      i = i + 1usize;
-    }
+    if ackDirty || waitingOuts > 0usize {return true;}
     let delay = self.resendDelay();
     var id = relOldest;
     while id != relNext {
@@ -505,13 +545,7 @@ pub struct ConnectionCore {
     var at = lastRecv + cfg.timeoutMs * msNs;
     // When a packet could carry something
     var want = lastSend + cfg.keepAliveMs * msNs;
-    var i = 0usize;
-    var any = ackDirty;
-    while i < outs.len() {
-      if outs[i].pending {any = true;}
-      i = i + 1usize;
-    }
-    if any {
+    if ackDirty || waitingOuts > 0usize {
       want = lastSend;
     } else {
       let delay = self.resendDelay();
@@ -688,37 +722,51 @@ pub struct ConnectionCore {
     p.fillBE[u8](relCount, nRel);
 
     // Latest-wins values: every waiting stream gains priority; the highest
-    // that fit go in, and the ones that do not keep what they gathered
-    var i = 0usize;
-    while i < outs.len() {
-      let s = &mut outs[i];
-      if s.pending {s.acc = s.acc + s.weight;}
-      i = i + 1usize;
-    }
+    // that fit go in, and the ones that do not keep what they gathered. The
+    // waiting streams are put in order once, highest priority first and, among
+    // equals, the one earlier in 'outs' first, and each that fits is taken in
+    // that order. That makes the choices of taking the best of those that
+    // still fit again and again: the budget only falls, so a stream that did
+    // not fit when its turn came cannot fit later, and a stream's priority does
+    // not change while the packet is built (only a stream taken has its zeroed)
     var nLat = 0u8;
-    while nLat < 255u8 {
-      var best = notFound;
-      i = 0usize;
-      while i < outs.len() {
-        let s = &outs[i];
-        if s.pending && latestOverhead + lenOf(&s.data) <= budget {
-          if best == notFound || s.acc > outs[best].acc {best = i;}
+    if waitingOuts > 0usize {
+      var order = Array[usize, 64]() <- fill 0usize;
+      var n = 0usize;
+      var i = 0usize;
+      while i < nOuts {
+        let s = &mut outs[i];
+        if s.pending {
+          s.acc = s.acc + s.weight;
+          // Insertion sort, after the equal ones already placed (stable)
+          var k = n;
+          while k > 0usize && outs[order[k - 1usize]].acc < outs[i].acc {
+            order[k] = order[k - 1usize];
+            k = k - 1usize;
+          }
+          order[k] = i;
+          n = n + 1usize;
         }
         i = i + 1usize;
       }
-      if best == notFound {break;}
-      let s = &mut outs[best];
-      p.putBE[u16](s.key);
-      p.putBE[u16](s.nextSeq);
-      p.putBE[u16](u16.from(lenOf(&s.data)));
-      putData(&mut p, &s.data);
-      budget = budget - (latestOverhead + lenOf(&s.data));
-      s.nextSeq = s.nextSeq + 1u16;
-      s.pending = false;
-      s.acc = 0u32;
-      s.data = None[Bytes];
-      nLat = nLat + 1u8;
-      st.latestSent = st.latestSent + 1u64;
+      var m = 0usize;
+      while m < n && nLat < 255u8 {
+        let s = &mut outs[order[m]];
+        m = m + 1usize;
+        if latestOverhead + lenOf(&s.data) > budget {continue;}
+        p.putBE[u16](s.key);
+        p.putBE[u16](s.nextSeq);
+        p.putBE[u16](u16.from(lenOf(&s.data)));
+        putData(&mut p, &s.data);
+        budget = budget - (latestOverhead + lenOf(&s.data));
+        s.nextSeq = s.nextSeq + 1u16;
+        s.pending = false;
+        s.acc = 0u32;
+        s.data = None[Bytes];
+        waitingOuts = waitingOuts - 1usize;
+        nLat = nLat + 1u8;
+        st.latestSent = st.latestSent + 1u64;
+      }
     }
     p.fillBE[u8](latCount, nLat);
     st.packetsSent = st.packetsSent + 1u64;
@@ -803,13 +851,21 @@ pub struct ConnectionCore {
     each item in pk.lat.drain() {
       var j = self.findIn(item.stream);
       if j == notFound {
-        ins.push(StreamIn(item.stream, item.seq - 1u16));
-        j = ins.len() - 1usize;
+        // A peer may name any of 65,536 streams: past the limit a new one is
+        // dropped and counted (the same limit the sending side keeps), and the
+        // connection stays open
+        if nIns >= maxStreams {
+          st.streamsRefused = st.streamsRefused + 1u64;
+          continue;
+        }
+        ins[nIns] = StreamIn(item.stream, item.seq - 1u16);
+        j = nIns;
+        nIns = nIns + 1usize;
       }
       if seqNewer(item.seq, ins[j].seq) {
         ins[j].seq = item.seq;
         let stream, d = item.(stream, data);
-        events.push(CoreEvent.Latest(stream, d));
+        events.push(CoreEvent.Latest(stream, d, j));
         st.latestDelivered = st.latestDelivered + 1u64;
       } else {
         st.latestStale = st.latestStale + 1u64;

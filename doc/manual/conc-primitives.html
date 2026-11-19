@@ -293,6 +293,37 @@ panic at sync.cone:640: sync: Mutex.unlock of a Mutex that is not locked
 		cannot go. A <span class="pre">Condvar</span> waits on a <span class="pre">Mutex</span> held as a value only: a lock
 		permission's lock is in a header no program names, so no wait is offered while a borrow holds one.</p>
 
+	<h2 id="latest">Latest-value cells: LatestCell</h2>
+	<p>Some state is wanted only fresh: a world's state sent to thousands of connections, the newest frame, an audio level.
+		A channel would queue every value; a lock would make the writer wait for its readers. The <span class="pre">sync</span>
+		package's latest-value cell does neither. <span class="pre">latestCell(capacity)</span> answers a
+		<span class="pre">LatestWriter</span> and a <span class="pre">LatestReader</span>; the writer's
+		<span class="pre">put(data)</span> stores a value of at most <span class="pre">capacity</span> bytes (it answers false,
+		and stores nothing, for a longer one), and a reader's <span class="pre">readNewer(seen, out)</span> copies the newest
+		value into <span class="pre">out</span> and answers <span class="pre">Some(CellRead)</span>, with its
+		<span class="pre">version</span>, <span class="pre">len</span> and <span class="pre">writtenAt</span>, only if its
+		version is more than <span class="pre">seen</span>. A value put and replaced before any reader came is never seen: the
+		latest wins.</p>
+<pre>
+var w: LatestWriter;
+var r: LatestReader;
+w, r = latestCell(1024usize);
+w.put(bytes);                           // the writer's thread
+...
+match r.readNewer(seen, out) {          // any thread
+  case let Some(got) { seen = got.version; }   // out[0 .. got.len] is whole
+  case is None[CellRead] {}                    // nothing newer, or try again
+}
+</pre>
+	<p>The writer is a move type, so there is one; it never waits and never allocates after the cell is made. A reader is
+		copyable (each copy is an owner of the cell, as an <span class="pre">Arc</span>'s are; <span class="pre">w.reader()</span>
+		makes another), reads only atomics, and never waits for the writer or another reader. Underneath, two slots take
+		the versions alternately, each guarded by a sequence number as the kernel's seqlock is, and every word is an
+		<span class="pre">Atomic[u64]</span> stored with Release and loaded with Acquire, so a copy that a put reached part-way
+		is seen and redone (up to three tries; then <span class="pre">None</span>, and the caller asks again later), never
+		returned. <span class="pre">readNewer</span> answers <span class="pre">None</span> also when <span class="pre">out</span>
+		is shorter than the value. The cell is freed when the writer and every reader are gone, in any order.</p>
+
 	<p>That is the bottom of Cone's concurrency: you can now count with atomics, sleep and wake on a futex, and guard data
 		with a plain lock, and you know which of them the compiler checks. With actors, parallel loops, I/O and the GPU above
 		them, you can choose the right tool at every level. Next comes <a href="modularity.html">Modularity</a>: how to break a

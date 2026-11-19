@@ -171,7 +171,7 @@ ANNOTATABLE = ("reject", "warn")
 SCENARIO_KEYS = {
     "category", "description", "tags", "diagnostics", "exit", "xfail",
     "run", "unlocated", "check", "argv", "link", "include", "program_exit",
-    "stderr_mask", "timeout", "link_options", "notes",
+    "stderr_mask", "timeout", "compile_timeout", "link_options", "notes",
 }
 
 # Wall-clock seconds per process (R1.3) where neither the command line nor the
@@ -183,8 +183,9 @@ class SuiteError(Exception):
     """A fault in the suite's own configuration, not in the compiler."""
 
 
-def parse_timeout(where: str, table: dict) -> float | None:
-    """A scenario's own 'timeout' key: seconds, a positive finite number.
+def parse_timeout(where: str, table: dict, key: str = "timeout") -> float | None:
+    """A scenario's own 'timeout' key (or, with key=, 'compile_timeout', read
+    the same way): seconds, a positive finite number.
 
     Every category runs at least one process (conec), so the key applies to
     all six and no category refuses it. TOML would also accept a boolean, a
@@ -192,18 +193,39 @@ def parse_timeout(where: str, table: dict) -> float | None:
     key that quietly meant "no limit" or "never" would turn the hang guard the
     timeout exists to be into a hang.
     """
-    if "timeout" not in table:
+    if key not in table:
         return None
-    value = table["timeout"]
+    value = table[key]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         kind = {bool: "a boolean", str: "a string", list: "a list", dict: "a table"}.get(
             type(value), type(value).__name__)
-        raise SuiteError(f"{where}: 'timeout' is a number of seconds, not {kind}")
+        raise SuiteError(f"{where}: '{key}' is a number of seconds, not {kind}")
     if value != value or value in (float("inf"), float("-inf")):
-        raise SuiteError(f"{where}: 'timeout' is a finite number of seconds, not {value}")
+        raise SuiteError(f"{where}: '{key}' is a finite number of seconds, not {value}")
     if value <= 0:
-        raise SuiteError(f"{where}: 'timeout' is a positive number of seconds, not {value:g}")
+        raise SuiteError(f"{where}: '{key}' is a positive number of seconds, not {value:g}")
     return float(value)
+
+
+def compile_limit(scenario_key: float | None, run_key: float | None, plain: float,
+                  command_line: float | None) -> float:
+    """The wall-clock limit for each compiler process (conec) of one run.
+
+    'timeout' bounds every process a scenario starts: the compiles, the link and
+    the program. A scenario's 'compile_timeout' (or its run entry's own, which
+    wins) gives the compiler that many seconds and leaves the program on
+    'plain', the limit the other processes get, so a slow compile needs no
+    longer wait for a hung program. The key only ever lengthens the compiler's
+    limit: the compiler gets the largest of the key, 'plain' and the command
+    line, so a 'compile_timeout' below a scenario's 'timeout' never gives the
+    compiler less than it had. An explicit --compile-timeout acts as --timeout
+    does: the larger of it and the key wins. Without one, a --timeout lengthens
+    the key the same way. With no key, the compiler gets 'plain' (raised the
+    same way).
+    """
+    key = run_key if run_key is not None else scenario_key
+    limit = plain if key is None else max(key, plain)
+    return limit if command_line is None else max(limit, command_line)
 
 
 def effective_timeout(scenario_timeout: float | None, command_line: float | None) -> float:
@@ -743,12 +765,22 @@ class Check:
     # The stem of a 'link' entry whose object the check reads, in place of the
     # scenario's own: what a package compiled on its own generated
     object: str | None = None
+    # A line's text: the check reads only the lines holding it, and for an IR
+    # 'define' line, that function's body too. A direct compile builds core into
+    # the program, so a check on the test's own symbols names them here rather
+    # than reading every line of the module.
+    within: str | None = None
+    # (regex, count) pairs: exactly 'count' lines of the text (after 'within')
+    # must match the regex, by re.search. A count pins an instruction by shape,
+    # with no value names in it: six release stores, whatever they are called.
+    matches: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
 class RunSpec:
     name: str
     options: tuple[str, ...]
+    compile_timeout: float | None = None
 
 
 @dataclass
@@ -795,6 +827,10 @@ class Scenario:
     # Seconds each process of this scenario may run, where the default does not
     # suit it (a program that is slow under load); see effective_timeout
     timeout: float | None = None
+    # Seconds each compiler process of this scenario may run, where that
+    # differs from 'timeout' (a compile that is slow under load); a run entry
+    # may carry its own; see compile_limit
+    compile_timeout: float | None = None
     xfail: bool = False
     annotations: list[Annotation] = field(default_factory=list)
     forbidden: list[Forbidden] = field(default_factory=list)
@@ -812,6 +848,31 @@ def _require_keys(where: str, table: dict, allowed: set[str]) -> None:
     unknown = sorted(set(table) - allowed)
     if unknown:
         raise SuiteError(f"{where}: unknown key(s) {', '.join(unknown)}")
+
+
+def parse_matches(where: str, raw: object) -> tuple[tuple[str, int], ...]:
+    """A check's 'matches': a list of { pattern = "<regex>", count = <n> }."""
+    if not isinstance(raw, list):
+        raise SuiteError(f"{where}: 'matches' is a list of {{ pattern, count }} tables")
+    out = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"pattern", "count"}:
+            raise SuiteError(f"{where}: each 'matches' entry is a table with exactly 'pattern' and 'count'")
+        pattern, count = item["pattern"], item["count"]
+        if not isinstance(pattern, str) or isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise SuiteError(f"{where}: 'matches' needs a string 'pattern' and a whole-number 'count' of 0 or more")
+        try:
+            re.compile(pattern)
+        except re.error as bad:
+            raise SuiteError(f"{where}: 'matches' pattern {pattern!r} is not a regex: {bad}")
+        out.append((pattern, count))
+    return tuple(out)
+
+
+def count_matching_lines(text: str, pattern: str) -> int:
+    """How many lines of 'text' hold a match of the regex 'pattern'."""
+    rx = re.compile(pattern)
+    return sum(1 for line in text.split("\n") if rx.search(line))
 
 
 def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
@@ -943,6 +1004,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                 raise SuiteError(f"{where}: 'stderr_mask' {mask!r} is not a regular expression: {exc}")
 
         timeout = parse_timeout(where, table)
+        compile_timeout = parse_timeout(where, table, "compile_timeout")
 
         # R2.10 names the total diagnostic count as recover's file-level
         # expectation. It asserts the count rather than each diagnostic, so
@@ -951,7 +1013,8 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             raise SuiteError(f"{where}: a 'recover' scenario needs diagnostics = <count>")
 
         runs = tuple(
-            RunSpec(entry.get("name", "default"), tuple(entry.get("options", [])))
+            RunSpec(entry.get("name", "default"), tuple(entry.get("options", [])),
+                    parse_timeout(f"{where} run {entry.get('name', 'default')!r}", entry, "compile_timeout"))
             for entry in table.get("run", [])
         ) or (RunSpec("default", ()),)
         if len({r.name for r in runs}) != len(runs):
@@ -959,7 +1022,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
 
         checks = []
         for entry in table.get("check", []):
-            _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object"})
+            _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object", "within", "matches"})
             if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta", "trust"):
                 raise SuiteError(
                     f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta', 'stdout' or 'trust'")
@@ -981,12 +1044,15 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             if entry["target"] in ("llvmir", "preir", "symbols", "asm", "trust") and category not in ("compile", "run"):
                 raise SuiteError(
                     f"{where}.check: a {category!r} scenario reaches no code generation")
+            matches = parse_matches(f"{where}.check", entry.get("matches", []))
             checks.append(Check(
                 name=entry["name"],
                 target=entry["target"],
                 contains=tuple(entry.get("contains", [])),
                 excludes=tuple(entry.get("excludes", [])),
                 object=entry.get("object"),
+                within=entry.get("within"),
+                matches=matches,
             ))
 
         scenario = Scenario(
@@ -1010,6 +1076,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             stderr_mask=tuple(stderr_mask),
             notes=tuple(notes),
             timeout=timeout,
+            compile_timeout=compile_timeout,
             xfail=bool(table.get("xfail", False)),
         )
         if source is not None:
@@ -2102,6 +2169,7 @@ DEMANGLE_BASIC_TYPES = {
     "a": "i8", "s": "i16", "l": "i32", "x": "i64", "n": "i128",
     "h": "u8", "t": "u16", "m": "u32", "y": "u64", "o": "u128",
     "f": "f32", "d": "f64", "b": "bool", "u": "void", "i": "isize", "j": "usize",
+    "w": "char",
 }
 
 # Itanium's codes where Itanium has the operator, Cone's own where it does not.
@@ -2433,6 +2501,46 @@ def demangle_selftest() -> None:
         raise SuiteError("the demangler disagrees with the worked examples:\n" + "\n".join(wrong))
 
 
+def matches_selftest() -> int:
+    """A check's 'matches': the count is exact (too few and too many both fail),
+    only 'within' lines are counted, and a malformed entry is refused.
+
+    Returns how many checks ran. Runs before any case, like the others."""
+    wrong = []
+    ir = ("define internal void @f() {\n  store atomic i64 %v1, ptr %p1 release, align 8\n"
+          "  store atomic i64 %v2, ptr %p2 release, align 8\n  store atomic i64 %v3, ptr %p3 monotonic, align 8\n}\n"
+          "define internal void @g() {\n  store atomic i64 %v9, ptr %p9 release, align 8\n}\n")
+    rel = r"store atomic i64 .* release"
+    checks = 0
+    for text, count in ((within_lines(ir, "define internal void @f("), 2),
+                        (within_lines(ir, "define internal void @g("), 1),
+                        (ir, 3)):
+        checks += 1
+        if count_matching_lines(text, rel) != count:
+            wrong.append(f"  {rel!r} counted {count_matching_lines(text, rel)}, expected {count}")
+    # The check's rule is equality, so a short and a long count both differ
+    f_body = within_lines(ir, "define internal void @f(")
+    for want, ok in ((2, True), (1, False), (3, False)):
+        checks += 1
+        if (count_matching_lines(f_body, rel) == want) != ok:
+            wrong.append(f"  count {want} against two matching lines: expected {'a pass' if ok else 'a failure'}")
+    checks += 1
+    if parse_matches("t", [{"pattern": rel, "count": 6}]) != ((rel, 6),):
+        wrong.append("  parse: a good entry was misread")
+    for bad in ([{"pattern": rel}], [{"pattern": rel, "count": -1}], [{"pattern": rel, "count": True}],
+                [{"pattern": "(", "count": 1}], [{"pattern": 3, "count": 1}], "x"):
+        checks += 1
+        try:
+            parse_matches("t", bad)
+        except SuiteError:
+            pass
+        else:
+            wrong.append(f"  parse: accepted {bad!r}, expected a refusal")
+    if wrong:
+        raise SuiteError("'matches' disagrees with its worked examples:\n" + "\n".join(wrong))
+    return checks
+
+
 def forbidden_selftest() -> int:
     """``//~!``: read from source, absent text passes, present text is reported.
 
@@ -2582,6 +2690,70 @@ def timeout_selftest() -> int:
         if load_group(group, {})[0].timeout != 7.0:
             wrong.append("  category driver: timeout = 7 did not reach the scenario")
 
+        # 'compile_timeout': read as 'timeout' is, on the scenario and on a run entry
+        (group / "core_slow.cone").write_text("fn main() {}\n", encoding="utf-8")
+
+        def load_c(body: str, run: str = ""):
+            (group / "cases.toml").write_text(
+                "[scenario.core_slow]\ncategory = \"run\"\n" + body + run, encoding="utf-8")
+            return load_group(group, {})[0]
+
+        checks += 1
+        got = load_c("")
+        if got.compile_timeout is not None or got.runs[0].compile_timeout is not None:
+            wrong.append("  cases.toml without 'compile_timeout': not None")
+        checks += 1
+        got = load_c("compile_timeout = 60\n")
+        if got.compile_timeout != 60.0 or got.timeout is not None:
+            wrong.append(f"  cases.toml 'compile_timeout = 60': read {got.compile_timeout!r}"
+                         f" (timeout {got.timeout!r})")
+        checks += 1
+        got = load_c("", "[[scenario.core_slow.run]]\nname = \"a\"\ncompile_timeout = 45\n"
+                         "[[scenario.core_slow.run]]\nname = \"b\"\n")
+        if [r.compile_timeout for r in got.runs] != [45.0, None] or got.compile_timeout is not None:
+            wrong.append(f"  a run entry's 'compile_timeout': read {[r.compile_timeout for r in got.runs]!r}")
+        for body, run, fragment in (
+                ("compile_timeout = 0\n", "", "[scenario.core_slow]: 'compile_timeout' is a positive"),
+                ("compile_timeout = \"60\"\n", "", "'compile_timeout' is a number of seconds, not a string"),
+                ("compile_timeout = inf\n", "", "'compile_timeout' is a finite"),
+                ("", "[[scenario.core_slow.run]]\nname = \"a\"\ncompile_timeout = -1\n",
+                 "run 'a': 'compile_timeout' is a positive")):
+            checks += 1
+            try:
+                load_c(body, run)
+            except SuiteError as refusal:
+                if fragment not in str(refusal):
+                    wrong.append(f"  compile_timeout {body.strip()!r}{run!r}: refused as {str(refusal)!r}")
+            else:
+                wrong.append(f"  compile_timeout {body.strip()!r}{run!r}: accepted, expected a refusal")
+    # (scenario key, run key, scenario 'timeout', --timeout, --compile-timeout) -> the compiler's limit
+    for (skey, rkey, stimeout, general, explicit), expected in (
+            ((None, None, None, None, None), DEFAULT_TIMEOUT),
+            ((60.0, None, None, None, None), 60.0),
+            ((60.0, 90.0, None, None, None), 90.0),
+            ((None, 90.0, None, None, None), 90.0),
+            ((60.0, None, None, 5.0, None), 60.0),
+            ((60.0, None, None, 5.0, 30.0), 60.0),
+            ((60.0, None, None, None, 120.0), 120.0),
+            ((60.0, None, 8.0, None, None), 60.0),
+            ((60.0, None, 90.0, None, None), 90.0),   # the key never lowers the compiler's limit
+            ((None, None, 8.0, None, None), 8.0),
+            ((None, None, None, None, 120.0), 120.0)):
+        checks += 1
+        runner = types.SimpleNamespace(
+            args=types.SimpleNamespace(timeout=general, compile_timeout=explicit),
+            timeout_for=lambda sc: Runner.timeout_for(
+                types.SimpleNamespace(args=types.SimpleNamespace(timeout=general)), sc))
+        via = Runner.compile_timeout_for(runner, types.SimpleNamespace(timeout=stimeout, compile_timeout=skey),
+                                         types.SimpleNamespace(compile_timeout=rkey))
+        if via != expected:
+            wrong.append(f"  compile_timeout key {skey!r}, run key {rkey!r}, timeout {stimeout!r},"
+                         f" --timeout {general!r}, --compile-timeout {explicit!r}: chose {via!r},"
+                         f" expected {expected!r}")
+        # the program's own limit is not touched by any of it
+        if runner.timeout_for(types.SimpleNamespace(timeout=stimeout)) != effective_timeout(stimeout, general):
+            wrong.append("  the program's limit moved with compile_timeout")
+
     if wrong:
         raise SuiteError("the scenario 'timeout' key misbehaves:\n" + "\n".join(wrong))
     return (1 + len(TIMEOUT_ACCEPTED) + len(TIMEOUT_REFUSED) + len(TIMEOUT_EFFECTIVE) + checks)
@@ -2694,6 +2866,15 @@ class Runner:
         own compile, the link, the program) gets this many seconds."""
         return effective_timeout(scenario.timeout, self.args.timeout)
 
+    def compile_timeout_for(self, scenario: Scenario, spec: RunSpec) -> float:
+        """Every compiler process (conec) of one run gets this many seconds;
+        the C compile of a linked source, the link and the program keep
+        timeout_for."""
+        explicit = self.args.compile_timeout
+        return compile_limit(scenario.compile_timeout, spec.compile_timeout,
+                             self.timeout_for(scenario),
+                             self.args.timeout if explicit is None else explicit)
+
     def run(self, scenario: Scenario, spec: RunSpec) -> Result:
         # A fault in the runner fails its own case rather than the whole run, so
         # one bad case still leaves the other results readable.
@@ -2782,7 +2963,7 @@ class Runner:
                 lib_cmd.insert(-3, "--llvmir")
             result.commands.append(quote(lib_cmd))
             built = execute(lib_cmd, REPO, out_dir, f"conec-{lib.stem}",
-                            self.timeout_for(scenario), self.args.max_output)
+                            self.compile_timeout_for(scenario, spec), self.args.max_output)
             if built.killed or built.code != 0 or parse_diagnostics(built.stderr):
                 result.status = FAIL
                 result.problems.append(
@@ -2819,7 +3000,7 @@ class Runner:
         cmd = [str(self.conec), *options, "-o", out_rel, scenario.source_rel]
         result.commands.append(quote(cmd))
         compiled = execute(cmd, REPO, out_dir, "conec",
-                           self.timeout_for(scenario), self.args.max_output)
+                           self.compile_timeout_for(scenario, spec), self.args.max_output)
         result.compiled = compiled
 
         if compiled.killed:
@@ -2865,7 +3046,7 @@ class Runner:
                 trust_cmd = [str(self.conec), *spec.options, "--report-trust", "-o", out_rel, scenario.source_rel]
                 result.commands.append(quote(trust_cmd))
                 trust = execute(trust_cmd, REPO, out_dir, "conec-trust",
-                                self.timeout_for(scenario), self.args.max_output)
+                                self.compile_timeout_for(scenario, spec), self.args.max_output)
                 if trust.killed or trust.code != 0:
                     result.status = FAIL
                     result.problems.append("--report-trust "
@@ -3094,7 +3275,7 @@ class Runner:
         cmd = [str(self.conec), *scenario.argv]
         result.commands.append(quote(cmd))
         invoked = execute(cmd, REPO, out_dir, "conec",
-                          self.timeout_for(scenario), self.args.max_output)
+                          self.compile_timeout_for(scenario, spec), self.args.max_output)
         result.compiled = invoked
         if invoked.killed:
             result.status = FAIL
@@ -3132,7 +3313,7 @@ class Runner:
             lto_cmd = [str(self.conec), "--lto-link", "-o", str(lto_dir), *map(str, bitcode)]
             result.commands.append(quote(lto_cmd))
             made = execute(lto_cmd, REPO, out_dir, "lto-link",
-                           self.timeout_for(scenario), self.args.max_output)
+                           self.compile_timeout_for(scenario, spec), self.args.max_output)
             if made.killed or made.code != 0:
                 result.status = FAIL
                 result.problems.append(
@@ -3276,6 +3457,8 @@ class Runner:
                 text = normalize(found[0].read_text(encoding="utf-8", errors="replace"))
             else:
                 text = result.program_stdout or ""
+            if check.within is not None:
+                text = within_lines(text, check.within)
             for needle in check.contains:
                 if needle not in text:
                     result.status = FAIL
@@ -3288,6 +3471,28 @@ class Runner:
                     result.problems.append(
                         f"check {check.name!r} ({check.target}): expected not to contain "
                         f"{needle!r}")
+            for pattern, count in check.matches:
+                found = count_matching_lines(text, pattern)
+                if found != count:
+                    result.status = FAIL
+                    result.problems.append(
+                        f"check {check.name!r} ({check.target}): expected {count} line(s) "
+                        f"matching {pattern!r}, found {found}")
+
+
+def within_lines(text: str, marker: str) -> str:
+    """The lines of 'text' holding 'marker'; for a 'define' line, through the
+    closing '}' of that function."""
+    out: list[str] = []
+    body = False
+    for line in text.split("\n"):
+        if body:
+            out.append(line)
+            body = line != "}"
+        elif marker in line:
+            out.append(line)
+            body = line.startswith("define") and line.rstrip().endswith("{")
+    return "\n".join(out)
 
 
 def trimmed(text: str) -> list[str]:
@@ -4077,6 +4282,10 @@ def main(argv: list[str]) -> int:
                         help=f"wall-clock seconds per process (R1.3; default"
                              f" {DEFAULT_TIMEOUT:g}). A scenario with its own"
                              f" 'timeout' key keeps the larger of the two")
+    parser.add_argument("--compile-timeout", type=float, default=None,
+                        help="wall-clock seconds per compiler process; acts as --timeout does"
+                             " for a scenario with a 'compile_timeout' key (the larger of the"
+                             " two wins); without it --timeout applies")
     parser.add_argument("--max-output", type=int, default=8 * 1024 * 1024,
                         help="bytes of output before a process is killed")
     args = parser.parse_args(argv)
@@ -4094,9 +4303,11 @@ def main(argv: list[str]) -> int:
         demangle_selftest()
         timeout_checks = timeout_selftest()
         forbid_checks = forbidden_selftest()
+        matches_checks = matches_selftest()
         if args.selftest:
             print(f"//~! forbidden text: {forbid_checks} checks hold")
             print(f"demangler: {len(DEMANGLE_EXAMPLES)} worked examples read as the scheme says")
+            print(f"check 'matches': {matches_checks} checks of the count and its refusals hold")
             print(f"scenario timeout: {timeout_checks} checks of the key and the limit it chooses hold")
             return 0
         codes = parse_error_codes(ERROR_H)

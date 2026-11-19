@@ -1087,6 +1087,20 @@ static int genlMemberUnchecked(INode *type, INode *member) {
     return structMembersLazy(type) && !(member->flags & TypeChecked);
 }
 
+// A trait's member that no object defines: a method (a requirement has no body, and
+// a default was cloned into each implementer, which owns the copy), or a static
+// requirement with no body, which has nothing to define or call. A static with a
+// default body is the trait's own and is generated. A real reference to a bodiless
+// static still names its symbol lazily (genlFnSym). An enum's method over the whole
+// enum is its own.
+static int genlTraitSkips(int istrait, INode *member) {
+    if (!istrait)
+        return 0;
+    if ((member->flags & FlagMethFld) && !structIsWholeEnumMethod(member))
+        return 1;
+    return member->tag == FnDclTag && ((FnDclNode*)member)->value == NULL;
+}
+
 static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
     if (instance->tag != StructTag)
         return;
@@ -1094,7 +1108,7 @@ static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&((INsTypeNode*)instance)->nodelist, cnt, nodesp)) {
-        if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
+        if (genlTraitSkips(istrait, *nodesp))
             continue;
         if (genlMemberUnchecked(instance, *nodesp))
             continue;
@@ -1148,7 +1162,7 @@ void genlGlobalSyms(GenState *gen, INode *node) {
                 // nothing inherits or dispatches them -- so they are generated
                 // here or nowhere, and 'Trait.name()' loaded a null without this.
                 // (an enum's method over the whole enum, 'self: &Lamp', is its own)
-                if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
+                if (genlTraitSkips(istrait, *nodesp))
                     continue;
                 genlGlobalSyms(gen, *nodesp);
             }
@@ -1228,7 +1242,7 @@ void genlGlobalImpl(GenState *gen, INode *node) {
             for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
                 if (genlMemberUnchecked(node, *nodesp))
                     continue;
-                if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
+                if (genlTraitSkips(istrait, *nodesp))
                     continue;
                 genlGlobalImpl(gen, *nodesp);
             }
@@ -1328,7 +1342,7 @@ static void genlImportedInstances(GenState *gen, INode *node) {
         // A non-generic type's generic methods
         int istrait = node->flags & TraitType;
         for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
-            if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
+            if (genlTraitSkips(istrait, *nodesp))
                 continue;
             genlImportedInstances(gen, *nodesp);
         }

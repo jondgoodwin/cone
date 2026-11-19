@@ -94,7 +94,7 @@ pub struct OpCore {
   pub buf: Option[IoBuf] = None;
   pub bytes: Option[Bytes] = None;
   pub bufs: Option[Uni[Chain]] = None;   // a gather's buffers (SendChain): out of line, 8 bytes here
-  pub batch: Option[Uni[RecvBatch]] = None;   // a recvMany's buffers and answers (kindRecvMany): out of line, 8 bytes here
+  pub batch: Option[Uni[DatagramBatch]] = None;   // a recvMany's batch, in and answered (kindRecvMany): out of line, 8 bytes here
   pub group: Option[CancelGroup] = None;
   // The promise: the Loop's thread only
   state: u32 = stFree;
@@ -216,7 +216,7 @@ pub struct OpCore {
       case let &Some(b) {b.base()}
       else {
         match &batch {
-          case let &Some(t) {if t.bufs.isEmpty() {null} else {t.bufs[0usize].base()}}
+          case let &Some(t) {if t.used == 0u32 {null} else {t.slots[0usize].buf.base()}}
           else {null}
         }
       }
@@ -227,7 +227,7 @@ pub struct OpCore {
       case let &Some(b) {b.len()}
       else {
         match &batch {
-          case let &Some(t) {if t.bufs.isEmpty() {0usize} else {t.bufs[0usize].len()}}
+          case let &Some(t) {if t.used == 0u32 {0usize} else {t.slots[0usize].buf.len()}}
           else {0usize}
         }
       }
@@ -238,7 +238,7 @@ pub struct OpCore {
       case let &Some(b) {b.room()}
       else {
         match &batch {
-          case let &Some(t) {if t.bufs.isEmpty() {0usize} else {t.bufs[0usize].room()}}
+          case let &Some(t) {if t.used == 0u32 {0usize} else {t.roomOfAll()}}
           else {0usize}
         }
       }
@@ -252,8 +252,8 @@ pub struct OpCore {
       else {
         match &mut batch {
           case var &mut Some(t) {
-            if !t.bufs.isEmpty() {
-              let b = &mut t.bufs[0usize];
+            if t.used > 0u32 {
+              let b = &mut t.slots[0usize].buf;
               b.setLen(b.len() + n);
             }
           }
@@ -263,18 +263,19 @@ pub struct OpCore {
     }
   }
 
-  // A recvMany's buffers, offered to the kernel: the first 'max' that have
-  // room, in order, as spans (a buffer with none ends the run: it and those
-  // after it stay unused), into 'out'; how many
+  // A recvMany's slots' buffers, offered to the kernel: the first 'max' of the
+  // batch's used slots, in order, as spans into 'out'; how many. A used slot
+  // with no room refuses the whole batch (none are offered), so a buffer left
+  // empty by mistake cannot cut datagrams to nothing unseen
   fn batchSpans(self: &mut, out: *Span, max: usize) usize {
     var filled = 0usize;
     match &mut batch {
       case var &mut Some(t) {
-        let total = t.bufs.len();
+        let total = usize.from(t.used);
         var k = 0usize;
         while k < total && k < max {
-          let b = &mut t.bufs[k];
-          if b.room() == 0usize {break;}
+          let b = &mut t.slots[k].buf;
+          if b.room() == 0usize {return 0usize;}
           (*(out + k)).base = b.base() + b.len();
           (*(out + k)).len = b.room();
           k = k + 1usize;
@@ -286,17 +287,17 @@ pub struct OpCore {
     filled
   }
 
-  // Datagram k arrived: n of its bytes are now buffer k's own, its sender is
+  // Datagram k arrived: n of its bytes are now slot k's buffer's own, its sender is
   // 'from', and 'cut' says it was longer than the room it had (n is then the
-  // room, all of it). Datagrams are put in order, so 'got' becomes k + 1
+  // room, all of it). Datagrams are put in order, so the count becomes k + 1
   fn batchPut(self: &mut, k: usize, n: usize, cut: bool, from: SocketAddr) {
     match &mut batch {
       case var &mut Some(t) {
-        let b = &mut t.bufs[k];
+        let b = &mut t.slots[k].buf;
         b.setLen(b.len() + n);
-        t.from.push(from);
-        t.got = k + 1usize;
-        if cut {t.cut = t.cut | (1u64 << u64.from(k));}
+        t.slots[k].from = from;
+        t.filled = u32.from(k + 1usize);
+        if cut {t.cuts = t.cuts | (1u64 << u64.from(k));}
       }
       else {}
     }
@@ -391,17 +392,94 @@ struct Span {
   pub len: usize;
 }
 
-// What a kindRecvMany record carries, out of line: the asker's buffers going
-// in (each one's room is where a datagram goes), and the answer coming out:
-// the first 'got' buffers hold one datagram each, appended, with that one's
-// sender in 'from[k]' and bit k of 'cut' set when it was longer than its
-// buffer's room (cut to it: Done, not an error); the buffers from 'got' on
-// are unused. The record's answer is Done(got), at least 1
-pub struct RecvBatch is Sendable {
-  pub bufs: List[IoBuf];
-  pub from: List[SocketAddr];
-  pub got: usize;
-  pub cut: u64;
+// A recvMany's batch, kept by its owner for life and lent to each receive: a
+// fixed block of up to 64 slots, each a buffer (its room is where a datagram
+// goes) and room for its sender's address. The block never moves and is never
+// resized. The receive is given the batch whole, as a Uni, and answers the
+// same batch: its first 'count()' slots each hold one datagram, appended to the
+// slot's buffer, with that one's sender in 'from(k)' and 'wasCut(k)' when it
+// was longer than the room (cut to it: Done, not an error); the slots from
+// 'count()' on are untouched. The owner takes each filled buffer out with
+// 'swapOut', leaving a fresh one in the slot. 64 is the width of 'cuts', the
+// ceiling. Sendable is taken on trust: the batch is moved into the receive and
+// moved back, so no Cone code holds it while the system fills it
+pub struct DatagramSlot is Sendable {
+  pub buf: IoBuf;
+  pub from: SocketAddr;
+}
+
+// The block of slots: 64, the width of the cut bits
+alias DatagramSlots = Array[DatagramSlot, 64];
+
+pub struct DatagramBatch is Sendable {
+  slots: DatagramSlots;
+  used: u32;           // slots in use, at most 64, set at make
+  filled: u32;         // datagrams the last receive put (slots 0 to filled-1)
+  cuts: u64;           // bit k: slot k's datagram was cut
+
+  // A batch of 'slots' slots (at most 64), each given a fresh buffer of 'room'
+  pub fn make(slots: u32, room: usize) Uni[DatagramBatch] {
+    let n = if slots > 64u32 {64u32} else {slots};
+    var b = DatagramBatch(DatagramSlots() <- fill DatagramSlot(IoBuf(), SocketAddr(Array[u8, 28]() <- fill 0u8, 0i32)), n, 0u32, 0u64);
+    var k = 0usize;
+    while k < usize.from(n) {
+      b.slots[k].buf = IoBuf(room);
+      k = k + 1usize;
+    }
+    Uni[DatagramBatch](b)
+  }
+
+  // The slots in use
+  pub fn size(self: &) u32 {used}
+
+  // The datagrams the last receive put, in slots 0 to count()-1
+  pub fn count(self: &) u32 {filled}
+
+  // Slot k's datagram was longer than its buffer's room: its first bytes are all there is
+  pub fn wasCut(self: &, k: u32) bool {((cuts >> u64.from(k)) & 1u64) == 1u64}
+
+  // The sender of slot k's datagram
+  pub fn from(self: &, k: u32) SocketAddr {slots[usize.from(k)].from}
+
+  // Slot k's buffer, to look at
+  pub fn bufAt(self: &, k: u32) &IoBuf {&slots[usize.from(k)].buf}
+
+  // Slot k's buffer, as the receive filled it, taken out; 'fresh' is left in
+  // its place (an empty IoBuf will do where the owner refills later, but a
+  // receive refuses a batch with a used slot that has no room)
+  pub fn swapOut(self: &mut, k: u32, fresh: IoBuf) IoBuf {
+    var f = fresh;
+    slots[usize.from(k)].buf <-> f;
+    f
+  }
+
+  // A new receive begins: nothing is put yet
+  pub fn clear(self: &mut) {
+    filled = 0u32;
+    cuts = 0u64;
+  }
+
+  // The least room among the used slots' buffers: 0 if any has none
+  fn roomOfAll(self: &) usize {
+    var least = slots[0usize].buf.room();
+    var k = 1usize;
+    while k < usize.from(used) {
+      let r = slots[k].buf.room();
+      if r < least {least = r;}
+      k = k + 1usize;
+    }
+    least
+  }
+
+  // The first used slot with no room, or u32's maximum when every one has some
+  pub fn firstWithoutRoom(self: &) u32 {
+    var k = 0usize;
+    while k < usize.from(used) {
+      if slots[k].buf.room() == 0usize {return u32.from(k);}
+      k = k + 1usize;
+    }
+    0xFFFFFFFFu32
+  }
 }
 
 // A record: the Loop's part, then the asker's (aio: the reply and its policy

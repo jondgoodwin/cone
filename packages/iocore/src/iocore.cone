@@ -64,11 +64,15 @@
 //   forever()                           an 'until' that never comes
 //   threadTimes()                       the calling thread's user and kernel nanoseconds (DIAGNOSTICS)
 //   lp.share()  Shared: sh.lock(h) sh.issue(p) sh.unlock(h) sh.markClosing(h) sh.contended() sh.isNone() sh.clone()
+//     sh.lockShared(h) sh.unlockShared(h)     the entry shared, for a datagram's issue
 //     sh.shutdownSend(h) sh.peerAddr(h) sh.setKeepAlive(h, ka) sh.keepAlive(h)
 //                      a connected socket's controls, h locked (shared.cone, CONTROLS)
 //     sharedTables()   tables made and not yet freed
 //     Shared.none()  issueNot issueDone issuePending    a receive or send issued off the loop's thread
 //     core.isIssued()                                    (WORKER-SIDE ISSUE)//
+//   lp.setWorkerPort(port)              UDP sockets bound after it wait on the caller's port  (UDP ON THE WORKER PORT)
+//     sh.issueWaiting(p)  sh.udpReady(index, gen, events, out)  sh.udpCompleted(p, bytes, out)
+//     sh.endWaiting(h, p, id, why, out)  sh.holdSends(h, on)
 //   Op.Connect(addr)  Op.Accept(listener)                   (OPERATIONS)
 //   Op.Recv(sock, buf)  Op.RecvReady(sock)  Op.Send(sock, buf)  Op.SendBytes(sock, bytes)
 //   Op.SendChain(sock, bufs)            several buffers, one send (a gather)
@@ -232,23 +236,25 @@
 //   it sent met a closed port (the ICMP port-unreachable, SIO_UDP_CONNRESET) is
 //   turned off, so the sender's receive just goes on waiting, as Linux's does.
 // - RecvMany (a record's kind alone: diag.kindRecvMany; no Op, no Completion): the
-//   datagrams already waiting, in one call. The record carries the buffers in
-//   'batch', a Uni[RecvBatch] (8 bytes in every record, None for the rest):
-//   'bufs', each one's room where a datagram goes, 'from' and 'got' and 'cut'
-//   empty. It waits for ONE datagram and takes every other one already waiting,
-//   up to the buffers (at most 64: the width of 'cut'); it never waits for a
-//   second. Done(n), n at least 1: the first n buffers each hold one datagram
-//   appended, its sender in 'from[k]', in arrival order, and bit k of 'cut'
-//   is set when that datagram was longer than its buffer's room (cut to it:
-//   Done, not the error RecvFrom answers); the other buffers are untouched.
-//   A buffer with no room ends the run offered to the system, so it and those
-//   after it are unused (aio's recvMany returns them in 'spare'); an empty list, or a first buffer with no room, is
-//   refused as RecvFrom's is. Linux: one recvmmsg over up to 64 mmsghdrs from
+//   datagrams already waiting, in one call. The record carries the asker's
+//   DatagramBatch (record.cone), kept by the asker for life and lent to each
+//   receive, in 'batch', a Uni[DatagramBatch] (8 bytes in every record, None for
+//   the rest): its slots' buffers, each one's room where a datagram goes, with
+//   nothing counted yet (the asker clears it). It waits for ONE datagram and takes every
+//   other one already waiting, up to the slots (at most 64: the width of the cut
+//   bits); it never waits for a second. Done(n), n at least 1: the first n slots each
+//   hold one datagram appended to the slot's buffer, its sender in the slot, in
+//   arrival order, and the batch's cut bit k is set when that datagram was longer than its
+//   buffer's room (cut to it: Done, not the error RecvFrom answers); the other
+//   slots are untouched. A used slot with no room refuses the whole batch, as
+//   RecvFrom's buffer with none is (a forgotten refill cannot cut datagrams to
+//   nothing). Linux: one recvmmsg over up to 64 mmsghdrs from
 //   the stack (linux.cone, lxRecvMany), the Loop's and the worker-side issue's
 //   both. Windows has no recvmmsg: a batch of ONE, a WSARecvFrom into the first
-//   buffer, so Done(1) always (the same record, the same answer). Deadlines,
-//   cancel groups and close are as for RecvFrom; every buffer is in the record
-//   (dissolved, it goes home) whatever the answer.
+//   slot's buffer, so Done(1) always (the same record, the same answer). Deadlines,
+//   cancel groups and close are as for RecvFrom; the batch is in the record
+//   (dissolved, its asker takes it back) whatever the answer, except in the one
+//   bad case below, where the kernel still holds it.
 // 'c.peer' is also Connect's address in a Connect's answer; for every other
 // operation it is of size 0. Several datagrams per send (sendmmsg) is not here.
 //
@@ -479,8 +485,8 @@
 //   thread: the pointer to a record holding ask and an OpCore with nothing in
 //   it) and fills its request: 'kind' (diag.kindRecv, ...), 'handle', 'buf',
 //   'bytes' or 'bufs' (Options: None is nothing here; 'bufs', a Uni[Chain],
-//   makes a kindSend a gather, as SendChain is; 'batch', a Uni[RecvBatch], is a
-//   diag.kindRecvMany's buffers), 'at', 'deadline' (forever()
+//   makes a kindSend a gather, as SendChain is; 'batch', a Uni[DatagramBatch], is a
+//   diag.kindRecvMany's batch), 'at', 'deadline' (forever()
 //   for none; a timer's own time for diag.kindTimer), 'group', 'lane' and
 //   'work' for a Call, 'setPeer(addr)' for SendTo and Connect. Only its
 //   address crosses to the loop's thread; 'qnext' is the asker's link for
@@ -601,18 +607,50 @@
 // 'lp.start(p)' LINKS it (counted, on its handle's list, in its group, its
 // deadline armed) -- the kernel's completion may come first, and is kept until
 // the record is linked, so it is answered once; or issueNot, nothing done, the
-// record started on the loop as ever. Then 'sh.unlock(h)'. Windows issues only
+// record started on the loop as ever. Then 'sh.unlock(h)'. A RecvFrom, SendTo or
+// RecvMany on a UDP handle may be issued under 'sh.lockShared(h)' instead (then
+// 'sh.unlockShared(h)'): any number of threads issue on one UDP socket at once,
+// and every exclusive taker below waits for them. Windows issues only
 // on a socket that skips the port on success; Linux tries the non-blocking
 // recv/send, and one that would block before moving a byte is issueNot, a send
 // that moved part of its bytes is issuePending and goes on from them. A cancel
 // or a close of h queued under the lock is ordered against an issue under it;
 // 'sh.markClosing(h)' (under the lock) stops any issue on h after it, so an
 // operation awaited behind a close fails as it does without the table. The
-// loop unpublishes a handle, under its lock, before it closes it. A lock found
-// held spins a while and then yields; 'sh.contended()' counts those. The table
+// loop unpublishes a handle, under its lock, before it closes it. A lock that has
+// to be waited for spins a while and then yields; 'sh.contended()' counts those. The table
 // outlives its loop for as long as a Shared is held (a thread that looks after
 // the loop died finds every entry unpublished), and the last holder to let go
 // frees it; 'sharedTables()' is how many are made and not yet freed.
+//
+// UDP ON THE WORKER PORT (shared.cone), behind a switch that is off. 'lp.setWorkerPort(port)'
+// names a port that is the caller's: Linux, an epoll descriptor; Windows, a completion port.
+// A UDP socket bound afterwards (Windows: one that skips the port on success; any other is
+// bound as ever) is registered there and not with the Loop's, and every datagram operation
+// on it goes through the shared table: the Loop answers one it is asked to start Failed,
+// InvalidInput, as for a handle that names nothing. A receive or send the socket will not
+// take at once is not given to the Loop: 'sh.issueWaiting(p)', with no lock held, takes the
+// entry exclusive, tries once more and lists the record in the entry (receives and sends
+// each in order of arrival; the lists change only under the exclusive lock). The shared try
+// 'sh.issue' already answers anything it can do on a worker-side socket, but on Windows it
+// leaves every receive to issueWaiting (the receive may go pending, and listing it must
+// leave no gap in which its completion could come first), and on Linux a new send is not
+// tried while sends are waiting on the socket, so a send never overtakes the one the socket
+// would not take. issueWaiting answers issueDone (the record is answered, in it), issuePending
+// (listed: the table's, until one of the calls below answers it, exactly once), or issueNot
+// (not a datagram operation on a worker-side socket: the Loop's way). Whoever waits on the
+// port gives what it takes to the table, and receives the records answered in 'out', a list
+// of the caller's (each in the state done, its buffer and batch in it, to be answered on):
+// Linux, 'sh.udpReady(index, gen, events, out)' for an epoll event (its datum is the entry
+// and generation in its two words) tries the waiting receives and sends in order, while each
+// takes; Windows, 'sh.udpCompleted(p, bytes, out)' for a completion (its OVERLAPPED is the
+// record) answers it from its status, as the Loop answers a completion. 'sh.endWaiting(h, p,
+// id, why, out)' ends a record on its deadline (why = diag.outcomeTimedOut) or a cancel: Linux
+// answers it at once; Windows asks the kernel to abort it, and the abort's completion
+// answers it, with no grace and no abandoning, so the batch comes back on every path.
+// 'lp.close(h)' answers what still waits on h Cancelled (Linux, on the Loop; Windows, the
+// aborted completions come to the port). 'sh.holdSends(h, on)' is for tests (Linux).
+// Not yet used by aio (a later change).
 //
 // DIAGNOSTICS. 'lp.counters()' copies the loop's counts out, a
 // diag.Counters; submitted = delivered + in flight at every moment. With
@@ -738,6 +776,7 @@ fn timedOut(g: &CancelGroup) bool {
 fn @initpure init() {
   poolsLive = Atomic[u32].of(0u32);
   sharedLive = Atomic[u32].of(0u32);
+  stripeNext = Atomic[u32].of(0u32);
   // Winsock started, and the blocking pool's default lanes made, before any
   // thread of the program can reach them
   let ws = startWinsock();

@@ -21,10 +21,13 @@ const connSim = 2u32;
 // connection gives up on it (CloseReason.Overflow)
 const outboxBound = 256usize;
 
-// A latest-wins value waiting for credit: only the newest of its stream is kept
+// A latest-wins value waiting for credit: only the newest of its stream is kept.
+// The Connection keeps one for each stream position, 'waiting' when the data is
+// a value not yet sent
 struct PendingUpdate {
   stream: u16;
-  data: Bytes;
+  data: Option[Bytes];
+  waiting: bool;
 }
 
 // A Connection is a ValueSource of NetEvents: it sends them to its handler (a
@@ -33,14 +36,24 @@ struct PendingUpdate {
 //  - reliable: an ordered queue of Messages with Refused and Left behind them, so a
 //    Left follows every message. Past outboxBound waiting messages the application
 //    is not keeping up, and the connection ends with CloseReason.Overflow.
-//  - latest-wins: one slot for each stream; a newer value replaces the one waiting,
-//    and the replaced one is counted in ConnectionStats.latestStale.
+//  - latest-wins: one slot for each stream (at most maxStreams, in a fixed table),
+//    sent in the order the streams began waiting; a newer value replaces the one
+//    waiting and keeps its turn, and the replaced one is counted in
+//    ConnectionStats.latestStale.
 // The credit it holds never exceeds the first grant (the window), so a unit the
 // handler returns for a control event cannot inflate it. The handler's 'stop' closes
 // the connection (CloseReason.Local). A connection shares its handler with the
 // others of its server, so it sends no 'end' to it: Left is the end of a
 // connection's events. The handler's one 'end' (Ending.Finished) comes from the
 // Endpoint at its shutdown, after the Left of every connection it held.
+// A full send buffer: the kind NoBufferSpace (WSAENOBUFS, ENOBUFS), or the
+// system's number for a full non-blocking socket, which has no kind: Winsock's
+// WSAEWOULDBLOCK, Linux's EAGAIN
+fn bufferFull(e: IoError) bool {
+  if e.kind() == IoErrorKind.NoBufferSpace {return true;}
+  #if #os == .windows {e.code == 10035u32} #else {e.code == 11u32}
+}
+
 pub actor Connection is ValueSource {
   kind: u32;
   id: u32;
@@ -49,8 +62,22 @@ pub actor Connection is ValueSource {
   avail: u32;                   // credit held
   outbox: Deque[NetEvent];      // the reliable lane, waiting for credit
   waiting: usize;               // the data events (Message) in outbox
-  slots: Deque[PendingUpdate];  // the latest-wins lane
+  // The latest-wins lane, in two tables of maxStreams (64) entries: the value
+  // waiting for credit of each stream, by the stream's position in the core's
+  // table of incoming streams (fixed for the connection's life, see ConnectionCore), and a
+  // ring of the positions that wait, in the order they began waiting, so a
+  // stream with a high position is not starved by one with a low one
+  pend: Array[PendingUpdate, 64];
+  ring: Array[usize, 64];
+  ringHead: usize;              // where the ring's first position is
+  ringLen: usize;               // positions waiting: never more than maxStreams, as each stream waits once
+  // In-process (no core): the streams heard of, by position, in the order they
+  // first came; never removed, so a position is fixed for the connection's life
+  directIds: Array[u16, 64];
+  nDirect: usize;
   staleOut: u64;                // values replaced in a slot before they were sent
+  sendErrors: u64;              // sends the socket answered with an error
+  slotsRefused: u64;            // updates dropped for an in-process stream beyond the maxStreams a connection carries
   peer: ConnectionCore;
   open: bool;
   forced: bool;                 // the reason it ended is not the peer's
@@ -74,7 +101,10 @@ pub actor Connection is ValueSource {
   fn init(self: &new, kind: u32, id: u32, handler: EventHandler, cfg: NetConfig, session: u64, addr: SocketAddr,
       ep: Option[Endpoint], tx: UdpSender, parent: CancelGroup, link: LinkConfig, seed: u64) {
     *self = Self(kind: kind, id: id, handler: handler, window: 0u32, avail: 0u32,
-      outbox: Deque[NetEvent](), waiting: 0usize, slots: Deque[PendingUpdate](), staleOut: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
+      outbox: Deque[NetEvent](), waiting: 0usize,
+      pend: Array[PendingUpdate, 64]() <- fill PendingUpdate(0u16, None[Bytes], false),
+      ring: Array[usize, 64]() <- fill 0usize, ringHead: 0usize, ringLen: 0usize,
+      directIds: Array[u16, 64]() <- fill 0u16, nDirect: 0usize, staleOut: 0u64, sendErrors: 0u64, slotsRefused: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
       open: true, forced: false, forcedReason: CloseReason.Local,
       addr: addr, ep: ep, tx: tx, outq: Deque[IoBuf](), parent: parent,
       timer: parent.child(), timerGen: 0u32, armed: -1i64, tickQueued: false,
@@ -114,7 +144,7 @@ pub actor Connection is ValueSource {
     }
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -158,7 +188,7 @@ pub actor Connection is ValueSource {
     self.closeNow();
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -169,7 +199,16 @@ pub actor Connection is ValueSource {
   pub async fn stats(self) ConnectionStats {
     var s = peer.stats();
     s.latestStale = s.latestStale + staleOut;
+    s.sendErrors = sendErrors;
+    s.streamsRefused = s.streamsRefused + slotsRefused;
     s
+  }
+
+  // As if the socket had answered a send with the system's error number 'code'.
+  // For tests: a full send buffer, or a socket closed under the connection,
+  // cannot be made to happen on demand
+  pub async fn sendAnswered(self, code: u32) {
+    self.sendFailed(IoError(code));
   }
 
   // The handler has used n events: n more may be sent (ValueSource)
@@ -188,7 +227,7 @@ pub actor Connection is ValueSource {
     self.closeNow();
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -203,7 +242,7 @@ pub actor Connection is ValueSource {
     self.closeNow();
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -226,7 +265,7 @@ pub actor Connection is ValueSource {
     self.run();
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -239,7 +278,7 @@ pub actor Connection is ValueSource {
     self.run();
     while true {
       match outq.popFront() {
-        case let Some(p) { let r = await tx.sendTo(addr, p); }
+        case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
         else { break; }
       }
     }
@@ -258,7 +297,7 @@ pub actor Connection is ValueSource {
       }
       while true {
         match outq.popFront() {
-          case let Some(p) { let r2 = await tx.sendTo(addr, p); }
+          case let Some(p) { self.sendDone(await tx.sendTo(addr, p)); }
           else { break; }
         }
       }
@@ -273,7 +312,22 @@ pub actor Connection is ValueSource {
 
   async fn inUpdate(self, stream: u16, data: Bytes) {
     if open {
-      self.emit(NetEvent.Update(id, stream, data));
+      // The stream's position: there is no core between the ends, so this end
+      // keeps its own table. A stream past maxStreams is dropped and counted
+      var pos = 0usize;
+      while pos < nDirect && directIds[pos] != stream {pos = pos + 1usize;}
+      if pos == nDirect {
+        // One entry a stream, and at most maxStreams of them: a handler that
+        // takes no updates holds at most that many buffers. The core keeps an
+        // incoming stream to the same limit; this bounds the in-process kind
+        if nDirect >= maxStreams {
+          slotsRefused = slotsRefused + 1u64;
+          return;
+        }
+        directIds[nDirect] = stream;
+        nDirect = nDirect + 1usize;
+      }
+      self.emitUpdate(pos, stream, data);
     }
   }
 
@@ -300,20 +354,9 @@ pub actor Connection is ValueSource {
   // messages before them, data waits for credit (see the actor's comment)
   fn emit(self, ev: NetEvent) {
     match ev {
-      case let Update(u) {
-        let stream, d = u.(stream, data);
-        var i = 0usize;
-        while i < slots.len() {
-          if slots[i].stream == stream {
-            let s = &mut slots[i];
-            s.data = d;
-            staleOut = staleOut + 1u64;
-            self.flush();
-            return;
-          }
-          i = i + 1usize;
-        }
-        slots.push(PendingUpdate(stream, d));
+      case is Update {
+        // Updates go through emitUpdate, which has the stream's position
+        return;
       }
       case is Message {
         if forced {return;}
@@ -325,6 +368,23 @@ pub actor Connection is ValueSource {
         outbox.push(ev);
       }
       else { outbox.push(ev); }
+    }
+    self.flush();
+  }
+
+  // The newest value of a stream, at its position: it replaces the value
+  // waiting there, or begins to wait, last in the ring
+  fn emitUpdate(self, pos: usize, stream: u16, d: Bytes) {
+    let s = &mut pend[pos];
+    if s.waiting {
+      s.data = Some[Bytes](d);
+      staleOut = staleOut + 1u64;
+    } else {
+      s.stream = stream;
+      s.data = Some[Bytes](d);
+      s.waiting = true;
+      ring[(ringHead + ringLen) % 64usize] = pos;
+      ringLen = ringLen + 1usize;
     }
     self.flush();
   }
@@ -353,14 +413,18 @@ pub actor Connection is ValueSource {
         else { break; }
       }
     }
-    while outbox.len() == 0usize && avail > 0u32 {
-      match slots.popFront() {
-        case let Some(p) {
+    while outbox.len() == 0usize && avail > 0u32 && ringLen > 0usize {
+      let pos = ring[ringHead];
+      ringHead = (ringHead + 1usize) % 64usize;
+      ringLen = ringLen - 1usize;
+      let s = &mut pend[pos];
+      s.waiting = false;
+      match s.data.take() {
+        case let Some(d) {
           avail = avail - 1u32;
-          let stream, d = p.(stream, data);
-          handler.accept(NetEvent.Update(id, stream, d));
+          handler.accept(NetEvent.Update(id, s.stream, d));
         }
-        else { break; }
+        else {}
       }
     }
   }
@@ -401,6 +465,25 @@ pub actor Connection is ValueSource {
     self.run();
   }
 
+  // What the socket answered to a datagram: an error is counted in the stats
+  // (ConnectionStats.sendErrors), and any but a full send buffer ends the
+  // connection with CloseReason.SendFailed (once: finish ignores a second call).
+  // A full buffer is a datagram lost, as the network may lose it; the protocol
+  // resends what matters
+  fn sendDone(self, r: Result[usize, IoError]) {
+    match r {
+      case let Err(e) { self.sendFailed(e); }
+      else {}
+    }
+  }
+
+  fn sendFailed(self, e: IoError) {
+    sendErrors = sendErrors + 1u64;
+    if !bufferFull(e) {
+      self.finish(CloseReason.SendFailed);
+    }
+  }
+
   // Poll the protocol: send what it has, tell the application what happened
   fn run(self) {
     if !open {return;}
@@ -438,8 +521,8 @@ pub actor Connection is ValueSource {
           if open {self.emit(NetEvent.Message(id, d));}
         }
         case let Latest(l) {
-          let stream, d = l.(stream, data);
-          if open {self.emit(NetEvent.Update(id, stream, d));}
+          let stream, d, pos = l.(stream, data, pos);
+          if open {self.emitUpdate(pos, stream, d);}
         }
         case let Closed(c) {
           if forced {
@@ -479,8 +562,12 @@ pub actor Connection is ValueSource {
     open = false;
     let c = timer.cancel();
     // A value still waiting for credit is dropped: nothing follows Left
-    while slots.len() > 0usize {
-      slots.popFront();
+    while ringLen > 0usize {
+      let s = &mut pend[ring[ringHead]];
+      ringHead = (ringHead + 1usize) % 64usize;
+      ringLen = ringLen - 1usize;
+      s.waiting = false;
+      s.data = None[Bytes];
       staleOut = staleOut + 1u64;
     }
     self.emit(NetEvent.Left(id, reason));

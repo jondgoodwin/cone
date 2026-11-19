@@ -1,6 +1,7 @@
 // A UDP endpoint: the actor that owns a socket, opens connections, and routes
 // each datagram to the actor of the connection it belongs to. A server's
-// endpoint accepts any number of clients (up to NetConfig.maxClients); a
+// endpoint accepts any number of clients (up to NetConfig.maxClients, and under
+// the limits per address and on admissions in NetConfig's header); a
 // client's has the one connection it dialed.
 //
 //   imm server = mustListen(SocketAddr.localhost(0u16), NetConfig.defaults(), handler);
@@ -14,9 +15,9 @@
 // does its I/O by awaiting, as any actor does. Nothing of the protocol is in
 // that; it moves bytes and time between the socket and the connections:
 //
-//   receive   one behaviour that loops: 'await sock.recvManyIn(bufs, ...)' (the
+//   receive   one behaviour that loops: 'await sock.recvManyIn(batch, ...)' (the
 //             next datagram and any already waiting, up to 64 for a server, 8
-//             for a client), then each datagram is handled in place
+//             for a client, into the one DatagramBatch the endpoint keeps), then each datagram is handled in place
 //             (onDatagram). It is paused at the await, so the actor handles its
 //             other messages meanwhile.
 //   send      each connection sends its own datagrams, through a UdpSender (this
@@ -39,7 +40,7 @@
 // their caller until the socket is bound, as they did while the pump thread
 // started; called from a behaviour they need a second worker to bind on, and
 // panic with one worker rather than deadlock). A datagram longer than
-// recvRoom arrives cut (its bit in recvMany's 'cut'): it is dropped, and does
+// recvRoom arrives cut (recvMany's wasCut): it is dropped, and does
 // not count toward the failures that end the receive. 1000 failures in a row end the
 // receive, as they ended the pump. A program that ends in the instant it
 // calls shutdown() (without waiting for the peers to hear it) may lose the
@@ -57,10 +58,95 @@ struct ConnectionSlot {
   id: u32;
   conn: Connection;
   session: u64;
+  ip: String;              // the address its peer counts under (ipGroup)
+  replacedAt: i64;         // when this connection replaced one of the same socket address; -1 it did not
 }
 
 // Where each connection's slot is in 'slots', by the other end's address
 alias SlotsByAddr = Dict[SocketAddr, usize];
+
+// What a server holds of one IP address (ipGroup): its connections
+struct AddrState {
+  conns: u32;
+}
+
+// The AddrState of each IP address that has a connection
+alias AddrStates = Dict[String, AddrState];
+
+// Replacements of a connection by a new session, from one socket address (IP and
+// port: clients behind one NAT have addresses of their own), are this far apart
+const replaceGapNs = 1000000000i64;
+
+// The admission bucket holds this many seconds of NetConfig.admitRate (50 a second, a burst of 100)
+const burstSeconds = 2i64;
+
+// The text a peer's connections are counted under, for NetConfig.maxPerAddress
+// and the replacement rate: an IPv4 address (a.b.c.d), an IPv6 address's /64,
+// its first four groups ([g0:g1:g2:g3), or, for an IPv4-mapped IPv6 address
+// (::ffff:a.b.c.d, which a dual-stack socket reports for an IPv4 peer), the
+// IPv4 address in it, so that such peers are not all counted as one. The port
+// and an IPv6 scope id are left out. SocketAddr.text gives each group in
+// hexadecimal without leading zeros, so the same /64 always has the same text
+fn ipGroup(addr: &SocketAddr) String {
+  let t = addr.text();
+  let v = t.view();
+  if !addr.isV6() {
+    let Some(c) = v.find(":") else {return String.from(v);};
+    return String.from(v.slice(0usize, c));
+  }
+  // [0:0:0:0:0:ffff:g6:g7]:port
+  if v.startsWith("[0:0:0:0:0:ffff:") {
+    let rest = v.sliceFrom(16usize);
+    let Some(c) = rest.find(":") else {return String.from(v);};
+    let Some(e) = rest.find("]") else {return String.from(v);};
+    let hi = hexValue(rest.slice(0usize, c));
+    let lo = hexValue(rest.slice(c + 1usize, e));
+    var out = String();
+    out.appendUInt((hi >> 8u64) & 255u64);
+    out.append(".");
+    out.appendUInt(hi & 255u64);
+    out.append(".");
+    out.appendUInt((lo >> 8u64) & 255u64);
+    out.append(".");
+    out.appendUInt(lo & 255u64);
+    return out;
+  }
+  // up to the fourth ':'
+  var pos = 0usize;
+  var seen = 0u32;
+  var cut = v.len();
+  while pos < v.len() {
+    if v[pos] == 58u8 {
+      seen = seen + 1u32;
+      if seen == 4u32 {
+        cut = pos;
+        break;
+      }
+    }
+    pos = pos + 1usize;
+  }
+  String.from(v.slice(0usize, cut))
+}
+
+// The number a run of hexadecimal digits spells (0 for what is not one)
+fn hexValue(s: &str) u64 {
+  var n = 0u64;
+  var i = 0usize;
+  while i < s.len() {
+    let c = s[i];
+    var d = 0u64;
+    if c >= 48u8 && c <= 57u8 {
+      d = u64.from(c - 48u8);
+    } else if c >= 97u8 && c <= 102u8 {
+      d = u64.from(c - 87u8);
+    } else if c >= 65u8 && c <= 70u8 {
+      d = u64.from(c - 55u8);
+    }
+    n = n * 16u64 + d;
+    i = i + 1usize;
+  }
+  n
+}
 
 // The deadline of a connection that has not asked for one
 const farFuture = 0x7FFFFFFFFFFFFFFFi64;
@@ -71,14 +157,21 @@ const recvRoom = 2048usize;
 
 // How many datagrams one receive may take at once: a server has many peers, a
 // client one (aio takes at most 64)
-const serverBatch = 64usize;
-const clientBatch = 8usize;
+const serverBatch = 64u32;
+const clientBatch = 8u32;
 
 // The most receives that fail one after the other before the endpoint stops receiving
 const maxFailures = 1000u32;
 
 // How long shutdown waits for the datagrams already handed to the socket
 const flushMillis = 300i64;
+
+// What an endpoint has refused to admit, by the limit that refused it
+pub struct EndpointStats {
+  pub refusedFull: u64;           // new addresses refused at NetConfig.maxClients
+  pub refusedPerAddress: u64;     // refused at NetConfig.maxPerAddress for their IP address
+  pub refusedRate: u64;           // refused by the admission rate (NetConfig.admitRate), or a replacement within a second of the last for its socket address
+}
 
 pub actor Endpoint {
   server: bool;
@@ -92,9 +185,13 @@ pub actor Endpoint {
   gate: ChallengeGate;
   slots: List[ConnectionSlot];
   byAddr: SlotsByAddr;          // the slot's index in 'slots', for each slot's address
+  byIp: AddrStates;             // each IP address's connection count
+  tokens: i64;                  // the admission bucket, in thousandths of a connection
+  refilled: i64;                // the instant 'tokens' was last brought up to date
   nextId: u32;
   armed: i64;                   // the instant the timer will next wake us; -1 none
   stopped: bool;
+  refused: EndpointStats;       // admissions refused, by kind
 
   // a client's
   dialer: ClientHandshake;
@@ -104,12 +201,13 @@ pub actor Endpoint {
   fn init(self: &new, server: bool, cfg: NetConfig, handler: EventHandler, remote: SocketAddr, seed: u64) {
     var rng = Rng.make(seed);
     let salt = rng.next();
-    let gateSeed = rng.next();
     let g = CancelGroup.make();
+    let now = Instant.now().nanos();
     *self = Self(server: server, cfg: cfg, handler: handler, sock: UdpSocket.none(),
       group: g, timer: g.child(), timerGen: 0u32, inflight: 0usize,
-      gate: ChallengeGate.make(gateSeed), slots: List[ConnectionSlot](), byAddr: SlotsByAddr(), nextId: 1u32,
-      armed: -1i64, stopped: false,
+      gate: ChallengeGate.fromOs(), slots: List[ConnectionSlot](), byAddr: SlotsByAddr(), byIp: AddrStates(), nextId: 1u32,
+      tokens: burstSeconds * 1000i64 * i64.from(cfg.admitRate), refilled: now,
+      armed: -1i64, stopped: false, refused: EndpointStats(0u64, 0u64, 0u64),
       dialer: ClientHandshake.make(cfg, salt, Instant.now()), dialing: !server,
       remote: remote);
   }
@@ -117,6 +215,11 @@ pub actor Endpoint {
   // How many connections are open now
   pub async fn connections(self) u32 {
     u32.from(slots.len())
+  }
+
+  // What the endpoint has refused to admit so far, by kind (all zero for a client)
+  pub async fn stats(self) EndpointStats {
+    refused
   }
 
   // End every connection (each tells its peer), send what is queued, close the
@@ -185,36 +288,42 @@ pub actor Endpoint {
 
   // Receive datagrams until shutdown cancels the receive: the next one to arrive
   // and any already waiting (up to the batch), each handled in place in arrival
-  // order. A datagram longer than recvRoom comes cut (its bit in 'cut') and is
-  // dropped: its first bytes alone would look like a packet
+  // order. A datagram longer than recvRoom comes cut (wasCut) and is
+  // dropped: its first bytes alone would look like a packet. The endpoint makes
+  // one DatagramBatch and keeps it for its life: each receive is lent it and
+  // answers it, and each filled buffer is swapped out of its slot for a fresh
+  // one and sent on (nothing slides; a failed receive hands the batch back too)
   async fn receive(self) {
     let n = if server {serverBatch} else {clientBatch};
     var failures = 0u32;
-    var bufs = List[IoBuf]();
+    var batch = DatagramBatch.make(n, recvRoom);
     while !stopped && failures <= maxFailures {
-      while bufs.len() < n {
-        bufs.push(IoBuf(recvRoom));
-      }
-      // The buffers go to the socket and come back in the answer, used or spare
-      let r = await sock.recvManyIn(bufs, IoLimits.within(group));
-      bufs = List[IoBuf]();
+      // The batch goes to the socket and comes back in the answer
+      let r = await sock.recvManyIn(batch, IoLimits.within(group));
       match r {
         case var Ok(ok) {
           failures = 0u32;
-          bufs <-> ok.spare;   // bufs is empty here
-          let cut = ok.cut;
-          var k = 0usize;
-          each dg in ok.got.drain() {
-            let isCut = ((cut >> u64.from(k)) & 1u64) == 1u64;
-            k = k + 1usize;
-            if !isCut {
-              // The buffer the socket filled goes on to the connection as it is
-              let buf, from = dg.(buf, from);
+          batch = ok;
+          let cnt = batch.count();
+          var k = 0u32;
+          while k < cnt {
+            let from = batch.from(k);
+            // The buffer the socket filled goes on to the connection as it is
+            let buf = batch.swapOut(k, IoBuf(recvRoom));
+            if !batch.wasCut(k) {
               self.onDatagram(from, buf);
             }
+            k = k + 1u32;
           }
         }
-        case let Err(e) {
+        case var Err(f) {
+          // The batch comes back with the failure (None only where the kernel
+          // still holds it: then a new one is made)
+          let e, back = f.(error, batch);
+          match back {
+            case var Some(b) {batch = b;}
+            else {batch = DatagramBatch.make(n, recvRoom);}
+          }
           if aio.isCancelled(e) {return;}
           if !aio.isTruncated(e) {failures = failures + 1u32;}
         }
@@ -322,6 +431,8 @@ pub actor Endpoint {
   // Take slot k out of the table: the last slot moves into its place (the
   // order of 'slots' is otherwise kept) and its entry is re-pointed
   fn removeSlot(self, k: usize) {
+    let ip = String.from(slots[k].ip.view());
+    self.leaveIp(ip.view());
     let dropped = byAddr.remove(&slots[k].addr);
     let last = slots.len() - 1usize;
     if k != last {
@@ -355,28 +466,119 @@ pub actor Endpoint {
 
   // A client proved it receives at its address: open its connection, or
   // answer a Response that has already been taken
+  // (a new session from an address that has a connection replaces it, at most
+  // once a second for a socket address; a new address is admitted under maxClients,
+  // maxPerAddress and the admission rate, or told it is denied)
   fn admit(self, from: SocketAddr, session: u64, accept: IoBuf, response: &Array[u8]) {
+    let now = Instant.now().nanos();
+    let ip = ipGroup(&from);
     let k = self.find(&from);
+    var replaced = false;
     if k != notFound {
       if slots[k].session == session {
         // The Accept was lost; say it again
         self.transmit(from, accept);
         return;
       }
-      // The same address, a new session: the old connection is dead
+      // The same address, a new session: the old connection is dead, if the
+      // address has not just replaced one (the old one stays, and the client
+      // asks again)
+      let last = slots[k].replacedAt;
+      if last >= 0i64 && now - last < replaceGapNs {
+        refused.refusedRate = refused.refusedRate + 1u64;
+        self.transmit(from, ChallengeGate.denied(ChallengeGate.saltOf(response)));
+        return;
+      }
       slots[k].conn.close();
       self.removeSlot(k);
-    } else if slots.len() >= cfg.maxClients {
-      self.transmit(from, ChallengeGate.denied(ChallengeGate.saltOf(response)));
-      return;
+      replaced = true;
+    } else {
+      // The first limit met counts, and the bucket is taken from only when the others pass
+      var admitted = false;
+      if slots.len() >= cfg.maxClients {
+        refused.refusedFull = refused.refusedFull + 1u64;
+      } else if self.connsOf(ip.view()) >= cfg.maxPerAddress {
+        refused.refusedPerAddress = refused.refusedPerAddress + 1u64;
+      } else if !self.takeToken(now) {
+        refused.refusedRate = refused.refusedRate + 1u64;
+      } else {
+        admitted = true;
+      }
+      if !admitted {
+        self.transmit(from, ChallengeGate.denied(ChallengeGate.saltOf(response)));
+        return;
+      }
     }
     let id = nextId;
     nextId = nextId + 1u32;
     let conn = Connection(connUdp, id, handler, cfg, session, from,
       Some[Endpoint](selfactor), sock.sender(), group.child(), LinkConfig.perfect(), 0u64);
-    byAddr.insert(from, slots.len());
-    slots.push(ConnectionSlot(from, id, conn, session));
+    self.addSlot(from, id, conn, session, ip.view(), if replaced {now} else {-1i64});
     self.transmit(from, accept);
+  }
+
+  // Put a connection in the table, and count it against its IP address
+  fn addSlot(self, addr: SocketAddr, id: u32, conn: Connection, session: u64, ip: &str, replacedAt: i64) {
+    byAddr.insert(addr, slots.len());
+    slots.push(ConnectionSlot(addr, id, conn, session, String.from(ip), replacedAt));
+    match byIp.getMut(ip) {
+      case let Some(a) { a.conns = a.conns + 1u32; return; }
+      else {}
+    }
+    byIp.insert(String.from(ip), AddrState(1u32));
+  }
+
+  // A connection of this IP address has gone: its entry goes with the last one
+  // (so the table holds only addresses with a connection)
+  fn leaveIp(self, ip: &str) {
+    var last = false;
+    match byIp.getMut(ip) {
+      case let Some(a) {
+        a.conns = a.conns - 1u32;
+        last = a.conns == 0u32;
+      }
+      else {}
+    }
+    if last {
+      let dropped = byIp.remove(ip);
+    }
+  }
+
+  // How many connections this IP address has
+  fn connsOf(self: &, ip: &str) usize {
+    match byIp.get(ip) {
+      case let Some(a) { return usize.from(a.conns); }
+      else {}
+    }
+    0usize
+  }
+
+  // Take one connection's worth from the admission bucket, refilled by the time
+  // since it was last looked at at NetConfig.admitRate a second and holding no
+  // more than burstSeconds of it. False when it holds less than one. A rate of 0
+  // is no limit: always true
+  fn takeToken(self, now: i64) bool {
+    if cfg.admitRate == 0u32 {return true;}
+    let per = i64.from(cfg.admitRate);
+    let longest = burstSeconds * 1000000000i64;
+    let gap = now - refilled;
+    if gap >= longest {
+      // The time it takes to fill it from empty: a longer gap adds no more
+      // (and the product below stays far from overflowing)
+      tokens = burstSeconds * 1000i64 * per;
+      refilled = now;
+    } else if gap >= 1000000i64 {
+      // Whole milliseconds, each worth 'per' thousandths of a connection; the
+      // part of a millisecond left over is kept for the next look
+      let ms = gap / 1000000i64;
+      tokens = tokens + ms * per;
+      refilled = refilled + ms * 1000000i64;
+    }
+    let cap = burstSeconds * 1000i64 * per;
+    if tokens > cap {tokens = cap;}
+    if tokens < 1000i64 {return false;}
+    tokens = tokens - 1000i64;
+    true
   }
 
   // The client side of the handshake: a datagram from the server
@@ -387,8 +589,8 @@ pub actor Endpoint {
         let id = 1u32;
         let conn = Connection(connUdp, id, handler, cfg, dialer.sessionId(), remote,
           Some[Endpoint](selfactor), sock.sender(), group.child(), LinkConfig.perfect(), 0u64);
-        byAddr.insert(remote, slots.len());
-        slots.push(ConnectionSlot(remote, id, conn, dialer.sessionId()));
+        let ip = ipGroup(&remote);
+        self.addSlot(remote, id, conn, dialer.sessionId(), ip.view(), -1i64);
         dialing = false;
         // The datagram that connected us may be a payload packet
         conn.packet(data);
