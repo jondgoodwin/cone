@@ -5105,8 +5105,11 @@ fn idle(w: *Worker) bool {
     parkHoldHere(s, w, 4u32);
   }
   // An ancestor's cancel asks for a sweep (WorkerWake): stored before its claim
-  // of this worker's bit, so it is seen here or the claim finds the bit
-  if anyWork(s) || (ts as usize != 0usize && (*ts).sweep.load() != 0u32) {
+  // of this worker's bit, so it is seen here or the claim finds the bit. Not once the timers have
+  // stopped: the step no longer sweeps, so a flag left set (an ask that came just before the
+  // stop, or one that raced it) would send this worker round again for ever, never reaching
+  // the 'stopping' check below (the hang of row 531: stopWorkers joining a worker spinning here)
+  if anyWork(s) || (ts as usize != 0usize && timersStopped.load() == 0u32 && (*ts).sweep.load() != 0u32) {
     if (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
       parkHoldHere(s, w, 3u32);
     }
@@ -5302,7 +5305,17 @@ pub fn monitorTick() u32 {
 // each quiet round, to at most monitorMaxTickFactor times that (Go's sysmon
 // backs off so), and a find snaps it back. After monitorIdleTicks ticks with
 // every worker parked the monitor parks on 's.monitor'; the first worker to
-// leave a park (uncount) wakes it, once per idle-to-busy change.
+// leave a park (uncount) wakes it, once per idle-to-busy change. It is also
+// the DEPUTY of a stuck worker's timers: a worker whose activation count has
+// not moved for a whole base tick, with cells overdue, has them fired by the
+// monitor under the wheel's word (THE WORKERS' TIMERS, timers.cone); while a
+// worker has cells armed the monitor does not park, and paces to the earliest
+// of them. A parked worker's 'due' keeps the base tick (a new, nearer due
+// published while the monitor sleeps is seen at the next tick, so the tick is
+// the lateness it adds), and the pause is cut to the due, to monitorLeastPause
+// at the least. A running worker's 'next' sets the pause, never shorter than the
+// base tick nor longer than the back-off's longest, so a far timer on a worker
+// (a connection's idle timeout) does not hold the monitor at the base tick.
 fn monitorMain(arg: WorkerArg) u32 {
   let s = (*arg.w).sched;
   let n = (*s).nworkers;
@@ -5310,6 +5323,16 @@ fn monitorMain(arg: WorkerArg) u32 {
   if last as usize == 0usize {
     die("actors: out of memory for the runtime");
   }
+  // THE DEPUTY (timers.cone): per worker, the activation count last seen to
+  // change and when; a count unmoved for a whole base tick is a worker stuck in
+  // one turn, whose overdue cells the monitor fires in its stead
+  let mark = libc.calloc(usize.from(n), 8usize) as *u64;
+  let markAt = libc.calloc(usize.from(n), 8usize) as *i64;
+  if mark as usize == 0usize || markAt as usize == 0usize {
+    die("actors: out of memory for the runtime");
+  }
+  var dep = deputyScratch();
+  let stuckNanos = i64.from((*s).monitorMicros) * 1000i64;
   let base = (*s).monitorMicros;
   let longest = base * monitorMaxTickFactor;
   var micros = base;
@@ -5321,10 +5344,14 @@ fn monitorMain(arg: WorkerArg) u32 {
   while (*s).stopping.load() == 0u32 {
     monitorPause(timer, time.Duration.fromNanos(pause));
     // THE WORKERS' TIMERS: a parked worker whose cell is due is woken by name;
-    // while any worker has one to come the monitor neither parks nor backs
-    // off, and pauses no longer than to the earliest
-    let soonest = timersWakeDue(s);
-    let timing = soonest != noDue || timersAnyDue(s);
+    // while one has a cell to come the monitor neither parks nor backs off, and
+    // pauses no longer than to the earliest. A worker that is running with cells
+    // armed sets the pace instead (below): the monitor keeps from parking, but
+    // pauses to that worker's earliest, within its base tick and its longest
+    var running = noDue;
+    let soonest = timersWakeDue(s, &mut running as *i64);
+    let parkedTiming = soonest != noDue || timersAnyDue(s);
+    let timing = parkedTiming || running != noDue;
     if (*s).sleepers.load() == n && !timing {
       quiet = quiet + 1u32;
     } else {
@@ -5347,14 +5374,19 @@ fn monitorMain(arg: WorkerArg) u32 {
       pause = i64.from(micros) * 1000i64;
       monitorTickNow.store(micros);
       // The counts as they are now: no turn is judged by a tick before the park
+      let parkEnd = time.Instant.now().nanos();
       var j = 0u32;
       while j < n {
-        *(last + usize.from(j)) = (*(*workerAt(s, j)).stat).activations.loadOrdered(MemOrder.Relaxed);
+        let c = (*(*workerAt(s, j)).stat).activations.loadOrdered(MemOrder.Relaxed);
+        *(last + usize.from(j)) = c;
+        *(mark + usize.from(j)) = c;
+        *(markAt + usize.from(j)) = parkEnd;
         j = j + 1u32;
       }
       continue;
     }
     var found = false;
+    let lookAt = time.Instant.now();
     var i = 0u32;
     while i < n {
       let w = workerAt(s, i);
@@ -5366,9 +5398,21 @@ fn monitorMain(arg: WorkerArg) u32 {
         }
       }
       *lp = now;
+      // The deputy: a count unmoved since the mark, for a whole base tick
+      let mp = mark + usize.from(i);
+      let ap = markAt + usize.from(i);
+      if now != *mp || *ap == 0i64 {
+        *mp = now;
+        *ap = lookAt.nanos();
+      } else if lookAt.nanos() - *ap >= stuckNanos {
+        let ts = timerStoreOf(i);
+        if ts as usize != 0usize && timersDeputy(ts, lookAt, &mut dep) {
+          found = true;
+        }
+      }
       i = i + 1u32;
     }
-    if found || timing {
+    if found || parkedTiming {
       calm = 0u32;
       micros = base;
     } else {
@@ -5387,10 +5431,20 @@ fn monitorMain(arg: WorkerArg) u32 {
       if left < pause {
         pause = if left > monitorLeastPause {left} else {monitorLeastPause};
       }
+    } else if running != noDue && !found {
+      // Only running workers have cells armed, and nothing was found: the
+      // pause is the time to the earliest, never shorter than the base tick
+      // (a stuck worker is judged by whole ticks) nor longer than the longest
+      let left = running - time.Instant.now().nanos();
+      let lo = i64.from(base) * 1000i64;
+      let hi = i64.from(longest) * 1000i64;
+      pause = if left < lo {lo} else if left > hi {hi} else {left};
     }
   }
   monitorTimerFree(timer);
   libc.free(last as *u8);
+  libc.free(mark as *u8);
+  libc.free(markAt as *u8);
   0u32
 }
 

@@ -251,7 +251,12 @@ Per target:
    `iexpGetStoreLvalInfo`: the place's lifetime as a borrow of it would have it
    ([references](references.md)), except that a parameter and its by-value
    parts stay at the caller band its type promises, 1, since what is stored
-   there is read back out with its type's lifetime.
+   there is read back out with its type's lifetime. A place with no variable at
+   its root (reached through a call's result or a raw pointer) is the global
+   scope, 0: `iexpLvalInfo` writes it for every such root, so a borrowed
+   parameter is refused there, the same on every platform (an unwritten scope
+   was read as stack garbage until lane 710). `swapFlow` applies the same check
+   to both sides.
 
 `assignMultRetFlow` runs `assignlvalrtype` per lval, then the same
 `flowHandleMoveOrCopy` on the one rval: a destructured call result is a
