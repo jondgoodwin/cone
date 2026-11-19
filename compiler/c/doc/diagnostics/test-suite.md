@@ -546,6 +546,15 @@ excludes = ["Point.add "]
 
 The name is what failure output reports and what selection matches.
 
+A check may also carry `within = "<text>"`, which narrows the artifact to the
+lines holding the text (a `define` line brings its whole body), and
+`matches = [{ pattern = "<regex>", count = <n> }]`, which requires exactly `n`
+lines (by `re.search`, after `within`) to match the regex. Use `matches` to pin
+an instruction by shape and number with no LLVM value names in it, so an
+unrelated edit or another platform's numbering leaves the check alone; too few
+and too many both fail. `test/run.py --selftest` checks the counting and the
+refusal of a malformed entry.
+
 A bug fix lands with a scenario that fails without the fix.
 
 #### `llvmir`
