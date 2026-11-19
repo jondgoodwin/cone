@@ -1,0 +1,138 @@
+// THE POLLER ROLE (poller.cone, row 493), forced rather than raced. One
+// worker, which always finds the role free and so parks in the worker port.
+//
+// - Twenty times: the test hook is armed at its fifth place (holdNextPark(5)),
+//   after the poller's wait and before it lets go of the role; an unmarked
+//   break (pokeParked) ends the wait, and the worker is held there. Main then
+//   sends a message: notify chooses the held worker (still published, its bit
+//   set), marks it NOTIFIED and, reading the role still held, breaks the port
+//   rather than waking a futex word nobody waits on (the break coalesces with
+//   the one the held worker has taken and not yet cleared: it reads its word
+//   after the clearing). Nothing is handled while it is held. Released, it
+//   lets go of the role, finds its word NOTIFIED and
+//   leaves the park: the message is handled within 2 s. A mark lost there (a
+//   futex wake for a worker in the port, or the word not read after the wait)
+//   leaves the message queued with the worker asleep.
+// - Twenty times: held at the second place (between the role's taking and the
+//   wait), a message's notify marks it and breaks the port before the wait has
+//   begun; released, the wait (or the word's read before it) takes the mark.
+// - Then fifty unmarked breaks with the worker asleep in the port: each
+//   returns from the wait, finds nothing and the word still PARKED, and waits
+//   again (stats' reparks), with no spin and no park of its own.
+// - pollBatch reaches the port, and the breaks are counted (pollerStats).
+mod pollerrole;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+const rounds = 20u64;
+
+let handled: Atomic[u64];
+
+fn @initpure init() {
+  handled = Atomic[u64].of(0u64);
+}
+
+actor Counter {
+  pub async fn bump(self) {
+    handled.add(1u64);
+  }
+}
+
+fn nowNs() u64 {u64.from(time.Instant.now().nanos())}
+
+fn handledBy(n: u64) bool {
+  let deadline = nowNs() + 2000000000u64;
+  while handled.load() < n && nowNs() < deadline {
+    thread.yieldNow();
+  }
+  handled.load() >= n
+}
+
+fn heldWithin(ms: u64) bool {
+  let deadline = nowNs() + ms * 1000000u64;
+  while !actors.parkHeld() && nowNs() < deadline {
+    thread.yieldNow();
+  }
+  actors.parkHeld()
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 1u32, pollBatch: 8u32));
+  {
+    let c = Counter();
+    actors.waitUntilIdle();
+    expectUInt(u64.from(actors.pollerStats().batch), 8u64, "Options.pollBatch reaches the worker port");
+
+    // Held after the wait, before the role is let go
+    var held5 = 0u64;
+    var waited5 = 0u64;
+    var k = 0u64;
+    while k < rounds {
+      let before = handled.load();
+      thread.sleep(time.Duration.fromMillis(2i64));
+      actors.holdNextPark(5u32);
+      var tries = 0u32;
+      while !actors.parkHeld() && tries < 200u32 {
+        actors.pokeParked();
+        thread.sleep(time.Duration.fromMillis(1i64));
+        tries = tries + 1u32;
+      }
+      require(actors.parkHeld(), "the poller is held back from its wait, before it lets go of the role, within 200 breaks");
+      held5 = held5 + 1u64;
+      c.bump();
+      thread.sleep(time.Duration.fromMillis(2i64));
+      if handled.load() == before {
+        waited5 = waited5 + 1u64;
+      }
+      actors.releasePark();
+      require(handledBy(before + 1u64), "the message whose notify broke the held poller is handled within 2 s of its release");
+      k = k + 1u64;
+    }
+    expectUInt(held5, rounds, "every round held the poller between its wait and its letting go of the role");
+    expectUInt(waited5, rounds, "every round's message waited while it was held");
+
+    // Held between the role's taking and the wait
+    var held2 = 0u64;
+    k = 0u64;
+    while k < rounds {
+      let before = handled.load();
+      actors.holdNextPark(2u32);
+      c.bump();
+      require(heldWithin(2000u64), "the poller is held before its wait, within 2 s");
+      held2 = held2 + 1u64;
+      c.bump();
+      thread.sleep(time.Duration.fromMillis(2i64));
+      actors.releasePark();
+      require(handledBy(before + 2u64), "the message whose notify marked the poller before its wait is handled within 2 s");
+      k = k + 1u64;
+    }
+    expectUInt(held2, rounds, "every round held the poller before its wait");
+
+    // Unmarked breaks: asleep in the port, it waits again
+    thread.sleep(time.Duration.fromMillis(20i64));
+    let a = actors.stats();
+    let pa = actors.pollerStats();
+    let h0 = handled.load();
+    var p = 0u32;
+    while p < 50u32 {
+      actors.pokeParked();
+      thread.sleep(time.Duration.fromMillis(1i64));
+      p = p + 1u32;
+    }
+    thread.sleep(time.Duration.fromMillis(20i64));
+    let b = actors.stats();
+    let pb = actors.pollerStats();
+    expect(b.reparks - a.reparks >= 40u64, "unmarked breaks: the poller waited again (40 or more reparks of 50)");
+    expect(pb.waits - pa.waits >= 40u64, "...each time in the port");
+    expectUInt(b.spins, a.spins, "...with no spin");
+    expectUInt(b.parks, a.parks, "...and no new park");
+    expectUInt(handled.load(), h0, "...and nothing ran");
+  }
+  finalAll();
+  expectUInt(handled.load(), 3u64 * rounds, "every message handled");
+  done()
+}

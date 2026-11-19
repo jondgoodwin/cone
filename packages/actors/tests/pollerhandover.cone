@@ -1,0 +1,172 @@
+// THE POLLER ROLE handed over while a break's flag is still set (poller.cone,
+// portTake; row 493, lane 731), forced rather than raced. Two workers.
+//
+// The holder of the role, back from its wait with a break, lets go of the role
+// before it clears 'breakPending'. In between, another worker can take the role
+// and park in the port, and a notify aimed at it finds the flag still set and
+// posts nothing; on Linux the eventfd is drained besides. Unless the old holder
+// breaks the port again once it has cleared the flag, the new poller sleeps on
+// with its word NOTIFIED, and 'searching' stays set, so no later notify wakes
+// anyone either.
+//
+// Each round: worker Q runs a turn that waits on a gate (a Spinner), while the
+// other, P, is the poller, asleep in the port. The test hook is armed at its
+// sixth place (holdNextPark(6): back from the wait with a break, the role let
+// go, the flag not yet cleared), and a message's notify marks P and breaks its
+// wait: P is held there. The gate opens: Q ends its turn, runs the message,
+// finds the role free, takes it and parks in the port. A second Spinner's
+// message is sent, whose notify marks Q and breaks the port (the break the
+// defect swallowed), then a Counter message, whose notify finds 'searching'
+// set. P is let go: it takes the Spinner's turn and waits on its gate, so the
+// Counter's message is handled only if Q was woken. It must be, within 2 s,
+// the gate still shut. A watchdog ends the program with status 1 if a round
+// hangs.
+mod pollerhandover;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+import stdio;
+import libc;
+
+const rounds = 10u64;
+
+let handled: Atomic[u64];
+let gate: Atomic[u32];
+let inTurn: Atomic[u32];
+let spunOn: Atomic[u32];
+let finished: Atomic[u32];
+let total: Atomic[u64];
+
+fn @initpure init() {
+  handled = Atomic[u64].of(0u64);
+  gate = Atomic[u32].of(0u32);
+  inTurn = Atomic[u32].of(0u32);
+  spunOn = Atomic[u32].of(0u32);
+  finished = Atomic[u32].of(0u32);
+  total = Atomic[u64].of(0u64);
+}
+
+actor Counter {
+  pub async fn bump(self) {
+    handled.add(1u64);
+  }
+}
+
+// A turn that does not end until the gate opens
+actor Spinner {
+  pub async fn hold(self, ticket: u32) {
+    spunOn.store(actors.workerIndex());
+    inTurn.store(ticket);
+    while gate.load() != ticket {
+      thread.yieldNow();
+    }
+  }
+}
+
+fn nowNs() u64 {u64.from(time.Instant.now().nanos())}
+
+fn handledWithin(n: u64, ms: u64) bool {
+  let deadline = nowNs() + ms * 1000000u64;
+  while handled.load() < n && nowNs() < deadline {
+    thread.yieldNow();
+  }
+  handled.load() >= n
+}
+
+fn heldWithin(ms: u64) bool {
+  let deadline = nowNs() + ms * 1000000u64;
+  while !actors.parkHeld() && nowNs() < deadline {
+    thread.yieldNow();
+  }
+  actors.parkHeld()
+}
+
+fn turnWithin(ticket: u32, ms: u64) bool {
+  let deadline = nowNs() + ms * 1000000u64;
+  while inTurn.load() != ticket && nowNs() < deadline {
+    thread.yieldNow();
+  }
+  inTurn.load() == ticket
+}
+
+fn waitsWithin(more: u64, ms: u64) bool {
+  let deadline = nowNs() + ms * 1000000u64;
+  while actors.pollerStats().waits < more && nowNs() < deadline {
+    thread.yieldNow();
+  }
+  actors.pollerStats().waits >= more
+}
+
+fn watchdog(secs: u32) u32 {
+  let deadline = nowNs() + u64.from(secs) * 1000000000u64;
+  while finished.load() == 0u32 {
+    if nowNs() >= deadline {
+      stdio.printStr("watchdog: the test did not end within its time (a lost wake)\n");
+      libc.exit(1i32);
+    }
+    thread.sleep(time.Duration.fromMillis(10i64));
+  }
+  0u32
+}
+
+fn main() i32 {
+  initAll();
+  let dog = thread.start(60u32, &watchdog);
+  dog.detach();
+  actors.configure(actors.Options(workers: 2u32));
+  {
+    let c = Counter();
+    let a = Spinner();
+    let b = Spinner();
+    actors.waitUntilIdle();
+    var ticket = 0u32;
+    var k = 0u64;
+    var sent = 0u64;
+    while k < rounds {
+      thread.sleep(time.Duration.fromMillis(10i64));
+      // Q runs a turn that waits on the gate; P, the other, is the poller
+      ticket = ticket + 1u32;
+      a.hold(ticket);
+      require(turnWithin(ticket, 5000u64), "a worker runs the first Spinner's turn within 5 s");
+      let q = spunOn.load();
+      // A notify marks P and breaks its wait: P is held before the flag's
+      // clearing. Sent again while P has not parked yet (under load it may still
+      // be on its way, and takes the message itself)
+      actors.holdNextPark(6u32);
+      var tries = 0u32;
+      while !actors.parkHeld() && tries < 100u32 {
+        c.bump();
+        sent = sent + 1u64;
+        heldWithin(50u64);
+        tries = tries + 1u32;
+      }
+      require(heldWithin(5000u64), "the poller is held after its wait, the role let go, before the break's flag is cleared");
+      require(actors.parkHeldWorker() != q, "...and it is not the worker in the Spinner's turn");
+      let w0 = actors.pollerStats().waits;
+      // Q ends its turn, runs the message, takes the role and parks in the port
+      gate.store(ticket);
+      require(handledWithin(sent, 5000u64), "the message is handled by the other worker within 5 s");
+      require(waitsWithin(w0 + 1u64, 5000u64), "...which then waits in the port as the new poller");
+      thread.sleep(time.Duration.fromMillis(20i64));
+      // A notify aimed at the new poller, then one that finds 'searching' set
+      ticket = ticket + 1u32;
+      b.hold(ticket);
+      c.bump();
+      sent = sent + 1u64;
+      thread.sleep(time.Duration.fromMillis(5i64));
+      // P goes on: it clears the flag, leaves the park and takes the Spinner's turn
+      actors.releasePark();
+      require(turnWithin(ticket, 5000u64), "the second Spinner's turn runs within 5 s of the release");
+      require(handledWithin(sent, 5000u64), "the new poller is woken by the notify aimed at it: the Counter's message is handled within 5 s, the Spinner's turn still running");
+      gate.store(ticket);
+      k = k + 1u64;
+    }
+    total.store(sent);
+  }
+  finalAll();
+  finished.store(1u32);
+  expectUInt(handled.load(), total.load(), "every message handled");
+  done()
+}

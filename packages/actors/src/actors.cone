@@ -64,6 +64,12 @@
 //                                   for the I/O package, not for programs: a timer awaited
 //                                   on the awaiting worker's own wheel (THE WORKERS'
 //                                   TIMERS, timers.cone); actors.timerStats(), a test hook
+//   actors.workerPort(), actors.workerEvents(events), actors.workerPortWaits(more)
+//                                   for the I/O package, not for programs: the runtime's
+//                                   own OS wait, where one parked worker at a time waits
+//                                   and keeps the parked workers' time (THE WORKER PORT
+//                                   AND THE POLLER, poller.cone); actors.pollerStats(),
+//                                   actors.seemWorkForever(), test hooks
 //   actors.parkBlocks()             the record blocks and per-thread keeps the runtime has
 //                                   taken from the allocator and given back (RECORD BLOCKS KEPT)
 //   actors.liveSegments()           how many mailbox segments are not yet freed
@@ -4231,10 +4237,6 @@ pub const defaultMonitorMicros = 500u32;
 // Ticks in a row with every worker parked, after which the monitor parks
 const monitorIdleTicks = 4u32;
 
-// The shortest pause the monitor takes toward a worker's cell, in nanoseconds
-// (THE WORKERS' TIMERS, timers.cone)
-const monitorLeastPause = 20000i64;
-
 // Rounds in a row that found nothing, after which the monitor's tick doubles
 // at each further quiet round, to at most monitorMaxTickFactor times its
 // base (500 us to 2 ms), as Go's sysmon does; a find snaps it back
@@ -4734,35 +4736,55 @@ fn notifyTree(s: *Sched, hint: u32) {
 // Choose a sleeper, mark it, then wake it (THE PARK WORD). None to be had
 // leaves 'searching' as it is: every worker counted a sleeper is then chosen
 // already or on its way out, and looks. A hint (not 0) is left for the worker
-// chosen, to look in that deque first. True when it woke one.
+// chosen, to look in that deque first. True when it woke one. The poller
+// (THE POLLER ROLE, poller.cone) is chosen last: its bit is passed over on the
+// first round and tried alone after it, so that a sleeper on its futex word
+// takes the work and the port keeps its waiter
 fn wakeOne(s: *Sched, hint: u32) bool {
+  let port = portHere();
+  let pa = if port as usize == 0usize {0u32} else {(*port).pollerAt.load()};
   var k = 0u32;
   while k < (*s).parkedWords {
     let wp = parkedWord(s, k);
     var v = mem.atomicLoad[u64](wp, MemOrder.SeqCst);
+    if pa != 0u32 && (pa - 1u32) / 64u32 == k {
+      v = v & ~(1u64 << u64.from((pa - 1u32) % 64u32));
+    }
     while v != 0u64 {
       let b = mem.trailingZeros[u64](v);
       let bit = 1u64 << u64.from(b);
       v = v & ~bit;
-      // Claim the bit; one another notify cleared first is passed over
-      if (mem.atomicAnd[u64](wp, ~bit, MemOrder.SeqCst) & bit) != 0u64 {
-        let i = k * 64u32 + b;
-        let w = workerAt(s, i);
-        var seen = 0u32;
-        var marked = false;
-        seen, marked = (*w).park.compareSwap(parkParked, parkNotified);
-        if marked {
-          if hint != 0u32 {
-            mem.atomicStore[u32](&(*w).hint as *u32, hint, MemOrder.Relaxed);
-          }
-          sync.futexWake(&(*w).park);
-          return true;
-        }
+      if wakeClaim(s, wp, bit, k * 64u32 + b, hint) {
+        return true;
       }
     }
     k = k + 1u32;
   }
+  if pa != 0u32 {
+    let i = pa - 1u32;
+    return wakeClaim(s, parkedWord(s, i / 64u32), 1u64 << u64.from(i % 64u32), i, hint);
+  }
   false
+}
+
+// Claim worker i's bit in word wp (one another notify cleared first is passed
+// over), mark it NOTIFIED and wake it. True if it woke it
+fn wakeClaim(s: *Sched, wp: *u64, bit: u64, i: u32, hint: u32) bool {
+  if (mem.atomicAnd[u64](wp, ~bit, MemOrder.SeqCst) & bit) == 0u64 {
+    return false;
+  }
+  let w = workerAt(s, i);
+  var seen = 0u32;
+  var marked = false;
+  seen, marked = (*w).park.compareSwap(parkParked, parkNotified);
+  if !marked {
+    return false;
+  }
+  if hint != 0u32 {
+    mem.atomicStore[u32](&(*w).hint as *u32, hint, MemOrder.Relaxed);
+  }
+  wakeMarked(w);
+  true
 }
 
 // Word k of the sleepers' bitmap
@@ -4797,6 +4819,9 @@ fn findWork(w: *Worker) *Header {
   let s = (*w).sched;
   (*w).tick = (*w).tick + 1u32;
   if (*w).tick % (*s).injectEvery == 0u32 {
+    // THE PORT'S OTHER ENTRIES (poller.cone): a look at the worker port while
+    // something waits there and nobody holds the role
+    busyPoll(w);
     let a = injectPop(s, w);
     if a as usize != 0usize {
       // Taken away from its own queue, as any inject take: more waiting
@@ -4849,9 +4874,19 @@ fn stealActor(w: *Worker) *Header {
   nullHeader()
 }
 
+// A TEST HOOK, not part of the API (tests/stopanywork.cone): from this call on
+// anyWork says there is work that no worker can take, the residue the
+// wirecapture hang is thought to have left (row 493 (c)): the stop must still
+// end every worker. For a test's last step before its end
+let seemWork: Atomic[u32];
+
+pub fn seemWorkForever() {
+  seemWork.store(1u32);
+}
+
 // Whether any queue holds an actor or a loop piece, looked at without taking one
 fn anyWork(s: *Sched) bool {
-  if (*s).injectLen.load() != 0u64 || taskWork(s) {
+  if (*s).injectLen.load() != 0u64 || taskWork(s) || seemWork.loadOrdered(MemOrder.Relaxed) != 0u32 {
     return true;
   }
   var i = 0u32;
@@ -4950,7 +4985,12 @@ fn spin(w: *Worker) bool {
 // (leavePark), where a notify can claim it and mark it while it is leaving.
 // 4: after it has published itself, before its look, where a notify that
 // claims it marks a worker whose look then sees work, so that it leaves
-// marked (2: tests/parkwake.cone; 4: tests/parkleave.cone). The Sched's
+// marked (2: tests/parkwake.cone; 4: tests/parkleave.cone). 5: the poller
+// (THE POLLER ROLE, poller.cone) back from its wait in the port, before it lets
+// go of the role (tests/pollerrole.cone); the role is taken before 1, so 1, 4
+// and 2 are between the role's taking and the wait. 6: the poller back from
+// its wait with a break, the role let go, before the break's flag is cleared
+// (portTake, tests/pollerhandover.cone). The Sched's
 // 'parkHold': 0 off; 1 armed; 2 a
 // worker held (its index in 'parkHeldIdx'); 3 released; 'parkHoldAt' says
 // where. releaseParkTo releases the held worker and arms the hook again in one
@@ -4958,7 +4998,7 @@ fn spin(w: *Worker) bool {
 // up to three relaxed loads of a line spin has just read; it is not on any
 // send's path.
 
-// Arm the hook: the next worker going to park stops at 'at' (1 to 4,
+// Arm the hook: the next worker going to park stops at 'at' (1 to 6,
 // above). A panic if the workers are not running
 pub fn holdNextPark(at: u32 = 1u32) {
   let s = running.load() as *Sched;
@@ -5020,6 +5060,11 @@ pub fn pokeParked() {
     sync.futexWake(&(*workerAt(s, i)).park);
     i = i + 1u32;
   }
+  // The poller's wait too, by a break with no mark (poller.cone)
+  let port = portHere();
+  if port as usize != 0usize {
+    portBreak(port);
+  }
 }
 
 fn parkHoldHere(s: *Sched, w: *Worker, at: u32) {
@@ -5046,11 +5091,15 @@ fn parkHoldHere(s: *Sched, w: *Worker, at: u32) {
 }
 
 // No work was found: spin a little (spin), then sleep until woken. False once
-// the runtime is stopping.
+// the runtime is stopping: every return checks 'stopping' before it treats
+// anything seen as work found (row 493 (c)), so a worker that sees work it
+// cannot take once the stop has begun (a queue that looks non-empty to
+// anyWork) ends rather than looking again for ever (the wirecapture hang,
+// tests/stopanywork.cone)
 fn idle(w: *Worker) bool {
   let s = (*w).sched;
   if spin(w) {
-    return true;
+    return (*s).stopping.load() == 0u32;
   }
   if runIdleHook() {
     // A worker woken to look that goes on to work has stopped looking, as
@@ -5062,11 +5111,11 @@ fn idle(w: *Worker) bool {
     if (*s).injectLen.load() != 0u64 || taskWork(s) {
       notify(s);
     }
-    return true;
+    return (*s).stopping.load() == 0u32;
   }
   // THE WORKERS' TIMERS (timers.cone): the step before the park, what it
   // answered this worker's to run, as the hook's; then its earliest cell
-  // published for the monitor, before the park is (SeqCst both)
+  // published, before the park is (SeqCst both), for the poller (poller.cone)
   let ts = myTimers as *TimerStore;
   if ts as usize != 0usize && timersPending(ts) && timersStep(ts) {
     (*w).woken = 0u32;
@@ -5074,9 +5123,14 @@ fn idle(w: *Worker) bool {
     if (*s).injectLen.load() != 0u64 || taskWork(s) {
       notify(s);
     }
-    return true;
+    return (*s).stopping.load() == 0u32;
   }
   let due = timersNext();
+  // THE POLLER ROLE (poller.cone), taken if it is free BEFORE the park is
+  // published: a notifier that sees PARKED sees the role, and breaks the
+  // port's wait rather than waking a futex word nobody waits on
+  let port = portHere();
+  let poller = port as usize != 0usize && roleTake(port, w);
   if due != noDue {
     (*ts).due.store(due);
   }
@@ -5092,14 +5146,12 @@ fn idle(w: *Worker) bool {
   let asleep = (*s).sleepers.add(1u32) + 1u32;
   assertDebugMsg(asleep <= (*s).nworkers, "actors: more sleepers counted than workers");
   (*s).searching.store(0u32);
-  // A worker parking with a cell due wakes a parked monitor, which keeps time
-  // for it: the due stored before this read, the monitor's park published
-  // before its read of the dues (timersAnyDue), so one sees the other
-  if due != noDue && (*s).monitor.load() != 0u32 {
-    let mseen, mgot = (*s).monitor.compareSwap(1u32, 0u32);
-    if mgot {
-      sync.futexWake(&(*s).monitor);
-    }
+  // KEEPING TIME (poller.cone): a parker that is not the poller, with a cell
+  // sooner than the poller's wait is armed for, breaks that wait. Its 'due'
+  // stored before this read of 'pollUntil'; the poller stores 'pollUntil'
+  // before it reads the dues: one sees the other
+  if !poller && due != noDue && port as usize != 0usize && due < (*port).pollUntil.load() {
+    portBreak(port);
   }
   if (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
     parkHoldHere(s, w, 4u32);
@@ -5116,13 +5168,19 @@ fn idle(w: *Worker) bool {
     if due != noDue {
       (*ts).due.store(0i64);
     }
+    if poller {
+      roleDrop(port);
+    }
     leavePark(s, w);
     (*w).woken = 1u32;
-    return true;
+    return (*s).stopping.load() == 0u32;
   }
   if (*s).stopping.load() != 0u32 {
     if due != noDue {
       (*ts).due.store(0i64);
+    }
+    if poller {
+      roleDrop(port);
     }
     leavePark(s, w);
     return false;
@@ -5144,15 +5202,28 @@ fn idle(w: *Worker) bool {
   if parkMs == 0u32 {
     cnWorkerPark();
   }
-  var timed = parkMs != 0u32;
-  // With a cell armed the sleep is bounded by it as well (THE WORKERS' TIMERS,
-  // THE PARK): coarse on Windows, where the monitor's wake by name is the
-  // precise one; past it the worker leaves the park itself
+  if poller {
+    return pollerPark(s, w, port, parkMs);
+  }
+  let timed = parkMs != 0u32;
   let cnUntil = if timed {time.Instant.now().nanos() + i64.from(parkMs) * 1000000i64} else {0i64};
+  // With a port the poller keeps this worker's time (KEEPING TIME); without
+  // one the sleep is bounded by its own cell, as row 483 had it
+  futexPark(s, w, if port as usize == 0usize {due} else {noDue}, parkMs, timed, cnUntil)
+}
+
+// The park on the worker's own futex word, published and looked: until it is
+// chosen, or 'bound' comes (its own cell, with no port to keep its time;
+// noDue none). 'timed' with cnmalloc's give-back at 'cnUntil'. True to look for
+// work again, false once the stop has begun
+fn futexPark(s: *Sched, w: *Worker, bound: i64, parkMs: u32, timedAt: bool, cnUntil: i64) bool {
+  let pk = &(*w).park;
+  let ts = myTimers as *TimerStore;
+  var timed = timedAt;
   var timerUp = false;
   while true {
-    if due != noDue {
-      var until = due;
+    if bound != noDue {
+      var until = bound;
       if timed && cnUntil < until {
         until = cnUntil;
       }
@@ -5164,7 +5235,7 @@ fn idle(w: *Worker) bool {
         break;
       }
       let now = time.Instant.now().nanos();
-      if now >= due {
+      if now >= bound {
         timerUp = true;
         break;
       }
@@ -5187,14 +5258,14 @@ fn idle(w: *Worker) bool {
     // again at once, still published (THE PARK WORD)
     tally(&(*(*w).stat).reparks, 1u64);
   }
-  if due != noDue {
+  if ts as usize != 0usize {
     (*ts).due.store(0i64);
   }
   if timerUp {
     // Its own cell's time: it leaves as one that saw work does, unchosen
     leavePark(s, w);
     (*w).woken = 1u32;
-    return true;
+    return (*s).stopping.load() == 0u32;
   }
   // Chosen (NOTIFIED): the notify cleared the bit
   pk.store(parkRunning);
@@ -5309,13 +5380,13 @@ pub fn monitorTick() u32 {
 // the DEPUTY of a stuck worker's timers: a worker whose activation count has
 // not moved for a whole base tick, with cells overdue, has them fired by the
 // monitor under the wheel's word (THE WORKERS' TIMERS, timers.cone); while a
-// worker has cells armed the monitor does not park, and paces to the earliest
-// of them. A parked worker's 'due' keeps the base tick (a new, nearer due
-// published while the monitor sleeps is seen at the next tick, so the tick is
-// the lateness it adds), and the pause is cut to the due, to monitorLeastPause
-// at the least. A running worker's 'next' sets the pause, never shorter than the
-// base tick nor longer than the back-off's longest, so a far timer on a worker
-// (a connection's idle timeout) does not hold the monitor at the base tick.
+// running worker has cells armed the monitor does not park, and its 'next'
+// sets the pause, never shorter than the base tick nor longer than the
+// back-off's longest, so a far timer on a worker (a connection's idle timeout)
+// does not hold the monitor at the base tick. A parked worker's cells are the
+// poller's (poller.cone, KEEPING TIME), not the monitor's (row 493 took that
+// part away from row 483's monitor); the monitor covers only THE GAP, when
+// nobody holds the role while workers are parked (portGap), each tick.
 fn monitorMain(arg: WorkerArg) u32 {
   let s = (*arg.w).sched;
   let n = (*s).nworkers;
@@ -5343,26 +5414,24 @@ fn monitorMain(arg: WorkerArg) u32 {
   var pause = i64.from(micros) * 1000i64;
   while (*s).stopping.load() == 0u32 {
     monitorPause(timer, time.Duration.fromNanos(pause));
-    // THE WORKERS' TIMERS: a parked worker whose cell is due is woken by name;
-    // while one has a cell to come the monitor neither parks nor backs off, and
-    // pauses no longer than to the earliest. A worker that is running with cells
-    // armed sets the pace instead (below): the monitor keeps from parking, but
-    // pauses to that worker's earliest, within its base tick and its longest
-    var running = noDue;
-    let soonest = timersWakeDue(s, &mut running as *i64);
-    let parkedTiming = soonest != noDue || timersAnyDue(s);
-    let timing = parkedTiming || running != noDue;
-    if (*s).sleepers.load() == n && !timing {
+    // THE WORKERS' TIMERS: a parked worker's cells are the poller's to keep
+    // (KEEPING TIME, poller.cone), and in the gap with nobody in the role the
+    // monitor wakes their owner (THE GAP: portGap, below). A worker that is
+    // running with cells armed sets the pace (below): the monitor keeps from
+    // parking, but pauses to that worker's earliest, within its base tick and
+    // its longest
+    let running = timersRunningNext(s);
+    if (*s).sleepers.load() == n && running == noDue {
       quiet = quiet + 1u32;
     } else {
       quiet = 0u32;
     }
     if quiet >= monitorIdleTicks {
       // Publish the park, then look again: a worker that left a park before
-      // the publication is seen in the count, one after it sees the park; a
-      // worker that published a due before it is seen here, one after wakes it
+      // the publication is seen in the count, one after it sees the park. With
+      // every worker parked one of them holds the role and keeps their time
       (*s).monitor.store(1u32);
-      if (*s).sleepers.load() == n && (*s).stopping.load() == 0u32 && !timersAnyDue(s) {
+      if (*s).sleepers.load() == n && (*s).stopping.load() == 0u32 {
         sync.futexWait(&(*s).monitor, 1u32);
       }
       var seen = 0u32;
@@ -5406,13 +5475,17 @@ fn monitorMain(arg: WorkerArg) u32 {
         *ap = lookAt.nanos();
       } else if lookAt.nanos() - *ap >= stuckNanos {
         let ts = timerStoreOf(i);
-        if ts as usize != 0usize && timersDeputy(ts, lookAt, &mut dep) {
+        if ts as usize != 0usize && timersDeputy(ts, lookAt, &mut dep, false) != 0u64 {
           found = true;
         }
       }
       i = i + 1u32;
     }
-    if found || parkedTiming {
+    // THE GAP (poller.cone): nobody in the role while workers are parked
+    if portGap(s) {
+      found = true;
+    }
+    if found {
       calm = 0u32;
       micros = base;
     } else {
@@ -5426,12 +5499,7 @@ fn monitorMain(arg: WorkerArg) u32 {
     }
     monitorTickNow.store(micros);
     pause = i64.from(micros) * 1000i64;
-    if soonest != noDue {
-      let left = soonest - time.Instant.now().nanos();
-      if left < pause {
-        pause = if left > monitorLeastPause {left} else {monitorLeastPause};
-      }
-    } else if running != noDue && !found {
+    if running != noDue && !found {
       // Only running workers have cells armed, and nothing was found: the
       // pause is the time to the earliest, never shorter than the base tick
       // (a stuck worker is judged by whole ticks) nor longer than the longest
@@ -5609,6 +5677,7 @@ fn workerMain(arg: WorkerArg) u32 {
       break;
     }
   }
+  entriesRelease();
   keepRelease();
   cnWorkerEnd();
   me = 0usize;
@@ -5650,8 +5719,9 @@ pub struct Options {
   pub spinMicros: u32 = defaultSpinMicros;   // how long an idle worker spins before it parks (THE SPIN); 0: it parks at once
   pub spinCap: u32 = 0u32;                   // most workers spinning at once; 0: half of them, at most defaultSpinMost (4)
   pub injectEvery: u32 = defaultInjectEvery; // every this many turns a worker looks in the inject queue before its own queue; 0: the default (61)
-  pub monitorMicros: u32 = defaultMonitorMicros; // the scheduler's monitor thread looks at the workers every this many microseconds, and wakes a sleeper to steal when a worker has held one turn for a whole tick with actors waiting in its queue (THE MONITOR), and keeps time for parked workers' timers (THE WORKERS' TIMERS, timers.cone); 0: no monitor thread, and aio's sleeps stay on its I/O thread
+  pub monitorMicros: u32 = defaultMonitorMicros; // the scheduler's monitor thread looks at the workers every this many microseconds, and wakes a sleeper to steal when a worker has held one turn for a whole tick with actors waiting in its queue (THE MONITOR), and, while no worker waits in the worker port, wakes a parked worker whose timer is due (THE GAP, poller.cone); 0: no monitor thread, and with more than one worker aio's sleeps stay on its I/O thread
   pub wakeOnPush: bool = false;              // OFF by default (it cost pingpong 6.8x). true: a push to a worker's own queue wakes one parked worker when none is looking, even if the queue was empty (THE SEARCH INVARIANT, duty 3)
+  pub pollBatch: u32 = 16u32;                // the most entries the worker that waits in the runtime's own OS wait takes from it at once (THE WORKER PORT AND THE POLLER, poller.cone); 0: the default (16)
 }
 
 // What the workers have done, counted by them: answered by 'stats'
@@ -5680,6 +5750,7 @@ let chosenSpinMicros: Atomic[u32];
 let chosenSpinCap: Atomic[u32];
 let chosenInjectEvery: Atomic[u32];
 let chosenWakeOnPush: Atomic[u32];
+let chosenPollBatch: Atomic[u32];
 let chosenMonitorMicros: Atomic[u32];
 let monitorFindsTotal: Atomic[u64];   // the monitor's finds, queues it moved (Relaxed); the monitor is the one writer, and stats() reads
 let monitorMovedTotal: Atomic[u64];   // the actors it moved (Relaxed), likewise
@@ -5745,6 +5816,12 @@ fn @initpure init() {
   chosenSpinCap = Atomic[u32].of(0u32);
   chosenInjectEvery = Atomic[u32].of(defaultInjectEvery);
   chosenWakeOnPush = Atomic[u32].of(0u32);
+  chosenPollBatch = Atomic[u32].of(defaultPollBatch);
+  portAt = Atomic[usize].of(0usize);
+  portEver = Atomic[usize].of(0usize);
+  portOnce = sync.Once.make();
+  portHookAt = Atomic[usize].of(0usize);
+  seemWork = Atomic[u32].of(0u32);
   chosenMonitorMicros = Atomic[u32].of(defaultMonitorMicros);
   monitorFindsTotal = Atomic[u64].of(0u64);
   monitorMovedTotal = Atomic[u64].of(0u64);
@@ -5824,6 +5901,7 @@ pub fn configure(opts: Options) {
   chosenSpinCap.store(opts.spinCap);
   chosenInjectEvery.store(opts.injectEvery);
   chosenWakeOnPush.store(if opts.wakeOnPush {1u32} else {0u32});
+  chosenPollBatch.store(opts.pollBatch);
   chosenMonitorMicros.store(opts.monitorMicros);
 }
 
@@ -5877,6 +5955,13 @@ fn startWorkers() {
   (*s).monitorMicros = if n >= 2u32 {chosenMonitorMicros.load()} else {0u32};
   // The workers' timer stores, by index (timers.cone), before any worker runs
   timerTableMake(n);
+  // THE WORKER PORT (poller.cone), made now if workerPort has not made it, its
+  // batch set before any worker waits in it
+  let port = portEnsure();
+  if port as usize != 0usize {
+    let pb = chosenPollBatch.load();
+    (*port).batch = if pb == 0u32 {defaultPollBatch} else {pb};
+  }
   // The sleepers' bitmap: a word for every 64 workers, a cache line each
   (*s).parkedWords = (n + 63u32) / 64u32;
   (*s).parked = libc.calloc(usize.from((*s).parkedWords), 64usize) as usize;
@@ -6127,6 +6212,12 @@ fn stopWorkers() {
     sync.futexWake(&(*w).park);
     j = j + 1u32;
   }
+  // The poller, marked with the rest, waits in the port: a break ends its wait
+  // (or its next one at once), and it finds its word NOTIFIED (poller.cone)
+  let port = portHere();
+  if port as usize != 0usize {
+    portBreak(port);
+  }
   // The monitor sees 'stopping' at its next tick, or is woken from its park
   if (*s).monitorMicros != 0u32 {
     (*s).monitor.store(0u32);
@@ -6140,6 +6231,8 @@ fn stopWorkers() {
     t.join();
     i = i + 1u32;
   }
+  // Nobody waits in the worker port now (poller.cone)
+  portClose();
   keepRelease();
   running.store(0usize);
   libc.free((*s).parked as *u8);

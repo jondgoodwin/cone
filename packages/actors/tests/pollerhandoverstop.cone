@@ -1,0 +1,146 @@
+// THE POLLER ROLE handed over while a break's flag is still set, at the stop
+// (poller.cone, portTake; row 493, lane 731), forced rather than raced. Two
+// workers; pollerhandover.cone has the notify's case and the defect.
+//
+// Worker Q runs a turn that waits on a gate while P, the poller, sleeps in the
+// port. The test hook is armed at its sixth place (holdNextPark(6)) and a
+// message's notify breaks P's wait: P is held back from the wait, the role let
+// go, the break's flag not yet cleared. The gate opens: Q runs the message,
+// takes the role and parks in the port. Then the stop: it marks every worker
+// and breaks the port, a break that finds the flag still set. A plain thread
+// lets P go once the stop has begun; P clears the flag, and unless it breaks
+// the port again Q sleeps on in it, its wait without a limit, and the stop's
+// join never ends. A watchdog ends the program with status 1 if the stop does
+// not end within 20 s.
+mod pollerhandoverstop;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+import stdio;
+import libc;
+
+let handled: Atomic[u64];
+let gate: Atomic[u32];
+let inTurn: Atomic[u32];
+let spunOn: Atomic[u32];
+let stopping: Atomic[u32];
+let released: Atomic[u32];
+let finished: Atomic[u32];
+let sent: Atomic[u64];
+
+fn @initpure init() {
+  handled = Atomic[u64].of(0u64);
+  gate = Atomic[u32].of(0u32);
+  inTurn = Atomic[u32].of(0u32);
+  spunOn = Atomic[u32].of(0u32);
+  stopping = Atomic[u32].of(0u32);
+  released = Atomic[u32].of(0u32);
+  finished = Atomic[u32].of(0u32);
+  sent = Atomic[u64].of(0u64);
+}
+
+actor Counter {
+  pub async fn bump(self) {
+    handled.add(1u64);
+  }
+}
+
+actor Spinner {
+  pub async fn hold(self, ticket: u32) {
+    spunOn.store(actors.workerIndex());
+    inTurn.store(ticket);
+    while gate.load() != ticket {
+      thread.yieldNow();
+    }
+  }
+}
+
+fn nowNs() u64 {u64.from(time.Instant.now().nanos())}
+
+fn within(cond: &fn() bool, ms: u64) bool {
+  let deadline = nowNs() + ms * 1000000u64;
+  while !cond() && nowNs() < deadline {
+    thread.yieldNow();
+  }
+  cond()
+}
+
+fn handledAll() bool {handled.load() >= sent.load()}
+fn turnOne() bool {inTurn.load() == 1u32}
+fn held() bool {actors.parkHeld()}
+
+fn watchdog(secs: u32) u32 {
+  let deadline = nowNs() + u64.from(secs) * 1000000000u64;
+  while finished.load() == 0u32 {
+    if nowNs() >= deadline {
+      stdio.printStr("watchdog: the stop did not end within its time (its break lost)\n");
+      libc.exit(1i32);
+    }
+    thread.sleep(time.Duration.fromMillis(10i64));
+  }
+  0u32
+}
+
+// Lets the held worker go once the stop has closed its gate, and the stop has
+// had the time to mark the workers and break the port
+fn releaser(n: u32) u32 {
+  while stopping.load() == 0u32 {
+    thread.sleep(time.Duration.fromMillis(1i64));
+  }
+  while actors.isRunning() {
+    thread.sleep(time.Duration.fromMillis(1i64));
+  }
+  thread.sleep(time.Duration.fromMillis(200i64));
+  // Stored before the release: once the held worker goes on, the stop can end
+  // before this thread runs again
+  released.store(1u32);
+  actors.releasePark();
+  n
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  {
+    let c = Counter();
+    let a = Spinner();
+    actors.waitUntilIdle();
+    thread.sleep(time.Duration.fromMillis(10i64));
+    a.hold(1u32);
+    require(within(&turnOne, 5000u64), "a worker runs the Spinner's turn within 5 s");
+    let q = spunOn.load();
+    // Sent again while the poller has not parked yet (under load it may still
+    // be on its way, and takes the message itself)
+    actors.holdNextPark(6u32);
+    var tries = 0u32;
+    while !actors.parkHeld() && tries < 100u32 {
+      c.bump();
+      sent.add(1u64);
+      within(&held, 50u64);
+      tries = tries + 1u32;
+    }
+    require(within(&held, 5000u64), "the poller is held after its wait, the role let go, before the break's flag is cleared");
+    require(actors.parkHeldWorker() != q, "...and it is not the worker in the Spinner's turn");
+    let w0 = actors.pollerStats().waits;
+    gate.store(1u32);
+    require(within(&handledAll, 5000u64), "the message is handled by the other worker within 5 s");
+    let deadline = nowNs() + 5000000000u64;
+    while actors.pollerStats().waits < w0 + 1u64 && nowNs() < deadline {
+      thread.yieldNow();
+    }
+    require(actors.pollerStats().waits >= w0 + 1u64, "...which then waits in the port as the new poller");
+    thread.sleep(time.Duration.fromMillis(20i64));
+  }
+  let dog = thread.start(20u32, &watchdog);
+  dog.detach();
+  let rel = thread.start(0u32, &releaser);
+  rel.detach();
+  stopping.store(1u32);
+  finalAll();
+  finished.store(1u32);
+  expectUInt(u64.from(released.load()), 1u64, "the held worker was let go during the stop, and the stop ended");
+  expectUInt(handled.load(), sent.load(), "every message handled");
+  done()
+}

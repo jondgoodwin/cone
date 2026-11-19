@@ -1,0 +1,801 @@
+// THE WORKER PORT AND THE POLLER (row 493; the spec is "aio and http"'s
+// "Candidate C for UDP", 18 Nov 2026, sections 3, 4 and 6). The runtime owns a
+// second OS wait beside aio's I/O thread's, the WORKER PORT: on Linux an epoll
+// instance with an eventfd (the break) and a timerfd, on Windows a completion
+// port with a high-resolution timer whose expiry a wait completion packet
+// delivers to the port (the Loop's own scheme, iocore loop.cone). It is made
+// once, at the workers' start or at the first workerPort(), and closed when
+// the stop has joined the workers.
+//
+// THE POLLER ROLE. One worker at a time holds it ('pollerAt', its index + 1;
+// 0 none) and parks by waiting in the port instead of on its futex word; the
+// others park on their words as before. A worker going to park takes the role
+// if it is free, by one compare-and-swap BEFORE it publishes itself PARKED, so
+// that a notifier whose compare-and-swap sees PARKED also sees the role
+// (SeqCst both) and chooses the right wake: a futex wake, or a BREAK, a packet
+// posted to the port (a PostQueuedCompletionStatus, an eventfd write),
+// coalesced by 'breakPending' as iocore's Port.wakes are. The port remembers a
+// break posted before the wait begins (a queued packet; a level-triggered
+// eventfd), so mark-then-break is safe in either order, as mark-then-futexWake
+// is. wakeOne chooses futex sleepers first and the poller last.
+//
+// KEEPING TIME. The poller's wait is bounded by 'pollUntil': the earliest of
+// its own cells and every parked worker's (a parked worker publishes 'due',
+// timers.cone). A Dekker pair on 'due' and 'pollUntil': a parker stores 'due'
+// then loads 'pollUntil', and breaks the wait if its due is sooner; the poller
+// stores 'pollUntil' then loads every 'due', and again while the earliest
+// moves earlier. Either the poller's look sees the due, or its store came
+// first and the parker breaks it. Back from the wait, the poller lets go of the
+// role (the first store after the system call), and fires the overdue cells of
+// parked workers as their DEPUTY (timersDeputy, parked), under row 485's wheel
+// word, which is uncontended because their owner sleeps; the answers go to its
+// own queue first (it runs them under inHook, so the first stays local and the
+// rest go to the inject queue with a notify, the existing rule).
+//
+// THE GAP. While the role holder runs, nobody holds the role: a parked worker's
+// cell would wait for the next poller. The monitor, which runs whenever any
+// worker does, wakes the parked owner of the earliest cell by name in that gap
+// (timersGapWake): it fires its own when they are due and takes the role as it
+// parks again. With every worker parked there is always a poller, so the
+// monitor parks as it did before cells existed. A runtime of one worker has no
+// monitor and needs none: its one worker always finds the role free. With no
+// port (it could not be made) a parked worker bounds its own futex wait by its
+// cell, as row 483 had it.
+//
+// THE PORT'S OTHER ENTRIES (substrate for aio, rows 494-495; nothing registers
+// yet): every entry that is not the port's own break or timer goes to the
+// events hook (workerEvents), on the worker that took it, under inHook. While
+// aio says something waits there (workerPortWaits) and nobody holds the role, a
+// busy worker polls the port without waiting every injectEvery turns, and the
+// monitor at each tick wakes a sleeper to take the role, or, with none,
+// polls without waiting itself.
+
+// The port's own entries. Linux: an epoll datum's high word 0 (a handle's
+// generation is never 0), the low word one of these. Windows: the keys
+const portDatumBreak = 1u32;
+const portDatumTimer = 2u32;
+const portKeyBreak = 0x7B01usize;
+const portKeyTimer = 0x7B02usize;
+
+// Options.pollBatch's default: at most this many entries a wait (spec choice 2)
+const defaultPollBatch = 16u32;
+
+// Linux: struct epoll_event, packed (as iocore's EpollEvent)
+struct PortEvent {
+  pub events: u32;
+  pub lo: u32;
+  pub hi: u32;
+}
+
+// Linux: struct itimerspec
+struct PortTimerSpec {
+  pub intervalSec: i64;
+  pub intervalNsec: i64;
+  pub valueSec: i64;
+  pub valueNsec: i64;
+}
+
+// Windows: OVERLAPPED_ENTRY
+struct PortEntry {
+  pub key: usize;
+  pub ov: *u8;
+  pub internal: usize;
+  pub bytes: u32;
+}
+
+extern {
+  fn @c epoll_create1(flags: i32) i32;
+  fn @c epoll_ctl(epfd: i32, op: i32, fd: i32, ev: *PortEvent) i32;
+  fn @c epoll_wait(epfd: i32, events: *PortEvent, max: i32, timeout: i32) i32;
+  fn @c eventfd(initial: u32, flags: i32) i32;
+  fn @c timerfd_create(clock: i32, flags: i32) i32;
+  fn @c timerfd_settime(fd: i32, flags: i32, spec: *PortTimerSpec, old: *PortTimerSpec) i32;
+  fn @c("read") portSysRead(fd: i32, buf: *u8, n: usize) i64;
+  fn @c("write") portSysWrite(fd: i32, buf: *u8, n: usize) i64;
+  fn @c("close") portSysClose(fd: i32) i32;
+}
+
+#if #os == .windows {
+  extern {
+    fn @c(system) CreateIoCompletionPort(h: usize, port: usize, key: usize, threads: u32) usize;
+    fn @c(system) GetQueuedCompletionStatusEx(port: usize, entries: *PortEntry, count: u32,
+        removed: *u32, ms: u32, alertable: i32) i32;
+    fn @c(system) PostQueuedCompletionStatus(port: usize, bytes: u32, key: usize, ov: *u8) i32;
+    fn @c(system) SetThreadPriority(thread: usize, priority: i32) i32;
+    fn @c(system) GetCurrentThread() usize;
+  }
+}
+
+// ntdll's wait completion packet, looked up at the port's making (actors links
+// no import library of ntdll's: the language suite's link line has none)
+alias NtCreatePacket = &fn @c (out: *usize, access: u32, attrs: *u8) i32;
+alias NtAssociatePacket = &fn @c (packet: usize, port: usize, target: usize, key: *u8, apc: *u8,
+    status: i32, info: usize, already: *u8) i32;
+
+const portEpollAdd = 1i32;
+const portEpollIn = 1u32;
+const portCloexec = 0x80000i32;
+const portNonBlock = 0x800i32;
+const portClockMonotonic = 1i32;
+const portInfinite = 0xFFFFFFFFu32;
+const threadPriorityNormal = 0i32;
+const threadPriorityHighest = 2i32;
+
+struct WorkerPort {
+  before: Array[u8, 64];
+  pollerAt: Atomic[u32];      // THE POLLER ROLE: 0, or its holder's index + 1
+  breakPending: Atomic[u32];  // 1 while a break is in the port
+  pollUntil: Atomic[i64];     // the instant the poller's wait is armed for (noDue: none); the poller writes, parkers read
+  waiting: Atomic[u64];       // what aio says waits in the port (workerPortWaits)
+  gap: Array[u8, 40];
+  handle: usize;              // Linux: the epoll descriptor. Windows: the completion port
+  wake: usize;                // Linux: the eventfd
+  timer: usize;               // Linux: the timerfd. Windows: the high-resolution waitable timer, 0 if none
+  packet: usize;              // Windows: the wait completion packet, 0 if none
+  associate: usize;           // Windows: NtAssociateWaitCompletionPacket
+  associated: Atomic[u32];    // Windows: the packet waits on the timer now
+  armedFor: Atomic[i64];      // the instant the timer is armed for; 0 none (the role holder's, Relaxed)
+  batch: u32;                 // Options.pollBatch
+  // Counts (Relaxed), for pollerStats
+  waits: Atomic[u64];         // waits in the port
+  entries: Atomic[u64];       // entries taken, the port's own included
+  fullBatches: Atomic[u64];   // waits that came back with a full batch
+  breaks: Atomic[u64];        // breaks posted
+  deputyFires: Atomic[u64];   // parked workers' cells fired by the poller
+  gapWakes: Atomic[u64];      // the monitor's wakes of a parked owner with no poller
+  busyPolls: Atomic[u64];     // polls without waiting, by a busy worker or the monitor
+  timerEntries: Atomic[u64];  // the timer's expiries taken
+  timeouts: Atomic[u64];      // timed waits back with nothing: the wait's own timeout, the timer's packet not come
+  lateMax: Atomic[i64];       // the latest a timed wait came back past its instant, ns (the role holder's)
+}
+
+// The port, or 0 before it is made and once the stop has closed it; and the
+// same kept after the stop, for pollerStats (the block is never freed)
+let portAt: Atomic[usize];
+let portEver: Atomic[usize];
+let portOnce: sync.Once;
+
+// The events hook (THE PORT'S OTHER ENTRIES): set once
+struct PortHook {
+  events: &fn(a: usize, b: usize, n: u32) bool;
+}
+let portHookAt: Atomic[usize];
+
+// This worker's entries buffer and its deputy's scratch, made at first need
+var @threadlocal myEntries: usize = 0usize;
+var @threadlocal myDeputy: usize = 0usize;
+
+fn portHere() *WorkerPort {portAt.load() as *WorkerPort}
+
+// Make the port (once): nothing if the system will not give one (the park is
+// then row 483's, each worker timing its own)
+fn portMake() {
+  let p = libc.calloc(1usize, mem.sizeof[WorkerPort]()) as *WorkerPort;
+  if p as usize == 0usize {
+    die("actors: out of memory for the runtime");
+  }
+  (*p).pollerAt = Atomic[u32].of(0u32);
+  (*p).breakPending = Atomic[u32].of(0u32);
+  (*p).pollUntil = Atomic[i64].of(noDue);
+  (*p).waiting = Atomic[u64].of(0u64);
+  (*p).associated = Atomic[u32].of(0u32);
+  (*p).armedFor = Atomic[i64].of(0i64);
+  (*p).batch = defaultPollBatch;
+  #if #os == .windows {
+    let h = CreateIoCompletionPort(0xFFFFFFFFFFFFFFFFusize, 0usize, 0usize, 0u32);
+    if h == 0usize {
+      libc.free(p as *u8);
+      return;
+    }
+    (*p).handle = h;
+    // The high-resolution timer and its wait completion packet; without them
+    // the wait's own millisecond timeout keeps the time
+    var tm = CreateWaitableTimerExW(null, null, 0x2u32, 0x1F0003u32);
+    if tm == 0usize {
+      tm = CreateWaitableTimerExW(null, null, 0u32, 0x1F0003u32);
+    }
+    (*p).timer = tm;
+    let nt = GetModuleHandleA(&"ntdll.dll" as *u8);
+    if tm != 0usize && nt != 0usize {
+      let mk = GetProcAddress(nt, &"NtCreateWaitCompletionPacket" as *u8);
+      let assoc = GetProcAddress(nt, &"NtAssociateWaitCompletionPacket" as *u8);
+      if mk != 0usize && assoc != 0usize {
+        let f = mk as *u8 as NtCreatePacket;
+        var packet = 0usize;
+        if f(&mut packet as *usize, 0x10000000u32, null) == 0i32 {
+          (*p).packet = packet;
+          (*p).associate = assoc;
+        }
+      }
+    }
+  } #else {
+    let ep = epoll_create1(portCloexec);
+    if ep < 0i32 {
+      libc.free(p as *u8);
+      return;
+    }
+    let ev = eventfd(0u32, portNonBlock | portCloexec);
+    let tm = timerfd_create(portClockMonotonic, portNonBlock | portCloexec);
+    var a = PortEvent(portEpollIn, portDatumBreak, 0u32);
+    var b = PortEvent(portEpollIn, portDatumTimer, 0u32);
+    if ev < 0i32 || tm < 0i32 || epoll_ctl(ep, portEpollAdd, ev, &mut a as *PortEvent) != 0i32
+        || epoll_ctl(ep, portEpollAdd, tm, &mut b as *PortEvent) != 0i32 {
+      if ev >= 0i32 {portSysClose(ev);}
+      if tm >= 0i32 {portSysClose(tm);}
+      portSysClose(ep);
+      libc.free(p as *u8);
+      return;
+    }
+    (*p).handle = usize.from(ep);
+    (*p).wake = usize.from(ev);
+    (*p).timer = usize.from(tm);
+  }
+  portEver.store(p as usize);
+  portAt.store(p as usize);
+}
+
+fn portEnsure() *WorkerPort {
+  portOnce.callOnce(&portMake);
+  portHere()
+}
+
+// The stop's last step, the workers joined: the port closed. Nothing waits in it
+fn portClose() {
+  let p = portHere();
+  if p as usize == 0usize {
+    return;
+  }
+  portAt.store(0usize);
+  #if #os == .windows {
+    if (*p).packet != 0usize {CloseHandle((*p).packet);}
+    if (*p).timer != 0usize {CloseHandle((*p).timer);}
+    CloseHandle((*p).handle);
+  } #else {
+    portSysClose(i32.from((*p).timer));
+    portSysClose(i32.from((*p).wake));
+    portSysClose(i32.from((*p).handle));
+  }
+  // The block itself is kept: a plain thread's late wake may still read it,
+  // as the timer stores are kept (timers.cone)
+}
+
+// THE PORT'S OTHER ENTRIES, for the I/O package and not for programs (public
+// because aio calls it from its own package, as workerHooks is): the port's
+// handle, made now if it was not (an epoll descriptor on Linux, a completion
+// port on Windows), for a socket to be registered with; 0 if the system gave
+// none, or once the stop has closed it
+pub fn workerPort() usize {
+  let p = portEnsure();
+  if p as usize == 0usize {0usize} else {(*p).handle}
+}
+
+// The same: the hook every other entry of the port goes to, on the worker (or
+// the monitor) that took it, under inHook. Linux: (the epoll events, the datum
+// as entry | gen << 32, 0); Windows: (the key, the OVERLAPPED, the bytes). True
+// when it answered anything. Set once, before anything is registered; a later
+// call changes nothing
+pub fn workerEvents(events: &fn(a: usize, b: usize, n: u32) bool) {
+  if portHookAt.load() != 0usize {
+    return;
+  }
+  let h = libc.malloc(mem.sizeof[PortHook]()) as *PortHook;
+  if h as usize == 0usize {
+    die("actors: out of memory for the worker hooks");
+  }
+  mem.writeRaw[PortHook](h, PortHook(events));
+  portHookAt.store(h as usize);
+}
+
+// The same: one more (or one fewer) operation waits in the port. While any
+// does and nobody holds the role, busy workers and the monitor poll it
+pub fn workerPortWaits(more: bool) {
+  let p = portEnsure();
+  if p as usize == 0usize {
+    return;
+  }
+  if more {(*p).waiting.add(1u64);} else {(*p).waiting.sub(1u64);}
+}
+
+// THE POLLER ROLE: taken by w if free
+fn roleTake(p: *WorkerPort, w: *Worker) bool {
+  let seen, ok = (*p).pollerAt.compareSwap(0u32, (*w).index + 1u32);
+  ok
+}
+
+fn roleDrop(p: *WorkerPort) {
+  (*p).pollerAt.store(0u32);
+}
+
+// Whether w holds the role now
+fn isPoller(w: *Worker) bool {
+  let p = portHere();
+  p as usize != 0usize && (*p).pollerAt.load() == (*w).index + 1u32
+}
+
+// A BREAK: the poller's wait ends (or the next one does at once). Coalesced:
+// one in the port at a time. Any thread
+fn portBreak(p: *WorkerPort) {
+  if (*p).breakPending.swap(1u32) != 0u32 {
+    return;
+  }
+  (*p).breaks.addOrdered(1u64, MemOrder.Relaxed);
+  #if #os == .windows {
+    PostQueuedCompletionStatus((*p).handle, 0u32, portKeyBreak, null);
+  } #else {
+    var one = 1u64;
+    portSysWrite(i32.from((*p).wake), &mut one as *u8, 8usize);
+  }
+}
+
+// Wake w, marked NOTIFIED by the caller: a break if it holds the role, which it
+// took before it published PARKED, else its futex word (THE POLLER ROLE)
+fn wakeMarked(w: *Worker) {
+  let p = portHere();
+  if p as usize != 0usize && (*p).pollerAt.load() == (*w).index + 1u32 {
+    portBreak(p);
+  } else {
+    sync.futexWake(&(*w).park);
+  }
+}
+
+// The earliest cell of every parked worker but w (noDue if none): a parked
+// worker's 'due' says it is parked; its wheel's 'next' is the time, which only
+// a deputy moves while it sleeps, and only later
+fn parkedEarliest(s: *Sched, w: *Worker) i64 {
+  var m = noDue;
+  var i = 0u32;
+  while i < (*s).nworkers {
+    if i != (*w).index {
+      let ts = timerStoreOf(i);
+      if ts as usize != 0usize && (*ts).due.load() != 0i64 {
+        let nx = nextOf(ts);
+        if nx < m {
+          m = nx;
+        }
+      }
+    }
+    i = i + 1u32;
+  }
+  m
+}
+
+// The poller's bound, published: 'own' or a parked worker's cell, the earliest
+// (KEEPING TIME: stored, then the dues looked at again)
+fn pollPlan(p: *WorkerPort, s: *Sched, w: *Worker, own: i64) i64 {
+  var m = own;
+  let e = parkedEarliest(s, w);
+  if e < m {
+    m = e;
+  }
+  while true {
+    (*p).pollUntil.store(m);
+    let again = parkedEarliest(s, w);
+    if again >= m {
+      break;
+    }
+    m = again;
+  }
+  m
+}
+
+// This worker's entries buffer, pollBatch long
+fn entriesHere(p: *WorkerPort) *u8 {
+  if myEntries == 0usize {
+    #if #os == .windows {
+      myEntries = libc.calloc(usize.from((*p).batch), mem.sizeof[PortEntry]()) as usize;
+    } #else {
+      myEntries = libc.calloc(usize.from((*p).batch), mem.sizeof[PortEvent]()) as usize;
+    }
+    if myEntries == 0usize {
+      die("actors: out of memory for the runtime");
+    }
+  }
+  myEntries as *u8
+}
+
+fn entriesRelease() {
+  if myEntries != 0usize {
+    libc.free(myEntries as *u8);
+    myEntries = 0usize;
+  }
+  if myDeputy != 0usize {
+    let d = myDeputy as *DeputyScratch;
+    let x = mem.readRaw[DeputyScratch](d);
+    libc.free(d as *u8);
+    myDeputy = 0usize;
+  }
+}
+
+// Arm the timer for 'until' (unless it already is) and say the wait's own
+// timeout in milliseconds: none (INFINITE) when 'until' never comes, else a
+// backstop a millisecond past it; 0 when it has come
+fn portArm(p: *WorkerPort, until: i64, now: i64) u32 {
+  if until == noDue {
+    return portInfinite;
+  }
+  let left = until - now;
+  if left <= 0i64 {
+    return 0u32;
+  }
+  #if #os == .windows {
+    if (*p).packet != 0usize {
+      if (*p).associated.load() == 0u32 || (*p).armedFor.loadOrdered(MemOrder.Relaxed) != until {
+        // Relative, in 100 ns units: negative. Not asked short of the instant as
+        // the monitor's pause is: tried, it added a third more waits (back
+        // early, then again for the rest) and no lateness was saved (mean
+        // 1.02 ms either way, 3 ms sleeps, 4 workers, row 493)
+        var due = 0i64 - (left + 99i64) / 100i64;
+        SetWaitableTimer((*p).timer, &mut due as *i64, 0i32, null, null, 0i32);
+        (*p).armedFor.storeOrdered(until, MemOrder.Relaxed);
+        if (*p).associated.load() == 0u32 {
+          let f = (*p).associate as *u8 as NtAssociatePacket;
+          // 'already' is not needed: a timer already signalled still has its
+          // packet queued at once, the flag set besides (probed on Windows 11
+          // 26200, lane 731: both timer kinds, the flag asked or not)
+          var already = 0u8;
+          if f((*p).packet, (*p).handle, (*p).timer, portKeyTimer as *u8, null, 0i32, 0usize, &mut already as *u8) == 0i32 {
+            (*p).associated.store(1u32);
+          }
+        }
+      }
+    }
+  } #else {
+    if (*p).armedFor.loadOrdered(MemOrder.Relaxed) != until {
+      var spec = PortTimerSpec(0i64, 0i64, left / 1000000000i64, left % 1000000000i64);
+      timerfd_settime(i32.from((*p).timer), 0i32, &mut spec as *PortTimerSpec, null);
+      (*p).armedFor.storeOrdered(until, MemOrder.Relaxed);
+    }
+  }
+  let ms = (left + 999999i64) / 1000000i64 + 1i64;
+  if ms >= i64.from(portInfinite) {portInfinite - 1u32} else {u32.from(ms)}
+}
+
+// One wait in the port for at most ms (0: a look), into this thread's buffer:
+// how many entries it took
+fn portWait(p: *WorkerPort, ms: u32) u32 {
+  let buf = entriesHere(p);
+  #if #os == .windows {
+    var got = 0u32;
+    if GetQueuedCompletionStatusEx((*p).handle, buf as *PortEntry, (*p).batch, &mut got as *u32, ms, 0i32) == 0i32 {
+      return 0u32;
+    }
+    got
+  } #else {
+    let t = if ms == portInfinite {0i32 - 1i32} else {i32.from(ms)};
+    let n = epoll_wait(i32.from((*p).handle), buf as *PortEvent, i32.from((*p).batch), t);
+    if n <= 0i32 {0u32} else {u32.from(n)}
+  }
+}
+
+// The entries taken: the port's own handled, the rest to the events hook.
+// A break or a timer entry taken may have been meant for a poller that has the
+// role now, which then gets a break of its own. That holds for the holder's
+// own wait too, which lets go of the role before it comes here: between the
+// letting go and the clearing of 'breakPending' another worker can take the
+// role and park, and a notifier's break for it finds the flag still set and
+// posts nothing (on Linux the eventfd's read here would drain it besides).
+// The clearing (SeqCst) comes before the role's read below, the notifier's
+// role read before its swap: either the swap comes after the clearing and
+// posts, or the read here sees the new poller and breaks it. A break nobody
+// needed sends that poller round its loop once. 'holder' says the wait was
+// the role holder's, for the test hook only (place 6, before the clearing:
+// tests/pollerhandover.cone). True when the hook answered anything
+fn portTake(p: *WorkerPort, got: u32, holder: bool) bool {
+  (*p).entries.addOrdered(u64.from(got), MemOrder.Relaxed);
+  let buf = entriesHere(p);
+  var own = false;
+  var answered = false;
+  var k = 0u32;
+  while k < got {
+    #if #os == .windows {
+      let e = (buf as *PortEntry) + usize.from(k);
+      let key = (*e).key;
+      if key == portKeyBreak {
+        if holder {portTakeHold();}
+        (*p).breakPending.store(0u32);
+        own = true;
+      } else if key == portKeyTimer {
+        (*p).associated.store(0u32);
+        (*p).armedFor.storeOrdered(0i64, MemOrder.Relaxed);
+        (*p).timerEntries.addOrdered(1u64, MemOrder.Relaxed);
+        own = true;
+      } else {
+        answered = portHook(key, (*e).ov as usize, (*e).bytes) || answered;
+      }
+    } #else {
+      let e = (buf as *PortEvent) + usize.from(k);
+      if (*e).hi == 0u32 && (*e).lo == portDatumBreak {
+        var counter = 0u64;
+        portSysRead(i32.from((*p).wake), &mut counter as *u8, 8usize);
+        if holder {portTakeHold();}
+        (*p).breakPending.store(0u32);
+        own = true;
+      } else if (*e).hi == 0u32 && (*e).lo == portDatumTimer {
+        var expirations = 0u64;
+        portSysRead(i32.from((*p).timer), &mut expirations as *u8, 8usize);
+        (*p).armedFor.storeOrdered(0i64, MemOrder.Relaxed);
+        (*p).timerEntries.addOrdered(1u64, MemOrder.Relaxed);
+        own = true;
+      } else {
+        answered = portHook(usize.from((*e).events), usize.from((*e).lo) | (usize.from((*e).hi) << 32usize), 0u32) || answered;
+      }
+    }
+    k = k + 1u32;
+  }
+  if own && (*p).pollerAt.load() != 0u32 {
+    portBreak(p);
+  }
+  answered
+}
+
+// The test hook's sixth place (holdNextPark, actors.cone): the role's holder
+// back from its wait with a break, the role let go, before 'breakPending' is
+// cleared (on Linux after the eventfd's read). Off, two relaxed loads
+fn portTakeHold() {
+  let s = running.loadOrdered(MemOrder.Relaxed) as *Sched;
+  if s as usize != 0usize && me != 0usize && (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
+    parkHoldHere(s, me as *Worker, 6u32);
+  }
+}
+
+fn portHook(a: usize, b: usize, n: u32) bool {
+  let at = portHookAt.load();
+  if at == 0usize {
+    return false;
+  }
+  let f = (*(at as *PortHook)).events;
+  let was = inHook;
+  inHook = true;
+  let more = f(a, b, n);
+  inHook = was;
+  more
+}
+
+// THE DEPUTY of parked workers: every parked worker's overdue cells but w's,
+// fired by w, the poller just back from its wait. True if it answered any
+fn portDeputy(p: *WorkerPort, s: *Sched, w: *Worker) bool {
+  let now = time.Instant.now();
+  var any = false;
+  var i = 0u32;
+  while i < (*s).nworkers {
+    if i != (*w).index {
+      let ts = timerStoreOf(i);
+      if ts as usize != 0usize && (*ts).due.load() != 0i64 && nextOf(ts) <= now.nanos() {
+        if myDeputy == 0usize {
+          let d = libc.malloc(mem.sizeof[DeputyScratch]()) as *DeputyScratch;
+          if d as usize == 0usize {
+            die("actors: out of memory for the runtime");
+          }
+          mem.writeRaw[DeputyScratch](d, deputyScratch());
+          myDeputy = d as usize;
+        }
+        let was = inHook;
+        inHook = true;
+        let won = timersDeputy(ts, now, (myDeputy as *DeputyScratch) as &mut DeputyScratch, true);
+        inHook = was;
+        if won != 0u64 {
+          (*p).deputyFires.addOrdered(won, MemOrder.Relaxed);
+          any = true;
+        }
+      }
+    }
+    i = i + 1u32;
+  }
+  any
+}
+
+// A busy worker's look at the port (THE PORT'S OTHER ENTRIES): every
+// injectEvery turns, while something waits there and nobody holds the role
+fn busyPoll(w: *Worker) {
+  let p = portHere();
+  if p as usize == 0usize || (*p).waiting.loadOrdered(MemOrder.Relaxed) == 0u64 || (*p).pollerAt.load() != 0u32 {
+    return;
+  }
+  (*p).busyPolls.addOrdered(1u64, MemOrder.Relaxed);
+  let got = portWait(p, 0u32);
+  if got != 0u32 {
+    portTake(p, got, false);
+  }
+}
+
+// THE GAP, the monitor's part at each tick: nobody holds the role while
+// workers are parked. A parked owner of a cell is woken by name, the earliest
+// (it fires its own and takes the role as it parks again); while something
+// waits in the port a sleeper is woken to take the role, or, with none, the
+// monitor polls without waiting itself, its answers going to the inject queue.
+// True if it did anything
+fn portGap(s: *Sched) bool {
+  let p = portHere();
+  if p as usize == 0usize || (*p).pollerAt.load() != 0u32 || (*s).stopping.load() != 0u32 {
+    return false;
+  }
+  if (*s).sleepers.load() != 0u32 {
+    var best = noDue;
+    var bi = noWorker;
+    var i = 0u32;
+    while i < (*s).nworkers {
+      let ts = timerStoreOf(i);
+      if ts as usize != 0usize && (*ts).due.load() != 0i64 {
+        let nx = nextOf(ts);
+        if nx < best {
+          best = nx;
+          bi = i;
+        }
+      }
+      i = i + 1u32;
+    }
+    if bi != noWorker {
+      (*p).gapWakes.addOrdered(1u64, MemOrder.Relaxed);
+      wakeNamed(s, workerAt(s, bi));
+      return true;
+    }
+  }
+  if (*p).waiting.loadOrdered(MemOrder.Relaxed) == 0u64 {
+    return false;
+  }
+  if (*s).sleepers.load() != 0u32 && wakeOne(s, 0u32) {
+    (*p).gapWakes.addOrdered(1u64, MemOrder.Relaxed);
+    return true;
+  }
+  (*p).busyPolls.addOrdered(1u64, MemOrder.Relaxed);
+  let got = portWait(p, 0u32);
+  got != 0u32 && portTake(p, got, false)
+}
+
+// THE PARK of the role's holder (idle, its step 2 done: published, looked,
+// nothing seen): waits in the port, bounded by its own cells and every parked
+// worker's, and back from the wait fires the parked workers' due cells and
+// hands the port's entries on. True to look for work again, false once the
+// stop has begun. 'parkMs' is cnmalloc's give-back delay (0 none)
+fn pollerPark(s: *Sched, w: *Worker, p: *WorkerPort, parkMs: u32) bool {
+  let pk = &(*w).park;
+  let ts = myTimers as *TimerStore;
+  var timed = parkMs != 0u32;
+  let cnUntil = if timed {time.Instant.now().nanos() + i64.from(parkMs) * 1000000i64} else {0i64};
+  var held = true;
+  var leave = false;
+  while true {
+    if !held {
+      if !roleTake(p, w) {
+        // Another worker took the role meanwhile: this one parks on its word,
+        // as any other; its 'due' is published, and the new poller looks at it
+        return futexPark(s, w, noDue, parkMs, timed, cnUntil);
+      }
+      held = true;
+    }
+    let own = timersNext();
+    var bound = own;
+    if timed && cnUntil < bound {
+      bound = cnUntil;
+    }
+    let until = pollPlan(p, s, w, bound);
+    // The role stored before this read of the park word (SeqCst): a notifier
+    // that marked this worker before the role was taken again is seen here,
+    // one after it reads the role and breaks the wait
+    if pk.load() != parkParked {
+      break;
+    }
+    let now = time.Instant.now().nanos();
+    if own != noDue && now >= own {
+      leave = true;
+      break;
+    }
+    let ms = portArm(p, until, now);
+    (*p).waits.addOrdered(1u64, MemOrder.Relaxed);
+    // Windows: a timed wait is waited at THREAD_PRIORITY_HIGHEST, put back to
+    // normal the moment it returns, before anything runs. Measured (row 493, 600
+    // sleeps of 1-8 ms, 4 workers, the machine at 94-100% from other lanes): at
+    // normal priority the port's wait came back up to 12-18 ms past its instant
+    // (the timer's packet in time, the thread not run: 18-54 sleeps over 2 ms
+    // late); raised, at most 1.1-2.8 ms (0-3 over 2 ms). A futex wake, the path
+    // before the port, gets the scheduler's wake boost; a completion port's does not.
+    // The raise lasts only while the thread is blocked in this wait, so it buys a
+    // prompt wake-up and no actor ever runs at high priority
+    #if #os == .windows {
+      if until != noDue {SetThreadPriority(GetCurrentThread(), threadPriorityHighest);}
+    }
+    let got = portWait(p, ms);
+    #if #os == .windows {
+      if until != noDue {SetThreadPriority(GetCurrentThread(), threadPriorityNormal);}
+    }
+    if (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
+      parkHoldHere(s, w, 5u32);
+    }
+    // How late the wait came back past the instant it was armed for (pollerStats)
+    if until != noDue {
+      let lateBy = time.Instant.now().nanos() - until;
+      if lateBy > (*p).lateMax.loadOrdered(MemOrder.Relaxed) {
+        (*p).lateMax.storeOrdered(lateBy, MemOrder.Relaxed);
+      }
+      if got == 0u32 {
+        (*p).timeouts.addOrdered(1u64, MemOrder.Relaxed);
+      }
+    }
+    // The first store after the wait: actor turns run only after it
+    roleDrop(p);
+    held = false;
+    if got == (*p).batch {
+      (*p).fullBatches.addOrdered(1u64, MemOrder.Relaxed);
+    }
+    var answered = got != 0u32 && portTake(p, got, true);
+    answered = portDeputy(p, s, w) || answered;
+    if answered {
+      // As the look that saw work leaves: the answers are on this worker's
+      // queue (the first) and the inject queue (the rest, with a notify); a
+      // full batch hands the rest of the port on to a sleeper
+      if ts as usize != 0usize {
+        (*ts).due.store(0i64);
+      }
+      leavePark(s, w);
+      (*w).woken = 1u32;
+      if got == (*p).batch {
+        notify(s);
+      }
+      return (*s).stopping.load() == 0u32;
+    }
+    if pk.load() != parkParked {
+      break;
+    }
+    let after = time.Instant.now().nanos();
+    let own2 = timersNext();
+    if own2 != noDue && after >= own2 {
+      leave = true;
+      break;
+    }
+    if timed && after >= cnUntil {
+      cnWorkerPark();
+      timed = false;
+    }
+    // Back with the word still PARKED and nothing for anyone: park again,
+    // still published (THE PARK WORD)
+    tally(&(*(*w).stat).reparks, 1u64);
+  }
+  if held {
+    roleDrop(p);
+  }
+  if ts as usize != 0usize {
+    (*ts).due.store(0i64);
+  }
+  if leave {
+    // Its own cell's time: it leaves as one that saw work does, unchosen
+    leavePark(s, w);
+    (*w).woken = 1u32;
+    return (*s).stopping.load() == 0u32;
+  }
+  // Chosen (NOTIFIED): the notify cleared the bit
+  pk.store(parkRunning);
+  uncount(s);
+  (*w).woken = 1u32;
+  (*s).stopping.load() == 0u32
+}
+
+// A TEST HOOK, not part of the API (tests/pollerrole.cone, aio's timer tests):
+// the worker port's counts, all 0 with no port
+pub struct PollerStats {
+  pub waits: u64;          // waits in the port by the role's holder
+  pub entries: u64;        // entries taken, the port's own break and timer included
+  pub fullBatches: u64;    // waits back with a full batch (pollBatch)
+  pub breaks: u64;         // breaks posted
+  pub deputyFires: u64;    // parked workers' cells fired by the poller
+  pub gapWakes: u64;       // the monitor's wakes with nobody holding the role
+  pub busyPolls: u64;      // polls without waiting
+  pub timerEntries: u64;   // the port's own timer's expiries taken
+  pub timeouts: u64;       // timed waits back with nothing (the wait's own timeout, not the timer's packet)
+  pub lateMax: i64;        // the latest a timed wait came back past its instant, in nanoseconds
+  pub batch: u32;          // pollBatch
+  pub fineTimer: bool;     // the port has its high-resolution timer (Linux: always)
+}
+
+pub fn pollerStats() PollerStats {
+  let p = portEver.load() as *WorkerPort;
+  if p as usize == 0usize {
+    return PollerStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0u32, false);
+  }
+  let fine = #if #os == .windows {(*p).packet != 0usize} #else {true};
+  PollerStats((*p).waits.loadOrdered(MemOrder.Relaxed), (*p).entries.loadOrdered(MemOrder.Relaxed),
+    (*p).fullBatches.loadOrdered(MemOrder.Relaxed), (*p).breaks.loadOrdered(MemOrder.Relaxed),
+    (*p).deputyFires.loadOrdered(MemOrder.Relaxed), (*p).gapWakes.loadOrdered(MemOrder.Relaxed),
+    (*p).busyPolls.loadOrdered(MemOrder.Relaxed), (*p).timerEntries.loadOrdered(MemOrder.Relaxed),
+    (*p).timeouts.loadOrdered(MemOrder.Relaxed), (*p).lateMax.loadOrdered(MemOrder.Relaxed),
+    (*p).batch, fine)
+}

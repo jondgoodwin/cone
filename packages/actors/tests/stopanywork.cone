@@ -1,0 +1,60 @@
+// The stop ends every worker even while anyWork says there is work (row 493
+// (c); the shutdown hang seen once in netmsg wirecapture, a worker going round
+// idle's spin while main joined it, Ruminations\wirecapture-hang-after-1456).
+// Four workers handle a few hundred messages; then, with every actor idle, a
+// test hook (seemWorkForever) makes anyWork say there is work that no worker
+// can take, the residue the hang is thought to have had, and main ends. The
+// stop's 'stopping' must be seen on each of idle's returns, the early ones
+// (the spin's find, the idle hook's, the timers' step) included: before row
+// 493 a worker whose spin saw work went back to look again for ever, and the
+// stop's join of it never returned (the .timeout ends the test there).
+mod stopanywork;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+const sends = 400u64;
+
+let handled: Atomic[u64];
+
+fn @initpure init() {
+  handled = Atomic[u64].of(0u64);
+}
+
+actor Counter {
+  pub async fn bump(self) {
+    handled.add(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  {
+    let a = Counter();
+    let b = Counter();
+    var i = 0u64;
+    while i < sends {
+      a.bump();
+      b.bump();
+      i = i + 1u64;
+    }
+    actors.waitUntilIdle();
+    expectUInt(handled.load(), 2u64 * sends, "every message handled before the residue");
+    actors.seemWorkForever();
+    // A worker asleep does not look again until it is woken: one message
+    // wakes one, whose look then finds the residue and wakes the rest
+    // (foundAway), so the stop finds them going round idle, not asleep
+    a.bump();
+    while handled.load() < 2u64 * sends + 1u64 {
+      thread.yieldNow();
+    }
+    thread.sleep(time.Duration.fromMillis(20i64));
+  }
+  // The stop: every worker must end though anyWork stays true to the last
+  finalAll();
+  expectBool(actors.isRunning(), false, "the stop ended, every worker joined");
+  done()
+}
