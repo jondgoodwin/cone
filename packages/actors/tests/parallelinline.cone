@@ -44,6 +44,7 @@ struct Tally {
   pub marks: *u8;
   pub pieces: Atomic[u64];
   pub ran: Atomic[u64];         // bit i: worker i ran a piece
+  pub sink: Atomic[u64];        // keeps the costly items' results alive (release drops an unused pure loop)
   pub slowFrom: usize;          // items from here on are costly
 }
 
@@ -57,7 +58,7 @@ fn bodyCount(data: *u8, lo: usize, hi: usize) {
   var i = lo;
   while i < hi {
     if i >= (*t).slowFrom {
-      cost(u64.from(i));
+      (*t).sink.add(cost(u64.from(i)));
     }
     *((*t).marks + i) = *((*t).marks + i) + 1u8;
     i = i + 1usize;
@@ -66,7 +67,7 @@ fn bodyCount(data: *u8, lo: usize, hi: usize) {
 
 fn runOf(n: usize, slowFrom: usize, what: &str) Tally {
   let marks = libc.calloc(n, 1usize) as *u8;
-  var t = Tally(marks, Atomic[u64].of(0u64), Atomic[u64].of(0u64), slowFrom);
+  var t = Tally(marks, Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), slowFrom);
   actors.parallelEach(0usize, n, &bodyCount, &mut t as *Tally as *u8);
   var once = true;
   var i = 0usize;
