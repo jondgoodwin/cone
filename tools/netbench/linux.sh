@@ -41,7 +41,7 @@ SRC=$W/packages/netmsg/examples/netbench.cone
 R=$W/build/nb; mkdir -p "$R"
 run() { # role, args: runs one copy under the caps, logs to $R/<role>.log
   mkdir -p "$R/$1"; cp "$SRC" "$R/$1/netbench.cone"
-  (cd "$W/packages" && timeout 1800 $CAP python3 ../tools/congo/congo.py run --release "$R/$1/netbench.cone" -- "${@:2}" >"$R/$1.log" 2>&1) &
+  (cd "$W/packages" && timeout 1800 $CAP python3 ../tools/congo/congo.py run --release "$R/$1/netbench.cone" -- "${@:2}" >"$R/$1.log" 2>&1 </dev/null) &   # not the script's stdin: a child reading it eats the rest of this script
 }
 pidof_exe() { pgrep -f "release/netbench.exe|release/netbench" | head -50; }
 echo "load before: $(cut -d' ' -f1-3 /proc/loadavg)"
