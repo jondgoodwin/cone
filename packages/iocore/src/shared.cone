@@ -109,6 +109,7 @@ struct Slab {
   dir: *usize;
   cont: *u64;              // the contended count: 'stripes' stripes of 8 words (atomic)
   holders: u64;            // the Loop and every Shared handed out (atomic)
+  loopPort: usize;         // Windows: the Loop's completion port, where a worker posts a connect's completion on (TCP ON THE WORKER PORT)
 }
 
 // How many tables are made and not yet freed: for tests, and for finding leaks
@@ -376,13 +377,24 @@ pub struct Shared is Move, Sendable {
     if e as usize == 0usize || (*e).closing != 0u32 {return issueNot;}
     let k = r.kind;
     let hk = (*e).kind;
-    let tcp = hk == hSocket && (k == diag.kindRecv || k == diag.kindSend);
+    let tcp = hk == hSocket && (k == diag.kindRecv || k == diag.kindSend || k == diag.kindRecvReady);
     let udp = hk == hDatagram && (k == diag.kindRecvFrom || k == diag.kindSendTo || k == diag.kindRecvMany);
     if !tcp && !udp {return issueNot;}
-    // An empty gather is the Loop's (its zero-length send answers Done(0))
+    // An empty gather is the Loop's (its zero-length send answers Done(0)); on a worker-side
+    // socket issueWaiting answers it
     if k == diag.kindSend && r.isGather() && r.gatherSegments() == 0usize {return issueNot;}
     if (k == diag.kindRecv || k == diag.kindRecvFrom || k == diag.kindRecvMany) && r.bufRoom() == 0usize {return issueNot;}
     #if #os == .windows { if (*e).skip == 0u32 {return issueNot;} }
+    // TCP ON THE WORKER PORT: a receive or send on a worker-side stream waits behind the ones already
+    // waiting on it (a read must not take bytes ahead of an earlier read, nor a send write between an
+    // earlier send's): every mode but the edge's own retry of the head. On Windows its kernel operation
+    // may go pending, which must be listed with no gap in which its completion could come first, so it
+    // is started under the exclusive lock by issueWaiting alone (tryWaiting)
+    let tcpWorker = tcp && (*e).worker != 0u32;
+    if tcpWorker {
+      if mode != tryRetry && (if k == diag.kindSend {(*e).swait} else {(*e).rwait}) as usize != 0usize {return issueNot;}
+      #if #os == .windows { if mode == tryPublic {return issueNot;} }
+    }
     // A send on a worker-side socket that is held, or has sends waiting ahead of it, is not tried. The
     // entry's wait lists change only under the exclusive lock, which no shared holder shares
     if udp && (*e).worker != 0u32 {
@@ -402,7 +414,11 @@ pub struct Shared is Move, Sendable {
     #if #os == .windows {
       winIssue(p, (*e).raw, now, (*e).worker != 0u32)
     } #else {
-      lxIssue(p, (*e).raw, now)
+      let got = lxIssue(p, (*e).raw, now, (*e).worker != 0u32);
+      // A send that moved part of its bytes on a worker-side stream stays here: it goes on from 'done'
+      // under issueWaiting, which lists it, never again from the start and never on the Loop
+      if got == issuePending && tcpWorker && mode == tryPublic {return issueNot;}
+      got
     }
   }
 
@@ -423,7 +439,9 @@ pub struct Shared is Move, Sendable {
   pub fn issueWaiting(self: &, p: *OpCore) u32 {
     let r = p as &mut OpCore;
     let k = r.kind;
-    if k != diag.kindRecvFrom && k != diag.kindRecvMany && k != diag.kindSendTo {return issueNot;}
+    let dgram = k == diag.kindRecvFrom || k == diag.kindRecvMany || k == diag.kindSendTo;
+    let stream = k == diag.kindRecv || k == diag.kindRecvReady || k == diag.kindSend;
+    if !dgram && !stream {return issueNot;}
     let h = r.handle;
     let now = Instant.now();
     if !self.lock(h) {
@@ -431,7 +449,7 @@ pub struct Shared is Move, Sendable {
       return answeredHere(p, diag.outcomeFailed, 0usize, noSuchHandle());
     }
     let e = self.entry(h.index);
-    if (*e).worker == 0u32 || (*e).kind != hDatagram {
+    if (*e).worker == 0u32 || (*e).kind != (if dgram {hDatagram} else {hSocket}) {
       self.unlock(h);
       return issueNot;
     }
@@ -440,17 +458,22 @@ pub struct Shared is Move, Sendable {
     if (*e).closing != 0u32 {
       stampIssued(p, now);
       got = answeredHere(p, diag.outcomeFailed, 0usize, noSuchHandle());
-    } else if k != diag.kindSendTo && r.bufRoom() == 0usize {
+    } else if (k == diag.kindRecv || k == diag.kindRecvFrom || k == diag.kindRecvMany) && r.bufRoom() == 0usize {
       stampIssued(p, now);
       got = answeredHere(p, diag.outcomeFailed, 0usize, noRoom());
+    } else if k == diag.kindSend && r.isGather() && r.gatherSegments() == 0usize {
+      // An empty gather: nothing to send, Done(0), as the Loop answers it
+      stampIssued(p, now);
+      got = answeredHere(p, diag.outcomeDone, 0usize, 0u32);
     } else if due != 0u32 {
       stampIssued(p, now);
       got = answeredHere(p, due, 0usize, 0u32);
     } else {
       got = self.issueAt(p, tryWaiting);
       if got == issueNot {
-        // Nothing to take, or a send held: not stamped yet (the try stamps what it answers)
-        stampIssued(p, now);
+        // Nothing to take, or a send held: not stamped yet (the try stamps what it answers). A send
+        // that moved part of its bytes is stamped already, its 'done' kept (TCP ON THE WORKER PORT)
+        if r.state != stFlight {stampIssued(p, now);}
         listWait(e, p);
         got = issuePending;
       } else if got == issuePending {
@@ -531,6 +554,13 @@ pub struct Shared is Move, Sendable {
     #if #os == .windows {
     let r = p as &mut OpCore;
     let h = r.handle;
+    // A worker-side connect (TCP ON THE WORKER PORT): its socket joined the worker port before it was
+    // connected; the Loop made it and finishes it, so the completion goes on to the Loop's own port
+    // as it is (the kernel's status is in the record's OVERLAPPED)
+    if r.kind == diag.kindConnect {
+      PostQueuedCompletionStatus((*(at as *Slab)).loopPort, bytes, keyIo, p as *u8);
+      return;
+    }
     if self.lock(h) {
       unlistWait(self.entry(h.index), p);
       self.unlock(h);
@@ -546,8 +576,11 @@ pub struct Shared is Move, Sendable {
       r.bufGrow(n);
       answeredHere(p, diag.outcomeFailed, 0usize, errorMsgSize);
     } else if status == statusSuccess {
-      if r.kind == diag.kindRecvFrom {r.bufGrow(n);}
+      if r.kind == diag.kindRecvFrom || r.kind == diag.kindRecv {r.bufGrow(n);}
       answeredHere(p, diag.outcomeDone, n, 0u32);
+    } else if status == statusEndOfFile && (r.kind == diag.kindRecv || r.kind == diag.kindRecvReady) {
+      // The end of the stream, as the Loop's finish answers it
+      answeredHere(p, diag.outcomeDone, 0usize, 0u32);
     } else if status == statusCancelled {
       answeredHere(p, if r.asked == askedDeadline {diag.outcomeTimedOut} else {diag.outcomeCancelled}, 0usize, 0u32);
     } else if status == statusInvalidBufferSize && r.kind == diag.kindSendTo {
@@ -732,6 +765,11 @@ fn publishEntry(sh: &Shared, i: u32, gen: u32, raw: usize, kind: u32, skip: u32,
   mem.atomicStore[u32](&(*e).gen as *u32, gen, MemOrder.Release);
 }
 
+// The Loop's own port, kept in the table for the workers that forward a connect's completion to it
+fn setLoopPort(sh: &Shared, port: usize) {
+  if sh.at != 0usize {(*(sh.at as *Slab)).loopPort = port;}
+}
+
 // A worker-side socket's entry is one: set by the Loop's thread, on the entry
 // of cell i, before any other thread knows the handle
 fn markWorkerEntry(sh: &Shared, i: u32) {
@@ -812,7 +850,7 @@ fn answeredHere(p: *OpCore, status: u32, n: usize, code: u32) u32 {
 #if #os == .windows {
 fn winIssue(p: *OpCore, raw: usize, now: Instant, worker: bool) u32 {
   let r = p as &mut OpCore;
-  if r.kind == diag.kindSend && r.isGather() {return winIssueGather(p, raw, now);}
+  if r.kind == diag.kindSend && r.isGather() {return winIssueGather(p, raw, now, worker);}
   var data = null as *u8;
   var len = 0usize;
   if r.kind == diag.kindSend {
@@ -844,6 +882,12 @@ fn winIssue(p: *OpCore, raw: usize, now: Instant, worker: bool) u32 {
     r.wsa.buf = r.bufBase();
     rc = WSASendTo(raw, &mut r.wsa as *WsaBuf, 1u32, &mut got as *u32, 0u32, from as *u8, (*from).size,
         p as *u8, null);
+  } else if r.kind == diag.kindRecvReady {
+    // A zero-byte receive, holding no buffer: it ends when bytes are there, or the stream has ended
+    r.wsa.len = 0u32;
+    r.wsa.buf = null;
+    r.flags = 0u32;
+    rc = WSARecv(raw, &mut r.wsa as *WsaBuf, 1u32, &mut got as *u32, &mut r.flags, p as *u8, null);
   } else if r.kind == diag.kindRecv {
     let room = r.bufRoom();
     r.wsa.len = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32} else {u32.from(room)};
@@ -882,7 +926,7 @@ fn winIssue(p: *OpCore, raw: usize, now: Instant, worker: bool) u32 {
 // else in a block freed after it. A gather over 0xFFFFFFFF bytes, or one the
 // block cannot be had for, is issueNot
 #if #os == .windows {
-fn winIssueGather(p: *OpCore, raw: usize, now: Instant) u32 {
+fn winIssueGather(p: *OpCore, raw: usize, now: Instant, worker: bool) u32 {
   let r = p as &mut OpCore;
   if r.gatherLen() > 0xFFFFFFFFusize {return issueNot;}
   let segs = r.gatherSegments();
@@ -909,7 +953,7 @@ fn winIssueGather(p: *OpCore, raw: usize, now: Instant) u32 {
   }
   stampIssued(p, now);
   r.raw = raw;
-  r.link = linkTransit;
+  r.link = if worker {linkNone} else {linkTransit};
   var got = 0u32;
   let rc = WSASend(raw, bufs, u32.from(n), &mut got as *u32, 0u32, p as *u8, null);
   let code = if rc == 0i32 {0u32} else {wsaError()};
@@ -928,9 +972,22 @@ fn winIssueGather(p: *OpCore, raw: usize, now: Instant) u32 {
 
 // Linux: the receive or send on the non-blocking descriptor raw
 #if #os != .windows {
-fn lxIssue(p: *OpCore, raw: usize, now: Instant) u32 {
+fn lxIssue(p: *OpCore, raw: usize, now: Instant, worker: bool) u32 {
   let r = p as &mut OpCore;
   let fd = fdOf(raw);
+  // A send of a worker-side stream goes on from the byte 'done' reached, once it is in flight (stamped):
+  // a try after a partial send, or the edge's retry (TCP ON THE WORKER PORT). The first try starts at 0
+  let resumed = r.state == stFlight;
+  if r.kind == diag.kindRecvReady {
+    // Data to read, or the end of the stream, without taking either
+    var probe = 0u8;
+    var n = sysRecv(fd, &mut probe as *u8, 1usize, msgPeek);
+    while n < 0i64 && lastErrno() == eintr {n = sysRecv(fd, &mut probe as *u8, 1usize, msgPeek);}
+    if n < 0i64 && lastErrno() == eagain {return issueNot;}
+    stampIssued(p, now);
+    if n >= 0i64 {return answeredHere(p, diag.outcomeDone, 0usize, 0u32);}
+    return answeredHere(p, diag.outcomeFailed, 0usize, u32.from(lastErrno()));
+  }
   if r.kind == diag.kindRecv {
     var n = sysRecv(fd, r.bufBase() + r.bufLen(), r.bufRoom(), 0i32);
     while n < 0i64 && lastErrno() == eintr {n = sysRecv(fd, r.bufBase() + r.bufLen(), r.bufRoom(), 0i32);}
@@ -991,7 +1048,8 @@ fn lxIssue(p: *OpCore, raw: usize, now: Instant) u32 {
     // issued. Part sent: 'done' keeps it, and the Loop goes on from there
     let glen = r.gatherLen();
     var spans = Array[Span, 64]() <- fill Span(null, 0usize);
-    var sentg = 0usize;
+    let from0 = if resumed {r.done} else {0usize};
+    var sentg = from0;
     var failedg = 0i32;
     while sentg < glen && failedg == 0i32 {
       let cnt = r.gatherSpans(sentg, &mut spans as *Span, gatherBatch);
@@ -1004,11 +1062,11 @@ fn lxIssue(p: *OpCore, raw: usize, now: Instant) u32 {
         if e != eintr {failedg = e;}
       }
     }
-    if failedg == eagain && sentg == 0usize {return issueNot;}
+    if failedg == eagain && sentg == from0 {return issueNot;}
     stampIssued(p, now);
     r.done = sentg;
     if failedg == eagain {
-      r.link = linkTransit;
+      r.link = if worker {linkNone} else {linkTransit};
       return issuePending;
     }
     if failedg != 0i32 {
@@ -1019,7 +1077,8 @@ fn lxIssue(p: *OpCore, raw: usize, now: Instant) u32 {
   var data = null as *u8;
   var len = 0usize;
   data, len = sendData(r);
-  var sent = 0usize;
+  let from = if resumed {r.done} else {0usize};
+  var sent = from;
   var failed = 0i32;
   while sent < len && failed == 0i32 {
     let n = sysSend(fd, data + sent, len - sent, msgNoSignal);
@@ -1030,13 +1089,13 @@ fn lxIssue(p: *OpCore, raw: usize, now: Instant) u32 {
       if e != eintr {failed = e;}
     }
   }
-  if failed == eagain && sent == 0usize {return issueNot;}
+  if failed == eagain && sent == from {return issueNot;}
   stampIssued(p, now);
   r.done = sent;
   if failed == eagain {
     // Part of it sent: the rest goes on from 'done' on the Loop, never again
-    // from the start (linkIssued keeps it)
-    r.link = linkTransit;
+    // from the start (linkIssued keeps it); a worker-side stream's, here (issueWaiting lists it)
+    r.link = if worker {linkNone} else {linkTransit};
     return issuePending;
   }
   if failed != 0i32 {
