@@ -22,8 +22,8 @@
 //     is cancelled (cancelgroups' watchWorkerAbove): the owner then looks at
 //     every armed cell's group;
 //   - 'due', the instant the owner must wake at, published while it parks, for
-//     THE MONITOR, which keeps time for parked workers and wakes the due one by
-//     name.
+//     THE POLLER (poller.cone), which keeps time for parked workers and fires
+//     their due cells as their deputy (THE PARK, below); nonzero says parked.
 // The step (timersStep) is the store's one entry for the owner: the retired
 // cells freed, a sweep if asked, and the due cells fired; or, once the stop has
 // begun, every armed cell dropped.
@@ -55,7 +55,7 @@
 // the rest of the turn, which today's I/O-thread timers never are. The monitor
 // already finds a worker that has held one turn for a whole tick (THE MONITOR),
 // and then looks at its store (timersDeputy): if the worker is not parked (its
-// 'due' is 0: a parked worker is woken by name and fires its own) and its
+// 'due' is 0: a parked worker's cells are the poller's, below) and its
 // 'next' has passed, the monitor try-locks the wheel and takes the due entries
 // out; each cell is taken by the same CAS out of Armed as every fire, so a
 // cancel racing the deputy answers once, whichever wins. With the lock let go,
@@ -77,14 +77,21 @@
 // the cancelling thread (choice 5), as orCancelled's does. The actor cannot
 // end with a live cell: the Reply holds a count of it.
 //
-// THE PARK. A worker with armed cells parks with futexWaitTimeout until its
-// earliest one (precise on Linux, whole milliseconds on Windows), and publishes
-// it in 'due' first; the monitor, which does not park while any 'due' is set,
-// pauses no longer than to the earliest and then wakes that worker by name: so
-// a parked worker's cell is late by at most a wheel tick, the monitor's beat
-// and the wake. A runtime with no monitor (one worker, or
-// Options.monitorMicros 0) takes no cells: timerAwaitable says None, and aio
-// keeps its I/O thread's timer, whose bound that is today.
+// THE PARK (row 493, which replaced row 483's interim, the monitor keeping time
+// for parked workers). A worker with armed cells publishes its earliest in
+// 'due' before it parks. The worker that holds THE POLLER ROLE (poller.cone)
+// waits in the runtime's worker port, bounded by its own cells and every
+// parked worker's (its one high-resolution timer: a beat of about 0.5 ms on
+// Windows, the timerfd's nanoseconds on Linux), and fires the parked workers'
+// due cells as their DEPUTY under the wheel word, answering onto its own queue:
+// one wake for a parked worker's cell, and it is late by at most a wheel tick
+// and the timer's beat. While nobody holds the role the monitor wakes the
+// parked owner of the earliest cell by name (THE GAP). With no port (the
+// system gave none) a parked worker bounds its own futex wait by its cell, as
+// row 483 had it. A runtime of one worker takes cells too: its one worker
+// always holds the role. A runtime of several workers with no monitor
+// (Options.monitorMicros 0) takes none: timerAwaitable says None, and aio keeps
+// its I/O thread's timer.
 //
 // THE STOP. stopWorkers sets timersStopped first: from then no cell fires, no
 // cancel answers one, and a timer started is let go unanswered at once, as aio

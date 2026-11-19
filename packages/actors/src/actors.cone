@@ -64,6 +64,12 @@
 //                                   for the I/O package, not for programs: a timer awaited
 //                                   on the awaiting worker's own wheel (THE WORKERS'
 //                                   TIMERS, timers.cone); actors.timerStats(), a test hook
+//   actors.workerPort(), actors.workerEvents(events), actors.workerPortWaits(more)
+//                                   for the I/O package, not for programs: the runtime's
+//                                   own OS wait, where one parked worker at a time waits
+//                                   and keeps the parked workers' time (THE WORKER PORT
+//                                   AND THE POLLER, poller.cone); actors.pollerStats(),
+//                                   actors.seemWorkForever(), test hooks
 //   actors.parkBlocks()             the record blocks and per-thread keeps the runtime has
 //                                   taken from the allocator and given back (RECORD BLOCKS KEPT)
 //   actors.liveSegments()           how many mailbox segments are not yet freed
@@ -4868,9 +4874,19 @@ fn stealActor(w: *Worker) *Header {
   nullHeader()
 }
 
+// A TEST HOOK, not part of the API (tests/stopanywork.cone): from this call on
+// anyWork says there is work that no worker can take, the residue the
+// wirecapture hang is thought to have left (row 493 (c)): the stop must still
+// end every worker. For a test's last step before its end
+let seemWork: Atomic[u32];
+
+pub fn seemWorkForever() {
+  seemWork.store(1u32);
+}
+
 // Whether any queue holds an actor or a loop piece, looked at without taking one
 fn anyWork(s: *Sched) bool {
-  if (*s).injectLen.load() != 0u64 || taskWork(s) {
+  if (*s).injectLen.load() != 0u64 || taskWork(s) || seemWork.loadOrdered(MemOrder.Relaxed) != 0u32 {
     return true;
   }
   var i = 0u32;
@@ -5701,7 +5717,7 @@ pub struct Options {
   pub spinMicros: u32 = defaultSpinMicros;   // how long an idle worker spins before it parks (THE SPIN); 0: it parks at once
   pub spinCap: u32 = 0u32;                   // most workers spinning at once; 0: half of them, at most defaultSpinMost (4)
   pub injectEvery: u32 = defaultInjectEvery; // every this many turns a worker looks in the inject queue before its own queue; 0: the default (61)
-  pub monitorMicros: u32 = defaultMonitorMicros; // the scheduler's monitor thread looks at the workers every this many microseconds, and wakes a sleeper to steal when a worker has held one turn for a whole tick with actors waiting in its queue (THE MONITOR), and keeps time for parked workers' timers (THE WORKERS' TIMERS, timers.cone); 0: no monitor thread, and aio's sleeps stay on its I/O thread
+  pub monitorMicros: u32 = defaultMonitorMicros; // the scheduler's monitor thread looks at the workers every this many microseconds, and wakes a sleeper to steal when a worker has held one turn for a whole tick with actors waiting in its queue (THE MONITOR), and, while no worker waits in the worker port, wakes a parked worker whose timer is due (THE GAP, poller.cone); 0: no monitor thread, and with more than one worker aio's sleeps stay on its I/O thread
   pub wakeOnPush: bool = false;              // OFF by default (it cost pingpong 6.8x). true: a push to a worker's own queue wakes one parked worker when none is looking, even if the queue was empty (THE SEARCH INVARIANT, duty 3)
   pub pollBatch: u32 = 16u32;                // the most entries the worker that waits in the runtime's own OS wait takes from it at once (THE WORKER PORT AND THE POLLER, poller.cone); 0: the default (16)
 }
@@ -5803,6 +5819,7 @@ fn @initpure init() {
   portEver = Atomic[usize].of(0usize);
   portOnce = sync.Once.make();
   portHookAt = Atomic[usize].of(0usize);
+  seemWork = Atomic[u32].of(0u32);
   chosenMonitorMicros = Atomic[u32].of(defaultMonitorMicros);
   monitorFindsTotal = Atomic[u64].of(0u64);
   monitorMovedTotal = Atomic[u64].of(0u64);

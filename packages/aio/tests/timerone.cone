@@ -1,10 +1,11 @@
-// One worker: no worker cells (row 483, the one-worker half of judgement call
-// (a): cells only in a runtime with a monitor). A runtime of one worker has no
-// monitor, so actors' timerAwaitable says None and aio keeps its sleeps on the
-// I/O thread's timer, as before row 483. The sleeps still work (never early,
-// each answered once, Done), a cancel and a deadline still end a long one, and
-// the workers' timer counts stay at zero. (workertimers is the other half: four
-// workers, the sleeps are cells.)
+// One worker: its sleeps are worker cells (row 493 (b), which reversed row
+// 483's one-worker half of judgement call (a), cells only in a runtime with a
+// monitor). A runtime of one worker has no monitor, and needs none: its one
+// worker always holds the poller's role when it parks (actors' poller.cone)
+// and keeps its own cells' time in the worker port, off aio's I/O thread. The
+// sleeps work (never early, each answered once, Done), a cancel and a
+// deadline end a long one, and the workers' timer counts show every sleep a
+// cell, none left armed. (workertimers is the four-worker case.)
 mod timerone;
 
 import testing use *;
@@ -114,7 +115,10 @@ fn main() i32 {
   expect((a == 2u64 && b == 3u64) || (a == 3u64 && b == 2u64), "a cancel ends one sleep (Cancelled), a deadline the other (TimedOut)");
   expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
   let st = actors.timerStats();
-  expect(st.arms == 0u64 && st.fires == 0u64 && st.cancels == 0u64 && st.armed == 0u64,
-    "no worker cell was armed: the sleeps were the I/O thread's");
+  // Armed: all but a sleep due at its await (a 0 us one, answered in its start).
+  // The cancel is the group's (cancels); the deadline's TimedOut is a lapse (fires)
+  expect(st.armed == 0u64 && st.arms == st.fires + st.cancels && st.cancels >= 1u64
+      && st.arms >= sleepers * perSleeper / 2u64,
+    "the sleeps were the worker's cells: armed, each fired or cancelled once, none left armed");
   done()
 }
