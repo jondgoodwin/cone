@@ -98,6 +98,10 @@ typedef struct {                         // a class's record: 512 bytes
 } LfCls;
 
 typedef struct { uint32_t tnum; uint8_t start[CN_MAXCLS]; uintptr_t startPage[CN_MAXCLS]; } LfTls;
+// (row 539) the key of a page's life, which a thread's start word is good for: the page and the low 16 bits of its generation. A page that retires
+// and comes back (any class) has another key, so a stale start is never used on it; a start word is a word of a page of its own class, so it is in
+// range for any page that happens to match.
+#define LF_KEY(P, g) ((uintptr_t)(P) ^ ((uintptr_t)((g) >> 8) << 48))
 
 typedef char lf_assert_d2[(sizeof(LfD2) == 576 && offsetof(LfD2, bits) == 64) ? 1 : -1];
 typedef char lf_assert_cls[(sizeof(LfCls) == 512 && offsetof(LfCls, used) == 80 && offsetof(LfCls, collisions) == 192 && offsetof(LfCls, st) == 256) ? 1 : -1];
@@ -192,7 +196,7 @@ static __forceinline void lf_free_i(void* p, int stats) {
   uint32_t idx = (uint32_t)(((uint64_t)(off & 0xFFFF) * g_lfrecip[c]) >> 32);
   if (stats) lf_count(&g_lfc[c].st[1]);
   { LfTls* T = &t_lf; uint32_t hw = idx >> 6;                  // the hint: the next allocate starts at the word of this thread's last free
-    if (T->start[c] != hw || T->startPage[c] != (uintptr_t)P) { T->start[c] = (uint8_t)hw; T->startPage[c] = (uintptr_t)P; } }
+    if (T->start[c] != hw || T->startPage[c] != LF_KEY(P, g)) { T->start[c] = (uint8_t)hw; T->startPage[c] = LF_KEY(P, g); } }
   lf_release_i(P, g, idx >> 6, 1ull << (idx & 63));
 }
 static void lf_free(void* p) { lf_free_i(p, g_stats); }
@@ -214,7 +218,7 @@ restart:;
     if ((g1 & 0xFF) == c) {
       if (!L->used[si]) L->used[si] = 1;
       uint32_t nw = g_lfnw[c];
-      uint32_t w = T->startPage[c] == (uintptr_t)P ? T->start[c] : 0;
+      uint32_t w = T->startPage[c] == LF_KEY(P, g1) ? T->start[c] : 0;
       int collided = 0;
       for (int pass = 0; pass < 4; pass++) {
         int lost = 0;
@@ -243,7 +247,7 @@ restart:;
             if (ask) cnm_lf_grow(g_heap, c);
             goto restart;
           }
-          if (j != w || T->startPage[c] != (uintptr_t)P) { T->start[c] = (uint8_t)j; T->startPage[c] = (uintptr_t)P; }   // the cursor: stay at the word last taken from
+          if (j != w || T->startPage[c] != LF_KEY(P, g1)) { T->start[c] = (uint8_t)j; T->startPage[c] = LF_KEY(P, g1); }   // the cursor: stay at the word last taken from
           if (ask) cnm_lf_grow(g_heap, c);
           if (g_stats) lf_count(&L->st[0]);
           return (void*)(P->base + ((size_t)j * 64 + b) * g_lfsize[c]);
@@ -301,7 +305,7 @@ restart:;
     if ((g1 & 0xFF) == c) {
       if (!L->used[si]) L->used[si] = 1;
       uint32_t nw = g_lfnw[c];
-      uint32_t w = T->startPage[c] == (uintptr_t)P ? T->start[c] : 0;
+      uint32_t w = T->startPage[c] == LF_KEY(P, g1) ? T->start[c] : 0;
       int collided = 0;
       for (int pass = 0; pass < 4; pass++) {
         int lost = 0;
@@ -329,7 +333,7 @@ restart:;
             if (ask) cnm_lf_grow(g_heap, c);
             goto restart;
           }
-          if (j != w || T->startPage[c] != (uintptr_t)P) { T->start[c] = (uint8_t)j; T->startPage[c] = (uintptr_t)P; }   // the cursor: stay at the word last taken from
+          if (j != w || T->startPage[c] != LF_KEY(P, g1)) { T->start[c] = (uint8_t)j; T->startPage[c] = LF_KEY(P, g1); }   // the cursor: stay at the word last taken from
           if (ask) cnm_lf_grow(g_heap, c);
           void* head = lf_link(P, c, j, want, got);     // MB-W: the cells' first touch, only now
           if (g_stats) _InterlockedExchangeAdd64((volatile LONG64*)&L->st[0], (LONG64)*got);
