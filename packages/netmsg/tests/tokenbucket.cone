@@ -1,0 +1,145 @@
+// Send pacing is a token bucket: a token comes back every interval (1/30 s, so
+// 33,333,333 ns) and the bucket holds 2. A packet takes one. An update that finds a
+// token goes at once, so nextDeadline says "now" and no timer is armed; one that
+// finds none waits for exactly the next token. In any window the packets sent are at
+// most the window over the interval, plus 2.
+
+mod tokenbucket;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
+
+const interval = 33333333i64;      // 1,000,000,000 / goodRate (30)
+const msNs = 1000000i64;
+
+fn config() NetConfig {
+  var cfg = NetConfig.defaults();
+  cfg.timeoutMs = 100000000i64;    // nothing arrives from a peer here; never give up on it
+  cfg
+}
+
+fn at(ns: i64) Instant {Instant.fromNanos(ns)}
+
+// A value waits, poll at 'ns', and the number of packets that came out
+fn sendAt(c: &mut ConnectionCore, ns: i64) usize {
+  _ = c.sendLatest(1u16, fz("v"));
+  pollAt(c, ns)
+}
+
+fn pollAt(c: &mut ConnectionCore, ns: i64) usize {
+  var out = Packets();
+  var ev = List[CoreEvent]();
+  c.poll(at(ns), &mut out, &mut ev);
+  var n = 0usize;
+  each p in out.drain() {
+    n = n + 1usize;
+  }
+  n
+}
+
+// A fresh bucket is full: two updates go at once, the third waits one interval
+// (and nextDeadline names that instant, not an earlier one), then goes
+fn full() {
+  var c = ConnectionCore.make(config(), 0x1122u64, at(0i64));
+  expect(c.sendLatest(1u16, fz("v")), "queued 1");
+  expect(c.nextDeadline().nanos() <= 0i64, "first: a token is there, no wait");
+  expect(pollAt(&mut c, 0i64) == 1usize, "first goes at once");
+  expect(c.sendLatest(1u16, fz("v")), "queued 2");
+  expect(c.nextDeadline().nanos() <= 0i64, "second: a token is still there, no wait");
+  expect(pollAt(&mut c, 0i64) == 1usize, "second goes at once");
+  expect(c.sendLatest(1u16, fz("v")), "queued 3");
+  expect(c.nextDeadline().nanos() == interval, "third waits for the next token, one interval on");
+  expect(pollAt(&mut c, 0i64) == 0usize, "third does not go at once");
+  expect(pollAt(&mut c, interval - 1i64) == 0usize, "nor a nanosecond before the token");
+  expect(pollAt(&mut c, interval) == 1usize, "it goes when the token comes back");
+}
+
+// After a long idle the bucket is full again, but only 2 deep: no catch-up
+fn idleRefill() {
+  var c = ConnectionCore.make(config(), 0x1122u64, at(0i64));
+  var t = 10000i64 * msNs;
+  expect(sendAt(&mut c, t) == 1usize, "after the idle: first");
+  expect(sendAt(&mut c, t) == 1usize, "second");
+  expect(sendAt(&mut c, t) == 0usize, "third waits");
+  expect(c.nextDeadline().nanos() == t + interval, "for one interval");
+}
+
+// Updates that come a little faster than the rate (every 33 ms, not every
+// 33.33 ms) are early by a third of a millisecond each: the bucket's two
+// tokens absorb that for about 100 updates, and every one of them goes at
+// once with nothing armed. After that the rate holds them.
+fn earlyUpdates() {
+  var c = ConnectionCore.make(config(), 0x1122u64, at(0i64));
+  var t = 0i64;
+  var k = 0usize;
+  var atOnce = 0usize;
+  var waited = false;
+  while k < 200usize {
+    expect(c.sendLatest(1u16, fz("v")), "queued");
+    let due = c.nextDeadline().nanos() <= t;
+    if due && !waited {
+      atOnce = atOnce + 1usize;
+    } else {
+      waited = true;
+    }
+    _ = pollAt(&mut c, t);
+    t = t + 33i64 * msNs;
+    k = k + 1usize;
+  }
+  expect(atOnce >= 95usize && atOnce <= 105usize, "about 100 early updates go with no wait");
+  expect(waited, "then the bucket is empty and the rate holds");
+}
+
+// The bound, on irregular updates: gaps from nothing to 70 ms, a value always waiting.
+// For every two sends, the sends from the first to the second (both counted) are
+// at most the time between them over the interval, plus 2.
+fn bound(gapMsMax: i64, rounds: usize) {
+  var c = ConnectionCore.make(config(), 0x1122u64, at(0i64));
+  var times = List[i64]();
+  var cur = 0i64;
+  var r = 12345i64;
+  var k = 0usize;
+  while k < rounds {
+    r = (r * 1103515245i64 + 12345i64) & 0x7FFFFFFFi64;
+    let next = cur + (r % (gapMsMax * 1000i64 + 1i64)) * 1000i64;
+    // The timer: a poll at each deadline that falls before the next update
+    while true {
+      let d = c.nextDeadline().nanos();
+      if d > next {break;}
+      if d > cur {cur = d;}
+      if pollAt(&mut c, cur) == 0usize {break;}
+      times.push(cur);
+    }
+    cur = next;
+    _ = c.sendLatest(1u16, fz("v"));
+    k = k + 1usize;
+  }
+  expect(times.len() > 50usize, "enough sends to mean something");
+  var i = 0usize;
+  var worst = 0i64;
+  while i < times.len() {
+    var j = i;
+    while j < times.len() {
+      let over = (i64.from(j - i) + 1i64) - (times[j] - times[i]) / interval;
+      if over > worst {worst = over;}
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  expect(worst <= 2i64, "in any window, no more sends than window/interval + 2");
+  expect(worst == 2i64, "and the bound is reached, so it is not loose");
+}
+
+fn main() i32 {
+  full();
+  idleRefill();
+  earlyUpdates();
+  bound(70i64, 1500usize);
+  bound(10i64, 1500usize);
+  done()
+}

@@ -1,0 +1,317 @@
+// The grouped return's link test (row 506; Ruminations\row-460-rules-and-tests-2026-11-18.md, B2 and section 4 test 2; the
+// model check's m5): A RETURN READS EVERY LINK OF ITS BATCH BEFORE IT RELEASES ANY GROUP (RT-L). Once a group's bits are set,
+// its cells are anyone's, and another thread may allocate them and overwrite their first words, which are the links. Every
+// step is driven.
+//
+// A worker thread (the returner; CNMALLOC cache=32) holds 24 stocked cells of the 256-byte class (4 words of 64 cells a page,
+// slots=1), 8 in each of words 0, 1 and 2 of one page, pushed so that the chain runs word 2, 1, 0, 2, 1, 0, ... (out of word
+// order). The main thread holds every other cell of the page, so the page is full. The returner empties its cache
+// (cnmalloc_workerPark) and is parked right after its first group's fetch_or (LF_HOOK_GROUP). The main thread then allocates
+// exactly the cells that group released, which are the only free cells of the page, and writes a wild link into each first
+// word: the address of a cell the main thread holds. The returner is released. A return that read a link after its group's
+// release follows the wild link and gives back the main thread's cell (and loses the rest of its chain). Checks: the first
+// group was word 2's 8 cells; the later groups set exactly the bits of words 0 and 1's stocked cells and nothing else; the
+// main thread's cells are still allocated; three groups, so three fetch_ors; and once every cell is freed, every bit is set
+// (or the page has retired). Three control rounds (no park) must give back all 24 cells in three groups.
+//
+// Needs cnd.lib (-DCN_HOOKS -DCN_DEBUG) and CNMALLOC=design=lockfree,giveback=now,slots=1,stats,cache=32:
+//   $env:_LINK_ = '"<dir>\cnd.lib"'; $env:CNMALLOC = 'design=lockfree,giveback=now,slots=1,stats,cache=32'   (delete build\ first),
+//   then 'congo test lfreturn'. CNRETURN_ROUNDS=<n> (default 20).
+// Under a plain 'congo test' nothing is linked and the test passes without testing. tests/mutants.ps1 runs it against m5.
+
+mod lfreturn;
+
+import testing use *;
+import thread;
+import libc;
+
+extern {
+  fn @c(system) Sleep(ms: u32);
+  fn @c(system) SwitchToThread() i32;
+  fn @c(system) GetStdHandle(n: u32) usize;
+  fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
+  fn @c(system) CreateFileA(name: *u8, access: u32, share: u32, sec: usize, disp: u32, flags: u32, tmpl: usize) usize;
+  fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) GetModuleHandleA(name: *u8) usize;
+  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
+  fn @c("strlen") strlen(s: cstr) usize;
+  fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
+}
+
+alias SetMulti = &fn @c (take: usize, group: usize);
+alias Collect = &fn @c (force: i32) u64;
+alias DesignFn = &fn @c () i32;
+alias Total = &fn @c (which: i32) i64;
+alias Peek = &fn @c (p: usize, which: i32) u64;
+alias Call = &fn @c ();
+
+// words of the control block
+const cCmd = 0usize;        // 1: free the 24 cells at cOut.. in order (into the cache); 2: empty the cache; 3: end and stop
+const cDone = 1usize;
+const cBegin = 2usize;      // cnmalloc_workerBegin, cnmalloc_workerPark, cnmalloc_workerEnd
+const cPark = 3usize;
+const cEnd = 4usize;
+const cArm = 5usize;        // the returner's next group parks
+const cParked = 6usize;
+const cRel = 7usize;
+const cGroups = 8usize;     // the returner's visits to the group park point
+const cOut = 16usize;       // the 24 cells, in the order they are pushed
+const cWords = 48usize;
+
+const ones = 0xFFFFFFFFFFFFFFFFu64;
+
+var @threadlocal fctl: usize = 0usize;
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+fn ld(base: usize, i: usize) usize { mem.atomicLoad[usize](word(base, i), MemOrder.SeqCst) }
+fn st(base: usize, i: usize, v: usize) { mem.atomicStore[usize](word(base, i), v, MemOrder.SeqCst); }
+
+fn @c hookGroup(cl: usize) {
+  let c = fctl;
+  if c != 0usize {
+    st(c, cGroups, ld(c, cGroups) + 1usize);
+    if ld(c, cArm) == 1usize {
+      st(c, cArm, 0usize);
+      st(c, cParked, 1usize);
+      while ld(c, cRel) == 0usize { SwitchToThread(); }
+    }
+  }
+}
+
+fn returner(arg: usize) u64 {
+  let c = arg;
+  fctl = c;
+  (ld(c, cBegin) as *u8 as Call)();
+  while true {
+    let cmd = ld(c, cCmd);
+    if cmd == 1usize {
+      st(c, cCmd, 0usize);
+      var i = 0usize;
+      while i < 24usize { libc.free(ld(c, cOut + i) as *u8); i = i + 1usize; }
+      st(c, cDone, 1usize);
+    } else if cmd == 2usize {
+      st(c, cCmd, 0usize);
+      (ld(c, cPark) as *u8 as Call)();
+      st(c, cDone, 1usize);
+    } else if cmd == 3usize {
+      (ld(c, cEnd) as *u8 as Call)();
+      st(c, cDone, 1usize);
+      break;
+    } else {
+      SwitchToThread();
+    }
+  }
+  0u64
+}
+
+fn waitFor(c: usize, i: usize, want: usize) bool {
+  var w = 0usize;
+  while ld(c, i) != want && w < 5000usize { Sleep(1u32); w = w + 1usize; }
+  ld(c, i) == want
+}
+
+fn command(c: usize, cmd: usize) bool {
+  st(c, cDone, 0usize);
+  st(c, cCmd, cmd);
+  waitFor(c, cDone, 1usize)
+}
+
+fn cleanup(coll: Collect) { coll(1i32); coll(1i32); }
+
+// the stocked cell i of word w (w 0 to 2, i 0 to 7): cell w*64 + 3*i + 1 of the page
+fn pick(w: usize, i: usize) usize { w * 64usize + 3usize * i + 1usize }
+fn bitsOf(w: usize) u64 {
+  var m = 0u64;
+  var i = 0usize;
+  while i < 8usize { m = m | (1u64 << u64.from(pick(w, i) - w * 64usize)); i = i + 1usize; }
+  m
+}
+
+const kErr = 0usize;
+const kFirst = 1usize;      // rounds whose first group was word 2's 8 cells
+const kLater = 2usize;      // rounds whose later groups set exactly words 0 and 1's stocked bits
+const kHeld = 3usize;       // rounds where the main thread's cells all stayed allocated
+const kThree = 4usize;      // rounds with exactly three groups
+const kEnd = 5usize;        // rounds whose page ended wholly free or retired
+const kControl = 6usize;
+
+fn bump(k: usize, i: usize) { *word(k, i) = *word(k, i) + 1usize; }
+
+fn round(c: usize, k: usize, cells: usize, coll: Collect, pk: Peek, parked: bool) {
+  cleanup(coll);
+  var n = 0usize;
+  while n < 256usize { *word(cells, n) = libc.malloc(256usize) as usize; n = n + 1usize; }
+  let base = *word(cells, 0usize);
+  n = 1usize;
+  var bad = 0usize;
+  while n < 256usize { if *word(cells, n) != base + n * 256usize { bad = bad + 1usize; } n = n + 1usize; }
+  if bad != 0usize || pk(base, 0i32) != 0u64 { bump(k, kErr); n = 0usize; while n < 256usize { libc.free(*word(cells, n) as *u8); n = n + 1usize; } return; }
+  // the returner's cache gets the 24 cells, pushed word 0, 1, 2 for each i: its chain runs 2, 1, 0, 2, 1, 0, ...
+  var i = 0usize;
+  while i < 8usize {
+    var w = 0usize;
+    while w < 3usize {
+      let x = pick(w, i);
+      st(c, cOut + i * 3usize + w, *word(cells, x));
+      *word(cells, x) = 0usize;
+      w = w + 1usize;
+    }
+    i = i + 1usize;
+  }
+  if !command(c, 1usize) { bump(k, kErr); return; }
+  st(c, cGroups, 0usize);
+  st(c, cRel, 0usize);
+  st(c, cParked, 0usize);
+  let wildTo = base + 192usize * 256usize;          // a cell of word 3, the main thread's
+  *word(wildTo, 0usize) = 0usize;
+  if parked { st(c, cArm, 1usize); }
+  st(c, cDone, 0usize);
+  st(c, cCmd, 2usize);
+  if parked {
+    if !waitFor(c, cParked, 1usize) {
+      bump(k, kErr); st(c, cArm, 0usize);
+    } else {
+      // the first group's cells are the page's only free cells: take them all and write a wild link into each
+      let m2 = pk(base, 2i32);
+      if m2 == bitsOf(2usize) && pk(base, 0i32) == 0u64 && pk(base, 1i32) == 0u64 { bump(k, kFirst); }
+      var j = 0usize;
+      var bits = m2;
+      while bits != 0u64 {
+        let q = libc.malloc(256usize) as usize;
+        if q >> 16usize != base >> 16usize { bump(k, kErr); }
+        *word(q, 0usize) = wildTo;
+        let ix = (q - base) / 256usize;
+        if ix >= 128usize && ix < 192usize { bits = bits & ((1u64 << u64.from(ix - 128usize)) ^ ones); *word(cells, ix) = q; } else { bump(k, kErr); bits = 0u64; }
+        j = j + 1usize;
+      }
+    }
+    st(c, cRel, 1usize);
+  }
+  if !waitFor(c, cDone, 1usize) { bump(k, kErr); }
+  let w0 = pk(base, 0i32);
+  let w1 = pk(base, 1i32);
+  let w2 = pk(base, 2i32);
+  let w3 = pk(base, 3i32);
+  if parked {
+    if w0 == bitsOf(0usize) && w1 == bitsOf(1usize) && w2 == 0u64 { bump(k, kLater); }
+    if w3 == 0u64 { bump(k, kHeld); }
+  } else if w0 == bitsOf(0usize) && w1 == bitsOf(1usize) && w2 == bitsOf(2usize) && w3 == 0u64 && ld(c, cGroups) == 3usize {
+    bump(k, kControl);
+  }
+  if parked && ld(c, cGroups) == 3usize { bump(k, kThree); }
+  // free every cell the main thread holds (a 0 entry is a stocked cell the returner gave back)
+  n = 0usize;
+  while n < 256usize { let p = *word(cells, n); if p != 0usize { libc.free(p as *u8); } n = n + 1usize; }
+  // wholly free, or retired (the give-back timer may retire it at any moment; its claim zeroes the words just before the
+  // state reads RETIRED, so a read that straddles a retire is tried again)
+  var tries = 0usize;
+  while tries < 100usize {
+    if pk(base, 65i32) == 0u64 || (pk(base, 0i32) == ones && pk(base, 1i32) == ones && pk(base, 2i32) == ones && pk(base, 3i32) == ones) {
+      bump(k, kEnd);
+      break;
+    }
+    Sleep(1u32);
+    tries = tries + 1usize;
+  }
+}
+
+fn envNum(name: cstr, dflt: usize) usize {
+  let p = libc.getenv(name);
+  if p as usize == 0usize { return dflt; }
+  var v = 0usize;
+  var i = 0usize;
+  while true {
+    let c = usize.from(*at(p, i));
+    if c < 48usize || c > 57usize { break; }
+    v = v * 10usize + (c - 48usize);
+    i = i + 1usize;
+  }
+  if i == 0usize { dflt } else { v }
+}
+
+fn putStr(buf: *u8, pos: usize, s: cstr) usize {
+  let n = strlen(s);
+  copyLit(at(buf, pos), s, n);
+  pos + n
+}
+
+fn putNum(buf: *u8, pos: usize, v: usize) usize {
+  var digits = 1usize;
+  var t = v;
+  while t >= 10usize { t = t / 10usize; digits = digits + 1usize; }
+  var x = v;
+  var i = digits;
+  while i > 0usize { i = i - 1usize; *at(buf, pos + i) = u8.from(48usize + x % 10usize); x = x / 10usize; }
+  pos + digits
+}
+
+fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
+  let buf = libc.malloc(300usize);
+  var n = 0usize;
+  n = putStr(buf, n, label); n = putNum(buf, n, a);
+  n = putStr(buf, n, mid); n = putNum(buf, n, b);
+  n = putStr(buf, n, tail); n = putNum(buf, n, c);
+  *at(buf, n) = 10u8;
+  var w = 0u32;
+  WriteFile(GetStdHandle(0xFFFFFFF4u32), buf, u32.from(n + 1usize), &mut w, 0usize);
+  // CNTEST_LOG=<file>: the same line appended there, since congo shows a passing test's stderr to nobody
+  let lf = libc.getenv("CNTEST_LOG");
+  if lf as usize != 0usize {
+    let fh = CreateFileA(lf, 4u32, 3u32, 0usize, 4u32, 128u32, 0usize);
+    if fh != 0xFFFFFFFFFFFFFFFFusize { WriteFile(fh, buf, u32.from(n + 1usize), &mut w, 0usize); CloseHandle(fh); }
+  }
+  libc.free(buf);
+}
+
+fn skipped() {
+  expect(true, "lfreturn: the first group released word 2's cells, all of them");
+  expect(true, "lfreturn: the later groups released exactly the stocked cells of words 0 and 1");
+  expect(true, "lfreturn: no wild link was followed (the main thread's cells stayed allocated)");
+  expect(true, "lfreturn: one fetch_or per group, three groups");
+  expect(true, "lfreturn: every bit ended set (or the page retired)");
+  expect(true, "lfreturn: the control rounds gave back all 24 cells in three groups");
+  expectUInt(0u64, 0, "lfreturn: no wrong cell, no stuck thread");
+}
+
+fn main() i32 {
+  let m = GetModuleHandleA(null);
+  let setMulti = GetProcAddress(m, &"cnmalloc_lfSetMultiHooks" as *u8);
+  let collect = GetProcAddress(m, &"cnmalloc_collect" as *u8);
+  let design = GetProcAddress(m, &"cnmalloc_design" as *u8);
+  let peek = GetProcAddress(m, &"cnmalloc_lfPeek" as *u8);
+  let begin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
+  let wpark = GetProcAddress(m, &"cnmalloc_workerPark" as *u8);
+  let end = GetProcAddress(m, &"cnmalloc_workerEnd" as *u8);
+  if setMulti == 0usize || collect == 0usize || design == 0usize || peek == 0usize || begin == 0usize { skipped(); return done(); }
+  if (design as *u8 as DesignFn)() != 2i32 { skipped(); return done(); }
+  let rounds = envNum("CNRETURN_ROUNDS", 20usize);
+  let coll = collect as *u8 as Collect;
+  let pk = peek as *u8 as Peek;
+  let c = libc.calloc(cWords, 8usize) as usize;
+  let k = libc.calloc(16usize, 8usize) as usize;
+  let cells = libc.calloc(256usize, 8usize) as usize;
+  st(c, cBegin, begin);
+  st(c, cPark, wpark);
+  st(c, cEnd, end);
+  (setMulti as *u8 as SetMulti)(0usize, &hookGroup as *u8 as usize);
+  let ft = thread.start[usize, u64](c, &returner);
+  var r = 0usize;
+  while r < 3usize { round(c, k, cells, coll, pk, false); r = r + 1usize; }
+  r = 0usize;
+  while r < rounds { round(c, k, cells, coll, pk, true); r = r + 1usize; }
+  command(c, 3usize);
+  ft.join();
+  (setMulti as *u8 as SetMulti)(0usize, 0usize);
+  errLine("lfreturn: rounds ", rounds, " first group right ", *word(k, kFirst), " later groups right ", *word(k, kLater));
+  errLine("lfreturn: main's cells held ", *word(k, kHeld), " three groups ", *word(k, kThree), " ended free ", *word(k, kEnd));
+  errLine("lfreturn: control rounds ", *word(k, kControl), " errors ", *word(k, kErr), " ", 0usize);
+  expect(*word(k, kFirst) == rounds, "lfreturn: the first group released word 2's cells, all of them");
+  expect(*word(k, kLater) == rounds, "lfreturn: the later groups released exactly the stocked cells of words 0 and 1");
+  expect(*word(k, kHeld) == rounds, "lfreturn: no wild link was followed (the main thread's cells stayed allocated)");
+  expect(*word(k, kThree) == rounds, "lfreturn: one fetch_or per group, three groups");
+  expect(*word(k, kEnd) == rounds + 3usize, "lfreturn: every bit ended set (or the page retired)");
+  expect(*word(k, kControl) == 3usize, "lfreturn: the control rounds gave back all 24 cells in three groups");
+  expectUInt(u64.from(*word(k, kErr)), 0, "lfreturn: no wrong cell, no stuck thread");
+  done()
+}
