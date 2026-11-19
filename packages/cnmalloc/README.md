@@ -3,12 +3,14 @@
 One shared heap for a process, in Cone, that replaces the C runtime's `malloc` family at the link. Standard C
 allocation API only. **Off by default:** nothing links it unless a program asks.
 
+**Platforms: Windows only** (`congo.toml` declares `os = ["windows"]`). The package calls kernel32 directly and its shim is Win32, so on Linux none of its 13 tests link `[planned: Linux]` (lane-queue row 550; there is no Linux layer yet).
+
 ## What is here
 
 | File | What it is |
 |---|---|
 | `src/os.cone` | `mod trait Os`: reserve, commit, decommit, release. The OS layer's interface. |
-| `src/oswin.cone` | The Windows implementation (`VirtualAlloc`, `VirtualFree`) and the few other calls the heap makes: clock, SRW lock, thread-pool timer, stderr. Linux's `mmap` is named in `os.cone`'s comment, not built. |
+| `src/oswin.cone` | The Windows implementation (`VirtualAlloc`, `VirtualFree`) and the few other calls the heap makes: clock, SRW lock, thread-pool timer, stderr. Linux's `mmap` is named in `os.cone`'s comment, not built `[planned: Linux]`. |
 | `src/cnmalloc.cone` | The heap (a C-named module: no prelude, no core, no globals, nothing from Cone's runtime). Its header comment is the design: the page pool and reservation interfaces, the lock order, the concurrency rule. |
 | `shim/cn_shim.c` | The C part (language gaps, below): the one global heap pointer, the lazy compare-and-swap start, the `malloc`/`free`/... names, the `__imp_` pointers, the exit-time statistics hook, the workers' cache, and (row 454) the second design's common paths. |
 | `shim/build-cn.ps1` | Builds `cn.lib` (the package's release object plus `cn_shim.c`) and `cnd.lib` (the same with `-DCN_HOOKS -DCN_DEBUG`: the second design's test hooks, and a double free that aborts). |
@@ -49,7 +51,7 @@ powershell -File packages\cnmalloc\shim\build-cn.ps1 -Out <dir>        # writes 
 `CONE_HEAP_CLASS_SIZE=1`, a separate environment variable and not one of the `CNMALLOC` settings, is read by conestd's
 heap region (`packages/conestd/heapregion.c`), not by cnmalloc: with it set, and cnmalloc linked, the heap answers a
 size request with cnmalloc's class size (the shim's `cnmalloc_sizeFor`), so a collection made at an exact fit grows into
-its cell before it moves. Off by default; Windows only; a trial.
+its cell before it moves. Off by default; Windows only (the lookup is `GetProcAddress`; on Linux it finds nothing until the port's `dlsym` `[planned: Linux]`); a trial.
 
 ## The workers' cache (row 426)
 
