@@ -193,7 +193,10 @@ fn violationRound(c: usize, cells: usize, coll: Collect, round: usize) {
   takeB(c, x0 >> 16usize, 2000usize + round);     // with a retired page in the slot this ends the process (the slot rule)
 }
 
-fn controlRound(c: usize, cells: usize, coll: Collect) {
+// Returns whether the freer's free entered "after a free" exactly once. Under load a free can legitimately take the other way (the
+// control assumes the fast path, and timing can move it), so main retries a round that did not, up to 3 tries. Nothing else is
+// retried: the errors, and every check of the violation rounds, stay strict.
+fn controlRound(c: usize, cells: usize, coll: Collect) usize {
   cleanup(coll);
   var n = 0usize;
   while n < 128usize { *word(cells, n) = libc.malloc(1024usize) as usize; n = n + 1usize; }   // page 1 full and detached, page 2 attached
@@ -205,9 +208,10 @@ fn controlRound(c: usize, cells: usize, coll: Collect) {
   st(c, cArmOr, 0usize); st(c, cArmAfter, 0usize);
   st(c, cCmd, 1usize);
   if !waitFor(c, cDone, 1usize) { st(c, cErrs, ld(c, cErrs) + 1usize); }
-  if ld(c, cReached) - before == 1usize { st(c, cControl, ld(c, cControl) + 1usize); }
+  let count = ld(c, cReached) - before;   // the hook count this try saw; 1 is the fast path the control assumes
   n = 64usize;
   while n < 128usize { libc.free(*word(cells, n) as *u8); n = n + 1usize; }
+  count
 }
 
 fn envNum(name: cstr, dflt: usize) usize {
@@ -246,6 +250,27 @@ fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
   n = putStr(buf, n, label); n = putNum(buf, n, a);
   n = putStr(buf, n, mid); n = putNum(buf, n, b);
   n = putStr(buf, n, tail); n = putNum(buf, n, c);
+  emitLine(buf, n);
+}
+
+// The retry line names the hook count each failed control try saw, so a count above 1 recurring in gate logs shows.
+fn retryLine(retries: usize, counts: usize, ok: usize, errs: usize) {
+  let buf = libc.malloc(256usize);
+  var n = 0usize;
+  n = putStr(buf, n, "lfstale: control tries that took the other way and were retried "); n = putNum(buf, n, retries);
+  n = putStr(buf, n, " (counts ");
+  var i = 0usize;
+  while i < retries {
+    if i != 0usize { n = putStr(buf, n, ", "); }
+    n = putNum(buf, n, *word(counts, i));
+    i = i + 1usize;
+  }
+  n = putStr(buf, n, ") of control rounds ok "); n = putNum(buf, n, ok);
+  n = putStr(buf, n, " errors "); n = putNum(buf, n, errs);
+  emitLine(buf, n);
+}
+
+fn emitLine(buf: *u8, n: usize) {
   *at(buf, n) = 10u8;
   var w = 0u32;
   WriteFile(GetStdHandle(0xFFFFFFF4u32), buf, u32.from(n + 1usize), &mut w, 0usize);
@@ -289,7 +314,19 @@ fn main() i32 {
   let ft = thread.start[usize, u64](c, &freer);
   let cells = libc.calloc(130usize, 8usize) as usize;
   var k = 0usize;
-  while k < 3usize { controlRound(c, cells, coll); k = k + 1usize; }
+  var retries = 0usize;
+  let counts = libc.calloc(9usize, 8usize) as usize;   // the hook count of each failed try, at most 3 rounds x 3 tries
+  while k < 3usize {
+    var tries = 0usize;
+    while tries < 3usize {
+      tries = tries + 1usize;
+      let got = controlRound(c, cells, coll);
+      if got == 1usize { st(c, cControl, ld(c, cControl) + 1usize); break; }
+      *word(counts, retries) = got;
+      retries = retries + 1usize;
+    }
+    k = k + 1usize;
+  }
   var round = 0usize;
   while round < rounds { violationRound(c, cells, coll, round); round = round + 1usize; }
   st(c, cStop, 1usize);
@@ -298,6 +335,8 @@ fn main() i32 {
   if setMulti != 0usize { (setMulti as *u8 as SetMulti)(0usize, 0usize); }
   errLine("lfstale: rounds ", rounds, " freer parked ", ld(c, cParkedRounds), " page reused by the other class ", ld(c, cReused) / 2usize);
   errLine("lfstale: stale freer past the generation test ", ld(c, cStale), " control rounds ok ", ld(c, cControl), " errors ", ld(c, cErrs));
+  if retries != 0usize { retryLine(retries, counts, ld(c, cControl), ld(c, cErrs)); }
+  libc.free(counts as *u8);
   expectUInt(u64.from(ld(c, cStale)), 0, "lfstale: a freer with a stale generation never passed the generation test");
   expect(ld(c, cParkedRounds) == rounds, "lfstale: every freer was parked after its fetch_or on a wholly free page");
   expect(ld(c, cReused) == rounds * 2usize, "lfstale: the retired page came back as the other class's page every round");
