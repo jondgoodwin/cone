@@ -215,15 +215,17 @@ def compile_limit(scenario_key: float | None, run_key: float | None, plain: floa
     the program. A scenario's 'compile_timeout' (or its run entry's own, which
     wins) gives the compiler that many seconds and leaves the program on
     'plain', the limit the other processes get, so a slow compile needs no
-    longer wait for a hung program. An explicit --compile-timeout acts as
-    --timeout does: the larger of it and the key wins. Without one, a
-    --timeout lengthens the key the same way. With no key, the compiler gets
-    'plain' (raised the same way).
+    longer wait for a hung program. The key only ever lengthens the compiler's
+    limit: the compiler gets the largest of the key, 'plain' and the command
+    line, so a 'compile_timeout' below a scenario's 'timeout' never gives the
+    compiler less than it had. An explicit --compile-timeout acts as --timeout
+    does: the larger of it and the key wins. Without one, a --timeout lengthens
+    the key the same way. With no key, the compiler gets 'plain' (raised the
+    same way).
     """
     key = run_key if run_key is not None else scenario_key
-    if key is None:
-        return plain if command_line is None else max(plain, command_line)
-    return key if command_line is None else max(key, command_line)
+    limit = plain if key is None else max(key, plain)
+    return limit if command_line is None else max(limit, command_line)
 
 
 def effective_timeout(scenario_timeout: float | None, command_line: float | None) -> float:
@@ -2734,6 +2736,7 @@ def timeout_selftest() -> int:
             ((60.0, None, None, 5.0, 30.0), 60.0),
             ((60.0, None, None, None, 120.0), 120.0),
             ((60.0, None, 8.0, None, None), 60.0),
+            ((60.0, None, 90.0, None, None), 90.0),   # the key never lowers the compiler's limit
             ((None, None, 8.0, None, None), 8.0),
             ((None, None, None, None, 120.0), 120.0)):
         checks += 1
