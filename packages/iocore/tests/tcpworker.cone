@@ -1,0 +1,534 @@
+// TCP waiting on the worker side (shared.cone, TCP ON THE WORKER PORT), behind the Loop's switch
+// 'setWorkerPort' and a listener or connect made with 'worker', with a port of the test's own and no
+// actors: the test is the waiter on the port, as the actors runtime's poller is (the same helpers as
+// workerudp). A socket the Loop accepts from a worker listener, or connects with the worker flag, is
+// registered with the test's port; its receives and sends that have to wait are listed in the table,
+// never on the Loop. Accept, connect, reset and close are the Loop's still.
+//
+// 1. A connect (worker) and an accept (from a worker listener) are the Loop's; both sockets are worker-side
+//    (an operation on them that cannot be answered at once is listed: issuePending).
+// 2. A receive waits; the bytes sent afterwards answer it, once.
+// 3. Two receives wait; the bytes come in the order sent (the first receive takes the first bytes).
+// 4. A zero-byte receive (RecvReady) waits and is answered when bytes are there, with no buffer; the receive
+//    that follows takes them.
+// 5. A send too big for the socket's buffers: part goes, the rest waits and goes on from where it was (Linux:
+//    at the edge; Windows: the kernel holds it), every byte arrives in order, the send answered once with the
+//    whole count.
+// 6. A half-close: the peer's waiting receive is answered Done(0), the clean end.
+// 7. A close of the socket a receive waits on, and a reset of it: Cancelled, once, the buffer back.
+// 8. A receive answered at once when bytes are there, and a close that came after the bytes: the receive is
+//    answered once (Done or Cancelled), never twice, its buffer back.
+// 9. The Loop does not start a receive on a worker-side socket (Failed, InvalidInput).
+// 10. A listener made without 'worker', and a connect without it, make sockets the Loop holds (the hosted
+//     services' way): issueWaiting leaves their operations to the Loop, which does them.
+// Every buffer is home at the end.
+
+mod tcpworker;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import ioerror use IoErrorKind;
+import diag;
+
+struct Ask {
+  tag: u64;
+}
+
+// Linux's struct epoll_event: the events and the 64-bit datum as two words
+struct Ev {
+  events: u32;
+  lo: u32;
+  hi: u32;
+}
+
+extern {
+  fn @c epoll_create1(flags: i32) i32;
+  fn @c epoll_wait(epfd: i32, events: *Ev, max: i32, timeout: i32) i32;
+  fn @c close(fd: i32) i32;
+  fn @c(system) CreateIoCompletionPort(h: usize, port: usize, key: usize, threads: u32) usize;
+  fn @c(system) GetQueuedCompletionStatus(port: usize, bytes: *u32, key: *usize, ov: *usize, ms: u32) i32;
+  fn @c(system) CloseHandle(h: usize) i32;
+}
+
+// The test's port: Linux's epoll instance, Windows' completion port
+fn openPort() usize {
+  #if #os == .windows {
+    CreateIoCompletionPort(0xFFFFFFFFFFFFFFFFusize, 0usize, 0usize, 1u32)
+  } #else {
+    usize.from(epoll_create1(0i32))
+  }
+}
+
+fn closePort(port: usize) {
+  #if #os == .windows {
+    CloseHandle(port);
+  } #else {
+    close(i32.from(port));
+  }
+}
+
+// Wait up to ms for the port's next event and give it to the table; what it
+// answers is appended to out. False when nothing came
+fn pollPort(port: usize, sh: &Shared, ms: u32, out: &mut List[*OpCore]) bool {
+  #if #os == .windows {
+    var bytes = 0u32;
+    var key = 0usize;
+    var ovp = 0usize;
+    GetQueuedCompletionStatus(port, &mut bytes as *u32, &mut key as *usize, &mut ovp as *usize, ms);
+    if ovp == 0usize {return false;}
+    sh.udpCompleted(ovp as *OpCore, bytes, out);
+    true
+  } #else {
+    var ev = Ev(0u32, 0u32, 0u32);
+    let n = epoll_wait(i32.from(port), &mut ev as *Ev, 1i32, i32.from(ms));
+    if n < 1i32 {return false;}
+    sh.udpReady(ev.lo, ev.hi, ev.events, out);
+    true
+  }
+}
+
+// Until out holds n records, taking the port's events, and the Loop's own
+// answers (a close answers on the Loop on Linux); ms at most
+fn waitFor(lp: &mut Loop, port: usize, sh: &Shared, out: &mut List[*OpCore], n: usize, ms: i64) {
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  var comps = List[Completion]();
+  while out.len() < n && Instant.now() < limit {
+    pollPort(port, sh, 2u32, out);
+    lp.poll(Instant.now() + Duration.fromMillis(1i64), &mut comps);
+    lp.takeDone(out);
+    comps.clear();
+  }
+}
+
+fn at(l: &List[*OpCore], k: usize) *OpCore {*l[k]}
+
+fn recvOn(pool: &OpPool[Ask], h: Handle, room: usize) *OpCore {
+  let r = pool.take(Ask(1u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindRecv;
+  c.handle = h;
+  c.buf = Some[IoBuf](IoBuf(room));
+  r as *OpCore
+}
+
+fn readyOn(pool: &OpPool[Ask], h: Handle) *OpCore {
+  let r = pool.take(Ask(2u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindRecvReady;
+  c.handle = h;
+  r as *OpCore
+}
+
+fn sendOn(pool: &OpPool[Ask], h: Handle, text: &Array[u8]) *OpCore {
+  let r = pool.take(Ask(3u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindSend;
+  c.handle = h;
+  var b = IoBuf(64usize);
+  b.append(text);
+  c.buf = Some[IoBuf](b);
+  r as *OpCore
+}
+
+// A send of n bytes, the byte at i being i mod 251
+fn bigSendOn(pool: &OpPool[Ask], h: Handle, n: usize) *OpCore {
+  let r = pool.take(Ask(4u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindSend;
+  c.handle = h;
+  var b = IoBuf(n);
+  let w = b.whole();
+  var i = 0usize;
+  while i < n {
+    w[i] = u8.from(i % 251usize);
+    i = i + 1usize;
+  }
+  b.setLen(n);
+  c.buf = Some[IoBuf](b);
+  r as *OpCore
+}
+
+// What a worker does with a stream operation: the shared try (the entry exclusive), then, if it
+// found nothing to do, the waiting one
+fn start(sh: &Shared, h: Handle, p: *OpCore) u32 {
+  if !sh.lock(h) {return 99u32;}
+  let got = sh.issue(p);
+  sh.unlock(h);
+  if got == issueNot {return sh.issueWaiting(p);}
+  got
+}
+
+// The record, dissolved: how many bytes its buffer holds, the first of them, and whether the
+// pattern (byte i is i mod 251, from 'from') held in all of them
+struct Held {
+  bytes: usize;
+  first: u8;
+  pattern: bool;
+}
+
+fn gone(pool: &OpPool[Ask], p: *OpCore, from: usize) Held {
+  let rec = pool.dissolve(p as *OpRec[Ask]);
+  let core, ask = rec.(core, ask);
+  var held = Held(0usize, 0u8, true);
+  let buf, batch = core.(buf, batch);
+  match buf {
+    case var Some(b) {
+      held.bytes = b.len();
+      let v = b.view();
+      var i = 0usize;
+      while i < b.len() {
+        if i == 0usize {held.first = v[0usize];}
+        if v[i] != u8.from((from + i) % 251usize) {held.pattern = false;}
+        i = i + 1usize;
+      }
+    }
+    else {}
+  }
+  held
+}
+
+fn handleOf(c: &Completion) Handle {c.handle}
+
+// A listener on the loop and its port
+fn listenOn(lp: &mut Loop, worker: bool) Handle {
+  match lp.listen(SocketAddr.localhost(0u16), 128i32, worker) {
+    case let Ok(h) {h}
+    case let Err(e) {panic("tcpworker: listen failed", "", 0u32)}
+  }
+}
+
+fn portOf(lp: &mut Loop, h: Handle) u16 {
+  match lp.localAddr(h) {
+    case let Ok(x) {x.port()}
+    case let Err(e) {0u16}
+  }
+}
+
+// A connected pair through the Loop: its Connect (worker, or not) to l's port, and its Accept of l. On
+// Windows a worker connect's completion comes to the test's port first, which posts it on
+fn pairOn(lp: &mut Loop, port: usize, sh: &Shared, l: Handle, worker: bool) Handle, Handle {
+  let lport = portOf(lp, l);
+  lp.submit(Op.Connect(SocketAddr.localhost(lport), worker), Target.Here(1u64));
+  lp.submit(Op.Accept(l), Target.Here(2u64));
+  var a = Handle.none();
+  var b = Handle.none();
+  var comps = List[Completion]();
+  var none = List[*OpCore]();
+  let limit = Instant.now() + Duration.fromMillis(3000i64);
+  while (a == Handle.none() || b == Handle.none()) && Instant.now() < limit {
+    pollPort(port, sh, 2u32, &mut none);
+    lp.poll(Instant.now() + Duration.fromMillis(2i64), &mut comps);
+    var k = 0usize;
+    while k < comps.len() {
+      let c = &comps[k];
+      if c.token == 1u64 {a = c.handle;}
+      if c.token == 2u64 {b = c.handle;}
+      k = k + 1usize;
+    }
+    comps.clear();
+  }
+  a, b
+}
+
+fn main() i32 {
+  initAll();
+  let port = openPort();
+  var lp = Loop.mustMake();
+  lp.setWorkerPort(port);
+  let sh = lp.share();
+  let pool = OpPool[Ask].make();
+  var out = List[*OpCore]();
+
+  // 1. a worker listener, a worker connect, an accept: the Loop's, and the sockets are worker-side
+  let l = listenOn(&mut lp, true);
+  var a = Handle.none();
+  var b = Handle.none();
+  a, b = pairOn(&mut lp, port, &sh, l, true);
+  expect(a != Handle.none() && b != Handle.none(), "1: the connect and the accept were answered by the Loop");
+  {
+    let r = recvOn(&pool, b, 64usize);
+    expectUInt(u64.from(start(&sh, b, r)), u64.from(issuePending), "1: the accepted socket is worker-side: a receive that finds nothing waits");
+    let r2 = recvOn(&pool, a, 64usize);
+    expectUInt(u64.from(start(&sh, a, r2)), u64.from(issuePending), "1: so is the connected one");
+    // 2. the bytes sent answer the receive on b, once
+    let s = sendOn(&pool, a, "hello");
+    expectUInt(u64.from(start(&sh, a, s)), u64.from(issueDone), "2: the send is done where it is issued");
+    expectUInt(u64.from((s as &OpCore).count()), 5u64, "2: five bytes");
+    let sg = gone(&pool, s, 0usize);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    expectUInt(u64.from(out.len()), 1u64, "2: the bytes answer the receive, once");
+    expect(out.len() == 1usize && at(&out, 0usize) as usize == r as usize, "2: the record that waited");
+    expect((r as &OpCore).isDone(), "2: Done");
+    expectUInt(u64.from((r as &OpCore).count()), 5u64, "2: five bytes");
+    let g = gone(&pool, r, 0usize);
+    expectUInt(u64.from(g.bytes), 5u64, "2: in the buffer");
+    out.clear();
+    // the receive left waiting on a is ended by a send the other way
+    let s2 = sendOn(&pool, b, "yo");
+    expectUInt(u64.from(start(&sh, b, s2)), u64.from(issueDone), "2: the reply is done");
+    let s2g = gone(&pool, s2, 0usize);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    expectUInt(u64.from(out.len()), 1u64, "2: the reply answers the connected side's receive");
+    expectUInt(u64.from((r2 as &OpCore).count()), 2u64, "2: two bytes");
+    let g2 = gone(&pool, r2, 0usize);
+    out.clear();
+  }
+
+  // 3. two receives wait; bytes come in the order sent
+  {
+    let r1 = recvOn(&pool, b, 3usize);
+    let r2 = recvOn(&pool, b, 3usize);
+    expectUInt(u64.from(start(&sh, b, r1)), u64.from(issuePending), "3: the first receive waits");
+    expectUInt(u64.from(start(&sh, b, r2)), u64.from(issuePending), "3: the second waits");
+    // (a receive's room is a pool block's, so the bytes are sent one message at a time)
+    let s = sendOn(&pool, a, "ab");
+    expectUInt(u64.from(start(&sh, a, s)), u64.from(issueDone), "3: two bytes sent");
+    let sg = gone(&pool, s, 0usize);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    expectUInt(u64.from(out.len()), 1u64, "3: one receive answered");
+    expect(out.len() == 1usize && at(&out, 0usize) as usize == r1 as usize, "3: the first one asked");
+    expectUInt(u64.from((r1 as &OpCore).count()), 2u64, "3: with the bytes");
+    out.clear();
+    let s2 = sendOn(&pool, a, "cd");
+    expectUInt(u64.from(start(&sh, a, s2)), u64.from(issueDone), "3: two more sent");
+    let s2g = gone(&pool, s2, 0usize);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    expect(out.len() == 1usize && at(&out, 0usize) as usize == r2 as usize, "3: the second one asked answers next");
+    expectUInt(u64.from((r2 as &OpCore).count()), 2u64, "3: with the next bytes");
+    let g1 = gone(&pool, r1, 0usize);
+    let g2 = gone(&pool, r2, 0usize);
+    out.clear();
+  }
+
+  // 4. a zero-byte receive waits, holding no buffer, and is answered when bytes are there
+  {
+    let rd = readyOn(&pool, b);
+    expectUInt(u64.from(start(&sh, b, rd)), u64.from(issuePending), "4: a zero-byte receive with nothing to read waits");
+    let s = sendOn(&pool, a, "z");
+    expectUInt(u64.from(start(&sh, a, s)), u64.from(issueDone), "4: a byte sent");
+    let sg = gone(&pool, s, 0usize);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    expectUInt(u64.from(out.len()), 1u64, "4: it is answered");
+    expect((rd as &OpCore).isDone() && (rd as &OpCore).count() == 0usize, "4: Done, no bytes taken");
+    let gd = gone(&pool, rd, 0usize);
+    out.clear();
+    let r = recvOn(&pool, b, 16usize);
+    expectUInt(u64.from(start(&sh, b, r)), u64.from(issueDone), "4: the receive after it takes the byte at once");
+    expectUInt(u64.from((r as &OpCore).count()), 1u64, "4: one byte");
+    let g = gone(&pool, r, 0usize);
+    // and one already readable is answered at once
+    let s2 = sendOn(&pool, a, "q");
+    let s2d = start(&sh, a, s2);
+    let s2g = gone(&pool, s2, 0usize);
+    thread.sleep(Duration.fromMillis(40i64));
+    let rd2 = readyOn(&pool, b);
+    expectUInt(u64.from(start(&sh, b, rd2)), u64.from(issueDone), "4: a zero-byte receive with bytes there is answered where issued");
+    let gd2 = gone(&pool, rd2, 0usize);
+    let r3 = recvOn(&pool, b, 16usize);
+    expectUInt(u64.from(start(&sh, b, r3)), u64.from(issueDone), "4: and the byte is there");
+    let g3 = gone(&pool, r3, 0usize);
+  }
+
+  // 5. a send too big for the buffers: part goes, the rest waits and goes on; every byte, in order
+  {
+    let total = 33554432usize;
+    let s = bigSendOn(&pool, a, total);
+    let got = start(&sh, a, s);
+    #if #os != .windows {
+      expectUInt(u64.from(got), u64.from(issuePending), "5: 32 MiB does not go at once: the rest waits");
+    }
+    var taken = 0usize;
+    var bad = 0usize;
+    var answered = got == issueDone;
+    let limit = Instant.now() + Duration.fromMillis(20000i64);
+    while taken < total && Instant.now() < limit {
+      let r = recvOn(&pool, b, 1048576usize);
+      let rg = start(&sh, b, r);
+      var rdone = rg == issueDone;
+      while !rdone && Instant.now() < limit {
+        // the receive's answer, or the send's (which is answered when its last bytes go)
+        var seen = List[*OpCore]();
+        waitFor(&mut lp, port, &sh, &mut seen, 1usize, 50i64);
+        var k = 0usize;
+        while k < seen.len() {
+          let p = at(&seen, k);
+          if p as usize == r as usize {rdone = true;}
+          if p as usize == s as usize {answered = true;}
+          k = k + 1usize;
+        }
+      }
+      let n = (r as &OpCore).count();
+      let g = gone(&pool, r, taken);
+      if !g.pattern {bad = bad + g.bytes;}
+      taken = taken + n;
+      if n == 0usize {break;}
+    }
+    expectUInt(u64.from(taken), u64.from(total), "5: every byte arrived");
+    expectUInt(u64.from(bad), 0u64, "5: in order, none of them wrong");
+    if !answered {
+      var seen = List[*OpCore]();
+      waitFor(&mut lp, port, &sh, &mut seen, 1usize, 3000i64);
+      answered = seen.len() == 1usize && at(&seen, 0usize) as usize == s as usize;
+    }
+    expect(answered, "5: the send was answered");
+    expectUInt(u64.from((s as &OpCore).count()), u64.from(total), "5: with the whole count");
+    let sg = gone(&pool, s, 0usize);
+  }
+
+  // 6. a half-close: the peer's waiting receive is answered with the clean end
+  {
+    let r = recvOn(&pool, b, 64usize);
+    expectUInt(u64.from(start(&sh, b, r)), u64.from(issuePending), "6: a receive waits");
+    expectUInt(u64.from(sh.shutdownSend(a)), 0u64, "6: the half-close is made on the calling thread");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    expectUInt(u64.from(out.len()), 1u64, "6: the receive is answered");
+    expect((r as &OpCore).isDone() && (r as &OpCore).count() == 0usize, "6: Done(0), the clean end");
+    let g = gone(&pool, r, 0usize);
+    out.clear();
+    // the half-closed side still receives
+    let r2 = recvOn(&pool, a, 64usize);
+    expectUInt(u64.from(start(&sh, a, r2)), u64.from(issuePending), "6: the closer's receive waits");
+    let s = sendOn(&pool, b, "ok");
+    expectUInt(u64.from(start(&sh, b, s)), u64.from(issueDone), "6: the reply goes");
+    let sg = gone(&pool, s, 0usize);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    expectUInt(u64.from((r2 as &OpCore).count()), 2u64, "6: and arrives");
+    let g2 = gone(&pool, r2, 0usize);
+    out.clear();
+  }
+  lp.close(a);
+  lp.close(b);
+
+  // 7. a close of the socket a receive waits on; a reset of one
+  {
+    var c = Handle.none();
+    var d = Handle.none();
+    c, d = pairOn(&mut lp, port, &sh, l, true);
+    let r = recvOn(&pool, d, 64usize);
+    expectUInt(u64.from(start(&sh, d, r)), u64.from(issuePending), "7: a receive waits");
+    expect(lp.close(d), "7: the socket is closed");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    expectUInt(u64.from(out.len()), 1u64, "7: the receive is answered, once");
+    expectUInt(u64.from((r as &OpCore).status), u64.from(diag.outcomeCancelled), "7: Cancelled");
+    let g = gone(&pool, r, 0usize);
+    out.clear();
+    lp.close(c);
+    var e = Handle.none();
+    var f = Handle.none();
+    e, f = pairOn(&mut lp, port, &sh, l, true);
+    let r2 = recvOn(&pool, f, 64usize);
+    expectUInt(u64.from(start(&sh, f, r2)), u64.from(issuePending), "7: a receive waits on the next");
+    expect(lp.reset(f), "7: the socket is reset");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    expectUInt(u64.from(out.len()), 1u64, "7: the receive is answered, once");
+    expectUInt(u64.from((r2 as &OpCore).status), u64.from(diag.outcomeCancelled), "7: Cancelled");
+    let g2 = gone(&pool, r2, 0usize);
+    out.clear();
+    // the peer sees the reset
+    let r3 = recvOn(&pool, e, 64usize);
+    let rg = start(&sh, e, r3);
+    if rg == issuePending {
+      waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+      expectUInt(u64.from(out.len()), 1u64, "7: the peer's receive is answered by the reset");
+    }
+    expectUInt(u64.from((r3 as &OpCore).status), u64.from(diag.outcomeFailed), "7: Failed, the connection reset");
+    expect(answerError(diag.kindRecv, (r3 as &OpCore).status, (r3 as &OpCore).code).kind() == IoErrorKind.ConnectionReset, "7: ConnectionReset");
+    let g3 = gone(&pool, r3, 0usize);
+    out.clear();
+    lp.close(e);
+  }
+
+  // 8. bytes, then a close, before the port is looked at: answered once, whichever it is
+  {
+    var rounds = 0u32;
+    var answers = 0u64;
+    while rounds < 50u32 {
+      var c = Handle.none();
+      var d = Handle.none();
+      c, d = pairOn(&mut lp, port, &sh, l, true);
+      let r = recvOn(&pool, d, 64usize);
+      let began = start(&sh, d, r);
+      let s = sendOn(&pool, c, "race");
+      let sd = start(&sh, c, s);
+      let sg = gone(&pool, s, 0usize);
+      lp.close(d);
+      var seen = List[*OpCore]();
+      if began == issuePending {
+        waitFor(&mut lp, port, &sh, &mut seen, 1usize, 3000i64);
+        // nothing else may come for it
+        pollPort(port, &sh, 2u32, &mut seen);
+        lp.takeDone(&mut seen);
+      } else {
+        seen.push(r);
+      }
+      answers = answers + u64.from(seen.len());
+      expect(seen.len() == 1usize && at(&seen, 0usize) as usize == r as usize, "8: answered once");
+      let g = gone(&pool, r, 0usize);
+      lp.close(c);
+      rounds = rounds + 1u32;
+    }
+    expectUInt(answers, 50u64, "8: fifty receives, fifty answers");
+  }
+
+  // 9. the Loop does not start a receive on a worker-side socket
+  {
+    var c = Handle.none();
+    var d = Handle.none();
+    c, d = pairOn(&mut lp, port, &sh, l, true);
+    let r = recvOn(&pool, d, 64usize);
+    lp.start(r);
+    var got = List[*OpCore]();
+    waitFor(&mut lp, port, &sh, &mut got, 1usize, 3000i64);
+    expectUInt(u64.from(got.len()), 1u64, "9: the Loop answers it");
+    expectUInt(u64.from((r as &OpCore).status), u64.from(diag.outcomeFailed), "9: Failed");
+    expect(answerError(diag.kindRecv, (r as &OpCore).status, (r as &OpCore).code).kind() == IoErrorKind.InvalidInput, "9: InvalidInput");
+    let g = gone(&pool, r, 0usize);
+    lp.close(c);
+    lp.close(d);
+  }
+
+  // 10. a listener and a connect without 'worker': the Loop holds the sockets, whatever port it was given
+  {
+    let hl = listenOn(&mut lp, false);
+    var c = Handle.none();
+    var d = Handle.none();
+    c, d = pairOn(&mut lp, port, &sh, hl, false);
+    expect(c != Handle.none() && d != Handle.none(), "10: connected through a listener that is not worker-side");
+    let r = recvOn(&pool, d, 64usize);
+    expectUInt(u64.from(sh.issueWaiting(r)), u64.from(issueNot), "10: issueWaiting leaves the accepted socket's receive to the Loop");
+    let s = sendOn(&pool, c, "hosted");
+    expectUInt(u64.from(sh.issueWaiting(s)), u64.from(issueNot), "10: and the connected socket's send");
+    // The Loop does them
+    lp.start(r);
+    lp.start(s);
+    var got = List[*OpCore]();
+    waitFor(&mut lp, port, &sh, &mut got, 2usize, 3000i64);
+    expectUInt(u64.from(got.len()), 2u64, "10: the Loop answers both");
+    expectUInt(u64.from((r as &OpCore).count()), 6u64, "10: the bytes arrived through the Loop");
+    let g = gone(&pool, r, 0usize);
+    let sg = gone(&pool, s, 0usize);
+    lp.close(c);
+    lp.close(d);
+    lp.close(hl);
+    // a worker listener's accept without the connect's flag still makes a worker-side socket
+    var e = Handle.none();
+    var f = Handle.none();
+    e, f = pairOn(&mut lp, port, &sh, l, false);
+    let r2 = recvOn(&pool, f, 64usize);
+    expectUInt(u64.from(start(&sh, f, r2)), u64.from(issuePending), "10: the accepted side of a worker listener is worker-side though the connect was not");
+    lp.close(f);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    let g2 = gone(&pool, r2, 0usize);
+    out.clear();
+    lp.close(e);
+  }
+
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  lp.close(l);
+  closePort(port);
+  done()
+}

@@ -392,8 +392,13 @@ pub struct Shared is Move, Sendable {
     // is started under the exclusive lock by issueWaiting alone (tryWaiting)
     let tcpWorker = tcp && (*e).worker != 0u32;
     if tcpWorker {
-      if mode != tryRetry && (if k == diag.kindSend {(*e).swait} else {(*e).rwait}) as usize != 0usize {return issueNot;}
-      #if #os == .windows { if mode == tryPublic {return issueNot;} }
+      // (Windows: the kernel orders overlapped operations on a socket as they were started, and every
+      // one listed there is the kernel's, so none waits unstarted behind another)
+      #if #os == .windows {
+        if mode == tryPublic {return issueNot;}
+      } #else {
+        if mode != tryRetry && (if k == diag.kindSend {(*e).swait} else {(*e).rwait}) as usize != 0usize {return issueNot;}
+      }
     }
     // A send on a worker-side socket that is held, or has sends waiting ahead of it, is not tried. The
     // entry's wait lists change only under the exclusive lock, which no shared holder shares
