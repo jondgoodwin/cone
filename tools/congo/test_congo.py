@@ -1422,7 +1422,7 @@ class Scenarios(unittest.TestCase):
         write(pkg / "congo.toml", head + '[package.x]\nk = 1\n')
         run = self.congo("build", cwd=pkg, ok=False)
         self.assertIn("'x' is not a [package] key; the keys are name, version, output,"
-                      " targets and quiet", run.stderr)
+                      " targets, quiet and os", run.stderr)
 
     def test_the_prelude_rests_on_libc(self):
         # core imports libc, a C package the compiler gives no prelude, so libc
@@ -2188,6 +2188,31 @@ class Testing(unittest.TestCase):
         self.assertIn("test timing ... ok", run.stdout)
         self.assertNotIn("test steady", run.stdout)
 
+    def test_os_names_the_systems_a_package_runs_on(self):
+        # [package] os: a package for another system is skipped, with a Result
+        # line that says so and no count; windows and linux are claimed where
+        # os is not written; a bad os is refused
+        folder = self.quiet_packages(self.root)
+        other = "macos" if sys.platform != "darwin" else "windows"
+        toml = folder / "qtwo" / "congo.toml"
+        base = toml.read_text(encoding="utf-8")
+        write(toml, base + f'os = ["{other}"]\n')
+        run = self.congo("test", cwd=folder)
+        self.assertIn(f"qtwo: skipped, [package] os is {other} and this is", run.stdout)
+        self.assertIn("2 packages: 2 tests: 2 passed", run.stdout)
+        self.assertNotIn("test other", run.stdout)
+        run = self.congo("test", cwd=folder / "qtwo")
+        self.assertIn("qtwo: skipped", run.stdout)
+        # os naming the host runs the package, whatever else it lists
+        here = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+        write(toml, base + f'os = ["{other}", "{here}"]\n')
+        run = self.congo("test", cwd=folder / "qtwo")
+        self.assertIn("test other ... ok", run.stdout)
+        for bad in ('os = []', 'os = ["bsd"]', 'os = "linux"'):
+            write(toml, base + bad + "\n")
+            run = self.congo("test", cwd=folder / "qtwo", ok=False)
+            self.assertIn("[package] os must be a list of the systems", run.stderr)
+
     def test_quiet_class_runs_only_when_the_parallel_phase_is_over(self):
         """The mechanism for timing-sensitive tests: whatever the job count, a
         quiet test starts only after every package has ended (its Result line
@@ -2868,7 +2893,7 @@ class GpuKernels(unittest.TestCase):
             self.assertIn(said, run.stderr, targets)
         write(pkg / "congo.toml", head + 'colour = "red"\n')
         self.assertIn("'colour' is not a [package] key; the keys are name, version, output,"
-                      " targets and quiet", self.congo("build", cwd=pkg, ok=False).stderr)
+                      " targets, quiet and os", self.congo("build", cwd=pkg, ok=False).stderr)
         # A program has no kernels to build: they go in a library it imports
         write(pkg / "congo.toml", '[package]\nname = "lib1"\nversion = "0.1.0"\n'
                                   'output = "executable"\ntargets = ["native", "gpu"]\n')
