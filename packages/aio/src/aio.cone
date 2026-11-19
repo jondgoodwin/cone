@@ -947,6 +947,7 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
         return;
       }
       if got == issuePending {
+        bump(&mut (*c).kover[w] as *u64);
         bump(&mut (*c).over as *u64);
         enqueueRec(ctx as *OpCore);
         if dgram {sh.unlockShared(h);} else {sh.unlock(h);}
@@ -960,6 +961,7 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
       }
     }
   }
+  bump(&mut (*c).kover[w + 24u32] as *u64);
   bump(&mut (*c).over as *u64);
   enqueueRec(ctx as *OpCore);
 }
@@ -1176,6 +1178,7 @@ struct HereCounts {
   here: u64;               // ...answered on this thread, where they were issued
   over: u64;               // ...handed to the I/O thread (in flight, or to start there)
   next: *HereCounts;
+  kover: Array[u64, 48];   // ...handed over, by kind (handedOverKind)
 }
 
 var @threadlocal hereAt = 0usize;
@@ -3173,8 +3176,23 @@ fn startControl[J](ctx: *u8, rp: actors.Reply) {
     dropHead(ctx as *JobHead);
     return;
   }
+  bump(&mut (*c).kover[47] as *u64);
   bump(&mut (*c).over as *u64);
   enqueue(ctx);
+}
+
+// Records handed over of one kind: k is an op code (1-21) for an operation the issue left in flight, an op code
+// + 24 (25-45) for one that went to the I/O thread without an issue (a stream's, or a datagram's the try left
+// when UDP is not on the worker port), 47 for a control, so the kinds sum to OpStats.handedOver. 0 past 47.
+pub fn handedOverKind(k: usize) u64 {
+  if k >= 48usize {return 0u64;}
+  var n = 0u64;
+  var c = countsAt.load() as *HereCounts;
+  while c as usize != 0usize {
+    n = n + mem.atomicLoad[u64](&(*c).kover[k] as *u64, MemOrder.Relaxed);
+    c = (*c).next;
+  }
+  n
 }
 
 // A control awaited: as 'awaitable', its start tries the worker first

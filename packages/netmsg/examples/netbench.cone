@@ -104,9 +104,14 @@ actor Hub {
     putU32(&mut p, k);
     putU64(&mut p, u64.from(t0.nanos()));
     while p.len() < size { p.push(7u8); }
+    // One frozen buffer a tick, every connection handed a share of it (an Arc, not a copy): the way Pegasus
+    // encodes its shared part once a publish. The copy a connection made of its own, 150,000 a second at 5,000
+    // connections, was the benchmark's cost and not the server's
+    let shared = copyPacket(p.view()).freeze();
+    let whole = shared.len();
     var s = 0usize;
     while s < seats.len() {
-      seats[s].sendLatest(1u16, copyPacket(p.view()).freeze());
+      seats[s].sendLatest(1u16, shared.slice(0usize, whole));
       s = s + 1usize;
     }
     spans.push(Instant.now().nanos() - t0.nanos());
@@ -135,6 +140,17 @@ fn snap(label: &str) {
   printStr(" handedOver="); printUInt(os.handedOver);
   printStr(" answeredHere="); printUInt(os.answeredHere);
   printStr(" contended="); printUInt(os.contended);
+  printStr(" queued="); printUInt(os.queued);
+  printStr("\n");
+  // handedOver by record kind (aio.handedOverKind): kN is op code N, k(N+24) an operation that went over without
+  // an issue, k47 a control
+  printStr("KOVER "); printStr(label);
+  var k = 0usize;
+  while k < 48usize {
+    let n = aio.handedOverKind(k);
+    if n > 0u64 { printStr(" k"); printUInt(u64.from(k)); printStr("="); printUInt(n); }
+    k = k + 1usize;
+  }
   printStr("\n");
 }
 
@@ -189,6 +205,7 @@ fn server(port: u16, n: usize, secs: i64, bytes: usize, bind: &str) {
   let start = Instant.now();
   var k = 0i64;
   snap("start");
+  printStr("SIZES "); printStr(netmsg.scratchSizes().view());
   printStr("RUNSTART\n");
   while k < steps {
     let target = start.nanos() + k * 33333333i64;

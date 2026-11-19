@@ -99,4 +99,4 @@ foreach ($c in $cli) {
   Cpu $c.pid ("client$($c.k)") ("conns {0}  heard {1} of ~{2} ({3:N1}%)" -f $c.share, $h, $e, (100.0 * $h / [math]::Max($e, 1)))
 }
 "all clients: heard $heard of ~$sent ({0:N1}%)" -f (100.0 * $heard / [math]::Max($sent, 1))
-(ReadLog $srvLog) -split "`n" | Where-Object { $_ -match '^(SERVER|JOINED|IOTIMES)' }
+(ReadLog $srvLog) -split "`n" | Where-Object { $_ -match '^(SERVER|JOINED|IOTIMES|SNAP|KOVER|SIZES)' }
