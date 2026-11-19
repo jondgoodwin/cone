@@ -780,6 +780,7 @@ user type named `i64` inside a module is still a path:
 | --- | --- | --- | --- | --- | --- | --- |
 | `a` i8 | `s` i16 | `l` i32 | `x` i64 | `i` isize | `f` f32 | `b` bool |
 | `h` u8 | `t` u16 | `m` u32 | `y` u64 | `j` usize | `d` f64 | `u` void |
+| `w` char | | | | | | |
 
 `n` and `o`, v0's i128 and u128, are read by the demangler and declared by
 nothing. A region and a permission are each the identifier of the declaration

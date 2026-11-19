@@ -1,0 +1,135 @@
+// A connection reads what the socket answers to its sends. A server and a client
+// on loopback. The server's connection is told (Connection.sendAnswered) the
+// socket answered a send with
+//   - a full send buffer (ENOBUFS, WSAENOBUFS): counted in stats.sendErrors, and
+//     the connection lives: no Left, and a message still reaches the client;
+//   - a failure (InvalidInput: the socket closed under it, as a UdpSender's send
+//     after the socket is dropped answers): counted, and the connection ends with
+//     CloseReason.SendFailed, once, however many more answers come.
+
+mod sendresults;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import thread;
+import actors;
+import iocore use SocketAddr, IoError;
+import ioerror use IoErrorKind;
+import iobuf use Bytes;
+import netmsg use *;
+
+actor Prober {
+  pub async fn ask(self, c: Connection, out: Sender[ConnectionStats]) {
+    let s = await c.stats();
+    out.send(s);
+  }
+}
+
+fn statsOf(c: Connection) ConnectionStats {
+  var tx: Sender[ConnectionStats];
+  var rx: Receiver[ConnectionStats];
+  tx, rx = Channel[ConnectionStats].make();
+  let prober = Prober();
+  prober.ask(c, tx);
+  match rx.recvTimeout(Duration.fromSeconds(5i64)) {
+    case let Some(st) { return st; }
+    case is None[ConnectionStats] {}
+  }
+  panic("the stats did not come")
+}
+
+// The system's error number for a full send buffer (WSAENOBUFS, ENOBUFS: the
+// kind NoBufferSpace), and for an invalid handle
+fn fullCode() u32 {
+  #if #os == .windows {10055u32} #else {105u32}
+}
+fn invalidCode() u32 {
+  #if #os == .windows {87u32} #else {22u32}
+}
+
+// Events of 'rx' for 'ms' milliseconds: the messages and the Lefts heard, and
+// the last Left's reason
+fn hear(rx: &mut Receiver[NetEvent], ms: i64, messages: &mut u32, lefts: &mut u32, sendFailed: &mut bool) {
+  let until = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < until {
+    match rx.recvTimeout(Duration.fromMillis(20i64)) {
+      case let Some(e) {
+        match e {
+          case is Message { *messages = *messages + 1u32; }
+          case let Left(l) {
+            *lefts = *lefts + 1u32;
+            match l.reason {
+              case is SendFailed { *sendFailed = true; }
+              else {}
+            }
+          }
+          else {}
+        }
+      }
+      case is None[NetEvent] {}
+    }
+  }
+}
+
+fn main() i32 {
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  {
+    let cfg = NetConfig.defaults();
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+    var sconn = List[Connection]();
+    let until = Instant.now() + Duration.fromSeconds(5i64);
+    while sconn.len() == 0usize && Instant.now() < until {
+      match rxS.recvTimeout(Duration.fromMillis(200i64)) {
+        case let Some(e) {
+          match e {
+            case let Joined(j) { sconn.push(j.conn); }
+            else {}
+          }
+        }
+        case is None[NetEvent] {}
+      }
+    }
+    require(sconn.len() == 1usize, "the server has a client");
+    let sc = *sconn[0usize];
+    expectUInt(statsOf(sc).sendErrors, 0u64, "no send has failed yet");
+
+    // A full buffer: counted, and the connection goes on
+    var cMsgs = 0u32;
+    var cLefts = 0u32;
+    var cFailed = false;
+    var sMsgs = 0u32;
+    var sLefts = 0u32;
+    var sFailed = false;
+    expect(IoError(fullCode()).kind() == IoErrorKind.NoBufferSpace, "the full-buffer number is NoBufferSpace");
+    sc.sendAnswered(fullCode());
+    sc.sendAnswered(fullCode());
+    hear(&mut rxS, 300i64, &mut sMsgs, &mut sLefts, &mut sFailed);
+    expectUInt(statsOf(sc).sendErrors, 2u64, "two full buffers were counted");
+    expectUInt(u64.from(sLefts), 0u64, "a full buffer does not end the connection");
+    var hello = List[u8]();
+    putBytes(&mut hello, "hello");
+    sc.sendReliable(copyPacket(hello.view()).freeze());
+    hear(&mut rxC, 500i64, &mut cMsgs, &mut cLefts, &mut cFailed);
+    expectUInt(u64.from(cMsgs), 1u64, "and the connection still sends");
+
+    // A failure: counted, and the connection ends once with SendFailed
+    sc.sendAnswered(invalidCode());
+    sc.sendAnswered(invalidCode());
+    hear(&mut rxS, 300i64, &mut sMsgs, &mut sLefts, &mut sFailed);
+    expectUInt(statsOf(sc).sendErrors, 4u64, "the failures were counted too");
+    expectUInt(u64.from(sLefts), 1u64, "a failed send ends the connection, once");
+    expect(sFailed, "with the reason SendFailed");
+
+    client.endpoint.shutdown();
+    server.endpoint.shutdown();
+  }
+  done()
+}

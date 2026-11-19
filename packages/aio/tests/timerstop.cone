@@ -1,0 +1,91 @@
+// The program ends with worker timers armed (row 483, the spec's test 7). 60
+// actors await sleeps an hour long (20 of them in a group no one cancels)
+// and 12 more loop on 1 ms sleeps, so cells are armed and firing on every
+// worker as main returns. The stop's first step (timersStop) stops every cell
+// from firing and has each worker drop its armed cells, their replies let go
+// unanswered: each awaiting actor is released once and its state finalized
+// once. The last of the 72 finalizers prints "all 72 finalized"; a cell missed
+// by the drop would leave its actor alive and the line unprinted, one dropped
+// twice would release an actor twice. The program does not wait out the hour.
+// (A runtime restart, the spec's other half, is not possible: the runtime is
+// never started again once stopped.)
+
+mod timerstop;
+
+import testing use *;
+import stdio use *;
+import thread;
+import time use Duration, Instant;
+import iocore use IoError, CancelGroup;
+import actors;
+import aio use IoLimits;
+
+const sleepers = 60u64;
+const grouped = 20u64;
+const tickers = 12u64;
+
+let finalized: Atomic[u64];
+let ticks: Atomic[u64];
+
+fn @initpure init() {
+  finalized = Atomic[u64].of(0u64);
+  ticks = Atomic[u64].of(0u64);
+}
+
+// In each actor's state: its finalizer counts the actor's end
+struct Tracker {
+  pub n: u64;
+  fn final(self: &uni) {
+    if finalized.add(1u64) + 1u64 == sleepers + tickers {
+      printStr("all 72 finalized\n");
+    }
+  }
+}
+
+actor Sleeper {
+  t: Tracker;
+  g: CancelGroup;
+
+  pub async fn sleepLong(self, inGroup: bool) {
+    let hour = Duration.fromSeconds(3600i64);
+    if inGroup {
+      let r = await aio.sleepIn(hour, IoLimits.within(g));
+    } else {
+      let r = await aio.sleep(hour);
+    }
+    printStr("a sleep of an hour answered\n");
+  }
+
+  pub async fn tick(self) {
+    while true {
+      let r = await aio.sleep(Duration.fromMillis(1i64));
+      ticks.add(1u64);
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  var k = 0u64;
+  while k < sleepers {
+    let s = Sleeper(Tracker(k), CancelGroup.make());
+    s.sleepLong(k < grouped);
+    k = k + 1u64;
+  }
+  k = 0u64;
+  while k < tickers {
+    let s = Sleeper(Tracker(k), CancelGroup.make());
+    s.tick();
+    k = k + 1u64;
+  }
+  let t0 = Instant.now();
+  while (actors.timerStats().armed < sleepers || ticks.load() < tickers * 20u64)
+      && t0.elapsed() < Duration.fromSeconds(20i64) {
+    thread.sleep(Duration.fromMillis(5i64));
+  }
+  expect(actors.timerStats().armed >= sleepers, "the long sleeps are armed cells");
+  expect(ticks.load() >= tickers * 20u64, "the tickers' cells fire");
+  expect(finalized.load() == 0u64, "no actor finalized yet");
+  done()
+}

@@ -49,11 +49,32 @@ pub struct ChallengeGate {
   k0: u64;
   k1: u64;
 
-  // A gate with a key of 128 bits made from 'seed', which should be secret and
-  // unpredictable (freshSeed())
+  // A gate with a key made from 'seed': the key a test passes in. A seed is 64
+  // bits, so a server's gate comes from 'fromOs'
   pub fn make(seed: u64) ChallengeGate {
     var rng = Rng.make(seed);
     ChallengeGate(rng.next(), rng.next())
+  }
+
+  // A gate whose whole 128-bit key is the OS's random bytes (osFill: the C
+  // runtime's rand_s on Windows, getentropy elsewhere), not expanded from a
+  // seed. A key an attacker could guess would let a spoofed address earn a
+  // cookie, so a server the OS gives no random bytes does not start
+  fn fromOs() ChallengeGate {
+    var b = Array[u8, 16]() <- fill 0u8;
+    match osFill(&mut b) {
+      case is Err { panic("netmsg: the OS gave no random bytes for the handshake key"); }
+      case is Ok {}
+    }
+    var k0 = 0u64;
+    var k1 = 0u64;
+    var i = 0usize;
+    while i < 8usize {
+      k0 = k0 | (u64.from(b[i]) << u64.from(8usize * i));
+      k1 = k1 | (u64.from(b[8usize + i]) << u64.from(8usize * i));
+      i = i + 1usize;
+    }
+    ChallengeGate(k0, k1)
   }
 
   fn cookie(self: &, addr: &str, salt: u64, epoch: i64) u64 {

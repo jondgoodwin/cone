@@ -234,7 +234,8 @@ target_compile_definitions(conec PRIVATE CONE_PACKAGES_DIR="${CMAKE_SOURCE_DIR}/
 # (the futex and the other system calls sync and thread need on Linux, which
 # Cone cannot call; empty on Windows), and console.c a fifth (the console's lock,
 # terminal test and write, in each system's own calls), and backtrace.c a sixth (the stack
-# at a panic, when CONE_BACKTRACE asks for it). All go into the one library. The object also holds what it uses of core and
+# at a panic, when CONE_BACKTRACE asks for it), and threadexit.c a seventh (the one slot whose callback
+# runs a thread's exit functions, which the buffer pool registers with). All go into the one library. The object also holds what it uses of core and
 # libc, so it is rebuilt when they change.
 set(CONESTD_CONE
 	${CMAKE_SOURCE_DIR}/packages/conestd/conestd.cone
@@ -266,5 +267,6 @@ add_library(conestd STATIC
 	packages/conestd/oscalls.c
 	packages/conestd/console.c
 	packages/conestd/backtrace.c
+	packages/conestd/threadexit.c
 	${CONESTD_OBJ}
 )

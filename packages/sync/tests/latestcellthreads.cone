@@ -1,0 +1,196 @@
+// LatestCell across threads: one writer putting as fast as it can, eight readers
+// copying as fast as they can, on real threads.
+//
+// The writer puts 300000 values. The value of version v is 1 + (v * 733) mod
+// 1024 bytes long (so the lengths run from 1 to the capacity, 1024, and
+// change at every put), and its byte i is (v * 131 + i * 17 + i / 7) mod 256:
+// a different value from the version before and the one after, in length and
+// in every byte, so a copy that mixes two versions, or takes any word of a
+// slot while it is being written, cannot match the version it was given. Each
+// reader loops readNewer until it has seen the last version, and checks every
+// value it gets: the version more than the last it saw, the length right for
+// the version, every byte right for the version. Readers on a machine with
+// fewer cores than threads see the lapped (None) answers; either way every
+// value they take must be whole.
+//
+//      torn values            0 on every reader
+//      versions out of order  0
+//      each reader saw        the last version, 300000, and the last value
+//      main's own reader      the same, after the threads are joined
+//
+// Before the writer starts, each reader also waits for the first version with a
+// loop on version() alone, no call in it. That is the one check an ordering
+// mutant is caught by in a release build: with a plain load in place of the
+// Acquire (cellLoad in sync.cone), the optimizer takes the load out of the loop
+// and no reader ever sees the first put (8 of 8 readers, 5 runs of 5). A plain
+// store in place of each Release is not caught on x86, where the hardware keeps
+// stores in order and the compiler has nothing here to move them past.
+
+mod latestcellthreads;
+
+import testing use *;
+import thread;
+import sync use *;
+import collections use List;
+import time use Duration;
+
+const lastVersion = 300000u64;
+const readers = 8usize;
+
+// Readers waiting at the start, before the writer is let go
+let armed: Atomic[u64];
+
+fn @initpure init() {
+  armed = Atomic[u64].of(0u64);
+}
+
+fn lenOf(v: u64) usize {
+  1usize + usize.from((v * 733u64) % 1024u64)
+}
+
+fn byteOf(v: u64, i: usize) u8 {
+  u8.from((v * 131u64 + u64.from(i) * 17u64 + u64.from(i / 7usize)) & 255u64)
+}
+
+struct Reading {
+  pub reader: LatestReader;
+}
+
+struct Totals {
+  pub reads: u64;
+  pub torn: u64;
+  pub disorder: u64;
+  pub lapped: u64;                 // None answers while nothing new was in the way
+  pub last: u64;
+  pub lastOk: bool;
+  pub waited: bool;                // saw the first version while spinning on version()
+}
+
+fn write(w: LatestWriter) u64 {
+  var cell = w;
+  var buf = List[u8]();
+  buf.resize(1024usize, 0u8);
+  var v = 1u64;
+  var refused = 0u64;
+  while v <= lastVersion {
+    let n = lenOf(v);
+    var i = 0usize;
+    while i < n {
+      buf[i] = byteOf(v, i);
+      i = i + 1usize;
+    }
+    if !cell.put(buf.view().slice(0usize, n)) {
+      refused = refused + 1u64;
+    }
+    v = v + 1u64;
+  }
+  refused
+}
+
+fn take(rd: Reading) Totals {
+  let r = rd.reader;
+  var out = List[u8]();
+  out.resize(1024usize, 0u8);
+  var t = Totals(0u64, 0u64, 0u64, 0u64, 0u64, false, false);
+  // Wait for the writer's first put on version() alone, no call in the loop
+  // (the bound is far past any real wait): a load that is not an Acquire is
+  // one the optimizer may take out of the loop, and the wait never ends
+  armed.add(1u64);
+  var spins = 0u64;
+  while r.version() == 0u64 && spins < 3000000000u64 {
+    spins = spins + 1u64;
+  }
+  t.waited = r.version() != 0u64;
+  var seen = 0u64;
+  while seen < lastVersion {
+    let g = r.readNewer(seen, out.viewMut());
+    match g {
+      case let Some(c) {
+        t.reads = t.reads + 1u64;
+        if c.version <= seen {
+          t.disorder = t.disorder + 1u64;
+        }
+        var ok = c.len == lenOf(c.version);
+        var i = 0usize;
+        while ok && i < c.len {
+          if out[i] != byteOf(c.version, i) {
+            ok = false;
+          }
+          i = i + 1usize;
+        }
+        if !ok {
+          t.torn = t.torn + 1u64;
+        }
+        seen = c.version;
+        t.lastOk = ok;
+      }
+      case is None[CellRead] {
+        t.lapped = t.lapped + 1u64;
+        thread.yieldNow();
+      }
+    }
+  }
+  t.last = seen;
+  t
+}
+
+fn main() i32 {
+  var w: LatestWriter;
+  var r: LatestReader;
+  w, r = latestCell(1024usize);
+  var hands = List[thread.Thread[Totals]]();
+  var k = 0usize;
+  while k < readers {
+    hands.push(thread.start(Reading(w.reader()), &take));
+    k = k + 1usize;
+  }
+  while armed.load() < u64.from(readers) {
+    thread.yieldNow();
+  }
+  thread.sleep(Duration.fromMillis(30));
+  let wt = thread.start(w, &write);
+  let refused = wt.join();
+  expectUInt(refused, 0u64, "no put refused");
+  var torn = 0u64;
+  var disorder = 0u64;
+  var reads = 0u64;
+  var short = 0u64;
+  var badLast = 0u64;
+  var unwaited = 0u64;
+  while !hands.isEmpty() {
+    let t = hands.pop().unwrap().join();
+    torn = torn + t.torn;
+    disorder = disorder + t.disorder;
+    reads = reads + t.reads;
+    if t.last != lastVersion {short = short + 1u64;}
+    if !t.lastOk {badLast = badLast + 1u64;}
+    if !t.waited {unwaited = unwaited + 1u64;}
+  }
+  expectUInt(torn, 0u64, "no torn value on any reader");
+  expectUInt(disorder, 0u64, "no version out of order");
+  expectUInt(unwaited, 0u64, "every reader that waited on version() saw the first put");
+  expectUInt(short, 0u64, "every reader saw the last version");
+  expectUInt(badLast, 0u64, "and the last value it took was whole");
+  expectBool(reads >= u64.from(readers), true, "every reader took values");
+
+  var out = List[u8]();
+  out.resize(1024usize, 0u8);
+  let g = r.readNewer(lastVersion - 1u64, out.viewMut());
+  match g {
+    case let Some(c) {
+      expectUInt(c.version, lastVersion, "main's reader gets the last version");
+      expectUInt(u64.from(c.len), u64.from(lenOf(lastVersion)), "its length");
+      var ok = true;
+      var i = 0usize;
+      while i < c.len {
+        if out[i] != byteOf(lastVersion, i) {ok = false;}
+        i = i + 1usize;
+      }
+      expectBool(ok, true, "and its bytes");
+    }
+    case is None[CellRead] {
+      expectBool(false, true, "main's reader gets the last version");
+    }
+  }
+  done()
+}

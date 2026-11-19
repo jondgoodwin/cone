@@ -1,0 +1,287 @@
+// 'watchHere' and 'watchWorker': the registrations of a worker's timer cells
+// (the runtime's calls, with no user yet).
+//
+// 1. 'watchHere' tells its Wakeup of its own group's cancel and not of an
+//    ancestor's; each call is an entry of its own, however often the same
+//    Wakeup comes; a child's cancel does not reach a parent's cell.
+// 2. Cells that have gone are swept out of a group's registry as it grows (a
+//    gone cell is told at most a few times however many came and went), and a
+//    live one among them is told exactly once.
+// 3. 'watchWorker' tells a worker of its group's cancel and of every
+//    ancestor's up to a shield: once per group however often it registers,
+//    however many children the parent has, with the worker indexes either side
+//    of the 64-bit words and beyond the 128 the bits cover.
+// 4. A worker's entry is not swept as a dead loop's is; a loop's, a worker's
+//    and a cell's entries in one group are each told once.
+// 5. Registration against a cancel on another thread, 20,000 rounds: either
+//    the registering thread sees the flag after the call, or the Wakeup is told
+//    exactly once, never twice and never neither.
+
+mod watchhere;
+
+import testing use *;
+import thread;
+import sync use Arc;
+import collections use List;
+import cancelgroups use *;
+
+// A waker for the tests: counts its signals
+struct Ear is Sendable {
+  pub signals: Arc[imm, Atomic[u32]];
+  pub gone: bool;
+  pub fn signal(self: &) bool {
+    signals.add(1u32);
+    !gone
+  }
+  pub fn isGone(self: &) bool {gone}
+}
+
+fn counter() Arc[imm, Atomic[u32]] {Arc[imm, Atomic[u32]](Atomic[u32].of(0u32))}
+
+fn ear(count: &Arc[imm, Atomic[u32]], gone: bool) Ear {Ear(*count, gone)}
+
+fn told(n: &Arc[imm, Atomic[u32]]) u64 {u64.from(n.load())}
+
+// One round of test 5: a group under a parent, the counts of the two Wakeups
+// given it, and whether the registering thread saw the flag after
+struct Round is Sendable {
+  pub parent: CancelGroup;
+  pub child: CancelGroup;
+  pub worker: Arc[imm, Atomic[u32]];
+  pub here: Arc[imm, Atomic[u32]];
+  pub seen: Arc[imm, Atomic[u32]];
+}
+
+struct Registering is Sendable {
+  pub rounds: List[Round];
+}
+
+struct Cancelling is Sendable {
+  pub rounds: List[Round];
+}
+
+fn register(a: Registering) u32 {
+  var i = 0usize;
+  while i < a.rounds.len() {
+    let r = &a.rounds[i];
+    let ew = ear(&r.worker, false);
+    let eh = ear(&r.here, false);
+    r.child.watchWorker(5u32, &ew);
+    r.child.watchHere(&eh);
+    if r.child.isCancelled() {r.seen.store(1u32);}
+    i = i + 1usize;
+  }
+  0u32
+}
+
+fn cancelRounds(a: Cancelling) u32 {
+  var i = 0usize;
+  while i < a.rounds.len() {
+    let r = &a.rounds[i];
+    if i % 2usize == 0usize {r.parent.cancel();} else {r.child.cancel();}
+    i = i + 1usize;
+  }
+  0u32
+}
+
+fn main() i32 {
+  // 1. watchHere
+  {
+    let n = counter();
+    let m = counter();
+    let p = CancelGroup.make();
+    let c = p.child();
+    let e = ear(&n, false);
+    let f = ear(&m, false);
+    c.watchHere(&e);
+    c.watchHere(&e);
+    p.watchHere(&f);
+    c.cancel();
+    expectUInt(told(&n), 2u64, "two calls with one waker, two entries, each told once");
+    expectUInt(told(&m), 0u64, "a child's cancel does not reach the parent's cell");
+    p.cancel();
+    expectUInt(told(&n), 2u64, "the parent's cancel does not reach the child's cells");
+    expectUInt(told(&m), 1u64, "the parent's cell is told by its own group's cancel");
+    c.cancel();
+    p.cancel();
+    expectUInt(told(&n) + told(&m), 3u64, "a second cancel tells no one");
+    // A group already cancelled: the entry is made, and the caller's read of the flag finds it
+    let q = CancelGroup.make();
+    q.cancel();
+    let k = counter();
+    let ek = ear(&k, false);
+    q.watchHere(&ek);
+    expect(q.isCancelled(), "a cancel before the registration is seen by the flag read after it");
+  }
+
+  // 2. Gone cells are swept; a live one is kept
+  {
+    let dead = counter();
+    let live = counter();
+    let g = CancelGroup.make();
+    let el = ear(&live, false);
+    let ed = ear(&dead, true);
+    g.watchHere(&el);
+    var i = 0usize;
+    while i < 200usize {
+      g.watchHere(&ed);
+      i = i + 1usize;
+    }
+    g.cancel();
+    expectUInt(told(&live), 1u64, "the live cell among two hundred gone is told once");
+    expect(told(&dead) <= 16u64, "the gone cells were swept as the registry grew");
+    expect(told(&dead) > 0u64, "(the sweep runs on growth, not at every call: some are still there)");
+  }
+
+  // 3. watchWorker
+  {
+    let n3 = counter();
+    let other = counter();
+    let n5 = counter();
+    let e3 = ear(&n3, false);
+    let e3b = ear(&other, false);
+    let e5 = ear(&n5, false);
+    let p = CancelGroup.make();
+    let c = p.child();
+    let gc = c.child();
+    gc.watchWorker(3u32, &e3);
+    gc.watchWorker(3u32, &e3b);
+    c.watchWorker(3u32, &e3b);
+    p.watchWorker(3u32, &e3b);
+    expectUInt(told(&other), 0u64, "nothing told yet; the second waker for a worker is not taken");
+    p.cancel();
+    expectUInt(told(&n3), 1u64, "worker 3 told once by the root's cancel, though three groups hold it");
+    expectUInt(told(&other), 0u64, "the second waker was never copied in");
+    gc.cancel();
+    expectUInt(told(&n3), 2u64, "and by the grandchild's own cancel");
+    // Another child of a root worker 3 has been through: its bit stands for the chain
+    let p2 = CancelGroup.make();
+    let a = p2.child();
+    let b = p2.child();
+    a.watchWorker(3u32, &e3);
+    b.watchWorker(3u32, &e3);
+    p2.watchWorker(3u32, &e3);
+    p2.cancel();
+    expectUInt(told(&n3), 3u64, "the root told once however many children registered the worker");
+    // Two workers at once
+    let p3 = CancelGroup.make();
+    let c3 = p3.child();
+    c3.watchWorker(3u32, &e3);
+    c3.watchWorker(5u32, &e5);
+    p3.cancel();
+    expectUInt(told(&n3), 4u64, "worker 3 told by the root");
+    expectUInt(told(&n5), 1u64, "worker 5 told by the root too");
+    // A shield stops the chain: the root's cancel does not reach it, and the worker is not put there
+    let p4 = CancelGroup.make();
+    let sh = p4.shield(forever());
+    let sc = sh.child();
+    sc.watchWorker(3u32, &e3);
+    p4.cancel();
+    expectUInt(told(&n3), 4u64, "not told by a cancel above a shield");
+    sh.cancel();
+    expectUInt(told(&n3), 5u64, "told by the shield's");
+    // Indexes either side of the words' edge, and beyond the bits
+    var edges = List[u32]();
+    edges.push(0u32);
+    edges.push(63u32);
+    edges.push(64u32);
+    edges.push(127u32);
+    edges.push(128u32);
+    edges.push(300u32);
+    var i = 0usize;
+    while i < edges.len() {
+      let w = *edges[i];
+      let cnt = counter();
+      let ew = ear(&cnt, false);
+      let pp = CancelGroup.make();
+      let cc = pp.child();
+      cc.watchWorker(w, &ew);
+      cc.watchWorker(w, &ew);
+      pp.watchWorker(w, &ew);
+      pp.cancel();
+      expectUInt(told(&cnt), 1u64, "a worker at the edge of a word, or past the bits, told once");
+      i = i + 1usize;
+    }
+  }
+
+  // 4. A worker's entry is never swept; loops, workers and cells are each told once
+  {
+    let nw = counter();
+    let nl = counter();
+    let nc = counter();
+    let nx = counter();
+    let g = CancelGroup.make();
+    let w = ear(&nw, true);
+    let lp = ear(&nl, false);
+    let cell = ear(&nc, false);
+    let gone = ear(&nx, true);
+    g.watchWorker(9u32, &w);
+    g.watch(1u64, &lp);
+    g.watchHere(&cell);
+    g.watch(2u64, &gone);
+    // This registration's sweep drops loop 2 (gone) and must keep the worker's
+    g.watch(3u64, &lp);
+    g.watchHere(&cell);
+    g.cancel();
+    expectUInt(told(&nw), 1u64, "a worker whose waker says gone is still told: its bit would otherwise lie");
+    expectUInt(told(&nl), 2u64, "loops 1 and 3 each told once");
+    expectUInt(told(&nc), 2u64, "two cells, each told once");
+    expectUInt(told(&nx), 0u64, "the gone loop was swept");
+  }
+
+  // 5. Registration against a cancel on another thread
+  {
+    var rounds = List[Round]();
+    var cancels = List[Round]();
+    var i = 0usize;
+    while i < 20000usize {
+      let p = CancelGroup.make();
+      let c = p.child();
+      let r = Round(p, c, counter(), counter(), counter());
+      let r2 = Round(p, c, r.worker, r.here, r.seen);
+      rounds.push(r);
+      cancels.push(r2);
+      i = i + 1usize;
+    }
+    var keep = List[Round]();
+    i = 0usize;
+    while i < rounds.len() {
+      keep.push(Round(rounds[i].parent, rounds[i].child, rounds[i].worker, rounds[i].here, rounds[i].seen));
+      i = i + 1usize;
+    }
+    let t1 = thread.start(Registering(rounds), &register);
+    let t2 = thread.start(Cancelling(cancels), &cancelRounds);
+    t1.join();
+    t2.join();
+    var lostWorker = 0u64;
+    var twiceWorker = 0u64;
+    var lostHere = 0u64;
+    var twiceHere = 0u64;
+    var strayHere = 0u64;
+    i = 0usize;
+    while i < keep.len() {
+      let r = &keep[i];
+      let nw = u64.from(r.worker.load());
+      let nh = u64.from(r.here.load());
+      let seen = r.seen.load() != 0u32;
+      if !seen && nw != 1u64 {lostWorker = lostWorker + 1u64;}
+      if nw > 1u64 {twiceWorker = twiceWorker + 1u64;}
+      if i % 2usize == 1usize {
+        // the child's own cancel: its cell is told, or the flag was seen
+        if !seen && nh != 1u64 {lostHere = lostHere + 1u64;}
+        if nh > 1u64 {twiceHere = twiceHere + 1u64;}
+      } else if nh != 0u64 {
+        // the parent's cancel never reaches a cell of the child's
+        strayHere = strayHere + 1u64;
+      }
+      i = i + 1usize;
+    }
+    expectUInt(lostWorker, 0u64, "no worker's cancel was lost between registering and the flag read");
+    expectUInt(twiceWorker, 0u64, "no worker told twice");
+    expectUInt(lostHere, 0u64, "no cell's cancel was lost");
+    expectUInt(twiceHere, 0u64, "no cell told twice");
+    expectUInt(strayHere, 0u64, "no cell told by an ancestor's cancel");
+  }
+
+  done()
+}

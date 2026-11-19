@@ -244,7 +244,7 @@ end of stream 5
 		<span class="pre">AddressNotAvailable</span>, <span class="pre">HostUnreachable</span>,
 		<span class="pre">NetworkUnreachable</span>, <span class="pre">NetworkDown</span>, <span class="pre">BrokenPipe</span>,
 		<span class="pre">TimedOut</span>, <span class="pre">Cancelled</span>, <span class="pre">Truncated</span>,
-		<span class="pre">InvalidInput</span>, <span class="pre">OutOfMemory</span>, <span class="pre">Unsupported</span>, and
+		<span class="pre">InvalidInput</span>, <span class="pre">OutOfMemory</span>, <span class="pre">NoBufferSpace</span> (ENOBUFS, WSAENOBUFS), <span class="pre">Unsupported</span>, and
 		<span class="pre">Other</span> for what none of them names. They are Rust's <span class="pre">io::ErrorKind</span>,
 		trimmed to what Windows and Linux give here; <span class="pre">ioerror</span>'s
 		<span class="pre">toText(&amp;k)</span> gives a kind's words, and its <span class="pre">osKind(code)</span> sorts
@@ -421,21 +421,30 @@ actor Reader {
 		too long, <span class="pre">WSAEMSGSIZE</span> or <span class="pre">EMSGSIZE</span>). The rest of the datagram is
 		lost, the next one is whole, and
 		the buffer goes home to its pool as a failed read's does, the bytes that fitted with it.</li>
-	<li><span class="pre">u.recvMany(bufs)</span>: the next datagram and every other one already waiting, up to the
-		buffers given (a <span class="pre">List[IoBuf]</span>, moved in; at most 64 are used). The answer is a
-		<span class="pre">Datagrams</span>: <span class="pre">got</span>, the datagrams in arrival order, each in one of the
-		buffers with its sender; <span class="pre">cut</span>, in which bit <i>k</i> is set when <span class="pre">got[k]</span>
-		was longer than its buffer's room and holds only its first bytes (it is in the answer, not an error, and does not end
-		the batch); and <span class="pre">spare</span>, the buffers not used. It waits for one datagram and never for a
-		second. An empty list, or a first buffer with no room, fails (<span class="pre">InvalidInput</span>); a later
-		buffer with no room ends the batch there. Linux takes every waiting datagram in one system call; Windows
-		answers one datagram a call, so a caller loops until it has what it wants and its code is the same on both.</li>
+	<li><span class="pre">u.recvMany(batch)</span>: the next datagram and every other one already waiting, up to the
+		slots of the batch given. The batch is a <span class="pre">DatagramBatch</span>, a fixed block of up to 64 slots
+		(each a buffer and room for its sender's address) that the receiver makes once with
+		<span class="pre">DatagramBatch.make(slots, room)</span> and keeps for life; it is moved in, as a
+		<span class="pre">Uni[DatagramBatch]</span>, and the answer is the same batch moved back, its first
+		<span class="pre">count()</span> slots each holding one datagram in arrival order with its sender
+		(<span class="pre">from(k)</span>); <span class="pre">wasCut(k)</span> is true when that datagram was longer
+		than its buffer's room and holds only its first bytes (it is in the answer, not an error, and does not end
+		the batch). The receiver takes each filled buffer out with <span class="pre">swapOut(k, fresh)</span>, which
+		leaves <span class="pre">fresh</span> in its slot, and sends it on; nothing slides and no list is made. A
+		failed receive answers a <span class="pre">RecvFailed</span> (<span class="pre">error</span>,
+		<span class="pre">batch</span>, <span class="pre">slot</span>) that carries the batch back too, so the owner
+		never loses its block (in one case only, Windows' rare late answer, where the system still holds the batch,
+		<span class="pre">batch</span> is <span class="pre">None</span>). It waits for one datagram and never for a
+		second. A batch with a used slot that has no room (a forgotten refill) fails
+		(<span class="pre">InvalidInput</span>, <span class="pre">slot</span> naming it). Linux takes every waiting datagram
+		in one system call; Windows answers one datagram a call, so a caller loops until it has what it wants and its
+		code is the same on both.</li>
 	<li><span class="pre">u.sendTo(addr, buf)</span>: all of the buffer as one datagram to <span class="pre">addr</span>,
 		the count its length, the buffer going home. UDP promises no delivery: the answer says the system took the datagram.
 		One too large for the network fails with the same number, of the kind <span class="pre">Other</span>.</li>
 	</ul>
 	<p>All three take <span class="pre">In</span> forms, <span class="pre">u.recvFromIn(buf, lim)</span>,
-		<span class="pre">u.recvManyIn(bufs, lim)</span> and
+		<span class="pre">u.recvManyIn(batch, lim)</span> and
 		<span class="pre">u.sendToIn(addr, buf, lim)</span>, and answer exactly once. A <span class="pre">UdpSocket</span>
 		moves and closes when dropped, as a <span class="pre">Socket</span> does. One receive at a time per socket is the
 		supported use; datagrams that arrive while none is outstanding wait in the socket's buffer, which the operating

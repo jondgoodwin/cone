@@ -493,6 +493,7 @@ tags = ["flow", "genllvm", "runtime"]
 
 [[scenario.concurrency_await_split.run]]
 name = "direct"
+compile_timeout = 60   # this mode's compile takes 9-12 s at 81-98% CPU and passed 20 s at ~100% under gate load (lane 730, 18 Nov)
 options = ["--await-direct"]
 
 [[scenario.concurrency_await_split.run]]
@@ -579,6 +580,7 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [[scenario.concurrency_await_places.run]]
 name = "direct"
+compile_timeout = 60   # this mode's compile takes 9-12 s at 81-98% CPU and passed 20 s at ~100% under gate load (lane 730, 18 Nov)
 options = ["--await-direct"]
 
 [[scenario.concurrency_await_places.run]]
@@ -616,6 +618,7 @@ tags = ["flow", "genllvm", "runtime"]
 
 [[scenario.concurrency_await_reply_final.run]]
 name = "release"
+compile_timeout = 60   # this mode's compile takes 9-12 s at 81-98% CPU and passed 20 s at ~100% under gate load (lane 730, 18 Nov)
 
 [[scenario.concurrency_await_reply_final.run]]
 name = "debug"
@@ -628,6 +631,7 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [[scenario.concurrency_await_reply.run]]
 name = "release"
+compile_timeout = 60   # this mode's compile takes 9-12 s at 81-98% CPU and passed 20 s at ~100% under gate load (lane 730, 18 Nov)
 
 [[scenario.concurrency_await_reply.run]]
 name = "debug"
@@ -779,6 +783,7 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [[scenario.concurrency_await_manual.run]]
 name = "release"
+compile_timeout = 60   # this mode's compile takes 9-12 s at 81-98% CPU and passed 20 s at ~100% under gate load (lane 730, 18 Nov)
 
 [[scenario.concurrency_await_manual.run]]
 name = "debug"
@@ -796,6 +801,7 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [[scenario.concurrency_await_operation.run]]
 name = "release"
+compile_timeout = 60   # this mode's compile takes 9-12 s at 81-98% CPU and passed 20 s at ~100% under gate load (lane 730, 18 Nov)
 
 [[scenario.concurrency_await_operation.run]]
 name = "debug"
@@ -985,6 +991,7 @@ tags = ["parse", "typecheck", "genllvm", "runtime"]
 
 [[scenario.concurrency_parallel_reduce.run]]
 name = "release"
+compile_timeout = 60   # this mode's compile takes 9-12 s at 81-98% CPU and passed 20 s at ~100% under gate load (lane 730, 18 Nov)
 
 [[scenario.concurrency_parallel_reduce.run]]
 name = "debug"
@@ -1609,3 +1616,31 @@ name = "release"
 [[scenario.concurrency_parallel_capture_copy.run]]
 name = "debug"
 options = ["--debug"]
+
+[scenario.concurrency_latestcell_orderings]
+category = "compile"
+description = "A LatestCell's shared words are stored with release and loaded with acquire, in the IR: a call of put and of readNewer, whose every store goes through sync's cellStore and every load through its cellLoad"
+tags = ["genllvm"]
+
+# 'cellStore' and 'cellLoad' are inline, so generation puts their instructions in
+# the caller; the checks read put's body and readNewer's body alone, so no other
+# code in the module (core is built in) can satisfy or trip them. The pins are the
+# shape and the count of the ordered instruction ('matches'), with no value names,
+# so an edit elsewhere or another platform's numbering leaves them alone. put's six stores
+# (the seq word to odd, the length, the time, a data word, the seq word to even,
+# 'latest') are each a release store; none is plain or of another ordering.
+[[scenario.concurrency_latestcell_orderings.check]]
+name = "put-stores-every-shared-word-with-release"
+target = "preir"
+within = "define internal i1 @_CNvNtC4sync12LatestWriter3put("
+matches = [{ pattern = 'store atomic i64 .* release', count = 6 }]
+excludes = ["monotonic", "seq_cst", "unordered", "acquire", "acq_rel"]
+
+# readNewer's six loads (latest, the seq word, the length, the time, a data word,
+# the seq word again) are each an acquire load.
+[[scenario.concurrency_latestcell_orderings.check]]
+name = "readnewer-loads-every-shared-word-with-acquire"
+target = "preir"
+within = "define internal void @_CNvNtC4sync12LatestReader9readNewer("
+matches = [{ pattern = 'load atomic i64, .* acquire', count = 6 }]
+excludes = ["monotonic", "seq_cst", "unordered", "release", "acq_rel"]

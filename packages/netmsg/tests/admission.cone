@@ -1,0 +1,444 @@
+// What one address, or a crowd, can make a server spend. A server holds at most
+// NetConfig.maxPerAddress (32) connections from one IP address, admits at most
+// NetConfig.admitRate (50, and 0 is no limit) new connections a second in a
+// bucket of twice that, and lets one socket address (IP and port) replace a
+// connection with a new session (a reconnect) once a second. Past a limit a
+// client hears the refusal it hears at maxClients (Left, Refused) and the
+// server hears nothing. Over real sockets on loopback: every client comes from
+// 127.0.0.1 (or ::1), told apart by port, which is what netbench's do. The
+// tests set maxPerAddress to 4 to meet it with few clients.
+//   - a fifth client from one address is refused, and a place is free again
+//     when one of the four leaves;
+//   - the same over IPv6 loopback;
+//   - with admitRate 1 (a burst of 2), a crowd of clients is admitted two and
+//     a second's worth at a time, and a pause refills the bucket;
+//   - with admitRate 0, the crowd is all admitted;
+//   - a reconnecting client replaces its old connection once, a second
+//     reconnect at once is denied and leaves the connection it would have
+//     replaced alone, a later one is let in, and a reconnect gets in when the
+//     admission bucket is empty;
+//   - the replacement limit is by socket address: another port on the same IP
+//     replaces its own connection at once;
+//   - two servers have different cookie keys: the same client address and
+//     salt earn different sessions;
+//   - the endpoint counts its refusals by kind (Endpoint.stats()): the fifth
+//     from one address is refusedPerAddress, a third client at maxClients 2 is
+//     refusedFull, and the crowd's refusals, with a denied replacement, are
+//     refusedRate.
+
+mod admission;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import thread;
+import iocore use SocketAddr;
+import aio use UdpSocket, IoLimits;
+import actors;
+import iobuf use IoBuf;
+import netmsg use *;
+
+fn reasonText(r: CloseReason) &str {
+  match r {
+    case is Local {"local"}
+    case is Remote {"remote"}
+    case is TimedOut {"timeout"}
+    case is Overflow {"overflow"}
+    case is Refused {"refused"}
+    case is NoAnswer {"noanswer"}
+    case is SendFailed {"sendfailed"}
+  }
+}
+
+// The next event as text (J1, L1:reason), or "none" if none comes in 'ms'
+fn next(rx: &mut Receiver[NetEvent], ms: i64) String {
+  var s = String();
+  match rx.recvTimeout(Duration.fromMillis(ms)) {
+    case let Some(e) {
+      match &e {
+        case let &Joined(j) { s.append("J"); s.appendUInt(u64.from(j.id)); }
+        case let &Left(l) { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
+        case let &Refused(r) { s.append("R"); s.appendUInt(u64.from(r.id)); }
+        case let &Message(m) { s.append("M"); s.appendUInt(u64.from(m.id)); }
+        case let &Update(u) { s.append("U"); s.appendUInt(u64.from(u.id)); }
+      }
+      return s;
+    }
+    case is None[NetEvent] {}
+  }
+  String.from("none")
+}
+
+// Of two events (the two a replacement makes, in either order), the Joined's
+// text if the other is 'left'; empty if not
+fn joinedWhenLeft(a: &str, b: &str, left: &str) String {
+  if a == left && b.startsWith("J") {return String.from(b);}
+  if b == left && a.startsWith("J") {return String.from(a);}
+  String()
+}
+
+fn pause(ms: i64) {
+  thread.sleep(Duration.fromMillis(ms));
+}
+
+// A client of the server at 'to': the endpoint to shut down, kept in 'held', and
+// the first thing it hears, "J1" or "L1:refused"
+fn dial(to: SocketAddr, cfg: NetConfig, held: &mut List[BoundEndpoint]) String {
+  var tx: Sender[NetEvent];
+  var rx: Receiver[NetEvent];
+  tx, rx = Channel[NetEvent].make();
+  held.push(mustConnect(to, cfg, channelHandler(tx)));
+  next(&mut rx, 3000i64)
+}
+
+// A raw UDP socket on one fixed port that runs client handshakes by hand, so
+// that a second session comes from the same address as the first (as in
+// udpsession)
+actor Raw {
+  sock: UdpSocket;
+
+  fn init(self: &new) {
+    *self = Self(sock: UdpSocket.none());
+  }
+
+  async fn open(self, up: OneshotSender[u16]) {
+    var tx = up;
+    let made = await aio.bindUdp(SocketAddr.localhost(0u16));
+    match made {
+      case let Ok(s) { sock = s; }
+      case let Err(e) { tx.send(0u16); return; }
+    }
+    var port = 0u16;
+    let la = await sock.localAddr();
+    match &la {
+      case let &Ok(x) { port = x.port(); }
+      else {}
+    }
+    tx.send(port);
+  }
+
+  // The client handshake with 'salt' to the server; say the session made, or 0
+  // if the server refused it or it did not complete in 5 s
+  async fn handshake(self, server: SocketAddr, salt: u64, up: OneshotSender[u64]) {
+    var tx = up;
+    var hs = ClientHandshake.make(NetConfig.defaults(), salt, Instant.now());
+    let limit = Instant.now() + Duration.fromSeconds(5i64);
+    while Instant.now() < limit {
+      var out = Packets();
+      hs.poll(Instant.now(), &mut out);
+      var ps = List[IoBuf]();
+      each p in out.drain() { ps.push(p); }
+      while ps.len() > 0usize {
+        match ps.pop() {
+          case let Some(p) { let s = await sock.sendTo(server, p); }
+          case is None[IoBuf] {}
+        }
+      }
+      let r = await sock.recvFromIn(IoBuf(2048usize), IoLimits.until(Instant.now() + Duration.fromMillis(50i64)));
+      match r {
+        case let Ok(dg) {
+          let ev = hs.receive(dg.buf.view());
+          if hs.isConnected() {
+            tx.send(hs.sessionId());
+            return;
+          }
+          if hs.wasRefused() {
+            tx.send(0u64);
+            return;
+          }
+        }
+        else {}
+      }
+    }
+    tx.send(0u64);
+  }
+}
+
+fn handshakeWith(raw: Raw, server: SocketAddr, salt: u64) u64 {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  raw.handshake(server, salt, tx);
+  rx.recv() || 0u64
+}
+
+fn newRaw() Raw {
+  let raw = Raw();
+  var txP: OneshotSender[u16];
+  var rxP: OneshotReceiver[u16];
+  txP, rxP = Oneshot[u16].make();
+  raw.open(txP);
+  require((rxP.recv() || 0u16) != 0u16, "the raw socket bound");
+  raw
+}
+
+// An application actor reading an endpoint's refusal counts, with 'await'
+actor Prober {
+  pub async fn ask(self, e: Endpoint, out: Sender[EndpointStats]) {
+    let s = await e.stats();
+    out.send(s);
+  }
+}
+
+// The endpoint's refusal counts, as "full/perAddress/rate"
+fn counts(e: Endpoint) String {
+  var tx: Sender[EndpointStats];
+  var rx: Receiver[EndpointStats];
+  tx, rx = Channel[EndpointStats].make();
+  Prober().ask(e, tx);
+  var s = String();
+  match rx.recvTimeout(Duration.fromMillis(3000i64)) {
+    case let Some(st) {
+      s.appendUInt(st.refusedFull);
+      s.append("/");
+      s.appendUInt(st.refusedPerAddress);
+      s.append("/");
+      s.appendUInt(st.refusedRate);
+    }
+    case is None[EndpointStats] { s.append("none"); }
+  }
+  s
+}
+
+fn shutAll(held: &mut List[BoundEndpoint]) {
+  while held.len() > 0usize {
+    match held.pop() {
+      case let Some(b) { b.endpoint.shutdown(); }
+      case is None[BoundEndpoint] {}
+    }
+  }
+}
+
+fn main() i32 {
+  // A fifth client from one address is refused; a place frees when one leaves
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    var cfg = NetConfig.defaults();
+    expectUInt(u64.from(cfg.maxPerAddress), 32u64, "the default is 32 connections from one address (carrier-grade NAT, proxies)");
+    expectUInt(u64.from(cfg.admitRate), 50u64, "and 50 admissions a second");
+    cfg.maxPerAddress = 4usize;
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.localhost(server.port);
+    var held = List[BoundEndpoint]();
+    var i = 0usize;
+    while i < 4usize {
+      expectStr(dial(to, cfg, &mut held).view(), "J1", "one of the first four from the address joins");
+      var want = String.from("J");
+      want.appendUInt(u64.from(i + 1usize));
+      expectStr(next(&mut rxS, 3000i64).view(), want.view(), "and the server has it");
+      i = i + 1usize;
+    }
+    expectStr(counts(server.endpoint).view(), "0/0/0", "nothing has been refused yet");
+    expectStr(dial(to, cfg, &mut held).view(), "L1:refused", "the fifth is refused");
+    expectStr(counts(server.endpoint).view(), "0/1/0", "and counted as refused for its address");
+    expectStr(next(&mut rxS, 300i64).view(), "none", "and the server hears nothing of it");
+    // One of the four leaves
+    match held.get(0usize) {
+      case let Some(b) { b.endpoint.shutdown(); }
+      else {}
+    }
+    expectStr(next(&mut rxS, 3000i64).view(), "L1:remote", "the server hears the first one go");
+    pause(300i64);
+    expectStr(dial(to, cfg, &mut held).view(), "J1", "and its place goes to another client");
+    expectStr(next(&mut rxS, 3000i64).view(), "J5", "the server has it");
+    shutAll(&mut held);
+    server.endpoint.shutdown();
+  }
+
+  // The same over IPv6 loopback
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    var cfg = NetConfig.defaults();
+    cfg.maxPerAddress = 4usize;
+    let server = mustListen(SocketAddr.v6Localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.v6Localhost(server.port);
+    var held = List[BoundEndpoint]();
+    var i = 0usize;
+    while i < 4usize {
+      expectStr(dial(to, cfg, &mut held).view(), "J1", "an IPv6 client joins");
+      i = i + 1usize;
+    }
+    expectStr(dial(to, cfg, &mut held).view(), "L1:refused", "the fifth from one IPv6 address is refused");
+    shutAll(&mut held);
+    server.endpoint.shutdown();
+  }
+
+  // A crowd: 1 admission a second, a burst of 2. (Many addresses are not
+  // needed to meet it, only a raised maxPerAddress.)
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    var cfg = NetConfig.defaults();
+    cfg.maxPerAddress = 100usize;
+    cfg.admitRate = 1u32;
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.localhost(server.port);
+    var held = List[BoundEndpoint]();
+    let began = Instant.now();
+    var joined = 0u32;
+    var refused = 0u32;
+    var i = 0usize;
+    while i < 8usize {
+      let r = dial(to, cfg, &mut held);
+      if r.view() == "J1" {joined = joined + 1u32;} else if r.view() == "L1:refused" {refused = refused + 1u32;}
+      i = i + 1usize;
+    }
+    let seconds = (Instant.now() - began).millis() / 1000i64;
+    expectUInt(u64.from(joined + refused), 8u64, "each of 8 clients is admitted or refused");
+    expect(joined >= 2u32, "the burst of 2 is admitted");
+    expect(i64.from(joined) <= 3i64 + seconds, "no more than the burst and what refilled in the time it took");
+    expect(refused >= 1u32 || seconds >= 5i64, "the rest are refused (unless the machine was too slow to say)");
+    var want = String.from("0/0/");
+    want.appendUInt(u64.from(refused));
+    expectStr(counts(server.endpoint).view(), want.view(), "each one refused by the rate is counted as refusedRate");
+    // A pause refills it
+    pause(2200i64);
+    expectStr(dial(to, cfg, &mut held).view(), "J1", "after two seconds a client is admitted");
+    expectStr(dial(to, cfg, &mut held).view(), "J1", "and a second");
+    shutAll(&mut held);
+    server.endpoint.shutdown();
+  }
+
+  // Reconnects: one a second from an address, and not held up by the bucket
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    var cfg = NetConfig.defaults();
+    cfg.admitRate = 1u32;
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.localhost(server.port);
+    let raw = newRaw();
+    let s1 = handshakeWith(raw, to, 0x1111111111111111u64);
+    require(s1 != 0u64, "the first session's handshake completed");
+    expectStr(next(&mut rxS, 3000i64).view(), "J1", "the first session joins");
+    // Other clients use up the bucket
+    var held = List[BoundEndpoint]();
+    var drained = false;
+    var n = 0usize;
+    while !drained && n < 6usize {
+      if dial(to, cfg, &mut held).view() == "L1:refused" {drained = true;}
+      n = n + 1usize;
+    }
+    expect(drained, "a client is refused when the bucket is empty");
+    while next(&mut rxS, 300i64).view() != "none" {}
+    // The raw socket's address reconnects: it gets in
+    let s2 = handshakeWith(raw, to, 0x2222222222222222u64);
+    expect(s2 != 0u64 && s2 != s1, "a reconnect is let in with the bucket empty");
+    let a = next(&mut rxS, 3000i64);
+    let b = next(&mut rxS, 3000i64);
+    let joined2 = joinedWhenLeft(a.view(), b.view(), "L1:local");
+    expect(joined2.len() > 0usize, "the old connection ends and the new one joins");
+    // Again at once: denied, and the connection stays
+    let s3 = handshakeWith(raw, to, 0x3333333333333333u64);
+    expectUInt(s3, 0u64, "a second reconnect within a second is denied");
+    expectStr(next(&mut rxS, 700i64).view(), "none", "and the connection it would have replaced is left alone");
+    expectStr(counts(server.endpoint).view(), "0/0/2", "the empty bucket's refusal and the denied replacement both count as refusedRate");
+    pause(500i64);
+    // A second after the first replacement it is let in, and only then does the old one end
+    let s4 = handshakeWith(raw, to, 0x4444444444444444u64);
+    expect(s4 != 0u64, "a reconnect a second later is let in");
+    let c = next(&mut rxS, 3000i64);
+    let d = next(&mut rxS, 3000i64);
+    var oldLeft = String.from("L");
+    oldLeft.append(joined2.view().sliceFrom(1usize));
+    oldLeft.append(":local");
+    expect(joinedWhenLeft(c.view(), d.view(), oldLeft.view()).len() > 0usize, "the connection the denied one met was alive until this replaced it");
+    shutAll(&mut held);
+    server.endpoint.shutdown();
+  }
+
+  // admitRate 0 is no limit: the crowd is all admitted
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    var cfg = NetConfig.defaults();
+    cfg.maxPerAddress = 100usize;
+    cfg.admitRate = 0u32;
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.localhost(server.port);
+    var held = List[BoundEndpoint]();
+    var joined = 0u32;
+    var i = 0usize;
+    while i < 12usize {
+      if dial(to, cfg, &mut held).view() == "J1" {joined = joined + 1u32;}
+      i = i + 1usize;
+    }
+    expectUInt(u64.from(joined), 12u64, "with admitRate 0 all 12 clients are admitted");
+    shutAll(&mut held);
+    server.endpoint.shutdown();
+  }
+
+  // The replacement limit is by socket address: two ports of one IP address each
+  // replace their own connection at once, and one port not twice
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    let cfg = NetConfig.defaults();
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.localhost(server.port);
+    let rawA = newRaw();
+    let rawB = newRaw();
+    require(handshakeWith(rawA, to, 0x1111111111111111u64) != 0u64, "the first port's session");
+    expectStr(next(&mut rxS, 3000i64).view(), "J1", "joins");
+    require(handshakeWith(rawB, to, 0x2222222222222222u64) != 0u64, "the second port's session");
+    expectStr(next(&mut rxS, 3000i64).view(), "J2", "joins");
+    expect(handshakeWith(rawA, to, 0x3333333333333333u64) != 0u64, "the first port replaces its connection");
+    let a = next(&mut rxS, 3000i64);
+    let b = next(&mut rxS, 3000i64);
+    expect(joinedWhenLeft(a.view(), b.view(), "L1:local").view() == "J3", "the first is replaced by the third");
+    expect(handshakeWith(rawB, to, 0x4444444444444444u64) != 0u64, "the second port replaces its own at once: it is another socket address");
+    let c = next(&mut rxS, 3000i64);
+    let d = next(&mut rxS, 3000i64);
+    expect(joinedWhenLeft(c.view(), d.view(), "L2:local").view() == "J4", "the second is replaced by the fourth");
+    expectUInt(handshakeWith(rawA, to, 0x5555555555555555u64), 0u64, "the first port again within a second is denied");
+    server.endpoint.shutdown();
+  }
+
+  // maxClients 2: a third client is refused for the full server
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    var cfg = NetConfig.defaults();
+    cfg.maxClients = 2usize;
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let to = SocketAddr.localhost(server.port);
+    var held = List[BoundEndpoint]();
+    expectStr(dial(to, cfg, &mut held).view(), "J1", "the first client joins");
+    expectStr(dial(to, cfg, &mut held).view(), "J1", "and the second");
+    expectStr(dial(to, cfg, &mut held).view(), "L1:refused", "the third is refused");
+    expectStr(counts(server.endpoint).view(), "1/0/0", "and counted as refusedFull");
+    shutAll(&mut held);
+    server.endpoint.shutdown();
+  }
+
+  // Each server has a key of its own: one address and salt, different sessions
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    let cfg = NetConfig.defaults();
+    let a = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txA));
+    let b = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txB));
+    let raw = newRaw();
+    let sa = handshakeWith(raw, SocketAddr.localhost(a.port), 0x5555555555555555u64);
+    let sb = handshakeWith(raw, SocketAddr.localhost(b.port), 0x5555555555555555u64);
+    require(sa != 0u64 && sb != 0u64, "both handshakes completed");
+    expect(sa != sb, "two servers' cookies for one address and salt differ");
+    a.endpoint.shutdown();
+    b.endpoint.shutdown();
+  }
+  done()
+}

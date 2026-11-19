@@ -87,8 +87,8 @@ struct MmsgHdrLx {
   pub pad: u32;
 }
 
-// The most datagrams one recvmmsg is given: the width of a RecvBatch's 'cut'
-// mask, and the size of the arrays it is given from the stack
+// The most datagrams one recvmmsg is given: the width of a DatagramBatch's cut
+// bits, and the size of the arrays it is given from the stack
 const recvBatch = 64usize;
 
 // The most segments one sendmsg is given (Linux's own bound, IOV_MAX, is
@@ -390,11 +390,14 @@ fn sendData(r: &mut OpCore) *u8, usize {
 
 // A socket made, closed with the loop's entry for it: a descriptor adopted
 // into the handle table and watched. 0 and the handle, or the error number
-// (the descriptor is then closed)
-fn lxAdopt(lp: &mut Loop, fd: usize, kind: u32, family: u16) u32, Handle {
+// (the descriptor is then closed). 'worker', not 0, is the epoll instance of the
+// worker port (UDP ON THE WORKER PORT, shared.cone): the descriptor is watched
+// there, and not by this loop's
+fn lxAdopt(lp: &mut Loop, fd: usize, kind: u32, family: u16, worker: usize = 0usize) u32, Handle {
   #if #os == .windows {errorInvalidParameter, Handle.none()} #else {
   let h = lp.register(fd, kind, family);
-  let code = lxWatch(lp.portHandle, fd, h.index, h.gen);
+  if worker != 0usize {lp.markWorker(h);}
+  let code = lxWatch(if worker != 0usize {worker} else {lp.portHandle}, fd, h.index, h.gen);
   if code != 0u32 {
     lp.close(h);
     return code, Handle.none();
@@ -404,7 +407,7 @@ fn lxAdopt(lp: &mut Loop, fd: usize, kind: u32, family: u16) u32, Handle {
 }
 
 // A RecvMany's one recvmmsg, on the non-blocking descriptor fd, over as many of
-// the record's buffers as have room (at most recvBatch), the arrays on the
+// the batch's slots (at most recvBatch), the arrays on the
 // stack: the datagrams already waiting, each into its own buffer, and no wait
 // for more (the descriptor is non-blocking, and recvmmsg stops at the first
 // receive that would block once it has one). Each datagram is put in the

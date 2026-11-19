@@ -1,0 +1,308 @@
+// LatestCell (latestCell, LatestWriter, LatestReader, CellRead), on one thread.
+//
+// 1. A new cell: version 0 on both ends, the capacity as asked, nothing to
+//    read at any 'seen'.
+// 2. Versions: each put makes the version one more, on the writer and on a
+//    reader; readNewer answers the newest value only when its version is
+//    more than 'seen', and never an older one: after three puts, 'seen' 0
+//    gets version 3 (1 and 2 are never seen), 'seen' 2 gets 3, 'seen' 3 and
+//    4 get None; a fourth put is seen once.
+// 3. Checksums: values of every length from 0 to the capacity (65) round-trip
+//    byte for byte, the length exact (0 included), whatever 'out' held.
+// 4. Refusal over capacity: a put of capacity + 1 bytes answers false, stores
+//    nothing, and leaves the version and the value as they were; a put of
+//    exactly the capacity is taken. A cell of capacity 0 takes only the empty
+//    value.
+// 5. An 'out' shorter than the value answers None, and the value is still
+//    there for a longer one (the same version, still unseen).
+// 6. Two readers each keep their own 'seen'; writtenAt is no later than now
+//    and never goes back.
+// 7. Handles dropped in every order: a writer and three readers (one made
+//    by the writer, one a copy of another, one the first) are dropped in
+//    each of the 24 orders, and after each drop the handles left still
+//    read the value or put a new one, as they should; the cell is freed with
+//    the last (a double free or a freed read would abort).
+
+mod latestcell;
+
+import testing use *;
+import sync use *;
+import time use Instant;
+import collections use List;
+
+// The byte i of the value of version v: anything a reader could not make up
+fn byteOf(v: u64, i: usize) u8 {
+  u8.from((v * 131u64 + u64.from(i) * 17u64 + u64.from(i / 7usize)) & 255u64)
+}
+
+fn valueOf(v: u64, n: usize) List[u8] {
+  var b = List[u8]();
+  var i = 0usize;
+  while i < n {
+    b.push(byteOf(v, i));
+    i = i + 1usize;
+  }
+  b
+}
+
+// Whether out holds the value of version v, n bytes
+fn holds(out: &Array[u8], v: u64, n: usize) bool {
+  var i = 0usize;
+  while i < n {
+    if out[i] != byteOf(v, i) {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+fn blank(n: usize) List[u8] {
+  var b = List[u8]();
+  b.resize(n, 255u8);
+  b
+}
+
+// What readNewer found as a version, or 0 for None
+fn versionOf(r: &Option[CellRead]) u64 {
+  match r {
+    case let Some(c) {return c.version;}
+    case is None[CellRead] {return 0u64;}
+  }
+  0u64
+}
+
+fn lenOf(r: &Option[CellRead]) usize {
+  match r {
+    case let Some(c) {return c.len;}
+    case is None[CellRead] {return 9999usize;}
+  }
+  9999usize
+}
+
+fn newCell(cap: usize) LatestWriter, LatestReader {
+  latestCell(cap)
+}
+
+// Part 1 and 2
+fn versions() {
+  var w: LatestWriter;
+  var r: LatestReader;
+  w, r = newCell(64usize);
+  expectUInt(u64.from(w.capacity()), 64u64, "writer capacity");
+  expectUInt(u64.from(r.capacity()), 64u64, "reader capacity");
+  expectUInt(w.version(), 0u64, "writer version, new");
+  expectUInt(r.version(), 0u64, "reader version, new");
+  var out = blank(64usize);
+  expectUInt(versionOf(&r.readNewer(0u64, out.viewMut())), 0u64, "nothing to read, new");
+
+  expectBool(w.put(valueOf(1u64, 20usize).view()), true, "put 1");
+  expectBool(w.put(valueOf(2u64, 21usize).view()), true, "put 2");
+  expectBool(w.put(valueOf(3u64, 22usize).view()), true, "put 3");
+  expectUInt(w.version(), 3u64, "writer version after 3");
+  expectUInt(r.version(), 3u64, "reader version after 3");
+
+  let a = r.readNewer(0u64, out.viewMut());
+  expectUInt(versionOf(&a), 3u64, "seen 0 gets the newest, 3");
+  expectUInt(u64.from(lenOf(&a)), 22u64, "its length");
+  expectBool(holds(out.view(), 3u64, 22usize), true, "its bytes are version 3's");
+  var out2 = blank(64usize);
+  expectUInt(versionOf(&r.readNewer(2u64, out2.viewMut())), 3u64, "seen 2 gets 3");
+  expectUInt(versionOf(&r.readNewer(3u64, out2.viewMut())), 0u64, "seen 3 gets none");
+  expectUInt(versionOf(&r.readNewer(7u64, out2.viewMut())), 0u64, "seen above the version gets none");
+  expectBool(w.put(valueOf(4u64, 23usize).view()), true, "put 4");
+  expectUInt(versionOf(&r.readNewer(3u64, out2.viewMut())), 4u64, "seen 3 gets 4");
+  expectBool(holds(out2.view(), 4u64, 23usize), true, "its bytes are version 4's");
+  expectUInt(versionOf(&r.readNewer(4u64, out2.viewMut())), 0u64, "and then none");
+}
+
+// Part 3
+fn lengths() {
+  var w: LatestWriter;
+  var r: LatestReader;
+  w, r = newCell(65usize);
+  var n = 0usize;
+  var bad = 0u64;
+  var out = blank(65usize);
+  var seen = 0u64;
+  while n <= 65usize {
+    w.put(valueOf(u64.from(n) + 100u64, n).view());
+    let g = r.readNewer(seen, out.viewMut());
+    if versionOf(&g) != seen + 1u64 || lenOf(&g) != n || !holds(out.view(), u64.from(n) + 100u64, n) {
+      bad = bad + 1u64;
+    }
+    seen = seen + 1u64;
+    n = n + 1usize;
+  }
+  expectUInt(bad, 0u64, "every length 0 to 65 round-trips, exact");
+  expectUInt(seen, 66u64, "66 versions");
+}
+
+// Part 4
+fn refusal() {
+  var w: LatestWriter;
+  var r: LatestReader;
+  w, r = newCell(16usize);
+  expectBool(w.put(valueOf(1u64, 16usize).view()), true, "a put of exactly the capacity");
+  expectBool(w.put(valueOf(2u64, 17usize).view()), false, "a put of capacity + 1 is refused");
+  expectBool(w.put(valueOf(2u64, 1000usize).view()), false, "and a far longer one");
+  expectUInt(w.version(), 1u64, "the version is unchanged");
+  expectUInt(r.version(), 1u64, "on the reader too");
+  var out = blank(16usize);
+  let g = r.readNewer(0u64, out.viewMut());
+  expectUInt(versionOf(&g), 1u64, "the value is still version 1");
+  expectBool(holds(out.view(), 1u64, 16usize), true, "with its bytes");
+  expectUInt(versionOf(&r.readNewer(1u64, out.viewMut())), 0u64, "nothing newer");
+
+  var w0: LatestWriter;
+  var r0: LatestReader;
+  w0, r0 = newCell(0usize);
+  expectUInt(u64.from(r0.capacity()), 0u64, "a cell of capacity 0");
+  expectBool(w0.put(valueOf(1u64, 1usize).view()), false, "takes no byte");
+  expectBool(w0.put(valueOf(1u64, 0usize).view()), true, "takes the empty value");
+  var none = blank(0usize);
+  let e = r0.readNewer(0u64, none.viewMut());
+  expectUInt(versionOf(&e), 1u64, "which reads as version 1");
+  expectUInt(u64.from(lenOf(&e)), 0u64, "of length 0");
+}
+
+// Part 5
+fn shortOut() {
+  var w: LatestWriter;
+  var r: LatestReader;
+  w, r = newCell(32usize);
+  w.put(valueOf(1u64, 30usize).view());
+  var small = blank(29usize);
+  expectUInt(versionOf(&r.readNewer(0u64, small.viewMut())), 0u64, "29 bytes of room for 30: none");
+  var exact = blank(30usize);
+  let g = r.readNewer(0u64, exact.viewMut());
+  expectUInt(versionOf(&g), 1u64, "30 of room: version 1, still unseen");
+  expectBool(holds(exact.view(), 1u64, 30usize), true, "its bytes");
+}
+
+// Part 6
+fn readers() {
+  var w: LatestWriter;
+  var r: LatestReader;
+  w, r = newCell(8usize);
+  let r2 = w.reader();
+  var out = blank(8usize);
+  let before = Instant.now();
+  var last = Instant.fromNanos(0i64);
+  var ordered = true;
+  var k = 1u64;
+  while k <= 5u64 {
+    w.put(valueOf(k, 8usize).view());
+    let g = r.readNewer(k - 1u64, out.viewMut());
+    match g {
+      case let Some(c) {
+        if c.writtenAt < before || c.writtenAt > Instant.now() || c.writtenAt < last {
+          ordered = false;
+        }
+        last = c.writtenAt;
+      }
+      case is None[CellRead] {ordered = false;}
+    }
+    k = k + 1u64;
+  }
+  expectBool(ordered, true, "writtenAt within the run and never going back");
+  expectUInt(versionOf(&r.readNewer(5u64, out.viewMut())), 0u64, "the first reader has seen 5");
+  expectUInt(versionOf(&r2.readNewer(2u64, out.viewMut())), 5u64, "the second has its own seen");
+  expectBool(holds(out.view(), 5u64, 8usize), true, "bytes");
+}
+
+// Part 7: the order of dropping 4 handles, by number: 0 the writer, 1 a reader
+// of the writer's, 2 a copy of 1, 3 the first reader
+fn dropOrder(p0: usize, p1: usize, p2: usize, p3: usize) bool {
+  var ws = List[LatestWriter]();
+  var rs = List[LatestReader]();
+  var w: LatestWriter;
+  var r: LatestReader;
+  w, r = newCell(24usize);
+  rs.push(r);                       // 3, the first reader, will be moved last
+  ws.push(w);
+  var alive = List[bool]();
+  alive.push(true);
+  alive.push(true);
+  alive.push(true);
+  alive.push(true);
+  var from = List[LatestReader]();
+  let made = ws[0usize].reader();
+  from.push(made);
+  from.push(made);
+  var ok = true;
+  var version = 1u64;
+  ws[0usize].put(valueOf(1u64, 24usize).view());
+  var order = List[usize]();
+  order.push(p0);
+  order.push(p1);
+  order.push(p2);
+  order.push(p3);
+  var step = 0usize;
+  var out = blank(24usize);
+  while step < 4usize {
+    let h = order[step];
+    alive[h] = false;
+    // The ends are in lists: 0 is ws[0]; 1 and 2 are from[0], from[1]; 3 is rs[0]
+    if h == 0usize {ws.pop();}
+    if h == 1usize {from.remove(0usize);}
+    if h == 2usize {
+      if alive[1usize] {from.remove(1usize);} else {from.remove(0usize);}
+    }
+    if h == 3usize {rs.pop();}
+    step = step + 1usize;
+    // What is left reads the newest, and the writer, if left, still puts
+    if alive[0usize] {
+      version = version + 1u64;
+      if !ws[0usize].put(valueOf(version, 24usize).view()) {ok = false;}
+    }
+    if !from.isEmpty() {
+      let g = from[0usize].readNewer(version - 1u64, out.viewMut());
+      if versionOf(&g) != version || !holds(out.view(), version, 24usize) {ok = false;}
+    }
+    if alive[3usize] {
+      let g = rs[0usize].readNewer(0u64, out.viewMut());
+      if versionOf(&g) != version || !holds(out.view(), version, 24usize) {ok = false;}
+    }
+  }
+  ok
+}
+
+fn dropOrders() {
+  var bad = 0u64;
+  var count = 0u64;
+  var a = 0usize;
+  while a < 4usize {
+    var b = 0usize;
+    while b < 4usize {
+      var c = 0usize;
+      while c < 4usize {
+        var d = 0usize;
+        while d < 4usize {
+          if a != b && a != c && a != d && b != c && b != d && c != d {
+            count = count + 1u64;
+            if !dropOrder(a, b, c, d) {
+              bad = bad + 1u64;
+            }
+          }
+          d = d + 1usize;
+        }
+        c = c + 1usize;
+      }
+      b = b + 1usize;
+    }
+    a = a + 1usize;
+  }
+  expectUInt(count, 24u64, "24 orders of dropping 4 handles");
+  expectUInt(bad, 0u64, "each left the others working");
+}
+
+fn main() i32 {
+  versions();
+  lengths();
+  refusal();
+  shortOut();
+  readers();
+  dropOrders();
+  done()
+}

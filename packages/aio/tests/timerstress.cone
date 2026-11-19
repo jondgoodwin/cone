@@ -1,0 +1,130 @@
+// Worker timers under random arms, cancels and parks (row 483, the spec's test
+// 8, after actors' wakestress). 32 actors on 4 workers, 2,000 rounds each, each
+// round one of: a plain sleep of 0-2 ms; a sleep in a fresh group that a
+// random other actor cancels after a random 0-2 ms (its own sleep first); a
+// sleep in a child of the actor's own parent group, whose parent a random
+// other actor cancels likewise (the worker's sweep), the parent then made
+// anew; a sleep with an IoLimits deadline before or after its time. Every 100
+// rounds the actor pauses 5-25 ms, so workers park and wake by their cells'
+// times and by cancels from other workers. Every round answers exactly once,
+// with an answer its case allows; at the end no cell is armed and the runtime
+// goes idle.
+
+mod timerstress;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import iocore use IoError, CancelGroup;
+import actors;
+import aio use IoLimits;
+
+const n = 32u64;
+const rounds = 2000u64;
+
+let answeredN: Atomic[u64];
+let wrongN: Atomic[u64];
+
+fn @initpure init() {
+  answeredN = Atomic[u64].of(0u64);
+  wrongN = Atomic[u64].of(0u64);
+}
+
+// 1 done, 2 cancelled, 3 timed out, 4 failed
+fn ended(r: Result[void, IoError]) u64 {
+  match r {
+    case let Err(e) {
+      if aio.isCancelled(e) {2u64}
+      else if aio.isTimedOut(e) {3u64}
+      else {4u64}
+    }
+    else {1u64}
+  }
+}
+
+actor Helper {
+  pub async fn cancelAfter(self, g: CancelGroup, us: i64) {
+    let r = await aio.sleep(Duration.fromMicros(us));
+    g.cancel();
+  }
+}
+
+actor Worker {
+  seed: u64;
+  helpers: List[Helper];
+  done: Sender[u64];
+
+  pub async fn run(self) {
+    var x = seed;
+    var parent = CancelGroup.make();
+    var i = 0u64;
+    while i < rounds {
+      x = x * 6364136223846793005u64 + 1442695040888963407u64;
+      let pick = (x >> 40u64) % 4u64;
+      let us = i64.from((x >> 20u64) % 2000u64);
+      let other = *helpers[usize.from((x >> 8u64) % u64.from(helpers.len()))];
+      let d = Duration.fromMicros(us);
+      var ok = false;
+      if pick == 0u64 {
+        let r = await aio.sleep(d);
+        ok = ended(r) == 1u64;
+      } else if pick == 1u64 {
+        let g = CancelGroup.make();
+        other.cancelAfter(g, i64.from((x >> 12u64) % 2000u64));
+        let r = await aio.sleepIn(d, IoLimits.within(g));
+        let e = ended(r);
+        ok = e == 1u64 || e == 2u64;
+      } else if pick == 2u64 {
+        let c = parent.child();
+        other.cancelAfter(parent, i64.from((x >> 12u64) % 2000u64));
+        let r = await aio.sleepIn(d, IoLimits.within(c));
+        let e = ended(r);
+        ok = e == 1u64 || e == 2u64;
+        parent = CancelGroup.make();
+      } else {
+        let lim = Instant.now() + Duration.fromMicros(i64.from((x >> 12u64) % 2000u64));
+        let r = await aio.sleepIn(d, IoLimits.until(lim));
+        let e = ended(r);
+        ok = e == 1u64 || e == 3u64;
+      }
+      if !ok {wrongN.add(1u64);}
+      answeredN.add(1u64);
+      if i % 100u64 == 99u64 {
+        let r = await aio.sleep(Duration.fromMillis(5i64 + i64.from((x >> 30u64) % 21u64)));
+      }
+      i = i + 1u64;
+    }
+    done.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  var helpers = List[Helper]();
+  var k = 0u64;
+  while k < 8u64 {
+    helpers.push(Helper());
+    k = k + 1u64;
+  }
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  k = 0u64;
+  while k < n {
+    let w = Worker(k * 2654435761u64 + 11u64, helpers.clone(), tx.clone());
+    w.run();
+    k = k + 1u64;
+  }
+  var finished = 0u64;
+  while finished < n {
+    finished = finished + (rx.recv() || 0u64);
+  }
+  expect(answeredN.load() == n * rounds, "every round answered exactly once");
+  expect(wrongN.load() == 0u64, "...with an answer its case allows");
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  expect(actors.timerStats().armed == 0u64, "no cell armed");
+  done()
+}
