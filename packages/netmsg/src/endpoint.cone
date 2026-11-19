@@ -62,6 +62,9 @@ struct ConnectionSlot {
   replacedAt: i64;         // when this connection replaced one of the same socket address; -1 it did not
 }
 
+// The connections an endpoint holds, in the order admitted (removal moves the last into the gap)
+alias ConnSlots = List[ConnectionSlot];
+
 // Where each connection's slot is in 'slots', by the other end's address
 alias SlotsByAddr = Dict[SocketAddr, usize];
 
@@ -183,7 +186,7 @@ pub actor Endpoint {
   timerGen: u32;                // which timer is the armed one
   inflight: usize;              // datagrams handed to the socket and not yet sent
   gate: ChallengeGate;
-  slots: List[ConnectionSlot];
+  slots: ConnSlots;             // room kept for NetConfig.maxClients at make (a client's for one), so admitting never regrows it
   byAddr: SlotsByAddr;          // the slot's index in 'slots', for each slot's address
   byIp: AddrStates;             // each IP address's connection count
   tokens: i64;                  // the admission bucket, in thousandths of a connection
@@ -205,7 +208,7 @@ pub actor Endpoint {
     let now = Instant.now().nanos();
     *self = Self(server: server, cfg: cfg, handler: handler, sock: UdpSocket.none(),
       group: g, timer: g.child(), timerGen: 0u32, inflight: 0usize,
-      gate: ChallengeGate.fromOs(), slots: List[ConnectionSlot](), byAddr: SlotsByAddr(), byIp: AddrStates(), nextId: 1u32,
+      gate: ChallengeGate.fromOs(), slots: ConnSlots.withCapacity(if server {cfg.maxClients} else {1usize}), byAddr: SlotsByAddr(), byIp: AddrStates(), nextId: 1u32,
       tokens: burstSeconds * 1000i64 * i64.from(cfg.admitRate), refilled: now,
       armed: -1i64, stopped: false, refused: EndpointStats(0u64, 0u64, 0u64),
       dialer: ClientHandshake.make(cfg, salt, Instant.now()), dialing: !server,
