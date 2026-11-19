@@ -1,0 +1,204 @@
+// Cells on the two kinds of connection that are not UDP. In-process there is no
+// core and no send slot: a bound cell's newest is delivered when the sim calls
+// flushCells, in order with the messages sent before and after the call
+// (single player's frame: the reliable requests, then the state, then the
+// frame's end). The simulated pair runs the real protocol between two actors,
+// and a cell's value crosses it as it does UDP.
+
+mod cellinprocess;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration;
+import actors;
+import iobuf use Bytes;
+import netmsg use *;
+
+// An event as text: J1, L1, M1:text, U1:stream:text, R1:...
+fn describe(e: NetEvent) String {
+  var s = String();
+  match e {
+    case let Joined(j) { s.append("J"); s.appendUInt(u64.from(j.id)); }
+    case let Left(l) { s.append("L"); s.appendUInt(u64.from(l.id)); }
+    case let Message(m) {
+      s.append("M"); s.appendUInt(u64.from(m.id)); s.append(":");
+      s.append(String.fromBytes(m.data.view()).view());
+    }
+    case let Update(u) {
+      s.append("U"); s.appendUInt(u64.from(u.id)); s.append(":"); s.appendUInt(u64.from(u.stream));
+      s.append(":"); s.append(String.fromBytes(u.data.view()).view());
+    }
+    case let Refused(r) {
+      s.append("R"); s.appendUInt(u64.from(r.id)); s.append(":value");
+      s.append(match r.why {
+        case is TooLarge {":large"}
+        case is TooManyStreams {":streams"}
+      });
+      s.append(":"); s.appendUInt(u64.from(r.size)); s.append(":"); s.appendUInt(u64.from(r.limit));
+    }
+  }
+  s
+}
+
+// The next event as text, or "none" if none comes in 'ms' milliseconds
+fn nextWithin(rx: &mut Receiver[NetEvent], ms: i64) String {
+  match rx.recvTimeout(Duration.fromMillis(ms)) {
+    case let Some(e) { return describe(e); }
+    case is None[NetEvent] {}
+  }
+  String.from("none")
+}
+
+fn next(rx: &mut Receiver[NetEvent]) String {nextWithin(rx, 1000i64)}
+
+fn bytes(s: &str) Bytes {
+  var b = List[u8]();
+  putBytes(&mut b, s);
+  copyPacket(b.view()).freeze()
+}
+
+fn text(s: &str) List[u8] {
+  var d = List[u8]();
+  putBytes(&mut d, s);
+  d
+}
+
+// An application actor reading a connection's measurements, with 'await'
+actor Prober {
+  pub async fn skipped(self, c: Connection, out: Sender[u64]) {
+    let s = await c.stats();
+    out.send(s.cellSkipped);
+  }
+}
+
+fn skippedOf(c: Connection) u64 {
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let prober = Prober();
+  prober.skipped(c, tx);
+  match rx.recvTimeout(Duration.fromSeconds(5i64)) {
+    case let Some(v) { return v; }
+    case is None[u64] {}
+  }
+  999999u64
+}
+
+fn main() i32 {
+  var txA: Sender[NetEvent];
+  var rxA: Receiver[NetEvent];
+  txA, rxA = Channel[NetEvent].make();
+  var txB: Sender[NetEvent];
+  var rxB: Receiver[NetEvent];
+  txB, rxB = Channel[NetEvent].make();
+  {
+    let pair = pairInProcess(channelHandler(txA), 1u32, channelHandler(txB), 7u32);
+    expectStr(next(&mut rxA).view(), "J1", "a joined");
+    expectStr(next(&mut rxB).view(), "J7", "b joined");
+    var w: LatestWriter;
+    var r: LatestReader;
+    w, r = latestCell(64usize);
+    pair.a.bindLatest(6u16, r, 1u32);
+
+    // The frame's order: a request, the state, the frame's end
+    pair.a.sendReliable(bytes("tell"));
+    w.put(text("state1").view());
+    pair.a.flushCells();
+    pair.a.sendReliable(bytes("done"));
+    expectStr(next(&mut rxB).view(), "M7:tell", "the message sent before flushCells comes first");
+    expectStr(next(&mut rxB).view(), "U7:6:state1", "then the cell's value");
+    expectStr(next(&mut rxB).view(), "M7:done", "then the message sent after it");
+
+    // Nothing new: nothing delivered
+    pair.a.flushCells();
+    pair.a.sendReliable(bytes("again"));
+    expectStr(next(&mut rxB).view(), "M7:again", "a flush with no new version delivers nothing");
+
+    // A value is held until the flush
+    w.put(text("state2").view());
+    pair.a.sendReliable(bytes("later"));
+    expectStr(next(&mut rxB).view(), "M7:later", "a put alone delivers nothing: only flushCells does");
+    pair.a.flushCells();
+    expectStr(next(&mut rxB).view(), "U7:6:state2", "and the flush delivers it");
+
+    // Two puts, one flush: the newer, the other counted
+    w.put(text("state3").view());
+    w.put(text("state4").view());
+    pair.a.flushCells();
+    expectStr(next(&mut rxB).view(), "U7:6:state4", "two puts between flushes deliver the newer");
+    expectStr(nextWithin(&mut rxB, 100i64).view(), "none", "and only it");
+    expectUInt(skippedOf(pair.a), 1u64, "state3 is counted skipped");
+
+    // Rebinding: the old cell is let go, the new one's first value goes
+    var wn: LatestWriter;
+    var rn: LatestReader;
+    wn, rn = latestCell(64usize);
+    pair.a.bindLatest(6u16, rn, 1u32);
+    w.put(text("old").view());
+    wn.put(text("new1").view());
+    pair.a.flushCells();
+    expectStr(next(&mut rxB).view(), "U7:6:new1", "after a rebind the new cell's value is delivered");
+    expectStr(nextWithin(&mut rxB, 100i64).view(), "none", "and the old cell's put is not");
+
+    // Unbound: nothing from the cell
+    pair.a.unbindLatest(6u16);
+    wn.put(text("new2").view());
+    pair.a.flushCells();
+    pair.a.sendReliable(bytes("end"));
+    expectStr(next(&mut rxB).view(), "M7:end", "after unbindLatest a flush delivers nothing");
+
+    // Too big a cell is refused, as a sendLatest's value is
+    var wb: LatestWriter;
+    var rb: LatestReader;
+    wb, rb = latestCell(1172usize);
+    pair.a.bindLatest(8u16, rb, 1u32);
+    expectStr(next(&mut rxA).view(), "R1:value:large:1172:1171", "a cell of 1172 bytes is refused");
+
+    pair.a.close();
+    expectStr(next(&mut rxA).view(), "L1", "closed");
+    expectStr(next(&mut rxB).view(), "L7", "and b hears it");
+    wn.put(text("after").view());
+    pair.a.flushCells();
+    expectStr(nextWithin(&mut rxB, 100i64).view(), "none", "nothing after the close");
+  }
+
+  // The simulated pair: the cell's value crosses the protocol
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  var txD: Sender[NetEvent];
+  var rxD: Receiver[NetEvent];
+  txD, rxD = Channel[NetEvent].make();
+  {
+    var sp = pairSimulated(NetConfig.defaults(), LinkConfig.perfect(), LinkConfig.perfect(), 3u64,
+      channelHandler(txC), 1u32, channelHandler(txD), 7u32);
+    expectStr(next(&mut rxC).view(), "J1", "a joined");
+    expectStr(next(&mut rxD).view(), "J7", "b joined");
+    var w: LatestWriter;
+    var r: LatestReader;
+    w, r = latestCell(64usize);
+    sp.a.bindLatest(5u16, r, 1u32);
+    w.put(text("sim1").view());
+    sp.a.flushCells();
+    expectStr(next(&mut rxD).view(), "U7:5:sim1", "a value crosses the simulated link");
+    w.put(text("sim2").view());
+    w.put(text("sim3").view());
+    sp.a.flushCells();
+    var last = String.from("none");
+    var heard = 0u32;
+    var t = 0u32;
+    while t < 20u32 {
+      let s = nextWithin(&mut rxD, 100i64);
+      if s.view() == "none" {break;}
+      last = s;
+      heard = heard + 1u32;
+      t = t + 1u32;
+    }
+    expectStr(last.view(), "U7:5:sim3", "the newest arrives last");
+    expect(heard >= 1u32 && heard <= 2u32, "and no value is sent twice");
+    sp.stop();
+    sp.a.close();
+  }
+  done()
+}

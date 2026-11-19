@@ -155,6 +155,27 @@ fn main() {
 		waiting stream's priority grows by its weight with every packet it waits through (1 by default), and the
 		highest goes first; a stream that did not fit keeps what it gathered, so everything is sent eventually and the
 		important streams often (Fiedler's priority accumulator).</li>
+	<li><span class="pre">bindLatest(stream, cell, weight)</span>: stream <span class="pre">stream</span>'s value is the newest of a
+		<span class="pre">sync.LatestReader</span> (<span class="pre">sync.latestCell</span>), under
+		<span class="pre">weight</span> as <span class="pre">setStreamWeight</span>'s. At each send slot the packet is built by
+		copying the newest value from the cell straight into the datagram if it is newer than the last one sent on the
+		stream; a value put twice between slots is sent once (the newer, and the versions passed over are counted in
+		<span class="pre">ConnectionStats.cellSkipped</span>), a cell never written sends nothing, and a value that does not
+		fit the room a packet has left stays for the next one. No message crosses per value: a world that publishes to
+		many connections puts each value in a cell once. A bound connection asks to be called at every send slot
+		(<span class="pre">nextDeadline</span>), since a cell cannot say it changed, which costs one timer fire a slot
+		(30 a second at the good rate). A cell that takes values over <span class="pre">maxLatestBytes</span>, or a 65th
+		stream, is refused as a <span class="pre">sendLatest</span> is. Binding a stream already bound lets go of the old
+		cell (nothing more of it is sent) and sends the new cell from its first value on, on the stream's own sequence, so
+		the receiver takes it as newer; a value set by <span class="pre">sendLatest</span> on a bound stream is sent once
+		and the cell goes on. In-process the stream has no weight and the cell's newest is delivered when
+		<span class="pre">flushCells()</span> is called.</li>
+	<li><span class="pre">unbindLatest(stream)</span>: lets go of the stream's cell; the stream is
+		<span class="pre">sendLatest</span>'s again.</li>
+	<li><span class="pre">flushCells()</span>: in-process, delivers each bound cell's newest now, in order with the messages sent
+		before and after the call (lockstep single player: the frame's requests, the state, the frame's end); over UDP and
+		on the simulated pair it looks at the cells now rather than at the next send slot, and sends what is newer when the
+		pacing allows.</li>
 	<li><span class="pre">close()</span>: the other end is told (the disconnect packet is sent five times).</li>
 	<li><span class="pre">await stats()</span> answers a <span class="pre">ConnectionStats</span>: <span class="pre">rttMs</span> and
 		<span class="pre">rttVarMs</span> (the smoothed round trip time, for clock synchronisation and an interpolation delay),
@@ -288,7 +309,9 @@ fn main() {
 		<span class="pre">sendLatest(stream, bytes)</span> (<span class="pre">bytes</span> an <span class="pre">iobuf.Bytes</span>, held until acknowledged or sent; each answers false when refused);
 		<span class="pre">receive(&amp;packet, now, events)</span> acts on one datagram (an <span class="pre">iobuf.Bytes</span>; the events' data are slices of it) (false if it is not this connection's or is
 		malformed); <span class="pre">poll(now, out, events)</span> appends the packets to send (<span class="pre">Packets</span>, a list of IoBufs, each one datagram) and the events that happened;
-		<span class="pre">nextDeadline()</span> says when to call <span class="pre">poll</span> next; and
+		<span class="pre">bindLatest(stream, reader, weight)</span> and <span class="pre">unbindLatest(stream)</span> (a stream's value is a
+		<span class="pre">sync.LatestReader</span>'s newest, copied into each packet; each answers false when refused);
+		<span class="pre">nextDeadline()</span> says when to call <span class="pre">poll</span> next (while a cell is bound, the next send slot: a poll that finds nothing new moves it an interval on); and
 		<span class="pre">rtt()</span>, <span class="pre">lossPermille()</span>, <span class="pre">stats()</span>, <span class="pre">close()</span>. The
 		events are <span class="pre">CoreEvent.Reliable{data}</span>, <span class="pre">CoreEvent.Latest{stream, data, pos}</span> (<span class="pre">pos</span>: the stream's place among those the connection has heard of, fixed for its life) and
 		<span class="pre">CoreEvent.Closed{reason}</span>. <span class="pre">ChallengeGate</span> is the server's side of the handshake

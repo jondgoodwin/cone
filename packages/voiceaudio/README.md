@@ -5,6 +5,8 @@ It is the audio end of a voice chat with a local model: capture mono f32 at 16 k
 mono f32 at 24 kHz for speech synthesis through a queue that can be cut off at once (barge-in), and decide when
 the speaker has finished a sentence.
 
+**Platforms: Windows only** (`congo.toml` declares `os = ["windows"]`): `sdl` is not built on Linux's test box, and `src/interrupt.cone` calls kernel32's console functions with no `#os` guard. Whether it works on a Linux machine with SDL3 is not known.
+
 ```
 src/voiceaudio.cone  overview and imports
 src/device.cone      Driver, Microphone, Speaker

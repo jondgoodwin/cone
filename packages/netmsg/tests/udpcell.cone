@@ -1,0 +1,120 @@
+// A stream bound to a cell, over UDP, on the connection's own actors.Timer. The
+// connection asks to be called at every send slot while a cell is bound, since
+// a cell cannot say it changed (nextDeadline); a slot that finds nothing must
+// move the next look on, or the held timer would be due again at once and fire
+// without end. Idle for 2 s with a cell never written, the actors' turns are
+// counted (actors.stats().activations): about one a send slot on the server's end
+// and a keep-alive's on the client's, never the tens of thousands a spin makes. Then
+// puts in the cell reach the client, newest last, and the last value put is
+// the one the client ends holding.
+
+mod udpcell;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import thread;
+import iocore use SocketAddr;
+import actors;
+import netmsg use *;
+
+fn text(s: &str) List[u8] {
+  var d = List[u8]();
+  putBytes(&mut d, s);
+  d
+}
+
+// Take what a channel holds: the Joined connection kept, the last Update's
+// text and how many Updates came
+fn drain(rx: &mut Receiver[NetEvent], conns: &mut List[Connection], last: &mut String, updates: &mut u64) {
+  while true {
+    match rx.tryRecv() {
+      case let Some(e) {
+        match e {
+          case let Joined(j) { conns.push(j.conn); }
+          case let Update(u) {
+            *last = String.fromBytes(u.data.view());
+            *updates = *updates + 1u64;
+          }
+          else {}
+        }
+      }
+      case is None[NetEvent] { break; }
+    }
+  }
+}
+
+fn main() i32 {
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  {
+    let cfg = NetConfig.defaults();
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+    var sConns = List[Connection]();
+    var cConns = List[Connection]();
+    var sLast = String();
+    var cLast = String();
+    var sUpdates = 0u64;
+    var cUpdates = 0u64;
+    let until = Instant.now() + Duration.fromSeconds(20i64);
+    while (sConns.len() == 0usize || cConns.len() == 0usize) && Instant.now() < until {
+      thread.sleep(Duration.fromMillis(20i64));
+      drain(&mut rxS, &mut sConns, &mut sLast, &mut sUpdates);
+      drain(&mut rxC, &mut cConns, &mut cLast, &mut cUpdates);
+    }
+    expectUInt(u64.from(sConns.len()), 1u64, "the server has its client");
+    expectUInt(u64.from(cConns.len()), 1u64, "the client is connected");
+
+    // Unbound idle, for the comparison
+    thread.sleep(Duration.fromMillis(300i64));
+    let u0 = actors.stats().activations;
+    thread.sleep(Duration.fromSeconds(2i64));
+    let unbound = actors.stats().activations - u0;
+
+    // Bound to a cell never written: idle, 2 s
+    var w: LatestWriter;
+    var r: LatestReader;
+    w, r = latestCell(64usize);
+    sConns[0usize].bindLatest(3u16, r, 1u32);
+    thread.sleep(Duration.fromMillis(300i64));
+    let b0 = actors.stats().activations;
+    thread.sleep(Duration.fromSeconds(2i64));
+    let bound = actors.stats().activations - b0;
+    drain(&mut rxC, &mut cConns, &mut cLast, &mut cUpdates);
+    expect(bound < 400u64, "idle with a cell bound the connection takes about one turn a send slot, not a spin");
+    expect(bound > unbound + 20u64, "and the slots are looked at: more turns than the keep-alives alone");
+    expectUInt(cUpdates, 0u64, "nothing was sent on the stream");
+
+    // Puts reach the client: the last one put is the last heard
+    var n = 0u32;
+    while n < 20u32 {
+      var s = String.from("v");
+      s.appendUInt(u64.from(n));
+      w.put(text(s.view()).view());
+      thread.sleep(Duration.fromMillis(15i64));
+      n = n + 1u32;
+    }
+    thread.sleep(Duration.fromMillis(200i64));
+    drain(&mut rxC, &mut cConns, &mut cLast, &mut cUpdates);
+    expectStr(cLast.view(), "v19", "the last value put is the last the client heard");
+    expect(cUpdates >= 3u64 && cUpdates <= 20u64, "values arrived, none more often than put");
+
+    // A value put in idle is sent at the next slot, not held for a keep-alive or a later put
+    let before = cUpdates;
+    w.put(text("lone").view());
+    thread.sleep(Duration.fromMillis(250i64));
+    drain(&mut rxC, &mut cConns, &mut cLast, &mut cUpdates);
+    expectStr(cLast.view(), "lone", "a lone value arrives within a few slots");
+    expectUInt(cUpdates, before + 1u64, "once");
+
+    client.endpoint.shutdown();
+    server.endpoint.shutdown();
+  }
+  done()
+}

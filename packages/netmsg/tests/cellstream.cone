@@ -1,0 +1,204 @@
+// Streams bound to latest-value cells (bindLatest), through two connection cores
+// on a synthetic clock. A bound stream sends its cell's newest value, copied
+// from the cell into the datagram, when that is newer than the last one sent:
+// a value put twice between packets is sent once (the newer), a value put
+// once is never sent twice, and a cell never written sends nothing. Bound streams
+// share a packet's room with sendLatest streams under the same priority
+// accumulator. A value that does not fit the room left in a packet is not lost:
+// it stays for the next packet, intact. The bind is refused for a cell too big
+// for a packet and past the 64 streams.
+
+mod cellstream;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant, Clock;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
+
+fn text(s: &str) List[u8] {
+  var d = List[u8]();
+  putBytes(&mut d, s);
+  d
+}
+
+fn filled(n: usize, b: u8) List[u8] {
+  var d = List[u8]();
+  var i = 0usize;
+  while i < n {
+    d.push(b);
+    i = i + 1usize;
+  }
+  d
+}
+
+// What b has heard: values by stream as "stream:text" (a long value by its length
+// and first byte: "stream:len/byte"), reliable messages counted
+struct Heard {
+  pub vals: List[String];
+  pub reliable: u64;
+}
+
+fn absorb(evs: &mut List[CoreEvent], h: &mut Heard) {
+  each e in evs.drain() {
+    match e {
+      case let Reliable(r) { h.reliable = h.reliable + 1u64; }
+      case let Latest(l) {
+        var s = String();
+        s.appendUInt(u64.from(l.stream));
+        if l.data.len() > 20usize {
+          s.append(":");
+          s.appendUInt(u64.from(l.data.len()));
+          s.append("/");
+          s.appendUInt(u64.from(l.data.view()[0usize]));
+        } else {
+          s.append(":");
+          s.append(String.fromBytes(l.data.view()).view());
+        }
+        h.vals.push(s);
+      }
+      case let Closed(c) {}
+    }
+  }
+}
+
+fn go(p: &mut SimPair, clock: &mut Clock, ms: i64, h: &mut Heard) {
+  var i = 0i64;
+  while i < ms {
+    clock.advance(Duration.fromMillis(1i64));
+    p.step(clock.now());
+    absorb(&mut p.eventsB, h);
+    p.eventsA.clear();
+    i = i + 1i64;
+  }
+}
+
+// How many values of stream 's' the list holds
+fn countOf(h: &Heard, stream: &str) u64 {
+  var n = 0u64;
+  var i = 0usize;
+  let want = String.from(stream);
+  while i < h.vals.len() {
+    let v = &h.vals[i];
+    if v.view().startsWith(want.view()) {n = n + 1u64;}
+    i = i + 1usize;
+  }
+  n
+}
+
+fn main() i32 {
+  let cfg = NetConfig.defaults();
+  var clock = Clock.synth();
+  var p = SimPair.make(cfg, LinkConfig.perfect(), LinkConfig.perfect(), 1u64, clock.now());
+  var h = Heard(List[String](), 0u64);
+
+  // A cell never written sends nothing, however long it is bound
+  var w: LatestWriter;
+  var r: LatestReader;
+  w, r = latestCell(64usize);
+  expect(p.a.bindLatest(4u16, r, 1u32), "a stream is bound to a cell");
+  go(&mut p, &mut clock, 300i64, &mut h);
+  expectUInt(u64.from(h.vals.len()), 0u64, "a cell never written sends nothing");
+
+  // The newest value of a cell goes, once
+  w.put(text("v1").view());
+  go(&mut p, &mut clock, 100i64, &mut h);
+  expectUInt(u64.from(h.vals.len()), 1u64, "a value put is sent");
+  expectStr(h.vals[0usize].view(), "4:v1", "on the bound stream, as put");
+  go(&mut p, &mut clock, 300i64, &mut h);
+  expectUInt(u64.from(h.vals.len()), 1u64, "and not sent again though the slots go on");
+
+  // Two puts between packets: only the newer is sent, and one version is counted skipped
+  w.put(text("v2").view());
+  w.put(text("v3").view());
+  go(&mut p, &mut clock, 100i64, &mut h);
+  expectUInt(u64.from(h.vals.len()), 2u64, "two puts between two packets send one value");
+  expectStr(h.vals[1usize].view(), "4:v3", "the newer");
+  expectUInt(p.a.stats().cellSkipped, 1u64, "the one between is counted skipped");
+  expectUInt(p.a.stats().latestSent, 2u64, "two values sent in all");
+  go(&mut p, &mut clock, 200i64, &mut h);
+  expectUInt(u64.from(h.vals.len()), 2u64, "nothing more without a put");
+
+  // A sendLatest on a bound stream sends that value, and the cell goes on after
+  p.a.sendLatest(4u16, fz("hand"));
+  go(&mut p, &mut clock, 100i64, &mut h);
+  expectStr(h.vals[2usize].view(), "4:hand", "a value sent by sendLatest on a bound stream goes");
+  w.put(text("v4").view());
+  go(&mut p, &mut clock, 100i64, &mut h);
+  expectStr(h.vals[3usize].view(), "4:v4", "and the cell's next value after it");
+  expectUInt(u64.from(h.vals.len()), 4u64, "the cell's v3 was not sent again");
+  expectUInt(p.b.stats().latestStale, 0u64, "every value had a newer sequence than the one before");
+
+  // A bound stream and a sendLatest stream share a packet's room by weight:
+  // two values of 700 bytes, one fits a packet; the cell's stream counts ten
+  // times as much, so it goes ten times in eleven and the other is not starved
+  var w1: LatestWriter;
+  var r1: LatestReader;
+  w1, r1 = latestCell(800usize);
+  expect(p.a.bindLatest(1u16, r1, 10u32), "a second stream bound, weight 10");
+  p.a.setStreamWeight(2u16, 1u32);
+  var cellsSent = 0u64;
+  var plainSent = 0u64;
+  var i = 0u32;
+  while i < 220u32 {
+    w1.put(filled(700usize, 1u8).view());
+    p.a.sendLatest(2u16, fz(filled(700usize, 2u8).view()));
+    go(&mut p, &mut clock, 34i64, &mut h);
+    i = i + 1u32;
+  }
+  go(&mut p, &mut clock, 1i64, &mut h);
+  cellsSent = countOf(&h, "1:");
+  plainSent = countOf(&h, "2:");
+  // A packet holds one of the two, and packets go one in 33.3 ms (the bucket's two tokens may add one or two)
+  let total = cellsSent + plainSent;
+  expect(total >= 220u64 && total <= 228u64, "one value in every packet");
+  expect(cellsSent * 100u64 >= total * 88u64 && cellsSent * 100u64 <= total * 94u64, "the cell's stream about 10 in 11");
+  expect(plainSent >= 15u64, "the other about 1 in 11, never starved");
+  let skippedW = p.a.stats().cellSkipped - 1u64;
+  expect(skippedW <= 220u64 - cellsSent && skippedW + 12u64 >= 220u64 - cellsSent, "each round the cell's stream lost to the other, its value was replaced by the next put: counted skipped");
+
+  // A value that does not fit what a reliable message left of the packet is not
+  // lost: it waits for the next packet and arrives whole
+  h.vals.clear();
+  go(&mut p, &mut clock, 300i64, &mut h);
+  h.vals.clear();
+  let skippedBefore = p.a.stats().cellSkipped;
+  w1.put(filled(700usize, 3u8).view());
+  p.a.sendReliable(fz(filled(700usize, 9u8).view()));
+  go(&mut p, &mut clock, 150i64, &mut h);
+  expect(h.reliable > 0u64, "the reliable message arrived");
+  expectUInt(countOf(&h, "1:"), 1u64, "the value that did not fit beside it came in a later packet");
+  expectStr(h.vals[0usize].view(), "1:700/3", "whole");
+  expectUInt(p.a.stats().cellSkipped, skippedBefore, "and nothing was passed over");
+
+  // Binds are refused: a cell too big for a packet, and a 65th stream
+  var wb: LatestWriter;
+  var rb: LatestReader;
+  wb, rb = latestCell(1172usize);
+  expect(!p.a.bindLatest(9u16, rb, 1u32), "a cell of 1172 bytes is refused: a value would not fit a packet");
+  var wf: LatestWriter;
+  var rf: LatestReader;
+  wf, rf = latestCell(1171usize);
+  expect(p.a.bindLatest(9u16, rf, 1u32), "one of 1171 bytes is bound");
+  var q = ConnectionCore.make(cfg, 0x1122334455667788u64, clock.now());
+  var k = 0u16;
+  var allBound = true;
+  while k < 64u16 {
+    var wk: LatestWriter;
+    var rk: LatestReader;
+    wk, rk = latestCell(8usize);
+    if !q.bindLatest(k, rk, 1u32) {allBound = false;}
+    k = k + 1u16;
+  }
+  expect(allBound, "64 streams bind");
+  var w65: LatestWriter;
+  var r65: LatestReader;
+  w65, r65 = latestCell(8usize);
+  expect(!q.bindLatest(64u16, r65, 1u32), "a 65th stream is refused");
+  expect(q.bindLatest(63u16, r65, 1u32), "a rebind of a stream already there is not a new stream");
+  expect(q.sendLatest(63u16, fz("x")), "and the stream is still sendLatest's to send on");
+  done()
+}
