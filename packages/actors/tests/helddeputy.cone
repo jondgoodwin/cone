@@ -1,0 +1,262 @@
+// A held timer fired by the monitor as THE DEPUTY of a worker stuck in a long
+// turn (row 500 after row 485; the spec's section 8, test 5, for a held cell).
+// Four workers, so the runtime has its monitor.
+//
+// 1. Eight holders each set their Timer 5 to 40 ms on and park on next(), all
+//    queued on one worker, and the next turn on that worker spins 50 ms. Their
+//    entries are in that worker's wheel and it can fire none in the spin, so
+//    the deputy must (heldFire from the monitor's thread; the resume runs on
+//    another worker): each resume comes within 3 ms of its deadline. Only the
+//    holders that set their timer on the spinning worker count, and the 99th
+//    percentile of their lateness must be within 3 ms in one of up to three
+//    passes (a pass under a loaded machine can miss by a long way; a lateness
+//    the service adds shows in all three). Without the deputy the later ones
+//    would be 10 to 45 ms late.
+// 2. Moves racing the deputy: 16 holders each make 300 rounds of: set 1 to 3 ms
+//    on, spin 2 ms (a turn longer than the monitor's tick, so the deputy may
+//    fire, refile or discard the entry meanwhile), set again 0 to 1.5 ms on
+//    (often earlier, in place, as the deputy looks at the same wheel) and park
+//    on next(). Every park resumes exactly once with true and never before the
+//    deadline set last.
+// 3. At the end no cell is held and no entry is left in any wheel.
+
+mod helddeputy;
+
+import testing use *;
+import env;
+import thread;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import actors use Timer;
+
+const waiters = 8u64;
+const roundsPerPass = 12u64;
+const passes = 3u32;
+const bucketUs = 250u64;
+const nBuckets = 24usize;       // 0 to 6 ms in 250 us; the last one holds anything later
+const boundUs = 3000u64;
+const minSamples = 24u64;              // of the 96 resumes in a pass
+const spinnerMark = 100000000000u64;   // the spinner's message: this plus its worker's index
+
+const churners = 16u64;
+const perChurner = 300u64;
+
+let answered: Atomic[u64];
+let early: Atomic[u64];
+let other: Atomic[u64];
+
+fn @initpure init() {
+  answered = Atomic[u64].of(0u64);
+  early = Atomic[u64].of(0u64);
+  other = Atomic[u64].of(0u64);
+}
+
+fn take(rx: &mut Receiver[u64]) u64 { rx.recv() || 7777777777u64 }
+
+fn afterUs(us: i64) Instant {Instant.fromNanos(Instant.now().nanos() + us * 1000i64)}
+
+// Part 1
+actor Spinner {
+  out: Sender[u64];
+
+  pub async fn spin(self) {
+    out.send(spinnerMark + u64.from(actors.workerIndex()));
+    let t = Instant.now();
+    while t.elapsed() < Duration.fromMillis(50i64) {}
+  }
+}
+
+actor Holder {
+  timer: Timer;
+  out: Sender[u64];
+
+  pub async fn waitFor(self, ms: u64) {
+    let d = Duration.fromMillis(i64.from(ms));
+    let t = Instant.now();
+    timer.set(Instant.fromNanos(t.nanos() + d.nanos()));
+    let w = u64.from(actors.workerIndex());
+    let ok = await timer.next();
+    let late = (t.elapsed() - d).nanos() / 1000i64;
+    // One message: the worker and the lateness in microseconds (capped); a
+    // false answer as the cap
+    var l = if late < 0i64 {0u64} else {u64.from(late)};
+    if l > 9999999u64 || !ok {l = 9999999u64;}
+    out.send(w * 10000000u64 + l);
+  }
+}
+
+// Queues the eight holders and then the spinner, in that order, on its own worker
+actor Starter {
+  w0: Holder; w1: Holder; w2: Holder; w3: Holder; w4: Holder; w5: Holder; w6: Holder; w7: Holder;
+  sp: Spinner;
+
+  pub async fn start(self) {
+    w0.waitFor(5u64);
+    w1.waitFor(10u64);
+    w2.waitFor(15u64);
+    w3.waitFor(20u64);
+    w4.waitFor(25u64);
+    w5.waitFor(30u64);
+    w6.waitFor(35u64);
+    w7.waitFor(40u64);
+    sp.spin();
+  }
+}
+
+// Part 2
+actor Churn {
+  timer: Timer;
+  seed: u64;
+  done: Sender[u64];
+
+  pub async fn run(self) {
+    var x = seed;
+    var i = 0u64;
+    while i < perChurner {
+      x = x * 6364136223846793005u64 + 1442695040888963407u64;
+      timer.set(afterUs(1000i64 + i64.from((x >> 33u64) % 2000u64)));
+      // A turn longer than the monitor's tick, the entry due in it or soon after
+      let s = Instant.now();
+      while s.elapsed() < Duration.fromMicros(2000i64) {}
+      x = x * 6364136223846793005u64 + 1442695040888963407u64;
+      let want = afterUs(i64.from((x >> 33u64) % 1500u64));
+      timer.set(want);
+      if await timer.next() {
+        if Instant.now().nanos() < want.nanos() {early.add(1u64);}
+      } else {
+        other.add(1u64);
+      }
+      answered.add(1u64);
+      i = i + 1u64;
+    }
+    done.send(1u64);
+  }
+}
+
+fn part1() {
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let st = Starter(Holder(Timer.make(), tx.clone()), Holder(Timer.make(), tx.clone()),
+    Holder(Timer.make(), tx.clone()), Holder(Timer.make(), tx.clone()),
+    Holder(Timer.make(), tx.clone()), Holder(Timer.make(), tx.clone()),
+    Holder(Timer.make(), tx.clone()), Holder(Timer.make(), tx.clone()), Spinner(tx.clone()));
+  var p99 = 0u64;
+  var counted = 0u64;
+  var total = 0u64;
+  var worst = 0u64;
+  var pass = 0u32;
+  while pass < passes {
+    var hist: Array[u64, 24] = [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+      0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+    counted = 0u64;
+    worst = 0u64;
+    var samples = 0u64;
+    var round = 0u64;
+    while round < roundsPerPass {
+      st.start();
+      var sw = 0u64;
+      var wk: Array[u64, 8] = [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+      var lt: Array[u64, 8] = [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+      var k = 0usize;
+      var got = 0u64;
+      while got < waiters + 1u64 {
+        let a = take(&mut rx);
+        if a >= spinnerMark && a < spinnerMark * 2u64 {
+          sw = a - spinnerMark;
+        } else if k < 8usize {
+          wk[k] = a / 10000000u64;
+          lt[k] = a % 10000000u64;
+          k = k + 1usize;
+        }
+        got = got + 1u64;
+      }
+      // Only the timers set on the spinning worker count (a holder another
+      // worker took from the queue filed its entry in its own wheel)
+      total = total + 1u64;
+      k = 0usize;
+      while k < 8usize {
+        if wk[k] == sw {
+          var b = usize.from(lt[k] / bucketUs);
+          if b >= nBuckets {b = nBuckets - 1usize;}
+          hist[b] = hist[b] + 1u64;
+          if lt[k] > worst {worst = lt[k];}
+          samples = samples + 1u64;
+        }
+        k = k + 1usize;
+      }
+      // The spinner has finished before the next round starts
+      actors.waitUntilIdleFor(Duration.fromSeconds(5i64));
+      round = round + 1u64;
+    }
+    p99 = 0u64;
+    var seen = 0u64;
+    var i = 0usize;
+    while i < nBuckets {
+      seen = seen + hist[i];
+      if p99 == 0u64 && samples > 0u64 && seen >= samples - samples / 100u64 {
+        p99 = (u64.from(i) + 1u64) * bucketUs;
+      }
+      i = i + 1usize;
+    }
+    counted = samples;
+    if counted >= minSamples && p99 != 0u64 && p99 <= boundUs {break;}
+    pass = pass + 1u32;
+  }
+  expect(counted >= minSamples, "enough timers were set on the spinning worker");
+  expect(p99 != 0u64 && p99 <= boundUs, "the 99th percentile of lateness is within 3 ms while the worker spins 50 ms");
+  expect(worst < 20000u64, "no held cell was left for the owner (the later ones would be 10 to 45 ms late)");
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "part 1 idle");
+  // CONE_DEPUTY_SHOW prints the last pass (as failing checks, for measuring)
+  match env.get("CONE_DEPUTY_SHOW") {
+    case let Some(v) {
+      expectUInt(counted, 0u64, "resumes counted (on the spinning worker)");
+      expectUInt(total, 0u64, "rounds in all passes");
+      expectUInt(p99, 0u64, "p99 lateness, us (upper bucket edge)");
+      expectUInt(worst, 0u64, "worst lateness, us");
+      expectUInt(u64.from(pass), 0u64, "pass");
+    }
+    else {}
+  }
+}
+
+fn part2() {
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  var k = 0u64;
+  while k < churners {
+    let m = Churn(Timer.make(), k * 7919u64 + 3u64, tx.clone());
+    m.run();
+    k = k + 1u64;
+  }
+  var got = 0u64;
+  k = 0u64;
+  while k < churners {
+    got = got + take(&mut rx);
+    k = k + 1u64;
+  }
+  expect(got == churners, "every churner finished");
+  expect(answered.load() == churners * perChurner, "every park resumed once");
+  expect(other.load() == 0u64, "none answered false");
+  expect(early.load() == 0u64, "none resumed before the deadline set last");
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  part1();
+  part2();
+  // 3
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  var waited = 0u64;
+  while (actors.timerStats().held != 0u64 || actors.timerStats().heldEntries != 0u64) && waited < 500u64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u64;
+  }
+  let st = actors.timerStats();
+  expect(st.held == 0u64, "no cell held once the holders have gone");
+  expect(st.heldEntries == 0u64, "no entry left in a wheel");
+  expect(st.movesInPlace > 0u64, "earlier moves in place");
+  done()
+}

@@ -777,6 +777,44 @@ actor Retrier {
 	<p><span class="pre">await retrier.gather()</span> is 115: the fetch fails with 0 and then 1, is added again each
 		time, and gives 100 on its third try, beside the shop's 15.</p>
 
+	<h2 id="timer">A timer an actor holds</h2>
+	<p>An actor that keeps one deadline for its life, such as a connection's next timeout, holds an
+		<span class="pre">actors.Timer</span> in its state and loops on <span class="pre">await timer.next()</span>. Each
+		of its behaviours sets the deadline to whatever is due next; the loop resumes once each time the deadline comes,
+		with <span class="pre">true</span>, and the deadline is then cleared. Moving the deadline later costs one store;
+		moving it earlier moves one entry of the scheduler's timers, with nothing allocated or sent; a deadline already
+		past fires at once. The loop never resumes for a deadline that has since been moved later or cleared.</p>
+<pre>
+actor Conn {
+  timer: actors.Timer;          // actors.Timer.make(), or actors.Timer.within(group)
+  idleUntil: time.Instant;
+
+  pub async fn clock(self) {
+    timer.set(idleUntil);
+    while await timer.next() {    // true: the deadline came
+      self.timedOut();
+    }                             // false: the timer was stopped, or its group cancelled
+  }
+
+  pub async fn received(self, now: time.Instant) {
+    idleUntil = time.Instant.fromNanos(now.nanos() + 100000000i64);
+    timer.set(idleUntil);         // later: the loop does not wake for the old deadline
+  }
+
+  pub async fn close(self) {
+    timer.stop();                 // the loop's next() answers false
+  }
+
+  fn timedOut(self) {}
+}
+</pre>
+	<p><span class="pre">clear()</span> removes the deadline and leaves the loop waiting; <span class="pre">stop()</span>
+		ends the timer, so a waiting <span class="pre">next()</span> answers <span class="pre">false</span>, and so does every
+		later one. A timer made with <span class="pre">Timer.within(g)</span> ends the same way when its group is cancelled,
+		and <span class="pre">cause()</span> then says why. A waiting <span class="pre">next()</span> keeps its actor alive,
+		as any await does, until the timer ends. One <span class="pre">next()</span> may wait at a time; a second is a
+		panic. A <span class="pre">Timer</span> is moved, never copied, and stays in its actor.</p>
+
 	<h2 id="await-nothing">A behaviour that returns nothing</h2>
 	<p>Whether an answer is sent is the behaviour's declaration to say, never its caller's: one with no return type sends
 		none, so there is nothing to await, and an <span class="pre">await</span> on it is refused. A caller that needs to

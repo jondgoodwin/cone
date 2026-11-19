@@ -1,0 +1,86 @@
+// The runtime's stop with held timers parked (row 500; the spec's test 7): 40
+// actors parked on a Timer's next() with an hour's deadline (20 of them in a
+// group never cancelled), and 12 whose loops fire every millisecond, so that
+// at the stop some arrives are in flight. The stop lets every parked next() go
+// unanswered (no loop goes on), every actor is finalized, and nothing hangs.
+
+mod heldstop;
+
+import testing use *;
+import stdio use *;
+import thread;
+import time use Duration, Instant;
+import cancelgroups use CancelGroup;
+import actors use Timer;
+
+const parkers = 40u64;
+const grouped = 20u64;
+const tickers = 12u64;
+
+let finalized: Atomic[u64];
+let parked: Atomic[u64];
+let ticks: Atomic[u64];
+
+fn @initpure init() {
+  finalized = Atomic[u64].of(0u64);
+  parked = Atomic[u64].of(0u64);
+  ticks = Atomic[u64].of(0u64);
+}
+
+struct Tracker {
+  pub n: u64;
+  fn final(self: &uni) {
+    if finalized.add(1u64) + 1u64 == parkers + tickers {
+      printStr("all 52 finalized\n");
+    }
+  }
+}
+
+fn after(ms: i64) Instant {Instant.fromNanos(Instant.now().nanos() + ms * 1000000i64)}
+
+actor Holder {
+  t: Tracker;
+  timer: Timer;
+
+  pub async fn parkLong(self) {
+    timer.set(after(3600000i64));
+    parked.add(1u64);
+    let r = await timer.next();
+    printStr("an hour's timer answered\n");
+  }
+
+  pub async fn tick(self) {
+    timer.set(after(1i64));
+    while await timer.next() {
+      ticks.add(1u64);
+      timer.set(after(1i64));
+    }
+    printStr("a ticker's timer ended\n");
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  var k = 0u64;
+  while k < parkers {
+    let tm = if k < grouped {Timer.within(&CancelGroup.make())} else {Timer.make()};
+    let h = Holder(Tracker(k), tm);
+    h.parkLong();
+    k = k + 1u64;
+  }
+  k = 0u64;
+  while k < tickers {
+    let h = Holder(Tracker(k), Timer.make());
+    h.tick();
+    k = k + 1u64;
+  }
+  let t0 = Instant.now();
+  while (parked.load() < parkers || ticks.load() < tickers * 20u64) && t0.elapsed() < Duration.fromSeconds(20i64) {
+    thread.sleep(Duration.fromMillis(5i64));
+  }
+  expect(parked.load() == parkers, "the long timers are parked");
+  expect(ticks.load() >= tickers * 20u64, "the tickers' timers fire");
+  expect(finalized.load() == 0u64, "no actor finalized yet");
+  done()
+}
