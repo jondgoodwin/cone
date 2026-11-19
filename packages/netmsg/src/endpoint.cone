@@ -166,6 +166,13 @@ const maxFailures = 1000u32;
 // How long shutdown waits for the datagrams already handed to the socket
 const flushMillis = 300i64;
 
+// What an endpoint has refused to admit, by the limit that refused it
+pub struct EndpointStats {
+  pub refusedFull: u64;           // new addresses refused at NetConfig.maxClients
+  pub refusedPerAddress: u64;     // refused at NetConfig.maxPerAddress for their IP address
+  pub refusedRate: u64;           // refused by the admission rate (NetConfig.admitRate), or a replacement within a second of the last for its socket address
+}
+
 pub actor Endpoint {
   server: bool;
   cfg: NetConfig;
@@ -184,6 +191,7 @@ pub actor Endpoint {
   nextId: u32;
   armed: i64;                   // the instant the timer will next wake us; -1 none
   stopped: bool;
+  refused: EndpointStats;       // admissions refused, by kind
 
   // a client's
   dialer: ClientHandshake;
@@ -199,7 +207,7 @@ pub actor Endpoint {
       group: g, timer: g.child(), timerGen: 0u32, inflight: 0usize,
       gate: ChallengeGate.fromOs(), slots: List[ConnectionSlot](), byAddr: SlotsByAddr(), byIp: AddrStates(), nextId: 1u32,
       tokens: burstSeconds * 1000i64 * i64.from(cfg.admitRate), refilled: now,
-      armed: -1i64, stopped: false,
+      armed: -1i64, stopped: false, refused: EndpointStats(0u64, 0u64, 0u64),
       dialer: ClientHandshake.make(cfg, salt, Instant.now()), dialing: !server,
       remote: remote);
   }
@@ -207,6 +215,11 @@ pub actor Endpoint {
   // How many connections are open now
   pub async fn connections(self) u32 {
     u32.from(slots.len())
+  }
+
+  // What the endpoint has refused to admit so far, by kind (all zero for a client)
+  pub async fn stats(self) EndpointStats {
+    refused
   }
 
   // End every connection (each tells its peer), send what is queued, close the
@@ -472,15 +485,29 @@ pub actor Endpoint {
       // asks again)
       let last = slots[k].replacedAt;
       if last >= 0i64 && now - last < replaceGapNs {
+        refused.refusedRate = refused.refusedRate + 1u64;
         self.transmit(from, ChallengeGate.denied(ChallengeGate.saltOf(response)));
         return;
       }
       slots[k].conn.close();
       self.removeSlot(k);
       replaced = true;
-    } else if slots.len() >= cfg.maxClients || self.connsOf(ip.view()) >= cfg.maxPerAddress || !self.takeToken(now) {
-      self.transmit(from, ChallengeGate.denied(ChallengeGate.saltOf(response)));
-      return;
+    } else {
+      // The first limit met counts, and the bucket is taken from only when the others pass
+      var admitted = false;
+      if slots.len() >= cfg.maxClients {
+        refused.refusedFull = refused.refusedFull + 1u64;
+      } else if self.connsOf(ip.view()) >= cfg.maxPerAddress {
+        refused.refusedPerAddress = refused.refusedPerAddress + 1u64;
+      } else if !self.takeToken(now) {
+        refused.refusedRate = refused.refusedRate + 1u64;
+      } else {
+        admitted = true;
+      }
+      if !admitted {
+        self.transmit(from, ChallengeGate.denied(ChallengeGate.saltOf(response)));
+        return;
+      }
     }
     let id = nextId;
     nextId = nextId + 1u32;
