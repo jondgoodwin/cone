@@ -302,6 +302,29 @@ fn main() i32 {
     let g1 = gone(&pool, r1, 0usize);
     let g2 = gone(&pool, r2, 0usize);
     out.clear();
+    // a receive started while an earlier one waits does not take the bytes ahead of it, though they are
+    // there already (the earlier one's edge is not taken yet)
+    let q1 = recvOn(&pool, b, 3usize);
+    expectUInt(u64.from(start(&sh, b, q1)), u64.from(issuePending), "3: a receive waits");
+    let sq = sendOn(&pool, a, "ef");
+    expectUInt(u64.from(start(&sh, a, sq)), u64.from(issueDone), "3: two bytes sent, for it");
+    let sqg = gone(&pool, sq, 0usize);
+    thread.sleep(Duration.fromMillis(40i64));
+    let q2 = recvOn(&pool, b, 3usize);
+    expectUInt(u64.from(start(&sh, b, q2)), u64.from(issuePending), "3: a later receive waits behind it, the bytes being there");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    expect(out.len() == 1usize && at(&out, 0usize) as usize == q1 as usize, "3: the earlier receive took them");
+    expectUInt(u64.from((q1 as &OpCore).count()), 2u64, "3: its two bytes");
+    out.clear();
+    let sq2 = sendOn(&pool, a, "gh");
+    expectUInt(u64.from(start(&sh, a, sq2)), u64.from(issueDone), "3: two more sent, for the later one");
+    let sq2g = gone(&pool, sq2, 0usize);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 3000i64);
+    expect(out.len() == 1usize && at(&out, 0usize) as usize == q2 as usize, "3: the later receive took the next");
+    expectUInt(u64.from((q2 as &OpCore).count()), 2u64, "3: its two bytes");
+    let gq1 = gone(&pool, q1, 0usize);
+    let gq2 = gone(&pool, q2, 0usize);
+    out.clear();
   }
 
   // 4. a zero-byte receive waits, holding no buffer, and is answered when bytes are there

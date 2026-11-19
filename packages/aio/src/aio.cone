@@ -1008,8 +1008,8 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
 // A read with no buffer (readAnyHere) holds none while it waits: on Linux it first tries a receive into a
 // pool buffer and gives it back if it would block, then waits as a zero-byte read (RecvReady) whose
 // answer (readAnyNext) takes the bytes into a buffer with the same record. It has no calm hint or quiet
-// stage on such a socket. A close racing the ready answer shows the read Failed (invalid handle), not
-// Cancelled. After a send there is no ask pass (askPass) while the worker port is on.
+// stage on such a socket. A close between its two stages ends the read Cancelled (readAnyClosed), as on the
+// Loop. After a send there is no ask pass (askPass) while the worker port is on.
 
 // Switch the Loop's UDP onto the worker port: once, on the I/O thread, before the first UDP socket is
 // bound. Nothing if the runtime has no port to give
@@ -1024,6 +1024,25 @@ fn udpSwitch(lp: &mut Loop) {
   actors.workerEvents(&portEvents);
   lp.setWorkerPort(port);
   udpOn.store(true);
+}
+
+// The error number of an operation on a handle that names nothing (iocore's noSuchHandle: EBADF, Windows'
+// ERROR_INVALID_HANDLE)
+fn handleGoneCode() u32 {
+  #if #os == .windows {6u32} #else {9u32}
+}
+
+// A read with no buffer whose second stage (the take, readAnyNext) found its socket closed meanwhile ends
+// Cancelled, as the Loop's flow ends it when the socket closes between its two stages (a close, the
+// operation's end, whichever came first)
+fn readAnyClosed(rp: *OpRec[Ask]) {
+  let r = rp as *OpCore as &mut OpCore;
+  if (*rp).ask.what == opRecvAny && (*rp).ask.stage == stageTake() && r.status == diag.outcomeFailed
+      && r.code == handleGoneCode() {
+    r.status = diag.outcomeCancelled;
+    r.code = 0u32;
+    r.n = 0usize;
+  }
 }
 
 // The wait of record rp, a datagram operation the shared try left (issueNot), on a socket that may be
@@ -1043,6 +1062,7 @@ fn waitHere(rp: *OpRec[Ask], c: *HereCounts) bool {
   if got == issueDone {
     bump(&mut (*c).here as *u64);
     if !readAnyNext(rp) {
+      readAnyClosed(rp);
       answerRec(rp);
     }
     return true;
