@@ -3,8 +3,9 @@
 // CELL in that worker's own store, armed in that worker's own timewheel, and
 // fired by that worker between its turns, its answer going to its own queue.
 // Nothing crosses to aio's I/O thread and nothing is locked across workers on
-// the common path. aio's sleeps are its one user (timerAwaitable); the
-// re-armable timer (row 500) will build on the same cells.
+// the common path. aio's sleeps are its first user (timerAwaitable); the
+// re-armable Timer holds one of the same cells for its life (THE HELD TIMER,
+// below).
 //
 // A STORE, one per worker index, made by the worker at its first timer and
 // never freed (a group that outlives the runtime may still signal a cell's
@@ -109,6 +110,7 @@ const cellReady = 1u64;
 const cellArmed = 2u64;
 const cellTaken = 3u64;
 const cellDead = 4u64;
+const cellHeld = 5u64;         // held by a Timer for its life (THE HELD TIMER): its own word is 'hword'
 const cellStateMask = 0xFFu64;
 const cellGenStep = 0x100u64;
 
@@ -138,6 +140,9 @@ struct TimerCell {
   reply: Reply;               // the await's, while Armed
   group: Option[CancelGroup]; // the IoLimits' group, from Ready until freed
   answer: &fn(rp: &mut Reply, outcome: u32);
+  hword: Atomic[u64];         // a held cell's word (THE HELD TIMER)
+  want: Atomic[i64];          // a held cell's deadline, noDue for none: written by its holder only
+  hentry: Atomic[u64];        // a held cell's live wheel entry (a TimerId's word), written by whoever holds hBusy
 }
 
 struct TimerChunk {
@@ -164,6 +169,14 @@ struct TimerStore {
   deputyFires: Atomic[u64];   // fired by the monitor as the owner's deputy (its Relaxed add)
   cancels: Atomic[u64];       // answered Cancelled or TimedOut by a cancel or a sweep, any thread
   dropped: Atomic[u64];       // let go unanswered at the stop
+  waiters: Atomic[u64];       // held cells of this store's with a next() parked (THE HELD TIMER), any thread
+  held: Atomic[u64];          // this store's cells held by a Timer now, any thread
+  heldIn: Atomic[u64];        // held cells' entries put in this wheel, and taken out (expired or cancelled): the owner's
+  heldOut: Atomic[u64];
+  movesInPlace: Atomic[u64];  // earlier moves made in this wheel by cancel and insert, the owner's
+  movesAcross: Atomic[u64];   // earlier moves that left a dead entry in another worker's wheel (or asked its filer)
+  refiles: Atomic[u64];       // held entries come up early (a later move) and filed again here
+  deadEntries: Atomic[u64];   // held entries come up dead, discarded here
 }
 
 // The stores, by worker index: an array of addresses made at startWorkers, never freed
@@ -225,6 +238,14 @@ fn timersHere() *TimerStore {
   (*ts).deputyFires = Atomic[u64].of(0u64);
   (*ts).cancels = Atomic[u64].of(0u64);
   (*ts).dropped = Atomic[u64].of(0u64);
+  (*ts).waiters = Atomic[u64].of(0u64);
+  (*ts).held = Atomic[u64].of(0u64);
+  (*ts).heldIn = Atomic[u64].of(0u64);
+  (*ts).heldOut = Atomic[u64].of(0u64);
+  (*ts).movesInPlace = Atomic[u64].of(0u64);
+  (*ts).movesAcross = Atomic[u64].of(0u64);
+  (*ts).refiles = Atomic[u64].of(0u64);
+  (*ts).deadEntries = Atomic[u64].of(0u64);
   let t = timerTable.load();
   mem.atomicStore[usize]((t + usize.from((*w).index) * mem.sizeof[usize]()) as *usize, ts as usize, MemOrder.Release);
   myTimers = ts as usize;
@@ -245,7 +266,8 @@ fn cellTake(ts: *TimerStore) *TimerCell {
       i = i - 1usize;
       let c = block + i;
       mem.writeRaw[TimerCell](c, TimerCell(Atomic[u64].of(cellGenStep), (*ts).free, null, ts,
-        TimerId.none(), 0i64, 0i64, 0u32, Reply(), None, &noAnswer));
+        TimerId.none(), 0i64, 0i64, 0u32, Reply(), None, &noAnswer,
+        Atomic[u64].of(0u64), Atomic[i64].of(noDue), Atomic[u64].of(0u64)));
       (*ts).free = c;
     }
     (*ch).next = (*ts).chunks;
@@ -623,6 +645,7 @@ fn cellCancelHere(ts: *TimerStore, c: *TimerCell) {
 fn timersPending(ts: *TimerStore) bool {
   nextOf(ts) != noDue || (*ts).retire.loadOrdered(MemOrder.Relaxed) != 0usize
     || (*ts).sweep.loadOrdered(MemOrder.Relaxed) != 0u32
+    || (timersStopped.loadOrdered(MemOrder.Relaxed) != 0u32 && (*ts).waiters.load() != 0u64)
 }
 
 // THE STEP, the owner's, between turns and before it parks: the retired cells
@@ -675,9 +698,15 @@ fn timersFire(ts: *TimerStore, now: time.Instant) bool {
   var any = false;
   var k = 0usize;
   while k < (*ts).expiries.len() {
-    let c = usize.from((*ts).expiries[k].token) as *TimerCell;
+    let tok = (*ts).expiries[k].token;
+    let c = usize.from(tok) as *TimerCell;
     let id = (*ts).expiries[k].id;
     k = k + 1usize;
+    if (tok & heldBit) != 0u64 {
+      // a held cell's entry (THE HELD TIMER): its own step
+      any = heldFire(ts, tok, now.nanos()) || any;
+      continue;
+    }
     if (*c).entry != id {
       continue;
     }
@@ -726,13 +755,21 @@ fn timersDeputy(ts: *TimerStore, now: time.Instant, sc: &mut DeputyScratch, park
   }
   sc.expiries.clear();
   sc.won.clear();
+  sc.held.clear();
   let wh = &mut (*ts).wheel;
   wh.expired(now, &mut sc.expiries);
   var k = 0usize;
   while k < sc.expiries.len() {
-    let c = usize.from(sc.expiries[k].token) as *TimerCell;
+    let tok = sc.expiries[k].token;
+    let c = usize.from(tok) as *TimerCell;
     let id = sc.expiries[k].id;
     k = k + 1usize;
+    if (tok & heldBit) != 0u64 {
+      // a held cell's entry (THE HELD TIMER): heldFire, once the word is let go
+      // (a refile inserts in this wheel)
+      sc.held.push(tok);
+      continue;
+    }
     if (*c).entry != id {
       continue;
     }
@@ -763,17 +800,28 @@ fn timersDeputy(ts: *TimerStore, now: time.Instant, sc: &mut DeputyScratch, park
     f(&mut r, o);
     cellRetire(c);
   }
-  u64.from(sc.won.len())
+  // The held entries, by the same per-entry step as the owner's (THE HELD TIMER)
+  var n = u64.from(sc.won.len());
+  k = 0usize;
+  while k < sc.held.len() {
+    let tok = sc.held[k];
+    k = k + 1usize;
+    if heldFire(ts, tok, now.nanos()) {
+      n = n + 1u64;
+    }
+  }
+  n
 }
 
 // The monitor's scratch for THE DEPUTY
 struct DeputyScratch {
   expiries: List[Expiry];
   won: List[usize];
+  held: List[u64];
 }
 
 fn deputyScratch() DeputyScratch {
-  DeputyScratch(List[Expiry](), List[usize]())
+  DeputyScratch(List[Expiry](), List[usize](), List[u64]())
 }
 
 // Every armed cell whose group is cancelled (an ancestor's cancel), answered
@@ -792,6 +840,8 @@ fn timersSweep(ts: *TimerStore) bool {
           cellCancelHere(ts, c);
           any = true;
         }
+      } else if (w & cellStateMask) == cellHeld && cellCancelled(c) {
+        any = heldEnd(c, w, lifeOf((*c).hword.load()), true) || any;
       }
     }
     ch = (*ch).next;
@@ -801,7 +851,7 @@ fn timersSweep(ts: *TimerStore) bool {
 
 // The stop's drop: every armed cell taken and its Reply let go unanswered
 fn timersDropAll(ts: *TimerStore) {
-  if (*ts).armed.load() == 0u64 {
+  if (*ts).armed.load() == 0u64 && (*ts).waiters.load() == 0u64 {
     return;
   }
   var ch = (*ts).chunks;
@@ -819,6 +869,8 @@ fn timersDropAll(ts: *TimerStore) {
           let r = cellReply(c);
           cellFree(ts, c);
         }
+      } else if (w & cellStateMask) == cellHeld {
+        heldDrop(c);
       }
     }
     ch = (*ch).next;
@@ -837,7 +889,7 @@ fn timersStop(s: *Sched) {
   while i < (*s).nworkers {
     let ts = timerStoreOf(i);
     if ts as usize != 0usize {
-      while (*ts).armed.load() != 0u64 {
+      while (*ts).armed.load() != 0u64 || (*ts).waiters.load() != 0u64 {
         wakeNamed(s, workerAt(s, i));
         thread.sleep(time.Duration.fromMicros(50i64));
       }
@@ -876,17 +928,28 @@ fn timersRunningNext(s: *Sched) i64 {
 
 // A TEST HOOK, not part of the API (aio's worker-timer tests): the workers'
 // timer counts summed: cells armed now, arms, fires, cancels (and sweeps)
-// answered, and cells dropped at the stop
+// answered, and cells dropped at the stop; and of the held timers (THE HELD
+// TIMER, the spec's counters), the cells held now, their entries in the wheels
+// now (live and dead), the earlier moves in place and across workers, the
+// refiles and the dead entries discarded
 pub struct TimerStats {
   pub armed: u64;
   pub arms: u64;
   pub fires: u64;
   pub cancels: u64;
   pub dropped: u64;
+  pub held: u64;
+  pub heldEntries: u64;
+  pub movesInPlace: u64;
+  pub movesAcross: u64;
+  pub refiles: u64;
+  pub deadEntries: u64;
 }
 
 pub fn timerStats() TimerStats {
-  var st = TimerStats(0u64, 0u64, 0u64, 0u64, 0u64);
+  var st = TimerStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  var ins = 0u64;
+  var outs = 0u64;
   let n = timerTableLen.load();
   var i = 0u32;
   while i < n {
@@ -897,10 +960,811 @@ pub fn timerStats() TimerStats {
       st.fires = st.fires + (*ts).fires.loadOrdered(MemOrder.Relaxed) + (*ts).deputyFires.loadOrdered(MemOrder.Relaxed);
       st.cancels = st.cancels + (*ts).cancels.loadOrdered(MemOrder.Relaxed);
       st.dropped = st.dropped + (*ts).dropped.loadOrdered(MemOrder.Relaxed);
+      st.held = st.held + (*ts).held.load();
+      ins = ins + (*ts).heldIn.loadOrdered(MemOrder.Relaxed);
+      outs = outs + (*ts).heldOut.loadOrdered(MemOrder.Relaxed);
+      st.movesInPlace = st.movesInPlace + (*ts).movesInPlace.loadOrdered(MemOrder.Relaxed);
+      st.movesAcross = st.movesAcross + (*ts).movesAcross.loadOrdered(MemOrder.Relaxed);
+      st.refiles = st.refiles + (*ts).refiles.loadOrdered(MemOrder.Relaxed);
+      st.deadEntries = st.deadEntries + (*ts).deadEntries.loadOrdered(MemOrder.Relaxed);
     }
     i = i + 1u32;
   }
+  st.heldEntries = if ins >= outs {ins - outs} else {0u64};
   st
+}
+
+// THE HELD TIMER (row 500; "aio and http"'s re-armable timer spec, 18 Nov
+// 2026). Timer is a Move value in an actor's state holding one deadline or
+// none, and, from its first set or next() on a worker, one HELD CELL of the
+// stores above for its whole life. The cell is the timer's home and belongs to
+// no worker but its store's (which frees it); only its live WHEEL ENTRY belongs
+// to a worker, the FILER, and that may be any worker's wheel. The program
+// loops on 'while await timer.next() { ... }' and sets the deadline after
+// each turn:
+//   - a LATER move is one store to 'want': the old entry comes up early at its
+//     filer, which sees the later 'want' and files it again (a refile), with no
+//     turn of the actor;
+//   - an EARLIER move on the filer cancels the entry and inserts it again in
+//     place (the wheel's free list reuses the entry just freed); on another
+//     worker it takes the word (one compare-and-swap) and files a new entry in
+//     its own wheel, the old one left DEAD for its wheel to discard when it
+//     comes up (it names an old move generation, or an old filer);
+//   - THE FIRE, at the filer's step (heldFire, the one per-entry step, which
+//     the deputy, timersDeputy, also calls for a stuck filer): due with a
+//     next() parked, the word goes from hWaiter to hInflight and an ARRIVE
+//     SLOT is published to the actor, the waiter's count with it; timerArrive
+//     then runs on the actor's own thread and decides again from 'want' there:
+//     due, the program resumes with true and the deadline is cleared; moved
+//     later or cleared since the filer looked, the waiter is put back and
+//     nothing runs. A next() that finds its deadline already passed publishes
+//     the same slot to itself, never an answer of true, since a set or clear
+//     queued to the actor before it runs first (tests/heldqueued.cone). So no
+//     resume is stale and none is doubled: only the winner
+//     of a CAS that clears hWaiter publishes, or answers;
+//   - the end: stop(), the group's cancel (Timer.within), or the Timer
+//     dropped, sets hEnded; a parked next() answers false (an arrive in flight
+//     answers false at its arrival), and so does every later one.
+// The word, 'hword': flags (below) in the low 16 bits, the filer's index in
+// bits 16-31, the MOVE GENERATION in 32-47 (each entry's token carries it, with
+// the cell's address and heldBit) and the LIFE in 48-63 (moved at each take;
+// the cell's Wakeup names it). 'hentry' is the filer's entry, written only by
+// whoever holds hBusy: a worker takes hBusy, with the filer's place, by the CAS
+// that makes it the filer or refiles there, and drops it once 'hentry' is
+// written; an earlier move that finds another worker's hBusy sets hMoved
+// instead, and that filer looks at 'want' again before it lets go. 'want' is
+// written by the holder alone, on the actor's thread; every hand-off of an
+// actor orders those stores before timerArrive's read.
+// A parked next() holds a count of its actor, as every await does, so an
+// actor with its loop parked lives until stop() or the cancel; one dropped with
+// no waiter frees the cell at its end (or, its arrive still in flight, leaves
+// that to timerArrive). Dead entries and a stale Wakeup find the cell's
+// generation or life moved, and cells are never unmapped. At THE STOP each
+// store's walk lets its parked waiters go unanswered, as it does armed sleeps.
+// Every wheel operation here runs on the wheel's owner, under THE WHEEL WORD,
+// except THE DEPUTY's (row 485): for a worker stuck in one turn the monitor
+// takes the due entries out and calls heldFire for the held ones, with the word
+// let go, so a refile there inserts in the stuck worker's wheel from the
+// monitor's thread. So every change the owner makes to a filed entry in its own
+// wheel first takes the entry by a CAS of 'hword' (hBusy, or clearing hFiled),
+// as a fire does, and the counts both add to are atomic adds.
+const hFiled = 1u64;       // an entry of the current move generation is in the filer's wheel
+const hWaiter = 2u64;      // a next() is parked: the cell holds its Reply
+const hInflight = 4u64;    // an arrive slot is on its way to the actor: the cell holds the Reply still
+const hEnded = 8u64;       // stopped, cancelled or dropped: next() answers false
+const hByGroup = 16u64;    // ... and it was the group's cancel
+const hBusy = 32u64;       // the filer is writing 'hentry'
+const hMoved = 64u64;      // an earlier move came while it was: the filer looks again
+const hGone = 128u64;      // the Timer was dropped with an arrive in flight: timerArrive frees the cell
+const hFilerMask = 0xFFFF0000u64;
+const hGenMask = 0xFFFF00000000u64;
+const hLifeMask = 0xFFFF000000000000u64;
+const heldBit = 1u64;                      // a held cell's token (a cell's address has its low three bits clear)
+const heldAddrMask = 0x0000FFFFFFFFFFF8u64;
+
+fn filerOf(w: u64) u64 {(w & hFilerMask) >> 16u64}
+fn genOf(w: u64) u64 {(w & hGenMask) >> 32u64}
+fn lifeOf(w: u64) u64 {(w & hLifeMask) >> 48u64}
+fn withFiler(w: u64, i: u32) u64 {(w & ~hFilerMask) | (u64.from(i) << 16u64)}
+
+fn genBumped(w: u64) u64 {
+  let g = genOf(w);
+  let n = if g == 0xFFFFu64 {0u64} else {g + 1u64};
+  (w & ~hGenMask) | (n << 32u64)
+}
+
+fn lifeBumped(w: u64) u64 {
+  let g = lifeOf(w);
+  let n = if g == 0xFFFFu64 {0u64} else {g + 1u64};
+  (w & ~hLifeMask) | (n << 48u64)
+}
+
+// A wheel entry's id as one word, and back
+fn idWord(id: TimerId) u64 {
+  if mem.sizeof[TimerId]() != 8usize {
+    die("actors: a TimerId is not one word");
+  }
+  var x = id;
+  mem.readRaw[u64](&mut x as *u64)
+}
+
+fn idOfWord(w: u64) TimerId {
+  var x = w;
+  mem.readRaw[TimerId](&mut x as *TimerId)
+}
+
+// This worker's index for comparing with a filer, or none
+fn hereIndex(ts: *TimerStore) u64 {
+  if ts as usize == 0usize {0xFFFFFFFFu64} else {u64.from((*ts).index)}
+}
+
+// A cell for a Timer, from this worker's store: its new life begun, its
+// group's Wakeup registered once for that life
+fn heldTake(xs: *TimerStore, g: &Option[CancelGroup], want: i64) *TimerCell {
+  let c = cellTake(xs);
+  let sw = ((*c).word.load() & ~cellStateMask) | cellHeld;
+  (*c).word.store(sw);
+  let hw = lifeBumped((*c).hword.load() & (hGenMask | hLifeMask));
+  (*c).hword.store(hw);
+  (*c).want.store(want);
+  (*c).hentry.store(0u64);
+  mem.writeRaw[Option[CancelGroup]](&(*c).group as *Option[CancelGroup], *g);
+  (*xs).held.add(1u64);
+  match (*c).group {
+    case let Some(gr) {
+      gr.watchHere(&HeldWake(c, sw, lifeOf(hw)));
+      gr.watchWorkerAbove((*xs).index, &WorkerWake((*xs).index));
+      // after the registrations, as timerStart's: a cancel before them is seen here
+      if gr.isCancelled() {
+        heldEnd(c, sw, lifeOf(hw), true);
+      }
+    }
+    else {}
+  }
+  c
+}
+
+// The cell freed at the end of its life: by its store's owner, or retired to it
+fn heldRelease(c: *TimerCell) {
+  let b = (*c).store;
+  (*b).held.sub(1u64);
+  if myTimers == b as usize {
+    cellFree(b, c);
+  } else {
+    cellRetire(c);
+  }
+}
+
+// An entry for the cell in this wheel, its token naming the move generation
+// 'gen'. 'fresh': not inside the fire step, so an empty wheel's now may be
+// brought up to date first (as timerStart does; the owner's alone, since it
+// uses the owner's scratch). Under THE WHEEL WORD: the deputy refiles here too
+fn heldInsert(ts: *TimerStore, c: *TimerCell, at: i64, gen: u64, fresh: bool) u64 {
+  wheelLock(ts);
+  let wh = &mut (*ts).wheel;
+  if fresh && wh.isEmpty() {
+    wh.expired(time.Instant.now(), &mut (*ts).expiries);
+    (*ts).expiries.clear();
+  }
+  let id = wh.insert(time.Instant.fromNanos(at), u64.from(c as usize) | (gen << 48u64) | heldBit);
+  if at < nextOf(ts) {
+    match wh.nextExpiry() {
+      case let Some(t) {(*ts).next.storeOrdered(t.nanos(), MemOrder.Relaxed);}
+      else {(*ts).next.storeOrdered(at, MemOrder.Relaxed);}
+    }
+  }
+  wheelUnlock(ts);
+  heldCount(&(*ts).heldIn);
+  idWord(id)
+}
+
+// A held entry cancelled in this wheel (under THE WHEEL WORD)
+fn heldCancelIn(ts: *TimerStore, idw: u64) {
+  wheelLock(ts);
+  let wh = &mut (*ts).wheel;
+  let out = wh.cancel(idOfWord(idw));
+  wheelUnlock(ts);
+  if out {
+    heldCount(&(*ts).heldOut);
+  }
+}
+
+// One more on a held count that the owner and the deputy both add to (an
+// atomic add, so neither's is lost; tally is the owner's alone)
+fn heldCount(n: &Atomic[u64]) {
+  n.addOrdered(1u64, MemOrder.Relaxed);
+}
+
+// The filer's part once it holds hBusy (its CAS made it the filer, or refiled
+// there): the entry inserted at 'at' and written, then hBusy dropped; an
+// earlier move that came meanwhile (hMoved) is looked at first
+fn heldInstall(ts: *TimerStore, c: *TimerCell, at0: i64, fresh: bool) {
+  var at = at0;
+  let gen = genOf((*c).hword.load());
+  var id = heldInsert(ts, c, at, gen, fresh);
+  (*c).hentry.store(id);
+  while true {
+    let w = (*c).hword.load();
+    if (w & hMoved) != 0u64 {
+      let seen, ok = (*c).hword.compareSwap(w, w & ~hMoved);
+      if ok {
+        let nw = (*c).want.load();
+        if nw < at {
+          heldCancelIn(ts, id);
+          at = nw;
+          id = heldInsert(ts, c, at, gen, fresh);
+          (*c).hentry.store(id);
+        }
+      }
+      continue;
+    }
+    let seen, ok = (*c).hword.compareSwap(w, w & ~hBusy);
+    if ok {
+      return;
+    }
+  }
+}
+
+// The deadline filed on this worker, if one is set and nothing is filed or in
+// flight (the holder, on the actor's thread)
+fn heldFileHere(xs: *TimerStore, c: *TimerCell) {
+  if xs as usize == 0usize {
+    return;
+  }
+  while true {
+    let w = (*c).hword.load();
+    if (w & (hEnded | hInflight | hFiled)) != 0u64 || (*c).want.load() == noDue {
+      return;
+    }
+    let seen, ok = (*c).hword.compareSwap(w, withFiler(genBumped(w), (*xs).index) | hFiled | hBusy);
+    if ok {
+      heldInstall(xs, c, (*c).want.load(), true);
+      return;
+    }
+  }
+}
+
+// set(at), the holder's
+fn heldSet(xs: *TimerStore, c: *TimerCell, at: i64) {
+  let old = (*c).want.load();
+  (*c).want.store(at);
+  if xs as usize == 0usize {
+    return;
+  }
+  let mine = u64.from((*xs).index);
+  while true {
+    let w = (*c).hword.load();
+    if (w & (hEnded | hInflight)) != 0u64 {
+      // ended; or a delivery is in flight, and timerArrive decides from 'want'
+      return;
+    }
+    if (w & hFiled) == 0u64 {
+      heldFileHere(xs, c);
+      return;
+    }
+    if at >= old {
+      // later: the filer refiles when the old entry comes up
+      return;
+    }
+    if (w & hBusy) != 0u64 {
+      // the filer is filing it now (another worker, or the deputy refiling in
+      // this wheel): it looks at 'want' again before it lets go
+      let seen, ok = (*c).hword.compareSwap(w, w | hMoved);
+      if ok {
+        if filerOf(w) == mine {
+          tally(&(*xs).movesInPlace, 1u64);
+        } else {
+          tally(&(*xs).movesAcross, 1u64);
+        }
+        return;
+      }
+      continue;
+    }
+    if filerOf(w) == mine {
+      // earlier, in place: cancel and insert in this wheel. The entry is taken
+      // first (hBusy, and a new move generation), since the deputy may fire this
+      // wheel's entries meanwhile: one it has out already is then dead
+      let seen, ok = (*c).hword.compareSwap(w, genBumped(w) | hBusy);
+      if ok {
+        heldCancelIn(xs, (*c).hentry.load());
+        tally(&(*xs).movesInPlace, 1u64);
+        heldInstall(xs, c, at, true);
+        return;
+      }
+      continue;
+    }
+    // earlier, on another worker: this one becomes the filer; the old entry is dead
+    let seen, ok = (*c).hword.compareSwap(w, withFiler(genBumped(w), (*xs).index) | hBusy);
+    if ok {
+      tally(&(*xs).movesAcross, 1u64);
+      heldInstall(xs, c, at, true);
+      return;
+    }
+  }
+}
+
+// clear(), the holder's: no deadline; an entry in this wheel is cancelled in
+// place, one elsewhere is left to come up and find none
+fn heldClear(xs: *TimerStore, c: *TimerCell) {
+  (*c).want.store(noDue);
+  let mine = hereIndex(xs);
+  while true {
+    let w = (*c).hword.load();
+    if (w & hFiled) == 0u64 || (w & hBusy) != 0u64 || filerOf(w) != mine {
+      return;
+    }
+    let seen, ok = (*c).hword.compareSwap(w, w & ~hFiled);
+    if ok {
+      heldCancelIn(xs, (*c).hentry.load());
+      return;
+    }
+  }
+}
+
+// stop(), the holder's: ended; a parked next() answered false (to this very
+// actor, which is running, so nothing is woken)
+fn heldStop(xs: *TimerStore, c: *TimerCell) {
+  (*c).want.store(noDue);
+  let mine = hereIndex(xs);
+  while true {
+    let w = (*c).hword.load();
+    if (w & hEnded) != 0u64 {
+      return;
+    }
+    var nw = w | hEnded;
+    let take = (w & hWaiter) != 0u64 && (w & hInflight) == 0u64;
+    if take {nw = nw & ~hWaiter;}
+    let here = (w & hFiled) != 0u64 && (w & hBusy) == 0u64 && filerOf(w) == mine;
+    if here {nw = nw & ~hFiled;}
+    let seen, ok = (*c).hword.compareSwap(w, nw);
+    if ok {
+      if here {
+        heldCancelIn(xs, (*c).hentry.load());
+      }
+      if take {
+        (*(*c).store).waiters.sub(1u64);
+        var r = cellReply(c);
+        answerNowIn[bool](&mut r, false);
+      }
+      return;
+    }
+  }
+}
+
+// The end by the group's cancel (its Wakeup, any thread, or the sweep for an
+// ancestor's), for the cell's life 'life' while its word is still 'sw': a
+// parked next() is answered false here, as a cell's cancel answers on the
+// cancelling thread
+fn heldEnd(c: *TimerCell, sw: u64, life: u64, byGroup: bool) bool {
+  while true {
+    if (*c).word.load() != sw {
+      return false;
+    }
+    let w = (*c).hword.load();
+    if lifeOf(w) != life || (w & hEnded) != 0u64 {
+      return false;
+    }
+    var nw = w | hEnded;
+    if byGroup {nw = nw | hByGroup;}
+    let take = (w & hWaiter) != 0u64 && (w & hInflight) == 0u64;
+    if take {nw = nw & ~hWaiter;}
+    let seen, ok = (*c).hword.compareSwap(w, nw);
+    if ok {
+      if take {
+        (*(*c).store).waiters.sub(1u64);
+        (*(*c).store).cancels.addOrdered(1u64, MemOrder.Relaxed);
+        var r = cellReply(c);
+        answerNowIn[bool](&mut r, false);
+      }
+      return true;
+    }
+  }
+  false
+}
+
+// A held cell's Wakeup in its group's registry (watchHere), for one life of
+// the cell. Sendable on trust, as CellWake is: the cell is never freed
+struct HeldWake is Sendable {
+  cell: *TimerCell;
+  word: u64;
+  life: u64;
+
+  pub fn signal(self: &) bool {
+    if timersStopped.load() != 0u32 {
+      return false;
+    }
+    heldEnd(cell, word, life, true)
+  }
+
+  pub fn isGone(self: &) bool {(*cell).word.load() != word}
+}
+
+// THE STOP's walk, for a held cell of this store: a parked next() let go
+// unanswered (its count, its group note and its operation, as Reply.final does)
+fn heldDrop(c: *TimerCell) {
+  while true {
+    let w = (*c).hword.load();
+    if (w & hWaiter) == 0u64 {
+      return;
+    }
+    let seen, ok = (*c).hword.compareSwap(w, (w & ~hWaiter) | hEnded);
+    if ok {
+      (*(*c).store).waiters.sub(1u64);
+      (*(*c).store).dropped.addOrdered(1u64, MemOrder.Relaxed);
+      let r = cellReply(c);
+      return;
+    }
+  }
+}
+
+// THE FIRE for one held entry that came up in this wheel (the owner's step, and
+// THE DEPUTY's for a stuck owner, each with the wheel's word let go). Dead (an
+// old filer, move generation or life): discarded. Ended or no deadline: nothing
+// filed. Moved later: filed again here. Due with a waiter: the arrive slot
+// published. Due with none: nothing filed, and the next next() answers at once.
+// True if it published
+fn heldFire(ts: *TimerStore, tok: u64, now: i64) bool {
+  heldCount(&(*ts).heldOut);
+  let c = usize.from(tok & heldAddrMask) as *TimerCell;
+  let tg = tok >> 48u64;
+  let mine = u64.from((*ts).index);
+  if ((*c).word.load() & cellStateMask) != cellHeld {
+    heldCount(&(*ts).deadEntries);
+    return false;
+  }
+  while true {
+    let w = (*c).hword.load();
+    if (w & hFiled) == 0u64 || (w & hBusy) != 0u64 || filerOf(w) != mine || genOf(w) != tg {
+      heldCount(&(*ts).deadEntries);
+      return false;
+    }
+    let want = (*c).want.load();
+    if (w & hEnded) != 0u64 || want == noDue {
+      let seen, ok = (*c).hword.compareSwap(w, w & ~hFiled);
+      if ok {
+        return false;
+      }
+    } else if want > now {
+      let seen, ok = (*c).hword.compareSwap(w, genBumped(w) | hBusy);
+      if ok {
+        heldCount(&(*ts).refiles);
+        heldInstall(ts, c, want, false);
+        return false;
+      }
+    } else if (w & hWaiter) != 0u64 {
+      let seen, ok = (*c).hword.compareSwap(w, (w & ~(hFiled | hWaiter)) | hInflight);
+      if ok {
+        (*(*c).store).waiters.sub(1u64);
+        heldPublish(c);
+        return true;
+      }
+    } else {
+      let seen, ok = (*c).hword.compareSwap(w, w & ~hFiled);
+      if ok {
+        return false;
+      }
+    }
+  }
+  false
+}
+
+// The arrive slot, published to the waiting actor as pushFuture publishes a
+// future's: its resume function timerArrive, its id the cell. The count the
+// waiter's Reply held goes with it (the scheduler's owner, or let go)
+fn heldPublish(c: *TimerCell) {
+  let h = (*c).reply.to;
+  // THE STOP'S GATE, for a plain thread (a deputy): refused, the waiter is let go unanswered
+  let plain = me == 0usize && stopperHere == 0usize;
+  if plain && !gateEnter() {
+    refuseSend(0u64);
+    let r = cellReply(c);
+    return;
+  }
+  if running.load() == 0usize {
+    die("actors: a timer's fire after the runtime stopped");
+  }
+  let cl = claim(h);
+  var cause = 0u64;
+  if traceLayerOn(traceLayerActors) {
+    cause = traceSend(h, traceKindReply);
+  }
+  mem.atomicStore[u64](ccause(cl.slot), cause, MemOrder.Relaxed);
+  let p = payloadOf(cl.slot);
+  var rf = &timerArrive;
+  *(p as **u8) = mem.readRaw[*u8](&mut rf as *(*u8));
+  *((p + 8usize) as *u64) = u64.from(c as usize);
+  *((p + replyHead) as **u8) = null;
+  let waited = publish(cl, kindReply + 1u64);
+  if wakeAfter(h, cl, waited) {
+    schedule(h);
+  } else {
+    let release = (*h).release;
+    release(h);
+  }
+  if plain {
+    gateLeave();
+  }
+}
+
+// The arrive slot reached the actor (its resume function; 'id' is the cell).
+// The decision is made again here, on the holder's thread: ended, false; due,
+// the deadline cleared and true; otherwise the waiter put back (a count of the
+// actor taken for it again), the deadline filed here if one is set, and the
+// program sees nothing
+fn timerArrive(st: *u8, id: u64, data: *u8) {
+  let c = usize.from(id) as *TimerCell;
+  while true {
+    let w = (*c).hword.load();
+    if (w & hEnded) != 0u64 {
+      let seen, ok = (*c).hword.compareSwap(w, w & ~hInflight);
+      if ok {
+        heldResume(st, c, false);
+        if (w & hGone) != 0u64 {
+          heldRelease(c);
+        }
+        return;
+      }
+      continue;
+    }
+    let want = (*c).want.load();
+    if want != noDue && want <= time.Instant.now().nanos() {
+      let seen, ok = (*c).hword.compareSwap(w, w & ~hInflight);
+      if ok {
+        (*c).want.store(noDue);
+        heldResume(st, c, true);
+        return;
+      }
+      continue;
+    }
+    let h = (*c).reply.to;
+    holdHeader(h);
+    (*(*c).store).waiters.add(1u64);
+    let seen, ok = (*c).hword.compareSwap(w, (w & ~hInflight) | hWaiter);
+    if ok {
+      heldFileHere(timersHere(), c);
+      return;
+    }
+    (*(*c).store).waiters.sub(1u64);
+    let release = (*h).release;
+    release(h);
+  }
+}
+
+// What the program's resume needs of the waiter's Reply, which is spent here:
+// its count went with the arrive slot, and its operation is counted spent
+struct HeldRun {
+  run: *u8;
+  id: u64;
+  hasId: bool;
+}
+
+fn heldSpend(c: *TimerCell) HeldRun {
+  var r = cellReply(c);
+  let hr = HeldRun(r.at, r.id, (r.meta & replyHasId) != 0u64);
+  spend(&mut r);
+  hr
+}
+
+// The program resumed with v, as a reply's slot resumes it (resumeSlot): the
+// seam's resume function called directly, the value on this stack, in the
+// group noted at its await
+fn heldResume(st: *u8, c: *TimerCell, v: bool) {
+  let hr = heldSpend(c);
+  var val = v;
+  let data = &mut val as *bool as *u8;
+  if (hr.id & groupBit) == 0u64 {
+    heldCall(hr.run, st, hr.hasId, hr.id, data);
+    return;
+  }
+  let node = usize.from(hr.id ^ groupBit) as *GNode;
+  groupTake(node);
+  let w = (*node).w;
+  let g = mem.readRaw[CancelGroup](&(*node).g as *CancelGroup);
+  libc.free(node as *u8);
+  curGroup = &g as *CancelGroup as usize;
+  heldCall(hr.run, st, hr.hasId, w, data);
+  curGroup = 0usize;
+}
+
+fn heldCall(run: *u8, st: *u8, hasId: bool, id: u64, data: *u8) {
+  var f = run;
+  if hasId {
+    let fp = mem.readRaw[&fn(s: *u8, id: u64, data: *u8)](&mut f as *(&fn(s: *u8, id: u64, data: *u8)));
+    fp(st, id, data);
+  } else {
+    let fp = mem.readRaw[&fn(s: *u8, data: *u8)](&mut f as *(&fn(s: *u8, data: *u8)));
+    fp(st, data);
+  }
+}
+
+// next()'s start, at the seam (on the actor's worker): ended, false at once;
+// due, an arrive slot published to the actor at once, as the fire publishes
+// one, so that timerArrive decides again when it is reached (a set or clear
+// already queued to the actor runs before it, and a resume of true then would
+// be stale); otherwise the Reply kept and the waiter set, and the deadline
+// filed here if it is set and nothing is filed
+fn heldStart(ctx: *u8, rp: Reply) {
+  let c = ctx as *TimerCell;
+  var r = rp;
+  let xs = timersHere();
+  if xs as usize == 0usize || timersStopped.load() != 0u32 {
+    // the stop has begun: let go unanswered, as a sleep is
+    return;
+  }
+  let w0 = (*c).hword.load();
+  if (w0 & (hWaiter | hInflight)) != 0u64 {
+    die("actors: a Timer's next() awaited while another is");
+  }
+  if (w0 & hEnded) != 0u64 {
+    answerNowIn[bool](&mut r, false);
+    return;
+  }
+  let want = (*c).want.load();
+  if want != noDue && want <= time.Instant.now().nanos() {
+    // nothing stays filed while the slot is in flight, as at the fire: an
+    // entry here is cancelled, one elsewhere left dead (hFiled cleared, a new
+    // move generation), once any filer writing it (hBusy) is done
+    mem.writeRaw[Reply](&(*c).reply as *Reply, r);
+    let mine = hereIndex(xs);
+    while true {
+      let w = (*c).hword.load();
+      if (w & hBusy) != 0u64 {
+        yieldProcessor();
+        continue;
+      }
+      let here = (w & hFiled) != 0u64 && filerOf(w) == mine;
+      let seen, ok = (*c).hword.compareSwap(w, (genBumped(w) & ~hFiled) | hInflight);
+      if ok {
+        if here {
+          heldCancelIn(xs, (*c).hentry.load());
+        }
+        break;
+      }
+    }
+    heldPublish(c);
+    return;
+  }
+  mem.writeRaw[Reply](&(*c).reply as *Reply, r);
+  (*(*c).store).waiters.add(1u64);
+  while true {
+    let w = (*c).hword.load();
+    if (w & hEnded) != 0u64 {
+      (*(*c).store).waiters.sub(1u64);
+      var back = cellReply(c);
+      answerNowIn[bool](&mut back, false);
+      return;
+    }
+    let seen, ok = (*c).hword.compareSwap(w, w | hWaiter);
+    if ok {
+      break;
+    }
+  }
+  heldFileHere(xs, c);
+}
+
+// next()'s Awaitable dying unawaited: the cell is the Timer's, so nothing
+fn heldNoDrop(ctx: *u8) {}
+
+// The Timer gone (its final): ended, its entry here cancelled, a parked next()
+// answered false (the Timer was replaced or dropped by its own actor while its
+// loop waited), and the cell freed, or, with an arrive in flight, left for
+// timerArrive to free
+fn heldFinal(c: *TimerCell) {
+  let ts = myTimers as *TimerStore;
+  let mine = hereIndex(ts);
+  var here = false;
+  var take = false;
+  var flying = false;
+  while true {
+    let w = (*c).hword.load();
+    if (w & hBusy) != 0u64 {
+      // another worker, or the deputy refiling in this wheel, is writing the
+      // entry: a few instructions (the cell must not be freed under it)
+      yieldProcessor();
+      continue;
+    }
+    take = (w & hWaiter) != 0u64 && (w & hInflight) == 0u64;
+    here = (w & hFiled) != 0u64 && filerOf(w) == mine;
+    flying = (w & hInflight) != 0u64;
+    var nw = genBumped(w | hEnded) & ~hWaiter;
+    if here {nw = nw & ~hFiled;}
+    if flying {nw = nw | hGone;}
+    let seen, ok = (*c).hword.compareSwap(w, nw);
+    if ok {
+      break;
+    }
+  }
+  if here {
+    heldCancelIn(ts, (*c).hentry.load());
+  }
+  if take {
+    (*(*c).store).waiters.sub(1u64);
+    var r = cellReply(c);
+    answerNowIn[bool](&mut r, false);
+  }
+  if !flying {
+    heldRelease(c);
+  }
+}
+
+// A re-armable timer, held in an actor's state for the actor's life (THE HELD
+// TIMER, above): one deadline or none, and a loop on 'while await
+// timer.next() { ... }' that resumes once each time the deadline comes. Move,
+// since a copy would give the cell two holders; not Sendable, since its
+// deadline is written by its actor alone. Its methods are the actor's: call
+// them from its behaviours (set and clear may also be called before the first
+// behaviour, off the workers; the cell is then taken at the first on a worker)
+pub struct Timer is Move {
+  cell: *TimerCell = null;
+  group: Option[CancelGroup] = None;
+  pend: i64 = noDue;          // the deadline while there is no cell
+  stopped: bool = false;
+
+  // No deadline; nothing is taken until the first set or next() on a worker
+  pub fn make() Timer {
+    Timer()
+  }
+
+  // The same, ended by g's cancel (or its deadline's): a parked next() then
+  // answers false, and cause() says why
+  pub fn within(g: &CancelGroup) Timer {
+    Timer(group: Some[CancelGroup](*g))
+  }
+
+  // The one deadline, replacing any: later, a store; earlier, a move of its
+  // wheel entry. One already past fires at this worker's next step
+  pub fn set(self: &mut, at: time.Instant) {
+    let xs = timersHere();
+    if self.cell as usize == 0usize {
+      self.pend = at.nanos();
+      if xs as usize == 0usize || self.stopped {
+        return;
+      }
+      self.cell = heldTake(xs, &self.group, self.pend);
+      heldFileHere(xs, self.cell);
+      return;
+    }
+    heldSet(xs, self.cell, at.nanos());
+  }
+
+  // No deadline. A parked next() stays parked
+  pub fn clear(self: &mut) {
+    self.pend = noDue;
+    if self.cell as usize == 0usize {
+      return;
+    }
+    heldClear(timersHere(), self.cell);
+  }
+
+  // Ended: a parked next() answers false, and so does every later one
+  pub fn stop(self: &mut) {
+    self.stopped = true;
+    self.pend = noDue;
+    if self.cell as usize == 0usize {
+      return;
+    }
+    heldStop(timersHere(), self.cell);
+  }
+
+  // The deadline set, if any
+  pub fn deadline(self: &) Option[time.Instant] {
+    let d = if self.cell as usize == 0usize {self.pend} else {(*self.cell).want.load()};
+    if d == noDue {None} else {Some[time.Instant](time.Instant.fromNanos(d))}
+  }
+
+  // Wait for the deadline: true when it has come (and it is cleared), false
+  // once the timer has ended. One next() may be parked at a time
+  pub fn next(self: &mut) Awaitable[bool] {
+    if self.cell as usize == 0usize {
+      let xs = timersHere();
+      if xs as usize == 0usize {
+        die("actors: a Timer's next() off the workers");
+      }
+      self.cell = heldTake(xs, &self.group, self.pend);
+      if self.stopped {
+        heldStop(xs, self.cell);
+      }
+    }
+    Awaitable[bool].of(self.cell as *u8, &heldStart, &heldNoDrop)
+  }
+
+  // Why it ended by its group (Cancelled or TimedOut); None if it has not, or
+  // was stopped first
+  pub fn cause(self: &) Option[Cause] {
+    if self.cell as usize == 0usize || ((*self.cell).hword.load() & hByGroup) == 0u64 {
+      return None;
+    }
+    match self.group {
+      case let Some(g) {g.cause()}
+      else {None}
+    }
+  }
+
+  fn final(self: &uni) {
+    if cell as usize != 0usize {
+      heldFinal(cell);
+    }
+  }
 }
 
 // A TEST HOOK, not part of the API (tests/sweepatstop.cone): ask worker i for a sweep as WorkerWake.signal does,
