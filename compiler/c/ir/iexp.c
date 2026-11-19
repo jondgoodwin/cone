@@ -239,7 +239,7 @@ INode *iexpCoerceType(INode *from, INode *totypedcl) {
     if (iexpIsBorrowType(fromtype))
         scope = ((RefNode*)fromtype)->scope;
     else if ((fromtype->tag == RefTag || fromtype->tag == VirtRefTag) && iexpIsLval(from)) {
-        INode *lvalperm;
+        INode *lvalperm = (INode*)immPerm;
         iexpGetLvalInfo(from, &lvalperm, &scope);
     }
     if (scope == 0)
