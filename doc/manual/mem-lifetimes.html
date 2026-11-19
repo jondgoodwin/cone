@@ -307,6 +307,34 @@ fn mine() i64 {
 		says: <span class="pre">struct Pin['a] { at: &amp;'a i64; }</span>. A borrow of a global the arguments carried
 		is still carried, so the global is not changed while the value is used.</p>
 
+	<h3 id="rawstore">Storing through a raw pointer</h3>
+	<p>A raw pointer carries no lifetime of its own, but a borrow stored through one is still checked, by the type of
+		the place stored into. This holds wherever the pointer comes from (a parameter, a local, a field, or a
+		function's result), and for <span class="pre">*p</span>, <span class="pre">p.r</span>,
+		<span class="pre">(*p)[i]</span> and <span class="pre">swap</span> alike. A type that names no lifetime, like
+		<span class="pre">Cell</span> below, is read as <span class="pre">'static</span>, so a borrow stored there must be
+		global, and a borrow the caller lent is refused. Wrapping the store in
+		<a href="safe-trust.html"><span class="pre">trust</span></a> vouches that the pointer is valid, not that what is
+		stored through it lasts, so it would not lift the check (<span class="pre">trust { }</span> does not parse yet,
+		so this cannot be tried today).</p>
+	<p>A reference is global when what it refers to is known at compile time to exist for the whole program. A
+		compiled program's functions do, so a <span class="pre">&amp;fn</span> is global wherever it came from, a
+		parameter included, and may be stored through a pointer. A closure reference
+		<span class="pre">&amp;&lt;fn</span> refers to a closure the caller owns, which may die first, so it is still a
+		borrow and is refused. (Code made at run time and later freed will not have that guarantee.)</p>
+<pre>
+struct Cell { n: i32; r: &amp;i32; c: &amp;&lt;fn(); hook: &amp;fn(); }
+fn cell() *Cell { null as *Cell }
+fn hk() {}
+
+fn set(p: *Cell, x: &amp;i32, c: &amp;&lt;fn(), f: &amp;fn()) {
+  (*p).r = x;               // **ERROR** 1013: lval outlives the borrowed reference you are storing
+  (*cell()).c = c;          // **ERROR** 1013: lval outlives the borrowed reference you are storing
+  (*p).hook = f;            // Ok: a &amp;fn is global, even as a parameter
+  (*cell()).hook = &amp;hk;     // Ok: a named function is global
+}
+</pre>
+
 	<h3 id="traitimpl">Implementing a trait</h3>
 	<p>A trait's implementation may promise more than the trait does: a result of <span class="pre">'static</span> or
 		of a longer lifetime, and a parameter of any lifetime where the trait's is <span class="pre">'static</span>. A call
