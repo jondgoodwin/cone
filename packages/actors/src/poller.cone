@@ -429,6 +429,9 @@ fn portArm(p: *WorkerPort, until: i64, now: i64) u32 {
         (*p).armedFor.storeOrdered(until, MemOrder.Relaxed);
         if (*p).associated.load() == 0u32 {
           let f = (*p).associate as *u8 as NtAssociatePacket;
+          // 'already' is not needed: a timer already signalled still has its
+          // packet queued at once, the flag set besides (probed on Windows 11
+          // 26200, lane 731: both timer kinds, the flag asked or not)
           var already = 0u8;
           if f((*p).packet, (*p).handle, (*p).timer, portKeyTimer as *u8, null, 0i32, 0usize, &mut already as *u8) == 0i32 {
             (*p).associated.store(1u32);
@@ -465,9 +468,18 @@ fn portWait(p: *WorkerPort, ms: u32) u32 {
 }
 
 // The entries taken: the port's own handled, the rest to the events hook.
-// 'holder' is false for a poll by a thread without the role: a break or a
-// timer entry it took may have been meant for a poller that has the role now,
-// which then gets a break of its own. True when the hook answered anything
+// A break or a timer entry taken may have been meant for a poller that has the
+// role now, which then gets a break of its own. That holds for the holder's
+// own wait too, which lets go of the role before it comes here: between the
+// letting go and the clearing of 'breakPending' another worker can take the
+// role and park, and a notifier's break for it finds the flag still set and
+// posts nothing (on Linux the eventfd's read here would drain it besides).
+// The clearing (SeqCst) comes before the role's read below, the notifier's
+// role read before its swap: either the swap comes after the clearing and
+// posts, or the read here sees the new poller and breaks it. A break nobody
+// needed sends that poller round its loop once. 'holder' says the wait was
+// the role holder's, for the test hook only (place 6, before the clearing:
+// tests/pollerhandover.cone). True when the hook answered anything
 fn portTake(p: *WorkerPort, got: u32, holder: bool) bool {
   (*p).entries.addOrdered(u64.from(got), MemOrder.Relaxed);
   let buf = entriesHere(p);
@@ -479,6 +491,7 @@ fn portTake(p: *WorkerPort, got: u32, holder: bool) bool {
       let e = (buf as *PortEntry) + usize.from(k);
       let key = (*e).key;
       if key == portKeyBreak {
+        if holder {portTakeHold();}
         (*p).breakPending.store(0u32);
         own = true;
       } else if key == portKeyTimer {
@@ -494,6 +507,7 @@ fn portTake(p: *WorkerPort, got: u32, holder: bool) bool {
       if (*e).hi == 0u32 && (*e).lo == portDatumBreak {
         var counter = 0u64;
         portSysRead(i32.from((*p).wake), &mut counter as *u8, 8usize);
+        if holder {portTakeHold();}
         (*p).breakPending.store(0u32);
         own = true;
       } else if (*e).hi == 0u32 && (*e).lo == portDatumTimer {
@@ -512,6 +526,16 @@ fn portTake(p: *WorkerPort, got: u32, holder: bool) bool {
     portBreak(p);
   }
   answered
+}
+
+// The test hook's sixth place (holdNextPark, actors.cone): the role's holder
+// back from its wait with a break, the role let go, before 'breakPending' is
+// cleared (on Linux after the eventfd's read). Off, two relaxed loads
+fn portTakeHold() {
+  let s = running.loadOrdered(MemOrder.Relaxed) as *Sched;
+  if s as usize != 0usize && me != 0usize && (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
+    parkHoldHere(s, me as *Worker, 6u32);
+  }
 }
 
 fn portHook(a: usize, b: usize, n: u32) bool {
