@@ -70,6 +70,9 @@
 //     sharedTables()   tables made and not yet freed
 //     Shared.none()  issueNot issueDone issuePending    a receive or send issued off the loop's thread
 //     core.isIssued()                                    (WORKER-SIDE ISSUE)//
+//   lp.setWorkerPort(port)              UDP sockets bound after it wait on the caller's port  (UDP ON THE WORKER PORT)
+//     sh.issueWaiting(p)  sh.udpReady(index, gen, events, out)  sh.udpCompleted(p, bytes, out)
+//     sh.endWaiting(h, p, id, why, out)  sh.holdSends(h, on)
 //   Op.Connect(addr)  Op.Accept(listener)                   (OPERATIONS)
 //   Op.Recv(sock, buf)  Op.RecvReady(sock)  Op.Send(sock, buf)  Op.SendBytes(sock, bytes)
 //   Op.SendChain(sock, bufs)            several buffers, one send (a gather)
@@ -619,6 +622,35 @@
 // outlives its loop for as long as a Shared is held (a thread that looks after
 // the loop died finds every entry unpublished), and the last holder to let go
 // frees it; 'sharedTables()' is how many are made and not yet freed.
+//
+// UDP ON THE WORKER PORT (shared.cone), behind a switch that is off. 'lp.setWorkerPort(port)'
+// names a port that is the caller's: Linux, an epoll descriptor; Windows, a completion port.
+// A UDP socket bound afterwards (Windows: one that skips the port on success; any other is
+// bound as ever) is registered there and not with the Loop's, and every datagram operation
+// on it goes through the shared table: the Loop answers one it is asked to start Failed,
+// InvalidInput, as for a handle that names nothing. A receive or send the socket will not
+// take at once is not given to the Loop: 'sh.issueWaiting(p)', with no lock held, takes the
+// entry exclusive, tries once more and lists the record in the entry (receives and sends
+// each in order of arrival; the lists change only under the exclusive lock). The shared try
+// 'sh.issue' already answers anything it can do on a worker-side socket, but on Windows it
+// leaves every receive to issueWaiting (the receive may go pending, and listing it must
+// leave no gap in which its completion could come first), and on Linux a new send is not
+// tried while sends are waiting on the socket, so a send never overtakes the one the socket
+// would not take. issueWaiting answers issueDone (the record is answered, in it), issuePending
+// (listed: the table's, until one of the calls below answers it, exactly once), or issueNot
+// (not a datagram operation on a worker-side socket: the Loop's way). Whoever waits on the
+// port gives what it takes to the table, and receives the records answered in 'out', a list
+// of the caller's (each in the state done, its buffer and batch in it, to be answered on):
+// Linux, 'sh.udpReady(index, gen, events, out)' for an epoll event (its datum is the entry
+// and generation in its two words) tries the waiting receives and sends in order, while each
+// takes; Windows, 'sh.udpCompleted(p, bytes, out)' for a completion (its OVERLAPPED is the
+// record) answers it from its status, as the Loop answers a completion. 'sh.endWaiting(h, p,
+// id, why, out)' ends a record on its deadline (why = diag.outcomeTimedOut) or a cancel: Linux
+// answers it at once; Windows asks the kernel to abort it, and the abort's completion
+// answers it, with no grace and no abandoning, so the batch comes back on every path.
+// 'lp.close(h)' answers what still waits on h Cancelled (Linux, on the Loop; Windows, the
+// aborted completions come to the port). 'sh.holdSends(h, on)' is for tests (Linux).
+// Not yet used by aio (a later change).
 //
 // DIAGNOSTICS. 'lp.counters()' copies the loop's counts out, a
 // diag.Counters; submitted = delivered + in flight at every moment. With
