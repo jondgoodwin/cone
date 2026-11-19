@@ -521,7 +521,19 @@ represented; this section is what they must add up to.
   names them apart and writes the where clause. Nothing about elision forbids a
   store.
 - **Raw pointers** carry no lifetime. A reference made from one is outside both
-  checks, and `trust` vouches for it.
+  checks, and `trust` vouches for it. A *store* through one is checked, by the
+  place's type, as Rust does (Jon, 18 Nov 2026): the holder is what the pointer
+  points at, wherever the pointer is held (a parameter, a local, a field, another
+  pointer, a call's result), and a type that names no lifetime (`*Cell`) is read as
+  global. A borrow stored there must be global too, or the store is refused (1013).
+- **A reference has the global lifetime when what it refers to is known at compile
+  time to exist for the whole program** (Jon, 19 Nov 2026; design principles, §7).
+  Globals and a statically compiled program's functions have that, so a `&fn` is
+  global wherever it came from (a parameter, a local, a field, a call's result), and
+  may be stored anywhere, including through a raw pointer. A closure reference
+  (`&<fn`) borrows a closure the caller owns, so it keeps the lifetime its path
+  gives it. Code made at run time (parsed into memory and later freed) will not have
+  that guarantee, and will need a lifetime when Cone can express one.
 
 **Where it is not yet enforced** (each a check against the contract that does
 not happen today):
