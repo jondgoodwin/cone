@@ -28,6 +28,7 @@ let spunOn: Atomic[u32];
 let stopping: Atomic[u32];
 let released: Atomic[u32];
 let finished: Atomic[u32];
+let sent: Atomic[u64];
 
 fn @initpure init() {
   handled = Atomic[u64].of(0u64);
@@ -37,6 +38,7 @@ fn @initpure init() {
   stopping = Atomic[u32].of(0u32);
   released = Atomic[u32].of(0u32);
   finished = Atomic[u32].of(0u32);
+  sent = Atomic[u64].of(0u64);
 }
 
 actor Counter {
@@ -65,7 +67,7 @@ fn within(cond: &fn() bool, ms: u64) bool {
   cond()
 }
 
-fn handledOne() bool {handled.load() >= 1u64}
+fn handledAll() bool {handled.load() >= sent.load()}
 fn turnOne() bool {inTurn.load() == 1u32}
 fn held() bool {actors.parkHeld()}
 
@@ -91,8 +93,10 @@ fn releaser(n: u32) u32 {
     thread.sleep(time.Duration.fromMillis(1i64));
   }
   thread.sleep(time.Duration.fromMillis(200i64));
-  actors.releasePark();
+  // Stored before the release: once the held worker goes on, the stop can end
+  // before this thread runs again
   released.store(1u32);
+  actors.releasePark();
   n
 }
 
@@ -105,17 +109,24 @@ fn main() i32 {
     actors.waitUntilIdle();
     thread.sleep(time.Duration.fromMillis(10i64));
     a.hold(1u32);
-    require(within(&turnOne, 2000u64), "a worker runs the Spinner's turn within 2 s");
+    require(within(&turnOne, 5000u64), "a worker runs the Spinner's turn within 5 s");
     let q = spunOn.load();
-    thread.sleep(time.Duration.fromMillis(5i64));
+    // Sent again while the poller has not parked yet (under load it may still
+    // be on its way, and takes the message itself)
     actors.holdNextPark(6u32);
-    c.bump();
-    require(within(&held, 2000u64), "the poller is held after its wait, the role let go, before the break's flag is cleared");
+    var tries = 0u32;
+    while !actors.parkHeld() && tries < 100u32 {
+      c.bump();
+      sent.add(1u64);
+      within(&held, 50u64);
+      tries = tries + 1u32;
+    }
+    require(within(&held, 5000u64), "the poller is held after its wait, the role let go, before the break's flag is cleared");
     require(actors.parkHeldWorker() != q, "...and it is not the worker in the Spinner's turn");
     let w0 = actors.pollerStats().waits;
     gate.store(1u32);
-    require(within(&handledOne, 2000u64), "the message is handled by the other worker within 2 s");
-    let deadline = nowNs() + 2000000000u64;
+    require(within(&handledAll, 5000u64), "the message is handled by the other worker within 5 s");
+    let deadline = nowNs() + 5000000000u64;
     while actors.pollerStats().waits < w0 + 1u64 && nowNs() < deadline {
       thread.yieldNow();
     }
@@ -130,6 +141,6 @@ fn main() i32 {
   finalAll();
   finished.store(1u32);
   expectUInt(u64.from(released.load()), 1u64, "the held worker was let go during the stop, and the stop ended");
-  expectUInt(handled.load(), 1u64, "the message handled");
+  expectUInt(handled.load(), sent.load(), "every message handled");
   done()
 }

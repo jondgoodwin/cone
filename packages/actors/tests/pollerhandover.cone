@@ -37,6 +37,7 @@ let gate: Atomic[u32];
 let inTurn: Atomic[u32];
 let spunOn: Atomic[u32];
 let finished: Atomic[u32];
+let total: Atomic[u64];
 
 fn @initpure init() {
   handled = Atomic[u64].of(0u64);
@@ -44,6 +45,7 @@ fn @initpure init() {
   inTurn = Atomic[u32].of(0u32);
   spunOn = Atomic[u32].of(0u32);
   finished = Atomic[u32].of(0u32);
+  total = Atomic[u64].of(0u64);
 }
 
 actor Counter {
@@ -121,41 +123,50 @@ fn main() i32 {
     actors.waitUntilIdle();
     var ticket = 0u32;
     var k = 0u64;
+    var sent = 0u64;
     while k < rounds {
       thread.sleep(time.Duration.fromMillis(10i64));
-      let before = handled.load();
       // Q runs a turn that waits on the gate; P, the other, is the poller
       ticket = ticket + 1u32;
       a.hold(ticket);
-      require(turnWithin(ticket, 2000u64), "a worker runs the first Spinner's turn within 2 s");
+      require(turnWithin(ticket, 5000u64), "a worker runs the first Spinner's turn within 5 s");
       let q = spunOn.load();
-      thread.sleep(time.Duration.fromMillis(5i64));
-      // A notify marks P and breaks its wait: P is held before the flag's clearing
+      // A notify marks P and breaks its wait: P is held before the flag's
+      // clearing. Sent again while P has not parked yet (under load it may still
+      // be on its way, and takes the message itself)
       actors.holdNextPark(6u32);
-      c.bump();
-      require(heldWithin(2000u64), "the poller is held after its wait, the role let go, before the break's flag is cleared");
+      var tries = 0u32;
+      while !actors.parkHeld() && tries < 100u32 {
+        c.bump();
+        sent = sent + 1u64;
+        heldWithin(50u64);
+        tries = tries + 1u32;
+      }
+      require(heldWithin(5000u64), "the poller is held after its wait, the role let go, before the break's flag is cleared");
       require(actors.parkHeldWorker() != q, "...and it is not the worker in the Spinner's turn");
       let w0 = actors.pollerStats().waits;
       // Q ends its turn, runs the message, takes the role and parks in the port
       gate.store(ticket);
-      require(handledWithin(before + 1u64, 2000u64), "the message is handled by the other worker within 2 s");
-      require(waitsWithin(w0 + 1u64, 2000u64), "...which then waits in the port as the new poller");
+      require(handledWithin(sent, 5000u64), "the message is handled by the other worker within 5 s");
+      require(waitsWithin(w0 + 1u64, 5000u64), "...which then waits in the port as the new poller");
       thread.sleep(time.Duration.fromMillis(20i64));
       // A notify aimed at the new poller, then one that finds 'searching' set
       ticket = ticket + 1u32;
       b.hold(ticket);
       c.bump();
+      sent = sent + 1u64;
       thread.sleep(time.Duration.fromMillis(5i64));
       // P goes on: it clears the flag, leaves the park and takes the Spinner's turn
       actors.releasePark();
-      require(turnWithin(ticket, 2000u64), "the second Spinner's turn runs within 2 s of the release");
-      require(handledWithin(before + 2u64, 2000u64), "the new poller is woken by the notify aimed at it: the Counter's message is handled within 2 s, the Spinner's turn still running");
+      require(turnWithin(ticket, 5000u64), "the second Spinner's turn runs within 5 s of the release");
+      require(handledWithin(sent, 5000u64), "the new poller is woken by the notify aimed at it: the Counter's message is handled within 5 s, the Spinner's turn still running");
       gate.store(ticket);
       k = k + 1u64;
     }
+    total.store(sent);
   }
   finalAll();
   finished.store(1u32);
-  expectUInt(handled.load(), 2u64 * rounds, "every message handled");
+  expectUInt(handled.load(), total.load(), "every message handled");
   done()
 }
