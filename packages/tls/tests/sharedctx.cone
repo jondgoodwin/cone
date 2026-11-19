@@ -1,0 +1,157 @@
+// A server's context shared by many connections (the HTTP server's stage 3,
+// S3). Its immutable half (the SSL_CTX, certificates, keys, the ALPN list) is
+// read by every session with no lock, and only a client's cache of sessions to
+// resume is behind one, so a server's accepted connections, on any thread,
+// never wait on one another. Checked here: a thousand sessions held open at
+// once from one Server, then four threads at once each handshaking two hundred
+// sessions against it (every one open, the handshakes counted), a copy of the
+// Server sharing the same context (a ticket one issued, the other accepts),
+// and resumption by tickets with the server's own session cache off, in TLS
+// 1.3 and TLS 1.2.
+
+mod sharedctx;
+
+import stdio use *;
+import testing use *;
+import thread;
+import fs;
+import path use Path;
+import collections use List, String;
+import tls;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("cannot read a certificate file")
+}
+
+fn clientOf(maxV: tls.TlsVersion) tls.Client {
+  var cfg = tls.ClientConfig.make();
+  cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.offline = true;
+  cfg.maxVersion = maxV;
+  match tls.Client.make(cfg) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("the client context could not be made")
+}
+
+fn serverOf() tls.Server {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  let cfg = tls.ServerConfig.make(&certFile, &keyFile);
+  match tls.Server.make(cfg) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("the server context could not be made")
+}
+
+fn pump(c: &mut tls.Session, s: &mut tls.Session) {
+  var buf = Array[u8, 20000]() <- fill 0u8;
+  var moved = true;
+  while moved {
+    moved = false;
+    while c.pending() > 0usize {
+      let n = c.transmit(&mut buf[0usize ..< 20000usize]);
+      s.feed(&buf[0usize ..< n]);
+      moved = true;
+    }
+    while s.pending() > 0usize {
+      let n = s.transmit(&mut buf[0usize ..< 20000usize]);
+      c.feed(&buf[0usize ..< n]);
+      moved = true;
+    }
+    while c.canRead() {
+      if c.read(&mut buf[0usize ..< 20000usize]) == 0usize {break;}
+    }
+    while s.canRead() {
+      if s.read(&mut buf[0usize ..< 20000usize]) == 0usize {break;}
+    }
+  }
+}
+
+struct Work {
+  pub srv: tls.Server;
+}
+
+// Two hundred sessions, each against its own client context: how many opened
+fn drive(w: Work) u32 {
+  let cl = clientOf(tls.TlsVersion.Tls13);
+  var opened = 0u32;
+  var k = 0u32;
+  while k < 200u32 {
+    var c = cl.session("localhost");
+    var s = w.srv.session();
+    pump(&mut c, &mut s);
+    if c.isOpen() && s.isOpen() {opened = opened + 1u32;}
+    k = k + 1u32;
+  }
+  opened
+}
+
+fn main() i32 {
+  let srv = serverOf();
+  let cl = clientOf(tls.TlsVersion.Tls13);
+
+  // A thousand sessions at once from one Server
+  var held = List[tls.Session]();
+  var k = 0u32;
+  while k < 1000u32 {
+    held.push(srv.session());
+    k = k + 1u32;
+  }
+  expectUInt(u64.from(held.len()), 1000u64, "a thousand server sessions held at once");
+  var c = cl.session("localhost");
+  var last = held.remove(999usize);
+  pump(&mut c, &mut last);
+  expect(c.isOpen() && last.isOpen(), "the last of them handshakes");
+  held = List[tls.Session]();
+
+  // Four threads, one Server
+  let before = tls.stats();
+  let t1 = thread.start(Work(srv), &drive);
+  let t2 = thread.start(Work(srv), &drive);
+  let t3 = thread.start(Work(srv), &drive);
+  let t4 = thread.start(Work(srv), &drive);
+  let opened = t1.join() + t2.join() + t3.join() + t4.join();
+  let after = tls.stats();
+  expectUInt(u64.from(opened), 800u64, "four threads: every session open");
+  expectUInt(after.handshakes - before.handshakes, 1600u64, "four threads: 1600 handshakes, both sides of 800");
+
+  // A copy shares the context: the ticket one's session gave, the other takes
+  let copy = srv;
+  let cl2 = clientOf(tls.TlsVersion.Tls13);
+  var c1 = cl2.session("localhost");
+  var s1 = srv.session();
+  pump(&mut c1, &mut s1);
+  require(c1.isOpen(), "a copy: the first handshake");
+  expect(!c1.info().resumed, "a copy: the first is a full handshake");
+  var c2 = cl2.session("localhost");
+  var s2 = copy.session();
+  pump(&mut c2, &mut s2);
+  require(c2.isOpen(), "a copy: the second handshake");
+  expect(c2.info().resumed && s2.info().resumed, "a copy: the second resumes from the first's ticket (tickets, no server-side cache)");
+
+  // TLS 1.2 as well
+  let cl12 = clientOf(tls.TlsVersion.Tls12);
+  var d1 = cl12.session("localhost");
+  var e1 = srv.session();
+  pump(&mut d1, &mut e1);
+  var d2 = cl12.session("localhost");
+  var e2 = copy.session();
+  pump(&mut d2, &mut e2);
+  require(d2.isOpen(), "TLS 1.2: the second handshake");
+  expect(d2.info().resumed && e2.info().resumed, "TLS 1.2: the second resumes from the first's ticket");
+  0i32
+}

@@ -1,0 +1,358 @@
+// Session.final on every path (the HTTP server's stage 3, S3). A client that
+// resumes allocates a block of arrivals in its SSL object's ticket slot, which
+// Session.final frees; the program's own malloc and free pass through a counter
+// here (as aio's alloc test counts malloc), which tracks every block of that
+// size, so a Session whose final was not reached leaves one live. Each path a
+// session can end on runs in a function of its own, and the live count is read
+// after it returns: a handshake that completes and closes both ways; one that
+// fails (an untrusted server; garbage); one cut short (the transport's end in
+// the middle of the handshake, and after it); one dropped open with no
+// close_notify (a shutdown); and, through a Stream in the shape httpconn holds
+// it (a Uni[Layer]), unopened, open, failed, and moved in and out of a list.
+
+mod finalpaths;
+
+import stdio use *;
+import testing use *;
+import libc;
+import fs;
+import path use Path;
+import collections use List, String;
+import httpconn use Layer;
+import iobuf use *;
+import time use Instant;
+import tls;
+
+const blockSize = 72usize;       // a client's arrivals: a count and eight pointers
+const nSlots = 4096usize;
+
+var tracked: Array[Atomic[usize], 4096];
+let guard: Atomic[u32];
+let ready: Atomic[u32];
+
+fn @initpure init() {
+  guard = Atomic[u32].of(0u32);
+  ready = Atomic[u32].of(1u32);
+  tracked = Array[Atomic[usize], 4096]() <- fill Atomic[usize].of(0usize);
+}
+
+#if #os == .windows {
+  extern {
+    fn @c("_malloc_base") winMalloc(size: usize) *u8;
+    fn @c("_calloc_base") winCalloc(n: usize, size: usize) *u8;
+    fn @c("_realloc_base") winRealloc(p: *u8, size: usize) *u8;
+    fn @c("_free_base") winFree(p: *u8);
+  }
+} #else {
+  extern {
+    fn @c("__libc_malloc") lxMalloc(size: usize) *u8;
+    fn @c("__libc_calloc") lxCalloc(n: usize, size: usize) *u8;
+    fn @c("__libc_realloc") lxRealloc(p: *u8, size: usize) *u8;
+    fn @c("__libc_free") lxFree(p: *u8);
+  }
+}
+
+fn lock() {
+  while guard.swap(1u32) != 0u32 {}
+}
+
+fn unlock() {guard.store(0u32);}
+
+fn track(p: *u8) {
+  if ready.load() == 0u32 ||p as usize == 0usize {return;}
+  lock();
+  var k = 0usize;
+  while k < nSlots {
+    if tracked[k].load() == 0usize {
+      tracked[k].store(p as usize);
+      break;
+    }
+    k = k + 1usize;
+  }
+  unlock();
+}
+
+fn untrack(p: *u8) {
+  if ready.load() == 0u32 ||p as usize == 0usize {return;}
+  lock();
+  var k = 0usize;
+  while k < nSlots {
+    if tracked[k].load() == p as usize {
+      tracked[k].store(0usize);
+      break;
+    }
+    k = k + 1usize;
+  }
+  unlock();
+}
+
+fn live() usize {
+  lock();
+  var n = 0usize;
+  var k = 0usize;
+  while k < nSlots {
+    if tracked[k].load() != 0usize {n = n + 1usize;}
+    k = k + 1usize;
+  }
+  unlock();
+  n
+}
+
+pub fn @c("malloc") countMalloc(size: usize) *u8 {
+  #if #os == .windows {
+    let p = winMalloc(size);
+    if size == blockSize {track(p);}
+    p
+  } #else {
+    let p = lxMalloc(size);
+    if size == blockSize {track(p);}
+    p
+  }
+}
+
+pub fn @c("calloc") countCalloc(n: usize, size: usize) *u8 {
+  #if #os == .windows {winCalloc(n, size)} #else {lxCalloc(n, size)}
+}
+
+pub fn @c("realloc") countRealloc(p: *u8, size: usize) *u8 {
+  #if #os == .windows {winRealloc(p, size)} #else {lxRealloc(p, size)}
+}
+
+pub fn @c("free") countFree(p: *u8) {
+  untrack(p);
+  #if #os == .windows {winFree(p);} #else {lxFree(p);}
+}
+
+// A file of the certificates' folder, tests/certs (see memory.cone)
+fn certs(name: &str) Path {
+  var p = String.from("../../../../tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("cannot read a certificate file")
+}
+
+fn clientOf(v: tls.Verifier) tls.Client {
+  var cfg = tls.ClientConfig.make();
+  cfg.verify = v;
+  cfg.offline = true;
+  match tls.Client.make(cfg) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("the client context could not be made")
+}
+
+fn serverOf() tls.Server {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  let cfg = tls.ServerConfig.make(&certFile, &keyFile);
+  match tls.Server.make(cfg) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("the server context could not be made")
+}
+
+fn pump(c: &mut tls.Session, s: &mut tls.Session) {
+  var buf = Array[u8, 20000]() <- fill 0u8;
+  var moved = true;
+  while moved {
+    moved = false;
+    while c.pending() > 0usize {
+      let n = c.transmit(&mut buf[0usize ..< 20000usize]);
+      s.feed(&buf[0usize ..< n]);
+      moved = true;
+    }
+    while s.pending() > 0usize {
+      let n = s.transmit(&mut buf[0usize ..< 20000usize]);
+      c.feed(&buf[0usize ..< n]);
+      moved = true;
+    }
+    while c.canRead() {
+      if c.read(&mut buf[0usize ..< 20000usize]) == 0usize {break;}
+    }
+    while s.canRead() {
+      if s.read(&mut buf[0usize ..< 20000usize]) == 0usize {break;}
+    }
+  }
+}
+
+// Each path, its sessions dropped as it returns ------------------------------
+
+fn normal(cl: &tls.Client, srv: &tls.Server) {
+  var c = cl.session("localhost");
+  var s = srv.session();
+  pump(&mut c, &mut s);
+  require(c.isOpen() && s.isOpen(), "normal: open");
+  c.write("hello");
+  pump(&mut c, &mut s);
+  c.close();
+  pump(&mut c, &mut s);
+  s.close();
+  pump(&mut c, &mut s);
+  expect(c.peerEnded() && s.peerEnded(), "normal: closed both ways");
+}
+
+fn refusedCert(bad: &tls.Client, srv: &tls.Server) {
+  // The root is not the server's: the client fails, the server's alert follows
+  var c = bad.session("localhost");
+  var s = srv.session();
+  pump(&mut c, &mut s);
+  expect(c.isFailed(), "refused: the client failed");
+}
+
+fn garbage(cl: &tls.Client) {
+  var c = cl.session("localhost");
+  var junk = Array[u8, 64]() <- fill 0x41u8;
+  var out = Array[u8, 4096]() <- fill 0u8;
+  while c.pending() > 0usize {c.transmit(&mut out[0usize ..< 4096usize]);}
+  c.feed(&junk);
+  c.feed(&junk);
+  expect(c.isFailed(), "garbage: failed");
+}
+
+fn cutInHandshake(cl: &tls.Client, srv: &tls.Server) {
+  var c = cl.session("localhost");
+  var s = srv.session();
+  var buf = Array[u8, 20000]() <- fill 0u8;
+  let n = c.transmit(&mut buf[0usize ..< 20000usize]);
+  s.feed(&buf[0usize ..< n]);
+  c.feedEnd();
+  s.feedEnd();
+  expect(c.isFailed() && s.isFailed(), "cut: both failed");
+}
+
+fn cutOpen(cl: &tls.Client, srv: &tls.Server) {
+  var c = cl.session("localhost");
+  var s = srv.session();
+  pump(&mut c, &mut s);
+  c.write("last words");
+  pump(&mut c, &mut s);
+  c.feedEnd();
+  s.feedEnd();
+  pump(&mut c, &mut s);
+  expect(c.info().truncated, "cut open: truncated");
+}
+
+fn droppedOpen(cl: &tls.Client, srv: &tls.Server) {
+  var c = cl.session("localhost");
+  var s = srv.session();
+  pump(&mut c, &mut s);
+  require(c.isOpen(), "dropped open: open");
+}
+
+fn neverStarted(cl: &tls.Client) {
+  var c = cl.session("localhost");
+  expect(!c.isOpen(), "never started");
+}
+
+// Through Stream, as a Uni[Layer] ------------------------------------------
+
+fn drain(l: &mut Uni[Layer]) {
+  var p = l.plainOut();
+  while p.len() > 0usize {p = l.plainOut();}
+}
+
+fn shuttle(a: &mut Uni[Layer], b: &mut Uni[Layer]) {
+  var moved = true;
+  var rounds = 0u32;
+  while moved && rounds < 50u32 {
+    moved = false;
+    rounds = rounds + 1u32;
+    let x = a.wireOut(Instant.now());
+    if x.len() > 0usize {
+      b.wireIn(x, Instant.now());
+      moved = true;
+    }
+    let y = b.wireOut(Instant.now());
+    if y.len() > 0usize {
+      a.wireIn(y, Instant.now());
+      moved = true;
+    }
+    drain(a);
+    drain(b);
+  }
+}
+
+fn streamsOpen(cl: &tls.Client, srv: &tls.Server) {
+  var ua: Uni[Layer] = Uni[tls.Stream](cl.stream("localhost"));
+  var ub: Uni[Layer] = Uni[tls.Stream](srv.stream());
+  shuttle(&mut ua, &mut ub);
+  expect(ua.isOpen() && ub.isOpen(), "stream: open");
+}
+
+fn streamsClosed(cl: &tls.Client, srv: &tls.Server) {
+  var ua: Uni[Layer] = Uni[tls.Stream](cl.stream("localhost"));
+  var ub: Uni[Layer] = Uni[tls.Stream](srv.stream());
+  shuttle(&mut ua, &mut ub);
+  ua.closeSend();
+  shuttle(&mut ua, &mut ub);
+  ub.closeSend();
+  shuttle(&mut ua, &mut ub);
+}
+
+fn streamUnopened(cl: &tls.Client, srv: &tls.Server) {
+  var ua: Uni[Layer] = Uni[tls.Stream](cl.stream("localhost"));
+  var ub: Uni[Layer] = Uni[tls.Stream](srv.stream());
+  expect(!ua.isOpen() && !ub.isOpen(), "stream: not open yet");
+}
+
+fn streamFailed(cl: &tls.Client) {
+  var ua: Uni[Layer] = Uni[tls.Stream](cl.stream("localhost"));
+  ua.wireIn(IoBuf(64usize), Instant.now());
+  ua.wireIn(IoBuf(64usize), Instant.now());
+}
+
+fn streamsInList(cl: &tls.Client, srv: &tls.Server) {
+  var held = List[Uni[Layer]]();
+  var k = 0u32;
+  while k < 4u32 {
+    held.push(Uni[tls.Stream](cl.stream("localhost")));
+    k = k + 1u32;
+  }
+  held.remove(1usize);
+  var a = held.remove(0usize);
+  var ub: Uni[Layer] = Uni[tls.Stream](srv.stream());
+  shuttle(&mut a, &mut ub);
+}
+
+fn main() i32 {
+  let srv = serverOf();
+  let cl = clientOf(tls.Verifier.roots(readText("ca.pem").view()));
+  let bad = clientOf(tls.Verifier.roots(readText("other-ca.pem").view()));
+  let base = live();
+  normal(&cl, &srv);
+  expectUInt(u64.from(live() - base), 0u64, "normal close: the session's block freed");
+  refusedCert(&bad, &srv);
+  expectUInt(u64.from(live() - base), 0u64, "a refused certificate: freed");
+  garbage(&cl);
+  expectUInt(u64.from(live() - base), 0u64, "garbage: freed");
+  cutInHandshake(&cl, &srv);
+  expectUInt(u64.from(live() - base), 0u64, "the end in the handshake: freed");
+  cutOpen(&cl, &srv);
+  expectUInt(u64.from(live() - base), 0u64, "the end after it: freed");
+  droppedOpen(&cl, &srv);
+  expectUInt(u64.from(live() - base), 0u64, "dropped open, no close_notify: freed");
+  neverStarted(&cl);
+  expectUInt(u64.from(live() - base), 0u64, "never started: freed");
+  streamsOpen(&cl, &srv);
+  expectUInt(u64.from(live() - base), 0u64, "streams dropped open: freed");
+  streamsClosed(&cl, &srv);
+  expectUInt(u64.from(live() - base), 0u64, "streams closed both ways: freed");
+  streamUnopened(&cl, &srv);
+  expectUInt(u64.from(live() - base), 0u64, "streams never opened: freed");
+  streamFailed(&cl);
+  expectUInt(u64.from(live() - base), 0u64, "a stream that failed: freed");
+  streamsInList(&cl, &srv);
+  expectUInt(u64.from(live() - base), 0u64, "streams in a list, some removed: freed");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  0i32
+}
