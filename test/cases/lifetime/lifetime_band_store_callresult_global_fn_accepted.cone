@@ -1,0 +1,36 @@
+// A reference to a named global function, and a borrow of a global, may be stored into a place reached
+// through a call's result: their lifetime is the global one, as long as the place's.
+//
+// Verdict: accept; prints hk, hk2, hk2, 1 (the pointer is of a real local, so the stores run).
+// Basis: the invariant: a borrow of global lifetime may be held anywhere. Lane 710: with the rule that a
+// place with no variable at its root is global, a global borrow still passes; runs on both systems.
+
+mod lifetime_band_store_callresult_global_fn_accepted;
+
+import stdio use *;
+
+struct Globals { n: i32; hook: &fn(); r: &i64; }
+
+fn hk() { printStr("hk\n"); }
+fn hk2() { printStr("hk2\n"); }
+let ONE: i64 = 1;
+let TWO: i64 = 2;
+
+fn at(p: *Globals) *Globals { p }
+
+fn setHook(p: *Globals) { (*at(p)).hook = &hk2; }
+fn setRef(p: *Globals) { (*at(p)).r = &ONE; }
+
+fn main() i32 {
+  var g = Globals(0, &hk, &TWO);
+  let h = g.hook;
+  h();
+  setHook(&g as *Globals);
+  let h2 = g.hook;
+  h2();
+  setRef(&g as *Globals);
+  h2();
+  printInt(*g.r);
+  printStr("\n");
+  0
+}
