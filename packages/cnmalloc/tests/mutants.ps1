@@ -4,8 +4,8 @@
 #   powershell -File packages\cnmalloc\tests\mutants.ps1 [-Name a|a2m|a2s|b|m1|...|m7|none|all] [-Runs 5] [-Scratch <dir>] [-RaceSecs 120]
 #
 #   a    Rule G's undo removed: the g2 test still runs, but the thread keeps the cell of the page's new life  (caught by lfrace: double free abort)
-#   a2m  the multi-bit fill's Rule G compare (MB-G) tests the class half of genclass only, not the generation half  (caught by lfmulti's same-class rounds, deterministically: the allocator hangs and lfmulti's 120 s watchdog fires)
-#   a2s  lf_alloc's single-cell Rule G compare tests the class half only  (NOT CAUGHT by any current test: lfrace's race reached only 5 to 17 Rule G undos of 3000 in 5 runs at 120 s and passed; a driven same-class round on lf_alloc is a queued follow-up. Run it by name only; it is not in 'all')
+#   a2m  the multi-bit fill's Rule G compare (MB-G) tests the class half of genclass only, not the generation half  (caught by lfmulti's same-class rounds, deterministically: the allocator hangs, lfmulti's waitFor gives up after 5 s and its checks fail; the 120 s watchdog does not fire)
+#   a2s  lf_alloc's single-cell Rule G compare tests the class half only  (caught by lfmulti's single-cell rounds (row 532), deterministically by its checks: a non-worker's lf_alloc is parked at LF_HOOK_TAKE while the page comes back as the same class; the taker keeps the cell, so its bit is not restored, Rule G's count does not rise and the page stays UNLISTED)
 #   b    lf_release reads genclass AFTER its fetch_or and its park point, not before the cell stopped being the caller's  (caught by lfstale)
 #   (row 506, the multi-bit fill and the grouped return; Ruminations\row-460-rules-and-tests-2026-11-18.md, section 4)
 #   m1   no g2 test on the multi path (MB-G)                                    (caught by lfmulti: stamps hit, wrong-class cells)
@@ -18,9 +18,8 @@
 #   none the unmutated shim: doublefree, lfpage (single and grouped), lfrace (plain and with fills), lfstale (single and grouped),
 #        lfmulti and lfreturn must pass
 # Everything is built and run under <Scratch> (default %TEMP%\cnmalloc-mutants); nothing in the tree changes. A mutant's test
-# runs -Runs times (all but a are deterministic: 5 of 5 must fail; a2s is the known gap, see above). lfrace on a mutant is capped at -RaceSecs seconds
-# (CNRACE_MAXSECS): a2s is not caught within it; the unmutated lfrace runs
-# with its default. Windows only (the shim is). Needs the Visual Studio build tools and the package's release build, which
+# runs -Runs times (all but a are deterministic: 5 of 5 must fail). lfrace on a mutant is capped at -RaceSecs seconds
+# (CNRACE_MAXSECS); the unmutated lfrace runs with its default. Windows only (the shim is). Needs the Visual Studio build tools and the package's release build, which
 # build-cn.ps1 makes.
 param(
   [string]$Name = 'all',
@@ -133,11 +132,11 @@ function Check([string]$what, [bool]$ok) { $script:verdicts += [pscustomobject]@
 
 # each mutant's catching test, with the variant that catches it
 $plan = @{
-  'a' = @('lfrace', @{}); 'a2m' = @('lfmulti', @{}); 'a2s' = @('lfrace', @{}); 'b' = @('lfstale', @{})
+  'a' = @('lfrace', @{}); 'a2m' = @('lfmulti', @{}); 'a2s' = @('lfmulti', @{}); 'b' = @('lfstale', @{})
   'm1' = @('lfmulti', @{}); 'm2' = @('lfmulti', @{}); 'm3' = @('lfmulti', @{}); 'm4' = @('lfstale', @{ CNSTALE_GROUPED = '1' })
   'm5' = @('lfreturn', @{}); 'm6' = @('lfmulti', @{}); 'm7' = @('doublefree', @{})
 }
-$names = if ($Name -eq 'all') { @('a', 'a2m', 'b', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'none') } else { $Name.Split(',') }
+$names = if ($Name -eq 'all') { @('a', 'a2m', 'a2s', 'b', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'none') } else { $Name.Split(',') }
 foreach ($m in $names) {
   if ($m -eq 'none') {
     foreach ($t in 'doublefree', 'lfpage', 'lfrace', 'lfstale', 'lfmulti', 'lfreturn') {
