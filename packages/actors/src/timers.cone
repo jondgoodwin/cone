@@ -1005,7 +1005,10 @@ pub fn timerStats() TimerStats {
 //     then runs on the actor's own thread and decides again from 'want' there:
 //     due, the program resumes with true and the deadline is cleared; moved
 //     later or cleared since the filer looked, the waiter is put back and
-//     nothing runs. So no resume is stale and none is doubled: only the winner
+//     nothing runs. A next() that finds its deadline already passed publishes
+//     the same slot to itself, never an answer of true, since a set or clear
+//     queued to the actor before it runs first (tests/heldqueued.cone). So no
+//     resume is stale and none is doubled: only the winner
 //     of a CAS that clears hWaiter publishes, or answers;
 //   - the end: stop(), the group's cancel (Timer.within), or the Timer
 //     dropped, sets hEnded; a parked next() answers false (an arrive in flight
@@ -1563,8 +1566,11 @@ fn heldCall(run: *u8, st: *u8, hasId: bool, id: u64, data: *u8) {
 }
 
 // next()'s start, at the seam (on the actor's worker): ended, false at once;
-// due, true at once and the deadline cleared; otherwise the Reply kept and the
-// waiter set, and the deadline filed here if it is set and nothing is filed
+// due, an arrive slot published to the actor at once, as the fire publishes
+// one, so that timerArrive decides again when it is reached (a set or clear
+// already queued to the actor runs before it, and a resume of true then would
+// be stale); otherwise the Reply kept and the waiter set, and the deadline
+// filed here if it is set and nothing is filed
 fn heldStart(ctx: *u8, rp: Reply) {
   let c = ctx as *TimerCell;
   var r = rp;
@@ -1583,8 +1589,27 @@ fn heldStart(ctx: *u8, rp: Reply) {
   }
   let want = (*c).want.load();
   if want != noDue && want <= time.Instant.now().nanos() {
-    heldClear(xs, c);
-    answerNowIn[bool](&mut r, true);
+    // nothing stays filed while the slot is in flight, as at the fire: an
+    // entry here is cancelled, one elsewhere left dead (hFiled cleared, a new
+    // move generation), once any filer writing it (hBusy) is done
+    mem.writeRaw[Reply](&(*c).reply as *Reply, r);
+    let mine = hereIndex(xs);
+    while true {
+      let w = (*c).hword.load();
+      if (w & hBusy) != 0u64 {
+        yieldProcessor();
+        continue;
+      }
+      let here = (w & hFiled) != 0u64 && filerOf(w) == mine;
+      let seen, ok = (*c).hword.compareSwap(w, (genBumped(w) & ~hFiled) | hInflight);
+      if ok {
+        if here {
+          heldCancelIn(xs, (*c).hentry.load());
+        }
+        break;
+      }
+    }
+    heldPublish(c);
     return;
   }
   mem.writeRaw[Reply](&(*c).reply as *Reply, r);

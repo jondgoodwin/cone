@@ -10,6 +10,11 @@
 // resumed exactly once (a doubled one would panic, "a reply answered twice",
 // or count twice; a lost one would leave a racer parked and the runtime not
 // idle), and at the end no cell is held and no entry left in any wheel.
+// The racers may never move across workers when the machine has few CPUs, so
+// first a mover does so on purpose: it files a deadline on one worker, and a
+// driver on that worker sends it an earlier one and keeps the worker busy
+// until another worker has run the move (tried again with a fresh mover if
+// the move ran on the filer after all). Its old entry is then dead.
 
 mod heldmoves;
 
@@ -29,8 +34,10 @@ let parks: Atomic[u64];
 let resumes: Atomic[u64];
 let fires: Atomic[u64];
 let stale: Atomic[u64];
+let moverRan: Atomic[u64];
 
 fn @initpure init() {
+  moverRan = Atomic[u64].of(0u64);
   parks = Atomic[u64].of(0u64);
   resumes = Atomic[u64].of(0u64);
   fires = Atomic[u64].of(0u64);
@@ -99,6 +106,54 @@ actor Poker {
   }
 }
 
+// The forced move across workers: a deadline 50 ms on, filed on this worker,
+// then moved earlier by the driver's message, which runs wherever it is taken
+actor Mover {
+  timer: Timer;
+  filedOn: u32;
+  result: Sender[u64];
+
+  pub async fn arm(self, d: Driver, me: Mover) {
+    timer.set(Instant.fromNanos(nowNs() + 50000000i64));
+    filedOn = actors.workerIndex();
+    d.go(me);
+  }
+
+  // Sends 1 if this ran on another worker than the filer's
+  pub async fn moveEarlier(self) {
+    moverRan.store(1u64);
+    let w = actors.workerIndex();
+    timer.set(Instant.fromNanos(nowNs() + 1000000i64));
+    result.send(if w != filedOn {1u64} else {0u64});
+  }
+}
+
+actor Driver {
+  // The move sent, and this worker kept busy until another has taken it (at
+  // most a second)
+  pub async fn go(self, m: Mover) {
+    m.moveEarlier();
+    let t0 = nowNs();
+    while moverRan.load() == 0u64 && nowNs() - t0 < 1000000000i64 {}
+  }
+}
+
+fn moveAcross() {
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let d = Driver();
+  var tries = 0u64;
+  var crossed = false;
+  while !crossed && tries < 200u64 {
+    moverRan.store(0u64);
+    let m = Mover(Timer.make(), 0u32, tx.clone());
+    m.arm(d, m);
+    crossed = (rx.recv() || 0u64) == 1u64;
+    tries = tries + 1u64;
+  }
+}
+
 // The racers' handles, for the pokers (a Sendable copy each)
 struct Racers {
   a: Racer; b: Racer; c: Racer; d: Racer; e: Racer; f: Racer; g: Racer; h: Racer;
@@ -148,6 +203,7 @@ fn runAll() {
 fn main() i32 {
   initAll();
   actors.configure(actors.Options(workers: 4u32));
+  moveAcross();
   runAll();
   expect(stale.load() == 0u64, "no resume before the deadline set last");
   expect(parks.load() == resumes.load(), "every park resumed exactly once");
