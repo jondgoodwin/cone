@@ -1,11 +1,14 @@
 // Contexts: a Client or a Server, an OpenSSL SSL_CTX and what its sessions
-// share. How it is built. The SSL_CTX and what goes with it (the verifier's
-// kind and pins, the ALPN list a server chooses from, the client's cache of
-// sessions to resume) are a CtxState behind an 'Arc[Mutex, ...]': copying a
-// Client or a Server shares it, between threads too, and every Session made
-// from it holds one owner, so a context outlives its sessions (OpenSSL's
-// callbacks read the ALPN list a server's state holds). Each session's
-// SSL object also holds its own reference on the SSL_CTX, OpenSSL's way.
+// share. How it is built. A context is two halves. The SSL_CTX and what is
+// fixed when it is made (the verifier's kind and pins, the ALPN list a server
+// chooses from) are a CtxCore behind an 'Arc[imm, ...]', read by every session
+// with no lock; the client's cache of sessions to resume is a CtxState behind
+// an 'Arc[Mutex, ...]', which a server's sessions never touch. Copying a
+// Client or a Server shares both, between threads too, and every Session made
+// from it holds an owner of each, so a context outlives its sessions
+// (OpenSSL's callbacks read the ALPN list a server's core holds). Each
+// session's SSL object also holds its own reference on the SSL_CTX, OpenSSL's
+// way. A server resumes by tickets alone: its own session cache is off.
 //
 // The client's cache. OpenSSL hands over each session to resume as it comes
 // (SSL_CTX_sess_set_new_cb): a TLS 1.3 ticket when it arrives after the
