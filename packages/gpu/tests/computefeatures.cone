@@ -1158,5 +1158,16 @@ fn main() i32 {
   expectUInt(u64.from(failures()), u64.from(planned), "no failure beyond the refusals the test provoked");
   expectUInt(u64.from(refusals), 1u64 - (if has.float16Arithmetic { 0u64 } else { 1u64 }), "the drawing device's refusal was the first");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
-  done()
+  // The blessed output was made on a GPU that has every feature this test uses: on one that lacks any, the shaders that
+  // need it are not run (their checks are replaced by a stand-in), so the count of checks is not that output's. The checks
+  // that ran still count: a failure in them is a failure. A clean run on such a GPU is a skip, which names the feature.
+  let code = done();
+  if code == 0i32 {
+    if !has.float16Arithmetic { return skip("this GPU has no 16-bit float arithmetic (shaderFloat16): the blessed output is from a GPU with every feature"); }
+    if !has.storage16Bit { return skip("this GPU has no 16-bit values in buffers (storageBuffer16BitAccess): the blessed output is from a GPU with every feature"); }
+    if !has.int8Arithmetic || !has.storage8Bit { return skip("this GPU has no 8-bit integers in arithmetic and buffers: the blessed output is from a GPU with every feature"); }
+    if !has.integerDotProduct { return skip("this GPU has no integer dot product: the blessed output is from a GPU with every feature"); }
+    if !has.hasSubgroupOps(SUBGROUP_OP_BASIC | SUBGROUP_OP_ARITHMETIC | SUBGROUP_OP_BALLOT | SUBGROUP_OP_SHUFFLE) { return skip("this GPU has no subgroup operations in compute: the blessed output is from a GPU with every feature"); }
+  }
+  code
 }
