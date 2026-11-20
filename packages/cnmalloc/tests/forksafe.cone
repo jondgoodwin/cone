@@ -1,0 +1,121 @@
+// The fork test (row 550, Linux). cnmalloc replaces the C library's allocator, and glibc's is fork-safe: a fork takes its locks and
+// the child may allocate at once. The shim's pthread_atfork handlers do the same for this heap (cnm_fork_prepare takes every lock in
+// the heap's one order, the parent and the child release them, the child forgets its timer thread). The failure this guards against
+// is a child that hangs on a lock that another thread of the parent held when the fork was made.
+//
+// Four threads allocate and free every size from 16 bytes to 200 KiB in a loop (small cells, and large blocks that take the large
+// table's lock) while the main thread forks 60 times. Each child allocates and frees 2,000 blocks of the same sizes, with a growing
+// realloc, and ends with _exit(0); the parent polls for it for up to 20 s and kills it when it hangs (a failed check).
+// Needs the shim linked, as the seven tests that skip without it do; CNMALLOC=design=lockfree or the default design.
+// On Windows there is no fork: the test skips.
+
+mod forksafe;
+
+import testing use *;
+import thread;
+import libc;
+import cnmalloc;
+
+#if #os != .windows {
+  extern {
+    fn @c fork() i32;
+    fn @c waitpid(pid: i32, status: *i32, options: i32) i32;
+    fn @c kill(pid: i32, sig: i32) i32;
+    fn @c _exit(code: i32);
+  }
+}
+
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+fn ld(base: usize, i: usize) usize { mem.atomicLoad[usize](word(base, i), MemOrder.SeqCst) }
+fn st(base: usize, i: usize, v: usize) { mem.atomicStore[usize](word(base, i), v, MemOrder.SeqCst); }
+
+fn sizeAt(i: usize) usize {
+  let k = i % 12usize;
+  if k < 8usize { (k + 1usize) * 16usize } else if k == 8usize { 3000usize } else if k == 9usize { 40000usize } else if k == 10usize { 70000usize } else { 200000usize }
+}
+
+// one thread: allocate, touch, free, until told to stop; the blocks of a round are all freed before the next
+fn hammer(c: usize) u64 {
+  var rounds = 0usize;
+  let held = libc.calloc(64usize, 8usize) as usize;
+  while ld(c, 0usize) == 0usize {
+    var i = 0usize;
+    while i < 64usize {
+      let n = sizeAt(rounds + i);
+      let p = libc.malloc(n);
+      if p as usize != 0usize { *p = 1u8; }
+      *word(held, i) = p as usize;
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < 64usize { libc.free(*word(held, i) as *u8); i = i + 1usize; }
+    rounds = rounds + 1usize;
+  }
+  libc.free(held as *u8);
+  u64.from(rounds)
+}
+
+// in the child: 2,000 allocations, frees and reallocs; 0 when all went well
+fn childWork() i32 {
+  var i = 0usize;
+  while i < 2000usize {
+    let p = libc.malloc(sizeAt(i));
+    if p as usize == 0usize { return 1i32; }
+    *p = 7u8;
+    let q = libc.realloc(p, sizeAt(i) * 2usize);
+    if q as usize == 0usize { return 2i32; }
+    libc.free(q);
+    i = i + 1usize;
+  }
+  0i32
+}
+
+fn main() i32 {
+  #if #os == .windows {
+    return testing.skip("forksafe: Windows has no fork");
+  } #else {
+    if cnmalloc.cnm_hostSym("cnmalloc_design") == 0usize {
+      return testing.skip("forksafe: the cnmalloc shim is not linked: cnmalloc_design was not found (the shim is not linked or, on Linux, not exported by the link)");
+    }
+    let c = libc.calloc(8usize, 8usize) as usize;
+    let t0 = thread.start[usize, u64](c, &hammer);
+    let t1 = thread.start[usize, u64](c, &hammer);
+    let t2 = thread.start[usize, u64](c, &hammer);
+    let t3 = thread.start[usize, u64](c, &hammer);
+    cnmalloc.cnm_hostSleepMs(50u32);
+    var good = 0usize;
+    var hung = 0usize;
+    var failed = 0usize;
+    var f = 0usize;
+    while f < 60usize {
+      let pid = fork();
+      if pid == 0i32 { _exit(childWork()); }
+      if pid < 0i32 { failed = failed + 1usize; }
+      else {
+        var status = 0i32;
+        let end = cnmalloc.cnm_hostMonoMs() + 20000u64;
+        var done = false;
+        while !done {
+          let r = waitpid(pid, &mut status, 1i32);          // WNOHANG
+          if r == pid { done = true; }
+          else if cnmalloc.cnm_hostMonoMs() > end { kill(pid, 9i32); waitpid(pid, &mut status, 0i32); hung = hung + 1usize; done = true; }
+          else { cnmalloc.cnm_hostSleepMs(2u32); }
+        }
+        if status == 0i32 { good = good + 1usize; }
+      }
+      f = f + 1usize;
+      cnmalloc.cnm_hostSleepMs(1u32);
+    }
+    st(c, 0usize, 1usize);
+    let r0 = t0.join();
+    let r1 = t1.join();
+    let r2 = t2.join();
+    let r3 = t3.join();
+    expect(r0 + r1 + r2 + r3 > 0u64, "forksafe: the allocating threads ran");
+    expectUInt(u64.from(failed), 0u64, "forksafe: every fork was made");
+    expectUInt(u64.from(hung), 0u64, "forksafe: no child hung on a lock another thread held");
+    expectUInt(u64.from(good), 60u64, "forksafe: every child allocated, reallocated, freed and exited 0");
+    libc.free(c as *u8);
+    done()
+  }
+}

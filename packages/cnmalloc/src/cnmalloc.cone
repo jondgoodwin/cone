@@ -8,7 +8,9 @@
 //
 // THE FOUR PARTS
 //   OS layer     os.cone is the interface (reserve, commit, decommit, release), oswin.cone the Windows
-//                implementation (VirtualAlloc, VirtualFree). It is the only code that asks the system for memory.
+//                implementation (VirtualAlloc, VirtualFree) and oslinux.cone the Linux one (mmap, mprotect, madvise,
+//                munmap; row 550). osplat.cone picks the one the build targets, and is the only name this file uses.
+//                The layer is the only code that asks the system for memory, time, a lock, a timer or the settings.
 //   Reservation  "reserve with room, commit as it grows": a large block's own OS reservation, with address space
 //                to grow in place (largeAlloc, largeResize below). INTERFACE: largeAlloc(n, align) -> block,
 //                largeResize(p, n) -> grows or shrinks in place when it can, largeFree(p). The second API set
@@ -199,6 +201,7 @@ pub struct Heap {
   nonWorker: u64;     // design 2: small allocations made by threads that are not workers (statistics run)
   callocs: u64;
   callocBytes: u64;
+  hookTimer: usize;   // tests: called in armTimer between the timer lock's release and the timer's creation (row 550)
 }
 
 pub struct Pool {
@@ -256,11 +259,6 @@ extern {
   fn memcpy(d: *u8, s: *u8, n: usize) *u8;
   fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
   fn strncmp(a: *u8, b: cstr, n: usize) i32;
-  fn @c(system) GetModuleHandleA(name: cstr) usize;
-  fn @c(system) LoadLibraryA(name: cstr) usize;
-  fn @c(system) GetProcAddress(module: usize, name: cstr) usize;
-  fn @c(system) GetEnvironmentVariableA(name: cstr, buf: *u8, size: u32) u32;
-  fn @c(system) GetActiveProcessorCount(group: u16) u32;
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +325,7 @@ fn flagPtr(h: *Heap, ti: usize, k: usize) *u8 { (h.flags + ti * h.chunksPerTree 
 fn ensureFirst(h: *Heap, ti: usize) {
   let f = flagPtr(h, ti, 0usize);
   if *f == 0u8 {
-    if !oswin.commit(treeAddr(h, ti), h.firstBytes) { oswin.fatal(); }
+    if !osplat.commit(treeAddr(h, ti), h.firstBytes) { osplat.fatal(); }
     *f = 1u8;
   }
 }
@@ -339,7 +337,7 @@ fn btSet(h: *Heap, ti: usize, i: usize) {
   let k = w0 >> 9usize;
   let f = flagPtr(h, ti, h.firstChunks + k);
   if *f == 0u8 {
-    if !oswin.commit(t + h.firstBytes + k * 4096usize, 4096usize) { oswin.fatal(); }
+    if !osplat.commit(t + h.firstBytes + k * 4096usize, 4096usize) { osplat.fatal(); }
     *f = 1u8;
   }
   let a0 = t + h.firstBytes + w0 * 8usize;
@@ -441,12 +439,12 @@ fn btLastBelow(h: *Heap, ti: usize, i: usize) usize {
 
 fn bumpForeign(h: *Heap) {
   let p = poolOf(h);
-  oswin.lock(p as usize);
+  osplat.lock(p as usize);
   h.foreign = h.foreign + 1u64;
-  oswin.unlock(p as usize);
+  osplat.unlock(p as usize);
 }
 
-fn fatalNow() { oswin.fatal(); }
+fn fatalNow() { osplat.fatal(); }
 
 // ---------------------------------------------------------------------------
 // The page pool. Its lock is taken under a class's lock, never the other way round. Pages are in one of
@@ -456,13 +454,13 @@ fn fatalNow() { oswin.fatal(); }
 
 fn ensureDesc(h: *Heap, p: *Pool, page: usize) {
   while p.descDone < (page + 1usize) * 64usize {
-    if !oswin.commit(h.descBase + p.descDone, 4096usize) { oswin.fatal(); }
+    if !osplat.commit(h.descBase + p.descDone, 4096usize) { osplat.fatal(); }
     p.descDone = p.descDone + 4096usize;
   }
   // design 2: the page's second descriptor (header and bits), committed for good (Rule D) as the page first comes into use
   if h.design == 2usize {
     while h.d2Done < (page + 1usize) * d2Stride {
-      if !oswin.commit(h.d2Base + h.d2Done, 4096usize) { oswin.fatal(); }
+      if !osplat.commit(h.d2Base + h.d2Done, 4096usize) { osplat.fatal(); }
       h.d2Done = h.d2Done + 4096usize;
     }
   }
@@ -472,7 +470,7 @@ fn pageDue(d: *Desc, now: u64, delay: u64) bool { now - d.since >= delay }
 
 // Decommits pages lo .. lo+count-1, all empty and committed (in tree 72), in ONE system call. Pool lock held.
 fn decommitRun(h: *Heap, p: *Pool, lo: usize, count: usize) {
-  oswin.decommit(pageAddr(h, lo), count << pageShift);
+  osplat.decommit(pageAddr(h, lo), count << pageShift);
   p.decommitCalls = p.decommitCalls + 1u64;
   var i = lo;
   while i < lo + count {
@@ -515,7 +513,7 @@ fn giveRun(h: *Heap, p: *Pool, now: u64, delay: u64, maxPages: usize, maxScan: u
 // The first 'need' bytes of it are committed. Called under a class lock; takes the pool lock.
 fn poolTake(h: *Heap, need: usize) usize {
   let p = poolOf(h);
-  oswin.lock(p as usize);
+  osplat.lock(p as usize);
   var page = btFirst(h, treeEmpty);
   if page != none {
     btClear(h, treeEmpty, page);
@@ -536,11 +534,11 @@ fn poolTake(h: *Heap, need: usize) usize {
     let d = descOf(h, page);
     let have = usize.from(d.commit);
     if have < need {
-      if !oswin.commit(pageAddr(h, page) + have, need - have) {
+      if !osplat.commit(pageAddr(h, page) + have, need - have) {
         // out of memory: the page goes back as it was
         if have == 0usize { d.state = stDecommitted; btSet(h, treeDecommitted, page); p.nDecommitted = p.nDecommitted + 1u64; }
         else { btSet(h, treeEmpty, page); p.nEmpty = p.nEmpty + 1u64; }
-        oswin.unlock(p as usize);
+        osplat.unlock(p as usize);
         return none;
       }
       p.commitCalls = p.commitCalls + 1u64;
@@ -551,9 +549,9 @@ fn poolTake(h: *Heap, need: usize) usize {
   }
   if h.mode == modeDelay {
     // a bounded amount of give-back: at most 16 pages, one run
-    giveRun(h, p, oswin.tick(), h.delayMs, 16usize, 64usize);
+    giveRun(h, p, osplat.tick(), h.delayMs, 16usize, 64usize);
   }
-  oswin.unlock(p as usize);
+  osplat.unlock(p as usize);
   page
 }
 
@@ -561,7 +559,7 @@ fn poolTake(h: *Heap, need: usize) usize {
 // decommitted at once.
 fn poolPut(h: *Heap, page: usize, now: u64) {
   let p = poolOf(h);
-  oswin.lock(p as usize);
+  osplat.lock(p as usize);
   let d = descOf(h, page);
   d.state = stEmpty;
   d.cls = 0xFFFFFFFFu32;
@@ -573,7 +571,7 @@ fn poolPut(h: *Heap, page: usize, now: u64) {
   } else if h.mode == modeDelay {
     giveRun(h, p, now, h.delayMs, 16usize, 64usize);
   }
-  oswin.unlock(p as usize);
+  osplat.unlock(p as usize);
 }
 
 // ---------------------------------------------------------------------------
@@ -584,25 +582,37 @@ fn poolPut(h: *Heap, page: usize, now: u64) {
 fn timerFired(inst: usize, ctx: usize, timer: usize) {
   let h = ctx as *Heap;
   let t = timerOf(h);
-  oswin.lock(t as usize);
+  osplat.lock(t as usize);
   t.armed = 0usize;
   t.fired = t.fired + 1u64;
-  oswin.unlock(t as usize);
+  osplat.unlock(t as usize);
   let ms = cnm_collect(ctx, false);
   if ms > 0u64 { armTimer(h, ms); }
 }
 
+// The handle while a thread is making the timer (never a real handle). Row 550: making the timer may allocate (on
+// Linux it is a thread made by pthread_create, whose start calls the C library's calloc, which is this heap, and that
+// allocation can come back here through armIfWaiting). So the timer is made with its lock NOT held, behind this
+// sentinel: an arm that finds it returns, because the thread that is making the timer arms it right after.
+const timerCreating = 1usize;
+
 fn armTimer(h: *Heap, ms: u64) {
   let t = timerOf(h);
-  oswin.lock(t as usize);
-  if t.armed == 0usize {
-    if t.handle == 0usize { t.handle = oswin.timerCreate(&timerFired, h as usize); }
-    if t.handle != 0usize {
-      t.armed = 1usize;
-      oswin.timerArm(t.handle, ms);
-    }
+  osplat.lock(t as usize);
+  if t.armed != 0usize || t.handle == timerCreating { osplat.unlock(t as usize); return; }
+  if t.handle == 0usize {
+    t.handle = timerCreating;
+    osplat.unlock(t as usize);
+    hookCall(h.hookTimer, 0usize);                   // tests only: an allocation inside the creation, reaching armTimer again
+    let created = osplat.timerCreate(&timerFired, h as usize);
+    osplat.lock(t as usize);
+    t.handle = created;                              // 0 when it could not be made: a later arm tries again
   }
-  oswin.unlock(t as usize);
+  if t.handle != 0usize && t.armed == 0usize {
+    t.armed = 1usize;
+    osplat.timerArm(t.handle, ms);
+  }
+  osplat.unlock(t as usize);
 }
 
 // called with no cnmalloc lock held, after something was left waiting
@@ -619,7 +629,7 @@ fn armIfWaiting(h: *Heap) {
 // retire a class's spare to the pool when it has been empty past the delay. Class lock held.
 fn checkSpare(h: *Heap, c: *Class) {
   if h.mode == modeDelay {
-    let now = oswin.tick();
+    let now = osplat.tick();
     let d = descOf(h, c.spare);
     if now - d.since >= h.delayMs {
       let page = c.spare;
@@ -630,8 +640,8 @@ fn checkSpare(h: *Heap, c: *Class) {
 }
 
 fn lockClass(h: *Heap, c: *Class) {
-  if !oswin.tryLock(c as usize) {
-    oswin.lock(c as usize);
+  if !osplat.tryLock(c as usize) {
+    osplat.lock(c as usize);
     c.waits = c.waits + 1u64;
   }
   if c.spare != none { checkSpare(h, c); }
@@ -646,7 +656,7 @@ fn retirePage(h: *Heap, c: *Class, page: usize, d: *Desc) {
   if c.cur == page { c.cur = none; }
   c.pages = c.pages - 1u64;
   c.retired = c.retired + 1u64;
-  let now = oswin.tick();
+  let now = osplat.tick();
   if c.spare == none {
     c.spare = page; d.state = stEmpty; d.since = now;
     return;
@@ -672,7 +682,7 @@ fn smallAlloc(h: *Heap, cl: usize, fresh: *u32) usize {
   let c = classAt(h, cl);
   lockClass(h, c);
   let a = takeCell(h, c, cl, fresh);
-  oswin.unlock(c as usize);
+  osplat.unlock(c as usize);
   a
 }
 
@@ -747,7 +757,7 @@ fn freeSmall(h: *Heap, a: usize) {
   let c = classAt(h, cl);
   lockClass(h, c);
   let waiting = putCell(h, c, cl, page, d, a);
-  oswin.unlock(c as usize);
+  osplat.unlock(c as usize);
   if waiting { armIfWaiting(h); }
 }
 
@@ -898,7 +908,7 @@ fn lfRetire(h: *Heap, c: *Class, cl: usize, page: usize, d2: usize) bool {
   c.pages = c.pages - 1u64;
   c.retired = c.retired + 1u64;
   let d = descOf(h, page);
-  let now = oswin.tick();
+  let now = osplat.tick();
   if c.spare == none {
     c.spare = page; d.state = stEmpty; d.since = now;
     return true;
@@ -990,8 +1000,8 @@ fn lfSlotRule(h: *Heap, cl: usize, d2: usize) {
   n = putStr(buf, n, " state ", 7usize); n = putNum(buf, n, st);
   n = putStr(buf, n, " genclass ", 10usize); n = putNum(buf, n, g);
   n = putStr(buf, n, "\n", 1usize);
-  oswin.writeErr(buf, n);
-  oswin.fatal();
+  osplat.writeErr(buf, n);
+  osplat.fatal();
 }
 
 // "A slot's page has no free bit" (section 5), called by the shim's allocate with the thread's number and the page
@@ -1007,7 +1017,7 @@ pub fn cnm_lf_attach(hh: usize, cl: usize, tnum: usize, seen: usize) usize {
   let cur = usize.from(rd(L + si * 8usize));
   if h.lfDebug != 0usize && cur != 0usize { lfSlotRule(h, cl, cur); }
   if cur != seen {
-    oswin.unlock(c as usize);
+    osplat.unlock(c as usize);
     return 1usize;
   }
   var waiting = false;
@@ -1015,7 +1025,7 @@ pub fn cnm_lf_attach(hh: usize, cl: usize, tnum: usize, seen: usize) usize {
     // the same page: its words may have read as zero to this thread only because another lock holder was retiring it or
     // making it ready, and the same page can come back to the same slot (row 455's F2). A set bit sends the thread round.
     if lfScan(cur) != 0usize {
-      oswin.unlock(c as usize);
+      osplat.unlock(c as usize);
       return 1usize;
     }
     wr(L + si * 8usize, 0u64);
@@ -1023,7 +1033,7 @@ pub fn cnm_lf_attach(hh: usize, cl: usize, tnum: usize, seen: usize) usize {
   }
   let q = lfPick(h, c, cl);
   if q == none {
-    oswin.unlock(c as usize);
+    osplat.unlock(c as usize);
     if waiting { armIfWaiting(h); }
     return 0usize;
   }
@@ -1032,7 +1042,7 @@ pub fn cnm_lf_attach(hh: usize, cl: usize, tnum: usize, seen: usize) usize {
   wr(L + si * 8usize, u64.from(d2));
   wr8(L + 80usize + si, 1u8);
   lfBump(L, 5usize);
-  oswin.unlock(c as usize);
+  osplat.unlock(c as usize);
   armIfWaiting(h);
   1usize
 }
@@ -1046,13 +1056,13 @@ pub fn cnm_lf_after_free(hh: usize, d2: usize, g: u64) {
   let c = classAt(h, cl);
   lockClass(h, c);
   if aLd(d2) != g {
-    oswin.unlock(c as usize);
+    osplat.unlock(c as usize);
     return;
   }
   let st = aLd(d2 + 8usize);
   hookCall(h.hookAfter, cl);
   if st == lfAttached {
-    oswin.unlock(c as usize);
+    osplat.unlock(c as usize);
     return;
   }
   var waiting = false;
@@ -1067,7 +1077,7 @@ pub fn cnm_lf_after_free(hh: usize, d2: usize, g: u64) {
     btSet(h, cl, d2Page(h, d2));
     lfBump(lfc(h, cl), 6usize);
   }
-  oswin.unlock(c as usize);
+  osplat.unlock(c as usize);
   if waiting { armIfWaiting(h); }
 }
 
@@ -1079,13 +1089,13 @@ pub fn cnm_lf_grow(hh: usize, cl: usize) {
   lockClass(h, c);
   let act = usize.from(rd32(L + 64usize));
   if act < h.slotCap {
-    wr(L + 128usize + act * 8usize, u64.from(oswin.tick()));
+    wr(L + 128usize + act * 8usize, u64.from(osplat.tick()));
     wr8(L + 80usize + act, 1u8);
     wr32(L + 64usize, u32.from(act + 1usize));
     lfBump(L, 3usize);
   }
   wr32(L + 192usize, 0u32);
-  oswin.unlock(c as usize);
+  osplat.unlock(c as usize);
 }
 
 // Collect's share (section 5, last paragraph, and section 8): a slot not used for the give-back delay is dropped (its
@@ -1100,7 +1110,7 @@ fn lfCollect(h: *Heap, force: bool, delay: u64) u64 {
     if c.pages != 0u64 || rd32(lfc(h, cl) + 64usize) > 1u32 {
       let L = lfc(h, cl);
       lockClass(h, c);
-      let now = oswin.tick();
+      let now = osplat.tick();
       var k = usize.from(rd32(L + 64usize));
       if delay >= 0xFFFFFFFFFFFFFFu64 { k = 0usize; }     // giveback=never: no slot is dropped
       while k > 0usize {
@@ -1135,7 +1145,7 @@ fn lfCollect(h: *Heap, force: bool, delay: u64) u64 {
         q = btLastBelow(h, cl, q);
         n = n + 1usize;
       }
-      oswin.unlock(c as usize);
+      osplat.unlock(c as usize);
     }
     cl = cl + 1usize;
   }
@@ -1159,6 +1169,13 @@ pub fn cnm_lf_set_hooks(hh: usize, detach: usize, retire: usize, claim: usize, a
   h.hookClaim = claim;
   h.hookAfter = after;
 }
+// tests only (row 550): a function called, with the timer lock released and the timer's handle the creation sentinel,
+// just before the timer is made; a test makes it allocate and free, so that armIfWaiting reaches armTimer again
+pub fn cnm_set_timer_hook(hh: usize, f: usize) { (hh as *Heap).hookTimer = f; }
+// the timer's state, for the test: its handle (0 none, 1 being made), whether it is armed, and how often it fired
+pub fn cnm_timer_handle(hh: usize) usize { timerOf(hh as *Heap).handle }
+pub fn cnm_timer_armed(hh: usize) usize { timerOf(hh as *Heap).armed }
+pub fn cnm_timer_fired(hh: usize) u64 { timerOf(hh as *Heap).fired }
 pub fn cnm_design(hh: usize) usize { (hh as *Heap).design }
 // the header the shim reads: page base, descriptor base, heap size, the first class record, the statistics flag
 pub fn cnm_lf_info(hh: usize) usize { (hh as *Heap).lf }
@@ -1214,9 +1231,9 @@ fn largeInsert(l: *Large, src: *LEntry) bool {
   if l.table == 0usize || (l.count + 1usize) * 2usize > l.cap {
     let ncap = if l.table == 0usize { 1024usize } else { l.cap * 2usize };
     let bytes = ncap * 48usize;
-    let r = oswin.reserve(bytes);
+    let r = osplat.reserve(bytes);
     if r == 0usize { return false; }
-    if !oswin.commit(r, bytes) { oswin.release(r); return false; }
+    if !osplat.commit(r, bytes) { osplat.release(r, bytes); return false; }
     let oldT = l.table;
     let oldCap = l.cap;
     let oldBytes = l.tableBytes;
@@ -1231,7 +1248,7 @@ fn largeInsert(l: *Large, src: *LEntry) bool {
       if e.addr != 0usize { largeInsertRaw(l, e); }
       j = j + 1usize;
     }
-    if oldT != 0usize { oswin.release(oldT); cRelease(l, 1u64); }
+    if oldT != 0usize { osplat.release(oldT, oldBytes); cRelease(l, 1u64); }
   }
   largeInsertRaw(l, src);
   l.count = l.count + 1usize;
@@ -1282,7 +1299,7 @@ fn cRelease(l: *Large, k: u64) { l.sysCalls = l.sysCalls + k; l.nRelease = l.nRe
 fn cacheRelease(h: *Heap, l: *Large, i: usize) {
   let e = cacheAt(h, i);
   l.cachedBytes = l.cachedBytes - e.committed;
-  oswin.release(e.base);
+  osplat.release(e.base, e.reserved);
   cRelease(l, 1u64);
   e.addr = 0usize;
 }
@@ -1303,7 +1320,7 @@ fn cacheEvict(h: *Heap, l: *Large, wantDecommitted: bool) {
 
 fn cacheDecommit(l: *Large, e: *LEntry) {
   if e.committed != 0usize {
-    oswin.decommit(e.addr, e.committed);
+    osplat.decommit(e.addr, e.committed);
     cDecommit(l, 1u64);
     l.cachedBytes = l.cachedBytes - e.committed;
     e.committed = 0usize;
@@ -1315,7 +1332,7 @@ fn largeAlloc(h: *Heap, n: usize, align: usize, fresh: *u32) usize {
   let l = largeOf(h);
   let rounded = roundUp(if n == 0usize { 1usize } else { n }, pageSize);
   let commitBytes = roundUp(if n == 0usize { 1usize } else { n }, 4096usize);
-  oswin.lock(l as usize);
+  osplat.lock(l as usize);
   // a freed reservation that fits (the smallest one), kept for reuse
   if align <= pageSize {
     var best = none;
@@ -1333,7 +1350,7 @@ fn largeAlloc(h: *Heap, n: usize, align: usize, fresh: *u32) usize {
       e.addr = 0usize;
       var ok = true;
       if ent.committed < commitBytes {
-        ok = oswin.commit(ent.addr + ent.committed, commitBytes - ent.committed);
+        ok = osplat.commit(ent.addr + ent.committed, commitBytes - ent.committed);
         cCommit(l, 1u64);
         if ok { ent.committed = commitBytes; }
       } else if ent.committed >= commitBytes + pageSize {
@@ -1341,7 +1358,7 @@ fn largeAlloc(h: *Heap, n: usize, align: usize, fresh: *u32) usize {
         // The program usually grows the block again (a List's realloc), and the tail it still holds is not faulted a second time.
         let keep = commitBytes + h.largeSlack;
         if ent.committed > keep {
-          oswin.decommit(ent.addr + keep, ent.committed - keep);
+          osplat.decommit(ent.addr + keep, ent.committed - keep);
           cDecommit(l, 1u64);
           ent.committed = keep;
         }
@@ -1352,13 +1369,13 @@ fn largeAlloc(h: *Heap, n: usize, align: usize, fresh: *u32) usize {
         l.live = l.live + 1u64;
         l.bytes = l.bytes + u64.from(ent.committed);
         l.cacheHits = l.cacheHits + 1u64;
-        oswin.unlock(l as usize);
+        osplat.unlock(l as usize);
         *fresh = 0u32;
         return ent.addr;
       }
-      oswin.release(ent.base);
+      osplat.release(ent.base, ent.reserved);
       cRelease(l, 1u64);
-      oswin.unlock(l as usize);
+      osplat.unlock(l as usize);
       return 0usize;
     }
   }
@@ -1366,26 +1383,26 @@ fn largeAlloc(h: *Heap, n: usize, align: usize, fresh: *u32) usize {
   let extraWant = rounded * (h.largeReserve - 1usize);
   var reserved = rounded + (if extraWant < h.largeReserveCap { extraWant } else { h.largeReserveCap });
   if align > pageSize { reserved = reserved + align; }
-  let r = oswin.reserve(reserved);
+  let r = osplat.reserve(reserved);
   cReserve(l, 1u64);
-  if r == 0usize { oswin.unlock(l as usize); return 0usize; }
+  if r == 0usize { osplat.unlock(l as usize); return 0usize; }
   let addr = if align > pageSize { roundUp(r, align) } else { r };
-  if !oswin.commit(addr, commitBytes) {
-    oswin.release(r);
+  if !osplat.commit(addr, commitBytes) {
+    osplat.release(r, reserved);
     cCommit(l, 1u64); cRelease(l, 1u64);
-    oswin.unlock(l as usize);
+    osplat.unlock(l as usize);
     return 0usize;
   }
   cCommit(l, 1u64);
   var ent = LEntry(addr, r, reserved, commitBytes, n, 0u64);
   if !largeInsert(l, &mut ent) {
-    oswin.release(r);
-    oswin.unlock(l as usize);
+    osplat.release(r, reserved);
+    osplat.unlock(l as usize);
     return 0usize;
   }
   l.live = l.live + 1u64;
   l.bytes = l.bytes + u64.from(commitBytes);
-  oswin.unlock(l as usize);
+  osplat.unlock(l as usize);
   *fresh = 1u32;
   addr
 }
@@ -1393,23 +1410,23 @@ fn largeAlloc(h: *Heap, n: usize, align: usize, fresh: *u32) usize {
 // Frees a large block into the cache (or releases it). Returns true if it was found.
 fn largeFree(h: *Heap, a: usize) bool {
   let l = largeOf(h);
-  oswin.lock(l as usize);
+  osplat.lock(l as usize);
   let slot = largeFind(l, a);
-  if slot == none { oswin.unlock(l as usize); return false; }
+  if slot == none { osplat.unlock(l as usize); return false; }
   var ent = *entryAt(l, slot);
   largeRemoveAt(l, slot);
   l.live = l.live - 1u64;
   l.bytes = l.bytes - u64.from(ent.committed);
-  let now = oswin.tick();
+  let now = osplat.tick();
   ent.stamp = now;
   ent.size = 0usize;
   var keep = true;
   if h.mode == modeNow {
-    oswin.decommit(ent.addr, ent.committed);
+    osplat.decommit(ent.addr, ent.committed);
     cDecommit(l, 1u64);
     ent.committed = 0usize;
   } else if h.mode == modeDelay && l.cachedBytes + ent.committed > h.largeCap {
-    oswin.decommit(ent.addr, ent.committed);
+    osplat.decommit(ent.addr, ent.committed);
     cDecommit(l, 1u64);
     ent.committed = 0usize;
   }
@@ -1431,10 +1448,10 @@ fn largeFree(h: *Heap, a: usize) bool {
     // more than 8 decommitted reservations held: the oldest is released
     while cacheCount(h, true) > 8usize { cacheEvict(h, l, true); }
   } else {
-    oswin.release(ent.base);
+    osplat.release(ent.base, ent.reserved);
     cRelease(l, 1u64);
   }
-  oswin.unlock(l as usize);
+  osplat.unlock(l as usize);
   armIfWaiting(h);
   true
 }
@@ -1442,41 +1459,41 @@ fn largeFree(h: *Heap, a: usize) bool {
 // the size of a large block, or none when a is not one
 fn largeSize(h: *Heap, a: usize) usize {
   let l = largeOf(h);
-  oswin.lock(l as usize);
+  osplat.lock(l as usize);
   let slot = largeFind(l, a);
   var r = none;
   if slot != none { r = entryAt(l, slot).size; }
-  oswin.unlock(l as usize);
+  osplat.unlock(l as usize);
   r
 }
 
 // grows or shrinks a large block in place when it can. 0 = could not, 1 = done. none when a is not large.
 fn largeResize(h: *Heap, a: usize, n: usize) usize {
   let l = largeOf(h);
-  oswin.lock(l as usize);
+  osplat.lock(l as usize);
   let slot = largeFind(l, a);
-  if slot == none { oswin.unlock(l as usize); return none; }
+  if slot == none { osplat.unlock(l as usize); return none; }
   let e = entryAt(l, slot);
   let want = roundUp(if n == 0usize { 1usize } else { n }, 4096usize);
   var r = 0usize;
   if want <= capOf(e) {
     r = 1usize;
     if want > e.committed {
-      if oswin.commit(e.addr + e.committed, want - e.committed) {
+      if osplat.commit(e.addr + e.committed, want - e.committed) {
         cCommit(l, 1u64);
         l.bytes = l.bytes + u64.from(want - e.committed);
         e.committed = want;
         l.grows = l.grows + 1u64;
       } else { r = 0usize; }
     } else if e.committed - want >= pageSize {
-      oswin.decommit(e.addr + want, e.committed - want);
+      osplat.decommit(e.addr + want, e.committed - want);
       cDecommit(l, 1u64);
       l.bytes = l.bytes - u64.from(e.committed - want);
       e.committed = want;
     }
     if r == 1usize { e.size = n; }
   }
-  oswin.unlock(l as usize);
+  osplat.unlock(l as usize);
   r
 }
 
@@ -1503,9 +1520,9 @@ pub fn cnm_collect(hh: usize, force: bool) u64 {
   while cl < nClasses {
     let c = classAt(h, cl);
     if c.spare != none {
-      oswin.lock(c as usize);
+      osplat.lock(c as usize);
       if c.spare != none {
-        let now = oswin.tick();
+        let now = osplat.tick();
         let d = descOf(h, c.spare);
         let age = now - d.since;
         // at 'now' the spare goes back at a collect once the tick has moved on since it was kept (a loop that
@@ -1521,34 +1538,34 @@ pub fn cnm_collect(hh: usize, force: bool) u64 {
           due = minDue(due, 1u64);
         }
       }
-      oswin.unlock(c as usize);
+      osplat.unlock(c as usize);
     }
     cl = cl + 1usize;
   }
   let p = poolOf(h);
   if giving {
     while true {
-      oswin.lock(p as usize);
-      let n = giveRun(h, p, oswin.tick(), delay, 1usize << 20usize, 1usize << 30usize);
-      oswin.unlock(p as usize);
+      osplat.lock(p as usize);
+      let n = giveRun(h, p, osplat.tick(), delay, 1usize << 20usize, 1usize << 30usize);
+      osplat.unlock(p as usize);
       if n == 0usize { break; }
     }
   }
   if h.mode == modeDelay && !force {
-    oswin.lock(p as usize);
-    let now = oswin.tick();
+    osplat.lock(p as usize);
+    let now = osplat.tick();
     var q = btLastBelow(h, treeEmpty, h.npages);
     while q != none {
       let age = now - descOf(h, q).since;
       due = minDue(due, if age >= delay { 1u64 } else { delay - age });
       q = btLastBelow(h, treeEmpty, q);
     }
-    oswin.unlock(p as usize);
+    osplat.unlock(p as usize);
   }
   // large blocks held for reuse
   let l = largeOf(h);
-  oswin.lock(l as usize);
-  let now = oswin.tick();
+  osplat.lock(l as usize);
+  let now = osplat.tick();
   var i = 0usize;
   while i < cacheSlots {
     let e = cacheAt(h, i);
@@ -1567,7 +1584,7 @@ pub fn cnm_collect(hh: usize, force: bool) u64 {
     var k = 0usize;
     while k < cacheSlots { if cacheAt(h, k).addr != 0usize { cacheRelease(h, l, k); } k = k + 1usize; }
   }
-  oswin.unlock(l as usize);
+  osplat.unlock(l as usize);
   if due != 0u64 && due < 1u64 { due = 1u64; }
   due
 }
@@ -1630,8 +1647,8 @@ pub fn cnm_defaults(s: *Settings) {
 
 // Reads CNMALLOC (for example "giveback=now,reserve=32g,largecap=16m,stats") into s. buf is 1024 bytes of scratch.
 pub fn cnm_readEnv(s: *Settings, buf: usize) {
-  let n = usize.from(GetEnvironmentVariableA("CNMALLOC", buf as *u8, 1000u32));
-  if n == 0usize || n >= 1000usize { return; }
+  let n = osplat.getEnv("CNMALLOC", buf, 1000usize);
+  if n == 0usize { return; }
   let end = buf + n;
   var a = buf;
   while a < end {
@@ -1683,20 +1700,20 @@ pub fn cnm_readEnv(s: *Settings, buf: usize) {
 
 // Makes a heap: its own region, its three reservations, its classes. Returns its address, or 0.
 pub fn cnm_create(s: *Settings) usize {
-  let region = oswin.reserve(regionBytes);
+  let region = osplat.reserve(regionBytes);
   if region == 0usize { return 0usize; }
-  if !oswin.commit(region, regionBytes) { oswin.release(region); return 0usize; }
+  if !osplat.commit(region, regionBytes) { osplat.release(region, regionBytes); return 0usize; }
   let h = region as *Heap;
   h.region = region;
   var size = roundUp(s.reserve, pageSize);
   if size < 67108864usize { size = 67108864usize; }
   if size > 1099511627776usize { size = 1099511627776usize; }
-  var base = oswin.reserve(size);
+  var base = osplat.reserve(size);
   while base == 0usize && size > 67108864usize {
     size = size >> 1usize;
-    base = oswin.reserve(size);
+    base = osplat.reserve(size);
   }
-  if base == 0usize { oswin.release(region); return 0usize; }
+  if base == 0usize { osplat.release(region, regionBytes); return 0usize; }
   h.base = base;
   h.size = size;
   h.npages = size >> pageShift;
@@ -1710,13 +1727,13 @@ pub fn cnm_create(s: *Settings) usize {
   h.flags = region + flagsOff;
   h.metaReserve = nTrees * h.treeStride;
   h.descReserve = h.npages * 64usize;
-  h.metaBase = oswin.reserve(h.metaReserve);
-  h.descBase = oswin.reserve(h.descReserve);
+  h.metaBase = osplat.reserve(h.metaReserve);
+  h.descBase = osplat.reserve(h.descReserve);
   if h.metaBase == 0usize || h.descBase == 0usize {
-    if h.metaBase != 0usize { oswin.release(h.metaBase); }
-    if h.descBase != 0usize { oswin.release(h.descBase); }
-    oswin.release(base);
-    oswin.release(region);
+    if h.metaBase != 0usize { osplat.release(h.metaBase, h.metaReserve); }
+    if h.descBase != 0usize { osplat.release(h.descBase, h.descReserve); }
+    osplat.release(base, size);
+    osplat.release(region, regionBytes);
     return 0usize;
   }
   h.mode = s.mode;
@@ -1732,20 +1749,20 @@ pub fn cnm_create(s: *Settings) usize {
   if s.design == 2usize {
     // the second design's descriptors and records: the lock design never reserves them
     h.d2Reserve = h.npages * d2Stride;
-    h.d2Base = oswin.reserve(h.d2Reserve);
+    h.d2Base = osplat.reserve(h.d2Reserve);
     let lfBytes = lfHeadBytes + nClasses * lfClsStride;
-    h.lf = oswin.reserve(lfBytes);
-    if h.d2Base == 0usize || h.lf == 0usize || !oswin.commit(h.lf, lfBytes) {
-      if h.d2Base != 0usize { oswin.release(h.d2Base); }
-      if h.lf != 0usize { oswin.release(h.lf); }
-      oswin.release(h.metaBase);
-      oswin.release(h.descBase);
-      oswin.release(base);
-      oswin.release(region);
+    h.lf = osplat.reserve(lfBytes);
+    if h.d2Base == 0usize || h.lf == 0usize || !osplat.commit(h.lf, lfBytes) {
+      if h.d2Base != 0usize { osplat.release(h.d2Base, h.d2Reserve); }
+      if h.lf != 0usize { osplat.release(h.lf, lfBytes); }
+      osplat.release(h.metaBase, h.metaReserve);
+      osplat.release(h.descBase, h.descReserve);
+      osplat.release(base, size);
+      osplat.release(region, regionBytes);
       return 0usize;
     }
     var cap = s.slotCap;
-    let np = usize.from(GetActiveProcessorCount(0xFFFFu16));
+    let np = osplat.processors();
     if cap > np { cap = np; }
     if cap < 1usize { cap = 1usize; }
     h.slotCap = cap;
@@ -1779,14 +1796,14 @@ pub fn cnm_create(s: *Settings) usize {
     *((region + sizeMapOff + i) as *u8) = u8.from(cl);
     i = i + 1usize;
   }
-  var m = GetModuleHandleA("ucrtbase.dll");
-  if m == 0usize { m = LoadLibraryA("ucrtbase.dll"); }
-  h.ucfree = GetProcAddress(m, "free");
-  h.ucrealloc = GetProcAddress(m, "realloc");
-  h.ucmsize = GetProcAddress(m, "_msize");
-  h.ucafree = GetProcAddress(m, "_aligned_free");
-  h.ucarealloc = GetProcAddress(m, "_aligned_realloc");
-  h.ucamsize = GetProcAddress(m, "_aligned_msize");
+  // where a foreign block goes: the C library's own functions, found by the platform's layer (never by the names this heap's
+  // shim replaces)
+  h.ucfree = osplat.foreignFree();
+  h.ucrealloc = osplat.foreignRealloc();
+  h.ucmsize = osplat.foreignMsize();
+  h.ucafree = osplat.foreignAFree();
+  h.ucarealloc = osplat.foreignARealloc();
+  h.ucamsize = osplat.foreignAMsize();
   region
 }
 
@@ -1809,34 +1826,68 @@ pub fn cnm_boot() usize {
   cnm_defaults(&mut s);
   // the settings text is read into a scratch area, so the heap's own region is not made yet: a small
   // reservation holds it for the moment
-  let tmp = oswin.reserve(65536usize);
+  let tmp = osplat.reserve(65536usize);
   if tmp == 0usize { return 0usize; }
-  if !oswin.commit(tmp, 4096usize) { oswin.release(tmp); return 0usize; }
+  if !osplat.commit(tmp, 4096usize) { osplat.release(tmp, 65536usize); return 0usize; }
   cnm_readEnv(&mut s, tmp);
-  oswin.release(tmp);
+  osplat.release(tmp, 65536usize);
   cnm_create(&mut s)
+}
+
+// FORK SAFETY (row 550). The shim registers these with pthread_atfork (Linux): the C library's own allocator is fork-safe,
+// so the one that replaces it has to be. Before the fork the calling thread takes every lock the heap has, in the one
+// order the LOCK ORDER above allows: each class lock by class number, then the pool's, the large table's and the
+// timer's (the last three are never held while another is taken, so their place after the classes is free). No other
+// thread then holds one across the fork, so the child never waits on a lock whose holder does not exist there. After it,
+// the parent releases them in the reverse order; the child does the same, and has first forgotten its timer, whose thread
+// is not in the child (a later arm makes another).
+pub fn cnm_fork_prepare(hh: usize) {
+  let h = hh as *Heap;
+  var c = 0usize;
+  while c < nClasses { osplat.lock(classAt(h, c) as usize); c = c + 1usize; }
+  osplat.lock(poolOf(h) as usize);
+  osplat.lock(largeOf(h) as usize);
+  osplat.lock(timerOf(h) as usize);
+}
+
+fn forkUnlock(h: *Heap) {
+  osplat.unlock(timerOf(h) as usize);
+  osplat.unlock(largeOf(h) as usize);
+  osplat.unlock(poolOf(h) as usize);
+  var c = nClasses;
+  while c > 0usize { c = c - 1usize; osplat.unlock(classAt(h, c) as usize); }
+}
+
+pub fn cnm_fork_parent(hh: usize) { forkUnlock(hh as *Heap); }
+
+pub fn cnm_fork_child(hh: usize) {
+  let h = hh as *Heap;
+  let t = timerOf(h);
+  t.handle = 0usize;
+  t.armed = 0usize;
+  forkUnlock(h);
 }
 
 // Gives every reservation back (tests only: a process's heap is never destroyed)
 pub fn cnm_destroy(hh: usize) {
   let h = hh as *Heap;
   let t = timerOf(h);
-  if t.handle != 0usize { oswin.timerClose(t.handle); }
+  if t.handle > timerCreating { osplat.timerClose(t.handle); }
   let l = largeOf(h);
   var i = 0usize;
-  while i < cacheSlots { if cacheAt(h, i).addr != 0usize { oswin.release(cacheAt(h, i).base); } i = i + 1usize; }
+  while i < cacheSlots { if cacheAt(h, i).addr != 0usize { osplat.release(cacheAt(h, i).base, cacheAt(h, i).reserved); } i = i + 1usize; }
   var j = 0usize;
   while l.table != 0usize && j < l.cap {
     let e = entryAt(l, j);
-    if e.addr != 0usize { oswin.release(e.base); }
+    if e.addr != 0usize { osplat.release(e.base, e.reserved); }
     j = j + 1usize;
   }
-  if l.table != 0usize { oswin.release(l.table); }
-  if h.design == 2usize { oswin.release(h.d2Base); oswin.release(h.lf); }
-  oswin.release(h.metaBase);
-  oswin.release(h.descBase);
-  oswin.release(h.base);
-  oswin.release(h.region);
+  if l.table != 0usize { osplat.release(l.table, l.tableBytes); }
+  if h.design == 2usize { osplat.release(h.d2Base, h.d2Reserve); osplat.release(h.lf, lfHeadBytes + nClasses * lfClsStride); }
+  osplat.release(h.metaBase, h.metaReserve);
+  osplat.release(h.descBase, h.descReserve);
+  osplat.release(h.base, h.size);
+  osplat.release(h.region, regionBytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -1931,10 +1982,10 @@ pub fn cnm_realloc(hh: usize, p: *u8, n: usize) *u8 {
     memcpy(q as *u8, p, cp);
     largeFree(h, a);
     let l = largeOf(h);
-    oswin.lock(l as usize);
+    osplat.lock(l as usize);
     l.moves = l.moves + 1u64;
     l.copied = l.copied + u64.from(cp);
-    oswin.unlock(l as usize);
+    osplat.unlock(l as usize);
     return q as *u8;
   }
   bumpForeign(h);
@@ -2077,7 +2128,7 @@ pub fn cnm_batch_alloc(hh: usize, cl: usize, n: usize, got: *usize) usize {
     head = a;
     k = k + 1usize;
   }
-  oswin.unlock(c as usize);
+  osplat.unlock(c as usize);
   *got = k;
   head
 }
@@ -2098,7 +2149,7 @@ pub fn cnm_batch_free(hh: usize, cl: usize, head: usize, n: usize) {
     a = nx;
     k = k + 1usize;
   }
-  oswin.unlock(c as usize);
+  osplat.unlock(c as usize);
   if waiting { armIfWaiting(h); }
 }
 
@@ -2210,7 +2261,7 @@ pub fn cnm_print_stats(hh: usize) {
       n = putStr(buf, n, " pages ", 7usize); n = putNum(buf, n, k.pages);
       n = putStr(buf, n, " lockwaits ", 11usize); n = putNum(buf, n, k.waits);
       n = putStr(buf, n, "\n", 1usize);
-      oswin.writeErr(buf, n);
+      osplat.writeErr(buf, n);
     }
     c = c + 1usize;
   }
@@ -2224,7 +2275,7 @@ pub fn cnm_print_stats(hh: usize) {
   n = putStr(buf, n, " commitcalls ", 13usize); n = putNum(buf, n, p.commitCalls);
   n = putStr(buf, n, " decommitcalls ", 15usize); n = putNum(buf, n, p.decommitCalls);
   n = putStr(buf, n, "\n", 1usize);
-  oswin.writeErr(buf, n);
+  osplat.writeErr(buf, n);
   n = putStr(buf, 0usize, "cnmalloc large live ", 20usize);
   n = putNum(buf, n, l.live);
   n = putStr(buf, n, " bytes ", 7usize); n = putNum(buf, n, l.bytes);
@@ -2239,7 +2290,7 @@ pub fn cnm_print_stats(hh: usize) {
   n = putStr(buf, n, " decommits ", 11usize); n = putNum(buf, n, l.nDecommit);
   n = putStr(buf, n, " releases ", 10usize); n = putNum(buf, n, l.nRelease);
   n = putStr(buf, n, "\n", 1usize);
-  oswin.writeErr(buf, n);
+  osplat.writeErr(buf, n);
   if h.cacheCap != 0usize {
     n = putStr(buf, 0usize, "cnmalloc cache cap ", 19usize);
     n = putNum(buf, n, u64.from(h.cacheCap));
@@ -2250,7 +2301,7 @@ pub fn cnm_print_stats(hh: usize) {
     n = putStr(buf, n, " batchreturns ", 14usize); n = putNum(buf, n, h.cReturns);
     n = putStr(buf, n, " batchfills ", 12usize); n = putNum(buf, n, h.cFills);
     n = putStr(buf, n, "\n", 1usize);
-    oswin.writeErr(buf, n);
+    osplat.writeErr(buf, n);
   }
   if h.design == 2usize {
     var cls = 0usize;
@@ -2281,7 +2332,7 @@ pub fn cnm_print_stats(hh: usize) {
         n = putStr(buf, n, " retiresabandoned ", 18usize); n = putNum(buf, n, rd(L + 320usize));
         n = putStr(buf, n, " ruleGundos ", 12usize); n = putNum(buf, n, rd(L + 328usize));
         n = putStr(buf, n, "\n", 1usize);
-        oswin.writeErr(buf, n);
+        osplat.writeErr(buf, n);
       }
       cls = cls + 1usize;
     }
@@ -2290,7 +2341,7 @@ pub fn cnm_print_stats(hh: usize) {
     n = putStr(buf, n, " nonworkersmall ", 16usize); n = putNum(buf, n, h.nonWorker);
     n = putStr(buf, n, " attachedwhollyfree ", 20usize); n = putNum(buf, n, wholly);
     n = putStr(buf, n, "\n", 1usize);
-    oswin.writeErr(buf, n);
+    osplat.writeErr(buf, n);
   }
 }
 
@@ -2308,12 +2359,12 @@ pub fn cnm_print_lock_waits_of(hh: usize) {
       n = putNum(buf, n, u64.from(k.size));
       n = putStr(buf, n, " ", 1usize); n = putNum(buf, n, k.waits);
       n = putStr(buf, n, "\n", 1usize);
-      oswin.writeErr(buf, n);
+      osplat.writeErr(buf, n);
     }
     c = c + 1usize;
   }
   var n = putStr(buf, 0usize, "lockwaits total ", 16usize);
   n = putNum(buf, n, total);
   n = putStr(buf, n, "\n", 1usize);
-  oswin.writeErr(buf, n);
+  osplat.writeErr(buf, n);
 }

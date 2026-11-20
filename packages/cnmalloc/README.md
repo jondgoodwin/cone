@@ -3,18 +3,26 @@
 One shared heap for a process, in Cone, that replaces the C runtime's `malloc` family at the link. Standard C
 allocation API only. **Off by default:** nothing links it unless a program asks.
 
-**Platforms: Windows only** (`congo.toml` declares `os = ["windows"]`). The package calls kernel32 directly and its shim is Win32, so on Linux none of its 13 tests link `[planned: Linux]` (lane-queue row 550; there is no Linux layer yet).
+**Systems:** Windows (x64, MSVC) and, since row 550, **Linux (x64, glibc 2.34 or newer)**. The glibc floor is `dlsym` and
+`pthread_atfork` living in libc itself (older glibc needs `-ldl`, and its `dlsym` allocated on first use), and `__libc_free`,
+`__libc_realloc` and `__libc_memalign` being exported. Not supported: macOS, any other processor, a program that links the C library
+statically (the shim replaces the names the dynamic loader resolves), and a shared library that loads its own allocator and
+interposes `malloc` itself. Making cnmalloc the default on Linux is a separate decision.
 
 ## What is here
 
 | File | What it is |
 |---|---|
-| `src/os.cone` | `mod trait Os`: reserve, commit, decommit, release. The OS layer's interface. |
-| `src/oswin.cone` | The Windows implementation (`VirtualAlloc`, `VirtualFree`) and the few other calls the heap makes: clock, SRW lock, thread-pool timer, stderr. Linux's `mmap` is named in `os.cone`'s comment, not built `[planned: Linux]`. |
+| `src/os.cone` | `mod trait Os`: reserve, commit, decommit, release (with the length). The OS layer's interface. |
+| `src/oswin.cone` | The Windows implementation (`VirtualAlloc`, `VirtualFree`) and the few other calls the heap makes: clock, SRW lock, thread-pool timer, stderr, the settings text, the processor count, the C runtime's functions that foreign blocks go to. |
+| `src/oslinux.cone` | The Linux implementation (row 550): `mmap` PROT_NONE over-mapped and trimmed to 64 KiB for a reserve, `mprotect` to commit, `madvise(MADV_DONTNEED)` plus PROT_NONE to decommit, `munmap` to release; a three-state futex lock on the low 32 bits of the lock word; the give-back timer as one thread of its own parked on a futex; `clock_gettime`, `write`, `_exit`, `getenv`, `sysconf`; foreign blocks to `__libc_free`/`__libc_realloc` and `dlsym(RTLD_NEXT, "malloc_usable_size")`. Each call was probed not to allocate (`Ruminations\cnmalloc-linux-step0-2026-11-19.md`). |
+| `src/osplat.cone` | The one name the heap calls: each function forwards at compile time to `oswin` or `oslinux`. A platform with neither fails at link on `cnmalloc_has_no_os_layer_for_this_platform`. |
+| `src/hosttest.cone` | What the tests ask of the system (sleep, clocks, stderr, a file append, `dlsym`/`GetProcAddress` of the program's own exports, `_msize`/`malloc_usable_size`, `setenv`, private bytes, a foreign block), on both systems, so no test names a system function. Part of the package's root module: `cnmalloc.cnm_host*`. |
 | `src/cnmalloc.cone` | The heap (a C-named module: no prelude, no core, no globals, nothing from Cone's runtime). Its header comment is the design: the page pool and reservation interfaces, the lock order, the concurrency rule. |
 | `shim/cn_shim.c` | The C part (language gaps, below): the one global heap pointer, the lazy compare-and-swap start, the `malloc`/`free`/... names, the `__imp_` pointers, the exit-time statistics hook, the workers' cache, and (row 454) the second design's common paths. |
-| `shim/build-cn.ps1` | Builds `cn.lib` (the package's release object plus `cn_shim.c`) and `cnd.lib` (the same with `-DCN_HOOKS -DCN_DEBUG`: the second design's test hooks, and a double free that aborts). |
-| `tests/` | `edges` (class table, aligned to 1 MiB, API edges, large grow/shrink, foreign blocks, struct layout), `dirty` (the dirty-page test under each give-back setting), `stress` (threads, cross-thread frees, realloc, pattern checks), `idle` (give-back by the timer when the process goes quiet), `spare` (at `giveback=now`, a one-block loop makes no system calls and the page goes back after a quiet gap), `cache` (the workers' cache, through the C runtime's malloc family: checks only when linked with `cn.lib` and `CNMALLOC=cache=<n>`; `CNCACHE_SECS`, `CNCACHE_THREADS`, `CNCACHE_MODE=random\|pc`), and `edges`' batch checks. Row 454's four need the second design linked (`cnd.lib`, `CNMALLOC=design=lockfree,stats,giveback=now`; each says how in its header, and each passes without testing under a plain `congo test`): `lfrace` (retire against late allocation: Rule G undos must be counted, thousands of them, or it fails), `lfpage` (a free raced against a detach: the page must be listed afterwards, every round), `lfstale` (a freer whose page was retired and came back as another class's page between its `fetch_or` and "after a free" must not act on it: every step driven by two park points, deterministic, run with `slots=1`), `doublefree` (the debug build's double-free check, and with a cache a grouped return's). Row 506's two, with `cache=<n>`: `lfmulti` (a multi-bit fill whose compare-and-swap lands on the page's next life gives every bit back in one `fetch_or`, writes no cell, and, when its take emptied the word and the page was detached under it, leaves the page listed; driven, `slots=1`), `lfreturn` (a grouped return reads every link before its first release, so cells another thread allocates and overwrites meanwhile lead nowhere; driven). Variants: `CNRACE_WORKERS=1` (lfrace with worker fills), `CNPAGE_GROUPED=1`, `CNSTALE_GROUPED=1` (the free is a grouped return). `tests/mutants.ps1` breaks the shim ten ways (Rule G's undo, Rule G's generation half, the freer's genclass read after its `fetch_or`, and row 506's m1 to m7 on the fill and the return) and checks that the test meant for each fails on it and that all of them pass unmutated; run it again after a change to the shim's common paths or to "after a free". |
+| `shim/cn_plat.h` | (Row 550) The platform layer of `cn_shim.c`, which is one source for both systems: the thread-local, inline and calling-convention words and every atomic access. A shared word is never `volatile`: each load or store is a `cn_ld*`/`cn_st*` form with its ordering in its name (acquire, relaxed, sequentially consistent, release); on MSVC each is the volatile access or `_Interlocked*` intrinsic the shim used before, on GCC the `__atomic` builtin. `shim/volatile-sites.md` lists the 23 sites. |
+| `shim/build-cn.ps1`, `shim/build-cn.sh` | Build the link shim. Windows: `cn.lib` (the package's release object plus `cn_shim.c`) and `cnd.lib` (the same with `-DCN_HOOKS -DCN_DEBUG`: the second design's test hooks, and a double free that aborts). Linux: `cn_shim.o`, `cn_shim_d.o` (the same two) and `libcnpkg.a` (the package's release object as an archive). |
+| `tests/` | `edges` (class table, aligned to 1 MiB, API edges, large grow/shrink, foreign blocks, struct layout), `dirty` (the dirty-page test under each give-back setting), `stress` (threads, cross-thread frees, realloc, pattern checks), `idle` (give-back by the timer when the process goes quiet), `spare` (at `giveback=now`, a one-block loop makes no system calls and the page goes back after a quiet gap), `timer` (row 550: the timer's creation with a nested arm, on both systems), `forksafe` (row 550, Linux: fork while threads allocate), `cache` (the workers' cache, through the C runtime's malloc family: checks only when linked with the shim and `CNMALLOC=cache=<n>`; `CNCACHE_SECS`, `CNCACHE_THREADS`, `CNCACHE_MODE=random\|pc`), and `edges`' batch checks. **A test that needs the shim reports itself skipped, by name, when the shim is not linked (or its names are not exported), on both systems** (row 550: they used to pass without testing; a plain `congo test` is now 7 passed and 8 skipped, `cache`, `doublefree`, `lfmulti`, `lfpage`, `lfrace`, `lfreturn`, `lfstale` and `forksafe`), so a pass always means cnmalloc ran. Row 454's four need the second design linked (`cnd.lib` / `cn_shim_d.o`, `CNMALLOC=design=lockfree,stats,giveback=now`; each says how in its header): `lfrace` (retire against late allocation: Rule G undos must be counted, thousands of them, or it fails), `lfpage` (a free raced against a detach: the page must be listed afterwards, every round), `lfstale` (a freer whose page was retired and came back as another class's page between its `fetch_or` and "after a free" must not act on it: every step driven by two park points, deterministic, run with `slots=1`), `doublefree` (the debug build's double-free check, and with a cache a grouped return's). Row 506's two, with `cache=<n>`: `lfmulti` (a multi-bit fill whose compare-and-swap lands on the page's next life gives every bit back in one `fetch_or`, writes no cell, and, when its take emptied the word and the page was detached under it, leaves the page listed; driven, `slots=1`), `lfreturn` (a grouped return reads every link before its first release, so cells another thread allocates and overwrites meanwhile lead nowhere; driven). Variants: `CNRACE_WORKERS=1` (lfrace with worker fills), `CNPAGE_GROUPED=1`, `CNSTALE_GROUPED=1` (the free is a grouped return). `tests/mutants.ps1` (Windows) and `tests/mutants.py` (Linux), which read one data file, `tests/mutants.json`, break the shim twelve ways (Rule G's undo, Rule G's generation half, the freer's genclass read after its `fetch_or`, and row 506's m1 to m7 on the fill and the return) and checks that the test meant for each fails on it and that all of them pass unmutated; run it again after a change to the shim's common paths or to "after a free". |
 
 ## Linking it
 
@@ -30,6 +38,43 @@ powershell -File packages\cnmalloc\shim\build-cn.ps1 -Out <dir>        # writes 
   link `cn.lib`.
 * `aio`'s test `alloc` and `iocore`'s test `jobrecord` define their own counting `malloc` family and cannot link with
   any shim.
+
+**Linux** (row 550):
+
+```
+bash packages/cnmalloc/shim/build-cn.sh <dir>        # writes <dir>/cn_shim.o, cn_shim_d.o, libcnpkg.a
+CONGO_LINK_EXTRA="<dir>/cn_shim.o <dir>/libcnpkg.a" python3 tools/congo/congo.py test        # any congo build or test
+```
+
+* `CONGO_LINK_EXTRA` is read by congo's Linux link only: the files go on the link line after the program's objects. The shim is a
+  **plain object**, never an archive member (an archive member is pulled only for a symbol the program names, and a program need not
+  name `malloc`) and never a shared library: its thread-locals are `-ftls-model=initial-exec`, so that no access calls
+  `__tls_get_addr`, which allocates. `libcnpkg.a` supplies `cnm_*` to a program that does not import the package and is not pulled by
+  one that does. The shim is built with `-fno-builtin-malloc` and friends (it is the definition of those names). Like `_LINK_`, the
+  setting is not part of congo's cache key: delete the package's `build/` folder, or pass `--no-cache`, after changing it.
+* Every congo link on Linux exports the shim's own names, `cnmalloc_*`, with `-Wl,--dynamic-list` (not `--export-dynamic`, which would
+  export every symbol of every program), so that `dlsym(RTLD_DEFAULT, name)` finds them: the actors runtime and conestd's heap region
+  look up `cnmalloc_workerBegin/Park/End/ParkMs` and `cnmalloc_sizeFor` that way, as they use `GetProcAddress` on Windows. A test that
+  does not find a name reports itself **skipped**, saying so; it cannot tell "not linked" from "linked but not exported".
+* **What the Linux shim adds.** `malloc_usable_size`, `memalign`, `aligned_alloc`, `posix_memalign`, `valloc`, `pvalloc` and
+  `reallocarray` (the Windows `_msize`, `_aligned_*` family is Windows only). `errno` is set to `ENOMEM` when an allocation answers
+  null. A **foreign block** (made by the dynamic loader or glibc's own start-up before the shim ran, or by `__libc_malloc`) is
+  recognised by not being in the heap's reservation or its large table, and is freed, resized and measured by glibc through
+  `__libc_free`, `__libc_realloc` and `malloc_usable_size` (looked up once, by `dlsym(RTLD_NEXT, ...)` on a name that exists; `dlerror`
+  is never called, since a failed lookup allocates). A **bootstrap buffer** (8 KiB, static) serves the starting thread alone while
+  the heap starts (`g_state` 1), should something under `pthread_atfork` or the timer's `pthread_create` allocate then; a block in it is
+  never freed; `cnmalloc_bootUsed()` says how much of it was ever used.
+* **Fork.** The shim registers `pthread_atfork` handlers: before the fork the calling thread takes every heap lock in the heap's one
+  order (each class lock by number, the pool's, the large table's, the timer's), the parent and the child release them, and the child
+  forgets its timer thread (a later arm makes another). `tests/forksafe.cone` forks 60 times while four threads allocate and checks that
+  every child can allocate.
+* **The timer.** One thread of the heap's own, made by `pthread_create` on the first arm and parked on a futex with a timeout. It is
+  created with the heap's timer lock **not held**, behind a sentinel handle (a nested arm, from the allocation that `pthread_create`
+  makes, returns and the creator arms right after); this is in the shared code, and `tests/timer.cone` forces a nested arm on both systems.
+* **Decommit and the mapping count.** Decommit is `madvise(MADV_DONTNEED)` then `mprotect(PROT_NONE)`, so a stale access faults as on Windows.
+  Each alternation of committed and decommitted pages is a separate mapping, and a process has `vm.max_map_count` of them (usually
+  65,530). The PR reports the peak line count of `/proc/self/maps` of the stress run and of bintrees. If it nears a tenth of the
+  limit, the switch is to `madvise` alone (still zero on recommit, one mapping; a stale access then reads zero instead of faulting).
 
 ## Settings (`CNMALLOC` environment variable, comma separated)
 
@@ -51,7 +96,7 @@ powershell -File packages\cnmalloc\shim\build-cn.ps1 -Out <dir>        # writes 
 `CONE_HEAP_CLASS_SIZE=1`, a separate environment variable and not one of the `CNMALLOC` settings, is read by conestd's
 heap region (`packages/conestd/heapregion.c`), not by cnmalloc: with it set, and cnmalloc linked, the heap answers a
 size request with cnmalloc's class size (the shim's `cnmalloc_sizeFor`), so a collection made at an exact fit grows into
-its cell before it moves. Off by default; Windows only (the lookup is `GetProcAddress`; on Linux it finds nothing until the port's `dlsym` `[planned: Linux]`); a trial.
+its cell before it moves. Off by default; a trial (Windows and Linux).
 
 ## The workers' cache (row 426)
 
@@ -71,7 +116,7 @@ free counters count heap takes and gives, not cache hits.
 The runtime's three calls are exported from the program's own module when `cn.lib` is linked: `cnmalloc_workerBegin()`
 (this thread is a worker), `cnmalloc_workerPark()` (empty the cache, then `cnm_collect`: give back what is due; the
 heap's timer handles what falls due later) and `cnmalloc_workerEnd()` (empty the cache, free the worker's slot). The
-actors runtime finds them by `GetProcAddress` on its own module when each worker starts, so a program without cnmalloc
+actors runtime finds them by `GetProcAddress` on its own module (`dlsym(RTLD_DEFAULT)` on Linux) when each worker starts, so a program without cnmalloc
 calls nothing. A thread that ends without `workerEnd` keeps its cached cells counted as used for good. Up to 512
 workers are cached at once; more run uncached.
 
@@ -148,8 +193,10 @@ prints the lock-wait lines the benchmark runner collects.
    that decides what a standard-API call does. Cone's C-named module could export them.
 6. Found while building: a string literal cannot be cast to `*u8` (1013), so literals reach `memcpy`-like code
    through a `cstr` parameter of an extern with another C name (`strncpy`), and the settings parser compares with `strncmp`.
-7. A module trait (`Os`) cannot be chosen by anything but naming the conforming module (`oswin`) in the code that
-   uses it: there is no way yet to select the implementation by a build setting.
+7. A module trait (`Os`) cannot be chosen by anything but naming the conforming module in the code that
+   uses it: there is no way yet to select the implementation by a build setting. (Row 550: `osplat.cone` names both and forwards each
+   call with `#if #os`; each module is all stubs on the other system, because an unreferenced public function is still emitted and
+   would carry its undefined externals into the object.)
 8. (Row 426) The workers' cache is a C thread-local: a C-named module has no globals, so no thread-locals. The calls
    into the heap that the cache needs (`cnm_cell_class`, `cnm_batch_alloc`, `cnm_batch_free`) are Cone.
 9. (Row 426) The actors runtime reaches the three worker calls by `GetProcAddress` on the program's own module (the
