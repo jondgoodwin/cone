@@ -72,12 +72,6 @@ struct IdleRef {
   stamp: u64;
 }
 
-// An entry of the queue of deadlines: the fetch and its generation
-struct DueRef {
-  fi: u32;
-  gen: u32;
-}
-
 // An entry of the queue of idle origins: the origin, its generation, and the use it was idle after
 struct LruRef {
   oi: u32;
@@ -107,8 +101,6 @@ struct ClientCore {
   idleHeap: PriorityQueue[u64, IdleRef];
   idleLive: usize;            // connections stamped idle
   idleClock: u64;
-  due: PriorityQueue[i64, DueRef];
-  dueLive: usize;             // fetches with an entry in 'due'
   lru: PriorityQueue[u64, LruRef];
 
   fn make(maxOrigins: u32, priorKnowledge: bool, h3Origins: List[String]) ClientCore {
@@ -117,7 +109,7 @@ struct ClientCore {
       byKey: Dict[String, u32](), keyBuf: String(), maxOrigins: maxOrigins, priorKnowledge: priorKnowledge,
       h3Origins: h3Origins, useClock: 0u64, qverNext: 1u64, qordNext: 1u64, dirty: List[u32](),
       oheap: PriorityQueue[FetchKey, OriginRef](), idleHeap: PriorityQueue[u64, IdleRef](), idleLive: 0usize,
-      idleClock: 1u64, due: PriorityQueue[i64, DueRef](), dueLive: 0usize, lru: PriorityQueue[u64, LruRef]())
+      idleClock: 1u64, lru: PriorityQueue[u64, LruRef]())
   }
 
   // ---------------------------------------------------------------------------
@@ -149,20 +141,18 @@ struct ClientCore {
       redirectStatus: 0u16, drained: 0usize, held: 0usize, sent: 0usize, retries: 0u32,
       maxRedirects: 0u32, timing: Timing.zero(), streamed: false, upLen: BodyLength(), upq: Deque[IoBuf](),
       upPushed: 0u64, upEnded: false, upFinished: false, upGone: false, upWritable: false, upAsked: false,
-      qver: 0u64, qord: 0u64, inDue: false, head: RequestHead(), hasHead: false));
+      qver: 0u64, qord: 0u64, head: RequestHead(), hasHead: false));
     (fetches.borrowMutAt(h.index).unwrap()).gen = h.gen;
     liveFetches = liveFetches + 1u32;
     h.index
   }
 
-  // The fetch's record freed: out of its queue and its origin's count, its deadline's entry let go
+  // The fetch's record freed: out of its queue and its origin's count
   fn freeFetchRec(self: &mut, i: u32) {
     let f = fetches.borrowAt(i).unwrap();
     let oi = f.origin;
     let waiting = f.state == fQueued && f.qver != 0u64;
-    let inDue = f.inDue;
     if waiting {self.takeWaiting(i);}
-    if inDue {dueLive = dueLive - 1usize;}
     fetches.removeAt(i);
     liveFetches = liveFetches - 1u32;
     if oi != noEntry {
@@ -647,66 +637,5 @@ struct ClientCore {
     }
     each pr in held.drain() {idleHeap.push(pr.0, pr.1);}
     found
-  }
-
-  // ---------------------------------------------------------------------------
-  // Deadlines
-  // ---------------------------------------------------------------------------
-
-  // Fetch fi's deadline kept in the queue of deadlines (a fetch with a group is watched by the loop's timer)
-  fn addDeadline(self: &mut, fi: u32) {
-    let f = fetches.borrowMutAt(fi).unwrap();
-    if f.inDue {return;}
-    f.inDue = true;
-    let at = f.deadline.nanos();
-    let gen = f.gen;
-    dueLive = dueLive + 1usize;
-    due.push(at, DueRef(fi, gen));
-    if due.len() > 2usize * dueLive + staleSlack {self.purgeDue();}
-  }
-
-  fn dueRefLive(self: &, r: &DueRef) bool {
-    if !fetches.isLive(r.fi) {return false;}
-    let f = fetches.borrowAt(r.fi).unwrap();
-    f.gen == r.gen && f.inDue
-  }
-
-  fn purgeDue(self: &mut) {
-    var old = PriorityQueue[i64, DueRef]();
-    old <-> due;
-    while true {
-      match old.pop() {
-        case let Some(pr) {if self.dueRefLive(&pr.1) {due.push(pr.0, pr.1);}}
-        else {break;}
-      }
-    }
-  }
-
-  // The earliest deadline it holds, or forever(): for the latest a host may wait. The top may be a fetch's
-  // that has ended (the host wakes then, once, and the next 'takeDue' lets it go)
-  fn peekDeadline(self: &) Instant {
-    match due.peek() {
-      case let Some(pr) {Instant.fromNanos(*pr.0)}
-      else {forever()}
-    }
-  }
-
-  // The fetches whose deadline is at or before now, taken out of the queue (each is listed once)
-  fn takeDue(self: &mut, now: Instant) List[u32] {
-    var out = List[u32]();
-    while true {
-      let top = match due.peek() {
-        case let Some(pr) {(*pr.0, DueRef(pr.1.fi, pr.1.gen))}
-        else {break;}
-      };
-      if !self.dueRefLive(&top.1) {due.pop(); continue;}
-      if top.0 > now.nanos() {break;}
-      due.pop();
-      let f = fetches.borrowMutAt(top.1.fi).unwrap();
-      f.inDue = false;
-      dueLive = dueLive - 1usize;
-      out.push(top.1.fi);
-    }
-    out
   }
 }

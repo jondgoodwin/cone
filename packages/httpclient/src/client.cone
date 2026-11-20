@@ -120,7 +120,6 @@ struct Fetch {
   upAsked: bool;             // a BodyRoom event was sent since the last push
   qver: u64;                 // the version of its entry in its origin's queue (0: not waiting)
   qord: u64;                 // its place in the order it was queued (a failed origin's fetches are answered in it)
-  inDue: bool;               // its deadline is in the core's queue of deadlines (it has no group's timer)
   head: RequestHead;         // the request's head, built at its first dispatch (see 'dispatch'), until a redirect changes it
   hasHead: bool;
 
@@ -444,19 +443,20 @@ pub struct Client {
       self.finishFetch(lp, fi, endTimedOut, None);
       return id;
     }
-    // Its group (and the deadline with it) is watched by one timer on the loop, in the group, so a cancel
-    // from another thread wakes the loop. A deadline alone is the core's: one queue of them, which
-    // 'wakeAt' and 'pump' read
+    // Its deadline and group, watched by one timer on the loop
+    let fgen = self.cc.fetches.borrowAt(fi).unwrap().gen;
+    let wt = drv.upperToken(lp, kWatch, (u64.from(fgen & watchGenMask) << 24u64) | u64.from(fi));
     match g {
       case let Some(gv) {
-        let fgen = self.cc.fetches.borrowAt(fi).unwrap().gen;
-        let wt = drv.upperToken(lp, kWatch, (u64.from(fgen & watchGenMask) << 24u64) | u64.from(fi));
         let at = if dl < forever() {dl} else {now + Duration.fromHours(87600i64)};
         let w = lp.afterIn(at, Target.Here(wt), gv);
         self.cc.fetches.borrowMutAt(fi).unwrap().watch = w;
       }
       else {
-        if dl < forever() {cc.addDeadline(fi);}
+        if dl < forever() {
+          let w = lp.after(dl, Target.Here(wt));
+          self.cc.fetches.borrowMutAt(fi).unwrap().watch = w;
+        }
       }
     }
     self.enqueue(fi);
@@ -757,9 +757,6 @@ pub struct Client {
     var w = drv.wakeAt();
     let pw = h3.wakeAt();
     if pw < w {w = pw;}
-    // The earliest deadline among fetches without a group (one that has passed was taken at the last pump)
-    let dd = cc.peekDeadline();
-    if dd < w {w = dd;}
     // An HTTP/3 attempt's deadline: it falls back then
     var k = 0usize;
     while k < attempts.len() {
@@ -819,7 +816,6 @@ pub struct Client {
   // events for this thread to out: how many
   pub fn pump(self: &mut, lp: &mut Loop, out: &uni List[Event]) usize {
     var rounds = 0u32;
-    self.deadlinesDue(lp);
     while rounds < 64u32 {
       let got = self.takeDriverEvents(lp) + self.takeH3Events(lp);
       self.learnAll();
@@ -833,18 +829,6 @@ pub struct Client {
       rounds = rounds + 1u32;
     }
     self.handOver(out)
-  }
-
-  // The fetches whose deadline has come, ended TimedOut (those with a group have the loop's timer)
-  fn deadlinesDue(self: &mut, lp: &mut Loop) {
-    if cc.dueLive == 0usize {return;}
-    let late = cc.takeDue(Instant.now());
-    var k = 0usize;
-    while k < late.len() {
-      let fi = *late[k];
-      if self.fetchLive(fi) {self.cancelFetch(lp, fi, endTimedOut);}
-      k = k + 1usize;
-    }
   }
 
   // The driver's events, each to the fetch or connection it is about: how

@@ -541,8 +541,9 @@ fn stepN(cl: &mut Client, svs: &mut List[Srv], lp: &mut Loop, out: &uni List[Eve
   cl.pump(lp, out);
   var j = 0usize;
   while j < svs.len() {
-    let s = &mut svs[j];
+    var s = svs.remove(j);
     s.drv.pump(lp, &uni sevs);
+    svs.insert(j, s);
     j = j + 1usize;
   }
   var limit = until;
@@ -563,8 +564,10 @@ fn stepN(cl: &mut Client, svs: &mut List[Srv], lp: &mut Loop, out: &uni List[Eve
     if !cl.complete(lp, c) {
       j = 0usize;
       while j < svs.len() {
-        let s = &mut svs[j];
-        if s.drv.complete(lp, c) {break;}
+        var s = svs.remove(j);
+        let mine = s.drv.complete(lp, c);
+        svs.insert(j, s);
+        if mine {break;}
         j = j + 1usize;
       }
     }
@@ -573,14 +576,15 @@ fn stepN(cl: &mut Client, svs: &mut List[Srv], lp: &mut Loop, out: &uni List[Eve
   comps.clear();
   j = 0usize;
   while j < svs.len() {
-    let s = &mut svs[j];
+    var s = svs.remove(j);
     var evs = List[httpconn.Event]();
     s.drv.pump(lp, &uni evs);
     var e = 0usize;
     while e < evs.len() {
-      serve(s, lp, &mut evs[e]);
+      serve(&mut s, lp, &mut evs[e]);
       e = e + 1usize;
     }
+    svs.insert(j, s);
     j = j + 1usize;
   }
   cl.pump(lp, out);
@@ -848,8 +852,9 @@ fn twoOrigins(lp: &mut Loop, svs: &mut List[Srv], pa: u16, pb: u16) {
 fn stopAll(svs: &mut List[Srv], lp: &mut Loop) {
   var j = 0usize;
   while j < svs.len() {
-    let s = &mut svs[j];
-    stopServer(s, lp);
+    var s = svs.remove(j);
+    stopServer(&mut s, lp);
+    svs.insert(j, s);
     j = j + 1usize;
   }
 }
