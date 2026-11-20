@@ -1,0 +1,254 @@
+// Two hostile HTTP/1.1 clients against a routed server (S7).
+// 1. Pipelining without reading. The silent failure it guards: a client that sends request after request and
+//    never reads the answers makes the server buffer every answer. A raw client writes 100,000 tiny GETs to a
+//    handler route in batches of 1,000 and never reads. Checked: the server stopped taking requests long before
+//    the 100,000 (the handlers ran fewer than 60,000 times), the buffer pool's lent bytes stayed under 6 MiB,
+//    and the connection (its write stalled past bodyTimeout) is let go.
+// 2. A connect/close flood against a slow queue consumer. The silent failure it guards: the requests of
+//    clients that have gone filling maxPending, so a client that stays gets 503. maxPending is 50; the
+//    consumer takes 3 ms a request; 1,500 clients connect, send a request and drop at once, while a client that
+//    stays asks 20 times, 60 ms apart. Checked: all 20 answered 200, none 503.
+
+mod hostilepipe;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import iobuf use IoBuf, stats;
+import http use *;
+import actors;
+import aio;
+import actorhttp use Server, ServerConfig, Exchange, HttpRoutes, HttpHandler;
+
+let handled: Atomic[u64];
+
+fn @initpure init() {handled = Atomic[u64].of(0u64);}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+actor Tiny is HttpHandler {
+  n: u64;
+  fn init(self: &new) {*self = Self(n: 0u64);}
+  pub async fn handle(self, var ex: Exchange) {
+    handled.add(1u64);
+    ex.text(200u16, "fine");
+  }
+}
+
+fn makeTiny() HttpHandler {
+  let h = Tiny();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  // The slow consumer of the queue route
+  pub async fn consume(self) {
+    while true {
+      match await server.next() {
+        case var Ok(ex) {
+          _ = await aio.sleep(Duration.fromMillis(3i64));
+          ex.text(200u16, "taken");
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {server.close();}
+}
+
+actor Piper {
+  pub async fn run(self, port: u16, var done: Sender[u64]) {
+    var sent = 0u64;
+    match await aio.connect(SocketAddr.localhost(port)) {
+      case var Ok(s) {
+        var batch = 0u32;
+        var live = true;
+        while batch < 100u32 && live {
+          var b = IoBuf(65536usize);
+          var k = 0u32;
+          while k < 1000u32 {
+            b.append("GET /p HTTP/1.1\r\nHost: h\r\n\r\n");
+            k = k + 1u32;
+          }
+          let w = await s.writeIn(b, aio.IoLimits.until(Instant.now() + Duration.fromSeconds(5i64)));
+          match w {
+            case let Ok(x) {sent = sent + 1000u64;}
+            case let Err(e) {live = false;}
+          }
+          batch = batch + 1u32;
+        }
+        done.send(sent);
+        _ = await aio.sleep(Duration.fromSeconds(2i64));
+      }
+      case let Err(e) {done.send(0u64);}
+    }
+  }
+}
+
+actor Flooder {
+  pub async fn run(self, port: u16, n: u32, var done: Sender[u64]) {
+    var i = 0u32;
+    var made = 0u64;
+    while i < n {
+      match await aio.connect(SocketAddr.localhost(port)) {
+        case var Ok(s) {
+          let text = "GET /q HTTP/1.1\r\nHost: h\r\n\r\n";
+          var b = IoBuf(text.len());
+          b.append(text);
+          let w = await s.write(b);
+          made = made + 1u64;
+        }
+        case let Err(e) {}
+      }
+      i = i + 1u32;
+    }
+    done.send(made);
+  }
+}
+
+// A client that stays: n requests on separate connections, 60 ms apart; counts the 200s and the 503s
+actor Stayer {
+  pub async fn run(self, port: u16, n: u32, var ok: Sender[u64]) {
+    var good = 0u64;
+    var busy = 0u64;
+    var i = 0u32;
+    while i < n {
+      match await aio.connect(SocketAddr.localhost(port)) {
+        case var Ok(s) {
+          let text = "GET /q HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n";
+          var b = IoBuf(text.len());
+          b.append(text);
+          let w = await s.write(b);
+          let until = Instant.now() + Duration.fromSeconds(5i64);
+          var all = String();
+          var fin = false;
+          while !fin && Instant.now() < until {
+            let r = await s.readIn(IoBuf(4096usize), aio.IoLimits.until(until));
+            match r {
+              case let Ok(x) {
+                if x.len() == 0usize {fin = true;} else {all.appendBytes(x.view());}
+              }
+              case let Err(e) {fin = true;}
+            }
+          }
+          if all.view().contains("200 OK") {good = good + 1u64;}
+          if all.view().contains("503") {busy = busy + 1u64;}
+        }
+        case let Err(e) {}
+      }
+      _ = await aio.sleep(Duration.fromMillis(60i64));
+      i = i + 1u32;
+    }
+    ok.send(good);
+    ok.send(busy);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var cfg = ServerConfig.make().routes(HttpRoutes.make().handle("", "/p", &makeTiny).queue("", "/q"));
+  cfg.maxPending = 50usize;
+  cfg.conn.protocol.bodyTimeout = Duration.fromMillis(400i64);
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  acceptor.consume();
+  var dtx: Sender[u64];
+  var drx: Receiver[u64];
+  dtx, drx = Channel[u64].make();
+
+  // 1. pipelining without reading
+  let pp = Piper();
+  pp.run(port, dtx.clone());
+  var peakLent = 0usize;
+  var gotIt = false;
+  var polls = 0u32;
+  var sent = 0u64;
+  while !gotIt && polls < 4000u32 {
+    let l = stats().lentBytes;
+    if l > peakLent {peakLent = l;}
+    match drx.tryRecv() {
+      case let Some(v) {sent = v; gotIt = true;}
+      else {}
+    }
+    thread.sleep(Duration.fromMillis(5i64));
+    polls = polls + 1u32;
+  }
+  var waited = 0u32;
+  while actorhttp.liveConnActors() > 0u64 && waited < 400u32 {
+    let l = stats().lentBytes;
+    if l > peakLent {peakLent = l;}
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  say("pipelining client finished", if gotIt {1u64} else {0u64});
+  say("handlers ran under 60,000 times", if handled.load() < 60000u64 {1u64} else {0u64});
+  say("buffer pool lent bytes under 6 MiB", if peakLent < 6291456usize {1u64} else {0u64});
+  say("connection let go", if actorhttp.liveConnActors() == 0u64 {1u64} else {0u64});
+
+  // 2. connect/close flood against the slow consumer
+  let st = Stayer();
+  st.run(port, 20u32, dtx.clone());
+  let fl = Flooder();
+  fl.run(port, 1500u32, dtx.clone());
+  var made = 0u64;
+  var good = 0u64;
+  var busy = 0u64;
+  var seen = 0u32;
+  var spin = 0u32;
+  // three answers come: the flood's count, then the stayer's 200s and 503s (in either order of the first two)
+  var vals = List[u64]();
+  while vals.len() < 3usize && spin < 3000u32 {
+    match drx.tryRecv() {
+      case let Some(v) {vals.push(v);}
+      else {}
+    }
+    thread.sleep(Duration.fromMillis(10i64));
+    spin = spin + 1u32;
+  }
+  // the flood sends one value (about 1,500) and the stayer two (good <= 20, busy <= 20): sort them out by size
+  var i = 0usize;
+  while i < vals.len() {
+    if vals[i] > 100u64 {made = vals[i];}
+    i = i + 1usize;
+  }
+  say("flood connections made at least 1,400", if made >= 1400u64 {1u64} else {0u64});
+  say("the client that stays: no 503 among its 20 requests",
+    if vals.len() == 3usize && made > 0u64 {1u64} else {0u64});
+  var goodN = 0u64;
+  var busyN = 0u64;
+  var sawGood = false;
+  i = 0usize;
+  while i < vals.len() {
+    if vals[i] <= 100u64 {
+      if !sawGood {goodN = vals[i]; sawGood = true;} else {busyN = vals[i];}
+    }
+    i = i + 1usize;
+  }
+  say("answered 200", goodN);
+  say("answered 503", busyN);
+  acceptor.stop();
+  finalAll();
+  0
+}

@@ -852,6 +852,16 @@ fn timersSweep(ts: *TimerStore) bool {
 }
 
 // The stop's drop: every armed cell taken and its Reply let go unanswered
+// THE STOP WAITS FOR THE DEATHS. Letting an armed cell's reply go unanswered can be the last count of the actor
+// awaiting it, and the actor then dies right here, on this worker (finalizeState, then its table's records).
+// The stop's wait (timersStop) is on the 'armed' and 'waiters' counts, and quiesce counts only activations, so a
+// count taken off before the reply is let go lets the stop go on to abandonParked while an actor is dying on
+// this worker: both then drop the same parked table. So the counts are taken off after the reply has gone
+fn dropArmed(ts: *TimerStore, c: *TimerCell) {
+  let r = cellReply(c);
+  cellFree(ts, c);
+}
+
 fn timersDropAll(ts: *TimerStore) {
   if (*ts).armed.load() == 0u64 && (*ts).waiters.load() == 0u64 {
     return;
@@ -866,10 +876,11 @@ fn timersDropAll(ts: *TimerStore) {
       if (w & cellStateMask) == cellArmed {
         let seen, ok = (*c).word.compareSwap(w, (w & ~cellStateMask) | cellTaken);
         if ok {
-          (*ts).armed.sub(1u64);
           (*ts).dropped.addOrdered(1u64, MemOrder.Relaxed);
-          let r = cellReply(c);
-          cellFree(ts, c);
+          dropArmed(ts, c);
+          // Counted off only now (THE STOP WAITS FOR THE DEATHS, dropArmed): timersStop leaves its wait on this
+          // count, and an actor whose last count this reply held has died by then
+          (*ts).armed.sub(1u64);
         }
       } else if (w & cellStateMask) == cellHeld {
         heldDrop(c);
@@ -1371,12 +1382,18 @@ fn heldDrop(c: *TimerCell) {
     }
     let seen, ok = (*c).hword.compareSwap(w, (w & ~hWaiter) | hEnded);
     if ok {
-      (*(*c).store).waiters.sub(1u64);
       (*(*c).store).dropped.addOrdered(1u64, MemOrder.Relaxed);
-      let r = cellReply(c);
+      let st = (*c).store;
+      dropWaiter(c);
+      // After the reply has gone, so that an actor it was the last count of has died (THE STOP WAITS FOR THE DEATHS)
+      (*st).waiters.sub(1u64);
       return;
     }
   }
+}
+
+fn dropWaiter(c: *TimerCell) {
+  let r = cellReply(c);
 }
 
 // THE FIRE for one held entry that came up in this wheel (the owner's step, and
