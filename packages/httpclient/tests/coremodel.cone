@@ -786,23 +786,35 @@ fn modelRound(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, port: u16, seed: u64
   expectUInt(fs.after, 0u64, "...none has an event after it");
 }
 
-// Two origins, room for one connection in all: the order each is served in, and who is first
+// Drive every server and the client for a while, counting the answers
+fn countN(cl: &mut Client, svs: &mut List[Srv], lp: &mut Loop, fs: &mut Finals, d: Duration) {
+  var out = List[Event]();
+  let until = Instant.now() + d;
+  while Instant.now() < until {
+    stepN(cl, svs, lp, &uni out, until);
+    account(cl, fs, &mut out);
+  }
+}
+
+// Two origins, room for one connection in all: random requests, then random cancels and reprioritizes while
+// they wait (after the client has looked at them once, so the origins' first requests change under it); the
+// order each is served in, and who is first
 fn twoOrigins(lp: &mut Loop, svs: &mut List[Srv], pa: u16, pb: u16) {
   var cfg = Config.make();
   cfg.maxPerOrigin = 1u32;
   cfg.maxTotal = 1u32;
   var cl = Client.make(cfg);
   var rng = Rng(77u64);
+  var fs = finals();
   // A held by a blocker, so everything waits until it goes
   let blocker = cl.send(lp, Request.get(url(pa, "/hang").view()), Sink.Here(1u64));
-  idleN(&mut cl, svs, lp, Duration.fromMillis(60i64));
+  countN(&mut cl, svs, lp, &mut fs, Duration.fromMillis(60i64));
   let baseA = (&svs[0usize]).order.len();
   let baseB = (&svs[1usize]).order.len();
   var ma = Model(List[u64](), List[i64](), List[bool](), List[FetchId]());
   var mb = Model(List[u64](), List[i64](), List[bool](), List[FetchId]());
-  var bestRank = 9u64;
-  var bestScore = 0i64;
-  var bestInA = true;
+  var gInA = List[bool]();
+  var gAt = List[usize]();
   var i = 0usize;
   while i < 40usize {
     let inA = roll(&mut rng, 2u64) == 0u64;
@@ -811,13 +823,9 @@ fn twoOrigins(lp: &mut Loop, svs: &mut List[Srv], pa: u16, pb: u16) {
     let port = if inA {pa} else {pb};
     let count = if inA {ma.rank.len()} else {mb.rank.len()};
     let r = ordered(port, numbered(u64.from(count)).view(), intentOf(rank), score);
-    // the first asked among the best intent and score is first overall
-    if rank < bestRank || (rank == bestRank && score > bestScore) {
-      bestRank = rank;
-      bestScore = score;
-      bestInA = inA;
-    }
     let id = cl.send(lp, r, Sink.Here(1u64));
+    gInA.push(inA);
+    gAt.push(count);
     if inA {
       ma.rank.push(rank);
       ma.score.push(score);
@@ -831,11 +839,60 @@ fn twoOrigins(lp: &mut Loop, svs: &mut List[Srv], pa: u16, pb: u16) {
     }
     i = i + 1usize;
   }
+  countN(&mut cl, svs, lp, &mut fs, Duration.fromMillis(40i64));
+  var cancelledN = 0u64;
+  var o = 0usize;
+  while o < 80usize {
+    let k = usize.from(roll(&mut rng, 40u64));
+    let which = roll(&mut rng, 2u64);
+    let inA = *gInA[k];
+    let at = *gAt[k];
+    let alive = if inA {*ma.alive[at]} else {*mb.alive[at]};
+    let id = if inA {*ma.ids[at]} else {*mb.ids[at]};
+    if which == 0u64 {
+      if alive {
+        cl.cancel(lp, id);
+        if inA {ma.alive.set(at, false);} else {mb.alive.set(at, false);}
+        cancelledN = cancelledN + 1u64;
+      }
+    } else if alive {
+      let rank = roll(&mut rng, 4u64);
+      let score = i64.from(roll(&mut rng, 5u64));
+      if cl.reprioritize(id, intentOf(rank), score) {
+        if inA {
+          ma.rank.set(at, rank);
+          ma.score.set(at, score);
+        } else {
+          mb.rank.set(at, rank);
+          mb.score.set(at, score);
+        }
+      }
+    }
+    o = o + 1usize;
+  }
+  countN(&mut cl, svs, lp, &mut fs, Duration.fromMillis(20i64));
+  // the first asked among the best intent and score of those left is first overall
+  var bestRank = 9u64;
+  var bestScore = 0i64;
+  var bestInA = true;
+  var q = 0usize;
+  while q < gInA.len() {
+    let inA = *gInA[q];
+    let at = *gAt[q];
+    let alive = if inA {*ma.alive[at]} else {*mb.alive[at]};
+    let rank = if inA {*ma.rank[at]} else {*mb.rank[at]};
+    let score = if inA {*ma.score[at]} else {*mb.score[at]};
+    if alive && (rank < bestRank || (rank == bestRank && score > bestScore)) {
+      bestRank = rank;
+      bestScore = score;
+      bestInA = inA;
+    }
+    q = q + 1usize;
+  }
   cl.cancel(lp, blocker);
   // Which server sees a request first: told as the loop turns
   var firstInA = true;
   var seenFirst = false;
-  var fs = finals();
   var out = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(15i64);
   while fs.done + fs.cancelled + fs.timedOut + fs.failed < 41u64 && Instant.now() < giveUp {
@@ -844,24 +901,15 @@ fn twoOrigins(lp: &mut Loop, svs: &mut List[Srv], pa: u16, pb: u16) {
       if (&svs[0usize]).order.len() > baseA {firstInA = true; seenFirst = true;}
       else if (&svs[1usize]).order.len() > baseB {firstInA = false; seenFirst = true;}
     }
-    var k = 0usize;
-    while k < out.len() {
-      let e = &mut out[k];
-      k = k + 1usize;
-      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
-      if e.isTerminal() {
-        if e.kind == EventKind.Done {fs.done = fs.done + 1u64;}
-        else if e.kind == EventKind.Cancelled {fs.cancelled = fs.cancelled + 1u64;}
-        else {fs.failed = fs.failed + 1u64;}
-      }
-    }
-    out.clear();
+    account(&mut cl, &mut fs, &mut out);
   }
-  expectUInt(fs.done, 40u64, "two origins, one connection in all: forty Done");
-  expectUInt(fs.cancelled, 1u64, "...the blocker Cancelled");
+  expectUInt(fs.done, 40u64 - cancelledN, "two origins, one connection in all: the requests left are Done");
+  expectUInt(fs.cancelled, cancelledN + 1u64, "...the cancelled ones and the blocker Cancelled");
+  expect(cancelledN > 0u64 && cancelledN < 40u64, "...some were cancelled, some left");
   expect(seenFirst && firstInA == bestInA, "...the origin whose first request is first overall is served first");
   expectStr(orderSince(&svs[0usize], baseA).view(), expectedOrder(&ma).view(), "...origin A's in the reference order") ;
   expectStr(orderSince(&svs[1usize], baseB).view(), expectedOrder(&mb).view(), "...origin B's in the reference order");
+  expectUInt(fs.after, 0u64, "...none has an event after its final answer");
   cl.abortAll(lp);
   idleN(&mut cl, svs, lp, Duration.fromMillis(30i64));
 }
@@ -923,6 +971,43 @@ fn originCaps(lp: &mut Loop) {
   cl2.abortAll(lp);
   idleN(&mut cl2, &mut live, lp, Duration.fromMillis(30i64));
   stopAll(&mut live, lp);
+}
+
+// The origin cap never drops an origin that has a fetch under way, whatever its place among the idle ones
+fn capSparesBusy(lp: &mut Loop) {
+  var cfg = Config.make();
+  cfg.maxOrigins = 2u32;
+  var cl = Client.make(cfg);
+  var svs = List[Srv]();
+  var ports = List[u16]();
+  var k = 0usize;
+  while k < 3usize {
+    svs.push(server());
+    let s = &mut svs[k];
+    ports.push(listen(s, lp));
+    k = k + 1usize;
+  }
+  var fs = finals();
+  cl.send(lp, Request.get(url(*ports[0usize], "/hello").view()), Sink.Here(1u64));
+  collectN(&mut cl, &mut svs, lp, &mut fs, 1u64);
+  cl.send(lp, Request.get(url(*ports[1usize], "/hello").view()), Sink.Here(1u64));
+  collectN(&mut cl, &mut svs, lp, &mut fs, 2u64);
+  cl.closeIdle(lp);
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(100i64));
+  expectUInt(u64.from(cl.stats().origins), 2u64, "two origins, both idle");
+  // the first has a request that never answers; a third origin needs the room
+  let held = cl.send(lp, Request.get(url(*ports[0usize], "/hang").view()), Sink.Here(1u64));
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(60i64));
+  cl.send(lp, Request.get(url(*ports[2usize], "/hello").view()), Sink.Here(1u64));
+  collectN(&mut cl, &mut svs, lp, &mut fs, 3u64);
+  expectUInt(fs.done, 3u64, "...a third origin's fetch: Done");
+  expectUInt(u64.from(cl.stats().origins), 2u64, "...the idle origin was dropped for it, the busy one kept");
+  cl.cancel(lp, held);
+  collectN(&mut cl, &mut svs, lp, &mut fs, 4u64);
+  expectUInt(fs.cancelled, 1u64, "...and the busy origin's request is still answered, Cancelled");
+  cl.abortAll(lp);
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(30i64));
+  stopAll(&mut svs, lp);
 }
 
 // The connection closed to make room for another origin's is the one idle longest, not the first origin's
@@ -1028,6 +1113,7 @@ fn main() i32 {
   twoOrigins(&mut lp, &mut svs, pa, pb);
   originCaps(&mut lp);
   idleOrder(&mut lp);
+  capSparesBusy(&mut lp);
   streamLimit(&mut lp);
 
   stopAll(&mut svs, &mut lp);
