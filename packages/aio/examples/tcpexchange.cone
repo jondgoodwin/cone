@@ -1,0 +1,180 @@
+// A kept-alive TCP exchange: how long a request and its reply take over one loopback connection (a client
+// writes 40 bytes and reads the echo; a server actor reads and echoes), the server's read waiting each
+// time. It is the speed check of TCP ON THE WORKER PORT (aio.cone): the same program runs on a build
+// with TCP on the Loop and one with TCP on the worker port, and the two rows are compared. Run it with
+//
+//   congo run --release packages/aio/examples/tcpexchange.cone -- [pairs] [exchanges] [rounds]
+//
+// 'pairs' connections (default 1) run at once, each 'exchanges' request/reply pairs (default 20000), for
+// 'rounds' rounds (default 5), after one round to warm up. It prints, for each round, the microseconds a
+// pair took per exchange (wall time of the round over the exchanges of one pair), then the median, and
+// 'handedOver' (the records the awaits gave to the I/O thread) over the rounds. Only a quiet machine gives
+// numbers worth comparing.
+
+mod tcpexchange;
+
+import stdio use *;
+import collections use List;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import time use Instant, Duration;
+import process;
+import thread;
+import actors;
+import aio use Socket;
+
+struct State {
+  pub finished: Atomic[u64];   // clients done in this round
+  pub bad: Atomic[u64];        // replies that were not 40 bytes
+}
+
+let st: State;
+
+fn @initpure init() {
+  st = State(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {panic("socketOf: the operation failed");}
+  }
+  s
+}
+
+actor Server {
+  pub async fn serve(self, s: Socket, n: u32) {
+    var k = 0u32;
+    while k < n {
+      let r = await s.read(IoBuf(64usize));
+      match r {
+        case let Ok(b) {
+          if b.len() == 0usize {break;}
+          let w = await s.write(b);
+          k = k + 1u32;
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+}
+
+actor Client {
+  pub async fn run(self, c: Socket, n: u32) {
+    var k = 0u32;
+    var bad = 0u64;
+    while k < n {
+      var req = IoBuf(64usize);
+      let w = req.whole();
+      w[0usize] = u8.from(k % 251u32);
+      req.setLen(40usize);
+      let sent = await c.write(req);
+      let back = await c.read(IoBuf(64usize));
+      match back {
+        case let Ok(bb) {if bb.len() != 40usize {bad = bad + 1u64;}}
+        else {bad = bad + 1u64;}
+      }
+      k = k + 1u32;
+    }
+    st.bad.add(bad);
+    st.finished.add(1u64);
+  }
+}
+
+actor Lead {
+  pub async fn run(self, pairs: u32, n: u32) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    var i = 0u32;
+    while i < pairs {
+      let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
+      let d = socketOf(await ls.accept());
+      Server().serve(d, n);
+      Client().run(c, n);
+      i = i + 1u32;
+    }
+  }
+}
+
+fn arg(i: usize, dflt: u64) u64 {
+  let args = process.args();
+  match args.get(i) {
+    case let Some(s) {u64.parse(s.view()) || dflt}
+    else {dflt}
+  }
+}
+
+fn main() i32 {
+  let pairs = u32.from(arg(1usize, 1u64));
+  let n = u32.from(arg(2usize, 20000u64));
+  let rounds = u32.from(arg(3usize, 5u64));
+  // A fourth argument sets Options.injectEvery (how often a busy worker looks at the worker port)
+  let ie = u32.from(arg(4usize, 0u64));
+  if ie != 0u32 {actors.configure(actors.Options(injectEvery: ie));}
+  var us = List[i64]();
+  let h0 = aio.opStats().handedOver;
+  var r = 0u32;
+  while r < rounds + 1u32 {
+    st.finished.store(0u64);
+    let t0 = Instant.now();
+    Lead().run(pairs, n);
+    while st.finished.load() < u64.from(pairs) {
+      if t0.elapsed() > Duration.fromSeconds(120i64) {
+        printStr("tcpexchange: timed out\n");
+        return 2;
+      }
+      thread.sleep(Duration.fromMillis(1i64));
+    }
+    let took = t0.elapsed().nanos();
+    // round 0 is a warm-up
+    if r > 0u32 {
+      let per = took / i64.from(n) / 1000i64;
+      us <- per;
+      printStr("round ");
+      printUInt(u64.from(r));
+      printStr(": ");
+      printUInt(u64.from(per));
+      printStr(" us per exchange (");
+      printUInt(u64.from(took / 1000000i64));
+      printStr(" ms)\n");
+    }
+    r = r + 1u32;
+  }
+  var sorted = List[i64]();
+  var a = 0usize;
+  while a < us.len() {
+    var at = sorted.len();
+    sorted <- us[a];
+    while at > 0usize && sorted[at - 1usize] > us[a] {
+      sorted[at] = sorted[at - 1usize];
+      at = at - 1usize;
+    }
+    sorted[at] = us[a];
+    a = a + 1usize;
+  }
+  printStr("median ");
+  printUInt(u64.from(sorted[sorted.len() / 2usize]));
+  printStr(" us per exchange, best ");
+  printUInt(u64.from(sorted[0usize]));
+  printStr(", bad ");
+  printUInt(st.bad.load());
+  printStr(", handedOver ");
+  printUInt(aio.opStats().handedOver - h0);
+  printStr("\n");
+  let ps = actors.pollerStats();
+  printStr("poller: waits ");
+  printUInt(ps.waits);
+  printStr(", entries ");
+  printUInt(ps.entries);
+  printStr(", busyPolls ");
+  printUInt(ps.busyPolls);
+  printStr("\n");
+  if st.bad.load() != 0u64 {return 1;}
+  0
+}

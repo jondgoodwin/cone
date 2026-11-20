@@ -925,6 +925,10 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
   let c = hereCounts();
   bump(&mut (*c).started as *u64);
   let w = a.what;
+  // A read with no buffer on a socket of the worker port: its own flow (readAnyHere); false: the Loop's
+  if w == opRecvAny && udpOn.load() && readAnyHere(ctx as *OpRec[Ask], c) {
+    return;
+  }
   if w == opRecv || w == opSend || w == opRecvFrom || w == opSendTo || w == opRecvMany {
     let sh = sharedNow();
     let h = (*(ctx as *OpCore)).handle;
@@ -940,8 +944,8 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
         if dgram {sh.unlockShared(h);} else {sh.unlock(h);}
         bump(&mut (*c).here as *u64);
         answerRec(ctx as *OpRec[Ask]);
-        // A UDP send needs no pass once UDP's completions go to the worker port, never to the Loop's
-        if w == opSend || (w == opSendTo && !udpOn.load()) {
+        // A send needs no pass once the sockets' completions go to the worker port, never to the Loop's
+        if (w == opSend || w == opSendTo) && !udpOn.load() {
           askPass();
         }
         return;
@@ -955,7 +959,8 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
       if dgram {sh.unlockShared(h);} else {sh.unlock(h);}
       // A datagram operation the try left, on a socket bound onto the worker port: it waits there, in
       // its entry, and never on the Loop
-      if dgram && got == issueNot && udpOn.load() && waitHere(ctx as *OpRec[Ask], c) {
+      // (and so does a stream's, on a socket the worker port holds: TCP ON THE WORKER PORT)
+      if got == issueNot && udpOn.load() && waitHere(ctx as *OpRec[Ask], c) {
         return;
       }
     }
@@ -968,7 +973,7 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
 // THE POLLER). At the first bindUdp the Loop is given the runtime's worker port, so every UDP socket
 // bound from then on is registered there, and the one worker in the port at a time (the poller)
 // answers what its entries say: a datagram for a waiting receive costs one wake, and nothing of UDP
-// crosses to the I/O thread. TCP and files stay on the Loop.
+// crosses to the I/O thread. Files stay on the Loop; TCP is the next section.
 //
 // A datagram operation tries on its own worker, as ever (the shared try, under the entry's shared
 // lock). If it finds nothing to do, 'waitHere' hands it to iocore's issueWaiting (no lock held),
@@ -991,6 +996,20 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
 // abandoned. Windows: the kernel holds each waiting record until its completion comes to the port;
 // the Loop's death closes the sockets (aborting them), and the I/O thread waits (waitUdpHome) until
 // the poller has taken them all, each abandoned, its buffer home, before it ends.
+//
+// TCP ON THE WORKER PORT (iocore's shared.cone, the same name). With the port on, a listener (ListenJob)
+// and a connect (connectIn) are made with 'onWorkers': the sockets they give (accepted, connected)
+// are worker-side, and so is a UDP socket bound here (BindUdpJob). A read (with a buffer, or with none:
+// opRecvAny), a write and a half-close on such a socket then go the way a datagram's does: tried on the
+// caller's worker, and if it cannot finish, listed in the socket's entry (waitHere) and answered at the
+// port, so a kept-alive exchange costs no hand-over to the I/O thread (opStats().handedOver stays put).
+// What stays on the I/O thread: accept, connect, reset and close (a close and a reset are queued control
+// records, counted in 'queued'), so a connect or close flood still crosses once per connection.
+// A read with no buffer (readAnyHere) holds none while it waits: on Linux it first tries a receive into a
+// pool buffer and gives it back if it would block, then waits as a zero-byte read (RecvReady) whose
+// answer (readAnyNext) takes the bytes into a buffer with the same record. It has no calm hint or quiet
+// stage on such a socket. A close between its two stages ends the read Cancelled (readAnyClosed), as on the
+// Loop. After a send there is no ask pass (askPass) while the worker port is on.
 
 // Switch the Loop's UDP onto the worker port: once, on the I/O thread, before the first UDP socket is
 // bound. Nothing if the runtime has no port to give
@@ -1005,6 +1024,25 @@ fn udpSwitch(lp: &mut Loop) {
   actors.workerEvents(&portEvents);
   lp.setWorkerPort(port);
   udpOn.store(true);
+}
+
+// The error number of an operation on a handle that names nothing (iocore's noSuchHandle: EBADF, Windows'
+// ERROR_INVALID_HANDLE)
+fn handleGoneCode() u32 {
+  #if #os == .windows {6u32} #else {9u32}
+}
+
+// A read with no buffer whose second stage (the take, readAnyNext) found its socket closed meanwhile ends
+// Cancelled, as the Loop's flow ends it when the socket closes between its two stages (a close, the
+// operation's end, whichever came first)
+fn readAnyClosed(rp: *OpRec[Ask]) {
+  let r = rp as *OpCore as &mut OpCore;
+  if (*rp).ask.what == opRecvAny && (*rp).ask.stage == stageTake() && r.status == diag.outcomeFailed
+      && r.code == handleGoneCode() {
+    r.status = diag.outcomeCancelled;
+    r.code = 0u32;
+    r.n = 0usize;
+  }
 }
 
 // The wait of record rp, a datagram operation the shared try left (issueNot), on a socket that may be
@@ -1023,7 +1061,10 @@ fn waitHere(rp: *OpRec[Ask], c: *HereCounts) bool {
   let got = sharedNow().issueWaiting(core);
   if got == issueDone {
     bump(&mut (*c).here as *u64);
-    answerRec(rp);
+    if !readAnyNext(rp) {
+      readAnyClosed(rp);
+      answerRec(rp);
+    }
     return true;
   }
   if got == issuePending {
@@ -1032,6 +1073,85 @@ fn waitHere(rp: *OpRec[Ask], c: *HereCounts) bool {
     return true;
   }
   udpEnded(rp);
+  false
+}
+
+// A read with no buffer (opRecvAny) on a socket of the worker port (TCP ON THE WORKER PORT below), started on
+// the awaiting actor's worker. True when it was handled here (answered, or waiting in the socket's entry);
+// false: the socket is the Loop's, and the record is as it came, to go to the I/O thread. Linux first tries
+// a receive into a buffer of the room asked, and keeps no buffer while it waits: a receive that would block
+// gives its buffer back, and the read waits as a zero-byte one (a record of kind RecvReady, holding none),
+// as an idle connection does on the Loop. Windows waits so at once (its zero-byte receive answers at once
+// when bytes are there). Bytes there, the same record takes them (readAnyNext)
+fn readAnyHere(rp: *OpRec[Ask], c: *HereCounts) bool {
+  let core = rp as *OpCore;
+  let r = core as &mut OpCore;
+  #if #os != .windows {
+    let b = IoBuf.tryMake(usize.from((*rp).ask.arg));
+    if b is Some {
+      let sh = sharedNow();
+      let h = r.handle;
+      setBuf(core, b);
+      r.kind = diag.kindRecv;
+      if sh.lock(h) {
+        let got = sh.issue(core);
+        sh.unlock(h);
+        if got == issueDone {
+          bump(&mut (*c).here as *u64);
+          answerRec(rp);
+          return true;
+        }
+      }
+      setBuf(core, None);
+    }
+  }
+  r.kind = diag.kindRecvReady;
+  (*rp).ask.stage = stageReady();
+  waitHere(rp, c)
+}
+
+// Record rp, a read with no buffer whose zero-byte receive a worker has answered (portEvents, or a cancel's
+// answer): bytes are there, so the same record is given a buffer and takes them, here. True when the record
+// went on (answered, or waiting again); false: it is for answerRec as it is (any other record, an outcome
+// but Done, a pool that refused the buffer: that read ends with the error, the bytes staying with the socket)
+fn readAnyNext(rp: *OpRec[Ask]) bool {
+  let core = rp as *OpCore;
+  let r = core as &mut OpCore;
+  if (*rp).ask.what != opRecvAny || r.kind != diag.kindRecvReady || r.status != diag.outcomeDone {
+    return false;
+  }
+  let got = IoBuf.tryMake(usize.from((*rp).ask.arg));
+  if got is None {
+    r.status = diag.outcomeFailed;
+    r.code = noMemoryCode();
+    r.n = 0usize;
+    return false;
+  }
+  udpEnded(rp);
+  setBuf(core, got);
+  r.kind = diag.kindRecv;
+  (*rp).ask.stage = stageTake();
+  let c = hereCounts();
+  #if #os != .windows {
+    let sh = sharedNow();
+    let h = r.handle;
+    if sh.lock(h) {
+      let issued = sh.issue(core);
+      sh.unlock(h);
+      if issued == issueDone {
+        bump(&mut (*c).here as *u64);
+        answerRec(rp);
+        return true;
+      }
+    }
+  }
+  if waitHere(rp, c) {
+    return true;
+  }
+  // No longer a worker-side socket (it cannot be, once made): answered as a read on a handle gone
+  r.status = diag.outcomeCancelled;
+  r.n = 0usize;
+  r.code = 0u32;
   false
 }
 
@@ -1125,7 +1245,7 @@ fn udpAnswered(out: &mut List[*OpCore]) bool {
     if ending {
       udpEnded(p as *OpRec[Ask]);
       let gone = dissolveAt(p as *u8);
-    } else {
+    } else if !readAnyNext(p as *OpRec[Ask]) {
       answerRec(p as *OpRec[Ask]);
     }
     k = k + 1usize;
@@ -2456,6 +2576,10 @@ fn startOne(lp: &mut Loop, p: *OpCore) {
   if w == opSleep {
     timeSleep(rp);
   }
+  // TCP ON THE WORKER PORT: the connected socket is worker-side (the Loop is given the port first)
+  if w == opConnect {
+    udpSwitch(lp);
+  }
   lp.start(p);
 }
 
@@ -2980,7 +3104,9 @@ struct ListenJob {
 
   fn run(self, lp: &mut Loop) {
     let addr, rp = self.(addr, reply);
-    match lp.listen(addr) {
+    // TCP ON THE WORKER PORT: the listener's accepted sockets wait on the worker port
+    udpSwitch(lp);
+    match lp.listen(addr, 128i32, true) {
       case let Ok(ok) {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError](newSocket(ok)));}
       case let Err(e) {actors.answerNow[Result[Socket, IoError]](rp, Err[Socket, IoError](e));}
     }
@@ -2995,7 +3121,7 @@ struct BindUdpJob {
   fn run(self, lp: &mut Loop) {
     let addr, rp = self.(addr, reply);
     udpSwitch(lp);
-    match lp.bindUdp(addr) {
+    match lp.bindUdp(addr, true) {
       case let Ok(ok) {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](newUdp(ok)));}
       case let Err(e) {actors.answerNow[Result[UdpSocket, IoError]](rp, Err[UdpSocket, IoError](e));}
     }
@@ -3800,7 +3926,7 @@ pub fn connect(addr: SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
 // A TCP socket connected to addr, ended if lim says so
 pub fn connectIn(addr: SocketAddr, lim: IoLimits) actors.Awaitable[Result[Socket, IoError]] {
   let p = takeRec(opConnect, diag.kindConnect, Handle.none(), lim);
-  (*p).core.setPeer(addr);
+  (*p).core.setPeer(addr, true);
   recAwaitable[Result[Socket, IoError]](p)
 }
 

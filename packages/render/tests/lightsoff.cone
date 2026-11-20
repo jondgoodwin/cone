@@ -182,8 +182,11 @@ fn main() i32 {
   var i = 0usize;
   while i < 5usize {
     eprint <- "measured hash "; eprint <- u64.from(i); eprint <- " = "; eprint <- first[i]; eprint <- "\n";
-    if base[i] != 0u64 {
-      expectUInt(first[i], base[i], "a scene without lights is bit for bit what it was before lights");
+    // The baselines are Windows GPUs' hashes; another system's driver draws other bytes (checked below by the skip)
+    #if #os == .windows {
+      if base[i] != 0u64 {
+        expectUInt(first[i], base[i], "a scene without lights is bit for bit what it was before lights");
+      }
     }
     i = i + 1usize;
   }
@@ -220,5 +223,13 @@ fn main() i32 {
   }
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
-  done()
+  // Where the baselines do not apply, the checks above that compare the scene with itself still ran and a failure in
+  // them is still a failure; a clean run is a skip, which says so
+  let code = done();
+  #if #os != .windows {
+    if code == 0i32 {
+      return skip("the baseline hashes (scenes before lights) were made on Windows GPUs (RTX 4060, UHD 770): another system's driver draws other bytes, so only the lights-change-nothing checks ran");
+    }
+  }
+  code
 }

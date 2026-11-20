@@ -1,8 +1,8 @@
 // Session.final on every path (the HTTP server's stage 3, S3). A client that
 // resumes allocates a block of arrivals in its SSL object's ticket slot, which
-// Session.final frees; the program's own malloc and free pass through a counter
-// here (as aio's alloc test counts malloc), which tracks every block of that
-// size, so a Session whose final was not reached leaves one live. Each path a
+// Session.final frees; tls counts those blocks as it makes and frees them
+// (tls.stats().arrivalsLive), so a Session whose final was not reached leaves
+// one live, on every platform and OpenSSL. Each path a
 // session can end on runs in a function of its own, and the live count is read
 // after it returns: a handshake that completes and closes both ways; one that
 // fails (an untrusted server; garbage); one cut short (the transport's end in
@@ -14,7 +14,6 @@ mod finalpaths;
 
 import stdio use *;
 import testing use *;
-import libc;
 import fs;
 import path use Path;
 import collections use List, String;
@@ -22,106 +21,6 @@ import httpconn use Layer;
 import iobuf use *;
 import time use Instant;
 import tls;
-
-const blockSize = 72usize;       // a client's arrivals: a count and eight pointers
-const nSlots = 4096usize;
-
-var tracked: Array[Atomic[usize], 4096];
-let guard: Atomic[u32];
-let ready: Atomic[u32];
-
-fn @initpure init() {
-  guard = Atomic[u32].of(0u32);
-  ready = Atomic[u32].of(1u32);
-  tracked = Array[Atomic[usize], 4096]() <- fill Atomic[usize].of(0usize);
-}
-
-#if #os == .windows {
-  extern {
-    fn @c("_malloc_base") winMalloc(size: usize) *u8;
-    fn @c("_calloc_base") winCalloc(n: usize, size: usize) *u8;
-    fn @c("_realloc_base") winRealloc(p: *u8, size: usize) *u8;
-    fn @c("_free_base") winFree(p: *u8);
-  }
-} #else {
-  extern {
-    fn @c("__libc_malloc") lxMalloc(size: usize) *u8;
-    fn @c("__libc_calloc") lxCalloc(n: usize, size: usize) *u8;
-    fn @c("__libc_realloc") lxRealloc(p: *u8, size: usize) *u8;
-    fn @c("__libc_free") lxFree(p: *u8);
-  }
-}
-
-fn lock() {
-  while guard.swap(1u32) != 0u32 {}
-}
-
-fn unlock() {guard.store(0u32);}
-
-fn track(p: *u8) {
-  if ready.load() == 0u32 ||p as usize == 0usize {return;}
-  lock();
-  var k = 0usize;
-  while k < nSlots {
-    if tracked[k].load() == 0usize {
-      tracked[k].store(p as usize);
-      break;
-    }
-    k = k + 1usize;
-  }
-  unlock();
-}
-
-fn untrack(p: *u8) {
-  if ready.load() == 0u32 ||p as usize == 0usize {return;}
-  lock();
-  var k = 0usize;
-  while k < nSlots {
-    if tracked[k].load() == p as usize {
-      tracked[k].store(0usize);
-      break;
-    }
-    k = k + 1usize;
-  }
-  unlock();
-}
-
-fn live() usize {
-  lock();
-  var n = 0usize;
-  var k = 0usize;
-  while k < nSlots {
-    if tracked[k].load() != 0usize {n = n + 1usize;}
-    k = k + 1usize;
-  }
-  unlock();
-  n
-}
-
-pub fn @c("malloc") countMalloc(size: usize) *u8 {
-  #if #os == .windows {
-    let p = winMalloc(size);
-    if size == blockSize {track(p);}
-    p
-  } #else {
-    let p = lxMalloc(size);
-    if size == blockSize {track(p);}
-    p
-  }
-}
-
-pub fn @c("calloc") countCalloc(n: usize, size: usize) *u8 {
-  #if #os == .windows {winCalloc(n, size)} #else {lxCalloc(n, size)}
-}
-
-pub fn @c("realloc") countRealloc(p: *u8, size: usize) *u8 {
-  #if #os == .windows {winRealloc(p, size)} #else {lxRealloc(p, size)}
-}
-
-pub fn @c("free") countFree(p: *u8) {
-  untrack(p);
-  #if #os == .windows {winFree(p);} #else {lxFree(p);}
-}
 
 // A file of the certificates' folder, tests/certs (see memory.cone)
 fn certs(name: &str) Path {
@@ -324,35 +223,40 @@ fn streamsInList(cl: &tls.Client, srv: &tls.Server) {
   shuttle(&mut a, &mut ub);
 }
 
+// Arrivals blocks made and not yet freed since base (tls counts them itself)
+fn checkLive(base: u64, what: &str) {
+  expectUInt(tls.stats().arrivalsLive - base, 0u64, what);
+}
+
 fn main() i32 {
   let srv = serverOf();
   let cl = clientOf(tls.Verifier.roots(readText("ca.pem").view()));
   let bad = clientOf(tls.Verifier.roots(readText("other-ca.pem").view()));
-  let base = live();
+  let base = tls.stats().arrivalsLive;
   normal(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "normal close: the session's block freed");
+  checkLive(base, "normal close: the session's block freed");
   refusedCert(&bad, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "a refused certificate: freed");
+  checkLive(base, "a refused certificate: freed");
   garbage(&cl);
-  expectUInt(u64.from(live() - base), 0u64, "garbage: freed");
+  checkLive(base, "garbage: freed");
   cutInHandshake(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "the end in the handshake: freed");
+  checkLive(base, "the end in the handshake: freed");
   cutOpen(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "the end after it: freed");
+  checkLive(base, "the end after it: freed");
   droppedOpen(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "dropped open, no close_notify: freed");
+  checkLive(base, "dropped open, no close_notify: freed");
   neverStarted(&cl);
-  expectUInt(u64.from(live() - base), 0u64, "never started: freed");
+  checkLive(base, "never started: freed");
   streamsOpen(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "streams dropped open: freed");
+  checkLive(base, "streams dropped open: freed");
   streamsClosed(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "streams closed both ways: freed");
+  checkLive(base, "streams closed both ways: freed");
   streamUnopened(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "streams never opened: freed");
+  checkLive(base, "streams never opened: freed");
   streamFailed(&cl);
-  expectUInt(u64.from(live() - base), 0u64, "a stream that failed: freed");
+  checkLive(base, "a stream that failed: freed");
   streamsInList(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "streams in a list, some removed: freed");
+  checkLive(base, "streams in a list, some removed: freed");
   expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   0i32
 }

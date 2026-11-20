@@ -1,0 +1,187 @@
+// A server connection (ServerConn) with no layer, HTTP/1.1, driven with no
+// socket: bytes in, events out, bytes taken. Checked: a request read and
+// answered; the same connection kept alive for a second; three requests
+// pipelined in one buffer answered in order, one at a time; a request with a
+// body (its Data and End); 'Connection: close' ends it after the response, and
+// 'done' says so once the output is taken and confirmed written.
+
+mod sconnplain;
+
+import testing use *;
+import collections use String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import httpconn use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn piece(text: &str) IoBuf {
+  var b = IoBuf(text.len());
+  b.append(text);
+  b
+}
+
+// Everything the connection has to send, as text, taken and confirmed written
+fn drain(c: &mut ServerConn, now: Instant) String {
+  c.fill(now);
+  var out = Chain.make(unbounded);
+  let n = c.takeWire(&mut out);
+  var text = String();
+  while true {
+    match out.popFront() {
+      case let Some(b) {text.appendBytes(b.view());}
+      else {break;}
+    }
+  }
+  c.wireSent(n);
+  text
+}
+
+fn has(text: &String, part: &str) bool {
+  let t = text.view() as &str;
+  var i = 0usize;
+  while i + part.len() <= t.len() {
+    if &t[i ..< i + part.len()] == part {return true;}
+    i = i + 1usize;
+  }
+  false
+}
+
+// Answer the request just announced with a sized body of text
+fn answer(c: &mut ServerConn, text: &str) {
+  let r = c.response();
+  r.status = 200u16;
+  r.headers.add("Content-Type", "text/plain");
+  c.respond(0u32, BodyLength.sized(u64.from(text.len())));
+  c.sendData(0u32, piece(text));
+  c.finish(0u32);
+}
+
+fn main() i32 {
+  let now = Instant.now();
+  var c = ServerConn.make(Config.make(), None, now);
+  expect(c.readRoom() > 0usize, "a new connection takes bytes");
+  expect(!c.isHttp2(), "HTTP/1.1 without prior knowledge");
+  match c.next(now) {
+    case is Nothing {}
+    else {expect(false, "nothing before any bytes");}
+  }
+
+  // One request
+  c.wireIn(piece("GET /one HTTP/1.1\r\nHost: example.com\r\nX-A: b\r\n\r\n"), now);
+  match c.next(now) {
+    case let Request(q) {expect(q.body.isEmpty(), "a GET has no body");}
+    else {expect(false, "a request");}
+  }
+  expectStr(c.request().target.view(), "/one", "its target");
+  expectStr(c.request().authority.view(), "example.com", "its authority");
+  expect(c.request().headers.has("X-A"), "its field");
+  answer(&mut c, "hello");
+  let t1 = drain(&mut c, now);
+  expect(has(&t1, "HTTP/1.1 200 OK\r\n"), "the status line");
+  expect(has(&t1, "Content-Type: text/plain\r\n"), "the field");
+  expect(has(&t1, "Content-Length: 5\r\n"), "the length");
+  expect(has(&t1, "\r\n\r\nhello"), "the body");
+  match c.next(now) {
+    case is End {}
+    else {expect(false, "the request's end");}
+  }
+  match c.next(now) {
+    case is Nothing {}
+    else {expect(false, "nothing more: kept alive");}
+  }
+  expect(!c.done(now), "not over: kept alive");
+
+  // The same connection, a second request (the kept head refilled)
+  c.wireIn(piece("GET /two?x=1 HTTP/1.1\r\nHost: example.org\r\n\r\n"), now);
+  match c.next(now) {
+    case is Request {}
+    else {expect(false, "a second request");}
+  }
+  expectStr(c.request().target.view(), "/two?x=1", "the second target");
+  expectStr(c.request().authority.view(), "example.org", "the second authority");
+  expect(!c.request().headers.has("X-A"), "the first request's field is gone");
+  answer(&mut c, "second");
+  let t2 = drain(&mut c, now);
+  expect(has(&t2, "\r\n\r\nsecond"), "the second body");
+  match c.next(now) {
+    case is End {}
+    else {expect(false, "the second end");}
+  }
+
+  // Three requests in one buffer: each is announced when the one before is answered
+  c.wireIn(piece("GET /a HTTP/1.1\r\nHost: h\r\n\r\nGET /b HTTP/1.1\r\nHost: h\r\n\r\nGET /c HTTP/1.1\r\nHost: h\r\n\r\n"), now);
+  var all = String();
+  var seen = String();
+  var k = 0u32;
+  while k < 3u32 {
+    match c.next(now) {
+      case is Request {}
+      else {expect(false, "a pipelined request");}
+    }
+    seen.append(c.request().target.view());
+    expectUInt(u64.from(c.request().headers.len()), 0u64, "a request with only Host has no other fields: nothing stale");
+    answer(&mut c, "x");
+    all.append(drain(&mut c, now).view());
+    match c.next(now) {
+      case is End {}
+      else {expect(false, "a pipelined end");}
+    }
+    k = k + 1u32;
+  }
+  expectStr(seen.view(), "/a/b/c", "the three targets in order");
+  var served = 0u32;
+  var from = 0usize;
+  let av = all.view() as &str;
+  while from + 15usize <= av.len() {
+    if &av[from ..< from + 15usize] == "HTTP/1.1 200 OK" {served = served + 1u32;}
+    from = from + 1usize;
+  }
+  expectUInt(u64.from(served), 3u64, "three responses");
+
+  // A request with a body
+  c.wireIn(piece("POST /p HTTP/1.1\r\nHost: h\r\nContent-Length: 3\r\n\r\nabc"), now);
+  match c.next(now) {
+    case let Request(q) {expect(q.body.isSized() && q.body.length == 3u64, "a sized body of 3");}
+    else {expect(false, "the POST");}
+  }
+  match c.next(now) {
+    case let Data(d) {
+      expectStr(d.buf.view(), "abc", "the body's bytes");
+      c.release(0u32, d.buf.len());
+    }
+    else {expect(false, "the body's data");}
+  }
+  match c.next(now) {
+    case is End {}
+    else {expect(false, "the body's end");}
+  }
+  answer(&mut c, "ok");
+  drain(&mut c, now);
+
+  // Connection: close ends it after the response
+  c.wireIn(piece("GET /bye HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n"), now);
+  match c.next(now) {
+    case is Request {}
+    else {expect(false, "the closing request");}
+  }
+  answer(&mut c, "bye");
+  c.fill(now);
+  expect(!c.done(now), "not over while the output is not taken");
+  var out = Chain.make(unbounded);
+  let n = c.takeWire(&mut out);
+  expect(n > 0usize, "the response is there to take");
+  expect(!c.done(now), "not over while the output is not written");
+  c.wireSent(n);
+  match c.next(now) {
+    case is End {}
+    else {expect(false, "the closing request's end");}
+  }
+  match c.next(now) {
+    case let Closed(x) {expect(x.failure is None, "closed cleanly");}
+    else {expect(false, "Closed");}
+  }
+  expect(c.done(now), "over: the owner half-closes the socket");
+  done()
+}

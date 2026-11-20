@@ -20,15 +20,20 @@ import render use *;
 extern {
   fn @c(system) GetCurrentProcess() usize;
   fn @c(system) GetProcessTimes(process: usize, creation: *u64, exit: *u64, kernel: *u64, user: *u64) i32;
+  fn @c("clock") processClock() i64;       // the C library's processor time; microseconds on Linux (CLOCKS_PER_SEC is 1,000,000)
 }
 
 fn cpuNanos() u64 {
-  var c = 0u64;
-  var e = 0u64;
-  var k = 0u64;
-  var u = 0u64;
-  GetProcessTimes(GetCurrentProcess(), &mut c as *u64, &mut e as *u64, &mut k as *u64, &mut u as *u64);
-  (k + u) * 100u64
+  #if #os == .windows {
+    var c = 0u64;
+    var e = 0u64;
+    var k = 0u64;
+    var u = 0u64;
+    GetProcessTimes(GetCurrentProcess(), &mut c as *u64, &mut e as *u64, &mut k as *u64, &mut u as *u64);
+    (k + u) * 100u64
+  } #else {
+    u64.from(processClock()) * 1000u64
+  }
 }
 
 struct Rng {

@@ -930,6 +930,31 @@ if e.kind == EventKind.End {
 		pool; a layer that fails closes its connection, every request on it <span class="pre">Failed</span> at
 		<span class="pre">Stage.Tls</span>.</p>
 
+	<h3 id="httpconn-serverconn">A server connection as one value: ServerConn</h3>
+	<p>A <span class="pre">ServerConn</span> is the whole of one server connection that is not a socket or a
+		clock, as one value that does no I/O: the layer (none for a plain connection, or a TLS session), the protocol
+		it chooses once the layer is open (HTTP/1.1, or HTTP/2 by ALPN or <span class="pre">h2PriorKnowledge</span>),
+		its deadlines, and the bytes in and out. Whoever owns the socket calls it with the time:
+		<span class="pre">ServerConn.make(config, layer, now)</span>; <span class="pre">readRoom()</span> says how many
+		bytes <span class="pre">wireIn(buf, now)</span> takes now; <span class="pre">next(now)</span> gives a
+		<span class="pre">ServerEvent</span> (<span class="pre">Request</span>, <span class="pre">Data</span>,
+		<span class="pre">End</span>, <span class="pre">Reset</span>, <span class="pre">Closed</span>, or
+		<span class="pre">Nothing</span>), the request's head being <span class="pre">request()</span> (HTTP/1.1: kept
+		in the connection and read into again for the next request) or <span class="pre">takeRequest()</span> (moved
+		out); an answer is written into the kept <span class="pre">response()</span> head and sent with
+		<span class="pre">respond(stream, body)</span>, then <span class="pre">sendData</span> and
+		<span class="pre">finish</span>; <span class="pre">fill(now)</span>, <span class="pre">takeWire(chain)</span>
+		and <span class="pre">wireSent(n)</span> move the output to the socket; <span class="pre">pollTimeout()</span>
+		and <span class="pre">handleTimeout(now)</span> are its deadlines, <span class="pre">shutdown()</span> and
+		<span class="pre">done(now)</span> its ending.</p>
+	<p>Its output holds its input back: while the bytes queued to send (in the protocol, the layer and the wire, or
+		taken but not yet confirmed written) are at the protocol's write watermark, <span class="pre">readRoom()</span>
+		is 0, and an HTTP/1.1 connection holds back the next request it has already read; it resumes below half the
+		watermark. A client that pipelines requests and reads none of the answers is therefore stopped at the
+		watermark and one answer. An HTTP/1.1 connection keeps one request head and one response head and the wire
+		buffers, so a kept-alive connection allocates nothing per request after the first.
+		<span class="pre">Driver</span> does not use it yet; it is what the server on connection actors is built on.</p>
+
 	<h2 id="httpclient">Fetching a URL: the httpclient package</h2>
 	<p>A <span class="pre">Client</span> takes a request for a URL and answers it with the response's events and
 		then exactly one final answer, as <span class="pre">httpconn</span> does for one connection. Between the two it
@@ -1583,7 +1608,8 @@ tls: certificate name mismatch: hostname mismatch (OpenSSL's verify result 62)
 		<span class="pre">closeNotify</span> and <span class="pre">truncated</span>; <span class="pre">String() &lt;- info</span> says it
 		in one line, which is what a connection's <span class="pre">layerInfo</span> gives. <span class="pre">tls.stats()</span>
 		counts, for the process, handshakes (and those resumed), failures, verifications by the system's verifier,
-		close_notify sent and received, and streams that ended without one.</p>
+		close_notify sent and received, streams that ended without one, and <span class="pre">arrivalsLive</span> (a resuming
+		client's bookkeeping blocks made and not yet freed, which a leak check reads: 0 at rest).</p>
 
 	<h2>Comes back in</h2>
 	<ul>

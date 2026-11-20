@@ -628,6 +628,11 @@ pub struct Connection is Move {
   // any) by sendData and finish. A stream that has ended meanwhile (reset)
   // drops it; one not a request's, or answered already, is a program error
   pub fn sendResponse(self: &mut, stream: u32, head: ResponseHead, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.respondWith(stream, &head, body, file, line);
+  }
+
+  // The same, the head only read: its owner keeps it (and refills it for the next response)
+  pub fn respondWith(self: &mut, stream: u32, head: &ResponseHead, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     if clientRole {panic("http2: sendResponse on a client's connection", file, line);}
     if failed || closed {return;}
     let slot = self.slotOf(stream);
@@ -640,7 +645,7 @@ pub struct Connection is Move {
     let noBody = s.headRequest || status == 204u16 || status == 304u16;
     let length = if body.isSized() && status != 204u16 && status != 304u16 {Some[u64](body.length)} else {None[u64]};
     fields.clear();
-    responseFields(&head, length, &mut fields, file, line);
+    responseFields(head, length, &mut fields, file, line);
     let end = noBody || body.isEmpty() || (body.isSized() && body.length == 0u64);
     self.writeBlock(stream, end);
     s.responded = true;

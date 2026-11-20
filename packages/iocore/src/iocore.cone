@@ -70,7 +70,10 @@
 //     sharedTables()   tables made and not yet freed
 //     Shared.none()  issueNot issueDone issuePending    a receive or send issued off the loop's thread
 //     core.isIssued()                                    (WORKER-SIDE ISSUE)//
-//   lp.setWorkerPort(port)              UDP sockets bound after it wait on the caller's port  (UDP ON THE WORKER PORT)
+//   lp.setWorkerPort(port)              sockets made worker-side (listen, bindUdp, Op.Connect: onWorkers=true) wait on the
+//                                       caller's port  (UDP ON THE WORKER PORT, TCP ON THE WORKER PORT)
+//   lp.listen(addr, backlog, onWorkers=false)  lp.bindUdp(addr, onWorkers=false)  lp.mustBindUdp(addr, onWorkers=false)
+//   Op.Connect(addr, onWorkers=false)  OpCore.setPeer(addr, onWorkers=false)   onWorkers: its sockets are worker-side
 //     sh.issueWaiting(p)  sh.udpReady(index, gen, events, out)  sh.udpCompleted(p, bytes, out)
 //     sh.endWaiting(h, p, id, why, out)  sh.holdSends(h, on)
 //   Op.Connect(addr)  Op.Accept(listener)                   (OPERATIONS)
@@ -625,8 +628,8 @@
 //
 // UDP ON THE WORKER PORT (shared.cone), behind a switch that is off. 'lp.setWorkerPort(port)'
 // names a port that is the caller's: Linux, an epoll descriptor; Windows, a completion port.
-// A UDP socket bound afterwards (Windows: one that skips the port on success; any other is
-// bound as ever) is registered there and not with the Loop's, and every datagram operation
+// A UDP socket bound afterwards with worker=true (Windows: one that skips the port on success; any
+// other is bound as ever; bindUdp without worker is the Loop's, so a hosted service's UDP stays put) is registered there and not with the Loop's, and every datagram operation
 // on it goes through the shared table: the Loop answers one it is asked to start Failed,
 // InvalidInput, as for a handle that names nothing. A receive or send the socket will not
 // take at once is not given to the Loop: 'sh.issueWaiting(p)', with no lock held, takes the
@@ -654,6 +657,15 @@
 // on the Loop; Windows: the kernel asked, the completion answering at the port), and a group that
 // ended by its deadline ends a record 'endWaiting' ends TimedOut. aio uses all of it (its package
 // header, UDP ON THE WORKER PORT).
+//
+// TCP ON THE WORKER PORT (shared.cone). A stream is worker-side too when it comes from a listener made
+// with 'lp.listen(addr, backlog, true)' (the accepted socket joins the worker port as it is adopted) or from
+// a connect asked with worker (Op.Connect's field, OpCore.setPeer's argument; the socket joins the port
+// before it connects, on Linux when the connect succeeds, and on Windows the connect's completion
+// arrives on the worker port and is posted on to the Loop's). On a worker-side stream a Recv, RecvReady
+// or Send (one buffer or a gather) is tried by 'sh.issue' and listed by 'sh.issueWaiting' exactly as a
+// datagram operation is, and the Loop answers one it is asked to start Failed, invalid handle. Accept,
+// connect, reset and close stay on the Loop. A stream's receives and its sends each keep their order.
 //
 // DIAGNOSTICS. 'lp.counters()' copies the loop's counts out, a
 // diag.Counters; submitted = delivered + in flight at every moment. With
@@ -1181,7 +1193,10 @@ fn keepSeconds(d: Duration) i32 {
 // A job for the kernel (see the package's header, OPERATIONS). Every variant
 // that carries bytes takes an owner of them, never a borrow (I2, I3)
 pub enum Op {
-  pub struct Connect {pub addr: SocketAddr;}
+  // onWorkers true: the worker threads handle this socket's reads and writes
+  // directly; false: the shared I/O thread does and hands them across.
+  // Temporary: removed once every socket is on the worker port (row 582)
+  pub struct Connect {pub addr: SocketAddr; pub onWorkers: bool = false;}
   pub struct Accept {pub listener: Handle;}
   pub struct Recv {pub sock: Handle; pub buf: IoBuf;}
   pub struct RecvReady {pub sock: Handle;}
