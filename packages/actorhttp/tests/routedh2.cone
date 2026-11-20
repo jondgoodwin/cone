@@ -1,0 +1,263 @@
+// A routed server over TLS offering HTTP/2 (the tls package's test certificates), with the package's own
+// client. Each HTTP/2 stream's handler is an actor of its own, made for the stream: twenty requests to a
+// handler that naps 200 ms, sent at once on the one connection, are all answered in about one nap, not
+// twenty (the streams run in parallel). Checked: a GET answered over HTTP/2; the twenty answered, all over
+// HTTP/2, in under 2.5 s (twenty serial naps would be 4 s); a POST with a body that comes back; a streamed
+// response of three writes; a handler that answers 404 by having no route; the server closed, its
+// connection actors freed.
+
+mod routedh2;
+
+import stdio use *;
+import libc;
+import thread;
+import fs;
+import path use Path;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Response, Request;
+import tls;
+import actors;
+import aio;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, Router, Handler;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn trusting() Client {
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  Client.make(cfg, actorhttp.defaultMaxBody)
+}
+
+actor Hello is Handler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.text(200u16, "hello over a stream actor");
+  }
+}
+
+fn makeHello() Handler {
+  let h = Hello();
+  let r: Handler = h;
+  r
+}
+
+actor Nap is Handler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    await aio.sleep(Duration.fromMillis(200i64));
+    ex.text(200u16, "rested");
+  }
+}
+
+fn makeNap() Handler {
+  let h = Nap();
+  let r: Handler = h;
+  r
+}
+
+actor Echo is Handler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    var t = String.from(ex.request.methodName());
+    t.append("|");
+    t.append(ex.request.body.view());
+    ex.text(200u16, t.view());
+  }
+}
+
+fn makeEcho() Handler {
+  let h = Echo();
+  let r: Handler = h;
+  r
+}
+
+actor Streamer is Handler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+    let a = await ex.write(String.from("one "));
+    let b = await ex.write(String.from("two "));
+    let c = await ex.write(String.from("three"));
+    let f = await ex.finish();
+  }
+}
+
+fn makeStreamer() Handler {
+  let h = Streamer();
+  let r: Handler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+
+  pub async fn waitClosed(self, var done: OneshotSender[u64]) {
+    let closed = await server.closed();
+    done.send(if closed {1u64} else {0u64});
+  }
+}
+
+fn show(what: &str, r: &Result[Response, FetchError]) {
+  printStr(what);
+  printStr(": ");
+  match r {
+    case let &Ok(ok) {
+      printUInt(u64.from(ok.status));
+      printStr(if ok.version == Version.Http2 {" HTTP/2 "} else {" other "});
+      printStr(ok.body.view());
+      printStr("\n");
+    }
+    case let &Err(e) {printStr("failed: "); print <- e; printStr("\n");}
+  }
+}
+
+// One request of the twenty
+actor One {
+  client: Client;
+
+  pub async fn run(self, port: u16, var done: Sender[u64]) {
+    let r = await client.get(url(port, "/nap").view());
+    var ok = 0u64;
+    match &r {
+      case let &Ok(x) {if x.status == 200u16 && x.version == Version.Http2 {ok = 1u64;}}
+      else {}
+    }
+    done.send(ok);
+  }
+}
+
+actor Prober {
+  client: Client;
+
+  pub async fn run(self, port: u16, var done: OneshotSender[u64]) {
+    show("hello", &(await client.get(url(port, "/hello").view())));
+    var post = Request.get(url(port, "/echo").view());
+    post.method = Method.Post;
+    post.body = String.from("body text");
+    show("echo", &(await client.send(post)));
+    show("stream", &(await client.get(url(port, "/stream").view())));
+    show("no route", &(await client.get(url(port, "/nowhere").view())));
+    done.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  let router = Router.make().handle("", "/hello", &makeHello).handle("", "/nap", &makeNap)
+    .handle("", "/echo", &makeEcho).handle("", "/stream", &makeStreamer);
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2().route(router), ptx.clone());
+  let port = prx.recv() || 0u16;
+  let client = trusting();
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let p = Prober(client.clone());
+    p.run(port, tx);
+    rx.recv();
+  }
+  // twenty at once
+  {
+    var dtx: Sender[u64];
+    var drx: Receiver[u64];
+    dtx, drx = Channel[u64].make();
+    let t0 = Instant.now();
+    var k = 0u32;
+    while k < 20u32 {
+      let o = One(client.clone());
+      o.run(port, dtx.clone());
+      k = k + 1u32;
+    }
+    var good = 0u64;
+    k = 0u32;
+    while k < 20u32 {
+      good = good + (drx.recv() || 0u64);
+      k = k + 1u32;
+    }
+    let took = t0.elapsed().nanos() / 1000000i64;
+    printStr("twenty naps answered over HTTP/2: ");
+    printUInt(good);
+    printStr("\n");
+    printStr("in under 2.5 s (serial would be 4 s): ");
+    printStr(yes(took < 2500i64));
+    printStr("\n");
+  }
+  acceptor.stop();
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    acceptor.waitClosed(tx);
+    printStr("closed: ");
+    printStr(yes((rx.recv() || 0u64) == 1u64));
+    printStr("\n");
+  }
+  var waited = 0u32;
+  while actorhttp.liveConnActors() > 0u64 && waited < 500u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  printStr("connection actors freed: ");
+  printStr(yes(actorhttp.liveConnActors() == 0u64));
+  printStr("\n");
+  finalAll();
+  0
+}
