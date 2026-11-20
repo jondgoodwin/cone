@@ -81,7 +81,11 @@ struct HEntry {
   pub writesTail: *OpCore;
   pub skip: u32;           // Windows: a socket whose completions skip the port on success: one done at once posts none
   pub waited: u32 = 0u32;  // Windows: a child some WaitChild has answered for (a second fails, as Linux's reaping makes it)
-  pub worker: u32 = 0u32;  // a UDP socket bound onto the worker port: its waits are not this Loop's (shared.cone, UDP ON THE WORKER PORT)
+  // 0: this Loop's. 1: a UDP socket bound onto the worker port, or a TCP socket whose reads and writes wait
+  // there: its waits are not this Loop's (shared.cone, UDP ON THE WORKER PORT, TCP ON THE WORKER PORT).
+  // 2: a listener whose accepted sockets are worker-side, or a socket still connecting that will be (one
+  // the Loop holds the operation on); never published as worker-side
+  pub worker: u32 = 0u32;
 }
 
 // An answer a full channel held back, and the channel's sender (a clone of
@@ -262,8 +266,14 @@ pub struct Loop {
   // -------------------------------------------------------------------------
 
   // A TCP socket listening at addr, for Accept; addr's port 0 has the OS
-  // choose one, which localAddr tells
-  pub fn listen(self: &mut, addr: SocketAddr, backlog: i32 = 128i32) Result[Handle, IoError] {
+  // choose one, which localAddr tells. With 'onWorkers' (and a worker port given:
+  // setWorkerPort) every socket this one accepts is worker-side: its reads and
+  // writes wait on the worker port, not on this Loop (shared.cone, TCP ON THE
+  // WORKER PORT); the accept itself is still this Loop's. Without it, as ever.
+  // onWorkers true: the worker threads handle this socket's reads and writes
+  // directly; false: the shared I/O thread does and hands them across.
+  // Temporary: removed once every socket is on the worker port (row 582)
+  pub fn listen(self: &mut, addr: SocketAddr, backlog: i32 = 128i32, onWorkers: bool = false) Result[Handle, IoError] {
     let s = tcpSocket(addr.family());
     if s == invalidHandle {return Err[Handle, IoError](IoError(wsaError()));}
     var a = addr;
@@ -285,22 +295,46 @@ pub struct Loop {
         closesocket(s);
         return Err[Handle, IoError](IoError(code));
       }
-      Ok[Handle, IoError](self.register(s, hListener, addr.family()))
+      let h = self.register(s, hListener, addr.family());
+      if onWorkers && workerPort != 0usize {self.markInherit(h);}
+      Ok[Handle, IoError](h)
     } #else {
       // Linux: epoll is told of it once it is a handle
       var code = 0u32;
       var h = Handle.none();
       code, h = lxAdopt(self, s, hListener, addr.family());
       if code != 0u32 {return Err[Handle, IoError](IoError(code));}
+      if onWorkers && workerPort != 0usize {self.markInherit(h);}
       Ok[Handle, IoError](h)
+    }
+  }
+
+  // h, a listener, makes worker-side sockets (or a socket still connecting
+  // will be one): its entry says so, here only (never published as worker-side)
+  fn markInherit(self: &mut, h: Handle) {
+    let e = handles.borrowMut(HEntryId(h.index, h.gen)).unwrap();
+    e.worker = 2u32;
+  }
+
+  // Whether h is a listener whose accepts make worker-side sockets
+  fn inherits(self: &, h: Handle) bool {
+    match handles.borrow(HEntryId(h.index, h.gen)) {
+      case let Some(e) {e.worker == 2u32}
+      case None {false}
     }
   }
 
   // A UDP socket bound to addr, for RecvFrom and SendTo; addr's port 0 has
   // the OS choose one, which localAddr tells. It is not connected: every
   // datagram it sends names its destination, and every one it receives
-  // names its sender
-  pub fn bindUdp(self: &mut, addr: SocketAddr) Result[Handle, IoError] {
+  // names its sender. With 'onWorkers' (and a worker port given: setWorkerPort) the
+  // socket is worker-side (UDP ON THE WORKER PORT, shared.cone). Without it the
+  // socket is this Loop's, whatever port the Loop was given: a hosted service's
+  // sockets stay on the Loop, as the TCP ones do.
+  // onWorkers true: the worker threads handle this socket's reads and writes
+  // directly; false: the shared I/O thread does and hands them across.
+  // Temporary: removed once every socket is on the worker port (row 582)
+  pub fn bindUdp(self: &mut, addr: SocketAddr, onWorkers: bool = false) Result[Handle, IoError] {
     let s = udpSocket(addr.family());
     if s == invalidHandle {return Err[Handle, IoError](IoError(wsaError()));}
     var a = addr;
@@ -318,7 +352,7 @@ pub struct Loop {
       // With the worker port switched on, the socket's completions go there, if
       // it skips the port on success (as a worker-side socket must); else to this
       // Loop's port as ever
-      if workerPort != 0usize && skipOnSuccess(s) {
+      if onWorkers && workerPort != 0usize && skipOnSuccess(s) {
         if CreateIoCompletionPort(s, workerPort, keyUdp, 0u32) == 0usize {
           let code = GetLastError();
           closesocket(s);
@@ -337,7 +371,7 @@ pub struct Loop {
     } #else {
       var code = 0u32;
       var h = Handle.none();
-      code, h = lxAdopt(self, s, hDatagram, addr.family(), workerPort);
+      code, h = lxAdopt(self, s, hDatagram, addr.family(), if onWorkers {workerPort} else {0usize});
       if code != 0u32 {return Err[Handle, IoError](IoError(code));}
       Ok[Handle, IoError](h)
     }
@@ -359,9 +393,12 @@ pub struct Loop {
     if !shared.isNone() {markWorkerEntry(&shared, h.index);}
   }
 
-  // A bound UDP socket; a panic, at the caller's line, if there can be none
-  pub fn mustBindUdp(self: &mut, addr: SocketAddr, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Handle {
-    let Ok(r) = self.bindUdp(addr) else {panic("iocore: bindUdp failed", file, line);};
+  // A bound UDP socket; a panic, at the caller's line, if there can be none.
+  // onWorkers true: the worker threads handle this socket's reads and writes
+  // directly; false: the shared I/O thread does and hands them across.
+  // Temporary: removed once every socket is on the worker port (row 582)
+  pub fn mustBindUdp(self: &mut, addr: SocketAddr, onWorkers: bool = false, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Handle {
+    let Ok(r) = self.bindUdp(addr, onWorkers) else {panic("iocore: bindUdp failed", file, line);};
     r
   }
 
@@ -598,7 +635,7 @@ pub struct Loop {
   // Whether h is a worker-side UDP socket (setWorkerPort)
   fn isWorker(self: &, h: Handle) bool {
     match handles.borrow(HEntryId(h.index, h.gen)) {
-      case let Some(e) {e.worker != 0u32}
+      case let Some(e) {e.worker == 1u32}
       case None {false}
     }
   }
@@ -627,6 +664,7 @@ pub struct Loop {
   pub fn share(self: &mut) Shared {
     if shared.isNone() {
       shared = makeShared();
+      #if #os == .windows {setLoopPort(&shared, portHandle);}
       var i = 0u32;
       while usize.from(i) < handles.bound() {
         if handles.isLive(i) {self.publish(i);}
@@ -643,7 +681,7 @@ pub struct Loop {
       case let Some(v) {v}
       case None {return;}
     };
-    publishEntry(&shared, i, handles.slotAt(i).gen, e.raw, e.kind, e.skip, e.worker);
+    publishEntry(&shared, i, handles.slotAt(i).gen, e.raw, e.kind, e.skip, if e.worker == 1u32 {1u32} else {0u32});
   }
 
   // Cell i's handle no longer published: under its entry's lock, so no thread
@@ -1229,7 +1267,7 @@ pub struct Loop {
     match op {
       case let Connect(o) {
         r.kind = diag.kindConnect;
-        r.setPeer(o.addr);
+        r.setPeer(o.addr, o.onWorkers);
       }
       case let Accept(o) {
         r.kind = diag.kindAccept;
@@ -1419,7 +1457,9 @@ pub struct Loop {
     }
     // A datagram operation on a worker-side socket is never the Loop's: its
     // waits are the worker port's (shared.cone). Answered as on a handle that names nothing
-    if (r.kind == diag.kindRecvFrom || r.kind == diag.kindSendTo || r.kind == diag.kindRecvMany) && self.isWorker(r.handle) {
+    // (so is a TCP receive or send on a worker-side socket)
+    if (r.kind == diag.kindRecvFrom || r.kind == diag.kindSendTo || r.kind == diag.kindRecvMany
+        || r.kind == diag.kindRecv || r.kind == diag.kindRecvReady || r.kind == diag.kindSend) && self.isWorker(r.handle) {
       stats.atSubmit = stats.atSubmit + 1u64;
       self.decide(p, diag.outcomeFailed, 0usize, noSuchHandle());
       return;
@@ -1524,12 +1564,18 @@ pub struct Loop {
         closesocket(s);
         return code;
       }
-      if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
+      // A worker-side socket (TCP ON THE WORKER PORT) is on the worker port from its
+      // first operation, its connect's completion with it: the worker that takes
+      // it posts it on to this Loop's port, which finishes the connect as ever
+      // (a socket's port cannot change once chosen)
+      let skip = skipOnSuccess(s);
+      let toWorker = r.viaWorker && workerPort != 0usize && skip;
+      r.viaWorker = toWorker;
+      if CreateIoCompletionPort(s, if toWorker {workerPort} else {portHandle}, if toWorker {keyUdp} else {keyIo}, 0u32) == 0usize {
         let code = GetLastError();
         closesocket(s);
         return code;
       }
-      let skip = skipOnSuccess(s);
       r.newSock = s;
       r.raw = s;
       r.family = addr.family();
@@ -1565,6 +1611,8 @@ pub struct Loop {
       r.family = e.family;
       let acceptEx = acceptExAddr as *u8 as AcceptExFn;
       let skip = e.skip != 0u32;
+      // A worker-side listener's accepted socket joins the worker port at adopt
+      r.viaWorker = e.worker == 2u32;
       if acceptEx(e.raw, s, &mut r.addr as *u8, 0u32, acceptAddrLen, acceptAddrLen, null, p as *u8) == 0i32 {
         let code = wsaError();
         if code != errorIoPending {
@@ -2182,7 +2230,10 @@ pub struct Loop {
       if r.kind == diag.kindAccept {
         var listener = r.raw;
         rc = setsockopt(s, solSocket, soUpdateAcceptContext, &mut listener as *u8, 8i32);
-        if rc == 0i32 && CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
+        // From a worker-side listener, a socket whose completions skip the port on
+        // success joins the worker port (TCP ON THE WORKER PORT); else this Loop's
+        if r.viaWorker && !skipOnSuccess(s) {r.viaWorker = false;}
+        if rc == 0i32 && CreateIoCompletionPort(s, if r.viaWorker {workerPort} else {portHandle}, if r.viaWorker {keyUdp} else {keyIo}, 0u32) == 0usize {
           let code = GetLastError();
           closesocket(s);
           return code;
@@ -2197,6 +2248,7 @@ pub struct Loop {
       }
       noDelay(s);
       r.newHandle = self.register(s, hSocket, r.family);
+      if r.viaWorker && workerPort != 0usize {self.markWorker(r.newHandle);}
       if r.kind == diag.kindAccept {setAcceptPeer(r, s);}
       0u32
     } #else {

@@ -886,6 +886,14 @@
 //   sleeper. There is no pause instruction between looks: Cone has none
 //   (neither an intrinsic nor anything in the C library), so a look is the
 //   loads and the clock's read.
+// - A spinner also looks at the worker port on each step (row 578), while
+//   something waits there (a socket's operation) and nobody holds the role
+//   (poller.cone, busyPoll: a poll without waiting). A completion that lands
+//   while a worker spins would otherwise be seen only when the spin ends,
+//   which is most of a socket ping-pong's completions (92-94%) and its extra
+//   8 us a take. The step is then a system call rather than two queue
+//   reads, so the spin burns its bound in the kernel; its length and spinCap
+//   are unchanged.
 // - A push while a worker spins wakes nobody (notify): the spinner will see
 //   it, and the pusher (often the I/O thread) is spared the futexWake, and no
 //   sleeper is woken to find the work gone and take a spinner's place.
@@ -4929,8 +4937,11 @@ fn runActor(w: *Worker, h: *Header) {
 // THE SPIN (the header, IDLE WORKERS): become one of at most spinCap spinners
 // and look for work until spinTicks of the clock have passed. True as soon as
 // work is seen; false when the bound passes, or at once when spinCap workers
-// are spinning already. It only reads the queues: whatever it misses, the
-// park that follows sees (idle).
+// are spinning already. It reads the queues and, while something waits in the
+// worker port and nobody holds the role, looks into the port without waiting
+// (busyPoll, on each step; the answers go to this worker's own queue, so the
+// next read of the queues sees them); whatever it misses, the park that
+// follows sees (idle).
 fn spin(w: *Worker) bool {
   let s = (*w).sched;
   if (*s).spinTicks == 0u64 {
@@ -4950,6 +4961,11 @@ fn spin(w: *Worker) bool {
   let start = clockTicks();
   var found = false;
   while !found {
+    // A look at the worker port, without waiting, on each step: while something
+    // waits there and nobody holds the role (busyPoll's own guard). A completion
+    // that lands while this worker spins is taken now, not when the spin ends
+    // (row 578; 92-94% of a socket ping-pong's completions land in a spin)
+    busyPoll(w);
     if anyWork(s) {
       found = true;
     } else if clockTicks() - start >= (*s).spinTicks {

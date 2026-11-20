@@ -144,6 +144,7 @@ extern {
 
 // epoll
 const epollCtlAdd = 1i32;
+const epollCtlDel = 2i32;
 const epollIn = 1u32;
 const epollOut = 4u32;
 const epollErr = 8u32;
@@ -694,7 +695,9 @@ fn lxTry(lp: &mut Loop, p: *OpCore, at: Instant) u32 {
       noDelay(sock);
       var code = 0u32;
       var h = Handle.none();
-      code, h = lxAdopt(lp, sock, hSocket, (lp.handles.borrowAt(ei).unwrap()).family);
+      // From a worker-side listener it is watched by the worker port's epoll, not this loop's
+      let onWorker = lp.inherits(r.handle) && lp.workerPort != 0usize;
+      code, h = lxAdopt(lp, sock, hSocket, (lp.handles.borrowAt(ei).unwrap()).family, if onWorker {lp.workerPort} else {0usize});
       if code != 0u32 {
         lp.decide(p, diag.outcomeFailed, 0usize, code);
       } else {
@@ -728,6 +731,10 @@ fn lxTry(lp: &mut Loop, p: *OpCore, at: Instant) u32 {
     }
     r.dequeued = at;
     lp.unlinkSide(p);
+    if err == 0i32 && lp.inherits(r.handle) {
+      // Asked to be worker-side (setPeer): connected, it leaves this loop's epoll for the worker port's
+      err = i32.from(lxToWorker(lp, r.handle));
+    }
     if err == 0i32 {
       noDelay(usize.from(fd));
       r.newHandle = r.handle;
@@ -740,6 +747,18 @@ fn lxTry(lp: &mut Loop, p: *OpCore, at: Instant) u32 {
     return triedDone;
   }
   triedDone
+  }
+}
+
+// A connected socket h, which the loop has watched while it connected, now watched by the worker port's epoll
+// instead (TCP ON THE WORKER PORT, shared.cone): 0, or the error number. Edge-triggered, so what is ready now is
+// reported at once. On the loop's thread; the entry has nothing waiting (its connect is done)
+fn lxToWorker(lp: &mut Loop, h: Handle) u32 {
+  #if #os == .windows {errorInvalidParameter} #else {
+  let raw = (lp.handles.borrowAt(h.index).unwrap()).raw;
+  epoll_ctl(fdOf(lp.portHandle), epollCtlDel, fdOf(raw), null);
+  lp.markWorker(h);
+  lxWatch(lp.workerPort, raw, h.index, h.gen)
   }
 }
 
@@ -889,6 +908,8 @@ fn lxStartConnect(lp: &mut Loop, p: *OpCore, addr: SocketAddr) u32 {
   var h = Handle.none();
   code, h = lxAdopt(lp, s, hSocket, addr.family());
   if code != 0u32 {return code;}
+  // Asked to be worker-side: it is, once connected (lxToWorker, at the connect's answer)
+  if r.viaWorker && lp.workerPort != 0usize {lp.markInherit(h);}
   r.handle = h;
   r.family = addr.family();
   // Connected already, or waiting for the socket to become writable

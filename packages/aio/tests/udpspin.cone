@@ -1,0 +1,119 @@
+// A SPINNING WORKER LOOKS AT THE WORKER PORT (actors' THE SPIN, row 578). One worker, a long spin (500 ms), a
+// UDP receive waiting in the worker port, and a datagram sent while the worker is in a spin: the worker takes
+// the completion from the port on a step of its own spin, so the receive is answered by the spin that is
+// running, not after it. Without the look (the spin reading only the queues) that spin runs out its bound
+// (spinsOut rises by one) and the completion is taken by the role holder after it.
+//
+// The pin is a counter, not a time: from before the datagram is sent to the answer, spinsOut (actors.stats())
+// does not move. A bound in time would have to be a few ms against a 500 ms spin on a gate under load; the
+// counter has the same cause and no bound to flake. The receive itself is a worker-port receive (nothing
+// handed to the I/O thread: opStats().handedOver does not move), the only taker of the port in this
+// program: one worker means no monitor (portGap), and injectEvery is huge so no busy poll comes first.
+//
+// 1. The worker is spinning when the datagram is sent (spins - spinsFound - spinsOut == 1).
+// 2. The receive answers with the datagram's 7 bytes.
+// 3. spinsOut did not move from before the send to the answer, and busyPolls rose.
+
+mod udpspin;
+
+import testing use *;
+import time use Instant, Duration;
+import iobuf use IoBuf, stats;
+import iocore use SocketAddr, IoError;
+import thread;
+import actors;
+import aio use UdpSocket;
+
+struct Got {
+  pub port: Atomic[u64];          // the receiver's port, once it is bound
+  pub posted: Atomic[u64];        // 1 once the receiver is about to wait
+  pub answered: Atomic[u64];      // 1 once the receive answered
+  pub bytes: Atomic[u64];         // the length it answered with
+  pub outAtAnswer: Atomic[u64];   // spinsOut at the answer
+  pub pollsAtAnswer: Atomic[u64]; // busyPolls at the answer
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
+  var res = r;
+  var s = UdpSocket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {panic("udpOf: the operation failed");}
+  }
+  s
+}
+
+fn portOf(r: Result[SocketAddr, IoError]) u16 {
+  match r {
+    case let Ok(a) {a.port()}
+    else {0u16}
+  }
+}
+
+actor Receiver {
+  pub async fn run(self) {
+    let b = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    got.port.store(u64.from(portOf(await b.localAddr())));
+    got.posted.store(1u64);
+    let r = await b.recvFrom(IoBuf(64usize));
+    got.outAtAnswer.store(actors.stats().spinsOut);
+    got.pollsAtAnswer.store(actors.pollerStats().busyPolls);
+    match r {
+      case let Ok(d) {got.bytes.store(u64.from(d.buf.len()));}
+      else {}
+    }
+    got.answered.store(1u64);
+  }
+}
+
+actor Kicker {
+  pub async fn go(self, port: u16) {
+    let a = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    var req = IoBuf(64usize);
+    req.setLen(7usize);
+    let sent = await a.sendTo(SocketAddr.localhost(port), req);
+  }
+}
+
+fn waitFor(f: &Atomic[u64]) bool {
+  let t0 = Instant.now();
+  while f.load() == 0u64 && t0.elapsed() < Duration.fromSeconds(5i64) {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  f.load() != 0u64
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 1u32, spinMicros: 500000u32, injectEvery: 1000000u32));
+  var spinningBefore = 0u64;
+  var outBefore = 0u64;
+  var pollsBefore = 0u64;
+  {
+    let rx = Receiver();
+    rx.run();
+    expect(waitFor(&got.posted), "the receiver is about to wait");
+    thread.sleep(Duration.fromMillis(30i64));
+    let s0 = actors.stats();
+    spinningBefore = s0.spins - s0.spinsFound - s0.spinsOut;
+    outBefore = s0.spinsOut;
+    pollsBefore = actors.pollerStats().busyPolls;
+    let k = Kicker();
+    k.go(u16.from(got.port.load()));
+    expect(waitFor(&got.answered), "the receive was answered");
+  }
+  expectUInt(spinningBefore, 1u64, "1: the worker was spinning when the datagram was sent");
+  expectUInt(got.bytes.load(), 7u64, "2: the receive answered with the datagram's bytes");
+  expectUInt(got.outAtAnswer.load() - outBefore, 0u64, "3: no spin ran out its bound before the answer");
+  expect(got.pollsAtAnswer.load() > pollsBefore, "3: the port was polled without waiting");
+  finalAll();
+  expectUInt(stats().lent, 0u64, "every buffer came home");
+  done()
+}
