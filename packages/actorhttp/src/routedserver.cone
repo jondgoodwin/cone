@@ -589,19 +589,23 @@ pub actor ConnActor {
     }
   }
 
-  // The closing sequence: half-close, a short read of what the peer still sends, drop the socket
+  // The closing sequence: half-close, then read and drop what the peer still sends until it closes, a read fails,
+  // the group is cancelled or the linger passes, so unread bytes never make the stack reset the answer away.
+  // One buffer serves every read: it comes back with each answer and is emptied for the next
   pub async fn closeOut(self) {
-    let lim = IoLimits.within(group);
     let c = await sock.closeWrite();
-    var k = 0u32;
     let until = Instant.now() + args.cfg.conn.lingerTimeout;
-    while k < 8u32 && !group.isCancelled() {
-      let r = await sock.readIn(IoBuf(512usize), IoLimits.until(until));
+    var buf = IoBuf(4096usize);
+    while !group.isCancelled() {
+      let r = await sock.readIn(buf,IoLimits.until(until));
       match r {
-        case let Ok(b) {if b.len() == 0usize {break;}}
+        case var Ok(b) {
+          if b.len() == 0usize {break;}
+          b.clear();
+          buf = b;
+        }
         case let Err(e) {break;}
       }
-      k = k + 1u32;
     }
     self.finishEnd();
   }
