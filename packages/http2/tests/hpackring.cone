@@ -1,0 +1,240 @@
+// The dynamic table's byte ring (hpack.cone, DynamicTable), against a model of RFC 7541 section 4 kept
+// the plain way: a list of (name, value) newest first, evicted from the oldest, its size the sum of
+// name + value + 32. After every operation the table and the model must agree on the count, the size
+// (section 4.1's accounting, which a ring could drift from), every entry's bytes and its size, and what
+// 'find' answers. The operations are pseudo-random: entries of a few bytes to ones near and over the
+// maximum size (section 4.4: one over empties the table and is not added), table size changes both ways
+// (section 4.3), and growth past the size the ring began at (the ring is laid out again with its entries).
+// Entry bytes follow from a counter, so one entry overwriting another's bytes is seen at once.
+
+mod hpackring;
+
+import testing use *;
+import collections use *;
+import http2 use *;
+
+struct Model {
+  names: List[List[u8]];       // newest first
+  values: List[List[u8]];
+  size: usize;
+  max: usize;
+}
+
+fn modelMake(max: usize) Model {Model(List[List[u8]](), List[List[u8]](), 0usize, max)}
+
+fn modelEvict(m: &mut Model, room: usize) {
+  while m.size > room && m.names.len() > 0usize {
+    let last = m.names.len() - 1usize;
+    m.size = m.size - (m.names[last].len() + m.values[last].len() + 32usize);
+    m.names.remove(last);
+    m.values.remove(last);
+  }
+  if m.names.len() == 0usize {m.size = 0usize;}
+}
+
+fn modelAdd(m: &mut Model, name: &List[u8], value: &List[u8]) {
+  let size = name.len() + value.len() + 32usize;
+  if size > m.max {
+    modelEvict(m, 0usize);
+    return;
+  }
+  modelEvict(m, m.max - size);
+  var n = List[u8]();
+  n.appendSlice(name.view());
+  var v = List[u8]();
+  v.appendSlice(value.view());
+  m.names.insert(0usize, n);
+  m.values.insert(0usize, v);
+  m.size = m.size + size;
+}
+
+fn modelSet(m: &mut Model, n: usize) {
+  m.max = n;
+  modelEvict(m, n);
+}
+
+fn same(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len {return false;}
+  var i = 0usize;
+  while i < a.len {
+    if a[i] != b[i] {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+// What find answers: the first entry (newest) with the name and value, else the first with the name
+fn modelFind(m: &Model, name: &Array[u8], value: &Array[u8]) TableMatch {
+  var named = 0usize;
+  var i = 0usize;
+  while i < m.names.len() {
+    if same(m.names[i].view(), name) {
+      if same(m.values[i].view(), value) {return TableMatch(i + 1usize, true);}
+      if named == 0usize {named = i + 1usize;}
+    }
+    i = i + 1usize;
+  }
+  TableMatch(named, false)
+}
+
+// 0 when the table and the model agree, else how many things differ
+fn compare(t: &DynamicTable, m: &Model, probeName: &List[u8], probeValue: &List[u8]) u64 {
+  var bad = 0u64;
+  if t.len() != m.names.len() {return 1u64;}
+  if t.size() != m.size {bad = bad + 1u64;}
+  if t.maxSize() != m.max {bad = bad + 1u64;}
+  var i = 0usize;
+  while i < t.len() {
+    let tn = t.name(i);
+    if !same(tn, m.names[i].view()) {bad = bad + 1u64;}
+    if !same(t.value(i), m.values[i].view()) {bad = bad + 1u64;}
+    if t.entrySize(i) != m.names[i].len() + m.values[i].len() + 32usize {bad = bad + 1u64;}
+    i = i + 1usize;
+  }
+  let a = t.find(probeName.view(), probeValue.view());
+  let b = modelFind(m, probeName.view(), probeValue.view());
+  if a.index != b.index || a.exact != b.exact {bad = bad + 1u64;}
+  bad
+}
+
+// Bytes from a counter: printable, so a String holds them
+fn fill(out: &mut List[u8], n: usize, seed: u64) {
+  var i = 0usize;
+  while i < n {
+    out.push(u8.from(33u64 + (seed * 31u64 + u64.from(i) * 7u64 + u64.from(i) / 13u64) % 90u64));
+    i = i + 1usize;
+  }
+}
+
+struct Rng {s: u64;}
+
+fn next(r: &mut Rng) u64 {
+  r.s = (r.s * 6364136223846793005u64 + 1442695040888963407u64);
+  r.s / 65536u64
+}
+
+// One run of 'ops' operations on a table starting at 'start', picking sizes among 'sizes'; 'big' makes
+// entries of up to the current maximum size more likely. The count of disagreements, and the most
+// entries and the number of evictions seen (for the checks that the run was a real one)
+struct Run {
+  bad: u64;
+  mostEntries: usize;
+  adds: u64;
+  empties: u64;
+  grew: u64;
+}
+
+fn run(seed: u64, start: usize, sizes: &Array[usize], ops: u32, big: bool) Run {
+  var rng = Rng(seed);
+  var t = DynamicTable.make(start);
+  var m = modelMake(start);
+  var out = Run(0u64, 0usize, 0u64, 0u64, 0u64);
+  var k = 0u32;
+  var counter = 0u64;
+  while k < ops {
+    let pick = next(&mut rng);
+    if pick % 29u64 == 0u64 {
+      let n = sizes[usize.from(next(&mut rng) % u64.from(sizes.len))];
+      if n > m.max {out.grew = out.grew + 1u64;}
+      t.setMaxSize(n);
+      modelSet(&mut m, n);
+    } else {
+      var nameLen = 1usize + usize.from(next(&mut rng) % 30u64);
+      var valueLen = usize.from(next(&mut rng) % 300u64);
+      if big && pick % 7u64 == 0u64 {
+        // An entry between half the maximum and a little over it
+        let want = m.max / 2usize + usize.from(next(&mut rng) % (u64.from(m.max) / 2u64 + 400u64));
+        if want > nameLen + 32usize {valueLen = want - nameLen - 32usize;}
+      }
+      var name = List[u8]();
+      var value = List[u8]();
+      fill(&mut name, nameLen, counter);
+      fill(&mut value, valueLen, counter + 1000003u64);
+      counter = counter + 1u64;
+      if nameLen + valueLen + 32usize > m.max {out.empties = out.empties + 1u64;}
+      t.add(String.fromBytes(name.view()), String.fromBytes(value.view()));
+      modelAdd(&mut m, &name, &value);
+      out.adds = out.adds + 1u64;
+    }
+    // A probe: an entry's name with its value, a name with another value, an absent name
+    var pn = List[u8]();
+    var pv = List[u8]();
+    if m.names.len() > 0usize {
+      let at = usize.from(next(&mut rng) % u64.from(m.names.len()));
+      pn.appendSlice(m.names[at].view());
+      if pick % 3u64 == 0u64 {pv.appendSlice(m.values[at].view());} else {pv.push(65u8);}
+    } else {
+      pn.push(120u8);
+      pv.push(121u8);
+    }
+    out.bad = out.bad + compare(&t, &m, &pn, &pv);
+    if m.names.len() > out.mostEntries {out.mostEntries = m.names.len();}
+    k = k + 1u32;
+  }
+  out
+}
+
+fn main() i32 {
+  // The default: 4096, entries of a few bytes to a few hundred, some near the maximum
+  {
+    var sizes = List[usize]();
+    sizes.push(4096usize);
+    let r = run(1u64, 4096usize, sizes.view(), 4000u32, true);
+    expectUInt(r.bad, 0u64, "4096: the table agrees with the model after every operation");
+    expect(r.mostEntries >= 10usize, "4096: it held many entries at once");
+    expect(r.empties > 20u64, "4096: entries over the maximum emptied it, and were not added");
+  }
+  // Many small entries: the entry ring and the byte ring wrap many times over
+  {
+    var sizes = List[usize]();
+    sizes.push(4096usize);
+    sizes.push(256usize);
+    let r = run(2u64, 256usize, sizes.view(), 6000u32, false);
+    expectUInt(r.bad, 0u64, "256 and 4096, small entries: the table agrees with the model");
+  }
+  // Sizes changing: to 0 and back, shrinking with entries held, growing past where the ring began
+  {
+    var sizes = List[usize]();
+    sizes.push(0usize);
+    sizes.push(100usize);
+    sizes.push(1000usize);
+    sizes.push(4096usize);
+    sizes.push(9000usize);
+    sizes.push(20000usize);
+    let r = run(3u64, 4096usize, sizes.view(), 8000u32, true);
+    expectUInt(r.bad, 0u64, "sizes 0 to 20000: the table agrees with the model");
+    expect(r.grew > 20u64, "sizes 0 to 20000: it was made larger many times, with entries held");
+  }
+  // The ring began small: 64 bytes, then up to 5000
+  {
+    var sizes = List[usize]();
+    sizes.push(64usize);
+    sizes.push(5000usize);
+    sizes.push(700usize);
+    let r = run(4u64, 64usize, sizes.view(), 5000u32, true);
+    expectUInt(r.bad, 0u64, "64 to 5000: the table agrees with the model");
+  }
+  // The worst case for the ring: every entry a bit over half the maximum, then a third
+  {
+    var t = DynamicTable.make(4096usize);
+    var m = modelMake(4096usize);
+    var bad = 0u64;
+    var k = 0u64;
+    while k < 300u64 {
+      var name = List[u8]();
+      var value = List[u8]();
+      fill(&mut name, 20usize, k);
+      fill(&mut value, if k % 2u64 == 0u64 {2100usize} else {1300usize}, k + 77u64);
+      t.add(String.fromBytes(name.view()), String.fromBytes(value.view()));
+      modelAdd(&mut m, &name, &value);
+      var pn = List[u8]();
+      var pv = List[u8]();
+      pn.appendSlice(name.view());
+      pv.appendSlice(value.view());
+      bad = bad + compare(&t, &m, &pn, &pv);
+      k = k + 1u64;
+    }
+    expectUInt(bad, 0u64, "entries over half and over a third of the maximum: the table agrees with the model");
+  }
+  done()
+}

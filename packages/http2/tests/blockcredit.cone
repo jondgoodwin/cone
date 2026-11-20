@@ -1,0 +1,381 @@
+// Received DATA held in blocks (connection.cone, 'emitData', BLOCK CREDIT). A DATA frame arrives in a
+// block of its own, 4 KiB at the least, so tiny frames turn the peer's byte window into blocks about
+// 4,000 to one. A client connection builds 60 streams (more than the 16 events a lookback covered), then
+// raw 1-byte DATA frames are interleaved over them, and the buffer pool's lent blocks are counted:
+//   - join: frames over the 60 streams, nobody polling, leave one Data event (one block) a stream,
+//     whatever the interleaving: 60 Data events of 20 bytes, in order, about 60 blocks lent;
+//   - the credit: the program polls after every round and sits on what it polled (no release), so
+//     nothing joins and each frame would hold a block. The blocks held stop at the connection's limit
+//     (blockLimit over 4 KiB), readCredit is 0 (the driver stops reading the socket), and the frames
+//     not yet parsed wait in the connection's input;
+//   - on again: what the program releases gives the credit back (the stalled frames are parsed at the next
+//     poll, the peer's whole wire arrives, every byte in its stream's order), and a second wave of the
+//     same size stalls at the same place, so the first leaked nothing;
+//   - the peer's end that comes while frames wait behind the credit waits for them: every byte taken
+//     arrives, then the connection reports its streams under way;
+//   - every block home at the end.
+// The limit for this budget (creditBudget 65536, 100 streams): 4 x 65536 + 100 x 4096 = 671744 bytes,
+// 164 blocks of 4096.
+
+mod blockcredit;
+
+import testing use *;
+import collections use *;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http2 use *;
+
+const streamsN = 60u32;
+const limitBlocks = 164u64;       // 671744 / 4096
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+fn post() RequestHead {
+  var head = RequestHead.make("POST", "/up", "example.com");
+  head.scheme = String.from("https");
+  head
+}
+
+fn bytesOf(c: &mut Chain, wire: &mut List[u8]) {
+  while c.len() > 0usize {
+    let b = c.popFront();
+    match b {
+      case let Some(x) {wire.appendSlice(x.view());}
+      case is None[IoBuf] {}
+    }
+  }
+}
+
+// The server takes wire[from..] in pieces of at most 'piece' bytes, within its read credit: where it got to
+fn feed(s: &mut Connection, wire: &List[u8], from: usize, piece: usize) usize {
+  var at1 = from;
+  while at1 < wire.len() {
+    var take = wire.len() - at1;
+    if take > piece {take = piece;}
+    if take > s.readCredit() {take = s.readCredit();}
+    if take == 0usize {break;}
+    var b = IoBuf(take);
+    let room = b.spare();
+    var i = 0usize;
+    while i < take {room[i] = (*wire)[at1 + i]; i = i + 1usize;}
+    b.setLen(take);
+    s.handleInput(b, at(1));
+    at1 = at1 + take;
+  }
+  at1
+}
+
+// The server takes the next piece of at most 'piece' bytes, no more than its read credit: where it got to
+fn feedOne(s: &mut Connection, wire: &List[u8], from: usize, piece: usize) usize {
+  var take = wire.len() - from;
+  if take > piece {take = piece;}
+  if take > s.readCredit() {take = s.readCredit();}
+  if take == 0usize {return from;}
+  var b = IoBuf(take);
+  let room = b.spare();
+  var i = 0usize;
+  while i < take {room[i] = (*wire)[from + i]; i = i + 1usize;}
+  b.setLen(take);
+  s.handleInput(b, at(1));
+  from + take
+}
+
+// A 1-byte DATA frame, the byte 'v'
+fn tiny(wire: &mut List[u8], id: u32, v: u8) {
+  wire.push(0u8);
+  wire.push(0u8);
+  wire.push(1u8);
+  wire.push(0u8);
+  wire.push(0u8);
+  wire.push(u8.from(id / 16777216u32 % 256u32));
+  wire.push(u8.from(id / 65536u32 % 256u32));
+  wire.push(u8.from(id / 256u32 % 256u32));
+  wire.push(u8.from(id % 256u32));
+  wire.push(v);
+}
+
+// 'n' rounds from round 'from', each one tiny frame on each of the streams in order; the byte is the
+// stream's count, mod 251
+fn rounds(wire: &mut List[u8], from: u32, n: u32) {roundsOf(wire, 0u32, streamsN, from, n);}
+
+// The same over streams k0 up to k1 (stream 2k + 1)
+fn roundsOf(wire: &mut List[u8], k0: u32, k1: u32, from: u32, n: u32) {
+  var r = from;
+  while r < from + n {
+    var k = k0;
+    while k < k1 {
+      tiny(wire, 2u32 * k + 1u32, u8.from(r % 251u32));
+      k = k + 1u32;
+    }
+    r = r + 1u32;
+  }
+}
+
+// What the client has to say, to the server
+fn carry(c: &mut Connection, s: &mut Connection) {
+  var out = c.pollTransmit(at(0));
+  var w = List[u8]();
+  bytesOf(&mut out, &mut w);
+  let to = feed(s, &w, 0usize, 16000usize);
+}
+
+struct Seen {
+  events: u64;       // Data events polled
+  bytes: u64;        // their bytes
+  wrong: u64;        // bytes not the stream's next
+  failed: bool;
+}
+
+fn seenNone() Seen {Seen(0u64, 0u64, 0u64, false)}
+
+// The server's events, polled until nothing is left; each stream's next expected byte is in 'next'.
+// Released at once when 'release' says, else the program sits on the buffers ('sat')
+fn poll(s: &mut Connection, seen: &mut Seen, next: &mut List[u32], sat: &mut List[IoBuf], release: bool) {
+  var going = true;
+  while going {
+    match s.pollEvent() {
+      case var Data(d) {
+        seen.events = seen.events + 1u64;
+        let k = usize.from((d.stream - 1u32) / 2u32);
+        var i = 0usize;
+        while i < d.buf.len() {
+          if u32.from(d.buf.view()[i]) != next[k] % 251u32 {seen.wrong = seen.wrong + 1u64;}
+          next[k] = next[k] + 1u32;
+          i = i + 1usize;
+        }
+        seen.bytes = seen.bytes + u64.from(d.buf.len());
+        if release {s.release(d.stream, d.buf.len());}
+        else {
+          var kept = IoBuf();
+          kept <-> d.buf;
+          sat.push(kept);
+        }
+      }
+      case let Failed(f) {seen.failed = true; going = false;}
+      case is NeedData {going = false;}
+      case is Closed {going = false;}
+      else {}
+    }
+  }
+}
+
+fn nexts() List[u32] {
+  var n = List[u32]();
+  var k = 0u32;
+  while k < 2u32 * streamsN {n.push(0u32); k = k + 1u32;}
+  n
+}
+
+// Every stream's unreleased bytes released
+fn releaseAll(s: &mut Connection) {
+  var k = 0u32;
+  while k < streamsN {
+    let id = 2u32 * k + 1u32;
+    s.release(id, s.unreleased(id));
+    k = k + 1u32;
+  }
+}
+
+// A server for the config, given the client's preface, SETTINGS and the 60 requests
+fn start(cfg: Config) Connection {
+  var c = Connection.client(Config.make(), at(0));
+  var k = 0u32;
+  while k < streamsN {
+    let id = c.sendRequest(post(), BodyLength.sized(1000000u64));
+    k = k + 1u32;
+  }
+  var out = c.pollTransmit(at(0));
+  var head = List[u8]();
+  bytesOf(&mut out, &mut head);
+  var s = Connection.server(cfg, at(0));
+  let to = feed(&mut s, &head, 0usize, 16000usize);
+  var seen = seenNone();
+  var nx = nexts();
+  var sat = List[IoBuf]();
+  poll(&mut s, &mut seen, &mut nx, &mut sat, true);
+  s
+}
+
+// Rounds of tiny frames fed one round at a time, the program polling after each and sitting on what it
+// polled, until the connection takes no more or the wire ends: where in the wire it got to, and the
+// most blocks lent (above lent0) meanwhile
+struct Stall {
+  from: usize;
+  rounds: u32;
+  peak: u64;
+}
+
+fn sitting(s: &mut Connection, wire: &List[u8], from: usize, seen: &mut Seen, nx: &mut List[u32], sat: &mut List[IoBuf], lent0: u64) Stall {
+  let roundBytes = usize.from(streamsN) * 10usize;
+  var at1 = from;
+  var peak = 0u64;
+  var r = 0u32;
+  while at1 < wire.len() {
+    let to = feedOne(s, wire, at1, roundBytes);
+    let moved = to > at1;
+    at1 = to;
+    poll(s, seen, nx, sat, false);
+    let now = stats().lent - lent0;
+    if now > peak {peak = now;}
+    if !moved {break;}
+    r = r + 1u32;
+  }
+  Stall(at1, r, peak)
+}
+
+fn main() i32 {
+  trim();
+  let lent0 = stats().lent;
+  var cfg = Config.make();
+  cfg.creditBudget = 65536u64;
+  let roundBytes = usize.from(streamsN) * 10usize;
+
+  // Join: 20 rounds over 60 streams, one feed, nobody polling
+  {
+    var s = start(cfg);
+    var wire = List[u8]();
+    rounds(&mut wire, 0u32, 20u32);
+    let got = feed(&mut s, &wire, 0usize, 16000usize);
+    expectUInt(u64.from(got), u64.from(wire.len()), "join: all the wire was taken");
+    let held = stats().lent - lent0;
+    expect(held <= 60u64 + 24u64, "join: about one block a stream is lent, not one a frame");
+    var seen = seenNone();
+    var nx = nexts();
+    var sat = List[IoBuf]();
+    poll(&mut s, &mut seen, &mut nx, &mut sat, true);
+    expectUInt(seen.events, u64.from(streamsN), "join: one Data event a stream");
+    expectUInt(seen.bytes, u64.from(streamsN) * 20u64, "join: of every byte sent");
+    expectUInt(seen.wrong, 0u64, "join: each stream's bytes in order");
+  }
+  expectUInt(stats().lent, lent0, "join: every block home");
+
+  // The credit: poll after every round, release nothing, until the connection stops reading
+  {
+    var s = start(cfg);
+    var wire = List[u8]();
+    rounds(&mut wire, 0u32, 40u32);
+    var seen = seenNone();
+    var nx = nexts();
+    var sat = List[IoBuf]();
+    let st = sitting(&mut s, &wire, 0usize, &mut seen, &mut nx, &mut sat, lent0);
+    expect(st.from < wire.len(), "credit: the connection stopped reading before the wire was all taken");
+    expectUInt(u64.from(s.readCredit()), 0u64, "credit: and gives no read credit");
+    expect(st.peak <= limitBlocks + 24u64, "credit: the blocks lent stop at the limit (and the input's)");
+    expectUInt(seen.events, limitBlocks, "credit: the Data events held, a block each, are the limit's 164 blocks of 4096, no more");
+    expectUInt(seen.wrong, 0u64, "credit: the bytes read are in order");
+
+    // On again: release everything polled so far; the stalled frames are parsed at the next poll
+    releaseAll(&mut s);
+    sat.clear();
+    expect(s.readCredit() > 0usize, "on again: released bytes give the credit back");
+    var from = st.from;
+    var guard = 0u32;
+    while from < wire.len() && guard < 100000u32 {
+      poll(&mut s, &mut seen, &mut nx, &mut sat, true);
+      from = feedOne(&mut s, &wire, from, roundBytes);
+      guard = guard + 1u32;
+    }
+    poll(&mut s, &mut seen, &mut nx, &mut sat, true);
+    expectUInt(u64.from(from), u64.from(wire.len()), "on again: the whole wire arrived");
+    expectUInt(seen.bytes, 40u64 * u64.from(streamsN), "on again: every byte was seen once");
+    expectUInt(seen.wrong, 0u64, "on again: each stream's bytes in order");
+    expect(s.readCredit() > 0usize, "on again: the credit stands open at the end");
+
+    // A second wave stalls at the same place: the first wave leaked nothing
+    var wire2 = List[u8]();
+    rounds(&mut wire2, 40u32, 40u32);
+    var seen2 = seenNone();
+    let st2 = sitting(&mut s, &wire2, 0usize, &mut seen2, &mut nx, &mut sat, lent0);
+    expect(st2.from < wire2.len(), "a second wave: stopped behind the credit too");
+    expect(st2.rounds + 2u32 >= st.rounds && st.rounds + 2u32 >= st2.rounds, "a second wave: at the first wave's place");
+    releaseAll(&mut s);
+    sat.clear();
+    var from2 = st2.from;
+    var guard2 = 0u32;
+    while from2 < wire2.len() && guard2 < 100000u32 {
+      poll(&mut s, &mut seen2, &mut nx, &mut sat, true);
+      from2 = feedOne(&mut s, &wire2, from2, roundBytes);
+      guard2 = guard2 + 1u32;
+    }
+    poll(&mut s, &mut seen2, &mut nx, &mut sat, true);
+    expectUInt(seen2.bytes, 40u64 * u64.from(streamsN), "a second wave: every byte seen");
+    expectUInt(seen2.wrong, 0u64, "a second wave: in order");
+    sat.clear();
+  }
+  expectUInt(stats().lent, lent0, "credit: every block home");
+
+  // The peer's end behind the credit waits for the frames the connection has taken: all of them arrive
+  {
+    var s = start(cfg);
+    var wire = List[u8]();
+    rounds(&mut wire, 0u32, 40u32);
+    var seen = seenNone();
+    var nx = nexts();
+    var sat = List[IoBuf]();
+    let st = sitting(&mut s, &wire, 0usize, &mut seen, &mut nx, &mut sat, lent0);
+    expect(st.from < wire.len(), "the end: stopped behind the credit");
+    s.handleInput(IoBuf(), at(2));
+    expect(!seen.failed, "the end: not yet reported");
+    releaseAll(&mut s);
+    sat.clear();
+    var guard = 0u32;
+    while !seen.failed && guard < 10u32 {
+      poll(&mut s, &mut seen, &mut nx, &mut sat, true);
+      guard = guard + 1u32;
+    }
+    expect(seen.failed, "the end: reported once the frames were parsed (streams under way)");
+    expectUInt(seen.bytes, u64.from(st.from) / 10u64, "the end: every byte the connection had taken arrived before it");
+    expectUInt(seen.wrong, 0u64, "the end: in order");
+  }
+  expectUInt(stats().lent, lent0, "the end: every block home");
+
+  // Streams that end give back what their blocks held, released or not: 60 streams hold 120 blocks and
+  // end with nothing released; 60 more then stall at the limit as a fresh connection's do
+  {
+    var c = Connection.client(Config.make(), at(0));
+    var s = Connection.server(cfg, at(0));
+    var seen = seenNone();
+    var nx = nexts();
+    var sat = List[IoBuf]();
+    var k = 0u32;
+    while k < streamsN {
+      let id = c.sendRequest(post(), BodyLength.sized(1000000u64));
+      k = k + 1u32;
+    }
+    carry(&mut c, &mut s);
+    poll(&mut s, &mut seen, &mut nx, &mut sat, true);
+    var wire = List[u8]();
+    rounds(&mut wire, 0u32, 2u32);
+    let st = sitting(&mut s, &wire, 0usize, &mut seen, &mut nx, &mut sat, lent0);
+    expectUInt(u64.from(st.from), u64.from(wire.len()), "ends: 120 blocks are all taken, under the limit");
+    expectUInt(seen.events, 2u64 * u64.from(streamsN), "ends: 120 Data events held");
+    // The client resets every stream (the one end the streams have without a body sent or an answer)
+    var j = 0u32;
+    while j < streamsN {
+      c.cancel(2u32 * j + 1u32);
+      j = j + 1u32;
+    }
+    carry(&mut c, &mut s);
+    poll(&mut s, &mut seen, &mut nx, &mut sat, true);
+    sat.clear();
+    expectUInt(u64.from(s.liveStreams()), 0u64, "ends: the 60 streams have left the table");
+    // 60 more streams (ids 121 on), the first wave's blocks never released
+    k = 0u32;
+    while k < streamsN {
+      let id = c.sendRequest(post(), BodyLength.sized(1000000u64));
+      k = k + 1u32;
+    }
+    carry(&mut c, &mut s);
+    poll(&mut s, &mut seen, &mut nx, &mut sat, true);
+    var wire2 = List[u8]();
+    roundsOf(&mut wire2, streamsN, 2u32 * streamsN, 0u32, 40u32);
+    var seen2 = seenNone();
+    let st2 = sitting(&mut s, &wire2, 0usize, &mut seen2, &mut nx, &mut sat, lent0);
+    expect(st2.from < wire2.len(), "ends: the second 60 streams stall too");
+    expectUInt(seen2.events, limitBlocks, "ends: at the limit's 164 blocks, as a fresh connection: what the ended streams held was given back");
+    sat.clear();
+  }
+  expectUInt(stats().lent, lent0, "ends: every block home");
+  done()
+}
