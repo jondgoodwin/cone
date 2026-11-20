@@ -1,0 +1,94 @@
+// Workers and their threads: a dropped pool leaves no thread behind that still writes into its memory.
+//
+//   stopped     make(3), let both workers spin out and park, stop(), drop; a block taken after the drop,
+//               of the size the pool's control words had, is not written to by a late worker
+//   dropped     the same without stop(): the drop does what stop() does
+//   twice       stop() twice, and a drop after stop(), join nothing a second time
+//
+// A worker that was parked when the stop came wakes after it, and its first act used to be a store of 0 into the
+// pool's control words. When the pool was dropped by then, the store landed in whatever took the memory.
+
+mod workers;
+
+import testing use *;
+import collections use *;
+import xpbdsoftbody use Workers;
+import thread;
+import time use Duration;
+
+const ROUNDS = 60i32;
+
+// Take a block as large as the pool's control words (16 u64 words), fill it with 7s, wait for a late worker to
+// wake, and count the words no longer 7
+fn damage() i32 {
+  var c = List[u64]();
+  var k = 0usize;
+  while k < 16usize { c.push(7u64); k = k + 1usize; }
+  thread.sleep(Duration.fromMillis(3i64));
+  var bad = 0i32;
+  k = 0usize;
+  while k < 16usize {
+    if *c[k] != 7u64 { bad = bad + 1i32; }
+    k = k + 1usize;
+  }
+  bad
+}
+
+fn churnStopped() {
+  var w = Workers.make(3u32);
+  thread.sleep(Duration.fromMillis(3i64));    // both workers spin out, and park
+  w.stop();
+}
+
+fn churnDropped() {
+  let w = Workers.make(3u32);
+  thread.sleep(Duration.fromMillis(3i64));
+}
+
+fn churnTwice() {
+  var w = Workers.make(3u32);
+  thread.sleep(Duration.fromMillis(3i64));
+  w.stop();
+  w.stop();
+  expectInt(i64.from(w.count), 1i64, "a stopped pool counts one thread");
+}
+
+fn testStopped() {
+  var damaged = 0i32;
+  var i = 0i32;
+  while i < ROUNDS {
+    churnStopped();
+    damaged = damaged + damage();
+    i = i + 1i32;
+  }
+  expectInt(i64.from(damaged), 0i64, "after stop() and a drop no late worker writes into the freed pool");
+}
+
+fn testDropped() {
+  var damaged = 0i32;
+  var i = 0i32;
+  while i < ROUNDS {
+    churnDropped();
+    damaged = damaged + damage();
+    i = i + 1i32;
+  }
+  expectInt(i64.from(damaged), 0i64, "after a drop without stop() no late worker writes into the freed pool");
+}
+
+fn testTwice() {
+  var damaged = 0i32;
+  var i = 0i32;
+  while i < 10i32 {
+    churnTwice();
+    damaged = damaged + damage();
+    i = i + 1i32;
+  }
+  expectInt(i64.from(damaged), 0i64, "stop() twice and a drop leave the memory alone");
+}
+
+fn main() i32 {
+  testStopped();
+  testDropped();
+  testTwice();
+  done()
+}

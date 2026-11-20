@@ -78,12 +78,12 @@ fn workerMain(a: WorkerArg) i32 {
 pub struct Workers {
   ctl: List[u64];
   view: List[StepView];
-  refs: List[thread.ThreadRef];
+  handles: List[thread.Thread[i32]];   // the workers: joined by stop() and final, so none outlives ctl and view
   pub count: u32;           // threads in all, the stepping thread included
 
   // No workers: every region runs on the stepping thread
   pub fn none() Workers {
-    Workers(List[u64](), List[StepView](), List[thread.ThreadRef](), 1u32)
+    Workers(List[u64](), List[StepView](), List[thread.Thread[i32]](), 1u32)
   }
 
   // 'count' threads in all (this one and count - 1 more). 1 is none.
@@ -100,8 +100,7 @@ pub struct Workers {
     var id = 1u32;
     while id < count {
       let t = thread.start(WorkerArg(ctl, vp, id, count), &workerMain);
-      w.refs.push(t.threadRef());
-      t.detach();
+      w.handles.push(t);
       id = id + 1u32;
     }
     w
@@ -125,7 +124,7 @@ pub struct Workers {
     mem.atomicAdd[u64](ctl + W_GEN, 1u64, MemOrder.SeqCst);
     var i = 0usize;
     while i + 1usize < usize.from(count) {
-      if mem.atomicLoad[u64](ctl + W_SLEEP + 1usize + i, MemOrder.SeqCst) != 0u64 { refs[i].unpark(); }
+      if mem.atomicLoad[u64](ctl + W_SLEEP + 1usize + i, MemOrder.SeqCst) != 0u64 { handles[i].unpark(); }
       i = i + 1usize;
     }
     let sl = sliceOf(lo, hi, 0u32, count);
@@ -134,30 +133,40 @@ pub struct Workers {
     while mem.atomicLoad[u64](ctl + W_DONE, MemOrder.SeqCst) < want { }
   }
 
-  // Tell the workers to leave
+  // Tell the workers to leave, and wait until each has: when this returns no thread touches the pool's memory,
+  // and 'count' is 1, so the regions after it run on this thread alone. Stopping twice is harmless.
   pub fn stop(self: &mut) {
     if count < 2u32 { return; }
     let ctl = ctl.viewMut() as *u64;
     mem.atomicStore[u64](ctl + W_STOP, 1u64, MemOrder.SeqCst);
     mem.atomicAdd[u64](ctl + W_GEN, 1u64, MemOrder.SeqCst);
     var i = 0usize;
-    while i < refs.len() {
-      refs[i].unpark();
+    while i < handles.len() {
+      handles[i].unpark();
       i = i + 1usize;
     }
+    // A handle in a list cannot be moved out to join, so clearing the list is the join: each handle finalizes in
+    // turn, and a finalizing handle waits for its thread. A worker that is spinning sees the stop at its next
+    // look; one that is parked has the unpark waiting for it (a kept token), so none sleeps through it.
+    handles.clear();
     count = 1u32;
   }
 
+  // A Workers dropped without stop() does the same. The fields drop after this body, so the lists the workers
+  // read (ctl, view) are alive for every worker's last look. The join cannot wait on itself: a worker thread
+  // never owns, moves or drops a Workers (it holds raw pointers into the lists and nothing else), so 'final'
+  // runs on the thread that owns the pool, never on one of its workers.
   fn final(self: &uni) {
     if count >= 2u32 {
       let ctl = ctl.viewMut() as *u64;
       mem.atomicStore[u64](ctl + W_STOP, 1u64, MemOrder.SeqCst);
       mem.atomicAdd[u64](ctl + W_GEN, 1u64, MemOrder.SeqCst);
       var i = 0usize;
-      while i < refs.len() {
-        refs[i].unpark();
+      while i < handles.len() {
+        handles[i].unpark();
         i = i + 1usize;
       }
+      handles.clear();
     }
   }
 }
