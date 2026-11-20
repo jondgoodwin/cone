@@ -482,6 +482,10 @@ pub struct Exchange is Move {
     if !streamed {die("actorhttp: body needs a server made with ServerConfig.streamBodies", file, line);}
     if bodyTaken {die("actorhttp: body was taken already", file, line);}
     bodyTaken = true;
+    match &conn {
+      case let &Some(c) {return RequestBody.routed(*c, stream, id);}
+      else {}
+    }
     RequestBody.make(srv, slot, id)
   }
 
@@ -490,7 +494,10 @@ pub struct Exchange is Move {
 
   fn final(self: &uni) {
     match &conn {
-      case let &Some(c) {c.xDrop(stream, id);}
+      case let &Some(c) {
+        if streamed && !bodyTaken {c.xBodyDrop(stream, id);}
+        c.xDrop(stream, id);
+      }
       else {post[DropExJob](DropExJob(srv, slot, id, streamed && !bodyTaken));}
     }
   }
