@@ -443,10 +443,42 @@ pub actor ConnActor {
     let r = await sock.readIn(IoBuf(want), IoLimits.within(group));
     reading = false;
     match r {
-      case let Ok(b) {sc.wireIn(b, Instant.now());}
+      case let Ok(b) {
+        let eof = b.len() == 0usize;
+        sc.wireIn(b, Instant.now());
+        if eof {self.peerLeft();}
+      }
       case let Err(e) {sc.abort();}
     }
     self.turn();
+  }
+
+  // The peer has sent its last byte. A request that waits in the queue for an actor is given up (as Go's
+  // server does, a client that has gone is not answered): it no longer counts against maxPending, and on
+  // HTTP/1.1 the connection ends. A request a handler already has may still be answered
+  fn peerLeft(self) {
+    var gone = List[u32]();
+    var it = streams.keys();
+    while true {
+      match it.next() {
+        case let Some(k) {
+          match streams.get(k) {
+            case let Some(r) {if r.state == stQueued || r.state == stFresh {gone.push(*k);}}
+            else {}
+          }
+        }
+        else {break;}
+      }
+    }
+    var i = 0usize;
+    while i < gone.len() {
+      match streams.remove(&gone[i]) {
+        case let Some(r) {if r.state == stQueued {srv.drop1(id, r.rid);}}
+        else {}
+      }
+      i = i + 1usize;
+    }
+    if gone.len() > 0usize && !sc.isHttp2() {sc.abort();}
   }
 
   pub async fn writeOnce(self) {

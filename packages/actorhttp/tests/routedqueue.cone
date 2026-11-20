@@ -1,0 +1,224 @@
+// The queue route of a routed server: a request whose connection has ended is not handed out, and does not
+// count against maxPending. No actor takes requests at first and maxPending is 3: eight clients each
+// connect, send a request, wait until the server holds it, and leave; after each leaves the server's
+// waiting count returns to 0 (a dead entry that stayed would count, and the fourth round would be answered
+// 503). Then one client keeps its connection and its request waits; an actor that asks takes that request,
+// not one of the dead, and answers it. The "silent failure" this guards: an Exchange handed to an actor
+// for a request whose peer has gone.
+
+mod routedqueue;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import iobuf use IoBuf;
+import http use *;
+import actors;
+import aio use IoLimits;
+import actorhttp use Server, ServerConfig, Exchange, Router;
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  // Wait up to ms for the server's waiting count to be n; answers the count it saw last
+  pub async fn waitFor(self, n: u64, ms: i64, var done: OneshotSender[u64]) {
+    let until = Instant.now() + Duration.fromMillis(ms);
+    var seen = 999u64;
+    while true {
+      seen = await server.waiting();
+      if seen == n || Instant.now() > until {break;}
+      await aio.sleep(Duration.fromMillis(5i64));
+    }
+    done.send(seen);
+  }
+
+  // Take one request and answer it with its path
+  pub async fn takeOne(self, var done: OneshotSender[String]) {
+    match await server.next() {
+      case var Ok(ex) {
+        let p = String.from(ex.request.path());
+        ex.text(200u16, "taken");
+        done.send(p);
+      }
+      case let Err(e) {done.send(String.from("closed"));}
+    }
+  }
+
+  pub async fn stop(self) {server.close();}
+
+  pub async fn waitClosed(self, var done: OneshotSender[u64]) {
+    let closed = await server.closed();
+    done.send(if closed {1u64} else {0u64});
+  }
+}
+
+// A raw client: one TCP connection, bytes in and out
+actor Raw {
+  sock: aio.Socket;
+
+  pub async fn open(self, port: u16, var done: OneshotSender[u64]) {
+    match await aio.connect(SocketAddr.localhost(port)) {
+      case var Ok(s) {
+        sock <-> s;
+        done.send(1u64);
+      }
+      case let Err(e) {done.send(0u64);}
+    }
+  }
+
+  pub async fn send(self, text: String, var done: OneshotSender[u64]) {
+    var b = IoBuf(text.len());
+    b.append(text.view());
+    match await sock.write(b) {
+      case let Ok(n) {done.send(u64.from(n));}
+      case let Err(e) {done.send(0u64);}
+    }
+  }
+
+  // What arrives within ms, as text (empty when nothing does)
+  pub async fn readText(self, ms: i64, var done: OneshotSender[String]) {
+    let lim = IoLimits.until(Instant.now() + Duration.fromMillis(ms));
+    var text = String();
+    while true {
+      match await sock.readIn(IoBuf(4096usize), lim) {
+        case let Ok(b) {
+          if b.len() == 0usize {break;}
+          text.appendBytes(b.view());
+          if text.len() > 12usize {break;}
+        }
+        case let Err(e) {break;}
+      }
+    }
+    done.send(text);
+  }
+
+  pub async fn leave(self) {
+    var dead = aio.Socket.none();
+    dead <-> sock;
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var cfg = ServerConfig.make().route(Router.make().queue("", "/"));
+  cfg.maxPending = 3usize;
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+
+  var round = 0u32;
+  while round < 8u32 {
+    let raw = Raw(aio.Socket.none());
+    {
+      var tx: OneshotSender[u64]; var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      raw.open(port, tx);
+      rx.recv();
+    }
+    {
+      var tx: OneshotSender[u64]; var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      raw.send(String.from("GET /dead HTTP/1.1\r\nHost: h\r\n\r\n"), tx);
+      rx.recv();
+    }
+    var held = 0u64;
+    {
+      var tx: OneshotSender[u64]; var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      acceptor.waitFor(1u64, 5000i64, tx);
+      held = rx.recv() || 999u64;
+    }
+    if held != 1u64 {say("round: the server held", held);}
+    raw.leave();
+    var left = 0u64;
+    {
+      var tx: OneshotSender[u64]; var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      acceptor.waitFor(0u64, 2000i64, tx);
+      left = rx.recv() || 999u64;
+    }
+    if left != 0u64 {
+      say("dead requests still counted after round", u64.from(round));
+      say("  counted", left);
+      break;
+    }
+    round = round + 1u32;
+  }
+  say("rounds with the count back at 0", u64.from(round));
+
+  // A live client: its request waits (not 503) and is the one an actor takes
+  let live = Raw(aio.Socket.none());
+  {
+    var tx: OneshotSender[u64]; var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    live.open(port, tx);
+    rx.recv();
+  }
+  {
+    var tx: OneshotSender[u64]; var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    live.send(String.from("GET /live HTTP/1.1\r\nHost: h\r\n\r\n"), tx);
+    rx.recv();
+  }
+  {
+    var tx: OneshotSender[u64]; var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    acceptor.waitFor(1u64, 5000i64, tx);
+    say("waiting with one live request", rx.recv() || 999u64);
+  }
+  {
+    var tx: OneshotSender[String]; var rx: OneshotReceiver[String];
+    tx, rx = Oneshot[String].make();
+    live.readText(150i64, tx);
+    let early = rx.recv() || String.from("?");
+    say("bytes the live client had before anyone took its request", u64.from(early.len()));
+  }
+  {
+    var tx: OneshotSender[String]; var rx: OneshotReceiver[String];
+    tx, rx = Oneshot[String].make();
+    acceptor.takeOne(tx);
+    let path = rx.recv() || String.from("?");
+    printStr("an actor took: ");
+    printStr(path.view());
+    printStr("\n");
+  }
+  {
+    var tx: OneshotSender[String]; var rx: OneshotReceiver[String];
+    tx, rx = Oneshot[String].make();
+    live.readText(3000i64, tx);
+    let got = rx.recv() || String.from("?");
+    let ok = got.len() >= 12usize && &got.view()[0usize ..< 12usize] == "HTTP/1.1 200";
+    printStr("the live client got a 200: ");
+    printStr(if ok {"yes"} else {"NO"});
+    printStr("\n");
+  }
+  acceptor.stop();
+  {
+    var tx: OneshotSender[u64]; var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    acceptor.waitClosed(tx);
+    say("closed", rx.recv() || 99u64);
+  }
+  live.leave();
+  finalAll();
+  0
+}
