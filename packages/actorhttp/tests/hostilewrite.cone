@@ -1,0 +1,177 @@
+// A write with no deadline (S6 review finding, S7's first hostile test). The silent failure it guards: a client
+// that asks for a long response and never reads kept its connection actor, its socket and its maxConnections
+// slot for as long as it liked, because a write was bounded only by the shutdown deadline.
+// 4 raw clients (maxConnections is 4) ask for /big (the handler streams 64 KiB pieces until a write fails) and
+// never read. With a write deadline of 400 ms the 4 connections are gone within a few seconds (liveConnActors is
+// 0, and each handler's write has been answered with an error), and a fifth client is then accepted and served.
+// Without the deadline the 4 stay, accepts wait for a free slot, and the fifth client is never answered.
+
+mod hostilewrite;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import iobuf use IoBuf;
+import http use *;
+import actors;
+import aio;
+import actorhttp use Server, ServerConfig, Exchange, HttpRoutes, HttpHandler;
+
+let streaming: Atomic[u64];     // /big handlers running
+let failedWrites: Atomic[u64];  // /big handlers whose write was answered with an error
+
+fn @initpure init() {
+  streaming = Atomic[u64].of(0u64);
+  failedWrites = Atomic[u64].of(0u64);
+}
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+actor Big is HttpHandler {
+  n: u64;
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    streaming.add(1u64);
+    ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+    var piece = String();
+    var i = 0usize;
+    while i < 65536usize {piece.append("x"); i = i + 1usize;}
+    var ok = true;
+    while ok {
+      let w = await ex.write(String.from(piece.view()));
+      match w {
+        case let Ok(k) {}
+        case let Err(e) {ok = false;}
+      }
+    }
+    failedWrites.add(1u64);
+  }
+}
+
+fn makeBig() HttpHandler {
+  let h = Big();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Small is HttpHandler {
+  n: u64;
+  fn init(self: &new) {*self = Self(n: 0u64);}
+  pub async fn handle(self, var ex: Exchange) {ex.text(200u16, "fine");}
+}
+
+fn makeSmall() HttpHandler {
+  let h = Small();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+}
+
+// Asks for /big on n connections and holds them without reading, for 'holdSecs'
+actor Stallers {
+  pub async fn run(self, port: u16, n: u32, holdSecs: i64, var done: Sender[u64]) {
+    var socks = List[aio.Socket]();
+    var k = 0u32;
+    var sent = 0u64;
+    while k < n {
+      match await aio.connect(SocketAddr.localhost(port)) {
+        case var Ok(s) {
+          let text = "GET /big HTTP/1.1\r\nHost: h\r\n\r\n";
+          var b = IoBuf(text.len());
+          b.append(text);
+          let w = await s.write(b);
+          socks.push(s);
+          sent = sent + 1u64;
+        }
+        case let Err(e) {}
+      }
+      k = k + 1u32;
+    }
+    done.send(sent);
+    _ = await aio.sleep(Duration.fromSeconds(holdSecs));
+  }
+}
+
+// One request to /small: 1 if the answer is "fine" within 5 s
+actor Probe {
+  pub async fn run(self, port: u16, var done: Sender[u64]) {
+    var got = 0u64;
+    match await aio.connect(SocketAddr.localhost(port)) {
+      case var Ok(s) {
+        let text = "GET /small HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n";
+        var b = IoBuf(text.len());
+        b.append(text);
+        let w = await s.write(b);
+        let until = Instant.now() + Duration.fromSeconds(5i64);
+        var all = String();
+        var fin = false;
+        while !fin && Instant.now() < until {
+          let r = await s.readIn(IoBuf(4096usize), aio.IoLimits.until(until));
+          match r {
+            case let Ok(x) {
+              if x.len() == 0usize {fin = true;} else {all.append(String.fromBytes(x.view()).view());}
+            }
+            case let Err(e) {fin = true;}
+          }
+        }
+        if all.view().contains("fine") {got = 1u64;}
+      }
+      case let Err(e) {}
+    }
+    done.send(got);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var cfg = ServerConfig.make().routes(HttpRoutes.make().handle("", "/big", &makeBig).handle("", "/small", &makeSmall));
+  cfg.conn.maxConnections = 4u32;
+  cfg.conn.protocol.bodyTimeout = Duration.fromMillis(400i64);
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  var dtx: Sender[u64];
+  var drx: Receiver[u64];
+  dtx, drx = Channel[u64].make();
+  let st = Stallers();
+  st.run(port, 4u32, 12i64, dtx.clone());
+  say("stalling clients connected", drx.recv() || 98u64);
+  var waited = 0u32;
+  while actorhttp.liveConnActors() > 0u64 && waited < 600u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  say("connections gone within 6 s (deadline 400 ms)", if actorhttp.liveConnActors() == 0u64 {1u64} else {0u64});
+  say("every handler's write was answered with an error", if failedWrites.load() == streaming.load() && streaming.load() >= 1u64 {1u64} else {0u64});
+  let pr = Probe();
+  pr.run(port, dtx.clone());
+  say("a new client is served", drx.recv() || 98u64);
+  acceptor.stop();
+  finalAll();
+  0
+}

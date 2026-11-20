@@ -407,6 +407,7 @@ pub actor ConnActor {
   out: Chain;
   reading: bool;
   writing: bool;
+  writeBy: Instant;         // while 'writing': the write has to be done by then (a peer that does not read is let go)
   protoClosed: bool;        // the protocol is over (Closed was given)
   closing: bool;            // the closing sequence has begun
   closeStarted: bool;       // closeOut is running (it starts once no read is parked)
@@ -433,7 +434,7 @@ pub actor ConnActor {
     }
     *self = Self(id: id, sc: httpconn.ServerConn.make(args.cfg.conn, layer, now), sock: sock, srv: srv,
       args: args, group: group, peer: peer, secure: secure, tm: actors.Timer.make(), out: Chain.make(noBound),
-      reading: false, writing: false, protoClosed: false, closing: false, closeStarted: false, ended: false,
+      reading: false, writing: false, writeBy: now, protoClosed: false, closing: false, closeStarted: false, ended: false,
       streams: Dict[u32, Strm](), pends: Deque[Pend](), h1: None[HttpHandler], h1ix: 0usize, nextRid: 1u64, guard: LiveGuard(true));
     selfactor.begin();
   }
@@ -446,7 +447,14 @@ pub actor ConnActor {
   pub async fn timerLoop(self) {
     while await tm.next() {
       if ended {break;}
-      sc.handleTimeout(Instant.now());
+      let now = Instant.now();
+      sc.handleTimeout(now);
+      // a write the peer has not taken within bodyTimeout: the peer does not read, so the connection is let go
+      // (its socket, its maxConnections slot and the bytes held for it) rather than kept for as long as it likes
+      if writing && now >= writeBy {
+        sc.abort();
+        sock.cancelWrite();
+      }
       self.turn();
     }
   }
@@ -562,6 +570,7 @@ pub actor ConnActor {
       let n = sc.fill(now);
       if n > 0usize {
         writing = true;
+        writeBy = now + args.cfg.conn.protocol.bodyTimeout;
         selfactor.writeOnce();
       }
     }
@@ -570,8 +579,8 @@ pub actor ConnActor {
       selfactor.readOnce();
     }
     match sc.pollTimeout() {
-      case let Some(t) {tm.set(t);}
-      else {tm.clear();}
+      case let Some(t) {tm.set(if writing && writeBy < t {writeBy} else {t});}
+      else {if writing {tm.set(writeBy);} else {tm.clear();}}
     }
     if isDone && !writing && !closing {
       closing = true;
