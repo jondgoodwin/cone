@@ -159,16 +159,15 @@ pub actor ServerActor {
     accepting = false;
     match r {
       case let Ok(a) {
+        // an accept that completed as the close did: the socket is dropped (closed) at once and no connection
+        // is made, since close() may already have answered 'closed()' and no deadline loop would reset it
+        if closing {return;}
         let sock, peer = a.(sock, peer);
         let id = nextConn;
         nextConn = nextConn + 1u64;
         let c = ConnActor(id, sock, peer, selfactor, args, tlsServer, connGroup);
         conns.insert(id, c);
         live = live + 1u64;
-        if closing {
-          // an accept that came as the close did
-          c.shutdown();
-        }
       }
       case let Err(e) {
         if closing {return;}
@@ -290,7 +289,22 @@ pub actor ServerActor {
   pub async fn deadlineLoop(self) {
     dl.set(Instant.now() + args.cfg.shutdownDeadline);
     if await dl.next() {
+      // the I/O outstanding ends; and a connection with none (parked on its Timer, or holding a request whose
+      // handler awaits a backend) is told to abort, so it ends too
       connGroup.cancel();
+      var all = List[ConnActor]();
+      var it = conns.values();
+      while true {
+        match it.next() {
+          case let Some(c) {all.push(*c);}
+          else {break;}
+        }
+      }
+      var i = 0usize;
+      while i < all.len() {
+        all[i].abortNow();
+        i = i + 1usize;
+      }
     }
   }
 
@@ -678,7 +692,19 @@ pub actor ConnActor {
   }
 
   // A request body over maxBody: answered 413, the rest of the body not wanted
+  // (once the response has begun there is no 413 to give: a second head would corrupt it. The stream ends,
+  // h2 with RST_STREAM, HTTP/1.1 by aborting the connection, and the handler's reads get their error)
   fn tooLarge(self, stream: u32) {
+    var begun = false;
+    match streams.get(&stream) {
+      case let Some(r) {begun = r.state >= stStreaming;}
+      else {}
+    }
+    if begun {
+      if sc.isHttp2() {sc.stopBody(stream);} else {sc.abort();}
+      self.dropStream(stream);
+      return;
+    }
     self.answerText(stream, 413u16, "request body too large");
     sc.stopBody(stream);
   }
@@ -1288,6 +1314,13 @@ pub actor ConnActor {
   // The server's call to finish: HTTP/1.1 ends after the request in hand, HTTP/2 sends GOAWAY
   pub async fn shutdown(self) {
     sc.shutdown();
+    self.turn();
+  }
+
+  // The server's shutdown deadline has passed: the connection ends now, whatever it waits for
+  pub async fn abortNow(self) {
+    if ended {return;}
+    sc.abort();
     self.turn();
   }
 }
