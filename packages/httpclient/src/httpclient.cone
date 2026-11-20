@@ -46,7 +46,8 @@
 //   c.poll(lp, until, events)  c.complete(lp, c)  c.pump(lp, events)  c.wakeAt()  (DRIVING)
 //   c.stats()  c.driverStats()  c.live()  c.queued()  c.isLive(id)  c.http3Live()
 //   Config.make(): conn tlsConfig http2 maxPerOrigin maxTotal idleTimeout  (CONFIGURATION)
-//     maxLifetime maxQueued maxRetries maxRedirects userAgent
+//     maxLifetime maxQueued maxRetries maxRedirects userAgent maxOrigins
+//     maxStreamsPerConnection
 //     http3 http3Origins http3Timeout                                    (HTTP/3)
 //   trait Http3  NoHttp3  H3Event H3Kind H3Req  http3From(maker, t)       (THE PLUG-IN)
 //   readAltSvc(value, host): AltSvc.H3(port, maxAge) Clear Nothing
@@ -109,7 +110,8 @@
 // 'idleTimeout' (50 s: below the servers it meets, 60 s for Cone's own and
 // most load balancers, so the client, not the server, ends an idle
 // connection and no request is sent on one the server is closing), or when
-// the total is reached and another origin needs a connection;
+// the total is reached and another origin needs a connection (the one idle
+// longest, of an origin nothing waits for, is the one closed);
 // 'closeIdle(lp)' closes every idle one now. A connection is not given a
 // request once it has been open 'maxLifetime' (5 min): it is closed then,
 // so a DNS change or a new server behind a load balancer is seen. A
@@ -290,7 +292,14 @@
 // bytes the program holds then are its own). Nothing queues without a
 // bound: at most 'maxQueued' requests wait (10,000; past it, Failed at
 // once, Stage.Queue: a full queue is a visible error, never silent growth),
-// 'maxTotal' connections, and the body window per connection.
+// 'maxTotal' connections, and the body window per connection. Origins are
+// bounded too: past 'maxOrigins' (1,024; 0 is no limit) the origins left idle
+// (nothing waiting, no connection, no fetch naming them) are forgotten, least
+// recently used first, as a new one needs the room; one whose first connect
+// failed, with nothing waiting, is not kept at all. And on one HTTP/2
+// connection the client puts at most 'maxStreamsPerConnection' streams at
+// once (100; 0 is no limit of the client's own), or the peer's limit when that is
+// lower; the rest wait in their order.
 //
 // FAILURES. A Failed answer carries a Failure: the stage it failed at (Url,
 // Queue, Resolve, Connect, Read, Write, Http, Tls, Closed, Limit, Redirect),
@@ -351,14 +360,14 @@ mod httpclient;
 
 import libc;
 import pools use GenPool;
-import collections use List, Deque, String;
+import collections use List, Deque, String, Dict, PriorityQueue;
 import time use Instant, Duration;
 import iobuf use IoBuf;
 import iocore use Loop, Completion, OpId, CancelGroup, Target, IoError, SocketAddr, forever, resolveOp, addressesIn;
 import http use *;
 import httpconn;
 import tls;
-import url use Url, UrlError;
+import url use Url, UrlError, HostKind;
 import diag;
 import streams;
 
@@ -431,13 +440,16 @@ pub struct Config {
   pub http3: Option[&fn(t: &tls.ClientConfig) Uni[Http3]];   // the HTTP/3 plug-in's maker; None: no HTTP/3
   pub http3Origins: List[String];   // https origins known to speak HTTP/3 (prior knowledge), as URLs
   pub http3Timeout: Duration;    // an HTTP/3 attempt not connected by then falls back to TCP
+  pub maxOrigins: u32;           // origins the client remembers; idle ones are dropped, least recently used first, past it (0: no limit)
+  pub maxStreamsPerConnection: u32;   // streams the client puts on one HTTP/2 connection at once, or the peer's limit if that is lower (0: no limit of the client's own)
 
   // The defaults: no HTTP/3 (see HTTP/3)
   pub fn make() Config {
     Config(conn: httpconn.Config.make(), tlsConfig: tls.ClientConfig.make(), http2: true, maxPerOrigin: 16u32,
       maxTotal: 256u32, idleTimeout: Duration.fromSeconds(50i64), maxLifetime: Duration.fromMinutes(5i64),
       maxQueued: 10000u32, maxRetries: 2u32, maxRedirects: 10u32, userAgent: String.from("cone-httpclient/0.1"),
-      http3: None, http3Origins: List[String](), http3Timeout: Duration.fromSeconds(1i64))
+      http3: None, http3Origins: List[String](), http3Timeout: Duration.fromSeconds(1i64), maxOrigins: 1024u32,
+      maxStreamsPerConnection: 100u32)
   }
 }
 
