@@ -595,9 +595,15 @@ pub actor ConnActor {
   pub async fn closeOut(self) {
     let c = await sock.closeWrite();
     let until = Instant.now() + args.cfg.conn.lingerTimeout;
-    var buf = IoBuf(4096usize);
+    // a buffer the peer's bytes cause is a tryMake (iobuf, THE RESERVE); a refusal ends without lingering
+    var buf = IoBuf();
+    match IoBuf.tryMake(4096usize) {
+      case let Some(b) {buf = b;}
+      else {self.finishEnd(); return;}
+    }
+    let lim = IoLimits(Some[CancelGroup](group), until);
     while !group.isCancelled() {
-      let r = await sock.readIn(buf,IoLimits.until(until));
+      let r = await sock.readIn(buf,lim);
       match r {
         case var Ok(b) {
           if b.len() == 0usize {break;}
