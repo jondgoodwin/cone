@@ -1,0 +1,301 @@
+// What a warm connection allocates, the program's own malloc, calloc and realloc counted (as http's
+// headsrefill does). The decoder's fields and the heads a request becomes are Strings, and not what S2
+// changed, so each test below compares two runs that differ only in what S2 removed:
+//   - the encoder's table: field after field, a table at its limit adding one entry and evicting
+//     another each round: 0 allocations a round, warm;
+//   - the decoder's table: the same fields as literals the table keeps and as literals it does not,
+//     the table at its limit and evicting: the same allocations (the decoded fields', no more for the table);
+//   - a stream's lists and queue: a server stream answered with a body (its queue used) and one with
+//     none, warm: the same allocations, and the same cycle after cycle (nothing grows or is made again);
+//   - the stream table: 40 streams opened past the 64 the table began with, and 40 more: the same
+//     allocations for each 40 (no table, map or list grows while they open).
+
+mod allocs;
+
+import testing use *;
+import collections use *;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http2 use *;
+
+var mallocs: Atomic[u64];
+
+fn @initpure init() {mallocs = Atomic[u64].of(0u64);}
+
+#if #os == .windows {
+  extern {
+    fn @c("_malloc_base") winMalloc(size: usize) *u8;
+    fn @c("_calloc_base") winCalloc(n: usize, size: usize) *u8;
+    fn @c("_realloc_base") winRealloc(p: *u8, size: usize) *u8;
+  }
+} #else {
+  extern {
+    fn @c("__libc_malloc") lxMalloc(size: usize) *u8;
+    fn @c("__libc_calloc") lxCalloc(n: usize, size: usize) *u8;
+    fn @c("__libc_realloc") lxRealloc(p: *u8, size: usize) *u8;
+  }
+}
+
+pub fn @c("malloc") countMalloc(size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winMalloc(size)} #else {lxMalloc(size)}
+}
+
+pub fn @c("calloc") countCalloc(n: usize, size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winCalloc(n, size)} #else {lxCalloc(n, size)}
+}
+
+pub fn @c("realloc") countRealloc(p: *u8, size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winRealloc(p, size)} #else {lxRealloc(p, size)}
+}
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+// The digits of n into the last bytes of v (so each round's value is new, the length the same)
+fn digits(v: &mut List[u8], n: u64) {
+  var x = n;
+  var i = v.len();
+  while i > 0usize {
+    i = i - 1usize;
+    v[i] = u8.from(48u64 + x % 10u64);
+    x = x / 10u64;
+  }
+}
+
+fn baseValue(n: usize) List[u8] {
+  var v = List[u8]();
+  var i = 0usize;
+  while i < n {v.push(u8.from(97usize + i % 20usize)); i = i + 1usize;}
+  v
+}
+
+// ---- the encoder: a table at its limit, one entry in and one out a round
+fn encoderRounds() {
+  var cfg = HpackConfig.make();
+  var enc = HpackEncoder.make(&cfg);
+  var out = List[u8]();
+  var value = baseValue(200usize);
+  var round = 0u64;
+  // Warm: past the table's limit (4096 / 240 = about 17 entries)
+  while round < 100u64 {
+    digits(&mut value, round);
+    out.clear();
+    enc.startBlock(&mut out);
+    enc.field("x-custom", value.view(), false, &mut out);
+    enc.field("x-other", value.view(), false, &mut out);
+    round = round + 1u64;
+  }
+  expect(enc.dynamicTable().size() > 3500usize, "encoder: the table is at its limit");
+  let before = mallocs.load();
+  var k = 0u64;
+  while k < 2000u64 {
+    digits(&mut value, round);
+    out.clear();
+    enc.startBlock(&mut out);
+    enc.field("x-custom", value.view(), false, &mut out);
+    enc.field("x-other", value.view(), false, &mut out);
+    round = round + 1u64;
+    k = k + 1u64;
+  }
+  expectUInt(mallocs.load() - before, 0u64, "encoder: 2000 rounds adding and evicting allocate nothing");
+}
+
+// ---- the decoder: the same fields kept in the table and not kept
+fn block(indexed: bool, round: u64, value: &mut List[u8]) List[u8] {
+  digits(value, round);
+  var cfg = HpackConfig.make();
+  cfg.encoderTableSize = if indexed {4096usize} else {0usize};
+  // The block is made by a fresh encoder each round with the size it has: for 'indexed' one that keeps
+  // the entry, for the other none; the decoder under test reads them in sequence
+  var enc = HpackEncoder.make(&cfg);
+  var out = List[u8]();
+  enc.startBlock(&mut out);
+  enc.field("x-custom", value.view(), false, &mut out);
+  enc.field("x-other", value.view(), false, &mut out);
+  out
+}
+
+// Allocations while the decoder reads 'blocks' (one block a round), 'rounds' rounds
+fn decodeRounds(indexed: bool, first: u64, rounds: u64) u64 {
+  var cfg = HpackConfig.make();
+  var dec = HpackDecoder.make(cfg);
+  var fields = List[HeaderField]();
+  var value = baseValue(200usize);
+  // The blocks made first (their allocations are not counted), the table warmed past its limit
+  var blocks = List[List[u8]]();
+  var r = 0u64;
+  while r < first + rounds {
+    blocks.push(block(indexed, r, &mut value));
+    r = r + 1u64;
+  }
+  r = 0u64;
+  while r < first {
+    fields.clear();
+    let ok = dec.decode(blocks[usize.from(r)].view(), &mut fields);
+    r = r + 1u64;
+  }
+  let before = mallocs.load();
+  while r < first + rounds {
+    fields.clear();
+    let ok = dec.decode(blocks[usize.from(r)].view(), &mut fields);
+    r = r + 1u64;
+  }
+  let used = mallocs.load() - before;
+  if indexed {
+    expect(dec.dynamicTable().size() > 3500usize, "decoder: the table is at its limit while it evicts");
+  } else {
+    expectUInt(u64.from(dec.dynamicTable().len()), 0u64, "decoder: the other run's table holds nothing");
+  }
+  used
+}
+
+// ---- a server stream, a request and its answer
+fn feedAll(to: &mut Connection, ch: &mut Chain) {
+  while ch.len() > 0usize {
+    var n = ch.len();
+    if n > to.readCredit() {n = to.readCredit();}
+    if n == 0usize {return;}
+    var b = IoBuf(n);
+    let room = b.spare();
+    let k = ch.copyOut(0usize, &mut room[0usize ..< n]);
+    b.setLen(k);
+    ch.advance(k);
+    to.handleInput(b, at(1));
+  }
+}
+
+fn request(method: &str, path: &str) RequestHead {
+  var h = RequestHead.make(method, path, "example.com");
+  h.scheme = String.from("https");
+  h
+}
+
+// Events polled until none is left; Data is released
+fn pollAll(c: &mut Connection) {
+  var going = true;
+  while going {
+    match c.pollEvent() {
+      case let Data(d) {c.release(d.stream, d.buf.len());}
+      case is NeedData {going = false;}
+      case is Failed {going = false;}
+      case is Closed {going = false;}
+      else {}
+    }
+  }
+}
+
+// What the server allocates answering one GET: the request in, then the answer out. With 'body' > 0 the
+// body of that many bytes is queued ('piece', made by the caller) and finished; else the answer is a
+// Content-Length of 0, finished. The client's own calls are not counted
+fn cycle(c: &mut Connection, s: &mut Connection, body: usize, piece: IoBuf, head: ResponseHead) u64 {
+  let id = c.sendRequest(request("GET", "/a"), BodyLength());
+  var wire = c.pollTransmit(at(1));
+  var spent = 0u64;
+  let before = mallocs.load();
+  feedAll(s, &mut wire);
+  pollAll(s);
+  s.sendResponse(id, head, BodyLength.sized(u64.from(body)));
+  if body > 0usize {
+    let back = s.sendData(id, piece);
+  }
+  s.finish(id);
+  var out = s.pollTransmit(at(2));
+  spent = mallocs.load() - before;
+  // The client takes the answer (uncounted), so the stream ends on both sides
+  feedAll(c, &mut out);
+  pollAll(c);
+  var rest = c.pollTransmit(at(3));
+  feedAll(s, &mut rest);
+  pollAll(s);
+  spent
+}
+
+fn piece(n: usize) IoBuf {
+  var x = IoBuf(n);
+  let room = x.spare();
+  var i = 0usize;
+  while i < n {room[i] = u8.from(i % 251usize); i = i + 1usize;}
+  x.setLen(n);
+  x
+}
+
+fn settle(c: &mut Connection, s: &mut Connection) {
+  var k = 0u32;
+  while k < 4u32 {
+    var a = c.pollTransmit(at(0));
+    feedAll(s, &mut a);
+    var b = s.pollTransmit(at(0));
+    feedAll(c, &mut b);
+    k = k + 1u32;
+  }
+  pollAll(c);
+  pollAll(s);
+}
+
+fn streamCycles() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  settle(&mut c, &mut s);
+  // Warm, alternating the two kinds of answer
+  var k = 0u32;
+  while k < 30u32 {
+    let n = cycle(&mut c, &mut s, if k % 2u32 == 0u32 {5usize} else {0usize}, piece(5usize), ResponseHead.make(200u16));
+    k = k + 1u32;
+  }
+  // Each kind a few times, the same each time
+  var withBody = List[u64]();
+  var without = List[u64]();
+  k = 0u32;
+  while k < 10u32 {
+    withBody.push(cycle(&mut c, &mut s, 5usize, piece(5usize), ResponseHead.make(200u16)));
+    without.push(cycle(&mut c, &mut s, 0usize, piece(5usize), ResponseHead.make(200u16)));
+    k = k + 1u32;
+  }
+  var steady = true;
+  k = 1u32;
+  while k < 10u32 {
+    if withBody[usize.from(k)] != withBody[0usize] || without[usize.from(k)] != without[0usize] {steady = false;}
+    k = k + 1u32;
+  }
+  expect(steady, "streams: the same allocations cycle after cycle once warm");
+  expectUInt(withBody[0usize], without[0usize], "streams: an answer with a body (the stream's queue used) allocates what one without does");
+  expectUInt(u64.from(s.liveStreams()), 0u64, "streams: every stream left the table");
+}
+
+// 80 streams opened on a server (a POST each, so each stays open): the 40 after the first, and 40 more,
+// past the 64 cells the table began with
+fn openStreams() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  settle(&mut c, &mut s);
+  var first = 0u64;
+  var second = 0u64;
+  var k = 0u32;
+  while k < 81u32 {
+    let id = c.sendRequest(request("POST", "/up"), BodyLength.sized(10u64));
+    var wire = c.pollTransmit(at(1));
+    let before = mallocs.load();
+    feedAll(&mut s, &mut wire);
+    pollAll(&mut s);
+    let used = mallocs.load() - before;
+    if k >= 1u32 && k < 41u32 {first = first + used;}
+    if k >= 41u32 {second = second + used;}
+    k = k + 1u32;
+  }
+  expectUInt(u64.from(s.liveStreams()), 81u64, "open: 81 streams live");
+  expectUInt(second, first, "open: the 40 streams past the table's first 64 allocate what the 40 before did (no table, map or list grows)");
+}
+
+fn main() i32 {
+  encoderRounds();
+  // Differential: the decoder keeping entries and evicting vs one that keeps none
+  let kept = decodeRounds(true, 200u64, 1000u64);
+  let notKept = decodeRounds(false, 200u64, 1000u64);
+  expectUInt(kept, notKept, "decoder: 1000 blocks kept in a table at its limit allocate as many as 1000 not kept");
+  streamCycles();
+  openStreams();
+  done()
+}
