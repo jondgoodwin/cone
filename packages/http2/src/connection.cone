@@ -72,11 +72,15 @@ fn streamFloor(cfg: &Config) u32 {
 }
 
 // The capacity of received DATA blocks the connection holds unreleased before
-// it stops reading (BLOCK CREDIT, at 'emitData'). A peer within its windows
-// never reaches it: the credit budget bounds the bytes it has sent unreleased
-// (at least two whole frames of them), a block the pool gives is under four
-// times the frame's size (its classes are 4 KiB, 16 KiB, 64 KiB...), and each
-// stream may hold one block more for its last, part-filled one
+// it stops reading (BLOCK CREDIT, at 'emitData'). The credit budget bounds the
+// bytes a peer has sent unreleased (at least two whole frames of them), a
+// block the pool gives a frame of about 1 KiB or more is under four times its
+// size (the classes are 4 KiB, 16 KiB, 64 KiB...), and each stream may hold one
+// block more for its last, part-filled one. So a peer within its windows whose
+// frames are about 1 KiB and up never reaches it, nor does any peer while the
+// program releases as it reads. A program that polls each Data and holds it
+// until End, from a peer whose frames are under 1 KiB, can reach it; reading
+// then waits on the program's releases (until the request's timeout)
 fn blockCreditLimit(cfg: &Config) usize {
   var bytes = cfg.creditBudget;
   let least = 2u64 * u64.from(cfg.frames.maxFrameSize);
@@ -1589,9 +1593,13 @@ pub struct Connection is Move {
   // when releases bring blockHeld under the limit again (the next pollEvent
   // parses what the input holds). The blocks held are bounded by blockLimit
   // over the block size, plus the one frame whose block meets the limit.
-  // blockLimit is set (blockCreditLimit) above anything a peer within its
-  // windows holds, because a stream whose program is slow to release holds
-  // blocks the stream behind it in the socket's bytes needs credit to pass
+  // blockLimit is set (blockCreditLimit) above what a peer within its windows
+  // holds when its frames are about 1 KiB and up, or when the program releases
+  // as it reads, because a stream whose program is slow to release holds
+  // blocks the stream behind it in the socket's bytes needs credit to pass. A
+  // program that polls each Data and holds it until End, from a peer whose
+  // frames are under 1 KiB, can reach the limit, and reading then waits on its
+  // releases (until the request's timeout)
   fn emitData(self: &mut, s: &mut Stream, id: u32, data: IoBuf) {
     let n = data.len();
     var joined = false;
