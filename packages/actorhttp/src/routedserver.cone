@@ -478,7 +478,18 @@ pub actor ConnActor {
       reading = false;
       return;
     }
-    let r = await sock.readIn(IoBuf(args.cfg.conn.recvSize), IoLimits.within(group));
+    let buf = match IoBuf.tryMake(args.cfg.conn.recvSize) {
+      case var Some(got) {got}
+      else {
+        // iobuf's THE RESERVE: a peer causes this buffer, so a full pool ends this connection (Overloaded, as
+        // the driver's receive does) rather than a plain IoBuf(...) panicking the whole server
+        reading = false;
+        sc.abort();
+        self.turn();
+        return;
+      }
+    };
+    let r = await sock.readIn(buf, IoLimits.within(group));
     reading = false;
     match r {
       case let Ok(b) {
