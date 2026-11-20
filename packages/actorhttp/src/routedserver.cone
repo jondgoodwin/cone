@@ -173,7 +173,7 @@ pub actor ServerActor {
       case let Err(e) {
         if closing {return;}
         // an accept that failed (a reset before it was taken, no descriptors): look again shortly
-        await aio.sleep(Duration.fromMillis(5i64));
+        let slept = await aio.sleep(Duration.fromMillis(5i64));
       }
     }
     self.kickAccept();
@@ -398,7 +398,7 @@ pub actor ConnActor {
   ended: bool;              // the connection has ended: nothing more is done
   streams: Dict[u32, Strm];
   pends: Deque[Pend];
-  h1: Option[Handler];
+  h1: Option[HttpHandler];
   h1ix: usize;              // the route h1 was made for
   nextRid: u64;
   guard: LiveGuard;
@@ -419,7 +419,7 @@ pub actor ConnActor {
     *self = Self(id: id, sc: httpconn.ServerConn.make(args.cfg.conn, layer, now), sock: sock, srv: srv,
       args: args, group: group, peer: peer, secure: secure, tm: actors.Timer.make(), out: Chain.make(noBound),
       reading: false, writing: false, protoClosed: false, closing: false, ended: false,
-      streams: Dict[u32, Strm](), pends: Deque[Pend](), h1: None[Handler], h1ix: 0usize, nextRid: 1u64, guard: LiveGuard(true));
+      streams: Dict[u32, Strm](), pends: Deque[Pend](), h1: None[HttpHandler], h1ix: 0usize, nextRid: 1u64, guard: LiveGuard(true));
     selfactor.begin();
   }
 
@@ -729,15 +729,15 @@ pub actor ConnActor {
     }
     if !fresh {return;}
     var pick: Option[usize] = None;
-    match &args.cfg.router {
+    match &args.cfg.table {
       case let &Some(rt) {pick = pickRoute(&rt.routes, host.view(), path.view());}
       else {}
     }
     match pick {
       case let Some(ix) {
         var isQueue = false;
-        var make: Option[&fn() Handler] = None;
-        match &args.cfg.router {
+        var make: Option[&fn() HttpHandler] = None;
+        match &args.cfg.table {
           case let &Some(rt) {
             let route = rt.routes.get(ix).unwrap();
             isQueue = route.isQueue;
@@ -784,12 +784,12 @@ pub actor ConnActor {
   }
 
   // The handler: on HTTP/1.1 one actor for the connection, its requests in order; on HTTP/2 one for each stream
-  fn runHandler(self, stream: u32, rid: u64, ix: usize, make: Option[&fn() Handler]) {
+  fn runHandler(self, stream: u32, rid: u64, ix: usize, make: Option[&fn() HttpHandler]) {
     let ex = match self.takeExchange(stream, rid) {
       case let Some(e) {e}
       else {return;}
     };
-    var mk: &fn() Handler = &noHandler;
+    var mk: &fn() HttpHandler = &noHandler;
     match make {
       case let Some(f) {mk = f;}
       else {}
@@ -808,7 +808,7 @@ pub actor ConnActor {
         }
       }
       let h = mk();
-      h1 = Some[Handler](h);
+      h1 = Some[HttpHandler](h);
       h1ix = ix;
       h.handle(ex);
     }
@@ -1293,4 +1293,4 @@ pub actor ConnActor {
 }
 
 // What a route holds when it has no handler (never called: a queue route has none)
-fn noHandler() Handler {panic("actorhttp: a route with no handler")}
+fn noHandler() HttpHandler {panic("actorhttp: a route with no handler")}

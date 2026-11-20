@@ -19,7 +19,7 @@ import http use *;
 import httpclient use Response, Request;
 import actors;
 import aio;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, Router, Handler;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
 
 fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
 
@@ -37,7 +37,7 @@ fn makeBody(n: usize) String {
 }
 
 // Reads the body piece by piece, checks every byte, answers with the count
-actor Reader is Handler {
+actor Reader is HttpHandler {
   nap: bool;
 
   fn init(self: &new) {*self = Self(nap: false);}
@@ -81,14 +81,14 @@ actor Reader is Handler {
   }
 }
 
-fn makeReader() Handler {
+fn makeReader() HttpHandler {
   let h = Reader();
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
 // Reads the whole body, up to 1,000 bytes
-actor Whole is Handler {
+actor Whole is HttpHandler {
   n: u64;
 
   fn init(self: &new) {*self = Self(n: 0u64);}
@@ -109,14 +109,14 @@ actor Whole is Handler {
   }
 }
 
-fn makeWhole() Handler {
+fn makeWhole() HttpHandler {
   let h = Whole();
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
 // Answers at once, never reading the body
-actor Skip is Handler {
+actor Skip is HttpHandler {
   n: u64;
 
   fn init(self: &new) {*self = Self(n: 0u64);}
@@ -126,9 +126,9 @@ actor Skip is Handler {
   }
 }
 
-fn makeSkip() Handler {
+fn makeSkip() HttpHandler {
   let h = Skip();
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
@@ -198,9 +198,9 @@ fn main() i32 {
   var ptx: Sender[u16];
   var prx: Receiver[u16];
   ptx, prx = Channel[u16].make();
-  let router = Router.make().handle("", "/read", &makeReader).handle("", "/whole", &makeWhole).handle("", "/skip", &makeSkip);
+  let router = HttpRoutes.make().handle("", "/read", &makeReader).handle("", "/whole", &makeWhole).handle("", "/skip", &makeSkip);
   let acceptor = Acceptor(Server.none());
-  acceptor.open(ServerConfig.make().streamBodies().route(router), ptx.clone());
+  acceptor.open(ServerConfig.make().streamBodies().routes(router), ptx.clone());
   let port = prx.recv() || 0u16;
   {
     var tx: OneshotSender[u64];

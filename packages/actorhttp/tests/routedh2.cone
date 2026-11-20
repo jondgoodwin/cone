@@ -22,7 +22,7 @@ import httpclient use Response, Request;
 import tls;
 import actors;
 import aio;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, Router, Handler;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
@@ -56,7 +56,7 @@ fn trusting() Client {
   Client.make(cfg, actorhttp.defaultMaxBody)
 }
 
-actor Hello is Handler {
+actor Hello is HttpHandler {
   n: u64;
 
   fn init(self: &new) {*self = Self(n: 0u64);}
@@ -66,13 +66,13 @@ actor Hello is Handler {
   }
 }
 
-fn makeHello() Handler {
+fn makeHello() HttpHandler {
   let h = Hello();
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
-actor Nap is Handler {
+actor Nap is HttpHandler {
   n: u64;
 
   fn init(self: &new) {*self = Self(n: 0u64);}
@@ -83,13 +83,13 @@ actor Nap is Handler {
   }
 }
 
-fn makeNap() Handler {
+fn makeNap() HttpHandler {
   let h = Nap();
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
-actor Echo is Handler {
+actor Echo is HttpHandler {
   n: u64;
 
   fn init(self: &new) {*self = Self(n: 0u64);}
@@ -102,13 +102,13 @@ actor Echo is Handler {
   }
 }
 
-fn makeEcho() Handler {
+fn makeEcho() HttpHandler {
   let h = Echo();
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
-actor Streamer is Handler {
+actor Streamer is HttpHandler {
   n: u64;
 
   fn init(self: &new) {*self = Self(n: 0u64);}
@@ -122,9 +122,9 @@ actor Streamer is Handler {
   }
 }
 
-fn makeStreamer() Handler {
+fn makeStreamer() HttpHandler {
   let h = Streamer();
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
@@ -200,10 +200,10 @@ fn main() i32 {
   ptx, prx = Channel[u16].make();
   let certFile = certs("server.pem");
   let keyFile = certs("server.key");
-  let router = Router.make().handle("", "/hello", &makeHello).handle("", "/nap", &makeNap)
+  let router = HttpRoutes.make().handle("", "/hello", &makeHello).handle("", "/nap", &makeNap)
     .handle("", "/echo", &makeEcho).handle("", "/stream", &makeStreamer);
   let acceptor = Acceptor(Server.none());
-  acceptor.open(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2().route(router), ptx.clone());
+  acceptor.open(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2().routes(router), ptx.clone());
   let port = prx.recv() || 0u16;
   let client = trusting();
   {

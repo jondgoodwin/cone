@@ -21,7 +21,7 @@ import http use *;
 import sse;
 import actors;
 import aio;
-import actorhttp use Server, ServerConfig, Exchange, Router, Handler;
+import actorhttp use Server, ServerConfig, Exchange, HttpRoutes, HttpHandler;
 
 let handlers: Atomic[u64];      // handler actors alive
 let toldClosed: Atomic[u64];   // handlers whose write answered Closed
@@ -43,7 +43,7 @@ struct HGuard is Move {
 }
 
 // Streams until a write says the connection is gone
-actor Events is Handler {
+actor Events is HttpHandler {
   guard: HGuard;
 
   fn init(self: &new) {
@@ -71,9 +71,9 @@ actor Events is Handler {
   }
 }
 
-fn makeEvents() Handler {
+fn makeEvents() HttpHandler {
   let h = Events();
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
@@ -167,7 +167,7 @@ fn main() i32 {
   var ptx: Sender[u16];
   var prx: Receiver[u16];
   ptx, prx = Channel[u16].make();
-  let cfg = ServerConfig.make().route(Router.make().handle("", "/events", &makeEvents))
+  let cfg = ServerConfig.make().routes(HttpRoutes.make().handle("", "/events", &makeEvents))
     .shutdownWithin(Duration.fromMillis(300i64));
   let acceptor = Acceptor(Server.none());
   acceptor.open(cfg, ptx.clone());

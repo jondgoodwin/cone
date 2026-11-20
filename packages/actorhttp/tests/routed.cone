@@ -1,4 +1,4 @@
-// A server with a router (ServerConfig.route): the server and its connections are actors, nothing of
+// A server with a router (ServerConfig.routes): the server and its connections are actors, nothing of
 // HTTP runs on the I/O thread. The package's own client is the other end. Checked, in order: a handler
 // route (an actor of the program's, made by the route's factory, answering with text); the same handler
 // route on a second request of the same connection (kept alive: one handler actor serves them in order);
@@ -20,7 +20,7 @@ import iocore use SocketAddr;
 import http use *;
 import httpclient use Response, Request;
 import actors;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, Router, Handler;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
 
 fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
 
@@ -32,7 +32,7 @@ fn url(port: u16, path: &str) String {
 }
 
 // A handler: answers the request with text naming the request, and counts the requests it has served
-actor Hello is Handler {
+actor Hello is HttpHandler {
   served: u64;
   tag: String;
 
@@ -51,20 +51,20 @@ actor Hello is Handler {
   }
 }
 
-fn makeHello() Handler {
+fn makeHello() HttpHandler {
   let h = Hello(String.from("hello"));
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
-fn makeOther() Handler {
+fn makeOther() HttpHandler {
   let h = Hello(String.from("other"));
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
 // A streamed response, three pieces each awaited
-actor Streamer is Handler {
+actor Streamer is HttpHandler {
   n: u64;
   fn init(self: &new) {*self = Self(n: 0u64);}
 
@@ -77,14 +77,14 @@ actor Streamer is Handler {
   }
 }
 
-fn makeStreamer() Handler {
+fn makeStreamer() HttpHandler {
   let h = Streamer();
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
 // Echoes the request's body
-actor Echo is Handler {
+actor Echo is HttpHandler {
   n: u64;
   fn init(self: &new) {*self = Self(n: 0u64);}
 
@@ -98,9 +98,9 @@ actor Echo is Handler {
   }
 }
 
-fn makeEcho() Handler {
+fn makeEcho() HttpHandler {
   let h = Echo();
-  let r: Handler = h;
+  let r: HttpHandler = h;
   r
 }
 
@@ -193,14 +193,14 @@ fn main() i32 {
   var drx: Receiver[u64];
   dtx, drx = Channel[u64].make();
 
-  let router = Router.make()
+  let router = HttpRoutes.make()
     .handle("", "/hello", &makeHello)
     .handle("", "/stream", &makeStreamer)
     .handle("", "/echo", &makeEcho)
     .handle("localhost", "/h", &makeOther)
     .queue("", "/q");
   let acceptor = Acceptor(Server.none());
-  acceptor.open(ServerConfig.make().route(router), ptx.clone());
+  acceptor.open(ServerConfig.make().routes(router), ptx.clone());
   let port = prx.recv() || 0u16;
   say("live server actors", actorhttp.liveServerActors());
   acceptor.serve(dtx.clone());

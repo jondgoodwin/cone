@@ -1,6 +1,6 @@
-// The router and the handler a program gives a server that has one (the package's
+// The routes and the handler a program gives a server that has one (the package's
 // header, A ROUTED SERVER; routedserver.cone has the actors that use them). The
-// program builds a Router before 'listen', and the server freezes it: one Arc[imm]
+// program builds an HttpRoutes before 'listen', and the server freezes it: one Arc[imm]
 // shared by every connection, read with no lock.
 
 // What a program writes to answer requests on a routed server: an actor trait, so that
@@ -10,7 +10,7 @@
 // order). 'handle' is called with the request's Exchange, which it answers as any
 // Exchange is answered; the handler ends when 'handle' returns and its Exchange is
 // dropped. It is written once and does not know which version carried the request
-pub actor trait Handler {
+pub actor trait HttpHandler {
   pub async fn handle(self, ex: Exchange);
 }
 
@@ -19,28 +19,28 @@ struct RouteEntry {
   host: String;                       // "" matches any host
   prefix: String;                     // the path begins with it; "/" matches every path
   isQueue: bool;                      // the queue route: 'server.next()' takes the request
-  make: Option[&fn() Handler];        // otherwise: the handler's factory
+  make: Option[&fn() HttpHandler];        // otherwise: the handler's factory
 }
 
-// A set of routes, matched on the request's host (exact, ignoring case and the port, or any) and
+// A table of routes, matched on the request's host (exact, ignoring case and the port, or any) and
 // the longest path prefix; where a host-exact and an any-host route match with the same prefix
 // length, the exact one wins. A request no route matches is answered 404 by the connection. Built
-// by the program, then given to 'ServerConfig.route'
-pub struct Router is Move {
+// by the program, then given to 'ServerConfig.routes'
+pub struct HttpRoutes is Move {
   routes: List[RouteEntry];
 
-  pub fn make() Router {Router(List[RouteEntry]())}
+  pub fn make() HttpRoutes {HttpRoutes(List[RouteEntry]())}
 
   // A route to a handler: host "" for any host, a path prefix, and the factory that makes the
-  // handler actor (a plain function that makes the program's own type and returns it as a Handler)
-  pub fn handle(self, host: &str, prefix: &str, make: &fn() Handler) Router {
+  // handler actor (a plain function that makes the program's own type and returns it as an HttpHandler)
+  pub fn handle(self, host: &str, prefix: &str, make: &fn() HttpHandler) HttpRoutes {
     var r = self;
-    r.routes.push(RouteEntry(String.from(host), String.from(prefix), false, Some[&fn() Handler](make)));
+    r.routes.push(RouteEntry(String.from(host), String.from(prefix), false, Some[&fn() HttpHandler](make)));
     r
   }
 
   // A route to the queue: the requests wait for 'server.next()', today's API
-  pub fn queue(self, host: &str, prefix: &str) Router {
+  pub fn queue(self, host: &str, prefix: &str) HttpRoutes {
     var r = self;
     r.routes.push(RouteEntry(String.from(host), String.from(prefix), true, None));
     r
