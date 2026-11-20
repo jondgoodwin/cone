@@ -6,9 +6,10 @@
 //   congo run --release packages/aio/examples/tcpexchange.cone -- [pairs] [exchanges] [rounds]
 //
 // 'pairs' connections (default 1) run at once, each 'exchanges' request/reply pairs (default 20000), for
-// 'rounds' rounds (default 5). It prints, for each round, the microseconds a pair took per exchange
-// (wall time of the round over the exchanges of one pair), then the median, and 'handedOver' (the records
-// the awaits gave to the I/O thread) over the rounds. Only a quiet machine gives numbers worth comparing.
+// 'rounds' rounds (default 5), after one round to warm up. It prints, for each round, the microseconds a
+// pair took per exchange (wall time of the round over the exchanges of one pair), then the median, and
+// 'handedOver' (the records the awaits gave to the I/O thread) over the rounds. Only a quiet machine gives
+// numbers worth comparing.
 
 mod tcpexchange;
 
@@ -17,10 +18,21 @@ import collections use List;
 import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
 import time use Instant, Duration;
-import sync use Oneshot, OneshotSender, OneshotReceiver;
 import process;
+import thread;
 import actors;
 import aio use Socket;
+
+struct State {
+  pub finished: Atomic[u64];   // clients done in this round
+  pub bad: Atomic[u64];        // replies that were not 40 bytes
+}
+
+let st: State;
+
+fn @initpure init() {
+  st = State(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
 
 fn socketOf(r: Result[Socket, IoError]) Socket {
   var res = r;
@@ -33,7 +45,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
 }
 
 actor Server {
-  pub async fn serve(self, s: Socket, n: u32, done: OneshotSender[u64]) {
+  pub async fn serve(self, s: Socket, n: u32) {
     var k = 0u32;
     while k < n {
       let r = await s.read(IoBuf(64usize));
@@ -46,13 +58,11 @@ actor Server {
         case let Err(e) {break;}
       }
     }
-    var d = done;
-    d.send(u64.from(k));
   }
 }
 
 actor Client {
-  pub async fn run(self, c: Socket, n: u32, done: OneshotSender[u64]) {
+  pub async fn run(self, c: Socket, n: u32) {
     var k = 0u32;
     var bad = 0u64;
     while k < n {
@@ -68,63 +78,27 @@ actor Client {
       }
       k = k + 1u32;
     }
-    var d = done;
-    d.send(bad);
-  }
-}
-
-actor Setup {
-  // one pair: connect, accept, run both sides, say when both are done (bad replies counted)
-  pub async fn pair(self, c: Socket, d: Socket, n: u32, done: OneshotSender[u64]) {
-    var stx: OneshotSender[u64];
-    var srx: OneshotReceiver[u64];
-    stx, srx = Oneshot[u64].make();
-    var ctx: OneshotSender[u64];
-    var crx: OneshotReceiver[u64];
-    ctx, crx = Oneshot[u64].make();
-    Server().serve(d, n, stx);
-    Client().run(c, n, ctx);
-    let bad = crx.recv();
-    let served = srx.recv();
-    var dn = done;
-    match bad {
-      case let Some(x) {dn.send(x);}
-      else {dn.send(1u64);}
-    }
+    st.bad.add(bad);
+    st.finished.add(1u64);
   }
 }
 
 actor Lead {
-  pub async fn run(self, pairs: u32, n: u32, done: OneshotSender[u64]) {
+  pub async fn run(self, pairs: u32, n: u32) {
     let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
     var port = 0u16;
     match await ls.localAddr() {
       case let Ok(x) {port = x.port();}
       else {}
     }
-    var rxs = List[OneshotReceiver[u64]]();
     var i = 0u32;
     while i < pairs {
-      var tx: OneshotSender[u64];
-      var rx: OneshotReceiver[u64];
-      tx, rx = Oneshot[u64].make();
       let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
       let d = socketOf(await ls.accept());
-      Setup().pair(c, d, n, tx);
-      rxs <- rx;
+      Server().serve(d, n);
+      Client().run(c, n);
       i = i + 1u32;
     }
-    var bad = 0u64;
-    var j = 0usize;
-    while j < rxs.len() {
-      match rxs[j].recv() {
-        case let Some(x) {bad = bad + x;}
-        else {bad = bad + 1u64;}
-      }
-      j = j + 1usize;
-    }
-    var d = done;
-    d.send(bad);
   }
 }
 
@@ -142,17 +116,17 @@ fn main() i32 {
   let rounds = u32.from(arg(3usize, 5u64));
   var us = List[i64]();
   let h0 = aio.opStats().handedOver;
-  var bad = 0u64;
   var r = 0u32;
   while r < rounds + 1u32 {
-    var tx: OneshotSender[u64];
-    var rx: OneshotReceiver[u64];
-    tx, rx = Oneshot[u64].make();
+    st.finished.store(0u64);
     let t0 = Instant.now();
-    Lead().run(pairs, n, tx);
-    match rx.recv() {
-      case let Some(x) {bad = bad + x;}
-      else {bad = bad + 1u64;}
+    Lead().run(pairs, n);
+    while st.finished.load() < u64.from(pairs) {
+      if t0.elapsed() > Duration.fromSeconds(120i64) {
+        printStr("tcpexchange: timed out\n");
+        return 2;
+      }
+      thread.sleep(Duration.fromMillis(1i64));
     }
     let took = t0.elapsed().nanos();
     // round 0 is a warm-up
@@ -169,22 +143,27 @@ fn main() i32 {
     }
     r = r + 1u32;
   }
-  // median
   var sorted = List[i64]();
   var a = 0usize;
   while a < us.len() {
     var at = sorted.len();
-    while at > 0usize && sorted[at - 1usize] > us[a] {at = at - 1usize;}
-    sorted.insert(at, us[a]);
+    sorted <- us[a];
+    while at > 0usize && sorted[at - 1usize] > us[a] {
+      sorted[at] = sorted[at - 1usize];
+      at = at - 1usize;
+    }
+    sorted[at] = us[a];
     a = a + 1usize;
   }
   printStr("median ");
   printUInt(u64.from(sorted[sorted.len() / 2usize]));
-  printStr(" us per exchange, bad ");
-  printUInt(bad);
+  printStr(" us per exchange, best ");
+  printUInt(u64.from(sorted[0usize]));
+  printStr(", bad ");
+  printUInt(st.bad.load());
   printStr(", handedOver ");
   printUInt(aio.opStats().handedOver - h0);
   printStr("\n");
-  if bad != 0u64 {return 1;}
+  if st.bad.load() != 0u64 {return 1;}
   0
 }
