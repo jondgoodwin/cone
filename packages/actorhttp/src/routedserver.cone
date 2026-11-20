@@ -407,7 +407,9 @@ pub actor ConnActor {
   out: Chain;
   reading: bool;
   writing: bool;
-  writeBy: Instant;         // while 'writing': the write has to be done by then (a peer that does not read is let go)
+  h2Rids: Dict[u64, bool];  // HTTP/2: the requests whose handler holds the exchange still
+  h2Live: u32;            // HTTP/2: stream handlers that have not returned (reset streams' included)
+  writeBy: Instant;        // while 'writing': the write has to be done by then (a peer that does not read is let go)
   protoClosed: bool;        // the protocol is over (Closed was given)
   closing: bool;            // the closing sequence has begun
   closeStarted: bool;       // closeOut is running (it starts once no read is parked)
@@ -434,7 +436,7 @@ pub actor ConnActor {
     }
     *self = Self(id: id, sc: httpconn.ServerConn.make(args.cfg.conn, layer, now), sock: sock, srv: srv,
       args: args, group: group, peer: peer, secure: secure, tm: actors.Timer.make(), out: Chain.make(noBound),
-      reading: false, writing: false, writeBy: now, protoClosed: false, closing: false, closeStarted: false, ended: false,
+      reading: false, writing: false, h2Rids: Dict[u64, bool](), h2Live: 0u32, writeBy: now, protoClosed: false, closing: false, closeStarted: false, ended: false,
       streams: Dict[u32, Strm](), pends: Deque[Pend](), h1: None[HttpHandler], h1ix: 0usize, nextRid: 1u64, guard: LiveGuard(true));
     selfactor.begin();
   }
@@ -829,6 +831,14 @@ pub actor ConnActor {
 
   // The handler: on HTTP/1.1 one actor for the connection, its requests in order; on HTTP/2 one for each stream
   fn runHandler(self, stream: u32, rid: u64, ix: usize, make: Option[&fn() HttpHandler]) {
+    // a stream the peer has reset leaves the protocol's count of open streams while its handler goes on, so the
+    // handlers still running are counted here and a stream past the cap is answered 503 (the handlers of an
+    // HTTP/2 connection are bounded by maxConcurrentStreams, not by how fast the peer opens and resets)
+    if sc.isHttp2() && h2Live >= args.cfg.conn.h2.maxConcurrentStreams {
+      self.answerText(stream, 503u16, "the server is busy");
+      sc.stopBody(stream);
+      return;
+    }
     let ex = match self.takeExchange(stream, rid) {
       case let Some(e) {e}
       else {return;}
@@ -840,6 +850,10 @@ pub actor ConnActor {
     }
     if sc.isHttp2() {
       let h = mk();
+      // counted until its exchange is dropped (the handler is done with the stream; 'handle' itself returns
+      // nothing to wait on): xDrop takes it off
+      h2Rids.insert(rid, true);
+      h2Live = h2Live + 1u32;
       h.handle(ex);
     } else {
       if h1ix == ix {
@@ -989,6 +1003,10 @@ pub actor ConnActor {
 
   // The Exchange was dropped: no answer is 500; an unsized body ends cleanly; a sized one short of its length resets
   pub async fn xDrop(self, stream: u32, rid: u64) {
+    match h2Rids.remove(&rid) {
+      case let Some(x) {h2Live = h2Live - 1u32;}
+      else {}
+    }
     if !self.live(stream, rid) {return;}
     var st = stFresh;
     var sized = false;
