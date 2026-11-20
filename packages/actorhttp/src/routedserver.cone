@@ -1,0 +1,957 @@
+// The server on connection actors (the package's header, A ROUTED SERVER; stage 3 of
+// the HTTP re-architecture, S6). A ServerActor owns the listening socket, the live
+// connection count, shutdown and the queue route's two queues; it makes one ConnActor
+// for each accepted connection. A ConnActor owns the socket, its httpconn.ServerConn
+// (the protocol, sans-I/O) and its one Timer, and runs on whatever worker has it, the
+// socket's reads and writes waiting on the shared worker port. Nothing of HTTP runs on
+// the I/O thread. A program's handler is an actor of its own, given an Exchange of the
+// second form: its calls reach the connection by message.
+//
+// A request is routed once it is read whole (up to ServerConfig.maxBody): a handler
+// route gets an Exchange; the queue route's request waits in the connection, named to
+// the server by (connection, request); no route answers 404.
+
+// ---------------------------------------------------------------------------
+// What a program may count: actors alive
+// ---------------------------------------------------------------------------
+
+// A held counter of the actors that exist: its 'final' runs when the actor's state is freed, so a count
+// that returns to 0 means the actors are gone, not only that their server stopped
+struct LiveGuard is Move {
+  conn: bool;
+
+  fn final(self: &uni) {
+    if conn {liveConns.sub(1u64);} else {liveServers.sub(1u64);}
+  }
+}
+
+// How many ConnActors exist now (made, and not yet freed)
+pub fn liveConnActors() u64 {liveConns.load()}
+
+// How many ServerActors exist now
+pub fn liveServerActors() u64 {liveServers.load()}
+
+// ---------------------------------------------------------------------------
+// What listen gives the server
+// ---------------------------------------------------------------------------
+
+// The listen call's arguments, shared (read only) by the server and every connection: the config
+// holds the router
+struct ListenArgs {
+  addr: SocketAddr;
+  cfg: ServerConfig;
+}
+
+// The server's Exchange of the second form: its calls go to the connection actor by message
+fn routedExchange(conn: &ConnActor, stream: u32, rid: u64, req: Request) Exchange {
+  Exchange(0u64, 0u32, rid, 0u32, false, 0u64, 0u64, false, false, false, req, Some[ConnActor](*conn), stream)
+}
+
+// A copy of a request head (HTTP/1.1's is kept in the connection, which still reads its method)
+fn copyHead(h: &RequestHead) RequestHead {
+  var c = RequestHead.make(h.methodName(), h.target.view(), h.authority.view());
+  c.scheme = String.from(h.scheme.view());
+  c.version = h.version;
+  c.headers = h.headers.clone();
+  c
+}
+
+// The listen of a routed server: the Server when it is listening, or why not
+fn listenRouted(addr: SocketAddr, cfg: ServerConfig) actors.Awaitable[Result[Server, ServerError]] {
+  let args = Arc[imm, ListenArgs](ListenArgs(addr, cfg));
+  actors.Awaitable[Result[Server, ServerError]].make(fn(rp: actors.ReplyOf[Result[Server, ServerError]]) [args] {
+    let s = ServerActor(args);
+    s.start(rp);
+  })
+}
+
+// ---------------------------------------------------------------------------
+// The server actor
+// ---------------------------------------------------------------------------
+
+// A request of the queue route, waiting for a 'next()': where it is
+struct Waiting {
+  conn: ConnActor;
+  connId: u64;
+  stream: u32;
+  rid: u64;
+}
+
+pub actor ServerActor {
+  args: Arc[imm, ListenArgs];
+  ls: aio.Socket;
+  tlsServer: Option[tls.Server];
+  acceptGroup: CancelGroup;       // ends the pending accept at close
+  connGroup: CancelGroup;         // ends every connection's I/O when the shutdown deadline passes
+  live: u64;                      // connections alive
+  nextConn: u64;
+  conns: Dict[u64, ConnActor];
+  waiting: Deque[Waiting];        // the queue route's requests, live ones only
+  takers: Deque[actors.ReplyOf[Result[Exchange, ServerError]]];
+  closing: bool;
+  closedDone: bool;
+  closedWaiters: List[actors.ReplyOf[bool]];
+  accepting: bool;
+  refs: u64;                      // Server handles (the last one's going closes the server)
+  dl: actors.Timer;               // the shutdown deadline
+  guard: LiveGuard;
+
+  fn init(self: &new, args: Arc[imm, ListenArgs]) {
+    liveServers.add(1u64);
+    *self = Self(args: args, ls: aio.Socket.none(), tlsServer: None[tls.Server], acceptGroup: CancelGroup.make(),
+      connGroup: CancelGroup.make(), live: 0u64, nextConn: 1u64, conns: Dict[u64, ConnActor](),
+      waiting: Deque[Waiting](), takers: Deque[actors.ReplyOf[Result[Exchange, ServerError]]](),
+      closing: false, closedDone: false, closedWaiters: List[actors.ReplyOf[bool]](), accepting: false,
+      refs: 1u64, dl: actors.Timer.make(), guard: LiveGuard(false));
+  }
+
+  // Listen, and answer the caller with the Server (or why not)
+  pub async fn start(self, rp: actors.ReplyOf[Result[Server, ServerError]]) {
+    var secure = false;
+    match &args.cfg.tlsConfig {
+      case let &Some(given) {
+        let t = tcpTls(given, args.cfg.http2);
+        match tls.Server.make(t) {
+          case let Ok(s) {
+            tlsServer = Some[tls.Server](s);
+            secure = true;
+          }
+          case let Err(x) {
+            rp.answer(Err[Server, ServerError](ServerError.failed(x.osError, (String() <- x).view())));
+            closing = true;
+            closedDone = true;
+            return;
+          }
+        }
+      }
+      else {}
+    }
+    let r = await aio.listen(args.addr);
+    match r {
+      case var Ok(sock) {
+        var bound = args.addr;
+        match await sock.localAddr() {
+          case let Ok(a) {bound = a;}
+          case let Err(e) {}
+        }
+        ls <-> sock;
+        let sv = Server(0u64, bound, secure, false, Some[ServerActor](selfactor));
+        rp.answer(Ok[Server, ServerError](sv));
+        self.kickAccept();
+      }
+      case let Err(e) {
+        rp.answer(Err[Server, ServerError](ServerError.failed(e.code, "could not listen")));
+        closing = true;
+        closedDone = true;
+      }
+    }
+  }
+
+  fn kickAccept(self) {
+    if !accepting && !closing && live < u64.from(args.cfg.conn.maxConnections) {
+      accepting = true;
+      selfactor.acceptOnce();
+    }
+  }
+
+  pub async fn acceptOnce(self) {
+    let r = await ls.acceptFromIn(IoLimits.within(acceptGroup));
+    accepting = false;
+    match r {
+      case let Ok(a) {
+        let sock, peer = a.(sock, peer);
+        let id = nextConn;
+        nextConn = nextConn + 1u64;
+        let c = ConnActor(id, sock, peer, selfactor, args, tlsServer, connGroup);
+        conns.insert(id, c);
+        live = live + 1u64;
+        if closing {
+          // an accept that came as the close did
+          c.shutdown();
+        }
+      }
+      case let Err(e) {
+        if closing {return;}
+        // an accept that failed (a reset before it was taken, no descriptors): look again shortly
+        await aio.sleep(Duration.fromMillis(5i64));
+      }
+    }
+    self.kickAccept();
+  }
+
+  // ---- the queue route
+
+  // A 'next()': a request takes it at once if one waits
+  pub async fn take(self, rp: actors.ReplyOf[Result[Exchange, ServerError]]) {
+    if closing {
+      rp.answer(Err[Exchange, ServerError](ServerError.closed()));
+      return;
+    }
+    takers.push(rp);
+    self.matchUp();
+  }
+
+  // A taker whose request had gone: it goes back to the front of the queue
+  pub async fn stale(self, rp: actors.ReplyOf[Result[Exchange, ServerError]]) {
+    if closing {
+      rp.answer(Err[Exchange, ServerError](ServerError.closed()));
+      return;
+    }
+    takers.pushFront(rp);
+    self.matchUp();
+  }
+
+  // Each request that waits goes to the taker that has waited longest: the connection is asked to hand it
+  // out, and answers the taker's reply with the Exchange, or sends the reply back if the request is gone
+  fn matchUp(self) {
+    while waiting.len() > 0usize && takers.len() > 0usize {
+      let w = waiting.popFront().unwrap();
+      let rp = takers.popFront().unwrap();
+      w.conn.handOut(w.stream, w.rid, rp, selfactor);
+    }
+  }
+
+  // A connection has a request for the queue route: it waits if there is room (live entries only)
+  pub async fn enqueue(self, conn: ConnActor, connId: u64, stream: u32, rid: u64) {
+    if closing || waiting.len() >= args.cfg.maxPending {
+      conn.refuse(stream, rid);
+      return;
+    }
+    waiting.push(Waiting(conn, connId, stream, rid));
+    self.matchUp();
+  }
+
+  // One waiting request is gone (its stream was reset)
+  pub async fn drop1(self, connId: u64, rid: u64) {
+    self.dropWaiting(connId, rid);
+  }
+
+  // The entries of a connection (and, if rid is not 0, only that request) leave the queue
+  fn dropWaiting(self, connId: u64, rid: u64) {
+    var n = waiting.len();
+    while n > 0usize {
+      n = n - 1usize;
+      let w = waiting.popFront().unwrap();
+      if !(w.connId == connId && (rid == 0u64 || w.rid == rid)) {waiting.push(w);}
+    }
+  }
+
+  // A connection has ended: what it had waiting no longer counts
+  pub async fn connEnded(self, connId: u64) {
+    self.dropWaiting(connId, 0u64);
+    match conns.remove(&connId) {
+      case let Some(c) {live = live - 1u64;}
+      else {}
+    }
+    self.checkClosed();
+    self.kickAccept();
+  }
+
+  // ---- shutdown
+
+  // Stop accepting and listening; refuse what waits; tell every connection to finish; after the deadline
+  // the ones still open are reset
+  pub async fn close(self) {
+    if closing {return;}
+    closing = true;
+    acceptGroup.cancel();
+    var dead = aio.Socket.none();
+    dead <-> ls;
+    while true {
+      match takers.popFront() {
+        case var Some(rp) {rp.answer(Err[Exchange, ServerError](ServerError.closed()));}
+        else {break;}
+      }
+    }
+    while true {
+      match waiting.popFront() {
+        case let Some(w) {w.conn.refuse(w.stream, w.rid);}
+        else {break;}
+      }
+    }
+    var all = List[ConnActor]();
+    var it = conns.values();
+    while true {
+      match it.next() {
+        case let Some(c) {all.push(*c);}
+        else {break;}
+      }
+    }
+    var i = 0usize;
+    while i < all.len() {
+      all[i].shutdown();
+      i = i + 1usize;
+    }
+    self.checkClosed();
+    if !closedDone {selfactor.deadlineLoop();}
+  }
+
+  // After the shutdown deadline, whatever is still open is reset
+  pub async fn deadlineLoop(self) {
+    dl.set(Instant.now() + args.cfg.shutdownDeadline);
+    if await dl.next() {
+      connGroup.cancel();
+    }
+  }
+
+  fn checkClosed(self) {
+    if closing && live == 0u64 && !closedDone {
+      closedDone = true;
+      dl.stop();
+      while true {
+        match closedWaiters.pop() {
+          case var Some(rp) {rp.answer(true);}
+          else {break;}
+        }
+      }
+    }
+  }
+
+  // 'closed()': true once the server is closed and every connection has ended
+  pub async fn askClosed(self, rp: actors.ReplyOf[bool]) {
+    if closedDone {
+      rp.answer(true);
+      return;
+    }
+    closedWaiters.push(rp);
+  }
+
+  pub async fn askWaiting(self, rp: actors.ReplyOf[u64]) {
+    rp.answer(u64.from(waiting.len()));
+  }
+
+  pub async fn addRef(self) {refs = refs + 1u64;}
+
+  // The last Server handle's going closes the server
+  pub async fn dropRef(self) {
+    if refs > 0u64 {refs = refs - 1u64;}
+    if refs == 0u64 {self.closeNow();}
+  }
+
+  fn closeNow(self) {
+    if !closing {selfactor.close();}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The connection actor
+// ---------------------------------------------------------------------------
+
+const stFresh = 0u32;         // the request is being read, or routed
+const stQueued = 1u32;        // waiting in the server's queue for a 'next()'
+const stHanded = 2u32;        // a handler or an actor has it; no response begun
+const stStreaming = 3u32;     // the response's head is out, its body to come
+
+const noBound = 0xFFFFFFFFFFFFFFFFusize;    // a Chain with no byte limit of its own (the watermark bounds the output)
+const writePiece = 16384usize;    // the most bytes of a 'write' made into one buffer
+
+// A request of this connection, from its head to the end of its response
+struct Strm is Move {
+  rid: u64;
+  stream: u32;
+  head: RequestHead;
+  body: String;
+  state: u32;
+  rejected: bool;        // the body is over maxBody: answered 413, the rest dropped
+  written: u64;          // body bytes the handler has written
+  sized: bool;
+  length: u64;
+  bodyless: bool;        // the response has no body bytes
+}
+
+// A 'write' or a 'finish' that waits for the connection to take its bytes
+struct Pend is Move {
+  stream: u32;
+  rid: u64;
+  isFinish: bool;
+  data: String;
+  off: usize;
+  rpW: Option[actors.ReplyOf[Result[usize, ServerError]]];
+  rpF: Option[actors.ReplyOf[Result[u64, ServerError]]];
+}
+
+pub actor ConnActor {
+  id: u64;
+  sc: httpconn.ServerConn;
+  sock: aio.Socket;
+  srv: ServerActor;
+  args: Arc[imm, ListenArgs];
+  group: CancelGroup;
+  peer: SocketAddr;
+  secure: bool;
+  tm: actors.Timer;
+  out: Chain;
+  reading: bool;
+  writing: bool;
+  protoClosed: bool;        // the protocol is over (Closed was given)
+  closing: bool;            // the closing sequence has begun
+  ended: bool;              // the connection has ended: nothing more is done
+  streams: Dict[u32, Strm];
+  pends: Deque[Pend];
+  h1: Option[Handler];
+  nextRid: u64;
+  guard: LiveGuard;
+
+  fn init(self: &new, id: u64, sock: aio.Socket, peer: SocketAddr, srv: ServerActor, args: Arc[imm, ListenArgs],
+      tlsServer: Option[tls.Server], group: CancelGroup) {
+    liveConns.add(1u64);
+    let now = Instant.now();
+    var layer: Option[Uni[httpconn.Layer]] = None;
+    var secure = false;
+    match &tlsServer {
+      case let &Some(t) {
+        layer = Some[Uni[httpconn.Layer]](Uni[tls.Stream](t.stream()));
+        secure = true;
+      }
+      else {}
+    }
+    *self = Self(id: id, sc: httpconn.ServerConn.make(args.cfg.conn, layer, now), sock: sock, srv: srv,
+      args: args, group: group, peer: peer, secure: secure, tm: actors.Timer.make(), out: Chain.make(noBound),
+      reading: false, writing: false, protoClosed: false, closing: false, ended: false,
+      streams: Dict[u32, Strm](), pends: Deque[Pend](), h1: None[Handler], nextRid: 1u64, guard: LiveGuard(true));
+    selfactor.begin();
+  }
+
+  pub async fn begin(self) {
+    selfactor.timerLoop();
+    self.turn();
+  }
+
+  pub async fn timerLoop(self) {
+    while await tm.next() {
+      if ended {break;}
+      sc.handleTimeout(Instant.now());
+      self.turn();
+    }
+  }
+
+  // ---- reading and writing: one socket operation at a time each, each a turn of its own
+
+  pub async fn readOnce(self) {
+    if ended || closing {
+      reading = false;
+      return;
+    }
+    let room = sc.readRoom();
+    if room == 0usize {
+      reading = false;
+      return;
+    }
+    let want = if room < args.cfg.conn.recvSize {room} else {args.cfg.conn.recvSize};
+    let r = await sock.readIn(IoBuf(want), IoLimits.within(group));
+    reading = false;
+    match r {
+      case let Ok(b) {sc.wireIn(b, Instant.now());}
+      case let Err(e) {sc.abort();}
+    }
+    self.turn();
+  }
+
+  pub async fn writeOnce(self) {
+    var c = Chain.make(noBound);
+    let n = sc.takeWire(&mut c);
+    if n == 0usize {
+      writing = false;
+      self.turn();
+      return;
+    }
+    let r = await sock.writeIn(c, IoLimits.within(group));
+    writing = false;
+    match r {
+      case let Ok(w) {sc.wireSent(n);}
+      case let Err(e) {sc.abort();}
+    }
+    self.turn();
+  }
+
+  // ---- what happened on the connection, and what follows from it
+
+  // Act on every event the protocol has, answer what can be answered, and start the next read and write
+  fn turn(self) {
+    if ended {return;}
+    let now = Instant.now();
+    var more = true;
+    while more {
+      match sc.next(now) {
+        case is Nothing {more = false;}
+        case let Request(q) {self.onRequest(q.stream, q.body, now);}
+        case let Data(d) {
+          let st, bf = d.(stream, buf);
+          self.onData(st, bf);
+        }
+        case let End(e) {self.onEnd(e.stream);}
+        case let Reset(x) {self.onReset(x.stream);}
+        case let Closed(c) {protoClosed = true;}
+      }
+    }
+    self.drainPends();
+    self.kick(now);
+  }
+
+  fn kick(self, now: Instant) {
+    if ended {return;}
+    let isDone = sc.done(now);
+    if !writing {
+      let n = sc.fill(now);
+      if n > 0usize {
+        writing = true;
+        selfactor.writeOnce();
+      }
+    }
+    if !closing && !reading && sc.readRoom() > 0usize {
+      reading = true;
+      selfactor.readOnce();
+    }
+    match sc.pollTimeout() {
+      case let Some(t) {tm.set(t);}
+      else {tm.clear();}
+    }
+    if isDone && !writing && !closing {
+      closing = true;
+      selfactor.closeOut();
+    }
+  }
+
+  // The closing sequence: half-close, a short read of what the peer still sends, drop the socket
+  pub async fn closeOut(self) {
+    let lim = IoLimits.within(group);
+    let c = await sock.closeWrite();
+    var k = 0u32;
+    let until = Instant.now() + args.cfg.conn.lingerTimeout;
+    while k < 8u32 && !group.isCancelled() {
+      let r = await sock.readIn(IoBuf(512usize), IoLimits.until(until));
+      match r {
+        case let Ok(b) {if b.len() == 0usize {break;}}
+        case let Err(e) {break;}
+      }
+      k = k + 1u32;
+    }
+    self.finishEnd();
+  }
+
+  // Every stream is told the connection is gone; the server is told it has ended
+  fn finishEnd(self) {
+    if ended {return;}
+    ended = true;
+    tm.stop();
+    var dead = aio.Socket.none();
+    dead <-> sock;
+    self.answerAllClosed();
+    streams.clear();
+    srv.connEnded(id);
+  }
+
+  // Every 'write' and 'finish' waiting is answered Closed
+  fn answerAllClosed(self) {
+    while true {
+      match pends.popFront() {
+        case var Some(p) {self.answerClosed(p);}
+        else {break;}
+      }
+    }
+  }
+
+  fn answerClosed(self, p: Pend) {
+    var q = p;
+    match q.rpW.take() {
+      case var Some(rp) {rp.answer(Err[usize, ServerError](ServerError.closed()));}
+      else {}
+    }
+    match q.rpF.take() {
+      case var Some(rp) {rp.answer(Err[u64, ServerError](ServerError.closed()));}
+      else {}
+    }
+  }
+
+  // ---- requests
+
+  fn onRequest(self, stream: u32, body: BodyLength, now: Instant) {
+    let h2 = sc.isHttp2();
+    let head = if h2 {sc.takeRequest()} else {copyHead(sc.request())};
+    let rid = nextRid;
+    nextRid = nextRid + 1u64;
+    var rec = Strm(rid, stream, head, String(), stFresh, false, 0u64, false, 0u64, false);
+    if body.isSized() && body.length > u64.from(args.cfg.maxBody) {
+      rec.rejected = true;
+    } else if rec.head.headers.hasToken("Expect", "100-continue") {
+      sc.sendContinue(stream);
+    }
+    let rej = rec.rejected;
+    streams.insert(stream, rec);
+    if rej {self.tooLarge(stream);}
+  }
+
+  fn onData(self, stream: u32, buf: IoBuf) {
+    let n = buf.len();
+    var over = false;
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        if !r.rejected {
+          if r.body.len() + n > args.cfg.maxBody {
+            r.rejected = true;
+            over = true;
+          } else {
+            r.body.appendBytes(buf.view());
+          }
+        }
+      }
+      else {}
+    }
+    sc.release(stream, n);
+    if over {self.tooLarge(stream);}
+  }
+
+  // A request body over maxBody: answered 413, the rest of the body not wanted
+  fn tooLarge(self, stream: u32) {
+    self.answerText(stream, 413u16, "request body too large");
+    sc.stopBody(stream);
+  }
+
+  fn onReset(self, stream: u32) {
+    var rid = 0u64;
+    var queued = false;
+    match streams.remove(&stream) {
+      case let Some(r) {
+        rid = r.rid;
+        queued = r.state == stQueued;
+      }
+      else {}
+    }
+    if queued {srv.drop1(id, rid);}
+    var n = pends.len();
+    while n > 0usize {
+      n = n - 1usize;
+      let p = pends.popFront().unwrap();
+      if p.stream == stream {self.answerClosed(p);} else {pends.push(p);}
+    }
+  }
+
+  // The request is whole: route it
+  fn onEnd(self, stream: u32) {
+    var host = String();
+    var path = String();
+    var rid = 0u64;
+    var fresh = false;
+    match streams.get(&stream) {
+      case let Some(r) {
+        fresh = !r.rejected && r.state == stFresh;
+        host = String.from(r.head.authority.view());
+        path = String.from(pathOf(r.head.target.view()));
+        rid = r.rid;
+      }
+      else {}
+    }
+    if !fresh {return;}
+    var pick: Option[usize] = None;
+    match &args.cfg.router {
+      case let &Some(rt) {pick = pickRoute(&rt.routes, host.view(), path.view());}
+      else {}
+    }
+    match pick {
+      case let Some(ix) {
+        var isQueue = false;
+        var make: Option[&fn() Handler] = None;
+        match &args.cfg.router {
+          case let &Some(rt) {
+            let route = rt.routes.get(ix).unwrap();
+            isQueue = route.isQueue;
+            make = route.make;
+          }
+          else {}
+        }
+        if isQueue {
+          self.setState(stream, stQueued);
+          srv.enqueue(selfactor, id, stream, rid);
+        } else {
+          self.setState(stream, stHanded);
+          self.runHandler(stream, rid, make);
+        }
+      }
+      else {self.answerText(stream, 404u16, "not found");}
+    }
+  }
+
+  fn setState(self, stream: u32, st: u32) {
+    match streams.getMut(&stream) {
+      case let Some(r) {r.state = st;}
+      else {}
+    }
+  }
+
+  // The request's Exchange, its head and body moved out of the record
+  fn takeExchange(self, stream: u32, rid: u64) Option[Exchange] {
+    var found = false;
+    var head = RequestHead();
+    var body = String();
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        if r.rid == rid {
+          found = true;
+          head <-> r.head;
+          body <-> r.body;
+        }
+      }
+      else {}
+    }
+    if !found {return None;}
+    Some[Exchange](routedExchange(&selfactor, stream, rid, Request(head, body, peer, secure)))
+  }
+
+  // The handler: on HTTP/1.1 one actor for the connection, its requests in order; on HTTP/2 one for each stream
+  fn runHandler(self, stream: u32, rid: u64, make: Option[&fn() Handler]) {
+    let ex = match self.takeExchange(stream, rid) {
+      case let Some(e) {e}
+      else {return;}
+    };
+    var mk: &fn() Handler = &noHandler;
+    match make {
+      case let Some(f) {mk = f;}
+      else {}
+    }
+    if sc.isHttp2() {
+      let h = mk();
+      h.handle(ex);
+    } else {
+      match &h1 {
+        case let &Some(h) {
+          h.handle(ex);
+          return;
+        }
+        else {}
+      }
+      let h = mk();
+      h1 = Some[Handler](h);
+      h.handle(ex);
+    }
+  }
+
+  // The queue route's request is taken by a 'next()': its Exchange answers the taker's reply, or the
+  // request is gone (its connection ended or its stream was reset) and the taker goes back to the server
+  pub async fn handOut(self, stream: u32, rid: u64, rp: actors.ReplyOf[Result[Exchange, ServerError]], to: ServerActor) {
+    var ok = false;
+    match streams.get(&stream) {
+      case let Some(r) {ok = r.rid == rid && r.state == stQueued && !ended;}
+      else {}
+    }
+    if !ok {
+      to.stale(rp);
+      return;
+    }
+    self.setState(stream, stHanded);
+    match self.takeExchange(stream, rid) {
+      case let Some(ex) {rp.answer(Ok[Exchange, ServerError](ex));}
+      else {to.stale(rp);}
+    }
+  }
+
+  // The queue route is full (or the server is closing): 503
+  pub async fn refuse(self, stream: u32, rid: u64) {
+    var ok = false;
+    match streams.get(&stream) {
+      case let Some(r) {ok = r.rid == rid && r.state == stQueued;}
+      else {}
+    }
+    if !ok {return;}
+    self.answerText(stream, 503u16, "the server is busy");
+    self.turn();
+  }
+
+  // The library's own answers: a whole text response
+  fn answerText(self, stream: u32, status: u16, text: &str) {
+    let r = sc.response();
+    r.status = status;
+    r.headers.add("Content-Type", "text/plain; charset=utf-8");
+    sc.respond(stream, BodyLength.sized(u64.from(text.len())));
+    var b = IoBuf(text.len());
+    b.append(text);
+    sc.sendData(stream, b);
+    sc.finish(stream);
+    streams.remove(&stream);
+  }
+
+  // ---- the Exchange's calls
+
+  fn fillHead(self, head: &ResponseHead) {
+    let r = sc.response();
+    r.status = head.status;
+    var i = 0usize;
+    while i < head.headers.len() {
+      let nm = String.from(head.headers.nameAt(i));
+      var vl = String();
+      vl.appendBytes(head.headers.valueAt(i));
+      r.headers.add(nm.view(), vl.view());
+      i = i + 1usize;
+    }
+  }
+
+  fn live(self, stream: u32, rid: u64) bool {
+    match streams.get(&stream) {
+      case let Some(r) {r.rid == rid}
+      else {false}
+    }
+  }
+
+  pub async fn xRespond(self, stream: u32, rid: u64, head: ResponseHead, body: String) {
+    if !self.live(stream, rid) {return;}
+    let st = head.status;
+    let isHead = match streams.get(&stream) {
+      case let Some(r) {r.head.method == Method.Head}
+      else {false}
+    };
+    let none = isHead || st == 204u16 || st == 304u16 || body.len() == 0usize;
+    self.fillHead(&head);
+    sc.respond(stream, BodyLength.sized(u64.from(body.len())));
+    if none {
+      streams.remove(&stream);
+    } else {
+      // the body goes as the protocol takes it, then the end (drainPends)
+      match streams.getMut(&stream) {
+        case let Some(r) {r.state = stStreaming;}
+        else {}
+      }
+      pends.push(Pend(stream, rid, false, body, 0usize, None, None));
+      pends.push(Pend(stream, rid, true, String(), 0usize, None, None));
+    }
+    self.turn();
+  }
+
+  pub async fn xStart(self, stream: u32, rid: u64, head: ResponseHead, framing: BodyLength) {
+    if !self.live(stream, rid) {return;}
+    let st = head.status;
+    var none = false;
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        r.sized = framing.isSized();
+        r.length = framing.length;
+        none = r.head.method == Method.Head || st == 204u16 || st == 304u16 || framing.isEmpty() ||
+          (framing.isSized() && framing.length == 0u64);
+        r.bodyless = none;
+        r.state = stStreaming;
+      }
+      else {}
+    }
+    self.fillHead(&head);
+    sc.respond(stream, framing);
+    if none {streams.remove(&stream);}
+    self.turn();
+  }
+
+  pub async fn xWrite(self, stream: u32, rid: u64, data: String, rp: actors.ReplyOf[Result[usize, ServerError]]) {
+    if !self.live(stream, rid) {
+      rp.answer(Err[usize, ServerError](ServerError.closed()));
+      return;
+    }
+    pends.push(Pend(stream, rid, false, data, 0usize, Some[actors.ReplyOf[Result[usize, ServerError]]](rp), None));
+    self.turn();
+  }
+
+  pub async fn xFinish(self, stream: u32, rid: u64, rp: actors.ReplyOf[Result[u64, ServerError]]) {
+    if !self.live(stream, rid) {
+      rp.answer(Err[u64, ServerError](ServerError.closed()));
+      return;
+    }
+    pends.push(Pend(stream, rid, true, String(), 0usize, None, Some[actors.ReplyOf[Result[u64, ServerError]]](rp)));
+    self.turn();
+  }
+
+  // The Exchange was dropped: no answer is 500; an unsized body ends cleanly; a sized one short of its length resets
+  pub async fn xDrop(self, stream: u32, rid: u64) {
+    if !self.live(stream, rid) {return;}
+    var st = stFresh;
+    var sized = false;
+    match streams.get(&stream) {
+      case let Some(r) {
+        st = r.state;
+        sized = r.sized;
+      }
+      else {}
+    }
+    if st == stHanded {
+      self.answerText(stream, 500u16, "the handler gave no answer");
+    } else if st == stStreaming {
+      if sized {
+        if sc.isHttp2() {sc.stopBody(stream);} else {sc.abort();}
+        streams.remove(&stream);
+      } else {
+        pends.push(Pend(stream, rid, true, String(), 0usize, None, None));
+      }
+    }
+    self.turn();
+  }
+
+  // Move what the writes waiting hold into the protocol while it takes them, in order, a stream's at a time:
+  // a write is answered when all its bytes are taken, a finish when the response is whole
+  fn drainPends(self) {
+    var blocked = List[u32]();
+    var n = pends.len();
+    while n > 0usize {
+      n = n - 1usize;
+      var p = pends.popFront().unwrap();
+      let stream = p.stream;
+      if !self.live(stream, p.rid) {
+        self.answerClosed(p);
+        continue;
+      }
+      var isBlocked = false;
+      var k = 0usize;
+      while k < blocked.len() {
+        if blocked[k] == stream {isBlocked = true;}
+        k = k + 1usize;
+      }
+      if isBlocked {
+        pends.push(p);
+        continue;
+      }
+      if p.isFinish {
+        var total = 0u64;
+        match streams.get(&stream) {
+          case let Some(r) {total = r.written;}
+          else {}
+        }
+        sc.finish(stream);
+        streams.remove(&stream);
+        match p.rpF.take() {
+          case var Some(rp) {rp.answer(Ok[u64, ServerError](total));}
+          else {}
+        }
+        continue;
+      }
+      // a write: as much as the protocol takes
+      var refused = false;
+      let bytes = p.data.view() as &Array[u8];
+      while p.off < bytes.len && !refused {
+        let left = bytes.len - p.off;
+        let m = if left > writePiece {writePiece} else {left};
+        var b = IoBuf(m);
+        b.append(&bytes[p.off ..< p.off + m]);
+        match sc.sendData(stream, b) {
+          case let Some(back) {refused = true;}
+          else {p.off = p.off + m;}
+        }
+      }
+      if refused {
+        blocked.push(stream);
+        pends.push(p);
+      } else {
+        let total = bytes.len;
+        match streams.getMut(&stream) {
+          case let Some(r) {r.written = r.written + u64.from(total);}
+          else {}
+        }
+        match p.rpW.take() {
+          case var Some(rp) {rp.answer(Ok[usize, ServerError](total));}
+          else {}
+        }
+      }
+    }
+  }
+
+  // The server's call to finish: HTTP/1.1 ends after the request in hand, HTTP/2 sends GOAWAY
+  pub async fn shutdown(self) {
+    sc.shutdown();
+    self.turn();
+  }
+}
+
+// What a route holds when it has no handler (never called: a queue route has none)
+fn noHandler() Handler {panic("actorhttp: a route with no handler")}

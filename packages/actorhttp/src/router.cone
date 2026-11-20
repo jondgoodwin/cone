@@ -1,0 +1,101 @@
+// The router and the handler a program gives a server that has one (the package's
+// header, A ROUTED SERVER; routedserver.cone has the actors that use them). The
+// program builds a Router before 'listen', and the server freezes it: one Arc[imm]
+// shared by every connection, read with no lock.
+
+// What a program writes to answer requests on a routed server: an actor trait, so that
+// it may await (a body read, a 'write' past the allowance, a call to a backend). The
+// server makes one by the factory the route holds: for each HTTP/2 stream, and once
+// for an HTTP/1.1 connection (its requests are serial, so one handler serves them in
+// order). 'handle' is called with the request's Exchange, which it answers as any
+// Exchange is answered; the handler ends when 'handle' returns and its Exchange is
+// dropped. It is written once and does not know which version carried the request
+pub actor trait Handler {
+  pub async fn handle(self, ex: Exchange);
+}
+
+// One route: where it applies, and what takes a request that matches
+struct RouteEntry {
+  host: String;                       // "" matches any host
+  prefix: String;                     // the path begins with it; "/" matches every path
+  isQueue: bool;                      // the queue route: 'server.next()' takes the request
+  make: Option[&fn() Handler];        // otherwise: the handler's factory
+}
+
+// A set of routes, matched on the request's host (exact, ignoring case and the port, or any) and
+// the longest path prefix; where a host-exact and an any-host route match with the same prefix
+// length, the exact one wins. A request no route matches is answered 404 by the connection. Built
+// by the program, then given to 'ServerConfig.route'
+pub struct Router is Move {
+  routes: List[RouteEntry];
+
+  pub fn make() Router {Router(List[RouteEntry]())}
+
+  // A route to a handler: host "" for any host, a path prefix, and the factory that makes the
+  // handler actor (a plain function that makes the program's own type and returns it as a Handler)
+  pub fn handle(self, host: &str, prefix: &str, make: &fn() Handler) Router {
+    var r = self;
+    r.routes.push(RouteEntry(String.from(host), String.from(prefix), false, Some[&fn() Handler](make)));
+    r
+  }
+
+  // A route to the queue: the requests wait for 'server.next()', today's API
+  pub fn queue(self, host: &str, prefix: &str) Router {
+    var r = self;
+    r.routes.push(RouteEntry(String.from(host), String.from(prefix), true, None));
+    r
+  }
+
+  pub fn len(self: &) usize {routes.len()}
+}
+
+// The index of the route that takes a request for host and path, or None
+fn pickRoute(routes: &List[RouteEntry], host: &str, path: &str) Option[usize] {
+  let h = hostOnly(host);
+  var best = 0usize;
+  var bestLen = 0usize;
+  var bestExact = false;
+  var found = false;
+  var i = 0usize;
+  while i < routes.len() {
+    let r = routes.get(i).unwrap();
+    let exact = r.host.len() > 0usize;
+    if (!exact || eqIgnoreCase(r.host.view() as &Array[u8], h as &Array[u8])) && startsWith(path, r.prefix.view()) {
+      let l = r.prefix.len();
+      if !found || l > bestLen || (l == bestLen && exact && !bestExact) {
+        found = true;
+        best = i;
+        bestLen = l;
+        bestExact = exact;
+      }
+    }
+    i = i + 1usize;
+  }
+  if found {Some[usize](best)} else {None}
+}
+
+fn startsWith(s: &str, p: &str) bool {
+  if p.len() > s.len() {return false;}
+  &s[0usize ..< p.len()] == p
+}
+
+// An authority without its port ("example.com:8080" is "example.com"; "[::1]:80" is "[::1]")
+fn hostOnly(a: &str) &str {
+  let b = a as &Array[u8];
+  var i = b.len;
+  while i > 0usize {
+    let c = b[i - 1usize];
+    if c == ':' {return &a[0usize ..< i - 1usize];}
+    if c == ']' || c < '0' || c > '9' {return a;}
+    i = i - 1usize;
+  }
+  a
+}
+
+// The target's path: everything before a '?'
+fn pathOf(target: &str) &str {
+  let t = target as &Array[u8];
+  var i = 0usize;
+  while i < t.len && t[i] != '?' {i = i + 1usize;}
+  &target[0usize ..< i]
+}
