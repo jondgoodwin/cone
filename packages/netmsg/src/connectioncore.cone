@@ -39,9 +39,26 @@ pub const headerSize = 23usize;
 pub const reliableOverhead = 4usize;
 pub const latestOverhead = 6usize;
 
-// Slots in each ring: packets sent and received, reliable messages in
-// flight. A power of two, and far more than the 33 packets an ack covers
+// Slots in each of the four rings (packets sent, packets received, reliable
+// messages in flight, reliable messages received ahead of their turn): a
+// ring starts at ringStart slots and doubles when what it must hold would
+// not fit, up to ringSize, and never shrinks. Each size is a power of two, so
+// a slot is id & (size - 1). ringSize is also the window each ring's rule is
+// written for (see each ring's grow function)
+const ringStart = 32usize;
 const ringSize = 1024usize;
+
+// The slot of an id in a ring of n slots (n a power of two; 65,536 is a
+// multiple of it, so the same slot holds across the wrap of the 16-bit ids)
+fn slotIn(id: u16, n: usize) usize inline {usize.from(id) & (n - 1usize)}
+
+// The size a ring of n slots grows to for something 'need' ids wide: n
+// doubled until it exceeds 'need', up to ringSize
+fn ringTarget(n: usize, need: usize) usize {
+  var m = n;
+  while m <= need && m < ringSize {m = m * 2usize;}
+  m
+}
 
 // Reliable messages queued or unacknowledged at once
 pub const reliableWindow = 1024usize;
@@ -295,9 +312,11 @@ fn parseInto(c: &'a mut streams.ByteCursor, dg: &Bytes, pk: &mut Parsed) bool {
 }
 
 // The reliable messages that arrived before the ones ahead of them: a ring of
-// ringSize slots, message id in slot id % ringSize, each holding the message's
-// own copy or None. The window is reliableWindow ids ahead of the next one to
-// give out, and equals ringSize, so no two ids waiting share a slot
+// slots, message id in slot slotIn(id, size), each holding the message's own
+// copy or None. The window is reliableWindow ids ahead of the next one to give
+// out, and equals ringSize; the ring has more slots than the farthest id
+// waiting is ahead (growRecv), so no two ids waiting share a slot, and a
+// slot's id is the one in the window with that slot (see growRecv)
 alias RecvRing = List[Option[List[u8]]];
 
 // What one packet carries, parsed before any of it is acted on. The core keeps
@@ -341,7 +360,7 @@ pub struct ConnectionCore {
   rel: List[RelSlot];
   relOldest: u16;             // the oldest id not yet acknowledged
   relNext: u16;               // the id the next message gets
-  recv: RecvRing;             // received out of order, waiting for the ones before them: id's slot is id % ringSize (own copies, see takeReliable)
+  recv: RecvRing;             // received out of order, waiting for the ones before them: id's slot is slotIn(id, recv.len()) (own copies, see takeReliable)
   relDeliver: u16;            // the next id to give the application
   parsed: Parsed;             // the packet being received, its two lists kept from packet to packet
 
@@ -381,12 +400,12 @@ pub struct ConnectionCore {
 
   // A new connection that begins now, with the session both ends know
   pub fn make(cfg: NetConfig, session: u64, now: Instant) ConnectionCore {
-    var sent = List[SentSlot].withCapacity(ringSize);
-    var seen = List[u32].withCapacity(ringSize);
-    var rel = List[RelSlot].withCapacity(ringSize);
-    var recv = RecvRing.withCapacity(ringSize);
+    var sent = List[SentSlot].withCapacity(ringStart);
+    var seen = List[u32].withCapacity(ringStart);
+    var rel = List[RelSlot].withCapacity(ringStart);
+    var recv = RecvRing.withCapacity(ringStart);
     var i = 0usize;
-    while i < ringSize {
+    while i < ringStart {
       sent.push(SentSlot(0u16, false, false, 0i64, List[u16]()));
       seen.push(0u32);
       recv.push(None[List[u8]]);
@@ -427,7 +446,10 @@ pub struct ConnectionCore {
     if state != CoreState.Active || data.len() > self.maxReliable() {return false;}
     let waiting = usize.from(relNext - relOldest);
     if waiting >= reliableWindow {return false;}
-    let s = &mut rel[usize.from(relNext) % ringSize];
+    // The ids waiting are relOldest to relNext, each in its own slot; this
+    // one's slot is free only while fewer than the ring's size wait
+    if waiting >= rel.len() {self.growRel(ringTarget(rel.len(), waiting));}
+    let s = &mut rel[slotIn(relNext, rel.len())];
     s.id = relNext;
     s.used = true;
     s.acked = false;
@@ -435,7 +457,7 @@ pub struct ConnectionCore {
     // A message with others waiting ahead of it has to wait for credit: it is
     // kept as a copy of its own bytes (the caller's buffer, a pool buffer of
     // 4 KiB at least, goes back). One that can go at the next poll is not copied.
-    let behind = relNext != relOldest && rel[usize.from(relNext - 1u16) % ringSize].lastSent < 0i64;
+    let behind = relNext != relOldest && rel[slotIn(relNext - 1u16, rel.len())].lastSent < 0i64;
     if behind {
       s.heap = copyBytes(data.view());
       s.parked = true;
@@ -653,7 +675,7 @@ pub struct ConnectionCore {
     let delay = self.resendDelay();
     var id = relOldest;
     while id != relNext {
-      let s = &rel[usize.from(id) % ringSize];
+      let s = &rel[slotIn(id, rel.len())];
       if s.used && !s.acked && (s.lastSent < 0i64 || t - s.lastSent >= delay) {return true;}
       id = id + 1u16;
     }
@@ -674,7 +696,7 @@ pub struct ConnectionCore {
       let delay = self.resendDelay();
       var id = relOldest;
       while id != relNext {
-        let s = &rel[usize.from(id) % ringSize];
+        let s = &rel[slotIn(id, rel.len())];
         if s.used && !s.acked {
           var due = lastSend;
           if s.lastSent >= 0i64 {due = s.lastSent + delay;}
@@ -801,7 +823,7 @@ pub struct ConnectionCore {
     var i = 0u32;
     while i < 32u32 {
       let q = remoteSeq - 1u16 - u16.from(i);
-      if seen[usize.from(q) % ringSize] == u32.from(q) + 1u32 {
+      if seen[slotIn(q, seen.len())] == u32.from(q) + 1u32 {
         bits = bits | (1u32 << i);
       }
       i = i + 1u32;
@@ -826,11 +848,16 @@ pub struct ConnectionCore {
     let latCount = p.slot[u8]();
 
     // The slot this packet is remembered in
-    if sent[usize.from(seq) % ringSize].used && !sent[usize.from(seq) % ringSize].acked {
+    // The ring grows while that slot holds a packet whose fate is not yet
+    // known (its window is the packets from 'scan' to the newest, up to ringSize)
+    while sent.len() < ringSize && sent[slotIn(seq, sent.len())].used {
+      self.growSent(sent.len() * 2usize);
+    }
+    if sent[slotIn(seq, sent.len())].used && !sent[slotIn(seq, sent.len())].acked {
       // Nothing came back for a packet a whole ring ago: count it lost
       self.noteFate(true);
     }
-    let slot = &mut sent[usize.from(seq) % ringSize];
+    let slot = &mut sent[slotIn(seq, sent.len())];
     slot.seq = seq;
     slot.used = true;
     slot.acked = false;
@@ -843,7 +870,7 @@ pub struct ConnectionCore {
     let delay = self.resendDelay();
     var id = relOldest;
     while id != relNext && nRel < 255u8 {
-      let s = &mut rel[usize.from(id) % ringSize];
+      let s = &mut rel[slotIn(id, rel.len())];
       if s.used && !s.acked && (s.lastSent < 0i64 || t - s.lastSent >= delay) {
         let need = reliableOverhead + relLen(s);
         if need > budget {break;}
@@ -1002,8 +1029,7 @@ pub struct ConnectionCore {
     // It is ours
     let t = now.nanos();
     lastRecv = t;
-    let slot = usize.from(pseq) % ringSize;
-    if seen[slot] == u32.from(pseq) + 1u32 {
+    if seen[slotIn(pseq, seen.len())] == u32.from(pseq) + 1u32 {
       st.packetsDuplicate = st.packetsDuplicate + 1u64;
       self.dropParsed();
       return true;
@@ -1014,8 +1040,12 @@ pub struct ConnectionCore {
       self.dropParsed();
       return true;
     }
-    seen[slot] = u32.from(pseq) + 1u32;
-    if !gotAny || seqNewer(pseq, remoteSeq) {
+    // The history is the ringSize packets up to the newest, this one counted:
+    // the ring grows while this packet's slot holds another of them
+    let newest = !gotAny || seqNewer(pseq, remoteSeq);
+    self.fitSeen(pseq, if newest {pseq} else {remoteSeq});
+    seen[slotIn(pseq, seen.len())] = u32.from(pseq) + 1u32;
+    if newest {
       remoteSeq = pseq;
       gotAny = true;
     }
@@ -1074,9 +1104,11 @@ pub struct ConnectionCore {
       relDeliver = relDeliver + 1u16;
       self.deliverReliable(events);
     } else {
-      // The ids waiting are all inside the window, which is the ring's size,
-      // so a slot that is taken is this id's own copy, already kept
-      let slot = &mut recv[usize.from(id) % ringSize];
+      // The ids waiting are all fewer ahead than the ring has slots, so a slot
+      // that is taken is this id's own copy, already kept
+      // (the ring grows first if this id is as far ahead as it has slots)
+      if ahead >= recv.len() {self.growRecv(ringTarget(recv.len(), ahead));}
+      let slot = &mut recv[slotIn(id, recv.len())];
       match slot {
         case is None { *slot = Some[List[u8]](copyBytes(data.view())); }
         else {}
@@ -1087,7 +1119,7 @@ pub struct ConnectionCore {
   // Give the application every reliable message that is next in order
   fn deliverReliable(self: &mut, events: &mut List[CoreEvent]) {
     while true {
-      match recv[usize.from(relDeliver) % ringSize].take() {
+      match recv[slotIn(relDeliver, recv.len())].take() {
         case let Some(d) {
           events.push(CoreEvent.Reliable(copyPacket(d.view()).freeze()));
           st.reliableDelivered = st.reliableDelivered + 1u64;
@@ -1124,7 +1156,7 @@ pub struct ConnectionCore {
     self.resolve();
     // Release the acknowledged messages at the front of the queue
     while relOldest != relNext {
-      let s = &mut rel[usize.from(relOldest) % ringSize];
+      let s = &mut rel[slotIn(relOldest, rel.len())];
       if !s.acked {break;}
       s.used = false;
       s.data = None[Bytes];
@@ -1135,7 +1167,7 @@ pub struct ConnectionCore {
   }
 
   fn ackOne(self: &mut, seq: u16, t: i64) {
-    let slot = &mut sent[usize.from(seq) % ringSize];
+    let slot = &mut sent[slotIn(seq, sent.len())];
     if !slot.used || slot.seq != seq || slot.acked {return;}
     slot.acked = true;
     let sentAt = slot.sentAt;
@@ -1145,7 +1177,7 @@ pub struct ConnectionCore {
       // The message is still queued (a later ack of an old packet may name
       // one already released and its slot reused)
       if usize.from(id - relOldest) < usize.from(relNext - relOldest) {
-        let m = &mut rel[usize.from(id) % ringSize];
+        let m = &mut rel[slotIn(id, rel.len())];
         if m.used && m.id == id {m.acked = true;}
       }
       k = k + 1usize;
@@ -1173,7 +1205,7 @@ pub struct ConnectionCore {
   // the newest ack (more than the 33 an ack covers) that no ack can come
   fn resolve(self: &mut) {
     while scan != nextSeq {
-      let slot = &sent[usize.from(scan) % ringSize];
+      let slot = &sent[slotIn(scan, sent.len())];
       if slot.used && slot.seq == scan {
         if slot.acked {
           self.noteFate(false);
@@ -1183,7 +1215,7 @@ pub struct ConnectionCore {
           return;
         }
         // Its fate is counted once: the slot is free
-        sent[usize.from(scan) % ringSize].used = false;
+        sent[slotIn(scan, sent.len())].used = false;
       }
       scan = scan + 1u16;
     }
@@ -1193,5 +1225,108 @@ pub struct ConnectionCore {
   fn noteFate(self: &mut, lost: bool) {
     let x = if lost {65536i64} else {0i64};
     lossFx = lossFx + (x - lossFx) / 64i64;
+  }
+
+  // ------------------------------------------------------------------
+  // Growing the rings
+  // ------------------------------------------------------------------
+  // Each ring is a List of a power of two slots, made at ringStart and grown
+  // here, never shrunk. A grow makes the room once (reserve, then the empty
+  // slots), then moves each live entry from its slot to its slot in the larger
+  // ring by swapping it with the empty slot there: an entry's id has the same
+  // low bits at both sizes, so its new slot is its old one or one past the old
+  // end, and no two entries meet. What is live, and so what a ring grows for:
+  //   sent   a packet 'used', not yet resolved: from 'scan' to the newest sent
+  //   seen   a packet of the history: the ringSize up to the newest received
+  //   rel    a message from relOldest to relNext
+  //   recv   a message parked, fewer ahead of relDeliver than the ring has slots
+  // At ringSize each ring is as before this growth: a slot's holder is replaced.
+
+  fn growSent(self: &mut, m: usize) {
+    let n = sent.len();
+    sent.reserve(m - n);
+    var i = n;
+    while i < m {
+      sent.push(SentSlot(0u16, false, false, 0i64, List[u16]()));
+      i = i + 1usize;
+    }
+    var s = 0usize;
+    while s < n {
+      if sent[s].used {
+        let to = slotIn(sent[s].seq, m);
+        if to != s {sent.swap(s, to);}
+      }
+      s = s + 1usize;
+    }
+  }
+
+  fn growSeen(self: &mut, m: usize) {
+    let n = seen.len();
+    seen.reserve(m - n);
+    var i = n;
+    while i < m {
+      seen.push(0u32);
+      i = i + 1usize;
+    }
+    var s = 0usize;
+    while s < n {
+      let v = seen[s];
+      if v != 0u32 {
+        let to = slotIn(u16.from(v - 1u32), m);
+        if to != s {seen.swap(s, to);}
+      }
+      s = s + 1usize;
+    }
+  }
+
+  // Before packet 'pseq' is recorded, with 'newest' the newest packet received
+  // counting it: grow while its slot holds an entry of the history (one at most
+  // ringSize behind 'newest'); an older entry is simply replaced, as it is at ringSize
+  fn fitSeen(self: &mut, pseq: u16, newest: u16) {
+    while seen.len() < ringSize {
+      let v = seen[slotIn(pseq, seen.len())];
+      if v == 0u32 || (newest - u16.from(v - 1u32)) >= u16.from(ringSize) {return;}
+      self.growSeen(seen.len() * 2usize);
+    }
+  }
+
+  // The messages waiting are the ids from relOldest to relNext, all in
+  // distinct slots (there are at most as many as slots)
+  fn growRel(self: &mut, m: usize) {
+    let n = rel.len();
+    rel.reserve(m - n);
+    var i = n;
+    while i < m {
+      rel.push(RelSlot(0u16, false, false, -1i64, None[Bytes], List[u8](), false));
+      i = i + 1usize;
+    }
+    var id = relOldest;
+    while id != relNext {
+      let from = slotIn(id, n);
+      let to = slotIn(id, m);
+      if from != to {rel.swap(from, to);}
+      id = id + 1u16;
+    }
+  }
+
+  // A slot holds no id: the id of what it holds is the one of the ids from
+  // relDeliver (the next in order, never parked) to relDeliver + n - 1 whose
+  // slot it is. Every one of those ids is moved, empty slots included
+  fn growRecv(self: &mut, m: usize) {
+    let n = recv.len();
+    recv.reserve(m - n);
+    var i = n;
+    while i < m {
+      recv.push(None[List[u8]]);
+      i = i + 1usize;
+    }
+    var ahead = 0usize;
+    while ahead < n {
+      let id = relDeliver + u16.from(ahead);
+      let from = slotIn(id, n);
+      let to = slotIn(id, m);
+      if from != to {recv.swap(from, to);}
+      ahead = ahead + 1usize;
+    }
   }
 }
