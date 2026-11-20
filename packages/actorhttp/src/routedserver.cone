@@ -1033,7 +1033,7 @@ pub actor ConnActor {
   // Move what the writes waiting hold into the protocol while it takes them, in order, a stream's at a time:
   // a write is answered when all its bytes are taken, a finish when the response is whole
   fn drainPends(self) {
-    var blocked = List[u32]();
+    var blocked = Dict[u32, bool]();     // a lookup, so a turn costs the pends, not the pends times the blocked streams
     var n = pends.len();
     while n > 0usize {
       n = n - 1usize;
@@ -1043,13 +1043,7 @@ pub actor ConnActor {
         self.answerClosed(p);
         continue;
       }
-      var isBlocked = false;
-      var k = 0usize;
-      while k < blocked.len() {
-        if blocked[k] == stream {isBlocked = true;}
-        k = k + 1usize;
-      }
-      if isBlocked {
+      if blocked.get(&stream) is Some {
         pends.push(p);
         continue;
       }
@@ -1081,7 +1075,7 @@ pub actor ConnActor {
         }
       }
       if refused {
-        blocked.push(stream);
+        blocked.insert(stream, true);
         pends.push(p);
       } else {
         let total = bytes.len;
