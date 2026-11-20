@@ -206,7 +206,7 @@ fn utf8Body() String {
   }
   i = 0usize;
   while i < 40000usize {
-    s.append("\u{20AC}");
+    s.append("€");
     i = i + 1usize;
   }
   s
@@ -232,13 +232,25 @@ fn main() i32 {
   let u8b = utf8Body();
   let u8Sum = checksum(u8b.view() as &Array[u8]);
   let u8Len = u64.from(u8b.len());
-  requireUInt(u8Len, 175535u64, "the UTF-8 body's length");
+  requireUInt(u8Len, 185535u64, "the UTF-8 body's length");
 
   expectStr(post(&mut c1, &mut a, &mut b, &mut lp, p1, pat.clone()).view(), expected(4000000u64, patSum).view(), "HTTP/1.1: 4 MB of i % 251 arrives unchanged");
   expectStr(post(&mut c1, &mut a, &mut b, &mut lp, p1, u8b.clone()).view(), expected(u8Len, u8Sum).view(), "HTTP/1.1: a piece ending inside a character arrives unchanged");
   expectStr(post(&mut c2, &mut a, &mut b, &mut lp, p2, pat.clone()).view(), expected(4000000u64, patSum).view(), "HTTP/2: 4 MB of i % 251 arrives unchanged");
   expectStr(post(&mut c2, &mut a, &mut b, &mut lp, p2, u8b.clone()).view(), expected(u8Len, u8Sum).view(), "HTTP/2: a piece ending inside a character arrives unchanged");
   expect(b.h2 == 2u64 && a.h2 == 0u64, "the second server's two requests came over HTTP/2, the first's over HTTP/1.1");
-  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  var rest = List[Event]();
+  var spin = 0u32;
+  while spin < 20u32 {
+    step(&mut c2, &mut a, &mut b, &mut lp, &uni rest, Instant.now() + Duration.fromMillis(10i64));
+    var j = 0usize;
+    while j < rest.len() {
+      if rest[j].kind == EventKind.Data {c2.release(rest[j].id, rest[j].buf.len());}
+      j = j + 1usize;
+    }
+    rest.clear();
+    spin = spin + 1u32;
+  }
+  expectUInt(stats().lent, 0u64,"every buffer back in the pool");
   done()
 }
