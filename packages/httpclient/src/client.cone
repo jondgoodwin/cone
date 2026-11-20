@@ -164,7 +164,7 @@ struct Limits {
   priorKnowledge: bool;      // http connections speak HTTP/2 from their first byte (the driver's h2PriorKnowledge)
   h3Origins: List[String];   // the origins (Url.origin) known to speak HTTP/3
   h3Timeout: Duration;
-  maxStreams: u32;           // streams the client puts on one HTTP/2 connection (the peer's own limit may be lower)
+  maxStreams: u32;           // streams the client puts on one HTTP/2 connection (the peer's own limit may be lower; no limit of ours is 4294967295)
 }
 
 // An origin: its pool and its queue
@@ -224,13 +224,12 @@ pub struct Client {
     if cfg.maxPerOrigin == 0u32 || cfg.maxTotal == 0u32 {
       panic("httpclient: maxPerOrigin and maxTotal are at least 1", file, line);
     }
-    if cfg.maxStreamsPerConnection == 0u32 {
-      panic("httpclient: maxStreamsPerConnection is at least 1", file, line);
-    }
     let given, http2, maxPerOrigin, maxTotal, idleTimeout, maxLifetime, maxQueued, maxRetries, maxRedirects,
-      userAgent, var conn, http3, http3Origins, h3Timeout, maxOrigins, maxStreams = cfg.(tlsConfig, http2, maxPerOrigin,
+      userAgent, var conn, http3, http3Origins, h3Timeout, maxOrigins, givenStreams = cfg.(tlsConfig, http2, maxPerOrigin,
       maxTotal, idleTimeout, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, conn, http3, http3Origins,
       http3Timeout, maxOrigins, maxStreamsPerConnection);
+    // 0 is no limit of the client's own (the peer's still holds)
+    let maxStreams = if givenStreams == 0u32 {4294967295u32} else {givenStreams};
     conn.protocol.idleTimeout = idleTimeout;
     conn.h2IdleTimeout = idleTimeout;
     var tlsConfig = given;

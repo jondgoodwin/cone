@@ -492,6 +492,8 @@ struct ClientCore {
   fn takeDirty(self: &mut) List[u32] {
     var out = List[u32]();
     out <-> dirty;
+    // The sort is kept for a visit order that is the same each run; over loopback the order the
+    // origins are visited in does not show in what a test can observe
     out.sort();
     var live = List[u32]();
     var k = 0usize;
@@ -536,6 +538,8 @@ struct ClientCore {
           let first = self.firstWaiting(r.oi);
           if first != noEntry {
             let k = self.keyOf(first);
+            // Guard kept though no test sees it fire: every change to an origin's first fetch also marks the
+            // origin dirty, so its entry is re-keyed on the visit before it can reach the top stale
             if (k <=> top.0) == 0i32 {return r.oi;}
             oheap.pop();
             oheap.push(k, r);
@@ -625,6 +629,8 @@ struct ClientCore {
         case let Some(pr) {
           if !self.idleRefLive(&pr.1) {continue;}
           let oi = (pconns.borrowAt(pr.1.pc).unwrap()).origin;
+          // Guard kept though the scheduler never meets it: dispatch onto idle connections runs before
+          // opening, so no origin has both an idle connection and waiters
           if (origins.borrowAt(oi).unwrap()).wlive == 0u32 {
             found = pr.1.pc;
             held.push(pr);

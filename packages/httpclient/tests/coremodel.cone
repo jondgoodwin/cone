@@ -1091,6 +1091,44 @@ fn streamLimit(lp: &mut Loop) {
   stopAll(&mut svs, lp);
 }
 
+// maxStreamsPerConnection of 0: no limit of the client's own, so the peer's (150 here) is the one that holds
+fn streamNoLimit(lp: &mut Loop) {
+  var scfg = httpconn.Config.make();
+  scfg.h2PriorKnowledge = true;
+  scfg.h2.maxConcurrentStreams = 150u32;
+  var svs = List[Srv]();
+  svs.push(serverWith(scfg));
+  let port = listen(&mut svs[0usize], lp);
+  var cfg = Config.make();
+  cfg.conn.h2PriorKnowledge = true;
+  cfg.conn.h2.assumedPeerStreams = 150u32;   // as the server's own SETTINGS will say
+  cfg.maxStreamsPerConnection = 0u32;
+  var cl = Client.make(cfg);
+  var k = 0usize;
+  while k < 170usize {
+    cl.send(lp, Request.get(url(port, "/hang").view()), Sink.Here(1u64));
+    k = k + 1usize;
+  }
+  var peak = 0usize;
+  var out = List[Event]();
+  let until = Instant.now() + Duration.fromMillis(600i64);
+  while Instant.now() < until {
+    stepN(&mut cl, &mut svs, lp, &uni out, until);
+    out.clear();
+    let held = (&svs[0usize]).reqs.len();
+    if held > peak {peak = held;}
+  }
+  expectUInt(u64.from(peak), 150u64, "a limit of 0, 170 at once to a server that allows 150: more than the default 100, up to the peer's");
+  expectUInt(u64.from(cl.queued()), 20u64, "...the other twenty wait");
+  expectUInt((&svs[0usize]).accepted, 1u64, "...on one connection");
+  var fs = finals();
+  cl.abortAll(lp);
+  collectN(&mut cl, &mut svs, lp, &mut fs, 170u64);
+  expectUInt(fs.cancelled, 170u64, "...and every one answered once");
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(30i64));
+  stopAll(&mut svs, lp);
+}
+
 fn main() i32 {
   var lp = Loop.mustMake();
   var svs = List[Srv]();
@@ -1119,6 +1157,7 @@ fn main() i32 {
   idleOrder(&mut lp);
   capSparesBusy(&mut lp);
   streamLimit(&mut lp);
+  streamNoLimit(&mut lp);
 
   stopAll(&mut svs, &mut lp);
   expectUInt(stats().lent, 0u64, "every buffer back in the pool");
