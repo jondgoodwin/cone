@@ -1,0 +1,136 @@
+// A connection accepted as the server closes (the "silent failure" this guards: a late accept after 'close()'
+// made a connection actor when the server had nothing live, so 'closed()' had answered and nothing reset
+// it). An idle routed server is closed while a client connects, 200 times, the connect and the close
+// started together with a varying gap. Checked, every time: 'closed()' answers; the connection actors
+// are 0 when it does and stay 0 (the client keeps its socket open until the check is made, so a connection
+// made late would not end by itself: its linger is 400 ms); and afterwards the server actor is freed.
+
+mod routedlate;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import http use *;
+import actors;
+import aio;
+import actorhttp use Server, ServerConfig, Exchange, HttpRoutes, HttpHandler;
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+actor Idle is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.text(200u16, "never");
+  }
+}
+
+fn makeIdle() HttpHandler {
+  let h = Idle();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+
+  pub async fn waitClosed(self, var done: OneshotSender[u64]) {
+    let closed = await server.closed();
+    done.send(if closed {1u64} else {0u64});
+  }
+
+  pub async fn release(self) {
+    var gone = Server.none();
+    gone <-> server;
+  }
+}
+
+// Connects, and keeps its socket until told to let go
+actor Raw {
+  sock: aio.Socket;
+
+  pub async fn open(self, port: u16) {
+    match await aio.connect(SocketAddr.localhost(port)) {
+      case var Ok(s) {sock <-> s;}
+      case let Err(e) {}
+    }
+  }
+
+  pub async fn letGo(self, var done: OneshotSender[u64]) {
+    var gone = aio.Socket.none();
+    gone <-> sock;
+    done.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  let rounds = 200u32;
+  var closedOk = 0u32;
+  var quiet = 0u32;
+  var stayed = 0u32;
+  var i = 0u32;
+  while i < rounds {
+    var ptx: Sender[u16];
+    var prx: Receiver[u16];
+    ptx, prx = Channel[u16].make();
+    var cfg = ServerConfig.make().routes(HttpRoutes.make().handle("", "/", &makeIdle));
+    cfg.conn.lingerTimeout = Duration.fromMillis(400i64);
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(cfg, ptx.clone());
+    let port = prx.recv() || 0u16;
+    let raw = Raw(aio.Socket.none());
+    raw.open(port);
+    // the connect and the close are close together; the gap varies from round to round
+    var spin = 0u32;
+    while spin < (i % 40u32) * 500u32 {spin = spin + 1u32;}
+    acceptor.stop();
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    acceptor.waitClosed(tx);
+    if (rx.recv() || 99u64) == 1u64 {closedOk = closedOk + 1u32;}
+    // 'closed()' has answered: nothing may be live now, nor made after it
+    if actorhttp.liveConnActors() == 0u64 {quiet = quiet + 1u32;}
+    thread.sleep(Duration.fromMillis(20i64));
+    if actorhttp.liveConnActors() == 0u64 {stayed = stayed + 1u32;}
+    var tx2: OneshotSender[u64];
+    var rx2: OneshotReceiver[u64];
+    tx2, rx2 = Oneshot[u64].make();
+    raw.letGo(tx2);
+    rx2.recv();
+    acceptor.release();
+    i = i + 1u32;
+  }
+  say("rounds", u64.from(rounds));
+  say("closed() answered", u64.from(closedOk));
+  say("no connection actor when it did", u64.from(quiet));
+  say("none made after it", u64.from(stayed));
+  var waited = 0u32;
+  while actorhttp.liveServerActors() > 0u64 && waited < 300u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  say("server actors left", actorhttp.liveServerActors());
+  say("connection actors left", actorhttp.liveConnActors());
+  finalAll();
+  0
+}

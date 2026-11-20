@@ -1,0 +1,141 @@
+// The shutdown deadline reaches a connection that has no I/O outstanding (the "silent failure" this guards:
+// the deadline cancelled only the connections' pending reads and writes, so a connection whose request sat
+// with a handler that awaits a backend, its read not parked, was never ended and 'closed()' waited for it).
+// A handler holds its request for 5 s (it is awaiting a backend); the shutdown deadline is 300 ms. A raw
+// client sends the request and waits. Checked: the handler holds the request; 'closed()' answers within
+// 1.5 s of 'close()' (not 5 s); the client's connection ends. The client half-closes after its request, so
+// the connection has no read parked (the peer's end has been seen) and no write: nothing for the deadline's
+// cancel of the connections' I/O to reach.
+
+mod routeddeadline;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import iobuf use IoBuf;
+import http use *;
+import actors;
+import aio;
+import actorhttp use Server, ServerConfig, Exchange, HttpRoutes, HttpHandler;
+
+let holding: Atomic[u64];       // handlers holding a request
+
+fn @initpure init() {
+  holding = Atomic[u64].of(0u64);
+}
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// Holds its request while it awaits a "backend" (a 5 s sleep), then answers
+actor Backend is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    holding.add(1u64);
+    _ = await aio.sleep(Duration.fromSeconds(5i64));
+    ex.text(200u16, "late");
+  }
+}
+
+fn makeBackend() HttpHandler {
+  let h = Backend();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+
+  pub async fn waitClosed(self, var done: OneshotSender[u64]) {
+    let closed = await server.closed();
+    done.send(if closed {1u64} else {0u64});
+  }
+}
+
+// Sends a request, then reads until its connection ends (or 8 s)
+actor Raw {
+  pub async fn run(self, port: u16, var done: Sender[u64]) {
+    match await aio.connect(SocketAddr.localhost(port)) {
+      case var Ok(s) {
+        let text = "GET /backend HTTP/1.1\r\nHost: h\r\n\r\n";
+        var b = IoBuf(text.len());
+        b.append(text);
+        let w = await s.write(b);
+        // the client has sent all it will: with the peer's end seen, the connection has no read outstanding
+        // (nor a write: the request is in the handler's hands), so only an abort message can end it
+        let c = await s.closeWrite();
+        done.send(1u64);
+        let until = Instant.now() + Duration.fromSeconds(8i64);
+        var ended = false;
+        while !ended && Instant.now() < until {
+          let r = await s.readIn(IoBuf(4096usize), aio.IoLimits.until(until));
+          match r {
+            case let Ok(x) {if x.len() == 0usize {ended = true;}}
+            case let Err(e) {ended = true;}
+          }
+        }
+        done.send(if ended {1u64} else {0u64});
+      }
+      case let Err(e) {
+        done.send(0u64);
+        done.send(0u64);
+      }
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let cfg = ServerConfig.make().routes(HttpRoutes.make().handle("", "/backend", &makeBackend))
+    .shutdownWithin(Duration.fromMillis(300i64));
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  var dtx: Sender[u64];
+  var drx: Receiver[u64];
+  dtx, drx = Channel[u64].make();
+  let raw = Raw();
+  raw.run(port, dtx.clone());
+  say("request sent", drx.recv() || 98u64);
+  var waited = 0u32;
+  while holding.load() < 1u64 && waited < 500u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  say("handler holding the request", holding.load());
+  let t0 = Instant.now();
+  acceptor.stop();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  acceptor.waitClosed(tx);
+  say("closed() answered", rx.recv() || 99u64);
+  let took = t0.elapsed().nanos() / 1000000i64;
+  say("within 1.5 s of close() (the request waits 5 s)", if took < 1500i64 {1u64} else {0u64});
+  say("client's connection ended", drx.recv() || 98u64);
+  finalAll();
+  0
+}
