@@ -1,0 +1,345 @@
+// A request body sent to a sink on a routed server (ServerConfig.streamBodies, RequestBody.to): the sink gets the
+// connection's own buffers, and the credit of each returns to the connection when the sink gives it back, as a
+// 'read' releases its piece (routedserver.cone, xBodyTo). Checked, over HTTP/1.1:
+//   1. a 12,000,000-byte POST through a slow sink (it naps at every buffer): every byte arrives, in order, one
+//      clean end, and the buffers lent (iobuf's lentBytes, the client's own sends in this process too: about
+//      2 MiB) stay under 4 MiB, far under the body: the connection's credit returns only as the sink gives
+//      buffers back, so the peer stops at its window. A credit released as the piece arrives lets the whole
+//      body queue (a lent peak of 12 MB: the mutant this guards against);
+//   2. a sink that stops its source at its 2nd buffer: its end is Failed with its own reason (the client may
+//      retry a cut POST, so the sink may be ended once per try), it took far less than the body, and the
+//      buffers are home;
+//   3. a sink that stops its source past a limit with BodyError.tooLarge: the client is answered 413, the
+//      sink's end is Failed (isTooLarge), the buffers are home;
+//   4. the connection and server still serve afterwards: a 20,000-byte body through a quick sink arrives whole.
+
+mod routedsink;
+
+import stdio use *;
+import libc;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String, AnyError, bytesEqual;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Response, Request;
+import actors;
+import aio;
+import actorhttp use BodyError, Client, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
+import stages use ChunkSink, ChunkSource, Ending;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+// (ASCII: httpclient's body send slices a String as a str, which refuses a cut inside a character)
+fn byteAt(i: usize) u8 {u8.from(97usize + i % 26usize)}
+
+struct Tally {
+  pub bytes: Atomic[u64];
+  pub bad: Atomic[u64];        // bytes that are not the test's
+  pub peakLent: Atomic[u64];   // the most bytes the connection had lent, seen at the sink
+  pub clean: Atomic[u64];      // clean ends at the sink
+  pub failed: Atomic[u64];     // failed ends at the sink
+  pub reasonOk: Atomic[u64];   // ...of them, with the reason "enough"
+  pub tooLarge: Atomic[u64];   // ...of them, a BodyError that isTooLarge
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  tally.bytes.store(0u64);
+  tally.bad.store(0u64);
+  tally.peakLent.store(0u64);
+  tally.clean.store(0u64);
+  tally.failed.store(0u64);
+  tally.reasonOk.store(0u64);
+  tally.tooLarge.store(0u64);
+}
+
+fn ended() u64 {tally.clean.load() + tally.failed.load()}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+fn lent() u64 {u64.from(iobuf.stats().lentBytes)}
+
+// The buffers are home but the one a connection kept open reads into (16,384 bytes)
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() > 16384u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() <= 16384u64
+}
+
+fn makeBody(n: usize) String {
+  var b = String.withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    b.appendByte(byteAt(i));
+    i = i + 1usize;
+  }
+  b
+}
+
+// The sink the handlers send the body to. mode 0: takes every buffer (napping 'napMs' at each) and gives it
+// back; 1: stops its source at its 2nd buffer ("enough"); 2: stops its source with BodyError.tooLarge once
+// it has taken 100,000 bytes
+actor Sink is ChunkSink {
+  up: Option[ChunkSource];
+  mode: u32;
+  napMs: i64;
+  n: u64;
+  total: usize;
+
+  pub fn init(self: &new, mode: u32, napMs: i64) {
+    *self = Self(up: None[ChunkSource], mode: mode, napMs: napMs, n: 0u64, total: 0usize);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    n = n + 1u64;
+    let v = c.view();
+    var k = 0usize;
+    while k < v.len {
+      if v[k] != byteAt(total + k) {tally.bad.add(1u64);}
+      k = k + 1usize;
+    }
+    total = total + c.len();
+    tally.bytes.add(u64.from(c.len()));
+    let now = lent();
+    if now > tally.peakLent.load() {tally.peakLent.store(now);}
+    if napMs > 0i64 {thread.sleep(Duration.fromMillis(napMs));}
+    match &up {
+      case let &Some(u) {
+        u.giveBack(c);
+        if mode == 1u32 && n == 2u64 {u.stop(Ending.Failed(AnyError.msg("enough")));}
+        if mode == 2u32 && total >= 100000usize {u.stop(Ending.Failed(AnyError.from(BodyError.tooLarge())));}
+      }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    match how {
+      case is Finished {tally.clean.add(1u64);}
+      case let Failed(e) {
+        var text = String();
+        {
+          var w = text.textOut();
+          e.report(&uni w);
+        }
+        if bytesEqual(text.view(), "enough") {tally.reasonOk.add(1u64);}
+        match e.downcastRef[BodyError]() {
+          case let Some(be) {if be.isTooLarge() {tally.tooLarge.add(1u64);}}
+          else {}
+        }
+        tally.failed.add(1u64);
+      }
+    }
+  }
+}
+
+// Sends the body to a sink; answers once the sink has ended (a request the server answers itself, or cuts,
+// is not answered again)
+actor Sender1 is HttpHandler {
+  mode: u32;
+  napMs: i64;
+
+  fn init(self: &new, mode: u32, napMs: i64) {*self = Self(mode: mode, napMs: napMs);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    let before = ended();
+    ex.body().to(Sink(mode, napMs));
+    var waited = 0u32;
+    while ended() == before && waited < 20000u32 {
+      let _nap = await aio.sleep(Duration.fromMillis(3i64));
+      waited = waited + 1u32;
+    }
+    var t = String.from("took ");
+    t.appendUInt(tally.bytes.load());
+    ex.text(200u16, t.view());
+  }
+}
+
+fn makeSlow() HttpHandler {
+  let h = Sender1(0u32, 10i64);
+  let r: HttpHandler = h;
+  r
+}
+
+fn makeQuick() HttpHandler {
+  let h = Sender1(0u32, 0i64);
+  let r: HttpHandler = h;
+  r
+}
+
+fn makeStop() HttpHandler {
+  let h = Sender1(1u32, 0i64);
+  let r: HttpHandler = h;
+  r
+}
+
+fn makeLimit() HttpHandler {
+  let h = Sender1(2u32, 0i64);
+  let r: HttpHandler = h;
+  r
+}
+
+fn post(port: u16, path: &str, n: usize) Request {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  var r = Request.get(u.view());
+  r.method = Method.Post;
+  r.body = makeBody(n);
+  r
+}
+
+fn status(r: &Result[Response, FetchError]) u64 {
+  match r {
+    case let &Ok(ok) {u64.from(ok.status)}
+    case let &Err(e) {0u64}
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+
+  pub async fn waitClosed(self, var done: OneshotSender[u64]) {
+    let closed = await server.closed();
+    done.send(if closed {1u64} else {0u64});
+  }
+}
+
+// One POST; its status goes to the oneshot
+actor Poster {
+  client: Client;
+
+  pub async fn run(self, port: u16, path: String, n: usize, var done: OneshotSender[u64]) {
+    let r = await client.send(post(port, path.view(), n));
+    done.send(status(&r));
+  }
+}
+
+fn postStatus(client: &Client, port: u16, path: &str, n: usize) u64 {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  let p = Poster(client.clone());
+  p.run(port, String.from(path), n, tx);
+  rx.recv() || 999u64
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let router = HttpRoutes.make().handle("", "/slow", &makeSlow).handle("", "/quick", &makeQuick)
+    .handle("", "/stop", &makeStop).handle("", "/limit", &makeLimit);
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(ServerConfig.make().streamBodies().routes(router), ptx.clone());
+  let port = prx.recv() || 0u16;
+  let client = Client.standard();
+
+  // 1. a body far larger than the credit window through a slow sink
+  reset();
+  let s1 = postStatus(&client, port, "/slow", 12000000usize);
+  printStr("a 12,000,000-byte body through a slow sink: answered 200 ");
+  printStr(yes(s1 == 200u64));
+  printStr(", every byte ");
+  printStr(yes(tally.bytes.load() == 12000000u64));
+  printStr(", in order ");
+  printStr(yes(tally.bad.load() == 0u64));
+  printStr(", one clean end ");
+  printStr(yes(tally.clean.load() == 1u64 && tally.failed.load() == 0u64));
+  printStr(", never held whole (lent peak under 4 MiB) ");
+  printStr(yes(tally.peakLent.load() < 4194304u64));
+  printStr("\n...every buffer home: ");
+  printStr(yes(allHome()));
+  printStr("\n");
+
+  // 2. a sink that stops early
+  reset();
+  let s2 = postStatus(&client, port, "/stop", 4000000usize);
+  waitFor(&tally.failed, 1u64);
+  printStr("a sink that stops at its 2nd buffer: one Failed end ");
+  printStr(yes(tally.failed.load() >= 1u64 && tally.clean.load() == 0u64));
+  printStr(", its own reason, every time (the client may retry) ");
+  printStr(yes(tally.reasonOk.load() == tally.failed.load()));
+  printStr(", it took far less than the body ");
+  printStr(yes(tally.bytes.load() < 1000000u64));
+  printStr(", no 413 ");
+  printStr(yes(s2 != 413u64));
+  printStr("\n...every buffer home: ");
+  printStr(yes(allHome()));
+  printStr("\n");
+
+  // 3. a body too large for its sink
+  reset();
+  let s3 = postStatus(&client, port, "/limit", 4000000usize);
+  waitFor(&tally.failed, 1u64);
+  printStr("a body too large for its sink: the client sees 413 ");
+  printStr(yes(s3 == 413u64));
+  printStr(", the sink's end is Failed, too large ");
+  printStr(yes(tally.failed.load() == 1u64 && tally.tooLarge.load() == 1u64 && tally.clean.load() == 0u64));
+  printStr("\n...every buffer home: ");
+  printStr(yes(allHome()));
+  printStr("\n");
+
+  // 4. the server still serves, on a fresh connection
+  reset();
+  let s4 = postStatus(&client, port, "/quick", 20000usize);
+  printStr("a 20,000-byte body through a quick sink afterwards: answered 200 ");
+  printStr(yes(s4 == 200u64));
+  printStr(", every byte ");
+  printStr(yes(tally.bytes.load() == 20000u64 && tally.bad.load() == 0u64));
+  printStr(", one clean end ");
+  printStr(yes(tally.clean.load() == 1u64 && tally.failed.load() == 0u64));
+  printStr("\n...every buffer home: ");
+  printStr(yes(allHome()));
+  printStr("\n");
+
+  acceptor.stop();
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    acceptor.waitClosed(tx);
+    printStr("closed ");
+    printStr(yes((rx.recv() || 99u64) == 1u64));
+    printStr("\n");
+  }
+  var waited = 0u32;
+  while actorhttp.liveConnActors() > 0u64 && waited < 300u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  printStr("live connection actors ");
+  printUInt(actorhttp.liveConnActors());
+  printStr("\n");
+  finalAll();
+  0
+}
