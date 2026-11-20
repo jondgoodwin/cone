@@ -72,7 +72,8 @@ def run_test(shim_obj: Path, archive: Path, test: str, tag: str, extra: dict, sc
     (run / "src").mkdir(parents=True)
     (run / "tests").mkdir()
     shutil.copy(pkg / "congo.toml", run)
-    for f in (pkg / "src").iterdir():
+    srcdir = archive.parent / "pkg" / "src"      # (row 580) a Cone-side mutant's own source: the test compiles it in too
+    for f in (srcdir if srcdir.is_dir() else pkg / "src").iterdir():
         shutil.copy(f, run / "src")
     for f in (pkg / "tests").glob(f"{test}.*"):
         shutil.copy(f, run / "tests")

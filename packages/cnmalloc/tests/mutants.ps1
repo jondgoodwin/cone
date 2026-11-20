@@ -102,7 +102,8 @@ function Run-Test([string]$libdir, [string]$test, [string]$tag, [hashtable]$extr
   if (Test-Path $run) { Remove-Item -Recurse -Force $run }
   New-Item -ItemType Directory -Force "$run\src", "$run\tests" | Out-Null
   Copy-Item "$pkg\congo.toml" $run
-  Copy-Item "$pkg\src\*" "$run\src"
+  $srcdir = if (Test-Path "$libdir\pkg\src") { "$libdir\pkg\src" } else { "$pkg\src" }     # (row 580) a Cone-side mutant's own source: the test compiles it in too
+  Copy-Item "$srcdir\*" "$run\src"
   Copy-Item "$pkg\tests\$test.*" "$run\tests"
   $log = Join-Path $Scratch "log-$test-$tag.txt"
   $save = @{}
