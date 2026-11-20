@@ -1,0 +1,212 @@
+// A server connection (ServerConn) over TLS, driven with no socket: a TLS
+// client session (the tls package's Stream) on the other side, bytes moved
+// between them by hand. HTTP/1.1 where ALPN chose it, and HTTP/2 where the
+// client offered h2: the handshake's own bytes come out of 'fill' before any
+// protocol byte, the protocol is chosen once the handshake is open, a request
+// and its response go through the records, and a shutdown ends with the
+// layer's close_notify taken and written before 'done' says the connection is over.
+
+mod sconntls;
+
+import testing use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http2;
+import httpconn use *;
+import tls;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn names(h2: bool) List[String] {
+  var l = List[String]();
+  if h2 {l.push(String.from("h2"));}
+  l.push(String.from("http/1.1"));
+  l
+}
+
+fn piece(text: &str) IoBuf {
+  var b = IoBuf(text.len());
+  b.append(text);
+  b
+}
+
+// A server connection over a TLS server session, and the client's session beside it
+fn make(h2: bool, now: Instant) (ServerConn, tls.Stream) {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  var scfg = tls.ServerConfig.make(&certFile, &keyFile);
+  scfg.alpn = names(true);
+  let server = match tls.Server.make(scfg) {
+    case let Ok(s) {s}
+    else {panic("the test's TLS server context", srcFile(), srcLine())}
+  };
+  var ccfg = tls.ClientConfig.make();
+  ccfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  ccfg.offline = true;
+  ccfg.alpn = names(h2);
+  let client = match tls.Client.make(ccfg) {
+    case let Ok(c) {c}
+    else {panic("the test's TLS client context", srcFile(), srcLine())}
+  };
+  var cfg = Config.make();
+  let srv = ServerConn.make(cfg, Some[Uni[Layer]](Uni[tls.Stream](server.stream())), now);
+  (srv, client.stream("localhost"))
+}
+
+// Both directions until neither has bytes. The client's HTTP/2 core, when it has one, speaks through its session
+fn pump(cl: &mut tls.Stream, c2: &mut http2.Connection, useH2: bool, srv: &mut ServerConn, now: Instant) usize {
+  var all = 0usize;
+  var round = 0u32;
+  while round < 20u32 {
+    var moved = 0usize;
+    if useH2 {
+      var a = c2.pollTransmit(now);
+      while true {
+        match a.popFront() {
+          case let Some(b) {cl.plainIn(b);}
+          else {break;}
+        }
+      }
+    }
+    while true {
+      let b = cl.wireOut(now);
+      if b.len() == 0usize {break;}
+      moved = moved + b.len();
+      srv.wireIn(b, now);
+    }
+    srv.fill(now);
+    var out = Chain.make(unbounded);
+    let n = srv.takeWire(&mut out);
+    while true {
+      match out.popFront() {
+        case let Some(b) {cl.wireIn(b, now);}
+        else {break;}
+      }
+    }
+    srv.wireSent(n);
+    moved = moved + n;
+    if useH2 {
+      while true {
+        let p = cl.plainOut();
+        if p.len() == 0usize {break;}
+        c2.handleInput(p, now);
+      }
+    }
+    all = all + moved;
+    if moved == 0usize {break;}
+    round = round + 1u32;
+  }
+  all
+}
+
+fn http1(now: Instant) {
+  let s0, c0 = make(false, now);
+  var srv = s0;
+  var cl = c0;
+  var none = http2.Connection.client(http2.Config.make(), now);
+  expect(!srv.isOpen(), "not open before the handshake");
+  expectUInt(u64.from(srv.readRoom() > 0usize), 1u64, "reads from the first byte: the handshake");
+  cl.plainIn(piece("GET /tls HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+  pump(&mut cl, &mut none, false, &mut srv, now);
+  expect(srv.isOpen(), "open once the handshake is done");
+  expect(!srv.isHttp2(), "ALPN: HTTP/1.1");
+  match srv.next(now) {
+    case is Request {}
+    else {expect(false, "the request, through the records");}
+  }
+  expectStr(srv.request().target.view(), "/tls", "its target");
+  let r = srv.response();
+  r.status = 200u16;
+  srv.respond(0u32, BodyLength.sized(5u64));
+  srv.sendData(0u32, piece("hello"));
+  srv.finish(0u32);
+  pump(&mut cl, &mut none, false, &mut srv, now);
+  var got = String();
+  while true {
+    let p = cl.plainOut();
+    if p.len() == 0usize {break;}
+    got.appendBytes(p.view());
+  }
+  let text = got.view() as &str;
+  expect(text.len() > 5usize && &text[0usize ..< 15usize] == "HTTP/1.1 200 OK", "the response arrived through the records");
+  expect(&text[text.len() - 5usize ..< text.len()] == "hello", "with its body");
+  // A shutdown ends with the layer's goodbye
+  match srv.next(now) {
+    case is End {}
+    else {expect(false, "the request's end");}
+  }
+  srv.shutdown();
+  expect(!srv.done(now), "not over: the close_notify is still to be written");
+  pump(&mut cl, &mut none, false, &mut srv, now);
+  match srv.next(now) {
+    case is Closed {}
+    else {expect(false, "the protocol is over");}
+  }
+  expect(srv.done(now), "over once the close_notify has been written");
+}
+
+fn http2case(now: Instant) {
+  let s0, c0 = make(true, now);
+  var srv = s0;
+  var cl = c0;
+  var c2 = http2.Connection.client(http2.Config.make(), now);
+  var h = RequestHead.make("GET", "/h2", "localhost");
+  h.scheme = String.from("https");
+  let s = c2.sendRequest(h, BodyLength());
+  pump(&mut cl, &mut c2, true, &mut srv, now);
+  expect(srv.isHttp2(), "ALPN: h2");
+  var stream = 0u32;
+  match srv.next(now) {
+    case let Request(q) {stream = q.stream;}
+    else {expect(false, "the request, through the records");}
+  }
+  expectUInt(u64.from(stream), u64.from(s), "on the client's stream");
+  expectStr(srv.request().target.view(), "/h2", "its target");
+  let r = srv.response();
+  r.status = 200u16;
+  srv.respond(stream, BodyLength.sized(2u64));
+  srv.sendData(stream, piece("h2"));
+  srv.finish(stream);
+  pump(&mut cl, &mut c2, true, &mut srv, now);
+  var body = String();
+  var going = true;
+  while going {
+    match c2.pollEvent() {
+      case let Data(d) {
+        body.appendBytes(d.buf.view());
+        c2.release(d.stream, d.buf.len());
+      }
+      case is Response {}
+      case is End {}
+      else {going = false;}
+    }
+  }
+  expectStr(body.view(), "h2", "the response's body on the stream");
+}
+
+fn main() i32 {
+  let now = Instant.now();
+  http1(now);
+  http2case(now);
+  done()
+}
