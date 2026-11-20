@@ -53,6 +53,7 @@ import iobuf use IoBuf;
 import diag;
 import ioerror use IoErrorKind;
 import noise use pcg;
+import posix;
 
 fn faultIs(c: &iocore.Completion, want: JobFault) bool {
   match faultOf(c) {
@@ -82,26 +83,59 @@ struct ThreadEntry {
   flags: u32;
 }
 
+// The process's open handles (Windows) or open file descriptors (Linux: the entries of /proc/self/fd, one of
+// them the listing's own, the same before and after)
 fn handleCount() u32 {
-  var n = 0u32;
-  GetProcessHandleCount(GetCurrentProcess(), &mut n as *u32);
-  n
+  #if #os == .windows {
+    var n = 0u32;
+    GetProcessHandleCount(GetCurrentProcess(), &mut n as *u32);
+    n
+  } #else {
+    var n = 0u32;
+    let dir = posix.opendir("/proc/self/fd");
+    if dir == null { return 0u32; }
+    while posix.readdir(dir) != null { n = n + 1u32; }
+    posix.closedir(dir);
+    n
+  }
 }
 
 // Whether this process has a thread whose id is 'id'
 fn hasThread(id: u32) bool {
-  let snap = CreateToolhelp32Snapshot(4u32, 0u32);    // TH32CS_SNAPTHREAD
-  let me = GetCurrentProcessId();
-  var e = ThreadEntry(28u32, 0u32, 0u32, 0u32, 0i32, 0i32, 0u32);
-  var found = false;
-  var more = Thread32First(snap, &mut e as *ThreadEntry) != 0i32;
-  while more {
-    if e.owner == me && e.thread == id { found = true; }
-    e.size = 28u32;
-    more = Thread32Next(snap, &mut e as *ThreadEntry) != 0i32;
+  #if #os == .windows {
+    let snap = CreateToolhelp32Snapshot(4u32, 0u32);    // TH32CS_SNAPTHREAD
+    let me = GetCurrentProcessId();
+    var e = ThreadEntry(28u32, 0u32, 0u32, 0u32, 0i32, 0i32, 0u32);
+    var found = false;
+    var more = Thread32First(snap, &mut e as *ThreadEntry) != 0i32;
+    while more {
+      if e.owner == me && e.thread == id { found = true; }
+      e.size = 28u32;
+      more = Thread32Next(snap, &mut e as *ThreadEntry) != 0i32;
+    }
+    CloseHandle(snap);
+    found
+  } #else {
+    // Linux: a thread of the process has a folder /proc/self/task/<id>
+    var path = Array[u8, 64]() <- fill 0u8;
+    let p = &mut path as *u8;
+    let prefix = "/proc/self/task/";
+    var at = 0usize;
+    while at < prefix.len() { p[at] = prefix[at]; at = at + 1usize; }
+    var digits = Array[u8, 12]() <- fill 0u8;
+    var count = 0usize;
+    var rest = id;
+    while rest > 0u32 || count == 0usize {
+      digits[count] = u8.from(48u32 + rest % 10u32);
+      rest = rest / 10u32;
+      count = count + 1usize;
+    }
+    while count > 0usize { count = count - 1usize; p[at] = digits[count]; at = at + 1usize; }
+    let f = libc.fopen(cstr.fromPtr(p), "rb");
+    if f == null { return false; }
+    libc.fclose(f);
+    true
   }
-  CloseHandle(snap);
-  found
 }
 
 fn preference() u32 {
