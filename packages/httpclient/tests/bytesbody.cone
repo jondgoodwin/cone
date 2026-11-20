@@ -1,0 +1,244 @@
+// A String request body goes out byte for byte, whatever it holds (row 592). Client.sendBody takes each piece
+// of the body as bytes, so a piece that ends inside a multi-byte character, or a body that is not UTF-8 at all,
+// is sent as it is; taken as a 'str' slice it panicked ("a range out of order"). A loopback server on the
+// client's Loop (httpconn's driver) answers each POST with the length and a checksum of the bytes it read; the
+// test computes the same from the bytes it sent. Over HTTP/1.1 and over HTTP/2 (prior knowledge, cleartext):
+//   - a body of 4,000,000 bytes, byte i being i % 251 (not UTF-8);
+//   - a body whose first piece ends inside the 3-byte character that follows 65,535 'a's.
+
+mod bytesbody;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, forever;
+import http use *;
+import httpconn;
+import httpclient use *;
+
+const tokSrv = 100u64;
+const modulus = 1000000007u64;
+
+struct Srv {
+  pub drv: httpconn.Driver;
+  pub bytes: u64;
+  pub sum: u64;
+  pub h2: u64;
+}
+
+fn server(cfg: httpconn.Config) Srv {
+  Srv(drv: httpconn.Driver.make(cfg), bytes: 0u64, sum: 0u64, h2: 0u64)
+}
+
+fn listen(sv: &mut Srv, lp: &mut Loop) u16 {
+  var port = 0u16;
+  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
+    case let Ok(r) {
+      match sv.drv.localAddr(lp, r) {
+        case let Ok(a) {port = a.port();}
+        case let Err(e) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  port
+}
+
+// The checksum, one byte on: order-sensitive
+fn fold(sum: u64, b: u8) u64 {(sum * 131u64 + u64.from(b) + 1u64) % modulus}
+
+fn checksum(v: &Array[u8]) u64 {
+  var sum = 0u64;
+  var i = 0usize;
+  while i < v.len {
+    sum = fold(sum, v[i]);
+    i = i + 1usize;
+  }
+  sum
+}
+
+fn serve(sv: &mut Srv, e: &mut httpconn.Event) {
+  let kind = e.kind;
+  if kind == httpconn.EventKind.Request {
+    sv.bytes = 0u64;
+    sv.sum = 0u64;
+    if e.request.version == Version.Http2 {sv.h2 = sv.h2 + 1u64;}
+  } else if kind == httpconn.EventKind.Data {
+    let v = e.buf.view();
+    var i = 0usize;
+    while i < v.len() {
+      sv.sum = fold(sv.sum, v[i]);
+      i = i + 1usize;
+    }
+    sv.bytes = sv.bytes + u64.from(v.len());
+    sv.drv.release(e.req, e.buf.len());
+  } else if kind == httpconn.EventKind.End {
+    var b = String.from("len=");
+    b.appendUInt(sv.bytes);
+    b.append(" sum=");
+    b.appendUInt(sv.sum);
+    sv.drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(u64.from(b.len())));
+    var io = IoBuf(b.len());
+    io.append(b.view() as &Array[u8]);
+    sv.drv.sendData(e.req, io);
+    sv.drv.finish(e.req);
+  }
+}
+
+fn serveAll(sv: &mut Srv, lp: &mut Loop) {
+  var sevs = List[httpconn.Event]();
+  sv.drv.pump(lp, &uni sevs);
+  var k = 0usize;
+  while k < sevs.len() {
+    serve(sv, &mut sevs[k]);
+    k = k + 1usize;
+  }
+}
+
+// One turn of the loop for the client and the two servers (a: HTTP/1.1, b: HTTP/2 by prior knowledge)
+fn step(cl: &mut Client, a: &mut Srv, b: &mut Srv, lp: &mut Loop, out: &uni List[Event], until: Instant) {
+  cl.pump(lp, out);
+  serveAll(a, lp);
+  serveAll(b, lp);
+  var limit = until;
+  let w = cl.wakeAt();
+  if w < limit {limit = w;}
+  let wa = a.drv.wakeAt();
+  if wa < limit {limit = wa;}
+  let wb = b.drv.wakeAt();
+  if wb < limit {limit = wb;}
+  if out.len() > 0usize {limit = Instant();}
+  var comps = List[Completion]();
+  lp.poll(limit, &mut comps);
+  var k = 0usize;
+  while k < comps.len() {
+    let c = &mut comps[k];
+    if !cl.complete(lp, c) {
+      if !a.drv.complete(lp, c) {b.drv.complete(lp, c);}
+    }
+    k = k + 1usize;
+  }
+  comps.clear();
+  serveAll(a, lp);
+  serveAll(b, lp);
+  cl.pump(lp, out);
+}
+
+fn url(port: u16) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append("/echo");
+  u
+}
+
+// A piece of the pattern, bytes at..at+n
+fn piece(at: u64, n: usize) IoBuf {
+  var b = IoBuf(n);
+  let s = b.spare();
+  var i = 0usize;
+  while i < n {
+    s[i] = u8.from((at + u64.from(i)) % 251u64);
+    i = i + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+// POST body to port, driven to its answer: what the server said it read
+fn post(cl: &mut Client, a: &mut Srv, b: &mut Srv, lp: &mut Loop, port: u16, body: String) String {
+  var r = Request.make("POST", url(port).view());
+  r.body = body;
+  let id = cl.send(lp, r, Sink.Here(1u64));
+  var reply = String();
+  var status = 0u16;
+  var finals = 0u64;
+  var last = EventKind.Done;
+  var out = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(30i64);
+  while finals == 0u64 && Instant.now() < giveUp {
+    step(cl, a, b, lp, &uni out, giveUp);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      if e.id == id {
+        if e.kind == EventKind.Response {status = e.response.status;}
+        else if e.kind == EventKind.Data {reply.appendBytes(e.buf.view()); cl.release(e.id, e.buf.len());}
+        else if e.isTerminal() {finals = finals + 1u64; last = e.kind;}
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  requireUInt(finals, 1u64, "the POST has its final answer in time");
+  expect(last == EventKind.Done && status == 200u16, "the POST is answered 200, Done");
+  reply
+}
+
+// What the server should say of these bytes
+fn expected(n: u64, sum: u64) String {
+  var b = String.from("len=");
+  b.appendUInt(n);
+  b.append(" sum=");
+  b.appendUInt(sum);
+  b
+}
+
+// 4,000,000 bytes of i % 251
+fn patternBody() String {
+  var s = String();
+  var at = 0u64;
+  while at < 4000000u64 {
+    let n = usize.from(if 4000000u64 - at < 100000u64 {4000000u64 - at} else {100000u64});
+    s.appendBytes(piece(at, n).view());
+    at = at + u64.from(n);
+  }
+  s
+}
+
+// 65,535 'a's, then 3-byte characters (U+20AC): the first piece (65,536 bytes) ends after the first byte of one
+fn utf8Body() String {
+  var s = String();
+  var i = 0usize;
+  while i < 65535usize {
+    s.append("a");
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < 40000usize {
+    s.append("\u{20AC}");
+    i = i + 1usize;
+  }
+  s
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var bcfg = httpconn.Config.make();
+  bcfg.h2PriorKnowledge = true;
+  var a = server(httpconn.Config.make());
+  var b = server(bcfg);
+  let p1 = listen(&mut a, &mut lp);
+  let p2 = listen(&mut b, &mut lp);
+  require(p1 != 0u16 && p2 != 0u16, "both servers listen");
+  var c1 = Client.make(Config.make());
+  var pcfg = Config.make();
+  pcfg.conn.h2PriorKnowledge = true;
+  var c2 = Client.make(pcfg);
+
+  let pat = patternBody();
+  requireUInt(u64.from(pat.len()), 4000000u64, "the pattern body is 4,000,000 bytes");
+  let patSum = checksum(pat.view() as &Array[u8]);
+  let u8b = utf8Body();
+  let u8Sum = checksum(u8b.view() as &Array[u8]);
+  let u8Len = u64.from(u8b.len());
+  requireUInt(u8Len, 175535u64, "the UTF-8 body's length");
+
+  expectStr(post(&mut c1, &mut a, &mut b, &mut lp, p1, pat.clone()).view(), expected(4000000u64, patSum).view(), "HTTP/1.1: 4 MB of i % 251 arrives unchanged");
+  expectStr(post(&mut c1, &mut a, &mut b, &mut lp, p1, u8b.clone()).view(), expected(u8Len, u8Sum).view(), "HTTP/1.1: a piece ending inside a character arrives unchanged");
+  expectStr(post(&mut c2, &mut a, &mut b, &mut lp, p2, pat.clone()).view(), expected(4000000u64, patSum).view(), "HTTP/2: 4 MB of i % 251 arrives unchanged");
+  expectStr(post(&mut c2, &mut a, &mut b, &mut lp, p2, u8b.clone()).view(), expected(u8Len, u8Sum).view(), "HTTP/2: a piece ending inside a character arrives unchanged");
+  expect(b.h2 == 2u64 && a.h2 == 0u64, "the second server's two requests came over HTTP/2, the first's over HTTP/1.1");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}
