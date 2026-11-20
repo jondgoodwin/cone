@@ -99,8 +99,11 @@
 // so connections opened together each take their own, up to 8 kept for a
 // server; a TLS 1.2 session stays, shared by every connection resuming it.
 // A connection opened while another to the same server is still open
-// resumes, as long as a ticket is left; past 256 in all, the oldest go.
-// 'cachedSessions()' says how many are kept.
+// resumes, as long as a ticket is left; past 256 in all, the oldest ticket of
+// the server used longest ago goes (a name is used when a session is taken for
+// it or kept for it). The cache is by server name.
+// 'cachedSessions()' says how many are kept; 'cachedSessionsFor(name)', for
+// one server.
 //
 // VERIFIERS. Who decides that a server is who it claims to be:
 // - Verifier.platform(), the default: the operating system. On Windows the
@@ -362,6 +365,44 @@ pub struct ClientConfig {
     ClientConfig(verify: Verifier.platform(), alpn: alpn, minVersion: TlsVersion.Tls12,
       maxVersion: TlsVersion.Tls13, resume: true, backend: Backend.Auto,
       verifyLane: defaultVerifyLane(), offline: false)
+  }
+
+  // A text that is the same for two configs exactly when a Client made from
+  // either would behave alike: for a program that keeps one Client for each
+  // config, so its connections share one session cache and can resume
+  pub fn sharingKey(self: &) String {
+    var s = String();
+    s.append(if verify.kind == VerifyKind.Platform {"p"}
+      else if verify.kind == VerifyKind.Roots {"r"}
+      else if verify.kind == VerifyKind.Pinned {"n"}
+      else {"i"});
+    s.appendUInt(u64.from(verify.bundle.len()));
+    s.append(":");
+    s.append(verify.bundle.view());
+    s.appendUInt(u64.from(verify.pins.len()));
+    s.append(":");
+    var k = 0usize;
+    while k < verify.pins.len() {
+      s.appendUInt(u64.from(*verify.pins[k]));
+      s.append(",");
+      k = k + 1usize;
+    }
+    s.append(";");
+    k = 0usize;
+    while k < alpn.len() {
+      s.appendUInt(u64.from(alpn[k].len()));
+      s.append(":");
+      s.append(alpn[k].view());
+      k = k + 1usize;
+    }
+    s.append(if minVersion == TlsVersion.Tls12 {";12"} else {";13"});
+    s.append(if maxVersion == TlsVersion.Tls12 {"-12"} else {"-13"});
+    s.append(if resume {";r"} else {";f"});
+    s.append(if backend == Backend.Auto {";a"} else {";o"});
+    s.append(if offline {";off"} else {";on"});
+    s.append(";");
+    s.appendUInt(u64.from(verifyLane.id));
+    s
   }
 }
 

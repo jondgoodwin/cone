@@ -39,6 +39,8 @@ alias Streams = GenPool[StreamRec];   // a client's streamed responses
 alias Clients = GenPool[ClientRec];
 alias Conns = GenPool[ConnRec];
 alias Srvs = GenPool[SrvRec];
+alias TlsClients = Dict[String, tls.Client];   // connectSecure's contexts, by the config's sharingKey
+const maxTlsClients = 16usize;                 // configs kept; past it the table is cleared (live connections keep theirs)
 
 // A sink's token for a stream's fetch: this bit and the stream's slot. A
 // whole fetch's token is its wait slot alone
@@ -121,11 +123,12 @@ struct Service {
   conns: Conns;
   xwaits: XWaits;
   srvs: Srvs;       // the servers listening, each with a driver of its own
+  tlsClients: TlsClients;   // the TLS contexts of connectSecure, one for each config, so its connections can resume
 
   fn make() Service {
     Service(clients: Clients(4usize),
       drv: httpconn.Driver.make(httpconn.Config.make()), conns: Conns(16usize),
-      xwaits: XWaits(16usize), srvs: Srvs(4usize))
+      xwaits: XWaits(16usize), srvs: Srvs(4usize), tlsClients: TlsClients())
   }
 
 
@@ -606,17 +609,25 @@ struct ConnectJob {
       c.conn = sv.drv.connect(lp, name.view(), port, sink);
       return;
     }
-    match tls.Client.make(cfg) {
-      case let Ok(t) {
-        c.conn = sv.drv.connectWith(lp, name.view(), port, Uni[tls.Stream](t.stream(name.view())), sink);
-      }
-      case let Err(x) {
-        c.connecting = false;
-        answerConn(c, Err[Conn, FetchError](FetchError.failed(
-          httpclient.Failure.make(httpclient.Stage.Tls, x.osError, ErrorKind.Unsupported, (String() <- x).view()))));
-        sv.freeConn(slot);
+    // One tls.Client for each config, shared by every connection made with it:
+    // its session cache then lets a later connection to the same server resume
+    let key = cfg.sharingKey();
+    if !sv.tlsClients.contains(key.view()) {
+      match tls.Client.make(cfg) {
+        case let Ok(t) {
+          if sv.tlsClients.len() >= maxTlsClients {sv.tlsClients.clear();}
+          sv.tlsClients.insert(key.clone(), t);
+        }
+        case let Err(x) {
+          c.connecting = false;
+          answerConn(c, Err[Conn, FetchError](FetchError.failed(
+            httpclient.Failure.make(httpclient.Stage.Tls, x.osError, ErrorKind.Unsupported, (String() <- x).view()))));
+          sv.freeConn(slot);
+          return;
+        }
       }
     }
+    c.conn = sv.drv.connectWith(lp, name.view(), port, Uni[tls.Stream](sv.tlsClients[key.view()].stream(name.view())), sink);
   }
 }
 
