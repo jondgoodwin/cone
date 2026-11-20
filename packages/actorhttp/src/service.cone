@@ -39,7 +39,7 @@ alias Streams = GenPool[StreamRec];   // a client's streamed responses
 alias Clients = GenPool[ClientRec];
 alias Conns = GenPool[ConnRec];
 alias Srvs = GenPool[SrvRec];
-alias TlsClients = Dict[String, tls.Client];   // connectSecure's contexts, by the config's sharingKey
+alias TlsClients = Dict[tls.ClientConfig, tls.Client];   // connectSecure's contexts, by the config itself
 const maxTlsClients = 16usize;                 // configs kept; past it the table is cleared (live connections keep theirs)
 
 // A sink's token for a stream's fetch: this bit and the stream's slot. A
@@ -611,12 +611,11 @@ struct ConnectJob {
     }
     // One tls.Client for each config, shared by every connection made with it:
     // its session cache then lets a later connection to the same server resume
-    let key = cfg.sharingKey();
-    if !sv.tlsClients.contains(key.view()) {
-      match tls.Client.make(cfg) {
+    if !sv.tlsClients.contains(&cfg) {
+      match tls.Client.make(cfg.clone()) {
         case let Ok(t) {
           if sv.tlsClients.len() >= maxTlsClients {sv.tlsClients.clear();}
-          sv.tlsClients.insert(key.clone(), t);
+          sv.tlsClients.insert(cfg.clone(), t);
         }
         case let Err(x) {
           c.connecting = false;
@@ -627,7 +626,7 @@ struct ConnectJob {
         }
       }
     }
-    c.conn = sv.drv.connectWith(lp, name.view(), port, Uni[tls.Stream](sv.tlsClients[key.view()].stream(name.view())), sink);
+    c.conn = sv.drv.connectWith(lp, name.view(), port, Uni[tls.Stream](sv.tlsClients[&cfg].stream(name.view())), sink);
   }
 }
 

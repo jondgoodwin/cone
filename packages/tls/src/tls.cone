@@ -231,7 +231,7 @@
 mod tls;
 
 import libc;
-import collections use Deque, List, String;
+import collections use Deque, Dict, List, String;
 import sync use Arc, Mutex, Once;
 import time use Instant, Duration;
 import iobuf use IoBuf, Chain;
@@ -261,8 +261,20 @@ fn @initpure init() {
 // ---------------------------------------------------------------------------
 
 // A version of TLS
-pub enum TlsVersion {
-  Tls12, Tls13
+pub enum TlsVersion is Eq, Hash {
+  Tls12, Tls13;
+
+  pub fn `==`(self: &, o: &TlsVersion) bool {versionTag(self) == versionTag(o)}
+  pub fn hash(self: &, h: &mut Hasher) {h.writeU8(versionTag(self));}
+}
+
+// An enum's own '==' and 'hash' are written by hand: the compiler derives
+// neither for an enum (only for a struct)
+fn versionTag(v: &TlsVersion) u8 {
+  match *v {
+    case TlsVersion.Tls12 {0u8}
+    case TlsVersion.Tls13 {1u8}
+  }
 }
 
 fn versionNumber(v: TlsVersion) i32 {
@@ -271,14 +283,27 @@ fn versionNumber(v: TlsVersion) i32 {
 
 // Which library does the TLS. Auto is OpenSSL, the one built; a second
 // (SChannel, rustls) fits behind the same Session
-pub enum Backend {
-  Auto, OpenSsl
+pub enum Backend is Eq, Hash {
+  Auto, OpenSsl;
+
+  pub fn `==`(self: &, o: &Backend) bool {backendTag(self) == backendTag(o)}
+  pub fn hash(self: &, h: &mut Hasher) {h.writeU8(backendTag(self));}
+}
+
+fn backendTag(v: &Backend) u8 {
+  match *v {
+    case Backend.Auto {0u8}
+    case Backend.OpenSsl {1u8}
+  }
 }
 
 // Who decides that the server is who it claims to be (see the package's
 // header, VERIFIERS)
-pub enum VerifyKind {
+pub enum VerifyKind is Eq, Hash {
   Platform, Roots, Pinned, Insecure;
+
+  pub fn `==`(self: &, o: &VerifyKind) bool {kindTag(self) == kindTag(o)}
+  pub fn hash(self: &, h: &mut Hasher) {h.writeU8(kindTag(self));}
 
   // The kind's name, in lower case: 'platform'
   pub fn toText(self: &, out: &uni TextOut) {
@@ -290,8 +315,17 @@ pub enum VerifyKind {
   }
 }
 
+fn kindTag(v: &VerifyKind) u8 {
+  match *v {
+    case VerifyKind.Platform {0u8}
+    case VerifyKind.Roots {1u8}
+    case VerifyKind.Pinned {2u8}
+    case VerifyKind.Insecure {3u8}
+  }
+}
+
 // A verifier: its kind and what it holds
-pub struct Verifier {
+pub struct Verifier is Eq, Hash, Clone {
   pub kind: VerifyKind;
   bundle: String;       // Roots: the PEM bundle
   pins: List[u8];       // Pinned: 32 bytes for each key
@@ -348,7 +382,7 @@ fn hexDigit(c: u8) u32 {
 }
 
 // How a Client is made (see the package's header, CONFIGURATION)
-pub struct ClientConfig {
+pub struct ClientConfig is Eq, Hash, Clone {
   pub verify: Verifier;
   pub alpn: List[String];        // offered, in order
   pub minVersion: TlsVersion;
@@ -365,44 +399,6 @@ pub struct ClientConfig {
     ClientConfig(verify: Verifier.platform(), alpn: alpn, minVersion: TlsVersion.Tls12,
       maxVersion: TlsVersion.Tls13, resume: true, backend: Backend.Auto,
       verifyLane: defaultVerifyLane(), offline: false)
-  }
-
-  // A text that is the same for two configs exactly when a Client made from
-  // either would behave alike: for a program that keeps one Client for each
-  // config, so its connections share one session cache and can resume
-  pub fn sharingKey(self: &) String {
-    var s = String();
-    s.append(if verify.kind == VerifyKind.Platform {"p"}
-      else if verify.kind == VerifyKind.Roots {"r"}
-      else if verify.kind == VerifyKind.Pinned {"n"}
-      else {"i"});
-    s.appendUInt(u64.from(verify.bundle.len()));
-    s.append(":");
-    s.append(verify.bundle.view());
-    s.appendUInt(u64.from(verify.pins.len()));
-    s.append(":");
-    var k = 0usize;
-    while k < verify.pins.len() {
-      s.appendUInt(u64.from(*verify.pins[k]));
-      s.append(",");
-      k = k + 1usize;
-    }
-    s.append(";");
-    k = 0usize;
-    while k < alpn.len() {
-      s.appendUInt(u64.from(alpn[k].len()));
-      s.append(":");
-      s.append(alpn[k].view());
-      k = k + 1usize;
-    }
-    s.append(if minVersion == TlsVersion.Tls12 {";12"} else {";13"});
-    s.append(if maxVersion == TlsVersion.Tls12 {"-12"} else {"-13"});
-    s.append(if resume {";r"} else {";f"});
-    s.append(if backend == Backend.Auto {";a"} else {";o"});
-    s.append(if offline {";off"} else {";on"});
-    s.append(";");
-    s.appendUInt(u64.from(verifyLane.id));
-    s
   }
 }
 
