@@ -1,0 +1,204 @@
+// aio's name cache and the merging of lookups in flight (namecache.cone), the
+// numbers read from nameCacheStats() (aio's own counts, so the system's own
+// cache of names under them does not show):
+//
+// 1. The defaults: a success kept 30 s, a failure 5 s, 1,024 entries.
+// 2. Twenty lookups of one name at once, with both threads of the DNS lane
+//    held while they queue, then let go: one lookup on the system ('resolves'
+//    1), the other nineteen joined it or found its answer; every one Done.
+// 3. A lookup again: a hit, no new lookup; the same name with another port is
+//    another entry.
+// 4. A failure is kept: asked again at once it is a hit and fails the same;
+//    after its time (set to 300 ms for the test) it is looked up again.
+// 5. The entry bound: twenty names with a bound of 8: 8 kept, 12 evicted, the
+//    ones kept the ones used last; the last used is a hit, the first a new lookup.
+//
+// No network is needed: the names are addresses as text, "localhost" and a
+// name with a space in it.
+
+mod namecache;
+
+import testing use *;
+import thread;
+import collections use List, String;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import iobuf use IoBuf;
+import iocore use IoError, SocketAddr, Lane, Outcome;
+import actors;
+import aio use IoLimits;
+
+var gate: Atomic[u32];       // 0 while held jobs wait
+var started: Atomic[u32];    // held jobs that have begun to run
+
+fn @initpure init() {
+  gate = Atomic[u32].of(0u32);
+  started = Atomic[u32].of(0u32);
+}
+
+fn heldWork(arg: u64, buf: &mut IoBuf) Outcome {
+  started.add(1u32);
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while gate.load() == 0u32 && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  Outcome.Done(0usize)
+}
+
+fn take(rx: &mut Receiver[u64]) u64 { rx.recv() || 999u64 }
+
+// 1 for a lookup that found addresses, 0 for one that failed
+fn found(r: &Result[List[SocketAddr], IoError]) u64 {
+  match r {
+    case let &Ok(l) {if l.len() > 0usize {1u64} else {0u64}}
+    else {0u64}
+  }
+}
+
+actor Holder {
+  pub async fn hold(self) {
+    _ = await aio.onPool(Lane.dns(), &heldWork, 0u64, IoBuf(64usize));
+  }
+}
+
+actor Quick {
+  pub async fn look(self, out: Sender[u64]) {
+    let r = await aio.resolve("LocalHost", 80u16);
+    out.send(found(&r));
+  }
+}
+
+actor Driver {
+  pub async fn run(self, out: Sender[u64], qout: Sender[u64]) {
+    // 2. Twenty at once, the lane's two threads held
+    aio.clearNameCache();
+    let h1 = Holder();
+    let h2 = Holder();
+    h1.hold();
+    h2.hold();
+    var waited = 0u32;
+    while started.load() < 2u32 && waited < 500u32 {
+      let z = await aio.sleep(Duration.fromMillis(10i64));
+      waited = waited + 1u32;
+    }
+    var k = 0u64;
+    while k < 20u64 {
+      let q = Quick();
+      q.look(qout.clone());
+      k = k + 1u64;
+    }
+    waited = 0u32;
+    while Lane.dns().stats().queued < 20u32 && waited < 500u32 {
+      let z = await aio.sleep(Duration.fromMillis(10i64));
+      waited = waited + 1u32;
+    }
+    out.send(u64.from(Lane.dns().stats().queued));
+    gate.store(1u32);
+    var good = 0u64;
+    k = 0u64;
+    // (the twenty answer on 'out' too: the test's main counts them)
+    waited = 0u32;
+    while aio.nameCacheStats().resolves + aio.nameCacheStats().hits + aio.nameCacheStats().joined < 20u64 && waited < 1000u32 {
+      let z = await aio.sleep(Duration.fromMillis(10i64));
+      waited = waited + 1u32;
+    }
+    let s = aio.nameCacheStats();
+    out.send(s.resolves);
+    out.send(s.hits + s.joined);
+    // 3. Again: a hit; another port: another entry
+    let r1 = await aio.resolve("localhost", 80u16);
+    let s1 = aio.nameCacheStats();
+    out.send(found(&r1));
+    out.send(s1.resolves);
+    out.send(s1.hits + s1.joined - (s.hits + s.joined));
+    let r2 = await aio.resolve("localhost", 81u16);
+    out.send(found(&r2));
+    out.send(aio.nameCacheStats().resolves);
+    // 4. A failure is kept for its time
+    aio.configureNameCache(Duration.fromSeconds(30i64), Duration.fromMillis(300i64), 1024usize);
+    aio.clearNameCache();
+    let f1 = await aio.resolve("no such host", 80u16);
+    let f2 = await aio.resolve("no such host", 80u16);
+    let sf = aio.nameCacheStats();
+    out.send(found(&f1) + found(&f2));
+    out.send(sf.resolves);
+    out.send(sf.hits);
+    let z = await aio.sleep(Duration.fromMillis(450i64));
+    let f3 = await aio.resolve("no such host", 80u16);
+    out.send(found(&f3));
+    out.send(aio.nameCacheStats().resolves);
+    // 5. The bound on entries
+    aio.configureNameCache(Duration.fromSeconds(30i64), Duration.fromSeconds(5i64), 8usize);
+    aio.clearNameCache();
+    var i = 0u64;
+    while i < 20u64 {
+      var name = String.from("10.0.0.");
+      name.appendUInt(i);
+      let r = await aio.resolve(name.view(), 80u16);
+      good = good + found(&r);
+      i = i + 1u64;
+    }
+    let se = aio.nameCacheStats();
+    out.send(good);
+    out.send(u64.from(se.entries));
+    out.send(se.evicted);
+    out.send(se.resolves);
+    let last = await aio.resolve("10.0.0.19", 80u16);
+    let sl = aio.nameCacheStats();
+    out.send(sl.resolves);
+    let first = await aio.resolve("10.0.0.0", 80u16);
+    out.send(aio.nameCacheStats().resolves);
+    let eleven = await aio.resolve("10.0.0.11", 80u16);
+    out.send(aio.nameCacheStats().resolves);
+    aio.configureNameCache(Duration.fromSeconds(30i64), Duration.fromSeconds(5i64), 1024usize);
+    out.send(0u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  let d = aio.nameCacheStats();
+  expectUInt(u64.from(d.okFor.nanos() / 1000000i64), 30000u64, "a success is kept 30 s");
+  expectUInt(u64.from(d.failFor.nanos() / 1000000i64), 5000u64, "a failure 5 s");
+  expectUInt(u64.from(d.maxEntries), 1024u64, "1,024 entries");
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  var qtx: Sender[u64];
+  var qrx: Receiver[u64];
+  qtx, qrx = Channel[u64].make();
+  let driver = Driver();
+  driver.run(tx.clone(), qtx.clone());
+  expectUInt(take(&mut rx), 20u64, "twenty lookups of one name queued behind the held threads");
+  // The twenty's answers come first (each 1), then the driver's counts
+  var all = 0u64;
+  var k = 0u64;
+  while k < 20u64 {
+    all = all + take(&mut qrx);
+    k = k + 1u64;
+  }
+  expectUInt(all, 20u64, "all twenty found addresses");
+  expectUInt(take(&mut rx), 1u64, "...with one lookup on the system");
+  expectUInt(take(&mut rx), 19u64, "...the other nineteen joined it or found its answer");
+  expectUInt(take(&mut rx), 1u64, "a lookup again found addresses");
+  expectUInt(take(&mut rx), 1u64, "...with no new lookup");
+  expectUInt(take(&mut rx), 1u64, "...a hit");
+  expectUInt(take(&mut rx), 1u64, "the same name on another port found addresses");
+  expectUInt(take(&mut rx), 2u64, "...and was a lookup of its own");
+  expectUInt(take(&mut rx), 0u64, "a name with a space: both failed");
+  expectUInt(take(&mut rx), 1u64, "...one lookup");
+  expectUInt(take(&mut rx), 1u64, "...the second a hit, failing the same");
+  expectUInt(take(&mut rx), 0u64, "after its time it failed again");
+  expectUInt(take(&mut rx), 2u64, "...by a new lookup");
+  expectUInt(take(&mut rx), 20u64, "twenty distinct addresses found");
+  expectUInt(take(&mut rx), 8u64, "...with a bound of 8: 8 kept");
+  expectUInt(take(&mut rx), 12u64, "...12 evicted");
+  expectUInt(take(&mut rx), 20u64, "...twenty lookups made");
+  expectUInt(take(&mut rx), 20u64, "the last used is a hit: no new lookup");
+  expectUInt(take(&mut rx), 21u64, "the first used was evicted: a new lookup");
+  expectUInt(take(&mut rx), 22u64, "the eleventh was evicted too");
+  expectUInt(take(&mut rx), 0u64, "the driver ended");
+  finalAll();
+  expectUInt(aio.opStats().inUse, 0u64, "every record is dissolved");
+  done()
+}

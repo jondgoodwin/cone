@@ -181,25 +181,13 @@ actor Peer {
     if isInvalid(await held.sendTo(to, datagram(1u8))) {got.afterClose.store(1u64);}
 
     // 3. The same port bound again: the new socket takes a's slot; the old sender must not reach it
-    // a's close is a record the I/O thread takes after the jobs of its pass, and a bind is a job: with a's
-    // sends answered on the worker (nothing crossing behind the close), the bind can come first, and the
-    // port is still in use. It is tried again
+    // a's close is a record, and the I/O thread's pass starts records before jobs, so the bind finds the
+    // port free at once: no retry
     var c = UdpSocket.none();
-    var bound = false;
-    var tries = 0u32;
-    while !bound && tries < 200u32 {
-      var br = await aio.bindUdp(SocketAddr.localhost(pa));
-      match &mut br {
-        case var &mut Ok(ok) {
-          c <-> *ok;
-          bound = true;
-        }
-        else {}
-      }
-      if !bound {
-        let nap = await aio.sleep(Duration.fromMillis(5i64));
-        tries = tries + 1u32;
-      }
+    var br = await aio.bindUdp(SocketAddr.localhost(pa));
+    match &mut br {
+      case var &mut Ok(ok) {c <-> *ok;}
+      else {}
     }
     let pc = portOf(await c.localAddr());
     if pc == pa {got.rebound.store(1u64);}

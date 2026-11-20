@@ -623,7 +623,13 @@
 // stopped, and answers when it ends, except that a deadline answers TimedOut
 // at the deadline (past iocore's 1 ms grace) and the work goes on, its answer
 // dropped. A lane whose queue is full refuses a job at once (ResourceBusy:
-// ERROR_BUSY, EBUSY). The pool's lanes: 'resolve' uses the DNS lane (2 threads), 'stat'
+// ERROR_BUSY, EBUSY), but for the DNS lane, which keeps it waiting, holding no
+// thread, until there is room, or its cancel or deadline ends it (iocore's
+// LaneConfig.waitWhenFull). Names looked up by 'resolve' are kept and merged:
+// the lookups in flight for one name and port are one lookup, an answer is kept
+// 30 s (a failure 5 s, at most 1,024 entries, the one used longest ago going
+// first), 'nameCacheStats', 'configureNameCache' and 'clearNameCache' (namecache.cone).
+// The pool's lanes: 'resolve' uses the DNS lane (2 threads), 'stat'
 // and 'run' the general lane (4 threads). 'resolve' and 'stat' take a buffer
 // (IoBuf(n), made for the call) for iocore's op to carry its answer in; it goes
 // home with the answer. A run's request and its answer are in its record,
@@ -725,11 +731,11 @@ mod aio;
 
 import libc;
 import thread;
-import sync use Mutex;
+import sync use Mutex, Condvar;
 import collections use List, String;
 import iobuf use IoBuf, Chain;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending, issueNot, DatagramBatch, OpId, noSuchHandleCode, noMemoryCode;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, resolveWork, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending, issueNot, DatagramBatch, OpId, noSuchHandleCode, noMemoryCode;
 import path use Path;
 import process;
 import actors;
@@ -753,6 +759,7 @@ fn @initpure init() {
   countsAt = Atomic[usize].of(0usize);
   udpOn = Atomic[bool].of(false);
   udpWaiting = Atomic[u64].of(0u64);
+  nameCacheAt = Atomic[usize].of(0usize);
 }
 
 // A panic, reported at the line calling 'die'
@@ -1929,12 +1936,16 @@ fn ioMain(arg: IoArg) u32 {
           k = k + 1usize;
         }
         got.clear();
-        runJobs(h, lp);
+        // Program order: records before jobs, so a close queued before a
+        // bind frees its port first. With services hosted the order is
+        // serveHosts, records, jobs, then turnHosts
         if (*me).hosts.len() == 0usize {
           startRecs(r, lp);
+          runJobs(h, lp);
         } else {
           serveHosts(&mut (*me).hosts, lp);
           startRecs(r, lp);
+          runJobs(h, lp);
           (*me).until = turnHosts(&(*me).hosts, lp);
         }
       }
@@ -4008,6 +4019,8 @@ pub fn resolve(host: &str, port: u16 = 0u16) actors.Awaitable[Result[List[Socket
 pub fn resolveIn(host: &str, port: u16, lim: IoLimits) actors.Awaitable[Result[List[SocketAddr], IoError]] {
   let p = takeRec(opResolve, diag.kindCall, Handle.none(), lim);
   fillCall(&mut (*p).core, resolveOp(host, port, IoBuf(roomFor(host))));
+  // The lookup goes through the name cache (namecache.cone)
+  (*p).core.work = &resolveShared;
   recAwaitable[Result[List[SocketAddr], IoError]](p)
 }
 
