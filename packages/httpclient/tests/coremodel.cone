@@ -436,35 +436,53 @@ fn slot(f: &Finals, id: FetchId) usize {
   f.ids.len()
 }
 
+// The events handed out, counted: each fetch's final answer once, its data given back
+fn account(cl: &mut Client, fs: &mut Finals, out: &mut List[Event]) {
+  var k = 0usize;
+  while k < out.len() {
+    let id = (&out[k]).id;
+    let kind = (&out[k]).kind;
+    let held = (&out[k]).buf.len();
+    let term = (&out[k]).isTerminal();
+    k = k + 1usize;
+    let j = slot(fs, id);
+    if j < fs.ids.len() {
+      fs.after = fs.after + 1u64;
+      if term {fs.counts.set(j, *fs.counts[j] + 1u32);}
+      continue;
+    }
+    if kind == EventKind.Data {cl.release(id, held);}
+    if term {
+      fs.ids.push(id);
+      fs.counts.push(1u32);
+      fs.kinds.push(kind);
+      fs.ended.push(Instant.now());
+      if kind == EventKind.Done {fs.done = fs.done + 1u64;}
+      else if kind == EventKind.Cancelled {fs.cancelled = fs.cancelled + 1u64;}
+      else if kind == EventKind.TimedOut {fs.timedOut = fs.timedOut + 1u64;}
+      else {fs.failed = fs.failed + 1u64;}
+    }
+  }
+  out.clear();
+}
+
+// Drive for a while, counting the answers
+fn countFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, fs: &mut Finals, d: Duration) {
+  var out = List[Event]();
+  let until = Instant.now() + d;
+  while Instant.now() < until {
+    step(cl, sv, lp, &uni out, until);
+    account(cl, fs, &mut out);
+  }
+}
+
 // Drive until n final answers have come, counting each
 fn collect(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, fs: &mut Finals, n: u64) {
   var out = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while fs.done + fs.cancelled + fs.timedOut + fs.failed < n && Instant.now() < giveUp {
     step(cl, sv, lp, &uni out, giveUp);
-    var k = 0usize;
-    while k < out.len() {
-      let e = &mut out[k];
-      k = k + 1usize;
-      let j = slot(fs, e.id);
-      if j < fs.ids.len() {
-        fs.after = fs.after + 1u64;
-        if e.isTerminal() {fs.counts.set(j, *fs.counts[j] + 1u32);}
-        continue;
-      }
-      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
-      if e.isTerminal() {
-        fs.ids.push(e.id);
-        fs.counts.push(1u32);
-        fs.kinds.push(e.kind);
-        fs.ended.push(Instant.now());
-        if e.kind == EventKind.Done {fs.done = fs.done + 1u64;}
-        else if e.kind == EventKind.Cancelled {fs.cancelled = fs.cancelled + 1u64;}
-        else if e.kind == EventKind.TimedOut {fs.timedOut = fs.timedOut + 1u64;}
-        else {fs.failed = fs.failed + 1u64;}
-      }
-    }
-    out.clear();
+    account(cl, fs, &mut out);
   }
   requireUInt(fs.done + fs.cancelled + fs.timedOut + fs.failed, n, "every final answer in time");
 }
@@ -757,9 +775,9 @@ fn modelRound(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, port: u16, seed: u64
     o = o + 1usize;
   }
   // The deadlines pass while the requests wait behind the blocker
-  idleFor(cl, sv, lp, Duration.fromMillis(120i64));
-  cl.cancel(lp, blocker);
   var fs = finals();
+  countFor(cl, sv, lp, &mut fs, Duration.fromMillis(120i64));
+  cl.cancel(lp, blocker);
   collect(cl, sv, lp, &mut fs, u64.from(n) + 1u64);
   expectStr(orderSince(sv, first).view(), expectedOrder(&m).view(), label);
   expectUInt(fs.timedOut, timed, "...the deadlined ones TimedOut, waiting");
