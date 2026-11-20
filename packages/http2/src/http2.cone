@@ -193,7 +193,10 @@
 // Appendix A) is a different 99, so what it shares is the shape, not the
 // data. A DynamicTable is a list of entries newest first, its size the sum
 // of their sizes, kept under its maximum by evicting the oldest; an entry
-// larger than the maximum empties it.
+// larger than the maximum empties it. The entries' bytes live in one byte ring
+// (twice the maximum size, made at the first add and again, whole, when the
+// maximum is raised past it) and the entries in a ring of their own: an entry
+// added or evicted allocates nothing once they are made.
 //
 // HUFFMAN. RFC 7541's Appendix B code, encoded and decoded a byte at a
 // time and needing no state between strings (see huffman.cone's header).
@@ -383,6 +386,22 @@
 // enforced meanwhile (at most settingsTimeout, 10 s).
 // httpconn's read credit (readCredit) is not this budget: it bounds the input
 // held unparsed, which release never touches, so it is not drawn on.
+//
+// BLOCK CREDIT. The budget counts bytes, but each DATA frame arrives in a block
+// of the pool's, 4 KiB at the least, so frames of a byte that a program polls
+// and sits on would hold a block each. Data events are charged by the capacity
+// of the blocks they queue, given back as the program releases their bytes (or
+// when the stream leaves the table). A small frame joins its own stream's last
+// Data event still queued (found by a sequence number the stream keeps, however
+// many streams interleave). At the block limit, four times the credit budget
+// plus 4 KiB a stream (a stream within its windows holds under four times its
+// bytes: the pool's classes are 4 KiB, 16 KiB, 64 KiB...), the connection parses
+// no more frames and readCredit is 0, so a driver stops reading the socket and
+// TCP slows the peer; releases open it again at the next pollEvent. The limit
+// bounds a peer that cuts its frames small, and is not a share: a slow
+// program's stream within its windows never meets it. The peer's end (an empty
+// handleInput) that arrives while frames wait behind the limit is acted on once
+// they are parsed.
 //
 // EVENTS. 'pollEvent' gives one Event each call, every one naming its
 // stream (0 for the connection's own), until NeedData (nothing more until

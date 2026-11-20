@@ -12,7 +12,8 @@ const protocolWindow = 65535u32;             // every window's size until SETTIN
 const shutdownPing = 0x73687574646f776eu64;  // "shutdown": the PING that times a graceful GOAWAY
 const firstWindow = 16384u64;                // a new stream is raised to this window at once, as the spare allows (the window before budgets)
 pub const defaultCreditBudget = 1048576u64;  // 1 MiB: a connection's receive credit, which its streams' windows share
-pub const minStreamFloor = 2048u64;          // a stream's announced window at the least, whatever the budget
+const smallestBlock = 4096usize;             // the buffer pool's smallest block, which a DATA frame of a byte takes whole
+pub const minStreamFloor = 2048u64;         // a stream's announced window at the least, whatever the budget
 
 // The client's connection preface (section 3.4)
 fn clientPreface() &str {"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"}
@@ -68,6 +69,19 @@ fn streamFloor(cfg: &Config) u32 {
   if f < minStreamFloor {f = minStreamFloor;}
   if f > u64.from(cfg.streamWindow) {f = u64.from(cfg.streamWindow);}
   u32.from(f)
+}
+
+// The capacity of received DATA blocks the connection holds unreleased before
+// it stops reading (BLOCK CREDIT, at 'emitData'). A peer within its windows
+// never reaches it: the credit budget bounds the bytes it has sent unreleased
+// (at least two whole frames of them), a block the pool gives is under four
+// times the frame's size (its classes are 4 KiB, 16 KiB, 64 KiB...), and each
+// stream may hold one block more for its last, part-filled one
+fn blockCreditLimit(cfg: &Config) usize {
+  var bytes = cfg.creditBudget;
+  let least = 2u64 * u64.from(cfg.frames.maxFrameSize);
+  if bytes < least {bytes = least;}
+  usize.from(4u64 * bytes + creditStreams(cfg) * u64.from(smallestBlock))
 }
 
 // What the budget leaves for streams to grow by once every stream has its floor
@@ -147,16 +161,31 @@ struct Stream {
   expect: u64;              // Content-Length, when 'expectSet'
   expectSet: bool;
   got: u64;
+
+  // Received DATA held in blocks (see BLOCK CREDIT at 'emitData')
+  hasData: bool;            // a Data event of its is queued: 'lastData' is its sequence number
+  lastData: u64;            // the sequence number (events popped before it, and its place in the queue) of its last Data event
+  held: usize;              // the capacity of the blocks its Data events hold, charged to the connection until released
 }
 
-fn newStream(id: u32, ours: bool, sendWindow: i64, recvWindow: i64) Stream {
+// The lists a stream keeps for its life, which the connection keeps for the
+// next: emptied when a stream leaves the table, taken again by the next
+struct StreamLists {
+  fields: List[HeaderField];
+  trailerFields: List[HeaderField];
+  outQ: Deque[IoBuf];
+}
+
+fn newStream(id: u32, ours: bool, sendWindow: i64, recvWindow: i64, lists: StreamLists) Stream {
+  let fields, trailerFields, outQ = lists.(fields, trailerFields, outQ);
   Stream(id: id, ours: ours, opened: false, counted: false, sendDone: false, recvDone: false,
     wireClosed: false, resetByUs: false, announced: false, stopAfter: false, events: 0usize,
-    fields: List[HeaderField](), trailerFields: List[HeaderField](), hasTrailers: false,
-    bodyFollows: false, sized: false, left: 0u64, outQ: Deque[IoBuf](), outOff: 0usize,
+    fields: fields, trailerFields: trailerFields, hasTrailers: false,
+    bodyFollows: false, sized: false, left: 0u64, outQ: outQ, outOff: 0usize,
     outBytes: 0usize, finishing: false, sendWindow: sendWindow, ready: false, responded: false,
     headRequest: false, recvWindow: recvWindow, drawn: 0u64, unacked: 0usize, outstanding: 0usize,
-    finalSeen: false, noBody: false, expect: 0u64, expectSet: false, got: 0u64)
+    finalSeen: false, noBody: false, expect: 0u64, expectSet: false, got: 0u64,
+    hasData: false, lastData: 0u64, held: 0usize)
 }
 
 // A stream recently closed, remembered so a frame on it can be told from
@@ -250,7 +279,13 @@ pub struct Connection is Move {
   localOpen: u32;            // ours open on the wire
   peerLive: u32;             // the peer's in the table
 
+  kept: List[StreamLists];   // what streams that left the table kept, for the next to take (at most maxConcurrentStreams)
   events: Deque[Event];
+  popped: u64;               // events taken from 'events' so far: an event's sequence number is that and its place in the queue
+  blockHeld: usize;          // the capacity of the DATA blocks the streams hold, unreleased (see BLOCK CREDIT at 'emitData')
+  blockLimit: usize;         // the most blockHeld lets the connection read on from
+  stalled: bool;             // reading stopped at blockLimit with input not yet parsed
+  eofPending: bool;          // the peer's end came while stalled: acted on once the input is parsed
   pingsOut: u32;
 
   // The end
@@ -291,6 +326,8 @@ pub struct Connection is Move {
     if cfg.maxConcurrentStreams == 0u32 {panic("http2: Config.maxConcurrentStreams of 0", file, line);}
     let fl = streamFloor(&cfg);
     let sp = creditSpare(&cfg);
+    let slots = usize.from(cfg.maxConcurrentStreams);
+    let blockLimit = blockCreditLimit(&cfg);
     var c = Connection(clientRole: client, cfg: cfg, now: now,
       input: Chain.make(cfg.maxBuffered),
       reader: if client {FrameReader.client(cfg.frames)} else {FrameReader.server(cfg.frames)},
@@ -302,11 +339,15 @@ pub struct Connection is Move {
       peerWindow: i64.from(protocolWindow), peerMaxHeaderList: 0xFFFFFFFFu32,
       connSend: i64.from(protocolWindow), connRecv: i64.from(protocolWindow), connUnacked: 0usize,
       floor: fl, spare: sp, reserve: sp / 2u64,
-      streams: Streams(64usize), byId: Dict[u32, StreamId](),
-      ready: Deque[u32](), waiting: Deque[u32](), gone: Deque[Gone](),
+      streams: Streams(slots), byId: Dict[u32, StreamId].withCapacity(slots),
+      ready: Deque[u32].withCapacity(slots),
+      waiting: Deque[u32].withCapacity(if client {cfg.maxQueuedRequests} else {0usize}),
+      gone: Deque[Gone].withCapacity(usize.from(cfg.maxConcurrentStreams) * 2usize + 33usize),
       goneMax: usize.from(cfg.maxConcurrentStreams) * 2usize + 32usize,
       nextLocal: if client {1u32} else {2u32}, lastLocal: 0u32, lastPeer: 0u32,
-      localOpen: 0u32, peerLive: 0u32, events: Deque[Event](), pingsOut: 0u32,
+      localOpen: 0u32, peerLive: 0u32, kept: List[StreamLists](),
+      events: Deque[Event](), popped: 0u64, blockHeld: 0usize, blockLimit: blockLimit,
+      stalled: false, eofPending: false, pingsOut: 0u32,
       goAwaySent: false, goAwayLast: maxStreamId, shutdownPinged: false,
       peerGoAway: false, peerLast: maxStreamId, failed: false, closed: false, noBuffer: false,
       peerResets: Budget(0u32, now), localResets: Budget(0u32, now),
@@ -348,7 +389,8 @@ pub struct Connection is Move {
     now = at;
     let n = buf.len();
     if n == 0usize {
-      self.onEof();
+      // With frames still unparsed behind the block credit, the end waits for them
+      if stalled && !failed && !closed {eofPending = true;} else {self.onEof();}
       return;
     }
     if failed || closed {return;}
@@ -412,8 +454,11 @@ pub struct Connection is Move {
 
   // The next event (see the package's header, EVENTS)
   pub fn pollEvent(self: &mut) Event {
+    // Reading stopped at blockLimit: on again once the program has released enough
+    if stalled && blockHeld < blockLimit {self.process();}
     match events.popFront() {
       case let Some(e) {
+        popped = popped + 1u64;
         let id = (&e).streamId();
         if id != 0u32 {self.eventTaken(id);}
         return e;
@@ -433,6 +478,7 @@ pub struct Connection is Move {
   // How many more bytes handleInput takes now
   pub fn readCredit(self: &) usize {
     if failed || closed || eof {return 0usize;}
+    if blockHeld >= blockLimit {return 0usize;}      // BLOCK CREDIT: back-pressure, the socket is not read
     if input.len() >= cfg.maxBuffered {0usize} else {cfg.maxBuffered - input.len()}
   }
 
@@ -444,6 +490,12 @@ pub struct Connection is Move {
     if slot.isNone() {return;}
     let s = streams.borrowMut(slot).unwrap();
     let k = if n > s.outstanding {s.outstanding} else {n};
+    // The blocks' capacity charged for them goes back in proportion (all of it with the last byte)
+    if s.held > 0usize {
+      let back = if k >= s.outstanding {s.held} else {usize.from(u64.from(s.held) * u64.from(k) / u64.from(s.outstanding))};
+      s.held = s.held - back;
+      blockHeld = blockHeld - back;
+    }
     s.outstanding = s.outstanding - k;
     s.unacked = s.unacked + k;
     if s.recvDone {self.shrink(s);}
@@ -551,7 +603,7 @@ pub struct Connection is Move {
     requestFields(&head, &body, &mut f, file, line);
     let id = nextLocal;
     nextLocal = nextLocal + 2u32;
-    let slot = streams.add(newStream(id, true, peerWindow, i64.from(floor)));
+    let slot = streams.add(newStream(id, true, peerWindow, i64.from(floor), self.takeLists()));
     byId.insert(id, slot);
     let s = streams.borrowMut(slot).unwrap();
     s.fields = f;
@@ -785,9 +837,22 @@ pub struct Connection is Move {
       }
       if prefaceLeft > 0usize {return;}
     }
+    stalled = false;
     while !failed && !closed {
+      // Blocks held to the limit: no frame is parsed (each DATA frame's block
+      // costs its capacity), and the driver is given no credit to read more
+      if blockHeld >= blockLimit {
+        stalled = true;
+        return;
+      }
       match reader.next(&mut input) {
-        case is NeedData {return;}
+        case is NeedData {
+          if eofPending {
+            eofPending = false;
+            self.onEof();
+          }
+          return;
+        }
         case let Got(g) {self.onFrame(g.frame);}
         case let Failed(f) {self.onFrameError(f.error);}
       }
@@ -1050,7 +1115,7 @@ pub struct Connection is Move {
           self.streamError(id, ErrorCode.ProtocolError, "a body shorter than its Content-Length");
           return;
         }
-        let slot2 = streams.add(newStream(id, false, peerWindow, i64.from(floor)));
+        let slot2 = streams.add(newStream(id, false, peerWindow, i64.from(floor), self.takeLists()));
         byId.insert(id, slot2);
         peerLive = peerLive + 1u32;
         streamsOpened = streamsOpened + 1u64;
@@ -1506,31 +1571,52 @@ pub struct Connection is Move {
 
   // A stream's received DATA as an event: joined into the stream's last
   // Data event still waiting when it has room (the arriving block goes back to
-  // the pool), else queued. Looks back over at most 16 events, those of other
-  // streams between; the stream's own order is kept (nothing of its own can
-  // follow a Data but more Data and its End, and the End is queued after)
+  // the pool), else queued. The stream knows its last Data event by its
+  // sequence number (the events popped so far, and its place in the queue), so
+  // however many streams interleave, a small frame finds its own stream's
+  // block; the stream's own order is kept (nothing of its own can follow a
+  // Data but more Data and its End, and the End is queued after)
+  //
+  // BLOCK CREDIT. Every DATA frame arrives in a block of its own, 4 KiB at the
+  // least, so frames of a few bytes turn the peer's byte window into blocks
+  // about 4,000 to one: one byte sent, the program polls it and sits on it,
+  // another byte, a block each. The credit that stops that is charged by block
+  // capacity: a block a Data event queues costs its capacity (blockHeld, and
+  // the stream's 'held'), given back as its bytes are released (or when the
+  // stream leaves the table). At blockLimit no more frames are parsed and
+  // readCredit is 0, so the driver stops reading the socket and TCP slows the
+  // peer: an honest peer of small frames is slowed, not cut off. It goes on
+  // when releases bring blockHeld under the limit again (the next pollEvent
+  // parses what the input holds). The blocks held are bounded by blockLimit
+  // over the block size, plus the one frame whose block meets the limit.
+  // blockLimit is set (blockCreditLimit) above anything a peer within its
+  // windows holds, because a stream whose program is slow to release holds
+  // blocks the stream behind it in the socket's bytes needs credit to pass
   fn emitData(self: &mut, s: &mut Stream, id: u32, data: IoBuf) {
     let n = data.len();
     var joined = false;
-    var k = events.len();
-    var steps = 0usize;
-    while !joined && s.events > 0usize && k > 0usize && steps < 16usize {
-      k = k - 1usize;
-      steps = steps + 1usize;
-      match &mut events[k] {
-        case let &mut Data(d) {
-          if d.stream == id {
-            if d.buf.room() >= n {
+    if s.hasData && s.lastData >= popped {
+      let k = usize.from(s.lastData - popped);
+      if k < events.len() {
+        match &mut events[k] {
+          case let &mut Data(d) {
+            if d.stream == id && d.buf.room() >= n {
               let m = d.buf.append(data.view());
               joined = true;
             }
-            steps = 16usize;
           }
+          else {}
         }
-        else {}
       }
     }
-    if !joined {self.emit(s, Event.Data(id, data));}
+    if !joined {
+      let c = data.capacity();
+      s.held = s.held + c;
+      blockHeld = blockHeld + c;
+      s.hasData = true;
+      s.lastData = popped + u64.from(events.len());
+      self.emit(s, Event.Data(id, data));
+    }
   }
 
   fn emit(self: &mut, s: &mut Stream, e: Event) {
@@ -1621,12 +1707,27 @@ pub struct Connection is Move {
   fn reap(self: &mut, id: u32) {
     match streams.take(self.slotOf(id)) {
       case let Some(s) {
-        let ours, drawn = s.(ours, drawn);
+        let ours, drawn, held, fields, trailerFields, outQ = s.(ours, drawn, held, fields, trailerFields, outQ);
         spare = spare + drawn;
+        blockHeld = blockHeld - held;
         byId.remove(&id);
         if !ours {peerLive = peerLive - 1u32;}
+        // Its lists, emptied, are kept for the next stream (as many as can be live)
+        var lists = StreamLists(fields, trailerFields, outQ);
+        lists.fields.clear();
+        lists.trailerFields.clear();
+        lists.outQ.clear();
+        if kept.len() < usize.from(cfg.maxConcurrentStreams) {kept.push(lists);}
       }
       case is None[Stream] {}
+    }
+  }
+
+  // The lists of a stream that left the table, or new ones
+  fn takeLists(self: &mut) StreamLists {
+    match kept.pop() {
+      case let Some(l) {l}
+      case is None[StreamLists] {StreamLists(List[HeaderField](), List[HeaderField](), Deque[IoBuf]())}
     }
   }
 
