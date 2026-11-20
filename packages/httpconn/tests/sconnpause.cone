@@ -1,0 +1,196 @@
+// Reading paused above the write watermark and resumed below half of it
+// (ServerConn.readRoom), with no socket. A peer pipelines 200 requests in
+// one buffer and reads none of the answers:
+//  - HTTP/1.1: requests are answered until the connection's output reaches the
+//    watermark (4 KiB here); then readRoom is 0 and the next request, already
+//    buffered, is held back: the output stays within the watermark and one
+//    response. Output taken but not yet written still counts; written, down to
+//    below half the watermark, reading resumes (not before: a drain to just
+//    above half stays paused) and the held requests come, in order, every one
+//    of the 200 served.
+//  - HTTP/2: the same on streams: readRoom 0 once the answers are over the
+//    watermark, back once they are written.
+
+mod sconnpause;
+
+import testing use *;
+import collections use List, String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http2;
+import httpconn use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+const watermark = 4096usize;
+
+fn piece(text: &str) IoBuf {
+  var b = IoBuf(text.len());
+  b.append(text);
+  b
+}
+
+fn pad(n: usize) String {
+  var s = String();
+  var i = 0usize;
+  while i < n {
+    s.append("p");
+    i = i + 1usize;
+  }
+  s
+}
+
+// The wire taken, not written: the bytes the owner holds
+fn take(c: &mut ServerConn, now: Instant) usize {
+  c.fill(now);
+  var out = Chain.make(unbounded);
+  c.takeWire(&mut out)
+}
+
+fn http1() {
+  let now = Instant.now();
+  var cfg = Config.make();
+  cfg.protocol.writeWatermark = watermark;
+  var c = ServerConn.make(cfg, None, now);
+  var text = String();
+  var i = 0u32;
+  while i < 200u32 {
+    text.append("GET /");
+    text.appendUInt(u64.from(i));
+    text.append(" HTTP/1.1\r\nHost: h\r\n\r\n");
+    i = i + 1u32;
+  }
+  expect(text.len() <= 16384usize, "the 200 requests fit one receive buffer");
+  c.wireIn(piece(text.view()), now);
+  expect(c.readRoom() > 0usize, "reading is on while the output is empty");
+  var served = 0u32;
+  var last = String();
+  while true {
+    match c.next(now) {
+      case is Request {
+        last = String.from(c.request().target.view());
+        let r = c.response();
+        r.status = 200u16;
+        r.headers.add("X-Pad", pad(60usize).view());
+        c.respond(0u32, BodyLength.sized(0u64));
+        served = served + 1u32;
+      }
+      case is End {}
+      case is Nothing {break;}
+      else {expect(false, "an unexpected event");}
+    }
+    c.fill(now);
+  }
+  expect(served > 10u32 && served < 200u32, "stopped part-way: the output reached the watermark");
+  expectUInt(u64.from(c.readRoom()), 0u64, "reading is paused above the watermark");
+  expect(c.queued() >= watermark, "the output is at the watermark");
+  expect(c.queued() < watermark + 300usize, "and not past it by more than one response");
+  let atPause = served;
+
+  // Taken for writing, not yet written: still counted, still paused
+  var out = Chain.make(unbounded);
+  let n = c.takeWire(&mut out);
+  expect(n >= watermark, "the owner holds the output");
+  expectUInt(u64.from(c.readRoom()), 0u64, "output taken but not written keeps reading paused");
+  match c.next(now) {
+    case is Nothing {}
+    else {expect(false, "the next buffered request is held back while paused");}
+  }
+  // Written down to above half the watermark: still paused
+  c.wireSent(n - 3000usize);
+  expectUInt(u64.from(c.readRoom()), 0u64, "above half the watermark: still paused");
+  // Below half: resumed
+  c.wireSent(1000usize);
+  expect(c.readRoom() > 0usize, "below half the watermark: reading resumes");
+  expectUInt(u64.from(atPause), u64.from(served), "nothing was served while paused");
+
+  // The held requests come, in order, each pause cleared by writing the output
+  var rounds = 0u32;
+  while served < 200u32 && rounds < 100u32 {
+    let m = take(&mut c, now);
+    c.wireSent(m);
+    c.wireSent(0usize);
+    var more = true;
+    while more {
+      match c.next(now) {
+        case is Request {
+          last = String.from(c.request().target.view());
+          let r = c.response();
+          r.status = 200u16;
+          r.headers.add("X-Pad", pad(60usize).view());
+          c.respond(0u32, BodyLength.sized(0u64));
+          served = served + 1u32;
+          c.fill(now);
+        }
+        case is End {}
+        else {more = false;}
+      }
+    }
+    rounds = rounds + 1u32;
+  }
+  expectUInt(u64.from(served), 200u64, "all 200 requests were served");
+  expectStr(last.view(), "/199", "the last one was the 200th, in order");
+}
+
+fn get(path: &str) RequestHead {
+  var h = RequestHead.make("GET", path, "example.com");
+  h.scheme = String.from("http");
+  h
+}
+
+fn http2case() {
+  let now = Instant.now();
+  var cfg = Config.make();
+  cfg.h2PriorKnowledge = true;
+  cfg.h2.writeWatermark = watermark;
+  var c = ServerConn.make(cfg, None, now);
+  var cli = http2.Connection.client(cfg.h2, now);
+  var i = 0u32;
+  while i < 40u32 {
+    cli.sendRequest(get("/x"), BodyLength());
+    i = i + 1u32;
+  }
+  var a = cli.pollTransmit(now);
+  while true {
+    match a.popFront() {
+      case let Some(b) {c.wireIn(b, now);}
+      else {break;}
+    }
+  }
+  var served = 0u32;
+  var paused = false;
+  var more = true;
+  while more {
+    match c.next(now) {
+      case let Request(q) {
+        let r = c.response();
+        r.status = 200u16;
+        var v = pad(280usize);
+        v.appendUInt(u64.from(served));
+        r.headers.add("X-Pad", v.view());
+        c.respond(q.stream, BodyLength());
+        served = served + 1u32;
+        c.fill(now);
+        if c.readRoom() == 0usize && !paused {
+          paused = true;
+        }
+      }
+      case is End {}
+      case is Nothing {more = false;}
+      else {}
+    }
+  }
+  expect(paused, "HTTP/2: reading paused once the answers passed the watermark");
+  expectUInt(u64.from(c.readRoom()), 0u64, "and it stays paused while they are unwritten");
+  let n = take(&mut c, now);
+  expect(n >= watermark, "the owner holds the output");
+  expectUInt(u64.from(c.readRoom()), 0u64, "taken but not written: still paused");
+  c.wireSent(n);
+  expect(c.readRoom() > 0usize, "HTTP/2: written, reading resumes");
+}
+
+fn main() i32 {
+  http1();
+  http2case();
+  done()
+}

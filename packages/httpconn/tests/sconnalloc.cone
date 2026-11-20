@@ -1,0 +1,104 @@
+// A kept-alive HTTP/1.1 server connection allocates nothing per request after
+// the first (ServerConn, no layer): 1000 requests, each read, answered with a
+// head of two fields and a 5-byte body, and its output taken and written, with
+// the program's own malloc, calloc and realloc counted (as aio's alloc test and
+// http's headsrefill do). The request head and the response head are kept and
+// refilled, the wire Chain is kept, and the buffers come from the pool.
+
+mod sconnalloc;
+
+import testing use *;
+import collections use String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import httpconn use *;
+
+var mallocs: Atomic[u64];
+
+fn @initpure init() {mallocs = Atomic[u64].of(0u64);}
+
+#if #os == .windows {
+  extern {
+    fn @c("_malloc_base") winMalloc(size: usize) *u8;
+    fn @c("_calloc_base") winCalloc(n: usize, size: usize) *u8;
+    fn @c("_realloc_base") winRealloc(p: *u8, size: usize) *u8;
+  }
+} #else {
+  extern {
+    fn @c("__libc_malloc") lxMalloc(size: usize) *u8;
+    fn @c("__libc_calloc") lxCalloc(n: usize, size: usize) *u8;
+    fn @c("__libc_realloc") lxRealloc(p: *u8, size: usize) *u8;
+  }
+}
+
+pub fn @c("malloc") countMalloc(size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winMalloc(size)} #else {lxMalloc(size)}
+}
+
+pub fn @c("calloc") countCalloc(n: usize, size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winCalloc(n, size)} #else {lxCalloc(n, size)}
+}
+
+pub fn @c("realloc") countRealloc(p: *u8, size: usize) *u8 {
+  mallocs.add(1u64);
+  #if #os == .windows {winRealloc(p, size)} #else {lxRealloc(p, size)}
+}
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+// One request on the connection, answered: the bytes of the response written
+fn serve(c: &mut ServerConn, wire: &mut Chain, now: Instant, round: u64) usize {
+  var req = IoBuf(256usize);
+  req.append("GET /resource?id=42 HTTP/1.1\r\nHost: example.com\r\nUser-Agent: probe/1.0\r\nAccept: */*\r\nCookie: session=abcdef0123456789\r\n\r\n");
+  c.wireIn(req, now);
+  match c.next(now) {
+    case is Request {}
+    else {expect(false, "a request");}
+  }
+  let r = c.response();
+  r.status = 200u16;
+  r.headers.add("Content-Type", "text/plain");
+  r.headers.addUInt("X-Round", round % 10u64);
+  c.respond(0u32, BodyLength.sized(5u64));
+  var body = IoBuf(16usize);
+  body.append("hello");
+  c.sendData(0u32, body);
+  c.finish(0u32);
+  c.fill(now);
+  let n = c.takeWire(wire);
+  var bytes = 0usize;
+  while true {
+    match wire.popFront() {
+      case let Some(b) {bytes = bytes + b.len();}
+      else {break;}
+    }
+  }
+  c.wireSent(n);
+  match c.next(now) {
+    case is End {}
+    else {expect(false, "the request's end");}
+  }
+  bytes
+}
+
+fn main() i32 {
+  let now = Instant.now();
+  var c = ServerConn.make(Config.make(), None, now);
+  var wire = Chain.make(unbounded);
+  var first = serve(&mut c, &mut wire, now, 0u64);
+  first = serve(&mut c, &mut wire, now, 1u64);    // warmed: heads, wire Chain and pool blocks at their largest
+  let before = mallocs.load();
+  var total = 0usize;
+  var i = 0u64;
+  while i < 1000u64 {
+    total = total + serve(&mut c, &mut wire, now, i);
+    i = i + 1u64;
+  }
+  let used = mallocs.load() - before;
+  expectUInt(u64.from(total), u64.from(first) * 1000u64, "every response is the same size");
+  expectUInt(used, 0u64, "1000 kept-alive requests allocate nothing");
+  done()
+}

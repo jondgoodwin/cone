@@ -242,6 +242,34 @@
 // layer says of itself ('describe'), and its 'alpn()' the protocol its
 // handshake chose (below).
 //
+// THE SERVER CONNECTION. 'ServerConn' (serverconn.cone) is one server
+// connection as one value, sans-I/O, with no tables behind it: an optional
+// layer (None is plain), the protocol chosen once the layer is open (as
+// HTTP/2, below, says), and everything between the bytes and the program's
+// requests. The owner of the socket (the Driver does not use it yet) makes it
+// with the config, the layer and the time, and calls it with the time:
+//   readRoom()  wireIn(buf, now)       the wire bytes it takes now (0: reading paused), and bytes in
+//   next(now)                          a ServerEvent: Request, Data, End, Reset, Closed, Nothing
+//   request() takeRequest()            the request's head: kept in the connection, or moved out
+//   response() respond(stream, body)   the answer: its head written into the kept one, and sent
+//   sendData finish release stopBody sendInterim sendContinue writeRoom   (as the Driver's, by stream)
+//   fill(now) takeWire(chain) wireSent(n)   the output to the socket: gathered into a Chain the
+//                                      connection keeps, taken, and confirmed written
+//   pollTimeout() handleTimeout(now)   its deadlines: the cores', the handshake's, HTTP/2's idle
+//   shutdown() done(now) abort()       its ending: finish the request in hand (HTTP/2: GOAWAY),
+//                                      the layer's goodbye written, then 'done' is true
+//   wantsCall() takeCall() callDone()  a layer's work for the blocking pool, as the Layer says
+// Back-pressure: the bytes it holds to send (the protocol's, the layer's, the wire Chain's, and
+// those taken and not yet confirmed written) pause its reading at the write watermark
+// (http1's or http2's, by the protocol chosen) and resume it below half of it, and HTTP/1.1
+// holds back the next request it has already read while paused, so a peer that pipelines
+// requests and reads nothing is stopped at the watermark and one answer. Kept: HTTP/1.1's one
+// request head (read into again, handed back to the core when the exchange ends) and one
+// response head, the fields' scratch, and the wire Chain, so a kept-alive HTTP/1.1 connection
+// allocates nothing per request after the first (tests/sconnalloc.cone, counted). An HTTP/2
+// request's head moves out whole by 'takeRequest'. The core's events are read one at a time;
+// nothing is queued beside the core's own queues. It is tested with no socket (tests/sconn*.cone).
+//
 // HTTP/2. A connection speaks HTTP/1.1 or HTTP/2, chosen once its layer is
 // open, before any request goes on it: over TLS, by what the handshake's
 // ALPN chose (the layer's 'alpn()': "h2" is HTTP/2; "http/1.1", or none,
