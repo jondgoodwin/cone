@@ -2,6 +2,8 @@
 # test that is meant to catch it must FAIL on it, and the same tests must PASS on the unmutated shim. Run it again after any change
 # to the shim's common paths (lf_alloc, lf_free, lf_release, lf_fill, the grouped return) or to "after a free" (cnm_lf_after_free).
 #   powershell -File packages\cnmalloc\tests\mutants.ps1 [-Name a|a2m|a2s|b|m1|...|m7|h1|none|all] [-Runs 5] [-Scratch <dir>] [-RaceSecs 120]
+# (Row 550) The mutants themselves, each test's setting and variants live in mutants.json beside this file, which the Linux runner
+# mutants.py reads too: one copy, so the two cannot drift. The text each mutant replaces is in that file; what each breaks:
 #
 #   a    Rule G's undo removed: the g2 test still runs, but the thread keeps the cell of the page's new life  (caught by lfrace: double free abort)
 #   a2m  the multi-bit fill's Rule G compare (MB-G) tests the class half of genclass only, not the generation half  (caught by lfmulti's same-class rounds, deterministically: the allocator hangs, lfmulti's waitFor gives up after 5 s and its checks fail; the 120 s watchdog does not fire)
@@ -21,7 +23,7 @@
 #        lfmulti and lfreturn must pass
 # Everything is built and run under <Scratch> (default %TEMP%\cnmalloc-mutants); nothing in the tree changes. A mutant's test
 # runs -Runs times (all but a are deterministic: 5 of 5 must fail). lfrace on a mutant is capped at -RaceSecs seconds
-# (CNRACE_MAXSECS); the unmutated lfrace runs with its default. Windows only (the shim is). Needs the Visual Studio build tools and the package's release build, which
+# (CNRACE_MAXSECS); the unmutated lfrace runs with its default. Windows only (cl and link; Linux's is mutants.py). Needs the Visual Studio build tools and the package's release build, which
 # build-cn.ps1 makes.
 param(
   [string]$Name = 'all',
@@ -37,66 +39,37 @@ $congo = Join-Path $tree 'tools\congo\congo.py'
 $vcvars = 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat'
 New-Item -ItemType Directory -Force $Scratch | Out-Null
 
+# the mutants and each test's setting, from the data file both runners read
+function To-Env($o) { $h = @{}; if ($o) { foreach ($p in $o.PSObject.Properties) { $h[$p.Name] = [string]$p.Value } }; return $h }
+$data = Get-Content (Join-Path $here 'mutants.json') -Raw | ConvertFrom-Json
+$cfg = @{}; foreach ($p in $data.cfg.PSObject.Properties) { $cfg[$p.Name] = [string]$p.Value }
+$variants = @{}; foreach ($p in $data.variants.PSObject.Properties) { $variants[$p.Name] = @($p.Value | ForEach-Object { To-Env $_ }) }
+$deterministicTests = @($data.deterministic)
+
 # the unmutated libraries (cn.lib, cnd.lib) and the package's release object
 $alloc = Join-Path $Scratch 'alloc'
 & powershell -NoProfile -File (Join-Path $pkg 'shim\build-cn.ps1') -Out $alloc | Out-Null
 $obj = Join-Path $pkg 'build\release\cnmalloc.obj'
 
-# each mutant: pairs of (exact text, replacement); every anchor must occur exactly once in cn_shim.c
-$mutants = @{
-  'a'  = @(, @(("            lf_release(P, g2, j, bit);`n            if (ask) cnm_lf_grow(g_heap, c);`n            goto restart;"), '            (void)g2;'))
-  'a2m' = @(, @('if (g2 != g1) {                               // MB-G:', 'if ((g2 & 0xFF) != (g1 & 0xFF)) {               // MB-G:'))
-  'a2s' = @(, @('if (g2 != g1) {                               // Rule G:', 'if ((g2 & 0xFF) != (g1 & 0xFF)) {               // Rule G:'))
-  'b'  = @(, @('LF_HOOK_OR(g & 0xFF);                               // tests only (CN_HOOKS): a park point after the fetch_or', ('LF_HOOK_OR(g & 0xFF);' + "`n" + '  g = P->genclass;')))
-  'm1' = @(, @('if (g2 != g1) {                               // MB-G', 'if (0) {                               // MB-G'))
-  'm2' = @(, @('lf_release(P, g2, j, want);', 'lf_release(P, g2, j, want & (0 - want));'))
-  'm3' = @(
-    @('LF_HOOK_TAKE(c, want);', ('size_t early_got; void* early = lf_link(P, c, j, want, &early_got);' + "`n" + '          LF_HOOK_TAKE(c, want);')),
-    @('void* head = lf_link(P, c, j, want, got);', 'void* head = early; *got = early_got;'))
-  'm4' = @(, @(("  uint64_t g = P->genclass;                           // RT-G: before this group's fetch_or`n  uint64_t old = (uint64_t)_InterlockedOr64((volatile LONG64*)&P->bits[j], (LONG64)mask);`n  LF_HOOK_GROUP(g & 0xFF);"),
-                ("  uint64_t old = (uint64_t)_InterlockedOr64((volatile LONG64*)&P->bits[j], (LONG64)mask);`n  LF_HOOK_GROUP(0);`n  uint64_t g = P->genclass;")))
-  'm5' = @(, @(("    while (p && n && m < LF_RBATCH) { a[m++] = p; p = *(void**)p; n--; }    // RT-L: the batch's links, all read first`n    lf_give_cells(a, m, cl);"),
-                ("    a[m++] = p; n--;`n    lf_give_cells(a, m, cl);`n    p = *(void**)a[0];")))
-  'm6' = @(, @('lf_release(P, g2, j, want);', 'lf_release(P, g1, j, want);'))
-  'm7' = @(, @('if (old & mask) {                                   // RT-D', 'if (old & mask & (0 - mask)) {                      // RT-D'))
-  'h1' = @(, @('#define LF_KEY(P, g) ((uintptr_t)(P) ^ ((uintptr_t)((g) >> 8) << 48))', '#define LF_KEY(P, g) ((uintptr_t)(P))'))
-}
-
 function Build-Mutant([string]$m) {
   $out = Join-Path $Scratch "mut-$m"
   New-Item -ItemType Directory -Force $out | Out-Null
   $t = [IO.File]::ReadAllText((Join-Path $pkg 'shim\cn_shim.c')).Replace("`r`n", "`n")
-  if (-not $mutants.ContainsKey($m)) { throw "unknown mutant $m" }
-  foreach ($pair in $mutants[$m]) {
+  $mut = $data.mutants.PSObject.Properties[$m]
+  if (-not $mut) { throw "unknown mutant $m" }
+  foreach ($pair in $mut.Value.edits) {
     $from = $pair[0]; $to = $pair[1]
     $count = ([regex]::Matches($t, [regex]::Escape($from))).Count
     if ($count -ne 1) { throw "mutation anchor for $m found $count times: $from" }
     $t = $t.Replace($from, $to)
   }
   [IO.File]::WriteAllText("$out\cn_shim.c", $t, (New-Object System.Text.UTF8Encoding($false)))
+  Copy-Item (Join-Path $pkg 'shim\cn_plat.h') $out -Force
   $bat = "$out\build.bat"
   Set-Content $bat "cd /d $out`r`ncl /nologo /c /O2 /MD /D_ACRTIMP= /Gs999999 /DCN_HOOKS /DCN_DEBUG `"$out\cn_shim.c`" /Fo:cn_shim_d.obj || exit /b 1`r`nlib /nologo /OUT:cnd.lib cn_shim_d.obj `"$obj`" || exit /b 1"
   cmd /c "`"$vcvars`" >nul 2>&1 && `"$bat`"" 2>&1 | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "cl or lib failed for mutant $m" }
   return $out
-}
-
-# each test's CNMALLOC setting, and the variants (extra environment) the unmutated run checks
-$cfg = @{
-  'lfstale'    = 'design=lockfree,giveback=now,slots=1,stats,cache=16'
-  'lfmulti'    = 'design=lockfree,giveback=now,slots=1,stats,cache=16'
-  'lfreturn'   = 'design=lockfree,giveback=now,slots=1,stats,cache=32'
-  'doublefree' = 'design=lockfree,giveback=now,stats,cache=16'
-  'lfpage'     = 'design=lockfree,giveback=now,stats,cache=16'
-  'lfrace'     = 'design=lockfree,giveback=now,stats'
-}
-$variants = @{
-  'doublefree' = @(@{})
-  'lfpage'     = @(@{}, @{ CNPAGE_GROUPED = '1' })
-  'lfrace'     = @(@{}, @{ CNRACE_WORKERS = '1'; CNMALLOC = 'design=lockfree,giveback=now,stats,cache=7' })
-  'lfstale'    = @(@{}, @{ CNSTALE_GROUPED = '1' })
-  'lfmulti'    = @(@{})
-  'lfreturn'   = @(@{})
 }
 
 # one test run on the second design linked from <libdir>\cnd.lib, in its own copy of the package; returns $true when the test passed
@@ -133,17 +106,11 @@ function Run-Test([string]$libdir, [string]$test, [string]$tag, [hashtable]$extr
 $verdicts = @()
 function Check([string]$what, [bool]$ok) { $script:verdicts += [pscustomobject]@{ Check = $what; Ok = $ok }; "{0,-60} {1}" -f $what, $(if ($ok) { 'ok' } else { 'WRONG' }) }
 
-# each mutant's catching test, with the variant that catches it
-$plan = @{
-  'a' = @('lfrace', @{}); 'a2m' = @('lfmulti', @{}); 'a2s' = @('lfmulti', @{}); 'b' = @('lfstale', @{})
-  'm1' = @('lfmulti', @{}); 'm2' = @('lfmulti', @{}); 'm3' = @('lfmulti', @{}); 'm4' = @('lfstale', @{ CNSTALE_GROUPED = '1' })
-  'm5' = @('lfreturn', @{}); 'm6' = @('lfmulti', @{}); 'm7' = @('doublefree', @{}); 'h1' = @('lfmulti', @{})
-}
-$names = if ($Name -eq 'all') { @('a', 'a2m', 'a2s', 'b', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'h1', 'none') } else { $Name.Split(',') }
+$names = if ($Name -eq 'all') { @($data.order) + @('none') } else { $Name.Split(',') }
 foreach ($m in $names) {
   if ($m -eq 'none') {
-    foreach ($t in 'doublefree', 'lfpage', 'lfrace', 'lfstale', 'lfmulti', 'lfreturn') {
-      $deterministic = $t -in @('lfstale', 'lfmulti', 'lfreturn', 'doublefree')
+    foreach ($t in @($data.unmutated)) {
+      $deterministic = $t -in $deterministicTests
       $n = if ($deterministic) { $Runs } else { 1 }      # the driven tests are cheap: -Runs times; lfrace and lfpage once
       $v = 0
       foreach ($extra in $variants[$t]) {
@@ -153,8 +120,9 @@ foreach ($m in $names) {
     }
   } else {
     $lib = Build-Mutant $m
-    $t = $plan[$m][0]
-    $extra = @{} + $plan[$m][1]
+    $mut = $data.mutants.PSObject.Properties[$m].Value
+    $t = $mut.test
+    $extra = To-Env $mut.env
     if ($t -eq 'lfrace') { $extra['CNRACE_MAXSECS'] = "$RaceSecs" }
     for ($i = 1; $i -le $Runs; $i++) { Check "mutant ${m}: $t FAILS (run $i)" (-not (Run-Test $lib $t "$m$i" $extra)) }
   }

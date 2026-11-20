@@ -1,0 +1,303 @@
+mod oslinux is Os;
+
+import os use Os;
+
+// The Linux implementation of the OS layer (row 550), and the few other system calls the heap makes: the clock, a
+// futex lock, the give-back timer, stderr, the settings text, the processor count, and the C library's functions
+// that foreign blocks go to. 'osplat' forwards to this module on Linux. C-named, like the heap: no prelude, no
+// runtime, no globals, so nothing here can reach Cone's own allocation. NOTHING HERE MAY CALL THE C LIBRARY'S
+// 'malloc', which is the heap itself once the shim is linked: every call below was probed not to allocate (the
+// glibc functions: mmap, munmap, mprotect, madvise, syscall, clock_gettime, write, _exit, getenv, sysconf,
+// pthread_create after its first thread's own TLS block: step 0 report, section 3). Written for glibc 2.34 or newer.
+//
+//   reserve   mmap(PROT_NONE, MAP_NORESERVE), over-mapped by 64 KiB and trimmed at both ends, so the reservation
+//             is aligned to 64 KiB and release can name its exact length
+//   commit    mprotect(PROT_READ|PROT_WRITE): the pages are zero the first time and after a decommit
+//   decommit  madvise(MADV_DONTNEED), then mprotect(PROT_NONE): the pages go back and read zero if committed again,
+//             and a stale access faults, as on Windows. (Never MADV_FREE: it does not zero.) Cost: each alternation
+//             of committed and decommitted pages is a mapping (vm.max_map_count, usually 65,530); decommitting with
+//             PROT_NONE lets neighbours merge. Step 2 of row 550 reports the peak line count of /proc/self/maps.
+//   release   munmap(addr, bytes)
+//   lock      three states on the low 32 bits of the lock word (0 free, 1 held, 2 held with a waiter), the futex
+//             system call made here
+//   timer     ONE thread of our own, made by pthread_create, parked on a futex with a timeout (a one-shot timer
+//             from timer_create(SIGEV_THREAD) allocates; a signal timer runs the callback on any thread, possibly
+//             one that holds a class lock). The thread and its state live in one page this module maps itself.
+//             The caller creates it with the heap's timer lock NOT held (cnmalloc.cone, armTimer): pthread_create
+//             calls the C library's calloc, which is this heap.
+
+pub alias TimerCb = &fn @c (inst: usize, ctx: usize, timer: usize);
+
+// On another platform the module is all stubs (never called: osplat forwards only to the module of the platform it is
+// built for), so that no object carries a reference to a function the platform does not have.
+#if #os == .linux {
+
+struct Ts {
+  sec: i64;
+  nsec: i64;
+}
+
+extern {
+  fn @c mmap(addr: usize, len: usize, prot: i32, flags: i32, fd: i32, off: i64) usize;
+  fn @c munmap(addr: usize, len: usize) i32;
+  fn @c mprotect(addr: usize, len: usize, prot: i32) i32;
+  fn @c madvise(addr: usize, len: usize, advice: i32) i32;
+  fn @c("syscall") futexSys(num: i64, addr: usize, op: i32, val: u32, ts: *Ts, a: usize, b: usize) i64;
+  fn @c clock_gettime(clock: i32, ts: *Ts) i32;
+  fn @c write(fd: i32, buf: *u8, n: usize) isize;
+  fn @c _exit(code: i32);
+  fn @c getenv(name: cstr) *u8;
+  fn @c sysconf(name: i32) i64;
+  fn @c pthread_create(t: *usize, attr: usize, start: &fn @c (arg: usize) usize, arg: usize) i32;
+  fn @c pthread_join(t: usize, ret: usize) i32;
+  fn @c __libc_free(p: *u8);
+  fn @c __libc_realloc(p: *u8, n: usize) *u8;
+  fn @c __libc_memalign(a: usize, n: usize) *u8;
+  fn @c memcpy(d: *u8, s: *u8, n: usize) *u8;
+  fn @c dlsym(handle: usize, name: cstr) usize;
+}
+
+const mapFailed = 0xFFFFFFFFFFFFFFFFusize;
+const sysFutex = 202i64;                      // x86-64
+const futexWaitPrivate = 128i32;
+const futexWakePrivate = 129i32;
+const alignUnit = 65536usize;
+
+fn roundPage(x: usize) usize { (x + 4095usize) & ~4095usize }
+
+pub fn reserve(bytes: usize) usize {
+  let rb = roundPage(bytes);
+  let total = rb + alignUnit;
+  // PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE
+  let p = mmap(0usize, total, 0i32, 0x4022i32, 0i32 - 1i32, 0i64);
+  if p == mapFailed { return 0usize; }
+  let a = (p + alignUnit - 1usize) & ~(alignUnit - 1usize);
+  if a > p { munmap(p, a - p); }
+  let tail = (p + total) - (a + rb);
+  if tail > 0usize { munmap(a + rb, tail); }
+  a
+}
+
+pub fn commit(addr: usize, bytes: usize) bool { mprotect(addr, bytes, 3i32) == 0i32 }   // PROT_READ | PROT_WRITE
+
+pub fn decommit(addr: usize, bytes: usize) {
+  madvise(addr, bytes, 4i32);       // MADV_DONTNEED: the pages go back, and read zero when committed again
+  mprotect(addr, bytes, 0i32);      // PROT_NONE: a stale access faults
+}
+
+pub fn release(addr: usize, bytes: usize) { munmap(addr, bytes); }
+
+// ---------------------------------------------------------------------------
+// The clock
+// ---------------------------------------------------------------------------
+
+// Milliseconds on the coarse monotonic clock (the vDSO; about 4 ms steps, plenty for a give-back delay)
+pub fn tick() u64 {
+  var ts = Ts(0i64, 0i64);
+  clock_gettime(6i32, &mut ts);     // CLOCK_MONOTONIC_COARSE
+  u64.from(ts.sec) * 1000u64 + u64.from(ts.nsec) / 1000000u64
+}
+
+fn nowNs() u64 {
+  var ts = Ts(0i64, 0i64);
+  clock_gettime(1i32, &mut ts);     // CLOCK_MONOTONIC
+  u64.from(ts.sec) * 1000000000u64 + u64.from(ts.nsec)
+}
+
+// ---------------------------------------------------------------------------
+// The lock: three states on the low 32 bits of the pointer-sized lock word (zero is unlocked, static, never allocates)
+// ---------------------------------------------------------------------------
+
+fn cas32(w: *u32, from: u32, to: u32) u32 {
+  var o = 0u32;
+  var ok = false;
+  o, ok = mem.atomicCompareSwap[u32](w, from, to, MemOrder.SeqCst, MemOrder.SeqCst);
+  o
+}
+
+fn futexWait(addr: usize, val: u32, ns: u64) {
+  if ns == 0u64 {
+    futexSys(sysFutex, addr, futexWaitPrivate, val, null, 0usize, 0usize);
+  } else {
+    var ts = Ts(i64.from(ns / 1000000000u64), i64.from(ns % 1000000000u64));
+    futexSys(sysFutex, addr, futexWaitPrivate, val, &mut ts, 0usize, 0usize);
+  }
+}
+
+fn futexWake(addr: usize) {
+  futexSys(sysFutex, addr, futexWakePrivate, 1u32, null, 0usize, 0usize);
+}
+
+pub fn lock(l: usize) {
+  let w = l as *u32;
+  var c = cas32(w, 0u32, 1u32);
+  if c == 0u32 { return; }
+  var spins = 0u32;
+  while spins < 100u32 {            // a short spin: most holds are a few instructions
+    if mem.atomicLoad[u32](w, MemOrder.SeqCst) == 0u32 {
+      c = cas32(w, 0u32, 1u32);
+      if c == 0u32 { return; }
+    }
+    spins = spins + 1u32;
+  }
+  if c != 2u32 { c = mem.atomicSwap[u32](w, 2u32, MemOrder.SeqCst); }
+  while c != 0u32 {
+    futexWait(l, 2u32, 0u64);
+    c = mem.atomicSwap[u32](w, 2u32, MemOrder.SeqCst);
+  }
+}
+
+pub fn tryLock(l: usize) bool { cas32(l as *u32, 0u32, 1u32) == 0u32 }
+
+pub fn unlock(l: usize) {
+  if mem.atomicSwap[u32](l as *u32, 0u32, MemOrder.SeqCst) == 2u32 { futexWake(l); }
+}
+
+// ---------------------------------------------------------------------------
+// The timer: one thread, parked on a futex word with a timeout. The state block (one mapped page):
+//   +0 u32 sequence (bumped by every arm and by close; the thread waits on it)   +4 u32 quit
+//   +8 u64 deadline on CLOCK_MONOTONIC in ns, 0 when not armed                  +16 callback  +24 context
+//   +32 the thread's pthread_t
+// 'arm' stores the deadline, bumps the sequence and wakes the thread; the thread reads the sequence, then the deadline,
+// then waits on the sequence it read, so an arm that lands between the two reads makes its wait return at once.
+// ---------------------------------------------------------------------------
+
+fn @c timerMain(blk: usize) usize {
+  let seqp = blk as *u32;
+  let quitp = (blk + 4usize) as *u32;
+  let dlp = (blk + 8usize) as *u64;
+  while true {
+    let seq = mem.atomicLoad[u32](seqp, MemOrder.SeqCst);
+    if mem.atomicLoad[u32](quitp, MemOrder.SeqCst) != 0u32 { return 0usize; }
+    let dl = mem.atomicLoad[u64](dlp, MemOrder.SeqCst);
+    if dl == 0u64 {
+      futexWait(blk, seq, 0u64);
+    } else {
+      let now = nowNs();
+      if now >= dl {
+        var o = 0u64;
+        var ok = false;
+        o, ok = mem.atomicCompareSwap[u64](dlp, dl, 0u64, MemOrder.SeqCst, MemOrder.SeqCst);
+        if ok {
+          let cb = *((blk + 16usize) as *usize) as *u8 as TimerCb;
+          cb(0usize, *((blk + 24usize) as *usize), blk);
+        }
+      } else {
+        futexWait(blk, seq, dl - now);
+      }
+    }
+  }
+  0usize
+}
+
+// Makes the thread, parked. 0 when it could not be made. Call it with no heap lock held: pthread_create allocates.
+pub fn timerCreate(cb: TimerCb, ctx: usize) usize {
+  let blk = mmap(0usize, 4096usize, 3i32, 0x22i32, 0i32 - 1i32, 0i64);   // MAP_PRIVATE | MAP_ANONYMOUS
+  if blk == mapFailed { return 0usize; }
+  *((blk + 16usize) as *usize) = cb as *u8 as usize;
+  *((blk + 24usize) as *usize) = ctx;
+  var t = 0usize;
+  if pthread_create(&mut t, 0usize, &timerMain, blk) != 0i32 {
+    munmap(blk, 4096usize);
+    return 0usize;
+  }
+  *((blk + 32usize) as *usize) = t;
+  blk
+}
+
+pub fn timerArm(timer: usize, ms: u64) {
+  mem.atomicStore[u64]((timer + 8usize) as *u64, nowNs() + ms * 1000000u64, MemOrder.SeqCst);
+  mem.atomicAdd[u32](timer as *u32, 1u32, MemOrder.SeqCst);
+  futexWake(timer);
+}
+
+// Stops the thread and frees its page (tests only: a process's timer is never closed). The callback must not be waiting on us.
+pub fn timerClose(timer: usize) {
+  mem.atomicStore[u32]((timer + 4usize) as *u32, 1u32, MemOrder.SeqCst);
+  mem.atomicAdd[u32](timer as *u32, 1u32, MemOrder.SeqCst);
+  futexWake(timer);
+  pthread_join(*((timer + 32usize) as *usize), 0usize);
+  munmap(timer, 4096usize);
+}
+
+// ---------------------------------------------------------------------------
+// stderr, exit, the settings text, the processor count
+// ---------------------------------------------------------------------------
+
+pub fn writeErr(buf: usize, n: usize) { write(2i32, buf as *u8, n); }
+
+// _exit, not exit: exit runs the C library's atexit handlers and destructors, which free
+pub fn fatal() { _exit(3i32); }
+
+// The text of an environment variable into buf (size bytes of scratch), copied at once so that the parse never reads
+// 'environ' while another thread calls setenv: its length, or 0 when it is not set or does not fit
+pub fn getEnv(name: cstr, buf: usize, size: usize) usize {
+  let v = getenv(name) as usize;
+  if v == 0usize { return 0usize; }
+  var n = 0usize;
+  while *((v + n) as *u8) != 0u8 {
+    if n + 1usize >= size { return 0usize; }
+    *((buf + n) as *u8) = *((v + n) as *u8);
+    n = n + 1usize;
+  }
+  *((buf + n) as *u8) = 0u8;
+  n
+}
+
+pub fn processors() usize { usize.from(sysconf(84i32)) }    // _SC_NPROCESSORS_ONLN
+
+// ---------------------------------------------------------------------------
+// Foreign blocks: made by the C library before the shim took the names (the dynamic loader, glibc's own start-up) or
+// by code that calls __libc_malloc. Found without dlsym: __libc_free, __libc_realloc and __libc_memalign are exported
+// by glibc and resolved by the dynamic linker. malloc_usable_size has no __libc_ form (ours would shadow it): one
+// dlsym(RTLD_NEXT, ...) at init, on a name that exists, never followed by dlerror (a failed lookup allocates).
+// ---------------------------------------------------------------------------
+
+pub fn foreignFree() usize { &__libc_free as usize }
+pub fn foreignRealloc() usize { &__libc_realloc as usize }
+pub fn foreignMsize() usize { dlsym(0xFFFFFFFFFFFFFFFFusize, "malloc_usable_size") }   // RTLD_NEXT is (void*)-1 on glibc
+pub fn foreignAFree() usize { &__libc_free as usize }                  // glibc's aligned blocks are freed by free
+pub fn foreignARealloc() usize { &foreignAlignedRealloc as usize }
+pub fn foreignAMsize() usize { &foreignAlignedMsize as usize }
+
+// The Windows names these two answer are not in the Linux shim, so nothing reaches them from the standard API; they keep
+// the heap's table whole (cnm_aligned_realloc and cnm_aligned_msize on a foreign block, which the package's tests call)
+fn foreignAlignedMsize(p: *u8, a: usize, o: usize) usize {
+  let f = foreignMsize() as &fn @c (p: *u8) usize;
+  f(p)
+}
+
+fn foreignAlignedRealloc(p: *u8, n: usize, a: usize) *u8 {
+  let q = __libc_memalign(a, n);
+  if q as usize == 0usize { return q; }
+  let old = foreignAlignedMsize(p, a, 0usize);
+  memcpy(q, p, if n < old { n } else { old });
+  __libc_free(p);
+  q
+}
+
+} #else {
+
+pub fn reserve(bytes: usize) usize { 0usize }
+pub fn commit(addr: usize, bytes: usize) bool { false }
+pub fn decommit(addr: usize, bytes: usize) { }
+pub fn release(addr: usize, bytes: usize) { }
+pub fn tick() u64 { 0u64 }
+pub fn lock(l: usize) { }
+pub fn tryLock(l: usize) bool { false }
+pub fn unlock(l: usize) { }
+pub fn timerCreate(cb: TimerCb, ctx: usize) usize { 0usize }
+pub fn timerArm(timer: usize, ms: u64) { }
+pub fn timerClose(timer: usize) { }
+pub fn writeErr(buf: usize, n: usize) { }
+pub fn fatal() { }
+pub fn getEnv(name: cstr, buf: usize, size: usize) usize { 0usize }
+pub fn processors() usize { 0usize }
+pub fn foreignFree() usize { 0usize }
+pub fn foreignRealloc() usize { 0usize }
+pub fn foreignMsize() usize { 0usize }
+pub fn foreignAFree() usize { 0usize }
+pub fn foreignARealloc() usize { 0usize }
+pub fn foreignAMsize() usize { 0usize }
+
+}

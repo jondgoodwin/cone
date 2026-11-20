@@ -1,0 +1,51 @@
+{
+  "_what": "The second design's mutants, one copy for mutants.ps1 (Windows) and mutants.py (Linux), so the two cannot drift (row 550). Each mutant is shim/cn_shim.c with one safety rule broken: every 'edits' pair is (exact text, replacement) and its text must occur exactly once in cn_shim.c. 'test' is the test meant to catch it and 'env' that test's variant; 'order' is the order 'all' runs them. 'cfg' is each test's CNMALLOC setting and 'variants' the extra environment the unmutated run checks (a list of environments, one run each). Describing comments for each mutant are in mutants.ps1's header.",
+  "order": ["a", "a2m", "a2s", "b", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "h1"],
+  "mutants": {
+    "a": { "test": "lfrace", "env": {}, "edits": [
+      ["            lf_release(P, g2, j, bit);\n            if (ask) cnm_lf_grow(g_heap, c);\n            goto restart;", "            (void)g2;"] ] },
+    "a2m": { "test": "lfmulti", "env": {}, "edits": [
+      ["if (g2 != g1) {                               // MB-G:", "if ((g2 & 0xFF) != (g1 & 0xFF)) {               // MB-G:"] ] },
+    "a2s": { "test": "lfmulti", "env": {}, "edits": [
+      ["if (g2 != g1) {                               // Rule G:", "if ((g2 & 0xFF) != (g1 & 0xFF)) {               // Rule G:"] ] },
+    "b": { "test": "lfstale", "env": {}, "edits": [
+      ["LF_HOOK_OR(g & 0xFF);                               // tests only (CN_HOOKS): a park point after the fetch_or", "LF_HOOK_OR(g & 0xFF);\n  g = cn_ld64_acq(&P->genclass);"] ] },
+    "m1": { "test": "lfmulti", "env": {}, "edits": [
+      ["if (g2 != g1) {                               // MB-G", "if (0) {                               // MB-G"] ] },
+    "m2": { "test": "lfmulti", "env": {}, "edits": [
+      ["lf_release(P, g2, j, want);", "lf_release(P, g2, j, want & (0 - want));"] ] },
+    "m3": { "test": "lfmulti", "env": {}, "edits": [
+      ["LF_HOOK_TAKE(c, want);", "size_t early_got; void* early = lf_link(P, c, j, want, &early_got);\n          LF_HOOK_TAKE(c, want);"],
+      ["void* head = lf_link(P, c, j, want, got);", "void* head = early; *got = early_got;"] ] },
+    "m4": { "test": "lfstale", "env": { "CNSTALE_GROUPED": "1" }, "edits": [
+      ["  uint64_t g = cn_ld64_acq(&P->genclass);             // RT-G: before this group's fetch_or\n  uint64_t old = cn_or64(&P->bits[j], mask);\n  LF_HOOK_GROUP(g & 0xFF);",
+       "  uint64_t old = cn_or64(&P->bits[j], mask);\n  LF_HOOK_GROUP(0);\n  uint64_t g = cn_ld64_acq(&P->genclass);"] ] },
+    "m5": { "test": "lfreturn", "env": {}, "edits": [
+      ["    while (p && n && m < LF_RBATCH) { a[m++] = p; p = *(void**)p; n--; }    // RT-L: the batch's links, all read first\n    lf_give_cells(a, m, cl);",
+       "    a[m++] = p; n--;\n    lf_give_cells(a, m, cl);\n    p = *(void**)a[0];"] ] },
+    "m6": { "test": "lfmulti", "env": {}, "edits": [
+      ["lf_release(P, g2, j, want);", "lf_release(P, g1, j, want);"] ] },
+    "m7": { "test": "doublefree", "env": {}, "edits": [
+      ["if (old & mask) {                                   // RT-D", "if (old & mask & (0 - mask)) {                      // RT-D"] ] },
+    "h1": { "test": "lfmulti", "env": {}, "edits": [
+      ["#define LF_KEY(P, g) ((uintptr_t)(P) ^ ((uintptr_t)((g) >> 8) << 48))", "#define LF_KEY(P, g) ((uintptr_t)(P))"] ] }
+  },
+  "cfg": {
+    "lfstale": "design=lockfree,giveback=now,slots=1,stats,cache=16",
+    "lfmulti": "design=lockfree,giveback=now,slots=1,stats,cache=16",
+    "lfreturn": "design=lockfree,giveback=now,slots=1,stats,cache=32",
+    "doublefree": "design=lockfree,giveback=now,stats,cache=16",
+    "lfpage": "design=lockfree,giveback=now,stats,cache=16",
+    "lfrace": "design=lockfree,giveback=now,stats"
+  },
+  "unmutated": ["doublefree", "lfpage", "lfrace", "lfstale", "lfmulti", "lfreturn"],
+  "deterministic": ["lfstale", "lfmulti", "lfreturn", "doublefree"],
+  "variants": {
+    "doublefree": [ {} ],
+    "lfpage": [ {}, { "CNPAGE_GROUPED": "1" } ],
+    "lfrace": [ {}, { "CNRACE_WORKERS": "1", "CNMALLOC": "design=lockfree,giveback=now,stats,cache=7" } ],
+    "lfstale": [ {}, { "CNSTALE_GROUPED": "1" } ],
+    "lfmulti": [ {} ],
+    "lfreturn": [ {} ]
+  }
+}

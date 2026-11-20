@@ -3,10 +3,15 @@ mod oswin is Os;
 import os use Os;
 
 // The Windows implementation of the OS layer, and the few other system calls the heap makes: the clock, the
-// SRW lock (a pointer-sized word, static, zero is unlocked, never allocates), the thread-pool timer and
-// stderr. All of them live in kernel32 or ntdll; none calls the C runtime's malloc.
+// SRW lock (a pointer-sized word, static, zero is unlocked, never allocates), the thread-pool timer, stderr, the
+// settings text, the processor count, and the C runtime's functions that foreign blocks go to. All of them live
+// in kernel32 or ntdll; none calls the C runtime's malloc. 'osplat' forwards to this module on Windows.
 
 pub alias TimerCb = &fn @c (inst: usize, ctx: usize, timer: usize);
+
+// On another platform the module is all stubs (never called: osplat forwards only to the module of the platform it is
+// built for), so that no object carries a reference to a function the platform does not have.
+#if #os == .windows {
 
 extern {
   fn @c(system) VirtualAlloc(addr: usize, size: usize, kind: u32, prot: u32) usize;
@@ -22,12 +27,17 @@ extern {
   fn @c(system) GetStdHandle(which: u32) usize;
   fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
   fn @c(system) ExitProcess(code: u32);
+  fn @c(system) GetModuleHandleA(name: cstr) usize;
+  fn @c(system) LoadLibraryA(name: cstr) usize;
+  fn @c(system) GetProcAddress(module: usize, name: cstr) usize;
+  fn @c(system) GetEnvironmentVariableA(name: cstr, buf: *u8, size: u32) u32;
+  fn @c(system) GetActiveProcessorCount(group: u16) u32;
 }
 
 pub fn reserve(bytes: usize) usize { VirtualAlloc(0usize, bytes, 0x2000u32, 4u32) }   // MEM_RESERVE, PAGE_READWRITE
 pub fn commit(addr: usize, bytes: usize) bool { VirtualAlloc(addr, bytes, 0x1000u32, 4u32) != 0usize }   // MEM_COMMIT
 pub fn decommit(addr: usize, bytes: usize) { VirtualFree(addr, bytes, 0x4000u32); }   // MEM_DECOMMIT
-pub fn release(addr: usize) { VirtualFree(addr, 0usize, 0x8000u32); }                 // MEM_RELEASE
+pub fn release(addr: usize, bytes: usize) { VirtualFree(addr, 0usize, 0x8000u32); }   // MEM_RELEASE: the length must be 0, so 'bytes' is ignored
 
 // Milliseconds since boot (15 ms granularity, plenty for a give-back delay)
 pub fn tick() u64 { GetTickCount64() }
@@ -55,3 +65,53 @@ pub fn writeErr(buf: usize, n: usize) {
 }
 
 pub fn fatal() { ExitProcess(3u32); }
+
+// The text of an environment variable into buf (size bytes of scratch): its length, or 0 when it is not set or does not fit
+pub fn getEnv(name: cstr, buf: usize, size: usize) usize {
+  let n = usize.from(GetEnvironmentVariableA(name, buf as *u8, u32.from(size)));
+  if n >= size { return 0usize; }
+  n
+}
+
+// Processors the process may use (all processor groups)
+pub fn processors() usize { usize.from(GetActiveProcessorCount(0xFFFFu16)) }
+
+// The C runtime's functions that a foreign block goes to (the block was made by ucrtbase before the shim took the
+// names, or by a library that calls it directly): addresses, 0 when not found, read once at the heap's creation.
+fn ucrtModule() usize {
+  var m = GetModuleHandleA("ucrtbase.dll");
+  if m == 0usize { m = LoadLibraryA("ucrtbase.dll"); }
+  m
+}
+pub fn foreignFree() usize { GetProcAddress(ucrtModule(), "free") }
+pub fn foreignRealloc() usize { GetProcAddress(ucrtModule(), "realloc") }
+pub fn foreignMsize() usize { GetProcAddress(ucrtModule(), "_msize") }
+pub fn foreignAFree() usize { GetProcAddress(ucrtModule(), "_aligned_free") }
+pub fn foreignARealloc() usize { GetProcAddress(ucrtModule(), "_aligned_realloc") }
+pub fn foreignAMsize() usize { GetProcAddress(ucrtModule(), "_aligned_msize") }
+
+} #else {
+
+pub fn reserve(bytes: usize) usize { 0usize }
+pub fn commit(addr: usize, bytes: usize) bool { false }
+pub fn decommit(addr: usize, bytes: usize) { }
+pub fn release(addr: usize, bytes: usize) { }
+pub fn tick() u64 { 0u64 }
+pub fn lock(l: usize) { }
+pub fn tryLock(l: usize) bool { false }
+pub fn unlock(l: usize) { }
+pub fn timerCreate(cb: TimerCb, ctx: usize) usize { 0usize }
+pub fn timerArm(timer: usize, ms: u64) { }
+pub fn timerClose(timer: usize) { }
+pub fn writeErr(buf: usize, n: usize) { }
+pub fn fatal() { }
+pub fn getEnv(name: cstr, buf: usize, size: usize) usize { 0usize }
+pub fn processors() usize { 0usize }
+pub fn foreignFree() usize { 0usize }
+pub fn foreignRealloc() usize { 0usize }
+pub fn foreignMsize() usize { 0usize }
+pub fn foreignAFree() usize { 0usize }
+pub fn foreignARealloc() usize { 0usize }
+pub fn foreignAMsize() usize { 0usize }
+
+}

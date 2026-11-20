@@ -17,20 +17,11 @@ alias DesignFn = &fn @c () i32;
 
 fn globalHeap() usize {
   if libc.getenv("CNTEST_GLOBAL") as usize == 0usize { return 0usize; }
-  let m = selfModule(null);
-  let hf = GetProcAddress(m, "cnmalloc_heap");
-  let df = GetProcAddress(m, "cnmalloc_design");
+  let hf = cnmalloc.cnm_hostSym("cnmalloc_heap");
+  let df = cnmalloc.cnm_hostSym("cnmalloc_design");
   if hf == 0usize || df == 0usize { return 0usize; }
   if (df as *u8 as DesignFn)() != 2i32 { return 0usize; }
   (hf as *u8 as HeapFn)()
-}
-
-extern {
-  fn @c("GetModuleHandleA") selfModule(name: *u8) usize;
-  fn @c(system) GetProcAddress(module: usize, name: cstr) usize;
-  fn @c(system) Sleep(ms: u32);
-  fn @c(system) GetCurrentProcess() usize;
-  fn @c(system) K32GetProcessMemoryInfo(p: usize, counters: *u8, cb: u32) i32;
 }
 
 struct Job {
@@ -41,13 +32,7 @@ struct Job {
 
 fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
 
-fn privateBytes() usize {
-  let buf = libc.calloc(1usize, 128usize);
-  K32GetProcessMemoryInfo(GetCurrentProcess(), buf, 80u32);
-  let v = *word(buf as usize, 9usize);     // PrivateUsage, at offset 72
-  libc.free(buf);
-  v
-}
+fn privateBytes() usize { cnmalloc.cnm_hostPrivateBytes() }
 
 fn worker(arg: usize) u64 {
   let job = arg as *Job;
@@ -62,7 +47,7 @@ fn worker(arg: usize) u64 {
   }
   mem.atomicAdd[usize](&mut job.peak, 1usize, MemOrder.SeqCst);
   // wait until every thread has allocated, so the peak is all of them at once
-  while mem.atomicLoad[usize](&mut job.peak, MemOrder.SeqCst) < 16usize { Sleep(5u32); }
+  while mem.atomicLoad[usize](&mut job.peak, MemOrder.SeqCst) < 16usize { cnmalloc.cnm_hostSleepMs(5u32); }
   i = 0usize;
   while i < per { cnmalloc.cnm_free(job.h, *word(mine, i) as *u8); i = i + 1usize; }
   libc.free(mine as *u8);
@@ -80,7 +65,7 @@ fn run(mode: usize, wantBack: bool, label: &Array[u8]) {
   while t < 16usize { ts.push(thread.start[usize, u64](job as usize, &worker)); t = t + 1usize; }
   while ts.len() > 0usize { ts.pop().unwrap().join(); }
   let afterFree = privateBytes();
-  Sleep(3000u32);
+  cnmalloc.cnm_hostSleepMs(3000u32);
   let idle = privateBytes();
   expect(afterFree > before + 300000000usize, "the 16 threads held about 400 MB between them");
   if wantBack {
