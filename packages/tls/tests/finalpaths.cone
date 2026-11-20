@@ -324,35 +324,46 @@ fn streamsInList(cl: &tls.Client, srv: &tls.Server) {
   shuttle(&mut a, &mut ub);
 }
 
+// The count by size is asserted on Windows only. On Linux the system OpenSSL
+// allocates blocks of this size itself (lazy hash tables, two blocks in a cached
+// resumption session), so the count would not be the arrivals block's; the Linux
+// leak check is the lane 796 mutant (free(arrivals) removed from Session.final),
+// until a counter replaces the size tracker. Every path still runs on both.
+fn checkLive(base: usize, what: &str) {
+  #if #os == .windows {
+    expectUInt(u64.from(live() - base), 0u64, what);
+  }
+}
+
 fn main() i32 {
   let srv = serverOf();
   let cl = clientOf(tls.Verifier.roots(readText("ca.pem").view()));
   let bad = clientOf(tls.Verifier.roots(readText("other-ca.pem").view()));
   let base = live();
   normal(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "normal close: the session's block freed");
+  checkLive(base, "normal close: the session's block freed");
   refusedCert(&bad, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "a refused certificate: freed");
+  checkLive(base, "a refused certificate: freed");
   garbage(&cl);
-  expectUInt(u64.from(live() - base), 0u64, "garbage: freed");
+  checkLive(base, "garbage: freed");
   cutInHandshake(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "the end in the handshake: freed");
+  checkLive(base, "the end in the handshake: freed");
   cutOpen(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "the end after it: freed");
+  checkLive(base, "the end after it: freed");
   droppedOpen(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "dropped open, no close_notify: freed");
+  checkLive(base, "dropped open, no close_notify: freed");
   neverStarted(&cl);
-  expectUInt(u64.from(live() - base), 0u64, "never started: freed");
+  checkLive(base, "never started: freed");
   streamsOpen(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "streams dropped open: freed");
+  checkLive(base, "streams dropped open: freed");
   streamsClosed(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "streams closed both ways: freed");
+  checkLive(base, "streams closed both ways: freed");
   streamUnopened(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "streams never opened: freed");
+  checkLive(base, "streams never opened: freed");
   streamFailed(&cl);
-  expectUInt(u64.from(live() - base), 0u64, "a stream that failed: freed");
+  checkLive(base, "a stream that failed: freed");
   streamsInList(&cl, &srv);
-  expectUInt(u64.from(live() - base), 0u64, "streams in a list, some removed: freed");
+  checkLive(base, "streams in a list, some removed: freed");
   expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   0i32
 }
