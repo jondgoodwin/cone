@@ -21,12 +21,7 @@ mod doublefree;
 import testing use *;
 import thread;
 import libc;
-
-extern {
-  fn @c(system) GetModuleHandleA(name: *u8) usize;
-  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
-  fn @c("_msize") msize(p: *u8) usize;
-}
+import cnmalloc;
 
 alias DesignFn = &fn @c () i32;
 alias SetHandler = &fn @c (f: usize);
@@ -59,18 +54,14 @@ fn dfWorker(arg: usize) u64 {
 }
 
 fn main() i32 {
-  let m = GetModuleHandleA(null);
-  let design = GetProcAddress(m, &"cnmalloc_design" as *u8);
-  let setH = GetProcAddress(m, &"cnmalloc_setDoubleFreeHandler" as *u8);
-  let live = design != 0usize && (design as *u8 as DesignFn)() == 2i32;
-  if !live {
-    expectUInt(0u64, 0, "doublefree: the handler was called once");
-    expect(true, "doublefree: the handler was given the cell");
-    expect(true, "doublefree: the heap is sound after a double free");
-    expect(true, "doublefree: a grouped return reported the group's double-freed cell once");
-    expect(true, "doublefree: the grouped return reported the right cell (not the group's lowest)");
-    return done();
+  let design = cnmalloc.cnm_hostSym("cnmalloc_design");
+  if design == 0usize {
+    return testing.skip("doublefree: the cnmalloc shim is not linked: cnmalloc_design was not found (the shim is not linked or, on Linux, not exported by the link)");
   }
+  if (design as *u8 as DesignFn)() != 2i32 {
+    return testing.skip("doublefree: the cnmalloc shim is linked but the second design is off (CNMALLOC=design=lockfree is needed)");
+  }
+  let setH = cnmalloc.cnm_hostSym("cnmalloc_setDoubleFreeHandler");
   let abort = libc.getenv("CNDF_ABORT");
   let p = libc.malloc(100usize);
   libc.free(p);
@@ -94,9 +85,9 @@ fn main() i32 {
   }
   expect(sound, "doublefree: the heap is sound after a double free");
   // the grouped part
-  let begin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
-  let wpark = GetProcAddress(m, &"cnmalloc_workerPark" as *u8);
-  let wend = GetProcAddress(m, &"cnmalloc_workerEnd" as *u8);
+  let begin = cnmalloc.cnm_hostSym("cnmalloc_workerBegin");
+  let wpark = cnmalloc.cnm_hostSym("cnmalloc_workerPark");
+  let wend = cnmalloc.cnm_hostSym("cnmalloc_workerEnd");
   var grouped = false;
   var once = false;
   var right = false;
@@ -104,7 +95,7 @@ fn main() i32 {
     let c = libc.calloc(8usize, 8usize) as usize;
     let lo = libc.malloc(100usize) as usize;
     let hi = libc.malloc(100usize) as usize;
-    let adjacent = hi == lo + msize(lo as *u8);   // while lo is live: once the page is wholly free it may be given back
+    let adjacent = hi == lo + cnmalloc.cnm_hostMsize(lo);   // while lo is live: once the page is wholly free it may be given back
     *word(c, 0usize) = begin; *word(c, 1usize) = wpark; *word(c, 2usize) = wend;
     *word(c, 3usize) = lo; *word(c, 4usize) = hi;
     libc.free(hi as *u8);

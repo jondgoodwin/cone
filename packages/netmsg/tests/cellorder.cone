@@ -1,0 +1,166 @@
+// A packet's input cells are written before its messages are delivered, on
+// every kind: a handler that reads a bound cell when a Message arrives sees the
+// value that came with that message, never the one before. Over UDP and over
+// the simulated pair, each round sends a value and then a message, waits for
+// the handler's own read of the cell on that Message, and checks the read held
+// this round's value. (The in-process kind writes the cell in the sender's
+// order, so it has this by construction; cellin covers it.)
+
+mod cellorder;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import thread;
+import iocore use SocketAddr;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+const rounds = 40u32;
+const burst = 12u32;
+
+fn bytes(s: &str) Bytes {
+  var b = List[u8]();
+  putBytes(&mut b, s);
+  copyPacket(b.view()).freeze()
+}
+
+fn held(r: &LatestReader) String {
+  var buf = IoBuf(r.capacity());
+  var s = String();
+  match r.readNewer(0u64, buf.spare()) {
+    case let Some(got) {
+      buf.setLen(got.len);
+      s.append(String.fromBytes(buf.freeze().view()).view());
+    }
+    else { s.append("none"); }
+  }
+  s
+}
+
+// A handler that passes every event on, and on each Message reads the cell at
+// once and says what it held
+fn watching(r: LatestReader, evs: Sender[NetEvent], reads: Sender[String]) EventHandler {
+  eventHandler(Uni[fn(ev: NetEvent) + Sendable](fn(ev: NetEvent) [r, evs, reads] {
+    match &ev {
+      case is Message { reads.send(held(&r)); }
+      else {}
+    }
+    evs.send(ev);
+  }))
+}
+
+fn roundText(i: u32) String {
+  var s = String.from("v");
+  s.appendUInt(u64.from(i));
+  s
+}
+
+// Each round: the value, then the message, then the handler's read must be the value
+fn runRounds(sender: &Connection, reads: &mut Receiver[String], what: &str) {
+  var stale = 0u32;
+  var lost = 0u32;
+  var i = 0u32;
+  while i < rounds {
+    let want = roundText(i);
+    sender.sendLatest(4u16, bytes(want.view()));
+    // Several messages, so the packet has many to deliver and the old order
+    // wrote the cell after all of them
+    var k = 0u32;
+    while k < burst {
+      sender.sendReliable(bytes("m"));
+      k = k + 1u32;
+    }
+    k = 0u32;
+    while k < burst {
+      match reads.recvTimeout(Duration.fromSeconds(5i64)) {
+        case let Some(got) {
+          if got.view() != want.view() {stale = stale + 1u32;}
+        }
+        case is None[String] { lost = lost + 1u32; }
+      }
+      k = k + 1u32;
+    }
+    thread.sleep(Duration.fromMillis(40i64));
+    i = i + 1u32;
+  }
+  expectUInt(u64.from(lost), 0u64, what);
+  expectUInt(u64.from(stale), 0u64, what);
+}
+
+fn main() i32 {
+  // The simulated pair
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    var reads: Sender[String];
+    var rxReads: Receiver[String];
+    reads, rxReads = Channel[String].make();
+    var w: LatestWriter;
+    var r: LatestReader;
+    w, r = latestCell(16usize);
+    let r2 = w.reader();
+    var sp = pairSimulated(NetConfig.defaults(), LinkConfig.perfect(), LinkConfig.perfect(), 5u64,
+      channelHandler(txA), 1u32, watching(r2, txB, reads), 7u32);
+    sp.b.bindIncoming(4u16, w);
+    runRounds(&sp.a, &mut rxReads, "simulated: the handler on a Message reads this packet's value");
+    expectStr(held(&r).view(), "v39", "simulated: the cell ends on the last value");
+    sp.stop();
+  }
+
+  // Over UDP
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  var reads: Sender[String];
+  var rxReads: Receiver[String];
+  reads, rxReads = Channel[String].make();
+  {
+    let cfg = NetConfig.defaults();
+    var w: LatestWriter;
+    var r: LatestReader;
+    w, r = latestCell(16usize);
+    let r2 = w.reader();
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, watching(r2, txS, reads));
+    let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+    var sConn = None[Connection];
+    var cConn = None[Connection];
+    var gotS = false;
+    var gotC = false;
+    let until = Instant.now() + Duration.fromSeconds(20i64);
+    while (!gotS || !gotC) && Instant.now() < until {
+      match rxS.recvTimeout(Duration.fromMillis(20i64)) {
+        case let Some(e) { match e { case let Joined(j) { sConn = Some[Connection](j.conn); gotS = true; } else {} } }
+        case is None[NetEvent] {}
+      }
+      match rxC.recvTimeout(Duration.fromMillis(20i64)) {
+        case let Some(e) { match e { case let Joined(j) { cConn = Some[Connection](j.conn); gotC = true; } else {} } }
+        case is None[NetEvent] {}
+      }
+    }
+    expect(gotS && gotC, "both ends joined");
+    match &sConn {
+      case let &Some[Connection](sc) { sc.bindIncoming(4u16, w); }
+      else {}
+    }
+    thread.sleep(Duration.fromMillis(100i64));
+    match &cConn {
+      case let &Some[Connection](cc) {
+        runRounds(cc, &mut rxReads, "udp: the handler on a Message reads this packet's value");
+      }
+      else {}
+    }
+    expectStr(held(&r).view(), "v39", "udp: the cell ends on the last value");
+    client.endpoint.shutdown();
+    server.endpoint.shutdown();
+  }
+  done()
+}

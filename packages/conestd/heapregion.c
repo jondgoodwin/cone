@@ -55,12 +55,19 @@ static void heapRelease(struct ConeRegion *r, void *block, size_t bytes) {
 // (read once, off by default) and the program links cnmalloc: then the answer is the size of the cell cnmalloc's
 // malloc hands out for that request (its small classes; larger requests and 0 answer as asked). That is within
 // core's 'size' promise: at least 'bytes', stable, idempotent (a class size is its own class's size) and never
-// falling. cnmalloc exports 'cnmalloc_sizeFor' from the executable (shim/cn_shim.c), found by GetProcAddress (Windows only, as cnmalloc
-// is) as the actors runtime finds its worker calls; a program without cnmalloc finds nothing and stays exact (row 451).
+// falling. cnmalloc exports 'cnmalloc_sizeFor' from the executable (shim/cn_shim.c), found by GetProcAddress (Windows) or
+// dlsym(RTLD_DEFAULT) (Linux, row 550) as the actors runtime finds its worker calls; a program without cnmalloc finds nothing and stays exact (row 451).
 #ifdef _WIN32
 __declspec(dllimport) void *__stdcall GetModuleHandleA(const char *name);
 __declspec(dllimport) void *__stdcall GetProcAddress(void *module, const char *name);
 __declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(const char *name, char *buf, unsigned long n);
+#else
+// Linux (cnmalloc row 550): the same lookup as dlsym(RTLD_DEFAULT = 0, ...), which finds the executable's own export when
+// congo's link exports the shim's cnmalloc_* names (--dynamic-list). Looked up only when the setting is on, and the name
+// is there when the shim is linked, so a lookup that would make glibc allocate is made only by a program that has the
+// setting on without the shim (one allocation, through glibc's own malloc).
+#include <stdlib.h>
+void *dlsym(void *handle, const char *name);
 #endif
 static volatile int sizeState;                       // 0 not looked yet, 1 settled
 static size_t (*volatile classSizeFn)(size_t);
@@ -72,6 +79,14 @@ static size_t heapSize(struct ConeRegion *r, size_t bytes, size_t align) {
         char v[8];
         if (GetEnvironmentVariableA("CONE_HEAP_CLASS_SIZE", v, sizeof v) == 1 && v[0] == '1')
             classSizeFn = (size_t (*)(size_t))GetProcAddress(GetModuleHandleA(0), "cnmalloc_sizeFor");
+        sizeState = 1;
+    }
+    if (classSizeFn) return classSizeFn(bytes);
+#else
+    if (!sizeState) {
+        const char *v = getenv("CONE_HEAP_CLASS_SIZE");
+        if (v && v[0] == '1' && v[1] == 0)
+            classSizeFn = (size_t (*)(size_t))dlsym(0, "cnmalloc_sizeFor");
         sizeState = 1;
     }
     if (classSizeFn) return classSizeFn(bytes);

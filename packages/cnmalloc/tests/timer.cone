@@ -1,0 +1,61 @@
+// The timer's creation test (row 550). The give-back timer is made on the first arm, and making it may allocate: on Linux it is a
+// thread made by pthread_create, whose start calls the C library's calloc, which is the heap itself once the shim is linked, and
+// that allocation can free a block and reach armTimer again. Made with the timer's lock held (as it was until row 550), the nested
+// arm waited for the lock its own thread held: a hang at first use, the failure the Linux layer is designed against.
+// The fix: the timer is made with its lock RELEASED, behind a sentinel handle; a nested arm that finds the sentinel returns, and the
+// thread making the timer arms it right after. Here the heap's test hook (cnm_set_timer_hook) runs between the lock's release and
+// the creation, with the handle the sentinel, and does what the allocation would: it allocates and frees a block, which reaches
+// armTimer again. The test is a package heap, so it needs no shim and runs on both platforms (a hang is the test timing out).
+// Then the timer, made, must still be armed by its creator, fire, and give the page back.
+
+mod timer;
+
+import testing use *;
+import cnmalloc;
+import libc;
+
+var @threadlocal gh: usize = 0usize;             // the hook runs on the thread that makes the first arm, which is this one
+var @threadlocal hookRuns: usize = 0usize;
+var @threadlocal hookSawSentinel: usize = 0usize;
+var @threadlocal nestedDone: usize = 0usize;
+
+fn @c timerHook(cl: usize) {
+  hookRuns = hookRuns + 1usize;
+  if cnmalloc.cnm_timer_handle(gh) == 1usize { hookSawSentinel = hookSawSentinel + 1usize; }
+  // the nested allocation: a free of a block leaves something waiting, so it calls armIfWaiting, which calls armTimer
+  var i = 0usize;
+  while i < 4usize {
+    cnmalloc.cnm_free(gh, cnmalloc.cnm_malloc(gh, 100usize + i * 3000usize));
+    i = i + 1usize;
+  }
+  nestedDone = nestedDone + 1usize;
+}
+
+fn word(a: *u64, i: usize) u64 { *(((a as usize) + i * 8usize) as *u64) }
+
+fn main() i32 {
+  // give-back after 50 ms of quiet
+  let h = cnmalloc.cnm_make(1073741824usize, 1usize, 50u64, 67108864usize);
+  gh = h;
+  let s = libc.calloc(512usize, 8usize) as *u64;
+  cnmalloc.cnm_stats(h, s, 512usize);
+  let floor = word(s, 360usize);
+  expectUInt(u64.from(cnmalloc.cnm_timer_handle(h)), 0u64, "timer: no timer is made before the first arm");
+
+  cnmalloc.cnm_set_timer_hook(h, &timerHook as *u8 as usize);
+  cnmalloc.cnm_free(h, cnmalloc.cnm_malloc(h, 100usize));      // the first free that leaves a page waiting: arms the timer, making it
+  expectUInt(u64.from(hookRuns), 1u64, "timer: the hook ran once, inside the creation");
+  expectUInt(u64.from(hookSawSentinel), 1u64, "timer: the hook saw the sentinel handle, with the timer's lock released");
+  expectUInt(u64.from(nestedDone), 1u64, "timer: the nested allocations and frees came back (no deadlock on the timer's lock)");
+  expect(cnmalloc.cnm_timer_handle(h) > 1usize, "timer: the creator stored the real handle");
+  expect(cnmalloc.cnm_timer_armed(h) == 1usize || cnmalloc.cnm_timer_fired(h) >= 1u64, "timer: the creator armed the timer");
+
+  cnmalloc.cnm_hostSleepMs(500u32);
+  expect(cnmalloc.cnm_timer_fired(h) >= 1u64, "timer: the timer fired after the delay");
+  cnmalloc.cnm_stats(h, s, 512usize);
+  expectUInt(word(s, 360usize), floor, "timer: the pages were given back, committed bytes are down to the floor");
+
+  libc.free(s as *u8);
+  cnmalloc.cnm_destroy(h);
+  done()
+}
