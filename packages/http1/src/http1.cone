@@ -348,6 +348,12 @@ pub struct Connection is Move {
   armHead: bool;             // start the head timeout at the next transmit
   armExpect: bool;           // start the expect timeout at the next transmit
 
+  // A server's request head read into the head the owner gave back (recycleRequest), and the
+  // scratch its fields are read into: both kept, so a connection reading request after request
+  // allocates nothing for them
+  spare: RequestHead;
+  fl: FieldLines;
+
   // The end
   closed: bool;
   failed: bool;
@@ -378,6 +384,7 @@ pub struct Connection is Move {
       headAt: now, headArmed: false, bodyAt: now, bodyArmed: false,
       idleAt: now + cfg.idleTimeout, idleArmed: true, expectAt: now, expectArmed: false,
       armHead: false, armExpect: false,
+      spare: RequestHead(), fl: FieldLines(Headers(), String(), 0usize),
       closed: false, failed: false, failure: List[Event](),
       exchanges: 0u64, bytesIn: 0u64, bytesOut: 0u64)
   }
@@ -426,6 +433,33 @@ pub struct Connection is Move {
     all <-> out;
     bytesOut = bytesOut + u64.from(all.len());
     all
+  }
+
+  // The same, appended to the Chain the caller keeps: the connection's own queue keeps its
+  // ring, and the caller's is refilled, so a connection sending response after response
+  // allocates no ring for either. How many bytes were moved
+  pub fn pollTransmitInto(self: &mut, at: Instant, dest: &mut Chain) usize {
+    self.transmitting(at);
+    var moved = 0usize;
+    while true {
+      match out.popFront() {
+        case var Some(b) {
+          moved = moved + b.len();
+          dest.push(b);
+        }
+        else {break;}
+      }
+    }
+    bytesOut = bytesOut + u64.from(moved);
+    moved
+  }
+
+  // A server's request head given back once the owner is done with it: the next request is
+  // read into it (its blocks kept) rather than into a new one. A head not given back is
+  // simply dropped by its owner, and the next is made anew, as it always was
+  pub fn recycleRequest(self: &mut, head: RequestHead) {
+    var h = head;
+    spare <-> h;
   }
 
   // A transmit at 'at': the deadlines that start when the bytes go
@@ -661,6 +695,11 @@ pub struct Connection is Move {
   // (if any) by sendData and finish. With no request awaiting it, a program
   // error; after the connection has failed, it does nothing
   pub fn sendResponse(self: &mut, head: ResponseHead, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.respondWith(&head, body, file, line);
+  }
+
+  // The same, the head only read: its owner keeps it (and refills it for the next response)
+  pub fn respondWith(self: &mut, head: &ResponseHead, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     if clientRole {panic("http1: sendResponse on a client's connection", file, line);}
     if closed || failed {return;}
     if !requestSeen || ws != WriteState.Idle {panic("http1: sendResponse with no request awaiting one", file, line);}
@@ -939,14 +978,15 @@ pub struct Connection is Move {
   // A server's request head, gathered: parsed, checked, and its body's
   // framing decided
   fn requestHead(self: &mut, len: usize) Event {
+    var head = RequestHead();
+    head <-> spare;
     let read = match input.peek(len) {
-      case let Some(v) {readRequest(v, &cfg)}
-      case is None[&Array[u8]] {bad[RequestRead](ErrorKind.Malformed, 400u16, "the head is not in the input")}
+      case let Some(v) {readRequestInto(v, &cfg, &mut head, &mut fl)}
+      case is None[&Array[u8]] {bad[Framing](ErrorKind.Malformed, 400u16, "the head is not in the input")}
     };
     self.consumeHead(len);
     match read {
-      case var Ok(r) {
-        let head, framing = r.(head, framing);
+      case var Ok(framing) {
         peer10 = head.version == Version.Http10;
         keepAlive = !peer10 && !head.headers.hasToken("Connection", "close");
         answeringHead = head.method == Method.Head;
