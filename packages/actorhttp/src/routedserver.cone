@@ -409,6 +409,7 @@ pub actor ConnActor {
   writing: bool;
   protoClosed: bool;        // the protocol is over (Closed was given)
   closing: bool;            // the closing sequence has begun
+  closeStarted: bool;       // closeOut is running (it starts once no read is parked)
   ended: bool;              // the connection has ended: nothing more is done
   streams: Dict[u32, Strm];
   pends: Deque[Pend];
@@ -432,7 +433,7 @@ pub actor ConnActor {
     }
     *self = Self(id: id, sc: httpconn.ServerConn.make(args.cfg.conn, layer, now), sock: sock, srv: srv,
       args: args, group: group, peer: peer, secure: secure, tm: actors.Timer.make(), out: Chain.make(noBound),
-      reading: false, writing: false, protoClosed: false, closing: false, ended: false,
+      reading: false, writing: false, protoClosed: false, closing: false, closeStarted: false, ended: false,
       streams: Dict[u32, Strm](), pends: Deque[Pend](), h1: None[HttpHandler], h1ix: 0usize, nextRid: 1u64, guard: LiveGuard(true));
     selfactor.begin();
   }
@@ -455,6 +456,8 @@ pub actor ConnActor {
   pub async fn readOnce(self) {
     if ended || closing {
       reading = false;
+      // the closing sequence waits for this read to be over (aio: one operation at a time per direction)
+      if !ended {self.turn();}
       return;
     }
     let room = sc.readRoom();
@@ -572,6 +575,12 @@ pub actor ConnActor {
     }
     if isDone && !writing && !closing {
       closing = true;
+      // a read parked on the socket is ended first: closeOut reads the socket too, and aio supports one
+      // operation at a time per direction (and a socket dropped under a read cancels it)
+      if reading {sock.cancelRead();}
+    }
+    if closing && !reading && !closeStarted {
+      closeStarted = true;
       selfactor.closeOut();
     }
   }
