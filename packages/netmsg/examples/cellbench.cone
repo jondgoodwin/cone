@@ -42,7 +42,8 @@ const beingWords = 8usize;    // 32 bytes a being
 const headBytes = 16usize;
 const personalBytes = 100usize;
 const inputBytes = 80usize;
-const packetFit = 1171usize;  // maxLatestBytes of the default config
+const packetFit = 1171usize;  // maxLatestBytes of the default config: one body (m1) is cut to this
+const beachCut = 1040usize;   // the crowded region's value is cut to this, so it can share a packet with the 106-byte personal part (the packet takes 1177 bytes of items, 6 over each)
 const histWidthNs = 100000i64;
 const histBuckets = 2000usize;
 
@@ -267,6 +268,7 @@ actor World {
   stepWall: List[u64];
   lagHist: List[u64];
   cpuNs: u64;
+  pubWallNs: u64;
   publishes: u64;
 
   pub fn init(self: &new, form: u32, zone: u32, expect: usize, per: usize, crowd: bool) {
@@ -287,7 +289,7 @@ actor World {
       rw: List[LatestWriter](), pw: List[LatestWriter](), ir: List[LatestReader](), seenIn: List[u64](),
       lastIn: List[u8](), inbuf: IoBuf(256usize), body: List[u8](), near: List[u32](), timer: actors.Timer.make(),
       inputsApplied: 0u64, inputUpdates: 0u64, beachFull: 0u64, beachRefused: 0u64, stepWall: newHist(),
-      lagHist: newHist(), cpuNs: 0u64, publishes: 0u64);
+      lagHist: newHist(), cpuNs: 0u64, pubWallNs: 0u64, publishes: 0u64);
   }
 
   pub async fn onNet(self, ev: NetEvent) {
@@ -330,7 +332,7 @@ actor World {
     if form == formC {
       var r = 0usize;
       while r < regions {
-        let cap = if crowd && r == 0usize {packetFit} else {headBytes + per * beingWords * 4usize};
+        let cap = if crowd && r == 0usize {beachCut} else {headBytes + per * beingWords * 4usize};
         var w: LatestWriter;
         var rd: LatestReader;
         w, rd = latestCell(cap);
@@ -370,11 +372,11 @@ actor World {
         if crowd && r == 0usize {
           // the whole value, which passes a packet at these counts: the put is refused, and the cut one goes in
           encodeRegion(&mut body, 0u32, tick, at, 1048576usize, &st, &bst, per, crowd, seats.len());
-          if body.len() > packetFit {
+          if body.len() > beachCut {
             beachFull = beachFull + 1u64;
             if !rw[0usize].put(body.view()) { beachRefused = beachRefused + 1u64; }
           }
-          encodeRegion(&mut body, 0u32, tick, at, packetFit, &st, &bst, per, crowd, seats.len());
+          encodeRegion(&mut body, 0u32, tick, at, beachCut, &st, &bst, per, crowd, seats.len());
         } else {
           encodeRegion(&mut body, u32.from(r), tick, at, 1048576usize, &st, &bst, per, crowd, seats.len());
         }
@@ -392,10 +394,10 @@ actor World {
       var rb = List[Bytes]();
       var r = 0usize;
       while r < regions {
-        encodeRegion(&mut body, u32.from(r), tick, at, packetFit, &st, &bst, per, crowd, seats.len());
+        encodeRegion(&mut body, u32.from(r), tick, at, beachCut, &st, &bst, per, crowd, seats.len());
         if crowd && r == 0usize {
           // would the whole value have fit?
-          if headBytes + (per + seats.len()) * beingWords * 4usize > packetFit { beachFull = beachFull + 1u64; }
+          if headBytes + (per + seats.len()) * beingWords * 4usize > beachCut { beachFull = beachFull + 1u64; }
         }
         rb.push(copyPacket(body.view()).freeze());
         r = r + 1usize;
@@ -415,7 +417,7 @@ actor World {
       return;
     }
     // m1: one body a player: header, the personal part, then the beings of its own region, then the others' until a packet is full
-    if crowd && headBytes + (per + seats.len()) * beingWords * 4usize > packetFit { beachFull = beachFull + 1u64; }
+    if crowd && headBytes + (per + seats.len()) * beingWords * 4usize > beachCut { beachFull = beachFull + 1u64; }
     while i < seats.len() {
       let reg = *seatRegion[i];
       body.clear();
@@ -491,7 +493,11 @@ actor World {
       var s1 = 0u64;
       u1, s1 = threadTimes();
       cpuNs = cpuNs + (u1 - u0) + (s1 - s0);
-      histAdd(&mut stepWall, Instant.now().nanos() - t0);
+      if k % 2i64 == 0i64 {
+        let took = Instant.now().nanos() - t0;
+        histAdd(&mut stepWall, took);
+        pubWallNs = pubWallNs + u64.from(took);
+      }
       k = k + 1i64;
       if k >= steps { break; }
       timer.set(Instant.fromNanos(startNs + k * 16666667i64));
@@ -515,7 +521,8 @@ actor World {
     printStr(" seats="); printUInt(u64.from(seats.len()));
     printStr(" regions="); printUInt(u64.from(regions));
     printStr(" publishes="); printUInt(publishes);
-    printStr(" cpu_us_per_publish="); printUInt(if publishes > 0u64 {cpuNs / publishes / 1000u64} else {0u64});
+    printStr(" thread_cpu_us_per_tick="); printUInt(if publishes > 0u64 {cpuNs / (publishes * 2u64) / 1000u64} else {0u64});
+    printStr(" publish_wall_us_mean="); printUInt(if publishes > 0u64 {pubWallNs / publishes / 1000u64} else {0u64});
     printStr(" inputsApplied="); printUInt(inputsApplied);
     printStr(" inputUpdates="); printUInt(inputUpdates);
     printStr("\n");
@@ -527,10 +534,10 @@ actor World {
       printStr(" beachBeings="); printUInt(u64.from(per + seats.len()));
       printStr(" beachPublishesOverPacket="); printUInt(beachFull);
       printStr(" beachPutRefused="); printUInt(beachRefused);
-      printStr(" beachBeingsSent="); printUInt(u64.from((packetFit - headBytes) / (beingWords * 4usize)));
+      printStr(" beachBeingsSent="); printUInt(u64.from((beachCut - headBytes) / (beingWords * 4usize)));
     }
     printStr("\n");
-    histLine("WORLD step wall (turn, sleeping excluded)", &stepWall);
+    histLine("WORLD publish tick wall (the turn: encode, put or send; sleeping excluded)", &stepWall);
     histLine("WORLD tick start lag vs schedule", &lagHist);
     done.send(1u64);
   }
