@@ -381,6 +381,8 @@ struct Strm is Move {
   waitAll: Option[actors.ReplyOf[Result[String, BodyError]]];
   allLimit: usize;
   gather: String;
+  sink: Option[ChunkSink];   // 'RequestBody.to': the sink the body's buffers are lent to (until its one end)
+  lend: BodyLend;            // the buffers lent to the sink and not yet given back (lend.cone)
 }
 
 // A 'write' or a 'finish' that waits for the connection to take its bytes
@@ -665,7 +667,7 @@ pub actor ConnActor {
     let expect = head.headers.hasToken("Expect", "100-continue");
     var rec = Strm(rid, stream, head, String(), stFresh, false, 0u64, false, 0u64, false, isHead, streamed, expect,
       Deque[IoBuf](), false, false, None[actors.ReplyOf[Result[Option[String], BodyError]]],
-      None[actors.ReplyOf[Result[String, BodyError]]], 0usize, String());
+      None[actors.ReplyOf[Result[String, BodyError]]], 0usize, String(), None[ChunkSink], newLend());
     if !streamed && body.isSized() && body.length > u64.from(args.cfg.maxBody) {
       rec.rejected = true;
     } else if !streamed && expect {
@@ -1126,6 +1128,7 @@ pub actor ConnActor {
         case let Some(r) {r.chunks.push(buf);}
         else {sc.release(stream, n);}
       }
+      self.pumpSink(stream);
     } else {
       sc.release(stream, n);
     }
@@ -1145,6 +1148,7 @@ pub actor ConnActor {
       }
       else {}
     }
+    self.pumpSink(stream);
     match rpR {
       case var Some(w) {w.answer(Ok[Option[String], BodyError](None));}
       else {}
@@ -1271,6 +1275,108 @@ pub actor ConnActor {
     self.turn();
   }
 
+  // ---- the request body sent to a sink (RequestBody.to)
+
+  // The sink is attached to its source and gets the body: the pieces already queued first, then each as it
+  // arrives, while the sink's window has room; its credit returns when the sink gives the buffer back
+  pub async fn xBodyTo(self, stream: u32, rid: u64, sink: ChunkSink, src: ChunkSource) {
+    var ok = self.live(stream, rid);
+    if ok {
+      match streams.getMut(&stream) {
+        case let Some(r) {
+          if r.sink is Some || r.waitRead is Some || r.waitAll is Some {ok = false;} else {r.sink = Some[ChunkSink](sink.clone());}
+        }
+        else {}
+      }
+    }
+    if !ok {
+      sink.end(Ending.Failed(AnyError.from(BodyError.cancelled())));
+      return;
+    }
+    self.sendExpected(stream);
+    sink.attach(src);
+    self.pumpSink(stream);
+    self.turn();
+  }
+
+  // Queued pieces to the sink while its window has room, then its end when the body is whole and sent
+  fn pumpSink(self, stream: u32) {
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        if r.sink is None {return;}
+        while true {
+          var cap = 0usize;
+          match r.chunks.peekFront() {
+            case let Some(b) {cap = b.capacity();}
+            else {break;}
+          }
+          if !hasRoom(&r.lend, cap) {break;}
+          match r.chunks.popFront() {
+            case let Some(b) {deliver(&mut r.lend, &r.sink, b);}
+            else {break;}
+          }
+        }
+        if r.bodyEnd && r.chunks.isEmpty() {
+          var held = None[ChunkSink];
+          held <-> r.sink;
+          match held {
+            case let Some(sk) {sk.end(Ending.Finished);}
+            else {}
+          }
+        }
+      }
+      else {}
+    }
+  }
+
+  // The sink gave a buffer back: the credit it held is released, and the next pieces go
+  pub async fn xBodyBack(self, stream: u32, rid: u64, b: IoBuf) {
+    if !self.live(stream, rid) {return;}
+    var m = 0usize;
+    match streams.getMut(&stream) {
+      case let Some(r) {m = lendReturn(&mut r.lend, b.base() as usize);}
+      else {}
+    }
+    if m > 0usize {sc.release(stream, m);}
+    self.pumpSink(stream);
+    self.turn();
+  }
+
+  // The sink stopped its source: the first reason is its one end, the queued pieces go, and the request is
+  // cancelled on the wire; past a limit (BodyError.tooLarge) the server answers 413 itself
+  pub async fn xBodyStop(self, stream: u32, rid: u64, why: Ending) {
+    if !self.live(stream, rid) {return;}
+    let limit = isBodyLimit(&why);
+    var held = None[ChunkSink];
+    var freed = List[usize]();
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        held = r.sink.take();
+        r.discard = true;
+        while true {
+          match r.chunks.popFront() {
+            case let Some(b) {freed.push(b.len());}
+            else {break;}
+          }
+        }
+      }
+      else {}
+    }
+    match held {
+      case let Some(sk) {sk.end(why);}
+      else {return;}
+    }
+    var i = 0usize;
+    while i < freed.len() {
+      sc.release(stream, freed[i]);
+      i = i + 1usize;
+    }
+    if limit {self.tooLarge(stream);}
+    else if sc.isHttp2() {sc.stopBody(stream);}
+    else {sc.abort();}
+    self.turn();
+  }
+
   // The Exchange's body handle was dropped: what is not read is released, and the rest is dropped as it arrives
   pub async fn xBodyDrop(self, stream: u32, rid: u64) {
     if !self.live(stream, rid) {return;}
@@ -1319,6 +1425,12 @@ pub actor ConnActor {
         else {break;}
       }
     }
+    match r.sink.take() {
+      case let Some(sk) {sk.end(Ending.Failed(AnyError.from(BodyError.cancelled())));}
+      else {}
+    }
+    let lentCredit = lendAbandon(&mut r.lend);
+    if lentCredit > 0usize {sc.release(stream, lentCredit);}
     if r.streamed && !r.bodyEnd {sc.stopBody(stream);}
   }
 

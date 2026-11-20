@@ -1,0 +1,647 @@
+// ClientCore: the pool's tables and the structures that decide its order.
+//
+// A Client is a ClientCore (this file) plus what touches the world: its
+// driver, its loop, the TLS context and the HTTP/3 plug-in. The core holds
+// the records of fetches, pooled connections and origins and the structures
+// the pool's decisions are made from; it calls nothing of the loop's or the
+// driver's, so the same decisions can be hosted by a polled loop (Client) or,
+// later, by an actor. Its internal name is plain: nothing outside the package
+// names it. What it holds:
+//
+// ORIGINS are found by key in a Dict ('https://example.com:443'), the key
+// built into a scratch String the core keeps, so a lookup allocates nothing.
+// An origin with nothing waiting, no connection and no fetch naming it is
+// idle; idle origins are dropped, least recently used first, once a new one
+// would take the count past 'maxOrigins'. An origin whose first connection
+// failed, with nothing waiting, goes at once, so a flood of redirects to new
+// hosts leaves nothing behind.
+//
+// WAITING FETCHES wait in one priority queue per origin, ordered by
+// (intent, score, order asked) as the scheduler's rules give. A queue entry
+// carries the version its fetch had when it was pushed; a cancel, a timeout,
+// a reprioritize or a dispatch makes the fetch's version another, and a pop
+// skips an entry whose version is not its fetch's (lazy deletion). A queue
+// that holds more stale entries than live ones is rebuilt. Across origins, a
+// second queue holds each origin that has waiters and room to open a
+// connection, keyed by its first fetch, so the origin to open for is its top.
+//
+// SCHEDULING follows what changed: an origin an event touched is on the dirty
+// list, and the scheduler visits those (in the order of their numbers) and not
+// the others.
+//
+// IDLE CONNECTIONS are stamped when they become idle, and a queue by stamp
+// gives the one idle longest (the one to close for room).
+//
+// DEADLINES are not here: each fetch's deadline and group are watched by one
+// timer on the host's loop (the polled Client). The actor host (C4) brings its
+// one Timer and its queue of deadlines with it.
+
+const noStamp = 0u64;
+const staleSlack = 64usize;       // stale entries a queue may hold beyond twice its live ones
+
+// What a waiting fetch is ordered by: its intent's rank, then the higher score, then the earlier asked
+struct FetchKey {
+  rank: u32;
+  score: i64;
+  seq: u64;
+
+  pub fn `<=>`(self, o: FetchKey) i32 {
+    if rank != o.rank {return rank <=> o.rank;}
+    if score != o.score {return o.score <=> score;}
+    seq <=> o.seq
+  }
+}
+
+// An entry of an origin's queue of waiting fetches: the fetch and the version it had when pushed
+struct WaitRef {
+  fi: u32;
+  ver: u64;
+}
+
+// An entry of the queue of origins that may open a connection: the origin and the version of its entry
+struct OriginRef {
+  oi: u32;
+  ver: u32;
+  gen: u32;
+}
+
+// An entry of the queue of idle connections: the connection, its generation, and the stamp it became idle with
+struct IdleRef {
+  pc: u32;
+  gen: u32;
+  stamp: u64;
+}
+
+// An entry of the queue of idle origins: the origin, its generation, and the use it was idle after
+struct LruRef {
+  oi: u32;
+  gen: u32;
+  used: u64;
+}
+
+struct ClientCore {
+  fetches: Fetches;
+  liveFetches: u32;
+  queuedN: u32;               // fetches waiting for a connection
+  seq: u64;                   // the order asked
+  pconns: PConns;
+  total: u32;                 // connections connecting, idle, busy or shared
+  undecided: List[u32];       // pooled connections connected whose protocol is still to be chosen
+  origins: Origins;
+  byKey: Dict[String, u32];   // an origin's key to its cell
+  keyBuf: String;             // the key being looked up: kept, so a lookup allocates nothing
+  maxOrigins: u32;
+  priorKnowledge: bool;       // http origins speak HTTP/2 from the first byte
+  h3Origins: List[String];    // origins known to speak HTTP/3
+  useClock: u64;
+  qverNext: u64;              // the next version of a queue entry
+  qordNext: u64;              // the next arrival number
+  dirty: List[u32];           // origins an event touched since the scheduler last visited them
+  oheap: PriorityQueue[FetchKey, OriginRef];
+  idleHeap: PriorityQueue[u64, IdleRef];
+  idleLive: usize;            // connections stamped idle
+  idleClock: u64;
+  lru: PriorityQueue[u64, LruRef];
+
+  fn make(maxOrigins: u32, priorKnowledge: bool, h3Origins: List[String]) ClientCore {
+    ClientCore(fetches: Fetches(usize.from(recsPerBlock)), liveFetches: 0u32, queuedN: 0u32, seq: 0u64,
+      pconns: PConns(usize.from(recsPerBlock)), total: 0u32, undecided: List[u32](), origins: Origins(8usize),
+      byKey: Dict[String, u32](), keyBuf: String(), maxOrigins: maxOrigins, priorKnowledge: priorKnowledge,
+      h3Origins: h3Origins, useClock: 0u64, qverNext: 1u64, qordNext: 1u64, dirty: List[u32](),
+      oheap: PriorityQueue[FetchKey, OriginRef](), idleHeap: PriorityQueue[u64, IdleRef](), idleLive: 0usize,
+      idleClock: 1u64, lru: PriorityQueue[u64, LruRef]())
+  }
+
+  // ---------------------------------------------------------------------------
+  // The tables
+  // ---------------------------------------------------------------------------
+
+  fn fetchLive(self: &, i: u32) bool {fetches.isLive(i)}
+
+  fn pconnLive(self: &, i: u32) bool {pconns.isLive(i)}
+
+  fn idOf(self: &, fi: u32) FetchId {FetchId(fi, (self.fetches.borrowAt(fi).unwrap()).gen)}
+
+  // The live fetch id names, or noEntry
+  fn fetchIndex(self: &, id: FetchId) u32 {
+    if id.isNone() {return noEntry;}
+    match fetches.borrowAt(id.index) {
+      case let Some(f) {if f.gen != id.gen {return noEntry;}}
+      else {return noEntry;}
+    }
+    id.index
+  }
+
+  fn newFetch(self: &mut) u32 {
+    let h = fetches.add(Fetch(gen: 0u32, state: fQueued, seq: 0u64, intent: Intent.Visible, score: 0i64,
+      sink: Sink.Here(0u64), method: Method.Get, methodText: String(), url: Url(),
+      headers: Headers(), body: String(), origin: noEntry, conn: noEntry, connGen: 0u32,
+      req: httpconn.ReqId.none(), qreq: H3Req.none(), deadline: forever(), group: None, watch: OpId.none(),
+      ending: endNone, delivered: false, following: false, cutting: false, location: String(),
+      redirectStatus: 0u16, drained: 0usize, held: 0usize, sent: 0usize, retries: 0u32,
+      maxRedirects: 0u32, timing: Timing.zero(), streamed: false, upLen: BodyLength(), upq: Deque[IoBuf](),
+      upPushed: 0u64, upEnded: false, upFinished: false, upGone: false, upWritable: false, upAsked: false,
+      qver: 0u64, qord: 0u64, head: RequestHead(), hasHead: false));
+    (fetches.borrowMutAt(h.index).unwrap()).gen = h.gen;
+    liveFetches = liveFetches + 1u32;
+    h.index
+  }
+
+  // The fetch's record freed: out of its queue and its origin's count
+  fn freeFetchRec(self: &mut, i: u32) {
+    let f = fetches.borrowAt(i).unwrap();
+    let oi = f.origin;
+    let waiting = f.state == fQueued && f.qver != 0u64;
+    if waiting {self.takeWaiting(i);}
+    fetches.removeAt(i);
+    liveFetches = liveFetches - 1u32;
+    if oi != noEntry {
+      let og = origins.borrowMutAt(oi).unwrap();
+      og.refs = og.refs - 1u32;
+      self.mayBeIdle(oi);
+    }
+  }
+
+  fn newConn(self: &mut) u32 {
+    let h = pconns.add(PConn(gen: 0u32, state: pConnecting, id: httpconn.ConnId.none(), origin: noEntry,
+      active: 0u32, uses: 0u32, opened: Instant.now(), proto: protoUnknown, awaiting: false, quic: false, qid: 0u64,
+      lookup: OpId.none(), h3By: Instant(), idleStamp: noStamp));
+    (pconns.borrowMutAt(h.index).unwrap()).gen = h.gen;
+    h.index
+  }
+
+  fn freeConnRec(self: &mut, i: u32) {
+    self.clearIdle(i);
+    let oi = (pconns.borrowAt(i).unwrap()).origin;
+    pconns.removeAt(i);
+    if oi != noEntry {
+      let og = origins.borrowMutAt(oi).unwrap();
+      og.recs = og.recs - 1u32;
+      self.mayBeIdle(oi);
+    }
+  }
+
+  // Connection record pc is origin oi's (counted there until it is freed)
+  fn attachConn(self: &mut, pc: u32, oi: u32) {
+    (pconns.borrowMutAt(pc).unwrap()).origin = oi;
+    let og = origins.borrowMutAt(oi).unwrap();
+    og.recs = og.recs + 1u32;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Origins
+  // ---------------------------------------------------------------------------
+
+  // The origin of a URL: its record, made the first time
+  fn originFor(self: &mut, u: &Url) u32 {
+    keyBuf.clear();
+    keyBuf.append(u.scheme.view());
+    keyBuf.append("://");
+    let v6 = u.hostKind == HostKind.Ipv6;
+    if v6 {keyBuf.append("[");}
+    keyBuf.append(u.host.view());
+    if v6 {keyBuf.append("]");}
+    keyBuf.append(":");
+    let port = u.effectivePort();
+    keyBuf.appendUInt(u64.from(port));
+    match byKey.getCopy(keyBuf.view()) {
+      case let Some(oi) {
+        useClock = useClock + 1u64;
+        (origins.borrowMutAt(oi).unwrap()).lastUse = useClock;
+        return oi;
+      }
+      else {}
+    }
+    // Room for it: idle origins let go, the least recently used first
+    if maxOrigins > 0u32 && origins.len() >= usize.from(maxOrigins) {
+      self.evictOrigins(usize.from(maxOrigins) - 1usize);
+    }
+    let secure = u.isSecure();
+    let key = u.origin();
+    // Prior knowledge of HTTP/3: on the origin's own port, for good
+    var prior = false;
+    if secure {
+      var j = 0usize;
+      while j < h3Origins.len() {
+        if h3Origins[j].view() == key.view() {prior = true;}
+        j = j + 1usize;
+      }
+    }
+    useClock = useClock + 1u64;
+    let dk = keyBuf.clone();
+    let h = origins.add(Origin(key: key, secure: secure, host: u.host.clone(),
+      port: port, queue: PriorityQueue[FetchKey, WaitRef](), wlive: 0u32, idle: List[u32](), shared: List[u32](),
+      open: 0u32, connecting: 0u32, undecided: 0u32, h2: !secure && priorKnowledge,
+      h3Port: if prior {port} else {0u16}, h3Until: if prior {forever()} else {Instant()}, h3Prior: prior,
+      h3Broken: Instant(), h3c: noEntry, gen: 0u32, refs: 0u32, recs: 0u32, dirty: false, oVer: 0u32, lastUse: useClock,
+      connected: false, dk: dk.clone()));
+    (origins.borrowMutAt(h.index).unwrap()).gen = h.gen;
+    byKey.insert(dk, h.index);
+    h.index
+  }
+
+  // Origin oi has a fetch or a connection no more, or may have none: if so, it is a candidate
+  // for being let go, the least recently used first
+  fn mayBeIdle(self: &mut, oi: u32) {
+    let og = origins.borrowAt(oi).unwrap();
+    if og.refs != 0u32 || og.recs != 0u32 || og.h3c != noEntry || og.wlive != 0u32 {return;}
+    let used = og.lastUse;
+    let gen = og.gen;
+    lru.push(used, LruRef(oi, gen, used));
+    if lru.len() > 4usize * origins.len() + staleSlack {self.purgeLru();}
+  }
+
+  // Whether origin oi is idle now
+  fn originIdle(self: &, oi: u32) bool {
+    let og = origins.borrowAt(oi).unwrap();
+    og.refs == 0u32 && og.recs == 0u32 && og.h3c == noEntry && og.wlive == 0u32
+  }
+
+  // Idle origins dropped, the least recently used first, until at most 'keep' remain (or none is idle)
+  fn evictOrigins(self: &mut, keep: usize) {
+    while origins.len() > keep {
+      let r = match lru.pop() {
+        case let Some(pr) {pr.1}
+        else {return;}
+      };
+      if !origins.isLive(r.oi) {continue;}
+      let og = origins.borrowAt(r.oi).unwrap();
+      if og.gen != r.gen || og.lastUse != r.used || !self.originIdle(r.oi) {continue;}
+      self.dropOrigin(r.oi);
+    }
+  }
+
+  // Origin oi, idle, forgotten
+  fn dropOrigin(self: &mut, oi: u32) {
+    // (A number left on the dirty list is skipped there: it names no origin, or another)
+    let dk = (origins.borrowAt(oi).unwrap()).dk.clone();
+    byKey.remove(dk.view());
+    origins.removeAt(oi);
+  }
+
+  // The origin's connect failed and nothing else holds it: gone at once, unless it has ever
+  // carried an exchange (what it learned of its peer, HTTP/2 or HTTP/3, is worth keeping)
+  fn dropIfFailedFresh(self: &mut, oi: u32) {
+    let og = origins.borrowAt(oi).unwrap();
+    if og.connected || !self.originIdle(oi) {return;}
+    self.dropOrigin(oi);
+  }
+
+  fn purgeLru(self: &mut) {
+    var keep = PriorityQueue[u64, LruRef]();
+    keep <-> lru;
+    while true {
+      match keep.pop() {
+        case let Some(pr) {
+          let r = pr.1;
+          if origins.isLive(r.oi) {
+            let og = origins.borrowAt(r.oi).unwrap();
+            if og.gen == r.gen && og.lastUse == r.used && self.originIdle(r.oi) {lru.push(pr.0, r);}
+          }
+        }
+        else {break;}
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Waiting fetches
+  // ---------------------------------------------------------------------------
+
+  // The key fetch fi waits by
+  fn keyOf(self: &, fi: u32) FetchKey {
+    let f = fetches.borrowAt(fi).unwrap();
+    FetchKey(intentRank(f.intent), f.score, f.seq)
+  }
+
+  // Fetch fi into its origin's queue (an origin it is not yet counted in is counted)
+  fn enqueue(self: &mut, fi: u32) {
+    let f = fetches.borrowMutAt(fi).unwrap();
+    let was = f.origin;
+    let oi = self.originFor(&f.url);
+    f.origin = oi;
+    f.state = fQueued;
+    f.conn = noEntry;
+    f.connGen = 0u32;
+    f.sent = 0usize;
+    f.following = false;
+    f.cutting = false;
+    f.drained = 0usize;
+    f.qord = qordNext;
+    qordNext = qordNext + 1u64;
+    if was != oi {
+      if was != noEntry {
+        let og0 = origins.borrowMutAt(was).unwrap();
+        og0.refs = og0.refs - 1u32;
+        self.mayBeIdle(was);
+      }
+      let og1 = origins.borrowMutAt(oi).unwrap();
+      og1.refs = og1.refs + 1u32;
+    }
+    self.pushWaiting(fi);
+    queuedN = queuedN + 1u32;
+  }
+
+  // Fetch fi (its origin set) pushed on that origin's queue under a new version
+  fn pushWaiting(self: &mut, fi: u32) {
+    let key = self.keyOf(fi);
+    let f = fetches.borrowMutAt(fi).unwrap();
+    let oi = f.origin;
+    let ver = qverNext;
+    qverNext = qverNext + 1u64;
+    f.qver = ver;
+    let og = origins.borrowMutAt(oi).unwrap();
+    og.queue.push(key, WaitRef(fi, ver));
+    og.wlive = og.wlive + 1u32;
+    let stale = og.queue.len() > 2usize * usize.from(og.wlive) + staleSlack;
+    self.markDirty(oi);
+    if stale {self.purgeWaiting(oi);}
+  }
+
+  // Fetch fi leaves its origin's queue (dispatched, cancelled, answered): its entry is stale from here
+  fn takeWaiting(self: &mut, fi: u32) {
+    let f = fetches.borrowMutAt(fi).unwrap();
+    if f.qver == 0u64 {return;}
+    f.qver = 0u64;
+    let oi = f.origin;
+    queuedN = queuedN - 1u32;
+    let og = origins.borrowMutAt(oi).unwrap();
+    og.wlive = og.wlive - 1u32;
+    self.markDirty(oi);
+  }
+
+  // A waiting fetch's order changed: its entry replaced
+  fn rekeyWaiting(self: &mut, fi: u32) {
+    let f = fetches.borrowAt(fi).unwrap();
+    if f.state != fQueued || f.qver == 0u64 {return;}
+    let oi = f.origin;
+    let og = origins.borrowMutAt(oi).unwrap();
+    og.wlive = og.wlive - 1u32;
+    (fetches.borrowMutAt(fi).unwrap()).qver = 0u64;
+    self.pushWaiting(fi);
+  }
+
+  // Whether queue entry r still names a waiting fetch under that version
+  fn entryLive(self: &, r: &WaitRef) bool {
+    if !fetches.isLive(r.fi) {return false;}
+    let f = fetches.borrowAt(r.fi).unwrap();
+    f.state == fQueued && f.qver == r.ver
+  }
+
+  // Stale entries off the top of origin oi's queue
+  fn trimWaiting(self: &mut, oi: u32) {
+    while true {
+      let og = origins.borrowAt(oi).unwrap();
+      let r = match og.queue.peek() {
+        case let Some(pr) {WaitRef(pr.1.fi, pr.1.ver)}
+        else {return;}
+      };
+      if self.entryLive(&r) {return;}
+      (origins.borrowMutAt(oi).unwrap()).queue.pop();
+    }
+  }
+
+  // Origin oi's first waiting fetch, or noEntry
+  fn firstWaiting(self: &mut, oi: u32) u32 {
+    self.trimWaiting(oi);
+    match (origins.borrowAt(oi).unwrap()).queue.peek() {
+      case let Some(pr) {pr.1.fi}
+      else {noEntry}
+    }
+  }
+
+  // Origin oi's first waiting fetch that is not a streamed upload, or noEntry. The ones before it
+  // are taken off and put back
+  fn firstPlainWaiting(self: &mut, oi: u32) u32 {
+    var held = List[(FetchKey, WaitRef)]();
+    var found = noEntry;
+    while true {
+      self.trimWaiting(oi);
+      let got = (origins.borrowMutAt(oi).unwrap()).queue.pop();
+      match got {
+        case let Some(pr) {
+          let fi = pr.1.fi;
+          let streamed = (fetches.borrowAt(fi).unwrap()).streamed;
+          held.push(pr);
+          if !streamed {found = fi; break;}
+        }
+        else {break;}
+      }
+    }
+    each pr in held.drain() {
+      (origins.borrowMutAt(oi).unwrap()).queue.push(pr.0, pr.1);
+    }
+    found
+  }
+
+  // Origin oi's waiting fetches in the order they were queued, its queue emptied of them. The fetches are
+  // still counted as waiting until the caller ends each (a cancel or an answer takes it out)
+  fn drainWaiting(self: &mut, oi: u32) List[u32] {
+    var byArrival = PriorityQueue[u64, u32]();
+    var old = PriorityQueue[FetchKey, WaitRef]();
+    old <-> (origins.borrowMutAt(oi).unwrap()).queue;
+    while true {
+      match old.pop() {
+        case let Some(pr) {
+          let r = WaitRef(pr.1.fi, pr.1.ver);
+          if self.entryLive(&r) {byArrival.push((fetches.borrowAt(r.fi).unwrap()).qord, r.fi);}
+        }
+        else {break;}
+      }
+    }
+    var out = List[u32]();
+    while true {
+      match byArrival.pop() {
+        case let Some(pr) {out.push(pr.1);}
+        else {break;}
+      }
+    }
+    out
+  }
+
+  // Origin oi's queue rebuilt without its stale entries
+  fn purgeWaiting(self: &mut, oi: u32) {
+    var old = PriorityQueue[FetchKey, WaitRef]();
+    old <-> (origins.borrowMutAt(oi).unwrap()).queue;
+    var fresh = PriorityQueue[FetchKey, WaitRef]();
+    while true {
+      match old.pop() {
+        case let Some(pr) {
+          let r = WaitRef(pr.1.fi, pr.1.ver);
+          if self.entryLive(&r) {fresh.push(pr.0, pr.1);}
+        }
+        else {break;}
+      }
+    }
+    (origins.borrowMutAt(oi).unwrap()).queue <-> fresh;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scheduling
+  // ---------------------------------------------------------------------------
+
+  // Origin oi is to be visited by the scheduler
+  fn markDirty(self: &mut, oi: u32) {
+    let og = origins.borrowMutAt(oi).unwrap();
+    if og.dirty {return;}
+    og.dirty = true;
+    dirty.push(oi);
+  }
+
+  // The origins to visit, the lowest numbers first; the list is emptied
+  fn takeDirty(self: &mut) List[u32] {
+    var out = List[u32]();
+    out <-> dirty;
+    // The sort is kept for a visit order that is the same each run; over loopback the order the
+    // origins are visited in does not show in what a test can observe
+    out.sort();
+    var live = List[u32]();
+    var k = 0usize;
+    while k < out.len() {
+      let oi = *out[k];
+      if origins.isLive(oi) && (live.len() == 0usize || *live[live.len() - 1usize] != oi) {
+        (origins.borrowMutAt(oi).unwrap()).dirty = false;
+        live.push(oi);
+      }
+      k = k + 1usize;
+    }
+    live
+  }
+
+  // Origin oi may (or may no longer) open a connection for what waits: its entry in the queue of
+  // origins replaced
+  fn setEligible(self: &mut, oi: u32, yes: bool) {
+    let og = origins.borrowMutAt(oi).unwrap();
+    og.oVer = og.oVer + 1u32;
+    if !yes {return;}
+    let ver = og.oVer;
+    let gen = og.gen;
+    let first = self.firstWaiting(oi);
+    if first == noEntry {return;}
+    oheap.push(self.keyOf(first), OriginRef(oi, ver, gen));
+    if oheap.len() > 2usize * origins.len() + staleSlack {self.purgeOrigins();}
+  }
+
+  // The origin whose first waiting fetch is first among those that may open a connection, or noEntry. An
+  // entry whose origin has gone, changed or has nothing waiting is let go; one whose first fetch is another
+  // now is put back under that fetch's key
+  fn topEligible(self: &mut) u32 {
+    while true {
+      let top = match oheap.peek() {
+        case let Some(pr) {(FetchKey(pr.0.rank, pr.0.score, pr.0.seq), OriginRef(pr.1.oi, pr.1.ver, pr.1.gen))}
+        else {return noEntry;}
+      };
+      let r = top.1;
+      if origins.isLive(r.oi) {
+        let og = origins.borrowAt(r.oi).unwrap();
+        if og.gen == r.gen && og.oVer == r.ver && og.wlive > 0u32 {
+          let first = self.firstWaiting(r.oi);
+          if first != noEntry {
+            let k = self.keyOf(first);
+            // Guard kept though no test sees it fire: every change to an origin's first fetch also marks the
+            // origin dirty, so its entry is re-keyed on the visit before it can reach the top stale
+            if (k <=> top.0) == 0i32 {return r.oi;}
+            oheap.pop();
+            oheap.push(k, r);
+            continue;
+          }
+        }
+      }
+      oheap.pop();
+    }
+    noEntry
+  }
+
+  fn purgeOrigins(self: &mut) {
+    var old = PriorityQueue[FetchKey, OriginRef]();
+    old <-> oheap;
+    while true {
+      match old.pop() {
+        case let Some(pr) {
+          let r = pr.1;
+          if origins.isLive(r.oi) {
+            let og = origins.borrowAt(r.oi).unwrap();
+            if og.gen == r.gen && og.oVer == r.ver && og.wlive > 0u32 {oheap.push(pr.0, r);}
+          }
+        }
+        else {break;}
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Idle connections, by recency
+  // ---------------------------------------------------------------------------
+
+  // Whether connection pc is idle now: kept, with nothing on it
+  fn isIdleConn(self: &, pc: u32) bool {
+    let p = pconns.borrowAt(pc).unwrap();
+    p.state == pIdle || (p.state == pShared && p.active == 0u32)
+  }
+
+  // Connection pc may have just become idle: stamped, once, as the latest
+  fn noteIdle(self: &mut, pc: u32) {
+    if !self.isIdleConn(pc) {return;}
+    let p = pconns.borrowMutAt(pc).unwrap();
+    if p.idleStamp != noStamp {return;}
+    p.idleStamp = idleClock;
+    let gen = p.gen;
+    let stamp = idleClock;
+    idleClock = idleClock + 1u64;
+    idleLive = idleLive + 1usize;
+    idleHeap.push(stamp, IdleRef(pc, gen, stamp));
+    if idleHeap.len() > 2usize * idleLive + staleSlack {self.purgeIdle();}
+  }
+
+  // Connection pc is busy, or gone: no longer idle
+  fn clearIdle(self: &mut, pc: u32) {
+    let p = pconns.borrowMutAt(pc).unwrap();
+    if p.idleStamp == noStamp {return;}
+    p.idleStamp = noStamp;
+    idleLive = idleLive - 1usize;
+  }
+
+  fn idleRefLive(self: &, r: &IdleRef) bool {
+    if !pconns.isLive(r.pc) {return false;}
+    let p = pconns.borrowAt(r.pc).unwrap();
+    p.gen == r.gen && p.idleStamp == r.stamp && self.isIdleConn(r.pc)
+  }
+
+  fn purgeIdle(self: &mut) {
+    var old = PriorityQueue[u64, IdleRef]();
+    old <-> idleHeap;
+    while true {
+      match old.pop() {
+        case let Some(pr) {if self.idleRefLive(&pr.1) {idleHeap.push(pr.0, pr.1);}}
+        else {break;}
+      }
+    }
+  }
+
+  // The connection idle longest, of an origin nothing waits for, or noEntry. It is left stamped: the caller
+  // retires it
+  fn oldestIdle(self: &mut) u32 {
+    var held = List[(u64, IdleRef)]();
+    var found = noEntry;
+    while true {
+      let got = idleHeap.pop();
+      match got {
+        case let Some(pr) {
+          if !self.idleRefLive(&pr.1) {continue;}
+          let oi = (pconns.borrowAt(pr.1.pc).unwrap()).origin;
+          // Guard kept though the scheduler never meets it: dispatch onto idle connections runs before
+          // opening, so no origin has both an idle connection and waiters
+          if (origins.borrowAt(oi).unwrap()).wlive == 0u32 {
+            found = pr.1.pc;
+            held.push(pr);
+            break;
+          }
+          held.push(pr);
+        }
+        else {break;}
+      }
+    }
+    each pr in held.drain() {idleHeap.push(pr.0, pr.1);}
+    found
+  }
+}
