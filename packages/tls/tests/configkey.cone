@@ -1,0 +1,113 @@
+// A ClientConfig and a Verifier are each other's equal, and hash alike, only
+// when every field is the same: a program that keeps one Client for each config
+// (actorhttp's connectSecure) keys a Dict by the config, and two configs that
+// verify or negotiate differently must never share one Client and its cached
+// sessions. One check for each field of each struct: a copy differing only in
+// that field compares unequal, hashes differently (a Hasher seeded with 5), and
+// takes a Dict entry of its own. A field left out of '==' or of 'hash' in tls
+// fails its line here.
+
+mod configkey;
+
+import testing use *;
+import collections use Dict, List, String;
+import iocore use Lane;
+import tls;
+
+fn hashOf[K: Hash](k: &K) u64 {
+  var h = Hasher.withSeed(5u64);
+  k.hash(&mut h);
+  h.finish()
+}
+
+const pinA = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+const pinAB = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff 00112233445566778899aabbccddeeff00112233445566778899aabbccddeef0";
+const pinB = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeef0";
+
+fn pemA() &str {"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"}
+fn pemB() &str {"-----BEGIN CERTIFICATE-----\nBBBB\n-----END CERTIFICATE-----\n"}
+
+// A config with this verifier and every other field at the default
+fn withVerifier(v: tls.Verifier) tls.ClientConfig {
+  var c = tls.ClientConfig.make();
+  c.verify = v;
+  c
+}
+
+fn checkVerifiers(a: &tls.Verifier, b: &tls.Verifier, label: &Array[u8]) {
+  expect(!(a == b), label);
+  expect(!(b == a), label);
+  expect(hashOf(a) != hashOf(b), label);
+  var d = Dict[tls.Verifier, u32]();
+  d.insert(a.clone(), 1u32);
+  d.insert(b.clone(), 2u32);
+  expectUInt(u64.from(d.len()), 2u64, label);
+}
+
+fn checkConfigs(a: &tls.ClientConfig, b: &tls.ClientConfig, label: &Array[u8]) {
+  expect(!(a == b), label);
+  expect(!(b == a), label);
+  expect(hashOf(a) != hashOf(b), label);
+  var d = Dict[tls.ClientConfig, u32]();
+  d.insert(a.clone(), 1u32);
+  d.insert(b.clone(), 2u32);
+  expectUInt(u64.from(d.len()), 2u64, label);
+}
+
+fn main() i32 {
+  // Two of the same are one: equal, alike, one Dict entry
+  let x = tls.ClientConfig.make();
+  let y = tls.ClientConfig.make();
+  expect(x == y, "two default configs are equal");
+  expectUInt(hashOf(&x), hashOf(&y), "and hash alike");
+  var same = Dict[tls.ClientConfig, u32]();
+  same.insert(x.clone(), 1u32);
+  same.insert(y.clone(), 2u32);
+  expectUInt(u64.from(same.len()), 1u64, "and share one Dict entry");
+
+  // Verifier: kind, bundle, pins
+  checkVerifiers(&tls.Verifier.platform(), &tls.Verifier.insecureDevelopmentOnly(), "verifier: kind");
+  checkVerifiers(&tls.Verifier.roots(pemA()), &tls.Verifier.roots(pemB()), "verifier: bundle");
+  checkVerifiers(&tls.Verifier.pinnedSha256(pinA), &tls.Verifier.pinnedSha256(pinB), "verifier: pins");
+  checkVerifiers(&tls.Verifier.pinnedSha256(pinA), &tls.Verifier.pinnedSha256(pinAB), "verifier: pins, a second key");
+
+  // ClientConfig: each field alone
+  let base = tls.ClientConfig.make();
+  var c = base.clone();
+  c.verify = tls.Verifier.insecureDevelopmentOnly();
+  checkConfigs(&base, &c, "config: verify");
+
+  // The verifier's own fields, through the config
+  checkConfigs(&withVerifier(tls.Verifier.pinnedSha256(pinA)), &withVerifier(tls.Verifier.pinnedSha256(pinB)), "config: verify.pins");
+  checkConfigs(&withVerifier(tls.Verifier.roots(pemA())), &withVerifier(tls.Verifier.roots(pemB())), "config: verify.bundle");
+
+  c = base.clone();
+  c.alpn.push(String.from("h2"));
+  checkConfigs(&base, &c, "config: alpn");
+
+  c = base.clone();
+  c.minVersion = tls.TlsVersion.Tls13;
+  checkConfigs(&base, &c, "config: minVersion");
+
+  c = base.clone();
+  c.maxVersion = tls.TlsVersion.Tls12;
+  checkConfigs(&base, &c, "config: maxVersion");
+
+  c = base.clone();
+  c.resume = false;
+  checkConfigs(&base, &c, "config: resume");
+
+  c = base.clone();
+  c.backend = tls.Backend.OpenSsl;
+  checkConfigs(&base, &c, "config: backend");
+
+  c = base.clone();
+  c.verifyLane = Lane(base.verifyLane.id + 1u32);
+  checkConfigs(&base, &c, "config: verifyLane");
+
+  c = base.clone();
+  c.offline = true;
+  checkConfigs(&base, &c, "config: offline");
+
+  done()
+}

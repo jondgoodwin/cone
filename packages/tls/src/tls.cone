@@ -261,20 +261,8 @@ fn @initpure init() {
 // ---------------------------------------------------------------------------
 
 // A version of TLS
-pub enum TlsVersion is Eq, Hash {
-  Tls12, Tls13;
-
-  pub fn `==`(self: &, o: &TlsVersion) bool {versionTag(self) == versionTag(o)}
-  pub fn hash(self: &, h: &mut Hasher) {h.writeU8(versionTag(self));}
-}
-
-// An enum's own '==' and 'hash' are written by hand: the compiler derives
-// neither for an enum (only for a struct)
-fn versionTag(v: &TlsVersion) u8 {
-  match *v {
-    case TlsVersion.Tls12 {0u8}
-    case TlsVersion.Tls13 {1u8}
-  }
+pub enum TlsVersion {
+  Tls12, Tls13
 }
 
 fn versionNumber(v: TlsVersion) i32 {
@@ -283,27 +271,14 @@ fn versionNumber(v: TlsVersion) i32 {
 
 // Which library does the TLS. Auto is OpenSSL, the one built; a second
 // (SChannel, rustls) fits behind the same Session
-pub enum Backend is Eq, Hash {
-  Auto, OpenSsl;
-
-  pub fn `==`(self: &, o: &Backend) bool {backendTag(self) == backendTag(o)}
-  pub fn hash(self: &, h: &mut Hasher) {h.writeU8(backendTag(self));}
-}
-
-fn backendTag(v: &Backend) u8 {
-  match *v {
-    case Backend.Auto {0u8}
-    case Backend.OpenSsl {1u8}
-  }
+pub enum Backend {
+  Auto, OpenSsl
 }
 
 // Who decides that the server is who it claims to be (see the package's
 // header, VERIFIERS)
-pub enum VerifyKind is Eq, Hash {
+pub enum VerifyKind {
   Platform, Roots, Pinned, Insecure;
-
-  pub fn `==`(self: &, o: &VerifyKind) bool {kindTag(self) == kindTag(o)}
-  pub fn hash(self: &, h: &mut Hasher) {h.writeU8(kindTag(self));}
 
   // The kind's name, in lower case: 'platform'
   pub fn toText(self: &, out: &uni TextOut) {
@@ -315,20 +290,27 @@ pub enum VerifyKind is Eq, Hash {
   }
 }
 
-fn kindTag(v: &VerifyKind) u8 {
-  match *v {
-    case VerifyKind.Platform {0u8}
-    case VerifyKind.Roots {1u8}
-    case VerifyKind.Pinned {2u8}
-    case VerifyKind.Insecure {3u8}
-  }
-}
-
 // A verifier: its kind and what it holds
 pub struct Verifier is Eq, Hash, Clone {
   pub kind: VerifyKind;
   bundle: String;       // Roots: the PEM bundle
   pins: List[u8];       // Pinned: 32 bytes for each key
+
+  // '==' and 'hash' are written by hand, because the compiler derives neither
+  // where a field is an enum. EVERY FIELD ABOVE MUST BE IN BOTH METHODS: a
+  // field left out lets two verifiers that differ share one cached session.
+  // (tests/configkey.cone has a test for each field.)
+  pub fn `==`(self: &, o: &Verifier) bool {
+    kind == o.kind && &bundle == &o.bundle && &pins == &o.pins
+  }
+  pub fn hash(self: &, h: &mut Hasher) {
+    h.writeU8(if kind == VerifyKind.Platform {0u8}
+      else if kind == VerifyKind.Roots {1u8}
+      else if kind == VerifyKind.Pinned {2u8}
+      else {3u8});
+    bundle.hash(h);
+    pins.hash(h);
+  }
 
   // The operating system's: on Windows, its chain engine and SSL policy
   pub fn platform() Verifier {Verifier(VerifyKind.Platform, String(), List[u8]())}
@@ -393,6 +375,27 @@ pub struct ClientConfig is Eq, Hash, Clone {
   pub offline: bool;             // the OS's verifier fetches nothing
 
   // The defaults: the OS's verifier, http/1.1, TLS 1.2 to 1.3, resumed
+  // '==' and 'hash' are written by hand, because the compiler derives neither
+  // where a field is an enum. EVERY FIELD ABOVE MUST BE IN BOTH METHODS: a
+  // field left out lets two configs that differ share one cached session
+  // (actorhttp keeps one Client for each config). tests/configkey.cone has a
+  // test for each field.
+  pub fn `==`(self: &, o: &ClientConfig) bool {
+    &verify == &o.verify && &alpn == &o.alpn && minVersion == o.minVersion
+      && maxVersion == o.maxVersion && resume == o.resume && backend == o.backend
+      && &verifyLane == &o.verifyLane && offline == o.offline
+  }
+  pub fn hash(self: &, h: &mut Hasher) {
+    verify.hash(h);
+    alpn.hash(h);
+    h.writeU8(if minVersion == TlsVersion.Tls12 {0u8} else {1u8});
+    h.writeU8(if maxVersion == TlsVersion.Tls12 {0u8} else {1u8});
+    h.writeU8(if resume {1u8} else {0u8});
+    h.writeU8(if backend == Backend.Auto {0u8} else {1u8});
+    verifyLane.hash(h);
+    h.writeU8(if offline {1u8} else {0u8});
+  }
+
   pub fn make() ClientConfig {
     var alpn = List[String]();
     alpn.push(String.from("http/1.1"));
