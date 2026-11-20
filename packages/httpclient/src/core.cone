@@ -36,8 +36,6 @@
 // invalidated lazily as the others are; the client asks it for the earliest
 // and for what is due.
 
-import collections use Dict, PriorityQueue;
-
 const noStamp = 0u64;
 const staleSlack = 64usize;       // stale entries a queue may hold beyond twice its live ones
 
@@ -684,17 +682,13 @@ struct ClientCore {
     }
   }
 
-  // The earliest deadline of a live fetch it holds, or forever()
-  fn nextDeadline(self: &mut) Instant {
-    while true {
-      let top = match due.peek() {
-        case let Some(pr) {(*pr.0, DueRef(pr.1.fi, pr.1.gen))}
-        else {return forever();}
-      };
-      if self.dueRefLive(&top.1) {return Instant.fromNanos(top.0);}
-      due.pop();
+  // The earliest deadline it holds, or forever(): for the latest a host may wait. The top may be a fetch's
+  // that has ended (the host wakes then, once, and the next 'takeDue' lets it go)
+  fn peekDeadline(self: &) Instant {
+    match due.peek() {
+      case let Some(pr) {Instant.fromNanos(*pr.0)}
+      else {forever()}
     }
-    forever()
   }
 
   // The fetches whose deadline is at or before now, taken out of the queue (each is listed once)
