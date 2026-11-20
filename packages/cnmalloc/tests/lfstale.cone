@@ -35,17 +35,9 @@ mod lfstale;
 import testing use *;
 import thread;
 import libc;
+import cnmalloc;
 
 extern {
-  fn @c(system) Sleep(ms: u32);
-  fn @c(system) SwitchToThread() i32;
-  fn @c(system) GetStdHandle(n: u32) usize;
-  fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
-  fn @c(system) CreateFileA(name: *u8, access: u32, share: u32, sec: usize, disp: u32, flags: u32, tmpl: usize) usize;
-  fn @c(system) CloseHandle(h: usize) i32;
-  fn @c(system) GetModuleHandleA(name: *u8) usize;
-  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
-  fn @c("_msize") msize(p: *u8) usize;
   fn @c("strlen") strlen(s: cstr) usize;
   fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
 }
@@ -86,7 +78,7 @@ fn ld(base: usize, i: usize) usize { mem.atomicLoad[usize](word(base, i), MemOrd
 fn st(base: usize, i: usize, v: usize) { mem.atomicStore[usize](word(base, i), v, MemOrder.SeqCst); }
 
 fn spinUntil(c: usize, i: usize) {
-  while ld(c, i) == 0usize { SwitchToThread(); }
+  while ld(c, i) == 0usize { cnmalloc.cnm_hostYield(); }
 }
 
 // the shim's park point, right after lf_release's fetch_or (only the freer thread, only when armed)
@@ -124,7 +116,7 @@ fn freer(arg: usize) u64 {
       if grouped { (ld(c, cFlush) as *u8 as Call)(); }       // the cache (the one cell) back to the heap, grouped
       st(c, cDone, 1usize);
     } else {
-      SwitchToThread();
+      cnmalloc.cnm_hostYield();
     }
   }
   0u64
@@ -132,7 +124,7 @@ fn freer(arg: usize) u64 {
 
 fn waitFor(c: usize, i: usize, want: usize) bool {
   var w = 0usize;
-  while ld(c, i) != want && w < 5000usize { Sleep(1u32); w = w + 1usize; }
+  while ld(c, i) != want && w < 5000usize { cnmalloc.cnm_hostSleepMs(1u32); w = w + 1usize; }
   ld(c, i) == want
 }
 
@@ -144,7 +136,7 @@ fn stamp(p: *u8, size: usize, v: usize) {
 }
 
 fn cellOk(p: *u8, size: usize, v: usize) bool {
-  *(p as *usize) == size && *word(p as usize, size / 8usize - 1usize) == v && msize(p) == size
+  *(p as *usize) == size && *word(p as usize, size / 8usize - 1usize) == v && cnmalloc.cnm_hostMsize(p as usize) == size
 }
 
 // a 512-class cell, stamped, checked and freed; whether it is on the page 'page' (an address >> 16)
@@ -183,7 +175,7 @@ fn violationRound(c: usize, cells: usize, coll: Collect, round: usize) {
   st(c, cArmAfter, 1usize);
   st(c, cRelOr, 1usize);
   var w = 0usize;
-  while ld(c, cParkedAfter) == 0usize && ld(c, cDone) == 0usize && w < 5000usize { Sleep(1u32); w = w + 1usize; }
+  while ld(c, cParkedAfter) == 0usize && ld(c, cDone) == 0usize && w < 5000usize { cnmalloc.cnm_hostSleepMs(1u32); w = w + 1usize; }
   // the freer is at its second park point (a freer that passed the generation test) or has finished (the right code)
   takeB(c, x0 >> 16usize, 1000usize + round);     // takes the page from the pool for the 512 class, readies and attaches it
   st(c, cRelAfter, 1usize);
@@ -272,40 +264,31 @@ fn retryLine(retries: usize, counts: usize, ok: usize, errs: usize) {
 
 fn emitLine(buf: *u8, n: usize) {
   *at(buf, n) = 10u8;
-  var w = 0u32;
-  WriteFile(GetStdHandle(0xFFFFFFF4u32), buf, u32.from(n + 1usize), &mut w, 0usize);
+  cnmalloc.cnm_hostErr(buf as usize, n + 1usize);
   // CNTEST_LOG=<file>: the same line appended there, since congo shows a passing test's stderr to nobody
   let lf = libc.getenv("CNTEST_LOG");
   if lf as usize != 0usize {
-    let fh = CreateFileA(lf, 4u32, 3u32, 0usize, 4u32, 128u32, 0usize);
-    if fh != 0xFFFFFFFFFFFFFFFFusize { WriteFile(fh, buf, u32.from(n + 1usize), &mut w, 0usize); CloseHandle(fh); }
+    cnmalloc.cnm_hostAppend(lf as *u8, buf as usize, n + 1usize);
   }
   libc.free(buf);
 }
 
-fn skipped() {
-  expectUInt(0u64, 0, "lfstale: a freer with a stale generation never passed the generation test");
-  expect(true, "lfstale: every freer was parked after its fetch_or on a wholly free page");
-  expect(true, "lfstale: the retired page came back as the other class's page every round");
-  expect(true, "lfstale: the control round entered the slow path legitimately");
-  expectUInt(0u64, 0, "lfstale: no wrong cell, no stuck thread");
-}
-
 fn main() i32 {
-  let m = GetModuleHandleA(null);
-  let setHooks = GetProcAddress(m, &"cnmalloc_lfSetHooks" as *u8);
-  let collect = GetProcAddress(m, &"cnmalloc_collect" as *u8);
-  let design = GetProcAddress(m, &"cnmalloc_design" as *u8);
-  if setHooks == 0usize || collect == 0usize || design == 0usize { skipped(); return done(); }
-  if (design as *u8 as DesignFn)() != 2i32 { skipped(); return done(); }
+  let setHooks = cnmalloc.cnm_hostSym("cnmalloc_lfSetHooks");
+  if setHooks == 0usize { return testing.skip("lfstale: the cnmalloc shim is not linked: cnmalloc_lfSetHooks was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let collect = cnmalloc.cnm_hostSym("cnmalloc_collect");
+  if collect == 0usize { return testing.skip("lfstale: the cnmalloc shim is not linked: cnmalloc_collect was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let design = cnmalloc.cnm_hostSym("cnmalloc_design");
+  if design == 0usize { return testing.skip("lfstale: the cnmalloc shim is not linked: cnmalloc_design was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  if (design as *u8 as DesignFn)() != 2i32 { return testing.skip("lfstale: the cnmalloc shim is linked but the second design is off (CNMALLOC=design=lockfree is needed)"); }
   let rounds = envNum("CNSTALE_ROUNDS", 20usize);
   let hooks = setHooks as *u8 as SetHooks;
   let coll = collect as *u8 as Collect;
   let c = libc.calloc(20usize, 8usize) as usize;
   hooks(0usize, 0usize, 0usize, 0usize, &hookOr as *u8 as usize, &hookAfter as *u8 as usize);
-  let setMulti = GetProcAddress(m, &"cnmalloc_lfSetMultiHooks" as *u8);
-  let begin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
-  let flush = GetProcAddress(m, &"cnmalloc_workerFlush" as *u8);
+  let setMulti = cnmalloc.cnm_hostSym("cnmalloc_lfSetMultiHooks");
+  let begin = cnmalloc.cnm_hostSym("cnmalloc_workerBegin");
+  let flush = cnmalloc.cnm_hostSym("cnmalloc_workerFlush");
   if envNum("CNSTALE_GROUPED", 0usize) != 0usize && setMulti != 0usize && begin != 0usize && flush != 0usize {
     st(c, cGrouped, begin);
     st(c, cFlush, flush);

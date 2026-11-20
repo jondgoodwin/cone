@@ -1,10 +1,11 @@
 mod os;
 
 // The OS layer's interface: address space is reserved, committed, decommitted and released, and nothing else
-// of the system is asked for by the heap's own logic. A module meets it with 'mod name is Os;'. The one
-// implementation is 'oswin' (VirtualAlloc and VirtualFree). Linux's would be 'mmap' with PROT_NONE for a
-// reserve, mprotect plus MAP_FIXED for a commit, madvise(MADV_DONTNEED) plus PROT_NONE for a decommit and
-// munmap for a release: named here, not built.
+// of the system is asked for by the heap's own logic. A module meets it with 'mod name is Os;'. The
+// implementations are 'oswin' (VirtualAlloc and VirtualFree) and 'oslinux' ('mmap' with PROT_NONE for a reserve,
+// over-mapped and trimmed to 64 KiB; mprotect for a commit; madvise(MADV_DONTNEED) plus PROT_NONE for a decommit;
+// munmap for a release). 'osplat' picks the one the build targets: a module trait cannot be chosen by a build
+// setting yet, so the heap names 'osplat', whose bodies are '#if #os' forwards.
 pub mod trait Os {
   // Address space only, nothing committed, aligned to 64 KiB; 0 when there is none
   pub fn reserve(bytes: usize) usize;
@@ -12,6 +13,7 @@ pub mod trait Os {
   pub fn commit(addr: usize, bytes: usize) bool;
   // Gives the memory back, keeping the address space reserved. A range committed again later is zero
   pub fn decommit(addr: usize, bytes: usize);
-  // Gives back a whole reservation, by the address reserve answered
-  pub fn release(addr: usize);
+  // Gives back a whole reservation, by the address reserve answered and the bytes it was asked for (Windows
+  // ignores the length: MEM_RELEASE wants 0; munmap needs it)
+  pub fn release(addr: usize, bytes: usize);
 }

@@ -37,6 +37,7 @@ import concurrent.futures
 import difflib
 import os
 import re
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -1833,8 +1834,11 @@ class Linker:
             ]
         # -lpthread: the thread package's pthread_create; the C library holds
         # it since glibc 2.34, and older ones keep it in a library of its own
-        return [self.tool, *map(str, objs), str(self.conestd), "-o", str(exe), "-lm",
-                "-lpthread"]
+        # CONGO_LINK_EXTRA: files put on the link line after the program's objects, as congo's Linux link does (cnmalloc's
+        # shim and package archive, row 550), so the suite can run with that allocator linked. -ldl: dlsym (conestd's
+        # heap region, the actors runtime), in libc itself since glibc 2.34
+        return [self.tool, *map(str, objs), *shlex.split(os.environ.get("CONGO_LINK_EXTRA", "")), str(self.conestd),
+                "-o", str(exe), "-lm", "-lpthread", "-ldl"]
 
 
 # ---------------------------------------------------------------------------

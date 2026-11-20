@@ -1,7 +1,7 @@
 // The workers' cache (row 426), exercised through the C runtime's own malloc family, which is cnmalloc's only
 // when the program is linked with cn.lib (shim\README.md, "Linking it") and CNMALLOC=cache=<n> asks for a cache.
-// Under a plain 'congo test' nothing is linked and this runs on the C runtime's malloc: the program's logic is
-// checked and the cache is not (the checks pass either way). The real runs:
+// Under a plain 'congo test' nothing is linked, so the test reports itself skipped (testing.skip) rather than pass
+// having tested nothing. The real runs:
 //   $env:_LINK_ = '"<dir>\cn.lib"'; $env:CNMALLOC = 'cache=7,giveback=now,stats'; (delete build\ first)
 //   CNCACHE_SECS=600 CNCACHE_THREADS=16 CNCACHE_MODE=random|pc   then 'congo test cache'.
 //   CNCACHE_NONWORKERS=8 makes the first 8 random-mode threads plain threads (no begin, park or end, so no cache: like a
@@ -22,16 +22,12 @@ mod cache;
 import testing use *;
 import thread;
 import libc;
+import cnmalloc;
 import collections use List;
 
 extern {
-  fn @c(system) GetTickCount64() u64;
   fn @c("strlen") strlen(s: cstr) usize;
   fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
-  fn @c(system) GetStdHandle(n: u32) usize;
-  fn @c(system) WriteFile(h: usize, buf: *u8, n: u32, written: *u32, ov: usize) i32;
-  fn @c(system) GetModuleHandleA(name: *u8) usize;
-  fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
 }
 
 alias Call = &fn @c ();
@@ -116,7 +112,7 @@ fn randomWorker(arg: usize) u64 {
   if worker { call(job.begin); }
   var ops = 0usize;
   var errs = 0usize;
-  while GetTickCount64() < job.endTick {
+  while cnmalloc.cnm_hostTickMs() < job.endTick {
     var burst = 0usize;
     while burst < 200usize {
       burst = burst + 1usize;
@@ -184,7 +180,7 @@ fn producer(arg: usize) u64 {
   var i = 0usize;
   var errs = 0usize;
   var made = 0usize;
-  while GetTickCount64() < job.endTick {
+  while cnmalloc.cnm_hostTickMs() < job.endTick {
     let slot = word(job.ring, i % ringN);
     if *slot == 0usize {
       let size = 16usize + usize.from(next(&mut seed) % 1009u64);
@@ -225,7 +221,7 @@ fn consumer(arg: usize) u64 {
       idle = 0usize;
       if got % 4096usize == 0usize { call(job.park); }
     } else {
-      if GetTickCount64() > job.endTick + 200u64 { break; }
+      if cnmalloc.cnm_hostTickMs() > job.endTick + 200u64 { break; }
       idle = idle + 1usize;
       thread.yieldNow();
     }
@@ -255,13 +251,12 @@ fn newJob(secs: usize, mode: usize) *Job {
   job.slots = libc.calloc(slotsN, 8usize) as usize;
   job.errs = libc.calloc(16usize, 8usize) as usize;
   job.ring = libc.calloc(ringN, 8usize) as usize;
-  job.endTick = GetTickCount64() + u64.from(secs) * 1000u64;
+  job.endTick = cnmalloc.cnm_hostTickMs() + u64.from(secs) * 1000u64;
   job.mode = mode;
   job.nonworkers = envNum("CNCACHE_NONWORKERS", 0usize);
-  let m = GetModuleHandleA(null);
-  job.begin = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
-  job.park = GetProcAddress(m, &"cnmalloc_workerPark" as *u8);
-  job.end = GetProcAddress(m, &"cnmalloc_workerEnd" as *u8);
+  job.begin = cnmalloc.cnm_hostSym("cnmalloc_workerBegin");
+  job.park = cnmalloc.cnm_hostSym("cnmalloc_workerPark");
+  job.end = cnmalloc.cnm_hostSym("cnmalloc_workerEnd");
   job
 }
 
@@ -304,8 +299,7 @@ fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
   n = putStr(buf, n, mid); n = putNum(buf, n, b);
   n = putStr(buf, n, tail); n = putNum(buf, n, c);
   *at(buf, n) = 10u8;
-  var w = 0u32;
-  WriteFile(GetStdHandle(0xFFFFFFF4u32), buf, u32.from(n + 1usize), &mut w, 0usize);
+  cnmalloc.cnm_hostErr(buf as usize, n + 1usize);
   libc.free(buf);
 }
 
@@ -317,12 +311,12 @@ fn putStr(buf: *u8, pos: usize, s: cstr) usize {
 
 fn runPc(secs: usize) {
   let job = newJob(secs, 1usize);
-  let t0 = GetTickCount64();
+  let t0 = cnmalloc.cnm_hostTickMs();
   let a = thread.start[usize, u64](job as usize, &producer);
   let b = thread.start[usize, u64](job as usize, &consumer);
   a.join();
   b.join();
-  let ms = GetTickCount64() - t0;
+  let ms = cnmalloc.cnm_hostTickMs() - t0;
   var errs = *word(job.errs, 0usize);
   // anything left in the ring is intact, and frees
   var i = 0usize;
@@ -344,6 +338,9 @@ fn runPc(secs: usize) {
 }
 
 fn main() i32 {
+  if cnmalloc.cnm_hostSym("cnmalloc_workerBegin") == 0usize {
+    return testing.skip("cache: the cnmalloc shim is not linked: cnmalloc_workerBegin was not found (the shim is not linked or, on Linux, not exported by the link)");
+  }
   let secs = envNum("CNCACHE_SECS", 2usize);
   let nthreads = envNum("CNCACHE_THREADS", 8usize);
   let only = libc.getenv("CNCACHE_MODE");
