@@ -10,16 +10,24 @@
 // Everything else (the names malloc, calloc, ... included) could be exported from Cone; they are here too so the
 // library has one place that decides what a standard-API call does. Nothing here calls malloc or anything that does.
 //
-// Build: /D_ACRTIMP= (else a C caller's malloc is dllimport and the swap silently does not happen), /MD.
-// Variants (shim/build-cn.ps1): -DCN_HOOKS adds the test hooks of the second design (a function called between a
+// (Row 550) ONE SOURCE FOR TWO SYSTEMS. Windows (MSVC) and Linux (GCC, Clang) compile this file; cn_plat.h is the platform
+// layer: the thread-local, the inline and calling-convention words, and above all the atomic operations. A shared word is
+// never `volatile` here: every load and store of one is a cn_ld*/cn_st* form with its ordering in its name (cn_plat.h says
+// what each is on each compiler), so that GCC, which gives volatile no ordering, cannot move a load across the fetch_or it
+// must follow. The names the C library has (Windows: malloc, _msize, _aligned_malloc ... and the __imp_ pointers; Linux:
+// malloc, malloc_usable_size, memalign, aligned_alloc, posix_memalign ...) are the two sections after "the C runtime's
+// heap names". Linux also has the bootstrap buffer (an allocation by the starting thread while it starts the heap), and
+// fork handlers. See README.md, "Linux".
+//
+// Build: Windows /D_ACRTIMP= (else a C caller's malloc is dllimport and the swap silently does not happen), /MD;
+// Linux build-cn.sh (-O2 -ftls-model=initial-exec -fno-builtin-malloc ...), an object on the executable's link line.
+// Variants (shim/build-cn.ps1, build-cn.sh): -DCN_HOOKS adds the test hooks of the second design (a function called between a
 // thread's page load and its compare-and-swap, after an allocation's or a fill's compare-and-swap, after a fetch_or, and inside a detach and
 // a retire) and a peek at a page's words; -DCN_DEBUG makes a double free abort (or call the handler a test installs).
-#include <windows.h>
-#include <intrin.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
+#include "cn_plat.h"
+#ifdef CN_LINUX
+#include <pthread.h>
+#endif
 
 // the Cone package's exports (all take the heap's address first)
 extern uintptr_t cnm_boot(void);
@@ -59,9 +67,13 @@ extern void cnm_lf_set(uintptr_t h, void* alloc, void* free, size_t debug);
 extern void cnm_lf_set_hooks(uintptr_t h, void* detach, void* retire, void* claim, void* after);
 extern void cnm_lf_set_counts(uintptr_t h, uint64_t callocs, uint64_t callocBytes, uint64_t nonWorker);
 extern uint64_t cnm_park_ms(uintptr_t h);
+// row 550: fork safety (Linux): every heap lock, in the heap's lock order, across a fork
+extern void cnm_fork_prepare(uintptr_t h);
+extern void cnm_fork_parent(uintptr_t h);
+extern void cnm_fork_child(uintptr_t h);
 
-static volatile uintptr_t g_heap;
-static volatile LONG g_state;       // 0 not started, 1 starting, 2 ready
+static uintptr_t g_heap;
+static uint32_t g_state;            // 0 not started, 1 starting, 2 ready
 static int g_stats;
 static int g_fast;                  // (row 519) the lock-free design is on and nothing else is: no worker cache, no statistics. Set once, in cn_start, before g_state is 2
 
@@ -74,26 +86,26 @@ static int g_fast;                  // (row 519) the lock-free design is on and 
 #define LF_ATTACHED 1ull
 
 typedef struct {                         // a page's second descriptor: 576 bytes
-  volatile uint64_t genclass;            // +0   class in the low 8 bits, generation above
-  volatile uint64_t state;               // +8   ATTACHED 1, LISTED 2, UNLISTED 3, RETIRED 0
-  volatile uint64_t ncells;              // +16
+  uint64_t genclass;                     // +0   class in the low 8 bits, generation above
+  uint64_t state;                        // +8   ATTACHED 1, LISTED 2, UNLISTED 3, RETIRED 0
+  uint64_t ncells;                       // +16
   uint64_t base;                         // +24  the page's address, never changes
   uint64_t pad[4];                       // +32
-  volatile uint64_t bits[64];            // +64  set means free
+  uint64_t bits[64];                     // +64  set means free
 } LfD2;
 
 typedef struct {                         // a class's record: 512 bytes
-  volatile uintptr_t slot[8];            // +0    an ATTACHED page's descriptor, or 0
-  volatile uint32_t active;              // +64   active slots
+  uintptr_t slot[8];                     // +0    an ATTACHED page's descriptor, or 0
+  uint32_t active;                       // +64   active slots
   uint32_t cap;                          // +68
   uint32_t collLimit;                    // +72
   uint32_t pad0;
-  volatile uint8_t used[8];              // +80   set by an allocation that finds it clear; cleared by collect
+  uint8_t used[8];                       // +80   set by an allocation that finds it clear; cleared by collect
   uint8_t pad1[40];
   uint64_t idleSince[8];                 // +128  (the Cone side's)
-  volatile LONG collisions;              // +192  collisions since the last change of the slot count
+  uint32_t collisions;                   // +192  collisions since the last change of the slot count
   uint8_t pad2[60];
-  volatile int64_t st[10];               // +256  allocs, frees, collisions, slots added, dropped, pages attached, listed, retired, retires abandoned, Rule G undos
+  uint64_t st[10];                       // +256  allocs, frees, collisions, slots added, dropped, pages attached, listed, retired, retires abandoned, Rule G undos
   uint8_t pad3[176];
 } LfCls;
 
@@ -109,16 +121,16 @@ typedef char lf_assert_cls[(sizeof(LfCls) == 512 && offsetof(LfCls, used) == 80 
 static int g_lf;                         // the second design is on
 static uintptr_t g_pbase, g_psize, g_d2base;
 static LfCls* g_lfc;
-static LONG g_tnum;
+static uint32_t g_tnum;
 static size_t g_lfsize[CN_MAXCLS];       // cell size
 static uint32_t g_lfnw[CN_MAXCLS];       // words of bits
 static uint32_t g_lfnfull[CN_MAXCLS];    // words wholly valid
 static uint64_t g_lflastmask[CN_MAXCLS]; // the valid bits of the word after them (0: none)
 static uint64_t g_lfrecip[CN_MAXCLS];    // ceil(2^32 / size): offset * recip >> 32 is offset / size for offsets under 65536
 static uint8_t g_lfmap[65];              // (n + 15) >> 4 -> class, for n up to 1024
-static __declspec(thread) LfTls t_lf;
-static volatile LONG64 g_callocs, g_callocBytes, g_nonWorker;
-static volatile LONG64 g_mbUndos;        // (row 506) Rule G undos of a multi-bit fill, also counted in st[9]; a statistics run only
+static CN_TLS LfTls t_lf;
+static uint64_t g_callocs, g_callocBytes, g_nonWorker;
+static uint64_t g_mbUndos;               // (row 506) Rule G undos of a multi-bit fill, also counted in st[9]; a statistics run only
 #ifdef CN_HOOKS
 static void (*g_hookPre)(size_t cl, uint64_t old);
 #define LF_HOOK(c, old) do { void (*hk)(size_t, uint64_t) = g_hookPre; if (hk) hk(c, old); } while (0)
@@ -140,8 +152,7 @@ static void (*g_dfHandler)(void* cell);
 
 static inline size_t lf_classof(size_t n) {          // n up to 32768
   if (n <= 1024) return g_lfmap[(n + 15) >> 4];
-  unsigned long msb;
-  _BitScanReverse64(&msb, n - 1);
+  unsigned msb = cn_bsr64(n - 1);
   return 8 + (msb - 7) * 8 + (((n - 1) >> (msb - 3)) & 7);
 }
 static inline int lf_owned(uintptr_t p) { return p - g_pbase < g_psize; }
@@ -149,18 +160,16 @@ static inline uint64_t lf_mask(size_t c, uint32_t j) {
   if (j < g_lfnfull[c]) return ~0ull;
   return j == g_lfnfull[c] ? g_lflastmask[c] : 0;
 }
-static inline void lf_count(volatile int64_t* k) { _InterlockedIncrement64((volatile LONG64*)k); }
+static inline void lf_count(uint64_t* k) { cn_inc64(k); }
 
 #ifdef CN_DEBUG
 static void lf_double_free(LfD2* P, uint32_t j, uint64_t bit, uint64_t g) {
-  unsigned long b;
-  _BitScanForward64(&b, bit);
+  unsigned b = cn_bsf64(bit);
   void* cell = (void*)(P->base + ((size_t)j * 64 + b) * g_lfsize[g & 0xFF]);
   if (g_dfHandler) { g_dfHandler(cell); return; }
   static const char msg[] = "cnmalloc: double free\n";
-  DWORD w;
-  WriteFile(GetStdHandle(STD_ERROR_HANDLE), msg, sizeof msg - 1, &w, NULL);
-  ExitProcess(134);
+  cn_write_err(msg, sizeof msg - 1);
+  cn_exit(134);
 }
 #endif
 
@@ -169,8 +178,8 @@ static void lf_double_free(LfD2* P, uint32_t j, uint64_t bit, uint64_t g) {
 // (row 519) The test after the fetch_or, "the word was empty, or is now every valid bit", is the same as before and is
 // written to reach the answer without lf_mask on the common path: a word that is not all ones can only be the page's last,
 // partly valid word, so its mask is read only when the word is that one.
-static __forceinline void lf_release_i(LfD2* P, uint64_t g, uint32_t j, uint64_t bit) {
-  uint64_t old = (uint64_t)_InterlockedOr64((volatile LONG64*)&P->bits[j], (LONG64)bit);
+static CN_FORCEINLINE void lf_release_i(LfD2* P, uint64_t g, uint32_t j, uint64_t bit) {
+  uint64_t old = cn_or64(&P->bits[j], bit);
   LF_HOOK_OR(g & 0xFF);                               // tests only (CN_HOOKS): a park point after the fetch_or
   if (old & bit) {                                  // double free: abort in a debug build, ignore otherwise
 #ifdef CN_DEBUG
@@ -183,15 +192,15 @@ static __forceinline void lf_release_i(LfD2* P, uint64_t g, uint32_t j, uint64_t
   if (old == 0) edge = 1;
   else if (now == ~0ull) edge = j < g_lfnfull[g & 0xFF];
   else edge = j == g_lfnfull[g & 0xFF] && now == g_lflastmask[g & 0xFF];
-  if (edge && P->state != LF_ATTACHED)
+  if (edge && cn_ld64_sc(&P->state) != LF_ATTACHED)
     cnm_lf_after_free(g_heap, (uintptr_t)P, g);        // a full page has room again, or a page may be wholly free
 }
-static __declspec(noinline) void lf_release(LfD2* P, uint64_t g, uint32_t j, uint64_t bit) { lf_release_i(P, g, j, bit); }
+static CN_NOINLINE void lf_release(LfD2* P, uint64_t g, uint32_t j, uint64_t bit) { lf_release_i(P, g, j, bit); }
 
-static __forceinline void lf_free_i(void* p, int stats) {
+static CN_FORCEINLINE void lf_free_i(void* p, int stats) {
   uintptr_t off = (uintptr_t)p - g_pbase;
   LfD2* P = (LfD2*)(g_d2base + (off >> 16) * sizeof(LfD2));
-  uint64_t g = P->genclass;                           // read while the cell is still the caller's
+  uint64_t g = cn_ld64_acq(&P->genclass);             // read while the cell is still the caller's
   size_t c = g & 0xFF;
   uint32_t idx = (uint32_t)(((uint64_t)(off & 0xFFFF) * g_lfrecip[c]) >> 32);
   if (stats) lf_count(&g_lfc[c].st[1]);
@@ -209,14 +218,14 @@ static void* lf_alloc(size_t c) {
   LfTls* T = &t_lf;
 restart:;
   uint32_t tn = T->tnum;
-  if (!tn) tn = T->tnum = (uint32_t)InterlockedIncrement(&g_tnum);
-  uint32_t si = tn % L->active;
-  LfD2* P = (LfD2*)L->slot[si];
+  if (!tn) tn = T->tnum = cn_inc32(&g_tnum);
+  uint32_t si = tn % cn_ld32_rlx(&L->active);
+  LfD2* P = (LfD2*)cn_ld64_acq(&L->slot[si]);
   int ask = 0;
   if (P) {
-    uint64_t g1 = P->genclass;
+    uint64_t g1 = cn_ld64_acq(&P->genclass);
     if ((g1 & 0xFF) == c) {
-      if (!L->used[si]) L->used[si] = 1;
+      if (!cn_ld8_rlx(&L->used[si])) cn_st8_rlx(&L->used[si], 1);
       uint32_t nw = g_lfnw[c];
       uint32_t w = T->startPage[c] == LF_KEY(P, g1) ? T->start[c] : 0;
       int collided = 0;
@@ -225,22 +234,21 @@ restart:;
         for (uint32_t n = 0; n < nw; n++) {
           uint32_t j = w + n;
           if (j >= nw) j -= nw;
-          uint64_t old = P->bits[j];
+          uint64_t old = cn_ld64_acq(&P->bits[j]);
           if (!old) continue;
-          unsigned long b;
-          _BitScanForward64(&b, old);
+          unsigned b = cn_bsf64(old);
           uint64_t bit = 1ull << b;
           LF_HOOK(c, old);
-          if ((uint64_t)_InterlockedCompareExchange64((volatile LONG64*)&P->bits[j], (LONG64)(old & ~bit), (LONG64)old) != old) {
+          if (cn_cas64(&P->bits[j], old, old & ~bit) != old) {
             lost = collided = 1;                        // note one collision on class c; move to the next word
             if (g_stats) lf_count(&L->st[2]);
-            if ((uint32_t)_InterlockedIncrement(&L->collisions) == L->collLimit) {
-              if (L->active < L->cap) ask = 1; else L->collisions = 0;
+            if (cn_inc32(&L->collisions) == L->collLimit) {
+              if (cn_ld32_rlx(&L->active) < L->cap) ask = 1; else cn_st32_rlx(&L->collisions, 0);
             }
             continue;
           }
           LF_HOOK_TAKE(c, bit);                         // tests only (CN_HOOKS; row 532): a park point between the swap and g2
-          uint64_t g2 = P->genclass;
+          uint64_t g2 = cn_ld64_acq(&P->genclass);
           if (g2 != g1) {                               // Rule G: the page changed life; give the bit back, start again
             if (g_stats) lf_count(&L->st[9]);
             lf_release(P, g2, j, bit);
@@ -270,8 +278,7 @@ static void* lf_link(LfD2* P, size_t c, uint32_t j, uint64_t want, size_t* got) 
   void* head = NULL;
   size_t n = 0;
   while (want) {
-    unsigned long b;
-    _BitScanReverse64(&b, want);
+    unsigned b = cn_bsr64(want);
     want &= ~(1ull << b);
     void* q = (void*)(base + (size_t)b * sz);
     *(void**)q = head;
@@ -296,14 +303,14 @@ static void* lf_fill(size_t c, size_t k, size_t* got) {
   LfTls* T = &t_lf;
 restart:;
   uint32_t tn = T->tnum;
-  if (!tn) tn = T->tnum = (uint32_t)InterlockedIncrement(&g_tnum);
-  uint32_t si = tn % L->active;
-  LfD2* P = (LfD2*)L->slot[si];
+  if (!tn) tn = T->tnum = cn_inc32(&g_tnum);
+  uint32_t si = tn % cn_ld32_rlx(&L->active);
+  LfD2* P = (LfD2*)cn_ld64_acq(&L->slot[si]);
   int ask = 0;
   if (P) {
-    uint64_t g1 = P->genclass;
+    uint64_t g1 = cn_ld64_acq(&P->genclass);
     if ((g1 & 0xFF) == c) {
-      if (!L->used[si]) L->used[si] = 1;
+      if (!cn_ld8_rlx(&L->used[si])) cn_st8_rlx(&L->used[si], 1);
       uint32_t nw = g_lfnw[c];
       uint32_t w = T->startPage[c] == LF_KEY(P, g1) ? T->start[c] : 0;
       int collided = 0;
@@ -312,21 +319,21 @@ restart:;
         for (uint32_t n = 0; n < nw; n++) {
           uint32_t j = w + n;
           if (j >= nw) j -= nw;
-          uint64_t old = P->bits[j];
+          uint64_t old = cn_ld64_acq(&P->bits[j]);
           if (!old) continue;
           uint64_t want = 0, rest = old;
           for (size_t i = 0; i < k && rest; i++) { want |= rest & (0 - rest); rest &= rest - 1; }
           LF_HOOK(c, old);
-          if ((uint64_t)_InterlockedCompareExchange64((volatile LONG64*)&P->bits[j], (LONG64)(old & ~want), (LONG64)old) != old) {
+          if (cn_cas64(&P->bits[j], old, old & ~want) != old) {
             lost = collided = 1;                        // note one collision on class c; move to the next word
             if (g_stats) lf_count(&L->st[2]);
-            if ((uint32_t)_InterlockedIncrement(&L->collisions) == L->collLimit) {
-              if (L->active < L->cap) ask = 1; else L->collisions = 0;
+            if (cn_inc32(&L->collisions) == L->collLimit) {
+              if (cn_ld32_rlx(&L->active) < L->cap) ask = 1; else cn_st32_rlx(&L->collisions, 0);
             }
             continue;
           }
           LF_HOOK_TAKE(c, want);                        // tests only (CN_HOOKS): a park point between the swap and g2
-          uint64_t g2 = P->genclass;
+          uint64_t g2 = cn_ld64_acq(&P->genclass);
           if (g2 != g1) {                               // MB-G: the page changed life; every taken bit back in one fetch_or
             if (g_stats) { lf_count(&L->st[9]); lf_count(&g_mbUndos); }
             lf_release(P, g2, j, want);
@@ -336,7 +343,7 @@ restart:;
           if (j != w || T->startPage[c] != LF_KEY(P, g1)) { T->start[c] = (uint8_t)j; T->startPage[c] = LF_KEY(P, g1); }   // the cursor: stay at the word last taken from
           if (ask) cnm_lf_grow(g_heap, c);
           void* head = lf_link(P, c, j, want, got);     // MB-W: the cells' first touch, only now
-          if (g_stats) _InterlockedExchangeAdd64((volatile LONG64*)&L->st[0], (LONG64)*got);
+          if (g_stats) cn_add64(&L->st[0], (uint64_t)*got);
           return head;
         }
         if (!lost) break;
@@ -350,7 +357,7 @@ restart:;
 
 static size_t lf_cellclass(uintptr_t p) {              // none (all ones) for a block that is not a small cell
   if (!lf_owned(p)) return (size_t)-1;
-  return (size_t)(((LfD2*)(g_d2base + ((p - g_pbase) >> 16) * sizeof(LfD2)))->genclass & 0xFF);
+  return (size_t)(cn_ld64_acq(&((LfD2*)(g_d2base + ((p - g_pbase) >> 16) * sizeof(LfD2)))->genclass) & 0xFF);
 }
 
 static void lf_setup(uintptr_t h) {
@@ -396,37 +403,71 @@ static void lf_setup(uintptr_t h) {
 // (3) Small realloc, _recalloc and the aligned calls go through it (below).
 #define CN_SLOTS 512
 #define CN_MAXREQ 32768
-typedef struct { volatile int64_t bytes, hits, misses, returns, fills; int64_t pad[3]; } CnSlot;   // one cache line
+typedef struct { uint64_t bytes, hits, misses, returns, fills; uint64_t pad[3]; } CnSlot;   // one cache line; only its worker writes it (relaxed), cn_publish reads it
 typedef struct { void* head[CN_MAXCLS]; uint16_t count[CN_MAXCLS]; uint16_t fill[CN_MAXCLS]; CnSlot* slot; } CnTls;
-static __declspec(thread) CnTls t_c;
-static __declspec(align(64)) CnSlot g_slots[CN_SLOTS];
-static volatile LONG g_slotUsed[CN_SLOTS];
-static volatile LONG64 g_endHits, g_endMisses, g_endReturns, g_endFills;   // workers that have ended
+static CN_TLS CnTls t_c;
+static CN_ALIGN64 CnSlot g_slots[CN_SLOTS];
+static uint32_t g_slotUsed[CN_SLOTS];
+static uint64_t g_endHits, g_endMisses, g_endReturns, g_endFills;   // workers that have ended
 static size_t g_cap, g_max, g_ncached, g_fill;
 static size_t g_csize[CN_MAXCLS];
 static uint8_t g_cls[CN_MAXREQ / 16 + 2];       // (n + 15) >> 4 -> class, for n up to cache_max
 
 // push the totals to the heap's counters (before they are read or printed)
 static void cn_publish(void) {
-  if (g_lf) cnm_lf_set_counts(g_heap, (uint64_t)g_callocs, (uint64_t)g_callocBytes, (uint64_t)g_nonWorker);
+  if (g_lf) cnm_lf_set_counts(g_heap, cn_ld64_rlx(&g_callocs), cn_ld64_rlx(&g_callocBytes), cn_ld64_rlx(&g_nonWorker));
   if (!g_cap) return;
-  int64_t b = 0, h = g_endHits, m = g_endMisses, r = g_endReturns, f = g_endFills;
+  int64_t b = 0, h = (int64_t)cn_ld64_rlx(&g_endHits), m = (int64_t)cn_ld64_rlx(&g_endMisses), r = (int64_t)cn_ld64_rlx(&g_endReturns), f = (int64_t)cn_ld64_rlx(&g_endFills);
   for (int i = 0; i < CN_SLOTS; i++) {
     CnSlot* s = &g_slots[i];
-    b += s->bytes; h += s->hits; m += s->misses; r += s->returns; f += s->fills;
+    b += (int64_t)cn_ld64_rlx(&s->bytes); h += (int64_t)cn_ld64_rlx(&s->hits); m += (int64_t)cn_ld64_rlx(&s->misses);
+    r += (int64_t)cn_ld64_rlx(&s->returns); f += (int64_t)cn_ld64_rlx(&s->fills);
   }
   cnm_set_cache_stats(g_heap, (uint64_t)b, (uint64_t)h, (uint64_t)m, (uint64_t)r, (uint64_t)f);
 }
 
 // CNMALLOC=stats: the counters are printed at exit. atexit is the exe's own CRT's and keeps its table in the C
 // runtime's internal heap (not through the exported malloc this file replaces), so registering allocates nothing of ours.
-static void __cdecl cn_at_exit(void) { if (g_stats && g_heap) { cn_publish(); cnm_print_stats(g_heap); } }
+static void CN_CALL cn_at_exit(void) { if (g_stats && g_heap) { cn_publish(); cnm_print_stats(g_heap); } }
+
+#ifdef CN_LINUX
+// ---- Linux: the bootstrap buffer, and fork (row 550) ----------------------------------------------------------------
+// NOTHING IN THE START-UP MAY CALL THE C LIBRARY'S malloc, which is this file. If something does (the timer's thread is
+// made by pthread_create, which allocates; so may anything glibc does under pthread_atfork), the call comes from the
+// starting thread while g_state is 1, and it would wait for itself for ever. So the starting thread, and only it, is served
+// from a static buffer for as long as g_state is 1: a bump allocation, a 16-byte header holding the block's size, never
+// freed. A pointer inside it is recognised by its address, before anything else; free of one does nothing, realloc of one
+// copies out into the heap, malloc_usable_size reads the header. Other threads still wait for g_state 2.
+// cnmalloc_bootUsed() answers how many bytes of it were ever used (the first-use probe reports it).
+#define CN_BOOT_BYTES 8192
+static unsigned char g_boot[CN_BOOT_BYTES] __attribute__((aligned(16)));
+static size_t g_bootUsed;                       // only the starting thread writes it, while g_state is 1
+static CN_TLS int t_starter;
+static CN_FORCEINLINE int cn_booting(void) { return CN_UNLIKELY(cn_ld32_acq(&g_state) != 2) && t_starter; }
+static CN_FORCEINLINE int cn_in_boot(const void* p) { return (uintptr_t)p - (uintptr_t)g_boot < CN_BOOT_BYTES; }
+static void* cn_boot_alloc(size_t n, size_t align) {
+  if (align < 16) align = 16;
+  uintptr_t at = ((uintptr_t)g_boot + g_bootUsed + 16 + align - 1) & ~(uintptr_t)(align - 1);   // the block, with a header before it
+  if (at + n > (uintptr_t)g_boot + CN_BOOT_BYTES || n > CN_BOOT_BYTES) { errno = ENOMEM; return NULL; }
+  *(size_t*)(at - 16) = n;
+  g_bootUsed = at + n - (uintptr_t)g_boot;
+  return (void*)at;
+}
+static size_t cn_boot_size(const void* p) { return *(const size_t*)((uintptr_t)p - 16); }
+
+static void cn_fork_prepare(void) { cnm_fork_prepare(g_heap); }
+static void cn_fork_parent(void) { cnm_fork_parent(g_heap); }
+static void cn_fork_child(void) { cnm_fork_child(g_heap); }
+#endif
 
 static uintptr_t cn_start(void) {
-  if (InterlockedCompareExchange(&g_state, 1, 0) == 0) {
+  if (cn_cas32(&g_state, 0, 1) == 0) {
+#ifdef CN_LINUX
+    t_starter = 1;
+#endif
     uintptr_t h = cnm_boot();
-    if (!h) ExitProcess(3);   // nothing sane to do without a heap
-    g_heap = h;
+    if (!h) cn_exit(3);   // nothing sane to do without a heap
+    cn_st64_rel(&g_heap, h);
     g_stats = cnm_wants_stats(h) ? 1 : 0;   // CNMALLOC=stats
     if (g_stats) atexit(cn_at_exit);
     size_t cap = cnm_cache_cap(h), mx = cnm_cache_max(h);
@@ -436,8 +477,8 @@ static uintptr_t cn_start(void) {
       g_ncached = g_cls[(mx + 15) >> 4] + 1;
       g_fill = cap / 2 ? cap / 2 : 1;
       g_max = mx;
-      MemoryBarrier();
-      g_cap = cap;                      // last: the cache is on only when everything above is ready
+      cn_fence();
+      CN_FLAG_ST(g_cap, cap);           // last: the cache is on only when everything above is ready
     }
     if (cnm_design(h) == 2) {
       lf_setup(h);
@@ -446,18 +487,22 @@ static uintptr_t cn_start(void) {
 #else
       cnm_lf_set(h, (void*)lf_alloc, (void*)lf_free, 0);
 #endif
-      MemoryBarrier();
+      cn_fence();
       g_lf = 1;
-      MemoryBarrier();
-      g_fast = (!g_cap && !g_stats) ? 1 : 0;
+      cn_fence();
+      CN_FLAG_ST(g_fast, (!g_cap && !g_stats) ? 1 : 0);
     }
-    InterlockedExchange(&g_state, 2);
+#ifdef CN_LINUX
+    pthread_atfork(cn_fork_prepare, cn_fork_parent, cn_fork_child);
+    t_starter = 0;
+#endif
+    cn_xchg32(&g_state, 2);
   } else {
-    while (g_state != 2) YieldProcessor();
+    while (cn_ld32_acq(&g_state) != 2) cn_pause();
   }
-  return g_heap;
+  return cn_ld64_rlx(&g_heap);
 }
-#define H() (g_state == 2 ? g_heap : cn_start())
+#define H() (cn_ld32_acq(&g_state) == 2 ? cn_ld64_rlx(&g_heap) : cn_start())
 
 // ---- the C runtime's heap names, over the heap; foreign blocks are forwarded inside cnm_* ---------------------------
 // The cache's allocate: the caller has checked g_cap, a worker's slot and that the class is cached.
@@ -468,36 +513,36 @@ static void* cn_cache_alloc_cl(size_t cl, int zero) {
   if (p) {
     t->head[cl] = *(void**)p;
     t->count[cl]--;
-    s->hits++;
-    s->bytes -= (int64_t)g_csize[cl];
+    cn_add64_rlx(&s->hits, 1);
+    cn_add64_rlx(&s->bytes, (uint64_t)0 - (uint64_t)g_csize[cl]);
   } else if (g_lf) {
     // the second design: no lock to take, so the fill is sized to demand (2 cells, then doubling up to half the cap),
     // and it is one compare-and-swap on one word (lf_fill): up to 'want' cells, fewer when the word has fewer free
     size_t want = t->fill[cl] ? t->fill[cl] : 2;
     if (want > g_fill) want = g_fill;
-    s->misses++;
+    cn_add64_rlx(&s->misses, 1);
     size_t got = 0;
     p = lf_fill(cl, want, &got);
     if (!p) return NULL;
     t->head[cl] = *(void**)p;           // the rest of the chain is the worker's list (it was empty)
     t->count[cl] = (uint16_t)(got - 1);
-    s->bytes += (int64_t)((got - 1) * g_csize[cl]);
-    s->fills++;
+    cn_add64_rlx(&s->bytes, (uint64_t)((got - 1) * g_csize[cl]));
+    cn_add64_rlx(&s->fills, 1);
     t->fill[cl] = (uint16_t)(want * 2 > g_fill ? g_fill : want * 2);
   } else {
     size_t got = 0;
-    s->misses++;
+    cn_add64_rlx(&s->misses, 1);
     void* chain = cnm_batch_alloc(g_heap, cl, g_fill, &got);   // one take of the class lock
     if (!got) return NULL;
     p = chain;
     t->head[cl] = *(void**)chain;       // the rest of the chain is the worker's list
     t->count[cl] = (uint16_t)(got - 1);
-    s->bytes += (int64_t)((got - 1) * g_csize[cl]);
-    s->fills++;
+    cn_add64_rlx(&s->bytes, (uint64_t)((got - 1) * g_csize[cl]));
+    cn_add64_rlx(&s->fills, 1);
   }
   if (zero) {
     memset(p, 0, g_csize[cl]);          // a cached cell is dirty
-    if (g_lf && g_stats) { _InterlockedIncrement64(&g_callocs); _InterlockedExchangeAdd64(&g_callocBytes, (LONG64)g_csize[cl]); }
+    if (g_lf && g_stats) { cn_inc64(&g_callocs); cn_add64(&g_callocBytes, (uint64_t)g_csize[cl]); }
   }
   return p;
 }
@@ -510,16 +555,16 @@ static void* cn_cache_alloc(size_t n, int zero) { return cn_cache_alloc_cl(g_cls
 // was, exactly as a single free's (lf_release). A double free in a build without CN_DEBUG is ignored, and the tests still
 // run for the group's other bits.
 static void lf_give_group(LfD2* P, uint32_t j, uint64_t mask) {
-  uint64_t g = P->genclass;                           // RT-G: before this group's fetch_or
-  uint64_t old = (uint64_t)_InterlockedOr64((volatile LONG64*)&P->bits[j], (LONG64)mask);
+  uint64_t g = cn_ld64_acq(&P->genclass);             // RT-G: before this group's fetch_or
+  uint64_t old = cn_or64(&P->bits[j], mask);
   LF_HOOK_GROUP(g & 0xFF);                            // tests only (CN_HOOKS): a park point after a group's fetch_or
   if (old & mask) {                                   // RT-D: double free (any bit of the group)
 #ifdef CN_DEBUG
     lf_double_free(P, j, old & mask, g);
 #endif
   }
-  if (g_stats) _InterlockedExchangeAdd64((volatile LONG64*)&g_lfc[g & 0xFF].st[1], (LONG64)__popcnt64(mask));
-  if ((old == 0 || (old | mask) == lf_mask(g & 0xFF, j)) && P->state != LF_ATTACHED)
+  if (g_stats) cn_add64(&g_lfc[g & 0xFF].st[1], cn_popcnt64(mask));
+  if ((old == 0 || (old | mask) == lf_mask(g & 0xFF, j)) && cn_ld64_sc(&P->state) != LF_ATTACHED)
     cnm_lf_after_free(g_heap, (uintptr_t)P, g);        // a full page has room again, or a page may be wholly free
 }
 
@@ -570,7 +615,7 @@ static void cn_cache_free(size_t cl, void* p) {
   *(void**)p = t->head[cl];
   t->head[cl] = p;
   t->count[cl]++;
-  s->bytes += (int64_t)g_csize[cl];
+  cn_add64_rlx(&s->bytes, (uint64_t)g_csize[cl]);
   if (t->count[cl] > g_cap) {
     // over the cap: keep the newer half, return the older half under one take of the class lock
     size_t count = t->count[cl], ret = count / 2, keep = count - ret;
@@ -579,8 +624,8 @@ static void cn_cache_free(size_t cl, void* p) {
     void* chain = *(void**)last;
     *(void**)last = NULL;
     t->count[cl] = (uint16_t)keep;
-    s->bytes -= (int64_t)(ret * g_csize[cl]);
-    s->returns++;
+    cn_add64_rlx(&s->bytes, (uint64_t)0 - (uint64_t)(ret * g_csize[cl]));
+    cn_add64_rlx(&s->returns, 1);
     if (g_lf) cn_lf_give_chain(chain, ret, cl);
     else cnm_batch_free(g_heap, cl, chain, ret);
   }
@@ -601,41 +646,53 @@ static void cn_cache_flush(void) {
     }
     t->fill[cl] = 0;                    // design 2: the next miss fills 2 again
   }
-  t->slot->bytes = 0;
+  cn_st64_rlx(&t->slot->bytes, 0);
 }
 
 // (design 2) a small cell of class cl for a caller that wants one: from the worker's cache when it has one for the class
 static void* lf_take_class(size_t cl) {
   if (g_cap && t_c.slot && cl < g_ncached) return cn_cache_alloc_cl(cl, 0);
-  if (g_stats && !t_c.slot) _InterlockedIncrement64(&g_nonWorker);
+  if (g_stats && !t_c.slot) cn_inc64(&g_nonWorker);
   return lf_alloc(cl);
 }
 
-void* __cdecl malloc(size_t n) {
-  if (g_fast && n <= 32768) return lf_alloc(lf_classof(n));   // (row 519) the common path: one word says nothing else is on
-  if (g_cap && n <= g_max && t_c.slot) return cn_cache_alloc(n, 0);
+void* CN_CALL malloc(size_t n) {
+  if (CN_FLAG_LD(g_fast) && n <= 32768) CN_RET_MEM(lf_alloc(lf_classof(n)));   // (row 519) the common path: one word says nothing else is on
+#ifdef CN_LINUX
+  if (cn_booting()) return cn_boot_alloc(n, 16);
+#endif
+  if (CN_FLAG_LD(g_cap) && n <= g_max && t_c.slot) CN_RET_MEM(cn_cache_alloc(n, 0));
   uintptr_t h = H();
-  if (g_lf && n <= 32768) return lf_take_class(lf_classof(n));
-  return cnm_malloc(h, n);
+  if (g_lf && n <= 32768) CN_RET_MEM(lf_take_class(lf_classof(n)));
+  CN_RET_MEM(cnm_malloc(h, n));
 }
-void* __cdecl calloc(size_t c, size_t n) {
-  if (g_cap && t_c.slot && (c == 0 || n <= SIZE_MAX / c) && c * n <= g_max) return cn_cache_alloc(c * n, 1);
+void* CN_CALL calloc(size_t c, size_t n) {
+#ifdef CN_LINUX
+  if (cn_booting()) {
+    if (c != 0 && n > SIZE_MAX / c) { errno = ENOMEM; return NULL; }
+    return cn_boot_alloc(c * n, 16);                         // the buffer is static, so zero until used once
+  }
+#endif
+  if (CN_FLAG_LD(g_cap) && t_c.slot && (c == 0 || n <= SIZE_MAX / c) && c * n <= g_max) CN_RET_MEM(cn_cache_alloc(c * n, 1));
   uintptr_t h = H();
   if (g_lf && (c == 0 || n <= SIZE_MAX / c) && c * n <= 32768) {
     size_t cl = lf_classof(c * n);
     void* p = lf_take_class(cl);
     if (p) {                            // every small cell is filled (spec section 7)
       memset(p, 0, g_lfsize[cl]);
-      if (g_stats) { _InterlockedIncrement64(&g_callocs); _InterlockedExchangeAdd64(&g_callocBytes, (LONG64)g_lfsize[cl]); }
+      if (g_stats) { cn_inc64(&g_callocs); cn_add64(&g_callocBytes, (uint64_t)g_lfsize[cl]); }
     }
-    return p;
+    CN_RET_MEM(p);
   }
-  return cnm_calloc(h, c, n);
+  CN_RET_MEM(cnm_calloc(h, c, n));
 }
-void __cdecl free(void* p) {
-  if (g_fast && lf_owned((uintptr_t)p)) { lf_free_i(p, 0); return; }   // (row 519) a null is never owned; g_fast means no statistics
+void CN_CALL free(void* p) {
+  if (CN_FLAG_LD(g_fast) && lf_owned((uintptr_t)p)) { lf_free_i(p, 0); return; }   // (row 519) a null is never owned; g_fast means no statistics
   if (!p) return;
-  if (g_cap && t_c.slot) {
+#ifdef CN_LINUX
+  if (cn_in_boot(p)) return;                                  // the bootstrap buffer is never freed
+#endif
+  if (CN_FLAG_LD(g_cap) && t_c.slot) {
     size_t cl = g_lf ? lf_cellclass((uintptr_t)p) : cnm_cell_class(g_heap, p);    // none (all ones) for a large or foreign block
     if (cl < g_ncached) { cn_cache_free(cl, p); return; }
   }
@@ -655,13 +712,25 @@ static void* lf_realloc_small(void* p, size_t n) {
   free(p);
   return q;
 }
-void* __cdecl realloc(void* p, size_t n) {
+void* CN_CALL realloc(void* p, size_t n) {
+#ifdef CN_LINUX
+  if (p && cn_in_boot(p)) {                                   // a block of the bootstrap buffer: copied out, the buffer's copy is left
+    size_t old = cn_boot_size(p);
+    if (n == 0) return NULL;
+    void* q = malloc(n);
+    if (q) memcpy(q, p, n < old ? n : old);
+    return q;
+  }
+  if (!p && cn_booting()) return cn_boot_alloc(n, 16);
+#endif
   uintptr_t h = H();
-  if (g_lf && p && lf_owned((uintptr_t)p)) return lf_realloc_small(p, n);
-  return cnm_realloc(h, p, n);
+  if (g_lf && p && lf_owned((uintptr_t)p)) CN_RET_MEMN(lf_realloc_small(p, n), n);
+  CN_RET_MEMN(cnm_realloc(h, p, n), n);
 }
-size_t __cdecl _msize(void* p) { return cnm_usable(H(), p); }
-void* __cdecl _recalloc(void* p, size_t c, size_t n) {
+
+#ifdef CN_WINDOWS
+size_t CN_CALL _msize(void* p) { return cnm_usable(H(), p); }
+void* CN_CALL _recalloc(void* p, size_t c, size_t n) {
   uintptr_t h = H();
   if (!g_lf) return cnm_recalloc(h, p, c, n);
   if (c != 0 && n > SIZE_MAX / c) return NULL;          // as cnm_recalloc: what the block grew by is zeroed, counted from _msize
@@ -670,9 +739,9 @@ void* __cdecl _recalloc(void* p, size_t c, size_t n) {
   if (q && total > old && total != 0) memset((char*)q + old, 0, total - old);
   return q;
 }
-void* __cdecl _expand(void* p, size_t n) { return cnm_expand(H(), p, n); }
+void* CN_CALL _expand(void* p, size_t n) { return cnm_expand(H(), p, n); }
 // (design 2) a small aligned cell: the smallest class whose size is a multiple of the alignment, through the cache
-void* __cdecl _aligned_malloc(size_t n, size_t a) {
+void* CN_CALL _aligned_malloc(size_t n, size_t a) {
   uintptr_t h = H();
   if (g_lf && a != 0 && (a & (a - 1)) == 0) {
     if (a <= 16) return malloc(n);
@@ -684,13 +753,13 @@ void* __cdecl _aligned_malloc(size_t n, size_t a) {
   }
   return cnm_aligned(h, a, n);
 }
-void __cdecl _aligned_free(void* p) {
+void CN_CALL _aligned_free(void* p) {
   if (!p) return;
   uintptr_t h = H();
   if (g_lf && lf_owned((uintptr_t)p)) { free(p); return; }
   cnm_aligned_free(h, p);
 }
-void* __cdecl _aligned_realloc(void* p, size_t n, size_t a) {
+void* CN_CALL _aligned_realloc(void* p, size_t n, size_t a) {
   uintptr_t h = H();
   if (g_lf && (!p || lf_owned((uintptr_t)p))) {
     if (!p) return _aligned_malloc(n, a);
@@ -703,7 +772,7 @@ void* __cdecl _aligned_realloc(void* p, size_t n, size_t a) {
   }
   return cnm_aligned_realloc(h, p, n, a);
 }
-size_t __cdecl _aligned_msize(void* p, size_t a, size_t off) { return cnm_aligned_msize(H(), p, a, off); }
+size_t CN_CALL _aligned_msize(void* p, size_t a, size_t off) { return cnm_aligned_msize(H(), p, a, off); }
 
 // Callers compiled with dllimport reference __imp_<name>, which pulls ucrt.lib's import member and collides with
 // the definitions above (LNK2005). Defining the pointers keeps those members out and swaps those callers too.
@@ -718,13 +787,71 @@ void* (__cdecl* __imp__aligned_malloc)(size_t, size_t) = _aligned_malloc;
 void  (__cdecl* __imp__aligned_free)(void*) = _aligned_free;
 void* (__cdecl* __imp__aligned_realloc)(void*, size_t, size_t) = _aligned_realloc;
 size_t(__cdecl* __imp__aligned_msize)(void*, size_t, size_t) = _aligned_msize;
+#endif
+
+#ifdef CN_LINUX
+// ---- Linux's names for the rest of the C library's allocation API (row 550) ---------------------------------------
+// glibc's own calls (reallocarray, fopen's buffers, pthread_create's TLS) go through the executable's names, because the
+// executable defines them and exports them to the libraries it links. malloc_usable_size is the one the C library has no
+// __libc_ form of; a block that is not ours (made by the dynamic loader or glibc's start-up) goes to glibc's through
+// the heap's foreign table (src/oslinux.cone).
+size_t malloc_usable_size(void* p) {
+  if (!p) return 0;
+  if (cn_in_boot(p)) return cn_boot_size(p);
+  return cnm_usable(H(), p);
+}
+
+// the aligned calls: a small cell whose class size is a multiple of the alignment, through the cache, as Windows'
+// _aligned_malloc does; anything else is the heap's own aligned allocation (a power of two alignment up to a large block's)
+static void* cn_aligned(size_t a, size_t n) {
+  if (cn_booting()) return cn_boot_alloc(n, a);
+  uintptr_t h = H();
+  if (g_lf && a <= 32768) {
+    if (a <= 16) return malloc(n);
+    if (n <= 32768) {
+      size_t cl = lf_classof(n);
+      while (cl < CN_MAXCLS && (g_lfsize[cl] & (a - 1))) cl++;
+      if (cl < CN_MAXCLS) CN_RET_MEM(lf_take_class(cl));
+    }
+  }
+  CN_RET_MEM(cnm_aligned(h, a, n));
+}
+static size_t cn_pow2_up(size_t a) { size_t r = 1; while (r < a && r) r <<= 1; return r; }
+void* memalign(size_t a, size_t n) {
+  if (a == 0 || (a & (a - 1))) a = cn_pow2_up(a);        // glibc: a non-power of two is rounded up
+  if (!a) { errno = EINVAL; return NULL; }
+  return cn_aligned(a, n);
+}
+void* aligned_alloc(size_t a, size_t n) {
+  if (a == 0 || (a & (a - 1))) { errno = EINVAL; return NULL; }
+  return cn_aligned(a, n);
+}
+int posix_memalign(void** out, size_t a, size_t n) {
+  if (a < sizeof(void*) || (a & (a - 1))) return EINVAL;
+  void* p = cn_aligned(a, n);
+  if (!p) return ENOMEM;
+  *out = p;
+  return 0;
+}
+void* valloc(size_t n) { return cn_aligned(4096, n); }
+void* pvalloc(size_t n) {
+  if (n > SIZE_MAX - 4096) { errno = ENOMEM; return NULL; }
+  return cn_aligned(4096, (n + 4095) & ~(size_t)4095);
+}
+void* reallocarray(void* p, size_t c, size_t n) {
+  if (c != 0 && n > SIZE_MAX / c) { errno = ENOMEM; return NULL; }
+  return realloc(p, c * n);
+}
+// cnmalloc_bootUsed: the bytes of the bootstrap buffer ever used (the first-use probe's question: was it needed?)
+CN_EXPORT size_t cnmalloc_bootUsed(void) { return g_bootUsed; }
+#endif
 
 // what the benchmark runner calls at the end of a run (row 428): one line per contended class, then the total
 void cn_print_lock_waits(void) { if (g_state == 2) cnm_print_lock_waits_of(g_heap); }
 
 // row 451: the size of the cell malloc(n) hands out, for the heap region's trial setting (CONE_HEAP_CLASS_SIZE=1;
-// conestd's heapregion.c finds this by GetProcAddress). 0 and requests over the small classes answer n.
-__declspec(dllexport) size_t cnmalloc_sizeFor(size_t n) {
+// conestd's heapregion.c finds this by GetProcAddress, or dlsym on Linux). 0 and requests over the small classes answer n.
+CN_EXPORT size_t cnmalloc_sizeFor(size_t n) {
   if (n == 0 || n > 32768) return n;
   uintptr_t h = H();
   size_t cl = cnm_class_of(h, n);
@@ -738,43 +865,43 @@ uint64_t cn_collect(int force) { return cnm_collect(H(), force); }
 uint64_t cn_stats(uint64_t* out, size_t max) { uintptr_t h = H(); cn_publish(); return cnm_stats(h, out, max); }
 
 // ---- the runtime's calls (rows 426 and 454) --------------------------------------------------------------------------
-// The actors runtime finds these by GetProcAddress on the program's own module, once per worker: they are exported
+// The actors runtime finds these by GetProcAddress (dlsym(RTLD_DEFAULT) on Linux) on the program's own module, once per worker: they are exported
 // from the executable only when this library is linked, so a program without cnmalloc finds nothing and calls nothing.
 // begin: this thread is a worker and gets a cache (when the cache is on). park: it is about to sleep (design 1), or it
 // has slept a whole give-back delay with no work (design 2): its cache goes back to the heap, then everything due under
 // the give-back delay is given back (row 425's timer handles what falls due later). end: the worker is finishing; its
 // cache goes back and its slot is freed. parkMs: 0 under design 1 (the scheduler parks and calls park as it always did);
 // under design 2 the milliseconds a worker sleeps before it calls park, then it sleeps without a limit.
-__declspec(dllexport) void cnmalloc_workerBegin(void) {
+CN_EXPORT void cnmalloc_workerBegin(void) {
   H();
   if (!g_cap || t_c.slot) return;
   for (int i = 0; i < CN_SLOTS; i++) {
-    if (g_slotUsed[i] == 0 && InterlockedCompareExchange(&g_slotUsed[i], 1, 0) == 0) { t_c.slot = &g_slots[i]; return; }
+    if (cn_ld32_rlx(&g_slotUsed[i]) == 0 && cn_cas32(&g_slotUsed[i], 0, 1) == 0) { t_c.slot = &g_slots[i]; return; }
   }                                    // out of slots: this worker simply has no cache
 }
 
-__declspec(dllexport) void cnmalloc_workerPark(void) {
+CN_EXPORT void cnmalloc_workerPark(void) {
   uintptr_t h = H();
   if (g_cap) cn_cache_flush();
   cnm_collect(h, 0);
 }
 
-__declspec(dllexport) uint32_t cnmalloc_workerParkMs(void) {
+CN_EXPORT uint32_t cnmalloc_workerParkMs(void) {
   uintptr_t h = H();
   return g_lf ? (uint32_t)cnm_park_ms(h) : 0;
 }
 
-__declspec(dllexport) void cnmalloc_workerEnd(void) {
+CN_EXPORT void cnmalloc_workerEnd(void) {
   if (!g_cap || !t_c.slot) return;
   cn_cache_flush();
   CnSlot* s = t_c.slot;
-  InterlockedAdd64(&g_endHits, s->hits);
-  InterlockedAdd64(&g_endMisses, s->misses);
-  InterlockedAdd64(&g_endReturns, s->returns);
-  InterlockedAdd64(&g_endFills, s->fills);
-  s->hits = s->misses = s->returns = s->fills = s->bytes = 0;
+  cn_add64(&g_endHits, cn_ld64_rlx(&s->hits));
+  cn_add64(&g_endMisses, cn_ld64_rlx(&s->misses));
+  cn_add64(&g_endReturns, cn_ld64_rlx(&s->returns));
+  cn_add64(&g_endFills, cn_ld64_rlx(&s->fills));
+  cn_st64_rlx(&s->hits, 0); cn_st64_rlx(&s->misses, 0); cn_st64_rlx(&s->returns, 0); cn_st64_rlx(&s->fills, 0); cn_st64_rlx(&s->bytes, 0);
   t_c.slot = NULL;
-  InterlockedExchange(&g_slotUsed[s - g_slots], 0);
+  cn_xchg32(&g_slotUsed[s - g_slots], 0);
 }
 
 // ---- for the tests (row 454) -----------------------------------------------------------------------------------------
@@ -782,24 +909,24 @@ __declspec(dllexport) void cnmalloc_workerEnd(void) {
 // 5 pages attached, 6 listed, 7 retired, 8 retires abandoned, 9 Rule G undos (0, 1, 2 and 9 only in a statistics run);
 // 10 (row 506) the Rule G undos of multi-bit fills alone (a statistics run only; they are in 9 too).
 // -1 when the second design is off. And which design this heap is.
-__declspec(dllexport) int64_t cnmalloc_lfTotal(int which) {
+CN_EXPORT int64_t cnmalloc_lfTotal(int which) {
   H();
   if (!g_lf || which < 0 || which > 10) return -1;
-  if (which == 10) return g_mbUndos;
+  if (which == 10) return (int64_t)cn_ld64_rlx(&g_mbUndos);
   int64_t t = 0;
-  for (int c = 0; c < CN_MAXCLS; c++) t += g_lfc[c].st[which];
+  for (int c = 0; c < CN_MAXCLS; c++) t += (int64_t)cn_ld64_rlx(&g_lfc[c].st[which]);
   return t;
 }
-__declspec(dllexport) int cnmalloc_design(void) { H(); return g_lf ? 2 : 1; }
-__declspec(dllexport) uintptr_t cnmalloc_heap(void) { return H(); }       // the process's heap, for tests that call cnm_* on it
-__declspec(dllexport) uint64_t cnmalloc_collect(int force) { return cnm_collect(H(), force != 0); }
-__declspec(dllexport) int cnmalloc_lfActive(int cl) { H(); return g_lf ? (int)g_lfc[cl].active : 0; }
+CN_EXPORT int cnmalloc_design(void) { H(); return g_lf ? 2 : 1; }
+CN_EXPORT uintptr_t cnmalloc_heap(void) { return H(); }       // the process's heap, for tests that call cnm_* on it
+CN_EXPORT uint64_t cnmalloc_collect(int force) { return cnm_collect(H(), force != 0); }
+CN_EXPORT int cnmalloc_lfActive(int cl) { H(); return g_lf ? (int)cn_ld32_rlx(&g_lfc[cl].active) : 0; }
 #ifdef CN_HOOKS
 // pre: called in lf_alloc between a thread's page load and its compare-and-swap, with the class and the word value the swap will expect; detach: inside a
 // detach, between the state exchange and the scan; retire: inside a retire, after RETIRED and before the generation
 // rises; claim: inside a retire, after the page was found wholly free and before its words are claimed
 // afterOr: in lf_release, right after the fetch_or; after: in "after a free", past the generation test, under the class lock, before the scan
-__declspec(dllexport) void cnmalloc_lfSetHooks(void (*pre)(size_t, uint64_t), void (*detach)(size_t), void (*retire)(size_t), void (*claim)(size_t), void (*afterOr)(size_t), void (*after)(size_t)) {
+CN_EXPORT void cnmalloc_lfSetHooks(void (*pre)(size_t, uint64_t), void (*detach)(size_t), void (*retire)(size_t), void (*claim)(size_t), void (*afterOr)(size_t), void (*after)(size_t)) {
   uintptr_t h = H();
   g_hookPre = pre;
   g_hookOr = afterOr;
@@ -808,23 +935,23 @@ __declspec(dllexport) void cnmalloc_lfSetHooks(void (*pre)(size_t, uint64_t), vo
 // (row 506) take: in lf_fill, after a successful multi-bit compare-and-swap and before the g2 load, with the class and
 // the bits taken; (row 532) also in lf_alloc, after its single-cell compare-and-swap and before its g2 load, with the one
 // bit taken; group: in a grouped return, right after each group's fetch_or
-__declspec(dllexport) void cnmalloc_lfSetMultiHooks(void (*take)(size_t, uint64_t), void (*group)(size_t)) {
+CN_EXPORT void cnmalloc_lfSetMultiHooks(void (*take)(size_t, uint64_t), void (*group)(size_t)) {
   H();
   g_hookTake = take;
   g_hookGroup = group;
 }
 // (row 506) a worker's cache goes back to the heap (grouped), as at a park but with no collect after it
-__declspec(dllexport) void cnmalloc_workerFlush(void) { if (g_cap && t_c.slot) cn_cache_flush(); }
+CN_EXPORT void cnmalloc_workerFlush(void) { if (g_cap && t_c.slot) cn_cache_flush(); }
 // (row 506) a look at the page holding address p: 0 to 63 its word of bits 'which', 64 its genclass, 65 its state
 // (ATTACHED 1, LISTED 2, UNLISTED 3, RETIRED 0); all ones for an address outside the small pages
-__declspec(dllexport) uint64_t cnmalloc_lfPeek(uintptr_t p, int which) {
+CN_EXPORT uint64_t cnmalloc_lfPeek(uintptr_t p, int which) {
   H();
   if (!g_lf || !lf_owned(p) || which < 0 || which > 65) return ~0ull;
   LfD2* P = (LfD2*)(g_d2base + ((p - g_pbase) >> 16) * sizeof(LfD2));
-  return which < 64 ? P->bits[which] : which == 64 ? P->genclass : P->state;
+  return which < 64 ? cn_ld64_rlx(&P->bits[which]) : which == 64 ? cn_ld64_rlx(&P->genclass) : cn_ld64_rlx(&P->state);
 }
 #endif
 #ifdef CN_DEBUG
 // a test installs a handler that is called with the cell instead of the process ending
-__declspec(dllexport) void cnmalloc_setDoubleFreeHandler(void (*f)(void*)) { g_dfHandler = f; }
+CN_EXPORT void cnmalloc_setDoubleFreeHandler(void (*f)(void*)) { g_dfHandler = f; }
 #endif

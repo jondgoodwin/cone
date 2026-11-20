@@ -1,0 +1,27 @@
+// A borrowed parameter stored, or swapped, into a place reached through the owning reference a call returned
+// ('Rc[mut, T]') is refused: nothing says how long that place lives, so it is held to the global lifetime and the
+// parameter's is the caller's.
+//
+// Verdict: refuse, ErrorInvType (1013) at the store and at the swap, on every system.
+// Basis: the invariant (doc/design/references-and-regions.md, "Lifetimes: one invariant"); a place with no
+// variable at its root is the global one. Row 576: this is the shape that reaches iexpLvalInfo's default arm
+// with a store ('iexpScopeThroughRef' leaves an owning region alone, and no raw-pointer step overwrites the scope),
+// so it fails when the scope there is read unset or set to anything but the global scope.
+// This case is the interim ruling (Jon has not ruled whether such a place is checked as global or left unchecked).
+
+mod lifetime_band_store_callresult_owner_refused;
+
+struct Globals { n: i32; r: &i32; }
+
+fn mk(p: &i32) Rc[mut, Globals] { Rc[mut, Globals](Globals(0, p)) }
+
+pub fn setRef(x: &i32) {
+  mk(x).r = x;   //~ ErrorInvType
+}
+
+pub fn swapIn(x: &i32) {
+  var mine = x;
+  mk(x).r <-> mine;   //~ ErrorInvType
+}
+
+fn main() i32 { 0 }

@@ -372,19 +372,36 @@ pub fn staticFind(name: &Array[u8], value: &Array[u8]) TableMatch {
 // The dynamic table (section 4)
 // ---------------------------------------------------------------------------
 
+// One entry: where its name starts in the table's byte ring (its value follows
+// it) and the two lengths
 struct Entry {
-  name: String;
-  value: String;
+  off: usize;
+  nameLen: usize;
+  valueLen: usize;
 }
 
 // A dynamic table: entries newest first, the sum of their sizes never past
-// its maximum size, the oldest evicted to make room
+// its maximum size, the oldest evicted to make room. The entries' bytes (name,
+// then value, back to back) are kept in one byte ring the table owns, and the
+// entries are a ring of their own (a Deque): once the two have their room, an
+// entry added or evicted allocates nothing.
+//
+// Names and values are read as slices, so an entry's bytes are whole in the
+// ring, never split by its end: an entry that would not fit before the end
+// goes to the start, and the rest is dead until the oldest entries are
+// evicted past it. The byte ring is at least twice the maximum size, which is
+// enough for that: once the oldest are evicted the entries hold at most the
+// maximum size less the new entry's bytes, and either the room after the
+// newest or the room before the oldest holds the new entry. A larger maximum
+// size lays the ring out again, whole, at the next add; the ring only grows
 pub struct DynamicTable {
   entries: Deque[Entry];
-  used: usize;              // the sum of the entries' sizes
+  ring: List[u8];           // the entries' bytes; its length is the ring's size, 0 until the first add
+  wpos: usize;              // where the next entry's bytes go: just after the newest's
+  used: usize;              // the sum of the entries' sizes (section 4.1)
   limit: usize;             // the maximum size
 
-  pub fn make(maxSize: usize) DynamicTable {DynamicTable(Deque[Entry](), 0usize, maxSize)}
+  pub fn make(maxSize: usize) DynamicTable {DynamicTable(Deque[Entry](), List[u8](), 0usize, 0usize, maxSize)}
 
   pub fn len(self: &) usize {entries.len()}
   pub fn size(self: &) usize {used}
@@ -392,9 +409,12 @@ pub struct DynamicTable {
 
   // The entry at i, 0 the newest (HPACK's index 62): its name, as http's
   // Field gives it, and its value's bytes
-  pub fn name(self: &, i: usize) &str {entries[i].name.view()}
-  pub fn value(self: &, i: usize) &Array[u8] {entries[i].value.view()}
-  pub fn entrySize(self: &, i: usize) usize {entries[i].name.len() + entries[i].value.len() + entryOverhead}
+  pub fn name(self: &, i: usize) &str {self.nameBytes(&entries[i]) as &str}
+  pub fn value(self: &, i: usize) &Array[u8] {self.valueBytes(&entries[i])}
+  pub fn entrySize(self: &, i: usize) usize {entries[i].nameLen + entries[i].valueLen + entryOverhead}
+
+  fn nameBytes(self: &'a, e: &Entry) &'a Array[u8] {&ring.view()[e.off ..< e.off + e.nameLen]}
+  fn valueBytes(self: &'a, e: &Entry) &'a Array[u8] {&ring.view()[e.off + e.nameLen ..< e.off + e.nameLen + e.valueLen]}
 
   // A new maximum size, evicting the oldest entries until they fit (section 4.3)
   pub fn setMaxSize(self: &mut, n: usize) {
@@ -405,14 +425,61 @@ pub struct DynamicTable {
   // Add an entry, evicting the oldest to make room; one larger than the
   // maximum size empties the table and is not added (section 4.4)
   pub fn add(self: &mut, name: String, value: String) {
-    let size = name.len() + value.len() + entryOverhead;
+    self.addBytes(name.view(), value.view());
+  }
+
+  // 'add' for bytes: they are copied into the ring
+  fn addBytes(self: &mut, name: &Array[u8], value: &Array[u8]) {
+    let size = name.len + value.len + entryOverhead;
     if size > limit {
       self.evictTo(0usize);
       return;
     }
     self.evictTo(limit - size);
-    entries.pushFront(Entry(name, value));
+    if ring.len() < 2usize * limit {self.layOut(2usize * limit);}
+    if entries.len() == 0usize {wpos = 0usize;}
+    let n = name.len + value.len;
+    var at = wpos;
+    if at + n > ring.len() {at = 0usize;}
+    var i = 0usize;
+    while i < name.len {
+      ring[at + i] = name[i];
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < value.len {
+      ring[at + name.len + i] = value[i];
+      i = i + 1usize;
+    }
+    entries.pushFront(Entry(at, name.len, value.len));
+    wpos = at + n;
     used = used + size;
+  }
+
+  // The ring at 'room' bytes, the entries' bytes moved into it from 0, oldest
+  // first, and the entries' ring with room for as many as the maximum size
+  // can hold (each costs 32 at the least)
+  fn layOut(self: &mut, room: usize) {
+    var fresh = List[u8]();
+    fresh.resize(room, 0u8);
+    var at = 0usize;
+    var k = entries.len();
+    while k > 0usize {
+      k = k - 1usize;
+      let off = entries[k].off;
+      let n = entries[k].nameLen + entries[k].valueLen;
+      var i = 0usize;
+      while i < n {
+        fresh[at + i] = ring[off + i];
+        i = i + 1usize;
+      }
+      entries[k].off = at;
+      at = at + n;
+    }
+    ring <-> fresh;
+    wpos = at;
+    let want = limit / entryOverhead + 1usize;
+    if want > entries.len() {entries.reserve(want - entries.len());}
   }
 
   // The entry holding this name and value, else the newest holding this
@@ -422,8 +489,8 @@ pub struct DynamicTable {
     var i = 0usize;
     while i < entries.len() {
       let e = &entries[i];
-      if bytesEq(e.name.view(), name) {
-        if bytesEq(e.value.view(), value) {return TableMatch(i + 1usize, true);}
+      if bytesEq(self.nameBytes(e), name) {
+        if bytesEq(self.valueBytes(e), value) {return TableMatch(i + 1usize, true);}
         if named == 0usize {named = i + 1usize;}
       }
       i = i + 1usize;
@@ -434,7 +501,7 @@ pub struct DynamicTable {
   fn evictTo(self: &mut, room: usize) {
     while used > room {
       match entries.pop() {
-        case let Some(e) {used = used - (e.name.len() + e.value.len() + entryOverhead);}
+        case let Some(e) {used = used - (e.nameLen + e.valueLen + entryOverhead);}
         case is None[Entry] {used = 0usize;}
       }
     }
@@ -519,7 +586,7 @@ pub struct HpackEncoder {
     }
     if name.len + value.len + entryOverhead <= table.maxSize() {
       encodeLiteral(out, Indexing.Incremental, m.index, name, value, huffman);
-      table.add(String.fromBytes(name), String.fromBytes(value));
+      table.addBytes(name, value);
     } else {
       encodeLiteral(out, Indexing.Without, m.index, name, value, huffman);
     }
@@ -664,7 +731,7 @@ pub struct HpackDecoder {
       if !over {
         out.push(HeaderField(String.fromBytes(name.view()), String.fromBytes(value.view()), never));
       }
-      if incremental {table.add(String.fromBytes(name.view()), String.fromBytes(value.view()));}
+      if incremental {table.addBytes(name.view(), value.view());}
     }
     if over {
       out.truncate(start);

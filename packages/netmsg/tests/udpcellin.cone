@@ -1,0 +1,149 @@
+// An incoming stream bound to a cell over UDP: the client's values on a stream
+// the server bound reach the server's cell, newest last, and are no Updates; a
+// value from before the bind and a stream not bound are Updates; reliable
+// messages sent around the values arrive in order, once each.
+
+mod udpcellin;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import thread;
+import iocore use SocketAddr;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+fn bytes(s: &str) Bytes {
+  var b = List[u8]();
+  putBytes(&mut b, s);
+  copyPacket(b.view()).freeze()
+}
+
+fn held(r: &LatestReader) String {
+  var buf = IoBuf(r.capacity());
+  var s = String();
+  match r.readNewer(0u64, buf.spare()) {
+    case let Some(got) {
+      buf.setLen(got.len);
+      s.append(String.fromBytes(buf.freeze().view()).view());
+    }
+    else { s.append("none"); }
+  }
+  s
+}
+
+// What the server's handler heard: Updates as "stream:text", messages in order
+struct Heard {
+  updates: List[String];
+  messages: List[String];
+}
+
+fn drain(rx: &mut Receiver[NetEvent], conns: &mut List[Connection], h: &mut Heard) {
+  while true {
+    match rx.tryRecv() {
+      case let Some(e) {
+        match e {
+          case let Joined(j) { conns.push(j.conn); }
+          case let Update(u) {
+            var s = String();
+            s.appendUInt(u64.from(u.stream));
+            s.append(":");
+            s.append(String.fromBytes(u.data.view()).view());
+            h.updates.push(s);
+          }
+          case let Message(m) { h.messages.push(String.fromBytes(m.data.view())); }
+          else {}
+        }
+      }
+      case is None[NetEvent] { break; }
+    }
+  }
+}
+
+fn main() i32 {
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  {
+    let cfg = NetConfig.defaults();
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+    var sConns = List[Connection]();
+    var cConns = List[Connection]();
+    var sHeard = Heard(List[String](), List[String]());
+    var cHeard = Heard(List[String](), List[String]());
+    let until = Instant.now() + Duration.fromSeconds(20i64);
+    while (sConns.len() == 0usize || cConns.len() == 0usize) && Instant.now() < until {
+      thread.sleep(Duration.fromMillis(20i64));
+      drain(&mut rxS, &mut sConns, &mut sHeard);
+      drain(&mut rxC, &mut cConns, &mut cHeard);
+    }
+    expectUInt(u64.from(sConns.len()), 1u64, "the server has its client");
+    expectUInt(u64.from(cConns.len()), 1u64, "the client is connected");
+
+    // Before the bind: an Update
+    cConns[0usize].sendLatest(6u16, bytes("early"));
+    thread.sleep(Duration.fromMillis(300i64));
+    drain(&mut rxS, &mut sConns, &mut sHeard);
+    expectUInt(u64.from(sHeard.updates.len()), 1u64, "the value before the bind is an Update");
+    expectStr(sHeard.updates[0usize].view(), "6:early", "it is the early value");
+
+    var w: LatestWriter;
+    var r: LatestReader;
+    w, r = latestCell(8usize);
+    sConns[0usize].bindIncoming(6u16, w);
+    thread.sleep(Duration.fromMillis(100i64));
+
+    // Values and messages: the cell holds the newest, no Update, messages in order
+    var n = 0u32;
+    while n < 10u32 {
+      var s = String.from("v");
+      s.appendUInt(u64.from(n));
+      cConns[0usize].sendLatest(6u16, bytes(s.view()));
+      var m = String.from("m");
+      m.appendUInt(u64.from(n));
+      cConns[0usize].sendReliable(bytes(m.view()));
+      thread.sleep(Duration.fromMillis(15i64));
+      n = n + 1u32;
+    }
+    thread.sleep(Duration.fromMillis(400i64));
+    drain(&mut rxS, &mut sConns, &mut sHeard);
+    expectStr(held(&r).view(), "v9", "the cell holds the last value sent");
+    expectUInt(u64.from(sHeard.updates.len()), 1u64, "no Update for the bound stream");
+    expectUInt(u64.from(sHeard.messages.len()), 10u64, "ten messages, none lost or repeated");
+    var ordered = true;
+    var i = 0usize;
+    while i < sHeard.messages.len() {
+      var m = String.from("m");
+      m.appendUInt(u64.from(i));
+      if sHeard.messages[i].view() != m.view() {ordered = false;}
+      i = i + 1usize;
+    }
+    expect(ordered, "in order");
+
+    // Another stream is an Update
+    cConns[0usize].sendLatest(7u16, bytes("else"));
+    thread.sleep(Duration.fromMillis(300i64));
+    drain(&mut rxS, &mut sConns, &mut sHeard);
+    expectUInt(u64.from(sHeard.updates.len()), 2u64, "a stream not bound is an Update");
+    expectStr(sHeard.updates[1usize].view(), "7:else", "it is that stream's value");
+    expectStr(held(&r).view(), "v9", "and the cell is untouched");
+
+    // Unbound: Updates again
+    sConns[0usize].unbindIncoming(6u16);
+    thread.sleep(Duration.fromMillis(100i64));
+    cConns[0usize].sendLatest(6u16, bytes("after"));
+    thread.sleep(Duration.fromMillis(300i64));
+    drain(&mut rxS, &mut sConns, &mut sHeard);
+    expectUInt(u64.from(sHeard.updates.len()), 3u64, "after unbindIncoming a value is an Update");
+    expectStr(sHeard.updates[2usize].view(), "6:after", "it is the new value");
+    expectStr(held(&r).view(), "v9", "the let-go cell keeps what it held");
+    client.endpoint.shutdown();
+    server.endpoint.shutdown();
+  }
+  done()
+}

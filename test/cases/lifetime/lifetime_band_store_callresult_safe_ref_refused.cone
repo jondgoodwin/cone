@@ -1,0 +1,35 @@
+// A borrow of a block-local value stored, or swapped, into a place the caller owns, through a safe reference a call
+// returned ('id(&mut g).r = &x'), is refused where the place outlives the borrow. The place has no variable at its
+// root; it lives as long as the returned reference's type says.
+//
+// Verdict: refuse, ErrorInvType (1013) at the store and at the swap, on every system.
+// Basis: the invariant (doc/design/references-and-regions.md, "Lifetimes: one invariant", checked from both sides of
+// a call). Row 576 probe: a safe reference as a call's result is not a hole, as the raw pointer is not either, since
+// the scope comes from the reference's type (iexpScopeThroughRef) and not from the unseen-root rule.
+
+mod lifetime_band_store_callresult_safe_ref_refused;
+
+struct Globals { n: i32; r: &i32; }
+
+fn id(g: &mut Globals) &mut Globals { g }
+
+fn storeInner() {
+  let z: i32 = 7;
+  var g = Globals(0, &z);
+  {
+    let x: i32 = 5;
+    id(&mut g).r = &x;   //~ ErrorInvType
+  }
+}
+
+fn swapInner() {
+  let z: i32 = 7;
+  var g = Globals(0, &z);
+  {
+    let x: i32 = 5;
+    var m = &x;
+    id(&mut g).r <-> m;   //~ ErrorInvType
+  }
+}
+
+fn main() i32 { 0 }

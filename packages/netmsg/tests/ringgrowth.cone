@@ -1,0 +1,422 @@
+// A connection's four rings (packets sent, packets received, reliable messages
+// in flight, reliable messages received ahead of their turn) start small and
+// grow to 1,024 slots, moving what they hold. The silent failures are a
+// reliable message delivered twice or never, and an entry in the wrong slot,
+// so each case checks what the other end gets, not a size (a ring's size is
+// not part of the API). Two connections on a synthetic clock, one packet a
+// millisecond, a message resent only after 2 s (no case lasts as long before it
+// settles):
+// Each case (a) to (c) runs from the start and from after 37 and 65,520 messages
+// (the last for a few sizes), so a slot is not its id, and ids wrap in the window.
+//   (a) 'send': n reliable messages wait for acknowledgement at once, n from
+//       1 to 1,024 around every power of two between: all are taken (the
+//       1,025th is refused), all reach the other end once, in order, and
+//       are acknowledged; then more messages go through the grown ring.
+//       Run with each message in a packet of its own (a sent ring and a
+//       window of n packets) and with all queued first (messages kept as
+//       copies, a few packets)
+//   (b) 'reverse': the same packets delivered newest first: nothing comes out
+//       until the first arrives, then all n in order, once (the received ring
+//       and the parked messages grow as older packets arrive); and the same
+//       packets again are all counted as duplicates (the history of received
+//       packets kept every one)
+//   (c) 'acks': the first 33 packets reach the other end and its
+//       acknowledgement comes back: exactly the 33 messages in them are
+//       acknowledged, none lost (the sent ring found each packet after it grew)
+//   (d) 'gaps': after 0, 37 or 1,000 messages in order, 1 to 1,023 messages wait
+//       for one before them, parked nearest first and farthest first, and all
+//       come out in order, once, when it arrives (the parked ring grows from
+//       a start that is not a multiple of its size)
+//   (e) 'bursts': 6,000 messages in bursts of 1 to 1,000, the ring never shrinking
+
+mod ringgrowth;
+
+import testing use *;
+import collections use *;
+import time use Instant;
+import netmsg use *;
+import iobuf use Bytes;
+
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+// A packet a millisecond, one rate and no keepalive, resends 2 s apart, no timeout
+fn cfg() NetConfig {
+  var c = NetConfig.defaults();
+  c.goodRate = 1000u32;
+  c.badRate = 1000u32;
+  c.badRttMs = 100000000i64;
+  c.keepAliveMs = 100000000i64;
+  c.timeoutMs = 100000000i64;
+  c.resendMinMs = 2000i64;
+  c
+}
+
+// Two ends, A sending and B receiving, and the ids of the messages B has delivered
+struct Rig {
+  a: ConnectionCore;
+  b: ConnectionCore;
+  t: i64;                 // milliseconds
+  evs: List[CoreEvent];
+  got: List[u16];
+  next: u16;              // the id, and the two bytes, of the next message A sends
+}
+
+fn newRig() Rig {
+  Rig(ConnectionCore.make(cfg(), 0x4242u64, at(0i64)), ConnectionCore.make(cfg(), 0x4242u64, at(0i64)),
+    0i64, List[CoreEvent](), List[u16](), 0u16)
+}
+
+fn bodyOf(id: u16) Bytes {
+  var l = List[u8]();
+  l.push(u8.from(id >> 8u16));
+  l.push(u8.from(id & 255u16));
+  fz(l.view())
+}
+
+fn collect(r: &mut Rig) {
+  each e in r.evs.drain() {
+    match e {
+      case let Reliable(x) {
+        let v = x.data.view();
+        r.got.push((u16.from(v[0usize]) << 8u16) | u16.from(v[1usize]));
+      }
+      else {}
+    }
+  }
+}
+
+// A queues 'n' messages and polls after each, so each is in a packet of its
+// own; the packets are added to 'pkts'. Stops at the first refused; returns the count taken
+fn sendEach(r: &mut Rig, n: usize, pkts: &mut List[Bytes]) usize {
+  var sent = 0usize;
+  while sent < n {
+    if !r.a.sendReliable(bodyOf(r.next)) {break;}
+    r.next = r.next + 1u16;
+    sent = sent + 1usize;
+    r.t = r.t + 1i64;
+    var out = Packets();
+    r.a.poll(at(r.t), &mut out, &mut r.evs);
+    r.evs.clear();
+    each p in out.drain() {pkts.push(fz(p.view()));}
+  }
+  sent
+}
+
+// A queues 'n' messages, then polls until it has sent them all, some to a packet
+fn sendQueued(r: &mut Rig, n: usize, pkts: &mut List[Bytes]) usize {
+  var sent = 0usize;
+  while sent < n {
+    if !r.a.sendReliable(bodyOf(r.next)) {break;}
+    r.next = r.next + 1u16;
+    sent = sent + 1usize;
+  }
+  var k = 0usize;
+  while k < 100usize {
+    r.t = r.t + 1i64;
+    var out = Packets();
+    r.a.poll(at(r.t), &mut out, &mut r.evs);
+    r.evs.clear();
+    if out.len() == 0usize {break;}
+    each p in out.drain() {pkts.push(fz(p.view()));}
+    k = k + 1usize;
+  }
+  sent
+}
+
+fn toB(r: &mut Rig, d: &Bytes) {
+  r.b.receive(d, at(r.t), &mut r.evs);
+  collect(r);
+}
+
+// B sends what it has to say, and A takes it
+fn ackBack(r: &mut Rig) {
+  r.t = r.t + 1i64;
+  var out = Packets();
+  r.b.poll(at(r.t), &mut out, &mut r.evs);
+  r.evs.clear();
+  each p in out.drain() {
+    let d = fz(p.view());
+    r.a.receive(&d, at(r.t), &mut r.evs);
+    r.evs.clear();
+  }
+}
+
+// Time past the resend delay, then both ends a millisecond at a time until A
+// has nothing unacknowledged
+fn settle(r: &mut Rig) bool {
+  r.t = r.t + 2100i64;
+  var k = 0usize;
+  while r.a.reliablePending() > 0usize && k < 3000usize {
+    r.t = r.t + 1i64;
+    var out = Packets();
+    r.a.poll(at(r.t), &mut out, &mut r.evs);
+    r.evs.clear();
+    each p in out.drain() {
+      let d = fz(p.view());
+      toB(r, &d);
+    }
+    ackBack(r);
+    k = k + 1usize;
+  }
+  r.a.reliablePending() == 0usize
+}
+
+// A connection that has already carried 'off' messages, one at a time, each in
+// a packet of its own and acknowledged: ids, packet sequences and the rings'
+// slots start somewhere other than 0 (B's 'got' is cleared)
+fn newRigAt(off: usize) Rig {
+  var r = newRig();
+  var i = 0usize;
+  while i < off {
+    var one = List[Bytes]();
+    if sendEach(&mut r, 1usize, &mut one) != 1usize {
+      expect(false, "an idle connection takes one message");
+      return r;
+    }
+    toB(&mut r, &one[0usize]);
+    ackBack(&mut r);
+    i = i + 1usize;
+  }
+  r.got.clear();
+  r
+}
+
+// B has delivered the ids from 'from', 'n' of them, in order, once each
+fn gotRun(r: &Rig, from: u16, n: usize) bool {
+  if r.got.len() != n {return false;}
+  var i = 0usize;
+  while i < n {
+    if r.got[i] != from + u16.from(i) {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+fn named(what: &str, n: usize) String {
+  var s = String.from(what);
+  s.append(" ");
+  s.appendUInt(u64.from(n));
+  s
+}
+
+// The window sizes: either side of each power of two from 32 to 1,024
+fn sizes() List[usize] {
+  var l = List[usize]();
+  l.push(1usize); l.push(31usize); l.push(32usize); l.push(33usize); l.push(34usize);
+  l.push(63usize); l.push(64usize); l.push(65usize); l.push(127usize); l.push(128usize);
+  l.push(129usize); l.push(255usize); l.push(256usize); l.push(257usize); l.push(511usize);
+  l.push(512usize); l.push(513usize); l.push(1023usize); l.push(1024usize);
+  l
+}
+
+// (a)
+fn sendCase(n: usize, queued: bool, off: usize) {
+  var r = newRigAt(off);
+  let o = u16.from(off);
+  var pkts = List[Bytes]();
+  let ask = if n == 1024usize {n + 1usize} else {n};
+  let taken = if queued {sendQueued(&mut r, ask, &mut pkts)} else {sendEach(&mut r, ask, &mut pkts)};
+  expectUInt(u64.from(taken), u64.from(n), "all taken, and no more than the window");
+  expectUInt(u64.from(r.a.reliablePending()), u64.from(n), "all wait for acknowledgement");
+  var i = 0usize;
+  while i < pkts.len() {
+    toB(&mut r, &pkts[i]);
+    i = i + 1usize;
+  }
+  expect(gotRun(&r, o, n), "all delivered, once each, in order");
+  // each packet again, oldest first: a duplicate whatever its age (up to 1,024 packets)
+  let before = r.b.stats().packetsDuplicate;
+  i = 0usize;
+  while i < pkts.len() {
+    toB(&mut r, &pkts[i]);
+    i = i + 1usize;
+  }
+  expectUInt(r.b.stats().packetsDuplicate - before, u64.from(pkts.len()), "each packet sent again is a duplicate");
+  expect(gotRun(&r, o, n), "and delivers nothing");
+  expect(settle(&mut r), "all acknowledged");
+  expectUInt(r.b.stats().reliableDelivered, u64.from(off + n), "none delivered twice, none lost");
+  // The grown ring goes on working
+  var more = List[Bytes]();
+  expectUInt(u64.from(sendEach(&mut r, 5usize, &mut more)), 5u64, "five more are taken");
+  i = 0usize;
+  while i < more.len() {
+    toB(&mut r, &more[i]);
+    i = i + 1usize;
+  }
+  expect(gotRun(&r, o, n + 5usize), "and arrive after the others");
+  expect(settle(&mut r), "and are acknowledged");
+}
+
+// (b)
+fn reverseCase(n: usize, off: usize) {
+  var r = newRigAt(off);
+  let o = u16.from(off);
+  var pkts = List[Bytes]();
+  expectUInt(u64.from(sendEach(&mut r, n, &mut pkts)), u64.from(n), "all taken");
+  var i = n;
+  while i > 1usize {
+    i = i - 1usize;
+    toB(&mut r, &pkts[i]);
+  }
+  expectUInt(u64.from(r.got.len()), 0u64, "nothing comes out before the first");
+  toB(&mut r, &pkts[0usize]);
+  expect(gotRun(&r, o, n), "then all, in order, once");
+  expectUInt(r.b.stats().packetsReceived, u64.from(off + n), "every packet counted");
+  i = 0usize;
+  while i < n {
+    toB(&mut r, &pkts[i]);
+    i = i + 1usize;
+  }
+  expectUInt(r.b.stats().packetsDuplicate, u64.from(n), "each sent again is a duplicate");
+  expectUInt(r.b.stats().packetsReceived, u64.from(off + n), "none taken as new");
+  expectUInt(r.b.stats().reliableDelivered, u64.from(off + n), "no message delivered again");
+  expect(gotRun(&r, o, n), "nothing more reaches the application");
+}
+
+// (c)
+fn acksCase(n: usize, off: usize) {
+  var r = newRigAt(off);
+  let o = u16.from(off);
+  var pkts = List[Bytes]();
+  expectUInt(u64.from(sendEach(&mut r, n, &mut pkts)), u64.from(n), "all taken");
+  var first = n;
+  if first > 33usize {first = 33usize;}
+  var i = 0usize;
+  while i < first {
+    toB(&mut r, &pkts[i]);
+    i = i + 1usize;
+  }
+  ackBack(&mut r);
+  expectUInt(u64.from(r.a.reliablePending()), u64.from(n - first), "the messages of the 33 packets are acknowledged, no others");
+  expectUInt(u64.from(r.a.stats().lossPermille), 0u64, "none counted lost");
+  while i < n {
+    toB(&mut r, &pkts[i]);
+    i = i + 1usize;
+  }
+  expect(gotRun(&r, o, n), "the rest arrive in order");
+  expect(settle(&mut r), "and everything is acknowledged");
+}
+
+// (d)
+fn gapsCase(start: usize, p: usize, farFirst: bool) {
+  var r = newRig();
+  var pre = List[Bytes]();
+  expectUInt(u64.from(sendEach(&mut r, start, &mut pre)), u64.from(start), "the first messages are taken");
+  var i = 0usize;
+  while i < pre.len() {
+    toB(&mut r, &pre[i]);
+    i = i + 1usize;
+  }
+  expect(settle(&mut r), "and acknowledged");
+  var pkts = List[Bytes]();
+  expectUInt(u64.from(sendEach(&mut r, p + 1usize, &mut pkts)), u64.from(p + 1usize), "the rest are taken");
+  if farFirst {
+    i = p;
+    while i >= 1usize {
+      toB(&mut r, &pkts[i]);
+      i = i - 1usize;
+    }
+  } else {
+    i = 1usize;
+    while i <= p {
+      toB(&mut r, &pkts[i]);
+      i = i + 1usize;
+    }
+  }
+  expect(gotRun(&r, 0u16, start), "those that wait are not delivered");
+  toB(&mut r, &pkts[0usize]);
+  expect(gotRun(&r, 0u16, start + p + 1usize), "all come out in order, once, when the first arrives");
+  expectUInt(r.b.stats().reliableDelivered, u64.from(start + p + 1usize), "none twice");
+}
+
+// (e)
+fn burstsCase() {
+  var r = newRig();
+  var seed = 12345u32;
+  var total = 0usize;
+  var bad = 0usize;
+  while total < 6000usize {
+    seed = seed * 1103515245u32 + 12345u32;
+    var n = usize.from((seed >> 8u32) % 1000u32) + 1usize;
+    var pkts = List[Bytes]();
+    if sendEach(&mut r, n, &mut pkts) != n {bad = bad + 1usize;}
+    var i = 0usize;
+    while i < pkts.len() {
+      toB(&mut r, &pkts[i]);
+      i = i + 1usize;
+    }
+    if !settle(&mut r) {bad = bad + 1usize;}
+    total = total + n;
+  }
+  expectUInt(u64.from(bad), 0u64, "every burst taken and acknowledged");
+  expect(gotRun(&r, 0u16, total), "every message delivered once, in order");
+  expectUInt(r.b.stats().reliableDelivered, u64.from(total), "and counted once");
+}
+
+fn main() i32 {
+  var sz = sizes();
+  // Each size from the start, from 37 messages in (a slot is not its id), and,
+  // for four of them, from 65,520 in (the 16-bit ids and packet sequences wrap
+  // while the window is in flight)
+  var wrap = List[usize]();
+  wrap.push(33usize); wrap.push(65usize); wrap.push(513usize); wrap.push(1024usize);
+  var offs = List[usize]();
+  offs.push(0usize); offs.push(37usize); offs.push(65520usize);
+  var oi = 0usize;
+  while oi < offs.len() {
+    let off = offs[oi];
+    var si = 0usize;
+    while si < sz.len() {
+      let n = sz[si];
+      si = si + 1usize;
+      var onWrap = false;
+      var wi = 0usize;
+      while wi < wrap.len() {
+        if wrap[wi] == n {onWrap = true;}
+        wi = wi + 1usize;
+      }
+      if off == 65520usize && !onWrap {continue;}
+      var c = named("send each", n);
+      c.append(" from "); c.appendUInt(u64.from(off));
+      beginCase(c.view());
+      sendCase(n, false, off);
+      var q = named("send queued", n);
+      q.append(" from "); q.appendUInt(u64.from(off));
+      beginCase(q.view());
+      sendCase(n, true, off);
+      var v = named("reverse", n);
+      v.append(" from "); v.appendUInt(u64.from(off));
+      beginCase(v.view());
+      reverseCase(n, off);
+      var a = named("acks", n);
+      a.append(" from "); a.appendUInt(u64.from(off));
+      beginCase(a.view());
+      acksCase(n, off);
+    }
+    oi = oi + 1usize;
+  }
+  var starts = List[usize]();
+  starts.push(0usize); starts.push(37usize); starts.push(1000usize);
+  var gaps = sizes();
+  _ = gaps.pop();  // 1,024 waiting would be 1,025 messages with the first
+  var si = 0usize;
+  while si < starts.len() {
+    var gi = 0usize;
+    while gi < gaps.len() {
+      var c = named("gaps from", starts[si]);
+      c.append(" waiting ");
+      c.appendUInt(u64.from(gaps[gi]));
+      beginCase(c.view());
+      gapsCase(starts[si], gaps[gi], true);
+      gapsCase(starts[si], gaps[gi], false);
+      gi = gi + 1usize;
+    }
+    si = si + 1usize;
+  }
+  beginCase("bursts");
+  burstsCase();
+  endCase();
+  done()
+}

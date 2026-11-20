@@ -886,6 +886,14 @@
 //   sleeper. There is no pause instruction between looks: Cone has none
 //   (neither an intrinsic nor anything in the C library), so a look is the
 //   loads and the clock's read.
+// - A spinner also looks at the worker port on each step (row 578), while
+//   something waits there (a socket's operation) and nobody holds the role
+//   (poller.cone, busyPoll: a poll without waiting). A completion that lands
+//   while a worker spins would otherwise be seen only when the spin ends,
+//   which is most of a socket ping-pong's completions (92-94%) and its extra
+//   8 us a take. The step is then a system call rather than two queue
+//   reads, so the spin burns its bound in the kernel; its length and spinCap
+//   are unchanged.
 // - A push while a worker spins wakes nobody (notify): the spinner will see
 //   it, and the pusher (often the I/O thread) is spared the futexWake, and no
 //   sleeper is woken to find the work gone and take a spinner's place.
@@ -4929,8 +4937,11 @@ fn runActor(w: *Worker, h: *Header) {
 // THE SPIN (the header, IDLE WORKERS): become one of at most spinCap spinners
 // and look for work until spinTicks of the clock have passed. True as soon as
 // work is seen; false when the bound passes, or at once when spinCap workers
-// are spinning already. It only reads the queues: whatever it misses, the
-// park that follows sees (idle).
+// are spinning already. It reads the queues and, while something waits in the
+// worker port and nobody holds the role, looks into the port without waiting
+// (busyPoll, on each step; the answers go to this worker's own queue, so the
+// next read of the queues sees them); whatever it misses, the park that
+// follows sees (idle).
 fn spin(w: *Worker) bool {
   let s = (*w).sched;
   if (*s).spinTicks == 0u64 {
@@ -4950,6 +4961,11 @@ fn spin(w: *Worker) bool {
   let start = clockTicks();
   var found = false;
   while !found {
+    // A look at the worker port, without waiting, on each step: while something
+    // waits there and nobody holds the role (busyPoll's own guard). A completion
+    // that lands while this worker spins is taken now, not when the spin ends
+    // (row 578; 92-94% of a socket ping-pong's completions land in a spin)
+    busyPoll(w);
     if anyWork(s) {
       found = true;
     } else if clockTicks() - start >= (*s).spinTicks {
@@ -5569,10 +5585,10 @@ fn monitorPause(timer: usize, d: time.Duration) {
 // a small capped cache of freed blocks, when the CNMALLOC setting cache=<n> asks for one), cnmalloc_workerPark
 // (the worker is about to sleep: its cache goes back to the shared heap, then whatever give-back is due is
 // done) and cnmalloc_workerEnd (the worker is ending: its cache goes back). THE CHOICE, LOOKUP OVER BUILD FACT:
-// each worker looks the three up once, by GetProcAddress on the program's own module, when it starts. A build
+// each worker looks the three up once, by GetProcAddress on the program's own module (dlsym(RTLD_DEFAULT) on Linux, row 550), when it starts. A build
 // fact (a weak default for each name, which the library's definition would replace) needs a C file or a linker
 // option in this package, which is Cone alone; the lookup costs three table searches per worker start, and
-// finds nothing, and so calls nothing, in a program that did not link cnmalloc (the default). Windows only,
+// finds nothing, and so calls nothing, in a program that did not link cnmalloc (the default). Windows and Linux,
 // as cnmalloc is. A fourth, cnmalloc_workerParkMs (row 454), answers 0 unless cnmalloc's second design is on (CNMALLOC=design=lockfree);
 // then it answers the give-back delay in milliseconds, and a parking worker sleeps that long before it calls
 // cnmalloc_workerPark (and keeps its cache until then), and then sleeps without a limit. With 0 the park is what it always was.
@@ -5586,6 +5602,14 @@ var @threadlocal cnEnd: usize = 0usize;
   extern {
     fn @c(system) GetModuleHandleA(name: *u8) usize;
     fn @c(system) GetProcAddress(module: usize, name: *u8) usize;
+  }
+} #else {
+  // Linux (cnmalloc row 550): dlsym(RTLD_DEFAULT = 0, name) finds the shim's exports in the executable, which congo's link
+  // exports with --dynamic-list (the cnmalloc_* names only). A name that is not there makes glibc allocate, so a lookup is
+  // only ever made for names that exist when the shim is linked; a program without it has none (and one allocation per
+  // worker start, through glibc's own malloc, which is the allocator it has)
+  extern {
+    fn @c dlsym(handle: usize, name: *u8) usize;
   }
 }
 
@@ -5601,6 +5625,20 @@ fn cnWorkerBegin() {
     }
     let b = GetProcAddress(m, &"cnmalloc_workerBegin" as *u8);
     if b != 0usize {
+      let f = b as *u8 as CnCall;
+      f();
+    }
+  } #else {
+    // first the one name every shim has: a program without it stops here, after one failed lookup
+    let b = dlsym(0usize, &"cnmalloc_workerBegin" as *u8);
+    if b != 0usize {
+      cnPark = dlsym(0usize, &"cnmalloc_workerPark" as *u8);
+      cnEnd = dlsym(0usize, &"cnmalloc_workerEnd" as *u8);
+      let pm = dlsym(0usize, &"cnmalloc_workerParkMs" as *u8);
+      if pm != 0usize {
+        let g = pm as *u8 as CnCallMs;
+        cnParkMsVal = g();
+      }
       let f = b as *u8 as CnCall;
       f();
     }
