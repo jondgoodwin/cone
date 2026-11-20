@@ -65,6 +65,12 @@ fn pump(c: &mut tls.Session, s: &mut tls.Session) {
   }
 }
 
+// The server's tickets come after the handshake and are taken in by a read
+fn takeTickets(c: &mut tls.Session) {
+  var rb = Array[u8, 16]() <- fill 0u8;
+  c.read(&mut rb[0usize ..< 16usize]);
+}
+
 fn name(prefix: &str, k: u32) String {
   var s = String.from(prefix);
   s.appendUInt(u64.from(k));
@@ -78,6 +84,7 @@ fn connect(cl: &tls.Client, srv: &tls.Server, host: &str) bool {
   var s = srv.session();
   pump(&mut c, &mut s);
   require(c.isOpen() && s.isOpen(), "the handshake is done");
+  takeTickets(&mut c);
   c.info().resumed
 }
 
@@ -107,6 +114,7 @@ fn main() i32 {
   k = 0u32;
   while k < 6u32 {
     pump(&mut cs[usize.from(k)], &mut ss[usize.from(k)]);
+    takeTickets(&mut cs[usize.from(k)]);
     k = k + 1u32;
   }
   expectUInt(u64.from(c8.cachedSessionsFor("many.example")), 8u64, "twelve tickets came, eight are kept");
