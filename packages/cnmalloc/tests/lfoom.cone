@@ -1,0 +1,167 @@
+// The second design's out-of-memory sweep (row 603; Incubator\Cone\Briefs\row-603.md). A re-listing threshold hides a few free
+// cells in each page that is neither attached nor listed: fewer than min(relist, valid bits / relistq) in each word. The heap must
+// never report out of memory while such cells exist, so the slow path, when it finds no page, lists every unlisted page of the class
+// that has a free cell (cnm_lf_sweep, called by the shim's lf_oom) and tries again.
+//
+// The small-block address space is the smallest the heap takes (reserve=64m, 1024 pages). The test allocates 4096-byte cells until the
+// heap says no (every page full, none attached: the last failed attach detached the slot's page), frees HIDE cells of every page
+// (HIDE = the threshold minus one, so no free brings a word to its threshold and no page is listed), then allocates again until the
+// heap says no. Every hidden cell must come back: the second count equals the number freed. Without the sweep the first allocation
+// after the frees fails (mutant s0 removes it) and the count is 0.
+// The test must not allocate anything while the heap is full, so it keeps its counts in locals and prints at the end, after the frees.
+//
+// Needs the second design linked: CNMALLOC=design=lockfree,giveback=now,reserve=64m (cn.lib or cnd.lib). CNOOM_HIDE=<n> cells freed per
+// page (3: the default threshold of a 16-cell page is min(8, 16 / 4) = 4; relist=2 needs 1, relist=3 needs 2).
+// Under a plain 'congo test' nothing is linked and the test passes without testing. tests/mutants.ps1 runs it against s0.
+
+mod lfoom;
+
+import testing use *;
+import libc;
+import cnmalloc;
+
+extern {
+  fn @c("strlen") strlen(s: cstr) usize;
+  fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
+}
+
+alias Collect = &fn @c (force: i32) u64;
+alias DesignFn = &fn @c () i32;
+alias HeapFn = &fn @c () usize;
+
+const cellSize = 4096usize;
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+fn slot(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+
+fn envNum(name: cstr, dflt: usize) usize {
+  let p = libc.getenv(name);
+  if p as usize == 0usize { return dflt; }
+  var v = 0usize;
+  var i = 0usize;
+  while true {
+    let c = usize.from(*at(p, i));
+    if c < 48usize || c > 57usize { break; }
+    v = v * 10usize + (c - 48usize);
+    i = i + 1usize;
+  }
+  if i == 0usize { dflt } else { v }
+}
+
+fn putStr(buf: *u8, pos: usize, s: cstr) usize {
+  let n = strlen(s);
+  copyLit(at(buf, pos), s, n);
+  pos + n
+}
+
+fn putNum(buf: *u8, pos: usize, v: usize) usize {
+  var digits = 1usize;
+  var t = v;
+  while t >= 10usize { t = t / 10usize; digits = digits + 1usize; }
+  var x = v;
+  var i = digits;
+  while i > 0usize { i = i - 1usize; *at(buf, pos + i) = u8.from(48usize + x % 10usize); x = x / 10usize; }
+  pos + digits
+}
+
+fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
+  let buf = libc.malloc(256usize);
+  var n = 0usize;
+  n = putStr(buf, n, label); n = putNum(buf, n, a);
+  n = putStr(buf, n, mid); n = putNum(buf, n, b);
+  n = putStr(buf, n, tail); n = putNum(buf, n, c);
+  *at(buf, n) = 10u8;
+  cnmalloc.cnm_hostErr(buf as usize, n + 1usize);
+  let lf = libc.getenv("CNTEST_LOG");
+  if lf as usize != 0usize {
+    cnmalloc.cnm_hostAppend(lf as *u8, buf as usize, n + 1usize);
+  }
+  libc.free(buf);
+}
+
+fn main() i32 {
+  let design = cnmalloc.cnm_hostSym("cnmalloc_design");
+  if design == 0usize { return testing.skip("lfoom: the cnmalloc shim is not linked: cnmalloc_design was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let heapSym = cnmalloc.cnm_hostSym("cnmalloc_heap");
+  if heapSym == 0usize { return testing.skip("lfoom: the cnmalloc shim is not linked: cnmalloc_heap was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let collect = cnmalloc.cnm_hostSym("cnmalloc_collect");
+  if collect == 0usize { return testing.skip("lfoom: the cnmalloc shim is not linked: cnmalloc_collect was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  if (design as *u8 as DesignFn)() != 2i32 { return testing.skip("lfoom: the cnmalloc shim is linked but the second design is off (CNMALLOC=design=lockfree is needed)"); }
+  let coll = collect as *u8 as Collect;
+  let h = (heapSym as *u8 as HeapFn)();
+  let cl = cnmalloc.cnm_class_of(h, cellSize);
+  let n = 65536usize / cnmalloc.cnm_class_size(h, cl);       // cells per page
+  var thr = n / 4usize;
+  if thr > 8usize { thr = 8usize; }
+  if thr < 1usize { thr = 1usize; }
+  let hide = envNum("CNOOM_HIDE", thr - 1usize);
+  let cap = 1100usize * n;
+  let a = libc.calloc(cap, 8usize) as usize;                 // the cells
+  let cnt = libc.calloc(1200usize, 8usize) as usize;         // per page: cells held, then cells freed (second half)
+  // 1. fill the heap
+  var got = 0usize;
+  while got < cap {
+    let p = libc.malloc(cellSize);
+    if p as usize == 0usize { break; }
+    *slot(a, got) = p as usize;
+    got = got + 1usize;
+  }
+  var minPage = *slot(a, 0usize) >> 16usize;
+  var i = 0usize;
+  while i < got {
+    let pg = *slot(a, i) >> 16usize;
+    if pg < minPage { minPage = pg; }
+    i = i + 1usize;
+  }
+  var inRange = true;
+  i = 0usize;
+  while i < got {
+    let pg = (*slot(a, i) >> 16usize) - minPage;
+    if pg >= 600usize { inRange = false; } else { *slot(cnt, pg) = *slot(cnt, pg) + 1usize; }
+    i = i + 1usize;
+  }
+  // 2. free `hide` cells of every full page: no word reaches its threshold, so nothing is listed
+  var freed = 0usize;
+  i = 0usize;
+  while i < got {
+    let pg = (*slot(a, i) >> 16usize) - minPage;
+    if pg < 600usize && *slot(cnt, pg) == n && *slot(cnt, 600usize + pg) < hide {
+      libc.free(*slot(a, i) as *u8);
+      *slot(a, i) = 0usize;
+      *slot(cnt, 600usize + pg) = *slot(cnt, 600usize + pg) + 1usize;
+      freed = freed + 1usize;
+    }
+    i = i + 1usize;
+  }
+  // 3. allocate again: the sweep must list the pages
+  var again = 0usize;
+  var k = 0usize;
+  while k < got {
+    if *slot(a, k) == 0usize {
+      let p = libc.malloc(cellSize);
+      if p as usize == 0usize { break; }
+      *slot(a, k) = p as usize;
+      again = again + 1usize;
+    }
+    k = k + 1usize;
+  }
+  var extra = libc.malloc(cellSize);                         // one more than the heap holds: must fail (the heap is full again)
+  let overflow = extra as usize != 0usize;
+  if overflow { libc.free(extra); }
+  i = 0usize;
+  while i < got {
+    if *slot(a, i) != 0usize { libc.free(*slot(a, i) as *u8); }
+    i = i + 1usize;
+  }
+  libc.free(a as *u8);
+  libc.free(cnt as *u8);
+  coll(1i32); coll(1i32);
+  errLine("lfoom: cells per page ", n, " allocated until full ", got, " freed ", freed);
+  errLine("lfoom: hidden per page ", hide, " allocated again ", again, " pages ", got / n);
+  expect(inRange, "lfoom: the heap's pages lie within the range the test counts");
+  expect(got > 1000usize, "lfoom: the heap took more than a thousand cells before it said no");
+  expect(freed == (got / n) * hide, "lfoom: HIDE cells were freed from every full page");
+  expect(again == freed, "lfoom: every hidden cell came back (the sweep listed the pages before the heap said no)");
+  expect(!overflow, "lfoom: with every hidden cell taken the heap is full again");
+  done()
+}

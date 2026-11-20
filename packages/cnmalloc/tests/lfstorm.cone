@@ -1,0 +1,157 @@
+// The second design's re-listing threshold, storm pattern (row 603; Incubator\Cone\Briefs\row-603.md): ONE thread keeps a live set
+// that spans many pages of one class and frees a random cell and allocates a new one, again and again. With a threshold of one free
+// cell (relist=1, the rule before row 603) nearly every free re-lists a page and nearly every allocation attaches one under the class
+// lock (0.95 takes per operation at 640 bytes and 3000 live cells). With the default threshold (relist=8, relistq=4) a page is
+// listed again only when a word holds min(8, valid bits / 4) free cells, so the takes fall to a few in a hundred.
+//
+// Two checks, because a broken edge test fails them differently:
+//   1. takes per operation (attaches + listings, cnmalloc_lfTotal 5 and 6, both counted under the class lock) at most CNSTORM_MAXTAKES
+//      per thousand operations. A threshold that does not apply (the free's edge test left at "the word was empty" is NOT this: see 2)
+//      shows here as a storm.
+//   2. no page is left behind: after the churn the class holds at most 1.5 times the pages its live cells need, plus 4. A free
+//      whose edge test misses the crossing (mutant e1: the test is "the word was empty" whatever the threshold) never lists a page
+//      again, so every page the churn leaves with a few free cells stays unlisted, the class takes a new page for every 100-odd
+//      allocations, and the page count grows with the number of operations (here to about 2000 pages against the 31 the live cells
+//      need) while the takes per operation fall to about 0.01.
+// Then every live cell is freed and the class must end with no live cells.
+//
+// Needs the second design linked: CNMALLOC=design=lockfree,giveback=now (cn.lib or cnd.lib). CNSTORM_LIVE=<n> live cells (3000),
+// CNSTORM_OPS=<n> operations (200000), CNSTORM_MAXTAKES=<n> per thousand (250: the default threshold measured about 80).
+// Under a plain 'congo test' nothing is linked and the test passes without testing. tests/mutants.ps1 runs it against e1.
+
+mod lfstorm;
+
+import testing use *;
+import libc;
+import cnmalloc;
+
+extern {
+  fn @c("strlen") strlen(s: cstr) usize;
+  fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
+}
+
+alias Collect = &fn @c (force: i32) u64;
+alias DesignFn = &fn @c () i32;
+alias Total = &fn @c (which: i32) i64;
+alias HeapFn = &fn @c () usize;
+
+const cellSize = 640usize;
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+fn slot(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+
+fn envNum(name: cstr, dflt: usize) usize {
+  let p = libc.getenv(name);
+  if p as usize == 0usize { return dflt; }
+  var v = 0usize;
+  var i = 0usize;
+  while true {
+    let c = usize.from(*at(p, i));
+    if c < 48usize || c > 57usize { break; }
+    v = v * 10usize + (c - 48usize);
+    i = i + 1usize;
+  }
+  if i == 0usize { dflt } else { v }
+}
+
+fn putStr(buf: *u8, pos: usize, s: cstr) usize {
+  let n = strlen(s);
+  copyLit(at(buf, pos), s, n);
+  pos + n
+}
+
+fn putNum(buf: *u8, pos: usize, v: usize) usize {
+  var digits = 1usize;
+  var t = v;
+  while t >= 10usize { t = t / 10usize; digits = digits + 1usize; }
+  var x = v;
+  var i = digits;
+  while i > 0usize { i = i - 1usize; *at(buf, pos + i) = u8.from(48usize + x % 10usize); x = x / 10usize; }
+  pos + digits
+}
+
+fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
+  let buf = libc.malloc(256usize);
+  var n = 0usize;
+  n = putStr(buf, n, label); n = putNum(buf, n, a);
+  n = putStr(buf, n, mid); n = putNum(buf, n, b);
+  n = putStr(buf, n, tail); n = putNum(buf, n, c);
+  *at(buf, n) = 10u8;
+  cnmalloc.cnm_hostErr(buf as usize, n + 1usize);
+  let lf = libc.getenv("CNTEST_LOG");
+  if lf as usize != 0usize {
+    cnmalloc.cnm_hostAppend(lf as *u8, buf as usize, n + 1usize);
+  }
+  libc.free(buf);
+}
+
+fn next(s: *u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+// the class's pages and live cells, from the heap's statistics (per class: allocations, frees, live cells, active pages, lock waits)
+fn classStat(h: usize, cl: usize, which: usize) u64 {
+  let out = libc.calloc(400usize, 8usize) as *u64;
+  cnmalloc.cnm_stats(h, out, 400usize);
+  let v = *((out as usize + (cl * 5usize + which) * 8usize) as *u64);
+  libc.free(out as *u8);
+  v
+}
+
+fn main() i32 {
+  let design = cnmalloc.cnm_hostSym("cnmalloc_design");
+  if design == 0usize { return testing.skip("lfstorm: the cnmalloc shim is not linked: cnmalloc_design was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let total = cnmalloc.cnm_hostSym("cnmalloc_lfTotal");
+  if total == 0usize { return testing.skip("lfstorm: the cnmalloc shim is not linked: cnmalloc_lfTotal was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let heapSym = cnmalloc.cnm_hostSym("cnmalloc_heap");
+  if heapSym == 0usize { return testing.skip("lfstorm: the cnmalloc shim is not linked: cnmalloc_heap was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let collect = cnmalloc.cnm_hostSym("cnmalloc_collect");
+  if collect == 0usize { return testing.skip("lfstorm: the cnmalloc shim is not linked: cnmalloc_collect was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  if (design as *u8 as DesignFn)() != 2i32 { return testing.skip("lfstorm: the cnmalloc shim is linked but the second design is off (CNMALLOC=design=lockfree is needed)"); }
+  let tot = total as *u8 as Total;
+  let coll = collect as *u8 as Collect;
+  let h = (heapSym as *u8 as HeapFn)();
+  let cl = cnmalloc.cnm_class_of(h, cellSize);
+  let live = envNum("CNSTORM_LIVE", 3000usize);
+  let ops = envNum("CNSTORM_OPS", 200000usize);
+  let maxTakes = envNum("CNSTORM_MAXTAKES", 250usize);
+  let cellsPerPage = 65536usize / cnmalloc.cnm_class_size(h, cl);
+  let a = libc.calloc(live, 8usize) as usize;
+  var rng = 88172645463325252u64;
+  var i = 0usize;
+  while i < live {
+    *slot(a, i) = libc.malloc(cellSize) as usize;
+    i = i + 1usize;
+  }
+  let t0 = tot(5i32) + tot(6i32);
+  let freed0 = tot(1i32);
+  var ok = true;
+  var k = 0usize;
+  while k < ops {
+    let j = usize.from(next(&mut rng) % u64.from(live));
+    libc.free(*slot(a, j) as *u8);
+    let p = libc.malloc(cellSize);
+    if p as usize == 0usize { ok = false; break; }
+    *slot(a, j) = p as usize;
+    k = k + 1usize;
+  }
+  let takes = usize.from(tot(5i32) + tot(6i32) - t0);
+  let pages = usize.from(classStat(h, cl, 3usize));
+  let livePages = (live + cellsPerPage - 1usize) / cellsPerPage;
+  errLine("lfstorm: live cells ", live, " operations ", ops, " takes ", takes);
+  errLine("lfstorm: takes per thousand operations ", takes * 1000usize / ops, " class pages ", pages, " pages the live cells need ", livePages);
+  expect(ok, "lfstorm: every allocation succeeded");
+  expect(takes * 1000usize <= maxTakes * ops, "lfstorm: the takes per operation stay under the limit (no storm)");
+  expect(pages * 2usize <= livePages * 3usize + 8usize, "lfstorm: the class holds at most 1.5 times the pages its live cells need, plus 4 (no page is left unlisted)");
+  i = 0usize;
+  while i < live { libc.free(*slot(a, i) as *u8); i = i + 1usize; }
+  libc.free(a as *u8);
+  coll(1i32); coll(1i32);
+  expectUInt(classStat(h, cl, 2usize), 0, "lfstorm: the class ends with no live cell");
+  done()
+}

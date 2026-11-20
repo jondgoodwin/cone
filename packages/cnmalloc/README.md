@@ -90,6 +90,8 @@ CONGO_LINK_EXTRA="<dir>/cn_shim.o <dir>/libcnpkg.a" python3 tools/congo/congo.py
 | `design=lockfree` / `design=lock` | `lock` | Row 454: `lockfree` is the second design of the general set, no lock on the common path (below); `lock` is the first (the default). Nothing about the lock design changes when `lockfree` is off. |
 | `slots=<n>` | `8` | `design=lockfree`: the most slots a class may hold, each slot one partly used page the threads allocate from (1 to 8, never more than the processor count). It bounds the memory the design holds beyond the lock design (below). |
 | `collisions=<n>` | `64` | `design=lockfree`: lost compare-and-swaps on a class, since its slot count last changed, that add a slot (up to `slots`). It bounds how fast the slot count grows. |
+| `relist=<k>` | `8` | Row 603. `design=lockfree`: a page that is neither attached nor listed is listed again when a free brings some word of its bits to `min(k, the word's valid bits / q)` free cells (at least 1; `q` is `relistq`; k from 1 to 64). `relist=1` is the rule of one free cell (a free into a full page lists it), which a live set spanning many pages turns into two class-lock takes per operation (about 0.95 takes per operation at 640 bytes and 3000 live cells, against about 0.14 at the default). The cost is hidden cells: fewer than the threshold in each word of a page that is neither attached nor listed (below). It is a setting string, not an API. |
+| `relistq=<q>` | `4` | Row 603. `design=lockfree`: the divisor of a word's valid bits in the threshold above (1 to 64): a 64-cell word has the threshold `min(k, 64 / q)`, a 32-cell page `min(k, 32 / q)`. |
 | `cache=<n>` | `0` (off) | Row 426: blocks per size class that a worker thread may keep in its own cache (see below). 0 touches no thread-local. |
 | `cache_max=<bytes>` | `1024` | Only requests up to this size, and their classes, are cached (at most 32768). |
 
@@ -135,9 +137,10 @@ paths only.
   and no atomic besides the compare-and-swap. A thread that loses the swap goes on to the next word, and makes at most 4 passes over the
   page after a lost swap before it gives the page up (each pass re-runs the whole load, swap and load of Rule G).
 * **Free is one `fetch_or`** (`lf_free`, `lf_release`): the page is found by arithmetic on the address and `genclass` is read
-  *before* the `fetch_or`. Only when the word was empty before (the page may have been full) or is now wholly free (the page may be
-  empty), and the page is not in a slot, does the free go to the class lock ("after a free"), carrying the `genclass` it read, which
-  the slow path re-checks under the lock.
+  *before* the `fetch_or`. Only when the word crossed its re-listing threshold (it held `thr - 1` free cells and now holds `thr`:
+  one popcount of the word the `fetch_or` returned; with `relist=1` that is "the word was empty before", the page may have been
+  full) or is now wholly free (the page may be empty), and the page is not in a slot, does the free go to the class lock
+  ("after a free"), carrying the `genclass` it read, which the slow path re-checks under the lock.
 * **Slow paths, under the class lock** (`cnm_lf_attach`, `cnm_lf_after_free`, `lfDetach`, `lfRetire`, `lfCollect` in Cone): a
   slot's page has no free bit (detach it, attach the lowest page of the class's tree that has a free bit, else the spare, else a
   page from the pool); a full page gets a cell back (listed in the tree); a page is retired. The Dekker rule: the lock holder
@@ -148,6 +151,17 @@ paths only.
   holder was retiring the page or making it ready; without this check two allocators can retire each other's freshly attached page
   for ever). The slot rule that check relies on: whenever the class lock is free, a slot is null or names a page `ATTACHED` to its
   class (a dropped slot is set to null, an added slot starts null). `cnd.lib` asserts the rule at every slow-path entry.
+* **Hidden cells and the sweep** (row 603; the full account is the comment "RE-LISTING AND HIDDEN CELLS" in `src/cnmalloc.cone`).
+  A page is listed (in the class's tree, where a slot looks for its next page) by a detach or an "after a free" only if some
+  word holds at least `thr` free cells (`thr` as in `relist=`); the page picks still take any free bit. So a page that is neither
+  attached nor listed can hold fewer than `thr` free cells in each of its words, hidden from the allocator until a free brings a
+  word up to `thr`: at most `thr - 1` per word, 14 of 102 cells for the 640-byte class and 7 of 32 for the 2048-byte class at the
+  default (the measured cost: peak commit +15% on a live set of hundreds of pages of one class, row 581's step 0; a fraction of a
+  megabyte on small live sets). The heap never reports out of memory because of them: when the slow path finds no listed page, no spare
+  and no page from the pool, the shim's `lf_oom` calls `cnm_lf_sweep`, which lists every unlisted page of the class that has a
+  free cell (under the class lock), and tries again. The sweep walks every page the pool has handed out, so it runs only here, never
+  before an ordinary new page. Tests: `lfstorm` (takes per operation, and no page left behind), `lfoom` (a 64 MiB heap filled, a
+  threshold's worth minus one freed from every page, every one of those cells allocated again); mutants `e1` and `s0`.
 * **Slots**: a class starts with one; a class whose slot pages lose `collisions` compare-and-swaps adds one, up to `slots`. A slot
   not used for the give-back delay is dropped by collect (its page detached; slot 0 keeps its page unless it is wholly free).
 * **`calloc` fills every small cell** (the written-mark of the lock design is not kept); large blocks keep their skip-fill.

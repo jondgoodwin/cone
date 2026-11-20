@@ -198,6 +198,8 @@ pub struct Heap {
   hookClaim: usize;   // design 2, tests: called after a page was found wholly free and before the retire claims its words
   hookAfter: usize;   // design 2, tests: called in "after a free", under the class lock, after the state load and before the scan
   lfDebug: usize;     // design 2: non-zero in the shim's debug build; the slot rule is then asserted (cnm_lf_attach)
+  lfK: usize;         // design 2 (row 603): CNMALLOC=relist=<k>, a page is listed again when a word holds min(k, valid bits / q) free cells
+  lfQ: usize;         // design 2 (row 603): CNMALLOC=relistq=<q>
   nonWorker: u64;     // design 2: small allocations made by threads that are not workers (statistics run)
   callocs: u64;
   callocBytes: u64;
@@ -804,6 +806,22 @@ fn putCell(h: *Heap, c: *Class, cl: usize, page: usize, d: *Desc, a: usize) bool
 // descriptor or 0), the count of active slots, the per-slot "used" flags and idle stamps, the collision count and
 // the class's counters.
 //
+// RE-LISTING AND HIDDEN CELLS (row 603; settings relist=<k>, relistq=<q>, default 8 and 4; relist=1 is the rule of one free
+// cell). A page that is neither attached nor listed is listed again when a free brings some WORD of its bits to thr free
+// cells, thr = min(k, the word's valid bits / q), at least 1 (thrOf here, g_lfthrf and g_lfthrl in the shim; the same
+// numbers). The free tests it with popcount(old) + 1 == thr on the word its fetch_or returned: one popcount, no new atomic;
+// the wholly-free test is unchanged. lfDetach and "after a free" list a page when some word holds at least thr free cells
+// (lfWorth); lfPick still accepts any free bit. Why: with one free cell as the threshold a class whose live set spans
+// many pages lists a page at nearly every free and attaches one at nearly every allocation, two lock takes per operation.
+// THE BOUND: the free cells a page can hide are those below the threshold in each of its words, in a page neither
+// attached nor listed: at most thr - 1 per word, that is under k per 64 cells (a 102-cell page of 640 bytes, thresholds 8 and
+// 8: at most 7 + 7 = 14 hidden, 14%; a 32-cell page of 2048 bytes: at most 7, 22%). THE OUT-OF-MEMORY SWEEP: hidden cells never cause an out-of-memory. When cnm_lf_attach finds no page (no listed
+// page, no spare, none from the pool), the shim calls cnm_lf_sweep, which lists every UNLISTED page of the class that has
+// a free cell, under the class lock, and the shim tries again. The sweep walks every page the pool has handed out, so it
+// runs only at out of memory, never before an ordinary new page: doing it there would make a live set that grows walk
+// every page at each growth step. A program that sits at its address-space limit and keeps allocating pays one walk per
+// failed allocation. The model of rows 455 and 490 (extended for thresholds 1 to 3 and the sweep) covers this.
+//
 // WHO WRITES WHAT: the lock holder writes the slots, the states and genclass, with the atomic operations below
 // (sequentially consistent: the Dekker rule of section 5 needs the exchange of a state to come before the scan of
 // its bits, and a free's fetch_or to come before its read of the state). Any thread may compare-and-swap or
@@ -850,6 +868,29 @@ fn lfScan(d2: usize) usize {
     j = j + 1usize;
   }
   if all { 2usize } else if any { 1usize } else { 0usize }
+}
+
+// (row 603) The listing threshold of word j of a page of n cells: min(k, valid bits of the word / q), at least 1, with k and q the
+// settings relist= and relistq=. The shim computes the same numbers for its edge test (lf_setup); the two must agree.
+fn thrOf(h: *Heap, n: usize, j: usize) usize {
+  var v = n - j * 64usize;
+  if v > 64usize { v = 64usize; }
+  var t = v / h.lfQ;
+  if t > h.lfK { t = h.lfK; }
+  if t < 1usize { t = 1usize; }
+  t
+}
+// worth listing: some word holds at least its threshold of free cells (lfPick still accepts any free bit)
+fn lfWorth(h: *Heap, d2: usize) bool {
+  let n = usize.from(rd(d2 + 16usize));
+  let nw = nwOf(n);
+  var j = 0usize;
+  while j < nw {
+    let v = aLd(bitsAt(d2, j));
+    if usize.from(v.countOnes()) >= thrOf(h, n, j) { return true; }
+    j = j + 1usize;
+  }
+  false
 }
 
 fn hookCall(f: usize, cl: usize) {
@@ -925,8 +966,10 @@ fn lfRetire(h: *Heap, c: *Class, cl: usize, page: usize, d2: usize) bool {
 
 // Takes a page out of a slot (section 5, step 2): the state is exchanged to UNLISTED, and only then are its words
 // scanned (the Dekker rule: a free that ORed its bit before the exchange is seen by the scan; one that ORs after it
-// reads a state other than ATTACHED and comes to the lock). Wholly free: tries to retire. Some bit set: LISTED and in
-// the tree. None: stays UNLISTED. Class lock held; the slot no longer names the page. Returns whether it retired.
+// reads a state other than ATTACHED and comes to the lock). Wholly free: tries to retire. Some word at its threshold
+// (lfWorth; with relist=1 any bit set): LISTED and in the tree. Otherwise it stays UNLISTED, its few free cells hidden
+// until a free brings a word to its threshold or the out-of-memory sweep (cnm_lf_sweep) lists it. Class lock held; the
+// slot no longer names the page. Returns whether it retired.
 fn lfDetach(h: *Heap, c: *Class, cl: usize, page: usize, d2: usize) bool {
   aXchg(d2 + 8usize, lfUnlisted);
   hookCall(h.hookDetach, cl);
@@ -934,7 +977,7 @@ fn lfDetach(h: *Heap, c: *Class, cl: usize, page: usize, d2: usize) bool {
   if r == 2usize {
     if lfRetire(h, c, cl, page, d2) { return true; }
   }
-  if r != 0usize {
+  if r != 0usize && lfWorth(h, d2) {
     aSt(d2 + 8usize, lfListed);
     btSet(h, cl, page);
     lfBump(lfc(h, cl), 6usize);
@@ -1072,7 +1115,7 @@ pub fn cnm_lf_after_free(hh: usize, d2: usize, g: u64) {
     waiting = lfRetire(h, c, cl, d2Page(h, d2), d2);
     done = waiting;
   }
-  if !done && r != 0usize && st == lfUnlisted {
+  if !done && r != 0usize && st == lfUnlisted && lfWorth(h, d2) {
     aSt(d2 + 8usize, lfListed);
     btSet(h, cl, d2Page(h, d2));
     lfBump(lfc(h, cl), 6usize);
@@ -1080,6 +1123,40 @@ pub fn cnm_lf_after_free(hh: usize, d2: usize, g: u64) {
   osplat.unlock(c as usize);
   if waiting { armIfWaiting(h); }
 }
+
+// (row 603) The out-of-memory sweep. The shim calls it when cnm_lf_attach has returned 0 (no listed page, no spare, no page from
+// the pool): under the class lock, every UNLISTED page of the class that has any free cell is listed, and the shim retries
+// the allocation if this listed one. So the cells a relist threshold hides (fewer than the threshold in each word of a page
+// that is neither attached nor listed) never cause an out-of-memory. It walks every page the pool has ever handed out, so it
+// runs only here, never before an ordinary new page: a live set that grows would otherwise walk every page at each step.
+// The class lock makes the state and class of such a page stable; a free that lands in a page after the walk has passed it
+// is a free that happened after the out-of-memory verdict. Returns 1 when it listed a page.
+pub fn cnm_lf_sweep(hh: usize, cl: usize) usize {
+  let h = hh as *Heap;
+  let c = classAt(h, cl);
+  let p = poolOf(h);
+  lockClass(h, c);
+  osplat.lock(p as usize);
+  let top = p.fresh;
+  osplat.unlock(p as usize);
+  var listed = 0usize;
+  var q = 0usize;
+  while q < top {
+    let d2 = d2Of(h, q);
+    if aLd(d2 + 8usize) == lfUnlisted && usize.from(aLd(d2) & 255u64) == cl && lfScan(d2) != 0usize {
+      aSt(d2 + 8usize, lfListed);
+      btSet(h, cl, q);
+      lfBump(lfc(h, cl), 6usize);
+      listed = 1usize;
+    }
+    q = q + 1usize;
+  }
+  osplat.unlock(c as usize);
+  listed
+}
+// the settings the shim reads to compute its edge thresholds (lf_setup)
+pub fn cnm_lf_relist(hh: usize) usize { (hh as *Heap).lfK }
+pub fn cnm_lf_relistq(hh: usize) usize { (hh as *Heap).lfQ }
 
 // The class has seen enough collisions: one more slot, up to the cap (section 8)
 pub fn cnm_lf_grow(hh: usize, cl: usize) {
@@ -1625,6 +1702,8 @@ pub struct Settings {
   slotCap: usize;          // row 454: CNMALLOC=slots=<n>, the most slots a class may hold (1 to 8, default 8)
   collLimit: usize;        // row 454: CNMALLOC=collisions=<n>, collisions that add a slot (default 64)
   largeSlack: usize;       // row 547: CNMALLOC=largeslack=<bytes>, default 256 KiB; 0 trims a reused block to its request
+  relist: usize;           // row 603: CNMALLOC=relist=<k>, 1 to 64: under design 2 a page is listed again when a word holds min(k, valid bits / q) free cells; 1 is the rule of one free cell
+  relistq: usize;          // row 603: CNMALLOC=relistq=<q>, 1 to 64, default 4
 }
 
 // the defaults: 64 GiB of address space, give-back after 1000 ms, 64 MiB of large blocks kept, no cache
@@ -1643,6 +1722,8 @@ pub fn cnm_defaults(s: *Settings) {
   s.slotCap = 8usize;
   s.collLimit = 64usize;
   s.largeSlack = 262144usize;
+  s.relist = 8usize;
+  s.relistq = 4usize;
 }
 
 // Reads CNMALLOC (for example "giveback=now,reserve=32g,largecap=16m,stats") into s. buf is 1024 bytes of scratch.
@@ -1682,6 +1763,14 @@ pub fn cnm_readEnv(s: *Settings, buf: usize) {
       s.slotCap = parseNum(a + 6usize, z);
       if s.slotCap < 1usize { s.slotCap = 1usize; }
       if s.slotCap > lfMaxSlots { s.slotCap = lfMaxSlots; }
+    } else if len >= 8usize && strncmp(a as *u8, "relistq=", 8usize) == 0i32 {
+      s.relistq = parseNum(a + 8usize, z);
+      if s.relistq < 1usize { s.relistq = 1usize; }
+      if s.relistq > 64usize { s.relistq = 64usize; }
+    } else if len >= 7usize && strncmp(a as *u8, "relist=", 7usize) == 0i32 {
+      s.relist = parseNum(a + 7usize, z);
+      if s.relist < 1usize { s.relist = 1usize; }
+      if s.relist > 64usize { s.relist = 64usize; }
     } else if len >= 11usize && strncmp(a as *u8, "collisions=", 11usize) == 0i32 {
       s.collLimit = parseNum(a + 11usize, z);
       if s.collLimit < 1usize { s.collLimit = 1usize; }
@@ -1767,6 +1856,8 @@ pub fn cnm_create(s: *Settings) usize {
     if cap < 1usize { cap = 1usize; }
     h.slotCap = cap;
     h.collLimit = s.collLimit;
+    h.lfK = s.relist;
+    h.lfQ = s.relistq;
     // the header the shim reads: page base, descriptor base, the heap's size, the first class record, the statistics flag
     wr(h.lf, u64.from(h.base)); wr(h.lf + 8usize, u64.from(h.d2Base)); wr(h.lf + 16usize, u64.from(h.size));
     wr(h.lf + 24usize, u64.from(h.lf + lfHeadBytes)); wr(h.lf + 32usize, u64.from(h.stats));
@@ -1811,18 +1902,18 @@ pub fn cnm_create(s: *Settings) usize {
 // For tests and tools: a heap as cnm_make makes, with a large-block reserve factor (1 to 64) and the cap on the
 // extra left at 64 MiB. Programs set these through CNMALLOC=largereserve=<n>,largereservecap=<n> instead.
 pub fn cnm_make_lr(reserve: usize, mode: usize, delayMs: u64, largeCap: usize, largeReserve: usize) usize {
-  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, largeReserve, 67108864usize, 1usize, 8usize, 64usize, 262144usize);
+  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, largeReserve, 67108864usize, 1usize, 8usize, 64usize, 262144usize, 8usize, 4usize);
   cnm_create(&mut s)
 }
 
 pub fn cnm_make(reserve: usize, mode: usize, delayMs: u64, largeCap: usize) usize {
-  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, 2usize, 67108864usize, 1usize, 8usize, 64usize, 262144usize);
+  var s = Settings(reserve, mode, delayMs, largeCap, 0usize, 0usize, 1024usize, 2usize, 67108864usize, 1usize, 8usize, 64usize, 262144usize, 8usize, 4usize);
   cnm_create(&mut s)
 }
 
 // A heap from the CNMALLOC environment variable. This is the process's: shim/cn_shim.c calls it once.
 pub fn cnm_boot() usize {
-  var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize, 0usize, 1024usize, 2usize, 67108864usize, 1usize, 8usize, 64usize, 262144usize);
+  var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize, 0usize, 1024usize, 2usize, 67108864usize, 1usize, 8usize, 64usize, 262144usize, 8usize, 4usize);
   cnm_defaults(&mut s);
   // the settings text is read into a scratch area, so the heap's own region is not made yet: a small
   // reservation holds it for the moment
