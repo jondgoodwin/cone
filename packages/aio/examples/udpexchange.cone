@@ -1,0 +1,167 @@
+// lane 795 scratch: a UDP request/reply exchange, as tcpexchange is for TCP. One socket pair on loopback: a client sends a
+// 40-byte datagram and reads the echo; a server actor receives and sends it back, its receive waiting each time.
+//   congo run --release examples/udpexchange.cone -- [pairs] [exchanges] [rounds]
+
+mod udpexchange;
+
+import stdio use *;
+import collections use List;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import time use Instant, Duration;
+import process;
+import thread;
+import actors;
+import aio use UdpSocket;
+
+struct State {
+  pub finished: Atomic[u64];
+  pub bad: Atomic[u64];
+}
+
+let st: State;
+
+fn @initpure init() {
+  st = State(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
+  var res = r;
+  var s = UdpSocket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {panic("udpOf: the operation failed");}
+  }
+  s
+}
+
+fn portOf(r: Result[SocketAddr, IoError]) u16 {
+  match r {
+    case let Ok(x) {x.port()}
+    else {0u16}
+  }
+}
+
+actor Server {
+  pub async fn serve(self, s: UdpSocket, n: u32) {
+    var k = 0u32;
+    while k < n {
+      let r = await s.recvFrom(IoBuf(64usize));
+      match r {
+        case let Ok(d) {
+          var rep = IoBuf(64usize);
+          rep.setLen(40usize);
+          let w = await s.sendTo(d.from, rep);
+          k = k + 1u32;
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+}
+
+actor Client {
+  pub async fn run(self, c: UdpSocket, to: u16, n: u32) {
+    var k = 0u32;
+    var bad = 0u64;
+    while k < n {
+      var req = IoBuf(64usize);
+      let w = req.whole();
+      w[0usize] = u8.from(k % 251u32);
+      req.setLen(40usize);
+      let sent = await c.sendTo(SocketAddr.localhost(to), req);
+      let back = await c.recvFrom(IoBuf(64usize));
+      match back {
+        case let Ok(d) {if d.buf.len() != 40usize {bad = bad + 1u64;}}
+        else {bad = bad + 1u64;}
+      }
+      k = k + 1u32;
+    }
+    st.bad.add(bad);
+    st.finished.add(1u64);
+  }
+}
+
+actor Lead {
+  pub async fn run(self, pairs: u32, n: u32) {
+    var i = 0u32;
+    while i < pairs {
+      let a = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+      let b = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+      let pb = portOf(await b.localAddr());
+      Server().serve(b, n);
+      Client().run(a, pb, n);
+      i = i + 1u32;
+    }
+  }
+}
+
+fn arg(i: usize, dflt: u64) u64 {
+  let args = process.args();
+  match args.get(i) {
+    case let Some(s) {u64.parse(s.view()) || dflt}
+    else {dflt}
+  }
+}
+
+fn main() i32 {
+  let pairs = u32.from(arg(1usize, 1u64));
+  let n = u32.from(arg(2usize, 20000u64));
+  let rounds = u32.from(arg(3usize, 5u64));
+  var us = List[i64]();
+  var r = 0u32;
+  while r < rounds + 1u32 {
+    st.finished.store(0u64);
+    let t0 = Instant.now();
+    Lead().run(pairs, n);
+    while st.finished.load() < u64.from(pairs) {
+      if t0.elapsed() > Duration.fromSeconds(120i64) {
+        printStr("udpexchange: timed out\n");
+        return 2;
+      }
+      thread.sleep(Duration.fromMillis(1i64));
+    }
+    let took = t0.elapsed().nanos();
+    if r > 0u32 {
+      let per = took / i64.from(n) / 1000i64;
+      us <- per;
+      printStr("round ");
+      printUInt(u64.from(r));
+      printStr(": ");
+      printUInt(u64.from(per));
+      printStr(" us per exchange (");
+      printUInt(u64.from(took / 1000000i64));
+      printStr(" ms)\n");
+    }
+    r = r + 1u32;
+  }
+  var sorted = List[i64]();
+  var a = 0usize;
+  while a < us.len() {
+    var at = sorted.len();
+    sorted <- us[a];
+    while at > 0usize && sorted[at - 1usize] > us[a] {
+      sorted[at] = sorted[at - 1usize];
+      at = at - 1usize;
+    }
+    sorted[at] = us[a];
+    a = a + 1usize;
+  }
+  printStr("median ");
+  printUInt(u64.from(sorted[sorted.len() / 2usize]));
+  printStr(" us per exchange, best ");
+  printUInt(u64.from(sorted[0usize]));
+  printStr(", bad ");
+  printUInt(st.bad.load());
+  printStr("\n");
+  let ps = actors.pollerStats();
+  printStr("poller: waits ");
+  printUInt(ps.waits);
+  printStr(", entries ");
+  printUInt(ps.entries);
+  printStr(", busyPolls ");
+  printUInt(ps.busyPolls);
+  printStr("\n");
+  if st.bad.load() != 0u64 {return 1;}
+  0
+}

@@ -1,0 +1,175 @@
+// lane 795 scratch: CPU-bound actor work while sockets wait on the worker port (waiting > 0 all the time).
+// 'sockets' idle connections each have a read waiting that is never answered; 'pairs' pairs of actors pass a ball
+// 'balls' times each (every actor turn is one message) on 'workers' workers. Prints the time and messages a second.
+//   congo run --release examples/cpuwait.cone -- [workers] [pairs] [balls] [sockets] [rounds]
+
+mod cpuwait;
+
+import stdio use *;
+import collections use List;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import time use Instant, Duration;
+import process;
+import thread;
+import actors;
+import aio use Socket;
+
+struct State {
+  pub done: Atomic[u64];
+}
+
+let st: State;
+
+fn @initpure init() {
+  st = State(Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {panic("socketOf: the operation failed");}
+  }
+  s
+}
+
+actor Idle {
+  pub async fn hold(self, s: Socket, c: Socket) {
+    let r = await s.read(IoBuf(64usize));
+  }
+}
+
+actor Lead {
+  pub async fn run(self, k: u32) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    var i = 0u32;
+    while i < k {
+      let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
+      let d = socketOf(await ls.accept());
+      Idle().hold(d, c);
+      i = i + 1u32;
+    }
+  }
+}
+
+actor Player {
+  peer: Option[Player];
+
+  fn init(self: &new) {
+    *self = Self(None[Player]);
+  }
+
+  pub async fn meet(self, p: Player) {
+    peer = Some[Player](p);
+  }
+
+  pub async fn ball(self, n: u64, limit: u64) {
+    if n + 1u64 < limit {
+      match peer {
+        case let Some(p) {p.ball(n + 1u64, limit);}
+        case is None[Player] {}
+      }
+    } else {
+      match peer {
+        case let Some(p) {p.leave();}
+        case is None[Player] {}
+      }
+      peer = None;
+      st.done.add(1u64);
+    }
+  }
+
+  pub async fn leave(self) {
+    peer = None;
+  }
+}
+
+fn arg(i: usize, dflt: u64) u64 {
+  let args = process.args();
+  match args.get(i) {
+    case let Some(s) {u64.parse(s.view()) || dflt}
+    else {dflt}
+  }
+}
+
+fn main() i32 {
+  let workers = u32.from(arg(1usize, 8u64));
+  let pairs = arg(2usize, 16u64);
+  let balls = arg(3usize, 200000u64);
+  let socks = u32.from(arg(4usize, 4u64));
+  let rounds = u32.from(arg(5usize, 5u64));
+  actors.configure(actors.Options(workers: workers));
+  if socks != 0u32 {
+    Lead().run(socks);
+    thread.sleep(Duration.fromMillis(400i64));
+  }
+  var r = 0u32;
+  var us = List[i64]();
+  while r < rounds + 1u32 {
+    st.done.store(0u64);
+    let t0 = Instant.now();
+    var i = 0u64;
+    while i < pairs {
+      let a = Player();
+      let b = Player();
+      a.meet(b);
+      b.meet(a);
+      a.ball(0u64, balls);
+      i = i + 1u64;
+    }
+    while st.done.load() < pairs {
+      if t0.elapsed() > Duration.fromSeconds(120i64) {
+        printStr("cpuwait: timed out\n");
+        return 2;
+      }
+      thread.sleep(Duration.fromMillis(1i64));
+    }
+    let took = t0.elapsed().nanos();
+    if r > 0u32 {
+      let ms = took / 1000000i64;
+      us <- ms;
+      printStr("round ");
+      printUInt(u64.from(r));
+      printStr(": ");
+      printUInt(u64.from(ms));
+      printStr(" ms\n");
+    }
+    r = r + 1u32;
+  }
+  var sorted = List[i64]();
+  var a = 0usize;
+  while a < us.len() {
+    var at = sorted.len();
+    sorted <- us[a];
+    while at > 0usize && sorted[at - 1usize] > us[a] {
+      sorted[at] = sorted[at - 1usize];
+      at = at - 1usize;
+    }
+    sorted[at] = us[a];
+    a = a + 1usize;
+  }
+  let med = sorted[sorted.len() / 2usize];
+  printStr("median ");
+  printUInt(u64.from(med));
+  printStr(" ms for ");
+  printUInt(pairs * balls);
+  printStr(" messages, ");
+  printUInt(pairs * balls * 1000u64 / u64.from(med));
+  printStr(" msgs/s\n");
+  let ps = actors.pollerStats();
+  printStr("poller: waits ");
+  printUInt(ps.waits);
+  printStr(", entries ");
+  printUInt(ps.entries);
+  printStr(", busyPolls ");
+  printUInt(ps.busyPolls);
+  printStr("\n");
+  0
+}
