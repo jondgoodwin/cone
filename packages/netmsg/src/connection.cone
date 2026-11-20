@@ -697,8 +697,20 @@ pub actor Connection is ValueSource {
   }
 
   // Give the application the events the protocol produced
+  // A packet's input cells are written first, so a handler hearing its message
+  // reads this packet's value, as it does in-process
   fn dispatch(self, var evs: List[CoreEvent]) {
+    var rest = List[CoreEvent]();
     each e in evs.drain() {
+      match e {
+        case let Latest(l) {
+          let stream, d, pos = l.(stream, data, pos);
+          if !(open && self.intoCell(stream, d)) {rest.push(CoreEvent.Latest(stream, d, pos));}
+        }
+        else { rest.push(e); }
+      }
+    }
+    each e in rest.drain() {
       match e {
         case let Reliable(r) {
           let d = r.(data);

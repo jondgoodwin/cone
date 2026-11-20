@@ -67,18 +67,6 @@ fn held(r: &LatestReader) String {
   s
 }
 
-// What the reader holds once it holds 'want', or after 2 s what it holds (a packet's
-// messages are given before its values, so a message can arrive first)
-fn heldBy(r: &LatestReader, want: &str) String {
-  var t = 0i64;
-  var s = held(r);
-  while s.view() != want && t < 2000i64 {
-    thread.sleep(Duration.fromMillis(10i64));
-    t = t + 10i64;
-    s = held(r);
-  }
-  s
-}
 
 actor Prober {
   pub async fn refused(self, c: Connection, out: Sender[u64]) {
@@ -219,11 +207,11 @@ fn main() i32 {
     sp.a.sendLatest(5u16, bytes("sim1"));
     sp.a.sendReliable(bytes("sm"));
     expectStr(next(&mut rxD).view(), "M7:sm", "the message crosses, and no Update for the bound stream");
-    expectStr(heldBy(&r, "1:sim1").view(), "1:sim1", "the value crossed the simulated link into the cell");
+    expectStr(held(&r).view(), "1:sim1", "the value crossed the simulated link into the cell");
     sp.a.sendLatest(5u16, bytes("sim2"));
     sp.a.sendReliable(bytes("sn"));
     expectStr(next(&mut rxD).view(), "M7:sn", "second message");
-    expectStr(heldBy(&r, "2:sim2").view(), "2:sim2", "the newest value follows");
+    expectStr(held(&r).view(), "2:sim2", "the newest value follows");
     expectStr(nextWithin(&mut rxD, 100i64).view(), "none", "no Update came");
     sp.stop();
     sp.a.close();
