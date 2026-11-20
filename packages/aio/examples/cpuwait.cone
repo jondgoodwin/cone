@@ -1,5 +1,6 @@
-// lane 795 scratch: CPU-bound actor work while sockets wait on the worker port (waiting > 0 all the time).
-// 'sockets' idle connections each have a read waiting that is never answered; 'pairs' pairs of actors pass a ball
+// CPU-bound actor work while sockets wait on the worker port (waiting > 0 all the time; row 578, from lane 795's scratch).
+// 'sockets' UDP sockets each have a receive waiting that is never answered (UDP is on the worker port on every
+// version; a TCP read is not on master's); 'pairs' pairs of actors pass a ball
 // 'balls' times each (every actor turn is one message) on 'workers' workers. Prints the time and messages a second.
 //   congo run --release examples/cpuwait.cone -- [workers] [pairs] [balls] [sockets] [rounds]
 
@@ -13,7 +14,7 @@ import time use Instant, Duration;
 import process;
 import thread;
 import actors;
-import aio use Socket;
+import aio use UdpSocket;
 
 struct State {
   pub done: Atomic[u64];
@@ -25,35 +26,28 @@ fn @initpure init() {
   st = State(Atomic[u64].of(0u64));
 }
 
-fn socketOf(r: Result[Socket, IoError]) Socket {
+fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
   var res = r;
-  var s = Socket.none();
+  var s = UdpSocket.none();
   match &mut res {
     case var &mut Ok(ok) {s <-> *ok;}
-    case let &mut Err(e) {panic("socketOf: the operation failed");}
+    case let &mut Err(e) {panic("udpOf: the operation failed");}
   }
   s
 }
 
 actor Idle {
-  pub async fn hold(self, s: Socket, c: Socket) {
-    let r = await s.read(IoBuf(64usize));
+  pub async fn hold(self, s: UdpSocket) {
+    let r = await s.recvFrom(IoBuf(64usize));
   }
 }
 
 actor Lead {
   pub async fn run(self, k: u32) {
-    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
-    var port = 0u16;
-    match await ls.localAddr() {
-      case let Ok(x) {port = x.port();}
-      else {}
-    }
     var i = 0u32;
     while i < k {
-      let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
-      let d = socketOf(await ls.accept());
-      Idle().hold(d, c);
+      let s = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+      Idle().hold(s);
       i = i + 1u32;
     }
   }
