@@ -1,0 +1,96 @@
+// The runtime's stop while actors parked on timers die as their timers are dropped (row 588). An actor parked
+// on a Timer's next() holds a pending table; the stop drops the timer on its worker, which lets the actor die
+// there (Pending.final), while the stop's own thread abandons every table still registered (abandonParked).
+// Both used to free the same parked record, in whichever order the two threads reached it, about one run in a
+// hundred. The runtime starts once a process, so each round is a child process of this test that parks a few
+// actors on hour-long timers and ends main; a double free is an abort, so 200 rounds with every child exiting
+// 0 and saying nothing on stderr show the stop has one owner for each table.
+
+mod abandonrace;
+
+import testing use *;
+import collections use *;
+import stdio use *;
+import actors use Timer;
+import thread;
+import time use Duration, Instant;
+import process;
+
+const rounds = 200u64;
+const actorsPerRound = 6u64;
+
+let parked: Atomic[u64];
+
+fn @initpure init() {
+  parked = Atomic[u64].of(0u64);
+}
+
+struct Tracker {
+  pub n: u64;
+}
+
+fn after(ms: i64) Instant {Instant.fromNanos(Instant.now().nanos() + ms * 1000000i64)}
+
+actor Holder {
+  t: Tracker;
+  timer: Timer;
+
+  pub async fn parkLong(self) {
+    timer.set(after(3600000i64));
+    parked.add(1u64);
+    let r = await timer.next();
+  }
+}
+
+// The child: park the actors, then end main with them parked
+fn child() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  var k = 0u64;
+  while k < actorsPerRound {
+    let h = Holder(Tracker(k), Timer.make());
+    h.parkLong();
+    k = k + 1u64;
+  }
+  let t0 = Instant.now();
+  while parked.load() < actorsPerRound && t0.elapsed() < Duration.fromSeconds(20i64) {
+    thread.sleep(Duration.fromMicros(200i64));
+  }
+  if parked.load() < actorsPerRound {
+    return 2i32;
+  }
+  0i32
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 2usize && a[1usize].equals("--child") {
+    return child();
+  }
+  var exe = String();
+  match process.currentExe() {
+    case let Ok(e) { exe = String.from(e.view()); }
+    case is Err { require(false, "currentExe"); }
+  }
+  var failed = 0u64;
+  var r = 0u64;
+  while r < rounds {
+    var c = List[String]();
+    c.push(String.from(exe.view()));
+    c.push(String.from("--child"));
+    var gone = List[String]();
+    gone.push(String.from("CONE_BACKTRACE"));
+    match process.run(c.view(), process.Options(timeout: Duration.fromMillis(60000i64), removeEnv: Some(gone))) {
+      case let Ok(o) {
+        if o.exitCode != 0u32 || o.timedOut || o.stderr.len() != 0usize {
+          failed = failed + 1u64;
+          print <- "round ", r, ": exit ", o.exitCode, ", signal ", o.signal, ", stderr: ", o.stderr.view(), "\n";
+        }
+      }
+      case is Err { failed = failed + 1u64; }
+    }
+    r = r + 1u64;
+  }
+  expectUInt(failed, 0u64, "200 stops with actors parked on timers: every child exits 0, quietly");
+  done()
+}
