@@ -357,6 +357,7 @@ struct Strm is Move {
   sized: bool;
   length: u64;
   bodyless: bool;        // the response has no body bytes
+  isHead: bool;          // the request is a HEAD (its head is moved out to the Exchange)
 }
 
 // A 'write' or a 'finish' that waits for the connection to take its bytes
@@ -389,6 +390,7 @@ pub actor ConnActor {
   streams: Dict[u32, Strm];
   pends: Deque[Pend];
   h1: Option[Handler];
+  h1ix: usize;              // the route h1 was made for
   nextRid: u64;
   guard: LiveGuard;
 
@@ -408,7 +410,7 @@ pub actor ConnActor {
     *self = Self(id: id, sc: httpconn.ServerConn.make(args.cfg.conn, layer, now), sock: sock, srv: srv,
       args: args, group: group, peer: peer, secure: secure, tm: actors.Timer.make(), out: Chain.make(noBound),
       reading: false, writing: false, protoClosed: false, closing: false, ended: false,
-      streams: Dict[u32, Strm](), pends: Deque[Pend](), h1: None[Handler], nextRid: 1u64, guard: LiveGuard(true));
+      streams: Dict[u32, Strm](), pends: Deque[Pend](), h1: None[Handler], h1ix: 0usize, nextRid: 1u64, guard: LiveGuard(true));
     selfactor.begin();
   }
 
@@ -570,7 +572,8 @@ pub actor ConnActor {
     let head = if h2 {sc.takeRequest()} else {copyHead(sc.request())};
     let rid = nextRid;
     nextRid = nextRid + 1u64;
-    var rec = Strm(rid, stream, head, String(), stFresh, false, 0u64, false, 0u64, false);
+    let isHead = head.method == Method.Head;
+    var rec = Strm(rid, stream, head, String(), stFresh, false, 0u64, false, 0u64, false, isHead);
     if body.isSized() && body.length > u64.from(args.cfg.maxBody) {
       rec.rejected = true;
     } else if rec.head.headers.hasToken("Expect", "100-continue") {
@@ -664,7 +667,7 @@ pub actor ConnActor {
           srv.enqueue(selfactor, id, stream, rid);
         } else {
           self.setState(stream, stHanded);
-          self.runHandler(stream, rid, make);
+          self.runHandler(stream, rid, ix, make);
         }
       }
       else {self.answerText(stream, 404u16, "not found");}
@@ -698,7 +701,7 @@ pub actor ConnActor {
   }
 
   // The handler: on HTTP/1.1 one actor for the connection, its requests in order; on HTTP/2 one for each stream
-  fn runHandler(self, stream: u32, rid: u64, make: Option[&fn() Handler]) {
+  fn runHandler(self, stream: u32, rid: u64, ix: usize, make: Option[&fn() Handler]) {
     let ex = match self.takeExchange(stream, rid) {
       case let Some(e) {e}
       else {return;}
@@ -712,15 +715,18 @@ pub actor ConnActor {
       let h = mk();
       h.handle(ex);
     } else {
-      match &h1 {
-        case let &Some(h) {
-          h.handle(ex);
-          return;
+      if h1ix == ix {
+        match &h1 {
+          case let &Some(h) {
+            h.handle(ex);
+            return;
+          }
+          else {}
         }
-        else {}
       }
       let h = mk();
       h1 = Some[Handler](h);
+      h1ix = ix;
       h.handle(ex);
     }
   }
@@ -795,7 +801,7 @@ pub actor ConnActor {
     if !self.live(stream, rid) {return;}
     let st = head.status;
     let isHead = match streams.get(&stream) {
-      case let Some(r) {r.head.method == Method.Head}
+      case let Some(r) {r.isHead}
       else {false}
     };
     let none = isHead || st == 204u16 || st == 304u16 || body.len() == 0usize;
@@ -823,7 +829,7 @@ pub actor ConnActor {
       case let Some(r) {
         r.sized = framing.isSized();
         r.length = framing.length;
-        none = r.head.method == Method.Head || st == 204u16 || st == 304u16 || framing.isEmpty() ||
+        none = r.isHead || st == 204u16 || st == 304u16 || framing.isEmpty() ||
           (framing.isSized() && framing.length == 0u64);
         r.bodyless = none;
         r.state = stStreaming;
