@@ -1,9 +1,10 @@
 // What a received packet costs, and how out-of-order reliable messages are
 // kept. The core keeps the lists a packet parses into and reuses them, and
 // keeps the messages that arrive before the ones ahead of them in a ring of
-// 1,024 slots by id, as the sending side keeps its own.
+// up to 1,024 slots by id, as the sending side keeps its own.
 //   - 100,000 packets (each a reliable message and a value) received by one
-//     connection: after a warm-up, not one allocation inside 'receive' (the
+//     connection: after a warm-up that includes the rings growing to 1,024
+//     slots, not one allocation inside 'receive' (the
 //     program's own malloc, calloc and realloc each pass through a counter
 //     here to the C library's, as aio's recvbatch does), and every message and
 //     value is delivered
@@ -163,8 +164,9 @@ fn main() i32 {
     let ok = b.receive(&dg, at(10i64), &mut evs);
     let after = allocs();
     if !ok {refused = refused + 1u64;}
-    // the first hundred warm the lists, the rest are counted
-    if i >= 100u32 {used = used + (after - before);}
+    // the first 1,100 warm the lists and let the received-packet ring grow
+    // to its 1,024 slots (in order it is full at the 513th), the rest are counted
+    if i >= 1100u32 {used = used + (after - before);}
     delivered = delivered + u64.from(evs.len());
     i = i + 1u32;
   }
