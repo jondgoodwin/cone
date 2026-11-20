@@ -1,0 +1,178 @@
+// A server connection (ServerConn) speaking HTTP/2 with no layer (prior
+// knowledge), driven with no socket against an http2 client core: three
+// streams open at once (two GETs and a POST with a body), each announced by
+// a Request event with its stream, answered out of order (5, then 1, then 3),
+// every response arriving on its own stream with its own body. The head of
+// each is moved out whole by takeRequest.
+
+mod sconnh2;
+
+import testing use *;
+import collections use List, String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http2;
+import httpconn use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn piece(text: &str) IoBuf {
+  var b = IoBuf(text.len());
+  b.append(text);
+  b
+}
+
+// Both directions until neither has bytes: the client's to the server, the server's to the client
+fn pump(cli: &mut http2.Connection, srv: &mut ServerConn, now: Instant) {
+  var round = 0u32;
+  while round < 8u32 {
+    var moved = 0usize;
+    var a = cli.pollTransmit(now);
+    while true {
+      match a.popFront() {
+        case let Some(b) {
+          moved = moved + b.len();
+          srv.wireIn(b, now);
+        }
+        else {break;}
+      }
+    }
+    srv.fill(now);
+    var out = Chain.make(unbounded);
+    let n = srv.takeWire(&mut out);
+    while true {
+      match out.popFront() {
+        case let Some(b) {cli.handleInput(b, now);}
+        else {break;}
+      }
+    }
+    srv.wireSent(n);
+    moved = moved + n;
+    if moved == 0usize {break;}
+    round = round + 1u32;
+  }
+}
+
+fn get(path: &str) RequestHead {
+  var h = RequestHead.make("GET", path, "example.com");
+  h.scheme = String.from("http");
+  h
+}
+
+fn main() i32 {
+  let now = Instant.now();
+  var cfg = Config.make();
+  cfg.h2PriorKnowledge = true;
+  var srv = ServerConn.make(cfg, None, now);
+  expect(srv.isHttp2(), "prior knowledge: HTTP/2 from the first byte");
+  var cli = http2.Connection.client(cfg.h2, now);
+
+  let s1 = cli.sendRequest(get("/one"), BodyLength());
+  let s3 = cli.sendRequest(get("/three"), BodyLength());
+  var post = RequestHead.make("POST", "/five", "example.com");
+  post.scheme = String.from("http");
+  let s5 = cli.sendRequest(post, BodyLength.sized(3u64));
+  cli.sendData(s5, piece("xyz"));
+  cli.finish(s5);
+  expectUInt(u64.from(s1), 1u64, "the first stream is 1");
+  expectUInt(u64.from(s3), 3u64, "the second is 3");
+  expectUInt(u64.from(s5), 5u64, "the third is 5");
+  pump(&mut cli, &mut srv, now);
+
+  // The three requests, as the server sees them
+  var streams = List[u32]();
+  var targets = List[String]();
+  var body5 = String();
+  var ends = 0u32;
+  var going = true;
+  while going {
+    match srv.next(now) {
+      case let Request(q) {
+        streams.push(q.stream);
+        let head = srv.takeRequest();
+        targets.push(String.from(head.target.view()));
+      }
+      case let Data(d) {
+        expectUInt(u64.from(d.stream), 5u64, "the body is the POST's");
+        body5.appendBytes(d.buf.view());
+        srv.release(d.stream, d.buf.len());
+      }
+      case let End(e) {ends = ends + 1u32;}
+      case is Nothing {going = false;}
+      else {expect(false, "an unexpected event");}
+    }
+  }
+  expectUInt(u64.from(streams.len()), 3u64, "three requests");
+  expectUInt(u64.from(*streams[0usize]), 1u64, "stream 1 first");
+  expectUInt(u64.from(*streams[1usize]), 3u64, "then stream 3");
+  expectUInt(u64.from(*streams[2usize]), 5u64, "then stream 5");
+  expectStr(targets[0usize].view(), "/one", "its target");
+  expectStr(targets[1usize].view(), "/three", "the second's target");
+  expectStr(targets[2usize].view(), "/five", "the third's target");
+  expectStr(body5.view(), "xyz", "the POST's body");
+  expectUInt(u64.from(ends), 3u64, "each stream's request ended");
+
+  // Out of order: 5, then 1, then 3
+  var order = List[u32]();
+  order.push(5u32);
+  order.push(1u32);
+  order.push(3u32);
+  var k = 0usize;
+  while k < order.len() {
+    let id = *order[k];
+    let text = if id == 5u32 {"five"} else if id == 1u32 {"one"} else {"three"};
+    let r = srv.response();
+    r.status = 200u16;
+    r.headers.add("X-Stream", text);
+    srv.respond(id, BodyLength.sized(u64.from(text.len())));
+    srv.sendData(id, piece(text));
+    srv.finish(id);
+    pump(&mut cli, &mut srv, now);
+    k = k + 1usize;
+  }
+
+  // The client reads each response on its stream
+  var got = List[String]();
+  var gotStreams = List[u32]();
+  var heads = 0u32;
+  going = true;
+  while going {
+    match cli.pollEvent() {
+      case let Response(p) {
+        heads = heads + 1u32;
+        expectUInt(u64.from(p.head.status), 200u64, "status 200");
+      }
+      case let Data(d) {
+        var at = 0usize;
+        var found = false;
+        while at < gotStreams.len() {
+          if *gotStreams[at] == d.stream {
+            got[at].appendBytes(d.buf.view());
+            found = true;
+          }
+          at = at + 1usize;
+        }
+        if !found {
+          gotStreams.push(d.stream);
+          var s = String();
+          s.appendBytes(d.buf.view());
+          got.push(s);
+        }
+        cli.release(d.stream, d.buf.len());
+      }
+      case is NeedData {going = false;}
+      case is End {}
+      else {going = false;}
+    }
+  }
+  expectUInt(u64.from(heads), 3u64, "three response heads");
+  expectUInt(u64.from(got.len()), 3u64, "three bodies");
+  expectUInt(u64.from(*gotStreams[0usize]), 5u64, "stream 5 answered first");
+  expectStr(got[0usize].view(), "five", "its body");
+  expectUInt(u64.from(*gotStreams[1usize]), 1u64, "stream 1 second");
+  expectStr(got[1usize].view(), "one", "its body");
+  expectUInt(u64.from(*gotStreams[2usize]), 3u64, "stream 3 last");
+  expectStr(got[2usize].view(), "three", "its body");
+  done()
+}

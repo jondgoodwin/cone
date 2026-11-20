@@ -83,12 +83,6 @@ fn scanHeadBytes(v: &Array[u8], from: usize, most: usize, client: bool) HeadScan
   HeadScan(0usize, i, if lim >= most {scanTooLong} else {scanOk})
 }
 
-// A request head read whole, and how its body is framed
-struct RequestRead {
-  head: RequestHead;
-  framing: Framing;
-}
-
 // A response head read whole, and how its body is framed
 struct ResponseRead {
   head: ResponseHead;
@@ -97,23 +91,32 @@ struct ResponseRead {
 
 // A server's request head h, gathered whole: its request line, its fields
 // (its Host as the head's authority), the checks on them, and its body's
-// framing
-fn readRequest(h: &Array[u8], cfg: &Config) Result[RequestRead, HttpError] {
+// framing. It is read into 'head', emptied first: a head kept from an earlier
+// request keeps its blocks, so a connection's steady state allocates none
+// ('fl' is the connection's scratch for the fields, swapped with the head's
+// blocks). A head that fails to read is left part-filled
+fn readRequestInto(h: &Array[u8], cfg: &Config, head: &mut RequestHead, fl: &mut FieldLines) Result[Framing, HttpError] {
   let first = lineEnd(h, 0usize);
   if first > cfg.maxLineBytes {
-    return bad[RequestRead](ErrorKind.TooLarge, 414u16, "the request line is longer than maxLineBytes");
+    return bad[Framing](ErrorKind.TooLarge, 414u16, "the request line is longer than maxLineBytes");
   }
-  var head = parseRequestLine(&h[0usize ..< first])?;
-  let fields = parseFields(h, lineNext(h, first), cfg, true, true)?;
-  let headers, host, hosts = fields.(headers, host, hosts);
-  head.headers = headers;
+  head.target.clear();
+  head.authority.clear();
+  head.scheme.clear();
+  head.headers.clear();
+  fillRequestLine(&h[0usize ..< first], head)?;
+  fl.headers.clear();
+  fl.host.clear();
+  fl.hosts = 0usize;
+  fillFields(h, lineNext(h, first), cfg, true, true, fl)?;
+  head.headers <-> fl.headers;
+  head.authority <-> fl.host;
+  let hosts = fl.hosts;
   let http10 = head.version == Version.Http10;
-  if hosts > 1usize {return bad[RequestRead](ErrorKind.Malformed, 400u16, "the request has more than one Host");}
-  if hosts == 0usize && !http10 {return bad[RequestRead](ErrorKind.Malformed, 400u16, "an HTTP/1.1 request has no Host");}
-  if head.method == Method.Connect {return bad[RequestRead](ErrorKind.Unsupported, 501u16, "CONNECT is not supported");}
-  let framing = framingOf(&head.headers, true, http10)?;
-  head.authority = host;
-  Ok[RequestRead, HttpError](RequestRead(head, framing))
+  if hosts > 1usize {return bad[Framing](ErrorKind.Malformed, 400u16, "the request has more than one Host");}
+  if hosts == 0usize && !http10 {return bad[Framing](ErrorKind.Malformed, 400u16, "an HTTP/1.1 request has no Host");}
+  if head.method == Method.Connect {return bad[Framing](ErrorKind.Unsupported, 501u16, "CONNECT is not supported");}
+  framingOf(&head.headers, true, http10)
 }
 
 // A client's response head h, gathered whole: its status line, its fields,
@@ -135,29 +138,35 @@ fn readResponse(h: &Array[u8], cfg: &Config) Result[ResponseRead, HttpError] {
 
 // request-line = method SP request-target SP HTTP-version (RFC 9112, 3):
 // one space each, nothing else
-fn parseRequestLine(line: &Array[u8]) Result[RequestHead, HttpError] {
+fn fillRequestLine(line: &Array[u8], head: &mut RequestHead) Result[bool, HttpError] {
   let sp1 = indexOf(line, ' ', 0usize);
-  if sp1 == line.len {return bad[RequestHead](ErrorKind.Malformed, 400u16, "the request line has no spaces");}
+  if sp1 == line.len {return bad[bool](ErrorKind.Malformed, 400u16, "the request line has no spaces");}
   let method = &line[0usize ..< sp1];
-  if !isToken(method) {return bad[RequestHead](ErrorKind.Malformed, 400u16, "the method is not a token");}
+  if !isToken(method) {return bad[bool](ErrorKind.Malformed, 400u16, "the method is not a token");}
   let sp2 = indexOf(line, ' ', sp1 + 1usize);
-  if sp2 == line.len {return bad[RequestHead](ErrorKind.Malformed, 400u16, "the request line has one space, not two");}
+  if sp2 == line.len {return bad[bool](ErrorKind.Malformed, 400u16, "the request line has one space, not two");}
   let target = &line[sp1 + 1usize ..< sp2];
-  if target.len == 0usize {return bad[RequestHead](ErrorKind.Malformed, 400u16, "the request target is empty (two spaces together)");}
+  if target.len == 0usize {return bad[bool](ErrorKind.Malformed, 400u16, "the request target is empty (two spaces together)");}
   var i = 0usize;
   while i < target.len {
     let c = target[i];
     if c <= 0x20u8 || c >= 0x7Fu8 {
-      return bad[RequestHead](ErrorKind.Malformed, 400u16, "the request target holds a space, a control character or a byte past 0x7E");
+      return bad[bool](ErrorKind.Malformed, 400u16, "the request target holds a space, a control character or a byte past 0x7E");
     }
     i = i + 1usize;
   }
   let ver = versionOf(&line[sp2 + 1usize ..< line.len]);
-  if ver == 1u32 {return bad[RequestHead](ErrorKind.Malformed, 400u16, "the request line does not end in an HTTP version");}
-  if ver == 0u32 {return bad[RequestHead](ErrorKind.Unsupported, 505u16, "the request's major version is not 1");}
-  var head = RequestHead.make(method as &str, target as &str, "");
+  if ver == 1u32 {return bad[bool](ErrorKind.Malformed, 400u16, "the request line does not end in an HTTP version");}
+  if ver == 0u32 {return bad[bool](ErrorKind.Unsupported, 505u16, "the request's major version is not 1");}
+  head.method = methodOf(method as &str);
+  if head.method == Method.Other {
+    // An extension method's token is kept by the head's own constructor (a rare path: it makes the head anew)
+    let kept = RequestHead.make(method as &str, "", "");
+    *head = kept;
+  }
+  head.target.appendBytes(target);
   head.version = if ver == 10u32 {Version.Http10} else {Version.Http11};
-  Ok[RequestHead, HttpError](head)
+  Ok[bool, HttpError](true)
 }
 
 // status-line = HTTP-version SP status-code SP [ reason-phrase ] (RFC 9112,
@@ -202,7 +211,8 @@ struct FieldLines {
   fn add(self: &mut, name: &str, value: &Array[u8], takeHost: bool) {
     if takeHost && eqIgnoreCase(name, "Host") {
       hosts = hosts + 1usize;
-      host = String.fromBytes(value);
+      host.clear();
+      host.appendBytes(value);
     } else {
       headers.add(name, value);
     }
@@ -216,9 +226,16 @@ struct FieldLines {
 // RFC 9112, 5.2) such a line continues the field before it, the fold
 // replaced by one space
 fn parseFields(h: &Array[u8], from: usize, cfg: &Config, request: bool, takeHost: bool) Result[FieldLines, HttpError] {
+  var out = FieldLines(Headers(), String(), 0usize);
+  fillFields(h, from, cfg, request, takeHost, &mut out)?;
+  Ok[FieldLines, HttpError](out)
+}
+
+// The same, into 'out', which the caller has emptied (a kept scratch refilled
+// allocates nothing once its blocks have grown)
+fn fillFields(h: &Array[u8], from: usize, cfg: &Config, request: bool, takeHost: bool, out: &mut FieldLines) Result[bool, HttpError] {
   let status = if request {431u16} else {0u16};
   let malformed = if request {400u16} else {0u16};
-  var out = FieldLines(Headers(), String(), 0usize);
   var at = from;
   var n = 0usize;
   // The field read last, not yet added: its name and value in h, and its
@@ -234,13 +251,13 @@ fn parseFields(h: &Array[u8], from: usize, cfg: &Config, request: bool, takeHost
     let end = lineEnd(h, at);
     if end == at {break;}                     // the empty line
     let line = &h[at ..< end];
-    if line.len > cfg.maxLineBytes {return bad[FieldLines](ErrorKind.TooLarge, status, "a field line is longer than maxLineBytes");}
+    if line.len > cfg.maxLineBytes {return bad[bool](ErrorKind.TooLarge, status, "a field line is longer than maxLineBytes");}
     if isOws(line[0usize]) {
-      if request {return bad[FieldLines](ErrorKind.Malformed, malformed, "a field line starts with a space or a tab (obs-fold)");}
-      if !pending {return bad[FieldLines](ErrorKind.Malformed, malformed, "the first field line starts with a space or a tab");}
+      if request {return bad[bool](ErrorKind.Malformed, malformed, "a field line starts with a space or a tab (obs-fold)");}
+      if !pending {return bad[bool](ErrorKind.Malformed, malformed, "the first field line starts with a space or a tab");}
       let more = trimOws(line);
       let whyMore = checkFieldValue(more);
-      if !whyMore.isEmpty() {return bad[FieldLines](ErrorKind.Malformed, malformed, whyMore);}
+      if !whyMore.isEmpty() {return bad[bool](ErrorKind.Malformed, malformed, whyMore);}
       if !folded {
         unfolded = String.fromBytes(&h[valueAt ..< valueEnd]);
         folded = true;
@@ -257,15 +274,15 @@ fn parseFields(h: &Array[u8], from: usize, cfg: &Config, request: bool, takeHost
       folded = false;
     }
     let colon = indexOf(line, ':', 0usize);
-    if colon == line.len {return bad[FieldLines](ErrorKind.Malformed, malformed, "a field line has no colon");}
+    if colon == line.len {return bad[bool](ErrorKind.Malformed, malformed, "a field line has no colon");}
     let name = &line[0usize ..< colon] as &str;
     let whyName = checkFieldName(name);
-    if !whyName.isEmpty() {return bad[FieldLines](ErrorKind.Malformed, malformed, whyName);}
+    if !whyName.isEmpty() {return bad[bool](ErrorKind.Malformed, malformed, whyName);}
     let value = trimOws(&line[colon + 1usize ..< line.len]);
     let whyValue = checkFieldValue(value);
-    if !whyValue.isEmpty() {return bad[FieldLines](ErrorKind.Malformed, malformed, whyValue);}
+    if !whyValue.isEmpty() {return bad[bool](ErrorKind.Malformed, malformed, whyValue);}
     n = n + 1usize;
-    if n > cfg.maxHeaders {return bad[FieldLines](ErrorKind.TooLarge, status, "more fields than maxHeaders");}
+    if n > cfg.maxHeaders {return bad[bool](ErrorKind.TooLarge, status, "more fields than maxHeaders");}
     pending = true;
     nameAt = at;
     nameEnd = at + colon;
@@ -278,7 +295,7 @@ fn parseFields(h: &Array[u8], from: usize, cfg: &Config, request: bool, takeHost
   if pending {
     out.add(&h[nameAt ..< nameEnd] as &str, if folded {unfolded.view()} else {&h[valueAt ..< valueEnd]}, takeHost);
   }
-  Ok[FieldLines, HttpError](out)
+  Ok[bool, HttpError](true)
 }
 
 // How a received message's body is framed
