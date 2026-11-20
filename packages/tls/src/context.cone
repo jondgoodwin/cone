@@ -52,10 +52,15 @@ struct CtxCore is Sendable {
   lane: Lane;
   offline: bool;
   alpn: *u8;               // a server's: the length (u32), then ALPN's wire format
+  keys: *u8;               // a server's: its TicketKeys (below), behind their own Mutex
 
   fn final(self: &uni) {
     if alpn as usize != 0usize {libc.free(alpn);}
     SSL_CTX_free(ctx);
+    if keys as usize != 0usize {
+      OPENSSL_cleanse(keys, mem.sizeof[TicketKeys]());
+      libc.free(keys);
+    }
   }
 }
 
@@ -252,7 +257,7 @@ pub struct Client {
       k = k + 1usize;
     }
     let core = Core(CtxCore(ctx: ctx, server: false, kind: kind, pins: pins,
-      resume: resume, lane: cfg.verifyLane, offline: cfg.offline, alpn: null));
+      resume: resume, lane: cfg.verifyLane, offline: cfg.offline, alpn: null, keys: null));
     Ok[Client, TlsError](Client(core, Shared(CtxState(cache: Cache()))))
   }
 
@@ -336,9 +341,28 @@ pub struct Server {
     // on by default, would hold every session and take a lock for each)
     SSL_CTX_clear_options(ctx, opNoTicket);
     SSL_CTX_ctrl(ctx, ctrlSessCacheMode, i64.from(sessCacheOff), null);
+    // The ticket keys, which rotate (TICKET KEYS in the package's header)
+    let keys = ticketKeysMake(cfg.ticketKeyRotationInterval);
+    if keys as usize == 0usize {
+      SSL_CTX_free(ctx);
+      libc.free(block);
+      return Err[Server, TlsError](configError("no random bytes for the ticket keys"));
+    }
+    SSL_CTX_set_ex_data(ctx, keysSlot(), keys);
+    SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, &ticketKeyCb);
     let core = Core(CtxCore(ctx: ctx, server: true, kind: VerifyKind.Insecure,
-      pins: List[u8](), resume: false, lane: defaultVerifyLane(), offline: false, alpn: block));
+      pins: List[u8](), resume: false, lane: defaultVerifyLane(), offline: false, alpn: block, keys: keys));
     Ok[Server, TlsError](Server(core, Shared(CtxState(cache: Cache()))))
+  }
+
+  // Rotate the ticket keys now: a new current key, the old current the
+  // previous, the one before gone. Every copy of this Server shares the keys
+  pub fn rotateTicketKeys(self: &) {
+    let k = core.keys as *TicketKeys;
+    (*k).lock.lock();
+    let ok = ticketKeysRotate(k);
+    (*k).lock.unlock();
+    if !ok {panic("tls: no random bytes to rotate the ticket keys with");}
   }
 
   // A session with one client
@@ -361,6 +385,174 @@ fn @c("coneTlsAlpnSelect") alpnSelect(ssl: *u8, out: &mut *u8, outLen: &mut u8, 
   *out = chosen;
   *outLen = chosenLen;
   tlsextErrOk
+}
+
+// ---------------------------------------------------------------------------
+// A server's ticket keys
+// ---------------------------------------------------------------------------
+
+// OpenSSL encrypts a ticket with one key for the context's life unless it is
+// asked otherwise (SSL_CTX_set_tlsext_ticket_key_evp_cb). Here it asks this
+// callback each time a ticket is made or opened: the server's current key
+// makes a ticket; a ticket opens under the current key, or under the
+// previous one (answer 2: accepted, and OpenSSL sends a new ticket made
+// under the current key); under no other (answer 0: a full handshake).
+// The keys are in one block of memory, a TicketKeys, which the SSL_CTX's
+// ex_data holds and the server's CtxCore owns. Everything in it is behind
+// its Mutex, and under it OpenSSL's calls are made on the keys' bytes only,
+// none of which calls back.
+
+const ticketKeyBytes = 80usize;      // a TicketKey: its name, then the AES key, then the MAC key
+const ticketNameBytes = 16usize;
+const ticketAesBytes = 32usize;
+const ticketMacBytes = 32usize;
+const ossParamUtf8 = 4u32;           // OSSL_PARAM_UTF8_STRING
+const ossParamOctets = 5u32;         // OSSL_PARAM_OCTET_STRING
+const ossParamBytes = 40usize;       // sizeof(OSSL_PARAM): a pointer, a u32 and padding, a pointer, two sizes
+const ossUnmodified = 0xFFFFFFFFFFFFFFFFu64;   // OSSL_PARAM_UNMODIFIED
+
+// One key: random, never written out
+struct TicketKey {
+  name: Array[u8, 16];             // sent in the clear in each ticket, to say which key made it
+  aes: Array[u8, 32];              // AES-256-CBC, which encrypts the ticket
+  mac: Array[u8, 32];              // HMAC-SHA256, which authenticates it
+}
+
+struct TicketKeys {
+  lock: Mutex;
+  cur: TicketKey;
+  prev: TicketKey;
+  hasPrev: bool;
+  rotatedAt: i64;                  // when 'cur' was made: Instant nanoseconds
+  interval: i64;                   // nanoseconds between rotations; zero or less: none by itself
+  words: Array[u8, 18];            // "key", "digest", "SHA256", each ended by a zero: the MAC's parameters' names
+}
+
+// A new block of keys, or null when OpenSSL has no random bytes
+fn ticketKeysMake(interval: Duration) *u8 {
+  let k = libc.calloc(1usize, mem.sizeof[TicketKeys]()) as *TicketKeys;
+  if k as usize == 0usize {return null;}
+  (*k).lock = Mutex.make();
+  if RAND_bytes(&(*k).cur.name[0usize] as *u8, i32.from(ticketKeyBytes)) != 1i32 {
+    libc.free(k as *u8);
+    return null;
+  }
+  (*k).hasPrev = false;
+  (*k).rotatedAt = Instant.now().nanos();
+  (*k).interval = interval.nanos();
+  let w = &(*k).words[0usize] as *u8;
+  putWord(w, 0usize, "key");
+  putWord(w, 4usize, "digest");
+  putWord(w, 11usize, "SHA256");
+  k as *u8
+}
+
+// A word at an offset in the names' block, ended by a zero
+fn putWord(block: *u8, at: usize, word: &str) {
+  var k = 0usize;
+  while k < word.len {
+    *(block + (at + k)) = word[k];
+    k = k + 1usize;
+  }
+  *(block + (at + word.len)) = 0u8;
+}
+
+// The current key becomes the previous, and a new one the current. Under the
+// lock. False, nothing changed, when OpenSSL has no random bytes
+fn ticketKeysRotate(k: *TicketKeys) bool {
+  var fresh = Array[u8, 80]() <- fill 0u8;
+  if RAND_bytes(&fresh[0usize], i32.from(ticketKeyBytes)) != 1i32 {return false;}
+  libc.memcpy(&(*k).prev.name[0usize] as *u8, &(*k).cur.name[0usize] as *u8, ticketKeyBytes);
+  libc.memcpy(&(*k).cur.name[0usize] as *u8, &fresh[0usize] as *u8, ticketKeyBytes);
+  OPENSSL_cleanse(&fresh[0usize] as *u8, ticketKeyBytes);
+  (*k).hasPrev = true;
+  (*k).rotatedAt = Instant.now().nanos();
+  true
+}
+
+// Under the lock: rotate when the interval has passed, and past two
+// intervals leave no previous key, since the key it was is by then older
+// than a ticket may be
+fn ticketKeysDue(k: *TicketKeys) {
+  if (*k).interval <= 0i64 {return;}
+  let passed = (Instant.now().nanos() - (*k).rotatedAt) / (*k).interval;
+  if passed < 1i64 {return;}
+  if !ticketKeysRotate(k) {return;}
+  if passed >= 2i64 {
+    OPENSSL_cleanse(&(*k).prev.name[0usize] as *u8, ticketKeyBytes);
+    (*k).hasPrev = false;
+  }
+}
+
+fn sameName(a: *u8, b: *u8) bool {
+  var n = 0usize;
+  while n < ticketNameBytes {
+    if *(a + n) != *(b + n) {return false;}
+    n = n + 1usize;
+  }
+  true
+}
+
+// OpenSSL's MAC context told which key and which digest to authenticate with
+fn ticketMac(k: *TicketKeys, macCtx: *u8, key: *TicketKey) bool {
+  var p = Array[u8, 120]() <- fill 0u8;
+  let b = &p[0usize] as *u8;
+  let w = &(*k).words[0usize] as *u8;
+  // the key: an octet string of the MAC's 32 bytes
+  *(b as *usize) = w as usize;
+  *((b + 8usize) as *u32) = ossParamOctets;
+  *((b + 16usize) as *usize) = &(*key).mac[0usize] as *u8 as usize;
+  *((b + 24usize) as *usize) = ticketMacBytes;
+  *((b + 32usize) as *u64) = ossUnmodified;
+  // the digest: a string, "SHA256"
+  let d = b + ossParamBytes;
+  *(d as *usize) = (w + 4usize) as usize;
+  *((d + 8usize) as *u32) = ossParamUtf8;
+  *((d + 16usize) as *usize) = (w + 11usize) as usize;
+  *((d + 24usize) as *usize) = 6usize;
+  *((d + 32usize) as *u64) = ossUnmodified;
+  // the third, all zero, ends the list
+  EVP_MAC_CTX_set_params(macCtx, b) == 1i32
+}
+
+// OpenSSL's ticket key callback. enc 1: a ticket is being made: the key's
+// name and a fresh IV go out through keyName and iv, and the cipher and MAC
+// are set up with the current key; 1, or -1 for an error. enc 0: a ticket is
+// being opened: 0 no key of ours made it (a full handshake), 1 the current
+// key did, 2 the previous one did, or the current one in TLS 1.3 (a new
+// ticket is sent, under the current key), -1 an error
+fn @c("coneTlsTicketKey") ticketKeyCb(ssl: *u8, keyName: *u8, iv: *u8, cipher: *u8, macCtx: *u8, enc: i32) i32 {
+  let k = SSL_CTX_get_ex_data(SSL_get_SSL_CTX(ssl), keysSlot()) as *TicketKeys;
+  if k as usize == 0usize {return -1i32;}
+  (*k).lock.lock();
+  ticketKeysDue(k);
+  var answer = -1i32;
+  if enc == 1i32 {
+    if RAND_bytes(iv, 16i32) == 1i32 {
+      libc.memcpy(keyName, &(*k).cur.name[0usize] as *u8, ticketNameBytes);
+      if EVP_EncryptInit_ex(cipher, EVP_aes_256_cbc(), null, &(*k).cur.aes[0usize] as *u8, iv) == 1i32
+          && ticketMac(k, macCtx, &(*k).cur) {
+        answer = 1i32;
+      }
+    }
+  } else if sameName(keyName, &(*k).cur.name[0usize] as *u8) {
+    if EVP_DecryptInit_ex(cipher, EVP_aes_256_cbc(), null, &(*k).cur.aes[0usize] as *u8, iv) == 1i32
+        && ticketMac(k, macCtx, &(*k).cur) {
+      // TLS 1.3 sends a new ticket after every resumption (a ticket is used
+      // once, and OpenSSL's own keys do the same), which it does when asked
+      // to renew; TLS 1.2 keeps its ticket
+      answer = if SSL_version(ssl) == tls13Version {2i32} else {1i32};
+    }
+  } else if (*k).hasPrev && sameName(keyName, &(*k).prev.name[0usize] as *u8) {
+    if EVP_DecryptInit_ex(cipher, EVP_aes_256_cbc(), null, &(*k).prev.aes[0usize] as *u8, iv) == 1i32
+        && ticketMac(k, macCtx, &(*k).prev) {
+      answer = 2i32;
+    }
+  } else {
+    answer = 0i32;
+  }
+  (*k).lock.unlock();
+  answer
 }
 
 // ---------------------------------------------------------------------------
