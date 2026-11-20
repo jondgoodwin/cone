@@ -1,0 +1,192 @@
+// A server's ticket keys rotate (the package's header, TICKET KEYS). Checked
+// here, in TLS 1.3 and TLS 1.2, with the server's own session cache off (so
+// resumption is by tickets alone): a ticket survives one rotation and is
+// refused after two; a ticket the previous key opened is renewed under the
+// current one, so it survives the next rotation as well; copies of a Server
+// share the keys; a Server made apart does not open another's tickets; the
+// server rotates by itself once its interval has passed (a short interval,
+// not twelve hours: the real clock, a few hundred milliseconds), and past two
+// intervals idle keeps no previous key; and a resumed handshake takes as many
+// flights after a rotation as before it.
+
+mod ticketkeys;
+
+import stdio use *;
+import testing use *;
+import thread;
+import time use Duration;
+import fs;
+import path use Path;
+import collections use List, String;
+import tls;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("cannot read a certificate file")
+}
+
+fn clientOf(maxV: tls.TlsVersion) tls.Client {
+  var cfg = tls.ClientConfig.make();
+  cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.offline = true;
+  cfg.maxVersion = maxV;
+  match tls.Client.make(cfg) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("the client context could not be made")
+}
+
+fn serverWith(interval: Duration) tls.Server {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  var cfg = tls.ServerConfig.make(&certFile, &keyFile);
+  cfg.ticketKeyRotationInterval = interval;
+  match tls.Server.make(cfg) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  panic("the server context could not be made")
+}
+
+fn serverOf() tls.Server {serverWith(Duration.fromHours(12i64))}
+
+// Both sides run until nothing moves: how many rounds moved something
+fn pump(c: &mut tls.Session, s: &mut tls.Session) u32 {
+  var buf = Array[u8, 20000]() <- fill 0u8;
+  var rounds = 0u32;
+  var moved = true;
+  while moved {
+    moved = false;
+    while c.pending() > 0usize {
+      let n = c.transmit(&mut buf[0usize ..< 20000usize]);
+      s.feed(&buf[0usize ..< n]);
+      moved = true;
+    }
+    while s.pending() > 0usize {
+      let n = s.transmit(&mut buf[0usize ..< 20000usize]);
+      c.feed(&buf[0usize ..< n]);
+      moved = true;
+    }
+    while c.canRead() {
+      if c.read(&mut buf[0usize ..< 20000usize]) == 0usize {break;}
+    }
+    while s.canRead() {
+      if s.read(&mut buf[0usize ..< 20000usize]) == 0usize {break;}
+    }
+    if moved {rounds = rounds + 1u32;}
+  }
+  rounds
+}
+
+// One connection from cl to srv: whether it opened and resumed, on both sides
+// (a connection that opened but did not resume is a full handshake); its rounds
+struct Outcome {
+  pub opened: bool;
+  pub resumed: bool;
+  pub rounds: u32;
+}
+
+fn connect(cl: &tls.Client, srv: &tls.Server) Outcome {
+  var c = cl.session("localhost");
+  var s = srv.session();
+  let rounds = pump(&mut c, &mut s);
+  let opened = c.isOpen() && s.isOpen();
+  let resumed = c.info().resumed && s.info().resumed;
+  Outcome(opened, resumed, rounds)
+}
+
+fn check(o: Outcome, resumed: bool, what: &str) {
+  require(o.opened, what);
+  var w = String.from(what);
+  if resumed {w.append(": resumed");} else {w.append(": a full handshake");}
+  expect(o.resumed == resumed, w.view());
+}
+
+// One version's whole story
+fn story(v: tls.TlsVersion, name: &str) {
+  let srv = serverOf();
+
+  // A ticket survives one rotation, and the ticket it is renewed with another
+  let cl = clientOf(v);
+  check(connect(&cl, &srv), false, "the first handshake");
+  let before = connect(&cl, &srv);
+  check(before, true, "a ticket resumes before any rotation");
+  srv.rotateTicketKeys();
+  let after = connect(&cl, &srv);
+  check(after, true, "a ticket survives one rotation");
+  expectUInt(u64.from(after.rounds), u64.from(before.rounds), "a resumption takes as many flights after a rotation as before");
+  srv.rotateTicketKeys();
+  check(connect(&cl, &srv), true, "the ticket it was renewed with survives the next rotation");
+
+  // And fails after two
+  let cl2 = clientOf(v);
+  check(connect(&cl2, &srv), false, "a second client's first handshake");
+  srv.rotateTicketKeys();
+  srv.rotateTicketKeys();
+  check(connect(&cl2, &srv), false, "a ticket does not survive two rotations: a full handshake, which works");
+  check(connect(&cl2, &srv), true, "and the full handshake's ticket resumes");
+
+  // A copy of a Server shares the keys, and a rotation by either is the other's
+  let copy = srv;
+  let cl3 = clientOf(v);
+  check(connect(&cl3, &srv), false, "a copy: the first handshake");
+  copy.rotateTicketKeys();
+  check(connect(&cl3, &srv), true, "a copy: rotated by the copy, the original opens the ticket");
+  copy.rotateTicketKeys();
+  copy.rotateTicketKeys();
+  let cl4 = clientOf(v);
+  check(connect(&cl4, &copy), false, "a copy: the copy's handshake");
+  srv.rotateTicketKeys();
+  srv.rotateTicketKeys();
+  check(connect(&cl4, &copy), false, "a copy: two rotations by the original, refused by the copy");
+
+  // A Server made apart has keys of its own
+  let other = serverOf();
+  let cl5 = clientOf(v);
+  check(connect(&cl5, &srv), false, "another server: the first handshake");
+  check(connect(&cl5, &other), false, "another server: not this server's ticket");
+}
+
+// By itself: a short interval stands for twelve hours
+fn byItself(v: tls.TlsVersion) {
+  let interval = Duration.fromMillis(300i64);
+  let srv = serverWith(interval);
+  let cl = clientOf(v);
+  check(connect(&cl, &srv), false, "by itself: the first handshake");
+  thread.sleep(Duration.fromMillis(400i64));
+  check(connect(&cl, &srv), true, "by itself: one interval later the ticket still resumes (the previous key)");
+
+  let cl2 = clientOf(v);
+  check(connect(&cl2, &srv), false, "by itself: a second client's first handshake");
+  thread.sleep(Duration.fromMillis(700i64));
+  check(connect(&cl2, &srv), false, "by itself: two intervals idle, the ticket is refused");
+
+  // Zero: never by itself
+  let still = serverWith(Duration.zero());
+  let cl3 = clientOf(v);
+  check(connect(&cl3, &still), false, "no interval: the first handshake");
+  thread.sleep(Duration.fromMillis(700i64));
+  check(connect(&cl3, &still), true, "no interval: nothing rotates by itself");
+  still.rotateTicketKeys();
+  still.rotateTicketKeys();
+  check(connect(&cl3, &still), false, "no interval: by rotateTicketKeys, it does");
+}
+
+fn main() i32 {
+  story(tls.TlsVersion.Tls13, "ok: TLS 1.3");
+  story(tls.TlsVersion.Tls12, "ok: TLS 1.2");
+  byItself(tls.TlsVersion.Tls13);
+  byItself(tls.TlsVersion.Tls12);
+  0i32
+}

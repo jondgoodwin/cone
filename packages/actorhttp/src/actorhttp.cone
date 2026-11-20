@@ -103,6 +103,9 @@
 //   ex.bodySink()   after start: a stages.ChunkSink, a pipeline's end, feeds the body   (A SERVER)
 //   ServerError: e.kind() (ServerErrorKind: Failed, Closed)  e.isClosed()  e.code  String() <- e
 //   defaultMaxRequestBody         the most request body bytes a server takes unless configured
+//   HttpRoutes.make()  routes.handle(host, prefix, factory)  routes.queue(host, prefix)   a table of routes   (A ROUTED SERVER)
+//   HttpHandler    an actor trait: handle(self, var ex: Exchange)    cfg.routes(table)  cfg.shutdownWithin(d)
+//   liveConnActors()  liveServerActors()     the actors of a routed server that exist now
 //
 // Each of the first four and the two of a connection makes an OPERATION, an
 // actors.Awaitable[R], which does nothing until an 'await' in a behaviour
@@ -395,6 +398,41 @@
 // a plug-in fetches over HTTP/3 where httpclient's header says it does, and
 // the Response's 'version' says so.
 //
+//
+// A ROUTED SERVER. 'cfg.routes(table)' makes the server run on connection actors: the server is an actor
+// that owns the listening socket and the live count, each accepted connection is an actor of its own that
+// owns its socket, its httpconn.ServerConn (the protocol, sans-I/O) and its one Timer, and the sockets'
+// reads and writes wait on the shared worker port, so nothing of HTTP or TLS runs on the I/O thread
+// (routedserver.cone). Without 'route', 'listen' is the server of A SERVER above, unchanged. A HttpRoutes
+// (router.cone) is built before 'listen':
+//
+//   let table = HttpRoutes.make()
+//     .handle("", "/api", &makeApi)            // any host, a path prefix, the handler's factory
+//     .handle("example.com", "/", &makeSite)   // a host (ignoring case and port) beats "any" at a tie
+//     .queue("", "/q");                        // the queue route: 'server.next()' takes these, as above
+//   actorhttp.listen(addr, ServerConfig.make().routes(table))
+//
+// A request is routed once read whole (up to cfg.maxBody; with cfg.streamBodies, at its head): the longest
+// matching path prefix, a host-exact route before an any-host one of the same length. No route: 404, from
+// the connection. A handler is an actor of the program's, conforming to the actor trait HttpHandler
+// ('pub async fn handle(self, var ex: Exchange)'), made by the route's factory, a plain function that
+// makes the program's own type and returns it as a HttpHandler. One handler serves an HTTP/1.1 connection's
+// requests in order (a request for another route makes another), and an HTTP/2 stream gets one of its own,
+// so a slow request does not hold its connection's others. The Exchange it is given has the methods of A SERVER
+// (respond, text, start, write, sendEvent, finish, request, and body with read and readAll); its calls reach the
+// connection by message, and a write or finish answers Closed once the connection has ended. Not on a
+// routed server: HTTP/3, 'bodySink', and a request body sent 'to' a sink (the sink is ended Failed).
+//
+// The queue route's waiting requests are named to the server by (connection, request) and their bytes stay in
+// the connection. Only live ones count against maxPending: a request whose peer has gone (its connection
+// ended, its stream was reset, or the peer sent its last byte before any handler had the request) is
+// withdrawn, and an actor asking for a request is never given one that is gone.
+//
+// 'server.close()' stops accepting, answers every 'next' Closed and every waiting request 503, tells each
+// connection to finish (HTTP/1.1 ends after the request in hand; HTTP/2 sends GOAWAY), and after
+// cfg.shutdownWithin (default 10 s) resets what is still open. 'closed()' answers when every connection has
+// ended. liveConnActors() and liveServerActors() count the actors that exist, for programs that check a
+// server has left nothing behind.
 // REQUEST BODIES AS STREAMS. 'cfg.streamBodies()' has the server deliver every request at its head, with
 // 'request.body' empty, and the actor take the body once with 'ex.body()': 'await body.read()' (a String
 // per piece), 'body.to(sink)' (a stages.ChunkSink) or 'await body.readAll(limit)'. The first is the choice,
@@ -429,7 +467,7 @@
 // body streamed from a client actor (a request carries its body
 // whole), a client's 'stream' and 'events' reconnecting, SSE's Last-Event-ID
 // resuming on the server (the program reads the field and chooses), WebSocket
-// and other Upgrades, HTTP/3 without TLS, routing (the program matches 'request.path()'),
+// and other Upgrades, HTTP/3 without TLS, routing on the service thread's server (a routed server has it: A ROUTED SERVER),
 // an 'In' form of 'next', a Conn made with its driver's other settings
 // (maxWaiting and the rest are httpconn.Config's defaults), a client's
 // reprioritize and closeIdle, a connect with an 'In' form, and httpclient and
@@ -439,7 +477,8 @@ mod actorhttp;
 
 import pools use GenPool, Handle;
 import collections use List, Deque, String, Dict, AnyError;
-import iobuf use IoBuf, IoHome;
+import iobuf use IoBuf, IoHome, Chain;
+import sync use Arc;
 import time use Instant, Duration;
 import iocore use Loop, Completion, SocketAddr, CancelGroup, IoError, forever;
 import ioerror use IoErrorKind;
@@ -452,8 +491,13 @@ import aio use IoLimits;
 import actors;
 import stages use ChunkSink, ChunkSource, Ending, chunkHome, ReaderSink, readSink, linkWindow, ValueSink, ValueSource, ValueReader, readValue;
 import streams;
+let liveConns: Atomic[u64];      // routedserver.cone: ConnActors alive
+let liveServers: Atomic[u64];    // ...and ServerActors
+
 fn @initpure init() {
   nextId = Atomic[u64].of(0u64);
+  liveConns = Atomic[u64].of(0u64);
+  liveServers = Atomic[u64].of(0u64);
   svcHost = aio.host[Service](&makeService);
 }
 

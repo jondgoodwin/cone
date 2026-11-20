@@ -104,9 +104,14 @@ actor Hub {
     putU32(&mut p, k);
     putU64(&mut p, u64.from(t0.nanos()));
     while p.len() < size { p.push(7u8); }
+    // One frozen buffer a tick, every connection handed a share of it (an Arc, not a copy): the way Pegasus
+    // encodes its shared part once a publish. The copy a connection made of its own, 150,000 a second at 5,000
+    // connections, was the benchmark's cost and not the server's
+    let shared = copyPacket(p.view()).freeze();
+    let whole = shared.len();
     var s = 0usize;
     while s < seats.len() {
-      seats[s].sendLatest(1u16, copyPacket(p.view()).freeze());
+      seats[s].sendLatest(1u16, shared.slice(0usize, whole));
       s = s + 1usize;
     }
     spans.push(Instant.now().nanos() - t0.nanos());
