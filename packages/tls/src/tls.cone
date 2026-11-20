@@ -39,6 +39,7 @@
 //   ClientConfig.make()  c.verify c.alpn c.minVersion c.maxVersion      (CONFIGURATION)
 //     c.resume c.backend c.verifyLane c.offline                         (RESUMPTION)
 //   ServerConfig.make(certFile, keyFile)  s.alpn s.minVersion s.maxVersion s.backend
+//     s.ticketKeyRotationInterval; Server.rotateTicketKeys()             (TICKET KEYS)
 //   Verifier.platform()  Verifier.roots(pem)  Verifier.pinnedSha256(hex)  (VERIFIERS)
 //     Verifier.insecureDevelopmentOnly()  v.rootsPem()  v.pinnedKeys()
 //   Client.make(cfg)  c.session(serverName)  c.stream(serverName)  (CONTEXTS)
@@ -58,7 +59,7 @@
 //   certErrorKind(code)  certErrorText(code)  genericFailure()   the verifier's own number
 //   TlsInfo: version versionName cipher alpn resumed verifiedBy          (DIAGNOSTICS)
 //     handshakeTime verifyTime closeNotify truncated; String() <- i
-//   stats(): TlsStats; backendVersion(); VerifyKind: toText(&k)
+//   stats(): TlsStats (arrivalsLive); backendVersion(); VerifyKind: toText(&k)
 //
 // SESSIONS. A Session is one TLS connection's state, in either role, made
 // from a Client or a Server. Ciphertext that arrived goes in by 'feed' (all
@@ -139,6 +140,22 @@
 // open, is the protocol the driver speaks on the connection: "h2" is HTTP/2,
 // anything else HTTP/1.1.
 //
+// TICKET KEYS. A server resumes sessions from tickets it encrypts with its own
+// key, and anyone who obtains that key can read every session resumed under
+// it, so the key is not kept for the server's life. A Server holds a current
+// key and the previous one: a ticket is made under the current key; a ticket
+// made under the previous one is accepted, and the client is sent a new ticket
+// under the current one; anything older does a full handshake (a ticket
+// survives one rotation, not two). 'rotateTicketKeys()' makes a new current
+// key, the old one the previous, the one before dropped. The server also
+// rotates by itself, once 'ServerConfig.ticketKeyRotationInterval' (12 hours
+// by default; zero or negative: never) has passed since the last rotation:
+// the check is made when a ticket is made or opened, so an idle server does
+// no work, and one idle for two intervals or more has no previous key left
+// when its next client comes. The keys are random, are never written
+// anywhere, and are shared by every copy of a Server; two servers made
+// apart (or two processes) do not resume each other's sessions.
+//
 // ERRORS. One TlsError for every back end. Its kind: a certificate
 // expired, for another name, untrusted, revoked, or refused for another
 // reason; a version no side shares; no application protocol both offered;
@@ -158,7 +175,8 @@
 //
 // DIAGNOSTICS. 'stats()' counts, for the process, handshakes done (and of
 // them resumed), sessions failed, verifications run by the OS's verifier,
-// close_notify sent and received, and streams that ended without one.
+// close_notify sent and received, streams that ended without one, and
+// 'arrivalsLive' (a resuming client's arrivals blocks made, not yet freed: 0 at rest).
 // 'info()' gives a session's version, cipher, ALPN, whether it resumed, who
 // verified it, how long its handshake took and the OS's verifier in it;
 // 'String() <- info' says it in a line, which is what a Stream's 'describe' gives
@@ -221,6 +239,7 @@ fn @initpure init() {
   laneOnce = Once.make();
   laneMade = Atomic[u32].of(0u32);
   ticketSlotIndex = CRYPTO_get_ex_new_index(0i32, 0i32, null, null, null, null);
+  keysSlotIndex = CRYPTO_get_ex_new_index(exIndexSslCtx, 0i32, null, null, null, null);
   storeOnce = Once.make();
   storeMade = Atomic[usize].of(0usize);
   nHandshakes = Atomic[u64].of(0u64);
@@ -230,6 +249,8 @@ fn @initpure init() {
   nCloseSent = Atomic[u64].of(0u64);
   nCloseReceived = Atomic[u64].of(0u64);
   nTruncated = Atomic[u64].of(0u64);
+  nArrivalsMade = Atomic[u64].of(0u64);
+  nArrivalsFreed = Atomic[u64].of(0u64);
 }
 
 // ---------------------------------------------------------------------------
@@ -352,12 +373,14 @@ pub struct ServerConfig {
   pub minVersion: TlsVersion;
   pub maxVersion: TlsVersion;
   pub backend: Backend;
+  pub ticketKeyRotationInterval: Duration;   // 12 hours; zero or negative: the keys rotate only by 'rotateTicketKeys'
 
   pub fn make(certFile: &Path, keyFile: &Path) ServerConfig {
     var alpn = List[String]();
     alpn.push(String.from("http/1.1"));
     ServerConfig(certFile: certFile.clone(), keyFile: keyFile.clone(), alpn: alpn,
-      minVersion: TlsVersion.Tls12, maxVersion: TlsVersion.Tls13, backend: Backend.Auto)
+      minVersion: TlsVersion.Tls12, maxVersion: TlsVersion.Tls13, backend: Backend.Auto,
+      ticketKeyRotationInterval: Duration.fromHours(12i64))
   }
 }
 
@@ -473,6 +496,7 @@ pub struct TlsStats {
   pub closeNotifySent: u64;
   pub closeNotifyReceived: u64;
   pub truncated: u64;
+  pub arrivalsLive: u64;   // resuming clients' arrivals blocks made and not yet freed
 }
 
 let nHandshakes: Atomic[u64];
@@ -482,11 +506,18 @@ let nVerifications: Atomic[u64];
 let nCloseSent: Atomic[u64];
 let nCloseReceived: Atomic[u64];
 let nTruncated: Atomic[u64];
+let nArrivalsMade: Atomic[u64];
+let nArrivalsFreed: Atomic[u64];
 
 // The counters, as they are now
 pub fn stats() TlsStats {
+  // Freed is read before made: a block is always made before it is freed,
+  // so this order can't make freed exceed made and wrap the subtraction.
+  let freed = nArrivalsFreed.load();
+  let made = nArrivalsMade.load();
   TlsStats(nHandshakes.load(), nResumed.load(), nFailures.load(), nVerifications.load(),
-    nCloseSent.load(), nCloseReceived.load(), nTruncated.load())
+    nCloseSent.load(), nCloseReceived.load(), nTruncated.load(),
+    made - freed)
 }
 
 // The back end's own name and version: 'OpenSSL 3.5.9 30 Sep 2026'
@@ -526,3 +557,8 @@ pub fn defaultVerifyLane() Lane {
 let ticketSlotIndex: i32;
 
 fn ticketSlot() i32 {ticketSlotIndex}
+
+// The SSL_CTX's ex_data index holding a server's ticket keys (context.cone)
+let keysSlotIndex: i32;
+
+fn keysSlot() i32 {keysSlotIndex}
