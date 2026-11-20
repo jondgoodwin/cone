@@ -1,0 +1,360 @@
+// TCP waiting on the worker port (aio's TCP ON THE WORKER PORT; iocore's shared.cone, the actors
+// runtime's poller.cone): the reads, writes and half-close of a TCP socket aio made wait in the socket's
+// entry and are ended there; accept, connect, reset and close are still the I/O thread's, and are counted.
+// opStats().handedOver is the check: it does not move over the phases that only read, write and half-close.
+//
+// 1. A connect and an accept are the I/O thread's: handedOver moves (at least 2).
+// 2. A kept-alive exchange, 400 request/reply pairs, the server's read waiting each time (the server reads
+//    into a buffer of its own for 200 of them and with no buffer, 'read()', for 200): every answer is the
+//    request's own bytes, and handedOver does not move.
+// 3. A write of 8 MiB to a peer that does not read at first: the send waits worker-side, goes on from where
+//    it was as the peer reads (a partial send), every byte arrives in order; handedOver does not move.
+// 4. A half-close (closeWrite): the peer reads the clean end, replies, the closer still reads it;
+//    handedOver does not move.
+// 5. A read waiting on a socket that is then reset by this side: answered once, Cancelled; the reset, the I/O
+//    thread's, is counted.
+// 6. At the end every record is dissolved and every buffer is home.
+
+mod tcpport;
+
+import testing use *;
+import stdio use printStr, printUInt;
+import thread;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf, stats;
+import iocore use SocketAddr, IoError;
+import ioerror use IoErrorKind;
+import actors;
+import aio use Socket;
+
+const requests = 400u32;
+const bigWrite = 8388608usize;
+
+struct Got {
+  pub setupCrossed: Atomic[u64];   // 1: records handed to the I/O thread by connect and accept
+  pub served: Atomic[u64];         // 2: requests the server answered
+  pub echoed: Atomic[u64];         // 2: replies the client found to be its request's own bytes
+  pub keptCrossed: Atomic[u64];    // 2: records handed over during the exchange
+  pub bigBytes: Atomic[u64];       // 3: bytes the slow reader took
+  pub bigBad: Atomic[u64];         // 3: bytes that were not the sender's pattern
+  pub bigSent: Atomic[u64];        // 3: the write's count
+  pub bigCrossed: Atomic[u64];     // 3: records handed over during the big write
+  pub endClean: Atomic[u64];       // 4: 1 if the peer's read after the half-close was the clean end
+  pub replied: Atomic[u64];        // 4: bytes the closer read after its half-close
+  pub shutCrossed: Atomic[u64];    // 4: records handed over
+  pub rWaiting: Atomic[u64];       // 5: 1 once the reader was started
+  pub rDone: Atomic[u64];          // 5: reads answered after a reset by this side
+  pub rCancelled: Atomic[u64];     // 5: ... of them Cancelled
+  pub endCrossed: Atomic[u64];     // 5: records handed over by the reset
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+// The records an await handed to the I/O thread (opStats().handedOver: in flight, or to be started there). A phase that
+// reads, writes and half-closes does not move it; connect and accept do
+fn crossed() u64 {aio.opStats().handedOver}
+
+// The control records queued for the I/O thread (opStats().queued: a cancel, a close, a reset: no await hands them over)
+fn queuedNow() u64 {aio.opStats().queued}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {
+      printStr("socketOf failed: code ");
+      printUInt(u64.from(e.code));
+      printStr("\n");
+      panic("socketOf: the operation failed");
+    }
+  }
+  s
+}
+
+fn lenOf(r: Result[IoBuf, IoError]) u64 {
+  match r {
+    case let Ok(b) {u64.from(b.len())}
+    case let Err(e) {1000000u64 + u64.from(e.code)}
+  }
+}
+
+// n bytes, the byte at i being (seed + i) mod 251
+fn pattern(n: usize, seed: usize) IoBuf {
+  var b = IoBuf(n);
+  let w = b.whole();
+  var i = 0usize;
+  while i < n {
+    w[i] = u8.from((seed + i) % 251usize);
+    i = i + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+// Whether the bytes of b are the pattern from 'seed' at offset 'at'
+fn patternHolds(b: &IoBuf, seed: usize, at: usize) bool {
+  let v = b.view();
+  var i = 0usize;
+  while i < b.len() {
+    if v[i] != u8.from((seed + at + i) % 251usize) {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+actor Server {
+  // n requests of 40 bytes: read (waiting for each to come), answered with the same bytes.
+  // 'any': the read takes no buffer of its own (read())
+  pub async fn serve(self, s: Socket, n: u32, any: bool, done: OneshotSender[u64]) {
+    var k = 0u32;
+    while k < n {
+      let r = if any {await s.read()} else {await s.read(IoBuf(64usize))};
+      match r {
+        case let Ok(b) {
+          if b.len() == 0usize {break;}
+          let w = await s.write(b);
+          k = k + 1u32;
+          got.served.store(got.served.load() + 1u64);
+        }
+        case let Err(e) {break;}
+      }
+    }
+    var d = done;
+    d.send(u64.from(k));
+  }
+
+  // 3. reads nothing for 400 ms, then every byte of the big write, slowly, checking the pattern
+  pub async fn slowReader(self, s: Socket, done: OneshotSender[u64]) {
+    let z = await aio.sleep(Duration.fromMillis(400i64));
+    var total = 0usize;
+    while total < bigWrite {
+      let r = await s.read(IoBuf(65536usize));
+      match r {
+        case let Ok(b) {
+          if b.len() == 0usize {break;}
+          if !patternHolds(&b, 7usize, total) {got.bigBad.store(got.bigBad.load() + u64.from(b.len()));}
+          total = total + b.len();
+        }
+        case let Err(e) {break;}
+      }
+    }
+    got.bigBytes.store(u64.from(total));
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 4. reads to the clean end, then answers "yz"
+  pub async fn halfPeer(self, s: Socket, done: OneshotSender[u64]) {
+    let first = await s.read(IoBuf(64usize));
+    let second = await s.read(IoBuf(64usize));
+    if lenOf(second) == 0u64 {got.endClean.store(1u64);}
+    let w = await s.write(pattern(2usize, 0usize));
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+actor Holder {
+  a: Socket;
+  b: Socket;
+
+  // 5. a read waits on a, then a is reset from here
+  pub async fn reader(self) {
+    let r = await a.read(IoBuf(64usize));
+    match r {
+      case let Err(e) {
+        if aio.isCancelled(e) {got.rCancelled.store(1u64);}
+      }
+      else {}
+    }
+    got.rDone.store(1u64);
+  }
+
+  pub async fn start(self, port: u16, ls: Socket, done: OneshotSender[u64]) {
+    a = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    b = socketOf(await ls.accept());
+    selfactor.reader();
+    selfactor.resetter(done);
+  }
+
+  pub async fn resetter(self, done: OneshotSender[u64]) {
+    thread.sleep(Duration.fromMillis(300i64));
+    let q0 = queuedNow();
+    var s = Socket.none();
+    s <-> a;
+    s.reset();
+    var waited = 0i64;
+    while got.rDone.load() == 0u64 && waited < 5000i64 {
+      thread.sleep(Duration.fromMillis(10i64));
+      waited = waited + 10i64;
+    }
+    got.endCrossed.store(queuedNow() - q0);
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+actor Peer {
+  pub async fn run(self, server: Server, done: OneshotSender[u64]) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+
+    // 1. connect and accept are the I/O thread's
+    let h0 = crossed();
+    let a = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let b = socketOf(await ls.accept());
+    got.setupCrossed.store(crossed() - h0);
+
+    // 2. a kept-alive exchange, the server's read waiting each time
+    {
+      let h1 = crossed();
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
+      let d = socketOf(await ls.accept());
+      server.serve(d, requests, false, tx);
+      let h1b = crossed();
+      var k = 0u32;
+      while k < requests {
+        var req = pattern(40usize, usize.from(k));
+        let sent = await c.write(req);
+        let back = await c.read(IoBuf(64usize));
+        match back {
+          case let Ok(bb) {
+            if bb.len() == 40usize && patternHolds(&bb, usize.from(k), 0usize) {got.echoed.store(got.echoed.load() + 1u64);}
+          }
+          else {}
+        }
+        k = k + 1u32;
+      }
+      got.keptCrossed.store(crossed() - h1b);
+      let ended = rx.recv();
+    }
+
+    // 2b. the same, the server's read taking no buffer of its own (read())
+    {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
+      let d = socketOf(await ls.accept());
+      server.serve(d, requests, true, tx);
+      let h1b = crossed();
+      var k = 0u32;
+      while k < requests {
+        let sent = await c.write(pattern(40usize, usize.from(k)));
+        let back = await c.read(IoBuf(64usize));
+        match back {
+          case let Ok(bb) {
+            if bb.len() == 40usize && patternHolds(&bb, usize.from(k), 0usize) {got.echoed.store(got.echoed.load() + 1u64);}
+          }
+          else {}
+        }
+        k = k + 1u32;
+      }
+      got.keptCrossed.store(got.keptCrossed.load() + (crossed() - h1b));
+      let ended = rx.recv();
+    }
+
+    // 3. a big write to a peer that reads late: it waits, goes on from where it was
+    {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
+      let d = socketOf(await ls.accept());
+      server.slowReader(d, tx);
+      let h3 = crossed();
+      let w = await c.write(pattern(bigWrite, 7usize));
+      match w {
+        case let Ok(n) {got.bigSent.store(u64.from(n));}
+        else {}
+      }
+      let ended = rx.recv();
+      got.bigCrossed.store(crossed() - h3);
+    }
+
+    // 4. a half-close: the peer reads to the clean end and answers; the closer still reads it
+    {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      let c = socketOf(await aio.connect(SocketAddr.localhost(port)));
+      let d = socketOf(await ls.accept());
+      server.halfPeer(d, tx);
+      let h4 = crossed();
+      let w = await c.write(pattern(5usize, 3usize));
+      let shut = await c.closeWrite();
+      got.replied.store(lenOf(await c.read(IoBuf(64usize))));
+      let ended = rx.recv();
+      got.shutCrossed.store(crossed() - h4);
+    }
+
+    // 5. a reset by this side while a read waits (the Holder), then the peer's
+    {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      let hd = Holder(Socket.none(), Socket.none());
+      hd.start(port, ls, tx);
+      let ended = rx.recv();
+    }
+    var dn = done;
+    dn.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let s = Server();
+    let peer = Peer();
+    peer.run(s, tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the peer said it was done");}
+    else {}
+  }
+  actors.waitUntilIdleFor(Duration.fromSeconds(5i64));
+  var waited = 0i64;
+  while aio.opStats().inUse > 0u64 && waited < 5000i64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 10i64;
+  }
+  let left = aio.opStats().inUse;
+  finalAll();
+  expect(got.setupCrossed.load() >= 2u64, "1: connect and accept were handed to the I/O thread (counted)");
+  expectUInt(got.served.load(), u64.from(requests) * 2u64, "2: the server answered every request");
+  expectUInt(got.echoed.load(), u64.from(requests) * 2u64, "2: every reply was its request's own bytes");
+  expectUInt(got.keptCrossed.load(), 0u64, "2: nothing was handed to the I/O thread over the kept-alive exchange");
+  expectUInt(got.bigSent.load(), u64.from(bigWrite), "3: the write was answered with every byte");
+  expectUInt(got.bigBytes.load(), u64.from(bigWrite), "3: the reader took every byte");
+  expectUInt(got.bigBad.load(), 0u64, "3: in order, none of them wrong");
+  expectUInt(got.bigCrossed.load(), 0u64, "3: nothing was handed over by the partial send");
+  expectUInt(got.endClean.load(), 1u64, "4: the peer's read after the half-close was the clean end");
+  expectUInt(got.replied.load(), 2u64, "4: the closer read the reply after its half-close");
+  expectUInt(got.shutCrossed.load(), 0u64, "4: nothing was handed over by the half-close");
+  expectUInt(got.rDone.load(), 1u64, "5: the read waiting on the reset socket was answered");
+  expectUInt(got.rCancelled.load(), 1u64, "5: Cancelled");
+  expect(got.endCrossed.load() >= 1u64, "5: the reset was handed to the I/O thread (counted)");
+  expectUInt(left, 0u64, "6: every record is dissolved");
+  expectUInt(stats().lent, 0u64, "6: every buffer is home");
+  done()
+}

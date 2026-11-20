@@ -103,6 +103,7 @@ pub struct OpCore {
   lapses: bool = false;                  // a timer whose wheel entry is its group's deadline, earlier than its own time
   early: bool = false;                   // answered TimedOut past the grace while the kernel or the pool holds it
   late: bool = false;                    // an early one the kernel (or the pool) has now given back
+  viaWorker: bool = false;               // Connect: asked to make a worker-side socket (setPeer); Accept's and Connect's: made so (TCP ON THE WORKER PORT)
   own: bool = false;                     // the Loop's own (the old API's), not an asker's
   inGroup: bool = false;                 // on the Loop's grouped list
   listed: bool = false;                  // on the Loop's done list, not yet handed over by takeDone
@@ -194,8 +195,15 @@ pub struct OpCore {
   }
 
   // SendTo's destination, Connect's address
-  pub fn setPeer(self: &mut, a: SocketAddr) {
+  // For Connect, 'onWorkers' asks for a socket whose reads and writes wait on the
+  // worker port (TCP ON THE WORKER PORT, shared.cone); the Loop makes it so
+  // only if it was given a port (setWorkerPort).
+  // onWorkers true: the worker threads handle this socket's reads and writes
+  // directly; false: the shared I/O thread does and hands them across.
+  // Temporary: removed once every socket is on the worker port (row 582)
+  pub fn setPeer(self: &mut, a: SocketAddr, onWorkers: bool = false) {
     *(&mut addr as *SocketAddr) = a;
+    viaWorker = onWorkers;
   }
 
   // The address the answer names: a datagram's sender or destination, a
