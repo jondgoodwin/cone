@@ -1,0 +1,182 @@
+// The routed server's lingering close (routedserver.cone, closeOut): after the answer and the half-close it reads
+// and drops what the peer still sends until the peer closes, a read fails or 'lingerTimeout' passes, whatever
+// the amount. The silent failure this guards: a close that stops reading early leaves the peer's bytes unread, the
+// TCP stack answers them with a reset, and the reset can reach the client before it has read the answer, so the
+// client sees no status. Checked over HTTP/1.1:
+//   1. a handler answers 413 at once without reading a 4,000,000-byte POST: the client reads the answer, 20 of 20;
+//   2. a peer that keeps sending after the answer: the connection is gone within lingerTimeout plus a margin.
+
+mod closelinger;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Response, Request;
+import actors;
+import aio use IoLimits;
+import actorhttp use Client, FetchError, Server, ServerConfig, Exchange, HttpRoutes, HttpHandler;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+// A handler that answers 413 and never touches the body
+actor Refuser is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.text(413u16, "too large");
+  }
+}
+
+fn makeRefuser() HttpHandler {
+  let h = Refuser();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+}
+
+fn post(port: u16, n: usize) Request {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append("/x");
+  var r = Request.get(u.view());
+  r.method = Method.Post;
+  var b = String.withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    b.appendByte(97u8);
+    i = i + 1usize;
+  }
+  r.body = b;
+  r
+}
+
+fn status(r: &Result[Response, FetchError]) u64 {
+  match r {
+    case let &Ok(ok) {u64.from(ok.status)}
+    case let &Err(e) {0u64}
+  }
+}
+
+actor Poster {
+  client: Client;
+
+  pub async fn run(self, port: u16, n: usize, var done: OneshotSender[u64]) {
+    let r = await client.send(post(port, n));
+    done.send(status(&r));
+  }
+}
+
+// A raw peer that declares a large body, sends part, reads the answer, then keeps sending until a write or a read
+// fails. It reports the milliseconds from the answer to that end (the cap of 10,000 when nothing ended it)
+actor Raw {
+  pub async fn run(self, port: u16, var done: OneshotSender[i64]) {
+    let c = await aio.connect(SocketAddr.localhost(port));
+    match c {
+      case var Ok(sock) {
+        var head = String.from("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 900000000\r\n\r\n");
+        match IoBuf.tryMake(head.len()) {
+          case var Some(b) {
+            b.append(head.view() as &Array[u8]);
+            let w = await sock.write(b);
+          }
+          else {}
+        }
+        let r1 = await sock.readIn(IoLimits.until(Instant.now() + Duration.fromMillis(5000i64)));
+        let t0 = Instant.now();
+        let cap = t0 + Duration.fromMillis(10000i64);
+        var going = true;
+        while going && Instant.now() < cap {
+          match IoBuf.tryMake(32768usize) {
+            case var Some(b) {
+              b.setLen(32768usize);
+              let w = await sock.write(b);
+              match w {
+                case let Ok(x) {}
+                case let Err(e) {going = false;}
+              }
+            }
+            else {going = false;}
+          }
+        }
+        done.send((Instant.now() - t0).millis());
+      }
+      case let Err(e) {done.send(-1i64);}
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var cfg = ServerConfig.make().routes(HttpRoutes.make().handle("", "/x", &makeRefuser));
+  cfg.conn.lingerTimeout = Duration.fromMillis(800i64);
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  let client = Client.standard();
+
+  var seen = 0u32;
+  var i = 0u32;
+  while i < 20u32 {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let p = Poster(client.clone());
+    p.run(port, 4000000usize, tx);
+    if (rx.recv() || 999u64) == 413u64 {seen = seen + 1u32;}
+    i = i + 1u32;
+  }
+  printStr("a 4,000,000-byte POST refused unread: the client read the 413, 20 of 20 ");
+  printStr(yes(seen == 20u32));
+  printStr("\n");
+
+  var tx2: OneshotSender[i64];
+  var rx2: OneshotReceiver[i64];
+  tx2, rx2 = Oneshot[i64].make();
+  let raw = Raw();
+  raw.run(port, tx2);
+  let ms = rx2.recv() || -1i64;
+  printStr("a peer that keeps sending: the connection is held for the linger (800 ms) and gone within a margin of it ");
+  printStr(yes(ms >= 400i64 && ms < 4000i64));
+  printStr("\n");
+  if seen != 20u32 || ms < 400i64 || ms >= 4000i64 {
+    printStr("seen "); printUInt(u64.from(seen)); printStr(", ms "); printInt(ms); printStr("\n");
+  }
+
+  acceptor.stop();
+  var waited = 0u32;
+  while actorhttp.liveConnActors() > 0u64 && waited < 300u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  printStr("connection actors left ");
+  printUInt(actorhttp.liveConnActors());
+  printStr("\n");
+  finalAll();
+  0
+}
