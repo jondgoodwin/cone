@@ -88,7 +88,7 @@ CONGO_LINK_EXTRA="<dir>/cn_shim.o <dir>/libcnpkg.a" python3 tools/congo/congo.py
 | `largereservecap=<n>[k\|m\|g]` | `64m` | The most a reservation may exceed its block's size (1 MiB to 64 GiB). With the default, `largereserve=32` stops helping above 2 MiB blocks; raise this to let big blocks keep their room. |
 | `stats` | off | Print the counters to stderr at exit (no allocation). |
 | `design=lockfree` / `design=lock` | `lock` | Row 454: `lockfree` is the second design of the general set, no lock on the common path (below); `lock` is the first (the default). Nothing about the lock design changes when `lockfree` is off. |
-| `slots=<n>` | `8` | `design=lockfree`: the most slots a class may hold, each slot one partly used page the threads allocate from (1 to 8, never more than the processor count). It bounds the memory the design holds beyond the lock design (below). |
+| `slots=<n>` | `min(processors, 32)` | `design=lockfree`: the most slots a class may hold, each slot one partly used page the threads allocate from (1 to 32; an explicit value is clamped to 32 only, not to the processor count). More than 32 is not supported: nothing above 16 threads has been measured. It bounds the memory the design holds beyond the lock design (below). |
 | `collisions=<n>` | `64` | `design=lockfree`: lost compare-and-swaps on a class, since its slot count last changed, that add a slot (up to `slots`). It bounds how fast the slot count grows. |
 | `cache=<n>` | `0` (off) | Row 426: blocks per size class that a worker thread may keep in its own cache (see below). 0 touches no thread-local. |
 | `cache_max=<bytes>` | `1024` | Only requests up to this size, and their classes, are cached (at most 32768). |
@@ -163,8 +163,9 @@ paths only.
   gives back each (page, word) group with one `fetch_or`, reading `genclass` before it; the double-free check covers every
   bit of the group. The multi-bit fills' Rule G undos are counted on their own as well (`cnmalloc_lfTotal(10)`, a statistics run).
 * **The memory bound.** Beyond what the lock design held, this design can hold at most one partly used 64 KiB page for each slot
-  above the first, in each class where collisions were seen. With the default cap and all 72 classes contended at once that is
-  72 x 7 x 64 KiB, about 32 MiB, and it falls back within one give-back delay of the contention ending. Slot 0's page of each class is
+  above the first, in each class where collisions were seen (a slot is added only on a collision and idles back down). With a cap
+  of 32 and all 72 classes contended by 32 threads at once that is 72 x 31 x 64 KiB, about 140 MiB (a cap of 8 held about 32 MiB):
+  at most (cap - 8) x 64 KiB more per class than the former cap, and it falls back within one give-back delay of the contention ending. Slot 0's page of each class is
   also held while the class is in use (as the lock design's current page is); a wholly free one goes back to the pool a delay after
   the last allocation from it. The statistics print the active slots of each class and the count of attached pages that are wholly free.
 * **Counters** (`CNMALLOC=stats`, never a timed run): per class allocations and frees, collisions (one atomic add each on the common

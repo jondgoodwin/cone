@@ -41,7 +41,27 @@ def build_mutant(name: str, scratch: Path) -> Path:
         text = text.replace(old, new)
     (out / "cn_shim.c").write_text(text)
     shutil.copy(pkg / "shim" / "cn_plat.h", out)
-    return build_shim(out, out)
+    archive = None
+    cone_edits = data["mutants"][name].get("cone")
+    if cone_edits:                      # (row 580) a mutant of cnmalloc.cone: its own package copy, built, archived
+        cp = out / "pkg"
+        shutil.rmtree(cp, ignore_errors=True)
+        (cp / "src").mkdir(parents=True)
+        shutil.copy(pkg / "congo.toml", cp)
+        for f in (pkg / "src").iterdir():
+            shutil.copy(f, cp / "src")
+        ctext = (cp / "src" / "cnmalloc.cone").read_text().replace("\r\n", "\n")
+        for old, new in cone_edits:
+            count = ctext.count(old)
+            if count != 1:
+                raise SystemExit(f"mutation anchor for {name} found {count} times in cnmalloc.cone: {old}")
+            ctext = ctext.replace(old, new)
+        (cp / "src" / "cnmalloc.cone").write_text(ctext)
+        subprocess.run([sys.executable, str(congo), "build", "--release"], cwd=cp, check=True)
+        archive = out / "libcnpkg.a"
+        archive.unlink(missing_ok=True)
+        subprocess.run(["ar", "rcs", str(archive), str(cp / "build" / "release" / "cnmalloc.o")], check=True)
+    return build_shim(out, out), archive
 
 
 def run_test(shim_obj: Path, archive: Path, test: str, tag: str, extra: dict, scratch: Path) -> bool:
@@ -107,14 +127,14 @@ def main() -> int:
                         check(f"unmutated: {t} variant {v} passes (run {i})",
                               run_test(unmutated, archive, t, f"none{v}-{i}", extra, scratch))
         else:
-            obj = build_mutant(m, scratch)
+            obj, mut_archive = build_mutant(m, scratch)
             mut = data["mutants"][m]
             extra = dict(mut["env"])
             if mut["test"] == "lfrace":
                 extra["CNRACE_MAXSECS"] = str(a.race_secs)
             for i in range(1, a.runs + 1):
                 check(f"mutant {m}: {mut['test']} FAILS (run {i})",
-                      not run_test(obj, archive, mut["test"], f"{m}{i}", extra, scratch))
+                      not run_test(obj, mut_archive or archive, mut["test"], f"{m}{i}", extra, scratch))
     print(f"{sum(verdicts)} of {len(verdicts)} checks as expected; logs and numbers in {scratch}")
     return 0 if all(verdicts) else 1
 

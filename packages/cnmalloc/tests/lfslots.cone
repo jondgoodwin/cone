@@ -1,0 +1,106 @@
+// The slot cap's default (row 580): WITH NO slots= SETTING, SIXTEEN THREADS ALLOCATING ONE CLASS MUST TAKE IT ABOVE EIGHT SLOTS.
+// The cap was 8 (and at most the processor count) until row 580; the default is now min(processors, 32). Sixteen threads
+// each allocate cells of the 64-byte class, hold a few and free them, so their compare-and-swaps collide; with collisions=<n>
+// small the class adds a slot every few collisions, and the main thread polls the class's active slots (cnmalloc_lfActive)
+// until it reads more than 8. A default cap left at 8 never gets there: the test fails after CNSLOTS_MAXSECS (default 10).
+// It also checks that the active slots never exceed min(processors, 32), the cap itself. The test needs 12 or more
+// processors (below that the default cap is not above 8) and skips itself with fewer.
+//
+// Needs the second design linked, and the default cap left alone (no slots= in CNMALLOC); the plain shim is enough (cn.lib):
+//   $env:_LINK_ = '"<dir>\cn.lib"'; $env:CNMALLOC = 'design=lockfree,giveback=now,collisions=4'   (delete build\ first), then 'congo test lfslots'.
+// Under a plain 'congo test' nothing is linked and the test is skipped.
+
+mod lfslots;
+
+import testing use *;
+import thread;
+import libc;
+import cnmalloc;
+import collections use List;
+
+alias DesignFn = &fn @c () i32;
+alias ActiveFn = &fn @c (cl: i32) i32;
+alias HeapFn = &fn @c () usize;
+
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+
+// words of the shared block: 0 the stop flag, 1 the class index's size (bytes of the cells)
+fn worker(arg: usize) u64 {
+  let flag = arg;
+  let mine = libc.calloc(16usize, 8usize) as usize;
+  var n = 0u64;
+  while mem.atomicLoad[usize](word(flag, 0usize), MemOrder.SeqCst) == 0usize {
+    var i = 0usize;
+    while i < 16usize {
+      let p = libc.malloc(64usize);
+      *word(mine, i) = p as usize;
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < 16usize {
+      libc.free(*word(mine, i) as *u8);
+      i = i + 1usize;
+    }
+    n = n + 16u64;
+  }
+  libc.free(mine as *u8);
+  n
+}
+
+fn envNum(name: cstr, dflt: usize) usize {
+  let p = libc.getenv(name);
+  if p as usize == 0usize { return dflt; }
+  var v = 0usize;
+  var i = 0usize;
+  while true {
+    let c = usize.from(*(((p as usize) + i) as *u8));
+    if c < 48usize || c > 57usize { break; }
+    v = v * 10usize + (c - 48usize);
+    i = i + 1usize;
+  }
+  if i == 0usize { dflt } else { v }
+}
+
+fn main() i32 {
+  let design = cnmalloc.cnm_hostSym("cnmalloc_design");
+  if design == 0usize { return testing.skip("lfslots: the cnmalloc shim is not linked: cnmalloc_design was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let active = cnmalloc.cnm_hostSym("cnmalloc_lfActive");
+  if active == 0usize { return testing.skip("lfslots: the cnmalloc shim is not linked: cnmalloc_lfActive was not found"); }
+  let heap = cnmalloc.cnm_hostSym("cnmalloc_heap");
+  if heap == 0usize { return testing.skip("lfslots: the cnmalloc shim is not linked: cnmalloc_heap was not found"); }
+  if (design as *u8 as DesignFn)() != 2i32 { return testing.skip("lfslots: the cnmalloc shim is linked but the second design is off (CNMALLOC=design=lockfree is needed)"); }
+  let np = cnmalloc.cnm_hostProcessors();
+  if np < 12usize { return testing.skip("lfslots: needs 12 or more processors (the default cap is min(processors, 32))"); }
+  let h = (heap as *u8 as HeapFn)();
+  let cl = cnmalloc.cnm_class_of(h, 64usize);
+  let act = active as *u8 as ActiveFn;
+  let maxSecs = envNum("CNSLOTS_MAXSECS", 10usize);
+  let flag = libc.calloc(2usize, 8usize) as usize;
+  var ts = List[thread.Thread[u64]]();
+  var t = 0usize;
+  while t < 16usize { ts.push(thread.start[usize, u64](flag, &worker)); t = t + 1usize; }
+  var most = 0usize;
+  let t0 = cnmalloc.cnm_hostMonoMs();
+  while most <= 8usize && cnmalloc.cnm_hostMonoMs() - t0 < u64.from(maxSecs) * 1000u64 {
+    cnmalloc.cnm_hostSleepMs(5u32);
+    let a = usize.from(act(i32.from(cl)));
+    if a > most { most = a; }
+  }
+  // a little longer under the load, to see the cap hold
+  var k = 0usize;
+  while k < 20usize {
+    cnmalloc.cnm_hostSleepMs(10u32);
+    let a = usize.from(act(i32.from(cl)));
+    if a > most { most = a; }
+    k = k + 1usize;
+  }
+  mem.atomicStore[usize](word(flag, 0usize), 1usize, MemOrder.SeqCst);
+  var ops = 0u64;
+  while ts.len() > 0usize { ops = ops + ts.pop().unwrap().join(); }
+  let cap = if np > 32usize { 32usize } else { np };
+  expect(most > 8usize, "lfslots: sixteen threads on one class took it above 8 active slots (the default cap is above 8)");
+  expect(most <= cap, "lfslots: the active slots never exceed min(processors, 32)");
+  expect(ops > 100000u64, "lfslots: the threads did real work");
+  libc.free(flag as *u8);
+  done()
+}

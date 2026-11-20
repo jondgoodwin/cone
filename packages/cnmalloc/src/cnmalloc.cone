@@ -94,9 +94,9 @@ const regionBytes = 81920usize;
 
 // the second design (row 454): a page descriptor's layout and the states of a page (see "THE SECOND DESIGN" below)
 const d2Stride = 576usize;          // per page: 64 bytes of header, then 64 words of bits
-const lfClsStride = 512usize;       // per class: slots, flags, counters (see lfc)
+const lfClsStride = 1024usize;       // per class: slots, flags, counters (see lfc)
 const lfHeadBytes = 4096usize;
-const lfMaxSlots = 8usize;
+const lfMaxSlots = 32usize;
 const lfAttached = 1u64;
 const lfListed = 2u64;
 const lfUnlisted = 3u64;
@@ -800,9 +800,13 @@ fn putCell(h: *Heap, c: *Class, cl: usize, page: usize, d: *Desc, a: usize) bool
 //     +16  ncells    the page's cell count in its present life (written before its bits are set)
 //     +24  base      the page's address (never changes)
 //     +64  bits      64 words, one bit per cell, SET MEANS FREE; every word is zero while the page is RETIRED (Rule Z)
-// A class's record (lfc; 512 bytes) holds its slots (8 words, each the address of an ATTACHED page's second
-// descriptor or 0), the count of active slots, the per-slot "used" flags and idle stamps, the collision count and
-// the class's counters.
+// A class's record (lfc; 1024 bytes) holds its slots (up to 32 words at +512, each the address of an ATTACHED page's
+// second descriptor or 0), the count of active slots (+64), the per-slot "used" flags (+80, 32 bytes), the idle stamps
+// (+768, 32 words), the collision count (+192) and the class's counters (+256).
+// THE CAP (row 580): at most 32 slots a class (lfMaxSlots); the default is min(processors, 32), and CNMALLOC=slots=<n>
+// is clamped to 32 only. Nothing above 16 threads was measured, so a machine with more than 32 processors is a later
+// row. THE MEMORY BOUND: a slot is added only on a collision and idles back down, so a class holds at most
+// (cap - 8) x 64 KiB more than the former cap of 8 did, while that many threads collide on it.
 //
 // WHO WRITES WHAT: the lock holder writes the slots, the states and genclass, with the atomic operations below
 // (sequentially consistent: the Dekker rule of section 5 needs the exchange of a state to come before the scan of
@@ -1014,7 +1018,7 @@ pub fn cnm_lf_attach(hh: usize, cl: usize, tnum: usize, seen: usize) usize {
   lockClass(h, c);
   let act = usize.from(rd32(L + 64usize));
   let si = tnum % act;
-  let cur = usize.from(rd(L + si * 8usize));
+  let cur = usize.from(rd(L + 512usize + si * 8usize));
   if h.lfDebug != 0usize && cur != 0usize { lfSlotRule(h, cl, cur); }
   if cur != seen {
     osplat.unlock(c as usize);
@@ -1028,7 +1032,7 @@ pub fn cnm_lf_attach(hh: usize, cl: usize, tnum: usize, seen: usize) usize {
       osplat.unlock(c as usize);
       return 1usize;
     }
-    wr(L + si * 8usize, 0u64);
+    wr(L + 512usize + si * 8usize, 0u64);
     waiting = lfDetach(h, c, cl, d2Page(h, cur), cur);
   }
   let q = lfPick(h, c, cl);
@@ -1039,7 +1043,7 @@ pub fn cnm_lf_attach(hh: usize, cl: usize, tnum: usize, seen: usize) usize {
   }
   let d2 = d2Of(h, q);
   aXchg(d2 + 8usize, lfAttached);
-  wr(L + si * 8usize, u64.from(d2));
+  wr(L + 512usize + si * 8usize, u64.from(d2));
   wr8(L + 80usize + si, 1u8);
   lfBump(L, 5usize);
   osplat.unlock(c as usize);
@@ -1089,7 +1093,7 @@ pub fn cnm_lf_grow(hh: usize, cl: usize) {
   lockClass(h, c);
   let act = usize.from(rd32(L + 64usize));
   if act < h.slotCap {
-    wr(L + 128usize + act * 8usize, u64.from(osplat.tick()));
+    wr(L + 768usize + act * 8usize, u64.from(osplat.tick()));
     wr8(L + 80usize + act, 1u8);
     wr32(L + 64usize, u32.from(act + 1usize));
     lfBump(L, 3usize);
@@ -1117,17 +1121,17 @@ fn lfCollect(h: *Heap, force: bool, delay: u64) u64 {
         k = k - 1usize;
         if rd8(L + 80usize + k) != 0u8 {
           wr8(L + 80usize + k, 0u8);
-          wr(L + 128usize + k * 8usize, u64.from(now));
+          wr(L + 768usize + k * 8usize, u64.from(now));
           due = minDue(due, period);
         } else {
-          let age = now - rd(L + 128usize + k * 8usize);
+          let age = now - rd(L + 768usize + k * 8usize);
           if force || age >= delay {
-            let P = usize.from(rd(L + k * 8usize));
+            let P = usize.from(rd(L + 512usize + k * 8usize));
             if P != 0usize && (k >= 1usize || lfScan(P) == 2usize) {
-              wr(L + k * 8usize, 0u64);
+              wr(L + 512usize + k * 8usize, 0u64);
               lfDetach(h, c, cl, d2Page(h, P), P);
             }
-            if k >= 1usize && k == usize.from(rd32(L + 64usize)) - 1usize && rd(L + k * 8usize) == 0u64 {
+            if k >= 1usize && k == usize.from(rd32(L + 64usize)) - 1usize && rd(L + 512usize + k * 8usize) == 0u64 {
               wr32(L + 64usize, u32.from(k));
               wr32(L + 192usize, 0u32);
               lfBump(L, 4usize);
@@ -1622,7 +1626,7 @@ pub struct Settings {
   largeReserve: usize;     // row 446: CNMALLOC=largereserve=<n>, 1 to 64, default 2
   largeReserveCap: usize;  // row 446: CNMALLOC=largereservecap=<bytes>, 1 MiB to 64 GiB, default 64 MiB
   design: usize;           // row 454: CNMALLOC=design=lockfree chooses the lock-free shared pages; 1 (default, also design=lock) the lock design
-  slotCap: usize;          // row 454: CNMALLOC=slots=<n>, the most slots a class may hold (1 to 8, default 8)
+  slotCap: usize;          // row 454: CNMALLOC=slots=<n>, the most slots a class may hold (1 to 32; 0, the default, means min(processors, 32))
   collLimit: usize;        // row 454: CNMALLOC=collisions=<n>, collisions that add a slot (default 64)
   largeSlack: usize;       // row 547: CNMALLOC=largeslack=<bytes>, default 256 KiB; 0 trims a reused block to its request
 }
@@ -1640,7 +1644,7 @@ pub fn cnm_defaults(s: *Settings) {
   s.largeReserve = 2usize;
   s.largeReserveCap = 67108864usize;
   s.design = 1usize;
-  s.slotCap = 8usize;
+  s.slotCap = 0usize;
   s.collLimit = 64usize;
   s.largeSlack = 262144usize;
 }
@@ -1761,9 +1765,12 @@ pub fn cnm_create(s: *Settings) usize {
       osplat.release(region, regionBytes);
       return 0usize;
     }
+    // row 580: the default (0) is min(processors, 32); an explicit slots=<n> is clamped to 32 only (a test may set it above the processor count)
     var cap = s.slotCap;
-    let np = osplat.processors();
-    if cap > np { cap = np; }
+    if cap == 0usize {
+      cap = osplat.processors();
+      if cap > lfMaxSlots { cap = lfMaxSlots; }
+    }
     if cap < 1usize { cap = 1usize; }
     h.slotCap = cap;
     h.collLimit = s.collLimit;
@@ -2313,7 +2320,7 @@ pub fn cnm_print_stats(hh: usize) {
       let attached = rd(L + 296usize);
       var s = 0usize;
       while s < act {
-        let P = usize.from(rd(L + s * 8usize));
+        let P = usize.from(rd(L + 512usize + s * 8usize));
         if P != 0usize && lfScan(P) == 2usize { wholly = wholly + 1u64; }
         s = s + 1usize;
       }
