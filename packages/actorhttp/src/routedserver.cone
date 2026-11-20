@@ -471,12 +471,14 @@ pub actor ConnActor {
       return;
     }
     let room = sc.readRoom();
-    if room == 0usize {
+    // a read fills its buffer, so one is made only when the protocol has credit for a whole recvSize (as the
+    // driver does): a smaller read could bring more than the credit, and the protocol panics at that
+    // (found by the pipelining test, S7)
+    if room < args.cfg.conn.recvSize {
       reading = false;
       return;
     }
-    let want = if room < args.cfg.conn.recvSize {room} else {args.cfg.conn.recvSize};
-    let r = await sock.readIn(IoBuf(want), IoLimits.within(group));
+    let r = await sock.readIn(IoBuf(args.cfg.conn.recvSize), IoLimits.within(group));
     reading = false;
     match r {
       case let Ok(b) {
@@ -576,7 +578,7 @@ pub actor ConnActor {
         selfactor.writeOnce();
       }
     }
-    if !closing && !reading && sc.readRoom() > 0usize {
+    if !closing && !reading && sc.readRoom() >= args.cfg.conn.recvSize {
       reading = true;
       selfactor.readOnce();
     }
