@@ -925,6 +925,46 @@ fn originCaps(lp: &mut Loop) {
   stopAll(&mut live, lp);
 }
 
+// The connection closed to make room for another origin's is the one idle longest, not the first origin's
+fn idleOrder(lp: &mut Loop) {
+  var cfg = Config.make();
+  cfg.maxTotal = 3u32;
+  var cl = Client.make(cfg);
+  var svs = List[Srv]();
+  var ports = List[u16]();
+  var k = 0usize;
+  while k < 4usize {
+    svs.push(server());
+    let s = &mut svs[k];
+    ports.push(listen(s, lp));
+    k = k + 1usize;
+  }
+  // The origins of servers 2, 1, 0 each once, then 2 again (its connection reused, so now the latest idle: 1 has
+  // been idle longest), then server 3's, which needs a connection with the total reached
+  var order = List[usize]();
+  order.push(2usize);
+  order.push(1usize);
+  order.push(0usize);
+  order.push(2usize);
+  var fs = finals();
+  k = 0usize;
+  while k < order.len() {
+    cl.send(lp, Request.get(url(*ports[*order[k]], "/hello").view()), Sink.Here(1u64));
+    collectN(&mut cl, &mut svs, lp, &mut fs, u64.from(k) + 1u64);
+    k = k + 1usize;
+  }
+  expectUInt((&svs[2usize]).accepted, 1u64, "three origins kept open, the first one's reused");
+  cl.send(lp, Request.get(url(*ports[3usize], "/hello").view()), Sink.Here(1u64));
+  collectN(&mut cl, &mut svs, lp, &mut fs, 5u64);
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(100i64));
+  expectUInt(fs.done, 5u64, "a fourth origin with the total reached: Done");
+  expectUInt((&svs[1usize]).open, 0u64, "...the connection idle longest was the one closed");
+  expectUInt((&svs[0usize]).open + (&svs[2usize]).open + (&svs[3usize]).open, 3u64, "...the others stay open");
+  cl.abortAll(lp);
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(30i64));
+  stopAll(&mut svs, lp);
+}
+
 // The client's own limit on streams per HTTP/2 connection, under the peer's higher one
 fn streamLimit(lp: &mut Loop) {
   var scfg = httpconn.Config.make();
@@ -987,6 +1027,7 @@ fn main() i32 {
 
   twoOrigins(&mut lp, &mut svs, pa, pb);
   originCaps(&mut lp);
+  idleOrder(&mut lp);
   streamLimit(&mut lp);
 
   stopAll(&mut svs, &mut lp);
