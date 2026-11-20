@@ -58,7 +58,7 @@
 //   certErrorKind(code)  certErrorText(code)  genericFailure()   the verifier's own number
 //   TlsInfo: version versionName cipher alpn resumed verifiedBy          (DIAGNOSTICS)
 //     handshakeTime verifyTime closeNotify truncated; String() <- i
-//   stats(): TlsStats; backendVersion(); VerifyKind: toText(&k)
+//   stats(): TlsStats (arrivalsLive); backendVersion(); VerifyKind: toText(&k)
 //
 // SESSIONS. A Session is one TLS connection's state, in either role, made
 // from a Client or a Server. Ciphertext that arrived goes in by 'feed' (all
@@ -158,7 +158,8 @@
 //
 // DIAGNOSTICS. 'stats()' counts, for the process, handshakes done (and of
 // them resumed), sessions failed, verifications run by the OS's verifier,
-// close_notify sent and received, and streams that ended without one.
+// close_notify sent and received, streams that ended without one, and
+// 'arrivalsLive' (a resuming client's arrivals blocks made, not yet freed: 0 at rest).
 // 'info()' gives a session's version, cipher, ALPN, whether it resumed, who
 // verified it, how long its handshake took and the OS's verifier in it;
 // 'String() <- info' says it in a line, which is what a Stream's 'describe' gives
@@ -230,6 +231,8 @@ fn @initpure init() {
   nCloseSent = Atomic[u64].of(0u64);
   nCloseReceived = Atomic[u64].of(0u64);
   nTruncated = Atomic[u64].of(0u64);
+  nArrivalsMade = Atomic[u64].of(0u64);
+  nArrivalsFreed = Atomic[u64].of(0u64);
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +476,7 @@ pub struct TlsStats {
   pub closeNotifySent: u64;
   pub closeNotifyReceived: u64;
   pub truncated: u64;
+  pub arrivalsLive: u64;   // resuming clients' arrivals blocks made and not yet freed
 }
 
 let nHandshakes: Atomic[u64];
@@ -482,11 +486,14 @@ let nVerifications: Atomic[u64];
 let nCloseSent: Atomic[u64];
 let nCloseReceived: Atomic[u64];
 let nTruncated: Atomic[u64];
+let nArrivalsMade: Atomic[u64];
+let nArrivalsFreed: Atomic[u64];
 
 // The counters, as they are now
 pub fn stats() TlsStats {
   TlsStats(nHandshakes.load(), nResumed.load(), nFailures.load(), nVerifications.load(),
-    nCloseSent.load(), nCloseReceived.load(), nTruncated.load())
+    nCloseSent.load(), nCloseReceived.load(), nTruncated.load(),
+    nArrivalsMade.load() - nArrivalsFreed.load())
 }
 
 // The back end's own name and version: 'OpenSSL 3.5.9 30 Sep 2026'
