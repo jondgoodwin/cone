@@ -45,14 +45,17 @@ pub struct Interrupt {
   pub fn start() Interrupt {
     var it = Interrupt(0usize, 0u32, false, false, List[u8]());
     it.buffer.resize(INPUT_RECORD_BYTES * READ_AT_A_TIME, 0u8);
-    let h = GetStdHandle(STD_INPUT_HANDLE);
-    if h != 0usize && h != 0xFFFFFFFFFFFFFFFFusize {
-      var mode = 0u32;
-      if GetConsoleMode(h, &mut mode) != 0i32 {
-        it.handle = h;
-        it.savedMode = mode;
-        if (mode & ENABLE_PROCESSED_INPUT) != 0u32 {
-          if SetConsoleMode(h, mode & (ENABLE_PROCESSED_INPUT ^ 0xFFFFFFFFu32)) != 0i32 { it.raw = true; }
+    // The console's own Ctrl-C is Windows's; elsewhere SDL's quit event is the only way it arrives
+    #if #os == .windows {
+      let h = GetStdHandle(STD_INPUT_HANDLE);
+      if h != 0usize && h != 0xFFFFFFFFFFFFFFFFusize {
+        var mode = 0u32;
+        if GetConsoleMode(h, &mut mode) != 0i32 {
+          it.handle = h;
+          it.savedMode = mode;
+          if (mode & ENABLE_PROCESSED_INPUT) != 0u32 {
+            if SetConsoleMode(h, mode & (ENABLE_PROCESSED_INPUT ^ 0xFFFFFFFFu32)) != 0i32 { it.raw = true; }
+          }
         }
       }
     }
@@ -62,7 +65,7 @@ pub struct Interrupt {
   // Put the console back as it was found
   pub fn stop(self: &mut) {
     if raw {
-      SetConsoleMode(handle, savedMode);
+      #if #os == .windows { SetConsoleMode(handle, savedMode); }
       raw = false;
     }
   }
@@ -80,6 +83,7 @@ pub struct Interrupt {
 
   // Read the console's waiting key events and drop them; Ctrl-C among them is a request to quit
   fn readKeys(self: &mut) {
+   #if #os == .windows {
     var waiting = 0u32;
     if GetNumberOfConsoleInputEvents(handle, &mut waiting) == 0i32 || waiting == 0u32 { return; }
     var n = usize.from(waiting);
@@ -104,5 +108,6 @@ pub struct Interrupt {
       }
       i = i + 1usize;
     }
+   }
   }
 }
