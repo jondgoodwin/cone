@@ -43,13 +43,14 @@ struct Tally {
   pub failed: Atomic[u64];     // failed ends at the sink
   pub reasonOk: Atomic[u64];   // ...of them, with the reason "enough"
   pub tooLarge: Atomic[u64];   // ...of them, a BodyError that isTooLarge
+  pub allErr: Atomic[u64];     // readAll answers that were an Err (after a read)
 }
 
 let tally: Tally;
 
 fn @initpure init() {
   tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn reset() {
@@ -60,6 +61,7 @@ fn reset() {
   tally.failed.store(0u64);
   tally.reasonOk.store(0u64);
   tally.tooLarge.store(0u64);
+  tally.allErr.store(0u64);
 }
 
 fn ended() u64 {tally.clean.load() + tally.failed.load()}
@@ -171,6 +173,48 @@ actor Sender1 is HttpHandler {
   }
 }
 
+// Reads one piece, then chooses again: mode 0 sends the rest to a sink (which must be ended Failed and get no
+// piece), mode 1 asks for the whole (which must be the Err). Without the choice recorded at the read, the rest
+// of the body would be handed over as though it were whole
+actor Chooser is HttpHandler {
+  mode: u32;
+
+  fn init(self: &new, mode: u32) {*self = Self(mode: mode);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    var b = ex.body();
+    let first = await b.read();
+    if mode == 0u32 {
+      let before = ended();
+      b.to(Sink(0u32, 0i64));
+      var waited = 0u32;
+      while ended() == before && waited < 2000u32 {
+        let _nap = await aio.sleep(Duration.fromMillis(3i64));
+        waited = waited + 1u32;
+      }
+    } else {
+      let all = await b.readAll(100000000usize);
+      match &all {
+        case let &Err(e) {tally.allErr.add(1u64);}
+        else {}
+      }
+    }
+    ex.text(200u16, "done");
+  }
+}
+
+fn makeChooseTo() HttpHandler {
+  let h = Chooser(0u32);
+  let r: HttpHandler = h;
+  r
+}
+
+fn makeChooseAll() HttpHandler {
+  let h = Chooser(1u32);
+  let r: HttpHandler = h;
+  r
+}
+
 fn makeSlow() HttpHandler {
   let h = Sender1(0u32, 10i64);
   let r: HttpHandler = h;
@@ -258,7 +302,8 @@ fn main() i32 {
   var prx: Receiver[u16];
   ptx, prx = Channel[u16].make();
   let router = HttpRoutes.make().handle("", "/slow", &makeSlow).handle("", "/quick", &makeQuick)
-    .handle("", "/stop", &makeStop).handle("", "/limit", &makeLimit);
+    .handle("", "/stop", &makeStop).handle("", "/limit", &makeLimit)
+    .handle("", "/chooseto", &makeChooseTo).handle("", "/chooseall", &makeChooseAll);
   let acceptor = Acceptor(Server.none());
   acceptor.open(ServerConfig.make().streamBodies().routes(router), ptx.clone());
   let port = prx.recv() || 0u16;
@@ -307,6 +352,24 @@ fn main() i32 {
   printStr(yes(tally.failed.load() == 1u64 && tally.tooLarge.load() == 1u64 && tally.clean.load() == 0u64));
   printStr("\n...every buffer home: ");
   printStr(yes(allHome()));
+  printStr("\n");
+
+  // 3b. a body already read from cannot be chosen again
+  reset();
+  let s5 = postStatus(&client, port, "/chooseto", 4000000usize);
+  printStr("read one piece, then to(sink): answered 200 ");
+  printStr(yes(s5 == 200u64));
+  printStr(", the sink ended Failed once ");
+  printStr(yes(tally.failed.load() == 1u64 && tally.clean.load() == 0u64));
+  printStr(", it got no piece ");
+  printStr(yes(tally.bytes.load() == 0u64));
+  printStr("\n");
+  reset();
+  let s6 = postStatus(&client, port, "/chooseall", 200000usize);
+  printStr("read one piece, then readAll: answered 200 ");
+  printStr(yes(s6 == 200u64));
+  printStr(", the answer is the Err ");
+  printStr(yes(tally.allErr.load() == 1u64));
   printStr("\n");
 
   // 4. the server still serves, on a fresh connection
