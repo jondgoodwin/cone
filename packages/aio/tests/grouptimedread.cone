@@ -1,0 +1,99 @@
+// A read whose group has ended by its deadline answers TimedOut, never Cancelled: on a socket of the worker
+// port (aio.listen's), where the read is looked at on the awaiting actor's worker (iocore's issueWaiting and
+// issue, dueOutcome), as on the Loop's, where a group past its deadline is not cancelled but timed out. The group
+// ends by its own deadline before the read is made, and the read has no deadline of its own.
+
+mod grouptimedread;
+
+import testing use *;
+import stdio use printStr, printUInt;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError, CancelGroup;
+import thread;
+import actors;
+import aio use Socket, IoLimits;
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {
+      printStr("socketOf failed: code ");
+      printUInt(u64.from(e.code));
+      printStr("\n");
+      panic("socketOf: the operation failed");
+    }
+  }
+  s
+}
+
+// How the read ended: 1 TimedOut, 2 Cancelled, 3 another error, 4 bytes
+actor Reader {
+  pub async fn go(self, group: CancelGroup, done: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
+    match a {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let ac = await ls.accept();
+    let peer = socketOf(c);
+    let s = socketOf(ac);
+    // Nothing is sent: the read can only end by its group
+    let r = await s.readIn(IoBuf(4096usize), IoLimits.within(group));
+    var how = 4u64;
+    match r {
+      case let Ok(b) {how = 4u64;}
+      case let Err(e) {
+        if e.isTimedOut() {how = 1u64;} else if e.isCancelled() {how = 2u64;} else {how = 3u64;}
+      }
+    }
+    var d = done;
+    d.send(how);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  // Already ended by its deadline when the read is made
+  let past = CancelGroup.until(Instant.now() + Duration.fromMillis(20i64));
+  thread.sleep(Duration.fromMillis(300i64));
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let r = Reader();
+    r.go(past, tx);
+  }
+  expectUInt(rx.recvTimeout(Duration.fromMillis(5000i64)) || 0u64, 1u64, "a group ended by its deadline: the read answers TimedOut");
+  // Ending by its deadline while the read waits
+  let later = CancelGroup.until(Instant.now() + Duration.fromMillis(150i64));
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+  {
+    let r = Reader();
+    r.go(later, tx2);
+  }
+  expectUInt(rx2.recvTimeout(Duration.fromMillis(5000i64)) || 0u64, 1u64, "a group that ends by its deadline while the read waits: TimedOut");
+  // A cancel is still Cancelled
+  let live = CancelGroup.make();
+  var tx3: OneshotSender[u64];
+  var rx3: OneshotReceiver[u64];
+  tx3, rx3 = Oneshot[u64].make();
+  {
+    let r = Reader();
+    r.go(live, tx3);
+  }
+  thread.sleep(Duration.fromMillis(100i64));
+  live.cancel();
+  expectUInt(rx3.recvTimeout(Duration.fromMillis(5000i64)) || 0u64, 2u64, "a group cancelled while the read waits: Cancelled");
+  finalAll();
+  done()
+}
