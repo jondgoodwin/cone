@@ -14,6 +14,15 @@ struct Key is Eq, Hash {
   pub parts: List[u8];
 }
 
+// Hash but not Eq (like pools.Handle): a List of it must still compile; it just isn't Hash
+struct HashOnly {
+  pub n: u32;
+
+  pub fn hash(self: &, h: &mut Hasher) {
+    h.writeU64(u64.from(self.n));
+  }
+}
+
 fn hashOf[K: Hash](k: &K) u64 {
   var h = Hasher.withSeed(5u64);
   k.hash(&mut h);
@@ -62,5 +71,9 @@ fn main() i32 {
   // As a struct's field
   expectUInt(hashOf(&Key(7u32, bytes(1u8, 2u8, 3u8))), hashOf(&Key(7u32, bytes(1u8, 2u8, 3u8))), "a struct holding a List: equal");
   expect(hashOf(&Key(7u32, bytes(1u8, 2u8, 3u8))) != hashOf(&Key(7u32, bytes(1u8, 2u8, 4u8))), "a struct holding a List: differing in it");
+  // A List of a Hash-but-not-Eq element compiles and works (it is not itself Hash)
+  var ho = List[HashOnly]();
+  ho.push(HashOnly(4u32));
+  expectUInt(u64.from(ho.len()), 1u64, "a List of a Hash-not-Eq element compiles");
   done()
 }
