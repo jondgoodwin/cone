@@ -1,0 +1,1132 @@
+// The client on actors (the package's header, A CLIENT ON ACTORS; stage 4 of the HTTP re-architecture, C4). A
+// ClientActor owns the pool: an httpclient.ClientCore (its origins, waiting fetches, limits, the retry and redirect
+// decisions) and the commands it gives, which it carries out. A ClientConnActor owns one socket, its httpconn.ClientConn
+// (the protocol, sans-I/O) and its one Timer, on whatever worker has it. Nothing of HTTP runs on the I/O thread. A fetch is
+// a message to the client actor with its reply; the connection that runs it hands the whole response back to the client,
+// which gives it to the core as events and answers the reply with what the core decides.
+//
+// The two sides tell each other a connection's state in messages: the connection actor's "up" (its layer is open and the
+// protocol chosen) and "state" (the requests it takes now, whether it takes any), and the client's mirror of them, which the
+// core asks as its ConnFacts. A request the client sends counts against the mirror's room at once (sent), until the
+// connection's next report says how many it has received (recv), so no report that crossed a send is taken for room.
+//
+// An exchange that ends tells the client (exchangeEnded); a connection that ends tells it too (connEnded) and nothing per
+// fetch: the core's Closed rule answers or sends again each fetch that was on it. A late word of an earlier attempt of a
+// fetch (its connection's Done or Failed after the Closed) is dropped by the core.
+//
+// Close frees everything: every fetch is cancelled, every connection is told to abort and its I/O ends with the client's group,
+// and each actor goes when its last reference does (liveClientActors and liveClientConnActors count them).
+
+// ---------------------------------------------------------------------------
+// What a program may count: actors alive
+// ---------------------------------------------------------------------------
+
+// A held counter of the client actors that exist: its 'final' runs when the actor's state is freed
+struct ClientGuard is Move {
+  conn: bool;
+
+  fn final(self: &uni) {
+    if conn {liveClientConns.sub(1u64);} else {liveClients.sub(1u64);}
+  }
+}
+
+// How many ClientActors exist now (made, and not yet freed)
+pub fn liveClientActors() u64 {liveClients.load()}
+
+// How many ClientConnActors exist now
+pub fn liveClientConnActors() u64 {liveClientConns.load()}
+
+// A fetch handed to the client actor: the service thread's job moves the request out of the job and sends it on with the reply
+// (a request has no clone, and an Awaitable's closure cannot move what it holds), so the thread only forwards a message
+struct ClientFetchJob {
+  pub ca: ClientActor;
+  pub req: httpclient.Request;
+
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[httpclient.Response, FetchError]]) {
+    let a, req = self.(ca, req);
+    a.fetch(req, rp);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// What the two sides share
+// ---------------------------------------------------------------------------
+
+// What a client's connections read, shared (read only): the config of each connection, the TLS context, the body limit
+struct ClientArgs {
+  conn: httpconn.Config;
+  tlsc: Option[tls.Client];
+  tlsFail: Option[httpclient.Failure];
+  maxBody: usize;
+}
+
+alias FetchReply = actors.ReplyOf[Result[httpclient.Response, FetchError]];
+
+// A fetch the client has taken: its reply, the request body kept (the core's Send gives only its length), the response
+// gathered by its last exchange, and the connection that exchange is on
+struct FRec is Move {
+  id: httpclient.FetchId;
+  reply: FetchReply;
+  body: String;
+  resp: httpclient.Response;
+  tooBig: bool;
+  pc: u32;
+  gen: u32;
+}
+
+alias FetchRecs = Dict[u64, FRec];
+
+// What the client holds of a connection it asked the core to open
+struct CState {
+  gen: u32;
+  free: usize;       // the requests it took when it last reported
+  recv: u64;         // ...and how many sends it had received then
+  sent: u64;         // sends made to it
+  takes: bool;
+  proto: u32;        // 0: not chosen, 1: HTTP/1.1, 2: HTTP/2
+}
+
+alias CStates = Dict[u32, CState];
+
+// The core's questions about its connections, answered from what the connections reported
+struct Facts is httpclient.ConnFacts {
+  states: CStates;
+
+  pub fn isIdle(self: &, c: httpclient.ConnRef) bool {
+    match states.get(&c.pc) {
+      case let Some(s) {s.gen == c.gen && s.takes && factsRoom(s) > 0usize}
+      else {false}
+    }
+  }
+
+  pub fn takes(self: &, c: httpclient.ConnRef) bool {
+    match states.get(&c.pc) {
+      case let Some(s) {s.gen == c.gen && s.takes}
+      else {false}
+    }
+  }
+
+  pub fn protocol(self: &, c: httpclient.ConnRef) Option[Version] {
+    match states.get(&c.pc) {
+      case let Some(s) {
+        if s.gen != c.gen || s.proto == 0u32 {None[Version]}
+        else {Some[Version](if s.proto == 2u32 {Version.Http2} else {Version.Http11})}
+      }
+      else {None[Version]}
+    }
+  }
+
+  pub fn h3Room(self: &, c: httpclient.ConnRef) bool {false}
+}
+
+// The requests a connection takes now: what it reported, less the sends it had not yet received
+fn factsRoom(s: &CState) usize {
+  let behind = if s.sent > s.recv {s.sent - s.recv} else {0u64};
+  if u64.from(s.free) > behind {s.free - usize.from(behind)} else {0usize}
+}
+
+// Remove the first v from l, keeping the order
+fn dropValue(l: &mut List[u32], v: u32) {
+  match l.indexOf(&v) {
+    case let Some(k) {l.remove(k);}
+    case is None[usize] {}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client actor
+// ---------------------------------------------------------------------------
+
+const addrTtl = 30i64;          // seconds a name's addresses are kept
+
+// A name's addresses, and the one the next connection takes
+struct Addrs is Move {
+  list: List[SocketAddr];
+  cursor: usize;
+  at: Instant;
+}
+
+alias AddrCache = Dict[String, Addrs];
+alias ConnActors = Dict[u32, ClientConnActor];
+
+pub actor ClientActor {
+  args: Arc[imm, ClientArgs];
+  core: httpclient.ClientCore;
+  facts: Facts;
+  fetches: FetchRecs;
+  conns: ConnActors;
+  addrs: AddrCache;
+  dls: PriorityQueue[i64, httpclient.FetchId];   // each fetch's deadline in Instant nanos (an entry for an answered fetch is let go when due)
+  tm: actors.Timer;
+  group: CancelGroup;           // ends every connection's I/O at close
+  refs: u64;
+  closing: bool;
+  guard: ClientGuard;
+
+  fn init(self: &new, p: httpclient.Parts, maxBody: usize) {
+    liveClients.add(1u64);
+    let limits, maxOrigins, conn, tlsr = p.(limits, maxOrigins, conn, tlsc);
+    var tlsc: Option[tls.Client] = None;
+    var tlsFail: Option[httpclient.Failure] = None;
+    match tlsr {
+      case var Ok(t) {tlsc = Some[tls.Client](t);}
+      case var Err(x) {tlsFail = Some[httpclient.Failure](x);}
+    }
+    let args = Arc[imm, ClientArgs](ClientArgs(conn, tlsc, tlsFail, maxBody));
+    *self = Self(args: args, core: httpclient.ClientCore.make(limits, maxOrigins, false), facts: Facts(CStates()),
+      fetches: FetchRecs(), conns: ConnActors(), addrs: AddrCache(),
+      dls: PriorityQueue[i64, httpclient.FetchId](), tm: actors.Timer.make(), group: CancelGroup.make(), refs: 1u64,
+      closing: false, guard: ClientGuard(false));
+    selfactor.deadlineLoop();
+  }
+
+  // ---- fetches
+
+  // A fetch: asked of the core, its reply kept until the core answers it
+  pub async fn fetch(self, req: httpclient.Request, rp: FetchReply) {
+    if closing {
+      rp.answer(Err[httpclient.Response, FetchError](FetchError.cancelled()));
+      return;
+    }
+    let body = String.from(req.body.view());
+    let id = core.ask(req, httpclient.Sink.Here(0u64), Instant.now());
+    fetches.insert(id.number(), FRec(id, rp, body, httpclient.Response.blank(), false, 0u32, 0u32));
+    self.pump();
+  }
+
+  // Every command the core gives, carried out, until it gives none
+  fn pump(self) {
+    while true {
+      match core.next(&facts) {
+        case let Some(c) {self.run(c);}
+        else {break;}
+      }
+    }
+    self.armTimer();
+  }
+
+  fn run(self, command: httpclient.Command) {
+    var c = command;
+    let k = c.kind;
+    if k == httpclient.CommandKind.Answer {
+      self.answer(c);
+    } else if k == httpclient.CommandKind.Send {
+      self.send(c);
+    } else if k == httpclient.CommandKind.Open {
+      self.open(c);
+    } else if k == httpclient.CommandKind.Close {
+      match conns.get(&c.pc) {
+        case let Some(a) {a.shutdown();}
+        else {}
+      }
+    } else if k == httpclient.CommandKind.Cancel {
+      self.cancelFetch(c.fetch);
+    } else if k == httpclient.CommandKind.Watch {
+      dls.push(c.deadline.nanos(), c.fetch);
+    }
+  }
+
+  // A fetch's request put on its connection
+  fn send(self, command: httpclient.Command) {
+    var c = command;
+    let id = c.fetch;
+    var bytes = String();
+    var live = false;
+    let key = id.number();
+    match fetches.getMut(&key) {
+      case let Some(r) {
+        r.pc = c.pc;
+        r.gen = c.gen;
+        live = true;
+        if !c.body.isEmpty() {bytes = String.from(r.body.view());}
+      }
+      else {}
+    }
+    if !live {return;}
+    let pc = c.pc;
+    match facts.states.getMut(&pc) {
+      case let Some(s) {s.sent = s.sent + 1u64;}
+      else {}
+    }
+    let head, body = c.(head, body);
+    match conns.get(&pc) {
+      case let Some(a) {a.send(id, head, body, bytes);}
+      else {}
+    }
+  }
+
+  // A fetch given up (the program's cancel, its deadline, a limit): its request is stopped on its connection and the core told
+  // the exchange is over at once, which it answers Cancelled or TimedOut by how the fetch was ended
+  fn cancelFetch(self, id: httpclient.FetchId) {
+    var pc = 4294967295u32;
+    var gen = 0u32;
+    let key = id.number();
+    match fetches.get(&key) {
+      case let Some(r) {
+        pc = r.pc;
+        gen = r.gen;
+      }
+      else {return;}
+    }
+    match conns.get(&pc) {
+      case let Some(a) {a.cancel(id);}
+      else {}
+    }
+    // An HTTP/1.1 connection that carried it is aborted by the cancel: it takes nothing more
+    match facts.states.getMut(&pc) {
+      case let Some(s) {if s.gen == gen && s.proto == 1u32 {s.takes = false;}}
+      else {}
+    }
+    var e = httpclient.PoolEvent.make(httpclient.PoolEventKind.Stopped);
+    e.fetch = id;
+    e.pc = pc;
+    e.gen = gen;
+    core.on(&e, &facts);
+  }
+
+  // The core's final answer for a fetch: its reply answered
+  fn answer(self, c: httpclient.Command) {
+    let key = c.fetch.number();
+    match fetches.remove(&key) {
+      case var Some(r) {
+        let k = c.event.kind;
+        var resp = httpclient.Response.blank();
+        resp <-> r.resp;
+        let rp, tooBig = r.(reply, tooBig);
+        if k == httpclient.EventKind.Done {
+          resp.outcome = k;
+          resp.timing = c.event.timing;
+          rp.answer(Ok[httpclient.Response, FetchError](resp));
+        } else if k == httpclient.EventKind.Failed {
+          rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(c.event.failure.clone())));
+        } else if k == httpclient.EventKind.TimedOut {
+          rp.answer(Err[httpclient.Response, FetchError](FetchError.timedOut()));
+        } else if tooBig {
+          rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(limitFailure())));
+        } else {
+          rp.answer(Err[httpclient.Response, FetchError](FetchError.cancelled()));
+        }
+      }
+      else {}
+    }
+  }
+
+  // ---- deadlines
+
+  fn armTimer(self) {
+    match dls.peek() {
+      case let Some(top) {tm.set(Instant.fromNanos(*top.0));}
+      else {tm.clear();}
+    }
+  }
+
+  pub async fn deadlineLoop(self) {
+    while await tm.next() {
+      let now = Instant.now();
+      while true {
+        let id = self.nextDue(now);
+        if id.isNone() {break;}
+        var e = httpclient.PoolEvent.make(httpclient.PoolEventKind.Due);
+        e.fetch = id;
+        e.timedOut = true;
+        e.now = now;
+        core.on(&e, &facts);
+      }
+      self.pump();
+    }
+  }
+
+  // The fetch whose deadline has passed, taken out of the queue, or none
+  fn nextDue(self, now: Instant) httpclient.FetchId {
+    var due = httpclient.FetchId.none();
+    var at = 0i64;
+    match dls.peek() {
+      case let Some(pr) {
+        at = *pr.0;
+        due = *pr.1;
+      }
+      else {}
+    }
+    if due.isNone() || at > now.nanos() {return httpclient.FetchId.none();}
+    dls.pop();
+    due
+  }
+
+  // ---- connections
+
+  // A connection to open: its address looked up (or kept), then its actor made
+  fn open(self, command: httpclient.Command) {
+    var c = command;
+    if closing {return;}
+    facts.states.insert(c.pc, CState(c.gen, 0usize, 0u64, 0u64, true, 0u32));
+    let secure = c.secure;
+    match &args.tlsFail {
+      case let &Some(fl) {
+        if secure {
+          self.fail(c.pc, c.gen, fl.clone(), true);
+          return;
+        }
+      }
+      else {}
+    }
+    let pc = c.pc;
+    let gen = c.gen;
+    let port = c.port;
+    let host = c.(host);
+    selfactor.dial(pc, gen, host, port, secure);
+  }
+
+  // The connection's address: the next of its name's, the name looked up when it is not kept. The actor is made with every
+  // address from there on, in the order, so a failed connect moves to the next
+  pub async fn dial(self, pc: u32, gen: u32, host: String, port: u16, secure: bool) {
+    var key = host.clone();
+    key.append(":");
+    key.appendUInt(u64.from(port));
+    var fresh = false;
+    match addrs.get(&key) {
+      case let Some(a) {fresh = Instant.now() - a.at < Duration.fromSeconds(addrTtl) && a.list.len() > 0usize;}
+      else {}
+    }
+    if !fresh {
+      let r = await aio.resolveIn(host.view(), port, IoLimits.within(group));
+      if closing {return;}
+      match r {
+        case var Ok(list) {
+          if list.len() == 0usize {
+            self.fail(pc, gen, httpclient.Failure.make(httpclient.Stage.Resolve, 0u32, ErrorKind.Closed, "the name has no address"), false);
+            return;
+          }
+          addrs.insert(key.clone(), Addrs(list, 0usize, Instant.now()));
+        }
+        case let Err(e) {
+          self.fail(pc, gen, httpclient.Failure.make(httpclient.Stage.Resolve, e.code, ErrorKind.Closed, "the name could not be looked up"), false);
+          return;
+        }
+      }
+    }
+    if closing {return;}
+    var rotated = List[SocketAddr]();
+    match addrs.getMut(&key) {
+      case let Some(a) {
+        var i = 0usize;
+        while i < a.list.len() {
+          rotated.push(a.list[(a.cursor + i) % a.list.len()]);
+          i = i + 1usize;
+        }
+        a.cursor = (a.cursor + 1usize) % a.list.len();
+      }
+      else {}
+    }
+    match facts.states.get(&pc) {
+      case let Some(s) {if s.gen != gen {return;}}
+      else {return;}
+    }
+    let a = ClientConnActor(selfactor, pc, gen, rotated, host, secure, args, group);
+    conns.insert(pc, a);
+  }
+
+  // A connection that could not be made (or opened) is ended as if it had closed with that failure
+  fn fail(self, pc: u32, gen: u32, fl: httpclient.Failure, tlsFailed: bool) {
+    selfactor.connEnded(pc, gen, false, fl, tlsFailed);
+  }
+
+  // A connection is up: its layer open and its protocol chosen
+  pub async fn connUp(self, pc: u32, gen: u32, h2: bool, takes: bool, free: usize, recv: u64) {
+    match facts.states.getMut(&pc) {
+      case let Some(s) {
+        if s.gen != gen {return;}
+        s.proto = if h2 {2u32} else {1u32};
+        s.takes = takes;
+        s.free = free;
+        s.recv = recv;
+      }
+      else {return;}
+    }
+    var e = httpclient.PoolEvent.make(httpclient.PoolEventKind.Connected);
+    e.pc = pc;
+    e.now = Instant.now();
+    core.on(&e, &facts);
+    self.pump();
+  }
+
+  // A connection's report: the requests it takes now, whether it takes any
+  pub async fn connState(self, pc: u32, gen: u32, free: usize, takes: bool, recv: u64) {
+    if !self.apply(pc, gen, free, takes, recv) {return;}
+    core.touchConn(pc);
+    self.pump();
+  }
+
+  // What a connection reported, into the mirror: whether the connection is the one the client holds
+  fn apply(self, pc: u32, gen: u32, free: usize, takes: bool, recv: u64) bool {
+    match facts.states.getMut(&pc) {
+      case let Some(s) {
+        if s.gen != gen {return false;}
+        s.free = free;
+        s.takes = takes;
+        if recv > s.recv {s.recv = recv;}
+        true
+      }
+      else {false}
+    }
+  }
+
+  // An exchange ended on a connection. kind: 0 its response is whole (Done), 1 it failed (failure), 2 its body is over the
+  // limit (the connection has given it up). The connection's report goes with it, so the core meets the connection as the
+  // exchange left it
+  pub async fn exchangeEnded(self, pc: u32, gen: u32, id: httpclient.FetchId, kind: u32, resp: httpclient.Response,
+      failure: httpclient.Failure, free: usize, takes: bool, recv: u64) {
+    self.apply(pc, gen, free, takes, recv);
+    let now = Instant.now();
+    let key = id.number();
+    let current = match fetches.get(&key) {
+      case let Some(r) {r.pc == pc && r.gen == gen}
+      else {false}
+    };
+    if !current {
+      self.pump();
+      return;
+    }
+    if kind == 0u32 {
+      var rr = resp;
+      rr.url = core.urlOf(id);
+      var head = httpclient.PoolEvent.make(httpclient.PoolEventKind.Response);
+      head.fetch = id;
+      head.pc = pc;
+      head.gen = gen;
+      head.now = now;
+      head.response = ResponseHead(rr.status, rr.version, rr.headers.clone());
+      match fetches.getMut(&key) {
+        case let Some(r) {r.resp = rr;}
+        else {}
+      }
+      core.on(&head, &facts);
+      var done = httpclient.PoolEvent.make(httpclient.PoolEventKind.Done);
+      done.fetch = id;
+      done.pc = pc;
+      done.gen = gen;
+      done.now = now;
+      core.on(&done, &facts);
+    } else if kind == 1u32 {
+      var fe = httpclient.PoolEvent.make(httpclient.PoolEventKind.Failed);
+      fe.fetch = id;
+      fe.pc = pc;
+      fe.gen = gen;
+      fe.now = now;
+      fe.failure = failure;
+      core.on(&fe, &facts);
+    } else {
+      match fetches.getMut(&key) {
+        case let Some(r) {r.tooBig = true;}
+        else {}
+      }
+      var cx = httpclient.PoolEvent.make(httpclient.PoolEventKind.Cancel);
+      cx.fetch = id;
+      cx.now = now;
+      core.on(&cx, &facts);
+    }
+    self.pump();
+  }
+
+  // A connection ended (its protocol over, or it could not be made): the core is told, and ends or sends again each fetch on it
+  pub async fn connEnded(self, pc: u32, gen: u32, clean: bool, failure: httpclient.Failure, tlsFailed: bool) {
+    match facts.states.get(&pc) {
+      case let Some(s) {if s.gen != gen {return;}}
+      else {return;}
+    }
+    facts.states.remove(&pc);
+    conns.remove(&pc);
+    var e = httpclient.PoolEvent.make(httpclient.PoolEventKind.Closed);
+    e.pc = pc;
+    e.clean = clean;
+    e.failure = failure;
+    e.tls = tlsFailed;
+    e.now = Instant.now();
+    core.on(&e, &facts);
+    self.pump();
+  }
+
+  // ---- the client's end
+
+  pub async fn addRef(self) {refs = refs + 1u64;}
+
+  // The last handle's going closes the client
+  pub async fn dropRef(self) {
+    if refs > 0u64 {refs = refs - 1u64;}
+    if refs == 0u64 {self.closeNow();}
+  }
+
+  fn closeNow(self) {
+    if !closing {selfactor.close();}
+  }
+
+  // Every fetch is cancelled (answered Cancelled), every connection told to abort, its I/O ended; no timer is left
+  pub async fn close(self) {
+    if closing {return;}
+    closing = true;
+    var ids = List[httpclient.FetchId]();
+    var it = fetches.values();
+    while true {
+      match it.next() {
+        case let Some(r) {ids.push(r.id);}
+        else {break;}
+      }
+    }
+    var i = 0usize;
+    while i < ids.len() {
+      var e = httpclient.PoolEvent.make(httpclient.PoolEventKind.Cancel);
+      e.fetch = ids[i];
+      e.now = Instant.now();
+      core.on(&e, &facts);
+      i = i + 1usize;
+    }
+    self.pump();
+    group.cancel();
+    var all = List[ClientConnActor]();
+    var cit = conns.values();
+    while true {
+      match cit.next() {
+        case let Some(a) {all.push(*a);}
+        else {break;}
+      }
+    }
+    i = 0usize;
+    while i < all.len() {
+      all[i].abort();
+      i = i + 1usize;
+    }
+    tm.stop();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The connection actor
+// ---------------------------------------------------------------------------
+
+// A request given to the connection that waits for room
+struct ClientSend is Move {
+  fetch: httpclient.FetchId;
+  head: RequestHead;
+  body: BodyLength;
+  bytes: String;
+}
+
+// An exchange on the connection: its response as it is gathered, and its request body still to go
+struct XRec is Move {
+  fetch: httpclient.FetchId;
+  resp: httpclient.Response;
+  bytes: String;
+  off: usize;
+  hasBody: bool;
+  finished: bool;
+  tooBig: bool;
+  began: bool;
+}
+
+alias ConnExchanges = Dict[u32, XRec];
+alias Pends = Deque[ClientSend];
+
+pub actor ClientConnActor {
+  client: ClientActor;
+  pc: u32;
+  gen: u32;
+  args: Arc[imm, ClientArgs];
+  addrs: List[SocketAddr];
+  host: String;
+  secure: bool;
+  group: CancelGroup;
+  cc: httpconn.ClientConn;
+  sock: aio.Socket;
+  tm: actors.Timer;
+  connected: bool;          // the socket is made and cc is the real connection
+  up: bool;                 // the client has been told it is open
+  reading: bool;
+  writing: bool;
+  calling: bool;            // the layer's pool job is out
+  closing: bool;
+  closeStarted: bool;
+  ended: bool;
+  told: bool;               // the client has been told it ended
+  aborted: bool;
+  goAway: bool;
+  shutting: bool;
+  protoClosed: bool;
+  writeBy: Instant;
+  exch: ConnExchanges;
+  bodying: List[u32];       // exchanges whose request body is not all sent
+  pends: Pends;
+  recv: u64;                // sends received
+  lastFree: usize;
+  lastTakes: bool;
+  guard: ClientGuard;
+
+  fn init(self: &new, client: ClientActor, pc: u32, gen: u32, addrs: List[SocketAddr], host: String, secure: bool,
+      args: Arc[imm, ClientArgs], group: CancelGroup) {
+    liveClientConns.add(1u64);
+    let now = Instant.now();
+    *self = Self(client: client, pc: pc, gen: gen, args: args, addrs: addrs, host: host, secure: secure, group: group,
+      cc: httpconn.ClientConn.make(args.conn, None[Uni[httpconn.Layer]], now), sock: aio.Socket.none(), tm: actors.Timer.make(),
+      connected: false, up: false, reading: false, writing: false, calling: false, closing: false, closeStarted: false,
+      ended: false, told: false, aborted: false, goAway: false, shutting: false, protoClosed: false, writeBy: now,
+      exch: ConnExchanges(), bodying: List[u32](), pends: Pends(), recv: 0u64, lastFree: 0usize, lastTakes: true,
+      guard: ClientGuard(true));
+    selfactor.begin();
+  }
+
+  // Connect (each address in turn, within connectTimeout), then the connection's layer and protocol
+  pub async fn begin(self) {
+    let until = Instant.now() + args.conn.connectTimeout;
+    var fail = httpclient.Failure.make(httpclient.Stage.Connect, 0u32, ErrorKind.Closed, "the connection could not be made");
+    var got = false;
+    var i = 0usize;
+    while i < addrs.len() && !got && !aborted {
+      let a = addrs[i];
+      let r = await aio.connectIn(a, IoLimits(Some[CancelGroup](group), until));
+      match r {
+        case var Ok(s) {
+          sock <-> s;
+          got = true;
+        }
+        case let Err(e) {
+          fail = httpclient.Failure.make(httpclient.Stage.Connect, e.code,
+            if e.isTimedOut() {ErrorKind.TimedOut} else {ErrorKind.Closed}, "the connection could not be made");
+        }
+      }
+      i = i + 1usize;
+    }
+    if !got {
+      self.finishEnd(false, fail, false);
+      return;
+    }
+    var layer: Option[Uni[httpconn.Layer]] = None;
+    if secure {
+      match &args.tlsc {
+        case let &Some(t) {layer = Some[Uni[httpconn.Layer]](Uni[tls.Stream](t.stream(host.view())));}
+        else {}
+      }
+    }
+    cc = httpconn.ClientConn.make(args.conn, layer, Instant.now());
+    connected = true;
+    if aborted {cc.abort();}
+    selfactor.timerLoop();
+    self.turn();
+  }
+
+  pub async fn timerLoop(self) {
+    while await tm.next() {
+      if ended {break;}
+      let now = Instant.now();
+      cc.handleTimeout(now);
+      if writing && now >= writeBy {
+        cc.abort();
+        sock.cancelWrite();
+      }
+      self.turn();
+    }
+  }
+
+  // ---- what the client asks
+
+  // A request on this connection: begun now if the protocol has room, else when it has
+  pub async fn send(self, fetch: httpclient.FetchId, head: RequestHead, body: BodyLength, bytes: String) {
+    recv = recv + 1u64;
+    if ended || protoClosed {return;}
+    pends.push(ClientSend(fetch, head, body, bytes));
+    self.turn();
+  }
+
+  // A fetch's request given up: an HTTP/2 stream is reset, an HTTP/1.1 connection aborted
+  pub async fn cancel(self, fetch: httpclient.FetchId) {
+    if ended {return;}
+    var n = pends.len();
+    while n > 0usize {
+      n = n - 1usize;
+      let p = pends.popFront().unwrap();
+      if p.fetch != fetch {pends.push(p);}
+    }
+    var found = false;
+    var stream = 0u32;
+    var it = exch.keys();
+    while !found {
+      match it.next() {
+        case let Some(k) {
+          match exch.get(k) {
+            case let Some(x) {if x.fetch == fetch {found = true; stream = *k;}}
+            else {}
+          }
+        }
+        else {break;}
+      }
+    }
+    if found {
+      exch.remove(&stream);
+      dropValue(&mut bodying, stream);
+      cc.cancel(stream);
+    }
+    self.turn();
+  }
+
+  // Close politely once what is under way is done
+  pub async fn shutdown(self) {
+    if ended {return;}
+    shutting = true;
+    cc.shutdown();
+    self.turn();
+  }
+
+  // End now
+  pub async fn abort(self) {
+    aborted = true;
+    if ended || !connected {return;}
+    cc.abort();
+    sock.cancelRead();
+    self.turn();
+  }
+
+  // ---- reading and writing: one socket operation at a time each, each a turn of its own
+
+  pub async fn readOnce(self) {
+    if ended || closing {
+      reading = false;
+      if !ended {self.turn();}
+      return;
+    }
+    let room = cc.readRoom();
+    if room < args.conn.recvSize {
+      reading = false;
+      return;
+    }
+    let buf = match IoBuf.tryMake(args.conn.recvSize) {
+      case var Some(got) {got}
+      else {
+        reading = false;
+        cc.abort();
+        self.turn();
+        return;
+      }
+    };
+    let r = await sock.readIn(buf, IoLimits.within(group));
+    reading = false;
+    match r {
+      case let Ok(b) {cc.wireIn(b, Instant.now());}
+      case let Err(e) {cc.abort();}
+    }
+    self.turn();
+  }
+
+  pub async fn writeOnce(self) {
+    var c = Chain.make(noBound);
+    let n = cc.takeWire(&mut c);
+    if n == 0usize {
+      writing = false;
+      self.turn();
+      return;
+    }
+    let r = await sock.writeIn(c, IoLimits.within(group));
+    writing = false;
+    match r {
+      case let Ok(w) {cc.wireSent(n);}
+      case let Err(e) {
+        cc.abort();
+        cc.wireSent(n);
+      }
+    }
+    self.turn();
+  }
+
+  // The layer's job on the blocking pool (a TLS certificate check by the OS), and its answer as values
+  pub async fn runCall(self) {
+    match cc.takeCall() {
+      case let Call(w) {
+        let lane, work, arg, buf = w.(lane, work, arg, buf);
+        let r = await aio.onPool(lane, work, arg, buf);
+        calling = false;
+        if ended {return;}
+        match r {
+          case let Ok(done) {
+            let back = done.(buf);
+            cc.callAnswered(&back, None[IoError], Instant.now());
+          }
+          case let Err(e) {
+            let none = IoBuf();
+            cc.callAnswered(&none, Some[IoError](e), Instant.now());
+          }
+        }
+        self.turn();
+      }
+      else {calling = false;}
+    }
+  }
+
+  // ---- what happened on the connection, and what follows from it
+
+  fn turn(self) {
+    if ended || !connected {return;}
+    let now = Instant.now();
+    var more = true;
+    while more {
+      match cc.next(now) {
+        case is Nothing {more = false;}
+        case let Response(r) {
+          let st, hd = r.(stream, head);
+          self.onResponse(st, hd);
+        }
+        case let Interim(i) {}
+        case let Data(d) {
+          let st, bf = d.(stream, buf);
+          self.onData(st, bf);
+        }
+        case let End(e) {self.onEnd(e.stream);}
+        case let Reset(x) {
+          let st, er = x.(stream, error);
+          self.onReset(st, er);
+        }
+        case let GoAway(g) {goAway = true;}
+        case let Closed(c) {
+          let f = c.(failure);
+          self.onClosed(f);
+        }
+      }
+    }
+    self.drainPends(now);
+    self.pushBodies();
+    if !calling && !ended && cc.wantsCall() {
+      calling = true;
+      selfactor.runCall();
+    }
+    self.report();
+    self.kick(now);
+  }
+
+  // The requests it takes now: the protocol's room, less what waits in pends
+  fn free(self) usize {
+    let r = cc.room();
+    if r > pends.len() {r - pends.len()} else {0usize}
+  }
+
+  fn takesNow(self) bool {
+    if ended || protoClosed || closing || goAway || shutting || aborted {return false;}
+    match cc.failureOf() {
+      case let &Some(x) {false}
+      else {true}
+    }
+  }
+
+  // The client is told the connection is up, and then each change in what it takes
+  fn report(self) {
+    if ended || protoClosed {return;}
+    if !up {
+      if !cc.isOpen() {return;}
+      up = true;
+      lastFree = self.free();
+      lastTakes = self.takesNow();
+      client.connUp(pc, gen, cc.isHttp2(), lastTakes, lastFree, recv);
+      return;
+    }
+    let f = self.free();
+    let t = self.takesNow();
+    if f != lastFree || t != lastTakes {
+      lastFree = f;
+      lastTakes = t;
+      client.connState(pc, gen, f, t, recv);
+    }
+  }
+
+  // Each request that waits begins as the protocol has room
+  fn drainPends(self, now: Instant) {
+    while pends.len() > 0usize && cc.room() > 0usize {
+      let p = pends.popFront().unwrap();
+      let fetch, head, body, bytes = p.(fetch, head, body, bytes);
+      let hasBody = !body.isEmpty();
+      let stream = cc.request(head, body, now);
+      exch.insert(stream, XRec(fetch, httpclient.Response.blank(), bytes, 0usize, hasBody, !hasBody, false, false));
+      if hasBody {bodying.push(stream);}
+    }
+  }
+
+  // The request bodies not yet whole go into the protocol as it takes them
+  fn pushBodies(self) {
+    var i = 0usize;
+    while i < bodying.len() {
+      let stream = bodying[i];
+      var done = false;
+      match exch.getMut(&stream) {
+        case let Some(x) {
+          let bytes = x.bytes.view() as &Array[u8];
+          var refused = false;
+          while x.off < bytes.len && !refused {
+            let left = bytes.len - x.off;
+            let m = if left > writePiece {writePiece} else {left};
+            var b = IoBuf(m);
+            b.append(&bytes[x.off ..< x.off + m]);
+            match cc.sendData(stream, b) {
+              case let Some(back) {refused = true;}
+              else {x.off = x.off + m;}
+            }
+          }
+          if x.off >= bytes.len {
+            cc.finish(stream);
+            x.finished = true;
+            done = true;
+          }
+        }
+        else {done = true;}
+      }
+      if done {
+        bodying.remove(i);
+      } else {
+        i = i + 1usize;
+      }
+    }
+  }
+
+  fn onResponse(self, stream: u32, head: ResponseHead) {
+    match exch.getMut(&stream) {
+      case let Some(x) {
+        let status, version, headers = head.(status, version, headers);
+        x.resp.status = status;
+        x.resp.version = version;
+        x.resp.headers = headers;
+        x.began = true;
+      }
+      else {}
+    }
+  }
+
+  fn onData(self, stream: u32, buf: IoBuf) {
+    let n = buf.len();
+    var over = false;
+    var fetch = httpclient.FetchId.none();
+    match exch.getMut(&stream) {
+      case let Some(x) {
+        if !streams.gather(&mut x.resp.body, buf.view(), args.maxBody) {
+          x.tooBig = true;
+          over = true;
+          fetch = x.fetch;
+        }
+      }
+      else {}
+    }
+    cc.release(stream, n);
+    if over {
+      exch.remove(&stream);
+      dropValue(&mut bodying, stream);
+      cc.cancel(stream);
+      self.tellExchange(fetch, 2u32, httpclient.Response.blank(), httpclient.Failure.none());
+    }
+  }
+
+  fn onEnd(self, stream: u32) {
+    match exch.remove(&stream) {
+      case var Some(x) {
+        var resp = httpclient.Response.blank();
+        resp <-> x.resp;
+        self.tellExchange(x.fetch, 0u32, resp, httpclient.Failure.none());
+      }
+      else {}
+    }
+  }
+
+  fn onReset(self, stream: u32, error: HttpError) {
+    match exch.remove(&stream) {
+      case var Some(x) {
+        let fl = httpclient.Failure.fromConn(&httpconn.Failure(httpconn.Stage.Http, 0u32, error, false));
+        self.tellExchange(x.fetch, 1u32, httpclient.Response.blank(), fl);
+      }
+      else {}
+    }
+  }
+
+  // The client is told an exchange ended, with what the connection takes now
+  fn tellExchange(self, fetch: httpclient.FetchId, kind: u32, resp: httpclient.Response, fl: httpclient.Failure) {
+    lastFree = self.free();
+    lastTakes = self.takesNow();
+    client.exchangeEnded(pc, gen, fetch, kind, resp, fl, lastFree, lastTakes, recv);
+  }
+
+  // The protocol is over: the client is told once, and ends or sends again each fetch that was on it (nothing is said per fetch)
+  fn onClosed(self, f: Option[httpconn.Failure]) {
+    protoClosed = true;
+    var fl = httpclient.Failure.none();
+    var tlsFailed = false;
+    match &f {
+      case let &Some(x) {
+        fl = httpclient.Failure.fromConn(x);
+        tlsFailed = x.stage == httpconn.Stage.Tls;
+      }
+      else {}
+    }
+    self.tell(f is None, fl, tlsFailed);
+  }
+
+  fn tell(self, clean: bool, fl: httpclient.Failure, tlsFailed: bool) {
+    if told {return;}
+    told = true;
+    client.connEnded(pc, gen, clean, fl, tlsFailed);
+  }
+
+  fn kick(self, now: Instant) {
+    if ended {return;}
+    let isDone = cc.done(now);
+    if !writing {
+      let n = cc.fill(now);
+      if n > 0usize {
+        writing = true;
+        writeBy = now + args.conn.protocol.bodyTimeout;
+        selfactor.writeOnce();
+      }
+    }
+    if !closing && !reading && !protoClosed && cc.readRoom() >= args.conn.recvSize {
+      reading = true;
+      selfactor.readOnce();
+    }
+    match cc.pollTimeout() {
+      case let Some(t) {tm.set(if writing && writeBy < t {writeBy} else {t});}
+      else {if writing {tm.set(writeBy);} else {tm.clear();}}
+    }
+    if isDone && !writing && !closing {
+      closing = true;
+      if reading {sock.cancelRead();}
+    }
+    if closing && !reading && !closeStarted {
+      closeStarted = true;
+      selfactor.closeOut();
+    }
+  }
+
+  // The closing sequence: half-close, then read and drop what the peer still sends until it closes, a read fails, the
+  // group is cancelled or the linger passes
+  pub async fn closeOut(self) {
+    let c = await sock.closeWrite();
+    let until = Instant.now() + args.conn.lingerTimeout;
+    var buf = IoBuf();
+    match IoBuf.tryMake(4096usize) {
+      case let Some(b) {buf = b;}
+      else {self.finishEnd(true, httpclient.Failure.none(), false); return;}
+    }
+    let lim = IoLimits(Some[CancelGroup](group), until);
+    while !group.isCancelled() {
+      let r = await sock.readIn(buf, lim);
+      match r {
+        case var Ok(b) {
+          if b.len() == 0usize {break;}
+          b.clear();
+          buf = b;
+        }
+        case let Err(e) {break;}
+      }
+    }
+    self.finishEnd(true, httpclient.Failure.none(), false);
+  }
+
+  // The connection is over and its socket gone: the client is told, if it has not been
+  fn finishEnd(self, clean: bool, fl: httpclient.Failure, tlsFailed: bool) {
+    if ended {return;}
+    ended = true;
+    tm.stop();
+    var dead = aio.Socket.none();
+    dead <-> sock;
+    exch.clear();
+    pends.clear();
+    self.tell(clean, fl, tlsFailed);
+  }
+}
