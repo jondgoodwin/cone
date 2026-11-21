@@ -1,0 +1,696 @@
+// clientbench: measures actorhttp.HttpClient against loopback servers in this process (stage 4, row C7). The same source
+// builds before and after the client moved to actors, since it uses only get/send. Run from a release build:
+//
+//   congo run --release packages/actorhttp/examples/clientbench.cone -- <mode> <a> <b> <c>
+//
+//   1 <n> <addrs> <warm>     (<warm> 1: one request first, so the name's addresses are known before the burst)
+//                            Jon's case: <n> variations of one request (a path of its own and a header of its own, the shared
+//                            headers prepared once and cloned per request) to one host name, all asked for at once.
+//                            <addrs> 1: "127.0.0.1" (one address); 2: "localhost", whose two addresses (127.0.0.1 and ::1)
+//                            each have a listener on one port. Prints requests per second, p50/p99, and per listener how
+//                            many requests it answered and how many distinct connections (peer ports) it saw.
+//   2 <fetches> <origins> <callers>   many origins: <fetches> in all to <origins> listeners (each its own port), <callers>
+//                            actors fetching one after another, caller c's k-th fetch going to origin (c + k * callers) % origins
+//   3 <lookups>              <lookups> aio.resolve calls at once of distinct names (hostN.invalid): ok, errors, the DNS lane's
+//                            counters
+//   4 <n>                    one caller, one fetch at a time on a kept connection, <n> of them (after 200 not counted):
+//                            the floor, "one request alone"
+//   5 <conns>                memory per connection: <conns> connections held busy (the server answers none until all
+//                            have arrived), sampled, then answered and left idle in the client's pool, sampled
+//
+// Every mode ends with a "CPU" line (the process's CPU time) and the actors' counters. Both ends of every connection are in
+// this process; memory is the process's private bytes (Windows' PrivateUsage; Linux's data size) and iobuf's held bytes.
+
+mod clientbench;
+
+import stdio use *;
+import libc;
+import thread;
+import collections use List, String;
+import sync use Channel, Sender, Receiver;
+import time use Instant, Duration;
+import iobuf;
+import iocore use SocketAddr, Lane;
+import http use *;
+import httpclient use Request;
+import actors;
+import aio;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange;
+
+extern {
+  fn @c(system) GetCurrentProcess() usize;
+  fn @c(system) K32GetProcessMemoryInfo(process: usize, counters: *u8, cb: u32) i32;
+  fn @c(system) GetProcessTimes(process: usize, creation: *u64, exit: *u64, kernel: *u64, user: *u64) i32;
+}
+
+struct PosixClock {
+  sec: i64;
+  nsec: i64;
+}
+extern fn @c clock_gettime(clock: i32, ts: *PosixClock) i32;
+
+fn privateBytes() u64 {
+  #if #os == .windows {
+    var c = Array[usize, 10]() <- fill 0usize;
+    let p = &mut c as *u8;
+    *(p as *u32) = 80u32;
+    K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
+    u64.from(c[9usize])
+  } #else {
+    dataBytes()
+  }
+}
+
+// Linux: the sixth number of /proc/self/statm (size resident shared text lib data dt), in 4096-byte pages
+fn dataBytes() u64 {
+  let f = libc.fopen("/proc/self/statm", "rb");
+  if f == null {return 0u64;}
+  var buf = Array[u8, 256]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  let n = libc.fread(bp, 1usize, 255usize, f);
+  libc.fclose(f);
+  var field = 0u32;
+  var value = 0u64;
+  var k = 0usize;
+  while k < n {
+    let c = buf[k];
+    if c >= '0' && c <= '9' {
+      if field == 5u32 {value = value * 10u64 + u64.from(c - '0');}
+    } else {
+      field = field + 1u32;
+    }
+    k = k + 1usize;
+  }
+  value * 4096u64
+}
+
+fn cpuNanos() u64 {
+  #if #os == .windows {
+    var c = 0u64;
+    var e = 0u64;
+    var k = 0u64;
+    var u = 0u64;
+    GetProcessTimes(GetCurrentProcess(), &mut c as *u64, &mut e as *u64, &mut k as *u64, &mut u as *u64);
+    (k + u) * 100u64
+  } #else {
+    var ts = PosixClock(0i64, 0i64);
+    clock_gettime(2i32, &mut ts as *PosixClock);
+    u64.from(ts.sec) * 1000000000u64 + u64.from(ts.nsec)
+  }
+}
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn argAt(argc: i32, argv: **u8, i: i32) u32 {
+  if argc > i {digits(*(argv + usize.from(u32.from(i))))} else {0u32}
+}
+
+fn sorted(v: &List[i64]) List[i64] {
+  var s = List[i64]();
+  var q = 0usize;
+  while q < v.len() {
+    s.push(*v[q]);
+    q = q + 1usize;
+  }
+  s.sort();
+  s
+}
+
+fn pct(s: &List[i64], q: usize) i64 {
+  if s.len() == 0usize {return 0i64;}
+  let at = s.len() * q / 100usize;
+  *s[if at >= s.len() {s.len() - 1usize} else {at}]
+}
+
+fn line(name: &str, v: &List[i64]) {
+  let s = sorted(v);
+  printStr(name);
+  printStr(" n="); printUInt(u64.from(s.len()));
+  printStr(" p50_us="); printInt(pct(&s, 50usize) / 1000i64);
+  printStr(" p99_us="); printInt(pct(&s, 99usize) / 1000i64);
+  printStr(" max_us="); printInt(pct(&s, 100usize) / 1000i64);
+  printStr("\n");
+}
+
+// ---------------------------------------------------------------------------
+// The servers
+// ---------------------------------------------------------------------------
+
+// What the listeners saw: per listener, the requests answered and the peer ports (one per connection) of those requests
+actor Tally {
+  reqs: List[u64];
+  peers: List[List[u16]];
+
+  pub fn init(self: &new) {
+    *self = Self(reqs: List[u64](), peers: List[List[u16]]());
+  }
+
+  pub async fn note(self, idx: u32, port: u16) {
+    let at = usize.from(idx);
+    while reqs.len() <= at {
+      reqs.push(0u64);
+      peers.push(List[u16]());
+    }
+    reqs.set(at, *reqs[at] + 1u64);
+    var seen = false;
+    var i = 0usize;
+    while i < peers[at].len() && !seen {
+      if *peers[at][i] == port {seen = true;}
+      i = i + 1usize;
+    }
+    if !seen {peers[at].push(port);}
+  }
+
+  // Flat: requests, connections, for listeners 0 to n-1
+  pub async fn dump(self, n: u32, out: Sender[List[u64]]) {
+    var r = List[u64]();
+    var i = 0usize;
+    while i < usize.from(n) {
+      if i < reqs.len() {
+        r.push(*reqs[i]);
+        r.push(u64.from(peers[i].len()));
+      } else {
+        r.push(0u64);
+        r.push(0u64);
+      }
+      i = i + 1usize;
+    }
+    out.send(r);
+  }
+}
+
+// The memory mode's gate: the handlers wait here until 'want' have arrived, which tells 'full'; 'release' answers them all
+actor Gate {
+  want: u32;
+  waiting: List[actors.ReplyOf[u32]];
+  full: Sender[u32];
+  told: bool;
+
+  pub async fn arrive(self, rp: actors.ReplyOf[u32]) {
+    waiting.push(rp);
+    if !told && u32.from(waiting.len()) >= want {
+      told = true;
+      full.send(want);
+    }
+  }
+
+  pub async fn release(self) {
+    var w = List[actors.ReplyOf[u32]]();
+    w <-> waiting;
+    while w.len() > 0usize {
+      match w.pop() {
+        case var Some(rp) {rp.answer(1u32);}
+        else {}
+      }
+    }
+  }
+}
+
+fn arrived(g: Gate) actors.Awaitable[u32] {
+  actors.Awaitable[u32].make(fn(rp: actors.ReplyOf[u32]) [g] {g.arrive(rp);})
+}
+
+actor Handler {
+  ex: Exchange;
+  idx: u32;
+  tally: Tally;
+  gate: Gate;
+  gated: bool;
+
+  pub async fn run(self) {
+    tally.note(idx, ex.request.peer.port());
+    if gated {
+      let w = await arrived(gate);
+    }
+    ex.text(200u16, "0123456789012345678901234567890123456789012345678901234567890123");
+  }
+}
+
+actor Acceptor {
+  server: Server;
+  idx: u32;
+  tally: Tally;
+  gate: Gate;
+  gated: bool;
+
+  // Listens on addr (port 0: any), tells the port as idx * 65536 + port
+  pub async fn open(self, addr: SocketAddr, ports: Sender[u32]) {
+    let r = await actorhttp.listen(addr, ServerConfig.make());
+    var res = r;
+    var p = 0u32;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok; p = u32.from(server.port());}
+      case let &mut Err(e) {}
+    }
+    ports.send(idx * 65536u32 + p);
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok, idx, tally, gate, gated);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The callers
+// ---------------------------------------------------------------------------
+
+fn urlTo(host: &str, port: u16, path: &str) String {
+  var u = String.from("http://");
+  u.append(host);
+  u.append(":");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+actor Worker {
+  client: HttpClient;
+
+  // One variation: its own path and its own header, on the shared headers cloned
+  pub async fn vary(self, url: String, shared: HttpHeaders, i: u32, out: Sender[i64], bad: Sender[u64]) {
+    let t0 = Instant.now();
+    var req = Request.get(url.view());
+    req.headers = shared.clone();
+    var v = String();
+    v.appendUInt(u64.from(i));
+    req.headers.add("X-Variation", v.view() as &Array[u8]);
+    let r = await client.send(req);
+    var failed = 0u64;
+    match r {
+      case let Ok(resp) { if resp.status != 200u16 { failed = 1u64; } }
+      case let Err(e) { failed = 1u64; }
+    }
+    out.send(t0.elapsed().nanos());
+    bad.send(failed);
+  }
+
+  // reps GETs one after another, the k-th to ports[(first + k * stride) % ports.len()] on host
+  pub async fn many(self, host: String, ports: List[u16], first: u32, stride: u32, reps: u32, warm: u32,
+      out: Sender[List[i64]], bad: Sender[u64]) {
+    var lat = List[i64]();
+    var failed = 0u64;
+    var k = 0u32;
+    while k < reps + warm {
+      let at = (usize.from(first) + usize.from(k) * usize.from(stride)) % ports.len();
+      let url = urlTo(host.view(), *ports[at], "/x");
+      let t0 = Instant.now();
+      let r = await client.send(Request.get(url.view()));
+      match r {
+        case let Ok(resp) { if resp.status != 200u16 { failed = failed + 1u64; } }
+        case let Err(e) { failed = failed + 1u64; }
+      }
+      if k >= warm {lat.push(t0.elapsed().nanos());}
+      k = k + 1u32;
+    }
+    out.send(lat);
+    bad.send(failed);
+  }
+
+  // A plain GET, for the memory mode (the connection stays open and idle in the pool afterwards)
+  pub async fn one(self, url: String, out: Sender[u64]) {
+    let r = await client.send(Request.get(url.view()));
+    var ok = 0u64;
+    match r {
+      case let Ok(resp) { if resp.status == 200u16 { ok = 1u64; } }
+      case let Err(e) {}
+    }
+    out.send(ok);
+  }
+}
+
+actor Looker {
+  pub async fn run(self, host: String, out: Sender[i64], kind: Sender[u64]) {
+    let t0 = Instant.now();
+    let r = await aio.resolve(host.view(), 80u16);
+    var k = 0u64;
+    match r {
+      case is Ok { k = 1u64; }
+      case let Err(e) { if aio.isCancelled(e) { k = 3u64; } else { k = 2u64; } }
+    }
+    out.send(t0.elapsed().nanos());
+    kind.send(k);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The modes
+// ---------------------------------------------------------------------------
+
+fn cpuLine(t0: Instant, cpu0: u64) {
+  let wall = u64.from(t0.elapsed().nanos());
+  let cpu = cpuNanos() - cpu0;
+  printStr("CPU ms="); printUInt(cpu / 1000000u64);
+  printStr(" wall_ms="); printUInt(wall / 1000000u64);
+  printStr(" cores_x100="); printUInt(if wall == 0u64 {0u64} else {cpu * 100u64 / wall});
+  printStr("\n");
+}
+
+fn drainLatencies(lr: &mut Receiver[List[i64]], br: &mut Receiver[u64], n: u32, all: &mut List[i64]) u64 {
+  var failed = 0u64;
+  var i = 0u32;
+  while i < n {
+    let l = lr.recv() || List[i64]();
+    var j = 0usize;
+    while j < l.len() { all.push(*l[j]); j = j + 1usize; }
+    failed = failed + (br.recv() || 0u64);
+    i = i + 1u32;
+  }
+  failed
+}
+
+// Opens count listeners (each its own port, on 127.0.0.1) and returns their ports in order
+fn openMany(count: u32, tally: Tally, gate: Gate, gated: bool, acc: &mut List[Acceptor]) List[u16] {
+  var ptx: Sender[u32];
+  var prx: Receiver[u32];
+  ptx, prx = Channel[u32].make();
+  var i = 0u32;
+  while i < count {
+    let a = Acceptor(Server.none(), i, tally.clone(), gate.clone(), gated);
+    a.open(SocketAddr.localhost(0u16), ptx.clone());
+    acc.push(a);
+    i = i + 1u32;
+  }
+  var ports = List[u16]();
+  i = 0u32;
+  while i < count { ports.push(0u16); i = i + 1u32; }
+  i = 0u32;
+  while i < count {
+    let v = prx.recv() || 0u32;
+    ports.set(usize.from(v / 65536u32), u16.from(v % 65536u32));
+    i = i + 1u32;
+  }
+  i = 0u32;
+  while i < count { acc[usize.from(i)].serve(); i = i + 1u32; }
+  ports
+}
+
+fn sharedHeaders() HttpHeaders {
+  var h = HttpHeaders();
+  h.add("Accept", "application/json" as &Array[u8]);
+  h.add("X-Api-Key", "0123456789abcdef0123456789abcdef" as &Array[u8]);
+  h.add("X-Tenant", "tenant-of-jon" as &Array[u8]);
+  h.add("X-Trace-Source", "clientbench" as &Array[u8]);
+  h.add("Accept-Language", "en-US,en;q=0.9" as &Array[u8]);
+  h
+}
+
+fn modeVariations(n: u32, addrs: u32, warm: u32, tally: Tally, gate: Gate) {
+  var ptx: Sender[u32];
+  var prx: Receiver[u32];
+  ptx, prx = Channel[u32].make();
+  let a0 = Acceptor(Server.none(), 0u32, tally.clone(), gate.clone(), false);
+  a0.open(SocketAddr.localhost(0u16), ptx.clone());
+  let port = u16.from((prx.recv() || 0u32) % 65536u32);
+  a0.serve();
+  var a1 = Acceptor(Server.none(), 1u32, tally.clone(), gate.clone(), false);
+  var listeners = 1u32;
+  if addrs >= 2u32 {
+    a1.open(SocketAddr.v6Localhost(port), ptx.clone());
+    let p1 = u16.from((prx.recv() || 0u32) % 65536u32);
+    if p1 == port {
+      a1.serve();
+      listeners = 2u32;
+    } else {
+      printStr("NOTE: the ::1 listener did not open on the port; one address only\n");
+    }
+  }
+  var lt: Sender[i64];
+  var lr: Receiver[i64];
+  lt, lr = Channel[i64].make();
+  var bt: Sender[u64];
+  var br: Receiver[u64];
+  bt, br = Channel[u64].make();
+  let client = HttpClient.standard();
+  let shared = sharedHeaders();
+  let host = if listeners == 2u32 {"localhost"} else {"127.0.0.1"};
+  if warm > 0u32 {
+    // one request first, so the name's addresses are known before the burst
+    var wt: Sender[u64];
+    var wr: Receiver[u64];
+    wt, wr = Channel[u64].make();
+    let w = Worker(client.clone());
+    w.one(urlTo(host, port, "/warm"), wt);
+    let ok = wr.recv() || 0u64;
+  }
+  let cpu0 = cpuNanos();
+  let t0 = Instant.now();
+  var i = 0u32;
+  while i < n {
+    let w = Worker(client.clone());
+    w.vary(urlTo(host, port, "/v"), shared.clone(), i, lt.clone(), bt.clone());
+    i = i + 1u32;
+  }
+  var lat = List[i64]();
+  var failed = 0u64;
+  i = 0u32;
+  while i < n {
+    lat.push(lr.recv() || 0i64);
+    failed = failed + (br.recv() || 0u64);
+    i = i + 1u32;
+  }
+  let ns = u64.from(t0.elapsed().nanos());
+  printStr("VARIATIONS host="); printStr(host);
+  printStr(" listeners="); printUInt(u64.from(listeners));
+  printStr(" requests="); printUInt(u64.from(lat.len()));
+  printStr(" failed="); printUInt(failed);
+  printStr(" ms="); printUInt(ns / 1000000u64);
+  printStr(" req_per_s="); printUInt(u64.from(lat.len()) * 1000000000u64 / ns);
+  printStr("\n");
+  line("VARIATIONS latency", &lat);
+  cpuLine(t0, cpu0);
+  var dt: Sender[List[u64]];
+  var dr: Receiver[List[u64]];
+  dt, dr = Channel[List[u64]].make();
+  tally.dump(listeners, dt);
+  let d = dr.recv() || List[u64]();
+  var k = 0usize;
+  while k + 1usize < d.len() {
+    printStr("ADDRESS "); printUInt(u64.from(k / 2usize));
+    printStr(" requests="); printUInt(*d[k]);
+    printStr(" connections="); printUInt(*d[k + 1usize]);
+    printStr("\n");
+    k = k + 2usize;
+  }
+  a0.stop();
+  if listeners == 2u32 {a1.stop();}
+}
+
+fn modeOrigins(fetches: u32, origins: u32, callers: u32, tally: Tally, gate: Gate) {
+  var acc = List[Acceptor]();
+  let ports = openMany(origins, tally.clone(), gate.clone(), false, &mut acc);
+  let per = fetches / callers;
+  var lt: Sender[List[i64]];
+  var lr: Receiver[List[i64]];
+  lt, lr = Channel[List[i64]].make();
+  var bt: Sender[u64];
+  var br: Receiver[u64];
+  bt, br = Channel[u64].make();
+  var cfg = httpclient.Config.make();
+  cfg.maxPerOrigin = 4u32;
+  let client = HttpClient.make(cfg, actorhttp.defaultMaxBody);
+  let st0 = actors.stats();
+  let cpu0 = cpuNanos();
+  let t0 = Instant.now();
+  var c = 0u32;
+  while c < callers {
+    let w = Worker(client.clone());
+    w.many(String.from("127.0.0.1"), ports.clone(), c, callers, per, 0u32, lt.clone(), bt.clone());
+    c = c + 1u32;
+  }
+  var all = List[i64]();
+  let failed = drainLatencies(&mut lr, &mut br, callers, &mut all);
+  let ns = u64.from(t0.elapsed().nanos());
+  printStr("ORIGINS origins="); printUInt(u64.from(origins));
+  printStr(" callers="); printUInt(u64.from(callers));
+  printStr(" fetches="); printUInt(u64.from(all.len()));
+  printStr(" failed="); printUInt(failed);
+  printStr(" ms="); printUInt(ns / 1000000u64);
+  printStr(" req_per_s="); printUInt(u64.from(all.len()) * 1000000000u64 / ns);
+  printStr("\n");
+  line("ORIGINS latency", &all);
+  cpuLine(t0, cpu0);
+  let st1 = actors.stats();
+  printStr("ORIGINS messages="); printUInt(st1.messages - st0.messages);
+  printStr(" steals="); printUInt(st1.steals - st0.steals);
+  printStr("\n");
+  var i = 0usize;
+  while i < acc.len() { acc[i].stop(); i = i + 1usize; }
+}
+
+fn modeLookups(n: u32) {
+  var ot: Sender[i64];
+  var orx: Receiver[i64];
+  ot, orx = Channel[i64].make();
+  var kt: Sender[u64];
+  var kr: Receiver[u64];
+  kt, kr = Channel[u64].make();
+  let cpu0 = cpuNanos();
+  let t0 = Instant.now();
+  var i = 0u32;
+  while i < n {
+    var h = String.from("host");
+    h.appendUInt(u64.from(i));
+    h.append(".invalid");
+    let lk = Looker();
+    lk.run(h, ot.clone(), kt.clone());
+    i = i + 1u32;
+  }
+  var lat = List[i64]();
+  var ok = 0u64;
+  var other = 0u64;
+  var cancelled = 0u64;
+  i = 0u32;
+  while i < n {
+    lat.push(orx.recv() || 0i64);
+    let k = kr.recv() || 0u64;
+    if k == 1u64 { ok = ok + 1u64; } else if k == 2u64 { other = other + 1u64; } else if k == 3u64 { cancelled = cancelled + 1u64; }
+    i = i + 1u32;
+  }
+  let ns = u64.from(t0.elapsed().nanos());
+  printStr("LOOKUPS n="); printUInt(u64.from(n));
+  printStr(" ok="); printUInt(ok);
+  printStr(" errors="); printUInt(other);
+  printStr(" cancelled="); printUInt(cancelled);
+  printStr(" ms_to_last="); printUInt(ns / 1000000u64);
+  printStr("\n");
+  line("LOOKUPS latency", &lat);
+  let ls = Lane.dns().stats();
+  printStr("DNSLANE queued="); printUInt(u64.from(ls.queued));
+  printStr(" maxQueued="); printUInt(u64.from(ls.maxQueued));
+  printStr(" threads="); printUInt(u64.from(ls.threads));
+  printStr(" ran="); printUInt(ls.ran);
+  printStr(" refused="); printUInt(ls.refused);
+  printStr(" maxWaitMs="); printUInt(ls.maxWaitNs / 1000000u64);
+  printStr("\n");
+  cpuLine(t0, cpu0);
+}
+
+fn modeAlone(n: u32, tally: Tally, gate: Gate) {
+  var acc = List[Acceptor]();
+  let ports = openMany(1u32, tally.clone(), gate.clone(), false, &mut acc);
+  var lt: Sender[List[i64]];
+  var lr: Receiver[List[i64]];
+  lt, lr = Channel[List[i64]].make();
+  var bt: Sender[u64];
+  var br: Receiver[u64];
+  bt, br = Channel[u64].make();
+  let client = HttpClient.standard();
+  let cpu0 = cpuNanos();
+  let t0 = Instant.now();
+  let w = Worker(client.clone());
+  w.many(String.from("127.0.0.1"), ports.clone(), 0u32, 1u32, n, 200u32, lt.clone(), bt.clone());
+  var all = List[i64]();
+  let failed = drainLatencies(&mut lr, &mut br, 1u32, &mut all);
+  printStr("ALONE fetches="); printUInt(u64.from(all.len()));
+  printStr(" failed="); printUInt(failed);
+  printStr("\n");
+  line("ALONE latency", &all);
+  var sum = 0i64;
+  var i = 0usize;
+  while i < all.len() { sum = sum + *all[i]; i = i + 1usize; }
+  printStr("ALONE mean_us="); printInt(sum / (if all.len() == 0usize {1i64} else {i64.from(all.len())}) / 1000i64);
+  printStr("\n");
+  cpuLine(t0, cpu0);
+  acc[0usize].stop();
+}
+
+fn modeMemory(conns: u32, tally: Tally, gate: Gate, full: &mut Receiver[u32]) {
+  var acc = List[Acceptor]();
+  let ports = openMany(1u32, tally.clone(), gate.clone(), true, &mut acc);
+  var cfg = httpclient.Config.make();
+  cfg.maxPerOrigin = conns + 8u32;
+  cfg.maxTotal = conns + 8u32;
+  let client = HttpClient.make(cfg, actorhttp.defaultMaxBody);
+  // a warm-up: one connection answered by itself, so the pool and the lanes exist before the base is taken
+  var ot: Sender[u64];
+  var orx: Receiver[u64];
+  ot, orx = Channel[u64].make();
+  let base = privateBytes();
+  let baseHeld = iobuf.stats().heldBytes;
+  var i = 0u32;
+  while i < conns {
+    let w = Worker(client.clone());
+    w.one(urlTo("127.0.0.1", *ports[0usize], "/m"), ot.clone());
+    i = i + 1u32;
+  }
+  let got = full.recvTimeout(Duration.fromSeconds(120i64)) || 0u32;
+  thread.sleep(Duration.fromMillis(1500i64));
+  let busy = privateBytes();
+  let busyHeld = iobuf.stats().heldBytes;
+  printStr("MEMORY conns="); printUInt(u64.from(conns));
+  printStr(" arrived_at_server="); printUInt(u64.from(got));
+  printStr("\n");
+  gate.release();
+  var ok = 0u64;
+  i = 0u32;
+  while i < conns { ok = ok + (orx.recv() || 0u64); i = i + 1u32; }
+  thread.sleep(Duration.fromMillis(1500i64));
+  let idle = privateBytes();
+  let idleHeld = iobuf.stats().heldBytes;
+  printStr("MEMORY answered_ok="); printUInt(ok);
+  printStr(" base_private="); printUInt(base);
+  printStr(" busy_private="); printUInt(busy);
+  printStr(" idle_private="); printUInt(idle);
+  printStr(" base_held="); printUInt(u64.from(baseHeld));
+  printStr(" busy_held="); printUInt(u64.from(busyHeld));
+  printStr(" idle_held="); printUInt(u64.from(idleHeld));
+  printStr("\n");
+  let c = u64.from(conns);
+  printStr("MEMORY per_busy_connection_bytes="); printUInt((busy - base) / c);
+  printStr(" per_idle_connection_bytes="); printUInt((idle - base) / c);
+  printStr(" (both ends of each connection, this process)\n");
+  acc[0usize].stop();
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  if argc < 3i32 {
+    printStr("usage: clientbench <mode 1-5> <a> [b] [c]\n");
+    return 2i32;
+  }
+  let mode = argAt(argc, argv, 1i32);
+  let a = argAt(argc, argv, 2i32);
+  let b = argAt(argc, argv, 3i32);
+  let c = argAt(argc, argv, 4i32);
+  var ft: Sender[u32];
+  var fr: Receiver[u32];
+  ft, fr = Channel[u32].make();
+  {
+    let tally = Tally();
+    let gate = Gate(if mode == 5u32 {a} else {0u32}, List[actors.ReplyOf[u32]](), ft.clone(), false);
+    if mode == 1u32 { modeVariations(a, if b == 0u32 {1u32} else {b}, c, tally.clone(), gate.clone()); }
+    else if mode == 2u32 { modeOrigins(a, b, if c == 0u32 {1u32} else {c}, tally.clone(), gate.clone()); }
+    else if mode == 3u32 { modeLookups(a); }
+    else if mode == 4u32 { modeAlone(a, tally.clone(), gate.clone()); }
+    else if mode == 5u32 { modeMemory(a, tally.clone(), gate.clone(), &mut fr); }
+  }
+  finalAll();
+  let st = actors.stats();
+  printStr("ACTORSTATS workers="); printUInt(u64.from(st.workers));
+  printStr(" messages="); printUInt(st.messages);
+  printStr(" activations="); printUInt(st.activations);
+  printStr(" steals="); printUInt(st.steals);
+  printStr("\n");
+  0i32
+}
