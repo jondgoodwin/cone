@@ -432,11 +432,25 @@ pub actor ClientActor {
   // The connection's address: the next of its name's, the name looked up when it is not kept. The actor is made with every
   // address from there on, in the order, so a failed connect moves to the next
   pub async fn dial(self, pc: u32, gen: u32, host: String, port: u16, secure: bool) {
+    var seamList: Option[List[SocketAddr]] = None;
     if self.targets.map.len() > 0usize {
       let tk = targetKey(host.view(), port);
-      if self.targets.map.get(&tk) is Some {
-        selfactor.dialTest(pc, gen, host, tk, secure);
-        return;
+      match self.targets.map.get(&tk) {
+        case let Some(t) {
+          if t.kind == kindAddresses {
+            var i = 0usize;
+            var l = List[SocketAddr]();
+            while i < t.found.len() {
+              l.push(t.found[i]);
+              i = i + 1usize;
+            }
+            seamList = Some[List[SocketAddr]](l);
+          } else {
+            selfactor.dialTest(pc, gen, host, tk, secure);
+            return;
+          }
+        }
+        else {}
       }
     }
     var key = host.clone();
@@ -448,20 +462,38 @@ pub actor ClientActor {
       else {}
     }
     if !fresh {
-      let r = await aio.resolveIn(host.view(), port, IoLimits.within(group));
+      var found: Option[List[SocketAddr]] = None;
+      if seamList is Some {
+        // a lookup takes a moment: a burst of dials is in flight together
+        let z = await aio.sleep(Duration.fromMillis(2i64));
+        seamList <-> found;
+      } else {
+        let r = await aio.resolveIn(host.view(), port, IoLimits.within(group));
+        if closing {return;}
+        match r {
+          case var Ok(list) {found = Some[List[SocketAddr]](list);}
+          case let Err(e) {
+            self.fail(pc, gen, httpclient.Failure.make(httpclient.Stage.Resolve, e.code, ErrorKind.Closed, "the name could not be looked up"), false);
+            return;
+          }
+        }
+      }
       if closing {return;}
-      match r {
-        case var Ok(list) {
+      match found {
+        case var Some(list) {
           if list.len() == 0usize {
             self.fail(pc, gen, httpclient.Failure.make(httpclient.Stage.Resolve, 0u32, ErrorKind.Closed, "the name has no address"), false);
             return;
           }
-          addrs.insert(key.clone(), Addrs(list, 0usize, Instant.now()));
+          // kept only when no dial of this burst kept it already (or the kept one has expired), so the cursor keeps moving
+          var keep = false;
+          match addrs.get(&key) {
+            case let Some(a) {keep = Instant.now() - a.at < Duration.fromSeconds(addrTtl) && a.list.len() > 0usize;}
+            else {}
+          }
+          if !keep {addrs.insert(key.clone(), Addrs(list, 0usize, Instant.now()));}
         }
-        case let Err(e) {
-          self.fail(pc, gen, httpclient.Failure.make(httpclient.Stage.Resolve, e.code, ErrorKind.Closed, "the name could not be looked up"), false);
-          return;
-        }
+        else {}
       }
     }
     if closing {return;}
