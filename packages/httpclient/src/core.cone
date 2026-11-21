@@ -1208,8 +1208,9 @@ pub struct ClientCore {
       og.connecting = og.connecting - 1u32;
       og.idle.push(pc);
       og.connected = true;
+      let oi = p.origin;
       self.noteIdle(pc);
-      self.touch(p.origin);
+      self.touch(oi);
       self.learn(pc, f);
     }
   }
@@ -1359,22 +1360,39 @@ pub struct ClientCore {
   // the opposite (see the package's header, HTTP/2)
   pub fn learn[F: ConnFacts](self: &mut, pc: u32, f: &F) {
     let r = self.refOf(pc);
-    let p = pconns.borrowMutAt(pc).unwrap();
-    if p.proto != protoUnknown || (p.state != pIdle && p.state != pBusy) {return;}
-    let og = origins.borrowMutAt(u32.from(p.origin)).unwrap();
+    if !self.learnable(pc) {return;}
     var h2 = false;
     match f.protocol(r) {
       case let Some(v) {h2 = v == Version.Http2;}
       else {
-        if !p.awaiting {
-          p.awaiting = true;
-          undecided.push(pc);
-          og.undecided = og.undecided + 1u32;
-        }
+        self.awaitProtocol(pc);
         return;
       }
     }
     self.forgetUndecided(pc);
+    self.chose(pc, h2);
+  }
+
+  // Whether connection pc's protocol is yet to be learned: connected, idle or busy, not yet chosen
+  fn learnable(self: &, pc: u32) bool {
+    let p = pconns.borrowAt(pc).unwrap();
+    p.proto == protoUnknown && (p.state == pIdle || p.state == pBusy)
+  }
+
+  // Connection pc's protocol is not chosen yet: asked again at every pump
+  fn awaitProtocol(self: &mut, pc: u32) {
+    let p = pconns.borrowMutAt(pc).unwrap();
+    if p.awaiting {return;}
+    p.awaiting = true;
+    undecided.push(pc);
+    let og = origins.borrowMutAt(u32.from(p.origin)).unwrap();
+    og.undecided = og.undecided + 1u32;
+  }
+
+  // Connection pc speaks HTTP/2 (h2) or HTTP/1.1, as its handshake chose
+  fn chose(self: &mut, pc: u32, h2: bool) {
+    let p = pconns.borrowMutAt(pc).unwrap();
+    let og = origins.borrowMutAt(u32.from(p.origin)).unwrap();
     og.h2 = h2;
     if !h2 {
       p.proto = protoH1;
@@ -1387,8 +1405,9 @@ pub struct ClientCore {
     st.streams = st.streams + u64.from(p.active);
     p.state = pShared;
     og.shared.push(pc);
+    let oi = p.origin;
     self.noteIdle(pc);
-    self.touch(p.origin);
+    self.touch(oi);
   }
 
   // Connection pc's protocol is no longer awaited
