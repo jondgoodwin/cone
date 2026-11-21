@@ -1,4 +1,4 @@
-// A client request fed by a stream: 'Client.upload' (upload.cone), against the package's own server, over
+// A client request fed by a stream: 'HttpClient.upload' (upload.cone), against the package's own server, over
 // HTTP/1.1 in the clear and over HTTP/2 through TLS (the tls package's test certificates). The source is a
 // test actor, Gen, that lends its buffers from a ChunkWindow of 256 KiB and counts what it sent, was given back
 // and was stopped for. The server (maxBody 16 MiB) reads each body whole, checks the pattern and counts. Checked,
@@ -41,7 +41,7 @@ import httpclient use Request, Response;
 import tls;
 import actors;
 import aio use IoLimits;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError;
 import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -357,13 +357,13 @@ fn readText(name: &str) String {
 }
 
 // A client of its own for each upload, dropped with it: no kept-alive connection holds a buffer when they are counted
-fn newClient(secure: bool) Client {
-  if !secure {return Client.standard();}
+fn newClient(secure: bool) HttpClient {
+  if !secure {return HttpClient.standard();}
   var cfg = httpclient.Config.make();
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
   cfg.http2 = true;
-  Client.make(cfg, actorhttp.defaultMaxBody)
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
 }
 
 fn url(secure: bool, port: u16, path: &str) String {
@@ -376,7 +376,7 @@ fn url(secure: bool, port: u16, path: &str) String {
 // One upload by POST: 'total' bytes from a Gen in chunks of 'chunk', sized (declared bytes) or unsized; the
 // response's 'stream' asked 'lateMs' after the source starts; a deadline of 'deadlineMs' (0: none)
 actor Up {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, total: u64, chunk: usize, declared: u64, failAt: u64, lateMs: i64, deadlineMs: i64) {
     let framing = if declared > 0u64 {BodyLength.sized(declared)} else {BodyLength.unsized()};
@@ -416,7 +416,7 @@ actor Up {
 
 // An Upload dropped while its source runs, without 'stream'
 actor Drop {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, total: u64) {
     {
@@ -431,7 +431,7 @@ actor Drop {
 
 // A plain GET, to see the server still answers
 actor Plain {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String) {
     let r = await client.send(Request.get(u.view()));

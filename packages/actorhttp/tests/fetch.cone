@@ -28,7 +28,7 @@ import http use *;
 import httpconn;
 import httpclient use Request, Response, Config;
 import actors;
-import actorhttp use Client, FetchError, FetchErrorKind;
+import actorhttp use HttpClient, FetchError, FetchErrorKind;
 import aio use IoLimits;
 
 // ---------------------------------------------------------------------------
@@ -331,7 +331,7 @@ fn landedAt(r: Result[Response, FetchError], expected: &str) bool {
 }
 
 actor Prober {
-  client: Client;
+  client: HttpClient;
 
   // Runs while run is paused at an await: ends the group's operations
   pub async fn stop(self, g: CancelGroup) {
@@ -364,7 +364,7 @@ actor Prober {
     // A big body, whole; and past a limit of 1000
     let big = say("big", await client.get(url(port, "/big/300000").view()));
     note("  and every byte is right", bigRight(big));
-    let small = Client.make(Config.make(), 1000usize);
+    let small = HttpClient.make(Config.make(), 1000usize);
     _ = say("big past the limit", await small.get(url(port, "/big/300000").view()));
     _ = say("small enough", await small.get(url(port, "/hello").view()));
 
@@ -433,7 +433,7 @@ actor Prober {
 
     // The first handle dropped: a clone goes on
     let twin = client.clone();
-    client = Client.none();
+    client = HttpClient.none();
     _ = say("clone after the first is dropped", await twin.get(url(port, "/hello").view()));
     client = twin.clone();
     _ = say("and another clone", await client.get(url(port, "/hello").view()));
@@ -447,7 +447,7 @@ actor Prober {
 // of the handle and makes POSTs whose bodies are its own, and checks that
 // each echo is the one it sent
 actor Worker {
-  client: Client;
+  client: HttpClient;
 
   pub async fn work(self, port: u16, id: u64, rounds: u64, tally: Sender[u64]) {
     var wrong = 0u64;
@@ -474,10 +474,10 @@ actor Worker {
 
 // A client dropped while its fetch is paused: the fetch ends Cancelled
 actor Dropper {
-  client: Client;
+  client: HttpClient;
 
   pub async fn release(self) {
-    client = Client.none();
+    client = HttpClient.none();
   }
 
   pub async fn run(self, port: u16, done: OneshotSender[u64]) {
@@ -502,7 +502,7 @@ fn main() i32 {
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    let p = Prober(Client.standard());
+    let p = Prober(HttpClient.standard());
     p.run(port, tx);
   }
   rx.recv();
@@ -512,7 +512,7 @@ fn main() i32 {
   var tallyRx: Receiver[u64];
   tallyTx, tallyRx = Channel[u64].make();
   {
-    let shared = Client.standard();
+    let shared = HttpClient.standard();
     var w = 0u64;
     while w < 8u64 {
       let wk = Worker(shared.clone());
@@ -538,7 +538,7 @@ fn main() i32 {
   var rx2: OneshotReceiver[u64];
   tx2, rx2 = Oneshot[u64].make();
   {
-    let d = Dropper(Client.standard());
+    let d = Dropper(HttpClient.standard());
     d.run(port, tx2);
     d.release();
   }

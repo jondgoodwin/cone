@@ -46,7 +46,7 @@ import httpclient use Request, Response;
 import tls;
 import actors;
 import aio use IoLimits;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError;
 import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -379,13 +379,13 @@ fn readText(name: &str) String {
 }
 
 // A client of its own for each fetch, dropped with it: no kept-alive connection holds a buffer when they are counted
-fn newClient(secure: bool) Client {
-  if !secure {return Client.standard();}
+fn newClient(secure: bool) HttpClient {
+  if !secure {return HttpClient.standard();}
   var cfg = httpclient.Config.make();
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
   cfg.http2 = true;
-  Client.make(cfg, actorhttp.defaultMaxBody)
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
 }
 
 fn url(secure: bool, port: u16, path: &str) String {
@@ -410,7 +410,7 @@ fn check(piece: &String, at: u64) {
 
 // stream().read(): 'pauseMs' asleep after the first piece; 'stopAfter' pieces then the handle is dropped (0: to the end)
 actor Reader {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, pauseMs: i64, stopAfter: u64) {
     let r = await client.streamIn(Request.get(u.view()), IoLimits.none());
@@ -451,7 +451,7 @@ actor Reader {
 
 // A whole request by 'method': its status and the length of its body, or -1 if it failed
 actor Plain {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, method: String, u: String) {
     let r = await client.send(Request.make(method.view(), u.view()));
@@ -469,7 +469,7 @@ actor Plain {
 // Three requests one after another on one client (so on its kept connection where there is one): the first
 // two are the unwired sink's, unsized then sized (reset), the third an ordinary body
 actor Chain {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u1: String, u2: String, u3: String) {
     var s1 = 0u64;                 // status and body length of each, or 0 and 99 if it failed
