@@ -8,7 +8,7 @@ mod addrspread;
 import stdio use *;
 import libc;
 import collections use List, String;
-import time use Duration;
+import time use Instant, Duration;
 import testing use *;
 import sync use Channel, Sender, Receiver;
 import iocore use SocketAddr;
@@ -18,13 +18,27 @@ import httpclient;
 import aio;
 import actorhttp use HttpClient, Server, ServerConfig, Exchange, HttpRoutes, HttpHandler, TestTarget, TestTargets;
 
+struct Gate {
+  pub arrived: Atomic[u64];
+}
+let gate: Gate;
+
+fn @initpure init() {
+  gate = Gate(Atomic[u64].of(0u64));
+}
+
 actor Tagged is HttpHandler {
   id: u64;
 
   fn init(self: &new, id: u64) {*self = Self(id: id);}
 
   pub async fn handle(self, var ex: Exchange) {
-    let z = await aio.sleep(Duration.fromMillis(150i64));
+    // hold every answer until all sixteen requests are open (10 s at most), so no connection is reused
+    gate.arrived.add(1u64);
+    let limit = Instant.now() + Duration.fromSeconds(10i64);
+    while gate.arrived.load() < 16u64 && Instant.now() < limit {
+      let z = await aio.sleep(Duration.fromMillis(2i64));
+    }
     var t = String.from("s");
     t.appendUInt(id);
     ex.text(200u16, t.view());
