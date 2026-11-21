@@ -1,6 +1,6 @@
 # run.ps1: the streaming scenario (row 429, work item D2) from one command.
 #
-#   run.ps1 [-Alloc crt|mi|sn|cn] [-Instrument] [-Conns 300] [-Sustain 120] [-Idle 30] [-Burst 60] [-Seed 429]
+#   run.ps1 [-Alloc crt|mi|sn|cn] [-Instrument] [-Routed] [-Conns 300] [-Sustain 120] [-Idle 30] [-Burst 60] [-Seed 429]
 #           [-Mix 70,10,10,10] [-Workers 4] [-Think 100] [-Out <dir>]
 #
 # A server (server.cone, actorhttp) and a load client (client.cone, httpclient) as two processes of their own, so
@@ -14,6 +14,10 @@
 # The defaults are the full scenario. Fewer connections and shorter phases (-Conns 60 -Sustain 20 -Idle 12 -Burst 10)
 # suit a loaded machine; a run on one is marked "loaded" in the JSON when the machine's CPU was over 25% on average.
 #
+# -Routed serves through a router's queue route (the routed server: connections are actors) instead of the I/O
+# thread's server; the result then says routed=true. Either way the JSON carries ioThreadOwnCpu from the server's
+# IOTIMES line: the I/O thread's own CPU (user + kernel over its life), not all the CPU spent on I/O.
+#
 # -Alloc swaps the server's allocator at the link (row 428's libraries in C:\src\zz-cnmalloc\alloc; cn waits for row 425). -Instrument is accepted and
 # recorded, and the files' path is null until row 424's tables exist; an instrumented run is never timed.
 #
@@ -21,6 +25,7 @@
 param(
   [ValidateSet('crt', 'mi', 'sn', 'cn')][string]$Alloc = 'crt',
   [switch]$Instrument,
+  [switch]$Routed,
   [int]$Conns = 300,
   [int]$Sustain = 120,
   [int]$Idle = 30,
@@ -110,7 +115,7 @@ $cpuBefore = Machine-Cpu
 $srvLog = Join-Path $Out 'server.log'
 $cliLog = Join-Path $Out 'client.log'
 if ($Alloc -ne 'crt') { $env:_LINK_ = "`"$allocLib`"" }
-$srv = Start-Congo 'server.cone' "0 $Workers" $srvLog $srvDir
+$srv = Start-Congo 'server.cone' "0 $Workers$(if ($Routed) { ' routed' })" $srvLog $srvDir
 Start-Sleep -Milliseconds 300
 Remove-Item Env:_LINK_ -ErrorAction SilentlyContinue   # the server's process tree has its environment now
 $port = $null
@@ -152,12 +157,21 @@ if (-not $srv.HasExited -and (Get-Process -Id $serverPid -ErrorAction SilentlyCo
 if (-not $resultLine) { throw "run.ps1: the client gave no RESULT; see $cliLog and $cliLog.err" }
 $client = $resultLine.Substring(7) | ConvertFrom-Json
 $cpuAfter = Machine-Cpu
+# the I/O thread's own CPU, printed by the server as it ends ("IOTIMES user_ms U kernel_ms K wall_ms W"); not all the CPU spent on I/O
+$io = $null
+$im = Select-String -Path $srvLog -Pattern '^IOTIMES user_ms (\d+) kernel_ms (\d+) wall_ms (\d+)' | Select-Object -First 1
+if ($im) {
+  $iu = [int64]$im.Matches[0].Groups[1].Value; $ik = [int64]$im.Matches[0].Groups[2].Value; $iw = [int64]$im.Matches[0].Groups[3].Value
+  $io = [ordered]@{ userMs = $iu; kernelMs = $ik; wallMs = $iw; ownCpuPctOfOneCore = if ($iw -gt 0) { [math]::Round(100 * ($iu + $ik) / $iw, 0) } else { $null } }
+}
 $avgCpu = [math]::Round((($samples | ForEach-Object { $_.machineCpuPct }) + $cpuBefore + $cpuAfter | Measure-Object -Average).Average, 0)
 $last = $samples | Where-Object { $_.clientCpuSec } | Select-Object -Last 1
 $wallS = [math]::Max(1, ($client.wallMs / 1000))
 $doc = [ordered]@{
   scenario   = 'streamload'
   alloc      = $Alloc
+  routed     = [bool]$Routed
+  ioThreadOwnCpu = $io
   instrument = [ordered]@{ requested = [bool]$Instrument; files = $null; note = 'row 424 tables not landed; an instrumented run is never timed' }
   loaded     = ($avgCpu -gt 25)
   machineCpuPctAvg = $avgCpu
