@@ -296,6 +296,41 @@ fn http2() {
   settle(&mut r, "h2: every fetch answered once in all");
 }
 
+// A peer's SETTINGS change an HTTP/2 connection's stream limit: ConnFacts.isIdle says whether it has room, and the
+// pool looks at the origin's waiting fetches again only when told the limit changed
+fn settingsLimit() {
+  var r = newRig(true, 2u32, 4u32, 2u32);
+  let a = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  let pc = lastPc(&r, a);
+  // The connection's streams are all in use: two more fetches wait
+  r.fk.idle = false;
+  let b = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  let c = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  expectUInt(u64.from(r.sends.len()), 1u64, "settings: with no room the two wait");
+  // The peer's SETTINGS raise its limit: the connection has room now, but the pool has not been told
+  r.fk.idle = true;
+  pump(&mut r);
+  expectUInt(u64.from(r.sends.len()), 1u64, "settings: nothing looks at the origin until the limit's change is told");
+  var e = PoolEvent.make(PoolEventKind.Settings);
+  e.pc = pc;
+  r.core.on(&e, &r.fk);
+  pump(&mut r);
+  expectUInt(u64.from(r.sends.len()), 3u64, "settings: told, both go out");
+  expectBool(lastPc(&r, b) == pc && lastPc(&r, c) == pc, true, "settings: on the same connection");
+  expectUInt(u64.from(r.opens), 1u64, "settings: no second connection was made");
+  // The peer lowers its limit: no stream opens past it, however often the pool is told
+  r.fk.idle = false;
+  let d = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  r.core.on(&e, &r.fk);
+  pump(&mut r);
+  expectUInt(u64.from(r.sends.len()), 3u64, "settings: past a lowered limit the fetch waits");
+  expectUInt(u64.from(r.opens), 1u64, "settings: ...and no second connection is made for it");
+  // A stream ends: the room it leaves is used
+  r.fk.idle = true;
+  doneOf(&mut r, a);
+  expectBool(lastPc(&r, d) == pc, true, "settings: a stream's end gives it the room");
+}
+
 struct Rng {
   pub s: u64;
 }
@@ -443,6 +478,7 @@ fn model(seed: u64, n: usize, ops: usize, label: &Array[u8]) {
 fn main() i32 {
   http1();
   http2();
+  settingsLimit();
   model(1u64, 40usize, 120usize, "the pool's order: 40 waiting, random cancels, timeouts, reprioritizes and retries");
   model(7u64, 40usize, 120usize, "the pool's order, another run");
   model(21u64, 300usize, 900usize, "the pool's order: 300 waiting");
