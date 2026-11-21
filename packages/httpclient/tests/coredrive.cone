@@ -331,6 +331,168 @@ fn settingsLimit() {
   expectBool(lastPc(&r, d) == pc, true, "settings: a stream's end gives it the room");
 }
 
+// The connection of fetch id closes (HTTP/1.1: no longer idle), its fetches' own Failed not sent first
+fn closeOn(r: &mut Rig, id: FetchId, clean: bool, fl: Failure, h2: bool) {
+  let pc = lastPc(r, id);
+  if !h2 {r.fk.idle = false;}
+  var c = PoolEvent.make(PoolEventKind.Closed);
+  c.pc = pc;
+  c.clean = clean;
+  c.failure = fl;
+  r.core.on(&c, &r.fk);
+  r.fk.idle = true;
+  // (an HTTP/2 caller has taken the connection's takes() away for the Closed, and pumps once it gives it back)
+  if !h2 {pump(r);}
+}
+
+// The same check as failChecked, the connection's Closed alone ending the fetch
+fn closeChecked(r: &mut Rig, id: FetchId, clean: bool, fl: Failure, h2: bool, wantAnswer: bool, what: &Array[u8]) {
+  let a0 = count(&r.answers, id.number());
+  let s0 = count(&r.sends, id.number());
+  closeOn(r, id, clean, fl, h2);
+  let a = count(&r.answers, id.number()) - a0;
+  let s = count(&r.sends, id.number()) - s0;
+  expectUInt(u64.from(a + s), 1u64, what);
+  expectBool(a == 1u32, wantAnswer, what);
+}
+
+// A connection's Closed with no Failed before it: each fetch on it is answered or sent again, by the rule of
+// Failed, and answered once in all. HTTP/1.1, then HTTP/2 with several streams
+fn closedFirst() {
+  // a GET with no response: sent again, on a second connection, until the retries (2) are spent
+  var r = newRig(false, 2u32, 4u32, 2u32);
+  let g = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  closeChecked(&mut r, g, false, failure(Stage.Closed, ErrorKind.Closed, true, false), false, false, "closed first, h1 get: sent again");
+  expectUInt(u64.from(r.opens), 2u64, "closed first, h1: a second connection opened");
+  closeChecked(&mut r, g, false, failure(Stage.Read, ErrorKind.Closed, true, false), false, false, "closed first, h1 get, again: sent again");
+  closeChecked(&mut r, g, false, failure(Stage.Read, ErrorKind.Closed, true, false), false, true, "closed first, h1 get, retries used up: answered");
+  expectBool(*r.kinds[r.kinds.len() - 1usize] == EventKind.Failed, true, "closed first, h1: ...Failed");
+  settle(&mut r, "closed first, h1 get: answered once in all");
+
+  // a POST that may have been processed: answered
+  var r2 = newRig(false, 2u32, 4u32, 2u32);
+  let p = askFor(&mut r2, "POST", Intent.Visible, 0i64);
+  closeChecked(&mut r2, p, false, failure(Stage.Read, ErrorKind.Closed, true, false), false, true, "closed first, h1 post: answered");
+  settle(&mut r2, "closed first, h1 post: answered once in all");
+
+  // a clean close under a GET (the failure is none): the connection closed under it, sent again
+  var r3 = newRig(false, 2u32, 4u32, 2u32);
+  let g3 = askFor(&mut r3, "GET", Intent.Visible, 0i64);
+  closeChecked(&mut r3, g3, true, Failure.none(), false, false, "closed first, h1 clean close under a get: sent again");
+  settle(&mut r3, "closed first, h1 clean close: answered once in all");
+
+  // ...and under a POST that was sent: answered Failed at Stage.Closed
+  var r4 = newRig(false, 2u32, 4u32, 2u32);
+  let p4 = askFor(&mut r4, "POST", Intent.Visible, 0i64);
+  closeChecked(&mut r4, p4, true, Failure.none(), false, true, "closed first, h1 clean close under a post: answered");
+  expectBool(*r4.kinds[r4.kinds.len() - 1usize] == EventKind.Failed, true, "closed first, h1 clean close: ...Failed");
+  settle(&mut r4, "closed first, h1 clean close under a post: answered once in all");
+
+  // a GET whose response had begun: answered whatever the failure says
+  var r5 = newRig(false, 2u32, 4u32, 2u32);
+  let g5 = askFor(&mut r5, "GET", Intent.Visible, 0i64);
+  var resp = PoolEvent.make(PoolEventKind.Response);
+  resp.fetch = g5;
+  resp.response = ResponseHead.make(200u16);
+  r5.core.on(&resp, &r5.fk);
+  closeChecked(&mut r5, g5, false, failure(Stage.Read, ErrorKind.Closed, true, false), false, true, "closed first, h1 get, response begun: answered");
+  settle(&mut r5, "closed first, h1 begun response: answered once in all");
+
+  // a fetch cancelled while under way: answered, not sent again
+  var r6 = newRig(false, 2u32, 4u32, 2u32);
+  let g6 = askFor(&mut r6, "GET", Intent.Visible, 0i64);
+  var cx = PoolEvent.make(PoolEventKind.Cancel);
+  cx.fetch = g6;
+  r6.core.on(&cx, &r6.fk);
+  pump(&mut r6);
+  closeChecked(&mut r6, g6, false, failure(Stage.Read, ErrorKind.Closed, true, false), false, true, "closed first, h1 cancelled: answered");
+  settle(&mut r6, "closed first, h1 cancelled: answered once in all");
+
+  // the failure's own Failed first, then the Closed: the Closed finds the fetch gone and does nothing more
+  var r7 = newRig(false, 2u32, 4u32, 2u32);
+  let g7 = askFor(&mut r7, "GET", Intent.Visible, 0i64);
+  failChecked(&mut r7, g7, failure(Stage.Read, ErrorKind.Closed, true, false), false, false, "failed then closed, h1 get: sent again once");
+  expectUInt(u64.from(r7.opens), 2u64, "failed then closed, h1: one new connection, not two");
+  settle(&mut r7, "failed then closed, h1: answered once in all");
+
+  // HTTP/2: four streams, one a POST, the connection closes with no stream's Failed: each GET sent again, the POST answered
+  var h = newRig(true, 2u32, 4u32, 2u32);
+  let a = askFor(&mut h, "GET", Intent.Visible, 0i64);
+  let b = askFor(&mut h, "GET", Intent.Visible, 0i64);
+  let c = askFor(&mut h, "POST", Intent.Visible, 0i64);
+  let d = askFor(&mut h, "GET", Intent.Visible, 0i64);
+  expectBool(lastPc(&h, a) == lastPc(&h, d), true, "closed first, h2: four streams on one connection");
+  // one stream has ended well before, one has failed by itself first: the Closed ends only the two others
+  doneOf(&mut h, b);
+  expectUInt(u64.from(count(&h.answers, b.number())), 1u64, "closed first, h2: the stream that ended is answered");
+  h.fk.up = false;
+  var fe = PoolEvent.make(PoolEventKind.Failed);
+  fe.fetch = d;
+  fe.failure = failure(Stage.Closed, ErrorKind.Closed, true, false);
+  h.core.on(&fe, &h.fk);
+  closeOn(&mut h, a, false, failure(Stage.Closed, ErrorKind.Closed, true, false), true);
+  h.fk.up = true;
+  pump(&mut h);
+  expectUInt(u64.from(count(&h.answers, c.number())), 1u64, "closed first, h2: the POST on it is answered");
+  expectUInt(u64.from(count(&h.answers, a.number())), 0u64, "closed first, h2: the GET on it is sent again, not answered");
+  expectUInt(u64.from(count(&h.sends, a.number())), 2u64, "closed first, h2: ...sent twice in all");
+  expectUInt(u64.from(count(&h.sends, d.number())), 2u64, "closed first, h2: the stream that failed first was sent again once, and not ended again by the Closed");
+  settle(&mut h, "closed first, h2: every fetch answered once in all");
+
+  // HTTP/2, many streams: ten GETs and ten POSTs on one connection, one Closed
+  var m = newRig(true, 2u32, 4u32, 2u32);
+  var ids = List[FetchId]();
+  var k = 0u32;
+  while k < 20u32 {
+    ids.push(askFor(&mut m, if k % 2u32 == 0u32 {"GET"} else {"POST"}, Intent.Visible, 0i64));
+    k = k + 1u32;
+  }
+  expectUInt(u64.from(m.opens), 1u64, "closed first, h2 many: one connection");
+  m.fk.up = false;
+  closeOn(&mut m, *ids[0usize], false, failure(Stage.Closed, ErrorKind.Closed, true, false), true);
+  m.fk.up = true;
+  pump(&mut m);
+  var posts = 0u32;
+  var resent = 0u32;
+  k = 0u32;
+  while k < 20u32 {
+    let id = ids[usize.from(k)];
+    if k % 2u32 == 1u32 && count(&m.answers, id.number()) == 1u32 {posts = posts + 1u32;}
+    if k % 2u32 == 0u32 && count(&m.answers, id.number()) == 0u32 && count(&m.sends, id.number()) == 2u32 {resent = resent + 1u32;}
+    k = k + 1u32;
+  }
+  expectUInt(u64.from(posts), 10u64, "closed first, h2 many: the ten POSTs answered");
+  expectUInt(u64.from(resent), 10u64, "closed first, h2 many: the ten GETs sent again, once each");
+  settle(&mut m, "closed first, h2 many: every fetch answered once in all");
+}
+
+// The time an event carries is the time the core stamps: a fetch answered while taking an event with a time
+// says that time was its end, and the core reads no clock for it
+fn timeIn() {
+  var r = newRig(false, 2u32, 4u32, 2u32);
+  let g = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  let at = Instant.fromNanos(123456789i64);
+  var e = PoolEvent.make(PoolEventKind.Done);
+  e.fetch = g;
+  e.now = at;
+  r.core.on(&e, &r.fk);
+  var ended = Instant();
+  var got = false;
+  while true {
+    match r.core.take() {
+      case let Some(c) {
+        if c.kind == CommandKind.Answer {
+          ended = c.event.timing.ended;
+          got = true;
+        }
+      }
+      else {break;}
+    }
+  }
+  expectBool(got, true, "time in: the fetch was answered");
+  expectBool(ended == at, true, "time in: its end is the event's time");
+}
+
 struct Rng {
   pub s: u64;
 }
@@ -478,6 +640,8 @@ fn model(seed: u64, n: usize, ops: usize, label: &Array[u8]) {
 fn main() i32 {
   http1();
   http2();
+  closedFirst();
+  timeIn();
   settingsLimit();
   model(1u64, 40usize, 120usize, "the pool's order: 40 waiting, random cancels, timeouts, reprioritizes and retries");
   model(7u64, 40usize, 120usize, "the pool's order, another run");
