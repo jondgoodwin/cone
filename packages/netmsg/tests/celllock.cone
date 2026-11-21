@@ -11,8 +11,10 @@
 //     from the write, so the state's wait for its slot is the spread, not a
 //     random fraction of the interval;
 //   - the spread is session % (spreadMs + 1) ms, never over spreadMs;
-//   - a look that found nothing is one interval on the lattice, not from now,
-//     and a poll before the look leaves it where it was;
+//   - a look that found nothing is a write a little late: four more looks a
+//     millisecond apart, then one interval on the lattice, not from now; a
+//     poll before the look leaves it where it was; a writer slower than the
+//     send interval is learned from its writes and looked for at its period;
 //   - a writer on another clock leaves the slots free-running;
 //   - followCell on a stream that is not bound is refused; unbinding the clock
 //     ends the lock;
@@ -23,6 +25,7 @@ mod celllock;
 import testing use *;
 import collections use *;
 import sync use *;
+import thread;
 import time use Duration, Instant, Clock;
 import iobuf use IoBuf, Bytes;
 import netmsg use *;
@@ -119,11 +122,20 @@ fn main() i32 {
     expectUInt(heard(&mut p), 1u64, "the first value is sent at once");
     expectInt(p.a.nextDeadline().nanos(), at + interval, "locked: the next look is the write plus an interval");
 
-    // Nothing is put: the look finds nothing and moves one interval on the lattice, not from now
+    // Nothing is put: the look finds nothing, which is a write a little late. It looks again a
+    // millisecond on, four times, and then moves one interval on the lattice, not from now
     let look = at + interval;
     moveTo(&mut clock, look + 2i64 * ms);
     p.step(clock.now());
-    expectInt(p.a.nextDeadline().nanos(), look + interval, "a look that found nothing: one interval on the lattice");
+    expectInt(p.a.nextDeadline().nanos() - clock.now().nanos(), ms, "a look that found nothing: look again in a millisecond");
+    var again = 0u64;
+    while p.a.nextDeadline().nanos() - clock.now().nanos() == ms && again < 10u64 {
+      again = again + 1u64;
+      moveTo(&mut clock, p.a.nextDeadline().nanos());
+      p.step(clock.now());
+    }
+    expectUInt(again, 4u64, "four more looks a millisecond apart");
+    expectInt(p.a.nextDeadline().nanos(), look + interval, "and then one interval on the lattice");
 
     // A poll before the look (called for another reason) leaves the look where it is
     moveTo(&mut clock, look + interval - 10i64 * ms);
@@ -141,6 +153,29 @@ fn main() i32 {
     let nd = p.a.nextDeadline().nanos();
     expect(nd > clock.now().nanos(), "the next look is in the future");
     expectInt((nd - (at2 + interval)) % interval, 0i64, "and on the lattice set from its write");
+  }
+
+  // A writer slower than the send interval: its period is learned from two values, and the next look is
+  // that period after the write, not an interval (a look an interval on would find nothing, each time)
+  {
+    var clock = onRealAxis();
+    var p: SimPair;
+    var w: LatestWriter;
+    var probe: LatestReader;
+    p, w, probe = bound(&cfg, &clock, session);
+    p.a.followCell(4u16, 0u32);
+    let at = putAndStamp(&mut w, &probe, "a");
+    moveTo(&mut clock, at + 2i64 * ms);
+    p.step(clock.now());
+    expectInt(p.a.nextDeadline().nanos(), at + interval, "the first value: the step is the interval");
+    thread.sleep(Duration.fromMillis(50i64));
+    let at2 = putAndStamp(&mut w, &probe, "b");
+    moveTo(&mut clock, at2 + 2i64 * ms);
+    p.step(clock.now());
+    var period = at2 - at;
+    if period > 8i64 * interval {period = 8i64 * interval;}
+    expect(period > interval, "(the writer's period is over the interval)");
+    expectInt(p.a.nextDeadline().nanos(), at2 + period, "the second: the next look is the learned period after the write");
   }
 
   // The spread: session % (spreadMs + 1) ms, from 0 to spreadMs, and the sessions differ
