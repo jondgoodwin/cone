@@ -26,7 +26,7 @@ import http use *;
 import httpclient use Request;
 import actors;
 import aio;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, BodyHead;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, BodyHead;
 import stages use ChunkSink, ChunkSource, Ending, linkWindow;
 import fs;
 import path use Path;
@@ -133,7 +133,7 @@ fn allHome() bool {
 // The server
 // ---------------------------------------------------------------------------
 
-fn acceptOf(h: &Headers) String {
+fn acceptOf(h: &HttpHeaders) String {
   match h.get("Accept-Encoding") {
     case let Some(v) {String.fromBytes(v)}
     case is None[&Array[u8]] {String.from("(none)")}
@@ -324,7 +324,7 @@ actor Count is ChunkSink {
 }
 
 actor Fetcher {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, sink: ChunkSink, limit: usize, pauseMs: i64) {
     let r = await client.stream(httpdecode.request(Request.get(u.view())));
@@ -361,7 +361,7 @@ fn fetch(port: u16, path: &str, check: bool, limit: usize, msgs: &mut Receiver[S
 fn fetchLate(port: u16, path: &str, check: bool, limit: usize, pauseMs: i64, msgs: &mut Receiver[String], mtx: Sender[String]) String {
   reset();
   let sink = Count(check, mtx.clone());
-  let f = Fetcher(Client.standard());
+  let f = Fetcher(HttpClient.standard());
   f.run(url(port, path), sink, limit, pauseMs);
   let limit = Instant.now() + Duration.fromMillis(60000i64);
   while tally.finished.load() + tally.failed.load() < 1u64 && Instant.now() < limit {

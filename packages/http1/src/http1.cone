@@ -269,7 +269,7 @@ pub enum Event {
   pub struct Response {pub head: ResponseHead; pub body: BodyLength;}
   pub struct Interim {pub head: ResponseHead;}
   pub struct Data {pub buf: IoBuf;}
-  pub struct End {pub trailers: Headers;}
+  pub struct End {pub trailers: HttpHeaders;}
   pub struct Failed {pub error: HttpError;}
   pub struct Closed {}
 }
@@ -387,7 +387,7 @@ pub struct Connection is Move {
       headAt: now, headArmed: false, bodyAt: now, bodyArmed: false,
       idleAt: now + cfg.idleTimeout, idleArmed: true, expectAt: now, expectArmed: false,
       armHead: false, armExpect: false,
-      spare: RequestHead(), fl: FieldLines(Headers(), String(), 0usize),
+      spare: RequestHead(), fl: FieldLines(HttpHeaders(), String(), 0usize),
       closed: false, failed: false, failure: List[Event](),
       exchanges: 0u64, bytesIn: 0u64, bytesOut: 0u64)
   }
@@ -561,7 +561,7 @@ pub struct Connection is Move {
       }
       if rs == ReadState.Head {return self.readHead();}
       if rs == ReadState.Sized {
-        if remaining == 0u64 {return self.endMessage(Headers());}
+        if remaining == 0u64 {return self.endMessage(HttpHeaders());}
         return self.deliver();
       }
       if rs == ReadState.ChunkData {
@@ -597,7 +597,7 @@ pub struct Connection is Move {
       }
       if rs == ReadState.Trailers {return self.readTrailers();}
       if rs == ReadState.UntilClose {
-        if input.len() == 0usize && eof {return self.endMessage(Headers());}
+        if input.len() == 0usize && eof {return self.endMessage(HttpHeaders());}
         return self.deliver();
       }
       if rs == ReadState.Done {
@@ -792,12 +792,12 @@ pub struct Connection is Move {
   // connection closed) does nothing; short of a Content-Length is a program
   // error
   pub fn finish(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
-    self.finishWith(Headers(), file, line);
+    self.finishWith(HttpHeaders(), file, line);
   }
 
   // The body is whole, and these trailer fields follow it (a chunked body
   // only: trailers on any other is a program error)
-  pub fn finishWith(self: &mut, trailers: Headers, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+  pub fn finishWith(self: &mut, trailers: HttpHeaders, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     if closed || failed || abandoned || ws == WriteState.Done || ws == WriteState.Idle {return;}
     if ws == WriteState.Sized && wremaining != 0u64 {panic("http1: finish short of the body's Content-Length", file, line);}
     if ws != WriteState.Chunked && !trailers.isEmpty() {panic("http1: trailer fields go only after a chunked body", file, line);}
@@ -1223,7 +1223,7 @@ pub struct Connection is Move {
   fn readTrailers(self: &mut) Event {
     if clientRole && input.len() >= 1usize && input.byteAt(0usize) == '\n' {
       input.consume(1usize);
-      return self.endMessage(Headers());
+      return self.endMessage(HttpHeaders());
     }
     if input.len() < 2usize {
       if eof {return self.closedMidBody();}
@@ -1231,7 +1231,7 @@ pub struct Connection is Move {
     }
     if input.matchesAt(0usize, "\r\n") {
       input.consume(2usize);
-      return self.endMessage(Headers());
+      return self.endMessage(HttpHeaders());
     }
     let len = self.gatherHead();
     if failed {return self.failedEvent();}
@@ -1254,7 +1254,7 @@ pub struct Connection is Move {
   }
 
   // The message read is whole
-  fn endMessage(self: &mut, trailers: Headers) Event {
+  fn endMessage(self: &mut, trailers: HttpHeaders) Event {
     rs = ReadState.Done;
     bodyArmed = false;
     if clientRole && ws != WriteState.Done {
@@ -1343,7 +1343,7 @@ pub struct Connection is Move {
     self.put("\r\n");
   }
 
-  fn putFields(self: &mut, h: &Headers) {
+  fn putFields(self: &mut, h: &HttpHeaders) {
     var i = 0usize;
     while i < h.len() {
       self.put(h.nameAt(i));

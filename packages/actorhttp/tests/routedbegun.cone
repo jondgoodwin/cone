@@ -23,7 +23,7 @@ import httpclient use Response, Request;
 import tls;
 import actors;
 import aio;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
 
 let tooLarge: Atomic[u64];      // handlers whose readAll answered the too-large error
 let otherErr: Atomic[u64];      // handlers whose readAll gave anything else
@@ -55,11 +55,11 @@ fn readText(name: &str) String {
   out
 }
 
-fn trusting() Client {
+fn trusting() HttpClient {
   var cfg = httpclient.Config.make();
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
-  Client.make(cfg, actorhttp.defaultMaxBody)
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
 }
 
 fn url(scheme: &str, port: u16, path: &str) String {
@@ -191,7 +191,7 @@ actor Raw {
 }
 
 actor H2Post {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, port: u16, var done: Sender[u64]) {
     var post = Request.get(url("https", port, "/begun").view());
@@ -260,7 +260,7 @@ fn main() i32 {
     say("h1 readAll too-large", waitAtLeast(&tooLarge, 1u64, 5000i64));
     say("h1 write answered Closed", waitAtLeast(&writeClosed, 1u64, 5000i64));
     // the server answers another request
-    let c = Client.standard();
+    let c = HttpClient.standard();
     match await_get(&c, port) {
       case let Some(s) {say("h1 next request", s);}
       else {say("h1 next request", 0u64);}
@@ -300,7 +300,7 @@ fn main() i32 {
 }
 
 actor Getter {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, port: u16, var done: Sender[u64]) {
     let r = await client.get(url("http", port, "/ok").view());
@@ -311,7 +311,7 @@ actor Getter {
   }
 }
 
-fn await_get(c: &Client, port: u16) Option[u64] {
+fn await_get(c: &HttpClient, port: u16) Option[u64] {
   var dtx: Sender[u64];
   var drx: Receiver[u64];
   dtx, drx = Channel[u64].make();

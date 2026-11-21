@@ -1,4 +1,4 @@
-// A response body sent to a stage as it arrives (Client.streamTo), against a
+// A response body sent to a stage as it arrives (HttpClient.streamTo), against a
 // loopback server of the package's own. Checked, in order:
 //   - a 16 MiB body to a counting sink: every byte checked, the head answered,
 //     one 'end' (Finished), the bytes lent (both ends' buffers, the server's
@@ -37,7 +37,7 @@ import httpclient use Request;
 import tls;
 import actors;
 import aio use IoLimits;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError;
 import stages use ChunkSink, ChunkSource, Ending, ChunkInbox, Turn;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -339,7 +339,7 @@ fn url(scheme: &str, port: u16, path: &str) String {
 }
 
 actor Fetcher {
-  client: Client;
+  client: HttpClient;
 
   // One fetch to 'sink'; the head's arrival is counted
   pub async fn run(self, u: String, sink: ChunkSink, lim: IoLimits, h2: bool) {
@@ -371,11 +371,11 @@ fn readText(name: &str) String {
   out
 }
 
-fn trusting() Client {
+fn trusting() HttpClient {
   var cfg = httpclient.Config.make();
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
-  Client.make(cfg, actorhttp.defaultMaxBody)
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
 }
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
@@ -410,7 +410,7 @@ fn main() i32 {
     reset();
     {
       let sink = Counter(0u32, 0i64, 0u64, none, false);
-      let f = Fetcher(Client.standard());
+      let f = Fetcher(HttpClient.standard());
       f.run(url("http", port, "/big/16777216"), sink, IoLimits.none(), false);
       waitFor(&tally.finished, 1u64);
       printStr("16 MiB to a counting sink: head ok ");
@@ -436,7 +436,7 @@ fn main() i32 {
     reset();
     {
       let sink = Counter(1u32, 3i64, 0u64, none, false);
-      let f = Fetcher(Client.standard());
+      let f = Fetcher(HttpClient.standard());
       let t0 = Instant.now();
       f.run(url("http", port, "/big/4194304"), sink, IoLimits.none(), false);
       waitFor(&tally.finished, 1u64);
@@ -463,7 +463,7 @@ fn main() i32 {
     {
       let g = CancelGroup.make();
       let sink = Counter(0u32, 0i64, mib, g, false);
-      let f = Fetcher(Client.standard());
+      let f = Fetcher(HttpClient.standard());
       f.run(url("http", port, "/big/1073741824"), sink, IoLimits.within(g), false);
       waitFor(&tally.failed, 1u64);
       thread.sleep(Duration.fromMillis(200i64));
@@ -488,7 +488,7 @@ fn main() i32 {
     {
       let g = CancelGroup.make();
       let sink = Counter(0u32, 0i64, mib, g, true);
-      let f = Fetcher(Client.standard());
+      let f = Fetcher(HttpClient.standard());
       f.run(url("http", port, "/big/1073741824"), sink, IoLimits.none(), false);
       waitFor(&tally.failed, 1u64);
       thread.sleep(Duration.fromMillis(200i64));
@@ -510,7 +510,7 @@ fn main() i32 {
     reset();
     {
       let sink = Counter(3u32, 0i64, 0u64, none, false);
-      let f = Fetcher(Client.standard());
+      let f = Fetcher(HttpClient.standard());
       f.run(url("http", port, "/big/4194304"), sink, IoLimits.none(), false);
       waitFor(&tally.finished, 1u64);
       printStr("4 MiB to a sink that trims every buffer to a byte: bytes ");
@@ -531,7 +531,7 @@ fn main() i32 {
     reset();
     {
       let sink = Counter(0u32, 0i64, 0u64, none, false);
-      let f = Fetcher(Client.standard());
+      let f = Fetcher(HttpClient.standard());
       f.run(url("http", 1u16, "/big/10"), sink, IoLimits.none(), false);
       waitFor(&tally.failed, 1u64);
       thread.sleep(Duration.fromMillis(100i64));
