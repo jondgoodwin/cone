@@ -926,14 +926,27 @@ fn stopAll(svs: &mut List[Srv], lp: &mut Loop) {
 }
 
 fn originCaps(lp: &mut Loop) {
-  // Origins that never connected are not kept: forty dead ports, each fetch Failed
+  // Origins that never connected are not kept: forty dead ports, each fetch Failed. The ports are ones the
+  // system just handed out and took back (a fixed range holds a live service on some machines: port 22 is sshd)
+  var dead = List[u16]();
+  {
+    var held = List[Srv]();
+    var h = 0usize;
+    while h < 40usize {
+      held.push(server());
+      let s = &mut held[h];
+      dead.push(listen(s, lp));
+      h = h + 1usize;
+    }
+    stopAll(&mut held, lp);
+  }
   var cl = Client.make(Config.make());
   var svs = List[Srv]();
   var fs = finals();
-  var p = 0u16;
-  while p < 40u16 {
-    cl.send(lp, Request.get(url(2u16 + p, "/hello").view()), Sink.Here(1u64));
-    p = p + 1u16;
+  var p = 0usize;
+  while p < 40usize {
+    cl.send(lp, Request.get(url(*dead[p], "/hello").view()), Sink.Here(1u64));
+    p = p + 1usize;
   }
   expectUInt(u64.from(cl.stats().origins), 40u64, "forty dead ports: forty origins while their fetches wait");
   collectN(&mut cl, &mut svs, lp, &mut fs, 40u64);
