@@ -588,6 +588,10 @@ pub struct Loop {
     self.unpublish(i);
     #if #os == .windows {CancelIoEx(e.raw, null);}
     self.detachLists(i);
+    // Linux: a worker-side socket leaves the worker port's epoll before it is closed. Closing alone can leave a
+    // worker's in-flight epoll event holding the file, so the port is freed late and a bind straight after the
+    // drop fails with EADDRINUSE; the DEL serialises against that event (row 631)
+    #if #os != .windows { if e.worker != 0u32 && workerPort != 0usize {lxUnwatch(workerPort, e.raw);} }
     closeRaw(e.kind, e.raw);
     handles.removeAt(i);
     true
