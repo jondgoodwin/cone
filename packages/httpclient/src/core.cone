@@ -160,6 +160,7 @@ pub struct Command {
 pub enum PoolEventKind {
   Connected,       // connection pc is connected
   Closed,          // connection pc is closed: clean, or failure (tls: its TLS failed)
+  Settings,        // connection pc's peer changed its HTTP/2 stream limit: its origin's waiting fetches are looked at again
   Done,            // fetch's exchange ended well
   Failed,          // fetch's exchange failed with failure
   Stopped,         // fetch's exchange was cancelled, or timed out (timedOut)
@@ -847,6 +848,10 @@ pub struct ClientCore {
       self.closed(e.pc, e.clean, e.failure.clone(), e.tls);
       return;
     }
+    if k == PoolEventKind.Settings {
+      self.limitChanged(e.pc);
+      return;
+    }
     let fi = self.fetchIndex(e.fetch);
     if fi == noEntry {return;}
     if k == PoolEventKind.Done {self.requestDone(fi, f);}
@@ -1251,6 +1256,13 @@ pub struct ClientCore {
   // ---------------------------------------------------------------------------
   // Connections
   // ---------------------------------------------------------------------------
+
+  // Pooled connection pc's peer changed its stream limit (HTTP/2's SETTINGS): the connection's room is what
+  // ConnFacts.isIdle says, so the origin's waiting fetches are looked at again
+  fn limitChanged(self: &mut, pc: u32) {
+    let p = pconns.borrowAt(pc).unwrap();
+    if p.state == pShared {self.touch(p.origin);}
+  }
 
   // Pooled connection pc is connected
   pub fn connected[F: ConnFacts](self: &mut, pc: u32, f: &F) {
