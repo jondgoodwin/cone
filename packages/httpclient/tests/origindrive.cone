@@ -1,0 +1,162 @@
+// ClientCore driven with events: 'maxOrigins' bounds the origins that hold only idle connections, and closes
+// their connections (a redirect flood to new hosts leaves nothing behind). The fake host connects at once, notes
+// each Send and Close, and gives the Closed events when the test says.
+
+mod origindrive;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import http use *;
+import httpconn;
+import httpclient use *;
+
+struct Fake is ConnFacts {
+  pub fn isIdle(self: &, c: ConnRef) bool {true}
+  pub fn takes(self: &, c: ConnRef) bool {true}
+  pub fn protocol(self: &, c: ConnRef) Option[Version] {Some[Version](Version.Http11)}
+  pub fn h3Room(self: &, c: ConnRef) bool {false}
+}
+
+struct Rig {
+  pub core: ClientCore;
+  pub fk: Fake;
+  pub ids: List[FetchId];
+  pub sendPcs: List[u32];       // each Send's connection, in the order given
+  pub closePcs: List[u32];      // each Close's connection, in the order given
+}
+
+fn newRig(maxOrigins: u32) Rig {
+  let lim = Limits(2u32, 256u32, Duration.fromHours(1i64), 10000u32, 2u32, 5u32, String.from("t"), false,
+    List[String](), Duration.fromSeconds(1i64), 100u32);
+  Rig(core: ClientCore.make(lim, maxOrigins, false), fk: Fake(), ids: List[FetchId](), sendPcs: List[u32](),
+    closePcs: List[u32]())
+}
+
+fn pump(r: &mut Rig) {
+  var did = true;
+  while did {
+    did = false;
+    while true {
+      match r.core.next(&r.fk) {
+        case let Some(c) {
+          did = true;
+          if c.kind == CommandKind.Open {
+            var e = PoolEvent.make(PoolEventKind.Connected);
+            e.pc = c.pc;
+            r.core.on(&e, &r.fk);
+          } else if c.kind == CommandKind.Send {
+            r.sendPcs.push(c.pc);
+          } else if c.kind == CommandKind.Close {
+            r.closePcs.push(c.pc);
+          }
+        }
+        else {break;}
+      }
+    }
+  }
+}
+
+// A GET to host n, begun
+fn ask(r: &mut Rig, n: u32) FetchId {
+  var s = String.from("http://h");
+  s.appendUInt(u64.from(n));
+  s.append(".example/x");
+  let id = r.core.ask(Request.make("GET", s.view()), Sink.Here(0u64), Instant.now());
+  r.ids.push(id);
+  pump(r);
+  id
+}
+
+fn finish(r: &mut Rig, id: FetchId) {
+  var e = PoolEvent.make(PoolEventKind.Done);
+  e.fetch = id;
+  r.core.on(&e, &r.fk);
+  pump(r);
+}
+
+// Every Close the core gave is answered with its connection's Closed
+fn closedAll(r: &mut Rig) {
+  var k = 0usize;
+  while k < r.closePcs.len() {
+    var e = PoolEvent.make(PoolEventKind.Closed);
+    e.pc = *r.closePcs[k];
+    e.clean = true;
+    r.core.on(&e, &r.fk);
+    k = k + 1usize;
+  }
+  pump(r);
+}
+
+// maxOrigins 3, origins 1..10 each fetched once and left idle with a connection: three kept, seven closed,
+// least recently used first
+fn flood() {
+  var r = newRig(3u32);
+  var n = 1u32;
+  while n <= 10u32 {
+    let id = ask(&mut r, n);
+    finish(&mut r, id);
+    n = n + 1u32;
+  }
+  expectUInt(u64.from(r.core.originCount()), 3u64, "flood: three origins kept");
+  expectUInt(u64.from(r.sendPcs.len()), 10u64, "flood: each fetch went out on a connection of its own");
+  expectUInt(u64.from(r.closePcs.len()), 7u64, "flood: seven connections closed");
+  var k = 0usize;
+  var inOrder = true;
+  while k < r.closePcs.len() {
+    if *r.closePcs[k] != *r.sendPcs[k] {inOrder = false;}
+    k = k + 1usize;
+  }
+  expectBool(inOrder, true, "flood: the closes are the first seven origins' connections, least recently used first");
+  // Their Closed events free the records, naming no origin; the pool carries on
+  closedAll(&mut r);
+  expectUInt(u64.from(r.core.originCount()), 3u64, "flood: after the Closed events, still three");
+  let again = ask(&mut r, 10u32);
+  expectUInt(u64.from(r.sendPcs.len()), 11u64, "flood: asked again, the last origin's idle connection is reused (a send, no open)");
+  expectUInt(u64.from(r.closePcs.len()), 7u64, "flood: ...and nothing more was closed");
+  finish(&mut r, again);
+  expectUInt(u64.from(r.core.live()), 0u64, "flood: nothing left under way");
+}
+
+// An origin with a fetch under way (a busy connection) is not dropped, and an origin whose connection is
+// already closing is not dropped twice. At maxOrigins 2: at most 2 origins
+fn spares() {
+  var r = newRig(2u32);
+  let held = ask(&mut r, 1u32);
+  let b = ask(&mut r, 2u32);
+  finish(&mut r, b);
+  let c = ask(&mut r, 3u32);
+  expectUInt(u64.from(r.closePcs.len()), 1u64, "spares: origin 2's idle connection closed for origin 3");
+  expectBool(*r.closePcs[0usize] == *r.sendPcs[1usize], true, "spares: ...not the busy one's");
+  expectUInt(u64.from(r.core.originCount()), 2u64, "spares: two origins");
+  finish(&mut r, c);
+  // origin 2's connection is closing (its Closed not yet given): origin 4 closes origin 3's, once
+  let d = ask(&mut r, 4u32);
+  expectUInt(u64.from(r.closePcs.len()), 2u64, "spares: one more closed, the closing one not closed again");
+  expectUInt(u64.from(r.core.originCount()), 2u64, "spares: still two origins");
+  closedAll(&mut r);
+  finish(&mut r, d);
+  finish(&mut r, held);
+  expectUInt(u64.from(r.core.live()), 0u64, "spares: all answered");
+}
+
+// At maxOrigins 1 a hop's earlier origin is still named when the next is made: two origins then, one after
+fn onlyOne() {
+  var r = newRig(1u32);
+  let a = ask(&mut r, 1u32);
+  let b = ask(&mut r, 2u32);
+  expectUInt(u64.from(r.core.originCount()), 2u64, "one: with the first fetch under way, two origins (maxOrigins + 1)");
+  finish(&mut r, a);
+  finish(&mut r, b);
+  let c = ask(&mut r, 3u32);
+  expectUInt(u64.from(r.core.originCount()), 1u64, "one: with nothing else under way, only the new fetch's origin");
+  expectUInt(u64.from(r.closePcs.len()), 2u64, "one: both idle origins' connections were closed");
+  finish(&mut r, c);
+}
+
+fn main() i32 {
+  flood();
+  spares();
+  onlyOne();
+  done()
+}

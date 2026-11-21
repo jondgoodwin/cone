@@ -20,11 +20,14 @@
 //
 // ORIGINS are found by key in a Dict ('https://example.com:443'), the key
 // built into a scratch String the core keeps, so a lookup allocates nothing.
-// An origin with nothing waiting, no connection and no fetch naming it is
-// idle; idle origins are dropped, least recently used first, once a new one
-// would take the count past 'maxOrigins'. An origin whose first connection
-// failed, with nothing waiting, goes at once, so a flood of redirects to new
-// hosts leaves nothing behind.
+// An origin with nothing waiting, no fetch naming it and no connection but
+// idle ones (one connecting, busy or closing keeps it) is idle; idle origins
+// are dropped, least recently used first, once a new one would take the count
+// past 'maxOrigins', and their idle connections are closed. An origin whose
+// first connection failed, with nothing waiting, goes at once, so a flood of
+// redirects to new hosts leaves nothing behind. The origin a fetch is leaving
+// (a redirect's earlier hop) is still named when the next is made, so at
+// 'maxOrigins' 1 there are at most two origins; from 2 up, at most 'maxOrigins'.
 //
 // WAITING FETCHES wait in one priority queue per origin, ordered by
 // (intent, score, order asked) as the scheduler's rules give. A queue entry
@@ -391,8 +394,8 @@ pub struct ClientCore {
   // Origin oi has a fetch or a connection no more, or may have none: if so, it is a candidate
   // for being let go, the least recently used first
   fn mayBeIdle(self: &mut, oi: u32) {
+    if !self.originIdle(oi) {return;}
     let og = origins.borrowAt(oi).unwrap();
-    if og.refs != 0u32 || og.recs != 0u32 || og.h3c != noEntry || og.wlive != 0u32 {return;}
     let used = og.lastUse;
     let gen = og.gen;
     lru.push(used, LruRef(oi, gen, used));
@@ -400,9 +403,19 @@ pub struct ClientCore {
   }
 
   // Whether origin oi is idle now
+  // (nothing waits, no fetch names it, every connection record it has is an idle connection)
   fn originIdle(self: &, oi: u32) bool {
     let og = origins.borrowAt(oi).unwrap();
-    og.refs == 0u32 && og.recs == 0u32 && og.h3c == noEntry && og.wlive == 0u32
+    if og.refs != 0u32 || og.h3c != noEntry || og.wlive != 0u32 {return false;}
+    if og.recs == 0u32 {return true;}
+    // A record that is connecting, busy or closing is not an idle connection: the origin is still in use
+    var idleN = u32.from(og.idle.len());
+    var k = 0usize;
+    while k < og.shared.len() {
+      if self.isIdleConn(*og.shared[k]) {idleN = idleN + 1u32;}
+      k = k + 1usize;
+    }
+    og.recs == idleN
   }
 
   // Idle origins dropped, the least recently used first, until at most 'keep' remain (or none is idle)
@@ -415,8 +428,30 @@ pub struct ClientCore {
       if !origins.isLive(r.oi) {continue;}
       let og = origins.borrowAt(r.oi).unwrap();
       if og.gen != r.gen || og.lastUse != r.used || !self.originIdle(r.oi) {continue;}
-      self.dropOrigin(r.oi);
+      self.closeAndDrop(r.oi);
     }
+  }
+
+  // Idle origin oi is to go with its idle connections: each is closed politely (the ones kept for reuse
+  // first, the shared ones after), and named by no origin from then on, so its Closed frees its record alone
+  fn closeAndDrop(self: &mut, oi: u32) {
+    var held = List[u32]();
+    let og = origins.borrowAt(oi).unwrap();
+    var k = 0usize;
+    while k < og.idle.len() {
+      held.push(*og.idle[k]);
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < og.shared.len() {
+      held.push(*og.shared[k]);
+      k = k + 1usize;
+    }
+    each pc in held.drain() {
+      self.retire(pc, true);
+      (pconns.borrowMutAt(pc).unwrap()).origin = noEntry;
+    }
+    self.dropOrigin(oi);
   }
 
   // Origin oi, idle, forgotten
@@ -742,6 +777,8 @@ pub struct ClientCore {
     idleLive = idleLive + 1usize;
     idleHeap.push(stamp, IdleRef(pc, gen, stamp));
     if idleHeap.len() > 2usize * idleLive + staleSlack {self.purgeIdle();}
+    // Its origin may now be one that holds nothing but idle connections
+    self.mayBeIdle((pconns.borrowAt(pc).unwrap()).origin);
   }
 
   // Connection pc is busy, or gone: no longer idle
@@ -826,6 +863,9 @@ pub struct ClientCore {
   // Fetches not yet answered
   pub fn live(self: &) u32 {liveFetches}
 
+  // Origins held now (a test reads it; the client's stats count them itself)
+  pub fn originCount(self: &) u32 {u32.from(origins.len())}
+
   // Fetches waiting for a connection
   pub fn queued(self: &) u32 {queuedN}
 
@@ -891,7 +931,7 @@ pub struct ClientCore {
     match pconns.borrowAt(pc) {
       case let Some(p) {
         let oi = p.origin;
-        self.touch(oi);
+        if oi != noEntry {self.touch(oi);}
       }
       else {}
     }
@@ -1323,6 +1363,12 @@ pub struct ClientCore {
   // a host tells its connection's end and its fetches' in: a Done, Failed or Stopped that names its connection
   // (PoolEvent.pc, gen) and comes after this is of the earlier attempt, and is dropped (attemptOf)
   pub fn closed(self: &mut, pc: u32, clean: bool, failure: Failure, tls: bool) {
+    // An idle connection closed with its origin dropped (closeAndDrop): no origin, no fetch, its record freed
+    if (pconns.borrowAt(pc).unwrap()).origin == noEntry {
+      st.closed = st.closed + 1u64;
+      self.freeConnRec(pc);
+      return;
+    }
     let p = pconns.borrowMutAt(pc).unwrap();
     let og = origins.borrowMutAt(u32.from(p.origin)).unwrap();
     var onIt = List[u32]();
