@@ -11,7 +11,7 @@
 mod closebind;
 
 import testing use *;
-import stdio use printStr, printUInt, eprintStr;
+import stdio use printStr, printUInt, eprintStr, eprintUInt;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
 import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
@@ -20,6 +20,9 @@ import actors;
 import aio use UdpSocket, Socket, IoLimits;
 
 const rounds = 400u64;
+// The two plain UDP phases run many more rounds: the race they pin (a port freed late after close) fails about 1 run
+// in 15 at 400 rounds on Linux, and most runs at 10,000
+const udpRoundsMany = 10000u64;
 // The test sets its own worker count and leaves one worker free of burners for the peer: a burner never yields, so
 // with as many burners as workers nothing is left to run the peer and the test never ends. Each phase names itself
 // on stderr, so a hang shows where it stopped
@@ -64,6 +67,20 @@ actor Burner {
   }
 }
 
+// A failed bind says which phase, round and port, and why
+fn note(what: &str, i: u64, port: u16, e: &IoError) {
+  eprintStr("FAILBIND ");
+  eprintStr(what);
+  eprintStr(" round ");
+  eprintUInt(i);
+  eprintStr(" port ");
+  eprintUInt(u64.from(port));
+  eprintStr(" : ");
+  let d = e.describe();
+  eprintStr(d.view());
+  eprintStr("\n");
+}
+
 fn dgram() IoBuf {
   var b = IoBuf(64usize);
   let w = b.whole();
@@ -74,7 +91,7 @@ fn dgram() IoBuf {
 
 actor Peer {
   // rounds of: bind addr, drop it, bind addr again at once; the binds that failed
-  async fn udpRounds(self, used: bool) u64 {
+  async fn udpRounds(self, used: bool, n: u64) u64 {
     let first = await aio.bindUdp(SocketAddr.localhost(0u16));
     var port = 0u16;
     match first {
@@ -84,7 +101,7 @@ actor Peer {
     let addr = SocketAddr.localhost(port);
     var failed = 0u64;
     var i = 0u64;
-    while i < rounds {
+    while i < n {
       var r = await aio.bindUdp(addr);
       match &mut r {
         case var &mut Ok(ok) {
@@ -95,7 +112,7 @@ actor Peer {
             let back = await s.recvFromIn(IoBuf(64usize), IoLimits.until(Instant.now() + Duration.fromMillis(1000i64)));
           }
         }
-        else {failed = failed + 1u64;}
+        case var &mut Err(er) {failed = failed + 1u64; note(if used {"udp used"} else {"udp bare"}, i, port, er);}
       }
       i = i + 1u64;
     }
@@ -119,7 +136,7 @@ actor Peer {
           var s = Socket.none();
           s <-> *ok;
         }
-        else {failed = failed + 1u64;}
+        case var &mut Err(er) {failed = failed + 1u64; note("tcp", i, port, er);}
       }
       i = i + 1u64;
     }
@@ -152,11 +169,11 @@ actor Peer {
               var t = UdpSocket.none();
               t <-> *ok2;
             }
-            else {failed = failed + 1u64;}
+            case var &mut Err(er) {failed = failed + 1u64; note("udp in flight, again", i, port, er);}
           }
           let rr = await reading;
         }
-        else {failed = failed + 1u64;}
+        case var &mut Err(er) {failed = failed + 1u64; note("udp in flight", i, port, er);}
       }
       i = i + 1u64;
     }
@@ -188,11 +205,11 @@ actor Peer {
               var t = Socket.none();
               t <-> *ok2;
             }
-            else {failed = failed + 1u64;}
+            case var &mut Err(er) {failed = failed + 1u64; note("tcp in flight, again", i, port, er);}
           }
           let rr = await accepting;
         }
-        else {failed = failed + 1u64;}
+        case var &mut Err(er) {failed = failed + 1u64; note("tcp in flight", i, port, er);}
       }
       i = i + 1u64;
     }
@@ -201,9 +218,9 @@ actor Peer {
 
   pub async fn run(self, done: OneshotSender[u64]) {
     eprintStr("phase: udp bare\n");
-    got.udpBare.store(await self.udpRounds(false));
+    got.udpBare.store(await self.udpRounds(false, udpRoundsMany));
     eprintStr("phase: udp used\n");
-    got.udpUsed.store(await self.udpRounds(true));
+    got.udpUsed.store(await self.udpRounds(true, udpRoundsMany));
     eprintStr("phase: tcp listener\n");
     got.tcpBare.store(await self.tcpRounds());
     eprintStr("phase: udp, read in flight\n");
@@ -218,9 +235,9 @@ actor Peer {
       k = k + 1u64;
     }
     eprintStr("phase: udp bare, workers busy\n");
-    got.udpBareLoaded.store(await self.udpRounds(false));
+    got.udpBareLoaded.store(await self.udpRounds(false, rounds));
     eprintStr("phase: udp used, workers busy\n");
-    got.udpUsedLoaded.store(await self.udpRounds(true));
+    got.udpUsedLoaded.store(await self.udpRounds(true, rounds));
     eprintStr("phase: tcp listener, workers busy\n");
     got.tcpBareLoaded.store(await self.tcpRounds());
     eprintStr("phase: done\n");
@@ -230,12 +247,12 @@ actor Peer {
   }
 }
 
-fn show(label: &str, n: u64) {
+fn show(label: &str, n: u64, of: u64) {
   printStr(label);
   printStr(": ");
   printUInt(n);
   printStr(" of ");
-  printUInt(rounds);
+  printUInt(of);
   printStr(" binds failed\n");
 }
 
@@ -254,14 +271,14 @@ fn main() i32 {
     else {}
   }
   finalAll();
-  show("udp bare", got.udpBare.load());
-  show("udp used", got.udpUsed.load());
-  show("tcp listener", got.tcpBare.load());
-  show("udp, read in flight", got.udpFlight.load());
-  show("tcp listener, accept in flight", got.tcpFlight.load());
-  show("udp bare, workers busy", got.udpBareLoaded.load());
-  show("udp used, workers busy", got.udpUsedLoaded.load());
-  show("tcp listener, workers busy", got.tcpBareLoaded.load());
+  show("udp bare", got.udpBare.load(), udpRoundsMany);
+  show("udp used", got.udpUsed.load(), udpRoundsMany);
+  show("tcp listener", got.tcpBare.load(), rounds);
+  show("udp, read in flight", got.udpFlight.load(), rounds);
+  show("tcp listener, accept in flight", got.tcpFlight.load(), rounds);
+  show("udp bare, workers busy", got.udpBareLoaded.load(), rounds);
+  show("udp used, workers busy", got.udpUsedLoaded.load(), rounds);
+  show("tcp listener, workers busy", got.tcpBareLoaded.load(), rounds);
   expectUInt(got.udpBare.load(), 0u64, "a UDP port bound again at once after its socket was dropped");
   expectUInt(got.udpUsed.load(), 0u64, "the same after the socket sent and received");
   expectUInt(got.tcpBare.load(), 0u64, "a TCP listener's port bound again at once after the drop");
