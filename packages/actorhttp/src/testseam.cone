@@ -2,7 +2,8 @@
 // 'HttpClient.makeTest' goes where a test says instead of to the name's own addresses, and the pool above it stays real
 // (limits, scheduling, retries, redirects, deadlines): only the transport changes. A target is one of
 //   TestTarget.address(a)      the origin's connections go to address a (a fake server on a local port; curl's --resolve)
-//   TestTarget.pipe(p)         the origin's connection is an in-memory pipe, the bytes of the wire with no socket: the
+//   TestTarget.addresses(l)    the origin's name looks up to the list l (the real rotation over a name's addresses runs)
+//   TestTarget.pipe(p)       the origin's connection is an in-memory pipe, the bytes of the wire with no socket: the
 //   TestTarget.pipes(list)     test is the server, reading what the client wrote and saying what it answers. Each new
 //                              connection to the origin takes the next pipe of the list, and one with none left fails
 //                              to connect
@@ -135,6 +136,7 @@ const kindNone = 0u32;       // nothing to connect to (a pipe list used up, a ha
 const kindAddress = 1u32;
 const kindPipe = 2u32;
 const kindHandler = 3u32;
+const kindAddresses = 4u32;  // a list the name's lookup is taken to have found (the real address rotation then runs)
 
 // Where one origin's connections go
 pub struct TestTarget is Move {
@@ -145,9 +147,22 @@ pub struct TestTarget is Move {
   routes: Option[HttpRoutes];    // a handler's, until its listener is started
   started: bool;
   server: Server;                // a handler's listener, held so that it closes with the client
+  found: List[SocketAddr];       // an addresses target's list
 
   fn plain(kind: u32, addr: SocketAddr) TestTarget {
-    TestTarget(kind, addr, List[TestPipe](), 0usize, None, false, Server.none())
+    TestTarget(kind, addr, List[TestPipe](), 0usize, None, false, Server.none(), List[SocketAddr]())
+  }
+
+  // The origin's name looks up to this list, in place of the resolver: its connections take the addresses in turn, as for a
+  // name with several addresses (one lookup serves a burst; each dial after it takes the next address first)
+  pub fn addresses(l: &List[SocketAddr]) TestTarget {
+    var t = TestTarget.plain(kindAddresses, SocketAddr.localhost(0u16));
+    var i = 0usize;
+    while i < l.len() {
+      t.found.push(l[i]);
+      i = i + 1usize;
+    }
+    t
   }
 
   pub fn address(a: SocketAddr) TestTarget {TestTarget.plain(kindAddress, a)}
