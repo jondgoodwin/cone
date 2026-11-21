@@ -399,6 +399,19 @@
 // the Response's 'version' says so.
 //
 //
+// A CLIENT ON ACTORS. A whole-body fetch ('get', 'getIn', 'send', 'sendIn') whose request has no cancel group
+// goes to a ClientActor that owns the pool (an httpclient.ClientCore: its origins, waiting fetches, limits, retries
+// and redirects) and carries out the commands the core gives; each connection is a ClientConnActor that owns its
+// socket, its httpconn.ClientConn and its one Timer, with TLS (the certificate check on the blocking pool by
+// 'aio.onPool') and every read and write on the shared worker port, so nothing of HTTP or TLS runs on the I/O thread
+// (clientactor.cone). The calls and their answers are the same as before. Several HTTP/2 connections per origin are
+// opened as the core decides (a new one when every open one is at maxStreamsPerConnection, up to maxPerOrigin), a fetch
+// goes to the one with the fewest streams, and a name's addresses are taken in turn. 'stream', 'streamTo', 'events',
+// 'upload', a fetch with a cancel group and an HTTP/3 client keep the service thread's client, so a handle holds two
+// pools and the per-origin limits are not shared between them. The last handle's going cancels every fetch, aborts every
+// connection and ends the actors ('liveClientActors' and 'liveClientConnActors' say how many exist).
+//
+//
 // A ROUTED SERVER. 'cfg.routes(table)' makes the server run on connection actors: the server is an actor
 // that owns the listening socket and the live count, each accepted connection is an actor of its own that
 // owns its socket, its httpconn.ServerConn (the protocol, sans-I/O) and its one Timer, and the sockets'

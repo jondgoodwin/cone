@@ -657,6 +657,7 @@ pub actor ClientConnActor {
   recv: u64;                // sends received
   lastFree: usize;
   lastTakes: bool;
+  hard: bool;               // the client gave the connection up (a cancel on HTTP/1.1, an abort): it is reset when over
   guard: ClientGuard;
 
   fn init(self: &new, client: ClientActor, pc: u32, gen: u32, addrs: List[SocketAddr], host: String, secure: bool,
@@ -667,7 +668,7 @@ pub actor ClientConnActor {
       cc: httpconn.ClientConn.make(args.conn, None[Uni[httpconn.Layer]], now), sock: aio.Socket.none(), tm: actors.Timer.make(),
       connected: false, up: false, reading: false, writing: false, calling: false, closing: false, closeStarted: false,
       ended: false, told: false, aborted: false, goAway: false, shutting: false, protoClosed: false, writeBy: now,
-      exch: ConnExchanges(), bodying: List[u32](), pends: Pends(), recv: 0u64, lastFree: 0usize, lastTakes: true,
+      exch: ConnExchanges(), bodying: List[u32](), pends: Pends(), recv: 0u64, lastFree: 0usize, lastTakes: true, hard: false,
       guard: ClientGuard(true));
     selfactor.begin();
   }
@@ -760,6 +761,7 @@ pub actor ClientConnActor {
     if found {
       exch.remove(&stream);
       dropValue(&mut bodying, stream);
+      if !cc.isHttp2() {hard = true;}
       cc.cancel(stream);
     }
     self.turn();
@@ -776,6 +778,7 @@ pub actor ClientConnActor {
   // End now
   pub async fn abort(self) {
     aborted = true;
+    hard = true;
     if ended || !connected {return;}
     cc.abort();
     sock.cancelRead();
@@ -1010,6 +1013,7 @@ pub actor ClientConnActor {
     if over {
       exch.remove(&stream);
       dropValue(&mut bodying, stream);
+      if !cc.isHttp2() {hard = true;}
       cc.cancel(stream);
       self.tellExchange(fetch, 2u32, httpclient.Response.blank(), httpclient.Failure.none());
     }
@@ -1058,6 +1062,19 @@ pub actor ClientConnActor {
     self.tell(f is None, fl, tlsFailed);
   }
 
+  // The socket closed abortively, every operation on it ended; the client is told if it has not been
+  fn resetNow(self) {
+    if ended {return;}
+    ended = true;
+    tm.stop();
+    var dead = aio.Socket.none();
+    dead <-> sock;
+    dead.reset();
+    exch.clear();
+    pends.clear();
+    self.tell(false, httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the connection was aborted"), false);
+  }
+
   fn tell(self, clean: bool, fl: httpclient.Failure, tlsFailed: bool) {
     if told {return;}
     told = true;
@@ -1082,6 +1099,12 @@ pub actor ClientConnActor {
     match cc.pollTimeout() {
       case let Some(t) {tm.set(if writing && writeBy < t {writeBy} else {t});}
       else {if writing {tm.set(writeBy);} else {tm.clear();}}
+    }
+    // A connection the client gave up on is reset, not half-closed and lingered on: the peer sees it go at once, even when
+    // it is not reading (as the polled driver's abort does)
+    if hard && isDone {
+      self.resetNow();
+      return;
     }
     if isDone && !writing && !closing {
       closing = true;
