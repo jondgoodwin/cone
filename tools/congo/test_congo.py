@@ -2415,6 +2415,9 @@ class Testing(unittest.TestCase):
             import halver;
 
             fn main() i32 {
+              each i in 0usize ..< 60usize {
+                eprintStr("noise\\n");
+              }
               eprintStr("crash: about to poke\\n");
               printInt(halver.pokeBadPointer());
               printStr("\\n");
@@ -2430,7 +2433,8 @@ class Testing(unittest.TestCase):
         self.assertIn("test crash ... FAILED", run.stdout)
         self.assertIn("test even ... ok", run.stdout)
         self.assertIn("test odd ... ok", run.stdout)       # a panic its .exit expects
-        self.assertIn("crash: about to poke", run.stdout)  # the stderr tail, as a stopped test's
+        self.assertIn("crash: about to poke", run.stdout)  # the stderr tail, as a stopped test's:
+        self.assertIn("(21 earlier lines left out)", run.stdout)       # its last 40 lines
         self.assertIn("exited " + ("3221225477" if IS_WINDOWS else "-11") + ", expected 0", run.stdout)
         records = sorted(hangs.glob("crash-*.txt"))
         self.assertEqual(len(records), 1, [p.name for p in records])

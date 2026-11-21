@@ -3904,7 +3904,8 @@ def run_test(session: Session, file: Path, bless: bool, pkg: Package | None = No
             diff = difflib.unified_diff(expected_err, actual_err, fromfile=shown(err_path),
                                         tofile="actual", lineterm="", n=2)
             problems.append("stderr differs:\n" + indent("\n".join(diff), "  "))
-    if ran.crash_record:
+    # Said only with a failure: a record never changes a test's verdict
+    if problems and ran.crash_record:
         problems.append(f"crash record: {ran.crash_record}")
     if problems and stderr.strip() and not err_checked:
         # A crashed test's stderr says how far it got, as a stopped test's does:
