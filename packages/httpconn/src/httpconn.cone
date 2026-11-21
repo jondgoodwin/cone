@@ -59,7 +59,7 @@
 //   Sink.Here(token)                                                   (SINKS)
 //   Event: e.kind e.token e.conn e.req e.stream, and per kind e.peer e.clean e.failure  (EVENTS)
 //     e.request e.response e.body e.buf e.trailers e.timing;  e.isTerminal()
-//   EventKind: Connected Accepted Closed Request Response Interim Data End
+//   EventKind: Connected Accepted Closed Settings Request Response Interim Data End
 //     Writable Done Failed Cancelled TimedOut;  toDebug(k)
 //   Failure: f.stage f.code f.error f.unsent String() <- f               (FAILURES)
 //   Timing: t.submitted t.started t.firstByte t.ended
@@ -609,6 +609,7 @@ pub enum EventKind {
   Connected,     // a client connection is made: peer
   Accepted,      // a server connection is accepted: listener, peer
   Closed,        // a connection has ended, its last event: clean, failure
+  Settings,      // a client's HTTP/2 connection: the peer's stream limit changed (its SETTINGS), so room for more requests, or fewer
   Request,       // a server's request has arrived: request, body
   Response,      // a client's response head: response, body
   Interim,       // a 1xx before it: response
@@ -735,6 +736,9 @@ pub trait Layer {
   pub fn takeCall(self: &mut) Op;
   // Its answer
   pub fn callDone(self: &mut, c: &mut Completion, now: Instant);
+  // Its answer as values, for a host that ran the work itself (aio.onPool): the buffer the work filled, and
+  // None when it ran, or the error that said it did not
+  pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant);
   // What it is and negotiated, for diagnostics ('plain'; a TLS session's
   // version, cipher, ALPN and handshake time)
   pub fn describe(self: &) String;
@@ -778,6 +782,7 @@ pub struct Plain {
   pub fn wantsCall(self: &) bool {false}
   pub fn takeCall(self: &mut) Op {Op.Call(Lane.general(), &noCall, 0u64, IoBuf())}
   pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {}
+  pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant) {}
   pub fn describe(self: &) String {String.from("plain")}
   pub fn alpn(self: &) String {String()}
 
