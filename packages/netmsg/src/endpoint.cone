@@ -175,11 +175,15 @@ const maxFailures = 1000u32;
 // How long shutdown waits for the datagrams already handed to the socket
 const flushMillis = 300i64;
 
+// How long the receive waits before asking again for a buffer the pool refused
+const owedStepMillis = 10i64;
+
 // What an endpoint has refused to admit, by the limit that refused it
 pub struct EndpointStats {
   pub refusedFull: u64;           // new addresses refused at NetConfig.maxClients
   pub refusedPerAddress: u64;     // refused at NetConfig.maxPerAddress for their IP address
   pub refusedRate: u64;           // refused by the admission rate (NetConfig.admitRate), or a replacement within a second of the last for its socket address
+  pub recvRefused: u64;           // receive buffers the buffer pool refused (IoBuf.tryMake): the batch slot stays owed and is filled again before the next receive
 }
 
 pub actor Endpoint {
@@ -214,7 +218,7 @@ pub actor Endpoint {
       group: g, timer: actors.Timer.within(&g), inflight: 0usize,
       gate: ChallengeGate.fromOs(), slots: ConnSlots.withCapacity(if !server {1usize} else if cfg.maxClients < slotsReserved {cfg.maxClients} else {slotsReserved}), byAddr: SlotsByAddr(), byIp: AddrStates(), nextId: 1u32,
       tokens: burstSeconds * 1000i64 * i64.from(cfg.admitRate), refilled: now,
-      stopped: false, refused: EndpointStats(0u64, 0u64, 0u64),
+      stopped: false, refused: EndpointStats(0u64, 0u64, 0u64, 0u64),
       dialer: ClientHandshake.make(cfg, salt, Instant.now()), dialing: !server,
       remote: remote);
   }
@@ -306,6 +310,23 @@ pub actor Endpoint {
     var failures = 0u32;
     var batch = DatagramBatch.make(n, recvRoom);
     while !stopped && failures <= maxFailures {
+      // Slots the pool refused a buffer are owed: made again as the pool gives
+      // them, and no receive starts while one is owed (the datagrams wait in
+      // the system's queue); a step's wait between tries
+      var owedSlot = batch.firstWithoutRoom();
+      while owedSlot != 0xFFFFFFFFu32 {
+        match IoBuf.tryMake(recvRoom) {
+          case var Some(b) {
+            let old = batch.swapOut(owedSlot, b);
+            owedSlot = batch.firstWithoutRoom();
+          }
+          else {
+            refused.recvRefused = refused.recvRefused + 1u64;
+            let z = await aio.sleep(Duration.fromMillis(owedStepMillis));
+            if stopped {return;}
+          }
+        }
+      }
       // The batch goes to the socket and comes back in the answer
       let r = await sock.recvManyIn(batch, IoLimits.within(group));
       match r {
@@ -316,8 +337,15 @@ pub actor Endpoint {
           var k = 0u32;
           while k < cnt {
             let from = batch.from(k);
-            // The buffer the socket filled goes on to the connection as it is
-            let buf = batch.swapOut(k, IoBuf(recvRoom));
+            // The buffer the socket filled goes on to the connection as it is. A
+            // peer causes these buffers, so a full pool refuses one (tryMake):
+            // the slot is left empty, owed, and filled before the next receive
+            var fresh = IoBuf();
+            match IoBuf.tryMake(recvRoom) {
+              case var Some(b) {fresh = b;}
+              else {refused.recvRefused = refused.recvRefused + 1u64;}
+            }
+            let buf = batch.swapOut(k, fresh);
             if !batch.wasCut(k) {
               self.onDatagram(from, buf);
             }
