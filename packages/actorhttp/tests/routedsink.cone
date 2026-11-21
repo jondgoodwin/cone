@@ -27,7 +27,7 @@ import http use *;
 import httpclient use Response, Request;
 import actors;
 import aio;
-import actorhttp use BodyError, Client, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
+import actorhttp use BodyError, HttpClient, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
 import stages use ChunkSink, ChunkSource, Ending;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -279,7 +279,7 @@ actor Acceptor {
 
 // One POST; its status goes to the oneshot
 actor Poster {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, port: u16, path: String, n: usize, var done: OneshotSender[u64]) {
     let r = await client.send(post(port, path.view(), n));
@@ -287,7 +287,7 @@ actor Poster {
   }
 }
 
-fn postStatus(client: &Client, port: u16, path: &str, n: usize) u64 {
+fn postStatus(client: &HttpClient, port: u16, path: &str, n: usize) u64 {
   var tx: OneshotSender[u64];
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
@@ -307,7 +307,7 @@ fn main() i32 {
   let acceptor = Acceptor(Server.none());
   acceptor.open(ServerConfig.make().streamBodies().routes(router), ptx.clone());
   let port = prx.recv() || 0u16;
-  let client = Client.standard();
+  let client = HttpClient.standard();
 
   // 1. a body far larger than the credit window through a slow sink
   reset();

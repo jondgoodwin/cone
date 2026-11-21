@@ -25,7 +25,7 @@ import http use *;
 import httpclient use Request;
 import actors;
 import aio use IoLimits;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError;
 import stages use ChunkSink, ChunkSource, Ending;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -221,7 +221,7 @@ actor CheckSink is ChunkSink {
 
 // mode 0: the head, a pause, 'to(sink)'; 1: the head, a pause, 'read' to the end; 2: the head, a pause, dropped
 actor Chooser {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, mode: u32, pauseMs: i64) {
     let r = await client.stream(Request.get(u.view()));
@@ -295,7 +295,7 @@ fn main() i32 {
     // 1. the head, then to(sink)
     reset();
     {
-      let c = Chooser(Client.standard());
+      let c = Chooser(HttpClient.standard());
       c.run(url(port, "/big/3000000"), 0u32, 200i64);
       report("to(sink) after a pause, 3 MB", 3000000u64);
     }
@@ -304,7 +304,7 @@ fn main() i32 {
     printStr("\n");
     reset();
     {
-      let c = Chooser(Client.standard());
+      let c = Chooser(HttpClient.standard());
       c.run(url(port, "/big/3000000"), 0u32, 0i64);
       report("to(sink) at once, 3 MB", 3000000u64);
     }
@@ -315,7 +315,7 @@ fn main() i32 {
     // 2. the head, then read()
     reset();
     {
-      let c = Chooser(Client.standard());
+      let c = Chooser(HttpClient.standard());
       c.run(url(port, "/big/3000000"), 1u32, 200i64);
       report("read() after a pause, 3 MB", 3000000u64);
     }
@@ -326,7 +326,7 @@ fn main() i32 {
     // 3. the body ends before the choice
     reset();
     {
-      let c = Chooser(Client.standard());
+      let c = Chooser(HttpClient.standard());
       c.run(url(port, "/big/20000"), 0u32, 300i64);
       report("to(sink), body ended before the choice, 20 KB", 20000u64);
     }
@@ -335,7 +335,7 @@ fn main() i32 {
     printStr("\n");
     reset();
     {
-      let c = Chooser(Client.standard());
+      let c = Chooser(HttpClient.standard());
       c.run(url(port, "/big/20000"), 1u32, 300i64);
       report("read(), body ended before the choice, 20 KB", 20000u64);
     }
@@ -346,7 +346,7 @@ fn main() i32 {
     // 4. dropped unchosen
     reset();
     {
-      let c = Chooser(Client.standard());
+      let c = Chooser(HttpClient.standard());
       c.run(url(port, "/big/1073741824"), 2u32, 150i64);
       waitFor(&tally.ended, 1u64);
       waitFor(&tally.serverStopped, 1u64);
@@ -359,7 +359,7 @@ fn main() i32 {
     printStr("\n");
     reset();
     {
-      let c = Chooser(Client.standard());
+      let c = Chooser(HttpClient.standard());
       c.run(url(port, "/big/20000"), 2u32, 300i64);
       waitFor(&tally.ended, 1u64);
       printStr("a BodyStream dropped unchosen after its body ended\n");
@@ -371,7 +371,7 @@ fn main() i32 {
     // 5. a body far past the window, left unchosen
     reset();
     {
-      let c = Chooser(Client.standard());
+      let c = Chooser(HttpClient.standard());
       c.run(url(port, "/big/33554432"), 0u32, 700i64);
       let peak = waitPeak(&tally.ended, 1u64);
       report("32 MiB left unchosen 700 ms, then to(sink)", 33554432u64);

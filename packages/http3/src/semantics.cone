@@ -7,7 +7,7 @@
 // sections 4.2 and 4.3 checked: what is malformed is refused with the
 // reason, for the connection to answer as a stream error (H3_MESSAGE_ERROR,
 // section 4.1.2). The pseudo-header fields map to the head's own fields and
-// never into its Headers; a name is sent in lower case and refused in upper
+// never into its HttpHeaders; a name is sent in lower case and refused in upper
 // case; cookie crumbs are joined with "; " (section 4.2.1); Content-Length
 // and Host are the core's, as in http1: a body's length travels as a
 // BodyLength, the Host as the authority.
@@ -28,7 +28,7 @@ const seenProtocol = 32u32;
 // record, filled as the section is read and taken apart once by the reader
 // of its kind
 struct SectionFields {
-  headers: Headers;
+  headers: HttpHeaders;
   method: String;
   scheme: String;
   authority: String;
@@ -44,7 +44,7 @@ struct SectionFields {
 }
 
 fn newSectionFields() SectionFields {
-  SectionFields(headers: Headers(), method: String(), scheme: String(),
+  SectionFields(headers: HttpHeaders(), method: String(), scheme: String(),
     authority: String(), path: String(), status: 0u16, seen: 0u32,
     length: 0u64, hasLength: false, host: String(), hasHost: false,
     cookie: String(), hasCookie: false)
@@ -167,10 +167,10 @@ fn readSection(fields: &Array[HeaderField], kind: SectionKind, f: &mut SectionFi
       f.hasCookie = true;
       continue;
     }
-    if !f.headers.add(name, value) {return "a field Headers refuses";}
+    if !f.headers.add(name, value) {return "a field HttpHeaders refuses";}
   }
   if f.hasCookie {
-    if !f.headers.add("cookie", f.cookie.view()) {return "a cookie Headers refuses";}
+    if !f.headers.add("cookie", f.cookie.view()) {return "a cookie HttpHeaders refuses";}
   }
   ""
 }
@@ -251,12 +251,12 @@ fn readResponse(fields: &Array[HeaderField]) Result[ReadResponse, &'static str] 
 }
 
 // A trailer section as its fields, or why it is malformed
-fn readTrailers(fields: &Array[HeaderField]) Result[Headers, &'static str] {
+fn readTrailers(fields: &Array[HeaderField]) Result[HttpHeaders, &'static str] {
   var f = newSectionFields();
   let why = readSection(fields, SectionKind.Trailers, &mut f);
-  if !why.isEmpty() {return Err[Headers, &str](why);}
+  if !why.isEmpty() {return Err[HttpHeaders, &str](why);}
   let headers = f.(headers);
-  Ok[Headers, &str](headers)
+  Ok[HttpHeaders, &str](headers)
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +272,7 @@ fn lowerField(name: &str, value: &Array[u8]) HeaderField {
 
 // A head's header fields, appended to out in lower case. A field the core
 // writes itself or HTTP/3 does not have is a program error, a panic
-fn putRegular(h: &Headers, out: &mut List[HeaderField], file: &Array[u8], line: u32) {
+fn putRegular(h: &HttpHeaders, out: &mut List[HeaderField], file: &Array[u8], line: u32) {
   var i = 0usize;
   while i < h.len() {
     let name = h.nameAt(i);
@@ -324,6 +324,6 @@ fn responseFields(head: &ResponseHead, body: &BodyLength, out: &mut List[HeaderF
 
 // Trailer fields as a list: lower case, none the core writes or HTTP/3
 // does not have
-fn trailerFields(h: &Headers, out: &mut List[HeaderField], file: &Array[u8], line: u32) {
+fn trailerFields(h: &HttpHeaders, out: &mut List[HeaderField], file: &Array[u8], line: u32) {
   putRegular(h, out, file, line);
 }

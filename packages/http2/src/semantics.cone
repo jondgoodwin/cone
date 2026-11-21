@@ -7,7 +7,7 @@
 // section 8.2 and 8.3 checked: what is malformed is refused with the reason,
 // for the connection to answer as a stream error (PROTOCOL_ERROR, section
 // 8.1.1). The pseudo-header fields map to the head's own fields and never
-// into its Headers; a name is sent in lower case and refused in upper case;
+// into its HttpHeaders; a name is sent in lower case and refused in upper case;
 // cookie crumbs are joined with "; " (section 8.2.3). Content-Length and Host
 // are the core's, as in http1: sent, a body's length is written from its
 // BodyLength and the Host as ':authority'; received, Content-Length stays
@@ -30,7 +30,7 @@ const seenProtocol = 32u32;
 // record, filled as the block is read and taken apart once by the reader of
 // its kind
 struct BlockFields {
-  headers: Headers;
+  headers: HttpHeaders;
   method: String;
   scheme: String;
   authority: String;
@@ -46,7 +46,7 @@ struct BlockFields {
 }
 
 fn newBlockFields() BlockFields {
-  BlockFields(headers: Headers(), method: String(), scheme: String(),
+  BlockFields(headers: HttpHeaders(), method: String(), scheme: String(),
     authority: String(), path: String(), status: 0u16, seen: 0u32,
     length: 0u64, hasLength: false, host: String(), hasHost: false,
     cookie: String(), hasCookie: false)
@@ -168,10 +168,10 @@ fn readBlock(fields: &Array[HeaderField], kind: BlockKind, f: &mut BlockFields) 
       f.hasCookie = true;
       continue;
     }
-    if !f.headers.add(name, value) {return "a field Headers refuses";}
+    if !f.headers.add(name, value) {return "a field HttpHeaders refuses";}
   }
   if f.hasCookie {
-    if !f.headers.add("cookie", f.cookie.view()) {return "a cookie Headers refuses";}
+    if !f.headers.add("cookie", f.cookie.view()) {return "a cookie HttpHeaders refuses";}
   }
   ""
 }
@@ -246,12 +246,12 @@ fn readResponse(fields: &Array[HeaderField]) Result[ReadResponse, &'static str] 
 }
 
 // A trailer section's block as its fields, or why it is malformed
-fn readTrailers(fields: &Array[HeaderField]) Result[Headers, &'static str] {
+fn readTrailers(fields: &Array[HeaderField]) Result[HttpHeaders, &'static str] {
   var f = newBlockFields();
   let why = readBlock(fields, BlockKind.Trailers, &mut f);
-  if !why.isEmpty() {return Err[Headers, &str](why);}
+  if !why.isEmpty() {return Err[HttpHeaders, &str](why);}
   let headers = f.(headers);
-  Ok[Headers, &str](headers)
+  Ok[HttpHeaders, &str](headers)
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +267,7 @@ fn lowerField(name: &str, value: &Array[u8]) HeaderField {
 
 // A head's header fields, appended to out in lower case. A field the core
 // writes itself or HTTP/2 does not have is a program error, a panic
-fn putRegular(h: &Headers, out: &mut List[HeaderField], file: &Array[u8], line: u32) {
+fn putRegular(h: &HttpHeaders, out: &mut List[HeaderField], file: &Array[u8], line: u32) {
   var i = 0usize;
   while i < h.len() {
     let name = h.nameAt(i);
