@@ -5,7 +5,7 @@
 //
 //   read   through BodyStream.read(): every piece copied into a String and
 //          answered to the awaiting actor, the bytes released as taken
-//   sink   through Client.streamTo: every piece an IoBuf moved to a counting
+//   sink   through HttpClient.streamTo: every piece an IoBuf moved to a counting
 //          sink, which gives it back at once (that call releases the bytes)
 //
 // 'rounds' rounds, read first then sink in each, in one process, so the two
@@ -34,7 +34,7 @@ import iocore use SocketAddr;
 import http use *;
 import httpclient use Request;
 import actors;
-import actorhttp use Client, Server, ServerConfig, Exchange;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange;
 import stages use ChunkSink, ChunkSource, Ending;
 
 const blockSize = 65536usize;
@@ -133,7 +133,7 @@ fn sample() {
 
 // Reports bytes taken (0 if it went wrong)
 actor Reader {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, url: String, done: OneshotSender[u64]) {
     var total = 0u64;
@@ -202,7 +202,7 @@ actor Counter is ChunkSink {
 }
 
 actor Fetcher {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, url: String, sink: ChunkSink) {
     let r = await client.streamTo(Request.get(url.view()), sink);
@@ -229,10 +229,10 @@ fn run(sinkMode: bool, port: u16, size: u64) u64 {
   tx, rx = Oneshot[u64].make();
   let t0 = Instant.now();
   if sinkMode {
-    let f = Fetcher(Client.standard());
+    let f = Fetcher(HttpClient.standard());
     f.run(url(port, size), Counter(tx));
   } else {
-    let r = Reader(Client.standard());
+    let r = Reader(HttpClient.standard());
     r.run(url(port, size), tx);
   }
   let got = rx.recv() || 0u64;

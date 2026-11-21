@@ -25,7 +25,7 @@ import httpclient use Response, Request;
 import tls;
 import sse;
 import actors;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, EventStream;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, EventStream;
 import iobuf use IoBuf;
 import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
 import h3driver;
@@ -190,13 +190,13 @@ fn url(port: u16, path: &str) String {
 
 // A client that trusts the test root, with the HTTP/3 plug-in; 'prior' an
 // origin it knows speaks HTTP/3 (none when 0)
-fn trusting(prior: u16) Client {
+fn trusting(prior: u16) HttpClient {
   var cfg = httpclient.Config.make();
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
   cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
   if prior != 0u16 {cfg.http3Origins.push(url(prior, ""));}
-  Client.make(cfg, actorhttp.defaultMaxBody)
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
 }
 
 fn say(what: &str, r: Result[Response, FetchError]) {
@@ -231,7 +231,7 @@ fn overH3(r: Result[Response, FetchError]) bool {
 }
 
 actor Many {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, port: u16, n: u32, done: Sender[u64]) {
     var good = 0u64;
@@ -245,8 +245,8 @@ actor Many {
 }
 
 actor Prober {
-  client: Client;
-  prior: Client;
+  client: HttpClient;
+  prior: HttpClient;
 
   pub async fn run(self, port: u16, smallPort: u16, done: OneshotSender[u64]) {
     // Learned from Alt-Svc: the first over HTTP/2, the next over HTTP/3

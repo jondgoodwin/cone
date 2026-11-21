@@ -49,7 +49,7 @@ import http use *;
 import httpclient use Request;
 import tls;
 import actors;
-import actorhttp use Client, Server, ServerConfig, Exchange;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange;
 import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
 import h3driver;
 
@@ -227,8 +227,8 @@ fn origin(port: u16, secure: bool) String {
 
 // A client for protocol p (1, 2, 3): plain for 1; trusting the test root for 2 (h2 offered) and 3 (h3
 // known to be on the server's port)
-fn clientFor(p: u32, port: u16) Client {
-  if p == 1u32 {return Client.standard();}
+fn clientFor(p: u32, port: u16) HttpClient {
+  if p == 1u32 {return HttpClient.standard();}
   var cfg = httpclient.Config.make();
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
@@ -237,7 +237,7 @@ fn clientFor(p: u32, port: u16) Client {
     cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
     cfg.http3Origins.push(origin(port, true));
   }
-  Client.make(cfg, actorhttp.defaultMaxBody)
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
 }
 
 fn versionFor(p: u32) Version {
@@ -247,7 +247,7 @@ fn versionFor(p: u32) Version {
 // ---- the client's upload ----
 
 actor Uploader {
-  client: Client;
+  client: HttpClient;
 
   // Sends 'size' bytes from a ListSource through 'client.upload', and sends 'done' the server's answer
   // text if the status and the version are right ("" if the upload or the answer went wrong)
@@ -283,7 +283,7 @@ actor Uploader {
 }
 
 // One upload: its nanoseconds, or 0 if wrong
-fn runUp(client: Client, name: &str, port: u16, p: u32, size: u64, sum: bool) u64 {
+fn runUp(client: HttpClient, name: &str, port: u16, p: u32, size: u64, sum: bool) u64 {
   var u = origin(port, p != 1u32);
   u.append(if sum {"/upsum"} else {"/up"});
   var tx: OneshotSender[String];

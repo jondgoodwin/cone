@@ -31,7 +31,7 @@ import httpclient use Request;
 import sse;
 import actors;
 import aio use IoLimits;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError;
 import stages use ChunkSink, ChunkSource, Ending, ReaderSink, readSink;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -238,7 +238,7 @@ fn noteEnd(e: &FetchError) {
 
 // stream().read(), 'paceMs' asleep after each piece; 'stopAfter' pieces then the handle is dropped (0: to the end)
 actor Reader {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, paceMs: i64, stopAfter: u64, lim: IoLimits) {
     let r = await client.streamIn(Request.get(u.view()), lim);
@@ -300,7 +300,7 @@ fn mkEnd(how: &Ending) Result[Option[String], AnyError] {
 
 // streamTo into a ReaderSink read here; 'cancelAfter' bytes then the group is cancelled (0: never)
 actor SinkReader {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, lim: IoLimits, cancel: CancelGroup, cancelAfter: u64) {
     let rs = ReaderSink[Result[Option[String], AnyError]](&mkText, &mkEnd);
@@ -348,7 +348,7 @@ actor SinkReader {
 
 // events(): counts the events; 'delayMs' asleep before the first; 'stopAfter' events then the handle is dropped (0: to the end)
 actor EvReader {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, delayMs: i64, stopAfter: u64) {
     let r = await client.events(Request.get(u.view()));
@@ -410,7 +410,7 @@ fn main() i32 {
     // A body ninety times the window, read slowly
     reset();
     {
-      let r = Reader(Client.standard());
+      let r = Reader(HttpClient.standard());
       r.run(url(port, "/big/25165824"), 2i64, 0u64, IoLimits.none());
       let peak = waitPeak(&tally.ended, 1u64);
       printStr("24 MiB read through stream() 2 ms a piece: bytes ");
@@ -430,7 +430,7 @@ fn main() i32 {
     // The same body straight through a ReaderSink
     reset();
     {
-      let r = SinkReader(Client.standard());
+      let r = SinkReader(HttpClient.standard());
       r.run(url(port, "/big/25165824"), IoLimits.none(), none, 0u64);
       waitFor(&tally.ended, 1u64);
       printStr("24 MiB through a ReaderSink: bytes ");
@@ -448,7 +448,7 @@ fn main() i32 {
     // Each terminal case through a ReaderSink
     reset();
     {
-      let r = SinkReader(Client.standard());
+      let r = SinkReader(HttpClient.standard());
       r.run(url(port, "/big/5000"), IoLimits.none(), none, 0u64);
       waitFor(&tally.ended, 1u64);
       printStr("Done: bytes ");
@@ -462,7 +462,7 @@ fn main() i32 {
     reset();
     {
       let g = CancelGroup.make();
-      let r = SinkReader(Client.standard());
+      let r = SinkReader(HttpClient.standard());
       r.run(url(port, "/big/1073741824"), IoLimits.within(g.clone()), g, 1048576u64);
       waitFor(&tally.ended, 1u64);
       printStr("Cancelled mid-body: cancelled ");
@@ -477,7 +477,7 @@ fn main() i32 {
     }
     reset();
     {
-      let r = SinkReader(Client.standard());
+      let r = SinkReader(HttpClient.standard());
       r.run(url(port, "/stall/100000"), IoLimits.until(Instant.now() + Duration.fromMillis(400i64)), none, 0u64);
       waitFor(&tally.ended, 1u64);
       printStr("TimedOut mid-body: timed out ");
@@ -489,7 +489,7 @@ fn main() i32 {
     reset();
     {
       // port 1 on loopback is closed
-      let r = SinkReader(Client.standard());
+      let r = SinkReader(HttpClient.standard());
       r.run(url(1u16, "/big/10"), IoLimits.none(), none, 0u64);
       waitFor(&tally.ended, 1u64);
       printStr("Failed before the head: the caller's Err ");
@@ -505,7 +505,7 @@ fn main() i32 {
     // A BodyStream dropped mid-body: the rest of the fetch is cancelled
     reset();
     {
-      let r = Reader(Client.standard());
+      let r = Reader(HttpClient.standard());
       r.run(url(port, "/big/1073741824"), 0i64, 3u64, IoLimits.none());
       waitFor(&tally.ended, 1u64);
       waitFor(&tally.serverStopped, 1u64);
@@ -522,7 +522,7 @@ fn main() i32 {
     // An EventStream dropped mid-stream
     reset();
     {
-      let r = EvReader(Client.standard());
+      let r = EvReader(HttpClient.standard());
       r.run(url(port, "/events/100000000"), 0i64, 5u64);
       waitFor(&tally.ended, 1u64);
       waitFor(&tally.serverStopped, 1u64);
@@ -539,7 +539,7 @@ fn main() i32 {
     // A flood of tiny events, the reader late to begin
     reset();
     {
-      let r = EvReader(Client.standard());
+      let r = EvReader(HttpClient.standard());
       r.run(url(port, "/events/200000"), 500i64, 0u64);
       let peak = waitPeak(&tally.ended, 1u64);
       printStr("200,000 tiny events, the reader asleep 500 ms: events ");

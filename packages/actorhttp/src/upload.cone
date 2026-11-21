@@ -1,7 +1,7 @@
-// A client request whose body is fed by a stream: 'Client.upload(req, framing)' makes an Upload,
+// A client request whose body is fed by a stream: 'HttpClient.upload(req, framing)' makes an Upload,
 // 'Upload.sink()' is a stages.ChunkSink, and a pipeline (a FileSource, a gzip stage...) that ends in it
 // becomes the request's body, so a large upload never sits whole in memory; 'Upload.stream()' awaits the
-// response, as 'Client.stream' does. The sink is an actor shaped like ResponseSink (responsesink.cone): it
+// response, as 'HttpClient.stream' does. The sink is an actor shaped like ResponseSink (responsesink.cone): it
 // posts each chunk to the service thread (the jobs below), which keeps them in the upload's StreamRec
 // ('up', an UpState) and feeds them to the fetch (httpclient: sendUpload, pushBody, endBody).
 //
@@ -33,7 +33,7 @@
 struct UpHead {
   status: u16;
   version: Version;
-  headers: Headers;
+  headers: HttpHeaders;
   url: String;
 }
 
@@ -245,7 +245,7 @@ actor UploadSink is ChunkSink {
 // The handle
 // ---------------------------------------------------------------------------
 
-// A request being sent with a streamed body (Client.upload): plain data naming a record the service
+// A request being sent with a streamed body (HttpClient.upload): plain data naming a record the service
 // thread owns, which moves. 'sink' is the body's end of a pipeline; 'stream' awaits the response.
 // Dropped without 'stream', the upload is cancelled
 pub struct Upload is Move {
@@ -261,7 +261,7 @@ pub struct Upload is Move {
   }
 
   // The response, answered when its head arrives (or the fetch fails first), with a BodyStream as
-  // Client.stream's. Asked once; a response that came before it is waiting. A response that comes
+  // HttpClient.stream's. Asked once; a response that came before it is waiting. A response that comes
   // before the body is all sent (an early 413, say) is delivered here, and the source is stopped Finished
   pub fn stream(self: &, file: &Array[u8] = srcFile(), line: u32 = srcLine())
       actors.Awaitable[Result[BodyStream, FetchError]] {
