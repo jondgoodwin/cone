@@ -41,20 +41,25 @@ struct Rig {
   pub ids: List[FetchId];       // every fetch asked, in the order
   pub sends: List[u64];         // each Send's fetch, in the order given
   pub sendPcs: List[u32];       // ...and its connection
+  pub sendGens: List[u32];      // ...and that connection's generation
   pub answers: List[u64];       // each Answer's fetch
   pub kinds: List[EventKind];   // ...and its kind
   pub opens: u32;
 }
 
-fn limits(perOrigin: u32, total: u32, retries: u32) Limits {
+fn limits(perOrigin: u32, total: u32, retries: u32, streams: u32) Limits {
   Limits(perOrigin, total, Duration.fromHours(1i64), 10000u32, retries, 5u32, String.from("t"), false,
-    List[String](), Duration.fromSeconds(1i64), 100u32)
+    List[String](), Duration.fromSeconds(1i64), streams)
 }
 
 fn newRig(h2: bool, perOrigin: u32, total: u32, retries: u32) Rig {
-  Rig(core: ClientCore.make(limits(perOrigin, total, retries), 100u32, false), fk: Fake(true, true, h2),
-    ids: List[FetchId](), sends: List[u64](), sendPcs: List[u32](), answers: List[u64](), kinds: List[EventKind](),
-    opens: 0u32)
+  newRigStreams(h2, perOrigin, total, retries, 100u32)
+}
+
+fn newRigStreams(h2: bool, perOrigin: u32, total: u32, retries: u32, streams: u32) Rig {
+  Rig(core: ClientCore.make(limits(perOrigin, total, retries, streams), 100u32, false), fk: Fake(true, true, h2),
+    ids: List[FetchId](), sends: List[u64](), sendPcs: List[u32](), sendGens: List[u32](), answers: List[u64](),
+    kinds: List[EventKind](), opens: 0u32)
 }
 
 fn count(l: &List[u64], v: u64) u32 {
@@ -95,6 +100,7 @@ fn run(r: &mut Rig, c: Command) {
   } else if k == CommandKind.Send {
     r.sends.push(c.fetch.number());
     r.sendPcs.push(c.pc);
+    r.sendGens.push(c.gen);
   } else if k == CommandKind.Answer {
     r.answers.push(c.fetch.number());
     r.kinds.push(c.event.kind);
@@ -121,6 +127,27 @@ fn lastPc(r: &Rig, id: FetchId) u32 {
 }
 
 fn noPc() u32 {4294967295u32}
+
+// The generation of the connection fetch id was last sent on
+fn lastGen(r: &Rig, id: FetchId) u32 {
+  var k = r.sends.len();
+  while k > 0usize {
+    k = k - 1usize;
+    if *r.sends[k] == id.number() {return *r.sendGens[k];}
+  }
+  0u32
+}
+
+// An exchange's end that names its connection: fetch id's attempt on connection pc of generation gen
+fn endOf(r: &mut Rig, kind: PoolEventKind, id: FetchId, pc: u32, gen: u32) {
+  var e = PoolEvent.make(kind);
+  e.fetch = id;
+  e.pc = pc;
+  e.gen = gen;
+  e.failure = failure(Stage.Read, ErrorKind.Closed, true, false);
+  r.core.on(&e, &r.fk);
+  pump(r);
+}
 
 fn doneOf(r: &mut Rig, id: FetchId) {
   var e = PoolEvent.make(PoolEventKind.Done);
@@ -431,6 +458,79 @@ fn closedFirst() {
   settle(&mut m, "closed first, h2 many: every fetch answered once in all");
 }
 
+// A Done, Failed or Stopped that names its connection and comes after that connection's Closed ended the fetch
+// (sent it again) is of the first attempt: dropped, so the second is not ended by it, in either order
+fn lateEnds() {
+  var n = 0u32;
+  while n < 3u32 {
+    var r = newRig(false, 2u32, 4u32, 2u32);
+    let g = askFor(&mut r, "GET", Intent.Visible, 0i64);
+    let pc1 = lastPc(&r, g);
+    let gen1 = lastGen(&r, g);
+    closeOn(&mut r, g, false, failure(Stage.Closed, ErrorKind.Closed, true, false), false);
+    expectUInt(u64.from(count(&r.sends, g.number())), 2u64, "late end: the Closed sent the fetch again");
+    expectBool(lastPc(&r, g) != pc1 || lastGen(&r, g) != gen1, true, "late end: ...on another connection");
+    let k = if n == 0u32 {PoolEventKind.Failed} else if n == 1u32 {PoolEventKind.Done} else {PoolEventKind.Stopped};
+    endOf(&mut r, k, g, pc1, gen1);
+    expectUInt(u64.from(count(&r.answers, g.number())), 0u64, "late end: the first attempt's late word answers nothing");
+    expectUInt(u64.from(count(&r.sends, g.number())), 2u64, "late end: ...and sends nothing again");
+    expectUInt(u64.from(r.core.live()), 1u64, "late end: the fetch is still under way");
+    // the second attempt's own Done answers it, once
+    endOf(&mut r, PoolEventKind.Done, g, lastPc(&r, g), lastGen(&r, g));
+    expectUInt(u64.from(count(&r.answers, g.number())), 1u64, "late end: the second attempt's Done answers it once");
+    expectBool(*r.kinds[r.kinds.len() - 1usize] == EventKind.Done, true, "late end: ...Done");
+    // (and the same late word again, after the answer, finds no fetch)
+    endOf(&mut r, k, g, pc1, gen1);
+    settle(&mut r, "late end: answered once in all");
+    n = n + 1u32;
+  }
+}
+
+// Several HTTP/2 connections to one origin, each fetch on the one with the fewest streams: a connection opens
+// only when every open one is at maxStreams (3 here), up to maxPerOrigin (3 here); a tie goes to the one used
+// least recently
+fn spread() {
+  var r = newRigStreams(true, 3u32, 6u32, 2u32, 3u32);
+  var i = 0u32;
+  while i < 3u32 {
+    askFor(&mut r, "GET", Intent.Visible, 0i64);
+    i = i + 1u32;
+  }
+  expectUInt(u64.from(r.opens), 1u64, "spread: one connection takes the first three streams");
+  askFor(&mut r, "GET", Intent.Visible, 0i64);
+  expectUInt(u64.from(r.opens), 2u64, "spread: the fourth, with the first at maxStreams, opens a second connection");
+  askFor(&mut r, "GET", Intent.Visible, 0i64);
+  askFor(&mut r, "GET", Intent.Visible, 0i64);
+  expectUInt(u64.from(r.opens), 2u64, "spread: the second takes the next two");
+  let ids = r.ids.clone();
+  let a = lastPc(&r, ids[0usize]);
+  let b = lastPc(&r, ids[3usize]);
+  expectBool(a != b, true, "spread: the two connections are two");
+  expectBool(lastPc(&r, ids[2usize]) == a && lastPc(&r, ids[5usize]) == b, true, "spread: three streams each");
+  // the first has two streams, the second one
+  doneOf(&mut r, ids[0usize]);
+  doneOf(&mut r, ids[3usize]);
+  doneOf(&mut r, ids[4usize]);
+  let f6 = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  expectBool(lastPc(&r, f6) == b, true, "spread: the stream goes to the connection with the fewest (b: 1 against 2)");
+  // two each: the tie goes to the one used less recently (a, whose last stream was before b's)
+  let f7 = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  expectBool(lastPc(&r, f7) == a, true, "spread: a tie goes to the connection used less recently");
+  // a: 3, b: 2
+  let f8 = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  expectBool(lastPc(&r, f8) == b, true, "spread: ...and then the one with fewer again");
+  expectUInt(u64.from(r.opens), 2u64, "spread: still two connections");
+  // both full: a third opens (maxPerOrigin 3), and a fourth would not
+  askFor(&mut r, "GET", Intent.Visible, 0i64);
+  expectUInt(u64.from(r.opens), 3u64, "spread: both at maxStreams, a third connection opens");
+  askFor(&mut r, "GET", Intent.Visible, 0i64);
+  askFor(&mut r, "GET", Intent.Visible, 0i64);
+  askFor(&mut r, "GET", Intent.Visible, 0i64);
+  expectUInt(u64.from(r.opens), 3u64, "spread: maxPerOrigin is the most there are");
+  expectUInt(u64.from(r.core.queued()), 1u64, "spread: the fetch past all three connections' streams waits");
+  settle(&mut r, "spread: every fetch answered once in all");
+}
+
 // The time an event carries is the time the core stamps: a fetch answered while taking an event with a time
 // says that time was its end, and the core reads no clock for it
 fn timeIn() {
@@ -607,6 +707,8 @@ fn main() i32 {
   http2();
   closedFirst();
   timeIn();
+  lateEnds();
+  spread();
   model(1u64, 40usize, 120usize, "the pool's order: 40 waiting, random cancels, timeouts, reprioritizes and retries");
   model(7u64, 40usize, 120usize, "the pool's order, another run");
   model(21u64, 300usize, 900usize, "the pool's order: 300 waiting");
