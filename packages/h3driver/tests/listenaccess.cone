@@ -8,6 +8,12 @@
 // port 0; every listen must succeed. Without the fix about a third fail with 10013. A port the caller names is still
 // not retried: a listen on a TCP port that is free but whose UDP twin is held that way must fail, and does. Linux has
 // no equivalent refusal to arrange, so there the test only says so.
+//
+// The refusal needs the held socket on the WILDCARD address: a socket held exclusively on 127.0.0.1 makes the same bind
+// answer 10048, which the old retry already took (lane 859 measured it: with the PermissionDenied retry removed the
+// loopback variant still passed, the wildcard one failed 86 of 300). A wildcard bind makes Windows Firewall prompt, once
+// per exe path, and every worktree builds a new path. So on Windows the test runs only when CONE_WILDCARD_BIND_TESTS is
+// set (a dedicated run, where the prompt is expected); otherwise it prints a skip line.
 
 mod listenaccess;
 
@@ -19,6 +25,7 @@ import sync use Channel, Sender, Receiver;
 import tls;
 import h3driver;
 import actors;
+import env;
 import actorhttp use Server, ServerConfig;
 
 #if #os == .windows {
@@ -79,6 +86,13 @@ fn config(certFile: &Path, keyFile: &Path) ServerConfig {
 
 #if #os == .windows {
 fn main() i32 {
+  match env.get("CONE_WILDCARD_BIND_TESTS") {
+    case let Some(v) {}
+    else {
+      printStr("skipped: binds the wildcard address, which makes Windows Firewall prompt; set CONE_WILDCARD_BIND_TESTS=1 to run\n");
+      return 0i32;
+    }
+  }
   initAll();
   var lp = Loop.mustMake();
   var held = List[usize]();
