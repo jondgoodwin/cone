@@ -126,6 +126,7 @@ pub struct RequestBody is Move {
         let cc = *c;
         let sid = stream;
         let rid = id;
+        if choice.load() == bodyUnchosen {choice.swap(bodyRead);}   // the first read is the choice
         return actors.Awaitable[Result[Option[String], BodyError]].make(
           fn(rp: actors.ReplyOf[Result[Option[String], BodyError]]) [cc, sid, rid] {cc.xBodyRead(sid, rid, rp);});
       }
@@ -143,9 +144,19 @@ pub struct RequestBody is Move {
   // sink's buffers are the connection's own window; one that gives them back slowly slows the sender. A body
   // already chosen cannot be sent: the sink is ended Failed
   pub fn to(self, sink: ChunkSink) {
-    if conn is Some {
-      sink.end(Ending.Failed(AnyError.msg("a body sent to a sink is not built for a server with a router yet: use read or readAll")));
-      return;
+    match &conn {
+      case let &Some(c) {
+        let cc = *c;
+        let was = choice.swap(bodyTo);   // the body is consumed here: dropping the handle drops nothing
+        if was == bodyUnchosen {
+          cc.xBodyTo(stream, id, sink, ConnBodySource(cc, stream, id));
+        } else {
+          choice.store(was);   // already chosen: the choice stands
+          sink.end(Ending.Failed(AnyError.msg("the body was chosen already, it cannot be sent to a sink")));
+        }
+        return;
+      }
+      else {}
     }
     if choice.swap(bodyTo) == bodyUnchosen {
       post[ReqChoiceJob](ReqChoiceJob(srv, slot, id, Some[ChunkSink](sink)));
@@ -163,7 +174,15 @@ pub struct RequestBody is Move {
         let cc = *c;
         let sid = stream;
         let rid = id;
-        choice.store(bodyTo);   // the body is consumed here: dropping the handle drops nothing
+        let was = choice.swap(bodyTo);   // the body is consumed here: dropping the handle drops nothing
+        if was != bodyUnchosen {
+          choice.store(was);   // already chosen: the choice stands
+          let g = GatherSink(limit);
+          g.end(Ending.Failed(AnyError.msg("the body was chosen already, it cannot be read whole")));
+          let h = g.clone();
+          return actors.Awaitable[Result[String, BodyError]].make(
+            fn(rp: actors.ReplyOf[Result[String, BodyError]]) [h] {h.want(rp);});
+        }
         return actors.Awaitable[Result[String, BodyError]].make(
           fn(rp: actors.ReplyOf[Result[String, BodyError]]) [cc, sid, rid, limit] {cc.xBodyAll(sid, rid, limit, rp);});
       }
@@ -215,6 +234,22 @@ actor ReqSource is ChunkSource {
   pub async fn stop(self, why: Ending) {
     post[ReqStopJob](ReqStopJob(srv, slot, id, Some[Ending](why)));
   }
+}
+
+// The source a routed request body's sink gives its buffers back to: each goes to the connection actor, which
+// releases the credit it held; 'stop' ends the request (past a limit it answers 413)
+actor ConnBodySource is ChunkSource {
+  cc: ConnActor;
+  stream: u32;
+  id: u64;
+
+  pub fn init(self: &new, cc: ConnActor, stream: u32, id: u64) {
+    *self = Self(cc: cc, stream: stream, id: id);
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {cc.xBodyBack(stream, id, b);}
+
+  pub async fn stop(self, why: Ending) {cc.xBodyStop(stream, id, why);}
 }
 
 // The sink 'readAll' uses: the pieces gathered up to the limit, each buffer given back as it is copied

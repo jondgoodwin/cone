@@ -14,10 +14,10 @@
 //   mod weather;
 //   import httpclient use Response;
 //   import actors;
-//   import actorhttp use Client, FetchError;
+//   import actorhttp use HttpClient, FetchError;
 //
 //   actor Weather {
-//     client Client;
+//     client HttpClient;
 //
 //     pub async fn show(self, url String) {
 //       imm r = await client.get(url.view());      // pauses until the whole response is in
@@ -28,7 +28,7 @@
 //     }
 //   }
 //
-//   ...  Weather(Client.standard()) ...
+//   ...  Weather(HttpClient.standard()) ...
 //
 // (tests/manual.cone, the reference manual's example, is this and a server, run.)
 //
@@ -64,8 +64,8 @@
 //
 // What there is:
 //
-//   Client.standard()  Client.make(cfg, maxBody)   a client of http:// and https:// servers   (A CLIENT)
-//   c.clone()  Client.none()  c.isNone()           another handle to it; a handle naming nothing
+//   HttpClient.standard()  HttpClient.make(cfg, maxBody)   a client of http:// and https:// servers   (A CLIENT)
+//   c.clone()  HttpClient.none()  c.isNone()           another handle to it; a handle naming nothing
 //   c.get(url)                    a GET of a URL as text        Result[Response, FetchError]
 //   c.send(request)               a Request                     Result[Response, FetchError]
 //   c.getIn(url, lim)  c.sendIn(request, lim)     the same two, limited by lim, an IoLimits
@@ -127,7 +127,7 @@
 // framing field of the caller's) is a program error: a panic at the line of
 // the call, as httpclient's and httpconn's are.
 //
-// A CLIENT. 'Client.make(cfg, maxBody)' takes an httpclient.Config (its pools
+// A CLIENT. 'HttpClient.make(cfg, maxBody)' takes an httpclient.Config (its pools
 // per origin, retries, redirects and TLS settings are httpclient's) and the
 // most body bytes a response may have; past it the exchange fails at
 // Stage.Limit, as fetchWhole's does. The httpclient.Client it names lives in
@@ -157,7 +157,7 @@
 // under the first request, and a certificate refused
 // ends that request Failed at Stage.Tls (at Read or Closed instead, if the
 // connection broke before the request was asked for). A Conn is plain data
-// that moves, like Client. 'request' writes the head the caller made (a RequestHead, its
+// that moves, like HttpClient. 'request' writes the head the caller made (a RequestHead, its
 // authority the host: RequestHead.make("GET", "/", "example.com")) and the
 // body, and answers the whole response. The connection carries one exchange
 // at a time (HTTP/1.1 without pipelining), and one more may wait behind it;
@@ -247,7 +247,7 @@
 // this package's SseParseStage, which runs the sse package's Reader over each buffer
 // off the service thread (its comments and unknown fields dropped, its limit of
 // 1 MiB for one event a fetch failure at Stage.Limit) and sends the events on, against
-// the credit of a stages.ValueReader; the events wait there for the actor. The stream outlives the last Client handle that made it;
+// the credit of a stages.ValueReader; the events wait there for the actor. The stream outlives the last HttpClient handle that made it;
 // dropping the handle cancels its fetch's group, so the rest of the fetch is
 // cancelled and the connection let go. CREDIT (invariant I9): a buffer's bytes are
 // released to the connection when the piece is read (an event stream: when fewer
@@ -394,7 +394,7 @@
 // reads it (httpclient's, with a plug-in) comes back over HTTP/3. Each
 // HTTP/3 request is delivered and answered exactly as above (its head says
 // Version.Http3); a 413 or 503 goes on its stream, the connection carrying
-// on. A client's calls are the same: a Client whose httpclient.Config names
+// on. A client's calls are the same: an HttpClient whose httpclient.Config names
 // a plug-in fetches over HTTP/3 where httpclient's header says it does, and
 // the Response's 'version' says so.
 //
@@ -419,9 +419,10 @@
 // makes the program's own type and returns it as a HttpHandler. One handler serves an HTTP/1.1 connection's
 // requests in order (a request for another route makes another), and an HTTP/2 stream gets one of its own,
 // so a slow request does not hold its connection's others. The Exchange it is given has the methods of A SERVER
-// (respond, text, start, write, sendEvent, finish, request, and body with read and readAll); its calls reach the
-// connection by message, and a write or finish answers Closed once the connection has ended. Not on a
-// routed server: HTTP/3, 'bodySink', and a request body sent 'to' a sink (the sink is ended Failed).
+// (respond, text, start, write, sendEvent, finish, request, and body with read, readAll and to(sink)); its calls reach the
+// connection by message, and a write or finish answers Closed once the connection has ended. A body sent 'to' a
+// sink gets the connection's own buffers, and a buffer's credit returns when the sink gives it back. Not on a
+// routed server: HTTP/3, and 'bodySink' (the response's sink).
 //
 // The queue route's waiting requests are named to the server by (connection, request) and their bytes stay in
 // the connection. Only live ones count against maxPending: a request whose peer has gone (its connection
@@ -460,7 +461,7 @@
 // and lets the exchanges already taken finish; the server's idle connections
 // are then reset. 'await server.closed()' completes once that is done (the
 // listener shut, so a connect is refused). 'await server.waiting()' is how many
-// requests are in the server waiting for an actor to take them. A Server handle, as a Client, is plain data that moves and
+// requests are in the server waiting for an actor to take them. A Server handle, as an HttpClient, is plain data that moves and
 // 'clone's.
 //
 // On Windows and Linux, as httpclient and httpconn are. Not here: a request's
@@ -600,31 +601,31 @@ pub const defaultMaxBody = 16777216usize;
 // header, A CLIENT): plain data naming a httpclient.Client that the service
 // thread owns, which moves, and which 'clone' makes another handle to. The
 // last handle's going ends the client
-pub struct Client is Move {
+pub struct HttpClient is Move {
   id: u64;
 
   // A client with httpclient's defaults, whose bodies are read up to defaultMaxBody
-  pub fn standard() Client {Client.make(httpclient.Config.make(), defaultMaxBody)}
+  pub fn standard() HttpClient {HttpClient.make(httpclient.Config.make(), defaultMaxBody)}
 
   // A client with cfg's pools, limits and TLS, whose response bodies are
   // read up to maxBody bytes (past it the exchange fails at Stage.Limit)
-  pub fn make(cfg: httpclient.Config, maxBody: usize) Client {
+  pub fn make(cfg: httpclient.Config, maxBody: usize) HttpClient {
     let id = newId();
     post[CreateClientJob](CreateClientJob(id, cfg, maxBody));
-    Client(id)
+    HttpClient(id)
   }
 
-  // A Client naming nothing, which ends nothing
-  pub fn none() Client {Client(0u64)}
+  // An HttpClient naming nothing, which ends nothing
+  pub fn none() HttpClient {HttpClient(0u64)}
 
   pub fn isNone(self: &) bool {id == 0u64}
 
   // Another handle to the same client, its pools and its limits
-  pub fn clone(self: &) Client {
+  pub fn clone(self: &) HttpClient {
     if id != 0u64 {
       post[RefJob](RefJob(id, true));
     }
-    Client(id)
+    HttpClient(id)
   }
 
   // A GET of a URL written as text, answered with the whole response

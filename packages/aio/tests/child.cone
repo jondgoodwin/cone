@@ -60,6 +60,61 @@ fn endedBy(r: &Result[process.Output, IoError]) u64 {
   }
 }
 
+// The system number of a failure (0 when it is not an Err, or has none)
+fn errCodeOf(r: &Result[process.Output, IoError]) u64 {
+  match r {
+    case let &Err(e) {u64.from(e.code)}
+    else {0u64}
+  }
+}
+
+// How a child ended, in one number (several actors share one channel, so one send each): endedBy in bits 56-63, the
+// Err's system number (low 24 bits) in bits 32-55, the exit code in bits 0-31
+fn packEnd(how: u64, code: u64, exit: u32) u64 {
+  (how << 56u64) | ((code & 16777215u64) << 32u64) | u64.from(exit)
+}
+
+fn endOk(p: u64) bool { (p >> 56u64) == 1u64 && (p & 4294967295u64) == 0u64 }
+
+// The packed end in words: " [endedBy 4 errno 5 exit 0]"
+fn endText(p: u64) String {
+  var s = String();
+  s.append(" [endedBy ");
+  s.appendUInt(p >> 56u64);
+  s.append(" errno ");
+  s.appendUInt((p >> 32u64) & 16777215u64);
+  s.append(" exit ");
+  s.appendUInt(p & 4294967295u64);
+  s.append("]");
+  s
+}
+
+// One child of a crowd reports how it ended
+fn crowdReport(out: &Sender[u64], r: Result[process.Output, IoError]) {
+  let how = endedBy(&r);
+  let code = errCodeOf(&r);
+  let o = outputOf(r);
+  out.send(packEnd(how, code, o.exitCode));
+}
+
+// Takes the reports of 'n' children and checks all were Done with exit 0; a failure's label names each failed child's
+// endedBy, errno and exit code
+fn crowdCheck(rx: &mut Receiver[u64], n: u64, what: &str) {
+  var done = 0u64;
+  var diag = String();
+  var k = 0u64;
+  while k < n {
+    let p = take(rx);
+    if endOk(p) {done = done + 1u64;}
+    else {diag.append(endText(p).view());}
+    k = k + 1u64;
+  }
+  var label = String();
+  label.append(what);
+  label.append(diag.view());
+  expect(done == n, label.view());
+}
+
 // 1 for a failure of the kind NotFound, else 0
 fn notFoundOf(r: &Result[process.Output, IoError]) u64 {
   match r {
@@ -174,9 +229,7 @@ actor Echoer {
 actor Slow {
   pub async fn go(self, out: Sender[u64]) {
     let r = await aio.runLine(slowLine(1u64).view());
-    let how = endedBy(&r);
-    let o = outputOf(r);
-    out.send(if how == 1u64 && o.exitCode == 0u32 {12u64} else {19u64});
+    crowdReport(&out, r);
   }
 }
 
@@ -219,9 +272,7 @@ actor Big {
 actor Crowd {
   pub async fn go(self, out: Sender[u64]) {
     let r = await aio.runLine(slowLine(2u64).view());
-    let how = endedBy(&r);
-    let o = outputOf(r);
-    out.send(b(how == 1u64 && o.exitCode == 0u32));
+    crowdReport(&out, r);
   }
 }
 
@@ -229,9 +280,7 @@ actor Crowd {
 actor QuietCrowd {
   pub async fn go(self, out: Sender[u64]) {
     let r = await aio.runLine(slowLine(2u64).view(), process.Options(crashReport: false));
-    let how = endedBy(&r);
-    let o = outputOf(r);
-    out.send(b(how == 1u64 && o.exitCode == 0u32));
+    crowdReport(&out, r);
   }
 }
 
@@ -317,13 +366,7 @@ fn main() i32 {
       c.go(tx.clone());
       k = k + 1u64;
     }
-    var all = 0u64;
-    k = 0u64;
-    while k < 12u64 {
-      all = all + take(&mut rx);
-      k = k + 1u64;
-    }
-    expectUInt(all, 12u64, "twelve children at once: each Done");
+    crowdCheck(&mut rx, 12u64, "twelve children at once: each Done");
     expect(ms(t) < 5000u64, "...together, not four at a time (about 2 s together; 6 s or more four at a time)");
   }
 
@@ -360,8 +403,21 @@ fn main() i32 {
   slow.go(tx.clone());
   let nap = Napper();
   nap.go(tx.clone());
-  expectUInt(take(&mut rx), 11u64, "a sleeper finishes while the child still runs");
-  expectUInt(take(&mut rx), 12u64, "...and the child ends Done, exit code 0");
+  {
+    // The sleeper's 11 must come first (the child still runs); both are taken either way, so a child that ended first
+    // is named in the label
+    let first = take(&mut rx);
+    let second = take(&mut rx);
+    let ended = if first == 11u64 {second} else {first};
+    var order = String();
+    order.append("a sleeper finishes while the child still runs");
+    if first != 11u64 {order.append(endText(first).view());}
+    expect(first == 11u64, order.view());
+    var label = String();
+    label.append("...and the child ends Done, exit code 0");
+    label.append(endText(ended).view());
+    expect(endOk(ended), label.view());
+  }
 
   // Twelve 'crashReport: false' children of a second at once: no cap of four (they were a pool thread's each)
   {
@@ -372,13 +428,7 @@ fn main() i32 {
       c.go(tx.clone());
       k = k + 1u64;
     }
-    var all = 0u64;
-    k = 0u64;
-    while k < 12u64 {
-      all = all + take(&mut rx);
-      k = k + 1u64;
-    }
-    expectUInt(all, 12u64, "twelve crashReport:false children at once: each Done");
+    crowdCheck(&mut rx, 12u64, "twelve crashReport:false children at once: each Done");
     expect(ms(t) < 5000u64, "...together, not four at a time (about 2 s together; 6 s or more four at a time)");
   }
 

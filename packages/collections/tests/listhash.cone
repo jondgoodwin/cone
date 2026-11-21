@@ -1,0 +1,79 @@
+// A List is Hash where its element is: it feeds a Hasher its length, then each
+// element in order. Two equal lists hash alike; lists that differ in an element,
+// in their order or in where one element ends and the next begins ([[1],[2,3]]
+// and [[1,2],[3]]) do not; and a struct holding a List derives its hash through
+// it. A Hasher seeded with 5 throughout.
+
+mod listhash;
+
+import testing use *;
+import collections use *;
+
+struct Key is Eq, Hash {
+  pub n: u32;
+  pub parts: List[u8];
+}
+
+// Hash but not Eq (like pools.Handle): a List of it must still compile; it just isn't Hash
+struct HashOnly {
+  pub n: u32;
+
+  pub fn hash(self: &, h: &mut Hasher) {
+    h.writeU64(u64.from(self.n));
+  }
+}
+
+fn hashOf[K: Hash](k: &K) u64 {
+  var h = Hasher.withSeed(5u64);
+  k.hash(&mut h);
+  h.finish()
+}
+
+fn bytes(a: u8, b: u8, c: u8) List[u8] {
+  var l = List[u8]();
+  l.push(a);
+  l.push(b);
+  l.push(c);
+  l
+}
+
+fn nested(x: &List[u8], y: &List[u8]) List[List[u8]] {
+  var l = List[List[u8]]();
+  l.push(x.clone());
+  l.push(y.clone());
+  l
+}
+
+fn main() i32 {
+  let a = bytes(1u8, 2u8, 3u8);
+  let b = bytes(1u8, 2u8, 3u8);
+  expectUInt(hashOf(&a), hashOf(&b), "equal lists hash alike");
+  expect(hashOf(&a) != hashOf(&bytes(1u8, 2u8, 4u8)), "an element differs");
+  expect(hashOf(&a) != hashOf(&bytes(3u8, 2u8, 1u8)), "the order differs");
+  expect(hashOf(&List[u8]()) != hashOf(&a), "empty and not");
+
+  // The length is fed: where one element ends and the next begins
+  var one = List[u8]();
+  one.push(1u8);
+  var two = List[u8]();
+  two.push(2u8);
+  two.push(3u8);
+  var onetwo = List[u8]();
+  onetwo.push(1u8);
+  onetwo.push(2u8);
+  var three = List[u8]();
+  three.push(3u8);
+  let p = nested(&one, &two);
+  let q = nested(&onetwo, &three);
+  expectUInt(hashOf(&p), hashOf(&nested(&one, &two)), "equal nested lists hash alike");
+  expect(hashOf(&p) != hashOf(&q), "[[1],[2,3]] and [[1,2],[3]] differ");
+
+  // As a struct's field
+  expectUInt(hashOf(&Key(7u32, bytes(1u8, 2u8, 3u8))), hashOf(&Key(7u32, bytes(1u8, 2u8, 3u8))), "a struct holding a List: equal");
+  expect(hashOf(&Key(7u32, bytes(1u8, 2u8, 3u8))) != hashOf(&Key(7u32, bytes(1u8, 2u8, 4u8))), "a struct holding a List: differing in it");
+  // A List of a Hash-but-not-Eq element compiles and works (it is not itself Hash)
+  var ho = List[HashOnly]();
+  ho.push(HashOnly(4u32));
+  expectUInt(u64.from(ho.len()), 1u64, "a List of a Hash-not-Eq element compiles");
+  done()
+}

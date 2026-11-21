@@ -2,7 +2,7 @@
 // 'Exchange.bodySink()' costs against 'write' of Strings (streaming bodies, step 4,
 // the server response). The same loopback server of this package answers both, a
 // body of 'MiB' mebibytes in 64 KiB blocks, and the same client takes it
-// (Client.streamTo into a counting sink), so only the server's side differs:
+// (HttpClient.streamTo into a counting sink), so only the server's side differs:
 //
 //   write   a handler awaiting 'ex.write(String)' for each block: the String is copied
 //           into pool buffers on the service thread, the awaited reply is the credit
@@ -46,7 +46,7 @@ import iocore use SocketAddr;
 import http use *;
 import httpclient use Request;
 import actors;
-import actorhttp use Client, Server, ServerConfig, Exchange;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange;
 import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
 
 const blockSize = 65536usize;
@@ -247,7 +247,7 @@ actor Counter is ChunkSink {
 }
 
 actor Fetcher {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, url: String, sink: ChunkSink) {
     let r = await client.streamTo(Request.get(url.view()), sink);
@@ -261,7 +261,7 @@ actor Fetcher {
 // ---- the client's upload: a String body, or 'client.upload' fed by a ListSource ----
 
 actor Uploader {
-  client: Client;
+  client: HttpClient;
 
   // Sends the body ('body' whole, or 'size' bytes from a ListSource when 'viaSink'), and sends 'done' the
   // server's count of the bytes it read (0 if the upload or the answer went wrong)
@@ -330,7 +330,7 @@ fn runUp(sinkMode: bool, port: u16, size: u64) u64 {
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   let t0 = Instant.now();
-  let f = Uploader(Client.standard());
+  let f = Uploader(HttpClient.standard());
   f.run(u, body, size, sinkMode, tx);
   let got = rx.recv() || 0u64;
   let ns = u64.from(t0.elapsed().nanos());
@@ -371,7 +371,7 @@ fn run(sinkMode: bool, port: u16, size: u64) u64 {
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   let t0 = Instant.now();
-  let f = Fetcher(Client.standard());
+  let f = Fetcher(HttpClient.standard());
   f.run(url(port, sinkMode, size), Counter(tx));
   let got = rx.recv() || 0u64;
   let ns = u64.from(t0.elapsed().nanos());
