@@ -25,6 +25,7 @@ import time use Instant, Duration;
 import sync use Channel, Sender, Receiver;
 import collections use List, String, AnyError;
 import iobuf use IoBuf, Chain;
+import bufpool;
 import iocore use SocketAddr;
 import http use *;
 import httpclient use Request;
@@ -308,7 +309,9 @@ actor Reader {
 
 // Take with tryMake, every size class in turn, until each is refused
 fn hoard() Chain {
-  iobuf.trimAll();
+  // not trimAll: the server and client threads are running and take and return buffers, and trimAll
+  // flushes their caches from under them. This thread's own cache and the idle slabs are what it needs.
+  bufpool.trimStock();
   var held = Chain.make(unbounded);
   var took = true;
   while took {
@@ -357,7 +360,7 @@ fn main() i32 {
   let tenBytes = 1048576u64;
   reset();
   {
-    iobuf.trimAll();
+    bufpool.trimStock();   // not trimAll: the server thread is running (see hoard)
     let base = u64.from(iobuf.stats().heldBytes);
     var k = 0u64;
     while k < 10u64 {
