@@ -159,6 +159,13 @@ actor Starter {
   }
 }
 
+actor Waiter {
+  pub async fn hear(self, p: TestPipe, n: usize, out: Sender[String]) {
+    let s = await pipeSeen(p, n);
+    out.send(String.from("waited"));
+  }
+}
+
 // Both client counters at 0 within seconds
 fn gone() bool {
   let limit = Instant.now() + Duration.fromSeconds(10i64);
@@ -271,6 +278,19 @@ fn main() i32 {
   expectStr(takeS(&mut orx).view(), "err failed", "no pipe left: the connection fails to connect and the fetch is answered Failed");
   f6.dropClient();
   expect(gone(), "...the empty client is gone");
+
+  // Two waits on one pipe: both return
+  let pw = TestPipe();
+  let w1 = Waiter();
+  let w2 = Waiter();
+  w1.hear(pw, 1usize, otx.clone());
+  w2.hear(pw, 2usize, otx.clone());
+  thread.sleep(Duration.fromMillis(200i64));
+  var wb = IoBuf(8usize);
+  wb.append("ab" as &Array[u8]);
+  pw.write(wb);
+  expectStr(takeS(&mut orx).view(), "waited", "two waits on one pipe: the first is answered");
+  expectStr(takeS(&mut orx).view(), "waited", "...and the second");
 
   // A handler
   let f7 = Fetcher(client(TestTargets.make().to("handler.test", 80u16, TestTarget.handler(HttpRoutes.make().handle("handler.test", "/", &makeHello)))));
