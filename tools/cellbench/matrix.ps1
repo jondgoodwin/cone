@@ -16,7 +16,7 @@ $rows = switch ($Set) {
   # Row 529's check, the phase lock (form cl: c with followCell, 3 ms spread) against m1 in the same window, in the rows 528 listed:
   # A 60 Hz, B100, B1000, Z, CR1000 (the Linux 100 row is tools\cellbench\linux.sh, m1:100:1 cl:100:1)
   'L'   {
-    foreach ($f in 'm1', 'c', 'cl') { @{ f = $f; n = 8; p = 1; w = 4; cw = 2; b = 28; hz = 60; tag = "A60-$f" } }
+    foreach ($f in 'm1', 'c', 'cl', 'cl1') { @{ f = $f; n = 8; p = 1; w = 4; cw = 2; b = 28; hz = 60; tag = "A60-$f" } }
     foreach ($n in 100, 1000) { foreach ($f in 'm1', 'cl') { @{ f = $f; n = $n; p = [int][math]::Ceiling($n / 625.0); w = 8; cw = 4; tag = "B$n-$f" } } }
     foreach ($f in 'm1', 'cl') { @{ f = $f; n = 1000; p = 2; w = 8; cw = 4; z = 2; tag = "Z2x500-$f" } }
     foreach ($f in 'm1', 'cl') { @{ f = $f; n = 1000; p = 2; w = 8; cw = 4; crowd = $true; tag = "CR1000-$f" } }
