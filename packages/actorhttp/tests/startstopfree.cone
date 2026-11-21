@@ -1,0 +1,221 @@
+// Start-stop-free under load (S7, spec section 8; Jon's requirement that stopping a server leaves nothing behind). The
+// silent failure it guards: a server that, closed while busy, leaves a connection actor, the server actor, a lent
+// buffer or an operation of aio's in flight behind, which a program that starts and stops servers would pay for each time.
+// A routed server (answers "ok") serves 8 loaders: four keep a connection for 20 requests and then make another
+// (churn), four keep one connection for good (so the close has live connections to end); each stops when a connect
+// is refused or its connection fails. When 3,000 requests have been answered the server is closed (deadline
+// 300 ms) with the load still running. Checked: 'closed()' answers within the deadline and slack; a connect after it is
+// refused; every loader ends; the connection actors and then (the program letting go of the Server) the server actor
+// are gone; no buffer is lent (iobuf.stats) and, after finalAll, no aio operation is in flight and every one submitted
+// was delivered (aio.ioCounters). There is no count of live socket handles to read: the refused connect and the freed
+// connection actors (whose sockets they own) stand for them.
+
+mod startstopfree;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import iobuf use IoBuf;
+import http use *;
+import actors;
+import aio;
+import actorhttp use Server, ServerConfig, Exchange, HttpRoutes, HttpHandler;
+
+let served: Atomic[u64];        // requests the loaders have had answered
+let closedFlag: Atomic[u64];
+
+fn @initpure init() {
+  served = Atomic[u64].of(0u64);
+  closedFlag = Atomic[u64].of(0u64);
+}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+actor Answer is HttpHandler {
+  n: u64;
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.text(200u16, "ok");
+  }
+}
+
+fn makeOk() HttpHandler {
+  let h = Answer();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+
+  pub async fn watchClosed(self) {
+    let c = await server.closed();
+    if c {closedFlag.store(1u64);}
+  }
+
+  pub async fn release(self) {
+    var gone = Server.none();
+    gone <-> server;
+  }
+}
+
+// Keeps a connection for 20 requests, then makes another; ends when a connect fails
+actor Loader {
+  pub async fn run(self, port: u16, per: u32, var done: Sender[u64]) {
+    var go = true;
+    while go {
+      match await aio.connect(SocketAddr.localhost(port)) {
+        case var Ok(s) {
+          var r = 0u32;
+          while r < per && go {
+            let req = "GET /x HTTP/1.1\r\nHost: h\r\n\r\n";
+            var b = IoBuf(req.len());
+            b.append(req);
+            let w = await s.write(b);
+            var ok = false;
+            match w {case let Ok(x) {ok = true;} case let Err(e) {}}
+            var fin = !ok;
+            var guard = 0u32;
+            while !fin && guard < 50u32 {
+              let rd = await s.readIn(IoBuf(1024usize), aio.IoLimits.until(Instant.now() + Duration.fromSeconds(5i64)));
+              match rd {
+                case let Ok(x) {
+                  if x.len() == 0usize {fin = true; ok = false;}
+                  else if x.view()[x.len() - 1usize] == 0x6Bu8 {fin = true;}     // the "k" of "ok"
+                }
+                case let Err(e) {fin = true; ok = false;}
+              }
+              guard = guard + 1u32;
+            }
+            if ok {served.add(1u64); r = r + 1u32;} else {r = per;}
+          }
+        }
+        case let Err(e) {go = false;}
+      }
+    }
+    done.send(1u64);
+  }
+}
+
+actor Raw {
+  sock: aio.Socket;
+
+  pub async fn open(self, port: u16, var done: OneshotSender[u64]) {
+    match await aio.connect(SocketAddr.localhost(port)) {
+      case var Ok(s) {
+        sock <-> s;
+        done.send(1u64);
+      }
+      case let Err(e) {done.send(0u64);}
+    }
+  }
+}
+
+fn connect(port: u16) (Raw, bool) {
+  let raw = Raw(aio.Socket.none());
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  raw.open(port, tx);
+  (raw, (rx.recv() || 0u64) == 1u64)
+}
+
+fn waitCount(read: &fn() u64, n: u64, ms: i64) u64 {
+  let until = Instant.now() + Duration.fromMillis(ms);
+  var seen = read();
+  while seen != n && Instant.now() < until {
+    thread.sleep(Duration.fromMillis(10i64));
+    seen = read();
+  }
+  seen
+}
+
+fn waitAtLeast(read: &fn() u64, n: u64, ms: i64) u64 {
+  let until = Instant.now() + Duration.fromMillis(ms);
+  var seen = read();
+  while seen < n && Instant.now() < until {
+    thread.sleep(Duration.fromMillis(10i64));
+    seen = read();
+  }
+  seen
+}
+
+fn readConns() u64 {actorhttp.liveConnActors()}
+fn readServers() u64 {actorhttp.liveServerActors()}
+fn readClosed() u64 {closedFlag.load()}
+fn readServed() u64 {served.load()}
+fn readLent() u64 {u64.from(iobuf.stats().lentBytes)}
+
+fn main() i32 {
+  initAll();
+  let lent0 = readLent();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let cfg = ServerConfig.make().routes(HttpRoutes.make().handle("", "/", &makeOk))
+    .shutdownWithin(Duration.fromMillis(300i64));
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  var dtx: Sender[u64];
+  var drx: Receiver[u64];
+  dtx, drx = Channel[u64].make();
+  var loaders = List[Loader]();
+  var i = 0u32;
+  while i < 8u32 {
+    let l = Loader();
+    l.run(port, if i < 4u32 {20u32} else {0xFFFFFFFFu32}, dtx.clone());
+    loaders.push(l);
+    i = i + 1u32;
+  }
+  say("load running (3,000 answered)", if waitAtLeast(&readServed, 3000u64, 60000i64) >= 3000u64 {1u64} else {0u64});
+  acceptor.watchClosed();
+  acceptor.stop();
+  let t0 = Instant.now();
+  let closedSeen = waitCount(&readClosed, 1u64, 5000i64);
+  say("closed() answered", closedSeen);
+  let took = u64.from(t0.elapsed().nanos() / 1000000i64);
+  say("within the deadline and slack (under 3 s)", if took < 3000u64 {1u64} else {0u64});
+  var ended = 0u64;
+  var polls = 0u32;
+  while ended < 8u64 && polls < 1000u32 {
+    match drx.tryRecv() {
+      case let Some(v) {ended = ended + v;}
+      else {thread.sleep(Duration.fromMillis(10i64)); polls = polls + 1u32;}
+    }
+  }
+  say("loaders ended", ended);
+  if ended < 8u64 {
+    printStr("the loaders did not all end\n");
+    say("connection actors alive", actorhttp.liveConnActors());
+    libc.exit(0i32);
+  }
+  let late, lateOk = connect(port);
+  say("a connect after close is refused", if lateOk {0u64} else {1u64});
+  say("connection actors left", waitCount(&readConns, 0u64, 5000i64));
+  acceptor.release();
+  say("server actors left", waitCount(&readServers, 0u64, 5000i64));
+  say("no buffer lent", if waitCount(&readLent, lent0, 10000i64) == lent0 {1u64} else {0u64});
+  finalAll();
+  let c = aio.ioCounters();
+  say("aio operations in flight at the end", c.inFlight);
+  say("every aio operation submitted was delivered", if c.submitted == c.delivered {1u64} else {0u64});
+  0
+}

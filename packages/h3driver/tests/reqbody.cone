@@ -22,7 +22,7 @@ import tls;
 import h3driver;
 import actors;
 import aio use IoLimits;
-import actorhttp use BodyError, Client, Server, ServerConfig, Exchange, FetchError;
+import actorhttp use BodyError, HttpClient, Server, ServerConfig, Exchange, FetchError;
 import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -418,13 +418,13 @@ fn readText(name: &str) String {
 }
 
 // A client that trusts the test root, with the HTTP/3 plug-in, and knows this origin speaks HTTP/3
-fn newClient(port: u16) Client {
+fn newClient(port: u16) HttpClient {
   var cfg = httpclient.Config.make();
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
   cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
   cfg.http3Origins.push(url(true, port, ""));
-  Client.make(cfg, actorhttp.defaultMaxBody)
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
 }
 
 fn url(secure: bool, port: u16, path: &str) String {
@@ -436,7 +436,7 @@ fn url(secure: bool, port: u16, path: &str) String {
 
 // One upload by POST: 'total' bytes from a Gen in chunks of 'chunk', sized or unsized
 actor Up {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, total: u64, chunk: usize, sized: bool) {
     let framing = if sized {BodyLength.sized(total)} else {BodyLength.unsized()};
@@ -469,7 +469,7 @@ actor Up {
 
 // A plain GET, to see the server still answers
 actor Plain {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String) {
     let r = await client.send(Request.get(u.view()));

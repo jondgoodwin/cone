@@ -426,7 +426,9 @@
 // minThreads: ..., maxThreads: ..., queueBound: ..., idleMillis: ...))' makes
 // more (64 in all), one per storage device for the file service to come. A
 // submit past a lane's bound is answered at once, Failed with ERROR_BUSY
-// (Linux's EBUSY: ResourceBusy), its buffer back (I9). 'l.stats()' counts its queue depth now and at most,
+// (Linux's EBUSY: ResourceBusy), its buffer back (I9); a lane made with 'waitWhenFull' (the DNS lane is) keeps it
+// in a waiting list instead, holding no thread, until the queue has room, or its
+// cancel or deadline takes it out ('stats().waiting' counts them). 'l.stats()' counts its queue depth now and at most,
 // threads, jobs run, cancelled out of the queue and refused, and the time
 // jobs waited queued. The pool comes with three kinds of work, each an Op
 // built by a function: 'resolveOp(host, port, buf)' (DNS lane; Done(n), the
@@ -979,6 +981,11 @@ fn queueFull() u32 {#if #os == .windows {errorBusy} #else {16u32}}              
 fn noMemory() u32 {#if #os == .windows {errorNotEnoughMemory} #else {12u32}}           // ENOMEM
 fn abandoned() u32 {#if #os == .windows {errorOperationAborted} #else {125u32}}        // ECANCELED
 fn datagramCut() u32 {#if #os == .windows {errorMsgSize} #else {90u32}}                // EMSGSIZE
+
+// Two of those numbers, for a package that sets an answer's code itself (aio's records), so that it
+// repeats neither: the code of an operation on a handle that names nothing, and of one that found no memory
+pub fn noSuchHandleCode() u32 {noSuchHandle()}
+pub fn noMemoryCode() u32 {noMemory()}
 
 // How a file is opened
 pub enum Access {

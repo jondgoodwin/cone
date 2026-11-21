@@ -106,7 +106,7 @@ pub enum Event {
   pub struct Response {pub stream: u32; pub head: ResponseHead; pub body: BodyLength;}
   pub struct Interim {pub stream: u32; pub head: ResponseHead;}
   pub struct Data {pub stream: u32; pub buf: IoBuf;}
-  pub struct End {pub stream: u32; pub trailers: Headers;}
+  pub struct End {pub stream: u32; pub trailers: HttpHeaders;}
   pub struct Reset {pub stream: u32; pub error: HttpError;}
   pub struct GoAway {pub stream: u32; pub lastStream: u32; pub code: ErrorCode; pub debug: String;}
   pub struct Pong {pub stream: u32; pub data: u64;}
@@ -713,11 +713,11 @@ pub struct Connection is Move {
   // do (ended, finished) does nothing; short of a Content-Length is a
   // program error
   pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
-    self.finishWith(stream, Headers(), file, line);
+    self.finishWith(stream, HttpHeaders(), file, line);
   }
 
   // The body is whole, and these trailer fields follow it
-  pub fn finishWith(self: &mut, stream: u32, trailers: Headers, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+  pub fn finishWith(self: &mut, stream: u32, trailers: HttpHeaders, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     if failed || closed {return;}
     let slot = self.slotOf(stream);
     if slot.isNone() {return;}
@@ -1018,7 +1018,7 @@ pub struct Connection is Move {
     if endStream {
       s.recvDone = true;
       self.shrink(s);
-      self.emit(s, Event.End(id, Headers()));
+      self.emit(s, Event.End(id, HttpHeaders()));
       self.settle(slot);
       return;
     }
@@ -1139,7 +1139,7 @@ pub struct Connection is Move {
         self.emit(s, Event.Request(id, head, body));
         if endStream {
           s.recvDone = true;
-          self.emit(s, Event.End(id, Headers()));
+          self.emit(s, Event.End(id, HttpHeaders()));
         } else {
           self.firstGrant(s);
         }
@@ -1181,7 +1181,7 @@ pub struct Connection is Move {
         if endStream {
           s.recvDone = true;
           self.shrink(s);
-          self.emit(s, Event.End(id, Headers()));
+          self.emit(s, Event.End(id, HttpHeaders()));
           self.settle(slot);
         }
       }

@@ -1,0 +1,321 @@
+// A request body that goes over a read's limit after the response has begun (the "silent failure" this
+// guards: the server answered 413 anyway, a second response head in the middle of the first). The handler
+// calls start(), writes a piece, waits for it to be on the wire, then readAll(1000) over a 5,000-byte body.
+// Checked, over HTTP/1.1 (a raw socket, so the bytes can be counted) and over HTTP/2 (TLS, the package's
+// client): the handler's readAll gets its too-large error; its next write is answered Closed; over HTTP/1.1
+// the client receives exactly one response head and no 413, and the connection ends; the server stays up and
+// answers another request; and at the end the connection actors are freed.
+
+mod routedbegun;
+
+import stdio use *;
+import libc;
+import thread;
+import fs;
+import path use Path;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import iobuf use IoBuf;
+import http use *;
+import httpclient use Response, Request;
+import tls;
+import actors;
+import aio;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
+
+let tooLarge: Atomic[u64];      // handlers whose readAll answered the too-large error
+let otherErr: Atomic[u64];      // handlers whose readAll gave anything else
+let writeClosed: Atomic[u64];   // handlers whose write after it answered Closed
+
+fn @initpure init() {
+  tooLarge = Atomic[u64].of(0u64);
+  otherErr = Atomic[u64].of(0u64);
+  writeClosed = Atomic[u64].of(0u64);
+}
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn trusting() HttpClient {
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
+}
+
+fn url(scheme: &str, port: u16, path: &str) String {
+  var u = String.from(scheme);
+  u.append("://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// Starts the response, waits for its first piece to go out, then reads the body up to 1,000 bytes
+actor Begun is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+    let a = await ex.write(String.from("first piece"));
+    _ = await aio.sleep(Duration.fromMillis(150i64));
+    var body = ex.body();
+    let r = await body.readAll(1000usize);
+    match r {
+      case let Ok(s) {otherErr.add(1u64);}
+      case let Err(e) {
+        if e.isTooLarge() {tooLarge.add(1u64);} else {otherErr.add(1u64);}
+      }
+    }
+    _ = await aio.sleep(Duration.fromMillis(100i64));
+    let w = await ex.write(String.from("more"));
+    match w {
+      case let Ok(k) {}
+      case let Err(e) {writeClosed.add(1u64);}
+    }
+  }
+}
+
+fn makeBegun() HttpHandler {
+  let h = Begun();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Ok200 is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.text(200u16, "still up");
+  }
+}
+
+fn makeOk() HttpHandler {
+  let h = Ok200();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+
+  pub async fn waitClosed(self, var done: OneshotSender[u64]) {
+    let closed = await server.closed();
+    done.send(if closed {1u64} else {0u64});
+  }
+}
+
+fn count(hay: &String, needle: &str) u64 {
+  let h = hay.view() as &Array[u8];
+  let nd = needle as &Array[u8];
+  var n = 0u64;
+  var i = 0usize;
+  while i + nd.len <= h.len {
+    var k = 0usize;
+    while k < nd.len && h[i + k] == nd[k] {k = k + 1usize;}
+    if k == nd.len {n = n + 1u64;}
+    i = i + 1usize;
+  }
+  n
+}
+
+// A raw HTTP/1.1 client: POSTs 5,000 bytes, reads until the connection ends (or 4 s), reports what it saw
+actor Raw {
+  pub async fn run(self, port: u16, var done: Sender[u64]) {
+    match await aio.connect(SocketAddr.localhost(port)) {
+      case var Ok(s) {
+        var req = String.from("POST /begun HTTP/1.1\r\nHost: h\r\nContent-Length: 5000\r\n\r\n");
+        var k = 0usize;
+        while k < 5000usize {req.appendByte(0x78u8); k = k + 1usize;}
+        var b = IoBuf(req.len());
+        b.append(req.view());
+        let w = await s.write(b);
+        var seen = String();
+        let until = Instant.now() + Duration.fromSeconds(4i64);
+        var ended = false;
+        while !ended && Instant.now() < until {
+          let r = await s.readIn(IoBuf(4096usize), aio.IoLimits.until(until));
+          match r {
+            case let Ok(x) {
+              if x.len() == 0usize {ended = true;} else {seen.appendBytes(x.view());}
+            }
+            case let Err(e) {ended = true;}
+          }
+        }
+        done.send(count(&seen, "HTTP/1."));
+        done.send(count(&seen, "413"));
+        done.send(if ended {1u64} else {0u64});
+      }
+      case let Err(e) {
+        done.send(99u64);
+        done.send(99u64);
+        done.send(99u64);
+      }
+    }
+  }
+}
+
+actor H2Post {
+  client: HttpClient;
+
+  pub async fn run(self, port: u16, var done: Sender[u64]) {
+    var post = Request.get(url("https", port, "/begun").view());
+    post.method = Method.Post;
+    var body = String();
+    var k = 0usize;
+    while k < 5000usize {body.appendByte(0x78u8); k = k + 1usize;}
+    post.body = body;
+    let r = await client.send(post);
+    done.send(1u64);
+    let again = await client.get(url("https", port, "/ok").view());
+    match &again {
+      case let &Ok(x) {done.send(if x.status == 200u16 && x.version == Version.Http2 {1u64} else {0u64});}
+      case let &Err(e) {done.send(0u64);}
+    }
+  }
+}
+
+fn waitAtLeast(a: &Atomic[u64], n: u64, ms: i64) u64 {
+  let until = Instant.now() + Duration.fromMillis(ms);
+  var seen = a.load();
+  while seen < n && Instant.now() < until {
+    thread.sleep(Duration.fromMillis(10i64));
+    seen = a.load();
+  }
+  seen
+}
+
+fn closeAndWait(acceptor: &Acceptor, what: &str) {
+  acceptor.stop();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  acceptor.waitClosed(tx);
+  printStr(what);
+  printStr(" closed: ");
+  printStr(yes((rx.recv() || 0u64) == 1u64));
+  printStr("\n");
+}
+
+fn makeRoutes() HttpRoutes {
+  HttpRoutes.make().handle("", "/begun", &makeBegun).handle("", "/ok", &makeOk)
+}
+
+fn main() i32 {
+  initAll();
+  // HTTP/1.1
+  {
+    var ptx: Sender[u16];
+    var prx: Receiver[u16];
+    ptx, prx = Channel[u16].make();
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(ServerConfig.make().streamBodies().routes(makeRoutes()), ptx.clone());
+    let port = prx.recv() || 0u16;
+    var dtx: Sender[u64];
+    var drx: Receiver[u64];
+    dtx, drx = Channel[u64].make();
+    let raw = Raw();
+    raw.run(port, dtx.clone());
+    let heads = drx.recv() || 98u64;
+    let fours = drx.recv() || 98u64;
+    let ended = drx.recv() || 98u64;
+    say("h1 response heads seen", heads);
+    say("h1 413s seen", fours);
+    say("h1 connection ended", ended);
+    say("h1 readAll too-large", waitAtLeast(&tooLarge, 1u64, 5000i64));
+    say("h1 write answered Closed", waitAtLeast(&writeClosed, 1u64, 5000i64));
+    // the server answers another request
+    let c = HttpClient.standard();
+    match await_get(&c, port) {
+      case let Some(s) {say("h1 next request", s);}
+      else {say("h1 next request", 0u64);}
+    }
+    closeAndWait(&acceptor, "h1");
+  }
+  // HTTP/2
+  {
+    var ptx: Sender[u16];
+    var prx: Receiver[u16];
+    ptx, prx = Channel[u16].make();
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(ServerConfig.make().streamBodies().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2().routes(makeRoutes()), ptx.clone());
+    let port = prx.recv() || 0u16;
+    var dtx: Sender[u64];
+    var drx: Receiver[u64];
+    dtx, drx = Channel[u64].make();
+    let p = H2Post(trusting());
+    p.run(port, dtx.clone());
+    say("h2 post finished", drx.recv() || 98u64);
+    say("h2 next request over HTTP/2", drx.recv() || 98u64);
+    say("both handlers saw too-large", waitAtLeast(&tooLarge, 2u64, 5000i64));
+    say("handlers with another error", otherErr.load());
+    say("both writes answered Closed", waitAtLeast(&writeClosed, 2u64, 5000i64));
+    closeAndWait(&acceptor, "h2");
+  }
+  var waited = 0u32;
+  while actorhttp.liveConnActors() > 0u64 && waited < 500u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  say("connection actors left", actorhttp.liveConnActors());
+  finalAll();
+  0
+}
+
+actor Getter {
+  client: HttpClient;
+
+  pub async fn run(self, port: u16, var done: Sender[u64]) {
+    let r = await client.get(url("http", port, "/ok").view());
+    match &r {
+      case let &Ok(x) {done.send(u64.from(x.status));}
+      case let &Err(e) {done.send(0u64);}
+    }
+  }
+}
+
+fn await_get(c: &HttpClient, port: u16) Option[u64] {
+  var dtx: Sender[u64];
+  var drx: Receiver[u64];
+  dtx, drx = Channel[u64].make();
+  let g = Getter(c.clone());
+  g.run(port, dtx);
+  drx.recv()
+}

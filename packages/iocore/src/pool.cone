@@ -82,7 +82,7 @@ fn bringHome(p: *OpCore) {
 // ---------------------------------------------------------------------------
 
 // A lane of the blocking pool (see the package's header, THE BLOCKING POOL)
-pub struct Lane {
+pub struct Lane is Eq, Hash {
   pub id: u32;
 
   // General work: up to 4 threads, 1,024 queued
@@ -98,7 +98,7 @@ pub struct Lane {
     let s = l as &mut LaneState;
     s.lock.lock();
     let st = LaneStats(s.queued, s.maxQueued, s.running, s.threads, s.maxThreads,
-      s.started, s.ran, s.cancelled, s.refused, s.waitNs, s.maxWaitNs);
+      s.started, s.ran, s.cancelled, s.refused, s.waitNs, s.maxWaitNs, s.waiting);
     s.lock.unlock();
     st
   }
@@ -113,6 +113,10 @@ pub struct LaneConfig {
   pub maxThreads: u32 = 4u32;
   pub queueBound: u32 = 1024u32;
   pub idleMillis: u32 = 10000u32;
+  // A job offered with the queue full: false refuses it at once (EBUSY), true
+  // keeps it in the lane's waiting list, holding no thread, until the queue
+  // has room, or its cancel or deadline takes it out. The DNS lane waits
+  pub waitWhenFull: bool = false;
 }
 
 // A lane's counters
@@ -128,9 +132,10 @@ pub struct LaneStats {
   pub refused: u64;        // submits refused: the queue was full
   pub waitNs: u64;         // nanoseconds jobs spent queued, in all
   pub maxWaitNs: u64;      // the longest a job was queued
+  pub waiting: u32;        // jobs in the waiting list now: offered to a full queue, holding no thread
 
   pub fn zero() LaneStats {
-    LaneStats(0u32, 0u32, 0u32, 0u32, 0u32, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)
+    LaneStats(0u32, 0u32, 0u32, 0u32, 0u32, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u32)
   }
 }
 
@@ -141,6 +146,10 @@ struct LaneState {
   ready: Condvar;          // its idle threads wait here
   head: *OpCore;           // the records queued, linked by their 'jprev' and 'jnext'
   tail: *OpCore;
+  wHead: *OpCore;          // the waiting list (waitWhenFull), oldest first, linked by 'jprev' and 'jnext'
+  wTail: *OpCore;
+  waiting: u32;
+  waits: bool;
   queued: u32;
   maxQueued: u32;
   bound: u32;
@@ -176,7 +185,7 @@ let laneCount: Atomic[u32];
 // starts none
 fn makeDefaultLanes() {
   addLaneLocked(LaneConfig(name: "iocore general", maxThreads: 4u32, queueBound: 1024u32));
-  addLaneLocked(LaneConfig(name: "iocore dns", maxThreads: 2u32, queueBound: 256u32));
+  addLaneLocked(LaneConfig(name: "iocore dns", maxThreads: 2u32, queueBound: 256u32, waitWhenFull: true));
   // Linux: the files' own, for ReadAt and WriteAt (linux.cone); its queue is
   // deep, since a refused file operation is no one's to retry
   #if #os != .windows {
@@ -211,6 +220,7 @@ fn addLaneLocked(cfg: LaneConfig) Lane {
   }
   mem.writeRaw[LaneState](p, LaneState(
     lock: Mutex.make(), ready: Condvar.make(), head: null, tail: null,
+    wHead: null, wTail: null, waiting: 0u32, waits: cfg.waitWhenFull,
     queued: 0u32, maxQueued: 0u32, bound: if cfg.queueBound == 0u32 {1u32} else {cfg.queueBound},
     threads: 0u32, idle: 0u32, running: 0u32,
     minThreads: cfg.minThreads,
@@ -273,6 +283,7 @@ fn worker(a: WorkerArg) {
     }
     let p = s.head;
     unlinkJob(s, p);
+    promoteWaiting(s);
     (*p).jstate.store(jobRunning);
     s.running = s.running + 1u32;
     let waited = u64.from((*p).submitted.elapsed().nanos());
@@ -349,21 +360,62 @@ fn unlinkJob(s: &mut LaneState, p: *OpCore) {
   s.queued = s.queued - 1u32;
 }
 
-// Queue record p on lane l: false when the lane's queue is full (counted)
-fn enqueueJob(p: *OpCore, l: *LaneState) bool {
-  let s = l as &mut LaneState;
-  s.lock.lock();
-  if s.queued >= s.bound {
-    s.refused = s.refused + 1u64;
-    s.lock.unlock();
-    return false;
+// Take record p out of its lane's waiting list: its lock is held
+fn unlinkWaiting(s: &mut LaneState, p: *OpCore) {
+  let prev = (*p).jprev;
+  let next = (*p).jnext;
+  if prev as usize == 0usize {s.wHead = next;} else {(*prev).jnext = next;}
+  if next as usize == 0usize {s.wTail = prev;} else {(*next).jprev = prev;}
+  (*p).jprev = null;
+  (*p).jnext = null;
+  s.waiting = s.waiting - 1u32;
+}
+
+// The queue has room (a job left it) and the waiting list holds records: the
+// oldest go to the queue's end, queued as if offered now. Lock held. No thread
+// is added: the one that took a job is there to take the next
+fn promoteWaiting(s: &mut LaneState) {
+  while s.wHead as usize != 0usize && s.queued < s.bound {
+    let w = s.wHead;
+    unlinkWaiting(s, w);
+    (*w).jstate.store(jobQueued);
+    pushJob(s, w);
+    if s.idle > 0u32 {s.ready.notifyOne();}
   }
+}
+
+// Record p at the queue's end: the lock is held and the bound has room
+fn pushJob(s: &mut LaneState, p: *OpCore) {
   (*p).jprev = s.tail;
   (*p).jnext = null;
   if s.tail as usize == 0usize {s.head = p;} else {(*s.tail).jnext = p;}
   s.tail = p;
   s.queued = s.queued + 1u32;
   if s.queued > s.maxQueued {s.maxQueued = s.queued;}
+}
+
+// Queue record p on lane l: false when the queue is full and the lane does not
+// wait (counted). A lane that waits keeps the record in its waiting list and
+// answers true: the record is away, and holds no thread
+fn enqueueJob(p: *OpCore, l: *LaneState) bool {
+  let s = l as &mut LaneState;
+  s.lock.lock();
+  if s.queued >= s.bound {
+    if s.waits {
+      (*p).jstate.store(jobWaiting);
+      (*p).jprev = s.wTail;
+      (*p).jnext = null;
+      if s.wTail as usize == 0usize {s.wHead = p;} else {(*s.wTail).jnext = p;}
+      s.wTail = p;
+      s.waiting = s.waiting + 1u32;
+      s.lock.unlock();
+      return true;
+    }
+    s.refused = s.refused + 1u64;
+    s.lock.unlock();
+    return false;
+  }
+  pushJob(s, p);
   if s.idle > 0u32 {s.ready.notifyOne();}
   // More queued than threads idle to take them: one more thread, while the
   // lane may have one
@@ -387,14 +439,22 @@ fn removeJob(p: *OpCore) bool {
   if l as usize == 0usize {return false;}
   let s = l as &mut LaneState;
   s.lock.lock();
-  let queued = (*p).jstate.load() == jobQueued;
-  if queued {
+  let st = (*p).jstate.load();
+  var taken = false;
+  if st == jobQueued {
     unlinkJob(s, p);
     (*p).jstate.store(jobHome);
     s.cancelled = s.cancelled + 1u64;
+    taken = true;
+    promoteWaiting(s);
+  } else if st == jobWaiting {
+    unlinkWaiting(s, p);
+    (*p).jstate.store(jobHome);
+    s.cancelled = s.cancelled + 1u64;
+    taken = true;
   }
   s.lock.unlock();
-  queued
+  taken
 }
 
 // ---------------------------------------------------------------------------
@@ -424,7 +484,10 @@ pub fn addressesIn(buf: &IoBuf) List[SocketAddr] {
   out
 }
 
-fn resolveWork(arg: u64, buf: &mut IoBuf) Outcome {
+// The lookup itself, as resolveOp's lane thread runs it: buf holds the name
+// and is left holding the addresses, each with port 'arg'. For work of a
+// caller's own that wraps the lookup (aio's cache of names)
+pub fn resolveWork(arg: u64, buf: &mut IoBuf) Outcome {
   #if #os == .windows {
     var wide = Array[u16, 520]() <- fill 0u16;
     let w = widenIn(buf.view(), &mut wide as *u16, 520usize);

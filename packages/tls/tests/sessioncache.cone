@@ -1,0 +1,142 @@
+// The client's session cache, by server name (the HTTP client's stage 4, C3):
+// a second connection to a server resumes and one to another server does not;
+// the cache keeps at most 8 tickets for a name; and past 256 in all, the ticket
+// that goes is the oldest of the name used longest ago, not of the one made
+// first. Sans-IO, with the test certificates, the client verifying nothing (the
+// names asked for are not the certificate's)
+
+mod sessioncache;
+
+import stdio use *;
+import testing use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import tls;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn insecureClient() tls.Client {
+  var cfg = tls.ClientConfig.make();
+  cfg.verify = tls.Verifier.insecureDevelopmentOnly();
+  match tls.Client.make(cfg) {
+    case var Ok(r) {return r;}
+    case let Err(e) {
+      print <- e;
+      printStr("\n");
+    }
+  }
+  panic("the client context could not be made")
+}
+
+fn testServer() tls.Server {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  match tls.Server.make(tls.ServerConfig.make(&certFile, &keyFile)) {
+    case var Ok(r) {return r;}
+    case let Err(e) {
+      print <- e;
+      printStr("\n");
+    }
+  }
+  panic("the server context could not be made")
+}
+
+// Move what each side has to send to the other until neither has any
+fn pump(c: &mut tls.Session, s: &mut tls.Session) {
+  var buf = Array[u8, 20000]() <- fill 0u8;
+  var moved = true;
+  while moved {
+    moved = false;
+    while c.pending() > 0usize {
+      let n = c.transmit(&mut buf[0usize ..< 20000usize]);
+      s.feed(&buf[0usize ..< n]);
+      moved = true;
+    }
+    while s.pending() > 0usize {
+      let n = s.transmit(&mut buf[0usize ..< 20000usize]);
+      c.feed(&buf[0usize ..< n]);
+      moved = true;
+    }
+  }
+}
+
+// The server's tickets come after the handshake and are taken in by a read
+fn takeTickets(c: &mut tls.Session) {
+  var rb = Array[u8, 16]() <- fill 0u8;
+  c.read(&mut rb[0usize ..< 16usize]);
+}
+
+fn name(prefix: &str, k: u32) String {
+  var s = String.from(prefix);
+  s.appendUInt(u64.from(k));
+  s.append(".example");
+  s
+}
+
+// One connection to 'host', its handshake done: whether it resumed
+fn connect(cl: &tls.Client, srv: &tls.Server, host: &str) bool {
+  var c = cl.session(host);
+  var s = srv.session();
+  pump(&mut c, &mut s);
+  require(c.isOpen() && s.isOpen(), "the handshake is done");
+  takeTickets(&mut c);
+  c.info().resumed
+}
+
+fn main() i32 {
+  let srv = testServer();
+
+  // A second connection to the same server resumes; one to another does not
+  let cl = insecureClient();
+  expect(!connect(&cl, &srv, "a.example"), "a first connection is a full handshake");
+  expectUInt(u64.from(cl.cachedSessionsFor("a.example")), 2u64, "the server's two tickets are kept for its name");
+  expectUInt(u64.from(cl.cachedSessionsFor("b.example")), 0u64, "none for another name");
+  expect(!connect(&cl, &srv, "b.example"), "a connection to another server does not resume");
+  expectUInt(u64.from(cl.cachedSessionsFor("b.example")), 2u64, "its tickets are its own");
+  expectUInt(u64.from(cl.cachedSessionsFor("a.example")), 2u64, "and the first's are untouched");
+  expect(connect(&cl, &srv, "a.example"), "a second connection to the same server resumes");
+
+  // At most 8 tickets for a name: six handshakes opened together bring twelve
+  let c8 = insecureClient();
+  var cs = List[tls.Session]();
+  var ss = List[tls.Session]();
+  var k = 0u32;
+  while k < 6u32 {
+    cs.push(c8.session("many.example"));
+    ss.push(srv.session());
+    k = k + 1u32;
+  }
+  k = 0u32;
+  while k < 6u32 {
+    pump(&mut cs[usize.from(k)], &mut ss[usize.from(k)]);
+    takeTickets(&mut cs[usize.from(k)]);
+    k = k + 1u32;
+  }
+  expectUInt(u64.from(c8.cachedSessionsFor("many.example")), 8u64, "twelve tickets came, eight are kept");
+  expectUInt(u64.from(c8.cachedSessions()), 8u64, "and the total says so");
+
+  // Past 256 in all, the name used longest ago loses its oldest ticket: 128
+  // names of two tickets fill the cache; the first name is used again; a new
+  // name's two tickets then push out the second name's, and not the first's
+  let ce = insecureClient();
+  k = 0u32;
+  while k < 128u32 {
+    connect(&ce, &srv, name("n", k).view());
+    k = k + 1u32;
+  }
+  expectUInt(u64.from(ce.cachedSessions()), 256u64, "128 names of two tickets: the cache is full");
+  expect(connect(&ce, &srv, name("n", 0u32).view()), "the first name resumes");
+  expectUInt(u64.from(ce.cachedSessions()), 256u64, "a resumption takes a ticket and brings one");
+  connect(&ce, &srv, "new.example");
+  expectUInt(u64.from(ce.cachedSessions()), 256u64, "a new name's tickets push two out, no more than 256");
+  expectUInt(u64.from(ce.cachedSessionsFor("new.example")), 2u64, "the new name keeps its tickets");
+  expectUInt(u64.from(ce.cachedSessionsFor(name("n", 1u32).view())), 0u64, "the name used longest ago is the one that went");
+  expectUInt(u64.from(ce.cachedSessionsFor(name("n", 0u32).view())), 2u64, "the first name, used since, stays");
+  expectUInt(u64.from(ce.cachedSessionsFor(name("n", 2u32).view())), 2u64, "and so does the third");
+  done()
+}

@@ -242,6 +242,20 @@
 // layer says of itself ('describe'), and its 'alpn()' the protocol its
 // handshake chose (below).
 //
+// THE CLIENT CONNECTION. 'ClientConn' (clientconn.cone) is ServerConn's other half, one client
+// connection as one value, sans-I/O: the same layer, protocol choice, wire Chain, back-pressure and
+// deadlines, and a request side instead of a response side. The caller tracks which request is on
+// which stream (HTTP/1.1's is 0):
+//   room()  request(head, body, now)   how many requests it takes now (HTTP/1.1: one when its exchange is
+//                                      over; HTTP/2: the peer's stream limit less the open streams; none after
+//                                      GOAWAY, shutdown or failure), and one begun: its stream
+//   sendData finish writeRoom release  a request body's bytes and end; the response body's credit given back
+//   cancel(stream)                     a request given up: HTTP/2 resets the stream, HTTP/1.1 ends the connection
+//   next(now)                          a ClientEvent: Response, Interim, Data, End, Reset, GoAway, Closed, Nothing
+//   isIdle() liveStreams() peerStreams()   what is on it
+// The rest (readRoom, wireIn, fill, takeWire, wireSent, pollTimeout, handleTimeout, shutdown, done, abort,
+// wantsCall, takeCall, callDone) is the server's (tests/clientconn.cone).
+//
 // THE SERVER CONNECTION. 'ServerConn' (serverconn.cone) is one server
 // connection as one value, sans-I/O, with no tables behind it: an optional
 // layer (None is plain), the protocol chosen once the layer is open (as
@@ -267,7 +281,9 @@
 // request head (read into again, handed back to the core when the exchange ends) and one
 // response head, the fields' scratch, and the wire Chain, so a kept-alive HTTP/1.1 connection
 // allocates nothing per request after the first (tests/sconnalloc.cone, counted). An HTTP/2
-// request's head moves out whole by 'takeRequest'. The core's events are read one at a time;
+// request's head moves out whole by 'takeRequest', as may HTTP/1.1's: the owner then lends the core a head again
+// with 'recycleRequest' when its exchange is over (a head not given back is dropped, and the next made anew; HTTP/2's
+// 'recycleRequest' keeps nothing). The core's events are read one at a time;
 // nothing is queued beside the core's own queues. It is tested with no socket (tests/sconn*.cone).
 //
 // HTTP/2. A connection speaks HTTP/1.1 or HTTP/2, chosen once its layer is
@@ -622,7 +638,7 @@ pub struct Event {
   pub response: ResponseHead; // Response, Interim: the head
   pub body: BodyLength;       // Request, Response: what is known of the body
   pub buf: IoBuf;             // Data: the bytes, the program's now
-  pub trailers: Headers;      // End: the trailer fields
+  pub trailers: HttpHeaders;      // End: the trailer fields
   pub timing: Timing;         // Done: when it reached each point
 
   // An event of kind k, about conn and req, every other field empty
@@ -630,7 +646,7 @@ pub struct Event {
     Event(kind: k, token: token, conn: conn, req: req, stream: 0u32, listener: ListenerId.none(),
       peer: SocketAddr.localhost(0u16), clean: false, failure: Failure.none(),
       request: RequestHead(), response: ResponseHead(), body: BodyLength(),
-      buf: IoBuf(), trailers: Headers(), timing: Timing.zero())
+      buf: IoBuf(), trailers: HttpHeaders(), timing: Timing.zero())
   }
 
   // Whether it is a request's final answer

@@ -23,7 +23,7 @@ import httpclient use Response, Request;
 import tls;
 import sse;
 import actors;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, EventStream;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, EventStream;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
@@ -125,11 +125,11 @@ fn url(scheme: &str, port: u16, path: &str) String {
 }
 
 // A client that trusts the test root (and asks no one else)
-fn trusting() Client {
+fn trusting() HttpClient {
   var cfg = httpclient.Config.make();
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
-  Client.make(cfg, actorhttp.defaultMaxBody)
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
 }
 
 fn say(what: &str, r: Result[Response, FetchError]) {
@@ -173,8 +173,8 @@ fn isOk(r: Result[Response, FetchError]) bool {
 }
 
 actor Prober {
-  client: Client;
-  plain: Client;
+  client: HttpClient;
+  plain: HttpClient;
 
   pub async fn run(self, port: u16, done: OneshotSender[u64]) {
     say("https get", await client.get(url("https", port, "/hello").view()));
@@ -258,7 +258,7 @@ fn main() i32 {
       var tx: OneshotSender[u64];
       var rx: OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
-      let p = Prober(trusting(), Client.standard());
+      let p = Prober(trusting(), HttpClient.standard());
       p.run(port, tx);
       rx.recv();
     }

@@ -1,6 +1,6 @@
 // readerbench: the numbers behind step 0 of the ReaderSink refit
 // (Ruminations\brief-reader-sink-refit-2026-11-06.md). Nothing here is a package
-// change: the sink is a throwaway counting sink through Client.streamTo, set
+// change: the sink is a throwaway counting sink through HttpClient.streamTo, set
 // against BodyStream.read / EventStream.next as they are today. One loopback
 // server of this package answers every mode; client and server share the
 // process, so a figure carries both, and the comparison between the two client
@@ -53,7 +53,7 @@ import httpclient use Request;
 import sse;
 import actors;
 import memtrace;       // MEMTRACE_OUT=run.json CONE_TRACE=memory=trace: the memory report (packages/memtrace/README.md)
-import actorhttp use Client, Server, ServerConfig, Exchange;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange;
 import stages use ChunkSink, ChunkSource, Ending, ReaderSink, readSink;
 // ---- shared counters (the actors report here) ----
 
@@ -375,7 +375,7 @@ actor Acceptor {
 
 // stream().read(): each piece a String; when 'wantLat', the delay to the piece's stamp
 actor Reader {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, url: String, wantLat: bool) {
     var total = 0u64;
@@ -467,7 +467,7 @@ fn mkEnd(how: &Ending) Result[Option[String], AnyError] {
 }
 
 actor SinkReader {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, url: String, wantLat: bool) {
     var total = 0u64;
@@ -509,7 +509,7 @@ actor SinkReader {
 }
 
 actor Fetcher {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, url: String, wantLat: bool) {
     let r = await client.streamTo(Request.get(url.view()), Counter(wantLat));
@@ -522,7 +522,7 @@ actor Fetcher {
 
 // events(): count the events (and their delays when stamped)
 actor EvReader {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, url: String, wantLat: bool) {
     var count = 0u64;
@@ -560,7 +560,7 @@ actor EvReader {
 
 // the control: stream() and an sse.Reader fed in the reading actor (chatapi's way)
 actor BodySse {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, url: String) {
     var count = 0u64;
@@ -642,13 +642,13 @@ fn oneRun(mode: u32, port: u16, path: &String, wantLat: bool) u64 {
   let u = url(port, path.view());
   let t0 = nowNs();
   if mode == 0u32 {
-    Reader(Client.standard()).run(u, wantLat);
+    Reader(HttpClient.standard()).run(u, wantLat);
   } else if mode == 1u32 {
-    SinkReader(Client.standard()).run(u, wantLat);
+    SinkReader(HttpClient.standard()).run(u, wantLat);
   } else if mode == 2u32 {
-    EvReader(Client.standard()).run(u, wantLat);
+    EvReader(HttpClient.standard()).run(u, wantLat);
   } else {
-    BodySse(Client.standard()).run(u);
+    BodySse(HttpClient.standard()).run(u);
   }
   if !waitEnded(1u64, 120000u64) { printStr("TIMED OUT\n"); return 0u64; }
   if failed.load() > 0u64 { printStr("FAILED\n"); return 0u64; }
@@ -799,7 +799,7 @@ fn main(argc: i32, argv: **u8) i32 {
     var k = 0u64;
     while k < n {
       let u = url(port, hold.view());
-      if memSink { Fetcher(Client.standard()).run(u, false); } else { Reader(Client.standard()).run(u, false); }
+      if memSink { Fetcher(HttpClient.standard()).run(u, false); } else { Reader(HttpClient.standard()).run(u, false); }
       k = k + 1u64;
     }
     var waited = 0u64;

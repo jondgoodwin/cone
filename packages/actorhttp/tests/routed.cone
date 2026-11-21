@@ -1,0 +1,232 @@
+// A server with a router (ServerConfig.routes): the server and its connections are actors, nothing of
+// HTTP runs on the I/O thread. The package's own client is the other end. Checked, in order: a handler
+// route (an actor of the program's, made by the route's factory, answering with text); the same handler
+// route on a second request of the same connection (kept alive: one handler actor serves them in order);
+// a streamed response from a handler (written in three pieces, each awaited, then finished); a longest
+// prefix and a host route (a request with another Host goes to the other handler); the queue route
+// (today's 'server.next()', an actor answers the Exchange it takes); a request no route matches (404);
+// a request body that comes back; a HEAD; and a closed server (the 'closed()' awaited, then every
+// connection actor and the server actor are gone).
+
+mod routed;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Response, Request;
+import actors;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// A handler: answers the request with text naming the request, and counts the requests it has served
+actor Hello is HttpHandler {
+  served: u64;
+  tag: String;
+
+  fn init(self: &new, tag: String) {*self = Self(served: 0u64, tag: tag);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    served = served + 1u64;
+    var t = String.from(tag.view());
+    t.append(" ");
+    t.append(ex.request.methodName());
+    t.append(" ");
+    t.append(ex.request.path());
+    t.append(" #");
+    t.appendUInt(served);
+    ex.text(200u16, t.view());
+  }
+}
+
+fn makeHello() HttpHandler {
+  let h = Hello(String.from("hello"));
+  let r: HttpHandler = h;
+  r
+}
+
+fn makeOther() HttpHandler {
+  let h = Hello(String.from("other"));
+  let r: HttpHandler = h;
+  r
+}
+
+// A streamed response, three pieces each awaited
+actor Streamer is HttpHandler {
+  n: u64;
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+    let a = await ex.write(String.from("one "));
+    let b = await ex.write(String.from("two "));
+    let c = await ex.write(String.from("three"));
+    let f = await ex.finish();
+  }
+}
+
+fn makeStreamer() HttpHandler {
+  let h = Streamer();
+  let r: HttpHandler = h;
+  r
+}
+
+// Echoes the request's body
+actor Echo is HttpHandler {
+  n: u64;
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    var t = String.from(ex.request.methodName());
+    t.append("|");
+    t.appendUInt(u64.from(ex.request.body.len()));
+    t.append("|");
+    t.append(ex.request.body.view());
+    ex.text(200u16, t.view());
+  }
+}
+
+fn makeEcho() HttpHandler {
+  let h = Echo();
+  let r: HttpHandler = h;
+  r
+}
+
+// Listens, then takes the queue route requests until the server is closed
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self, var done: Sender[u64]) {
+    var n = 0u64;
+    while true {
+      match await server.next() {
+        case var Ok(ex) {
+          n = n + 1u64;
+          ex.text(200u16, "from the queue");
+        }
+        case let Err(e) {break;}
+      }
+    }
+    done.send(n);
+  }
+
+  pub async fn stop(self) {server.close();}
+
+  pub async fn waitClosed(self, var done: OneshotSender[u64]) {
+    let closed = await server.closed();
+    printStr("closed: ");
+    printStr(if closed {"yes"} else {"NO"});
+    printStr("\n");
+    done.send(1u64);
+  }
+}
+
+fn show(what: &str, r: Result[Response, FetchError]) {
+  printStr(what);
+  printStr(": ");
+  match &r {
+    case let &Ok(ok) {
+      printUInt(u64.from(ok.status));
+      if ok.body.len() > 0usize {
+        printStr(" ");
+        printStr(ok.body.view());
+      }
+      printStr("\n");
+    }
+    case let &Err(e) {printStr("failed: "); print <- e; printStr("\n");}
+  }
+}
+
+actor Prober {
+  client: HttpClient;
+
+  pub async fn run(self, port: u16, var done: OneshotSender[u64]) {
+    show("hello", await client.get(url(port, "/hello").view()));
+    show("hello again", await client.get(url(port, "/hello/again?x=1").view()));
+    show("stream", await client.get(url(port, "/stream").view()));
+    show("queue", await client.get(url(port, "/q/one").view()));
+    show("no route", await client.get(url(port, "/nowhere").view()));
+    var post = Request.get(url(port, "/echo").view());
+    post.method = Method.Post;
+    post.body = String.from("body text");
+    show("echo", await client.send(post));
+    var host = String.from("http://localhost:");
+    host.appendUInt(u64.from(port));
+    host.append("/h");
+    let other = Request.get(host.view());
+    show("host route", await client.send(other));
+    var h = Request.get(url(port, "/hello").view());
+    h.method = Method.Head;
+    show("head", await client.send(h));
+    done.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var dtx: Sender[u64];
+  var drx: Receiver[u64];
+  dtx, drx = Channel[u64].make();
+
+  let router = HttpRoutes.make()
+    .handle("", "/hello", &makeHello)
+    .handle("", "/stream", &makeStreamer)
+    .handle("", "/echo", &makeEcho)
+    .handle("localhost", "/h", &makeOther)
+    .queue("", "/q");
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(ServerConfig.make().routes(router), ptx.clone());
+  let port = prx.recv() || 0u16;
+  say("live server actors", actorhttp.liveServerActors());
+  acceptor.serve(dtx.clone());
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let p = Prober(HttpClient.standard());
+    p.run(port, tx);
+    rx.recv();
+  }
+  acceptor.stop();
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    acceptor.waitClosed(tx);
+    rx.recv();
+  }
+  say("the taker took", drx.recv() || 99u64);
+  var waited = 0u32;
+  while actorhttp.liveConnActors() > 0u64 && waited < 200u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  say("live connection actors", actorhttp.liveConnActors());
+  finalAll();
+  0
+}

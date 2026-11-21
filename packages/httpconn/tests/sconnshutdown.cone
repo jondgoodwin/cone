@@ -1,0 +1,113 @@
+// A server connection (ServerConn) asked to shut down, driven with no socket.
+// Checked: shutdown() right after a response is whole, with its bytes still in
+// the connection and not yet taken: the connection does not end until they have
+// been written, and they are all there (the response is not dropped); an idle
+// connection told to shut down is over at once; one with a request in hand
+// finishes that request first.
+
+mod sconnshutdown;
+
+import testing use *;
+import collections use String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import httpconn use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn piece(text: &str) IoBuf {
+  var b = IoBuf(text.len());
+  b.append(text);
+  b
+}
+
+fn has(text: &String, part: &str) bool {
+  let t = text.view() as &str;
+  var i = 0usize;
+  while i + part.len() <= t.len() {
+    if &t[i ..< i + part.len()] == part {return true;}
+    i = i + 1usize;
+  }
+  false
+}
+
+fn answer(c: &mut ServerConn, text: &str) {
+  let r = c.response();
+  r.status = 200u16;
+  r.headers.add("Content-Type", "text/plain");
+  c.respond(0u32, BodyLength.sized(u64.from(text.len())));
+  c.sendData(0u32, piece(text));
+  c.finish(0u32);
+}
+
+// What the connection has ready to write now, taken and not yet confirmed
+struct Taken {text: String; n: usize;}
+
+fn take(c: &mut ServerConn, now: Instant) Taken {
+  c.fill(now);
+  var out = Chain.make(unbounded);
+  let n = c.takeWire(&mut out);
+  var text = String();
+  while true {
+    match out.popFront() {
+      case let Some(b) {text.appendBytes(b.view());}
+      else {break;}
+    }
+  }
+  Taken(text, n)
+}
+
+fn main() i32 {
+  let now = Instant.now();
+
+  // A response whole and still in the connection's queue, then shutdown
+  var c = ServerConn.make(Config.make(), None, now);
+  c.wireIn(piece("GET /one HTTP/1.1\r\nHost: h\r\n\r\n"), now);
+  match c.next(now) {
+    case is Request {}
+    else {expect(false, "a request");}
+  }
+  answer(&mut c, "hello world");
+  match c.next(now) {
+    case is End {}
+    else {expect(false, "the request's end");}
+  }
+  // Nothing has called fill: the whole response is in the protocol's queue
+  expect(c.queued() > 0usize, "the response is queued");
+  c.shutdown();
+  expect(!c.done(now), "not over: the response has not been written");
+  let t1 = take(&mut c, now);
+  expect(t1.n > 0usize, "the response is there to write");
+  expect(has(&t1.text, "HTTP/1.1 200 OK\r\n"), "the status line survived shutdown");
+  expect(has(&t1.text, "Content-Length: 11\r\n"), "the length survived");
+  expect(has(&t1.text, "\r\n\r\nhello world"), "the whole body survived");
+  expect(!c.done(now), "not over until the bytes are confirmed written");
+  c.wireSent(t1.n);
+  expect(c.done(now), "over once the response is written");
+
+  // An idle connection told to shut down is over at once
+  var d = ServerConn.make(Config.make(), None, now);
+  d.shutdown();
+  expect(d.done(now), "an idle connection ends at shutdown");
+
+  // A request in hand is finished first
+  var e = ServerConn.make(Config.make(), None, now);
+  e.wireIn(piece("GET /two HTTP/1.1\r\nHost: h\r\n\r\n"), now);
+  match e.next(now) {
+    case is Request {}
+    else {expect(false, "a request to finish");}
+  }
+  e.shutdown();
+  expect(!e.done(now), "not over with a request in hand");
+  answer(&mut e, "late");
+  match e.next(now) {
+    case is End {}
+    else {expect(false, "its end");}
+  }
+  let t2 = take(&mut e, now);
+  expect(has(&t2.text, "\r\n\r\nlate"), "the answer given after shutdown went out");
+  e.wireSent(t2.n);
+  expect(e.done(now), "over once it is answered and written");
+  done()
+}
