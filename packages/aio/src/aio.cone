@@ -748,6 +748,8 @@ import diag;
 
 fn @initpure init() {
   ioLock = Mutex.make();
+  traceN = Atomic[u64].of(0u64);
+  traceBuf = Atomic[usize].of(0usize);
   noShared = Shared.none();
   io = Atomic[usize].of(0usize);
   ended = Atomic[bool].of(false);
@@ -1389,6 +1391,26 @@ struct IoThread {
 // Guards the queues, 'io', 'ended' and the pool's making
 let ioLock: Mutex;
 
+// TRACE (lane 892 scratch)
+let traceN: Atomic[u64];
+let traceBuf: Atomic[usize];
+fn tr(kind: u64, arg: u64) {
+  let b = traceBuf.load();
+  if b == 0usize {return;}
+  let i = traceN.addOrdered(1u64, MemOrder.Relaxed);
+  if i >= 300000u64 {return;}
+  let w = (b as *u64) + usize.from(i) * 3usize;
+  *w = u64.from(Instant.now().nanos());
+  *(w + 1usize) = kind | (u64.from(thread.current().id()) << 8u64);
+  *(w + 2usize) = arg;
+}
+pub fn traceMark(a: u64) {tr(9u64, a);}
+pub fn traceCount() u64 {traceN.load()}
+pub fn traceGet(i: u64, k: u64) u64 {
+  let b = traceBuf.load();
+  *((b as *u64) + usize.from(i) * 3usize + usize.from(k))
+}
+
 // The table of no Loop, for a thread that looks before the I/O thread has
 // started (sharedNow). Set in 'init'
 let noShared: Shared;
@@ -1702,6 +1724,7 @@ fn quickPass(t: *IoThread) usize {
   let lp = &mut (*t).lp;
   let out = &mut (*t).out;
   let got = &mut (*t).got;
+  tr(7u64, if r as usize != 0usize {1u64} else {0u64});
   startRecs(r, lp);
   lp.poll(Instant.now(), out);
   out.clear();
@@ -1843,6 +1866,7 @@ fn startIo() {
   if t as usize == 0usize {
     die("aio: out of memory for the I/O thread");
   }
+  traceBuf.store(libc.calloc(300000usize * 3usize, 8usize) as usize);
   mem.writeRaw[thread.Thread[u32]](&(*t).os as *thread.Thread[u32],
     thread.startWith(thread.Options(name: "aio I/O"), IoArg(t as usize), &ioMain));
   while (*t).ready.load() == 0u32 {
@@ -1939,6 +1963,7 @@ fn ioMain(arg: IoArg) u32 {
         // Program order: records before jobs, so a close queued before a
         // bind frees its port first. With services hosted the order is
         // serveHosts, records, jobs, then turnHosts
+        tr(6u64, (if r as usize != 0usize {1u64} else {0u64}) | (if h as usize != 0usize {2u64} else {0u64}));
         if (*me).hosts.len() == 0usize {
           startRecs(r, lp);
           runJobs(h, lp);
@@ -2542,7 +2567,9 @@ fn startOne(lp: &mut Loop, p: *OpCore) {
     return;
   }
   if w == opClose {
-    lp.close((*p).handle);
+    tr(2u64, 0u64);
+    let okc = lp.close((*p).handle);
+    tr(3u64, if okc {1u64} else {0u64});
     let gone = dissolveAt(p as *u8);
     return;
   }
@@ -3120,9 +3147,10 @@ struct BindUdpJob {
   fn run(self, lp: &mut Loop) {
     let addr, rp = self.(addr, reply);
     udpSwitch(lp);
+    tr(4u64, 0u64);
     match lp.bindUdp(addr, true) {
-      case let Ok(ok) {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](newUdp(ok)));}
-      case let Err(e) {actors.answerNow[Result[UdpSocket, IoError]](rp, Err[UdpSocket, IoError](e));}
+      case let Ok(ok) {tr(5u64, 0u64); actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](newUdp(ok)));}
+      case let Err(e) {tr(5u64, u64.from(e.code)); actors.answerNow[Result[UdpSocket, IoError]](rp, Err[UdpSocket, IoError](e));}
     }
   }
 }
@@ -3364,6 +3392,7 @@ fn closeHandle(h: Handle) {
     sh.markClosing(h);
   }
   enqueueRec(p);
+  tr(1u64, 0u64);
   if held {
     sh.unlock(h);
   }

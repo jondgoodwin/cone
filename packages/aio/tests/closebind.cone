@@ -65,6 +65,7 @@ actor Burner {
 }
 
 fn note(what: &str, i: u64, port: u16, e: &IoError) {
+  aio.traceMark(1000u64 + i);
   eprintStr("FAILBIND ");
   eprintStr(what);
   eprintStr(" round ");
@@ -165,11 +166,11 @@ actor Peer {
               var t = UdpSocket.none();
               t <-> *ok2;
             }
-            else {failed = failed + 1u64;}
+            else {failed = failed + 1u64; aio.traceMark(1000u64 + i);}
           }
           let rr = await reading;
         }
-        else {failed = failed + 1u64;}
+        else {failed = failed + 1u64; aio.traceMark(1000u64 + i);}
       }
       i = i + 1u64;
     }
@@ -201,11 +202,11 @@ actor Peer {
               var t = Socket.none();
               t <-> *ok2;
             }
-            else {failed = failed + 1u64;}
+            else {failed = failed + 1u64; aio.traceMark(1000u64 + i);}
           }
           let rr = await accepting;
         }
-        else {failed = failed + 1u64;}
+        else {failed = failed + 1u64; aio.traceMark(1000u64 + i);}
       }
       i = i + 1u64;
     }
@@ -267,6 +268,27 @@ fn main() i32 {
     else {}
   }
   finalAll();
+  let totalFailed = got.udpBare.load() + got.udpUsed.load() + got.tcpBare.load() + got.udpFlight.load() + got.tcpFlight.load()
+    + got.udpBareLoaded.load() + got.udpUsedLoaded.load() + got.tcpBareLoaded.load();
+  if totalFailed != 0u64 {
+    let n = aio.traceCount();
+    var k = 0u64;
+    while k < n {
+      eprintStr("T ");
+      eprintUInt(k);
+      eprintStr(" ");
+      eprintUInt(aio.traceGet(k, 0u64));
+      eprintStr(" ");
+      let kt = aio.traceGet(k, 1u64);
+      eprintUInt(kt >> 8u64);
+      eprintStr(" ");
+      eprintUInt(kt & 255u64);
+      eprintStr(" ");
+      eprintUInt(aio.traceGet(k, 2u64));
+      eprintStr("\n");
+      k = k + 1u64;
+    }
+  }
   show("udp bare", got.udpBare.load());
   show("udp used", got.udpUsed.load());
   show("tcp listener", got.tcpBare.load());
