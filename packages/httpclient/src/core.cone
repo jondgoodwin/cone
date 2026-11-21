@@ -180,10 +180,11 @@ pub struct PoolEvent {
   pub response: ResponseHead;
   pub intent: Intent;
   pub score: i64;
+  pub now: Instant;            // when it happened, as the host reads its clock (zero: the core reads it)
 
   pub fn make(k: PoolEventKind) PoolEvent {
     PoolEvent(kind: k, pc: noEntry, fetch: FetchId.none(), clean: false, tls: false, timedOut: false,
-      failure: Failure.none(), response: ResponseHead(), intent: Intent.Visible, score: 0i64)
+      failure: Failure.none(), response: ResponseHead(), intent: Intent.Visible, score: 0i64, now: Instant())
   }
 }
 
@@ -222,6 +223,7 @@ pub struct ClientCore {
   phase: u32;                 // ...0: visiting origins, 1: opening connections
   visit: List[u32];           // ...the origins it visits
   vpos: usize;                // ...and the one it is at
+  clock: Instant;             // the time the event being taken carries (zero: none, and the real time is read)
 
   // A core to the limits cfg, its origins kept up to maxOrigins; h3on: the host has an HTTP/3 plug-in
   pub fn make(cfg: Limits, maxOrigins: u32, h3on: bool) ClientCore {
@@ -234,7 +236,7 @@ pub struct ClientCore {
       oheap: PriorityQueue[FetchKey, OriginRef](), idleHeap: PriorityQueue[u64, IdleRef](), idleLive: 0usize,
       idleClock: 1u64, lru: PriorityQueue[u64, LruRef](), cfg: cfg, h3on: h3on, st: ClientStats.zero(),
       attempts: List[u32](), wantSchedule: false, out: Deque[Command](), inPass: false, phase: 0u32,
-      visit: List[u32](), vpos: 0usize)
+      visit: List[u32](), vpos: 0usize, clock: Instant())
   }
 
   // ---------------------------------------------------------------------------
@@ -242,6 +244,21 @@ pub struct ClientCore {
   // ---------------------------------------------------------------------------
 
   fn fetchLive(self: &, i: u32) bool {fetches.isLive(i)}
+
+  // The time of the event being taken, when it brought one (PoolEvent.now, ask's 'now'): the core's
+  // answers and stamps carry it, so a host that gives the times makes the core deterministic. An
+  // event with none (the polled client's own calls) reads the clock
+  fn now(self: &) Instant {
+    if clock == Instant() {Instant.now()} else {clock}
+  }
+
+  // Fetch fi leaves its connection's list (it was answered, or goes back to wait): it is on no connection after this
+  fn leaveConn(self: &mut, fi: u32) {
+    let f = fetches.borrowAt(fi).unwrap();
+    if f.state != fActive || f.conn == noEntry || !self.fetchConnLive(f) {return;}
+    let pc = f.conn;
+    removeValue(&mut (pconns.borrowMutAt(pc).unwrap()).fetches, fi);
+  }
 
   fn pconnLive(self: &, i: u32) bool {pconns.isLive(i)}
 
@@ -288,9 +305,10 @@ pub struct ClientCore {
   }
 
   fn newConn(self: &mut) u32 {
+    let opened = self.now();
     let h = pconns.add(PConn(gen: 0u32, state: pConnecting, id: httpconn.ConnId.none(), origin: noEntry,
-      active: 0u32, uses: 0u32, opened: Instant.now(), proto: protoUnknown, awaiting: false, quic: false, qid: 0u64,
-      lookup: OpId.none(), h3By: Instant(), idleStamp: noStamp));
+      active: 0u32, uses: 0u32, opened: opened, proto: protoUnknown, awaiting: false, quic: false, qid: 0u64,
+      lookup: OpId.none(), h3By: Instant(), idleStamp: noStamp, fetches: List[u32]()));
     (pconns.borrowMutAt(h.index).unwrap()).gen = h.gen;
     h.index
   }
@@ -441,6 +459,7 @@ pub struct ClientCore {
 
   // Fetch fi into its origin's queue (an origin it is not yet counted in is counted)
   fn enqueue(self: &mut, fi: u32) {
+    self.leaveConn(fi);
     let f = fetches.borrowMutAt(fi).unwrap();
     let was = f.origin;
     let oi = self.originFor(&f.url);
@@ -811,8 +830,14 @@ pub struct ClientCore {
     wantSchedule = true;
   }
 
-  // An event taken in
+  // An event taken in. The time it carries (e.now) is the time of everything the core stamps while taking it
   pub fn on[F: ConnFacts](self: &mut, e: &PoolEvent, f: &F) {
+    clock = e.now;
+    self.onEvent(e, f);
+    clock = Instant();
+  }
+
+  fn onEvent[F: ConnFacts](self: &mut, e: &PoolEvent, f: &F) {
     let k = e.kind;
     if k == PoolEventKind.Connected {
       self.connected(e.pc, f);
@@ -873,7 +898,7 @@ pub struct ClientCore {
 
   // Whether connection pc has been open maxLifetime: it is given no more requests
   fn pastLifetime(self: &, pc: u32) bool {
-    Instant.now() - (pconns.borrowAt(pc).unwrap()).opened >= cfg.maxLifetime
+    self.now() - (pconns.borrowAt(pc).unwrap()).opened >= cfg.maxLifetime
   }
 
   // ---------------------------------------------------------------------------
@@ -884,6 +909,13 @@ pub struct ClientCore {
   // One that cannot be made is answered at once (an Answer command), and one with a deadline or group
   // is to be watched (a Watch command)
   pub fn ask(self: &mut, req: Request, sink: Sink, now: Instant) FetchId {
+    clock = now;
+    let id = self.askAt(req, sink, now);
+    clock = Instant();
+    id
+  }
+
+  fn askAt(self: &mut, req: Request, sink: Sink, now: Instant) FetchId {
     var r = req;
     let fi = self.newFetch();
     let f = fetches.borrowMutAt(fi).unwrap();
@@ -979,6 +1011,7 @@ pub struct ClientCore {
   // Fetch fi's one final answer: queued as a command, and the fetch freed
   fn finish(self: &mut, fi: u32, how: u32, fl: Option[Failure]) {
     if !self.fetchLive(fi) {return;}
+    self.leaveConn(fi);
     // (A waiting fetch's entry in its origin's queue goes with its record, in freeFetchRec)
     let f = fetches.borrowMutAt(fi).unwrap();
     var c = Command.make(CommandKind.Answer);
@@ -988,7 +1021,7 @@ pub struct ClientCore {
     f.held = 0usize;
     c.req = f.req;
     c.qreq = f.qreq;
-    f.timing.ended = Instant.now();
+    f.timing.ended = self.now();
     var k: EventKind = EventKind.Done;
     var failure = fl;
     if how == endDone {
@@ -1079,6 +1112,12 @@ pub struct ClientCore {
     let proto = if alive {(pconns.borrowAt(fconn).unwrap()).proto} else {protoUnknown};
     let multiplexed = proto == protoH2 || proto == protoH3;
     if alive {self.connEnded(fconn, f);}
+    self.failActive(fi, fl, multiplexed);
+  }
+
+  // Fetch fi's attempt failed with fl, its connection's own books settled: sent again if that is safe, else
+  // Failed (multiplexed: it was on an HTTP/2 or HTTP/3 connection)
+  fn failActive(self: &mut, fi: u32, fl: Failure, multiplexed: bool) {
     let ending = (fetches.borrowAt(fi).unwrap()).ending;
     if ending == endLimit || ending == endCancelled || ending == endTimedOut {
       self.finish(fi, if ending == endLimit {endLimit} else {endFailed}, Some[Failure](fl));
@@ -1230,9 +1269,19 @@ pub struct ClientCore {
   }
 
   // Pooled connection pc is closed, cleanly or with failure (tls: its TLS failed)
+  //
+  // A fetch still on the connection at its Closed (its own Failed did not come first) is ended here by the
+  // rule of Failed: sent again if that is safe, else answered Failed (with the connection's failure, or, for a
+  // clean close, that the connection closed under it). Each is answered or sent again, once, whatever order
+  // a host tells its connection's end and its fetches' in. A host sends a fetch's Failed or leaves it to this,
+  // never both: a Failed that follows the Closed would end the fetch's next attempt
   pub fn closed(self: &mut, pc: u32, clean: bool, failure: Failure, tls: bool) {
     let p = pconns.borrowMutAt(pc).unwrap();
     let og = origins.borrowMutAt(u32.from(p.origin)).unwrap();
+    var onIt = List[u32]();
+    onIt <-> p.fetches;
+    let multiplexed = p.proto == protoH2 || p.proto == protoH3;
+    let pgen = p.gen;
     self.forgetUndecided(pc);
     let was = p.state;
     if was == pConnecting {
@@ -1271,6 +1320,25 @@ pub struct ClientCore {
     self.freeConnRec(pc);
     // An origin whose first connect failed, with nothing waiting, is not kept
     if failedFresh {self.dropIfFailedFresh(oi);}
+    each fi in onIt.drain() {
+      self.endOnClosed(fi, pc, pgen, clean, &failure, multiplexed);
+    }
+  }
+
+  // Fetch fi was on connection pc (generation pgen) when it closed: ended by the rule of Failed
+  fn endOnClosed(self: &mut, fi: u32, pc: u32, pgen: u32, clean: bool, failure: &Failure, multiplexed: bool) {
+    if !self.fetchLive(fi) {return;}
+    let f = fetches.borrowAt(fi).unwrap();
+    if f.state != fActive || f.conn != pc || f.connGen != pgen {return;}
+    // A response that had begun is not to be sent again: noResponse says so, whatever the connection's failure
+    let began = f.delivered || f.following;
+    var fl = if clean {
+      Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed with the request still on it")
+    } else {
+      failure.clone()
+    };
+    fl.error.noResponse = if clean {!began} else {fl.error.noResponse && !began};
+    self.failActive(fi, fl, multiplexed);
   }
 
   // An exchange on connection pc has ended well: it is idle in its pool if
@@ -1739,6 +1807,7 @@ pub struct ClientCore {
     else {st.streams = st.streams + 1u64;}
     p.active = p.active + 1u32;
     p.uses = p.uses + 1u32;
+    p.fetches.push(fi);
     // The head is built once (and again after a redirect changes it). An attempt takes a copy while
     // another may follow it (a retry), and the head itself when none can
     if !f.hasHead {
@@ -1759,7 +1828,7 @@ pub struct ClientCore {
     let body = if f.streamed {f.upLen}
       else if f.body.len() > 0usize {BodyLength.sized(u64.from(f.body.len()))} else {BodyLength()};
     f.upWritable = false;
-    f.timing.dispatched = Instant.now();
+    f.timing.dispatched = self.now();
     f.timing.attempts = f.timing.attempts + 1u32;
     f.timing.reused = p.uses > 1u32;
     st.sent = st.sent + 1u64;
