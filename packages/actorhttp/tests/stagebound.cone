@@ -26,6 +26,7 @@ import time use Instant, Duration;
 import sync use Channel, Sender, Receiver;
 import collections use List, String, AnyError;
 import iobuf use IoBuf, Chain;
+import bufpool;
 import iocore use SocketAddr;
 import fs;
 import path use Path;
@@ -345,7 +346,9 @@ actor Reader {
 // fast buffers are reused. Each refusal of its own is counted in tally.mine, so a test can tell
 // the refusals of the code under test from these.
 fn hoard() Chain {
-  iobuf.trimAll();
+  // not trimAll: the server and client threads are running and take and return buffers, and trimAll
+  // flushes their caches from under them. This thread's own cache and the idle slabs are what it needs.
+  bufpool.trimStock();
   var held = Chain.make(unbounded);
   let limit = Instant.now() + Duration.fromMillis(30000i64);
   while tally.ended.load() < 1u64 && Instant.now() < limit {
@@ -390,7 +393,7 @@ fn main() i32 {
   reset();
   var window = 0u64;
   {
-    iobuf.trimAll();
+    bufpool.trimStock();   // not trimAll: the server thread is running (see hoard)
     let base = u64.from(iobuf.stats().heldBytes);
     let r = Reader(HttpClient.standard());
     r.run(url(port, "/tiny/1048576"), tinyBytes, wantTiny, 700i64, 0i64, 1u64);
@@ -407,7 +410,7 @@ fn main() i32 {
   // ten at once
   reset();
   {
-    iobuf.trimAll();
+    bufpool.trimStock();   // not trimAll: the server thread is running (see hoard)
     let base = u64.from(iobuf.stats().heldBytes);
     var k = 0u64;
     while k < 10u64 {
