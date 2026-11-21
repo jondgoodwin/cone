@@ -47,15 +47,6 @@ fn routedExchange(conn: &ConnActor, stream: u32, rid: u64, req: Request, streame
   Exchange(0u64, 0u32, rid, 0u32, false, 0u64, 0u64, false, streamed, false, req, Some[ConnActor](*conn), stream)
 }
 
-// A copy of a request head (HTTP/1.1's is kept in the connection, which still reads its method)
-fn copyHead(h: &RequestHead) RequestHead {
-  var c = RequestHead.make(h.methodName(), h.target.view(), h.authority.view());
-  c.scheme = String.from(h.scheme.view());
-  c.version = h.version;
-  c.headers = h.headers.clone();
-  c
-}
-
 // The listen of a routed server: the Server when it is listening, or why not
 fn listenRouted(addr: SocketAddr, cfg: ServerConfig) actors.Awaitable[Result[Server, ServerError]] {
   let args = Arc[imm, ListenArgs](ListenArgs(addr, cfg));
@@ -691,7 +682,8 @@ pub actor ConnActor {
 
   fn onRequest(self, stream: u32, body: BodyLength, now: Instant) {
     let h2 = sc.isHttp2();
-    let head = if h2 {sc.takeRequest()} else {copyHead(sc.request())};
+    // moved out on both protocols; HTTP/1.1's core is lent a head again by 'xDrop' (httpconn, 'giveSpare')
+    let head = sc.takeRequest();
     let rid = nextRid;
     nextRid = nextRid + 1u64;
     let isHead = head.method == Method.Head;
@@ -785,25 +777,24 @@ pub actor ConnActor {
 
   // Route a request: whole when bodies are gathered (at its end), at its head when the handler reads them
   fn routeRequest(self, stream: u32) {
-    var host = String();
-    var path = String();
     var rid = 0u64;
     var fresh = false;
+    var pick: Option[usize] = None;
     match streams.get(&stream) {
       case let Some(r) {
         fresh = !r.rejected && r.state == stFresh;
-        host = String.from(r.head.authority.view());
-        path = String.from(pathOf(r.head.target.view()));
         rid = r.rid;
+        // the route is picked from views of the head where it lies
+        if fresh {
+          match &args.cfg.table {
+            case let &Some(rt) {pick = pickRoute(&rt.routes, r.head.authority.view(), pathOf(r.head.target.view()));}
+            else {}
+          }
+        }
       }
       else {}
     }
     if !fresh {return;}
-    var pick: Option[usize] = None;
-    match &args.cfg.table {
-      case let &Some(rt) {pick = pickRoute(&rt.routes, host.view(), path.view());}
-      else {}
-    }
     match pick {
       case let Some(ix) {
         var isQueue = false;
@@ -943,15 +934,14 @@ pub actor ConnActor {
 
   // ---- the Exchange's calls
 
-  fn fillHead(self, head: &ResponseHead) {
+  // The handler's response head, copied field by field into the connection's kept one (taken by value: the borrow
+  // checker can't tell a borrowed head from the one 'sc.response()' lends, and would refuse the copy)
+  fn fillHead(self, head: ResponseHead) {
     let r = sc.response();
     r.status = head.status;
     var i = 0usize;
     while i < head.headers.len() {
-      let nm = String.from(head.headers.nameAt(i));
-      var vl = String();
-      vl.appendBytes(head.headers.valueAt(i));
-      r.headers.add(nm.view(), vl.view());
+      r.headers.add(head.headers.nameAt(i), head.headers.valueAt(i));
       i = i + 1usize;
     }
   }
@@ -971,7 +961,7 @@ pub actor ConnActor {
       else {false}
     };
     let none = isHead || st == 204u16 || st == 304u16 || body.len() == 0usize;
-    self.fillHead(&head);
+    self.fillHead(head);
     sc.respond(stream, BodyLength.sized(u64.from(body.len())));
     if none {
       self.dropStream(stream);
@@ -1002,7 +992,7 @@ pub actor ConnActor {
       }
       else {}
     }
-    self.fillHead(&head);
+    self.fillHead(head);
     sc.respond(stream, framing);
     if none {self.dropStream(stream);}
     self.turn();
@@ -1027,7 +1017,9 @@ pub actor ConnActor {
   }
 
   // The Exchange was dropped: no answer is 500; an unsized body ends cleanly; a sized one short of its length resets
-  pub async fn xDrop(self, stream: u32, rid: u64) {
+  // (it carries the request's head back: the next request on an HTTP/1.1 connection is read into it)
+  pub async fn xDrop(self, stream: u32, rid: u64, spare: RequestHead) {
+    sc.giveSpare(spare);
     match h2Rids.remove(&rid) {
       case let Some(x) {h2Live = h2Live - 1u32;}
       else {}
