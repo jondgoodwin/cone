@@ -160,7 +160,17 @@ fn main() i32 {
   tx2, rx2 = Oneshot[i64].make();
   let raw = Raw();
   raw.run(port, tx2);
-  let ms = rx2.recv() || -1i64;
+  // Raw caps itself at 10 s and reads with a 5 s limit, so 14 s with no report means a write or a read is stuck
+  // (the server's close never began). Fail here, naming what was seen, not at congo's 180 s
+  var ms = -1i64;
+  match rx2.recvTimeout(Duration.fromMillis(14000i64)) {
+    case let Some(v) {ms = v;}
+    else {
+      printStr("a peer that keeps sending: NO report from the raw peer within 14 s (a stuck write or read; the server's close never began), seen ");
+      printUInt(u64.from(seen)); printStr(" of 20 POSTs\n");
+      libc.exit(1i32);
+    }
+  }
   printStr("a peer that keeps sending: the connection is held for the linger (800 ms) and gone within a margin of it ");
   printStr(yes(ms >= 400i64 && ms < 4000i64));
   printStr("\n");
