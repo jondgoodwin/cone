@@ -1,0 +1,250 @@
+// Streamed-body bytes held across streams (S6 review finding 3, S7). The question it settles: with streamBodies a
+// chunk holds its credit until the handler reads it, and routedserver adds up no streams, so is what a connection
+// holds unread bounded by anything? (It is: by HTTP/2's own credit budget, 1 MiB a connection by default, from
+// which the windows' grants are drawn.)
+// A raw prior-knowledge HTTP/2 client opens 100 POST streams to a handler that never reads (it sleeps), then
+// sends on every stream as much as the server's windows allow, following SETTINGS and WINDOW_UPDATE frames, until
+// no stream can send more. Checked: the client could send in all no more than 1.5 MiB (the budget plus the
+// floors of the streams); the buffer pool's lent bytes, sampled every 5 ms, stay under 8 MiB; the handlers end,
+// and the connection actors are freed once the client leaves.
+
+mod hostilebodies;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import iobuf use IoBuf, tryLoadUint, stats;
+import http use *;
+import actors;
+import aio;
+import actorhttp use Server, ServerConfig, Exchange, HttpRoutes, HttpHandler;
+
+let running: Atomic[u64];
+
+fn @initpure init() {running = Atomic[u64].of(0u64);}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+actor Sleeper is HttpHandler {
+  n: u64;
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    running.add(1u64);
+    _ = await aio.sleep(Duration.fromSeconds(3i64));
+    ex.text(200u16, "done");
+    running.sub(1u64);
+  }
+}
+
+fn makeSleeper() HttpHandler {
+  let h = Sleeper();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+}
+
+fn frame(b: &mut IoBuf, len: u64, kind: u8, flags: u8, sid: u32) {
+  b.putUint(len, 3usize, true);
+  b.putNum[u8](kind, true);
+  b.putNum[u8](flags, true);
+  b.putNum[u32](sid, true);
+}
+
+let streams = 100u32;
+
+actor Filler {
+  // what the client has been granted: windows, as the server's frames say
+  win: List[i64];
+  connWin: i64;
+  initWin: i64;
+  acc: IoBuf;
+  ackDue: bool;
+
+  fn init(self: &new) {
+    var w = List[i64]();
+    var i = 0u32;
+    while i < streams {w.push(65535i64); i = i + 1u32;}
+    *self = Self(win: w, connWin: 65535i64, initWin: 65535i64, acc: IoBuf(262144usize), ackDue: false);
+  }
+
+  // Take the frames the server has sent in this time, whole ones only
+  fn eat(self, bytes: &Array[u8]) {
+    acc.append(bytes);
+    var at = 0usize;
+    while true {
+      let hdr = acc.view();
+      let len = match tryLoadUint(hdr, at, 3usize, true) {case let Some(v) {v} else {break;}};
+      if at + 9usize + usize.from(len) > acc.len() {break;}
+      let kind = tryLoadUint(hdr, at + 3usize, 1usize, true).unwrap();
+      let flags = tryLoadUint(hdr, at + 4usize, 1usize, true).unwrap();
+      let sid = tryLoadUint(hdr, at + 5usize, 4usize, true).unwrap() & 0x7FFFFFFFu64;
+      let p = at + 9usize;
+      if kind == 4u64 && (flags & 1u64) == 0u64 {
+        var k = 0usize;
+        while k + 6usize <= usize.from(len) {
+          let id = tryLoadUint(hdr, p + k, 2usize, true).unwrap();
+          let v = tryLoadUint(hdr, p + k + 2usize, 4usize, true).unwrap();
+          if id == 4u64 {
+            let d = i64.from(v) - initWin;
+            initWin = i64.from(v);
+            var q = 0usize;
+            while q < win.len() {win[q] = win[q] + d; q = q + 1usize;}
+          }
+          k = k + 6usize;
+        }
+        ackDue = true;
+      } else if kind == 8u64 && len == 4u64 {
+        let inc = i64.from(tryLoadUint(hdr, p, 4usize, true).unwrap() & 0x7FFFFFFFu64);
+        if sid == 0u64 {connWin = connWin + inc;}
+        else if sid % 2u64 == 1u64 && (sid - 1u64) / 2u64 < u64.from(streams) {
+          let ix = usize.from((sid - 1u64) / 2u64);
+          win[ix] = win[ix] + inc;
+        }
+      }
+      at = at + 9usize + usize.from(len);
+    }
+    if at > 0usize {
+      var rest = IoBuf(262144usize);
+      rest.append(&acc.view()[at ..< acc.len()]);
+      acc = rest;
+    }
+  }
+
+  pub async fn run(self, port: u16, var done: Sender[u64]) {
+    var total = 0u64;
+    match await aio.connect(SocketAddr.localhost(port)) {
+      case var Ok(s) {
+        var hello = IoBuf(256usize);
+        hello.append("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+        frame(&mut hello, 0u64, 4u8, 0u8, 0u32);
+        let w0 = await s.write(hello);
+        var tries = 0u32;
+        while tries < 3u32 {
+          let r = await s.readIn(IoBuf(65536usize), aio.IoLimits.until(Instant.now() + Duration.fromMillis(100i64)));
+          match r {case let Ok(x) {self.eat(x.view());} case let Err(e) {}}
+          tries = tries + 1u32;
+        }
+        var ack = IoBuf(64usize);
+        frame(&mut ack, 0u64, 4u8, 1u8, 0u32);
+        let wa = await s.write(ack);
+        // open every stream: a POST with a body to come
+        var i = 0u32;
+        while i < streams {
+          var b = IoBuf(64usize);
+          frame(&mut b, 6u64, 1u8, 4u8, 1u32 + 2u32 * i);    // HEADERS, END_HEADERS
+          b.putNum[u8](0x83u8, true);                        // :method POST
+          b.putNum[u8](0x86u8, true);                        // :scheme http
+          b.putNum[u8](0x84u8, true);                        // :path /
+          b.putNum[u8](0x01u8, true);                        // :authority "h"
+          b.putNum[u8](0x01u8, true);
+          b.putNum[u8](0x68u8, true);
+          let w = await s.write(b);
+          i = i + 1u32;
+        }
+        var idle = 0u32;
+        var rounds = 0u32;
+        while idle < 6u32 && rounds < 600u32 {
+          let r = await s.readIn(IoBuf(65536usize), aio.IoLimits.until(Instant.now() + Duration.fromMillis(25i64)));
+          match r {case let Ok(x) {self.eat(x.view());} case let Err(e) {}}
+          var b = IoBuf(1048576usize);
+          var sentNow = 0u64;
+          var q = 0usize;
+          while q < win.len() {
+            var n = win[q];
+            if n > connWin {n = connWin;}
+            if n > 16384i64 {n = 16384i64;}
+            if n > 0i64 && b.room() > 20000usize {
+              frame(&mut b, u64.from(n), 0u8, 0u8, 1u32 + 2u32 * u32.from(q));
+              b.putRepeat(0x78u8, usize.from(n));
+              win[q] = win[q] - n;
+              connWin = connWin - n;
+              sentNow = sentNow + u64.from(n);
+            }
+            q = q + 1usize;
+          }
+          if sentNow > 0u64 {
+            let w = await s.write(b);
+            total = total + sentNow;
+            idle = 0u32;
+          } else {
+            idle = idle + 1u32;
+          }
+          rounds = rounds + 1u32;
+        }
+        done.send(total);
+        _ = await aio.sleep(Duration.fromSeconds(1i64));
+      }
+      case let Err(e) {done.send(0u64);}
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var cfg = ServerConfig.make().streamBodies().routes(HttpRoutes.make().handle("", "/", &makeSleeper));
+  cfg.conn.h2PriorKnowledge = true;
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  var dtx: Sender[u64];
+  var drx: Receiver[u64];
+  dtx, drx = Channel[u64].make();
+  let fl = Filler();
+  fl.run(port, dtx.clone());
+  var peakLent = 0usize;
+  var got = 0u64;
+  var gotIt = false;
+  var polls = 0u32;
+  while !gotIt && polls < 6000u32 {
+    let l = stats().lentBytes;
+    if l > peakLent {peakLent = l;}
+    match drx.tryRecv() {
+      case let Some(v) {got = v; gotIt = true;}
+      else {}
+    }
+    thread.sleep(Duration.fromMillis(5i64));
+    polls = polls + 1u32;
+  }
+  say("client finished", if gotIt {1u64} else {0u64});
+  say("client could send something", if got > 0u64 {1u64} else {0u64});
+  say("granted in all within 1.5 MiB", if got <= 1572864u64 {1u64} else {0u64});
+  say("buffer pool lent bytes under 8 MiB", if peakLent < 8388608usize {1u64} else {0u64});
+  var waited = 0u32;
+  while running.load() > 0u64 && waited < 800u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  say("handlers ended", if running.load() == 0u64 {1u64} else {0u64});
+  waited = 0u32;
+  while actorhttp.liveConnActors() > 0u64 && waited < 600u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  say("connection actors freed", if actorhttp.liveConnActors() == 0u64 {1u64} else {0u64});
+  acceptor.stop();
+  finalAll();
+  0
+}

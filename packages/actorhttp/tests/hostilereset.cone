@@ -1,0 +1,182 @@
+// Rapid reset against the handler actors (S6 review finding 2, S7). The silent failure it guards: on HTTP/2 each
+// stream's handler is an actor of its own, and a stream the peer resets leaves the core's stream count while its
+// handler keeps running, so a client that opens a stream to a slow handler, resets it and repeats could hold
+// as many handler actors as it likes (the core's own rapid-reset bound is raised out of the way here, to show
+// the server's).
+// A raw prior-knowledge HTTP/2 client opens 2,000 streams, each to a handler that sleeps 2 s, and resets each
+// at once. maxConcurrentStreams is 20. Checked: handlers running at once (sampled every 2 ms) never pass the
+// cap by more than 5; all 2,000 attempts were sent; the handlers all end afterwards; the connection actors are
+// freed once the client leaves.
+
+mod hostilereset;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import iobuf use IoBuf;
+import http use *;
+import actors;
+import aio;
+import actorhttp use Server, ServerConfig, Exchange, HttpRoutes, HttpHandler;
+
+let running: Atomic[u64];       // handlers inside 'handle'
+let started: Atomic[u64];       // handlers ever started
+
+fn @initpure init() {
+  running = Atomic[u64].of(0u64);
+  started = Atomic[u64].of(0u64);
+}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+actor Slow is HttpHandler {
+  n: u64;
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    running.add(1u64);
+    started.add(1u64);
+    _ = await aio.sleep(Duration.fromSeconds(2i64));
+    ex.text(200u16, "late");
+    running.sub(1u64);
+  }
+}
+
+fn makeSlow() HttpHandler {
+  let h = Slow();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+}
+
+fn frame(b: &mut IoBuf, len: u64, kind: u8, flags: u8, sid: u32) {
+  b.putUint(len, 3usize, true);
+  b.putNum[u8](kind, true);
+  b.putNum[u8](flags, true);
+  b.putNum[u32](sid, true);
+}
+
+actor Flood {
+  pub async fn run(self, port: u16, attempts: u32, var done: Sender[u64]) {
+    var sent = 0u64;
+    match await aio.connect(SocketAddr.localhost(port)) {
+      case var Ok(s) {
+        var hello = IoBuf(256usize);
+        hello.append("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+        frame(&mut hello, 0u64, 4u8, 0u8, 0u32);
+        let w0 = await s.write(hello);
+        let r0 = await s.readIn(IoBuf(4096usize), aio.IoLimits.until(Instant.now() + Duration.fromSeconds(2i64)));
+        var ack = IoBuf(64usize);
+        frame(&mut ack, 0u64, 4u8, 1u8, 0u32);
+        let w1 = await s.write(ack);
+        var i = 0u32;
+        while i < attempts {
+          var b = IoBuf(8192usize);
+          var k = 0u32;
+          while k < 50u32 && i < attempts {
+            let sid = 1u32 + 2u32 * i;
+            frame(&mut b, 6u64, 1u8, 5u8, sid);        // HEADERS, END_STREAM | END_HEADERS
+            b.putNum[u8](0x82u8, true);                // :method GET
+            b.putNum[u8](0x86u8, true);                // :scheme http
+            b.putNum[u8](0x84u8, true);                // :path /
+            b.putNum[u8](0x01u8, true);                // :authority, literal, name from the table
+            b.putNum[u8](0x01u8, true);
+            b.putNum[u8](0x68u8, true);                // "h"
+            frame(&mut b, 4u64, 3u8, 0u8, sid);        // RST_STREAM
+            b.putNum[u32](8u32, true);                 // CANCEL
+            k = k + 1u32;
+            i = i + 1u32;
+          }
+          let w = await s.write(b);
+          match w {
+            case let Ok(x) {sent = sent + u64.from(k);}
+            case let Err(e) {i = attempts;}
+          }
+          // take what the server has said (settings, answers), so its writes do not back up
+          let r = await s.readIn(IoBuf(65536usize), aio.IoLimits.until(Instant.now() + Duration.fromMillis(1i64)));
+        }
+        done.send(sent);
+        _ = await aio.sleep(Duration.fromSeconds(3i64));
+      }
+      case let Err(e) {done.send(0u64);}
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var cfg = ServerConfig.make().routes(HttpRoutes.make().handle("", "/", &makeSlow));
+  cfg.conn.h2PriorKnowledge = true;
+  cfg.conn.h2.maxConcurrentStreams = 20u32;
+  cfg.conn.h2.maxPeerResets = 1000000u32;
+  cfg.conn.h2.maxLocalResets = 1000000u32;
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  var dtx: Sender[u64];
+  var drx: Receiver[u64];
+  dtx, drx = Channel[u64].make();
+  let fl = Flood();
+  fl.run(port, 2000u32, dtx.clone());
+  var peak = 0u64;
+  var got = 0u64;
+  var gotIt = false;
+  var polls = 0u32;
+  while !gotIt && polls < 20000u32 {
+    let n = running.load();
+    if n > peak {peak = n;}
+    match drx.tryRecv() {
+      case let Some(v) {got = v; gotIt = true;}
+      else {}
+    }
+    thread.sleep(Duration.fromMillis(2i64));
+    polls = polls + 1u32;
+  }
+  say("attempts sent", got);
+  var more = 0u32;
+  while more < 1000u32 {
+    let n = running.load();
+    if n > peak {peak = n;}
+    thread.sleep(Duration.fromMillis(2i64));
+    more = more + 1u32;
+  }
+  say("handlers ever started past 0", if started.load() > 0u64 {1u64} else {0u64});
+  say("peak handlers within cap 20 plus 5", if peak <= 25u64 {1u64} else {0u64});
+  var waited = 0u32;
+  while running.load() > 0u64 && waited < 600u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  say("handlers all ended", if running.load() == 0u64 {1u64} else {0u64});
+  waited = 0u32;
+  while actorhttp.liveConnActors() > 0u64 && waited < 600u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  say("connection actors freed", if actorhttp.liveConnActors() == 0u64 {1u64} else {0u64});
+  acceptor.stop();
+  finalAll();
+  0
+}

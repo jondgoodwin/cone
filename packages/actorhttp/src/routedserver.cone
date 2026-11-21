@@ -409,6 +409,9 @@ pub actor ConnActor {
   out: Chain;
   reading: bool;
   writing: bool;
+  h2Rids: Dict[u64, bool];  // HTTP/2: the requests whose handler holds the exchange still
+  h2Live: u32;            // HTTP/2: stream handlers that have not returned (reset streams' included)
+  writeBy: Instant;        // while 'writing': the write has to be done by then (a peer that does not read is let go)
   protoClosed: bool;        // the protocol is over (Closed was given)
   closing: bool;            // the closing sequence has begun
   closeStarted: bool;       // closeOut is running (it starts once no read is parked)
@@ -435,7 +438,7 @@ pub actor ConnActor {
     }
     *self = Self(id: id, sc: httpconn.ServerConn.make(args.cfg.conn, layer, now), sock: sock, srv: srv,
       args: args, group: group, peer: peer, secure: secure, tm: actors.Timer.make(), out: Chain.make(noBound),
-      reading: false, writing: false, protoClosed: false, closing: false, closeStarted: false, ended: false,
+      reading: false, writing: false, h2Rids: Dict[u64, bool](), h2Live: 0u32, writeBy: now, protoClosed: false, closing: false, closeStarted: false, ended: false,
       streams: Dict[u32, Strm](), pends: Deque[Pend](), h1: None[HttpHandler], h1ix: 0usize, nextRid: 1u64, guard: LiveGuard(true));
     selfactor.begin();
   }
@@ -448,7 +451,14 @@ pub actor ConnActor {
   pub async fn timerLoop(self) {
     while await tm.next() {
       if ended {break;}
-      sc.handleTimeout(Instant.now());
+      let now = Instant.now();
+      sc.handleTimeout(now);
+      // a write the peer has not taken within bodyTimeout: the peer does not read, so the connection is let go
+      // (its socket, its maxConnections slot and the bytes held for it) rather than kept for as long as it likes
+      if writing && now >= writeBy {
+        sc.abort();
+        sock.cancelWrite();
+      }
       self.turn();
     }
   }
@@ -470,7 +480,18 @@ pub actor ConnActor {
       reading = false;
       return;
     }
-    let r = await sock.readIn(IoBuf(args.cfg.conn.recvSize), IoLimits.within(group));
+    let buf = match IoBuf.tryMake(args.cfg.conn.recvSize) {
+      case var Some(got) {got}
+      else {
+        // iobuf's THE RESERVE: a peer causes this buffer, so a full pool ends this connection (Overloaded, as
+        // the driver's receive does) rather than a plain IoBuf(...) panicking the whole server
+        reading = false;
+        sc.abort();
+        self.turn();
+        return;
+      }
+    };
+    let r = await sock.readIn(buf, IoLimits.within(group));
     reading = false;
     match r {
       case let Ok(b) {
@@ -566,6 +587,7 @@ pub actor ConnActor {
       let n = sc.fill(now);
       if n > 0usize {
         writing = true;
+        writeBy = now + args.cfg.conn.protocol.bodyTimeout;
         selfactor.writeOnce();
       }
     }
@@ -574,8 +596,8 @@ pub actor ConnActor {
       selfactor.readOnce();
     }
     match sc.pollTimeout() {
-      case let Some(t) {tm.set(t);}
-      else {tm.clear();}
+      case let Some(t) {tm.set(if writing && writeBy < t {writeBy} else {t});}
+      else {if writing {tm.set(writeBy);} else {tm.clear();}}
     }
     if isDone && !writing && !closing {
       closing = true;
@@ -834,6 +856,14 @@ pub actor ConnActor {
 
   // The handler: on HTTP/1.1 one actor for the connection, its requests in order; on HTTP/2 one for each stream
   fn runHandler(self, stream: u32, rid: u64, ix: usize, make: Option[&fn() HttpHandler]) {
+    // a stream the peer has reset leaves the protocol's count of open streams while its handler goes on, so the
+    // handlers still running are counted here and a stream past the cap is answered 503 (the handlers of an
+    // HTTP/2 connection are bounded by maxConcurrentStreams, not by how fast the peer opens and resets)
+    if sc.isHttp2() && h2Live >= args.cfg.conn.h2.maxConcurrentStreams {
+      self.answerText(stream, 503u16, "the server is busy");
+      sc.stopBody(stream);
+      return;
+    }
     let ex = match self.takeExchange(stream, rid) {
       case let Some(e) {e}
       else {return;}
@@ -845,6 +875,10 @@ pub actor ConnActor {
     }
     if sc.isHttp2() {
       let h = mk();
+      // counted until its exchange is dropped (the handler is done with the stream; 'handle' itself returns
+      // nothing to wait on): xDrop takes it off
+      h2Rids.insert(rid, true);
+      h2Live = h2Live + 1u32;
       h.handle(ex);
     } else {
       if h1ix == ix {
@@ -994,6 +1028,10 @@ pub actor ConnActor {
 
   // The Exchange was dropped: no answer is 500; an unsized body ends cleanly; a sized one short of its length resets
   pub async fn xDrop(self, stream: u32, rid: u64) {
+    match h2Rids.remove(&rid) {
+      case let Some(x) {h2Live = h2Live - 1u32;}
+      else {}
+    }
     if !self.live(stream, rid) {return;}
     var st = stFresh;
     var sized = false;
@@ -1020,7 +1058,7 @@ pub actor ConnActor {
   // Move what the writes waiting hold into the protocol while it takes them, in order, a stream's at a time:
   // a write is answered when all its bytes are taken, a finish when the response is whole
   fn drainPends(self) {
-    var blocked = List[u32]();
+    var blocked = Dict[u32, bool]();     // a lookup, so a turn costs the pends, not the pends times the blocked streams
     var n = pends.len();
     while n > 0usize {
       n = n - 1usize;
@@ -1030,13 +1068,7 @@ pub actor ConnActor {
         self.answerClosed(p);
         continue;
       }
-      var isBlocked = false;
-      var k = 0usize;
-      while k < blocked.len() {
-        if blocked[k] == stream {isBlocked = true;}
-        k = k + 1usize;
-      }
-      if isBlocked {
+      if blocked.get(&stream) is Some {
         pends.push(p);
         continue;
       }
@@ -1068,7 +1100,7 @@ pub actor ConnActor {
         }
       }
       if refused {
-        blocked.push(stream);
+        blocked.insert(stream, true);
         pends.push(p);
       } else {
         let total = bytes.len;
