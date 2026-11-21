@@ -13,7 +13,7 @@ K="-i $KEY -o ConnectTimeout=30 ubuntu@40.87.21.70"
 LL=/c/src/zz-cone-module-tools/linuxlock.sh
 W=zz-cb819-$(date +%m%d-%H%M%S)
 RPID=
-T=$(bash $LL take "lane 819 cellbench" 45 30 $$) || { echo "linux lock not taken in 30 minutes: Linux part not done"; exit 2; }
+T=$(bash $LL take "lane 819 cellbench" 45 240) || { echo "linux lock not taken in 240 minutes: Linux part not done"; exit 2; }
 cleanup() {
   if [ -n "$RPID" ]; then ssh $K "kill -9 -- -$RPID 2>/dev/null; rm -rf ~/$W"; fi
   bash $LL release "$T"
