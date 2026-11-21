@@ -942,6 +942,29 @@ named `<package>-<test>-<head>-<yyyymmdd-HHMMSS>`, the head being
 A capture that fails prints one line on stderr and goes on: the test is still
 stopped and still reported as timed out.
 
+### When a test crashes
+
+With `CONE_HANG_DIR` set, a test that dies of a crash it does not expect
+leaves a record in the same folder, named `crash-<package>-<test>-<head>-<time>`
+(a test whose `.exit` expects the crash, a panic's, leaves none, and neither
+does a passing test). The failure's output says `crash record: <path>` and
+shows the last 40 lines of the test's stderr. Neither changes the exit status
+or the verdict.
+
+- Windows (a second-chance exception, seen by Congo as the test's debugger):
+  a `.txt` with the exception code, for an access violation the address and
+  whether it was read or written, the fault's module, offset and function (with
+  file and line from the `.pdb`), and every thread's stack with symbols; and a
+  full-memory `.dmp` as for a hang.
+- Linux (SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE): the test is started
+  through `sh -c 'ulimit -c unlimited; exec ...'` and its core is read as the
+  box allows without root: a `core` or `core.<pid>` in the test's folder, or,
+  where `core_pattern` pipes to Ubuntu's apport, the report it writes to
+  `/var/crash` when `~/.config/apport/settings` holds `unpackaged=true` under
+  `[main]` (kept beside the record as `.crash`, and unpacked with
+  `apport-unpack`). The `.txt` has every thread's stack from `gdb -batch`, else
+  `lldb -b`. With no readable core it says which part is missing.
+
 ### Testing the repository's packages
 
 The repository's packages are tested with

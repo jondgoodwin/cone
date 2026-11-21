@@ -2394,6 +2394,73 @@ class Testing(unittest.TestCase):
                       run.stdout)
         self.assertNotIn("no test or example has", run.stderr)
 
+    def test_a_crashing_test_leaves_a_record_and_a_passing_one_none(self):
+        """With CONE_HANG_DIR set, a test that dies of a bad dereference (an
+        access violation; SIGSEGV) leaves crash-<label>-*.txt there, naming
+        the exception, the fault's function in every thread's stack, and a
+        minidump (Windows) or the apport report (Linux); the test's verdict is
+        what it was, and its last stderr lines are in Congo's output. A
+        passing test leaves none, and neither does a test that ends in a
+        panic on purpose (its .exit says so)."""
+        if CONGO_EXE:
+            self.skipTest("the crash record is congo.py's: the Cone Congo has no CONE_HANG_DIR path")
+        pkg = self.halver(self.root)             # even passes; odd panics on purpose, in debug
+        with open(pkg / "src" / "halver.cone", "a", encoding="utf-8", newline="\n") as src:
+            src.write("\npub fn poke(p: *i64) i64 {\n  *p\n}\n\n"
+                      "pub fn pokeBadPointer() i64 {\n  poke(8usize as *i64)\n}\n")
+        write(pkg / "tests" / "crash.cone", """
+            mod crash;
+
+            import stdio use *;
+            import halver;
+
+            fn main() i32 {
+              each i in 0usize ..< 60usize {
+                eprintStr("noise\\n");
+              }
+              eprintStr("crash: about to poke\\n");
+              printInt(halver.pokeBadPointer());
+              printStr("\\n");
+              0i32
+            }
+            """)
+        write(pkg / "tests" / "crash.out", "0\n")
+        write(pkg / "tests" / "odd.exit", "3221226505\n")      # a panic: -6 (SIGABRT) off Windows
+        write(pkg / "tests" / "odd.out", "")
+        hangs = self.root / "hangs"
+        self.env["CONE_HANG_DIR"] = str(hangs)
+        run = self.congo("test", cwd=pkg, ok=False)
+        self.assertIn("test crash ... FAILED", run.stdout)
+        self.assertIn("test even ... ok", run.stdout)
+        self.assertIn("test odd ... ok", run.stdout)       # a panic its .exit expects
+        self.assertIn("crash: about to poke", run.stdout)  # the stderr tail, as a stopped test's:
+        self.assertIn("(21 earlier lines left out)", run.stdout)       # its last 40 lines
+        self.assertIn("exited " + ("3221225477" if IS_WINDOWS else "-11") + ", expected 0", run.stdout)
+        records = sorted(hangs.glob("crash-*.txt"))
+        self.assertEqual(len(records), 1, [p.name for p in records])
+        self.assertTrue(records[0].name.startswith("crash-halver-crash-"), records[0].name)
+        self.assertIn(f"crash record: {records[0]}", run.stdout)
+        text = records[0].read_text(encoding="utf-8")
+        if IS_WINDOWS:
+            self.assertIn("exception code 0xc0000005", text)
+            self.assertIn("access violation: read of address 0x8", text)
+            self.assertIn("(FAULTING)", text)
+            self.assertIn("poke", text.split("--- thread", 2)[1])        # the faulting thread's stack
+            self.assertIn("pokeBadPointer", text)
+            self.assertEqual(len(list(hangs.glob("crash-*.dmp"))), 1)
+        else:
+            if "no core" in text or "neither gdb nor lldb" in text:
+                self.skipTest("no core can be read on this box:\n" + text)
+            self.assertIn("killed by signal 11", text)
+            self.assertIn("poke", text)
+            self.assertIn("pokeBadPointer", text)
+        # A passing run adds nothing
+        for old in hangs.glob("crash-*"):
+            old.unlink()
+        run = self.congo("test", "even", cwd=pkg)
+        self.assertIn("test even ... ok", run.stdout)
+        self.assertEqual(list(hangs.glob("crash-*")), [])
+
     def test_a_panics_backtrace_is_named_and_not_compared(self):
         # Congo sets CONE_BACKTRACE for each test it runs, so a panic writes a
         # 'stack backtrace:' block. Its addresses are no part of what a .err
