@@ -1,0 +1,27 @@
+// Whether a refused HTTP/3 bind of a listen on port 0 is retried on another port (Bug 101): the decision, with no
+// socket. The address being in use, or the OS refusing the number (Windows answers WSAEACCES for a port a wildcard
+// exclusive socket holds), means try again; any other failure is the caller's. Checked:
+// 1. the address-in-use and access-denied codes of this system are retried;
+// 2. a refused connection, a reset, no error and an unrelated number are not.
+
+mod listenretry;
+
+import testing use *;
+import actorhttp use *;
+
+fn main() i32 {
+  #if #os == .windows {
+    expect(listenRetryable(10048u32), "1: WSAEADDRINUSE is retried");
+    expect(listenRetryable(10013u32), "1: WSAEACCES is retried");
+    expect(!listenRetryable(10061u32), "2: WSAECONNREFUSED is not");
+    expect(!listenRetryable(10054u32), "2: WSAECONNRESET is not");
+  } #else {
+    expect(listenRetryable(98u32), "1: EADDRINUSE is retried");
+    expect(listenRetryable(13u32), "1: EACCES is retried");
+    expect(!listenRetryable(111u32), "2: ECONNREFUSED is not");
+    expect(!listenRetryable(104u32), "2: ECONNRESET is not");
+  }
+  expect(!listenRetryable(0u32), "2: no error is not");
+  expect(!listenRetryable(2u32), "2: an unrelated number is not");
+  done()
+}

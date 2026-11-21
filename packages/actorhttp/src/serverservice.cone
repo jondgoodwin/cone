@@ -158,6 +158,13 @@ struct TlsMaker {
   pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream())}
 }
 
+// (pub for tests/listenretry.cone, not an API) Whether a refused HTTP/3 bind, on a listen of port 0, is retried on
+// another port: AddressInUse, or the OS refusing the number (WSAEACCES, EACCES), since TCP chose it (Bug 101)
+pub fn listenRetryable(code: u32) bool {
+  let kind = IoError(code).kind();
+  kind == IoErrorKind.AddressInUse || kind == IoErrorKind.PermissionDenied
+}
+
 // A reply kept in an Option answered in place, and let go
 fn answerKeptIn[R](kept: &mut Option[actors.ReplyOf[R]], v: R) {
   var taken: Option[actors.ReplyOf[R]] = None;
@@ -795,9 +802,7 @@ fn listenOnce(lp: &mut Loop, sv: &mut Service, addr: SocketAddr, cfg: &ServerCon
         if why.len() > 0usize {
           drv.stopListening(lp, l);
           drv.abortAll(lp);
-          // AddressInUse, or the OS refusing the number (WSAEACCES, EACCES): on port 0 TCP chose it (Bug 101)
-          let kind = IoError(code).kind();
-          if retry && (kind == IoErrorKind.AddressInUse || kind == IoErrorKind.PermissionDenied) {
+          if retry && listenRetryable(code) {
             return None[Result[Server, ServerError]];
           }
           return Some[Result[Server, ServerError]](Err[Server, ServerError](ServerError.failed(code, why.view())));
