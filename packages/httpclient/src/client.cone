@@ -1416,6 +1416,46 @@ pub fn getWhole(text: &str, limit: usize) Response {
   r
 }
 
+// What a host of its own (the client actor, actorhttp) makes its client from: a Config taken apart as
+// Client.make does it, the pool's limits, each connection's config, and the TLS context (or why there is none)
+pub struct Parts {
+  pub limits: Limits;
+  pub maxOrigins: u32;
+  pub conn: httpconn.Config;
+  pub tlsc: Result[tls.Client, Failure];
+  pub http3: bool;               // the config names an HTTP/3 plug-in: a host without one keeps that client for itself
+}
+
+pub fn partsOf(cfg: Config) Parts {
+  if cfg.maxPerOrigin == 0u32 || cfg.maxTotal == 0u32 {
+    panic("httpclient: maxPerOrigin and maxTotal are at least 1");
+  }
+  let given, http2, maxPerOrigin, maxTotal, idleTimeout, maxLifetime, maxQueued, maxRetries, maxRedirects,
+    userAgent, var conn, http3, maxOrigins, givenStreams = cfg.(tlsConfig, http2, maxPerOrigin,
+    maxTotal, idleTimeout, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, conn, http3, maxOrigins,
+    maxStreamsPerConnection);
+  let maxStreams = if givenStreams == 0u32 {4294967295u32} else {givenStreams};
+  conn.protocol.idleTimeout = idleTimeout;
+  conn.h2IdleTimeout = idleTimeout;
+  var tlsConfig = given;
+  tlsConfig.alpn = alpnFor(&tlsConfig.alpn, http2);
+  var hasH3 = false;
+  match http3 {
+    case let Some(mk) {hasH3 = true;}
+    else {}
+  }
+  let tlsc = match tls.Client.make(tlsConfig) {
+    case var Ok(r) {Ok[tls.Client, Failure](r)}
+    case var Err(e) {
+      Err[tls.Client, Failure](Failure.make(Stage.Tls, e.osError, ErrorKind.Unsupported, (String() <- e).view()))
+    }
+  };
+  let priorKnowledge = conn.h2PriorKnowledge;
+  let lim = Limits(maxPerOrigin, maxTotal, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, priorKnowledge,
+    List[String](), Duration.fromSeconds(1i64), maxStreams);
+  Parts(lim, maxOrigins, conn, tlsc, hasH3)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

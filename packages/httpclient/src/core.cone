@@ -183,7 +183,7 @@ pub struct PoolEvent {
   pub intent: Intent;
   pub score: i64;
   pub now: Instant;            // when it happened, as the host reads its clock (zero: the core reads it)
-  pub gen: u32;                // Done, Failed, Stopped: the generation of connection pc, which the exchange was on
+  pub gen: u32;                // Response, Done, Failed, Stopped: the generation of connection pc, which the exchange was on (pc given: the event is dropped if that is not the fetch's current attempt)
 
   pub fn make(k: PoolEventKind) PoolEvent {
     PoolEvent(kind: k, pc: noEntry, fetch: FetchId.none(), clean: false, tls: false, timedOut: false,
@@ -856,7 +856,8 @@ pub struct ClientCore {
     // An exchange's end that names its connection (pc, gen) and is not the fetch's current attempt is a late
     // word of an earlier one (its connection closed, the fetch was sent again): dropped, so the new attempt
     // is not ended by it, whatever order a host tells its events in
-    if (k == PoolEventKind.Done || k == PoolEventKind.Failed || k == PoolEventKind.Stopped) && e.pc != noEntry &&
+    if (k == PoolEventKind.Done || k == PoolEventKind.Failed || k == PoolEventKind.Stopped || k == PoolEventKind.Response) &&
+        e.pc != noEntry &&
         !self.attemptOf(fi, e.pc, e.gen) {return;}
     if k == PoolEventKind.Done {self.requestDone(fi, f);}
     else if k == PoolEventKind.Failed {self.requestFailed(fi, e.failure.clone(), f);}
@@ -869,6 +870,25 @@ pub struct ClientCore {
       ft.intent = e.intent;
       ft.score = e.score;
       self.rekeyWaiting(fi);
+    }
+  }
+
+  // The URL fetch id is at now, after the redirects followed so far, as text (empty when it is no live fetch)
+  pub fn urlOf(self: &, id: FetchId) String {
+    let fi = self.fetchIndex(id);
+    if fi == noEntry {return String();}
+    (fetches.borrowAt(fi).unwrap()).url.text()
+  }
+
+  // Connection pc's room or its taking requests has changed (a host whose connections tell it so): the
+  // scheduler is to look at its origin again
+  pub fn touchConn(self: &mut, pc: u32) {
+    match pconns.borrowAt(pc) {
+      case let Some(p) {
+        let oi = p.origin;
+        self.touch(oi);
+      }
+      else {}
     }
   }
 
