@@ -6,12 +6,15 @@
 // (as sconnalloc and aio's alloc test do), read by the handler at the start of request 200 and of request 5,200.
 // The handler's own answer (head and body, 'ex.text') is measured alone beforehand and taken off.
 // Checked: every reply is the same length; the server's allocations per request, beyond the handler's answer,
-// are no more than today's 12.5.
+// are no more than today's 4.5.
 // SPEC SECTION 8 ASKS FOR NONE ("no allocation per request on a kept-alive HTTP/1 connection"), AND IT IS NOT MET:
-// today 12 allocations a request (debug build, Windows; the handler's own answer is 4 more), from the routed
-// connection actor (routeRequest's host and path Strings, takeExchange's RequestHead and Request, fillHead's copy of
-// each header, the Pend records) and its messages. httpconn alone allocates none (sconnalloc). The ceiling pins today's
-// count so it cannot grow; lower it as the allocations go.
+// today 4 allocations a request (debug build, Windows; the handler's own answer is 4 more). Row 604 took 8 away: the
+// request head moves out and comes back to the core by the Exchange's drop message (a spare, refilled), the route is
+// picked from views of the head, and the response head is filled straight into the connection's kept one. What is
+// left is the three messages' payloads (handle, xRespond, xDrop: Cone malloc's region B) and, it seems, one IoBuf
+// the response body is copied into (drainPends). httpconn alone allocates none (sconnalloc). The ceiling pins today's
+// count so it cannot grow; lower it as the allocations go. (Dropping the spare's reuse, 'xDrop' not calling
+// 'giveSpare', makes it 6: the mutant check.)
 
 mod keptalivealloc;
 
@@ -212,7 +215,7 @@ fn main() i32 {
   // the server's own allocations, per request, in thousandths (the handler's answer taken off)
   let beyond = if used > perAnswer * u64.from(measured) {(used - perAnswer * u64.from(measured)) * 1000u64 / u64.from(measured)} else {0u64};
   say("measured", if atEnd.load() > 0u64 {1u64} else {0u64});
-  say("server allocations per request no more than today's 12.5", if beyond <= 12500u64 {1u64} else {0u64});
+  say("server allocations per request no more than today's 4.5", if beyond <= 4500u64 {1u64} else {0u64});
   acceptor.stop();
   finalAll();
   0
