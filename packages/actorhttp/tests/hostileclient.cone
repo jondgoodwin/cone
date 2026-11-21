@@ -1,0 +1,616 @@
+// The client on actors against hostile servers (stage 4, row C7). Each backend is a raw one of this test's own (aio sockets,
+// no HTTP library), so what it says and when it stops is the test's. The silent failure each guards against is a client
+// that a server can make grow without bound, or hold forever:
+// 1. A redirect chain that goes to a new host at every hop (127.0.0.k for k = 2, 3, ...): the client follows at most
+//    maxRedirects, answers the fetch once, and keeps no more origins than maxOrigins, so a server cannot make it remember
+//    (or hold connections to) every host it names. The mutant: no cap on origins, or on redirects.
+// 2. An HTTP/2 server (prior knowledge, no TLS) announcing 2^31 - 1 concurrent streams and answering none: the client puts
+//    no more streams on a connection than maxStreamsPerConnection, and no more connections than maxPerOrigin; the rest wait.
+//    The mutant: the client's own limit of streams taken away.
+// 3. A body declared 4 GiB and sent slowly, a chunked body that never ends, and a body that trickles: each bounded by the
+//    client's body limit (or its deadline), the fetch answered once and the connection closed, so the server's sending stops.
+//    The mutant: the body limit not applied.
+// 4. A client closed with fetches waiting for a connection, in flight and redirecting (held at the server): all
+//    answered Cancelled, no client actor or connection actor left, every connection closed at the server, no buffer lent;
+//    a client made and closed twenty times leaves no more than the same.
+
+mod hostileclient;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver;
+import collections use List, String;
+import time use Instant, Duration;
+import testing use *;
+import iobuf use *;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Response, Request;
+import actors;
+import actorhttp use HttpClient, FetchError, liveClientActors, liveClientConnActors;
+import aio use IoLimits;
+
+let open: Atomic[u64];          // connections the backend holds open now
+let maxOpen: Atomic[u64];
+let accepts: Atomic[u64];
+let served: Atomic[u64];        // requests the backend read (redirects: the chain's length)
+let backendPort: Atomic[u64];
+let hold: Atomic[u64];          // 1: the held requests stay held; 0: released
+let sent: Atomic[u64];          // body bytes the backend wrote
+let writeFailed: Atomic[u64];   // 1 once a write of the backend's failed, the client having closed
+let headers: Atomic[u64];       // HTTP/2 HEADERS frames read, in all
+let maxHeaders: Atomic[u64];    // ... the most on one connection
+
+fn @initpure init() {
+  open = Atomic[u64].of(0u64);
+  maxOpen = Atomic[u64].of(0u64);
+  accepts = Atomic[u64].of(0u64);
+  served = Atomic[u64].of(0u64);
+  backendPort = Atomic[u64].of(0u64);
+  hold = Atomic[u64].of(1u64);
+  sent = Atomic[u64].of(0u64);
+  writeFailed = Atomic[u64].of(0u64);
+  headers = Atomic[u64].of(0u64);
+  maxHeaders = Atomic[u64].of(0u64);
+}
+
+const noBound = 0xFFFFFFFFFFFFFFFFusize;
+
+fn bump(m: &Atomic[u64], v: u64) {
+  m.max(v);
+}
+
+// Whether the request text holds its blank line
+fn whole(s: &String) bool {
+  let b = s.view() as &Array[u8];
+  var i = 0usize;
+  while i + 3usize < b.len {
+    if b[i] == 13u8 && b[i + 1usize] == 10u8 && b[i + 2usize] == 13u8 && b[i + 3usize] == 10u8 {return true;}
+    i = i + 1usize;
+  }
+  false
+}
+
+// The request's path: between the first two spaces
+fn pathOf(s: &String) String {
+  let b = s.view() as &Array[u8];
+  var i = 0usize;
+  while i < b.len && b[i] != 32u8 {i = i + 1usize;}
+  i = i + 1usize;
+  var p = String();
+  while i < b.len && b[i] != 32u8 {
+    p.appendByte(b[i]);
+    i = i + 1usize;
+  }
+  p
+}
+
+// The number after the path's first two characters ("/h12" is 12)
+fn hopOf(path: &String) u64 {
+  let b = path.view() as &Array[u8];
+  var n = 0u64;
+  var i = 2usize;
+  while i < b.len && b[i] >= 48u8 && b[i] <= 57u8 {
+    n = n * 10u64 + u64.from(b[i] - 48u8);
+    i = i + 1usize;
+  }
+  n
+}
+
+// Bytes given as decimal numbers separated by commas
+fn putBytes(out: &mut String, spec: &str) {
+  let b = spec as &Array[u8];
+  var n = 0u32;
+  var i = 0usize;
+  while i <= b.len {
+    if i == b.len || b[i] == 44u8 {
+      out.appendByte(u8.from(n));
+      n = 0u32;
+    } else {
+      n = n * 10u32 + u32.from(b[i] - 48u8);
+    }
+    i = i + 1usize;
+  }
+}
+
+fn chainOf(text: &String) Chain {
+  var c = Chain.make(noBound);
+  var b = IoBuf(text.len() + 1usize);
+  b.append(text.view() as &Array[u8]);
+  c.push(b);
+  c
+}
+
+// The kind of a backend: what its connections do
+const kRedirect = 1u32;     // each request answered 302 to the next host of the chain
+const kH2 = 2u32;           // HTTP/2 with no TLS: announces 2^31 - 1 streams, answers none
+const kBody = 3u32;         // /huge, /chunked, /trickle
+const kHold = 4u32;         // /hold held until released; /r redirects to /hold; /ok answered
+
+actor Backend {
+  ls: aio.Socket;
+  kind: u32;
+
+  pub async fn start(self, ports: Sender[u16]) {
+    let r = await aio.listen(SocketAddr.v4(0u8, 0u8, 0u8, 0u8, 0u16));
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {ls <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n"); libc.exit(1i32);}
+    }
+    var p = 0u16;
+    match await ls.localAddr() {
+      case let Ok(a) {p = a.port();}
+      else {}
+    }
+    backendPort.store(u64.from(p));
+    ports.send(p);
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let r = await ls.acceptFromIn(IoLimits.none());
+      match r {
+        case let Ok(a) {
+          let sock, peer = a.(sock, peer);
+          accepts.add(1u64);
+          maxOpen.max(open.add(1u64) + 1u64);
+          if kind == kH2 {
+            let c = H2Conn(sock);
+            c.run();
+          } else {
+            let c = BackendConn(sock, kind);
+            c.run();
+          }
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    var dead = aio.Socket.none();
+    dead <-> ls;
+  }
+}
+
+actor BackendConn {
+  sock: aio.Socket;
+  kind: u32;
+
+  pub async fn run(self) {
+    let r = await self.serveHttp();
+    open.sub(1u64);
+  }
+
+  // HTTP/1.1: requests read one at a time and answered by the kind's rule
+  async fn serveHttp(self) u32 {
+    while true {
+      var req = String();
+      while !whole(&req) {
+        let r = await sock.readIn(IoBuf(4096usize), IoLimits.none());
+        match r {
+          case let Ok(b) {
+            if b.len() == 0usize {return 0u32;}
+            req.appendBytes(b.view());
+          }
+          case let Err(e) {return 0u32;}
+        }
+      }
+      served.add(1u64);
+      let path = pathOf(&req);
+      if kind == kRedirect {
+        let k = hopOf(&path);
+        var t = String.from("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.");
+        t.appendUInt(3u64 + k % 200u64);
+        t.append(":");
+        t.appendUInt(backendPort.load());
+        t.append("/h");
+        t.appendUInt(k + 1u64);
+        t.append("\r\nContent-Length: 0\r\n\r\n");
+        let w = await sock.writeIn(chainOf(&t), IoLimits.none());
+        match w {
+          case let Ok(n) {}
+          case let Err(e) {return 0u32;}
+        }
+      } else if kind == kHold {
+        if path.view() == "/r" {
+          let t = String.from("HTTP/1.1 302 Found\r\nLocation: /hold\r\nContent-Length: 0\r\n\r\n");
+          let w = await sock.writeIn(chainOf(&t), IoLimits.none());
+          match w {
+            case let Ok(n) {}
+            case let Err(e) {return 0u32;}
+          }
+        } else if path.view() == "/hold" {
+          while hold.load() == 1u64 {
+            let s = await aio.sleep(Duration.fromMillis(20i64));
+          }
+          return 0u32;
+        } else {
+          let t = String.from("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+          let w = await sock.writeIn(chainOf(&t), IoLimits.none());
+          match w {
+            case let Ok(n) {}
+            case let Err(e) {return 0u32;}
+          }
+        }
+      } else {
+        // kBody
+        var head = String();
+        var piece = String();
+        var every = 5i64;
+        var limit = 8000000u64;
+        if path.view() == "/huge" {
+          head = String.from("HTTP/1.1 200 OK\r\nContent-Length: 4294967296\r\n\r\n");
+          var i = 0usize;
+          while i < 1000usize {piece.appendByte(65u8); i = i + 1usize;}
+          every = 10i64;
+        } else if path.view() == "/chunked" {
+          head = String.from("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
+          piece = String.from("3e8\r\n");
+          var i = 0usize;
+          while i < 1000usize {piece.appendByte(66u8); i = i + 1usize;}
+          piece.append("\r\n");
+          every = 2i64;
+        } else {
+          head = String.from("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n");
+          piece = String.from("C");
+          every = 100i64;
+          limit = 100u64;
+        }
+        let w = await sock.writeIn(chainOf(&head), IoLimits.none());
+        match w {
+          case let Ok(n) {}
+          case let Err(e) {writeFailed.store(1u64); return 0u32;}
+        }
+        var total = 0u64;
+        while total < limit {
+          let s = await aio.sleep(Duration.fromMillis(every));
+          let w2 = await sock.writeIn(chainOf(&piece), IoLimits.none());
+          match w2 {
+            case let Ok(n) {sent.add(u64.from(piece.len())); total = total + u64.from(piece.len());}
+            case let Err(e) {writeFailed.store(1u64); return 0u32;}
+          }
+        }
+        return 0u32;
+      }
+    }
+    0u32
+  }
+
+}
+
+actor H2Conn {
+  sock: aio.Socket;
+
+  pub async fn run(self) {
+    let r = await self.serveH2();
+    open.sub(1u64);
+  }
+
+  // HTTP/2 prior knowledge: our SETTINGS first (SETTINGS_MAX_CONCURRENT_STREAMS = 2^31 - 1), an acknowledgement of the
+  // client's, and every HEADERS frame counted; no stream is ever answered
+  async fn serveH2(self) u32 {
+    var out = String();
+    // SETTINGS: length 6, type 4, flags 0, stream 0; id 3, value 0x7FFFFFFF
+    putBytes(&mut out, "0,0,6,4,0,0,0,0,0,0,3,127,255,255,255");
+    let w0 = await sock.writeIn(chainOf(&out), IoLimits.none());
+    match w0 {
+      case let Ok(n) {}
+      case let Err(e) {return 0u32;}
+    }
+    var buf = List[u8]();
+    var pos = 0usize;
+    var prefaceDone = false;
+    var mine = 0u64;
+    while true {
+      let r = await sock.readIn(IoBuf(16384usize), IoLimits.none());
+      match r {
+        case let Ok(b) {
+          if b.len() == 0usize {return 0u32;}
+          let v = b.view() as &Array[u8];
+          var j = 0usize;
+          while j < v.len {buf.push(v[j]); j = j + 1usize;}
+        }
+        case let Err(e) {return 0u32;}
+      }
+      if !prefaceDone {
+        if buf.len() < 24usize {continue;}
+        pos = 24usize;
+        prefaceDone = true;
+      }
+      var ack = String();
+      while buf.len() >= pos + 9usize {
+        let len = (usize.from(*buf[pos]) << 16usize) | (usize.from(*buf[pos + 1usize]) << 8usize) | usize.from(*buf[pos + 2usize]);
+        if buf.len() < pos + 9usize + len {break;}
+        let ty = *buf[pos + 3usize];
+        let fl = *buf[pos + 4usize];
+        if ty == 4u8 && (fl & 1u8) == 0u8 {
+          putBytes(&mut ack, "0,0,0,4,1,0,0,0,0");
+        }
+        if ty == 1u8 {
+          mine = mine + 1u64;
+          headers.add(1u64);
+          bump(&maxHeaders, mine);
+        }
+        pos = pos + 9usize + len;
+      }
+      if ack.len() > 0usize {
+        let w = await sock.writeIn(chainOf(&ack), IoLimits.none());
+        match w {
+          case let Ok(n) {}
+          case let Err(e) {return 0u32;}
+        }
+      }
+    }
+    0u32
+  }
+}
+
+fn urlAt(host: &str, path: &str) String {
+  var u = String.from("http://");
+  u.append(host);
+  u.append(":");
+  u.appendUInt(backendPort.load());
+  u.append(path);
+  u
+}
+
+fn describe(r: &Result[Response, FetchError]) String {
+  match r {
+    case let &Ok(ok) {
+      var s = String.from("ok ");
+      s.appendUInt(u64.from(ok.status));
+      s
+    }
+    case let &Err(e) {
+      if e.isCancelled() {String.from("err cancelled")} else if e.isTimedOut() {String.from("err timedout")} else {String.from("err failed")}
+    }
+  }
+}
+
+actor Fetcher {
+  client: HttpClient;
+
+  pub async fn get(self, u: String, out: Sender[String]) {
+    let r = await client.get(u.view());
+    out.send(describe(&r));
+  }
+
+  // With a deadline of ms from now
+  pub async fn getWithin(self, u: String, ms: i64, out: Sender[String]) {
+    let r = await client.getIn(u.view(), IoLimits.until(Instant.now() + Duration.fromMillis(ms)));
+    out.send(describe(&r));
+  }
+
+  // The client handle let go
+  pub async fn dropClient(self) {
+    client = HttpClient.none();
+  }
+}
+
+fn takeS(rx: &mut Receiver[String]) String {rx.recvTimeout(Duration.fromSeconds(20i64)) || String.from("(timeout)")}
+
+// How many of n answers, within 20 seconds in all, are Cancelled
+fn cancelledWithin(rx: &mut Receiver[String], n: u32) u32 {
+  let limit = Instant.now() + Duration.fromSeconds(20i64);
+  var got = 0u32;
+  var cancelled = 0u32;
+  while got < n && Instant.now() < limit {
+    match rx.recvTimeout(Duration.fromMillis(200i64)) {
+      case let Some(s) {
+        got = got + 1u32;
+        if s.view() == "err cancelled" {cancelled = cancelled + 1u32;}
+      }
+      else {}
+    }
+  }
+  cancelled
+}
+
+// The counter's value once it is want, waiting up to 10 seconds for it; the value seen if it never gets there
+fn waitFor(c: &Atomic[u64], want: u64) u64 {
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while c.load() != want && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  c.load()
+}
+
+// A short settle after a wait, so an extra one arriving late would still be counted
+fn settle() {
+  thread.sleep(Duration.fromMillis(200i64));
+}
+
+// Both counters at 0 within seconds
+fn gone() bool {
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while (liveClientActors() > 0u64 || liveClientConnActors() > 0u64) && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  liveClientActors() == 0u64 && liveClientConnActors() == 0u64
+}
+
+// What the backend holds open, within seconds, at most n
+fn openWithin(n: u64) u64 {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while open.load() > n && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  open.load()
+}
+
+fn startBackend(kind: u32) Backend {
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let be = Backend(aio.Socket.none(), kind);
+  be.start(ptx);
+  let port = prx.recv() || 0u16;
+  require(port != 0u16, "the backend listens");
+  be.serve();
+  be
+}
+
+fn resetCounts() {
+  open.store(0u64);
+  maxOpen.store(0u64);
+  accepts.store(0u64);
+  served.store(0u64);
+  sent.store(0u64);
+  writeFailed.store(0u64);
+  headers.store(0u64);
+  maxHeaders.store(0u64);
+}
+
+
+// 1. Redirect chains to a new host at each hop. The silent failure: a server that makes the client open, and keep open,
+// a connection to every host it names. Each hop leaves its connection idle in the pool, so what bounds them is maxTotal
+// (and maxRedirects bounds a chain); 'maxOrigins' alone does not (an origin holding a connection is not idle: the core's
+// header, ORIGINS). Two chains of eleven hosts each go through a client of maxTotal 6, maxRedirects 10.
+fn redirects() {
+  resetCounts();
+  let be = startBackend(kRedirect);
+  var otx: Sender[String];
+  var orx: Receiver[String];
+  otx, orx = Channel[String].make();
+  var cfg = httpclient.Config.make();
+  cfg.maxRedirects = 10u32;
+  cfg.maxOrigins = 3u32;
+  cfg.maxTotal = 6u32;
+  let f = Fetcher(HttpClient.make(cfg, actorhttp.defaultMaxBody));
+  f.get(urlAt("127.0.0.2", "/h0"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "err failed", "redirects: a chain longer than maxRedirects ends Failed, once");
+  expectUInt(served.load(), 11u64, "redirects: the first request and ten redirects were made, no more");
+  f.get(urlAt("127.0.0.150", "/h100"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "err failed", "redirects: a second chain to other hosts: the same");
+  expectUInt(served.load(), 22u64, "redirects: eleven requests more");
+  waitFor(&accepts, 22u64);
+  settle();
+  expectUInt(accepts.load(), 22u64, "redirects: each of the 22 hosts was a connection of its own");
+  // (the server sees a closed connection a moment after the client opened the next, so a little slack over maxTotal)
+  expect(maxOpen.load() <= 8u64, "redirects: never more than maxTotal (and one or two just closing) connections open at the server");
+  expect(open.load() <= 6u64, "redirects: and no more than that left");
+  f.dropClient();
+  expect(gone(), "redirects: the client and its connections are gone");
+  expectUInt(openWithin(0u64), 0u64, "redirects: every connection closed at the server");
+  be.stop();
+}
+
+// 2. A server announcing 2^31 - 1 streams. The silent failure: the client believing it, and sending a stream per
+// waiting fetch on the connection (and a connection per fetch to a server that never answers)
+fn streams() {
+  resetCounts();
+  let be = startBackend(kH2);
+  var otx: Sender[String];
+  var orx: Receiver[String];
+  otx, orx = Channel[String].make();
+  var cfg = httpclient.Config.make();
+  cfg.conn.h2PriorKnowledge = true;
+  cfg.maxStreamsPerConnection = 8u32;
+  cfg.maxPerOrigin = 3u32;
+  let f = Fetcher(HttpClient.make(cfg, actorhttp.defaultMaxBody));
+  var i = 0u32;
+  while i < 60u32 {
+    f.get(urlAt("127.0.0.1", "/s"), otx.clone());
+    i = i + 1u32;
+  }
+  waitFor(&accepts, 3u64);
+  waitFor(&maxHeaders, 8u64);
+  waitFor(&headers, 24u64);
+  settle();
+  expectUInt(accepts.load(), 3u64, "streams: three connections (maxPerOrigin), not one per fetch");
+  expectUInt(maxHeaders.load(), 8u64, "streams: eight streams on each (maxStreamsPerConnection), not 2^31 - 1 or sixty");
+  expectUInt(headers.load(), 24u64, "streams: 24 requests sent in all; the other 36 wait");
+  f.dropClient();
+  let cancelled = cancelledWithin(&mut orx, 60u32);
+  expectUInt(u64.from(cancelled), 60u64, "streams: each of the sixty fetches answered Cancelled once");
+  expect(gone(), "streams: the client and its connections are gone");
+  expectUInt(openWithin(0u64), 0u64, "streams: every connection closed at the server");
+  be.stop();
+}
+
+// 3. Bodies. The silent failure: a body the server declares or streams without end held (and buffered) by the client
+fn bodies() {
+  var otx: Sender[String];
+  var orx: Receiver[String];
+  otx, orx = Channel[String].make();
+  let be = startBackend(kBody);
+  var p = 0u32;
+  while p < 2u32 {
+    let path = if p == 0u32 {"/huge"} else {"/chunked"};
+    resetCounts();
+    let f = Fetcher(HttpClient.make(httpclient.Config.make(), 65536usize));
+    f.get(urlAt("127.0.0.1", path), otx.clone());
+    expectStr(takeS(&mut orx).view(), "err failed", "bodies: past the 64 KiB limit the fetch is Failed, once");
+    waitFor(&writeFailed, 1u64);
+    settle();
+    expect(sent.load() < 200000u64, "bodies: the server's sending stopped near the limit, not at 4 GiB or the end of its stream");
+    expectUInt(writeFailed.load(), 1u64, "bodies: the client closed the connection");
+    f.dropClient();
+    expect(gone(), "bodies: the client and its connections are gone");
+    expectUInt(openWithin(0u64), 0u64, "bodies: every connection closed at the server");
+    p = p + 1u32;
+  }
+  resetCounts();
+  let t = Fetcher(HttpClient.make(httpclient.Config.make(), 65536usize));
+  t.getWithin(urlAt("127.0.0.1", "/trickle"), 600i64, otx.clone());
+  expectStr(takeS(&mut orx).view(), "err timedout", "bodies: a body that trickles ends at the caller's deadline, TimedOut");
+  waitFor(&writeFailed, 1u64);
+  expectUInt(writeFailed.load(), 1u64, "bodies: ...and the client closed the connection");
+  t.dropClient();
+  expect(gone(), "bodies: the client and its connections are gone");
+  be.stop();
+}
+
+// 4. A client closed with fetches waiting, in flight and redirecting. The silent failure: a fetch never answered, or an
+// actor, connection or buffer left behind
+fn closing() {
+  resetCounts();
+  hold.store(1u64);
+  let be = startBackend(kHold);
+  var otx: Sender[String];
+  var orx: Receiver[String];
+  otx, orx = Channel[String].make();
+  var cfg = httpclient.Config.make();
+  cfg.maxPerOrigin = 4u32;
+  let f = Fetcher(HttpClient.make(cfg, actorhttp.defaultMaxBody));
+  var i = 0u32;
+  while i < 30u32 {
+    f.get(urlAt("127.0.0.1", "/hold"), otx.clone());
+    i = i + 1u32;
+  }
+  i = 0u32;
+  while i < 10u32 {
+    f.get(urlAt("127.0.0.2", "/r"), otx.clone());
+    i = i + 1u32;
+  }
+  waitFor(&open, 8u64);
+  waitFor(&served, 12u64);
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while (liveClientActors() != 1u64 || liveClientConnActors() != 8u64) && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  settle();
+  expectUInt(open.load(), 8u64, "closing: four connections held to each of two hosts (maxPerOrigin 4)");
+  expectUInt(served.load(), 12u64, "closing: four held, four redirected and then held, the rest waiting");
+  expect(liveClientActors() == 1u64 && liveClientConnActors() == 8u64, "closing: a client actor and eight connection actors alive");
+  f.dropClient();
+  let cancelled = cancelledWithin(&mut orx, 40u32);
+  expectUInt(u64.from(cancelled), 40u64, "closing: all forty fetches (in flight, waiting, redirecting) Cancelled once");
+  expect(gone(), "closing: no client actor and no connection actor left");
+  hold.store(0u64);
+  expectUInt(openWithin(0u64), 0u64, "closing: every connection closed at the server");
+  expectUInt(u64.from(iobuf.stats().lentBytes), 0u64, "closing: no buffer lent");
+  be.stop();
+}
+
+fn main() i32 {
+  initAll();
+  redirects();
+  streams();
+  bodies();
+  closing();
+  done()
+}

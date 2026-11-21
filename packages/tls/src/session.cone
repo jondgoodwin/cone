@@ -498,16 +498,24 @@ pub struct Session is Move {
 
   // The OS's verifier's answer, from the pool
   pub fn verifyDone(self: &mut, c: &mut Completion) {
+    if c.isDone() {self.verifyAnswered(&c.buf, None);}
+    else {self.verifyAnswered(&c.buf, Some[IoError](c.error()));}
+  }
+
+  // The same answer as values, for a host that has none of iocore's Completion (a job run by aio.onPool): the
+  // buffer the job filled, and None when it ran, or the error that said it did not
+  pub fn verifyAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError]) {
     if phase != pVerify {return;}
     verifyTime = Instant.now() - verifyAt;
-    if c.isDone() && c.buf.len() >= 4usize {
-      self.verified(*(c.buf.base() as *u32));
-    } else if c.isDone() {
+    let ran = failed is None;
+    if ran && buf.len() >= 4usize {
+      self.verified(*(buf.base() as *u32));
+    } else if ran {
       self.verified(genericFailure());
     } else {
       // The job did not run (a lane's queue full, a cancel, the deadline):
       // iocore's IoError for it, its number the system's own
-      let e = c.error();
+      let e = failed.unwrap();
       ownError = true;
       err = jobError(&e);
       self.verified(if e.code == 0u32 {genericFailure()} else {e.code});
