@@ -2655,7 +2655,7 @@ pub struct OneshotReceiver[T: Sendable] is Sendable {
 // The pieces: 'LatestWriter' (Move; Sendable, so a zone handoff moves it) and
 // 'LatestReader' (copyable: each copy is an owner of the cell, as an 'Arc' is;
 // 'LatestWriter.reader()' makes another). They share one 'Arc' of a block
-// allocated once, 2 * (capacity + 24) bytes, rounded to words, and freed when
+// allocated once, 2 * (capacity + 24) bytes plus a word of retries, rounded to words, and freed when
 // the last of them goes: no value is ever freed while a reader holds it.
 // ---------------------------------------------------------------------------
 
@@ -2685,7 +2685,7 @@ struct CellStore {
 
   fn make(capacity: usize) CellStore {
     let dw = (capacity + 7usize) / 8usize;
-    let n = 1usize + 2usize * (3usize + dw);
+    let n = 2usize + 2usize * (3usize + dw);
     let p = libc.calloc(n, 8usize) as *u64;
     if p as usize == 0usize {
       die("sync: out of memory for a latest-value cell\n");
@@ -2700,6 +2700,16 @@ struct CellStore {
 
   fn word(base: *u64, i: usize) *u64 {
     ((base as *u8) + 8usize * i) as *u64
+  }
+
+  // The last word: how many tries at a copy the readers have thrown away (a
+  // put reached the slot during the copy). Only a failed try touches it
+  fn retryWord(self: &) *u64 {
+    ((words as *u8) + 8usize * (1usize + 2usize * (3usize + dw))) as *u64
+  }
+
+  fn noteRetry(self: &) {
+    mem.atomicAdd[u64](self.retryWord(), 1u64, MemOrder.Relaxed);
   }
 
   fn final(self: &uni) {
@@ -2771,6 +2781,14 @@ pub struct LatestReader is Sendable {
     cellLoad(store.words)
   }
 
+  // How many tries at a copy have been thrown away since the cell was made,
+  // across all its readers: a try is thrown away when a put reached the slot
+  // during it (readNewer tries up to three times). A count for measuring; it is
+  // zero while the writer puts less often than a reader copies
+  pub fn retries(self: &) u64 {
+    cellLoad(store.retryWord())
+  }
+
   // The newest value, copied into 'out', if its version is newer than 'seen'.
   // None when nothing is newer; when 'out' is shorter than the value; or when
   // the writer put twice during each of three tries at the copy (call again).
@@ -2787,6 +2805,7 @@ pub struct LatestReader is Sendable {
       let base = store.slot(v & 1u64);
       let s1 = cellLoad(CellStore.word(base, 0usize));
       if s1 != 2u64 * v {
+        store.noteRetry();
         continue;
       }
       let len = usize.from(cellLoad(CellStore.word(base, 1usize)));
@@ -2809,6 +2828,7 @@ pub struct LatestReader is Sendable {
       }
       let s2 = cellLoad(CellStore.word(base, 0usize));
       if s2 != s1 {
+        store.noteRetry();
         continue;
       }
       if !fits || !room {

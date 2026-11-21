@@ -1,0 +1,288 @@
+// The phase lock, followCell (row 529; spec section 3.8). Free-running slots
+// look at a bound cell an interval apart from wherever the connection began,
+// so a new value waits for the next look. A connection that follows a cell
+// sets its look from when the cell's value was written: after sending a new
+// value of the clock stream, the next look is at that value's writtenAt plus
+// one send interval plus the connection's own spread; a look that finds
+// nothing moves one interval on that lattice. On a synthetic clock put on the
+// writer's own axis (a writer stamps Instant.now()), checked by the deadline
+// the core asks for, read off the value's own writtenAt:
+//   - without the lock the next look is an interval from the send; with it,
+//     from the write, so the state's wait for its slot is the spread, not a
+//     random fraction of the interval;
+//   - the spread is session % (spreadMs + 1) ms, never over spreadMs;
+//   - a look that found nothing is a write a little late: four more looks a
+//     millisecond apart, then one interval on the lattice, not from now; a
+//     poll before the look leaves it where it was; a writer slower than the
+//     send interval is learned from its writes and looked for at its period;
+//   - a writer on another clock leaves the slots free-running;
+//   - followCell on a stream that is not bound is refused; unbinding the clock
+//     ends the lock;
+//   - idle for 10 s, locked, the core does not spin (one turn a slot).
+
+mod celllock;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import thread;
+import time use Duration, Instant, Clock;
+import iobuf use IoBuf, Bytes;
+import netmsg use *;
+
+fn text(s: &str) List[u8] {
+  var d = List[u8]();
+  putBytes(&mut d, s);
+  d
+}
+
+// A synthetic clock at the real clock's reading, which is the axis a cell's writer stamps
+fn onRealAxis() Clock {
+  var c = Clock.synth();
+  c.advance(Duration.fromNanos(Instant.now().nanos()));
+  c
+}
+
+// Move a synthetic clock to 'at' (not back)
+fn moveTo(c: &mut Clock, at: i64) {
+  let d = at - c.now().nanos();
+  if d > 0i64 {c.advance(Duration.fromNanos(d));}
+}
+
+// Put a value and read back when the writer stamped it
+fn putAndStamp(w: &mut LatestWriter, probe: &LatestReader, s: &str) i64 {
+  w.put(text(s).view());
+  var buf = List[u8]();
+  buf.resize(64usize, 0u8);
+  let at = probe.readNewer(w.version() - 1u64, buf.viewMut());
+  match at {
+    case let Some(c) { c.writtenAt.nanos() }
+    else { 0i64 }
+  }
+}
+
+fn heard(p: &mut SimPair) u64 {
+  var n = 0u64;
+  each ev in p.eventsB.drain() {
+    match ev {
+      case is Latest { n = n + 1u64; }
+      else {}
+    }
+  }
+  n
+}
+
+const interval = 33333333i64;      // the good rate, 30 a second
+const ms = 1000000i64;
+
+// A pair on 'session', stream 4 bound to a new cell: the pair, the writer, a probe reader
+fn bound(cfg: &NetConfig, clock: &Clock, session: u64) SimPair, LatestWriter, LatestReader {
+  var p = SimPair.make(*cfg, LinkConfig.perfect(), LinkConfig.perfect(), 1u64, clock.now());
+  p.a = ConnectionCore.make(*cfg, session, clock.now());
+  p.b = ConnectionCore.make(*cfg, session, clock.now());
+  var w: LatestWriter;
+  var r: LatestReader;
+  w, r = latestCell(64usize);
+  let probe = w.reader();
+  p.a.bindLatest(4u16, r, 1u32);
+  p, w, probe
+}
+
+fn main() i32 {
+  let cfg = NetConfig.defaults();
+  let session = 0x1122334455667788u64;
+
+  // Free-running: the next look is an interval from the send
+  {
+    var clock = onRealAxis();
+    var p: SimPair;
+    var w: LatestWriter;
+    var probe: LatestReader;
+    p, w, probe = bound(&cfg, &clock, session);
+    let at = putAndStamp(&mut w, &probe, "one");
+    moveTo(&mut clock, at + 7i64 * ms);
+    let sendAt = clock.now().nanos();
+    p.step(clock.now());
+    expectInt(p.a.nextDeadline().nanos() - sendAt, interval, "free-running: the next look is an interval from the send");
+  }
+
+  // Locked, spread 0: the next look is an interval from the write
+  {
+    var clock = onRealAxis();
+    var p: SimPair;
+    var w: LatestWriter;
+    var probe: LatestReader;
+    p, w, probe = bound(&cfg, &clock, session);
+    expect(p.a.followCell(4u16, 0u32), "followCell on a bound stream");
+    expect(!p.a.followCell(9u16, 0u32), "followCell on a stream that is not bound is refused");    let at = putAndStamp(&mut w, &probe, "one");
+    moveTo(&mut clock, at + 7i64 * ms);
+    p.step(clock.now());
+    p.step(clock.now());
+    expectUInt(heard(&mut p), 1u64, "the first value is sent at once");
+    expectInt(p.a.nextDeadline().nanos(), at + interval, "locked: the next look is the write plus an interval");
+
+    // Nothing is put: the look finds nothing, which is a write a little late. It looks again a
+    // millisecond on, four times, and then moves one interval on the lattice, not from now
+    let look = at + interval;
+    moveTo(&mut clock, look + 2i64 * ms);
+    p.step(clock.now());
+    expectInt(p.a.nextDeadline().nanos() - clock.now().nanos(), ms, "a look that found nothing: look again in a millisecond");
+    var again = 0u64;
+    while p.a.nextDeadline().nanos() - clock.now().nanos() == ms && again < 10u64 {
+      again = again + 1u64;
+      moveTo(&mut clock, p.a.nextDeadline().nanos());
+      p.step(clock.now());
+    }
+    expectUInt(again, 4u64, "four more looks a millisecond apart");
+    expectInt(p.a.nextDeadline().nanos(), look + interval, "and then one interval on the lattice");
+
+    // A poll before the look (called for another reason) leaves the look where it is
+    moveTo(&mut clock, look + interval - 10i64 * ms);
+    p.step(clock.now());
+    expectInt(p.a.nextDeadline().nanos(), look + interval, "a poll before the look leaves it");
+
+    // A value written just before the look is sent at it, and the lattice is set again from its write
+    let at2 = putAndStamp(&mut w, &probe, "two");
+    moveTo(&mut clock, look + interval + 1i64 * ms);
+    p.step(clock.now());
+    p.step(clock.now());
+    expectUInt(heard(&mut p), 1u64, "the second value is sent at the look");
+    // (the writer stamps the real clock, which is far behind this synthetic one, so the write's
+    // lattice point is long past and the look lands on the next point of the same lattice)
+    let nd = p.a.nextDeadline().nanos();
+    expect(nd > clock.now().nanos(), "the next look is in the future");
+    expectInt((nd - (at2 + interval)) % interval, 0i64, "and on the lattice set from its write");
+  }
+
+  // A writer slower than the send interval: its period is learned from two values, and the next look is
+  // that period after the write, not an interval (a look an interval on would find nothing, each time)
+  {
+    var clock = onRealAxis();
+    var p: SimPair;
+    var w: LatestWriter;
+    var probe: LatestReader;
+    p, w, probe = bound(&cfg, &clock, session);
+    p.a.followCell(4u16, 0u32);
+    let at = putAndStamp(&mut w, &probe, "a");
+    moveTo(&mut clock, at + 2i64 * ms);
+    p.step(clock.now());
+    expectInt(p.a.nextDeadline().nanos(), at + interval, "the first value: the step is the interval");
+    thread.sleep(Duration.fromMillis(50i64));
+    let at2 = putAndStamp(&mut w, &probe, "b");
+    moveTo(&mut clock, at2 + 2i64 * ms);
+    p.step(clock.now());
+    var period = at2 - at;
+    if period > 8i64 * interval {period = 8i64 * interval;}
+    expect(period > interval, "(the writer's period is over the interval)");
+    expectInt(p.a.nextDeadline().nanos(), at2 + period, "the second: the next look is the learned period after the write");
+  }
+
+  // The spread: session % (spreadMs + 1) ms, from 0 to spreadMs, and the sessions differ
+  {
+    var seen = 0u64;
+    var inRange = 0u64;
+    var wrong = 0u64;
+    var last = -1i64;
+    var s = 1u64;
+    while s <= 6u64 {
+      let sess = s * 0x9E3779B97F4A7C15u64;
+      var clock = onRealAxis();
+      var p: SimPair;
+      var w: LatestWriter;
+      var probe: LatestReader;
+      p, w, probe = bound(&cfg, &clock, sess);
+      p.a.followCell(4u16, 3u32);
+      let at = putAndStamp(&mut w, &probe, "x");
+      moveTo(&mut clock, at + 1i64 * ms);
+      p.step(clock.now());
+      let delta = i64.from(sess % 3000001u64);
+      if p.a.nextDeadline().nanos() != at + interval + delta {wrong = wrong + 1u64;}
+      if delta >= 0i64 && delta <= 3i64 * ms {inRange = inRange + 1u64;}
+      if delta != last {seen = seen + 1u64;}
+      last = delta;
+      s = s + 1u64;
+    }
+    expectUInt(wrong, 0u64, "each connection's look is the write plus an interval plus session % 3,000,001 ns");
+    expectUInt(inRange, 6u64, "every spread is within 0 to 3 ms");
+    expectUInt(seen, 6u64, "and the six sessions spread to six different instants");
+  }
+
+  // A stream the connection knows but that has no cell (sendLatest's) cannot be the clock
+  {
+    var clock = onRealAxis();
+    var p: SimPair;
+    var w: LatestWriter;
+    var probe: LatestReader;
+    p, w, probe = bound(&cfg, &clock, session);
+    p.a.sendLatest(7u16, copyPacket(text("plain").view()).freeze());
+    expect(!p.a.followCell(7u16, 0u32), "followCell on a sendLatest stream, which has no cell, is refused");
+  }
+
+  // A writer on another clock (here a synthetic clock at 0, the writer stamping the real one) leaves the slots free-running
+  {
+    var clock = Clock.synth();
+    var p: SimPair;
+    var w: LatestWriter;
+    var probe: LatestReader;
+    p, w, probe = bound(&cfg, &clock, session);
+    p.a.followCell(4u16, 0u32);
+    putAndStamp(&mut w, &probe, "far");
+    clock.advance(Duration.fromMillis(5i64));
+    let sendAt = clock.now().nanos();
+    p.step(clock.now());
+    expectInt(p.a.nextDeadline().nanos() - sendAt, interval, "a writer on another clock: free-running, an interval from the send");
+  }
+
+  // Unbinding the clock stream ends the lock; a new bind is free-running
+  {
+    var clock = onRealAxis();
+    var p: SimPair;
+    var w: LatestWriter;
+    var probe: LatestReader;
+    p, w, probe = bound(&cfg, &clock, session);
+    p.a.followCell(4u16, 0u32);
+    expect(p.a.unbindLatest(4u16), "unbound");
+    var w2: LatestWriter;
+    var r2: LatestReader;
+    w2, r2 = latestCell(64usize);
+    let probe2 = w2.reader();
+    p.a.bindLatest(4u16, r2, 1u32);
+    let at = putAndStamp(&mut w2, &probe2, "again");
+    moveTo(&mut clock, at + 5i64 * ms);
+    let sendAt = clock.now().nanos();
+    p.step(clock.now());
+    expectInt(p.a.nextDeadline().nanos() - sendAt, interval, "after unbindLatest the stream is free-running again");
+  }
+
+  // Idle for 10 s, locked, by the core's own deadline: one turn a slot, and every deadline in the future
+  {
+    var clock = onRealAxis();
+    var p: SimPair;
+    var w: LatestWriter;
+    var probe: LatestReader;
+    p, w, probe = bound(&cfg, &clock, session);
+    p.a.followCell(4u16, 3u32);
+    let at = putAndStamp(&mut w, &probe, "once");
+    moveTo(&mut clock, at + 1i64 * ms);
+    let start = clock.now().nanos();
+    var turns = 0u64;
+    var notFuture = 0u64;
+    while clock.now().nanos() - start < 10000000000i64 && turns < 5000u64 {
+      p.step(clock.now());
+      turns = turns + 1u64;
+      let d = p.a.nextDeadline().nanos();
+      let e = p.b.nextDeadline().nanos();
+      let next = if d < e {d} else {e};
+      if next <= clock.now().nanos() {
+        notFuture = notFuture + 1u64;
+        clock.advance(Duration.fromMillis(1i64));
+      } else {
+        clock.advance(Duration.fromNanos(next - clock.now().nanos()));
+      }
+    }
+    expectUInt(notFuture, 0u64, "locked and idle: after a poll the next deadline is never already due");
+    expect(turns < 700u64, "about one turn a slot over 10 s, not a spin");
+    expect(turns > 250u64, "and a turn at every slot");
+  }
+  done()
+}
