@@ -1,12 +1,22 @@
-// ClientCore: the pool's tables and the structures that decide its order.
+// ClientCore: the pool, as a value that events go into and commands come out of.
 //
 // A Client is a ClientCore (this file) plus what touches the world: its
 // driver, its loop, the TLS context and the HTTP/3 plug-in. The core holds
-// the records of fetches, pooled connections and origins and the structures
-// the pool's decisions are made from; it calls nothing of the loop's or the
-// driver's, so the same decisions can be hosted by a polled loop (Client) or,
-// later, by an actor. Its internal name is plain: nothing outside the package
-// names it. What it holds:
+// the records of fetches, pooled connections and origins, the structures
+// the pool's decisions are made from, and the decisions themselves: which
+// waiting fetch goes on which connection (dispatch), where a connection is
+// opened (the scheduler), whether a failed fetch is sent again (canRetry,
+// safeToRetry) and how a redirect is followed (follow). It calls nothing of
+// the loop's or the driver's, so the same decisions are hosted by the polled
+// Client and by a client actor. EVENTS go in: 'ask' (a fetch asked), and 'on'
+// or the methods it calls (connected, closed, requestDone, requestFailed,
+// requestStopped, redirectOf, cancelFetch). COMMANDS come out of 'next' and
+// 'take', one at a time (Open, OpenH3, Send, Close, Cancel, Watch, Answer).
+// The scheduler makes one decision a 'next' and the host carries it out before
+// it asks again, because what the pool asks of the host's connections
+// (ConnFacts: idle, takes requests, protocol chosen, HTTP/3 room) holds what
+// the commands before it did. The host's answers to commands come back as
+// 'opened', 'sent' and 'watching', and 'connectFailed'. What the core holds:
 //
 // ORIGINS are found by key in a Dict ('https://example.com:443'), the key
 // built into a scratch String the core keeps, so a lookup allocates nothing.
@@ -833,13 +843,17 @@ pub struct ClientCore {
     (pconns.borrowMutAt(pc).unwrap()).id = id;
   }
 
-  pub fn sent(self: &mut, fi: u32, req: httpconn.ReqId, qreq: H3Req) {
+  pub fn sent(self: &mut, id: FetchId, req: httpconn.ReqId, qreq: H3Req) {
+    let fi = self.fetchIndex(id);
+    if fi == noEntry {return;}
     let ft = fetches.borrowMutAt(fi).unwrap();
     ft.req = req;
     ft.qreq = qreq;
   }
 
-  pub fn watching(self: &mut, fi: u32, op: OpId) {
+  pub fn watching(self: &mut, id: FetchId, op: OpId) {
+    let fi = self.fetchIndex(id);
+    if fi == noEntry {return;}
     (fetches.borrowMutAt(fi).unwrap()).watch = op;
   }
 
@@ -963,7 +977,7 @@ pub struct ClientCore {
   // ---------------------------------------------------------------------------
 
   // Fetch fi's one final answer: queued as a command, and the fetch freed
-  pub fn finish(self: &mut, fi: u32, how: u32, fl: Option[Failure]) {
+  fn finish(self: &mut, fi: u32, how: u32, fl: Option[Failure]) {
     if !self.fetchLive(fi) {return;}
     // (A waiting fetch's entry in its origin's queue goes with its record, in freeFetchRec)
     let f = fetches.borrowMutAt(fi).unwrap();
@@ -1019,7 +1033,7 @@ pub struct ClientCore {
 
   // Fetch fi is cancelled (how: endCancelled, endTimedOut, endLimit): a waiting one answered, one under way
   // asked to stop (a Cancel command; its Cancelled comes)
-  pub fn cancelFetch(self: &mut, fi: u32, how: u32) {
+  fn cancelFetch(self: &mut, fi: u32, how: u32) {
     let f = fetches.borrowMutAt(fi).unwrap();
     if f.state == fQueued {
       self.finish(fi, how, None);
@@ -1039,7 +1053,7 @@ pub struct ClientCore {
 
   // Fetch fi's exchange ended well: its connection is free again (or carries on), and the fetch is
   // Done, or follows its redirect
-  pub fn requestDone[F: ConnFacts](self: &mut, fi: u32, f: &F) {
+  fn requestDone[F: ConnFacts](self: &mut, fi: u32, f: &F) {
     let ft = fetches.borrowMutAt(fi).unwrap();
     let pc = ft.conn;
     // Its connection is gone if its Closed came first (the driver sends a
@@ -1056,7 +1070,7 @@ pub struct ClientCore {
 
   // Fetch fi's exchange failed with fl: retried when that is safe, else Failed. Each fetch is answered
   // or queued again, never both
-  pub fn requestFailed[F: ConnFacts](self: &mut, fi: u32, fl: Failure, f: &F) {
+  fn requestFailed[F: ConnFacts](self: &mut, fi: u32, fl: Failure, f: &F) {
     let ft = fetches.borrowMutAt(fi).unwrap();
     // Its connection is gone if its Closed came first (see requestDone)
     let alive = self.fetchConnLive(ft);
@@ -1079,7 +1093,7 @@ pub struct ClientCore {
   }
 
   // Fetch fi's exchange was cancelled, or timed out (the driver's own timeout)
-  pub fn requestStopped[F: ConnFacts](self: &mut, fi: u32, timedOut: bool, f: &F) {
+  fn requestStopped[F: ConnFacts](self: &mut, fi: u32, timedOut: bool, f: &F) {
     let ft = fetches.borrowMutAt(fi).unwrap();
     let alive = self.fetchConnLive(ft);
     let fconn = ft.conn;
@@ -1103,7 +1117,7 @@ pub struct ClientCore {
 
   // Whether fetch fi's response head is a redirect to follow, which is kept to itself (its body read and dropped,
   // then 'requestDone' follows it); else the head is the fetch's answer
-  pub fn redirectOf(self: &mut, fi: u32, response: &ResponseHead) bool {
+  fn redirectOf(self: &mut, fi: u32, response: &ResponseHead) bool {
     let f = fetches.borrowMutAt(fi).unwrap();
     let status = response.status;
     if f.ending == endNone && followsRedirect(status) && f.maxRedirects > 0u32 &&
@@ -1125,7 +1139,7 @@ pub struct ClientCore {
 
   // n body bytes of fetch fi's response: 0 when they are its own, 1 when a redirect's, read and dropped (their
   // credit goes back), 2 when also the redirect's body has gone past drainLimit and its request is to be cut off
-  pub fn redirectBody(self: &mut, fi: u32, n: usize) u32 {
+  fn redirectBody(self: &mut, fi: u32, n: usize) u32 {
     let f = fetches.borrowMutAt(fi).unwrap();
     if !f.following {return 0u32;}
     f.drained = f.drained + n;
@@ -1358,7 +1372,7 @@ pub struct ClientCore {
   // the idle list (or its one fetch's busy state) to be shared, and its
   // origin is known to speak it; one that speaks HTTP/1.1 tells its origin
   // the opposite (see the package's header, HTTP/2)
-  pub fn learn[F: ConnFacts](self: &mut, pc: u32, f: &F) {
+  fn learn[F: ConnFacts](self: &mut, pc: u32, f: &F) {
     let r = self.refOf(pc);
     if !self.learnable(pc) {return;}
     var h2 = false;

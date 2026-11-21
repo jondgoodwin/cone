@@ -61,6 +61,23 @@
 //   Response: r.outcome r.status r.version r.headers r.body r.url r.failure r.timing r.isOk()
 //   Failure: f.stage f.code f.error f.unsent f.attempts String() <- f;  Stage  (FAILURES)
 //   Timing: t.queued t.dispatched t.firstByte t.ended t.attempts t.redirects t.reused
+//   ClientCore.make(limits, maxOrigins, h3on)  Limits  ConnRef  trait ConnFacts   (THE POOL)
+//     core.ask(request, sink, now)  core.on(poolEvent, facts)  core.next(facts)  core.take()
+//     Command: c.kind (CommandKind: Open OpenH3 Send Close Cancel Watch Answer) and its fields
+//     PoolEvent: e.kind (PoolEventKind: Connected Closed Done Failed Stopped Response Due Cancel
+//       Reprioritize) and its fields
+//
+// THE POOL. The pool's decisions are a value, ClientCore (core.cone), that calls nothing of a loop or a
+// driver: which waiting fetch goes on which connection, where a connection is opened, when a fetch is
+// sent again after its connection fails, how a redirect is followed, which idle connection is closed for
+// room. Events go in ('ask', and 'on' for a connection connected or closed, an exchange done, failed or
+// stopped, a response head, a timer run out, a cancel, a reprioritize), and commands come out ('next'
+// gives them one at a time: Open a connection, Send a request, Close, Cancel, Watch a fetch's timer,
+// Answer a fetch). A host carries out each command before it asks for the next, since the pool reads what
+// its connections say of themselves (ConnFacts: idle, takes requests, protocol chosen, HTTP/3 room) as it
+// decides, and each command changes that. Two hosts: the polled Client (client.cone: its driver, its
+// loop's timers, its HTTP/3 plug-in), and a client actor (stage 4's). Each fetch is answered once, or sent
+// again, never both and never neither (tests/coredrive.cone drives it with events and no loop).
 //
 // THE CLIENT. One per Loop, driven by the loop's thread, as httpconn's
 // Driver is, which it owns: every connection it makes is one of its

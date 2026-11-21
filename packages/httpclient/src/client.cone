@@ -1,4 +1,11 @@
-// The Client: its tables, the driver's events it reads, and the scheduler.
+// The Client: the polled host of the pool (core.cone's ClientCore). The pool's
+// tables and its decisions (scheduling, dispatch, retry, redirects) are the core's;
+// this file is what touches the world: the driver and the HTTP/3 plug-in, the
+// loop's timers for a fetch's deadline and group, the events handed to sinks. It
+// feeds the core the driver's events and carries out the commands it gives (open
+// a connection, send a request, close, cancel, watch a timer, answer a fetch), each
+// before it asks for the next, since the core reads what the connections say of
+// themselves (Wire, its ConnFacts) as it decides.
 //
 // How it is built. Fetches and pooled connections are records in two
 // tables, each in blocks of 64 that never move while the client lives,
@@ -22,8 +29,8 @@
 // the pool's state; then the scheduler hands free connections to the best
 // waiting fetches and opens connections where fetches wait; then the driver
 // is pumped again so what was asked goes out, until nothing moves. Every
-// final answer goes through 'finishFetch', which frees the record: so each
-// fetch is answered once, by construction (I1).
+// final answer goes through the core's 'finish', which frees the record and
+// queues the Answer command: so each fetch is answered once, by construction (I1).
 
 const recsPerBlock = 64u32;
 const genMask = 0xFFFFFFu32;
@@ -746,6 +753,7 @@ pub struct Client {
     }
     if k == CommandKind.Send {
       let fi = c.fetch.index;
+      let fid = c.fetch;
       let quic = c.quic;
       let cid = c.id;
       let qid = c.qid;
@@ -753,13 +761,13 @@ pub struct Client {
       let head, body = c.(head, body);
       if !quic {
         let rq = wire.drv.request(lp, cid, head, body, httpconn.Sink.Here(token));
-        cc.sent(fi, rq, H3Req.none());
+        cc.sent(fid, rq, H3Req.none());
         return true;
       }
       // HTTP/3: its body, if any, goes at once (the plug-in tells Writable only
       // after a refusal)
       let q = wire.h3.request(lp, qid, head, body, token);
-      cc.sent(fi, httpconn.ReqId.none(), q);
+      cc.sent(fid, httpconn.ReqId.none(), q);
       let f2 = self.cc.fetches.borrowAt(fi).unwrap();
       if !q.isNone() && (f2.body.len() > 0usize || f2.streamed) {self.sendBody(lp, fi);}
       return true;
@@ -811,12 +819,12 @@ pub struct Client {
         case let Some(gv) {
           let at = if dl < forever() {dl} else {Instant.now() + Duration.fromHours(87600i64)};
           let op = lp.afterIn(at, Target.Here(wt), gv);
-          cc.watching(fi, op);
+          cc.watching(c.fetch, op);
         }
         else {
           if dl < forever() {
             let op = lp.after(dl, Target.Here(wt));
-            cc.watching(fi, op);
+            cc.watching(c.fetch, op);
           }
         }
       }
