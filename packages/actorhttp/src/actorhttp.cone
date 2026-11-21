@@ -492,7 +492,7 @@ mod actorhttp;
 import pools use GenPool, Handle;
 import collections use List, Deque, String, Dict, AnyError, PriorityQueue;
 import iobuf use IoBuf, IoHome, Chain;
-import sync use Arc;
+import sync use Arc, Mutex;
 import time use Instant, Duration;
 import iocore use Loop, Completion, SocketAddr, CancelGroup, IoError, forever;
 import ioerror use IoErrorKind;
@@ -509,6 +509,7 @@ let liveConns: Atomic[u64];      // routedserver.cone: ConnActors alive
 let liveServers: Atomic[u64];    // ...and ServerActors
 let liveClients: Atomic[u64];    // clientactor.cone: ClientActors alive
 let liveClientConns: Atomic[u64];    // ...and ClientConnActors
+let clientReg: Arc[Mutex, ClientRegistry];    // the client actors not yet closed (clientactor.cone), for the program's end
 
 fn @initpure init() {
   nextId = Atomic[u64].of(0u64);
@@ -516,6 +517,7 @@ fn @initpure init() {
   liveServers = Atomic[u64].of(0u64);
   liveClients = Atomic[u64].of(0u64);
   liveClientConns = Atomic[u64].of(0u64);
+  clientReg = Arc[Mutex, ClientRegistry](ClientRegistry(List[ClientActor](), List[u64]()));
   svcHost = aio.host[Service](&makeService);
 }
 
@@ -587,6 +589,10 @@ fn makeService() Service {Service.make()}
 // PROGRAM'S END). It ends here, not in aio's finalizer, so that it ends before
 // the packages it uses (httpconn, httpclient, tls) are finalized
 fn final() {
+  actors.waitQuiet();
+  // The client actors let go of the replies they hold (the fetches still waiting are abandoned, as the service's are
+  // below), so a behaviour paused on one is dropped before the service ends, as it was when the service held it
+  abandonClients();
   actors.waitQuiet();
   svcHost.end();
 }

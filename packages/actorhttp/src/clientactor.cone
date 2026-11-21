@@ -33,6 +33,50 @@ struct ClientGuard is Move {
 // How many ClientActors exist now (made, and not yet freed)
 pub fn liveClientActors() u64 {liveClients.load()}
 
+// The client actors not yet closed and their ids, behind a lock (each borrow of it takes the lock)
+struct ClientRegistry {
+  actors: List[ClientActor];
+  ids: List[u64];
+}
+
+fn regAdd(a: ClientActor, id: u64) {
+  let r = &mut *clientReg;
+  r.actors.push(a);
+  r.ids.push(id);
+}
+
+fn regRemove(id: u64) {
+  let r = &mut *clientReg;
+  match r.ids.indexOf(&id) {
+    case let Some(k) {
+      r.actors.remove(k);
+      r.ids.remove(k);
+    }
+    case is None[usize] {}
+  }
+}
+
+fn regCopy(out: &mut List[ClientActor]) {
+  let r = &mut *clientReg;
+  var i = 0usize;
+  while i < r.actors.len() {
+    out.push(r.actors[i]);
+    i = i + 1usize;
+  }
+}
+
+// At the program's end (final): every client actor not closed lets go of the replies it holds, unanswered, so a behaviour
+// paused on a fetch is abandoned as the service's own pending ones are
+fn abandonClients() {
+  var all = List[ClientActor]();
+  regCopy(&mut all);
+  var i = 0usize;
+  while i < all.len() {
+    all[i].abandon();
+    i = i + 1usize;
+  }
+}
+
 // How many ClientConnActors exist now
 pub fn liveClientConnActors() u64 {liveClientConns.load()}
 
@@ -161,6 +205,7 @@ pub actor ClientActor {
   group: CancelGroup;           // ends every connection's I/O at close
   refs: u64;
   closing: bool;
+  rid: u64;                     // its place in the registry of clients not yet closed
   guard: ClientGuard;
 
   fn init(self: &new, p: httpclient.Parts, maxBody: usize) {
@@ -176,8 +221,15 @@ pub actor ClientActor {
     *self = Self(args: args, core: httpclient.ClientCore.make(limits, maxOrigins, false), facts: Facts(CStates()),
       fetches: FetchRecs(), conns: ConnActors(), addrs: AddrCache(),
       dls: PriorityQueue[i64, httpclient.FetchId](), tm: actors.Timer.make(), group: CancelGroup.make(), refs: 1u64,
-      closing: false, guard: ClientGuard(false));
+      closing: false, rid: newId(), guard: ClientGuard(false));
+    let myId = self.rid;
+    regAdd(selfactor, myId);
     selfactor.deadlineLoop();
+  }
+
+  // The program ends: the replies the client holds are let go unanswered (see abandonClients)
+  pub async fn abandon(self) {
+    fetches.clear();
   }
 
   // ---- fetches
@@ -563,6 +615,7 @@ pub actor ClientActor {
   pub async fn close(self) {
     if closing {return;}
     closing = true;
+    regRemove(rid);
     var ids = List[httpclient.FetchId]();
     var it = fetches.values();
     while true {
@@ -798,16 +851,9 @@ pub actor ClientConnActor {
       reading = false;
       return;
     }
-    let buf = match IoBuf.tryMake(args.conn.recvSize) {
-      case var Some(got) {got}
-      else {
-        reading = false;
-        cc.abort();
-        self.turn();
-        return;
-      }
-    };
-    let r = await sock.readIn(buf, IoLimits.within(group));
+    // A read with no buffer of ours (aio's READS WITH NO BUFFER): the connection holds none while it waits for the other end
+    // to speak, as the polled driver's idle one does, and aio takes one (recvSize) when bytes have come
+    let r = await sock.readIn(args.conn.recvSize, IoLimits.within(group));
     reading = false;
     match r {
       case let Ok(b) {cc.wireIn(b, Instant.now());}
