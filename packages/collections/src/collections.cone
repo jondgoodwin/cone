@@ -275,7 +275,7 @@ fn isHeap(r: *MemRegion) bool inline { r as usize == heapRegion() as usize }
 // 'splitOff', 'extend', 'drain(start, end)'), and the methods of Array that keep the
 // length (first, last, fill, rotate, copyFrom, copyWithin, windows, startsWith,
 // endsWith, position) are its own through its view.
-pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements, Serialize if T is Serialize, Deserialize[List[T]] if T is Deserialize[T] {
+pub struct List[T] is Default, ShapeChanging, Sendable, Hash if T is Eq && T is Hash, CarriesRegion, GcTraceElements, Serialize if T is Serialize, Deserialize[List[T]] if T is Deserialize[T] {
   ptr: *T;
   used: usize;
   cap: usize;
@@ -736,6 +736,18 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // same place. Exists only where T is Eq. Compared as borrows, '&a == &b'
   pub fn `==`(self: &, other: &List[T]) bool where T is Eq {
     self.view() == other.view()
+  }
+
+  // What identifies it to a Hasher: its length, then each value in order (so
+  // [[1],[2,3]] and [[1,2],[3]] differ). Exists only where T is Eq and Hash
+  // (Hash requires '==', which List has only where T is Eq)
+  pub fn hash(self: &, h: &mut Hasher) where T is Eq && T is Hash {
+    h.writeU64(u64.from(used));
+    var i = 0usize;
+    while i < used {
+      ((ptr + i) as &T).hash(h);
+      i = i + 1usize;
+    }
   }
 
   // Whether some value is '==' to x. Only where T is Eq

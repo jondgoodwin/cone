@@ -30,13 +30,15 @@
 const maxCached = 256usize;      // sessions a client keeps to resume, at most
 const maxPerServer = 8usize;     // TLS 1.3 tickets kept for one server, at most
 
-// A cached session: which server it is for, and OpenSSL's SSL_SESSION
-alias Cache = Deque[Cached];
-
-struct Cached {
-  key: String;
-  sess: *u8;
+// The sessions kept for one server name (oldest first: OpenSSL's SSL_SESSIONs),
+// and when the name was last used, by CtxState's clock
+struct Tickets {
+  sess: List[*u8];
+  used: u64;
 }
+
+// The cache: by server name, so a take or a put is a hash and not a scan
+alias Cache = Dict[String, Tickets];
 
 // A context's immutable half: the SSL_CTX and what is fixed when the context is
 // made, read by every session made from it with no lock ('Arc[imm, ...]': a
@@ -70,77 +72,139 @@ alias Core = Arc[imm, CtxCore];
 // resume (a server has none, and its sessions never take this lock). Sendable
 // on trust as well: the cache's sessions are reached only under the Arc's lock
 struct CtxState is Sendable {
-  cache: Cache;            // oldest first
+  cache: Cache;
+  clock: u64;              // counts every take and put; a name's 'used' is its value at its last
+  held: usize;             // the sessions held, all names together
 
   // A session for 'key' to resume, or null: the newest the cache holds for
   // it. A TLS 1.3 ticket is taken out (it is used once); a TLS 1.2 session
   // stays, and the caller is given a reference of its own. One OpenSSL has
-  // marked not resumable (its connection failed) is dropped on the way
+  // marked not resumable (its connection failed) is dropped on the way. The
+  // name counts as used
   fn takeCached(self: &mut, key: &str) *u8 {
-    var k = cache.len();
-    while k > 0usize {
-      k = k - 1usize;
-      if cache[k].key.view() != key {continue;}
-      let s = cache[k].sess;
-      if SSL_SESSION_is_resumable(s) != 1i32 {
-        self.dropAt(k);
-      } else if SSL_SESSION_get_protocol_version(s) == tls13Version {
-        self.removeAt(k);
-        return s;
-      } else {
-        SSL_SESSION_up_ref(s);
-        return s;
+    clock = clock + 1u64;
+    var out: *u8 = null;
+    var emptied = false;
+    match cache.getMut(key) {
+      case let Some(t) {
+        t.used = clock;
+        var k = t.sess.len();
+        while k > 0usize {
+          k = k - 1usize;
+          let s = t.sess[k];
+          if SSL_SESSION_is_resumable(s) != 1i32 {
+            SSL_SESSION_free(s);
+            t.sess.remove(k);
+            held = held - 1usize;
+          } else if SSL_SESSION_get_protocol_version(s) == tls13Version {
+            t.sess.remove(k);
+            held = held - 1usize;
+            out = s;
+            break;
+          } else {
+            SSL_SESSION_up_ref(s);
+            out = s;
+            break;
+          }
+        }
+        emptied = t.sess.len() == 0usize;
       }
+      else {}
     }
-    null
+    if emptied {cache.remove(key);}
+    out
   }
 
-  // Keep a session to resume 'key' with; the cache takes the reference. A
-  // TLS 1.3 ticket joins the server's others, its oldest going past
-  // maxPerServer; a TLS 1.2 session replaces what the server had; past
-  // maxCached in all, the oldest goes
-  fn putCached(self: &mut, key: &str, sess: *u8) {
+  // Keep a session to resume 'key' with; the cache takes the reference and
+  // the key (made by the caller before the lock). A TLS 1.3 ticket joins the
+  // server's others, its oldest going past maxPerServer; a TLS 1.2 session
+  // replaces what the server had. Past maxCached in all, the oldest ticket of
+  // the name used longest ago goes
+  fn putCached(self: &mut, key: String, sess: *u8) {
     let tls13 = SSL_SESSION_get_protocol_version(sess) == tls13Version;
-    var held = 0usize;
-    var k = cache.len();
-    while k > 0usize {
-      k = k - 1usize;
-      if cache[k].key.view() != key {continue;}
-      if cache[k].sess as usize == sess as usize {
+    clock = clock + 1u64;
+    let t = cache.getOrInsert(key, Tickets(sess: List[*u8](), used: clock));
+    t.used = clock;
+    var k = 0usize;
+    while k < t.sess.len() {
+      if t.sess[k] as usize == sess as usize {
         // Already here: a TLS 1.2 session handed back by its connection
         SSL_SESSION_free(sess);
         return;
       }
-      if !tls13 {
-        self.dropAt(k);
-      } else if held + 1usize >= maxPerServer {
-        self.dropAt(k);
-      } else {
-        held = held + 1usize;
+      k = k + 1usize;
+    }
+    if !tls13 {
+      while t.sess.len() > 0usize {
+        SSL_SESSION_free(t.sess.remove(0usize));
+        held = held - 1usize;
+      }
+    } else {
+      while t.sess.len() + 1usize > maxPerServer {
+        SSL_SESSION_free(t.sess.remove(0usize));
+        held = held - 1usize;
       }
     }
-    if cache.len() >= maxCached {self.dropAt(0usize);}
-    cache.push(Cached(String.from(key), sess));
+    t.sess.push(sess);
+    held = held + 1usize;
+    if held > maxCached {self.evict();}
   }
 
-  // The entry at k out of the cache, its session freed, the order kept
-  fn dropAt(self: &mut, k: usize) {
-    SSL_SESSION_free(cache[k].sess);
-    self.removeAt(k);
+  // The oldest ticket of the name used longest ago goes (the clock's values
+  // are all different, so there is one such name)
+  fn evict(self: &mut) {
+    var least = 0xFFFFFFFFFFFFFFFFu64;
+    var it = cache.iter();
+    while true {
+      match it.next() {
+        case let Some(kv) {if kv.1.used < least {least = kv.1.used;}}
+        case is None {break;}
+      }
+    }
+    var victim = String();
+    var it2 = cache.iter();
+    while true {
+      match it2.next() {
+        case let Some(kv) {
+          if kv.1.used == least {
+            victim = kv.0.clone();
+            break;
+          }
+        }
+        case is None {break;}
+      }
+    }
+    var emptied = false;
+    match cache.getMut(victim.view()) {
+      case let Some(t) {
+        if t.sess.len() > 0usize {
+          SSL_SESSION_free(t.sess.remove(0usize));
+          held = held - 1usize;
+        }
+        emptied = t.sess.len() == 0usize;
+      }
+      else {}
+    }
+    if emptied {cache.remove(victim.view());}
   }
 
-  // The entry at k out of the cache, its session the caller's, the order kept
-  fn removeAt(self: &mut, k: usize) {
-    cache.remove(k);
+  // The sessions held for one name
+  fn countFor(self: &, key: &str) usize {
+    match cache.get(key) {
+      case let Some(t) {t.sess.len()}
+      else {0usize}
+    }
   }
 
-  fn cachedCount(self: &) usize {cache.len()}
+  fn cachedCount(self: &) usize {held}
 
   fn final(self: &uni) {
-    var k = 0usize;
-    while k < cache.len() {
-      SSL_SESSION_free(cache[k].sess);
-      k = k + 1usize;
+    each t in cache.values() {
+      var k = 0usize;
+      while k < t.sess.len() {
+        SSL_SESSION_free(t.sess[k]);
+        k = k + 1usize;
+      }
     }
   }
 }
@@ -258,7 +322,7 @@ pub struct Client {
     }
     let core = Core(CtxCore(ctx: ctx, server: false, kind: kind, pins: pins,
       resume: resume, lane: cfg.verifyLane, offline: cfg.offline, alpn: null, keys: null));
-    Ok[Client, TlsError](Client(core, Shared(CtxState(cache: Cache()))))
+    Ok[Client, TlsError](Client(core, Shared(CtxState(cache: Cache(), clock: 0u64, held: 0usize))))
   }
 
   // A session with the server named serverName (a DNS name, sent by SNI and
@@ -272,6 +336,9 @@ pub struct Client {
 
   // Sessions kept to resume
   pub fn cachedSessions(self: &) usize {(&*state).cachedCount()}
+
+  // The sessions kept to resume one server name
+  pub fn cachedSessionsFor(self: &, serverName: &str) usize {(&*state).countFor(serverName)}
 }
 
 // The certificates of a PEM bundle into a context's store: how many
@@ -352,7 +419,7 @@ pub struct Server {
     SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, &ticketKeyCb);
     let core = Core(CtxCore(ctx: ctx, server: true, kind: VerifyKind.Insecure,
       pins: List[u8](), resume: false, lane: defaultVerifyLane(), offline: false, alpn: block, keys: keys));
-    Ok[Server, TlsError](Server(core, Shared(CtxState(cache: Cache()))))
+    Ok[Server, TlsError](Server(core, Shared(CtxState(cache: Cache(), clock: 0u64, held: 0usize))))
   }
 
   // Rotate the ticket keys now: a new current key, the old current the

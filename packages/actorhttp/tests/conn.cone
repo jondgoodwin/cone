@@ -451,6 +451,16 @@ actor Prober {
     say("secure get", await s1.request(get("/hello"), String()));
     say("secure again", await s1.request(get("/hello"), String()));
 
+    // A second connectSecure with an equal config shares the first's tls.Client,
+    // so it resumes the session the first was sent
+    let resumedBefore = tls.stats().resumed;
+    var cfgB = tls.ClientConfig.make();
+    cfgB.verify = tls.Verifier.roots(readText("ca.pem").view());
+    cfgB.offline = true;
+    let s1b = connOf("secure connect, second", await actorhttp.connectSecure("127.0.0.1", goodPort, cfgB));
+    say("secure get on the second", await s1b.request(get("/hello"), String()));
+    note("  and it resumed the first's session", tls.stats().resumed > resumedBefore);
+
     // ...and one it does not: the connection is made, the first request fails
     var cfg2 = tls.ClientConfig.make();
     cfg2.verify = tls.Verifier.roots(readText("ca.pem").view());
