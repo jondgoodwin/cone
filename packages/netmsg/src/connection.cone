@@ -244,6 +244,23 @@ pub actor Connection is ValueSource {
     }
   }
 
+  // Make a stream bound to a cell (bindLatest) the connection's clock, the
+  // phase lock: its send slots follow from when its newest value was written
+  // (the value's writtenAt plus one send interval plus this connection's own
+  // spread, 0 to spreadMs milliseconds, so many connections do not wake at once),
+  // not from wherever the connection began, so a state waits a few milliseconds
+  // for its slot, not half an interval. Never faster than the send rate; a
+  // writer on another clock, or stopped, leaves the slots free-running. A stream
+  // not bound to a cell is ignored; unbindLatest of the clock stream ends the
+  // lock. In-process there are no send slots: no effect (flushCells is the clock).
+  pub async fn followCell(self, stream: u16, spreadMs: u32) {
+    if !open {return;}
+    if kind == connDirect {return;}
+    if peer.followCell(stream, spreadMs) {
+      self.reschedule();
+    }
+  }
+
   // This stream's newest incoming value goes into the cell, not to the handler
   // (no Update event): the receiver reads it from the cell's reader. A value
   // longer than the cell's capacity is dropped and counted in

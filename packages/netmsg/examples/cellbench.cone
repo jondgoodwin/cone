@@ -4,6 +4,8 @@
 //   m2  regions encoded once into shared Bytes, one sendLatest per region per subscriber (isolates regions from cells)
 //   c   cells: each region and each player's personal part is a cell (sync.latestCell); each connection binds the
 //       regions near its player (bindLatest), and its input arrives in a cell (bindIncoming)
+//   cl  c with the phase lock (row 529): form=cl or form=clS, each connection makes its own-region stream its clock
+//       (followCell) with a spread of S ms (3 when S is not given); on the clients it is form c
 // The world ticks at 60 Hz on actors.Timer and publishes at 30 Hz. Run it in a release build, by tools/cellbench/run.ps1
 // (Windows) or tools/cellbench/linux.sh (Linux box). By hand, arguments are  <role> <port> <ip or -> then key=value:
 //   server  <port> <bindIPv4|-> form=m1|m2|c players=N secs=S workers=W zones=Z beings=8 crowd=0|1
@@ -94,6 +96,26 @@ fn argForm(args: &List[String]) u32 {
     i = i + 1usize;
   }
   formM1
+}
+
+// form=cl or form=clS: the phase lock's spread in ms (3 for plain cl); -1 for any other form
+fn argLock(args: &List[String]) i64 {
+  var i = 2usize;
+  while i < args.len() {
+    let a = args[i].view().bytes();
+    if a.len >= 6usize && a[0usize] == 102u8 && a[1usize] == 111u8 && a[4usize] == 61u8 {
+      if a[5usize] == 99u8 && a.len >= 7usize && a[6usize] == 108u8 {
+        if a.len == 7usize { return 3i64; }
+        var v = 0i64;
+        var p = 7usize;
+        while p < a.len { v = v * 10i64 + i64.from(a[p] - 48u8); p = p + 1usize; }
+        return v;
+      }
+      return -1i64;
+    }
+    i = i + 1usize;
+  }
+  -1i64
 }
 
 fn formName(f: u32) &str {
@@ -242,6 +264,7 @@ actor World {
   form: u32;
   zone: u32;
   crowd: bool;
+  lock: i64;                     // c: the phase lock's spread in ms (followCell on the own-region stream); -1 none
   per: usize;                    // beings in a region
   seats: List[Connection];
   seatRegion: List[u32];
@@ -271,7 +294,7 @@ actor World {
   pubWallNs: u64;
   publishes: u64;
 
-  pub fn init(self: &new, form: u32, zone: u32, expect: usize, per: usize, crowd: bool) {
+  pub fn init(self: &new, form: u32, zone: u32, expect: usize, per: usize, crowd: bool, lock: i64) {
     var r = (expect + 7usize) / 8usize;
     if r < 1usize { r = 1usize; }
     var words = List[u32]();
@@ -284,7 +307,7 @@ actor World {
       }
       b = b + 1usize;
     }
-    *self = Self(form: form, zone: zone, crowd: crowd, per: per, seats: List[Connection](), seatRegion: List[u32](),
+    *self = Self(form: form, zone: zone, crowd: crowd, lock: lock, per: per, seats: List[Connection](), seatRegion: List[u32](),
       seatOf: Dict[u32, usize](), expect: expect, regions: r, gw: gridWidth(r), st: words, bst: List[u32](),
       rw: List[LatestWriter](), pw: List[LatestWriter](), ir: List[LatestReader](), seenIn: List[u64](),
       lastIn: List[u8](), inbuf: IoBuf(256usize), body: List[u8](), near: List[u32](), timer: actors.Timer.make(),
@@ -356,6 +379,9 @@ actor World {
         while j < near.len() {
           seats[i].bindLatest(sRegion0 + u16.from(j), rw[usize.from(*near[j])].reader(), if j == 0usize {8u32} else {4u32});
           j = j + 1usize;
+        }
+        if lock >= 0i64 {
+          seats[i].followCell(sRegion0, u32.from(lock));
         }
         i = i + 1usize;
       }
@@ -530,6 +556,16 @@ actor World {
     printStr(" cellSkipped="); printUInt(skipped);
     printStr(" cellRefused(in)="); printUInt(refusedIn);
     printStr(" latestSent="); printUInt(sent);
+    // seqlock tries thrown away, over every cell the world holds (regions, personal parts, inputs)
+    var retries = 0u64;
+    var q = 0usize;
+    while q < rw.len() { retries = retries + rw[q].reader().retries(); q = q + 1usize; }
+    q = 0usize;
+    while q < pw.len() { retries = retries + pw[q].reader().retries(); q = q + 1usize; }
+    q = 0usize;
+    while q < ir.len() { retries = retries + ir[q].retries(); q = q + 1usize; }
+    printStr(" cellRetries="); printUInt(retries);
+    printStr(" lock="); printInt(lock);
     if crowd {
       printStr(" beachBeings="); printUInt(u64.from(per + seats.len()));
       printStr(" beachPublishesOverPacket="); printUInt(beachFull);
@@ -580,7 +616,7 @@ fn server(port: u16, args: &List[String], bind: &str) {
   var z = 0usize;
   while z < zones {
     let take = n / zones + (if z < n % zones {1usize} else {0usize});
-    ws.push(World(form, u32.from(z), take, per, crowd));
+    ws.push(World(form, u32.from(z), take, per, crowd, argLock(args)));
     z = z + 1usize;
   }
   let srv = mustListen(pick(bind, port), cfg, handlerOf(ws.clone(), zones));
