@@ -74,6 +74,7 @@ pub const maxStreams = 64usize;
 const disconnectCopies = 5usize;
 
 const msNs = 1000000i64;
+const lockRetries = 4i64;          // phase lock: looks, a millisecond apart, for a write that is a little late
 
 // Sends are paced by a token bucket: a token comes back every interval (the good
 // or bad rate's) and the bucket holds burstTokens at most. A packet takes a
@@ -386,6 +387,17 @@ pub struct ConnectionCore {
   cellCheckAt: i64;           // while a cell is bound: when a send slot next looks at the cells. A cell cannot say it changed, so
                               // each slot looks; a poll that finds nothing new moves this one interval on, or the deadline
                               // would stay in the past and the connection's clock would spin (see nextDeadline)
+  clockIdx: usize;            // followCell: the outs entry that is the connection's clock; notFound none (free-running slots)
+  clockW: i64;                // the writtenAt of the clock stream's value the packet being built took
+  clockFresh: bool;           // a packet built in this poll took a value of the clock stream (clockW holds its writtenAt)
+  lockAt: i64;                // the instant of the next phase-locked look; -1 none yet
+  lockDelta: i64;             // this connection's own spread, 0 to spreadMs, so wake-ups do not all land on one instant
+  clockVer: u64;              // the version of the clock value the packet being built took
+  lockBase: i64;              // the lattice point the look aims at: a write's writtenAt plus the step plus lockDelta; -1 none
+  lockP: i64;                 // the writer's period, estimated from the clock values sent (smoothed); 0 not yet
+  prevW: i64;                 // the writtenAt and version of the clock value sent before the newest
+  prevVer: u64;
+  missRun: i64;               // looks in a row at the lattice point, and shortly after, that found nothing new
 
   // measurements
   hasRtt: bool;
@@ -418,7 +430,7 @@ pub struct ConnectionCore {
       rel, 0u16, 0u16, recv, 0u16, Parsed(0u16, 0u16, 0u32, List[RelRecv](), List[LatestItem]()),
       Array[StreamOut, 64]() <- fill StreamOut(0u16, 1u32, 0u32, 0u16, false, None[Bytes], None[LatestReader], 0u64), 0usize, 0usize, 0usize,
       Array[StreamIn, 64]() <- fill StreamIn(0u16, 0u16), 0usize,
-      t, t - cfg.keepAliveMs * msNs, t, false, false, t,
+      t, t - cfg.keepAliveMs * msNs, t, false, false, t, notFound, 0i64, false, -1i64, 0i64, 0u64, -1i64, 0i64, 0i64, 0u64, 0i64,
       false, 0i64, 0i64, 0i64, true, -1i64, 4i64 * secNs, t,
       ConnectionStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0i64, 0u32, true))
   }
@@ -559,7 +571,106 @@ pub struct ConnectionCore {
     s.seen = 0u64;
     s.acc = 0u32;
     nCells = nCells - 1usize;
+    if clockIdx == k {clockIdx = notFound; lockAt = -1i64; lockBase = -1i64;}
     true
+  }
+
+  // Make this stream, which must be bound to a cell, the connection's clock
+  // (the phase lock). Free-running slots look at the cells an interval apart
+  // from wherever the connection began, so a value waits for the next look:
+  // half an interval on average, 17 ms at 30 Hz, on top of its age. The clock
+  // stream's slot is set instead from when its value was written: after
+  // sending a new value, the next look is at that value's writtenAt plus one
+  // step plus this connection's own spread (0 to 'spreadMs', from the session,
+  // so five thousand connections do not wake on one instant): just after the
+  // writer's next put. The step is the writer's period, learned from the
+  // writtenAt and version of the values sent (smoothed), and never under one
+  // send interval: a writer that puts at every second slot is looked for at
+  // every second slot, not at each. A look that finds nothing is a write a
+  // little late: it looks again a millisecond on, up to four times; after
+  // that, one step on the same lattice. A value found is sent and the lattice
+  // is set again from its write. A look is never sooner than the send rate
+  // allows (nextDeadline holds the token), and one that would be over two steps
+  // away (a writer on another clock) leaves the slots free-running. Before the
+  // first value the connection is free-running. False, and nothing changed,
+  // when the stream is not bound to a cell; another call moves the clock to
+  // another stream or the spread to another; unbindLatest of the clock stream
+  // ends it.
+  pub fn followCell(self: &mut, stream: u16, spreadMs: u32) bool {
+    let k = self.findOut(stream);
+    if k == notFound {return false;}
+    match &outs[k].cell {
+      case is Some[LatestReader] {}
+      else { return false; }
+    }
+    var spread = i64.from(spreadMs) * msNs;
+    if spread > secNs {spread = secNs;}
+    clockIdx = k;
+    clockFresh = false;
+    lockAt = -1i64;
+    lockBase = -1i64;
+    lockP = 0i64;
+    prevW = 0i64;
+    prevVer = 0u64;
+    missRun = 0i64;
+    lockDelta = i64.from(session % u64.from(spread + 1i64));
+    true
+  }
+
+  // Where this poll's look at the cells leaves the next one: free-running, an
+  // interval from now; or, with a clock stream (followCell), on the lattice of
+  // its writes
+  fn nextLook(self: &mut, t: i64) i64 {
+    let iv = self.interval();
+    if clockIdx == notFound {return t + iv;}
+    var step = lockP;
+    if step < iv {step = iv;}
+    if clockFresh {
+      clockFresh = false;
+      // The writer's period, from this write and the one sent before it (the
+      // versions between them are puts too). A gap over three times the period
+      // so far is a writer that paused, not a period: not learned
+      if prevVer > 0u64 && clockVer > prevVer && clockW > prevW {
+        var sample = (clockW - prevW) / i64.from(clockVer - prevVer);
+        if sample < msNs {sample = msNs;}
+        if sample > 8i64 * iv {sample = 8i64 * iv;}
+        if lockP == 0i64 {
+          lockP = sample;
+        } else if sample <= 3i64 * lockP {
+          lockP = lockP + (sample - lockP) / 4i64;
+        }
+        step = lockP;
+        if step < iv {step = iv;}
+      }
+      prevW = clockW;
+      prevVer = clockVer;
+      missRun = 0i64;
+      lockBase = clockW + step + lockDelta;
+    } else if lockBase < 0i64 {
+      return t + iv;
+    } else if lockAt > t {
+      // A poll before the look, called for something else: the look stays
+      return lockAt;
+    } else {
+      // The look was due and found nothing new: a write a little late is looked
+      // for again shortly, a few times; after that, the next point of the lattice
+      if missRun < lockRetries {
+        missRun = missRun + 1i64;
+        lockAt = t + msNs;
+        return lockAt;
+      }
+      lockBase = lockBase + step;
+    }
+    // Onto the lattice's next point after now
+    if lockBase <= t {lockBase = lockBase + ((t - lockBase) / step + 1i64) * step;}
+    // A writer on another clock must not push the look far out
+    if lockBase - t > 2i64 * step + lockDelta + msNs {
+      lockBase = -1i64;
+      lockAt = -1i64;
+      return t + iv;
+    }
+    lockAt = lockBase;
+    lockBase
   }
 
   // The connection has ended: its cells' readers are let go
@@ -570,6 +681,9 @@ pub struct ConnectionCore {
       i = i + 1usize;
     }
     nCells = 0usize;
+    clockIdx = notFound;
+    lockAt = -1i64;
+    lockBase = -1i64;
   }
 
   // Whether the cell bound to outs[i] holds a version newer than the last one sent
@@ -764,7 +878,7 @@ pub struct ConnectionCore {
     }
     // A send slot with cells bound: this look is done, the next is an interval
     // on (found nothing, or sent: either way the deadline moves forward)
-    if nCells > 0usize {cellCheckAt = t + self.interval();}
+    if nCells > 0usize {cellCheckAt = self.nextLook(t);}
   }
 
   // Fiedler's two-state rate control: sending at the good rate, until the
@@ -928,7 +1042,8 @@ pub struct ConnectionCore {
       }
       var m = 0usize;
       while m < n && nLat < 255u8 {
-        let s = &mut outs[order[m]];
+        let si = order[m];
+        let s = &mut outs[si];
         m = m + 1usize;
         if !s.pending {
           if latestOverhead > budget {continue;}
@@ -950,6 +1065,11 @@ pub struct ConnectionCore {
                   st.cellSkipped = st.cellSkipped + (got.version - s.seen - 1u64);
                 }
                 s.seen = got.version;
+                if si == clockIdx {
+                  clockW = got.writtenAt.nanos();
+                  clockVer = got.version;
+                  clockFresh = true;
+                }
                 budget = budget - (latestOverhead + got.len);
                 s.nextSeq = s.nextSeq + 1u16;
                 s.acc = 0u32;

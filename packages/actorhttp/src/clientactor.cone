@@ -207,8 +207,9 @@ pub actor ClientActor {
   closing: bool;
   rid: u64;                     // its place in the registry of clients not yet closed
   guard: ClientGuard;
+  targets: TestTargets;         // origins the test seam sends elsewhere (testseam.cone); empty for a program's client
 
-  fn init(self: &new, p: httpclient.Parts, maxBody: usize) {
+  fn init(self: &new, p: httpclient.Parts, maxBody: usize, targets: TestTargets) {
     liveClients.add(1u64);
     let limits, maxOrigins, conn, tlsr = p.(limits, maxOrigins, conn, tlsc);
     var tlsc: Option[tls.Client] = None;
@@ -221,7 +222,7 @@ pub actor ClientActor {
     *self = Self(args: args, core: httpclient.ClientCore.make(limits, maxOrigins, false), facts: Facts(CStates()),
       fetches: FetchRecs(), conns: ConnActors(), addrs: AddrCache(),
       dls: PriorityQueue[i64, httpclient.FetchId](), tm: actors.Timer.make(), group: CancelGroup.make(), refs: 1u64,
-      closing: false, rid: newId(), guard: ClientGuard(false));
+      closing: false, rid: newId(), guard: ClientGuard(false), targets: targets);
     let myId = self.rid;
     regAdd(selfactor, myId);
     selfactor.deadlineLoop();
@@ -431,6 +432,27 @@ pub actor ClientActor {
   // The connection's address: the next of its name's, the name looked up when it is not kept. The actor is made with every
   // address from there on, in the order, so a failed connect moves to the next
   pub async fn dial(self, pc: u32, gen: u32, host: String, port: u16, secure: bool) {
+    var seamList: Option[List[SocketAddr]] = None;
+    if self.targets.map.len() > 0usize {
+      let tk = targetKey(host.view(), port);
+      match self.targets.map.get(&tk) {
+        case let Some(t) {
+          if t.kind == kindAddresses {
+            var i = 0usize;
+            var l = List[SocketAddr]();
+            while i < t.found.len() {
+              l.push(t.found[i]);
+              i = i + 1usize;
+            }
+            seamList = Some[List[SocketAddr]](l);
+          } else {
+            selfactor.dialTest(pc, gen, host, tk, secure);
+            return;
+          }
+        }
+        else {}
+      }
+    }
     var key = host.clone();
     key.append(":");
     key.appendUInt(u64.from(port));
@@ -440,20 +462,38 @@ pub actor ClientActor {
       else {}
     }
     if !fresh {
-      let r = await aio.resolveIn(host.view(), port, IoLimits.within(group));
+      var found: Option[List[SocketAddr]] = None;
+      if seamList is Some {
+        // a lookup takes a moment: a burst of dials is in flight together
+        let z = await aio.sleep(Duration.fromMillis(2i64));
+        seamList <-> found;
+      } else {
+        let r = await aio.resolveIn(host.view(), port, IoLimits.within(group));
+        if closing {return;}
+        match r {
+          case var Ok(list) {found = Some[List[SocketAddr]](list);}
+          case let Err(e) {
+            self.fail(pc, gen, httpclient.Failure.make(httpclient.Stage.Resolve, e.code, ErrorKind.Closed, "the name could not be looked up"), false);
+            return;
+          }
+        }
+      }
       if closing {return;}
-      match r {
-        case var Ok(list) {
+      match found {
+        case var Some(list) {
           if list.len() == 0usize {
             self.fail(pc, gen, httpclient.Failure.make(httpclient.Stage.Resolve, 0u32, ErrorKind.Closed, "the name has no address"), false);
             return;
           }
-          addrs.insert(key.clone(), Addrs(list, 0usize, Instant.now()));
+          // kept only when no dial of this burst kept it already (or the kept one has expired), so the cursor keeps moving
+          var keep = false;
+          match addrs.get(&key) {
+            case let Some(a) {keep = Instant.now() - a.at < Duration.fromSeconds(addrTtl) && a.list.len() > 0usize;}
+            else {}
+          }
+          if !keep {addrs.insert(key.clone(), Addrs(list, 0usize, Instant.now()));}
         }
-        case let Err(e) {
-          self.fail(pc, gen, httpclient.Failure.make(httpclient.Stage.Resolve, e.code, ErrorKind.Closed, "the name could not be looked up"), false);
-          return;
-        }
+        else {}
       }
     }
     if closing {return;}
@@ -473,7 +513,84 @@ pub actor ClientActor {
       case let Some(s) {if s.gen != gen {return;}}
       else {return;}
     }
-    let a = ClientConnActor(selfactor, pc, gen, rotated, host, secure, args, group);
+    let a = ClientConnActor(selfactor, pc, gen, rotated, host, secure, args, group, None[TestPipe]);
+    conns.insert(pc, a);
+  }
+
+  // A connection to an origin the test seam names: to its address, or on its next pipe, or to its handler's listener (started
+  // on the first dial)
+  pub async fn dialTest(self, pc: u32, gen: u32, host: String, key: String, secure: bool) {
+    var kind = kindNone;
+    var addr = SocketAddr.localhost(0u16);
+    var pipe: Option[TestPipe] = None;
+    var routes: Option[HttpRoutes] = None;
+    var holding = false;
+    match targets.map.getMut(&key) {
+      case let Some(t) {
+        kind = t.kind;
+        addr = t.addr;
+        if t.kind == kindPipe {
+          if t.next < t.wires.len() {
+            pipe = Some[TestPipe](t.wires[t.next]);
+            t.next = t.next + 1usize;
+          } else {kind = kindNone;}
+        } else if t.kind == kindHandler {
+          if !t.started {
+            t.started = true;
+            routes <-> t.routes;
+          } else if t.addr.port() == 0u16 {holding = true;}
+        }
+      }
+      else {}
+    }
+    match routes {
+      case var Some(r) {
+        let l = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make().routes(r));
+        match l {
+          case var Ok(srv) {
+            addr = SocketAddr.localhost(srv.port());
+            match targets.map.getMut(&key) {
+              case let Some(t) {
+                t.addr = addr;
+                t.server <-> srv;
+              }
+              else {}
+            }
+          }
+          case let Err(e) {
+            kind = kindNone;
+            match targets.map.getMut(&key) {
+              case let Some(t) {t.kind = kindNone;}
+              else {}
+            }
+          }
+        }
+      }
+      else {}
+    }
+    while holding && !closing {
+      let s = await aio.sleep(Duration.fromMillis(2i64));
+      match targets.map.getMut(&key) {
+        case let Some(t) {
+          kind = t.kind;
+          addr = t.addr;
+          if t.kind == kindNone || t.addr.port() != 0u16 {holding = false;}
+        }
+        else {holding = false;}
+      }
+    }
+    if closing {return;}
+    match facts.states.get(&pc) {
+      case let Some(s) {if s.gen != gen {return;}}
+      else {return;}
+    }
+    if kind == kindNone || (kind == kindHandler && addr.port() == 0u16) {
+      self.fail(pc, gen, httpclient.Failure.make(httpclient.Stage.Connect, 0u32, ErrorKind.Closed, "the test target has nothing to connect to"), false);
+      return;
+    }
+    var list = List[SocketAddr]();
+    if kind != kindPipe {list.push(addr);}
+    let a = ClientConnActor(selfactor, pc, gen, list, host, secure, args, group, pipe);
     conns.insert(pc, a);
   }
 
@@ -712,9 +829,10 @@ pub actor ClientConnActor {
   lastTakes: bool;
   hard: bool;               // the client gave the connection up (a cancel on HTTP/1.1, an abort): it is reset when over
   guard: ClientGuard;
+  pipe: Option[TestPipe];   // the test seam's in-memory wire, in place of the socket
 
   fn init(self: &new, client: ClientActor, pc: u32, gen: u32, addrs: List[SocketAddr], host: String, secure: bool,
-      args: Arc[imm, ClientArgs], group: CancelGroup) {
+      args: Arc[imm, ClientArgs], group: CancelGroup, pipe: Option[TestPipe]) {
     liveClientConns.add(1u64);
     let now = Instant.now();
     *self = Self(client: client, pc: pc, gen: gen, args: args, addrs: addrs, host: host, secure: secure, group: group,
@@ -722,7 +840,7 @@ pub actor ClientConnActor {
       connected: false, up: false, reading: false, writing: false, calling: false, closing: false, closeStarted: false,
       ended: false, told: false, aborted: false, goAway: false, shutting: false, protoClosed: false, writeBy: now,
       exch: ConnExchanges(), bodying: List[u32](), pends: Pends(), recv: 0u64, lastFree: 0usize, lastTakes: true, hard: false,
-      guard: ClientGuard(true));
+      guard: ClientGuard(true), pipe: pipe);
     selfactor.begin();
   }
 
@@ -730,7 +848,7 @@ pub actor ClientConnActor {
   pub async fn begin(self) {
     let until = Instant.now() + args.conn.connectTimeout;
     var fail = httpclient.Failure.make(httpclient.Stage.Connect, 0u32, ErrorKind.Closed, "the connection could not be made");
-    var got = false;
+    var got = pipe is Some;
     var i = 0usize;
     while i < addrs.len() && !got && !aborted {
       let a = addrs[i];
@@ -834,8 +952,16 @@ pub actor ClientConnActor {
     hard = true;
     if ended || !connected {return;}
     cc.abort();
-    sock.cancelRead();
+    self.cancelReads();
     self.turn();
+  }
+
+  // A read in flight ended (the socket's, or the test pipe's)
+  fn cancelReads(self) {
+    match &pipe {
+      case let &Some(p) {p.cancelRead();}
+      else {sock.cancelRead();}
+    }
   }
 
   // ---- reading and writing: one socket operation at a time each, each a turn of its own
@@ -853,7 +979,11 @@ pub actor ClientConnActor {
     }
     // A read with no buffer of ours (aio's READS WITH NO BUFFER): the connection holds none while it waits for the other end
     // to speak, as the polled driver's idle one does, and aio takes one (recvSize) when bytes have come
-    let r = await sock.readIn(args.conn.recvSize, IoLimits.within(group));
+    var r: Result[IoBuf, IoError] = Err[IoBuf, IoError](IoError.ofKind(IoErrorKind.Cancelled));
+    match &pipe {
+      case let &Some(p) {r = await pipeRead(*p, args.conn.recvSize);}
+      else {r = await sock.readIn(args.conn.recvSize, IoLimits.within(group));}
+    }
     reading = false;
     match r {
       case let Ok(b) {cc.wireIn(b, Instant.now());}
@@ -870,15 +1000,25 @@ pub actor ClientConnActor {
       self.turn();
       return;
     }
-    let r = await sock.writeIn(c, IoLimits.within(group));
-    writing = false;
-    match r {
-      case let Ok(w) {cc.wireSent(n);}
-      case let Err(e) {
-        cc.abort();
-        cc.wireSent(n);
+    var sent = true;
+    match &pipe {
+      case let &Some(p) {
+        var tmp = IoBuf(n);
+        let k = c.take(tmp.whole());
+        tmp.setLen(k);
+        p.write(tmp);
+      }
+      else {
+        let r = await sock.writeIn(c, IoLimits.within(group));
+        match r {
+          case let Err(e) {sent = false;}
+          else {}
+        }
       }
     }
+    writing = false;
+    if !sent {cc.abort();}
+    cc.wireSent(n);
     self.turn();
   }
 
@@ -1113,6 +1253,7 @@ pub actor ClientConnActor {
     if ended {return;}
     ended = true;
     tm.stop();
+    self.cancelReads();
     var dead = aio.Socket.none();
     dead <-> sock;
     dead.reset();
@@ -1154,7 +1295,7 @@ pub actor ClientConnActor {
     }
     if isDone && !writing && !closing {
       closing = true;
-      if reading {sock.cancelRead();}
+      if reading {self.cancelReads();}
     }
     if closing && !reading && !closeStarted {
       closeStarted = true;
@@ -1192,6 +1333,7 @@ pub actor ClientConnActor {
     if ended {return;}
     ended = true;
     tm.stop();
+    self.cancelReads();
     var dead = aio.Socket.none();
     dead <-> sock;
     exch.clear();

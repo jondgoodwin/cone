@@ -5,7 +5,7 @@
 #   pwsh tools\cellbench\run.ps1 -Form c -N 1000 -Procs 2 [-W 8] [-CW 4] [-Seconds 10] [-Zones 1] [-Beings 8] [-Crowd] [-InputHz 30] [-Port 47400] [-Tag x]
 # Needs CONEC / CONESTD of a built compiler (default: the main checkout's release build). Logs go to build\cellbench-<tag>\.
 param([string]$Form = 'c', [int]$N = 1000, [int]$Procs = 2, [int]$W = 8, [int]$CW = 4, [int]$Seconds = 10,
-      [int]$Zones = 1, [int]$Beings = 8, [switch]$Crowd, [int]$InputHz = 30, [int]$Port = 47400, [string]$Tag = "")
+      [int]$Zones = 1, [int]$Beings = 8, [switch]$Crowd, [int]$InputHz = 30, [int]$Port = 47400, [string]$Tag = "", [switch]$Memstats)
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..\..").Path
 $cr = if ($Crowd) { 1 } else { 0 }
@@ -24,6 +24,13 @@ function Start-Congo([string]$a, [string]$log, [string]$role = 'srv') {
   Copy-Item $src "$out\$role\cellbench.cone" -Force
   $prog = "$out\$role\cellbench.cone"
   $line = "`"$vcvars`" >nul && python `"$congo`" run --release `"$prog`" -- $a"
+  if ($Memstats -and $role -eq 'srv') {
+    # the server's allocations, counted by packages\memstats (never timed: a tag changes the layout and the scheduling)
+    $lib = "$repo\packages\memstats\shim\out\memstats.lib"
+    if (-not (Test-Path $lib)) { & "$repo\packages\memstats\shim\build.ps1" }
+    New-Item -ItemType Directory -Force "$out\ms" | Out-Null
+    $line = "`"$vcvars`" >nul && set _LINK_=`"$lib`"&& set MEMSTATS_OUT=$out\ms&& python `"$congo`" run -D MEMSTATS --release `"$prog`" -- $a"
+  }
   Start-Process -FilePath cmd -ArgumentList '/c', "`"$line`"" -WorkingDirectory "$repo\packages" -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru -WindowStyle Hidden
 }
 function Find-Exe([int]$rootId) {
