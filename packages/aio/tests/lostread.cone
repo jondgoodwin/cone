@@ -1,0 +1,189 @@
+// A socket read with a deadline always ends: with bytes, an end of stream, an error, or at its deadline.
+//
+// The routed server's closing sequence, alone: a connection half-closes its sending side, then reads 4096
+// bytes at a time with IoLimits(group, until), one deadline for the whole run of reads, while its peer writes
+// 32 KB blocks without pause. Each connection ends when a read answers TimedOut at the deadline. The reads run
+// on a socket of the worker port (aio.listen's), issued on the awaiting actor's worker (iocore's
+// issueWaiting); a read issued in the instant the deadline passes is the case: its deadline is reached
+// between issueWaiting's look and the issue's own, and a read that listed itself then, holding no kernel
+// operation, was never answered on Windows. Only the last read of a connection can meet the instant, and it
+// did on roughly one connection in ten when measured, so 200 short connections make it certain; a read that
+// does not come back is found by the wait in main, which fails the test with the state of the connection's
+// reads.
+
+mod lostread;
+
+import testing use *;
+import stdio use printStr, printUInt, printInt, printFlush;
+import libc;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError, CancelGroup;
+import actors;
+import aio use Socket, IoLimits;
+
+const lingerMs = 30i64;
+const connections = 600u64;      // each about lingerMs and thousands of reads; the case is about 1 connection in 50
+
+let reads: Atomic[u64];          // reads answered, over the run
+let readsHere: Atomic[u64];      // reads answered on the current connection
+let lastMs: Atomic[u64];         // when the last read answered, in ms from the connection's start
+let timedOut: Atomic[u64];       // connections whose reads ended at their deadline
+let endedOther: Atomic[u64];     // connections whose reads ended by an end of stream or another error
+let latest: Atomic[u64];         // the latest a connection's reads ended, ms after its deadline
+
+fn @initpure init() {
+  reads = Atomic[u64].of(0u64);
+  readsHere = Atomic[u64].of(0u64);
+  lastMs = Atomic[u64].of(0u64);
+  timedOut = Atomic[u64].of(0u64);
+  endedOther = Atomic[u64].of(0u64);
+  latest = Atomic[u64].of(0u64);
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {
+      printStr("socketOf failed: code ");
+      printUInt(u64.from(e.code));
+      printStr("\n");
+      panic("socketOf: the operation failed");
+    }
+  }
+  s
+}
+
+actor Writer {
+  pub async fn go(self, s: Socket, done: OneshotSender[u64]) {
+    let cap = Instant.now() + Duration.fromMillis(20000i64);
+    var going = true;
+    while going && Instant.now() < cap {
+      match IoBuf.tryMake(32768usize) {
+        case var Some(b) {
+          b.setLen(32768usize);
+          let w = await s.write(b);
+          match w {
+            case let Ok(x) {}
+            case let Err(e) {going = false;}
+          }
+        }
+        else {going = false;}
+      }
+    }
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+actor Lingerer {
+  pub async fn go(self, s: Socket, group: CancelGroup, done: OneshotSender[u64]) {
+    let start = Instant.now();
+    let c = await s.closeWrite();
+    let until = start + Duration.fromMillis(lingerMs);
+    var buf = IoBuf(4096usize);
+    let lim = IoLimits(Some[CancelGroup](group), until);
+    while !group.isCancelled() {
+      let r = await s.readIn(buf, lim);
+      reads.add(1u64);
+      readsHere.add(1u64);
+      lastMs.store(u64.from((Instant.now() - start).millis()));
+      match r {
+        case var Ok(b) {
+          if b.len() == 0usize {
+            endedOther.add(1u64);
+            printStr("a read ended with the end of the stream\n");
+            break;
+          }
+          b.clear();
+          buf = b;
+        }
+        case let Err(e) {
+          if e.isTimedOut() {
+            timedOut.add(1u64);
+          } else {
+            endedOther.add(1u64);
+            printStr("a read ended with error code "); printUInt(u64.from(e.code)); printStr("\n");
+          }
+          break;
+        }
+      }
+    }
+    let late = (Instant.now() - until).millis();
+    if late > 0i64 && u64.from(late) > latest.load() {latest.store(u64.from(late));}
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+actor Setup {
+  pub async fn go(self, group: CancelGroup, wtx: OneshotSender[u64], rtx: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
+    match a {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let ac = await ls.accept();
+    let w = Writer();
+    w.go(socketOf(c), wtx);
+    let r = Lingerer();
+    r.go(socketOf(ac), group, rtx);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  let group = CancelGroup.make();
+  var k = 0u64;
+  var stuck = false;
+  while k < connections && !stuck {
+    var wtx: OneshotSender[u64];
+    var wrx: OneshotReceiver[u64];
+    wtx, wrx = Oneshot[u64].make();
+    var rtx: OneshotSender[u64];
+    var rrx: OneshotReceiver[u64];
+    rtx, rrx = Oneshot[u64].make();
+    readsHere.store(0u64);
+    lastMs.store(0u64);
+    {
+      let s = Setup();
+      s.go(group, wtx, rtx);
+    }
+    match rrx.recvTimeout(Duration.fromMillis(lingerMs + 5000i64)) {
+      case let Some(v) {}
+      else {
+        printStr("STUCK: connection "); printUInt(k);
+        printStr(": reads on it "); printUInt(readsHere.load());
+        printStr(", the last answered at ms "); printUInt(lastMs.load());
+        printStr(" of its deadline "); printInt(lingerMs);
+        printStr("; the next read never came back\n");
+        stuck = true;
+      }
+    }
+    if !stuck {
+      match wrx.recvTimeout(Duration.fromMillis(10000i64)) {
+        case let Some(v) {}
+        else {printStr("the writer did not end, connection "); printUInt(k); printStr("\n"); stuck = true;}
+      }
+    }
+    k = k + 1u64;
+  }
+  if stuck {
+    printStr("FAIL\n");
+    printFlush();
+    libc.exit(3i32);
+  }
+  finalAll();
+  expectUInt(timedOut.load() + endedOther.load(), connections, "every connection's reads ended");
+  expectUInt(endedOther.load(), 0u64, "each at its deadline, with TimedOut");
+  expect(latest.load() < 1000u64, "none later than a second after its deadline");
+  expect(reads.load() > 100u64 * connections, "many reads each");
+  done()
+}

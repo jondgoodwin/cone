@@ -491,7 +491,18 @@ pub struct Shared is Move, Sendable {
       got = answeredHere(p, due, 0usize, 0u32);
     } else {
       got = self.issueAt(p, tryWaiting);
-      if got == issueNot {
+      // The try looks at the deadline and the group itself, a moment after the look above, and a deadline
+      // reached between the two makes it decline with nothing started. Listing the record then would leave
+      // a record no kernel operation holds: on Windows nothing completes it, and the group's end (endWaiting)
+      // asks the kernel to abort an operation that is not there, so the read would never be answered, its
+      // deadline lost with it. A deadline reached, or a group cancelled, never un-happens, so what the try
+      // declined for it is due here too, and is answered at once, as above
+      var late = 0u32;
+      if got == issueNot {late = dueOutcome(r, Instant.now());}
+      if late != 0u32 {
+        stampIssued(p, now);
+        got = answeredHere(p, late, 0usize, 0u32);
+      } else if got == issueNot {
         // Nothing to take, or a send held: not stamped yet (the try stamps what it answers). A send
         // that moved part of its bytes is stamped already, its 'done' kept (TCP ON THE WORKER PORT)
         if r.state != stFlight {stampIssued(p, now);}
@@ -660,7 +671,11 @@ fn dueOutcome(r: &mut OpCore, now: Instant) u32 {
   match r.group {
     case let Some(s) {
       if s.deadline() < dl {dl = s.deadline();}
-      cancelled = s.isCancelled();
+      // A group that ended by its deadline is not a cancel: the operation answers TimedOut, as the Loop's
+      // own timers answer it (timedOut, iocore.cone)
+      // A group that ended by its deadline is not a cancel: the operation answers TimedOut, as the Loop's
+      // own timers answer it (timedOut, iocore.cone)
+      cancelled = s.isCancelled() && !timedOut(&s);
     }
     else {}
   }
