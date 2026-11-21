@@ -466,9 +466,10 @@ fn resetCounts() {
 
 
 // 1. Redirect chains to a new host at each hop. The silent failure: a server that makes the client open, and keep open,
-// a connection to every host it names. Each hop leaves its connection idle in the pool, so what bounds them is maxTotal
-// (and maxRedirects bounds a chain); 'maxOrigins' alone does not (an origin holding a connection is not idle: the core's
-// header, ORIGINS). Two chains of eleven hosts each go through a client of maxTotal 6, maxRedirects 10.
+// a connection to every host it names. Each hop's connection is pooled, idle, and an origin holding only idle connections
+// is dropped, least recently used first, past 'maxOrigins', its connections closed (the core's header, ORIGINS), so
+// maxOrigins bounds the connections left (and maxRedirects bounds a chain). Two chains of eleven hosts each go through a
+// client of maxOrigins 3, maxRedirects 10 (maxTotal left at its default, so it bounds nothing here).
 fn redirects() {
   resetCounts();
   let be = startBackend(kRedirect);
@@ -478,7 +479,6 @@ fn redirects() {
   var cfg = httpclient.Config.make();
   cfg.maxRedirects = 10u32;
   cfg.maxOrigins = 3u32;
-  cfg.maxTotal = 6u32;
   let f = Fetcher(HttpClient.make(cfg, actorhttp.defaultMaxBody));
   f.get(urlAt("127.0.0.2", "/h0"), otx.clone());
   expectStr(takeS(&mut orx).view(), "err failed", "redirects: a chain longer than maxRedirects ends Failed, once");
@@ -489,9 +489,9 @@ fn redirects() {
   waitFor(&accepts, 22u64);
   settle();
   expectUInt(accepts.load(), 22u64, "redirects: each of the 22 hosts was a connection of its own");
-  // (the server sees a closed connection a moment after the client opened the next, so a little slack over maxTotal)
-  expect(maxOpen.load() <= 8u64, "redirects: never more than maxTotal (and one or two just closing) connections open at the server");
-  expect(open.load() <= 6u64, "redirects: and no more than that left");
+  // (the server sees a closed connection a moment after the client opened the next, so a little slack over maxOrigins)
+  expect(maxOpen.load() <= 5u64, "redirects: never more than maxOrigins (and one or two just closing) connections open at the server");
+  expect(openWithin(3u64) <= 3u64, "redirects: no more than maxOrigins connections left (one for each origin kept)");
   f.dropClient();
   expect(gone(), "redirects: the client and its connections are gone");
   expectUInt(openWithin(0u64), 0u64, "redirects: every connection closed at the server");
