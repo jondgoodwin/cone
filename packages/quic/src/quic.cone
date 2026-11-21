@@ -33,12 +33,13 @@
 //   defaultStreamWindow defaultCreditBudget minStreamFloor
 //   defaultConnectionWindow defaultMaxStreamsBidi
 //   defaultMaxStreamsUni defaultIdleSeconds defaultMaxUdpPayload
+//   defaultHandshakeSeconds defaultStreamIdLimit
 //   Context.client(cfg)  Context.server(cfg, certFile, keyFile)            (CONTEXTS)
 //   ctx.isServer()  ctx.config()
 //   Addr.v4(a, b, c, d, port)
 //   Connection.client(ctx, host, localAddr, remoteAddr, now)                (CONNECTIONS)
 //   Connection.accept(ctx, firstPacket, localAddr, remoteAddr, now)
-//   c.handleInput(packet, now)  c.pollTransmit(now)  c.wakeAt()  c.pollEvent()
+//   c.handleInput(packet, now)  c.pollTransmit(now)  c.pollTransmitWith(spare, now)  c.wakeAt()  c.pollEvent()
 //   c.openBidi()  c.openUni()  c.write(stream, buf)  c.writeBytes(stream, bytes)  (STREAMS)
 //   c.finish(stream)  c.reset(stream, code)  c.stopSending(stream, code)
 //   c.release(stream, n)  c.window(stream)  c.unreleased(stream)  c.queued(stream)  c.openStreams()  (CREDIT)
@@ -49,7 +50,7 @@
 //   Event: Nothing HandshakeDone VerifyNeeded PeerStream Data Reset          (EVENTS)
 //     WriteStopped MoreStreams Closed
 //   c.isServer()  c.handshakeDone()  c.error()  c.alpn()  c.tlsVersion()     (DIAGNOSTICS)
-//   c.cipher()  c.verifiedBy()  QuicError: e.code e.osError e.detail String() <- e
+//   c.cipher()  c.verifiedBy()  QuicError: e.code e.osError e.detail e.handshakeTimedOut() String() <- e
 //   ngtcp2Version()  backendVersion()
 //
 // CONNECTIONS. A Connection is one QUIC connection's state, in either role.
@@ -173,7 +174,16 @@
 // quic-go's and msquic's; the smaller of both ends' wins). 'maxUdpPayload'
 // (1452: ngtcp2's own default, an Ethernet MTU of 1500 less the IPv6 and UDP
 // headers) is the largest payload sent and the largest the peer is told this
-// end takes; 1200, QUIC's least, at the smallest. ngtcp2's window
+// end takes; 1200, QUIC's least, at the smallest. 'handshakeTimeout' (10 s;
+// ngtcp2's own default is none, so a client whose datagrams never arrive would
+// wait out the idle timeout): a connection whose handshake is not done by then
+// ends with a QuicError whose handshakeTimedOut() is true; zero: none.
+// 'streamIdLimit' (2^32; QUIC's own limit on stream ids is 2^62) keeps the
+// ids of the bidirectional streams the peer opens under it, so a host that
+// narrows ids (httpconn's stream numbers are a u32) never sees one past its
+// range: the credit granted never passes limit/4 streams (ids are 4n+k),
+// and retiring a stream grants no more once it has. 'pollTransmitWith(spare, now)' is pollTransmit with the caller's
+// spare buffer (kept when nothing goes out). ngtcp2's window
 // auto-tuning is off: the windows are the Config's.
 //
 // CERTIFICATES. A client checks the server's certificate by its Config's
