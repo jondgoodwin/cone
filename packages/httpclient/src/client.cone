@@ -151,6 +151,7 @@ struct PConn {
   lookup: OpId;              // ...its name's lookup, while it runs
   h3By: Instant;             // ...connected by then, or it falls back (http3Timeout)
   idleStamp: u64;            // when it last became idle (the core's recency), or 0 while it is not
+  lastUsed: u64;             // the order a request was last put on it (the core's 'connUse'): of two equally loaded HTTP/2 connections, the lower was used less recently
   fetches: List[u32];        // the fetches on it now (their records), in the order dispatched: at its Closed the core ends each one
 }
 
@@ -1419,6 +1420,54 @@ pub fn getWhole(text: &str, limit: usize) Response {
   var evs = List[Event]();
   c.pump(&mut lp, &uni evs);
   r
+}
+
+// What a host of its own (the client actor, actorhttp) makes its client from: a Config taken apart as
+// Client.make does it, the pool's limits, each connection's config, and the TLS context (or why there is none)
+pub struct Parts {
+  pub limits: Limits;
+  pub maxOrigins: u32;
+  pub conn: httpconn.Config;
+  pub tlsc: Result[tls.Client, Failure];
+  pub http3: bool;               // the config names an HTTP/3 plug-in: a host without one keeps that client for itself
+}
+
+pub fn partsOf(cfg: &Config) Parts {
+  if cfg.maxPerOrigin == 0u32 || cfg.maxTotal == 0u32 {
+    panic("httpclient: maxPerOrigin and maxTotal are at least 1");
+  }
+  let http2 = cfg.http2;
+  let maxPerOrigin = cfg.maxPerOrigin;
+  let maxTotal = cfg.maxTotal;
+  let idleTimeout = cfg.idleTimeout;
+  let maxLifetime = cfg.maxLifetime;
+  let maxQueued = cfg.maxQueued;
+  let maxRetries = cfg.maxRetries;
+  let maxRedirects = cfg.maxRedirects;
+  let maxOrigins = cfg.maxOrigins;
+  let givenStreams = cfg.maxStreamsPerConnection;
+  let userAgent = cfg.userAgent.clone();
+  var conn = cfg.conn;
+  let maxStreams = if givenStreams == 0u32 {4294967295u32} else {givenStreams};
+  conn.protocol.idleTimeout = idleTimeout;
+  conn.h2IdleTimeout = idleTimeout;
+  var tlsConfig = cfg.tlsConfig.clone();
+  tlsConfig.alpn = alpnFor(&tlsConfig.alpn, http2);
+  var hasH3 = false;
+  match &cfg.http3 {
+    case let &Some(mk) {hasH3 = true;}
+    else {}
+  }
+  let tlsc = match tls.Client.make(tlsConfig) {
+    case var Ok(r) {Ok[tls.Client, Failure](r)}
+    case var Err(e) {
+      Err[tls.Client, Failure](Failure.make(Stage.Tls, e.osError, ErrorKind.Unsupported, (String() <- e).view()))
+    }
+  };
+  let priorKnowledge = conn.h2PriorKnowledge;
+  let lim = Limits(maxPerOrigin, maxTotal, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, priorKnowledge,
+    List[String](), Duration.fromSeconds(1i64), maxStreams);
+  Parts(lim, maxOrigins, conn, tlsc, hasH3)
 }
 
 // ---------------------------------------------------------------------------

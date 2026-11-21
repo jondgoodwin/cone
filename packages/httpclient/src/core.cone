@@ -98,6 +98,8 @@ pub struct ConnRef {
   pub id: httpconn.ConnId;     // the driver's connection (a TCP one)
   pub qid: u64;                // the HTTP/3 plug-in's (a QUIC one)
   pub quic: bool;
+  pub pc: u32;                 // the pool's record of it, and its generation: a host whose connections
+  pub gen: u32;                // are its own values (the client actor's) finds them by these
 }
 
 // What the pool reads of its connections' transports, which only the host knows: the driver's or the plug-in's
@@ -182,10 +184,11 @@ pub struct PoolEvent {
   pub intent: Intent;
   pub score: i64;
   pub now: Instant;            // when it happened, as the host reads its clock (zero: the core reads it)
+  pub gen: u32;                // Response, Done, Failed, Stopped: the generation of connection pc, which the exchange was on (pc given: the event is dropped if that is not the fetch's current attempt)
 
   pub fn make(k: PoolEventKind) PoolEvent {
     PoolEvent(kind: k, pc: noEntry, fetch: FetchId.none(), clean: false, tls: false, timedOut: false,
-      failure: Failure.none(), response: ResponseHead(), intent: Intent.Visible, score: 0i64, now: Instant())
+      failure: Failure.none(), response: ResponseHead(), intent: Intent.Visible, score: 0i64, now: Instant(), gen: 0u32)
   }
 }
 
@@ -206,6 +209,7 @@ pub struct ClientCore {
   priorKnowledge: bool;       // http origins speak HTTP/2 from the first byte
   h3Origins: List[String];    // origins known to speak HTTP/3
   useClock: u64;
+  connUse: u64;               // the order requests were put on connections (PConn.lastUsed)
   qverNext: u64;              // the next version of a queue entry
   qordNext: u64;              // the next arrival number
   dirty: List[u32];           // origins an event touched since the scheduler last visited them
@@ -233,7 +237,7 @@ pub struct ClientCore {
     ClientCore(fetches: Fetches(usize.from(recsPerBlock)), liveFetches: 0u32, queuedN: 0u32, seq: 0u64,
       pconns: PConns(usize.from(recsPerBlock)), total: 0u32, undecided: List[u32](), origins: Origins(8usize),
       byKey: Dict[String, u32](), keyBuf: String(), maxOrigins: maxOrigins, priorKnowledge: priorKnowledge,
-      h3Origins: h3Origins, useClock: 0u64, qverNext: 1u64, qordNext: 1u64, dirty: List[u32](),
+      h3Origins: h3Origins, useClock: 0u64, connUse: 0u64, qverNext: 1u64, qordNext: 1u64, dirty: List[u32](),
       oheap: PriorityQueue[FetchKey, OriginRef](), idleHeap: PriorityQueue[u64, IdleRef](), idleLive: 0usize,
       idleClock: 1u64, lru: PriorityQueue[u64, LruRef](), cfg: cfg, h3on: h3on, st: ClientStats.zero(),
       attempts: List[u32](), wantSchedule: false, out: Deque[Command](), inPass: false, phase: 0u32,
@@ -309,7 +313,7 @@ pub struct ClientCore {
     let opened = self.now();
     let h = pconns.add(PConn(gen: 0u32, state: pConnecting, id: httpconn.ConnId.none(), origin: noEntry,
       active: 0u32, uses: 0u32, opened: opened, proto: protoUnknown, awaiting: false, quic: false, qid: 0u64,
-      lookup: OpId.none(), h3By: Instant(), idleStamp: noStamp, fetches: List[u32]()));
+      lookup: OpId.none(), h3By: Instant(), idleStamp: noStamp, lastUsed: 0u64, fetches: List[u32]()));
     (pconns.borrowMutAt(h.index).unwrap()).gen = h.gen;
     h.index
   }
@@ -854,6 +858,12 @@ pub struct ClientCore {
     }
     let fi = self.fetchIndex(e.fetch);
     if fi == noEntry {return;}
+    // An exchange's end that names its connection (pc, gen) and is not the fetch's current attempt is a late
+    // word of an earlier one (its connection closed, the fetch was sent again): dropped, so the new attempt
+    // is not ended by it, whatever order a host tells its events in
+    if (k == PoolEventKind.Done || k == PoolEventKind.Failed || k == PoolEventKind.Stopped || k == PoolEventKind.Response) &&
+        e.pc != noEntry &&
+        !self.attemptOf(fi, e.pc, e.gen) {return;}
     if k == PoolEventKind.Done {self.requestDone(fi, f);}
     else if k == PoolEventKind.Failed {self.requestFailed(fi, e.failure.clone(), f);}
     else if k == PoolEventKind.Stopped {self.requestStopped(fi, e.timedOut, f);}
@@ -866,6 +876,31 @@ pub struct ClientCore {
       ft.score = e.score;
       self.rekeyWaiting(fi);
     }
+  }
+
+  // The URL fetch id is at now, after the redirects followed so far, as text (empty when it is no live fetch)
+  pub fn urlOf(self: &, id: FetchId) String {
+    let fi = self.fetchIndex(id);
+    if fi == noEntry {return String();}
+    (fetches.borrowAt(fi).unwrap()).url.text()
+  }
+
+  // Connection pc's room or its taking requests has changed (a host whose connections tell it so): the
+  // scheduler is to look at its origin again
+  pub fn touchConn(self: &mut, pc: u32) {
+    match pconns.borrowAt(pc) {
+      case let Some(p) {
+        let oi = p.origin;
+        self.touch(oi);
+      }
+      else {}
+    }
+  }
+
+  // Whether fetch fi is under way on connection pc of generation gen: that attempt, not an earlier one
+  fn attemptOf(self: &, fi: u32, pc: u32, gen: u32) bool {
+    let f = fetches.borrowAt(fi).unwrap();
+    f.state == fActive && f.conn == pc && f.connGen == gen
   }
 
   // The host's answers to commands: the driver's connection of Open, the request of Send, the timer of Watch
@@ -889,7 +924,7 @@ pub struct ClientCore {
 
   fn refOf(self: &, pc: u32) ConnRef {
     let p = pconns.borrowAt(pc).unwrap();
-    ConnRef(p.id, p.qid, p.quic)
+    ConnRef(p.id, p.qid, p.quic, pc, p.gen)
   }
 
   // Whether the connection fetch f was dispatched on is still open: its cell holds that same
@@ -1285,8 +1320,8 @@ pub struct ClientCore {
   // A fetch still on the connection at its Closed (its own Failed did not come first) is ended here by the
   // rule of Failed: sent again if that is safe, else answered Failed (with the connection's failure, or, for a
   // clean close, that the connection closed under it). Each is answered or sent again, once, whatever order
-  // a host tells its connection's end and its fetches' in. A host sends a fetch's Failed or leaves it to this,
-  // never both: a Failed that follows the Closed would end the fetch's next attempt
+  // a host tells its connection's end and its fetches' in: a Done, Failed or Stopped that names its connection
+  // (PoolEvent.pc, gen) and comes after this is of the earlier attempt, and is dropped (attemptOf)
   pub fn closed(self: &mut, pc: u32, clean: bool, failure: Failure, tls: bool) {
     let p = pconns.borrowMutAt(pc).unwrap();
     let og = origins.borrowMutAt(u32.from(p.origin)).unwrap();
@@ -1702,21 +1737,25 @@ pub struct ClientCore {
     // HTTP/2: each shared connection takes the first waiting fetches as a
     // stream each, while the peer allows another and the client's own
     // limit (maxStreamsPerConnection) does; the rest wait here, in the
-    // order, for a stream to end
+    // order, for a stream to end. Of the connections with room, the one with the fewest streams on it
+    // takes the fetch; a tie goes to the one used least recently
     var j = 0usize;
     var pick = noEntry;
-    while pick == noEntry && j < (origins.borrowAt(o).unwrap()).shared.len() && (origins.borrowAt(o).unwrap()).wlive > 0u32 {
+    while j < (origins.borrowAt(o).unwrap()).shared.len() && (origins.borrowAt(o).unwrap()).wlive > 0u32 {
       let pc = *(origins.borrowAt(o).unwrap()).shared[j];
       let p = pconns.borrowAt(pc).unwrap();
       if !f.takes(self.refOf(pc)) || self.pastLifetime(pc) {
         self.keepShared(pc, f);      // out of the list: the next visit finds the others
         return true;
       }
-      if !f.isIdle(self.refOf(pc)) || p.active >= cfg.maxStreams {
-        j = j + 1usize;
-        continue;
+      j = j + 1usize;
+      if !f.isIdle(self.refOf(pc)) || p.active >= cfg.maxStreams {continue;}
+      if pick == noEntry {
+        pick = pc;
+      } else {
+        let q = pconns.borrowAt(pick).unwrap();
+        if p.active < q.active || (p.active == q.active && p.lastUsed < q.lastUsed) {pick = pc;}
       }
-      pick = pc;
     }
     if pick != noEntry {
       let fi = self.firstWaiting(o);
@@ -1787,17 +1826,20 @@ pub struct ClientCore {
   }
 
   // Whether another connection may be opened to origin oi for what waits
-  // there, HTTP/2 aside: not while a shared connection to it takes requests
-  // (its streams, when all in use, free up), nor, for an origin known to
+  // there: not while a shared (HTTP/2) connection to it takes requests and is
+  // below maxStreams (it takes the fetch as a stream), nor, for an origin known to
   // speak HTTP/2, while one is being made or its protocol is still to be
   // chosen (it will most likely be shared)
   fn mayOpen[F: ConnFacts](self: &, oi: u32, f: &F) bool {
     let og = origins.borrowAt(u32.from(oi)).unwrap();
     // HTTP/3 being tried, or open, or to be tried: no TCP connection
     if og.h3c != noEntry || self.wantsH3(oi) {return false;}
+    // (an HTTP/2 connection that takes requests and has not reached maxStreams has room, or will when the
+    // peer's own limit lets a stream go: a connection is opened only when every one is at maxStreams)
     var j = 0usize;
     while j < og.shared.len() {
-      if f.takes(self.refOf(*og.shared[j])) {return false;}
+      let pc = *og.shared[j];
+      if f.takes(self.refOf(pc)) && (pconns.borrowAt(pc).unwrap()).active < cfg.maxStreams {return false;}
       j = j + 1usize;
     }
     !(og.h2 && (og.connecting > 0u32 || og.undecided > 0u32))
@@ -1819,6 +1861,8 @@ pub struct ClientCore {
     else {st.streams = st.streams + 1u64;}
     p.active = p.active + 1u32;
     p.uses = p.uses + 1u32;
+    connUse = connUse + 1u64;
+    p.lastUsed = connUse;
     p.fetches.push(fi);
     // The head is built once (and again after a redirect changes it). An attempt takes a copy while
     // another may follow it (a retry), and the head itself when none can

@@ -1054,8 +1054,10 @@ fn idleOrder(lp: &mut Loop) {
   stopAll(&mut svs, lp);
 }
 
-// The client's own limit on streams per HTTP/2 connection, under the peer's higher one
-fn streamLimit(lp: &mut Loop) {
+// The client's own limit on streams per HTTP/2 connection, under the peer's higher one. With room for more
+// connections (maxPerOrigin 16) the twelve go on three connections of four streams; with maxPerOrigin 1 they
+// queue on the one, as before several HTTP/2 connections per origin
+fn streamLimit(lp: &mut Loop, perOrigin: u32, wantPeak: u64, wantQueued: u64, wantConns: u64) {
   var scfg = httpconn.Config.make();
   scfg.h2PriorKnowledge = true;
   var svs = List[Srv]();
@@ -1064,6 +1066,7 @@ fn streamLimit(lp: &mut Loop) {
   var cfg = Config.make();
   cfg.conn.h2PriorKnowledge = true;
   cfg.maxStreamsPerConnection = 4u32;
+  cfg.maxPerOrigin = perOrigin;
   var cl = Client.make(cfg);
   var ids = List[FetchId]();
   var k = 0usize;
@@ -1080,9 +1083,9 @@ fn streamLimit(lp: &mut Loop) {
     let held = (&svs[0usize]).reqs.len();
     if held > peak {peak = held;}
   }
-  expectUInt(u64.from(peak), 4u64, "twelve at once to a server that allows more: four streams at most, the client's limit");
-  expectUInt(u64.from(cl.queued()), 8u64, "...the other eight wait");
-  expectUInt((&svs[0usize]).accepted, 1u64, "...on one connection");
+  expectUInt(u64.from(peak), wantPeak, "twelve at once to a server that allows more: the client's limit of four streams a connection holds");
+  expectUInt(u64.from(cl.queued()), wantQueued, "...the rest wait");
+  expectUInt((&svs[0usize]).accepted, wantConns, "...on this many connections");
   var fs = finals();
   cl.abortAll(lp);
   collectN(&mut cl, &mut svs, lp, &mut fs, 12u64);
@@ -1155,7 +1158,8 @@ fn main() i32 {
   originCaps(&mut lp);
   idleOrder(&mut lp);
   capSparesBusy(&mut lp);
-  streamLimit(&mut lp);
+  streamLimit(&mut lp, 16u32, 12u64, 0u64, 3u64);
+  streamLimit(&mut lp, 1u32, 4u64, 8u64, 1u64);
   streamNoLimit(&mut lp);
 
   stopAll(&mut svs, &mut lp);

@@ -399,6 +399,19 @@
 // the Response's 'version' says so.
 //
 //
+// A CLIENT ON ACTORS. A whole-body fetch ('get', 'getIn', 'send', 'sendIn') whose request has no cancel group
+// goes to a ClientActor that owns the pool (an httpclient.ClientCore: its origins, waiting fetches, limits, retries
+// and redirects) and carries out the commands the core gives; each connection is a ClientConnActor that owns its
+// socket, its httpconn.ClientConn and its one Timer, with TLS (the certificate check on the blocking pool by
+// 'aio.onPool') and every read and write on the shared worker port, so nothing of HTTP or TLS runs on the I/O thread
+// (clientactor.cone). The calls and their answers are the same as before. Several HTTP/2 connections per origin are
+// opened as the core decides (a new one when every open one is at maxStreamsPerConnection, up to maxPerOrigin), a fetch
+// goes to the one with the fewest streams, and a name's addresses are taken in turn. 'stream', 'streamTo', 'events',
+// 'upload', a fetch with a cancel group and an HTTP/3 client keep the service thread's client, so a handle holds two
+// pools and the per-origin limits are not shared between them. The last handle's going cancels every fetch, aborts every
+// connection and ends the actors ('liveClientActors' and 'liveClientConnActors' say how many exist).
+//
+//
 // A ROUTED SERVER. 'cfg.routes(table)' makes the server run on connection actors: the server is an actor
 // that owns the listening socket and the live count, each accepted connection is an actor of its own that
 // owns its socket, its httpconn.ServerConn (the protocol, sans-I/O) and its one Timer, and the sockets'
@@ -477,9 +490,9 @@
 mod actorhttp;
 
 import pools use GenPool, Handle;
-import collections use List, Deque, String, Dict, AnyError;
+import collections use List, Deque, String, Dict, AnyError, PriorityQueue;
 import iobuf use IoBuf, IoHome, Chain;
-import sync use Arc;
+import sync use Arc, Mutex;
 import time use Instant, Duration;
 import iocore use Loop, Completion, SocketAddr, CancelGroup, IoError, forever;
 import ioerror use IoErrorKind;
@@ -494,11 +507,17 @@ import stages use ChunkSink, ChunkSource, Ending, chunkHome, ReaderSink, readSin
 import streams;
 let liveConns: Atomic[u64];      // routedserver.cone: ConnActors alive
 let liveServers: Atomic[u64];    // ...and ServerActors
+let liveClients: Atomic[u64];    // clientactor.cone: ClientActors alive
+let liveClientConns: Atomic[u64];    // ...and ClientConnActors
+let clientReg: Arc[Mutex, ClientRegistry];    // the client actors not yet closed (clientactor.cone), for the program's end
 
 fn @initpure init() {
   nextId = Atomic[u64].of(0u64);
   liveConns = Atomic[u64].of(0u64);
   liveServers = Atomic[u64].of(0u64);
+  liveClients = Atomic[u64].of(0u64);
+  liveClientConns = Atomic[u64].of(0u64);
+  clientReg = Arc[Mutex, ClientRegistry](ClientRegistry(List[ClientActor](), List[u64]()));
   svcHost = aio.host[Service](&makeService);
 }
 
@@ -571,6 +590,10 @@ fn makeService() Service {Service.make()}
 // the packages it uses (httpconn, httpclient, tls) are finalized
 fn final() {
   actors.waitQuiet();
+  // The client actors let go of the replies they hold (the fetches still waiting are abandoned, as the service's are
+  // below), so a behaviour paused on one is dropped before the service ends, as it was when the service held it
+  abandonClients();
+  actors.waitQuiet();
   svcHost.end();
 }
 
@@ -603,6 +626,7 @@ pub const defaultMaxBody = 16777216usize;
 // last handle's going ends the client
 pub struct HttpClient is Move {
   id: u64;
+  ca: Option[ClientActor];   // the client actor that runs the fetches that need no service (clientactor.cone); none for an HTTP/3 config
 
   // A client with httpclient's defaults, whose bodies are read up to defaultMaxBody
   pub fn standard() HttpClient {HttpClient.make(httpclient.Config.make(), defaultMaxBody)}
@@ -611,12 +635,15 @@ pub struct HttpClient is Move {
   // read up to maxBody bytes (past it the exchange fails at Stage.Limit)
   pub fn make(cfg: httpclient.Config, maxBody: usize) HttpClient {
     let id = newId();
+    var ca: Option[ClientActor] = None;
+    let parts = httpclient.partsOf(&cfg);
+    if !parts.http3 {ca = Some[ClientActor](ClientActor(parts, maxBody));}
     post[CreateClientJob](CreateClientJob(id, cfg, maxBody));
-    HttpClient(id)
+    HttpClient(id, ca)
   }
 
   // An HttpClient naming nothing, which ends nothing
-  pub fn none() HttpClient {HttpClient(0u64)}
+  pub fn none() HttpClient {HttpClient(0u64, None[ClientActor])}
 
   pub fn isNone(self: &) bool {id == 0u64}
 
@@ -625,7 +652,11 @@ pub struct HttpClient is Move {
     if id != 0u64 {
       post[RefJob](RefJob(id, true));
     }
-    HttpClient(id)
+    match &ca {
+      case let &Some(a) {a.addRef();}
+      else {}
+    }
+    HttpClient(id, ca)
   }
 
   // A GET of a URL written as text, answered with the whole response
@@ -657,6 +688,16 @@ pub struct HttpClient is Move {
       else {}
     }
     if lim.deadline < r.deadline {r.deadline = lim.deadline;}
+    // A whole-body fetch with no cancel group goes to the client actor; one with a group stays on the service
+    // (nothing yet wakes an actor from a group's cancel)
+    match &ca {
+      case let &Some(a) {
+        if r.group is None {
+          return awaitable[ClientFetchJob, Result[httpclient.Response, FetchError]](ClientFetchJob(*a, r));
+        }
+      }
+      else {}
+    }
     awaitable[FetchJob, Result[httpclient.Response, FetchError]](FetchJob(id, r))
   }
 
@@ -740,6 +781,10 @@ pub struct HttpClient is Move {
   fn final(self: &uni) {
     if id != 0u64 {
       post[RefJob](RefJob(id, false));
+    }
+    match &ca {
+      case let &Some(a) {a.dropRef();}
+      else {}
     }
   }
 }
