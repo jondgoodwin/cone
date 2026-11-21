@@ -3781,6 +3781,11 @@ def run_program(exe: Path, cwd: Path, timeout: float, label: str = "",
                     and wants_crash_record(expected)):
                 done.crash_record = capture_crash_linux(exe, cwd, proc.pid, proc.returncode,
                                                         label or exe.stem, repo or cwd)
+            elif proc.returncode in CRASH_SIGNALS and proc.returncode == expected:
+                # A crash on purpose (a panic): where apport keeps reports of
+                # unpackaged programs, this one is nobody's to read
+                with contextlib.suppress(OSError):
+                    (Path("/var/crash") / (str(exe).replace("/", "_") + f".{os.getuid()}.crash")).unlink()
             return done
         except subprocess.TimeoutExpired:
             capture_hang(proc.pid, label or exe.stem, repo or cwd)
