@@ -75,6 +75,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -3287,6 +3288,9 @@ class Debuggee:
         self.event = self.k.DebugEvent()
         self.seen_breakpoint = False
         self.exited = False
+        # Called as on_crash(code, thread id, event words) at a second-chance
+        # exception, with the process still whole, before it is ended
+        self.on_crash = None
 
     def pump(self, wait: float) -> bool:
         """Handle the debug events that come within wait seconds; whether
@@ -3303,8 +3307,11 @@ class Debuggee:
                     self.seen_breakpoint = True          # the loader's, for a debugger
                 elif first_chance:
                     status = self.DBG_EXCEPTION_NOT_HANDLED
-                elif not k.TerminateProcess(int(self.process._handle), code):
-                    status = self.DBG_EXCEPTION_NOT_HANDLED
+                else:
+                    if self.on_crash is not None:
+                        self.on_crash(code, ev.tid, list(ev.u))
+                    if not k.TerminateProcess(int(self.process._handle), code):
+                        status = self.DBG_EXCEPTION_NOT_HANDLED
             elif ev.code in (self.CREATE_PROCESS_DEBUG_EVENT, self.LOAD_DLL_DEBUG_EVENT):
                 if ev.u[0]:
                     k.CloseHandle(ev.u[0])               # the image's file, the debugger's to close
@@ -3442,29 +3449,357 @@ def hang_linux(pid: int) -> list[str]:
     return lines
 
 
+class CrashStacks:
+    """Windows only: what a test that has just hit a second-chance exception
+    was doing, written as text: the exception's code, the faulting address as
+    module+offset and function, and the stack of every thread with symbols, by
+    dbghelp from the program's .pdb. The process is held stopped at the event
+    while this runs, so every thread's context is as the crash left it."""
+
+    _ready = False
+
+    @classmethod
+    def api(cls):
+        if not cls._ready:
+            import ctypes
+            from ctypes import wintypes as w
+
+            class Entry(ctypes.Structure):     # THREADENTRY32
+                _fields_ = [("size", w.DWORD), ("usage", w.DWORD), ("tid", w.DWORD), ("pid", w.DWORD),
+                            ("pri", w.LONG), ("delta", w.LONG), ("flags", w.DWORD)]
+
+            class Addr(ctypes.Structure):      # ADDRESS64
+                _fields_ = [("offset", ctypes.c_uint64), ("segment", w.WORD), ("mode", ctypes.c_int)]
+
+            class KdHelp(ctypes.Structure):    # KDHELP64
+                _fields_ = [("a", ctypes.c_uint64), ("b", w.DWORD * 4), ("c", ctypes.c_uint64 * 6),
+                            ("d", ctypes.c_uint64 * 5)]
+
+            class Frame(ctypes.Structure):     # STACKFRAME64
+                _fields_ = [("pc", Addr), ("ret", Addr), ("frame", Addr), ("stack", Addr), ("store", Addr),
+                            ("table", ctypes.c_void_p), ("params", ctypes.c_uint64 * 4), ("far", w.BOOL),
+                            ("virtual", w.BOOL), ("reserved", ctypes.c_uint64 * 3), ("kd", KdHelp)]
+
+            class Symbol(ctypes.Structure):    # SYMBOL_INFO with a 512-byte name
+                _fields_ = [("size", w.ULONG), ("type", w.ULONG), ("reserved", ctypes.c_uint64 * 2),
+                            ("index", w.ULONG), ("length", w.ULONG), ("base", ctypes.c_uint64),
+                            ("flags", w.ULONG), ("value", ctypes.c_uint64), ("address", ctypes.c_uint64),
+                            ("register", w.ULONG), ("scope", w.ULONG), ("tag", w.ULONG),
+                            ("name_len", w.ULONG), ("max_name", w.ULONG), ("name", ctypes.c_char * 512)]
+
+            class Line(ctypes.Structure):      # IMAGEHLP_LINE64
+                _fields_ = [("size", w.DWORD), ("key", ctypes.c_void_p), ("line", w.DWORD),
+                            ("file", ctypes.c_char_p), ("address", ctypes.c_uint64)]
+
+            class Module(ctypes.Structure):    # IMAGEHLP_MODULE64 (leading fields)
+                _fields_ = [("size", w.DWORD), ("base", ctypes.c_uint64), ("image_size", w.DWORD),
+                            ("stamp", w.DWORD), ("checksum", w.DWORD), ("syms", w.DWORD),
+                            ("sym_type", ctypes.c_int), ("name", ctypes.c_char * 32),
+                            ("image", ctypes.c_char * 256), ("loaded", ctypes.c_char * 256)]
+
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            d = ctypes.WinDLL("dbghelp", use_last_error=True)
+            k.OpenThread.restype = w.HANDLE
+            k.OpenThread.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+            k.GetThreadContext.argtypes = [w.HANDLE, ctypes.c_void_p]
+            k.SuspendThread.argtypes = [w.HANDLE]
+            k.CreateToolhelp32Snapshot.restype = w.HANDLE
+            k.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
+            k.Thread32First.argtypes = k.Thread32Next.argtypes = [w.HANDLE, ctypes.c_void_p]
+            k.CloseHandle.argtypes = [w.HANDLE]
+            k.GetProcessId.argtypes = [w.HANDLE]
+            d.SymInitialize.argtypes = [w.HANDLE, ctypes.c_char_p, w.BOOL]
+            d.SymCleanup.argtypes = [w.HANDLE]
+            d.StackWalk64.argtypes = [w.DWORD, w.HANDLE, w.HANDLE, ctypes.POINTER(Frame), ctypes.c_void_p,
+                                      ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            d.SymFunctionTableAccess64.restype = ctypes.c_void_p
+            d.SymFunctionTableAccess64.argtypes = [w.HANDLE, ctypes.c_uint64]
+            d.SymGetModuleBase64.restype = ctypes.c_uint64
+            d.SymGetModuleBase64.argtypes = [w.HANDLE, ctypes.c_uint64]
+            d.SymFromAddr.argtypes = [w.HANDLE, ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint64),
+                                      ctypes.POINTER(Symbol)]
+            d.SymGetLineFromAddr64.argtypes = [w.HANDLE, ctypes.c_uint64, ctypes.POINTER(w.DWORD),
+                                               ctypes.POINTER(Line)]
+            d.SymGetModuleInfo64.argtypes = [w.HANDLE, ctypes.c_uint64, ctypes.POINTER(Module)]
+            cls.k, cls.d = k, d
+            cls.Entry, cls.Frame, cls.Symbol, cls.Line, cls.Module = Entry, Frame, Symbol, Line, Module
+            cls._ready = True
+        return cls
+
+    @classmethod
+    def describe(cls, process_handle: int, pc: int) -> str:
+        """'module+offset function+offset file:line' of an address, as far as
+        the symbols reach."""
+        import ctypes
+        from ctypes import wintypes as w
+        d, h = cls.d, ctypes.c_void_p(process_handle)
+        mod = cls.Module()
+        mod.size = ctypes.sizeof(mod)
+        where = ""
+        if d.SymGetModuleInfo64(h, pc, ctypes.byref(mod)):
+            where = f"{mod.name.decode(errors='replace')}+{pc - mod.base:#x} "
+        sym = cls.Symbol()
+        sym.size, sym.max_name = 88, 512
+        shift = ctypes.c_uint64()
+        func = "(no symbol)"
+        if d.SymFromAddr(h, pc, ctypes.byref(shift), ctypes.byref(sym)):
+            func = sym.name.decode(errors="replace") + f"+{shift.value:#x}"
+        line = cls.Line()
+        line.size = ctypes.sizeof(line)
+        into = w.DWORD()
+        at = ""
+        if d.SymGetLineFromAddr64(h, pc, ctypes.byref(into), ctypes.byref(line)):
+            at = f"  {line.file.decode(errors='replace')}:{line.line}"
+        return f"{where}{func}{at}"
+
+    @classmethod
+    def write(cls, process_handle: int, fault_tid: int, words, label: str) -> list[str]:
+        """The record's text lines. words are the exception event's union:
+        code and flags, the record's address, the faulting address, the count
+        of parameters and the first two parameters."""
+        import ctypes
+        cls.api()
+        k, d = cls.k, cls.d
+        pid = k.GetProcessId(process_handle)
+        code, address = words[0] & 0xFFFFFFFF, words[2]
+        lines = [f"exception code {code:#x}, thread {fault_tid}, parameters {words[3]}"]
+        if code == 0xC0000005 and words[3] >= 2:
+            kind = {0: "read", 1: "write", 8: "execute"}.get(words[4], f"kind {words[4]}")
+            lines.append(f"access violation: {kind} of address {words[5]:#x}")
+        h = ctypes.c_void_p(process_handle)
+        d.SymSetOptions(0x2 | 0x10 | 0x4)     # UNDNAME, DEFERRED_LOADS, LOAD_LINES
+        started = d.SymInitialize(h, None, True)
+        lines.append(f"symbols loaded: {bool(started)}")
+        lines.append(f"fault address {address:#x}: {cls.describe(process_handle, address)}")
+        snap = k.CreateToolhelp32Snapshot(0x4, 0)
+        tids: list[int] = []
+        entry = cls.Entry()
+        entry.size = ctypes.sizeof(entry)
+        more = k.Thread32First(snap, ctypes.byref(entry))
+        while more:
+            if entry.pid == pid:
+                tids.append(entry.tid)
+            more = k.Thread32Next(snap, ctypes.byref(entry))
+        k.CloseHandle(snap)
+        tids.sort(key=lambda t: t != fault_tid)
+        for tid in tids:
+            th = k.OpenThread(0x1F03FF, False, tid)
+            if not th:
+                lines.append(f"thread {tid}: cannot be opened")
+                continue
+            try:
+                lines += cls.walk(process_handle, th, tid, tid == fault_tid)
+            finally:
+                k.CloseHandle(th)
+        d.SymCleanup(h)
+        return lines
+
+    @classmethod
+    def walk(cls, process_handle: int, th, tid: int, faulting: bool) -> list[str]:
+        import ctypes
+        k, d = cls.k, cls.d
+        h = ctypes.c_void_p(process_handle)
+        buf = ctypes.create_string_buffer(1232 + 16)
+        context = (ctypes.addressof(buf) + 15) & ~15
+        ctypes.c_uint32.from_address(context + 48).value = 0x10001F      # CONTEXT_ALL, amd64
+        if not faulting:
+            k.SuspendThread(th)
+        if not k.GetThreadContext(th, ctypes.c_void_p(context)):
+            return [f"thread {tid}: GetThreadContext failed ({ctypes.get_last_error()})"]
+        rsp, rbp, rip = (ctypes.c_uint64.from_address(context + off).value for off in (0x98, 0xA0, 0xF8))
+        out = [f"--- thread {tid}{' (FAULTING)' if faulting else ''}: rip {rip:#x} rsp {rsp:#x}"]
+        frame = cls.Frame()
+        frame.pc.offset, frame.pc.mode = rip, 3
+        frame.frame.offset, frame.frame.mode = rbp, 3
+        frame.stack.offset, frame.stack.mode = rsp, 3
+        for i in range(64):
+            if not d.StackWalk64(0x8664, h, th, ctypes.byref(frame), ctypes.c_void_p(context), None,
+                                 d.SymFunctionTableAccess64, d.SymGetModuleBase64, None):
+                break
+            pc = frame.pc.offset
+            if pc == 0:
+                break
+            out.append(f"  #{i} {pc:#018x} {cls.describe(process_handle, pc)}")
+        return out
+
+
+def capture_crash(process, tid: int, words, label: str, repo: Path) -> str | None:
+    """With CONE_HANG_DIR set, save what a test that has just crashed was
+    doing, beside the hang dumps: <folder>/crash-<label>-<head>-<time>.txt (the
+    exception, the fault's module, offset and function, every thread's stack
+    with symbols) and a .dmp minidump. Windows only, at the debugger's
+    second-chance event, where the process is still whole. Whatever goes wrong
+    is one line on stderr: it never changes the verdict. Returns the .txt's
+    path, or None when nothing was written."""
+    folder = os.environ.get("CONE_HANG_DIR")
+    if not folder:
+        return None
+    try:
+        dest = Path(folder)
+        dest.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", label)
+        base = f"crash-{safe}-{hang_head(repo)}-{time.strftime('%Y%m%d-%H%M%S')}"
+        notes = [f"process {process.pid}", f"label {label}", f"repo {repo}"]
+        try:
+            notes += CrashStacks.write(int(process._handle), tid, words, label)
+        except Exception as exc:
+            notes.append(f"stacks failed: {exc!r}")
+        notes += hang_windows(process.pid, dest / (base + ".dmp"))
+        text = dest / (base + ".txt")
+        text.write_text("\n".join(notes) + "\n", encoding="utf-8")
+        print(f"congo: crash captured to {dest / base}.*", file=sys.stderr, flush=True)
+        return str(text)
+    except Exception as exc:
+        print(f"congo: crash capture failed: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+CRASH_SIGNALS = (-4, -6, -7, -8, -11)       # SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV
+
+
+def wants_crash_record(expected: int) -> bool:
+    """Whether a crash of this test is to be recorded: CONE_HANG_DIR is set,
+    and the test does not end in a crash on purpose (a panic test's .exit says
+    so; a panic is a fail-fast, which is a crash to the debugger)."""
+    if not os.environ.get("CONE_HANG_DIR"):
+        return False
+    return not (expected in CRASH_SIGNALS or (expected & 0xFFFFFFFF) >> 28 == 0xC)
+
+
+def crash_core_command(exe: Path, expected: int) -> list[str]:
+    """Linux: the command that runs a test so that a crash leaves a core
+    where this user can read it: the shell lifts the core size limit and
+    execs the test. Plain [exe] when no record is wanted."""
+    if not wants_crash_record(expected):
+        return [str(exe)]
+    return ["/bin/sh", "-c", 'ulimit -c unlimited 2>/dev/null; exec "$0"', str(exe)]
+
+
+def capture_crash_linux(exe: Path, cwd: Path, pid: int, code: int, label: str, repo: Path) -> str | None:
+    """A test killed by a signal (SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE):
+    the core of it is read, as the box allows without root, from where the
+    kernel put it, and every thread's stack written beside the hang dumps as
+    <folder>/crash-<label>-<head>-<time>.txt.
+      - a file 'core' or 'core.<pid>' in the test's folder, or
+      - Ubuntu's apport (core_pattern is a pipe to it): with 'unpackaged=true'
+        under [main] in ~/.config/apport/settings it writes
+        /var/crash/<path of exe with / as _>.<uid>.crash, which is taken (moved
+        beside the record, as .crash) and unpacked with apport-unpack.
+    The stacks are gdb's, else lldb's. With no core or no debugger the record
+    says which is missing: what it holds then is the signal and the exe."""
+    folder = os.environ.get("CONE_HANG_DIR")
+    if not folder:
+        return None
+    try:
+        dest = Path(folder)
+        dest.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", label)
+        base = f"crash-{safe}-{hang_head(repo)}-{time.strftime('%Y%m%d-%H%M%S')}"
+        notes = [f"process {pid}", f"label {label}", f"repo {repo}", f"executable {exe}",
+                 f"killed by signal {-code}"]
+        core: Path | None = None
+        work = Path(tempfile.mkdtemp(prefix="crashrec-"))
+        try:
+            for name in (f"core.{pid}", "core"):
+                if (cwd / name).is_file():
+                    core = cwd / name
+                    break
+            report = Path("/var/crash") / (str(exe).replace("/", "_") + f".{os.getuid()}.crash")
+            if core is None:
+                end = time.monotonic() + 10
+                while not report.is_file() and time.monotonic() < end:
+                    time.sleep(0.25)
+                if report.is_file():
+                    time.sleep(0.5)
+                    kept = dest / (base + ".crash")
+                    shutil.move(str(report), str(kept))
+                    notes.append(f"apport report kept as {kept}")
+                    if shutil.which("apport-unpack"):
+                        done = subprocess.run(["apport-unpack", str(kept), str(work / "u")],
+                                              capture_output=True, text=True, timeout=120)
+                        if done.returncode == 0 and (work / "u" / "CoreDump").is_file():
+                            core = work / "u" / "CoreDump"
+                        else:
+                            notes.append(f"apport-unpack failed: {done.stderr.strip()}")
+                    else:
+                        notes.append("apport-unpack is not installed: the .crash file holds the core")
+                else:
+                    notes.append("no core: none in the test's folder, and no apport report in /var/crash"
+                                 " (apport needs 'unpackaged=true' under [main] in ~/.config/apport/settings)")
+            if core is not None:
+                notes += stacks_of_core(exe, core)
+                if core.parent == cwd:
+                    shutil.move(str(core), str(dest / (base + ".core")))
+                    notes.append(f"core kept as {dest / (base + '.core')}")
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        text = dest / (base + ".txt")
+        text.write_text("\n".join(notes) + "\n", encoding="utf-8")
+        print(f"congo: crash captured to {dest / base}.*", file=sys.stderr, flush=True)
+        return str(text)
+    except Exception as exc:
+        print(f"congo: crash capture failed: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+def stacks_of_core(exe: Path, core: Path) -> list[str]:
+    """Every thread's stack from a core, by gdb or else lldb in batch mode."""
+    if shutil.which("gdb"):
+        done = subprocess.run(["gdb", "-batch", "-ex", "info signal", "-ex", "thread apply all bt",
+                               str(exe), str(core)], capture_output=True, text=True, timeout=180)
+        return ["gdb:", done.stdout, done.stderr]
+    lldb = shutil.which("lldb") or shutil.which("lldb-23") or next(
+        (str(p) for p in sorted(Path("/usr/bin").glob("lldb-[0-9]*"))), None)
+    if lldb:
+        done = subprocess.run([lldb, "-b", "-c", str(core), str(exe), "-o", "thread backtrace all"],
+                              capture_output=True, text=True, timeout=180)
+        return ["lldb:", done.stdout, done.stderr]
+    return ["neither gdb nor lldb is installed: the core was not read"]
+
+
 def run_program(exe: Path, cwd: Path, timeout: float, label: str = "",
-                repo: Path | None = None) -> subprocess.CompletedProcess:
+                repo: Path | None = None, expected: int = 0) -> subprocess.CompletedProcess:
     """Run a test program with no input, what it writes captured, for at most
     timeout seconds: a returncode of None is one stopped for its time, with
     what it wrote until then. On Windows it runs as Congo's debuggee
-    (Debuggee), so that a crash, a panic's above all, ends at once."""
+    (Debuggee), so that a crash, a panic's above all, ends at once.
+
+    With CONE_HANG_DIR set, a crash (Windows: a second-chance exception;
+    Linux: SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE) that is not the status
+    the test expects leaves a record beside the hang dumps (capture_crash,
+    capture_crash_linux); the result's crash_record is its .txt, else None.
+    Neither changes the status or the output."""
     if not IS_WINDOWS:
-        proc = subprocess.Popen([str(exe)], cwd=cwd, stdin=subprocess.DEVNULL,
+        proc = subprocess.Popen(crash_core_command(exe, expected), cwd=cwd, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=child_env())
         try:
             out, err = proc.communicate(timeout=timeout)
-            return subprocess.CompletedProcess([str(exe)], proc.returncode, out, err)
+            done = subprocess.CompletedProcess([str(exe)], proc.returncode, out, err)
+            done.crash_record = None
+            if (proc.returncode in CRASH_SIGNALS and proc.returncode != expected
+                    and wants_crash_record(expected)):
+                done.crash_record = capture_crash_linux(exe, cwd, proc.pid, proc.returncode,
+                                                        label or exe.stem, repo or cwd)
+            return done
         except subprocess.TimeoutExpired:
             capture_hang(proc.pid, label or exe.stem, repo or cwd)
             proc.kill()
             out, err = proc.communicate()
-            return subprocess.CompletedProcess([str(exe)], None, out or b"", err or b"")
+            done = subprocess.CompletedProcess([str(exe)], None, out or b"", err or b"")
+            done.crash_record = None
+            return done
     process = subprocess.Popen([str(exe)], cwd=cwd, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=dict(child_env(), **Debuggee.ENVIRONMENT),
                                creationflags=Debuggee.DEBUG_ONLY_THIS_PROCESS)
     debugger = Debuggee(process)
+    record: list[str | None] = []
+    if wants_crash_record(expected):
+        def on_crash(code: int, tid: int, words: list[int]) -> None:
+            if code != (expected & 0xFFFFFFFF):
+                record.append(capture_crash(process, tid, words, label or exe.stem, repo or cwd))
+        debugger.on_crash = on_crash
     # Its outputs are read on a thread of their own, both at once, while this
     # one, the debugger, waits for its events
     captured: list[bytes] = []
@@ -3485,7 +3820,9 @@ def run_program(exe: Path, cwd: Path, timeout: float, label: str = "",
     reader.join()
     code = None if timed_out else process.wait()
     stdout, stderr = captured if len(captured) == 2 else (b"", b"")
-    return subprocess.CompletedProcess([str(exe)], code, stdout, stderr)
+    done = subprocess.CompletedProcess([str(exe)], code, stdout, stderr)
+    done.crash_record = record[0] if record else None
+    return done
 
 
 def run_test(session: Session, file: Path, bless: bool, pkg: Package | None = None) -> tuple[bool | None, str]:
@@ -3497,7 +3834,7 @@ def run_test(session: Session, file: Path, bless: bool, pkg: Package | None = No
     limit = test_timeout(file)
     ran = run_program(exe, into, limit,
                       f"{pkg.name}-{file.stem}" if pkg else file.stem,
-                      pkg.root if pkg else None)
+                      pkg.root if pkg else None, expected_exit(file))
     if ran.returncode is None:
         # What it wrote to stderr says how far it got: a panic's line, say,
         # before an end that never came
@@ -3567,8 +3904,15 @@ def run_test(session: Session, file: Path, bless: bool, pkg: Package | None = No
             diff = difflib.unified_diff(expected_err, actual_err, fromfile=shown(err_path),
                                         tofile="actual", lineterm="", n=2)
             problems.append("stderr differs:\n" + indent("\n".join(diff), "  "))
+    if ran.crash_record:
+        problems.append(f"crash record: {ran.crash_record}")
     if problems and stderr.strip() and not err_checked:
-        problems.append("stderr:\n" + indent(show_stderr(shown_stderr, exe), "  "))
+        # A crashed test's stderr says how far it got, as a stopped test's does:
+        # its last 40 lines
+        shown_err = show_stderr(shown_stderr, exe)
+        if ran.crash_record:
+            shown_err = last_lines(shown_err)
+        problems.append("stderr:\n" + indent(shown_err, "  "))
     if bless:
         # Said, not silent: --bless writes only what is missing
         kept = (f"kept the existing expected file {shown(expected_path)};"
