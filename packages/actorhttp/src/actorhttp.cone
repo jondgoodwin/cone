@@ -637,9 +637,21 @@ pub struct HttpClient is Move {
     let id = newId();
     var ca: Option[ClientActor] = None;
     let parts = httpclient.partsOf(&cfg);
-    if !parts.http3 {ca = Some[ClientActor](ClientActor(parts, maxBody));}
+    if !parts.http3 {ca = Some[ClientActor](ClientActor(parts, maxBody, TestTargets.none()));}
     post[CreateClientJob](CreateClientJob(id, cfg, maxBody));
     HttpClient(id, ca)
+  }
+
+  // A client for tests (testseam.cone): the same, but the origins 'targets' names go where it says (an address, a pipe, a
+  // handler). The fetches the client actor runs (get, getIn, send, sendIn with no cancel group) use them; the others keep the
+  // real network. A config with HTTP/3 is refused
+  pub fn makeTest(cfg: httpclient.Config, maxBody: usize, targets: TestTargets) HttpClient {
+    let id = newId();
+    let parts = httpclient.partsOf(&cfg);
+    if parts.http3 {panic("actorhttp: a test client has no HTTP/3");}
+    let ca = ClientActor(parts, maxBody, targets);
+    post[CreateClientJob](CreateClientJob(id, cfg, maxBody));
+    HttpClient(id, Some[ClientActor](ca))
   }
 
   // An HttpClient naming nothing, which ends nothing
