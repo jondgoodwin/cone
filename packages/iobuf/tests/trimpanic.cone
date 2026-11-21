@@ -1,0 +1,52 @@
+// bufpool.trimEverything() refuses, loudly, while another thread still holds a
+// cache: flushing it would hand a block out twice. Here thread B takes and drops
+// a block (so it has a cache) and waits; main's trimEverything() panics, with a
+// message naming the cause, instead of corrupting the pool. (The narrow call,
+// iobuf.trimAll(), is safe whatever the other threads do: trimrace.)
+
+mod trimpanic;
+
+import testing use *;
+import thread;
+import time use Duration;
+import iobuf use *;
+import bufpool;
+
+let ready: Atomic[u64];
+let finish: Atomic[u64];
+
+fn @initpure init() {
+  ready = Atomic[u64].of(0u64);
+  finish = Atomic[u64].of(0u64);
+}
+
+fn holder(n: u64) u64 {
+  {
+    var b = IoBuf(100usize);
+    b.append("x");
+  }
+  ready.store(1u64);
+  var i = 0u32;
+  while finish.load() == 0u64 && i < 20000u32 {
+    thread.sleep(Duration.fromMillis(1i64));
+    i = i + 1u32;
+  }
+  n
+}
+
+fn main() i32 {
+  let t = thread.start(1u64, &holder);
+  var i = 0u32;
+  while ready.load() == 0u64 && i < 20000u32 {
+    thread.sleep(Duration.fromMillis(1i64));
+    i = i + 1u32;
+  }
+  require(ready.load() == 1u64, "B holds a cache");
+  trimAll();    // the narrow call is fine with B's cache live
+  expectUInt(stats().lent, 0u64, "nothing lent");
+  bufpool.trimEverything();    // panics: B's record is live
+  finish.store(1u64);
+  _ = t.join();
+  expect(false, "trimEverything did not refuse while another thread held a cache");
+  done()
+}
