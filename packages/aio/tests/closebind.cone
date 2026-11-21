@@ -11,7 +11,7 @@
 mod closebind;
 
 import testing use *;
-import stdio use printStr, printUInt;
+import stdio use printStr, printUInt, eprintStr;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
 import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
@@ -20,7 +20,11 @@ import actors;
 import aio use UdpSocket, Socket, IoLimits;
 
 const rounds = 400u64;
-const burners = 8u64;
+// The test sets its own worker count and leaves one worker free of burners for the peer: a burner never yields, so
+// with as many burners as workers nothing is left to run the peer and the test never ends. Each phase names itself
+// on stderr, so a hang shows where it stopped
+const workers = 3u32;
+const burners = u64.from(workers) - 1u64;
 
 struct Got {
   pub udpBare: Atomic[u64];
@@ -196,20 +200,30 @@ actor Peer {
   }
 
   pub async fn run(self, done: OneshotSender[u64]) {
+    eprintStr("phase: udp bare\n");
     got.udpBare.store(await self.udpRounds(false));
+    eprintStr("phase: udp used\n");
     got.udpUsed.store(await self.udpRounds(true));
+    eprintStr("phase: tcp listener\n");
     got.tcpBare.store(await self.tcpRounds());
+    eprintStr("phase: udp, read in flight\n");
     got.udpFlight.store(await self.udpInflight());
+    eprintStr("phase: tcp listener, accept in flight\n");
     got.tcpFlight.store(await self.tcpInflight());
+    eprintStr("phase: burners started\n");
     var k = 0u64;
     while k < burners {
       let b = Burner();
       b.spin();
       k = k + 1u64;
     }
+    eprintStr("phase: udp bare, workers busy\n");
     got.udpBareLoaded.store(await self.udpRounds(false));
+    eprintStr("phase: udp used, workers busy\n");
     got.udpUsedLoaded.store(await self.udpRounds(true));
+    eprintStr("phase: tcp listener, workers busy\n");
     got.tcpBareLoaded.store(await self.tcpRounds());
+    eprintStr("phase: done\n");
     got.stop.store(1u64);
     var dn = done;
     dn.send(1u64);
@@ -227,6 +241,7 @@ fn show(label: &str, n: u64) {
 
 fn main() i32 {
   initAll();
+  actors.configure(actors.Options(workers: workers));
   var tx: OneshotSender[u64];
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
