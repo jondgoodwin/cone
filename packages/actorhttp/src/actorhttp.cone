@@ -66,6 +66,9 @@
 //
 //   HttpClient.standard()  HttpClient.make(cfg, maxBody)   a client of http:// and https:// servers   (A CLIENT)
 //   c.clone()  HttpClient.none()  c.isNone()           another handle to it; a handle naming nothing
+//   HttpClient.makeTest(cfg, maxBody, TestTargets.make().to(host, port, TestTarget.address(a) | .pipe(&p) | .pipes(&l) |
+//     .handler(routes)))          a client whose origin goes to an address, a pipe (TestPipe: say, hangup, pipeSeen) or an
+//                                 in-process handler, the pool real (testseam.cone's header)
 //   c.get(url)                    a GET of a URL as text        Result[Response, FetchError]
 //   c.send(request)               a Request                     Result[Response, FetchError]
 //   c.getIn(url, lim)  c.sendIn(request, lim)     the same two, limited by lim, an IoLimits
@@ -410,6 +413,10 @@
 // 'upload', a fetch with a cancel group and an HTTP/3 client keep the service thread's client, so a handle holds two
 // pools and the per-origin limits are not shared between them. The last handle's going cancels every fetch, aborts every
 // connection and ends the actors ('liveClientActors' and 'liveClientConnActors' say how many exist).
+// THE TEST SEAM (testseam.cone): 'HttpClient.makeTest' takes the origins a test redirects, each to an address (a fake
+// server on a local port), an in-memory pipe (the test is the server, on the bytes of the wire) or an in-process HttpRoutes
+// handler, and the client actor's pool (limits, scheduling, retries, redirects, deadlines) stays real: only the connection's
+// transport changes. It applies to the fetches the client actor runs.
 //
 //
 // A ROUTED SERVER. 'cfg.routes(table)' makes the server run on connection actors: the server is an actor
@@ -637,9 +644,21 @@ pub struct HttpClient is Move {
     let id = newId();
     var ca: Option[ClientActor] = None;
     let parts = httpclient.partsOf(&cfg);
-    if !parts.http3 {ca = Some[ClientActor](ClientActor(parts, maxBody));}
+    if !parts.http3 {ca = Some[ClientActor](ClientActor(parts, maxBody, TestTargets.none()));}
     post[CreateClientJob](CreateClientJob(id, cfg, maxBody));
     HttpClient(id, ca)
+  }
+
+  // A client for tests (testseam.cone): the same, but the origins 'targets' names go where it says (an address, a pipe, a
+  // handler). The fetches the client actor runs (get, getIn, send, sendIn with no cancel group) use them; the others keep the
+  // real network. A config with HTTP/3 is refused
+  pub fn makeTest(cfg: httpclient.Config, maxBody: usize, targets: TestTargets) HttpClient {
+    let id = newId();
+    let parts = httpclient.partsOf(&cfg);
+    if parts.http3 {panic("actorhttp: a test client has no HTTP/3");}
+    let ca = ClientActor(parts, maxBody, targets);
+    post[CreateClientJob](CreateClientJob(id, cfg, maxBody));
+    HttpClient(id, Some[ClientActor](ca))
   }
 
   // An HttpClient naming nothing, which ends nothing
