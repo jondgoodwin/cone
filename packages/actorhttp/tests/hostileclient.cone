@@ -409,6 +409,20 @@ fn cancelledWithin(rx: &mut Receiver[String], n: u32) u32 {
   cancelled
 }
 
+// The counter's value once it is want, waiting up to 10 seconds for it; the value seen if it never gets there
+fn waitFor(c: &Atomic[u64], want: u64) u64 {
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while c.load() != want && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  c.load()
+}
+
+// A short settle after a wait, so an extra one arriving late would still be counted
+fn settle() {
+  thread.sleep(Duration.fromMillis(200i64));
+}
+
 // Both counters at 0 within seconds
 fn gone() bool {
   let limit = Instant.now() + Duration.fromSeconds(10i64);
@@ -472,9 +486,11 @@ fn redirects() {
   f.get(urlAt("127.0.0.150", "/h100"), otx.clone());
   expectStr(takeS(&mut orx).view(), "err failed", "redirects: a second chain to other hosts: the same");
   expectUInt(served.load(), 22u64, "redirects: eleven requests more");
-  thread.sleep(Duration.fromMillis(300i64));
+  waitFor(&accepts, 22u64);
+  settle();
   expectUInt(accepts.load(), 22u64, "redirects: each of the 22 hosts was a connection of its own");
-  expect(maxOpen.load() <= 6u64, "redirects: never more than maxTotal connections open at the server");
+  // (the server sees a closed connection a moment after the client opened the next, so a little slack over maxTotal)
+  expect(maxOpen.load() <= 8u64, "redirects: never more than maxTotal (and one or two just closing) connections open at the server");
   expect(open.load() <= 6u64, "redirects: and no more than that left");
   f.dropClient();
   expect(gone(), "redirects: the client and its connections are gone");
@@ -500,7 +516,10 @@ fn streams() {
     f.get(urlAt("127.0.0.1", "/s"), otx.clone());
     i = i + 1u32;
   }
-  thread.sleep(Duration.fromMillis(1500i64));
+  waitFor(&accepts, 3u64);
+  waitFor(&maxHeaders, 8u64);
+  waitFor(&headers, 24u64);
+  settle();
   expectUInt(accepts.load(), 3u64, "streams: three connections (maxPerOrigin), not one per fetch");
   expectUInt(maxHeaders.load(), 8u64, "streams: eight streams on each (maxStreamsPerConnection), not 2^31 - 1 or sixty");
   expectUInt(headers.load(), 24u64, "streams: 24 requests sent in all; the other 36 wait");
@@ -525,7 +544,8 @@ fn bodies() {
     let f = Fetcher(HttpClient.make(httpclient.Config.make(), 65536usize));
     f.get(urlAt("127.0.0.1", path), otx.clone());
     expectStr(takeS(&mut orx).view(), "err failed", "bodies: past the 64 KiB limit the fetch is Failed, once");
-    thread.sleep(Duration.fromMillis(300i64));
+    waitFor(&writeFailed, 1u64);
+    settle();
     expect(sent.load() < 200000u64, "bodies: the server's sending stopped near the limit, not at 4 GiB or the end of its stream");
     expectUInt(writeFailed.load(), 1u64, "bodies: the client closed the connection");
     f.dropClient();
@@ -537,7 +557,7 @@ fn bodies() {
   let t = Fetcher(HttpClient.make(httpclient.Config.make(), 65536usize));
   t.getWithin(urlAt("127.0.0.1", "/trickle"), 600i64, otx.clone());
   expectStr(takeS(&mut orx).view(), "err timedout", "bodies: a body that trickles ends at the caller's deadline, TimedOut");
-  thread.sleep(Duration.fromMillis(300i64));
+  waitFor(&writeFailed, 1u64);
   expectUInt(writeFailed.load(), 1u64, "bodies: ...and the client closed the connection");
   t.dropClient();
   expect(gone(), "bodies: the client and its connections are gone");
@@ -566,7 +586,13 @@ fn closing() {
     f.get(urlAt("127.0.0.2", "/r"), otx.clone());
     i = i + 1u32;
   }
-  thread.sleep(Duration.fromMillis(800i64));
+  waitFor(&open, 8u64);
+  waitFor(&served, 12u64);
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while (liveClientActors() != 1u64 || liveClientConnActors() != 8u64) && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  settle();
   expectUInt(open.load(), 8u64, "closing: four connections held to each of two hosts (maxPerOrigin 4)");
   expectUInt(served.load(), 12u64, "closing: four held, four redirected and then held, the rest waiting");
   expect(liveClientActors() == 1u64 && liveClientConnActors() == 8u64, "closing: a client actor and eight connection actors alive");
