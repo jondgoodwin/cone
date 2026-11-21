@@ -1,0 +1,450 @@
+// ClientCore driven with events, no loop and no driver: the pool's decisions as a value.
+//
+// A fake host stands in for the connections' transports (ConnFacts says whether a connection is idle, takes
+// requests, and which protocol it chose); the test carries out the core's commands itself (an Open is connected
+// at once, a Send is noted, an Answer is counted) and feeds the events a driver would. What is checked:
+// - the silent failure of a pool: a fetch whose connection dies after its request was sent is, for each failure,
+//   either answered or sent again, never both and never neither, and answered exactly once in all. On HTTP/1.1 (a
+//   GET with no response, a POST that may have been processed, a POST whose request never reached the socket, a
+//   reply that had started, a reused connection's POST, a cancelled fetch, retries used up) and on an HTTP/2
+//   connection that dies under several streams;
+// - the waiting fetches' order, against a reference ordering, with random cancels, timeouts, reprioritizes and
+//   retries (the retried fetch keeps its place in the order asked), a fetch dispatched each time the connection is
+//   free, each answered once.
+
+mod coredrive;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import http use *;
+import httpconn;
+import httpclient use *;
+
+// What the connections' transports say, the same for all
+struct Fake is ConnFacts {
+  pub idle: bool;
+  pub up: bool;
+  pub h2: bool;
+
+  pub fn isIdle(self: &, c: ConnRef) bool {idle}
+  pub fn takes(self: &, c: ConnRef) bool {up}
+  pub fn protocol(self: &, c: ConnRef) Option[Version] {
+    Some[Version](if h2 {Version.Http2} else {Version.Http11})
+  }
+  pub fn h3Room(self: &, c: ConnRef) bool {false}
+}
+
+struct Rig {
+  pub core: ClientCore;
+  pub fk: Fake;
+  pub ids: List[FetchId];       // every fetch asked, in the order
+  pub sends: List[u64];         // each Send's fetch, in the order given
+  pub sendPcs: List[u32];       // ...and its connection
+  pub answers: List[u64];       // each Answer's fetch
+  pub kinds: List[EventKind];   // ...and its kind
+  pub opens: u32;
+}
+
+fn limits(perOrigin: u32, total: u32, retries: u32) Limits {
+  Limits(perOrigin, total, Duration.fromHours(1i64), 10000u32, retries, 5u32, String.from("t"), false,
+    List[String](), Duration.fromSeconds(1i64), 100u32)
+}
+
+fn newRig(h2: bool, perOrigin: u32, total: u32, retries: u32) Rig {
+  Rig(core: ClientCore.make(limits(perOrigin, total, retries), 100u32, false), fk: Fake(true, true, h2),
+    ids: List[FetchId](), sends: List[u64](), sendPcs: List[u32](), answers: List[u64](), kinds: List[EventKind](),
+    opens: 0u32)
+}
+
+fn count(l: &List[u64], v: u64) u32 {
+  var n = 0u32;
+  var k = 0usize;
+  while k < l.len() {
+    if *l[k] == v {n = n + 1u32;}
+    k = k + 1usize;
+  }
+  n
+}
+
+// The core's commands carried out, until it has no more
+fn pump(r: &mut Rig) {
+  // (rounds, as the polled client's pump has them: a pass begun again when a command's event asked for one)
+  var did = true;
+  while did {
+    did = false;
+    while true {
+      match r.core.next(&r.fk) {
+        case let Some(c) {
+          run(r, c);
+          did = true;
+        }
+        else {break;}
+      }
+    }
+  }
+}
+
+fn run(r: &mut Rig, c: Command) {
+  let k = c.kind;
+  if k == CommandKind.Open {
+    r.opens = r.opens + 1u32;
+    var e = PoolEvent.make(PoolEventKind.Connected);
+    e.pc = c.pc;
+    r.core.on(&e, &r.fk);
+  } else if k == CommandKind.Send {
+    r.sends.push(c.fetch.number());
+    r.sendPcs.push(c.pc);
+  } else if k == CommandKind.Answer {
+    r.answers.push(c.fetch.number());
+    r.kinds.push(c.event.kind);
+  }
+}
+
+fn askFor(r: &mut Rig, method: &str, intent: Intent, score: i64) FetchId {
+  var q = Request.make(method, "http://a.example/x");
+  q.intent = intent;
+  q.score = score;
+  let id = r.core.ask(q, Sink.Here(0u64), Instant.now());
+  r.ids.push(id);
+  pump(r);
+  id
+}
+
+fn lastPc(r: &Rig, id: FetchId) u32 {
+  var k = r.sends.len();
+  while k > 0usize {
+    k = k - 1usize;
+    if *r.sends[k] == id.number() {return *r.sendPcs[k];}
+  }
+  noPc()
+}
+
+fn noPc() u32 {4294967295u32}
+
+fn doneOf(r: &mut Rig, id: FetchId) {
+  var e = PoolEvent.make(PoolEventKind.Done);
+  e.fetch = id;
+  r.core.on(&e, &r.fk);
+  pump(r);
+}
+
+// Fetch id's exchange fails: its connection ends (HTTP/1.1: the connection is gone, so it is no longer idle)
+fn failure(stage: Stage, kind: ErrorKind, noResponse: bool, unsent: bool) Failure {
+  var fl = Failure.make(stage, 0u32, kind, "the connection ended");
+  fl.error.noResponse = noResponse;
+  fl.unsent = unsent;
+  fl
+}
+
+fn failOn(r: &mut Rig, id: FetchId, fl: Failure, h2: bool) {
+  let pc = lastPc(r, id);
+  if !h2 {r.fk.idle = false;}
+  var e = PoolEvent.make(PoolEventKind.Failed);
+  e.fetch = id;
+  e.failure = fl;
+  r.core.on(&e, &r.fk);
+  if !h2 {
+    var c = PoolEvent.make(PoolEventKind.Closed);
+    c.pc = pc;
+    c.clean = false;
+    c.failure = failure(Stage.Closed, ErrorKind.Closed, true, false);
+    r.core.on(&c, &r.fk);
+    r.fk.idle = true;
+  }
+  pump(r);
+}
+
+// Fail fetch id with fl and check what the failure did: sent again (wantSends) or answered (wantAnswers), the
+// two together exactly one
+fn failChecked(r: &mut Rig, id: FetchId, fl: Failure, h2: bool, wantAnswer: bool, what: &Array[u8]) {
+  let a0 = count(&r.answers, id.number());
+  let s0 = count(&r.sends, id.number());
+  failOn(r, id, fl, h2);
+  let a = count(&r.answers, id.number()) - a0;
+  let s = count(&r.sends, id.number()) - s0;
+  expectUInt(u64.from(a + s), 1u64, what);
+  expectBool(a == 1u32, wantAnswer, what);
+}
+
+// Every fetch still under way is let end Done; every one asked is then answered exactly once
+fn settle(r: &mut Rig, what: &Array[u8]) {
+  var k = 0usize;
+  while k < r.ids.len() {
+    let id = r.ids[k];
+    if count(&r.answers, id.number()) == 0u32 {doneOf(r, id);}
+    k = k + 1usize;
+  }
+  var bad = 0u32;
+  k = 0usize;
+  while k < r.ids.len() {
+    if count(&r.answers, (r.ids[k]).number()) != 1u32 {bad = bad + 1u32;}
+    k = k + 1usize;
+  }
+  expectUInt(u64.from(bad), 0u64, what);
+  expectUInt(u64.from(r.core.live()), 0u64, what);
+}
+
+fn http1() {
+  // a GET that got no response: safe to send again, on a new connection
+  var r = newRig(false, 2u32, 4u32, 2u32);
+  let g = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  expectUInt(u64.from(r.opens), 1u64, "h1: a connection opened for the first fetch");
+  expectUInt(u64.from(count(&r.sends, g.number())), 1u64, "h1: the fetch sent on it");
+  failChecked(&mut r, g, failure(Stage.Read, ErrorKind.Closed, true, false), false, false, "h1 get, no response: sent again");
+  expectUInt(u64.from(r.opens), 2u64, "h1: ...on a second connection");
+  // used up: the retries allowed (2) are spent, and the third failure is the fetch's answer
+  failChecked(&mut r, g, failure(Stage.Read, ErrorKind.Closed, true, false), false, false, "h1 get, second failure: sent again");
+  failChecked(&mut r, g, failure(Stage.Read, ErrorKind.Closed, true, false), false, true, "h1 get, retries used up: answered");
+  expectBool(*r.kinds[r.kinds.len() - 1usize] == EventKind.Failed, true, "h1: ...Failed");
+  settle(&mut r, "h1 get: answered once in all");
+
+  // a POST that may have been processed: answered, not sent again
+  var r2 = newRig(false, 2u32, 4u32, 2u32);
+  let p = askFor(&mut r2, "POST", Intent.Visible, 0i64);
+  failChecked(&mut r2, p, failure(Stage.Read, ErrorKind.Closed, true, false), false, true, "h1 post, first use, no response: answered");
+  settle(&mut r2, "h1 post: answered once in all");
+
+  // a POST whose request never reached the socket: sent again
+  var r3 = newRig(false, 2u32, 4u32, 2u32);
+  let p3 = askFor(&mut r3, "POST", Intent.Visible, 0i64);
+  var unsent = failure(Stage.Write, ErrorKind.Closed, true, true);
+  failChecked(&mut r3, p3, unsent, false, false, "h1 post, unsent: sent again");
+  settle(&mut r3, "h1 unsent post: answered once in all");
+
+  // a GET whose response had begun: answered
+  var r4 = newRig(false, 2u32, 4u32, 2u32);
+  let g4 = askFor(&mut r4, "GET", Intent.Visible, 0i64);
+  var resp = PoolEvent.make(PoolEventKind.Response);
+  resp.fetch = g4;
+  resp.response = ResponseHead.make(200u16);
+  r4.core.on(&resp, &r4.fk);
+  failChecked(&mut r4, g4, failure(Stage.Read, ErrorKind.Closed, false, false), false, true, "h1 get, response begun: answered");
+  settle(&mut r4, "h1 begun response: answered once in all");
+
+  // a POST on a kept connection (the idle race): sent again
+  var r5 = newRig(false, 2u32, 4u32, 2u32);
+  let g5 = askFor(&mut r5, "GET", Intent.Visible, 0i64);
+  doneOf(&mut r5, g5);
+  let p5 = askFor(&mut r5, "POST", Intent.Visible, 0i64);
+  expectUInt(u64.from(r5.opens), 1u64, "h1: the kept connection takes the second fetch");
+  failChecked(&mut r5, p5, failure(Stage.Read, ErrorKind.Closed, true, false), false, false, "h1 post on a reused connection: sent again");
+  settle(&mut r5, "h1 reused post: answered once in all");
+
+  // a fetch cancelled while under way, its connection then failing: answered, not sent again
+  var r6 = newRig(false, 2u32, 4u32, 2u32);
+  let g6 = askFor(&mut r6, "GET", Intent.Visible, 0i64);
+  var cx = PoolEvent.make(PoolEventKind.Cancel);
+  cx.fetch = g6;
+  r6.core.on(&cx, &r6.fk);
+  pump(&mut r6);
+  failChecked(&mut r6, g6, failure(Stage.Read, ErrorKind.Closed, true, false), false, true, "h1 cancelled, then failed: answered");
+  settle(&mut r6, "h1 cancelled: answered once in all");
+}
+
+fn http2() {
+  // four streams on one connection, which dies: each GET sent again, the POST answered, none twice
+  var r = newRig(true, 2u32, 4u32, 2u32);
+  let a = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  let b = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  let c = askFor(&mut r, "POST", Intent.Visible, 0i64);
+  let d = askFor(&mut r, "GET", Intent.Visible, 0i64);
+  expectUInt(u64.from(r.opens), 1u64, "h2: one connection for the four");
+  expectBool(lastPc(&r, a) == lastPc(&r, d), true, "h2: all four are streams on it");
+  var all = List[FetchId]();
+  all.push(a);
+  all.push(b);
+  all.push(c);
+  all.push(d);
+  var a0 = List[u32]();
+  var s0 = List[u32]();
+  var k = 0usize;
+  while k < all.len() {
+    a0.push(count(&r.answers, (all[k]).number()));
+    s0.push(count(&r.sends, (all[k]).number()));
+    k = k + 1usize;
+  }
+  // The connection's streams fail one after another, then it closes
+  let pc = lastPc(&r, a);
+  r.fk.up = false;
+  k = 0usize;
+  while k < all.len() {
+    let id = all[k];
+    var e = PoolEvent.make(PoolEventKind.Failed);
+    e.fetch = id;
+    e.failure = failure(Stage.Closed, ErrorKind.Closed, true, false);
+    r.core.on(&e, &r.fk);
+    k = k + 1usize;
+  }
+  var cl = PoolEvent.make(PoolEventKind.Closed);
+  cl.pc = pc;
+  cl.clean = false;
+  cl.failure = failure(Stage.Closed, ErrorKind.Closed, true, false);
+  r.core.on(&cl, &r.fk);
+  r.fk.up = true;
+  pump(&mut r);
+  k = 0usize;
+  while k < all.len() {
+    let id = all[k];
+    let ans = count(&r.answers, id.number()) - *a0[k];
+    let snd = count(&r.sends, id.number()) - *s0[k];
+    expectUInt(u64.from(ans + snd), 1u64, "h2: each of the four streams got exactly one of an answer or a send again");
+    k = k + 1usize;
+  }
+  expectUInt(u64.from(count(&r.answers, c.number())), 1u64, "h2: the POST was answered");
+  expectUInt(u64.from(count(&r.answers, a.number())), 0u64, "h2: a GET was not (it is sent again)");
+  settle(&mut r, "h2: every fetch answered once in all");
+}
+
+struct Rng {
+  pub s: u64;
+}
+
+fn roll(r: &mut Rng, n: u64) u64 {
+  r.s = (r.s * 1103515245u64 + 12345u64) % 2147483648u64;
+  (r.s >> 8u64) % n
+}
+
+struct Item {
+  pub id: FetchId;
+  pub rank: u64;
+  pub score: i64;
+  pub seq: u64;
+}
+
+fn rankOf(i: Intent) u64 {
+  if i == Intent.Urgent {0u64} else if i == Intent.Visible {1u64} else if i == Intent.Prefetch {2u64} else {3u64}
+}
+
+fn intentOf(rank: u64) Intent {
+  if rank == 0u64 {Intent.Urgent} else if rank == 1u64 {Intent.Visible} else if rank == 2u64 {Intent.Prefetch} else {Intent.Background}
+}
+
+// Whether a is before b: the lower intent rank, then the higher score, then the earlier asked
+fn before(a: &Item, b: &Item) bool {
+  if a.rank != b.rank {return a.rank < b.rank;}
+  if a.score != b.score {return a.score > b.score;}
+  a.seq < b.seq
+}
+
+fn firstOf(w: &List[Item]) usize {
+  var best = 0usize;
+  var k = 1usize;
+  while k < w.len() {
+    if before(&w[k], &w[best]) {best = k;}
+    k = k + 1usize;
+  }
+  best
+}
+
+fn indexOfId(w: &List[Item], id: FetchId) usize {
+  var k = 0usize;
+  while k < w.len() {
+    if (w[k]).id == id {return k;}
+    k = k + 1usize;
+  }
+  w.len()
+}
+
+// One connection in all: the fetch it carries blocks the rest, which wait in the pool. Random cancels, timeouts,
+// reprioritizes and retries of the fetch under way, the connection let go again and again; each fetch it is then
+// given to must be the first of the reference ordering of those waiting
+fn model(seed: u64, n: usize, ops: usize, label: &Array[u8]) {
+  var r = newRig(false, 1u32, 1u32, 100000u32);
+  var rng = Rng(seed);
+  var waiting = List[Item]();
+  var active = Item(FetchId.none(), 0u64, 0i64, 0u64);
+  var k = 0usize;
+  var seq = 0u64;
+  var wrong = 0u32;
+  // the first fetch gets the connection; the others wait
+  while k <= n {
+    let rank = roll(&mut rng, 4u64);
+    let score = i64.from(roll(&mut rng, 5u64)) - 2i64;
+    let id = askFor(&mut r, "GET", intentOf(rank), score);
+    let it = Item(id, rank, score, seq);
+    seq = seq + 1u64;
+    if k == 0usize {active = it;} else {waiting.push(it);}
+    k = k + 1usize;
+  }
+  var sent = r.sends.len();
+  var step = 0usize;
+  while step < ops + n * 4usize && (waiting.len() > 0usize || active.id != FetchId.none()) {
+    step = step + 1usize;
+    let op = if step < ops {roll(&mut rng, 10u64)} else {9u64};
+    if op < 2u64 && waiting.len() > 0usize {
+      // a cancel of a waiting fetch
+      let j = usize.from(roll(&mut rng, u64.from(waiting.len())));
+      var e = PoolEvent.make(PoolEventKind.Cancel);
+      e.fetch = (waiting[j]).id;
+      r.core.on(&e, &r.fk);
+      waiting.remove(j);
+      pump(&mut r);
+    } else if op < 3u64 && waiting.len() > 0usize {
+      // a timeout of a waiting fetch
+      let j = usize.from(roll(&mut rng, u64.from(waiting.len())));
+      var e = PoolEvent.make(PoolEventKind.Due);
+      e.fetch = (waiting[j]).id;
+      e.timedOut = true;
+      r.core.on(&e, &r.fk);
+      waiting.remove(j);
+      pump(&mut r);
+    } else if op < 5u64 && waiting.len() > 0usize {
+      // a reprioritize of a waiting fetch
+      let j = usize.from(roll(&mut rng, u64.from(waiting.len())));
+      let rank = roll(&mut rng, 4u64);
+      let score = i64.from(roll(&mut rng, 5u64)) - 2i64;
+      var e = PoolEvent.make(PoolEventKind.Reprioritize);
+      e.fetch = (waiting[j]).id;
+      e.intent = intentOf(rank);
+      e.score = score;
+      r.core.on(&e, &r.fk);
+      (&mut waiting[j]).rank = rank;
+      (&mut waiting[j]).score = score;
+    } else if op < 7u64 {
+      // a retry: the fetch under way fails and is sent again in its old place, behind or before what waits
+      failOn(&mut r, active.id, failure(Stage.Read, ErrorKind.Closed, true, false), false);
+      waiting.push(Item(active.id, active.rank, active.score, active.seq));
+      active = Item(FetchId.none(), 0u64, 0i64, 0u64);
+    } else {
+      // the fetch under way is done: the connection is free
+      doneOf(&mut r, active.id);
+      active = Item(FetchId.none(), 0u64, 0i64, 0u64);
+    }
+    // what the pool did now: at most one fetch given the connection, and it must be the reference's first
+    if active.id == FetchId.none() && waiting.len() > 0usize {
+      pump(&mut r);
+      let want = firstOf(&waiting);
+      if r.sends.len() != sent + 1usize {
+        wrong = wrong + 1u32;
+      } else {
+        let got = *r.sends[r.sends.len() - 1usize];
+        if got != (waiting[want]).id.number() {wrong = wrong + 1u32;}
+        // (whichever it was, the model follows what the pool did, so one wrong pick is counted once)
+        var m = 0usize;
+        while m < waiting.len() {
+          if (waiting[m]).id.number() == got {break;}
+          m = m + 1usize;
+        }
+        if m < waiting.len() {
+          active = Item((waiting[m]).id, (waiting[m]).rank, (waiting[m]).score, (waiting[m]).seq);
+          waiting.remove(m);
+        }
+      }
+      sent = r.sends.len();
+    } else if active.id == FetchId.none() {
+      pump(&mut r);
+    }
+  }
+  expectUInt(u64.from(wrong), 0u64, label);
+  settle(&mut r, label);
+}
+
+fn main() i32 {
+  http1();
+  http2();
+  model(1u64, 40usize, 120usize, "the pool's order: 40 waiting, random cancels, timeouts, reprioritizes and retries");
+  model(7u64, 40usize, 120usize, "the pool's order, another run");
+  model(21u64, 300usize, 900usize, "the pool's order: 300 waiting");
+  done()
+}
