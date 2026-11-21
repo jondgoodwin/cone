@@ -1,0 +1,602 @@
+// The HTTP/3 connection as a sans-I/O value (h3driver's H3Client and H3Server, which meet httpconn's
+// ClientProto and ServerProto): two values in memory, joined by a link that drops and reorders datagrams, with no
+// socket, no loop and no clock (the test's own moves on by what the values' wake times ask). Checked:
+//   - twelve requests answered over a clean link, a lossy one, a reordering one and both: every body whole and
+//     byte for byte, no stream reset, and the connection ended cleanly by its shutdown
+//   - every request open at a connection's end is Reset before its Closed, at both ends (the plug-in's rule), and
+//     a request's one final event is that Reset
+//   - a stream-number mismatch between HTTP/3 and QUIC fails the connection (QUIC opens a stream HTTP/3 does not
+//     know of; the next request would be numbered differently), before the server hears of the request
+//   - a client whose handshake never finishes ends at QUIC's handshake timeout, with httpconn's Connect stage
+//   - stream numbers stay under the stream id limit (lowered to 200 here): as a client, room() answers none from the
+//     last number and the connection shuts down cleanly; as a server, GOAWAY goes before the limit
+//   - one generic function takes both TCP's ClientConn and the QUIC value as httpconn's ClientProto
+
+mod h3value;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import http use *;
+import http3;
+import httpconn;
+import tls;
+import quic;
+import h3driver use *;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String()
+}
+
+fn clientCtx(cfg: quic.Config) quic.Context {
+  var c = cfg;
+  c.verify = tls.Verifier.roots(readText("ca.pem").view());
+  match quic.Context.client(c) {
+    case var Ok(r) {return r;}
+    case let Err(e) {
+      print <- e;
+      printStr("\n");
+    }
+  }
+  panic("the client's context could not be made")
+}
+
+fn serverCtx(cfg: quic.Config) quic.Context {
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  match quic.Context.server(cfg, &cert, &key) {
+    case var Ok(r) {return r;}
+    case let Err(e) {
+      print <- e;
+      printStr("\n");
+    }
+  }
+  panic("the server's context could not be made")
+}
+
+fn clientAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 50000u16)}
+fn serverAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 4433u16)}
+
+fn yesNo(b: bool) &str {if b {"yes"} else {"no"}}
+
+const budget = 8388608usize;      // a connection's block budget: more than these tests' streams need
+
+// One direction of the network: every 'every'th payload lost (0: none), each batch reversed when 'reverse'
+struct Link {
+  every: u32;
+  reverse: bool;
+  count: u32;
+
+  fn make(every: u32, reverse: bool) Link {Link(every, reverse, 0u32)}
+}
+
+// What the test saw at each end
+struct Tally {
+  sent: u32;               // requests the client made
+  seen: u32;               // requests the server read
+  whole: u32;              // responses whole and right, at the client
+  wrong: u32;              // responses whose bytes were not the ones sent
+  resets: u32;             // streams reset, at the client
+  serverResets: u32;       // ...at the server
+  clientLog: String;       // R: a reset, C: Closed, G: a GOAWAY
+  serverLog: String;
+  clientClosed: bool;
+  clientClean: bool;
+  clientStage: String;
+  serverClosed: bool;
+  serverClean: bool;
+  goAways: u32;
+  answer: bool;            // the server answers each request
+  bytes: List[u32];        // per client stream: bytes read
+  highest: u32;            // the highest request stream number the server read
+
+  fn make(answer: bool) Tally {
+    Tally(0u32, 0u32, 0u32, 0u32, 0u32, 0u32, String(), String(), false, false, String(), false, false, 0u32, answer,
+      List[u32](), 0u32)
+  }
+}
+
+const bodySize = 3000usize;
+
+fn bodyByte(stream: u32, k: usize) u8 {u8.from(97u32 + ((u32.from(k) + stream) % 26u32))}
+
+fn makePair(cctx: &quic.Context, sctx: &quic.Context, idLimitC: u64, idLimitS: u64, now: Instant) H3Pair {
+  var cq = match quic.Connection.client(cctx, "localhost", &clientAddr(), &serverAddr(), now) {
+    case var Ok(c) {c}
+    case let Err(e) {panic("the client could not be made")}
+  };
+  let step = Duration.fromMillis(1i64);
+  var client = H3Client.make(H3Conn.forClient(cq, http3.Config.make(), 0u64, budget, step, idLimitC, now));
+  // The first datagram of the client's, to make the server connection of
+  let first = match client.takeDatagram(now) {
+    case var Some(b) {b}
+    case is None[IoBuf] {panic("the client had no first datagram")}
+  };
+  var sq = match quic.Connection.accept(sctx, first.view(), &serverAddr(), &clientAddr(), now) {
+    case var Ok(s) {s}
+    case let Err(e) {panic("the server could not accept the client's first packet")}
+  };
+  var hc = http3.Config.make();
+  hc.maxRequestStreams = usize.from(sctx.config().maxStreamsBidi);
+  var server = H3Server.make(H3Conn.forServer(sq, hc, 0u64, budget, step, idLimitS, now));
+  H3Pair(client, server, first)
+}
+
+// The pair, and the datagram that made the server (not yet given to it: accept took it already)
+struct H3Pair {
+  c: H3Client;
+  s: H3Server;
+  first: IoBuf;
+}
+
+// Carry every datagram one end has for the other through a link: whether any
+fn carryUp(p: &mut H3Pair, link: &mut Link, now: Instant) bool {
+  var batch = List[IoBuf]();
+  while true {
+    match p.c.takeDatagram(now) {
+      case var Some(b) {batch.push(b);}
+      case is None[IoBuf] {break;}
+    }
+  }
+  let n = batch.len();
+  var k = 0usize;
+  while k < n {
+    let i = if link.reverse {n - 1usize - k} else {k};
+    link.count = link.count + 1u32;
+    if link.every > 0u32 && link.count % link.every == 0u32 {
+    } else {
+      p.s.datagramIn(batch[i].view(), now);
+    }
+    k = k + 1usize;
+  }
+  n > 0usize
+}
+
+fn carryDown(p: &mut H3Pair, link: &mut Link, now: Instant) bool {
+  var batch = List[IoBuf]();
+  while true {
+    match p.s.takeDatagram(now) {
+      case var Some(b) {batch.push(b);}
+      case is None[IoBuf] {break;}
+    }
+  }
+  let n = batch.len();
+  var k = 0usize;
+  while k < n {
+    let i = if link.reverse {n - 1usize - k} else {k};
+    link.count = link.count + 1u32;
+    if link.every > 0u32 && link.count % link.every == 0u32 {
+    } else {
+      p.c.datagramIn(batch[i].view(), now);
+    }
+    k = k + 1usize;
+  }
+  n > 0usize
+}
+
+// The client's events, tallied
+fn clientEvents(p: &mut H3Pair, t: &mut Tally, now: Instant) bool {
+  var moved = false;
+  while true {
+    match p.c.next(now) {
+      case is Nothing {break;}
+      case let Response(r) {
+        moved = true;
+      }
+      case let Interim(r) {moved = true;}
+      case let Data(d) {
+        moved = true;
+        let stream = d.stream;
+        let slot = usize.from(stream / 4u32);
+        while t.bytes.len() <= slot {t.bytes.push(0u32);}
+        var k = 0usize;
+        var right = true;
+        let have = usize.from(t.bytes[slot]);
+        while k < d.buf.len() {
+          if d.buf.view()[k] != bodyByte(stream, have + k) {right = false;}
+          k = k + 1usize;
+        }
+        if !right {t.wrong = t.wrong + 1u32;}
+        t.bytes[slot] = t.bytes[slot] + u32.from(d.buf.len());
+        p.c.release(stream, d.buf.len());
+      }
+      case let End(e) {
+        moved = true;
+        let slot = usize.from(e.stream / 4u32);
+        if slot < t.bytes.len() && usize.from(t.bytes[slot]) == bodySize {t.whole = t.whole + 1u32;}
+      }
+      case let Reset(x) {
+        moved = true;
+        t.resets = t.resets + 1u32;
+        t.clientLog.append("R");
+      }
+      case let GoAway(g) {
+        moved = true;
+        t.goAways = t.goAways + 1u32;
+        t.clientLog.append("G");
+      }
+      case let Closed(x) {
+        moved = true;
+        t.clientClosed = true;
+        t.clientLog.append("C");
+        match x.failure {
+          case let Some(f) {
+            t.clientClean = false;
+            t.clientStage = String() <- f.stage;
+          }
+          case is None[httpconn.Failure] {t.clientClean = true;}
+        }
+      }
+    }
+  }
+  moved
+}
+
+// The server's events, tallied, each request answered when the test says so
+fn serverEvents(p: &mut H3Pair, t: &mut Tally, now: Instant) bool {
+  var moved = false;
+  while true {
+    match p.s.next(now) {
+      case is Nothing {break;}
+      case let Request(r) {
+        moved = true;
+        t.seen = t.seen + 1u32;
+        if r.stream > t.highest {t.highest = r.stream;}
+        if t.answer {
+          let head = p.s.response();
+          head.status = 200u16;
+          head.headers.add("Content-Type", "text/plain");
+          p.s.respond(r.stream, BodyLength.sized(u64.from(bodySize)));
+          var b = IoBuf(bodySize);
+          var k = 0usize;
+          while k < bodySize {
+            b.append(&[bodyByte(r.stream, k)]);
+            k = k + 1usize;
+          }
+          p.s.sendData(r.stream, b);
+          p.s.finish(r.stream);
+        }
+      }
+      case let Data(d) {moved = true; p.s.release(d.stream, d.buf.len());}
+      case let End(e) {moved = true;}
+      case let Reset(x) {
+        moved = true;
+        t.serverResets = t.serverResets + 1u32;
+        t.serverLog.append("R");
+      }
+      case let Closed(x) {
+        moved = true;
+        t.serverClosed = true;
+        t.serverLog.append("C");
+        t.serverClean = x.failure is None;
+      }
+    }
+  }
+  moved
+}
+
+fn earliest(a: Option[Instant], b: Option[Instant]) Option[Instant] {
+  match a {
+    case let Some(x) {
+      match b {
+        case let Some(y) {return Some(if y < x {y} else {x});}
+        case is None[Instant] {return Some(x);}
+      }
+    }
+    case is None[Instant] {}
+  }
+  b
+}
+
+// One pass: datagrams both ways, then each end's events; the time moves to the next wake time when nothing moved.
+// Whether anything moved
+fn pass(p: &mut H3Pair, up: &mut Link, down: &mut Link, t: &mut Tally, now: &mut Instant) bool {
+  var moved = carryUp(p, up, *now);
+  if clientEvents(p, t, *now) {moved = true;}
+  if serverEvents(p, t, *now) {moved = true;}
+  if carryDown(p, down, *now) {moved = true;}
+  if serverEvents(p, t, *now) {moved = true;}
+  if clientEvents(p, t, *now) {moved = true;}
+  if !moved {
+    // Nothing moves: the clock goes to a wake time (at least a millisecond on)
+    match earliest(p.c.pollTimeout(), p.s.pollTimeout()) {
+      case let Some(w) {
+        *now = if w > *now {w} else {*now + Duration.fromMillis(1i64)};
+        p.c.handleTimeout(*now);
+        p.s.handleTimeout(*now);
+      }
+      case is None[Instant] {*now = *now + Duration.fromMillis(10i64);}
+    }
+  }
+  moved
+}
+
+// Make the requests the client has room for, up to 'want' in all
+fn sendRequests(p: &mut H3Pair, t: &mut Tally, want: u32, now: Instant) {
+  while t.sent < want && p.c.room() > 0usize {
+    let stream = p.c.request(RequestHead.get("/", "example.com"), BodyLength(), now);
+    t.sent = t.sent + 1u32;
+  }
+}
+
+fn describe(name: &str, t: &Tally) {
+  printStr(name);
+  printStr(": requests ");
+  printUInt(u64.from(t.sent));
+  printStr(", read by the server ");
+  printUInt(u64.from(t.seen));
+  printStr(", responses whole ");
+  printUInt(u64.from(t.whole));
+  printStr(", wrong bytes ");
+  printUInt(u64.from(t.wrong));
+  printStr(", resets ");
+  printUInt(u64.from(t.resets));
+  printStr("\n");
+}
+
+// Twelve requests answered over a link, then the connection shut down
+fn linkRun(name: &str, every: u32, reverse: bool) {
+  var scfg = quic.Config.make();
+  scfg.maxStreamsBidi = 8u64;
+  let sctx = serverCtx(scfg);
+  let cctx = clientCtx(quic.Config.make());
+  var now = Instant.now();
+  var p = makePair(&cctx, &sctx, quic.defaultStreamIdLimit, quic.defaultStreamIdLimit, now);
+  var up = Link.make(every, reverse);
+  var down = Link.make(every, reverse);
+  var t = Tally.make(true);
+  let limit = now + Duration.fromSeconds(20i64);
+  var passes = 0u32;
+  while passes < 100000u32 && now < limit && t.whole < 12u32 {
+    passes = passes + 1u32;
+    sendRequests(&mut p, &mut t, 12u32, now);
+    pass(&mut p, &mut up, &mut down, &mut t, &mut now);
+  }
+  describe(name, &t);
+  p.c.shutdown();
+  passes = 0u32;
+  while passes < 100000u32 && now < limit && !(t.clientClosed && t.serverClosed) {
+    passes = passes + 1u32;
+    pass(&mut p, &mut up, &mut down, &mut t, &mut now);
+  }
+  printStr("  shut down: both ended ");
+  printStr(yesNo(t.clientClosed && t.serverClosed));
+  printStr(", cleanly ");
+  printStr(yesNo(t.clientClean && t.serverClean));
+  printStr("\n");
+}
+
+// Requests open when the connection ends are each Reset first, then the Closed
+fn endingRun() {
+  let sctx = serverCtx(quic.Config.make());
+  let cctx = clientCtx(quic.Config.make());
+  var now = Instant.now();
+  var p = makePair(&cctx, &sctx, quic.defaultStreamIdLimit, quic.defaultStreamIdLimit, now);
+  var up = Link.make(0u32, false);
+  var down = Link.make(0u32, false);
+  var t = Tally.make(false);
+  let limit = now + Duration.fromSeconds(20i64);
+  var passes = 0u32;
+  while passes < 100000u32 && now < limit && t.seen < 3u32 {
+    passes = passes + 1u32;
+    sendRequests(&mut p, &mut t, 3u32, now);
+    pass(&mut p, &mut up, &mut down, &mut t, &mut now);
+  }
+  printStr("three requests open, none answered: the server has read ");
+  printUInt(u64.from(t.seen));
+  printStr("\n");
+  p.c.abort();
+  passes = 0u32;
+  while passes < 100000u32 && now < limit && !(t.clientClosed && t.serverClosed) {
+    passes = passes + 1u32;
+    pass(&mut p, &mut up, &mut down, &mut t, &mut now);
+  }
+  printStr("the client's events at its abort: ");
+  printStr(t.clientLog.view());
+  printStr("\nthe server's events at the peer's close: ");
+  printStr(t.serverLog.view());
+  printStr("\n");
+}
+
+// QUIC opens a stream HTTP/3 does not know of: the next request is numbered differently by the two layers
+fn mismatchRun() {
+  let sctx = serverCtx(quic.Config.make());
+  let cctx = clientCtx(quic.Config.make());
+  var now = Instant.now();
+  var p = makePair(&cctx, &sctx, quic.defaultStreamIdLimit, quic.defaultStreamIdLimit, now);
+  var up = Link.make(0u32, false);
+  var down = Link.make(0u32, false);
+  var t = Tally.make(true);
+  let limit = now + Duration.fromSeconds(20i64);
+  var passes = 0u32;
+  while passes < 100000u32 && now < limit && p.c.room() == 0usize {
+    passes = passes + 1u32;
+    pass(&mut p, &mut up, &mut down, &mut t, &mut now);
+  }
+  printStr("handshake done, room for a request: ");
+  printStr(yesNo(p.c.room() > 0usize));
+  printStr("\n");
+  let skewed = p.c.core.injectStreamSkew();
+  sendRequests(&mut p, &mut t, 1u32, now);
+  passes = 0u32;
+  while passes < 2000u32 && now < limit && !(t.clientClosed && t.serverClosed) {
+    passes = passes + 1u32;
+    pass(&mut p, &mut up, &mut down, &mut t, &mut now);
+  }
+  printStr("QUIC opened a stream HTTP/3 does not know: ");
+  printStr(yesNo(skewed));
+  printStr("\nthe request: reset ");
+  printUInt(u64.from(t.resets));
+  printStr(", read by the server ");
+  printUInt(u64.from(t.seen));
+  printStr(", answered ");
+  printUInt(u64.from(t.whole));
+  printStr("\nthe client's connection ended, with a failure: ");
+  printStr(yesNo(t.clientClosed && !t.clientClean));
+  printStr("\nthe client's events: ");
+  printStr(t.clientLog.view());
+  printStr("\n");
+}
+
+// A client whose peer never answers (every datagram it sends is lost): its handshake times out at QUIC's
+// handshake timeout (300 ms here), httpconn's Connect stage
+fn handshakeRun() {
+  var ccfg = quic.Config.make();
+  ccfg.handshakeTimeout = Duration.fromMillis(300i64);
+  let cctx = clientCtx(ccfg);
+  let sctx = serverCtx(quic.Config.make());
+  let start = Instant.now();
+  var now = start;
+  var p = makePair(&cctx, &sctx, quic.defaultStreamIdLimit, quic.defaultStreamIdLimit, now);
+  var up = Link.make(1u32, false);
+  var down = Link.make(0u32, false);
+  var t = Tally.make(false);
+  var passes = 0u32;
+  while passes < 100000u32 && now < start + Duration.fromSeconds(5i64) && !t.clientClosed {
+    passes = passes + 1u32;
+    pass(&mut p, &mut up, &mut down, &mut t, &mut now);
+  }
+  printStr("a client whose datagrams all go astray: ended ");
+  printStr(yesNo(t.clientClosed));
+  printStr(", at the handshake timeout (300 to 400 ms) ");
+  printStr(yesNo(now >= start + Duration.fromMillis(300i64) && now < start + Duration.fromMillis(400i64)));
+  printStr(", stage ");
+  printStr(t.clientStage.view());
+  printStr("\n");
+}
+
+// Stream numbers stay under the stream id limit (200 here: 50 request streams), as a client...
+fn clientLimitRun() {
+  var scfg = quic.Config.make();
+  scfg.maxStreamsBidi = 8u64;
+  let sctx = serverCtx(scfg);
+  var ccfg = quic.Config.make();
+  ccfg.streamIdLimit = 200u64;
+  let cctx = clientCtx(ccfg);
+  var now = Instant.now();
+  var p = makePair(&cctx, &sctx, 200u64, quic.defaultStreamIdLimit, now);
+  var up = Link.make(0u32, false);
+  var down = Link.make(0u32, false);
+  var t = Tally.make(true);
+  let limit = now + Duration.fromSeconds(20i64);
+  var passes = 0u32;
+  var answered = 0u32;
+  // One request at a time: made when the last was answered
+  while passes < 100000u32 && now < limit && !(t.clientClosed && t.serverClosed) {
+    passes = passes + 1u32;
+    if t.whole == t.sent && p.c.room() > 0usize {sendRequests(&mut p, &mut t, t.sent + 1u32, now);}
+    pass(&mut p, &mut up, &mut down, &mut t, &mut now);
+  }
+  printStr("as a client, stream numbers under 200: requests made ");
+  printUInt(u64.from(t.sent));
+  printStr(", answered ");
+  printUInt(u64.from(t.whole));
+  printStr(", highest stream the server read ");
+  printUInt(u64.from(t.highest));
+  printStr("\n  room() after the last: ");
+  printUInt(u64.from(p.c.room()));
+  printStr("\n  the connection ended by itself, cleanly: ");
+  printStr(yesNo(t.clientClosed && t.serverClosed && t.clientClean && t.serverClean));
+  printStr("\n");
+}
+
+// ...and as a server: no credit past the limit, GOAWAY before it
+fn serverLimitRun() {
+  var scfg = quic.Config.make();
+  scfg.maxStreamsBidi = 4u64;
+  scfg.streamIdLimit = 200u64;
+  let sctx = serverCtx(scfg);
+  let cctx = clientCtx(quic.Config.make());
+  var now = Instant.now();
+  var p = makePair(&cctx, &sctx, quic.defaultStreamIdLimit, 200u64, now);
+  var up = Link.make(0u32, false);
+  var down = Link.make(0u32, false);
+  var t = Tally.make(true);
+  let limit = now + Duration.fromSeconds(20i64);
+  var passes = 0u32;
+  var stop = 0u32;
+  while passes < 100000u32 && now < limit && stop < 40u32 {
+    passes = passes + 1u32;
+    if t.whole == t.sent && p.c.room() > 0usize {sendRequests(&mut p, &mut t, t.sent + 1u32, now);}
+    let moved = pass(&mut p, &mut up, &mut down, &mut t, &mut now);
+    // after the GOAWAY, some passes more
+    if t.goAways > 0u32 {stop = stop + 1u32;}
+  }
+  printStr("as a server, stream numbers under 200: requests answered ");
+  printUInt(u64.from(t.whole));
+  printStr(" of ");
+  printUInt(u64.from(t.sent));
+  printStr(", highest stream read under 200 ");
+  printStr(yesNo(t.highest < 200u32));
+  printStr("\n  the client was sent a GOAWAY ");
+  printStr(yesNo(t.goAways > 0u32));
+  printStr(", and then has room() ");
+  printUInt(u64.from(p.c.room()));
+  printStr("\n");
+  p.c.shutdown();
+  passes = 0u32;
+  while passes < 100000u32 && now < limit && !(t.clientClosed && t.serverClosed) {
+    passes = passes + 1u32;
+    pass(&mut p, &mut up, &mut down, &mut t, &mut now);
+  }
+  printStr("  shut down: both ended cleanly ");
+  printStr(yesNo(t.clientClosed && t.serverClosed && t.clientClean && t.serverClean));
+  printStr("\n");
+}
+
+// One function over httpconn's ClientProto, called with TCP's ClientConn and with the QUIC value
+fn roomOf[C: httpconn.ClientProto](c: &C) usize {c.room()}
+
+fn genericRun() {
+  let now = Instant.now();
+  let tcp = httpconn.ClientConn.make(httpconn.Config.make(), None, now);
+  let cctx = clientCtx(quic.Config.make());
+  var cq = match quic.Connection.client(&cctx, "localhost", &clientAddr(), &serverAddr(), now) {
+    case var Ok(c) {c}
+    case let Err(e) {panic("the client could not be made")}
+  };
+  let quicSide = H3Client.make(H3Conn.forClient(cq, http3.Config.make(), 0u64, budget, Duration.fromMillis(1i64),
+    quic.defaultStreamIdLimit, now));
+  printStr("a generic over ClientProto, called with TCP's ClientConn (room 1 on a plain connection) ");
+  printUInt(u64.from(roomOf[httpconn.ClientConn](&tcp)));
+  printStr(" and with the QUIC value (room 0 before its handshake) ");
+  printUInt(u64.from(roomOf[H3Client](&quicSide)));
+  printStr("\n");
+  // ...and through the trait object: the value made a Uni[ClientProto] directly
+  let dyn: Uni[httpconn.ClientProto] = Uni[H3Client](quicSide);
+  printStr("the same through a Uni[ClientProto] of the QUIC value ");
+  printUInt(u64.from(roomDyn(&dyn)));
+  printStr("\n");
+}
+
+fn roomDyn(c: &Uni[httpconn.ClientProto]) usize {c.room()}
+
+fn main() {
+  linkRun("a clean link", 0u32, false);
+  linkRun("every 5th datagram lost", 5u32, false);
+  linkRun("every batch reversed", 0u32, true);
+  linkRun("every 7th lost and every batch reversed", 7u32, true);
+  endingRun();
+  mismatchRun();
+  handshakeRun();
+  clientLimitRun();
+  serverLimitRun();
+  genericRun();
+}

@@ -1,0 +1,115 @@
+// A connection whose handshake never finishes ends at Config.handshakeTimeout. A server accepts a client's
+// first packet and the client never hears from it (its payloads are dropped), so the connection stays
+// half open; the test's clock moves on by 20 ms steps. ngtcp2's own default is no handshake timeout at
+// all, so without the Config's value set in the connection's settings the connection would last its idle
+// timeout (30 s) and not end in these 2 s. Checked: the default is 10 s; the connection is still open
+// just before the timeout (lowered to 300 ms here), and ended by the first step past it with the
+// handshake-timeout error, and not by the idle timeout.
+
+mod hstimeout;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import tls;
+import quic;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String()
+}
+
+fn clientCtx() quic.Context {
+  var cfg = quic.Config.make();
+  cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  match quic.Context.client(cfg) {
+    case var Ok(r) {return r;}
+    case let Err(e) {
+      print <- e;
+      printStr("\n");
+    }
+  }
+  panic("the client's context could not be made")
+}
+
+fn serverCtx(cfg: quic.Config) quic.Context {
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  match quic.Context.server(cfg, &cert, &key) {
+    case var Ok(r) {return r;}
+    case let Err(e) {
+      print <- e;
+      printStr("\n");
+    }
+  }
+  panic("the server's context could not be made")
+}
+
+fn yesNo(b: bool) &str {if b {"yes"} else {"no"}}
+
+fn main() {
+  printStr("the default handshake timeout: ");
+  printUInt(u64.from(quic.Config.make().handshakeTimeout.nanos() / 1000000000i64));
+  printStr(" s\n");
+
+  var cfg = quic.Config.make();
+  cfg.handshakeTimeout = Duration.fromMillis(300i64);
+  let sctx = serverCtx(cfg);
+  let cctx = clientCtx();
+  let ca = quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 50000u16);
+  let sa = quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 4433u16);
+  var now = Instant.now();
+  var client = match quic.Connection.client(&cctx, "localhost", &ca, &sa, now) {
+    case var Ok(c) {c}
+    case let Err(e) {panic("the client could not be made")}
+  };
+  let first = client.pollTransmit(now);
+  var server = match quic.Connection.accept(&sctx, first.view(), &sa, &ca, now) {
+    case var Ok(s) {s}
+    case let Err(e) {panic("the server could not accept the client's first packet")}
+  };
+  // The client never hears from the server: what it sends is dropped; the server's clock moves on
+  var steps = 0u32;
+  var endedAt = 0u32;
+  var openBefore = true;
+  while steps < 100u32 && endedAt == 0u32 {
+    steps = steps + 1u32;
+    now = now + Duration.fromMillis(20i64);
+    let p = server.pollTransmit(now);
+    if server.isClosed() {
+      endedAt = steps * 20u32;
+    } else if steps * 20u32 < 300u32 {
+      openBefore = true;
+    }
+  }
+  printStr("open at every step before the timeout: ");
+  printStr(yesNo(openBefore && endedAt >= 300u32));
+  printStr("\nended by the first step past it: ");
+  printStr(yesNo(endedAt >= 300u32 && endedAt <= 340u32));
+  printStr("\nthe handshake timeout is why: ");
+  var why = false;
+  match server.error() {
+    case let Some(e) {why = e.handshakeTimedOut();}
+    case is None[quic.QuicError] {}
+  }
+  printStr(yesNo(why));
+  printStr("\nhandshake done: ");
+  printStr(yesNo(server.handshakeDone()));
+  printStr("\n");
+}
