@@ -1,0 +1,120 @@
+// A full buffer pool refuses an endpoint's receive buffer instead of
+// panicking the program: a peer causes these buffers (IoBuf.tryMake). The
+// batch slot stays owed, the endpoint counts the refusal (EndpointStats.recvRefused),
+// keeps running, and receives again once room returns.
+//
+// 1. The pool's try bank is filled (4 KiB buffers until tryMake refuses), a
+//    client dials a server, and the server's first datagram needs a fresh
+//    receive buffer: the server counts a refusal and nothing panics.
+// 2. The buffers go home: the server receives again, and the client and the
+//    server both see the connection join.
+//
+// Under the mutant (the panicking IoBuf(recvRoom) put back) step 1 counts no
+// refusal and fails.
+
+mod recvrefused;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import iocore use SocketAddr;
+import actors;
+import thread;
+import iobuf use IoBuf, Chain, setLimits, trim;
+import netmsg use *;
+
+const mib = 1048576usize;
+
+fn next(rx: &mut Receiver[NetEvent], ms: i64, conns: &mut List[Connection]) String {
+  var s = String();
+  match rx.recvTimeout(Duration.fromMillis(ms)) {
+    case let Some(e) {
+      match &e {
+        case let &Joined(j) { s.append("J"); s.appendUInt(u64.from(j.id)); conns.push(j.conn); }
+        case let &Left(l) { s.append("L"); s.appendUInt(u64.from(l.id)); }
+        case let &Refused(r) { s.append("R"); s.appendUInt(u64.from(r.id)); }
+        case let &Message(m) { s.append("M"); s.appendUInt(u64.from(m.id)); }
+        case let &Update(u) { s.append("U"); s.appendUInt(u64.from(u.id)); }
+      }
+      return s;
+    }
+    case is None[NetEvent] {}
+  }
+  String.from("none")
+}
+
+actor Prober {
+  pub async fn ask(self, e: Endpoint, out: Sender[EndpointStats]) {
+    let s = await e.stats();
+    out.send(s);
+  }
+}
+
+// The endpoint's count of receive buffers the pool refused (a large number if the ask got no answer)
+fn refusals(e: Endpoint) u64 {
+  var tx: Sender[EndpointStats];
+  var rx: Receiver[EndpointStats];
+  tx, rx = Channel[EndpointStats].make();
+  Prober().ask(e, tx);
+  match rx.recvTimeout(Duration.fromMillis(3000i64)) {
+    case let Some(st) {return st.recvRefused;}
+    case is None[EndpointStats] {}
+  }
+  0xFFFFFFFFFFFFFFFFu64
+}
+
+// Every 4 KiB buffer tryMake gives, until it refuses
+fn fillTry() Chain {
+  var held = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var going = true;
+  while going {
+    match IoBuf.tryMake(4096usize) {
+      case var Some(b) {
+        b.append("x");
+        held.push(b);
+      }
+      else {going = false;}
+    }
+  }
+  held
+}
+
+fn main() i32 {
+  var dump = List[Connection]();
+  setLimits(8usize * mib, 2usize * mib);
+  trim();
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  var txA: Sender[NetEvent];
+  var rxA: Receiver[NetEvent];
+  txA, rxA = Channel[NetEvent].make();
+  var cfg = NetConfig.defaults();
+  cfg.connectTimeoutMs = 10000i64;
+  cfg.connectRetryMs = 100i64;
+  let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+  expectUInt(refusals(server.endpoint), 0u64, "no refusals before the pool is full");
+
+  // 1.
+  var held = fillTry();
+  expect(held.len() > 0usize, "the try bank gave buffers before refusing");
+  let a = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txA));
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  var seen = 0u64;
+  while seen == 0u64 && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(20i64));
+    seen = refusals(server.endpoint);
+  }
+  expect(seen > 0u64 && seen != 0xFFFFFFFFFFFFFFFFu64, "the server counts a refused receive buffer and runs on");
+
+  // 2.
+  held.advance(held.len());
+  expectStr(next(&mut rxA, 5000i64, &mut dump).view(), "J1", "the client joins once room returns");
+  expectStr(next(&mut rxS, 5000i64, &mut dump).view(), "J1", "so does the server's side");
+
+  expect(refusals(server.endpoint) >= seen, "the count only grows");
+  server.endpoint.shutdown();
+  a.endpoint.shutdown();
+  done()
+}
