@@ -54,8 +54,8 @@ pub struct ServerConfig {
   pub http2: bool;                          // TLS: HTTP/2 offered (ALPN "h2" before "http/1.1")
   pub http3: Option[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]];   // TLS: HTTP/3 on UDP, by this plug-in's maker
   pub bodiesStreamed: bool;                 // every request is delivered at its head, its body taken by 'Exchange.body()' (maxBody applies to none)
-  pub table: Option[HttpRoutes];               // Some: a routed server, on connection actors (routedserver.cone); None: today's, on the service thread
-  pub shutdownDeadline: Duration;           // a routed server's close: connections still open after it are reset
+  pub httpRoutes: Option[HttpRoutes];          // Some: a routed server, on connection actors (routedserver.cone); None: today's, on the service thread
+  pub shutdownTimeout: Duration;            // a routed server's close: connections still open after it are reset
 
   // The defaults: plain HTTP/1.1, httpconn's bounds, bodies up to 1 MiB, 1024 requests waiting
   pub fn make() ServerConfig {
@@ -68,14 +68,14 @@ pub struct ServerConfig {
   // and has no streamed bodies ('streamBodies' and 'Exchange.body' are for the server without a router)
   pub fn routes(self, r: HttpRoutes) ServerConfig {
     var c = self;
-    c.table = Some[HttpRoutes](r);
+    c.httpRoutes = Some[HttpRoutes](r);
     c
   }
 
   // The same with another shutdown deadline (default 10 s)
   pub fn shutdownWithin(self, d: Duration) ServerConfig {
     var c = self;
-    c.shutdownDeadline = d;
+    c.shutdownTimeout = d;
     c
   }
 
@@ -299,7 +299,7 @@ pub struct Server is Move {
 // finds it taken starts the listen over on a fresh port (up to 16 tries). A
 // port the caller named is never retried
 pub fn listen(addr: SocketAddr, cfg: ServerConfig) actors.Awaitable[Result[Server, ServerError]] {
-  if cfg.table is Some {return listenRouted(addr, cfg);}
+  if cfg.httpRoutes is Some {return listenRouted(addr, cfg);}
   awaitable[ListenJob, Result[Server, ServerError]](ListenJob(addr, cfg))
 }
 

@@ -278,7 +278,7 @@ pub actor ServerActor {
 
   // After the shutdown deadline, whatever is still open is reset
   pub async fn deadlineLoop(self) {
-    dl.set(Instant.now() + args.cfg.shutdownDeadline);
+    dl.set(Instant.now() + args.cfg.shutdownTimeout);
     if await dl.next() {
       // the I/O outstanding ends; and a connection with none (parked on its Timer, or holding a request whose
       // handler awaits a backend) is told to abort, so it ends too
@@ -786,7 +786,7 @@ pub actor ConnActor {
         rid = r.rid;
         // the route is picked from views of the head where it lies
         if fresh {
-          match &args.cfg.table {
+          match &args.cfg.httpRoutes {
             case let &Some(rt) {pick = pickRoute(&rt.routes, r.head.authority.view(), pathOf(r.head.target.view()));}
             else {}
           }
@@ -799,7 +799,7 @@ pub actor ConnActor {
       case let Some(ix) {
         var isQueue = false;
         var make: Option[&fn() HttpHandler] = None;
-        match &args.cfg.table {
+        match &args.cfg.httpRoutes {
           case let &Some(rt) {
             let route = rt.routes.get(ix).unwrap();
             isQueue = route.isQueue;
