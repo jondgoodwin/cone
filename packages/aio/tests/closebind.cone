@@ -11,7 +11,7 @@
 mod closebind;
 
 import testing use *;
-import stdio use printStr, printUInt, eprintStr;
+import stdio use printStr, printUInt, eprintStr, eprintUInt;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
 import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
@@ -64,6 +64,19 @@ actor Burner {
   }
 }
 
+fn note(what: &str, i: u64, port: u16, e: &IoError) {
+  eprintStr("FAILBIND ");
+  eprintStr(what);
+  eprintStr(" round ");
+  eprintUInt(i);
+  eprintStr(" port ");
+  eprintUInt(u64.from(port));
+  eprintStr(" : ");
+  let d = e.describe();
+  eprintStr(d.view());
+  eprintStr("\n");
+}
+
 fn dgram() IoBuf {
   var b = IoBuf(64usize);
   let w = b.whole();
@@ -95,7 +108,7 @@ actor Peer {
             let back = await s.recvFromIn(IoBuf(64usize), IoLimits.until(Instant.now() + Duration.fromMillis(1000i64)));
           }
         }
-        else {failed = failed + 1u64;}
+        case var &mut Err(er) {failed = failed + 1u64; note(if used {"udp used"} else {"udp bare"}, i, port, er);}
       }
       i = i + 1u64;
     }
@@ -119,7 +132,7 @@ actor Peer {
           var s = Socket.none();
           s <-> *ok;
         }
-        else {failed = failed + 1u64;}
+        case var &mut Err(er) {failed = failed + 1u64; note("tcp", i, port, er);}
       }
       i = i + 1u64;
     }
