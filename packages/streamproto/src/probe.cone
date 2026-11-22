@@ -1,0 +1,134 @@
+// Case 5, the guarantees: a producer, a producer that drops its stream, a receiver that counts what reaches it and
+// can answer Stop, and a source that counts its delivers and declines.
+
+fn textOf(e: &AnyError) String {
+  var text = String();
+  {
+    var w = text.textOut();
+    e.report(&uni w);
+  }
+  text
+}
+
+pub struct ProdOut is Sendable {
+  pub sent: u64;
+  pub stopSeen: bool;
+}
+
+// The producer's whole job (section 3.2): a piece, its answer, and at the end the one 'end'
+pub actor Prod {
+  pub async fn run(self, to: StreamTo[IoBuf], pieces: u64, size: usize, report: OneshotSender[ProdOut]) {
+    var dest = to;
+    var i = 0u64;
+    var stop = None[Ending];
+    var seen = false;
+    while i < pieces && stop is None {
+      var b = IoBuf(size);
+      b.setLen(size);
+      let a = await dest.sink.piece(dest.tag, b);
+      i = i + 1u64;
+      match a {
+        case is More {}
+        case let MoreWith(back) {}
+        case let Stop(why) {
+          seen = true;
+          #if #defined("MUT_IGNORE_STOP") {} #else { stop = Some[Ending](why); }
+        }
+      }
+    }
+    match stop {
+      case let Some(why) { dest.end(why); }
+      case is None { dest.end(Ending.Finished); }
+    }
+    var r = report;
+    r.send(ProdOut(i, seen));
+  }
+}
+
+// Sends 'pieces' pieces and lets the stream go un-ended
+pub actor DropProd {
+  pub async fn run(self, to: StreamTo[IoBuf], pieces: u64, size: usize, report: OneshotSender[u64]) {
+    var i = 0u64;
+    while i < pieces {
+      var b = IoBuf(size);
+      b.setLen(size);
+      _ = await to.sink.piece(to.tag, b);
+      i = i + 1u64;
+    }
+    var r = report;
+    r.send(i);
+  }                                    // 'to' is dropped here, un-ended
+}
+
+pub struct ProbeOut is Sendable {
+  pub pieces: u64;
+  pub afterStop: u64;
+  pub ends: u64;
+  pub endKind: u32;            // 0 none, 1 Finished, 2 Failed
+  pub endText: String;
+}
+
+pub actor Probe is PieceSink[IoBuf] {
+  stopAt: u64;                 // answer Stop to the piece with this number (counting from 1); 0: never
+  pieces: u64;
+  afterStop: u64;
+  ends: u64;
+  endKind: u32;
+  endText: String;
+  stopped: bool;
+
+  pub fn init(self: &new, stopAt: u64) {
+    *self = Self(stopAt: stopAt, pieces: 0u64, afterStop: 0u64, ends: 0u64, endKind: 0u32, endText: String(), stopped: false);
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    pieces = pieces + 1u64;
+    if stopped { afterStop = afterStop + 1u64; }
+    if stopAt != 0u64 && pieces == stopAt {
+      stopped = true;
+      return Stop[IoBuf](Ending.Failed(AnyError.msg("probe: enough")));
+    }
+    More[IoBuf]
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    ends = ends + 1u64;
+    match how {
+      case is Finished { endKind = 1u32; }
+      case let Failed(e) { endKind = 2u32; endText = textOf(&e); }
+    }
+  }
+
+  pub async fn report(self, to: OneshotSender[ProbeOut]) {
+    var t = to;
+    t.send(ProbeOut(pieces, afterStop, ends, endKind, String.from(endText.view())));
+  }
+}
+
+// A source that counts its delivers and declines
+pub actor Offer is PieceSource[IoBuf] {
+  delivers: u64;
+  declines: u64;
+
+  pub fn init(self: &new) { *self = Self(delivers: 0u64, declines: 0u64); }
+
+  pub async fn deliver(self, tag: u64, to: StreamTo[IoBuf]) {
+    delivers = delivers + 1u64;
+    var dest = to;
+    var i = 0u64;
+    while i < 3u64 {
+      var b = IoBuf(100usize);
+      b.setLen(100usize);
+      _ = await dest.sink.piece(dest.tag, b);
+      i = i + 1u64;
+    }
+    dest.end(Ending.Finished);
+  }
+
+  pub async fn decline(self, tag: u64) { declines = declines + 1u64; }
+
+  pub async fn report(self, to: OneshotSender[(u64, u64)]) {
+    var t = to;
+    t.send((delivers, declines));
+  }
+}

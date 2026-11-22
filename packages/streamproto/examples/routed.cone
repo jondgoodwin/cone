@@ -1,0 +1,84 @@
+// Row 659, case 2: messages in a routed response with a proxy, on the new core, actors only.
+//
+//   congo run --release packages/streamproto/examples/routed.cone
+//
+// For each kind of handler it runs R requests of N pieces (and of 0, to take the slope), waits until the actors are
+// quiet, and prints the messages the workers handled: in all, per request, and per piece. Section 4.3's table is the
+// thing to read it against: "a small response: 2 (handle and its answer)", "a body piece: one message and one
+// answer", "a proxied piece: one message and one answer between the two connections".
+
+mod routed;
+
+import stdio use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import streamproto use *;
+
+// 0 small, 1 export (the handler is the source), 2 proxy
+fn runKind(kind: u32, requests: u64, pieces: u64) u64 {
+  var tx: OneshotSender[Counts];
+  var rx: OneshotReceiver[Counts];
+  tx, rx = Oneshot[Counts].make();
+  var htx: OneshotSender[u64];
+  var hrx: OneshotReceiver[u64];
+  htx, hrx = Oneshot[u64].make();
+  let m0 = actors.stats().messages;
+  var handlerSaw = 0u64;
+  var connSaw = Counts(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  {
+    let conn = Conn();
+    var h: Option[Handler] = None[Handler];
+    if kind == 0u32 {
+      let s = Small();
+      h = Some[Handler](s);
+    } else if kind == 1u32 {
+      let e = Export();
+      h = Some[Handler](e);
+    } else {
+      let b = Back();
+      let p = Proxy(b);
+      h = Some[Handler](p);
+    }
+    match h {
+      case let Some(hh) {
+        var id = 1u64;
+        while id <= requests {
+          conn.serve(Request(id, pieces), hh);
+          id = id + 1u64;
+        }
+      }
+      case is None {}
+    }
+    actors.waitQuiet();
+    conn.report(tx);
+  }
+  match rx.recv() {
+    case let Some(c) { connSaw = c; }
+    case is None {}
+  }
+  let msgs = actors.stats().messages - m0;
+  printStr("  kind "); printUInt(u64.from(kind)); printStr(", "); printUInt(requests); printStr(" requests of ");
+  printUInt(pieces); printStr(" pieces: conn took "); printUInt(connSaw.pieces); printStr(" pieces, ");
+  printUInt(connSaw.bytes); printStr(" bytes, "); printUInt(connSaw.ends); printStr(" ends ("); printUInt(connSaw.finished);
+  printStr(" finished); workers handled "); printUInt(msgs); printStr(" messages\n");
+  msgs
+}
+
+fn main() i32 {
+  initAll();
+  let r = 200u64;
+  let n = 50u64;
+  var kind = 0u32;
+  while kind < 3u32 {
+    let flat = runKind(kind, r, 0u64);
+    let full = runKind(kind, r, n);
+    printStr("kind "); printUInt(u64.from(kind)); printStr(": per request (no body) ");
+    printUInt(flat * 100u64 / r); printStr("/100; per piece ");
+    printUInt((full - flat) * 100u64 / (r * n)); printStr("/100\n");
+    kind = kind + 1u32;
+  }
+  finalAll();
+  0i32
+}

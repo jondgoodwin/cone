@@ -1,0 +1,132 @@
+// Row 659, case 5: the guarantees of the stream core (section 3.4, 3.10).
+//
+//   A. a producer drops its StreamTo un-ended after two pieces: the receiver gets exactly one 'end', Failed
+//   B. a producer ends properly: exactly one 'end', Finished (the finalizer adds none)
+//   C. a StreamFrom dropped untaken: the source gets exactly one 'decline' and no 'deliver'
+//   D. a StreamFrom taken: the source gets one 'deliver' and no 'decline'; its three pieces arrive, one end
+//   E. a receiver answers Stop to its 3rd piece: the producer sends no 4th, ends once with the stop's reason
+//
+// Mutants (each must make a check above fail), run as 'congo test --no-cache -D NAME':
+//   MUT_NO_FINAL_TO    StreamTo's finalizer sends nothing: A fails
+//   MUT_NO_FINAL_FROM  StreamFrom's finalizer sends nothing: C fails
+//   MUT_IGNORE_STOP    the producer loop ignores Stop: E fails
+
+mod guarantees;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import stages use Ending;
+import streamproto use *;
+
+fn probeOut(p: Probe) ProbeOut {
+  var tx: OneshotSender[ProbeOut];
+  var rx: OneshotReceiver[ProbeOut];
+  tx, rx = Oneshot[ProbeOut].make();
+  p.report(tx);
+  match rx.recv() {
+    case let Some(o) { o }
+    case is None { ProbeOut(0u64, 0u64, 0u64, 0u32, String()) }
+  }
+}
+
+fn main() i32 {
+  initAll();
+
+  // A. dropped un-ended
+  {
+    let probe = Probe(0u64);
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let dp = DropProd();
+    dp.run(StreamTo[IoBuf].at(probe, 1u64), 2u64, 100usize, tx);
+    expectUInt((rx.recv() || 0u64), 2u64, "A: the producer sent two pieces");
+    actors.waitQuiet();
+    let o = probeOut(probe);
+    expectUInt(o.pieces, 2u64, "A: the receiver took two pieces");
+    expectUInt(o.ends, 1u64, "A: and got exactly one end");
+    expectUInt(u64.from(o.endKind), 2u64, "A: which was Failed");
+    expectStr(o.endText.view(), "streamproto: the producer dropped the stream", "A: with the dropped-stream reason");
+  }
+
+  // B. ended properly
+  {
+    let probe = Probe(0u64);
+    var tx: OneshotSender[ProdOut];
+    var rx: OneshotReceiver[ProdOut];
+    tx, rx = Oneshot[ProdOut].make();
+    let p = Prod();
+    p.run(StreamTo[IoBuf].at(probe, 1u64), 4u64, 100usize, tx);
+    let r = rx.recv() || ProdOut(0u64, false);
+    expectUInt(r.sent, 4u64, "B: the producer sent four pieces");
+    actors.waitQuiet();
+    let o = probeOut(probe);
+    expectUInt(o.pieces, 4u64, "B: the receiver took four pieces");
+    expectUInt(o.ends, 1u64, "B: and got exactly one end");
+    expectUInt(u64.from(o.endKind), 1u64, "B: which was Finished");
+  }
+
+  // C. a stream on offer, dropped untaken
+  {
+    let offer = Offer();
+    {
+      let sf = StreamFrom[IoBuf].of(offer, 5u64);
+    }
+    actors.waitQuiet();
+    var tx: OneshotSender[(u64, u64)];
+    var rx: OneshotReceiver[(u64, u64)];
+    tx, rx = Oneshot[(u64, u64)].make();
+    offer.report(tx);
+    let c = rx.recv() || (9u64, 9u64);
+    expectUInt(c.0, 0u64, "C: dropped untaken: no deliver");
+    expectUInt(c.1, 1u64, "C: and exactly one decline");
+  }
+
+  // D. a stream on offer, taken
+  {
+    let offer = Offer();
+    let probe = Probe(0u64);
+    {
+      var sf = StreamFrom[IoBuf].of(offer, 5u64);
+      sf.to(StreamTo[IoBuf].at(probe, 9u64));
+    }
+    actors.waitQuiet();
+    var tx: OneshotSender[(u64, u64)];
+    var rx: OneshotReceiver[(u64, u64)];
+    tx, rx = Oneshot[(u64, u64)].make();
+    offer.report(tx);
+    let c = rx.recv() || (9u64, 9u64);
+    expectUInt(c.0, 1u64, "D: taken: one deliver");
+    expectUInt(c.1, 0u64, "D: and no decline");
+    let o = probeOut(probe);
+    expectUInt(o.pieces, 3u64, "D: the three pieces arrived");
+    expectUInt(o.ends, 1u64, "D: with one end");
+    expectUInt(u64.from(o.endKind), 1u64, "D: Finished");
+  }
+
+  // E. the receiver says Stop to its 3rd piece
+  {
+    let probe = Probe(3u64);
+    var tx: OneshotSender[ProdOut];
+    var rx: OneshotReceiver[ProdOut];
+    tx, rx = Oneshot[ProdOut].make();
+    let p = Prod();
+    p.run(StreamTo[IoBuf].at(probe, 1u64), 10u64, 100usize, tx);
+    let r = rx.recv() || ProdOut(0u64, false);
+    actors.waitQuiet();
+    let o = probeOut(probe);
+    expectUInt(r.sent, 3u64, "E: the producer sent three pieces and no fourth");
+    expectBool(r.stopSeen, true, "E: it saw the Stop");
+    expectUInt(o.pieces, 3u64, "E: the receiver took three");
+    expectUInt(o.afterStop, 0u64, "E: none after its Stop");
+    expectUInt(o.ends, 1u64, "E: it got one end");
+    expectStr(o.endText.view(), "probe: enough", "E: carrying the stop's reason");
+  }
+
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}

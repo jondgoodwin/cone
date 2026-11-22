@@ -1,0 +1,248 @@
+// Case 2 (actors only, no HTTP): a stand-in connection that takes many streams, handlers that return a response value
+// whose body is a StreamFrom, and a stand-in back end that is a PieceSource. Section 4.3.
+//
+//   Conn      takes the requests (serve), asks the handler (await handle), and takes the body of the response it
+//             gets: one StreamTo per stream, a tag of its own for each. Counts what reaches it.
+//   Small     a handler that answers with a body in hand: nothing is streamed
+//   Export    a handler that is the source of its own body: StreamFrom.of(selfactor, id)
+//   Proxy     a handler that asks a back end for its response and returns that response's body
+//   Back      the back end: fetch (the head and a StreamFrom), then 'deliver' sends the pieces to wherever the
+//             StreamFrom was taken to
+//
+// A count of every behaviour that ran is kept by each actor, so a test can say who saw what.
+
+pub struct Request is Sendable {
+  pub id: u64;
+  pub pieces: u64;                    // how many pieces the body has (0: a small response)
+}
+
+pub use Body;
+pub enum Body is Move, Sendable {
+  Empty;
+  Whole(IoBuf);
+  Streamed(StreamFrom[IoBuf]);
+}
+
+pub struct Response is Move, Sendable {
+  pub status: u32;
+  pub body: Body;
+
+  pub fn takeBody(self: &mut) Body {
+    var b = Body.Empty;
+    b <-> body;
+    b
+  }
+}
+
+pub actor trait Handler {
+  pub async fn handle(self, req: Request) Response;
+}
+
+pub struct Counts is Sendable {
+  pub pieces: u64;
+  pub bytes: u64;
+  pub ends: u64;
+  pub finished: u64;
+  pub served: u64;
+  pub heads: u64;
+  pub delivers: u64;
+}
+
+fn pieceOf(n: usize, fill: u8) IoBuf {
+  var b = IoBuf(n);
+  b.setLen(n);
+  b
+}
+
+// ---- the connection ----
+
+pub actor Conn is PieceSink[IoBuf] {
+  pieces: u64;
+  bytes: u64;
+  ends: u64;
+  finished: u64;
+  served: u64;
+  heads: u64;
+
+  pub fn init(self: &new) {
+    *self = Self(pieces: 0u64, bytes: 0u64, ends: 0u64, finished: 0u64, served: 0u64, heads: 0u64);
+  }
+
+  // One request: the handler's response, then its body taken. The stream's tag is the request's id
+  pub async fn serve(self, req: Request, h: Handler) {
+    served = served + 1u64;
+    var resp = await h.handle(req);
+    heads = heads + 1u64;
+    match resp.takeBody() {
+      case is Empty {}
+      case let Whole(b) { bytes = bytes + u64.from(b.len()); }
+      case let Streamed(s) {
+        var sf = s;
+        sf.to(StreamTo[IoBuf].at(selfactor, req.id));
+      }
+    }
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    pieces = pieces + 1u64;
+    bytes = bytes + u64.from(c.len());
+    var b = c;
+    b.clear();
+    MoreWith[IoBuf](b)
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    ends = ends + 1u64;
+    match how {
+      case is Finished { finished = finished + 1u64; }
+      case is Failed {}
+    }
+  }
+
+  pub async fn report(self, to: OneshotSender[Counts]) {
+    var t = to;
+    t.send(Counts(pieces, bytes, ends, finished, served, heads, 0u64));
+  }
+}
+
+// ---- handlers ----
+
+pub actor Small is Handler {
+  seen: u64;
+  pub fn init(self: &new) { *self = Self(seen: 0u64); }
+  pub async fn handle(self, req: Request) Response {
+    seen = seen + 1u64;
+    var b = IoBuf(64usize);
+    b.setLen(64usize);
+    Response(200u32, Body.Whole(b))
+  }
+  pub async fn count(self, to: OneshotSender[u64]) { var t = to; t.send(seen); }
+}
+
+// The handler is the producer of its own body
+pub actor Export is Handler, PieceSource[IoBuf] {
+  seen: u64;
+  produced: u64;
+  want: Deque[(u64, u64)];            // (id, pieces) of the streams on offer
+
+  pub fn init(self: &new) {
+    *self = Self(seen: 0u64, produced: 0u64, want: Deque[(u64, u64)]());
+  }
+
+  pub async fn handle(self, req: Request) Response {
+    seen = seen + 1u64;
+    want.push((req.id, req.pieces));
+    Response(200u32, Body.Streamed(StreamFrom[IoBuf].of(selfactor, req.id)))
+  }
+
+  pub async fn deliver(self, tag: u64, to: StreamTo[IoBuf]) {
+    var dest = to;
+    var n = 0u64;
+    var k = want.len();
+    var spare = None[IoBuf];
+    while k > 0usize {
+      match want.popFront() {
+        case let Some(w) {
+          if w.0 == tag { n = w.1; } else { want.push(w); }
+        }
+        case is None {}
+      }
+      k = k - 1usize;
+    }
+    var i = 0u64;
+    var stopped = false;
+    while i < n && !stopped {
+      var b = IoBuf(1024usize);
+      b.setLen(1024usize);
+      let a = await dest.sink.piece(dest.tag, b);
+      produced = produced + 1u64;
+      match a {
+        case is More {}
+        case let MoreWith(back) { spare = Some[IoBuf](back); }
+        case is Stop { stopped = true; }
+      }
+      i = i + 1u64;
+    }
+    dest.end(Ending.Finished);
+  }
+
+  pub async fn decline(self, tag: u64) {}
+  pub async fn count(self, to: OneshotSender[u64]) { var t = to; t.send(seen); }
+}
+
+// ---- the back end, and the proxy ----
+
+pub struct BackResp is Move, Sendable {
+  pub status: u32;
+  pub body: Option[StreamFrom[IoBuf]];
+}
+
+pub actor Back is PieceSource[IoBuf] {
+  delivers: u64;
+  declined: u64;
+  want: Deque[(u64, u64)];
+
+  pub fn init(self: &new) {
+    *self = Self(delivers: 0u64, declined: 0u64, want: Deque[(u64, u64)]());
+  }
+
+  // The head, and the body on offer: answered at the head, as the client's 'stream' is
+  pub async fn fetch(self, req: Request) BackResp {
+    want.push((req.id, req.pieces));
+    BackResp(200u32, Some[StreamFrom[IoBuf]](StreamFrom[IoBuf].of(selfactor, req.id)))
+  }
+
+  pub async fn deliver(self, tag: u64, to: StreamTo[IoBuf]) {
+    delivers = delivers + 1u64;
+    var dest = to;
+    var n = 0u64;
+    var k = want.len();
+    while k > 0usize {
+      match want.popFront() {
+        case let Some(w) {
+          if w.0 == tag { n = w.1; } else { want.push(w); }
+        }
+        case is None {}
+      }
+      k = k - 1usize;
+    }
+    var i = 0u64;
+    var stopped = false;
+    while i < n && !stopped {
+      var b = IoBuf(1024usize);
+      b.setLen(1024usize);
+      let a = await dest.sink.piece(dest.tag, b);
+      match a {
+        case is Stop { stopped = true; }
+        else {}
+      }
+      i = i + 1u64;
+    }
+    dest.end(Ending.Finished);
+  }
+
+  pub async fn decline(self, tag: u64) { declined = declined + 1u64; }
+  pub async fn count(self, to: OneshotSender[Counts]) {
+    var t = to;
+    t.send(Counts(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, delivers));
+  }
+}
+
+pub actor Proxy is Handler {
+  back: Back;
+  seen: u64;
+  pub fn init(self: &new, back: Back) { *self = Self(back: back, seen: 0u64); }
+  pub async fn handle(self, req: Request) Response {
+    seen = seen + 1u64;
+    let head = await back.fetch(req);
+    var h = head;
+    // the back end's body, as it is: nothing of it comes through this actor
+    var b = None[StreamFrom[IoBuf]];
+    b <-> h.body;
+    match b {
+      case let Some(s) { Response(h.status, Body.Streamed(s)) }
+      case is None { Response(h.status, Body.Empty) }
+    }
+  }
+  pub async fn count(self, to: OneshotSender[u64]) { var t = to; t.send(seen); }
+}

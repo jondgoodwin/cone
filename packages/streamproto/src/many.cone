@@ -1,0 +1,146 @@
+// Case 3: many streams into one actor, interleaved. A receiver whose 'piece' awaits (a simulated write) is parked
+// on that await while the same actor handles other streams' pieces, ends and resets, so what it resumes into is
+// not what it left.
+//
+// THE RULE each parked behaviour follows (it goes into the design):
+//   1. Before it parks, it checks its stream is live, and carries nothing but the TAG across the await: not an
+//      index, not a reference into the stream table, not a count read from it. (A reference cannot be carried:
+//      the compiler ends every borrow at an await. An index can, and is the hazard: the table moves.)
+//   2. On resuming it looks the stream up AGAIN by tag. Gone: the work it did is dropped, nothing is credited,
+//      and the answer is Stop (Failed "ended while parked"). Found: it credits that stream.
+//   3. A tag names one stream for ever: it carries a generation (the receiver's own, bumped at each open of a
+//      slot), so a tag reused after its stream ended is a new tag, and an old piece for the old tag finds nothing.
+//   4. An 'end' for a tag that is not live is dropped and counted (the stream was reset by the receiver).
+//
+// The stream table here is a List with swap-remove, so an index cached over an await goes wrong at once: that is
+// the hazard made easy to hit. MUT_NO_RECHECK (credit the cached index on resume) and MUT_NO_GEN (a tag without a
+// generation) are the mutants a test must see fail.
+
+pub struct Gone is Sendable {
+  pub tag: u64;
+  pub written: u64;
+  pub pieces: u64;
+  pub finished: bool;
+}
+
+pub struct ManyOut is Sendable {
+  pub gone: List[Gone];
+  pub live: u64;
+  pub stale: u64;            // parked pieces that found their stream gone on resuming
+  pub staleEnds: u64;        // ends for a tag that was not live
+  pub refused: u64;          // pieces that arrived for a tag that was not live
+}
+
+struct Live {
+  pub tag: u64;
+  pub written: u64;
+  pub pieces: u64;
+}
+
+pub actor Many is PieceSink[IoBuf] {
+  table: List[Live];
+  gens: List[u64];           // the generation of each slot n, by n
+  gone: List[Gone];
+  stale: u64;
+  staleEnds: u64;
+  refused: u64;
+  writeMicros: u64;          // a piece's write takes this many microseconds per KiB
+
+  pub fn init(self: &new, writeMicros: u64) {
+    *self = Self(table: List[Live](), gens: List[u64](), gone: List[Gone](), stale: 0u64, staleEnds: 0u64,
+      refused: 0u64, writeMicros: writeMicros);
+  }
+
+  // A stream's tag: slot n and its generation
+  pub async fn open(self, n: u64) u64 {
+    while u64.from(gens.len()) <= n { gens.push(0u64); }
+    let g = gens[usize.from(n)] + 1u64;
+    gens[usize.from(n)] = g;
+    var tag = (g << 32u64) | n;
+    #if #defined("MUT_NO_GEN") { tag = n; }
+    table.push(Live(tag, 0u64, 0u64));
+    tag
+  }
+
+  fn find(self: &, tag: u64) Option[usize] {
+    var i = 0usize;
+    while i < table.len() {
+      if table[i].tag == tag { return Some[usize](i); }
+      i = i + 1usize;
+    }
+    None[usize]
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    var cached = 0usize;
+    match self.find(tag) {
+      case let Some(i) { cached = i; }
+      case is None {
+        refused = refused + 1u64;
+        return Stop[IoBuf](Ending.Failed(AnyError.msg("many: no such stream")));
+      }
+    }
+    let n = u64.from(c.len());
+    // the write: this behaviour parks here, and the actor runs its other messages
+    let w = await aio.sleep(Duration.fromNanos(i64.from(n * writeMicros / 1024u64 * 1000u64)));
+    #if #defined("MUT_NO_RECHECK") {
+      if cached < table.len() {
+        table[cached].written = table[cached].written + n;
+        table[cached].pieces = table[cached].pieces + 1u64;
+      }
+    } #else {
+      match self.find(tag) {
+        case let Some(j) {
+          table[j].written = table[j].written + n;
+          table[j].pieces = table[j].pieces + 1u64;
+        }
+        case is None {
+          stale = stale + 1u64;
+          return Stop[IoBuf](Ending.Failed(AnyError.msg("many: ended while parked")));
+        }
+      }
+    }
+    var b = c;
+    b.clear();
+    MoreWith[IoBuf](b)
+  }
+
+  fn close(self: &mut, tag: u64, finished: bool) bool {
+    match self.find(tag) {
+      case let Some(i) {
+        let l = table[i];
+        gone.push(Gone(l.tag, l.written, l.pieces, finished));
+        let last = table.len() - 1usize;
+        if i != last { table[i] = table[last]; }
+        table.truncate(last);
+        true
+      }
+      case is None { false }
+    }
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    var finished = false;
+    match how {
+      case is Finished { finished = true; }
+      case is Failed {}
+    }
+    if !self.close(tag, finished) { staleEnds = staleEnds + 1u64; }
+  }
+
+  // The receiver's own end of a stream (the peer left): its slot is free at once, whatever is parked on it
+  pub async fn reset(self, tag: u64) {
+    _ = self.close(tag, false);
+  }
+
+  pub async fn report(self, to: OneshotSender[ManyOut]) {
+    var t = to;
+    var out = ManyOut(List[Gone](), u64.from(table.len()), stale, staleEnds, refused);
+    var i = 0usize;
+    while i < gone.len() {
+      out.gone.push(gone[i]);
+      i = i + 1usize;
+    }
+    t.send(out);
+  }
+}
