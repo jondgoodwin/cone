@@ -848,6 +848,8 @@ pub actor ClientConnActor {
   pub async fn begin(self) {
     let until = Instant.now() + args.conn.connectTimeout;
     var fail = httpclient.Failure.make(httpclient.Stage.Connect, 0u32, ErrorKind.Closed, "the connection could not be made");
+    fail.unsent = true;
+    fail.error.noResponse = true;
     var got = pipe is Some;
     var i = 0usize;
     while i < addrs.len() && !got && !aborted {
@@ -859,8 +861,14 @@ pub actor ClientConnActor {
           got = true;
         }
         case let Err(e) {
+          // No connection was made, so no byte of any request reached a socket: unsent and noResponse, as the polled
+          // client reports it. A refused TCP connect stays Closed, not Refused: Refused means "the server did not
+          // process this request" (REFUSED_STREAM, above a GOAWAY) and the core retries it whatever the method; the
+          // stage Connect with the system's number and text already says what happened.
           fail = httpclient.Failure.make(httpclient.Stage.Connect, e.code,
             if e.isTimedOut() {ErrorKind.TimedOut} else {ErrorKind.Closed}, "the connection could not be made");
+          fail.unsent = true;
+          fail.error.noResponse = true;
         }
       }
       i = i + 1usize;
