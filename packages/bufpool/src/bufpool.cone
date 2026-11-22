@@ -69,11 +69,11 @@
 // aligned segments.) How the alignment is made, written to one contract on both
 // systems: the OS is asked for 2 MiB + 2 MiB + a page, the aligned 2 MiB (and
 // the header page before it) is picked out of it. On Windows the rest stays
-// reserved and uncommitted (VirtualAlloc reserves it all; only the slab and its
-// header are committed; VirtualFree releases the whole reservation, from the base
+// reserved and uncommitted (VirtualAlloc reserves it all; only the header and the
+// blocks carved so far are committed; VirtualFree releases the whole reservation, from the base
 // the header remembers). On Linux the rest is unmapped at both edges (mmap, then
 // munmap of the head and the tail). The header page is not counted in the bound
-// or in osBytes(), only the 2 MiB of blocks: it is 0.2% on top. A block is at
+// or in osBytes(), only the bytes of blocks that hold something: see BYTES COUNTED. A block is at
 // least 8 bytes: while it sits idle in the stock its first word links it to the
 // next. Classes are registered while modules initialise, before any thread takes
 // a block: at most 10, each with a cache of at most 32 blocks. The pool registers
@@ -120,11 +120,32 @@
 // stock takes the first slab with a block to give. One process-wide bound
 // (default 64 MiB) limits the bytes held from the OS, slabs and oversize
 // blocks together: a slab that would pass it first has the idle slabs of
-// every class given back, then the thread's own cache flushed, and if that is
+// every class given back, then the thread's own cache flushed, then the idle blocks
+// of the slabs that remain decommitted (BYTES COUNTED), and if that is
 // not enough blockTake answers null. A second bound (default 8 MiB) is the
 // idle bytes the stock keeps: when blocks come home and the idle bytes pass it,
 // slabs wholly idle are given back to the OS, a whole slab at a time, but never
 // below the bound, so a steady load does not make the OS calls it saved.
+//
+// BYTES COUNTED (row 658). The bound counts bytes that hold something, not address space, in two ways.
+//   - CARVED, NOT WHOLE: a slab's blocks are committed and counted a COMMIT CHUNK (64 KiB, or the block if
+//     larger) at a time, as the bump mark carves them: a slab's first take counts one chunk, not 2 MiB. The
+//     growth path pays one commit call (Windows; on Linux the mapping is readable already and the chunk is
+//     only counted) per chunk ever carved, never one per take or return. osBytes() and the memory
+//     trace report these committed bytes.
+//   - IDLE, NOT PINNED: a slab with one block still lent cannot go back whole, and its idle blocks would hold
+//     the bound's bytes for nothing. When a take is refused at the bound, after the idle slabs are given back
+//     and this thread's cache is flushed, the idle blocks of the slabs that remain are DECOMMITTED
+//     (decommitForRoom): taken off their free list, marked in the slab's bitmap (the header page's 'bits', 512
+//     at most: blocks of a page or more), and their pages given back to the OS (VirtualFree MEM_DECOMMIT;
+//     madvise MADV_DONTNEED then PROT_NONE), and their bytes leave 'held'. A take of the slab uses the free
+//     list, then the bump mark, then a decommitted block, recommitted after its bytes are counted again
+//     (never by making room under a lock: the take counts first, outside it). The class lock is held across
+//     the marking and the decommit, so a take cannot bring a marked block back under the late decommit. A
+//     decommitted block is never touched until it is recommitted (its pages fault on Windows and read zero on
+//     Linux after MADV_DONTNEED). stockBytes is the COMMITTED idle bytes. The take and return fast paths, a
+//     spill and a refill's batch are unchanged: the new work is in a slab with nothing committed to take
+//     and on the refusal path only.
 //
 // THE BANKS. A flood of a peer's small buffers must not leave the program's own
 // constructions without a slab, whichever way the peer's blocks are freed. So
@@ -213,8 +234,9 @@ import trace use Level, Kind4;
 
 // MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md). The pool takes its memory from the OS
 // (VirtualAlloc, mmap), which no malloc shim sees, so it counts its own supply: bufpool.reserve (address space
-// asked for, n bytes), bufpool.commit (memory made usable, n bytes), bufpool.release (given back, n bytes; there
-// is no partial decommit), all Debug, one per slab or oversize block (elem 2 MiB slab, or 0 oversize), and
+// asked for, n bytes), bufpool.commit (memory made usable, n bytes: a slab's header and first chunk, each
+// later chunk, a block recommitted), bufpool.release (given back, n bytes: a slab freed whole, with what is
+// committed of it, or idle blocks decommitted at the bound), all Debug, one per slab, chunk or oversize block (elem 2 MiB slab, or 0 oversize), and
 // bufpool.cache (Trace): the bytes one thread's cache holds after a batch moved between it and the stock (a
 // refill or a spill; the per-block fast paths carry no check): inst is the cache's address (a key of its
 // own, so the report sums the last aux of each cache at each sample): n its misses so far, aux the bytes held.
@@ -401,7 +423,7 @@ fn osFree(block: *u8, size: usize) {
 }
 
 // What the pool holds from the OS now: slabs and oversize blocks, and their bytes
-// (a slab's 2 MiB of blocks; its header page is not counted)
+// (a slab's committed blocks, less its decommitted ones; its header page is not counted)
 pub fn osBlocks() u64 {liveBlocks.load()}
 pub fn osBytes() u64 {liveBytes.load()}
 
@@ -1657,11 +1679,11 @@ fn releaseOversize(b: *u8, size: usize) {
 pub struct BlockStats {
   pub maxBytes: usize;
   pub keepBytes: usize;
-  pub heldBytes: usize;     // slabs and oversize blocks, from the OS
+  pub heldBytes: usize;     // the committed bytes of slabs, and oversize blocks, from the OS
   pub lentBytes: usize;     // blocks out of the cache and stock, and oversize blocks
   pub cachedBytes: usize;   // idle in threads' caches
-  pub idleBytes: usize;     // held and not lent: cached, idle in the stock, and not yet carved
-  pub stockBytes: usize;    // idle in the stock, carved and returned
+  pub idleBytes: usize;     // held and not lent: cached, idle in the stock, and carved into a commit chunk but not yet taken
+  pub stockBytes: usize;    // idle in the stock, carved and returned: committed (a decommitted block is not counted)
   pub lent: u64;            // blocks lent now (oversize too)
   pub takes: u64;           // blocks ever lent
   pub reuses: u64;          // takes served by the thread's own cache

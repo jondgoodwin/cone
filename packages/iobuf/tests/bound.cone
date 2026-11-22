@@ -56,19 +56,27 @@ fn main() i32 {
   expectUInt(osBlocks(), 0u64, "trim gives every idle slab back");
   expectUInt(u64.from(stats().heldBytes), 0u64, "none held");
 
-  // Room is made: with 3 MiB the bound, one 4 KiB slab leaves no room for a
+  // Room is made: with 2 MiB the bound, a 4 KiB slab carved whole leaves no room for a
   // 64 KiB one until the idle slab goes back
-  setLimits(3145728usize, 3145728usize);
+  setLimits(2097152usize, 2097152usize);
   {
-    let a = IoBuf(1usize);
-  }   // its block is in this thread's cache; the slab is not wholly idle
-  expectUInt(osBlocks(), 1u64, "a 4 KiB slab held, idle but for a cached block");
+    var held = Chain.make(4194304usize);
+    var i = 0u32;
+    while i < 512u32 {
+      var b = IoBuf(1usize);
+      b.append("x");
+      held.push(b);
+      i = i + 1u32;
+    }
+    held.advance(held.len());
+  }   // its blocks are home, up to 32 in this thread's cache; the slab is not wholly idle
+  expectUInt(osBlocks(), 1u64, "a 4 KiB slab held, carved whole, idle but for cached blocks");
   let before = stats();
   {
     let big = IoBuf(65536usize);
     let s = stats();
     expectUInt(s.osFrees - before.osFrees, 1u64, "the idle slab went back to make room");
-    expectUInt(u64.from(s.heldBytes), u64.from(slab), "held: the 64 KiB slab alone");
+    expectUInt(u64.from(s.heldBytes), 65536u64, "held: the 64 KiB slab, one commit chunk, alone");
   }
 
   // An oversize block is counted against the bound, and never kept idle
