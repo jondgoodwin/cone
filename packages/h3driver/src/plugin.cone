@@ -50,7 +50,7 @@ pub struct Plugin {
   // and key (QUIC's own bounds the defaults, its credit budget the driver
   // Config.make's: a connection's share of the pool)
   pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, cfg: &tls.ServerConfig, token: u64) Result[u64, httpclient.Failure] {
-    let ctx = serverContext(cfg)?;
+    let ctx = serverContext(cfg, drv.handshakeTimeout)?;
     let l = drv.listen(lp, addr, ctx, token).mapError(fn(f: Failure) httpclient.Failure {clientFailure(f)})?;
     Ok[u64, httpclient.Failure]((u64.from(l.gen) << 32u64) | u64.from(l.index))
   }
@@ -91,7 +91,7 @@ pub struct Plugin {
   // Context made as listen's is, and a connector over the Context the client's own connections use. The
   // driver is read for its bounds and nothing else: neither takes a loop, a socket or a place in it
   pub fn acceptor(self: &, cfg: &tls.ServerConfig) Result[Uni[httpclient.H3Acceptor], httpclient.Failure] {
-    let ctx = serverContext(cfg)?;
+    let ctx = serverContext(cfg, drv.handshakeTimeout)?;
     Ok[Uni[httpclient.H3Acceptor], httpclient.Failure](Uni[Acceptor](Acceptor.make(ctx, &drv)))
   }
 
@@ -107,9 +107,10 @@ pub struct Plugin {
 }
 
 // A server Context for cfg's certificate and key, QUIC's own bounds the defaults, its credit budget the driver
-// Config.make's: a connection's share of the pool
-fn serverContext(cfg: &tls.ServerConfig) Result[quic.Context, httpclient.Failure] {
+// Config.make's: a connection's share of the pool; its handshake deadline the plug-in's driver's (cfg.transport's)
+fn serverContext(cfg: &tls.ServerConfig, handshakeTimeout: Duration) Result[quic.Context, httpclient.Failure] {
   var qcfg = quic.Config.make();
+  qcfg.handshakeTimeout = handshakeTimeout;
   let made = Config.make();
   qcfg.creditBudget = made.transport.creditBudget;
   qcfg.maxStreamsBidi = made.transport.maxStreamsBidi;
