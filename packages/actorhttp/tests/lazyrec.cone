@@ -1,0 +1,115 @@
+// The service is made only when a call needs it (row 653). A client's whole-body fetches with no cancel group go straight to its
+// client actor, so a program that makes only those never makes the service: 'servicesCreated' stays 0 through them. The first call
+// that needs the service (a fetch with a cancel group) makes it and makes the client's record then, with the handles there are:
+// a client cloned before that has two, so dropping the clone leaves the client alive and its next fetch is answered (a record made
+// with one handle would end at the clone's drop and answer Cancelled).
+
+mod lazyrec;
+
+import stdio use *;
+import libc;
+import collections use List, String;
+import time use Instant, Duration;
+import testing use *;
+import sync use Channel, Sender, Receiver;
+import iocore use SocketAddr, CancelGroup;
+import http use *;
+import actors;
+import httpclient;
+import aio use IoLimits;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, HttpRoutes, HttpHandler, servicesCreated;
+
+actor Hello is HttpHandler {
+  pub async fn handle(self, var ex: Exchange) {
+    ex.text(200u16, "ok");
+  }
+}
+
+fn hello() HttpHandler {
+  let h = Hello();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Starter {
+  srv: Server;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let routes = HttpRoutes.make().handle("", "/", &hello);
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make().routes(routes));
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {srv <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n"); libc.exit(1i32);}
+    }
+    ports.send(srv.port());
+  }
+}
+
+actor Fetcher {
+  client: HttpClient;
+
+  // The answer's text, "failed" if the fetch failed; with a cancel group if 'grouped'
+  pub async fn get(self, u: String, grouped: bool, out: Sender[String]) {
+    var lim = IoLimits.none();
+    if grouped {lim = IoLimits.within(CancelGroup.make());}
+    let r = await client.getIn(u.view(), lim);
+    match &r {
+      case let &Ok(ok) {out.send(String.from(ok.body.view()));}
+      case let &Err(e) {out.send(String.from("failed"));}
+    }
+  }
+
+  // Let go of the handle
+  pub async fn release(self, out: Sender[String]) {
+    client = HttpClient.none();
+    out.send(String.from("released"));
+  }
+}
+
+// The next text sent, or "(timeout)"
+fn heard(rx: &mut Receiver[String]) String {
+  rx.recvTimeout(Duration.fromSeconds(20i64)) || String.from("(timeout)")
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let s = Starter(Server.none());
+  s.open(ptx);
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(prx.recv() || 0u16));
+  u.append("/x");
+
+  let a = HttpClient.standard();
+  let b = a.clone();
+  let fa = Fetcher(a);
+  let fb = Fetcher(b);
+  var otx: Sender[String];
+  var orx: Receiver[String];
+  otx, orx = Channel[String].make();
+
+  expect(servicesCreated() == 0u64, "no service before a fetch");
+  fa.get(u.clone(), false, otx.clone());
+  expect(heard(&mut orx) == "ok", "a whole-body fetch with no group is answered");
+  expect(servicesCreated() == 0u64, "...and made no service");
+
+  fa.get(u.clone(), true, otx.clone());
+  expect(heard(&mut orx) == "ok", "a fetch with a cancel group is answered");
+  expect(servicesCreated() == 1u64, "...and made the service, once");
+
+  fb.release(otx.clone());
+  expect(heard(&mut orx) == "released", "the clone's handle is let go");
+  fa.get(u.clone(), true, otx.clone());
+  expect(heard(&mut orx) == "ok", "the record made late counted both handles: the client lives on");
+  fa.get(u.clone(), false, otx.clone());
+  expect(heard(&mut orx) == "ok", "...and its client actor still answers");
+  expect(servicesCreated() == 1u64, "the service was made once in all");
+
+  let fn0 = Fetcher(HttpClient.none());
+  fn0.get(u.clone(), true, otx.clone());
+  expect(heard(&mut orx) == "failed", "a call on HttpClient.none() that needs the service is answered as a call on no client");
+  done()
+}

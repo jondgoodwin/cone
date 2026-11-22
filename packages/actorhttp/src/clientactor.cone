@@ -80,16 +80,18 @@ fn abandonClients() {
 // How many ClientConnActors exist now
 pub fn liveClientConnActors() u64 {liveClientConns.load()}
 
-// A fetch handed to the client actor: the service thread's job moves the request out of the job and sends it on with the reply
-// (a request has no clone, and an Awaitable's closure cannot move what it holds), so the thread only forwards a message
-struct ClientFetchJob {
-  pub ca: ClientActor;
-  pub req: httpclient.Request;
-
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[httpclient.Response, FetchError]]) {
-    let a, req = self.(ca, req);
-    a.fetch(req, rp);
-  }
+// A fetch handed to the client actor, with no hop through the service: an Awaitable whose start sends the request on with
+// the reply. A request has no clone and an Awaitable's closure cannot move what it holds, so the request waits in a
+// locked cell the closure takes it from when it is started
+fn clientFetch(ca: &ClientActor, req: httpclient.Request) actors.Awaitable[Result[httpclient.Response, FetchError]] {
+  let a = *ca;
+  let cell = Arc[Mutex, Option[httpclient.Request]](Some[httpclient.Request](req));
+  actors.Awaitable[Result[httpclient.Response, FetchError]].make(
+    fn(rp: actors.ReplyOf[Result[httpclient.Response, FetchError]]) [a, cell] {
+      let slot = &mut *cell;
+      let r = slot.take().unwrap();
+      a.fetch(r, rp);
+    })
 }
 
 // ---------------------------------------------------------------------------

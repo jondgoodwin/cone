@@ -412,7 +412,10 @@
 // goes to the one with the fewest streams, and a name's addresses are taken in turn. 'stream', 'streamTo', 'events',
 // 'upload', a fetch with a cancel group and an HTTP/3 client keep the service thread's client, so a handle holds two
 // pools and the per-origin limits are not shared between them. The last handle's going cancels every fetch, aborts every
-// connection and ends the actors ('liveClientActors' and 'liveClientConnActors' say how many exist).
+// connection and ends the actors ('liveClientActors' and 'liveClientConnActors' say how many exist). The fetch goes to
+// the actor directly, and the service's own record of the client (and the service itself) is made only when a call that
+// keeps the service's client first runs: a program of whole-body fetches with no cancel group never makes the service
+// ('servicesCreated' counts it; LazyRec says how the record is made late with the handles there are).
 // THE TEST SEAM (testseam.cone): 'HttpClient.makeTest' takes the origins a test redirects, each to an address (a fake
 // server on a local port), an in-memory pipe (the test is the server, on the bytes of the wire) or an in-process HttpRoutes
 // handler, and the client actor's pool (limits, scheduling, retries, redirects, deadlines) stays real: only the connection's
@@ -520,6 +523,7 @@ let clientReg: Arc[Mutex, ClientRegistry];    // the client actors not yet close
 
 fn @initpure init() {
   nextId = Atomic[u64].of(0u64);
+  servicesMade = Atomic[u64].of(0u64);
   liveConns = Atomic[u64].of(0u64);
   liveServers = Atomic[u64].of(0u64);
   liveClients = Atomic[u64].of(0u64);
@@ -584,11 +588,19 @@ let svcHost: aio.Host[Service];
 
 // The ids handles carry: never 0
 let nextId: Atomic[u64];
+let servicesMade: Atomic[u64];   // makeService's runs
 
 fn newId() u64 {nextId.add(1u64) + 1u64}
 
 // The service, made on aio's I/O thread
-fn makeService() Service {Service.make()}
+fn makeService() Service {
+  servicesMade.add(1u64);
+  Service.make()
+}
+
+// How many times the service has been made: 0 until a call that needs it (a probe, as liveClientActors is)
+// (It goes with the Service itself at stage 6; it stays public until then.)
+pub fn servicesCreated() u64 {servicesMade.load()}
 
 // The package's finalizer, run by finalAll() before aio's and the actors
 // package's: once no actor is queued or running, the service ends, and every
@@ -634,6 +646,7 @@ pub const defaultMaxBody = 16777216usize;
 pub struct HttpClient is Move {
   id: u64;
   ca: Option[ClientActor];   // the client actor that runs the fetches that need no service (clientactor.cone); none for an HTTP/3 config
+  lazy: Arc[Mutex, LazyRec]; // the service's record of this client, made when a call first needs the service (LazyRec)
 
   // A client with httpclient's defaults, whose bodies are read up to defaultMaxBody
   pub fn standard() HttpClient {HttpClient.make(httpclient.Config.make(), defaultMaxBody)}
@@ -645,8 +658,7 @@ pub struct HttpClient is Move {
     var ca: Option[ClientActor] = None;
     let parts = httpclient.partsOf(&cfg);
     if !parts.http3 {ca = Some[ClientActor](ClientActor(parts, maxBody, TestTargets.none()));}
-    post[CreateClientJob](CreateClientJob(id, cfg, maxBody));
-    HttpClient(id, ca)
+    HttpClient(id, ca, lazyRec(cfg, maxBody))
   }
 
   // A client for tests (testseam.cone): the same, but the origins 'targets' names go where it says (an address, a pipe, a
@@ -657,25 +669,22 @@ pub struct HttpClient is Move {
     let parts = httpclient.partsOf(&cfg);
     if parts.http3 {panic("actorhttp: a test client has no HTTP/3");}
     let ca = ClientActor(parts, maxBody, targets);
-    post[CreateClientJob](CreateClientJob(id, cfg, maxBody));
-    HttpClient(id, Some[ClientActor](ca))
+    HttpClient(id, Some[ClientActor](ca), lazyRec(cfg, maxBody))
   }
 
   // An HttpClient naming nothing, which ends nothing
-  pub fn none() HttpClient {HttpClient(0u64, None[ClientActor])}
+  pub fn none() HttpClient {HttpClient(0u64, None[ClientActor], lazyRec(httpclient.Config.make(), 0usize))}
 
   pub fn isNone(self: &) bool {id == 0u64}
 
   // Another handle to the same client, its pools and its limits
   pub fn clone(self: &) HttpClient {
-    if id != 0u64 {
-      post[RefJob](RefJob(id, true));
-    }
+    if id != 0u64 {lazyRef(&lazy, id, true);}
     match &ca {
       case let &Some(a) {a.addRef();}
       else {}
     }
-    HttpClient(id, ca)
+    HttpClient(id, ca, lazy)
   }
 
   // A GET of a URL written as text, answered with the whole response
@@ -707,16 +716,15 @@ pub struct HttpClient is Move {
       else {}
     }
     if lim.deadline < r.deadline {r.deadline = lim.deadline;}
-    // A whole-body fetch with no cancel group goes to the client actor; one with a group stays on the service
-    // (nothing yet wakes an actor from a group's cancel)
+    // A whole-body fetch with no cancel group goes to the client actor, with no hop through the service; one with a
+    // group stays on the service (nothing yet wakes an actor from a group's cancel)
     match &ca {
       case let &Some(a) {
-        if r.group is None {
-          return awaitable[ClientFetchJob, Result[httpclient.Response, FetchError]](ClientFetchJob(*a, r));
-        }
+        if r.group is None {return clientFetch(a, r);}
       }
       else {}
     }
+    needRec(&lazy, id);
     awaitable[FetchJob, Result[httpclient.Response, FetchError]](FetchJob(id, r))
   }
 
@@ -734,6 +742,7 @@ pub struct HttpClient is Move {
     var r = limitedRequest(req, lim, file, line);
     let group = streamGroup(&mut r);
     let reader = ReaderSink[Result[Option[String], FetchError]](&bodyChunk, &bodyEnd);
+    needRec(&lazy, id);
     awaitable[StreamOpenJob, Result[BodyStream, FetchError]](StreamOpenJob(id, r, reader, group))
   }
 
@@ -750,6 +759,7 @@ pub struct HttpClient is Move {
   pub fn streamToIn(self: &, req: httpclient.Request, sink: ChunkSink, lim: IoLimits, file: &Array[u8] = srcFile(), line: u32 = srcLine())
       actors.Awaitable[Result[BodyHead, FetchError]] {
     let r = limitedRequest(req, lim, file, line);
+    needRec(&lazy, id);
     awaitable[StreamToJob, Result[BodyHead, FetchError]](StreamToJob(id, r, sink))
   }
 
@@ -771,6 +781,7 @@ pub struct HttpClient is Move {
     let group = streamGroup(&mut r);
     let reader = eventReader();
     let stage = SseParseStage(reader.clone());
+    needRec(&lazy, id);
     awaitable[EventOpenJob, Result[EventStream, FetchError]](EventOpenJob(id, r, stage, reader, group))
   }
 
@@ -793,19 +804,52 @@ pub struct HttpClient is Move {
     let group = streamGroup(&mut r);
     let reader = ReaderSink[Result[Option[String], FetchError]](&bodyChunk, &bodyEnd);
     let sid = newId();
+    needRec(&lazy, id);
     post[UploadOpenJob](UploadOpenJob(id, sid, r, reader, group, framing));
     Upload(id, sid, UploadSink(id, sid), Atomic[u8].of(0u8))
   }
 
   fn final(self: &uni) {
-    if id != 0u64 {
-      post[RefJob](RefJob(id, false));
-    }
+    if id != 0u64 {lazyRef(&lazy, id, false);}
     match &ca {
       case let &Some(a) {a.dropRef();}
       else {}
     }
   }
+}
+
+// What the handles of one client share: what the service's record of it will be made from, until it is made. The record
+// is made by the first call that needs the service (a fetch with a cancel group, a stream, events, an upload, an HTTP/3
+// client's fetch), so a program whose fetches all go to the client actor never makes the service. 'handles' counts the
+// handles now, so a record made late starts with the right count; once 'made', each clone or drop posts its RefJob. The
+// lock is held across each post, so the jobs reach the service in the order the handles changed
+struct LazyRec {
+  cfg: Option[httpclient.Config];   // taken by the job that makes the record
+  maxBody: usize;
+  handles: u32;
+  made: bool;
+}
+
+fn lazyRec(cfg: httpclient.Config, maxBody: usize) Arc[Mutex, LazyRec] {
+  Arc[Mutex, LazyRec](LazyRec(Some[httpclient.Config](cfg), maxBody, 1u32, false))
+}
+
+// The service's record of client id made now if it is not: posted before the job the caller queues next
+fn needRec(lz: &Arc[Mutex, LazyRec], id: u64) {
+  if id == 0u64 {return;}   // HttpClient.none() names no client: its calls are answered as calls on none
+  let st = &mut **lz;
+  if !st.made {
+    st.made = true;
+    let cfg = st.cfg.take().unwrap();
+    post[CreateClientJob](CreateClientJob(id, cfg, st.maxBody, st.handles));
+  }
+}
+
+// A handle made (add) or dropped: counted, and told to the service's record if it has one
+fn lazyRef(lz: &Arc[Mutex, LazyRec], id: u64, add: bool) {
+  let st = &mut **lz;
+  if add {st.handles = st.handles + 1u32;} else {st.handles = st.handles - 1u32;}
+  if st.made {post[RefJob](RefJob(id, add));}
 }
 
 // The group a stream's fetch runs in, put on its request: a child of the request's own
