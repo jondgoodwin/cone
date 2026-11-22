@@ -68,7 +68,7 @@
 //     sh.shutdownSend(h) sh.peerAddr(h) sh.setKeepAlive(h, ka) sh.keepAlive(h)
 //                      a connected socket's controls, h locked (shared.cone, CONTROLS)
 //     sharedTables()   tables made and not yet freed
-//     Shared.none()  issueNot issueDone issuePending    a receive or send issued off the loop's thread
+//     Shared.none()  issueNot issueDone issuePending issueStarted   a receive or send issued off the loop's thread
 //     core.isIssued()                                    (WORKER-SIDE ISSUE)//
 //   lp.setWorkerPort(port)              sockets made worker-side (listen, bindUdp, Op.Connect: onWorkers=true) wait on the
 //                                       caller's port  (UDP ON THE WORKER PORT, TCP ON THE WORKER PORT)
@@ -76,6 +76,7 @@
 //   Op.Connect(addr, onWorkers=false)  OpCore.setPeer(addr, onWorkers=false)   onWorkers: its sockets are worker-side
 //     sh.issueWaiting(p)  sh.udpReady(index, gen, events, out)  sh.udpCompleted(p, bytes, out)
 //     sh.endWaiting(h, p, id, why, out)  sh.holdSends(h, on)
+//     sh.listStarted(p)  sh.startedForTest(p)   Windows: a datagram started under the shared lock, listed (or answered) after it
 //   Op.Connect(addr)  Op.Accept(listener)                   (OPERATIONS)
 //   Op.Recv(sock, buf)  Op.RecvReady(sock)  Op.Send(sock, buf)  Op.SendBytes(sock, bytes)
 //   Op.SendChain(sock, bufs)            several buffers, one send (a gather)
@@ -612,7 +613,9 @@
 // 'lp.start(p)' LINKS it (counted, on its handle's list, in its group, its
 // deadline armed) -- the kernel's completion may come first, and is kept until
 // the record is linked, so it is answered once; or issueNot, nothing done, the
-// record started on the loop as ever. Then 'sh.unlock(h)'. A RecvFrom, SendTo or
+// record started on the loop as ever; or, Windows, a datagram on a worker-side socket
+// issued under the shared lock that the kernel keeps: issueStarted (UDP ON THE WORKER
+// PORT, below). Then 'sh.unlock(h)'. A RecvFrom, SendTo or
 // RecvMany on a UDP handle may be issued under 'sh.lockShared(h)' instead (then
 // 'sh.unlockShared(h)'): any number of threads issue on one UDP socket at once,
 // and every exclusive taker below waits for them. Windows issues only
@@ -637,9 +640,10 @@
 // take at once is not given to the Loop: 'sh.issueWaiting(p)', with no lock held, takes the
 // entry exclusive, tries once more and lists the record in the entry (receives and sends
 // each in order of arrival; the lists change only under the exclusive lock). The shared try
-// 'sh.issue' already answers anything it can do on a worker-side socket, but on Windows it
-// leaves every receive to issueWaiting (the receive may go pending, and listing it must
-// leave no gap in which its completion could come first), and on Linux a new send is not
+// 'sh.issue' already answers anything it can do on a worker-side socket; on Windows a datagram
+// operation the kernel keeps answers issueStarted, with the entry held SHARED: its caller lets go
+// and calls 'sh.listStarted(p)', which lists it, or answers it if its completion came first
+// (shared.cone, STARTED UNDER THE SHARED LOCK); on Linux a new send is not
 // tried while sends are waiting on the socket, so a send never overtakes the one the socket
 // would not take. issueWaiting answers issueDone (the record is answered, in it), issuePending
 // (listed: the table's, until one of the calls below answers it, exactly once), or issueNot

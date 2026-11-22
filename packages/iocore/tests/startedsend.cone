@@ -1,0 +1,398 @@
+// A datagram operation STARTED under the entry's SHARED lock, and listed after
+// it (shared.cone, STARTED UNDER THE SHARED LOCK), Windows. The kernel's answer
+// is "pending" and the completion may be taken by another thread before the
+// issuer has listed the record. Loopback sends almost never go pending, so the
+// test makes the gap itself: 'startedForTest' starts a real overlapped receive
+// on a socket with nothing waiting (it pends) the way the shared try does, and
+// the test then does, in the gap, what other threads do, in both orders:
+//
+// 1. Listing first: 'listStarted' lists the record (issuePending); the datagram
+//    then answers it, once, Done with its bytes.
+// 2. Completion first: the datagram's completion is taken (udpCompleted) before
+//    the record is listed. It answers nothing; 'listStarted' then answers the
+//    record from what the completion stored (issueDone, its bytes and sender),
+//    and lists nothing (a cancel afterwards finds nothing waiting).
+// 3. A listed record is the table's: a cancel after the listing ends it
+//    (endWaiting true, answered Cancelled once); a cancel in the gap is lost
+//    to endWaiting (false: nothing listed), and so 'listStarted' asks again
+//    for a group cancelled or a deadline reached in the gap: Cancelled and
+//    TimedOut, answered once each.
+// 4. A close in the gap (the entry unpublished: its lock cannot be taken):
+//    the abort's completion answers the record, once, Cancelled, in either
+//    order of the completion and 'listStarted'.
+// 5. A send started under the shared lock: Done at once on loopback, never
+//    listed; a receive started by the shared try itself is listed by 'listStarted'.
+// 8. The shared try starts a receive (no hook); its datagram's completion is
+//    taken in the gap, and 'listStarted' answers it.
+// 6. Every buffer is home at the end.
+// 7. Several records wait in one entry's list, which is circular backwards (the
+//    first record's 'hprev' is the last): ended from the middle, the end and the
+//    front, each answered once; one listed after the end was taken off goes on
+//    the end.
+//
+// A mutant is a one-line change in shared.cone (the swap in udpCompleted
+// dropped; the listing dropped; the due look in listStarted dropped), run with
+// 'congo test --no-cache'; each makes a check here fail.
+
+mod startedsend;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import thread;
+import diag;
+
+struct Ask {
+  tag: u64;
+}
+
+extern {
+  fn @c(system) CreateIoCompletionPort(h: usize, port: usize, key: usize, threads: u32) usize;
+  fn @c(system) GetQueuedCompletionStatus(port: usize, bytes: *u32, key: *usize, ov: *usize, ms: u32) i32;
+  fn @c(system) CloseHandle(h: usize) i32;
+}
+
+fn openPort() usize {
+  CreateIoCompletionPort(0xFFFFFFFFFFFFFFFFusize, 0usize, 0usize, 1u32)
+}
+
+// Take the port's next completion, if one comes within ms, and give it to the
+// table; true if one came. What it answers is appended to out
+fn pollPort(port: usize, sh: &Shared, ms: u32, out: &mut List[*OpCore]) bool {
+  var bytes = 0u32;
+  var key = 0usize;
+  var ovp = 0usize;
+  GetQueuedCompletionStatus(port, &mut bytes as *u32, &mut key as *usize, &mut ovp as *usize, ms);
+  if ovp == 0usize {return false;}
+  sh.udpCompleted(ovp as *OpCore, bytes, out);
+  true
+}
+
+// Until out holds n records, taking the port's completions (and the Loop's own
+// answers); ms at most
+fn waitFor(lp: &mut Loop, port: usize, sh: &Shared, out: &mut List[*OpCore], n: usize, ms: i64) {
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  var comps = List[Completion]();
+  while out.len() < n && Instant.now() < limit {
+    pollPort(port, sh, 2u32, out);
+    lp.poll(Instant.now() + Duration.fromMillis(1i64), &mut comps);
+    lp.takeDone(out);
+    comps.clear();
+  }
+}
+
+fn at(l: &List[*OpCore], k: usize) *OpCore {*l[k]}
+
+fn portOf(lp: &mut Loop, h: Handle) u16 {
+  match lp.localAddr(h) {
+    case let Ok(x) {x.port()}
+    case let Err(e) {0u16}
+  }
+}
+
+fn recvFromOn(pool: &OpPool[Ask], h: Handle) *OpCore {
+  let r = pool.take(Ask(1u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindRecvFrom;
+  c.handle = h;
+  c.buf = Some[IoBuf](IoBuf(64usize));
+  r as *OpCore
+}
+
+fn sendToOn(pool: &OpPool[Ask], h: Handle, port: u16, text: &Array[u8]) *OpCore {
+  let r = pool.take(Ask(3u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindSendTo;
+  c.handle = h;
+  c.setPeer(SocketAddr.localhost(port));
+  var b = IoBuf(64usize);
+  b.append(text);
+  c.buf = Some[IoBuf](b);
+  r as *OpCore
+}
+
+// A worker's start of a datagram operation under the shared lock, on the real
+// path (a send) or the test's (a receive: 'startedForTest'); the lock is let
+// go before this returns, as the issuer lets it go before it lists the record
+fn startShared(sh: &Shared, h: Handle, p: *OpCore, forced: bool) u32 {
+  if !sh.lockShared(h) {return 99u32;}
+  let got = if forced {sh.startedForTest(p)} else {sh.issue(p)};
+  sh.unlockShared(h);
+  got
+}
+
+// What a worker does with a datagram operation: the shared try, then, if the kernel keeps it, its listing, or if
+// it left it, the waiting one
+fn startSend(sh: &Shared, h: Handle, p: *OpCore) u32 {
+  let got = startShared(sh, h, p, false);
+  if got == issueStarted {return sh.listStarted(p);}
+  if got == issueNot {return sh.issueWaiting(p);}
+  got
+}
+
+struct Held {
+  bytes: usize;
+}
+
+fn gone(pool: &OpPool[Ask], p: *OpCore) Held {
+  let rec = pool.dissolve(p as *OpRec[Ask]);
+  let core, ask = rec.(core, ask);
+  let buf, batch = core.(buf, batch);
+  var held = Held(0usize);
+  match buf {
+    case var Some(b) {held.bytes = b.len();}
+    else {}
+  }
+  held
+}
+
+// A datagram of the sender tx to rx's port: sent and done at once
+fn sendOne(sh: &Shared, pool: &OpPool[Ask], tx: Handle, rxPort: u16, text: &Array[u8]) {
+  let s = sendToOn(pool, tx, rxPort, text);
+  expectUInt(u64.from(startSend(sh, tx, s)), u64.from(issueDone), "a send is done where it is started");
+  let sg = gone(pool, s);
+}
+
+fn main() i32 {
+  #if #os != .windows {
+    return skip("Windows only: a datagram start listed after its issue is Windows' (shared.cone, STARTED UNDER THE SHARED LOCK)");
+  } #else {
+  initAll();
+  let port = openPort();
+  var lp = Loop.mustMake();
+  lp.setWorkerPort(port);
+  let sh = lp.share();
+  let pool = OpPool[Ask].make();
+  var out = List[*OpCore]();
+  let rx = lp.mustBindUdp(SocketAddr.localhost(0u16), true);
+  let tx = lp.mustBindUdp(SocketAddr.localhost(0u16), true);
+  let rxPort = portOf(&mut lp, rx);
+  let txPort = portOf(&mut lp, tx);
+  expect(rxPort != 0u16 && txPort != 0u16, "two sockets, two ports");
+
+  // 1. Listing first, then the datagram
+  {
+    let r = recvFromOn(&pool, rx);
+    expectUInt(u64.from(startShared(&sh, rx, r, true)), u64.from(issueStarted), "1: a receive that finds nothing is started, and left for 'listStarted'");
+    expectUInt(u64.from(sh.listStarted(r)), u64.from(issuePending), "1: 'listStarted' lists it");
+    sendOne(&sh, &pool, tx, rxPort, "hello");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "1: the datagram answers it, once");
+    expect(out.len() == 1usize && at(&out, 0usize) as usize == r as usize, "1: the record that waited");
+    expect((r as &OpCore).isDone(), "1: Done");
+    expectUInt(u64.from((r as &OpCore).count()), 5u64, "1: five bytes");
+    expectUInt(u64.from((r as &OpCore).peer().port()), u64.from(txPort), "1: from the sender");
+    let g = gone(&pool, r);
+    expectUInt(u64.from(g.bytes), 5u64, "1: in the buffer");
+    out.clear();
+  }
+
+  // 2. The completion first, then 'listStarted'
+  {
+    let r = recvFromOn(&pool, rx);
+    let id = (r as &OpCore).id();
+    expectUInt(u64.from(startShared(&sh, rx, r, true)), u64.from(issueStarted), "2: a receive is started");
+    sendOne(&sh, &pool, tx, rxPort, "world");
+    expect(pollPort(port, &sh, 2000u32, &mut out), "2: its completion is taken before it is listed");
+    expectUInt(u64.from(out.len()), 0u64, "2: the completion answers nothing: the record is not its to answer");
+    expect(!sh.endWaiting(rx, r, id, diag.outcomeCancelled, &mut out), "2: and a cancel finds nothing listed");
+    expectUInt(u64.from(out.len()), 0u64, "2: it answers nothing either");
+    expectUInt(u64.from(sh.listStarted(r)), u64.from(issueDone), "2: 'listStarted' answers it from what the completion stored");
+    expect((r as &OpCore).isDone(), "2: Done");
+    expectUInt(u64.from((r as &OpCore).count()), 5u64, "2: five bytes");
+    expectUInt(u64.from((r as &OpCore).peer().port()), u64.from(txPort), "2: from the sender");
+    expect(!sh.endWaiting(rx, r, id, diag.outcomeCancelled, &mut out), "2: it is not listed: a cancel finds it answered");
+    expectUInt(u64.from(out.len()), 0u64, "2: nothing more answers it");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 50i64);
+    expectUInt(u64.from(out.len()), 0u64, "2: no second completion answers it");
+    let g = gone(&pool, r);
+    expectUInt(u64.from(g.bytes), 5u64, "2: five bytes in the buffer");
+  }
+
+  // 3. A cancel after the listing; a cancel and a deadline in the gap
+  {
+    let r = recvFromOn(&pool, rx);
+    let id = (r as &OpCore).id();
+    expectUInt(u64.from(startShared(&sh, rx, r, true)), u64.from(issueStarted), "3: a receive is started");
+    expectUInt(u64.from(sh.listStarted(r)), u64.from(issuePending), "3: and listed");
+    expect(sh.endWaiting(rx, r, id, diag.outcomeCancelled, &mut out), "3: a cancel after the listing finds it");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "3: answered once");
+    if out.len() != 1usize {return done();}
+    expectUInt(u64.from((r as &OpCore).status), u64.from(diag.outcomeCancelled), "3: Cancelled");
+    let g = gone(&pool, r);
+    expectUInt(u64.from(g.bytes), 0u64, "3: the buffer back, empty");
+    out.clear();
+
+    // A cancel in the gap: its group is cancelled after the start
+    let grp = CancelGroup.make();
+    let r2 = recvFromOn(&pool, rx);
+    (*r2).group = Some[CancelGroup](grp);
+    let id2 = (r2 as &OpCore).id();
+    expectUInt(u64.from(startShared(&sh, rx, r2, true)), u64.from(issueStarted), "3: a receive of a group is started");
+    grp.cancel();
+    expect(!sh.endWaiting(rx, r2, id2, diag.outcomeCancelled, &mut out), "3: the cancel in the gap finds nothing listed");
+    expectUInt(u64.from(sh.listStarted(r2)), u64.from(issuePending), "3: listed");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "3: the cancel in the gap is not lost: answered once");
+    if out.len() != 1usize {return done();}
+    expectUInt(u64.from((r2 as &OpCore).status), u64.from(diag.outcomeCancelled), "3: Cancelled");
+    let g2 = gone(&pool, r2);
+    out.clear();
+
+    // A handle-level cancel of the reads in the gap (cancelRead: the socket stays open, so only the cancel
+    // can end the receive): the count of cancels moved, and 'listStarted' asks the kernel to abort it
+    let rh = recvFromOn(&pool, rx);
+    expectUInt(u64.from(startShared(&sh, rx, rh, true)), u64.from(issueStarted), "3: a receive is started, for a handle's cancel");
+    expectUInt(u64.from(lp.cancelHandle(rx, false)), 0u64, "3: the handle's cancel in the gap finds nothing listed");
+    expectUInt(u64.from(sh.listStarted(rh)), u64.from(issuePending), "3: listed");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "3: the handle's cancel in the gap is not lost: answered once");
+    if out.len() != 1usize {return done();}
+    expectUInt(u64.from((rh as &OpCore).status), u64.from(diag.outcomeCancelled), "3: Cancelled");
+    let gh = gone(&pool, rh);
+    out.clear();
+    // A cancel of the writes in the gap does not touch a receive
+    let rw = recvFromOn(&pool, rx);
+    let iw = (rw as &OpCore).id();
+    expectUInt(u64.from(startShared(&sh, rx, rw, true)), u64.from(issueStarted), "3: a receive is started, for a write cancel");
+    lp.cancelHandle(rx, true);
+    expectUInt(u64.from(sh.listStarted(rw)), u64.from(issuePending), "3: listed");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 100i64);
+    expectUInt(u64.from(out.len()), 0u64, "3: a write cancel in the gap leaves the receive waiting");
+    expect(sh.endWaiting(rx, rw, iw, diag.outcomeCancelled, &mut out), "3: it is still listed, and ended");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "3: and answered once");
+    let gw = gone(&pool, rw);
+    out.clear();
+
+    // A deadline reached in the gap
+    let r3 = recvFromOn(&pool, rx);
+    (*r3).deadline = Instant.now() + Duration.fromMillis(30i64);
+    expectUInt(u64.from(startShared(&sh, rx, r3, true)), u64.from(issueStarted), "3: a receive with a deadline is started");
+    thread.sleep(Duration.fromMillis(40i64));
+    expectUInt(u64.from(sh.listStarted(r3)), u64.from(issuePending), "3: listed");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "3: the deadline reached in the gap is not lost: answered once");
+    if out.len() != 1usize {return done();}
+    expectUInt(u64.from((r3 as &OpCore).status), u64.from(diag.outcomeTimedOut), "3: TimedOut");
+    let g3 = gone(&pool, r3);
+    out.clear();
+  }
+
+  // 4. A close in the gap, in either order
+  {
+    let z = lp.mustBindUdp(SocketAddr.localhost(0u16), true);
+    let r = recvFromOn(&pool, z);
+    expectUInt(u64.from(startShared(&sh, z, r, true)), u64.from(issueStarted), "4: a receive is started");
+    lp.close(z);
+    expectUInt(u64.from(sh.listStarted(r)), u64.from(issuePending), "4: the entry is gone: 'listStarted' leaves it to the abort's completion");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "4: the abort answers it, once");
+    expectUInt(u64.from((r as &OpCore).status), u64.from(diag.outcomeCancelled), "4: Cancelled");
+    let g = gone(&pool, r);
+    out.clear();
+
+    let z2 = lp.mustBindUdp(SocketAddr.localhost(0u16), true);
+    let r2 = recvFromOn(&pool, z2);
+    expectUInt(u64.from(startShared(&sh, z2, r2, true)), u64.from(issueStarted), "4: another receive is started");
+    lp.close(z2);
+    expect(pollPort(port, &sh, 2000u32, &mut out), "4: the abort's completion comes before the record is listed");
+    expectUInt(u64.from(out.len()), 0u64, "4: and answers nothing");
+    expectUInt(u64.from(sh.listStarted(r2)), u64.from(issueDone), "4: 'listStarted' answers it from the completion");
+    expectUInt(u64.from((r2 as &OpCore).status), u64.from(diag.outcomeCancelled), "4: Cancelled");
+    let g2 = gone(&pool, r2);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 50i64);
+    expectUInt(u64.from(out.len()), 0u64, "4: nothing answers it again");
+  }
+
+  // 5. A send started under the shared lock
+  {
+    let r = recvFromOn(&pool, rx);
+    expectUInt(u64.from(startSend(&sh, rx, r)), u64.from(issuePending), "5: a receive that finds nothing is started under the shared lock and listed");
+    let s = sendToOn(&pool, tx, rxPort, "start");
+    expectUInt(u64.from(startShared(&sh, tx, s, false)), u64.from(issueDone), "5: a send is started under the shared lock, and done at once");
+    expectUInt(u64.from((s as &OpCore).count()), 5u64, "5: five bytes");
+    let sg = gone(&pool, s);
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "5: the receive is answered, once");
+    let g = gone(&pool, r);
+    out.clear();
+  }
+
+  // 7. Several records wait in the entry's list (circular: the first's 'hprev' is the last): taken off from
+  // the middle, the end and the front, each answered once, and the list is whole after each
+  {
+    let a = recvFromOn(&pool, rx);
+    let b = recvFromOn(&pool, rx);
+    let c = recvFromOn(&pool, rx);
+    let ib = (b as &OpCore).id();
+    let ic = (c as &OpCore).id();
+    expectUInt(u64.from(startSend(&sh, rx, a)), u64.from(issuePending), "7: a waits (the waiting try)");
+    expectUInt(u64.from(startShared(&sh, rx, b, true)), u64.from(issueStarted), "7: b is started");
+    expectUInt(u64.from(sh.listStarted(b)), u64.from(issuePending), "7: and listed after a");
+    expectUInt(u64.from(startShared(&sh, rx, c, true)), u64.from(issueStarted), "7: c is started");
+    expectUInt(u64.from(sh.listStarted(c)), u64.from(issuePending), "7: and listed after b");
+    expect(sh.endWaiting(rx, b, ib, diag.outcomeCancelled, &mut out), "7: the middle one is ended");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expect(out.len() == 1usize && at(&out, 0usize) as usize == b as usize, "7: b answered, once");
+    out.clear();
+    expect(sh.endWaiting(rx, c, ic, diag.outcomeCancelled, &mut out), "7: the last one is ended");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expect(out.len() == 1usize && at(&out, 0usize) as usize == c as usize, "7: c answered, once");
+    out.clear();
+    // Appended after a removal of the last: the list's end is the record before it
+    let d = recvFromOn(&pool, rx);
+    expectUInt(u64.from(startShared(&sh, rx, d, true)), u64.from(issueStarted), "7: d is started");
+    expectUInt(u64.from(sh.listStarted(d)), u64.from(issuePending), "7: and listed after a");
+    // The handle's cancel walks the list from its front: d is there, so the end was found right
+    expectUInt(u64.from(lp.cancelHandle(rx, false)), 2u64, "7: the handle's cancel reaches a and d");
+    waitFor(&mut lp, port, &sh, &mut out, 2usize, 2000i64);
+    expectUInt(u64.from(out.len()), 2u64, "7: both answered, once each");
+    out.clear();
+    // The front taken off with another behind it: the other is the front, and the end
+    let e = recvFromOn(&pool, rx);
+    let f = recvFromOn(&pool, rx);
+    let ie = (e as &OpCore).id();
+    expectUInt(u64.from(startShared(&sh, rx, e, true)), u64.from(issueStarted), "7: e is started");
+    expectUInt(u64.from(sh.listStarted(e)), u64.from(issuePending), "7: and listed");
+    expectUInt(u64.from(startShared(&sh, rx, f, true)), u64.from(issueStarted), "7: f is started");
+    expectUInt(u64.from(sh.listStarted(f)), u64.from(issuePending), "7: and listed after e");
+    expect(sh.endWaiting(rx, e, ie, diag.outcomeCancelled, &mut out), "7: the front one is ended");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expect(out.len() == 1usize && at(&out, 0usize) as usize == e as usize, "7: e answered, once");
+    out.clear();
+    expectUInt(u64.from(lp.cancelHandle(rx, false)), 1u64, "7: the handle's cancel reaches f alone");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expect(out.len() == 1usize && at(&out, 0usize) as usize == f as usize, "7: f answered, once");
+    out.clear();
+    let ga = gone(&pool, a);
+    let gb = gone(&pool, b);
+    let gc = gone(&pool, c);
+    let gd = gone(&pool, d);
+    let ge = gone(&pool, e);
+    let gf = gone(&pool, f);
+  }
+
+  // 8. A receive is started under the shared lock by the shared try itself (no test hook), the datagram's
+  // completion is taken in the gap, and the issuer answers it
+  {
+    let r = recvFromOn(&pool, rx);
+    expectUInt(u64.from(startShared(&sh, rx, r, false)), u64.from(issueStarted), "8: the shared try starts a receive, and the kernel keeps it");
+    sendOne(&sh, &pool, tx, rxPort, "again");
+    expect(pollPort(port, &sh, 2000u32, &mut out), "8: its completion is taken before it is listed");
+    expectUInt(u64.from(out.len()), 0u64, "8: and answers nothing");
+    expectUInt(u64.from(sh.listStarted(r)), u64.from(issueDone), "8: 'listStarted' answers it");
+    expectUInt(u64.from((r as &OpCore).count()), 5u64, "8: five bytes");
+    let g = gone(&pool, r);
+  }
+
+  expectUInt(stats().lent, 0u64, "6: every buffer back in the pool");
+  lp.close(rx);
+  lp.close(tx);
+  CloseHandle(port);
+  done()
+  }
+}
