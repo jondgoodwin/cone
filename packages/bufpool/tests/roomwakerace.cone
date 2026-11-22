@@ -1,0 +1,214 @@
+// The room wake's lost-wake windows, forced (R8, row 647). The pool's test-only room hook
+// (setRoomHook) parks the thread making room after the room is made and before its event reads
+// the armed flag; the waiter's side is main itself, which holds the window between its arm and its
+// retry by its own sequence. The bound is 8 MiB, so tryAllocate's bank holds 4 MiB: two slabs, each
+// of two blocks of 1 MiB (a class with no cache, so a return is one locked step to the stock).
+//
+//   A. The returner parked after making room, before it reads the flag. The waiter arms, retries
+//      and finds the room. The returner then reads the flag armed and wakes: one spurious run.
+//      (An event that read the flag before the room was made, or before the class lock was
+//      released, would have read it unarmed and not woken.)
+//   B. The waiter holds the window between its arm and its retry while a returner makes room and
+//      its event runs whole. The event must see the arm and wake; the retry then finds the room.
+//      'armFirst' is the waiter's order, the protocol's: with the arm after the retry the room
+//      made in the window is lost, and the waiter strands.
+//   C. A slab goes back to the OS while a waiter is refused: the returner parks after unlinking the
+//      idle slab and before the OS call lowers 'held'. The waiter arms and its retry is refused
+//      (held is not lowered yet). The returner's first event wakes it (the wake re-arms, as a
+//      waiting layer's handler does); then 'held' falls, and that is a second event, which must
+//      wake again: without it the waiter that retries on the first wake is refused and strands.
+//   D. Only oversize blocks: the pool is full of two blocks of 2 MiB; a release of one lowers
+//      'held' and nothing else, so that release's event is the only wake there can be.
+
+mod roomwakerace;
+
+import testing use *;
+import thread;
+import time use Duration;
+import bufpool use *;
+
+const armFirst = true;       // the waiter's order, the protocol's; false is the mutant that strands in B
+
+let wakes: Atomic[u64];
+let rearm: Atomic[u64];      // 1: the wake arms again, as a waiting layer's handler does before it retries
+let hookSeen: Atomic[u64];   // room events that ran the hook
+let hookAt: Atomic[u64];     // the one that parks (0: none)
+let parked: Atomic[u64];
+let release: Atomic[u64];
+
+fn @initpure init() {
+  wakes = Atomic[u64].of(0u64);
+  rearm = Atomic[u64].of(0u64);
+  hookSeen = Atomic[u64].of(0u64);
+  hookAt = Atomic[u64].of(0u64);
+  parked = Atomic[u64].of(0u64);
+  release = Atomic[u64].of(0u64);
+  addRoomWake(&wake);
+}
+
+fn @c wake() {
+  wakes.add(1u64);
+  if rearm.swap(0u64) == 1u64 {armRoomWake();}     // once
+}
+
+// The room hook: the event numbered hookAt parks until released
+fn parkHook() {
+  let n = hookSeen.add(1u64) + 1u64;
+  if n == hookAt.load() {
+    parked.store(1u64);
+    var ms = 0u32;
+    while release.load() == 0u64 && ms < 20000u32 {
+      thread.sleep(Duration.fromMillis(1i64));
+      ms = ms + 1u32;
+    }
+  }
+}
+
+// waits up to ms milliseconds for flag to be 1; answers whether it is
+fn waitFor(flag: &Atomic[u64], ms: u32) bool {
+  var i = 0u32;
+  while i < ms {
+    if flag.load() == 1u64 {
+      return true;
+    }
+    thread.sleep(Duration.fromMillis(1i64));
+    i = i + 1u32;
+  }
+  false
+}
+
+// waits up to ms milliseconds for the wake to have run n times in all
+fn waitWakes(n: u64, ms: u32) bool {
+  var i = 0u32;
+  while i < ms {
+    if wakes.load() >= n {
+      return true;
+    }
+    thread.sleep(Duration.fromMillis(1i64));
+    i = i + 1u32;
+  }
+  wakes.load() >= n
+}
+
+fn rearmHook(at: u64) {
+  hookSeen.store(0u64);
+  hookAt.store(at);
+  parked.store(0u64);
+  release.store(0u64);
+}
+
+struct Rel {
+  pub a: usize;
+  pub b: usize;        // 0: none
+  pub bytes: usize;
+}
+
+fn giveBack(j: Rel) u64 {
+  let r = bufferPool() as &MemRegion;
+  r.release(j.a as *u8, j.bytes);
+  if j.b != 0usize {r.release(j.b as *u8, j.bytes);}
+  1u64
+}
+
+fn mib(n: usize) usize {n * 1048576usize}
+
+fn slabOf(a: usize) usize {a & (0usize - 2097152usize)}
+
+fn main() i32 {
+  let r = bufferPool() as &MemRegion;
+  setLimits(8388608usize, 0usize);
+  setRoomHook(&parkHook);
+
+  // The bank full: four blocks of 1 MiB, two to a slab
+  var x = Array[usize, 4]() <- fill 0usize;
+  var i = 0usize;
+  while i < 4usize {
+    x[i] = tryAllocate(mib(1usize)) as usize;
+    i = i + 1usize;
+  }
+  expect(x[0] != 0usize && x[1] != 0usize && x[2] != 0usize && x[3] != 0usize, "four blocks of 1 MiB");
+  expect(tryAllocate(mib(1usize)) as usize == 0usize, "a fifth is refused");
+
+  // A. the returner parked before it reads the flag; the waiter arms and retries in that window
+  rearmHook(1u64);
+  let w0 = wakes.load();
+  let ta = thread.start(Rel(x[0], 0usize, mib(1usize)), &giveBack);
+  expect(waitFor(&parked, 20000u32), "A: the returner parks after making room, before it reads the flag");
+  expectUInt(wakes.load(), w0, "A: no wake has run yet");
+  armRoomWake();
+  var got = tryAllocate(mib(1usize));
+  expect(got as usize != 0usize, "A: the retry in the window finds the room the returner made");
+  release.store(1u64);
+  expectUInt(ta.join(), 1u64, "A: the returner finished");
+  expectUInt(wakes.load(), w0 + 1u64, "A: its event read the flag after the room was made: armed, so it woke (spuriously)");
+  x[0] = got as usize;
+
+  // B. the waiter holds the window between its arm and its retry; the room is made whole inside it
+  rearmHook(0u64);
+  let w1 = wakes.load();
+  expect(tryAllocate(mib(1usize)) as usize == 0usize, "B: full again, so a take is refused");
+  var first = null as *u8;
+  if armFirst {armRoomWake();} else {first = tryAllocate(mib(1usize));}
+  let tb = thread.start(Rel(x[1], 0usize, mib(1usize)), &giveBack);
+  expectUInt(tb.join(), 1u64, "B: a return and its event ran, whole, in the window");
+  if armFirst {got = tryAllocate(mib(1usize));} else {armRoomWake(); got = first;}
+  expect(got as usize != 0usize || waitWakes(w1 + 1u64, 1000u32), "B: the waiter is woken, or finds room on its retry");
+  expectUInt(wakes.load(), w1 + 1u64, "B: the event saw the wake armed and ran it once");
+  if got as usize == 0usize {got = tryAllocate(mib(1usize));}
+  expect(got as usize != 0usize, "B: and the retry after the wake finds the room");
+  x[1] = got as usize;
+
+  // C. a slab goes back to the OS while a waiter is refused: the second event is the one that wakes
+  r.release(x[0] as *u8, mib(1usize));
+  r.release(x[1] as *u8, mib(1usize));
+  r.release(x[2] as *u8, mib(1usize));
+  r.release(x[3] as *u8, mib(1usize));
+  trimEverything();
+  i = 0usize;
+  while i < 4usize {
+    x[i] = tryAllocate(mib(1usize)) as usize;
+    i = i + 1usize;
+  }
+  expect(x[0] != 0usize && x[1] != 0usize && x[2] != 0usize && x[3] != 0usize, "C: four blocks again");
+  expect(slabOf(x[0]) == slabOf(x[1]) && slabOf(x[2]) == slabOf(x[3]) && slabOf(x[0]) != slabOf(x[2]), "C: two to a slab");
+  r.release(x[3] as *u8, mib(1usize));     // idle bytes elsewhere, so that the first slab, once idle, may go
+  setLimits(0usize, 1usize);               // keep 1 byte idle
+  expect(tryAllocate(mib(2usize)) as usize == 0usize, "C: 4 MiB held, so a block of 2 MiB is refused");
+  rearmHook(2u64);
+  rearm.store(1u64);
+  let w2 = wakes.load();
+  let tc = thread.start(Rel(x[0], x[1], mib(1usize)), &giveBack);
+  expect(waitFor(&parked, 20000u32), "C: the returner parks at its second return's event, with the first slab unlinked");
+  armRoomWake();
+  expect(tryAllocate(mib(2usize)) as usize == 0usize, "C: the waiter's retry is refused: 'held' has not fallen yet");
+  release.store(1u64);
+  expectUInt(tc.join(), 1u64, "C: the returner finished");
+  rearm.store(0u64);
+  expectUInt(wakes.load(), w2 + 2u64, "C: the event after the return woke it, and the one after the OS call, which lowered 'held', woke it again");
+  let big = tryAllocate(mib(2usize));
+  expect(big as usize != 0usize, "C: and now the retry finds the room");
+  r.release(big, mib(2usize));
+  r.release(x[2] as *u8, mib(1usize));
+  trimEverything();
+  setLimits(0usize, 8388608usize);
+
+  // D. only oversize blocks: nothing is cached or kept, and a release lowers only 'held'
+  rearmHook(0u64);
+  let o0 = tryAllocate(mib(2usize));
+  let o1 = tryAllocate(mib(2usize));
+  expect(o0 as usize != 0usize && o1 as usize != 0usize, "D: two oversize blocks of 2 MiB");
+  expect(tryAllocate(mib(2usize)) as usize == 0usize, "D: a third is refused");
+  let w3 = wakes.load();
+  armRoomWake();
+  expect(tryAllocate(mib(2usize)) as usize == 0usize, "D: and the retry is refused");
+  let td = thread.start(Rel(o0 as usize, 0usize, mib(2usize)), &giveBack);
+  expectUInt(td.join(), 1u64, "D: another thread released one");
+  expect(waitWakes(w3 + 1u64, 1000u32), "D: the release woke the waiter");
+  let o2 = tryAllocate(mib(2usize));
+  expect(o2 as usize != 0usize, "D: and its retry finds the room");
+  r.release(o1, mib(2usize));
+  r.release(o2, mib(2usize));
+  trimEverything();
+  expectUInt(osBlocks(), 0u64, "nothing held at the end");
+  done()
+}

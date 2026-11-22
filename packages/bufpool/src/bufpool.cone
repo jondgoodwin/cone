@@ -389,6 +389,10 @@ struct Globals {
   bigTakes: Atomic[u64];     // oversize blocks ever lent
   refused: Atomic[u64];      // tryAllocate's refusals
   flushHook: usize;          // test-only (setFlushHook): the address of a hook flushCache calls, 0 in a program
+  roomState: Atomic[u32];    // ROOM WAKE: bit 0, a waiter has armed the wake; bit 1, the test-only hook is set
+  roomWakeCount: u32;        // the wakes registered, at most maxRoomWakes, set in module initialisation
+  roomWakes: Array[usize, 4];  // their addresses
+  roomHook: usize;           // test-only (setRoomHook): the address of a hook the room event calls, 0 in a program
 }
 
 pub const defaultMaxBytes = 67108864usize;     // 64 MiB held from the OS at most
@@ -432,6 +436,7 @@ fn blocksInit() {
   (*g).bigBytes = Atomic[u64].of(0u64);
   (*g).bigTakes = Atomic[u64].of(0u64);
   (*g).refused = Atomic[u64].of(0u64);
+  (*g).roomState = Atomic[u32].of(0u32);
   gAddr.store(g as usize);
 }
 
@@ -502,6 +507,98 @@ pub fn setLimits(maxBytes: usize, keepBytes: usize) {
 }
 
 // ---------------------------------------------------------------------------
+// The room wake: a refused caller learns that room has come back (ROOM WAKE)
+// ---------------------------------------------------------------------------
+
+const roomArmedBit = 1u32;
+const roomHookBit = 2u32;
+const maxRoomWakes = 4u32;
+
+// Register a function the pool calls when room may have come back to a caller it
+// refused, and that caller has armed the wake (armRoomWake). During module
+// initialisation only: a panic once a thread has a record, as registerClass. At
+// most four. The function is called on whatever thread made the room (a thread
+// returning a block, one ending, one trimming), outside every lock of the pool,
+// and it is called for ANY room, not for one caller: it must only post a
+// message or a completion or set a flag. It must not take or return a pool
+// block, nor call back into the pool, and it must not block
+pub fn addRoomWake(f: &fn @c ()) {
+  let g = glob();
+  (*g).regLock.lock();
+  if (*g).regHead as usize != 0usize {
+    (*g).regLock.unlock();
+    panic("bufpool: addRoomWake after the pool is in use; register wakes in module initialisation");
+  }
+  let n = (*g).roomWakeCount;
+  if n >= maxRoomWakes {
+    (*g).regLock.unlock();
+    panic("bufpool: too many room wakes");
+  }
+  var held = f;    // kept as an address, as setFlushHook does
+  *(((&(*g).roomWakes) as *usize) + usize.from(n)) = mem.readRaw[usize](&mut held as *usize);
+  (*g).roomWakeCount = n + 1u32;
+  (*g).regLock.unlock();
+}
+
+// A caller the pool refused (tryAllocate or IoBuf.tryMake answered null) arms the
+// wake, THEN retries once; if that is refused it parks on its own terms. The
+// order is the whole argument: room made after the arm finds the wake armed and
+// calls the registered functions once (they are then disarmed); room made before
+// it is seen by the retry. A waiter woken calls this again before it retries, so
+// room that arrives during its retry pass fires again. A wake may be spurious (a
+// retry that finds room leaves the wake armed). Sequentially consistent, as the
+// room events' reads are
+pub fn armRoomWake() {
+  (*glob()).roomState.bitOr(roomArmedBit);
+}
+
+// A room event: room has just been made, outside every lock of the pool. When no
+// waiter has armed the wake this is one atomic load
+fn roomEvent(g: *Globals) inline {
+  let s = (*g).roomState.load();
+  if s != 0u32 {
+    roomEventArmed(g, s);
+  }
+}
+
+fn roomEventArmed(g: *Globals, s: u32) {
+  if s & roomHookBit != 0u32 {
+    runRoomHook(g);       // test-only park point: after the room is made, before the flag is read
+  }
+  let was = (*g).roomState.bitAnd(0xFFFFFFFFu32 - roomArmedBit);   // the one that sees it armed disarms it, and calls
+  if was & roomArmedBit == 0u32 {
+    return;
+  }
+  var i = 0usize;
+  let n = usize.from((*g).roomWakeCount);
+  while i < n {
+    var p = *(((&(*g).roomWakes) as *usize) + i);
+    let w = mem.readRaw[&fn @c ()](&mut p as *(&fn @c ()));
+    w();
+    i = i + 1usize;
+  }
+}
+
+// A test-only hook, as setFlushHook: f is called by every room event that runs while the hook is
+// set, on the thread making the room, after the room is made and before the event reads the
+// armed flag, so a test can hold the returner there while a waiter arms and retries. A program
+// does not set it. The hook costs a program nothing: the bit that says it is set shares the
+// word the event loads anyway
+pub fn setRoomHook(f: &fn()) {
+  var held = f;
+  (*glob()).roomHook = mem.readRaw[usize](&mut held as *usize);
+  (*glob()).roomState.bitOr(roomHookBit);
+}
+
+fn runRoomHook(g: *Globals) {
+  var p = (*g).roomHook;
+  if p != 0usize {
+    let hook = mem.readRaw[&fn()](&mut p as *(&fn()));
+    hook();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The thread's cache
 // ---------------------------------------------------------------------------
 
@@ -560,15 +657,18 @@ fn @c bufpoolThreadEnded() {
     return;
   }
   (*g).regLock.lock();
+  var gave = false;
   if (*g).stopping.load() == 0u32 {   // the final has not begun (the lock orders this against it)
-    flushCache(tc);
+    flushCache(tc, false);            // under the registry's lock: the room event is made after it
     (*tc).live = 0u32;
     (*tc).nextFree = (*g).freeRecs;
     (*g).freeRecs = tc;
+    gave = true;
   } else {
     (*tc).live = 0u32;                // ended: the final flushes it if it has not yet walked past it; nothing is given back here
   }
   (*g).regLock.unlock();
+  if gave {roomEvent(g);}
 }
 
 // A take on a finished thread: one block from the stock, through a slot on the
@@ -588,7 +688,7 @@ fn lateTake(g: *Globals, c: usize) *u8 {
 fn lateReturn(g: *Globals, c: usize, b: *u8) {
   let cs = classAt(g, c);
   var one = b;
-  stockPut(g, cs, &one, 1u32);
+  stockPut(g, cs, &one, 1u32, true);
   (*cs).lateReturns.add(1u64);
 }
 
@@ -646,7 +746,7 @@ fn blockPut(c: usize, b: *u8) {
       // no cache: the block goes straight to the stock
       let e = slotsOf(ln);
       *e = b;
-      stockPut(glob(), classAt(glob(), c), e, 1u32);
+      stockPut(glob(), classAt(glob(), c), e, 1u32, true);
       return;
     }
   }
@@ -663,7 +763,7 @@ fn spill(tc: *ThreadCache, c: usize, ln: *CacheLine) {
   let g = glob();
   let cs = classAt(g, c);
   let k = if (*cs).batch < n {(*cs).batch} else {n};
-  stockPut(g, cs, slotsOf(ln), k);
+  stockPut(g, cs, slotsOf(ln), k, true);
   mem.moveRaw[*u8](slotsOf(ln), slotsOf(ln) + usize.from(k), usize.from(n - k));
   (*ln).count = n - k;
   bufCache.emit(0u64, (*tc).misses, u64.from(tc as usize), cacheHeld(tc));
@@ -679,12 +779,13 @@ pub fn flushThread() {
   }
   let g = glob();
   (*g).regLock.lock();       // under the lock, as a thread's end is, so that the final's flush cannot empty these lines too
-  flushCache(tc);
+  flushCache(tc, false);
   (*tc).live = 0u32;
   (*tc).nextFree = (*g).freeRecs;
   (*g).freeRecs = tc;
   (*g).regLock.unlock();
   myCache = null;
+  roomEvent(g);
 }
 
 // A test-only hook, a slow-path field (never read by a take or a return): f is
@@ -707,8 +808,10 @@ fn runFlushHook(g: *Globals) {
   }
 }
 
-// Every block of tc's lines back to the stock
-fn flushCache(tc: *ThreadCache) {
+// Every block of tc's lines back to the stock. 'fire' says whether each batch's room
+// event is made here; a caller that holds the registry's lock passes false and
+// makes the event itself, after it unlocks
+fn flushCache(tc: *ThreadCache, fire: bool) {
   let g = glob();
   var c = 0usize;
   while c < maxClasses {
@@ -717,7 +820,7 @@ fn flushCache(tc: *ThreadCache) {
     if n != 0u32 {
       runFlushHook(g);    // test-only park point: n is read, the line is not yet emptied
       (*ln).count = 0u32;
-      stockPut(g, classAt(g, c), slotsOf(ln), n);
+      stockPut(g, classAt(g, c), slotsOf(ln), n, fire);
     }
     c = c + 1usize;
   }
@@ -800,7 +903,10 @@ fn listPartial(cs: *ClassState, s: *SlabRec) {
 // List, a String, a buffer) that releases it once when it dies, and the entry points that release
 // (the region's 'release' and the pool's own: blockPut, releaseOversize and poolRelease, all private)
 // take a raw pointer, which is trusted. A caller that returns a block twice breaks the header's rule "a block is returned once".
-fn stockPut(g: *Globals, cs: *ClassState, src: **u8, n: u32) {
+//
+// Room is made, so the room event is made after the lock is released ('fire'; a caller that holds
+// the registry's lock passes false)
+fn stockPut(g: *Globals, cs: *ClassState, src: **u8, n: u32, fire: bool) {
   (*cs).lock.lock();
   var i = 0usize;
   let count = usize.from(n);
@@ -825,7 +931,8 @@ fn stockPut(g: *Globals, cs: *ClassState, src: **u8, n: u32) {
     doomed = reclaim(g, cs, keep);
   }
   (*cs).lock.unlock();
-  freeSlabs(g, doomed);
+  if fire {roomEvent(g);}
+  freeSlabs(g, doomed, fire);
 }
 
 // Total bytes idle in the stock, every class. The other classes' counts are
@@ -873,7 +980,8 @@ fn reclaim(g: *Globals, cs: *ClassState, keep: u64) *SlabRec {
 
 // Outside any lock: give slabs, unlinked by reclaim, back to the OS (a slab's
 // record is in the memory that goes, so what is wanted of it is read first)
-fn freeSlabs(g: *Globals, head: *SlabRec) {
+fn freeSlabs(g: *Globals, head: *SlabRec, fire: bool) {
+  if head as usize == 0usize {return;}
   var s = head;
   while s as usize != 0usize {
     let next = (*s).nextA;
@@ -883,6 +991,7 @@ fn freeSlabs(g: *Globals, head: *SlabRec) {
     (*g).osFrees.add(1u64);
     s = next;
   }
+  if fire {roomEvent(g);}     // 'held' is lower
 }
 
 // ---------------------------------------------------------------------------
@@ -890,14 +999,24 @@ fn freeSlabs(g: *Globals, head: *SlabRec) {
 // ---------------------------------------------------------------------------
 
 // Count size bytes against a bound on the bytes held; whether it holds
+//
+// A refusal leaves 'held' as it was: it is read and then raised by a compare-and-swap, never raised
+// and lowered again, because a caller that fails a concurrent caller's reserve by a count that goes
+// away a moment later would be refused with room in hand and no event to wake it (ROOM WAKE)
 fn reserve(g: *Globals, size: usize, limit: u64) bool {
   let n = u64.from(size);
-  let before = (*g).held.add(n);
-  if before + n > limit {
-    (*g).held.sub(n);
-    return false;
+  var cur = (*g).held.load();
+  while true {
+    if cur + n > limit {
+      return false;
+    }
+    let seen, ok = (*g).held.compareSwap(cur, cur + n);
+    if ok {
+      return true;
+    }
+    cur = seen;
   }
-  true
+  false
 }
 
 // Count size bytes against a bound, making room if need be: every wholly
@@ -907,7 +1026,7 @@ fn reserveRoom(g: *Globals, size: usize, limit: u64) bool {
   trimStockOf(g);
   if reserve(g, size, limit) {return true;}
   let tc = myCache;
-  if tc as usize != 0usize {flushCache(tc);}
+  if tc as usize != 0usize {flushCache(tc, true);}
   trimStockOf(g);
   reserve(g, size, limit)
 }
@@ -967,7 +1086,7 @@ fn trimStockOf(g: *Globals) {
     (*cs).lock.lock();
     let doomed = reclaim(g, cs, 0u64);
     (*cs).lock.unlock();
-    freeSlabs(g, doomed);
+    freeSlabs(g, doomed, true);
     c = c + 1usize;
   }
 }
@@ -975,7 +1094,7 @@ fn trimStockOf(g: *Globals) {
 // This thread's cache back to the stock, and every wholly idle slab to the OS
 pub fn trimStock() {
   let tc = myCache;
-  if tc as usize != 0usize {flushCache(tc);}
+  if tc as usize != 0usize {flushCache(tc, true);}
   trimStockOf(glob());
 }
 
@@ -1001,6 +1120,7 @@ pub fn trimEverything() {
   }
   flushRegistry(g);
   (*g).regLock.unlock();
+  roomEvent(g);
   trimStockOf(g);
 }
 
@@ -1008,7 +1128,7 @@ pub fn trimEverything() {
 fn flushRegistry(g: *Globals) {
   var tc = (*g).regHead;
   while tc as usize != 0usize {
-    flushCache(tc);
+    flushCache(tc, false);
     tc = (*tc).nextReg;
   }
 }
@@ -1025,7 +1145,7 @@ fn trimAllCachesFinal() {
   var tc = (*g).regHead;
   while tc as usize != 0usize {
     if tc == me || (*tc).live == 0u32 {
-      flushCache(tc);
+      flushCache(tc, false);
     }
     tc = (*tc).nextReg;
   }
@@ -1064,6 +1184,7 @@ fn releaseOversize(b: *u8, size: usize) {
   (*g).osFrees.add(1u64);
   (*g).bigLent.sub(1u64);
   (*g).bigBytes.sub(u64.from(size));
+  roomEvent(g);
 }
 
 // ---------------------------------------------------------------------------
