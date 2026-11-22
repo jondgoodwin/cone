@@ -13,12 +13,11 @@
 //   3. A HANDSHAKE THAT FAILS gives back its handshaking place: with room for two, five clients that refuse the
 //      server's certificate come one after the other, each ending with the place freed, and a sixth that trusts it
 //      is let in. The mutant drops the release (the places stay held and the later clients are refused)
-//   4. the table is bounded: a connection told over and over of IDs (what a client that retires and asks again
-//      makes it do) holds at most its client's first ID and maxIssuedIds more, a key another connection holds is
-//      never replaced, and the keys leave with the connection
-//   5. an Initial naming another connection's ID (its Destination ID rewritten to that of a connection that is
-//      up) goes to that connection, which drops it: nothing is admitted, nothing replaced, and the connection
-//      still serves
+//   4. the table holds each connection's first ID and the IDs it issued (at most 17), and the keys leave with the
+//      connection (the table's bound against a client that retires and asks again is actorhttp's h3endpointfake)
+//   5. an Initial naming another connection's ID (its Destination ID rewritten to that of a half-open connection
+//      from a raw socket) goes to that connection, which drops it: nothing is admitted, nothing replaced, and a real
+//      client is still served
 //   6. datagrams of IDs no connection has (a first-flight junk, short packets, a non-Initial long header) make no
 //      connection and are counted
 //   7. the server's HTTP/3 count: after the endpoint shuts down, every connection actor and then the endpoint are freed
@@ -81,10 +80,6 @@ actor Prober {
     out.send(Snap(s, c, h, t));
   }
 
-  pub async fn tell(self, e: H3Endpoint, conn: u64, keys: List[H3Cid], out: Sender[bool]) {
-    let ok = await e.ids(conn, keys);
-    out.send(ok);
-  }
 }
 
 fn snap(e: &H3Endpoint) Snap {
@@ -99,13 +94,6 @@ fn snap(e: &H3Endpoint) Snap {
   panic("the endpoint did not answer")
 }
 
-fn tellIds(e: &H3Endpoint, conn: u64, keys: List[H3Cid]) {
-  var tx: Sender[bool];
-  var rx: Receiver[bool];
-  tx, rx = Channel[bool].make();
-  Prober().tell(*e, conn, keys, tx);
-  let r = rx.recvTimeout(Duration.fromMillis(4000i64));
-}
 
 fn waitConns(e: &H3Endpoint, want: u32, limitMs: i64) Snap {
   let until = Instant.now() + Duration.fromMillis(limitMs);
@@ -379,11 +367,10 @@ fn main() i32 {
     ep.endpoint.shutdown();
   }
 
-  // 4. The table is bounded, nothing of another connection's is replaced, the keys leave with the connection
+  // 4. The table holds each connection's first ID and the IDs it issued, and the keys leave with the connection
+  // (the table's bound against a client that retires and asks for IDs in a loop is actorhttp's h3endpointfake)
   {
-    var cfg4 = H3EndpointConfig.make();
-    cfg4.shutdownTimeout = Duration.fromMillis(300i64);
-    let ep = startEndpoint(cfg4, 0i64);
+    let ep = startEndpoint(H3EndpointConfig.make(), 0i64);
     var a = makeClient(true);
     dialClient(&mut a, ep.port);
     runClient(&mut a, 1u32, 8000i64);
@@ -392,44 +379,12 @@ fn main() i32 {
     runClient(&mut b, 1u32, 8000i64);
     let base = snap(&ep.endpoint);
     expectUInt(u64.from(base.conns), 2u64, "4: two connections up");
-    // connection 1 is told, a hundred times, of fresh IDs (a client that retires and asks for more in a loop)
-    var round = 0u32;
-    while round < 100u32 {
-      var keys = List[H3Cid]();
-      var j = 0u32;
-      while j < 40u32 {keys.push(keyOf(1000u32 * round + j)); j = j + 1u32;}
-      tellIds(&ep.endpoint, 1u64, keys);
-      round = round + 1u32;
-    }
-    let s = snap(&ep.endpoint);
-    expect(s.table >= 18u64 && s.table <= 18u64 + 16u64, "4: after 100 rounds of 40 new IDs connection 1 holds its first ID and 16 more (17), connection 2 its own: the table is bounded");
-    expect(s.stats.idsCapped > 0u64, "4: the surplus is counted (idsCapped)");
-    // connection 2 is told of a key connection 1 holds: refused, not replaced
-    var dup = List[H3Cid]();
-    dup.push(keyOf(1000u32 * 99u32 + 0u32));
-    let refusedBefore = s.stats.idRefused;
-    tellIds(&ep.endpoint, 2u64, dup);
-    let s2 = snap(&ep.endpoint);
-    expectUInt(s2.stats.idRefused, refusedBefore + 1u64, "4: a key the table holds is not registered again for another connection");
-    // (connection 2 is told of this key alone, so the IDs it had issued leave the table, and the key stays connection 1's)
-    tellIds(&ep.endpoint, 2u64, List[H3Cid]());
-    let s2b = snap(&ep.endpoint);
-    expectUInt(s2b.table, 18u64, "4: nothing was replaced: connection 1's 17 keys and connection 2's first ID are all the table holds");
-    // told of none: the issued keys it held leave
-    tellIds(&ep.endpoint, 1u64, List[H3Cid]());
-    let s3 = snap(&ep.endpoint);
-    expectUInt(s3.table, 2u64, "4: IDs a connection no longer answers to leave the table (the two first IDs stay)");
-    // an ID of a connection that is not there
-    var strays = List[H3Cid]();
-    strays.push(keyOf(5u32));
-    tellIds(&ep.endpoint, 999u64, strays);
-    expectUInt(snap(&ep.endpoint).table, s3.table, "4: a registration for no connection adds nothing");
-    // (the connections' own IDs were replaced above, so their closes are not routed: the endpoint's shutdown cuts them)
+    expect(base.table >= 4u64 && base.table <= 34u64, "4: each holds its first ID and the IDs it issued, at most 17");
     closeClient(&mut a);
     closeClient(&mut b);
-    ep.endpoint.shutdown();
     let gone = waitConns(&ep.endpoint, 0u32, 8000i64);
     expectUInt(gone.table, 0u64, "4: the keys left with the connections");
+    ep.endpoint.shutdown();
   }
 
   // 5. An Initial naming another connection's ID goes to it and is dropped
@@ -440,36 +395,26 @@ fn main() i32 {
       case var Ok(k) {k}
       case let Err(f) {panic("no connector")}
     };
-    var a = makeClient(true);
-    dialClient(&mut a, ep.port);
-    runClient(&mut a, 2u32, 8000i64);
-    let base = snap(&ep.endpoint);
-    // A second Initial, its Destination ID overwritten with the first connection's issued one: the first
-    // key of the first connection is the client's own choice, which this test does not know, so take it from
-    // the datagram a client value makes, and aim the rewritten datagram at it by the first connection's table
-    // entry (any key the table holds routes the same way): here, a key the table holds is the one for connection 1
-    // that a connection told of keys has, so register one and use it
-    var keys = List[H3Cid]();
-    let target = keyOf(77u32);
-    keys.push(target);
-    tellIds(&ep.endpoint, 1u64, keys);
+    // A first Initial from a raw socket makes a connection (half-open: nothing answers its server)
+    let raw = newRaw();
+    let first = firstInitial(&con, 4u32);
+    rawSend(&raw, SocketAddr.localhost(ep.port), copyOf(first.view()));
+    aioNap(300i64);
     let before = snap(&ep.endpoint);
+    expectUInt(before.stats.admitted, 1u64, "5: the first Initial made a connection");
+    // A second Initial, its Destination ID overwritten with the first connection's (long header: flags, version (4),
+    // DCID length, DCID, then the rest): it is not decryptable, and goes where the ID says
     var d = firstInitial(&con, 5u32);
-    // long header: flags, version (4), DCID length, DCID. keyOf is 9 bytes: rewrite the length and its bytes
     var rewritten = List[u8]();
     var i = 0usize;
     while i < 5usize {rewritten.push(d[i]); i = i + 1usize;}
     let oldLen = usize.from(d[5usize]);
-    rewritten.push(9u8);
-    var kb = List[u8]();
-    var q = 0u32;
-    while q < 8u32 {kb.push(u8.from((77u32 >> (8u32 * (q % 4u32))) & 255u32) ^ u8.from(q * 31u32)); q = q + 1u32;}
-    kb.push(0xEEu8);
+    let newLen = usize.from(first[5usize]);
+    rewritten.push(first[5usize]);
     i = 0usize;
-    while i < kb.len() {rewritten.push(kb[i]); i = i + 1usize;}
+    while i < newLen {rewritten.push(first[6usize + i]); i = i + 1usize;}
     i = 6usize + oldLen;
     while i < d.len() {rewritten.push(d[i]); i = i + 1usize;}
-    let raw = newRaw();
     var round = 0u32;
     while round < 20u32 {
       rawSend(&raw, SocketAddr.localhost(ep.port), copyOf(rewritten.view()));
@@ -477,13 +422,15 @@ fn main() i32 {
     }
     aioNap(300i64);
     let s = snap(&ep.endpoint);
-    expectUInt(s.stats.admitted, base.stats.admitted, "5: no connection was admitted by an Initial naming a connection's ID");
+    expectUInt(s.stats.admitted, 1u64, "5: no connection was admitted by an Initial naming a connection's ID");
     expectUInt(u64.from(s.conns), 1u64, "5: still the one connection");
     expectUInt(s.table, before.table, "5: nothing of the table was replaced or added");
     expectUInt(s.stats.unknownId, before.stats.unknownId, "5: the datagrams were not counted unknown: they went to the connection the ID names");
-    a.asked = false;
-    a.status = 0u16;
-    runClient(&mut a, 2u32, 100i64);
+    // and a real client still gets in beside it
+    var a = makeClient(true);
+    dialClient(&mut a, ep.port);
+    runClient(&mut a, 2u32, 8000i64);
+    expectUInt(u64.from(a.status), 503u64, "5: a real client is answered beside it");
     closeClient(&mut a);
     ep.endpoint.shutdown();
   }

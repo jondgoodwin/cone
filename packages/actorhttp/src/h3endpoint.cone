@@ -331,7 +331,7 @@ pub actor H3Endpoint {
   // ------------------------------------------------------------------
 
   // A connection's handshake is done: its handshaking place is given back
-  pub async fn established(self, conn: u64) {
+  async fn established(self, conn: u64) {
     match byConn.getCopy(&conn) {
       case let Some(k) {
         if slots[k].handshaking {
@@ -344,7 +344,7 @@ pub actor H3Endpoint {
   }
 
   // A connection has ended (or its accept was refused): its keys leave the table, its place is given back
-  pub async fn gone(self, conn: u64, acceptFailed: bool) {
+  async fn gone(self, conn: u64, acceptFailed: bool) {
     if acceptFailed {refused.acceptFailed = refused.acceptFailed + 1u64;}
     match byConn.getCopy(&conn) {
       case let Some(k) {self.removeSlot(k);}
@@ -355,7 +355,7 @@ pub actor H3Endpoint {
   // The connection's issued IDs (all it answers to now except the client's first), registered once the table
   // holds them: the connection awaits this answer before it sends a datagram that carries a new one. A key the
   // table already holds (for any connection) is not replaced; the slot holds at most maxIssuedIds
-  pub async fn ids(self, conn: u64, keys: List[httpclient.H3Cid]) bool {
+  async fn ids(self, conn: u64, keys: List[httpclient.H3Cid]) bool {
     if idsDelayMs > 0i64 {
       let z = await aio.sleep(Duration.fromMillis(idsDelayMs));
     }
@@ -395,7 +395,8 @@ pub actor H3Endpoint {
 
   // A datagram arrived, from 'from'
   fn onDatagram(self, from: SocketAddr, buf: IoBuf) {
-    if stopped {return;}
+    // (after a shutdown has begun, a known connection's datagrams still go to it so it can finish closing, and an
+    // Initial is refused by 'accepting')
     let Some(key) = acc.connectionId(buf.view()) else {
       refused.unknownId = refused.unknownId + 1u64;
       return;
@@ -801,6 +802,8 @@ actor H3ConnActor {
         }
         if ended {break;}
       }
+      // (the send's Result is ignored: a datagram the socket would not take is a lost datagram, which QUIC's loss
+      // recovery resends, not an error of this connection's)
       let r = await tx.sendToIn(peer, buf, IoLimits.within(group));
       n = n + 1usize;
       sent = true;

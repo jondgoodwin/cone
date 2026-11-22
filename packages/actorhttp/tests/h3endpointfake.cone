@@ -1,0 +1,315 @@
+// The HTTP/3 endpoint's bounds, driven with a fake plug-in (no QUIC): an acceptor that reads a made-up header and a server
+// connection value that does what a test asks, so the endpoint's own caps are reached exactly. (The same endpoint against
+// real QUIC is h3driver's tests h3endpoint and h3endpointflood.) A datagram here is: byte 0 0xC0 (an "Initial") or 0x40,
+// bytes 1..8 its Destination ID, byte 9 the connection's mode (0 plain, 1 hostile IDs, 2 sleepy), byte 10 its salt.
+//   1. HOSTILE IDs: a connection that moves its connection-ID epoch with 40 fresh IDs on every datagram it sends (a client
+//      that retires and asks again in a loop) holds in the table its first ID and 16 more, never more, and the surplus is
+//      counted (idsCapped); the IDs it no longer answers to leave the table
+//   2. an ID a connection asks to register that the table holds for another connection is refused and counted (idRefused);
+//      nothing of the other's is replaced
+//   3. THE BACKLOG CAP: one connection whose actor is busy (its datagramIn sleeps 40 ms) is sent 3,000 datagrams with a
+//      cap of 20 waiting; the excess is dropped and counted (backlogDropped), and the buffers lent stay bounded (a cap
+//      of 20 holds 80 KiB, not 12 MB). The mutant removes the cap check: nothing is dropped and the buffers pile up
+//   4. an Initial sent after the shutdown has begun is refused and counted (refusedNotAccepting)
+
+mod h3endpointfake;
+
+import stdio use *;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf, stats;
+import iocore use SocketAddr, Handle, Completion, Op;
+import http use *;
+import httpconn;
+import httpclient use H3Cid;
+import actors;
+import aio;
+import actorhttp use H3Endpoint, H3EndpointConfig, H3EndpointStats, H3BoundEndpoint, startH3Endpoint;
+import testing use *;
+
+// ---------------------------------------------------------------------------
+// The fake plug-in
+// ---------------------------------------------------------------------------
+
+struct FakeConn is Move, httpclient.H3ServerConn {
+  mode: u8;
+  salt: u8;
+  epoch: u64;
+  sent: u32;
+  head: RequestHead;
+  resp: ResponseHead;
+  failure: Option[httpconn.Failure];
+
+  pub fn next(self: &mut, now: Instant) httpconn.ServerEvent {httpconn.ServerEvent.Nothing}
+  pub fn request(self: &) &RequestHead {&head}
+  pub fn takeRequest(self: &mut) RequestHead {RequestHead()}
+  pub fn recycleRequest(self: &mut, spare: RequestHead) {}
+  pub fn response(self: &mut) &mut ResponseHead {&mut resp}
+  pub fn respond(self: &mut, stream: u32, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {}
+  pub fn sendInterim(self: &mut, stream: u32, head: ResponseHead, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {}
+  pub fn sendContinue(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {}
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {None[IoBuf]}
+  pub fn writeRoom(self: &, stream: u32) usize {0usize}
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {}
+  pub fn release(self: &mut, stream: u32, n: usize) {}
+  pub fn stopBody(self: &mut, stream: u32) bool {false}
+  pub fn pollTimeout(self: &) Option[Instant] {None[Instant]}
+  pub fn handleTimeout(self: &mut, now: Instant) {}
+  pub fn shutdown(self: &mut) {}
+  pub fn abort(self: &mut) {}
+  pub fn done(self: &mut, now: Instant) bool {false}
+  pub fn failureOf(self: &) &Option[httpconn.Failure] {&failure}
+  pub fn isHttp2(self: &) bool {true}
+  pub fn isOpen(self: &) bool {true}
+  pub fn wantsCall(self: &) bool {false}
+  pub fn takeCall(self: &mut) Op {Op.RecvReady(Handle.none())}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {}
+  pub fn datagramIn(self: &mut, d: &Array[u8], now: Instant) {
+    if mode == 2u8 {thread.sleep(Duration.fromMillis(40i64));}
+  }
+  // The hostile one makes 30 datagrams, each after the connection IDs have changed
+  pub fn takeDatagram(self: &mut, now: Instant) Option[IoBuf] {
+    if mode == 1u8 && sent < 30u32 {
+      sent = sent + 1u32;
+      epoch = epoch + 1u64;
+      var b = IoBuf(8usize);
+      b.append("fake");
+      return Some[IoBuf](b);
+    }
+    if mode != 1u8 && sent < 1u32 {
+      // the others send one datagram, which carries their one ID
+      sent = sent + 1u32;
+      var b = IoBuf(8usize);
+      b.append("fake");
+      return Some[IoBuf](b);
+    }
+    None[IoBuf]
+  }
+  pub fn finishTurn(self: &mut, now: Instant) {}
+  pub fn wantsTurn(self: &) bool {false}
+  pub fn ids(self: &, out: &mut List[H3Cid]) usize {
+    var bytes = List[u8]();
+    var n = 0usize;
+    if mode == 1u8 {
+      // 40 IDs, fresh with each epoch
+      while n < 40usize {
+        bytes.clear();
+        bytes.push(0xB0u8);
+        bytes.push(salt);
+        bytes.push(u8.from(epoch & 255u64));
+        bytes.push(u8.from((epoch >> 8u64) & 255u64));
+        bytes.push(u8.from(n));
+        bytes.push(1u8);
+        bytes.push(2u8);
+        bytes.push(3u8);
+        match H3Cid.of(bytes.view(), 0usize, 8usize) {
+          case let Some(k) {out.push(k);}
+          case is None[H3Cid] {}
+        }
+        n = n + 1usize;
+      }
+      return 40usize;
+    }
+    // the others: one ID that depends on the salt alone
+    bytes.push(0xA0u8);
+    bytes.push(salt);
+    var k = 0u8;
+    while k < 6u8 {bytes.push(k); k = k + 1u8;}
+    match H3Cid.of(bytes.view(), 0usize, 8usize) {
+      case let Some(key) {out.push(key); return 1usize;}
+      case is None[H3Cid] {}
+    }
+    0usize
+  }
+  pub fn idsEpoch(self: &) u64 {epoch + 1u64}
+}
+
+struct FakeAcc is httpclient.H3Acceptor {
+  pad: u32;
+
+  pub fn connectionId(self: &, d: &Array[u8]) Option[H3Cid] {
+    if d.len < 11usize {return None[H3Cid];}
+    H3Cid.of(d, 1usize, 8usize)
+  }
+  pub fn isInitial(self: &, d: &Array[u8]) bool {d.len >= 11usize && d[0usize] == 0xC0u8}
+  pub fn accept(self: &, first: &Array[u8], bound: SocketAddr, peer: SocketAddr, now: Instant)
+      Result[Uni[httpclient.H3ServerConn], httpclient.Failure] {
+    let c = FakeConn(first[9usize], first[10usize], 0u64, 0u32, RequestHead(), ResponseHead(), None[httpconn.Failure]);
+    Ok[Uni[httpclient.H3ServerConn], httpclient.Failure](Uni[FakeConn](c))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The harness
+// ---------------------------------------------------------------------------
+
+struct Snap {
+  stats: H3EndpointStats;
+  conns: u32;
+  table: u64;
+}
+
+actor Prober {
+  pub async fn ask(self, e: H3Endpoint, out: Sender[Snap]) {
+    let s = await e.stats();
+    let c = await e.connections();
+    let t = await e.tableSize();
+    out.send(Snap(s, c, t));
+  }
+}
+
+fn snap(e: &H3Endpoint) Snap {
+  var tx: Sender[Snap];
+  var rx: Receiver[Snap];
+  tx, rx = Channel[Snap].make();
+  Prober().ask(*e, tx);
+  match rx.recvTimeout(Duration.fromMillis(4000i64)) {
+    case let Some(s) {return s;}
+    case is None[Snap] {}
+  }
+  panic("the endpoint did not answer")
+}
+
+fn nap(ms: i64) {
+  let t = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < t {thread.sleep(Duration.fromMillis(1i64));}
+}
+
+fn start(cfg: H3EndpointConfig) H3BoundEndpoint {
+  let acc: Uni[httpclient.H3Acceptor] = Uni[FakeAcc](FakeAcc(0u32));
+  match startH3Endpoint(SocketAddr.localhost(0u16), acc, cfg) {
+    case var Ok(b) {return b;}
+    case let Err(e) {}
+  }
+  panic("the endpoint could not bind")
+}
+
+// A raw UDP source that sends made-up datagrams
+actor Raw {
+  sock: aio.UdpSocket;
+
+  fn init(self: &new) {*self = Self(sock: aio.UdpSocket.none());}
+
+  pub async fn open(self, var up: OneshotSender[bool]) {
+    match await aio.bindUdp(SocketAddr.localhost(0u16)) {
+      case let Ok(s) {sock = s; up.send(true);}
+      case let Err(e) {up.send(false);}
+    }
+  }
+
+  // count datagrams: an Initial (init) or not, of connection kid, in mode, with salt
+  pub async fn blast(self, to: SocketAddr, init: bool, kid: u8, mode: u8, salt: u8, count: u32, var done: OneshotSender[bool]) {
+    var i = 0u32;
+    while i < count {
+      var b = IoBuf(100usize);
+      var bytes = List[u8]();
+      bytes.push(if init {0xC0u8} else {0x40u8});
+      bytes.push(0x11u8);
+      bytes.push(kid);
+      var k = 3u8;
+      while k < 9u8 {bytes.push(k); k = k + 1u8;}
+      bytes.push(mode);
+      bytes.push(salt);
+      while bytes.len() < 100usize {bytes.push(0u8);}
+      b.append(bytes.view());
+      let r = await sock.sendTo(to, b);
+      i = i + 1u32;
+    }
+    done.send(true);
+  }
+}
+
+fn newRaw() Raw {
+  let r = Raw();
+  var tx: OneshotSender[bool];
+  var rx: OneshotReceiver[bool];
+  tx, rx = Oneshot[bool].make();
+  r.open(tx);
+  require(rx.recv() || false, "the raw socket bound");
+  r
+}
+
+fn blast(r: &Raw, port: u16, init: bool, kid: u8, mode: u8, salt: u8, count: u32) {
+  var tx: OneshotSender[bool];
+  var rx: OneshotReceiver[bool];
+  tx, rx = Oneshot[bool].make();
+  r.blast(SocketAddr.localhost(port), init, kid, mode, salt, count, tx);
+  let ok = rx.recv();
+}
+
+fn main() i32 {
+  // 1. Hostile IDs
+  {
+    var cfg = H3EndpointConfig.make();
+    cfg.shutdownTimeout = Duration.fromMillis(300i64);
+    let ep = start(cfg);
+    let raw = newRaw();
+    blast(&raw, ep.port, true, 1u8, 1u8, 1u8, 1u32);
+    nap(800i64);
+    let s = snap(&ep.endpoint);
+    expectUInt(u64.from(s.conns), 1u64, "1: one connection");
+    expectUInt(s.table, 17u64, "1: after 30 epochs of 40 fresh IDs it holds its first ID and 16 more, no more");
+    expect(s.stats.idsCapped > 0u64, "1: the surplus is counted");
+    expectUInt(s.stats.unknownId, 0u64, "1: nothing else was unknown");
+    ep.endpoint.shutdown();
+  }
+
+  // 2. A key the table holds is refused for another connection
+  {
+    var cfg = H3EndpointConfig.make();
+    cfg.shutdownTimeout = Duration.fromMillis(300i64);
+    let ep = start(cfg);
+    let raw = newRaw();
+    blast(&raw, ep.port, true, 1u8, 0u8, 7u8, 1u32);
+    nap(200i64);
+    blast(&raw, ep.port, true, 2u8, 0u8, 7u8, 1u32);
+    nap(500i64);
+    let s = snap(&ep.endpoint);
+    expectUInt(u64.from(s.conns), 2u64, "2: two connections");
+    expectUInt(s.stats.idRefused, 1u64, "2: the second's ID, the first's already, is refused and counted");
+    expectUInt(s.table, 3u64, "2: two first IDs and the one issued ID, nothing replaced");
+    ep.endpoint.shutdown();
+  }
+
+  // 3. The backlog cap
+  {
+    var cfg = H3EndpointConfig.make();
+    cfg.maxBacklog = 20u32;
+    cfg.shutdownTimeout = Duration.fromMillis(300i64);
+    let ep = start(cfg);
+    let raw = newRaw();
+    blast(&raw, ep.port, true, 1u8, 2u8, 3u8, 1u32);
+    nap(300i64);
+    let lent0 = stats().lentBytes;
+    blast(&raw, ep.port, false, 1u8, 2u8, 3u8, 3000u32);
+    let lent1 = stats().lentBytes;
+    nap(200i64);
+    let s = snap(&ep.endpoint);
+    expect(s.stats.backlogDropped >= 2000u64, "3: the datagrams past the cap are dropped and counted");
+    expect(s.stats.backlogDropped < 3000u64, "3: and some got through");
+    expect(lent1 < lent0 + 1048576usize, "3: the buffers lent stay bounded (a cap of 20, not 3,000 buffers)");
+    ep.endpoint.shutdown();
+  }
+
+  // 4. An Initial after the shutdown has begun
+  {
+    var cfg = H3EndpointConfig.make();
+    cfg.shutdownTimeout = Duration.fromMillis(1500i64);
+    let ep = start(cfg);
+    let raw = newRaw();
+    blast(&raw, ep.port, true, 1u8, 0u8, 9u8, 1u32);
+    nap(300i64);
+    ep.endpoint.shutdown();
+    nap(200i64);
+    blast(&raw, ep.port, true, 2u8, 0u8, 9u8, 1u32);
+    nap(300i64);
+    let s = snap(&ep.endpoint);
+    expectUInt(s.stats.refusedNotAccepting, 1u64, "4: an Initial after the shutdown began is refused and counted");
+    expectUInt(s.stats.admitted, 1u64, "4: and no connection was made for it");
+  }
+  nap(2000i64);
+  printStr("h3endpointfake: done\n");
+  0i32
+}
