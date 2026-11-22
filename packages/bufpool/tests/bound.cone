@@ -148,6 +148,7 @@ fn main() i32 {
   expectUInt(checkSlabs(), 0u64, "2: sound with the decommitted blocks");
   var taken = 0usize;
   var rising = true;
+  var accounted = true;
   var writable = true;
   while taken < 124usize {
     let b = r.allocate(65536usize, 8usize);
@@ -156,9 +157,11 @@ fn main() i32 {
     paint(b, 65536usize, u8.from(taken % 100usize) + 1u8);
     taken = taken + 1usize;
     if osBytes() != u64.from((4usize + taken) * chunk) {rising = false;}
+    if heldNow() != osBytes() {accounted = false;}
   }
   expectUInt(u64.from(taken), 124u64, "2: all 124 blocks come back");
   expect(rising, "2: osBytes() rose by each block's 64 KiB");
+  expect(accounted, "2: and so did the bound's count: each recommit was reserved against it first");
   i = 0usize;
   while i < taken {
     if !painted(*at(big, i) as *u8, 65536usize, u8.from(i % 100usize) + 1u8) {writable = false;}
@@ -172,7 +175,9 @@ fn main() i32 {
   }
   expect(writable, "2: the lent blocks were not touched");
   expectUInt(osBytes(), u64.from(8usize * mib), "2: 8 MiB committed again");
-  expect(r.allocate(65536usize, 8usize) as usize == 0usize, "2: and the bound refuses another");
+  let extra = r.allocate(65536usize, 8usize);
+  expect(extra as usize == 0usize, "2: and the bound refuses another");
+  if extra as usize != 0usize {r.release(extra, 65536usize);}
   expectUInt(checkSlabs(), 0u64, "2: sound after the recommits: free lists and bitmaps agree");
   i = 0usize;
   while i < taken {
