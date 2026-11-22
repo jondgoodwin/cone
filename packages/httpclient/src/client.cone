@@ -949,20 +949,9 @@ pub struct Client {
   // aborted (its Closed frees the record); when it fell back, the origin's
   // HTTP/3 is not tried again for h3BrokenFor, and its fetches take TCP
   fn dropAttempt(self: &mut, lp: &mut Loop, pc: u32, fellBack: bool) {
+    // (the pool's part, and the back-off, are the core's: the client actor's attempts end there too)
+    cc.dropH3Attempt(pc, fellBack);
     let p = self.cc.pconns.borrowMutAt(pc).unwrap();
-    let og = self.cc.origins.borrowMutAt(u32.from(p.origin)).unwrap();
-    removeValue(&mut cc.attempts, pc);
-    if og.h3c == pc {og.h3c = noEntry;}
-    if fellBack {
-      og.h3Broken = Instant.now() + Duration.fromSeconds(h3BrokenFor);
-      cc.st.h3Fallbacks = cc.st.h3Fallbacks + 1u64;
-    }
-    if p.state == pConnecting {
-      og.connecting = og.connecting - 1u32;
-      og.open = og.open - 1u32;
-      cc.total = cc.total - 1u32;
-    }
-    self.touch(p.origin);
     if !p.lookup.isNone() {
       lp.cancel(p.lookup);
       p.lookup = OpId.none();
@@ -985,7 +974,7 @@ pub struct Client {
       k = k - 1usize;
       if k >= cc.attempts.len() {continue;}
       let pc = *cc.attempts[k];
-      if now >= (self.cc.pconns.borrowAt(pc).unwrap()).h3By {self.dropAttempt(lp, pc, true);}
+      if now >= cc.h3Deadline(pc) {self.dropAttempt(lp, pc, true);}
     }
   }
 
@@ -1025,65 +1014,17 @@ pub struct Client {
     n
   }
 
-  // An HTTP/3 connection's event: connected (it takes fetches now), or
-  // closed (one that never connected falls back)
+  // An HTTP/3 connection's event: connected (it takes fetches now), or closed (one that never connected falls back, and
+  // each fetch still on it is sent again or failed by the rule of any connection's loss: the plug-in answers each request
+  // before its Closed, so a fetch left is one it lost). Both are the core's, the client actor's connections end there too
   fn onH3Conn(self: &mut, lp: &mut Loop, pc: u32, e: &H3Event) {
-    let p = self.cc.pconns.borrowMutAt(pc).unwrap();
-    let og = self.cc.origins.borrowMutAt(u32.from(p.origin)).unwrap();
     if e.kind == H3Kind.Connected {
-      if p.state == pConnecting {
-        removeValue(&mut cc.attempts, pc);
-        og.connecting = og.connecting - 1u32;
-        p.state = pShared;
-        og.connected = true;
-        self.cc.noteIdle(pc);
-        self.touch(p.origin);
-      }
+      cc.connected(pc, &wire);
       return;
     }
     if e.kind != H3Kind.Closed {return;}
-    // A close ends every fetch still on the connection (the plug-in answers
-    // each request before it, but a fetch it left unanswered would wait for
-    // its deadline): each fails at once, or is retried as any other loss of
-    // its connection would be
-    let oidx = p.origin;
-    self.failFetchesOn(lp, pc, e);
-    let was = self.cc.pconns.borrowAt(pc).unwrap().state;
-    removeValue(&mut cc.attempts, pc);
-    let og2 = self.cc.origins.borrowMutAt(u32.from(oidx)).unwrap();
-    if og2.h3c == pc {og2.h3c = noEntry;}
-    if was == pConnecting {
-      // Its handshake failed: TCP for a while
-      og2.connecting = og2.connecting - 1u32;
-      og2.open = og2.open - 1u32;
-      cc.total = cc.total - 1u32;
-      og2.h3Broken = Instant.now() + Duration.fromSeconds(h3BrokenFor);
-      cc.st.h3Fallbacks = cc.st.h3Fallbacks + 1u64;
-    } else if was == pShared {
-      og2.open = og2.open - 1u32;
-      cc.total = cc.total - 1u32;
-    }
-    cc.st.closed = cc.st.closed + 1u64;
-    self.touch(oidx);
-    self.freeConnRec(pc);
-  }
-
-  // The fetches still under way on HTTP/3 connection pc, whose Closed event e
-  // has come: each fails with the connection's failure (a Closed one of ours
-  // when it ended cleanly), through reqFailed, so that a fetch the retry
-  // rules allow goes to another connection
-  fn failFetchesOn(self: &mut, lp: &mut Loop, pc: u32, e: &H3Event) {
-    var i = 0u32;
-    while usize.from(i) < cc.fetches.bound() {
-      if !self.fetchLive(i) {i = i + 1u32; continue;}
-      let f = self.cc.fetches.borrowAt(i).unwrap();
-      if f.state == fActive && f.conn == pc && self.fetchConnLive(f) {
-        var fl = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the HTTP/3 connection closed before the exchange ended");
-        if !e.clean {fl = e.failure.clone();}
-        self.reqFailed(lp, i, fl);
-      }
-      i = i + 1u32;
-    }
+    cc.closed(pc, e.clean, e.failure.clone(), false);
+    self.drain(lp);
   }
 
   // A streamed fetch's queued pieces, as many as its connection takes now; then, the body being

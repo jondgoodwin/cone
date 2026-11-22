@@ -107,7 +107,6 @@ struct ClientArgs {
   tlsFail: Option[httpclient.Failure];
   maxBody: usize;
   h3: Option[Uni[httpclient.H3Connector]];   // the HTTP/3 plug-in's connector, shared by the QUIC connection actors (None: no HTTP/3)
-  h3Timeout: Duration;                       // an attempt not up by then falls back to TCP
 }
 
 alias FetchReply = actors.ReplyOf[Result[httpclient.Response, FetchError]];
@@ -233,8 +232,7 @@ pub actor ClientActor {
       case var Err(x) {tlsFail = Some[httpclient.Failure](x);}
     }
     let h3on = h3 is Some;
-    let h3Timeout = limits.h3Timeout;
-    let args = Arc[imm, ClientArgs](ClientArgs(conn, tlsc, tlsFail, maxBody, h3, h3Timeout));
+    let args = Arc[imm, ClientArgs](ClientArgs(conn, tlsc, tlsFail, maxBody, h3));
     *self = Self(args: args, core: httpclient.ClientCore.make(limits, maxOrigins, h3on), facts: Facts(CStates()),
       fetches: FetchRecs(), conns: ConnActors(), qconns: QuicActors(), addrs: AddrCache(),
       dls: PriorityQueue[i64, httpclient.FetchId](), tm: actors.Timer.make(), group: CancelGroup.make(), refs: 1u64,
@@ -564,7 +562,7 @@ pub actor ClientActor {
     facts.states.insert(r.pc, CState(r.gen, 0usize, 0u64, 0u64, true, 0u32));
     let port = c.port;
     let host = c.(host);
-    selfactor.dialH3(r.pc, r.gen, host, port, Instant.now() + args.h3Timeout);
+    selfactor.dialH3(r.pc, r.gen, host, port, core.h3Deadline(r.pc));
   }
 
   pub async fn dialH3(self, pc: u32, gen: u32, host: String, port: u16, upBy: Instant) {

@@ -1415,10 +1415,7 @@ pub struct ClientCore {
     if isQuic {
       removeValue(&mut attempts, pc);
       if og.h3c == pc {og.h3c = noEntry;}
-      if was == pConnecting {
-        og.h3Broken = Instant.now() + Duration.fromSeconds(h3BrokenFor);
-        st.h3Fallbacks = st.h3Fallbacks + 1u64;
-      }
+      if was == pConnecting {markFallback(og, &mut st);}
     }
     // A connection that could not be made (or whose TLS failed before its
     // first exchange) fails what waits for its origin, when nothing else is
@@ -1889,6 +1886,27 @@ pub struct ClientCore {
     h3Step
   }
 
+  // The time the attempt of record pc is to have connected by (http3Timeout from its beginning)
+  pub fn h3Deadline(self: &, pc: u32) Instant {(pconns.borrowAt(pc).unwrap()).h3By}
+
+  // HTTP/3 attempt pc given up before it connected (its lookup or its connect failed, or its deadline passed): it leaves its
+  // origin and the pool's counts; fellBack: the origin's HTTP/3 is not tried again for h3BrokenFor and its fetches take TCP.
+  // The record stays, for the host to free once its own things (the lookup, the connection) are ended. A connection that
+  // ends by itself comes through 'closed', which does the same
+  pub fn dropH3Attempt(self: &mut, pc: u32, fellBack: bool) {
+    let p = pconns.borrowMutAt(pc).unwrap();
+    let og = origins.borrowMutAt(u32.from(p.origin)).unwrap();
+    removeValue(&mut attempts, pc);
+    if og.h3c == pc {og.h3c = noEntry;}
+    if fellBack {markFallback(og, &mut st);}
+    if p.state == pConnecting {
+      og.connecting = og.connecting - 1u32;
+      og.open = og.open - 1u32;
+      total = total - 1u32;
+    }
+    self.touch(p.origin);
+  }
+
   // An HTTP/3 attempt begins for origin oi (the OpenH3 command's pc): its connection record made, counted in the origin and the
   // pool, and the origin's own connection while it is made or open. The host looks the name up and connects, and tells
   // Connected (a PoolEvent) or Closed. The record's handle: its pc and generation
@@ -2085,6 +2103,13 @@ fn safeToRetry(fl: &Failure, method: Method, reused: bool, h2: bool) bool {
   if !connEnded {return false;}
   if fl.unsent {return true;}
   fl.error.noResponse && (isIdempotent(method) || (reused && !h2))
+}
+
+// An HTTP/3 attempt of origin og fell back: its HTTP/3 is not tried again for h3BrokenFor, and its fetches take TCP (the one place
+// the back-off is made: both hosts' attempts end here)
+fn markFallback(og: &mut Origin, st: &mut ClientStats) {
+  og.h3Broken = Instant.now() + Duration.fromSeconds(h3BrokenFor);
+  st.h3Fallbacks = st.h3Fallbacks + 1u64;
 }
 
 // Remove the first v from l, keeping the order: whether it was there

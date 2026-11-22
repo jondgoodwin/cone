@@ -61,14 +61,15 @@ fn url(port: u16, path: &str) String {
 
 // A client that trusts the test root, with the HTTP/3 plug-in and the origin on 'port' known to speak it (or, 'platform', one
 // that leaves its certificate checks to the operating system's verifier, which does not know the test root)
-fn trusting(port: u16, attemptMs: i64) HttpClient {return clientFor(port, attemptMs, false);}
+fn trusting(port: u16, attemptMs: i64) HttpClient {return clientFor(port, attemptMs, false, true);}
 
-fn clientFor(port: u16, attemptMs: i64, platform: bool) HttpClient {
+// 'prior': the origin is known to speak HTTP/3 from the first fetch; else the client learns it from an Alt-Svc field
+fn clientFor(port: u16, attemptMs: i64, platform: bool, prior: bool) HttpClient {
   var cfg = httpclient.Config.make();
   if !platform {cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());}
   cfg.tlsConfig.offline = true;
   cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
-  cfg.http3Origins.push(url(port, ""));
+  if prior {cfg.http3Origins.push(url(port, ""));}
   cfg.http3Timeout = Duration.fromMillis(attemptMs);
   HttpClient.make(cfg, actorhttp.defaultMaxBody)
 }
@@ -136,22 +137,35 @@ actor Hole {
   }
 }
 
-// A TLS server over TCP at 'port' (0: any), answering "tcp" to every path but "/hang", and (offering HTTP/3 when 'h3') the
-// same on UDP. "/hang" tells 'hung' it has a request, and never answers it
+// A TLS server over TCP at 'port' (0: any), answering "tcp" to every path (and, offering HTTP/3 when 'h3', "h3" over it on
+// UDP). A site that 'hangs' tells 'hung' it has a request for "/hang" and never answers it. A site with an 'alt' port says,
+// in an Alt-Svc field, that HTTP/3 is on that port
 actor Handler {
   ex: Exchange;
   owner: Site;
   hung: Sender[u64];
+  hangs: bool;
+  alt: u16;
 
   pub async fn run(self) {
     owner.hit();
     let p = String.from(ex.request.path());
-    if p.view() == "/hang" {
+    if hangs && p.view() == "/hang" {
       hung.send(1u64);
       let z = await aio.sleep(Duration.fromSeconds(30i64));
     } else {
-      var t = String.from(versionName(ex.request.head.version));
-      ex.text(200u16, if t.view() == "HTTP/3" {"h3"} else {"tcp"});
+      let t = String.from(versionName(ex.request.head.version));
+      let body = if t.view() == "HTTP/3" {"h3"} else {"tcp"};
+      if alt == 0u16 {
+        ex.text(200u16, body);
+      } else {
+        var head = ResponseHead.make(200u16);
+        var v = String.from("h3=\":");
+        v.appendUInt(u64.from(alt));
+        v.append("\"; ma=3600");
+        head.headers.add("Alt-Svc", v.view());
+        ex.respond(head, String.from(body));
+      }
     }
   }
 }
@@ -161,6 +175,8 @@ actor Site {
   listened: bool;
   hits: u64;
   hung: Sender[u64];
+  hangs: bool;
+  alt: u16;
 
   pub async fn open(self, port: u16, h3: bool, ports: Sender[u16]) {
     let certFile = certs("server.pem");
@@ -188,7 +204,7 @@ actor Site {
       let n = await server.next();
       match n {
         case var Ok(ok) {
-          let h = Handler(ok, selfactor, hung.clone());
+          let h = Handler(ok, selfactor, hung.clone(), hangs, alt);
           h.run();
         }
         case let Err(e) {break;}
@@ -229,6 +245,13 @@ actor Fetcher {
 
   pub async fn get(self, target: String, done: Sender[String]) {
     let r = await client.get(target.view());
+    done.send(describe(&r));
+  }
+
+  pub async fn post(self, target: String, body: String, done: Sender[String]) {
+    var req = Request.make("POST", target.view());
+    req.body = body;
+    let r = await client.send(req);
     done.send(describe(&r));
   }
 
@@ -273,13 +296,13 @@ fn main() i32 {
     // A fetch whose QUIC attempt never completes: answered once, over TCP
     var holePort = 0u16;
     var hole = Hole(aio.UdpSocket.none(), CancelGroup.make(), 0u64);
-    var site = Site(Server.none(), false, 0u64, htx.clone());
+    var site = Site(Server.none(), false, 0u64, htx.clone(), false, 0u16);
     var tries = 0u32;
     while tries < 20u32 && holePort == 0u16 {
       hole = Hole(aio.UdpSocket.none(), CancelGroup.make(), 0u64);
       hole.open(ptx.clone());
       let hp = prx.recvTimeout(Duration.fromSeconds(10i64)) || 0u16;
-      site = Site(Server.none(), false, 0u64, htx.clone());
+      site = Site(Server.none(), false, 0u64, htx.clone(), false, 0u16);
       site.open(hp, false, ptx.clone());
       let sp = prx.recvTimeout(Duration.fromSeconds(10i64)) || 0u16;
       if hp != 0u16 && sp == hp {
@@ -334,7 +357,7 @@ fn main() i32 {
   }
   {
     // A fetch under way on a QUIC connection when its server is closed
-    let site = Site(Server.none(), false, 0u64, htx.clone());
+    let site = Site(Server.none(), false, 0u64, htx.clone(), true, 0u16);
     site.open(0u16, true, ptx.clone());
     let port = prx.recvTimeout(Duration.fromSeconds(10i64)) || 0u16;
     if port == 0u16 {printStr("listen failed\n"); libc.exit(1i32);}
@@ -365,12 +388,12 @@ fn main() i32 {
     // The operating system's verifier, run for a QUIC connection on the blocking pool and its answer given back to the
     // connection: it does not know the test root, so the handshake ends at once and the fetch falls back to TCP, where the
     // same verifier refuses it too. Were its answer lost, the QUIC attempt would wait out its 20 s deadline
-    let site = Site(Server.none(), false, 0u64, htx.clone());
+    let site = Site(Server.none(), false, 0u64, htx.clone(), false, 0u16);
     site.open(0u16, true, ptx.clone());
     let port = prx.recvTimeout(Duration.fromSeconds(10i64)) || 0u16;
     if port == 0u16 {printStr("listen failed\n"); libc.exit(1i32);}
     site.serve();
-    let f = Fetcher(clientFor(port, 20000i64, true));
+    let f = Fetcher(clientFor(port, 20000i64, true, true));
     let t0 = Instant.now();
     f.get(url(port, "/os"), dtx.clone());
     printStr("the OS verifier refuses the test root: ");
@@ -384,6 +407,55 @@ fn main() i32 {
     printStr("the client's actors are freed: ");
     printStr(yes(gone()));
     printStr("\n");
+  }
+  // A fetch in flight over an established QUIC connection that dies while TCP to the origin still works. The origin is a
+  // TCP-only site whose responses say, in an Alt-Svc field, that HTTP/3 is on another server's port (the QUIC server, which
+  // holds the request and is then closed): the connection ends under the fetch, with the request sent. A GET that no
+  // response byte answered may go again, and does, over TCP, answered once. A POST that was sent answers its failure, once,
+  // and is not sent over TCP: the TCP site sees none
+  var round = 0u32;
+  while round < 2u32 {
+    let post = round == 1u32;
+    let quic = Site(Server.none(), false, 0u64, htx.clone(), true, 0u16);
+    quic.open(0u16, true, ptx.clone());
+    let qport = prx.recvTimeout(Duration.fromSeconds(10i64)) || 0u16;
+    let tcp = Site(Server.none(), false, 0u64, htx.clone(), false, qport);
+    tcp.open(0u16, false, ptx.clone());
+    let tport = prx.recvTimeout(Duration.fromSeconds(10i64)) || 0u16;
+    if qport == 0u16 || tport == 0u16 {printStr("listen failed\n"); libc.exit(1i32);}
+    quic.serve();
+    tcp.serve();
+    let f = Fetcher(clientFor(tport, 1000i64, false, false));
+    let prefix = if post {"POST"} else {"GET"};
+    f.get(url(tport, "/learn"), dtx.clone());
+    printStr(prefix);
+    printStr(" round, the first fetch, over TCP: ");
+    printStr(answer(&mut drx).view());
+    printStr("\n");
+    f.get(url(tport, "/warm"), dtx.clone());
+    printStr("the next, over the QUIC connection the Alt-Svc named: ");
+    printStr(answer(&mut drx).view());
+    printStr("\n");
+    if post {f.post(url(tport, "/hang"), String.from("a request body"), dtx.clone());}
+    else {f.get(url(tport, "/hang"), dtx.clone());}
+    let up = hrx.recvTimeout(Duration.fromSeconds(20i64)) || 0u64;
+    printStr("the QUIC server has the request: ");
+    printStr(yes(up == 1u64));
+    printStr("\n");
+    quic.stop();
+    printStr("the connection died under it: ");
+    printStr(answer(&mut drx).view());
+    printStr("\n");
+    tcp.report(ctx.clone());
+    printStr("the TCP site's requests: ");
+    printUInt(count(&mut crx, 99u64));
+    printStr("\n");
+    f.dropClient();
+    printStr("the client's actors are freed: ");
+    printStr(yes(gone()));
+    printStr("\n");
+    tcp.stop();
+    round = round + 1u32;
   }
   finalAll();
   printStr("end\n");
