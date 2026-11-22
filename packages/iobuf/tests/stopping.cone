@@ -1,11 +1,12 @@
 // Once the pool's final has begun, a thread's end gives nothing back
-// (bufpool's header, THREADS: 'stopping'). The final flushes every cache
-// itself, and a thread that ends after it must not reach a pool being torn
-// down: the stock stays, but nothing goes to it from a thread's end.
+// (bufpool's header, THREADS: 'stopping'). The final flushes the caller's cache
+// and ended threads' only, leaving a running thread's alone (exitfinal), and a
+// thread that ends after it must not reach a pool being torn down: the stock
+// stays, but nothing goes to it from a thread's end.
 //
 // A thread takes and drops buffers, then waits; main runs the finals
-// (finalAll(), as a program that calls it itself does), which flush that
-// thread's cache with the rest; the thread then takes and drops more and ends.
+// (finalAll(), as a program that calls it itself does), which leave that
+// thread's cache as it is; the thread then takes and drops more and ends.
 // Its cache from after the final is still counted as cached: given nothing back.
 // Before the final, the same thread's end would have given it back (exitflush).
 
@@ -52,8 +53,9 @@ fn main() i32 {
   let t = thread.start(goRx, &late);
   while ready.load() == 0u64 {thread.sleep(Duration.fromMillis(1i64));}
   expect(stats().cachedBytes > 0usize, "the thread holds a cache");
+  let before = u64.from(stats().cachedBytes);
   finalAll();
-  expectUInt(u64.from(stats().cachedBytes), 0u64, "the final flushed every cache");
+  expectUInt(u64.from(stats().cachedBytes), before, "the final left a running thread's cache alone (row 646)");
   goTx.send(1u64);
   expectUInt(t.join(), 8u64, "the thread ended after the final");
   expect(stats().cachedBytes > 0usize, "a thread that ended once the final had begun gave nothing back");
