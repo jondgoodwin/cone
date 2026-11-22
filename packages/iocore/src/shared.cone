@@ -86,11 +86,64 @@
 // flight (issuePending). Anything else -- another kind, a deadline or a group
 // already done with, a buffer with no room, a handle closing or gone -- is
 // issueNot, and goes the Loop's way unchanged.
+//
+// STARTED UNDER THE SHARED LOCK (Windows, a datagram operation on a worker-side socket). THE RULE THIS
+// REPLACES: every such operation was started under the EXCLUSIVE lock, so that one the kernel kept (pending)
+// was listed in the entry before the lock was let go, with no gap in which its completion, taken by another
+// worker, could find it unlisted. That held the entry across every WSASendTo, 0.83-0.89 s of every second at
+// 5,000 connections, though the kernel runs concurrent sends on one socket in parallel (row 553's report,
+// sections 4 and 7). NOW a send is started under the SHARED lock, as Linux's is, and only a
+// send the kernel keeps takes the exclusive lock, to be listed. (A receive is started under the exclusive lock
+// still: it is the same mechanism, and goes the same way when it is moved.) The lock has no upgrade (an exclusive
+// taker waits for the shared holders to go, so an issuer holding the shared bit cannot take the exclusive bit
+// without letting go of it first), so on pending there is a GAP between the kernel call and the listing, in
+// which the completion can be taken by another worker, a cancel or a deadline can find nothing listed
+// (endWaiting), and the entry can be closed (unpublished: no thread can take its lock then, ever). The lock
+// cannot say who goes first; THE RECORD DECIDES, by one word, 'ustate':
+//   1. The issuer, under the shared lock, BEFORE the kernel call, stores usStarted (the call's own packet is
+//      what the completion is, so whoever takes the completion has the store behind it, as it has the
+//      kernel's status in 'ov.internal'). A call that answers at once, or fails, puts usNone back: no packet
+//      will come.
+//   2. A completion ('udpCompleted') first stores its bytes and stamp in the record, then compare-and-swaps
+//      usStarted to usCompleted. If it WINS, the record is the issuer's to answer: the completion neither
+//      lists nor answers nor pushes it, and touches it no more. If it LOSES (the issuer got there first:
+//      usListed or usLeft, or the record was not started this way), it goes on as ever: it takes the entry,
+//      unlists the record, answers it.
+//   3. The issuer, on pending, answers issueStarted. Its caller lets go of the shared lock, counts the wait,
+//      and calls 'listStarted(p)', which takes the entry EXCLUSIVE if it still can. Under it, it
+//      compare-and-swaps usStarted to usListed. If it WINS it lists the record, then looks again at the
+//      deadline and the group (a cancel or a deadline reached in the gap never un-happens, and endWaiting,
+//      which finds an unlisted record waiting for nothing, answered false to it: so the abort is asked here,
+//      as endWaiting would have), lets go, and answers issuePending: the record is the table's, and its
+//      completion answers it. If it LOSES (usCompleted), the completion came first and the record is answered
+//      here from what it stored: issueDone, its bytes and its status as the completion would have answered
+//      them. If the entry cannot be taken (the handle was closed in the gap), it compare-and-swaps usStarted
+//      to usLeft: it WINS, and the abort the close made (closing a socket aborts what the kernel holds on
+//      it) is a completion that answers the record as ever (no entry, so nothing to unlist), or LOSES
+//      (usCompleted) and answers it here.
+//   WHY IT HOLDS. Both parties compare-and-swap the one word from the one value, usStarted, so exactly one
+//   wins: the winner of a listing or a leaving hands the answer to the completion, the winner of a completion
+//   hands it to the issuer, and the loser sees which and acts, so the record is answered once (not twice,
+//   not never). Neither party frees or answers a record after its own swap except as the swap says, and the
+//   record's owner (the kernel, until its completion is taken, and then whoever the word names) lets it go
+//   only after both have swapped, so nothing is freed under the other. A completion that LOST the swap to a
+//   listing waits for the entry's lock, which 'listStarted' holds from its swap until the record is listed,
+//   so the completion never unlists a record before it is on the list. Nothing is ever listed that has
+//   been answered: the listing happens only on the winning swap, under the lock.
 
 // What 'issue' did
 pub const issueNot = 0u32;       // nothing: the record goes the Loop's way, as if never tried
 pub const issueDone = 1u32;      // answered here: the record is the caller's, its outcome in it
 pub const issuePending = 2u32;   // in flight: the caller hands it to the Loop (lp.start)
+pub const issueStarted = 3u32;   // Windows, a worker-side datagram started under the SHARED lock, and pending: the kernel holds
+                                 // it, not yet listed; the caller lets go of the lock and calls 'listStarted' (below)
+
+// A record's 'ustate' (STARTED UNDER THE SHARED LOCK): who answers it, decided by compare-and-swap on the record
+const usNone = 0u32;         // not started that way (every record's state but for the window below)
+const usStarted = 1u32;      // set by the issuer under the shared lock, before the kernel call: started, not listed
+const usListed = 2u32;       // the issuer listed it: its completion goes on to unlist it and answer it
+const usCompleted = 3u32;    // its completion came first: bytes and status stored, the issuer answers it
+const usLeft = 4u32;         // the issuer could not take the entry (closed): its completion answers it, as ever
 
 const tryPublic = 0u32;      // issueAt's modes
 const tryWaiting = 1u32;
@@ -370,23 +423,26 @@ pub struct Shared is Move, Sendable {
   }
 
   // Try record p's receive or send here (ISSUE above). The entry of p's
-  // handle is locked by this thread. issueNot, issueDone or issuePending. It
-  // never answers issuePending for a worker-side socket (UDP ON THE WORKER
-  // PORT): a datagram is never partial, so on Linux it is answered or issueNot,
-  // and on Windows every datagram operation answers issueNot; 'issueWaiting'
-  // is what starts and lists those, and so answers issuePending itself
+  // handle is locked by this thread. issueNot, issueDone, issuePending or
+  // issueStarted. It never answers issuePending for a worker-side socket (UDP
+  // ON THE WORKER PORT): a datagram is never partial, so on Linux it is answered
+  // or issueNot; on Windows a datagram SEND is answered, or issueStarted (the
+  // kernel holds it: STARTED UNDER THE SHARED LOCK, whose caller then calls
+  // 'listStarted' with no lock held), and every receive answers issueNot;
+  // 'issueWaiting' is what starts and lists those, and so answers issuePending
+  // itself
   pub fn issue(self: &, p: *OpCore) u32 {self.issueAt(p, tryPublic)}
 
   // 'issue' in one of three modes, which differ for a worker-side socket
   // (UDP ON THE WORKER PORT). A datagram send waits behind the sends already
   // waiting on it (Linux: the socket's EPOLLOUT edge tries them in order, and
   // a send tried past them would overtake): every mode but the edge's own
-  // retry of the head, tryRetry. A datagram operation on Windows, a send as
-  // much as a receive, is never started under the entry's shared lock (its
-  // kernel operation may go pending, and the record must then be listed with
-  // no gap in which its completion could come first, and where a deadline or
-  // a cancel finds it): tryPublic, which is 'issue', says issueNot, and
-  // issueWaiting starts it under the exclusive lock, tryWaiting
+  // retry of the head, tryRetry. A datagram send on Windows is started under
+  // the entry's shared lock by tryPublic, which is 'issue', and one the kernel
+  // keeps answers issueStarted, to be listed by 'listStarted' (STARTED UNDER THE
+  // SHARED LOCK). A datagram receive on Windows is not: tryPublic says issueNot,
+  // and issueWaiting starts it under the exclusive lock, tryWaiting, so that a
+  // pending one is listed with no gap in which its completion could come first
   fn issueAt(self: &, p: *OpCore, mode: u32) u32 {
     let r = p as &mut OpCore;
     let e = self.entry(r.handle.index);
@@ -420,8 +476,9 @@ pub struct Shared is Move, Sendable {
     // entry's wait lists change only under the exclusive lock, which no shared holder shares
     if udp && (*e).worker != 0u32 {
       #if #os == .windows {
-        // Every datagram operation: started under the exclusive lock, so that a pending one is listed with no gap
-        if mode == tryPublic {return issueNot;}
+        // A receive: started under the exclusive lock, so that a pending one is listed with no gap. A send is
+        // started under the shared lock (STARTED UNDER THE SHARED LOCK)
+        if mode == tryPublic && k != diag.kindSendTo {return issueNot;}
       } #else {
         if k == diag.kindSendTo {
           if (*e).hold != 0u32 {return issueNot;}
@@ -433,7 +490,9 @@ pub struct Shared is Move, Sendable {
     let now = Instant.now();
     if dueOutcome(r, now) != 0u32 {return issueNot;}
     #if #os == .windows {
-      winIssue(p, (*e).raw, now, (*e).worker != 0u32)
+      // A datagram on a worker-side socket tried under the shared lock (tryPublic) is started there, and
+      // left for 'listStarted' if the kernel keeps it
+      winIssue(p, (*e).raw, now, (*e).worker != 0u32, udp && (*e).worker != 0u32 && mode == tryPublic)
     } #else {
       let got = lxIssue(p, (*e).raw, now, (*e).worker != 0u32);
       // A send that moved part of its bytes on a worker-side stream stays here: it goes on from 'done'
@@ -581,7 +640,9 @@ pub struct Shared is Move, Sendable {
   // answered, as the Loop answers a completion: a deadline's or a cancel's
   // abort completion is TimedOut or Cancelled, the record whole with its
   // buffer and its batch; a completion that came first is Done. Appended to
-  // out. A no-op on Linux
+  // out. A record started under the shared lock and not yet listed
+  // (STARTED UNDER THE SHARED LOCK) is not answered here when this completion
+  // wins its word: 'listStarted' answers it. A no-op on Linux
   pub fn udpCompleted(self: &, p: *OpCore, bytes: u32, out: &mut List[*OpCore]) {
     #if #os == .windows {
     let r = p as &mut OpCore;
@@ -593,11 +654,72 @@ pub struct Shared is Move, Sendable {
       PostQueuedCompletionStatus((*(at as *Slab)).loopPort, bytes, keyIo, p as *u8);
       return;
     }
+    r.dequeued = Instant.now();
+    // Started and not yet listed: the bytes are stored, and the issuer answers it (the swap decides who)
+    r.stashBytes = bytes;
+    if swapState(r, usStarted, usCompleted) {return;}
     if self.lock(h) {
       unlistWait(self.entry(h.index), p);
       self.unlock(h);
     }
-    r.dequeued = Instant.now();
+    self.finishCompleted(p, bytes);
+    out.push(p);
+    } #else {}
+  }
+
+  // Windows: record p, started under the shared lock and left pending (issueStarted), listed or answered, by its
+  // issuer, with no lock held (STARTED UNDER THE SHARED LOCK). issuePending: the record is the table's, and
+  // its completion answers it, exactly once (a cancel, or a deadline, reached in the gap is asked here); or
+  // issueDone: its completion came first, and the record is answered here, from what it stored, as that
+  // completion would have answered it (the caller answers it on, as for issueWaiting's issueDone); or
+  // issueNot: it was not started so. A no-op on Linux (issueNot)
+  pub fn listStarted(self: &, p: *OpCore) u32 {
+    #if #os == .windows {
+    let r = p as &mut OpCore;
+    let h = r.handle;
+    if self.lock(h) {
+      let e = self.entry(h.index);
+      if swapState(r, usStarted, usListed) {
+        listWait(e, p);
+        // A cancel or a deadline reached in the gap never un-happens, and endWaiting, which found nothing
+        // listed, answered false to it: the abort is asked here, as endWaiting asks it
+        let due = dueOutcome(r, Instant.now());
+        if due != 0u32 {
+          if r.asked == askedNone {r.asked = if due == diag.outcomeTimedOut {askedDeadline} else {askedCancel};}
+          CancelIoEx((*e).raw, p as *u8);
+        }
+        self.unlock(h);
+        return issuePending;
+      }
+      self.unlock(h);
+    } else if swapState(r, usStarted, usLeft) {
+      // Closed in the gap: the abort the close made is a completion, and answers it as one that was not listed
+      return issuePending;
+    }
+    if mem.atomicLoad[u32](&r.ustate as *u32, MemOrder.Acquire) != usCompleted {return issueNot;}
+    self.finishCompleted(p, r.stashBytes);
+    issueDone
+    } #else {issueNot}
+  }
+
+  // For tests (Windows; issueNot on Linux): the start of a datagram operation under the SHARED lock, which the caller
+  // holds, as 'issue' makes it for a send, whatever its kind: a receive with nothing to take answers issueStarted
+  // here, which loopback never does for a send. The caller then does what other threads do in the gap, and
+  // calls 'listStarted' (iocore's startedsend test)
+  pub fn startedForTest(self: &, p: *OpCore) u32 {
+    #if #os == .windows {
+    let r = p as &mut OpCore;
+    let e = self.entry(r.handle.index);
+    if e as usize == 0usize || (*e).worker == 0u32 || (*e).skip == 0u32 {return issueNot;}
+    winIssue(p, (*e).raw, Instant.now(), true, true)
+    } #else {issueNot}
+  }
+
+  // Record p, whose completion has been taken (bytes moved; its status in its OVERLAPPED), answered as the Loop
+  // answers a completion. Windows only
+  fn finishCompleted(self: &, p: *OpCore, bytes: u32) {
+    #if #os == .windows {
+    let r = p as &mut OpCore;
     let status = r.ov.internal & 0xFFFFFFFFusize;
     let n = usize.from(bytes);
     if r.kind == diag.kindRecvMany && (status == statusSuccess || status == statusBufferOverflow) {
@@ -620,7 +742,6 @@ pub struct Shared is Move, Sendable {
     } else {
       answeredHere(p, diag.outcomeFailed, 0usize, RtlNtStatusToDosError(u32.from(status)));
     }
-    out.push(p);
     } #else {}
   }
 
@@ -682,37 +803,53 @@ fn dueOutcome(r: &mut OpCore, now: Instant) u32 {
   0u32
 }
 
+// Record r's 'ustate' compare-and-swapped from one value to another: true if this call made the change
+// (STARTED UNDER THE SHARED LOCK: the one place two threads decide who answers a record)
+fn swapState(r: &mut OpCore, from: u32, to: u32) bool {
+  let old, ok = mem.atomicCompareSwap[u32](&r.ustate as *u32, from, to, MemOrder.AcqRel, MemOrder.Acquire);
+  ok
+}
+
 // Record p listed last among entry e's waiting receives, or sends; e is held
-// exclusive. The record's own links serve, as a Loop's handle lists do
+// exclusive. The record's own links serve, as a Loop's handle lists do. The list
+// is CIRCULAR backwards: the first record's 'hprev' is the last, so the last is
+// found, and a record appended, in constant time (thousands of sends can wait
+// on one entry when the send buffer is full); the last's 'hnext' is null, and
+// every other record's 'hprev' is the record before it
 fn listWait(e: *SEntry, p: *OpCore) {
   let r = p as &mut OpCore;
   let reads = r.kind != diag.kindSendTo && r.kind != diag.kindSend;
   r.side = if reads {onReads} else {onWrites};
   r.hnext = null;
-  r.hprev = null;
-  var last = if reads {(*e).rwait} else {(*e).swait};
-  if last as usize == 0usize {
+  let first = if reads {(*e).rwait} else {(*e).swait};
+  if first as usize == 0usize {
+    r.hprev = p;
     if reads {(*e).rwait = p;} else {(*e).swait = p;}
     return;
   }
-  while (*last).hnext as usize != 0usize {last = (*last).hnext;}
+  let last = (*first).hprev;
   (*last).hnext = p;
   r.hprev = last;
+  (*first).hprev = p;
 }
 
 // Record p taken off the list of entry e it is on, if it is on one; e is held
-// exclusive
+// exclusive (the list is circular backwards: see listWait)
 fn unlistWait(e: *SEntry, p: *OpCore) {
   let r = p as &mut OpCore;
   if r.side == onNone {return;}
   let prev = r.hprev;
   let next = r.hnext;
-  if prev as usize == 0usize {
-    if r.side == onReads {(*e).rwait = next;} else {(*e).swait = next;}
+  let reads = r.side == onReads;
+  let first = if reads {(*e).rwait} else {(*e).swait};
+  if first as usize == p as usize {
+    // The first: the next becomes first, and its 'hprev' is the last, which the first's was
+    if reads {(*e).rwait = next;} else {(*e).swait = next;}
+    if next as usize != 0usize {(*next).hprev = prev;}
   } else {
     (*prev).hnext = next;
+    if next as usize != 0usize {(*next).hprev = prev;} else {(*first).hprev = prev;}
   }
-  if next as usize != 0usize {(*next).hprev = prev;}
   r.side = onNone;
   r.hprev = null;
   r.hnext = null;
@@ -864,6 +1001,7 @@ fn stampIssued(p: *OpCore, now: Instant) {
   r.n = 0usize;
   r.code = 0u32;
   r.done = 0usize;
+  r.ustate = usNone;
   r.ov = Overlapped(0usize, 0usize, 0u32, 0u32, 0usize);
 }
 
@@ -880,9 +1018,11 @@ fn answeredHere(p: *OpCore, status: u32, n: usize, code: u32) u32 {
 
 // Windows: the receive or send on raw, whose completions skip the port on
 // success. Pending: the record is the kernel's, marked in transit BEFORE the
-// call, and nothing of it is touched here after
+// call, and nothing of it is touched here after. 'started': the entry is held SHARED, not exclusive: the
+// record is marked usStarted before the call, and a pending one answers issueStarted, for 'listStarted'
+// (STARTED UNDER THE SHARED LOCK); a call that answers at once, or fails, leaves it usNone
 #if #os == .windows {
-fn winIssue(p: *OpCore, raw: usize, now: Instant, worker: bool) u32 {
+fn winIssue(p: *OpCore, raw: usize, now: Instant, worker: bool, started: bool) u32 {
   let r = p as &mut OpCore;
   if r.kind == diag.kindSend && r.isGather() {return winIssueGather(p, raw, now, worker);}
   var data = null as *u8;
@@ -898,6 +1038,8 @@ fn winIssue(p: *OpCore, raw: usize, now: Instant, worker: bool) u32 {
   // A worker-side socket's completion comes to the worker port, whose waiter
   // answers it; the Loop never holds the record, so it is not in transit
   r.link = if worker {linkNone} else {linkTransit};
+  // Before the kernel call: its completion, taken by any thread, then finds this store behind it
+  if started {mem.atomicStore[u32](&r.ustate as *u32, usStarted, MemOrder.Release);}
   var got = 0u32;
   var rc = 0i32;
   let from = r.sockAddr();
@@ -935,6 +1077,7 @@ fn winIssue(p: *OpCore, raw: usize, now: Instant, worker: bool) u32 {
   }
   if rc == 0i32 {
     // Done at once, and no packet will come: the port is skipped on success
+    if started {mem.atomicStore[u32](&r.ustate as *u32, usNone, MemOrder.Relaxed);}
     r.dequeued = Instant.now();
     if r.kind == diag.kindRecv || r.kind == diag.kindRecvFrom || r.kind == diag.kindRecvMany {r.bufGrow(usize.from(got));}
     if r.kind == diag.kindRecvMany {
@@ -944,8 +1087,11 @@ fn winIssue(p: *OpCore, raw: usize, now: Instant, worker: bool) u32 {
     return answeredHere(p, diag.outcomeDone, usize.from(got), 0u32);
   }
   let code = wsaError();
-  if code == errorIoPending {return issuePending;}
+  // Pending: nothing of the record is touched here after (a completion may be taken and, if it wins the word,
+  // left for the issuer to answer: listStarted)
+  if code == errorIoPending {return if started {issueStarted} else {issuePending};}
   // Refused at once: no packet either, the same answer the Loop's start gives
+  if started {mem.atomicStore[u32](&r.ustate as *u32, usNone, MemOrder.Relaxed);}
   if code == errorMsgSize && r.kind == diag.kindRecvMany {
     r.batchCutAtOnce();
     return answeredHere(p, diag.outcomeDone, 1usize, 0u32);
