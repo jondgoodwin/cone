@@ -103,7 +103,7 @@ foreach ($c in $cli) {
   $e = if ($m.Success) { [int64]$m.Groups[2].Value } else { 0 }
   $heardAll += $h; $expAll += $e
   $lines += (Cpu $c.pid ("client$($c.k)") ("conns {0}  own-region heard {1} of {2} ({3:N1}%)" -f $c.share, $h, $e, (100.0 * $h / [math]::Max($e, 1))))
-  $lines += ((ReadLog $c.log) -split "`n" | Where-Object { $_ -match '^CLIENTS own-region state age' } | ForEach-Object { "  client$($c.k) $_" })
+  $lines += ((ReadLog $c.log) -split "`n" | Where-Object { $_ -match '^CLIENTS (own|ring)-region state age' } | ForEach-Object { "  client$($c.k) $_" })
 }
 $lines += "all clients: own-region updates heard $heardAll of $expAll ({0:N1}%)" -f (100.0 * $heardAll / [math]::Max($expAll, 1))
 # the age over every client process: the histograms merged (100 us buckets; a percentile is its bucket's upper edge)

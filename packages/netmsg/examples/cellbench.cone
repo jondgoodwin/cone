@@ -666,6 +666,7 @@ fn server(port: u16, args: &List[String], bind: &str) {
 actor Collector {
   conns: List[Connection];
   hist: List[u64];
+  ringHist: List[u64];     // the age of the ring regions' values (streams after the own region's), the price of the own region going first
   heard: u64;
   any: u64;
   ownStream: u16;
@@ -673,7 +674,7 @@ actor Collector {
   seq: u32;
 
   pub fn init(self: &new, form: u32, total: u32) {
-    *self = Self(conns: List[Connection](), hist: newHist(), heard: 0u64, any: 0u64,
+    *self = Self(conns: List[Connection](), hist: newHist(), ringHist: newHist(), heard: 0u64, any: 0u64,
       ownStream: if form == formM1 {sPersonal} else {sRegion0}, total: total, seq: 0u32);
   }
 
@@ -686,6 +687,13 @@ actor Collector {
         let now = Instant.now().nanos();
         any = any + 1u64;
         serverGo.store(1u64);
+        if ownStream == sRegion0 && u.stream > sRegion0 && u.stream < sInput && u.data.len() >= 16usize {
+          var rc = PacketReader.start();
+          let rreg = rc.rdU32(u.data.view());
+          let rtick = rc.rdU32(u.data.view());
+          let rat = i64.from(rc.rdU64(u.data.view()));
+          if rtick >= 30u32 && rtick + 30u32 < total { histAdd(&mut ringHist, now - rat); }
+        }
         if u.stream == ownStream {
           var c = PacketReader.start();
           let reg = c.rdU32(u.data.view());
@@ -718,6 +726,8 @@ actor Collector {
     var out = hist.clone();
     out.push(heard);
     out.push(any);
+    var rb = 0usize;
+    while rb < ringHist.len() { out.push(*ringHist[rb]); rb = rb + 1usize; }
     done.send(out);
   }
 }
@@ -767,6 +777,7 @@ fn clients(port: u16, args: &List[String], host: &str) {
   }
   thread.sleep(Duration.fromSeconds(2i64));
   var all = newHist();
+  var ringAll = newHist();
   var heardAll = 0u64;
   var anyAll = 0u64;
   var m = 0usize;
@@ -779,6 +790,10 @@ fn clients(port: u16, args: &List[String], host: &str) {
     var b = 0usize;
     while b < histBuckets && b < l.len() { all[b] = *all[b] + *l[b]; b = b + 1usize; }
     if l.len() >= histBuckets + 2usize { heardAll = heardAll + *l[histBuckets]; anyAll = anyAll + *l[histBuckets + 1usize]; }
+    if l.len() >= 2usize * histBuckets + 2usize {
+      b = 0usize;
+      while b < histBuckets { ringAll[b] = *ringAll[b] + *l[histBuckets + 2usize + b]; b = b + 1usize; }
+    }
     m = m + 1usize;
   }
   let expected = u64.from(n) * u64.from(total - 60u32);
@@ -787,6 +802,7 @@ fn clients(port: u16, args: &List[String], host: &str) {
   printStr(" any updates="); printUInt(anyAll);
   printStr("\n");
   histLine("CLIENTS own-region state age", &all);
+  histLine("CLIENTS ring-region state age", &ringAll);
   // the histogram itself (bucket:count, 100 us a bucket), so a run's processes can be merged
   printStr("HIST");
   var hb = 0usize;
