@@ -165,6 +165,14 @@ fn refusedTls(r: Result[Response, FetchError]) bool {
   }
 }
 
+// Whether a fetch failed with 'unsent' and 'noResponse' both set
+fn neverSent(r: &Result[Response, FetchError]) bool {
+  match r {
+    case let &Err(e) {e.failure.unsent && e.failure.error.noResponse}
+    else {false}
+  }
+}
+
 fn isOk(r: Result[Response, FetchError]) bool {
   match &r {
     case let &Ok(ok) {true}
@@ -221,7 +229,12 @@ actor Prober {
     // A client that does not trust the root, and one that does not speak TLS at all
     let untrusting = await plain.get(url("https", port, "/hello").view());
     printStr("an untrusting client is refused at the handshake: ");
+    let sentNothing = neverSent(&untrusting);
     printStr(yes(refusedTls(untrusting)));
+    printStr("\n");
+    // The handshake carries no request byte: the refused fetch was never sent, and no response began
+    printStr("...its request was never sent, and nothing answered it: ");
+    printStr(yes(sentNothing));
     printStr("\n");
     let unencrypted = await plain.get(url("http", port, "/hello").view());
     printStr("a plain client to the TLS port gets no answer: ");
