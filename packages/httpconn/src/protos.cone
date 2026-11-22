@@ -1,0 +1,83 @@
+// ServerProto and ClientProto: the protocol surface of one connection, whichever wire carries it (see the
+// package's header, THE SERVER CONNECTION and THE CLIENT CONNECTION). ServerConn and ClientConn are the
+// byte-wire ones (TCP, with a layer); a QUIC connection's HTTP/3 value (h3driver's) meets the same two
+// traits with datagrams for its wire. So code written once for both (the handler half that takes requests
+// and hands responses back, the exchange half of a client's connection) is written over the trait, as a
+// generic ('[C: ClientProto]') or through a trait object, and TCP's calls through the generic stay static.
+//
+// Each is ServerConn's or ClientConn's methods minus the byte-wire ones: readRoom, wireIn, fill,
+// takeWire, wireSent, queued. Events and stream numbers are the structs': a stream is a u32, HTTP/3's
+// numbers narrowed (its value keeps them under 2^32, HTTP/2's bound for its own).
+
+// A server connection's protocol surface: the requests that come, the responses that go
+pub trait ServerProto {
+  // The next thing that happened, at 'now' (Nothing when none)
+  pub fn next(self: &mut, now: Instant) ServerEvent;
+  // The request head in hand, read at once ('takeRequest' moves it out; 'recycleRequest' gives a spare back)
+  pub fn request(self: &) &RequestHead;
+  pub fn takeRequest(self: &mut) RequestHead;
+  pub fn recycleRequest(self: &mut, spare: RequestHead);
+  // The response head being written, kept and refilled: fill it, then 'respond'
+  pub fn response(self: &mut) &mut ResponseHead;
+  pub fn respond(self: &mut, stream: u32, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine());
+  pub fn sendInterim(self: &mut, stream: u32, head: ResponseHead, file: &Array[u8] = srcFile(), line: u32 = srcLine());
+  pub fn sendContinue(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine());
+  // Response body bytes: None once queued; Some(buf) back, refused, at the write watermark
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf];
+  pub fn writeRoom(self: &, stream: u32) usize;
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine());
+  // The program is done with n bytes of request body that Data events handed it
+  pub fn release(self: &mut, stream: u32, n: usize);
+  // The request's body is no longer wanted: false when nothing was done
+  pub fn stopBody(self: &mut, stream: u32) bool;
+  // The one Instant to wake at and call handleTimeout, or None
+  pub fn pollTimeout(self: &) Option[Instant];
+  pub fn handleTimeout(self: &mut, now: Instant);
+  // Close once what is under way is done; end now; whether the connection is over and all it had to send has gone
+  pub fn shutdown(self: &mut);
+  pub fn abort(self: &mut);
+  pub fn done(self: &mut, now: Instant) bool;
+  // Why the connection failed, once it has
+  pub fn failureOf(self: &) &Option[Failure];
+  // Whether streams are multiplexed (HTTP/2, HTTP/3) and whether the protocol is chosen
+  pub fn isHttp2(self: &) bool;
+  pub fn isOpen(self: &) bool;
+  // The layer's work for the blocking pool (a certificate check by the OS): whether there is some, the work, its answer
+  pub fn wantsCall(self: &) bool;
+  pub fn takeCall(self: &mut) Op;
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant);
+}
+
+// A client connection's protocol surface: the requests that go, the responses that come
+pub trait ClientProto {
+  // How many more requests the connection takes now
+  pub fn room(self: &) usize;
+  // A request begun: its stream. The body, if any, goes by sendData and finish
+  pub fn request(self: &mut, head: RequestHead, body: BodyLength, now: Instant,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) u32;
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf];
+  pub fn writeRoom(self: &, stream: u32) usize;
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine());
+  // The program is done with n bytes of response body that Data events handed it
+  pub fn release(self: &mut, stream: u32, n: usize);
+  // A request given up
+  pub fn cancel(self: &mut, stream: u32);
+  // The next thing that happened, at 'now' (Nothing when none)
+  pub fn next(self: &mut, now: Instant) ClientEvent;
+  pub fn pollTimeout(self: &) Option[Instant];
+  pub fn handleTimeout(self: &mut, now: Instant);
+  pub fn shutdown(self: &mut);
+  pub fn abort(self: &mut);
+  pub fn done(self: &mut, now: Instant) bool;
+  pub fn failureOf(self: &) &Option[Failure];
+  pub fn isHttp2(self: &) bool;
+  pub fn isOpen(self: &) bool;
+  // Nothing on the connection; the streams open; the streams the peer allows at once
+  pub fn isIdle(self: &) bool;
+  pub fn liveStreams(self: &) usize;
+  pub fn peerStreams(self: &) usize;
+  pub fn wantsCall(self: &) bool;
+  pub fn takeCall(self: &mut) Op;
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant);
+  pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant);
+}

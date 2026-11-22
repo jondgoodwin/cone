@@ -53,6 +53,19 @@
 //   Failure: f.stage f.code f.error f.unsent String() <- f  Stage  toText(&s)  (FAILURES)
 //   Timing: t.submitted t.started t.firstByte t.ended
 //   ConnId ReqId ListenerId  Config  DriverStats
+//   H3Conn: forClient forServer datagramIn takeDatagram finishTurn handleTimeout pollTimeout  (THE VALUE)
+//   H3Server H3Client (httpconn.ServerProto, ClientProto over an H3Conn)  H3Counts  protoFailure(f)
+//
+// THE VALUE. A connection's protocol logic (QUIC events, HTTP/3's events and writes, the
+// stream records and their in-step stream numbers, the waste budget, the wake clamp, the
+// request-stream id limit with its GOAWAY, the Failed-before-Closed sweep) is one sans-I/O
+// value, 'H3Conn' (h3conn.cone and h3steps.cone), that owns the quic.Connection and the
+// http3.Connection and has no socket, loop or clock: its host gives it datagrams and the time and
+// takes the datagrams to send. 'H3Server' and 'H3Client' present one as httpconn's ServerProto and
+// ClientProto, so code above the wire is written once for TCP and QUIC (the connection actors,
+// stage 5, host them). The polled Driver below is one host: it keeps what is not protocol (sockets,
+// the 0x33 token layer, completions, routing, the all-connections scan) and calls the value.
+// The value's type is meant to stay internal to this plug-in; it is public for tests and the actors.
 //
 // THE DRIVER. One per Loop, driven by the loop's thread. It is a hosted
 // service by its methods (aio's trait Hosted): 'turn(lp)' moves every
@@ -359,6 +372,7 @@ import http3;
 import quic;
 import tls;
 import httpclient;
+import httpconn;
 
 // The pools of this package, and the id of one record in any of them; the pool kind is spelled here only
 alias Streams = GenPool[Strm];
