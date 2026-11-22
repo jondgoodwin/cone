@@ -1,0 +1,278 @@
+// Datagram operations started under the entry's SHARED lock by several threads
+// at once, their completions taken by one more (shared.cone, STARTED UNDER THE
+// SHARED LOCK), Windows. The driven test (startedsend) forces each order of
+// completion and listing; this one lets threads race, and checks what must hold
+// whatever the order:
+//
+//  - every record is answered exactly once (a counter in the record's own
+//    Ask, taken at each answer: by the poller, from a completion that found the
+//    record listed, or by the issuer, from 'listStarted' or 'issueWaiting'),
+//  - every record the table kept is answered at the end, none lost: the
+//    waiting receives are met by datagrams the test sends, and every buffer is
+//    home (lent == 0) and every record dissolved.
+//
+// Four workers each post, again and again, a receive on one socket (nothing
+// waiting: the kernel keeps it), a small send to that socket, which answers it,
+// and a send of 60,000 bytes to another socket nothing reads (a UDP send waits
+// only for the local send buffer). The main thread is the one waiter on the
+// port. How many operations went pending, and how many met their completion
+// before they were listed, go to stderr ('started', 'completion first',
+// 'listed'): a run that never raced is not a failure, it is a lesser test, and
+// the numbers are there to say so. Loopback seldom pends a send, so what races
+// here is mostly the receives', which pend whenever no datagram is waiting.
+
+mod startedstress;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import stdio use eprintStr, eprintUInt;
+import diag;
+
+const workers = 4u32;
+const perWorker = 300u32;
+const big = 60000usize;
+
+struct Ask {
+  answers: u32;     // how many times the record was answered (atomic)
+}
+
+extern {
+  fn @c(system) CreateIoCompletionPort(h: usize, port: usize, key: usize, threads: u32) usize;
+  fn @c(system) GetQueuedCompletionStatus(port: usize, bytes: *u32, key: *usize, ov: *usize, ms: u32) i32;
+  fn @c(system) CloseHandle(h: usize) i32;
+}
+
+let started: Atomic[u32];       // issueStarted answers
+let compFirst: Atomic[u32];     // of them, answered by 'listStarted' (the completion came first)
+let listed: Atomic[u32];        // of them, listed by 'listStarted'
+let waited: Atomic[u32];        // left to issueWaiting, and listed there
+let atOnce: Atomic[u32];        // answered where issued
+let polled: Atomic[u32];        // answered at the port, from a completion
+let doubled: Atomic[u32];       // answered more than once (none expected)
+let unanswered: Atomic[u32];    // kept by the table and never answered (none expected)
+let posted: Atomic[u32];        // receives the table kept
+let finished: Atomic[u32];      // workers that have posted all they will
+let allDone: Atomic[u32];       // 1 once the poller has seen every kept record answered
+
+fn @initpure init() {
+  started = Atomic[u32].of(0u32);
+  compFirst = Atomic[u32].of(0u32);
+  listed = Atomic[u32].of(0u32);
+  waited = Atomic[u32].of(0u32);
+  atOnce = Atomic[u32].of(0u32);
+  polled = Atomic[u32].of(0u32);
+  doubled = Atomic[u32].of(0u32);
+  unanswered = Atomic[u32].of(0u32);
+  posted = Atomic[u32].of(0u32);
+  finished = Atomic[u32].of(0u32);
+  allDone = Atomic[u32].of(0u32);
+}
+
+struct Work is Sendable {
+  sh: Shared;
+  rx: Handle;
+  tx: Handle;
+  rxPort: u16;
+  sinkPort: u16;
+}
+
+fn openPort() usize {
+  CreateIoCompletionPort(0xFFFFFFFFFFFFFFFFusize, 0usize, 0usize, 1u32)
+}
+
+// A record answered: its count up by one; a second answer is counted
+fn answered(p: *OpCore) {
+  let n = mem.atomicAdd[u32](&(*(p as *OpRec[Ask])).ask.answers as *u32, 1u32, MemOrder.Relaxed);
+  if n != 0u32 {doubled.add(1u32);}
+}
+
+fn recvFromOn(pool: &OpPool[Ask], h: Handle) *OpCore {
+  let r = pool.take(Ask(0u32));
+  let c = &mut (*r).core;
+  c.kind = diag.kindRecvFrom;
+  c.handle = h;
+  c.buf = Some[IoBuf](IoBuf(64usize));
+  r as *OpCore
+}
+
+fn sendToOn(pool: &OpPool[Ask], h: Handle, port: u16, size: usize) *OpCore {
+  let r = pool.take(Ask(0u32));
+  let c = &mut (*r).core;
+  c.kind = diag.kindSendTo;
+  c.handle = h;
+  c.setPeer(SocketAddr.localhost(port));
+  var b = IoBuf(size + 8usize);
+  if size == big {
+    b.setLen(big);
+  } else {
+    b.append("datagram");
+  }
+  c.buf = Some[IoBuf](b);
+  r as *OpCore
+}
+
+// What a worker does with a datagram operation on h: the shared try, 'listStarted' for one the kernel keeps, the
+// waiting try for one the shared try leaves. Records the table keeps go into mine; the rest are dissolved
+fn post(sh: &Shared, pool: &OpPool[Ask], h: Handle, p: *OpCore, mine: &mut List[*OpCore], recv: bool) {
+  var got = issueNot;
+  if sh.lockShared(h) {
+    got = sh.issue(p);
+    sh.unlockShared(h);
+  }
+  if got == issueNot {
+    got = sh.issueWaiting(p);
+    if got == issuePending {
+      waited.add(1u32);
+      if recv {posted.add(1u32);}
+    }
+  } else if got == issueStarted {
+    started.add(1u32);
+    // The gap: whatever the port does now, 'listStarted' decides who answers
+    got = sh.listStarted(p);
+    if got == issueDone {
+      compFirst.add(1u32);
+    } else {
+      listed.add(1u32);
+      if recv {posted.add(1u32);}
+    }
+  }
+  if got == issueDone {
+    answered(p);
+    atOnce.add(1u32);
+    let rec = pool.dissolve(p as *OpRec[Ask]);
+  } else {
+    mine.push(p);
+  }
+}
+
+fn worker(w: Work) u32 {
+  let pool = OpPool[Ask].make();
+  var mine = List[*OpCore]();
+  var k = 0u32;
+  while k < perWorker {
+    k = k + 1u32;
+    post(&w.sh, &pool, w.rx, recvFromOn(&pool, w.rx), &mut mine, true);
+    post(&w.sh, &pool, w.tx, sendToOn(&pool, w.tx, w.rxPort, 8usize), &mut mine, false);
+    post(&w.sh, &pool, w.tx, sendToOn(&pool, w.tx, w.sinkPort, big), &mut mine, false);
+  }
+  finished.add(1u32);
+  // The records the table kept are the poller's to answer: they are let go when it has
+  let limit = Instant.now() + Duration.fromSeconds(60i64);
+  while allDone.load() == 0u32 && Instant.now() < limit {thread.sleep(Duration.fromMillis(1i64));}
+  var j = 0usize;
+  while j < mine.len() {
+    let p = *mine[j];
+    if mem.atomicLoad[u32](&(*(p as *OpRec[Ask])).ask.answers as *u32, MemOrder.Acquire) != 1u32 {unanswered.add(1u32);}
+    let rec = pool.dissolve(p as *OpRec[Ask]);
+    j = j + 1usize;
+  }
+  flushThread();
+  u32.from(mine.len())
+}
+
+fn report(what: &Array[u8], n: u32) {
+  eprintStr(what as &str);
+  eprintUInt(u64.from(n));
+  eprintStr("\n");
+}
+
+fn main() i32 {
+  #if #os != .windows {
+    return skip("Windows only: a datagram start listed after its issue is Windows' (shared.cone, STARTED UNDER THE SHARED LOCK)");
+  } #else {
+  initAll();
+  let port = openPort();
+  var lp = Loop.mustMake();
+  lp.setWorkerPort(port);
+  let sh = lp.share();
+  let mainPool = OpPool[Ask].make();
+  let rx = lp.mustBindUdp(SocketAddr.localhost(0u16), true);
+  let tx = lp.mustBindUdp(SocketAddr.localhost(0u16), true);
+  let sink = lp.mustBindUdp(SocketAddr.localhost(0u16), true);
+  var rxPort = 0u16;
+  var sinkPort = 0u16;
+  match lp.localAddr(rx) {
+    case let Ok(x) {rxPort = x.port();}
+    case let Err(e) {}
+  }
+  match lp.localAddr(sink) {
+    case let Ok(x) {sinkPort = x.port();}
+    case let Err(e) {}
+  }
+  expect(rxPort != 0u16 && sinkPort != 0u16, "the sockets are bound");
+
+  let t0 = thread.start(Work(sh.clone(), rx, tx, rxPort, sinkPort), &worker);
+  let t1 = thread.start(Work(sh.clone(), rx, tx, rxPort, sinkPort), &worker);
+  let t2 = thread.start(Work(sh.clone(), rx, tx, rxPort, sinkPort), &worker);
+  let t3 = thread.start(Work(sh.clone(), rx, tx, rxPort, sinkPort), &worker);
+
+  // The one waiter on the port: every completion goes to the table, and what it answers is counted. When it
+  // has been quiet and the workers are through, a receive still waiting has lost its datagram: it is sent one
+  var out = List[*OpCore]();
+  var mineMain = List[*OpCore]();
+  let limit = Instant.now() + Duration.fromSeconds(60i64);
+  var polledRecv = 0u32;
+  var silent = Instant.now();
+  var settled = false;
+  while !settled && Instant.now() < limit {
+    var bytes = 0u32;
+    var key = 0usize;
+    var ovp = 0usize;
+    GetQueuedCompletionStatus(port, &mut bytes as *u32, &mut key as *usize, &mut ovp as *usize, 5u32);
+    if ovp != 0usize {
+      sh.udpCompleted(ovp as *OpCore, bytes, &mut out);
+      var k = 0usize;
+      while k < out.len() {
+        answered(*out[k]);
+        polled.add(1u32);
+        if (*out[k] as &OpCore).kind == diag.kindRecvFrom {polledRecv = polledRecv + 1u32;}
+        k = k + 1usize;
+      }
+      out.clear();
+      silent = Instant.now();
+    }
+    let fin = finished.load();
+    let kept = waited.load() + listed.load();
+    if fin == workers && polled.load() == kept {
+      settled = true;
+    } else if fin == workers && Instant.now() - silent > Duration.fromMillis(300i64) {
+      var missing = posted.load() - polledRecv;
+      silent = Instant.now();
+      while missing > 0u32 && missing < 100000u32 {
+        missing = missing - 1u32;
+        post(&sh, &mainPool, tx, sendToOn(&mainPool, tx, rxPort, 8usize), &mut mineMain, false);
+      }
+    }
+  }
+  allDone.store(1u32);
+  let n0 = t0.join();
+  let n1 = t1.join();
+  let n2 = t2.join();
+  let n3 = t3.join();
+  var j = 0usize;
+  while j < mineMain.len() {
+    let rec = mainPool.dissolve(*mineMain[j] as *OpRec[Ask]);
+    j = j + 1usize;
+  }
+  expect(settled, "every record the table kept was answered at the port");
+  expectUInt(u64.from(doubled.load()), 0u64, "no record was answered twice");
+  expectUInt(u64.from(unanswered.load()), 0u64, "no record the table kept was left unanswered");
+  expectUInt(u64.from(n0 + n1 + n2 + n3), u64.from(waited.load() + listed.load()), "the records the workers kept are those the table kept");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  report("started under the shared lock, pending: ", started.load());
+  report("  completion first: ", compFirst.load());
+  report("  listed: ", listed.load());
+  report("left to issueWaiting, listed: ", waited.load());
+  report("answered where issued: ", atOnce.load());
+  report("answered at the port: ", polled.load());
+  lp.close(rx);
+  lp.close(tx);
+  lp.close(sink);
+  CloseHandle(port);
+  done()
+  }
+}

@@ -735,7 +735,7 @@ import sync use Mutex, Condvar;
 import collections use List, String;
 import iobuf use IoBuf, Chain;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, resolveWork, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending, issueNot, DatagramBatch, OpId, noSuchHandleCode, noMemoryCode, Cause;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, resolveWork, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending, issueStarted, issueNot, DatagramBatch, OpId, noSuchHandleCode, noMemoryCode, Cause;
 import path use Path;
 import process;
 import actors;
@@ -968,6 +968,13 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
         if dgram {sh.unlockShared(h);} else {sh.unlock(h);}
         return;
       }
+      // Windows: a datagram started under the shared lock that the kernel keeps. It is the worker port's, never
+      // the Loop's: the lock is let go, and the record is listed (or answered, if its completion came first)
+      if got == issueStarted {
+        if dgram {sh.unlockShared(h);} else {sh.unlock(h);}
+        startedHere(ctx as *OpRec[Ask], c);
+        return;
+      }
       if dgram {sh.unlockShared(h);} else {sh.unlock(h);}
       // A datagram operation the try left, on a socket bound onto the worker port: it waits there, in
       // its entry, and never on the Loop
@@ -989,7 +996,11 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
 //
 // A datagram operation tries on its own worker, as ever (the shared try, under the entry's shared
 // lock). If it finds nothing to do, 'waitHere' hands it to iocore's issueWaiting (no lock held),
-// which lists it in the socket's entry, or answers it at once. It is then ended, once, by whichever
+// which lists it in the socket's entry, or answers it at once. Windows: a datagram operation the kernel
+// keeps is started in the shared try itself (issueStarted), and 'startedHere' lets go of the lock and
+// has iocore's listStarted list it, or answer it if its completion came first (shared.cone, STARTED
+// UNDER THE SHARED LOCK): one shared take for an update, one exclusive take for each that goes pending.
+// It is then ended, once, by whichever
 // comes first: the port's event or completion (portEvents, on the worker that took it: the same hook
 // the park's poller calls), a cancel of its group or the group's deadline (UdpWake, told by
 // cancelgroups, on the cancelling thread), a cancelRead or cancelWrite of its handle or a close
@@ -1085,6 +1096,35 @@ fn waitHere(rp: *OpRec[Ask], c: *HereCounts) bool {
   }
   udpEnded(rp);
   false
+}
+
+// The wait of record rp, a datagram operation started under its entry's shared lock that the kernel keeps
+// (issueStarted: iocore's STARTED UNDER THE SHARED LOCK), with no lock held: counted as a wait (before it can be
+// answered, by this thread or another), then listed by 'listStarted' (its completion answers it), or answered
+// here when its completion came first. Nothing of the record is touched once it is listed: another thread may
+// answer it
+fn startedHere(rp: *OpRec[Ask], c: *HereCounts) {
+  let core = rp as *OpCore;
+  let r = core as &mut OpCore;
+  let reg = udpGroupOf(r);
+  let id = r.id();
+  let h = r.handle;
+  (*rp).ask.udp = true;
+  udpWaiting.add(1u64);
+  actors.workerPortWaits(true);
+  let got = sharedNow().listStarted(core);
+  if got == issueNot {
+    die("aio: a datagram answered started that was not started");
+  }
+  bump(&mut (*c).here as *u64);
+  if got == issueDone {
+    if !readAnyNext(rp) {
+      readAnyClosed(rp);
+      answerRec(rp);
+    }
+    return;
+  }
+  udpWatch(reg, core, id, h);
 }
 
 // A read with no buffer (opRecvAny) on a socket of the worker port (TCP ON THE WORKER PORT below), started on
