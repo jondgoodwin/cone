@@ -5,7 +5,7 @@
 #   pwsh tools\cellbench\run.ps1 -Form c -N 1000 -Procs 2 [-W 8] [-CW 4] [-Seconds 10] [-Zones 1] [-Beings 8] [-Crowd] [-InputHz 30] [-Port 47400] [-Tag x]
 # Needs CONEC / CONESTD of a built compiler (default: the main checkout's release build). Logs go to build\cellbench-<tag>\.
 param([string]$Form = 'c', [int]$N = 1000, [int]$Procs = 2, [int]$W = 8, [int]$CW = 4, [int]$Seconds = 10,
-      [int]$Zones = 1, [int]$Beings = 8, [switch]$Crowd, [int]$InputHz = 30, [int]$Port = 47400, [string]$Tag = "", [switch]$Memstats)
+      [int]$Zones = 1, [int]$Beings = 8, [switch]$Crowd, [int]$InputHz = 30, [int]$Port = 47400, [string]$Tag = "", [switch]$Memstats, [int]$Rate = 0)
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..\..").Path
 $cr = if ($Crowd) { 1 } else { 0 }
@@ -59,7 +59,7 @@ function ReadLog([string]$f) {
 $idle = (Get-Counter '\Processor(_Total)\% Idle Time' -SampleInterval 1 -MaxSamples 3 | ForEach-Object { $_.CounterSamples[0].CookedValue } | Measure-Object -Average).Average
 $srvLog = "$out\srv.log"
 $common = "form=$Form secs=$Seconds beings=$Beings crowd=$cr players=$N"
-$s = Start-Congo "server $Port - $common workers=$W zones=$Zones" $srvLog 'srv'
+$s = Start-Congo "server $Port - $common workers=$W zones=$Zones rate=$Rate" $srvLog 'srv'
 $srvPid = Find-Exe $s.Id
 for ($i = 0; $i -lt 1200; $i++) { if ((ReadLog $srvLog) -match 'LISTENING') { break }; Start-Sleep -Milliseconds 250 }
 Start-Sleep 1

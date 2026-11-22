@@ -169,6 +169,7 @@ pub struct ConnectionStats {
   pub streamsRefused: u64;        // updates dropped for a latest-wins stream past the maxStreams a connection carries (the peer's, or ones waiting for the application)
   pub cellSkipped: u64;           // cell versions passed over: a bound stream's cell (bindLatest) was more than one version past the last one sent, and the ones between were never sent
   pub cellRefused: u64;           // incoming values dropped because the cell bound to their stream (bindIncoming) takes fewer bytes than they have
+  pub cellNoRoom: u64;            // times a bound stream's cell had a newer value that a packet left out for want of room (the link is over capacity: spread the regions, write less, or raise the weight of the stream that matters)
   pub rttMs: i64;                 // smoothed round trip time; 0 before the first sample
   pub rttVarMs: i64;
   pub lossPermille: u32;          // of our packets, in a thousand, that never got acknowledged
@@ -432,7 +433,7 @@ pub struct ConnectionCore {
       Array[StreamIn, 64]() <- fill StreamIn(0u16, 0u16), 0usize,
       t, t - cfg.keepAliveMs * msNs, t, false, false, t, notFound, 0i64, false, -1i64, 0i64, 0u64, -1i64, 0i64, 0i64, 0u64, 0i64,
       false, 0i64, 0i64, 0i64, true, -1i64, 4i64 * secNs, t,
-      ConnectionStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0i64, 0u32, true))
+      ConnectionStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0i64, 0u32, true))
   }
 
   pub fn sessionId(self: &) u64 {session}
@@ -1046,7 +1047,10 @@ pub struct ConnectionCore {
         let s = &mut outs[si];
         m = m + 1usize;
         if !s.pending {
-          if latestOverhead > budget {continue;}
+          if latestOverhead > budget {
+            st.cellNoRoom = st.cellNoRoom + 1u64;
+            continue;
+          }
           let mk = p.mark();
           p.putBE[u16](s.key);
           p.putBE[u16](s.nextSeq);
@@ -1080,6 +1084,8 @@ pub struct ConnectionCore {
             }
             else {}
           }
+          // The cell had a newer value (cellNewer) and none went: it did not fit the room left
+          st.cellNoRoom = st.cellNoRoom + 1u64;
           p.truncateTo(mk);
           p.release(mk);
           continue;

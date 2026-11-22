@@ -8,7 +8,7 @@
 //       (followCell) with a spread of S ms (3 when S is not given); on the clients it is form c
 // The world ticks at 60 Hz on actors.Timer and publishes at 30 Hz. Run it in a release build, by tools/cellbench/run.ps1
 // (Windows) or tools/cellbench/linux.sh (Linux box). By hand, arguments are  <role> <port> <ip or -> then key=value:
-//   server  <port> <bindIPv4|-> form=m1|m2|c players=N secs=S workers=W zones=Z beings=8 crowd=0|1
+//   server  <port> <bindIPv4|-> form=m1|m2|c players=N secs=S workers=W zones=Z beings=8 crowd=0|1 rate=0 (packets a second to each client; 0: 30)
 //   clients <port> <serverIPv4|-> form=.. n=N (this process's connections) secs=S workers=W players=N (the whole run)
 //           inputhz=30 beings=8 crowd=0|1
 //   inproc  form=m1|c frames=F      (case A, single player lockstep through pairInProcess, flushCells)
@@ -46,6 +46,10 @@ const personalBytes = 100usize;
 const inputBytes = 80usize;
 const packetFit = 1171usize;  // maxLatestBytes of the default config: one body (m1) is cut to this
 const beachCut = 1040usize;   // the crowded region's value is cut to this, so it can share a packet with the 106-byte personal part (the packet takes 1177 bytes of items, 6 over each)
+// Weights (spec section 4.1, row 617): the own region goes in personal's tier, so a ring cell starved for 250 packets
+// (about 8 s at 30 a second) is what it takes to outrank it; the ring shares what room is left
+const weightOwn = 1000u32;
+const weightRing = 4u32;
 const histWidthNs = 100000i64;
 const histBuckets = 2000usize;
 
@@ -377,7 +381,7 @@ actor World {
         neighbours(*seatRegion[i], gw, u32.from(regions), &mut near);
         var j = 0usize;
         while j < near.len() {
-          seats[i].bindLatest(sRegion0 + u16.from(j), rw[usize.from(*near[j])].reader(), if j == 0usize {8u32} else {4u32});
+          seats[i].bindLatest(sRegion0 + u16.from(j), rw[usize.from(*near[j])].reader(), if j == 0usize {weightOwn} else {weightRing});
           j = j + 1usize;
         }
         if lock >= 0i64 {
@@ -533,12 +537,14 @@ actor World {
 
   pub async fn report(self, done: Sender[u64]) {
     var skipped = 0u64;
+    var noRoom = 0u64;
     var refusedIn = 0u64;
     var sent = 0u64;
     var i = 0usize;
     while i < seats.len() {
       let s = await seats[i].stats();
       skipped = skipped + s.cellSkipped;
+      noRoom = noRoom + s.cellNoRoom;
       refusedIn = refusedIn + s.cellRefused;
       sent = sent + s.latestSent;
       i = i + 1usize;
@@ -554,6 +560,7 @@ actor World {
     printStr("\n");
     printStr("WORLD zone="); printUInt(u64.from(zone));
     printStr(" cellSkipped="); printUInt(skipped);
+    printStr(" cellNoRoom="); printUInt(noRoom);
     printStr(" cellRefused(in)="); printUInt(refusedIn);
     printStr(" latestSent="); printUInt(sent);
     // seqlock tries thrown away, over every cell the world holds (regions, personal parts, inputs)
@@ -612,6 +619,8 @@ fn server(port: u16, args: &List[String], bind: &str) {
   cfg.maxClients = n + 16usize;
   cfg.maxPerAddress = n + 16usize;
   cfg.admitRate = 0u32;
+  let rate = argNum(args, "rate", 0u64);   // packets a second to each client; 0: the default (30). 60 is the row that fits the link
+  if rate > 0u64 {cfg.goodRate = u32.from(rate);}
   var ws = List[World]();
   var z = 0usize;
   while z < zones {
