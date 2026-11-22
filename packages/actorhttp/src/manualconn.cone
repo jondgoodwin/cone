@@ -37,6 +37,48 @@ fn tlsFor(cfg: &tls.ClientConfig) Result[tls.Client, httpclient.Failure] {
   Ok[tls.Client, httpclient.Failure](tc[cfg])
 }
 
+// The ManualConns whose connection is not ended, and their ids, behind a lock: held for the program's end, when each lets go of
+// the replies it holds (a behaviour paused on one is then abandoned, as for a client's fetches)
+struct ManualRegistry {
+  actors: List[ManualConn];
+  ids: List[u64];
+}
+
+fn mAdd(a: ManualConn, id: u64) {
+  let r = &mut *manualReg;
+  r.actors.push(a);
+  r.ids.push(id);
+}
+
+fn mRemove(id: u64) {
+  let r = &mut *manualReg;
+  match r.ids.indexOf(&id) {
+    case let Some(k) {
+      r.actors.remove(k);
+      r.ids.remove(k);
+    }
+    case is None[usize] {}
+  }
+}
+
+// At the program's end (final): every manual connection not ended lets go of its replies, unanswered
+fn abandonManual() {
+  var all = List[ManualConn]();
+  {
+    let r = &mut *manualReg;
+    var i = 0usize;
+    while i < r.actors.len() {
+      all.push(r.actors[i]);
+      i = i + 1usize;
+    }
+  }
+  var i = 0usize;
+  while i < all.len() {
+    all[i].abandon();
+    i = i + 1usize;
+  }
+}
+
 fn closedFailure(why: &str) httpclient.Failure {
   httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, why)
 }
@@ -90,10 +132,30 @@ pub actor ManualConn is ConnOwner {
   next: u32;
   ended: bool;                  // the connection is over
   closing: bool;                // the Conn was dropped
+  rid: u64;                     // its place in the registry of connections not ended
+  proto: u32;                  // 0: not chosen, 1: HTTP/1.1, 2: HTTP/2
+  cap1: usize;                  // the requests held at once on HTTP/1.1: the one on the wire and 'maxWaiting' behind it
+  cap2: usize;                  // ...on HTTP/2: the streams a peer commonly allows, and 'h2MaxWaiting' past them
 
   fn init(self: &new) {
+    let conf = httpconn.Config.make();
     *self = Self(conn: None[ClientConnActor], group: CancelGroup.make(), pending: None[ConnReply], reqs: ConnReqs(),
-      next: 0u32, ended: false, closing: false);
+      next: 0u32, ended: false, closing: false, rid: newId(), proto: 0u32, cap1: 1usize + usize.from(conf.maxWaiting),
+      cap2: 128usize + usize.from(conf.h2MaxWaiting));
+    let myId = self.rid;
+    mAdd(selfactor, myId);
+  }
+
+  // The program ends (see abandonManual): the replies held are let go unanswered, so a behaviour paused on one is abandoned
+  pub async fn abandon(self) {
+    reqs.clear();
+    pending = None[ConnReply];
+  }
+
+  // The connection is over: no more is asked of the registry's hold on this actor
+  fn endNow(self) {
+    ended = true;
+    mRemove(rid);
   }
 
   // The connection made: the host looked up (within connectTimeout), then the connection actor, which connects each address in
@@ -107,7 +169,7 @@ pub actor ManualConn is ConnOwner {
         case let Ok(t) {tlsc = Some[tls.Client](t);}
         case let Err(f) {
           self.answerConnect(Err[Conn, FetchError](FetchError.failed(f)));
-          ended = true;
+          self.endNow();
           return;
         }
       }
@@ -121,7 +183,7 @@ pub actor ManualConn is ConnOwner {
         if list.len() == 0usize {
           self.answerConnect(Err[Conn, FetchError](FetchError.failed(
             httpclient.Failure.make(httpclient.Stage.Resolve, 0u32, ErrorKind.Closed, "the name has no address"))));
-          ended = true;
+          self.endNow();
           return;
         }
         conn = Some[ClientConnActor](ClientConnActor(selfactor, 1u32, 1u32, list, host, secure, args, group, None[TestPipe], true));
@@ -130,7 +192,7 @@ pub actor ManualConn is ConnOwner {
         self.answerConnect(Err[Conn, FetchError](FetchError.failed(
           httpclient.Failure.make(httpclient.Stage.Resolve, e.code,
             if e.isTimedOut() {ErrorKind.TimedOut} else {ErrorKind.Closed}, "the name could not be looked up"))));
-        ended = true;
+        self.endNow();
       }
     }
   }
@@ -151,6 +213,12 @@ pub actor ManualConn is ConnOwner {
   pub async fn exchange(self, head: RequestHead, body: String, outer: Option[CancelGroup], deadline: Instant, rp: FetchReply) {
     if closing || ended {
       rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(closedFailure("the connection is closed"))));
+      return;
+    }
+    // Past what the connection holds: refused at once (the package's header, A CONNECTION)
+    if reqs.len() >= (if proto == 2u32 {cap2} else {cap1}) {
+      rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(
+        httpclient.Failure.make(httpclient.Stage.Limit, 0u32, ErrorKind.TooLarge, "maxWaiting requests already wait on the connection"))));
       return;
     }
     let g = match outer {
@@ -210,6 +278,7 @@ pub actor ManualConn is ConnOwner {
   pub async fn close(self) {
     if closing {return;}
     closing = true;
+    mRemove(rid);
     self.answerConnect(Err[Conn, FetchError](FetchError.cancelled()));
     let busy = reqs.len() > 0usize;
     var keys = List[u64]();
@@ -248,7 +317,9 @@ pub actor ManualConn is ConnOwner {
     self.answerConnect(Ok[Conn, FetchError](Conn(Some[ManualConn](selfactor))));
   }
 
-  pub async fn connUp(self, pc: u32, gen: u32, proto: u32, takes: bool, free: usize, recv: u64) {}
+  pub async fn connUp(self, pc: u32, gen: u32, chosen: u32, takes: bool, free: usize, recv: u64) {
+    proto = chosen;
+  }
 
   pub async fn connState(self, pc: u32, gen: u32, free: usize, takes: bool, recv: u64) {}
 
@@ -275,7 +346,7 @@ pub actor ManualConn is ConnOwner {
 
   // The connection is over: a connect not yet answered fails with why, and each request on it with the same
   pub async fn connEnded(self, pc: u32, gen: u32, clean: bool, failure: httpclient.Failure, tlsFailed: bool) {
-    ended = true;
+    self.endNow();
     conn = None[ClientConnActor];
     self.answerConnect(Err[Conn, FetchError](FetchError.failed(failure.clone())));
     var keys = List[u64]();

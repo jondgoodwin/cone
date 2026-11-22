@@ -149,9 +149,10 @@
 // response's 'version' says which protocol was used (httpclient's header,
 // HTTP/2).
 //
-// A CONNECTION. 'connect(host, port)' makes one HTTP/1.1 connection of httpconn's
-// Driver (the host looked up and connected within the driver's connectTimeout,
-// 10 s) and answers a Conn when it is made; 'connectSecure' does so through a
+// A CONNECTION. 'connect(host, port)' makes one connection on an actor of its own
+// (a ManualConn, manualconn.cone, which owns a ClientConnActor, the actor a client's
+// pool makes, outside any client's pool; the host looked up and connected within
+// connectTimeout, 10 s) and answers a Conn when it is made; 'connectSecure' does so through a
 // TLS client made from the tls.ClientConfig given, the host the name the
 // server's certificate must hold (it speaks HTTP/2 when that config's 'alpn'
 // offers "h2" and the server chooses it; what follows is HTTP/1.1's, and on
@@ -544,7 +545,8 @@ let liveClients: Atomic[u64];    // clientactor.cone: ClientActors alive
 let liveClientConns: Atomic[u64];    // ...and ClientConnActors
 let liveH3Conns: Atomic[u64];        // h3endpoint.cone: H3ConnActors alive
 let liveH3Endpoints: Atomic[u64];    // ...and H3Endpoints
-let manualTls: Arc[Mutex, TlsClients];    // manualconn.cone: connectSecure's TLS contexts, one for each config
+let manualReg: Arc[Mutex, ManualRegistry];    // the ManualConns not ended (manualconn.cone), for the program's end
+let manualTls: Arc[Mutex, TlsClients];   // manualconn.cone: connectSecure's TLS contexts, one for each config
 let clientReg: Arc[Mutex, ClientRegistry];    // the client actors not yet closed (clientactor.cone), for the program's end
 
 fn @initpure init() {
@@ -557,6 +559,7 @@ fn @initpure init() {
   liveH3Conns = Atomic[u64].of(0u64);
   liveH3Endpoints = Atomic[u64].of(0u64);
   manualTls = Arc[Mutex, TlsClients](TlsClients());
+  manualReg = Arc[Mutex, ManualRegistry](ManualRegistry(List[ManualConn](), List[u64]()));
   clientReg = Arc[Mutex, ClientRegistry](ClientRegistry(List[ClientActor](), List[u64]()));
   svcHost = aio.host[Service](&makeService);
 }
@@ -641,6 +644,8 @@ fn final() {
   // The client actors let go of the replies they hold (the fetches still waiting are abandoned, as the service's are
   // below), so a behaviour paused on one is dropped before the service ends, as it was when the service held it
   abandonClients();
+  actors.waitQuiet();
+  abandonManual();
   actors.waitQuiet();
   svcHost.end();
 }

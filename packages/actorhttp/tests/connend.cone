@@ -166,6 +166,7 @@ fn describe(r: &Result[httpclient.Response, FetchError]) String {
       if e.isCancelled() {String.from("err cancelled")}
       else if e.isTimedOut() {String.from("err timedout")}
       else if e.failure.stage == httpclient.Stage.Closed {String.from("err failed at closed")}
+      else if e.failure.stage == httpclient.Stage.Limit {String.from("err failed at limit")}
       else {String.from("err failed elsewhere")}
     }
   }
@@ -279,5 +280,21 @@ fn main() i32 {
   expect(endedReaches(before3 + 1u64), "an idle Conn let go: the backend sees the connection closed");
   expect(gone(), "...its connection actor is gone");
   expect(allHome(), "...and no buffer is left lent");
+
+  // One request on the wire and one waiting behind it: a third is refused at once, at the Limit stage
+  let before4 = ended.load();
+  let c4 = Caller(Conn.none());
+  c4.connect(port, otx.clone());
+  expectStr(takeS(&mut orx).view(), "connected", "a fourth connection");
+  c4.get(String.from("/head"), otx.clone());
+  c4.get(String.from("/head"), otx.clone());
+  thread.sleep(Duration.fromMillis(300i64));
+  c4.get(String.from("/head"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "err failed at limit", "a third request while two stand: refused at the Limit stage");
+  c4.drop();
+  expectStr(takeS(&mut orx).view(), "err cancelled", "...the one on the wire is Cancelled when the Conn is let go");
+  expectStr(takeS(&mut orx).view(), "err cancelled", "...and the one waiting behind it");
+  expect(endedReaches(before4 + 1u64), "...the backend sees the connection end");
+  expect(gone(), "...its connection actor is gone");
   done()
 }
