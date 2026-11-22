@@ -1,0 +1,117 @@
+// The buffer pool's final leaves a thread that is still running alone (Bug 104 at
+// exit; row 646, from row 643's probe). A detached thread, such as an iocore lane
+// worker, can be mid-job, taking from its own cache, when main returns and the
+// module finals run. A final that flushed that cache too would read a line's
+// count, and the thread could take the top block before the final emptied the
+// line; the final would then hand that block to the stock while the thread held
+// it, and the stock would hand it out again.
+//
+// The worker fills its own cache (class 0 holds 6, class 1 holds 2) and waits
+// mid-job. Main holds blocks in classes 2 and 3 of its own cache (it made its
+// record first, so the worker's is newer and a walk of the registry meets the
+// worker's lines first), and returns. The final runs on main and flushes its
+// lines. bufpool's test-only flush hook parks it at the first line it flushes
+// (count read, not yet emptied): the worker takes the top block X of its class-0
+// line. The hook then lets it go to the next line, and on that second call the
+// worker takes 60 class-0 blocks from the stock and checks none is X. With the
+// worker's line flushed (a mutant) the first call is the worker's class-0 line,
+// X is emptied into the stock, and the worker is handed X again. With the fix
+// the final never reaches the worker's lines, the hook is called only for main's,
+// and X is never in the stock.
+
+mod exitfinal;
+
+import testing use *;
+import thread;
+import stdio;
+import time use Instant, Duration;
+import bufpool;
+import collections use List;
+
+let primed: Atomic[u64];
+let hookCalls: Atomic[u64];
+let took: Atomic[u64];
+let stage2: Atomic[u64];
+let verdictDone: Atomic[u64];
+let dup: Atomic[u64];
+let armed: Atomic[u64];
+
+fn @initpure init() {
+  primed = Atomic[u64].of(0u64);
+  hookCalls = Atomic[u64].of(0u64);
+  took = Atomic[u64].of(0u64);
+  stage2 = Atomic[u64].of(0u64);
+  verdictDone = Atomic[u64].of(0u64);
+  dup = Atomic[u64].of(0u64);
+  armed = Atomic[u64].of(0u64);
+}
+
+fn waitOn(flag: &Atomic[u64]) bool {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while flag.load() == 0u64 && Instant.now() < limit {
+    thread.yieldNow();
+  }
+  flag.load() != 0u64
+}
+
+// bufpool's flush hook, on the flushing thread (main, in the final)
+fn hook() {
+  if armed.load() == 0u64 {return;}
+  let n = hookCalls.add(1u64);
+  if n == 0u64 {
+    // the first line flushed: its count is read, not yet emptied; the worker takes now
+    stdio.printStr("hook 1: worker takes from its line now\n");
+    waitOn(&took);
+  } else if n == 1u64 {
+    // the first line has been emptied; the worker takes from the stock and checks
+    stdio.printStr("hook 2: worker takes from the stock now\n");
+    stage2.store(1u64);
+    waitOn(&verdictDone);
+    if dup.load() != 0u64 {
+      stdio.printStr("RESULT: DOUBLE HANDOUT (the worker was handed the block it already held)\n");
+    } else {
+      stdio.printStr("RESULT: no duplicate\n");
+    }
+  }
+}
+
+// a running thread: its cache is full and it goes on taking after main returns
+fn worker(arg: u64) u64 {
+  var held = List[*u8]();
+  var k = 0usize;
+  while k < 6usize {held.push(bufpool.blockTake(0usize)); k = k + 1usize;}
+  k = 0usize;
+  while k < 2usize {held.push(bufpool.blockTake(1usize)); k = k + 1usize;}
+  k = 0usize;
+  while k < 6usize {bufpool.blockPut(0usize, held[k]); k = k + 1usize;}
+  while k < 8usize {bufpool.blockPut(1usize, held[k]); k = k + 1usize;}
+  primed.store(1u64);
+  while hookCalls.load() == 0u64 {thread.yieldNow();}
+  let x = bufpool.blockTake(0usize);     // the top of its own line, while the final has its count read
+  took.store(1u64);
+  if waitOn(&stage2) {
+    var j = 0usize;
+    while j < 60usize {
+      let y = bufpool.blockTake(0usize);
+      if y as usize == x as usize {dup.add(1u64);}
+      j = j + 1usize;
+    }
+  }
+  verdictDone.store(1u64);
+  arg
+}
+
+fn main() i32 {
+  // main's own cache first, so its record is the older one: lines of class 2 and 3
+  let a = bufpool.blockTake(2usize);
+  let b = bufpool.blockTake(3usize);
+  bufpool.blockPut(2usize, a);
+  bufpool.blockPut(3usize, b);
+  bufpool.setFlushHook(&hook);
+  let t = thread.start(0u64, &worker);
+  t.detach();
+  expect(waitOn(&primed), "the worker primed its cache");
+  armed.store(1u64);
+  stdio.printStr("main returns with the worker mid-job\n");
+  done()
+}
