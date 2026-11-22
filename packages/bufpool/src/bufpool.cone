@@ -466,11 +466,18 @@ fn setNext(b: *u8, next: *u8) {*(b as **u8) = next;}
 // (at most 32) of them. Answers its number. During module initialisation only
 pub fn registerClass(blockSize: usize, cacheBlocks: u32) usize {
   let g = glob();
+  (*g).regLock.lock();
+  if (*g).regHead as usize != 0usize {    // a record exists (live or retired): its lines hold the caps copied at its making
+    (*g).regLock.unlock();
+    panic("bufpool: registerClass after the pool is in use; register classes in module initialisation");
+  }
   let c = (*g).nClasses;
   if c >= maxClasses {
+    (*g).regLock.unlock();
     panic("bufpool: too many block classes");
   }
   if blockSize < 8usize || blockSize > slabBytes || blockSize % 8usize != 0usize || cacheBlocks > maxCache {
+    (*g).regLock.unlock();
     panic("bufpool: a block class needs blocks of 8 bytes or more (a multiple of 8) in a slab of 2 MiB, and a cache of 32 at most");
   }
   let cs = classAt(g, c);
@@ -482,6 +489,7 @@ pub fn registerClass(blockSize: usize, cacheBlocks: u32) usize {
   (*cs).batch = if half == 0u32 {1u32} else {half};
   (*cs).active = 1u32;
   (*g).nClasses = c + 1usize;
+  (*g).regLock.unlock();
   c
 }
 
