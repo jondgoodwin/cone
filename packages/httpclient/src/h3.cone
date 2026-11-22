@@ -122,6 +122,154 @@ pub trait Http3 {
   pub fn stopBody(self: &mut, req: H3Req) bool {false}
   // Give a request up: Cancelled now
   pub fn cancel(self: &mut, lp: &mut Loop, req: H3Req) bool;
+  // FOR ACTORS (see THE ACTORS' SIDE below): the acceptor of a server whose TLS config is cfg (its certificate
+  // and key), or why it cannot be made; it takes no loop and no socket. The default says no, so a plug-in
+  // written before these methods still builds
+  pub fn acceptor(self: &, cfg: &tls.ServerConfig) Result[Uni[H3Acceptor], Failure] {
+    Err[Uni[H3Acceptor], Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Unsupported, "no HTTP/3 acceptor in this plug-in"))
+  }
+  // The connector of a client, its certificate check as the plug-in's maker was given, or why it cannot be made
+  pub fn connector(self: &) Result[Uni[H3Connector], Failure] {
+    Err[Uni[H3Connector], Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Unsupported, "no HTTP/3 connector in this plug-in"))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The actors' side: connections as values, the plug-in making them
+// ---------------------------------------------------------------------------
+//
+// THE ACTORS' SIDE. The polled Driver above hosts connections itself, on its own loop. An actor host (actorhttp's
+// connection actors) hosts them one to an actor, and needs only values: a plug-in makes them and runs no loop and
+// owns no actor. A connection is one value, whole in itself and with no clock, socket or loop of its own (h3driver's
+// header, THE VALUE): the host gives it the datagrams that come and the time, and takes the datagrams it has to
+// send. This package never imports QUIC, so the host reaches a connection only through the four traits below.
+//
+//   H3ServerConn  H3ClientConn   the value, by role
+//   H3Acceptor                   one per server socket, shared by its actors: reads a datagram's header, makes a server's value
+//   H3Connector                  one per client, shared by its actors: makes a client's value
+//
+// H3ServerConn and H3ClientConn carry the methods of httpconn's ServerProto and ClientProto, with the same
+// signatures, and stand alone: a trait that extends ServerProto or ClientProto cannot be a generic bound or sit
+// behind a Uni (errors 1186, 1025, 1006; Backlog\generics.md), so the host holds each in a small adapter that meets
+// the httpconn trait by forwarding. If that is fixed, these may extend httpconn's and the adapters go.
+//
+// A TURN, as the value's header says: the host's call of datagramIn or handleTimeout (or of the calls above the
+// wire), then takeDatagram until it gives None (or at the host's send depth, then finishTurn); wantsTurn says
+// another turn is owed.
+
+// A connection ID of at most 20 bytes (RFC 9000's most), its bytes packed into three words, and its length: the
+// key a host's routing table holds a connection under
+pub struct H3Cid is Hash {
+  pub a: u64;
+  pub b: u64;
+  pub c: u64;
+  pub len: u32;
+
+  pub fn `==`(self, o: H3Cid) bool {a == o.a && b == o.b && c == o.c && len == o.len}
+
+  // The key of the n bytes at bytes[from], or None when n is past 20 or past the end
+  pub fn of(bytes: &Array[u8], from: usize, n: usize) Option[H3Cid] {
+    if n > 20usize || from + n > bytes.len {return None;}
+    var w = Array[u64, 3]() <- fill 0u64;
+    var k = 0usize;
+    while k < n {
+      let at = k / 8usize;
+      w[at] = (w[at] << 8u64) | u64.from(bytes[from + k]);
+      k = k + 1usize;
+    }
+    Some[H3Cid](H3Cid(w[0usize], w[1usize], w[2usize], u32.from(n)))
+  }
+}
+
+// A server connection's value: httpconn.ServerProto's methods, then those below the wire
+pub trait H3ServerConn {
+  pub fn next(self: &mut, now: Instant) httpconn.ServerEvent;
+  pub fn request(self: &) &RequestHead;
+  pub fn takeRequest(self: &mut) RequestHead;
+  pub fn recycleRequest(self: &mut, spare: RequestHead);
+  pub fn response(self: &mut) &mut ResponseHead;
+  pub fn respond(self: &mut, stream: u32, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine());
+  pub fn sendInterim(self: &mut, stream: u32, head: ResponseHead, file: &Array[u8] = srcFile(), line: u32 = srcLine());
+  pub fn sendContinue(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine());
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf];
+  pub fn writeRoom(self: &, stream: u32) usize;
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine());
+  pub fn release(self: &mut, stream: u32, n: usize);
+  pub fn stopBody(self: &mut, stream: u32) bool;
+  pub fn pollTimeout(self: &) Option[Instant];
+  pub fn handleTimeout(self: &mut, now: Instant);
+  pub fn shutdown(self: &mut);
+  pub fn abort(self: &mut);
+  pub fn done(self: &mut, now: Instant) bool;
+  pub fn failureOf(self: &) &Option[httpconn.Failure];
+  pub fn isHttp2(self: &) bool;
+  pub fn isOpen(self: &) bool;
+  pub fn wantsCall(self: &) bool;
+  pub fn takeCall(self: &mut) Op;
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant);
+  // Below the wire: one UDP payload from the peer; the next datagram to send (None when there is none now);
+  // what the last call of a turn would do, when the host stops taking datagrams early; whether another turn is
+  // owed; the connection IDs it answers to now, appended to out (how many), and the count that moves when they change
+  pub fn datagramIn(self: &mut, d: &Array[u8], now: Instant);
+  pub fn takeDatagram(self: &mut, now: Instant) Option[IoBuf];
+  pub fn finishTurn(self: &mut, now: Instant);
+  pub fn wantsTurn(self: &) bool;
+  pub fn ids(self: &, out: &mut List[H3Cid]) usize;
+  pub fn idsEpoch(self: &) u64;
+}
+
+// A client connection's value: httpconn.ClientProto's methods, then those below the wire
+pub trait H3ClientConn {
+  pub fn room(self: &) usize;
+  pub fn request(self: &mut, head: RequestHead, body: BodyLength, now: Instant,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) u32;
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf];
+  pub fn writeRoom(self: &, stream: u32) usize;
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine());
+  pub fn release(self: &mut, stream: u32, n: usize);
+  pub fn cancel(self: &mut, stream: u32);
+  pub fn next(self: &mut, now: Instant) httpconn.ClientEvent;
+  pub fn pollTimeout(self: &) Option[Instant];
+  pub fn handleTimeout(self: &mut, now: Instant);
+  pub fn shutdown(self: &mut);
+  pub fn abort(self: &mut);
+  pub fn done(self: &mut, now: Instant) bool;
+  pub fn failureOf(self: &) &Option[httpconn.Failure];
+  pub fn isHttp2(self: &) bool;
+  pub fn isOpen(self: &) bool;
+  pub fn isIdle(self: &) bool;
+  pub fn liveStreams(self: &) usize;
+  pub fn peerStreams(self: &) usize;
+  pub fn wantsCall(self: &) bool;
+  pub fn takeCall(self: &mut) Op;
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant);
+  pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant);
+  pub fn datagramIn(self: &mut, d: &Array[u8], now: Instant);
+  pub fn takeDatagram(self: &mut, now: Instant) Option[IoBuf];
+  pub fn finishTurn(self: &mut, now: Instant);
+  pub fn wantsTurn(self: &) bool;
+}
+
+// A server socket's acceptor, shared by every actor of the server (Sendable: held behind an Arc[imm], its
+// methods read only what is fixed when it is made: the QUIC context and the bounds). The endpoint reads a
+// datagram's header to route it; a new connection's actor makes the value from the connection's first datagram
+pub trait H3Acceptor is Sendable {
+  // The datagram's Destination Connection ID, the routing key (None for one that has none, or not a QUIC packet's)
+  pub fn connectionId(self: &, d: &Array[u8]) Option[H3Cid];
+  // Whether the datagram begins a new connection (a QUIC version 1 Initial)
+  pub fn isInitial(self: &, d: &Array[u8]) bool;
+  // The value for the connection the first datagram begins, the datagram given to it already, or why not
+  // (an address that is not IPv4, a first packet that is not a client's, a limit)
+  pub fn accept(self: &, first: &Array[u8], bound: SocketAddr, peer: SocketAddr, now: Instant)
+    Result[Uni[H3ServerConn], Failure];
+}
+
+// A client's connector, shared by every actor of the client (Sendable, as the acceptor is)
+pub trait H3Connector is Sendable {
+  // The value for a connection from bound (its own address) to peer, the server's certificate checked against serverName; the
+  // first datagram is the value's to give (takeDatagram)
+  pub fn connect(self: &, serverName: &str, bound: SocketAddr, peer: SocketAddr, now: Instant)
+    Result[Uni[H3ClientConn], Failure];
 }
 
 // The plug-in of a client or server made with none: it has no connection,

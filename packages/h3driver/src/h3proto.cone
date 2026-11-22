@@ -14,7 +14,7 @@ fn narrow(c: &mut H3Conn, id: u64) u32 {
 }
 
 // A server connection: its requests come as events, its responses go by respond, sendData and finish
-pub struct H3Server is Move, httpconn.ServerProto {
+pub struct H3Server is Move, httpconn.ServerProto, httpclient.H3ServerConn {
   pub core: H3Conn;
   reqHead: RequestHead;      // the request head 'next' last named
   resp: ResponseHead;        // the response being written, kept and refilled
@@ -115,12 +115,28 @@ pub struct H3Server is Move, httpconn.ServerProto {
   // Below the wire (the datagram methods of the plug-in's traits, Q2)
   pub fn datagramIn(self: &mut, d: &Array[u8], now: Instant) {core.datagramIn(d, now);}
   pub fn takeDatagram(self: &mut, now: Instant) Option[IoBuf] {core.takeDatagram(now)}
-  pub fn ids(self: &, out: &mut List[u8]) usize {core.ids(out)}
+  pub fn finishTurn(self: &mut, now: Instant) {core.finishTurn(now);}
+  pub fn wantsTurn(self: &) bool {core.wantsTurn()}
+  // The connection IDs it answers to, as routing keys appended to out: how many
+  pub fn ids(self: &, out: &mut List[httpclient.H3Cid]) usize {
+    var bytes = List[u8]();
+    let n = core.ids(&mut bytes);
+    var k = 0usize;
+    var made = 0usize;
+    while k < n {
+      match httpclient.H3Cid.of(bytes.view(), k * quic.localIdLen, quic.localIdLen) {
+        case let Some(key) {out.push(key); made = made + 1usize;}
+        case is None[httpclient.H3Cid] {}
+      }
+      k = k + 1usize;
+    }
+    made
+  }
   pub fn idsEpoch(self: &) u64 {core.idsEpoch()}
 }
 
 // A client connection: its requests go by request, sendData and finish, its responses come as events
-pub struct H3Client is Move, httpconn.ClientProto {
+pub struct H3Client is Move, httpconn.ClientProto, httpclient.H3ClientConn {
   pub core: H3Conn;
 
   pub fn make(core: H3Conn) H3Client {H3Client(core)}
@@ -221,6 +237,8 @@ pub struct H3Client is Move, httpconn.ClientProto {
   // Below the wire (the datagram methods of the plug-in's traits, Q2)
   pub fn datagramIn(self: &mut, d: &Array[u8], now: Instant) {core.datagramIn(d, now);}
   pub fn takeDatagram(self: &mut, now: Instant) Option[IoBuf] {core.takeDatagram(now)}
+  pub fn finishTurn(self: &mut, now: Instant) {core.finishTurn(now);}
+  pub fn wantsTurn(self: &) bool {core.wantsTurn()}
   pub fn ids(self: &, out: &mut List[u8]) usize {core.ids(out)}
   pub fn idsEpoch(self: &) u64 {core.idsEpoch()}
 }

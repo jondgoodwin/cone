@@ -1,0 +1,261 @@
+// The plug-in for actors (httpclient's THE ACTORS' SIDE), through httpclient's traits alone: a Plugin's
+// acceptor and connector, which an actor host holds and shares, and the connection values they make, driven
+// in memory with no socket, loop or clock (the test's own, as h3value.cone's). Checked:
+//   - the control for the link check (httpclient's noquic.cone): a program that imports h3driver has QUIC's
+//     library beside it, on Windows; on Linux, loaded
+//   - one acceptor and one connector make a connection that handshakes, carries a request and its answer,
+//     and ends cleanly, the acceptor's routing reads (connectionId, isInitial) agreeing with the datagrams
+//     the client makes and the connection IDs the server value reports (ids)
+//   - a bad address and a first packet that is not a client's are refused with a Failure, not a panic
+//   - the shared Context: two threads, one acceptor and one connector between them, each making 24
+//     connections at the same time (a start gate holds both until each is ready), every one answered
+//     whole: the Context is read from both with no lock and no failure
+
+mod h3actors;
+
+import stdio use *;
+import fs;
+import path use Path;
+import process;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpconn;
+import tls;
+import thread;
+import sync use Arc;
+import httpclient use H3Acceptor, H3Connector, H3ServerConn, H3ClientConn, H3Cid, Http3;
+import h3driver use *;
+import testing use *;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String()
+}
+
+const bodyText = "an answer from the shared context";
+
+// What a connection's drive saw
+struct Seen {
+  ok: bool;                // the request was answered whole, and both ends closed cleanly
+  routed: bool;            // the routing reads agreed with the datagrams and the IDs
+  why: String;
+}
+
+// A client value and a server value, from the acceptor and connector, driven to a request answered and a close
+fn oneConnection(acc: &Uni[H3Acceptor], con: &Uni[H3Connector], tag: u32, start: Instant) Seen {
+  var now = start;
+  let cAddr = SocketAddr.localhost(u16.from(50000u32 + tag));
+  let sAddr = SocketAddr.localhost(4433u16);
+  var client = match con.connect("localhost", cAddr, sAddr, now) {
+    case var Ok(c) {c}
+    case let Err(f) {return Seen(false, false, String.from("connect failed"));}
+  };
+  let firstOut = client.takeDatagram(now);
+  let Some(first) = firstOut else {return Seen(false, false, String.from("no first datagram"));};
+  var routed = acc.isInitial(first.view());
+  let key = acc.connectionId(first.view());
+  if key is None {routed = false;}
+  var server = match acc.accept(first.view(), sAddr, cAddr, now) {
+    case var Ok(s) {s}
+    case let Err(f) {return Seen(false, false, String.from("accept failed"));}
+  };
+  var sent = false;
+  var answered = false;
+  var clientClosed = false;
+  var clientClean = false;
+  var serverClean = false;
+  var idsChecked = false;
+  var round = 0u32;
+  while round < 600u32 && !(clientClosed && serverClean) {
+    round = round + 1u32;
+    var moved = false;
+    // The client's datagrams to the server
+    while true {
+      match client.takeDatagram(now) {
+        case var Some(b) {
+          moved = true;
+          server.datagramIn(b.view(), now);
+        }
+        case is None[IoBuf] {break;}
+      }
+    }
+    // The server's events
+    while true {
+      match server.next(now) {
+        case is Nothing {break;}
+        case let Request(r) {
+          moved = true;
+          let head = server.response();
+          head.status = 200u16;
+          server.respond(r.stream, BodyLength.sized(u64.from(bodyText.len())));
+          var b = IoBuf(bodyText.len());
+          b.append(bodyText as &Array[u8]);
+          server.sendData(r.stream, b);
+          server.finish(r.stream);
+        }
+        case let Data(d) {moved = true; server.release(d.stream, d.buf.len());}
+        case let End(e) {moved = true;}
+        case let Reset(x) {moved = true;}
+        case let Closed(x) {moved = true; serverClean = x.failure is None;}
+      }
+    }
+    // The server's IDs: once its handshake is done it has told the client some, and each is a key of the
+    // size it routes by; the first datagram's key is what the endpoint routed the connection under
+    if !idsChecked && server.isOpen() {
+      var ids = List[H3Cid]();
+      let n = server.ids(&mut ids);
+      idsChecked = true;
+      if n == 0usize || ids.len() != n || server.idsEpoch() == 0u64 {routed = false;}
+    }
+    // The server's datagrams to the client
+    while true {
+      match server.takeDatagram(now) {
+        case var Some(b) {moved = true; client.datagramIn(b.view(), now);}
+        case is None[IoBuf] {break;}
+      }
+    }
+    // The client's events
+    if !sent && client.room() > 0usize {
+      let stream = client.request(RequestHead.get("/", "localhost"), BodyLength(), now);
+      client.finish(stream);
+      sent = true;
+      moved = true;
+    }
+    while true {
+      match client.next(now) {
+        case is Nothing {break;}
+        case let Response(r) {moved = true;}
+        case let Interim(r) {moved = true;}
+        case let Data(d) {
+          moved = true;
+          if d.buf.len() == bodyText.len() {answered = true;}
+          client.release(d.stream, d.buf.len());
+        }
+        case let End(e) {moved = true; if answered {client.shutdown();}}
+        case let Reset(x) {moved = true;}
+        case let GoAway(g) {moved = true;}
+        case let Closed(x) {moved = true; clientClosed = true; clientClean = x.failure is None;}
+      }
+    }
+    if !moved {
+      var wake = now + Duration.fromMillis(10i64);
+      match client.pollTimeout() {
+        case let Some(w) {if w > now && w < wake {wake = w;}}
+        case is None[Instant] {}
+      }
+      match server.pollTimeout() {
+        case let Some(w) {if w > now && w < wake {wake = w;}}
+        case is None[Instant] {}
+      }
+      now = wake;
+      client.handleTimeout(now);
+      server.handleTimeout(now);
+    }
+  }
+  var why = String();
+  if !answered {why.append("not answered ");}
+  if !clientClosed {why.append("client not closed ");}
+  if !clientClean {why.append("client not clean ");}
+  if !serverClean {why.append("server not clean ");}
+  Seen(answered && clientClosed && clientClean && serverClean, routed, why)
+}
+
+// What a thread is given: the acceptor and connector it shares, and a gate to wait at until both are ready
+struct Work is Sendable {
+  acc: Arc[imm, Uni[H3Acceptor]];
+  con: Arc[imm, Uni[H3Connector]];
+  gate: Arc[imm, Atomic[u32]];
+  base: u32;
+}
+
+fn workerRun(w: Work) u32 {
+  w.gate.add(1u32);
+  while w.gate.load() < 2u32 {thread.yieldNow();}
+  var good = 0u32;
+  var k = 0u32;
+  let t0 = Instant.now();
+  while k < 24u32 {
+    let s = oneConnection(&*w.acc, &*w.con, w.base + k, t0);
+    if s.ok && s.routed {good = good + 1u32;}
+    k = k + 1u32;
+  }
+  good
+}
+
+fn main() i32 {
+  // The control for httpclient's noquic.cone: QUIC's library is beside a program that imports h3driver
+  var quicLinked = false;
+  #if #os == .windows {
+    match process.currentExe() {
+      case let Ok(p) {quicLinked = fs.exists(&p.parent().join("ngtcp2.dll"));}
+      case let Err(e) {}
+    }
+  } #else {
+    match fs.readFile(&Path.from("/proc/self/maps")) {
+      case let Ok(m) {quicLinked = m.view().contains("ngtcp2");}
+      case let Err(e) {}
+    }
+  }
+  expect(quicLinked, "a program that imports h3driver has QUIC's library beside it (or loaded)");
+
+  var ccfg = tls.ClientConfig.make();
+  ccfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  let scfg = tls.ServerConfig.make(&cert, &key);
+  let plug = plugin(&ccfg);
+  let acc = match plug.acceptor(&scfg) {
+    case var Ok(a) {a}
+    case let Err(f) {printStr("no acceptor\n"); return 1i32;}
+  };
+  let con = match plug.connector() {
+    case var Ok(c) {c}
+    case let Err(f) {printStr("no connector\n"); return 1i32;}
+  };
+
+  // One connection, through the traits alone
+  let one = oneConnection(&acc, &con, 0u32, Instant.now());
+  expect(one.ok, "one connection: a request answered whole, both ends closed cleanly");
+  if !one.ok {printStr(one.why.view()); printStr("\n");}
+  expect(one.routed, "the routing reads agree: an Initial, a key, the server's IDs");
+
+  // Refusals: not a QUIC packet, and an IPv6 address
+  var junk = List[u8]();
+  var j = 0u32;
+  while j < 1300u32 {junk.push(u8.from(j % 251u32)); j = j + 1u32;}
+  expect(!acc.isInitial(junk.view()), "junk is not an Initial");
+  var refused = false;
+  match acc.accept(junk.view(), SocketAddr.localhost(4433u16), SocketAddr.localhost(50001u16), Instant.now()) {
+    case var Ok(s) {}
+    case let Err(f) {refused = true;}
+  }
+  expect(refused, "a first packet that is not a client's is refused with a Failure");
+
+  // Two threads, one shared Context between them
+  let sharedAcc = Arc[imm, Uni[H3Acceptor]](acc);
+  let sharedCon = Arc[imm, Uni[H3Connector]](con);
+  let gate = Arc[imm, Atomic[u32]](Atomic[u32].of(0u32));
+  let t1 = thread.start(Work(sharedAcc, sharedCon, gate, 1000u32), &workerRun);
+  let t2 = thread.start(Work(sharedAcc, sharedCon, gate, 2000u32), &workerRun);
+  let a = t1.join();
+  let b = t2.join();
+  expectUInt(u64.from(a), 24u64, "worker 1: every connection answered whole");
+  expectUInt(u64.from(b), 24u64, "worker 2: every connection answered whole");
+  done()
+}
