@@ -52,7 +52,7 @@ fn @initpure init() {
 
 fn @c wake() {
   wakes.add(1u64);
-  if rearm.swap(0u64) == 1u64 {armRoomWake();}     // once
+  if rearm.load() > 0u64 {rearm.sub(1u64); armRoomWake();}     // as many times as the test counts
 }
 
 // The room hook: the event numbered hookAt parks until released
@@ -106,6 +106,7 @@ fn rearmHook(at: u64) {
 struct Rel {
   pub a: usize;
   pub b: usize;        // 0: none
+  pub first: usize;    // 0: none; else released before a and b
   pub bytes: usize;
 }
 
@@ -113,6 +114,7 @@ struct Rel {
 // room event too, which would wake a waiter that the events under test did not
 fn giveBack(j: Rel) u64 {
   let r = bufferPool() as &MemRegion;
+  if j.first != 0usize {r.release(j.first as *u8, j.bytes);}
   r.release(j.a as *u8, j.bytes);
   if j.b != 0usize {r.release(j.b as *u8, j.bytes);}
   relDone.store(1u64);
@@ -142,7 +144,7 @@ fn main() i32 {
   // A. the returner parked before it reads the flag; the waiter arms and retries in that window
   rearmHook(1u64);
   let w0 = wakes.load();
-  let ta = thread.start(Rel(x[0], 0usize, mib(1usize)), &giveBack);
+  let ta = thread.start(Rel(x[0], 0usize, 0usize, mib(1usize)), &giveBack);
   expect(waitFor(&parked, 20000u32), "A: the returner parks after making room, before it reads the flag");
   expectUInt(wakes.load(), w0, "A: no wake has run yet");
   armRoomWake();
@@ -161,7 +163,7 @@ fn main() i32 {
   expect(tryAllocate(mib(1usize)) as usize == 0usize, "B: full again, so a take is refused");
   var first = null as *u8;
   if armFirst {armRoomWake();} else {first = tryAllocate(mib(1usize));}
-  let tb = thread.start(Rel(x[1], 0usize, mib(1usize)), &giveBack);
+  let tb = thread.start(Rel(x[1], 0usize, 0usize, mib(1usize)), &giveBack);
   expect(waitFor(&relDone, 20000u32), "B: a return and its event ran, whole, in the window");
   if armFirst {got = tryAllocate(mib(1usize));} else {armRoomWake(); got = first;}
   expect(got as usize != 0usize || waitWakes(w1 + 1u64, 1000u32), "B: the waiter is woken, or finds room on its retry");
@@ -185,19 +187,21 @@ fn main() i32 {
   }
   expect(x[0] != 0usize && x[1] != 0usize && x[2] != 0usize && x[3] != 0usize, "C: four blocks again");
   expect(slabOf(x[0]) == slabOf(x[1]) && slabOf(x[2]) == slabOf(x[3]) && slabOf(x[0]) != slabOf(x[2]), "C: two to a slab");
-  r.release(x[3] as *u8, mib(1usize));     // idle bytes elsewhere, so that the first slab, once idle, may go
+  // Idle bytes elsewhere, so that the first slab, once idle, may go: the returner releases x[3] first. They
+  // are idle in a slab with x[2] still lent, so the waiter's refused retry decommits them (the bound's
+  // limit path): that lowers 'held' by 1 MiB, to 3 MiB, which is not room for 2 MiB under the 4 MiB mark
   setLimits(0usize, 1usize);               // keep 1 byte idle
   expect(tryAllocate(mib(2usize)) as usize == 0usize, "C: 4 MiB held, so a block of 2 MiB is refused");
-  rearmHook(2u64);
-  rearm.store(1u64);
+  rearmHook(3u64);
+  rearm.store(2u64);     // the wake re-arms twice: for the returner's two events after the waiter's own
   let w2 = wakes.load();
-  let tc = thread.start(Rel(x[0], x[1], mib(1usize)), &giveBack);
-  expect(waitFor(&parked, 20000u32), "C: the returner parks at its second return's event, with the first slab unlinked");
+  let tc = thread.start(Rel(x[0], x[1], x[3], mib(1usize)), &giveBack);
+  expect(waitFor(&parked, 20000u32), "C: the returner parks at its third return's event, with the first slab unlinked");
   armRoomWake();
   expect(tryAllocate(mib(2usize)) as usize == 0usize, "C: the waiter's retry is refused: 'held' has not fallen yet");
   release.store(1u64);
   expect(waitFor(&relDone, 20000u32), "C: the returner finished its returns and the OS call");
-  expectUInt(wakes.load(), w2 + 2u64, "C: the event after the return woke it, and the one after the OS call, which lowered 'held', woke it again");
+  expectUInt(wakes.load(), w2 + 3u64, "C: the waiter's own decommit event woke it, then the event after the return, then the one after the OS call, which lowered 'held'");
   rearm.store(0u64);
   goOn.store(1u64);
   _ = tc.join();
@@ -217,7 +221,7 @@ fn main() i32 {
   let w3 = wakes.load();
   armRoomWake();
   expect(tryAllocate(mib(2usize)) as usize == 0usize, "D: and the retry is refused");
-  let td = thread.start(Rel(o0 as usize, 0usize, mib(2usize)), &giveBack);
+  let td = thread.start(Rel(o0 as usize, 0usize, 0usize, mib(2usize)), &giveBack);
   expect(waitFor(&relDone, 20000u32), "D: another thread released one");
   expect(waitWakes(w3 + 1u64, 1000u32), "D: the release woke the waiter");
   goOn.store(1u64);
