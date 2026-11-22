@@ -735,11 +735,12 @@ import sync use Mutex, Condvar;
 import collections use List, String;
 import iobuf use IoBuf, Chain;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, resolveWork, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending, issueStarted, issueNot, DatagramBatch, OpId, noSuchHandleCode, noMemoryCode;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, KeepAlive, IoError, CancelGroup, Access, Outcome, Lane, WorkFn, FileStat, forever, resolveOp, resolveWork, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending, issueStarted, issueNot, DatagramBatch, OpId, noSuchHandleCode, noMemoryCode, Cause;
 import path use Path;
 import process;
 import actors;
 import diag;
+import bufpool;
 
 // "Who is asking" for the memstats shim (kinds.toml: 33 HostJob, the blocks of jobs posted to the I/O thread); MEMSTATS builds only
 #if #defined("MEMSTATS") {
@@ -760,6 +761,15 @@ fn @initpure init() {
   udpOn = Atomic[bool].of(false);
   udpWaiting = Atomic[u64].of(0u64);
   nameCacheAt = Atomic[usize].of(0usize);
+  roomLock = Mutex.make();
+  roomHead = Atomic[usize].of(0usize);
+  roomTail = Atomic[usize].of(0usize);
+  roomWoke = Atomic[u32].of(0u32);
+  // TEST KNOB (row 587's backstop test): with CONE_AIO_NO_ROOM_WAKE set the wake is not registered, so only the
+  // backstop resumes a parked read
+  if libc.getenv("CONE_AIO_NO_ROOM_WAKE") as usize == 0usize {
+    bufpool.addRoomWake(&roomWake);
+  }
 }
 
 // A panic, reported at the line calling 'die'
@@ -805,6 +815,7 @@ struct Ask is Sendable {
   stage: u32;                   // a read with no buffer: stageReady ...; a sleep: sleepAt or sleepAfter
   ours: bool;                   // a read with no buffer: its deadline now is the quiet time's, tighter than the caller's
   write: bool;                  // a cancel's direction
+  port: bool;                   // a read with no buffer waiting for room: its socket is worker-side (ROOM)
   udp: bool;                    // a datagram operation counted as waiting on the worker port (UDP ON THE WORKER PORT): its answer uncounts it
   since: i64;                  // a read with no buffer: when its stage was started (the steady clock)
   arg: u64;                     // a read with no buffer: the room of the buffer it takes; a relative sleep's nanoseconds
@@ -885,7 +896,7 @@ fn setBatch(p: *OpCore, batch: Uni[DatagramBatch]) {
 // handle), what it is doing and the kind of iocore operation, limited by lim:
 // any thread
 fn takeRec(what: u32, kind: u32, h: Handle, lim: IoLimits) *OpRec[Ask] {
-  let p = thePool().take(Ask(actors.Reply(), what, 0u32, false, false, false, 0i64, 0u64, forever()));
+  let p = thePool().take(Ask(actors.Reply(), what, 0u32, false, false, false, false, 0i64, 0u64, forever()));
   let c = &mut (*p).core;
   c.kind = kind;
   c.handle = h;
@@ -1033,6 +1044,11 @@ fn udpSwitch(lp: &mut Loop) {
   if port == 0usize {
     return;
   }
+  // TEST KNOB (row 587, as gc.cone's CONE_ACTORGC_STRESS): with CONE_AIO_NO_WORKER_PORT set the Loop is not
+  // given the port, as on a runtime that has none, so every socket's reads are the Loop's. No program sets it
+  if libc.getenv("CONE_AIO_NO_WORKER_PORT") as usize != 0usize {
+    return;
+  }
   actors.workerEvents(&portEvents);
   lp.setWorkerPort(port);
   udpOn.store(true);
@@ -1148,7 +1164,7 @@ fn readAnyHere(rp: *OpRec[Ask], c: *HereCounts) bool {
 // Record rp, a read with no buffer whose zero-byte receive a worker has answered (portEvents, or a cancel's
 // answer): bytes are there, so the same record is given a buffer and takes them, here. True when the record
 // went on (answered, or waiting again); false: it is for answerRec as it is (any other record, an outcome
-// but Done, a pool that refused the buffer: that read ends with the error, the bytes staying with the socket)
+// but Done). A pool that refused the buffer: the read waits for room (ROOM), the bytes staying with the socket
 fn readAnyNext(rp: *OpRec[Ask]) bool {
   let core = rp as *OpCore;
   let r = core as &mut OpCore;
@@ -1157,11 +1173,22 @@ fn readAnyNext(rp: *OpRec[Ask]) bool {
   }
   let got = IoBuf.tryMake(usize.from((*rp).ask.arg));
   if got is None {
-    r.status = diag.outcomeFailed;
-    r.code = noMemoryCode();
-    r.n = 0usize;
-    return false;
+    // A pool that refuses the buffer: the read waits for room (ROOM), the bytes staying with the socket.
+    // It is parked on the I/O thread's pass, so a close or cancel queued before it is seen first
+    udpEnded(rp);
+    (*rp).ask.stage = stageRoom();
+    (*rp).ask.port = true;
+    enqueueRec(core);
+    return true;
   }
+  readAnyTake(rp, got)
+}
+
+// The second stage of a read with no buffer on the worker port, a buffer in hand: the same record takes the
+// bytes. As readAnyNext's answer
+fn readAnyTake(rp: *OpRec[Ask], got: Option[IoBuf]) bool {
+  let core = rp as *OpCore;
+  let r = core as &mut OpCore;
   udpEnded(rp);
   setBuf(core, got);
   r.kind = diag.kindRecv;
@@ -1188,6 +1215,265 @@ fn readAnyNext(rp: *OpRec[Ask]) bool {
   r.n = 0usize;
   r.code = 0u32;
   false
+}
+
+// ROOM (row 587). A read with no buffer whose bytes have come, and whose buffer the pool refuses
+// (IoBuf.tryMake answers None), waits for room and does not fail: the bytes stay in the socket, so TCP
+// holds the peer. On the worker port the second stage (readAnyNext), on the Loop doneRec's, parks the
+// record; both are parked and retried by the baton's holder, on the I/O thread's pass, so a close or a
+// cancel queued before the park is seen first (startOne's sweep, roomEndHandle). The pool's room wake
+// (bufpool.addRoomWake, registered in 'init') is called on whatever thread made room: it sets
+// roomWoke and wakes the I/O thread, nothing more. Its protocol (bufpool's ROOM WAKE) is kept in
+// roomPark: under roomLock, arm the wake, retry the take once, and only if refused list the record. The
+// pass that finds roomWoke raised (roomRetry) lowers it under the same lock, so a record is either in
+// the list that pass takes, or came after it and armed again. The records are chained by their queue
+// link (qnext), oldest first, which no other state of a parked record uses. A parked record is ended by
+// its group (RoomWatch: cancel or deadline), by a close or cancelRead of its handle (roomEndHandle) or by
+// the program's end (roomAbandon); each takes it out of the list first, so it is answered once.
+let roomLock: Mutex;
+let roomHead: Atomic[usize];      // the oldest parked record, under roomLock
+let roomTail: Atomic[usize];
+let roomWoke: Atomic[u32];        // 1: room may have come back since the I/O thread last looked
+
+// THE BACKSTOP. Room can sit where no room event is made for it (in an idle thread's cache, until that thread
+// spills or ends), and a wake can be missed by a rule's gap; a parked read must not wait for ever for it. While
+// any read is parked the I/O thread's poll waits at most this long (no timer otherwise) and then retries every
+// parked read, as a wake does. The I/O thread's own take sees the stock and its own cache, not another
+// thread's unflushed one: the backstop finds room that is in the stock without an event, not a cache that
+// is never flushed
+const roomBackstopMs = 100i64;
+
+// A watch key for a parked record's group, clear of the Loop's ids, the worker's bit and udpWatchBit
+const roomWatchBit = 0x1000000000000000u64;
+
+// The pool's room wake: any thread, no lock of the pool held; it may only post or set a flag
+fn @c roomWake() {
+  roomWoke.store(1u32);
+  let t = io.load();
+  if t != 0usize {
+    (*(t as *IoThread)).waker.wake();
+  }
+}
+
+// A group that ended by its deadline (iocore's timedOut)
+fn groupTimedOut(g: &CancelGroup) bool {
+  match g.cause() {
+    case let Some(c) {
+      match c {
+        case Cause.TimedOut {true}
+        case Cause.Cancelled {false}
+        case Cause.SiblingFinished {false}
+        case Cause.Shutdown {false}
+      }
+    }
+    else {false}
+  }
+}
+
+// What a record's group and deadline say now: Cancelled, TimedOut, or 0
+fn roomDue(r: &mut OpCore) u32 {
+  var dl = r.deadline;
+  var cancelled = false;
+  var timed = false;
+  match r.group {
+    case let Some(g) {
+      if g.deadline() < dl {dl = g.deadline();}
+      if g.isCancelled() {
+        if groupTimedOut(&g) {timed = true;} else {cancelled = true;}
+      }
+    }
+    else {}
+  }
+  if cancelled {return diag.outcomeCancelled;}
+  if timed || dl <= Instant.now() {return diag.outcomeTimedOut;}
+  0u32
+}
+
+// Under roomLock: p listed last
+fn roomPush(p: *OpCore) {
+  (*p).qnext = nullCore();
+  let tl = roomTail.load();
+  if tl == 0usize {roomHead.store(p as usize);} else {(*(tl as *OpCore)).qnext = p;}
+  roomTail.store(p as usize);
+}
+
+// The parked records taken out of the list: the one at 'only' (when its id is 'idn'), or, with only 0, every
+// one of handle h. Chained by qnext
+fn roomUnlink(h: Handle, only: usize, idn: u64) *OpCore {
+  var out = nullCore();
+  var outTail = nullCore();
+  roomLock.lock();
+  var prev = nullCore();
+  var p = roomHead.load() as *OpCore;
+  while p as usize != 0usize {
+    let next = (*p).qnext;
+    var hit = false;
+    if only != 0usize {
+      hit = p as usize == only && (p as &OpCore).id().number() == idn;
+    } else {
+      hit = (*p).handle == h;
+    }
+    if hit {
+      if prev as usize == 0usize {roomHead.store(next as usize);} else {(*prev).qnext = next;}
+      if roomTail.load() == p as usize {roomTail.store(prev as usize);}
+      (*p).qnext = nullCore();
+      if outTail as usize == 0usize {out = p;} else {(*outTail).qnext = p;}
+      outTail = p;
+    } else {
+      prev = p;
+    }
+    p = next;
+  }
+  roomLock.unlock();
+  out
+}
+
+// A record answered ended: outcome, no bytes
+fn roomEndNow(rp: *OpRec[Ask], outcome: u32) {
+  let r = rp as *OpCore as &mut OpCore;
+  r.status = outcome;
+  r.code = 0u32;
+  r.n = 0usize;
+  answerRec(rp);
+}
+
+// The records of a chain ended: by a close or cancel (Cancelled), or by their group (whatever it says)
+fn roomAnswer(first: *OpCore, byGroup: bool) usize {
+  var n = 0usize;
+  var p = first;
+  while p as usize != 0usize {
+    let next = (*p).qnext;
+    (*p).qnext = nullCore();
+    var outcome = diag.outcomeCancelled;
+    if byGroup {
+      let due = roomDue(p as &mut OpCore);
+      if due != 0u32 {outcome = due;}
+    }
+    roomEndNow(p as *OpRec[Ask], outcome);
+    n = n + 1usize;
+    p = next;
+  }
+  n
+}
+
+// A handle's close or cancelRead, on the I/O thread: its parked reads end Cancelled. How many
+fn roomEndHandle(h: Handle) usize {
+  if roomHead.load() == 0usize {
+    return 0usize;
+  }
+  roomAnswer(roomUnlink(h, 0usize, 0u64), false)
+}
+
+// A parked record's group: when it is cancelled or ends by its deadline the record, if still parked, is ended
+struct RoomWatch is Sendable {
+  at: usize;
+  id: OpId;
+
+  pub fn signal(self: &) bool {
+    roomAnswer(roomUnlink(Handle.none(), at, id.number()), true);
+    true
+  }
+
+  pub fn isGone(self: &) bool {
+    ((at as *OpCore) as &OpCore).id() != id
+  }
+}
+
+// Record rp, a read with no buffer whose bytes are there and whose buffer the pool refused (stageRoom; ask.port
+// says which flow), on the baton's holder: ended if its handle is gone or its group or deadline says so;
+// else, under roomLock, the wake is armed and the take retried once; refused, the record is listed
+fn roomPark(lp: &mut Loop, rp: *OpRec[Ask]) {
+  let core = rp as *OpCore;
+  let r = core as &mut OpCore;
+  let h = r.handle;
+  var open = false;
+  if (*rp).ask.port {
+    let sh = sharedNow();
+    if sh.lock(h) {
+      sh.unlock(h);
+      open = true;
+    }
+  } else {
+    open = lp.isOpen(h);
+  }
+  if !open {
+    roomEndNow(rp, diag.outcomeCancelled);
+    return;
+  }
+  let due = roomDue(r);
+  if due != 0u32 {
+    roomEndNow(rp, due);
+    return;
+  }
+  let reg = udpGroupOf(r);
+  let id = r.id();
+  roomLock.lock();
+  bufpool.armRoomWake();
+  let got = IoBuf.tryMake(usize.from((*rp).ask.arg));
+  if got is Some {
+    roomLock.unlock();
+    roomGo(lp, rp, got);
+    return;
+  }
+  roomPush(core);
+  roomLock.unlock();
+  // Nothing of the record is touched from here: another thread may end it. A cancel that came before the
+  // registration is seen by isCancelled
+  match reg {
+    case let Some(g) {
+      let w = RoomWatch(core as usize, id);
+      g.watch(roomWatchBit | id.number(), &w);
+      if g.isCancelled() {
+        w.signal();
+      }
+    }
+    else {}
+  }
+}
+
+// A parked record given its buffer: it goes on as it would have, the same record
+fn roomGo(lp: &mut Loop, rp: *OpRec[Ask], got: Option[IoBuf]) {
+  if (*rp).ask.port {
+    if !readAnyTake(rp, got) {
+      readAnyClosed(rp);
+      answerRec(rp);
+    }
+  } else {
+    setBuf(rp as *OpCore, got);
+    beginStage(lp, rp, stageTake());
+  }
+}
+
+// The I/O thread's pass found the wake raised: lowered under the lock, and every parked record tried again
+fn roomRetry(lp: &mut Loop) {
+  roomLock.lock();
+  roomWoke.store(0u32);
+  var p = roomHead.load() as *OpCore;
+  roomHead.store(0usize);
+  roomTail.store(0usize);
+  roomLock.unlock();
+  while p as usize != 0usize {
+    let next = (*p).qnext;
+    (*p).qnext = nullCore();
+    roomPark(lp, p as *OpRec[Ask]);
+    p = next;
+  }
+}
+
+// The program's end, on the I/O thread: what is parked is dissolved, its reply dropped unsent
+fn roomAbandon() {
+  roomLock.lock();
+  var p = roomHead.load() as *OpCore;
+  roomHead.store(0usize);
+  roomTail.store(0usize);
+  roomLock.unlock();
+  while p as usize != 0usize {
+    let next = (*p).qnext;
+    (*p).qnext = nullCore();
+    udpEnded(p as *OpRec[Ask]);
+    let gone = dissolveAt(p as *u8);
+    p = next;
+  }
 }
 
 // The group a waiting record is ended through: its own, with its own deadline given a group when that is
@@ -1936,10 +2222,15 @@ fn ioMain(arg: IoArg) u32 {
     sync.futexWake(&(*me).ready);
     var more = true;
     var quick = false;                      // back from standing aside: this look does not wait
+    var roomNext = Instant.now();           // the next backstop retry of parked reads (ROOM)
     // With no service hosted the pass is aio's alone: every step for the
     // services is skipped, one test each
     while more {
-      lp.poll(if quick {Instant.now()} else {(*me).until}, out);
+      var waitTo = if quick {Instant.now()} else {(*me).until};
+      if roomHead.load() != 0usize && roomNext < waitTo {
+        waitTo = roomNext;       // the backstop (ROOM): while a read is parked the poll does not wait past it
+      }
+      lp.poll(waitTo, out);
       quick = false;
       if (*me).hosts.len() != 0usize {
         offerAll(&(*me).hosts, lp, out);
@@ -1964,6 +2255,7 @@ fn ioMain(arg: IoArg) u32 {
         keepCounters(lp.counters(), born);
         dropJobs(h);
         endUnstarted(r, lp);
+        roomAbandon();
         if (*me).hosts.len() != 0usize {
           endAllHosts(&mut (*me).hosts, lp);
         }
@@ -1989,10 +2281,21 @@ fn ioMain(arg: IoArg) u32 {
           (*me).until = turnHosts(&(*me).hosts, lp);
         }
       }
+      if !stop && roomHead.load() != 0usize {
+        let now = Instant.now();
+        if roomWoke.load() != 0u32 || now >= roomNext {
+          roomRetry(lp);
+          roomNext = Instant.now() + Duration.fromMillis(roomBackstopMs);
+        } else if roomNext > now + Duration.fromMillis(roomBackstopMs) {
+          roomNext = now + Duration.fromMillis(roomBackstopMs);
+        }
+      } else if !stop && roomWoke.load() != 0u32 {
+        roomRetry(lp);
+      }
       pool.flushHere();
       // Workers are passing: leave the port to them. Never with a service
       // hosted: its completions are for this thread
-      if more && (*me).hosts.len() == 0usize && workersBusy(me) && !lp.dueWithin(Duration.fromNanos(asideMarginNanos)) {
+      if more && (*me).hosts.len() == 0usize && roomHead.load() == 0usize && workersBusy(me) && !lp.dueWithin(Duration.fromNanos(asideMarginNanos)) {
         standAside(me);
         quick = true;
       }
@@ -2555,6 +2858,7 @@ fn stageReady() u32 {0u32}
 fn stageStraight() u32 {1u32}
 fn stageTake() u32 {2u32}
 fn stageForced() u32 {3u32}         // stageStraight's, under the test's late path (testLateQuiet)
+fn stageRoom() u32 {4u32}           // the pool refused the buffer: waiting for room (ROOM)
 
 // A sleep's time: absolute (the record's deadline) or relative (its 'arg',
 // nanoseconds from the moment the I/O thread starts it)
@@ -2576,12 +2880,16 @@ fn startOne(lp: &mut Loop, p: *OpCore) {
   let rp = p as *OpRec[Ask];
   let w = (*rp).ask.what;
   if w == opCancel {
-    let n = lp.cancelHandle((*p).handle, (*rp).ask.write);
+    var n = lp.cancelHandle((*p).handle, (*rp).ask.write);
+    if !(*rp).ask.write {
+      n = n + roomEndHandle((*p).handle);
+    }
     cancelsAsked.add(u64.from(n));
     let gone = dissolveAt(p as *u8);
     return;
   }
   if w == opClose {
+    let waiting = roomEndHandle((*p).handle);
     lp.close((*p).handle);
     let gone = dissolveAt(p as *u8);
     return;
@@ -2590,16 +2898,21 @@ fn startOne(lp: &mut Loop, p: *OpCore) {
     // iocore's reset does nothing for a handle that is not a connected socket
     // (a listener): the Socket is gone, so close it, or it would never be
     let h = (*p).handle;
+    let waiting = roomEndHandle(h);
     if !lp.reset(h) {
       lp.close(h);
     }
     let gone = dissolveAt(p as *u8);
     return;
   }
+  if w == opRecvAny && (*rp).ask.stage == stageRoom() {
+    roomPark(lp, rp);          // a read of the worker port the pool refused (readAnyNext)
+    return;
+  }
   if w == opRecvAny {
     // A pool that refuses the buffer (iobuf's tryMake) leaves the read to wait
     // without one, as a read on a socket that is not calm does: its bytes, when
-    // they come, ask again (below), and the read ends with an error if refused
+    // they come, ask again (below), and the read waits for room if refused (ROOM)
     var held = None[IoBuf];
     if (lp.hint((*p).handle) & hintCalm) != 0u32 {
       held = IoBuf.tryMake(usize.from((*rp).ask.arg));
@@ -2730,12 +3043,11 @@ fn doneRec(lp: &mut Loop, p: *OpCore) {
       setCalm(lp, (*p).handle, waited < quietNanos());
       let got = IoBuf.tryMake(usize.from((*rp).ask.arg));
       if got is None {
-        // A pool that refuses the buffer (iobuf's tryMake): the read ends with
-        // an error, not enough memory, and the bytes stay with the socket
-        (*p).status = diag.outcomeFailed;
-        (*p).code = noMemoryCode();
-        (*p).n = 0usize;
-        answerRec(rp);
+        // A pool that refuses the buffer (iobuf's tryMake): the read waits for room (ROOM), the bytes
+        // staying with the socket, the peer held by flow control
+        (*rp).ask.stage = stageRoom();
+        (*rp).ask.port = false;
+        roomPark(lp, rp);
         return;
       }
       setBuf(p, got);

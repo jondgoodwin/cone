@@ -149,9 +149,10 @@
 // response's 'version' says which protocol was used (httpclient's header,
 // HTTP/2).
 //
-// A CONNECTION. 'connect(host, port)' makes one HTTP/1.1 connection of httpconn's
-// Driver (the host looked up and connected within the driver's connectTimeout,
-// 10 s) and answers a Conn when it is made; 'connectSecure' does so through a
+// A CONNECTION. 'connect(host, port)' makes one connection on an actor of its own
+// (a ManualConn, manualconn.cone, which owns a ClientConnActor, the actor a client's
+// pool makes, outside any client's pool; the host looked up and connected within
+// connectTimeout, 10 s) and answers a Conn when it is made; 'connectSecure' does so through a
 // TLS client made from the tls.ClientConfig given, the host the name the
 // server's certificate must hold (it speaks HTTP/2 when that config's 'alpn'
 // offers "h2" and the server chooses it; what follows is HTTP/1.1's, and on
@@ -182,9 +183,12 @@
 // cancel on, an exchange started in it is answered Cancelled at once; a deadline
 // already past answers TimedOut at once. A cancel and a completion that race are
 // settled by the layers beneath: the answer is whichever came first, never
-// two. The exchange is one the service thread starts when the 'await' does, so
-// a cancel from another actor or thread may arrive before it has started: the
-// group's state, not the order of the calls, decides. A client or a Conn
+// two. A whole-body fetch runs on the client actor, which watches the fetch's
+// group (clientactor.cone, FetchWake): the group's cancel posts the actor one
+// message, and the core then answers the fetch Cancelled whatever stage it is
+// in (waiting for a connection, for the head, in the body) and has its exchange
+// stopped. A cancel from another actor or thread may arrive before the fetch
+// has started: the group's state, not the order of the calls, decides. A client or a Conn
 // dropped while an exchange of it is in flight ends it Cancelled.
 //
 /// THE SERVICE THREAD is aio's I/O thread. The package's service -- every
@@ -428,11 +432,11 @@
 // read on a TCP response) is fetched over its one QUIC connection, a ClientQuicActor (clientquic.cone) that binds its own UDP
 // socket on its worker and shares the TCP actor's exchange half (ClientExchanges, written once); an attempt that does not
 // connect within 'http3Timeout' falls back to TCP, as httpclient's header says. 'stream', 'streamTo', 'events',
-// 'upload' and a fetch with a cancel group keep the service thread's client, so a handle holds two
+// and 'upload' keep the service thread's client, so a handle holds two
 // pools, each with its own Alt-Svc knowledge, and the per-origin limits are not shared between them. The last handle's going cancels every fetch, aborts every
 // connection and ends the actors ('liveClientActors' and 'liveClientConnActors' say how many exist). The fetch goes to
 // the actor directly, and the service's own record of the client (and the service itself) is made only when a call that
-// keeps the service's client first runs: a program of whole-body fetches with no cancel group never makes the service
+// keeps the service's client first runs: a program of whole-body fetches, with a cancel group or none, never makes the service
 // ('servicesCreated' counts it; LazyRec says how the record is made late with the handles there are).
 // THE TEST SEAM (testseam.cone): 'HttpClient.makeTest' takes the origins a test redirects, each to an address (a fake
 // server on a local port), an in-memory pipe (the test is the server, on the bytes of the wire) or an in-process HttpRoutes
@@ -522,7 +526,7 @@ import collections use List, Deque, String, Dict, AnyError, PriorityQueue;
 import iobuf use IoBuf, IoHome, Chain, page, stats;
 import sync use Arc, Mutex, Oneshot, OneshotSender, OneshotReceiver;
 import time use Instant, Duration;
-import iocore use Loop, Op, Completion, SocketAddr, CancelGroup, IoError, forever, DatagramBatch;
+import iocore use Loop, Op, Completion, SocketAddr, CancelGroup, Cause, IoError, forever, DatagramBatch;
 import ioerror use IoErrorKind;
 import http use *;
 import httpconn;
@@ -531,6 +535,8 @@ import tls;
 import sse;
 import aio use IoLimits, UdpSocket, UdpSender;
 import actors;
+import cancelgroups use Wakeup;
+import diag;
 import stages use ChunkSink, ChunkSource, Ending, chunkHome, ReaderSink, readSink, linkWindow, ValueSink, ValueSource, ValueReader, readValue;
 import streams;
 let liveConns: Atomic[u64];      // routedserver.cone: ConnActors alive
@@ -539,6 +545,8 @@ let liveClients: Atomic[u64];    // clientactor.cone: ClientActors alive
 let liveClientConns: Atomic[u64];    // ...and ClientConnActors
 let liveH3Conns: Atomic[u64];        // h3endpoint.cone: H3ConnActors alive
 let liveH3Endpoints: Atomic[u64];    // ...and H3Endpoints
+let manualReg: Arc[Mutex, ManualRegistry];    // the ManualConns not ended (manualconn.cone), for the program's end
+let manualTls: Arc[Mutex, TlsClients];   // manualconn.cone: connectSecure's TLS contexts, one for each config
 let clientReg: Arc[Mutex, ClientRegistry];    // the client actors not yet closed (clientactor.cone), for the program's end
 
 fn @initpure init() {
@@ -550,6 +558,8 @@ fn @initpure init() {
   liveClientConns = Atomic[u64].of(0u64);
   liveH3Conns = Atomic[u64].of(0u64);
   liveH3Endpoints = Atomic[u64].of(0u64);
+  manualTls = Arc[Mutex, TlsClients](TlsClients());
+  manualReg = Arc[Mutex, ManualRegistry](ManualRegistry(List[ManualConn](), List[u64]()));
   clientReg = Arc[Mutex, ClientRegistry](ClientRegistry(List[ClientActor](), List[u64]()));
   svcHost = aio.host[Service](&makeService);
 }
@@ -635,6 +645,8 @@ fn final() {
   // below), so a behaviour paused on one is dropped before the service ends, as it was when the service held it
   abandonClients();
   actors.waitQuiet();
+  abandonManual();
+  actors.waitQuiet();
   svcHost.end();
 }
 
@@ -683,7 +695,7 @@ pub struct HttpClient is Move {
   }
 
   // A client for tests (testseam.cone): the same, but the origins 'targets' names go where it says (an address, a pipe, a
-  // handler). The fetches the client actor runs (get, getIn, send, sendIn with no cancel group) use them; the others keep the
+  // handler). The fetches the client actor runs (get, getIn, send, sendIn) use them; the others keep the
   // real network. A config with HTTP/3 is refused
   pub fn makeTest(cfg: httpclient.Config, maxBody: usize, targets: TestTargets) HttpClient {
     let id = newId();
@@ -737,16 +749,16 @@ pub struct HttpClient is Move {
       else {}
     }
     if lim.deadline < r.deadline {r.deadline = lim.deadline;}
-    // A whole-body fetch with no cancel group goes to the client actor, with no hop through the service; one with a
-    // group stays on the service (nothing yet wakes an actor from a group's cancel)
+    // A whole-body fetch goes to the client actor, with no hop through the service; its cancel group, if it has one, is
+    // watched there (FetchWake). A client naming nothing answers Cancelled
     match &ca {
-      case let &Some(a) {
-        if r.group is None {return clientFetch(a, r);}
-      }
+      case let &Some(a) {return clientFetch(a, r);}
       else {}
     }
-    needRec(&lazy, id);
-    awaitable[FetchJob, Result[httpclient.Response, FetchError]](FetchJob(id, r))
+    actors.Awaitable[Result[httpclient.Response, FetchError]].make(
+      fn(rp: actors.ReplyOf[Result[httpclient.Response, FetchError]]) {
+        rp.answer(Err[httpclient.Response, FetchError](FetchError.cancelled()));
+      })
   }
 
   // A request whose response the actor reads as it arrives, body chunk by
@@ -840,7 +852,7 @@ pub struct HttpClient is Move {
 }
 
 // What the handles of one client share: what the service's record of it will be made from, until it is made. The record
-// is made by the first call that needs the service (a fetch with a cancel group, a stream, events, an upload), so a
+// is made by the first call that needs the service (a stream, events, an upload), so a
 // program whose fetches all go to the client actor never makes the service. 'handles' counts the
 // handles now, so a record made late starts with the right count; once 'made', each clone or drop posts its RefJob. The
 // lock is held across each post, so the jobs reach the service in the order the handles changed
@@ -934,17 +946,17 @@ fn checkRequest(r: &httpclient.Request, file: &Array[u8], line: u32) {
 // Connections
 // ---------------------------------------------------------------------------
 
-// One HTTP/1.1 connection an actor holds (the package's header, A CONNECTION):
-// plain data naming a connection the service thread's httpconn Driver owns,
-// which moves. Dropping it closes the connection politely, or resets it if an
-// exchange is still in flight on it, which then ends Cancelled
+// One connection an actor holds (the package's header, A CONNECTION): a handle
+// to the ManualConn actor that owns it (manualconn.cone), which moves.
+// Dropping it closes the connection politely, or resets it if an exchange is
+// still in flight on it, which then ends Cancelled
 pub struct Conn is Move {
-  id: u64;
+  owner: Option[ManualConn];
 
   // A Conn naming nothing, which closes nothing
-  pub fn none() Conn {Conn(0u64)}
+  pub fn none() Conn {Conn(None[ManualConn])}
 
-  pub fn isNone(self: &) bool {id == 0u64}
+  pub fn isNone(self: &) bool {owner is None}
 
   // A request with its whole body ('' for none), on this connection: the
   // response, whole. The head is the caller's to make, its authority the
@@ -959,27 +971,61 @@ pub struct Conn is Move {
   pub fn requestIn(self: &, head: RequestHead, body: String, lim: IoLimits, file: &Array[u8] = srcFile(), line: u32 = srcLine())
       actors.Awaitable[Result[httpclient.Response, FetchError]] {
     checkHead(&head, file, line);
-    awaitable[ExchangeJob, Result[httpclient.Response, FetchError]](
-      ExchangeJob(id, head, body, lim.group, lim.deadline))
+    let call = Arc[Mutex, Option[ConnCall]](Some[ConnCall](ConnCall(head, body, lim.group, lim.deadline)));
+    let who = match &owner {
+      case let &Some(m) {Some[ManualConn](*m)}
+      else {None[ManualConn]}
+    };
+    actors.Awaitable[Result[httpclient.Response, FetchError]].make(
+      fn(rp: actors.ReplyOf[Result[httpclient.Response, FetchError]]) [who, call] {
+        let slot = &mut *call;
+        let c = slot.take().unwrap();
+        let h, b, g, d = c.(head, body, group, deadline);
+        if who is None {
+          rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(
+            httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the connection names nothing"))));
+          return;
+        }
+        let m = who.unwrap();
+        m.exchange(h, b, g, d, rp);
+      })
   }
 
   fn final(self: &uni) {
-    if id != 0u64 {
-      post[DropConnJob](DropConnJob(id));
+    match &owner {
+      case let &Some(m) {m.close();}
+      else {}
     }
   }
 }
 
-// A connection to host:port, plain. The host is looked up and connected by
-// httpconn's driver, bounded by its connectTimeout (10 s)
+// A connection to host:port, plain. The host is looked up and connected
+// within its connectTimeout (10 s), and the Conn answered when the socket is
+// connected
 pub fn connect(host: &str, port: u16) actors.Awaitable[Result[Conn, FetchError]] {
-  awaitable[ConnectJob, Result[Conn, FetchError]](
-    ConnectJob(String.from(host), port, false, tls.ClientConfig.make()))
+  connectWith(host, port, false, tls.ClientConfig.make())
 }
 
 // A connection to host:port through TLS, the server's certificate checked as
 // cfg says (the host is the name it must hold)
 pub fn connectSecure(host: &str, port: u16, cfg: tls.ClientConfig) actors.Awaitable[Result[Conn, FetchError]] {
-  awaitable[ConnectJob, Result[Conn, FetchError]](
-    ConnectJob(String.from(host), port, true, cfg))
+  connectWith(host, port, true, cfg)
+}
+
+struct ConnSpec is Move {
+  host: String;
+  cfg: tls.ClientConfig;
+}
+
+// The connection's owner made when the Awaitable is started, the reply handed to it
+fn connectWith(host: &str, port: u16, secure: bool, cfg: tls.ClientConfig) actors.Awaitable[Result[Conn, FetchError]] {
+  let cell = Arc[Mutex, Option[ConnSpec]](Some[ConnSpec](ConnSpec(String.from(host), cfg)));
+  actors.Awaitable[Result[Conn, FetchError]].make(
+    fn(rp: ConnReply) [cell, port, secure] {
+      let slot = &mut *cell;
+      let sp = slot.take().unwrap();
+      let h, c = sp.(host, cfg);
+      let m = ManualConn();
+      m.start(rp, h, port, secure, c);
+    })
 }

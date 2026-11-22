@@ -82,6 +82,46 @@ fn abandonClients() {
 // How many ClientConnActors exist now
 pub fn liveClientConnActors() u64 {liveClientConns.load()}
 
+// A fetch's watch on its cancel group. The group's cancel (any thread, under the group's lock) runs 'signal', which posts the
+// client actor a message ('groupCancelled') and no more; the actor then tells the core, which answers the fetch Cancelled
+// and has the exchange stopped (CommandKind.Cancel). The cell holds the actor until the one signal or until the fetch's
+// record goes, whichever is first: neither side then holds the other
+struct WakeCell is Sendable {
+  slot: Arc[Mutex, Option[ClientActor]];
+
+  fn take(self: &) Option[ClientActor] {
+    let s = &mut *slot;
+    s.take()
+  }
+
+  fn clear(self: &) {
+    let s = &mut *slot;
+    let gone = s.take();
+  }
+
+  fn isClear(self: &) bool {
+    let s = &mut *slot;
+    *s is None
+  }
+}
+
+struct FetchWake is Sendable {
+  cell: WakeCell;
+  id: httpclient.FetchId;
+
+  pub fn signal(self: &) bool {
+    match cell.take() {
+      case let Some(a) {
+        a.groupCancelled(id);
+        true
+      }
+      else {false}
+    }
+  }
+
+  pub fn isGone(self: &) bool {cell.isClear()}
+}
+
 // A fetch handed to the client actor, with no hop through the service: an Awaitable whose start sends the request on with
 // the reply. A request has no clone and an Awaitable's closure cannot move what it holds, so the request waits in a
 // locked cell the closure takes it from when it is started
@@ -111,6 +151,17 @@ struct ClientArgs {
 
 alias FetchReply = actors.ReplyOf[Result[httpclient.Response, FetchError]];
 
+// What a connection actor tells, and whom: the actor that owns the connection. A client's pool is one (ClientActor); a
+// connection a program makes itself has a ManualConn (manualconn.cone), which is no pool and holds the one connection
+pub actor trait ConnOwner {
+  pub async fn connected(self, pc: u32, gen: u32);
+  pub async fn connUp(self, pc: u32, gen: u32, proto: u32, takes: bool, free: usize, recv: u64);
+  pub async fn connState(self, pc: u32, gen: u32, free: usize, takes: bool, recv: u64);
+  pub async fn exchangeEnded(self, pc: u32, gen: u32, id: httpclient.FetchId, kind: u32, resp: httpclient.Response,
+      failure: httpclient.Failure, free: usize, takes: bool, recv: u64);
+  pub async fn connEnded(self, pc: u32, gen: u32, clean: bool, failure: httpclient.Failure, tlsFailed: bool);
+}
+
 // A fetch the client has taken: its reply, the request body kept (the core's Send gives only its length), the response
 // gathered by its last exchange, and the connection that exchange is on
 struct FRec is Move {
@@ -121,6 +172,8 @@ struct FRec is Move {
   tooBig: bool;
   pc: u32;
   gen: u32;
+  wake: Option[WakeCell];       // the watch on its cancel group, if it has one (FetchWake)
+  group: Option[CancelGroup];   // ...and the group, whose cause says how its cancel ended the fetch (a deadline: TimedOut)
 }
 
 alias FetchRecs = Dict[u64, FRec];
@@ -205,7 +258,7 @@ alias AddrCache = Dict[String, Addrs];
 alias ConnActors = Dict[u32, ClientConnActor];
 alias QuicActors = Dict[u32, ClientQuicActor];
 
-pub actor ClientActor {
+pub actor ClientActor is ConnOwner {
   args: Arc[imm, ClientArgs];
   core: httpclient.ClientCore;
   facts: Facts;
@@ -257,7 +310,7 @@ pub actor ClientActor {
     }
     let body = String.from(req.body.view());
     let id = core.ask(req, httpclient.Sink.Here(0u64), Instant.now());
-    fetches.insert(id.number(), FRec(id, rp, body, httpclient.Response.blank(), false, 0u32, 0u32));
+    fetches.insert(id.number(), FRec(id, rp, body, httpclient.Response.blank(), false, 0u32, 0u32, None[WakeCell], None[CancelGroup]));
     self.pump();
   }
 
@@ -296,7 +349,59 @@ pub actor ClientActor {
       self.cancelFetch(c.fetch);
     } else if k == httpclient.CommandKind.Watch {
       dls.push(c.deadline.nanos(), c.fetch);
+      match &c.group {
+        case let &Some(g) {self.watchGroup(c.fetch, g);}
+        else {}
+      }
     }
+  }
+
+  // A fetch with a cancel group: the actor is told when the group is cancelled (FetchWake). A group cancelled before the watch
+  // was made is seen after it, as every loop of the groups sees it
+  fn watchGroup(self, id: httpclient.FetchId, g: &CancelGroup) {
+    let key = id.number();
+    match fetches.getMut(&key) {
+      case let Some(r) {
+        match &r.wake {
+          case let &Some(c) {return;}
+          else {}
+        }
+        let slot = Arc[Mutex, Option[ClientActor]](Some[ClientActor](selfactor));
+        r.wake = Some[WakeCell](WakeCell(slot));
+        r.group = Some[CancelGroup](*g);
+        let w = FetchWake(WakeCell(slot), id);
+        g.watch(diag.nextLoopId(), &w);
+        if g.isCancelled() {let ignored = w.signal();}
+      }
+      else {}
+    }
+  }
+
+  // The fetch's cancel group was cancelled (told by FetchWake): the core ends the fetch, as for the program's own cancel
+  pub async fn groupCancelled(self, id: httpclient.FetchId) {
+    let key = id.number();
+    // A group ended by its own deadline ends the fetch TimedOut, as the fetch's own deadline (the group's is the core's too) does
+    var timedOut = false;
+    match fetches.get(&key) {
+      case let Some(r) {
+        match &r.group {
+          case let &Some(g) {
+            match g.cause() {
+              case let Some(c) {timedOut = c == Cause.TimedOut;}
+              else {}
+            }
+          }
+          else {}
+        }
+      }
+      else {return;}
+    }
+    var e = httpclient.PoolEvent.make(if timedOut {httpclient.PoolEventKind.Due} else {httpclient.PoolEventKind.Cancel});
+    e.timedOut = timedOut;
+    e.fetch = id;
+    e.now = Instant.now();
+    core.on(&e, &facts);
+    self.pump();
   }
 
   // A fetch's request put on its connection
@@ -377,6 +482,12 @@ pub actor ClientActor {
     let key = c.fetch.number();
     match fetches.remove(&key) {
       case var Some(r) {
+        // the fetch is over: the watch on its group lets go of the client actor, so a group that outlives the fetch holds
+        // none (its entry stays, small, until a later 'watch' of the group sweeps it, as 'isGone' says)
+        match &r.wake {
+          case let &Some(w) {w.clear();}
+          else {}
+        }
         let k = c.event.kind;
         var resp = httpclient.Response.blank();
         resp <-> r.resp;
@@ -548,7 +659,7 @@ pub actor ClientActor {
       case let Some(s) {if s.gen != gen {return;}}
       else {return;}
     }
-    let a = ClientConnActor(selfactor, pc, gen, rotated, host, secure, args, group, None[TestPipe]);
+    let a = ClientConnActor(selfactor, pc, gen, rotated, host, secure, args, group, None[TestPipe], false);
     conns.insert(pc, a);
   }
 
@@ -675,7 +786,7 @@ pub actor ClientActor {
     }
     var list = List[SocketAddr]();
     if kind != kindPipe {list.push(addr);}
-    let a = ClientConnActor(selfactor, pc, gen, list, host, secure, args, group, pipe);
+    let a = ClientConnActor(selfactor, pc, gen, list, host, secure, args, group, pipe, false);
     conns.insert(pc, a);
   }
 
@@ -683,6 +794,9 @@ pub actor ClientActor {
   fn fail(self, pc: u32, gen: u32, fl: httpclient.Failure, tlsFailed: bool) {
     selfactor.connEnded(pc, gen, false, fl, tlsFailed);
   }
+
+  // The socket is connected: a pooled connection is not asked to say so (only a ManualConn's, which answers its connect)
+  pub async fn connected(self, pc: u32, gen: u32) {}
 
   // A connection is up: its layer open and its protocol chosen
   pub async fn connUp(self, pc: u32, gen: u32, proto: u32, takes: bool, free: usize, recv: u64) {
@@ -912,7 +1026,7 @@ alias Pends = Deque[ClientSend];
 // no timer and no loop, so the exchange code is written once. The wire half sets 'ended' (the connection is over and its
 // socket gone) and 'closing' (it is closing its socket) as it goes.
 struct ClientExchanges[C: httpconn.ClientProto] is Move {
-  client: ClientActor;
+  client: ConnOwner;
   pc: u32;
   gen: u32;
   maxBody: usize;
@@ -933,7 +1047,7 @@ struct ClientExchanges[C: httpconn.ClientProto] is Move {
   protoClosed: bool;
   hard: bool;               // the client gave the connection up (a cancel on HTTP/1.1, an abort): it is reset when over
 
-  fn make(client: ClientActor, pc: u32, gen: u32, maxBody: usize, quic: bool) ClientExchanges[C] {
+  fn make(client: ConnOwner, pc: u32, gen: u32, maxBody: usize, quic: bool) ClientExchanges[C] {
     ClientExchanges[C](client: client, pc: pc, gen: gen, maxBody: maxBody, quic: quic, exch: ConnExchanges(), bodying: List[u32](),
       pends: Pends(), recv: 0u64, lastFree: 0usize, lastTakes: true, up: false, ended: false, closing: false, told: false,
       aborted: false, goAway: false, shutting: false, protoClosed: false, hard: false)
@@ -1224,16 +1338,17 @@ pub actor ClientConnActor {
   writeBy: Instant;
   guard: ClientGuard;
   pipe: Option[TestPipe];   // the test seam's in-memory wire, in place of the socket
+  announce: bool;           // the owner is told when the socket is connected (a program's own connection answers its connect then)
 
-  fn init(self: &new, client: ClientActor, pc: u32, gen: u32, addrs: List[SocketAddr], host: String, secure: bool,
-      args: Arc[imm, ClientArgs], group: CancelGroup, pipe: Option[TestPipe]) {
+  fn init(self: &new, client: ConnOwner, pc: u32, gen: u32, addrs: List[SocketAddr], host: String, secure: bool,
+      args: Arc[imm, ClientArgs], group: CancelGroup, pipe: Option[TestPipe], announce: bool) {
     liveClientConns.add(1u64);
     let now = Instant.now();
     *self = Self(args: args, addrs: addrs, host: host, secure: secure, group: group,
       cc: httpconn.ClientConn.make(args.conn, None[Uni[httpconn.Layer]], now),
       ex: ClientExchanges[httpconn.ClientConn].make(client, pc, gen, args.maxBody, false), sock: aio.Socket.none(),
       tm: actors.Timer.make(), connected: false, reading: false, writing: false, calling: false, closeStarted: false,
-      writeBy: now, guard: ClientGuard(true), pipe: pipe);
+      writeBy: now, guard: ClientGuard(true), pipe: pipe, announce: announce);
     selfactor.begin();
   }
 
@@ -1279,6 +1394,7 @@ pub actor ClientConnActor {
     }
     cc = httpconn.ClientConn.make(args.conn, layer, Instant.now());
     connected = true;
+    if announce {ex.client.connected(ex.pc, ex.gen);}
     if ex.aborted {cc.abort();}
     selfactor.timerLoop();
     self.turn();

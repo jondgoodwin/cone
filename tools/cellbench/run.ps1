@@ -5,7 +5,7 @@
 #   pwsh tools\cellbench\run.ps1 -Form c -N 1000 -Procs 2 [-W 8] [-CW 4] [-Seconds 10] [-Zones 1] [-Beings 8] [-Crowd] [-InputHz 30] [-Port 47400] [-Tag x]
 # Needs CONEC / CONESTD of a built compiler (default: the main checkout's release build). Logs go to build\cellbench-<tag>\.
 param([string]$Form = 'c', [int]$N = 1000, [int]$Procs = 2, [int]$W = 8, [int]$CW = 4, [int]$Seconds = 10,
-      [int]$Zones = 1, [int]$Beings = 8, [switch]$Crowd, [int]$InputHz = 30, [int]$Port = 47400, [string]$Tag = "", [switch]$Memstats)
+      [int]$Zones = 1, [int]$Beings = 8, [switch]$Crowd, [int]$InputHz = 30, [int]$Port = 47400, [string]$Tag = "", [switch]$Memstats, [int]$Rate = 0)
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..\..").Path
 $cr = if ($Crowd) { 1 } else { 0 }
@@ -59,7 +59,7 @@ function ReadLog([string]$f) {
 $idle = (Get-Counter '\Processor(_Total)\% Idle Time' -SampleInterval 1 -MaxSamples 3 | ForEach-Object { $_.CounterSamples[0].CookedValue } | Measure-Object -Average).Average
 $srvLog = "$out\srv.log"
 $common = "form=$Form secs=$Seconds beings=$Beings crowd=$cr players=$N"
-$s = Start-Congo "server $Port - $common workers=$W zones=$Zones" $srvLog 'srv'
+$s = Start-Congo "server $Port - $common workers=$W zones=$Zones rate=$Rate" $srvLog 'srv'
 $srvPid = Find-Exe $s.Id
 for ($i = 0; $i -lt 1200; $i++) { if ((ReadLog $srvLog) -match 'LISTENING') { break }; Start-Sleep -Milliseconds 250 }
 Start-Sleep 1
@@ -69,8 +69,10 @@ for ($k = 0; $k -lt $Procs; $k++) {
   $share = [int][math]::Floor($left / ($Procs - $k)); $left -= $share
   $log = "$out\cli$k.log"
   $c = Start-Congo "clients $Port - $common n=$share workers=$CW inputhz=$InputHz" $log "cli$k"
-  $cli += [pscustomobject]@{ k = $k; share = $share; log = $log; proc = $c; pid = (Find-Exe $c.Id) }
+  $cli += [pscustomobject]@{ k = $k; share = $share; log = $log; proc = $c; pid = 0 }
 }
+# every client process is started before any is waited for, so they compile side by side (lane 941)
+foreach ($c in $cli) { $c.pid = Find-Exe $c.proc.Id }
 $ids = @($srvPid) + @($cli | ForEach-Object { $_.pid })
 $a = @{}; $b = @{}; $tA = $null; $tB = $null; $load = $null
 $pc = New-Object System.Diagnostics.PerformanceCounter('Processor', '% Processor Time', '_Total'); [void]$pc.NextValue()
@@ -103,7 +105,7 @@ foreach ($c in $cli) {
   $e = if ($m.Success) { [int64]$m.Groups[2].Value } else { 0 }
   $heardAll += $h; $expAll += $e
   $lines += (Cpu $c.pid ("client$($c.k)") ("conns {0}  own-region heard {1} of {2} ({3:N1}%)" -f $c.share, $h, $e, (100.0 * $h / [math]::Max($e, 1))))
-  $lines += ((ReadLog $c.log) -split "`n" | Where-Object { $_ -match '^CLIENTS own-region state age' } | ForEach-Object { "  client$($c.k) $_" })
+  $lines += ((ReadLog $c.log) -split "`n" | Where-Object { $_ -match '^CLIENTS (own|ring)-region state age' } | ForEach-Object { "  client$($c.k) $_" })
 }
 $lines += "all clients: own-region updates heard $heardAll of $expAll ({0:N1}%)" -f (100.0 * $heardAll / [math]::Max($expAll, 1))
 # the age over every client process: the histograms merged (100 us buckets; a percentile is its bucket's upper edge)

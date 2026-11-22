@@ -55,6 +55,7 @@
 //   trimEverything()     the same after every thread's cache is flushed; a panic if another
 //                        thread still has a cache (nothing else is safe to do with it)
 //   setLimits(maxBytes, keepBytes)  the process-wide bounds
+//   addRoomWake(f), armRoomWake()   a refused caller learns room has come back  (ROOM WAKE)
 //   blockStats()         the counters, a BlockStats
 //   osBlocks(), osBytes()  what the pool holds from the OS now
 //   classSize(c), page, largestClass, classCount        (the region's classes)
@@ -68,11 +69,11 @@
 // aligned segments.) How the alignment is made, written to one contract on both
 // systems: the OS is asked for 2 MiB + 2 MiB + a page, the aligned 2 MiB (and
 // the header page before it) is picked out of it. On Windows the rest stays
-// reserved and uncommitted (VirtualAlloc reserves it all; only the slab and its
-// header are committed; VirtualFree releases the whole reservation, from the base
+// reserved and uncommitted (VirtualAlloc reserves it all; only the header and the
+// blocks carved so far are committed; VirtualFree releases the whole reservation, from the base
 // the header remembers). On Linux the rest is unmapped at both edges (mmap, then
 // munmap of the head and the tail). The header page is not counted in the bound
-// or in osBytes(), only the 2 MiB of blocks: it is 0.2% on top. A block is at
+// or in osBytes(), only the bytes of blocks that hold something: see BYTES COUNTED. A block is at
 // least 8 bytes: while it sits idle in the stock its first word links it to the
 // next. Classes are registered while modules initialise, before any thread takes
 // a block: at most 10, each with a cache of at most 32 blocks. The pool registers
@@ -119,11 +120,32 @@
 // stock takes the first slab with a block to give. One process-wide bound
 // (default 64 MiB) limits the bytes held from the OS, slabs and oversize
 // blocks together: a slab that would pass it first has the idle slabs of
-// every class given back, then the thread's own cache flushed, and if that is
+// every class given back, then the thread's own cache flushed, then the idle blocks
+// of the slabs that remain decommitted (BYTES COUNTED), and if that is
 // not enough blockTake answers null. A second bound (default 8 MiB) is the
 // idle bytes the stock keeps: when blocks come home and the idle bytes pass it,
 // slabs wholly idle are given back to the OS, a whole slab at a time, but never
 // below the bound, so a steady load does not make the OS calls it saved.
+//
+// BYTES COUNTED (row 658). The bound counts bytes that hold something, not address space, in two ways.
+//   - CARVED, NOT WHOLE: a slab's blocks are committed and counted a COMMIT CHUNK (64 KiB, or the block if
+//     larger) at a time, as the bump mark carves them: a slab's first take counts one chunk, not 2 MiB. The
+//     growth path pays one commit call (Windows; on Linux the mapping is readable already and the chunk is
+//     only counted) per chunk ever carved, never one per take or return. osBytes() and the memory
+//     trace report these committed bytes.
+//   - IDLE, NOT PINNED: a slab with one block still lent cannot go back whole, and its idle blocks would hold
+//     the bound's bytes for nothing. When a take is refused at the bound, after the idle slabs are given back
+//     and this thread's cache is flushed, the idle blocks of the slabs that remain are DECOMMITTED
+//     (decommitForRoom): taken off their free list, marked in the slab's bitmap (the header page's 'bits', 512
+//     at most: blocks of a page or more), and their pages given back to the OS (VirtualFree MEM_DECOMMIT;
+//     madvise MADV_DONTNEED then PROT_NONE), and their bytes leave 'held'. A take of the slab uses the free
+//     list, then the bump mark, then a decommitted block, recommitted after its bytes are counted again
+//     (never by making room under a lock: the take counts first, outside it). The class lock is held across
+//     the marking and the decommit, so a take cannot bring a marked block back under the late decommit. A
+//     decommitted block is never touched until it is recommitted (its pages fault on Windows and read zero on
+//     Linux after MADV_DONTNEED). stockBytes is the COMMITTED idle bytes. The take and return fast paths, a
+//     spill and a refill's batch are unchanged: the new work is in a slab with nothing committed to take
+//     and on the refusal path only.
 //
 // THE BANKS. A flood of a peer's small buffers must not leave the program's own
 // constructions without a slab, whichever way the peer's blocks are freed. So
@@ -142,6 +164,49 @@
 // up. So they are exact once the threads that took and returned have stopped;
 // read while others run, they are a sum of moments. The OS counters and the
 // stock's are exact: kept under its locks or atomically.
+//
+// ROOM WAKE. A caller that tryAllocate (or IoBuf.tryMake) refused can wait for room instead of
+// retrying on a timer. The waiting layer registers a function at module initialisation
+// (addRoomWake: at most four, a panic once a thread has a record), and a waiter's protocol is:
+//   1. a take is refused;  2. armRoomWake();  3. retry the take once;
+//   4. if it is refused too, park outside the pool, on its own terms;
+//   5. when woken, armRoomWake() again before retrying the parked takes, so that room that arrives
+//      during the retry pass fires again.
+// The order is the whole argument. A room event is made where room is made, after it is made and
+// outside every lock of the pool: the blocks of a stockPut (a spill, a flush, a thread's end, a late
+// return, a return with no cache), the bytes of 'held' lowered by freeSlabs and by releaseOversize.
+// An event reads the armed word once (one atomic load when nobody waits); when armed it disarms it
+// and calls every registered function, so a burst of room is one wake, and a waiter that arms again
+// asks for the next. No wake is lost, by two pairs. A stockPut's blocks are published by the class
+// lock's release, and its event reads the word after it; the waiter's arm comes before its retry,
+// which takes the same lock. The retry's lock comes after the event's unlock (it sees the blocks) or
+// before it (the arm is then before the event's read, which sees it armed). 'held' is atomic and
+// every operation on it and on the armed word is sequentially consistent: the arm, then the retry's
+// reserve; the sub, then the event's read. 'reserve' raises 'held' by a compare-and-swap and never
+// raises it and lowers it again, because a refusal made by a count that goes away a moment later would
+// leave a waiter that has room in hand with no event to wake it. A refused take of one class can
+// be helped by a return of another (the retry's trim gives back a slab the return left idle), so
+// every stockPut is an event, and a wasted wake is a spurious one: allowed. A retry that finds room
+// leaves the wake armed: at most one spurious run. THE WAKE FUNCTION is called on whatever thread
+// made the room, a thread's exit callback among them, and for any room, not for one caller: it may
+// post a message or a completion or set a flag; it must not take or return a pool block, call back
+// into the pool or block. 'Must not block' is the rule that stays a rule (breaking it hangs, it
+// corrupts nothing); the rest is not what safety rests on: a wake that takes blocks, returns them,
+// calls trimStock or does all three, is safe at every site that makes room, shown by
+// tests/roomreenter.cone (Windows, and Linux under ASan): a spill (a line that is the whole batch
+// too), a return with no cache, a late return, flushThread, a thread's end (where 'myCache' is
+// already the late record, so the wake's takes and returns go straight to the stock), trimEverything,
+// freeSlabs, releaseOversize, a take that gives idle slabs back to make room for its own slab, and the
+// final. What makes it so: room made while a cache line is half moved (a spill's batch still in
+// the line, a refill's batch landing in the line's own slots) or while the registry's lock is held is
+// only noted (noteRoom), and announced (roomAnnounce) once the line is whole, after the block that
+// caused the spill is in it, and after the lock is released. A wake that does these things may
+// be wasteful (a second event, a spurious wake), never unsafe. KNOWN LIMITS: (a) blocks idle in another thread's cache are not room
+// until that thread spills, flushes or ends, so a waiter can wait while memory sits in busy
+// threads' caches (R2, row 649); the waiting layer's own timer retry can stay as a slow backstop
+// until R2 answers. (b) An OS refusal of memory the bound allows (VirtualAlloc, mmap, malloc
+// failing) is not room and runs no event: a waiter refused in the instant a concurrent attempt's
+// reserved bytes were given back after such a refusal waits for the next real event.
 //
 // The module's init makes the region and registers the five classes twice; its final
 // gives every idle slab back to the OS, after every module that uses the pool has
@@ -169,8 +234,9 @@ import trace use Level, Kind4;
 
 // MEMORY TRACING (target "memory"; schema in packages/memtrace/README.md). The pool takes its memory from the OS
 // (VirtualAlloc, mmap), which no malloc shim sees, so it counts its own supply: bufpool.reserve (address space
-// asked for, n bytes), bufpool.commit (memory made usable, n bytes), bufpool.release (given back, n bytes; there
-// is no partial decommit), all Debug, one per slab or oversize block (elem 2 MiB slab, or 0 oversize), and
+// asked for, n bytes), bufpool.commit (memory made usable, n bytes: a slab's header and first chunk, each
+// later chunk, a block recommitted), bufpool.release (given back, n bytes: a slab freed whole, with what is
+// committed of it, or idle blocks decommitted at the bound), all Debug, one per slab, chunk or oversize block (elem 2 MiB slab, or 0 oversize), and
 // bufpool.cache (Trace): the bytes one thread's cache holds after a batch moved between it and the stock (a
 // refill or a spill; the per-block fast paths carry no check): inst is the cache's address (a key of its
 // own, so the report sums the last aux of each cache at each sample): n its misses so far, aux the bytes held.
@@ -202,6 +268,8 @@ extern {
   fn @c(system) VirtualFree(addr: *u8, size: usize, kind: u32) i32;
   fn @c mmap(addr: *u8, size: usize, protect: i32, flags: i32, fd: i32, offset: i64) *u8;
   fn @c munmap(addr: *u8, size: usize) i32;
+  fn @c mprotect(addr: *u8, size: usize, protect: i32) i32;
+  fn @c madvise(addr: *u8, size: usize, advice: i32) i32;
   // conestd's threadexit.c: the process's one thread-exit slot (THREADS)
   fn @c cone_threadExitAdd(callback: &fn @c ()) u32;
   fn @c cone_threadExitArm(id: u32);
@@ -209,6 +277,7 @@ extern {
 
 const memCommit = 0x1000u32;
 const memReserve = 0x2000u32;
+const memDecommit = 0x4000u32;
 const memRelease = 0x8000u32;
 const pageReadWrite = 0x04u32;
 const pageNoAccess = 0x01u32;
@@ -216,6 +285,8 @@ const pageNoAccess = 0x01u32;
 // Linux: readable and writable, private and anonymous; mmap answers (void*)-1
 // when it fails
 const protReadWrite = 3i32;
+const protNone = 0i32;
+const madvDontNeed = 4i32;
 const mapPrivateAnonymous = 0x22i32;
 const mapFailed = 0xFFFFFFFFFFFFFFFFusize;
 
@@ -235,23 +306,25 @@ const maxClasses = 10usize;    // the five sizes twice: the plain bank, then try
 const maxCache = 32u32;
 
 // A new slab: slabBytes bytes aligned to slabBytes, the page before them
-// committed too (the header), and the base of the whole reservation, which
-// osFreeSlab wants back. Null when the OS refuses
-fn osAllocSlab() *u8, *u8 {
+// committed (the header), and 'first' bytes of the blocks committed (a multiple of
+// the commit chunk; on Linux the mapping is all readable and writable at once, and
+// 'first' is only what the pool counts). Answers the aligned base and the base of
+// the whole reservation, which osFreeSlab wants back. Null when the OS refuses
+fn osAllocSlab(first: usize) *u8, *u8 {
   let total = slabBytes + slabBytes + page;
   #if #os == .windows {
     let r = VirtualAlloc(null, total, memReserve, pageNoAccess);
     if r as usize == 0usize {return null, null;}
     let aligned = (r as usize + page + slabBytes - 1usize) & (0usize - slabBytes);
-    let c = VirtualAlloc((aligned - page) as *u8, slabBytes + page, memCommit, pageReadWrite);
+    let c = VirtualAlloc((aligned - page) as *u8, first + page, memCommit, pageReadWrite);
     if c as usize == 0usize {
       VirtualFree(r, 0usize, memRelease);
       return null, null;
     }
     liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
-    liveBytes.addOrdered(u64.from(slabBytes), MemOrder.Relaxed);
+    liveBytes.addOrdered(u64.from(first), MemOrder.Relaxed);
     bufReserve.emit(u64.from(slabBytes), u64.from(total), 0u64, 0u64);
-    bufCommit.emit(u64.from(slabBytes), u64.from(slabBytes + page), 0u64, 0u64);
+    bufCommit.emit(u64.from(slabBytes), u64.from(first + page), 0u64, 0u64);
     return aligned as *u8, r;
   } #else {
     let p = mmap(null, total, protReadWrite, mapPrivateAnonymous, 0i32 - 1i32, 0i64);
@@ -262,20 +335,66 @@ fn osAllocSlab() *u8, *u8 {
     let tail = p as usize + total - (aligned + slabBytes);
     if tail > 0usize {munmap((aligned + slabBytes) as *u8, tail);}
     liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
-    liveBytes.addOrdered(u64.from(slabBytes), MemOrder.Relaxed);
+    liveBytes.addOrdered(u64.from(first), MemOrder.Relaxed);
     bufReserve.emit(u64.from(slabBytes), u64.from(total), 0u64, 0u64);
-    bufCommit.emit(u64.from(slabBytes), u64.from(slabBytes + page), 0u64, 0u64);
+    bufCommit.emit(u64.from(slabBytes), u64.from(first + page), 0u64, 0u64);
     aligned as *u8, (aligned - page) as *u8
   }
 }
 
 // A slab's whole reservation back to the OS: 'osBase' is what osAllocSlab
-// answered second
-fn osFreeSlab(osBase: *u8) {
+// answered second, 'committed' the bytes of its blocks that are committed now
+fn osFreeSlab(osBase: *u8, committed: usize) {
   #if #os == .windows {VirtualFree(osBase, 0usize, memRelease);} #else {munmap(osBase, slabBytes + page);}
   liveBlocks.subOrdered(1u64, MemOrder.Relaxed);
-  liveBytes.subOrdered(u64.from(slabBytes), MemOrder.Relaxed);
-  bufRelease.emit(u64.from(slabBytes), u64.from(slabBytes + page), 0u64, u64.from(slabBytes + slabBytes + page));
+  liveBytes.subOrdered(u64.from(committed), MemOrder.Relaxed);
+  bufRelease.emit(u64.from(slabBytes), u64.from(committed + page), 0u64, u64.from(slabBytes + slabBytes + page));
+}
+
+// 'bytes' more of a slab's never-carved blocks made usable, at 'addr': the next commit chunk,
+// on the growth path. Windows commits them; on Linux they are readable and writable already,
+// and this only counts. False when the OS refuses
+fn osExtend(addr: *u8, bytes: usize) bool {
+  var ok = true;
+  #if #os == .windows {
+    ok = VirtualAlloc(addr, bytes, memCommit, pageReadWrite) as usize != 0usize;
+  } #else {
+    ok = true;
+  }
+  if ok {
+    liveBytes.addOrdered(u64.from(bytes), MemOrder.Relaxed);
+    bufCommit.emit(u64.from(slabBytes), u64.from(bytes), 0u64, 0u64);
+  }
+  ok
+}
+
+// Idle blocks given back to the OS but kept in their slab: the pages go (Windows MEM_DECOMMIT;
+// Linux MADV_DONTNEED, so they read zero, then PROT_NONE, so a stale touch faults) and the
+// address range stays. Only at the bound, with the class's lock held; osRecommit is its inverse
+fn osDecommit(addr: *u8, bytes: usize) {
+  #if #os == .windows {
+    VirtualFree(addr, bytes, memDecommit);
+  } #else {
+    madvise(addr, bytes, madvDontNeed);
+    mprotect(addr, bytes, protNone);
+  }
+  liveBytes.subOrdered(u64.from(bytes), MemOrder.Relaxed);
+  bufRelease.emit(u64.from(slabBytes), u64.from(bytes), 0u64, 0u64);
+}
+
+// A decommitted run made usable again (its pages read zero). False when the OS refuses
+fn osRecommit(addr: *u8, bytes: usize) bool {
+  var ok = true;
+  #if #os == .windows {
+    ok = VirtualAlloc(addr, bytes, memCommit, pageReadWrite) as usize != 0usize;
+  } #else {
+    ok = mprotect(addr, bytes, protReadWrite) == 0i32;
+  }
+  if ok {
+    liveBytes.addOrdered(u64.from(bytes), MemOrder.Relaxed);
+    bufCommit.emit(u64.from(slabBytes), u64.from(bytes), 0u64, 0u64);
+  }
+  ok
 }
 
 // An oversize block of size bytes (whole pages), page-aligned and of its own
@@ -304,7 +423,7 @@ fn osFree(block: *u8, size: usize) {
 }
 
 // What the pool holds from the OS now: slabs and oversize blocks, and their bytes
-// (a slab's 2 MiB of blocks; its header page is not counted)
+// (a slab's committed blocks, less its decommitted ones; its header page is not counted)
 pub fn osBlocks() u64 {liveBlocks.load()}
 pub fn osBytes() u64 {liveBytes.load()}
 
@@ -327,8 +446,50 @@ struct SlabRec {
   prevP: *SlabRec;
   nextA: *SlabRec;   // the list of every slab
   prevA: *SlabRec;
-  pad: Array[u64, 6];  // 'home' is alone on the next 64-byte line of the header page
+  decommitted: u32;  // blocks off the free list whose pages are decommitted (the bits below); in the stock, not 'used'
+  commitEnd: u32;    // bytes from 'base' that are committed (and counted in 'held'): the carved blocks, rounded up to a commit chunk
+  pad: Array[u64, 5];  // 'home' is alone on the next 64-byte line of the header page
   home: u32;         // its class again, written once before the slab is listed, read without the lock
+  homePad: u32;
+  pad2: Array[u64, 7];
+  bits: Array[u64, 8];  // bit i set: block i is decommitted (blocks of a page or more only: 512 at most)
+  fresh: Array[u64, 8]; // while decommitSlab runs: the bits it has just set (so a run is decommitted once); else 0
+}
+
+fn freshOf(s: *SlabRec) *u64 {(&(*s).fresh) as *u64}
+fn freshTest(s: *SlabRec, i: usize) bool {
+  ((*(freshOf(s) + (i >> 6usize)) >> u64.from(i & 63usize)) & 1u64) != 0u64
+}
+fn freshSet(s: *SlabRec, i: usize) {
+  let w = freshOf(s) + (i >> 6usize);
+  *w = *w | (1u64 << u64.from(i & 63usize));
+}
+fn freshClear(s: *SlabRec, i: usize) {
+  let w = freshOf(s) + (i >> 6usize);
+  *w = *w & ((1u64 << u64.from(i & 63usize)) ^ 0xFFFFFFFFFFFFFFFFu64);
+}
+
+// Under the class lock: a slab's decommit bitmap
+fn bitsOf(s: *SlabRec) *u64 {(&(*s).bits) as *u64}
+fn bitTest(s: *SlabRec, i: usize) bool {
+  ((*(bitsOf(s) + (i >> 6usize)) >> u64.from(i & 63usize)) & 1u64) != 0u64
+}
+fn bitSet(s: *SlabRec, i: usize) {
+  let w = bitsOf(s) + (i >> 6usize);
+  *w = *w | (1u64 << u64.from(i & 63usize));
+}
+fn bitClear(s: *SlabRec, i: usize) {
+  let w = bitsOf(s) + (i >> 6usize);
+  *w = *w & ((1u64 << u64.from(i & 63usize)) ^ 0xFFFFFFFFFFFFFFFFu64);
+}
+
+// What one stockTake carries through takeLocked: bytes it has already counted into 'held' (CREDIT, spent
+// by the commits that follow, the rest given back at the end), the least bytes the take would need to
+// go on when the bound refused it, and whether the OS refused a commit
+struct TakeCtx {
+  credit: u64;
+  need: u64;
+  failed: u32;
 }
 
 // A class's stock. Every field is reached under 'lock', except the class's
@@ -389,6 +550,11 @@ struct Globals {
   bigTakes: Atomic[u64];     // oversize blocks ever lent
   refused: Atomic[u64];      // tryAllocate's refusals
   flushHook: usize;          // test-only (setFlushHook): the address of a hook flushCache calls, 0 in a program
+  roomState: Atomic[u32];    // ROOM WAKE: bit 0, a waiter has armed the wake; bit 1, the test-only hook is set
+  roomWakeCount: u32;        // the wakes registered, at most maxRoomWakes, set in module initialisation
+  roomWakes: Array[usize, 4];  // their addresses
+  roomHook: usize;           // test-only (setRoomHook): the address of a hook the room event calls, 0 in a program
+  decommitHook: usize;       // test-only (setDecommitHook): the address of a hook decommitSlab calls, 0 in a program
 }
 
 pub const defaultMaxBytes = 67108864usize;     // 64 MiB held from the OS at most
@@ -432,6 +598,7 @@ fn blocksInit() {
   (*g).bigBytes = Atomic[u64].of(0u64);
   (*g).bigTakes = Atomic[u64].of(0u64);
   (*g).refused = Atomic[u64].of(0u64);
+  (*g).roomState = Atomic[u32].of(0u32);
   gAddr.store(g as usize);
 }
 
@@ -502,6 +669,113 @@ pub fn setLimits(maxBytes: usize, keepBytes: usize) {
 }
 
 // ---------------------------------------------------------------------------
+// The room wake: a refused caller learns that room has come back (ROOM WAKE)
+// ---------------------------------------------------------------------------
+
+const roomArmedBit = 1u32;
+const roomHookBit = 2u32;
+const maxRoomWakes = 4u32;
+
+// Register a function the pool calls when room may have come back to a caller it
+// refused, and that caller has armed the wake (armRoomWake). During module
+// initialisation only: a panic once a thread has a record, as registerClass. At
+// most four. The function is called on whatever thread made the room (a thread
+// returning a block, one ending, one trimming), outside every lock of the pool,
+// and it is called for ANY room, not for one caller: it must only post a
+// message or a completion or set a flag. It must not take or return a pool
+// block, nor call back into the pool, and it must not block
+pub fn addRoomWake(f: &fn @c ()) {
+  let g = glob();
+  (*g).regLock.lock();
+  if (*g).regHead as usize != 0usize {
+    (*g).regLock.unlock();
+    panic("bufpool: addRoomWake after the pool is in use; register wakes in module initialisation");
+  }
+  let n = (*g).roomWakeCount;
+  if n >= maxRoomWakes {
+    (*g).regLock.unlock();
+    panic("bufpool: too many room wakes");
+  }
+  var held = f;    // kept as an address, as setFlushHook does
+  *(((&(*g).roomWakes) as *usize) + usize.from(n)) = mem.readRaw[usize](&mut held as *usize);
+  (*g).roomWakeCount = n + 1u32;
+  (*g).regLock.unlock();
+}
+
+// A caller the pool refused (tryAllocate or IoBuf.tryMake answered null) arms the
+// wake, THEN retries once; if that is refused it parks on its own terms. The
+// order is the whole argument: room made after the arm finds the wake armed and
+// calls the registered functions once (they are then disarmed); room made before
+// it is seen by the retry. A waiter woken calls this again before it retries, so
+// room that arrives during its retry pass fires again. A wake may be spurious (a
+// retry that finds room leaves the wake armed). Sequentially consistent, as the
+// room events' reads are
+pub fn armRoomWake() {
+  (*glob()).roomState.bitOr(roomArmedBit);
+}
+
+// A room event: room has just been made, outside every lock of the pool. When no
+// waiter has armed the wake this is one atomic load
+fn roomEvent(g: *Globals) inline {
+  let s = (*g).roomState.load();
+  if s != 0u32 {
+    roomEventArmed(g, s);
+  }
+}
+
+// Room made where the event cannot be made yet (the thread's cache line is half moved, or the
+// registry's lock is held) is noted, and announced where the state is whole again
+var @threadlocal roomPending: u32 = 0u32;
+
+fn noteRoom() {
+  roomPending = 1u32;
+}
+
+fn roomAnnounce(g: *Globals) {
+  if roomPending != 0u32 {
+    roomPending = 0u32;
+    roomEvent(g);
+  }
+}
+
+fn roomEventArmed(g: *Globals, s: u32) {
+  if s & roomHookBit != 0u32 {
+    runRoomHook(g);       // test-only park point: after the room is made, before the flag is read
+  }
+  let was = (*g).roomState.bitAnd(0xFFFFFFFFu32 - roomArmedBit);   // the one that sees it armed disarms it, and calls
+  if was & roomArmedBit == 0u32 {
+    return;
+  }
+  var i = 0usize;
+  let n = usize.from((*g).roomWakeCount);
+  while i < n {
+    var p = *(((&(*g).roomWakes) as *usize) + i);
+    let w = mem.readRaw[&fn @c ()](&mut p as *(&fn @c ()));
+    w();
+    i = i + 1usize;
+  }
+}
+
+// A test-only hook, as setFlushHook: f is called by every room event that runs while the hook is
+// set, on the thread making the room, after the room is made and before the event reads the
+// armed flag, so a test can hold the returner there while a waiter arms and retries. A program
+// does not set it. The hook costs a program nothing: the bit that says it is set shares the
+// word the event loads anyway
+pub fn setRoomHook(f: &fn()) {
+  var held = f;
+  (*glob()).roomHook = mem.readRaw[usize](&mut held as *usize);
+  (*glob()).roomState.bitOr(roomHookBit);
+}
+
+fn runRoomHook(g: *Globals) {
+  var p = (*g).roomHook;
+  if p != 0usize {
+    let hook = mem.readRaw[&fn()](&mut p as *(&fn()));
+    hook();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The thread's cache
 // ---------------------------------------------------------------------------
 
@@ -560,15 +834,18 @@ fn @c bufpoolThreadEnded() {
     return;
   }
   (*g).regLock.lock();
+  var gave = false;
   if (*g).stopping.load() == 0u32 {   // the final has not begun (the lock orders this against it)
-    flushCache(tc);
+    flushCache(tc, false);            // under the registry's lock: the room event is made after it
     (*tc).live = 0u32;
     (*tc).nextFree = (*g).freeRecs;
     (*g).freeRecs = tc;
+    gave = true;
   } else {
     (*tc).live = 0u32;                // ended: the final flushes it if it has not yet walked past it; nothing is given back here
   }
   (*g).regLock.unlock();
+  if gave {roomAnnounce(g);}      // 'myCache' is the late record: a wake that takes or returns goes straight to the stock
 }
 
 // A take on a finished thread: one block from the stock, through a slot on the
@@ -577,7 +854,7 @@ fn @c bufpoolThreadEnded() {
 fn lateTake(g: *Globals, c: usize) *u8 {
   let cs = classAt(g, c);
   var one = null as *u8;
-  if stockTake(g, cs, 1u32, &one) == 0u32 {
+  if stockTake(g, cs, 1u32, &one, true) == 0u32 {
     return null;
   }
   (*cs).lateTakes.add(1u64);
@@ -588,7 +865,7 @@ fn lateTake(g: *Globals, c: usize) *u8 {
 fn lateReturn(g: *Globals, c: usize, b: *u8) {
   let cs = classAt(g, c);
   var one = b;
-  stockPut(g, cs, &one, 1u32);
+  stockPut(g, cs, &one, 1u32, true);
   (*cs).lateReturns.add(1u64);
 }
 
@@ -619,15 +896,20 @@ fn refill(tc: *ThreadCache, c: usize, ln: *CacheLine) *u8 {
   (*tc).misses = (*tc).misses + 1u64;
   let cs = classAt(g, c);
   let want = if (*ln).cap == 0u32 {1u32} else {(*cs).batch};
-  let got = stockTake(g, cs, want, slotsOf(ln));
+  // The batch lands in the line's own slots, so room made on the way (a slab given back to make
+  // room for this one) is announced after the line is whole, and the block read before it
+  let got = stockTake(g, cs, want, slotsOf(ln), false);
   if got == 0u32 {
     let t = takesAt(tc, c);
     *t = *t - 1u64;
+    roomAnnounce(g);
     return null;
   }
   (*ln).count = got - 1u32;
   bufCache.emit(0u64, (*tc).misses, u64.from(tc as usize), cacheHeld(tc));
-  *(slotsOf(ln) + usize.from(got - 1u32))
+  let b = *(slotsOf(ln) + usize.from(got - 1u32));
+  roomAnnounce(g);
+  b
 }
 
 // Block b of class c comes home
@@ -646,9 +928,15 @@ fn blockPut(c: usize, b: *u8) {
       // no cache: the block goes straight to the stock
       let e = slotsOf(ln);
       *e = b;
-      stockPut(glob(), classAt(glob(), c), e, 1u32);
+      stockPut(glob(), classAt(glob(), c), e, 1u32, true);
       return;
     }
+    // the spill's room is announced once the block is in the line: a wake that returns blocks
+    // must find the line whole
+    *(slotsOf(ln) + usize.from((*ln).count)) = b;
+    (*ln).count = (*ln).count + 1u32;
+    roomAnnounce(glob());
+    return;
   }
   *(slotsOf(ln) + usize.from((*ln).count)) = b;
   (*ln).count = (*ln).count + 1u32;
@@ -663,7 +951,7 @@ fn spill(tc: *ThreadCache, c: usize, ln: *CacheLine) {
   let g = glob();
   let cs = classAt(g, c);
   let k = if (*cs).batch < n {(*cs).batch} else {n};
-  stockPut(g, cs, slotsOf(ln), k);
+  stockPut(g, cs, slotsOf(ln), k, false);     // announced by blockPut, after the line is whole
   mem.moveRaw[*u8](slotsOf(ln), slotsOf(ln) + usize.from(k), usize.from(n - k));
   (*ln).count = n - k;
   bufCache.emit(0u64, (*tc).misses, u64.from(tc as usize), cacheHeld(tc));
@@ -679,12 +967,84 @@ pub fn flushThread() {
   }
   let g = glob();
   (*g).regLock.lock();       // under the lock, as a thread's end is, so that the final's flush cannot empty these lines too
-  flushCache(tc);
+  flushCache(tc, false);
   (*tc).live = 0u32;
   (*tc).nextFree = (*g).freeRecs;
   (*g).freeRecs = tc;
   (*g).regLock.unlock();
   myCache = null;
+  roomAnnounce(g);
+}
+
+// A test-only hook: f is called by decommitSlab (the bound's limit path) after it has taken a slab's
+// idle blocks off the free list and marked them, and before it decommits them, with the class's lock
+// held, so a test can hold the decommitter there while another thread tries to take from the class.
+// No program sets it
+pub fn setDecommitHook(f: &fn()) {
+  var held = f;
+  (*glob()).decommitHook = mem.readRaw[usize](&mut held as *usize);
+}
+
+fn runDecommitHook(g: *Globals) {
+  var p = (*g).decommitHook;
+  if p != 0usize {
+    let hook = mem.readRaw[&fn()](&mut p as *(&fn()));
+    hook();
+  }
+}
+
+// A test-only consistency walk of every slab, under each class's lock: the free list, the decommit
+// bitmap and the counts agree (every carved block is lent or cached, on the free list or decommitted;
+// a block on the free list is not marked; the marks are the count; the committed part is a whole number
+// of chunks that covers the carved blocks; a slab is listed while it has something to give), and, when the
+// pool is quiet, the bytes the slabs hold (committed, less decommitted) and the oversize blocks' are what
+// 'held' and osBytes() say. Answers the number of disagreements found: 0 is a sound stock
+pub fn checkSlabs() u64 {
+  let g = glob();
+  var faults = 0u64;
+  var bytes = 0u64;
+  var c = 0usize;
+  while c < (*g).nClasses {
+    let cs = classAt(g, c);
+    let bs = (*cs).blockSize;
+    (*cs).lock.lock();
+    var idle = 0usize;
+    var s = (*cs).all;
+    while s as usize != 0usize {
+      let carved = usize.from((*s).carved);
+      var free = 0usize;
+      var b = (*s).freeHead;
+      while b as usize != 0usize && free <= carved {
+        free = free + 1usize;
+        let i = ((b as usize) - ((*s).base as usize)) / bs;
+        if slabOf(b) != s || i >= carved || (bs >= page && bitTest(s, i)) {faults = faults + 1u64;}
+        b = linkNext(b);
+      }
+      var marked = 0usize;
+      var i = 0usize;
+      while i < 512usize {
+        if bitTest(s, i) {
+          marked = marked + 1usize;
+          if i >= carved {faults = faults + 1u64;}
+        }
+        i = i + 1usize;
+      }
+      if marked != usize.from((*s).decommitted) {faults = faults + 1u64;}
+      if free + marked + usize.from((*s).used) != carved {faults = faults + 1u64;}
+      let ce = usize.from((*s).commitEnd);
+      if ce < carved * bs || ce > slabBytes || ce % commitChunk != 0usize {faults = faults + 1u64;}
+      if ((*s).listed != 0u32) != ((*s).used < (*s).total) {faults = faults + 1u64;}
+      idle = idle + free;
+      bytes = bytes + u64.from(ce - marked * bs);
+      s = (*s).nextA;
+    }
+    if idle != (*cs).idleBlocks {faults = faults + 1u64;}
+    (*cs).lock.unlock();
+    c = c + 1usize;
+  }
+  bytes = bytes + (*g).bigBytes.load();
+  if bytes != (*g).held.load() || bytes != liveBytes.load() {faults = faults + 1u64;}
+  faults
 }
 
 // A test-only hook, a slow-path field (never read by a take or a return): f is
@@ -707,8 +1067,10 @@ fn runFlushHook(g: *Globals) {
   }
 }
 
-// Every block of tc's lines back to the stock
-fn flushCache(tc: *ThreadCache) {
+// Every block of tc's lines back to the stock. 'fire' says whether each batch's room
+// event is made here; a caller that holds the registry's lock passes false and
+// makes the event itself, after it unlocks
+fn flushCache(tc: *ThreadCache, fire: bool) {
   let g = glob();
   var c = 0usize;
   while c < maxClasses {
@@ -717,7 +1079,7 @@ fn flushCache(tc: *ThreadCache) {
     if n != 0u32 {
       runFlushHook(g);    // test-only park point: n is read, the line is not yet emptied
       (*ln).count = 0u32;
-      stockPut(g, classAt(g, c), slotsOf(ln), n);
+      stockPut(g, classAt(g, c), slotsOf(ln), n, fire);
     }
     c = c + 1usize;
   }
@@ -729,45 +1091,169 @@ fn flushCache(tc: *ThreadCache) {
 
 // Up to want blocks of class c, written to dest; at least one, or 0 when the
 // bound or the OS refuses a slab
-fn stockTake(g: *Globals, cs: *ClassState, want: u32, dest: **u8) u32 {
-  while true {
-    (*cs).lock.lock();
-    let got = takeLocked(cs, want, dest);
-    (*cs).lock.unlock();
-    if got > 0u32 {
-      return got;
-    }
-    if !newSlab(g, cs) {
-      return 0u32;
-    }
-  }
-  0u32
-}
-
-// Under the lock: pop blocks from the slabs that have them
-fn takeLocked(cs: *ClassState, want: u32, dest: **u8) u32 {
+fn stockTake(g: *Globals, cs: *ClassState, want: u32, dest: **u8, fire: bool) u32 {
+  var ctx = TakeCtx(0u64, 0u64, 0u32);
+  let cx = &mut ctx as *TakeCtx;
   var got = 0u32;
-  while got < want {
-    let s = (*cs).partial;
-    if s as usize == 0usize {
+  while true {
+    (*cx).need = 0u64;
+    (*cs).lock.lock();
+    got = takeLocked(g, cs, want, dest, cx);
+    (*cs).lock.unlock();
+    if got > 0u32 || (*cx).failed != 0u32 {
       break;
     }
-    var b = (*s).freeHead;
-    if b as usize != 0usize {
-      (*s).freeHead = linkNext(b);
-      (*cs).idleBlocks = (*cs).idleBlocks - 1usize;
-    } else {
-      b = (*s).base + usize.from((*s).carved) * (*cs).blockSize;
-      (*s).carved = (*s).carved + 1u32;
+    if (*cx).need != 0u64 {
+      // A slab of the class has blocks to give but the bound would not count the bytes they need (a
+      // commit chunk to carve, a decommitted block to bring back): make room for them, outside the
+      // lock, as a new slab would, and take again with the bytes counted
+      if (*cx).need > (*cx).credit {
+        if !reserveRoom(g, usize.from((*cx).need - (*cx).credit), limitOf(g, cs), fire) {
+          break;
+        }
+        (*cx).credit = (*cx).need;
+      }
+    } else if !newSlab(g, cs, fire) {
+      break;
     }
-    (*s).used = (*s).used + 1u32;
+  }
+  if (*cx).credit != 0u64 {         // counted and not spent: given back
+    (*g).held.sub((*cx).credit);
+    if fire {roomEvent(g);} else {noteRoom();}
+  }
+  got
+}
+
+// Under the lock: pop blocks from the slabs that have them, in each slab's order: the free list of
+// committed blocks, the bump mark (carving: the next commit chunk is counted and committed when the
+// mark leaves the committed part), then a decommitted block of the slab; a slab that cannot give
+// because the bound or the OS refuses the bytes it needs is passed over to the next
+fn takeLocked(g: *Globals, cs: *ClassState, want: u32, dest: **u8, cx: *TakeCtx) u32 {
+  var got = 0u32;
+  var s = (*cs).partial;
+  while got < want && s as usize != 0usize {
+    let nextS = (*s).nextP;
+    got = takeFrom(g, cs, s, want, dest, got, cx);
     if (*s).used == (*s).total {
       unlistPartial(cs, s);
     }
-    *(dest + usize.from(got)) = b;
-    got = got + 1u32;
+    s = nextS;
   }
   got
+}
+
+// Bytes to be counted into 'held' for a commit under the lock: spent from the take's credit, or reserved
+// (never reserveRoom: no making room under a class lock). False when the bound refuses
+fn payFor(g: *Globals, cs: *ClassState, bytes: usize, cx: *TakeCtx) bool {
+  let n = u64.from(bytes);
+  if (*cx).credit >= n {
+    (*cx).credit = (*cx).credit - n;
+    return true;
+  }
+  reserve(g, bytes, limitOf(g, cs))
+}
+
+fn noteNeed(cx: *TakeCtx, bytes: usize) {
+  let n = u64.from(bytes);
+  if (*cx).need == 0u64 || n < (*cx).need {(*cx).need = n;}
+}
+
+// Bytes paid for a commit the OS then refused: kept as credit, which the take gives back at its end
+fn refundTo(cx: *TakeCtx, bytes: usize) {
+  (*cx).credit = (*cx).credit + u64.from(bytes);
+  (*cx).failed = 1u32;
+}
+
+// Under the lock: from slab s, blocks into dest[start..want]; the count then in dest
+fn takeFrom(g: *Globals, cs: *ClassState, s: *SlabRec, want: u32, dest: **u8, start: u32, cx: *TakeCtx) u32 {
+  var got = start;
+  var more = true;
+  while got < want && more {
+    let h = (*s).freeHead;
+    if h as usize != 0usize {
+      (*s).freeHead = linkNext(h);
+      (*cs).idleBlocks = (*cs).idleBlocks - 1usize;
+      *(dest + usize.from(got)) = h;
+      (*s).used = (*s).used + 1u32;
+      got = got + 1u32;
+    } else {
+      var c = null as *u8;
+      if (*s).carved < (*s).total {c = carveOne(g, cs, s, cx);}
+      if c as usize != 0usize {
+        *(dest + usize.from(got)) = c;
+        (*s).used = (*s).used + 1u32;
+        got = got + 1u32;
+      } else if (*s).decommitted > 0u32 {
+        let n = recommitRun(g, cs, s, want - got, dest + usize.from(got), cx);
+        (*s).used = (*s).used + n;
+        got = got + n;
+        if n == 0u32 {more = false;}
+      } else {
+        more = false;
+      }
+    }
+  }
+  got
+}
+
+// Under the lock: the slab's next never-carved block, its bytes committed (and counted) if the mark
+// leaves the committed part, one commit chunk at a time; null when the bound or the OS refuses them
+fn carveOne(g: *Globals, cs: *ClassState, s: *SlabRec, cx: *TakeCtx) *u8 {
+  let at = usize.from((*s).carved) * (*cs).blockSize;
+  let end = at + (*cs).blockSize;
+  let have = usize.from((*s).commitEnd);
+  if end > have {
+    let ext = chunkCeil(end) - have;
+    if !payFor(g, cs, ext, cx) {
+      noteNeed(cx, ext);
+      return null;
+    }
+    if !osExtend((*s).base + have, ext) {
+      refundTo(cx, ext);
+      return null;
+    }
+    (*s).commitEnd = u32.from(have + ext);
+  }
+  (*s).carved = (*s).carved + 1u32;
+  (*s).base + at
+}
+
+// Under the lock: up to maxN decommitted blocks of the slab, adjacent ones in one call, brought back and
+// written to dest; the bytes are counted first, a refusal of the run falls back to one block. Answers the count
+fn recommitRun(g: *Globals, cs: *ClassState, s: *SlabRec, maxN: u32, dest: **u8, cx: *TakeCtx) u32 {
+  let bs = (*cs).blockSize;
+  let carved = usize.from((*s).carved);
+  var i = 0usize;
+  while i < carved && !bitTest(s, i) {i = i + 1usize;}
+  if i >= carved {return 0u32;}
+  var r = 1usize;
+  while r < usize.from(maxN) && i + r < carved && bitTest(s, i + r) {r = r + 1usize;}
+  if !payFor(g, cs, r * bs, cx) {
+    r = 1usize;
+    if !payFor(g, cs, bs, cx) {
+      noteNeed(cx, bs);
+      return 0u32;
+    }
+  }
+  if !osRecommit((*s).base + i * bs, r * bs) {
+    refundTo(cx, r * bs);
+    return 0u32;
+  }
+  var k = 0usize;
+  while k < r {
+    bitClear(s, i + k);
+    *(dest + k) = (*s).base + (i + k) * bs;
+    k = k + 1usize;
+  }
+  (*s).decommitted = (*s).decommitted - u32.from(r);
+  u32.from(r)
+}
+
+// A commit chunk, and a size rounded up to whole chunks
+const commitChunk = 65536usize;
+
+fn chunkCeil(n: usize) usize {
+  (n + commitChunk - 1usize) & (0usize - commitChunk)
 }
 
 fn unlistPartial(cs: *ClassState, s: *SlabRec) {
@@ -800,7 +1286,10 @@ fn listPartial(cs: *ClassState, s: *SlabRec) {
 // List, a String, a buffer) that releases it once when it dies, and the entry points that release
 // (the region's 'release' and the pool's own: blockPut, releaseOversize and poolRelease, all private)
 // take a raw pointer, which is trusted. A caller that returns a block twice breaks the header's rule "a block is returned once".
-fn stockPut(g: *Globals, cs: *ClassState, src: **u8, n: u32) {
+//
+// Room is made, so the room event is made after the lock is released ('fire'; a caller that holds
+// the registry's lock passes false)
+fn stockPut(g: *Globals, cs: *ClassState, src: **u8, n: u32, fire: bool) {
   (*cs).lock.lock();
   var i = 0usize;
   let count = usize.from(n);
@@ -825,7 +1314,8 @@ fn stockPut(g: *Globals, cs: *ClassState, src: **u8, n: u32) {
     doomed = reclaim(g, cs, keep);
   }
   (*cs).lock.unlock();
-  freeSlabs(g, doomed);
+  if fire {roomEvent(g);} else {noteRoom();}
+  freeSlabs(g, doomed, fire);
 }
 
 // Total bytes idle in the stock, every class. The other classes' counts are
@@ -852,14 +1342,15 @@ fn reclaim(g: *Globals, cs: *ClassState, keep: u64) *SlabRec {
   while s as usize != 0usize {
     let next = (*s).nextA;
     if (*s).used == 0u32 {
-      let own = u64.from(usize.from((*s).carved) * (*cs).blockSize);
+      let idleHere = usize.from((*s).carved - (*s).decommitted);    // its free list: the decommitted blocks hold no bytes
+      let own = u64.from(idleHere * (*cs).blockSize);
       if idle >= keep + own {
         if (*s).listed != 0u32 {unlistPartial(cs, s);}
         let p = (*s).prevA;
         if p as usize != 0usize {(*p).nextA = next;} else {(*cs).all = next;}
         if next as usize != 0usize {(*next).prevA = p;}
         (*cs).slabs = (*cs).slabs - 1usize;
-        (*cs).idleBlocks = (*cs).idleBlocks - usize.from((*s).carved);
+        (*cs).idleBlocks = (*cs).idleBlocks - idleHere;
         idle = idle - own;
         (*s).nextA = doomed;
         (*s).prevA = null;
@@ -873,16 +1364,20 @@ fn reclaim(g: *Globals, cs: *ClassState, keep: u64) *SlabRec {
 
 // Outside any lock: give slabs, unlinked by reclaim, back to the OS (a slab's
 // record is in the memory that goes, so what is wanted of it is read first)
-fn freeSlabs(g: *Globals, head: *SlabRec) {
+fn freeSlabs(g: *Globals, head: *SlabRec, fire: bool) {
+  if head as usize == 0usize {return;}
   var s = head;
   while s as usize != 0usize {
     let next = (*s).nextA;
     let osBase = (*s).osBase;
-    osFreeSlab(osBase);
-    (*g).held.sub(u64.from(slabBytes));
+    // the bytes it holds: its committed part less its decommitted blocks
+    let committed = usize.from((*s).commitEnd) - usize.from((*s).decommitted) * (*classAt(g, usize.from((*s).cls))).blockSize;
+    osFreeSlab(osBase, committed);
+    (*g).held.sub(u64.from(committed));
     (*g).osFrees.add(1u64);
     s = next;
   }
+  if fire {roomEvent(g);} else {noteRoom();}     // 'held' is lower
 }
 
 // ---------------------------------------------------------------------------
@@ -890,26 +1385,131 @@ fn freeSlabs(g: *Globals, head: *SlabRec) {
 // ---------------------------------------------------------------------------
 
 // Count size bytes against a bound on the bytes held; whether it holds
+//
+// A refusal leaves 'held' as it was: it is read and then raised by a compare-and-swap, never raised
+// and lowered again, because a caller that fails a concurrent caller's reserve by a count that goes
+// away a moment later would be refused with room in hand and no event to wake it (ROOM WAKE)
 fn reserve(g: *Globals, size: usize, limit: u64) bool {
   let n = u64.from(size);
-  let before = (*g).held.add(n);
-  if before + n > limit {
-    (*g).held.sub(n);
-    return false;
+  var cur = (*g).held.load();
+  while true {
+    if cur + n > limit {
+      return false;
+    }
+    let seen, ok = (*g).held.compareSwap(cur, cur + n);
+    if ok {
+      return true;
+    }
+    cur = seen;
   }
-  true
+  false
 }
 
 // Count size bytes against a bound, making room if need be: every wholly
 // idle slab of every class back to the OS, then this thread's cache
-fn reserveRoom(g: *Globals, size: usize, limit: u64) bool {
+fn reserveRoom(g: *Globals, size: usize, limit: u64, fire: bool) bool {
   if reserve(g, size, limit) {return true;}
-  trimStockOf(g);
+  trimStockOf(g, fire);
   if reserve(g, size, limit) {return true;}
   let tc = myCache;
-  if tc as usize != 0usize {flushCache(tc);}
-  trimStockOf(g);
-  reserve(g, size, limit)
+  if tc as usize != 0usize {flushCache(tc, fire);}
+  trimStockOf(g, fire);
+  if reserve(g, size, limit) {return true;}
+  decommitForRoom(g, size, limit, fire)
+}
+
+// The limit path's last recovery. The idle blocks of slabs that still have a block lent or cached
+// are bytes the bound counts and nothing uses, and no slab of them can go back whole. So here they go
+// back page by page: the idle blocks of a class (the class holding the most idle bytes first, then the
+// next, and in a class one slab at a time) are taken off their free lists, marked in their slab's
+// bitmap and decommitted, and their bytes leave 'held'. It stops as soon as the bytes fit, so one
+// refusal does not strip every class. Nothing is kept: at the limit the keep bound does not apply.
+// Either bank's idle blocks serve: the plain bank's lowers 'held' for the try bank's mark too
+fn decommitForRoom(g: *Globals, size: usize, limit: u64, fire: bool) bool {
+  let n = (*g).nClasses;
+  var visited = 0u32;
+  var freed = 0usize;
+  var ok = false;
+  while !ok {
+    var best = n;
+    var bestBytes = 0usize;
+    var c = 0usize;
+    while c < n {
+      let cs = classAt(g, c);
+      let bytes = (*cs).idleBlocks * (*cs).blockSize;     // a hint, read without the lock
+      if (visited & (1u32 << u32.from(c))) == 0u32 && (*cs).blockSize >= page && bytes > bestBytes {
+        best = c;
+        bestBytes = bytes;
+      }
+      c = c + 1usize;
+    }
+    if best == n {break;}
+    visited = visited | (1u32 << u32.from(best));
+    let cs = classAt(g, best);
+    (*cs).lock.lock();
+    var s = (*cs).partial;
+    while s as usize != 0usize && !fits(g, size, limit) {
+      if (*s).freeHead as usize != 0usize {freed = freed + decommitSlab(g, cs, s);}
+      s = (*s).nextP;
+    }
+    (*cs).lock.unlock();
+    ok = reserve(g, size, limit);
+  }
+  if freed != 0usize {
+    if fire {roomEvent(g);} else {noteRoom();}     // 'held' is lower
+  }
+  ok
+}
+
+// Whether size more bytes would fit now (a read, not a reservation)
+fn fits(g: *Globals, size: usize, limit: u64) bool {
+  (*g).held.load() + u64.from(size) <= limit
+}
+
+// Under the class lock: every block on slab s's free list decommitted. Each is unlinked (a free block's
+// link lives in the block itself, which is about to go) and marked in the bitmap, 'decommitted' counts
+// it, and its bytes leave 'held' and osBytes(). Adjacent decommitted blocks go in one call. THE LOCK IS
+// HELD ACROSS THE CALLS, on purpose: were it dropped between marking a block and decommitting it, a take
+// could bring the marked block back (recommit) and hand it out, and the late decommit would then take its
+// memory from under its new holder. The path is the bound's only, so a system call under the lock costs
+// nothing that matters. Answers the bytes given back
+fn decommitSlab(g: *Globals, cs: *ClassState, s: *SlabRec) usize {
+  let bs = (*cs).blockSize;
+  let base = (*s).base;
+  var n = 0usize;
+  var b = (*s).freeHead;
+  while b as usize != 0usize {
+    let next = linkNext(b);
+    let i = ((b as usize) - (base as usize)) / bs;
+    bitSet(s, i);
+    freshSet(s, i);
+    n = n + 1usize;
+    b = next;
+  }
+  (*s).freeHead = null;
+  (*cs).idleBlocks = (*cs).idleBlocks - n;
+  (*s).decommitted = (*s).decommitted + u32.from(n);
+  let carved = usize.from((*s).carved);
+  var i = 0usize;
+  while i < carved {
+    if bitTest(s, i) {
+      var j = i;
+      var any = false;
+      while j < carved && bitTest(s, j) {
+        if freshTest(s, j) {any = true; freshClear(s, j);}
+        j = j + 1usize;
+      }
+      if any {
+        runDecommitHook(g);     // test-only park point: the run is marked, not yet decommitted, the lock held
+        osDecommit(base + i * bs, (j - i) * bs);
+      }
+      i = j;
+    } else {
+      i = i + 1usize;
+    }
+  }
+  (*g).held.sub(u64.from(n * bs));
+  n * bs
 }
 
 // The bytes held, both banks together, that the try bank grows to: maxBytes less
@@ -930,19 +1530,23 @@ fn limitOf(g: *Globals, cs: *ClassState) u64 {
 
 // A new slab for class cs, got from the OS and listed; false when the bound or
 // the OS refuses it
-fn newSlab(g: *Globals, cs: *ClassState) bool {
-  if !reserveRoom(g, slabBytes, limitOf(g, cs)) {
+fn newSlab(g: *Globals, cs: *ClassState, fire: bool) bool {
+  // Only what the first take can carve is counted and committed: one commit chunk (a block larger than
+  // a chunk is its own first chunk); carving commits and counts the rest as it goes
+  let first = chunkCeil((*cs).blockSize);
+  if !reserveRoom(g, first, limitOf(g, cs), fire) {
     return false;
   }
   var base = null as *u8;
   var osBase = null as *u8;
-  base, osBase = osAllocSlab();
+  base, osBase = osAllocSlab(first);
   if base as usize == 0usize {
-    (*g).held.sub(u64.from(slabBytes));
+    (*g).held.sub(u64.from(first));
     return false;
   }
   (*g).osAllocs.add(1u64);
   let s = (base - page) as *SlabRec;     // its header, committed and zeroed by the OS
+  (*s).commitEnd = u32.from(first);
   (*s).base = base;
   (*s).osBase = osBase;
   (*s).cls = (*cs).index;
@@ -959,7 +1563,7 @@ fn newSlab(g: *Globals, cs: *ClassState) bool {
 }
 
 // Every wholly idle slab of every class back to the OS
-fn trimStockOf(g: *Globals) {
+fn trimStockOf(g: *Globals, fire: bool) {
   var c = 0usize;
   let n = (*g).nClasses;
   while c < n {
@@ -967,7 +1571,7 @@ fn trimStockOf(g: *Globals) {
     (*cs).lock.lock();
     let doomed = reclaim(g, cs, 0u64);
     (*cs).lock.unlock();
-    freeSlabs(g, doomed);
+    freeSlabs(g, doomed, fire);
     c = c + 1usize;
   }
 }
@@ -975,8 +1579,8 @@ fn trimStockOf(g: *Globals) {
 // This thread's cache back to the stock, and every wholly idle slab to the OS
 pub fn trimStock() {
   let tc = myCache;
-  if tc as usize != 0usize {flushCache(tc);}
-  trimStockOf(glob());
+  if tc as usize != 0usize {flushCache(tc, true);}
+  trimStockOf(glob(), true);
 }
 
 // Every thread's cache back to the stock, and every wholly idle slab to the
@@ -1001,14 +1605,15 @@ pub fn trimEverything() {
   }
   flushRegistry(g);
   (*g).regLock.unlock();
-  trimStockOf(g);
+  roomAnnounce(g);
+  trimStockOf(g, true);
 }
 
 // Every record on the registry flushed, with the registry's lock held
 fn flushRegistry(g: *Globals) {
   var tc = (*g).regHead;
   while tc as usize != 0usize {
-    flushCache(tc);
+    flushCache(tc, false);
     tc = (*tc).nextReg;
   }
 }
@@ -1025,12 +1630,12 @@ fn trimAllCachesFinal() {
   var tc = (*g).regHead;
   while tc as usize != 0usize {
     if tc == me || (*tc).live == 0u32 {
-      flushCache(tc);
+      flushCache(tc, false);
     }
     tc = (*tc).nextReg;
   }
   (*g).regLock.unlock();
-  trimStockOf(g);
+  trimStockOf(g, true);
 }
 
 // Oversize blocks, which are not pooled: a block of size bytes of its own,
@@ -1042,7 +1647,7 @@ fn holdOversize(size: usize) *u8 {
 
 // The same, counted against 'limit' bytes held
 fn holdOversizeWithin(g: *Globals, size: usize, limit: u64) *u8 {
-  if !reserveRoom(g, size, limit) {
+  if !reserveRoom(g, size, limit, true) {
     return null;
   }
   let b = osAlloc(size);
@@ -1064,6 +1669,7 @@ fn releaseOversize(b: *u8, size: usize) {
   (*g).osFrees.add(1u64);
   (*g).bigLent.sub(1u64);
   (*g).bigBytes.sub(u64.from(size));
+  roomEvent(g);
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,11 +1679,11 @@ fn releaseOversize(b: *u8, size: usize) {
 pub struct BlockStats {
   pub maxBytes: usize;
   pub keepBytes: usize;
-  pub heldBytes: usize;     // slabs and oversize blocks, from the OS
+  pub heldBytes: usize;     // the committed bytes of slabs, and oversize blocks, from the OS
   pub lentBytes: usize;     // blocks out of the cache and stock, and oversize blocks
   pub cachedBytes: usize;   // idle in threads' caches
-  pub idleBytes: usize;     // held and not lent: cached, idle in the stock, and not yet carved
-  pub stockBytes: usize;    // idle in the stock, carved and returned
+  pub idleBytes: usize;     // held and not lent: cached, idle in the stock, and carved into a commit chunk but not yet taken
+  pub stockBytes: usize;    // idle in the stock, carved and returned: committed (a decommitted block is not counted)
   pub lent: u64;            // blocks lent now (oversize too)
   pub takes: u64;           // blocks ever lent
   pub reuses: u64;          // takes served by the thread's own cache
