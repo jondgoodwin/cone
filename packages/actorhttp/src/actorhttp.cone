@@ -501,17 +501,17 @@ mod actorhttp;
 
 import pools use GenPool, Handle;
 import collections use List, Deque, String, Dict, AnyError, PriorityQueue;
-import iobuf use IoBuf, IoHome, Chain;
-import sync use Arc, Mutex;
+import iobuf use IoBuf, IoHome, Chain, page, stats;
+import sync use Arc, Mutex, Oneshot, OneshotSender, OneshotReceiver;
 import time use Instant, Duration;
-import iocore use Loop, Op, Completion, SocketAddr, CancelGroup, IoError, forever;
+import iocore use Loop, Op, Completion, SocketAddr, CancelGroup, IoError, forever, DatagramBatch;
 import ioerror use IoErrorKind;
 import http use *;
 import httpconn;
 import httpclient;
 import tls;
 import sse;
-import aio use IoLimits;
+import aio use IoLimits, UdpSocket, UdpSender;
 import actors;
 import stages use ChunkSink, ChunkSource, Ending, chunkHome, ReaderSink, readSink, linkWindow, ValueSink, ValueSource, ValueReader, readValue;
 import streams;
@@ -519,6 +519,8 @@ let liveConns: Atomic[u64];      // routedserver.cone: ConnActors alive
 let liveServers: Atomic[u64];    // ...and ServerActors
 let liveClients: Atomic[u64];    // clientactor.cone: ClientActors alive
 let liveClientConns: Atomic[u64];    // ...and ClientConnActors
+let liveH3Conns: Atomic[u64];        // h3endpoint.cone: H3ConnActors alive
+let liveH3Endpoints: Atomic[u64];    // ...and H3Endpoints
 let clientReg: Arc[Mutex, ClientRegistry];    // the client actors not yet closed (clientactor.cone), for the program's end
 
 fn @initpure init() {
@@ -528,6 +530,8 @@ fn @initpure init() {
   liveServers = Atomic[u64].of(0u64);
   liveClients = Atomic[u64].of(0u64);
   liveClientConns = Atomic[u64].of(0u64);
+  liveH3Conns = Atomic[u64].of(0u64);
+  liveH3Endpoints = Atomic[u64].of(0u64);
   clientReg = Arc[Mutex, ClientRegistry](ClientRegistry(List[ClientActor](), List[u64]()));
   svcHost = aio.host[Service](&makeService);
 }

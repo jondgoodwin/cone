@@ -1,0 +1,539 @@
+// The HTTP/3 endpoint actor and its server connections' transport half (actorhttp's h3endpoint.cone; stage 5, row
+// Q3), against a real client Driver over real UDP on 127.0.0.1, and raw UDP sockets for what no honest client sends.
+// The endpoint's acceptor is this package's plug-in's (Plugin.acceptor), its TLS the tls package's test certificates.
+// Checked, each by what the endpoint says of itself (stats, connections, the table's size):
+//   1. a client connects, its request is answered 503 (the handler half is not built) and its stream reset, the
+//      handshaking place is given back when the handshake is done, the table holds the client's first ID and the
+//      server's issued ones, and when the connection ends its keys leave and its actor is freed
+//   2. THE RACE: each registration of a connection's issued IDs is delayed 300 ms at the endpoint, which takes
+//      datagrams meanwhile; the connection awaits the registration before it sends, so no datagram reaches the
+//      endpoint with an ID it has not registered (stats.unknownId stays 0) and the handshake still completes.
+//      The mutant drops the await: the client's answer to the server's first flight names the server's new ID,
+//      which arrives before the registration, and is dropped
+//   3. A HANDSHAKE THAT FAILS gives back its handshaking place: with room for two, five clients that refuse the
+//      server's certificate come one after the other, each ending with the place freed, and a sixth that trusts it
+//      is let in. The mutant drops the release (the places stay held and the later clients are refused)
+//   4. the table is bounded: a connection told over and over of IDs (what a client that retires and asks again
+//      makes it do) holds at most its client's first ID and maxIssuedIds more, a key another connection holds is
+//      never replaced, and the keys leave with the connection
+//   5. an Initial naming another connection's ID (its Destination ID rewritten to that of a connection that is
+//      up) goes to that connection, which drops it: nothing is admitted, nothing replaced, and the connection
+//      still serves
+//   6. datagrams of IDs no connection has (a first-flight junk, short packets, a non-Initial long header) make no
+//      connection and are counted
+//   7. the server's HTTP/3 count: after the endpoint shuts down, every connection actor and then the endpoint are freed
+
+mod h3endpoint;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import iocore use Loop, Completion, SocketAddr;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver, Arc;
+import http use *;
+import tls;
+import actors;
+import thread;
+import aio;
+import httpclient use H3Cid, H3Connector, H3Acceptor;
+import actorhttp use H3Endpoint, H3EndpointConfig, H3EndpointStats, H3BoundEndpoint, startH3Endpoint, liveH3ConnActors, liveH3EndpointActors;
+import h3driver use *;
+import testing use *;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String()
+}
+
+// ---------------------------------------------------------------------------
+// The endpoint under test, and what it says
+// ---------------------------------------------------------------------------
+
+struct Snap {
+  stats: H3EndpointStats;
+  conns: u32;
+  hs: u32;
+  table: u64;
+}
+
+actor Prober {
+  pub async fn ask(self, e: H3Endpoint, out: Sender[Snap]) {
+    let s = await e.stats();
+    let c = await e.connections();
+    let h = await e.handshakingNow();
+    let t = await e.tableSize();
+    out.send(Snap(s, c, h, t));
+  }
+
+  pub async fn tell(self, e: H3Endpoint, conn: u64, keys: List[H3Cid], out: Sender[bool]) {
+    let ok = await e.ids(conn, keys);
+    out.send(ok);
+  }
+}
+
+fn snap(e: &H3Endpoint) Snap {
+  var tx: Sender[Snap];
+  var rx: Receiver[Snap];
+  tx, rx = Channel[Snap].make();
+  Prober().ask(*e, tx);
+  match rx.recvTimeout(Duration.fromMillis(4000i64)) {
+    case let Some(s) {return s;}
+    case is None[Snap] {}
+  }
+  panic("the endpoint did not answer")
+}
+
+fn tellIds(e: &H3Endpoint, conn: u64, keys: List[H3Cid]) {
+  var tx: Sender[bool];
+  var rx: Receiver[bool];
+  tx, rx = Channel[bool].make();
+  Prober().tell(*e, conn, keys, tx);
+  let r = rx.recvTimeout(Duration.fromMillis(4000i64));
+}
+
+fn waitConns(e: &H3Endpoint, want: u32, limitMs: i64) Snap {
+  let until = Instant.now() + Duration.fromMillis(limitMs);
+  var s = snap(e);
+  while s.conns != want && Instant.now() < until {
+    aioNap(20i64);
+    s = snap(e);
+  }
+  s
+}
+
+fn aioNap(ms: i64) {
+  let t = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < t {thread.sleep(Duration.fromMillis(1i64));}
+}
+
+fn serverPlugin(hsMs: i64) Plugin {
+  var cfg = Config.make();
+  if hsMs > 0i64 {cfg.transport.handshakeTimeout = Duration.fromMillis(hsMs);}
+  Plugin.make(cfg)
+}
+
+fn startEndpoint(cfg: H3EndpointConfig, hsMs: i64) H3BoundEndpoint {
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  let scfg = tls.ServerConfig.make(&cert, &key);
+  let plug = serverPlugin(hsMs);
+  let acc = match plug.acceptor(&scfg) {
+    case var Ok(a) {a}
+    case let Err(f) {panic("no acceptor")}
+  };
+  match startH3Endpoint(SocketAddr.localhost(0u16), acc, cfg) {
+    case var Ok(b) {return b;}
+    case let Err(e) {}
+  }
+  panic("the endpoint could not bind")
+}
+
+// ---------------------------------------------------------------------------
+// A real client: a client Driver on this thread's Loop
+// ---------------------------------------------------------------------------
+
+struct Client {
+  drv: Driver;
+  lp: Loop;
+  conn: ConnId;
+  connected: bool;
+  asked: bool;
+  status: u16;
+  reset: bool;
+  closed: bool;
+  failed: bool;
+}
+
+fn makeClient(trusting: bool) Client {
+  var cfg = Config.make();
+  if trusting {
+    cfg.transport.verify = tls.Verifier.roots(readText("ca.pem").view());
+  } else {
+    cfg.transport.verify = tls.Verifier.pinnedSha256("0000000000000000000000000000000000000000000000000000000000000000");
+  }
+  Client(Driver.make(cfg), Loop.mustMake(), ConnId.none(), false, false, 0u16, false, false, false)
+}
+
+fn dialClient(c: &mut Client, port: u16) {
+  match c.drv.connect(&mut c.lp, SocketAddr.localhost(port), "localhost", 1u64) {
+    case let Ok(id) {c.conn = id;}
+    case let Err(f) {panic("the client could not begin a connection");}
+  }
+}
+
+// Turn the client until 'done' says so (1: connected, 2: answered, 3: ended) or ms pass
+fn runClient(c: &mut Client, mode: u32, ms: i64) {
+  let until = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < until {
+    var cev = List[Event]();
+    c.drv.pump(&mut c.lp, &mut cev);
+    var k = 0usize;
+    while k < cev.len() {
+      let kind = cev[k].kind;
+      if kind == EventKind.Connected {c.connected = true;}
+      if kind == EventKind.Response {c.status = cev[k].response.status;}
+      if kind == EventKind.Failed {c.reset = true;}
+      if kind == EventKind.Closed {c.closed = true; if !cev[k].clean {c.failed = true;}}
+      k = k + 1usize;
+    }
+    if c.connected && !c.asked {
+      c.asked = true;
+      c.drv.request(&mut c.lp, c.conn, RequestHead.get("/", "localhost"), BodyLength(), 7u64);
+    }
+    if mode == 1u32 && c.connected {return;}
+    if mode == 2u32 && (c.status != 0u16 || c.reset) {return;}
+    if mode == 3u32 && c.closed {return;}
+    var limit = until;
+    let a = c.drv.wakeAt();
+    if a < limit {limit = a;}
+    var comps = List[Completion]();
+    c.lp.poll(limit, &mut comps);
+    k = 0usize;
+    while k < comps.len() {
+      let taken = c.drv.complete(&mut c.lp, &mut comps[k]);
+      k = k + 1usize;
+    }
+  }
+}
+
+fn closeClient(c: &mut Client) {
+  // a graceful close, so the server's connection ends now and not at its idle timeout
+  if c.connected && !c.closed {
+    c.drv.close(&mut c.lp, c.conn);
+    runClient(c, 3u32, 3000i64);
+  }
+  c.drv.abortAll(&mut c.lp);
+  runClient(c, 0u32, 100i64);
+}
+
+// ---------------------------------------------------------------------------
+// A raw UDP source: a socket bound to 127.0.0.1, and a client value's first datagram sent from it
+// ---------------------------------------------------------------------------
+
+actor Raw {
+  sock: aio.UdpSocket;
+  bound: SocketAddr;
+
+  fn init(self: &new) {*self = Self(sock: aio.UdpSocket.none(), bound: SocketAddr.localhost(0u16));}
+
+  pub async fn open(self, var up: OneshotSender[u16]) {
+    let made = await aio.bindUdp(SocketAddr.localhost(0u16));
+    match made {
+      case let Ok(s) {sock = s;}
+      case let Err(e) {up.send(0u16); return;}
+    }
+    match await sock.localAddr() {
+      case let Ok(a) {bound = a;}
+      case let Err(e) {}
+    }
+    up.send(bound.port());
+  }
+
+  pub async fn send(self, to: SocketAddr, data: IoBuf, var done: OneshotSender[bool]) {
+    let r = await sock.sendTo(to, data);
+    done.send(true);
+  }
+}
+
+fn newRaw() Raw {
+  let r = Raw();
+  var tx: OneshotSender[u16];
+  var rx: OneshotReceiver[u16];
+  tx, rx = Oneshot[u16].make();
+  r.open(tx);
+  require((rx.recv() || 0u16) != 0u16, "the raw socket bound");
+  r
+}
+
+fn rawSend(r: &Raw, to: SocketAddr, data: IoBuf) {
+  var tx: OneshotSender[bool];
+  var rx: OneshotReceiver[bool];
+  tx, rx = Oneshot[bool].make();
+  r.send(to, data, tx);
+  let ok = rx.recv();
+}
+
+fn copyOf(bytes: &Array[u8]) IoBuf {
+  var b = IoBuf(bytes.len);
+  b.append(bytes);
+  b
+}
+
+// A client value's first datagram (an Initial) as bytes
+fn firstInitial(con: &Uni[H3Connector], tag: u32) List[u8] {
+  var out = List[u8]();
+  var client = match con.connect("localhost", SocketAddr.localhost(u16.from(41000u32 + tag)), SocketAddr.localhost(4433u16), Instant.now()) {
+    case var Ok(c) {c}
+    case let Err(f) {panic("no client value")}
+  };
+  match client.takeDatagram(Instant.now()) {
+    case var Some(b) {
+      var i = 0usize;
+      while i < b.len() {out.push(b.view()[i]); i = i + 1usize;}
+    }
+    case is None[IoBuf] {panic("no first datagram");}
+  }
+  out
+}
+
+fn keyOf(seed: u32) H3Cid {
+  var bytes = List[u8]();
+  var i = 0u32;
+  while i < 8u32 {
+    bytes.push(u8.from((seed >> (8u32 * (i % 4u32))) & 255u32) ^ u8.from(i * 31u32));
+    i = i + 1u32;
+  }
+  bytes.push(0xEEu8);
+  match H3Cid.of(bytes.view(), 0usize, 9usize) {
+    case let Some(k) {return k;}
+    case is None[H3Cid] {}
+  }
+  panic("no key")
+}
+
+fn main() i32 {
+  var ccfg = tls.ClientConfig.make();
+  ccfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+
+  // 1. One client: answered 503, the places, the table, the end
+  {
+    var cfg = H3EndpointConfig.make();
+    let ep = startEndpoint(cfg, 0i64);
+    var c = makeClient(true);
+    dialClient(&mut c, ep.port);
+    runClient(&mut c, 1u32, 8000i64);
+    expect(c.connected, "1: the client's handshake completed through the endpoint");
+    runClient(&mut c, 2u32, 8000i64);
+    expectUInt(u64.from(c.status), 503u64, "1: its request is answered 503 (the handler half is not built)");
+    let s = snap(&ep.endpoint);
+    expectUInt(s.stats.admitted, 1u64, "1: one Initial admitted");
+    expectUInt(u64.from(s.conns), 1u64, "1: one connection held");
+    expectUInt(u64.from(s.hs), 0u64, "1: its handshaking place is given back once the handshake is done");
+    expect(s.table >= 2u64, "1: the table holds the client's first ID and the server's issued one(s)");
+    expect(s.table <= 17u64, "1: and no more than the first ID and maxIssuedIds");
+    expectUInt(s.stats.unknownId, 0u64, "1: no datagram carried an ID the endpoint did not know");
+    expect(liveH3ConnActors() == 1u64, "1: one connection actor alive");
+    c.drv.close(&mut c.lp, c.conn);
+    runClient(&mut c, 3u32, 8000i64);
+    let after = waitConns(&ep.endpoint, 0u32, 8000i64);
+    expectUInt(u64.from(after.conns), 0u64, "1: the connection ended: it is out of the endpoint");
+    expectUInt(after.table, 0u64, "1: its keys left the table");
+    closeClient(&mut c);
+    ep.endpoint.shutdown();
+  }
+
+  // 2. The race: registrations delayed 300 ms at the endpoint, and nothing reaches it with an unregistered ID
+  {
+    let ep = startEndpoint(H3EndpointConfig.make(), 0i64);
+    ep.endpoint.delayIds(300i64);
+    var c = makeClient(true);
+    dialClient(&mut c, ep.port);
+    runClient(&mut c, 1u32, 8000i64);
+    expect(c.connected, "2: the handshake completes with the registrations delayed");
+    let s = snap(&ep.endpoint);
+    expectUInt(s.stats.unknownId, 0u64, "2: no datagram arrived with an ID the endpoint had not registered");
+    closeClient(&mut c);
+    ep.endpoint.shutdown();
+  }
+
+  // 3. Handshakes that fail give their places back
+  {
+    var cfg = H3EndpointConfig.make();
+    cfg.maxHandshaking = 2usize;
+    let ep = startEndpoint(cfg, 0i64);
+    var n = 0u32;
+    while n < 5u32 {
+      var c = makeClient(false);
+      dialClient(&mut c, ep.port);
+      runClient(&mut c, 3u32, 6000i64);
+      expect(c.closed, "3: a client that refuses the certificate ends");
+      let s = waitConns(&ep.endpoint, 0u32, 4000i64);
+      expectUInt(u64.from(s.hs), 0u64, "3: the failed handshake's place is back");
+      closeClient(&mut c);
+      n = n + 1u32;
+    }
+    var good = makeClient(true);
+    dialClient(&mut good, ep.port);
+    runClient(&mut good, 1u32, 8000i64);
+    expect(good.connected, "3: a client that trusts the certificate is let in after five failures");
+    let s = snap(&ep.endpoint);
+    expectUInt(s.stats.refusedHandshaking, 0u64, "3: no Initial was refused for want of a place");
+    expectUInt(s.stats.admitted, 6u64, "3: six admitted");
+    closeClient(&mut good);
+    ep.endpoint.shutdown();
+  }
+
+  // 4. The table is bounded, nothing of another connection's is replaced, the keys leave with the connection
+  {
+    var cfg4 = H3EndpointConfig.make();
+    cfg4.shutdownTimeout = Duration.fromMillis(300i64);
+    let ep = startEndpoint(cfg4, 0i64);
+    var a = makeClient(true);
+    dialClient(&mut a, ep.port);
+    runClient(&mut a, 1u32, 8000i64);
+    var b = makeClient(true);
+    dialClient(&mut b, ep.port);
+    runClient(&mut b, 1u32, 8000i64);
+    let base = snap(&ep.endpoint);
+    expectUInt(u64.from(base.conns), 2u64, "4: two connections up");
+    // connection 1 is told, a hundred times, of fresh IDs (a client that retires and asks for more in a loop)
+    var round = 0u32;
+    while round < 100u32 {
+      var keys = List[H3Cid]();
+      var j = 0u32;
+      while j < 40u32 {keys.push(keyOf(1000u32 * round + j)); j = j + 1u32;}
+      tellIds(&ep.endpoint, 1u64, keys);
+      round = round + 1u32;
+    }
+    let s = snap(&ep.endpoint);
+    expect(s.table >= 18u64 && s.table <= 18u64 + 16u64, "4: after 100 rounds of 40 new IDs connection 1 holds its first ID and 16 more (17), connection 2 its own: the table is bounded");
+    expect(s.stats.idsCapped > 0u64, "4: the surplus is counted (idsCapped)");
+    // connection 2 is told of a key connection 1 holds: refused, not replaced
+    var dup = List[H3Cid]();
+    dup.push(keyOf(1000u32 * 99u32 + 0u32));
+    let refusedBefore = s.stats.idRefused;
+    tellIds(&ep.endpoint, 2u64, dup);
+    let s2 = snap(&ep.endpoint);
+    expectUInt(s2.stats.idRefused, refusedBefore + 1u64, "4: a key the table holds is not registered again for another connection");
+    // (connection 2 is told of this key alone, so the IDs it had issued leave the table, and the key stays connection 1's)
+    tellIds(&ep.endpoint, 2u64, List[H3Cid]());
+    let s2b = snap(&ep.endpoint);
+    expectUInt(s2b.table, 18u64, "4: nothing was replaced: connection 1's 17 keys and connection 2's first ID are all the table holds");
+    // told of none: the issued keys it held leave
+    tellIds(&ep.endpoint, 1u64, List[H3Cid]());
+    let s3 = snap(&ep.endpoint);
+    expectUInt(s3.table, 2u64, "4: IDs a connection no longer answers to leave the table (the two first IDs stay)");
+    // an ID of a connection that is not there
+    var strays = List[H3Cid]();
+    strays.push(keyOf(5u32));
+    tellIds(&ep.endpoint, 999u64, strays);
+    expectUInt(snap(&ep.endpoint).table, s3.table, "4: a registration for no connection adds nothing");
+    // (the connections' own IDs were replaced above, so their closes are not routed: the endpoint's shutdown cuts them)
+    closeClient(&mut a);
+    closeClient(&mut b);
+    ep.endpoint.shutdown();
+    let gone = waitConns(&ep.endpoint, 0u32, 8000i64);
+    expectUInt(gone.table, 0u64, "4: the keys left with the connections");
+  }
+
+  // 5. An Initial naming another connection's ID goes to it and is dropped
+  {
+    let ep = startEndpoint(H3EndpointConfig.make(), 0i64);
+    var plug = Plugin.forClient(&ccfg);
+    let con = match plug.connector() {
+      case var Ok(k) {k}
+      case let Err(f) {panic("no connector")}
+    };
+    var a = makeClient(true);
+    dialClient(&mut a, ep.port);
+    runClient(&mut a, 2u32, 8000i64);
+    let base = snap(&ep.endpoint);
+    // A second Initial, its Destination ID overwritten with the first connection's issued one: the first
+    // key of the first connection is the client's own choice, which this test does not know, so take it from
+    // the datagram a client value makes, and aim the rewritten datagram at it by the first connection's table
+    // entry (any key the table holds routes the same way): here, a key the table holds is the one for connection 1
+    // that a connection told of keys has, so register one and use it
+    var keys = List[H3Cid]();
+    let target = keyOf(77u32);
+    keys.push(target);
+    tellIds(&ep.endpoint, 1u64, keys);
+    let before = snap(&ep.endpoint);
+    var d = firstInitial(&con, 5u32);
+    // long header: flags, version (4), DCID length, DCID. keyOf is 9 bytes: rewrite the length and its bytes
+    var rewritten = List[u8]();
+    var i = 0usize;
+    while i < 5usize {rewritten.push(d[i]); i = i + 1usize;}
+    let oldLen = usize.from(d[5usize]);
+    rewritten.push(9u8);
+    var kb = List[u8]();
+    var q = 0u32;
+    while q < 8u32 {kb.push(u8.from((77u32 >> (8u32 * (q % 4u32))) & 255u32) ^ u8.from(q * 31u32)); q = q + 1u32;}
+    kb.push(0xEEu8);
+    i = 0usize;
+    while i < kb.len() {rewritten.push(kb[i]); i = i + 1usize;}
+    i = 6usize + oldLen;
+    while i < d.len() {rewritten.push(d[i]); i = i + 1usize;}
+    let raw = newRaw();
+    var round = 0u32;
+    while round < 20u32 {
+      rawSend(&raw, SocketAddr.localhost(ep.port), copyOf(rewritten.view()));
+      round = round + 1u32;
+    }
+    aioNap(300i64);
+    let s = snap(&ep.endpoint);
+    expectUInt(s.stats.admitted, base.stats.admitted, "5: no connection was admitted by an Initial naming a connection's ID");
+    expectUInt(u64.from(s.conns), 1u64, "5: still the one connection");
+    expectUInt(s.table, before.table, "5: nothing of the table was replaced or added");
+    expectUInt(s.stats.unknownId, before.stats.unknownId, "5: the datagrams were not counted unknown: they went to the connection the ID names");
+    a.asked = false;
+    a.status = 0u16;
+    runClient(&mut a, 2u32, 100i64);
+    closeClient(&mut a);
+    ep.endpoint.shutdown();
+  }
+
+  // 6. Datagrams of IDs no connection has
+  {
+    let ep = startEndpoint(H3EndpointConfig.make(), 0i64);
+    let raw = newRaw();
+    var n = 0u32;
+    while n < 300u32 {
+      var junk = List[u8]();
+      let len = 1u32 + (n * 7u32) % 1200u32;
+      var j = 0u32;
+      while j < len {junk.push(u8.from((n * 31u32 + j * 17u32) & 255u32)); j = j + 1u32;}
+      // every third a short header (first bit clear), every third a long header that is not an Initial (a Handshake: 0xE0)
+      if n % 3u32 == 0u32 {junk[0usize] = 0x40u8;}
+      else if n % 3u32 == 1u32 {junk[0usize] = 0xE0u8;}
+      rawSend(&raw, SocketAddr.localhost(ep.port), copyOf(junk.view()));
+      n = n + 1u32;
+    }
+    aioNap(500i64);
+    let s = snap(&ep.endpoint);
+    expectUInt(s.stats.admitted, 0u64, "6: no connection from junk");
+    expectUInt(u64.from(s.conns), 0u64, "6: none held");
+    expectUInt(s.table, 0u64, "6: the table is empty");
+    expect(s.stats.unknownId > 250u64, "6: the junk is counted as unknown IDs");
+    ep.endpoint.shutdown();
+  }
+
+  // 7. Shutdown frees the actors
+  {
+    let ep = startEndpoint(H3EndpointConfig.make(), 0i64);
+    var c = makeClient(true);
+    dialClient(&mut c, ep.port);
+    runClient(&mut c, 1u32, 8000i64);
+    expect(liveH3ConnActors() >= 1u64, "7: a connection actor is alive");
+    ep.endpoint.shutdown();
+    var waited = 0u32;
+    while liveH3ConnActors() > 0u64 && waited < 400u32 {
+      runClient(&mut c, 0u32, 20i64);
+      waited = waited + 1u32;
+    }
+    expectUInt(liveH3ConnActors(), 0u64, "7: every connection actor is freed after the endpoint's shutdown");
+    closeClient(&mut c);
+  }
+  var waitedEp = 0u32;
+  while liveH3EndpointActors() > 0u64 && waitedEp < 500u32 {
+    aioNap(10i64);
+    waitedEp = waitedEp + 1u32;
+  }
+  expectUInt(liveH3EndpointActors(), 0u64, "7: every endpoint actor is freed once the program lets go of it");
+  0i32
+}
