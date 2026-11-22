@@ -1,0 +1,308 @@
+// A read with no buffer whose buffer the pool refuses waits for room instead of failing (row 587; aio's
+// header, ROOM). The pool is held at its bound by the test (IoBuf.tryMake until refused), the peer
+// then sends, and the read, on a socket of the worker port, and again on the Loop's (the child process
+// is started with CONE_AIO_NO_WORKER_PORT, which keeps the runtime's port from the Loop), each case in a
+// process of its own:
+//
+//   - does not answer (the bytes stay in the socket), however long it waits;
+//   - holds its peer by flow control: the peer's bulk writes stop short of the whole;
+//   - completes with the bytes once room is given back (the pool's room wake, bufpool.addRoomWake);
+//   - ends Cancelled when its group is cancelled, TimedOut at its deadline, Cancelled by a cancelRead of
+//     its socket and by the socket's close (dropped), each while it waits for room.
+//
+// Mutants (made by hand, not kept): the wake never registered (case 0 times out, its read never
+// completing); the read ended Failed as before (case 0 gets an error at once, not the bytes).
+
+mod roomread;
+
+import testing use *;
+import stdio use printStr, printUInt;
+import thread;
+import process;
+import collections use List, String;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError, CancelGroup;
+import actors;
+import aio use Socket, IoLimits;
+import bufpool;
+
+const bulkWrites = 512u64;       // 64 KiB each
+
+let written: Atomic[u64];        // bulk writes the peer has had answered
+let gotLen: Atomic[u64];         // the bytes the read answered with
+let gotFirst: Atomic[u64];       // ...and the first of them
+let answeredFlag: Atomic[u64];   // 1: the read has been answered
+
+fn @initpure init() {
+  written = Atomic[u64].of(0u64);
+  gotLen = Atomic[u64].of(0u64);
+  gotFirst = Atomic[u64].of(0u64);
+  answeredFlag = Atomic[u64].of(0u64);
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {
+      printStr("socketOf failed: code ");
+      printUInt(u64.from(e.code));
+      printStr("\n");
+      panic("socketOf: the operation failed");
+    }
+  }
+  s
+}
+
+// The read's answer as a number: 10 bytes, 15 an empty buffer, 2 Cancelled, 3 TimedOut, 4 another error
+fn codeOf(r: Result[IoBuf, IoError]) u64 {
+  match r {
+    case let Ok(b) {
+      if b.len() == 0usize {return 15u64;}
+      gotLen.store(u64.from(b.len()));
+      gotFirst.store(u64.from(b.view()[0usize]));
+      10u64
+    }
+    case let Err(e) {
+      if e.isCancelled() {2u64} else if e.isTimedOut() {3u64} else {4u64}
+    }
+  }
+}
+
+// The peer: waits for the gate (the pool is held by then), sends 11 bytes, then up to 32 MiB in 64 KiB writes,
+// which TCP stops while nothing reads
+actor Writer {
+  pub async fn go(self, s: Socket, gate: OneshotReceiver[u64], done: OneshotSender[u64]) {
+    var g = gate;
+    let opened = g.recvTimeout(Duration.fromMillis(30000i64));
+    var hello = IoBuf(64usize);
+    hello.append("hello, room");
+    let w0 = await s.write(hello);
+    var k = 0u64;
+    var going = true;
+    while going && k < bulkWrites {
+      var b = IoBuf(65536usize);
+      b.setLen(65536usize);
+      let w = await s.write(b);
+      match w {
+        case let Ok(x) {written.add(1u64);}
+        case let Err(e) {going = false;}
+      }
+      k = k + 1u64;
+    }
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+// The other side of the cancel and close cases: after a while it cancels the socket's reads until the read is
+// answered, or drops the socket (a close)
+actor Other {
+  pub async fn cancelAfter(self, s: Socket) {
+    let z = await aio.sleep(Duration.fromMillis(700i64));
+    while answeredFlag.load() == 0u64 {
+      s.cancelRead();
+      let y = await aio.sleep(Duration.fromMillis(20i64));
+    }
+  }
+
+  pub async fn dropAfter(self, s: Socket) {
+    let z = await aio.sleep(Duration.fromMillis(700i64));
+  }
+}
+
+actor Reader {
+  // The read, awaited here, its socket kept here until it answers
+  pub async fn go(self, s: Socket, lim: IoLimits, done: OneshotSender[u64]) {
+    let r = await s.readIn(lim);
+    answeredFlag.store(1u64);
+    var d = done;
+    d.send(codeOf(r));
+  }
+
+  // The read started here, its socket handed to the other actor
+  pub async fn goOther(self, s: Socket, mode: u64, other: Other, done: OneshotSender[u64]) {
+    let reading = s.readIn(IoLimits.none());
+    if mode == 3u64 {other.cancelAfter(s);} else {other.dropAfter(s);}
+    let r = await reading;
+    answeredFlag.store(1u64);
+    var d = done;
+    d.send(codeOf(r));
+  }
+}
+
+actor Setup {
+  pub async fn go(self, mode: u64, group: CancelGroup, other: Other, gate: OneshotReceiver[u64],
+      ready: OneshotSender[u64], result: OneshotSender[u64], wdone: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
+    match a {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let ac = await ls.accept();
+    let w = Writer();
+    w.go(socketOf(c), gate, wdone);
+    let r = Reader();
+    if mode == 0u64 {
+      r.go(socketOf(ac), IoLimits.none(), result);
+    } else if mode == 1u64 {
+      r.go(socketOf(ac), IoLimits.within(group), result);
+    } else if mode == 2u64 {
+      r.go(socketOf(ac), IoLimits.until(Instant.now() + Duration.fromMillis(1500i64)), result);
+    } else {
+      r.goOther(socketOf(ac), mode, other, result);
+    }
+    var rd = ready;
+    rd.send(1u64);
+  }
+}
+
+// The pool filled to its bound with the smallest block, which is what a read with no buffer asks for
+fn fillPool(held: &mut List[IoBuf]) usize {
+  var n = 0usize;
+  var going = true;
+  while going {
+    match IoBuf.tryMake(4096usize) {
+      case var Some(b) {
+        b.append("x");
+        held.push(b);
+        n = n + 1usize;
+      }
+      else {going = false;}
+    }
+  }
+  n
+}
+
+fn giveRoom(held: &mut List[IoBuf]) {
+  *held = List[IoBuf]();
+  bufpool.flushThread();
+}
+
+// One case: mode 0 the read completes on room; 1 its group is cancelled; 2 its deadline; 3 cancelRead; 4 close
+fn scenario(mode: u64, wantCode: u64) {
+  written.store(0u64);
+  gotLen.store(0u64);
+  gotFirst.store(0u64);
+  answeredFlag.store(0u64);
+  let group = CancelGroup.make();
+  var gtx: OneshotSender[u64];
+  var grx: OneshotReceiver[u64];
+  gtx, grx = Oneshot[u64].make();
+  var qtx: OneshotSender[u64];
+  var qrx: OneshotReceiver[u64];
+  qtx, qrx = Oneshot[u64].make();
+  var rtx: OneshotSender[u64];
+  var rrx: OneshotReceiver[u64];
+  rtx, rrx = Oneshot[u64].make();
+  var wtx: OneshotSender[u64];
+  var wrx: OneshotReceiver[u64];
+  wtx, wrx = Oneshot[u64].make();
+  let other = Other();
+  {
+    let s = Setup();
+    s.go(mode, group, other, grx, qtx, rtx, wtx);
+  }
+  let ready = qrx.recvTimeout(Duration.fromMillis(20000i64));
+  expect(ready is Some, "the connection is made");
+  var held = List[IoBuf]();
+  let filled = fillPool(&mut held);
+  expect(filled > 1000usize, "the pool is held at its bound");
+  gtx.send(1u64);
+  // The bytes have come and the pool refuses a buffer: the read is waiting, not answered
+  let early = rrx.recvTimeout(Duration.fromMillis(500i64));
+  expect(early is None, "the read waits while the pool is full");
+  let w1 = written.load();
+  thread.sleep(Duration.fromMillis(200i64));
+  let w2 = written.load();
+  expect(w1 == w2, "the peer is held by flow control: its writes stop");
+  expect(w2 < bulkWrites, "the peer's bulk writes are not all through");
+  if mode == 1u64 {
+    group.cancel();
+  } else if mode == 0u64 {
+    giveRoom(&mut held);
+  }
+  let late = rrx.recvTimeout(Duration.fromMillis(15000i64));
+  var code = 0u64;
+  match late {
+    case let Some(v) {code = v;}
+    else {}
+  }
+  expectUInt(code, wantCode, "the read's answer");
+  if mode == 0u64 {
+    expect(gotLen.load() >= 11u64, "the read has the bytes the peer sent");
+    expectUInt(gotFirst.load(), 104u64, "the first of them is the first sent");
+  }
+  giveRoom(&mut held);
+  let wend = wrx.recvTimeout(Duration.fromMillis(20000i64));
+  expect(wend is Some, "the peer ends");
+}
+
+// One case in a process of its own (a thread's cache of blocks, kept from an earlier case, would serve a
+// take the pool refuses everyone else: the case needs a pool no thread holds a block of)
+fn child(mode: u64) i32 {
+  initAll();
+  scenario(mode, if mode == 0u64 {10u64} else if mode == 2u64 {3u64} else {2u64});
+  finalAll();
+  done()
+}
+
+fn ran(exe: &str, mode: u64, loop: bool) process.Output {
+  var o = process.Output(0u32, 0u32, false, String(), String());
+  var c = List[String]();
+  c.push(String.from(exe));
+  c.push(String.from("--child"));
+  c.push(String.from(if mode == 0u64 {"0"} else if mode == 1u64 {"1"} else if mode == 2u64 {"2"} else if mode == 3u64 {"3"} else {"4"}));
+  var vars = List[process.EnvVar]();
+  if loop {
+    vars.push(process.EnvVar(String.from("CONE_AIO_NO_WORKER_PORT"), String.from("1")));
+  }
+  match process.run(c.view(), process.Options(timeout: Duration.fromMillis(120000i64), env: Some[List[process.EnvVar]](vars))) {
+    case var Ok(ok) {o <-> ok;}
+    case let Err(e) {
+      let m = String() <- e;
+      expectStr(m.view(), "<started>", "the case's process starts");
+    }
+  }
+  o
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 3usize && a[1usize].equals("--child") {
+    return child(if a[2usize].equals("0") {0u64} else if a[2usize].equals("1") {1u64} else if a[2usize].equals("2") {2u64}
+      else if a[2usize].equals("3") {3u64} else {4u64});
+  }
+  var exe = String();
+  match process.currentExe() {
+    case let Ok(e) {exe = String.from(e.view());}
+    case is Err {require(false, "currentExe");}
+  }
+  var loop = false;
+  var round = 0u32;
+  while round < 2u32 {
+    var mode = 0u64;
+    while mode < 5u64 {
+      let o = ran(exe.view(), mode, loop);
+      if !o.success() {
+        printStr(if loop {"the Loop's sockets, case "} else {"the worker port's sockets, case "});
+        printUInt(mode);
+        printStr(":\n");
+        printStr(o.stdout.view());
+        printStr(o.stderr.view());
+      }
+      expect(o.success(), if loop {"a read waits for room on the Loop's sockets"} else {"a read waits for room on the worker port's sockets"});
+      mode = mode + 1u64;
+    }
+    loop = true;
+    round = round + 1u32;
+  }
+  done()
+}
