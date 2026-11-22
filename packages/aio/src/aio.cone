@@ -985,7 +985,11 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
 //
 // A datagram operation tries on its own worker, as ever (the shared try, under the entry's shared
 // lock). If it finds nothing to do, 'waitHere' hands it to iocore's issueWaiting (no lock held),
-// which lists it in the socket's entry, or answers it at once. It is then ended, once, by whichever
+// which lists it in the socket's entry, or answers it at once. Windows: a datagram operation the kernel
+// keeps is started in the shared try itself (issueStarted), and 'startedHere' lets go of the lock and
+// has iocore's listStarted list it, or answer it if its completion came first (shared.cone, STARTED
+// UNDER THE SHARED LOCK): one shared take for an update, one exclusive take for each that goes pending.
+// It is then ended, once, by whichever
 // comes first: the port's event or completion (portEvents, on the worker that took it: the same hook
 // the park's poller calls), a cancel of its group or the group's deadline (UdpWake, told by
 // cancelgroups, on the cancelling thread), a cancelRead or cancelWrite of its handle or a close

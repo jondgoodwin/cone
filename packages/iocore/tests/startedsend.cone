@@ -20,8 +20,10 @@
 // 4. A close in the gap (the entry unpublished: its lock cannot be taken):
 //    the abort's completion answers the record, once, Cancelled, in either
 //    order of the completion and 'listStarted'.
-// 5. A send started under the shared lock goes the same way as a receive: Done
-//    at once on loopback, never listed.
+// 5. A send started under the shared lock: Done at once on loopback, never
+//    listed; a receive started by the shared try itself is listed by 'listStarted'.
+// 8. The shared try starts a receive (no hook); its datagram's completion is
+//    taken in the gap, and 'listStarted' answers it.
 // 6. Every buffer is home at the end.
 // 7. Several records wait in one entry's list, which is circular backwards (the
 //    first record's 'hprev' is the last): ended from the middle, the end and the
@@ -121,9 +123,11 @@ fn startShared(sh: &Shared, h: Handle, p: *OpCore, forced: bool) u32 {
   got
 }
 
-// What a worker does with a send: the shared try, then, if it left it, the waiting one
+// What a worker does with a datagram operation: the shared try, then, if the kernel keeps it, its listing, or if
+// it left it, the waiting one
 fn startSend(sh: &Shared, h: Handle, p: *OpCore) u32 {
   let got = startShared(sh, h, p, false);
+  if got == issueStarted {return sh.listStarted(p);}
   if got == issueNot {return sh.issueWaiting(p);}
   got
 }
@@ -281,7 +285,7 @@ fn main() i32 {
   // 5. A send started under the shared lock
   {
     let r = recvFromOn(&pool, rx);
-    expectUInt(u64.from(startSend(&sh, rx, r)), u64.from(issuePending), "5: a receive (not started under the shared lock yet) waits as ever");
+    expectUInt(u64.from(startSend(&sh, rx, r)), u64.from(issuePending), "5: a receive that finds nothing is started under the shared lock and listed");
     let s = sendToOn(&pool, tx, rxPort, "start");
     expectUInt(u64.from(startShared(&sh, tx, s, false)), u64.from(issueDone), "5: a send is started under the shared lock, and done at once");
     expectUInt(u64.from((s as &OpCore).count()), 5u64, "5: five bytes");
@@ -344,6 +348,19 @@ fn main() i32 {
     let gd = gone(&pool, d);
     let ge = gone(&pool, e);
     let gf = gone(&pool, f);
+  }
+
+  // 8. A receive is started under the shared lock by the shared try itself (no test hook), the datagram's
+  // completion is taken in the gap, and the issuer answers it
+  {
+    let r = recvFromOn(&pool, rx);
+    expectUInt(u64.from(startShared(&sh, rx, r, false)), u64.from(issueStarted), "8: the shared try starts a receive, and the kernel keeps it");
+    sendOne(&sh, &pool, tx, rxPort, "again");
+    expect(pollPort(port, &sh, 2000u32, &mut out), "8: its completion is taken before it is listed");
+    expectUInt(u64.from(out.len()), 0u64, "8: and answers nothing");
+    expectUInt(u64.from(sh.listStarted(r)), u64.from(issueDone), "8: 'listStarted' answers it");
+    expectUInt(u64.from((r as &OpCore).count()), 5u64, "8: five bytes");
+    let g = gone(&pool, r);
   }
 
   expectUInt(stats().lent, 0u64, "6: every buffer back in the pool");

@@ -92,9 +92,10 @@
 // was listed in the entry before the lock was let go, with no gap in which its completion, taken by another
 // worker, could find it unlisted. That held the entry across every WSASendTo, 0.83-0.89 s of every second at
 // 5,000 connections, though the kernel runs concurrent sends on one socket in parallel (row 553's report,
-// sections 4 and 7). NOW a send is started under the SHARED lock, as Linux's is, and only a
-// send the kernel keeps takes the exclusive lock, to be listed. (A receive is started under the exclusive lock
-// still: it is the same mechanism, and goes the same way when it is moved.) The lock has no upgrade (an exclusive
+// sections 4 and 7). NOW a send, and a receive, is started under the SHARED lock, as Linux's is,
+// and only an operation the kernel keeps takes the exclusive lock, to be listed. (A receive goes pending
+// whenever no datagram is waiting, so the gap below is met all the time, and the ordinary suites run through
+// it; and the receives' exclusive takes no longer stall every sender.) The lock has no upgrade (an exclusive
 // taker waits for the shared holders to go, so an issuer holding the shared bit cannot take the exclusive bit
 // without letting go of it first), so on pending there is a GAP between the kernel call and the listing, in
 // which the completion can be taken by another worker, a cancel or a deadline can find nothing listed
@@ -426,23 +427,22 @@ pub struct Shared is Move, Sendable {
   // handle is locked by this thread. issueNot, issueDone, issuePending or
   // issueStarted. It never answers issuePending for a worker-side socket (UDP
   // ON THE WORKER PORT): a datagram is never partial, so on Linux it is answered
-  // or issueNot; on Windows a datagram SEND is answered, or issueStarted (the
-  // kernel holds it: STARTED UNDER THE SHARED LOCK, whose caller then calls
-  // 'listStarted' with no lock held), and every receive answers issueNot;
-  // 'issueWaiting' is what starts and lists those, and so answers issuePending
-  // itself
+  // or issueNot; on Windows a datagram operation is answered, or issueStarted
+  // (the kernel holds it: STARTED UNDER THE SHARED LOCK, whose caller then calls
+  // 'listStarted' with no lock held); 'issueWaiting' lists what 'issue' leaves
+  // (issueNot), and so answers issuePending itself
   pub fn issue(self: &, p: *OpCore) u32 {self.issueAt(p, tryPublic)}
 
   // 'issue' in one of three modes, which differ for a worker-side socket
   // (UDP ON THE WORKER PORT). A datagram send waits behind the sends already
   // waiting on it (Linux: the socket's EPOLLOUT edge tries them in order, and
   // a send tried past them would overtake): every mode but the edge's own
-  // retry of the head, tryRetry. A datagram send on Windows is started under
-  // the entry's shared lock by tryPublic, which is 'issue', and one the kernel
-  // keeps answers issueStarted, to be listed by 'listStarted' (STARTED UNDER THE
-  // SHARED LOCK). A datagram receive on Windows is not: tryPublic says issueNot,
-  // and issueWaiting starts it under the exclusive lock, tryWaiting, so that a
-  // pending one is listed with no gap in which its completion could come first
+  // retry of the head, tryRetry. A datagram operation on Windows, a receive as
+  // much as a send, is started under the entry's shared lock by tryPublic, which
+  // is 'issue', and one the kernel keeps answers issueStarted, to be listed by
+  // 'listStarted' (STARTED UNDER THE SHARED LOCK); issueWaiting's start under the
+  // exclusive lock, tryWaiting, is for what 'issue' declined (a handle closing,
+  // a deadline reached, a socket whose completions do not skip the port)
   fn issueAt(self: &, p: *OpCore, mode: u32) u32 {
     let r = p as &mut OpCore;
     let e = self.entry(r.handle.index);
@@ -473,17 +473,13 @@ pub struct Shared is Move, Sendable {
       }
     }
     // A send on a worker-side socket that is held, or has sends waiting ahead of it, is not tried. The
-    // entry's wait lists change only under the exclusive lock, which no shared holder shares
-    if udp && (*e).worker != 0u32 {
-      #if #os == .windows {
-        // A receive: started under the exclusive lock, so that a pending one is listed with no gap. A send is
-        // started under the shared lock (STARTED UNDER THE SHARED LOCK)
-        if mode == tryPublic && k != diag.kindSendTo {return issueNot;}
-      } #else {
-        if k == diag.kindSendTo {
-          if (*e).hold != 0u32 {return issueNot;}
-          if mode != tryRetry && (*e).swait as usize != 0usize {return issueNot;}
-        }
+    // entry's wait lists change only under the exclusive lock, which no shared holder shares. (Windows:
+    // no such rule, the kernel orders what it holds; a datagram operation, a receive as much as a send, is
+    // started under the shared lock, STARTED UNDER THE SHARED LOCK)
+    #if #os != .windows {
+      if udp && (*e).worker != 0u32 && k == diag.kindSendTo {
+        if (*e).hold != 0u32 {return issueNot;}
+        if mode != tryRetry && (*e).swait as usize != 0usize {return issueNot;}
       }
     }
     // A deadline or a group done with is answered by the Loop, as at a start
