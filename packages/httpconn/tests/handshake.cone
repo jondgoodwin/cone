@@ -63,9 +63,11 @@ struct Seen {
   pub kind: ErrorKind;
   pub detail: String;
   pub at: Instant;
+  pub unsent: bool;
+  pub noResponse: bool;
 }
 
-fn seen() Seen {Seen(false, false, false, Stage.Closed, ErrorKind.Closed, String(), Instant())}
+fn seen() Seen {Seen(false, false, false, Stage.Closed, ErrorKind.Closed, String(), Instant(), false, false)}
 
 fn note(s: &mut Seen, e: &mut Event) {
   if e.kind == EventKind.Connected || e.kind == EventKind.Accepted {s.opened = true;}
@@ -76,6 +78,8 @@ fn note(s: &mut Seen, e: &mut Event) {
     s.kind = e.failure.error.kind;
     s.detail = e.failure.error.detail.clone();
     s.at = Instant.now();
+    s.unsent = e.failure.unsent;
+    s.noResponse = e.failure.error.noResponse;
   }
 }
 
@@ -161,6 +165,8 @@ fn main() i32 {
     var client = seen();
     var finals = 0u32;
     var reqStage: Stage = Stage.Closed;
+    var reqUnsent = false;
+    var reqNoResponse = false;
     var events = List[Event]();
     let giveUp = Instant.now() + Duration.fromSeconds(5i64);
     while !(client.closed && finals > 0u32) && Instant.now() < giveUp {
@@ -171,7 +177,11 @@ fn main() i32 {
         if e.token == 21u64 {note(&mut client, e);}
         else if e.token == 22u64 && e.isTerminal() {
           finals = finals + 1u32;
-          if e.kind == EventKind.Failed {reqStage = e.failure.stage;}
+          if e.kind == EventKind.Failed {
+            reqStage = e.failure.stage;
+            reqUnsent = e.failure.unsent;
+            reqNoResponse = e.failure.error.noResponse;
+          }
         }
         k = k + 1usize;
       }
@@ -185,6 +195,9 @@ fn main() i32 {
     expect(took >= Duration.fromMillis(200i64) && took < Duration.fromSeconds(3i64), "...at its deadline, not the head timeout's");
     expectUInt(u64.from(finals), 1u64, "its request: one final answer");
     expect(reqStage == Stage.Tls, "...Failed at Stage.Tls");
+    // The handshake carries no request byte: neither the connection's failure nor the request's says a byte was sent
+    expect(client.unsent && client.noResponse, "...the connection's failure: unsent, no response");
+    expect(reqUnsent && reqNoResponse, "...the request's: unsent, no response");
     drv.abortAll(&mut lp);
     drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni events);
   }
@@ -219,6 +232,50 @@ fn main() i32 {
       "...then closed at Stage.Tls, timed out");
     let took = server.at - started;
     expect(took >= Duration.fromMillis(200i64) && took < Duration.fromSeconds(3i64), "...at its deadline, not the idle timeout's");
+    drv.abortAll(&mut lp);
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni events);
+  }
+  // ---- a peer that closes the connection in the middle of the handshake: the request was never sent
+  {
+    var drv = Driver.make(Config.make());
+    var l = ListenerId.none();
+    match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(40u64)) {
+      case let Ok(r) {l = r;}
+      case let Err(e) {}
+    }
+    let conn = drv.connectWith(&mut lp, "127.0.0.1", port(&drv, &lp, l), Uni[Stall](Stall(0u64)), Sink.Here(41u64));
+    drv.request(&mut lp, conn, RequestHead.get("/", "127.0.0.1"), BodyLength(), Sink.Here(42u64));
+    var client = seen();
+    var finals = 0u32;
+    var reqUnsent = false;
+    var reqNoResponse = false;
+    var aborted = false;
+    var events = List[Event]();
+    let giveUp = Instant.now() + Duration.fromSeconds(5i64);
+    while !(client.closed && finals > 0u32) && Instant.now() < giveUp {
+      drv.poll(&mut lp, giveUp, &uni events);
+      var k = 0usize;
+      while k < events.len() {
+        let e = &mut events[k];
+        if e.token == 41u64 {note(&mut client, e);}
+        else if e.token == 42u64 && e.isTerminal() {
+          finals = finals + 1u32;
+          if e.kind == EventKind.Failed {
+            reqUnsent = e.failure.unsent;
+            reqNoResponse = e.failure.error.noResponse;
+          }
+        }
+        else if e.token == 40u64 && e.kind == EventKind.Accepted && !aborted {
+          aborted = true;
+          drv.abort(&mut lp, e.conn);
+        }
+        k = k + 1usize;
+      }
+      events.clear();
+    }
+    expect(aborted && client.closed && !client.clean, "a peer that closes mid-handshake: the client's connection fails");
+    expect(client.unsent && client.noResponse, "...its failure: unsent, no response");
+    expect(finals == 1u32 && reqUnsent && reqNoResponse, "...its request: one answer, unsent, no response");
     drv.abortAll(&mut lp);
     drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni events);
   }
