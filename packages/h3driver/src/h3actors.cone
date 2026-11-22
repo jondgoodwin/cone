@@ -1,0 +1,77 @@
+// The plug-in for actors (httpclient's THE ACTORS' SIDE): the acceptor and the connector, which make the
+// connection values (h3proto.cone's H3Server and H3Client over an H3Conn). They run no loop, own no socket and
+// no actor: an actor host gives a value its datagrams and the time. Each is one per server socket or client and
+// shared by the host's actors on every worker, so each holds only what is fixed when it is made: the QUIC
+// Context (a handle on an Arc[imm] core: quic's context.cone) and the bounds. Every call reads them and makes a
+// value of its own, so no call touches what another is using.
+
+// A server socket's acceptor: the Context of its connections (the certificate and key) and the bounds each takes
+pub struct Acceptor is httpclient.H3Acceptor {
+  ctx: quic.Context;
+  h3cfg: http3.Config;         // its connections' HTTP/3 (maxRequestStreams the Context's stream limit)
+  budget: usize;               // a connection's block budget (THE BLOCK BUDGET)
+  wakeStep: Duration;
+  sendWatermark: u64;
+
+  // An acceptor for ctx (a server's Context), its connections taking the bounds drv's own do
+  pub fn make(ctx: quic.Context, drv: &Driver) Acceptor {
+    var hc = drv.h3cfg;
+    hc.maxRequestStreams = usize.from(ctx.config().maxStreamsBidi);
+    Acceptor(ctx, hc, blockBudget(drv.share, drv.maxConnections), drv.wakeStep, drv.sendWatermark)
+  }
+
+  pub fn connectionId(self: &, d: &Array[u8]) Option[httpclient.H3Cid] {destId(d)}
+
+  pub fn isInitial(self: &, d: &Array[u8]) bool {isInitialPacket(d)}
+
+  pub fn accept(self: &, first: &Array[u8], bound: SocketAddr, peer: SocketAddr, now: Instant)
+      Result[Uni[httpclient.H3ServerConn], httpclient.Failure] {
+    let Some(localQ) = quicAddr(&bound) else {return Err[Uni[httpclient.H3ServerConn], httpclient.Failure](addrFailure());};
+    let Some(peerQ) = quicAddr(&peer) else {return Err[Uni[httpclient.H3ServerConn], httpclient.Failure](addrFailure());};
+    // (accept hands the first datagram to the connection itself)
+    match quic.Connection.accept(&ctx, first, &localQ, &peerQ, now) {
+      case let Ok(q) {
+        var core = H3Conn.forServer(q, h3cfg, 0u64, budget, wakeStep, ctx.config().streamIdLimit, now);
+        core.sendWatermark = sendWatermark;
+        Ok[Uni[httpclient.H3ServerConn], httpclient.Failure](Uni[H3Server](H3Server.make(core)))
+      }
+      case let Err(e) {Err[Uni[httpclient.H3ServerConn], httpclient.Failure](serverFailure(e))}
+    }
+  }
+}
+
+// A client's connector: the Context of its connections (the certificate check) and the bounds each takes
+pub struct Connector is httpclient.H3Connector {
+  ctx: quic.Context;
+  h3cfg: http3.Config;
+  budget: usize;
+  wakeStep: Duration;
+  sendWatermark: u64;
+  idLimit: u64;
+
+  // A connector for ctx (a client's Context), its connections taking the bounds drv's own do
+  pub fn make(ctx: quic.Context, drv: &Driver) Connector {
+    Connector(ctx, drv.h3cfg, blockBudget(drv.share, drv.maxConnections), drv.wakeStep, drv.sendWatermark,
+      drv.clientIdLimit)
+  }
+
+  pub fn connect(self: &, serverName: &str, bound: SocketAddr, peer: SocketAddr, now: Instant)
+      Result[Uni[httpclient.H3ClientConn], httpclient.Failure] {
+    let Some(localQ) = quicAddr(&bound) else {return Err[Uni[httpclient.H3ClientConn], httpclient.Failure](addrFailure());};
+    let Some(peerQ) = quicAddr(&peer) else {return Err[Uni[httpclient.H3ClientConn], httpclient.Failure](addrFailure());};
+    match quic.Connection.client(&ctx, serverName, &localQ, &peerQ, now) {
+      case let Ok(q) {
+        var core = H3Conn.forClient(q, h3cfg, 0u64, budget, wakeStep, idLimit, now);
+        core.sendWatermark = sendWatermark;
+        Ok[Uni[httpclient.H3ClientConn], httpclient.Failure](Uni[H3Client](H3Client.make(core)))
+      }
+      case let Err(e) {Err[Uni[httpclient.H3ClientConn], httpclient.Failure](serverFailure(e))}
+    }
+  }
+}
+
+fn isInitialPacket(d: &Array[u8]) bool {isInitial(d)}
+
+fn addrFailure() httpclient.Failure {
+  httpclient.Failure.make(httpclient.Stage.Connect, 0u32, ErrorKind.Unsupported, "only IPv4 addresses (quic's Addr)")
+}
