@@ -103,8 +103,11 @@
 // so a block taken or returned on it later (by another exit callback) goes
 // straight to the stock, counted apart, and no record is made that nobody would
 // flush. Once the module's final has begun ('stopping'), and while the process
-// is ending (threadexit.c asks), a thread's end gives nothing back; the final's
-// the final does. flushThread does the same early, for a thread that lives
+// is ending (threadexit.c asks), a thread's end gives nothing back: it only
+// marks its record ended. The final flushes the calling thread's record and the
+// ended ones, and leaves a running thread's alone (a detached thread, an iocore
+// worker, may be taking from it that moment; its blocks go back with the
+// process). flushThread does the same early, for a thread that lives
 // on idle. If the slot is not to be had (cone_threadExitAdd answers 0: its table
 // is full, or the system refused the slot), nothing is armed, a thread's end
 // gives nothing back, and flushThread is the pool's only give-back from a
@@ -146,8 +149,9 @@
 //
 // CAVEATS (what only the program can keep true):
 // - A thread's cache is touched only by that thread, by its end and flushThread
-//   (both under the registry's lock) and by the module's final, which runs after
-//   every thread that uses the pool has stopped. trimEverything flushes every
+//   (both under the registry's lock) and by the module's final, which flushes
+//   only the calling thread's and ended threads' records (a thread still running
+//   at the final keeps its cache). trimEverything flushes every
 //   cache, so it panics unless every other thread's record is retired (the thread
 //   ended, or called flushThread): a cache cannot be emptied from outside while
 //   its thread may be taking from it or returning to it.
@@ -538,24 +542,23 @@ fn makeCache() *ThreadCache {
 // lines hold nothing, so a block dropped on it after this (by another exit
 // callback, or a thread-local's destructor) goes straight to the stock and no
 // cache is made that nobody would flush. Once the module's final has begun
-// ('stopping') nothing is given back: the record stays on the registry for the
-// final's own flush
+// ('stopping') nothing is given back: the record is only marked ended (not live,
+// not reused), so the final flushes it if it has not yet walked past it
 fn @c bufpoolThreadEnded() {
   let g = glob();
-  if (*g).stopping.load() != 0u32 {    // first of all: the final has begun, give nothing back
-    return;
-  }
   let tc = myCache;
   myCache = (*g).lateRec;
   if tc as usize == 0usize || tc == (*g).lateRec {
     return;
   }
   (*g).regLock.lock();
-  if (*g).stopping.load() == 0u32 {   // again: the final may have begun since the first look
+  if (*g).stopping.load() == 0u32 {   // the final has not begun (the lock orders this against it)
     flushCache(tc);
     (*tc).live = 0u32;
     (*tc).nextFree = (*g).freeRecs;
     (*g).freeRecs = tc;
+  } else {
+    (*tc).live = 0u32;                // ended: the final flushes it if it has not yet walked past it; nothing is given back here
   }
   (*g).regLock.unlock();
 }
@@ -1002,12 +1005,22 @@ fn flushRegistry(g: *Globals) {
   }
 }
 
-// The module's final: every cache flushed and the idle slabs back to the OS,
-// with no check, because every thread that used the pool has stopped by now
+// The module's final: the caller's cache and every ended thread's flushed, and the
+// idle slabs back to the OS. A thread still running (an iocore worker, any
+// detached thread) may be taking from its cache this moment, so its record is
+// left alone: flushing it would hand a block out twice. Its blocks go back to the
+// OS with the process, and its slabs stay (a cached block is lent to the stock)
 fn trimAllCachesFinal() {
   let g = glob();
+  let me = myCache;
   (*g).regLock.lock();
-  flushRegistry(g);
+  var tc = (*g).regHead;
+  while tc as usize != 0usize {
+    if tc == me || (*tc).live == 0u32 {
+      flushCache(tc);
+    }
+    tc = (*tc).nextReg;
+  }
   (*g).regLock.unlock();
   trimStockOf(g);
 }
