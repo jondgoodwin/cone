@@ -1,0 +1,364 @@
+// The client's HTTP/3 on actors (actorhttp's clientactor.cone and clientquic.cone), driven where QUIC fails under a fetch:
+//   - a fetch whose QUIC attempt never completes (a UDP socket that takes datagrams and answers none, at the origin's port, with
+//     a TLS server over TCP at the same port) is answered once, over TCP, and an origin whose attempt fell back is not tried
+//     again: the black hole sees no datagram after the fallback;
+//   - a fetch under way on a QUIC connection when its server is closed is answered once, with a failure, and does not wait
+//     for ever;
+//   - a client that has used HTTP/3 ends with its actors: the client actor and every connection actor, QUIC's included, are
+//     freed (start-stop-free).
+
+mod h3client;
+
+import stdio use *;
+import libc;
+import fs;
+import thread;
+import path use Path;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String;
+import iobuf use IoBuf;
+import iocore use SocketAddr, DatagramBatch, CancelGroup;
+import http use *;
+import httpclient use Response, Request;
+import tls;
+import actors;
+import aio use IoLimits;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, liveClientActors, liveClientConnActors;
+import h3driver;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+fn versionName(v: Version) &str {
+  if v == Version.Http3 {"HTTP/3"}
+  else if v == Version.Http2 {"HTTP/2"}
+  else if v == Version.Http11 {"HTTP/1.1"}
+  else {"other"}
+}
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// A client that trusts the test root, with the HTTP/3 plug-in and the origin on 'port' known to speak it
+fn trusting(port: u16, attemptMs: i64) HttpClient {
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
+  cfg.http3Origins.push(url(port, ""));
+  cfg.http3Timeout = Duration.fromMillis(attemptMs);
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
+}
+
+// ---------------------------------------------------------------------------
+// The servers
+// ---------------------------------------------------------------------------
+
+// A UDP socket that takes datagrams and answers none: an HTTP/3 server whose handshake never completes
+actor Hole {
+  sock: aio.UdpSocket;
+  group: CancelGroup;
+  seen: u64;
+
+  pub async fn open(self, port: Sender[u16]) {
+    let made = await aio.bindUdp(SocketAddr.localhost(0u16));
+    var p = 0u16;
+    match made {
+      case var Ok(s) {
+        sock <-> s;
+        let la = await sock.localAddr();
+        match &la {
+          case let &Ok(a) {p = a.port();}
+          else {}
+        }
+      }
+      case let Err(e) {}
+    }
+    port.send(p);
+    if p != 0u16 {selfactor.listen();}
+  }
+
+  pub async fn listen(self) {
+    var batch = DatagramBatch.make(8u32, 1500usize);
+    while true {
+      let r = await sock.recvManyIn(batch, IoLimits.within(group));
+      match r {
+        case var Ok(ok) {
+          batch = ok;
+          let cnt = batch.count();
+          var k = 0u32;
+          while k < cnt {
+            let old = batch.swapOut(k, IoBuf(1500usize));
+            k = k + 1u32;
+          }
+          seen = seen + u64.from(cnt);
+        }
+        case var Err(f) {
+          let e, back = f.(error, batch);
+          match back {
+            case var Some(b) {batch = b;}
+            else {batch = DatagramBatch.make(8u32, 1500usize);}
+          }
+          if aio.isCancelled(e) {return;}
+        }
+      }
+    }
+  }
+
+  pub async fn report(self, out: Sender[u64]) {out.send(seen);}
+
+  pub async fn stop(self) {
+    group.cancel();
+    sock = aio.UdpSocket.none();
+  }
+}
+
+// A TLS server over TCP at 'port' (0: any), answering "tcp" to every path but "/hang", and (offering HTTP/3 when 'h3') the
+// same on UDP. "/hang" tells 'hung' it has a request, and never answers it
+actor Handler {
+  ex: Exchange;
+  owner: Site;
+  hung: Sender[u64];
+
+  pub async fn run(self) {
+    owner.hit();
+    let p = String.from(ex.request.path());
+    if p.view() == "/hang" {
+      hung.send(1u64);
+      let z = await aio.sleep(Duration.fromSeconds(30i64));
+    } else {
+      var t = String.from(versionName(ex.request.head.version));
+      ex.text(200u16, if t.view() == "HTTP/3" {"h3"} else {"tcp"});
+    }
+  }
+}
+
+actor Site {
+  server: Server;
+  listened: bool;
+  hits: u64;
+  hung: Sender[u64];
+
+  pub async fn open(self, port: u16, h3: bool, ports: Sender[u16]) {
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    var cfg = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2();
+    if h3 {cfg = cfg.offerHttp3(&h3driver.plugin);}
+    let r = await actorhttp.listen(SocketAddr.localhost(port), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {
+        server <-> *ok;
+        listened = true;
+      }
+      case let &mut Err(e) {}
+    }
+    ports.send(if listened && (!h3 || server.offersHttp3()) {server.port()} else {0u16});
+  }
+
+  pub async fn hit(self) {hits = hits + 1u64;}
+
+  pub async fn report(self, out: Sender[u64]) {out.send(hits);}
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok, selfactor, hung.clone());
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client's side
+// ---------------------------------------------------------------------------
+
+// What a fetch ended with, said as one line
+fn describe(r: &Result[Response, FetchError]) String {
+  var t = String();
+  match r {
+    case let &Ok(ok) {
+      t.append("answered ");
+      t.appendUInt(u64.from(ok.status));
+      t.append(" ");
+      t.append(versionName(ok.version));
+      t.append(" ");
+      t.append(ok.body.view());
+    }
+    case let &Err(e) {t.append("failed");}
+  }
+  t
+}
+
+// A client held by an actor, its fetches each answered once on a channel (a second send on it would be the fetch answered
+// twice), and let go on 'dropClient'
+actor Fetcher {
+  client: HttpClient;
+
+  pub async fn get(self, target: String, done: Sender[String]) {
+    let r = await client.get(target.view());
+    done.send(describe(&r));
+  }
+
+  pub async fn dropClient(self) {
+    client = HttpClient.none();
+  }
+}
+
+fn count(rx: &mut Receiver[u64], dflt: u64) u64 {rx.recvTimeout(Duration.fromSeconds(20i64)) || dflt}
+
+fn answer(rx: &mut Receiver[String]) String {
+  match rx.recvTimeout(Duration.fromSeconds(60i64)) {
+    case let Some(s) {s}
+    case is None[String] {String.from("NEVER ANSWERED")}
+  }
+}
+
+// Both counters at 0 within seconds
+fn gone() bool {
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while (liveClientActors() > 0u64 || liveClientConnActors() > 0u64) && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  liveClientActors() == 0u64 && liveClientConnActors() == 0u64
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var htx: Sender[u64];
+  var hrx: Receiver[u64];
+  htx, hrx = Channel[u64].make();
+  var ctx: Sender[u64];
+  var crx: Receiver[u64];
+  ctx, crx = Channel[u64].make();
+  var dtx: Sender[String];
+  var drx: Receiver[String];
+  dtx, drx = Channel[String].make();
+  {
+    // A fetch whose QUIC attempt never completes: answered once, over TCP
+    var holePort = 0u16;
+    var hole = Hole(aio.UdpSocket.none(), CancelGroup.make(), 0u64);
+    var site = Site(Server.none(), false, 0u64, htx.clone());
+    var tries = 0u32;
+    while tries < 20u32 && holePort == 0u16 {
+      hole = Hole(aio.UdpSocket.none(), CancelGroup.make(), 0u64);
+      hole.open(ptx.clone());
+      let hp = prx.recvTimeout(Duration.fromSeconds(10i64)) || 0u16;
+      site = Site(Server.none(), false, 0u64, htx.clone());
+      site.open(hp, false, ptx.clone());
+      let sp = prx.recvTimeout(Duration.fromSeconds(10i64)) || 0u16;
+      if hp != 0u16 && sp == hp {
+        holePort = hp;
+      } else {
+        hole.stop();
+        site.stop();
+      }
+      tries = tries + 1u32;
+    }
+    if holePort == 0u16 {printStr("no port for both\n"); libc.exit(1i32);}
+    site.serve();
+    hole.listen();
+    printStr("a TLS server over TCP and a black hole on UDP, one port: yes\n");
+    let f = Fetcher(trusting(holePort, 300i64));
+    // Three at once, each over a QUIC attempt that never completes
+    f.get(url(holePort, "/x"), dtx.clone());
+    f.get(url(holePort, "/x"), dtx.clone());
+    f.get(url(holePort, "/x"), dtx.clone());
+    var k = 0u32;
+    while k < 3u32 {
+      printStr("at once: ");
+      printStr(answer(&mut drx).view());
+      printStr("\n");
+      k = k + 1u32;
+    }
+    hole.report(ctx.clone());
+    let before = count(&mut crx, 0u64);
+    printStr("the black hole saw the attempt's datagrams: ");
+    printStr(yes(before > 0u64));
+    printStr("\n");
+    // After the fallback the origin's HTTP/3 is not tried: the next fetch is TCP's, and sends no datagram
+    f.get(url(holePort, "/y"), dtx.clone());
+    printStr("after the fallback: ");
+    printStr(answer(&mut drx).view());
+    printStr("\n");
+    hole.report(ctx.clone());
+    let after = count(&mut crx, 1u64);
+    printStr("it sent no datagram: ");
+    printStr(yes(after == before));
+    printStr("\n");
+    site.report(ctx.clone());
+    printStr("the server saw one request for each of the four fetches: ");
+    printStr(yes(count(&mut crx, 0u64) == 4u64));
+    printStr("\n");
+    f.dropClient();
+    printStr("the client's actors are freed: ");
+    printStr(yes(gone()));
+    printStr("\n");
+    hole.stop();
+    site.stop();
+  }
+  {
+    // A fetch under way on a QUIC connection when its server is closed
+    let site = Site(Server.none(), false, 0u64, htx.clone());
+    site.open(0u16, true, ptx.clone());
+    let port = prx.recvTimeout(Duration.fromSeconds(10i64)) || 0u16;
+    if port == 0u16 {printStr("listen failed\n"); libc.exit(1i32);}
+    site.serve();
+    let f = Fetcher(trusting(port, 1000i64));
+    f.get(url(port, "/warm"), dtx.clone());
+    printStr("warm: ");
+    printStr(answer(&mut drx).view());
+    printStr("\n");
+    printStr("a QUIC connection is alive: ");
+    printStr(yes(liveClientConnActors() > 0u64));
+    printStr("\n");
+    f.get(url(port, "/hang"), dtx.clone());
+    let up = hrx.recvTimeout(Duration.fromSeconds(20i64)) || 0u64;
+    printStr("the server has the request: ");
+    printStr(yes(up == 1u64));
+    printStr("\n");
+    site.stop();
+    printStr("server closed mid-fetch: ");
+    printStr(answer(&mut drx).view());
+    printStr("\n");
+    f.dropClient();
+    printStr("the client's actors are freed: ");
+    printStr(yes(gone()));
+    printStr("\n");
+  }
+  finalAll();
+  printStr("end\n");
+  0i32
+}
