@@ -1,0 +1,297 @@
+// A room wake that breaks its rule: row 647's condition (design chat, 22 Nov). 'addRoomWake' is a
+// safe function, and its rule "the wake must not take or return a pool block, nor call back into
+// the pool" is a precondition the compiler cannot check; so breaking it must be wrong behaviour at
+// worst, never memory corruption (Bug 104). This registers a wake that does what it must not, and
+// fires it from every site that makes room:
+//
+//   mode 1: the wake takes a block of the site's class and returns it;
+//   mode 2: the wake calls trimStock();
+//   mode 3: both;
+//   mode 4: the wake takes forty blocks and returns them, enough to fill and spill a cache line.
+//
+// The sites: a spill (a cache of 32, and a cache of 1, where the whole line is the spilled batch);
+// a return with no cache; a late return (a block dropped by a thread-exit callback that runs after
+// the pool's); flushThread; a thread's end (where 'myCache' has just become the late record and
+// the thread's record is on the free list); trimEverything; freeSlabs (a trim that gives a slab
+// back); releaseOversize; and a take that has to give an idle slab back to make room for its own
+// slab (the batch it is taking lands in the line's own slots). The final's is the last, in the
+// process's end: the wake prints a line there.
+//
+// After each: nothing is handed out twice (every block of a batch of takes holds its own tag),
+// every block is home, and once the caches are given back every slab is back with the OS (a block
+// lost by the wake's re-entry would keep its slab). Run under Linux ASan as well (row 647's gate).
+
+mod roomreenter;
+
+import testing use *;
+import thread;
+import stdio;
+import libc;
+import bufpool use *;
+
+extern {
+  fn @c cone_threadExitAdd(callback: &fn @c ()) u32;
+  fn @c cone_threadExitArm(id: u32);
+}
+
+let runs: Atomic[u64];
+let mode: Atomic[u64];
+let wakeBytes: Atomic[usize];
+let finalPhase: Atomic[u64];
+let lateId: Atomic[u32];
+
+var @threadlocal lateBlock: usize = 0usize;
+var @threadlocal lateBytes: usize = 0usize;
+
+fn @initpure init() {
+  runs = Atomic[u64].of(0u64);
+  mode = Atomic[u64].of(0u64);
+  wakeBytes = Atomic[usize].of(4096usize);
+  finalPhase = Atomic[u64].of(0u64);
+  lateId = Atomic[u32].of(0u32);
+  addRoomWake(&wake);
+  // after the pool's own thread-exit callback, which was registered in its init
+  lateId.store(cone_threadExitAdd(&lateDrop));
+}
+
+// The thread-exit callback that runs after the pool's: it drops a block, which is a late return
+fn @c lateDrop() {
+  if lateBlock != 0usize {
+    let b = lateBlock;
+    lateBlock = 0usize;
+    (bufferPool() as &MemRegion).release(b as *u8, lateBytes);
+  }
+}
+
+fn @c wake() {
+  runs.add(1u64);
+  if finalPhase.load() == 1u64 {
+    stdio.printStr("final: the wake ran\n");
+  }
+  let m = mode.load();
+  if m & 1u64 != 0u64 {
+    let bytes = wakeBytes.load();
+    let p = tryAllocate(bytes);
+    if p as usize != 0usize {
+      *p = 9u8;
+      (bufferPool() as &MemRegion).release(p, bytes);
+    }
+  }
+  if m & 2u64 != 0u64 {
+    trimStock();
+  }
+  if m & 4u64 != 0u64 {
+    // many: enough to fill the thread's line and spill it again from inside the wake
+    let bytes = wakeBytes.load();
+    var held = Array[usize, 40]() <- fill 0usize;
+    var i = 0usize;
+    while i < 40usize {
+      held[i] = tryAllocate(bytes) as usize;
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < 40usize {
+      if held[i] != 0usize {(bufferPool() as &MemRegion).release(held[i] as *u8, bytes);}
+      i = i + 1usize;
+    }
+  }
+}
+
+fn pool() &MemRegion {bufferPool() as &MemRegion}
+
+fn at(base: usize, i: usize) *usize {(base as *usize) + i}
+
+// Every block of n takes is its own: a block handed out twice would take the tag of the later
+// write. Then every block home, and every slab back with the OS once the cache is given back.
+// The wake is off while this runs
+fn check(bytes: usize, n: usize) bool {
+  mode.store(0u64);
+  let r = pool();
+  let base = libc.malloc(n * 8usize) as usize;
+  var ok = true;
+  var i = 0usize;
+  while i < n {
+    let p = tryAllocate(bytes);
+    if p as usize == 0usize {ok = false; *at(base, i) = 0usize;}
+    else {
+      *at(base, i) = p as usize;
+      *(p as *usize) = i + 1usize;
+      *((p + (bytes - 8usize)) as *usize) = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < n {
+    let a = *at(base, i);
+    if a != 0usize {
+      if *(a as *usize) != i + 1usize || *((a + (bytes - 8usize)) as *usize) != i + 1usize {ok = false;}
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < n {
+    let a = *at(base, i);
+    if a != 0usize {r.release(a as *u8, bytes);}
+    i = i + 1usize;
+  }
+  libc.free(base as *u8);
+  trimStock();
+  if blockStats().lent != 0u64 {ok = false;}
+  if osBlocks() != 0u64 {ok = false;}
+  ok
+}
+
+struct Job {
+  pub bytes: usize;
+  pub count: usize;
+  pub how: u32;          // 0 spill, 1 flushThread, 2 thread's end, 3 late return
+}
+
+// A thread that takes count blocks and returns them, and makes room as 'how' says, with the wake armed
+fn worker(j: Job) u64 {
+  let r = pool();
+  let base = libc.malloc(j.count * 8usize) as usize;
+  var i = 0usize;
+  while i < j.count {
+    *at(base, i) = tryAllocate(j.bytes) as usize;
+    i = i + 1usize;
+  }
+  if j.how == 3u32 {
+    // keep one block for the exit callback that runs after the pool's, and arm it
+    lateBlock = *at(base, 0usize);
+    lateBytes = j.bytes;
+    *at(base, 0usize) = 0usize;
+    cone_threadExitArm(lateId.load());
+    armRoomWake();
+  }
+  if j.how == 0u32 {armRoomWake();}
+  i = 0usize;
+  while i < j.count {
+    let a = *at(base, i);
+    if a != 0usize {r.release(a as *u8, j.bytes);}
+    i = i + 1usize;
+  }
+  libc.free(base as *u8);
+  if j.how == 1u32 {
+    armRoomWake();
+    flushThread();
+  } else if j.how == 2u32 {
+    armRoomWake();
+  }
+  1u64
+}
+
+fn viaThread(bytes: usize, count: usize, how: u32) bool {
+  let before = runs.load();
+  wakeBytes.store(bytes);
+  let t = thread.start(Job(bytes, count, how), &worker);
+  _ = t.join();
+  runs.load() > before
+}
+
+fn mib(n: usize) usize {n * 1048576usize}
+
+fn setMode(m: u64, bytes: usize) {
+  mode.store(m);
+  wakeBytes.store(bytes);
+}
+
+// A return with no cache, on this thread
+fn noCache() bool {
+  let before = runs.load();
+  let p = tryAllocate(mib(1usize));
+  armRoomWake();
+  pool().release(p, mib(1usize));
+  runs.load() > before
+}
+
+// trimEverything with blocks in this thread's cache
+fn trimAll() bool {
+  let before = runs.load();
+  var i = 0usize;
+  let r = pool();
+  var mine = Array[usize, 5]() <- fill 0usize;
+  while i < 5usize {mine[i] = tryAllocate(4096usize) as usize; i = i + 1usize;}
+  i = 0usize;
+  while i < 5usize {r.release(mine[i] as *u8, 4096usize); i = i + 1usize;}
+  armRoomWake();
+  trimEverything();
+  runs.load() > before
+}
+
+// A trim that gives a slab back to the OS
+fn slabBack() bool {
+  let before = runs.load();
+  let r = pool();
+  let a = tryAllocate(mib(1usize));
+  let b = tryAllocate(mib(1usize));
+  r.release(a, mib(1usize));
+  r.release(b, mib(1usize));
+  armRoomWake();
+  trimStock();
+  runs.load() > before
+}
+
+fn oversize() bool {
+  let before = runs.load();
+  let p = tryAllocate(mib(2usize));
+  armRoomWake();
+  pool().release(p, mib(2usize));
+  runs.load() > before
+}
+
+// The bank is full of 1 MiB blocks (22 of them, 11 slabs, under a bound of 32 MiB), two slabs idle; a
+// take of 4 KiB needs a slab, so it gives the idle ones back first, and the room that makes is
+// announced when the take's line is whole. The wake takes a slab of its own on the way, and there is
+// room left for the take's, so the take goes on into its line: a wake that ran while the line was
+// the take's scratch would have its blocks overwritten there and lost
+fn refill() bool {
+  let before = runs.load();
+  let r = pool();
+  var x = Array[usize, 22]() <- fill 0usize;
+  var i = 0usize;
+  while i < 22usize {x[i] = tryAllocate(mib(1usize)) as usize; i = i + 1usize;}
+  i = 0usize;
+  while i < 4usize {r.release(x[i] as *u8, mib(1usize)); i = i + 1usize;}
+  armRoomWake();
+  let p = tryAllocate(4096usize);
+  r.release(p, 4096usize);
+  i = 4usize;
+  while i < 22usize {r.release(x[i] as *u8, mib(1usize)); i = i + 1usize;}
+  runs.load() > before
+}
+
+fn main() i32 {
+  setLimits(8388608usize, 0usize);
+  var m = 1u64;
+  while m <= 4u64 {
+    setMode(m, 4096usize);
+    expect(viaThread(4096usize, 33usize, 0u32) && check(4096usize, 40usize), "spill (cache of 32): the wake re-enters safely");
+    setMode(m, 262144usize);
+    expect(viaThread(262144usize, 3usize, 0u32) && check(262144usize, 6usize), "spill (cache of 1, the whole line is the batch)");
+    setMode(m, mib(1usize));
+    expect(noCache() && check(mib(1usize), 3usize), "a return with no cache");
+    expect(viaThread(mib(1usize), 1usize, 3u32) && check(mib(1usize), 3usize), "a late return, after the pool's thread-exit callback");
+    setMode(m, 4096usize);
+    expect(viaThread(4096usize, 5usize, 1u32) && check(4096usize, 40usize), "flushThread");
+    expect(viaThread(4096usize, 5usize, 2u32) && check(4096usize, 40usize), "a thread's end");
+    expect(trimAll() && check(4096usize, 40usize), "trimEverything");
+    setMode(m, mib(1usize));
+    expect(slabBack() && check(mib(1usize), 3usize), "freeSlabs: a slab given back");
+    setMode(m, mib(2usize));
+    expect(oversize() && check(mib(2usize), 1usize), "releaseOversize");
+    setMode(m, 4096usize);
+    setLimits(33554432usize, 0usize);
+    expect(refill() && check(4096usize, 40usize), "a take that gives idle slabs back to make room for its own");
+    setLimits(8388608usize, 0usize);
+    m = m + 1u64;
+  }
+
+  // The final's: the process's end, with a slab to give back and the wake armed
+  setMode(3u64, 4096usize);
+  finalPhase.store(1u64);
+  let p = tryAllocate(4096usize);
+  pool().release(p, 4096usize);
+  armRoomWake();
+  done()
+}

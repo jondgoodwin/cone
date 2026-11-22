@@ -2115,7 +2115,12 @@ fn stateOf[S, M: Sendable](h: *Header) *S {
   &(*(h as *Block[S, M])).state as *S
 }
 
+// Debug builds only: how many workers are inside actorDied, which abandonParked asserts is none (its comment says
+// no actor is running then)
+let dying: Atomic[u32];
+
 fn actorDied(h: *Header) {
+  #if #debug { dying.add(1u32); }
   let finalize = (*h).finalize;
   finalize(h);
   // The actor's region goes after its state, whose finals may read what they
@@ -2157,6 +2162,7 @@ fn actorDied(h: *Header) {
     }
     libc.free(e as *u8);
   }
+  #if #debug { dying.sub(1u32); }
 }
 
 // Finalize actor h's state: moved out of the block and dropped, so its own
@@ -3664,7 +3670,13 @@ pub struct Pending is GcTraceElements {
   // drops those tables itself (ABANDONING AT THE END)
   fn final(self: &uni) {
     if node as usize != 0usize {
-      pendingUnregister(node);
+      // One owner for the table's arrays (ONE OWNER AT THE END): if the program's end took them while this
+      // table was in the registry, they are the end's to drop, whatever this copy of the table still says
+      // (finalizeState drops a copy of the state moved out of its block, which the end's take does not
+      // reach). The answer is read under the lock, and the loads below come after it by data
+      if pendingUnregister(node) {
+        return;
+      }
     }
     if slots as usize == 0usize {
       return;
@@ -3706,7 +3718,16 @@ struct PNode {
   prev: *PNode;
   next: *PNode;
   owner: *Pending;     // the table, where it lay when it parked first: only read while it is in the registry
+  taken: usize;        // 1 once abandonParked took the table's arrays and nothing has parked since; under regLock
 }
+
+// ONE OWNER AT THE END. The arrays of a table (slots, and the records in them) are freed by exactly one of two
+// sides: the table's own death (Pending.final) or the program's end (abandonParked). Whichever side comes
+// first under regLock owns them: the end marks the entry 'taken' as it takes the arrays, and the death, which
+// leaves the registry under the same lock, learns there whether the end got there first. The table's own
+// fields cannot say, because the death may be dropping a copy of the table (finalizeState moves the state out
+// of its block), which the end's zeroing of the table where it parked first does not reach. The mark is
+// cleared by the table's next park, which makes arrays of its own again
 
 let regLock: sync.Mutex;          // guards regHead and every entry's links
 let regHead: Atomic[usize];       // the newest entry, a *PNode; touched only under regLock
@@ -3720,6 +3741,7 @@ fn pendingRegister(p: &mut Pending) {
     die("actors: out of memory for the pending registry");
   }
   (*n).prev = null;
+  (*n).taken = 0usize;
   (*n).owner = p as *Pending;
   regLock.lock();
   let head = regHead.loadOrdered(MemOrder.Relaxed) as *PNode;
@@ -3732,9 +3754,11 @@ fn pendingRegister(p: &mut Pending) {
   p.node = n;
 }
 
-// Take a table's entry out, as its death does
-fn pendingUnregister(n: *PNode) {
+// Take a table's entry out, as its death does. True if the program's end had taken the table's arrays (ONE OWNER
+// AT THE END): the caller then frees nothing
+fn pendingUnregister(n: *PNode) bool {
   regLock.lock();
+  let taken = (*n).taken != 0usize;
   let prev = (*n).prev;
   let next = (*n).next;
   if prev as usize != 0usize {
@@ -3747,6 +3771,7 @@ fn pendingUnregister(n: *PNode) {
   }
   regLock.unlock();
   libc.free(n as *u8);
+  taken
 }
 
 // The end of the program drops every parked record of every actor still
@@ -3786,6 +3811,7 @@ fn pendingUnregister(n: *PNode) {
 // print goes through a console that is still there. That drain belongs at the
 // marked line in stopWorkers, ahead of this call, not in here.
 fn abandonParked(s: *Sched) {
+  assertDebugMsg(dying.load() == 0u32, "actors: an actor is dying on a worker as the parked records are abandoned");
   var round = 0u32;
   while true {
     round = round + 1u32;
@@ -3815,6 +3841,7 @@ fn abandonParked(s: *Sched) {
         (*p).cap = 0usize;
         (*p).free = 0usize;
         (*p).count = 0usize;
+        (*np).taken = 1usize;
       }
       np = (*np).next;
     }
@@ -3906,6 +3933,11 @@ fn noTrace(record: *u8, mode: u32) {}
 pub fn parkReserve(p: &mut Pending, size: usize, drop: *u8, trace: *u8) u64 {
   if p.node as usize == 0usize {
     pendingRegister(p);
+  } else if p.cap == 0usize {
+    // Arrays taken by the program's end: what is made now is the table's own again (ONE OWNER AT THE END)
+    regLock.lock();
+    (*p.node).taken = 0usize;
+    regLock.unlock();
   }
   if p.free == 0usize {
     var newcap = 8usize;
@@ -5911,6 +5943,7 @@ fn @initpure init() {
   gCount = Atomic[usize].of(0usize);
   regLock = sync.Mutex.make();
   regHead = Atomic[usize].of(0usize);
+  dying = Atomic[u32].of(0u32);
   gTicket = Atomic[u64].of(0u64);
   lateOwed = Atomic[usize].of(0usize);
   coDelivered = Atomic[u64].of(0u64);

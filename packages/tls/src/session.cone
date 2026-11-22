@@ -20,6 +20,11 @@
 // OpenSSL.
 
 // Phases
+// The most a verification job may hold (the name, and the server's chain in
+// DER): the peer sets the chain's size, so a chain past it fails the handshake
+// instead of leaving the pool's refusal as the only bound
+const maxVerifyJob = 262144usize;
+
 const pHandshake = 0u32;
 const pVerify = 1u32;       // stopped: the OS's verifier has the chain
 const pOpen = 2u32;
@@ -482,34 +487,35 @@ pub struct Session is Move {
   // chain the server sent and the name asked for, in a buffer from pool.
   // Its completion goes to verifyDone
   pub fn verifyOp(self: &mut) Op {
-    var job = List[u8]();
-    self.verifyJob(&mut job);
-    // The job's size comes from the peer's certificates, so the pool may refuse its
-    // buffer (iobuf's tryMake): the handshake fails, and the op that goes does nothing
-    var b = match IoBuf.tryMake(job.len()) {
-      case var Some(got) {got}
-      else {
-        noBuffer = true;
-        self.fail(TlsErrorKind.Backend, 0u32, "no buffer for the certificate check, the buffer pool is full (iobuf maxBytes)");
-        return Op.Call(lane, &verifyNothing, 0u64, IoBuf());
-      }
-    };
-    b.append(job.view());
-    Op.Call(lane, &verifyWork, if offline {1u64} else {0u64}, b)
+    // The job's size comes from the peer's certificates, so the chain may be
+    // too large or the pool may refuse its buffer (iobuf's tryMake): the
+    // handshake fails, and the op that goes does nothing
+    match self.verifyBuffer() {
+      case var Some(b) {Op.Call(lane, &verifyWork, if offline {1u64} else {0u64}, b)}
+      else {Op.Call(lane, &verifyNothing, 0u64, IoBuf())}
+    }
   }
 
   // The OS's verifier's answer, from the pool
   pub fn verifyDone(self: &mut, c: &mut Completion) {
+    if c.isDone() {self.verifyAnswered(&c.buf, None);}
+    else {self.verifyAnswered(&c.buf, Some[IoError](c.error()));}
+  }
+
+  // The same answer as values, for a host that has none of iocore's Completion (a job run by aio.onPool): the
+  // buffer the job filled, and None when it ran, or the error that said it did not
+  pub fn verifyAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError]) {
     if phase != pVerify {return;}
     verifyTime = Instant.now() - verifyAt;
-    if c.isDone() && c.buf.len() >= 4usize {
-      self.verified(*(c.buf.base() as *u32));
-    } else if c.isDone() {
+    let ran = failed is None;
+    if ran && buf.len() >= 4usize {
+      self.verified(*(buf.base() as *u32));
+    } else if ran {
       self.verified(genericFailure());
     } else {
       // The job did not run (a lane's queue full, a cancel, the deadline):
       // iocore's IoError for it, its number the system's own
-      let e = c.error();
+      let e = failed.unwrap();
       ownError = true;
       err = jobError(&e);
       self.verified(if e.code == 0u32 {genericFailure()} else {e.code});
@@ -520,43 +526,65 @@ pub struct Session is Move {
   // network. For a program with no loop
   pub fn verifyNow(self: &mut) {
     if !verifyWanted {return;}
-    var job = List[u8]();
-    self.verifyJob(&mut job);
-    let code = osVerify(job.view(), offline);
-    verifyTime = Instant.now() - verifyAt;
-    self.verified(code);
+    match self.verifyBuffer() {
+      case var Some(b) {
+        let code = osVerify(b.view(), offline);
+        verifyTime = Instant.now() - verifyAt;
+        self.verified(code);
+      }
+      else {}
+    }
   }
 
   // The job: the name, then the chain the server sent, each certificate in
-  // DER (see verify.cone)
-  fn verifyJob(self: &mut, job: &mut List[u8]) {
+  // DER (see verify.cone), made in one pass: each certificate's length is asked
+  // once, the job is sized from them, and one buffer is filled in place (no
+  // byte-wise push, no second copy). None, the handshake failed, when the
+  // chain is larger than maxVerifyJob (the peer sets its size) or the pool
+  // refuses the buffer
+  fn verifyBuffer(self: &mut) Option[IoBuf] {
     verifyWanted = false;
     verifyAt = Instant.now();
     nVerifications.add(1u64);
-    putU32(job, u32.from(host.len()));
-    appendBytes(job, host.view());
     let chain = SSL_get_peer_cert_chain(ssl);
     let n = if chain as usize == 0usize {0i32} else {OPENSSL_sk_num(chain)};
-    putU32(job, u32.from(n));
+    var lens = List[usize]();
+    var total = 8usize + host.len();
     var k = 0i32;
     while k < n {
-      let x = OPENSSL_sk_value(chain, k);
-      let len = i2d_X509(x, null);
-      if len <= 0i32 {
-        putU32(job, 0u32);
-      } else {
-        putU32(job, u32.from(len));
-        let at = job.len();
-        var j = 0i32;
-        while j < len {
-          job.push(0u8);
-          j = j + 1i32;
-        }
-        var p = &mut (job.viewMut())[at] as *u8;
-        i2d_X509(x, &mut p as **u8);
+      let len = i2d_X509(OPENSSL_sk_value(chain, k), null);
+      let l = if len <= 0i32 {0usize} else {usize.from(len)};
+      lens.push(l);
+      total = total + 4usize + l;
+      if total > maxVerifyJob {
+        self.fail(TlsErrorKind.Backend, 0u32, "the server's certificate chain is too large to check");
+        return None[IoBuf];
       }
       k = k + 1i32;
     }
+    var b = match IoBuf.tryMake(total) {
+      case var Some(got) {got}
+      else {
+        noBuffer = true;
+        self.fail(TlsErrorKind.Backend, 0u32, "no buffer for the certificate check, the buffer pool is full (iobuf maxBytes)");
+        return None[IoBuf];
+      }
+    };
+    b.putNum[u32](u32.from(host.len()), false);
+    b.append(host.view());
+    b.putNum[u32](u32.from(n), false);
+    k = 0i32;
+    while k < n {
+      let l = lens[usize.from(k)];
+      b.putNum[u32](u32.from(l), false);
+      if l > 0usize {
+        var p = b.base() + b.len();
+        i2d_X509(OPENSSL_sk_value(chain, k), &mut p as **u8);
+        b.setLen(b.len() + l);
+      }
+      k = k + 1i32;
+    }
+    Some[IoBuf](b)
   }
 
   // The verdict: 0 trusted, else the OS's error; the handshake goes on
@@ -586,7 +614,8 @@ pub struct Session is Move {
     var k = 0usize;
     while k < n {
       let sess = (*arrivalAt(arrivals, k)) as *u8;
-      (&mut *state).putCached(host.view(), sess);
+      let key = host.clone();
+      (&mut *state).putCached(key, sess);
       k = k + 1usize;
     }
     *(arrivals as *usize) = 0usize;
@@ -596,7 +625,7 @@ pub struct Session is Move {
     if arrivals as usize != 0usize {
       self.harvest();
       SSL_set_ex_data(ssl, ticketSlot(), null);
-      libc.free(arrivals);
+      arrivalsFree(arrivals);
     }
     if !isServer && resume && wasOpen && phase != pFailed {
       // A TLS 1.2 session goes back to the cache: the same one, which stays
@@ -605,7 +634,8 @@ pub struct Session is Move {
         let sess = SSL_get1_session(ssl);
         if sess as usize != 0usize {
           if SSL_SESSION_is_resumable(sess) == 1i32 {
-            (&mut *state).putCached(host.view(), sess);
+            let key = host.clone();
+            (&mut *state).putCached(key, sess);
           } else {
             SSL_SESSION_free(sess);
           }
@@ -659,19 +689,4 @@ fn spkiSha256(x: *u8, out: &mut Array[u8, 32]) bool {
   let ok = EVP_Digest(der, usize.from(len), out as *u8, &mut size as *u32, EVP_sha256(), null) == 1i32;
   libc.free(der);
   ok
-}
-
-fn putU32(l: &mut List[u8], v: u32) {
-  l.push(u8.from(v & 255u32));
-  l.push(u8.from((v >> 8u32) & 255u32));
-  l.push(u8.from((v >> 16u32) & 255u32));
-  l.push(u8.from(v >> 24u32));
-}
-
-fn appendBytes(l: &mut List[u8], b: &Array[u8]) {
-  var k = 0usize;
-  while k < b.len {
-    l.push(b[k]);
-    k = k + 1usize;
-  }
 }

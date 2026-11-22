@@ -1,0 +1,211 @@
+// Closing a routed server under load leaves nothing running (the "silent failure" this guards: a stream
+// actor or a connection outliving its server). The server has a handler route whose handler streams
+// events until its write answers Closed, and a short shutdown deadline (300 ms). Open: three connections
+// streaming events that nobody reads, two idle connections, one holding half a request. Then the server
+// is closed: 'closed()' must answer within the deadline plus slack (the idle connections end at once, the
+// streaming ones are reset at the deadline), a new connect is refused, every handler actor has ended, and
+// when the program lets go of the Server, every connection actor and the server actor are freed (counted by
+// the guards in their state, which run when the state is freed).
+
+mod routedshutdown;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import iobuf use IoBuf;
+import http use *;
+import sse;
+import actors;
+import aio;
+import actorhttp use Server, ServerConfig, Exchange, HttpRoutes, HttpHandler;
+
+let handlers: Atomic[u64];      // handler actors alive
+let toldClosed: Atomic[u64];   // handlers whose write answered Closed
+let closedFlag: Atomic[u64];    // 'closed()' has answered
+
+fn @initpure init() {
+  handlers = Atomic[u64].of(0u64);
+  closedFlag = Atomic[u64].of(0u64);
+  toldClosed = Atomic[u64].of(0u64);
+}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+// Counts a handler actor while its state exists
+struct HGuard is Move {
+  fn final(self: &uni) {handlers.sub(1u64);}
+}
+
+// Streams until a write says the connection is gone
+actor Events is HttpHandler {
+  guard: HGuard;
+
+  fn init(self: &new) {
+    handlers.add(1u64);
+    *self = Self(guard: HGuard());
+  }
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.startEvents();
+    while true {
+      // 64 KiB a write: with no one reading, the connection soon refuses more and the write waits
+      var chunk = String.withCapacity(65536usize);
+      var k = 0usize;
+      while k < 65536usize {chunk.appendByte(0x78u8); k = k + 1usize;}
+      let r = await ex.write(chunk);
+      match r {
+        case let Ok(n) {}
+        case let Err(e) {
+          toldClosed.add(1u64);
+          break;
+        }
+      }
+      await aio.sleep(Duration.fromMillis(5i64));
+    }
+  }
+}
+
+fn makeEvents() HttpHandler {
+  let h = Events();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+
+  // Sets closedFlag when 'closed()' answers
+  pub async fn watchClosed(self) {
+    let c = await server.closed();
+    if c {closedFlag.store(1u64);}
+  }
+
+  // The program lets go of the server
+  pub async fn release(self) {
+    var gone = Server.none();
+    gone <-> server;
+  }
+}
+
+actor Raw {
+  sock: aio.Socket;
+
+  pub async fn open(self, port: u16, var done: OneshotSender[u64]) {
+    match await aio.connect(SocketAddr.localhost(port)) {
+      case var Ok(s) {
+        sock <-> s;
+        done.send(1u64);
+      }
+      case let Err(e) {done.send(0u64);}
+    }
+  }
+
+  pub async fn send(self, text: String, var done: OneshotSender[u64]) {
+    var b = IoBuf(text.len());
+    b.append(text.view());
+    match await sock.write(b) {
+      case let Ok(n) {done.send(u64.from(n));}
+      case let Err(e) {done.send(0u64);}
+    }
+  }
+}
+
+fn connect(port: u16) (Raw, bool) {
+  let raw = Raw(aio.Socket.none());
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  raw.open(port, tx);
+  (raw, (rx.recv() || 0u64) == 1u64)
+}
+
+fn sendOn(raw: &Raw, text: &str) {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  raw.send(String.from(text), tx);
+  rx.recv();
+}
+
+// Wait up to ms for the atomic to reach n (or for it to be at most n if 'atMost')
+fn waitCount(read: &fn() u64, n: u64, ms: i64) u64 {
+  let until = Instant.now() + Duration.fromMillis(ms);
+  var seen = read();
+  while seen != n && Instant.now() < until {
+    thread.sleep(Duration.fromMillis(10i64));
+    seen = read();
+  }
+  seen
+}
+
+fn readHandlers() u64 {handlers.load()}
+fn readConns() u64 {actorhttp.liveConnActors()}
+fn readServers() u64 {actorhttp.liveServerActors()}
+fn readClosed() u64 {closedFlag.load()}
+fn readTold() u64 {toldClosed.load()}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let cfg = ServerConfig.make().routes(HttpRoutes.make().handle("", "/events", &makeEvents))
+    .shutdownWithin(Duration.fromMillis(300i64));
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+
+  var raws = List[Raw]();
+  var opened = 0u64;
+  var i = 0u32;
+  while i < 6u32 {
+    let c, ok = connect(port);
+    if ok {opened = opened + 1u64;}
+    if i < 3u32 {sendOn(&c, "GET /events HTTP/1.1\r\nHost: h\r\n\r\n");}
+    if i == 5u32 {sendOn(&c, "GET /events HTT");}
+    raws.push(c);
+    i = i + 1u32;
+  }
+  say("connections opened", opened);
+  say("handlers streaming", waitCount(&readHandlers, 3u64, 5000i64));
+  say("connection actors", waitCount(&readConns, 6u64, 5000i64));
+
+  acceptor.watchClosed();
+  acceptor.stop();
+  let t0 = Instant.now();
+  let closedSeen = waitCount(&readClosed, 1u64, 5000i64);
+  say("closed() answered", closedSeen);
+  let took = u64.from(t0.elapsed().nanos() / 1000000i64);
+  say("within the deadline and slack (under 3 s)", if took < 3000u64 {1u64} else {0u64});
+  if closedSeen != 1u64 {
+    printStr("the server did not finish closing\n");
+    libc.exit(0i32);
+  }
+  let late, ok = connect(port);
+  say("a connect after close is refused", if ok {0u64} else {1u64});
+  say("handlers whose write answered Closed", waitCount(&readTold, 3u64, 5000i64));
+  say("handler actors left", waitCount(&readHandlers, 0u64, 5000i64));
+  say("connection actors left", waitCount(&readConns, 0u64, 5000i64));
+  acceptor.release();
+  say("server actors left", waitCount(&readServers, 0u64, 5000i64));
+  finalAll();
+  0
+}

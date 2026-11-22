@@ -16,13 +16,13 @@ pub enum ServerEvent {
   pub struct Nothing {}          // none now: bytes are wanted (or reading is paused)
   pub struct Request {pub stream: u32; pub body: BodyLength;}
   pub struct Data {pub stream: u32; pub buf: IoBuf;}
-  pub struct End {pub stream: u32; pub trailers: Headers;}
+  pub struct End {pub stream: u32; pub trailers: HttpHeaders;}
   pub struct Reset {pub stream: u32; pub error: HttpError;}      // HTTP/2: the peer reset the stream
   pub struct Closed {pub failure: Option[Failure];}              // the protocol is over (once); output may still be going
 }
 
 // One server connection's whole state (see above)
-pub struct ServerConn is Move {
+pub struct ServerConn is Move, ServerProto {
   cfg: Config;
   layer: Option[Uni[Layer]];   // None: the socket's bytes are the protocol's
   core: http1.Connection;
@@ -46,7 +46,8 @@ pub struct ServerConn is Move {
   lastActive: Instant;         // HTTP/2: a stream last began or ended
   head: RequestHead;           // the request in hand
   headOut: bool;               // HTTP/1.1: head holds a request the core was lent a spare for
-  resp: ResponseHead;          // the response being written, kept and refilled
+  reqIsHead: bool;             // HTTP/1.1: the request in hand is a HEAD (kept: the head may be taken out)
+  resp: ResponseHead;        // the response being written, kept and refilled
   inFlight: bool;              // HTTP/1.1: a request's exchange is not over
   readDone: bool;              // ...its request is read whole
   respDone: bool;              // ...its response is whole
@@ -62,7 +63,7 @@ pub struct ServerConn is Move {
       wire: Chain.make(noBound), tx: Chain.make(noBound), inflight: 0usize, paused: false,
       eofSeen: false, eofFed: false, feedHeld: false, closeSent: false, closeAsked: false, h2Shut: false,
       closedGiven: false, failure: None, openBy: now + cfg.handshakeTimeout, lastActive: now,
-      head: RequestHead(), headOut: false, resp: ResponseHead(), inFlight: false, readDone: false,
+      head: RequestHead(), headOut: false, reqIsHead: false, resp: ResponseHead(), inFlight: false, readDone: false,
       respDone: false);
     c.decide(now);
     c
@@ -301,6 +302,7 @@ pub struct ServerConn is Move {
           var h = got;
           head <-> h;
           headOut = true;
+          reqIsHead = head.method == Method.Head;
           inFlight = true;
           readDone = false;
           respDone = false;
@@ -372,7 +374,14 @@ pub struct ServerConn is Move {
   pub fn takeRequest(self: &mut) RequestHead {
     var out = RequestHead();
     out <-> head;
+    headOut = false;   // HTTP/1.1: nothing of the connection's to hand back; 'recycleRequest' lends the core a head
     out
+  }
+
+  // A request head whose exchange is over, given back so the next request is read into it, its blocks kept
+  // (HTTP/1.1; HTTP/2's heads are made anew). A head not given back is dropped by its owner, as ever
+  pub fn recycleRequest(self: &mut, spare: RequestHead) {
+    if !isH2 {core.recycleRequest(spare);}
   }
 
   // ---------------------------------------------------------------------------
@@ -394,7 +403,7 @@ pub struct ServerConn is Move {
       }
     } else {
       core.respondWith(&resp, body, file, line);
-      if head.method == Method.Head || status == 204u16 || status == 304u16 || body.isEmpty() ||
+      if reqIsHead || status == 204u16 || status == 304u16 || body.isEmpty() ||
           (body.isSized() && body.length == 0u64) {
         self.responseWhole();
       }
@@ -673,6 +682,9 @@ pub struct ServerConn is Move {
           }
         }
       } else if !inFlight && !core.isClosed() {
+        // A response that is whole may still be in the core's queue, and abort drops the
+        // queue: move it to the wire first, so a graceful shutdown loses none of it
+        self.fill(now);
         core.abort();
       }
     }

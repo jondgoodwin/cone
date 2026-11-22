@@ -185,6 +185,8 @@ pub struct Connection is Move {
   closed: bool;            // closing, draining, or gone: nothing more goes out
   closing: Option[CloseWith];    // the next pollTransmit writes this CONNECTION_CLOSE
   err: Option[QuicError];
+  bidiCredit: u64;         // peer-opened bidirectional streams allowed so far (the credit granted)
+  bidiCap: u64;            // ...and the most it may come to: Config.streamIdLimit / 4
 
   // A client's connection to 'host' (its certificate must be for that name),
   // its first packet ready to transmit
@@ -193,7 +195,7 @@ pub struct Connection is Move {
     if ctx.isServer() {return Err[Connection, QuicError](QuicError.make(0i32, "a client needs a client's Context"));}
     let cfg = ctx.config();
     let b = boxMake();
-    let ssl = SSL_new(ctx.ctx);
+    let ssl = SSL_new(ctx.sslCtx());
     if ssl as usize == 0usize {
       boxFree(b);
       return Err[Connection, QuicError](tlsError("SSL_new failed"));
@@ -248,12 +250,12 @@ pub struct Connection is Move {
     let arv = ngtcp2_accept(&mut hd, &packet[0usize] as *u8, packet.len);
     if arv != 0i32 {return Err[Connection, QuicError](QuicError.make(arv, "the packet is not a client's first"));}
     let b = boxMake();
-    let wire = ctx.alpn.view();
+    let wire = ctx.alpnBytes().view();
     let a = libc.malloc(wire.len);
     libc.memcpy(a, &wire[0usize] as *u8, wire.len);
     (*(b as *Box)).alpn = a;
     (*(b as *Box)).alpnLen = u32.from(wire.len);
-    let ssl = SSL_new(ctx.ctx);
+    let ssl = SSL_new(ctx.sslCtx());
     if ssl as usize == 0usize {
       boxFree(b);
       return Err[Connection, QuicError](tlsError("SSL_new failed"));
@@ -299,6 +301,8 @@ pub struct Connection is Move {
 
   // One UDP payload that came from the peer
   pub fn handleInput(self: &mut, packet: &Array[u8], now: Instant) {
+    // OpenSSL's error queue is the thread's: another connection's leftovers on this worker are not this one's
+    ERR_clear_error();
     self.expire(now);
     if closed || packet.len == 0usize {return;}
     let pi = PktInfo.none();
@@ -330,19 +334,39 @@ pub struct Connection is Move {
   // ngtcp2's own frames (the handshake, acknowledgements, flow control) ride
   // with them or alone. A wake time that has come is acted on first
   pub fn pollTransmit(self: &mut, now: Instant) IoBuf {
+    var spare: Option[IoBuf] = None;
+    self.pollTransmitWith(&mut spare, now)
+  }
+
+  // The same, into a buffer the caller keeps: 'spare' is the datagram's buffer when it holds one of
+  // maxUdpPayload bytes of capacity (else one is made, as pollTransmit does). A datagram that goes out
+  // takes the buffer (spare is None after); nothing to send puts it back, so a loop that polls until
+  // empty allocates once per datagram sent and none for the poll that finds none. A pool that refuses
+  // the buffer (iobuf's tryMake) ends the connection, as for every buffer it makes
+  pub fn pollTransmitWith(self: &mut, spare: &mut Option[IoBuf], now: Instant) IoBuf {
+    // OpenSSL's error queue is the thread's: another connection's leftovers are not this one's
+    ERR_clear_error();
     self.expire(now);
     if closed {return IoBuf();}
-    // A pool that refuses the datagram's buffer (iobuf's tryMake) ends the
-    // connection, as for every buffer it makes
-    var buf = match IoBuf.tryMake(maxUdp) {
-      case var Some(got) {got}
-      else {
-        self.starve();
-        return IoBuf();
+    var buf = IoBuf();
+    match spare.take() {
+      case var Some(kept) {buf = kept;}
+      case is None[IoBuf] {}
+    }
+    if buf.capacity() < maxUdp {
+      match IoBuf.tryMake(maxUdp) {
+        case var Some(got) {buf = got;}
+        else {
+          self.starve();
+          return IoBuf();
+        }
       }
-    };
+    }
     let n = self.transmitInto(buf.base(), maxUdp, now);
-    if n == 0usize {return IoBuf();}
+    if n == 0usize {
+      let none = spare.replace(buf);
+      return IoBuf();
+    }
     buf.setLen(n);
     buf
   }
@@ -962,7 +986,12 @@ pub struct Connection is Move {
     }
     if closed || self.isLocal(stream) {return;}
     if (stream & 2i64) == 0i64 {
-      ngtcp2_conn_extend_max_streams_bidi(conn, 1usize);
+      // Credit stops at the stream id limit: past it no peer stream opens (a server's HTTP/3 sends its
+      // GOAWAY before then)
+      if bidiCredit < bidiCap {
+        bidiCredit = bidiCredit + 1u64;
+        ngtcp2_conn_extend_max_streams_bidi(conn, 1usize);
+      }
     } else {
       ngtcp2_conn_extend_max_streams_uni(conn, 1usize);
     }
@@ -1195,7 +1224,13 @@ fn made(conn: *u8, ossl: *u8, ssl: *u8, b: *u8, ps: *u8, server: bool, host: &st
     lane: cfg.verifyLane, maxUdp: cfg.maxUdpPayload, floor: streamFloor(cfg),
     maxWindow: cfg.streamWindow, spare: creditSpare(cfg), reserve: creditSpare(cfg) / 2u64, streams: Streams(16usize),
     byId: Dict[i64, u32](), cursor: 0usize, events: Deque[Event](), verifyStage: stageIdle,
-    lastNow: now, closed: false, closing: None, err: None)
+    lastNow: now, closed: false, closing: None, err: None, bidiCredit: bidiStart(cfg), bidiCap: cfg.streamIdLimit / 4u64)
+}
+
+// The bidirectional streams the peer may open at the start: the Config's, never past the stream id limit
+fn bidiStart(cfg: &Config) u64 {
+  let cap = cfg.streamIdLimit / 4u64;
+  if cfg.maxStreamsBidi < cap {cfg.maxStreamsBidi} else {cap}
 }
 
 fn padded(n: usize) usize {(n + 7usize) / 8usize * 8usize}
@@ -1252,6 +1287,10 @@ fn settingsFor(now: Instant, cfg: &Config) Settings {
   var s = defaultSettings();
   s.initialTs = tsOf(now);
   s.maxTxUdpPayloadSize = cfg.maxUdpPayload;
+  // ngtcp2's default is no handshake timeout at all (UINT64_MAX), so a half-open connection lasts as long as
+  // the peer keeps its idle timer alive: the Config's, in nanoseconds
+  let hs = cfg.handshakeTimeout.nanos();
+  if hs > 0i64 {s.handshakeTimeout = u64.from(hs);}
   s
 }
 
@@ -1277,7 +1316,7 @@ fn paramsFor(cfg: &Config) TransportParams {
   tp.initialMaxStreamDataBidiRemote = floor;
   tp.initialMaxStreamDataUni = floor;
   tp.initialMaxData = cfg.connectionWindow;
-  tp.initialMaxStreamsBidi = cfg.maxStreamsBidi;
+  tp.initialMaxStreamsBidi = bidiStart(cfg);
   tp.initialMaxStreamsUni = cfg.maxStreamsUni;
   let idle = cfg.idleTimeout.nanos();
   tp.maxIdleTimeout = if idle > 0i64 {u64.from(idle)} else {0u64};

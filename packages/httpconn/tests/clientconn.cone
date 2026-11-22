@@ -1,0 +1,185 @@
+// A client connection (ClientConn) with no layer, driven with no socket against a
+// ServerConn: bytes both ways, events out. Checked on HTTP/1.1: a request answered with
+// a body (Response, Data, End), the same connection reused for a second, room() 0 while
+// an exchange is out and 1 after it, 'cancel' ending the connection; on HTTP/2 (prior
+// knowledge): two streams at once answered out of order, each response on its own
+// stream, room() following the exchanges, and a shutdown reaching the client as GOAWAY.
+
+mod clientconn;
+
+import testing use *;
+import collections use String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import httpconn use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn piece(text: &str) IoBuf {
+  var b = IoBuf(text.len());
+  b.append(text);
+  b
+}
+
+// Both directions until neither has bytes
+fn pump(cli: &mut ClientConn, srv: &mut ServerConn, now: Instant) {
+  var round = 0u32;
+  while round < 8u32 {
+    var moved = 0usize;
+    cli.fill(now);
+    var a = Chain.make(unbounded);
+    let na = cli.takeWire(&mut a);
+    while true {
+      match a.popFront() {
+        case let Some(b) {srv.wireIn(b, now);}
+        else {break;}
+      }
+    }
+    cli.wireSent(na);
+    srv.fill(now);
+    var out = Chain.make(unbounded);
+    let nb = srv.takeWire(&mut out);
+    while true {
+      match out.popFront() {
+        case let Some(b) {cli.wireIn(b, now);}
+        else {break;}
+      }
+    }
+    srv.wireSent(nb);
+    moved = na + nb;
+    if moved == 0usize {break;}
+    round = round + 1u32;
+  }
+}
+
+fn get(path: &str) RequestHead {
+  var h = RequestHead.make("GET", path, "example.com");
+  h.scheme = String.from("http");
+  h
+}
+
+fn answer(srv: &mut ServerConn, stream: u32, text: &str) {
+  let r = srv.response();
+  r.status = 200u16;
+  srv.respond(stream, BodyLength.sized(u64.from(text.len())));
+  srv.sendData(stream, piece(text));
+  srv.finish(stream);
+}
+
+// The server's next request event, its stream
+fn serverRequest(srv: &mut ServerConn, now: Instant) u32 {
+  // (the Data and End events of earlier requests are passed over)
+  while true {
+    match srv.next(now) {
+      case let Request(q) {return q.stream;}
+      case is Nothing {break;}
+      else {}
+    }
+  }
+  expect(false, "a request reached the server");
+  0u32
+}
+
+// The client's events up to the next Nothing, as text: "R<stream>:<status> D<stream>:<bytes> E<stream> "
+fn events(cli: &mut ClientConn, now: Instant) String {
+  var s = String();
+  while true {
+    match cli.next(now) {
+      case is Nothing {break;}
+      case let Response(r) {
+        s.append("R");
+        s.appendUInt(u64.from(r.stream));
+        s.append(":");
+        s.appendUInt(u64.from(r.head.status));
+        s.append(" ");
+      }
+      case let Data(d) {
+        s.append("D");
+        s.appendUInt(u64.from(d.stream));
+        s.append(":");
+        s.appendBytes(d.buf.view());
+        s.append(" ");
+        cli.release(d.stream, d.buf.len());
+      }
+      case let End(e) {
+        s.append("E");
+        s.appendUInt(u64.from(e.stream));
+        s.append(" ");
+      }
+      case let GoAway(g) {s.append("G ");}
+      case let Closed(c) {s.append("C ");}
+      else {s.append("? ");}
+    }
+  }
+  s
+}
+
+fn main() i32 {
+  let now = Instant.now();
+
+  // HTTP/1.1
+  var c = ClientConn.make(Config.make(), None, now);
+  var s = ServerConn.make(Config.make(), None, now);
+  expect(c.isOpen() && !c.isHttp2(), "plain HTTP/1.1");
+  expectUInt(u64.from(c.room()), 1u64, "one request fits a new connection");
+  expect(c.isIdle(), "idle");
+  let st = c.request(get("/one"), BodyLength(), now);
+  expectUInt(u64.from(st), 0u64, "HTTP/1.1's stream is 0");
+  expectUInt(u64.from(c.room()), 0u64, "none while the exchange is out");
+  expect(!c.isIdle(), "busy");
+  pump(&mut c, &mut s, now);
+  let ss = serverRequest(&mut s, now);
+  expectStr(s.request().target.view(), "/one", "the server read the target");
+  answer(&mut s, ss, "hello");
+  pump(&mut c, &mut s, now);
+  expectStr(events(&mut c, now).view(), "R0:200 D0:hello E0 ", "the response, its body, its end");
+  expectUInt(u64.from(c.room()), 1u64, "a request fits again once the response is whole");
+  expect(c.isIdle(), "idle again");
+  // The same connection, a second request
+  let st2 = c.request(get("/two"), BodyLength(), now);
+  pump(&mut c, &mut s, now);
+  serverRequest(&mut s, now);
+  expectStr(s.request().target.view(), "/two", "the second target");
+  answer(&mut s, 0u32, "again");
+  pump(&mut c, &mut s, now);
+  expectStr(events(&mut c, now).view(), "R0:200 D0:again E0 ", "the second response");
+  // A third, cancelled: HTTP/1.1 can only end the connection
+  c.request(get("/three"), BodyLength(), now);
+  c.cancel(0u32);
+  expectUInt(u64.from(c.room()), 0u64, "no room on a cancelled connection");
+  expect(events(&mut c, now).view() == "C ", "Closed after the cancel");
+
+  // HTTP/2 by prior knowledge
+  var cfg = Config.make();
+  cfg.h2PriorKnowledge = true;
+  var c2 = ClientConn.make(cfg, None, now);
+  var s2 = ServerConn.make(cfg, None, now);
+  expect(c2.isHttp2(), "prior knowledge chose HTTP/2");
+  expect(c2.room() > 1usize, "an HTTP/2 connection takes many requests");
+  let a = c2.request(get("/a"), BodyLength(), now);
+  let b = c2.request(get("/b"), BodyLength(), now);
+  expect(a != b && a != 0u32 && b != 0u32, "two streams");
+  expectUInt(u64.from(c2.liveStreams()), 2u64, "two streams live");
+  pump(&mut c2, &mut s2, now);
+  let sa = serverRequest(&mut s2, now);
+  let sb = serverRequest(&mut s2, now);
+  expectUInt(u64.from(sa), u64.from(a), "the server's first stream");
+  expectUInt(u64.from(sb), u64.from(b), "the server's second stream");
+  answer(&mut s2, sb, "BB");
+  answer(&mut s2, sa, "AA");
+  pump(&mut c2, &mut s2, now);
+  let got = events(&mut c2, now);
+  expectStr(got.view(), "R3:200 R1:200 D3:BB E3 D1:AA E1 ", "both responses, each on its stream (the heads leave first)");
+  expect(c2.isIdle(), "idle once both are whole");
+  c2.request(get("/c"), BodyLength(), now);
+  c2.cancel(5u32);
+  pump(&mut c2, &mut s2, now);
+  expect(c2.liveStreams() <= 1usize, "a cancelled stream is let go");
+  s2.shutdown();
+  s2.done(now);
+  pump(&mut c2, &mut s2, now);
+  expect(events(&mut c2, now).view() != "", "the shutdown reaches the client");
+  expectUInt(u64.from(c2.room()), 0u64, "no room after GOAWAY");
+  done()
+}

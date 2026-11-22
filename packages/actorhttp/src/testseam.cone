@@ -1,0 +1,224 @@
+// The client's test seam (the package's header, A CLIENT ON ACTORS; stage 4 row C6): an origin of an HttpClient made with
+// 'HttpClient.makeTest' goes where a test says instead of to the name's own addresses, and the pool above it stays real
+// (limits, scheduling, retries, redirects, deadlines): only the transport changes. A target is one of
+//   TestTarget.address(a)      the origin's connections go to address a (a fake server on a local port; curl's --resolve)
+//   TestTarget.addresses(l)    the origin's name looks up to the list l (the real rotation over a name's addresses runs)
+//   TestTarget.pipe(p)       the origin's connection is an in-memory pipe, the bytes of the wire with no socket: the
+//   TestTarget.pipes(list)     test is the server, reading what the client wrote and saying what it answers. Each new
+//                              connection to the origin takes the next pipe of the list, and one with none left fails
+//                              to connect
+//   TestTarget.handler(routes) the origin is served in this process by the routes of an HttpRoutes (the same handlers a
+//                              server runs), on a loopback listener the client starts when the origin is first dialled
+//                              and closes with itself
+// A target applies to the fetches that go through the client actor (get, getIn, send, sendIn); the
+// service's own fetches (stream, streamTo, events, upload) and HTTP/3 keep the real network. A target is for http:// origins:
+// no TLS is spoken to a fake.
+
+// ---------------------------------------------------------------------------
+// The in-memory pipe
+// ---------------------------------------------------------------------------
+
+// The far end of one connection, held by the test: what the client wrote is 'seen', what the test 'say's is read by the
+// client (any amount, up to the room of each read), and 'hangup' ends the reading side as a closed socket does
+pub actor TestPipe {
+  inbox: String;                 // said, not yet read by the client
+  seen: String;                  // everything the client wrote
+  hung: bool;
+  reader: Option[actors.ReplyOf[Result[IoBuf, IoError]]];   // the client's read, waiting for bytes
+  room: usize;
+  watch: Option[actors.ReplyOf[String]];                    // the test's wait for the client's bytes
+  watchAt: usize;
+
+  pub fn init(self: &new) {
+    *self = Self(inbox: String(), seen: String(), hung: false, reader: None[actors.ReplyOf[Result[IoBuf, IoError]]], room: 0usize,
+      watch: None[actors.ReplyOf[String]], watchAt: 0usize);
+  }
+
+  // The test speaks: these bytes are what the client reads next
+  pub async fn say(self, text: String) {
+    inbox.append(text.view());
+    self.feed();
+  }
+
+  // The test closes its end: once what was said is read, a read ends the stream
+  pub async fn hangup(self) {
+    hung = true;
+    self.feed();
+  }
+
+  // The client's read of up to room bytes: answered at once if there are bytes (or the end), else when there are
+  pub async fn read(self, room: usize, rp: actors.ReplyOf[Result[IoBuf, IoError]]) {
+    if reader is Some {
+      rp.answer(Err[IoBuf, IoError](IoError.ofKind(IoErrorKind.ResourceBusy)));
+      return;
+    }
+    self.room = room;
+    reader = Some[actors.ReplyOf[Result[IoBuf, IoError]]](rp);
+    self.feed();
+  }
+
+  // The client's read given up
+  pub async fn cancelRead(self) {
+    var r: Option[actors.ReplyOf[Result[IoBuf, IoError]]] = None;
+    r <-> reader;
+    match r {
+      case var Some(rp) {rp.answer(Err[IoBuf, IoError](IoError.ofKind(IoErrorKind.Cancelled)));}
+      else {}
+    }
+  }
+
+  // The client's write
+  pub async fn write(self, b: IoBuf) {
+    seen.appendBytes(b.view());
+    if watch is Some && seen.len() >= watchAt {
+      var w: Option[actors.ReplyOf[String]] = None;
+      w <-> watch;
+      match w {
+        case var Some(rp) {rp.answer(String.from(seen.view()));}
+        else {}
+      }
+    }
+  }
+
+  // The bytes the client has written, once there are at least n of them
+  pub async fn seenAtLeast(self, n: usize, rp: actors.ReplyOf[String]) {
+    if seen.len() >= n {
+      rp.answer(String.from(seen.view()));
+      return;
+    }
+    // an earlier wait still open is answered with what is seen so far, so it is not dropped
+    var old: Option[actors.ReplyOf[String]] = None;
+    old <-> watch;
+    match old {
+      case var Some(first) {first.answer(String.from(seen.view()));}
+      else {}
+    }
+    watchAt = n;
+    watch = Some[actors.ReplyOf[String]](rp);
+  }
+
+  fn feed(self) {
+    if reader is None {return;}
+    if inbox.len() == 0usize && !hung {return;}
+    var r: Option[actors.ReplyOf[Result[IoBuf, IoError]]] = None;
+    r <-> reader;
+    match r {
+      case var Some(rp) {
+        let all = inbox.view() as &Array[u8];
+        var k = all.len;
+        if k > room {k = room;}
+        var b = IoBuf(if k == 0usize {1usize} else {k});
+        if k > 0usize {b.append(&all[0usize ..< k]);}
+        var rest = String();
+        if k < all.len {rest.appendBytes(&all[k ..< all.len]);}
+        inbox = rest;
+        rp.answer(Ok[IoBuf, IoError](b));
+      }
+      else {}
+    }
+  }
+}
+
+// What the client has written to the pipe, once it is at least n bytes long
+pub fn pipeSeen(p: TestPipe, n: usize) actors.Awaitable[String] {
+  actors.Awaitable[String].make(fn(rp: actors.ReplyOf[String]) [p, n] {p.seenAtLeast(n, rp);})
+}
+
+fn pipeRead(p: TestPipe, room: usize) actors.Awaitable[Result[IoBuf, IoError]] {
+  actors.Awaitable[Result[IoBuf, IoError]].make(fn(rp: actors.ReplyOf[Result[IoBuf, IoError]]) [p, room] {p.read(room, rp);})
+}
+
+// ---------------------------------------------------------------------------
+// The targets
+// ---------------------------------------------------------------------------
+
+const kindNone = 0u32;       // nothing to connect to (a pipe list used up, a handler's listener that did not start)
+const kindAddress = 1u32;
+const kindPipe = 2u32;
+const kindHandler = 3u32;
+const kindAddresses = 4u32;  // a list the name's lookup is taken to have found (the real address rotation then runs)
+
+// Where one origin's connections go
+pub struct TestTarget is Move {
+  kind: u32;
+  addr: SocketAddr;              // the address; a handler's, once its listener is up (port 0 until then)
+  wires: List[TestPipe];
+  next: usize;                   // the pipe the next connection takes
+  routes: Option[HttpRoutes];    // a handler's, until its listener is started
+  started: bool;
+  server: Server;                // a handler's listener, held so that it closes with the client
+  found: List[SocketAddr];       // an addresses target's list
+
+  fn plain(kind: u32, addr: SocketAddr) TestTarget {
+    TestTarget(kind, addr, List[TestPipe](), 0usize, None, false, Server.none(), List[SocketAddr]())
+  }
+
+  // The origin's name looks up to this list, in place of the resolver: its connections take the addresses in turn, as for a
+  // name with several addresses (one lookup serves a burst; each dial after it takes the next address first)
+  pub fn addresses(l: &List[SocketAddr]) TestTarget {
+    var t = TestTarget.plain(kindAddresses, SocketAddr.localhost(0u16));
+    var i = 0usize;
+    while i < l.len() {
+      t.found.push(l[i]);
+      i = i + 1usize;
+    }
+    t
+  }
+
+  pub fn address(a: SocketAddr) TestTarget {TestTarget.plain(kindAddress, a)}
+
+  pub fn pipe(p: &TestPipe) TestTarget {
+    var t = TestTarget.plain(kindPipe, SocketAddr.localhost(0u16));
+    t.wires.push(*p);
+    t
+  }
+
+  pub fn pipes(l: &List[TestPipe]) TestTarget {
+    var t = TestTarget.plain(kindPipe, SocketAddr.localhost(0u16));
+    var i = 0usize;
+    while i < l.len() {
+      t.wires.push(l[i]);
+      i = i + 1usize;
+    }
+    t
+  }
+
+  pub fn handler(r: HttpRoutes) TestTarget {
+    var t = TestTarget.plain(kindHandler, SocketAddr.localhost(0u16));
+    t.routes = Some[HttpRoutes](r);
+    t
+  }
+}
+
+alias TargetMap = Dict[String, TestTarget];
+
+// The origins a client redirects, by "host:port" as the URL spells them (the host in lower case)
+pub struct TestTargets is Move {
+  map: TargetMap;
+
+  pub fn none() TestTargets {TestTargets(TargetMap())}
+
+  pub fn make() TestTargets {TestTargets(TargetMap())}
+
+  // The origin host:port goes to target
+  pub fn to(self, host: &str, port: u16, target: TestTarget) TestTargets {
+    var t = self;
+    t.map.insert(targetKey(host, port), target);
+    t
+  }
+}
+
+fn targetKey(host: &str, port: u16) String {
+  var k = String();
+  var i = 0usize;
+  let b = host as &Array[u8];
+  while i < b.len {
+    var c = b[i];
+    if c >= 'A' && c <= 'Z' {c = c + 32u8;}
+    k.appendByte(c);
+    i = i + 1usize;
+  }
+  k.append(":");
+  k.appendUInt(u64.from(port));
+  k
+}

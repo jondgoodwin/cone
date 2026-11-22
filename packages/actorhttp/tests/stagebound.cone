@@ -26,6 +26,7 @@ import time use Instant, Duration;
 import sync use Channel, Sender, Receiver;
 import collections use List, String, AnyError;
 import iobuf use IoBuf, Chain;
+import bufpool;
 import iocore use SocketAddr;
 import fs;
 import path use Path;
@@ -33,7 +34,7 @@ import http use *;
 import httpclient use Request;
 import actors;
 import aio use IoLimits;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError;
 import testing use *;
 
 struct Tally {
@@ -290,7 +291,7 @@ fn url(port: u16, path: &str) String {
 // ---------------------------------------------------------------------------
 
 actor Reader {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, n: u64, want: u64, holdMs: i64, paceMs: i64, burst: u64) {
     let r = await client.stream(Request.get(u.view()));
@@ -345,7 +346,9 @@ actor Reader {
 // fast buffers are reused. Each refusal of its own is counted in tally.mine, so a test can tell
 // the refusals of the code under test from these.
 fn hoard() Chain {
-  iobuf.trimAll();
+  // not trimAll: the server and client threads are running and take and return buffers, and trimAll
+  // flushes their caches from under them. This thread's own cache and the idle slabs are what it needs.
+  bufpool.trimStock();
   var held = Chain.make(unbounded);
   let limit = Instant.now() + Duration.fromMillis(30000i64);
   while tally.ended.load() < 1u64 && Instant.now() < limit {
@@ -390,9 +393,9 @@ fn main() i32 {
   reset();
   var window = 0u64;
   {
-    iobuf.trimAll();
+    bufpool.trimStock();   // not trimAll: the server thread is running (see hoard)
     let base = u64.from(iobuf.stats().heldBytes);
-    let r = Reader(Client.standard());
+    let r = Reader(HttpClient.standard());
     r.run(url(port, "/tiny/1048576"), tinyBytes, wantTiny, 700i64, 0i64, 1u64);
     let peak = peakHeld(&tally.ended, 1u64, 600i64, base);
     window = peak;
@@ -407,11 +410,11 @@ fn main() i32 {
   // ten at once
   reset();
   {
-    iobuf.trimAll();
+    bufpool.trimStock();   // not trimAll: the server thread is running (see hoard)
     let base = u64.from(iobuf.stats().heldBytes);
     var k = 0u64;
     while k < 10u64 {
-      let r = Reader(Client.standard());
+      let r = Reader(HttpClient.standard());
       r.run(url(port, "/tiny/524288"), 524288u64, wantTen, 900i64, 0i64, 1u64);
       k = k + 1u64;
     }
@@ -443,7 +446,7 @@ fn main() i32 {
   // a reader that keeps up: every piece its own
   reset();
   {
-    let r = Reader(Client.standard());
+    let r = Reader(HttpClient.standard());
     r.run(url(port, "/paced/200"), 60000u64, expected(60000u64), 0i64, 0i64, 1u64);
     expect(waitFor(&tally.ended, 1u64, 60000i64), "the paced stream ended");
     expect(tally.good.load() == 1u64, "...whole, the hash right");
@@ -463,7 +466,7 @@ fn main() i32 {
     let n = 10u64 * 40320u64;
     var k = 0u64;
     while k < 4u64 {
-      let r = Reader(Client.standard());
+      let r = Reader(HttpClient.standard());
       r.run(url(port, "/alt/10"), n, expected(n), 500i64, 3i64, 1u64);
       k = k + 1u64;
     }
@@ -482,7 +485,7 @@ fn main() i32 {
       while k < 10u64 {
         let seed = batch * 10u64 + k;
         let pace = seed % 3u64;
-        let r = Reader(Client.standard());
+        let r = Reader(HttpClient.standard());
         var u = String.from("/mix/393216/");
         u.appendUInt(seed);
         r.run(url(port, u.view()), 393216u64, wantMix, if pace == 2u64 {60i64} else {0i64}, if pace == 1u64 {1i64} else {0i64}, 1u64);
@@ -508,7 +511,7 @@ fn main() i32 {
   // the pool taken while a stream stages
   reset();
   {
-    let r = Reader(Client.standard());
+    let r = Reader(HttpClient.standard());
     r.run(url(port, "/tiny/1048576"), tinyBytes, wantTiny, 1500i64, 0i64, 1u64);
     expect(waitFor(&tally.opened, 1u64, 20000i64), "the head arrived");
     thread.sleep(Duration.fromMillis(300i64));
@@ -548,7 +551,7 @@ fn main() i32 {
   expect(allHome(), "...and every buffer is home after the shortage");
   reset();
   {
-    let r = Reader(Client.standard());
+    let r = Reader(HttpClient.standard());
     r.run(url(port, "/tiny/65536"), 65536u64, expected(65536u64), 0i64, 0i64, 1u64);
     expect(waitFor(&tally.ended, 1u64, 30000i64) && tally.good.load() == 1u64, "a new fetch is served once the pool has room");
   }

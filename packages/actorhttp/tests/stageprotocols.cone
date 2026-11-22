@@ -20,6 +20,7 @@ import time use Instant, Duration;
 import sync use Channel, Sender, Receiver;
 import collections use List, String, AnyError;
 import iobuf use IoBuf, Chain;
+import bufpool;
 import iocore use SocketAddr;
 import fs;
 import path use Path;
@@ -28,7 +29,7 @@ import httpclient use Request;
 import tls;
 import actors;
 import aio use IoLimits;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError;
 import testing use *;
 
 struct Tally {
@@ -272,12 +273,12 @@ fn url(port: u16, path: &str) String {
 }
 
 // A client that trusts the test root; h2 offered unless told not to
-fn trusting(h2: bool) Client {
+fn trusting(h2: bool) HttpClient {
   var cfg = httpclient.Config.make();
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
   cfg.http2 = h2;
-  Client.make(cfg, actorhttp.defaultMaxBody)
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
 }
 
 // The reader: stream().read() to the end, hashing. 'holdMs' asleep before the first
@@ -285,7 +286,7 @@ fn trusting(h2: bool) Client {
 // ---------------------------------------------------------------------------
 
 actor Reader {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, n: u64, want: u64, holdMs: i64, paceMs: i64, burst: u64) {
     let r = await client.stream(Request.get(u.view()));
@@ -361,7 +362,7 @@ fn rows(p: u64, name: &str) {
   // pieces now join the last one queued
   reset();
   {
-    iobuf.trimAll();
+    bufpool.trimStock();   // not trimAll: the server thread is running
     let base = u64.from(iobuf.stats().heldBytes);
     let r = Reader(trusting(p == 1u64));
     r.run(url(port, "/tiny/524288"), 524288u64, expected(524288u64), 700i64, 0i64, 1u64);

@@ -53,6 +53,22 @@
 //   Failure: f.stage f.code f.error f.unsent String() <- f  Stage  toText(&s)  (FAILURES)
 //   Timing: t.submitted t.started t.firstByte t.ended
 //   ConnId ReqId ListenerId  Config  DriverStats
+//   H3Conn: forClient forServer datagramIn takeDatagram finishTurn handleTimeout pollTimeout  (THE VALUE)
+//   H3Server H3Client (httpconn.ServerProto, ClientProto over an H3Conn; also httpclient's H3ServerConn, H3ClientConn)
+//   Acceptor Connector (httpclient's H3Acceptor, H3Connector; Plugin.acceptor() / connector() hand them out)
+//
+// THE VALUE. A connection's protocol logic (QUIC events, HTTP/3's events and writes, the
+// stream records and their in-step stream numbers, the waste budget, the wake clamp, the
+// request-stream id limit with its GOAWAY, the Failed-before-Closed sweep) is one sans-I/O
+// value, 'H3Conn' (h3conn.cone and h3steps.cone), that owns the quic.Connection and the
+// http3.Connection and has no socket, loop or clock: its host gives it datagrams and the time and
+// takes the datagrams to send. 'H3Server' and 'H3Client' present one as httpconn's ServerProto and
+// ClientProto, so code above the wire is written once for TCP and QUIC (the connection actors,
+// stage 5, host them). The polled Driver below is one host: it keeps what is not protocol (sockets,
+// the 0x33 token layer, completions, routing, the all-connections scan) and calls the value.
+// The value's type is meant to stay internal to this plug-in; H3Conn, H3Server and H3Client stay public only because
+// tests/h3value.cone builds them directly (it needs injectStreamSkew; the seam for that is an open question). The
+// actors reach a connection only through Acceptor and Connector. H3Counts and protoFailure are package-private.
 //
 // THE DRIVER. One per Loop, driven by the loop's thread. It is a hosted
 // service by its methods (aio's trait Hosted): 'turn(lp)' moves every
@@ -351,7 +367,7 @@ import collections use List, String, Deque, Dict;
 import time use Instant, Duration;
 import iobuf use IoBuf, Chain, page, stats;
 import diag;
-import iocore use Loop, Op, Target, Completion, Handle, SocketAddr, IoError, forever;
+import iocore use Loop, Op, OpId, Target, Completion, Handle, SocketAddr, IoError, forever;
 import ioerror use IoErrorKind;
 import pools use GenPool, Handle as PoolHandle;
 import http use *;
@@ -359,6 +375,7 @@ import http3;
 import quic;
 import tls;
 import httpclient;
+import httpconn;
 
 // The pools of this package, and the id of one record in any of them; the pool kind is spelled here only
 alias Streams = GenPool[Strm];
@@ -588,7 +605,7 @@ pub struct Event {
   pub response: ResponseHead; // Response, Interim: the head
   pub body: BodyLength;       // Request, Response: what is known of the body
   pub buf: IoBuf;             // Data: the bytes, the program's now
-  pub trailers: Headers;      // End: the trailer fields
+  pub trailers: HttpHeaders;      // End: the trailer fields
   pub timing: Timing;         // Done: when it reached each point
 
   // An event of kind k, about conn and req, every other field empty
@@ -596,7 +613,7 @@ pub struct Event {
     Event(kind: k, token: token, conn: conn, req: req, stream: stream, listener: ListenerId.none(),
       peer: SocketAddr.localhost(0u16), clean: false, failure: Failure.none(),
       request: RequestHead(), response: ResponseHead(), body: BodyLength(),
-      buf: IoBuf(), trailers: Headers(), timing: Timing.zero())
+      buf: IoBuf(), trailers: HttpHeaders(), timing: Timing.zero())
   }
 
   // Whether it is a request's final answer
@@ -650,29 +667,13 @@ pub struct DriverStats {
 // ---------------------------------------------------------------------------
 
 // A connection ID of at most 20 bytes (RFC 9000's most), its bytes packed
-// into three words, and its length
-struct CidKey is Hash {
-  a: u64;
-  b: u64;
-  c: u64;
-  len: u32;
-
-  pub fn `==`(self, o: CidKey) bool {a == o.a && b == o.b && c == o.c && len == o.len}
-}
+// into three words, and its length: httpclient's H3Cid, the key the actors'
+// endpoint routes by too
+alias CidKey = httpclient.H3Cid;
 
 // The key of the n bytes at bytes[from], or None when n is past 20 or past
 // the end
-fn cidKey(bytes: &Array[u8], from: usize, n: usize) Option[CidKey] {
-  if n > 20usize || from + n > bytes.len {return None;}
-  var w = Array[u64, 3]() <- fill 0u64;
-  var k = 0usize;
-  while k < n {
-    let at = k / 8usize;
-    w[at] = (w[at] << 8u64) | u64.from(bytes[from + k]);
-    k = k + 1usize;
-  }
-  Some[CidKey](CidKey(w[0usize], w[1usize], w[2usize], u32.from(n)))
-}
+fn cidKey(bytes: &Array[u8], from: usize, n: usize) Option[CidKey] {httpclient.H3Cid.of(bytes, from, n)}
 
 // A datagram's Destination Connection ID: a long header's (its length in
 // byte 5), or a short header's, quic.localIdLen bytes after its first

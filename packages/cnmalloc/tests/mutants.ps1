@@ -21,8 +21,15 @@
 #   h1   the start word's key names the page but not its generation: a retired page's next life starts at the old life's word  (caught by lfmulti: its filler's word is not the one the round set up; found 19 Nov when the key was the page alone)
 #   (row 580, the slot cap; a mutant of cnmalloc.cone, not of the shim)
 #   s1   the default slot cap left at 8 (the setting's default 0 replaced by 8)  (caught by lfslots: sixteen threads on one class never take it above 8 active slots)
-#   none the unmutated shim: doublefree, lfpage (single and grouped), lfrace (plain and with fills), lfstale (single and grouped),
-#        lfmulti and lfreturn must pass
+#   (row 603, the re-listing threshold; the tests that look for one free cell to list a page run with relist=1 in mutants.json)
+#   e1   the free's edge test is "the word was empty" (n + 1 == 1) whatever the threshold  (caught by lfstorm: no page that a free
+#        brings to its threshold is ever listed again, so the class takes a new page for every hundred allocations and its page count
+#        grows with the operations while takes per operation fall to about 0.01; the page-count check fails)
+#   s0   the out-of-memory sweep removed (lf_oom returns 0)                                (caught by lfoom: a 64 MiB heap filled, the hidden cells freed, and the
+#        first allocation after them fails; the model's s0 is the same mutation)
+#   none the unmutated shim: doublefree, lfpage (single and grouped), lfrace (plain, with fills, and both again at the default
+#        threshold), lfstale (single and grouped), lfmulti, lfreturn, lfstorm (default, relist=2, relist=3) and lfoom (default,
+#        relist=2, relist=3) and lfslots must pass
 # Everything is built and run under <Scratch> (default %TEMP%\cnmalloc-mutants); nothing in the tree changes. A mutant's test
 # runs -Runs times (all but a are deterministic: 5 of 5 must fail). lfrace on a mutant is capped at -RaceSecs seconds
 # (CNRACE_MAXSECS); the unmutated lfrace runs with its default. Windows only (cl and link; Linux's is mutants.py). Needs the Visual Studio build tools and the package's release build, which

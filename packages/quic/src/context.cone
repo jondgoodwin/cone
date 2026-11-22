@@ -21,6 +21,8 @@ pub struct Config {
   pub maxStreamsUni: u64;        // unidirectional streams the peer may have open
   pub idleTimeout: Duration;     // silence that ends the connection (the smaller of both ends'); zero: none
   pub maxUdpPayload: usize;      // the largest UDP payload sent, and the largest the peer may send (1200 at least)
+  pub handshakeTimeout: Duration; // a connection whose handshake is not done by then ends (ngtcp2's own default is none); zero: none
+  pub streamIdLimit: u64;        // stream ids stay under this: no bidirectional stream credit is granted past it (2^32 by default)
 
   // The defaults (see the package's header, CONFIG): ALPN h3, the OS's
   // verifier, 256 KiB a stream at most, 1 MiB of credit the connection's
@@ -31,7 +33,8 @@ pub struct Config {
       verifyLane: tls.defaultVerifyLane(), streamWindow: defaultStreamWindow,
       creditBudget: defaultCreditBudget, connectionWindow: defaultConnectionWindow, maxStreamsBidi: defaultMaxStreamsBidi,
       maxStreamsUni: defaultMaxStreamsUni, idleTimeout: Duration.fromSeconds(defaultIdleSeconds),
-      maxUdpPayload: defaultMaxUdpPayload)
+      maxUdpPayload: defaultMaxUdpPayload, handshakeTimeout: Duration.fromSeconds(defaultHandshakeSeconds),
+      streamIdLimit: defaultStreamIdLimit)
   }
 }
 
@@ -45,6 +48,8 @@ pub const defaultMaxStreamsBidi = 100u64;
 pub const defaultMaxStreamsUni = 16u64;
 pub const defaultIdleSeconds = 30i64;
 pub const defaultMaxUdpPayload = 1452usize;
+pub const defaultHandshakeSeconds = 10i64;
+pub const defaultStreamIdLimit = 4294967296u64;      // 2^32
 
 // A stream's first window, its floor (see the package's header, CREDIT): half
 // the budget over the streams the peer may have open, so that the floors of
@@ -68,12 +73,29 @@ fn creditSpare(cfg: &Config) u64 {
   if cfg.creditBudget > reserved {cfg.creditBudget - reserved} else {0u64}
 }
 
-// What one side's connections share (see the header of this file)
-pub struct Context is Move {
+// A Context's content, fixed when it is made and read by every Connection made from it with no lock
+// ('Arc[imm, ...]': a server's connections, accepted on any worker, share it and never wait on one
+// another, as tls's CtxCore is shared). It declares Sendable, a promise taken on trust, for OpenSSL's
+// pointer: an SSL_CTX is safe to use from any thread once configured (OpenSSL's own locks; SSL_new
+// takes a reference on it atomically), and every use a Connection makes of this is a read. The rest is
+// plain data nothing mutates: the role, ALPN's wire bytes, and the Config, whose 'verify' (a
+// tls.Verifier: a kind, a PEM String, a pin List[u8]) and 'verifyLane' (a Lane: a u32 id) hold no
+// cell, lock or pointer.
+struct QuicCore is Sendable {
   ctx: *u8;
   serverRole: bool;
   alpn: List[u8];           // ALPN's wire format: the name after its length
   cfg: Config;
+
+  fn final(self: &uni) {SSL_CTX_free(ctx);}
+}
+
+alias Core = Arc[imm, QuicCore];
+
+// What one side's connections share (see the header of this file). A copy shares the same SSL_CTX (a
+// handle on an 'Arc[imm, ...]'), so every acceptor and connection actor on every worker holds one
+pub struct Context {
+  core: Core;
 
   // A client's: the server's certificate checked by cfg.verify, against the
   // name each Connection connects to; cfg.alpn offered, and required of the
@@ -106,7 +128,7 @@ pub struct Context is Move {
     }
     let w = wire.view();
     SSL_CTX_set_alpn_protos(ctx, &w[0usize] as *u8, u32.from(w.len));
-    Ok[Context, QuicError](Context(ctx, false, wire, checked(cfg)))
+    Ok[Context, QuicError](Context(Core(QuicCore(ctx, false, wire, checked(cfg)))))
   }
 
   // A server's: its certificate chain and private key from PEM files;
@@ -144,15 +166,17 @@ pub struct Context is Move {
     SSL_CTX_set_max_early_data(ctx, 0u32);
     SSL_CTX_set_num_tickets(ctx, 0usize);
     SSL_CTX_set_alpn_select_cb(ctx, &alpnSelect, null);
-    Ok[Context, QuicError](Context(ctx, true, wire, checked(cfg)))
+    Ok[Context, QuicError](Context(Core(QuicCore(ctx, true, wire, checked(cfg)))))
   }
 
-  pub fn isServer(self: &) bool {serverRole}
+  pub fn isServer(self: &) bool {core.serverRole}
 
   // The Config its connections are made with
-  pub fn config(self: &) &Config {&cfg}
+  pub fn config(self: &) &Config {&core.cfg}
 
-  fn final(self: &uni) {SSL_CTX_free(ctx);}
+  // The SSL_CTX, and ALPN's wire bytes, for the Connections made from it
+  fn sslCtx(self: &) *u8 {core.ctx}
+  fn alpnBytes(self: &) &List[u8] {&core.alpn}
 }
 
 // A Config with its payload size no smaller than QUIC's least (1200)

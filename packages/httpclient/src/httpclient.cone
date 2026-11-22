@@ -46,9 +46,12 @@
 //   c.poll(lp, until, events)  c.complete(lp, c)  c.pump(lp, events)  c.wakeAt()  (DRIVING)
 //   c.stats()  c.driverStats()  c.live()  c.queued()  c.isLive(id)  c.http3Live()
 //   Config.make(): conn tlsConfig http2 maxPerOrigin maxTotal idleTimeout  (CONFIGURATION)
-//     maxLifetime maxQueued maxRetries maxRedirects userAgent
+//     maxLifetime maxQueued maxRetries maxRedirects userAgent maxOrigins
+//     maxStreamsPerConnection
 //     http3 http3Origins http3Timeout                                    (HTTP/3)
 //   trait Http3  NoHttp3  H3Event H3Kind H3Req  http3From(maker, t)       (THE PLUG-IN)
+//   Http3.acceptor(cfg)  Http3.connector()                                (THE PLUG-IN, FOR ACTORS)
+//   trait H3ServerConn H3ClientConn H3Acceptor H3Connector  H3Cid          (h3.cone, THE ACTORS' SIDE)
 //   readAltSvc(value, host): AltSvc.H3(port, maxAge) Clear Nothing
 //   Request.get(url)  Request.make(method, url)  Request.to(method, Url)  (REQUESTS)
 //     r.url r.headers r.body r.intent r.score r.deadline r.group r.maxRedirects
@@ -60,6 +63,23 @@
 //   Response: r.outcome r.status r.version r.headers r.body r.url r.failure r.timing r.isOk()
 //   Failure: f.stage f.code f.error f.unsent f.attempts String() <- f;  Stage  (FAILURES)
 //   Timing: t.queued t.dispatched t.firstByte t.ended t.attempts t.redirects t.reused
+//   ClientCore.make(limits, maxOrigins, h3on)  Limits  ConnRef  trait ConnFacts   (THE POOL)
+//     core.ask(request, sink, now)  core.on(poolEvent, facts)  core.next(facts)  core.take()
+//     Command: c.kind (CommandKind: Open OpenH3 Send Close Cancel Watch Answer) and its fields
+//     PoolEvent: e.kind (PoolEventKind: Connected Closed Done Failed Stopped Response Due Cancel
+//       Reprioritize) and its fields
+//
+// THE POOL. The pool's decisions are a value, ClientCore (core.cone), that calls nothing of a loop or a
+// driver: which waiting fetch goes on which connection, where a connection is opened, when a fetch is
+// sent again after its connection fails, how a redirect is followed, which idle connection is closed for
+// room. Events go in ('ask', and 'on' for a connection connected or closed, an exchange done, failed or
+// stopped, a response head, a timer run out, a cancel, a reprioritize), and commands come out ('next'
+// gives them one at a time: Open a connection, Send a request, Close, Cancel, Watch a fetch's timer,
+// Answer a fetch). A host carries out each command before it asks for the next, since the pool reads what
+// its connections say of themselves (ConnFacts: idle, takes requests, protocol chosen, HTTP/3 room) as it
+// decides, and each command changes that. Two hosts: the polled Client (client.cone: its driver, its
+// loop's timers, its HTTP/3 plug-in), and a client actor (stage 4's). Each fetch is answered once, or sent
+// again, never both and never neither (tests/coredrive.cone drives it with events and no loop).
 //
 // THE CLIENT. One per Loop, driven by the loop's thread, as httpconn's
 // Driver is, which it owns: every connection it makes is one of its
@@ -109,7 +129,8 @@
 // 'idleTimeout' (50 s: below the servers it meets, 60 s for Cone's own and
 // most load balancers, so the client, not the server, ends an idle
 // connection and no request is sent on one the server is closing), or when
-// the total is reached and another origin needs a connection;
+// the total is reached and another origin needs a connection (the one idle
+// longest, of an origin nothing waits for, is the one closed);
 // 'closeIdle(lp)' closes every idle one now. A connection is not given a
 // request once it has been open 'maxLifetime' (5 min): it is closed then,
 // so a DNS change or a new server behind a load balancer is seen. A
@@ -156,10 +177,12 @@
 // speaks it only by prior knowledge ('conn.h2PriorKnowledge': every http
 // connection of the client's, from its first byte, never by an Upgrade).
 // Each Response says which protocol carried it ('version': Version.Http2 or
-// Http11); the program's calls are the same either way. Per origin, one
-// HTTP/2 connection carries many fetches, a stream each: while it takes
-// requests no other is opened to the origin, so maxPerOrigin bounds the
-// HTTP/1.1 connections alone (maxTotal counts both). A fetch becomes a
+// Http11); the program's calls are the same either way. Per origin, an
+// HTTP/2 connection carries many fetches, a stream each: another is opened
+// to the origin only when every one that takes requests has
+// 'maxStreamsPerConnection' streams on it (up to maxPerOrigin, which maxTotal
+// also counts), and a fetch goes on the one with the fewest streams, a tie
+// to the one used least recently. A fetch becomes a
 // stream only while the server allows another (its MAX_CONCURRENT_STREAMS);
 // the rest wait in the client's queue, in the order. A connection's protocol
 // is known once its TLS handshake has chosen it, and an origin remembers
@@ -201,7 +224,10 @@
 // timeout, maxLifetime) takes no new fetch, and the next makes another.
 // Retries are HTTP/2's: a stream refused (sent before a GOAWAY's last, or
 // never reached QUIC) whatever the method, one cut off with no response
-// byte when the method is idempotent. Not here: racing QUIC against TCP
+// byte when the method is idempotent. The pool's decisions are ClientCore's, so
+// this client and actorhttp's client actor share them, Alt-Svc learning and the
+// fallback included; the actor makes its connections from the plug-in's
+// connector (h3.cone, THE ACTORS' SIDE), not through a Loop. Not here: racing QUIC against TCP
 // (Chrome's), HTTPS DNS records, 0-RTT, IPv6 (quic's addresses are IPv4),
 // another host's alternative, and Alt-Svc's 'persist'.
 //
@@ -290,7 +316,14 @@
 // bytes the program holds then are its own). Nothing queues without a
 // bound: at most 'maxQueued' requests wait (10,000; past it, Failed at
 // once, Stage.Queue: a full queue is a visible error, never silent growth),
-// 'maxTotal' connections, and the body window per connection.
+// 'maxTotal' connections, and the body window per connection. Origins are
+// bounded too: past 'maxOrigins' (1,024; 0 is no limit) the origins left idle
+// (nothing waiting, no connection, no fetch naming them) are forgotten, least
+// recently used first, as a new one needs the room; one whose first connect
+// failed, with nothing waiting, is not kept at all. And on one HTTP/2
+// connection the client puts at most 'maxStreamsPerConnection' streams at
+// once (100; 0 is no limit of the client's own), or the peer's limit when that is
+// lower; the rest wait in their order.
 //
 // FAILURES. A Failed answer carries a Failure: the stage it failed at (Url,
 // Queue, Resolve, Connect, Read, Write, Http, Tls, Closed, Limit, Redirect),
@@ -351,14 +384,14 @@ mod httpclient;
 
 import libc;
 import pools use GenPool;
-import collections use List, Deque, String;
+import collections use List, Deque, String, Dict, PriorityQueue;
 import time use Instant, Duration;
 import iobuf use IoBuf;
-import iocore use Loop, Completion, OpId, CancelGroup, Target, IoError, SocketAddr, forever, resolveOp, addressesIn;
+import iocore use Loop, Op, Completion, OpId, CancelGroup, Target, IoError, SocketAddr, forever, resolveOp, addressesIn;
 import http use *;
 import httpconn;
 import tls;
-import url use Url, UrlError;
+import url use Url, UrlError, HostKind;
 import diag;
 import streams;
 
@@ -405,6 +438,8 @@ pub struct FetchId {
   gen: u32;
 
   pub fn none() FetchId {FetchId(noEntry, 0u32)}
+  // The n'th id of a caller that numbers its own fetches (actorhttp's one-connection owner); n is below noEntry
+  pub fn numbered(n: u32) FetchId {FetchId(n, 1u32)}
   pub fn isNone(self) bool {gen == 0u32}
   pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index)}
   pub fn `==`(self, o: FetchId) bool {index == o.index && gen == o.gen}
@@ -431,13 +466,16 @@ pub struct Config {
   pub http3: Option[&fn(t: &tls.ClientConfig) Uni[Http3]];   // the HTTP/3 plug-in's maker; None: no HTTP/3
   pub http3Origins: List[String];   // https origins known to speak HTTP/3 (prior knowledge), as URLs
   pub http3Timeout: Duration;    // an HTTP/3 attempt not connected by then falls back to TCP
+  pub maxOrigins: u32;           // origins the client remembers; idle ones are dropped, least recently used first, past it (0: no limit)
+  pub maxStreamsPerConnection: u32;   // streams the client puts on one HTTP/2 connection at once, or the peer's limit if that is lower (0: no limit of the client's own)
 
   // The defaults: no HTTP/3 (see HTTP/3)
   pub fn make() Config {
     Config(conn: httpconn.Config.make(), tlsConfig: tls.ClientConfig.make(), http2: true, maxPerOrigin: 16u32,
       maxTotal: 256u32, idleTimeout: Duration.fromSeconds(50i64), maxLifetime: Duration.fromMinutes(5i64),
       maxQueued: 10000u32, maxRetries: 2u32, maxRedirects: 10u32, userAgent: String.from("cone-httpclient/0.1"),
-      http3: None, http3Origins: List[String](), http3Timeout: Duration.fromSeconds(1i64))
+      http3: None, http3Origins: List[String](), http3Timeout: Duration.fromSeconds(1i64), maxOrigins: 1024u32,
+      maxStreamsPerConnection: 100u32)
   }
 }
 
@@ -451,7 +489,7 @@ const useConfig = 4294967295u32;
 pub struct Request {
   pub method: Method;
   pub url: Url;
-  pub headers: Headers;
+  pub headers: HttpHeaders;
   pub body: String;              // sent whole, with its Content-Length; empty: no body
   pub intent: Intent;
   pub score: i64;                // within its intent, higher first
@@ -481,7 +519,7 @@ pub struct Request {
   pub fn to(method: &str, u: Url) Request {
     let m = methodOf(method);
     let o = if m == Method.Other {String.from(method)} else {String()};
-    Request(method: m, url: u, headers: Headers(), body: String(), intent: Intent.Visible,
+    Request(method: m, url: u, headers: HttpHeaders(), body: String(), intent: Intent.Visible,
       score: 0i64, deadline: forever(), group: None, maxRedirects: useConfig, methodText: o,
       urlError: None)
   }
@@ -626,14 +664,14 @@ pub struct Event {
   pub body: BodyLength;         // Response: what is known of the body
   pub url: String;              // Response: the URL that answered, after any redirects
   pub buf: IoBuf;               // Data: the bytes, the program's now
-  pub trailers: Headers;        // End: the trailer fields
+  pub trailers: HttpHeaders;        // End: the trailer fields
   pub failure: Failure;         // Failed: why
   pub timing: Timing;           // every final answer
 
   // An event of kind k about fetch id, every other field empty
   pub fn make(k: EventKind, token: u64, id: FetchId) Event {
     Event(kind: k, token: token, id: id, response: ResponseHead(), body: BodyLength(),
-      url: String(), buf: IoBuf(), trailers: Headers(), failure: Failure.none(),
+      url: String(), buf: IoBuf(), trailers: HttpHeaders(), failure: Failure.none(),
       timing: Timing.zero())
   }
 
@@ -650,14 +688,14 @@ pub struct Response {
   pub outcome: EventKind;     // Done, Failed, Cancelled or TimedOut
   pub status: u16;
   pub version: Version;       // the protocol that carried it: Http11, Http2 or Http3
-  pub headers: Headers;
+  pub headers: HttpHeaders;
   pub body: String;           // the whole body, as bytes
   pub url: String;            // the URL that answered, after any redirects
   pub failure: Failure;       // Failed: why
   pub timing: Timing;
 
   pub fn blank() Response {
-    Response(EventKind.Failed, 0u16, Version.Http11, Headers(), String(), String(),
+    Response(EventKind.Failed, 0u16, Version.Http11, HttpHeaders(), String(), String(),
       Failure.none(), Timing.zero())
   }
 

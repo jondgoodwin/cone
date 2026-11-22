@@ -1,0 +1,121 @@
+// The HTTP/3 plug-in's connection values as httpconn's protocol traits (stage 5, Q2). A QUIC connection actor
+// holds a connection value only through httpclient's H3ServerConn or H3ClientConn (this package never names
+// h3driver, so a program that doesn't want QUIC doesn't link it). Those two traits carry the methods of
+// httpconn's ServerProto and ClientProto but cannot extend them: a trait that extends ClientProto can be
+// neither a generic bound nor behind a Uni (errors 1186, 1025, 1006; Backlog\generics.md). So the code written
+// once for both wires (the client's exchange half, the handler half) stays generic over httpconn's trait
+// ('[C: ClientProto]'), TCP's ClientConn and ServerConn meet it as they are (static calls), and the QUIC side
+// is one of these adapters: a concrete struct that holds the value's Uni and meets the trait by forwarding each
+// method. The QUIC side pays one dynamic call per method; TCP pays nothing. Each method list is written twice
+// (here and in the plug-in trait): the compiler checks both ends, since an adapter must meet its trait and can
+// call only what the plug-in trait declares.
+//
+// Private to the package: no new public name. The datagram methods are not forwarded; the actor reaches them
+// through 'conn' (the one place that holds the value). If the generics lead is fixed, the plug-in traits can
+// extend httpconn's and these go.
+
+// A server connection's value, as httpconn.ServerProto
+struct H3ServerAdapter is httpconn.ServerProto {
+  conn: Uni[httpclient.H3ServerConn];
+
+  fn make(conn: Uni[httpclient.H3ServerConn]) H3ServerAdapter {H3ServerAdapter(conn)}
+
+  pub fn next(self: &mut, now: Instant) httpconn.ServerEvent {conn.next(now)}
+  pub fn request(self: &) &RequestHead {conn.request()}
+  pub fn takeRequest(self: &mut) RequestHead {conn.takeRequest()}
+  pub fn recycleRequest(self: &mut, spare: RequestHead) {conn.recycleRequest(spare);}
+  pub fn response(self: &mut) &mut ResponseHead {conn.response()}
+  pub fn respond(self: &mut, stream: u32, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    conn.respond(stream, body, file, line);
+  }
+  pub fn sendInterim(self: &mut, stream: u32, head: ResponseHead, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    conn.sendInterim(stream, head, file, line);
+  }
+  pub fn sendContinue(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    conn.sendContinue(stream, file, line);
+  }
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {
+    conn.sendData(stream, buf, file, line)
+  }
+  pub fn writeRoom(self: &, stream: u32) usize {conn.writeRoom(stream)}
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    conn.finish(stream, file, line);
+  }
+  pub fn release(self: &mut, stream: u32, n: usize) {conn.release(stream, n);}
+  pub fn stopBody(self: &mut, stream: u32) bool {conn.stopBody(stream)}
+  pub fn pollTimeout(self: &) Option[Instant] {conn.pollTimeout()}
+  pub fn handleTimeout(self: &mut, now: Instant) {conn.handleTimeout(now);}
+  pub fn shutdown(self: &mut) {conn.shutdown();}
+  pub fn abort(self: &mut) {conn.abort();}
+  pub fn done(self: &mut, now: Instant) bool {conn.done(now)}
+  pub fn failureOf(self: &) &Option[httpconn.Failure] {conn.failureOf()}
+  pub fn isHttp2(self: &) bool {conn.isHttp2()}
+  pub fn isOpen(self: &) bool {conn.isOpen()}
+  pub fn wantsCall(self: &) bool {conn.wantsCall()}
+  pub fn takeCall(self: &mut) Op {conn.takeCall()}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {conn.callDone(c, now);}
+}
+
+// A client connection's value, as httpconn.ClientProto
+struct H3ClientAdapter is httpconn.ClientProto {
+  conn: Uni[httpclient.H3ClientConn];
+
+  fn make(conn: Uni[httpclient.H3ClientConn]) H3ClientAdapter {H3ClientAdapter(conn)}
+
+  pub fn room(self: &) usize {conn.room()}
+  pub fn request(self: &mut, head: RequestHead, body: BodyLength, now: Instant,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) u32 {
+    conn.request(head, body, now, file, line)
+  }
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {
+    conn.sendData(stream, buf, file, line)
+  }
+  pub fn writeRoom(self: &, stream: u32) usize {conn.writeRoom(stream)}
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    conn.finish(stream, file, line);
+  }
+  pub fn release(self: &mut, stream: u32, n: usize) {conn.release(stream, n);}
+  pub fn cancel(self: &mut, stream: u32) {conn.cancel(stream);}
+  pub fn next(self: &mut, now: Instant) httpconn.ClientEvent {conn.next(now)}
+  pub fn pollTimeout(self: &) Option[Instant] {conn.pollTimeout()}
+  pub fn handleTimeout(self: &mut, now: Instant) {conn.handleTimeout(now);}
+  pub fn shutdown(self: &mut) {conn.shutdown();}
+  pub fn abort(self: &mut) {conn.abort();}
+  pub fn done(self: &mut, now: Instant) bool {conn.done(now)}
+  pub fn failureOf(self: &) &Option[httpconn.Failure] {conn.failureOf()}
+  pub fn isHttp2(self: &) bool {conn.isHttp2()}
+  pub fn isOpen(self: &) bool {conn.isOpen()}
+  pub fn isIdle(self: &) bool {conn.isIdle()}
+  pub fn liveStreams(self: &) usize {conn.liveStreams()}
+  pub fn peerStreams(self: &) usize {conn.peerStreams()}
+  pub fn wantsCall(self: &) bool {conn.wantsCall()}
+  pub fn takeCall(self: &mut) Op {conn.takeCall()}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {conn.callDone(c, now);}
+  pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant) {
+    conn.callAnswered(buf, failed, now);
+  }
+}
+
+// The proof the generic form holds: one small function over httpconn's trait, instantiated with TCP's concrete
+// struct and with the adapter, for each role. The client's ClientExchanges[C: ClientProto] takes ClientConn and
+// H3ClientAdapter the same way (clientactor.cone, clientquic.cone), and Q5's handler half will take the server's two.
+// (Not called: instantiating it is what checks the server form)
+fn clientTurn[C: httpconn.ClientProto](c: &mut C, now: Instant) usize {
+  c.handleTimeout(now);
+  var n = c.room();
+  if c.isOpen() && !c.isIdle() {n = n + c.liveStreams();}
+  n
+}
+
+fn serverTurn[C: httpconn.ServerProto](c: &mut C, now: Instant) bool {
+  c.handleTimeout(now);
+  c.isOpen() && c.done(now)
+}
+
+fn bothFormsHold(tcpClient: &mut httpconn.ClientConn, quicClient: &mut H3ClientAdapter,
+    tcpServer: &mut httpconn.ServerConn, quicServer: &mut H3ServerAdapter, now: Instant) usize {
+  var n = clientTurn[httpconn.ClientConn](tcpClient, now) + clientTurn[H3ClientAdapter](quicClient, now);
+  if serverTurn[httpconn.ServerConn](tcpServer, now) {n = n + 1usize;}
+  if serverTurn[H3ServerAdapter](quicServer, now) {n = n + 1usize;}
+  n
+}

@@ -30,7 +30,7 @@ import iocore use SocketAddr, CancelGroup;
 import http use *;
 import httpclient use Response, Request;
 import actors;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError;
 import aio use IoLimits;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -219,7 +219,7 @@ fn statusOf(r: &Result[Response, FetchError]) u64 {
 }
 
 actor Prober {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, port: u16, done: OneshotSender[u64]) {
     say2("hello", await client.get(url(port, "/hello").view()));
@@ -341,7 +341,7 @@ actor Prober {
 
 // Several of these at once, each asking for a few things through one client
 actor Crowd {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, port: u16, n: u64, oks: Sender[u64]) {
     var k = 0u64;
@@ -377,7 +377,7 @@ fn main() i32 {
     var tx: OneshotSender[u64];
     var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
-    let p = Prober(Client.standard());
+    let p = Prober(HttpClient.standard());
     p.run(port, tx);
     rx.recv();
     // What the two streamed responses finished with (13 and 10 bytes, in either order)
@@ -390,7 +390,7 @@ fn main() i32 {
     var otx: Sender[u64];
     var orx: Receiver[u64];
     otx, orx = Channel[u64].make();
-    let shared = Client.standard();
+    let shared = HttpClient.standard();
     var crowd = List[Crowd]();
     var c = 0u64;
     while c < 4u64 {
@@ -419,7 +419,7 @@ fn main() i32 {
     var tx: OneshotSender[u64];
     var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
-    let p = Limiter(Client.standard());
+    let p = Limiter(HttpClient.standard());
     p.run(sport, tx);
     rx.recv();
     small.stop();
@@ -440,7 +440,7 @@ fn main() i32 {
     var singles = List[Single]();
     var s = 0u64;
     while s < 4u64 {
-      let one = Single(Client.standard());
+      let one = Single(HttpClient.standard());
       one.run(bport, 1500i64, stx.clone());
       singles.push(one);
       s = s + 1u64;
@@ -467,7 +467,7 @@ fn main() i32 {
     var tx: OneshotSender[u64];
     var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
-    let after = Prober2(Client.standard());
+    let after = Prober2(HttpClient.standard());
     var tx2: OneshotSender[u64];
     var rx2: OneshotReceiver[u64];
     tx2, rx2 = Oneshot[u64].make();
@@ -484,7 +484,7 @@ fn main() i32 {
     var tx: OneshotSender[u64];
     var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
-    let p = Prober2(Client.standard());
+    let p = Prober2(HttpClient.standard());
     p.refused(port, String.from("closed server"), tx);
     rx.recv();
   }
@@ -499,7 +499,7 @@ fn main() i32 {
     var tx: OneshotSender[u64];
     var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
-    let p = Prober2(Client.standard());
+    let p = Prober2(HttpClient.standard());
     p.refused(hport, String.from("server whose last handle went"), tx);
     rx.recv();
   }
@@ -529,7 +529,7 @@ actor Holder {
 
 // The body limit: 413 over it, 200 under it
 actor Limiter {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, port: u16, done: OneshotSender[u64]) {
     var under = Request.make("POST", url(port, "/echo").view());
@@ -563,7 +563,7 @@ fn shortened(r: Result[Response, FetchError]) Result[Response, FetchError] {
 // One request from a client of its own, to a server with room for two waiting
 // and nobody to take them
 actor Single {
-  client: Client;
+  client: HttpClient;
 
   // One request given ms milliseconds: its status, or 0 if it was not answered
   pub async fn run(self, port: u16, ms: i64, out: Sender[u64]) {
@@ -574,7 +574,7 @@ actor Single {
 }
 
 actor Prober2 {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, port: u16, done: OneshotSender[u64]) {
     say2("after the flood", await client.get(url(port, "/hello").view()));
@@ -586,7 +586,8 @@ actor Prober2 {
     let r = await client.get(url(port, "/hello").view());
     printStr(label.view());
     match &r {
-      case let &Err(e) {printStr(": refused ("); printStr(yes(e.failure.stage == httpclient.Stage.Connect)); printStr(")\n");}
+      case let &Err(e) {printStr(": refused ("); printStr(yes(e.failure.stage == httpclient.Stage.Connect)); printStr(") unsent (");
+        printStr(yes(e.failure.unsent)); printStr(") noResponse ("); printStr(yes(e.failure.error.noResponse)); printStr(")\n");}
       case let &Ok(ok) {printStr(": ANSWERED\n");}
     }
     var d = done;

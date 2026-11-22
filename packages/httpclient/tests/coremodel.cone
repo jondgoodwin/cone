@@ -1,0 +1,1181 @@
+// The pool's order and bounds, against loopback servers on the client's Loop (the harness is order's).
+// Checked, over the client's public face, what ClientCore's queues must give:
+// - the order under a full pool (one connection, held by a request that never answers), against a
+//   reference ordering: rounds of random requests at random intents and scores, then random cancels,
+//   reprioritizes and deadlines while they wait; the blocker let go; the server must see exactly the
+//   survivors, by intent, then score, then the order asked, and every request has one final answer;
+// - the same with 3,000 waiting and 98% of them cancelled, which leaves more stale entries than live ones
+//   in the queue (it is rebuilt) and still the right order;
+// - two origins and room for one connection in all: the origin whose first request is first is served
+//   first, each origin's own in order, and every request answered once;
+// - the origin cap: origins that never connected are not kept, and idle ones are dropped, least recently
+//   used first, once the cap would be passed;
+// - HTTP/2 over a cleartext connection: the client's own limit on streams per connection is kept while the
+//   peer allows more, and the waiting ones follow as streams end.
+
+mod coremodel;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import thread;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, CancelGroup, forever;
+import http use *;
+import httpconn;
+import httpclient use *;
+
+// ---------------------------------------------------------------------------
+// The loopback server: httpconn's own driver on the client's Loop. What it
+// answers is chosen by the request's path:
+//   /hello             200 "hello" (and any path not below)
+//   /echo              200, the method, a space, and the request's body
+//   /nobody            204
+//   /close             no answer: the connection is reset
+//   /closeonce         the first time, as /close; after, 200 "second"
+//   /redirect/N        302 to /redirect/N-1; /redirect/0 is 200 "landed"
+//   /status/C?L        status C, Location L when L is given, body "moved"
+//   /headers           200 "auth=A;cookie=C;method=M;body=B" ('-' for none)
+//   /big/N             200, N bytes, byte i being i % 251, sent as taken
+//   /stall             200 with 1 MiB to come; 64 KiB of it sent, then nothing
+//   /hang              nothing at all
+//   /order/L           200 L
+// Every request's target is kept in 'order', in the order they came.
+// ---------------------------------------------------------------------------
+
+const tokSrv = 100u64;
+
+struct Srv {
+  pub drv: httpconn.Driver;
+  pub accepted: u64;
+  pub open: u64;
+  pub maxOpen: u64;
+  pub requests: u64;
+  pub closedOnce: bool;
+  pub order: List[String];
+  pub reqs: List[httpconn.ReqId];
+  pub conns: List[httpconn.ConnId];
+  pub methods: List[Method];
+  pub targets: List[String];
+  pub bodies: List[String];
+  pub auths: List[String];
+  pub cookies: List[String];
+  pub streams: List[httpconn.ReqId];
+  pub sent: List[u64];
+  pub totals: List[u64];
+}
+
+fn server() Srv {
+  Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
+    open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String](),
+    reqs: List[httpconn.ReqId](), conns: List[httpconn.ConnId](), methods: List[Method](),
+    targets: List[String](), bodies: List[String](), auths: List[String](),
+    cookies: List[String](), streams: List[httpconn.ReqId](), sent: List[u64](),
+    totals: List[u64]())
+}
+
+fn listen(sv: &mut Srv, lp: &mut Loop) u16 {
+  var port = 0u16;
+  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
+    case let Ok(r) {
+      match sv.drv.localAddr(lp, r) {
+        case let Ok(a) {port = a.port();}
+        case let Err(e) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  port
+}
+
+fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, location: &Array[u8], body: &Array[u8]) {
+  var h = ResponseHead.make(status);
+  if location.len > 0usize {h.headers.add("Location", location);}
+  sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
+  if body.len > 0usize && !head {
+    var b = IoBuf(body.len);
+    b.append(body);
+    sv.drv.sendData(req, b);
+    sv.drv.finish(req);
+  }
+}
+
+fn number(s: &str) u64 { u64.parse(s) || 0u64 }
+
+// Stream j's next pieces, as many as the connection takes now
+fn pumpStream(sv: &mut Srv, j: usize) {
+  let req = *sv.streams[j];
+  while *sv.sent[j] < *sv.totals[j] {
+    let at = *sv.sent[j];
+    let left = *sv.totals[j] - at;
+    let n = if left < 65536u64 {usize.from(left)} else {65536usize};
+    var b = IoBuf(n);
+    let s = b.spare();
+    var i = 0usize;
+    while i < n {
+      s[i] = u8.from((at + u64.from(i)) % 251u64);
+      i = i + 1usize;
+    }
+    b.setLen(n);
+    match sv.drv.sendData(req, b) {
+      case is None[IoBuf] {sv.sent.set(j, at + u64.from(n));}
+      else {return;}
+    }
+  }
+  sv.drv.finish(req);
+  dropStream(sv, j);
+}
+
+fn dropStream(sv: &mut Srv, j: usize) {
+  let last = sv.streams.len() - 1usize;
+  sv.streams.swap(j, last);
+  sv.sent.swap(j, last);
+  sv.totals.swap(j, last);
+  sv.streams.pop();
+  sv.sent.pop();
+  sv.totals.pop();
+}
+
+fn findStream(sv: &Srv, req: httpconn.ReqId) usize {
+  var j = 0usize;
+  while j < sv.streams.len() {
+    if *sv.streams[j] == req {return j;}
+    j = j + 1usize;
+  }
+  sv.streams.len()
+}
+
+// The answer to request k, read whole
+fn answer(sv: &mut Srv, lp: &mut Loop, k: usize) {
+  let req = *sv.reqs[k];
+  let full = sv.targets[k].clone();
+  let t = full.view();
+  var q = 0usize;
+  while q < t.len && t[q] != '?' {q = q + 1usize;}
+  let path = &t[0usize ..< q];
+  let query = &t[(if q < t.len {q + 1usize} else {q}) ..];
+  let head = *sv.methods[k] == Method.Head;
+  if path == "/echo" {
+    var b = String.from(methodToken(*sv.methods[k]));
+    b.append(" ");
+    b.append(sv.bodies[k].view());
+    reply(sv, req, head, 200u16, "", b.view());
+  } else if path == "/nobody" {
+    reply(sv, req, head, 204u16, "", "");
+  } else if path == "/close" {
+    sv.drv.abort(lp, *sv.conns[k]);
+  } else if path == "/closeonce" {
+    if !sv.closedOnce {
+      sv.closedOnce = true;
+      sv.drv.abort(lp, *sv.conns[k]);
+    } else {
+      reply(sv, req, head, 200u16, "", "second");
+    }
+  } else if path.len > 10usize && &path[0usize ..< 10usize] == "/redirect/" {
+    let n = number(&path[10usize ..]);
+    if n == 0u64 {
+      reply(sv, req, head, 200u16, "", "landed");
+    } else {
+      var loc = String.from("/redirect/");
+      loc.appendUInt(n - 1u64);
+      reply(sv, req, head, 302u16, loc.view(), "moved");
+    }
+  } else if path.len > 8usize && &path[0usize ..< 8usize] == "/status/" {
+    reply(sv, req, head, u16.from(number(&path[8usize ..])), query, "moved");
+  } else if path == "/headers" {
+    var b = String.from("auth=");
+    b.append(sv.auths[k].view());
+    b.append(";cookie=");
+    b.append(sv.cookies[k].view());
+    b.append(";method=");
+    b.append(methodToken(*sv.methods[k]));
+    b.append(";body=");
+    b.append(if sv.bodies[k].len() == 0usize {"-"} else {sv.bodies[k].view()});
+    reply(sv, req, head, 200u16, "", b.view());
+  } else if path.len > 5usize && &path[0usize ..< 5usize] == "/big/" {
+    let n = number(&path[5usize ..]);
+    sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
+    sv.streams.push(req);
+    sv.sent.push(0u64);
+    sv.totals.push(n);
+    pumpStream(sv, sv.streams.len() - 1usize);
+  } else if path == "/stall" {
+    sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
+    var b = IoBuf(65536usize);
+    b.setLen(65536usize);
+    sv.drv.sendData(req, b);
+  } else if path == "/hang" {
+  } else if path.len > 7usize && &path[0usize ..< 7usize] == "/order/" {
+    reply(sv, req, head, 200u16, "", &path[7usize ..]);
+  } else {
+    reply(sv, req, head, 200u16, "", "hello");
+  }
+}
+
+fn findReq(sv: &Srv, req: httpconn.ReqId) usize {
+  var k = 0usize;
+  while k < sv.reqs.len() {
+    if *sv.reqs[k] == req {return k;}
+    k = k + 1usize;
+  }
+  sv.reqs.len()
+}
+
+fn forget(sv: &mut Srv, k: usize) {
+  let last = sv.reqs.len() - 1usize;
+  sv.reqs.swap(k, last);
+  sv.conns.swap(k, last);
+  sv.methods.swap(k, last);
+  sv.targets.swap(k, last);
+  sv.bodies.swap(k, last);
+  sv.auths.swap(k, last);
+  sv.cookies.swap(k, last);
+  sv.reqs.pop();
+  sv.conns.pop();
+  sv.methods.pop();
+  sv.targets.pop();
+  sv.bodies.pop();
+  sv.auths.pop();
+  sv.cookies.pop();
+}
+
+fn fieldOr(h: &HttpHeaders, name: &str) String {
+  match h.get(name) {
+    case let Some(v) {String.fromBytes(v)}
+    case is None[&Array[u8]] {String.from("-")}
+  }
+}
+
+fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
+  let kind = e.kind;
+  if kind == httpconn.EventKind.Accepted {
+    sv.accepted = sv.accepted + 1u64;
+    sv.open = sv.open + 1u64;
+    if sv.open > sv.maxOpen {sv.maxOpen = sv.open;}
+  } else if kind == httpconn.EventKind.Closed {
+    sv.open = sv.open - 1u64;
+  } else if kind == httpconn.EventKind.Request {
+    sv.requests = sv.requests + 1u64;
+    sv.order.push(e.request.target.clone());
+    sv.reqs.push(e.req);
+    sv.conns.push(e.conn);
+    sv.methods.push(e.request.method);
+    sv.targets.push(e.request.target.clone());
+    sv.bodies.push(String());
+    sv.auths.push(fieldOr(&e.request.headers, "Authorization"));
+    sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
+  } else if kind == httpconn.EventKind.Data {
+    let k = findReq(sv, e.req);
+    if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
+    sv.drv.release(e.req, e.buf.len());
+  } else if kind == httpconn.EventKind.End {
+    let k = findReq(sv, e.req);
+    if k < sv.reqs.len() {answer(sv, lp, k);}
+  } else if kind == httpconn.EventKind.Writable {
+    let j = findStream(sv, e.req);
+    if j < sv.streams.len() {pumpStream(sv, j);}
+  } else if e.isTerminal() {
+    let k = findReq(sv, e.req);
+    if k < sv.reqs.len() {forget(sv, k);}
+    let j = findStream(sv, e.req);
+    if j < sv.streams.len() {dropStream(sv, j);}
+  }
+}
+
+// One turn of the loop: the client's completions to it, the server's to
+// its driver; the server's events answered; the client's appended to out
+fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], until: Instant) {
+  var sevs = List[httpconn.Event]();
+  cl.pump(lp, out);
+  sv.drv.pump(lp, &uni sevs);
+  var limit = until;
+  let a = cl.wakeAt();
+  if a < limit {limit = a;}
+  let b = sv.drv.wakeAt();
+  if b < limit {limit = b;}
+  if out.len() > 0usize || sevs.len() > 0usize {limit = Instant();}
+  var comps = List[Completion]();
+  lp.poll(limit, &mut comps);
+  var k = 0usize;
+  while k < comps.len() {
+    let c = &mut comps[k];
+    if !cl.complete(lp, c) {sv.drv.complete(lp, c);}
+    k = k + 1usize;
+  }
+  comps.clear();
+  sv.drv.pump(lp, &uni sevs);
+  k = 0usize;
+  while k < sevs.len() {
+    serve(sv, lp, &mut sevs[k]);
+    k = k + 1usize;
+  }
+  cl.pump(lp, out);
+}
+
+// The server's every connection reset, and its buffers home
+fn stopServer(sv: &mut Srv, lp: &mut Loop) {
+  sv.drv.abortAll(lp);
+  var sevs = List[httpconn.Event]();
+  sv.drv.pump(lp, &uni sevs);
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// ---------------------------------------------------------------------------
+// What the client saw
+// ---------------------------------------------------------------------------
+
+struct Seen {
+  pub status: u16;
+  pub body: String;
+  pub url: String;
+  pub kinds: String;          // each event's kind's first letter, in order
+  pub finals: u64;
+  pub last: EventKind;
+  pub failure: String;
+  pub stage: Stage;
+  pub timing: Timing;
+}
+
+fn seen() Seen {
+  Seen(status: 0u16, body: String(), url: String(), kinds: String(), finals: 0u64,
+    last: EventKind.Done, failure: String(), stage: Stage.Url, timing: Timing.zero())
+}
+
+fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
+  let n = String() <- toDebug(&e.kind);
+  s.kinds.appendByte(n.view()[0usize]);
+  if e.kind == EventKind.Response {
+    s.status = e.response.status;
+    s.url = e.url.clone();
+  } else if e.kind == EventKind.Data {
+    s.body.appendBytes(e.buf.view());
+    cl.release(e.id, e.buf.len());
+  } else if e.isTerminal() {
+    s.finals = s.finals + 1u64;
+    s.last = e.kind;
+    s.timing = e.timing;
+    if e.kind == EventKind.Failed {
+      s.failure = String() <- e.failure;
+      s.stage = e.failure.stage;
+    }
+  }
+}
+
+// Drive until fetch id has its final answer, its events noted in s
+fn finishOf(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, id: FetchId, s: &mut Seen) {
+  var out = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  let before = s.finals;
+  while s.finals == before && Instant.now() < giveUp {
+    step(cl, sv, lp, &uni out, giveUp);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      if e.id == id {note(cl, s, e);}
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  requireUInt(s.finals, before + 1u64, "the fetch has its final answer in time");
+}
+
+// A request sent and driven to its final answer: what was seen
+fn fetchSeen(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, r: Request) Seen {
+  var s = seen();
+  let id = cl.send(lp, r, Sink.Here(1u64));
+  finishOf(cl, sv, lp, id, &mut s);
+  s
+}
+
+// Drive for a while
+fn idleFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, d: Duration) {
+  var out = List[Event]();
+  let until = Instant.now() + d;
+  while Instant.now() < until {
+    step(cl, sv, lp, &uni out, until);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+}
+
+// Every fetch's final answers, counted by its id; how many of each kind
+struct Finals {
+  pub ids: List[FetchId];
+  pub counts: List[u32];
+  pub kinds: List[EventKind];
+  pub ended: List[Instant];
+  pub done: u64;
+  pub cancelled: u64;
+  pub timedOut: u64;
+  pub failed: u64;
+  pub after: u64;          // events for a fetch after its final answer
+}
+
+fn finals() Finals {
+  Finals(List[FetchId](), List[u32](), List[EventKind](), List[Instant](), 0u64,
+    0u64, 0u64, 0u64, 0u64)
+}
+
+fn slot(f: &Finals, id: FetchId) usize {
+  var k = 0usize;
+  while k < f.ids.len() {
+    if *f.ids[k] == id {return k;}
+    k = k + 1usize;
+  }
+  f.ids.len()
+}
+
+// The events handed out, counted: each fetch's final answer once, its data given back
+fn account(cl: &mut Client, fs: &mut Finals, out: &mut List[Event]) {
+  var k = 0usize;
+  while k < out.len() {
+    let id = (&out[k]).id;
+    let kind = (&out[k]).kind;
+    let held = (&out[k]).buf.len();
+    let term = (&out[k]).isTerminal();
+    k = k + 1usize;
+    let j = slot(fs, id);
+    if j < fs.ids.len() {
+      fs.after = fs.after + 1u64;
+      if term {fs.counts.set(j, *fs.counts[j] + 1u32);}
+      continue;
+    }
+    if kind == EventKind.Data {cl.release(id, held);}
+    if term {
+      fs.ids.push(id);
+      fs.counts.push(1u32);
+      fs.kinds.push(kind);
+      fs.ended.push(Instant.now());
+      if kind == EventKind.Done {fs.done = fs.done + 1u64;}
+      else if kind == EventKind.Cancelled {fs.cancelled = fs.cancelled + 1u64;}
+      else if kind == EventKind.TimedOut {fs.timedOut = fs.timedOut + 1u64;}
+      else {fs.failed = fs.failed + 1u64;}
+    }
+  }
+  out.clear();
+}
+
+// Drive for a while, counting the answers
+fn countFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, fs: &mut Finals, d: Duration) {
+  var out = List[Event]();
+  let until = Instant.now() + d;
+  while Instant.now() < until {
+    step(cl, sv, lp, &uni out, until);
+    account(cl, fs, &mut out);
+  }
+}
+
+// Drive until n final answers have come, counting each
+fn collect(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, fs: &mut Finals, n: u64) {
+  var out = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while fs.done + fs.cancelled + fs.timedOut + fs.failed < n && Instant.now() < giveUp {
+    step(cl, sv, lp, &uni out, giveUp);
+    account(cl, fs, &mut out);
+  }
+  requireUInt(fs.done + fs.cancelled + fs.timedOut + fs.failed, n, "every final answer in time");
+}
+
+// How fetch id ended, and when (from the call that asked for it)
+fn kindOf(fs: &Finals, id: FetchId) EventKind {
+  let j = slot(fs, id);
+  if j < fs.ids.len() {*fs.kinds[j]} else {EventKind.Data}
+}
+
+fn endedAt(fs: &Finals, id: FetchId) Instant {
+  let j = slot(fs, id);
+  if j < fs.ids.len() {*fs.ended[j]} else {Instant()}
+}
+
+// The server's order, from index 'from', each target's last segment
+// joined by spaces
+fn orderSince(sv: &Srv, from: usize) String {
+  var out = String();
+  var k = from;
+  while k < sv.order.len() {
+    let t = sv.order[k].view();
+    var s = t.len;
+    while s > 0usize && t[s - 1usize] != '/' {s = s - 1usize;}
+    if out.len() > 0usize {out.append(" ");}
+    out.append(&t[s ..]);
+    k = k + 1usize;
+  }
+  out
+}
+
+fn ordered(port: u16, label: &str, intent: Intent, score: i64) Request {
+  var path = String.from("/order/");
+  path.append(label);
+  var r = Request.get(url(port, path.view()).view());
+  r.intent = intent;
+  r.score = score;
+  r
+}
+
+fn numbered(n: u64) String {
+  var s = String();
+  s.appendUInt(n);
+  s
+}
+
+// A group cancelled from another thread, after a while
+struct Canceller {
+  pub g: CancelGroup;
+  pub after: Duration;
+}
+
+fn cancelLater(a: Canceller) bool {
+  thread.sleep(a.after);
+  a.g.cancel()
+}
+
+// ---------------------------------------------------------------------------
+// Several servers on one loop
+// ---------------------------------------------------------------------------
+
+fn serverWith(cfg: httpconn.Config) Srv {
+  Srv(drv: httpconn.Driver.make(cfg), accepted: 0u64,
+    open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String](),
+    reqs: List[httpconn.ReqId](), conns: List[httpconn.ConnId](), methods: List[Method](),
+    targets: List[String](), bodies: List[String](), auths: List[String](),
+    cookies: List[String](), streams: List[httpconn.ReqId](), sent: List[u64](),
+    totals: List[u64]())
+}
+
+// One turn of the loop with every server: the client's completions to it, each server's to its driver
+fn stepN(cl: &mut Client, svs: &mut List[Srv], lp: &mut Loop, out: &uni List[Event], until: Instant) {
+  var sevs = List[httpconn.Event]();
+  cl.pump(lp, out);
+  var j = 0usize;
+  while j < svs.len() {
+    var s = svs.remove(j);
+    s.drv.pump(lp, &uni sevs);
+    svs.insert(j, s);
+    j = j + 1usize;
+  }
+  var limit = until;
+  let a = cl.wakeAt();
+  if a < limit {limit = a;}
+  j = 0usize;
+  while j < svs.len() {
+    let w = (&svs[j]).drv.wakeAt();
+    if w < limit {limit = w;}
+    j = j + 1usize;
+  }
+  if out.len() > 0usize || sevs.len() > 0usize {limit = Instant();}
+  var comps = List[Completion]();
+  lp.poll(limit, &mut comps);
+  var k = 0usize;
+  while k < comps.len() {
+    let c = &mut comps[k];
+    if !cl.complete(lp, c) {
+      j = 0usize;
+      while j < svs.len() {
+        var s = svs.remove(j);
+        let mine = s.drv.complete(lp, c);
+        svs.insert(j, s);
+        if mine {break;}
+        j = j + 1usize;
+      }
+    }
+    k = k + 1usize;
+  }
+  comps.clear();
+  j = 0usize;
+  while j < svs.len() {
+    var s = svs.remove(j);
+    var evs = List[httpconn.Event]();
+    s.drv.pump(lp, &uni evs);
+    var e = 0usize;
+    while e < evs.len() {
+      serve(&mut s, lp, &mut evs[e]);
+      e = e + 1usize;
+    }
+    svs.insert(j, s);
+    j = j + 1usize;
+  }
+  cl.pump(lp, out);
+}
+
+fn idleN(cl: &mut Client, svs: &mut List[Srv], lp: &mut Loop, d: Duration) {
+  var out = List[Event]();
+  let until = Instant.now() + d;
+  while Instant.now() < until {
+    stepN(cl, svs, lp, &uni out, until);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+}
+
+// Drive until n final answers have come, counting each; 'first' is told which server saw a request first
+fn collectN(cl: &mut Client, svs: &mut List[Srv], lp: &mut Loop, fs: &mut Finals, n: u64) {
+  var out = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(15i64);
+  while fs.done + fs.cancelled + fs.timedOut + fs.failed < n && Instant.now() < giveUp {
+    stepN(cl, svs, lp, &uni out, giveUp);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      k = k + 1usize;
+      let j = slot(fs, e.id);
+      if j < fs.ids.len() {
+        fs.after = fs.after + 1u64;
+        if e.isTerminal() {fs.counts.set(j, *fs.counts[j] + 1u32);}
+        continue;
+      }
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
+      if e.isTerminal() {
+        fs.ids.push(e.id);
+        fs.counts.push(1u32);
+        fs.kinds.push(e.kind);
+        fs.ended.push(Instant.now());
+        if e.kind == EventKind.Done {fs.done = fs.done + 1u64;}
+        else if e.kind == EventKind.Cancelled {fs.cancelled = fs.cancelled + 1u64;}
+        else if e.kind == EventKind.TimedOut {fs.timedOut = fs.timedOut + 1u64;}
+        else {fs.failed = fs.failed + 1u64;}
+      }
+    }
+    out.clear();
+  }
+  requireUInt(fs.done + fs.cancelled + fs.timedOut + fs.failed, n, "every final answer in time");
+}
+
+// A line of the model's: a waiting request's intent rank, score, state
+struct Model {
+  pub rank: List[u64];
+  pub score: List[i64];
+  pub alive: List[bool];     // not cancelled, no deadline: it will be served
+  pub ids: List[FetchId];
+}
+
+fn intentOf(rank: u64) Intent {
+  if rank == 0u64 {Intent.Urgent} else if rank == 1u64 {Intent.Visible}
+  else if rank == 2u64 {Intent.Prefetch} else {Intent.Background}
+}
+
+struct Rng {
+  pub s: u64;
+}
+
+fn roll(r: &mut Rng, n: u64) u64 {
+  r.s = (r.s * 1103515245u64 + 12345u64) % 2147483648u64;
+  (r.s >> 8u64) % n
+}
+
+// The reference ordering: the live ones by intent rank, then the higher score, then the order asked
+fn expectedOrder(m: &Model) String {
+  var idx = List[usize]();
+  var i = 0usize;
+  while i < m.alive.len() {
+    if *m.alive[i] {idx.push(i);}
+    i = i + 1usize;
+  }
+  // an insertion sort: the model is the plain rule, nothing clever
+  var a = 1usize;
+  while a < idx.len() {
+    var b = a;
+    while b > 0usize {
+      let x = *idx[b - 1usize];
+      let y = *idx[b];
+      let yFirst = if *m.rank[y] != *m.rank[x] {*m.rank[y] < *m.rank[x]}
+        else if *m.score[y] != *m.score[x] {*m.score[y] > *m.score[x]}
+        else {y < x};
+      if !yFirst {break;}
+      idx.set(b - 1usize, y);
+      idx.set(b, x);
+      b = b - 1usize;
+    }
+    a = a + 1usize;
+  }
+  var out = String();
+  var k = 0usize;
+  while k < idx.len() {
+    if out.len() > 0usize {out.append(" ");}
+    out.appendUInt(u64.from(*idx[k]));
+    k = k + 1usize;
+  }
+  out
+}
+
+fn waitRequests(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, n: u64) {
+  var out = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while sv.requests < n && Instant.now() < giveUp {
+    step(cl, sv, lp, &uni out, giveUp);
+    out.clear();
+  }
+  requireUInt(sv.requests, n, "the server has the request in time");
+}
+
+// One round: a pool of one connection held by a request that never answers; n requests at random
+// intents and scores wait behind it; then 'ops' random cancels, reprioritizes and (a few) deadlines
+// that pass while they wait; then the blocker is let go and the server must see the rest in the
+// reference order, each request ending once
+fn modelRound(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, port: u16, seed: u64, n: usize, ops: usize, label: &str) {
+  var rng = Rng(seed);
+  let before = sv.requests;
+  let blocker = cl.send(lp, Request.get(url(port, "/hang").view()), Sink.Here(1u64));
+  waitRequests(cl, sv, lp, before + 1u64);
+  let first = sv.order.len();
+  var m = Model(List[u64](), List[i64](), List[bool](), List[FetchId]());
+  var timed = 0u64;
+  var cancelled = 0u64;
+  var i = 0usize;
+  while i < n {
+    let rank = roll(&mut rng, 4u64);
+    let score = i64.from(roll(&mut rng, 5u64));
+    var r = ordered(port, numbered(u64.from(i)).view(), intentOf(rank), score);
+    var alive = true;
+    if roll(&mut rng, 8u64) == 0u64 {
+      r.deadline = Instant.now() + Duration.fromMillis(40i64);
+      alive = false;
+      timed = timed + 1u64;
+    }
+    m.rank.push(rank);
+    m.score.push(score);
+    m.alive.push(alive);
+    m.ids.push(cl.send(lp, r, Sink.Here(1u64)));
+    i = i + 1usize;
+  }
+  var o = 0usize;
+  while o < ops {
+    let k = usize.from(roll(&mut rng, u64.from(n)));
+    let which = roll(&mut rng, 2u64);
+    if which == 0u64 {
+      // a cancel of one still waiting (a deadlined one is let be: it is TimedOut)
+      if *m.alive[k] {
+        cl.cancel(lp, *m.ids[k]);
+        m.alive.set(k, false);
+        cancelled = cancelled + 1u64;
+      }
+    } else {
+      let rank = roll(&mut rng, 4u64);
+      let score = i64.from(roll(&mut rng, 5u64));
+      if cl.reprioritize(*m.ids[k], intentOf(rank), score) {
+        m.rank.set(k, rank);
+        m.score.set(k, score);
+      }
+    }
+    o = o + 1usize;
+  }
+  // The deadlines pass while the requests wait behind the blocker
+  var fs = finals();
+  countFor(cl, sv, lp, &mut fs, Duration.fromMillis(120i64));
+  cl.cancel(lp, blocker);
+  collect(cl, sv, lp, &mut fs, u64.from(n) + 1u64);
+  expectStr(orderSince(sv, first).view(), expectedOrder(&m).view(), label);
+  expectUInt(fs.timedOut, timed, "...the deadlined ones TimedOut, waiting");
+  expectUInt(fs.cancelled, cancelled + 1u64, "...the cancelled ones and the blocker Cancelled");
+  expectUInt(fs.done + fs.cancelled + fs.timedOut + fs.failed, u64.from(n) + 1u64, "...every request has its final answer");
+  expectUInt(fs.after, 0u64, "...none has an event after it");
+}
+
+// Drive every server and the client for a while, counting the answers
+fn countN(cl: &mut Client, svs: &mut List[Srv], lp: &mut Loop, fs: &mut Finals, d: Duration) {
+  var out = List[Event]();
+  let until = Instant.now() + d;
+  while Instant.now() < until {
+    stepN(cl, svs, lp, &uni out, until);
+    account(cl, fs, &mut out);
+  }
+}
+
+// Two origins, room for one connection in all: random requests, then random cancels and reprioritizes while
+// they wait (after the client has looked at them once, so the origins' first requests change under it); the
+// order each is served in, and who is first
+fn twoOrigins(lp: &mut Loop, svs: &mut List[Srv], pa: u16, pb: u16) {
+  var cfg = Config.make();
+  cfg.maxPerOrigin = 1u32;
+  cfg.maxTotal = 1u32;
+  var cl = Client.make(cfg);
+  var rng = Rng(77u64);
+  var fs = finals();
+  // A held by a blocker, so everything waits until it goes
+  let blocker = cl.send(lp, Request.get(url(pa, "/hang").view()), Sink.Here(1u64));
+  countN(&mut cl, svs, lp, &mut fs, Duration.fromMillis(60i64));
+  let baseA = (&svs[0usize]).order.len();
+  let baseB = (&svs[1usize]).order.len();
+  var ma = Model(List[u64](), List[i64](), List[bool](), List[FetchId]());
+  var mb = Model(List[u64](), List[i64](), List[bool](), List[FetchId]());
+  var gInA = List[bool]();
+  var gAt = List[usize]();
+  var i = 0usize;
+  while i < 40usize {
+    let inA = roll(&mut rng, 2u64) == 0u64;
+    let rank = roll(&mut rng, 4u64);
+    let score = i64.from(roll(&mut rng, 5u64));
+    let port = if inA {pa} else {pb};
+    let count = if inA {ma.rank.len()} else {mb.rank.len()};
+    let r = ordered(port, numbered(u64.from(count)).view(), intentOf(rank), score);
+    let id = cl.send(lp, r, Sink.Here(1u64));
+    gInA.push(inA);
+    gAt.push(count);
+    if inA {
+      ma.rank.push(rank);
+      ma.score.push(score);
+      ma.alive.push(true);
+      ma.ids.push(id);
+    } else {
+      mb.rank.push(rank);
+      mb.score.push(score);
+      mb.alive.push(true);
+      mb.ids.push(id);
+    }
+    i = i + 1usize;
+  }
+  countN(&mut cl, svs, lp, &mut fs, Duration.fromMillis(40i64));
+  var cancelledN = 0u64;
+  var o = 0usize;
+  while o < 80usize {
+    let k = usize.from(roll(&mut rng, 40u64));
+    let which = roll(&mut rng, 2u64);
+    let inA = *gInA[k];
+    let at = *gAt[k];
+    let alive = if inA {*ma.alive[at]} else {*mb.alive[at]};
+    let id = if inA {*ma.ids[at]} else {*mb.ids[at]};
+    if which == 0u64 {
+      if alive {
+        cl.cancel(lp, id);
+        if inA {ma.alive.set(at, false);} else {mb.alive.set(at, false);}
+        cancelledN = cancelledN + 1u64;
+      }
+    } else if alive {
+      let rank = roll(&mut rng, 4u64);
+      let score = i64.from(roll(&mut rng, 5u64));
+      if cl.reprioritize(id, intentOf(rank), score) {
+        if inA {
+          ma.rank.set(at, rank);
+          ma.score.set(at, score);
+        } else {
+          mb.rank.set(at, rank);
+          mb.score.set(at, score);
+        }
+      }
+    }
+    o = o + 1usize;
+  }
+  countN(&mut cl, svs, lp, &mut fs, Duration.fromMillis(20i64));
+  // the first asked among the best intent and score of those left is first overall
+  var bestRank = 9u64;
+  var bestScore = 0i64;
+  var bestInA = true;
+  var q = 0usize;
+  while q < gInA.len() {
+    let inA = *gInA[q];
+    let at = *gAt[q];
+    let alive = if inA {*ma.alive[at]} else {*mb.alive[at]};
+    let rank = if inA {*ma.rank[at]} else {*mb.rank[at]};
+    let score = if inA {*ma.score[at]} else {*mb.score[at]};
+    if alive && (rank < bestRank || (rank == bestRank && score > bestScore)) {
+      bestRank = rank;
+      bestScore = score;
+      bestInA = inA;
+    }
+    q = q + 1usize;
+  }
+  cl.cancel(lp, blocker);
+  // Which server sees a request first: told as the loop turns
+  var firstInA = true;
+  var seenFirst = false;
+  var out = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(15i64);
+  while fs.done + fs.cancelled + fs.timedOut + fs.failed < 41u64 && Instant.now() < giveUp {
+    stepN(&mut cl, svs, lp, &uni out, giveUp);
+    if !seenFirst {
+      if (&svs[0usize]).order.len() > baseA {firstInA = true; seenFirst = true;}
+      else if (&svs[1usize]).order.len() > baseB {firstInA = false; seenFirst = true;}
+    }
+    account(&mut cl, &mut fs, &mut out);
+  }
+  expectUInt(fs.done, 40u64 - cancelledN, "two origins, one connection in all: the requests left are Done");
+  expectUInt(fs.cancelled, cancelledN + 1u64, "...the cancelled ones and the blocker Cancelled");
+  expect(cancelledN > 0u64 && cancelledN < 40u64, "...some were cancelled, some left");
+  expect(seenFirst && firstInA == bestInA, "...the origin whose first request is first overall is served first");
+  expectStr(orderSince(&svs[0usize], baseA).view(), expectedOrder(&ma).view(), "...origin A's in the reference order") ;
+  expectStr(orderSince(&svs[1usize], baseB).view(), expectedOrder(&mb).view(), "...origin B's in the reference order");
+  expectUInt(fs.after, 0u64, "...none has an event after its final answer");
+  cl.abortAll(lp);
+  idleN(&mut cl, svs, lp, Duration.fromMillis(30i64));
+}
+
+// A server's every request answered: the held ones' connections reset
+fn stopAll(svs: &mut List[Srv], lp: &mut Loop) {
+  var j = 0usize;
+  while j < svs.len() {
+    var s = svs.remove(j);
+    stopServer(&mut s, lp);
+    svs.insert(j, s);
+    j = j + 1usize;
+  }
+}
+
+fn originCaps(lp: &mut Loop) {
+  // Origins that never connected are not kept: forty dead ports, each fetch Failed. The ports are ones the
+  // system just handed out and took back (a fixed range holds a live service on some machines: port 22 is sshd)
+  var dead = List[u16]();
+  {
+    var held = List[Srv]();
+    var h = 0usize;
+    while h < 40usize {
+      held.push(server());
+      let s = &mut held[h];
+      dead.push(listen(s, lp));
+      h = h + 1usize;
+    }
+    stopAll(&mut held, lp);
+  }
+  var cl = Client.make(Config.make());
+  var svs = List[Srv]();
+  var fs = finals();
+  var p = 0usize;
+  while p < 40usize {
+    cl.send(lp, Request.get(url(*dead[p], "/hello").view()), Sink.Here(1u64));
+    p = p + 1usize;
+  }
+  expectUInt(u64.from(cl.stats().origins), 40u64, "forty dead ports: forty origins while their fetches wait");
+  collectN(&mut cl, &mut svs, lp, &mut fs, 40u64);
+  expectUInt(fs.failed, 40u64, "...each fetch Failed");
+  expectUInt(u64.from(cl.stats().origins), 0u64, "...an origin that never connected is not kept");
+
+  // Idle origins are dropped, least recently used first, once the cap would be passed
+  var cfg = Config.make();
+  cfg.maxOrigins = 3u32;
+  var cl2 = Client.make(cfg);
+  var live = List[Srv]();
+  var ports = List[u16]();
+  var k = 0usize;
+  while k < 7usize {
+    live.push(server());
+    let s = &mut live[k];
+    ports.push(listen(s, lp));
+    k = k + 1usize;
+  }
+  var fs2 = finals();
+  k = 0usize;
+  while k < 6usize {
+    cl2.send(lp, Request.get(url(*ports[k], "/hello").view()), Sink.Here(1u64));
+    collectN(&mut cl2, &mut live, lp, &mut fs2, u64.from(k) + 1u64);
+    k = k + 1usize;
+  }
+  expectUInt(fs2.done, 6u64, "six origins, each fetched: Done");
+  expectUInt(u64.from(cl2.stats().origins), 3u64, "...three kept: an origin holding only an idle connection is idle, and dropped (its connection closed) for a new one");
+  cl2.closeIdle(lp);
+  idleN(&mut cl2, &mut live, lp, Duration.fromMillis(100i64));
+  expectUInt(u64.from(cl2.stats().origins), 3u64, "...closed: the three stay, kept until a new one needs the room");
+  cl2.send(lp, Request.get(url(*ports[6usize], "/hello").view()), Sink.Here(1u64));
+  collectN(&mut cl2, &mut live, lp, &mut fs2, 7u64);
+  expectUInt(u64.from(cl2.stats().origins), 3u64, "...a seventh dropped the least recently used until it makes three");
+  cl2.abortAll(lp);
+  idleN(&mut cl2, &mut live, lp, Duration.fromMillis(30i64));
+  stopAll(&mut live, lp);
+}
+
+// The origin cap never drops an origin that has a fetch under way, whatever its place among the idle ones
+fn capSparesBusy(lp: &mut Loop) {
+  var cfg = Config.make();
+  cfg.maxOrigins = 2u32;
+  var cl = Client.make(cfg);
+  var svs = List[Srv]();
+  var ports = List[u16]();
+  var k = 0usize;
+  while k < 3usize {
+    svs.push(server());
+    let s = &mut svs[k];
+    ports.push(listen(s, lp));
+    k = k + 1usize;
+  }
+  var fs = finals();
+  cl.send(lp, Request.get(url(*ports[0usize], "/hello").view()), Sink.Here(1u64));
+  collectN(&mut cl, &mut svs, lp, &mut fs, 1u64);
+  cl.send(lp, Request.get(url(*ports[1usize], "/hello").view()), Sink.Here(1u64));
+  collectN(&mut cl, &mut svs, lp, &mut fs, 2u64);
+  cl.closeIdle(lp);
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(100i64));
+  expectUInt(u64.from(cl.stats().origins), 2u64, "two origins, both idle");
+  // the first has a request that never answers; a third origin needs the room
+  let held = cl.send(lp, Request.get(url(*ports[0usize], "/hang").view()), Sink.Here(1u64));
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(60i64));
+  cl.send(lp, Request.get(url(*ports[2usize], "/hello").view()), Sink.Here(1u64));
+  collectN(&mut cl, &mut svs, lp, &mut fs, 3u64);
+  expectUInt(fs.done, 3u64, "...a third origin's fetch: Done");
+  expectUInt(u64.from(cl.stats().origins), 2u64, "...the idle origin was dropped for it, the busy one kept");
+  // the dropped one asked again is made anew, and the third origin (idle, holding a connection) is dropped for it
+  cl.send(lp, Request.get(url(*ports[1usize], "/hello").view()), Sink.Here(1u64));
+  collectN(&mut cl, &mut svs, lp, &mut fs, 4u64);
+  expectUInt(u64.from(cl.stats().origins), 2u64, "...the dropped origin, asked again, is new, and the third (idle) is dropped for it: still two");
+  cl.cancel(lp, held);
+  collectN(&mut cl, &mut svs, lp, &mut fs, 5u64);
+  expectUInt(fs.cancelled, 1u64, "...and the busy origin's request is still answered, Cancelled");
+  cl.abortAll(lp);
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(30i64));
+  stopAll(&mut svs, lp);
+}
+
+// The connection closed to make room for another origin's is the one idle longest, not the first origin's
+fn idleOrder(lp: &mut Loop) {
+  var cfg = Config.make();
+  cfg.maxTotal = 3u32;
+  var cl = Client.make(cfg);
+  var svs = List[Srv]();
+  var ports = List[u16]();
+  var k = 0usize;
+  while k < 4usize {
+    svs.push(server());
+    let s = &mut svs[k];
+    ports.push(listen(s, lp));
+    k = k + 1usize;
+  }
+  // The origins of servers 2, 1, 0 each once, then 2 again (its connection reused, so now the latest idle: 1 has
+  // been idle longest), then server 3's, which needs a connection with the total reached
+  var order = List[usize]();
+  order.push(2usize);
+  order.push(1usize);
+  order.push(0usize);
+  order.push(2usize);
+  var fs = finals();
+  k = 0usize;
+  while k < order.len() {
+    cl.send(lp, Request.get(url(*ports[*order[k]], "/hello").view()), Sink.Here(1u64));
+    collectN(&mut cl, &mut svs, lp, &mut fs, u64.from(k) + 1u64);
+    k = k + 1usize;
+  }
+  expectUInt((&svs[2usize]).accepted, 1u64, "three origins kept open, the first one's reused");
+  cl.send(lp, Request.get(url(*ports[3usize], "/hello").view()), Sink.Here(1u64));
+  collectN(&mut cl, &mut svs, lp, &mut fs, 5u64);
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(100i64));
+  expectUInt(fs.done, 5u64, "a fourth origin with the total reached: Done");
+  expectUInt((&svs[1usize]).open, 0u64, "...the connection idle longest was the one closed");
+  expectUInt((&svs[0usize]).open + (&svs[2usize]).open + (&svs[3usize]).open, 3u64, "...the others stay open");
+  cl.abortAll(lp);
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(30i64));
+  stopAll(&mut svs, lp);
+}
+
+// The client's own limit on streams per HTTP/2 connection, under the peer's higher one. With room for more
+// connections (maxPerOrigin 16) the twelve go on three connections of four streams; with maxPerOrigin 1 they
+// queue on the one, as before several HTTP/2 connections per origin
+fn streamLimit(lp: &mut Loop, perOrigin: u32, wantPeak: u64, wantQueued: u64, wantConns: u64) {
+  var scfg = httpconn.Config.make();
+  scfg.h2PriorKnowledge = true;
+  var svs = List[Srv]();
+  svs.push(serverWith(scfg));
+  let port = listen(&mut svs[0usize], lp);
+  var cfg = Config.make();
+  cfg.conn.h2PriorKnowledge = true;
+  cfg.maxStreamsPerConnection = 4u32;
+  cfg.maxPerOrigin = perOrigin;
+  var cl = Client.make(cfg);
+  var ids = List[FetchId]();
+  var k = 0usize;
+  while k < 12usize {
+    ids.push(cl.send(lp, Request.get(url(port, "/hang").view()), Sink.Here(1u64)));
+    k = k + 1usize;
+  }
+  var peak = 0usize;
+  var out = List[Event]();
+  let until = Instant.now() + Duration.fromMillis(300i64);
+  while Instant.now() < until {
+    stepN(&mut cl, &mut svs, lp, &uni out, until);
+    out.clear();
+    let held = (&svs[0usize]).reqs.len();
+    if held > peak {peak = held;}
+  }
+  expectUInt(u64.from(peak), wantPeak, "twelve at once to a server that allows more: the client's limit of four streams a connection holds");
+  expectUInt(u64.from(cl.queued()), wantQueued, "...the rest wait");
+  expectUInt((&svs[0usize]).accepted, wantConns, "...on this many connections");
+  var fs = finals();
+  cl.abortAll(lp);
+  collectN(&mut cl, &mut svs, lp, &mut fs, 12u64);
+  expectUInt(fs.cancelled, 12u64, "...and every one answered once");
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(30i64));
+  stopAll(&mut svs, lp);
+}
+
+// maxStreamsPerConnection of 0: no limit of the client's own, so the peer's (150 here) is the one that holds
+fn streamNoLimit(lp: &mut Loop) {
+  var scfg = httpconn.Config.make();
+  scfg.h2PriorKnowledge = true;
+  scfg.h2.maxConcurrentStreams = 150u32;
+  var svs = List[Srv]();
+  svs.push(serverWith(scfg));
+  let port = listen(&mut svs[0usize], lp);
+  var cfg = Config.make();
+  cfg.conn.h2PriorKnowledge = true;
+  cfg.maxStreamsPerConnection = 0u32;
+  var cl = Client.make(cfg);
+  var k = 0usize;
+  while k < 170usize {
+    cl.send(lp, Request.get(url(port, "/hang").view()), Sink.Here(1u64));
+    k = k + 1usize;
+  }
+  var peak = 0usize;
+  var out = List[Event]();
+  let until = Instant.now() + Duration.fromMillis(600i64);
+  while Instant.now() < until {
+    stepN(&mut cl, &mut svs, lp, &uni out, until);
+    out.clear();
+    let held = (&svs[0usize]).reqs.len();
+    if held > peak {peak = held;}
+  }
+  expectUInt(u64.from(peak), 150u64, "a limit of 0, 170 at once to a server that allows 150: more than the default 100, up to the peer's");
+  expectUInt(u64.from(cl.queued()), 20u64, "...the other twenty wait");
+  expectUInt((&svs[0usize]).accepted, 1u64, "...on one connection");
+  var fs = finals();
+  cl.abortAll(lp);
+  collectN(&mut cl, &mut svs, lp, &mut fs, 170u64);
+  expectUInt(fs.cancelled, 170u64, "...and every one answered once");
+  idleN(&mut cl, &mut svs, lp, Duration.fromMillis(30i64));
+  stopAll(&mut svs, lp);
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var svs = List[Srv]();
+  svs.push(server());
+  svs.push(server());
+  let pa = listen(&mut svs[0usize], &mut lp);
+  let pb = listen(&mut svs[1usize], &mut lp);
+  require(pa != 0u16 && pb != 0u16, "the servers listen");
+
+  // ---- The order under a full pool, against the reference ----
+  var cfg = Config.make();
+  cfg.maxPerOrigin = 1u32;
+  var cl = Client.make(cfg);
+  var seed = 1u64;
+  while seed <= 12u64 {
+    modelRound(&mut cl, &mut svs[0usize], &mut lp, pa, seed, 60usize, 70usize, "a round: the survivors in the reference order");
+    seed = seed + 1u64;
+  }
+  // 3,000 waiting, nearly all cancelled: the queue holds far more stale entries than live ones
+  modelRound(&mut cl, &mut svs[0usize], &mut lp, pa, 99u64, 3000usize, 6000usize, "3,000 waiting, most cancelled: the survivors in the reference order");
+  cl.abortAll(&mut lp);
+  idleN(&mut cl, &mut svs, &mut lp, Duration.fromMillis(30i64));
+
+  twoOrigins(&mut lp, &mut svs, pa, pb);
+  originCaps(&mut lp);
+  idleOrder(&mut lp);
+  capSparesBusy(&mut lp);
+  streamLimit(&mut lp, 16u32, 12u64, 0u64, 3u64);
+  streamLimit(&mut lp, 1u32, 4u64, 8u64, 1u64);
+  streamNoLimit(&mut lp);
+
+  stopAll(&mut svs, &mut lp);
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}

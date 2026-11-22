@@ -1,0 +1,956 @@
+// cellbench: the stress test of latest-value cells (row 528; spec Ruminations\io-rearch-netmsg-latest-cells-spec-2026-11-18.md,
+// section 8). A synthetic world actor publishes a world to many netmsg clients over UDP, in three forms:
+//   m1  today's: per player, the interest set encoded into one value, one sendLatest each; input as Update events
+//   m2  regions encoded once into shared Bytes, one sendLatest per region per subscriber (isolates regions from cells)
+//   c   cells: each region and each player's personal part is a cell (sync.latestCell); each connection binds the
+//       regions near its player (bindLatest), and its input arrives in a cell (bindIncoming)
+//   cl  c with the phase lock (row 529): form=cl or form=clS, each connection makes its own-region stream its clock
+//       (followCell) with a spread of S ms (3 when S is not given); on the clients it is form c
+// The world ticks at 60 Hz on actors.Timer and publishes at 30 Hz. Run it in a release build, by tools/cellbench/run.ps1
+// (Windows) or tools/cellbench/linux.sh (Linux box). By hand, arguments are  <role> <port> <ip or -> then key=value:
+//   server  <port> <bindIPv4|-> form=m1|m2|c players=N secs=S workers=W zones=Z beings=8 crowd=0|1 rate=0 (packets a second to each client; 0: 30)
+//   clients <port> <serverIPv4|-> form=.. n=N (this process's connections) secs=S workers=W players=N (the whole run)
+//           inputhz=30 beings=8 crowd=0|1
+//   inproc  form=m1|c frames=F      (case A, single player lockstep through pairInProcess, flushCells)
+// Server: the players are put 8 to a region (R = ceil(players / 8) regions a zone, in a square grid), each player is
+// given the 3 x 3 regions around its own; a region is `beings` beings of 32 bytes after a 16-byte header. crowd=1 puts every
+// player in region 0 (the landing beach, spec section 7): its value is the villagers and every player's being,
+// more than one packet at case B's counts, so the world's put is refused and the value that is sent is cut to fit.
+// Clients take the own region's stream (m1: the one body's stream) and record the age of each newest state: the time the
+// client received it minus the time the world's publish began (one monotonic clock: the same machine only).
+
+mod cellbench;
+
+import stdio use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import thread;
+import process;
+import iocore use SocketAddr, threadTimes;
+import iobuf use Bytes, IoBuf;
+import actors;
+import aio;
+import netmsg use *;
+
+const formM1 = 1u32;
+const formM2 = 2u32;
+const formC = 3u32;
+
+const sPersonal = 1u16;       // personal part (c, m2); m1's one body
+const sRegion0 = 2u16;        // the own region; the others follow (m2, c)
+const sInput = 20u16;
+const beingWords = 8usize;    // 32 bytes a being
+const headBytes = 16usize;
+const personalBytes = 100usize;
+const inputBytes = 80usize;
+const packetFit = 1171usize;  // maxLatestBytes of the default config: one body (m1) is cut to this
+const beachCut = 1040usize;   // the crowded region's value is cut to this, so it can share a packet with the 106-byte personal part (the packet takes 1177 bytes of items, 6 over each)
+// Weights (spec section 4.1, row 617): the own region goes in personal's tier, so a ring cell starved for 250 packets
+// (about 8 s at 30 a second) is what it takes to outrank it; the ring shares what room is left
+const weightOwn = 1000u32;
+const weightRing = 4u32;
+const histWidthNs = 100000i64;
+const histBuckets = 2000usize;
+
+let joined: Atomic[u64];
+let serverGo: Atomic[u64];
+let finalSeen: Atomic[u64];
+
+fn @initpure init() {
+  joined = Atomic[u64].of(0u64);
+  serverGo = Atomic[u64].of(0u64);
+  finalSeen = Atomic[u64].of(0u64);
+}
+
+// ---------------------------- small helpers ----------------------------
+
+// The value of key=value in the arguments after the third; none: 'dflt'
+fn argNum(args: &List[String], key: &str, dflt: u64) u64 {
+  var i = 2usize;
+  let kb = key.bytes();
+  while i < args.len() {
+    let a = args[i].view().bytes();
+    if a.len > kb.len && a[kb.len] == 61u8 {
+      var same = true;
+      var j = 0usize;
+      while j < kb.len { if a[j] != kb[j] { same = false; } j = j + 1usize; }
+      if same {
+        var v = 0u64;
+        var p = kb.len + 1usize;
+        while p < a.len { v = v * 10u64 + u64.from(a[p] - 48u8); p = p + 1usize; }
+        return v;
+      }
+    }
+    i = i + 1usize;
+  }
+  dflt
+}
+
+// form=m1, m2 or c
+fn argForm(args: &List[String]) u32 {
+  var i = 2usize;
+  while i < args.len() {
+    let a = args[i].view().bytes();
+    if a.len >= 6usize && a[0usize] == 102u8 && a[1usize] == 111u8 && a[4usize] == 61u8 {
+      if a[5usize] == 99u8 { return formC; }
+      if a[5usize] == 109u8 && a.len >= 7usize && a[6usize] == 50u8 { return formM2; }
+      return formM1;
+    }
+    i = i + 1usize;
+  }
+  formM1
+}
+
+// form=cl or form=clS: the phase lock's spread in ms (3 for plain cl); -1 for any other form
+fn argLock(args: &List[String]) i64 {
+  var i = 2usize;
+  while i < args.len() {
+    let a = args[i].view().bytes();
+    if a.len >= 6usize && a[0usize] == 102u8 && a[1usize] == 111u8 && a[4usize] == 61u8 {
+      if a[5usize] == 99u8 && a.len >= 7usize && a[6usize] == 108u8 {
+        if a.len == 7usize { return 3i64; }
+        var v = 0i64;
+        var p = 7usize;
+        while p < a.len { v = v * 10i64 + i64.from(a[p] - 48u8); p = p + 1usize; }
+        return v;
+      }
+      return -1i64;
+    }
+    i = i + 1usize;
+  }
+  -1i64
+}
+
+fn formName(f: u32) &str {
+  if f == formC { "c" } else if f == formM2 { "m2" } else { "m1" }
+}
+
+fn addrOf(text: &str, port: u16) SocketAddr {
+  var parts = Array[u8, 4]() <- fill 0u8;
+  var at = 0usize;
+  var cur = 0u32;
+  var i = 0usize;
+  let b = text.bytes();
+  while i < b.len {
+    let c = b[i];
+    if c == 46u8 {
+      if at >= 3usize {return SocketAddr.localhost(port);}
+      parts[at] = u8.from(cur);
+      at = at + 1usize;
+      cur = 0u32;
+    } else if c >= 48u8 && c <= 57u8 {
+      cur = cur * 10u32 + u32.from(c - 48u8);
+      if cur > 255u32 {return SocketAddr.localhost(port);}
+    } else {
+      return SocketAddr.localhost(port);
+    }
+    i = i + 1usize;
+  }
+  if at != 3usize {return SocketAddr.localhost(port);}
+  parts[3usize] = u8.from(cur);
+  SocketAddr.v4(parts[0usize], parts[1usize], parts[2usize], parts[3usize], port)
+}
+
+fn pick(text: &str, port: u16) SocketAddr {
+  if text.len() <= 1usize {SocketAddr.localhost(port)} else {addrOf(text, port)}
+}
+
+// ---- histograms: 100 us buckets to 200 ms, the last one holding the rest ----
+
+fn newHist() List[u64] {
+  var h = List[u64]();
+  var i = 0usize;
+  while i < histBuckets { h.push(0u64); i = i + 1usize; }
+  h
+}
+
+fn histAdd(h: &mut List[u64], ns: i64) {
+  var b = if ns <= 0i64 {0usize} else {usize.from(ns / histWidthNs)};
+  if b >= histBuckets { b = histBuckets - 1usize; }
+  h[b] = *h[b] + 1u64;
+}
+
+fn histN(h: &List[u64]) u64 {
+  var n = 0u64;
+  var i = 0usize;
+  while i < histBuckets { n = n + *h[i]; i = i + 1usize; }
+  n
+}
+
+// The q-th percentile, in microseconds (the bucket's upper edge)
+fn histPct(h: &List[u64], q: u64) i64 {
+  let n = histN(h);
+  if n == 0u64 { return 0i64; }
+  let want = (n * q + 99u64) / 100u64;
+  var run = 0u64;
+  var i = 0usize;
+  while i < histBuckets {
+    run = run + *h[i];
+    if run >= want && run > 0u64 { return i64.from(i + 1usize) * (histWidthNs / 1000i64); }
+    i = i + 1usize;
+  }
+  i64.from(histBuckets) * (histWidthNs / 1000i64)
+}
+
+fn histLine(name: &str, h: &List[u64]) {
+  printStr(name);
+  printStr(" n="); printUInt(histN(h));
+  printStr(" p50_us="); printInt(histPct(h, 50u64));
+  printStr(" p99_us="); printInt(histPct(h, 99u64));
+  printStr(" max_us="); printInt(histPct(h, 100u64));
+  printStr("\n");
+}
+
+// ---------------------------- the world ----------------------------
+
+fn gridWidth(r: usize) u32 {
+  var g = 1u32;
+  while usize.from(g) * usize.from(g) < r { g = g + 1u32; }
+  g
+}
+
+// The region itself first, then the 3 x 3 around it that exist
+fn neighbours(reg: u32, w: u32, r: u32, out: &mut List[u32]) {
+  out.clear();
+  out.push(reg);
+  let cx = i32.from(reg % w);
+  let cy = i32.from(reg / w);
+  var dy = -1i32;
+  while dy <= 1i32 {
+    var dx = -1i32;
+    while dx <= 1i32 {
+      if !(dx == 0i32 && dy == 0i32) {
+        let x = cx + dx;
+        let y = cy + dy;
+        if x >= 0i32 && y >= 0i32 && x < i32.from(w) {
+          let id = u32.from(y) * w + u32.from(x);
+          if id < r { out.push(id); }
+        }
+      }
+      dx = dx + 1i32;
+    }
+    dy = dy + 1i32;
+  }
+}
+
+fn putBeing(out: &mut List[u8], st: &List[u32], b: usize) {
+  var w = 0usize;
+  while w < beingWords { putU32(out, *st[b * beingWords + w]); w = w + 1usize; }
+}
+
+fn putPersonal(out: &mut List[u8], tick: u32, applied: u32, at: u64, seed: u32) {
+  out.clear();
+  putU32(out, tick);
+  putU32(out, applied);
+  putU64(out, at);
+  var w = 0u32;
+  while out.len() < personalBytes { putU32(out, seed + w); w = w + 1u32; }
+}
+
+// The region's body into 'out' (cleared first): its beings, then, for region 0 of a crowd, the beach's. 'limit' is the
+// most bytes allowed
+fn encodeRegion(out: &mut List[u8], reg: u32, tick: u32, at: u64, limit: usize, st: &List[u32], bst: &List[u32], per: usize, crowd: bool, nbeach: usize) {
+  out.clear();
+  putU32(out, reg);
+  putU32(out, tick);
+  putU64(out, at);
+  var b = usize.from(reg) * per;
+  let end = b + per;
+  while b < end && out.len() + beingWords * 4usize <= limit { putBeing(out, st, b); b = b + 1usize; }
+  if crowd && reg == 0u32 {
+    var k = 0usize;
+    while k < nbeach && out.len() + beingWords * 4usize <= limit { putBeing(out, bst, k); k = k + 1usize; }
+  }
+}
+
+actor World {
+  form: u32;
+  zone: u32;
+  crowd: bool;
+  lock: i64;                     // c: the phase lock's spread in ms (followCell on the own-region stream); -1 none
+  per: usize;                    // beings in a region
+  seats: List[Connection];
+  seatRegion: List[u32];
+  seatOf: Dict[u32, usize];
+  expect: usize;                 // the players this world takes
+  regions: usize;
+  gw: u32;
+  st: List[u32];                 // the region beings' words
+  bst: List[u32];                // the beach's player beings (crowd)
+  rw: List[LatestWriter];        // c: a cell a region
+  pw: List[LatestWriter];        // c: a cell a player (personal)
+  ir: List[LatestReader];        // c: the input cell a player
+  seenIn: List[u64];
+  lastIn: List[u8];              // the newest input's first byte (m1, m2: from the Update)
+  inbuf: IoBuf;
+  body: List[u8];
+  near: List[u32];
+  timer: actors.Timer;
+  inputsApplied: u64;
+  inputUpdates: u64;
+  beachFull: u64;                // publishes where the beach's value would not fit a packet
+  beachRefused: u64;             // ... and a put of it that was refused
+  // measurements
+  stepWall: List[u64];
+  lagHist: List[u64];
+  cpuNs: u64;
+  pubWallNs: u64;
+  publishes: u64;
+
+  pub fn init(self: &new, form: u32, zone: u32, expect: usize, per: usize, crowd: bool, lock: i64) {
+    var r = (expect + 7usize) / 8usize;
+    if r < 1usize { r = 1usize; }
+    var words = List[u32]();
+    var b = 0usize;
+    while b < r * per {
+      var w = 0usize;
+      while w < beingWords {
+        words.push(if w == 0usize {u32.from(b)} else {u32.from(b * 31usize + w * 7usize)});
+        w = w + 1usize;
+      }
+      b = b + 1usize;
+    }
+    *self = Self(form: form, zone: zone, crowd: crowd, lock: lock, per: per, seats: List[Connection](), seatRegion: List[u32](),
+      seatOf: Dict[u32, usize](), expect: expect, regions: r, gw: gridWidth(r), st: words, bst: List[u32](),
+      rw: List[LatestWriter](), pw: List[LatestWriter](), ir: List[LatestReader](), seenIn: List[u64](),
+      lastIn: List[u8](), inbuf: IoBuf(256usize), body: List[u8](), near: List[u32](), timer: actors.Timer.make(),
+      inputsApplied: 0u64, inputUpdates: 0u64, beachFull: 0u64, beachRefused: 0u64, stepWall: newHist(),
+      lagHist: newHist(), cpuNs: 0u64, pubWallNs: 0u64, publishes: 0u64);
+  }
+
+  pub async fn onNet(self, ev: NetEvent) {
+    match ev {
+      case let Joined(j) {
+        seatOf.insert(j.id, seats.len());
+        let reg = if crowd {0u32} else {u32.from((seats.len() / 8usize) % regions)};
+        seats.push(j.conn);
+        seatRegion.push(reg);
+        lastIn.push(0u8);
+        seenIn.push(0u64);
+        joined.store(u64.from(seats.len()));
+      }
+      case let Left(l) {}
+      case let Message(m) {}
+      case let Update(u) {
+        inputUpdates = inputUpdates + 1u64;
+        match seatOf.get(&u.id) {
+          case let Some(s) { lastIn[*s] = u.data.view()[0usize]; }
+          else {}
+        }
+      }
+      case let Refused(r) {}
+    }
+  }
+
+  // Everyone has joined: the cells, the bindings, the beach
+  pub async fn prepare(self) {
+    var i = 0usize;
+    if crowd {
+      while i < seats.len() {
+        var w = 0usize;
+        while w < beingWords {
+          bst.push(if w == 0usize {u32.from(regions * per + i)} else {u32.from(i * 17usize + w * 5usize)});
+          w = w + 1usize;
+        }
+        i = i + 1usize;
+      }
+    }
+    if form == formC {
+      var r = 0usize;
+      while r < regions {
+        let cap = if crowd && r == 0usize {beachCut} else {headBytes + per * beingWords * 4usize};
+        var w: LatestWriter;
+        var rd: LatestReader;
+        w, rd = latestCell(cap);
+        rw.push(w);
+        r = r + 1usize;
+      }
+      i = 0usize;
+      while i < seats.len() {
+        var pwr: LatestWriter;
+        var prd: LatestReader;
+        pwr, prd = latestCell(personalBytes);
+        pw.push(pwr);
+        var iw: LatestWriter;
+        var ird: LatestReader;
+        iw, ird = latestCell(256usize);
+        ir.push(ird);
+        seats[i].bindIncoming(sInput, iw);
+        seats[i].bindLatest(sPersonal, prd, 1000u32);
+        neighbours(*seatRegion[i], gw, u32.from(regions), &mut near);
+        var j = 0usize;
+        while j < near.len() {
+          seats[i].bindLatest(sRegion0 + u16.from(j), rw[usize.from(*near[j])].reader(), if j == 0usize {weightOwn} else {weightRing});
+          j = j + 1usize;
+        }
+        if lock >= 0i64 {
+          seats[i].followCell(sRegion0, u32.from(lock));
+        }
+        i = i + 1usize;
+      }
+    }
+  }
+
+  fn publish(self, k: i64, t0: i64) {
+    let tick = u32.from(k / 2i64);
+    let at = u64.from(t0);
+    var i = 0usize;
+    if form == formC {
+      var r = 0usize;
+      while r < regions {
+        if crowd && r == 0usize {
+          // the whole value, which passes a packet at these counts: the put is refused, and the cut one goes in
+          encodeRegion(&mut body, 0u32, tick, at, 1048576usize, &st, &bst, per, crowd, seats.len());
+          if body.len() > beachCut {
+            beachFull = beachFull + 1u64;
+            if !rw[0usize].put(body.view()) { beachRefused = beachRefused + 1u64; }
+          }
+          encodeRegion(&mut body, 0u32, tick, at, beachCut, &st, &bst, per, crowd, seats.len());
+        } else {
+          encodeRegion(&mut body, u32.from(r), tick, at, 1048576usize, &st, &bst, per, crowd, seats.len());
+        }
+        rw[r].put(body.view());
+        r = r + 1usize;
+      }
+      while i < seats.len() {
+        putPersonal(&mut body, tick, u32.from(inputsApplied), at, u32.from(i));
+        pw[i].put(body.view());
+        i = i + 1usize;
+      }
+      return;
+    }
+    if form == formM2 {
+      var rb = List[Bytes]();
+      var r = 0usize;
+      while r < regions {
+        encodeRegion(&mut body, u32.from(r), tick, at, beachCut, &st, &bst, per, crowd, seats.len());
+        if crowd && r == 0usize {
+          // would the whole value have fit?
+          if headBytes + (per + seats.len()) * beingWords * 4usize > beachCut { beachFull = beachFull + 1u64; }
+        }
+        rb.push(copyPacket(body.view()).freeze());
+        r = r + 1usize;
+      }
+      while i < seats.len() {
+        putPersonal(&mut body, tick, u32.from(inputsApplied), at, u32.from(i));
+        seats[i].sendLatest(sPersonal, copyPacket(body.view()).freeze());
+        neighbours(*seatRegion[i], gw, u32.from(regions), &mut near);
+        var j = 0usize;
+        while j < near.len() {
+          let rbytes = &rb[usize.from(*near[j])];
+          seats[i].sendLatest(sRegion0 + u16.from(j), rbytes.slice(0usize, rbytes.len()));
+          j = j + 1usize;
+        }
+        i = i + 1usize;
+      }
+      return;
+    }
+    // m1: one body a player: header, the personal part, then the beings of its own region, then the others' until a packet is full
+    if crowd && headBytes + (per + seats.len()) * beingWords * 4usize > beachCut { beachFull = beachFull + 1u64; }
+    while i < seats.len() {
+      let reg = *seatRegion[i];
+      body.clear();
+      putU32(&mut body, reg);
+      putU32(&mut body, tick);
+      putU64(&mut body, at);
+      var pers = List[u8]();
+      putPersonal(&mut pers, tick, u32.from(inputsApplied), at, u32.from(i));
+      putBytes(&mut body, pers.view());
+      neighbours(reg, gw, u32.from(regions), &mut near);
+      var j = 0usize;
+      while j < near.len() && body.len() + beingWords * 4usize <= packetFit {
+        let rr = *near[j];
+        var b = usize.from(rr) * per;
+        let end = b + per;
+        while b < end && body.len() + beingWords * 4usize <= packetFit { putBeing(&mut body, &st, b); b = b + 1usize; }
+        if crowd && rr == 0u32 {
+          var q = 0usize;
+          while q < seats.len() && body.len() + beingWords * 4usize <= packetFit { putBeing(&mut body, &bst, q); q = q + 1usize; }
+        }
+        j = j + 1usize;
+      }
+      seats[i].sendLatest(sPersonal, copyPacket(body.view()).freeze());
+      i = i + 1usize;
+    }
+  }
+
+  fn step(self, k: i64, t0: i64) {
+    // the inputs: c reads each player's cell; m1 and m2 have the newest the handler stored
+    var i = 0usize;
+    if form == formC {
+      while i < ir.len() {
+        match ir[i].readNewer(*seenIn[i], inbuf.spare()) {
+          case let Some(got) {
+            seenIn[i] = got.version;
+            inbuf.setLen(got.len);
+            lastIn[i] = inbuf.view()[0usize];
+            inputsApplied = inputsApplied + 1u64;
+          }
+          else {}
+        }
+        i = i + 1usize;
+      }
+    } else {
+      inputsApplied = inputUpdates;
+    }
+    // the beings move
+    var b = 0usize;
+    while b < regions * per {
+      st[b * beingWords + 1usize] = (*st[b * beingWords + 1usize] + 7u32) & 1048575u32;
+      st[b * beingWords + 2usize] = (*st[b * beingWords + 2usize] + 3u32) & 1048575u32;
+      b = b + 1usize;
+    }
+    if k % 2i64 == 0i64 {
+      self.publish(k, t0);
+      publishes = publishes + 1u64;
+    }
+  }
+
+  // The 60 Hz loop: 'steps' ticks from 'startNs'
+  pub async fn run(self, startNs: i64, steps: i64, done: Sender[u64]) {
+    var k = 0i64;
+    timer.set(Instant.fromNanos(startNs));
+    while await timer.next() {
+      let t0 = Instant.now().nanos();
+      let target = startNs + k * 16666667i64;
+      histAdd(&mut lagHist, t0 - target);
+      var u0 = 0u64;
+      var s0 = 0u64;
+      u0, s0 = threadTimes();
+      self.step(k, t0);
+      var u1 = 0u64;
+      var s1 = 0u64;
+      u1, s1 = threadTimes();
+      cpuNs = cpuNs + (u1 - u0) + (s1 - s0);
+      if k % 2i64 == 0i64 {
+        let took = Instant.now().nanos() - t0;
+        histAdd(&mut stepWall, took);
+        pubWallNs = pubWallNs + u64.from(took);
+      }
+      k = k + 1i64;
+      if k >= steps { break; }
+      timer.set(Instant.fromNanos(startNs + k * 16666667i64));
+    }
+    done.send(1u64);
+  }
+
+  pub async fn report(self, done: Sender[u64]) {
+    var skipped = 0u64;
+    var noRoom = 0u64;
+    var refusedIn = 0u64;
+    var sent = 0u64;
+    var i = 0usize;
+    while i < seats.len() {
+      let s = await seats[i].stats();
+      skipped = skipped + s.cellSkipped;
+      noRoom = noRoom + s.cellNoRoom;
+      refusedIn = refusedIn + s.cellRefused;
+      sent = sent + s.latestSent;
+      i = i + 1usize;
+    }
+    printStr("WORLD zone="); printUInt(u64.from(zone));
+    printStr(" seats="); printUInt(u64.from(seats.len()));
+    printStr(" regions="); printUInt(u64.from(regions));
+    printStr(" publishes="); printUInt(publishes);
+    printStr(" thread_cpu_us_per_tick="); printUInt(if publishes > 0u64 {cpuNs / (publishes * 2u64) / 1000u64} else {0u64});
+    printStr(" publish_wall_us_mean="); printUInt(if publishes > 0u64 {pubWallNs / publishes / 1000u64} else {0u64});
+    printStr(" inputsApplied="); printUInt(inputsApplied);
+    printStr(" inputUpdates="); printUInt(inputUpdates);
+    printStr("\n");
+    printStr("WORLD zone="); printUInt(u64.from(zone));
+    printStr(" cellSkipped="); printUInt(skipped);
+    printStr(" cellNoRoom="); printUInt(noRoom);
+    printStr(" cellRefused(in)="); printUInt(refusedIn);
+    printStr(" latestSent="); printUInt(sent);
+    // seqlock tries thrown away, over every cell the world holds (regions, personal parts, inputs)
+    var retries = 0u64;
+    var q = 0usize;
+    while q < rw.len() { retries = retries + rw[q].reader().retries(); q = q + 1usize; }
+    q = 0usize;
+    while q < pw.len() { retries = retries + pw[q].reader().retries(); q = q + 1usize; }
+    q = 0usize;
+    while q < ir.len() { retries = retries + ir[q].retries(); q = q + 1usize; }
+    printStr(" cellRetries="); printUInt(retries);
+    printStr(" lock="); printInt(lock);
+    if crowd {
+      printStr(" beachBeings="); printUInt(u64.from(per + seats.len()));
+      printStr(" beachPublishesOverPacket="); printUInt(beachFull);
+      printStr(" beachPutRefused="); printUInt(beachRefused);
+      printStr(" beachBeingsSent="); printUInt(u64.from((beachCut - headBytes) / (beingWords * 4usize)));
+    }
+    printStr("\n");
+    histLine("WORLD publish tick wall (the turn: encode, put or send; sleeping excluded)", &stepWall);
+    histLine("WORLD tick start lag vs schedule", &lagHist);
+    done.send(1u64);
+  }
+}
+
+fn routeOf(ev: &NetEvent, zones: usize) usize {
+  match ev {
+    case let &Joined(j) { usize.from(j.id) % zones }
+    case let &Left(l) { usize.from(l.id) % zones }
+    case let &Refused(r) { usize.from(r.id) % zones }
+    case let &Message(m) { usize.from(m.id) % zones }
+    case let &Update(u) { usize.from(u.id) % zones }
+  }
+}
+
+fn handlerOf(ws: List[World], zones: usize) EventHandler {
+  eventHandler(Uni[fn(ev: NetEvent) + Sendable](fn(ev: NetEvent) [ws, zones] { ws[routeOf(&ev, zones)].onNet(ev); }))
+}
+
+fn snap(label: &str) {
+  let st = actors.stats();
+  printStr("SNAP "); printStr(label);
+  printStr(" messages="); printUInt(st.messages);
+  printStr(" activations="); printUInt(st.activations);
+  printStr("\n");
+}
+
+fn server(port: u16, args: &List[String], bind: &str) {
+  let form = argForm(args);
+  let n = usize.from(argNum(args, "players", 8u64));
+  let secs = i64.from(argNum(args, "secs", 10u64));
+  let zones = usize.from(argNum(args, "zones", 1u64));
+  let per = usize.from(argNum(args, "beings", 8u64));
+  let crowd = argNum(args, "crowd", 0u64) != 0u64;
+  var cfg = NetConfig.defaults();
+  cfg.maxClients = n + 16usize;
+  cfg.maxPerAddress = n + 16usize;
+  cfg.admitRate = 0u32;
+  let rate = argNum(args, "rate", 0u64);   // packets a second to each client; 0: the default (30). 60 is the row that fits the link
+  if rate > 0u64 {cfg.goodRate = u32.from(rate);}
+  var ws = List[World]();
+  var z = 0usize;
+  while z < zones {
+    let take = n / zones + (if z < n % zones {1usize} else {0usize});
+    ws.push(World(form, u32.from(z), take, per, crowd, argLock(args)));
+    z = z + 1usize;
+  }
+  let srv = mustListen(pick(bind, port), cfg, handlerOf(ws.clone(), zones));
+  printStr("LISTENING "); printUInt(u64.from(srv.port)); printStr("\n");
+  var waited = 0i64;
+  while joined.load() < u64.from(n) && waited < 900000i64 {
+    thread.sleep(Duration.fromMillis(100i64));
+    waited = waited + 100i64;
+  }
+  printStr("JOINED "); printUInt(joined.load()); printStr(" after ms "); printInt(waited); printStr("\n");
+  z = 0usize;
+  while z < zones { ws[z].prepare(); z = z + 1usize; }
+  thread.sleep(Duration.fromMillis(1500i64));
+  let steps = secs * 60i64;
+  let start = Instant.now().nanos() + 200000000i64;
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  snap("start");
+  printStr("RUNSTART\n");
+  z = 0usize;
+  while z < zones { ws[z].run(start, steps, tx.clone()); z = z + 1usize; }
+  z = 0usize;
+  while z < zones { rx.recv(); z = z + 1usize; }
+  snap("end");
+  printStr("RUNEND\n");
+  thread.sleep(Duration.fromMillis(1000i64));
+  z = 0usize;
+  while z < zones { ws[z].report(tx.clone()); z = z + 1usize; }
+  z = 0usize;
+  while z < zones { rx.recv(); z = z + 1usize; }
+  srv.endpoint.shutdown();
+  thread.sleep(Duration.fromMillis(300i64));
+}
+
+// ---------------------------- the clients ----------------------------
+
+actor Collector {
+  conns: List[Connection];
+  hist: List[u64];
+  ringHist: List[u64];     // the age of the ring regions' values (streams after the own region's), the price of the own region going first
+  heard: u64;
+  any: u64;
+  ownStream: u16;
+  total: u32;
+  seq: u32;
+
+  pub fn init(self: &new, form: u32, total: u32) {
+    *self = Self(conns: List[Connection](), hist: newHist(), ringHist: newHist(), heard: 0u64, any: 0u64,
+      ownStream: if form == formM1 {sPersonal} else {sRegion0}, total: total, seq: 0u32);
+  }
+
+  pub async fn onNet(self, ev: NetEvent) {
+    match ev {
+      case let Joined(j) { conns.push(j.conn); joined.add(1u64); }
+      case let Left(l) {}
+      case let Message(m) {}
+      case let Update(u) {
+        let now = Instant.now().nanos();
+        any = any + 1u64;
+        serverGo.store(1u64);
+        if ownStream == sRegion0 && u.stream > sRegion0 && u.stream < sInput && u.data.len() >= 16usize {
+          var rc = PacketReader.start();
+          let rreg = rc.rdU32(u.data.view());
+          let rtick = rc.rdU32(u.data.view());
+          let rat = i64.from(rc.rdU64(u.data.view()));
+          if rtick >= 30u32 && rtick + 30u32 < total { histAdd(&mut ringHist, now - rat); }
+        }
+        if u.stream == ownStream {
+          var c = PacketReader.start();
+          let reg = c.rdU32(u.data.view());
+          let tick = c.rdU32(u.data.view());
+          let at = i64.from(c.rdU64(u.data.view()));
+          if tick + 31u32 >= total { finalSeen.store(1u64); }
+          if tick >= 30u32 && tick + 30u32 < total {
+            heard = heard + 1u64;
+            histAdd(&mut hist, now - at);
+          }
+        }
+      }
+      case let Refused(r) {}
+    }
+  }
+
+  pub async fn sendInput(self) {
+    seq = seq + 1u32;
+    var i = 0usize;
+    while i < conns.len() {
+      var p = List[u8]();
+      putU32(&mut p, seq);
+      while p.len() < inputBytes { p.push(9u8); }
+      conns[i].sendLatest(sInput, copyPacket(p.view()).freeze());
+      i = i + 1usize;
+    }
+  }
+
+  pub async fn report(self, done: Sender[List[u64]]) {
+    var out = hist.clone();
+    out.push(heard);
+    out.push(any);
+    var rb = 0usize;
+    while rb < ringHist.len() { out.push(*ringHist[rb]); rb = rb + 1usize; }
+    done.send(out);
+  }
+}
+
+fn clientHandler(h: Collector) EventHandler {
+  eventHandler(Uni[fn(ev: NetEvent) + Sendable](fn(ev: NetEvent) [h] { h.onNet(ev); }))
+}
+
+fn clients(port: u16, args: &List[String], host: &str) {
+  let form = argForm(args);
+  let n = usize.from(argNum(args, "n", 8u64));
+  let secs = i64.from(argNum(args, "secs", 10u64));
+  let hz = argNum(args, "inputhz", 30u64);
+  let total = u32.from(secs * 30i64);
+  var cols = List[Collector]();
+  var c = 0usize;
+  while c < 8usize { cols.push(Collector(form, total)); c = c + 1usize; }
+  let cfg = NetConfig.defaults();
+  var conns = List[BoundEndpoint]();
+  var i = 0usize;
+  while i < n {
+    conns.push(mustConnect(pick(host, port), cfg, clientHandler(cols[i % 8usize].clone())));
+    if i % 50usize == 49usize { thread.sleep(Duration.fromMillis(20i64)); }
+    i = i + 1usize;
+  }
+  var waited = 0i64;
+  while joined.load() < u64.from(n) && waited < 900000i64 {
+    thread.sleep(Duration.fromMillis(100i64));
+    waited = waited + 100i64;
+  }
+  printStr("CLIENTS joined "); printUInt(joined.load()); printStr(" of "); printUInt(u64.from(n)); printStr("\n");
+  // the server starts when every client process has joined: wait for its first value, then send input till its last
+  var run = 0i64;
+  while serverGo.load() == 0u64 && run < 600000i64 {
+    thread.sleep(Duration.fromMillis(20i64));
+    run = run + 20i64;
+  }
+  let gap = 1000000000i64 / i64.from(hz);
+  var k = 0i64;
+  let t0 = Instant.now().nanos();
+  while finalSeen.load() == 0u64 && k < 100000i64 {
+    var m = 0usize;
+    while m < 8usize { cols[m].sendInput(); m = m + 1usize; }
+    k = k + 1i64;
+    let rest = t0 + k * gap - Instant.now().nanos();
+    if rest > 0i64 { thread.sleep(Duration.fromNanos(rest)); }
+  }
+  thread.sleep(Duration.fromSeconds(2i64));
+  var all = newHist();
+  var ringAll = newHist();
+  var heardAll = 0u64;
+  var anyAll = 0u64;
+  var m = 0usize;
+  while m < 8usize {
+    var tx: Sender[List[u64]];
+    var rx: Receiver[List[u64]];
+    tx, rx = Channel[List[u64]].make();
+    cols[m].report(tx);
+    let l = rx.recv() || List[u64]();
+    var b = 0usize;
+    while b < histBuckets && b < l.len() { all[b] = *all[b] + *l[b]; b = b + 1usize; }
+    if l.len() >= histBuckets + 2usize { heardAll = heardAll + *l[histBuckets]; anyAll = anyAll + *l[histBuckets + 1usize]; }
+    if l.len() >= 2usize * histBuckets + 2usize {
+      b = 0usize;
+      while b < histBuckets { ringAll[b] = *ringAll[b] + *l[histBuckets + 2usize + b]; b = b + 1usize; }
+    }
+    m = m + 1usize;
+  }
+  let expected = u64.from(n) * u64.from(total - 60u32);
+  printStr("CLIENTS own-region updates heard="); printUInt(heardAll);
+  printStr(" expected="); printUInt(expected);
+  printStr(" any updates="); printUInt(anyAll);
+  printStr("\n");
+  histLine("CLIENTS own-region state age", &all);
+  histLine("CLIENTS ring-region state age", &ringAll);
+  // the histogram itself (bucket:count, 100 us a bucket), so a run's processes can be merged
+  printStr("HIST");
+  var hb = 0usize;
+  while hb < histBuckets {
+    if *all[hb] != 0u64 { printStr(" "); printUInt(u64.from(hb)); printStr(":"); printUInt(*all[hb]); }
+    hb = hb + 1usize;
+  }
+  printStr("\n");
+  var q = 0usize;
+  while q < conns.len() { conns[q].endpoint.shutdown(); q = q + 1usize; }
+  thread.sleep(Duration.fromMillis(500i64));
+}
+
+// ---------------------------- case A, single player in process ----------------------------
+
+fn fnv(h: u64, data: &Array[u8]) u64 {
+  var x = h;
+  var i = 0usize;
+  while i < data.len() { x = (x ^ u64.from(data[i])) * 1099511628211u64; i = i + 1usize; }
+  x
+}
+
+fn inprocess(args: &List[String]) {
+  let form = argForm(args);
+  let frames = argNum(args, "frames", 600u64);
+  var txA: Sender[NetEvent];
+  var rxA: Receiver[NetEvent];
+  txA, rxA = Channel[NetEvent].make();
+  var txB: Sender[NetEvent];
+  var rxB: Receiver[NetEvent];
+  txB, rxB = Channel[NetEvent].make();
+  let pair = pairInProcess(channelHandler(txA), 1u32, channelHandler(txB), 7u32);
+  var pw: LatestWriter;
+  var prd: LatestReader;
+  pw, prd = latestCell(personalBytes);
+  var rwr: LatestWriter;
+  var rrd: LatestReader;
+  rwr, rrd = latestCell(headBytes + 28usize * beingWords * 4usize);
+  if form == formC {
+    // bound in this order: personal first, then the region: the delivery order within a flush
+    pair.a.bindLatest(sPersonal, prd, 1u32);
+    pair.a.bindLatest(sRegion0, rrd, 1u32);
+  }
+  var st = List[u32]();
+  var b = 0usize;
+  while b < 28usize * beingWords { st.push(if b % beingWords == 0usize {u32.from(b / beingWords)} else {u32.from(b * 31usize)}); b = b + 1usize; }
+  var body = List[u8]();
+  var pers = List[u8]();
+  var expectHash = 14695981039346656037u64;
+  var gotHash = 14695981039346656037u64;
+  var frame = 0u64;
+  var orderBad = 0u64;
+  var missing = 0u64;
+  let t0 = Instant.now().nanos();
+  while frame < frames {
+    var q = 0usize;
+    while q < 28usize { st[q * beingWords + 1usize] = (*st[q * beingWords + 1usize] + 7u32) & 1048575u32; q = q + 1usize; }
+    putPersonal(&mut pers, u32.from(frame), 0u32, 0u64, 3u32);
+    body.clear();
+    putU32(&mut body, 0u32);
+    putU32(&mut body, u32.from(frame));
+    putU64(&mut body, 0u64);
+    var z = 0usize;
+    while z < 28usize { putBeing(&mut body, &st, z); z = z + 1usize; }
+    expectHash = fnv(expectHash, pers.view());
+    expectHash = fnv(expectHash, body.view());
+    if form == formC {
+      pw.put(pers.view());
+      rwr.put(body.view());
+      pair.a.flushCells();
+    } else {
+      var one = List[u8]();
+      putBytes(&mut one, pers.view());
+      putBytes(&mut one, body.view());
+      pair.a.sendLatest(sPersonal, copyPacket(one.view()).freeze());
+    }
+    var fd = List[u8]();
+    putU32(&mut fd, u32.from(frame));
+    pair.a.sendReliable(copyPacket(fd.view()).freeze());
+    // the receiver: the state's Updates, then the frame's end, in that order
+    var gotState = 0u32;
+    var done = false;
+    while !done {
+      match rxB.recvTimeout(Duration.fromSeconds(5i64)) {
+        case let Some(e) {
+          match e {
+            case let Update(u) { gotHash = fnv(gotHash, u.data.view()); gotState = gotState + 1u32; }
+            case let Message(mm) { done = true; }
+            else {}
+          }
+        }
+        case is None[NetEvent] { done = true; missing = missing + 1u64; }
+      }
+    }
+    if gotState == 0u32 {
+      orderBad = orderBad + 1u64;
+      if orderBad == 1u64 { printStr("INPROC first frame ended before its state: "); printUInt(frame); printStr("\n"); }
+    }
+    frame = frame + 1u64;
+  }
+  let wall = Instant.now().nanos() - t0;
+  printStr("INPROC form="); printStr(formName(form));
+  printStr(" frames="); printUInt(frames);
+  printStr(" expectedHash="); printUInt(expectHash);
+  printStr(" receivedHash="); printUInt(gotHash);
+  printStr(" same="); printStr(if expectHash == gotHash {"yes"} else {"NO"});
+  printStr(" frameEndedBeforeState="); printUInt(orderBad);
+  printStr(" timeouts="); printUInt(missing);
+  printStr(" us_per_frame="); printInt(wall / 1000i64 / i64.from(frames));
+  printStr("\n");
+}
+
+fn main() i32 {
+  initAll();
+  iobuf.setLimits(1073741824usize, 268435456usize);
+  let args = process.args();
+  var rc = 2i32;
+  let role = if args.len() >= 2usize {args[1usize].view()} else {""};
+  let isSrv = role == "server";
+  let isCli = role == "clients";
+  let isIn = role == "inproc";
+  if (isSrv || isCli) && args.len() >= 4usize {
+    let w = argNum(&args, "workers", 4u64);
+    actors.configure(actors.Options(workers: u32.from(w)));
+  }
+  if isSrv || isCli {
+    let port = u16.from(u64.parse(args[2usize].view()) || 0u64);
+    let ip = args[3usize].view();
+    if isSrv { server(port, &args, ip); } else { clients(port, &args, ip); }
+    rc = 0i32;
+  } else if isIn {
+    inprocess(&args);
+    rc = 0i32;
+  } else {
+    printStr("usage: cellbench server <port> <bindIPv4|-> form=m1|m2|c players=N secs=S workers=W zones=Z beings=8 crowd=0|1 | clients <port> <serverIPv4|-> form=.. n=N secs=S workers=W inputhz=30 | inproc form=m1|c frames=F\n");
+  }
+  finalAll();
+  let st = actors.stats();
+  printStr("ACTORSTATS workers="); printUInt(u64.from(st.workers));
+  printStr(" messages="); printUInt(st.messages);
+  printStr(" activations="); printUInt(st.activations);
+  printStr(" steals="); printUInt(st.steals);
+  printStr(" parks="); printUInt(st.parks);
+  printStr("\n");
+  let tt = aio.ioThreadTimes();
+  printStr("IOTIMES user_ms="); printUInt(tt.userNs / 1000000u64);
+  printStr(" kernel_ms="); printUInt(tt.kernelNs / 1000000u64);
+  printStr(" wall_ms="); printUInt(tt.wallNs / 1000000u64);
+  printStr("\n");
+  rc
+}

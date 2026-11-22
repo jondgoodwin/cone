@@ -1,0 +1,311 @@
+// The client's test seam (testseam.cone): an origin of an HttpClient made with 'makeTest' goes to an address, an in-memory pipe
+// or an in-process HttpRoutes handler, and the pool above it is the real one. Checked through it:
+// - an address target: the host name (which no DNS knows) is fetched at a local server's port;
+// - a pipe: the test is the server, reads the request the client wrote and answers on the wire;
+// - the pool's retry: a connection that hangs up after the request was read is sent again on the origin's next pipe, once;
+// - the pool's redirects: a 302 is followed on the same kept connection, to the Location's path;
+// - the pool's limit: maxPerOrigin 1 with one pipe: three fetches at once are served one after another on that connection;
+// - the pool's deadline: a fetch the pipe never answers ends TimedOut at its deadline;
+// - a pipe list used up: a connection with no pipe fails to connect (Failed, not a hang);
+// - a handler: the origin is served by an HttpRoutes handler of this process (two requests on one kept connection reach
+//   one handler), and the listener it started goes with the client.
+
+mod testseam;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver;
+import collections use List, String;
+import time use Instant, Duration;
+import testing use *;
+import iobuf use *;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Response, Request;
+import actors;
+import actorhttp use HttpClient, FetchError, liveClientActors, liveClientConnActors, liveServerActors, Server, ServerConfig, Exchange,
+  HttpRoutes, HttpHandler, TestPipe, TestTarget, TestTargets, pipeSeen;
+
+fn describe(r: &Result[Response, FetchError]) String {
+  match r {
+    case let &Ok(ok) {
+      var s = String.from("ok ");
+      s.appendUInt(u64.from(ok.status));
+      s.append(" ");
+      s.append(ok.body.view());
+      s
+    }
+    case let &Err(e) {
+      if e.isCancelled() {String.from("err cancelled")} else if e.isTimedOut() {String.from("err timedout")} else {String.from("err failed")}
+    }
+  }
+}
+
+actor Fetcher {
+  client: HttpClient;
+
+  pub async fn get(self, u: String, out: Sender[String]) {
+    let r = await client.get(u.view());
+    out.send(describe(&r));
+  }
+
+  pub async fn getBy(self, u: String, millis: i64, out: Sender[String]) {
+    var req = Request.make("GET", u.view());
+    req.deadline = Instant.now() + Duration.fromMillis(millis);
+    let r = await client.send(req);
+    out.send(describe(&r));
+  }
+
+  pub async fn dropClient(self) {
+    client = HttpClient.none();
+  }
+}
+
+// How many requests (blank lines) the bytes hold
+fn requests(s: &String) usize {
+  let b = s.view() as &Array[u8];
+  var n = 0usize;
+  var i = 0usize;
+  while i + 3usize < b.len {
+    if b[i] == 13u8 && b[i + 1usize] == 10u8 && b[i + 2usize] == 13u8 && b[i + 3usize] == 10u8 {
+      n = n + 1usize;
+      i = i + 4usize;
+    } else {i = i + 1usize;}
+  }
+  n
+}
+
+// The first line of the k-th request (from 1)
+fn lineOf(s: &String, k: usize) String {
+  let b = s.view() as &Array[u8];
+  var start = 0usize;
+  var n = 0usize;
+  var i = 0usize;
+  while i + 3usize < b.len && n + 1usize < k {
+    if b[i] == 13u8 && b[i + 1usize] == 10u8 && b[i + 2usize] == 13u8 && b[i + 3usize] == 10u8 {
+      n = n + 1usize;
+      i = i + 4usize;
+      start = i;
+    } else {i = i + 1usize;}
+  }
+  var out = String();
+  var j = start;
+  while j < b.len && b[j] != 13u8 {
+    out.appendByte(b[j]);
+    j = j + 1usize;
+  }
+  out
+}
+
+// The test as the server on a pipe: each character of the plan treats the next request that arrives: 'o' answers it 200 "ok",
+// 'r' answers 302 to /b, 'h' hangs up, 's' says nothing. Each request's first line is sent on 'out'
+actor PipeServer {
+  pipe: TestPipe;
+
+  pub async fn serve(self, plan: String, out: Sender[String]) {
+    var seen = String();
+    var k = 0usize;
+    while k < plan.len() {
+      k = k + 1usize;
+      while requests(&seen) < k {
+        seen = await pipeSeen(pipe, seen.len() + 1usize);
+      }
+      out.send(lineOf(&seen, k));
+      let c = plan.view() as &Array[u8];
+      let ch = c[k - 1usize];
+      if ch == 'o' {pipe.say(String.from("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"));}
+      else if ch == 'r' {pipe.say(String.from("HTTP/1.1 302 Found\r\nLocation: /b\r\nContent-Length: 0\r\n\r\n"));}
+      else if ch == 'h' {pipe.hangup();}
+    }
+  }
+}
+
+fn takeS(rx: &mut Receiver[String]) String {rx.recvTimeout(Duration.fromSeconds(20i64)) || String.from("(timeout)")}
+
+actor Hello is HttpHandler {
+  served: u64;
+
+  fn init(self: &new) {*self = Self(served: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    served = served + 1u64;
+    var t = String.from("hello ");
+    t.append(ex.request.path());
+    t.append(" #");
+    t.appendUInt(served);
+    ex.text(200u16, t.view());
+  }
+}
+
+fn makeHello() HttpHandler {
+  let h = Hello();
+  let r: HttpHandler = h;
+  r
+}
+
+// A server of this test's own, for the address target
+actor Starter {
+  srv: Server;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make().routes(HttpRoutes.make().handle("", "/", &makeHello)));
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {srv <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n"); libc.exit(1i32);}
+    }
+    ports.send(srv.port());
+  }
+}
+
+actor Waiter {
+  pub async fn hear(self, p: TestPipe, n: usize, out: Sender[String]) {
+    let s = await pipeSeen(p, n);
+    out.send(String.from("waited"));
+  }
+}
+
+// Both client counters at 0 within seconds
+fn gone() bool {
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while (liveClientActors() > 0u64 || liveClientConnActors() > 0u64) && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  liveClientActors() == 0u64 && liveClientConnActors() == 0u64
+}
+
+fn client(t: TestTargets) HttpClient {HttpClient.makeTest(httpclient.Config.make(), actorhttp.defaultMaxBody, t)}
+
+fn main() i32 {
+  initAll();
+  var otx: Sender[String];
+  var orx: Receiver[String];
+  otx, orx = Channel[String].make();
+
+  // An address target
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let st = Starter(Server.none());
+  st.open(ptx.clone());
+  let port = prx.recv() || 0u16;
+  require(port != 0u16, "the server of the address target listens");
+  let a = Fetcher(client(TestTargets.make().to("addr.test", 8080u16, TestTarget.address(SocketAddr.localhost(port)))));
+  a.get(String.from("http://addr.test:8080/x"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "ok 200 hello /x #1", "an address target: a host no DNS knows is served by the server at its address");
+  a.dropClient();
+  expect(gone(), "...and the client's actors are gone");
+
+  // A pipe: the test is the server
+  let pa = TestPipe();
+  let sa = PipeServer(pa);
+  var ltx: Sender[String];
+  var lrx: Receiver[String];
+  ltx, lrx = Channel[String].make();
+  sa.serve(String.from("o"), ltx.clone());
+  let f1 = Fetcher(client(TestTargets.make().to("pipe.test", 80u16, TestTarget.pipe(&pa))));
+  f1.get(String.from("http://pipe.test/a"), otx.clone());
+  expectStr(takeS(&mut lrx).view(), "GET /a HTTP/1.1", "a pipe: the request the client wrote is read from it");
+  expectStr(takeS(&mut orx).view(), "ok 200 ok", "...and the answer the test said is the fetch's response");
+  f1.dropClient();
+  expect(gone(), "...the pipe's client is gone");
+
+  // The pool's retry on the next pipe
+  let p1 = TestPipe();
+  let p2 = TestPipe();
+  var two = List[TestPipe]();
+  two.push(p1);
+  two.push(p2);
+  let s1 = PipeServer(p1);
+  let s2 = PipeServer(p2);
+  s1.serve(String.from("h"), ltx.clone());
+  s2.serve(String.from("o"), ltx.clone());
+  let f2 = Fetcher(client(TestTargets.make().to("retry.test", 80u16, TestTarget.pipes(&two))));
+  f2.get(String.from("http://retry.test/a"), otx.clone());
+  expectStr(takeS(&mut lrx).view(), "GET /a HTTP/1.1", "retry: the first pipe is read, then hangs up with no answer");
+  expectStr(takeS(&mut lrx).view(), "GET /a HTTP/1.1", "...the request is sent again on the origin's next pipe");
+  expectStr(takeS(&mut orx).view(), "ok 200 ok", "...and answered once");
+  f2.dropClient();
+  expect(gone(), "...the retry's client is gone");
+
+  // The pool's redirect on a kept connection
+  let pr = TestPipe();
+  let sr = PipeServer(pr);
+  sr.serve(String.from("ro"), ltx.clone());
+  let f3 = Fetcher(client(TestTargets.make().to("redir.test", 80u16, TestTarget.pipe(&pr))));
+  f3.get(String.from("http://redir.test/a"), otx.clone());
+  expectStr(takeS(&mut lrx).view(), "GET /a HTTP/1.1", "redirect: the first request");
+  expectStr(takeS(&mut lrx).view(), "GET /b HTTP/1.1", "...a 302 to /b is followed, on the same pipe");
+  expectStr(takeS(&mut orx).view(), "ok 200 ok", "...and the redirected fetch is answered with the last response");
+  f3.dropClient();
+  expect(gone(), "...the redirect's client is gone");
+
+  // The pool's limit: one connection to the origin
+  let pl = TestPipe();
+  let sl = PipeServer(pl);
+  sl.serve(String.from("ooo"), ltx.clone());
+  var cfg = httpclient.Config.make();
+  cfg.maxPerOrigin = 1u32;
+  let f4 = Fetcher(HttpClient.makeTest(cfg, actorhttp.defaultMaxBody, TestTargets.make().to("limit.test", 80u16, TestTarget.pipe(&pl))));
+  f4.get(String.from("http://limit.test/1"), otx.clone());
+  f4.get(String.from("http://limit.test/2"), otx.clone());
+  f4.get(String.from("http://limit.test/3"), otx.clone());
+  var good = 0u32;
+  var q = 0u32;
+  while q < 3u32 {
+    if takeS(&mut orx).view() == "ok 200 ok" {good = good + 1u32;}
+    q = q + 1u32;
+  }
+  expectUInt(u64.from(good), 3u64, "limit: three fetches at once on maxPerOrigin 1 with one pipe are all answered, one after another");
+  f4.dropClient();
+  expect(gone(), "...the limit's client is gone");
+
+  // The pool's deadline
+  let pd = TestPipe();
+  let sd = PipeServer(pd);
+  sd.serve(String.from("s"), ltx.clone());
+  let f5 = Fetcher(client(TestTargets.make().to("slow.test", 80u16, TestTarget.pipe(&pd))));
+  f5.getBy(String.from("http://slow.test/a"), 300i64, otx.clone());
+  expectStr(takeS(&mut orx).view(), "err timedout", "deadline: a pipe that never answers: the fetch ends TimedOut");
+  f5.dropClient();
+  expect(gone(), "...the deadline's client is gone");
+
+  // A pipe list used up
+  let none = List[TestPipe]();
+  let f6 = Fetcher(client(TestTargets.make().to("none.test", 80u16, TestTarget.pipes(&none))));
+  f6.get(String.from("http://none.test/a"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "err failed", "no pipe left: the connection fails to connect and the fetch is answered Failed");
+  f6.dropClient();
+  expect(gone(), "...the empty client is gone");
+
+  // Two waits on one pipe: both return
+  let pw = TestPipe();
+  let w1 = Waiter();
+  let w2 = Waiter();
+  w1.hear(pw, 1usize, otx.clone());
+  w2.hear(pw, 2usize, otx.clone());
+  thread.sleep(Duration.fromMillis(200i64));
+  var wb = IoBuf(8usize);
+  wb.append("ab" as &Array[u8]);
+  pw.write(wb);
+  expectStr(takeS(&mut orx).view(), "waited", "two waits on one pipe: the first is answered");
+  expectStr(takeS(&mut orx).view(), "waited", "...and the second");
+
+  // A handler
+  let f7 = Fetcher(client(TestTargets.make().to("handler.test", 80u16, TestTarget.handler(HttpRoutes.make().handle("handler.test", "/", &makeHello)))));
+  f7.get(String.from("http://handler.test/one"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "ok 200 hello /one #1", "a handler: the origin is served by the routes' handler");
+  f7.get(String.from("http://handler.test/two"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "ok 200 hello /two #2", "...the next request on the kept connection reaches the same handler");
+  expect(liveServerActors() > 0u64, "...its listener is a server actor of this process");
+  f7.dropClient();
+  expect(gone(), "...the handler's client is gone");
+  var waited = 0u32;
+  while liveServerActors() > 1u64 && waited < 500u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  expectUInt(liveServerActors(), 1u64, "...and the listener it started went with it (only the address target's server is left)");
+  done()
+}

@@ -61,6 +61,9 @@ extern void cnm_set_cache_stats(uintptr_t h, uint64_t bytes, uint64_t hits, uint
 extern size_t cnm_design(uintptr_t h);
 extern uintptr_t cnm_lf_info(uintptr_t h);
 extern size_t cnm_lf_attach(uintptr_t h, size_t cl, size_t tnum, uintptr_t seen);
+extern size_t cnm_lf_sweep(uintptr_t h, size_t cl);      // (row 603) before out of memory: list the class's unlisted pages that hold a free cell
+extern size_t cnm_lf_relist(uintptr_t h);                // (row 603) CNMALLOC=relist=<k>, relistq=<q>: the listing threshold's settings
+extern size_t cnm_lf_relistq(uintptr_t h);
 extern void cnm_lf_after_free(uintptr_t h, uintptr_t d2, uint64_t g);
 extern void cnm_lf_grow(uintptr_t h, size_t cl);
 extern void cnm_lf_set(uintptr_t h, void* alloc, void* free, size_t debug);
@@ -127,6 +130,8 @@ static size_t g_lfsize[CN_MAXCLS];       // cell size
 static uint32_t g_lfnw[CN_MAXCLS];       // words of bits
 static uint32_t g_lfnfull[CN_MAXCLS];    // words wholly valid
 static uint64_t g_lflastmask[CN_MAXCLS]; // the valid bits of the word after them (0: none)
+static uint32_t g_lfthrf[CN_MAXCLS];     // (row 603) the listing threshold of a wholly valid word: min(relist, 64 / relistq), at least 1
+static uint32_t g_lfthrl[CN_MAXCLS];     // ... of the last, partly valid word: min(relist, its valid bits / relistq), at least 1 (the same numbers as thrOf in cnmalloc.cone)
 static uint64_t g_lfrecip[CN_MAXCLS];    // ceil(2^32 / size): offset * recip >> 32 is offset / size for offsets under 65536
 static uint8_t g_lfmap[65];              // (n + 15) >> 4 -> class, for n up to 1024
 static CN_TLS LfTls t_lf;
@@ -179,7 +184,11 @@ static void lf_double_free(LfD2* P, uint32_t j, uint64_t bit, uint64_t g) {
 // (row 519) The test after the fetch_or, "the word was empty, or is now every valid bit", is the same as before and is
 // written to reach the answer without lf_mask on the common path: a word that is not all ones can only be the page's last,
 // partly valid word, so its mask is read only when the word is that one.
-static CN_FORCEINLINE void lf_release_i(LfD2* P, uint64_t g, uint32_t j, uint64_t bit) {
+// (row 603) The first test is now "the word crossed its listing threshold": popcount(old) + 1 == thr for one bit (the
+// word held thr - 1 free cells and now holds thr), and popcount(old) < thr <= popcount(old) + popcount(bit) for several (an undo of a
+// multi-bit take, multi = 1). With thr = 1 that is "the word was empty", as before. One popcount on the word the fetch_or
+// returned; no new atomic.
+static CN_FORCEINLINE void lf_release_i(LfD2* P, uint64_t g, uint32_t j, uint64_t bit, int multi) {
   uint64_t old = cn_or64(&P->bits[j], bit);
   LF_HOOK_OR(g & 0xFF);                               // tests only (CN_HOOKS): a park point after the fetch_or
   if (old & bit) {                                  // double free: abort in a debug build, ignore otherwise
@@ -189,14 +198,26 @@ static CN_FORCEINLINE void lf_release_i(LfD2* P, uint64_t g, uint32_t j, uint64_
     return;
   }
   uint64_t now = old | bit;
-  int edge;
-  if (old == 0) edge = 1;
-  else if (now == ~0ull) edge = j < g_lfnfull[g & 0xFF];
-  else edge = j == g_lfnfull[g & 0xFF] && now == g_lflastmask[g & 0xFF];
+  size_t cc = g & 0xFF;
+  uint64_t n = cn_popcnt64(old);
+  uint64_t thr = j < g_lfnfull[cc] ? g_lfthrf[cc] : g_lfthrl[cc];
+  int edge = multi ? (n < thr && n + cn_popcnt64(bit) >= thr) : (n + 1 == thr);   // the word crossed its threshold
+  if (!edge) {
+    if (now == ~0ull) edge = j < g_lfnfull[cc];
+    else edge = j == g_lfnfull[cc] && now == g_lflastmask[cc];                     // or it is now every valid bit (a page may be wholly free)
+  }
   if (edge && cn_ld64_sc(&P->state) != LF_ATTACHED)
-    cnm_lf_after_free(g_heap, (uintptr_t)P, g);        // a full page has room again, or a page may be wholly free
+    cnm_lf_after_free(g_heap, (uintptr_t)P, g);        // a page has a word at its threshold again, or may be wholly free
 }
-static CN_NOINLINE void lf_release(LfD2* P, uint64_t g, uint32_t j, uint64_t bit) { lf_release_i(P, g, j, bit); }
+static CN_NOINLINE void lf_release(LfD2* P, uint64_t g, uint32_t j, uint64_t bit) { lf_release_i(P, g, j, bit, 1); }
+
+// (row 603) The slow path found no page for class c. A relist threshold hides a few free cells in each page that is neither
+// attached nor listed, so before the heap reports out of memory the class's unlisted pages that hold a free cell are listed
+// (a walk over the class's pages under its lock, in cnmalloc.cone), and the allocation is tried again when that listed one. It
+// runs only here: never before an ordinary new page.
+static CN_NOINLINE int lf_oom(size_t c) {
+  return cnm_lf_sweep(g_heap, c) != 0;
+}
 
 static CN_FORCEINLINE void lf_free_i(void* p, int stats) {
   uintptr_t off = (uintptr_t)p - g_pbase;
@@ -207,7 +228,7 @@ static CN_FORCEINLINE void lf_free_i(void* p, int stats) {
   if (stats) lf_count(&g_lfc[c].st[1]);
   { LfTls* T = &t_lf; uint32_t hw = idx >> 6;                  // the hint: the next allocate starts at the word of this thread's last free
     if (T->start[c] != hw || T->startPage[c] != LF_KEY(P, g)) { T->start[c] = (uint8_t)hw; T->startPage[c] = LF_KEY(P, g); } }
-  lf_release_i(P, g, idx >> 6, 1ull << (idx & 63));
+  lf_release_i(P, g, idx >> 6, 1ull << (idx & 63), 0);
 }
 static void lf_free(void* p) { lf_free_i(p, g_stats); }
 
@@ -266,7 +287,7 @@ restart:;
     }
   }
   if (ask) cnm_lf_grow(g_heap, c);
-  if (!cnm_lf_attach(g_heap, c, tn, (uintptr_t)P)) return NULL;     // the slow path, under the class lock
+  if (!cnm_lf_attach(g_heap, c, tn, (uintptr_t)P) && !lf_oom(c)) return NULL;     // the slow path, under the class lock; out of memory only after the sweep
   goto restart;
 }
 
@@ -352,7 +373,7 @@ restart:;
     }
   }
   if (ask) cnm_lf_grow(g_heap, c);
-  if (!cnm_lf_attach(g_heap, c, tn, (uintptr_t)P)) return NULL;     // the slow path, under the class lock
+  if (!cnm_lf_attach(g_heap, c, tn, (uintptr_t)P) && !lf_oom(c)) return NULL;     // the slow path, under the class lock; out of memory only after the sweep
   goto restart;
 }
 
@@ -367,6 +388,9 @@ static void lf_setup(uintptr_t h) {
   g_d2base = ((uintptr_t*)info)[1];
   g_psize = ((uintptr_t*)info)[2];
   g_lfc = (LfCls*)((uintptr_t*)info)[3];
+  size_t k = cnm_lf_relist(h), q = cnm_lf_relistq(h);       // (row 603) CNMALLOC=relist=<k>,relistq=<q>
+  if (k < 1) k = 1;
+  if (q < 1) q = 1;
   for (size_t c = 0; c < CN_MAXCLS; c++) {
     size_t sz = cnm_class_size(h, c);
     size_t ncells = 65536 / sz;
@@ -375,6 +399,13 @@ static void lf_setup(uintptr_t h) {
     g_lfnfull[c] = (uint32_t)(ncells >> 6);
     g_lflastmask[c] = (ncells & 63) ? (1ull << (ncells & 63)) - 1 : 0;
     g_lfrecip[c] = ((1ull << 32) + sz - 1) / sz;
+    // (row 603) the listing thresholds: min(k, valid bits of the word / q), at least 1; thrOf in cnmalloc.cone computes the same
+    size_t lastv = ncells & 63;
+    size_t tf = 64 / q, tl = lastv / q;
+    if (tf > k) tf = k;
+    if (tl > k) tl = k;
+    g_lfthrf[c] = (uint32_t)(tf < 1 ? 1 : tf);
+    g_lfthrl[c] = (uint32_t)(tl < 1 ? 1 : tl);
   }
   for (size_t i = 0; i <= 64; i++) g_lfmap[i] = (uint8_t)cnm_class_of(h, i * 16);
 }
@@ -565,8 +596,12 @@ static void lf_give_group(LfD2* P, uint32_t j, uint64_t mask) {
 #endif
   }
   if (g_stats) cn_add64(&g_lfc[g & 0xFF].st[1], cn_popcnt64(mask));
-  if ((old == 0 || (old | mask) == lf_mask(g & 0xFF, j)) && cn_ld64_sc(&P->state) != LF_ATTACHED)
-    cnm_lf_after_free(g_heap, (uintptr_t)P, g);        // a full page has room again, or a page may be wholly free
+  size_t cc = g & 0xFF;
+  uint64_t n = cn_popcnt64(old);
+  uint64_t thr = j < g_lfnfull[cc] ? g_lfthrf[cc] : g_lfthrl[cc];
+  // (row 603) the group's word crossed its listing threshold (popcount(old) < thr <= popcount(old | mask)), or is now every valid bit
+  if (((n < thr && n + cn_popcnt64(mask & ~old) >= thr) || (old | mask) == lf_mask(cc, j)) && cn_ld64_sc(&P->state) != LF_ATTACHED)
+    cnm_lf_after_free(g_heap, (uintptr_t)P, g);        // a page has a word at its threshold again, or may be wholly free
 }
 
 // one batch of a worker's cells of class cl, every link already read: grouped by (page, word) in the order a group's

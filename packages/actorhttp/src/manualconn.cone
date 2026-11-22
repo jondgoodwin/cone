@@ -1,0 +1,375 @@
+// The connections a program makes itself (the package's header, A CONNECTION; stage 6 (c) of the HTTP re-architecture). A Conn
+// names one ManualConn actor, which owns exactly one connection: a ClientConnActor (clientactor.cone) over a socket, the same
+// actor a client's pool makes, with its sans-I/O httpconn.ClientConn. A ManualConn stands in for the pool: it is the
+// ConnOwner the connection actor tells, and it has no pool logic (no origins, no queue, no retry, no redirect), because a
+// manual connection is one connection the program owns. It is outside any client.
+//
+// 'connect' answers when the TCP connection is made, as it did on the service (a TLS handshake that fails then fails the
+// first request, and the ones waiting). A request is kept with its reply until the connection reports its exchange ended; a
+// request's own limits (the group it was given, the deadline) are a group of its own, watched as a client's fetch is, so the
+// group's cancel is a message to this actor. The connection ending (the server closed it, it was reset) answers every request
+// waiting on it with the connection's failure; a request after it is answered Closed.
+//
+// A Conn's drop is a message ('close'): what waits is answered Cancelled, a connection with a request in flight is reset and
+// an idle one is closed politely. The two actors let go of each other when the connection actor has ended.
+
+alias ConnReply = actors.ReplyOf[Result[Conn, FetchError]];
+
+alias TlsClients = Dict[tls.ClientConfig, tls.Client];   // connectSecure's contexts, by the config itself
+const maxTlsClients = 16usize;                 // configs kept; past it the table is cleared (live connections keep theirs)
+
+// The tls.Client for a config: one for each config, shared by every connection made with it, so that its session cache lets a
+// later connection to the same server resume
+fn tlsFor(cfg: &tls.ClientConfig) Result[tls.Client, httpclient.Failure] {
+  let tc = &mut *manualTls;
+  if !tc.contains(cfg) {
+    match tls.Client.make(cfg.clone()) {
+      case let Ok(t) {
+        if tc.len() >= maxTlsClients {tc.clear();}
+        tc.insert(cfg.clone(), t);
+      }
+      case let Err(x) {
+        return Err[tls.Client, httpclient.Failure](
+          httpclient.Failure.make(httpclient.Stage.Tls, x.osError, ErrorKind.Unsupported, (String() <- x).view()));
+      }
+    }
+  }
+  Ok[tls.Client, httpclient.Failure](tc[cfg])
+}
+
+// The ManualConns whose connection is not ended, and their ids, behind a lock: held for the program's end, when each lets go of
+// the replies it holds (a behaviour paused on one is then abandoned, as for a client's fetches)
+struct ManualRegistry {
+  actors: List[ManualConn];
+  ids: List[u64];
+}
+
+fn mAdd(a: ManualConn, id: u64) {
+  let r = &mut *manualReg;
+  r.actors.push(a);
+  r.ids.push(id);
+}
+
+fn mRemove(id: u64) {
+  let r = &mut *manualReg;
+  match r.ids.indexOf(&id) {
+    case let Some(k) {
+      r.actors.remove(k);
+      r.ids.remove(k);
+    }
+    case is None[usize] {}
+  }
+}
+
+// At the program's end (final): every manual connection not ended lets go of its replies, unanswered
+fn abandonManual() {
+  var all = List[ManualConn]();
+  {
+    let r = &mut *manualReg;
+    var i = 0usize;
+    while i < r.actors.len() {
+      all.push(r.actors[i]);
+      i = i + 1usize;
+    }
+  }
+  var i = 0usize;
+  while i < all.len() {
+    all[i].abandon();
+    i = i + 1usize;
+  }
+}
+
+fn closedFailure(why: &str) httpclient.Failure {
+  httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, why)
+}
+
+// A request's watch on its own group: the group's cancel (any thread) posts the actor a message and no more. The cell holds
+// the actor until the one signal or until the request's record goes
+struct ConnWake is Sendable {
+  cell: Arc[Mutex, Option[ManualConn]];
+  id: u64;
+
+  pub fn signal(self: &) bool {
+    let s = &mut *cell;
+    match s.take() {
+      case let Some(a) {
+        a.groupCancelled(id);
+        true
+      }
+      else {false}
+    }
+  }
+
+  pub fn isGone(self: &) bool {
+    let s = &mut *cell;
+    *s is None
+  }
+}
+
+// A request taken: its reply, the watch on its group (cleared when it ends) and the group
+struct ConnReq is Move {
+  reply: FetchReply;
+  cell: Arc[Mutex, Option[ManualConn]];
+  group: CancelGroup;
+  fetch: httpclient.FetchId;
+}
+
+alias ConnReqs = Dict[u64, ConnReq];
+
+// What a request holds until its Awaitable is started (its closure cannot move what it holds)
+struct ConnCall is Move {
+  head: RequestHead;
+  body: String;
+  group: Option[CancelGroup];
+  deadline: Instant;
+}
+
+pub actor ManualConn is ConnOwner {
+  conn: Option[ClientConnActor];
+  group: CancelGroup;           // ends the connection's I/O when the Conn is dropped under a request
+  pending: Option[ConnReply];   // connect's reply, until it is answered
+  reqs: ConnReqs;
+  next: u32;
+  ended: bool;                  // the connection is over
+  closing: bool;                // the Conn was dropped
+  rid: u64;                     // its place in the registry of connections not ended
+  proto: u32;                  // 0: not chosen, 1: HTTP/1.1, 2: HTTP/2
+  cap1: usize;                  // the requests held at once on HTTP/1.1: the one on the wire and 'maxWaiting' behind it
+  cap2: usize;                  // ...on HTTP/2: the streams a peer commonly allows, and 'h2MaxWaiting' past them
+
+  fn init(self: &new) {
+    let conf = httpconn.Config.make();
+    *self = Self(conn: None[ClientConnActor], group: CancelGroup.make(), pending: None[ConnReply], reqs: ConnReqs(),
+      next: 0u32, ended: false, closing: false, rid: newId(), proto: 0u32, cap1: 1usize + usize.from(conf.maxWaiting),
+      cap2: 128usize + usize.from(conf.h2MaxWaiting));
+    let myId = self.rid;
+    mAdd(selfactor, myId);
+  }
+
+  // The program ends (see abandonManual): the replies held are let go unanswered, so a behaviour paused on one is abandoned
+  pub async fn abandon(self) {
+    reqs.clear();
+    pending = None[ConnReply];
+  }
+
+  // The connection is over: no more is asked of the registry's hold on this actor
+  fn endNow(self) {
+    ended = true;
+    mRemove(rid);
+  }
+
+  // The connection made: the host looked up (within connectTimeout), then the connection actor, which connects each address in
+  // turn
+  pub async fn start(self, rp: ConnReply, host: String, port: u16, secure: bool, cfg: tls.ClientConfig) {
+    pending = Some[ConnReply](rp);
+    let conf = httpconn.Config.make();
+    var tlsc: Option[tls.Client] = None;
+    if secure {
+      match tlsFor(&cfg) {
+        case let Ok(t) {tlsc = Some[tls.Client](t);}
+        case let Err(f) {
+          self.answerConnect(Err[Conn, FetchError](FetchError.failed(f)));
+          self.endNow();
+          return;
+        }
+      }
+    }
+    let until = Instant.now() + conf.connectTimeout;
+    let args = Arc[imm, ClientArgs](ClientArgs(conf, tlsc, None[httpclient.Failure], defaultMaxBody, None[Uni[httpclient.H3Connector]]));
+    let r = await aio.resolveIn(host.view(), port, IoLimits(Some[CancelGroup](group), until));
+    if closing {return;}
+    match r {
+      case let Ok(list) {
+        if list.len() == 0usize {
+          self.answerConnect(Err[Conn, FetchError](FetchError.failed(
+            httpclient.Failure.make(httpclient.Stage.Resolve, 0u32, ErrorKind.Closed, "the name has no address"))));
+          self.endNow();
+          return;
+        }
+        conn = Some[ClientConnActor](ClientConnActor(selfactor, 1u32, 1u32, list, host, secure, args, group, None[TestPipe], true));
+      }
+      case let Err(e) {
+        self.answerConnect(Err[Conn, FetchError](FetchError.failed(
+          httpclient.Failure.make(httpclient.Stage.Resolve, e.code,
+            if e.isTimedOut() {ErrorKind.TimedOut} else {ErrorKind.Closed}, "the name could not be looked up"))));
+        self.endNow();
+      }
+    }
+  }
+
+  fn answerConnect(self, v: Result[Conn, FetchError]) {
+    var taken: Option[ConnReply] = None;
+    taken <-> pending;
+    match taken {
+      case let Some(r) {r.answer(v);}
+      else {}
+    }
+  }
+
+  // ---- what the program asks
+
+  // A request on the connection: its whole body, and its limits. Given a group of its own so that the program's group and its
+  // deadline both end it
+  pub async fn exchange(self, head: RequestHead, body: String, outer: Option[CancelGroup], deadline: Instant, rp: FetchReply) {
+    if closing || ended {
+      rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(closedFailure("the connection is closed"))));
+      return;
+    }
+    // Past what the connection holds: refused at once (the package's header, A CONNECTION)
+    if reqs.len() >= (if proto == 2u32 {cap2} else {cap1}) {
+      rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(
+        httpclient.Failure.make(httpclient.Stage.Limit, 0u32, ErrorKind.TooLarge, "maxWaiting requests already wait on the connection"))));
+      return;
+    }
+    let g = match outer {
+      case let Some(p) {if deadline < forever() {p.childUntil(deadline)} else {p.child()}}
+      else {if deadline < forever() {CancelGroup.until(deadline)} else {CancelGroup.make()}}
+    };
+    // Past its limits before it began: nothing is sent
+    if deadline < forever() && deadline <= Instant.now() {
+      rp.answer(Err[httpclient.Response, FetchError](FetchError.timedOut()));
+      return;
+    }
+    if g.isCancelled() {
+      rp.answer(Err[httpclient.Response, FetchError](self.endOf(&g)));
+      return;
+    }
+    next = next + 1u32;
+    let id = httpclient.FetchId.numbered(next);
+    let key = id.number();
+    let cell = Arc[Mutex, Option[ManualConn]](Some[ManualConn](selfactor));
+    reqs.insert(key, ConnReq(rp, cell, g, id));
+    let w = ConnWake(cell, key);
+    g.watch(diag.nextLoopId(), &w);
+    if g.isCancelled() {let ignored = w.signal();}
+    let length = if body.len() > 0usize {BodyLength.sized(u64.from(body.len()))} else {BodyLength()};
+    match &conn {
+      case let &Some(c) {c.send(id, head, length, body);}
+      else {}
+    }
+  }
+
+  // How a request's group ended it: TimedOut for its deadline, else Cancelled
+  fn endOf(self, g: &CancelGroup) FetchError {
+    match g.cause() {
+      case let Some(c) {if c == Cause.TimedOut {return FetchError.timedOut();}}
+      else {}
+    }
+    FetchError.cancelled()
+  }
+
+  // A request's group ended: it is answered, and its exchange given up on the connection (which resets an HTTP/1.1 one)
+  pub async fn groupCancelled(self, key: u64) {
+    match reqs.remove(&key) {
+      case var Some(r) {
+        let rp, g, id = r.(reply, group, fetch);
+        rp.answer(Err[httpclient.Response, FetchError](self.endOf(&g)));
+        match &conn {
+          case let &Some(c) {c.cancel(id);}
+          else {}
+        }
+      }
+      else {}
+    }
+  }
+
+  // The Conn is dropped: what waits is answered Cancelled, and the connection reset if a request was on it, else closed
+  // politely
+  pub async fn close(self) {
+    if closing {return;}
+    closing = true;
+    mRemove(rid);
+    self.answerConnect(Err[Conn, FetchError](FetchError.cancelled()));
+    let busy = reqs.len() > 0usize;
+    var keys = List[u64]();
+    var it = reqs.keys();
+    while true {
+      match it.next() {
+        case let Some(k) {keys.push(*k);}
+        else {break;}
+      }
+    }
+    var i = 0usize;
+    while i < keys.len() {
+      match reqs.remove(&keys[i]) {
+        case var Some(r) {
+          let rp, cell = r.(reply, cell);
+          let s = &mut *cell;
+          let gone = s.take();
+          rp.answer(Err[httpclient.Response, FetchError](FetchError.cancelled()));
+        }
+        else {}
+      }
+      i = i + 1usize;
+    }
+    match &conn {
+      case let &Some(c) {
+        if busy {c.abort();} else {c.shutdown();}
+      }
+      else {group.cancel();}
+    }
+    conn = None[ClientConnActor];
+  }
+
+  // ---- what the connection tells
+
+  pub async fn connected(self, pc: u32, gen: u32) {
+    self.answerConnect(Ok[Conn, FetchError](Conn(Some[ManualConn](selfactor))));
+  }
+
+  pub async fn connUp(self, pc: u32, gen: u32, chosen: u32, takes: bool, free: usize, recv: u64) {
+    proto = chosen;
+  }
+
+  pub async fn connState(self, pc: u32, gen: u32, free: usize, takes: bool, recv: u64) {}
+
+  pub async fn exchangeEnded(self, pc: u32, gen: u32, id: httpclient.FetchId, kind: u32, resp: httpclient.Response,
+      failure: httpclient.Failure, free: usize, takes: bool, recv: u64) {
+    match reqs.remove(&id.number()) {
+      case var Some(r) {
+        let rp, cell = r.(reply, cell);
+        let s = &mut *cell;
+        let gone = s.take();
+        if kind == 0u32 {
+          var rr = resp;
+          rr.outcome = httpclient.EventKind.Done;
+          rp.answer(Ok[httpclient.Response, FetchError](rr));
+        } else if kind == 1u32 {
+          rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(failure)));
+        } else {
+          rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(limitFailure())));
+        }
+      }
+      else {}
+    }
+  }
+
+  // The connection is over: a connect not yet answered fails with why, and each request on it with the same
+  pub async fn connEnded(self, pc: u32, gen: u32, clean: bool, failure: httpclient.Failure, tlsFailed: bool) {
+    self.endNow();
+    conn = None[ClientConnActor];
+    self.answerConnect(Err[Conn, FetchError](FetchError.failed(failure.clone())));
+    var keys = List[u64]();
+    var it = reqs.keys();
+    while true {
+      match it.next() {
+        case let Some(k) {keys.push(*k);}
+        else {break;}
+      }
+    }
+    var i = 0usize;
+    while i < keys.len() {
+      match reqs.remove(&keys[i]) {
+        case var Some(r) {
+          let rp, cell = r.(reply, cell);
+          let s = &mut *cell;
+          let gone = s.take();
+          rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(
+            if clean {closedFailure("the connection closed")} else {failure.clone()})));
+        }
+        else {}
+      }
+      i = i + 1usize;
+    }
+  }
+}

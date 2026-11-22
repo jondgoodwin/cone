@@ -27,7 +27,7 @@
 //   stats()               the pool's counters, a Stats
 //   trim()                give every idle slab back to the OS
 //   setLimits(maxBytes, keepBytes)  the process-wide bounds
-//   trimAll()             trim after flushing every thread's cache
+//   trimAll()             trim after flushing this thread's cache
 //   flushThread()         this thread's cache goes back to the stock now, not at its end
 //   classSize(c), page, largestClass, classCount        (SIZE CLASSES)
 //   osBlocks(), osBytes() what the pool holds from the OS now
@@ -179,8 +179,11 @@
 // of its own, so they are exact once the threads have stopped, and a sum of
 // moments while they run. These count every block of the pool, a List's too, not
 // IoBufs alone. 'osBlocks()' and 'osBytes()' count what the pool holds from the
-// OS (slabs and oversize blocks), for a leak check: 0 once every block is home
-// and 'trimAll()' has run, which the bufpool module's 'final' does.
+// OS (slabs and oversize blocks), for a leak check: 0 once every block is home,
+// every thread that cached blocks has ended or called 'flushThread()', and
+// 'trimAll()' has run, which the bufpool module's 'final' does for every thread.
+// While threads live, 'stats().lent == 0' is the leak check: a block in a
+// thread's cache is home.
 //
 // THE PER-THREAD CACHES. Each thread keeps a few idle blocks of each size
 // (up to 32 of 4 KiB, 2 of 16 KiB, 2 of 64 KiB, 1 of 256 KiB, none of 1 MiB:
@@ -200,7 +203,7 @@
 // the exit slot, which the pool then goes without: 'flushThread()' is then the
 // only give-back). Once the pool's 'final'
 // has begun, or the process is ending, a thread's end gives nothing back:
-// 'trimAll()' and the final do. Not covered: a buffer held in a '@threadlocal'
+// the final does. Not covered: a buffer held in a '@threadlocal'
 // (NOTHING FINALIZES A '@threadlocal' YET when its thread ends, a language gap,
 // mod-globals says so), which keeps its block, and a thread killed outright.
 //
@@ -312,10 +315,13 @@ pub const largestClass = 1048576usize;
 pub fn osBlocks() u64 {bufpool.osBlocks()}
 pub fn osBytes() u64 {bufpool.osBytes()}
 
-// Every thread's cache back to the stock and every idle slab back to the OS:
-// for when no other thread is taking or returning buffers (a leak check, the
-// end of a program)
-pub fn trimAll() {bufpool.trimEverything();}
+// This thread's cache back to the stock and every wholly idle slab back to the
+// OS, whatever the other threads are doing: a thread's cache is touched only by
+// that thread, so another thread's stays its own until that thread ends or
+// calls flushThread. A leak check reads 'stats().lent' (a buffer in a cache is
+// home); 'osBlocks()' reaches 0 once every thread that cached blocks has ended
+// or flushed
+pub fn trimAll() {bufpool.trimStock();}
 
 // This thread's cache back to the stock now (its end does it too)
 pub fn flushThread() {bufpool.flushThread();}

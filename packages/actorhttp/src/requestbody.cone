@@ -102,9 +102,17 @@ pub struct RequestBody is Move {
   srv: u64;
   slot: u32;
   id: u64;
+  conn: Option[ConnActor] = None;   // a routed server's body: its connection, asked by message (routedserver.cone)
+  stream: u32 = 0u32;
 
   fn make(srv: u64, slot: u32, id: u64) RequestBody {
     RequestBody(ReaderSink[Result[Option[String], BodyError]](&requestChunk, &requestEnd), Atomic[u8].of(bodyUnchosen), srv, slot, id)
+  }
+
+  // The body of a routed server's request: read through its connection actor
+  fn routed(c: ConnActor, stream: u32, rid: u64) RequestBody {
+    RequestBody(ReaderSink[Result[Option[String], BodyError]](&requestChunk, &requestEnd), Atomic[u8].of(bodyUnchosen), 0u64, 0u32, rid,
+      Some[ConnActor](c), stream)
   }
 
   // The next piece of the body (the bytes of one receive: any size), or None when the body is whole; or why it
@@ -113,6 +121,17 @@ pub struct RequestBody is Move {
   // String COPIED from the receive buffer, so reading a body costs a copy of every byte; for a big body use
   // 'to(sink)', which hands the sink the connection's own buffers uncopied. The Err is a BodyError
   pub fn read(self: &) actors.Awaitable[Result[Option[String], BodyError]] {
+    match &conn {
+      case let &Some(c) {
+        let cc = *c;
+        let sid = stream;
+        let rid = id;
+        if choice.load() == bodyUnchosen {choice.swap(bodyRead);}   // the first read is the choice
+        return actors.Awaitable[Result[Option[String], BodyError]].make(
+          fn(rp: actors.ReplyOf[Result[Option[String], BodyError]]) [cc, sid, rid] {cc.xBodyRead(sid, rid, rp);});
+      }
+      else {}
+    }
     if choice.load() == bodyUnchosen {
       if choice.swap(bodyRead) == bodyUnchosen {
         post[ReqChoiceJob](ReqChoiceJob(srv, slot, id, Some[ChunkSink](reader.clone())));
@@ -125,6 +144,20 @@ pub struct RequestBody is Move {
   // sink's buffers are the connection's own window; one that gives them back slowly slows the sender. A body
   // already chosen cannot be sent: the sink is ended Failed
   pub fn to(self, sink: ChunkSink) {
+    match &conn {
+      case let &Some(c) {
+        let cc = *c;
+        let was = choice.swap(bodyTo);   // the body is consumed here: dropping the handle drops nothing
+        if was == bodyUnchosen {
+          cc.xBodyTo(stream, id, sink, ConnBodySource(cc, stream, id));
+        } else {
+          choice.store(was);   // already chosen: the choice stands
+          sink.end(Ending.Failed(AnyError.msg("the body was chosen already, it cannot be sent to a sink")));
+        }
+        return;
+      }
+      else {}
+    }
     if choice.swap(bodyTo) == bodyUnchosen {
       post[ReqChoiceJob](ReqChoiceJob(srv, slot, id, Some[ChunkSink](sink)));
     } else {
@@ -136,6 +169,25 @@ pub struct RequestBody is Move {
   // gathered request over maxBody gets), discards the rest, and this is the Err (a BodyError, isTooLarge). The whole body is held, and copied into the String. The Err
   // is also what a peer that left, or a body already chosen, gives
   pub fn readAll(self, limit: usize) actors.Awaitable[Result[String, BodyError]] {
+    match &conn {
+      case let &Some(c) {
+        let cc = *c;
+        let sid = stream;
+        let rid = id;
+        let was = choice.swap(bodyTo);   // the body is consumed here: dropping the handle drops nothing
+        if was != bodyUnchosen {
+          choice.store(was);   // already chosen: the choice stands
+          let g = GatherSink(limit);
+          g.end(Ending.Failed(AnyError.msg("the body was chosen already, it cannot be read whole")));
+          let h = g.clone();
+          return actors.Awaitable[Result[String, BodyError]].make(
+            fn(rp: actors.ReplyOf[Result[String, BodyError]]) [h] {h.want(rp);});
+        }
+        return actors.Awaitable[Result[String, BodyError]].make(
+          fn(rp: actors.ReplyOf[Result[String, BodyError]]) [cc, sid, rid, limit] {cc.xBodyAll(sid, rid, limit, rp);});
+      }
+      else {}
+    }
     let g = GatherSink(limit);
     if choice.swap(bodyTo) == bodyUnchosen {
       post[ReqChoiceJob](ReqChoiceJob(srv, slot, id, Some[ChunkSink](g.clone())));
@@ -150,6 +202,13 @@ pub struct RequestBody is Move {
   }
 
   fn final(self: &uni) {
+    match &conn {
+      case let &Some(cn) {
+        if choice.load() != bodyTo {cn.xBodyDrop(stream, id);}
+        return;
+      }
+      else {}
+    }
     let c = choice.load();
     // a body unchosen, or being read, is no longer wanted; one sent 'to' a sink is the sink's
     if c != bodyTo {post[ReqDropJob](ReqDropJob(srv, slot, id));}
@@ -175,6 +234,22 @@ actor ReqSource is ChunkSource {
   pub async fn stop(self, why: Ending) {
     post[ReqStopJob](ReqStopJob(srv, slot, id, Some[Ending](why)));
   }
+}
+
+// The source a routed request body's sink gives its buffers back to: each goes to the connection actor, which
+// releases the credit it held; 'stop' ends the request (past a limit it answers 413)
+actor ConnBodySource is ChunkSource {
+  cc: ConnActor;
+  stream: u32;
+  id: u64;
+
+  pub fn init(self: &new, cc: ConnActor, stream: u32, id: u64) {
+    *self = Self(cc: cc, stream: stream, id: id);
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {cc.xBodyBack(stream, id, b);}
+
+  pub async fn stop(self, why: Ending) {cc.xBodyStop(stream, id, why);}
 }
 
 // The sink 'readAll' uses: the pieces gathered up to the limit, each buffer given back as it is copied

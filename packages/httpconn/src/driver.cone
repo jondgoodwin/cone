@@ -104,6 +104,7 @@ struct Conn {
   h2: Option[Uni[http2.Connection]];  // HTTP/2's, once chosen (see core.cone)
   isH2: bool;                // the protocol chosen is HTTP/2
   decided: bool;             // the protocol is chosen: the layer has opened
+  peerStreams: u32;          // HTTP/2 client: the peer's stream limit as the program was last told (the assumed one until its SETTINGS say)
   cleartext: bool;           // its layer has no handshake (Plain): no ALPN, prior knowledge decides
   layer: Option[Uni[Layer]];  // None only while a Layer call has it out (takeLayer/putLayer)
   sink: Sink;
@@ -338,7 +339,7 @@ pub struct Driver {
       sock: Handle.none(),
       core: if server {http1.Connection.server(cfg.protocol, now)} else {http1.Connection.client(cfg.protocol, now)},
       h2: None, isH2: false,
-      decided: false,
+      decided: false, peerStreams: cfg.h2.assumedPeerStreams,
       // A layer open from the start has no handshake, so no ALPN: cleartext
       cleartext: layer.isOpen(),
       layer: Some[Uni[Layer]](layer), sink: sink, addrs: List[SocketAddr](), nextAddr: 0usize,
@@ -783,6 +784,20 @@ pub struct Driver {
     }
   }
 
+  // A client's HTTP/2 connection whose peer's stream limit has changed since the program was told: a Settings
+  // event, so a waiting request can go out on it (or stop going)
+  fn noteLimit(self: &mut, i: u32) {
+    let c = self.conns.borrowMutAt(i).unwrap();
+    if c.server {return;}
+    let now = match &c.h2 {
+      case let &Some(h) {h.peerMaxConcurrentStreams()}
+      else {return;}
+    };
+    if now == c.peerStreams {return;}
+    c.peerStreams = now;
+    self.emit(Event.make(EventKind.Settings, c.sink.token, self.connIdOf(i), ReqId.none()));
+  }
+
   // The HTTP/2 core's events, to their sinks: each names its stream, whose
   // request the event is about (0: the whole connection)
   fn events2(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
@@ -793,7 +808,10 @@ pub struct Driver {
         else {return;}
       };
       match ev2 {
-        case is NeedData {return;}
+        case is NeedData {
+          self.noteLimit(i);
+          return;
+        }
         case is Closed {return;}
         case let Request(q) {
           // A server's request: its record, and the program told
@@ -1449,7 +1467,13 @@ pub struct Driver {
       let lk = if lay(c).overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
       c.failure = Some[Failure](Failure.make(Stage.Tls, lay(c).failureCode(), lk, text.view()));
     } else {
-      c.failure = Some[Failure](Failure.make(stage, code, kind, detail));
+      var nf = Failure.make(stage, code, kind, detail);
+      // A connection that was never made has written nothing: what waits on it was never sent
+      if stage == Stage.Resolve || stage == Stage.Connect {
+        nf.unsent = true;
+        nf.error.noResponse = true;
+      }
+      c.failure = Some[Failure](nf);
     }
     self.closeNow(lp, i, false, false);
   }
@@ -1987,11 +2011,11 @@ pub struct Driver {
 
   // The body is whole
   pub fn finish(self: &mut, req: ReqId, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
-    self.finishWith(req, Headers(), file, line);
+    self.finishWith(req, HttpHeaders(), file, line);
   }
 
   // The body is whole, and these trailer fields follow it (a chunked body)
-  pub fn finishWith(self: &mut, req: ReqId, trailers: Headers, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+  pub fn finishWith(self: &mut, req: ReqId, trailers: HttpHeaders, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     let ri = self.reqIndex(req);
     if ri == noEntry {return;}
     let r = self.reqs.borrowMutAt(ri).unwrap();

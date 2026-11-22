@@ -1,0 +1,139 @@
+// A cold burst to an origin whose name has several addresses is spread over them (row 613). The origin's name looks up (through
+// TestTarget.addresses) to four local servers; sixteen fetches start together, each holding its connection 150 ms, so all sixteen
+// dial before any answers. The lookup is kept once and the cursor moves with each dial: four connections land on each server
+// (before the fix every dial of the burst reset the cursor and all sixteen went to the first address).
+
+mod addrspread;
+
+import stdio use *;
+import libc;
+import collections use List, String;
+import time use Instant, Duration;
+import testing use *;
+import sync use Channel, Sender, Receiver;
+import iocore use SocketAddr;
+import http use *;
+import actors;
+import httpclient;
+import aio;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, HttpRoutes, HttpHandler, TestTarget, TestTargets;
+
+struct Gate {
+  pub arrived: Atomic[u64];
+}
+let gate: Gate;
+
+fn @initpure init() {
+  gate = Gate(Atomic[u64].of(0u64));
+}
+
+actor Tagged is HttpHandler {
+  id: u64;
+
+  fn init(self: &new, id: u64) {*self = Self(id: id);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    // hold every answer until all sixteen requests are open (10 s at most), so no connection is reused
+    gate.arrived.add(1u64);
+    let limit = Instant.now() + Duration.fromSeconds(10i64);
+    while gate.arrived.load() < 16u64 && Instant.now() < limit {
+      let z = await aio.sleep(Duration.fromMillis(2i64));
+    }
+    var t = String.from("s");
+    t.appendUInt(id);
+    ex.text(200u16, t.view());
+  }
+}
+
+fn tagged(id: u64) HttpHandler {
+  let h = Tagged(id);
+  let r: HttpHandler = h;
+  r
+}
+fn mk0() HttpHandler {tagged(0u64)}
+fn mk1() HttpHandler {tagged(1u64)}
+fn mk2() HttpHandler {tagged(2u64)}
+fn mk3() HttpHandler {tagged(3u64)}
+
+actor Starter {
+  srv: Server;
+
+  pub async fn open(self, id: u64, ports: Sender[u16]) {
+    var routes = HttpRoutes.make();
+    if id == 0u64 {routes = routes.handle("", "/", &mk0);}
+    else if id == 1u64 {routes = routes.handle("", "/", &mk1);}
+    else if id == 2u64 {routes = routes.handle("", "/", &mk2);}
+    else {routes = routes.handle("", "/", &mk3);}
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make().routes(routes));
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {srv <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n"); libc.exit(1i32);}
+    }
+    ports.send(srv.port());
+  }
+}
+
+actor Fetcher {
+  client: HttpClient;
+
+  pub async fn get(self, u: String, out: Sender[String]) {
+    let r = await client.get(u.view());
+    match &r {
+      case let &Ok(ok) {out.send(String.from(ok.body.view()));}
+      case let &Err(e) {out.send(String.from("failed"));}
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var servers = List[Starter]();
+  var addrs = List[SocketAddr]();
+  var k = 0u64;
+  while k < 4u64 {
+    let s = Starter(Server.none());
+    s.open(k, ptx.clone());
+    servers.push(s);
+    addrs.push(SocketAddr.localhost(prx.recv() || 0u16));
+    k = k + 1u64;
+  }
+  var cfg = httpclient.Config.make();
+  cfg.maxPerOrigin = 16u32;
+  let client = HttpClient.makeTest(cfg, actorhttp.defaultMaxBody, TestTargets.make().to("many.test", 8080u16, TestTarget.addresses(&addrs)));
+  let f = Fetcher(client);
+  var otx: Sender[String];
+  var orx: Receiver[String];
+  otx, orx = Channel[String].make();
+  var n = 0;
+  while n < 16 {
+    f.get(String.from("http://many.test:8080/x"), otx.clone());
+    n = n + 1;
+  }
+  var counts = List[i32]();
+  counts.push(0i32); counts.push(0i32); counts.push(0i32); counts.push(0i32);
+  var bad = 0;
+  n = 0;
+  while n < 16 {
+    let s = orx.recvTimeout(Duration.fromSeconds(20i64)) || String.from("(timeout)");
+    let b = s.view() as &Array[u8];
+    if b.len == 2usize && b[0usize] == 's' && b[1usize] >= '0' && b[1usize] <= '3' {
+      let i = usize.from(b[1usize] - '0');
+      counts[i] = counts[i] + 1i32;
+    } else {bad = bad + 1;}
+    n = n + 1;
+  }
+  expect(bad == 0, "all sixteen fetches are answered");
+  var i = 0usize;
+  while i < 4usize {
+    var m = String.from("server ");
+    m.appendUInt(u64.from(i));
+    m.append(" took 4 of the burst");
+    expect(counts[i] == 4i32, m.view());
+    i = i + 1usize;
+  }
+  done()
+}

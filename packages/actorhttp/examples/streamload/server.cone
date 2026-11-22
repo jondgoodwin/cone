@@ -9,6 +9,10 @@
 //   GET  /_phase?name=X  the client's phase mark: prints "PHASE X <ms since start>" and answers ok
 //   GET  /_quit          answers ok and ends the process
 //
+// Arguments: [port [workers [routed]]]: "routed" serves through a router's queue route (the routed server's
+// connection actors) instead of the I/O thread's server. At the end it prints "IOTIMES user_ms U kernel_ms K wall_ms W":
+// the I/O thread's own CPU (aio.ioThreadTimes), not all the CPU spent on I/O.
+//
 // Run by run.ps1; by hand: congo run --release packages/actorhttp/examples/streamload/server.cone -- <port>
 // (port 0: it picks one; the line "LISTENING <port>" says which). Never a test: congo builds only the
 // programs directly in examples/, and this one is in a folder of its own.
@@ -24,7 +28,8 @@ import process;
 import http use *;
 import sse;
 import actors;
-import actorhttp use Server, ServerConfig, Exchange;
+import aio;
+import actorhttp use Server, ServerConfig, Exchange, HttpRoutes;
 
 let quit: Atomic[u64];
 let started: Atomic[u64];
@@ -151,8 +156,11 @@ actor Handler {
 actor Front {
   server: Server;
 
-  pub async fn run(self, port: u16) {
-    let cfg = ServerConfig.make().streamBodies();
+  pub async fn run(self, port: u16, routed: bool) {
+    var cfg = ServerConfig.make().streamBodies();
+    // routed: the connections are actors that route to the same queue ('server.next()' below), so the run measures the
+    // routed server's path (row 562, S7) against the same load
+    if routed {cfg = cfg.routes(HttpRoutes.make().queue("", "/"));}
     let r = await actorhttp.listen(SocketAddr.localhost(port), cfg);
     var res = r;
     match &mut res {
@@ -201,12 +209,23 @@ fn main() i32 {
       case is Err {}
     }
   }
+  var routed = false;
+  if args.len() >= 4usize && args[3usize].view() == "routed" {routed = true;}
   actors.configure(actors.Options(workers: workers));
   let front = Front(Server.none());
-  front.run(port);
+  front.run(port, routed);
   while quit.load() == 0u64 { thread.sleep(Duration.fromMillis(50i64)); }
   thread.sleep(Duration.fromMillis(200i64));
   finalAll();
+  // the I/O thread's own CPU (not all the CPU spent on I/O: with the routed server the polling is in the workers' passes)
+  let t = aio.ioThreadTimes();
+  printStr("IOTIMES user_ms ");
+  printUInt(t.userNs / 1000000u64);
+  printStr(" kernel_ms ");
+  printUInt(t.kernelNs / 1000000u64);
+  printStr(" wall_ms ");
+  printUInt(t.wallNs / 1000000u64);
+  printStr("\n");
   if quit.load() == 2u64 { return 1i32; }
   0i32
 }

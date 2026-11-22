@@ -1,0 +1,802 @@
+// A client connection as one value, sans-I/O (see the package's header, THE
+// CLIENT CONNECTION). It is every part of a client connection that is not a
+// socket or a clock: the optional layer (TLS), the protocol chosen once the layer
+// is open (HTTP/1.1, or HTTP/2 by ALPN or prior knowledge), the wire Chain it
+// keeps, the back-pressure of its output on its reading, and its deadlines. It is
+// ServerConn's other half: whoever owns the socket calls it with the bytes that
+// arrived and the time, and takes the bytes it has to send; it keeps no table of
+// requests, makes no pool of records and knows no Loop. The caller tracks which
+// request is on which stream: HTTP/1.1 has one exchange at a time (stream 0),
+// HTTP/2 names a stream in each event.
+
+// What happened on a client connection (ClientConn.next). HTTP/1.1's events name stream 0
+pub enum ClientEvent {
+  pub struct Nothing {}          // none now: bytes are wanted (or reading is paused)
+  pub struct Response {pub stream: u32; pub head: ResponseHead; pub body: BodyLength;}
+  pub struct Interim {pub stream: u32; pub head: ResponseHead;}
+  pub struct Data {pub stream: u32; pub buf: IoBuf;}
+  pub struct End {pub stream: u32; pub trailers: HttpHeaders;}
+  pub struct Reset {pub stream: u32; pub error: HttpError;}      // HTTP/2: the peer reset the stream
+  pub struct GoAway {pub lastStream: u32;}                       // HTTP/2: no new stream; those above lastStream were not processed
+  pub struct Closed {pub failure: Option[Failure];}              // the protocol is over (once); output may still be going
+}
+
+// One client connection's whole state (see above)
+pub struct ClientConn is Move, ClientProto {
+  cfg: Config;
+  layer: Option[Uni[Layer]];   // None: the socket's bytes are the protocol's
+  core: http1.Connection;
+  h2: Option[Uni[http2.Connection]];
+  isH2: bool;
+  decided: bool;               // the protocol is chosen: the layer has opened
+  cleartext: bool;             // no handshake: no ALPN, prior knowledge decides
+  wire: Chain;                 // bytes ready for the socket, kept
+  tx: Chain;                   // the protocol's bytes on their way into the layer, kept
+  inflight: usize;             // bytes taken by takeWire, not yet confirmed by wireSent
+  paused: bool;                // reading paused: the output is over the write watermark
+  eofSeen: bool;               // the socket's receiving side ended
+  eofFed: bool;                // ...and the protocol has been told
+  feedHeld: bool;              // the feed stopped for the protocol's credit: the layer may hold bytes
+  closeSent: bool;             // the layer's closeSend has been called
+  closeAsked: bool;            // shutdown: end once what is under way is done
+  h2Shut: bool;                // HTTP/2: our GOAWAY has been asked for
+  goAway: bool;                // HTTP/2: the peer's GOAWAY has come: no new stream
+  closedGiven: bool;           // Closed has been returned
+  failure: Option[Failure];
+  openBy: Instant;             // the layer's handshake ends by then
+  lastActive: Instant;         // HTTP/2: a stream last began or ended
+  exchange: bool;              // HTTP/1.1: a request is out and its response is not whole yet
+
+  // A connection made at 'now', over 'layer' (None: plain), taking cfg's bounds
+  pub fn make(cfg: Config, layer: Option[Uni[Layer]], now: Instant) ClientConn {
+    let cleartext = match &layer {
+      case let &Some(l) {l.isOpen()}
+      else {true}
+    };
+    var c = ClientConn(cfg: cfg, layer: layer, core: http1.Connection.client(cfg.protocol, now),
+      h2: None, isH2: false, decided: false, cleartext: cleartext,
+      wire: Chain.make(noBound), tx: Chain.make(noBound), inflight: 0usize, paused: false,
+      eofSeen: false, eofFed: false, feedHeld: false, closeSent: false, closeAsked: false, h2Shut: false,
+      goAway: false, closedGiven: false, failure: None, openBy: now + cfg.handshakeTimeout, lastActive: now,
+      exchange: false);
+    c.decide(now);
+    c
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reading
+  // ---------------------------------------------------------------------------
+
+  // How many wire bytes 'wireIn' takes now: 0 while reading is paused (the
+  // output is over the write watermark, and resumes below half of it), while the
+  // protocol has no credit, and once the socket's end has come
+  pub fn readRoom(self: &) usize {
+    if paused || eofSeen || self.pClosed() {return 0usize;}
+    let credit = self.pCredit();
+    match &layer {
+      case let &Some(l) {
+        if credit < self.feedNeed() {return 0usize;}
+        l.wireRoom()
+      }
+      else {credit}
+    }
+  }
+
+  // Bytes that came off the socket, at 'now' (an empty buffer: the peer's end).
+  // More than readRoom() is a program error
+  pub fn wireIn(self: &mut, buf: IoBuf, now: Instant) {
+    if buf.len() == 0usize {eofSeen = true;}
+    if layer is Some {
+      self.lWireIn(buf, now);
+    } else if buf.len() > 0usize {
+      if !self.pClosed() {self.pInput(buf, now);}
+    }
+    self.feed(now);
+    self.updatePause();
+  }
+
+  // The bytes the layer has for the protocol, and the end of the stream
+  fn feed(self: &mut, now: Instant) {
+    self.decide(now);
+    var hasLayer = false;
+    match &layer {
+      case let &Some(l) {hasLayer = true;}
+      else {}
+    }
+    if !hasLayer {
+      if eofSeen && !eofFed {
+        eofFed = true;
+        self.pInput(IoBuf(), now);
+      }
+      return;
+    }
+    feedHeld = false;
+    let need = self.feedNeed();
+    while decided {
+      if self.pCredit() < need && !self.pClosed() {
+        feedHeld = true;
+        break;
+      }
+      let b = self.lPlainOut();
+      if b.len() == 0usize {break;}
+      self.pInput(b, now);
+    }
+    var ended = false;
+    var failed = false;
+    match &layer {
+      case let &Some(l) {
+        ended = l.peerEnded();
+        failed = l.failed();
+      }
+      else {}
+    }
+    if ended && !eofFed {
+      eofFed = true;
+      self.pInput(IoBuf(), now);
+    }
+    if failed {self.layerFailed();}
+  }
+
+  fn feedNeed(self: &) usize {
+    var gives = false;
+    match &layer {
+      case let &Some(l) {gives = l.givesRecords();}
+      else {}
+    }
+    if cfg.recvSize > feedRecord || !gives {cfg.recvSize} else {feedRecord}
+  }
+
+  fn layerFailed(self: &mut) {
+    if failure is Some {return;}
+    var text = String();
+    var code = 0u32;
+    var overloaded = false;
+    match &layer {
+      case let &Some(l) {
+        text = l.failureText();
+        code = l.failureCode();
+        overloaded = l.overloaded();
+      }
+      else {}
+    }
+    let kind = if overloaded {ErrorKind.Overloaded} else {ErrorKind.Closed};
+    failure = Some[Failure](Failure.make(Stage.Tls, code, kind, text.view()));
+    self.pAbort();
+  }
+
+  // The protocol, chosen once the layer is open: what its handshake chose by
+  // ALPN ("h2" is HTTP/2; "http/1.1", or none, HTTP/1.1), or, for a layer with
+  // no handshake, HTTP/2 by prior knowledge when the config says so
+  fn decide(self: &mut, now: Instant) {
+    if decided || !self.layerOpen() {return;}
+    decided = true;
+    var p = String();
+    match &layer {
+      case let &Some(l) {p = l.alpn();}
+      else {}
+    }
+    var h2 = p.view() == "h2";
+    if p.len() == 0usize && cleartext {h2 = cfg.h2PriorKnowledge;}
+    if !h2 && p.len() > 0usize && p.view() != "http/1.1" {
+      var why = String.from("ALPN chose a protocol the client does not speak: ");
+      why.append(p.view());
+      failure = Some[Failure](Failure.make(Stage.Tls, 0u32, ErrorKind.Unsupported, why.view()));
+      self.pAbort();
+      return;
+    }
+    if h2 {
+      let made = http2.Connection.client(cfg.h2, now);
+      self.h2 = Some[Uni[http2.Connection]](Uni[http2.Connection](made));
+      isH2 = true;
+      lastActive = now;
+    }
+  }
+
+  fn layerOpen(self: &) bool {
+    match &layer {
+      case let &Some(l) {l.isOpen()}
+      else {true}
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The protocol, whichever it is
+  // ---------------------------------------------------------------------------
+
+  fn pInput(self: &mut, buf: IoBuf, now: Instant) {
+    if isH2 {
+      match &mut h2 {
+        case var &mut Some(h) {h.handleInput(buf, now);}
+        else {}
+      }
+    } else {
+      core.handleInput(buf, now);
+    }
+  }
+
+  fn pCredit(self: &) usize {
+    if isH2 {
+      match &h2 {
+        case let &Some(h) {return h.readCredit();}
+        else {}
+      }
+    }
+    core.readCredit()
+  }
+
+  fn pClosed(self: &) bool {
+    if isH2 {
+      match &h2 {
+        case let &Some(h) {return h.isClosed();}
+        else {}
+      }
+    }
+    core.isClosed()
+  }
+
+  fn pShouldClose(self: &) bool {
+    if isH2 {
+      match &h2 {
+        case let &Some(h) {return h.shouldClose();}
+        else {}
+      }
+    }
+    core.shouldClose()
+  }
+
+  fn pAbort(self: &mut) {
+    if isH2 {
+      match &mut h2 {
+        case var &mut Some(h) {h.abort();}
+        else {}
+      }
+    }
+    core.abort();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Requests
+  // ---------------------------------------------------------------------------
+
+  // How many more requests the connection takes now: HTTP/1.1, one when its
+  // exchange is over; HTTP/2, as many as the peer's stream limit leaves; none
+  // before the protocol is chosen, after a GOAWAY, a shutdown or a failure
+  pub fn room(self: &) usize {
+    if !decided || failure is Some || closeAsked || self.pClosed() {return 0usize;}
+    if isH2 {
+      if goAway || h2Shut {return 0usize;}
+      match &h2 {
+        case let &Some(h) {
+          let open = h.openLocalStreams();
+          let max = h.peerMaxConcurrentStreams();
+          return if !h.canSendRequest() || open >= max {0usize} else {usize.from(max - open)};
+        }
+        else {return 0usize;}
+      }
+    }
+    if exchange || !core.canSendRequest() {0usize} else {1usize}
+  }
+
+  // A request begun: its stream (0 on HTTP/1.1). The body, if any, goes by sendData and
+  // finish; a request with no body (body.isEmpty()) is whole. A call when room() is 0 is a
+  // program error
+  pub fn request(self: &mut, head: RequestHead, body: BodyLength, now: Instant,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) u32 {
+    if self.room() == 0usize {panic("httpconn: ClientConn.request with no room", file, line);}
+    if isH2 {
+      var hd = head;
+      if hd.scheme.isEmpty() {hd.scheme = String.from(if cleartext {"http"} else {"https"});}
+      stripForH2(&mut hd.headers);
+      lastActive = now;
+      var stream = 0u32;
+      match &mut h2 {
+        case var &mut Some(h) {stream = h.sendRequest(hd, body, file, line);}
+        else {}
+      }
+      self.updatePause();
+      return stream;
+    }
+    exchange = true;
+    core.sendRequest(head, body, file, line);
+    self.updatePause();
+    0u32
+  }
+
+  // Request body bytes: None once queued; Some(buf) back, refused, at the write watermark
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {
+    var back: Option[IoBuf] = None;
+    if isH2 {
+      match &mut h2 {
+        case var &mut Some(h) {back = h.sendData(stream, buf, file, line);}
+        else {}
+      }
+    } else {
+      back = core.sendData(buf, file, line);
+    }
+    self.updatePause();
+    back
+  }
+
+  // How many more bytes sendData takes before it refuses
+  pub fn writeRoom(self: &, stream: u32) usize {
+    if isH2 {
+      match &h2 {
+        case let &Some(h) {return h.writeRoom(stream);}
+        else {}
+      }
+    }
+    core.writeRoom()
+  }
+
+  // The request's body is whole
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if isH2 {
+      match &mut h2 {
+        case var &mut Some(h) {h.finish(stream, file, line);}
+        else {}
+      }
+    } else {
+      core.finish(file, line);
+    }
+    self.updatePause();
+  }
+
+  // The program is done with n bytes of response body that Data events handed it
+  pub fn release(self: &mut, stream: u32, n: usize) {
+    if isH2 {
+      match &mut h2 {
+        case var &mut Some(h) {h.release(stream, n);}
+        else {}
+      }
+    } else {
+      core.release(n);
+    }
+  }
+
+  // A request given up: an HTTP/2 stream is reset (CANCEL); HTTP/1.1 has no way to stop one
+  // exchange but ending the connection, so it is aborted. The stream's later events are
+  // dropped by the caller
+  pub fn cancel(self: &mut, stream: u32) {
+    if isH2 {
+      match &mut h2 {
+        case var &mut Some(h) {h.cancel(stream);}
+        else {}
+      }
+    } else {
+      if failure is None {failure = Some[Failure](Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the request was cancelled"));}
+      self.pAbort();
+    }
+    self.updatePause();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Events
+  // ---------------------------------------------------------------------------
+
+  // The next thing that happened, at 'now' (Nothing when none)
+  pub fn next(self: &mut, now: Instant) ClientEvent {
+    self.feed(now);
+    let ev = if isH2 {self.next2(now)} else {self.next1()};
+    self.updatePause();
+    ev
+  }
+
+  fn closedEvent(self: &mut) ClientEvent {
+    if closedGiven {return ClientEvent.Nothing;}
+    closedGiven = true;
+    ClientEvent.Closed(failure.take())
+  }
+
+  fn next1(self: &mut) ClientEvent {
+    while true {
+      match core.pollEvent() {
+        case is NeedData {return ClientEvent.Nothing;}
+        case is Paused {return ClientEvent.Nothing;}
+        case is Closed {return self.closedEvent();}
+        case let Response(p) {
+          let head, body = p.(head, body);
+          return ClientEvent.Response(0u32, head, body);
+        }
+        case let Interim(p) {return ClientEvent.Interim(0u32, p.(head));}
+        case let Data(d) {return ClientEvent.Data(0u32, d.(buf));}
+        case let End(e) {
+          exchange = false;
+          return ClientEvent.End(0u32, e.(trailers));
+        }
+        case let Failed(f) {
+          failure = Some[Failure](Failure(Stage.Http, 0u32, f.(error), false));
+        }
+        case let Request(q) {}
+      }
+    }
+    ClientEvent.Nothing
+  }
+
+  fn next2(self: &mut, now: Instant) ClientEvent {
+    while true {
+      let ev = match &mut h2 {
+        case var &mut Some(h) {h.pollEvent()}
+        else {return ClientEvent.Nothing;}
+      };
+      match ev {
+        case is NeedData {return ClientEvent.Nothing;}
+        case is Closed {return self.closedEvent();}
+        case let Response(p) {
+          let stream, head, body = p.(stream, head, body);
+          return ClientEvent.Response(stream, head, body);
+        }
+        case let Interim(p) {
+          let stream, head = p.(stream, head);
+          return ClientEvent.Interim(stream, head);
+        }
+        case let Data(d) {
+          let stream, buf = d.(stream, buf);
+          return ClientEvent.Data(stream, buf);
+        }
+        case let End(e) {
+          lastActive = now;
+          let stream, trailers = e.(stream, trailers);
+          return ClientEvent.End(stream, trailers);
+        }
+        case let Reset(x) {
+          lastActive = now;
+          let stream, error = x.(stream, error);
+          return ClientEvent.Reset(stream, error);
+        }
+        case let GoAway(g) {
+          goAway = true;
+          return ClientEvent.GoAway(g.(lastStream));
+        }
+        case let Failed(f) {
+          failure = Some[Failure](Failure(Stage.Http, 0u32, f.(error), false));
+        }
+        case let Pong(p) {}
+        case let Request(q) {}
+      }
+    }
+    ClientEvent.Nothing
+  }
+
+  // ---------------------------------------------------------------------------
+  // Writing
+  // ---------------------------------------------------------------------------
+
+  // Move everything ready to send into the connection's wire Chain (the
+  // layer's own bytes, a handshake's, first; then the protocol's through the
+  // layer): how many bytes it holds now
+  pub fn fill(self: &mut, now: Instant) usize {
+    var hasLayer = false;
+    match &layer {
+      case let &Some(l) {hasLayer = true;}
+      else {}
+    }
+    while true {
+      if hasLayer {
+        let b = self.lWireOut(now);
+        if b.len() > 0usize {
+          wire.push(b);
+          continue;
+        }
+      }
+      if !decided {break;}
+      var moved = 0usize;
+      if !hasLayer {
+        moved = self.pTransmit(now, true);
+      } else {
+        moved = self.pTransmit(now, false);
+        while true {
+          match tx.popFront() {
+            case var Some(p) {self.lPlainIn(p);}
+            else {break;}
+          }
+        }
+      }
+      if moved == 0usize {break;}
+      if !hasLayer {break;}
+    }
+    self.updatePause();
+    wire.len()
+  }
+
+  // The protocol's output, into the wire (when there is no layer) or the layer's feed Chain
+  fn pTransmit(self: &mut, now: Instant, direct: bool) usize {
+    if isH2 {
+      var chain = Chain.make(noBound);
+      match &mut h2 {
+        case var &mut Some(h) {chain = h.pollTransmit(now);}
+        else {}
+      }
+      var n = 0usize;
+      while true {
+        match chain.popFront() {
+          case var Some(p) {
+            n = n + p.len();
+            if direct {wire.push(p);} else {tx.push(p);}
+          }
+          else {break;}
+        }
+      }
+      return n;
+    }
+    if direct {core.pollTransmitInto(now, &mut wire)} else {core.pollTransmitInto(now, &mut tx)}
+  }
+
+  // The bytes in the wire Chain, moved to 'dest' to be written to the socket:
+  // how many. They count against the watermark until 'wireSent' says they went
+  pub fn takeWire(self: &mut, dest: &mut Chain) usize {
+    let n = wire.len();
+    while true {
+      match wire.popFront() {
+        case var Some(b) {dest.push(b);}
+        else {break;}
+      }
+    }
+    inflight = inflight + n;
+    n
+  }
+
+  // n of the bytes 'takeWire' gave have been written
+  pub fn wireSent(self: &mut, n: usize) {
+    inflight = if n >= inflight {0usize} else {inflight - n};
+    self.updatePause();
+  }
+
+  // Bytes waiting to go to the socket: in the protocol, the layer, the wire
+  // Chain and written but not confirmed
+  pub fn queued(self: &) usize {
+    var q = wire.len() + tx.len() + inflight;
+    if !isH2 {q = q + core.queued();}
+    match &layer {
+      case let &Some(l) {q = q + l.pending();}
+      else {}
+    }
+    q
+  }
+
+  // Reading pauses when the output is at the write watermark and resumes below
+  // half of it
+  fn updatePause(self: &mut) {
+    let wm = if isH2 {cfg.h2.writeWatermark} else {cfg.protocol.writeWatermark};
+    let q = self.queued();
+    if !paused && q >= wm {paused = true;}
+    else if paused && q < wm / 2usize {paused = false;}
+  }
+
+  // ---------------------------------------------------------------------------
+  // Deadlines and the end
+  // ---------------------------------------------------------------------------
+
+  // The one Instant to wake at and call handleTimeout, or None
+  pub fn pollTimeout(self: &) Option[Instant] {
+    var best: Option[Instant] = None;
+    if isH2 {
+      match &h2 {
+        case let &Some(h) {
+          best = h.pollTimeout();
+          if h.liveStreams() == 0usize && !h2Shut {
+            let at = lastActive + cfg.h2IdleTimeout;
+            best = soonest(best, at);
+          }
+        }
+        else {}
+      }
+    } else {
+      best = core.pollTimeout();
+    }
+    if !self.layerOpen() && !self.pClosed() {best = soonest(best, openBy);}
+    best
+  }
+
+  // Act on every deadline due at 'now'
+  pub fn handleTimeout(self: &mut, now: Instant) {
+    if !self.layerOpen() && now >= openBy && failure is None {
+      failure = Some[Failure](Failure.make(Stage.Tls, 0u32, ErrorKind.TimedOut, "the TLS handshake did not finish within handshakeTimeout"));
+      self.pAbort();
+      return;
+    }
+    if isH2 {
+      match &mut h2 {
+        case var &mut Some(h) {
+          h.handleTimeout(now);
+          if h.liveStreams() == 0usize && !h2Shut && now >= lastActive + cfg.h2IdleTimeout {
+            h2Shut = true;
+            h.shutdown();
+          }
+        }
+        else {}
+      }
+    } else {
+      core.handleTimeout(now);
+    }
+  }
+
+  // Close once what is under way is done: HTTP/1.1 finishes the exchange in
+  // hand and ends; HTTP/2 sends GOAWAY and lets its open streams finish
+  pub fn shutdown(self: &mut) {closeAsked = true;}
+
+  // End the connection now, dropping what was not yet sent
+  pub fn abort(self: &mut) {
+    if failure is None {failure = Some[Failure](Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was aborted"));}
+    self.pAbort();
+  }
+
+  // Whether the connection is over and all it had to send has gone: the owner
+  // then half-closes the socket, reads out what the peer still sends, and
+  // drops it. It also acts on 'shutdown', and sends the layer's own goodbye (a
+  // TLS close_notify) into the wire first: the owner takes and writes it, and asks again
+  pub fn done(self: &mut, now: Instant) bool {
+    if closeAsked {
+      if isH2 {
+        if !h2Shut {
+          h2Shut = true;
+          match &mut h2 {
+            case var &mut Some(h) {h.shutdown();}
+            else {}
+          }
+        }
+      } else if !exchange && !core.isClosed() {
+        self.fill(now);
+        core.abort();
+      }
+    }
+    if !self.pShouldClose() {return false;}
+    self.fill(now);
+    if wire.len() > 0usize || inflight > 0usize {return false;}
+    var pending = 0usize;
+    match &layer {
+      case let &Some(l) {pending = l.pending();}
+      else {}
+    }
+    if pending > 0usize {return false;}
+    if !closeSent {
+      closeSent = true;
+      self.lCloseSend();
+      self.fill(now);
+      return wire.len() == 0usize;
+    }
+    true
+  }
+
+  // Why the connection failed, once it has
+  pub fn failureOf(self: &) &Option[Failure] {&failure}
+
+  // Whether the protocol chosen is HTTP/2
+  pub fn isHttp2(self: &) bool {isH2}
+
+  // Whether the layer's handshake is done and the protocol chosen
+  pub fn isOpen(self: &) bool {decided}
+
+  // Whether nothing is on the connection: no exchange (HTTP/1.1) and no stream (HTTP/2)
+  pub fn isIdle(self: &) bool {
+    if isH2 {
+      match &h2 {
+        case let &Some(h) {return h.liveStreams() == 0usize;}
+        else {}
+      }
+    }
+    !exchange
+  }
+
+  // The streams open on an HTTP/2 connection (HTTP/1.1: 1 or 0)
+  pub fn liveStreams(self: &) usize {
+    if isH2 {
+      match &h2 {
+        case let &Some(h) {return h.liveStreams();}
+        else {}
+      }
+      return 0usize;
+    }
+    if exchange {1usize} else {0usize}
+  }
+
+  // Streams the peer allows at once (HTTP/2; HTTP/1.1: 1)
+  pub fn peerStreams(self: &) usize {
+    if isH2 {
+      match &h2 {
+        case let &Some(h) {return usize.from(h.peerMaxConcurrentStreams());}
+        else {}
+      }
+    }
+    1usize
+  }
+
+  // The layer's work for the blocking pool (a TLS session's certificate check
+  // by the OS), as the Layer says it: whether there is some, the work, its answer
+  pub fn wantsCall(self: &) bool {
+    match &layer {
+      case let &Some(l) {l.wantsCall()}
+      else {false}
+    }
+  }
+
+  pub fn takeCall(self: &mut) Op {
+    match layer.take() {
+      case var Some(l) {
+        let op = l.takeCall();
+        layer = Some[Uni[Layer]](l);
+        op
+      }
+      else {Op.Call(Lane.general(), &noCall, 0u64, IoBuf())}
+    }
+  }
+
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {
+    match layer.take() {
+      case var Some(l) {
+        l.callDone(c, now);
+        layer = Some[Uni[Layer]](l);
+      }
+      else {}
+    }
+    self.feed(now);
+  }
+
+  // The same, answered as values (the work run by aio.onPool, with no Completion)
+  pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant) {
+    match layer.take() {
+      case var Some(l) {
+        l.callAnswered(buf, failed, now);
+        layer = Some[Uni[Layer]](l);
+      }
+      else {}
+    }
+    self.feed(now);
+  }
+
+  // A Layer's own calls that change it are made on it taken out of its Option and put
+  // back: a virtual call may change the Option it came from, so no borrow of the
+  // Option is held across one
+  fn lWireIn(self: &mut, buf: IoBuf, now: Instant) {
+    match layer.take() {
+      case var Some(l) {
+        l.wireIn(buf, now);
+        layer = Some[Uni[Layer]](l);
+      }
+      else {}
+    }
+  }
+
+  fn lWireOut(self: &mut, now: Instant) IoBuf {
+    var b = IoBuf();
+    match layer.take() {
+      case var Some(l) {
+        b = l.wireOut(now);
+        layer = Some[Uni[Layer]](l);
+      }
+      else {}
+    }
+    b
+  }
+
+  fn lPlainIn(self: &mut, buf: IoBuf) {
+    match layer.take() {
+      case var Some(l) {
+        l.plainIn(buf);
+        layer = Some[Uni[Layer]](l);
+      }
+      else {}
+    }
+  }
+
+  fn lPlainOut(self: &mut) IoBuf {
+    var b = IoBuf();
+    match layer.take() {
+      case var Some(l) {
+        b = l.plainOut();
+        layer = Some[Uni[Layer]](l);
+      }
+      else {}
+    }
+    b
+  }
+
+  fn lCloseSend(self: &mut) {
+    match layer.take() {
+      case var Some(l) {
+        l.closeSend();
+        layer = Some[Uni[Layer]](l);
+      }
+      else {}
+    }
+  }
+}

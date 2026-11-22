@@ -1,0 +1,253 @@
+// An H3Conn as httpconn's ServerProto and ClientProto: the protocol surface a TCP connection
+// (httpconn's ServerConn and ClientConn) presents, with datagrams below it instead of bytes. The stream
+// number handed up is QUIC's own, narrowed to u32 (the value keeps them under 2^32, so a number that
+// does not fit is the mismatch rule: the connection fails). See h3conn.cone for the turn.
+
+// A stream number as httpconn's u32; one that does not fit fails the connection (it can only come from a bug)
+fn narrow(c: &mut H3Conn, id: u64) u32 {
+  if id > 0xFFFFFFFFu64 {
+    c.h.abort(http3.h3InternalError);
+    c.work = true;
+    return 0xFFFFFFFFu32;
+  }
+  u32.from(id)
+}
+
+// A server connection: its requests come as events, its responses go by respond, sendData and finish
+pub struct H3Server is Move, httpconn.ServerProto, httpclient.H3ServerConn {
+  pub core: H3Conn;
+  reqHead: RequestHead;      // the request head 'next' last named
+  resp: ResponseHead;        // the response being written, kept and refilled
+
+  pub fn make(core: H3Conn) H3Server {H3Server(core, RequestHead(), ResponseHead())}
+
+  // The next thing that happened, at 'now' (Nothing when none). A request's Failed is a Reset (its
+  // error); every request open at the connection's end is Reset before Closed
+  pub fn next(self: &mut, now: Instant) httpconn.ServerEvent {
+    core.lastNow = now;
+    pumpCore(&mut core, now);
+    while true {
+      match core.ready.popFront() {
+        case var Some(e) {
+          let k = e.kind;
+          if k == EventKind.Request {
+            reqHead <-> e.request;
+            return httpconn.ServerEvent.Request(narrow(&mut core, e.stream), e.body);
+          } else if k == EventKind.Data {
+            var buf = IoBuf();
+            buf <-> e.buf;
+            return httpconn.ServerEvent.Data(narrow(&mut core, e.stream), buf);
+          } else if k == EventKind.End {
+            var trailers = HttpHeaders();
+            trailers <-> e.trailers;
+            return httpconn.ServerEvent.End(narrow(&mut core, e.stream), trailers);
+          } else if k == EventKind.Failed {
+            var error = HttpError();
+            error <-> e.failure.error;
+            return httpconn.ServerEvent.Reset(narrow(&mut core, e.stream), error);
+          } else if k == EventKind.Closed {
+            let f = if e.clean {None[httpconn.Failure]} else {Some[httpconn.Failure](protoFailure(&e.failure, core.hsTimeout))};
+            return httpconn.ServerEvent.Closed(f);
+          }
+        }
+        case is None[Event] {return httpconn.ServerEvent.Nothing;}
+      }
+    }
+    httpconn.ServerEvent.Nothing
+  }
+
+  // The head of the request the last Request event named
+  pub fn request(self: &) &RequestHead {&reqHead}
+
+  // The same, moved out; the value keeps an empty one
+  pub fn takeRequest(self: &mut) RequestHead {
+    var out = RequestHead();
+    out <-> reqHead;
+    out
+  }
+
+  // (HTTP/3's heads are made anew)
+  pub fn recycleRequest(self: &mut, spare: RequestHead) {}
+
+  // The response head the program fills before 'respond': kept, and emptied by it
+  pub fn response(self: &mut) &mut ResponseHead {&mut resp}
+
+  pub fn respond(self: &mut, stream: u32, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    var head = ResponseHead();
+    head <-> resp;
+    let ok = core.respondTo(core.slotOfStream(u64.from(stream)), head, body, file, line);
+  }
+
+  pub fn sendInterim(self: &mut, stream: u32, head: ResponseHead, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    let ok = core.interimTo(core.slotOfStream(u64.from(stream)), head, file, line);
+  }
+
+  pub fn sendContinue(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.sendInterim(stream, ResponseHead.make(100u16), file, line);
+  }
+
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {
+    core.sendBody(core.slotOfStream(u64.from(stream)), buf, file, line)
+  }
+
+  pub fn writeRoom(self: &, stream: u32) usize {core.writeRoomOf(core.slotOfStream(u64.from(stream)))}
+
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    core.finishBody(core.slotOfStream(u64.from(stream)), HttpHeaders(), file, line);
+  }
+
+  pub fn release(self: &mut, stream: u32, n: usize) {core.releaseBody(core.slotOfStream(u64.from(stream)), n);}
+
+  pub fn stopBody(self: &mut, stream: u32) bool {core.stopBodyOf(core.slotOfStream(u64.from(stream)))}
+
+  pub fn pollTimeout(self: &) Option[Instant] {core.pollTimeout()}
+  pub fn handleTimeout(self: &mut, now: Instant) {core.handleTimeout(now);}
+  pub fn shutdown(self: &mut) {core.goAway();}
+  pub fn abort(self: &mut) {core.abortNow();}
+  pub fn done(self: &mut, now: Instant) bool {core.isEnded()}
+  pub fn failureOf(self: &) &Option[httpconn.Failure] {&core.failure}
+  pub fn isHttp2(self: &) bool {true}
+  pub fn isOpen(self: &) bool {core.told}
+  pub fn wantsCall(self: &) bool {core.wantsCall()}
+  pub fn takeCall(self: &mut) Op {core.takeCall()}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {core.callDone(c, now);}
+
+  // Below the wire (the datagram methods of the plug-in's traits, Q2)
+  pub fn datagramIn(self: &mut, d: &Array[u8], now: Instant) {core.datagramIn(d, now);}
+  pub fn takeDatagram(self: &mut, now: Instant) Option[IoBuf] {core.takeDatagram(now)}
+  pub fn finishTurn(self: &mut, now: Instant) {core.finishTurn(now);}
+  pub fn wantsTurn(self: &) bool {core.wantsTurn()}
+  // The connection IDs it answers to, as routing keys appended to out: how many
+  pub fn ids(self: &, out: &mut List[httpclient.H3Cid]) usize {
+    var bytes = List[u8]();
+    let n = core.ids(&mut bytes);
+    var k = 0usize;
+    var made = 0usize;
+    while k < n {
+      match httpclient.H3Cid.of(bytes.view(), k * quic.localIdLen, quic.localIdLen) {
+        case let Some(key) {out.push(key); made = made + 1usize;}
+        case is None[httpclient.H3Cid] {}
+      }
+      k = k + 1usize;
+    }
+    made
+  }
+  pub fn idsEpoch(self: &) u64 {core.idsEpoch()}
+}
+
+// A client connection: its requests go by request, sendData and finish, its responses come as events
+pub struct H3Client is Move, httpconn.ClientProto, httpclient.H3ClientConn {
+  pub core: H3Conn;
+
+  pub fn make(core: H3Conn) H3Client {H3Client(core)}
+
+  // How many more requests it takes now: one while the handshake is done and none waits for the peer's
+  // stream limit (QUIC says when it opens a stream: MoreStreams), none from the stream id limit
+  pub fn room(self: &) usize {if core.hasRoom() {1usize} else {0usize}}
+
+  // A request begun: its stream
+  pub fn request(self: &mut, head: RequestHead, body: BodyLength, now: Instant,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) u32 {
+    if !core.hasRoom() {panic("h3driver: H3Client.request with no room", file, line);}
+    core.lastNow = now;
+    let slot = core.sendRequest(head, body, 0u64, now);
+    narrow(&mut core, core.streamOf(slot))
+  }
+
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {
+    core.sendBody(core.slotOfStream(u64.from(stream)), buf, file, line)
+  }
+
+  pub fn writeRoom(self: &, stream: u32) usize {core.writeRoomOf(core.slotOfStream(u64.from(stream)))}
+
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    core.finishBody(core.slotOfStream(u64.from(stream)), HttpHeaders(), file, line);
+  }
+
+  pub fn release(self: &mut, stream: u32, n: usize) {core.releaseBody(core.slotOfStream(u64.from(stream)), n);}
+
+  // A request given up: its exchange is reset both ways (H3_REQUEST_CANCELLED)
+  pub fn cancel(self: &mut, stream: u32) {
+    let ok = core.cancelRequest(core.slotOfStream(u64.from(stream)), core.lastNow);
+  }
+
+  // The next thing that happened, at 'now' (Nothing when none)
+  pub fn next(self: &mut, now: Instant) httpconn.ClientEvent {
+    core.lastNow = now;
+    pumpCore(&mut core, now);
+    match core.goAwayIn.take() {
+      case let Some(id) {
+        // HTTP/3's GOAWAY names the first stream not processed; httpconn's names the last that was
+        return httpconn.ClientEvent.GoAway(if id > 0u64 {narrow(&mut core, id - 1u64)} else {0u32});
+      }
+      case is None[u64] {}
+    }
+    while true {
+      match core.ready.popFront() {
+        case var Some(e) {
+          let k = e.kind;
+          if k == EventKind.Response {
+            var head = ResponseHead();
+            head <-> e.response;
+            return httpconn.ClientEvent.Response(narrow(&mut core, e.stream), head, e.body);
+          } else if k == EventKind.Interim {
+            var head = ResponseHead();
+            head <-> e.response;
+            return httpconn.ClientEvent.Interim(narrow(&mut core, e.stream), head);
+          } else if k == EventKind.Data {
+            var buf = IoBuf();
+            buf <-> e.buf;
+            return httpconn.ClientEvent.Data(narrow(&mut core, e.stream), buf);
+          } else if k == EventKind.End {
+            var trailers = HttpHeaders();
+            trailers <-> e.trailers;
+            return httpconn.ClientEvent.End(narrow(&mut core, e.stream), trailers);
+          } else if k == EventKind.Failed {
+            var error = HttpError();
+            error <-> e.failure.error;
+            return httpconn.ClientEvent.Reset(narrow(&mut core, e.stream), error);
+          } else if k == EventKind.Closed {
+            let f = if e.clean {None[httpconn.Failure]} else {Some[httpconn.Failure](protoFailure(&e.failure, core.hsTimeout))};
+            return httpconn.ClientEvent.Closed(f);
+          }
+        }
+        case is None[Event] {return httpconn.ClientEvent.Nothing;}
+      }
+    }
+    httpconn.ClientEvent.Nothing
+  }
+
+  pub fn pollTimeout(self: &) Option[Instant] {core.pollTimeout()}
+  pub fn handleTimeout(self: &mut, now: Instant) {core.handleTimeout(now);}
+  pub fn shutdown(self: &mut) {core.goAway();}
+  pub fn abort(self: &mut) {core.abortNow();}
+  pub fn done(self: &mut, now: Instant) bool {core.isEnded()}
+  pub fn failureOf(self: &) &Option[httpconn.Failure] {&core.failure}
+  pub fn isHttp2(self: &) bool {true}
+  pub fn isOpen(self: &) bool {core.told}
+  pub fn isIdle(self: &) bool {core.openRequests() == 0usize}
+  pub fn liveStreams(self: &) usize {core.openRequests()}
+  // (QUIC does not say what the peer allows: the default's count)
+  pub fn peerStreams(self: &) usize {usize.from(quic.defaultMaxStreamsBidi)}
+  pub fn wantsCall(self: &) bool {core.wantsCall()}
+  pub fn takeCall(self: &mut) Op {core.takeCall()}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {core.callDone(c, now);}
+  pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant) {core.callAnswered(buf, failed, now);}
+
+  // Below the wire (the datagram methods of the plug-in's traits, Q2)
+  pub fn datagramIn(self: &mut, d: &Array[u8], now: Instant) {core.datagramIn(d, now);}
+  pub fn takeDatagram(self: &mut, now: Instant) Option[IoBuf] {core.takeDatagram(now)}
+  pub fn finishTurn(self: &mut, now: Instant) {core.finishTurn(now);}
+  pub fn wantsTurn(self: &) bool {core.wantsTurn()}
+  pub fn ids(self: &, out: &mut List[u8]) usize {core.ids(out)}
+  pub fn idsEpoch(self: &) u64 {core.idsEpoch()}
+}
+
+// What a call above the wire does first: the events a turn has made, and the record's end, are there to be taken
+fn pumpCore(c: &mut H3Conn, now: Instant) {
+  if c.work && c.rounds < maxRounds {
+    c.work = false;
+    settle(c, now);
+  }
+  tail(c, now);
+}

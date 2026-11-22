@@ -25,12 +25,13 @@ import time use Instant, Duration;
 import sync use Channel, Sender, Receiver;
 import collections use List, String, AnyError;
 import iobuf use IoBuf, Chain;
+import bufpool;
 import iocore use SocketAddr;
 import http use *;
 import httpclient use Request;
 import actors;
 import aio use IoLimits;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError;
 import testing use *;
 
 struct Tally {
@@ -257,7 +258,7 @@ fn url(port: u16, path: &str) String {
 // ---------------------------------------------------------------------------
 
 actor Reader {
-  client: Client;
+  client: HttpClient;
 
   pub async fn run(self, u: String, n: u64, want: u64, holdMs: i64, paceMs: i64, burst: u64) {
     let r = await client.stream(Request.get(u.view()));
@@ -308,7 +309,9 @@ actor Reader {
 
 // Take with tryMake, every size class in turn, until each is refused
 fn hoard() Chain {
-  iobuf.trimAll();
+  // not trimAll: the server and client threads are running and take and return buffers, and trimAll
+  // flushes their caches from under them. This thread's own cache and the idle slabs are what it needs.
+  bufpool.trimStock();
   var held = Chain.make(unbounded);
   var took = true;
   while took {
@@ -357,11 +360,11 @@ fn main() i32 {
   let tenBytes = 1048576u64;
   reset();
   {
-    iobuf.trimAll();
+    bufpool.trimStock();   // not trimAll: the server thread is running (see hoard)
     let base = u64.from(iobuf.stats().heldBytes);
     var k = 0u64;
     while k < 10u64 {
-      let r = Reader(Client.standard());
+      let r = Reader(HttpClient.standard());
       r.run(url(port, "/tiny/1048576"), tenBytes, expected(tenBytes), 900i64, 0i64, 1u64);
       k = k + 1u64;
     }

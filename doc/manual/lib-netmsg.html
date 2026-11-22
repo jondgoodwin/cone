@@ -132,7 +132,9 @@ fn main() {
 		refused to admit, by the limit that refused it: <span class="pre">refusedFull</span> (<span class="pre">maxClients</span>),
 		<span class="pre">refusedPerAddress</span> (<span class="pre">maxPerAddress</span>) and <span class="pre">refusedRate</span>
 		(<span class="pre">admitRate</span>, and a replacement within a second of the last for its socket address). Each refusal
-		counts once, under the first limit it met; all zero for a client.</li>
+		counts once, under the first limit it met; all zero for a client. <span class="pre">recvRefused</span> counts the
+		receive buffers the buffer pool refused (<span class="pre">IoBuf.tryMake</span>; a peer causes them, so a full
+		pool refuses rather than panics): the endpoint waits for room and receives again, a client's too.</li>
 	</ul>
 
 	<h2 id="connection">A connection</h2>
@@ -161,7 +163,9 @@ fn main() {
 		copying the newest value from the cell straight into the datagram if it is newer than the last one sent on the
 		stream; a value put twice between slots is sent once (the newer, and the versions passed over are counted in
 		<span class="pre">ConnectionStats.cellSkipped</span>), a cell never written sends nothing, and a value that does not
-		fit the room a packet has left stays for the next one. No message crosses per value: a world that publishes to
+		fit the room a packet has left stays for the next one (each time a packet leaves out a bound stream's newer value
+		for want of room, <span class="pre">ConnectionStats.cellNoRoom</span> counts one: the link is over capacity, and the
+		weights decide which streams pay). No message crosses per value: a world that publishes to
 		many connections puts each value in a cell once. A bound connection asks to be called at every send slot
 		(<span class="pre">nextDeadline</span>), since a cell cannot say it changed, which costs one timer fire a slot
 		(30 a second at the good rate). A cell that takes values over <span class="pre">maxLatestBytes</span>, or a 65th
@@ -172,6 +176,19 @@ fn main() {
 		<span class="pre">flushCells()</span> is called.</li>
 	<li><span class="pre">unbindLatest(stream)</span>: lets go of the stream's cell; the stream is
 		<span class="pre">sendLatest</span>'s again.</li>
+	<li><span class="pre">followCell(stream, spreadMs)</span>: the phase lock. Slots that look at a bound cell run free from wherever the
+		connection began, so a new value waits for the next look, half an interval on average (17 ms at 30 Hz) on top of
+		its age. <span class="pre">followCell</span> makes a bound stream the connection's clock: after sending a new value
+		of it, the next look is at that value's <span class="pre">writtenAt</span> plus one send interval plus this
+		connection's own spread (0 to <span class="pre">spreadMs</span> ms, taken from the session, so thousands of connections
+		do not wake together), just after the writer's next put. The step is the writer's period, learned from the
+		<span class="pre">writtenAt</span> and version of the values sent, and never under one send interval (a writer that
+		puts at every second slot is looked for at every second slot). A look that finds nothing is a write a little late:
+		it looks again a millisecond on, up to four times, and then one step on along the same lattice; a value found is
+		sent and sets the lattice again from its own write. The send rate is
+		unchanged (the token bucket still holds); a writer on another clock, or one that has stopped, leaves the slots
+		free-running. A stream that is not bound to a cell is ignored; <span class="pre">unbindLatest</span> of the clock
+		stream ends the lock. In-process there are no send slots and it has no effect.</li>
 	<li><span class="pre">bindIncoming(stream, cell)</span>: the stream's newest incoming value goes into a
 		<span class="pre">sync.LatestWriter</span> instead of to the handler, so the receiver (the world, reading every
 		player's input each tick) reads it from the cell's reader with no event and no message. The protocol's sequence rules
@@ -330,6 +347,7 @@ fn main() {
 		malformed); <span class="pre">poll(now, out, events)</span> appends the packets to send (<span class="pre">Packets</span>, a list of IoBufs, each one datagram) and the events that happened;
 		<span class="pre">bindLatest(stream, reader, weight)</span> and <span class="pre">unbindLatest(stream)</span> (a stream's value is a
 		<span class="pre">sync.LatestReader</span>'s newest, copied into each packet; each answers false when refused);
+		<span class="pre">followCell(stream, spreadMs)</span> (the phase lock; false when the stream is not bound to a cell);
 		<span class="pre">nextDeadline()</span> says when to call <span class="pre">poll</span> next (while a cell is bound, the next send slot: a poll that finds nothing new moves it an interval on); and
 		<span class="pre">rtt()</span>, <span class="pre">lossPermille()</span>, <span class="pre">stats()</span>, <span class="pre">close()</span>. The
 		events are <span class="pre">CoreEvent.Reliable{data}</span>, <span class="pre">CoreEvent.Latest{stream, data, pos}</span> (<span class="pre">pos</span>: the stream's place among those the connection has heard of, fixed for its life) and

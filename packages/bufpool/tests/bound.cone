@@ -1,0 +1,274 @@
+// The bound counts only memory that holds something (row 658). A slab's bytes are counted as they are
+// carved, a commit chunk (64 KiB) at a time, and at the limit the idle blocks of slabs that still have a
+// block lent are decommitted (their bytes leave 'held' and osBytes()) and come back, written over their
+// whole length, when they are taken again. The bound is 8 MiB throughout, the plain bank's; the try bank's
+// mark is 4 MiB of it.
+//   1. PINNING: 128 blocks of 64 KiB fill four slabs, all but one block of each are returned, and 4 KiB
+//      blocks are then taken up to the bound: before the change the first was refused, the idle blocks
+//      being in slabs a lent block pinned.
+//   2. RECOMMIT: the 64 KiB blocks are taken back, each writable over its whole length, osBytes() rising
+//      by each; the consistency walk (checkSlabs) agrees with the free lists and the bitmaps.
+//   3. BANKS: the plain bank's idle blocks, decommitted, give the try bank's mark room; the plain bank
+//      then grows by its reserve.
+//   4. CARVING: one 4 KiB block on a fresh pool holds one commit chunk; a slab carved to its end and
+//      given back whole leaves nothing.
+
+mod bound;
+
+import testing use *;
+import libc;
+import bufpool use *;
+
+const mib = 1048576usize;
+const chunk = 65536usize;
+
+fn pool() &MemRegion {bufferPool() as &MemRegion}
+
+fn at(base: usize, i: usize) *usize {(base as *usize) + i}
+
+fn slabOf(a: usize) usize {a & (0usize - 2097152usize)}
+
+fn heldNow() u64 {u64.from(blockStats().heldBytes)}
+
+// A block's every byte written with v, and read back
+fn paint(p: *u8, n: usize, v: u8) {
+  _ = libc.memset(p, i32.from(v), n);
+}
+
+fn painted(p: *u8, n: usize, v: u8) bool {
+  var i = 0usize;
+  while i < n {
+    if *(p + i) != v {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+fn main() i32 {
+  let r = pool();
+  let blocks = libc.malloc(2200usize * 8usize) as usize;      // 4 KiB block addresses
+  let big = libc.malloc(130usize * 8usize) as usize;          // 64 KiB block addresses
+
+  // 4. Carving: a fresh pool at the default bound
+  let p = r.allocate(1usize, 8usize);
+  expect(p as usize != 0usize, "4: a 4 KiB block");
+  expectUInt(osBytes(), u64.from(chunk), "4: one 4 KiB take holds one commit chunk, not 2 MiB");
+  expectUInt(heldNow(), u64.from(chunk), "4: and the bound counts the same");
+  expectUInt(checkSlabs(), 0u64, "4: the stock is sound");
+  r.release(p, 4096usize);
+  trimEverything();
+  expectUInt(osBytes(), 0u64, "4: given back");
+  var i = 0usize;
+  while i < 512usize {
+    *at(blocks, i) = r.allocate(1usize, 8usize) as usize;
+    i = i + 1usize;
+  }
+  expectUInt(osBytes(), 2097152u64, "4: a slab carved to its end holds all 2 MiB");
+  expectUInt(checkSlabs(), 0u64, "4: sound, the whole slab carved");
+  i = 0usize;
+  while i < 512usize {
+    r.release(*at(blocks, i) as *u8, 4096usize);
+    i = i + 1usize;
+  }
+  trimEverything();
+  expectUInt(osBytes(), 0u64, "4: and freed whole it returns osBytes() to 0");
+  expectUInt(osBlocks(), 0u64, "4: no slab");
+  expectUInt(heldNow(), 0u64, "4: nothing held");
+
+  // 1. Pinning
+  setLimits(8usize * mib, 8usize * mib);
+  i = 0usize;
+  while i < 128usize {
+    *at(big, i) = r.allocate(65536usize, 8usize) as usize;
+    i = i + 1usize;
+  }
+  expect(r.allocate(65536usize, 8usize) as usize == 0usize, "1: the 129th 64 KiB block is refused: 8 MiB held");
+  expectUInt(osBytes(), u64.from(8usize * mib), "1: four slabs, carved whole");
+  expectUInt(heldNow(), u64.from(8usize * mib), "1: held at the bound");
+  var seen = Array[usize, 4]() <- fill 0usize;
+  var kept = Array[usize, 4]() <- fill 0usize;
+  var nseen = 0usize;
+  var keptCount = 0usize;
+  i = 0usize;
+  while i < 128usize {
+    let a = *at(big, i);
+    let s = slabOf(a);
+    var known = false;
+    var k = 0usize;
+    while k < nseen {
+      if seen[k] == s {known = true;}
+      k = k + 1usize;
+    }
+    if !known {
+      seen[nseen] = s;
+      nseen = nseen + 1usize;
+      kept[keptCount] = a;           // the one block of its slab that stays lent, written over
+      keptCount = keptCount + 1usize;
+      paint(a as *u8, 65536usize, 200u8);
+    } else {
+      r.release(a as *u8, 65536usize);
+    }
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(nseen), 4u64, "1: four slabs");
+  trimStock();                       // this thread's cache to the stock; no slab is wholly idle
+  expectUInt(u64.from(blockStats().stockBytes), 124u64 * 65536u64, "1: 124 idle blocks in the stock");
+  expectUInt(osBytes(), u64.from(8usize * mib), "1: nothing decommitted below the limit");
+  expectUInt(checkSlabs(), 0u64, "1: sound before the limit");
+  var n4 = 0usize;
+  let first = r.allocate(1usize, 8usize);
+  expect(first as usize != 0usize, "1: a 4 KiB block where it was refused before");
+  *at(blocks, n4) = first as usize;
+  n4 = n4 + 1usize;
+  expectUInt(osBytes(), u64.from(8usize * mib - 31usize * chunk + chunk), "1: osBytes() fell by the decommitted slab's 31 idle blocks and rose by the new slab's chunk");
+  expectUInt(u64.from(blockStats().stockBytes), 93u64 * 65536u64, "1: stockBytes is the committed idle blocks: three slabs' 31");
+  expectUInt(checkSlabs(), 0u64, "1: sound after the first decommit");
+  var over = false;
+  while true {
+    let q = r.allocate(1usize, 8usize);
+    if q as usize == 0usize {break;}
+    *at(blocks, n4) = q as usize;
+    n4 = n4 + 1usize;
+    if heldNow() > u64.from(8usize * mib) || osBytes() > u64.from(8usize * mib) {over = true;}
+  }
+  expect(!over, "1: held and osBytes() never pass the bound");
+  expectUInt(u64.from(n4), 1984u64, "1: the 4 KiB blocks that fit: 8 MiB less the four lent blocks, 7.75 MiB");
+  expectUInt(heldNow(), u64.from(8usize * mib), "1: held at the bound again");
+  expectUInt(osBytes(), u64.from(8usize * mib), "1: osBytes() the same");
+  expectUInt(checkSlabs(), 0u64, "1: sound at the bound");
+
+  // 2. Recommit: the 4 KiB blocks go home, their slabs are freed, and the 64 KiB blocks come back
+  i = 0usize;
+  while i < n4 {
+    r.release(*at(blocks, i) as *u8, 4096usize);
+    i = i + 1usize;
+  }
+  trimStock();
+  expectUInt(osBytes(), 4u64 * u64.from(chunk), "2: four lent blocks of 64 KiB are all that is committed");
+  expectUInt(checkSlabs(), 0u64, "2: sound with the decommitted blocks");
+  var taken = 0usize;
+  var rising = true;
+  var accounted = true;
+  var writable = true;
+  while taken < 124usize {
+    let b = r.allocate(65536usize, 8usize);
+    if b as usize == 0usize {break;}
+    *at(big, taken) = b as usize;
+    paint(b, 65536usize, u8.from(taken % 100usize) + 1u8);
+    taken = taken + 1usize;
+    if osBytes() != u64.from((4usize + taken) * chunk) {rising = false;}
+    if heldNow() != osBytes() {accounted = false;}
+  }
+  expectUInt(u64.from(taken), 124u64, "2: all 124 blocks come back");
+  expect(rising, "2: osBytes() rose by each block's 64 KiB");
+  expect(accounted, "2: and so did the bound's count: each recommit was reserved against it first");
+  i = 0usize;
+  while i < taken {
+    if !painted(*at(big, i) as *u8, 65536usize, u8.from(i % 100usize) + 1u8) {writable = false;}
+    i = i + 1usize;
+  }
+  expect(writable, "2: each block is writable over its whole length and keeps what was written");
+  i = 0usize;
+  while i < 4usize {
+    if !painted(kept[i] as *u8, 65536usize, 200u8) {writable = false;}
+    i = i + 1usize;
+  }
+  expect(writable, "2: the lent blocks were not touched");
+  expectUInt(osBytes(), u64.from(8usize * mib), "2: 8 MiB committed again");
+  let extra = r.allocate(65536usize, 8usize);
+  expect(extra as usize == 0usize, "2: and the bound refuses another");
+  if extra as usize != 0usize {r.release(extra, 65536usize);}
+  expectUInt(checkSlabs(), 0u64, "2: sound after the recommits: free lists and bitmaps agree");
+  i = 0usize;
+  while i < taken {
+    r.release(*at(big, i) as *u8, 65536usize);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < 4usize {
+    r.release(kept[i] as *u8, 65536usize);
+    i = i + 1usize;
+  }
+  trimEverything();
+  expectUInt(osBytes(), 0u64, "2: every slab goes back, decommitted blocks or not");
+  expectUInt(heldNow(), 0u64, "2: nothing held");
+
+  // 3. The banks
+  i = 0usize;
+  while i < 128usize {
+    *at(big, i) = r.allocate(65536usize, 8usize) as usize;
+    i = i + 1usize;
+  }
+  nseen = 0usize;
+  seen = Array[usize, 4]() <- fill 0usize;
+  keptCount = 0usize;
+  i = 0usize;
+  while i < 128usize {
+    let a = *at(big, i);
+    let s = slabOf(a);
+    var known = false;
+    var k = 0usize;
+    while k < nseen {
+      if seen[k] == s {known = true;}
+      k = k + 1usize;
+    }
+    if !known {
+      seen[nseen] = s;
+      nseen = nseen + 1usize;
+      kept[keptCount] = a;
+      keptCount = keptCount + 1usize;
+    } else {
+      r.release(a as *u8, 65536usize);
+    }
+    i = i + 1usize;
+  }
+  trimStock();
+  expectUInt(heldNow(), u64.from(8usize * mib), "3: the plain bank holds the whole bound, 124 blocks of it idle");
+  var n4t = 0usize;
+  let t0 = tryAllocate(4096usize);
+  expect(t0 as usize != 0usize, "3: the try bank takes where today it is refused: the plain bank's idle blocks are decommitted");
+  *at(blocks, n4t) = t0 as usize;
+  n4t = n4t + 1usize;
+  var tryOver = false;
+  while true {
+    let q = tryAllocate(4096usize);
+    if q as usize == 0usize {break;}
+    *at(blocks, n4t) = q as usize;
+    n4t = n4t + 1usize;
+    if heldNow() > u64.from(4usize * mib) {tryOver = true;}
+  }
+  expect(!tryOver, "3: the try bank's takes never pass its mark");
+  expectUInt(heldNow(), u64.from(4usize * mib), "3: and reach it");
+  expectUInt(checkSlabs(), 0u64, "3: sound");
+  var grown = 0usize;
+  while true {
+    let q = r.allocate(65536usize, 8usize);
+    if q as usize == 0usize {break;}
+    *at(big, grown) = q as usize;
+    grown = grown + 1usize;
+  }
+  expect(grown >= 64usize, "3: the plain bank can still grow by its reserve afterwards: at least 4 MiB (64 blocks)");
+  expectUInt(heldNow(), u64.from(8usize * mib), "3: to the bound");
+  expectUInt(checkSlabs(), 0u64, "3: sound");
+  i = 0usize;
+  while i < n4t {
+    r.release(*at(blocks, i) as *u8, 4096usize);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < grown {
+    r.release(*at(big, i) as *u8, 65536usize);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < 4usize {
+    r.release(kept[i] as *u8, 65536usize);
+    i = i + 1usize;
+  }
+  trimEverything();
+  expectUInt(osBytes(), 0u64, "3: everything back");
+  expectUInt(checkSlabs(), 0u64, "3: sound at the end");
+  libc.free(blocks as *u8);
+  libc.free(big as *u8);
+  done()
+}

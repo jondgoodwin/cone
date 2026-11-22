@@ -119,6 +119,7 @@ fn main() i32 {
   expectStr(h.vals[1usize].view(), "4:v3", "the newer");
   expectUInt(p.a.stats().cellSkipped, 1u64, "the one between is counted skipped");
   expectUInt(p.a.stats().latestSent, 2u64, "two values sent in all");
+  expectUInt(p.a.stats().cellNoRoom, 0u64, "with room for all of them nothing is left out");
   go(&mut p, &mut clock, 200i64, &mut h);
   expectUInt(u64.from(h.vals.len()), 2u64, "nothing more without a put");
 
@@ -160,12 +161,17 @@ fn main() i32 {
   let skippedW = p.a.stats().cellSkipped - 1u64;
   expect(skippedW <= 220u64 - cellsSent && skippedW + 12u64 >= 220u64 - cellsSent, "each round the cell's stream lost to the other, its value was replaced by the next put: counted skipped");
 
+  // Every round the cell's stream lost to the other, its newer value was left out for want of room: cellNoRoom
+  expect(p.a.stats().cellNoRoom >= skippedW, "a value left out for room is counted in cellNoRoom, at least once for each one replaced");
+  expect(p.a.stats().cellNoRoom <= 220u64 - cellsSent + 12u64, "and not more often than the rounds it lost (a few spare)");
+
   // A value that does not fit what a reliable message left of the packet is not
   // lost: it waits for the next packet and arrives whole
   h.vals.clear();
   go(&mut p, &mut clock, 300i64, &mut h);
   h.vals.clear();
   let skippedBefore = p.a.stats().cellSkipped;
+  let noRoomBefore = p.a.stats().cellNoRoom;
   w1.put(filled(700usize, 3u8).view());
   p.a.sendReliable(fz(filled(700usize, 9u8).view()));
   go(&mut p, &mut clock, 150i64, &mut h);
@@ -173,6 +179,7 @@ fn main() i32 {
   expectUInt(countOf(&h, "1:"), 1u64, "the value that did not fit beside it came in a later packet");
   expectStr(h.vals[0usize].view(), "1:700/3", "whole");
   expectUInt(p.a.stats().cellSkipped, skippedBefore, "and nothing was passed over");
+  expectUInt(p.a.stats().cellNoRoom, noRoomBefore + 1u64, "but the packet that left it out is counted in cellNoRoom, once");
 
   // Binds are refused: a cell too big for a packet, and a 65th stream
   var wb: LatestWriter;

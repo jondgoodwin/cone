@@ -1,0 +1,133 @@
+// The limit path decommits idle blocks WITH THE CLASS LOCK HELD (row 658). A block is off the free list and
+// marked in its slab's bitmap before its pages go; were the lock dropped between the two, a take could bring
+// the marked block back and hand it out, and the late decommit would take its memory from under its new
+// holder. The test-only decommit hook parks the decommitter after a run is marked and before it is
+// decommitted; another thread then takes a block of the same class. With the lock held that thread waits for
+// the decommit to end (the hook sees it not done), and its block, recommitted afterwards, is usable and
+// keeps what is written to it. Without the lock (the mutant) the thread's block is the marked one: the
+// decommit then faults it on Windows, or zeroes it on Linux, and this test fails. The other thread first
+// releases an oversize block (2 MiB of the 10 MiB bound), so that the bound has room for it to bring a
+// marked block back at once: the decommitter's own 'held' is lowered only after its calls.
+
+mod decommitrace;
+
+import testing use *;
+import thread;
+import time use Duration;
+import libc;
+import bufpool use *;
+
+const mib = 1048576usize;
+
+let parked: Atomic[u64];
+let helperDone: Atomic[u64];
+let helperBlock: Atomic[u64];
+let hookCalls: Atomic[u64];
+let doneAtHookEnd: Atomic[u64];
+
+fn @initpure init() {
+  parked = Atomic[u64].of(0u64);
+  helperDone = Atomic[u64].of(0u64);
+  helperBlock = Atomic[u64].of(0u64);
+  hookCalls = Atomic[u64].of(0u64);
+  doneAtHookEnd = Atomic[u64].of(0u64);
+}
+
+fn at(base: usize, i: usize) *usize {(base as *usize) + i}
+fn slabOf(a: usize) usize {a & (0usize - 2097152usize)}
+
+// The hook: its first call parks until the helper has its block, or 400 ms
+fn parkHook() {
+  if hookCalls.add(1u64) == 0u64 {
+    parked.store(1u64);
+    var ms = 0u32;
+    while helperDone.load() == 0u64 && ms < 400u32 {
+      thread.sleep(Duration.fromMillis(1i64));
+      ms = ms + 1u32;
+    }
+    doneAtHookEnd.store(helperDone.load());
+  }
+}
+
+// The other thread: waits for the park, then takes a block of the class and writes it over its whole length
+fn helper(x: u64) u64 {
+  var ms = 0u32;
+  while parked.load() == 0u64 && ms < 20000u32 {
+    thread.sleep(Duration.fromMillis(1i64));
+    ms = ms + 1u32;
+  }
+  let r = bufferPool() as &MemRegion;
+  r.release(usize.from(x) as *u8, 2usize * 1048576usize);     // room under the bound, with the decommit's bytes still counted
+  let b = r.allocate(65536usize, 8usize);
+  if b as usize != 0usize {_ = libc.memset(b, 77i32, 65536usize);}
+  helperBlock.store(u64.from(b as usize));
+  helperDone.store(1u64);
+  1u64
+}
+
+fn painted(p: *u8, n: usize, v: u8) bool {
+  var i = 0usize;
+  while i < n {
+    if *(p + i) != v {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+fn main() i32 {
+  let r = bufferPool() as &MemRegion;
+  setLimits(10usize * mib, 10usize * mib);
+  let big = libc.malloc(130usize * 8usize) as usize;
+  var i = 0usize;
+  while i < 128usize {
+    *at(big, i) = r.allocate(65536usize, 8usize) as usize;
+    i = i + 1usize;
+  }
+  var seen = Array[usize, 4]() <- fill 0usize;
+  var kept = Array[usize, 4]() <- fill 0usize;
+  var nseen = 0usize;
+  i = 0usize;
+  while i < 128usize {
+    let a = *at(big, i);
+    var known = false;
+    var k = 0usize;
+    while k < nseen {
+      if seen[k] == slabOf(a) {known = true;}
+      k = k + 1usize;
+    }
+    if !known {
+      seen[nseen] = slabOf(a);
+      kept[nseen] = a;
+      nseen = nseen + 1usize;
+    } else {
+      r.release(a as *u8, 65536usize);
+    }
+    i = i + 1usize;
+  }
+  let ov = r.allocate(2usize * mib, 8usize);     // oversize: 2 MiB of its own
+  trimStock();
+  expectUInt(osBytes(), u64.from(10usize * mib), "10 MiB held: the oversize block and four slabs with 124 blocks idle, one lent each");
+  setDecommitHook(&parkHook);
+  let t = thread.start(u64.from(ov as usize), &helper);
+  let p = r.allocate(1usize, 8usize);          // refused today: the limit path decommits a slab's idle blocks, and parks
+  expect(p as usize != 0usize, "the 4 KiB take that made the decommit succeeds");
+  expectUInt(hookCalls.load(), 1u64, "the decommit parked once: one run in one slab");
+  expectUInt(doneAtHookEnd.load(), 0u64, "the other thread did not get a block while the decommit held the class: the lock is held across the marking and the decommit");
+  _ = t.join();
+  let hb = usize.from(helperBlock.load());
+  expect(hb != 0usize, "the other thread's take succeeded once the decommit was done");
+  expectUInt(u64.from(slabOf(hb) / 2097152usize), u64.from(seen[0] / 2097152usize), "its block is in the slab that was decommitted");
+  expect(painted(hb as *u8, 65536usize, 77u8), "and its block, recommitted, holds what was written over its whole length");
+  expectUInt(checkSlabs(), 0u64, "the stock is sound");
+  r.release(hb as *u8, 65536usize);
+  r.release(p, 4096usize);
+  i = 0usize;
+  while i < 4usize {
+    r.release(kept[i] as *u8, 65536usize);
+    i = i + 1usize;
+  }
+  trimEverything();
+  expectUInt(osBytes(), 0u64, "everything back");
+  libc.free(big as *u8);
+  done()
+}

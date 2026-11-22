@@ -1,0 +1,520 @@
+// The HTTP/3 connection as one value, sans-I/O: one QUIC connection and its HTTP/3
+// connection, h3driver's stream records and their in-step stream numbers, the waste
+// budget, the wake clamp and the drive loop. It has no loop, no clock and no socket:
+// whoever hosts it gives it datagrams and the time and takes the datagrams it has to
+// send. The polled Driver hosts it (driver.cone); the connection actors will (stage 5).
+//
+// THE VALUE. 'H3Conn' is the connection, in either role; 'H3Server' and 'H3Client' wrap
+// one and present it as httpconn's ServerProto and ClientProto, the protocol surface a
+// TCP connection (httpconn's ServerConn, ClientConn) presents too, so code above the wire
+// is written once. Below the wire:
+//   datagramIn(d, now)      one UDP payload that came from the peer
+//   takeDatagram(now)       the next datagram to send, until None (the host may stop earlier, at
+//                           its own send depth, and then calls finishTurn(now))
+//   handleTimeout(now)      pollTimeout()'s time has come
+//   pollTimeout()           the Instant to wake at (QUIC's wake time, clamped: WAKE TIMES)
+//   ids(out) idsEpoch()     the connection IDs it answers to, for the host's routing table
+// A TURN is the host's call of datagramIn or handleTimeout (or the calls it makes above the wire),
+// then takeDatagram until it gives None (finishTurn does what the last call would). Each call of
+// takeDatagram first moves the value as far as it goes on what it was given (QUIC's events, the
+// bytes HTTP/3 has credit for, HTTP/3's events and what it writes: up to 'maxRounds' rounds, then
+// 'wantsTurn' says another turn is owed), then polls QUIC once.
+//
+// WAKE TIMES. QUIC has no handleTimeout: a wake time that has come is acted on by the next
+// pollTransmit, which every turn makes once at least. Under loss ngtcp2 can keep the wake time at
+// or before now for thousands of steps, so the value never reports one that has passed: after a
+// turn, a wake time at or before now, or one that comes within 'wakeStep' after a turn its wake
+// time asked for and that sent nothing, is moved to now + wakeStep.
+//
+// EVENTS, for the polled Driver, by 'takeEvent': h3driver's own Event, in the same order and
+// with the same fields as the Driver has always made them, 'conn' and 'req.conn' empty (the host
+// knows its connection) and 'peer' and 'listener' empty. Above the wire, 'next' gives httpconn's
+// ServerEvent or ClientEvent: a request's Failed is a Reset (its error), a connection's Closed is
+// Closed (its failure, httpconn's, by the stages below); every request open at the end is Reset
+// before Closed, and a request has one final event.
+//
+// FAILURES, as httpconn's, by stage: the handshake refused or the certificate not verified, Tls;
+// the client's handshake not done in time, Connect; the peer's CONNECTION_CLOSE or QUIC's idle
+// timeout, Closed; a protocol violation or a core's own deadline, Http; the waste budget or a cap
+// (the buffer pool full), Limit. 'code' is the system's number when there is one, else 0; QUIC's
+// and HTTP/3's error codes are in the detail. (A send that failed is the host's: the value sends
+// nothing.) The Driver's own events keep the stages it has always given.
+//
+// STREAM NUMBERS. HTTP/3's and QUIC's are one (THE STREAM MAP, 1); httpconn's are u32, so
+// they stay under 2^32 (Config.streamIdLimit of quic, HTTP/2's own bound in effect): a server
+// never grants credit for a bidirectional stream past it and sends GOAWAY before it is reached; a
+// client's room() is none from there and the connection shuts down cleanly (GOAWAY, then the close
+// once its requests are done). A number that does not fit is the mismatch rule below.
+
+// The time, to the value, is what its host gives it: nothing here reads a clock
+
+const defaultSendWatermark = 262144u64;   // 256 KiB, quic's stream window at its defaults
+const goAwayMargin = 4usize;     // 'maxStreamsBidi' windows before the stream id limit, a server's GOAWAY goes (and more)
+
+// A stream: one record in its connection's table (the package's header, THE
+// STREAM MAP)
+struct Strm {
+  id: u64;                  // its number: HTTP/3's and QUIC's
+  ours: bool;               // this end opened it
+  opened: bool;             // QUIC has it (a local one waits for the peer's limit)
+  inbound: Chain;           // bytes QUIC delivered that HTTP/3 has not taken
+  inFin: bool;              // QUIC's end of the peer's half came, after them
+  inDone: bool;             // the peer's half is over here: ended into HTTP/3, reset, stopped, or none
+  pendingOut: Chain;        // what HTTP/3 wrote before QUIC opened it
+  pendingFin: bool;         // ...and its end
+  pendingReset: bool;       // HTTP/3 reset it before QUIC opened it...
+  resetCode: u64;
+  pendingStop: bool;        // ...or stopped it
+  stopCode: u64;
+  finWritten: bool;         // the end of this end's half went to QUIC
+  req: bool;                // a request on it awaits its final answer
+  token: u64;               // ...and its events carry this
+  wrote: bool;              // a byte of the request reached QUIC
+  bodyOpen: bool;           // a client's: the program is still sending the request's body
+  readDone: bool;           // the message read on it is whole (End)
+  wantWritable: bool;       // sendData refused a buffer: Writable when there is room
+  timing: Timing;
+}
+
+fn newStrm(id: u64, ours: bool, opened: bool) Strm {
+  Strm(id: id, ours: ours, opened: opened, inbound: Chain.make(noBound), inFin: false,
+    inDone: false, pendingOut: Chain.make(noBound), pendingFin: false, pendingReset: false,
+    resetCode: 0u64, pendingStop: false, stopCode: 0u64, finWritten: false, req: false, token: 0u64,
+    wrote: false, bodyOpen: false, readDone: false, wantWritable: false, timing: Timing.zero())
+}
+
+// What a connection's turns counted, for its host's DriverStats; 'takeCounts' moves them out
+struct H3Counts {
+  pub requests: u64;       // requests read (a server's)
+  pub accepted: u64;       // a server's handshake done
+  pub connected: u64;      // a client's
+  pub done: u64;           // final answers, by outcome
+  pub failed: u64;
+  pub cancelled: u64;
+  pub closed: u64;         // the connection ended...
+  pub cleanCloses: u64;    // ...cleanly
+  pub bufferRefused: u64;  // times the buffer pool refused a buffer for it
+  pub budgetEnded: u64;    // ended for holding more buffers than its block budget
+  pub idleWakes: u64;      // turns its wake time asked for that sent nothing
+  pub clamped: u64;        // wake times moved on to a wakeStep
+
+  fn zero() H3Counts {
+    H3Counts(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)
+  }
+}
+
+// One QUIC connection and its HTTP/3, in either role (see the top of this file)
+pub struct H3Conn is Move {
+  server: bool;
+  token: u64;                // the host's mark, carried in every request's events (a server's)
+  q: quic.Connection;
+  h: http3.Connection;
+  streams: Streams;
+  byId: Dict[u64, RecId];    // a stream's number to its record
+  waitBidi: Deque[RecId];    // its own streams waiting for QUIC to open them, in HTTP/3's order
+  waitUni: Deque[RecId];
+  nextUni: u64;              // the number of the next unidirectional stream of its own HTTP/3 writes first
+  nextReq: u64;              // a client's: the number of the next request stream
+  idLimit: u64;              // stream numbers stay under this (quic.Config.streamIdLimit)
+  goAwayAt: u64;             // a server's: a peer request stream at or past this number sends GOAWAY
+  ready: Deque[Event];       // events, until takeEvent moves them
+  spare: Option[IoBuf];      // the datagram buffer polled into and kept until a datagram goes out
+  work: bool;                // something may have changed since the last settle
+  more: bool;                // the rounds ran out: another turn is owed
+  rounds: usize;             // rounds this turn has used
+  sentTurn: usize;           // datagrams this turn has given
+  byWake: bool;              // this turn is one its wake time asked for
+  wake: Instant;             // when to be turned (WAKE TIMES)
+  wakeStep: Duration;
+  told: bool;                // Connected or Accepted has gone
+  closeWait: bool;           // a graceful close waits for QUIC to deliver what was written
+  closeCode: u64;
+  quicClosed: bool;
+  idle: bool;                // ...by QUIC's idle timeout
+  hsTimeout: bool;           // ...by the handshake timeout
+  h3Closed: bool;
+  h3Error: Option[HttpError];   // HTTP/3's failure, when it closed with one
+  ended: bool;               // its Closed has gone
+  budget: usize;             // the bytes of blocks its streams may hold beyond their bytes (THE BLOCK BUDGET)
+  shed: bool;                // the budget ended it: its buffers went home, what arrives is dropped
+  callWanted: bool;          // the OS's verifier is to run (wantsCall)
+  goAwayIn: Option[u64];     // HTTP/3's GOAWAY, for 'next'
+  counts: H3Counts;
+  failure: Option[httpconn.Failure];   // why it ended, when it did not end cleanly
+  sendWatermark: u64;        // a stream's bytes QUIC holds before sendData hands a buffer back
+  lastNow: Instant;          // the latest time a call brought (calls that bring none, as cancel, use it)
+
+  // A client connection over q (made by quic.Connection.client), its HTTP/3 taking cfg's bounds. 'budget'
+  // is the connection's block budget (THE BLOCK BUDGET), 'wakeStep' the least a passed wake time is
+  // moved on, 'idLimit' quic.Config.streamIdLimit
+  pub fn forClient(q: quic.Connection, cfg: http3.Config, token: u64, budget: usize, wakeStep: Duration,
+      idLimit: u64, now: Instant) H3Conn {
+    H3Conn.made(false, q, http3.Connection.client(cfg, now), token, budget, wakeStep, idLimit, 2u64, cfg.maxRequestStreams, now)
+  }
+
+  // A server connection over q (made by quic.Connection.accept)
+  pub fn forServer(q: quic.Connection, cfg: http3.Config, token: u64, budget: usize, wakeStep: Duration,
+      idLimit: u64, now: Instant) H3Conn {
+    H3Conn.made(true, q, http3.Connection.server(cfg, now), token, budget, wakeStep, idLimit, 3u64, cfg.maxRequestStreams, now)
+  }
+
+  fn made(server: bool, q: quic.Connection, h: http3.Connection, token: u64, budget: usize, wakeStep: Duration,
+      idLimit: u64, nextUni: u64, maxStreams: usize, now: Instant) H3Conn {
+    let window = 4u64 * (u64.from(maxStreams) + 1u64) * u64.from(goAwayMargin);
+    H3Conn(server: server, token: token, q: q, h: h, streams: Streams(16usize), byId: Dict[u64, RecId](),
+      waitBidi: Deque[RecId](), waitUni: Deque[RecId](), nextUni: nextUni, nextReq: 0u64, idLimit: idLimit,
+      goAwayAt: if idLimit > window {idLimit - window} else {0u64}, ready: Deque[Event](), spare: None,
+      work: true, more: false, rounds: 0usize, sentTurn: 0usize, byWake: false, wake: forever(), wakeStep: wakeStep,
+      told: false, closeWait: false, closeCode: 0u64, quicClosed: false, idle: false, hsTimeout: false,
+      h3Closed: false, h3Error: None, ended: false, budget: budget, shed: false, callWanted: false,
+      goAwayIn: None, counts: H3Counts.zero(), failure: None, sendWatermark: defaultSendWatermark, lastNow: now)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Below the wire: datagrams and the time
+  // ---------------------------------------------------------------------------
+
+  // One UDP payload that came from the peer (dropped once the connection has ended)
+  pub fn datagramIn(self: &mut, d: &Array[u8], now: Instant) {
+    lastNow = now;
+    if ended || d.len == 0usize {return;}
+    q.handleInput(d, now);
+    work = true;
+  }
+
+  // The next datagram to send, or None: the value first moves as far as it goes on what it has been
+  // given, then polls QUIC once (acting on a wake time that has come, as QUIC has no handleTimeout).
+  // The turn ends with None, or by finishTurn when the host stops earlier
+  pub fn takeDatagram(self: &mut, now: Instant) Option[IoBuf] {
+    lastNow = now;
+    if ended {return None;}
+    var going = true;
+    while going && rounds < maxRounds {
+      if work {
+        work = false;
+        settle(self, now);
+      }
+      let b = q.pollTransmitWith(&mut spare, now);
+      if b.len() > 0usize {
+        sentTurn = sentTurn + 1usize;
+        work = true;
+        return Some[IoBuf](b);
+      }
+      // A wake time that has come may have ended the connection (the idle timeout) or failed a stream:
+      // its events now
+      if quicEvents(self, now) {
+        work = true;
+        rounds = rounds + 1usize;
+      } else {
+        going = false;
+      }
+    }
+    if rounds >= maxRounds {more = true; work = true;}
+    self.finishTurn(now);
+    None
+  }
+
+  // The turn's end: what is left to move is moved, the final events are made (a request answered, a
+  // stream's record retired, the connection's end), and the wake time is set
+  pub fn finishTurn(self: &mut, now: Instant) {
+    if work && rounds < maxRounds {
+      work = false;
+      settle(self, now);
+    }
+    tail(self, now);
+    if ended {
+      sentTurn = 0usize;
+      rounds = 0usize;
+      byWake = false;
+      return;
+    }
+    var w = forever();
+    match q.wakeAt() {
+      case let Some(t) {w = t;}
+      case is None[Instant] {}
+    }
+    let idleTurn = byWake && sentTurn == 0usize;
+    if idleTurn {counts.idleWakes = counts.idleWakes + 1u64;}
+    if w < forever() && (w <= now || (idleTurn && w < now + wakeStep)) {
+      w = now + wakeStep;
+      counts.clamped = counts.clamped + 1u64;
+    }
+    wake = w;
+    sentTurn = 0usize;
+    rounds = 0usize;
+    byWake = false;
+  }
+
+  // Its wake time has come: the next turn acts on it
+  pub fn handleTimeout(self: &mut, now: Instant) {
+    lastNow = now;
+    byWake = true;
+    work = true;
+  }
+
+  // The Instant to wake at, or None
+  pub fn pollTimeout(self: &) Option[Instant] {
+    if ended || wake >= forever() {return None;}
+    Some[Instant](wake)
+  }
+
+  // Whether the last turn ran out of rounds: another is owed now
+  pub fn wantsTurn(self: &) bool {more && !ended}
+
+  // A turn begins: its owed continuation, if any, is taken up
+  pub fn startTurn(self: &mut, byTimer: bool) {
+    more = false;
+    if byTimer {byWake = true;}
+  }
+
+  // The connection IDs it answers to (a server's, for the host's routing table): each of quic.localIdLen
+  // bytes, appended to out, and how many; and the epoch that moves when they change
+  pub fn ids(self: &, out: &mut List[u8]) usize {q.localIds(out)}
+  pub fn idsEpoch(self: &) u64 {q.localIdsEpoch()}
+
+  // Whether its Closed has gone (the host then frees it once its own sends are answered)
+  pub fn isEnded(self: &) bool {ended}
+
+  // Its counters since the last call, moved out
+  pub fn takeCounts(self: &mut) H3Counts {
+    let out = counts;
+    counts = H3Counts.zero();
+    out
+  }
+
+  // The next event for the polled Driver, in the order they were made
+  pub fn takeEvent(self: &mut) Option[Event] {ready.popFront()}
+
+  // ---------------------------------------------------------------------------
+  // The verifier's work (a client's certificate check by the OS), run on the blocking pool
+  // ---------------------------------------------------------------------------
+
+  pub fn wantsCall(self: &) bool {callWanted && q.wantsVerify()}
+
+  pub fn takeCall(self: &mut) Op {
+    callWanted = false;
+    q.verifyOp()
+  }
+
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {
+    q.verifyDone(c);
+    work = true;
+  }
+
+  // The same, from a host that ran the job itself (an actor's aio.onPool, which answers values and no Completion): the
+  // answer is made into the Completion quic's verifyDone reads, the job's buffer (or the IoError that ended it) in it
+  pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant) {
+    var status = diag.outcomeDone;
+    var code = 0u32;
+    var b = IoBuf();
+    match failed {
+      case let Some(e) {
+        status = if e.isCancelled() {diag.outcomeCancelled} else if e.isTimedOut() {diag.outcomeTimedOut} else {diag.outcomeFailed};
+        code = e.code;
+      }
+      else {
+        b = IoBuf(buf.len());
+        b.append(buf.view());
+      }
+    }
+    var c = Completion(0u64, OpId.none(), 0u64, diag.kindCall, status, b.len(), code, b, None, Handle.none(),
+      SocketAddr.localhost(0u16), now, now, now);
+    q.verifyDone(&mut c);
+    work = true;
+  }
+
+  // How many more bytes a stream's sendData takes before it refuses (none while QUIC holds
+  // sendWatermark bytes of it)
+  pub fn writeRoomOf(self: &, slot: RecId) usize {
+    match streams.borrow(slot) {
+      case let Some(s) {
+        if heldInQuic(self, s) >= sendWatermark {0usize} else {h.writeRoom(s.id)}
+      }
+      else {0usize}
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The connection's state, as the host asks it
+  // ---------------------------------------------------------------------------
+
+  // Whether it takes a new request: a client's, not ended, QUIC not closed
+  pub fn alive(self: &) bool {!ended && !server && !quicClosed}
+
+  // ...whether HTTP/3 takes one (no GOAWAY either way, the stream numbers not used up)
+  pub fn canRequest(self: &) bool {h.canSendRequest() && nextReq < idLimit}
+
+  // Requests waiting for the peer's stream limit
+  pub fn waiting(self: &) usize {waitBidi.len()}
+
+  // Whether a request made now goes to QUIC at once: handshake done and none waits
+  pub fn hasRoom(self: &) bool {alive() && canRequest() && told && waitBidi.len() == 0usize}
+
+  // The stream records it holds
+  pub fn streamRecords(self: &) usize {streams.len()}
+
+  // Streams with a request awaiting its final answer
+  pub fn openRequests(self: &) usize {
+    var n = 0usize;
+    var k = 0usize;
+    while k < streams.bound() {
+      if streams.isLive(u32.from(k)) && streams.borrowAt(u32.from(k)).unwrap().req {n = n + 1usize;}
+      k = k + 1usize;
+    }
+    n
+  }
+
+  // A request's record while its final answer is still to come
+  pub fn live(self: &, slot: RecId) bool {
+    match streams.borrow(slot) {
+      case let Some(s) {s.req}
+      else {false}
+    }
+  }
+
+  // The record of the stream with this number, or RecId.none()
+  pub fn slotOfStream(self: &, stream: u64) RecId {slotOf(self, stream)}
+
+  // The number of the stream a record holds
+  pub fn streamOf(self: &, slot: RecId) u64 {streams.borrow(slot).unwrap().id}
+
+  // ---------------------------------------------------------------------------
+  // Requests and responses, by record
+  // ---------------------------------------------------------------------------
+
+  // A request on a client connection, its events carrying token: its record (the caller has checked
+  // alive, canRequest and the waiting bound)
+  pub fn sendRequest(self: &mut, head: RequestHead, body: BodyLength, token: u64, now: Instant) RecId {
+    let hasBody = body.isUnsized() || (body.isSized() && body.length > 0u64);
+    let id = h.sendRequest(head, body);
+    nextReq = id + 4u64;
+    var s = newStrm(id, true, false);
+    s.req = true;
+    s.token = token;
+    s.bodyOpen = hasBody;
+    s.timing.submitted = now;
+    let slot = streams.add(s);
+    let previous = byId.insert(id, slot);
+    waitBidi.push(slot);
+    openWaiting(self, true, now);
+    // The last stream number this end may use: no more are made, and the connection ends once these are done
+    if nextReq >= idLimit {h.goAway();}
+    work = true;
+    slot
+  }
+
+  // A server's response to a request: its head now, its body by sendData and finish
+  pub fn respondTo(self: &mut, slot: RecId, head: ResponseHead, body: BodyLength, file: &Array[u8], line: u32) bool {
+    if !self.live(slot) {return false;}
+    let sid = streams.borrow(slot).unwrap().id;
+    h.sendResponse(sid, head, body, file, line);
+    work = true;
+    true
+  }
+
+  pub fn interimTo(self: &mut, slot: RecId, head: ResponseHead, file: &Array[u8], line: u32) bool {
+    if !self.live(slot) {return false;}
+    let sid = streams.borrow(slot).unwrap().id;
+    h.sendInterim(sid, head, file, line);
+    work = true;
+    true
+  }
+
+  // Body bytes of a request (a client's) or a response (a server's), moved in: None once taken (or
+  // dropped, the request having gone), or Some(buf) back when the stream holds sendWatermark bytes in
+  // QUIC or writeWatermark in HTTP/3 (Writable follows when there is room)
+  pub fn sendBody(self: &mut, slot: RecId, buf: IoBuf, file: &Array[u8], line: u32) Option[IoBuf] {
+    if !self.live(slot) {return None;}
+    if heldInQuic(self, streams.borrow(slot).unwrap()) >= sendWatermark {
+      streams.borrowMut(slot).unwrap().wantWritable = true;
+      return Some[IoBuf](buf);
+    }
+    work = true;
+    let sid = streams.borrow(slot).unwrap().id;
+    let sent = h.sendData(sid, buf, file, line);
+    match sent {
+      case let Some(b) {
+        streams.borrowMut(slot).unwrap().wantWritable = true;
+        return Some[IoBuf](b);
+      }
+      case is None[IoBuf] {}
+    }
+    None
+  }
+
+  // The body is whole, these trailer fields follow it, and the stream ends
+  pub fn finishBody(self: &mut, slot: RecId, trailers: HttpHeaders, file: &Array[u8], line: u32) {
+    if !self.live(slot) {return;}
+    let s = streams.borrowMut(slot).unwrap();
+    s.bodyOpen = false;
+    let sid = s.id;
+    h.finishWith(sid, trailers, file, line);
+    work = true;
+  }
+
+  // The program is done with n bytes of a request's body that Data events handed out
+  pub fn releaseBody(self: &mut, slot: RecId, n: usize) {
+    match streams.borrow(slot) {
+      case let Some(s) {
+        let sid = s.id;
+        h.release(sid, n);
+        work = true;
+      }
+      else {}
+    }
+  }
+
+  // A server's request whose body is no longer wanted (STOP_SENDING, H3_NO_ERROR): false, and nothing
+  // done, when it names no request, is a client's, or was read whole already
+  pub fn stopBodyOf(self: &mut, slot: RecId) bool {
+    if !self.live(slot) {return false;}
+    let s = streams.borrowMut(slot).unwrap();
+    if !server || s.readDone {return false;}
+    h.stopBody(s.id);
+    s.readDone = true;
+    work = true;
+    true
+  }
+
+  // Give a request up: its exchange is reset both ways (H3_REQUEST_CANCELLED), and it is answered
+  // Cancelled now. False when it has had its final answer
+  pub fn cancelRequest(self: &mut, slot: RecId, now: Instant) bool {
+    if !self.live(slot) {return false;}
+    let sid = streams.borrow(slot).unwrap().id;
+    h.reset(sid, http3.h3RequestCancelled);
+    answer(self, slot.index, EventKind.Cancelled, Failure.none(), now);
+    work = true;
+    true
+  }
+
+  // End it gracefully: a GOAWAY, what is open finishes, then the close
+  pub fn goAway(self: &mut) {
+    h.goAway();
+    work = true;
+  }
+
+  // End it now: every request on it Failed, the close sent with H3_NO_ERROR (and QUIC's, should HTTP/3
+  // have closed already)
+  pub fn abortNow(self: &mut) {
+    h.abort(http3.h3NoError);
+    q.close(http3.h3NoError);
+    work = true;
+  }
+
+  // The connection ends now whatever QUIC and HTTP/3 say: its requests Failed, its Closed made
+  pub fn forceEnd(self: &mut, now: Instant) {
+    if ended {return;}
+    quicClosed = true;
+    h3Closed = true;
+    endConn(self, now);
+  }
+
+  // A test's aid: QUIC opens a stream HTTP/3 does not know of, so the two layers' stream numbers part
+  // (the mismatch rule: the connection fails). Whether QUIC opened one
+  pub fn injectStreamSkew(self: &mut) bool {
+    match q.openBidi() {
+      case let Some(n) {true}
+      case is None[i64] {false}
+    }
+  }
+}

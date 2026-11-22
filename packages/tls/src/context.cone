@@ -30,13 +30,15 @@
 const maxCached = 256usize;      // sessions a client keeps to resume, at most
 const maxPerServer = 8usize;     // TLS 1.3 tickets kept for one server, at most
 
-// A cached session: which server it is for, and OpenSSL's SSL_SESSION
-alias Cache = Deque[Cached];
-
-struct Cached {
-  key: String;
-  sess: *u8;
+// The sessions kept for one server name (oldest first: OpenSSL's SSL_SESSIONs),
+// and when the name was last used, by CtxState's clock
+struct Tickets {
+  sess: List[*u8];
+  used: u64;
 }
+
+// The cache: by server name, so a take or a put is a hash and not a scan
+alias Cache = Dict[String, Tickets];
 
 // A context's immutable half: the SSL_CTX and what is fixed when the context is
 // made, read by every session made from it with no lock ('Arc[imm, ...]': a
@@ -52,10 +54,15 @@ struct CtxCore is Sendable {
   lane: Lane;
   offline: bool;
   alpn: *u8;               // a server's: the length (u32), then ALPN's wire format
+  keys: *u8;               // a server's: its TicketKeys (below), behind their own Mutex
 
   fn final(self: &uni) {
     if alpn as usize != 0usize {libc.free(alpn);}
     SSL_CTX_free(ctx);
+    if keys as usize != 0usize {
+      OPENSSL_cleanse(keys, mem.sizeof[TicketKeys]());
+      libc.free(keys);
+    }
   }
 }
 
@@ -65,77 +72,139 @@ alias Core = Arc[imm, CtxCore];
 // resume (a server has none, and its sessions never take this lock). Sendable
 // on trust as well: the cache's sessions are reached only under the Arc's lock
 struct CtxState is Sendable {
-  cache: Cache;            // oldest first
+  cache: Cache;
+  clock: u64;              // counts every take and put; a name's 'used' is its value at its last
+  held: usize;             // the sessions held, all names together
 
   // A session for 'key' to resume, or null: the newest the cache holds for
   // it. A TLS 1.3 ticket is taken out (it is used once); a TLS 1.2 session
   // stays, and the caller is given a reference of its own. One OpenSSL has
-  // marked not resumable (its connection failed) is dropped on the way
+  // marked not resumable (its connection failed) is dropped on the way. The
+  // name counts as used
   fn takeCached(self: &mut, key: &str) *u8 {
-    var k = cache.len();
-    while k > 0usize {
-      k = k - 1usize;
-      if cache[k].key.view() != key {continue;}
-      let s = cache[k].sess;
-      if SSL_SESSION_is_resumable(s) != 1i32 {
-        self.dropAt(k);
-      } else if SSL_SESSION_get_protocol_version(s) == tls13Version {
-        self.removeAt(k);
-        return s;
-      } else {
-        SSL_SESSION_up_ref(s);
-        return s;
+    clock = clock + 1u64;
+    var out: *u8 = null;
+    var emptied = false;
+    match cache.getMut(key) {
+      case let Some(t) {
+        t.used = clock;
+        var k = t.sess.len();
+        while k > 0usize {
+          k = k - 1usize;
+          let s = t.sess[k];
+          if SSL_SESSION_is_resumable(s) != 1i32 {
+            SSL_SESSION_free(s);
+            t.sess.remove(k);
+            held = held - 1usize;
+          } else if SSL_SESSION_get_protocol_version(s) == tls13Version {
+            t.sess.remove(k);
+            held = held - 1usize;
+            out = s;
+            break;
+          } else {
+            SSL_SESSION_up_ref(s);
+            out = s;
+            break;
+          }
+        }
+        emptied = t.sess.len() == 0usize;
       }
+      else {}
     }
-    null
+    if emptied {cache.remove(key);}
+    out
   }
 
-  // Keep a session to resume 'key' with; the cache takes the reference. A
-  // TLS 1.3 ticket joins the server's others, its oldest going past
-  // maxPerServer; a TLS 1.2 session replaces what the server had; past
-  // maxCached in all, the oldest goes
-  fn putCached(self: &mut, key: &str, sess: *u8) {
+  // Keep a session to resume 'key' with; the cache takes the reference and
+  // the key (made by the caller before the lock). A TLS 1.3 ticket joins the
+  // server's others, its oldest going past maxPerServer; a TLS 1.2 session
+  // replaces what the server had. Past maxCached in all, the oldest ticket of
+  // the name used longest ago goes
+  fn putCached(self: &mut, key: String, sess: *u8) {
     let tls13 = SSL_SESSION_get_protocol_version(sess) == tls13Version;
-    var held = 0usize;
-    var k = cache.len();
-    while k > 0usize {
-      k = k - 1usize;
-      if cache[k].key.view() != key {continue;}
-      if cache[k].sess as usize == sess as usize {
+    clock = clock + 1u64;
+    let t = cache.getOrInsert(key, Tickets(sess: List[*u8](), used: clock));
+    t.used = clock;
+    var k = 0usize;
+    while k < t.sess.len() {
+      if t.sess[k] as usize == sess as usize {
         // Already here: a TLS 1.2 session handed back by its connection
         SSL_SESSION_free(sess);
         return;
       }
-      if !tls13 {
-        self.dropAt(k);
-      } else if held + 1usize >= maxPerServer {
-        self.dropAt(k);
-      } else {
-        held = held + 1usize;
+      k = k + 1usize;
+    }
+    if !tls13 {
+      while t.sess.len() > 0usize {
+        SSL_SESSION_free(t.sess.remove(0usize));
+        held = held - 1usize;
+      }
+    } else {
+      while t.sess.len() + 1usize > maxPerServer {
+        SSL_SESSION_free(t.sess.remove(0usize));
+        held = held - 1usize;
       }
     }
-    if cache.len() >= maxCached {self.dropAt(0usize);}
-    cache.push(Cached(String.from(key), sess));
+    t.sess.push(sess);
+    held = held + 1usize;
+    if held > maxCached {self.evict();}
   }
 
-  // The entry at k out of the cache, its session freed, the order kept
-  fn dropAt(self: &mut, k: usize) {
-    SSL_SESSION_free(cache[k].sess);
-    self.removeAt(k);
+  // The oldest ticket of the name used longest ago goes (the clock's values
+  // are all different, so there is one such name)
+  fn evict(self: &mut) {
+    var least = 0xFFFFFFFFFFFFFFFFu64;
+    var it = cache.iter();
+    while true {
+      match it.next() {
+        case let Some(kv) {if kv.1.used < least {least = kv.1.used;}}
+        case is None {break;}
+      }
+    }
+    var victim = String();
+    var it2 = cache.iter();
+    while true {
+      match it2.next() {
+        case let Some(kv) {
+          if kv.1.used == least {
+            victim = kv.0.clone();
+            break;
+          }
+        }
+        case is None {break;}
+      }
+    }
+    var emptied = false;
+    match cache.getMut(victim.view()) {
+      case let Some(t) {
+        if t.sess.len() > 0usize {
+          SSL_SESSION_free(t.sess.remove(0usize));
+          held = held - 1usize;
+        }
+        emptied = t.sess.len() == 0usize;
+      }
+      else {}
+    }
+    if emptied {cache.remove(victim.view());}
   }
 
-  // The entry at k out of the cache, its session the caller's, the order kept
-  fn removeAt(self: &mut, k: usize) {
-    cache.remove(k);
+  // The sessions held for one name
+  fn countFor(self: &, key: &str) usize {
+    match cache.get(key) {
+      case let Some(t) {t.sess.len()}
+      else {0usize}
+    }
   }
 
-  fn cachedCount(self: &) usize {cache.len()}
+  fn cachedCount(self: &) usize {held}
 
   fn final(self: &uni) {
-    var k = 0usize;
-    while k < cache.len() {
-      SSL_SESSION_free(cache[k].sess);
-      k = k + 1usize;
+    each t in cache.values() {
+      var k = 0usize;
+      while k < t.sess.len() {
+        SSL_SESSION_free(t.sess[k]);
+        k = k + 1usize;
+      }
     }
   }
 }
@@ -252,8 +321,8 @@ pub struct Client {
       k = k + 1usize;
     }
     let core = Core(CtxCore(ctx: ctx, server: false, kind: kind, pins: pins,
-      resume: resume, lane: cfg.verifyLane, offline: cfg.offline, alpn: null));
-    Ok[Client, TlsError](Client(core, Shared(CtxState(cache: Cache()))))
+      resume: resume, lane: cfg.verifyLane, offline: cfg.offline, alpn: null, keys: null));
+    Ok[Client, TlsError](Client(core, Shared(CtxState(cache: Cache(), clock: 0u64, held: 0usize))))
   }
 
   // A session with the server named serverName (a DNS name, sent by SNI and
@@ -267,6 +336,9 @@ pub struct Client {
 
   // Sessions kept to resume
   pub fn cachedSessions(self: &) usize {(&*state).cachedCount()}
+
+  // The sessions kept to resume one server name
+  pub fn cachedSessionsFor(self: &, serverName: &str) usize {(&*state).countFor(serverName)}
 }
 
 // The certificates of a PEM bundle into a context's store: how many
@@ -336,9 +408,28 @@ pub struct Server {
     // on by default, would hold every session and take a lock for each)
     SSL_CTX_clear_options(ctx, opNoTicket);
     SSL_CTX_ctrl(ctx, ctrlSessCacheMode, i64.from(sessCacheOff), null);
+    // The ticket keys, which rotate (TICKET KEYS in the package's header)
+    let keys = ticketKeysMake(cfg.ticketKeyRotationInterval);
+    if keys as usize == 0usize {
+      SSL_CTX_free(ctx);
+      libc.free(block);
+      return Err[Server, TlsError](configError("no random bytes for the ticket keys"));
+    }
+    SSL_CTX_set_ex_data(ctx, keysSlot(), keys);
+    SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, &ticketKeyCb);
     let core = Core(CtxCore(ctx: ctx, server: true, kind: VerifyKind.Insecure,
-      pins: List[u8](), resume: false, lane: defaultVerifyLane(), offline: false, alpn: block));
-    Ok[Server, TlsError](Server(core, Shared(CtxState(cache: Cache()))))
+      pins: List[u8](), resume: false, lane: defaultVerifyLane(), offline: false, alpn: block, keys: keys));
+    Ok[Server, TlsError](Server(core, Shared(CtxState(cache: Cache(), clock: 0u64, held: 0usize))))
+  }
+
+  // Rotate the ticket keys now: a new current key, the old current the
+  // previous, the one before gone. Every copy of this Server shares the keys
+  pub fn rotateTicketKeys(self: &) {
+    let k = core.keys as *TicketKeys;
+    (*k).lock.lock();
+    let ok = ticketKeysRotate(k);
+    (*k).lock.unlock();
+    if !ok {panic("tls: no random bytes to rotate the ticket keys with");}
   }
 
   // A session with one client
@@ -364,6 +455,174 @@ fn @c("coneTlsAlpnSelect") alpnSelect(ssl: *u8, out: &mut *u8, outLen: &mut u8, 
 }
 
 // ---------------------------------------------------------------------------
+// A server's ticket keys
+// ---------------------------------------------------------------------------
+
+// OpenSSL encrypts a ticket with one key for the context's life unless it is
+// asked otherwise (SSL_CTX_set_tlsext_ticket_key_evp_cb). Here it asks this
+// callback each time a ticket is made or opened: the server's current key
+// makes a ticket; a ticket opens under the current key, or under the
+// previous one (answer 2: accepted, and OpenSSL sends a new ticket made
+// under the current key); under no other (answer 0: a full handshake).
+// The keys are in one block of memory, a TicketKeys, which the SSL_CTX's
+// ex_data holds and the server's CtxCore owns. Everything in it is behind
+// its Mutex, and under it OpenSSL's calls are made on the keys' bytes only,
+// none of which calls back.
+
+const ticketKeyBytes = 80usize;      // a TicketKey: its name, then the AES key, then the MAC key
+const ticketNameBytes = 16usize;
+const ticketAesBytes = 32usize;
+const ticketMacBytes = 32usize;
+const ossParamUtf8 = 4u32;           // OSSL_PARAM_UTF8_STRING
+const ossParamOctets = 5u32;         // OSSL_PARAM_OCTET_STRING
+const ossParamBytes = 40usize;       // sizeof(OSSL_PARAM): a pointer, a u32 and padding, a pointer, two sizes
+const ossUnmodified = 0xFFFFFFFFFFFFFFFFu64;   // OSSL_PARAM_UNMODIFIED
+
+// One key: random, never written out
+struct TicketKey {
+  name: Array[u8, 16];             // sent in the clear in each ticket, to say which key made it
+  aes: Array[u8, 32];              // AES-256-CBC, which encrypts the ticket
+  mac: Array[u8, 32];              // HMAC-SHA256, which authenticates it
+}
+
+struct TicketKeys {
+  lock: Mutex;
+  cur: TicketKey;
+  prev: TicketKey;
+  hasPrev: bool;
+  rotatedAt: i64;                  // when 'cur' was made: Instant nanoseconds
+  interval: i64;                   // nanoseconds between rotations; zero or less: none by itself
+  words: Array[u8, 18];            // "key", "digest", "SHA256", each ended by a zero: the MAC's parameters' names
+}
+
+// A new block of keys, or null when OpenSSL has no random bytes
+fn ticketKeysMake(interval: Duration) *u8 {
+  let k = libc.calloc(1usize, mem.sizeof[TicketKeys]()) as *TicketKeys;
+  if k as usize == 0usize {return null;}
+  (*k).lock = Mutex.make();
+  if RAND_bytes(&(*k).cur.name[0usize] as *u8, i32.from(ticketKeyBytes)) != 1i32 {
+    libc.free(k as *u8);
+    return null;
+  }
+  (*k).hasPrev = false;
+  (*k).rotatedAt = Instant.now().nanos();
+  (*k).interval = interval.nanos();
+  let w = &(*k).words[0usize] as *u8;
+  putWord(w, 0usize, "key");
+  putWord(w, 4usize, "digest");
+  putWord(w, 11usize, "SHA256");
+  k as *u8
+}
+
+// A word at an offset in the names' block, ended by a zero
+fn putWord(block: *u8, at: usize, word: &str) {
+  var k = 0usize;
+  while k < word.len {
+    *(block + (at + k)) = word[k];
+    k = k + 1usize;
+  }
+  *(block + (at + word.len)) = 0u8;
+}
+
+// The current key becomes the previous, and a new one the current. Under the
+// lock. False, nothing changed, when OpenSSL has no random bytes
+fn ticketKeysRotate(k: *TicketKeys) bool {
+  var fresh = Array[u8, 80]() <- fill 0u8;
+  if RAND_bytes(&fresh[0usize], i32.from(ticketKeyBytes)) != 1i32 {return false;}
+  libc.memcpy(&(*k).prev.name[0usize] as *u8, &(*k).cur.name[0usize] as *u8, ticketKeyBytes);
+  libc.memcpy(&(*k).cur.name[0usize] as *u8, &fresh[0usize] as *u8, ticketKeyBytes);
+  OPENSSL_cleanse(&fresh[0usize] as *u8, ticketKeyBytes);
+  (*k).hasPrev = true;
+  (*k).rotatedAt = Instant.now().nanos();
+  true
+}
+
+// Under the lock: rotate when the interval has passed, and past two
+// intervals leave no previous key, since the key it was is by then older
+// than a ticket may be
+fn ticketKeysDue(k: *TicketKeys) {
+  if (*k).interval <= 0i64 {return;}
+  let passed = (Instant.now().nanos() - (*k).rotatedAt) / (*k).interval;
+  if passed < 1i64 {return;}
+  if !ticketKeysRotate(k) {return;}
+  if passed >= 2i64 {
+    OPENSSL_cleanse(&(*k).prev.name[0usize] as *u8, ticketKeyBytes);
+    (*k).hasPrev = false;
+  }
+}
+
+fn sameName(a: *u8, b: *u8) bool {
+  var n = 0usize;
+  while n < ticketNameBytes {
+    if *(a + n) != *(b + n) {return false;}
+    n = n + 1usize;
+  }
+  true
+}
+
+// OpenSSL's MAC context told which key and which digest to authenticate with
+fn ticketMac(k: *TicketKeys, macCtx: *u8, key: *TicketKey) bool {
+  var p = Array[u8, 120]() <- fill 0u8;
+  let b = &p[0usize] as *u8;
+  let w = &(*k).words[0usize] as *u8;
+  // the key: an octet string of the MAC's 32 bytes
+  *(b as *usize) = w as usize;
+  *((b + 8usize) as *u32) = ossParamOctets;
+  *((b + 16usize) as *usize) = &(*key).mac[0usize] as *u8 as usize;
+  *((b + 24usize) as *usize) = ticketMacBytes;
+  *((b + 32usize) as *u64) = ossUnmodified;
+  // the digest: a string, "SHA256"
+  let d = b + ossParamBytes;
+  *(d as *usize) = (w + 4usize) as usize;
+  *((d + 8usize) as *u32) = ossParamUtf8;
+  *((d + 16usize) as *usize) = (w + 11usize) as usize;
+  *((d + 24usize) as *usize) = 6usize;
+  *((d + 32usize) as *u64) = ossUnmodified;
+  // the third, all zero, ends the list
+  EVP_MAC_CTX_set_params(macCtx, b) == 1i32
+}
+
+// OpenSSL's ticket key callback. enc 1: a ticket is being made: the key's
+// name and a fresh IV go out through keyName and iv, and the cipher and MAC
+// are set up with the current key; 1, or -1 for an error. enc 0: a ticket is
+// being opened: 0 no key of ours made it (a full handshake), 1 the current
+// key did, 2 the previous one did, or the current one in TLS 1.3 (a new
+// ticket is sent, under the current key), -1 an error
+fn @c("coneTlsTicketKey") ticketKeyCb(ssl: *u8, keyName: *u8, iv: *u8, cipher: *u8, macCtx: *u8, enc: i32) i32 {
+  let k = SSL_CTX_get_ex_data(SSL_get_SSL_CTX(ssl), keysSlot()) as *TicketKeys;
+  if k as usize == 0usize {return -1i32;}
+  (*k).lock.lock();
+  ticketKeysDue(k);
+  var answer = -1i32;
+  if enc == 1i32 {
+    if RAND_bytes(iv, 16i32) == 1i32 {
+      libc.memcpy(keyName, &(*k).cur.name[0usize] as *u8, ticketNameBytes);
+      if EVP_EncryptInit_ex(cipher, EVP_aes_256_cbc(), null, &(*k).cur.aes[0usize] as *u8, iv) == 1i32
+          && ticketMac(k, macCtx, &(*k).cur) {
+        answer = 1i32;
+      }
+    }
+  } else if sameName(keyName, &(*k).cur.name[0usize] as *u8) {
+    if EVP_DecryptInit_ex(cipher, EVP_aes_256_cbc(), null, &(*k).cur.aes[0usize] as *u8, iv) == 1i32
+        && ticketMac(k, macCtx, &(*k).cur) {
+      // TLS 1.3 sends a new ticket after every resumption (a ticket is used
+      // once, and OpenSSL's own keys do the same), which it does when asked
+      // to renew; TLS 1.2 keeps its ticket
+      answer = if SSL_version(ssl) == tls13Version {2i32} else {1i32};
+    }
+  } else if (*k).hasPrev && sameName(keyName, &(*k).prev.name[0usize] as *u8) {
+    if EVP_DecryptInit_ex(cipher, EVP_aes_256_cbc(), null, &(*k).prev.aes[0usize] as *u8, iv) == 1i32
+        && ticketMac(k, macCtx, &(*k).prev) {
+      answer = 2i32;
+    }
+  } else {
+    answer = 0i32;
+  }
+  (*k).lock.unlock();
+  answer
+}
+
+// ---------------------------------------------------------------------------
 // Sessions to resume, as they come
 // ---------------------------------------------------------------------------
 
@@ -375,7 +634,14 @@ const maxArrivals = 8usize;
 fn arrivalsMake() *u8 {
   let b = libc.malloc(mem.sizeof[usize]() * (1usize + maxArrivals));
   *(b as *usize) = 0usize;
+  nArrivalsMade.add(1u64);
   b
+}
+
+// Gives a session's arrivals block back
+fn arrivalsFree(b: *u8) {
+  libc.free(b);
+  nArrivalsFreed.add(1u64);
 }
 
 // The n-th arrival's place in a block

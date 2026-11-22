@@ -5,24 +5,27 @@
 // 50 rounds. In each, 16 threads take and drop buffers of two classes, then
 // wait at a gate holding their caches and taking nothing; main opens the gate,
 // so all of them end at once, their exit flushes running together, while main
-// calls trimAll() over and over (it flushes every record on the registry,
-// those of the ending threads included). trimAll's rule is that no other thread
-// is taking or returning, and these are not: they are ending. If an exit flush
-// and a trim could flush the same lines at once, a block would reach the stock
-// twice, its slab's count of blocks out would wrap, and that slab would never
-// go back to the OS: at the end every slab must be back, nothing lent, nothing
-// cached.
+// calls trimAll() over and over: this thread's cache and every wholly idle slab
+// back to the OS, which races the exit flushes' returns to the stock (a slab
+// goes to the OS only when every block of it is home). If a block reached the
+// stock twice, its slab's count of blocks out would wrap, and that slab would
+// never go back to the OS: at the end every slab must be back, nothing lent,
+// nothing cached. (trimAll no longer flushes the ending threads' caches:
+// bufpool.trimEverything, which does, panics while a thread still holds a
+// cache, and the 16 do until they have ended.)
 //
-// The 50 rounds only sometimes put a trim inside the window between an exit
-// flush reading a line and emptying it, so a flush that did not hold the
-// registry's lock (a mutant) mostly survives them. So first, in parkPhase, the
-// window is held open: bufpool's test-only flush hook parks a dying thread
-// right there (it has read a line's count, the line is not yet emptied) while
-// another thread runs trimAll(). With the lock the trim waits behind the parked
-// thread; without it the trim would flush the same line, and when the thread is
-// released the same blocks reach the stock twice. Main holds a buffer of each
-// class, so no slab goes back to the OS inside the window and the doubled
-// blocks show at the end as a slab that never comes home.
+// What remains of the every-thread flush racing an exit flush is the window
+// where a thread has ended and its record is retired under the registry's lock;
+// parkPhase holds it open. bufpool's test-only flush hook parks a dying thread
+// in its exit flush (it has read a line's count, the line is not yet emptied,
+// the registry's lock is held) while another thread runs bufpool.trimEverything().
+// The trim has to wait for the lock, and so finds the record retired and empty:
+// it is neither flushed twice nor refused. A flush that did not hold the lock (a
+// mutant) would leave the dying thread's record live when the trim checks, and
+// the trim would panic. The same holds for a thread that gives its cache back
+// early with flushThread() (every other round). Main holds a buffer of each class, so no slab goes back
+// to the OS inside the window; it has given its own cache back first, so the
+// dying thread's is the only record trimEverything could find live.
 
 mod exitrace;
 
@@ -34,7 +37,7 @@ import bufpool;
 
 const perRound = 16u64;
 const rounds = 50u64;
-const parkRounds = 3u64;
+const parkRounds = 4u64;
 
 let gate: Atomic[u64];
 let waiting: Atomic[u64];
@@ -73,8 +76,22 @@ fn dying(n: u64) u64 {
   n
 }
 
+// The same, calling flushThread() while it is still alive
+fn flushing(n: u64) u64 {
+  var k = 0u64;
+  while k < 6u64 {
+    var b = IoBuf(100usize);
+    b.append("x");
+    var m = IoBuf(10000usize);
+    m.append("y");
+    k = k + 1u64;
+  }
+  flushThread();
+  n
+}
+
 fn trimmer(n: u64) u64 {
-  trimAll();
+  bufpool.trimEverything();
   trimDone.store(1u64);
   n
 }
@@ -97,6 +114,7 @@ fn parkPhase() {
   keepA.append("a");
   var keepB = IoBuf(10000usize);
   keepB.append("b");
+  flushThread();    // main's cache back to the stock: its record is retired, so a trimEverything finds no live one of main's
   bufpool.setFlushHook(&parkHook);
   var r = 0u64;
   var sawParked = 0u64;
@@ -106,7 +124,8 @@ fn parkPhase() {
     release.store(0u64);
     trimDone.store(0u64);
     armed.store(1u64);
-    let d = thread.start(r, &dying);
+    // even rounds: the thread ends; odd rounds: it calls flushThread() (the same flush, under the same lock)
+    let d = if r % 2u64 == 0u64 {thread.start(r, &dying)} else {thread.start(r, &flushing)};
     if waitFor(&parked, 5000u32) {
       sawParked = sawParked + 1u64;
     }

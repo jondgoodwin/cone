@@ -241,14 +241,14 @@ decoded   a b&amp;c=d/é
 		and writes those, from a <span class="pre">BodyLength</span>.</p>
 
 	<h3 id="http-headers">Header fields</h3>
-	<p>A <span class="pre">Headers</span> is a message's header (or trailer) fields in the order they came or were
+	<p>A <span class="pre">HttpHeaders</span> is a message's header (or trailer) fields in the order they came or were
 		added, a name repeated as often as it was. Names compare ignoring ASCII case and are kept as written.
 		Nothing is joined unless asked, because Set-Cookie cannot be.</p>
 	<ul>
 	<li><span class="pre">h.add(name, value)</span> adds a field after the others, and says
 		<span class="pre">false</span>, adding nothing, when the name is not a token or the value, its spaces
 		and tabs at either end dropped, holds a CR, an LF, a NUL or a control character. So a
-		<span class="pre">Headers</span> holds only fields that any version may send.
+		<span class="pre">HttpHeaders</span> holds only fields that any version may send.
 		<span class="pre">addUInt(name, n)</span> adds a number; <span class="pre">set</span> replaces every field of
 		the name; <span class="pre">remove</span> removes them and says how many.</li>
 	<li><span class="pre">get(name)</span> is an <span class="pre">Option[&amp;Array[u8]]</span>, the first value;
@@ -338,7 +338,7 @@ fn main() {
   printStr(if req.headers.add("X-Note", "two\nlines") {"added\n"} else {"refused a value with a newline\n"});
 
   // A repeated field is kept as often as it came; joined only when asked
-  var h = Headers();
+  var h = HttpHeaders();
   h.add("Set-Cookie", "a=1");
   h.add("Set-Cookie", "b=2");
   h.add("Connection", "keep-alive, Upgrade");
@@ -1152,8 +1152,12 @@ GET /reset: Failed, read stage
 		both sides willing to keep it waits idle in its origin's pool, and the next request for that origin takes it.
 		At most <span class="pre">maxPerOrigin</span> (6) connections are open to an origin and
 		<span class="pre">maxTotal</span> (64) in all; an idle one is closed after <span class="pre">idleTimeout</span>
-		(90 s), or when the total is reached and another origin needs a connection, or by
-		<span class="pre">client.closeIdle(lp)</span>. HTTP/1.1 carries one request at a time on a connection, so
+		(90 s), or when the total is reached and another origin needs a connection (the one idle longest, of an origin nothing waits for, is the one closed), or by
+		<span class="pre">client.closeIdle(lp)</span>. The client remembers at most
+		<span class="pre">maxOrigins</span> (1,024; 0 for no limit) origins: past it, origins holding nothing but
+		idle connections are forgotten, least recently used first, and their connections closed. On one HTTP/2 connection it puts at most
+		<span class="pre">maxStreamsPerConnection</span> (100; 0 for no limit of its own) streams at once, or the
+		peer's limit if that is lower. HTTP/1.1 carries one request at a time on a connection, so
 		these are also the most requests under way at once. All of an <span class="pre">https</span> client's
 		connections take their TLS sessions from one <span class="pre">tls.Client</span>, so a new connection to a
 		server resumes an earlier one's session. A connection that cannot be made fails the requests waiting for
@@ -1280,7 +1284,8 @@ fn main() {
 		<span class="pre">httpconn.Config</span>, its driver's), <span class="pre">tlsConfig</span> (a
 		<span class="pre">tls.ClientConfig</span>), <span class="pre">maxPerOrigin</span>,
 		<span class="pre">maxTotal</span>, <span class="pre">idleTimeout</span>, <span class="pre">maxQueued</span>,
-		<span class="pre">maxRetries</span>, <span class="pre">maxRedirects</span> and
+		<span class="pre">maxRetries</span>, <span class="pre">maxRedirects</span>, <span class="pre">maxOrigins</span>,
+		<span class="pre">maxStreamsPerConnection</span> and
 		<span class="pre">userAgent</span> (<span class="pre">cone-httpclient/0.1</span>), each a public field.</p>
 
 	<h2 id="sse">Server-sent events: the sse package</h2>
@@ -1608,7 +1613,8 @@ tls: certificate name mismatch: hostname mismatch (OpenSSL's verify result 62)
 		<span class="pre">closeNotify</span> and <span class="pre">truncated</span>; <span class="pre">String() &lt;- info</span> says it
 		in one line, which is what a connection's <span class="pre">layerInfo</span> gives. <span class="pre">tls.stats()</span>
 		counts, for the process, handshakes (and those resumed), failures, verifications by the system's verifier,
-		close_notify sent and received, and streams that ended without one.</p>
+		close_notify sent and received, streams that ended without one, and <span class="pre">arrivalsLive</span> (a resuming
+		client's bookkeeping blocks made and not yet freed, which a leak check reads: 0 at rest).</p>
 
 	<h2>Comes back in</h2>
 	<ul>

@@ -54,10 +54,29 @@ pub struct ServerConfig {
   pub http2: bool;                          // TLS: HTTP/2 offered (ALPN "h2" before "http/1.1")
   pub http3: Option[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]];   // TLS: HTTP/3 on UDP, by this plug-in's maker
   pub bodiesStreamed: bool;                 // every request is delivered at its head, its body taken by 'Exchange.body()' (maxBody applies to none)
+  pub httpRoutes: Option[HttpRoutes];          // Some: a routed server, on connection actors (routedserver.cone); None: today's, on the service thread
+  pub shutdownTimeout: Duration;            // a routed server's close: connections still open after it are reset
 
   // The defaults: plain HTTP/1.1, httpconn's bounds, bodies up to 1 MiB, 1024 requests waiting
   pub fn make() ServerConfig {
-    ServerConfig(httpconn.Config.make(), defaultMaxRequestBody, 1024usize, None, false, None, false)
+    ServerConfig(httpconn.Config.make(), defaultMaxRequestBody, 1024usize, None, false, None, false, None,
+      Duration.fromSeconds(10i64))
+  }
+
+  // The same with a router: the server then runs on connection actors, a request going to the route that
+  // matches it (a handler, or the queue 'server.next()' takes from). A routed server does not offer HTTP/3
+  // yet ('listen' answers an error for 'offerHttp3' on one); it streams bodies when the config says 'streamBodies()', as the server without a router does
+  pub fn routes(self, r: HttpRoutes) ServerConfig {
+    var c = self;
+    c.httpRoutes = Some[HttpRoutes](r);
+    c
+  }
+
+  // The same with another shutdown deadline (default 10 s)
+  pub fn shutdownWithin(self, d: Duration) ServerConfig {
+    var c = self;
+    c.shutdownTimeout = d;
+    c
   }
 
   // The same through TLS, with a certificate chain and a key (tls.ServerConfig's)
@@ -172,11 +191,12 @@ pub struct Server is Move {
   addr: SocketAddr;
   tlsOn: bool;
   h3On: bool;
+  act: Option[ServerActor];      // a routed server: its actor (id is 0)
 
   // A Server naming nothing, which closes nothing
-  pub fn none() Server {Server(0u64, SocketAddr.localhost(0u16), false, false)}
+  pub fn none() Server {Server(0u64, SocketAddr.localhost(0u16), false, false, None)}
 
-  pub fn isNone(self: &) bool {id == 0u64}
+  pub fn isNone(self: &) bool {id == 0u64 && act is None}
 
   // The address it listens on (its port, if it was asked for 0)
   pub fn localAddr(self: &) SocketAddr {addr}
@@ -194,7 +214,11 @@ pub struct Server is Move {
     if id != 0u64 {
       post[SrvRefJob](SrvRefJob(id, true));
     }
-    Server(id, addr, tlsOn, h3On)
+    match &act {
+      case let &Some(a) {a.addRef();}
+      else {}
+    }
+    Server(id, addr, tlsOn, h3On, act)
   }
 
   // The next request, whole, as an Exchange to answer; or Closed when the
@@ -202,6 +226,14 @@ pub struct Server is Move {
   // request goes to one of them, in the order they asked. A request waits in
   // the server (up to maxPending of them) until an actor asks for it
   pub fn next(self: &) actors.Awaitable[Result[Exchange, ServerError]] {
+    match &act {
+      case let &Some(a) {
+        let aa = *a;
+        return actors.Awaitable[Result[Exchange, ServerError]].make(
+          fn(rp: actors.ReplyOf[Result[Exchange, ServerError]]) [aa] {aa.take(rp);});
+      }
+      else {}
+    }
     awaitable[NextJob, Result[Exchange, ServerError]](NextJob(id))
   }
 
@@ -213,6 +245,10 @@ pub struct Server is Move {
     if id != 0u64 {
       post[SrvCloseJob](SrvCloseJob(id));
     }
+    match &act {
+      case let &Some(a) {a.close();}
+      else {}
+    }
   }
 
   // Complete (true) once the server is closed, by 'close' or the last handle's
@@ -220,6 +256,13 @@ pub struct Server is Move {
   // answered Closed and the untaken requests 503. At once if it already is.
   // Awaiting it does not close the server
   pub fn closed(self: &) actors.Awaitable[bool] {
+    match &act {
+      case let &Some(a) {
+        let aa = *a;
+        return actors.Awaitable[bool].make(fn(rp: actors.ReplyOf[bool]) [aa] {aa.askClosed(rp);});
+      }
+      else {}
+    }
     awaitable[ClosedJob, bool](ClosedJob(id))
   }
 
@@ -228,12 +271,23 @@ pub struct Server is Move {
   // counts until a 'next' skips it). 0 for a closed server or none. For
   // monitoring a server that its actors are keeping up with
   pub fn waiting(self: &) actors.Awaitable[u64] {
+    match &act {
+      case let &Some(a) {
+        let aa = *a;
+        return actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) [aa] {aa.askWaiting(rp);});
+      }
+      else {}
+    }
     awaitable[WaitingJob, u64](WaitingJob(id))
   }
 
   fn final(self: &uni) {
     if id != 0u64 {
       post[SrvRefJob](SrvRefJob(id, false));
+    }
+    match &act {
+      case let &Some(a) {a.dropRef();}
+      else {}
     }
   }
 }
@@ -245,6 +299,7 @@ pub struct Server is Move {
 // finds it taken starts the listen over on a fresh port (up to 16 tries). A
 // port the caller named is never retried
 pub fn listen(addr: SocketAddr, cfg: ServerConfig) actors.Awaitable[Result[Server, ServerError]] {
+  if cfg.httpRoutes is Some {return listenRouted(addr, cfg);}
   awaitable[ListenJob, Result[Server, ServerError]](ListenJob(addr, cfg))
 }
 
@@ -280,6 +335,8 @@ pub struct Exchange is Move {
   streamed: bool;                // the server delivers bodies as streams (ServerConfig.streamBodies): 'request.body' is empty
   bodyTaken: bool;               // ...and 'body()' has been called
   pub request: Request;
+  conn: Option[ConnActor] = None;   // a routed server's exchange (the second form): its connection, which its calls go to by message
+  stream: u32 = 0u32;               // ...and its stream there (0 on HTTP/1.1)
 
   // A whole response: the head (status 200 to 599; the framing fields are the
   // core's to write) and the body, '' for none. Not awaited: the response is
@@ -289,7 +346,10 @@ pub struct Exchange is Move {
     if phase != phaseFresh {die("actorhttp: this exchange has been answered already", file, line);}
     phase = phaseOver;
     written = u64.from(body.len());
-    post[RespondJob](RespondJob(srv, slot, id, head, body));
+    match &conn {
+      case let &Some(c) {c.xRespond(stream, id, head, body);}
+      else {post[RespondJob](RespondJob(srv, slot, id, head, body));}
+    }
   }
 
   // A whole response of text: the status, a Content-Type of text/plain
@@ -311,7 +371,10 @@ pub struct Exchange is Move {
     let none = framing.isEmpty() || (framing.isSized() && framing.length == 0u64);
     bodyless = request.head.method == Method.Head || st == 204u16 || st == 304u16 || none;
     phase = if none {phaseOver} else {phaseStreaming};
-    post[StartJob](StartJob(srv, slot, id, head, framing));
+    match &conn {
+      case let &Some(c) {c.xStart(stream, id, head, framing);}
+      else {post[StartJob](StartJob(srv, slot, id, head, framing));}
+    }
   }
 
   // Begin a stream of server-sent events: 200, 'Content-Type: text/event-stream',
@@ -341,6 +404,16 @@ pub struct Exchange is Move {
       die("actorhttp: write past the length 'start' declared", file, line);
     }
     written = written + u64.from(data.len());
+    match &conn {
+      case let &Some(c) {
+        let cc = *c;
+        let sid = stream;
+        let rid = id;
+        return actors.Awaitable[Result[usize, ServerError]].make(
+          fn(rp: actors.ReplyOf[Result[usize, ServerError]]) [cc, sid, rid, data] {cc.xWrite(sid, rid, data.clone(), rp);});
+      }
+      else {}
+    }
     awaitable[WriteJob, Result[usize, ServerError]](WriteJob(srv, slot, id, data))
   }
 
@@ -363,6 +436,16 @@ pub struct Exchange is Move {
     if phase != phaseStreaming {die("actorhttp: finish needs a response begun by 'start' and not yet finished", file, line);}
     if sized && written != length {die("actorhttp: finish short of the length 'start' declared", file, line);}
     phase = phaseOver;
+    match &conn {
+      case let &Some(c) {
+        let cc = *c;
+        let sid = stream;
+        let rid = id;
+        return actors.Awaitable[Result[u64, ServerError]].make(
+          fn(rp: actors.ReplyOf[Result[u64, ServerError]]) [cc, sid, rid] {cc.xFinish(sid, rid, rp);});
+      }
+      else {}
+    }
     awaitable[FinishJob, Result[u64, ServerError]](FinishJob(srv, slot, id))
   }
 
@@ -378,6 +461,7 @@ pub struct Exchange is Move {
   // body the protocol forbids (HEAD, 204, 304, a length of 0) the source is stopped
   // Finished when it is attached, so the pipeline is not run. (responsesink.cone)
   pub fn bodySink(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) ChunkSink {
+    if conn is Some {die("actorhttp: bodySink is not built for a server with a router yet", file, line);}
     if phase == phaseSink {die("actorhttp: bodySink was taken already", file, line);}
     if phase == phaseFresh {die("actorhttp: bodySink needs a response begun by 'start'", file, line);}
     if phase == phaseOver && !(bodyless && written == 0u64) {
@@ -398,6 +482,10 @@ pub struct Exchange is Move {
     if !streamed {die("actorhttp: body needs a server made with ServerConfig.streamBodies", file, line);}
     if bodyTaken {die("actorhttp: body was taken already", file, line);}
     bodyTaken = true;
+    match &conn {
+      case let &Some(c) {return RequestBody.routed(*c, stream, id);}
+      else {}
+    }
     RequestBody.make(srv, slot, id)
   }
 
@@ -405,7 +493,15 @@ pub struct Exchange is Move {
   pub fn isAnswered(self: &) bool {phase != phaseFresh}
 
   fn final(self: &uni) {
-    post[DropExJob](DropExJob(srv, slot, id, streamed && !bodyTaken));
+    match &conn {
+      case let &Some(c) {
+        if streamed && !bodyTaken {c.xBodyDrop(stream, id);}
+        var spare = RequestHead();
+        spare <-> request.head;
+        c.xDrop(stream, id, spare);
+      }
+      else {post[DropExJob](DropExJob(srv, slot, id, streamed && !bodyTaken));}
+    }
   }
 }
 

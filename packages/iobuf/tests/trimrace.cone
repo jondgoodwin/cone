@@ -1,0 +1,187 @@
+// trimAll() while another thread takes and returns buffers: no block is handed
+// out twice. The call used to flush every thread's cache from outside (bufpool's
+// trimEverything), so a thread caching blocks could have its line emptied under
+// it: a block the thread then took was also in the stock, and the next taker
+// was given it as well (row 623's crash, row 642).
+//
+// Deterministic, with bufpool's test-only flush hook, as exitrace and exitlive
+// use it. B takes 16 blocks of the 4 KiB class and drops them again, so its
+// cache line holds those 16, and waits. A calls trimAll() with the hook armed:
+// a trimAll that reaches B's line reads its count and parks right there, before
+// emptying it. Main then lets B take one block (B holds it) and releases A,
+// which finishes the flush, so those 16 blocks, B's held one among them, are in
+// the stock as well. A then takes 40 blocks of the class: not one may be a block
+// B holds or still has in its line. With the fix A never reads B's line: the
+// hook has nothing to park on, trimAll comes back at once, and B's cache is left
+// as it was.
+//
+// Main holds one block of the class, so the slab is never wholly idle and the
+// trim cannot give it back to the OS inside the window (the doubled blocks
+// would then show as nothing), and main gives its own cache back first, so the
+// hook's first line to park on is B's.
+
+mod trimrace;
+
+import testing use *;
+import thread;
+import sync use *;
+import time use Duration;
+import collections use List;
+import iobuf use *;
+import bufpool;
+
+const held = 16usize;        // the blocks B takes and drops
+const taken = 40usize;       // the blocks A takes after the trim
+
+let armed: Atomic[u64];      // 1: the next flush that reads a line parks
+let parked: Atomic[u64];
+let release: Atomic[u64];
+let bReady: Atomic[u64];
+let goTake: Atomic[u64];
+let bTook: Atomic[u64];
+let aTrimmed: Atomic[u64];
+let bEnd: Atomic[u64];
+
+fn @initpure init() {
+  armed = Atomic[u64].of(0u64);
+  parked = Atomic[u64].of(0u64);
+  release = Atomic[u64].of(0u64);
+  bReady = Atomic[u64].of(0u64);
+  goTake = Atomic[u64].of(0u64);
+  bTook = Atomic[u64].of(0u64);
+  aTrimmed = Atomic[u64].of(0u64);
+  bEnd = Atomic[u64].of(0u64);
+}
+
+// bufpool's flush hook: the one flush that finds 'armed' set parks until released
+fn parkHook() {
+  if armed.swap(0u64) == 1u64 {
+    parked.store(1u64);
+    while release.load() == 0u64 {thread.yieldNow();}
+  }
+}
+
+// waits up to ms milliseconds for flag to be 1; answers whether it is
+fn waitFor(flag: &Atomic[u64], ms: u32) bool {
+  var i = 0u32;
+  while i < ms {
+    if flag.load() == 1u64 {
+      return true;
+    }
+    thread.sleep(Duration.fromMillis(1i64));
+    i = i + 1u32;
+  }
+  false
+}
+
+// B: takes 16 blocks, drops them (its line holds them now), waits; then takes
+// one and holds it until told to end, and gives it back
+fn holder(tx: Sender[usize]) u64 {
+  var mine = Array[usize, 16]() <- fill 0usize;
+  var bufs = List[IoBuf]();
+  var k = 0usize;
+  while k < held {
+    var b = IoBuf(4096usize);
+    mine[k] = b.base() as usize;
+    bufs.push(b);
+    k = k + 1usize;
+  }
+  bufs.clear();
+  k = 0usize;
+  while k < held {
+    tx.send(mine[k]);
+    k = k + 1usize;
+  }
+  bReady.store(1u64);
+  _ = waitFor(&goTake, 20000u32);
+  let hb = IoBuf(4096usize);
+  tx.send(hb.base() as usize);
+  bTook.store(1u64);
+  _ = waitFor(&bEnd, 20000u32);
+  1u64
+}
+
+// A: trims, then takes 40 blocks and reports them
+fn trimmer(tx: Sender[usize]) u64 {
+  armed.store(1u64);
+  trimAll();
+  armed.store(0u64);
+  aTrimmed.store(1u64);
+  _ = waitFor(&bTook, 20000u32);
+  var bufs = List[IoBuf]();
+  var k = 0usize;
+  while k < taken {
+    var b = IoBuf(4096usize);
+    tx.send(b.base() as usize);
+    bufs.push(b);
+    k = k + 1usize;
+  }
+  bufs.clear();
+  1u64
+}
+
+fn main() i32 {
+  // main keeps one block, so the slab never goes back to the OS, and gives its cache back
+  var keep = List[IoBuf]();
+  keep.push(IoBuf(4096usize));
+  flushThread();
+  bufpool.setFlushHook(&parkHook);
+
+  var btx: Sender[usize];
+  var brx: Receiver[usize];
+  btx, brx = Channel[usize].make();
+  var atx: Sender[usize];
+  var arx: Receiver[usize];
+  atx, arx = Channel[usize].make();
+
+  let b = thread.start(btx, &holder);
+  expect(waitFor(&bReady, 20000u32), "B holds 16 blocks in its cache");
+  var inLine = Array[usize, 16]() <- fill 0usize;
+  var k = 0usize;
+  while k < held {
+    inLine[k] = brx.recv() || 0usize;
+    k = k + 1usize;
+  }
+
+  let a = thread.start(atx, &trimmer);
+  // A's trim parks in B's line (a trim that reaches it) or comes back at once
+  var sawParked = 0u64;
+  var i = 0u32;
+  while i < 5000u32 && parked.load() == 0u64 && aTrimmed.load() == 0u64 {
+    thread.sleep(Duration.fromMillis(1i64));
+    i = i + 1u32;
+  }
+  if parked.load() == 1u64 {sawParked = 1u64;}
+  // B takes one block from its line while A is parked (or after the trim)
+  goTake.store(1u64);
+  expect(waitFor(&bTook, 20000u32), "B took a block");
+  let hb = brx.recv() || 0usize;
+  release.store(1u64);
+  expect(waitFor(&aTrimmed, 20000u32), "A's trim finished");
+
+  var dups = 0u64;
+  k = 0usize;
+  while k < taken {
+    let p = arx.recv() || 0usize;
+    var j = 0usize;
+    var same = p == hb;
+    while j < held {
+      if p == inLine[j] {same = true;}
+      j = j + 1usize;
+    }
+    if same {dups = dups + 1u64;}
+    k = k + 1usize;
+  }
+  expectUInt(sawParked, 0u64, "trimAll never reached another thread's cache line");
+  expectUInt(dups, 0u64, "no block A was given is one B holds or still has cached");
+  expect(stats().cachedBytes >= (held - 1usize) * 4096usize, "B's cache is still B's: the 15 blocks left in its line");
+
+  bEnd.store(1u64);
+  expectUInt(b.join(), 1u64, "B ran");
+  expectUInt(a.join(), 1u64, "A ran");
+  keep.clear();
+  expectUInt(stats().lent, 0u64, "every block home");
+  trimAll();
+  expectUInt(osBlocks(), 0u64, "and with both threads ended every slab goes back to the OS");
+  done()
+}
