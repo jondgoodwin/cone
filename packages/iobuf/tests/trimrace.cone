@@ -26,6 +26,7 @@ import testing use *;
 import thread;
 import sync use *;
 import time use Duration;
+import collections use List;
 import iobuf use *;
 import bufpool;
 
@@ -77,16 +78,15 @@ fn waitFor(flag: &Atomic[u64], ms: u32) bool {
 // one and holds it until told to end, and gives it back
 fn holder(tx: Sender[usize]) u64 {
   var mine = Array[usize, 16]() <- fill 0usize;
+  var bufs = List[IoBuf]();
   var k = 0usize;
   while k < held {
-    mine[k] = bufpool.blockTake(0usize) as usize;
+    var b = IoBuf(4096usize);
+    mine[k] = b.base() as usize;
+    bufs.push(b);
     k = k + 1usize;
   }
-  k = 0usize;
-  while k < held {
-    bufpool.blockPut(0usize, mine[k] as *u8);
-    k = k + 1usize;
-  }
+  bufs.clear();
   k = 0usize;
   while k < held {
     tx.send(mine[k]);
@@ -94,11 +94,10 @@ fn holder(tx: Sender[usize]) u64 {
   }
   bReady.store(1u64);
   _ = waitFor(&goTake, 20000u32);
-  let hb = bufpool.blockTake(0usize);
-  tx.send(hb as usize);
+  let hb = IoBuf(4096usize);
+  tx.send(hb.base() as usize);
   bTook.store(1u64);
   _ = waitFor(&bEnd, 20000u32);
-  bufpool.blockPut(0usize, hb);
   1u64
 }
 
@@ -109,24 +108,22 @@ fn trimmer(tx: Sender[usize]) u64 {
   armed.store(0u64);
   aTrimmed.store(1u64);
   _ = waitFor(&bTook, 20000u32);
-  var mine = Array[usize, 40]() <- fill 0usize;
+  var bufs = List[IoBuf]();
   var k = 0usize;
   while k < taken {
-    mine[k] = bufpool.blockTake(0usize) as usize;
-    tx.send(mine[k]);
+    var b = IoBuf(4096usize);
+    tx.send(b.base() as usize);
+    bufs.push(b);
     k = k + 1usize;
   }
-  k = 0usize;
-  while k < taken {
-    bufpool.blockPut(0usize, mine[k] as *u8);
-    k = k + 1usize;
-  }
+  bufs.clear();
   1u64
 }
 
 fn main() i32 {
   // main keeps one block, so the slab never goes back to the OS, and gives its cache back
-  let keep = bufpool.blockTake(0usize);
+  var keep = List[IoBuf]();
+  keep.push(IoBuf(4096usize));
   flushThread();
   bufpool.setFlushHook(&parkHook);
 
@@ -182,7 +179,7 @@ fn main() i32 {
   bEnd.store(1u64);
   expectUInt(b.join(), 1u64, "B ran");
   expectUInt(a.join(), 1u64, "A ran");
-  bufpool.blockPut(0usize, keep);
+  keep.clear();
   expectUInt(stats().lent, 0u64, "every block home");
   trimAll();
   expectUInt(osBlocks(), 0u64, "and with both threads ended every slab goes back to the OS");

@@ -1,0 +1,20 @@
+// bufpool.registerClass() is for module initialisation only: once any thread has a
+// cache record, a new class would race on the class count and the caps copied into
+// each record. After a take it panics, with a message naming the cause.
+
+mod regpanic;
+
+import testing use *;
+import iobuf use *;
+import bufpool;
+
+fn main() i32 {
+  {
+    var b = IoBuf(100usize);    // a take: the pool is in use
+    b.append("x");
+  }
+  expectUInt(stats().lent, 0u64, "nothing lent");
+  _ = bufpool.registerClass(64usize, 4u32);    // panics: a record exists
+  expect(false, "registerClass did not refuse once the pool was in use");
+  done()
+}

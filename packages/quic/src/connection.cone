@@ -195,7 +195,7 @@ pub struct Connection is Move {
     if ctx.isServer() {return Err[Connection, QuicError](QuicError.make(0i32, "a client needs a client's Context"));}
     let cfg = ctx.config();
     let b = boxMake();
-    let ssl = SSL_new(ctx.ctx);
+    let ssl = SSL_new(ctx.sslCtx());
     if ssl as usize == 0usize {
       boxFree(b);
       return Err[Connection, QuicError](tlsError("SSL_new failed"));
@@ -250,12 +250,12 @@ pub struct Connection is Move {
     let arv = ngtcp2_accept(&mut hd, &packet[0usize] as *u8, packet.len);
     if arv != 0i32 {return Err[Connection, QuicError](QuicError.make(arv, "the packet is not a client's first"));}
     let b = boxMake();
-    let wire = ctx.alpn.view();
+    let wire = ctx.alpnBytes().view();
     let a = libc.malloc(wire.len);
     libc.memcpy(a, &wire[0usize] as *u8, wire.len);
     (*(b as *Box)).alpn = a;
     (*(b as *Box)).alpnLen = u32.from(wire.len);
-    let ssl = SSL_new(ctx.ctx);
+    let ssl = SSL_new(ctx.sslCtx());
     if ssl as usize == 0usize {
       boxFree(b);
       return Err[Connection, QuicError](tlsError("SSL_new failed"));

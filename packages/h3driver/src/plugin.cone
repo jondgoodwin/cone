@@ -50,12 +50,7 @@ pub struct Plugin {
   // and key (QUIC's own bounds the defaults, its credit budget the driver
   // Config.make's: a connection's share of the pool)
   pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, cfg: &tls.ServerConfig, token: u64) Result[u64, httpclient.Failure] {
-    var qcfg = quic.Config.make();
-    let made = Config.make();
-    qcfg.creditBudget = made.transport.creditBudget;
-    qcfg.maxStreamsBidi = made.transport.maxStreamsBidi;
-    let ctx = quic.Context.server(qcfg, &cfg.certFile, &cfg.keyFile)
-      .mapError(fn(e: quic.QuicError) httpclient.Failure {serverFailure(e)})?;
+    let ctx = serverContext(cfg)?;
     let l = drv.listen(lp, addr, ctx, token).mapError(fn(f: Failure) httpclient.Failure {clientFailure(f)})?;
     Ok[u64, httpclient.Failure]((u64.from(l.gen) << 32u64) | u64.from(l.index))
   }
@@ -91,6 +86,35 @@ pub struct Plugin {
   pub fn release(self: &mut, req: httpclient.H3Req, n: usize) {drv.release(reqOf(req), n);}
   pub fn stopBody(self: &mut, req: httpclient.H3Req) bool {drv.stopBody(reqOf(req))}
   pub fn cancel(self: &mut, lp: &mut Loop, req: httpclient.H3Req) bool {drv.cancel(lp, reqOf(req))}
+
+  // For actors (httpclient's THE ACTORS' SIDE): an acceptor for a server whose TLS config is cfg, its
+  // Context made as listen's is, and a connector over the Context the client's own connections use. The
+  // driver is read for its bounds and nothing else: neither takes a loop, a socket or a place in it
+  pub fn acceptor(self: &, cfg: &tls.ServerConfig) Result[Uni[httpclient.H3Acceptor], httpclient.Failure] {
+    let ctx = serverContext(cfg)?;
+    Ok[Uni[httpclient.H3Acceptor], httpclient.Failure](Uni[Acceptor](Acceptor.make(ctx, &drv)))
+  }
+
+  pub fn connector(self: &) Result[Uni[httpclient.H3Connector], httpclient.Failure] {
+    match &drv.client {
+      case let Ok(ctx) {
+        let shared = *ctx;
+        return Ok[Uni[httpclient.H3Connector], httpclient.Failure](Uni[Connector](Connector.make(shared, &drv)));
+      }
+      case let Err(e) {return Err[Uni[httpclient.H3Connector], httpclient.Failure](serverFailure(e.clone()));}
+    }
+  }
+}
+
+// A server Context for cfg's certificate and key, QUIC's own bounds the defaults, its credit budget the driver
+// Config.make's: a connection's share of the pool
+fn serverContext(cfg: &tls.ServerConfig) Result[quic.Context, httpclient.Failure] {
+  var qcfg = quic.Config.make();
+  let made = Config.make();
+  qcfg.creditBudget = made.transport.creditBudget;
+  qcfg.maxStreamsBidi = made.transport.maxStreamsBidi;
+  quic.Context.server(qcfg, &cfg.certFile, &cfg.keyFile)
+    .mapError(fn(e: quic.QuicError) httpclient.Failure {serverFailure(e)})
 }
 
 // The maker httpclient.Config.http3 names (and actorhttp's offerHttp3): a
