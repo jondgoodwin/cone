@@ -1,0 +1,42 @@
+// A program that imports httpclient and not h3driver links no QUIC (requirement 5 of stage 5: a program that
+// doesn't want HTTP/3 doesn't carry it). httpclient holds the plug-in's traits (Http3, and for actors H3Acceptor,
+// H3Connector, H3ServerConn, H3ClientConn) and imports no QUIC, so:
+//   - QUIC's library is not beside this program (Windows: Congo copies a package's runtime DLLs beside every
+//     program that imports it, at any depth; h3driver's h3actors.cone checks the same file IS there for a program
+//     that imports h3driver) and is not loaded (Linux: /proc/self/maps)
+//   - a client with no plug-in (NoHttp3) says no to an acceptor and to a connector, with a Failure, so a host
+//     that asks of a program built without HTTP/3 gets an answer and not a crash
+
+mod noquic;
+
+import stdio use *;
+import fs;
+import path use Path;
+import process;
+import tls;
+import httpclient use NoHttp3, Http3;
+import testing use *;
+
+fn main() i32 {
+  var linked = false;
+  #if #os == .windows {
+    match process.currentExe() {
+      case let Ok(p) {linked = fs.exists(&p.parent().join("ngtcp2.dll"));}
+      case let Err(e) {}
+    }
+  } #else {
+    match fs.readFile(&Path.from("/proc/self/maps")) {
+      case let Ok(m) {linked = m.view().contains("ngtcp2");}
+      case let Err(e) {}
+    }
+  }
+  expect(!linked, "no QUIC library beside, or loaded in, a program that imports httpclient alone");
+
+  let none: Uni[Http3] = Uni[NoHttp3](NoHttp3.make());
+  let cert = Path.from("server.pem");
+  let key = Path.from("server.key");
+  let scfg = tls.ServerConfig.make(&cert, &key);
+  expect(none.acceptor(&scfg) is Err, "a client with no plug-in makes no acceptor");
+  expect(none.connector() is Err, "...and no connector");
+  done()
+}
