@@ -69,8 +69,10 @@ for ($k = 0; $k -lt $Procs; $k++) {
   $share = [int][math]::Floor($left / ($Procs - $k)); $left -= $share
   $log = "$out\cli$k.log"
   $c = Start-Congo "clients $Port - $common n=$share workers=$CW inputhz=$InputHz" $log "cli$k"
-  $cli += [pscustomobject]@{ k = $k; share = $share; log = $log; proc = $c; pid = (Find-Exe $c.Id) }
+  $cli += [pscustomobject]@{ k = $k; share = $share; log = $log; proc = $c; pid = 0 }
 }
+# every client process is started before any is waited for, so they compile side by side (lane 941)
+foreach ($c in $cli) { $c.pid = Find-Exe $c.proc.Id }
 $ids = @($srvPid) + @($cli | ForEach-Object { $_.pid })
 $a = @{}; $b = @{}; $tA = $null; $tB = $null; $load = $null
 $pc = New-Object System.Diagnostics.PerformanceCounter('Processor', '% Processor Time', '_Total'); [void]$pc.NextValue()

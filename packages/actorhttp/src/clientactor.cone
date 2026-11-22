@@ -151,6 +151,17 @@ struct ClientArgs {
 
 alias FetchReply = actors.ReplyOf[Result[httpclient.Response, FetchError]];
 
+// What a connection actor tells, and whom: the actor that owns the connection. A client's pool is one (ClientActor); a
+// connection a program makes itself has a ManualConn (manualconn.cone), which is no pool and holds the one connection
+pub actor trait ConnOwner {
+  pub async fn connected(self, pc: u32, gen: u32);
+  pub async fn connUp(self, pc: u32, gen: u32, proto: u32, takes: bool, free: usize, recv: u64);
+  pub async fn connState(self, pc: u32, gen: u32, free: usize, takes: bool, recv: u64);
+  pub async fn exchangeEnded(self, pc: u32, gen: u32, id: httpclient.FetchId, kind: u32, resp: httpclient.Response,
+      failure: httpclient.Failure, free: usize, takes: bool, recv: u64);
+  pub async fn connEnded(self, pc: u32, gen: u32, clean: bool, failure: httpclient.Failure, tlsFailed: bool);
+}
+
 // A fetch the client has taken: its reply, the request body kept (the core's Send gives only its length), the response
 // gathered by its last exchange, and the connection that exchange is on
 struct FRec is Move {
@@ -247,7 +258,7 @@ alias AddrCache = Dict[String, Addrs];
 alias ConnActors = Dict[u32, ClientConnActor];
 alias QuicActors = Dict[u32, ClientQuicActor];
 
-pub actor ClientActor {
+pub actor ClientActor is ConnOwner {
   args: Arc[imm, ClientArgs];
   core: httpclient.ClientCore;
   facts: Facts;
@@ -648,7 +659,7 @@ pub actor ClientActor {
       case let Some(s) {if s.gen != gen {return;}}
       else {return;}
     }
-    let a = ClientConnActor(selfactor, pc, gen, rotated, host, secure, args, group, None[TestPipe]);
+    let a = ClientConnActor(selfactor, pc, gen, rotated, host, secure, args, group, None[TestPipe], false);
     conns.insert(pc, a);
   }
 
@@ -775,7 +786,7 @@ pub actor ClientActor {
     }
     var list = List[SocketAddr]();
     if kind != kindPipe {list.push(addr);}
-    let a = ClientConnActor(selfactor, pc, gen, list, host, secure, args, group, pipe);
+    let a = ClientConnActor(selfactor, pc, gen, list, host, secure, args, group, pipe, false);
     conns.insert(pc, a);
   }
 
@@ -783,6 +794,9 @@ pub actor ClientActor {
   fn fail(self, pc: u32, gen: u32, fl: httpclient.Failure, tlsFailed: bool) {
     selfactor.connEnded(pc, gen, false, fl, tlsFailed);
   }
+
+  // The socket is connected: a pooled connection is not asked to say so (only a ManualConn's, which answers its connect)
+  pub async fn connected(self, pc: u32, gen: u32) {}
 
   // A connection is up: its layer open and its protocol chosen
   pub async fn connUp(self, pc: u32, gen: u32, proto: u32, takes: bool, free: usize, recv: u64) {
@@ -1012,7 +1026,7 @@ alias Pends = Deque[ClientSend];
 // no timer and no loop, so the exchange code is written once. The wire half sets 'ended' (the connection is over and its
 // socket gone) and 'closing' (it is closing its socket) as it goes.
 struct ClientExchanges[C: httpconn.ClientProto] is Move {
-  client: ClientActor;
+  client: ConnOwner;
   pc: u32;
   gen: u32;
   maxBody: usize;
@@ -1033,7 +1047,7 @@ struct ClientExchanges[C: httpconn.ClientProto] is Move {
   protoClosed: bool;
   hard: bool;               // the client gave the connection up (a cancel on HTTP/1.1, an abort): it is reset when over
 
-  fn make(client: ClientActor, pc: u32, gen: u32, maxBody: usize, quic: bool) ClientExchanges[C] {
+  fn make(client: ConnOwner, pc: u32, gen: u32, maxBody: usize, quic: bool) ClientExchanges[C] {
     ClientExchanges[C](client: client, pc: pc, gen: gen, maxBody: maxBody, quic: quic, exch: ConnExchanges(), bodying: List[u32](),
       pends: Pends(), recv: 0u64, lastFree: 0usize, lastTakes: true, up: false, ended: false, closing: false, told: false,
       aborted: false, goAway: false, shutting: false, protoClosed: false, hard: false)
@@ -1324,16 +1338,17 @@ pub actor ClientConnActor {
   writeBy: Instant;
   guard: ClientGuard;
   pipe: Option[TestPipe];   // the test seam's in-memory wire, in place of the socket
+  announce: bool;           // the owner is told when the socket is connected (a program's own connection answers its connect then)
 
-  fn init(self: &new, client: ClientActor, pc: u32, gen: u32, addrs: List[SocketAddr], host: String, secure: bool,
-      args: Arc[imm, ClientArgs], group: CancelGroup, pipe: Option[TestPipe]) {
+  fn init(self: &new, client: ConnOwner, pc: u32, gen: u32, addrs: List[SocketAddr], host: String, secure: bool,
+      args: Arc[imm, ClientArgs], group: CancelGroup, pipe: Option[TestPipe], announce: bool) {
     liveClientConns.add(1u64);
     let now = Instant.now();
     *self = Self(args: args, addrs: addrs, host: host, secure: secure, group: group,
       cc: httpconn.ClientConn.make(args.conn, None[Uni[httpconn.Layer]], now),
       ex: ClientExchanges[httpconn.ClientConn].make(client, pc, gen, args.maxBody, false), sock: aio.Socket.none(),
       tm: actors.Timer.make(), connected: false, reading: false, writing: false, calling: false, closeStarted: false,
-      writeBy: now, guard: ClientGuard(true), pipe: pipe);
+      writeBy: now, guard: ClientGuard(true), pipe: pipe, announce: announce);
     selfactor.begin();
   }
 
@@ -1379,6 +1394,7 @@ pub actor ClientConnActor {
     }
     cc = httpconn.ClientConn.make(args.conn, layer, Instant.now());
     connected = true;
+    if announce {ex.client.connected(ex.pc, ex.gen);}
     if ex.aborted {cc.abort();}
     selfactor.timerLoop();
     self.turn();
