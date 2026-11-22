@@ -59,10 +59,13 @@ fn url(port: u16, path: &str) String {
   u
 }
 
-// A client that trusts the test root, with the HTTP/3 plug-in and the origin on 'port' known to speak it
-fn trusting(port: u16, attemptMs: i64) HttpClient {
+// A client that trusts the test root, with the HTTP/3 plug-in and the origin on 'port' known to speak it (or, 'platform', one
+// that leaves its certificate checks to the operating system's verifier, which does not know the test root)
+fn trusting(port: u16, attemptMs: i64) HttpClient {return clientFor(port, attemptMs, false);}
+
+fn clientFor(port: u16, attemptMs: i64, platform: bool) HttpClient {
   var cfg = httpclient.Config.make();
-  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  if !platform {cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());}
   cfg.tlsConfig.offline = true;
   cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
   cfg.http3Origins.push(url(port, ""));
@@ -354,6 +357,30 @@ fn main() i32 {
     printStr(answer(&mut drx).view());
     printStr("\n");
     f.dropClient();
+    printStr("the client's actors are freed: ");
+    printStr(yes(gone()));
+    printStr("\n");
+  }
+  {
+    // The operating system's verifier, run for a QUIC connection on the blocking pool and its answer given back to the
+    // connection: it does not know the test root, so the handshake ends at once and the fetch falls back to TCP, where the
+    // same verifier refuses it too. Were its answer lost, the QUIC attempt would wait out its 20 s deadline
+    let site = Site(Server.none(), false, 0u64, htx.clone());
+    site.open(0u16, true, ptx.clone());
+    let port = prx.recvTimeout(Duration.fromSeconds(10i64)) || 0u16;
+    if port == 0u16 {printStr("listen failed\n"); libc.exit(1i32);}
+    site.serve();
+    let f = Fetcher(clientFor(port, 20000i64, true));
+    let t0 = Instant.now();
+    f.get(url(port, "/os"), dtx.clone());
+    printStr("the OS verifier refuses the test root: ");
+    printStr(answer(&mut drx).view());
+    printStr("\n");
+    printStr("...within seconds, not the attempt's deadline: ");
+    printStr(yes(Instant.now() - t0 < Duration.fromSeconds(10i64)));
+    printStr("\n");
+    f.dropClient();
+    site.stop();
     printStr("the client's actors are freed: ");
     printStr(yes(gone()));
     printStr("\n");
