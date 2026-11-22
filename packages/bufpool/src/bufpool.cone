@@ -169,7 +169,18 @@
 // leaves the wake armed: at most one spurious run. THE WAKE FUNCTION is called on whatever thread
 // made the room, a thread's exit callback among them, and for any room, not for one caller: it may
 // post a message or a completion or set a flag; it must not take or return a pool block, call back
-// into the pool or block. KNOWN LIMITS: (a) blocks idle in another thread's cache are not room
+// into the pool or block. 'Must not block' is the rule that stays a rule (breaking it hangs, it
+// corrupts nothing); the rest is not what safety rests on: a wake that takes blocks, returns them,
+// calls trimStock or does all three, is safe at every site that makes room, shown by
+// tests/roomreenter.cone (Windows, and Linux under ASan): a spill (a line that is the whole batch
+// too), a return with no cache, a late return, flushThread, a thread's end (where 'myCache' is
+// already the late record, so the wake's takes and returns go straight to the stock), trimEverything,
+// freeSlabs, releaseOversize, a take that gives idle slabs back to make room for its own slab, and the
+// final. What makes it so: room made while a cache line is half moved (a spill's batch still in
+// the line, a refill's batch landing in the line's own slots) or while the registry's lock is held is
+// only noted (noteRoom), and announced (roomAnnounce) once the line is whole, after the block that
+// caused the spill is in it, and after the lock is released. A wake that does these things may
+// be wasteful (a second event, a spurious wake), never unsafe. KNOWN LIMITS: (a) blocks idle in another thread's cache are not room
 // until that thread spills, flushes or ends, so a waiter can wait while memory sits in busy
 // threads' caches (R2, row 649); the waiting layer's own timer retry can stay as a slow backstop
 // until R2 answers. (b) An OS refusal of memory the bound allows (VirtualAlloc, mmap, malloc

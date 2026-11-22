@@ -6,7 +6,8 @@
 //
 //   mode 1: the wake takes a block of the site's class and returns it;
 //   mode 2: the wake calls trimStock();
-//   mode 3: both.
+//   mode 3: both;
+//   mode 4: the wake takes forty blocks and returns them, enough to fill and spill a cache line.
 //
 // The sites: a spill (a cache of 32, and a cache of 1, where the whole line is the spilled batch);
 // a return with no cache; a late return (a block dropped by a thread-exit callback that runs after
@@ -78,6 +79,21 @@ fn @c wake() {
   }
   if m & 2u64 != 0u64 {
     trimStock();
+  }
+  if m & 4u64 != 0u64 {
+    // many: enough to fill the thread's line and spill it again from inside the wake
+    let bytes = wakeBytes.load();
+    var held = Array[usize, 40]() <- fill 0usize;
+    var i = 0usize;
+    while i < 40usize {
+      held[i] = tryAllocate(bytes) as usize;
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < 40usize {
+      if held[i] != 0usize {(bufferPool() as &MemRegion).release(held[i] as *u8, bytes);}
+      i = i + 1usize;
+    }
   }
 }
 
@@ -224,28 +240,31 @@ fn oversize() bool {
   runs.load() > before
 }
 
-// The pool is full of 1 MiB blocks, one slab idle; a take of 4 KiB needs a slab, so it gives the idle one
-// back first, and the room that makes is announced when the take's line is whole
+// The bank is full of 1 MiB blocks (22 of them, 11 slabs, under a bound of 32 MiB), two slabs idle; a
+// take of 4 KiB needs a slab, so it gives the idle ones back first, and the room that makes is
+// announced when the take's line is whole. The wake takes a slab of its own on the way, and there is
+// room left for the take's, so the take goes on into its line: a wake that ran while the line was
+// the take's scratch would have its blocks overwritten there and lost
 fn refill() bool {
   let before = runs.load();
   let r = pool();
-  var x = Array[usize, 4]() <- fill 0usize;
+  var x = Array[usize, 22]() <- fill 0usize;
   var i = 0usize;
-  while i < 4usize {x[i] = tryAllocate(mib(1usize)) as usize; i = i + 1usize;}
-  r.release(x[0] as *u8, mib(1usize));
-  r.release(x[1] as *u8, mib(1usize));
+  while i < 22usize {x[i] = tryAllocate(mib(1usize)) as usize; i = i + 1usize;}
+  i = 0usize;
+  while i < 4usize {r.release(x[i] as *u8, mib(1usize)); i = i + 1usize;}
   armRoomWake();
   let p = tryAllocate(4096usize);
   r.release(p, 4096usize);
-  r.release(x[2] as *u8, mib(1usize));
-  r.release(x[3] as *u8, mib(1usize));
+  i = 4usize;
+  while i < 22usize {r.release(x[i] as *u8, mib(1usize)); i = i + 1usize;}
   runs.load() > before
 }
 
 fn main() i32 {
   setLimits(8388608usize, 0usize);
   var m = 1u64;
-  while m <= 3u64 {
+  while m <= 4u64 {
     setMode(m, 4096usize);
     expect(viaThread(4096usize, 33usize, 0u32) && check(4096usize, 40usize), "spill (cache of 32): the wake re-enters safely");
     setMode(m, 262144usize);
@@ -262,7 +281,9 @@ fn main() i32 {
     setMode(m, mib(2usize));
     expect(oversize() && check(mib(2usize), 1usize), "releaseOversize");
     setMode(m, 4096usize);
-    expect(refill() && check(4096usize, 40usize), "a take that gives an idle slab back to make room for its own");
+    setLimits(33554432usize, 0usize);
+    expect(refill() && check(4096usize, 40usize), "a take that gives idle slabs back to make room for its own");
+    setLimits(8388608usize, 0usize);
     m = m + 1u64;
   }
 
