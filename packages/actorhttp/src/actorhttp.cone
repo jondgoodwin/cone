@@ -504,7 +504,7 @@ import collections use List, Deque, String, Dict, AnyError, PriorityQueue;
 import iobuf use IoBuf, IoHome, Chain;
 import sync use Arc, Mutex;
 import time use Instant, Duration;
-import iocore use Loop, Op, Completion, SocketAddr, CancelGroup, IoError, forever;
+import iocore use Loop, Op, Completion, SocketAddr, CancelGroup, IoError, forever, DatagramBatch;
 import ioerror use IoErrorKind;
 import http use *;
 import httpconn;
@@ -645,7 +645,7 @@ pub const defaultMaxBody = 16777216usize;
 // last handle's going ends the client
 pub struct HttpClient is Move {
   id: u64;
-  ca: Option[ClientActor];   // the client actor that runs the fetches that need no service (clientactor.cone); none for an HTTP/3 config
+  ca: Option[ClientActor];   // the client actor that runs the fetches that need no service (clientactor.cone)
   lazy: Arc[Mutex, LazyRec]; // the service's record of this client, made when a call first needs the service (LazyRec)
 
   // A client with httpclient's defaults, whose bodies are read up to defaultMaxBody
@@ -655,10 +655,9 @@ pub struct HttpClient is Move {
   // read up to maxBody bytes (past it the exchange fails at Stage.Limit)
   pub fn make(cfg: httpclient.Config, maxBody: usize) HttpClient {
     let id = newId();
-    var ca: Option[ClientActor] = None;
     let parts = httpclient.partsOf(&cfg);
-    if !parts.http3 {ca = Some[ClientActor](ClientActor(parts, maxBody, TestTargets.none()));}
-    HttpClient(id, ca, lazyRec(cfg, maxBody))
+    let ca = ClientActor(parts, maxBody, TestTargets.none());
+    HttpClient(id, Some[ClientActor](ca), lazyRec(cfg, maxBody))
   }
 
   // A client for tests (testseam.cone): the same, but the origins 'targets' names go where it says (an address, a pipe, a

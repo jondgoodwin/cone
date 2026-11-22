@@ -104,6 +104,8 @@ struct ClientArgs {
   tlsc: Option[tls.Client];
   tlsFail: Option[httpclient.Failure];
   maxBody: usize;
+  h3: Option[Uni[httpclient.H3Connector]];   // the HTTP/3 plug-in's connector, shared by the QUIC connection actors (None: no HTTP/3)
+  h3Timeout: Duration;                       // an attempt not up by then falls back to TCP
 }
 
 alias FetchReply = actors.ReplyOf[Result[httpclient.Response, FetchError]];
@@ -129,7 +131,7 @@ struct CState {
   recv: u64;         // ...and how many sends it had received then
   sent: u64;         // sends made to it
   takes: bool;
-  proto: u32;        // 0: not chosen, 1: HTTP/1.1, 2: HTTP/2
+  proto: u32;        // 0: not chosen, 1: HTTP/1.1, 2: HTTP/2, 3: HTTP/3
 }
 
 alias CStates = Dict[u32, CState];
@@ -156,13 +158,19 @@ struct Facts is httpclient.ConnFacts {
     match states.get(&c.pc) {
       case let Some(s) {
         if s.gen != c.gen || s.proto == 0u32 {None[Version]}
-        else {Some[Version](if s.proto == 2u32 {Version.Http2} else {Version.Http11})}
+        else {Some[Version](if s.proto == 3u32 {Version.Http3} else if s.proto == 2u32 {Version.Http2} else {Version.Http11})}
       }
       else {None[Version]}
     }
   }
 
-  pub fn h3Room(self: &, c: httpclient.ConnRef) bool {false}
+  // A request made now on the QUIC connection goes out at once: it is up, takes requests, and the value has room
+  pub fn h3Room(self: &, c: httpclient.ConnRef) bool {
+    match states.get(&c.pc) {
+      case let Some(s) {s.gen == c.gen && s.proto == 3u32 && s.takes && factsRoom(s) > 0usize}
+      else {false}
+    }
+  }
 }
 
 // The requests a connection takes now: what it reported, less the sends it had not yet received
@@ -194,6 +202,7 @@ struct Addrs is Move {
 
 alias AddrCache = Dict[String, Addrs];
 alias ConnActors = Dict[u32, ClientConnActor];
+alias QuicActors = Dict[u32, ClientQuicActor];
 
 pub actor ClientActor {
   args: Arc[imm, ClientArgs];
@@ -201,6 +210,7 @@ pub actor ClientActor {
   facts: Facts;
   fetches: FetchRecs;
   conns: ConnActors;
+  qconns: QuicActors;           // the HTTP/3 connections (the pooled connection numbers are one set: a number is in one of the two)
   addrs: AddrCache;
   dls: PriorityQueue[i64, httpclient.FetchId];   // each fetch's deadline in Instant nanos (an entry for an answered fetch is let go when due)
   tm: actors.Timer;
@@ -213,16 +223,18 @@ pub actor ClientActor {
 
   fn init(self: &new, p: httpclient.Parts, maxBody: usize, targets: TestTargets) {
     liveClients.add(1u64);
-    let limits, maxOrigins, conn, tlsr = p.(limits, maxOrigins, conn, tlsc);
+    let limits, maxOrigins, conn, tlsr, h3 = p.(limits, maxOrigins, conn, tlsc, h3);
     var tlsc: Option[tls.Client] = None;
     var tlsFail: Option[httpclient.Failure] = None;
     match tlsr {
       case var Ok(t) {tlsc = Some[tls.Client](t);}
       case var Err(x) {tlsFail = Some[httpclient.Failure](x);}
     }
-    let args = Arc[imm, ClientArgs](ClientArgs(conn, tlsc, tlsFail, maxBody));
-    *self = Self(args: args, core: httpclient.ClientCore.make(limits, maxOrigins, false), facts: Facts(CStates()),
-      fetches: FetchRecs(), conns: ConnActors(), addrs: AddrCache(),
+    let h3on = h3 is Some;
+    let h3Timeout = limits.h3Timeout;
+    let args = Arc[imm, ClientArgs](ClientArgs(conn, tlsc, tlsFail, maxBody, h3, h3Timeout));
+    *self = Self(args: args, core: httpclient.ClientCore.make(limits, maxOrigins, h3on), facts: Facts(CStates()),
+      fetches: FetchRecs(), conns: ConnActors(), qconns: QuicActors(), addrs: AddrCache(),
       dls: PriorityQueue[i64, httpclient.FetchId](), tm: actors.Timer.make(), group: CancelGroup.make(), refs: 1u64,
       closing: false, rid: newId(), guard: ClientGuard(false), targets: targets);
     let myId = self.rid;
@@ -269,8 +281,14 @@ pub actor ClientActor {
       self.send(c);
     } else if k == httpclient.CommandKind.Open {
       self.open(c);
+    } else if k == httpclient.CommandKind.OpenH3 {
+      self.openH3(c);
     } else if k == httpclient.CommandKind.Close {
       match conns.get(&c.pc) {
+        case let Some(a) {a.shutdown();}
+        else {}
+      }
+      match qconns.get(&c.pc) {
         case let Some(a) {a.shutdown();}
         else {}
       }
@@ -304,9 +322,20 @@ pub actor ClientActor {
       else {}
     }
     let head, body = c.(head, body);
-    match conns.get(&pc) {
-      case let Some(a) {a.send(id, head, body, bytes);}
-      else {}
+    let overTcp = match conns.get(&pc) {
+      case let Some(a) {true}
+      else {false}
+    };
+    if overTcp {
+      match conns.get(&pc) {
+        case let Some(a) {a.send(id, head, body, bytes);}
+        else {}
+      }
+    } else {
+      match qconns.get(&pc) {
+        case let Some(a) {a.send(id, head, body, bytes);}
+        else {}
+      }
     }
   }
 
@@ -324,6 +353,10 @@ pub actor ClientActor {
       else {return;}
     }
     match conns.get(&pc) {
+      case let Some(a) {a.cancel(id);}
+      else {}
+    }
+    match qconns.get(&pc) {
       case let Some(a) {a.cancel(id);}
       else {}
     }
@@ -519,6 +552,53 @@ pub actor ClientActor {
     conns.insert(pc, a);
   }
 
+  // An HTTP/3 attempt the core asked for: its record made by the core (beginH3), the name looked up, then the QUIC connection's
+  // actor made. The attempt's deadline (http3Timeout) covers the lookup and the handshake: past it the attempt is a fallback, and
+  // what waited for it takes TCP
+  fn openH3(self, command: httpclient.Command) {
+    var c = command;
+    if closing {return;}
+    let r = core.beginH3(c.pc);
+    facts.states.insert(r.pc, CState(r.gen, 0usize, 0u64, 0u64, true, 0u32));
+    let port = c.port;
+    let host = c.(host);
+    selfactor.dialH3(r.pc, r.gen, host, port, Instant.now() + args.h3Timeout);
+  }
+
+  pub async fn dialH3(self, pc: u32, gen: u32, host: String, port: u16, upBy: Instant) {
+    let r = await aio.resolveIn(host.view(), port, IoLimits(Some[CancelGroup](group), upBy));
+    if closing {return;}
+    var addr = SocketAddr.localhost(0u16);
+    var found = false;
+    var fl = httpclient.Failure.make(httpclient.Stage.Resolve, 0u32, ErrorKind.Closed, "the name has no IPv4 address");
+    match r {
+      case let Ok(list) {
+        var k = 0usize;
+        while k < list.len() && !found {
+          if !list[k].isV6() {
+            addr = list[k];
+            found = true;
+          }
+          k = k + 1usize;
+        }
+      }
+      case let Err(e) {
+        fl = httpclient.Failure.make(httpclient.Stage.Resolve, e.code,
+          if e.isTimedOut() {ErrorKind.TimedOut} else {ErrorKind.Closed}, "the name could not be looked up");
+      }
+    }
+    match facts.states.get(&pc) {
+      case let Some(s) {if s.gen != gen {return;}}
+      else {return;}
+    }
+    if !found {
+      self.fail(pc, gen, fl, false);
+      return;
+    }
+    let a = ClientQuicActor(selfactor, pc, gen, host, addr, upBy, args, group);
+    qconns.insert(pc, a);
+  }
+
   // A connection to an origin the test seam names: to its address, or on its next pipe, or to its handler's listener (started
   // on the first dial)
   pub async fn dialTest(self, pc: u32, gen: u32, host: String, key: String, secure: bool) {
@@ -605,11 +685,11 @@ pub actor ClientActor {
   }
 
   // A connection is up: its layer open and its protocol chosen
-  pub async fn connUp(self, pc: u32, gen: u32, h2: bool, takes: bool, free: usize, recv: u64) {
+  pub async fn connUp(self, pc: u32, gen: u32, proto: u32, takes: bool, free: usize, recv: u64) {
     match facts.states.getMut(&pc) {
       case let Some(s) {
         if s.gen != gen {return;}
-        s.proto = if h2 {2u32} else {1u32};
+        s.proto = proto;
         s.takes = takes;
         s.free = free;
         s.recv = recv;
@@ -663,6 +743,13 @@ pub actor ClientActor {
     if kind == 0u32 {
       var rr = resp;
       rr.url = core.urlOf(id);
+      // An Alt-Svc field on a response that came over TCP is the origin's offer of HTTP/3 (the core keeps what it says)
+      var overQuic = false;
+      match facts.states.get(&pc) {
+        case let Some(s) {overQuic = s.proto == 3u32;}
+        else {}
+      }
+      if !overQuic {core.learnAltSvc(id, &rr.headers);}
       var head = httpclient.PoolEvent.make(httpclient.PoolEventKind.Response);
       head.fetch = id;
       head.pc = pc;
@@ -709,6 +796,7 @@ pub actor ClientActor {
     }
     facts.states.remove(&pc);
     conns.remove(&pc);
+    qconns.remove(&pc);
     var e = httpclient.PoolEvent.make(httpclient.PoolEventKind.Closed);
     e.pc = pc;
     e.clean = clean;
@@ -769,6 +857,19 @@ pub actor ClientActor {
       all[i].abort();
       i = i + 1usize;
     }
+    var allQ = List[ClientQuicActor]();
+    var qit = qconns.values();
+    while true {
+      match qit.next() {
+        case let Some(a) {allQ.push(*a);}
+        else {break;}
+      }
+    }
+    i = 0usize;
+    while i < allQ.len() {
+      allQ[i].abort();
+      i = i + 1usize;
+    }
     tm.stop();
   }
 }
@@ -815,6 +916,7 @@ struct ClientExchanges[C: httpconn.ClientProto] is Move {
   pc: u32;
   gen: u32;
   maxBody: usize;
+  quic: bool;               // the protocol is HTTP/3 (its value answers isHttp2 too: it is multiplexed)
   exch: ConnExchanges;
   bodying: List[u32];       // exchanges whose request body is not all sent
   pends: Pends;
@@ -831,8 +933,8 @@ struct ClientExchanges[C: httpconn.ClientProto] is Move {
   protoClosed: bool;
   hard: bool;               // the client gave the connection up (a cancel on HTTP/1.1, an abort): it is reset when over
 
-  fn make(client: ClientActor, pc: u32, gen: u32, maxBody: usize) ClientExchanges[C] {
-    ClientExchanges[C](client: client, pc: pc, gen: gen, maxBody: maxBody, exch: ConnExchanges(), bodying: List[u32](),
+  fn make(client: ClientActor, pc: u32, gen: u32, maxBody: usize, quic: bool) ClientExchanges[C] {
+    ClientExchanges[C](client: client, pc: pc, gen: gen, maxBody: maxBody, quic: quic, exch: ConnExchanges(), bodying: List[u32](),
       pends: Pends(), recv: 0u64, lastFree: 0usize, lastTakes: true, up: false, ended: false, closing: false, told: false,
       aborted: false, goAway: false, shutting: false, protoClosed: false, hard: false)
   }
@@ -941,7 +1043,7 @@ struct ClientExchanges[C: httpconn.ClientProto] is Move {
       up = true;
       lastFree = self.free(cc);
       lastTakes = self.takesNow(cc);
-      client.connUp(pc, gen, cc.isHttp2(), lastTakes, lastFree, recv);
+      client.connUp(pc, gen, if quic {3u32} else if cc.isHttp2() {2u32} else {1u32}, lastTakes, lastFree, recv);
       return;
     }
     let f = self.free(cc);
@@ -1129,7 +1231,7 @@ pub actor ClientConnActor {
     let now = Instant.now();
     *self = Self(args: args, addrs: addrs, host: host, secure: secure, group: group,
       cc: httpconn.ClientConn.make(args.conn, None[Uni[httpconn.Layer]], now),
-      ex: ClientExchanges[httpconn.ClientConn].make(client, pc, gen, args.maxBody), sock: aio.Socket.none(),
+      ex: ClientExchanges[httpconn.ClientConn].make(client, pc, gen, args.maxBody, false), sock: aio.Socket.none(),
       tm: actors.Timer.make(), connected: false, reading: false, writing: false, calling: false, closeStarted: false,
       writeBy: now, guard: ClientGuard(true), pipe: pipe);
     selfactor.begin();

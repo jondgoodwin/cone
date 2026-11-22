@@ -887,61 +887,20 @@ pub struct Client {
   // An Alt-Svc field on a response to fetch fi (over TCP): its h3
   // alternative for the fetch's origin cached with its max-age, or a 'clear'
   // taken. Read only when there is a plug-in to use it
+  // (the core's: the client actor learns from it as well)
   fn learnAltSvc(self: &mut, fi: u32, headers: &HttpHeaders) {
-    if !self.hasH3() {return;}
-    let f = self.cc.fetches.borrowAt(fi).unwrap();
-    if f.origin == noEntry {return;}
-    let og = self.cc.origins.borrowMutAt(u32.from(f.origin)).unwrap();
-    if !og.secure {return;}
-    var k = 0usize;
-    while k < headers.len() {
-      if fieldIs(headers.nameAt(k), "alt-svc") {
-        let host = og.host.clone();
-        match readAltSvc(headers.valueAt(k), host.view()) {
-          case is Clear {
-            if !og.h3Prior {
-              og.h3Port = 0u16;
-              og.h3Until = Instant();
-            }
-            return;
-          }
-          case let H3(a) {
-            if !og.h3Prior {
-              let now = Instant.now();
-              if og.h3Port == 0u16 || og.h3Until <= now {cc.st.altSvc = cc.st.altSvc + 1u64;}
-              let age = if a.maxAge > 31536000u64 {31536000u64} else {a.maxAge};
-              og.h3Port = a.port;
-              og.h3Until = now + Duration.fromSeconds(i64.from(age));
-            }
-            return;
-          }
-          else {}
-        }
-      }
-      k = k + 1usize;
-    }
+    self.cc.learnAltSvcOf(fi, headers);
   }
 
   // An HTTP/3 attempt for origin oi: its host looked up (bounded by the
   // attempt's deadline), then the plug-in's connect to its first IPv4
-  // address, on the Alt-Svc's port
+  // address, on the Alt-Svc's port. The record and the counts are the core's (beginH3)
   fn openH3(self: &mut, lp: &mut Loop, oi: u32) {
-    let og = self.cc.origins.borrowMutAt(u32.from(oi)).unwrap();
-    let pc = self.newConn();
-    self.cc.attachConn(pc, oi);
-    let p = self.cc.pconns.borrowMutAt(pc).unwrap();
-    p.quic = true;
-    p.proto = protoH3;
-    p.h3By = Instant.now() + cc.cfg.h3Timeout;
-    og.open = og.open + 1u32;
-    og.connecting = og.connecting + 1u32;
-    og.h3c = pc;
-    cc.total = cc.total + 1u32;
-    cc.st.connects = cc.st.connects + 1u64;
-    cc.st.h3Attempts = cc.st.h3Attempts + 1u64;
-    cc.attempts.push(pc);
+    let pc = self.cc.beginH3(oi).pc;
+    let p = self.cc.pconns.borrowAt(pc).unwrap();
     let pgen = p.gen;
     let limit = p.h3By;
+    let og = self.cc.origins.borrowAt(u32.from(oi)).unwrap();
     let host = og.host.clone();
     let h3Port = og.h3Port;
     let tok = wire.drv.upperToken(lp, kWatch, resolveBit | (u64.from(pgen & watchGenMask) << 24u64) | u64.from(pc));
@@ -1429,7 +1388,8 @@ pub struct Parts {
   pub maxOrigins: u32;
   pub conn: httpconn.Config;
   pub tlsc: Result[tls.Client, Failure];
-  pub http3: bool;               // the config names an HTTP/3 plug-in: a host without one keeps that client for itself
+  pub http3: bool;               // the config names an HTTP/3 plug-in
+  pub h3: Option[Uni[H3Connector]];   // ...and its connector, which a host that runs connections as actors makes them from (None: no plug-in, or it makes none)
 }
 
 pub fn partsOf(cfg: &Config) Parts {
@@ -1453,10 +1413,29 @@ pub fn partsOf(cfg: &Config) Parts {
   conn.h2IdleTimeout = idleTimeout;
   var tlsConfig = cfg.tlsConfig.clone();
   tlsConfig.alpn = alpnFor(&tlsConfig.alpn, http2);
+  // The HTTP/3 plug-in, made by the program's maker from the TLS config as Client.make does, and its connector: all the
+  // actors need of it (the plug-in itself, a driver for a loop, is let go)
   var hasH3 = false;
+  var h3: Option[Uni[H3Connector]] = None;
   match &cfg.http3 {
-    case let &Some(mk) {hasH3 = true;}
+    case let &Some(mk) {
+      hasH3 = true;
+      let plug = (*mk)(&tlsConfig);
+      match plug.connector() {
+        case var Ok(c) {h3 = Some[Uni[H3Connector]](c);}
+        case let Err(x) {}
+      }
+    }
     else {}
+  }
+  var h3Origins = List[String]();
+  var k = 0usize;
+  while k < cfg.http3Origins.len() {
+    match Url.parse(cfg.http3Origins[k].view()) {
+      case let Ok(u) {if u.isSecure() {h3Origins.push(u.origin());}}
+      case let Err(x) {}
+    }
+    k = k + 1usize;
   }
   let tlsc = match tls.Client.make(tlsConfig) {
     case var Ok(r) {Ok[tls.Client, Failure](r)}
@@ -1466,8 +1445,8 @@ pub fn partsOf(cfg: &Config) Parts {
   };
   let priorKnowledge = conn.h2PriorKnowledge;
   let lim = Limits(maxPerOrigin, maxTotal, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, priorKnowledge,
-    List[String](), Duration.fromSeconds(1i64), maxStreams);
-  Parts(lim, maxOrigins, conn, tlsc, hasH3)
+    h3Origins, cfg.http3Timeout, maxStreams);
+  Parts(lim, maxOrigins, conn, tlsc, hasH3, h3)
 }
 
 // ---------------------------------------------------------------------------
