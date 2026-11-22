@@ -1,0 +1,74 @@
+// Row 659, case 2 as a test: a routed response with a proxy, actors only. A connection takes the requests, a Proxy
+// handler asks a Back end for its response and returns the back end's body in its own response, and the connection
+// takes that body: from then on the pieces go from the back end's actor to the connection's, and the handler sees
+// no message for them.
+//
+//   20 requests of 10 pieces each through the proxy:
+//   - the connection takes all 200 pieces (and their 2,000 KiB), 20 ends, all Finished
+//   - the Proxy ran 'handle' 20 times and nothing else (it counts its behaviours; 'count' is the 21st, the check's)
+//   - the back end delivered 20 streams, one 'deliver' each
+//   - the workers handled at most 2 messages a piece plus a fixed number a request (the slope between 10 and 0 pieces)
+
+mod routed;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import streamproto use *;
+
+fn run(requests: u64, pieces: u64) (Counts, u64, u64) {
+  var tx: OneshotSender[Counts];
+  var rx: OneshotReceiver[Counts];
+  tx, rx = Oneshot[Counts].make();
+  var btx: OneshotSender[Counts];
+  var brx: OneshotReceiver[Counts];
+  btx, brx = Oneshot[Counts].make();
+  var ptx: OneshotSender[u64];
+  var prx: OneshotReceiver[u64];
+  ptx, prx = Oneshot[u64].make();
+  let m0 = actors.stats().messages;
+  var msgs = 0u64;
+  {
+    let conn = Conn();
+    let back = Back();
+    let proxy = Proxy(back);
+    let h: Handler = proxy;
+    var id = 1u64;
+    while id <= requests {
+      conn.serve(Request(id, pieces), h);
+      id = id + 1u64;
+    }
+    actors.waitQuiet();
+    msgs = actors.stats().messages - m0;
+    conn.report(tx);
+    back.count(btx);
+    proxy.count(ptx);
+  }
+  let c = rx.recv() || Counts(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  let b = brx.recv() || Counts(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  let seen = prx.recv() || 0u64;
+  (Counts(c.pieces, c.bytes, c.ends, c.finished, c.served, c.heads, b.delivers), seen, msgs)
+}
+
+fn main() i32 {
+  initAll();
+  let flat = run(20u64, 0u64);
+  let full = run(20u64, 10u64);
+  let c = full.0;
+  expectUInt(c.served, 20u64, "the connection served 20 requests");
+  expectUInt(c.heads, 20u64, "and had 20 responses from the proxy");
+  expectUInt(c.pieces, 200u64, "it took all 200 pieces");
+  expectUInt(c.bytes, 204800u64, "their 200 KiB");
+  expectUInt(c.ends, 20u64, "with 20 ends");
+  expectUInt(c.finished, 20u64, "all Finished");
+  expectUInt(c.delivers, 20u64, "the back end delivered 20 streams, one 'deliver' each");
+  expectUInt(full.1, 20u64, "the proxy handled 20 'handle' and nothing for any piece");
+  expectUInt(flat.1, 20u64, "(as it did with no pieces)");
+  let perPiece = (full.2 - flat.2) / 200u64;
+  expectUInt(perPiece, 2u64, "the workers handled 2 messages a piece: the call and its answer");
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}
