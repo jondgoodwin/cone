@@ -102,7 +102,7 @@ actor Writer {
 // answered, or drops the socket (a close)
 actor Other {
   pub async fn cancelAfter(self, s: Socket) {
-    let z = await aio.sleep(Duration.fromMillis(700i64));
+    let z = await aio.sleep(Duration.fromMillis(1200i64));
     while answeredFlag.load() == 0u64 {
       s.cancelRead();
       let y = await aio.sleep(Duration.fromMillis(20i64));
@@ -110,13 +110,23 @@ actor Other {
   }
 
   pub async fn dropAfter(self, s: Socket) {
-    let z = await aio.sleep(Duration.fromMillis(700i64));
+    let z = await aio.sleep(Duration.fromMillis(1200i64));
   }
 }
 
 actor Reader {
   // The read, awaited here, its socket kept here until it answers
-  pub async fn go(self, s: Socket, lim: IoLimits, done: OneshotSender[u64]) {
+  // (It starts once the pool is full, on the gate: on Linux a read first tries a pool buffer and gives it back,
+  // which would leave a block in this worker's cache, to serve the take the pool must refuse.)
+  pub async fn go(self, s: Socket, mode: u64, group: CancelGroup, gate: OneshotReceiver[u64], done: OneshotSender[u64]) {
+    var g = gate;
+    let opened = g.recvTimeout(Duration.fromMillis(30000i64));
+    var lim = IoLimits.none();
+    if mode == 1u64 {
+      lim = IoLimits.within(group);
+    } else if mode == 2u64 {
+      lim = IoLimits.until(Instant.now() + Duration.fromMillis(1500i64));
+    }
     let r = await s.readIn(lim);
     answeredFlag.store(1u64);
     var d = done;
@@ -124,7 +134,9 @@ actor Reader {
   }
 
   // The read started here, its socket handed to the other actor
-  pub async fn goOther(self, s: Socket, mode: u64, other: Other, done: OneshotSender[u64]) {
+  pub async fn goOther(self, s: Socket, mode: u64, other: Other, gate: OneshotReceiver[u64], done: OneshotSender[u64]) {
+    var g = gate;
+    let opened = g.recvTimeout(Duration.fromMillis(30000i64));
     let reading = s.readIn(IoLimits.none());
     if mode == 3u64 {other.cancelAfter(s);} else {other.dropAfter(s);}
     let r = await reading;
@@ -136,7 +148,7 @@ actor Reader {
 
 actor Setup {
   pub async fn go(self, mode: u64, group: CancelGroup, other: Other, gate: OneshotReceiver[u64],
-      ready: OneshotSender[u64], result: OneshotSender[u64], wdone: OneshotSender[u64]) {
+      rgate: OneshotReceiver[u64], ready: OneshotSender[u64], result: OneshotSender[u64], wdone: OneshotSender[u64]) {
     let l = await aio.listen(SocketAddr.localhost(0u16));
     let ls = socketOf(l);
     let a = await ls.localAddr();
@@ -150,14 +162,10 @@ actor Setup {
     let w = Writer();
     w.go(socketOf(c), gate, wdone);
     let r = Reader();
-    if mode == 0u64 {
-      r.go(socketOf(ac), IoLimits.none(), result);
-    } else if mode == 1u64 {
-      r.go(socketOf(ac), IoLimits.within(group), result);
-    } else if mode == 2u64 {
-      r.go(socketOf(ac), IoLimits.until(Instant.now() + Duration.fromMillis(1500i64)), result);
+    if mode <= 2u64 {
+      r.go(socketOf(ac), mode, group, rgate, result);
     } else {
-      r.goOther(socketOf(ac), mode, other, result);
+      r.goOther(socketOf(ac), mode, other, rgate, result);
     }
     var rd = ready;
     rd.send(1u64);
@@ -196,6 +204,9 @@ fn scenario(mode: u64, wantCode: u64) {
   var gtx: OneshotSender[u64];
   var grx: OneshotReceiver[u64];
   gtx, grx = Oneshot[u64].make();
+  var xtx: OneshotSender[u64];
+  var xrx: OneshotReceiver[u64];
+  xtx, xrx = Oneshot[u64].make();
   var qtx: OneshotSender[u64];
   var qrx: OneshotReceiver[u64];
   qtx, qrx = Oneshot[u64].make();
@@ -208,13 +219,15 @@ fn scenario(mode: u64, wantCode: u64) {
   let other = Other();
   {
     let s = Setup();
-    s.go(mode, group, other, grx, qtx, rtx, wtx);
+    s.go(mode, group, other, grx, xrx, qtx, rtx, wtx);
   }
   let ready = qrx.recvTimeout(Duration.fromMillis(20000i64));
   expect(ready is Some, "the connection is made");
   var held = List[IoBuf]();
   let filled = fillPool(&mut held);
   expect(filled > 1000usize, "the pool is held at its bound");
+  xtx.send(1u64);                                 // the read starts, the pool full
+  thread.sleep(Duration.fromMillis(200i64));      // and waits for its connection to be heard from
   gtx.send(1u64);
   // The bytes have come and the pool refuses a buffer: the read is waiting, not answered
   let early = rrx.recvTimeout(Duration.fromMillis(500i64));
