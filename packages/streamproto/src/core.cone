@@ -1,0 +1,66 @@
+// The core, as section 3.2 sketches it. A stream is the simple call made many times: the producer makes one
+// call 'piece' per piece on a PieceSink and awaits its answer, a PieceAck, which says go on, go on and here
+// is the buffer back, or stop.
+
+// The answer to a piece
+pub use PieceAck;
+pub enum PieceAck[T] {
+  More;                 // go on; the piece is mine now
+  MoreWith(T);          // go on; here is the piece's storage back, to refill
+  Stop(Ending);         // send no more. Finished: I have what I need. Failed(e): I failed, and why
+}
+
+// Anything that takes a stream of T; 'tag' is the number the receiver chose, sent back with every call
+pub actor trait PieceSink[T] {
+  pub async fn piece(self, tag: u64, item: T) PieceAck[T];
+  pub async fn end(self, tag: u64, how: Ending);
+}
+
+// "Deliver here": owned by the one producer of one stream. Dropped un-ended, it ends the stream Failed
+pub struct StreamTo[T] is Move {
+  pub sink: PieceSink[T];
+  pub tag: u64;
+  over: bool;
+
+  pub fn at(sink: PieceSink[T], tag: u64) StreamTo[T] {
+    StreamTo[T](sink, tag, false)
+  }
+
+  // The one end; nothing is to be sent after it
+  pub fn end(self: &mut, how: Ending) {
+    if over { return; }
+    over = true;
+    sink.end(tag, how);
+  }
+
+  fn final(self: &uni) {
+    if !over { sink.end(tag, Ending.Failed(AnyError.msg("streamproto: the producer dropped the stream"))); }
+  }
+}
+
+// Anything that has a stream of T to give
+pub actor trait PieceSource[T] {
+  pub async fn deliver(self, tag: u64, to: StreamTo[T]);
+  pub async fn decline(self, tag: u64);
+}
+
+// "A stream on offer": taken (to) or dropped (declined)
+pub struct StreamFrom[T] is Move {
+  source: PieceSource[T];
+  tag: u64;
+  taken: bool;
+
+  pub fn of(source: PieceSource[T], tag: u64) StreamFrom[T] {
+    StreamFrom[T](source, tag, false)
+  }
+
+  pub fn to(self: &mut, target: StreamTo[T]) {
+    if taken { return; }
+    taken = true;
+    source.deliver(tag, target);
+  }
+
+  fn final(self: &uni) {
+    if !taken { source.decline(tag); }
+  }
+}

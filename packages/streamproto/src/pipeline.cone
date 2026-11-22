@@ -1,0 +1,309 @@
+// The stages of the sample pipeline on the new core: a socket, an inflate, a sha256 and a file, each an actor that
+// takes pieces ('piece' answered with a PieceAck) and sends them on through a StreamTo.
+//
+// 'ahead' is how many unanswered pieces a producer may have on a link. 0 awaits each answer where the piece is sent
+// (the producer's whole job, section 3.2). 1 or more keeps the answers as futures (one allocation each) and
+// collects the oldest before a piece would pass the count (section 3.6); the producer works on while they are out.
+
+// A buffer to fill: the one an answer brought back, or a new one
+fn fresh(spare: &mut Option[IoBuf]) IoBuf {
+  var t = None[IoBuf];
+  t <-> *spare;
+  match t {
+    case let Some(b) { var x = b; x.clear(); x }
+    case is None { IoBuf(linkBytes) }
+  }
+}
+
+// ---- the socket end: reads a connection into a stream ----
+
+pub actor SocketFrom {
+  ahead: usize;
+  pending: Deque[actors.Future[PieceAck[IoBuf]]];
+  spare: Option[IoBuf];
+  stopped: Option[Ending];
+
+  pub fn init(self: &new, ahead: usize) {
+    *self = Self(ahead: ahead, pending: Deque[actors.Future[PieceAck[IoBuf]]](), spare: None[IoBuf],
+      stopped: None[Ending]);
+  }
+
+  pub async fn run(self, addr: SocketAddr, to: StreamTo[IoBuf]) {
+    var dest = to;
+    let r = await aio.connect(addr);
+    var conn = Socket.none();
+    match r {
+      case let Ok(s) { conn = s; }
+      case let Err(e) {
+        dest.end(Ending.Failed(AnyError.from(e)));
+        return;
+      }
+    }
+    var more = true;
+    while more {
+      let b = fresh(&mut spare);
+      let got = await conn.read(b);
+      match got {
+        case let Ok(buf) {
+          if buf.isEmpty() {
+            more = false;
+          } else if ahead == 0usize {
+            let a = await dest.sink.piece(dest.tag, buf);
+            match a {
+              case is More {}
+              case let MoreWith(back) { spare = Some[IoBuf](back); }
+              case let Stop(why) { stopped = Some[Ending](why); more = false; }
+            }
+          } else {
+            if pending.len() >= ahead {
+              match pending.popFront() {
+                case let Some(oldest) {
+                  let a = await oldest;
+                  match a {
+                    case is More {}
+                    case let MoreWith(back) { spare = Some[IoBuf](back); }
+                    case let Stop(why) { stopped = Some[Ending](why); more = false; }
+                  }
+                }
+                case is None {}
+              }
+            }
+            pending.push(dest.sink.piece(dest.tag, buf));
+          }
+        }
+        case let Err(e) { stopped = Some[Ending](Ending.Failed(AnyError.from(e))); more = false; }
+      }
+    }
+    // every answer in before the end (the stream's one end follows its last piece's answer)
+    var draining = true;
+    while draining {
+      match pending.popFront() {
+        case let Some(oldest) {
+          let a = await oldest;
+          match a {
+            case let Stop(why) { if stopped is None { stopped = Some[Ending](why); } }
+            else {}
+          }
+        }
+        case is None { draining = false; }
+      }
+    }
+    var how = Ending.Finished;
+    var s = None[Ending];
+    s <-> stopped;
+    match s {
+      case let Some(w) { how = w; }
+      case is None {}
+    }
+    dest.end(how);
+  }                                  // conn closes here
+}
+
+// ---- a stage over a Transform (inflate): output pieces, up to 'ahead' of them unanswered ----
+// It takes one input piece at a time: its producer keeps one unanswered, so 'end' follows the last answer. The
+// answer to an input piece goes when its output has been sent (its answers may still be out when 'ahead' is not 0).
+
+pub actor TransformPass[T: Transform] is PieceSink[IoBuf] {
+  t: T;
+  down: StreamTo[IoBuf];
+  ahead: usize;
+  pending: Deque[actors.Future[PieceAck[IoBuf]]];
+  spare: Option[IoBuf];
+  stopped: Option[Ending];          // the receiver said Stop, or the transform failed
+
+  pub fn init(self: &new, down: StreamTo[IoBuf], t: T, ahead: usize) {
+    *self = Self(t: t, down: down, ahead: ahead, pending: Deque[actors.Future[PieceAck[IoBuf]]](),
+      spare: None[IoBuf], stopped: None[Ending]);
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    var cur = c;
+    if stopped is None {
+      t.feed(cur.view());
+      var more = true;
+      while more {
+        var out = fresh(&mut spare);
+        let st = t.pull(&mut out);
+        if !out.isEmpty() {
+          var reply = None[PieceAck[IoBuf]];
+          if ahead == 0usize {
+            reply = Some[PieceAck[IoBuf]](await down.sink.piece(down.tag, out));
+          } else {
+            if pending.len() >= ahead {
+              match pending.popFront() {
+                case let Some(oldest) { reply = Some[PieceAck[IoBuf]](await oldest); }
+                case is None {}
+              }
+            }
+            pending.push(down.sink.piece(down.tag, out));
+          }
+          match reply {
+            case let Some(a) {
+              match a {
+                case is More {}
+                case let MoreWith(back) { spare = Some[IoBuf](back); }
+                case let Stop(why) { stopped = Some[Ending](why); more = false; }
+              }
+            }
+            case is None {}
+          }
+        } else {
+          spare = Some[IoBuf](out);
+        }
+        if st != Status.MoreOutput { more = false; }
+        if st == Status.Failed {
+          stopped = Some[Ending](Ending.Failed(AnyError.msg("streamproto: the transform failed")));
+        }
+      }
+    }
+    cur.clear();
+    match &stopped {
+      case let &Some(w) { return Stop[IoBuf](reasonOf(w)); }
+      case is None {}
+    }
+    MoreWith[IoBuf](cur)
+  }
+
+  // The end: the transform finishes and its last output goes, every answer is collected, then the one end goes down
+  pub async fn end(self, tag: u64, how: Ending) {
+    match how {
+      case is Finished {
+        if stopped is None {
+          t.finish();
+          var more = true;
+          while more {
+            var out = fresh(&mut spare);
+            let st = t.pull(&mut out);
+            if !out.isEmpty() {
+              var reply = None[PieceAck[IoBuf]];
+              if ahead == 0usize {
+                reply = Some[PieceAck[IoBuf]](await down.sink.piece(down.tag, out));
+              } else {
+                if pending.len() >= ahead {
+                  match pending.popFront() {
+                    case let Some(oldest) { reply = Some[PieceAck[IoBuf]](await oldest); }
+                    case is None {}
+                  }
+                }
+                pending.push(down.sink.piece(down.tag, out));
+              }
+              match reply {
+                case let Some(a) {
+                  match a {
+                    case is More {}
+                    case let MoreWith(back) { spare = Some[IoBuf](back); }
+                    case let Stop(why) { stopped = Some[Ending](why); more = false; }
+                  }
+                }
+                case is None {}
+              }
+            }
+            if st != Status.MoreOutput { more = false; }
+          }
+        }
+      }
+      case is Failed {}
+    }
+    var draining = true;
+    while draining {
+      match pending.popFront() {
+        case let Some(oldest) {
+          let a = await oldest;
+          match a {
+            case let Stop(why) { if stopped is None { stopped = Some[Ending](why); } }
+            else {}
+          }
+        }
+        case is None { draining = false; }
+      }
+    }
+    var s = None[Ending];
+    s <-> stopped;
+    match s {
+      case let Some(w) { down.end(w); }
+      case is None { down.end(how); }
+    }
+  }
+}
+
+fn reasonOf(w: &Ending) Ending {
+  match w {
+    case is Finished { Ending.Finished }
+    case let &Failed(e) { Ending.Failed(AnyError.msg("streamproto: stopped")) }
+  }
+}
+
+// ---- a stage over a Digester: the piece goes on as it is, and so does the answer ----
+
+pub actor HashPass[D: Digester] is PieceSink[IoBuf] {
+  d: D;
+  down: StreamTo[IoBuf];
+  to: DigestSink[D.Out];
+
+  pub fn init(self: &new, down: StreamTo[IoBuf], d: D, to: DigestSink[D.Out]) {
+    *self = Self(d: d, down: down, to: to);
+  }
+
+  // 'feed' and the send are one step before any wait, so pieces in flight together keep their order
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    d.feed(c.view());
+    await down.sink.piece(down.tag, c)
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    match &how {
+      case is Finished { to.digest(Ok[D.Out, AnyError](d.finish())); }
+      case let &Failed(e) { to.digest(Err[D.Out, AnyError](AnyError.msg("streamproto: the stream failed"))); }
+    }
+    down.end(how);
+  }
+}
+
+// ---- the file end: writes each piece at its offset, which it reserves on arrival ----
+
+pub actor FileTo is PieceSink[IoBuf] {
+  file: File;
+  at: u64;                           // the next offset to give a piece
+  written: u64;
+  failed: Option[AnyError];
+  done: OneshotSender[Result[u64, AnyError]];
+
+  pub fn init(self: &new, file: File, done: OneshotSender[Result[u64, AnyError]]) {
+    *self = Self(file: file, at: 0u64, written: 0u64, failed: None[AnyError], done: done);
+  }
+
+  // The offset is taken before the wait, so pieces in flight together land where they belong
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    let n = u64.from(c.len());
+    let mine = at;
+    at = at + n;
+    let w = await file.writeAt(mine, c);
+    match w {
+      case let Ok(back) {
+        written = written + n;
+        var b = back;
+        b.clear();
+        MoreWith[IoBuf](b)
+      }
+      case let Err(e) {
+        failed = Some[AnyError](AnyError.from(e));
+        Stop[IoBuf](Ending.Failed(AnyError.msg("streamproto: the file write failed")))
+      }
+    }
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    var old = File.none();
+    old <-> file;
+    var bad = None[AnyError];
+    bad <-> failed;
+    match bad {
+      case let Some(e) { done.send(Err[u64, AnyError](e)); return; }
+      case is None {}
+    }
+    match how {
+      case is Finished { done.send(Ok[u64, AnyError](written)); }
+      case let Failed(e) { done.send(Err[u64, AnyError](e)); }
+    }
+  }
+}
