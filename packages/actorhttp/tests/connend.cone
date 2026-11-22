@@ -1,0 +1,283 @@
+// A program's own connection (Conn, on its own actor outside any client's pool) against a raw backend of this test's own:
+// - a server that closes the connection after one response: the response is whole, and the next request on the connection fails
+//   at the Closed stage;
+// - a Conn dropped under a request in flight: the request ends Cancelled, the backend sees the connection end, no connection
+//   actor is left alive and no buffer is left lent;
+// - an idle Conn dropped: the backend sees it closed and no connection actor is left.
+
+mod connend;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver;
+import collections use List, String;
+import time use Instant, Duration;
+import testing use *;
+import iobuf use *;
+import iocore use SocketAddr, CancelGroup;
+import http use *;
+import httpclient;
+import actors;
+import actorhttp use Conn, FetchError, liveClientActors, liveClientConnActors;
+import aio use IoLimits;
+
+let accepts: Atomic[u64];
+let ended: Atomic[u64];        // backend connections whose peer closed them
+let mode: Atomic[u64];         // 0: hold; 3: release the held
+
+fn @initpure init() {
+  accepts = Atomic[u64].of(0u64);
+  ended = Atomic[u64].of(0u64);
+  mode = Atomic[u64].of(0u64);
+}
+
+const noBound = 0xFFFFFFFFFFFFFFFFusize;
+
+fn whole(s: &String) bool {
+  let b = s.view() as &Array[u8];
+  var i = 0usize;
+  while i + 3usize < b.len {
+    if b[i] == 13u8 && b[i + 1usize] == 10u8 && b[i + 2usize] == 13u8 && b[i + 3usize] == 10u8 {return true;}
+    i = i + 1usize;
+  }
+  false
+}
+
+fn pathOf(s: &String) String {
+  let b = s.view() as &Array[u8];
+  var i = 0usize;
+  while i < b.len && b[i] != 32u8 {i = i + 1usize;}
+  i = i + 1usize;
+  var p = String();
+  while i < b.len && b[i] != 32u8 {
+    p.appendByte(b[i]);
+    i = i + 1usize;
+  }
+  p
+}
+
+actor Backend {
+  ls: aio.Socket;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await aio.listen(SocketAddr.localhost(0u16));
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {ls <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n"); libc.exit(1i32);}
+    }
+    var p = 0u16;
+    match await ls.localAddr() {
+      case let Ok(a) {p = a.port();}
+      else {}
+    }
+    ports.send(p);
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let r = await ls.acceptFromIn(IoLimits.none());
+      match r {
+        case let Ok(a) {
+          let sock, peer = a.(sock, peer);
+          accepts.add(1u64);
+          let c = BackendConn(sock);
+          c.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+}
+
+actor BackendConn {
+  sock: aio.Socket;
+
+  // Reads the request; answers by its path (/head: nothing, /body: a head and ten body bytes of a hundred, /ok: a whole answer,
+  // /hold: nothing, until released); then reads until the peer ends the connection
+  pub async fn run(self) {
+    var req = String();
+    while !whole(&req) {
+      let r = await sock.readIn(IoBuf(4096usize), IoLimits.none());
+      match r {
+        case let Ok(b) {
+          if b.len() == 0usize {ended.add(1u64); return;}
+          req.appendBytes(b.view());
+        }
+        case let Err(e) {ended.add(1u64); return;}
+      }
+    }
+    let path = pathOf(&req);
+    var text = String();
+    if path.view() == "/body" {
+      text = String.from("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n0123456789");
+    } else if path.view() == "/ok" {
+      text = String.from("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    } else if path.view() == "/close" {
+      text = String.from("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+    }
+    if text.len() > 0usize {
+      var c = Chain.make(noBound);
+      var b = IoBuf(text.len());
+      b.append(text.view() as &Array[u8]);
+      c.push(b);
+      let w = await sock.writeIn(c, IoLimits.none());
+      match w {
+        case let Ok(k) {}
+        case let Err(e) {ended.add(1u64); return;}
+      }
+    }
+    if path.view() == "/close" {
+      // hung up by the server after its one response
+      let cw = await sock.closeWrite();
+      return;
+    }
+    while true {
+      let r = await sock.readIn(IoBuf(4096usize), IoLimits.none());
+      match r {
+        case let Ok(b) {if b.len() == 0usize {break;}}
+        case let Err(e) {break;}
+      }
+    }
+    ended.add(1u64);
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn getHead(path: &str) RequestHead {RequestHead.make("GET", path, "127.0.0.1")}
+
+fn describe(r: &Result[httpclient.Response, FetchError]) String {
+  match r {
+    case let &Ok(ok) {
+      var s = String.from("ok ");
+      s.appendUInt(u64.from(ok.status));
+      s.append(" ");
+      s.appendUInt(u64.from(ok.body.len()));
+      s
+    }
+    case let &Err(e) {
+      if e.isCancelled() {String.from("err cancelled")}
+      else if e.isTimedOut() {String.from("err timedout")}
+      else if e.failure.stage == httpclient.Stage.Closed {String.from("err failed at closed")}
+      else {String.from("err failed elsewhere")}
+    }
+  }
+}
+
+// The Conn an answer holds, or none
+fn connOf(r: Result[Conn, FetchError]) Conn {
+  var res = r;
+  var c = Conn.none();
+  match &mut res {
+    case var &mut Ok(ok) {c <-> *ok;}
+    else {}
+  }
+  c
+}
+
+actor Caller {
+  conn: Conn;
+
+  pub async fn connect(self, port: u16, out: Sender[String]) {
+    conn = connOf(await actorhttp.connect("127.0.0.1", port));
+    out.send(if conn.isNone() {String.from("connect failed")} else {String.from("connected")});
+  }
+
+  pub async fn get(self, path: String, out: Sender[String]) {
+    let r = await conn.request(getHead(path.view()), String());
+    out.send(describe(&r));
+  }
+
+  // The Conn let go
+  pub async fn drop(self) {
+    conn = Conn.none();
+  }
+}
+
+fn takeS(rx: &mut Receiver[String]) String {rx.recvTimeout(Duration.fromSeconds(20i64)) || String.from("(timeout)")}
+
+fn gone() bool {
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while liveClientConnActors() > 0u64 && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  liveClientConnActors() == 0u64
+}
+
+// Whether the backend's count of ended connections reaches n within seconds
+fn endedReaches(n: u64) bool {
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while ended.load() < n && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  ended.load() >= n
+}
+
+// The pool's bytes lent now
+fn lent() u64 {u64.from(iobuf.stats().lentBytes)}
+
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var otx: Sender[String];
+  var orx: Receiver[String];
+  otx, orx = Channel[String].make();
+  let be = Backend(aio.Socket.none());
+  be.open(ptx.clone());
+  let port = prx.recv() || 0u16;
+  require(port != 0u16, "the backend listens");
+  be.serve();
+
+  // A server that closes after one response: the next request is told the connection is closed
+  let c1 = Caller(Conn.none());
+  c1.connect(port, otx.clone());
+  expectStr(takeS(&mut orx).view(), "connected", "a connection to the backend");
+  expect(liveClientConnActors() > 0u64, "...its connection actor is alive");
+  c1.get(String.from("/close"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "ok 200 2", "the one response is whole");
+  c1.get(String.from("/ok"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "err failed at closed", "the next request on it fails at the Closed stage");
+  c1.drop();
+  expect(gone(), "...and no connection actor is left once the Conn is let go");
+
+  // A Conn dropped under a request in flight: the request ends Cancelled, the connection is reset
+  let before = ended.load();
+  let c2 = Caller(Conn.none());
+  c2.connect(port, otx.clone());
+  expectStr(takeS(&mut orx).view(), "connected", "a second connection");
+  c2.get(String.from("/head"), otx.clone());
+  thread.sleep(Duration.fromMillis(300i64));
+  c2.drop();
+  expectStr(takeS(&mut orx).view(), "err cancelled", "a Conn dropped under a request: the request ends Cancelled");
+  expect(endedReaches(before + 1u64), "...the backend sees the connection end");
+  expect(gone(), "...its connection actor is gone");
+  expect(allHome(), "...and no buffer is left lent");
+
+  // An idle Conn dropped: closed
+  let before3 = ended.load();
+  let c3 = Caller(Conn.none());
+  c3.connect(port, otx.clone());
+  expectStr(takeS(&mut orx).view(), "connected", "a third connection");
+  c3.get(String.from("/ok"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "ok 200 2", "a request on it is answered");
+  c3.drop();
+  expect(endedReaches(before3 + 1u64), "an idle Conn let go: the backend sees the connection closed");
+  expect(gone(), "...its connection actor is gone");
+  expect(allHome(), "...and no buffer is left lent");
+  done()
+}
