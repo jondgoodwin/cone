@@ -6,40 +6,11 @@
 // Records
 // ---------------------------------------------------------------------------
 
-// An exchange awaited: the reply its answer goes back in, the response being
-// gathered (empty to begin with), and what it needs to end it. It is made
-// whole when the exchange starts, and taken out of its table whole when the
-// exchange ends, its reply answered with its response
-struct Wait {
-  reply: actors.ReplyOf[Result[httpclient.Response, FetchError]];
-  resp: httpclient.Response;
-  tooBig: bool;                  // the body passed the limit, and the exchange was cancelled for it
-  refused: bool;                 // the pool refused a buffer for the request body, and the exchange was cancelled for it
-  limit: usize;                  // the most body bytes it takes
-  fetch: httpclient.FetchId;     // a client's fetch
-  req: httpconn.ReqId;           // a connection's request
-  body: String;                  // a connection's request body still to send
-  sent: usize;                   // ...and how much of it has gone
-  conn: usize;                   // a connection's request: its connection's slot
-  bodyDone: bool;                // its body has been finished
-}
-
-// A wait for reply, its response not begun, taking at most limit body bytes
-fn waitFor(rp: actors.ReplyOf[Result[httpclient.Response, FetchError]], limit: usize) Wait {
-  Wait(reply: rp, resp: httpclient.Response.blank(), tooBig: false, refused: false, limit: limit,
-    fetch: httpclient.FetchId.none(), req: httpconn.ReqId.none(), body: String(), sent: 0usize,
-    conn: 0usize, bodyDone: false)
-}
-
 // The pools of this package, named for what each holds (the pool kind is spelled here and nowhere else)
 alias EntryId = Handle;                // a pool's handle for one entry (the token helpers below take one)
-alias XWaits = GenPool[Wait];          // the exchanges on the service's own connections awaiting theirs
 alias Streams = GenPool[StreamRec];   // a client's streamed responses
 alias Clients = GenPool[ClientRec];
-alias Conns = GenPool[ConnRec];
 alias Srvs = GenPool[SrvRec];
-alias TlsClients = Dict[tls.ClientConfig, tls.Client];   // connectSecure's contexts, by the config itself
-const maxTlsClients = 16usize;                 // configs kept; past it the table is cleared (live connections keep theirs)
 
 // A sink's token for a stream's fetch: this bit and the stream's slot. A
 // whole fetch's token is its wait slot alone
@@ -75,12 +46,10 @@ pub fn byToken[T](pool: &GenPool[T], t: u64) EntryId {
 }
 
 // WHY DROPPING A STALE EVENT IS SAFE. A token's entry leaves its table only when its owner has finished with it:
-// a stream's record goes when the stream ends, a connection's goes after its Closed event, and an exchange's Wait likewise ends
-// at its terminal event. So an event whose token no longer reaches a live entry belongs to something already
-// answered and released: nothing is left waiting on it (no reply unanswered, no connection-closed notice owed), and
+// a stream's record goes when the stream ends. So an event whose token no longer reaches a live entry belongs to something
+// already answered and released: nothing is left waiting on it (no reply unanswered), and
 // the entry now in that cell, if any, is another one's and must not be touched. A Data event's buffer drops with the
-// event; the fetch or exchange it flowed to is gone, so no credit is owed for it.
-// Checked by staleEventDropped (end of this file), driven by tests/stale.cone.
+// event; the stream it flowed to is gone, so no credit is owed for it.
 
 // A client the service owns: its handles counted, its fetches awaited
 struct ClientRec {
@@ -93,39 +62,16 @@ struct ClientRec {
   ups: Dict[u64, u32];               // an upload's stream id: its slot in 'streams' (upload.cone: its sink knows the id alone)
 }
 
-// A connection the service owns, which a Conn names
-struct ConnRec {
-  used: bool;
-  id: u64;
-  conn: httpconn.ConnId;
-  connecting: bool;              // its connect's reply is still to be answered
-  open: bool;
-  closed: bool;
-  dropped: bool;                 // its Conn handle has gone
-  busy: u32;                     // exchanges in flight on it
-  reply: Option[actors.ReplyOf[Result[Conn, FetchError]]];
-}
-
-
-// A sink's token for a connection's own events (Connected, Closed): this bit
-// and the connection's slot. A request's token is its exchange slot alone
-const connBit = 0x100000000u64;
-
-// Everything the service thread keeps: its clients, its driver for the
-// connections a program makes itself, and what is awaited on those. A service
-// hosted on aio's I/O thread (aio.Hosted: turn, complete, wakeAt, end)
+// Everything the service thread keeps: its clients (their streams) and its
+// servers. A service hosted on aio's I/O thread (aio.Hosted: turn, complete,
+// wakeAt, end). The connections a program makes itself are ManualConn actors
+// (manualconn.cone), not the service's
 struct Service {
   clients: Clients;
-  drv: httpconn.Driver;
-  conns: Conns;
-  xwaits: XWaits;
   srvs: Srvs;       // the servers listening, each with a driver of its own
-  tlsClients: TlsClients;   // the TLS contexts of connectSecure, one for each config, so its connections can resume
 
   fn make() Service {
-    Service(clients: Clients(4usize),
-      drv: httpconn.Driver.make(httpconn.Config.make()), conns: Conns(16usize),
-      xwaits: XWaits(16usize), srvs: Srvs(4usize), tlsClients: TlsClients())
+    Service(clients: Clients(4usize), srvs: Srvs(4usize))
   }
 
 
@@ -155,19 +101,6 @@ struct Service {
     clients.bound()
   }
 
-  // Where the connection id is in its cells, or their number
-  fn findConn(self: &, id: u64) usize {
-    var k = 0usize;
-    while k < conns.bound() {
-      if conns.isLive(u32.from(k)) {
-        let p = conns.borrowAt(u32.from(k)).unwrap();
-        if p.used && p.id == id {return k;}
-      }
-      k = k + 1usize;
-    }
-    conns.bound()
-  }
-
   // Its turn on aio's I/O thread (aio.Hosted), after the jobs queued for it
   // have run: drive everything started, each event to what awaits it, and let
   // the servers and clients that are over leave
@@ -179,7 +112,6 @@ struct Service {
       }
       k = k + 1usize;
     }
-    self.pumpConns(lp);
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
@@ -194,7 +126,7 @@ struct Service {
   // The latest the I/O thread may wait in its poll before the next turn: the
   // earliest any client or driver wants (aio.Hosted)
   pub fn wakeAt(self: &) Instant {
-    var limit = drv.wakeAt();
+    var limit = forever();
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
@@ -236,7 +168,7 @@ struct Service {
       }
       s = s + 1usize;
     }
-    drv.complete(lp, c)
+    false
   }
 
   // Its end, the Loop still alive (aio.Hosted; the package's header, THE
@@ -260,7 +192,6 @@ struct Service {
       }
       s = s + 1usize;
     }
-    drv.abortAll(lp);
   }
 
   // Servers that are closed, with nothing left to answer, leave: their
@@ -302,130 +233,6 @@ struct Service {
       k = k + 1usize;
     }
   }
-
-  // The driver's events for this turn, each to the connection or exchange
-  // awaiting it
-  fn pumpConns(self: &mut, lp: &mut Loop) {
-    var evs = List[httpconn.Event]();
-    drv.pump(lp, &uni evs);
-    each e in evs.drain() {
-      if (e.token & connBit) != 0u64 {
-        self.onConnEvent(lp, &e);
-      } else {
-        self.onExchangeEvent(lp, e);
-      }
-    }
-  }
-
-  // A connection's own event: it connected, or it is over
-  fn onConnEvent(self: &mut, lp: &mut Loop, e: &httpconn.Event) {
-    if byToken(&conns, e.token).isNone() { return; }
-    let slot = usize.from(tokCell(e.token));
-    let c = conns.borrowMutAt(tokCell(e.token)).unwrap();
-    let k = e.kind;
-    if k == httpconn.EventKind.Connected {
-      c.open = true;
-      if c.connecting {
-        c.connecting = false;
-        answerConn(c, Ok[Conn, FetchError](Conn(c.id)));
-      }
-    } else if k == httpconn.EventKind.Closed {
-      c.open = false;
-      c.closed = true;
-      if c.connecting {
-        c.connecting = false;
-        answerConn(c, Err[Conn, FetchError](FetchError.failed(httpclient.Failure.fromConn(&e.failure))));
-      }
-      if c.dropped {self.freeConn(slot);}
-    }
-  }
-
-  // Connection slot k is free again
-  fn freeConn(self: &mut, k: usize) {
-    conns.removeAt(u32.from(k));
-  }
-
-  // An event of an exchange on a connection, taken by value: its head's
-  // fields go whole into the response gathered
-  fn onExchangeEvent(self: &mut, lp: &mut Loop, e: httpconn.Event) {
-    if byToken(&xwaits, e.token).isNone() { return; }
-    let slot = usize.from(tokCell(e.token));
-    let w = xwaits.borrowMutAt(tokCell(e.token)).unwrap();
-    let k = e.kind;
-    if k == httpconn.EventKind.Response {
-      let status, version, headers = e.(response).(status, version, headers);
-      w.resp.status = status;
-      w.resp.version = version;
-      w.resp.headers = headers;
-    } else if k == httpconn.EventKind.Data {
-      let n = e.buf.len();
-      if !streams.gather(&mut w.resp.body, e.buf.view(), w.limit) && !w.tooBig {
-        w.tooBig = true;
-        drv.cancel(lp, w.req);
-      }
-      drv.release(e.req, n);
-    } else if k == httpconn.EventKind.Writable {
-      self.sendBody(lp, slot);
-    } else if e.isTerminal() {
-      let c = conns.borrowMutAt(u32.from(w.conn)).unwrap();
-      if c.busy > 0u32 {c.busy = c.busy - 1u32;}
-      let timing = httpclient.Timing(e.timing.submitted, e.timing.started, e.timing.firstByte,
-        e.timing.ended, 1u32, 0u32, false);
-      // The wait is over: taken out whole, its reply answered with what it gathered
-      match xwaits.take(xwaits.slotAt(u32.from(slot))) {
-        case var Some(over) {
-          let reply, var resp, tooBig, refused = over.(reply, resp, tooBig, refused);
-          resp.timing = timing;
-          var v: Result[httpclient.Response, FetchError] = Err[httpclient.Response, FetchError](FetchError.cancelled());
-          if k == httpconn.EventKind.Done {
-            resp.outcome = httpclient.EventKind.Done;
-            v = Ok[httpclient.Response, FetchError](resp);
-          } else if k == httpconn.EventKind.Failed {
-            v = Err[httpclient.Response, FetchError](FetchError.failed(httpclient.Failure.fromConn(&e.failure)));
-          } else if k == httpconn.EventKind.TimedOut {
-            v = Err[httpclient.Response, FetchError](FetchError.timedOut());
-          } else if refused {
-            v = Err[httpclient.Response, FetchError](FetchError.failed(overloadedFailure()));
-          } else if tooBig {
-            v = Err[httpclient.Response, FetchError](FetchError.failed(limitFailure()));
-          }
-          reply.answer(v);
-        }
-        else {}
-      }
-    }
-  }
-
-  // As much of exchange slot's body as its connection takes now
-  fn sendBody(self: &mut, lp: &mut Loop, slot: usize) {
-    let w = (xwaits.rawAt(u32.from(slot)) as &mut Wait);
-    if w.bodyDone {return;}
-    while w.sent < w.body.len() {
-      let left = w.body.len() - w.sent;
-      let n = if left < sendChunk {left} else {sendChunk};
-      // A pool that refuses the buffer (iobuf's tryMake) ends the exchange: it is
-      // cancelled, and its fetch answered Overloaded
-      var b = match IoBuf.tryMake(n) {
-        case var Some(got) {got}
-        else {
-          if !w.refused {
-            w.refused = true;
-            drv.cancel(lp, w.req);
-          }
-          return;
-        }
-      };
-      // As bytes: a piece may end inside a UTF-8 character, which a 'str' slice refuses
-      let all = w.body.view() as &Array[u8];
-      b.append(&all[w.sent ..< w.sent + n]);
-      match drv.sendData(w.req, b) {
-        case is None[IoBuf] {w.sent = w.sent + n;}
-        else {return;}      // refused: Writable comes when there is room
-      }
-    }
-    w.bodyDone = true;
-    drv.finish(w.req);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -439,18 +246,6 @@ const sendChunk = 16384usize;
 fn overloadedFailure() httpclient.Failure {
   httpclient.Failure.make(httpclient.Stage.Limit, 0u32, ErrorKind.Overloaded,
     "the buffer pool is full (iobuf maxBytes): no buffer for the request body")
-}
-
-// A connect's reply carries v back to the actor awaiting it, answered in
-// place: the reply is spent after, as the connection lives on; a second
-// answer is a program error, a panic
-fn answerConn(c: &mut ConnRec, v: Result[Conn, FetchError]) {
-  var taken: Option[actors.ReplyOf[Result[Conn, FetchError]]] = None;
-  taken <-> c.reply;
-  match taken {
-    case let Some(r) {r.answer(v);}
-    else {panic("actorhttp: a connect's reply answered twice");}
-  }
 }
 
 // The failure of an exchange that went over its body limit
@@ -513,131 +308,4 @@ struct RefJob {
     }
     unrefClient(rec, lp);
   }
-}
-
-// ---------------------------------------------------------------------------
-// The jobs: connections
-// ---------------------------------------------------------------------------
-
-// A connection made, plain or through TLS, for the reply that awaits it
-struct ConnectJob {
-  pub host: String;
-  pub port: u16;
-  pub secure: bool;
-  pub cfg: tls.ClientConfig;
-
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[Conn, FetchError]]) {
-    let host, port, secure, cfg = self.(host, port, secure, cfg);
-    let ch = sv.conns.add(ConnRec(used: true, id: newId(), conn: httpconn.ConnId.none(),
-      connecting: true, open: false, closed: false, dropped: false, busy: 0u32, reply: Some[actors.ReplyOf[Result[Conn, FetchError]]](rp)));
-    let slot = usize.from(ch.index);
-    let c = (sv.conns.rawAt(u32.from(slot)) as &mut ConnRec);
-    let sink = httpconn.Sink.Here(tokenOf(ch, connBit));
-    // The driver is handed a copy of the host: it holds Strings, and nothing
-    // shows the job's is none of them
-    let name = host.clone();
-    if !secure {
-      c.conn = sv.drv.connect(lp, name.view(), port, sink);
-      return;
-    }
-    // One tls.Client for each config, shared by every connection made with it:
-    // its session cache then lets a later connection to the same server resume
-    if !sv.tlsClients.contains(&cfg) {
-      match tls.Client.make(cfg.clone()) {
-        case let Ok(t) {
-          if sv.tlsClients.len() >= maxTlsClients {sv.tlsClients.clear();}
-          sv.tlsClients.insert(cfg.clone(), t);
-        }
-        case let Err(x) {
-          c.connecting = false;
-          answerConn(c, Err[Conn, FetchError](FetchError.failed(
-            httpclient.Failure.make(httpclient.Stage.Tls, x.osError, ErrorKind.Unsupported, (String() <- x).view()))));
-          sv.freeConn(slot);
-          return;
-        }
-      }
-    }
-    c.conn = sv.drv.connectWith(lp, name.view(), port, Uni[tls.Stream](sv.tlsClients[&cfg].stream(name.view())), sink);
-  }
-}
-
-// A request on a connection: its head and whole body, and its limits; its
-// response goes back in the reply the 'await' gives
-struct ExchangeJob {
-  pub id: u64;
-  pub head: RequestHead;
-  pub body: String;
-  pub group: Option[CancelGroup];
-  pub deadline: Instant;
-
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[httpclient.Response, FetchError]]) {
-    let id, head, body, group, deadline = self.(id, head, body, group, deadline);
-    let k = sv.findConn(id);
-    if k >= sv.conns.bound() {
-      rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(
-        httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the connection names nothing"))));
-      return;
-    }
-    let c = sv.conns.borrowMutAt(u32.from(k)).unwrap();
-    let xh = sv.xwaits.add(waitFor(rp, defaultMaxBody));
-    let slot = usize.from(xh.index);
-    let w = (sv.xwaits.rawAt(u32.from(slot)) as &mut Wait);
-    w.conn = k;
-    w.body = body;
-    c.busy = c.busy + 1u32;
-    let length = if w.body.len() > 0usize {BodyLength.sized(u64.from(w.body.len()))} else {BodyLength()};
-    let sink = httpconn.Sink.Here(tokenOf(xh, 0u64));
-    match group {
-      case let Some(g) {w.req = sv.drv.requestIn(lp, c.conn, head, length, sink, g, deadline);}
-      else {
-        if deadline < forever() {
-          w.req = sv.drv.requestBy(lp, c.conn, head, length, sink, deadline);
-        } else {
-          w.req = sv.drv.request(lp, c.conn, head, length, sink);
-        }
-      }
-    }
-  }
-}
-
-// A Conn dropped: its connection closed (aborted, if exchanges are in flight)
-struct DropConnJob {
-  pub id: u64;
-
-  pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
-    let k = sv.findConn(id);
-    if k >= sv.conns.bound() {return;}
-    let c = sv.conns.borrowMutAt(u32.from(k)).unwrap();
-    c.dropped = true;
-    if c.closed {
-      sv.freeConn(k);
-    } else if c.busy > 0u32 {
-      sv.drv.abort(lp, c.conn);
-    } else {
-      sv.drv.close(lp, c.conn);
-    }
-  }
-}
-
-// (pub for tests/stale.cone, not an API) A stale connection event driven through a Service: a connection record is
-// added and freed, its cell reused by another record, and the first record's Closed event (its old token) is
-// delivered to onConnEvent. True if the second record is left as it was and its own event still takes effect
-pub fn staleEventDropped() bool {
-  var sv = Service.make();
-  var lpr = Loop.mustMake();
-  let h1 = sv.conns.add(ConnRec(true, 1u64, httpconn.ConnId.none(), false, false, false, false, 0u32,
-    None[actors.ReplyOf[Result[Conn, FetchError]]]));
-  let t1 = tokenOf(h1, connBit);
-  sv.freeConn(usize.from(h1.index));
-  let h2 = sv.conns.add(ConnRec(true, 2u64, httpconn.ConnId.none(), false, true, false, false, 0u32,
-    None[actors.ReplyOf[Result[Conn, FetchError]]]));
-  if h2.index != h1.index {return false;}
-  var stale = httpconn.Event.make(httpconn.EventKind.Closed, t1, httpconn.ConnId.none(), httpconn.ReqId.none());
-  sv.onConnEvent(&mut lpr, &stale);
-  let c = sv.conns.borrowMutAt(h2.index).unwrap();
-  if !c.open || c.closed {return false;}
-  var live = httpconn.Event.make(httpconn.EventKind.Closed, tokenOf(h2, connBit), httpconn.ConnId.none(), httpconn.ReqId.none());
-  sv.onConnEvent(&mut lpr, &live);
-  let c2 = sv.conns.borrowMutAt(h2.index).unwrap();
-  c2.closed && !c2.open
 }
