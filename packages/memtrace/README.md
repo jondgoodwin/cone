@@ -51,8 +51,8 @@ entry (its drop adds nothing to `lf`/`gr`).
 | `iobuf.take` | Trace | K10/K11 IoBuf | block bytes (the size class) | buffers out after | 0 | bytes asked for |
 | `iobuf.return` | Trace | K10/K11 | block bytes | buffers out after | 0 | bytes held |
 | `bufpool.reserve` | Debug | K10 IoBuf slabs and oversize blocks (VirtualAlloc / mmap: no malloc shim sees them) | slab bytes (2 MiB), or 0 for an oversize block | bytes of address space asked for | 0 | 0 |
-| `bufpool.commit` | Debug | K10 | as reserve | bytes made usable (a slab: slab + header page) | 0 | 0 |
-| `bufpool.release` | Debug | K10 | as reserve | bytes given back (no partial decommit exists) | 0 | the reservation's bytes |
+| `bufpool.commit` | Debug | K10 | as reserve | bytes made usable (a slab: its header page and first commit chunk; then each later 64 KiB chunk carved; a decommitted block brought back) | 0 | 0 |
+| `bufpool.release` | Debug | K10 | as reserve | bytes given back (a slab freed whole: what is committed of it and its header page; or idle blocks decommitted at the bound) | 0 | the reservation's bytes (a slab freed whole), else 0 |
 | `bufpool.cache` | Trace | K10 per-thread caches | 0 | the cache's misses so far | the cache's address (a key of its own) | bytes this cache holds after a batch refill or spill (no check on the per-block fast paths); the report sums each cache's last aux at each sample |
 | `arena.grow`, `arena.drop` | Debug | K18 Arena chunks | chunk room in bytes (drop: 0) | same (drop: 1) | 0 | 0 |
 | `gc.make`, `gc.free` | Trace | K21 Gc objects | object bytes | collector live bytes after | 0 | live objects after |
