@@ -23,6 +23,8 @@ import httpclient use Response, Request;
 import tls;
 import sse;
 import actors;
+import aio use IoLimits;
+import time use Duration;
 import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, EventStream;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -245,6 +247,66 @@ actor Prober {
   }
 }
 
+// A server that takes the TCP connection and never answers the ClientHello
+actor Staller {
+  ls: aio.Socket;
+  held: List[aio.Socket];
+
+  pub async fn start(self, ports: Sender[u16]) {
+    let r = await aio.listen(SocketAddr.localhost(0u16));
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {ls <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n"); return;}
+    }
+    var p = 0u16;
+    match await ls.localAddr() {
+      case let Ok(a) {p = a.port();}
+      else {}
+    }
+    ports.send(p);
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let r = await ls.acceptFromIn(IoLimits.none());
+      match r {
+        case var Ok(a) {
+          var s = aio.Socket.none();
+          s <-> a.sock;
+          held.push(s);
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    var dead = aio.Socket.none();
+    dead <-> ls;
+    held.clear();
+  }
+}
+
+// A client whose handshake never finishes: its handshakeTimeout is short
+actor StallProber {
+  client: HttpClient;
+
+  pub async fn run(self, port: u16, done: OneshotSender[u64]) {
+    let r = await client.get(url("https", port, "/hello").view());
+    printStr("a handshake that never finishes times out at the TLS stage: ");
+    match &r {
+      case let &Err(e) {printStr(yes(e.failure.stage == httpclient.Stage.Tls && e.failure.error.kind == ErrorKind.TimedOut));}
+      else {printStr("NO");}
+    }
+    printStr("\n...its request was never sent, and nothing answered it: ");
+    printStr(yes(neverSent(&r)));
+    printStr("\n");
+    var d = done;
+    d.send(1u64);
+  }
+}
+
 fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
 
 fn main() i32 {
@@ -286,6 +348,23 @@ fn main() i32 {
     printStr("a server with the wrong key listens: ");
     printStr(yes(bport != 0u16 && bport != 1u16));
     printStr("\n");
+
+    // A server that never answers the ClientHello, and a client that gives up on the handshake at once
+    let staller = Staller(aio.Socket.none(), List[aio.Socket]());
+    staller.start(ptx.clone());
+    let sport = take[u16](&mut prx, 0u16);
+    staller.serve();
+    {
+      var scfg = httpclient.Config.make();
+      scfg.conn.handshakeTimeout = Duration.fromMillis(300i64);
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      let sp = StallProber(HttpClient.make(scfg, actorhttp.defaultMaxBody));
+      sp.run(sport, tx);
+      rx.recv();
+    }
+    staller.stop();
   }
   finalAll();
   printStr("end\n");
