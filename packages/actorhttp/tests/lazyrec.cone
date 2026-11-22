@@ -1,6 +1,6 @@
-// The service is made only when a call needs it (row 653). A client's whole-body fetches with no cancel group go straight to its
-// client actor, so a program that makes only those never makes the service: 'servicesCreated' stays 0 through them. The first call
-// that needs the service (a fetch with a cancel group) makes it and makes the client's record then, with the handles there are:
+// The service is made only when a call needs it (row 653). A client's whole-body fetches, with a cancel group or none (row 654), go
+// straight to its client actor, so a program that makes only those never makes the service: 'servicesCreated' stays 0 through them.
+// The first call that needs the service (a stream) makes it and makes the client's record then, with the handles there are:
 // a client cloned before that has two, so dropping the clone leaves the client alive and its next fetch is answered (a record made
 // with one handle would end at the clone's drop and answer Cancelled).
 
@@ -60,6 +60,15 @@ actor Fetcher {
     }
   }
 
+  // A stream, which the service runs: "ok" if its head came, else "failed"
+  pub async fn stream(self, u: String, out: Sender[String]) {
+    let r = await client.stream(httpclient.Request.get(u.view()));
+    match &r {
+      case let &Ok(bs) {out.send(String.from("ok"));}
+      case let &Err(e) {out.send(String.from("failed"));}
+    }
+  }
+
   // Let go of the handle
   pub async fn release(self, out: Sender[String]) {
     client = HttpClient.none();
@@ -98,18 +107,22 @@ fn main() i32 {
 
   fa.get(u.clone(), true, otx.clone());
   expect(heard(&mut orx) == "ok", "a fetch with a cancel group is answered");
+  expect(servicesCreated() == 0u64, "...and made no service");
+
+  fa.stream(u.clone(), otx.clone());
+  expect(heard(&mut orx) == "ok", "a stream is answered");
   expect(servicesCreated() == 1u64, "...and made the service, once");
 
   fb.release(otx.clone());
   expect(heard(&mut orx) == "released", "the clone's handle is let go");
-  fa.get(u.clone(), true, otx.clone());
+  fa.stream(u.clone(), otx.clone());
   expect(heard(&mut orx) == "ok", "the record made late counted both handles: the client lives on");
   fa.get(u.clone(), false, otx.clone());
   expect(heard(&mut orx) == "ok", "...and its client actor still answers");
   expect(servicesCreated() == 1u64, "the service was made once in all");
 
   let fn0 = Fetcher(HttpClient.none());
-  fn0.get(u.clone(), true, otx.clone());
+  fn0.stream(u.clone(), otx.clone());
   expect(heard(&mut orx) == "failed", "a call on HttpClient.none() that needs the service is answered as a call on no client");
   done()
 }
