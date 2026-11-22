@@ -1,0 +1,67 @@
+// A struct that declares Hash and writes no 'hash' is supplied one over its fields, and a field that is an
+// enum declaring Hash (with its own '==' and 'hash') is accepted: the supplied hash calls the enum's own
+// 'hash', so equal enums hash equal (row 671; core's doc says a derived hash is refused only where a field is
+// a float or not Hash). Equal H values hash equal, a different enum field hashes differently, and an H is a
+// Dict key read back. Each printed value was checked by hand against the source.
+
+mod trait_hash_enum_field;
+
+import collections use *;
+import stdio use *;
+
+enum Color is Eq, Hash {
+  Red;
+  Green;
+  pub fn `==`(self: &, o: &Color) bool {
+    code(self) == code(o)
+  }
+  pub fn hash(self: &, h: &mut Hasher) {
+    h.writeU32(code(self));
+  }
+}
+
+fn code(c: &Color) u32 {
+  match c {
+    case is Red {1u32}
+    case is Green {2u32}
+  }
+}
+
+struct H is Eq, Hash {
+  pub c: Color;
+  pub n: i32;
+  pub fn `==`(self: &, o: &H) bool {c == o.c && n == o.n}
+}
+
+fn hashOf[K: Hash](k: &K) u64 {
+  var h = Hasher.withSeed(1u64);
+  k.hash(&mut h);
+  h.finish()
+}
+
+fn yes(label: &str, b: bool) {
+  printStr(label);
+  printStr(if b {" yes\n"} else {" NO\n"});
+}
+
+fn main() {
+  let a = H(Color.Red, 5);
+  let b = H(Color.Red, 5);
+  let c = H(Color.Green, 5);
+  yes("equal H, equal hash", hashOf(&a) == hashOf(&b));
+  yes("another color, another hash", hashOf(&a) != hashOf(&c));
+
+  // The enum's own hash is what the field feeds: Red is the one word 1, then the i32 5
+  var want = Hasher.withSeed(1u64);
+  want.writeU32(1u32);
+  want.writeU32(5u32);
+  yes("fed the enum's own hash", hashOf(&a) == want.finish());
+
+  var d = Dict[H, i64]();
+  d.insert(H(Color.Red, 5), 10i64);
+  d.insert(H(Color.Green, 5), 20i64);
+  printInt(d.getCopy(&b).unwrap());
+  printStr("\n");
+  printInt(d.getCopy(&c).unwrap());
+  printStr("\n");
+}
