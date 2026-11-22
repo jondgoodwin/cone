@@ -28,7 +28,7 @@ import iocore use SocketAddr;
 import http use *;
 import httpclient use Response, Request;
 import actors;
-import actorhttp use HttpClient, FetchError, liveClientActors, liveClientConnActors;
+import actorhttp use HttpClient, TestTarget, TestTargets, FetchError, liveClientActors, liveClientConnActors;
 import aio use IoLimits;
 
 let open: Atomic[u64];          // connections the backend holds open now
@@ -133,7 +133,7 @@ actor Backend {
   kind: u32;
 
   pub async fn start(self, ports: Sender[u16]) {
-    let r = await aio.listen(SocketAddr.v4(0u8, 0u8, 0u8, 0u8, 0u16));
+    let r = await aio.listen(SocketAddr.localhost(0u16));
     var res = r;
     match &mut res {
       case var &mut Ok(ok) {ls <-> *ok;}
@@ -357,6 +357,21 @@ fn urlAt(host: &str, path: &str) String {
   u
 }
 
+// A client whose origins 127.0.0.1 to 127.0.0.210 (every host the chains use, at the backend's port) all go to the one
+// backend on 127.0.0.1: each stays an origin of its own in the core, so the connection counts mean what they did when the
+// backend listened on every address (nothing here listens beyond loopback, so the firewall never asks).
+fn clientToBackend(cfg: httpclient.Config) HttpClient {
+  var t = TestTargets.make();
+  var k = 1u32;
+  while k <= 210u32 {
+    var h = String.from("127.0.0.");
+    h.appendUInt(u64.from(k));
+    t = t.to(h.view(), u16.from(backendPort.load()), TestTarget.address(SocketAddr.localhost(u16.from(backendPort.load()))));
+    k = k + 1u32;
+  }
+  HttpClient.makeTest(cfg, actorhttp.defaultMaxBody, t)
+}
+
 fn describe(r: &Result[Response, FetchError]) String {
   match r {
     case let &Ok(ok) {
@@ -479,7 +494,7 @@ fn redirects() {
   var cfg = httpclient.Config.make();
   cfg.maxRedirects = 10u32;
   cfg.maxOrigins = 3u32;
-  let f = Fetcher(HttpClient.make(cfg, actorhttp.defaultMaxBody));
+  let f = Fetcher(clientToBackend(cfg));
   f.get(urlAt("127.0.0.2", "/h0"), otx.clone());
   expectStr(takeS(&mut orx).view(), "err failed", "redirects: a chain longer than maxRedirects ends Failed, once");
   expectUInt(served.load(), 11u64, "redirects: the first request and ten redirects were made, no more");
@@ -575,7 +590,7 @@ fn closing() {
   otx, orx = Channel[String].make();
   var cfg = httpclient.Config.make();
   cfg.maxPerOrigin = 4u32;
-  let f = Fetcher(HttpClient.make(cfg, actorhttp.defaultMaxBody));
+  let f = Fetcher(clientToBackend(cfg));
   var i = 0u32;
   while i < 30u32 {
     f.get(urlAt("127.0.0.1", "/hold"), otx.clone());
