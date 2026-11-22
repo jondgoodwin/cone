@@ -42,19 +42,19 @@
 //   - size(bytes, align) is the class's size, or the pages for an oversize one.
 // A block may be released on any thread, whichever took it.
 //
-// The mechanism underneath is "fixed-size blocks with per-thread caches", written
-// so that anything wanting a stock of equal-sized blocks (the mailbox rings'
-// segments, later) can register a class of its own in the same slabs:
+// The mechanism underneath is "fixed-size blocks with per-thread caches". Its raw
+// calls (blockTake, blockPut, holdOversize, releaseOversize) are private: safe
+// code could return a block twice through them. A later user of the mechanism
+// (a stock of equal-sized blocks, such as the mailbox rings' segments) gets an
+// owning handle (as core's AlignedBlock), designed when it comes. What the
+// package exports of it:
 //
-//   registerClass(blockSize, cacheBlocks)    a class; during init       (CLASSES)
-//   blockTake(c)         a block of class c; null when the bound or the OS refuses
-//   blockPut(c, b)       a block comes home
+//   registerClass(blockSize, cacheBlocks)    a class; during init; a panic once the pool is in use  (CLASSES)
 //   flushThread()        this thread's cache goes back to the stock now; its end does too (THREADS)
 //   trimStock()          this thread's cache, and every idle slab, go back to the OS  (THE OS)
 //   trimEverything()     the same after every thread's cache is flushed; a panic if another
 //                        thread still has a cache (nothing else is safe to do with it)
 //   setLimits(maxBytes, keepBytes)  the process-wide bounds
-//   holdOversize(n) / releaseOversize(b, n)   a block of its own, counted in the bound
 //   blockStats()         the counters, a BlockStats
 //   osBlocks(), osBytes()  what the pool holds from the OS now
 //   classSize(c), page, largestClass, classCount        (the region's classes)
@@ -597,7 +597,7 @@ fn lateReturn(g: *Globals, c: usize, b: *u8) {
 // ---------------------------------------------------------------------------
 
 // A block of class c, or null when the bound, or the OS, will not give one
-pub fn blockTake(c: usize) *u8 {
+fn blockTake(c: usize) *u8 {
   let tc = threadCache();
   let t = takesAt(tc, c);
   *t = *t + 1u64;
@@ -631,7 +631,7 @@ fn refill(tc: *ThreadCache, c: usize, ln: *CacheLine) *u8 {
 }
 
 // Block b of class c comes home
-pub fn blockPut(c: usize, b: *u8) {
+fn blockPut(c: usize, b: *u8) {
   let tc = threadCache();
   let r = returnsAt(tc, c);
   *r = *r + 1u64;
@@ -798,8 +798,8 @@ fn listPartial(cs: *ClassState, s: *SlabRec) {
 // Only the class is checked, not that the block is out: a block released twice goes on the free
 // list twice and is then given to two takers. Safe code cannot do it: a block has one owner (a
 // List, a String, a buffer) that releases it once when it dies, and the entry points that release
-// (blockPut, releaseOversize, poolRelease, the region's 'release') take a raw pointer, which is
-// trusted. A caller that returns a block twice breaks the header's rule "a block is returned once".
+// (the region's 'release' and the pool's own: blockPut, releaseOversize and poolRelease, all private)
+// take a raw pointer, which is trusted. A caller that returns a block twice breaks the header's rule "a block is returned once".
 fn stockPut(g: *Globals, cs: *ClassState, src: **u8, n: u32) {
   (*cs).lock.lock();
   var i = 0usize;
@@ -1035,7 +1035,7 @@ fn trimAllCachesFinal() {
 
 // Oversize blocks, which are not pooled: a block of size bytes of its own,
 // counted against the bound, or null when the bound or the OS refuses it
-pub fn holdOversize(size: usize) *u8 {
+fn holdOversize(size: usize) *u8 {
   let g = glob();
   holdOversizeWithin(g, size, (*g).maxBytes.load())
 }
@@ -1057,7 +1057,7 @@ fn holdOversizeWithin(g: *Globals, size: usize, limit: u64) *u8 {
   b
 }
 
-pub fn releaseOversize(b: *u8, size: usize) {
+fn releaseOversize(b: *u8, size: usize) {
   let g = glob();
   osFree(b, size);
   (*g).held.sub(u64.from(size));
