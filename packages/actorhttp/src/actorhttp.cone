@@ -544,6 +544,7 @@ let liveClients: Atomic[u64];    // clientactor.cone: ClientActors alive
 let liveClientConns: Atomic[u64];    // ...and ClientConnActors
 let liveH3Conns: Atomic[u64];        // h3endpoint.cone: H3ConnActors alive
 let liveH3Endpoints: Atomic[u64];    // ...and H3Endpoints
+let manualTls: Arc[Mutex, TlsClients];    // manualconn.cone: connectSecure's TLS contexts, one for each config
 let clientReg: Arc[Mutex, ClientRegistry];    // the client actors not yet closed (clientactor.cone), for the program's end
 
 fn @initpure init() {
@@ -555,6 +556,7 @@ fn @initpure init() {
   liveClientConns = Atomic[u64].of(0u64);
   liveH3Conns = Atomic[u64].of(0u64);
   liveH3Endpoints = Atomic[u64].of(0u64);
+  manualTls = Arc[Mutex, TlsClients](TlsClients());
   clientReg = Arc[Mutex, ClientRegistry](ClientRegistry(List[ClientActor](), List[u64]()));
   svcHost = aio.host[Service](&makeService);
 }
@@ -939,17 +941,17 @@ fn checkRequest(r: &httpclient.Request, file: &Array[u8], line: u32) {
 // Connections
 // ---------------------------------------------------------------------------
 
-// One HTTP/1.1 connection an actor holds (the package's header, A CONNECTION):
-// plain data naming a connection the service thread's httpconn Driver owns,
-// which moves. Dropping it closes the connection politely, or resets it if an
-// exchange is still in flight on it, which then ends Cancelled
+// One connection an actor holds (the package's header, A CONNECTION): a handle
+// to the ManualConn actor that owns it (manualconn.cone), which moves.
+// Dropping it closes the connection politely, or resets it if an exchange is
+// still in flight on it, which then ends Cancelled
 pub struct Conn is Move {
-  id: u64;
+  owner: Option[ManualConn];
 
   // A Conn naming nothing, which closes nothing
-  pub fn none() Conn {Conn(0u64)}
+  pub fn none() Conn {Conn(None[ManualConn])}
 
-  pub fn isNone(self: &) bool {id == 0u64}
+  pub fn isNone(self: &) bool {owner is None}
 
   // A request with its whole body ('' for none), on this connection: the
   // response, whole. The head is the caller's to make, its authority the
@@ -964,27 +966,61 @@ pub struct Conn is Move {
   pub fn requestIn(self: &, head: RequestHead, body: String, lim: IoLimits, file: &Array[u8] = srcFile(), line: u32 = srcLine())
       actors.Awaitable[Result[httpclient.Response, FetchError]] {
     checkHead(&head, file, line);
-    awaitable[ExchangeJob, Result[httpclient.Response, FetchError]](
-      ExchangeJob(id, head, body, lim.group, lim.deadline))
+    let call = Arc[Mutex, Option[ConnCall]](Some[ConnCall](ConnCall(head, body, lim.group, lim.deadline)));
+    let who = match &owner {
+      case let &Some(m) {Some[ManualConn](*m)}
+      else {None[ManualConn]}
+    };
+    actors.Awaitable[Result[httpclient.Response, FetchError]].make(
+      fn(rp: actors.ReplyOf[Result[httpclient.Response, FetchError]]) [who, call] {
+        let slot = &mut *call;
+        let c = slot.take().unwrap();
+        let h, b, g, d = c.(head, body, group, deadline);
+        if who is None {
+          rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(
+            httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the connection names nothing"))));
+          return;
+        }
+        let m = who.unwrap();
+        m.exchange(h, b, g, d, rp);
+      })
   }
 
   fn final(self: &uni) {
-    if id != 0u64 {
-      post[DropConnJob](DropConnJob(id));
+    match &owner {
+      case let &Some(m) {m.close();}
+      else {}
     }
   }
 }
 
-// A connection to host:port, plain. The host is looked up and connected by
-// httpconn's driver, bounded by its connectTimeout (10 s)
+// A connection to host:port, plain. The host is looked up and connected
+// within its connectTimeout (10 s), and the Conn answered when the socket is
+// connected
 pub fn connect(host: &str, port: u16) actors.Awaitable[Result[Conn, FetchError]] {
-  awaitable[ConnectJob, Result[Conn, FetchError]](
-    ConnectJob(String.from(host), port, false, tls.ClientConfig.make()))
+  connectWith(host, port, false, tls.ClientConfig.make())
 }
 
 // A connection to host:port through TLS, the server's certificate checked as
 // cfg says (the host is the name it must hold)
 pub fn connectSecure(host: &str, port: u16, cfg: tls.ClientConfig) actors.Awaitable[Result[Conn, FetchError]] {
-  awaitable[ConnectJob, Result[Conn, FetchError]](
-    ConnectJob(String.from(host), port, true, cfg))
+  connectWith(host, port, true, cfg)
+}
+
+struct ConnSpec is Move {
+  host: String;
+  cfg: tls.ClientConfig;
+}
+
+// The connection's owner made when the Awaitable is started, the reply handed to it
+fn connectWith(host: &str, port: u16, secure: bool, cfg: tls.ClientConfig) actors.Awaitable[Result[Conn, FetchError]] {
+  let cell = Arc[Mutex, Option[ConnSpec]](Some[ConnSpec](ConnSpec(String.from(host), cfg)));
+  actors.Awaitable[Result[Conn, FetchError]].make(
+    fn(rp: ConnReply) [cell, port, secure] {
+      let slot = &mut *cell;
+      let sp = slot.take().unwrap();
+      let h, c = sp.(host, cfg);
+      let m = ManualConn();
+      m.start(rp, h, port, secure, c);
+    })
 }
