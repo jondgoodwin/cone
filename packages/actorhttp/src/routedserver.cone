@@ -98,6 +98,15 @@ pub actor ServerActor {
 
   // Listen, and answer the caller with the Server (or why not)
   pub async fn start(self, rp: actors.ReplyOf[Result[Server, ServerError]]) {
+    // HTTP/3 on a routed server waits for the handler half (the endpoint's connections answer 503 until then):
+    // 'offerHttp3' is refused rather than ignored
+    if args.cfg.http3 is Some {
+      rp.answer(Err[Server, ServerError](ServerError.failed(0u32,
+        "a routed server does not offer HTTP/3 yet (offerHttp3 is for a server without routes)")));
+      closing = true;
+      closedDone = true;
+      return;
+    }
     var secure = false;
     match &args.cfg.tlsConfig {
       case let &Some(given) {

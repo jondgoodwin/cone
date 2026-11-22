@@ -1,0 +1,299 @@
+// A full buffer pool refuses the HTTP/3 endpoint's receive buffer instead of panicking the program (a peer causes these
+// buffers: IoBuf.tryMake). The failure it guards is a server that goes deaf under memory pressure: the batch slot stays
+// owed, the endpoint counts the refusal (recvRefused), runs on, and receives again once room returns, so a real client
+// is then answered. As netmsg's recvrefused: the pool's try bank is filled (4 KiB buffers until tryMake refuses; the
+// pool is lowered first with setLimits), a client dials, the endpoint counts a refusal and nothing panics; the buffers
+// go home, and the client's handshake completes and its request is answered 503. The mutant gives up on the owed slot
+// (the receive ends where it should wait and try again): after the buffers are home the endpoint never receives again
+// and the client is never answered.
+
+mod h3endpointrefused;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf, Chain, setLimits, trim, stats;
+import iocore use Loop, Completion, SocketAddr;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver, Arc;
+import http use *;
+import tls;
+import actors;
+import thread;
+import aio;
+import httpclient use H3Cid, H3Connector, H3Acceptor;
+import actorhttp use H3Endpoint, H3EndpointConfig, H3EndpointStats, H3BoundEndpoint, startH3Endpoint, liveH3ConnActors, liveH3EndpointActors;
+import h3driver use *;
+import testing use *;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String()
+}
+
+// ---------------------------------------------------------------------------
+// The endpoint under test, and what it says
+// ---------------------------------------------------------------------------
+
+struct Snap {
+  stats: H3EndpointStats;
+  conns: u32;
+  hs: u32;
+  table: u64;
+}
+
+actor Prober {
+  pub async fn ask(self, e: H3Endpoint, out: Sender[Snap]) {
+    let s = await e.stats();
+    let c = await e.connections();
+    let h = await e.handshakingNow();
+    let t = await e.tableSize();
+    out.send(Snap(s, c, h, t));
+  }
+
+}
+
+fn snap(e: &H3Endpoint) Snap {
+  var tx: Sender[Snap];
+  var rx: Receiver[Snap];
+  tx, rx = Channel[Snap].make();
+  Prober().ask(*e, tx);
+  match rx.recvTimeout(Duration.fromMillis(4000i64)) {
+    case let Some(s) {return s;}
+    case is None[Snap] {}
+  }
+  panic("the endpoint did not answer")
+}
+
+
+fn waitConns(e: &H3Endpoint, want: u32, limitMs: i64) Snap {
+  let until = Instant.now() + Duration.fromMillis(limitMs);
+  var s = snap(e);
+  while s.conns != want && Instant.now() < until {
+    aioNap(20i64);
+    s = snap(e);
+  }
+  s
+}
+
+fn aioNap(ms: i64) {
+  let t = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < t {thread.sleep(Duration.fromMillis(1i64));}
+}
+
+fn serverPlugin(hsMs: i64) Plugin {
+  var cfg = Config.make();
+  if hsMs > 0i64 {cfg.transport.handshakeTimeout = Duration.fromMillis(hsMs);}
+  Plugin.make(cfg)
+}
+
+fn startEndpoint(cfg: H3EndpointConfig, hsMs: i64) H3BoundEndpoint {
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  let scfg = tls.ServerConfig.make(&cert, &key);
+  let plug = serverPlugin(hsMs);
+  let acc = match plug.acceptor(&scfg) {
+    case var Ok(a) {a}
+    case let Err(f) {panic("no acceptor")}
+  };
+  match startH3Endpoint(SocketAddr.localhost(0u16), acc, cfg) {
+    case var Ok(b) {return b;}
+    case let Err(e) {}
+  }
+  panic("the endpoint could not bind")
+}
+
+// ---------------------------------------------------------------------------
+// A real client: a client Driver on this thread's Loop
+// ---------------------------------------------------------------------------
+
+struct Client {
+  drv: Driver;
+  lp: Loop;
+  conn: ConnId;
+  connected: bool;
+  asked: bool;
+  status: u16;
+  reset: bool;
+  closed: bool;
+  failed: bool;
+}
+
+fn makeClient(trusting: bool) Client {
+  var cfg = Config.make();
+  if trusting {
+    cfg.transport.verify = tls.Verifier.roots(readText("ca.pem").view());
+  } else {
+    cfg.transport.verify = tls.Verifier.pinnedSha256("0000000000000000000000000000000000000000000000000000000000000000");
+  }
+  Client(Driver.make(cfg), Loop.mustMake(), ConnId.none(), false, false, 0u16, false, false, false)
+}
+
+fn dialClient(c: &mut Client, port: u16) {
+  match c.drv.connect(&mut c.lp, SocketAddr.localhost(port), "localhost", 1u64) {
+    case let Ok(id) {c.conn = id;}
+    case let Err(f) {panic("the client could not begin a connection");}
+  }
+}
+
+// Turn the client until 'done' says so (1: connected, 2: answered, 3: ended) or ms pass
+fn runClient(c: &mut Client, mode: u32, ms: i64) {
+  let until = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < until {
+    var cev = List[Event]();
+    c.drv.pump(&mut c.lp, &mut cev);
+    var k = 0usize;
+    while k < cev.len() {
+      let kind = cev[k].kind;
+      if kind == EventKind.Connected {c.connected = true;}
+      if kind == EventKind.Response {c.status = cev[k].response.status;}
+      if kind == EventKind.Failed {c.reset = true;}
+      if kind == EventKind.Closed {c.closed = true; if !cev[k].clean {c.failed = true;}}
+      k = k + 1usize;
+    }
+    if c.connected && !c.asked {
+      c.asked = true;
+      c.drv.request(&mut c.lp, c.conn, RequestHead.get("/", "localhost"), BodyLength(), 7u64);
+    }
+    if mode == 1u32 && c.connected {return;}
+    if mode == 2u32 && (c.status != 0u16 || c.reset) {return;}
+    if mode == 3u32 && c.closed {return;}
+    var limit = until;
+    let a = c.drv.wakeAt();
+    if a < limit {limit = a;}
+    var comps = List[Completion]();
+    c.lp.poll(limit, &mut comps);
+    k = 0usize;
+    while k < comps.len() {
+      let taken = c.drv.complete(&mut c.lp, &mut comps[k]);
+      k = k + 1usize;
+    }
+  }
+}
+
+fn closeClient(c: &mut Client) {
+  // a graceful close, so the server's connection ends now and not at its idle timeout
+  if c.connected && !c.closed {
+    c.drv.close(&mut c.lp, c.conn);
+    runClient(c, 3u32, 3000i64);
+  }
+  c.drv.abortAll(&mut c.lp);
+  runClient(c, 0u32, 100i64);
+}
+
+
+// ---------------------------------------------------------------------------
+// A raw UDP source: a socket bound to 127.0.0.1, and a client value's first datagram sent from it
+// ---------------------------------------------------------------------------
+
+actor Raw {
+  sock: aio.UdpSocket;
+  bound: SocketAddr;
+
+  fn init(self: &new) {*self = Self(sock: aio.UdpSocket.none(), bound: SocketAddr.localhost(0u16));}
+
+  pub async fn open(self, var up: OneshotSender[u16]) {
+    let made = await aio.bindUdp(SocketAddr.localhost(0u16));
+    match made {
+      case let Ok(s) {sock = s;}
+      case let Err(e) {up.send(0u16); return;}
+    }
+    match await sock.localAddr() {
+      case let Ok(a) {bound = a;}
+      case let Err(e) {}
+    }
+    up.send(bound.port());
+  }
+
+  pub async fn send(self, to: SocketAddr, data: IoBuf, var done: OneshotSender[bool]) {
+    let r = await sock.sendTo(to, data);
+    done.send(true);
+  }
+}
+
+fn newRaw() Raw {
+  let r = Raw();
+  var tx: OneshotSender[u16];
+  var rx: OneshotReceiver[u16];
+  tx, rx = Oneshot[u16].make();
+  r.open(tx);
+  require((rx.recv() || 0u16) != 0u16, "the raw socket bound");
+  r
+}
+
+fn rawSend(r: &Raw, to: SocketAddr, data: IoBuf) {
+  var tx: OneshotSender[bool];
+  var rx: OneshotReceiver[bool];
+  tx, rx = Oneshot[bool].make();
+  r.send(to, data, tx);
+  let ok = rx.recv();
+}
+
+fn copyOf(bytes: &Array[u8]) IoBuf {
+  var b = IoBuf(bytes.len);
+  b.append(bytes);
+  b
+}
+
+// Every 4 KiB buffer tryMake gives, until it refuses
+fn fillTry() Chain {
+  var held = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var going = true;
+  while going {
+    match IoBuf.tryMake(4096usize) {
+      case var Some(b) {
+        b.append("x");
+        held.push(b);
+      }
+      else {going = false;}
+    }
+  }
+  held
+}
+
+fn main() i32 {
+  setLimits(16usize * 1048576usize, 4usize * 1048576usize);
+  trim();
+  let ep = startEndpoint(H3EndpointConfig.make(), 0i64);
+  expectUInt(snap(&ep.endpoint).stats.recvRefused, 0u64, "no refusals before the pool is full");
+  let raw = newRaw();
+  var c = makeClient(true);
+  var held = fillTry();
+  expect(held.len() > 0usize, "the try bank gave buffers before refusing");
+  // (junk datagrams: each needs a fresh receive buffer, which the full pool refuses)
+  var n = 0u32;
+  var seen = 0u64;
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while seen == 0u64 && Instant.now() < limit {
+    rawSend(&raw, SocketAddr.localhost(ep.port), copyOf("junk datagram"));
+    aioNap(20i64);
+    seen = snap(&ep.endpoint).stats.recvRefused;
+  }
+  expect(seen > 0u64, "the endpoint counts a refused receive buffer and runs on");
+  held.advance(held.len());
+  // room is back: a real client is let in and answered
+  dialClient(&mut c, ep.port);
+  runClient(&mut c, 1u32, 10000i64);
+  expect(c.connected, "the client's handshake completes once room returns: the endpoint receives again");
+  runClient(&mut c, 2u32, 8000i64);
+  expectUInt(u64.from(c.status), 503u64, "and its request is answered");
+  expect(snap(&ep.endpoint).stats.recvRefused >= seen, "the count only grows");
+  closeClient(&mut c);
+  ep.endpoint.shutdown();
+  printStr("h3endpointrefused: done\n");
+  0i32
+}
