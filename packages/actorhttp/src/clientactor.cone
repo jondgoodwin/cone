@@ -82,6 +82,46 @@ fn abandonClients() {
 // How many ClientConnActors exist now
 pub fn liveClientConnActors() u64 {liveClientConns.load()}
 
+// A fetch's watch on its cancel group. The group's cancel (any thread, under the group's lock) runs 'signal', which posts the
+// client actor a message ('groupCancelled') and no more; the actor then tells the core, which answers the fetch Cancelled
+// and has the exchange stopped (CommandKind.Cancel). The cell holds the actor until the one signal or until the fetch's
+// record goes, whichever is first: neither side then holds the other
+struct WakeCell is Sendable {
+  slot: Arc[Mutex, Option[ClientActor]];
+
+  fn take(self: &) Option[ClientActor] {
+    let s = &mut *slot;
+    s.take()
+  }
+
+  fn clear(self: &) {
+    let s = &mut *slot;
+    let gone = s.take();
+  }
+
+  fn isClear(self: &) bool {
+    let s = &mut *slot;
+    *s is None
+  }
+}
+
+struct FetchWake is Sendable {
+  cell: WakeCell;
+  id: httpclient.FetchId;
+
+  pub fn signal(self: &) bool {
+    match cell.take() {
+      case let Some(a) {
+        a.groupCancelled(id);
+        true
+      }
+      else {false}
+    }
+  }
+
+  pub fn isGone(self: &) bool {cell.isClear()}
+}
+
 // A fetch handed to the client actor, with no hop through the service: an Awaitable whose start sends the request on with
 // the reply. A request has no clone and an Awaitable's closure cannot move what it holds, so the request waits in a
 // locked cell the closure takes it from when it is started
@@ -121,6 +161,7 @@ struct FRec is Move {
   tooBig: bool;
   pc: u32;
   gen: u32;
+  wake: Option[WakeCell];       // the watch on its cancel group, if it has one (FetchWake)
 }
 
 alias FetchRecs = Dict[u64, FRec];
@@ -257,7 +298,7 @@ pub actor ClientActor {
     }
     let body = String.from(req.body.view());
     let id = core.ask(req, httpclient.Sink.Here(0u64), Instant.now());
-    fetches.insert(id.number(), FRec(id, rp, body, httpclient.Response.blank(), false, 0u32, 0u32));
+    fetches.insert(id.number(), FRec(id, rp, body, httpclient.Response.blank(), false, 0u32, 0u32, None[WakeCell]));
     self.pump();
   }
 
@@ -296,7 +337,42 @@ pub actor ClientActor {
       self.cancelFetch(c.fetch);
     } else if k == httpclient.CommandKind.Watch {
       dls.push(c.deadline.nanos(), c.fetch);
+      match &c.group {
+        case let &Some(g) {self.watchGroup(c.fetch, g);}
+        else {}
+      }
     }
+  }
+
+  // A fetch with a cancel group: the actor is told when the group is cancelled (FetchWake). A group cancelled before the watch
+  // was made is seen after it, as every loop of the groups sees it
+  fn watchGroup(self, id: httpclient.FetchId, g: &CancelGroup) {
+    let key = id.number();
+    match fetches.getMut(&key) {
+      case let Some(r) {
+        match &r.wake {
+          case let &Some(c) {return;}
+          else {}
+        }
+        let slot = Arc[Mutex, Option[ClientActor]](Some[ClientActor](selfactor));
+        r.wake = Some[WakeCell](WakeCell(slot));
+        let w = FetchWake(WakeCell(slot), id);
+        g.watch(diag.nextLoopId(), &w);
+        if g.isCancelled() {let ignored = w.signal();}
+      }
+      else {}
+    }
+  }
+
+  // The fetch's cancel group was cancelled (told by FetchWake): the core ends the fetch, as for the program's own cancel
+  pub async fn groupCancelled(self, id: httpclient.FetchId) {
+    let key = id.number();
+    if !fetches.contains(&key) {return;}
+    var e = httpclient.PoolEvent.make(httpclient.PoolEventKind.Cancel);
+    e.fetch = id;
+    e.now = Instant.now();
+    core.on(&e, &facts);
+    self.pump();
   }
 
   // A fetch's request put on its connection
@@ -377,6 +453,12 @@ pub actor ClientActor {
     let key = c.fetch.number();
     match fetches.remove(&key) {
       case var Some(r) {
+        // the fetch is over: the watch on its group lets go of the client actor, so a group that outlives the fetch holds
+        // none (its entry stays, small, until a later 'watch' of the group sweeps it, as 'isGone' says)
+        match &r.wake {
+          case let &Some(w) {w.clear();}
+          else {}
+        }
         let k = c.event.kind;
         var resp = httpclient.Response.blank();
         resp <-> r.resp;
