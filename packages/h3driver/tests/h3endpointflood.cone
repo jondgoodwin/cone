@@ -1,0 +1,453 @@
+// The HTTP/3 endpoint's hostile-input tests (actorhttp's h3endpoint.cone; stage 5, row Q3). With no Retry (it went to
+// the backlog, Jon 21 Nov), a flood of Initials is bounded by the endpoint's own caps alone; these show the caps
+// hold, plainly, with real Initials (a client value's first datagram) sent from many sources:
+//   A. an Initial flood from many addresses (150 sources, each on an address of its own, 127.1.x.y): the handshaking
+//      cap holds (16 connections are admitted, the rest refused and counted by reason), live connection actors
+//      stay at the bound, and the buffers the endpoint holds stay bounded. The sources are real sockets, since an
+//      address cannot be forged on loopback; the cap on handshaking places is what such a flood meets
+//   B. many connections from one address (20 sources on one IP, 3 allowed): the per-address cap holds
+//   C. the admission rate (10 a second, a burst of 1 s) holds against 40 Initials at once
+//   D. THE HANDSHAKE DEADLINE: 4 half-open connections fill the 4 handshaking places, their peers pinging in Initial
+//      packets until just before the deadline (1.5 s), which a peer's packets do not extend: the places are freed at
+//      the deadline, a real client refused until then gets in once they are, and is answered. The mutant leaves the
+//      server Context's handshake timeout unset (ngtcp2's own default is none): the places stay held (the peers' packets
+//      keep QUIC's 30 s idle timer restarting) and the client never gets in
+//   E. the shutdown after a flood frees every connection actor
+
+mod h3endpointflood;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf, stats;
+import iocore use Loop, Completion, SocketAddr;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver, Arc;
+import http use *;
+import tls;
+import actors;
+import thread;
+import aio;
+import httpclient use H3Cid, H3Connector, H3Acceptor, H3ClientConn;
+import actorhttp use H3Endpoint, H3EndpointConfig, H3EndpointStats, H3BoundEndpoint, startH3Endpoint, liveH3ConnActors, liveH3EndpointActors;
+import h3driver use *;
+import testing use *;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String()
+}
+
+// ---------------------------------------------------------------------------
+// The endpoint under test, and what it says
+// ---------------------------------------------------------------------------
+
+struct Snap {
+  stats: H3EndpointStats;
+  conns: u32;
+  hs: u32;
+  table: u64;
+}
+
+actor Prober {
+  pub async fn ask(self, e: H3Endpoint, out: Sender[Snap]) {
+    let s = await e.stats();
+    let c = await e.connections();
+    let h = await e.handshakingNow();
+    let t = await e.tableSize();
+    out.send(Snap(s, c, h, t));
+  }
+
+}
+
+fn snap(e: &H3Endpoint) Snap {
+  var tx: Sender[Snap];
+  var rx: Receiver[Snap];
+  tx, rx = Channel[Snap].make();
+  Prober().ask(*e, tx);
+  match rx.recvTimeout(Duration.fromMillis(4000i64)) {
+    case let Some(s) {return s;}
+    case is None[Snap] {}
+  }
+  panic("the endpoint did not answer")
+}
+
+fn waitConns(e: &H3Endpoint, want: u32, limitMs: i64) Snap {
+  let until = Instant.now() + Duration.fromMillis(limitMs);
+  var s = snap(e);
+  while s.conns != want && Instant.now() < until {
+    aioNap(20i64);
+    s = snap(e);
+  }
+  s
+}
+
+fn aioNap(ms: i64) {
+  let t = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < t {thread.sleep(Duration.fromMillis(1i64));}
+}
+
+fn serverPlugin(hsMs: i64) Plugin {
+  var cfg = Config.make();
+  if hsMs > 0i64 {cfg.transport.handshakeTimeout = Duration.fromMillis(hsMs);}
+  Plugin.make(cfg)
+}
+
+fn startEndpoint(cfg: H3EndpointConfig, hsMs: i64) H3BoundEndpoint {
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  let scfg = tls.ServerConfig.make(&cert, &key);
+  let plug = serverPlugin(hsMs);
+  let acc = match plug.acceptor(&scfg) {
+    case var Ok(a) {a}
+    case let Err(f) {panic("no acceptor")}
+  };
+  match startH3Endpoint(SocketAddr.localhost(0u16), acc, cfg) {
+    case var Ok(b) {return b;}
+    case let Err(e) {}
+  }
+  panic("the endpoint could not bind")
+}
+
+// ---------------------------------------------------------------------------
+// A real client: a client Driver on this thread's Loop
+// ---------------------------------------------------------------------------
+
+struct Client {
+  drv: Driver;
+  lp: Loop;
+  conn: ConnId;
+  connected: bool;
+  asked: bool;
+  status: u16;
+  reset: bool;
+  closed: bool;
+  failed: bool;
+}
+
+fn makeClient(trusting: bool) Client {
+  var cfg = Config.make();
+  if trusting {
+    cfg.transport.verify = tls.Verifier.roots(readText("ca.pem").view());
+  } else {
+    cfg.transport.verify = tls.Verifier.pinnedSha256("0000000000000000000000000000000000000000000000000000000000000000");
+  }
+  Client(Driver.make(cfg), Loop.mustMake(), ConnId.none(), false, false, 0u16, false, false, false)
+}
+
+fn dialClient(c: &mut Client, port: u16) {
+  match c.drv.connect(&mut c.lp, SocketAddr.localhost(port), "localhost", 1u64) {
+    case let Ok(id) {c.conn = id;}
+    case let Err(f) {panic("the client could not begin a connection");}
+  }
+}
+
+// Turn the client until 'done' says so (1: connected, 2: answered, 3: ended) or ms pass
+fn runClient(c: &mut Client, mode: u32, ms: i64) {
+  let until = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < until {
+    var cev = List[Event]();
+    c.drv.pump(&mut c.lp, &mut cev);
+    var k = 0usize;
+    while k < cev.len() {
+      let kind = cev[k].kind;
+      if kind == EventKind.Connected {c.connected = true;}
+      if kind == EventKind.Response {c.status = cev[k].response.status;}
+      if kind == EventKind.Failed {c.reset = true;}
+      if kind == EventKind.Closed {c.closed = true; if !cev[k].clean {c.failed = true;}}
+      k = k + 1usize;
+    }
+    if c.connected && !c.asked {
+      c.asked = true;
+      c.drv.request(&mut c.lp, c.conn, RequestHead.get("/", "localhost"), BodyLength(), 7u64);
+    }
+    if mode == 1u32 && c.connected {return;}
+    if mode == 2u32 && (c.status != 0u16 || c.reset) {return;}
+    if mode == 3u32 && c.closed {return;}
+    var limit = until;
+    let a = c.drv.wakeAt();
+    if a < limit {limit = a;}
+    var comps = List[Completion]();
+    c.lp.poll(limit, &mut comps);
+    k = 0usize;
+    while k < comps.len() {
+      let taken = c.drv.complete(&mut c.lp, &mut comps[k]);
+      k = k + 1usize;
+    }
+  }
+}
+
+fn closeClient(c: &mut Client) {
+  // a graceful close, so the server's connection ends now and not at its idle timeout
+  if c.connected && !c.closed {
+    c.drv.close(&mut c.lp, c.conn);
+    runClient(c, 3u32, 3000i64);
+  }
+  c.drv.abortAll(&mut c.lp);
+  runClient(c, 0u32, 100i64);
+}
+
+// ---------------------------------------------------------------------------
+// A raw UDP source: a socket bound to 127.0.0.1, and a client value's first datagram sent from it
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The sources
+// ---------------------------------------------------------------------------
+
+// Sockets, each bound to an address of its own (distinct) or to 127.0.0.1 on a port of its own, and each sending the
+// first datagram of a client value (an Initial) to the endpoint; the sockets are kept open until 'release' so that
+// the endpoint's answers have somewhere to go
+actor Flooder {
+  socks: List[aio.UdpSocket];
+
+  fn init(self: &new) {*self = Self(socks: List[aio.UdpSocket]());}
+
+  pub async fn flood(self, con: Arc[imm, Uni[H3Connector]], to: SocketAddr, count: u32, distinct: bool, var done: OneshotSender[u32]) {
+    var sent = 0u32;
+    var i = 0u32;
+    while i < count {
+      var from = SocketAddr.localhost(0u16);
+      if distinct {
+        from = SocketAddr.v4(127u8, 1u8, u8.from((i / 250u32) & 255u32), u8.from(1u32 + i % 250u32), 0u16);
+      }
+      i = i + 1u32;
+      match await aio.bindUdp(from) {
+        case var Ok(s) {
+          var bound = from;
+          match await s.localAddr() {
+            case let Ok(a) {bound = a;}
+            case let Err(e) {}
+          }
+          var client = match con.connect("localhost", bound, to, Instant.now()) {
+            case var Ok(c) {c}
+            case let Err(f) {continue;}
+          };
+          match client.takeDatagram(Instant.now()) {
+            case var Some(b) {
+              let r = await s.sendTo(to, b);
+              sent = sent + 1u32;
+            }
+            case is None[IoBuf] {}
+          }
+          socks.push(s);
+        }
+        case let Err(e) {}
+      }
+    }
+    done.send(sent);
+  }
+
+  pub async fn release(self) {socks.clear();}
+}
+
+// A peer that sends an Initial and then keeps the half-open connection alive: the client value is run on, its
+// own timeouts handled and every datagram it makes sent (PINGs and probes in Initial packets, which decrypt at the
+// server), for ms milliseconds. It never gets an answer to use: nothing it is sent is given to it
+actor Pinger {
+  pub async fn run(self, con: Arc[imm, Uni[H3Connector]], to: SocketAddr, ms: i64, var done: OneshotSender[u32]) {
+    var sent = 0u32;
+    var sock = aio.UdpSocket.none();
+    match await aio.bindUdp(SocketAddr.localhost(0u16)) {
+      case let Ok(s) {sock = s;}
+      case let Err(e) {done.send(0u32); return;}
+    }
+    var bound = SocketAddr.localhost(0u16);
+    match await sock.localAddr() {
+      case let Ok(a) {bound = a;}
+      case let Err(e) {}
+    }
+    var client = match con.connect("localhost", bound, to, Instant.now()) {
+      case var Ok(c) {c}
+      case let Err(f) {done.send(0u32); return;}
+    };
+    let until = Instant.now() + Duration.fromMillis(ms);
+    while Instant.now() < until {
+      let now = Instant.now();
+      match client.pollTimeout() {
+        case let Some(t) {if t <= now {client.handleTimeout(now);}}
+        else {}
+      }
+      var going = true;
+      while going {
+        match client.takeDatagram(Instant.now()) {
+          case var Some(b) {
+            let r = await sock.sendTo(to, b);
+            sent = sent + 1u32;
+          }
+          case is None[IoBuf] {going = false;}
+        }
+      }
+      let z = await aio.sleep(Duration.fromMillis(10i64));
+    }
+    done.send(sent);
+  }
+}
+
+fn floodFrom(con: &Arc[imm, Uni[H3Connector]], to: SocketAddr, count: u32, distinct: bool, f: &Flooder) u32 {
+  var tx: OneshotSender[u32];
+  var rx: OneshotReceiver[u32];
+  tx, rx = Oneshot[u32].make();
+  f.flood(*con, to, count, distinct, tx);
+  rx.recv() || 0u32
+}
+
+fn settle(ms: i64) {aioNap(ms);}
+
+fn connectorFor(ccfg: &tls.ClientConfig) Arc[imm, Uni[H3Connector]] {
+  var plug = Plugin.forClient(ccfg);
+  match plug.connector() {
+    case var Ok(k) {return Arc[imm, Uni[H3Connector]](k);}
+    case let Err(f) {}
+  }
+  panic("no connector")
+}
+
+fn main() i32 {
+  var ccfg = tls.ClientConfig.make();
+  ccfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  let con = connectorFor(&ccfg);
+
+  let lent0 = u64.from(stats().lentBytes);
+  // A. A flood from many addresses
+  {
+    var cfg = H3EndpointConfig.make();
+    cfg.maxHandshaking = 16usize;
+    cfg.maxConnections = 40usize;
+    cfg.maxPerAddress = 2usize;
+    cfg.admitRate = 0u32;
+    cfg.shutdownTimeout = Duration.fromMillis(300i64);
+    let ep = startEndpoint(cfg, 0i64);
+    let lentBefore = stats().lentBytes;
+    let f = Flooder();
+    let sent = floodFrom(&con, SocketAddr.localhost(ep.port), 150u32, true, &f);
+    expectUInt(u64.from(sent), 150u64, "A: 150 Initials sent, each from an address of its own");
+    settle(800i64);
+    let s = snap(&ep.endpoint);
+    expectUInt(s.stats.admitted, 16u64, "A: exactly the handshaking cap's worth of connections admitted");
+    expectUInt(s.stats.refusedHandshaking, 134u64, "A: every other Initial refused at maxHandshaking, counted");
+    expectUInt(s.stats.refusedFull + s.stats.refusedPerAddress + s.stats.refusedRate, 0u64, "A: and by no other reason");
+    expectUInt(u64.from(s.conns), 16u64, "A: live connections stay at the bound");
+    expectUInt(u64.from(s.hs), 16u64, "A: all of them handshaking");
+    expect(liveH3ConnActors() <= 16u64, "A: live connection actors stay at the bound");
+    expect(s.table <= 16u64 * 17u64, "A: the table stays bounded");
+    expect(stats().lentBytes < lentBefore + 4194304usize, "A: the buffers lent stay bounded (a block or two a connection, not a flood's worth)");
+    f.release();
+    ep.endpoint.shutdown();
+    let gone = waitConns(&ep.endpoint, 0u32, 6000i64);
+    expectUInt(u64.from(gone.conns), 0u64, "A: the shutdown ends every connection");
+  }
+  var waitedA = 0u32;
+  while liveH3ConnActors() > 0u64 && waitedA < 300u32 {aioNap(10i64); waitedA = waitedA + 1u32;}
+  expectUInt(liveH3ConnActors(), 0u64, "A: every connection actor is freed after the shutdown");
+
+  // B. Many sources on one address
+  {
+    var cfg = H3EndpointConfig.make();
+    cfg.maxPerAddress = 3usize;
+    cfg.admitRate = 0u32;
+    cfg.shutdownTimeout = Duration.fromMillis(300i64);
+    let ep = startEndpoint(cfg, 0i64);
+    let f = Flooder();
+    let sent = floodFrom(&con, SocketAddr.localhost(ep.port), 20u32, false, &f);
+    settle(500i64);
+    let s = snap(&ep.endpoint);
+    expectUInt(s.stats.admitted, 3u64, "B: three admitted from one address");
+    expectUInt(s.stats.refusedPerAddress, 17u64, "B: the other seventeen refused at maxPerAddress, counted");
+    f.release();
+    ep.endpoint.shutdown();
+    let gone = waitConns(&ep.endpoint, 0u32, 6000i64);
+  }
+
+  // C. The admission rate
+  {
+    var cfg = H3EndpointConfig.make();
+    cfg.maxPerAddress = 100usize;
+    cfg.maxHandshaking = 100usize;
+    cfg.admitRate = 10u32;
+    cfg.admitBurst = 1u32;
+    cfg.shutdownTimeout = Duration.fromMillis(300i64);
+    let ep = startEndpoint(cfg, 0i64);
+    let f = Flooder();
+    let sent = floodFrom(&con, SocketAddr.localhost(ep.port), 40u32, true, &f);
+    settle(500i64);
+    let s = snap(&ep.endpoint);
+    expect(s.stats.admitted >= 10u64 && s.stats.admitted <= 13u64, "C: about a second's worth (10) admitted at 10 a second");
+    expectUInt(s.stats.refusedRate, 40u64 - s.stats.admitted, "C: the rest refused by the rate, counted");
+    f.release();
+    ep.endpoint.shutdown();
+    let gone = waitConns(&ep.endpoint, 0u32, 6000i64);
+  }
+
+  // D. The handshake deadline
+  {
+    var cfg = H3EndpointConfig.make();
+    cfg.maxHandshaking = 4usize;
+    cfg.maxPerAddress = 100usize;
+    cfg.admitRate = 0u32;
+    cfg.shutdownTimeout = Duration.fromMillis(300i64);
+    let ep = startEndpoint(cfg, 1500i64);
+    var tx: OneshotSender[u32];
+    var rx: OneshotReceiver[u32];
+    tx, rx = Oneshot[u32].make();
+    var p = 0u32;
+    while p < 4u32 {
+      var t2: OneshotSender[u32];
+      var r2: OneshotReceiver[u32];
+      t2, r2 = Oneshot[u32].make();
+      Pinger().run(con, SocketAddr.localhost(ep.port), 1400i64, t2);
+      p = p + 1u32;
+    }
+    settle(300i64);
+    let held = snap(&ep.endpoint);
+    expectUInt(u64.from(held.hs), 4u64, "D: four half-open connections hold the four handshaking places");
+    var c = makeClient(true);
+    dialClient(&mut c, ep.port);
+    runClient(&mut c, 1u32, 300i64);
+    expect(!c.connected, "D: a real client is not let in while the places are held");
+    runClient(&mut c, 1u32, 10000i64);
+    expect(c.connected, "D: a real client gets in once the places are freed at the deadline");
+    runClient(&mut c, 2u32, 5000i64);
+    expectUInt(u64.from(c.status), 503u64, "D: and is answered");
+    let after = snap(&ep.endpoint);
+    expect(after.stats.refusedHandshaking >= 1u64, "D: its first Initial was refused for want of a place");
+    expectUInt(u64.from(after.conns), 1u64, "D: only the real client's connection is held: the half-open ones ended at the deadline");
+    closeClient(&mut c);
+    ep.endpoint.shutdown();
+    let gone = waitConns(&ep.endpoint, 0u32, 6000i64);
+  }
+
+  var waitedEp = 0u32;
+  while (liveH3EndpointActors() > 0u64 || liveH3ConnActors() > 0u64) && waitedEp < 500u32 {
+    aioNap(10i64);
+    waitedEp = waitedEp + 1u32;
+  }
+  expectUInt(liveH3ConnActors(), 0u64, "E: every connection actor is freed");
+  expectUInt(liveH3EndpointActors(), 0u64, "E: every endpoint actor is freed");
+  var waitedLent = 0u32;
+  while u64.from(stats().lentBytes) != lent0 && waitedLent < 1000u32 {
+    aioNap(10i64);
+    waitedLent = waitedLent + 1u32;
+  }
+  expectUInt(u64.from(stats().lentBytes), lent0, "E: no buffer is lent once everything is stopped");
+  finalAll();
+  let io = aio.ioCounters();
+  expectUInt(io.inFlight, 0u64, "E: no aio operation is in flight at the end");
+  expect(io.submitted == io.delivered, "E: every aio operation submitted was delivered");
+  printStr("h3endpointflood: done\n");
+  0i32
+}

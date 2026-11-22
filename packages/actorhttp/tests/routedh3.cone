@@ -1,0 +1,60 @@
+// A routed server given 'offerHttp3' answers an error from 'listen' (stage 5, row Q3: the endpoint's handler half is not
+// built, so a routed server cannot offer HTTP/3 yet) instead of ignoring the request silently, as it did. The control: the
+// same routes without 'offerHttp3' listen.
+
+mod routedh3;
+
+import stdio use *;
+import sync use Channel, Sender, Receiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import http use *;
+import tls;
+import actors;
+import httpclient;
+import actorhttp use Server, ServerConfig, HttpRoutes, ServerError;
+import testing use *;
+
+// A plug-in maker that makes none that listens (the refusal comes before the maker is called)
+fn nothing(t: &tls.ClientConfig) Uni[httpclient.Http3] {
+  Uni[httpclient.NoHttp3](httpclient.NoHttp3.make())
+}
+
+actor Lis {
+  pub async fn go(self, cfg: ServerConfig, var out: Sender[String]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {
+        ok.close();
+        out.send(String.from("listening"));
+      }
+      case let &mut Err(e) {out.send(String() <- e);}
+    }
+  }
+}
+
+fn tryListen(cfg: ServerConfig) String {
+  var tx: Sender[String];
+  var rx: Receiver[String];
+  tx, rx = Channel[String].make();
+  Lis().go(cfg, tx);
+  match rx.recvTimeout(Duration.fromMillis(5000i64)) {
+    case let Some(s) {return s;}
+    case is None[String] {}
+  }
+  String.from("no answer")
+}
+
+fn main() i32 {
+  let routes = HttpRoutes.make().queue("", "/");
+  let ok = tryListen(ServerConfig.make().routes(routes));
+  expectStr(ok.view(), "listening", "a routed server without offerHttp3 listens");
+  let refused = tryListen(ServerConfig.make().routes(HttpRoutes.make().queue("", "/")).offerHttp3(&nothing));
+  expect(refused.view().contains("does not offer HTTP/3"), "a routed server given offerHttp3 answers an error");
+  printStr("routedh3: ");
+  printStr(refused.view());
+  printStr("\n");
+  0i32
+}

@@ -1467,7 +1467,13 @@ pub struct Driver {
       let lk = if lay(c).overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
       c.failure = Some[Failure](Failure.make(Stage.Tls, lay(c).failureCode(), lk, text.view()));
     } else {
-      c.failure = Some[Failure](Failure.make(stage, code, kind, detail));
+      var nf = Failure.make(stage, code, kind, detail);
+      // A connection that was never made has written nothing: what waits on it was never sent
+      if stage == Stage.Resolve || stage == Stage.Connect {
+        nf.unsent = true;
+        nf.error.noResponse = true;
+      }
+      c.failure = Some[Failure](nf);
     }
     self.closeNow(lp, i, false, false);
   }

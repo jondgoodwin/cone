@@ -301,6 +301,28 @@ pub struct H3Conn is Move {
     work = true;
   }
 
+  // The same, from a host that ran the job itself (an actor's aio.onPool, which answers values and no Completion): the
+  // answer is made into the Completion quic's verifyDone reads, the job's buffer (or the IoError that ended it) in it
+  pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant) {
+    var status = diag.outcomeDone;
+    var code = 0u32;
+    var b = IoBuf();
+    match failed {
+      case let Some(e) {
+        status = if e.isCancelled() {diag.outcomeCancelled} else if e.isTimedOut() {diag.outcomeTimedOut} else {diag.outcomeFailed};
+        code = e.code;
+      }
+      else {
+        b = IoBuf(buf.len());
+        b.append(buf.view());
+      }
+    }
+    var c = Completion(0u64, OpId.none(), 0u64, diag.kindCall, status, b.len(), code, b, None, Handle.none(),
+      SocketAddr.localhost(0u16), now, now, now);
+    q.verifyDone(&mut c);
+    work = true;
+  }
+
   // How many more bytes a stream's sendData takes before it refuses (none while QUIC holds
   // sendWatermark bytes of it)
   pub fn writeRoomOf(self: &, slot: RecId) usize {
