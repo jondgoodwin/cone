@@ -19,6 +19,7 @@ import testing use *;
 import stdio use printStr, printUInt;
 import thread;
 import process;
+import env;
 import collections use List, String;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
 import time use Duration, Instant;
@@ -239,10 +240,20 @@ fn scenario(mode: u64, wantCode: u64) {
   expect(w2 < bulkWrites, "the peer's bulk writes are not all through");
   if mode == 1u64 {
     group.cancel();
-  } else if mode == 0u64 {
+  }
+  // The measuring run (ROOMREAD_IDLE set): the read stays parked, the process idle, for 10 s
+  if mode == 0u64 && idling() {
+    thread.sleep(Duration.fromMillis(10000i64));
+  }
+  let gave = Instant.now();
+  if mode == 0u64 {
     giveRoom(&mut held);
   }
   let late = rrx.recvTimeout(Duration.fromMillis(15000i64));
+  if mode == 0u64 {
+    // the wake, or with it off the backstop (100 ms), brings the read back within a second
+    expect((Instant.now() - gave).millis() < 1000i64, "the read resumes within a second of the room");
+  }
   var code = 0u64;
   match late {
     case let Some(v) {code = v;}
@@ -264,10 +275,26 @@ fn child(mode: u64) i32 {
   initAll();
   scenario(mode, if mode == 0u64 {10u64} else if mode == 2u64 {3u64} else {2u64});
   finalAll();
+  if mode == 0u64 && idling() {
+    // the I/O thread's CPU over its whole life: the 10 s parked, and the case's own start and end
+    let t = aio.ioThreadTimes();
+    printStr("io thread cpu ms, user+kernel: ");
+    printUInt((t.userNs + t.kernelNs) / 1000000u64);
+    printStr(" of wall ms ");
+    printUInt(t.wallNs / 1000000u64);
+    printStr("\n");
+  }
   done()
 }
 
-fn ran(exe: &str, mode: u64, loop: bool) process.Output {
+fn idling() bool {
+  match env.get("ROOMREAD_IDLE") {
+    case let Some(v) {true}
+    else {false}
+  }
+}
+
+fn ran(exe: &str, mode: u64, loop: bool, nowake: bool) process.Output {
   var o = process.Output(0u32, 0u32, false, String(), String());
   var c = List[String]();
   c.push(String.from(exe));
@@ -276,6 +303,9 @@ fn ran(exe: &str, mode: u64, loop: bool) process.Output {
   var vars = List[process.EnvVar]();
   if loop {
     vars.push(process.EnvVar(String.from("CONE_AIO_NO_WORKER_PORT"), String.from("1")));
+  }
+  if nowake {
+    vars.push(process.EnvVar(String.from("CONE_AIO_NO_ROOM_WAKE"), String.from("1")));
   }
   match process.run(c.view(), process.Options(timeout: Duration.fromMillis(120000i64), env: Some[List[process.EnvVar]](vars))) {
     case var Ok(ok) {o <-> ok;}
@@ -303,7 +333,8 @@ fn main() i32 {
   while round < 2u32 {
     var mode = 0u64;
     while mode < 5u64 {
-      let o = ran(exe.view(), mode, loop);
+      let o = ran(exe.view(), mode, loop, false);
+      if mode == 0u64 && idling() {printStr(o.stdout.view());}
       if !o.success() {
         printStr(if loop {"the Loop's sockets, case "} else {"the worker port's sockets, case "});
         printUInt(mode);
@@ -317,5 +348,13 @@ fn main() i32 {
     loop = true;
     round = round + 1u32;
   }
+  // The wake not registered: room given back with no wake to hear it, and only the backstop brings the read back
+  // (the Loop's flow, and the worker port's)
+  let b1 = ran(exe.view(), 0u64, false, true);
+  if !b1.success() {printStr(b1.stdout.view()); printStr(b1.stderr.view());}
+  expect(b1.success(), "the backstop resumes a read on the worker port's sockets, with no wake");
+  let b2 = ran(exe.view(), 0u64, true, true);
+  if !b2.success() {printStr(b2.stdout.view()); printStr(b2.stderr.view());}
+  expect(b2.success(), "the backstop resumes a read on the Loop's sockets, with no wake");
   done()
 }

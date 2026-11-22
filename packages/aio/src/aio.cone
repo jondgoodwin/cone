@@ -765,7 +765,11 @@ fn @initpure init() {
   roomHead = Atomic[usize].of(0usize);
   roomTail = Atomic[usize].of(0usize);
   roomWoke = Atomic[u32].of(0u32);
-  bufpool.addRoomWake(&roomWake);
+  // TEST KNOB (row 587's backstop test): with CONE_AIO_NO_ROOM_WAKE set the wake is not registered, so only the
+  // backstop resumes a parked read
+  if libc.getenv("CONE_AIO_NO_ROOM_WAKE") as usize == 0usize {
+    bufpool.addRoomWake(&roomWake);
+  }
 }
 
 // A panic, reported at the line calling 'die'
@@ -1190,6 +1194,14 @@ let roomLock: Mutex;
 let roomHead: Atomic[usize];      // the oldest parked record, under roomLock
 let roomTail: Atomic[usize];
 let roomWoke: Atomic[u32];        // 1: room may have come back since the I/O thread last looked
+
+// THE BACKSTOP. Room can sit where no room event is made for it (in an idle thread's cache, until that thread
+// spills or ends), and a wake can be missed by a rule's gap; a parked read must not wait for ever for it. While
+// any read is parked the I/O thread's poll waits at most this long (no timer otherwise) and then retries every
+// parked read, as a wake does. The I/O thread's own take sees the stock and its own cache, not another
+// thread's unflushed one: the backstop finds room that is in the stock without an event, not a cache that
+// is never flushed
+const roomBackstopMs = 100i64;
 
 // A watch key for a parked record's group, clear of the Loop's ids, the worker's bit and udpWatchBit
 const roomWatchBit = 0x1000000000000000u64;
@@ -2170,10 +2182,15 @@ fn ioMain(arg: IoArg) u32 {
     sync.futexWake(&(*me).ready);
     var more = true;
     var quick = false;                      // back from standing aside: this look does not wait
+    var roomNext = Instant.now();           // the next backstop retry of parked reads (ROOM)
     // With no service hosted the pass is aio's alone: every step for the
     // services is skipped, one test each
     while more {
-      lp.poll(if quick {Instant.now()} else {(*me).until}, out);
+      var waitTo = if quick {Instant.now()} else {(*me).until};
+      if roomHead.load() != 0usize && roomNext < waitTo {
+        waitTo = roomNext;       // the backstop (ROOM): while a read is parked the poll does not wait past it
+      }
+      lp.poll(waitTo, out);
       quick = false;
       if (*me).hosts.len() != 0usize {
         offerAll(&(*me).hosts, lp, out);
@@ -2224,13 +2241,21 @@ fn ioMain(arg: IoArg) u32 {
           (*me).until = turnHosts(&(*me).hosts, lp);
         }
       }
-      if !stop && roomWoke.load() != 0u32 {
+      if !stop && roomHead.load() != 0usize {
+        let now = Instant.now();
+        if roomWoke.load() != 0u32 || now >= roomNext {
+          roomRetry(lp);
+          roomNext = Instant.now() + Duration.fromMillis(roomBackstopMs);
+        } else if roomNext > now + Duration.fromMillis(roomBackstopMs) {
+          roomNext = now + Duration.fromMillis(roomBackstopMs);
+        }
+      } else if !stop && roomWoke.load() != 0u32 {
         roomRetry(lp);
       }
       pool.flushHere();
       // Workers are passing: leave the port to them. Never with a service
       // hosted: its completions are for this thread
-      if more && (*me).hosts.len() == 0usize && workersBusy(me) && !lp.dueWithin(Duration.fromNanos(asideMarginNanos)) {
+      if more && (*me).hosts.len() == 0usize && roomHead.load() == 0usize && workersBusy(me) && !lp.dueWithin(Duration.fromNanos(asideMarginNanos)) {
         standAside(me);
         quick = true;
       }
