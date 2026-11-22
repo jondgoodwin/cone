@@ -78,13 +78,59 @@ fn yesNo(b: bool) &str {if b {"yes"} else {"no"}}
 
 const budget = 8388608usize;      // a connection's block budget: more than these tests' streams need
 
-// One direction of the network: every 'every'th payload lost (0: none), each batch reversed when 'reverse'
+// A seeded generator (the same small one http3's roundtrip test uses): the same seed, the same run, on every platform
+struct Rng {
+  s: u64;
+  fn next(self: &mut) u64 {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    s >> 33u64
+  }
+  fn below(self: &mut, n: u64) u64 {self.next() % n}
+}
+
+// One direction of the network: every 'every'th payload lost (0: none), each batch reversed when 'reverse'; and,
+// from a seeded generator, each payload lost with chance 'permille' in a thousand and each batch shuffled when 'mix'
 struct Link {
   every: u32;
   reverse: bool;
   count: u32;
+  permille: u32;
+  mix: bool;
+  rng: Rng;
 
-  fn make(every: u32, reverse: bool) Link {Link(every, reverse, 0u32)}
+  fn make(every: u32, reverse: bool) Link {Link(every, reverse, 0u32, 0u32, false, Rng(1u64))}
+  fn random(permille: u32, mix: bool, seed: u64) Link {Link(0u32, false, 0u32, permille, mix, Rng(seed))}
+
+  // The indexes of a batch of n payloads, in the order they arrive, the lost ones left out
+  fn plan(self: &mut, n: usize) List[usize] {
+    var order = List[usize]();
+    var k = 0usize;
+    while k < n {
+      order.push(if reverse {n - 1usize - k} else {k});
+      k = k + 1usize;
+    }
+    if mix {
+      // Fisher-Yates
+      var j = n;
+      while j > 1usize {
+        let r = usize.from(rng.below(u64.from(j)));
+        let t = order[j - 1usize];
+        order[j - 1usize] = order[r];
+        order[r] = t;
+        j = j - 1usize;
+      }
+    }
+    var kept = List[usize]();
+    k = 0usize;
+    while k < n {
+      count = count + 1u32;
+      var lost = every > 0u32 && count % every == 0u32;
+      if permille > 0u32 && rng.below(1000u64) < u64.from(permille) {lost = true;}
+      if !lost {kept.push(order[k]);}
+      k = k + 1usize;
+    }
+    kept
+  }
 }
 
 // What the test saw at each end
@@ -156,14 +202,10 @@ fn carryUp(p: &mut H3Pair, link: &mut Link, now: Instant) bool {
     }
   }
   let n = batch.len();
+  let order = link.plan(n);
   var k = 0usize;
-  while k < n {
-    let i = if link.reverse {n - 1usize - k} else {k};
-    link.count = link.count + 1u32;
-    if link.every > 0u32 && link.count % link.every == 0u32 {
-    } else {
-      p.s.datagramIn(batch[i].view(), now);
-    }
+  while k < order.len() {
+    p.s.datagramIn(batch[order[k]].view(), now);
     k = k + 1usize;
   }
   n > 0usize
@@ -178,14 +220,10 @@ fn carryDown(p: &mut H3Pair, link: &mut Link, now: Instant) bool {
     }
   }
   let n = batch.len();
+  let order = link.plan(n);
   var k = 0usize;
-  while k < n {
-    let i = if link.reverse {n - 1usize - k} else {k};
-    link.count = link.count + 1u32;
-    if link.every > 0u32 && link.count % link.every == 0u32 {
-    } else {
-      p.c.datagramIn(batch[i].view(), now);
-    }
+  while k < order.len() {
+    p.c.datagramIn(batch[order[k]].view(), now);
     k = k + 1usize;
   }
   n > 0usize
@@ -352,15 +390,15 @@ fn describe(name: &str, t: &Tally) {
 }
 
 // Twelve requests answered over a link, then the connection shut down
-fn linkRun(name: &str, every: u32, reverse: bool) {
+fn linkRun(name: &str, upIn: Link, downIn: Link) {
   var scfg = quic.Config.make();
   scfg.maxStreamsBidi = 8u64;
   let sctx = serverCtx(scfg);
   let cctx = clientCtx(quic.Config.make());
   var now = Instant.now();
   var p = makePair(&cctx, &sctx, quic.defaultStreamIdLimit, quic.defaultStreamIdLimit, now);
-  var up = Link.make(every, reverse);
-  var down = Link.make(every, reverse);
+  var up = upIn;
+  var down = downIn;
   var t = Tally.make(true);
   let limit = now + Duration.fromSeconds(20i64);
   var passes = 0u32;
@@ -588,11 +626,30 @@ fn genericRun() {
 
 fn roomDyn(c: &Uni[httpconn.ClientProto]) usize {c.room()}
 
+// Seeded random loss and reordering, both ways: the same seed gives the same run on every platform
+fn randomRuns() {
+  var seed = 1u64;
+  while seed <= 3u64 {
+    var a = String.from("seed ");
+    a.appendUInt(seed);
+    var b = String.from(a.view());
+    var c = String.from(a.view());
+    a.append(", random loss (10%)");
+    linkRun(a.view(), Link.random(100u32, false, seed), Link.random(100u32, false, seed + 100u64));
+    b.append(", random reordering");
+    linkRun(b.view(), Link.random(0u32, true, seed), Link.random(0u32, true, seed + 100u64));
+    c.append(", random loss (10%) and reordering");
+    linkRun(c.view(), Link.random(100u32, true, seed), Link.random(100u32, true, seed + 100u64));
+    seed = seed + 1u64;
+  }
+}
+
 fn main() {
-  linkRun("a clean link", 0u32, false);
-  linkRun("every 5th datagram lost", 5u32, false);
-  linkRun("every batch reversed", 0u32, true);
-  linkRun("every 7th lost and every batch reversed", 7u32, true);
+  linkRun("a clean link", Link.make(0u32, false), Link.make(0u32, false));
+  linkRun("every 5th datagram lost", Link.make(5u32, false), Link.make(5u32, false));
+  linkRun("every batch reversed", Link.make(0u32, true), Link.make(0u32, true));
+  linkRun("every 7th lost and every batch reversed", Link.make(7u32, true), Link.make(7u32, true));
+  randomRuns();
   endingRun();
   mismatchRun();
   handshakeRun();

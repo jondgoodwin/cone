@@ -26,6 +26,7 @@ import thread;
 import stdio;
 import time use Instant, Duration;
 import bufpool;
+import iobuf use IoBuf;
 import collections use List;
 
 let primed: Atomic[u64];
@@ -77,23 +78,23 @@ fn hook() {
 
 // a running thread: its cache is full and it goes on taking after main returns
 fn worker(arg: u64) u64 {
-  var held = List[*u8]();
+  var held = List[IoBuf]();
   var k = 0usize;
-  while k < 6usize {held.push(bufpool.blockTake(0usize)); k = k + 1usize;}
+  while k < 6usize {held.push(IoBuf(4096usize)); k = k + 1usize;}
   k = 0usize;
-  while k < 2usize {held.push(bufpool.blockTake(1usize)); k = k + 1usize;}
-  k = 0usize;
-  while k < 6usize {bufpool.blockPut(0usize, held[k]); k = k + 1usize;}
-  while k < 8usize {bufpool.blockPut(1usize, held[k]); k = k + 1usize;}
+  while k < 2usize {held.push(IoBuf(16384usize)); k = k + 1usize;}
+  held.clear();
   primed.store(1u64);
   while hookCalls.load() == 0u64 {thread.yieldNow();}
-  let x = bufpool.blockTake(0usize);     // the top of its own line, while the final has its count read
+  let x = IoBuf(4096usize);     // the top of its own line, while the final has its count read
   took.store(1u64);
   if waitOn(&stage2) {
+    var more = List[IoBuf]();     // held, as the raw takes were: none comes back
     var j = 0usize;
     while j < 60usize {
-      let y = bufpool.blockTake(0usize);
-      if y as usize == x as usize {dup.add(1u64);}
+      let y = IoBuf(4096usize);
+      if y.base() as usize == x.base() as usize {dup.add(1u64);}
+      more.push(y);
       j = j + 1usize;
     }
   }
@@ -103,10 +104,10 @@ fn worker(arg: u64) u64 {
 
 fn main() i32 {
   // main's own cache first, so its record is the older one: lines of class 2 and 3
-  let a = bufpool.blockTake(2usize);
-  let b = bufpool.blockTake(3usize);
-  bufpool.blockPut(2usize, a);
-  bufpool.blockPut(3usize, b);
+  {
+    let a = IoBuf(65536usize);
+    let b = IoBuf(262144usize);
+  }
   bufpool.setFlushHook(&hook);
   let t = thread.start(0u64, &worker);
   t.detach();
