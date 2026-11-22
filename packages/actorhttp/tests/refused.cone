@@ -3,10 +3,15 @@
 // handler's write is answered with an error, no panic, and a new request is
 // served once the pool has room. A plain IoBuf there would not be refused here
 // and the checks fail. The test takes the pool's reserve (a hoard, with
-// tryMake, until every size class refuses; every thread's cache first goes back
+// tryMake, until every size class refuses; this thread's cache first goes back
 // to the stock) after the connection's buffers are made and the handler is
-// waiting, and then lets the handler write 20,000 bytes (the 64 KiB class: a
-// block a thread's cache could still hold from before is of the 4 KiB class).
+// waiting, and then lets the handler write 100,000 bytes. The service thread
+// that makes the write's buffers keeps its own cache, which no other thread may
+// empty (iobuf.trimAll() touches only the calling thread's), and holds up to 2
+// blocks of the 16 KiB class pumpWrites takes (sendChunk): so the write is six
+// chunks of that class and a remainder, more than the cache covers, and the
+// third take has to go to the stock, which the hoard has emptied. (A write of
+// 20,000 bytes, two chunks, was served from the cache, and was not refused.)
 //
 // Not here, because no check could tell the site from the receive refusals
 // the same hoard causes at the far end (measured: with the site made a plain
@@ -25,6 +30,7 @@ import stdio use *;
 import libc;
 import thread;
 import iobuf use *;
+import bufpool;
 import sync use Channel, Sender, Receiver;
 import collections use List, String;
 import time use Instant, Duration;
@@ -49,11 +55,11 @@ fn sizeOf(i: u32) usize {
   else if i == 3u32 {262144usize} else {1048576usize}
 }
 
-// Take with tryMake, every size class in turn, until each is refused
-// (every thread's cache goes back to the stock first: the service thread, which
-// makes the buffers under test, would otherwise be served from its own cache)
+// Take with tryMake, every size class in turn, until each is refused (this
+// thread's cache goes back to the stock first, so its blocks are the hoard's too;
+// the service thread's cache is its own and stays, see the top)
 fn hoard() Chain {
-  trimAll();
+  bufpool.trimStock();    // this thread's cache and the idle slabs: the service threads are running, and their caches stay theirs
   var held = Chain.make(unbounded);
   // Largest first, then round again until a whole round takes nothing: a small
   // class may still have a slab's room when a large one is refused
@@ -95,7 +101,7 @@ actor Handler {
       while go.load() == 0u64 {
         let s = await aio.sleep(Duration.fromMillis(10i64));
       }
-      let w = await ex.write(bigText(20000usize));
+      let w = await ex.write(bigText(100000usize));
       match w {
         case let Ok(n) {report.send(1u64);}
         case let Err(e) {report.send(0u64);}
@@ -227,7 +233,7 @@ fn main() i32 {
   go.store(0u64);
   let pumped = takeS(&mut orx);
   expect(pumped.view() != "(timeout)", "the client's fetch of it ended, it did not hang");
-  expect(pumped.view() != "ok 200 20000", "...without the body whole");
+  expect(pumped.view() != "ok 200 100000", "...without the body whole");
 
   // A new request is served once the pool has room again
   f.get(url(port, "/hello"), otx.clone());
