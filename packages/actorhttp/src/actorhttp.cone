@@ -399,7 +399,21 @@
 // Version.Http3); a 413 or 503 goes on its stream, the connection carrying
 // on. A client's calls are the same: an HttpClient whose httpclient.Config names
 // a plug-in fetches over HTTP/3 where httpclient's header says it does, and
-// the Response's 'version' says so.
+// the Response's 'version' says so. A routed server (cfg.routes) does not offer
+// HTTP/3 yet: 'listen' answers an error for 'offerHttp3' on one.
+//
+// THE HTTP/3 ENDPOINT (h3endpoint.cone; the server's UDP side on actors, built ahead of the handler half). 'startH3Endpoint'
+// binds a UDP socket and runs an H3Endpoint actor on it: it receives, routes each datagram by its Destination Connection ID
+// to the H3ConnActor of its connection, and admits an Initial with an unknown ID only within its caps (H3EndpointConfig:
+// maxConnections, maxHandshaking, maxPerAddress, an admission rate; the first limit met drops it, counted by reason in
+// H3EndpointStats). Each connection actor accepts its Initial itself and runs its QUIC connection (the plug-in's
+// httpclient.H3ServerConn: its decryption, protocol work and sends, on whichever worker has it, each datagram sent
+// by its own await). The endpoint does no protocol work. Every request is answered 503 and its stream reset until the
+// handler half lands. The connection awaits the endpoint's registration of the connection IDs it has issued before it
+// sends a datagram that carries one; a peer's connection that misses the handshake deadline
+// (quic.Config.handshakeTimeout, 10 s) ends and gives back its handshaking place. 'shutdown' closes every connection
+// and the socket. 'liveH3ConnActors' and 'liveH3EndpointActors' count the actors that exist. The server actor will
+// own the endpoint (a routed server's offerHttp3); for now a program or a test starts one itself.
 //
 //
 // A CLIENT ON ACTORS. A whole-body fetch ('get', 'getIn', 'send', 'sendIn') whose request has no cancel group

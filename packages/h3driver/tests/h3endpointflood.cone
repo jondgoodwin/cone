@@ -334,6 +334,7 @@ fn main() i32 {
   ccfg.verify = tls.Verifier.roots(readText("ca.pem").view());
   let con = connectorFor(&ccfg);
 
+  let lent0 = u64.from(stats().lentBytes);
   // A. A flood from many addresses
   {
     var cfg = H3EndpointConfig.make();
@@ -449,6 +450,16 @@ fn main() i32 {
   }
   expectUInt(liveH3ConnActors(), 0u64, "E: every connection actor is freed");
   expectUInt(liveH3EndpointActors(), 0u64, "E: every endpoint actor is freed");
+  var waitedLent = 0u32;
+  while u64.from(stats().lentBytes) != lent0 && waitedLent < 1000u32 {
+    aioNap(10i64);
+    waitedLent = waitedLent + 1u32;
+  }
+  expectUInt(u64.from(stats().lentBytes), lent0, "E: no buffer is lent once everything is stopped");
+  finalAll();
+  let io = aio.ioCounters();
+  expectUInt(io.inFlight, 0u64, "E: no aio operation is in flight at the end");
+  expect(io.submitted == io.delivered, "E: every aio operation submitted was delivered");
   printStr("h3endpointflood: done\n");
   0i32
 }
