@@ -171,7 +171,8 @@ struct SEntry {
   rwait: *OpCore;          // under the EXCLUSIVE lock: the receives waiting worker-side, oldest first (hnext, hprev)
   swait: *OpCore;          // likewise the sends: Linux, those the socket would not take, tried in order at an
                            // EPOLLOUT edge; Windows, those the kernel holds
-  pad: Array[u8, 8];
+  rcancels: u32;           // Windows: how many times the handle's reads were asked to end (askWaiting), under the EXCLUSIVE lock
+  wcancels: u32;           // likewise the writes. A datagram started under the shared lock notes them, and looks again when listed
 }
 
 // The table: the chunk directory, the contended count, and how many hold it
@@ -488,7 +489,9 @@ pub struct Shared is Move, Sendable {
     #if #os == .windows {
       // A datagram on a worker-side socket tried under the shared lock (tryPublic) is started there, and
       // left for 'listStarted' if the kernel keeps it
-      winIssue(p, (*e).raw, now, (*e).worker != 0u32, udp && (*e).worker != 0u32 && mode == tryPublic)
+      let started = udp && (*e).worker != 0u32 && mode == tryPublic;
+      if started {noteCancels(e, r);}
+      winIssue(p, (*e).raw, now, (*e).worker != 0u32, started)
     } #else {
       let got = lxIssue(p, (*e).raw, now, (*e).worker != 0u32);
       // A send that moved part of its bytes on a worker-side stream stays here: it goes on from 'done'
@@ -679,7 +682,11 @@ pub struct Shared is Move, Sendable {
         listWait(e, p);
         // A cancel or a deadline reached in the gap never un-happens, and endWaiting, which found nothing
         // listed, answered false to it: the abort is asked here, as endWaiting asks it
-        let due = dueOutcome(r, Instant.now());
+        var due = dueOutcome(r, Instant.now());
+        // A handle-level cancel (askWaiting: cancelRead, cancelWrite) in the gap found the record unlisted, and
+        // the socket stays open, so nothing else would end it: the entry's count of cancels moved since the start
+        let now = if r.kind == diag.kindSendTo || r.kind == diag.kindSend {(*e).wcancels} else {(*e).rcancels};
+        if due == 0u32 && now != r.cepoch {due = diag.outcomeCancelled;}
         if due != 0u32 {
           if r.asked == askedNone {r.asked = if due == diag.outcomeTimedOut {askedDeadline} else {askedCancel};}
           CancelIoEx((*e).raw, p as *u8);
@@ -707,6 +714,7 @@ pub struct Shared is Move, Sendable {
     let r = p as &mut OpCore;
     let e = self.entry(r.handle.index);
     if e as usize == 0usize || (*e).worker == 0u32 || (*e).skip == 0u32 {return issueNot;}
+    noteCancels(e, r);
     winIssue(p, (*e).raw, Instant.now(), true, true)
     } #else {issueNot}
   }
@@ -799,6 +807,12 @@ fn dueOutcome(r: &mut OpCore, now: Instant) u32 {
   0u32
 }
 
+// Record r, about to be started under the shared lock on entry e: how many cancels of its direction the entry
+// has had so far (STARTED UNDER THE SHARED LOCK, a handle-level cancel in the gap)
+fn noteCancels(e: *SEntry, r: &mut OpCore) {
+  r.cepoch = if r.kind == diag.kindSendTo || r.kind == diag.kindSend {(*e).wcancels} else {(*e).rcancels};
+}
+
 // Record r's 'ustate' compare-and-swapped from one value to another: true if this call made the change
 // (STARTED UNDER THE SHARED LOCK: the one place two threads decide who answers a record)
 fn swapState(r: &mut OpCore, from: u32, to: u32) bool {
@@ -862,6 +876,9 @@ fn askWaiting(sh: &Shared, h: Handle, write: bool, n: &mut usize) *OpCore {
   let e = sh.entry(h.index);
   var head = if write {(*e).swait} else {(*e).rwait};
   #if #os == .windows {
+    // Counted whether or not anything is listed: a datagram started under the shared lock and not yet
+    // listed finds the count changed when 'listStarted' lists it, and asks the kernel to abort it
+    if write {(*e).wcancels = (*e).wcancels + 1u32;} else {(*e).rcancels = (*e).rcancels + 1u32;}
     var q = head;
     while q as usize != 0usize {
       let r = q as &mut OpCore;

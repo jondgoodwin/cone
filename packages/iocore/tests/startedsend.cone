@@ -242,6 +242,32 @@ fn main() i32 {
     let g2 = gone(&pool, r2);
     out.clear();
 
+    // A handle-level cancel of the reads in the gap (cancelRead: the socket stays open, so only the cancel
+    // can end the receive): the count of cancels moved, and 'listStarted' asks the kernel to abort it
+    let rh = recvFromOn(&pool, rx);
+    expectUInt(u64.from(startShared(&sh, rx, rh, true)), u64.from(issueStarted), "3: a receive is started, for a handle's cancel");
+    expectUInt(u64.from(lp.cancelHandle(rx, false)), 0u64, "3: the handle's cancel in the gap finds nothing listed");
+    expectUInt(u64.from(sh.listStarted(rh)), u64.from(issuePending), "3: listed");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "3: the handle's cancel in the gap is not lost: answered once");
+    if out.len() != 1usize {return done();}
+    expectUInt(u64.from((rh as &OpCore).status), u64.from(diag.outcomeCancelled), "3: Cancelled");
+    let gh = gone(&pool, rh);
+    out.clear();
+    // A cancel of the writes in the gap does not touch a receive
+    let rw = recvFromOn(&pool, rx);
+    let iw = (rw as &OpCore).id();
+    expectUInt(u64.from(startShared(&sh, rx, rw, true)), u64.from(issueStarted), "3: a receive is started, for a write cancel");
+    lp.cancelHandle(rx, true);
+    expectUInt(u64.from(sh.listStarted(rw)), u64.from(issuePending), "3: listed");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 100i64);
+    expectUInt(u64.from(out.len()), 0u64, "3: a write cancel in the gap leaves the receive waiting");
+    expect(sh.endWaiting(rx, rw, iw, diag.outcomeCancelled, &mut out), "3: it is still listed, and ended");
+    waitFor(&mut lp, port, &sh, &mut out, 1usize, 2000i64);
+    expectUInt(u64.from(out.len()), 1u64, "3: and answered once");
+    let gw = gone(&pool, rw);
+    out.clear();
+
     // A deadline reached in the gap
     let r3 = recvFromOn(&pool, rx);
     (*r3).deadline = Instant.now() + Duration.fromMillis(30i64);
