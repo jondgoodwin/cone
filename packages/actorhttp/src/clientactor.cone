@@ -162,6 +162,7 @@ struct FRec is Move {
   pc: u32;
   gen: u32;
   wake: Option[WakeCell];       // the watch on its cancel group, if it has one (FetchWake)
+  group: Option[CancelGroup];   // ...and the group, whose cause says how its cancel ended the fetch (a deadline: TimedOut)
 }
 
 alias FetchRecs = Dict[u64, FRec];
@@ -298,7 +299,7 @@ pub actor ClientActor {
     }
     let body = String.from(req.body.view());
     let id = core.ask(req, httpclient.Sink.Here(0u64), Instant.now());
-    fetches.insert(id.number(), FRec(id, rp, body, httpclient.Response.blank(), false, 0u32, 0u32, None[WakeCell]));
+    fetches.insert(id.number(), FRec(id, rp, body, httpclient.Response.blank(), false, 0u32, 0u32, None[WakeCell], None[CancelGroup]));
     self.pump();
   }
 
@@ -356,6 +357,7 @@ pub actor ClientActor {
         }
         let slot = Arc[Mutex, Option[ClientActor]](Some[ClientActor](selfactor));
         r.wake = Some[WakeCell](WakeCell(slot));
+        r.group = Some[CancelGroup](*g);
         let w = FetchWake(WakeCell(slot), id);
         g.watch(diag.nextLoopId(), &w);
         if g.isCancelled() {let ignored = w.signal();}
@@ -367,8 +369,24 @@ pub actor ClientActor {
   // The fetch's cancel group was cancelled (told by FetchWake): the core ends the fetch, as for the program's own cancel
   pub async fn groupCancelled(self, id: httpclient.FetchId) {
     let key = id.number();
-    if !fetches.contains(&key) {return;}
-    var e = httpclient.PoolEvent.make(httpclient.PoolEventKind.Cancel);
+    // A group ended by its own deadline ends the fetch TimedOut, as the fetch's own deadline (the group's is the core's too) does
+    var timedOut = false;
+    match fetches.get(&key) {
+      case let Some(r) {
+        match &r.group {
+          case let &Some(g) {
+            match g.cause() {
+              case let Some(c) {timedOut = c == Cause.TimedOut;}
+              else {}
+            }
+          }
+          else {}
+        }
+      }
+      else {return;}
+    }
+    var e = httpclient.PoolEvent.make(if timedOut {httpclient.PoolEventKind.Due} else {httpclient.PoolEventKind.Cancel});
+    e.timedOut = timedOut;
     e.fetch = id;
     e.now = Instant.now();
     core.on(&e, &facts);
