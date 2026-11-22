@@ -55,6 +55,7 @@
 //   trimEverything()     the same after every thread's cache is flushed; a panic if another
 //                        thread still has a cache (nothing else is safe to do with it)
 //   setLimits(maxBytes, keepBytes)  the process-wide bounds
+//   addRoomWake(f), armRoomWake()   a refused caller learns room has come back  (ROOM WAKE)
 //   blockStats()         the counters, a BlockStats
 //   osBlocks(), osBytes()  what the pool holds from the OS now
 //   classSize(c), page, largestClass, classCount        (the region's classes)
@@ -142,6 +143,38 @@
 // up. So they are exact once the threads that took and returned have stopped;
 // read while others run, they are a sum of moments. The OS counters and the
 // stock's are exact: kept under its locks or atomically.
+//
+// ROOM WAKE. A caller that tryAllocate (or IoBuf.tryMake) refused can wait for room instead of
+// retrying on a timer. The waiting layer registers a function at module initialisation
+// (addRoomWake: at most four, a panic once a thread has a record), and a waiter's protocol is:
+//   1. a take is refused;  2. armRoomWake();  3. retry the take once;
+//   4. if it is refused too, park outside the pool, on its own terms;
+//   5. when woken, armRoomWake() again before retrying the parked takes, so that room that arrives
+//      during the retry pass fires again.
+// The order is the whole argument. A room event is made where room is made, after it is made and
+// outside every lock of the pool: the blocks of a stockPut (a spill, a flush, a thread's end, a late
+// return, a return with no cache), the bytes of 'held' lowered by freeSlabs and by releaseOversize.
+// An event reads the armed word once (one atomic load when nobody waits); when armed it disarms it
+// and calls every registered function, so a burst of room is one wake, and a waiter that arms again
+// asks for the next. No wake is lost, by two pairs. A stockPut's blocks are published by the class
+// lock's release, and its event reads the word after it; the waiter's arm comes before its retry,
+// which takes the same lock. The retry's lock comes after the event's unlock (it sees the blocks) or
+// before it (the arm is then before the event's read, which sees it armed). 'held' is atomic and
+// every operation on it and on the armed word is sequentially consistent: the arm, then the retry's
+// reserve; the sub, then the event's read. 'reserve' raises 'held' by a compare-and-swap and never
+// raises it and lowers it again, because a refusal made by a count that goes away a moment later would
+// leave a waiter that has room in hand with no event to wake it. A refused take of one class can
+// be helped by a return of another (the retry's trim gives back a slab the return left idle), so
+// every stockPut is an event, and a wasted wake is a spurious one: allowed. A retry that finds room
+// leaves the wake armed: at most one spurious run. THE WAKE FUNCTION is called on whatever thread
+// made the room, a thread's exit callback among them, and for any room, not for one caller: it may
+// post a message or a completion or set a flag; it must not take or return a pool block, call back
+// into the pool or block. KNOWN LIMITS: (a) blocks idle in another thread's cache are not room
+// until that thread spills, flushes or ends, so a waiter can wait while memory sits in busy
+// threads' caches (R2, row 649); the waiting layer's own timer retry can stay as a slow backstop
+// until R2 answers. (b) An OS refusal of memory the bound allows (VirtualAlloc, mmap, malloc
+// failing) is not room and runs no event: a waiter refused in the instant a concurrent attempt's
+// reserved bytes were given back after such a refusal waits for the next real event.
 //
 // The module's init makes the region and registers the five classes twice; its final
 // gives every idle slab back to the OS, after every module that uses the pool has

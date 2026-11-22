@@ -27,7 +27,7 @@ import thread;
 import time use Duration;
 import bufpool use *;
 
-const armFirst = true;       // the waiter's order, the protocol's; false is the mutant that strands in B
+const armFirst = true;     // the waiter's order, the protocol's; false is the mutant that strands in B
 
 let wakes: Atomic[u64];
 let rearm: Atomic[u64];      // 1: the wake arms again, as a waiting layer's handler does before it retries
@@ -35,6 +35,8 @@ let hookSeen: Atomic[u64];   // room events that ran the hook
 let hookAt: Atomic[u64];     // the one that parks (0: none)
 let parked: Atomic[u64];
 let release: Atomic[u64];
+let relDone: Atomic[u64];    // the returner has released its blocks, and its events have run
+let goOn: Atomic[u64];       // main lets the returner end
 
 fn @initpure init() {
   wakes = Atomic[u64].of(0u64);
@@ -43,6 +45,8 @@ fn @initpure init() {
   hookAt = Atomic[u64].of(0u64);
   parked = Atomic[u64].of(0u64);
   release = Atomic[u64].of(0u64);
+  relDone = Atomic[u64].of(0u64);
+  goOn = Atomic[u64].of(0u64);
   addRoomWake(&wake);
 }
 
@@ -95,6 +99,8 @@ fn rearmHook(at: u64) {
   hookAt.store(at);
   parked.store(0u64);
   release.store(0u64);
+  relDone.store(0u64);
+  goOn.store(0u64);
 }
 
 struct Rel {
@@ -103,10 +109,14 @@ struct Rel {
   pub bytes: usize;
 }
 
+// The returner releases its blocks, says so, and lives on until main lets it end: its own end is a
+// room event too, which would wake a waiter that the events under test did not
 fn giveBack(j: Rel) u64 {
   let r = bufferPool() as &MemRegion;
   r.release(j.a as *u8, j.bytes);
   if j.b != 0usize {r.release(j.b as *u8, j.bytes);}
+  relDone.store(1u64);
+  _ = waitFor(&goOn, 20000u32);
   1u64
 }
 
@@ -139,8 +149,10 @@ fn main() i32 {
   var got = tryAllocate(mib(1usize));
   expect(got as usize != 0usize, "A: the retry in the window finds the room the returner made");
   release.store(1u64);
-  expectUInt(ta.join(), 1u64, "A: the returner finished");
+  expect(waitFor(&relDone, 20000u32), "A: the returner finished its return and its event");
   expectUInt(wakes.load(), w0 + 1u64, "A: its event read the flag after the room was made: armed, so it woke (spuriously)");
+  goOn.store(1u64);
+  _ = ta.join();
   x[0] = got as usize;
 
   // B. the waiter holds the window between its arm and its retry; the room is made whole inside it
@@ -150,10 +162,12 @@ fn main() i32 {
   var first = null as *u8;
   if armFirst {armRoomWake();} else {first = tryAllocate(mib(1usize));}
   let tb = thread.start(Rel(x[1], 0usize, mib(1usize)), &giveBack);
-  expectUInt(tb.join(), 1u64, "B: a return and its event ran, whole, in the window");
+  expect(waitFor(&relDone, 20000u32), "B: a return and its event ran, whole, in the window");
   if armFirst {got = tryAllocate(mib(1usize));} else {armRoomWake(); got = first;}
   expect(got as usize != 0usize || waitWakes(w1 + 1u64, 1000u32), "B: the waiter is woken, or finds room on its retry");
   expectUInt(wakes.load(), w1 + 1u64, "B: the event saw the wake armed and ran it once");
+  goOn.store(1u64);
+  _ = tb.join();
   if got as usize == 0usize {got = tryAllocate(mib(1usize));}
   expect(got as usize != 0usize, "B: and the retry after the wake finds the room");
   x[1] = got as usize;
@@ -182,9 +196,11 @@ fn main() i32 {
   armRoomWake();
   expect(tryAllocate(mib(2usize)) as usize == 0usize, "C: the waiter's retry is refused: 'held' has not fallen yet");
   release.store(1u64);
-  expectUInt(tc.join(), 1u64, "C: the returner finished");
-  rearm.store(0u64);
+  expect(waitFor(&relDone, 20000u32), "C: the returner finished its returns and the OS call");
   expectUInt(wakes.load(), w2 + 2u64, "C: the event after the return woke it, and the one after the OS call, which lowered 'held', woke it again");
+  rearm.store(0u64);
+  goOn.store(1u64);
+  _ = tc.join();
   let big = tryAllocate(mib(2usize));
   expect(big as usize != 0usize, "C: and now the retry finds the room");
   r.release(big, mib(2usize));
@@ -202,8 +218,10 @@ fn main() i32 {
   armRoomWake();
   expect(tryAllocate(mib(2usize)) as usize == 0usize, "D: and the retry is refused");
   let td = thread.start(Rel(o0 as usize, 0usize, mib(2usize)), &giveBack);
-  expectUInt(td.join(), 1u64, "D: another thread released one");
+  expect(waitFor(&relDone, 20000u32), "D: another thread released one");
   expect(waitWakes(w3 + 1u64, 1000u32), "D: the release woke the waiter");
+  goOn.store(1u64);
+  _ = td.join();
   let o2 = tryAllocate(mib(2usize));
   expect(o2 as usize != 0usize, "D: and its retry finds the room");
   r.release(o1, mib(2usize));
