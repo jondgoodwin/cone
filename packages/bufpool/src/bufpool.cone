@@ -594,6 +594,21 @@ fn roomEvent(g: *Globals) inline {
   }
 }
 
+// Room made where the event cannot be made yet (the thread's cache line is half moved, or the
+// registry's lock is held) is noted, and announced where the state is whole again
+var @threadlocal roomPending: u32 = 0u32;
+
+fn noteRoom() {
+  roomPending = 1u32;
+}
+
+fn roomAnnounce(g: *Globals) {
+  if roomPending != 0u32 {
+    roomPending = 0u32;
+    roomEvent(g);
+  }
+}
+
 fn roomEventArmed(g: *Globals, s: u32) {
   if s & roomHookBit != 0u32 {
     runRoomHook(g);       // test-only park point: after the room is made, before the flag is read
@@ -701,7 +716,7 @@ fn @c bufpoolThreadEnded() {
     (*tc).live = 0u32;                // ended: the final flushes it if it has not yet walked past it; nothing is given back here
   }
   (*g).regLock.unlock();
-  if gave {roomEvent(g);}
+  if gave {roomAnnounce(g);}      // 'myCache' is the late record: a wake that takes or returns goes straight to the stock
 }
 
 // A take on a finished thread: one block from the stock, through a slot on the
@@ -710,7 +725,7 @@ fn @c bufpoolThreadEnded() {
 fn lateTake(g: *Globals, c: usize) *u8 {
   let cs = classAt(g, c);
   var one = null as *u8;
-  if stockTake(g, cs, 1u32, &one) == 0u32 {
+  if stockTake(g, cs, 1u32, &one, true) == 0u32 {
     return null;
   }
   (*cs).lateTakes.add(1u64);
@@ -752,15 +767,20 @@ fn refill(tc: *ThreadCache, c: usize, ln: *CacheLine) *u8 {
   (*tc).misses = (*tc).misses + 1u64;
   let cs = classAt(g, c);
   let want = if (*ln).cap == 0u32 {1u32} else {(*cs).batch};
-  let got = stockTake(g, cs, want, slotsOf(ln));
+  // The batch lands in the line's own slots, so room made on the way (a slab given back to make
+  // room for this one) is announced after the line is whole, and the block read before it
+  let got = stockTake(g, cs, want, slotsOf(ln), false);
   if got == 0u32 {
     let t = takesAt(tc, c);
     *t = *t - 1u64;
+    roomAnnounce(g);
     return null;
   }
   (*ln).count = got - 1u32;
   bufCache.emit(0u64, (*tc).misses, u64.from(tc as usize), cacheHeld(tc));
-  *(slotsOf(ln) + usize.from(got - 1u32))
+  let b = *(slotsOf(ln) + usize.from(got - 1u32));
+  roomAnnounce(g);
+  b
 }
 
 // Block b of class c comes home
@@ -782,6 +802,12 @@ fn blockPut(c: usize, b: *u8) {
       stockPut(glob(), classAt(glob(), c), e, 1u32, true);
       return;
     }
+    // the spill's room is announced once the block is in the line: a wake that returns blocks
+    // must find the line whole
+    *(slotsOf(ln) + usize.from((*ln).count)) = b;
+    (*ln).count = (*ln).count + 1u32;
+    roomAnnounce(glob());
+    return;
   }
   *(slotsOf(ln) + usize.from((*ln).count)) = b;
   (*ln).count = (*ln).count + 1u32;
@@ -796,7 +822,7 @@ fn spill(tc: *ThreadCache, c: usize, ln: *CacheLine) {
   let g = glob();
   let cs = classAt(g, c);
   let k = if (*cs).batch < n {(*cs).batch} else {n};
-  stockPut(g, cs, slotsOf(ln), k, true);
+  stockPut(g, cs, slotsOf(ln), k, false);     // announced by blockPut, after the line is whole
   mem.moveRaw[*u8](slotsOf(ln), slotsOf(ln) + usize.from(k), usize.from(n - k));
   (*ln).count = n - k;
   bufCache.emit(0u64, (*tc).misses, u64.from(tc as usize), cacheHeld(tc));
@@ -818,7 +844,7 @@ pub fn flushThread() {
   (*g).freeRecs = tc;
   (*g).regLock.unlock();
   myCache = null;
-  roomEvent(g);
+  roomAnnounce(g);
 }
 
 // A test-only hook, a slow-path field (never read by a take or a return): f is
@@ -865,7 +891,7 @@ fn flushCache(tc: *ThreadCache, fire: bool) {
 
 // Up to want blocks of class c, written to dest; at least one, or 0 when the
 // bound or the OS refuses a slab
-fn stockTake(g: *Globals, cs: *ClassState, want: u32, dest: **u8) u32 {
+fn stockTake(g: *Globals, cs: *ClassState, want: u32, dest: **u8, fire: bool) u32 {
   while true {
     (*cs).lock.lock();
     let got = takeLocked(cs, want, dest);
@@ -873,7 +899,7 @@ fn stockTake(g: *Globals, cs: *ClassState, want: u32, dest: **u8) u32 {
     if got > 0u32 {
       return got;
     }
-    if !newSlab(g, cs) {
+    if !newSlab(g, cs, fire) {
       return 0u32;
     }
   }
@@ -964,7 +990,7 @@ fn stockPut(g: *Globals, cs: *ClassState, src: **u8, n: u32, fire: bool) {
     doomed = reclaim(g, cs, keep);
   }
   (*cs).lock.unlock();
-  if fire {roomEvent(g);}
+  if fire {roomEvent(g);} else {noteRoom();}
   freeSlabs(g, doomed, fire);
 }
 
@@ -1024,7 +1050,7 @@ fn freeSlabs(g: *Globals, head: *SlabRec, fire: bool) {
     (*g).osFrees.add(1u64);
     s = next;
   }
-  if fire {roomEvent(g);}     // 'held' is lower
+  if fire {roomEvent(g);} else {noteRoom();}     // 'held' is lower
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,13 +1080,13 @@ fn reserve(g: *Globals, size: usize, limit: u64) bool {
 
 // Count size bytes against a bound, making room if need be: every wholly
 // idle slab of every class back to the OS, then this thread's cache
-fn reserveRoom(g: *Globals, size: usize, limit: u64) bool {
+fn reserveRoom(g: *Globals, size: usize, limit: u64, fire: bool) bool {
   if reserve(g, size, limit) {return true;}
-  trimStockOf(g);
+  trimStockOf(g, fire);
   if reserve(g, size, limit) {return true;}
   let tc = myCache;
-  if tc as usize != 0usize {flushCache(tc, true);}
-  trimStockOf(g);
+  if tc as usize != 0usize {flushCache(tc, fire);}
+  trimStockOf(g, fire);
   reserve(g, size, limit)
 }
 
@@ -1082,8 +1108,8 @@ fn limitOf(g: *Globals, cs: *ClassState) u64 {
 
 // A new slab for class cs, got from the OS and listed; false when the bound or
 // the OS refuses it
-fn newSlab(g: *Globals, cs: *ClassState) bool {
-  if !reserveRoom(g, slabBytes, limitOf(g, cs)) {
+fn newSlab(g: *Globals, cs: *ClassState, fire: bool) bool {
+  if !reserveRoom(g, slabBytes, limitOf(g, cs), fire) {
     return false;
   }
   var base = null as *u8;
@@ -1111,7 +1137,7 @@ fn newSlab(g: *Globals, cs: *ClassState) bool {
 }
 
 // Every wholly idle slab of every class back to the OS
-fn trimStockOf(g: *Globals) {
+fn trimStockOf(g: *Globals, fire: bool) {
   var c = 0usize;
   let n = (*g).nClasses;
   while c < n {
@@ -1119,7 +1145,7 @@ fn trimStockOf(g: *Globals) {
     (*cs).lock.lock();
     let doomed = reclaim(g, cs, 0u64);
     (*cs).lock.unlock();
-    freeSlabs(g, doomed, true);
+    freeSlabs(g, doomed, fire);
     c = c + 1usize;
   }
 }
@@ -1128,7 +1154,7 @@ fn trimStockOf(g: *Globals) {
 pub fn trimStock() {
   let tc = myCache;
   if tc as usize != 0usize {flushCache(tc, true);}
-  trimStockOf(glob());
+  trimStockOf(glob(), true);
 }
 
 // Every thread's cache back to the stock, and every wholly idle slab to the
@@ -1153,8 +1179,8 @@ pub fn trimEverything() {
   }
   flushRegistry(g);
   (*g).regLock.unlock();
-  roomEvent(g);
-  trimStockOf(g);
+  roomAnnounce(g);
+  trimStockOf(g, true);
 }
 
 // Every record on the registry flushed, with the registry's lock held
@@ -1183,7 +1209,7 @@ fn trimAllCachesFinal() {
     tc = (*tc).nextReg;
   }
   (*g).regLock.unlock();
-  trimStockOf(g);
+  trimStockOf(g, true);
 }
 
 // Oversize blocks, which are not pooled: a block of size bytes of its own,
@@ -1195,7 +1221,7 @@ fn holdOversize(size: usize) *u8 {
 
 // The same, counted against 'limit' bytes held
 fn holdOversizeWithin(g: *Globals, size: usize, limit: u64) *u8 {
-  if !reserveRoom(g, size, limit) {
+  if !reserveRoom(g, size, limit, true) {
     return null;
   }
   let b = osAlloc(size);
