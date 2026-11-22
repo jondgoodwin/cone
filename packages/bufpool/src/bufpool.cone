@@ -1467,7 +1467,6 @@ fn decommitSlab(g: *Globals, cs: *ClassState, s: *SlabRec) usize {
   (*s).freeHead = null;
   (*cs).idleBlocks = (*cs).idleBlocks - n;
   (*s).decommitted = (*s).decommitted + u32.from(n);
-  runDecommitHook(g);     // test-only park point: marked, not yet decommitted, the lock held
   let carved = usize.from((*s).carved);
   var i = 0usize;
   while i < carved {
@@ -1478,7 +1477,10 @@ fn decommitSlab(g: *Globals, cs: *ClassState, s: *SlabRec) usize {
         if freshTest(s, j) {any = true; freshClear(s, j);}
         j = j + 1usize;
       }
-      if any {osDecommit(base + i * bs, (j - i) * bs);}
+      if any {
+        runDecommitHook(g);     // test-only park point: the run is marked, not yet decommitted, the lock held
+        osDecommit(base + i * bs, (j - i) * bs);
+      }
       i = j;
     } else {
       i = i + 1usize;
