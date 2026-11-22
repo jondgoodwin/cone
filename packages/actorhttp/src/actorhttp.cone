@@ -409,9 +409,13 @@
 // 'aio.onPool') and every read and write on the shared worker port, so nothing of HTTP or TLS runs on the I/O thread
 // (clientactor.cone). The calls and their answers are the same as before. Several HTTP/2 connections per origin are
 // opened as the core decides (a new one when every open one is at maxStreamsPerConnection, up to maxPerOrigin), a fetch
-// goes to the one with the fewest streams, and a name's addresses are taken in turn. 'stream', 'streamTo', 'events',
-// 'upload', a fetch with a cancel group and an HTTP/3 client keep the service thread's client, so a handle holds two
-// pools and the per-origin limits are not shared between them. The last handle's going cancels every fetch, aborts every
+// goes to the one with the fewest streams, and a name's addresses are taken in turn. A client whose config names an
+// HTTP/3 plug-in has the same actor: an origin known to speak HTTP/3 (prior knowledge, or an Alt-Svc field the actor's pool
+// read on a TCP response) is fetched over its one QUIC connection, a ClientQuicActor (clientquic.cone) that binds its own UDP
+// socket on its worker and shares the TCP actor's exchange half (ClientExchanges, written once); an attempt that does not
+// connect within 'http3Timeout' falls back to TCP, as httpclient's header says. 'stream', 'streamTo', 'events',
+// 'upload' and a fetch with a cancel group keep the service thread's client, so a handle holds two
+// pools, each with its own Alt-Svc knowledge, and the per-origin limits are not shared between them. The last handle's going cancels every fetch, aborts every
 // connection and ends the actors ('liveClientActors' and 'liveClientConnActors' say how many exist). The fetch goes to
 // the actor directly, and the service's own record of the client (and the service itself) is made only when a call that
 // keeps the service's client first runs: a program of whole-body fetches with no cancel group never makes the service
@@ -818,8 +822,8 @@ pub struct HttpClient is Move {
 }
 
 // What the handles of one client share: what the service's record of it will be made from, until it is made. The record
-// is made by the first call that needs the service (a fetch with a cancel group, a stream, events, an upload, an HTTP/3
-// client's fetch), so a program whose fetches all go to the client actor never makes the service. 'handles' counts the
+// is made by the first call that needs the service (a fetch with a cancel group, a stream, events, an upload), so a
+// program whose fetches all go to the client actor never makes the service. 'handles' counts the
 // handles now, so a record made late starts with the right count; once 'made', each clone or drop posts its RefJob. The
 // lock is held across each post, so the jobs reach the service in the order the handles changed
 struct LazyRec {
