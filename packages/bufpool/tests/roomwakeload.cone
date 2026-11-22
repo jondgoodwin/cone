@@ -1,0 +1,150 @@
+// The room wake under load (R8, row 647): eight threads take from a pool whose bound they hit, and
+// wait on the wake when refused; eight others return what they were handed, for 10 seconds. A
+// waiter follows the protocol: read the wake's counter, arm, retry once, and if refused sleep
+// on the counter until it changes (a futex; no timer, so a lost wake is a stranded thread). The
+// wake bumps the counter and wakes every sleeper. The bound is 8 MiB, so tryAllocate's bank holds
+// 4 MiB: four blocks of 1 MiB at the most, or oversize blocks of 1.5 MiB (the takers alternate),
+// and the idle bound is 1 byte, so slabs are made and given back constantly. At the end the
+// takers stop; no waiter may be stranded more than 1 second after the last return.
+
+mod roomwakeload;
+
+import testing use *;
+import thread;
+import sync use *;
+import collections use List;
+import time use Duration, Instant;
+import bufpool use *;
+
+const pairs = 8usize;
+const runMillis = 10000u32;
+
+let seq: Atomic[u32];        // the wake's counter, bumped by every run of the wake
+let wakes: Atomic[u64];
+let stop: Atomic[u64];
+let finished: Atomic[u64];   // takers that have ended
+let parks: Atomic[u64];      // times a taker slept, after its retry was refused
+let takes: Atomic[u64];
+let returns: Atomic[u64];
+
+fn @initpure init() {
+  seq = Atomic[u32].of(0u32);
+  wakes = Atomic[u64].of(0u64);
+  stop = Atomic[u64].of(0u64);
+  finished = Atomic[u64].of(0u64);
+  parks = Atomic[u64].of(0u64);
+  takes = Atomic[u64].of(0u64);
+  returns = Atomic[u64].of(0u64);
+  addRoomWake(&wake);
+}
+
+fn @c wake() {
+  wakes.add(1u64);
+  seq.add(1u32);
+  futexWakeAll(&seq);
+}
+
+struct Piece {
+  pub addr: usize;
+  pub bytes: usize;
+}
+
+struct TakerJob {
+  pub tx: Sender[Piece];
+  pub bytes: usize;
+}
+
+// A taker: take, handing each block to its returner; refused, arm and retry, then sleep on the counter
+fn taker(j: TakerJob) u64 {
+  var n = 0u64;
+  while stop.load() == 0u64 {
+    var p = tryAllocate(j.bytes);
+    if p as usize == 0usize {
+      let s = seq.load();             // read before the arm: a wake after it ends the sleep at once
+      armRoomWake();
+      p = tryAllocate(j.bytes);
+      if p as usize == 0usize {
+        parks.add(1u64);
+        _ = futexWait(&seq, s);       // no timeout: only a wake ends it
+        continue;
+      }
+    }
+    j.tx.send(Piece(p as usize, j.bytes));
+    takes.add(1u64);
+    n = n + 1u64;
+  }
+  finished.add(1u64);
+  n
+}
+
+// A returner: holds each block for about 100 microseconds, then gives it back
+fn returner(arg: Receiver[Piece]) u64 {
+  let r = bufferPool() as &MemRegion;
+  var rx = arg;
+  var n = 0u64;
+  while true {
+    match rx.recv() {
+      case let Some(p) {
+        let t0 = Instant.now();
+        while t0.elapsed().nanos() < 100000i64 {thread.yieldNow();}
+        r.release(p.addr as *u8, p.bytes);
+        returns.add(1u64);
+        n = n + 1u64;
+      }
+      case is None[Piece] {break;}
+    }
+  }
+  n
+}
+
+fn waitAllFinished(ms: u32) bool {
+  var i = 0u32;
+  while i < ms {
+    if finished.load() == u64.from(pairs) {
+      return true;
+    }
+    thread.sleep(Duration.fromMillis(1i64));
+    i = i + 1u32;
+  }
+  finished.load() == u64.from(pairs)
+}
+
+fn main() i32 {
+  setLimits(8388608usize, 1usize);
+  var ts = List[thread.Thread[u64]]();
+  var rs = List[thread.Thread[u64]]();
+  var i = 0usize;
+  while i < pairs {
+    var tx: Sender[Piece];
+    var rx: Receiver[Piece];
+    tx, rx = Channel[Piece].bounded(4usize);
+    rs.push(thread.start(rx, &returner));
+    ts.push(thread.start(TakerJob(tx, if i % 2usize == 0usize {1048576usize} else {1572864usize}), &taker));
+    i = i + 1usize;
+  }
+  var ms = 0u32;
+  while ms < runMillis {
+    thread.sleep(Duration.fromMillis(10i64));
+    ms = ms + 10u32;
+  }
+  stop.store(1u64);
+  let ended = waitAllFinished(1000u32);
+  expect(ended, "every taker ended within a second of the stop: none stranded on the wake");
+  if !ended {          // rescue the stranded, so that the test can end and say so
+    seq.add(1u32);
+    futexWakeAll(&seq);
+    _ = waitAllFinished(5000u32);
+  }
+  var total = 0u64;
+  while ts.len() > 0usize {total = total + ts.pop().unwrap().join();}
+  var back = 0u64;
+  while rs.len() > 0usize {back = back + rs.pop().unwrap().join();}
+  expectUInt(back, total, "every block taken was returned");
+  expect(total > 1000u64, "many takes");
+  expect(parks.load() > 20u64, "the takers did wait on the wake");
+  expect(wakes.load() > 20u64, "the wake ran");
+  expectUInt(blockStats().lent, 0u64, "every block home");
+  trimEverything();
+  expectUInt(osBlocks(), 0u64, "nothing held at the end");
+  done()
+}

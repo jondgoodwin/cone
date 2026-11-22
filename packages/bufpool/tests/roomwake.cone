@@ -1,0 +1,220 @@
+// The room wake (R8, row 647), deterministic and with no thread racing another: a
+// caller the pool refused arms the wake, and room that comes back afterwards runs
+// the registered function, whichever way the room is made.
+//
+// The bound is 8 MiB, so tryAllocate's bank holds 4 MiB: two slabs, 1,024 blocks of
+// 4 KiB (the reserve is half the bound). Main takes 1,024 and the 1,025th is refused.
+// Each case below arms the wake, makes room one way, and counts the wake's runs:
+// exactly one, because the first event that sees the wake armed disarms it. The wake
+// itself reads the pool's statistics and trims it, which take the registry's lock and
+// every class's lock: a wake called under one of them would deadlock here, so every
+// case also checks that no lock is held when the wake runs.
+
+mod roomwake;
+
+import testing use *;
+import thread;
+import time use Duration;
+import libc;
+import bufpool use *;
+
+let wakes: Atomic[u64];      // runs of the wake
+let probe: Atomic[u64];      // 1: the wake also has a second thread take the pool's locks, to show it holds none
+let probed: Atomic[u64];     // probes the second thread answered in time
+let held: Atomic[u64];       // probes it could not answer in time: a lock of the pool was held
+let probeReq: Atomic[u64];
+let probeAck: Atomic[u64];
+let probeQuit: Atomic[u64];
+
+fn @initpure init() {
+  wakes = Atomic[u64].of(0u64);
+  probe = Atomic[u64].of(0u64);
+  probed = Atomic[u64].of(0u64);
+  held = Atomic[u64].of(0u64);
+  probeReq = Atomic[u64].of(0u64);
+  probeAck = Atomic[u64].of(0u64);
+  probeQuit = Atomic[u64].of(0u64);
+  addRoomWake(&wake);
+}
+
+// The wake must hold no lock of the pool. A second thread (never the calling thread, whose cache may
+// be half moved at this moment) takes the registry's lock (blockStats) and every class's (trimStock);
+// the wake waits for it up to two seconds. If the wake were called under one of the pool's locks the
+// prober would wait for it and the wake would report it, not hang
+fn @c wake() {
+  wakes.add(1u64);
+  if probe.load() == 1u64 {
+    probeReq.store(1u64);
+    var ms = 0u32;
+    while probeAck.load() == 0u64 && ms < 2000u32 {
+      thread.sleep(Duration.fromMillis(1i64));
+      ms = ms + 1u32;
+    }
+    if probeAck.swap(0u64) == 1u64 {probed.add(1u64);} else {held.add(1u64);}
+  }
+}
+
+fn prober(unused: u64) u64 {
+  while probeQuit.load() == 0u64 {
+    if probeReq.swap(0u64) == 1u64 {
+      _ = blockStats();
+      trimStock();
+      probeAck.store(1u64);
+    } else {
+      thread.sleep(Duration.fromMillis(1i64));
+    }
+  }
+  1u64
+}
+
+fn pool() &MemRegion {bufferPool() as &MemRegion}
+
+fn at(base: usize, i: usize) *usize {(base as *usize) + i}
+
+struct Rel {
+  pub base: usize;
+  pub from: usize;
+  pub count: usize;
+  pub flush: bool;
+}
+
+// Release count blocks of 4 KiB from the array, on this thread
+fn giveBack(j: Rel) u64 {
+  let r = pool();
+  var i = 0usize;
+  while i < j.count {
+    r.release(*at(j.base, j.from + i) as *u8, 4096usize);
+    i = i + 1usize;
+  }
+  if j.flush {flushThread();}
+  u64.from(j.count)
+}
+
+// Takes five blocks and gives them back to its cache, and ends, or flushes first
+fn cycler(flush: bool) u64 {
+  let r = pool();
+  var mine = Array[usize, 5]() <- fill 0usize;
+  var k = 0usize;
+  while k < 5usize {
+    mine[k] = tryAllocate(4096usize) as usize;
+    k = k + 1usize;
+  }
+  k = 0usize;
+  while k < 5usize {
+    r.release(mine[k] as *u8, 4096usize);
+    k = k + 1usize;
+  }
+  if flush {flushThread();}
+  5u64
+}
+
+fn main() i32 {
+  let r = pool();
+  setLimits(8388608usize, 0usize);
+  let base = libc.malloc(1100usize * 8usize) as usize;
+  let pr = thread.start(0u64, &prober);
+
+  // Take until refused; the retry after arming is refused too, and no wake has run
+  var n = 0usize;
+  while true {
+    let p = tryAllocate(4096usize);
+    if p as usize == 0usize {break;}
+    *at(base, n) = p as usize;
+    n = n + 1usize;
+  }
+  expectUInt(u64.from(n), 1024u64, "two slabs of 4 KiB blocks, then a refusal");
+  armRoomWake();
+  expect(tryAllocate(4096usize) as usize == 0usize, "the retry after arming is refused again");
+  expectUInt(wakes.load(), 0u64, "no room came back: no wake ran");
+  probe.store(1u64);
+
+  // The armed wake runs once, when a thread whose line is full spills: the 33rd
+  // return of a cache of 32. Its end then flushes with the wake disarmed: no run
+  let t2 = thread.start(Rel(base, 0usize, 33usize, false), &giveBack);
+  expectUInt(t2.join(), 33u64, "second thread returned 33 blocks");
+  expectUInt(wakes.load(), 1u64, "a spill ran the wake once");
+  expectUInt(probed.load(), 1u64, "and a second thread could take the pool's locks while it ran");
+
+  // Not armed: returns that spill run nothing
+  var i = 0usize;
+  while i < 100usize {
+    r.release(*at(base, 33usize + i) as *u8, 4096usize);
+    i = i + 1usize;
+  }
+  expectUInt(wakes.load(), 1u64, "not armed: 100 returns on main, three spills, no wake");
+
+  // Take, arm, retry: the retry succeeds, a take makes no room, and the wake stays armed
+  armRoomWake();
+  let q = tryAllocate(4096usize);
+  expect(q as usize != 0usize, "the retry finds room");
+  expectUInt(wakes.load(), 1u64, "a take runs no wake");
+  r.release(q, 4096usize);
+  // the armed wake is left for the next case: one spurious run at most
+
+  // A thread's end: its cache goes back after the registry's lock is released
+  let w0 = wakes.load();
+  armRoomWake();
+  let t3 = thread.start(false, &cycler);
+  expectUInt(t3.join(), 5u64, "third thread ran");
+  expectUInt(wakes.load(), w0 + 1u64, "a thread's end ran the wake once, outside the registry's lock");
+
+  // flushThread: the same, early
+  let w1 = wakes.load();
+  armRoomWake();
+  let t4 = thread.start(true, &cycler);
+  expectUInt(t4.join(), 5u64, "fourth thread ran");
+  expectUInt(wakes.load(), w1 + 1u64, "flushThread ran the wake once, outside the registry's lock");
+
+  // trimEverything: every cache flushed under the registry's lock, the wake after it. Main's cache
+  // holds blocks (the returns above)
+  let w2 = wakes.load();
+  armRoomWake();
+  trimEverything();
+  expectUInt(wakes.load(), w2 + 1u64, "trimEverything ran the wake once, outside the registry's lock");
+
+  // The rest of main's blocks home, with nothing armed; main's cache goes back, so that every slab
+  // is wholly idle, and the next trim gives them to the OS
+  let w3 = wakes.load();
+  i = 133usize;
+  while i < 1024usize {
+    r.release(*at(base, i) as *u8, 4096usize);
+    i = i + 1usize;
+  }
+  flushThread();
+  expectUInt(wakes.load(), w3, "not armed: nothing ran");
+  expectUInt(blockStats().lent, 0u64, "every block home");
+  armRoomWake();
+  trimStock();
+  expectUInt(wakes.load(), w3 + 1u64, "idle slabs given back to the OS ran the wake once: held is lower");
+  expectUInt(osBlocks(), 0u64, "every slab given back");
+
+  // An oversize block: held is lowered by its release and by nothing else
+  let big = tryAllocate(3145728usize);
+  expect(big as usize != 0usize, "an oversize block of 3 MiB fits the bank's 4 MiB");
+  expect(tryAllocate(3145728usize) as usize == 0usize, "a second does not");
+  let w4 = wakes.load();
+  armRoomWake();
+  r.release(big, 3145728usize);
+  expectUInt(wakes.load(), w4 + 1u64, "releasing an oversize block ran the wake once");
+  expectUInt(osBlocks(), 0u64, "oversize block back with the OS");
+
+  // A class with no cache: each return is its own locked step to the stock
+  let m = tryAllocate(1048576usize);
+  expect(m as usize != 0usize, "a block of 1 MiB");
+  let w5 = wakes.load();
+  armRoomWake();
+  r.release(m, 1048576usize);
+  expectUInt(wakes.load(), w5 + 1u64, "a return with no cache ran the wake once");
+  let w6 = wakes.load();
+  let m2 = tryAllocate(1048576usize);
+  r.release(m2, 1048576usize);
+  expectUInt(wakes.load(), w6, "not armed: a second return ran nothing");
+
+  expectUInt(held.load(), 0u64, "the wake never ran with a lock of the pool held");
+  probeQuit.store(1u64);
+  expectUInt(pr.join(), 1u64, "the prober ended");
+  libc.free(base as *u8);
+  trimEverything();
+  expectUInt(osBlocks(), 0u64, "nothing held at the end");
+  done()
+}
