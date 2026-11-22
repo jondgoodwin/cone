@@ -256,7 +256,28 @@ actor Prober {
     post.body = String.from("over h3");
     say("post", await client.send(post));
 
-    // Events over HTTP/3
+    // Events over HTTP/3. A response stream is the service's, and the service's pool learns an origin's HTTP/3 from its own
+    // first response (the client actor's pool, which the requests above went through, is another): one stream is read over
+    // TCP first, for it to learn
+    let first = await client.events(Request.get(url(port, "/events").view()));
+    match first {
+      case let Ok(es) {
+        var more = true;
+        while more {
+          let n = await es.next();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(ev) {}
+                case is None[sse.Event] {more = false;}
+              }
+            }
+            case let Err(er) {more = false;}
+          }
+        }
+      }
+      case let Err(e) {}
+    }
     let r = await client.events(Request.get(url(port, "/events").view()));
     match r {
       case let Ok(es) {

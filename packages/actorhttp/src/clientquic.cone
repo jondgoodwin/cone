@@ -1,0 +1,305 @@
+// The client's QUIC connection on actors (the package's header, A CLIENT ON ACTORS; stage 5, Q4). A ClientQuicActor is the
+// ClientConnActor of an HTTP/3 connection: the same exchange half (ClientExchanges, written once in clientactor.cone), and a wire
+// half of its own. Its wire is a UDP socket it binds itself on whatever worker has it, a batch of 8 receives, and a send of each
+// datagram the connection value gives, awaited on its own worker. The value is httpclient's H3ClientConn, made by the plug-in's
+// connector inside this actor (it never crosses actors) and held through h3adapt.cone's adapter. There is no half-close and no
+// linger: the value's own CONNECTION_CLOSE is its last datagram.
+//
+// The attempt's deadline (httpclient's http3Timeout, as 'by') is this actor's: a connection not up by then ends with a Connect
+// failure, which the client's core meets as a fallback to TCP (ClientCore.closed, h3Broken).
+
+const quicRecvRoom = 1500usize;        // a receive's buffer: an Ethernet frame's payload, the most a datagram of ours holds
+const quicRecvBatch = 8u32;            // datagrams one receive takes (netmsg's client size)
+const quicSendDepth = 32usize;         // datagrams taken from the value into the send queue at a time
+
+actor ClientQuicActor {
+  args: Arc[imm, ClientArgs];
+  group: CancelGroup;                  // this connection's own, a child of the client's: it ends the receive
+  host: String;
+  peer: SocketAddr;
+  upBy: Instant;                       // not up by then: the attempt has failed
+  cc: Option[H3ClientAdapter];         // the value, made once the socket is bound
+  ex: ClientExchanges[H3ClientAdapter];
+  sock: aio.UdpSocket;
+  tx: aio.UdpSender;
+  tm: actors.Timer;
+  outq: Deque[IoBuf];                  // datagrams taken from the value and not yet handed to the socket
+  sending: bool;                       // sendOut is running
+  guard: ClientGuard;
+
+  fn init(self: &new, client: ClientActor, pc: u32, gen: u32, host: String, peer: SocketAddr, upBy: Instant,
+      args: Arc[imm, ClientArgs], parent: CancelGroup) {
+    liveClientConns.add(1u64);
+    *self = Self(args: args, group: parent.child(), host: host, peer: peer, upBy: upBy, cc: None[H3ClientAdapter],
+      ex: ClientExchanges[H3ClientAdapter].make(client, pc, gen, args.maxBody, true), sock: aio.UdpSocket.none(),
+      tx: aio.UdpSender.none(), tm: actors.Timer.make(), outq: Deque[IoBuf](), sending: false, guard: ClientGuard(true));
+    selfactor.begin();
+  }
+
+  // Bind the socket (loopback for a loopback server, else any address), read the address it got, make the connection value with
+  // it, then receive and run the connection
+  pub async fn begin(self) {
+    let bindAt = if peer.isLoopback() {SocketAddr.localhost(0u16)} else {SocketAddr.v4(0u8, 0u8, 0u8, 0u8, 0u16)};
+    let made = await aio.bindUdp(bindAt);
+    match made {
+      case var Ok(s) {sock <-> s;}
+      case let Err(e) {
+        self.failAtOnce(e.code, "the UDP socket could not be bound");
+        return;
+      }
+    }
+    if ex.aborted || group.isCancelled() {
+      self.failAtOnce(0u32, "the connection was given up before it began");
+      return;
+    }
+    var bound = bindAt;
+    let la = await sock.localAddr();
+    match &la {
+      case let &Ok(a) {bound = *a;}
+      else {}
+    }
+    tx = sock.sender();
+    var made2: Option[Uni[httpclient.H3ClientConn]] = None;
+    var why = httpclient.Failure.none();
+    match &args.h3 {
+      case let &Some(conn) {
+        match conn.connect(host.view(), bound, peer, Instant.now()) {
+          case var Ok(v) {made2 = Some[Uni[httpclient.H3ClientConn]](v);}
+          case var Err(f) {why = f;}
+        }
+      }
+      else {why = httpclient.Failure.make(httpclient.Stage.Connect, 0u32, ErrorKind.Unsupported, "no HTTP/3 connector");}
+    }
+    match made2 {
+      case var Some(v) {cc = Some[H3ClientAdapter](H3ClientAdapter.make(v));}
+      else {
+        why.unsent = true;
+        why.error.noResponse = true;
+        self.finishEnd(false, why, false);
+        return;
+      }
+    }
+    selfactor.timerLoop();
+    selfactor.receive();
+    self.turn();
+  }
+
+  // The socket could not be made, or the attempt was given up first: it ends with a Connect failure no request reached
+  fn failAtOnce(self, code: u32, text: &str) {
+    var fl = httpclient.Failure.make(httpclient.Stage.Connect, code, ErrorKind.Closed, text);
+    fl.unsent = true;
+    fl.error.noResponse = true;
+    self.finishEnd(false, fl, false);
+  }
+
+  pub async fn timerLoop(self) {
+    while await tm.next() {
+      if ex.ended {break;}
+      let now = Instant.now();
+      match cc.asMut() {
+        case let Some(c) {c.handleTimeout(now);}
+        else {}
+      }
+      if !ex.up && now >= upBy {
+        var fl = httpclient.Failure.make(httpclient.Stage.Connect, 0u32, ErrorKind.TimedOut, "the HTTP/3 connection was not made in time");
+        fl.unsent = true;
+        fl.error.noResponse = true;
+        self.finishEnd(false, fl, false);
+        return;
+      }
+      self.turn();
+    }
+  }
+
+  // ---- what the client asks
+
+  pub async fn send(self, fetch: httpclient.FetchId, head: RequestHead, body: BodyLength, bytes: String) {
+    if !ex.accept(fetch, head, body, bytes) {return;}
+    self.turn();
+  }
+
+  pub async fn cancel(self, fetch: httpclient.FetchId) {
+    if ex.ended {return;}
+    match cc.asMut() {
+      case let Some(c) {ex.cancel(c, fetch);}
+      else {}
+    }
+    self.turn();
+  }
+
+  pub async fn shutdown(self) {
+    if ex.ended {return;}
+    match cc.asMut() {
+      case let Some(c) {ex.shutdown(c);}
+      else {}
+    }
+    self.turn();
+  }
+
+  // End now
+  pub async fn abort(self) {
+    ex.aborted = true;
+    ex.hard = true;
+    if ex.ended {return;}
+    match cc.asMut() {
+      case let Some(c) {c.abort();}
+      else {return;}
+    }
+    self.turn();
+  }
+
+  // ---- the wire
+
+  // Receive datagrams until the connection ends: the next ones to arrive (up to the batch), each given to the connection value in
+  // arrival order. A datagram that is longer than the room comes cut and is dropped, as one from anyone but the server is. Each
+  // buffer is taken out of its slot and put back empty, so the batch is kept for the connection's life
+  pub async fn receive(self) {
+    var failures = 0u32;
+    var batch = DatagramBatch.make(quicRecvBatch, quicRecvRoom);
+    while !ex.ended && failures <= 8u32 {
+      let r = await sock.recvManyIn(batch, IoLimits.within(group));
+      match r {
+        case var Ok(ok) {
+          failures = 0u32;
+          batch = ok;
+          let cnt = batch.count();
+          var k = 0u32;
+          while k < cnt {
+            let from = batch.from(k);
+            var b = batch.swapOut(k, IoBuf());
+            if !batch.wasCut(k) && from == peer {
+              match cc.asMut() {
+                case let Some(c) {c.conn.datagramIn(b.view(), Instant.now());}
+                else {}
+              }
+            }
+            b.clear();
+            let spare = batch.swapOut(k, b);
+            k = k + 1u32;
+          }
+          if cnt > 0u32 {self.turn();}
+        }
+        case var Err(f) {
+          let e, back = f.(error, batch);
+          match back {
+            case var Some(b) {batch = b;}
+            else {batch = DatagramBatch.make(quicRecvBatch, quicRecvRoom);}
+          }
+          if aio.isCancelled(e) {return;}
+          if !aio.isTruncated(e) {failures = failures + 1u32;}
+        }
+      }
+    }
+    // Its receives keep failing: the connection is over
+    if !ex.ended {
+      match cc.asMut() {
+        case let Some(c) {c.abort();}
+        else {}
+      }
+      self.turn();
+    }
+  }
+
+  // The datagrams in outq go to the socket, one awaited send each; a failed send is the network's loss and QUIC resends
+  pub async fn sendOut(self) {
+    while true {
+      match outq.popFront() {
+        case let Some(p) {let r = await tx.sendTo(peer, p);}
+        else {break;}
+      }
+    }
+    sending = false;
+    if !ex.ended {self.turn();}
+  }
+
+  // ---- what happened on the connection, and what follows from it
+
+  fn turn(self) {
+    if ex.ended {return;}
+    let now = Instant.now();
+    var calling = false;
+    var done = false;
+    match cc.asMut() {
+      case let Some(c) {
+        ex.step(c, now);
+        ex.report(c);
+        // The datagrams it has to send, as many as the queue takes
+        var took = 0usize;
+        while outq.len() < quicSendDepth {
+          match c.conn.takeDatagram(now) {
+            case let Some(p) {
+              outq.push(p);
+              took = took + 1usize;
+            }
+            else {break;}
+          }
+        }
+        if outq.len() >= quicSendDepth {c.conn.finishTurn(now);}
+        done = c.done(now);
+        match c.pollTimeout() {
+          case let Some(t) {tm.set(if !ex.up && upBy < t {upBy} else {t});}
+          else {if !ex.up {tm.set(upBy);} else {tm.clear();}}
+        }
+        calling = c.wantsCall();
+      }
+      else {return;}
+    }
+    if outq.len() > 0usize && !sending {
+      sending = true;
+      selfactor.sendOut();
+    }
+    if calling {selfactor.runCall();}
+    if done && outq.len() == 0usize && !sending {self.finishEnd(true, httpclient.Failure.none(), false);}
+  }
+
+  // The certificate check by the OS, on the blocking pool, and its answer as values
+  pub async fn runCall(self) {
+    var op: Option[Op] = None;
+    match cc.asMut() {
+      case let Some(c) {if c.wantsCall() {op = Some[Op](c.takeCall());}}
+      else {}
+    }
+    match op {
+      case var Some(o) {
+        match o {
+          case let Call(w) {
+            let lane, work, arg, buf = w.(lane, work, arg, buf);
+            let r = await aio.onPool(lane, work, arg, buf);
+            if ex.ended {return;}
+            match cc.asMut() {
+              case let Some(c) {
+                match r {
+                  case let Ok(done) {
+                    let back = done.(buf);
+                    c.callAnswered(&back, None[IoError], Instant.now());
+                  }
+                  case let Err(e) {
+                    let none = IoBuf();
+                    c.callAnswered(&none, Some[IoError](e), Instant.now());
+                  }
+                }
+              }
+              else {}
+            }
+            self.turn();
+          }
+          else {}
+        }
+      }
+      else {}
+    }
+  }
+
+  // The connection is over: its socket let go (which closes it), its receive ended, and the client told if it has not been
+  fn finishEnd(self, clean: bool, fl: httpclient.Failure, tlsFailed: bool) {
+    if ex.ended {return;}
+    ex.ended = true;
+    tm.stop();
+    group.cancel();
+    sock = aio.UdpSocket.none();
+    tx = aio.UdpSender.none();
+    outq.clear();
+    ex.clear();
+    ex.tell(clean, fl, tlsFailed);
+  }
+}
