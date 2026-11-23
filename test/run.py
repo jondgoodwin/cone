@@ -1871,6 +1871,24 @@ def normalize(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+SOURCE_LINE_RX = re.compile(r"\b([\w.-]+\.(?:cone|c|h|cpp|rs)):\d+(?::\d+)?")
+
+
+def without_foreign_lines(text: str, source_dir: Path) -> str:
+    """Stderr as a ``.err`` file is compared: the ``:LINE`` (and ``:COLUMN``) after
+    a source file's name is dropped, unless that file is one of the scenario's
+    own, a ``.cone`` file under its source's folder. A panic inside a library
+    names a line of a file the test does not own, which an edit above it moves
+    for no change of behaviour; the file name and the message stay compared
+    exactly, and a line in the test's own file stays pinned, since a test of
+    where a panic is reported is there to say where."""
+    own = {f.name for f in source_dir.rglob("*.cone")}
+
+    def drop(m: re.Match) -> str:
+        return m.group(0) if m.group(1) in own else m.group(1)
+    return SOURCE_LINE_RX.sub(drop, text)
+
+
 def normalize_path(text: str) -> str:
     return text.replace("\\", "/")
 
@@ -3382,6 +3400,9 @@ class Runner:
             actual_err = normalize(ran.stderr)
             for mask in scenario.stderr_mask:
                 actual_err = re.sub(mask, "<masked>", actual_err)
+            src_dir = scenario.source.parent
+            expected_err = without_foreign_lines(expected_err, src_dir)
+            actual_err = without_foreign_lines(actual_err, src_dir)
             if trimmed(actual_err) != trimmed(expected_err):
                 result.status = FAIL
                 result.problems.append("stderr does not match "

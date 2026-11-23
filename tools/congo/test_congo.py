@@ -113,6 +113,43 @@ class HeaderScan(unittest.TestCase):
         self.assertEqual([i.name for i in header.imports], ["stdio", "q"])
 
 
+class ErrLines(unittest.TestCase):
+    """An expected-stderr (.err) comparison ignores :LINE after a file the test
+    does not own, in congo.py and in the compiler suite's test/run.py alike."""
+
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cone_suite_run", congo.REPO / "test" / "run.py")
+        self.suite = importlib.util.module_from_spec(spec)
+        sys.modules["cone_suite_run"] = self.suite
+        spec.loader.exec_module(self.suite)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        (self.dir / "mine.cone").write_text("", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def same(self, want: str, got: str) -> bool:
+        a = congo.without_foreign_lines([want], self.dir) == congo.without_foreign_lines([got], self.dir)
+        b = (self.suite.without_foreign_lines(want, self.dir)
+             == self.suite.without_foreign_lines(got, self.dir))
+        self.assertEqual(a, b)
+        return a
+
+    def test_another_files_line_may_differ(self):
+        self.assertTrue(self.same("panic at bufpool.cone:652: boom", "panic at bufpool.cone:700: boom"))
+        self.assertTrue(self.same("panic at a.c:3:9: boom", "panic at a.c:40: boom"))
+
+    def test_the_message_or_the_file_must_still_match(self):
+        self.assertFalse(self.same("panic at bufpool.cone:652: boom", "panic at bufpool.cone:652: bang"))
+        self.assertFalse(self.same("panic at bufpool.cone:652: boom", "panic at pool.cone:652: boom"))
+
+    def test_the_tests_own_file_keeps_its_line(self):
+        self.assertFalse(self.same("panic at mine.cone:5: boom", "panic at mine.cone:6: boom"))
+        self.assertTrue(self.same("panic at mine.cone:5: boom", "panic at mine.cone:5: boom"))
+
+
 class NotNames(unittest.TestCase):
     def test_the_words_that_cannot_name_a_module_are_the_compilers(self):
         # Every keyAdd in the lexer but an attribute's, which no file or folder

@@ -65,7 +65,10 @@ sit anywhere in the derived layout, and forbids a type relying on a trait to
 declare its state for it.
 
 **Only the first abstraction named may require fields**, since only one of them
-can hold position zero. ▸ **Settles** that any number of abstractions may be
+can hold position zero, **unless a later one requires exactly the first's** (same
+names, types and order: a diamond, where two traits each `is` a third and repeat
+its fields; `structTraitFieldsSame`). One that adds a field of its own wants a
+different prefix and is `ErrorIsaMulti`. ▸ **Settles** that any number of abstractions may be
 named: a field two of them wanted is declared once, so no contest between two
 traits' field orders can arise. ▸ A trait is held to the field requirement exactly
 as a struct is, because a field has no bodiless form — declaring it *is* the
@@ -503,6 +506,15 @@ value, so only a reference to either recasts. That one test is
 references or a pointer) keeps its exact reading, and lifetimes are
 `lifeSigMeets`' as before. `trait_method_variance` pins what is accepted and
 `trait_typecheck_method_variance` what is refused.
+
+**`Self` by value in an open trait's requirement** (`b: Self`, a by-value `self`,
+a result `Self`): `varDclSizeCheck` (`stmt/vardcl.c`) does not report it as a
+trait held by value (`ErrorNoSize`, 1069), because `Self` there stands for the
+type meeting the trait, which has a size; a default using it is cloned into each
+implementer. A closed trait (`HasTagField`, `SameSize`) and an enum keep their
+own reading. A virtual reference to such a trait is still refused where a struct
+is given as one, as for `&Self` (`trait_typecheck_self_by_value`;
+`trait_self_by_value` runs the rest).
 
 **One rule, spelled once** (`fnSigMeetKind` in `types/fnsig.c`; `fnSigVrefMeets`,
 `fnSigMeets` and `fnSigMeetsMethod` are its three forms by what stands first in the
@@ -1022,8 +1034,8 @@ members", is the mechanism.
    be declared here, under the same names and types, in the base's order,
    beginning at position 0 — `ErrorIsaFields`, reported at the field that breaks
    the prefix, or at the type when the requirement runs off the end of its field
-   list. And every abstraction past the first must require no fields at all
-   (`ErrorIsaMulti`), since only one can hold position zero. An enum base is exempt
+   list. And every abstraction past the first must require no fields, or exactly the
+   first's (`ErrorIsaMulti`), since only one prefix can hold position zero. An enum base is exempt
    both ways: it splices its fields in, so a variant declares none of them.
    Then a type declaring `AtomicValue` is held to its shape
    (`structAtomicValueCheck`, "AtomicValue" below).
