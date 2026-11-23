@@ -226,6 +226,33 @@ A backslash at a line's end inside the literal already has its own error
 one diagnostic. `lexical_reject_mlstring_open` holds the refusal and
 `lexical_mlstring_open` the legal forms beside it.
 
+**Raw and triple-quoted literals** (`doc/manual/syntax-lexical.html#string`) are the same
+walk with a different opening: `lexScanStr(srcp, interp, raw, delim, dlen)`. An `r`
+directly before `"` or a backtick opens a raw literal (checked at the identifier case of
+the token dispatch, before `lexScanIdent`); three double quotes open a triple-quoted one
+(`dlen` 3), after an optional `r`. A raw literal copies a backslash as text and neither
+the sizing walk nor the build steps over an escape, so `r"a\"` is `a\`; the
+backslash-before-line-end join is an escape's, so a raw multi-line literal keeps it as
+text. A triple-quoted literal is closed by the last three of the run of quotes that ends
+it (`""""Happy Birthday!""""` holds the quotes), and a quote that is not part of the
+closing three is content; the sizing walk finds that closer first (`endp`) and the build
+stops there. A backtick raw literal ends at the next backtick. Margin, line-end and
+text-after-the-opening rules are the multi-line literal's, unchanged. `$"` stays the only
+interpolated opening, and a raw literal written inside an interpolation's braces is not
+stepped over whole by `lexInterpSkipBraces` (it reads quotes as plain strings). Tests:
+`lexical_raw_strings`, `lexical_reject_raw_strings`, `lexical_reject_unclosed_raw`.
+
+**The `p` exponent is a hexadecimal literal's** (Jon 28 Oct, ruled 1 Nov 2026).
+`lexScanNumber` reads `p` or `P` as an exponent after a hex mantissa only; in a decimal
+literal a `p` that digits follow is `ErrorRadixFloat` ("takes its exponent with 'e'"),
+once, and is still read as the exponent so the literal ends where it should
+(`lexical_reject_decimal_p`). A hex float's exponent is decimal digits, so the `f` of
+`0x1.8p1f` begins the suffix and is applied (`lexical_hex_float_suffix`).
+
+**`local` and `wait` are ordinary names** (released, Jon 28 Oct 2026, built 23 Nov):
+`lexical_released_words`; Congo's reserved-word lists (`congo.py`, `header.cone`) follow
+the lexer's `ReservedToken` group, which test_congo.py checks.
+
 **A raw tab in a literal is content; every other raw control character is
 refused.** Jon's ruling of 24 September 2026: a tab written as itself is part
 of a one-line string, a multi-line string or a character literal alike, and

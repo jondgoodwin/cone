@@ -1,0 +1,90 @@
+// Raw and triple-quoted string literals, by doc/manual/syntax-lexical.html#string,
+// "Escaped vs. Raw Text" (design chat's ruling of 1 Nov 2026, delegated by Jon):
+//
+//   "..."       escape sequences; a double quote or backslash is escaped
+//   r"..."      raw: no escape sequences, a backslash is text; no double quote inside
+//   r`...`      raw; double quotes and backslashes are text; no backtick inside
+//   """..."""   escape sequences; double quotes need no escape
+//   r"""...""" raw; neither a backslash nor a double quote is escaped
+//
+// A literal opened by three quotes is closed by the last three of the run of quotes that
+// ends it (the manual's "Happy Birthday!" example). The multi-line rules of
+// lexical_mlstring (the opening quotes end their line; the closing quotes begin a later
+// line, whose indentation is the margin) hold for the raw and triple forms too, with one
+// exception: raw text has no escape sequences, so a backslash before a line's end is text
+// and joins nothing.
+//
+// Every literal is printed a byte at a time between bars, with a new-line and a tab
+// spelled as their escapes, so a backslash that is text and a new-line that is a line end
+// differ by the length printed at the end. Each length was counted by hand.
+
+mod lexical_raw_strings;
+
+import stdio use *;
+
+fn show(label: &str, text: &Array[u8]) {
+  printStr(label);
+  printStr(" = |");
+  var i = 0u64;
+  while i < text.len {
+    let c = text[i];
+    if c == '\n' {
+      printStr("\\n");
+    } else if c == '\t' {
+      printStr("\\t");
+    } else {
+      printChar(u64.from(c));
+    }
+    i = i + 1;
+  }
+  printStr("|, len ");
+  printUInt(u64.from(text.len));
+  printStr("\n");
+}
+
+// A multi-line raw triple-quoted literal at module level: the backslashes and quotes are
+// text, and the margin (three spaces) is stripped from each line
+let doc = r"""
+   say "x"\n
+     two
+   """;
+
+fn main() i32 {
+  // The cooked literal as it always was: \n is one new-line byte
+  show("cooked", "plain\n");
+
+  // r"...": the backslashes are text
+  show("raw-path", r"C:\dir\n");
+  // A backslash before the closing quote is text, not an escaped quote
+  show("raw-backslash-end", r"a\");
+  show("raw-empty", r"");
+
+  // r`...`: double quotes and backslashes are text
+  show("raw-tick", r`say "hi" \t`);
+
+  // """...""" has escapes, and its double quotes need none
+  show("triple-escapes", """say "hi" \\ and \t""");
+  show("triple-quote-inside", """a"b""");
+  show("triple-empty", """""");
+
+  // The terminator is the last three of a longer run: the others are text
+  show("triple-birthday", """"Happy Birthday!"""");
+
+  // r"""...""": neither a backslash nor a quote is escaped
+  show("raw-triple", r"""a\b "q" c""");
+
+  // Multi-line: the line ends are new-lines, the margin is stripped, and a backslash
+  // before a line end is text in a raw literal
+  show("raw-doc", doc);
+  let rawjoin = r"""
+a\
+b
+""";
+  show("raw-backslash-line-end", rawjoin);
+  let cookedjoin = """
+a\
+b
+""";
+  show("triple-backslash-joins", cookedjoin);
+  return 0;
+}

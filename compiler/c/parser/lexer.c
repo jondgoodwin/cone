@@ -222,9 +222,7 @@ void keywordInit() {
     // than reserved.
     keyAdd("baseurl", ReservedToken);
     keyAdd("context", ReservedToken);
-    keyAdd("local", ReservedToken);
     keyAdd("selfmethod", ReservedToken);
-    keyAdd("wait", ReservedToken);
 
     // The second group spells the syntax of features the reference describes but
     // syntax-lexical.html has not caught up with: safe-panics.html for error handling,
@@ -686,11 +684,18 @@ static char *lexInterpSkipStr(char *p, int interp) {
     return NULL;
 }
 
-static void lexScanStr(char *srcp, int interp) {
+// A string literal is opened by one delimiter, or by three double quotes
+// (dlen), after an optional 'r' (raw: no escape sequences, a backslash is
+// text) or '$' (interpolated); doc/manual/syntax-lexical.html#string. A
+// literal opened by three quotes is closed by the last three of the run of
+// quotes that ends it, so '""""Happy Birthday!""""' holds "Happy Birthday!"
+// with its quotes. The delimiter is '"', or a backtick for r`...`. srcp is
+// the literal's first character.
+static void lexScanStr(char *srcp, int interp, int raw, char delim, int dlen) {
     uint64_t uchar;
-    lex->tokp = srcp++;
-    if (interp)
-        ++srcp;  // past the '"' after the '$'
+    int prefix = (interp || raw ? 1 : 0) + dlen;  // bytes before the content
+    lex->tokp = srcp;
+    srcp += prefix;
     int multiline = lexEolLen(srcp) != 0;
     char *margin = srcp;
     uint32_t marginlen = 0;
@@ -704,8 +709,8 @@ static void lexScanStr(char *srcp, int interp) {
     // escape sequence, a line's end, a control character, each is at most as
     // long in the string as in the source.
     char *endp = srcp;
-    while (*endp && *endp != '"') {
-        if (*endp == '\\' && *(endp + 1))
+    while (*endp && !(*endp == delim && (dlen == 1 || (endp[1] == delim && endp[2] == delim)))) {
+        if (!raw && *endp == '\\' && *(endp + 1))
             ++endp;
         else if (interp && *endp == '{') {
             if (endp[1] == '{')
@@ -730,11 +735,15 @@ static void lexScanStr(char *srcp, int interp) {
         }
         ++endp;
     }
+    // The last three quotes of a longer run close a triple-quoted literal
+    if (dlen == 3 && *endp == delim)
+        while (endp[3] == delim)
+            ++endp;
     uint32_t srclen = (uint32_t)(endp - srcp);
 
     // No closing quote before the source's end. Reported here, at the opening
     // quote, before the build below counts the lines the literal runs over
-    if (*endp != '"' && !badbrace)
+    if (*endp != delim && !badbrace)
         errorMsgLex(ErrorBadTok, "String literal is never closed: no closing quote before the end of the file");
     // Text follows the opening quote and the literal runs on to another line.
     // The manual's multi-line literal ends its line right after the opening
@@ -743,7 +752,7 @@ static void lexScanStr(char *srcp, int interp) {
     // reads the literal as it always has, so the rest of the file lexes as before
     else if (!multiline) {
         for (char *p = srcp; p < endp; ++p) {
-            if (*p == '\\' && p + 1 < endp) {
+            if (!raw && *p == '\\' && p + 1 < endp) {
                 // An escape is stepped over whole, as the count above does. A
                 // backslash at a line's end is an error of its own (the build
                 // below reports it), and one mistake gets one diagnostic
@@ -770,7 +779,7 @@ static void lexScanStr(char *srcp, int interp) {
 
     if (multiline) {
         // The closing quote's indentation, which must be all its line holds before it
-        if (*endp == '"') {
+        if (*endp == delim) {
             char *linebeg = endp;
             while (*(linebeg - 1) == ' ' || *(linebeg - 1) == '\t')
                 --linebeg;
@@ -794,10 +803,10 @@ static void lexScanStr(char *srcp, int interp) {
         ilit = (InterpLit*)memAllocBlk(sizeof(InterpLit) + sizeof(InterpPart) * (2 * nbraces + 1));
         lex->val.interp = ilit;
     }
-    srcp = lex->tokp + (interp ? 2 : 1);
+    srcp = lex->tokp + prefix;
     if (multiline)
         srcp = lexStringNewLine(srcp, margin, marginlen);  // the opening quote's end of line is not content
-    while (*srcp != '"' && *srcp) {
+    while (*srcp && !(*srcp == delim && (dlen == 1 || srcp == endp))) {
         if (interp && *srcp == '{' && srcp[1] != '{') {
             // A brace's expression: the text before it ends as a part of its own
             char *close = badbrace == srcp ? NULL : lexInterpSkipBraces(srcp + 1);
@@ -866,7 +875,7 @@ static void lexScanStr(char *srcp, int interp) {
                 srcp = lexStringNewLine(srcp, margin, marginlen);
                 continue;
             }
-            if (*srcp == '\\' && lexEolLen(srcp + 1)) {
+            if (!raw && *srcp == '\\' && lexEolLen(srcp + 1)) {
                 srcp = lexStringNewLine(srcp + 1, margin, marginlen);
                 continue;
             }
@@ -897,7 +906,7 @@ static void lexScanStr(char *srcp, int interp) {
         }
 
         // Copy over next byte or an escaped character
-        if (*srcp != '\\') {
+        if (raw || *srcp != '\\') {
             *newp++ = *srcp++; // Works for utf8-encoded characters as well
             srclen++;
         }
@@ -930,8 +939,8 @@ static void lexScanStr(char *srcp, int interp) {
         }
     }
     *newp = '\0';  // Backstop with null to be careful
-    if (*srcp == '"')
-        srcp++;        // Move past terminating " character
+    if (*srcp == delim)
+        srcp += dlen;  // Move past the terminating delimiter
 
     lex->strlen = srclen;  // Count of all characters of string, except final null char.
     lex->srcp = srcp;
@@ -950,7 +959,8 @@ static void lexScanStr(char *srcp, int interp) {
 }
 
 void lexScanString(char *srcp) {
-    lexScanStr(srcp, 0);
+    // Three double quotes open a literal of the triple-quoted kind
+    lexScanStr(srcp, 0, 0, '"', srcp[1] == '"' && srcp[2] == '"' ? 3 : 1);
 }
 
 // Convert ascii float number to double float
@@ -1029,6 +1039,7 @@ void lexScanNumber(char *srcp) {
     char isFloat;        // nonzero when number token is a float, 'e' when in exponent
     char overflow;      // nonzero once the digits no longer fit in intval
     char badRadix = '\0';   // nonzero once a binary or octal literal has been reported
+    char badDecimalP = '\0';  // nonzero once a decimal literal's 'p' exponent has been reported
     int ndigits = 0;     // digits taken after a binary or octal prefix
     const char *radix = NULL;  // "binary" or "octal" for those literals
 
@@ -1064,10 +1075,21 @@ void lexScanNumber(char *srcp) {
         // Only one exponent allowed. In a hex literal 'e' and 'E' are digits,
         // so only 'p' or 'P' can begin its exponent. A binary or octal literal has
         // none: its 'e' is not a digit, so an 'e' that a digit follows is an exponent
-        // written where there can be none, and so is a 'p'
-        if (!afterDot && isFloat!='e' && ((base==10 && (*srcp=='e' || *srcp=='E')) || *srcp=='p' || *srcp=='P'
-            || (radix && (*srcp=='e' || *srcp=='E')
-                && ((srcp[1]>='0' && srcp[1]<='9') || ((srcp[1]=='-' || srcp[1]=='+') && srcp[2]>='0' && srcp[2]<='9'))))) {
+        // written where there can be none, and so is a 'p'. A decimal literal has
+        // none either, 'p' being the hexadecimal exponent (Jon 28 Oct 2026, ruled
+        // 1 Nov): a 'p' with digits after it is refused, once, and still read as the
+        // exponent it was meant for, so the literal ends where it should
+        int expDigit = (srcp[1]>='0' && srcp[1]<='9') || ((srcp[1]=='-' || srcp[1]=='+') && srcp[2]>='0' && srcp[2]<='9');
+        int decimalP = base==10 && (*srcp=='p' || *srcp=='P') && expDigit;
+        if (!afterDot && isFloat!='e' && ((base==10 && (*srcp=='e' || *srcp=='E')) || decimalP
+            || (base!=10 && (*srcp=='p' || *srcp=='P'))
+            || (radix && (*srcp=='e' || *srcp=='E') && expDigit))) {
+            if (decimalP && !badDecimalP) {
+                lex->tokp = srcp;
+                errorMsgLex(ErrorRadixFloat, "A decimal literal takes its exponent with 'e': 'p' begins the exponent of a hexadecimal literal");
+                lex->tokp = srcbeg;
+                badDecimalP = '\1';
+            }
             if (radix && !badRadix) {
                 lexRadixError(ErrorRadixFloat, srcp, "exponent", radix, srcbeg);
                 badRadix = '\1';
@@ -1118,9 +1140,11 @@ void lexScanNumber(char *srcp) {
             srcp++;
             continue;
         }
-        else if (base==16 && *srcp>='A' && *srcp<='F')
+        // A hex float's exponent is written in decimal digits, so a letter after
+        // it is no digit: the 'f' of '0x1.8p1f' is the float suffix, not part of it
+        else if (base==16 && isFloat!='e' && *srcp>='A' && *srcp<='F')
             digit = *srcp++ - 'A'+10;
-        else if (base==16 && *srcp>='a' && *srcp<='f')
+        else if (base==16 && isFloat!='e' && *srcp>='a' && *srcp<='f')
             digit = *srcp++ - 'a'+10;
         else
             break;
@@ -1490,7 +1514,7 @@ void lexNextTokenx() {
         // $" " - an interpolated string; a '$' not before a quote is no token
         case '$':
             if (srcp[1] == '"') {
-                lexScanStr(srcp, 1);
+                lexScanStr(srcp, 1, 0, '"', 1);
                 return;
             }
             lex->tokp = srcp;
@@ -1510,6 +1534,17 @@ void lexNextTokenx() {
         case 'P': case 'Q': case 'R': case 'S': case 'T':
         case 'U': case 'V': case 'W': case 'X': case 'Y': case 'Z':
         case '_':
+            // r"..." and r"""...""" are raw string literals, r`...` the one that may
+            // hold double quotes: an 'r' directly before a quote or a backtick opens
+            // one, and is no identifier
+            if (*srcp == 'r' && srcp[1] == '"') {
+                lexScanStr(srcp, 0, 1, '"', srcp[2] == '"' && srcp[3] == '"' ? 3 : 1);
+                return;
+            }
+            if (*srcp == 'r' && srcp[1] == '`') {
+                lexScanStr(srcp, 0, 1, '`', 1);
+                return;
+            }
             lexScanIdent(srcp);
             return;
 
