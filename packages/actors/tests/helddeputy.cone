@@ -10,7 +10,7 @@
 //    tick and the monitor's own, spec section 6: 1 to 2.5 ms measured on a
 //    lightly loaded machine). Only the holders that set their timer on the
 //    spinning worker count, and the MEDIAN of their lateness must be within
-//    5 ms, and the worst under 20 ms, in one of up to three passes.
+//    3 ms, and the worst under 20 ms, in one of up to three passes.
 //    Without the deputy every holder would be 10 to 45 ms late (a holder of
 //    40 ms is late by the spin's remaining 10 ms or more; the median is about
 //    27 ms), so the bound separates a held cell fired by the deputy from one
@@ -21,9 +21,11 @@
 //    few resumes held off 5 to 10 ms or more by the scheduler, with the
 //    mechanism sound; that failed 3 of 8 runs alone on 23 Nov, and 10 of 24
 //    in the measurement for this change. The median does not move with them,
-//    and a pass lost to a load spike is retried. What this gives up: a
-//    deputy that adds 2 to 5 ms to every resume, or that fails a few holders
-//    in a hundred by under 20 ms, is not caught.
+//    and a pass lost to a load spike is retried. The median measured 0.75 to
+//    1.5 ms under load, so 3 ms has twice the headroom and still pins the
+//    spec's 3 ms as the typical lateness; a deputy adding 2 ms or more to
+//    every resume fails it. What it no longer catches: a few holders in a
+//    hundred late by under 20 ms.
 // 2. Moves racing the deputy: 16 holders each make 300 rounds of: set 1 to 3 ms
 //    on, spin 2 ms (a turn longer than the monitor's tick, so the deputy may
 //    fire, refile or discard the entry meanwhile), set again 0 to 1.5 ms on
@@ -46,7 +48,7 @@ const roundsPerPass = 12u64;
 const passes = 3u32;
 const bucketUs = 250u64;
 const nBuckets = 24usize;       // 0 to 6 ms in 250 us; the last one holds anything later
-const boundUs = 5000u64;
+const boundUs = 3000u64;
 const worstUs = 20000u64;
 const minSamples = 24u64;              // of the 96 resumes in a pass
 const spinnerMark = 100000000000u64;   // the spinner's message: this plus its worker's index
@@ -229,7 +231,7 @@ fn part1() {
     pass = pass + 1u32;
   }
   expect(counted >= minSamples, "enough timers were set on the spinning worker");
-  expect(p50 != 0u64 && p50 <= boundUs, "the median lateness is within 5 ms while the worker spins 50 ms");
+  expect(p50 != 0u64 && p50 <= boundUs, "the median lateness is within 3 ms while the worker spins 50 ms");
   expect(worst < worstUs, "no held cell was left for the owner (the later ones would be 10 to 45 ms late)");
   expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "part 1 idle");
   // CONE_DEPUTY_SHOW prints the last pass (as failing checks, for measuring)
