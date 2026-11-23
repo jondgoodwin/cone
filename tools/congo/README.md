@@ -482,7 +482,9 @@ says `/OPT:REF,ICF` (given by name: `/DEBUG`, which it also says unless the buil
 is `--strip`ped, would turn the folding off by default), so the linker drops what nothing reaches and folds
 identical functions: the net under the compiler's keeping each of a release
 program's generic instance functions as the program's own copy
-(`--private-instances` caps that by size). `tls` is the example of a
+(`--private-instances` caps that by size). A release link on Linux says
+`-Wl,--gc-sections`, and on macOS `-Wl,-dead_strip`, to the same end (the compiler
+gives each symbol a section of its own); a debug link says neither. `tls` is the example of a
 package whose libraries differ by system, with no plain `[link]`: on Windows
 OpenSSL's import libraries and `crypt32`, on Linux the system's `ssl` and
 `crypto` (Ubuntu's `libssl-dev`).
