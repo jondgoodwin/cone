@@ -1692,6 +1692,8 @@ static StructNode *structEnumCopyVariant(StructNode *node, StructNode *base, Str
 
 // Give a variant the tag value after 'prior's, or zero when it is the first.
 // Counting up from a negative value stays negative only until it reaches zero.
+// Counting past the largest 64-bit unsigned value would wrap to 0, a duplicate of
+// the first tag, so it is refused with ErrorTagWidth, as any tag that does not fit.
 void structTagFollow(StructNode *variant, StructNode *prior) {
     if (prior == NULL || prior->tagstate == TagUnassigned) {
         variant->tagnbr = 0;
@@ -1700,6 +1702,10 @@ void structTagFollow(StructNode *variant, StructNode *prior) {
     }
     variant->tagnbr = (int64_t)((uint64_t)prior->tagnbr + 1);
     variant->tagstate = prior->tagstate == TagNegative && variant->tagnbr < 0 ? TagNegative : TagNonNeg;
+    if (prior->tagstate == TagNonNeg && prior->tagnbr == -1)
+        errorMsgNode((INode*)variant, ErrorTagWidth,
+            "The tag value after %s would pass 18446744073709551615, the largest an enum tag holds, and wrap to 0.",
+            &prior->namesym->namestr);
 }
 
 // Do two variants hold the same tag value? Never, while either is unsettled.
@@ -3525,8 +3531,26 @@ static int structTraitRequiresFields(StructNode *trait) {
     return 0;
 }
 
+// Do two traits require the same fields: the same count, names and types, in the
+// same order? Placeholders standing for other abstractions are not fields. Two
+// traits reaching one super-trait by different paths (a diamond) agree this way.
+static int structTraitFieldsSame(StructNode *a, StructNode *b) {
+    uint32_t ia = 0, ib = 0;
+    for (;;) {
+        while (ia < a->fields.used && (nodelistGet(&a->fields, ia)->flags & IsMixin)) ++ia;
+        while (ib < b->fields.used && (nodelistGet(&b->fields, ib)->flags & IsMixin)) ++ib;
+        if (ia >= a->fields.used || ib >= b->fields.used)
+            return ia >= a->fields.used && ib >= b->fields.used;
+        FieldDclNode *fa = (FieldDclNode*)nodelistGet(&a->fields, ia++);
+        FieldDclNode *fb = (FieldDclNode*)nodelistGet(&b->fields, ib++);
+        if (fa->namesym != fb->namesym || !itypeIsSame(fa->vtype, fb->vtype))
+            return 0;
+    }
+}
+
 // Verify that this type declares the fields the abstractions it is-a require, and
-// that no more than one of them requires any.
+// that no more than one of them requires any, unless the others require just what
+// the first does.
 //
 // A trait contributes no fields. What its fields state is a requirement, which the
 // type satisfies by declaring those fields itself -- the same names, the same
@@ -3570,6 +3594,8 @@ static void structCheckIsaFields(StructNode *node) {
             if (trait == base || structBaseGivesFields(trait))
                 continue;
             if (!structTraitRequiresFields(trait))
+                continue;
+            if (!enumlaid && base && structTraitFieldsSame(trait, base))
                 continue;
             if (enumlaid)
                 errorMsgNode((INode*)node, ErrorIsaMulti,

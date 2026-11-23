@@ -1,0 +1,52 @@
+// A closure written inside a generic function names the function's type parameter
+// like any local: the closure is cloned into each instance with the function, so
+// 'T' in its parameter list, its result and its body is the instance's type.
+// Reached: a closure whose parameter and result are 'T' (called at i64 and at a
+// struct); one that declares a local of type 'T'; one handed to a generic
+// function whose bound is its own signature; one in a generic type's method.
+// Each printed value was checked by hand against the source.
+
+mod generic_closure_names_param;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct P { pub v: i64; }
+
+fn through[T](a: T) T {
+  var g = fn (x: T) T { x };
+  g(a)
+}
+
+fn viaLocal[T](a: T) T {
+  var g = fn (x: T) T { var y: T = x; y };
+  g(a)
+}
+
+fn run[F: fn(x: i64) i64](f: F, v: i64) i64 { f(v) }
+
+fn bridge[T](a: T) i64 {
+  run(fn (x: i64) i64 { var keep: T = a; x + 1 }, 40)
+}
+
+struct Holder[T] {
+  pub v: T;
+  pub fn get(self: &) T {
+    var g = fn (x: &Holder[T]) T { x.v };
+    g(self)
+  }
+}
+
+fn main() {
+  show("i64", through(7i64));
+  show("struct", through(P(9)).v);
+  show("local", viaLocal(11i64));
+  show("bridge", bridge(P(1)));
+  show("method", Holder[i64](13).get());
+}
