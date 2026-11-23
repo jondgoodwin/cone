@@ -82,6 +82,17 @@ int genlCAbiTarget(const char *triple) {
     return CAbiOther;
 }
 
+// Whether the 'system' calling convention is stdcall on a triple. Only 32-bit x86
+// has such a convention (32-bit Windows' Win32 API is stdcall; Cone doesn't target
+// it today). Elsewhere 'system' is the C convention: x86-64 ignores stdcall, but
+// AArch64 rejects it ("unsupported calling convention").
+int genlSystemIsStdcall(const char *triple) {
+    if (!triple)
+        return 0;
+    return strncmp(triple, "i386", 4) == 0 || strncmp(triple, "i486", 4) == 0
+        || strncmp(triple, "i586", 4) == 0 || strncmp(triple, "i686", 4) == 0;
+}
+
 // Whether a function's values cross as C passes them: a C-named function a
 // module owns. A type's method keeps Cone's convention even when '@c' names
 // it, since a vtable slot calls it with the method's Cone signature.
@@ -558,7 +569,7 @@ static LLVMValueRef genlCAbiCall(GenState *gen, FnSigNode *fnsig, LLVMTypeRef fn
 // hands back its result, as the C ABI passes them.
 LLVMValueRef genlFnDclCall(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn, LLVMValueRef *args, uint32_t argcnt) {
     LLVMTypeRef fntype = genlFnDclType(gen, fndcl);
-    int stdcall = (fndcl->dclinfo.facts & DclSystemCC) != 0;
+    int stdcall = (fndcl->dclinfo.facts & DclSystemCC) != 0 && genlSystemIsStdcall(LLVMGetTarget(gen->module));
     if (!genlIsCAbiFn(fndcl))
         return genlFnDclCallInst(gen, stdcall, fntype, fn, args, argcnt);
     return genlCAbiCall(gen, (FnSigNode*)itypeGetTypeDcl(fndcl->vtype), fntype, fn, args, argcnt, stdcall);

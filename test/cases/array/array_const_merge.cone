@@ -1,0 +1,51 @@
+// A constant array literal, a constant array a name holds, and a string
+// literal are values that may be written out once for every use, so their
+// globals carry 'unnamed_addr' and LLVM's constant merge folds equal ones into
+// one. Nothing here may depend on a literal having an address of its own: each
+// read below goes through the borrow and prints what it finds.
+//
+// The two functions are called with a run-time index, so the optimizer cannot
+// fold the reads into numbers and the merge has globals to act on. A program
+// that needs the single copy writes a module 'imm' table.
+
+mod array_const_merge;
+
+import stdio use *;
+
+const primes: Array[u32, 4] = [2u32, 3u32, 5u32, 7u32];
+
+fn showU(label: &str, n: u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn pick(p: &Array[u32, 4], i: usize) u32 { return p[i]; }
+
+fn firstTable(i: usize) u32 { return pick(&[5u32, 6u32, 7u32, 8u32], i); }
+fn secondTable(i: usize) u32 { return pick(&[5u32, 6u32, 7u32, 8u32], i); }
+fn thirdTable(i: usize) u32 { return pick(&primes, i); }
+fn fourthTable(i: usize) u32 { return pick(&primes, i); }
+
+fn firstWord() &str { return "merged text"; }
+fn secondWord() &str { return "merged text"; }
+
+fn main() i32 {
+  var i: usize = 0;
+  var sum: u64 = 0;
+  while i < 4 {
+    sum = sum + u64.from(firstTable(i)) + u64.from(secondTable(i));
+    i = i + 1;
+  }
+  showU("literal tables", sum);
+  i = 0;
+  sum = 0;
+  while i < 4 {
+    sum = sum + u64.from(thirdTable(i)) + u64.from(fourthTable(i));
+    i = i + 1;
+  }
+  showU("constant tables", sum);
+  showU("word", u64.from(firstWord().len() + secondWord().len()));
+  return 0;
+}

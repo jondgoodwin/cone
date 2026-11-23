@@ -1059,9 +1059,9 @@ which is where the `symbols` check target reads them.
 | vtable list | `@_CLNt5Meter = internal constant [2 x ptr] [...], comdat` — one per trait, so LLVM never uniquifies one | internal · `nodeduplicate` |
 | `extern` in a Cone-named module | `declare i64 @_CNvC12moduleextern5twice(i64)` — `moduleextern.twice`, the module's Cone name; in the root, bare, as every root declaration is | external · none |
 | `extern` with `@c`, or in a C-named module | `declare i32 @abs(i32)`; `declare %void @printStr({ ptr, i64 })` for `Str` in `mod @c("print") cio` | external · none |
-| `extern fn @c(system)` | `declare dllimport x86_stdcallcc i32 @GetTickCount()` — the DLL import only because it is `extern` | external · none |
+| `extern fn @c(system)` | (32-bit x86 target; elsewhere without `x86_stdcallcc`) `declare dllimport x86_stdcallcc i32 @GetTickCount()` — the DLL import only because it is `extern` | external · none |
 | `pub fn @c("cone_square")`, a body | `define i64 @cone_square(i64 %0) comdat {` — exported to C; private, it would be `define internal` | external · `nodeduplicate` |
-| `pub fn @c("ConeTicks")` in `mod @c(system) win` | `define x86_stdcallcc i32 @ConeTicks() comdat {` — the convention, and no DLL import on a definition | external · `nodeduplicate` |
+| `pub fn @c("ConeTicks")` in `mod @c(system) win` | (32-bit x86 target; elsewhere without `x86_stdcallcc`) `define x86_stdcallcc i32 @ConeTicks() comdat {` — the convention, and no DLL import on a definition | external · `nodeduplicate` |
 | string literal | `@string = internal constant [6 x i8] c"hello\00", comdat` | internal · `nodeduplicate` |
 | anonymous `fn` | `define internal i32 @anon(i32 %0) comdat {` | internal · `nodeduplicate` |
 | `inline` fn | no symbol | |
