@@ -65,7 +65,10 @@ sit anywhere in the derived layout, and forbids a type relying on a trait to
 declare its state for it.
 
 **Only the first abstraction named may require fields**, since only one of them
-can hold position zero. ▸ **Settles** that any number of abstractions may be
+can hold position zero, **unless a later one requires exactly the first's** (same
+names, types and order: a diamond, where two traits each `is` a third and repeat
+its fields; `structTraitFieldsSame`). One that adds a field of its own wants a
+different prefix and is `ErrorIsaMulti`. ▸ **Settles** that any number of abstractions may be
 named: a field two of them wanted is declared once, so no contest between two
 traits' field orders can arise. ▸ A trait is held to the field requirement exactly
 as a struct is, because a field has no bodiless form — declaring it *is* the
@@ -1029,8 +1032,8 @@ members", is the mechanism.
    be declared here, under the same names and types, in the base's order,
    beginning at position 0 — `ErrorIsaFields`, reported at the field that breaks
    the prefix, or at the type when the requirement runs off the end of its field
-   list. And every abstraction past the first must require no fields at all
-   (`ErrorIsaMulti`), since only one can hold position zero. An enum base is exempt
+   list. And every abstraction past the first must require no fields, or exactly the
+   first's (`ErrorIsaMulti`), since only one prefix can hold position zero. An enum base is exempt
    both ways: it splices its fields in, so a variant declares none of them.
    Then a type declaring `AtomicValue` is held to its shape
    (`structAtomicValueCheck`, "AtomicValue" below).
