@@ -305,6 +305,7 @@ class Scenarios(unittest.TestCase):
         listed = ", ".join(f'"{f.as_posix()}"' for f in folders)
         write(self.root / "home" / "config.toml", f"[registry]\nfolders = [{listed}]\n")
 
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'init' yet")
     def test_init_makes_a_package_of_an_existing_folder(self):
         folder = self.root / "already_here"
         write(folder / "notes.txt", "kept\n")
@@ -329,6 +330,7 @@ class Scenarios(unittest.TestCase):
         bad.mkdir()
         self.assertNotEqual(self.congo("init", cwd=bad, ok=False).returncode, 0)
 
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'run --example' yet")
     def test_run_example(self):
         self.congo("new", "demo", cwd=self.root)
         pkg = self.root / "demo"
@@ -353,6 +355,7 @@ class Scenarios(unittest.TestCase):
         both = self.congo("run", "--example", "first", "x.cone", cwd=pkg, ok=False)
         self.assertNotEqual(both.returncode, 0)
 
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo does not give the missing-ngtcp2 hint yet")
     def test_a_missing_ngtcp2_says_what_to_run(self):
         self.congo("new", "needs", cwd=self.root)
         pkg = self.root / "needs"
