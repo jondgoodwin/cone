@@ -457,6 +457,10 @@ and a type that is not `Hash`. Both are cured in the type declaring `Hash`, by
 a `hash` of its own that feeds what identifies it, or by leaving the field out
 of the key; the second also by declaring the field's type `Hash`.
 
+`ErrorEnumDeriveEqHash` is an enum that lists `Eq` or `Hash` and writes no `==` or `hash`, with a variant
+that carries a payload: only an enum whose variants carry nothing is derived (by its tag) so far. It is
+reported at the first such variant, naming it; the remedy is to write the methods, or leave the trait out.
+
 Core's `Eq` takes one. `ErrorEqField` is a field of a struct that declares `Eq` and
 writes no `==` whose type has no `==` against itself (an array, a tuple, a struct
 declaring none), reported at the field. The remedy is an `==` of the struct's own,

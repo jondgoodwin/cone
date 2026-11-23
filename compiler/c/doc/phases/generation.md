@@ -168,7 +168,8 @@ lowers them, in two functions and a derivation:
   vtable, which no node declares, is `GenlShared` in a described build and
   `GenlDefined` otherwise (`genlVtableDefinition`). It is the one place that
   decides them, and it sets no visibility. A `DclSystemCC` function takes the
-  x86 stdcall convention whether defined here or not, and the DLL import
+  x86 stdcall convention on a 32-bit x86 target (elsewhere the C convention, since
+  AArch64 rejects stdcall; `genlSystemIsStdcall`) whether defined here or not, and the DLL import
   storage class only when it is `extern`; every call to one is made with the
   convention too (`genlFnCallInternal`).
 - **`genlComdat`** then derives the COMDAT selection kind from the linkage
@@ -676,6 +677,10 @@ compares the virtual reference's vtable pointer with `Circle as Shape`'s
   build alike, and the linker keeps one copy; a build with no description is the
   program's only object, so its internal vtables have no second copy to disagree
   with.
+- **A literal's global may be merged with an equal one.** A string literal's global and a constant
+  array literal's are `unnamed_addr` (`genlAddr`, `StringLitTag` and `ArrayLitTag`), so a program may
+  not rely on two equal literals having different addresses, or one having the same address in two
+  places; a `const` is a value written out once per use, and a module `imm` table is the one copy.
 - **Two vtables never fold into one.** Neither carries `unnamed_addr`, so LLVM
   merges no two. The linker's identical-COMDAT folding (`link.exe`'s default
   `/OPT:ICF`, which Congo's release link gives explicitly as `/OPT:REF,ICF` because
