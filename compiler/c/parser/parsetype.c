@@ -1504,10 +1504,26 @@ static void parseEnumSupply(ParseState *parse, StructItems *items) {
         return;
     int wantser = supplyDeclares(en, "Serialize") && !supplyHasMethod(en, "serialize");
     int wantdes = supplyDeclares(en, "Deserialize") && !supplyHasMethod(en, "deserialize");
-    if (!wantser && !wantdes)
-        return;
+    int wanteq = supplyDeclares(en, "Eq") && !supplyHasMethod(en, "==");
+    int wanthash = supplyDeclares(en, "Hash") && !supplyHasMethod(en, "hash");
     INode **nodesp;
     uint32_t cnt;
+    // Eq and Hash are written for an enum whose variants carry nothing: by the tag. One that
+    // carries a payload is refused, naming the first such variant, and keeps its own bodies
+    if ((wanteq || wanthash) && en->derived) {
+        for (nodesFor(en->derived, cnt, nodesp)) {
+            StructNode *v = (StructNode*)*nodesp;
+            if (supplyKind(v) != SupplyUnit) {
+                errorMsgNode((INode*)v, ErrorEnumDeriveEqHash,
+                    "Enum %s asks for %s, but variant %s carries a payload: payload enums aren't derived yet. Write the method yourself, or leave the trait out.",
+                    &en->namesym->namestr, wanteq && wanthash ? "Eq and Hash" : wanteq ? "Eq" : "Hash", &v->namesym->namestr);
+                wanteq = wanthash = 0;
+                break;
+            }
+        }
+    }
+    if (!wantser && !wantdes && !wanteq && !wanthash)
+        return;
     for (nodelistFor(&en->fields, cnt, nodesp))
         if (!((*nodesp)->flags & (IsTagField | IsMixin)))
             return;
@@ -1541,6 +1557,26 @@ static void parseEnumSupply(ParseState *parse, StructItems *items) {
             index++;
         }
         supplyAdd(&b, "  }\n}\n");
+    }
+
+    // '==' takes '&', as Eq requires, and compares the variants' positions in the enum's list;
+    // 'hash' feeds the position as one u32. Both read the position with the same match.
+    for (int which = 0; which < 2; ++which) {
+        if (which == 0 ? !wanteq : !wanthash)
+            continue;
+        if (which == 0)
+            supplyAdd(&b, "pub fn `==`(self: &%s, o: &%s) bool {\n", tn.text, tn.text);
+        else
+            supplyAdd(&b, "pub fn hash(self: &%s, h: &mut Hasher) {\n", tn.text);
+        for (int side = 0; side < (which == 0 ? 2 : 1); ++side) {
+            supplyAdd(&b, "  var %s = 0u32;\n  match %s {\n", side ? "b" : "a", side ? "o" : "self");
+            uint32_t index = 0;
+            for (nodesFor(en->derived, cnt, nodesp))
+                supplyAdd(&b, "    case is %s { %s = %uu32; }\n", &((StructNode*)*nodesp)->namesym->namestr,
+                    side ? "b" : "a", index++);
+            supplyAdd(&b, "  }\n");
+        }
+        supplyAdd(&b, which == 0 ? "  a == b\n}\n" : "  h.writeU32(a);\n}\n");
     }
 
     if (wantdes) {
