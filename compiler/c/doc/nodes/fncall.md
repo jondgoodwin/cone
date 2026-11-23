@@ -578,6 +578,13 @@ an error reported inside core: a struct declaring no `==`, an enum with a
 variant that carries fields and declares none, an array (whose comparison is not
 built), a trait, a virtual reference.
 
+**A comparison declared against `&Self` is found by values.** Where `==`, `<`,
+`<=`, `>`, `>=` or `<=>` (`threeWayName`) found no candidate for the operands as
+written and the other operand is a struct, `fnCallLowerMethod` lends that operand
+read-only (`fnCallLendEnumOperand`) and borrows the receiver (`fnCallBorrowReceiver`),
+so `a == b` is `&a == &b` and nothing is copied or moved. `!=` is `!(a == b)`.
+Arithmetic operators are not in this list: their right operand is a value.
+
 **`==` on an enum with a variant that carries fields is a call of the enum's
 `-eq`** (`fnCallLowerEnumEq`, reached from `fnCallLowerMethod` where the selected
 `==` is the enum's `NoEqIntrinsic`): the tags are compared and then the variant's
