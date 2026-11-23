@@ -1,0 +1,31 @@
+// A call through a function value lends a reference argument handed by name as
+// a call of the function by name does (Bug 107, row 708): the callee's
+// signature is the value's function type, which names no lifetime, so the
+// result borrows from every reference argument, and storing it into the
+// value that argument points at keeps a borrow of its own storage. Held in a
+// local, a parameter, a field, a function literal and a method value: each
+// was accepted by name, and refused as '&mut *s'.
+//
+// Verdict: refuse each, ErrorSelfStore, at the store.
+
+mod lifetime_bug107_fnvalue_refused;
+
+struct Tcb { pub id: i32; pub link: Option[&mut Tcb]; }
+struct Sched {
+  pub cur: Option[&mut Tcb]; pub own: Tcb;
+  pub fn pick(self: &mut Sched) Option[&mut Tcb] { Some[&mut Tcb](&mut self.own) }
+}
+struct Holder { pub f: &fn(s: &mut Sched) Option[&mut Tcb]; }
+
+fn pick(s: &mut Sched) Option[&mut Tcb] { Some[&mut Tcb](&mut s.own) }
+
+fn viaLocal(s: &mut Sched) { let f = &pick; s.cur = f(s); }   //~ ErrorSelfStore "borrow of '*s'"
+fn viaParam(s: &mut Sched, f: &fn(s: &mut Sched) Option[&mut Tcb]) { s.cur = f(s); }   //~ ErrorSelfStore "borrow of '*s'"
+fn viaField(s: &mut Sched, h: &Holder) { s.cur = h.f(s); }   //~ ErrorSelfStore "borrow of '*s'"
+fn viaLiteral(s: &mut Sched) {
+  let c = &fn(x: &mut Sched) Option[&mut Tcb] { Some[&mut Tcb](&mut x.own) };
+  s.cur = c(s);   //~ ErrorSelfStore "borrow of '*s'"
+}
+fn viaMethodValue(s: &mut Sched) { let f = &Sched.pick; s.cur = f(s); }   //~ ErrorSelfStore "borrow of '*s'"
+
+fn main() { }
