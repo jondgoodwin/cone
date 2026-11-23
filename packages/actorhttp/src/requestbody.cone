@@ -102,7 +102,7 @@ pub struct RequestBody is Move {
   srv: u64;
   slot: u32;
   id: u64;
-  conn: Option[ConnActor] = None;   // a routed server's body: its connection, asked by message (routedserver.cone)
+  conn: Option[ExchangeHost] = None;   // a routed server's body: its connection, asked by message (routedserver.cone)
   stream: u32 = 0u32;
 
   fn make(srv: u64, slot: u32, id: u64) RequestBody {
@@ -110,9 +110,9 @@ pub struct RequestBody is Move {
   }
 
   // The body of a routed server's request: read through its connection actor
-  fn routed(c: ConnActor, stream: u32, rid: u64) RequestBody {
+  fn routed(c: ExchangeHost, stream: u32, rid: u64) RequestBody {
     RequestBody(ReaderSink[Result[Option[String], BodyError]](&requestChunk, &requestEnd), Atomic[u8].of(bodyUnchosen), 0u64, 0u32, rid,
-      Some[ConnActor](c), stream)
+      Some[ExchangeHost](c), stream)
   }
 
   // The next piece of the body (the bytes of one receive: any size), or None when the body is whole; or why it
@@ -239,11 +239,11 @@ actor ReqSource is ChunkSource {
 // The source a routed request body's sink gives its buffers back to: each goes to the connection actor, which
 // releases the credit it held; 'stop' ends the request (past a limit it answers 413)
 actor ConnBodySource is ChunkSource {
-  cc: ConnActor;
+  cc: ExchangeHost;
   stream: u32;
   id: u64;
 
-  pub fn init(self: &new, cc: ConnActor, stream: u32, id: u64) {
+  pub fn init(self: &new, cc: ExchangeHost, stream: u32, id: u64) {
     *self = Self(cc: cc, stream: stream, id: id);
   }
 

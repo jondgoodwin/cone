@@ -728,6 +728,7 @@ include     = ["include/q.cone"] # what q's compile must generate, which the pro
 category    = "driver"       # a driver scenario has no .cone file
 argv        = ["--bogus"]    # the whole invocation; nothing is appended
 exit        = 4              # required: asserting it is the whole category
+                                 # an argv with '--check' and '-o <dir>' also asserts that <dir> is unchanged
 
 [[scenario.core_overload.run]]   # omit entirely for a single default run
 name    = "debug"                # declare all of them once you declare any
@@ -760,6 +761,22 @@ The `trust` target (a `compile` or `run` scenario) is the output of a second run
 of the same source with `--report-trust`, which generates no code; its lines are
 `<kind> <file>:<line> <function> [<what>]`, so a check names a site by kind, line
 and function (`doc/design/safety.md` says what the kinds are).
+
+The `file` target (a `compile` or `run` scenario) asserts the name of a file the
+compile produced: the check's `file` key names a file in the scenario's output
+folder, which must exist; `contains` and `excludes` read what it holds, and may be
+left out when the name is all that matters. `file` is a name, not a path, and a
+`file` check takes no `object`, `within` or `matches`. The run passes whatever
+option writes the file, in its `options`. `module_ir_artifact_name` pins that `--ir`
+writes `<srcname>.ast`, named for the source compiled:
+
+```toml
+[[scenario.module_ir_artifact_name.check]]
+name = "the-dump-is-named-for-the-source"
+target = "file"
+file = "module_ir_artifact_name.ast"
+contains = ["tallyIrArtifact"]
+```
 
 **Several runs of one source** is how an option matrix avoids duplicating a
 `.cone` file. Every run is compared against the same expectations, so what a

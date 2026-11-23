@@ -1,0 +1,62 @@
+// What the reborrow of a virtual reference refuses: the reborrow is the whole
+// form '&uni *v', '&mut *v' or '&*v', so a bare '*v' stays refused (a virtual
+// reference is not dereferenced, 1031); a reborrow gives no more permission than
+// the reference holds (1034), as for a plain reference; and '&mut a' on an owner
+// is still no borrowed virtual reference (1013), as it is for a plain owner.
+
+mod trait_typecheck_vref_reborrow;
+
+trait App {
+  pub fn frame(self: &mut) bool;
+  pub fn look(self: &) i64;
+}
+
+struct Spinner {
+  pub n: i64;
+  pub fn frame(self: &mut) bool {n = n + 1; n < 4}
+  pub fn look(self: &) i64 {n}
+}
+
+fn useMut(b: &<mut App) i64 { b.look() }
+
+fn bare(v: &<uni App) {
+  let x = *v;                      //~ ErrorNotPtr:11 "May only de-reference a simple reference or pointer"
+}
+
+fn bareOwner(o: Uni[App]) {
+  let x = *o;                      //~ ErrorNotPtr:11 "May only de-reference a simple reference or pointer"
+}
+
+fn roToMut(v: &<App) {
+  useMut(&mut *v);                 //~ ErrorBadPerm:10 "Borrowed reference cannot obtain this permission"
+}
+
+fn roToUni(v: &<App) {
+  let r: &<uni App = &uni *v;      //~ ErrorBadPerm:22 "Borrowed reference cannot obtain this permission"
+}
+
+fn mutToUni(v: &<mut App) {
+  let r: &<uni App = &uni *v;      //~ ErrorBadPerm:22 "Borrowed reference cannot obtain this permission"
+}
+
+fn ownerBorrow() {
+  var o: Uni[App] = Uni[Spinner](1);
+  useMut(&mut o);               //~ ErrorInvType:10 "Expression's type does not match declared parameter"
+}
+
+fn useUni(b: &<uni App) i64 { b.look() }
+
+// An owner shared and writable ('Rc[mut, App]') holds no unique path to lend
+fn sharedOwner(c: Rc[mut, App]) i64 {
+  useUni(&uni *c)               //~ ErrorBadPerm:10 "Borrowed reference cannot obtain this permission"
+}
+
+struct Holder { pub app: Uni[App]; }
+
+// An owner reached through a '&mut' lends at most '&mut', as a plain owner does
+fn throughShared(h: &mut Holder) i64 {
+  useUni(&uni *h.app)           //~ ErrorBadPerm:10 "Borrowed reference cannot obtain this permission"
+}
+
+fn main() {
+}

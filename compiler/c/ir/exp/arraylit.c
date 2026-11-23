@@ -62,9 +62,11 @@ static void arrayLitTypeCheckElems(TypeCheckState *pstate, ArrayNode *arrlit) {
         return;
     }
 
-    // Otherwise handle multi-value array literal
+    // Otherwise handle multi-value array literal. An empty one reaches here only
+    // where nothing expected an array of no elements (arrayLitTypeCheckEmpty)
     if (arrlit->elems->used == 0) {
-        errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal list may not be empty");
+        errorMsgNode((INode*)arrlit, ErrorBadArray,
+            "An empty array literal '[]' takes its element type from the type expected where it is written (a declared variable, parameter, field or return type 'Array[T, 0]'), and none is.");
         arrlit->vtype = errorType;
         return;
     }
@@ -121,6 +123,29 @@ static int arrayLitTypeCheckExpected(TypeCheckState *pstate, ArrayNode *arrlit, 
     return 1;
 }
 
+// Type the empty literal '[]' as the array of no elements its expected type
+// asks for: the element type is the expected type's. Return 0, having checked
+// nothing, where no array type is expected, so the literal is refused as before;
+// an expected array of some elements is refused here, naming its count.
+static int arrayLitTypeCheckEmpty(ArrayNode *arrlit, INode *expectType) {
+    if (arrlit->elems->used != 0 || arrlit->dimens->used != 0)
+        return 0;
+    if (expectType == NULL || expectType == unknownType || expectType == noCareType)
+        return 0;
+    INode *totype = itypeGetTypeDcl(expectType);
+    if (totype->tag != ArrayTag || ((ArrayNode*)totype)->dimens->used != 1)
+        return 0;
+    if (arrayDim1(totype) != 0) {
+        errorMsgNode((INode*)arrlit, ErrorBadArray,
+            "An empty array literal '[]' has no elements, and the array expected here holds %llu.",
+            (unsigned long long)arrayDim1(totype));
+        arrlit->vtype = errorType;
+        return 1;
+    }
+    arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, 0, arrayElemType(totype));
+    return 1;
+}
+
 // Is an array literal's dimension a constant whose count type check can read? A
 // reinterpretation of a constant is a constant (litIsLiteral), but its count is
 // known only once generated, and the array type needs it now. A 'null' is a
@@ -143,6 +168,8 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectT
     if (arrlit->dimens->used > 0 && !arrayLitDimIsConst(nodesGet(arrlit->dimens, 0))) {
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant: an integer literal, or a named constant holding one");
     }
+    if (arrayLitTypeCheckEmpty(arrlit, expectType))
+        return;
     if (arrayLitTypeCheckExpected(pstate, arrlit, expectType))
         return;
     arrayLitTypeCheckElems(pstate, arrlit);

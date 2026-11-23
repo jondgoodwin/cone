@@ -1,0 +1,979 @@
+// The handler half of a server connection, written once for every wire (the package's header, A ROUTED SERVER; stage 5,
+// row Q5). A connection's requests come from its protocol value C (httpconn.ServerProto: ServerConn over TCP, or the
+// adapter of an HTTP/3 value over QUIC); this half routes each, runs the program's handler (on HTTP/2 and HTTP/3 one handler
+// for each stream, on HTTP/1.1 one for the connection), and carries out the Exchange's calls: the response head and body in
+// order, the request body read whole, in pieces or by a sink, a dropped Exchange. It has no socket, no timer and no loop.
+// The actor that owns one (ConnActor over a TCP socket, H3ConnActor over a QUIC connection) holds the protocol value beside
+// it and passes it to each call, as ClientConnActor does its ClientExchanges, and says what each wire alone knows: it turns
+// after each call so the wire moves what the call made ready.
+//
+// The Exchange's calls reach this half by message to the actor that owns it, so both actors meet ExchangeHost, the trait
+// those messages are written in. The only difference between the wires this half knows is 'quic' (the TCP responses of a
+// server that offers HTTP/3 carry its Alt-Svc).
+
+const stFresh = 0u32;         // the request is being read, or routed
+const stQueued = 1u32;        // waiting in the server's queue for a 'next()'
+const stHanded = 2u32;        // a handler or an actor has it; no response begun
+const stStreaming = 3u32;     // the response's head is out, its body to come
+
+const noBound = 0xFFFFFFFFFFFFFFFFusize;    // a Chain with no byte limit of its own (the watermark bounds the output)
+const writePiece = 16384usize;    // the most bytes of a 'write' made into one buffer
+
+// What an Exchange's calls go to, and what the server's queue route asks of a connection: the actor that owns the
+// connection a request came in on
+actor trait ExchangeHost {
+  pub async fn xRespond(self, stream: u32, rid: u64, head: ResponseHead, body: String);
+  pub async fn xStart(self, stream: u32, rid: u64, head: ResponseHead, framing: BodyLength);
+  pub async fn xWrite(self, stream: u32, rid: u64, data: String, rp: actors.ReplyOf[Result[usize, ServerError]]);
+  pub async fn xFinish(self, stream: u32, rid: u64, rp: actors.ReplyOf[Result[u64, ServerError]]);
+  pub async fn xDrop(self, stream: u32, rid: u64, spare: RequestHead);
+  pub async fn xBodyRead(self, stream: u32, rid: u64, rp: actors.ReplyOf[Result[Option[String], BodyError]]);
+  pub async fn xBodyAll(self, stream: u32, rid: u64, limit: usize, rp: actors.ReplyOf[Result[String, BodyError]]);
+  pub async fn xBodyTo(self, stream: u32, rid: u64, sink: ChunkSink, src: ChunkSource);
+  pub async fn xBodyBack(self, stream: u32, rid: u64, b: IoBuf);
+  pub async fn xBodyStop(self, stream: u32, rid: u64, why: Ending);
+  pub async fn xBodyDrop(self, stream: u32, rid: u64);
+  pub async fn handOut(self, stream: u32, rid: u64, rp: actors.ReplyOf[Result[Exchange, ServerError]], to: ServerActor);
+  pub async fn refuse(self, stream: u32, rid: u64);
+}
+
+// A request of this connection, from its head to the end of its response
+struct Strm is Move {
+  rid: u64;
+  stream: u32;
+  head: RequestHead;
+  body: String;
+  state: u32;
+  rejected: bool;        // the body is over maxBody: answered 413, the rest dropped
+  written: u64;          // body bytes the handler has written
+  sized: bool;
+  length: u64;
+  bodyless: bool;        // the response has no body bytes
+  isHead: bool;          // the request is a HEAD (its head is moved out to the Exchange)
+  streamed: bool;        // the handler reads the body (ServerConfig.streamBodies): it is routed at its head
+  expect: bool;          // 100 Continue asked for and not yet sent
+  chunks: Deque[IoBuf];  // body bytes arrived and not yet read: their credit is not yet released
+  bodyEnd: bool;         // the request's end has come
+  discard: bool;         // the body is not wanted: bytes are released as they arrive
+  waitRead: Option[actors.ReplyOf[Result[Option[String], BodyError]]];
+  waitAll: Option[actors.ReplyOf[Result[String, BodyError]]];
+  allLimit: usize;
+  gather: String;
+  sink: Option[ChunkSink];   // 'RequestBody.to': the sink the body's buffers are lent to (until its one end)
+  lend: BodyLend;            // the buffers lent to the sink and not yet given back (lend.cone)
+}
+
+// A 'write' or a 'finish' that waits for the connection to take its bytes
+struct Pend is Move {
+  stream: u32;
+  rid: u64;
+  isFinish: bool;
+  data: String;
+  off: usize;
+  rpW: Option[actors.ReplyOf[Result[usize, ServerError]]];
+  rpF: Option[actors.ReplyOf[Result[u64, ServerError]]];
+}
+
+// The handler half of one connection, whatever carries its bytes. 'C' is the protocol value the owning actor holds beside
+// it and passes to each call
+struct ServerExchanges[C: httpconn.ServerProto] is Move {
+  id: u64;                  // the connection's number for the server's queue route (a QUIC connection's has its top bit set)
+  srv: ServerActor;
+  args: Arc[imm, ListenArgs];
+  peer: SocketAddr;
+  secure: bool;
+  quic: bool;               // the protocol is HTTP/3 (no Alt-Svc on its responses)
+  altSvc: String;           // the Alt-Svc field value TCP responses carry, or empty
+  h2Rids: Dict[u64, bool];  // multiplexed: the requests whose handler holds the exchange still
+  h2Live: u32;              // multiplexed: stream handlers that have not returned (reset streams' included)
+  protoClosed: bool;        // the protocol is over (Closed was given)
+  streams: Dict[u32, Strm];
+  pends: Deque[Pend];
+  h1: Option[HttpHandler];
+  h1ix: usize;              // the route h1 was made for
+  nextRid: u64;
+
+  fn make(id: u64, srv: ServerActor, args: Arc[imm, ListenArgs], peer: SocketAddr, secure: bool, quic: bool,
+      altSvc: String) ServerExchanges[C] {
+    ServerExchanges[C](id: id, srv: srv, args: args, peer: peer, secure: secure, quic: quic, altSvc: altSvc,
+      h2Rids: Dict[u64, bool](), h2Live: 0u32, protoClosed: false, streams: Dict[u32, Strm](), pends: Deque[Pend](),
+      h1: None[HttpHandler], h1ix: 0usize, nextRid: 1u64)
+  }
+
+  // Act on every event the protocol has and answer what can be answered (the owner then starts its wire's next read
+  // and write). True when there was an event
+  fn events(self: &mut, sc: &mut C, host: ExchangeHost, now: Instant) bool {
+    var any = false;
+    var more = true;
+    while more {
+      match sc.next(now) {
+        case is Nothing {more = false;}
+        case let Request(q) {any = true; self.onRequest(sc, host, q.stream, q.body, now);}
+        case let Data(d) {
+          any = true;
+          let st, bf = d.(stream, buf);
+          self.onData(sc, host, st, bf);
+        }
+        case let End(e) {any = true; self.onEnd(sc, host, e.stream);}
+        case let Reset(x) {any = true; self.onReset(sc, host, x.stream);}
+        case let Closed(c) {any = true; protoClosed = true;}
+      }
+    }
+    self.drainPends(sc, host);
+    any
+  }
+
+  // The connection has ended: every write waiting is answered Closed and every stream told the connection is gone
+  fn clear(self: &mut, sc: &mut C, host: ExchangeHost) {
+    self.answerAllClosed(sc, host);
+    var ids = List[u32]();
+    var ks = streams.keys();
+    while true {
+      match ks.next() {
+        case let Some(k) {ids.push(*k);}
+        else {break;}
+      }
+    }
+    var q = 0usize;
+    while q < ids.len() {
+      match streams.remove(&ids[q]) {
+        case var Some(r) {self.failWaiters(sc, host, r, ids[q]);}
+        else {}
+      }
+      q = q + 1usize;
+    }
+  }
+
+  // The peer has sent its last byte. A request that waits in the queue for an actor is given up (as Go's
+  // server does, a client that has gone is not answered): it no longer counts against maxPending, and on
+  // HTTP/1.1 the connection ends. A request a handler already has may still be answered
+  fn peerLeft(self: &mut, sc: &mut C, host: ExchangeHost) {
+    var gone = List[u32]();
+    var it = streams.keys();
+    while true {
+      match it.next() {
+        case let Some(k) {
+          match streams.get(k) {
+            case let Some(r) {if r.state == stQueued || r.state == stFresh {gone.push(*k);}}
+            else {}
+          }
+        }
+        else {break;}
+      }
+    }
+    var i = 0usize;
+    while i < gone.len() {
+      match streams.remove(&gone[i]) {
+        case let Some(r) {
+          if r.state == stQueued {srv.drop1(id, r.rid);}
+          self.failWaiters(sc, host, r, gone[i]);
+        }
+        else {}
+      }
+      i = i + 1usize;
+    }
+    if gone.len() > 0usize && !sc.isHttp2() {sc.abort();}
+  }
+
+  // Every 'write' and 'finish' waiting is answered Closed
+  fn answerAllClosed(self: &mut, sc: &mut C, host: ExchangeHost) {
+    while true {
+      match pends.popFront() {
+        case var Some(p) {self.answerClosed(sc, host, p);}
+        else {break;}
+      }
+    }
+  }
+
+  fn answerClosed(self: &mut, sc: &mut C, host: ExchangeHost, p: Pend) {
+    var q = p;
+    match q.rpW.take() {
+      case var Some(rp) {rp.answer(Err[usize, ServerError](ServerError.closed()));}
+      else {}
+    }
+    match q.rpF.take() {
+      case var Some(rp) {rp.answer(Err[u64, ServerError](ServerError.closed()));}
+      else {}
+    }
+  }
+
+  // ---- requests
+
+  fn onRequest(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, body: BodyLength, now: Instant) {
+    let h2 = sc.isHttp2();
+    // moved out on both protocols; HTTP/1.1's core is lent a head again by 'xDrop' (httpconn, 'recycleRequest')
+    let head = sc.takeRequest();
+    let rid = nextRid;
+    nextRid = nextRid + 1u64;
+    let isHead = head.method == Method.Head;
+    let streamed = args.cfg.bodiesStreamed;
+    let expect = head.headers.hasToken("Expect", "100-continue");
+    var rec = Strm(rid, stream, head, String(), stFresh, false, 0u64, false, 0u64, false, isHead, streamed, expect,
+      Deque[IoBuf](), false, false, None[actors.ReplyOf[Result[Option[String], BodyError]]],
+      None[actors.ReplyOf[Result[String, BodyError]]], 0usize, String(), None[ChunkSink], newLend());
+    if !streamed && body.isSized() && body.length > u64.from(args.cfg.maxBody) {
+      rec.rejected = true;
+    } else if !streamed && expect {
+      sc.sendContinue(stream);
+      rec.expect = false;
+    }
+    let rej = rec.rejected;
+    streams.insert(stream, rec);
+    if rej {self.tooLarge(sc, host, stream);}
+    else if streamed {self.routeRequest(sc, host, stream);}
+  }
+
+  fn onData(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, buf: IoBuf) {
+    if args.cfg.bodiesStreamed {
+      self.onBodyData(sc, host, stream, buf);
+      return;
+    }
+    let n = buf.len();
+    var over = false;
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        if !r.rejected {
+          if r.body.len() + n > args.cfg.maxBody {
+            r.rejected = true;
+            over = true;
+          } else {
+            r.body.appendBytes(buf.view());
+          }
+        }
+      }
+      else {}
+    }
+    sc.release(stream, n);
+    if over {self.tooLarge(sc, host, stream);}
+  }
+
+  // A request body over maxBody: answered 413, the rest of the body not wanted
+  // (once the response has begun there is no 413 to give: a second head would corrupt it. The stream ends,
+  // h2 with RST_STREAM, HTTP/1.1 by aborting the connection, and the handler's reads get their error)
+  fn tooLarge(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32) {
+    var begun = false;
+    match streams.get(&stream) {
+      case let Some(r) {begun = r.state >= stStreaming;}
+      else {}
+    }
+    if begun {
+      if sc.isHttp2() {sc.stopBody(stream);} else {sc.abort();}
+      self.dropStream(sc, host, stream);
+      return;
+    }
+    self.answerText(sc, host, stream, 413u16, "request body too large");
+    sc.stopBody(stream);
+  }
+
+  fn onReset(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32) {
+    var rid = 0u64;
+    var queued = false;
+    match streams.remove(&stream) {
+      case let Some(r) {
+        rid = r.rid;
+        queued = r.state == stQueued;
+        self.failWaiters(sc, host, r, stream);
+      }
+      else {}
+    }
+    if queued {srv.drop1(id, rid);}
+    var n = pends.len();
+    while n > 0usize {
+      n = n - 1usize;
+      let p = pends.popFront().unwrap();
+      if p.stream == stream {self.answerClosed(sc, host, p);} else {pends.push(p);}
+    }
+  }
+
+  // The request is whole: route it
+  fn onEnd(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32) {
+    if args.cfg.bodiesStreamed {
+      self.onBodyEnd(sc, host, stream);
+      return;
+    }
+    self.routeRequest(sc, host, stream);
+  }
+
+  // Route a request: whole when bodies are gathered (at its end), at its head when the handler reads them
+  fn routeRequest(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32) {
+    var rid = 0u64;
+    var fresh = false;
+    var pick: Option[usize] = None;
+    match streams.get(&stream) {
+      case let Some(r) {
+        fresh = !r.rejected && r.state == stFresh;
+        rid = r.rid;
+        // the route is picked from views of the head where it lies
+        if fresh {
+          match &args.cfg.httpRoutes {
+            case let &Some(rt) {pick = pickRoute(&rt.routes, r.head.authority.view(), pathOf(r.head.target.view()));}
+            else {}
+          }
+        }
+      }
+      else {}
+    }
+    if !fresh {return;}
+    match pick {
+      case let Some(ix) {
+        var isQueue = false;
+        var make: Option[&fn() HttpHandler] = None;
+        match &args.cfg.httpRoutes {
+          case let &Some(rt) {
+            let route = rt.routes.get(ix).unwrap();
+            isQueue = route.isQueue;
+            make = route.make;
+          }
+          else {}
+        }
+        if isQueue {
+          self.setState(stream, stQueued);
+          srv.enqueue(host, id, stream, rid);
+        } else {
+          self.setState(stream, stHanded);
+          self.runHandler(sc, host, stream, rid, ix, make);
+        }
+      }
+      else {self.answerText(sc, host, stream, 404u16, "not found");}
+    }
+  }
+
+  fn setState(self: &mut, stream: u32, st: u32) {
+    match streams.getMut(&stream) {
+      case let Some(r) {r.state = st;}
+      else {}
+    }
+  }
+
+  // The request's Exchange, its head and body moved out of the record
+  fn takeExchange(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64) Option[Exchange] {
+    var found = false;
+    var head = RequestHead();
+    var body = String();
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        if r.rid == rid {
+          found = true;
+          head <-> r.head;
+          body <-> r.body;
+        }
+      }
+      else {}
+    }
+    if !found {return None;}
+    Some[Exchange](routedExchange(&host, stream, rid, Request(head, body, peer, secure), args.cfg.bodiesStreamed))
+  }
+
+  // The handler: on HTTP/1.1 one actor for the connection, its requests in order; on HTTP/2 one for each stream
+  fn runHandler(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, ix: usize, make: Option[&fn() HttpHandler]) {
+    // a stream the peer has reset leaves the protocol's count of open streams while its handler goes on, so the
+    // handlers still running are counted here and a stream past the cap is answered 503 (the handlers of an
+    // HTTP/2 connection are bounded by maxConcurrentStreams, not by how fast the peer opens and resets)
+    if sc.isHttp2() && h2Live >= args.cfg.conn.h2.maxConcurrentStreams {
+      self.answerText(sc, host, stream, 503u16, "the server is busy");
+      sc.stopBody(stream);
+      return;
+    }
+    let ex = match self.takeExchange(sc, host, stream, rid) {
+      case let Some(e) {e}
+      else {return;}
+    };
+    var mk: &fn() HttpHandler = &noHandler;
+    match make {
+      case let Some(f) {mk = f;}
+      else {}
+    }
+    if sc.isHttp2() {
+      let h = mk();
+      // counted until its exchange is dropped (the handler is done with the stream; 'handle' itself returns
+      // nothing to wait on): xDrop takes it off
+      h2Rids.insert(rid, true);
+      h2Live = h2Live + 1u32;
+      h.handle(ex);
+    } else {
+      if h1ix == ix {
+        match &h1 {
+          case let &Some(h) {
+            h.handle(ex);
+            return;
+          }
+          else {}
+        }
+      }
+      let h = mk();
+      h1 = Some[HttpHandler](h);
+      h1ix = ix;
+      h.handle(ex);
+    }
+  }
+
+  // The queue route's request is taken by a 'next()': its Exchange answers the taker's reply, or the
+  // request is gone (its connection ended or its stream was reset) and the taker goes back to the server
+  fn handOut(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, rp: actors.ReplyOf[Result[Exchange, ServerError]], to: ServerActor, ended: bool) {
+    var ok = false;
+    match streams.get(&stream) {
+      case let Some(r) {ok = r.rid == rid && r.state == stQueued && !ended;}
+      else {}
+    }
+    if !ok {
+      to.stale(rp);
+      return;
+    }
+    self.setState(stream, stHanded);
+    match self.takeExchange(sc, host, stream, rid) {
+      case let Some(ex) {rp.answer(Ok[Exchange, ServerError](ex));}
+      else {to.stale(rp);}
+    }
+  }
+
+  // The queue route is full (or the server is closing): 503
+  fn refuse(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64) {
+    var ok = false;
+    match streams.get(&stream) {
+      case let Some(r) {ok = r.rid == rid && r.state == stQueued;}
+      else {}
+    }
+    if !ok {return;}
+    self.answerText(sc, host, stream, 503u16, "the server is busy");
+  }
+
+  // The library's own answers: a whole text response
+  fn answerText(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, status: u16, text: &str) {
+    let r = sc.response();
+    r.status = status;
+    r.headers.add("Content-Type", "text/plain; charset=utf-8");
+    sc.respond(stream, BodyLength.sized(u64.from(text.len())));
+    var b = IoBuf(text.len());
+    b.append(text);
+    sc.sendData(stream, b);
+    sc.finish(stream);
+    self.dropStream(sc, host, stream);
+  }
+
+  // ---- the Exchange's calls
+
+  // The handler's response head, copied field by field into the connection's kept one (taken by value: the borrow
+  // checker can't tell a borrowed head from the one 'sc.response()' lends, and would refuse the copy)
+  fn fillHead(self: &mut, sc: &mut C, host: ExchangeHost, head: ResponseHead) {
+    let r = sc.response();
+    r.status = head.status;
+    var i = 0usize;
+    while i < head.headers.len() {
+      r.headers.add(head.headers.nameAt(i), head.headers.valueAt(i));
+      i = i + 1usize;
+    }
+    // a TCP response of a server that offers HTTP/3 says where it is, unless the program wrote an Alt-Svc of its own
+    if !quic && altSvc.len() > 0usize && !head.headers.has("Alt-Svc") {r.headers.add("Alt-Svc", altSvc.view());}
+  }
+
+  fn live(self: &, stream: u32, rid: u64) bool {
+    match streams.get(&stream) {
+      case let Some(r) {r.rid == rid}
+      else {false}
+    }
+  }
+
+  fn xRespond(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, head: ResponseHead, body: String) {
+    if !self.live(stream, rid) {return;}
+    let st = head.status;
+    let isHead = match streams.get(&stream) {
+      case let Some(r) {r.isHead}
+      else {false}
+    };
+    let none = isHead || st == 204u16 || st == 304u16 || body.len() == 0usize;
+    self.fillHead(sc, host, head);
+    sc.respond(stream, BodyLength.sized(u64.from(body.len())));
+    if none {
+      self.dropStream(sc, host, stream);
+    } else {
+      // the body goes as the protocol takes it, then the end (drainPends)
+      match streams.getMut(&stream) {
+        case let Some(r) {r.state = stStreaming;}
+        else {}
+      }
+      pends.push(Pend(stream, rid, false, body, 0usize, None, None));
+      pends.push(Pend(stream, rid, true, String(), 0usize, None, None));
+    }
+  }
+
+  fn xStart(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, head: ResponseHead, framing: BodyLength) {
+    if !self.live(stream, rid) {return;}
+    let st = head.status;
+    var none = false;
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        r.sized = framing.isSized();
+        r.length = framing.length;
+        none = r.isHead || st == 204u16 || st == 304u16 || framing.isEmpty() ||
+          (framing.isSized() && framing.length == 0u64);
+        r.bodyless = none;
+        r.state = stStreaming;
+      }
+      else {}
+    }
+    self.fillHead(sc, host, head);
+    sc.respond(stream, framing);
+    if none {self.dropStream(sc, host, stream);}
+  }
+
+  fn xWrite(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, data: String, rp: actors.ReplyOf[Result[usize, ServerError]]) {
+    if !self.live(stream, rid) {
+      rp.answer(Err[usize, ServerError](ServerError.closed()));
+      return;
+    }
+    pends.push(Pend(stream, rid, false, data, 0usize, Some[actors.ReplyOf[Result[usize, ServerError]]](rp), None));
+  }
+
+  fn xFinish(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, rp: actors.ReplyOf[Result[u64, ServerError]]) {
+    if !self.live(stream, rid) {
+      rp.answer(Err[u64, ServerError](ServerError.closed()));
+      return;
+    }
+    pends.push(Pend(stream, rid, true, String(), 0usize, None, Some[actors.ReplyOf[Result[u64, ServerError]]](rp)));
+  }
+
+  // The Exchange was dropped: no answer is 500; an unsized body ends cleanly; a sized one short of its length resets
+  // (it carries the request's head back: the next request on an HTTP/1.1 connection is read into it)
+  fn xDrop(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, spare: RequestHead) {
+    sc.recycleRequest(spare);
+    match h2Rids.remove(&rid) {
+      case let Some(x) {h2Live = h2Live - 1u32;}
+      else {}
+    }
+    if !self.live(stream, rid) {return;}
+    var st = stFresh;
+    var sized = false;
+    match streams.get(&stream) {
+      case let Some(r) {
+        st = r.state;
+        sized = r.sized;
+      }
+      else {}
+    }
+    if st == stHanded {
+      self.answerText(sc, host, stream, 500u16, "the handler gave no answer");
+    } else if st == stStreaming {
+      if sized {
+        if sc.isHttp2() {sc.stopBody(stream);} else {sc.abort();}
+        self.dropStream(sc, host, stream);
+      } else {
+        pends.push(Pend(stream, rid, true, String(), 0usize, None, None));
+      }
+    }
+  }
+
+  // Move what the writes waiting hold into the protocol while it takes them, in order, a stream's at a time:
+  // a write is answered when all its bytes are taken, a finish when the response is whole
+  fn drainPends(self: &mut, sc: &mut C, host: ExchangeHost) {
+    var blocked = Dict[u32, bool]();     // a lookup, so a turn costs the pends, not the pends times the blocked streams
+    var n = pends.len();
+    while n > 0usize {
+      n = n - 1usize;
+      var p = pends.popFront().unwrap();
+      let stream = p.stream;
+      if !self.live(stream, p.rid) {
+        self.answerClosed(sc, host, p);
+        continue;
+      }
+      if blocked.get(&stream) is Some {
+        pends.push(p);
+        continue;
+      }
+      if p.isFinish {
+        var total = 0u64;
+        match streams.get(&stream) {
+          case let Some(r) {total = r.written;}
+          else {}
+        }
+        sc.finish(stream);
+        self.dropStream(sc, host, stream);
+        match p.rpF.take() {
+          case var Some(rp) {rp.answer(Ok[u64, ServerError](total));}
+          else {}
+        }
+        continue;
+      }
+      // a write: as much as the protocol takes
+      var refused = false;
+      let bytes = p.data.view() as &Array[u8];
+      while p.off < bytes.len && !refused {
+        let left = bytes.len - p.off;
+        let m = if left > writePiece {writePiece} else {left};
+        var b = IoBuf(m);
+        b.append(&bytes[p.off ..< p.off + m]);
+        match sc.sendData(stream, b) {
+          case let Some(back) {refused = true;}
+          else {p.off = p.off + m;}
+        }
+      }
+      if refused {
+        blocked.insert(stream, true);
+        pends.push(p);
+      } else {
+        let total = bytes.len;
+        match streams.getMut(&stream) {
+          case let Some(r) {r.written = r.written + u64.from(total);}
+          else {}
+        }
+        match p.rpW.take() {
+          case var Some(rp) {rp.answer(Ok[usize, ServerError](total));}
+          else {}
+        }
+      }
+    }
+  }
+
+  // ---- the request body, read by the handler (ServerConfig.streamBodies)
+
+  // The first read of the body answers an 'Expect: 100-continue'
+  fn sendExpected(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32) {
+    var send = false;
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        if r.expect {
+          r.expect = false;
+          send = true;
+        }
+      }
+      else {}
+    }
+    if send {sc.sendContinue(stream);}
+  }
+
+  // A body piece arrived for a handler that reads: to the waiting reader, or queued (its credit is held
+  // until it is read, so a handler that reads slowly slows the sender)
+  fn onBodyData(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, buf: IoBuf) {
+    let n = buf.len();
+    var act = 0u32;
+    match streams.get(&stream) {
+      case let Some(r) {
+        act = if r.discard {0u32} else if r.waitRead is Some {1u32} else if r.waitAll is Some {2u32} else {3u32};
+      }
+      else {}
+    }
+    if act == 1u32 {
+      var rp: Option[actors.ReplyOf[Result[Option[String], BodyError]]] = None;
+      match streams.getMut(&stream) {
+        case let Some(r) {rp = r.waitRead.take();}
+        else {}
+      }
+      sc.release(stream, n);
+      match rp {
+        case var Some(w) {w.answer(Ok[Option[String], BodyError](Some[String](String.fromBytes(buf.view()))));}
+        else {}
+      }
+    } else if act == 2u32 {
+      var over = false;
+      match streams.getMut(&stream) {
+        case let Some(r) {
+          if r.gather.len() + n > r.allLimit {over = true;} else {r.gather.appendBytes(buf.view());}
+        }
+        else {}
+      }
+      sc.release(stream, n);
+      if over {self.allTooLarge(sc, host, stream);}
+    } else if act == 3u32 {
+      match streams.getMut(&stream) {
+        case let Some(r) {r.chunks.push(buf);}
+        else {sc.release(stream, n);}
+      }
+      self.pumpSink(sc, host, stream);
+    } else {
+      sc.release(stream, n);
+    }
+  }
+
+  // The request's end, for a handler that reads: a waiting reader is answered
+  fn onBodyEnd(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32) {
+    var rpR: Option[actors.ReplyOf[Result[Option[String], BodyError]]] = None;
+    var rpA: Option[actors.ReplyOf[Result[String, BodyError]]] = None;
+    var all = String();
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        r.bodyEnd = true;
+        rpR = r.waitRead.take();
+        rpA = r.waitAll.take();
+        if rpA is Some {all <-> r.gather;}
+      }
+      else {}
+    }
+    self.pumpSink(sc, host, stream);
+    match rpR {
+      case var Some(w) {w.answer(Ok[Option[String], BodyError](None));}
+      else {}
+    }
+    match rpA {
+      case var Some(w) {w.answer(Ok[String, BodyError](all));}
+      else {}
+    }
+  }
+
+  // A 'readAll' past its limit: its Err, the server's own 413, the rest of the body dropped
+  fn allTooLarge(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32) {
+    var rp: Option[actors.ReplyOf[Result[String, BodyError]]] = None;
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        rp = r.waitAll.take();
+        r.discard = true;
+      }
+      else {}
+    }
+    match rp {
+      case var Some(w) {w.answer(Err[String, BodyError](BodyError.tooLarge()));}
+      else {}
+    }
+    self.tooLarge(sc, host, stream);
+  }
+
+  // The next piece of the body, or None when it is whole
+  fn xBodyRead(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, rp: actors.ReplyOf[Result[Option[String], BodyError]]) {
+    if !self.live(stream, rid) {
+      rp.answer(Err[Option[String], BodyError](BodyError.cancelled()));
+      return;
+    }
+    self.sendExpected(sc, host, stream);
+    var piece: Option[IoBuf] = None;
+    var end = false;
+    var busy = false;
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        if r.waitRead is Some || r.waitAll is Some {busy = true;} else {
+          piece = r.chunks.popFront();
+          end = r.bodyEnd;
+        }
+      }
+      else {}
+    }
+    if busy {
+      // one read at a time
+      rp.answer(Err[Option[String], BodyError](BodyError.cancelled()));
+    } else {
+      match piece {
+        case let Some(b) {
+          sc.release(stream, b.len());
+          rp.answer(Ok[Option[String], BodyError](Some[String](String.fromBytes(b.view()))));
+        }
+        else {
+          if end {
+            rp.answer(Ok[Option[String], BodyError](None));
+          } else {
+            match streams.getMut(&stream) {
+              case let Some(r) {r.waitRead = Some[actors.ReplyOf[Result[Option[String], BodyError]]](rp);}
+              else {}
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // The whole body, up to limit
+  fn xBodyAll(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, limit: usize, rp: actors.ReplyOf[Result[String, BodyError]]) {
+    if !self.live(stream, rid) {
+      rp.answer(Err[String, BodyError](BodyError.cancelled()));
+      return;
+    }
+    self.sendExpected(sc, host, stream);
+    var code = 0u32;
+    var out = String();
+    var freed = List[usize]();
+    var held: Option[actors.ReplyOf[Result[String, BodyError]]] = Some[actors.ReplyOf[Result[String, BodyError]]](rp);
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        r.allLimit = limit;
+        while code == 0u32 {
+          match r.chunks.popFront() {
+            case let Some(b) {
+              freed.push(b.len());
+              if r.gather.len() + b.len() > limit {code = 2u32;} else {r.gather.appendBytes(b.view());}
+            }
+            else {break;}
+          }
+        }
+        if code == 0u32 && r.bodyEnd {
+          code = 1u32;
+          out <-> r.gather;
+        } else if code == 0u32 {
+          r.waitAll = held.take();
+        }
+      }
+      else {}
+    }
+    var i = 0usize;
+    while i < freed.len() {
+      sc.release(stream, freed[i]);
+      i = i + 1usize;
+    }
+    if code == 1u32 {
+      match held.take() {
+        case var Some(w) {w.answer(Ok[String, BodyError](out));}
+        else {}
+      }
+    } else if code == 2u32 {
+      match held.take() {
+        case var Some(w) {w.answer(Err[String, BodyError](BodyError.tooLarge()));}
+        else {}
+      }
+      match streams.getMut(&stream) {
+        case let Some(r) {r.discard = true;}
+        else {}
+      }
+      self.tooLarge(sc, host, stream);
+    }
+  }
+
+  // ---- the request body sent to a sink (RequestBody.to)
+
+  // The sink is attached to its source and gets the body: the pieces already queued first, then each as it
+  // arrives, while the sink's window has room; its credit returns when the sink gives the buffer back
+  fn xBodyTo(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, sink: ChunkSink, src: ChunkSource) {
+    var ok = self.live(stream, rid);
+    if ok {
+      match streams.getMut(&stream) {
+        case let Some(r) {
+          if r.sink is Some || r.waitRead is Some || r.waitAll is Some {ok = false;} else {r.sink = Some[ChunkSink](sink.clone());}
+        }
+        else {}
+      }
+    }
+    if !ok {
+      sink.end(Ending.Failed(AnyError.from(BodyError.cancelled())));
+      return;
+    }
+    self.sendExpected(sc, host, stream);
+    sink.attach(src);
+    self.pumpSink(sc, host, stream);
+  }
+
+  // Queued pieces to the sink while its window has room, then its end when the body is whole and sent
+  fn pumpSink(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32) {
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        if r.sink is None {return;}
+        while true {
+          var cap = 0usize;
+          match r.chunks.peekFront() {
+            case let Some(b) {cap = b.capacity();}
+            else {break;}
+          }
+          if !hasRoom(&r.lend, cap) {break;}
+          match r.chunks.popFront() {
+            case let Some(b) {deliver(&mut r.lend, &r.sink, b);}
+            else {break;}
+          }
+        }
+        if r.bodyEnd && r.chunks.isEmpty() {
+          var held = None[ChunkSink];
+          held <-> r.sink;
+          match held {
+            case let Some(sk) {sk.end(Ending.Finished);}
+            else {}
+          }
+        }
+      }
+      else {}
+    }
+  }
+
+  // The sink gave a buffer back: the credit it held is released, and the next pieces go
+  fn xBodyBack(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, b: IoBuf) {
+    if !self.live(stream, rid) {return;}
+    var m = 0usize;
+    match streams.getMut(&stream) {
+      case let Some(r) {m = lendReturn(&mut r.lend, b.base() as usize);}
+      else {}
+    }
+    if m > 0usize {sc.release(stream, m);}
+    self.pumpSink(sc, host, stream);
+  }
+
+  // The sink stopped its source: the first reason is its one end, the queued pieces go, and the request is
+  // cancelled on the wire; past a limit (BodyError.tooLarge) the server answers 413 itself
+  fn xBodyStop(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64, why: Ending) {
+    if !self.live(stream, rid) {return;}
+    let limit = isBodyLimit(&why);
+    var held = None[ChunkSink];
+    var freed = List[usize]();
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        held = r.sink.take();
+        r.discard = true;
+        while true {
+          match r.chunks.popFront() {
+            case let Some(b) {freed.push(b.len());}
+            else {break;}
+          }
+        }
+      }
+      else {}
+    }
+    match held {
+      case let Some(sk) {sk.end(why);}
+      else {return;}
+    }
+    var i = 0usize;
+    while i < freed.len() {
+      sc.release(stream, freed[i]);
+      i = i + 1usize;
+    }
+    if limit {self.tooLarge(sc, host, stream);}
+    else if sc.isHttp2() {sc.stopBody(stream);}
+    else {sc.abort();}
+  }
+
+  // The Exchange's body handle was dropped: what is not read is released, and the rest is dropped as it arrives
+  fn xBodyDrop(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, rid: u64) {
+    if !self.live(stream, rid) {return;}
+    var freed = List[usize]();
+    match streams.getMut(&stream) {
+      case let Some(r) {
+        r.discard = true;
+        while true {
+          match r.chunks.popFront() {
+            case let Some(b) {freed.push(b.len());}
+            else {break;}
+          }
+        }
+      }
+      else {}
+    }
+    var i = 0usize;
+    while i < freed.len() {
+      sc.release(stream, freed[i]);
+      i = i + 1usize;
+    }
+  }
+
+  // A stream's record is gone: readers still waiting are answered, what was read and not released is released
+  fn dropStream(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32) {
+    match streams.remove(&stream) {
+      case var Some(r) {self.failWaiters(sc, host, r, stream);}
+      else {}
+    }
+  }
+
+  fn failWaiters(self: &mut, sc: &mut C, host: ExchangeHost, rec: Strm, stream: u32) {
+    var r = rec;
+    match r.waitRead.take() {
+      case var Some(rp) {rp.answer(Err[Option[String], BodyError](BodyError.cancelled()));}
+      else {}
+    }
+    match r.waitAll.take() {
+      case var Some(rp) {rp.answer(Err[String, BodyError](BodyError.cancelled()));}
+      else {}
+    }
+    while true {
+      match r.chunks.popFront() {
+        case let Some(b) {sc.release(stream, b.len());}
+        else {break;}
+      }
+    }
+    match r.sink.take() {
+      case let Some(sk) {sk.end(Ending.Failed(AnyError.from(BodyError.cancelled())));}
+      else {}
+    }
+    let lentCredit = lendAbandon(&mut r.lend);
+    if lentCredit > 0usize {sc.release(stream, lentCredit);}
+    if r.streamed && !r.bodyEnd {sc.stopBody(stream);}
+  }
+}
