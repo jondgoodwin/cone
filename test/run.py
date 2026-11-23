@@ -3296,6 +3296,17 @@ class Runner:
         result = Result(scenario, spec, PASS, 0.0)
         cmd = [str(self.conec), *scenario.argv]
         result.commands.append(quote(cmd))
+
+        # --check writes nothing: the folder -o names holds the same files, each
+        # as it was, after the run
+        def folder_state() -> dict[str, tuple[int, int]] | None:
+            if "--check" not in scenario.argv or "-o" not in scenario.argv:
+                return None
+            folder = REPO / scenario.argv[scenario.argv.index("-o") + 1]
+            return {p.name: (p.stat().st_size, p.stat().st_mtime_ns)
+                    for p in folder.iterdir() if p.is_file()}
+
+        before = folder_state()
         invoked = execute(cmd, REPO, out_dir, "conec",
                           self.compile_timeout_for(scenario, spec), self.args.max_output)
         result.compiled = invoked
@@ -3304,6 +3315,9 @@ class Runner:
             result.problems.append(f"compiler {invoked.killed}")
         else:
             self.check_exit(result, scenario, invoked)
+            if before is not None and folder_state() != before:
+                result.status = FAIL
+                result.problems.append("--check wrote to its output folder")
             # coneOptSet reports bad options and prints usage on stdout, not
             # stderr, so a driver failure is invisible without this. Usage runs
             # to sixty lines and says nothing about why the case failed, so only

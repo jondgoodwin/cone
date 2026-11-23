@@ -728,6 +728,7 @@ include     = ["include/q.cone"] # what q's compile must generate, which the pro
 category    = "driver"       # a driver scenario has no .cone file
 argv        = ["--bogus"]    # the whole invocation; nothing is appended
 exit        = 4              # required: asserting it is the whole category
+                                 # an argv with '--check' and '-o <dir>' also asserts that <dir> is unchanged
 
 [[scenario.core_overload.run]]   # omit entirely for a single default run
 name    = "debug"                # declare all of them once you declare any

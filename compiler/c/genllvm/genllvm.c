@@ -2658,8 +2658,16 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
         }
     }
 
+    // --check: everything above is what generation can refuse. Nothing after
+    // it reports a user's error, but a GPU target's own pipeline below, which
+    // is what refuses a kernel's slice or atomic, so that target goes on
+    if (gen->opt->check && !gen->opt->gpu) {
+        LLVMDisposeModule(gen->module);
+        return;
+    }
+
     // Serialize the LLVM IR, if requested
-    if (gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, gen->opt->srcname, "preir"), &err) != 0) {
+    if (!gen->opt->check && gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, gen->opt->srcname, "preir"), &err) != 0) {
         errorMsg(ErrorGenErr, "Could not emit pre-ir file: %s", err);
         LLVMDisposeMessage(err);
     }
@@ -2773,6 +2781,12 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
             LLVMDisposeModule(gen->module);
             return;
         }
+    }
+
+    // --check ends here: what follows only writes
+    if (gen->opt->check) {
+        LLVMDisposeModule(gen->module);
+        return;
     }
 
     // Serialize the LLVM IR, if requested

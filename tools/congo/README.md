@@ -11,6 +11,7 @@ congo new hello            make a program package, hello/
 congo new geometry --lib   make a library package
 congo build                build the package this folder is in (debug)
 congo build --release      the same, optimised
+congo check                report the package's errors as a build would, writing nothing for it
 congo run                  build it and run it
 congo run hello.cone       build and run one lone file, no manifest needed
 congo run -- a b           arguments after '--' go to the program
@@ -26,7 +27,14 @@ congo build --release --lto     optimise across the packages at link time (ThinL
 congo publish              point an index registry at this package's current commit
 ```
 
-`-D NAME` and `-D NAME=123`, given to `build`, `run` or `test`, are passed to
+`congo check` builds what the package imports, as `build` does, and runs `conec --check` on the package
+itself: every error a compile of it gives, with the same exit status, and no object, no include file, no
+cache entry and no link. It takes `--release`, `-D` and `--no-cache`, and prints `Checked`. Tests and
+examples are not checked (`congo test` builds them). A marked package's kernels are checked too. A link
+error (a missing C library, a symbol nothing defines) is not found, since nothing is linked. `check` runs
+the compiler's analysis, generation and verification in memory, and stops before optimising and emitting.
+
+`-D NAME` and `-D NAME=123`, given to `build`, `run`, `check` or `test`, are passed to
 every `conec` compile of the build, the packages it imports included, where
 `#defined("NAME")` and `#define("NAME")` read them in an `#if`
 (`doc/manual/mod-generativity.html#meta`).
