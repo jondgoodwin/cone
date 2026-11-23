@@ -381,6 +381,13 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
     }
     if (assignTargetsTypeCheck(pstate, &node->lval) == 0)
         return;
+    // A plain '=' to a bare local name stores to it and reads nothing of it
+    // (WarnUnusedVar counts those uses apart)
+    if (node->assignType == NormalAssign && isNameUseNode(node->lval)) {
+        INode *dcl = ((NameUseNode*)node->lval)->dclnode;
+        if (dcl && dcl->tag == VarDclTag && ((VarDclNode*)dcl)->nwrites < 255)
+            ((VarDclNode*)dcl)->nwrites++;
+    }
 
     // Handle tuple decomposition for parallel assignment
     INode *lval = node->lval;

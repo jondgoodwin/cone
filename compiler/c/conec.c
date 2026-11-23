@@ -206,6 +206,7 @@ int main(int argc, char **argv) {
     intrinsicForceFallback = coneopt.intrinsic_fallback;
     awaitDirect = coneopt.await_direct;
     derefWarnIndexStar = coneopt.warn_index_star;
+    blockWarnUnusedVar = coneopt.warn_unused_var;
     timerFine = coneopt.verbosity > 0;
     flowGateCountAll = coneopt.verbosity > 1;
 

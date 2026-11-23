@@ -32,6 +32,7 @@ copies the initializer, and marks it initialized. Generation allocas.
 | `hollowed` | on a local owning reference, each move that took what it points at out ([Flow Analysis](../phases/flow.md), "A move out through a sole owner"); `hollowall`, every such move in the function, on any path, with `hollowuse` the use of the variable's name each is reached through, in the same order (the path walk says which of them reach a release) | none | none |
 | `llvmflag` | its drop flag's `i8` slot, for a variable with `VarDropFlag` | none | none |
 | `flowflags` | **dead** — zeroed twice, never read | none | none |
+| `userlocal`, `nuses`, `nwrites` | `userlocal`: the parser set it on a `let` or `var` the reader wrote as a block statement (not a pattern's or a macro's binding); `nuses` counts name uses type check saw, `nwrites` those that were the target of a plain `=`; `blockTypeCheckIn` warns `WarnUnusedVar` (3010, only under `--warn-unused-var`) when `nuses <= nwrites` and the name does not start with `_` | none | none |
 
 The absences are the point:
 
