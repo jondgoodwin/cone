@@ -995,7 +995,9 @@ members", is the mechanism.
    bytes however few variants there are. A negative value makes the discriminant
    signed (`EnumNode.issigned`), as narrow as holds every value; only a negative
    value beside one past `i64`'s largest has no integer that holds both, which is
-   `ErrorTagWidth` at that value. An enum that named its integer type has the
+   `ErrorTagWidth` at that value. So is counting on past `0xFFFFFFFFFFFFFFFF`,
+   which would wrap to 0 and duplicate the first tag (`structTagFollow`, reported
+   as the enum is parsed or its extension seeded). An enum that named its integer type has the
    width and the sign fixed there instead — that being the point of naming it — so
    a value it cannot hold is `ErrorTagWidth` rather than a silent widening away
    from the layout the author asked for. "Cannot hold" is the literal rule
