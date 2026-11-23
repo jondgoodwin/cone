@@ -1463,7 +1463,11 @@ too. What the compiler adds:
   where the field has no hash that agrees with its `==`: a float is
   `ErrorHashFloat` (NaN is not equal to itself, -0 is equal to 0), and any type
   that is not `Hash` — a struct that does not declare or fit it, a reference or
-  slice, a tuple, an array, a pointer, an enum — is `ErrorHashField`. A refused
+  slice, a tuple, an array, a pointer, an enum that does not declare `Hash` — is
+  `ErrorHashField`. An enum that declares `Hash` is accepted as a field, and the
+  supplied `self.field.hash(h)` calls its own `hash`. (Until row 671 every enum
+  field was refused, from when no enum could be `Hash`; an enum also carries the
+  trait flag, which the old test excluded.) A refused
   struct is given an empty body so nothing more is said of it. An enum, a
   variant and a trait are not supplied; one that declares `Hash` is asked for a
   `hash` by the ordinary requirement check.
