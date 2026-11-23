@@ -806,6 +806,33 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         return NULL;
     }
 
+    // A hint that a loop is spinning: x86's pause (llvm.x86.sse2.pause) or
+    // AArch64's yield (llvm.aarch64.hint(1)); nothing on a GPU, WebAssembly or
+    // any other target
+    case SpinHintIntrinsic: {
+        if (gen->opt->gpu || gen->opt->wasm)
+            return NULL;
+        const char *triple = gen->opt->triple;
+        const char *name = NULL;
+        LLVMValueRef args[1];
+        unsigned nargs = 0;
+        if (strncmp(triple, "x86_64", 6) == 0 || strncmp(triple, "i386", 4) == 0
+            || strncmp(triple, "i686", 4) == 0 || strncmp(triple, "amd64", 5) == 0)
+            name = "llvm.x86.sse2.pause";
+        else if (strncmp(triple, "aarch64", 7) == 0 || strncmp(triple, "arm64", 5) == 0) {
+            name = "llvm.aarch64.hint";
+            args[nargs++] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 1, 0);
+        }
+        if (name == NULL)
+            return NULL;
+        unsigned id = LLVMLookupIntrinsicID(name, strlen(name));
+        if (id == 0)
+            return NULL;
+        LLVMValueRef fn = LLVMGetIntrinsicDeclaration(gen->module, id, NULL, 0);
+        LLVMBuildCall2(gen->builder, LLVMIntrinsicGetType(gen->context, id, NULL, 0), fn, args, nargs, "");
+        return NULL;
+    }
+
     // A GPU workgroup's barriers (genlgpusync.c): on a GPU an instruction, on
     // the CPU a call to the thread's barrier hook when it has set one.
     // WebAssembly links no conestd, which holds the hook, and runs a kernel one
