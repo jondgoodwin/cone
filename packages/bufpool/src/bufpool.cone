@@ -203,8 +203,11 @@
 // caused the spill is in it, and after the lock is released. A wake that does these things may
 // be wasteful (a second event, a spurious wake), never unsafe. KNOWN LIMITS: (a) blocks idle in another thread's cache are not room
 // until that thread spills, flushes or ends, so a waiter can wait while memory sits in busy
-// threads' caches (R2, row 649); the waiting layer's own timer retry can stay as a slow backstop
-// until R2 answers. (b) An OS refusal of memory the bound allows (VirtualAlloc, mmap, malloc
+// threads' caches. Closed for the actors workers by aio: while a read waits, each worker about to sleep
+// flushes its cache, and aio's backstop tick wakes the sleepers to do so (aio's THE BACKSTOP). Still open
+// for any other thread (a program's own): its cache is room only once it spills, flushes or ends. A flush
+// retires the thread's record, so a trace line keyed by the record's address (bufCache's id) can change
+// across it. (b) An OS refusal of memory the bound allows (VirtualAlloc, mmap, malloc
 // failing) is not room and runs no event: a waiter refused in the instant a concurrent attempt's
 // reserved bytes were given back after such a refusal waits for the next real event.
 //

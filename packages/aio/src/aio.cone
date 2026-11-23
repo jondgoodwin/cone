@@ -1239,8 +1239,11 @@ let roomWoke: Atomic[u32];        // 1: room may have come back since the I/O th
 // spills or ends), and a wake can be missed by a rule's gap; a parked read must not wait for ever for it. While
 // any read is parked the I/O thread's poll waits at most this long (no timer otherwise) and then retries every
 // parked read, as a wake does. The I/O thread's own take sees the stock and its own cache, not another
-// thread's unflushed one: the backstop finds room that is in the stock without an event, not a cache that
-// is never flushed
+// thread's unflushed one. A worker's cache is given back by the worker: while a read is parked each worker
+// about to sleep flushes its cache (beforePark, one load when nothing is parked), and a backstop tick that
+// finds a read still parked wakes the sleeping workers (actors.wakeIdle) so that each runs that hook once
+// more. The spill is a room event, and the parked read comes back by the wake. A thread that is not an
+// actors worker (a program's own) keeps its cache until it spills, flushes or ends
 const roomBackstopMs = 100i64;
 
 // A watch key for a parked record's group, clear of the Loop's ids, the worker's bit and udpWatchBit
@@ -2094,6 +2097,11 @@ fn afterTurn() {
 // it brought anything. Then nobody may be left to poll: the last worker going
 // idle sends the I/O thread back to the port
 fn beforePark() bool {
+  // A read is waiting for room (ROOM, THE BACKSTOP): this worker's cache goes back to the stock, so that
+  // room held only here is room. One load otherwise
+  if roomHead.load() != 0usize {
+    bufpool.flushThread();
+  }
   if !hereHot {
     return false;
   }
@@ -2284,8 +2292,12 @@ fn ioMain(arg: IoArg) u32 {
       if !stop && roomHead.load() != 0usize {
         let now = Instant.now();
         if roomWoke.load() != 0u32 || now >= roomNext {
+          let tick = now >= roomNext;
           roomRetry(lp);
           roomNext = Instant.now() + Duration.fromMillis(roomBackstopMs);
+          if tick && roomHead.load() != 0usize {
+            actors.wakeIdle();       // a read still waits: the sleeping workers give their caches back (beforePark)
+          }
         } else if roomNext > now + Duration.fromMillis(roomBackstopMs) {
           roomNext = now + Duration.fromMillis(roomBackstopMs);
         }

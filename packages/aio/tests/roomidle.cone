@@ -1,0 +1,214 @@
+// A read the pool refuses waits for room, and the room is held only in idle workers' caches (row 664). The pool
+// is filled to its bound by this thread; a few of its blocks are then handed to an actor and dropped on
+// the workers (a return into a worker's own cache is no room event), and the workers go idle. A read then
+// starts and the pool refuses it. Nothing else makes room: the read resumes only if the idle workers give
+// their caches back (aio's beforePark flush, and actors.wakeIdle at a backstop tick for the workers already
+// asleep). It must be answered within a few backstop ticks (100 ms each).
+//
+// Mutants (made by hand, not kept): the flush in beforePark removed (the read stays parked, this case times
+// out); the wakeIdle call removed (the workers asleep before the read parked are never asked: the read stays
+// parked).
+
+mod roomidle;
+
+import testing use *;
+import stdio use printStr, printUInt, eprintStr, eprintUInt;
+import process;
+import thread;
+import actors;
+import collections use List, String;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import aio use Socket, IoLimits;
+import bufpool;
+
+const dropCount = 6usize;
+
+let answeredFlag: Atomic[u64];
+let gotLen: Atomic[u64];
+
+fn @initpure init() {
+  answeredFlag = Atomic[u64].of(0u64);
+  gotLen = Atomic[u64].of(0u64);
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {
+      printStr("socketOf failed: code ");
+      printUInt(u64.from(e.code));
+      printStr("\n");
+      panic("socketOf: the operation failed");
+    }
+  }
+  s
+}
+
+// The peer: it is given its socket, and when started it sends 11 bytes. No actor waits for the gate: the main
+// thread starts each with a message, so no worker is ever blocked (with two workers, two blocked actors would
+// leave none to run the Dropper).
+actor Writer {
+  sock: Socket;
+
+  pub async fn attach(self, s: Socket) {
+    var t = s;
+    sock <-> t;
+  }
+
+  pub async fn startWrite(self, done: OneshotSender[u64]) {
+    var hello = IoBuf(64usize);
+    hello.append("hello, room");
+    let w0 = await sock.write(hello);
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+// The read, started on the gate, the pool full and its free blocks in the workers' caches
+actor Reader {
+  sock: Socket;
+
+  pub async fn attach(self, s: Socket) {
+    var t = s;
+    sock <-> t;
+  }
+
+  pub async fn startRead(self, done: OneshotSender[u64]) {
+    let r = await sock.readIn(IoLimits.none());
+    answeredFlag.store(1u64);
+    var code = 4u64;
+    match r {
+      case let Ok(b) {
+        gotLen.store(u64.from(b.len()));
+        code = 10u64;
+      }
+      else {}
+    }
+    var d = done;
+    d.send(code);
+  }
+}
+
+// Drops the blocks it is given, on whichever worker runs it: each goes into that worker's cache
+actor Dropper {
+  pub async fn eat(self, b: IoBuf, ack: OneshotSender[u64]) {
+    var a = ack;
+    a.send(1u64);
+  }
+}
+
+actor Setup {
+  pub async fn go(self, w: Writer, r: Reader, ready: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
+    match a {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let ac = await ls.accept();
+    w.attach(socketOf(c));
+    r.attach(socketOf(ac));
+    var rd = ready;
+    rd.send(1u64);
+  }
+}
+
+fn fillPool(held: &mut List[IoBuf]) usize {
+  var n = 0usize;
+  var going = true;
+  while going {
+    match IoBuf.tryMake(4096usize) {
+      case var Some(b) {
+        b.append("x");
+        held.push(b);
+        n = n + 1usize;
+      }
+      else {going = false;}
+    }
+  }
+  n
+}
+
+fn scenario() {
+  eprintStr("workers: ");
+  eprintUInt(u64.from(thread.parallelism()));
+  eprintStr("\n");
+  var qtx: OneshotSender[u64];
+  var qrx: OneshotReceiver[u64];
+  qtx, qrx = Oneshot[u64].make();
+  var rtx: OneshotSender[u64];
+  var rrx: OneshotReceiver[u64];
+  rtx, rrx = Oneshot[u64].make();
+  var wtx: OneshotSender[u64];
+  var wrx: OneshotReceiver[u64];
+  wtx, wrx = Oneshot[u64].make();
+  let writer = Writer(Socket.none());
+  let reader = Reader(Socket.none());
+  {
+    let s = Setup();
+    s.go(writer, reader, qtx);
+  }
+  let ready = qrx.recvTimeout(Duration.fromMillis(20000i64));
+  expect(ready is Some, "the connection is made");
+  var held = List[IoBuf]();
+  let filled = fillPool(&mut held);
+  expect(filled > 1000usize, "the pool is held at its bound");
+  // A few blocks given to the workers' caches: the only room there is
+  let d = Dropper();
+  var i = 0usize;
+  while i < dropCount {
+    var atx: OneshotSender[u64];
+    var arx: OneshotReceiver[u64];
+    atx, arx = Oneshot[u64].make();
+    match held.pop() {
+      case var Some(b) {d.eat(b, atx);}
+      else {}
+    }
+    let acked = arx.recvTimeout(Duration.fromMillis(20000i64));
+    expect(acked is Some, "a block is dropped on a worker");
+    i = i + 1usize;
+  }
+  thread_sleep(300i64);                 // the workers go idle, to sleep
+  reader.startRead(rtx);                // the read starts: the stock is empty, so it is refused and parks
+  writer.startWrite(wtx);
+  let t0 = Instant.now();
+  let late = rrx.recvTimeout(Duration.fromMillis(5000i64));
+  expect(late is Some, "the read resumes with room held only in idle workers' caches");
+  expect((Instant.now() - t0).millis() < 1500i64, "within a few backstop ticks");
+  match late {
+    case let Some(v) {expectUInt(v, 10u64, "the read's answer");}
+    else {}
+  }
+  expect(gotLen.load() >= 11u64, "the read has the bytes the peer sent");
+  held = List[IoBuf]();
+  bufpool.flushThread();
+  let wend = wrx.recvTimeout(Duration.fromMillis(20000i64));
+  expect(wend is Some, "the peer ends");
+  // The flush ran on the workers inside beforePark, and the room wake it made (roomWake) ran there too: the
+  // workers' sleeper state is undisturbed, so a worker still serves a message and the runtime finds itself idle
+  var btx: OneshotSender[u64];
+  var brx: OneshotReceiver[u64];
+  btx, brx = Oneshot[u64].make();
+  Dropper().eat(IoBuf(64usize), btx);
+  expect(brx.recvTimeout(Duration.fromMillis(5000i64)) is Some, "a worker still serves a message after its flush");
+  expect(actors.waitUntilIdleFor(Duration.fromMillis(10000i64)), "the runtime goes idle after the flushes");
+}
+
+fn thread_sleep(ms: i64) {
+  thread.sleep(Duration.fromMillis(ms));
+}
+
+fn main() i32 {
+  initAll();
+  scenario();
+  finalAll();
+  done()
+}

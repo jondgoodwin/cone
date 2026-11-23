@@ -60,6 +60,9 @@
 //   actors.workerHooks(after, idle), actors.askAfterTurn()
 //                                   for the I/O package, not for programs: what a worker
 //                                   runs between turns (WORKER HOOKS, at 'me')
+//   actors.wakeIdle()               for the I/O package, not for programs: every sleeping worker
+//                                   looks once more and runs its 'idle' hook before it sleeps
+//                                   again (WORKER HOOKS)
 //   actors.timerAwaitable[R](when, relative, group, limit, answer)
 //                                   for the I/O package, not for programs: a timer awaited
 //                                   on the awaiting worker's own wheel (THE WORKERS'
@@ -5091,6 +5094,30 @@ pub fn releasePark() {
   hp.store(3u32);
   while hp.load() != 0u32 {
     yieldProcessor();
+  }
+}
+
+// Every sleeping worker woken to look once more and sleep again: it finds no work, and its 'idle' hook runs
+// before it publishes itself a sleeper (WORKER HOOKS), which is all this is for (aio's flush of the
+// pool's cache for a read waiting for room). The workers are chosen by wakeOne, as a send's notify
+// chooses one, each marked NOTIFIED, so no park rule changes. A worker that has gone past its hook and
+// not yet published itself sleeps through this call: the caller asks again later. Nothing on the paths
+// of a send or a park; costs a sleeper count's load when nobody sleeps
+pub fn wakeIdle() {
+  let s = running.load() as *Sched;
+  if s as usize == 0usize {
+    return;
+  }
+  var k = (*s).sleepers.load();
+  if k == 0u32 {
+    return;
+  }
+  (*s).searching.store(1u32);
+  while k > 0u32 {
+    if !wakeOne(s, 0u32) {
+      break;
+    }
+    k = k - 1u32;
   }
 }
 
