@@ -1,0 +1,86 @@
+// The shape a C-named function's struct values take for arm64 Apple, whatever
+// the host: the LLVM signatures clang gives the same C declarations for
+// arm64-apple-macos. A struct of one to four members of one float type, nested
+// or not (a homogeneous aggregate), crosses as an array of them, one SIMD
+// register each, and comes back as the struct of them; any other struct of up
+// to 16 bytes as integer registers ('i64' or '[2 x i64]'), and a result of 8
+// bytes or less as the integer of its size; a larger struct as a pointer to a
+// copy (not 'byval'), and a larger result through 'sret'. The caller widens a
+// char or a short.
+mod module_c_byvalue_arm64_shape;
+
+struct Ext2 { pub a: i32; pub b: i32; }                    // 8 bytes: i64
+struct Rgb { pub r: u8; pub g: u8; pub b: u8; }             // 3 bytes: i64, returned i24
+struct Vec2 { pub x: f32; pub y: f32; }                    // [2 x float]
+struct Vec3 { pub x: f32; pub y: f32; pub z: f32; }         // [3 x float]
+struct Quad { pub lo: Vec2; pub hi: Vec2; }                // nested: [4 x float]
+struct Dbl4 { pub a: f64; pub b: f64; pub c: f64; pub d: f64; }  // 32 bytes: [4 x double]
+struct Flt5 { pub a: f32; pub b: f32; pub c: f32; pub d: f32; pub e: f32; }  // five: memory
+struct IntDbl { pub a: i32; pub d: f64; }                  // 16 bytes, mixed: [2 x i64]
+struct Int3 { pub a: i32; pub b: i32; pub c: i32; }         // 12 bytes: [2 x i64]
+struct Big3 { pub a: i64; pub b: i64; pub c: i64; }         // 24 bytes: memory
+struct V2 { pub a: Vector[f32, 4]; pub b: Vector[f32, 4]; }  // short vectors: [2 x <4 x float>]
+struct V1 { pub a: Vector[f32, 4]; }
+
+extern {
+  fn @c ext_sum(e: Ext2) i32;
+  fn @c rgb_code(c: Rgb) i32;
+  fn @c vec2_len(v: Vec2) f32;
+  fn @c vec3_len(v: Vec3) f32;
+  fn @c quad_sum(q: Quad) f32;
+  fn @c dbl4_code(v: Dbl4) i64;
+  fn @c flt5_code(v: Flt5) i64;
+  fn @c intdbl_code(v: IntDbl) i64;
+  fn @c int3_code(v: Int3) i64;
+  fn @c big3_code(v: Big3) i64;
+  fn @c rgb_make(n: i32) Rgb;
+  fn @c ext_make(n: i32) Ext2;
+  fn @c vec3_make(f: f32) Vec3;
+  fn @c dbl4_make(n: i32) Dbl4;
+  fn @c flt5_make(n: i32) Flt5;
+  fn @c intdbl_make(n: i32) IntDbl;
+  fn @c big3_make(n: i32) Big3;
+  fn @c narrow(a: i8, b: u8, c: i16, d: u16) i8;
+  fn @c v2_sum(v: V2) f32;
+  fn @c v1_make(f: f32) V1;
+}
+
+pub fn @c cone_vec3(v: Vec3, k: f32) Vec3 {
+  Vec3(v.x * k, v.y * k, v.z * k)
+}
+pub fn @c cone_ext(e: Ext2) i32 {
+  e.a * 1000 + e.b
+}
+pub fn @c cone_dbl4(v: Dbl4) Dbl4 {
+  Dbl4(v.d, v.c, v.b, v.a)
+}
+
+fn main() {
+  let e = Ext2(3, 4);
+  let a = ext_sum(e) + rgb_code(Rgb(1, 2, 3));
+  let f = vec2_len(Vec2(1., 2.)) + vec3_len(Vec3(1., 2., 3.)) + quad_sum(Quad(Vec2(1., 2.), Vec2(3., 4.)));
+  let g = dbl4_code(Dbl4(1., 2., 3., 4.)) + flt5_code(Flt5(1., 2., 3., 4., 5.))
+    + intdbl_code(IntDbl(1, 2.)) + int3_code(Int3(1, 2, 3)) + big3_code(Big3(7, 8, 9));
+  let r = rgb_make(a);
+  let x = ext_make(a);
+  let z = vec3_make(f);
+  let d = dbl4_make(a);
+  let v = flt5_make(a);
+  let w = intdbl_make(a);
+  let b = big3_make(a);
+  let n = narrow(-1, 2, -3, 4);
+  let va = Vector[f32, 4]() <- 1.0, 2.0, 3.0, 4.0;
+  let vs = v2_sum(V2(va, va));
+  let vm = v1_make(1.);
+  let c = cone_vec3(z, 2.);
+  let h = cone_ext(e);
+  let o = cone_dbl4(d);
+
+  // Through '&fn @c', the call a direct one makes: the aggregate copying pass
+  // (genlaggcopy.c) leaves its homogeneous aggregate alone, as it does the
+  // direct call's
+  let viaC: &fn @c (v: Vec3, k: f32) Vec3 = &cone_vec3;
+  let q = viaC(z, 2.);
+  let viaD: &fn @c (v: Dbl4) Dbl4 = &cone_dbl4;
+  let p = viaD(d);
+}
