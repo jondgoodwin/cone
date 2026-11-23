@@ -536,7 +536,10 @@ pub struct Driver {
     if !h2 && p.len() > 0usize && p.view() != "http/1.1" {
       var why = String.from("ALPN chose a protocol the driver does not speak: ");
       why.append(p.view());
-      c.failure = Some[Failure](Failure.make(Stage.Tls, 0u32, ErrorKind.Unsupported, why.view()));
+      var tf = Failure.make(Stage.Tls, 0u32, ErrorKind.Unsupported, why.view());
+      tf.unsent = true;  // chosen before any request started
+      tf.error.noResponse = true;
+      c.failure = Some[Failure](tf);
       self.closeNow(lp, i, true, false);
       return;
     }
@@ -602,7 +605,12 @@ pub struct Driver {
     let c = self.conns.borrowMutAt(i).unwrap();
     let text = lay(c).failureText();
     let kind = if lay(c).overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
-    c.failure = Some[Failure](Failure.make(Stage.Tls, lay(c).failureCode(), kind, text.view()));
+    var tf = Failure.make(Stage.Tls, lay(c).failureCode(), kind, text.view());
+    if !c.decided {
+      tf.unsent = true;  // the handshake carries no request byte
+      tf.error.noResponse = true;
+    }
+    c.failure = Some[Failure](tf);
     self.closeNow(lp, i, true, false);
   }
 
@@ -1465,11 +1473,17 @@ pub struct Driver {
     if (stage == Stage.Read || stage == Stage.Write) && lay(c).failed() {
       let text = lay(c).failureText();
       let lk = if lay(c).overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
-      c.failure = Some[Failure](Failure.make(Stage.Tls, lay(c).failureCode(), lk, text.view()));
+      var tf = Failure.make(Stage.Tls, lay(c).failureCode(), lk, text.view());
+      if !c.decided {
+        tf.unsent = true;
+        tf.error.noResponse = true;
+      }
+      c.failure = Some[Failure](tf);
     } else {
       var nf = Failure.make(stage, code, kind, detail);
-      // A connection that was never made has written nothing: what waits on it was never sent
-      if stage == Stage.Resolve || stage == Stage.Connect {
+      // A connection that was never made has written nothing: what waits on it was never sent. Nor has one whose layer
+      // never opened (a handshake that timed out, was refused or was cut): a handshake carries no request byte
+      if stage == Stage.Resolve || stage == Stage.Connect || !c.decided {
         nf.unsent = true;
         nf.error.noResponse = true;
       }

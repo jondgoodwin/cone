@@ -160,7 +160,12 @@ pub struct ClientConn is Move, ClientProto {
       else {}
     }
     let kind = if overloaded {ErrorKind.Overloaded} else {ErrorKind.Closed};
-    failure = Some[Failure](Failure.make(Stage.Tls, code, kind, text.view()));
+    var tf = Failure.make(Stage.Tls, code, kind, text.view());
+    if !decided {
+      tf.unsent = true;  // the handshake carries no request byte
+      tf.error.noResponse = true;
+    }
+    failure = Some[Failure](tf);
     self.pAbort();
   }
 
@@ -180,7 +185,10 @@ pub struct ClientConn is Move, ClientProto {
     if !h2 && p.len() > 0usize && p.view() != "http/1.1" {
       var why = String.from("ALPN chose a protocol the client does not speak: ");
       why.append(p.view());
-      failure = Some[Failure](Failure.make(Stage.Tls, 0u32, ErrorKind.Unsupported, why.view()));
+      var tf = Failure.make(Stage.Tls, 0u32, ErrorKind.Unsupported, why.view());
+      tf.unsent = true;  // chosen before any request started
+      tf.error.noResponse = true;
+      failure = Some[Failure](tf);
       self.pAbort();
       return;
     }
@@ -590,7 +598,10 @@ pub struct ClientConn is Move, ClientProto {
   // Act on every deadline due at 'now'
   pub fn handleTimeout(self: &mut, now: Instant) {
     if !self.layerOpen() && now >= openBy && failure is None {
-      failure = Some[Failure](Failure.make(Stage.Tls, 0u32, ErrorKind.TimedOut, "the TLS handshake did not finish within handshakeTimeout"));
+      var tf = Failure.make(Stage.Tls, 0u32, ErrorKind.TimedOut, "the TLS handshake did not finish within handshakeTimeout");
+      tf.unsent = true;  // the handshake carries no request byte
+      tf.error.noResponse = true;
+      failure = Some[Failure](tf);
       self.pAbort();
       return;
     }
@@ -616,7 +627,14 @@ pub struct ClientConn is Move, ClientProto {
 
   // End the connection now, dropping what was not yet sent
   pub fn abort(self: &mut) {
-    if failure is None {failure = Some[Failure](Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was aborted"));}
+    if failure is None {
+      var af = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was aborted");
+      if !decided {
+        af.unsent = true;  // aborted before its layer opened (a peer that left mid-handshake): no request byte went
+        af.error.noResponse = true;
+      }
+      failure = Some[Failure](af);
+    }
     self.pAbort();
   }
 
