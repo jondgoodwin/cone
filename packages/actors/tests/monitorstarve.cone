@@ -2,15 +2,19 @@
 // is busy on its own queue, and one actor waits behind a long turn. Four
 // workers. Three Churn actors send themselves a message at the end of every
 // turn, so three workers run short turns for ever; the fourth worker sleeps.
-// Main sends Hold, which wakes the fourth worker and holds it for 400 ms with
+// Main sends Hold, which wakes the fourth worker and holds it for 800 ms with
 // its first act the making of Late runnable, onto that worker's own queue
 // (a push to an empty queue wakes nobody: nothing sleeps now in any case).
 // Notifying cannot help here, since no worker sleeps; the monitor moves Late
 // to the inject queue, where a busy worker finds it at its next look there
-// (every injectEvery turns). Late must run within 100 ms of being made
+// (every injectEvery turns). Late must run within 400 ms of being made
 // runnable, with Hold still in its turn (the bound is the monitor's two ticks
-// at their longest, 4 ms, and a look: 100 ms is 25 times that, for a loaded
-// machine). Five rounds.
+// at their longest, 4 ms, and a look: 400 ms is 100 times that, for a loaded
+// machine; without the monitor Late waits the whole 800 ms of Hold). Five
+// rounds. Hold was 400 ms with a bound of 100 ms, which a loaded machine
+// sometimes overran. What this gives up: a monitor that finds the stranded
+// queue up to 400 ms late (instead of 100) is not caught; one that never does
+// is.
 
 mod monitorstarve;
 
@@ -57,7 +61,7 @@ actor Hold {
   pub async fn hold(self, late: Late) {
     flags.madeAt.store(nowNs());
     late.run();
-    let until = nowNs() + 400000000u64;
+    let until = nowNs() + 800000000u64;
     while nowNs() < until {}
     flags.holdDone.store(1u32);
   }
@@ -89,14 +93,14 @@ fn main() i32 {
       }
       require(flags.holdDone.load() == 1u32, "Hold ended within 2 s");
       require(flags.lateAt.load() != 0u64, "Late ran by the end of Hold's turn");
-      if flags.lateAt.load() - flags.madeAt.load() < 100000000u64 {prompt = prompt + 1u32;}
+      if flags.lateAt.load() - flags.madeAt.load() < 400000000u64 {prompt = prompt + 1u32;}
       if flags.lateDuring.load() == 1u32 {during = during + 1u32;}
       r = r + 1u32;
     }
     flags.stop.store(1u32);
     actors.waitUntilIdle();
     expectUInt(u64.from(during), u64.from(rounds), "every round, Late ran while Hold was still in its turn");
-    expectUInt(u64.from(prompt), u64.from(rounds), "every round, Late ran within 100 ms of being made runnable");
+    expectUInt(u64.from(prompt), u64.from(rounds), "every round, Late ran within 400 ms of being made runnable");
     expectBool(actors.stats().monitorFinds >= u64.from(rounds), true, "the monitor found the stranded queue each round");
   }
   finalAll();

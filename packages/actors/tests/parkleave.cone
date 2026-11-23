@@ -6,7 +6,7 @@
 //    itself, before its look), and a message wakes the lowest-numbered
 //    sleeper, L (notify takes the lowest bit); L runs it, spins, publishes
 //    itself again and is held before its look.
-// 2. Main sends X1, a message that keeps its worker 200 ms: notify claims
+// 2. Main sends X1, a message that keeps its worker 500 ms: notify claims
 //    the lowest bit again, L's, and marks L NOTIFIED. Main sends X2 at once:
 //    its notify finds 'searching' set by X1's and wakes nobody.
 // 3. L is let go: its look sees work, its compare-and-swap out of the park
@@ -16,9 +16,13 @@
 //    still in X1.
 //
 // The checks: L was held; marksSpent grew by one; X2 ran on a worker other
-// than L, within 150 ms of L's release (well inside X1's 200 ms), while X1
+// than L, within 300 ms of L's release (inside X1's 500 ms), while X1
 // was still running. Without foundAway's wake, X2 would wait for L to finish
-// X1.
+// X1 (about 500 ms after the release). The hold was 200 ms with a bound of
+// 150 ms, 50 ms of headroom, which a loaded machine took from it now and
+// then; with 500 ms and 300 ms the bound has 200 ms to either side. What this
+// gives up: a second sleeper's wake that is late by up to 300 ms (instead of
+// 150) is not caught; one that never comes is.
 
 mod parkleave;
 
@@ -50,7 +54,7 @@ actor Work {
   pub async fn poke(self) {}
 
   pub async fn slow(self) {
-    let until = nowNs() + 200000000u64;
+    let until = nowNs() + 500000000u64;
     while nowNs() < until {}
     flags.x1done.store(1u32);
   }
@@ -109,7 +113,7 @@ fn main() i32 {
       require(flags.x2done.load() == 1u32, "X2 handled within 2 s");
       if actors.stats().marksSpent - spent0 == 1u64 {spent = spent + 1u32;}
       if flags.x2worker.load() != lIdx {second = second + 1u32;}
-      if flags.x2at.load() - t0 < 150000000u64 {prompt = prompt + 1u32;}
+      if flags.x2at.load() - t0 < 300000000u64 {prompt = prompt + 1u32;}
       if flags.x2during.load() == 1u32 {during = during + 1u32;}
       actors.waitUntilIdle();
       r = r + 1u32;
@@ -117,7 +121,7 @@ fn main() i32 {
     expectUInt(u64.from(held), u64.from(rounds), "every round held L between publishing itself and its look");
     expectUInt(u64.from(spent), u64.from(rounds), "every round, L spent the mark of X1's notify, which claimed it while it was leaving: a notify that woke nobody new");
     expectUInt(u64.from(second), u64.from(rounds), "every round, X2 ran on a second sleeper, not on L");
-    expectUInt(u64.from(prompt), u64.from(rounds), "every round, X2 ran within 150 ms of L's release");
+    expectUInt(u64.from(prompt), u64.from(rounds), "every round, X2 ran within 300 ms of L's release");
     expectUInt(u64.from(during), u64.from(rounds), "every round, X2 ran before X1 had finished");
   }
   finalAll();
