@@ -203,7 +203,11 @@ static int fnSigReqNamesEnumSelf(INode *req) {
 static Nodes *implGenericParms = NULL;
 static Nodes *reqGenericParms = NULL;
 
-void fnSigGenericParms(Nodes *implparms, Nodes *reqparms) {
+void fnSigGenericParms(Nodes *implparms, Nodes *reqparms, Nodes **previmpl, Nodes **prevreq) {
+    if (previmpl)
+        *previmpl = implGenericParms;
+    if (prevreq)
+        *prevreq = reqGenericParms;
     implGenericParms = implparms;
     reqGenericParms = reqparms;
 }

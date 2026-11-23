@@ -720,7 +720,15 @@ type parameter the same — a use of one is not a type, so neither resolves to a
 declaration — so `iNsTypeFindVrefMethod` hands the two methods' parameter lists
 to `fnSigGenericParms`, and `fnSigReqTypeSame` matches a use of the
 requirement's parameter with the use of the implementation's parameter at the
-same place (`trait_generic_method_params`, `trait_typecheck_generic_method_params`). The opposite pairing, a type's generic method against a
+same place (`trait_generic_method_params`, `trait_typecheck_generic_method_params`).
+The lists are held in statics for the one compare; `iNsTypeFindVrefMethod` saves
+the pair that stood and restores it afterwards, so a compare reached from inside
+another keeps the outer one's lists. No such nested path was found today
+(read, not proven: `fnSigVrefEqual` calls only type comparison and lifetime
+checks), so there is no test for it; the save and restore is a guard. A bound
+is compared by the bound's name, so two bounds of the same name from different
+modules match; that is not unsound, since the instance's own `where` check still
+runs against the real trait. The opposite pairing, a type's generic method against a
 trait's method that is not generic, is refused by design, as in Rust:
 `iNsTypeFindVrefMethod` skips a generic candidate then, so it never fits a
 bound, an `is` or a virtual reference, whether or not its signature names its

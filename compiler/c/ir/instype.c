@@ -289,11 +289,14 @@ FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth, INode *se
                 && methnode->genericinfo->parms->used == matchmeth->genericinfo->parms->used;
             if (methnode->genericinfo && matchmeth->genericinfo && !sameparms)
                 continue;
-            if (sameparms)
-                fnSigGenericParms(methnode->genericinfo->parms, matchmeth->genericinfo->parms);
+            // Saved and restored, not cleared: a compare reached from inside another
+            // (nothing known today does) must leave the outer one's lists standing
+            Nodes *previmpl, *prevreq;
+            fnSigGenericParms(sameparms ? methnode->genericinfo->parms : NULL,
+                sameparms ? matchmeth->genericinfo->parms : NULL, &previmpl, &prevreq);
             int met = loose ? fnSigVrefMeets((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype)
                             : fnSigVrefEqual((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype);
-            fnSigGenericParms(NULL, NULL);
+            fnSigGenericParms(previmpl, prevreq, NULL, NULL);
             if (!met)
                 continue;
             if (found)
