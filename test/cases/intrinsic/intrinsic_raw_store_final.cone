@@ -1,0 +1,40 @@
+// A store through a raw pointer finalizes the value it replaces, as it already
+// releases an owning reference it replaces, and 'mem.writeRaw' is the write that
+// finalizes nothing, for a slot that holds nothing (ruled 1 Nov; Rust's '*p = v'
+// drops the old value and 'ptr::write' does not). Worked out by hand, in order:
+//   - writeRaw puts Res 1 into fresh memory: nothing runs;
+//   - '*p = Res(2)' finalizes Res 1 ("final 1"), then holds 2;
+//   - a field stored through the pointer, '(*h).r = Res(4)', finalizes the field's old Res 3;
+//   - writeRaw over the live Res 2 forgets it: no "final 2" is printed for it;
+//   - finalize at the end runs the final of what each slot holds then: 7, then 4.
+
+mod intrinsic_raw_store_final;
+
+import stdio use *;
+import libc use *;
+
+struct Res {
+  pub id: i32;
+  fn final(self: &uni) { printStr("final "); printInt(i64.from(id)); printStr("\n"); }
+}
+
+struct Holder {
+  pub r: Res;
+  pub n: i32;
+}
+
+fn main() {
+  let p = malloc(mem.sizeof[Res]()) as *Res;
+  mem.writeRaw[Res](p, Res(1i32));
+  printStr("-- store over 1\n");
+  *p = Res(2i32);
+  printStr("-- writeRaw over 2 forgets it\n");
+  mem.writeRaw[Res](p, Res(7i32));
+  printStr("-- field store\n");
+  let h = malloc(mem.sizeof[Holder]()) as *Holder;
+  mem.writeRaw[Holder](h, Holder(Res(3i32), 0i32));
+  (*h).r = Res(4i32);
+  printStr("-- finalize both\n");
+  mem.finalize[Res](p);
+  mem.finalize[Holder](h);
+}

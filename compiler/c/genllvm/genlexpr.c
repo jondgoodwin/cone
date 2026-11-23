@@ -914,6 +914,40 @@ static LLVMValueRef genlAtomicIntrinsic(GenState *gen, FnDclNode *fndcl, FnCallN
     return isbool ? LLVMBuildTrunc(gen->builder, result, valtype, "") : result;
 }
 
+// An integer number's '/' and '%' panic where the divisor is zero or, signed,
+// where the type's minimum is divided by -1, whose quotient does not fit [Jon 28 Oct],
+// as a vector's do (genlDivideCheck). A divisor known not to be zero or -1 needs no
+// check, so the common division by a constant generates as it did.
+static void genlScalarDivideCheck(GenState *gen, INode *site, int issigned, LLVMValueRef a, LLVMValueRef b) {
+    LLVMTypeRef type = LLVMTypeOf(b);
+    if (LLVMIsAConstantInt(b)) {
+        unsigned long long zext = LLVMConstIntGetZExtValue(b);
+        unsigned width = LLVMGetIntTypeWidth(type);
+        unsigned long long mask = width >= 64 ? ~0ULL : ((1ULL << width) - 1);
+        if (zext != 0 && !(issigned && zext == mask))
+            return;
+    }
+    LLVMValueRef bad = LLVMBuildICmp(gen->builder, LLVMIntEQ, b, LLVMConstNull(type), "divzero");
+    if (issigned) {
+        unsigned width = LLVMGetIntTypeWidth(type);
+        LLVMValueRef minval = LLVMConstInt(type, 1ULL << (width - 1), 0);
+        LLVMValueRef negone = LLVMConstInt(type, ~0ULL, 1);
+        LLVMValueRef overflow = LLVMBuildAnd(gen->builder,
+            LLVMBuildICmp(gen->builder, LLVMIntEQ, a, minval, ""),
+            LLVMBuildICmp(gen->builder, LLVMIntEQ, b, negone, ""), "divoverflow");
+        bad = LLVMBuildOr(gen->builder, bad, overflow, "divbad");
+    }
+    LLVMBasicBlockRef panicblk = genlInsertBlock(gen, "panic");
+    LLVMBasicBlockRef okblk = genlInsertBlock(gen, "divok");
+    LLVMBuildCondBr(gen->builder, bad, panicblk, okblk);
+    LLVMPositionBuilderAtEnd(gen->builder, panicblk);
+    LLVMTypeRef usize = genlUsize(gen);
+    LLVMValueRef what = LLVMBuildSelect(gen->builder, LLVMBuildICmp(gen->builder, LLVMIntEQ, b, LLVMConstNull(type), ""),
+        LLVMConstInt(usize, 0, 0), LLVMConstInt(usize, 1, 0), "");
+    genlPanic(gen, site, PanicDivide, &what);
+    LLVMPositionBuilderAtEnd(gen->builder, okblk);
+}
+
 LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs, INode *selftype) {
 
     // Handle call when we have a derefed pointer to a function: '(*f)(x)', where
@@ -1342,10 +1376,10 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             case AddIntrinsic: fncallret = LLVMBuildAdd(gen->builder, fnargs[0], fnargs[1], ""); break;
             case SubIntrinsic: fncallret = LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], ""); break;
             case MulIntrinsic: fncallret = LLVMBuildMul(gen->builder, fnargs[0], fnargs[1], ""); break;
-            case DivIntrinsic: fncallret = LLVMBuildUDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
-            case SDivIntrinsic: fncallret = LLVMBuildSDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
-            case RemIntrinsic: fncallret = LLVMBuildURem(gen->builder, fnargs[0], fnargs[1], ""); break;
-            case SRemIntrinsic: fncallret = LLVMBuildSRem(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case DivIntrinsic: genlScalarDivideCheck(gen, objfn, 0, fnargs[0], fnargs[1]); fncallret = LLVMBuildUDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case SDivIntrinsic: genlScalarDivideCheck(gen, objfn, 1, fnargs[0], fnargs[1]); fncallret = LLVMBuildSDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case RemIntrinsic: genlScalarDivideCheck(gen, objfn, 0, fnargs[0], fnargs[1]); fncallret = LLVMBuildURem(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case SRemIntrinsic: genlScalarDivideCheck(gen, objfn, 1, fnargs[0], fnargs[1]); fncallret = LLVMBuildSRem(gen->builder, fnargs[0], fnargs[1], ""); break;
 
                 // Comparison
             case EqIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], ""); break;
@@ -3377,7 +3411,8 @@ static void genlStoreBarrier(GenState *gen, INode *lval, LLVMValueRef lvalptr) {
 // Did the target of a store hold a value to release? A variable, or a part of
 // a local's own value, did unless flow found it held none (FlagFirstAssign,
 // FlagPartNoPrior); where that differs by path, the variable's drop flag
-// decides (FlagDropTest). A place reached through a reference always holds one.
+// decides (FlagDropTest). A place reached through a reference or a raw pointer
+// always holds one: 'mem.writeRaw' is the write for memory that holds none.
 static int genlStoreHeld(INode *lval) {
     if (isNameUseNode(lval) && isExpNode(lval))
         return !(lval->flags & FlagFirstAssign);
@@ -3387,31 +3422,6 @@ static int genlStoreHeld(INode *lval) {
     if (flowLvalRootVar(lval) != NULL)
         return !(lval->flags & FlagPartNoPrior);
     return 1;
-}
-
-// Is a store's target reached through a raw pointer? That may be memory never
-// given a value -- a buffer being filled -- so a value that finalizes is not
-// finalized there (an owning reference is released there as it always was).
-static int genlStoreThroughPtr(INode *lval) {
-    INode *node = lval;
-    while (1) {
-        INode *inner;
-        switch (node->tag) {
-        case DerefTag:
-            inner = ((StarNode *)node)->vtexp; break;
-        case FldAccessTag:
-        case ArrIndexTag:
-            inner = ((FnCallNode *)node)->objfn; break;
-        case CastTag:
-            node = ((CastNode *)node)->exp;
-            continue;
-        default:
-            return 0;
-        }
-        if (iexpGetTypeDcl(inner)->tag == PtrTag)
-            return 1;
-        node = inner;
-    }
 }
 
 // Does the release genlReleaseOwning makes of a value -- each owning reference
@@ -3538,7 +3548,7 @@ static void genlStoreTo(GenState *gen, INode *lval, LLVMValueRef lvalptr, LLVMVa
     // The previous value is released exactly as scope exit would release it,
     // unless the target held none (genlStoreHeld)
     int owning = flowIsOwningType(lvaltype);
-    if (genlStoreHeld(lval) && (owning || (itypeNeedsFinal(lvaltype) && !genlStoreThroughPtr(lval)))) {
+    if (genlStoreHeld(lval) && (owning || itypeNeedsFinal(lvaltype))) {
         VarDclNode *flagvar = NULL;
         if (lval->flags & FlagDropTest)
             flagvar = isNameUseNode(lval) && isExpNode(lval)

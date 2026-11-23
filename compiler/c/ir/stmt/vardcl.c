@@ -512,6 +512,16 @@ Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext) {
 // A variable holds its type by value: rule 4's report site
 static void varDclSizeCheck(TypeCheckState *pstate, INode *node, void *extra) {
     VarDclNode *name = (VarDclNode *)node;
+    // 'Self' in an open trait's requirement stands for whichever type meets it, which
+    // has a size (a default is checked in each implementer, with Self repointed to it).
+    // What has no size is the trait itself, so a virtual reference to such a trait
+    // is refused where it is made (a use of Self other than '&<Self')
+    if (isNameUseNode(name->vtype) && ((NameUseNode*)name->vtype)->namesym == selfTypeName) {
+        INode *selfdcl = itypeGetTypeDcl(name->vtype);
+        if (selfdcl->tag == StructTag && (selfdcl->flags & TraitType)
+            && !(selfdcl->flags & (EnumType | SameSize | HasTagField)))
+            return;
+    }
     INode *nosizeroot;
     char *nosize = itypeNoSizeCause(name->vtype, &nosizeroot);
     if (nosize) {
