@@ -261,7 +261,7 @@ fn @initpure init() {
 // ---------------------------------------------------------------------------
 
 // A version of TLS
-pub enum TlsVersion {
+pub enum TlsVersion is Eq, Hash {
   Tls12, Tls13
 }
 
@@ -271,13 +271,13 @@ fn versionNumber(v: TlsVersion) i32 {
 
 // Which library does the TLS. Auto is OpenSSL, the one built; a second
 // (SChannel, rustls) fits behind the same Session
-pub enum Backend {
+pub enum Backend is Eq, Hash {
   Auto, OpenSsl
 }
 
 // Who decides that the server is who it claims to be (see the package's
 // header, VERIFIERS)
-pub enum VerifyKind {
+pub enum VerifyKind is Eq, Hash {
   Platform, Roots, Pinned, Insecure;
 
   // The kind's name, in lower case: 'platform'
@@ -296,18 +296,9 @@ pub struct Verifier is Eq, Hash, Clone {
   bundle: String;       // Roots: the PEM bundle
   pins: List[u8];       // Pinned: 32 bytes for each key
 
-  // 'hash' is written by hand, because the compiler derives it for no enum
-  // field ('==' is derived). EVERY FIELD ABOVE MUST BE IN 'hash': one left out
-  // makes verifiers that differ collide (the derived '==' still tells them
-  // apart). tests/configkey.cone has a test for each field.
-  pub fn hash(self: &, h: &mut Hasher) {
-    h.writeU8(if kind == VerifyKind.Platform {0u8}
-      else if kind == VerifyKind.Roots {1u8}
-      else if kind == VerifyKind.Pinned {2u8}
-      else {3u8});
-    bundle.hash(h);
-    pins.hash(h);
-  }
+  // '==' and 'hash' are derived over every field, so a field added later is in
+  // the key (the enum's own are derived too). tests/configkey.cone has a test
+  // for each field.
 
   // The operating system's: on Windows, its chain engine and SSL policy
   pub fn platform() Verifier {Verifier(VerifyKind.Platform, String(), List[u8]())}
@@ -371,20 +362,8 @@ pub struct ClientConfig is Eq, Hash, Clone {
   pub verifyLane: Lane;          // where the OS's verifier runs
   pub offline: bool;             // the OS's verifier fetches nothing
 
-  // 'hash' is written by hand, because the compiler derives it for no enum
-  // field ('==' is derived). EVERY FIELD ABOVE MUST BE IN 'hash': one left out
-  // makes configs that differ collide (the derived '==' still tells them
-  // apart). tests/configkey.cone has a test for each field.
-  pub fn hash(self: &, h: &mut Hasher) {
-    verify.hash(h);
-    alpn.hash(h);
-    h.writeU8(if minVersion == TlsVersion.Tls12 {0u8} else {1u8});
-    h.writeU8(if maxVersion == TlsVersion.Tls12 {0u8} else {1u8});
-    h.writeU8(if resume {1u8} else {0u8});
-    h.writeU8(if backend == Backend.Auto {0u8} else {1u8});
-    verifyLane.hash(h);
-    h.writeU8(if offline {1u8} else {0u8});
-  }
+  // '==' and 'hash' are derived over every field, so a field added later is in
+  // the key. tests/configkey.cone has a test for each field.
 
   // The defaults: the OS's verifier, http/1.1, TLS 1.2 to 1.3, resumed
 
