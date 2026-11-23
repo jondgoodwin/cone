@@ -3411,7 +3411,8 @@ static void genlStoreBarrier(GenState *gen, INode *lval, LLVMValueRef lvalptr) {
 // Did the target of a store hold a value to release? A variable, or a part of
 // a local's own value, did unless flow found it held none (FlagFirstAssign,
 // FlagPartNoPrior); where that differs by path, the variable's drop flag
-// decides (FlagDropTest). A place reached through a reference always holds one.
+// decides (FlagDropTest). A place reached through a reference or a raw pointer
+// always holds one: 'mem.writeRaw' is the write for memory that holds none.
 static int genlStoreHeld(INode *lval) {
     if (isNameUseNode(lval) && isExpNode(lval))
         return !(lval->flags & FlagFirstAssign);
@@ -3421,31 +3422,6 @@ static int genlStoreHeld(INode *lval) {
     if (flowLvalRootVar(lval) != NULL)
         return !(lval->flags & FlagPartNoPrior);
     return 1;
-}
-
-// Is a store's target reached through a raw pointer? That may be memory never
-// given a value -- a buffer being filled -- so a value that finalizes is not
-// finalized there (an owning reference is released there as it always was).
-static int genlStoreThroughPtr(INode *lval) {
-    INode *node = lval;
-    while (1) {
-        INode *inner;
-        switch (node->tag) {
-        case DerefTag:
-            inner = ((StarNode *)node)->vtexp; break;
-        case FldAccessTag:
-        case ArrIndexTag:
-            inner = ((FnCallNode *)node)->objfn; break;
-        case CastTag:
-            node = ((CastNode *)node)->exp;
-            continue;
-        default:
-            return 0;
-        }
-        if (iexpGetTypeDcl(inner)->tag == PtrTag)
-            return 1;
-        node = inner;
-    }
 }
 
 // Does the release genlReleaseOwning makes of a value -- each owning reference
@@ -3573,8 +3549,6 @@ static void genlStoreTo(GenState *gen, INode *lval, LLVMValueRef lvalptr, LLVMVa
     // unless the target held none (genlStoreHeld)
     int owning = flowIsOwningType(lvaltype);
     if (genlStoreHeld(lval) && (owning || itypeNeedsFinal(lvaltype))) {
-        if (!owning && genlStoreThroughPtr(lval) && getenv("CONE_TRACE963"))
-            fprintf(stderr, "TRACE963 %s:%u\n", lval->lexer && lval->lexer->url ? lval->lexer->url : "?", lval->linenbr);
         VarDclNode *flagvar = NULL;
         if (lval->flags & FlagDropTest)
             flagvar = isNameUseNode(lval) && isExpNode(lval)

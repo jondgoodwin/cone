@@ -468,6 +468,9 @@ file adds to the scalar's lowering:
   are ORed, and one branch goes to `genlPanic` (`PanicDivide`, which `cone_panicDivide` in `packages/conestd/panic.cone`
   reports with the line) before the `udiv`/`sdiv`/`urem`/`srem`. On four `i32` lanes that is about eight
   instructions and one branch (`vector_genllvm`), against four `idiv`s that each cost more.
+- **A scalar integer's `/` and `%` are checked the same way** (`genlScalarDivideCheck`, in `genlFnCallInternal`):
+  zero, and signed the minimum by -1, go to `PanicDivide` before the `udiv`/`sdiv`/`urem`/`srem`; a constant divisor
+  that is neither zero nor (signed) -1 is not checked. A float's is not.
 - **A shift is defined past the width,** lane by lane, as a scalar's is (`genlVectorShift`).
 - **Reductions are LLVM's vector reductions,** called by name with the vector's type (`llvm.vector.reduce.add`,
   `.fadd` started at -0.0, `.fmul` from 1.0, `.smin`/`.umin`/`.fmin`, `.or` and `.and` for `any`
@@ -870,9 +873,9 @@ evaluated and before it is stored: an owning reference, or a tuple of owners
 only, through `genlReleaseOwning`, as always; anything else with a death dies
 in place (`genlFinalizeAt`). Not where flow found the target held nothing
 (`FlagFirstAssign` on a variable, `FlagPartNoPrior` on a part of a local's own
-value), and not a finalizing value reached through a raw pointer, which may be
-memory never given one (`genlStoreThroughPtr`; an owner there is released as it
-always was). A place reached through a reference always holds a value.
+value). A place reached through a raw pointer is taken to hold a value too, a
+finalizing one included (`mem.writeRaw` is the write for memory that holds none);
+so is a place reached through a reference.
 
 **Drop flags.** A variable flow gave `VarDropFlag` has an `i8` slot of its own,
 `<name>.held` (`genlDropFlagBegin`), stored where the variable begins: `1` at a
