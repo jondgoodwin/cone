@@ -85,7 +85,8 @@ that type, laid out and indexed (`a[i][j]`) as it is. The parser builds every
 Literal tokens map straight to constructors. `parseArrayLit` gathers
 comma-separated expressions, and **if a `;` follows, swaps** — what it gathered
 becomes `dimens` and a fresh list is gathered into `elems` — only so that name
-resolution can refuse `[n; x]` in both its meanings (below).
+resolution can refuse `[n; x]` in both its meanings (below). `[]` gathers nothing:
+the empty literal, both lists empty.
 
 A type literal is not built as one. A construction, `Point(1, 2)`, is the
 `FnCallNode` of a call, its `objfn` the type -- a name, a path, type arguments
@@ -118,7 +119,8 @@ naming `i32` or `f64` into a resolved one. A string literal's `vtype` is still
 `unknownType`, so this is a no-op for it.
 
 **`arrayNameRes` is the one retag site**: `ArrayTag` becomes `ArrayLitTag` when
-`elems[0]` is **not** a type node. Decided by the first element alone. `[n; x]`
+`elems[0]` is **not** a type node, and for `[]`, which has no first element.
+Decided by the first element alone. `[n; x]`
 is refused either way: with a type for x, `[3; i32]`, it is the old spelling of
 an array type (`ErrorArrayTypeOld`, naming `Array[T, n]`), and stays the
 `ArrayTag` it spells, so nothing after reports it again; with a value it is the
@@ -428,6 +430,10 @@ contents arrive already typed as the array (`contentsLowerArray`), the fill
 form among them, and are not checked again. Its fill-form arm is reached only
 by a fill literal a macro's or generic's clone refused, after the refusal:
 one constant dimension, forced to `usize`, and exactly one value.
+- **Empty form, `[]`** (`arrayLitTypeCheckEmpty`): typed only by its expected type, which must
+  be a one-dimension array of no elements; the element type is that type's. With no array type
+  expected it is refused (`ErrorBadArray`), as it is where the expected array holds some elements.
+  Where it is a call's argument checked before the callee is chosen, no type is expected yet.
 - **List form**: not empty; the elements settle on one type by folding, the same
   way an `if` folds its branches — the first successfully typed element sets the
   type in common, and each later one either matches it or meets it at a
