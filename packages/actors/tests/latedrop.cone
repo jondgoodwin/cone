@@ -1,0 +1,102 @@
+// A FINAL THAT RUNS OFF A WORKER, DURING AND AFTER THE STOP (Bug 106). The last handle of an actor is dropped by a
+// thread the runtime does not join, once the stop's gate has closed, so the actor's final (the 'actorDied' of
+// actors.cone) runs on that thread beside abandonParked and then, held until the stop has finished, after the
+// scheduler has been freed. The design lets a final run there ('isRunning' says a final that may run during or after
+// the stop takes its direct path), and nothing a final reaches is the scheduler's memory except through the stop's
+// gate. The debug build's check that no actor is dying as the parked records are abandoned counts the workers' finals
+// only, so this final does not trip it. What the test pins:
+//   - the program ends with no panic or crash, in debug and in release;
+//   - the final's send is refused at the gate, counted in stats().refused, and its delivery never made;
+//   - the final's state drops, after the stop, the last handle of a second actor, whose own final runs there too
+//     (an actorDied inside an actorDied, off every worker, after the scheduler is gone).
+
+mod latedrop;
+
+import stdio use *;
+import actors;
+import thread;
+import time use Duration;
+
+// Main sets it when finalAll has returned: the held final goes on only then
+let stopped: Atomic[u32];
+// How many finals have run to their end
+let finished: Atomic[u32];
+// How many finals began
+let begun: Atomic[u32];
+
+fn @initpure init() {
+  stopped = Atomic[u32].of(0u32);
+  finished = Atomic[u32].of(0u32);
+  begun = Atomic[u32].of(0u32);
+}
+
+actor Peer {
+  n: u64 = 0u64;
+
+  pub async fn hear(self, x: u64) {
+    n = n + x;
+  }
+
+  fn final(self: &uni) {
+    finished.add(1u32);
+  }
+}
+
+actor Sink {
+  peer: Option[Peer];
+
+  fn init(self: &new) {
+    *self = Self(None[Peer]);
+  }
+
+  pub async fn meet(self, p: Peer) {
+    peer = Some[Peer](p);
+  }
+
+  // Held until the stop is over (bounded: a failure must not hang), so it overlaps the stop's abandonParked and then
+  // runs beyond the freed scheduler
+  fn final(self: &uni) {
+    begun.add(1u32);
+    var waited = 0i64;
+    while stopped.load() == 0u32 && waited < 5000i64 {
+      thread.sleep(Duration.fromMillis(1i64));
+      waited = waited + 1i64;
+    }
+    // Refused at the gate (the stop is under way or over), never delivered
+    match peer {
+      case let Some(p) {p.hear(1u64);}
+      case is None[Peer] {}
+    }
+    finished.add(1u32);
+  }
+}
+
+// The thread the runtime does not join: it holds the only handle, and drops it once the gate has closed
+fn dropper(s: Sink) u32 {
+  while actors.isRunning() {
+    thread.yieldNow();
+  }
+  0u32
+}
+
+// A Sink holding the only handle of its Peer
+fn makeSink() Sink {
+  let s = Sink();
+  let p = Peer();
+  s.meet(p);
+  s
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let s = makeSink();
+  let t1 = thread.start(s, &dropper);
+  thread.sleep(Duration.fromMillis(20i64));
+  finalAll();
+  stopped.store(1u32);
+  print <- "stop done\n";
+  t1.join();
+  print <- "finals begun: ", begun.load(), ", finished: ", finished.load(), "\n";
+  print <- "final's send refused and counted: ", actors.stats().refused >= 1u64, "\n";
+}
