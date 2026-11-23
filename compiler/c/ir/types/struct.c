@@ -3525,8 +3525,26 @@ static int structTraitRequiresFields(StructNode *trait) {
     return 0;
 }
 
+// Do two traits require the same fields: the same count, names and types, in the
+// same order? Placeholders standing for other abstractions are not fields. Two
+// traits reaching one super-trait by different paths (a diamond) agree this way.
+static int structTraitFieldsSame(StructNode *a, StructNode *b) {
+    uint32_t ia = 0, ib = 0;
+    for (;;) {
+        while (ia < a->fields.used && (nodelistGet(&a->fields, ia)->flags & IsMixin)) ++ia;
+        while (ib < b->fields.used && (nodelistGet(&b->fields, ib)->flags & IsMixin)) ++ib;
+        if (ia >= a->fields.used || ib >= b->fields.used)
+            return ia >= a->fields.used && ib >= b->fields.used;
+        FieldDclNode *fa = (FieldDclNode*)nodelistGet(&a->fields, ia++);
+        FieldDclNode *fb = (FieldDclNode*)nodelistGet(&b->fields, ib++);
+        if (fa->namesym != fb->namesym || !itypeIsSame(fa->vtype, fb->vtype))
+            return 0;
+    }
+}
+
 // Verify that this type declares the fields the abstractions it is-a require, and
-// that no more than one of them requires any.
+// that no more than one of them requires any, unless the others require just what
+// the first does.
 //
 // A trait contributes no fields. What its fields state is a requirement, which the
 // type satisfies by declaring those fields itself -- the same names, the same
@@ -3570,6 +3588,8 @@ static void structCheckIsaFields(StructNode *node) {
             if (trait == base || structBaseGivesFields(trait))
                 continue;
             if (!structTraitRequiresFields(trait))
+                continue;
+            if (!enumlaid && base && structTraitFieldsSame(trait, base))
                 continue;
             if (enumlaid)
                 errorMsgNode((INode*)node, ErrorIsaMulti,
