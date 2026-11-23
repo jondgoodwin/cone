@@ -1962,6 +1962,72 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
 static void fnCallReadThroughRefs(FnCallNode *node);
 int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *objdereftype);
 
+// Does reading this expression do nothing but name a place: a variable, a
+// field or element of one, a dereference of one? The count of an array is its
+// type's, so '.len' never reads the array, and a receiver that runs code
+// ('make().items.len') would have that code silently dropped.
+static int fnCallIsQuietPlace(INode *node) {
+    switch (node->tag) {
+    case NameUseTag:
+    case ULitTag:
+    case FLitTag:
+    case StringLitTag:
+        return 1;
+    case DerefTag:
+        return fnCallIsQuietPlace(((StarNode*)node)->vtexp);
+    case BorrowTag:
+        return fnCallIsQuietPlace(((RefNode*)node)->vtexp);
+    case ArrayLitTag: {
+        ArrayNode *lit = (ArrayNode*)node;
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(lit->elems, cnt, elemp))
+            if (!fnCallIsQuietPlace(*elemp))
+                return 0;
+        return 1;
+    }
+    case FldAccessTag:
+        return fnCallIsQuietPlace(((FnCallNode*)node)->objfn);
+    case ArrIndexTag: {
+        FnCallNode *index = (FnCallNode*)node;
+        INode **argp;
+        uint32_t cnt;
+        if (!fnCallIsQuietPlace(index->objfn))
+            return 0;
+        if (index->args)
+            for (nodesFor(index->args, cnt, argp))
+                if (!fnCallIsQuietPlace(*argp))
+                    return 0;
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+// 'a.len' on an array: the count its type states, a 'usize' constant standing
+// where the call stood (nothing is read at run time). Answers 0, changing
+// nothing, where the call is not a '.len' of an array of one dimension's count.
+static int fnCallLowerArrayLen(FnCallNode **nodep, INode *arraytype) {
+    FnCallNode *node = *nodep;
+    if (node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != lenName
+        || (node->args != NULL && node->args->used > 0)
+        || (node->flags & (FlagIndex | FlagOperator | FlagBorrow | FlagRange))
+        || arraytype->tag != ArrayTag || ((ArrayNode*)arraytype)->dimens->used != 1)
+        return 0;
+    if (!fnCallIsQuietPlace(node->objfn)) {
+        errorMsgNode((INode*)node, ErrorBadArray,
+            "The length of an array is its type's, so '.len' reads no value, and this receiver runs code that would be dropped: name the array in a variable first.");
+        node->vtype = errorType;
+        return 1;
+    }
+    ULitNode *count = newULitNodeTC(arrayDim1(arraytype), (INode*)usizeType);
+    inodeLexCopy((INode*)count, (INode*)node);
+    *((INode**)nodep) = (INode*)count;
+    return 1;
+}
+
 // A method called on an array, a reference to one or a slice, lowered against
 // core's 'Array[T]' for its element type. Answers 0, changing nothing, where
 // the body has no such method.
@@ -6112,6 +6178,8 @@ dispatch:
             fnCallArrIndex(node);  // indexing or borrowed ref to index
         else if (fnCallIsValueCompare(opname) && fnCallArrayAsSlice(pstate, node))
             ;
+        else if (fnCallLowerArrayLen(nodep, objtype))
+            ;
         else if (fnCallLowerSliceMethod(pstate, node))
             ;
         else
@@ -6174,6 +6242,8 @@ dispatch:
                 }
                 else if (objdereftype->tag == PtrTag)
                     fnCallLowerPtrMethod(node, ptrType);
+                else if (objdereftype->tag == ArrayTag && fnCallLowerArrayLen(nodep, objdereftype))
+                    ;
                 else if (objdereftype->tag == ArrayTag && fnCallLowerSliceMethod(pstate, node))
                     ;
                 // A borrow of an owner ('self: &Uni[Node]', a method's receiver form) is
