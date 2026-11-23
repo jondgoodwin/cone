@@ -54,6 +54,7 @@ enum
     OPT_FILENAMES,
     OPT_CHECKTREE,
     OPT_REPORT_TRUST,
+    OPT_CHECK,
     OPT_SPANS,
     OPT_META_IR,
     OPT_META_STEPS,
@@ -112,6 +113,7 @@ static opt_arg_t args[] =
     { "files", '\0', OPT_ARG_NONE, OPT_FILENAMES },
     { "checktree", '\0', OPT_ARG_NONE, OPT_CHECKTREE },
     { "report-trust", '\0', OPT_ARG_NONE, OPT_REPORT_TRUST },
+    { "check", '\0', OPT_ARG_NONE, OPT_CHECK },
     { "spans", '\0', OPT_ARG_NONE, OPT_SPANS },
     { "meta-ir", '\0', OPT_ARG_NONE, OPT_META_IR },
     { "meta-steps", '\0', OPT_ARG_REQUIRED, OPT_META_STEPS },
@@ -200,6 +202,9 @@ static void usage()
         "    =columns      Defaults to the terminal width.\n"
         "  --immerr        Report errors immediately rather than deferring.\n"
         "  --checktree     Verify IR well-formedness.\n"
+        "  --check         Report every error a compile would, and write nothing:\n"
+        "                  analyse, generate in memory and verify, stop before\n"
+        "                  optimising and emitting. Linking is not covered.\n"
         "  --report-trust  After type checking, list the unconstrained operations; generates no code.\n"
         "  --spans         Print where each of the root module's declarations\n"
         "                  and each of its types' members starts and ends.\n"
@@ -475,6 +480,7 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_FILENAMES: opt->print_filenames = 1; break;
         case OPT_CHECKTREE: opt->check_tree = 1; break;
         case OPT_REPORT_TRUST: opt->report_trust = 1; break;
+        case OPT_CHECK: opt->check = 1; opt->verify = 1; break;
         case OPT_SPANS: opt->print_spans = 1; break;
         case OPT_META_IR: opt->print_meta = 1; break;
         case OPT_META_STEPS:
