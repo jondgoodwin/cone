@@ -174,7 +174,9 @@ literal can be malformed (lexer). `ErrorRadixDigit` is no digit after the prefix
 `0b_`), pointed at the prefix's letter, or a digit the radix does not have (`0b2`, `0o8`),
 pointed at that digit. `ErrorRadixFloat` is a fraction, an exponent or a float suffix on
 such a literal (`0b1.0`, `0o7e2`, `0b1f32`), pointed at the `.`, the `e` or `p`, or the
-`f`: the literal is a whole number. Each literal is reported once, and a reported one is
+`f`: the literal is a whole number. A decimal literal's `p` exponent (`1p3`) is the same
+code, said once at the `p`: `p` is a hexadecimal literal's exponent, a decimal one writes `e`.
+Each literal is reported once, and a reported one is
 read on as the integer 0 so nothing is said again about it. Hexadecimal is not held to
 these rules (`0x` is read as 0).
 
