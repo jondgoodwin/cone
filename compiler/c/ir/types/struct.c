@@ -1692,6 +1692,8 @@ static StructNode *structEnumCopyVariant(StructNode *node, StructNode *base, Str
 
 // Give a variant the tag value after 'prior's, or zero when it is the first.
 // Counting up from a negative value stays negative only until it reaches zero.
+// Counting past the largest 64-bit unsigned value would wrap to 0, a duplicate of
+// the first tag, so it is refused with ErrorTagWidth, as any tag that does not fit.
 void structTagFollow(StructNode *variant, StructNode *prior) {
     if (prior == NULL || prior->tagstate == TagUnassigned) {
         variant->tagnbr = 0;
@@ -1700,6 +1702,10 @@ void structTagFollow(StructNode *variant, StructNode *prior) {
     }
     variant->tagnbr = (int64_t)((uint64_t)prior->tagnbr + 1);
     variant->tagstate = prior->tagstate == TagNegative && variant->tagnbr < 0 ? TagNegative : TagNonNeg;
+    if (prior->tagstate == TagNonNeg && prior->tagnbr == -1)
+        errorMsgNode((INode*)variant, ErrorTagWidth,
+            "The tag value after %s would pass 18446744073709551615, the largest an enum tag holds, and wrap to 0.",
+            &prior->namesym->namestr);
 }
 
 // Do two variants hold the same tag value? Never, while either is unsettled.
