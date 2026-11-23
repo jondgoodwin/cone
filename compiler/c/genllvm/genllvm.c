@@ -635,7 +635,8 @@ void genlLinkage(LLVMValueRef global, INode *dclnode, GenlDefinition defined) {
     if (dclnode) {
         DclInfo *dclinfo = inodeGetDclInfo(dclnode);
         if (dclnode->tag == FnDclTag && (dclinfo->facts & DclSystemCC)) {
-            LLVMSetFunctionCallConv(global, LLVMX86StdcallCallConv);
+            if (genlSystemIsStdcall(LLVMGetTarget(LLVMGetGlobalParent(global))))
+                LLVMSetFunctionCallConv(global, LLVMX86StdcallCallConv);
             if (dclinfo->facts & DclExternal)
                 LLVMSetDLLStorageClass(global, LLVMDLLImportStorageClass);
         }
