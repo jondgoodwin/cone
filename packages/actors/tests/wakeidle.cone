@@ -1,0 +1,71 @@
+// actors.wakeIdle (aio's room flush, row 664) must not hold idle detection open. A thread calls wakeIdle every
+// 100 ms (ten wakes a second, aio's backstop rate) while main sends messages and waits: waitUntilIdle and
+// waitQuiet return with the wakes still ticking, a chain of sends is handled whole, and waitUntilIdleFor
+// answers true well inside its limit. Every woken worker finds no work and sleeps again, and the last one
+// to sleep is what wakes the waiter.
+
+mod wakeidle;
+
+import testing use *;
+import actors;
+import thread;
+import time use Duration, Instant;
+
+let chain: Atomic[u64];
+let ticking: Atomic[u32];
+let ticks: Atomic[u64];
+
+fn @initpure init() {
+  chain = Atomic[u64].of(0u64);
+  ticking = Atomic[u32].of(1u32);
+  ticks = Atomic[u64].of(0u64);
+}
+
+actor Chain {
+  pub async fn link(self, left: u64) {
+    chain.add(1u64);
+    if left > 0u64 {
+      selfactor.link(left - 1u64);
+    }
+  }
+}
+
+fn ticker(n: u32) u32 {
+  while ticking.load() != 0u32 {
+    actors.wakeIdle();
+    ticks.add(1u64);
+    thread.sleep(Duration.fromMillis(100i64));
+  }
+  0u32
+}
+
+fn main() i32 {
+  initAll();
+  let c = Chain();
+  c.link(50u64);
+  actors.waitUntilIdle();                       // the workers exist now and go to sleep
+  let t = thread.start(0u32, &ticker);
+  var round = 0u64;
+  while round < 6u64 {
+    c.link(100u64);
+    let t0 = Instant.now();
+    actors.waitUntilIdle();
+    expect((Instant.now() - t0).millis() < 2000i64, "waitUntilIdle returns with the wakes ticking");
+    expectUInt(chain.load(), 51u64 + 102u64 * round + 101u64, "the chain ran to its end before the wait returned");
+    thread.sleep(Duration.fromMillis(150i64));  // across a tick, the workers asleep
+    c.link(0u64);
+    actors.waitQuiet();
+    thread.sleep(Duration.fromMillis(100i64));
+    round = round + 1u64;
+  }
+  // a quiet runtime with the wakes ticking: the deadline form answers true, well inside its limit
+  let t1 = Instant.now();
+  let ok = actors.waitUntilIdleFor(Duration.fromMillis(5000i64));
+  expect(ok, "waitUntilIdleFor answers true with the wakes ticking");
+  expect((Instant.now() - t1).millis() < 2000i64, "...and soon");
+  ticking.store(0u32);
+  t.join();
+  expect(ticks.load() >= 6u64, "the wakes ticked meanwhile");
+  finalAll();
+  done()
+}
