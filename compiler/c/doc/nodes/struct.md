@@ -504,6 +504,15 @@ references or a pointer) keeps its exact reading, and lifetimes are
 `lifeSigMeets`' as before. `trait_method_variance` pins what is accepted and
 `trait_typecheck_method_variance` what is refused.
 
+**`Self` by value in an open trait's requirement** (`b: Self`, a by-value `self`,
+a result `Self`): `varDclSizeCheck` (`stmt/vardcl.c`) does not report it as a
+trait held by value (`ErrorNoSize`, 1069), because `Self` there stands for the
+type meeting the trait, which has a size; a default using it is cloned into each
+implementer. A closed trait (`HasTagField`, `SameSize`) and an enum keep their
+own reading. A virtual reference to such a trait is still refused where a struct
+is given as one, as for `&Self` (`trait_typecheck_self_by_value`;
+`trait_self_by_value` runs the rest).
+
 **One rule, spelled once** (`fnSigMeetKind` in `types/fnsig.c`; `fnSigVrefMeets`,
 `fnSigMeets` and `fnSigMeetsMethod` are its three forms by what stands first in the
 two signatures: a receiver in both, none, or in the implementation alone). Every
