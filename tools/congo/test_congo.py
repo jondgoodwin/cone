@@ -3150,7 +3150,7 @@ class GpuKernels(unittest.TestCase):
         run = self.congo("build", cwd=kern)
         self.assertIn(f"Compiling kern v0.1.0 for the GPU ({kern})", run.stdout)
         out = kern / "build" / "debug"
-        self.assertIn(f"Finished debug library object {Path('build/debug/kern.obj')} and"
+        self.assertIn(f"Finished debug library object {Path('build/debug/kern' + congo.OBJ_EXT)} and"
                       f" kernels {Path('build/debug/kern.spv')}", run.stdout)
         # One module, its kernel named as its function is; geomath, marked
         # but with no kernels of its own, has none built
@@ -3379,7 +3379,7 @@ class GpuFolder(unittest.TestCase):
         run = self.congo("build", cwd=shapes)
         self.assertIn(f"Compiling shapes v0.1.0 for the GPU ({shapes / 'gpu'})", run.stdout)
         out = shapes / "build" / "debug"
-        self.assertIn(f"Finished debug library object {Path('build/debug/shapes.obj')} and"
+        self.assertIn(f"Finished debug library object {Path('build/debug/shapes' + congo.OBJ_EXT)} and"
                       f" kernels {Path('build/debug/shapes.spv')}", run.stdout)
         self.assertEqual(entry_points(out / "shapes.spv"), ["scale"])
         # For the CPU, gpu/'s modules are in the package's one description,
@@ -3532,7 +3532,7 @@ class GpuFolder(unittest.TestCase):
         run = self.congo("build", cwd=lib)
         self.assertNotIn("for the GPU", run.stdout)
         self.assertFalse((lib / "build" / "debug" / "lib.spv").exists())
-        self.assertIn(f"Finished debug library object {Path('build/debug/lib.obj')}\n",
+        self.assertIn(f"Finished debug library object {Path('build/debug/lib' + congo.OBJ_EXT)}\n",
                       run.stdout)
         # Its imports are checked all the same
         write(lib / "gpu" / "maths" / "maths.cone", "mod maths;\n\nimport stdio;\n")
