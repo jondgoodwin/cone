@@ -506,6 +506,12 @@ char *nameType(char *bufp, INode *vtype) {
         ArrayNode *anode = (ArrayNode *)vtype;
         INode **nodesp;
         uint32_t cnt;
+        // An array type written with no size or no one element type was refused where it was
+        // checked (arrayTypeCheck); it has no element to spell
+        if (anode->dimens == NULL || anode->dimens->used == 0 || anode->elems == NULL || anode->elems->used != 1) {
+            *bufp++ = '?';
+            return bufp;
+        }
         for (nodesFor(anode->dimens, cnt, nodesp))
             *bufp++ = 'A';
         bufp = nameType(bufp, arrayElemType(vtype));
@@ -538,6 +544,14 @@ char *nameType(char *bufp, INode *vtype) {
         return nameType(bufp, fnsig->rettype);
     }
     default:
+        // A type already reported as bad (a parameter written '&' with no target) is spelled
+        // by a letter no type has, so naming what holds it, a signature's trait, carries on
+        // to the program's other errors. Nothing is generated from a program with errors, so
+        // the symbol is never emitted.
+        if (vtype == errorType && errors > 0) {
+            *bufp++ = '?';
+            return bufp;
+        }
         errorUnreachable(vtype, "a type the symbol speller has no case for");
         return bufp;
     }

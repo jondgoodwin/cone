@@ -1409,7 +1409,9 @@ static void supplyAddText(SupplyBuf *b, const char *src, size_t len) {
 static int supplyIsTrait(INode *entry, const char *name) {
     if (entry != NULL && entry->tag == FnCallTag)
         entry = ((FnCallNode*)entry)->objfn;
-    if (entry == NULL || entry->tag != NameUseTag)
+    // An entry the parser could not read as a name ('is [X]') is a name use with no name, which
+    // the parser has already reported
+    if (entry == NULL || entry->tag != NameUseTag || ((NameUseNode*)entry)->namesym == NULL)
         return 0;
     return strcmp(&((NameUseNode*)entry)->namesym->namestr, name) == 0;
 }
