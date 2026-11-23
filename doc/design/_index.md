@@ -305,6 +305,13 @@ line number** — and never a section number in another note; quote its heading
 instead. Both rot silently and nothing checks them. Each note states its
 provenance near the top: measured, or read from source.
 
+`test/notecheck.py` reads every note in `doc/design/` and `compiler/c/doc/` and
+runs with a whole-suite `python test/run.py`. It fails on a markdown link whose
+file or heading does not exist, and on a wiki-link (`[[...]]`) to a work item:
+the dependency runs one way, work item to design note. It also prints, for a
+human to read and never as a failure, each place a note seems to narrate its own
+history ("used to", "no longer", "has since", "now <verb>s"): the rule below.
+
 **Rationale is normative, not historical.** Explain a shape against what a
 reader would otherwise assume — the industry-standard alternative, the obvious
 simpler design, the intuition the name invites. Do not narrate what the project
