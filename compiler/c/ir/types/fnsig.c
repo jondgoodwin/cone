@@ -198,7 +198,70 @@ static int fnSigReqNamesEnumSelf(INode *req) {
     }
 }
 
+// The type parameters of the generic method being met and of the requirement it
+// is compared with, while fnSigGenericParms has them set (or NULL)
+static Nodes *implGenericParms = NULL;
+static Nodes *reqGenericParms = NULL;
+
+void fnSigGenericParms(Nodes *implparms, Nodes *reqparms) {
+    implGenericParms = implparms;
+    reqGenericParms = reqparms;
+}
+
+// The place among 'parms' of the type parameter that 'type' names, or -1. A
+// generic method's signature is not name resolved until an instance is made,
+// so the parameter is still a use of its name, which is what is matched
+static int fnSigGenericParmIndex(Nodes *parms, INode *type) {
+    INode **parmp;
+    uint32_t cnt;
+    int index = 0;
+    for (nodesFor(parms, cnt, parmp)) {
+        if (*parmp == type
+            || (isNameUseNode(type) && ((NameUseNode*)type)->namesym == ((GenVarDclNode*)*parmp)->namesym))
+            return index;
+        ++index;
+    }
+    return -1;
+}
+
+// Do two bound names mean the one trait? Each is a use of a name, perhaps not yet resolved
+static int fnSigBoundSame(INode *req, INode *impl) {
+    if (isNameUseNode(req) && isNameUseNode(impl))
+        return ((NameUseNode*)req)->namesym == ((NameUseNode*)impl)->namesym;
+    return itypeGetTypeDcl(req) == itypeGetTypeDcl(impl);
+}
+
+// A type parameter of the requirement is met by the implementation's parameter in
+// the same place, whatever each is called; their bounds must name the same traits
+static int fnSigGenericParmSame(INode *req, INode *impl, int *same) {
+    if (reqGenericParms == NULL || implGenericParms == NULL)
+        return 0;
+    INode *reqdcl = itypeGetTypeDcl(req);
+    int reqindex = fnSigGenericParmIndex(reqGenericParms, reqdcl);
+    if (reqindex < 0)
+        return 0;
+    INode *impldcl = itypeGetTypeDcl(impl);
+    *same = 0;
+    if (reqindex != fnSigGenericParmIndex(implGenericParms, impldcl))
+        return 1;
+    Nodes *reqannot = ((GenVarDclNode*)nodesGet(reqGenericParms, reqindex))->annot;
+    Nodes *implannot = ((GenVarDclNode*)nodesGet(implGenericParms, reqindex))->annot;
+    uint32_t reqcnt = reqannot ? reqannot->used : 0;
+    uint32_t implcnt = implannot ? implannot->used : 0;
+    if (reqcnt != implcnt)
+        return 1;
+    for (uint32_t i = 0; i < reqcnt; ++i) {
+        if (!fnSigBoundSame(nodesGet(reqannot, i), nodesGet(implannot, i)))
+            return 1;
+    }
+    *same = 1;
+    return 1;
+}
+
 static int fnSigReqTypeSame(INode *req, INode *impl, INode *selftype) {
+    int parmsame;
+    if (fnSigGenericParmSame(req, impl, &parmsame))
+        return parmsame;
     if (itypeIsSame(req, impl) && !(selftype && fnSigReqNamesEnumSelf(req)))
         return 1;
     if (selftype == NULL)

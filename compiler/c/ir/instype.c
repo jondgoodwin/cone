@@ -283,8 +283,18 @@ FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth, INode *se
             // signature is written in type parameters that are not types
             if (methnode->genericinfo && !matchmeth->genericinfo)
                 continue;
-            if (loose ? !fnSigVrefMeets((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype)
-                      : !fnSigVrefEqual((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype))
+            // Two generic methods meet where their type parameters agree by place
+            // and bound, names aside
+            int sameparms = methnode->genericinfo && matchmeth->genericinfo
+                && methnode->genericinfo->parms->used == matchmeth->genericinfo->parms->used;
+            if (methnode->genericinfo && matchmeth->genericinfo && !sameparms)
+                continue;
+            if (sameparms)
+                fnSigGenericParms(methnode->genericinfo->parms, matchmeth->genericinfo->parms);
+            int met = loose ? fnSigVrefMeets((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype)
+                            : fnSigVrefEqual((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype);
+            fnSigGenericParms(NULL, NULL);
+            if (!met)
                 continue;
             if (found)
                 return NULL;
