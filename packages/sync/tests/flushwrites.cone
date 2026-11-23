@@ -1,0 +1,121 @@
+// macOS's process-wide store barrier, cone_flushProcessWriteBuffers: the
+// heavy half of the asymmetric fence the single-sender channel sleeps on. It
+// must make every processor running a thread of this process drain its
+// stores, and what does that on macOS is the stop the kernel makes of each
+// running thread to read its registers. A barrier that stops no one still
+// runs, and the channels then fail only rarely, so this checks the stop
+// itself. On Windows and Linux the barrier is the system's own documented
+// call (FlushProcessWriteBuffers, membarrier), whose interruption may be
+// shorter than this can time; there the test skips.
+//
+// Workers spin reading the steady clock. A step between two reads of more
+// than 4 us is a time the worker did not run. Main flushes 400 times,
+// publishing each flush's start and end; a worker whose step overlaps the
+// flush counts itself in, once a flush. Nearly every flush must find every
+// worker in. Measured on an M2 (debug build): the register reads 396 of 400;
+// a barrier that does nothing, and the Linux page-protection fallback, which
+// on Apple silicon interrupts no one, 0 of 400. A step that has another cause
+// (a timer, being descheduled) only adds hits, which is why the test runs
+// alone (quiet) and the step it counts is long.
+//
+// Not a litmus test of stores and loads: one takes microseconds to flush, by
+// when a store not fenced at all has drained, so it passes a barrier that
+// does nothing but take time.
+
+mod flushwrites;
+
+import testing use *;
+import thread;
+import time use Duration;
+import collections use List;
+
+extern fn @c cone_flushProcessWriteBuffers();
+
+struct PosixClock {
+  sec: i64;
+  nsec: i64;
+}
+extern fn @c clock_gettime(clock: i32, ts: *PosixClock) i32;
+
+const flushes = 400u64;
+const gapNs = 4000u64;
+const clockMonotonic = 6i32;   // macOS's number for CLOCK_MONOTONIC
+
+let started: Atomic[u64];     // the flush under way, counted from 1
+let startNs: Atomic[u64];     // when it started
+let endedFlush: Atomic[u64];  // the last flush that has ended
+let endNs: Atomic[u64];       // when it ended
+let hits: Atomic[u64];        // workers stopped during the flush under way
+let running: Atomic[u64];     // workers spinning
+let stop: Atomic[u64];
+
+fn @initpure init() {
+  started = Atomic[u64].of(0u64);
+  startNs = Atomic[u64].of(0u64);
+  endedFlush = Atomic[u64].of(0u64);
+  endNs = Atomic[u64].of(0u64);
+  hits = Atomic[u64].of(0u64);
+  running = Atomic[u64].of(0u64);
+  stop = Atomic[u64].of(0u64);
+}
+
+fn nowNs() u64 {
+  var ts = PosixClock(0i64, 0i64);
+  clock_gettime(clockMonotonic, &mut ts as *PosixClock);
+  u64.from(ts.sec) * 1000000000u64 + u64.from(ts.nsec)
+}
+
+fn worker(n: u32) u64 {
+  running.add(1u64);
+  var counted = 0u64;          // the last flush this worker counted itself in
+  var last = nowNs();
+  while stop.load() == 0u64 {
+    let now = nowNs();
+    if now - last > gapNs {
+      // The flush under way, or the last one, if this step overlaps it
+      let k = started.load();
+      if k != counted && k != 0u64 && now >= startNs.load()
+          && (endedFlush.load() != k || last <= endNs.load()) {
+        counted = k;
+        hits.add(1u64);
+      }
+    }
+    last = now;
+  }
+  0u64
+}
+
+fn check() {
+  // One processor is main's; at least two workers, so that a barrier that
+  // stops only one thread is still caught
+  let cpus = u64.from(thread.parallelism());
+  let workers = if cpus > 8u64 {7u64} else if cpus > 3u64 {cpus - 1u64} else {2u64};
+  var ts = List[thread.Thread[u64]]();
+  var w = 0u64;
+  while w < workers { ts.push(thread.start[u32, u64](0u32, &worker)); w = w + 1u64; }
+  while running.load() < workers { thread.sleep(Duration.fromMillis(1)); }
+  thread.sleep(Duration.fromMillis(20));
+
+  var every = 0u64;
+  var k = 1u64;
+  while k <= flushes {
+    hits.store(0u64);
+    startNs.store(nowNs());
+    started.store(k);
+    cone_flushProcessWriteBuffers();
+    endNs.store(nowNs());
+    endedFlush.store(k);
+    // Long enough for each stopped worker to have run again and counted
+    thread.sleep(Duration.fromMicros(500));
+    if hits.load() >= workers { every = every + 1u64; }
+    k = k + 1u64;
+  }
+  stop.store(1u64);
+  while ts.len() > 0usize { ts.pop().unwrap().join(); }
+  expect(every * 10u64 >= flushes * 9u64, "every worker was stopped during nine flushes in ten or more");
+}
+
+fn main() i32 {
+  initAll();
+  #if #os == .macos {check(); done()} #else {skip("the barrier checked is macOS's")}
+}
