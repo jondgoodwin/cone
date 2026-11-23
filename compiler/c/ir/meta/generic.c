@@ -414,6 +414,23 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
         }
         return genericInferType(inferredgencall, genparms, arrayElemType(parmtype), arrayElemType(argtype));
     }
+    case VectorTag: {
+        // A vector type, 'Vector[f32, N]', matches a vector the same way an array
+        // does: a value parameter used as its lane count takes the argument's
+        // count, and its lane type is matched in turn
+        if (argtype->tag != VectorTag)
+            return 1;
+        VectorNode *parmvec = (VectorNode *)parmtype;
+        VectorNode *argvec = (VectorNode *)argtype;
+        if (parmvec->dimens->used == 1 && argvec->dimens->used == 1) {
+            GenVarDclNode *sizeparm = genericValueParmOf(nodesGet(parmvec->dimens, 0));
+            INode *size = nodesGet(argvec->dimens, 0);
+            if (sizeparm && size->tag == ULitTag
+                && genericCaptureValue(inferredgencall, genparms, sizeparm, ((ULitNode*)size)->uintlit) == 0)
+                return 0;
+        }
+        return genericInferType(inferredgencall, genparms, nodesGet(parmvec->elems, 0), nodesGet(argvec->elems, 0));
+    }
     case TTupleTag:
     case VTupleTag: {
         // A tuple type, '(P, P)', matches a tuple of as many elements, element by
