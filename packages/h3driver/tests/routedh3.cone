@@ -1,0 +1,431 @@
+// HTTP/3 through the routed server (stage 5, row Q5): a routed server given 'offerHttp3' owns the UDP endpoint on its TCP
+// port, and an HTTP/3 request reaches the program's handler, and its response goes back, through the same handler half
+// ConnActor uses for HTTP/1.1 and HTTP/2 (actorhttp's serverexchanges.cone), each stream's handler an actor of its own. The
+// package's own client, with prior knowledge of the origin (so the first request goes over HTTP/3), against the tls
+// package's test certificates. Checked: a whole response; a request body gathered by the server; a streamed response of
+// three writes (xStart, xWrite, xFinish); a handler that drops its Exchange (500); six requests on the one
+// connection to a route whose factory counts the handlers it makes (six: a handler actor for each stream, not one for the
+// connection as HTTP/1.1 has); with
+// ServerConfig.streamBodies, a request body read in pieces and read whole (and one past its limit: 413); an Alt-Svc on a
+// TCP response; the server closed, its endpoint and its connection actors freed.
+
+mod routedh3;
+
+import stdio use *;
+import libc;
+import thread;
+import fs;
+import path use Path;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Response, Request;
+import tls;
+import actors;
+import aio;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
+import h3driver;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+fn versionName(v: Version) &str {
+  if v == Version.Http3 {"HTTP/3"}
+  else if v == Version.Http2 {"HTTP/2"}
+  else if v == Version.Http11 {"HTTP/1.1"}
+  else {"other"}
+}
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// A client that trusts the test root; with the HTTP/3 plug-in and prior knowledge of 'prior' (0: none, TCP only)
+fn trusting(prior: u16) HttpClient {
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  if prior != 0u16 {
+    cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
+    cfg.http3Origins.push(url(prior, ""));
+  }
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
+}
+
+// ---------------------------------------------------------------------------
+// The server's handlers
+// ---------------------------------------------------------------------------
+
+actor Hello is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.text(200u16, "hello over a stream actor");
+  }
+}
+
+fn makeHello() HttpHandler {
+  let h = Hello();
+  let r: HttpHandler = h;
+  r
+}
+
+// Counts the handlers made, and answers with the count so far
+let made: Atomic[u64];
+
+fn @initpure init() {
+  made = Atomic[u64].of(0u64);
+}
+
+actor Counted is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: made.add(1u64) + 1u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    var t = String.from("handler ");
+    t.appendUInt(n);
+    ex.text(200u16, t.view());
+  }
+}
+
+fn makeCounted() HttpHandler {
+  let h = Counted();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Echo is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    var t = String.from(ex.request.methodName());
+    t.append("|");
+    t.append(ex.request.body.view());
+    ex.text(200u16, t.view());
+  }
+}
+
+fn makeEcho() HttpHandler {
+  let h = Echo();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Streamer is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+    let a = await ex.write(String.from("one "));
+    let b = await ex.write(String.from("two "));
+    let c = await ex.write(String.from("three"));
+    let f = await ex.finish();
+  }
+}
+
+fn makeStreamer() HttpHandler {
+  let h = Streamer();
+  let r: HttpHandler = h;
+  r
+}
+
+// Answers nothing: its Exchange is dropped
+actor Dropper is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    let wasted = 1u32;
+  }
+}
+
+fn makeDropper() HttpHandler {
+  let h = Dropper();
+  let r: HttpHandler = h;
+  r
+}
+
+// The byte at position i of the test's bodies
+fn byteAt(i: usize) u8 {u8.from(i % 251usize)}
+
+fn makeBody(n: usize) String {
+  var b = String.withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    b.appendByte(byteAt(i));
+    i = i + 1usize;
+  }
+  b
+}
+
+// Reads the body piece by piece, checks every byte, answers with the count
+actor Reader is HttpHandler {
+  nap: bool;
+
+  fn init(self: &new) {*self = Self(nap: false);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    var body = ex.body();
+    var total = 0usize;
+    var pieces = 0usize;
+    var bad = 0usize;
+    while true {
+      let r = await body.read();
+      match r {
+        case let Ok(p) {
+          match p {
+            case let Some(s) {
+              var k = 0usize;
+              let v = s.view() as &Array[u8];
+              while k < v.len {
+                if v[k] != byteAt(total + k) {bad = bad + 1usize;}
+                k = k + 1usize;
+              }
+              total = total + s.len();
+              pieces = pieces + 1usize;
+            }
+            else {break;}
+          }
+        }
+        case let Err(e) {
+          ex.text(500u16, "read failed");
+          return;
+        }
+      }
+    }
+    var t = String.from("read ");
+    t.appendUInt(u64.from(total));
+    t.append(" bytes, bad ");
+    t.appendUInt(u64.from(bad));
+    t.append(if pieces > 1usize {", in pieces"} else {", in one piece or none"});
+    ex.text(200u16, t.view());
+  }
+}
+
+fn makeReader() HttpHandler {
+  let h = Reader();
+  let r: HttpHandler = h;
+  r
+}
+
+// Reads the whole body, up to 1,000 bytes
+actor Whole is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    var body = ex.body();
+    let r = await body.readAll(1000usize);
+    match r {
+      case let Ok(s) {
+        var t = String.from("whole ");
+        t.appendUInt(u64.from(s.len()));
+        ex.text(200u16, t.view());
+      }
+      case let Err(e) {
+        // e.isTooLarge(): the server has answered 413 itself
+      }
+    }
+  }
+}
+
+fn makeWhole() HttpHandler {
+  let h = Whole();
+  let r: HttpHandler = h;
+  r
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+
+  pub async fn waitClosed(self, var done: OneshotSender[u64]) {
+    let closed = await server.closed();
+    done.send(if closed {1u64} else {0u64});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client's side
+// ---------------------------------------------------------------------------
+
+fn show(what: &str, r: &Result[Response, FetchError]) {
+  printStr(what);
+  printStr(": ");
+  match r {
+    case let &Ok(ok) {
+      printUInt(u64.from(ok.status));
+      printStr(" ");
+      printStr(versionName(ok.version));
+      printStr(" ");
+      printStr(ok.body.view());
+      printStr("\n");
+    }
+    case let &Err(e) {printStr("failed: "); print <- e; printStr("\n");}
+  }
+}
+
+actor Prober {
+  client: HttpClient;
+  bodyClient: HttpClient;
+  tcp: HttpClient;
+
+  pub async fn run(self, port: u16, bodyPort: u16, var done: OneshotSender[u64]) {
+    show("hello", &(await client.get(url(port, "/hello").view())));
+    var post = Request.get(url(port, "/echo").view());
+    post.method = Method.Post;
+    post.body = String.from("body text");
+    show("echo", &(await client.send(post)));
+    show("stream", &(await client.get(url(port, "/stream").view())));
+    show("dropped", &(await client.get(url(port, "/drop").view())));
+    show("no route", &(await client.get(url(port, "/nowhere").view())));
+    var k = 0u32;
+    while k < 6u32 {
+      show("count", &(await client.get(url(port, "/count").view())));
+      k = k + 1u32;
+    }
+    // the request body read by the handler: in pieces, whole, and past its limit
+    var big = Request.get(url(bodyPort, "/read").view());
+    big.method = Method.Post;
+    big.body = makeBody(100000usize);
+    show("read in pieces", &(await bodyClient.send(big)));
+    var small = Request.get(url(bodyPort, "/whole").view());
+    small.method = Method.Post;
+    small.body = String.from("12345");
+    show("read whole", &(await bodyClient.send(small)));
+    var over = Request.get(url(bodyPort, "/whole").view());
+    over.method = Method.Post;
+    over.body = makeBody(5000usize);
+    let o = await bodyClient.send(over);
+    printStr("read past its limit: ");
+    match &o {
+      case let &Ok(ok) {printUInt(u64.from(ok.status)); printStr(" "); printStr(versionName(ok.version)); printStr("\n");}
+      case let &Err(e) {printStr("failed: "); print <- e; printStr("\n");}
+    }
+    // a TCP response carries the Alt-Svc of the endpoint beside it
+    let t = await tcp.get(url(port, "/hello").view());
+    match &t {
+      case let &Ok(ok) {
+        var want = String.from("h3=\":");
+        want.appendUInt(u64.from(port));
+        want.append("\"; ma=86400");
+        printStr("a TCP response: ");
+        printUInt(u64.from(ok.status));
+        printStr(" ");
+        printStr(versionName(ok.version));
+        printStr(", Alt-Svc says h3 on this port: ");
+        match ok.headers.get("Alt-Svc") {
+          case let Some(a) {printStr(yes(a == want.view()));}
+          else {printStr("NO (none)");}
+        }
+        printStr("\n");
+      }
+      case let &Err(e) {printStr("a TCP request failed: "); print <- e; printStr("\n");}
+    }
+    done.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  let router = HttpRoutes.make().handle("", "/hello", &makeHello).handle("", "/count", &makeCounted)
+    .handle("", "/echo", &makeEcho).handle("", "/stream", &makeStreamer).handle("", "/drop", &makeDropper);
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2()
+    .offerHttp3(&h3driver.plugin).routes(router), ptx.clone());
+  let port = prx.recv() || 0u16;
+  let readRoutes = HttpRoutes.make().handle("", "/read", &makeReader).handle("", "/whole", &makeWhole);
+  let bodies = Acceptor(Server.none());
+  bodies.open(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp3(&h3driver.plugin)
+    .streamBodies().routes(readRoutes), ptx.clone());
+  let bodyPort = prx.recv() || 0u16;
+  let client = trusting(port);
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let p = Prober(client.clone(), trusting(bodyPort), trusting(0u16));
+    p.run(port, bodyPort, tx);
+    rx.recv();
+  }
+  printStr("six requests, handler actors made: ");
+  printUInt(made.load());
+  printStr("\n");
+  printStr("endpoint actors up, one for each server: ");
+  printUInt(actorhttp.liveH3EndpointActors());
+  printStr("\n");
+  acceptor.stop();
+  bodies.stop();
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    acceptor.waitClosed(tx);
+    var tx2: OneshotSender[u64];
+    var rx2: OneshotReceiver[u64];
+    tx2, rx2 = Oneshot[u64].make();
+    bodies.waitClosed(tx2);
+    printStr("both closed: ");
+    printStr(yes((rx.recv() || 0u64) == 1u64 && (rx2.recv() || 0u64) == 1u64));
+    printStr("\n");
+  }
+  var waited = 0u32;
+  while (actorhttp.liveConnActors() > 0u64 || actorhttp.liveH3ConnActors() > 0u64 || actorhttp.liveH3EndpointActors() > 0u64)
+      && waited < 500u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
+  printStr("connection actors freed: ");
+  printStr(yes(actorhttp.liveConnActors() == 0u64 && actorhttp.liveH3ConnActors() == 0u64));
+  printStr("\n");
+  printStr("endpoint actors freed: ");
+  printStr(yes(actorhttp.liveH3EndpointActors() == 0u64));
+  printStr("\n");
+  finalAll();
+  0
+}
