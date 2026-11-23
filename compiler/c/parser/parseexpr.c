@@ -923,6 +923,13 @@ INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
     if (lexIsToken(LParenToken))
         return parseFieldList(parse, node);
 
+    // '.[i]': the element of 'this', as 'this[i]' (a '[' suffix of the node
+    // returned, which the caller goes on to read). Only 'this' has this
+    // short form
+    if (lexIsToken(LBracketToken) && node->tag == NameUseTag
+        && ((NameUseNode*)node)->namesym == thisName)
+        return node;
+
     // Get field/method name. 'await' is a keyword, but no expression follows a
     // '.', so it may name the convention method a type is awaited by (ir/exp/await.c)
     if (lexIsToken(IdentToken) || lexIsToken(AwaitToken))

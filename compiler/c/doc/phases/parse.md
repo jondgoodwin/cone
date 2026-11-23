@@ -824,7 +824,9 @@ from an integer one, so the step is a call of a private name that type check fin
 ([block](../nodes/block.md), `eachRangeStepLower`). The comparison forms the range was once
 written in, `a < b`, are refused, `ErrorEachCompare`, and `...` is refused,
 `ErrorRangeEllipsis`. `with e {…}` becomes a block with a `this` declaration
-first. Prefix `.f` becomes `this.f`. Unary minus on
+first. Prefix `.f` becomes `this.f`, and prefix `.[i]` becomes `this[i]` (`parseDotCall` returns
+`this` where a `[` follows the `.`, and the suffix loop reads the index; after any other
+name that `.[` is still `ErrorNoMbr`). Unary minus on
 a literal is constant-folded in place, and an integer literal records it
 (`FlagLitNeg`), because its range check needs the digits written
 ([literals](../nodes/literals.md)).

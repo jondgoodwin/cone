@@ -2366,12 +2366,13 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     // A comparison whose '==' (or ordering) takes its other operand by '&' lends it:
     // 'a == b' is '&a == &b' for a type that wrote its comparison against '&Self'
     // (the receiver was lent just above). Read-only, where the operand lies; a
-    // temporary lasts to the end of its statement. Only the comparison operators,
+    // temporary lasts to the end of its statement. Only the comparison operators
+    // ('==', '<', '<=', '>', '>=' and the three-way '<=>'; '!=' is the opposite of '=='),
     // and only after the operands as written found no candidate, so a comparison
     // declared for values or written with its borrows is selected as before.
     if (selected == NULL && status == OverloadNone && (callnode->flags & FlagOperator)
         && (methsym == eqName || methsym == ltName || methsym == leName || methsym == gtName
-            || methsym == geName)
+            || methsym == geName || methsym == threeWayName)
         && callnode->args && callnode->args->used == 1 && isExpNode(nodesGet(callnode->args, 0))) {
         INode **argp = &nodesGet(callnode->args, 0);
         INode *arg = *argp;

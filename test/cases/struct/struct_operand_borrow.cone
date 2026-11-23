@@ -1,0 +1,49 @@
+// A comparison written against '&Self' finds its operands by borrowing them.
+//
+// '==', '<', '<=', '>', '>=' and '<=>' match a method whose receiver and other
+// operand are borrowed ('self: &, o: &H'), and borrow both operands as a method
+// call borrows its receiver, so a comparison never copies or moves what it
+// compares. '!=' is the opposite of '=='. The type below has a finalizer that
+// prints, so a comparison that copied an operand would print an extra "final";
+// the two printed at the end are the two values dying once each, 'b' before 'a'
+// (the reverse of their declaration).
+//
+// Checked by hand with a = 1 and b = 2:
+//   a == b 0, a != b 1, a < b 1, a <= b 1, a > b 0, a >= b 0, a <=> b -1 (1 - 2)
+//   The lines print: "011100-1", then "0" (a == b again, after the first round),
+//   then "end", then the finalizers.
+
+mod struct_operand_borrow;
+
+import stdio use *;
+
+struct H {
+  n: i32;
+  pub fn `==`(self: &, o: &H) bool { n == o.n }
+  pub fn `<`(self: &, o: &H) bool { n < o.n }
+  pub fn `<=`(self: &, o: &H) bool { n <= o.n }
+  pub fn `>`(self: &, o: &H) bool { n > o.n }
+  pub fn `>=`(self: &, o: &H) bool { n >= o.n }
+  pub fn cmp overload `<=>`(self: &, o: &H) i32 { n - o.n }
+  fn final(self: &uni) {
+    printStr("final ");
+    printInt(n);
+    printStr("\n");
+  }
+}
+
+fn main() i32 {
+  var a = H(1);
+  var b = H(2);
+  printInt(if a == b {1} else {0});
+  printInt(if a != b {1} else {0});
+  printInt(if a < b {1} else {0});
+  printInt(if a <= b {1} else {0});
+  printInt(if a > b {1} else {0});
+  printInt(if a >= b {1} else {0});
+  printInt(a <=> b);
+  printStr("\n");
+  printInt(if a == b {1} else {0});
+  printStr("\nend\n");
+  0
+}
