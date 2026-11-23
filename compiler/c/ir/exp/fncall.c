@@ -507,6 +507,25 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         }
     }
 
+    // Type arguments are given by position, 'id[i32](3)': a generic's parameters
+    // are not matched to names, so 'id[T: i32]' is refused here, once, rather than
+    // reaching type check as a value no type can be read from
+    if (node->args && (node->flags & FlagIndex) && node->methfld == NULL && isNameUseNode(node->objfn)) {
+        INode *genericdcl = nameUseGetDcl((NameUseNode*)node->objfn);
+        // A generic struct's brackets may be its literal, 'Pair[a: 1, b: 2.0]', so
+        // only a generic function's brackets are all type arguments
+        if (genericdcl && genericdcl->tag == FnDclTag && genericGetInfo(genericdcl) != NULL) {
+            for (nodesFor(node->args, cnt, argsp)) {
+                if ((*argsp)->tag != NamedValTag)
+                    continue;
+                errorMsgNode(*argsp, ErrorNamedArg,
+                    "Type arguments are not named; give the type, such as `id[i32](3)`. Only a struct's implicit init, such as `Point(x: 1)`, takes values by name.");
+                node->vtype = errorType;
+                return;
+            }
+        }
+    }
+
     // Name resolve arguments/statements
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
