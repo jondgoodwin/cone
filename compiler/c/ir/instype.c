@@ -170,7 +170,8 @@ FnDclNode *iNsTypeAmbiguous[2];
 // Find the one method candidate that accepts the call's receiver and arguments.
 // Every candidate is tested, using a viability test that never alters the call.
 // No candidate wins for being an exact rather than a coercible match, for needing
-// fewer coercions, or for being declared first: the caller resolves an ambiguity
+// fewer coercions, or for being declared first (the one exception, a plain value
+// wrapped into an Option, is iNsTypeFindMethod's): the caller resolves an ambiguity
 // by using a concrete name or by converting its arguments.
 static FnDclNode *iNsTypeFindMethodPass(INode *binding, INode **self, Nodes *args, enum OverloadMatch *status) {
     INode **candidatep;
