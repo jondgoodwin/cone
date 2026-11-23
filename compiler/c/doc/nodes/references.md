@@ -289,6 +289,14 @@ only `*` of a slice reference that `derefTypeCheck` types (as the array it point
 the reference's like any borrow's, so `&uni *s` of a `&mut` slice is `ErrorBadPerm`. Any
 other `*s` stays `ErrorNotPtr`.
 
+The same written forms on a virtual reference (borrowed or owning) reborrow it: `derefTypeCheck`
+types the `*v` named by the borrow (`derefSliceBorrowed`, so a bare `*v` is still `ErrorNotPtr`)
+as the trait, and `borrowTypeCheck` builds a `VirtRefTag` borrowed reference of the borrow's
+permission (`&*v` is read-only, as `&<Trait` is), keeping the markers. `iexpLvalInfo` reads the
+permission and lifetime through the virtual reference as through any reference, so a permission
+beyond it is `ErrorBadPerm`. Generation copies the (data, vtable) pair: no object place exists.
+This is the written form of what `borrowDerefOf` builds for an implicit reborrow or lend.
+
 
 In order: re-associate `&v[i]` into `(&v)[i]` when the operand is an index, so a
 type's own indexing method receives the borrowed receiver (`` `[]` `` for a plain
