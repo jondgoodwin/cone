@@ -594,7 +594,7 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
 
     StructNode *trait = (StructNode*)itypeGetTypeDcl(node->vtexp);
     if (trait->tag != StructTag || !(trait->flags & TraitType)) {
-        errorMsgNode((INode*)node, ErrorInvType, "A virtual reference must be to a trait.");
+        errorMsgNode((INode*)node, ErrorInvType, "A virtual reference must be to a trait: a plain struct has no vtable. Name a trait the type meets and refer to that.");
         return;
     }
 

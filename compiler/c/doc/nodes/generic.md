@@ -311,7 +311,9 @@ parameter's annotation and skipping to its `,` or `]`: a choice is written in a
 `where` clause [Jon 27 Sep].
 
 Attached by `parseFn` only in the named branch — so an anonymous function can
-never be generic — and by `parseStruct` after the type name. Nothing about the
+never be generic (a closure inside a generic function is cloned into each
+instance with it, so it names the function's `T` like any local:
+`generic_closure_names_param`) — and by `parseStruct` after the type name. Nothing about the
 symbol is decided here: it is spelled at generation, and the type arguments in
 its path are what tell one instance from another.
 
@@ -797,7 +799,7 @@ generic where it is declared.
 **An argument is a `ULitNode` of the parameter's type** (`genericValueArg`),
 built whole, so it is not a type and `isTypeNode` is false of it. It is written
 in the brackets, `dot[3](a, b)`, or inferred: `genericInferType` has an
-`ArrayTag` case that matches a parameter type's array against the argument's,
+`ArrayTag` case (and a `VectorTag` case, for `Vector[f32, N]`'s lane count) that matches a parameter type's array against the argument's,
 captures the number where the parameter's size is a use of a value parameter
 (`genericCaptureValue`; two sizes for one parameter are `ErrorGenValueClash`) and
 goes on into the element types, so nested arrays and a slice of arrays give a
