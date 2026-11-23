@@ -740,7 +740,17 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // Let's infer this value type from the lval we are borrowing from
     uint16_t tag;
     INode *refvtype;
-    if (node->tag == BorrowTag) {
+    RefNode *vreborrow = NULL;  // '&perm *v' of a virtual reference: a borrowed one over the same pair
+    if (node->tag == BorrowTag && !(node->flags & FlagSuffix) && node->vtexp->tag == DerefTag) {
+        INode *vt = iexpGetTypeDcl(((StarNode*)node->vtexp)->vtexp);
+        if (vt->tag == VirtRefTag)
+            vreborrow = (RefNode*)vt;
+    }
+    if (vreborrow) {
+        tag = VirtRefTag;
+        refvtype = lvaltype;
+    }
+    else if (node->tag == BorrowTag) {
         tag = RefTag;
         refvtype = lvaltype;
     }
@@ -759,7 +769,8 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // Ensure requested/inferred permission matches lval's permission
     INode *refperm = node->perm;
     if (refperm == unknownType) {
-        refperm = newPermUseNode(itypeIsConcrete(refvtype) || itypeLenBodyElem(refvtype) ? roPerm : opaqPerm);
+        // a virtual reference's trait is not concrete, but '&<Trait' is the read-only one
+        refperm = newPermUseNode(vreborrow || itypeIsConcrete(refvtype) || itypeLenBodyElem(refvtype) ? roPerm : opaqPerm);
         // Immutable's rule one: 'imm', where the place allows it. A place that
         // does not (a 'var' variable, a 'ro' borrow) keeps the ordinary default,
         // so that a borrow of what is already held stays possible
@@ -781,6 +792,8 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
 
     RefNode *reftype = newRefNodeFull(tag, (INode*)node, borrowRef, refperm, refvtype);
     reftype->scope = scope;
+    if (vreborrow)
+        reftype->marks = vreborrow->marks;
     node->vtype = (INode *)reftype;
     if (tag == RefTag && !refused)
         narrowBorrowed(lval, refperm, refvtype);
