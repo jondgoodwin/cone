@@ -77,7 +77,7 @@ rather than a leftover.
 | --- | --- | --- |
 | `--ir` | a Cone IR/AST dump, written to `<srcname>.ast` — `inodePrint` names it after the source compiled, not after the empty `init` pseudo-source the program node's own lexer points at | what a phase built or lowered a construct into |
 | `--llvmir` | **two** files, `<name>.preir` before optimization and `<name>.ir` after | what generation emitted. Read `.preir` — `.ir` has been through the optimizer (in a release build, LLVM's whole `default<O2>` pipeline) and no longer resembles the emission |
-| `--checktree` | nothing, unless it finds a hole | an expression node with no `vtype`, or a block with no statements. `test/run.py` passes it on every compile |
+| `--checktree` | nothing, unless it finds a hole | an expression node with no `vtype`, a block with no statements, or (in a program with no errors) a module function with no body that is not `extern`, or a literal and the like left with the unknown type. `test/run.py` passes it on every compile |
 | `--verify` | LLVM's own module verification | malformed IR — a phi with the wrong predecessors, a truncation of a pointer |
 | `--asm` | `.asm`/`.s`, or `.wat` under `--wasm` | the final instruction selection |
 
