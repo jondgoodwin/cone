@@ -366,8 +366,13 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     // does not return either
     int never = itypeIsNever(rettype);
     if (rettype->tag == VoidTag && !never) {
-        if (laststmt->tag != ReturnTag)
-            nodesAdd(&blk->stmts, (INode*)newReturnNodeExp((INode*)newNilLitNode()));
+        if (laststmt->tag != ReturnTag) {
+            // The injected 'return nil' stands where the body's last statement is, not where the
+            // lexer ended up, so a diagnostic about it points into the user's text
+            INode *nil = (INode*)newNilLitNode();
+            inodeLexCopy(nil, laststmt);
+            nodesAdd(&blk->stmts, (INode*)newReturnNodeExp(nil));
+        }
     }
     else {
         // Inject return in front of expression
