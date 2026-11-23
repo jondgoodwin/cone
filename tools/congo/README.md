@@ -23,6 +23,9 @@ congo run -D FAST -D N=2   a constant for #defined and #define
 congo build --no-cache     compile everything, whatever an earlier build left
 congo build --release --strip   no debug info, and no .pdb beside the .exe
 congo build --release --lto     optimise across the packages at link time (ThinLTO)
+congo layout               build the package and print each struct's size, alignment, field offsets and
+                           padding bytes (a struct padded by a quarter of its size or more is marked
+                           PADDED); it changes nothing, and `congo.py` has it, not yet the Cone port
 congo publish              point an index registry at this package's current commit
 ```
 

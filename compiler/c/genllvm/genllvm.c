@@ -1677,6 +1677,9 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     genlStitch(gen, 0);
     genlStitch(gen, 1);
 
+    if (gen->opt->layout)
+        genlLayoutReport(gen, pgm);
+
     if (gen->opt->debuginfo)
         LLVMDIBuilderFinalize(gen->dibuilder);
 }

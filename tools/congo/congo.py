@@ -149,6 +149,10 @@ DEFINES: list[str] = []
 # carries debug info, and a link on Windows writes a PDB beside the .exe
 STRIP_DEBUG = [False]
 
+# 'congo layout': conec is passed --layout for every compile of the build, and
+# prints each struct and enum's size, alignment, field offsets and padding
+LAYOUT = [False]
+
 # '--lto' given to build, run or test with --release: every native compile writes
 # ThinLTO bitcode (<name>.bc) in place of an object, and the link is preceded by
 # conec's ThinLTO link of them all, whose objects the linker takes. Into a build
@@ -2054,7 +2058,8 @@ def conec_command(command: list[str], lto: bool = False) -> list[str]:
     put after the compiler."""
     defines = [arg for define in DEFINES for arg in ("-D", define)]
     strip = ["--strip"] if STRIP_DEBUG[0] else []
-    return [command[0], *defines, *strip, *(["--lto"] if lto and LTO[0] else []), *command[1:]]
+    layout = ["--layout"] if LAYOUT[0] else []
+    return [command[0], *defines, *strip, *layout, *(["--lto"] if lto and LTO[0] else []), *command[1:]]
 
 
 def key_inputs(command: list[str], env: dict[str, str],
@@ -2810,6 +2815,17 @@ def cmd_new(args: argparse.Namespace) -> int:
 
 
 def cmd_build(args: argparse.Namespace) -> int:
+    build(current_package(), "release" if args.release else "debug")
+    return 0
+
+
+def cmd_layout(args: argparse.Namespace) -> int:
+    """Build this package with conec's --layout, which prints each struct and enum's
+    size, alignment, field offsets and padding bytes, marking a struct padded by a
+    quarter of its size or more PADDED. It changes nothing in what the build makes.
+    Every compile of the build prints its own, so nothing is taken from the cache."""
+    LAYOUT[0] = True
+    USE_CACHE[0] = False
     build(current_package(), "release" if args.release else "debug")
     return 0
 
@@ -4308,6 +4324,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                      help="a library package, whose include file its build generates")
     new.set_defaults(func=cmd_new)
     for name, func, text in (("build", cmd_build, "build this package"),
+                             ("layout", cmd_layout, "build this package and print its types' sizes,"
+                                                    " field offsets and padding"),
                              ("run", cmd_run, "build this package or a lone file, and run it")):
         p = sub.add_parser(name, help=text)
         p.add_argument("--release", action="store_true", help="an optimised build")

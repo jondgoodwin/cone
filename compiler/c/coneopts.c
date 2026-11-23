@@ -64,6 +64,7 @@ enum
     OPT_AWAIT_DIRECT,
     OPT_WARN_INDEX_STAR,
     OPT_WARN_UNUSED_VAR,
+    OPT_LAYOUT,
     OPT_PRIVATE_INSTANCES,
     OPT_NO_NOALIAS,
     OPT_LTO,
@@ -121,6 +122,7 @@ static opt_arg_t args[] =
     { "await-direct", '\0', OPT_ARG_NONE, OPT_AWAIT_DIRECT },
     { "warn-index-star", '\0', OPT_ARG_NONE, OPT_WARN_INDEX_STAR },
     { "warn-unused-var", '\0', OPT_ARG_NONE, OPT_WARN_UNUSED_VAR },
+    { "layout", '\0', OPT_ARG_NONE, OPT_LAYOUT },
     { "private-instances", '\0', OPT_ARG_REQUIRED, OPT_PRIVATE_INSTANCES },
     { "no-noalias", '\0', OPT_ARG_NONE, OPT_NO_NOALIAS },
     { "lto", '\0', OPT_ARG_NONE, OPT_LTO },
@@ -222,6 +224,9 @@ static void usage()
         "  --warn-unused-var\n"
         "                  Warn at each local 'let' or 'var' that nothing reads\n"
         "                  (a name starting with '_' is exempt).\n"
+        "  --layout        Print each struct and enum's size, alignment, field\n"
+        "                  offsets and padding bytes (a type padded by a quarter\n"
+        "                  of its size or more is marked PADDED), and change nothing.\n"
         "  --private-instances=n\n"
         "                  A release program (not a library) keeps to itself each\n"
         "                  generic instance function, so it can be inlined or\n"
@@ -483,6 +488,7 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_AWAIT_DIRECT: opt->await_direct = 1; break;
         case OPT_WARN_INDEX_STAR: opt->warn_index_star = 1; break;
         case OPT_WARN_UNUSED_VAR: opt->warn_unused_var = 1; break;
+        case OPT_LAYOUT: opt->layout = 1; break;
         case OPT_PRIVATE_INSTANCES:
             opt->privateinst = atoi(s.arg_val);
             if (opt->privateinst < 0)
