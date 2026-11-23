@@ -1,0 +1,180 @@
+// The actor client (actorhttp.HttpClient) over HTTP/3 keeps many requests in flight on its one connection, as it does over
+// HTTP/2 (row 693: H3Client.room() answered 1, so ClientExchanges began one request at a time and twenty GETs to a handler
+// that naps 200 ms took twenty naps). Twenty actors each GET once, through one HttpClient, from an actorhttp.Server whose
+// handler naps 200 ms. Checked:
+//   - every GET answered 200 over HTTP/3
+//   - the handlers overlapped: all twenty finish well inside ten naps (in one nap when nothing is held up; sequential would
+//     be twenty), so many were in flight on the connection at once. The bound is loose for a loaded machine.
+//   - the HTTP/2 pair (the same twenty, over HTTP/2) answers as well, as the control for the setup
+
+mod actorinflight;
+
+import stdio use *;
+import fs;
+import path use Path;
+import sync use Channel, Sender, Receiver;
+import collections use String;
+import iocore use SocketAddr;
+import time use Instant, Duration;
+import http use *;
+import tls;
+import actors;
+import aio;
+import httpclient;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange;
+import h3driver;
+import testing use *;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn url(port: u16) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u
+}
+
+fn trusting(port: u16, h3: bool) HttpClient {
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  if h3 {
+    cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
+    cfg.http3Origins.push(url(port));
+  }
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
+}
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let napped = await aio.sleep(Duration.fromMillis(200i64));
+    ex.text(200u16, "nap");
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+actor One {
+  client: HttpClient;
+
+  pub async fn run(self, u: String, want: Version, done: Sender[u64]) {
+    var good = 0u64;
+    let r = await client.get(u.view());
+    match &r {
+      case let &Ok(ok) {
+        if ok.status == 200u16 && ok.version == want {good = 1u64;}
+      }
+      else {}
+    }
+    done.send(good);
+  }
+}
+
+// twenty GETs at once through one client: how many answered right, and how long they took (milliseconds)
+fn twenty(client: &HttpClient, port: u16, want: Version) (u64, i64) {
+  var dtx: Sender[u64];
+  var drx: Receiver[u64];
+  dtx, drx = Channel[u64].make();
+  let t0 = Instant.now();
+  var w = 0u32;
+  while w < 20u32 {
+    let m = One(client.clone());
+    m.run(url(port), want, dtx.clone());
+    w = w + 1u32;
+  }
+  var good = 0u64;
+  w = 0u32;
+  while w < 20u32 {
+    good = good + (drx.recv() || 0u64);
+    w = w + 1u32;
+  }
+  (good, (Instant.now() - t0).nanos() / 1000000i64)
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  var h3ms = 0i64;
+  var h2ms = 0i64;
+  var h3good = 0u64;
+  var h2good = 0u64;
+  {
+    var scfg = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp3(&h3driver.plugin);
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(scfg, ptx.clone());
+    let port = prx.recv() || 0u16;
+    acceptor.serve();
+    expect(port != 0u16, "the server listens");
+    let client = trusting(port, true);
+    // the connection is made first (a GET that is not counted), so the twenty find it open
+    let warm = twenty(&client, port, Version.Http3);
+    h3good, h3ms = twenty(&client, port, Version.Http3);
+    acceptor.stop();
+  }
+  {
+    let scfg = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2();
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(scfg, ptx.clone());
+    let port = prx.recv() || 0u16;
+    acceptor.serve();
+    expect(port != 0u16, "the HTTP/2 server listens");
+    let client = trusting(port, false);
+    let warm = twenty(&client, port, Version.Http2);
+    h2good, h2ms = twenty(&client, port, Version.Http2);
+    acceptor.stop();
+  }
+  finalAll();
+  expectUInt(h3good, 20u64, "twenty GETs over HTTP/3: every one 200 over HTTP/3");
+  expect(h3ms < 2000i64, "...many in flight on the one connection: all twenty inside ten naps");
+  expectUInt(h2good, 20u64, "the HTTP/2 pair: every one 200 over HTTP/2");
+  expect(h2ms < 2000i64, "...and inside ten naps");
+  done()
+}
