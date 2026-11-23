@@ -1,0 +1,56 @@
+// A requirement of an open trait may take 'Self' by value, as a parameter or as
+// its result: 'Self' stands for the type meeting the trait, which has a size, so
+// the requirement is met by 'plus(self: &, b: V) V' on a type declaring 'is
+// Addable' and by the same method on a type that only fits it, and a default body
+// is checked in each implementer, where 'b' is that type held by value.
+// Reached: a requirement with a by-value parameter and result; a default using
+// the parameter by value; a call through a bound ('[T: Addable]'); a type that
+// only fits. Each printed value was checked by hand against the source.
+
+mod trait_self_by_value;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+trait Addable {
+  pub fn plus(self: &, b: Self) Self;
+  pub fn second(self: &, b: Self) Self { b }
+}
+
+struct V is Addable {
+  pub n: i64;
+  pub fn plus(self: &, b: V) V { V(n + b.n) }
+}
+
+struct W {
+  pub n: i64;
+  pub fn plus(self: &, b: W) W { W(n * b.n) }
+}
+
+// A by-value receiver and result
+trait Twice {
+  pub fn twice(self, b: Self) Self;
+}
+
+struct U is Twice {
+  pub n: i64;
+  pub fn twice(self, b: U) U { U(n * 2 + b.n) }
+}
+
+fn sum2[T: Addable](a: &T, b: T) T { a.plus(b) }
+
+fn main() {
+  let a = V(3);
+  show("direct", a.plus(V(4)).n);
+  show("default", a.second(V(9)).n);
+  show("bound", sum2(&a, V(10)).n);
+  let w = W(3);
+  show("fits", sum2(&w, W(5)).n);
+  show("receiver", U(4).twice(U(1)).n);
+}

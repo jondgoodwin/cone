@@ -296,8 +296,8 @@ owning elements each — and anything else with a death in place
 (a part of a local's own value) is present, and under `FlagDropTest` only when
 the variable's drop flag says the value is there. The lval need not be a
 variable: a field, an element, or a dereference releases what it held just the
-same; a finalizing value reached through a raw pointer does not, since the
-memory may never have held one. A flagged variable stored over whole has its
+same, through a raw pointer too: `*p = v` treats the slot as holding a live
+value, and `mem.writeRaw` is the write for memory that holds none (ruled 1 Nov). A flagged variable stored over whole has its
 flag set after the store.
 
 ## Hazards
