@@ -364,6 +364,12 @@ scenario checks a C-named function against the calling convention C really
 uses, in both directions (`module_c_byvalue`). With no C compiler the scenario
 is skipped, as a `run` scenario with no linker is.
 
+A scenario whose `options` name a `--triple` is skipped where this `conec`'s LLVM
+was built without that triple's back end: `conec` reports error 1002, "No
+available targets are compatible with triple", and the run is noted as such
+rather than failed (`module_c_byvalue_arm64_shape` needs AArch64). Any other
+error 1002 still fails.
+
 **The round trip** of a package's include file is the `include` key beside
 `link`. A linked package compiled as a library writes its include file,
 `<package>.cone`, beside its object; each golden file `include` names — named

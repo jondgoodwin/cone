@@ -2099,6 +2099,20 @@ def execute(cmd: list[str], cwd: Path, out_dir: Path, stem: str,
 
 PASS, FAIL, SKIP = "pass", "fail", "skip"
 
+# A '--triple' names a back end, and an LLVM is built with only some of them
+# (Windows' carries X86 and SPIR-V, not AArch64). conec then stops with error
+# 1002 before anything about the case is known, so the run is skipped, not
+# failed. Only this message is: any other 1002 stays a failure.
+NO_BACKEND = re.compile(r'Error 1002: Could not create target: No available targets '
+                        r'are compatible with triple "([^"]*)"')
+
+
+def missing_backend(stderr: str) -> str | None:
+    """The note for a skipped run when this conec's LLVM lacks the triple's
+    back end, else None."""
+    found = NO_BACKEND.search(stderr)
+    return f"this conec's LLVM has no back end for {found.group(1)}" if found else None
+
 # R3.8. An xfail case that fails is XFAIL, which is not a failure; one that
 # passes is XPASS, which is. Reporting XFAIL as pass would lose the distinction
 # the mark exists to make, and reporting XPASS as pass would let a fix land
@@ -2986,6 +3000,12 @@ class Runner:
             result.commands.append(quote(lib_cmd))
             built = execute(lib_cmd, REPO, out_dir, f"conec-{lib.stem}",
                             self.compile_timeout_for(scenario, spec), self.args.max_output)
+            absent = not built.killed and built.code != 0 and missing_backend(built.stderr)
+            if absent:
+                result.status = SKIP
+                result.note = absent
+                result.seconds = time.monotonic() - started
+                return result
             if built.killed or built.code != 0 or parse_diagnostics(built.stderr):
                 result.status = FAIL
                 result.problems.append(
@@ -3028,6 +3048,12 @@ class Runner:
         if compiled.killed:
             result.status = FAIL
             result.problems.append(f"compiler {compiled.killed}")
+            result.seconds = time.monotonic() - started
+            return result
+        absent = compiled.code != 0 and missing_backend(compiled.stderr)
+        if absent:
+            result.status = SKIP
+            result.note = absent
             result.seconds = time.monotonic() - started
             return result
 
