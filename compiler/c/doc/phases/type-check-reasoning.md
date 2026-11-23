@@ -173,8 +173,12 @@ for anything else.
    a named constant holding one, or a char any other way made, is a `char`. An
    unsuffixed integer literal is no `char` either (`litAdoptNumberType` leaves
    it, as it leaves `bool`).
-2. **Target is `bool`**: look for an `isTrue` method on the source type, or,
-   for a variant's value, its enum's (Option's and Result's take the whole enum).
+2. **Target is `bool`**: inside a condition only (`iexpInCondition`: the value of an `if` or
+   `while` condition, the operand of `!`), look for an `isTrue` method on the source type, or,
+   for a variant's value, its enum's (Option's and Result's take the whole enum). Outside a
+   condition the answer is `NoMatch` for every type, so a `bool` parameter no longer matches a
+   number or a user type in overload choice, and `iexpCoerce` reports a value whose type has an
+   `isTrue` as `ErrorTruthOutsideCondition` (1629) and builds the conversion anyway.
    This branch returns in both arms, so a `bool` target never reaches the two
    fallbacks below.
 3. **Source is an untyped integer literal** (`ULitTag` with `FlagUnkType`) and
