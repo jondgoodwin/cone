@@ -677,6 +677,10 @@ compares the virtual reference's vtable pointer with `Circle as Shape`'s
   build alike, and the linker keeps one copy; a build with no description is the
   program's only object, so its internal vtables have no second copy to disagree
   with.
+- **A literal's global may be merged with an equal one.** A string literal's global and a constant
+  array literal's are `unnamed_addr` (`genlAddr`, `StringLitTag` and `ArrayLitTag`), so a program may
+  not rely on two equal literals having different addresses, or one having the same address in two
+  places; a `const` is a value written out once per use, and a module `imm` table is the one copy.
 - **Two vtables never fold into one.** Neither carries `unnamed_addr`, so LLVM
   merges no two. The linker's identical-COMDAT folding (`link.exe`'s default
   `/OPT:ICF`, which Congo's release link gives explicitly as `/OPT:REF,ICF` because
@@ -2097,6 +2101,14 @@ layouts agree because both objects made the frame from the same text.
 Not tried: a GPU or WebAssembly target (a box is a C `malloc`).
 
 ## 7. Output, and what does not work
+
+`--check` reports what a compile would and writes nothing (`congo check` runs it on the package's own
+sources). It runs analysis, then generates the module in memory and verifies it (so `--verify` is on), and
+stops: before the optimiser and the emit on a native or WebAssembly target, where neither reports a user's
+error. A GPU target also runs its own pipeline and kernel checks (`genlGpuEntries`, `genlGpuAtomics`),
+since those refuse a kernel's slice or atomic, and stops before the emit. A library's include file is
+generated and self-checked but not written, and `ErrorIncWrite` still fires. Linking, which `conec` does not do,
+is not covered. Code that gains an error report after `genpgm`'s verify must also run under `--check`.
 
 `--llvmir` writes **two** files: `.preir` before the pass manager and `.ir`
 after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.

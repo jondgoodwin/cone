@@ -825,7 +825,11 @@ instance is then written through that name.
 
 **What an instance is cloned from is its generic's own declarations**, so what
 a clone is not built for is refused where the generic declares it,
-`ErrorGenModBody` (`modGenericCheckBody`): a module trait. One declared inside
+`ErrorGenModBody` (`modGenericCheckBody`): a module trait. The message names the
+outermost generic module the declaration is inside, the one the author wrote
+as generic, and adds the submodule where it is the submodule that holds it
+(`Generic module nested may not hold module trait Shape (in its submodule leaf)`).
+One declared inside
 a generic module would be each instance's own, as everything else it declares
 is, and a module conforming to it is outside the instance, with no spelling yet
 that names an instance's module trait (`is` takes one name, and an import of a

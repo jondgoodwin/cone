@@ -1604,6 +1604,32 @@ static StructNode *pwLentArg(FnCallNode *call, uint32_t i, INode **parmtype) {
     return (StructNode *)container;
 }
 
+// A reference handed to a free function by name, whose result may hold a borrow
+// of it ('pick(s)', 's' a '&mut' parameter or local): lent as '&mut *s' is, so
+// the result carries a loan of what 's' points at, the loan a store of the
+// result into that same value is refused by (loanSelfStore). Without it the
+// result carried only what 's' itself holds, and 's.cur = pick(s)' kept a
+// borrow of its own storage unseen (Bug 107). Sets 'parmtype' to the
+// parameter's type; 0 where the argument is not such a reference.
+static int pwLentByName(FnCallNode *call, uint32_t i, INode **parmtype) {
+    if ((call->flags & FlagLvalOp) || i >= 8)
+        return 0;
+    INode *arg = nodesGet(call->args, i);
+    if (!pwNamedVar(arg) || !pwIsBorrowed(iexpGetTypeDcl(arg)) || iexpGetTypeDcl(arg)->tag != RefTag)
+        return 0;
+    INode *fnn = call->objfn;
+    if (!isNameUseNode(fnn) || ((NameUseNode *)fnn)->dclnode == NULL || ((NameUseNode *)fnn)->dclnode->tag != FnDclTag)
+        return 0;
+    FnSigNode *callsig = (FnSigNode *)((FnDclNode *)((NameUseNode *)fnn)->dclnode)->vtype;
+    if (callsig == NULL || callsig->tag != FnSigTag || i >= callsig->parms->used)
+        return 0;
+    INode *argtype = iexpGetTypeDcl(nodesGet(callsig->parms, i));
+    if (argtype->tag != RefTag)
+        return 0;
+    *parmtype = argtype;
+    return 1;
+}
+
 // A holder's value dies -- at its scope's end, or stored over whole: if its
 // finalizer may read a borrow it holds, that is a use of the holder
 static void pwHolderDies(uint32_t var) {
@@ -3164,6 +3190,10 @@ static PathSet *pwCall(FnCallNode *call) {
             carried = pwLendRef(argsp, parmtype, 0, 0, &lentpl[argi], &lentloan[argi], &access);
             lentcnt[argi] = lentcont;
         }
+        else if (carries && !meth && pathLoans && pwLentByName(call, argi, &parmtype)) {
+            int access;
+            carried = pwLendRef(argsp, parmtype, 0, 0, &lentpl[argi], &lentloan[argi], &access);
+        }
         else {
             INode *savedvalue = pwArenaValue;
             pwArenaValue = NULL;
@@ -3254,7 +3284,7 @@ static PathSet *pwCall(FnCallNode *call) {
     // it was reached through is frozen while the result is used, and a change
     // through another name is asked of every call made meanwhile
     for (uint32_t i = 0; i < nargs && i < 8; ++i) {
-        if (lentloan[i]
+        if (lentloan[i] && lentcnt[i]
                 && pathSetHasLoan(pwArgCarriesTo(sig, i, rettype, argsets[i], globalonly), lentloan[i]))
             pwShapeLent(&lentpl[i], lentloan[i], (INode *)lentcnt[i], 1);
     }

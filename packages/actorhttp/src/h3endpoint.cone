@@ -52,8 +52,10 @@
 // the endpoint is told 'gone', the Timer stopped, the value dropped) and carries a guard so a test can see
 // it freed (liveH3ConnActors).
 //
-// UNTIL THE HANDLER HALF LANDS (row 637), every request a connection takes is answered 503 and its request
-// stream reset (STOP_SENDING), as a full server answers one.
+// THE HANDLER HALF. A connection of an endpoint a routed server owns (H3Serving) serves its requests through
+// serverexchanges.cone, the code ConnActor uses (the connection value is held through h3adapt.cone's adapter). An endpoint
+// a program starts itself (startH3Endpoint) has no routes: every request is answered 503 and its request stream reset
+// (STOP_SENDING), as a full server answers one.
 //
 // CLOSING. 'shutdown' stops admitting, asks every connection to shut down (HTTP/3's GOAWAY, then the close),
 // waits for them up to 'shutdownTimeout', cancels the group (which ends every connection's sends and Timer and
@@ -193,14 +195,15 @@ pub actor H3Endpoint {
   stopped: bool;
   idsDelayMs: i64;                  // a test's: each 'ids' takes effect this long after it arrives
   refused: H3EndpointStats;
+  serving: Option[H3Serving];       // the server that owns this endpoint (its routes serve the requests), or None
   guard: H3LiveGuard;
 
-  fn init(self: &new, acc: Arc[imm, Uni[httpclient.H3Acceptor]], cfg: H3EndpointConfig) {
+  fn init(self: &new, acc: Arc[imm, Uni[httpclient.H3Acceptor]], cfg: H3EndpointConfig, serving: Option[H3Serving]) {
     liveH3Endpoints.add(1u64);
     *self = Self(acc: acc, cfg: cfg, sock: UdpSocket.none(), bound: SocketAddr.localhost(0u16), group: CancelGroup.make(),
       slots: H3Slots(), table: H3Table(), byConn: H3ByConn(), byIp: H3ByIp(), handshaking: 0usize,
       tokens: i64.from(cfg.admitBurst) * 1000i64 * i64.from(cfg.admitRate), refilled: Instant.now().nanos(),
-      nextConn: 1u64, accepting: true, stopped: false, idsDelayMs: 0i64, refused: H3EndpointStats.none(),
+      nextConn: 1u64, accepting: true, stopped: false, idsDelayMs: 0i64, refused: H3EndpointStats.none(), serving: serving,
       guard: H3LiveGuard(false));
   }
 
@@ -224,7 +227,12 @@ pub actor H3Endpoint {
   // Stop admitting, close the connections (each says GOAWAY, then closes), wait up to the shutdown timeout for
   // them, cut what is left, and close the socket. Call it before the program ends
   pub async fn shutdown(self) {
-    if stopped {return;}
+    let z = await self.stopAll();
+  }
+
+  // 'shutdown', answered once the endpoint is closed (the server owning it waits for that)
+  async fn stopAll(self) bool {
+    if stopped {return true;}
     stopped = true;
     accepting = false;
     var i = 0usize;
@@ -238,6 +246,7 @@ pub actor H3Endpoint {
     }
     let c = group.cancel();
     sock = UdpSocket.none();
+    true
   }
 
   // ------------------------------------------------------------------
@@ -266,6 +275,30 @@ pub actor H3Endpoint {
     }
     tx.send(Ok[SocketAddr, IoError](bound));
     selfactor.receive();
+  }
+
+  // The server's opening of its endpoint: the same as 'open', answered as the call's value
+  async fn openAt(self, bind: SocketAddr) Result[SocketAddr, IoError] {
+    let made = await aio.bindUdp(bind);
+    match made {
+      case let Ok(ok) {sock = ok;}
+      case let Err(e) {return Err[SocketAddr, IoError](e);}
+    }
+    bound = bind;
+    let la = await sock.localAddr();
+    match &la {
+      case let &Ok(a) {bound = *a;}
+      else {}
+    }
+    selfactor.receive();
+    Ok[SocketAddr, IoError](bound)
+  }
+
+  fn servingCopy(self: &) Option[H3Serving] {
+    match &serving {
+      case let &Some(s) {Some[H3Serving](H3Serving(s.srv, s.args))}
+      else {None[H3Serving]}
+    }
   }
 
   // Receive datagrams until shutdown cancels the receive: the next and any already waiting (up to the batch), each
@@ -452,7 +485,7 @@ pub actor H3Endpoint {
     let id = nextConn;
     nextConn = nextConn + 1u64;
     let backlog = Arc[imm, Atomic[u32]](Atomic[u32].of(0u32));
-    let conn = H3ConnActor(id, selfactor, acc, bound, from, sock.sender(), group, backlog);
+    let conn = H3ConnActor(id, selfactor, acc, bound, from, sock.sender(), group, backlog, self.servingCopy());
     var keys = List[httpclient.H3Cid]();
     keys.push(key);
     let k = slots.len();
@@ -583,12 +616,12 @@ fn requireAWorker() {
 
 // An HTTP/3 endpoint on the UDP socket bound at 'bind' (port 0: the system chooses, and 'port' says which), its
 // connections made by 'acceptor' (the plug-in's: Http3.acceptor), under 'cfg's limits: the endpoint, or why the
-// socket could not be bound. Every connection answers its requests 503 until the handler half is built (the
-// server actor will make the endpoint itself). Call 'endpoint.shutdown()' before the program ends
+// socket could not be bound. Every connection answers its requests 503 (a routed server's server actor makes its own
+// endpoint, and its connections serve its routes). Call 'endpoint.shutdown()' before the program ends
 pub fn startH3Endpoint(bind: SocketAddr, acceptor: Uni[httpclient.H3Acceptor], cfg: H3EndpointConfig)
     Result[H3BoundEndpoint, IoError] {
   requireAWorker();
-  let ep = H3Endpoint(Arc[imm, Uni[httpclient.H3Acceptor]](acceptor), cfg);
+  let ep = H3Endpoint(Arc[imm, Uni[httpclient.H3Acceptor]](acceptor), cfg, None[H3Serving]);
   var tx: OneshotSender[Result[SocketAddr, IoError]];
   var rx: OneshotReceiver[Result[SocketAddr, IoError]];
   tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
@@ -605,7 +638,22 @@ pub fn startH3Endpoint(bind: SocketAddr, acceptor: Uni[httpclient.H3Acceptor], c
 // The datagrams a turn sends before it takes breath (and asks the value to finish its turn)
 const sendBurst = 64usize;
 
-actor H3ConnActor {
+// What a server owning an endpoint gives each connection: the server (its queue route and its end) and what it was
+// listened with (its routes and bounds)
+struct H3Serving {
+  srv: ServerActor;
+  args: Arc[imm, ListenArgs];
+}
+
+// A queue-route connection's number, apart from every TCP connection's the server numbers (their counter would need
+// 2^63 connections to reach it)
+const h3QueueBit = 0x8000000000000000u64;
+
+// The transport half of a QUIC server connection: datagrams in from the endpoint, the value's datagrams out, one Timer.
+// What a request is, its handler and its response is the handler half's (serverexchanges.cone, the same code as
+// ConnActor's), which this actor holds when a server owns the endpoint. An endpoint a program starts on its own
+// (startH3Endpoint) has no routes: its connections answer every request 503 and reset its stream
+actor H3ConnActor is ExchangeHost {
   id: u64;
   ep: Option[H3Endpoint];
   acc: Arc[imm, Uni[httpclient.H3Acceptor]];
@@ -614,7 +662,8 @@ actor H3ConnActor {
   tx: UdpSender;
   group: CancelGroup;
   backlog: Arc[imm, Atomic[u32]];     // datagrams the endpoint has sent and this actor has not taken
-  conn: Option[Uni[httpclient.H3ServerConn]];
+  conn: Option[H3ServerAdapter];      // the value (its Uni inside), made at 'begin'
+  hx: Option[ServerExchanges[H3ServerAdapter]];    // the handler half, when a server owns the endpoint
   tm: actors.Timer;
   driving: bool;                      // a drive is running (it awaits sends)
   again: bool;                        // input arrived while it ran: another round
@@ -624,19 +673,38 @@ actor H3ConnActor {
   guard: H3LiveGuard;
 
   fn init(self: &new, id: u64, ep: H3Endpoint, acc: Arc[imm, Uni[httpclient.H3Acceptor]], bound: SocketAddr,
-      peer: SocketAddr, tx: UdpSender, group: CancelGroup, backlog: Arc[imm, Atomic[u32]]) {
+      peer: SocketAddr, tx: UdpSender, group: CancelGroup, backlog: Arc[imm, Atomic[u32]], serving: Option[H3Serving]) {
     liveH3Conns.add(1u64);
+    var hx = None[ServerExchanges[H3ServerAdapter]];
+    match &serving {
+      case let &Some(s) {
+        hx = Some[ServerExchanges[H3ServerAdapter]](
+          ServerExchanges[H3ServerAdapter].make(id | h3QueueBit, s.srv, s.args, peer, true, true, String()));
+      }
+      else {}
+    }
     *self = Self(id: id, ep: Some[H3Endpoint](ep), acc: acc, bound: bound, peer: peer, tx: tx, group: group,
-      backlog: backlog, conn: None[Uni[httpclient.H3ServerConn]], tm: actors.Timer.within(&group), driving: false,
+      backlog: backlog, conn: None[H3ServerAdapter], hx: hx, tm: actors.Timer.within(&group), driving: false,
       again: false, told: false, ended: false, idsSent: unreadEpoch, guard: H3LiveGuard(true));
   }
 
+  // The value out of its place, for a call that needs it beside the handler half (and 'putConn' to give it back)
+  fn takeConn(self) Option[H3ServerAdapter] {
+    var held = None[H3ServerAdapter];
+    held <-> conn;
+    held
+  }
+
+  fn putConn(self, held: Option[H3ServerAdapter]) {
+    var h = held;
+    conn <-> h;
+  }
 
   // The connection's first message: its Initial, accepted here (the endpoint does no protocol work)
   pub async fn begin(self, first: IoBuf) {
     let now = Instant.now();
     match acc.accept(first.view(), bound, peer, now) {
-      case var Ok(c) {conn = Some[Uni[httpclient.H3ServerConn]](c);}
+      case var Ok(c) {conn = Some[H3ServerAdapter](H3ServerAdapter.make(c));}
       case let Err(f) {
         self.finishEnd(true);
         return;
@@ -651,26 +719,24 @@ actor H3ConnActor {
     let back = backlog.sub(1u32);
     if ended {return;}
     let now = Instant.now();
-    var held = None[Uni[httpclient.H3ServerConn]];
-    held <-> conn;
+    var held = self.takeConn();
     match &mut held {
-      case let &mut Some(c) {c.datagramIn(buf.view(), now);}
+      case let &mut Some(a) {a.conn.datagramIn(buf.view(), now);}
       else {}
     }
-    conn <-> held;
+    self.putConn(held);
     selfactor.drive();
   }
 
   // The endpoint is closing: GOAWAY, what is open finishes, then the close
   pub async fn closeDown(self) {
     if ended {return;}
-    var held = None[Uni[httpclient.H3ServerConn]];
-    held <-> conn;
+    var held = self.takeConn();
     match &mut held {
-      case let &mut Some(c) {c.shutdown();}
+      case let &mut Some(a) {a.shutdown();}
       else {}
     }
-    conn <-> held;
+    self.putConn(held);
     selfactor.drive();
   }
 
@@ -679,13 +745,12 @@ actor H3ConnActor {
   pub async fn timerLoop(self) {
     while await tm.next() {
       if ended {break;}
-      var held = None[Uni[httpclient.H3ServerConn]];
-      held <-> conn;
+      var held = self.takeConn();
       match &mut held {
-        case let &mut Some(c) {c.handleTimeout(Instant.now());}
+        case let &mut Some(a) {a.handleTimeout(Instant.now());}
         else {}
       }
-      conn <-> held;
+      self.putConn(held);
       selfactor.drive();
     }
     self.finishEnd(false);
@@ -714,53 +779,58 @@ actor H3ConnActor {
   }
 
   fn wantsTurn(self) bool {
-    var held = None[Uni[httpclient.H3ServerConn]];
-    held <-> conn;
+    var held = self.takeConn();
     var w = false;
     match &mut held {
-      case let &mut Some(c) {w = c.wantsTurn();}
+      case let &mut Some(a) {w = a.conn.wantsTurn();}
       else {}
     }
-    conn <-> held;
+    self.putConn(held);
     w
   }
 
-  // What the value says, acted on: every request is answered 503 and its request stream reset (until the handler
-  // half), body bytes are released, the end noted. True when there was an event
+  // What the value says, acted on: by the handler half when a server owns the endpoint; else every request is answered
+  // 503 and its request stream reset, body bytes are released, the end noted. True when there was an event
   fn events(self) bool {
     let now = Instant.now();
     var any = false;
-    var held = None[Uni[httpclient.H3ServerConn]];
-    held <-> conn;
+    var held = self.takeConn();
     match &mut held {
-      case let &mut Some(c) {
-        var going = true;
-        while going {
-          match c.next(now) {
-            case is Nothing {going = false;}
-            case let Request(q) {
-              any = true;
-              let stream = q.stream;
-              let head = c.response();
-              head.status = 503u16;
-              c.respond(stream, BodyLength.sized(0u64));
-              c.finish(stream);
-              let stopped = c.stopBody(stream);
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {any = h.events(a, selfactor, now);}
+          else {
+            // No routes: 'startH3Endpoint' (an endpoint no server owns) answers every request 503 and resets its stream.
+            // Only h3driver's tests use it; a routed server's endpoint serves through the handler half above
+            var going = true;
+            while going {
+              match a.next(now) {
+                case is Nothing {going = false;}
+                case let Request(q) {
+                  any = true;
+                  let stream = q.stream;
+                  let head = a.response();
+                  head.status = 503u16;
+                  a.respond(stream, BodyLength.sized(0u64));
+                  a.finish(stream);
+                  let stopped = a.stopBody(stream);
+                }
+                case let Data(d) {
+                  any = true;
+                  let st, bf = d.(stream, buf);
+                  a.release(st, bf.len());
+                }
+                case let End(e) {any = true;}
+                case let Reset(x) {any = true;}
+                case let Closed(x) {any = true;}
+              }
             }
-            case let Data(d) {
-              any = true;
-              let st, bf = d.(stream, buf);
-              c.release(st, bf.len());
-            }
-            case let End(e) {any = true;}
-            case let Reset(x) {any = true;}
-            case let Closed(x) {any = true;}
           }
         }
       }
       else {}
     }
-    conn <-> held;
+    self.putConn(held);
     any
   }
 
@@ -774,23 +844,22 @@ actor H3ConnActor {
       var out = None[IoBuf];
       var epoch = 0u64;
       var keys = List[httpclient.H3Cid]();
-      var held = None[Uni[httpclient.H3ServerConn]];
-      held <-> conn;
+      var held = self.takeConn();
       var present = false;
       match &mut held {
-        case let &mut Some(c) {
+        case let &mut Some(a) {
           present = true;
           if n >= sendBurst {
-            c.finishTurn(now);
+            a.conn.finishTurn(now);
           } else {
-            out = c.takeDatagram(now);
-            epoch = c.idsEpoch();
-            if epoch != idsSent {let made = c.ids(&mut keys);}
+            out = a.conn.takeDatagram(now);
+            epoch = a.conn.idsEpoch();
+            if epoch != idsSent {let made = a.conn.ids(&mut keys);}
           }
         }
         else {}
       }
-      conn <-> held;
+      self.putConn(held);
       if !present {break;}
       let Some(buf) = out else {break;};
       if epoch != idsSent {
@@ -817,17 +886,16 @@ actor H3ConnActor {
     var done = false;
     var open = false;
     var wake = None[Instant];
-    var held = None[Uni[httpclient.H3ServerConn]];
-    held <-> conn;
+    var held = self.takeConn();
     match &mut held {
-      case let &mut Some(c) {
-        done = c.done(now);
-        open = c.isOpen();
-        wake = c.pollTimeout();
+      case let &mut Some(a) {
+        done = a.done(now);
+        open = a.isOpen();
+        wake = a.pollTimeout();
       }
       else {}
     }
-    conn <-> held;
+    self.putConn(held);
     match wake {
       case let Some(t) {tm.set(t);}
       else {tm.clear();}
@@ -842,16 +910,228 @@ actor H3ConnActor {
     if done {self.finishEnd(false);}
   }
 
-  // The connection is over: the endpoint is told, the Timer stopped, the value dropped
+  // The connection is over: every stream is told, the server (if one owns the endpoint) and the endpoint are told, the
+  // Timer stopped, the value dropped
   fn finishEnd(self, acceptFailed: bool) {
     if ended {return;}
     ended = true;
     tm.stop();
-    conn = None[Uni[httpclient.H3ServerConn]];
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.clear(a, selfactor);}
+          else {}
+        }
+      }
+      else {}
+    }
+    held = None[H3ServerAdapter];
+    match &hx {
+      case let &Some(h) {h.srv.connEnded(h.id);}
+      else {}
+    }
+    hx = None[ServerExchanges[H3ServerAdapter]];
     match &ep {
       case let &Some(e) {e.gone(id, acceptFailed);}
       else {}
     }
     ep = None[H3Endpoint];
+  }
+
+  // ---- the Exchange's calls: the handler half's, then a drive
+
+  pub async fn xRespond(self, stream: u32, rid: u64, head: ResponseHead, body: String) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.xRespond(a, selfactor, stream, rid, head, body);}
+          else {}
+        }
+      }
+      else {}
+    }
+    self.putConn(held);
+    selfactor.drive();
+  }
+
+  pub async fn xStart(self, stream: u32, rid: u64, head: ResponseHead, framing: BodyLength) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.xStart(a, selfactor, stream, rid, head, framing);}
+          else {}
+        }
+      }
+      else {}
+    }
+    self.putConn(held);
+    selfactor.drive();
+  }
+
+  pub async fn xWrite(self, stream: u32, rid: u64, data: String, rp: actors.ReplyOf[Result[usize, ServerError]]) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.xWrite(a, selfactor, stream, rid, data, rp);}
+          else {rp.answer(Err[usize, ServerError](ServerError.closed()));}
+        }
+      }
+      else {rp.answer(Err[usize, ServerError](ServerError.closed()));}
+    }
+    self.putConn(held);
+    selfactor.drive();
+  }
+
+  pub async fn xFinish(self, stream: u32, rid: u64, rp: actors.ReplyOf[Result[u64, ServerError]]) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.xFinish(a, selfactor, stream, rid, rp);}
+          else {rp.answer(Err[u64, ServerError](ServerError.closed()));}
+        }
+      }
+      else {rp.answer(Err[u64, ServerError](ServerError.closed()));}
+    }
+    self.putConn(held);
+    selfactor.drive();
+  }
+
+  pub async fn xDrop(self, stream: u32, rid: u64, spare: RequestHead) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.xDrop(a, selfactor, stream, rid, spare);}
+          else {}
+        }
+      }
+      else {}
+    }
+    self.putConn(held);
+    selfactor.drive();
+  }
+
+  pub async fn xBodyRead(self, stream: u32, rid: u64, rp: actors.ReplyOf[Result[Option[String], BodyError]]) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.xBodyRead(a, selfactor, stream, rid, rp);}
+          else {rp.answer(Err[Option[String], BodyError](BodyError.cancelled()));}
+        }
+      }
+      else {rp.answer(Err[Option[String], BodyError](BodyError.cancelled()));}
+    }
+    self.putConn(held);
+    selfactor.drive();
+  }
+
+  pub async fn xBodyAll(self, stream: u32, rid: u64, limit: usize, rp: actors.ReplyOf[Result[String, BodyError]]) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.xBodyAll(a, selfactor, stream, rid, limit, rp);}
+          else {rp.answer(Err[String, BodyError](BodyError.cancelled()));}
+        }
+      }
+      else {rp.answer(Err[String, BodyError](BodyError.cancelled()));}
+    }
+    self.putConn(held);
+    selfactor.drive();
+  }
+
+  pub async fn xBodyTo(self, stream: u32, rid: u64, sink: ChunkSink, src: ChunkSource) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.xBodyTo(a, selfactor, stream, rid, sink, src);}
+          else {sink.end(Ending.Failed(AnyError.from(BodyError.cancelled())));}
+        }
+      }
+      else {sink.end(Ending.Failed(AnyError.from(BodyError.cancelled())));}
+    }
+    self.putConn(held);
+    selfactor.drive();
+  }
+
+  pub async fn xBodyBack(self, stream: u32, rid: u64, b: IoBuf) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.xBodyBack(a, selfactor, stream, rid, b);}
+          else {}
+        }
+      }
+      else {}
+    }
+    self.putConn(held);
+    selfactor.drive();
+  }
+
+  pub async fn xBodyStop(self, stream: u32, rid: u64, why: Ending) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.xBodyStop(a, selfactor, stream, rid, why);}
+          else {}
+        }
+      }
+      else {}
+    }
+    self.putConn(held);
+    selfactor.drive();
+  }
+
+  pub async fn xBodyDrop(self, stream: u32, rid: u64) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.xBodyDrop(a, selfactor, stream, rid);}
+          else {}
+        }
+      }
+      else {}
+    }
+    self.putConn(held);
+    selfactor.drive();
+  }
+
+  pub async fn handOut(self, stream: u32, rid: u64, rp: actors.ReplyOf[Result[Exchange, ServerError]], to: ServerActor) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.handOut(a, selfactor, stream, rid, rp, to, ended);}
+          else {to.stale(rp);}
+        }
+      }
+      else {to.stale(rp);}
+    }
+    self.putConn(held);
+  }
+
+  pub async fn refuse(self, stream: u32, rid: u64) {
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {
+        match &mut hx {
+          case let &mut Some(h) {h.refuse(a, selfactor, stream, rid);}
+          else {}
+        }
+      }
+      else {}
+    }
+    self.putConn(held);
+    selfactor.drive();
   }
 }

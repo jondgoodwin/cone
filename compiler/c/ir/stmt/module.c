@@ -919,6 +919,16 @@ void modFoldAlone(NameResState *pstate, Nodes *modules, Nodes *mods) {
 // an instance's module trait: 'is' takes one name, and nothing folds from a
 // generic module.
 static void modGenericCheckBody(ModuleNode *mod) {
+    // The author wrote the generic at the top, so the message names the
+    // outermost generic module; 'mod' is named too where it is a submodule in it.
+    ModuleNode *top = mod;
+    for (INode *node = mod->dclinfo.owner; node && node->tag == ModuleTag; node = ((ModuleNode*)node)->dclinfo.owner) {
+        if (((ModuleNode*)node)->genericinfo)
+            top = (ModuleNode*)node;
+    }
+    char where[256] = "";
+    if (top != mod)
+        snprintf(where, sizeof(where), " (in its submodule %s)", &mod->namesym->namestr);
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(mod->nodes, cnt, nodesp)) {
@@ -934,8 +944,8 @@ static void modGenericCheckBody(ModuleNode *mod) {
             break;
         case ModTraitTag:
             errorMsgNode(node, ErrorGenModBody,
-                "Generic module %s may not hold module trait %s: it would be each instance's own, and a module trait inside a generic module cannot yet be named from outside it.",
-                &mod->namesym->namestr, &((ModTraitNode*)node)->namesym->namestr);
+                "Generic module %s may not hold module trait %s%s: it would be each instance's own, and a module trait inside a generic module cannot yet be named from outside it.",
+                &top->namesym->namestr, &((ModTraitNode*)node)->namesym->namestr, where);
             continue;
         default:
             what = "this declaration";
@@ -943,8 +953,8 @@ static void modGenericCheckBody(ModuleNode *mod) {
         }
         if (what)
             errorMsgNode(node, ErrorGenModBody,
-                "Generic module %s may not hold %s: an instance of a generic module is not built for one yet.",
-                &mod->namesym->namestr, what);
+                "Generic module %s may not hold %s%s: an instance of a generic module is not built for one yet.",
+                &top->namesym->namestr, what, where);
     }
 }
 

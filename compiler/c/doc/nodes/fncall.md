@@ -293,11 +293,21 @@ unwritten `self`), and a literal of a struct named directly and not generic,
 each value expecting the field it will fill (`fnCallTypeLitField`). Then every
 argument is checked, against that type where there is one, so an `if`, a block
 or an array literal is coerced branch by branch as an initializer is; an
-overload set's, an operator's and a generic's arguments get none, because their
-types are what selects or infers the callee -- but for an `if` that is the argument of a
-number operator, which is given the receiver's number type (checked first for that, as
-`==`'s and `<-`'s are for a call), and an `if` that is the receiver, which is given the
-argument's. **A closure literal among a
+overload set's arguments get none, because their types are what selects the callee.
+An operator's one argument with branches (an `if`, a `match`, a block, but not the
+block a `?` is parsed to: `fnCallArgBranches`) is given the type the receiver's method
+takes there, the receiver being checked first for that, as `==`'s and `<-`'s are for a
+call: a number receiver's number type, `==`'s and `!=`'s receiver type, otherwise the one
+type every candidate of the method declares (`fnCallArgAgreed`, none when they differ or
+the method is generic). The push skips an untyped literal receiver, whose default type is not its
+type (it takes the argument's: `0.18 * (if c {1.} else {x})` with an f32 `x`), and a pointer
+receiver, whose operand type reads through to the pointee (so its `+` would be the pointee's);
+the pointer's own `+` and `-` live on the core pointer type and need their own overload choice
+(the second slice). A generic
+call's branching argument waits for the other arguments, as a construction does, and is
+checked against the parameter's type once they and the call's expected type have said its
+type parameters (`genericFnArgExpect`); when they do not, it is checked with none. An `if`
+that is the receiver of a number operator is given the argument's number type. **A closure literal among a
 generic's or an overload set's arguments waits for the others** and is checked
 after them (`fnCallClosureArgs`): its signature is what the other arguments leave
 the callee's bound, or the overload its parameter count and written types pick
@@ -421,7 +431,7 @@ by value, an array and a function go on to the table's own rows.
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
 | struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent (`fnCallImplicitName`, below), then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetPlace`) takes `&[]` |
 | `TTupleTag` | `==`, `!=` to `fnCallLowerTupleCompare` (below); else `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
-| `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice`; else a method of core's `Array[T]` (`fnCallLowerSliceMethod`, below), `len` excepted |
+| `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice`; `len` to its count (`fnCallLowerArrayLen`); else a method of core's `Array[T]` (`fnCallLowerSliceMethod`, below) |
 | `VectorTag` | `fnCallArrIndex` (a lane, `vectorIndex`) under `FlagIndex`; else fill in `()` as `methfld` if absent and `fnCallLowerMethod`, which finds the operator or method in the vector's own namespace. Four things are lowered by hooks of `fnCallLowerMethodOn` or the call's checks and not found there: a number beside a vector (`vectorBroadcastOperand`, before selection), `select` (`vectorSelectLower`), `.from` (`vectorFromCall`, ahead of `fnCallNumberFrom`) and a vector's contents (`contentsLowerVector`) — [vector](vector.md) |
 | `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType`, else a method of core's `Array[T]` |
 | `RefTag` | a key (`lifeIsKey`) refused for anything but `===` and `!==` (`ErrorKeyAccess`); else function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` (a reference to an array: a method of core's `Array[T]`) |
@@ -467,7 +477,9 @@ instance of core's `Array[T]` for the element type (`fnCallSliceBodyOf`: a
 `FnCallNode` for `Array[elem]`, type checked), and the call is lowered against
 that struct (`fnCallLowerMethodOn`) with the array or slice as the receiver, as
 the methods a list folds in from its `view()` are called. An array's `len` is
-its type's, not a member of the value, and stays refused. A `self: &mut` method
+its type's, not a member of the value: it is lowered ahead of that lookup to a `usize` literal
+of the first dimension's count (`fnCallLowerArrayLen`), for an array or a reference to one, and
+refused where the receiver runs code that the literal would drop (`fnCallIsQuietPlace`). A `self: &mut` method
 on an array borrows it mutably (`fnCallBorrowReceiver` takes an array).
 
 **Text has three lowerings of its own, ahead of that dispatch.** `fnCallTextOf` asks
