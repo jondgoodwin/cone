@@ -65,6 +65,11 @@ void derefTypeCheck(TypeCheckState *pstate, StarNode *node) {
     // ('&*s', '&mut *s', '&uni *s'), which borrowTypeCheck allows by naming the node
     else if (ptype->tag == ArrayRefTag && node == derefSliceBorrowed)
         node->vtype = (INode*)newArrayDerefNodeFrom((RefNode*)ptype);
+    // A virtual reference's pointee, the trait object: no place is ever formed, so it is only
+    // named to be borrowed again ('&*v', '&mut *v', '&uni *v'), which borrowTypeCheck turns
+    // into a copy of the (data, vtable) pair; a bare '*v' stays ErrorNotPtr
+    else if (ptype->tag == VirtRefTag && node == derefSliceBorrowed)
+        node->vtype = ((RefNode*)ptype)->vtexp;
     else
         errorMsgNode((INode*)node, ErrorNotPtr, "May only de-reference a simple reference or pointer.");
 }

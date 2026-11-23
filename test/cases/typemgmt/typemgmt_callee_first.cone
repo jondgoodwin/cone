@@ -1,0 +1,86 @@
+// A generic call's and an operator's arguments with branches -- an 'if', a
+// 'match', a block -- are wanted as the type the callee gives them, as a
+// function that is one declaration gives them (typemgmt_branch_argument): the
+// call's other arguments and its place say what a generic's type parameters
+// are, and the receiver says what its operator takes. A literal in a branch
+// that is too wide for i32 is built at that type.
+//
+// An overload set's arguments are still checked with no type expected, since
+// the argument types choose the candidate; typemgmt_typecheck_meet holds that.
+// Branches with no type in common are refused for any callee
+// (typemgmt_callee_first_refuse).
+
+mod typemgmt_callee_first;
+
+import stdio use *;
+
+fn id[T](x: T) T {
+  x
+}
+
+fn both[T](a: T, b: T) T {
+  b
+}
+
+fn wide(n: i64) i64 {
+  n
+}
+
+struct Tally {
+  pub n: i64;
+
+  pub fn `+`(self: &, d: i64) i64 {
+    self.n + d
+  }
+
+  pub fn `-`(self: &, d: i64) i64 {
+    self.n - d
+  }
+}
+
+fn thinned(s: f32, r: f32) f32 {
+  let thin = 1. - 0.18 * (if s > 45. { 1. } else { s / 45. });
+  r * thin
+}
+
+// A pointer receiver pushes nothing into a branching argument: the offset is its own usize
+fn offsetByte(p: *u8, c: bool) u8 {
+  *(p + (if c {2usize} else {0usize}))
+}
+
+fn main() {
+  var yes = true;
+  var no = false;
+  var w: i64 = 1;
+
+  // A generic whose type parameter the call's place says
+  printInt(wide(id(if yes {5000000000} else {2}))); printStr("\n");
+  printInt(wide(id({6000000000}))); printStr("\n");
+  printInt(wide(id(match no {case ==true {1} else {7000000000}}))); printStr("\n");
+
+  // A generic whose type parameter another argument says
+  printInt(both(w, if yes {5000000000} else {2})); printStr("\n");
+  printInt(both(w, if no {5000000000} else {2})); printStr("\n");
+
+  // A number operator's right operand: a match and a block as well as an if
+  printInt(w + (if yes {5000000000} else {2})); printStr("\n");
+  printInt(w + (match yes {case ==true {5000000000} else {2}})); printStr("\n");
+  printInt(w + {5000000000}); printStr("\n");
+  printInt(w - {5000000000}); printStr("\n");
+
+  // A comparison's right operand
+  printStr(if w == (if yes {1} else {5000000000}) {"eq"} else {"ne"}); printStr("\n");
+  printStr(if w != (if no {1} else {5000000000}) {"ne"} else {"eq"}); printStr("\n");
+
+  // A struct's operator method, which takes an i64
+  var t = Tally(10);
+  printInt(t + (if yes {5000000000} else {2})); printStr("\n");
+  printInt(t - {1}); printStr("\n");
+
+  // An untyped literal receiver takes the branching argument's type, not its default f64:
+  // 'thin' is an f32 and meets the f32 beside it
+  let hi = thinned(90., 100.);
+  let lo = thinned(9., 100.);
+  printStr(if hi > 81.9 && hi < 82.1 {"thin hi"} else {"wrong"}); printStr("\n");
+  printStr(if lo > 96.3 && lo < 96.5 {"thin lo"} else {"wrong"}); printStr("\n");
+}

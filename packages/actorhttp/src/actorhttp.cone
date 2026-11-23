@@ -403,8 +403,8 @@
 // Version.Http3); a 413 or 503 goes on its stream, the connection carrying
 // on. A client's calls are the same: an HttpClient whose httpclient.Config names
 // a plug-in fetches over HTTP/3 where httpclient's header says it does, and
-// the Response's 'version' says so. A routed server (cfg.routes) does not offer
-// HTTP/3 yet: 'listen' answers an error for 'offerHttp3' on one.
+// the Response's 'version' says so. A routed server (cfg.routes) offers it
+// too: its server actor owns the UDP endpoint (below, A ROUTED SERVER).
 //
 // THE HTTP/3 ENDPOINT (h3endpoint.cone; the server's UDP side on actors, built ahead of the handler half). 'startH3Endpoint'
 // binds a UDP socket and runs an H3Endpoint actor on it: it receives, routes each datagram by its Destination Connection ID
@@ -412,12 +412,13 @@
 // maxConnections, maxHandshaking, maxPerAddress, an admission rate; the first limit met drops it, counted by reason in
 // H3EndpointStats). Each connection actor accepts its Initial itself and runs its QUIC connection (the plug-in's
 // httpclient.H3ServerConn: its decryption, protocol work and sends, on whichever worker has it, each datagram sent
-// by its own await). The endpoint does no protocol work. Every request is answered 503 and its stream reset until the
-// handler half lands. The connection awaits the endpoint's registration of the connection IDs it has issued before it
+// by its own await). The endpoint does no protocol work. A connection of an endpoint a program starts itself answers
+// every request 503 and resets its stream (it has no routes); a routed server's connections serve their requests through the
+// same handler half ConnActor does (serverexchanges.cone). The connection awaits the endpoint's registration of the connection IDs it has issued before it
 // sends a datagram that carries one; a peer's connection that misses the handshake deadline
 // (quic.Config.handshakeTimeout, 10 s) ends and gives back its handshaking place. 'shutdown' closes every connection
-// and the socket. 'liveH3ConnActors' and 'liveH3EndpointActors' count the actors that exist. The server actor will
-// own the endpoint (a routed server's offerHttp3); for now a program or a test starts one itself.
+// and the socket. 'liveH3ConnActors' and 'liveH3EndpointActors' count the actors that exist. A routed server's
+// server actor owns its own endpoint (A ROUTED SERVER); a program or a test starts one itself only for a server of its own.
 //
 //
 // A CLIENT ON ACTORS. A whole-body fetch ('get', 'getIn', 'send', 'sendIn') whose request has no cancel group
@@ -473,6 +474,13 @@
 // the connection. Only live ones count against maxPending: a request whose peer has gone (its connection
 // ended, its stream was reset, or the peer sent its last byte before any handler had the request) is
 // withdrawn, and an actor asking for a request is never given one that is gone.
+//
+// HTTP/3 ('cfg.offerHttp3(maker)', with TLS): the server actor binds a UDP endpoint (h3endpoint.cone) on the TCP listener's address
+// and port (on port 0 a UDP bind that finds the number taken starts the listen over on a fresh one) and TCP responses carry
+// 'Alt-Svc: h3=":port"; ma=86400' unless the program wrote one. Each QUIC connection is an H3ConnActor that serves its requests
+// through the same handler half as ConnActor (serverexchanges.cone: routing, the handler of each stream an actor of its own,
+// the Exchange's calls and the request body), so a handler sees no difference but Version.Http3. 'close()' shuts the endpoint
+// down too (HTTP/3's GOAWAY on each connection), and 'closed()' answers once it and every connection have ended.
 //
 // 'server.close()' stops accepting, answers every 'next' Closed and every waiting request 503, tells each
 // connection to finish (HTTP/1.1 ends after the request in hand; HTTP/2 sends GOAWAY), and after
