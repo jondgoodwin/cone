@@ -32,8 +32,8 @@
 #   f1a/f1f  a free-only failure counted as a collision and not retried                (caught by lfcas round 1: the collision count rises, no retry is counted)
 #   f2a/f2f  a taker's failure treated as free-only (the free-only test dropped)       (caught by lfcas round 2: the collision is not counted, a retry is)
 #   f3a/f3f  the bound on free-only retries removed                                    (caught by lfcas round 3: five retries and no collision, not four and one)
-#   f4a/f4f  the retry re-reads g1, so Rule G compares against the page's next life    (caught by lfcas round 4: no Rule G undo, the taker keeps the cell it took
-#            on a page that changed life after the first swap's g1)
+#   f4a/f4f  the retry re-reads g1 just before its swap (after the park point), so Rule G compares against the page's next life  (caught by lfcas round 4:
+#            no Rule G undo, the taker keeps the cell it took on a page that changed life after the first swap's g1)
 #   none the unmutated shim: doublefree, lfpage (single and grouped), lfrace (plain, with fills, and both again at the default
 #        threshold), lfstale (single and grouped), lfmulti, lfreturn, lfstorm (default, relist=2, relist=3) and lfoom (default,
 #        relist=2, relist=3), lfslots, and lfcas (a non-worker taker, and CNCAS_FILL=1) must pass
