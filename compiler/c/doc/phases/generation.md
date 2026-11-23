@@ -168,7 +168,8 @@ lowers them, in two functions and a derivation:
   vtable, which no node declares, is `GenlShared` in a described build and
   `GenlDefined` otherwise (`genlVtableDefinition`). It is the one place that
   decides them, and it sets no visibility. A `DclSystemCC` function takes the
-  x86 stdcall convention whether defined here or not, and the DLL import
+  x86 stdcall convention on a 32-bit x86 target (elsewhere the C convention, since
+  AArch64 rejects stdcall; `genlSystemIsStdcall`) whether defined here or not, and the DLL import
   storage class only when it is `extern`; every call to one is made with the
   convention too (`genlFnCallInternal`).
 - **`genlComdat`** then derives the COMDAT selection kind from the linkage

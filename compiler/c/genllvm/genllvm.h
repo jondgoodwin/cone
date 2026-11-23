@@ -584,6 +584,8 @@ LLVMValueRef genlTypeRecordOf(GenState *gen, INode *vtype, StructNode *recnode);
 // genlcabi.c: a C-named function's values, as the platform's C ABI passes them
 // The CAbiTarget a target triple names
 int genlCAbiTarget(const char *triple);
+// Whether the 'system' calling convention is stdcall on this triple: only 32-bit x86
+int genlSystemIsStdcall(const char *triple);
 // Whether a function's values cross as C passes them: a C-named function a module owns
 int genlIsCAbiFn(FnDclNode *fndcl);
 // The LLVM function type of a declared function: its Cone signature, lowered
