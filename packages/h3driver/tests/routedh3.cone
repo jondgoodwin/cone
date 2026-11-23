@@ -19,12 +19,12 @@ import path use Path;
 import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
 import collections use List, String;
 import time use Instant, Duration;
-import iocore use SocketAddr;
+import iocore use SocketAddr, CancelGroup;
 import http use *;
 import httpclient use Response, Request;
 import tls;
 import actors;
-import aio;
+import aio use IoLimits, sleep;
 import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
 import h3driver;
 
@@ -94,9 +94,30 @@ fn makeHello() HttpHandler {
 
 // Counts the handlers made, and answers with the count so far
 let made: Atomic[u64];
+let lateDone: Atomic[u64];
 
 fn @initpure init() {
   made = Atomic[u64].of(0u64);
+  lateDone = Atomic[u64].of(0u64);
+}
+
+// Answers after a nap: a client that gave the request up meanwhile has reset its stream, so the answer is made on a dead one
+actor Late is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    await sleep(Duration.fromMillis(400i64));
+    ex.text(200u16, "late");
+    lateDone.add(1u64);
+  }
+}
+
+fn makeLate() HttpHandler {
+  let h = Late();
+  let r: HttpHandler = h;
+  r
 }
 
 actor Counted is HttpHandler {
@@ -319,6 +340,19 @@ actor Prober {
     show("stream", &(await client.get(url(port, "/stream").view())));
     show("dropped", &(await client.get(url(port, "/drop").view())));
     show("no route", &(await client.get(url(port, "/nowhere").view())));
+    // a request given up after 100 ms: its handler answers a reset stream (the call does nothing), the server serves on
+    let lim = IoLimits(Some[CancelGroup](CancelGroup.make()), Instant.now() + Duration.fromMillis(100i64));
+    let late = await client.getIn(url(port, "/late").view(), lim);
+    printStr("late request given up: ");
+    match &late {
+      case let &Ok(ok) {printStr("NO, answered "); printUInt(u64.from(ok.status)); printStr("\n");}
+      case let &Err(e) {printStr("yes\n");}
+    }
+    let napped = await sleep(Duration.fromMillis(700i64));
+    printStr("its handler finished: ");
+    printStr(yes(lateDone.load() == 1u64));
+    printStr("\n");
+    show("after it", &(await client.get(url(port, "/hello").view())));
     var k = 0u32;
     while k < 6u32 {
       show("count", &(await client.get(url(port, "/count").view())));
@@ -373,7 +407,7 @@ fn main() i32 {
   ptx, prx = Channel[u16].make();
   let certFile = certs("server.pem");
   let keyFile = certs("server.key");
-  let router = HttpRoutes.make().handle("", "/hello", &makeHello).handle("", "/count", &makeCounted)
+  let router = HttpRoutes.make().handle("", "/hello", &makeHello).handle("", "/count", &makeCounted).handle("", "/late", &makeLate)
     .handle("", "/echo", &makeEcho).handle("", "/stream", &makeStreamer).handle("", "/drop", &makeDropper);
   let acceptor = Acceptor(Server.none());
   acceptor.open(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2()
