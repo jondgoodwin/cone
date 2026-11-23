@@ -293,11 +293,17 @@ unwritten `self`), and a literal of a struct named directly and not generic,
 each value expecting the field it will fill (`fnCallTypeLitField`). Then every
 argument is checked, against that type where there is one, so an `if`, a block
 or an array literal is coerced branch by branch as an initializer is; an
-overload set's, an operator's and a generic's arguments get none, because their
-types are what selects or infers the callee -- but for an `if` that is the argument of a
-number operator, which is given the receiver's number type (checked first for that, as
-`==`'s and `<-`'s are for a call), and an `if` that is the receiver, which is given the
-argument's. **A closure literal among a
+overload set's arguments get none, because their types are what selects the callee.
+An operator's one argument with branches (an `if`, a `match`, a block, but not the
+block a `?` is parsed to: `fnCallArgBranches`) is given the type the receiver's method
+takes there, the receiver being checked first for that, as `==`'s and `<-`'s are for a
+call: a number receiver's number type, `==`'s and `!=`'s receiver type, otherwise the one
+type every candidate of the method declares (`fnCallArgAgreed`, none when they differ or
+the method is generic, nor for an untyped literal receiver, which has no method). A generic
+call's branching argument waits for the other arguments, as a construction does, and is
+checked against the parameter's type once they and the call's expected type have said its
+type parameters (`genericFnArgExpect`); when they do not, it is checked with none. An `if`
+that is the receiver of a number operator is given the argument's number type. **A closure literal among a
 generic's or an overload set's arguments waits for the others** and is checked
 after them (`fnCallClosureArgs`): its signature is what the other arguments leave
 the callee's bound, or the overload its parameter count and written types pick
