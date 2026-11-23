@@ -273,8 +273,8 @@ does, `expectType` reaches the literal first.
 
 **A literal nothing typed keeps its `i32` default, and must fit it.** Some
 literals are reached by neither `litTypeCheck`'s `expectType` nor `iexpCoerce`:
-the value of a block passed as an operand, or the branches of an `if` given to an overload
-set, which get no type because theirs chooses the
+the value of a block passed as an overloaded operator's operand, or the branches of an `if` given
+to an overload set, which get no type because theirs chooses the
 callee, and every literal whose type comes from nothing but itself — a
 variable, global or constant declared without a type, an array literal's
 elements. Such a literal still carries `FlagUnkType` when it is
