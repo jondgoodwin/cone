@@ -12,7 +12,7 @@
 mod roomidle;
 
 import testing use *;
-import stdio use printStr, printUInt;
+import stdio use printStr, printUInt, eprintStr, eprintUInt;
 import process;
 import thread;
 import actors;
@@ -49,14 +49,21 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
   s
 }
 
-// The peer: after the gate it sends 11 bytes
+// The peer: it is given its socket, and when started it sends 11 bytes. No actor waits for the gate: the main
+// thread starts each with a message, so no worker is ever blocked (with two workers, two blocked actors would
+// leave none to run the Dropper).
 actor Writer {
-  pub async fn go(self, s: Socket, gate: OneshotReceiver[u64], done: OneshotSender[u64]) {
-    var g = gate;
-    let opened = g.recvTimeout(Duration.fromMillis(30000i64));
+  sock: Socket;
+
+  pub async fn attach(self, s: Socket) {
+    var t = s;
+    sock <-> t;
+  }
+
+  pub async fn startWrite(self, done: OneshotSender[u64]) {
     var hello = IoBuf(64usize);
     hello.append("hello, room");
-    let w0 = await s.write(hello);
+    let w0 = await sock.write(hello);
     var d = done;
     d.send(1u64);
   }
@@ -64,10 +71,15 @@ actor Writer {
 
 // The read, started on the gate, the pool full and its free blocks in the workers' caches
 actor Reader {
-  pub async fn go(self, s: Socket, gate: OneshotReceiver[u64], done: OneshotSender[u64]) {
-    var g = gate;
-    let opened = g.recvTimeout(Duration.fromMillis(30000i64));
-    let r = await s.readIn(IoLimits.none());
+  sock: Socket;
+
+  pub async fn attach(self, s: Socket) {
+    var t = s;
+    sock <-> t;
+  }
+
+  pub async fn startRead(self, done: OneshotSender[u64]) {
+    let r = await sock.readIn(IoLimits.none());
     answeredFlag.store(1u64);
     var code = 4u64;
     match r {
@@ -91,8 +103,7 @@ actor Dropper {
 }
 
 actor Setup {
-  pub async fn go(self, gate: OneshotReceiver[u64], rgate: OneshotReceiver[u64], ready: OneshotSender[u64],
-      result: OneshotSender[u64], wdone: OneshotSender[u64]) {
+  pub async fn go(self, w: Writer, r: Reader, ready: OneshotSender[u64]) {
     let l = await aio.listen(SocketAddr.localhost(0u16));
     let ls = socketOf(l);
     let a = await ls.localAddr();
@@ -103,10 +114,8 @@ actor Setup {
     }
     let c = await aio.connect(SocketAddr.localhost(port));
     let ac = await ls.accept();
-    let w = Writer();
-    w.go(socketOf(c), gate, wdone);
-    let r = Reader();
-    r.go(socketOf(ac), rgate, result);
+    w.attach(socketOf(c));
+    r.attach(socketOf(ac));
     var rd = ready;
     rd.send(1u64);
   }
@@ -129,12 +138,9 @@ fn fillPool(held: &mut List[IoBuf]) usize {
 }
 
 fn scenario() {
-  var gtx: OneshotSender[u64];
-  var grx: OneshotReceiver[u64];
-  gtx, grx = Oneshot[u64].make();
-  var xtx: OneshotSender[u64];
-  var xrx: OneshotReceiver[u64];
-  xtx, xrx = Oneshot[u64].make();
+  eprintStr("workers: ");
+  eprintUInt(u64.from(thread.parallelism()));
+  eprintStr("\n");
   var qtx: OneshotSender[u64];
   var qrx: OneshotReceiver[u64];
   qtx, qrx = Oneshot[u64].make();
@@ -144,9 +150,11 @@ fn scenario() {
   var wtx: OneshotSender[u64];
   var wrx: OneshotReceiver[u64];
   wtx, wrx = Oneshot[u64].make();
+  let writer = Writer(Socket.none());
+  let reader = Reader(Socket.none());
   {
     let s = Setup();
-    s.go(grx, xrx, qtx, rtx, wtx);
+    s.go(writer, reader, qtx);
   }
   let ready = qrx.recvTimeout(Duration.fromMillis(20000i64));
   expect(ready is Some, "the connection is made");
@@ -169,8 +177,8 @@ fn scenario() {
     i = i + 1usize;
   }
   thread_sleep(300i64);                 // the workers go idle, to sleep
-  xtx.send(1u64);                       // the read starts: the stock is empty, so it is refused and parks
-  gtx.send(1u64);
+  reader.startRead(rtx);                // the read starts: the stock is empty, so it is refused and parks
+  writer.startWrite(wtx);
   let t0 = Instant.now();
   let late = rrx.recvTimeout(Duration.fromMillis(5000i64));
   expect(late is Some, "the read resumes with room held only in idle workers' caches");
