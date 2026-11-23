@@ -97,19 +97,20 @@ typedef struct {                         // a page's second descriptor: 576 byte
   uint64_t bits[64];                     // +64  set means free
 } LfD2;
 
-typedef struct {                         // a class's record: 512 bytes
-  uintptr_t slot[8];                     // +0    an ATTACHED page's descriptor, or 0
+typedef struct {                         // a class's record: 1024 bytes, up to 32 slots (row 580)
+  uint8_t pad_a[64];
   uint32_t active;                       // +64   active slots
   uint32_t cap;                          // +68
   uint32_t collLimit;                    // +72
   uint32_t pad0;
-  uint8_t used[8];                       // +80   set by an allocation that finds it clear; cleared by collect
-  uint8_t pad1[40];
-  uint64_t idleSince[8];                 // +128  (the Cone side's)
+  uint8_t used[32];                      // +80   set by an allocation that finds it clear; cleared by collect
+  uint8_t pad1[80];
   uint32_t collisions;                   // +192  collisions since the last change of the slot count
   uint8_t pad2[60];
   uint64_t st[10];                       // +256  allocs, frees, collisions, slots added, dropped, pages attached, listed, retired, retires abandoned, Rule G undos
   uint8_t pad3[176];
+  uintptr_t slot[32];                    // +512  an ATTACHED page's descriptor, or 0
+  uint64_t idleSince[32];                // +768  (the Cone side's)
 } LfCls;
 
 typedef struct { uint32_t tnum; uint8_t start[CN_MAXCLS]; uintptr_t startPage[CN_MAXCLS]; } LfTls;
@@ -119,7 +120,7 @@ typedef struct { uint32_t tnum; uint8_t start[CN_MAXCLS]; uintptr_t startPage[CN
 #define LF_KEY(P, g) ((uintptr_t)(P) ^ ((uintptr_t)((g) >> 8) << 48))
 
 typedef char lf_assert_d2[(sizeof(LfD2) == 576 && offsetof(LfD2, bits) == 64) ? 1 : -1];
-typedef char lf_assert_cls[(sizeof(LfCls) == 512 && offsetof(LfCls, used) == 80 && offsetof(LfCls, collisions) == 192 && offsetof(LfCls, st) == 256) ? 1 : -1];
+typedef char lf_assert_cls[(sizeof(LfCls) == 1024 && offsetof(LfCls, slot) == 512 && offsetof(LfCls, used) == 80 && offsetof(LfCls, collisions) == 192 && offsetof(LfCls, st) == 256) ? 1 : -1];
 
 static int g_lf;                         // the second design is on
 static uintptr_t g_pbase, g_psize, g_d2base;

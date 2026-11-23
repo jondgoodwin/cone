@@ -19,6 +19,8 @@
 #   m7   the grouped return's double-free test on the group's lowest bit only (RT-D)  (caught by doublefree's grouped part)
 #   (row 539, the scan's start word)
 #   h1   the start word's key names the page but not its generation: a retired page's next life starts at the old life's word  (caught by lfmulti: its filler's word is not the one the round set up; found 19 Nov when the key was the page alone)
+#   (row 580, the slot cap; a mutant of cnmalloc.cone, not of the shim)
+#   s1   the default slot cap left at 8 (the setting's default 0 replaced by 8)  (caught by lfslots: sixteen threads on one class never take it above 8 active slots)
 #   (row 603, the re-listing threshold; the tests that look for one free cell to list a page run with relist=1 in mutants.json)
 #   e1   the free's edge test is "the word was empty" (n + 1 == 1) whatever the threshold  (caught by lfstorm: no page that a free
 #        brings to its threshold is ever listed again, so the class takes a new page for every hundred allocations and its page count
@@ -27,7 +29,7 @@
 #        first allocation after them fails; the model's s0 is the same mutation)
 #   none the unmutated shim: doublefree, lfpage (single and grouped), lfrace (plain, with fills, and both again at the default
 #        threshold), lfstale (single and grouped), lfmulti, lfreturn, lfstorm (default, relist=2, relist=3) and lfoom (default,
-#        relist=2, relist=3) must pass
+#        relist=2, relist=3) and lfslots must pass
 # Everything is built and run under <Scratch> (default %TEMP%\cnmalloc-mutants); nothing in the tree changes. A mutant's test
 # runs -Runs times (all but a are deterministic: 5 of 5 must fail). lfrace on a mutant is capped at -RaceSecs seconds
 # (CNRACE_MAXSECS); the unmutated lfrace runs with its default. Windows only (cl and link; Linux's is mutants.py). Needs the Visual Studio build tools and the package's release build, which
@@ -72,8 +74,30 @@ function Build-Mutant([string]$m) {
   }
   [IO.File]::WriteAllText("$out\cn_shim.c", $t, (New-Object System.Text.UTF8Encoding($false)))
   Copy-Item (Join-Path $pkg 'shim\cn_plat.h') $out -Force
+  $useObj = $obj
+  if ($mut.Value.PSObject.Properties['cone']) {           # (row 580) a mutant of the Cone side: its own copy of the package, built
+    $cp = Join-Path $out 'pkg'
+    if (Test-Path $cp) { Remove-Item -Recurse -Force $cp }
+    New-Item -ItemType Directory -Force "$cp\src" | Out-Null
+    Copy-Item (Join-Path $pkg 'congo.toml') $cp
+    Copy-Item (Join-Path $pkg 'src\*') "$cp\src"
+    $c = [IO.File]::ReadAllText("$cp\src\cnmalloc.cone").Replace("`r`n", "`n")
+    foreach ($pair in $mut.Value.cone) {
+      $from = $pair[0]; $to = $pair[1]
+      $count = ([regex]::Matches($c, [regex]::Escape($from))).Count
+      if ($count -ne 1) { throw "mutation anchor for $m found $count times in cnmalloc.cone: $from" }
+      $c = $c.Replace($from, $to)
+    }
+    [IO.File]::WriteAllText("$cp\src\cnmalloc.cone", $c, (New-Object System.Text.UTF8Encoding($false)))
+    Push-Location $cp
+    python $congo build --release | Out-Null
+    $code = $LASTEXITCODE
+    Pop-Location
+    if ($code -ne 0) { throw "congo build failed for mutant $m" }
+    $useObj = Join-Path $cp 'build\release\cnmalloc.obj'
+  }
   $bat = "$out\build.bat"
-  Set-Content $bat "cd /d $out`r`ncl /nologo /c /O2 /MD /D_ACRTIMP= /Gs999999 /DCN_HOOKS /DCN_DEBUG `"$out\cn_shim.c`" /Fo:cn_shim_d.obj || exit /b 1`r`nlib /nologo /OUT:cnd.lib cn_shim_d.obj `"$obj`" || exit /b 1"
+  Set-Content $bat "cd /d $out`r`ncl /nologo /c /O2 /MD /D_ACRTIMP= /Gs999999 /DCN_HOOKS /DCN_DEBUG `"$out\cn_shim.c`" /Fo:cn_shim_d.obj || exit /b 1`r`nlib /nologo /OUT:cnd.lib cn_shim_d.obj `"$useObj`" || exit /b 1"
   cmd /c "`"$vcvars`" >nul 2>&1 && `"$bat`"" 2>&1 | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "cl or lib failed for mutant $m" }
   return $out
@@ -85,7 +109,8 @@ function Run-Test([string]$libdir, [string]$test, [string]$tag, [hashtable]$extr
   if (Test-Path $run) { Remove-Item -Recurse -Force $run }
   New-Item -ItemType Directory -Force "$run\src", "$run\tests" | Out-Null
   Copy-Item "$pkg\congo.toml" $run
-  Copy-Item "$pkg\src\*" "$run\src"
+  $srcdir = if (Test-Path "$libdir\pkg\src") { "$libdir\pkg\src" } else { "$pkg\src" }     # (row 580) a Cone-side mutant's own source: the test compiles it in too
+  Copy-Item "$srcdir\*" "$run\src"
   Copy-Item "$pkg\tests\$test.*" "$run\tests"
   $log = Join-Path $Scratch "log-$test-$tag.txt"
   $save = @{}
