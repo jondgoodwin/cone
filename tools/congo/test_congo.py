@@ -356,8 +356,10 @@ class Scenarios(unittest.TestCase):
     def test_a_missing_ngtcp2_says_what_to_run(self):
         self.congo("new", "needs", cwd=self.root)
         pkg = self.root / "needs"
+        # A library that exists nowhere, its name holding "ngtcp2": the link fails
+        # whether or not the machine has the real ngtcp2 (a gate puts deps/ngtcp2 on LIB)
         with open(pkg / "congo.toml", "a", encoding="utf-8") as manifest:
-            manifest.write('\n[link]\nlibraries = ["ngtcp2"]\n')
+            manifest.write('\n[link]\nlibraries = ["ngtcp2_no_such_library"]\n')
         run = self.congo("build", cwd=pkg, ok=False)
         self.assertNotEqual(run.returncode, 0)
         self.assertIn("link failed", run.stderr)
