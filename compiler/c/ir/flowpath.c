@@ -1617,10 +1617,16 @@ static int pwLentByName(FnCallNode *call, uint32_t i, INode **parmtype) {
     INode *arg = nodesGet(call->args, i);
     if (!pwNamedVar(arg) || !pwIsBorrowed(iexpGetTypeDcl(arg)) || iexpGetTypeDcl(arg)->tag != RefTag)
         return 0;
+    // The callee's signature: a direct free function's declaration, or, for a
+    // call through a function value (a local, a parameter, a field), the
+    // function type the value has: the call learns its callee's signature
+    // from that type, as it does from the declaration
     INode *fnn = call->objfn;
-    if (!isNameUseNode(fnn) || ((NameUseNode *)fnn)->dclnode == NULL || ((NameUseNode *)fnn)->dclnode->tag != FnDclTag)
-        return 0;
-    FnSigNode *callsig = (FnSigNode *)((FnDclNode *)((NameUseNode *)fnn)->dclnode)->vtype;
+    FnSigNode *callsig;
+    if (isNameUseNode(fnn) && ((NameUseNode *)fnn)->dclnode != NULL && ((NameUseNode *)fnn)->dclnode->tag == FnDclTag)
+        callsig = (FnSigNode *)((FnDclNode *)((NameUseNode *)fnn)->dclnode)->vtype;
+    else
+        callsig = (FnSigNode *)iexpGetDerefTypeDcl(fnn);
     if (callsig == NULL || callsig->tag != FnSigTag || i >= callsig->parms->used)
         return 0;
     INode *argtype = iexpGetTypeDcl(nodesGet(callsig->parms, i));
