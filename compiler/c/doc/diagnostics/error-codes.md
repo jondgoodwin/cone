@@ -1179,6 +1179,10 @@ braces of a trait, where it would be a requirement each implementer meets (`pars
 A `const` with no value is `ErrorNoInit`, one with no name `ErrorNoIdent`, a name the type already has `ErrorDupName`,
 and a value that is no constant expression `ErrorNotLit`, as at module level.
 
+`ErrorFieldViaType` (1628) is a field named through its type, `Shade.count` or `Gadget.w`, with no value of the type to
+read it from. A field is per instance and has no storage of its own, so the use (`nameUseTypeCheck`) is refused and takes the
+error type, and the message names the form that works, `value.field`. It is the mirror of `ErrorConstViaValue`.
+
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in
 another (`#if #debug && T is Float`, or `#if T is Float {..} #elif #os == .windows {..}`),
