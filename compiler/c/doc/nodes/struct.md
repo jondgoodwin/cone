@@ -1482,9 +1482,10 @@ too. What the compiler adds:
   supplied `self.field.hash(h)` calls its own `hash`. (Until row 671 every enum
   field was refused, from when no enum could be `Hash`; an enum also carries the
   trait flag, which the old test excluded.) A refused
-  struct is given an empty body so nothing more is said of it. An enum, a
-  variant and a trait are not supplied; one that declares `Hash` is asked for a
-  `hash` by the ordinary requirement check.
+  struct is given an empty body so nothing more is said of it. A variant and a
+  trait are not supplied by this check. An enum that declares `Hash` and writes
+  no `hash` is supplied one by the parser (`parseEnumSupply`, below, "An enum
+  that lists `Eq` or `Hash`"); one that writes its own is kept.
 
 ### Eq, and the `==` it supplies
 
@@ -1508,8 +1509,13 @@ type inherits bodiless (`structInheritTrait`) is found at `eqName`.
   to such a type, which `==` reads through; an array, a tuple, a function type
   and a virtual reference do not. A refused struct is given a body that says
   false so nothing more is said of it.
-- **Not supplied** for an enum, a variant or a trait, as for `Hash`: an enum's
-  `==` is the compiler's (`structEnumAddEquality`).
+- **Not supplied by this check** for a variant or a trait. An enum that declares
+  `Eq` and writes no `==` is supplied one by the parser (`parseEnumSupply`,
+  "An enum that lists `Eq` or `Hash`"), taking `&` as `Eq` requires. An enum
+  that does not declare `Eq` keeps the compiler's by-value `==`
+  (`structEnumAddEquality`), so `a == b` on two values compiles, but it is no
+  `Eq` bound; a `==` in the enum's own namespace (written, or supplied) stops
+  `structEnumAddEquality` from adding its own.
 - **Number types and `bool`** meet `Eq` by their built-in `==`
   (`genericNumberFits`, the route `Ordered`'s `<=>` takes); no compiler change
   beyond L2's was needed. A struct whose `==` is written by value
@@ -1586,6 +1592,17 @@ parameter. It supplies nothing for an enum that writes the method itself, that h
 or lifetimes, or that extends another. The trait is found by its name in the `is` list, as the
 supplied text names core's functions. Variant text for a `V(T)` payload type is kept as written
 (`parseVariantTextNote`). The text read is `<supplied by the compiler>` in a diagnostic.
+
+**An enum that lists `Eq` or `Hash`** (Jon's yes to Question 18, 22 Nov 2026; opt-in, unit-only first) is
+supplied by the same function: `==` taking `&` (`self: &E, o: &E`) when `Eq` is listed and no `==` is
+written, `hash` when `Hash` is listed and no `hash` is written. Each reads the variant's position in the
+enum's list into a `u32` with a `match`; `==` compares the two, `hash` feeds the one with `writeU32`. An enum
+that lists either and has a variant carrying a payload (a type variant, a record variant) is
+`ErrorEnumDeriveEqHash`, at the first such variant, and nothing is supplied for it: payload enums are the
+follow-up. An enum that lists neither gets nothing, so it stays not `Hash`, and its by-value `==` is
+unchanged. Because the supplied `==` is in the enum's namespace, `structEnumAddEquality` leaves it be;
+`a == b` on two values then calls it through `&`. Fields in common, an extension and lifetimes
+exclude an enum as for `Serialize`.
 The library enums that declare both: json `ErrorKind`, `Event` (the reader's) and `Json` (with its
 `Member`), http `Method`, `Version`, `BodyKind`, `ErrorKind`, `ErrorScope`. Core's
 `DataErrorKind` does not: declaring it breaks `collection_bounds_fixed` and `module_build_lib`. Quic's
