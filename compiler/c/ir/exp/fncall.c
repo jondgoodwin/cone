@@ -5654,7 +5654,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                 if (!(branching && litIsUntypedNumber(node->objfn)))
                     opexpect = rcvtype;
             }
-            else if (branching) {
+            else if (branching && !litIsUntypedNumber(node->objfn) && iexpGetTypeDcl(node->objfn)->tag != PtrTag) {
+                // (nor does a pointer receiver push: 'rcvtype' reads through a pointer to its
+                // target, whose '+' is not the pointer's own, so 'p + (if c {2usize} else {0usize})' keeps the order it had)
+                // (a receiver that is an untyped literal has not taken its type yet, so its default
+                // type is no type to want: it takes the argument's, '0.18 * (if c {1.} else {x})')
                 // The type the receiver's method takes there, when every candidate agrees on one
                 INode *found = isMethodType(rcvtype) ? iNsTypeFindFnField((INsTypeNode*)rcvtype, argopname) : NULL;
                 if (found)

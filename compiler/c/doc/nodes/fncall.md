@@ -299,7 +299,11 @@ block a `?` is parsed to: `fnCallArgBranches`) is given the type the receiver's 
 takes there, the receiver being checked first for that, as `==`'s and `<-`'s are for a
 call: a number receiver's number type, `==`'s and `!=`'s receiver type, otherwise the one
 type every candidate of the method declares (`fnCallArgAgreed`, none when they differ or
-the method is generic, nor for an untyped literal receiver, which has no method). A generic
+the method is generic). The push skips an untyped literal receiver, whose default type is not its
+type (it takes the argument's: `0.18 * (if c {1.} else {x})` with an f32 `x`), and a pointer
+receiver, whose operand type reads through to the pointee (so its `+` would be the pointee's);
+the pointer's own `+` and `-` live on the core pointer type and need their own overload choice
+(the second slice). A generic
 call's branching argument waits for the other arguments, as a construction does, and is
 checked against the parameter's type once they and the call's expected type have said its
 type parameters (`genericFnArgExpect`); when they do not, it is checked with none. An `if`
