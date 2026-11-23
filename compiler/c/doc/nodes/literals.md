@@ -103,7 +103,11 @@ the call is not a type literal, `typeLitNewCheck` for a name a declared init
 would be given, and `macroExpand` report each one through `namedValRefuseArgs`
 (`ErrorNamedArg`). A function, method, closure or declared init's call, an
 index and a macro use take arguments by position only, and flow analysis and
-generation meet a `NamedValNode` only inside a type literal.
+generation meet a `NamedValNode` only inside a type literal. The brackets of a
+generic *function*, `id[T: i32](3)`, are type arguments, so `fnCallNameRes` refuses
+the name there, once, before the argument is resolved as a value (`ErrorNamedArg`,
+"Type arguments are not named"); a generic struct's brackets are left to type
+check, because `Pair[a: 1, b: 2.0]` can be its literal.
 
 **A minus before a literal is folded into it.** `parsePrefix` negates a
 `ULitTag`'s `uintlit` in place, two's complement, and a `FLitTag`'s `floatlit`,
@@ -273,8 +277,8 @@ does, `expectType` reaches the literal first.
 
 **A literal nothing typed keeps its `i32` default, and must fit it.** Some
 literals are reached by neither `litTypeCheck`'s `expectType` nor `iexpCoerce`:
-the value of a block passed as an operand, or the branches of an `if` given to an overload
-set, which get no type because theirs chooses the
+the value of a block passed as an overloaded operator's operand, or the branches of an `if` given
+to an overload set, which get no type because theirs chooses the
 callee, and every literal whose type comes from nothing but itself — a
 variable, global or constant declared without a type, an array literal's
 elements. Such a literal still carries `FlagUnkType` when it is
