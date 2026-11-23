@@ -2133,8 +2133,14 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
                  env: dict[str, str], packages: list[Package] = (),
                  includes: Path | None = None, announce: bool = True,
                  prelude: list[tuple[str, Path]] | None = (),
-                 homes: "Callable[[Package], Path] | None" = None) -> Path:
-    """Write the package's build description into build/<mode>/ and compile the
+                 homes: "Callable[[Package], Path] | None" = None,
+                 check: bool = False) -> Path:
+    """With 'check' (the package 'congo check' checks, never one it imports),
+    conec runs with --check, which reports what a compile would and writes
+    nothing: the build cache is neither read nor written, an earlier build's
+    object and include file stand, and the object's path is returned unmade.
+
+    Write the package's build description into build/<mode>/ and compile the
     package on its own. Every package but the one being built is a library;
     the one being built is what its manifest says. 'packages' is the unit's
     dependency closure, which the description lists for its include files.
@@ -2162,6 +2168,12 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     obj = out / f"{unit.pkg.name}{LTO_EXT if LTO[0] else OBJ_EXT}"
     include = include_for(unit.pkg, out)
     outputs = [obj, include] if output == "library" else [obj]
+    if check:
+        if announce:
+            say("Checking", f"{unit.pkg.label()} ({unit.pkg.root})")
+        if not run_conec(conec_command([str(conec), "--check", "-o", str(out), str(desc)]), env):
+            raise CongoError(f"could not check {unit.pkg.name} (build description: {desc})")
+        return obj
     command = conec_command([str(conec), "-o", str(out), str(desc)], lto=True)
     files: list[tuple[str, Path]] = []
     if not unit.pkg.lone:
@@ -2376,8 +2388,11 @@ def gpu_module_order(tree: Module) -> list[Module]:
 
 
 def compile_gpu(conec: Path, unit: Unit, units: dict[str, Unit], core: Package, out: Path,
-                mode: str, env: dict[str, str]) -> Path:
-    """Compile a package's kernels into out/<name>.spv: a direct conec compile,
+                mode: str, env: dict[str, str], check: bool = False) -> Path:
+    """With 'check', conec runs with --check, writes nothing and the cache is
+    left alone; the module it checks is still written under out/gpu/.
+
+    Compile a package's kernels into out/<name>.spv: a direct conec compile,
     for SPIR-V's Vulkan form, in out/gpu/<name>/, of a module written here,
     so that what it imports is found on the package search path and compiled
     from its source. For a marked package, the module imports the package;
@@ -2409,6 +2424,11 @@ def compile_gpu(conec: Path, unit: Unit, units: dict[str, Unit], core: Package, 
         command.append("--debug")
     if folders:
         command.append("--path=" + ";".join(str(f) for f in folders))
+    if check:
+        say("Checking", f"{pkg.label()} for the GPU ({shown_root})")
+        if not run_conec(conec_command([*command, "--check", "-o", str(work), str(source)]), env):
+            raise CongoError(f"could not check {pkg.name} for the GPU ({source})")
+        return spv
     command = conec_command([*command, "-o", str(work), str(source)])
     # The key (above, "The build cache") holds what conec may read of each
     # package it finds on its search path and compiles from source, more than
@@ -2537,7 +2557,7 @@ class Session:
         return self.shared / f"{pkg.name}-{where}"
 
     def compile(self, order: list[Unit], top: Package, top_out: Path | None = None,
-                announce: bool = True) -> list[Path]:
+                announce: bool = True, check: bool = False) -> list[Path]:
         """Compile every unit of the order not compiled already, each after what
         it imports; return the objects in the order's order. 'top' gets the
         output its manifest says, into 'top_out' where that is given (a test
@@ -2605,7 +2625,7 @@ class Session:
                   else contextlib.nullcontext()):
                 obj = compile_unit(conec, unit, into, self.mode, is_top, env,
                                    packages, self.out, announce or not is_top, prelude,
-                                   self.home)
+                                   self.home, check=check and is_top)
             if not is_top or (into == self.out and unit.pkg.output == "library"):
                 self.objs[unit.pkg.key] = obj
             objs.append(obj)
@@ -2614,7 +2634,8 @@ class Session:
         for unit in order:
             if unit.kernels and core is not None and unit.pkg.key not in self.spvs:
                 self.spvs[unit.pkg.key] = compile_gpu(conec, unit, by_name, core, self.out,
-                                                       self.mode, env)
+                                                       self.mode, env,
+                                                       check=check and unit.pkg is top)
         return objs
 
     def lto_link(self, bitcode: list[Path], exe: Path, announce: bool) -> list[Path]:
@@ -2732,6 +2753,17 @@ def build(pkg: Package, mode: str, session: Session | None = None) -> Path:
     return exe
 
 
+def check_package(pkg: Package, mode: str) -> None:
+    """Build what pkg imports, as build does, and have conec check pkg itself:
+    every error a compile of it gives, with nothing written for it and nothing
+    linked."""
+    session = Session(open_registry(), build_folder(pkg, mode), mode)
+    restore(pkg, session.registry)
+    order = build_order(pkg, session.registry)
+    session.compile(order, pkg, check=True)
+    say("Checked", f"{mode} {pkg.label()} ({pkg.root})")
+
+
 def lone_package(file: Path) -> Package:
     """A lone file with no manifest is a program of one module, named by its
     'mod' line. A file with none is named by the file here, and the compiler
@@ -2841,6 +2873,11 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_build(args: argparse.Namespace) -> int:
     build(current_package(), "release" if args.release else "debug")
+    return 0
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    check_package(current_package(), "release" if args.release else "debug")
     return 0
 
 
@@ -4385,6 +4422,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                                 " list the examples")
             p.epilog = "Arguments after '--' are passed to the program."
         p.set_defaults(func=func)
+    check = sub.add_parser("check", help="report this package's errors, as a build would, and"
+                                         " write nothing for it (what it imports is built)")
+    check.add_argument("--release", action="store_true", help="check as a release build")
+    add_define_argument(check)
+    add_cache_argument(check)
+    check.set_defaults(func=cmd_check)
     test = sub.add_parser("test", help="build this package, run its tests and build its"
                                        " examples")
     test.add_argument("name", nargs="?",

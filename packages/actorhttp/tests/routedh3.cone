@@ -1,6 +1,7 @@
-// A routed server given 'offerHttp3' answers an error from 'listen' (stage 5, row Q3: the endpoint's handler half is not
-// built, so a routed server cannot offer HTTP/3 yet) instead of ignoring the request silently, as it did. The control: the
-// same routes without 'offerHttp3' listen.
+// A routed server given 'offerHttp3' that cannot serve it answers an error from 'listen' instead of ignoring the request:
+// without TLS (HTTP/3 needs it), and with a plug-in that makes no acceptor (the routed server's endpoint is made from it;
+// the working case is h3driver's routedh3 test, since only h3driver can name a real plug-in). The control: the same routes
+// without 'offerHttp3' listen.
 
 mod routedh3;
 
@@ -15,8 +16,9 @@ import actors;
 import httpclient;
 import actorhttp use Server, ServerConfig, HttpRoutes, ServerError;
 import testing use *;
+import path use Path;
 
-// A plug-in maker that makes none that listens (the refusal comes before the maker is called)
+/// A plug-in maker whose plug-in makes no acceptor (httpclient's NoHttp3: the trait's default answers 'no HTTP/3 acceptor')
 fn nothing(t: &tls.ClientConfig) Uni[httpclient.Http3] {
   Uni[httpclient.NoHttp3](httpclient.NoHttp3.make())
 }
@@ -47,14 +49,28 @@ fn tryListen(cfg: ServerConfig) String {
   String.from("no answer")
 }
 
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
 fn main() i32 {
   let routes = HttpRoutes.make().queue("", "/");
   let ok = tryListen(ServerConfig.make().routes(routes));
   expectStr(ok.view(), "listening", "a routed server without offerHttp3 listens");
-  let refused = tryListen(ServerConfig.make().routes(HttpRoutes.make().queue("", "/")).offerHttp3(&nothing));
-  expect(refused.view().contains("does not offer HTTP/3"), "a routed server given offerHttp3 answers an error");
+  let plain = tryListen(ServerConfig.make().routes(HttpRoutes.make().queue("", "/")).offerHttp3(&nothing));
+  expectStr(plain.view(), "HTTP/3 needs TLS: ServerConfig.secure", "offerHttp3 without TLS answers an error");
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  let noAcceptor = tryListen(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile))
+    .routes(HttpRoutes.make().queue("", "/")).offerHttp3(&nothing));
+  expect(noAcceptor.view().contains("no HTTP/3 acceptor"), "a plug-in with no acceptor answers an error");
   printStr("routedh3: ");
-  printStr(refused.view());
+  printStr(noAcceptor.view());
+  printStr("\n");
+  printStr("routedh3: ");
+  printStr(plain.view());
   printStr("\n");
   0i32
 }
