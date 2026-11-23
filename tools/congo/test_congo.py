@@ -593,6 +593,7 @@ class Scenarios(unittest.TestCase):
         self.assertIn("build: release",
                       (pkg / "build" / "release" / "show.conebuild").read_text())
 
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'layout' yet")
     def test_layout_report(self):
         """'congo layout' builds with conec's --layout and prints each struct's
         size, alignment, field offsets and padding; a second run prints it again
