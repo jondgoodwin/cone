@@ -350,6 +350,76 @@ class Scenarios(unittest.TestCase):
         self.congo("clean", cwd=pkg)
         self.assertFalse((pkg / "build").exists())
 
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'check' yet")
+    def test_check_reports_errors_and_writes_nothing_for_the_package(self):
+        self.congo("new", "app", cwd=self.root)
+        pkg = self.root / "app"
+        out = pkg / "build" / "debug"
+        run = self.congo("check", cwd=pkg)
+        self.assertIn("Checked", run.stdout)
+        self.assertNotIn("Linking", run.stdout)
+        # What it imports was built; the package itself left no object or include file
+        for name in ("core", "stdio"):
+            self.assertTrue((out / f"{name}{congo.OBJ_EXT}").is_file(), name)
+        self.assertFalse((out / f"app{congo.OBJ_EXT}").exists())
+        self.assertFalse((out / "app.cone").exists())
+        self.assertFalse((out / f"app{congo.EXE_EXT}").exists())
+        # An error is reported and the command fails, as a build's does
+        good = (pkg / "src" / "app.cone").read_text()
+        write(pkg / "src" / "app.cone", good.replace("Hello, world!", "Hello") + "\nlet bad: i32 = \"no\";\n")
+        run = self.congo("check", cwd=pkg, ok=False)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("could not check app", run.stdout + run.stderr)
+        self.assertFalse((out / f"app{congo.OBJ_EXT}").exists())
+        built = self.congo("build", cwd=pkg, ok=False)
+        self.assertEqual(built.returncode, 1)
+
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'check' yet")
+    def test_check_of_a_package_with_a_library_dependency(self):
+        shelf = self.root / "reg" / "shelf"
+        self.congo("new", "shelf", str(shelf), "--lib", cwd=self.root)
+        write(shelf / "src" / "shelf.cone", """
+            mod shelf;
+
+            pub fn twice(n: i64) i64 {
+              n * 2i64
+            }
+            """)
+        self.registry(self.root / "reg")
+        self.congo("new", "app", cwd=self.root)
+        pkg = self.root / "app"
+        write(pkg / "src" / "app.cone", """
+            mod app;
+
+            import stdio use *;
+            import shelf;
+
+            fn main() i32 {
+              printInt(shelf.twice(21i64));
+              0i32
+            }
+            """)
+        run = self.congo("check", cwd=pkg)
+        self.assertIn("Checked", run.stdout)
+        out = pkg / "build" / "debug"
+        self.assertTrue((out / f"shelf{congo.OBJ_EXT}").is_file())
+        self.assertTrue((out / "shelf.cone").is_file())
+        self.assertFalse((out / f"app{congo.OBJ_EXT}").exists())
+        # A use of the library its include file does not satisfy is found
+        write(pkg / "src" / "app.cone", """
+            mod app;
+
+            import stdio use *;
+            import shelf;
+
+            fn main() i32 {
+              printInt(shelf.twice("x"));
+              0i32
+            }
+            """)
+        run = self.congo("check", cwd=pkg, ok=False)
+        self.assertEqual(run.returncode, 1)
+
     def test_an_import_renamed_with_as(self):
         # 'import x as y' names the package x, which is what Congo reads: the
         # rename and the clause after it are the compiler's. A sister imported
