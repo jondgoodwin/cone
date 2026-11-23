@@ -181,7 +181,7 @@ KEYWORDS = frozenset((
     " while each in by break continue as is into inline where new trynew try await yield selfactor async"
     " void nil null true false undef using let var").split())
 RESERVED = frozenset((
-    "baseurl context local selfmethod wait throw catch spawn"
+    "baseurl context selfmethod throw catch spawn"
     ).split())
 PERMISSIONS = frozenset("uni mut imm ro mut1 opaq".split())
 
