@@ -502,6 +502,12 @@ Some facts belong to the file rather than a line:
   is written `<masked>` before it is compared with the `.err` file, which
   writes `<masked>` in its place (a thread's identity in a panic's report,
   `exception_thread`).
+- **Lines in a `.err` file.** In the `.err` comparison the `:LINE` and `:COLUMN` after a source
+  file's name (`.cone`, `.c`, `.h`, `.cpp`, `.rs`) are ignored, expected and actual alike, unless
+  the file is a `.cone` file under the scenario source's folder (the test's own, where the line is
+  what the test pins). A panic inside a library thus survives an edit above it; the file name and
+  the message are compared exactly. Congo's package tests follow the same rule (`tools/congo/README.md`).
+  `.out` files are compared exactly.
 - **Lines under a diagnostic that are no diagnostic**, `notes`, a list of strings for a `reject`
   scenario: each must appear in the compiler's output. An error in a pass of a `#each` is followed by
   `... in pass 2 of 3 of this '#each', where #x is 2.5`, a line that an annotation cannot pin

@@ -794,6 +794,12 @@ packages/geomath/
    `tests/<name>.linux.out` (`windows` and `macos` likewise, and `.err`), which is
    compared in place of the plain one on that host: the compiler suite's rule.
    A mismatch prints a diff of the output, or both statuses.
+   **Lines in a `.err` file.** In the `.err` comparison (expected and actual alike) the `:LINE`
+   and `:COLUMN` after a source file's name (`.cone`, `.c`, `.h`, `.cpp`, `.rs`) are ignored, so
+   `panic at bufpool.cone:652: ...` matches the same panic at any line of `bufpool.cone`; the file
+   name and the message are compared exactly. A `.cone` file under the test's own `tests` folder keeps its
+   line (a test of where a panic is reported must pin it). The compiler suite does the same, for
+   the folder of a scenario's source. `.out` files are compared exactly.
    **A panic's backtrace.** Congo sets `CONE_BACKTRACE=1` for each program it runs
    (`congo run` too), unless the caller has set it, so a panic writes `stack
    backtrace:` and its frames (`N: 0xADDRESS module+0xOFFSET`). The block is left out

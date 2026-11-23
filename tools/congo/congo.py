@@ -3138,6 +3138,24 @@ def normalized_lines(text: str) -> list[str]:
     return lines
 
 
+SOURCE_LINE_RX = re.compile(r"\b([\w.-]+\.(?:cone|c|h|cpp|rs)):\d+(?::\d+)?")
+
+
+def without_foreign_lines(lines: list[str], tests_dir: Path) -> list[str]:
+    """Stderr as a ``.err`` file is compared: the ``:LINE`` (and ``:COLUMN``) after
+    a source file's name is dropped, unless that file is one of the test's own, a
+    ``.cone`` file under its ``tests`` folder. A panic inside the package or core
+    names a line of a file the test does not own, which an edit above it moves for
+    no change of behaviour; the file name and the message stay compared exactly,
+    and a line in the test's own file stays pinned, since the test is there to
+    say where the panic is reported."""
+    own = {f.name for f in tests_dir.rglob("*.cone")}
+
+    def drop(m: re.Match) -> str:
+        return m.group(0) if m.group(1) in own else m.group(1)
+    return [SOURCE_LINE_RX.sub(drop, line) for line in lines]
+
+
 def expectation_file(program: Path, suffix: str) -> Path:
     """The file a test's stdout (``.out``) or stderr (``.err``) is compared with
     on this host: ``tests/<name>.out`` unless the test has a file of its own for
@@ -3903,8 +3921,9 @@ def run_test(session: Session, file: Path, bless: bool, pkg: Package | None = No
     err_path = expectation_file(file, ".err")
     err_checked = err_path.is_file()
     if err_checked:
-        expected_err = normalized_lines(err_path.read_text(encoding="utf-8"))
-        actual_err = normalized_lines(stderr)
+        expected_err = without_foreign_lines(
+            normalized_lines(err_path.read_text(encoding="utf-8")), file.parent)
+        actual_err = without_foreign_lines(normalized_lines(stderr), file.parent)
         if actual_err != expected_err:
             diff = difflib.unified_diff(expected_err, actual_err, fromfile=shown(err_path),
                                         tofile="actual", lineterm="", n=2)
