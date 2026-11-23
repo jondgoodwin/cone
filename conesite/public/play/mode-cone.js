@@ -120,7 +120,7 @@ var ConeHighlightRules = function() {
             regex: /\b(?:while|each|in|by)\b/
         }, {
             token: "keyword.other.reserved.cone",
-            regex: /\b(?:baseurl|context|local|selfmethod|wait|yield|throw|catch|spawn)\b/
+            regex: /\b(?:baseurl|context|selfmethod|yield|throw|catch|spawn)\b/
         }, {
             token: "text",
             regex: /\-|\+|\*|\/(?![\/*])|%|<<|>>/
