@@ -350,6 +350,7 @@ class Scenarios(unittest.TestCase):
         self.congo("clean", cwd=pkg)
         self.assertFalse((pkg / "build").exists())
 
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'check' yet")
     def test_check_reports_errors_and_writes_nothing_for_the_package(self):
         self.congo("new", "app", cwd=self.root)
         pkg = self.root / "app"
@@ -373,6 +374,7 @@ class Scenarios(unittest.TestCase):
         built = self.congo("build", cwd=pkg, ok=False)
         self.assertEqual(built.returncode, 1)
 
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'check' yet")
     def test_check_of_a_package_with_a_library_dependency(self):
         shelf = self.root / "reg" / "shelf"
         self.congo("new", "shelf", str(shelf), "--lib", cwd=self.root)

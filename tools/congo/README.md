@@ -1315,6 +1315,7 @@ Where it differs from `congo.py`:
 
 ## Not built yet
 
+- `check` in the Cone Congo (`congo.py` has it).
 - Runtime libraries anywhere but Windows, where the dynamic loader finds a
   shared library by its own rules (`rpath`, `LD_LIBRARY_PATH`).
 - A package of C sources, which Congo would compile; a C package whose root
