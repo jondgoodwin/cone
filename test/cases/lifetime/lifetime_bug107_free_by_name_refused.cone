@@ -1,0 +1,23 @@
+// A '&mut' parameter handed to a free function by name lends what '&mut *s'
+// lends: the result of 'pick(s)' carries a borrow of '*s', so storing it into
+// 's' keeps a borrow of the value's own storage, which the caller may move or
+// change after the call. The method form, the explicit reborrow and the
+// direct store were refused (ErrorSelfStore) already; the by-name call was
+// accepted (Bug 107, found 23 Nov 2026, row 705). 'Sched' names no lifetime.
+//
+// Verdict: refuse each, ErrorSelfStore, at the store.
+
+mod lifetime_bug107_free_by_name_refused;
+
+struct Tcb { pub id: i32; pub link: Option[&mut Tcb]; }
+struct Sched { pub cur: Option[&mut Tcb]; pub own: Tcb; pub head: Option[&mut Tcb]; }
+
+fn pick(s: &mut Sched, ct: i32) Option[&mut Tcb] { Some[&mut Tcb](&mut s.own) }
+fn step(s: &mut Sched) { s.cur = pick(s, 1i32); }   //~ ErrorSelfStore "borrow of '*s'"
+
+// The result a stored borrow, as in richards: still a borrow of '*s' where the
+// signature names no lifetime
+fn pickHead(s: &mut Sched, ct: i32) Option[&mut Tcb] { s.head }
+fn stepHead(s: &mut Sched) { s.cur = pickHead(s, 1i32); }   //~ ErrorSelfStore "borrow of '*s'"
+
+fn main() { }
