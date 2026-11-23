@@ -113,6 +113,30 @@ python3 test/run.py --conec build/x64-release/conec
   `name.<host>.out` first). Write tests to print the same everywhere where possible, asking
   `#if #os == .windows` for the values that differ.
 
+### macOS
+
+Verified on Apple Silicon (arm64), macOS 27.2, Xcode 27: Homebrew's `llvm` (23.1.6; AArch64,
+X86, WebAssembly and SPIRV targets), `cmake` (4.5) and `ninja`, with Xcode or its Command Line
+Tools for Apple's `clang` and linker. Homebrew's `llvm` is keg-only, so name it with `LLVM_DIR`:
+
+```sh
+brew install llvm cmake ninja
+cmake -S . -B build/arm64-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DLLVM_DIR=$(brew --prefix llvm)/lib/cmake/llvm
+cmake --build build/arm64-release
+python3 test/run.py --conec build/arm64-release/conec
+```
+
+- CMake 4 refuses the `cmake_minimum_required` version in `CMakeLists.txt` unless given
+  `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`.
+- With an Xcode or Command Line Tools older than macOS, linking `conec` prints `was built for
+  newer 'macOS' version` warnings for Homebrew's LLVM libraries: its SDK is older than they are.
+  The build and test results are unaffected; updating Xcode removes them.
+- LLVM's official macOS release archive does not link with Apple's linker: its static libraries
+  are LLVM bitcode, which Xcode 16's `ld` cannot read. Use Homebrew's `llvm`.
+- Link a program by hand with `cc prog.o build/arm64-release/libconestd.a -o prog`; the math and
+  thread libraries are part of macOS's `libSystem`.
+- A test whose output differs on the Mac has `name.macos.out` beside `name.out`.
+
 ## Validating a change
 
 **Compiling clean is not evidence of correct runtime behaviour.** It is the first check, not the last.
