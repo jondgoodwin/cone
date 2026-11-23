@@ -4514,7 +4514,7 @@ static void structHashCheck(StructNode *node) {
         }
         else if (fldtype->tag == IntNbrTag || fldtype->tag == UintNbrTag)
             continue;
-        else if (fldtype->tag == StructTag && !(fldtype->flags & (TraitType | EnumType))
+        else if (fldtype->tag == StructTag && (!(fldtype->flags & TraitType) || (fldtype->flags & EnumType))
             && genericTypeIs(field->vtype, hashtrait))
             continue;
         // An owner of text, Uni[str] or Rc[str], is Hash by the compiler's grant (its
