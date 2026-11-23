@@ -2719,6 +2719,8 @@ class Session:
                      else "the linker's own search path")
             hint = (f"\nC libraries linked ({named}): the linker looks for each in the"
                     f" folders [link] paths names, then in {where}" if named else "")
+            if "ngtcp2" in said:
+                hint += NGTCP2_HINT
             raise CongoError(f"link failed:\n{' '.join(command)}\n{said}{hint}{again}")
         for name, source in runtime.items():
             if copy_runtime(source, exe.parent, name) and announce:
@@ -2822,6 +2824,28 @@ pub fn answer() i64 {{
 """
 
 
+# Said after a link that names ngtcp2 as missing, in place of the bare linker
+# failure: the package quic links C libraries a checkout does not carry
+NGTCP2_HINT = ("\nquic needs deps: run tools/deps/fetch.py openssl-headers +"
+               " tools/deps/build_ngtcp2.py")
+
+
+def make_package(root: Path, name: str, lib: bool, existing: bool) -> None:
+    """The folders and files of a new package at root. For 'init' (existing),
+    the folder is there already, and a source file in it is never overwritten."""
+    output = "library" if lib else "executable"
+    (root / "src").mkdir(parents=True, exist_ok=existing)
+    (root / "tests").mkdir(exist_ok=existing)
+    (root / MANIFEST).write_text(
+        f'[package]\nname = "{name}"\nversion = "0.1.0"\noutput = "{output}"\n',
+        encoding="utf-8")
+    template = LIBRARY_TEMPLATE if lib else PROGRAM_TEMPLATE
+    root_file = root / "src" / f"{name}.cone"
+    if not (existing and root_file.exists()):
+        root_file.write_text(template.format(name=name), encoding="utf-8")
+    say("Created", f"{output} package {name} ({shown(root)})")
+
+
 def cmd_new(args: argparse.Namespace) -> int:
     name = args.name
     if name_fault(name):
@@ -2829,15 +2853,21 @@ def cmd_new(args: argparse.Namespace) -> int:
     root = Path(args.path or name).resolve()
     if root.exists():
         raise CongoError(f"{root} already exists")
-    output = "library" if args.lib else "executable"
-    (root / "src").mkdir(parents=True)
-    (root / "tests").mkdir()
-    (root / MANIFEST).write_text(
-        f'[package]\nname = "{name}"\nversion = "0.1.0"\noutput = "{output}"\n',
-        encoding="utf-8")
-    template = LIBRARY_TEMPLATE if args.lib else PROGRAM_TEMPLATE
-    (root / "src" / f"{name}.cone").write_text(template.format(name=name), encoding="utf-8")
-    say("Created", f"{output} package {name} ({shown(root)})")
+    make_package(root, name, args.lib, existing=False)
+    return 0
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """'congo init': the package of the current folder, which exists already;
+    named by the folder unless a name is given."""
+    root = Path.cwd().resolve()
+    name = args.name or root.name
+    if name_fault(name):
+        raise CongoError(f"'{name}' {name_fault(name)}"
+                         + ("" if args.name else "; 'congo init <name>' names the package"))
+    if (root / MANIFEST).exists():
+        raise CongoError(f"{root / MANIFEST} exists already: this folder is a package")
+    make_package(root, name, args.lib, existing=True)
     return 0
 
 
@@ -3010,8 +3040,36 @@ def show_stderr(text: str, exe: Path) -> str:
     return "\n".join(lines)
 
 
+def example_package(pkg: Package, name: str) -> Package | None:
+    """'congo run --example <name>': examples/<name>.cone of the package of the
+    current folder, resolved as 'congo run examples/<name>.cone' resolves it. With
+    no name, the examples are listed and None comes back."""
+    folder = pkg.root / EXAMPLES
+    names = [f.stem for f in programs(folder, None)]
+    if not name:
+        if not names:
+            raise CongoError(f"{pkg.name} has no examples (no .cone file in {shown(folder)})")
+        print(f"examples of {pkg.name}:")
+        for stem in names:
+            print(f"  {stem}")
+        return None
+    name = name[:-5] if name.endswith(".cone") else name
+    if name not in names:
+        have = ", ".join(names) if names else "none"
+        raise CongoError(f"{pkg.name} has no example '{name}' (examples: {have})")
+    return lone_package(folder / f"{name}.cone")
+
+
 def cmd_run(args: argparse.Namespace) -> int:
-    pkg = lone_package(Path(args.file)) if args.file else current_package()
+    if args.example is not None:
+        if args.file:
+            raise CongoError("--example names a program in this package's examples folder;"
+                             " it takes no file")
+        pkg = example_package(current_package(), args.example)
+        if pkg is None:
+            return 0
+    else:
+        pkg = lone_package(Path(args.file)) if args.file else current_package()
     if pkg.output != "executable":
         raise CongoError(f"{pkg.name} is a library, which has nothing to run;"
                          f" 'congo build' builds it")
@@ -4344,6 +4402,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     new.add_argument("--lib", action="store_true",
                      help="a library package, whose include file its build generates")
     new.set_defaults(func=cmd_new)
+    init = sub.add_parser("init", help="make a package of the current folder")
+    init.add_argument("name", nargs="?", help="the package's name (default: the folder's)")
+    init.add_argument("--lib", action="store_true",
+                      help="a library package, whose include file its build generates")
+    init.set_defaults(func=cmd_init)
     for name, func, text in (("build", cmd_build, "build this package"),
                              ("run", cmd_run, "build this package or a lone file, and run it")):
         p = sub.add_parser(name, help=text)
@@ -4354,6 +4417,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         add_cache_argument(p)
         if name == "run":
             p.add_argument("file", nargs="?", help="a lone .cone file, run with no manifest")
+            p.add_argument("--example", nargs="?", const="", default=None, metavar="NAME",
+                           help="run examples/NAME.cone of this package; with no name,"
+                                " list the examples")
             p.epilog = "Arguments after '--' are passed to the program."
         p.set_defaults(func=func)
     check = sub.add_parser("check", help="report this package's errors, as a build would, and"

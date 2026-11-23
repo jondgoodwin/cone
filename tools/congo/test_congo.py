@@ -305,6 +305,70 @@ class Scenarios(unittest.TestCase):
         listed = ", ".join(f'"{f.as_posix()}"' for f in folders)
         write(self.root / "home" / "config.toml", f"[registry]\nfolders = [{listed}]\n")
 
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'init' yet")
+    def test_init_makes_a_package_of_an_existing_folder(self):
+        folder = self.root / "already_here"
+        write(folder / "notes.txt", "kept\n")
+        self.congo("init", cwd=folder)
+        self.assertTrue((folder / "congo.toml").is_file())
+        self.assertIn('name = "already_here"', (folder / "congo.toml").read_text())
+        self.assertTrue((folder / "src" / "already_here.cone").is_file())
+        self.assertTrue((folder / "tests").is_dir())
+        self.assertEqual((folder / "notes.txt").read_text(), "kept\n")
+        # A second init refuses, and leaves the manifest as it is
+        again = self.congo("init", cwd=folder, ok=False)
+        self.assertNotEqual(again.returncode, 0)
+        self.assertIn("exists already", again.stderr)
+        # A name is given, and a source file of that name is not overwritten
+        other = self.root / "other"
+        write(other / "src" / "mine.cone", "// mine\n")
+        self.congo("init", "mine", "--lib", cwd=other)
+        self.assertEqual((other / "src" / "mine.cone").read_text(), "// mine\n")
+        self.assertIn('output = "library"', (other / "congo.toml").read_text())
+        # A folder name that is no package name needs a name
+        bad = self.root / "9 bad folder"
+        bad.mkdir()
+        self.assertNotEqual(self.congo("init", cwd=bad, ok=False).returncode, 0)
+
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'run --example' yet")
+    def test_run_example(self):
+        self.congo("new", "demo", cwd=self.root)
+        pkg = self.root / "demo"
+        # No examples folder: the list says so
+        none = self.congo("run", "--example", cwd=pkg, ok=False)
+        self.assertNotEqual(none.returncode, 0)
+        self.assertIn("no examples", none.stderr)
+        source = (pkg / "src" / "demo.cone").read_text()
+        for name in ("first", "second"):
+            write(pkg / "examples" / f"{name}.cone",
+                  source.replace("mod demo;", f"mod {name};")
+                  .replace("Hello, world!", f"from {name}"))
+        listed = self.congo("run", "--example", cwd=pkg)
+        self.assertEqual(listed.stdout.splitlines(), ["examples of demo:", "  first", "  second"])
+        run = self.congo("run", "--example", "second", cwd=pkg)
+        self.assertEqual(self.program_output(run), "from second\n")
+        run = self.congo("run", "--example", "first.cone", cwd=pkg)
+        self.assertEqual(self.program_output(run), "from first\n")
+        missing = self.congo("run", "--example", "third", cwd=pkg, ok=False)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("no example 'third' (examples: first, second)", missing.stderr)
+        both = self.congo("run", "--example", "first", "x.cone", cwd=pkg, ok=False)
+        self.assertNotEqual(both.returncode, 0)
+
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo does not give the missing-ngtcp2 hint yet")
+    def test_a_missing_ngtcp2_says_what_to_run(self):
+        self.congo("new", "needs", cwd=self.root)
+        pkg = self.root / "needs"
+        # A library that exists nowhere, its name holding "ngtcp2": the link fails
+        # whether or not the machine has the real ngtcp2 (a gate puts deps/ngtcp2 on LIB)
+        with open(pkg / "congo.toml", "a", encoding="utf-8") as manifest:
+            manifest.write('\n[link]\nlibraries = ["ngtcp2_no_such_library"]\n')
+        run = self.congo("build", cwd=pkg, ok=False)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("link failed", run.stderr)
+        self.assertIn("quic needs deps: run tools/deps/fetch.py openssl-headers +"
+                      " tools/deps/build_ngtcp2.py", run.stderr)
+
     def test_new_then_run(self):
         self.congo("new", "hello", cwd=self.root)
         pkg = self.root / "hello"
