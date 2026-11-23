@@ -238,9 +238,12 @@ it (`""""Happy Birthday!""""` holds the quotes), and a quote that is not part of
 closing three is content; the sizing walk finds that closer first (`endp`) and the build
 stops there. A backtick raw literal ends at the next backtick. Margin, line-end and
 text-after-the-opening rules are the multi-line literal's, unchanged. `$"` stays the only
-interpolated opening, and a raw literal written inside an interpolation's braces is not
-stepped over whole by `lexInterpSkipBraces` (it reads quotes as plain strings). Tests:
-`lexical_raw_strings`, `lexical_reject_raw_strings`, `lexical_reject_unclosed_raw`.
+interpolated opening, and a raw or triple-quoted literal written inside an interpolation's
+braces is stepped over whole by `lexInterpSkipBraces` (`lexInterpSkipRawOrTriple`), so a brace,
+quote or backslash in it closes nothing; an unclosed one is not taken for a literal there
+and is reported at its opening by the expression's own lexing. Tests:
+`lexical_raw_strings`, `lexical_reject_raw_strings`, `lexical_reject_unclosed_raw`,
+`lexical_raw_interp`, `lexical_reject_interp_raw_open`.
 
 **The `p` exponent is a hexadecimal literal's** (Jon 28 Oct, ruled 1 Nov 2026).
 `lexScanNumber` reads `p` or `P` as an exponent after a hex mantissa only; in a decimal

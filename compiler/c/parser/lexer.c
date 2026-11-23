@@ -620,9 +620,53 @@ static char *lexStringNewLine(char *srcp, char *margin, uint32_t marginlen) {
 // none closes it. Strings and characters inside are stepped over, so a brace or
 // a quote in them closes nothing.
 static char *lexInterpSkipStr(char *p, int interp);
+
+// The place after the raw or triple-quoted literal that begins at p ('r' of
+// r"..." and r`...`, or the first of three quotes), or NULL where none begins
+// there or its closer never comes. A triple-quoted literal closes on the last
+// three of the run of quotes that ends it; only the cooked kind has escapes.
+static char *lexInterpSkipRawOrTriple(char *p) {
+    int raw = 0;
+    if (*p == 'r' && (p[1] == '"' || p[1] == '`') && (p == lex->source
+        || !(isalnum((unsigned char)p[-1]) || p[-1] == '_' || ((unsigned char)p[-1] & 0x80)))) {
+        raw = 1;
+        ++p;
+    }
+    else if (p > lex->source && p[-1] == '$')
+        return NULL;  // $" opens an interpolated string
+    char delim = *p;
+    int triple = delim == '"' && p[1] == '"' && p[2] == '"';
+    if (!raw && !triple)
+        return NULL;
+    if (!triple) {
+        for (++p; *p; ++p)
+            if (*p == delim)
+                return p + 1;
+        return NULL;
+    }
+    p += 3;
+    while (*p) {
+        if (!raw && *p == '\\' && p[1])
+            p += 2;
+        else if (p[0] == '"' && p[1] == '"' && p[2] == '"') {
+            while (p[3] == '"')
+                ++p;
+            return p + 3;
+        }
+        else
+            ++p;
+    }
+    return NULL;
+}
+
 static char *lexInterpSkipBraces(char *p) {
     int depth = 1;
     while (*p) {
+        char *lit = (*p == '"' || *p == 'r') ? lexInterpSkipRawOrTriple(p) : NULL;
+        if (lit) {
+            p = lit;
+            continue;
+        }
         if (*p == '"')
             p = lexInterpSkipStr(p + 1, p > lex->source && p[-1] == '$');
         else if (*p == '\'' && p[1] == '\\') {
