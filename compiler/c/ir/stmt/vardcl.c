@@ -30,6 +30,8 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     name->flowtracked = 0;
     name->flowlend = 0;
     name->nuses = 0;
+    name->nwrites = 0;
+    name->userlocal = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->hollowuse = NULL;
@@ -56,6 +58,8 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     name->flowtracked = 0;
     name->flowlend = 0;
     name->nuses = 0;
+    name->nwrites = 0;
+    name->userlocal = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->hollowuse = NULL;
@@ -77,6 +81,7 @@ VarDclNode *cloneVarDclShell(VarDclNode *node) {
     // What flow finds of the copy is the copy's own (VarLendSeen)
     newnode->flowlend = 0;
     newnode->nuses = 0;
+    newnode->nwrites = 0;
     return newnode;
 }
 

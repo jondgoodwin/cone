@@ -1022,3 +1022,122 @@ LLVMValueRef genlAlignof(GenState *gen, INode *vtype) {
 LLVMTypeRef genlUsize(GenState *gen) {
     return gen->opt->ptrsize == 32 ? LLVMInt32TypeInContext(gen->context) : LLVMInt64TypeInContext(gen->context);
 }
+
+// --layout: what the target lays out for each struct and enum of the modules this
+// compile generates (and the instances it made of their generics): its size,
+// alignment, each field's offset, and the bytes of padding between and after
+// them. A type that is padded by a quarter of its size or more (and by four
+// bytes or more) is marked PADDED: reordering its fields, or narrowing one, may
+// shrink it. The report changes nothing about the layout. A type no code of the
+// program lays out has no layout yet and is not listed.
+#define LayoutPadPercent 25
+#define LayoutPadBytes 4
+
+static void genlLayoutOne(GenState *gen, StructNode *strnode, const char *modname) {
+    LLVMTypeRef ty = strnode->llvmtype;
+    if (ty == NULL || LLVMGetTypeKind(ty) != LLVMStructTypeKind || LLVMIsOpaqueStruct(ty)
+        || (strnode->flags & (DeclaredOpaque | TraitType)))
+        return;
+    unsigned long long size = LLVMABISizeOfType(gen->datalayout, ty);
+    unsigned align = LLVMABIAlignmentOfType(gen->datalayout, ty);
+    unsigned elems = LLVMCountStructElementTypes(ty);
+    LLVMTypeRef *etypes = (LLVMTypeRef*)memAllocBlk((elems + 1) * sizeof(LLVMTypeRef));
+    LLVMGetStructElementTypes(ty, etypes);
+
+    // What each LLVM element is: a field the reader wrote (named), a hidden one
+    // (a tagged enum's payload), or the byte array that fills a variant out to
+    // its enum's size, which is padding as far as this variant goes
+    const char **fnames = (const char**)memAllocBlk((elems + 1) * sizeof(char*));
+    for (unsigned i = 0; i < elems; ++i) {
+        fnames[i] = NULL;
+        INode **fp;
+        uint32_t fcnt;
+        for (nodelistFor(&strnode->fields, fcnt, fp)) {
+            if (((FieldDclNode*)*fp)->index == i) {
+                fnames[i] = &((FieldDclNode*)*fp)->namesym->namestr;
+                break;
+            }
+        }
+    }
+    int variant = strnode->basetrait != NULL;
+    unsigned fillers = (variant && elems > 0 && fnames[elems - 1] == NULL
+        && LLVMGetTypeKind(etypes[elems - 1]) == LLVMArrayTypeKind) ? 1 : 0;
+
+    // Padding is every byte no field covers: before each field, and after the last
+    unsigned long long padding = 0, end = 0;
+    for (unsigned i = 0; i < elems; ++i) {
+        unsigned long long off = LLVMOffsetOfElement(gen->datalayout, ty, i);
+        unsigned long long fsize = LLVMABISizeOfType(gen->datalayout, etypes[i]);
+        padding += off - end;
+        if (i + fillers >= elems)
+            padding += fsize;
+        end = off + fsize;
+    }
+    padding += size - end;
+    int flagged = !variant && padding >=LayoutPadBytes && padding * 100 >= size * LayoutPadPercent;
+
+    char spelled[256];
+    propagateSpell(spelled, sizeof(spelled), (INode*)strnode);
+    char owner[256];
+    owner[0] = '\0';
+    if (variant && isTypeNode(strnode->basetrait))
+        propagateSpell(owner, sizeof(owner), strnode->basetrait);
+    printf("%s.%s%s%s%s: size %llu, align %u, padding %llu%s\n", modname, owner, owner[0] ? "." : "", spelled,
+        (strnode->flags & EnumType) ? " (enum)" : "", size, align, padding, flagged ? " PADDED" : "");
+    end = 0;
+    for (unsigned i = 0; i < elems; ++i) {
+        unsigned long long off = LLVMOffsetOfElement(gen->datalayout, ty, i);
+        unsigned long long fsize = LLVMABISizeOfType(gen->datalayout, etypes[i]);
+        if (off > end)
+            printf("    %llu padding\n", off - end);
+        if (i + fillers >= elems)
+            printf("  +%llu %llu padding (fills out the enum's size)\n", off, fsize);
+        else
+            printf("  +%llu %s, %llu bytes\n", off, fnames[i] ? fnames[i] : "(hidden)", fsize);
+        end = off + fsize;
+    }
+    if (size > end)
+        printf("    %llu padding\n", size - end);
+}
+
+static void genlLayoutNode(GenState *gen, INode *node, const char *modname) {
+    if (node->tag != StructTag)
+        return;
+    StructNode *strnode = (StructNode*)node;
+    if (strnode->genericinfo) {
+        Nodes *memonodes = strnode->genericinfo->memonodes;
+        if (memonodes == NULL)
+            return;
+        uint32_t cnt;
+        INode **nodesp;
+        for (nodesFor(memonodes, cnt, nodesp)) {
+            ++nodesp; --cnt;  // memonodes holds pairs: the call, then what it instantiated
+            genlLayoutNode(gen, *nodesp, modname);
+        }
+        return;
+    }
+    genlLayoutOne(gen, strnode, modname);
+    // An enum's variants are structs of their own, whose layout a variant's value has
+    if (strnode->flags & EnumType) {
+        uint32_t copies = structEnumCopyCount(strnode);
+        for (uint32_t pos = 0; pos < copies; ++pos)
+            genlLayoutNode(gen, nodesGet(strnode->derived, pos), modname);
+    }
+}
+
+void genlLayoutReport(GenState *gen, ProgramNode *pgm) {
+    uint32_t cnt;
+    INode **nodesp;
+    for (nodesFor(pgm->modules, cnt, nodesp)) {
+        ModuleNode *mod = (ModuleNode*)*nodesp;
+        if (modIsTemplate(mod) || !(mod->flags & FlagGenMod))
+            continue;
+        // core's own types are the language's, not the program's
+        if (strcmp(&mod->namesym->namestr, "core") == 0)
+            continue;
+        uint32_t icnt;
+        INode **inodesp;
+        for (nodesFor(mod->nodes, icnt, inodesp))
+            genlLayoutNode(gen, *inodesp, &mod->namesym->namestr);
+    }
+}

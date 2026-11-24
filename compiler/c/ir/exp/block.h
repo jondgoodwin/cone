@@ -60,6 +60,10 @@ void blockNameRes(NameResState *pstate, BlockNode *blk);
 // Note: When coerced by iexpCoerces, vtype of the block will be specified
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blkvz, INode *expectType);
 
+// '--warn-unused-var': warn at each local 'let' or 'var' nothing reads (WarnUnusedVar).
+// Silent by default until the packages and tests are cleaned of them
+extern int blockWarnUnusedVar;
+
 // Ensure this particular block does not end with break/continue
 // Used by regular and loop blocks, but not by 'if' based blocks
 void blockNoBreak(BlockNode *blk);

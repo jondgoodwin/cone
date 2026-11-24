@@ -2076,6 +2076,8 @@ static void parseBlockStmts(ParseState *parse, BlockNode *blk, BlockTail *tail) 
                 if (parse->usingdcl)
                     errorMsgNode((INode*)var, ErrorUsingForm,
                         "A pattern a function runs may not match, so a binding by 'using' ends in an 'else' that leaves: 'let rest using prefix(\"GET \") = line else { return; };'. To test and bind in a block, write 'if let rest using prefix(\"GET \") = line {...}'.");
+                else if (var->namesym != anonName && !parse->usingdcl)
+                    var->userlocal = 1;
                 nodesAdd(&blk->stmts, (INode*)var);
             }
             parseEndOfStatement();
