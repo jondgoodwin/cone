@@ -3605,6 +3605,18 @@ fn resumeSlot[S](st: *S, p: *u8, kind: u64) {
 }
 
 fn resumeSlotIn[S](st: *S, p: *u8, kind: u64, id: u64) {
+  // THE LATE-ANSWER GUARD (above regLock): an answer to a record whose table the stop has taken, or is taking,
+  // is dropped, not resumed. One load of a static word and a compare, for a reply with a record; the flag alone
+  // for one without
+  if kind == kindReply + 1u64 || kind == kindReply + 3u64 {
+    if lateById(id) {
+      dropLate(p, kind);
+      return;
+    }
+  } else if (guardWord.load() & guardTaking) != 0u64 {
+    dropLate(p, kind);
+    return;
+  }
   let run = *(p as **u8);
   var data = p + replyHead;
   let boxed = kind >= kindReply + 2u64;
@@ -3624,6 +3636,35 @@ fn resumeSlotIn[S](st: *S, p: *u8, kind: u64, id: u64) {
   if boxed {
     libc.free(data);
   }
+}
+
+// A late answer's slot, given up without its second half (THE LATE-ANSWER GUARD): a lent value is taken into a
+// place of this stack's own, as resumeLent does, so that the lender's place is free and its operation counted
+// spent; a box is freed. The value is not finalized (its type is not known here), so what it holds is leaked, as
+// freeRecords leaks what the end drops unfinalized. Nothing here reads a table or a record
+fn dropLate(p: *u8, kind: u64) {
+  lateDrops.addOrdered(1u64, MemOrder.Relaxed);
+  if kind < kindReply + 2u64 {
+    return;
+  }
+  let w = *((p + replyHead) as *usize);
+  if (w & 1usize) != 0usize {
+    var mine = Array[u64, 16]() <- fill 0u64;
+    var f = *((p + replyHead + 8usize) as **u8);
+    let fp = mem.readRaw[&fn(p: *u8, to: *u8)](&mut f as *(&fn(p: *u8, to: *u8)));
+    fp((w - 1usize) as *u8, &mine[0usize] as *u8);
+    return;
+  }
+  libc.free(w as *u8);
+}
+
+// How many answers the guard has dropped
+let lateDrops: Atomic[u64];
+
+// TEST-ONLY, not for programs (public only because Cone has no test-only visibility): how many late answers the
+// guard has dropped so far
+pub fn testLateDrops() u64 {
+  lateDrops.load()
 }
 
 // A reply whose value is lent (LENT ANSWERS): the value is moved into a place
@@ -3739,6 +3780,54 @@ struct PNode {
 let regLock: sync.Mutex;          // guards regHead and every entry's links
 let regHead: Atomic[usize];       // the newest entry, a *PNode; touched only under regLock
 
+// THE LATE-ANSWER GUARD. The stop's quiesce is a point in time, not a gate: an answer a worker has begun to push
+// outside any counted state (a hook between turns, a timer's fire) is not counted until its push reaches
+// 'schedule', so it can resume a parked record after abandonParked has taken the table, whoever pushes it
+// (Bug 108). The resume is therefore checked, at the one place every answer to a record passes (resumeSlotIn),
+// against ONE WORD in static memory, 'guardWord', which nothing frees, so that the check itself reads nothing
+// the take frees: the id word it is given (in the reply's own slot in the awaiting actor's mailbox, which the
+// awaiting actor, alive, still holds) and this word. It reads no table, no record, no PNode.
+//   bits 0..39    unused here
+//   bits 40..61   the GENERATION: how many takes have been made; abandonParked bumps it at each take
+//   bit 62        the TAKING flag: set while abandonParked is about to take and takes, clear otherwise
+// A record's id word is its slot's index (bits 0..39: a table of 2^40 slots is not reachable) and, in bits 40..61,
+// the generation when it was parked (parkReserve); bit 62 is never set in an id and bit 63 is the group's. An
+// answer is dropped, not resumed, when its id's generation is not the current one (its record was taken: the
+// answer is late) or the flag is set (a take is under way: the record is about to be taken, or has just been).
+// A reply that carries no record has no id to compare and is dropped on the flag alone: its second half touches no
+// table of the taken records, but may park a new one, and that races the take.
+//
+// THE ORDER (the race between the flag and a resume that has already read it). Every operation named is
+// sequentially consistent. abandonParked: (1) stores the flag; (2) quiesces, which loads every worker's counts;
+// (3) takes under regLock, bumping the generation first, the flag still set; (4) stores the word with the flag
+// clear (the generation stays bumped), and only then runs the records' finalizers. A resume is in an activation
+// that 'schedule' counted (a worker's 'started' store, or 'extStarted''s add) BEFORE the activation runs, and the
+// resume loads the word after that: Dekker's pair, (1)-(2) against the count-then-load. In the single total order of
+// the sequentially consistent operations either the load follows (1), and then it sees the flag, or the generation
+// of a take after it, or both (the word only moves to a bumped generation, and (4) comes after the bump in the
+// stopper's program order), so the answer is dropped; or (2) read the activation's count before it: then it is not
+// quiescent (the end is counted after the resume finishes, and the counts are read ended first), so the take comes
+// after the resume has finished, and the resume found its table whole. Either way no resume runs against the take.
+// What is NOT closed here: an activation a late producer starts by SENDING a message, not answering (its behaviour
+// may park or unpark on a table being taken): the check is on the replies, which are what a stop's gate does not
+// meet and where the unsafe step is.
+let guardWord: Atomic[u64];
+const idIndexMask = 0x000000FFFFFFFFFFu64;
+const idGenMask = 0x3FFFFF0000000000u64;
+const idGenStep = 0x0000010000000000u64;
+const guardTaking = 0x4000000000000000u64;
+
+// The current generation, shifted to where an id carries it
+fn guardGen() u64 {
+  guardWord.load() & idGenMask
+}
+
+// Whether an answer to a record parked at 'id' must be dropped (a take is under way, or has been made since the
+// record parked); one load of the word, one compare
+fn lateById(id: u64) bool {
+  ((id ^ guardWord.load()) & (idGenMask | guardTaking)) != 0u64
+}
+
 // Enter table p, which is about to park its first record
 fn pendingRegister(p: &mut Pending) {
   #if #defined("MEMSTATS") { msAsk(17u32, mem.sizeof[PNode]()); }
@@ -3825,7 +3914,15 @@ fn abandonParked(s: *Sched) {
     var lists: *usize = null;       // pairs: slots, cap, count
     var used = 0usize;
     var room = 0usize;
+    // THE LATE-ANSWER GUARD, steps (1) and (2): the flag, then a look at the counts, so that an answer's
+    // activation counted after this look sees the flag, and one counted before it is waited for. Nothing
+    // resumed from here to the flag's clearing; what is resumed on a record is done before the take
+    let gen = guardWord.load() & idGenMask;
+    guardWord.store(gen | guardTaking);
+    quiesce(s);
     regLock.lock();
+    // step (3): the generation, bumped under the lock before any table is emptied, the flag still set
+    guardWord.store(((gen + idGenStep) & idGenMask) | guardTaking);
     var np = regHead.loadOrdered(MemOrder.Relaxed) as *PNode;
     while np as usize != 0usize {
       let p = (*np).owner;
@@ -3853,6 +3950,9 @@ fn abandonParked(s: *Sched) {
       np = (*np).next;
     }
     regLock.unlock();
+    // step (4): the flag clear, the generation kept, before any finalizer runs: what they start (messages, new
+    // parks at the new generation) resumes as ever, and an answer owed to a record just taken stays dropped
+    guardWord.store((gen + idGenStep) & idGenMask);
     if used == 0usize {
       return;
     }
@@ -3993,20 +4093,23 @@ pub fn parkReserve(p: &mut Pending, size: usize, drop: *u8, trace: *u8) u64 {
   mem.writeRaw[Erased](block as *Erased, Erased(block + recordHead, recordType(block)));
   *slot = block as usize;
   p.count = p.count + 1usize;
-  u64.from(id)
+  // the id: the slot's index, and the generation now (THE LATE-ANSWER GUARD), so that an answer that outlives a
+  // take of this table is told from one that does not
+  u64.from(id) | guardGen()
 }
 
 // Where the record parked at id goes in its block, to write it there
 pub fn parked(p: &mut Pending, id: u64) *u8 {
-  (*(p.slots + usize.from(id)) as *u8) + recordHead
+  (*(p.slots + usize.from(id & idIndexMask)) as *u8) + recordHead
 }
 
 // The reply for id arrived: where its record is, the slot freed
 pub fn unpark(p: &mut Pending, id: u64) *u8 {
-  let slot = p.slots + usize.from(id);
+  let at = usize.from(id & idIndexMask);
+  let slot = p.slots + at;
   let block = *slot as *u8;
   *slot = p.free * 2usize + 1usize;
-  p.free = usize.from(id) + 1usize;
+  p.free = at + 1usize;
   p.count = p.count - 1usize;
   block + recordHead
 }
@@ -5974,6 +6077,8 @@ fn @initpure init() {
   gCount = Atomic[usize].of(0usize);
   regLock = sync.Mutex.make();
   regHead = Atomic[usize].of(0usize);
+  guardWord = Atomic[u64].of(0u64);
+  lateDrops = Atomic[u64].of(0u64);
   dying = Atomic[u32].of(0u32);
   gTicket = Atomic[u64].of(0u64);
   lateOwed = Atomic[usize].of(0usize);
