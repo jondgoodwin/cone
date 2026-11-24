@@ -1050,6 +1050,16 @@ void closureContextTail(FnDclNode *fn) {
         errorMsgNode(blk->tailmark, ErrorTailSemi, TailSemiMsg);
     else if ((blk->flags & FlagTailOpen) && voidret)
         errorMsgNode(blk->tailmark, ErrorTailOpen, TailOpenMsg);
+    // A last line that is, or ends in, an 'if' with no 'else' where no value is wanted: some
+    // path giving a value is refused, as for an inferring closure
+    else if (voidret && !(blk->flags & FlagTailSemi)) {
+        INode *last = nodesLast(blk->stmts);
+        if (last->tag == IfTag || last->tag == BlockTag) {
+            int elseless = 0;
+            if (closureTailGivesValue(last, &elseless) && elseless)
+                errorMsgNode(last, ErrorTailOpen, "this 'if' gives a value on one path and nothing on the other: add an 'else', or end the line with ';' if the closure returns nothing");
+        }
+    }
 }
 
 void closureReturnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
