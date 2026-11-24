@@ -107,8 +107,8 @@ typedef struct {                         // a class's record: 1024 bytes, up to 
   uint8_t pad1[80];
   uint32_t collisions;                   // +192  collisions since the last change of the slot count
   uint8_t pad2[60];
-  uint64_t st[10];                       // +256  allocs, frees, collisions, slots added, dropped, pages attached, listed, retired, retires abandoned, Rule G undos
-  uint8_t pad3[176];
+  uint64_t st[11];                       // +256  allocs, frees, collisions, slots added, dropped, pages attached, listed, retired, retires abandoned, Rule G undos, (row 711) free-only retries
+  uint8_t pad3[168];
   uintptr_t slot[32];                    // +512  an ATTACHED page's descriptor, or 0
   uint64_t idleSince[32];                // +768  (the Cone side's)
 } LfCls;
@@ -118,6 +118,16 @@ typedef struct { uint32_t tnum; uint8_t start[CN_MAXCLS]; uintptr_t startPage[CN
 // and comes back (any class) has another key, so a stale start is never used on it; a start word is a word of a page of its own class, so it is in
 // range for any page that happens to match.
 #define LF_KEY(P, g) ((uintptr_t)(P) ^ ((uintptr_t)((g) >> 8) << 48))
+
+// (row 711) A lost compare-and-swap is a collision only if another taker took a bit. Slots exist to spread takers who compete for
+// the same cells (spec, "Slots"); a free does not compete, it adds a cell. cn_cas64 returns the word's current value, cur, and
+// old & ~cur is the bits that were free at the load and are not now: 0 means the word only gained bits, so only frees happened.
+// Such a failure is not counted, and the swap is tried again on the same word with old = cur, because that word now holds more free
+// cells, not fewer. The retry is a new take attempt: g1 stays the genclass read before the first swap, and the g2 test after a
+// successful swap is unchanged (Rule G). LF_FREE_RETRIES bounds the retries per word: a freer that wins four swaps in a row
+// means the word's cache line is hot, and moving on to the next word, counting a collision, is what the slot logic is for.
+#define LF_FREE_RETRIES 4
+#define LF_FREE_ONLY(old, cur) (((old) & ~(cur)) == 0)
 
 typedef char lf_assert_d2[(sizeof(LfD2) == 576 && offsetof(LfD2, bits) == 64) ? 1 : -1];
 typedef char lf_assert_cls[(sizeof(LfCls) == 1024 && offsetof(LfCls, slot) == 512 && offsetof(LfCls, used) == 80 && offsetof(LfCls, collisions) == 192 && offsetof(LfCls, st) == 256) ? 1 : -1];
@@ -258,10 +268,21 @@ restart:;
           if (j >= nw) j -= nw;
           uint64_t old = cn_ld64_acq(&P->bits[j]);
           if (!old) continue;
+          unsigned fr = 0;                              // (row 711) free-only retries on this word
+        again:;
           unsigned b = cn_bsf64(old);
           uint64_t bit = 1ull << b;
           LF_HOOK(c, old);
-          if (cn_cas64(&P->bits[j], old, old & ~bit) != old) {
+          uint64_t cur = cn_cas64(&P->bits[j], old, old & ~bit);
+          if (cur != old) {
+            // A lost swap is a collision only if a taker took a bit (row 711): a failure that only added bits was frees, which add
+            // cells and compete for none. Retry the same word from what it holds now, at most LF_FREE_RETRIES times (see the define).
+            if (LF_FREE_ONLY(old, cur) && fr < LF_FREE_RETRIES) {
+              fr++;
+              if (g_stats) lf_count(&L->st[10]);
+              old = cur;
+              goto again;
+            }
             lost = collided = 1;                        // note one collision on class c; move to the next word
             if (g_stats) lf_count(&L->st[2]);
             if (cn_inc32(&L->collisions) == L->collLimit) {
@@ -343,10 +364,21 @@ restart:;
           if (j >= nw) j -= nw;
           uint64_t old = cn_ld64_acq(&P->bits[j]);
           if (!old) continue;
+          unsigned fr = 0;                              // (row 711) free-only retries on this word
+        again:;
           uint64_t want = 0, rest = old;
           for (size_t i = 0; i < k && rest; i++) { want |= rest & (0 - rest); rest &= rest - 1; }
           LF_HOOK(c, old);
-          if (cn_cas64(&P->bits[j], old, old & ~want) != old) {
+          uint64_t cur = cn_cas64(&P->bits[j], old, old & ~want);
+          if (cur != old) {
+            // A lost swap is a collision only if a taker took a bit (row 711), as in lf_alloc: after frees alone, take again from
+            // the word as it is now (want is recomputed from it), at most LF_FREE_RETRIES times.
+            if (LF_FREE_ONLY(old, cur) && fr < LF_FREE_RETRIES) {
+              fr++;
+              if (g_stats) lf_count(&L->st[10]);
+              old = cur;
+              goto again;
+            }
             lost = collided = 1;                        // note one collision on class c; move to the next word
             if (g_stats) lf_count(&L->st[2]);
             if (cn_inc32(&L->collisions) == L->collLimit) {
@@ -943,14 +975,16 @@ CN_EXPORT void cnmalloc_workerEnd(void) {
 // ---- for the tests (row 454) -----------------------------------------------------------------------------------------
 // The second design's counters summed over the classes: 0 allocs, 1 frees, 2 collisions, 3 slots added, 4 slots dropped,
 // 5 pages attached, 6 listed, 7 retired, 8 retires abandoned, 9 Rule G undos (0, 1, 2 and 9 only in a statistics run);
-// 10 (row 506) the Rule G undos of multi-bit fills alone (a statistics run only; they are in 9 too).
+// 10 (row 506) the Rule G undos of multi-bit fills alone (a statistics run only; they are in 9 too);
+// 11 (row 711) the free-only retries: a lost compare-and-swap that only frees caused, tried again on the same word (a statistics run only).
 // -1 when the second design is off. And which design this heap is.
 CN_EXPORT int64_t cnmalloc_lfTotal(int which) {
   H();
-  if (!g_lf || which < 0 || which > 10) return -1;
+  if (!g_lf || which < 0 || which > 11) return -1;
   if (which == 10) return (int64_t)cn_ld64_rlx(&g_mbUndos);
   int64_t t = 0;
-  for (int c = 0; c < CN_MAXCLS; c++) t += (int64_t)cn_ld64_rlx(&g_lfc[c].st[which]);
+  int s = which == 11 ? 10 : which;                  // (row 711) 11 is st[10], the free-only retries
+  for (int c = 0; c < CN_MAXCLS; c++) t += (int64_t)cn_ld64_rlx(&g_lfc[c].st[s]);
   return t;
 }
 CN_EXPORT int cnmalloc_design(void) { H(); return g_lf ? 2 : 1; }

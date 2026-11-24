@@ -253,7 +253,7 @@ static void blockStmtTypeCheck(TypeCheckState *pstate, INode **stmtp, Nodes **ho
         }
     }
     if (owner == NULL) {
-        int wasName = isNameUseNode(*stmtp);
+        int wasName = nameUseWasName(*stmtp);
         inodeTypeCheck(pstate, stmtp, noCareType);
         nameUseNoValue(*stmtp, wasName);
         discardCheck(*stmtp);
@@ -435,7 +435,7 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
     else {
         // Last statement of a regular block needs to be a break, continue, return or blockret
         if (laststmtp && isExpOrMacroNode(*laststmtp)) {
-            int lastWasName = isNameUseNode(*laststmtp);
+            int lastWasName = nameUseWasName(*laststmtp);
             inodeTypeCheck(pstate, laststmtp, expectType);
             // A call that does not return ends the block as a 'return' would,
             // giving it no value to coerce, so it becomes one: returnTypeCheck
