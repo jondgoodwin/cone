@@ -6283,8 +6283,16 @@ dispatch:
                     if (fnCallLowerTraitMethod(pstate, node, objdereftype) == 0)
                         fnCallLowerMethod(pstate, node);
                 }
-                else if (objdereftype->tag == PtrTag)
-                    fnCallLowerPtrMethod(node, ptrType);
+                else if (objdereftype->tag == PtrTag) {
+                    // A pointer has no '<-' (nor any operator it does not declare): the
+                    // call is refused as the missing method it is, not left unlowered
+                    if (fnCallLowerPtrMethod(node, ptrType) == 0 && node->methfld
+                        && isNameUseNode(node->methfld)) {
+                        errorMsgNode((INode*)node, ErrorNoMbr, "Method or field `%s` not found.",
+                            &((NameUseNode*)node->methfld)->namesym->namestr);
+                        node->vtype = errorType;
+                    }
+                }
                 else if (objdereftype->tag == ArrayTag && fnCallLowerArrayLen(nodep, objdereftype))
                     ;
                 else if (objdereftype->tag == ArrayTag && fnCallLowerSliceMethod(pstate, node))

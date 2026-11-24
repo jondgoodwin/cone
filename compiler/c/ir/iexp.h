@@ -32,6 +32,11 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from);
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint);
 
+// While nonzero, a plain value does not convert to an Option as its 'Some'. An overload choice
+// sets it for its first look at the candidates (the wrap never competes with a candidate that
+// takes the call as written), and a macro's lazy parameter for its own test
+extern int iexpOptWrapOff;
+
 // A char where a number is wanted, a number where a char is wanted, or a
 // non-ASCII character literal wanted as a u8: none reaches the other
 // implicitly. Reports it (ErrorCharNotNbr), naming the explicit conversion, and

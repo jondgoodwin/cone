@@ -41,6 +41,23 @@ static int propagateIsCore(INode *type, Name *name) {
     return mod != NULL && mod->namesym == nametblFind("core", 4);
 }
 
+static StructNode *propagateVariant(INode *enumdcl, Name *name);
+static INode *propagateHeld(StructNode *variant);
+static INode *propagateConstruct(StructNode *variant, INode *value, INode *lexnode);
+static enum PropagateKind propagateKindOf(INode *type);
+
+// The 'Some' variant of an Option instance, or NULL for any other type (a Result's 'Ok' is no
+// plain value's wrap: a success is written 'Ok(v)')
+StructNode *propagateOptionSome(INode *type) {
+    if (type->tag != StructTag || propagateKindOf(type) != PropagateOption)
+        return NULL;
+    return propagateVariant(type, someName);
+}
+// What a variant holds, or NULL
+INode *propagateSuccessHeld(StructNode *variant) { return propagateHeld(variant); }
+// The variant constructed holding value, positioned on lexnode, ready to type check
+INode *propagateWrap(StructNode *variant, INode *value, INode *lexnode) { return propagateConstruct(variant, value, lexnode); }
+
 // Which of the two this type is
 static enum PropagateKind propagateKindOf(INode *type) {
     if (propagateIsCore(type, resultName))
