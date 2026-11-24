@@ -524,7 +524,22 @@ returned `{ lo, hi }`. A larger struct, or one that finds fewer integer (six)
 or SSE (eight) argument registers than it needs, is copied to the stack: a
 `byval(%T) align 8` pointer, unless no integer register is left and it is
 8 bytes or less, when it is the integer of its size. A larger return is
-`sret(%T) align N` and takes the first integer register. The plan for a whole
+`sret(%T) align N` and takes the first integer register. For **arm64 Apple**
+(AAPCS64 as Apple varies it), as clang lowers it for `arm64-apple-macos`: a
+struct of one to four members of one floating-point or short-vector type,
+nested or in arrays, with no padding (`genlCAbiHomog`, a homogeneous
+aggregate), crosses as `[N x T]`, one SIMD register each, and returns as the
+literal struct `{ T, ... }`; any other struct of up to 16 bytes crosses as an
+`i64` or a `[2 x i64]` (an `i128` if it is 16-byte aligned), and returns as
+those, but as the integer of its size when it is 8 bytes or less (an `i24` for
+three chars); a larger one is a `ptr` to a copy the caller makes (never
+`byval`), and returns through `sret(%T) align N` (`genlCAbiArm64Apple`). Where
+the registers run out, and the packing of stack arguments by their natural size
+that Apple adds, are left to LLVM's AArch64 back end, as clang leaves them, so
+the plan counts no registers there. A char or a short is widened by its sign,
+as on SysV, since Apple has the caller widen it. The buffer a struct is split
+through (`genlCAbiBuf`) holds the whole struct, a homogeneous aggregate of four
+doubles being 32 bytes. The plan for a whole
 signature (`genlCAbiPlan`) is made where it is needed, from the types alone, in
 `genlFnDclType`, the declaration's marks, a call, a prologue and a return,
 which therefore agree. **wasm32 is not built**: its structs still cross whole,
@@ -1508,7 +1523,12 @@ The rewrite:
   direct or through a vtable slot or a reference, passes homes; every object
   this compiler makes agrees. A **C-named function** keeps the C ABI
   (`genlcabi.c`): `genlCAbiDeclare` marks it `"cone-cabi"`, which the pass
-  reads and removes.
+  reads and removes. So does a call made as the C ABI passes values
+  (`genlCAbiCall`), which it marks `GenlCAbiCallMark`: through a `&fn @c`
+  reference the callee is a loaded pointer, not the marked function, and a C
+  shape the pass would otherwise remake (arm64 Apple's `{ float, float, float }`
+  result, or its `[4 x double]` argument) would no longer be C's. The pass
+  reads the mark at the call and clears every one as it ends.
 
 **A smaller aggregate result is returned in registers or through its caller's
 slot, never one register per field** (`genlAggRetClass`). LLVM returns a
@@ -2799,7 +2819,7 @@ compile writes its bitcode, and the objects are made at the link).
 | | `genlGpuBarrier`, `genlGpuGlobalSpace` | the two barriers as LLVM's SPIR-V intrinsics; a `@workgroup` global's address space |
 | | `genlCpuBarrier` | a barrier on a native target: the thread's barrier hook called when it is set (section 7, "Barriers on the CPU") |
 | | `genlGpuSyncPatch` | the emitted module put right: a relaxed atomic's semantics None, a compare-and-swap's result rid of the insertions the backend writes after it |
-| `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPlan`, `genlCAbiPassOne` | which C ABI the target follows, which functions cross by it, and how each value of a signature crosses (direct, coerced to one or two scalars, through a pointer, `byval`) |
+| `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPlan`, `genlCAbiPassOne`, `genlCAbiArm64Apple`, `genlCAbiHomog` | which C ABI the target follows, which functions cross by it, and how each value of a signature crosses (direct, coerced to one or two scalars, through a pointer, `byval`) |
 | | `genlCAbiWalk`, `genlCAbiClassify`, `genlCAbiEightbyte` | SysV x86-64's classification of a struct of up to 16 bytes: its scalars, the class of each eightbyte, the scalar each crosses as |
 | | `genlCAbiExtend`, `genlCAbiMark` | the `zeroext` or `signext` a narrow integer crosses with, and the `sret` and `byval` marks, put on a declaration or a call |
 | | `genlFnDclType`, `genlCAbiFnType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnPtrCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type (and a `ccall` signature's), its marks (and the `"cone-cabi"` mark `genlAggCopies` leaves alone), a direct call to it and a call through a reference to it, its prologue's parameters and its returns — lowered for a C-named one |

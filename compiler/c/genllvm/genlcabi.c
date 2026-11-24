@@ -22,13 +22,26 @@
  *   larger struct, or one that no longer fits the argument registers left
  *   (six integer, eight SSE, a hidden result pointer taking one), is copied
  *   to the stack ('byval'); a larger return goes through 'sret'.
+ * - arm64 Apple (macOS, iOS): AAPCS64 with Apple's variations. A struct of
+ *   one to four members of one floating-point or short vector type, nested or
+ *   in arrays (a homogeneous aggregate), crosses as an array of them, '[N x T]',
+ *   one SIMD register each, and is returned as the struct of them. Any other
+ *   struct of up to 16 bytes crosses as integer registers: an 'i64', or a
+ *   '[2 x i64]' ('i128' if it is 16-byte aligned); one returned in 8 bytes or
+ *   less is the integer of its size, an 'i24' for three chars. A larger struct
+ *   is passed as a pointer to a copy the caller made (not 'byval'), and
+ *   returned through 'sret'. Where registers run out, and Apple's packing of
+ *   stack arguments by their natural size, are LLVM's AArch64 back end's, as
+ *   they are for clang. This is the shape clang gives the same C declaration
+ *   for arm64-apple-macos.
  * - wasm32 is not built: a struct is still handed to LLVM whole, which is
  *   what the C ABI does only for a struct of one scalar.
  *
  * An integer narrower than C's 'int' keeps its LLVM type but is marked, on the
  * declaration and at each call, with the widening C gives it in its register:
  * a bool, C's 'bool', 'zeroext' on all three; an 8- or 16-bit integer
- * 'signext' or 'zeroext' by its sign on SysV and wasm32, and nothing on Win64.
+ * 'signext' or 'zeroext' by its sign on SysV, arm64 Apple (where the caller
+ * widens it, unlike standard AAPCS64) and wasm32, and nothing on Win64.
  *
  * Only a struct is lowered. A slice, a virtual reference, a tuple or an array
  * has no C counterpart, and keeps Cone's own convention: a slice's pointer and
@@ -59,7 +72,7 @@ typedef struct CAbiArg {
     unsigned nparts;
     LLVMTypeRef type;           // The struct's own LLVM type
     unsigned long long size;
-    unsigned align;             // Byval and SysV sret: the alignment the stack copy or result slot is marked with
+    unsigned align;             // Byval and SysV/arm64 Apple sret: the alignment the stack copy or result slot is marked with
 } CAbiArg;
 
 // How every value of one signature crosses
@@ -77,6 +90,10 @@ int genlCAbiTarget(const char *triple) {
             return CAbiWin64;
         return CAbiSysV;
     }
+    if ((strncmp(triple, "arm64", 5) == 0 || strncmp(triple, "aarch64", 7) == 0)
+        && (strstr(triple, "apple") || strstr(triple, "darwin") || strstr(triple, "macos")
+            || strstr(triple, "ios")))
+        return CAbiArm64Apple;
     if (strncmp(triple, "wasm32", 6) == 0)
         return CAbiWasm32;
     return CAbiOther;
@@ -262,6 +279,82 @@ static int genlCAbiClassify(GenState *gen, LLVMTypeRef t, unsigned long long siz
     return 1;
 }
 
+// ---- Classifying a struct: arm64 Apple ----------------------------------------
+
+// Whether LLVM type 't', at byte offset 'off', continues a homogeneous
+// aggregate: every scalar one floating-point type, or one short vector type
+// (8 or 16 bytes), each starting where the one before ends, at most four.
+// '*base' is that type (NULL before the first) and '*count' how many so far.
+static int genlCAbiHomog(GenState *gen, LLVMTypeRef t, unsigned long long off,
+        LLVMTypeRef *base, unsigned *count) {
+    switch (LLVMGetTypeKind(t)) {
+    case LLVMHalfTypeKind: case LLVMBFloatTypeKind: case LLVMFloatTypeKind: case LLVMDoubleTypeKind:
+    case LLVMVectorTypeKind: {
+        unsigned long long size = LLVMABISizeOfType(gen->datalayout, t);
+        if (LLVMGetTypeKind(t) == LLVMVectorTypeKind && size != 8 && size != 16)
+            return 0;
+        if (*base == NULL)
+            *base = t;
+        if (t != *base || *count >= 4 || off != *count * size)
+            return 0;
+        ++*count;
+        return 1;
+    }
+    case LLVMStructTypeKind: {
+        unsigned cnt = LLVMCountStructElementTypes(t);
+        for (unsigned i = 0; i < cnt; ++i) {
+            if (!genlCAbiHomog(gen, LLVMStructGetTypeAtIndex(t, i),
+                    off + LLVMOffsetOfElement(gen->datalayout, t, i), base, count))
+                return 0;
+        }
+        return 1;
+    }
+    case LLVMArrayTypeKind: {
+        unsigned long long len = LLVMGetArrayLength2(t);
+        LLVMTypeRef elem = LLVMGetElementType(t);
+        unsigned long long esize = LLVMABISizeOfType(gen->datalayout, elem);
+        if (len > 4)
+            return 0;
+        for (unsigned long long i = 0; i < len; ++i) {
+            if (!genlCAbiHomog(gen, elem, off + i * esize, base, count))
+                return 0;
+        }
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+// How a struct of 'arg->size' bytes crosses on arm64 Apple, as clang lowers it
+static void genlCAbiArm64Apple(GenState *gen, int isret, CAbiArg *arg) {
+    LLVMContextRef ctx = gen->context;
+    LLVMTypeRef base = NULL;
+    unsigned count = 0;
+    if (genlCAbiHomog(gen, arg->type, 0, &base, &count) && count > 0
+            && count * LLVMABISizeOfType(gen->datalayout, base) == arg->size) {
+        LLVMTypeRef elems[4] = {base, base, base, base};
+        arg->pass = CAbiCoerce;
+        arg->nparts = 1;
+        arg->parts[0] = isret ? LLVMStructTypeInContext(ctx, elems, count, 0)
+            : LLVMArrayType2(base, count);
+        return;
+    }
+    if (arg->size > 16) {
+        arg->pass = CAbiIndirect;
+        return;
+    }
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    arg->pass = CAbiCoerce;
+    arg->nparts = 1;
+    if (arg->align >= 16)
+        arg->parts[0] = LLVMIntTypeInContext(ctx, 128);
+    else if (arg->size <= 8)
+        arg->parts[0] = isret ? LLVMIntTypeInContext(ctx, (unsigned)(arg->size * 8)) : i64;
+    else
+        arg->parts[0] = LLVMArrayType2(i64, 2);
+}
+
 // ---- The plan: how each value of a signature crosses -------------------------
 
 // Take the registers a value that crosses as its own LLVM type uses
@@ -342,6 +435,9 @@ static void genlCAbiPassOne(GenState *gen, INode *type, int isret, CAbiArg *arg,
         }
         break;
     }
+    case CAbiArm64Apple:
+        genlCAbiArm64Apple(gen, isret, arg);
+        break;
     default:
         break;
     }
@@ -460,7 +556,7 @@ static LLVMAttributeRef genlCAbiExtend(GenState *gen, INode *type) {
         if (bits != 1)
             return NULL;
         break;
-    case CAbiSysV: case CAbiWasm32:
+    case CAbiSysV: case CAbiArm64Apple: case CAbiWasm32:
         break;
     default:
         return NULL;
@@ -477,7 +573,7 @@ static LLVMAttributeRef genlCAbiExtend(GenState *gen, INode *type) {
 static void genlCAbiMark(GenState *gen, FnSigNode *fnsig, CAbiPlan *plan, LLVMValueRef fn, LLVMValueRef call) {
     if (plan->ret.pass == CAbiIndirect) {
         genlCAbiAttr(fn, call, 1, genlCAbiSret(gen, fnsig->rettype));
-        if (gen->cabi == CAbiSysV)
+        if (gen->cabi == CAbiSysV || gen->cabi == CAbiArm64Apple)
             genlCAbiAttr(fn, call, 1, genlCAbiAlign(gen, plan->ret.align));
     }
     LLVMAttributeRef ext = genlCAbiExtend(gen, fnsig->rettype);
@@ -518,10 +614,12 @@ void genlCAbiDeclare(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn) {
 // ---- Moving a struct between its Cone value and the scalars it crosses as ------
 
 // A buffer a struct is spilled to and its scalars read from (or the reverse):
-// two eightbytes, aligned for the struct, so a scalar of either is whole in it
+// at least two eightbytes, so a scalar of either is whole in it, and the whole
+// struct (an arm64 homogeneous aggregate of up to 32 bytes), aligned for it
 static LLVMValueRef genlCAbiBuf(GenState *gen, CAbiArg *arg) {
     LLVMTypeRef i64 = LLVMInt64TypeInContext(gen->context);
-    LLVMValueRef slot = genlAlloca(gen, LLVMArrayType2(i64, 2), "cabi");
+    unsigned long long words = (arg->size + 7) / 8;
+    LLVMValueRef slot = genlAlloca(gen, LLVMArrayType2(i64, words > 2 ? words : 2), "cabi");
     LLVMSetAlignment(slot, arg->align < 8 ? 8 : arg->align);
     return slot;
 }
@@ -600,7 +698,7 @@ static LLVMValueRef genlCAbiCall(GenState *gen, FnSigNode *fnsig, LLVMTypeRef fn
     LLVMValueRef retslot = NULL;
     if (plan.ret.pass == CAbiIndirect) {
         retslot = genlAlloca(gen, rettype, "cret");
-        if (gen->cabi == CAbiSysV && plan.ret.align > LLVMGetAlignment(retslot))
+        if ((gen->cabi == CAbiSysV || gen->cabi == CAbiArm64Apple) && plan.ret.align > LLVMGetAlignment(retslot))
             LLVMSetAlignment(retslot, plan.ret.align);
         cargs[cargcnt++] = retslot;
     }
@@ -629,6 +727,10 @@ static LLVMValueRef genlCAbiCall(GenState *gen, FnSigNode *fnsig, LLVMTypeRef fn
 
     LLVMValueRef call = genlFnDclCallInst(gen, stdcall, fntype, fn, cargs, cargcnt);
     genlCAbiMark(gen, fnsig, &plan, NULL, call);
+    // Its convention is left alone (genlaggcopy.c), as the declaration's is:
+    // through a reference, the callee is not a function that carries the mark
+    if (!gen->opt->gpu)
+        genlMark(gen, call, GenlCAbiCallMark);
     switch (plan.ret.pass) {
     case CAbiIndirect:
         return LLVMBuildLoad2(gen->builder, rettype, retslot, "");
