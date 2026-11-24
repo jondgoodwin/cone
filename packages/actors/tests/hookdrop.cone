@@ -1,0 +1,70 @@
+// Bug 108's other hook case (row 723): a worker's hook lets go of the last handle to an actor, which dies there,
+// outside every counted activation, beside the stop.
+//
+// An actor's 'final' runs on whichever thread let go last. From a worker's hook (actors.workerHooks) that is a
+// worker not inside an activation, which the stop's quiesce does not see. abandonParked asserts, in debug builds,
+// that no worker is inside an actor's death as it begins (dying).
+//
+// The producer is this test's own after-turn hook. Starter's one behaviour asks for it (askAfterTurn). The hook
+// makes a Victim (no message: idle) and lets go of it at its end, so the Victim's 'final' runs in the hook: it
+// stays 400 ms before it prints, and main calls finalAll 50 ms after the Starter ran, so the stop reaches
+// abandonParked with the death under way.
+//
+// Debug builds asserted there (dying: "a worker is inside an actor's death as the parked records are abandoned"), a
+// panic. abandonParked now first waits for the deaths a hook has under way (hookDying, counted in every build), so the
+// stop goes on after the final has ended: 'victim final', then the end. A release build ran the same either way.
+
+mod hookdrop;
+
+import stdio use *;
+import actors;
+import thread;
+import time;
+
+let ready: Atomic[u64];       // 1 once the hook has been asked for
+let inFinal: Atomic[u64];     // 1 once the Victim's final has begun
+
+fn @initpure init() {
+  ready = Atomic[u64].of(0u64);
+  inFinal = Atomic[u64].of(0u64);
+}
+
+actor Victim {
+  n: u64 = 0u64;
+
+  fn final(self: &uni) {
+    inFinal.store(1u64);
+    thread.sleep(time.Duration.fromMillis(400i64));
+    printStr("victim final\n");
+  }
+}
+
+fn afterTurn() {
+  let v = Victim();
+}
+
+fn idleHook() bool {false}
+
+actor Starter {
+  pub async fn go(self) {
+    actors.askAfterTurn();
+    ready.store(1u64);
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  actors.workerHooks(&afterTurn, &idleHook);
+  let s = Starter();
+  s.go();
+  while ready.load() == 0u64 {
+    thread.yieldNow();
+  }
+  while inFinal.load() == 0u64 {
+    thread.yieldNow();
+  }
+  thread.sleep(time.Duration.fromMillis(50i64));
+  finalAll();
+  printStr("end\n");
+}

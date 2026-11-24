@@ -1,0 +1,494 @@
+// The second design's lost-swap rule (row 711; Incubator\Cone\Briefs\row-711.md): A COMPARE-AND-SWAP LOST ONLY TO A FREE IS NOT A
+// COLLISION. A taker whose swap on a word fails because bits were ADDED to the word (frees) tries the same word again from what it
+// now holds, up to LF_FREE_RETRIES (4) times, and counts no collision; a failure where another taker took a bit is a collision, as
+// before; after the fourth free-only retry on one word the next failure is a collision and the taker moves on. Every step is driven
+// by the shim's first park point (LF_HOOK, between a taker's load of a word and its swap), one 1024-class page of 64 cells (one word
+// of bits), slots=1, and a second thread (the taker) that is a non-worker (its malloc is lf_alloc) or, with CNCAS_FILL=1, a worker
+// whose malloc misses its cache and fills with lf_fill (the same rule, the second code site).
+//
+// The taker parks at EVERY visit to the park point (a visit count and a release count, so the main thread acts between visits).
+// Each round starts with the page fully taken by the main thread, then frees some cells, so the word is exactly what the round says.
+//   1 free-only (the brief's test 1): word {c0}. The taker is parked before its first swap; the main thread frees c1; released, its
+//     swap fails on the added bit alone. Expected: it is parked again at the park point (the retry, on the same word, whose value is
+//     now {c0,c1}); released, its take succeeds from that word. Collisions (lfTotal 2) UNCHANGED, one free-only retry (lfTotal 11).
+//     Were the change wrong (a free-only failure counted as a collision) the collision count would rise by one and the retry count
+//     not at all (mutant f1a/f1f).
+//   2 the taker's case (test 2): word {c0,c1}. The taker is parked; the main thread TAKES one of them (an allocation); released,
+//     the swap fails because a bit it meant to take is gone. Expected: ONE collision, no free-only retry, and the taker's cell is
+//     the other cell. Were a taker's failure treated as free-only the collision would not be counted (mutant f2a/f2f).
+//   3 the bound (test 3): word {c0}, and the main thread frees one more cell before each of the taker's first five swaps (five frees
+//     in a row). Expected: four free-only retries, then the fifth failure is ONE collision and the taker moves on (its sixth swap,
+//     a second pass, succeeds). Without the bound the fifth failure would be a retry (collisions 0, retries 5: mutant f3a/f3f).
+//   4 Rule G on the retry (requirement 1): as 1, but while the taker is parked at the retry the page goes round (wholly free,
+//     retired, back from the pool as the same class with a NEW generation) and its word is made to read as the taker loaded it. The
+//     retry's swap succeeds on the new life, and the g2 test, against the g1 read before the FIRST swap, must undo it: Rule G's
+//     undo count (lfTotal 9) rises by one and the bit is back (the taker is at the park point again, seeing the word restored),
+//     and no stamp of the new life is hit. A retry that re-read g1 would keep the cell (no undo: mutant f4a/f4f).
+//
+// Needs cnd.lib (-DCN_HOOKS -DCN_DEBUG) and CNMALLOC=design=lockfree,giveback=now,slots=1,stats,cache=16,relist=1:
+//   $env:_LINK_ = '"<dir>\cnd.lib"'; $env:CNMALLOC = '...'   (delete build\ first), then 'congo test lfcas'.
+//   CNCAS_ROUNDS=<n> rounds of each kind (default 10); CNCAS_FILL=1 the taker is a worker (lf_fill). Under a plain 'congo test'
+//   nothing is linked and the test passes without testing. tests/mutants.ps1 runs it against f1a..f4f.
+
+mod lfcas;
+
+import testing use *;
+import thread;
+import libc;
+import cnmalloc;
+
+extern {
+  fn @c("strlen") strlen(s: cstr) usize;
+  fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
+}
+
+alias SetHooks = &fn @c (pre: usize, detach: usize, retire: usize, claim: usize, afterOr: usize, after: usize);
+alias Collect = &fn @c (force: i32) u64;
+alias DesignFn = &fn @c () i32;
+alias Total = &fn @c (which: i32) i64;
+alias Peek = &fn @c (p: usize, which: i32) u64;
+alias Call = &fn @c ();
+
+// words of the taker's control block
+const cCmd = 0usize;        // 1: malloc(1024) into cOut; 2: end the worker and stop; 3: flush the worker's cache
+const cDone = 1usize;
+const cBegin = 2usize;      // cnmalloc_workerBegin (CNCAS_FILL), else 0
+const cEnd = 3usize;
+const cArm = 4usize;        // the taker parks at every visit to the park point while this is 1
+const cParkedN = 5usize;    // visits parked so far
+const cRelN = 6usize;       // visits released so far (the taker leaves visit n when this reaches n)
+const cOut = 7usize;
+const cFlush = 8usize;
+const cStop = 9usize;
+const cSeen = 16usize;      // 16 + n: the word the taker loaded at visit n (n from 1)
+const cWords = 32usize;
+
+var @threadlocal fctl: usize = 0usize;
+
+fn at(p: *u8, i: usize) *u8 { ((p as usize) + i) as *u8 }
+fn word(base: usize, i: usize) *usize { (base + i * 8usize) as *usize }
+fn ld(base: usize, i: usize) usize { mem.atomicLoad[usize](word(base, i), MemOrder.SeqCst) }
+fn st(base: usize, i: usize, v: usize) { mem.atomicStore[usize](word(base, i), v, MemOrder.SeqCst); }
+
+// the shim's park point: before every swap of a take, on the taker only, while armed
+fn @c hookPre(cl: usize, old: u64) {
+  let c = fctl;
+  if c != 0usize && ld(c, cArm) == 1usize {
+    let n = ld(c, cParkedN) + 1usize;
+    st(c, cSeen + n, usize.from(old));
+    st(c, cParkedN, n);
+    while ld(c, cRelN) < n { cnmalloc.cnm_hostYield(); }
+  }
+}
+
+fn taker(arg: usize) u64 {
+  let c = arg;
+  fctl = c;
+  if ld(c, cBegin) != 0usize { (ld(c, cBegin) as *u8 as Call)(); }
+  while true {
+    let cmd = ld(c, cCmd);
+    if cmd == 1usize {
+      st(c, cCmd, 0usize);
+      st(c, cOut, libc.malloc(1024usize) as usize);
+      st(c, cDone, 1usize);
+    } else if cmd == 3usize {
+      st(c, cCmd, 0usize);
+      if ld(c, cFlush) != 0usize { (ld(c, cFlush) as *u8 as Call)(); }
+      st(c, cDone, 1usize);
+    } else if cmd == 2usize {
+      if ld(c, cEnd) != 0usize { (ld(c, cEnd) as *u8 as Call)(); }
+      st(c, cDone, 1usize);
+      break;
+    } else {
+      cnmalloc.cnm_hostYield();
+    }
+  }
+  0u64
+}
+
+// a mutant can corrupt the allocator itself; the watchdog turns a hang into a failure
+fn watchdog(c: usize) u64 {
+  var t = 0usize;
+  while t < 240usize {
+    if ld(c, cStop) == 1usize { return 0u64; }
+    cnmalloc.cnm_hostSleepMs(500u32);
+    t = t + 1usize;
+  }
+  errLine("lfcas: WATCHDOG: no end after seconds ", 120usize, " state ", 0usize, " ", 0usize);
+  cnmalloc.cnm_hostExit(3u32);
+  0u64
+}
+
+fn nowMs() i64 { cnmalloc.cnm_hostMonoMs() as i64 }
+
+// until word i is at least `want`, or about 5 s have passed
+fn waitAtLeast(c: usize, i: usize, want: usize) bool {
+  let end = nowMs() + 5000i64;
+  while ld(c, i) < want && nowMs() < end { cnmalloc.cnm_hostSleepMs(1u32); }
+  ld(c, i) >= want
+}
+
+fn waitDone(c: usize) bool { waitAtLeast(c, cDone, 1usize) }
+
+// until the taker has parked n times or finished: a taker that did not park where it should, from one that did
+fn waitParkOrDone(c: usize, n: usize) {
+  let end = nowMs() + 5000i64;
+  while ld(c, cParkedN) < n && ld(c, cDone) == 0usize && nowMs() < end { cnmalloc.cnm_hostSleepMs(1u32); }
+}
+
+fn cleanup(coll: Collect) { coll(1i32); coll(1i32); }
+
+fn stamp(p: usize, size: usize, v: usize) {
+  *word(p, 0usize) = size;
+  *word(p, size / 8usize - 1usize) = v;
+}
+
+fn stampOk(p: usize, size: usize, v: usize) bool {
+  *word(p, 0usize) == size && *word(p, size / 8usize - 1usize) == v
+}
+
+// the bit of a 1024-class cell in its page's one word
+fn bitOf(p: usize) u64 { 1u64 << u64.from((p & 0xFFFFusize) / 1024usize) }
+
+fn pop(v: u64) usize {
+  var n = 0usize;
+  var x = v;
+  while x != 0u64 { x = x & (x - 1u64); n = n + 1usize; }
+  n
+}
+
+// counts kept by the rounds
+const kErr = 0usize;
+const kFoColl = 1usize;     // round 1: the collision count did not move
+const kFoRetry = 2usize;    // round 1: the free-only retry count rose by one
+const kFoWord = 3usize;     // round 1: the taker's retry loaded the word as the frees had left it
+const kFoTook = 4usize;     // round 1: the taker's cell is one of the two freed, and the word holds the rest
+const kTkColl = 5usize;     // round 2: one collision
+const kTkRetry = 6usize;    // round 2: no free-only retry
+const kTkTook = 7usize;     // round 2: the taker's cell is the one the main thread did not take, and the word is empty
+const kBdColl = 8usize;     // round 3: one collision
+const kBdRetry = 9usize;    // round 3: four free-only retries
+const kBdTook = 10usize;    // round 3: the taker's cell is one of the freed six, and the word holds the rest
+const kGUndo = 11usize;     // round 4: Rule G's undo count rose by one
+const kGRest = 12usize;     // round 4: the taker saw the word restored at its next visit to the park point
+const kGReused = 13usize;   // round 4: the retired page came back as the same class with a new generation
+const kGStamp = 14usize;    // round 4: stamps of the new life overwritten
+const kGColl = 15usize;     // round 4: no collision, one free-only retry
+const kTook = 16usize;      // allocations taken from the page by the taker, summed over the rounds of kinds 1 to 3 (info)
+
+fn bump(k: usize, i: usize) { *word(k, i) = *word(k, i) + 1usize; }
+
+fn startTaker(t: usize) {
+  st(t, cDone, 0usize);
+  st(t, cParkedN, 0usize);
+  st(t, cRelN, 0usize);
+  st(t, cOut, 0usize);
+  st(t, cArm, 1usize);
+  st(t, cCmd, 1usize);
+}
+
+// let the taker run free of its park point (a round that went wrong), and wait for it
+fn abandon(t: usize) {
+  st(t, cArm, 0usize);
+  st(t, cRelN, 1000usize);
+  waitDone(t);
+}
+
+fn freeCell(cells: usize, i: usize) {
+  libc.free(*word(cells, i) as *u8);
+  *word(cells, i) = 0usize;
+}
+
+// the round's end: the taker's cache back to the heap (a worker), then every cell still held, and the taker's cell
+fn endRound(t: usize, cells: usize, fillv: bool, extra: usize) {
+  if fillv { st(t, cDone, 0usize); st(t, cCmd, 3usize); waitDone(t); }
+  var n = 0usize;
+  while n < 64usize { if *word(cells, n) != 0usize { freeCell(cells, n); } n = n + 1usize; }
+  let p = ld(t, cOut);
+  if p != 0usize { libc.free(p as *u8); st(t, cOut, 0usize); }
+  if extra != 0usize { libc.free(extra as *u8); }
+}
+
+// the page: all 64 cells of the 1024 class taken by the main thread (one page, cell n is bit n); 0 when they are not on one page
+fn setup(cells: usize, coll: Collect) usize {
+  cleanup(coll);
+  var n = 0usize;
+  while n < 64usize { *word(cells, n) = libc.malloc(1024usize) as usize; n = n + 1usize; }
+  let x0 = *word(cells, 0usize);
+  var onPage = 0usize;
+  n = 0usize;
+  while n < 64usize { if *word(cells, n) >> 16usize == x0 >> 16usize { onPage = onPage + 1usize; } n = n + 1usize; }
+  if onPage != 64usize {
+    n = 0usize;
+    while n < 64usize { freeCell(cells, n); n = n + 1usize; }
+    return 0usize;
+  }
+  x0
+}
+
+// the taker's take: from the word's free cells `free` (a mask), took cells were taken by it (1 for lf_alloc; a fill takes more);
+// the word must hold the rest, and its cell must be one of those that were free
+fn tookOk(t: usize, x0: usize, pk: Peek, free: u64, took: usize, fillv: bool) bool {
+  let p = ld(t, cOut);
+  let w = pk(x0, 0i32);
+  p != 0usize && (bitOf(p) & free) != 0u64 && took >= 1usize && (fillv || took == 1usize)
+    && (w & free) == w && pop(w) + took == pop(free)
+}
+
+// round 1 (test 1): a swap lost to one free is retried on the same word, and is no collision
+fn freeOnlyRound(t: usize, k: usize, cells: usize, coll: Collect, tot: Total, pk: Peek, fillv: bool) {
+  let x0 = setup(cells, coll);
+  if x0 == 0usize { bump(k, kErr); return; }
+  let b0 = bitOf(*word(cells, 0usize));
+  let b1 = bitOf(*word(cells, 1usize));
+  freeCell(cells, 0usize);
+  let c0 = tot(2i32); let r0 = tot(11i32); let a0 = tot(0i32);
+  startTaker(t);
+  if !waitAtLeast(t, cParkedN, 1usize) { bump(k, kErr); abandon(t); endRound(t, cells, fillv, 0usize); return; }
+  if u64.from(ld(t, cSeen + 1usize)) != b0 { bump(k, kErr); }
+  freeCell(cells, 1usize);                         // the other thread's free: a bit added to the word under the parked taker
+  st(t, cRelN, 1usize);
+  waitParkOrDone(t, 2usize);
+  if ld(t, cParkedN) >= 2usize {
+    if u64.from(ld(t, cSeen + 2usize)) == (b0 | b1) { bump(k, kFoWord); }
+    st(t, cRelN, 2usize);
+  } else { bump(k, kErr); }
+  if !waitDone(t) { bump(k, kErr); abandon(t); }
+  if tot(2i32) == c0 { bump(k, kFoColl); }
+  if tot(11i32) == r0 + 1i64 { bump(k, kFoRetry); }
+  let took = usize.from(tot(0i32) - a0);
+  if tookOk(t, x0, pk, b0 | b1, took, fillv) { bump(k, kFoTook); }
+  endRound(t, cells, fillv, 0usize);
+}
+
+// round 2 (test 2): a swap lost to a taker is one collision, and is not retried as a free-only failure
+fn takerRound(t: usize, k: usize, cells: usize, coll: Collect, tot: Total, pk: Peek, fillv: bool) {
+  let x0 = setup(cells, coll);
+  if x0 == 0usize { bump(k, kErr); return; }
+  let b0 = bitOf(*word(cells, 0usize));
+  let b1 = bitOf(*word(cells, 1usize));
+  freeCell(cells, 0usize);
+  freeCell(cells, 1usize);
+  let c0 = tot(2i32); let r0 = tot(11i32);
+  startTaker(t);
+  if !waitAtLeast(t, cParkedN, 1usize) { bump(k, kErr); abandon(t); endRound(t, cells, fillv, 0usize); return; }
+  if u64.from(ld(t, cSeen + 1usize)) != (b0 | b1) { bump(k, kErr); }
+  let q = libc.malloc(1024usize) as usize;          // the other taker takes a cell of the word
+  let bq = bitOf(q);
+  if (bq & (b0 | b1)) == 0u64 { bump(k, kErr); }
+  st(t, cRelN, 1usize);
+  waitParkOrDone(t, 2usize);
+  if ld(t, cParkedN) >= 2usize {
+    if u64.from(ld(t, cSeen + 2usize)) != ((b0 | b1) & (bq ^ 0xFFFFFFFFFFFFFFFFu64)) { bump(k, kErr); }
+    st(t, cRelN, 2usize);
+  } else { bump(k, kErr); }
+  if !waitDone(t) { bump(k, kErr); abandon(t); }
+  if tot(2i32) == c0 + 1i64 { bump(k, kTkColl); }
+  if tot(11i32) == r0 { bump(k, kTkRetry); }
+  let p = ld(t, cOut);
+  if p != 0usize && bitOf(p) == ((b0 | b1) & (bq ^ 0xFFFFFFFFFFFFFFFFu64)) && pk(x0, 0i32) == 0u64 { bump(k, kTkTook); }
+  endRound(t, cells, fillv, q);
+}
+
+// round 3 (test 3): five frees in a row; four free-only retries, the fifth failure is one collision and the taker moves on
+fn boundRound(t: usize, k: usize, cells: usize, coll: Collect, tot: Total, pk: Peek, fillv: bool) {
+  let x0 = setup(cells, coll);
+  if x0 == 0usize { bump(k, kErr); return; }
+  var mask = bitOf(*word(cells, 0usize));
+  freeCell(cells, 0usize);
+  let c0 = tot(2i32); let r0 = tot(11i32); let a0 = tot(0i32);
+  startTaker(t);
+  var i = 1usize;
+  while i <= 5usize {
+    if !waitAtLeast(t, cParkedN, i) { bump(k, kErr); abandon(t); endRound(t, cells, fillv, 0usize); return; }
+    if u64.from(ld(t, cSeen + i)) != mask { bump(k, kErr); }
+    mask = mask | bitOf(*word(cells, i));
+    freeCell(cells, i);
+    st(t, cRelN, i);
+    i = i + 1usize;
+  }
+  waitParkOrDone(t, 6usize);                         // the second pass's swap: the taker moved on and tries again
+  if ld(t, cParkedN) >= 6usize {
+    if u64.from(ld(t, cSeen + 6usize)) != mask { bump(k, kErr); }
+    st(t, cRelN, 6usize);
+  } else { bump(k, kErr); }
+  if !waitDone(t) { bump(k, kErr); abandon(t); }
+  if tot(2i32) == c0 + 1i64 { bump(k, kBdColl); }
+  if tot(11i32) == r0 + 4i64 { bump(k, kBdRetry); }
+  let took = usize.from(tot(0i32) - a0);
+  if tookOk(t, x0, pk, mask, took, fillv) { bump(k, kBdTook); }
+  endRound(t, cells, fillv, 0usize);
+}
+
+// round 4: the retry's swap lands on the page's next life; Rule G (the g1 read before the first swap) must undo it
+fn ruleGRound(t: usize, k: usize, cells: usize, coll: Collect, tot: Total, pk: Peek, fillv: bool, round: usize) {
+  let x0 = setup(cells, coll);
+  if x0 == 0usize { bump(k, kErr); return; }
+  let b0 = bitOf(*word(cells, 0usize));
+  let b1 = bitOf(*word(cells, 1usize));
+  let g1 = pk(x0, 64i32);
+  freeCell(cells, 0usize);
+  let c0 = tot(2i32); let r0 = tot(11i32);
+  startTaker(t);
+  if !waitAtLeast(t, cParkedN, 1usize) { bump(k, kErr); abandon(t); endRound(t, cells, fillv, 0usize); return; }
+  freeCell(cells, 1usize);
+  st(t, cRelN, 1usize);
+  waitParkOrDone(t, 2usize);
+  if ld(t, cParkedN) < 2usize { bump(k, kErr); abandon(t); endRound(t, cells, fillv, 0usize); return; }
+  // the taker is parked at its retry, which will swap {b0,b1}. The page goes round: wholly free, retired, back as the same class
+  // with a new generation, all 64 cells taken (in bit order) and stamped, the first two freed: the word reads {b0,b1} again
+  var n = 2usize;
+  while n < 64usize { freeCell(cells, n); n = n + 1usize; }
+  cleanup(coll);
+  var onPage = 0usize;
+  n = 0usize;
+  while n < 64usize {
+    let b = libc.malloc(1024usize) as usize;
+    *word(cells, n) = b;
+    stamp(b, 1024usize, 9000000usize + round * 1000usize + n);
+    if b >> 16usize == x0 >> 16usize { onPage = onPage + 1usize; }
+    n = n + 1usize;
+  }
+  if onPage == 64usize && pk(x0, 64i32) != g1 && (pk(x0, 64i32) & 0xFFu64) == (g1 & 0xFFu64) { bump(k, kGReused); }
+  freeCell(cells, 0usize);
+  freeCell(cells, 1usize);
+  if pk(x0, 0i32) != (b0 | b1) { bump(k, kErr); }
+  let u9 = tot(9i32);
+  st(t, cRelN, 2usize);                               // the retry swaps {b0,b1} on the new life; g2 != g1: undo and start again
+  waitParkOrDone(t, 3usize);
+  if ld(t, cParkedN) >= 3usize {
+    if u64.from(ld(t, cSeen + 3usize)) == (b0 | b1) { bump(k, kGRest); }
+    st(t, cRelN, 3usize);
+  } else { bump(k, kErr); }                           // no undo: the taker kept the cell and finished
+  if !waitDone(t) { bump(k, kErr); abandon(t); }
+  if tot(9i32) == u9 + 1i64 { bump(k, kGUndo); }
+  if tot(2i32) == c0 && tot(11i32) == r0 + 1i64 { bump(k, kGColl); }
+  n = 2usize;
+  while n < 64usize {
+    if !stampOk(*word(cells, n), 1024usize, 9000000usize + round * 1000usize + n) { bump(k, kGStamp); }
+    n = n + 1usize;
+  }
+  endRound(t, cells, fillv, 0usize);
+}
+
+fn envNum(name: cstr, dflt: usize) usize {
+  let p = libc.getenv(name);
+  if p as usize == 0usize { return dflt; }
+  var v = 0usize;
+  var i = 0usize;
+  while true {
+    let c = usize.from(*at(p, i));
+    if c < 48usize || c > 57usize { break; }
+    v = v * 10usize + (c - 48usize);
+    i = i + 1usize;
+  }
+  if i == 0usize { dflt } else { v }
+}
+
+fn putStr(buf: *u8, pos: usize, s: cstr) usize {
+  let n = strlen(s);
+  copyLit(at(buf, pos), s, n);
+  pos + n
+}
+
+fn putNum(buf: *u8, pos: usize, v: usize) usize {
+  var digits = 1usize;
+  var t = v;
+  while t >= 10usize { t = t / 10usize; digits = digits + 1usize; }
+  var x = v;
+  var i = digits;
+  while i > 0usize { i = i - 1usize; *at(buf, pos + i) = u8.from(48usize + x % 10usize); x = x / 10usize; }
+  pos + digits
+}
+
+fn errLine(label: cstr, a: usize, mid: cstr, b: usize, tail: cstr, c: usize) {
+  let buf = libc.malloc(256usize);
+  var n = 0usize;
+  n = putStr(buf, n, label); n = putNum(buf, n, a);
+  n = putStr(buf, n, mid); n = putNum(buf, n, b);
+  n = putStr(buf, n, tail); n = putNum(buf, n, c);
+  *at(buf, n) = 10u8;
+  cnmalloc.cnm_hostErr(buf as usize, n + 1usize);
+  // CNTEST_LOG=<file>: the same line appended there, since congo shows a passing test's stderr to nobody
+  let lf = libc.getenv("CNTEST_LOG");
+  if lf as usize != 0usize {
+    cnmalloc.cnm_hostAppend(lf as *u8, buf as usize, n + 1usize);
+  }
+  libc.free(buf);
+}
+
+fn main() i32 {
+  let setHooks = cnmalloc.cnm_hostSym("cnmalloc_lfSetHooks");
+  if setHooks == 0usize { return testing.skip("lfcas: the cnmalloc shim is not linked: cnmalloc_lfSetHooks was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let collect = cnmalloc.cnm_hostSym("cnmalloc_collect");
+  if collect == 0usize { return testing.skip("lfcas: the cnmalloc shim is not linked: cnmalloc_collect was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let design = cnmalloc.cnm_hostSym("cnmalloc_design");
+  if design == 0usize { return testing.skip("lfcas: the cnmalloc shim is not linked: cnmalloc_design was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let total = cnmalloc.cnm_hostSym("cnmalloc_lfTotal");
+  if total == 0usize { return testing.skip("lfcas: the cnmalloc shim is not linked: cnmalloc_lfTotal was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let peek = cnmalloc.cnm_hostSym("cnmalloc_lfPeek");
+  if peek == 0usize { return testing.skip("lfcas: the cnmalloc shim is not linked: cnmalloc_lfPeek was not found (the shim is not linked or, on Linux, not exported by the link)"); }
+  let begin = cnmalloc.cnm_hostSym("cnmalloc_workerBegin");
+  let end = cnmalloc.cnm_hostSym("cnmalloc_workerEnd");
+  let flush = cnmalloc.cnm_hostSym("cnmalloc_workerFlush");
+  if (design as *u8 as DesignFn)() != 2i32 { return testing.skip("lfcas: the cnmalloc shim is linked but the second design is off (CNMALLOC=design=lockfree is needed)"); }
+  let tot = total as *u8 as Total;
+  if tot(11i32) < 0i64 { return testing.skip("lfcas: the shim has no free-only retry counter (lfTotal 11)"); }
+  let rounds = envNum("CNCAS_ROUNDS", 10usize);
+  let fillv = envNum("CNCAS_FILL", 0usize) != 0usize;
+  if fillv && (begin == 0usize || end == 0usize || flush == 0usize) { return testing.skip("lfcas: CNCAS_FILL needs the worker calls of the shim (cnmalloc_workerBegin, cnmalloc_workerEnd, cnmalloc_workerFlush)"); }
+  let coll = collect as *u8 as Collect;
+  let pk = peek as *u8 as Peek;
+  let c = libc.calloc(cWords, 8usize) as usize;     // the watchdog's word
+  let t = libc.calloc(cWords, 8usize) as usize;     // the taker's control block
+  let k = libc.calloc(24usize, 8usize) as usize;
+  let cells = libc.calloc(130usize, 8usize) as usize;
+  if fillv { st(t, cBegin, begin); st(t, cEnd, end); st(t, cFlush, flush); }
+  (setHooks as *u8 as SetHooks)(&hookPre as *u8 as usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+  let wd = thread.start[usize, u64](c, &watchdog);
+  let tt = thread.start[usize, u64](t, &taker);
+  var r = 0usize;
+  while r < rounds { freeOnlyRound(t, k, cells, coll, tot, pk, fillv); r = r + 1usize; }
+  r = 0usize;
+  while r < rounds { takerRound(t, k, cells, coll, tot, pk, fillv); r = r + 1usize; }
+  r = 0usize;
+  while r < rounds { boundRound(t, k, cells, coll, tot, pk, fillv); r = r + 1usize; }
+  r = 0usize;
+  while r < rounds { ruleGRound(t, k, cells, coll, tot, pk, fillv, r); r = r + 1usize; }
+  st(t, cArm, 0usize);
+  st(t, cDone, 0usize);
+  st(t, cCmd, 2usize);
+  waitDone(t);
+  tt.join();
+  st(c, cStop, 1usize);
+  wd.join();
+  (setHooks as *u8 as SetHooks)(0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+  libc.free(cells as *u8);
+  libc.free(t as *u8);
+  cleanup(coll);
+  var fillNum = 0usize;
+  if fillv { fillNum = 1usize; }
+  errLine("lfcas: rounds of each kind ", rounds, " fill ", fillNum, " errors ", *word(k, kErr));
+  errLine("lfcas: free-only: no collision ", *word(k, kFoColl), " retried ", *word(k, kFoRetry), " word ", *word(k, kFoWord));
+  errLine("lfcas: free-only: took ", *word(k, kFoTook), " taker's case: collision ", *word(k, kTkColl), " no retry ", *word(k, kTkRetry));
+  errLine("lfcas: taker's case: took ", *word(k, kTkTook), " bound: collision ", *word(k, kBdColl), " four retries ", *word(k, kBdRetry));
+  errLine("lfcas: bound: took ", *word(k, kBdTook), " Rule G: undo ", *word(k, kGUndo), " restored ", *word(k, kGRest));
+  errLine("lfcas: Rule G: page reused ", *word(k, kGReused), " stamps hit ", *word(k, kGStamp), " counts ", *word(k, kGColl));
+  expect(*word(k, kFoColl) == rounds, "lfcas: a swap lost to a free was not counted as a collision");
+  expect(*word(k, kFoRetry) == rounds, "lfcas: a swap lost to a free was retried on the same word, once");
+  expect(*word(k, kFoWord) == rounds, "lfcas: the retry swapped the word as the free had left it");
+  expect(*word(k, kFoTook) == rounds, "lfcas: the retry took a cell of that word");
+  expect(*word(k, kTkColl) == rounds, "lfcas: a swap lost to a taker was one collision");
+  expect(*word(k, kTkRetry) == rounds, "lfcas: a swap lost to a taker was not retried as free-only");
+  expect(*word(k, kTkTook) == rounds, "lfcas: after losing to a taker the taker took the cell that was left");
+  expect(*word(k, kBdColl) == rounds, "lfcas: after four free-only retries the fifth failure was one collision");
+  expect(*word(k, kBdRetry) == rounds, "lfcas: exactly four free-only retries on a word, no more");
+  expect(*word(k, kBdTook) == rounds, "lfcas: the taker that moved on took a cell of the word");
+  expect(*word(k, kGUndo) == rounds, "lfcas: a retry's swap on the page's next life was undone by Rule G (g1 from before the first swap)");
+  expect(*word(k, kGRest) == rounds, "lfcas: the undo gave the bit back");
+  expect(*word(k, kGReused) == rounds, "lfcas: the retired page came back as the same class with a new generation every round");
+  expect(*word(k, kGColl) == rounds, "lfcas: the Rule G round counted no collision and one retry");
+  expectUInt(u64.from(*word(k, kGStamp)), 0, "lfcas: no stamp of the page's new life was overwritten");
+  expectUInt(u64.from(*word(k, kErr)), 0, "lfcas: no wrong cell, no stuck thread");
+  done()
+}

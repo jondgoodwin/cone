@@ -2126,8 +2126,16 @@ fn stateOf[S, M: Sendable](h: *Header) *S {
 // a final reaches is outside the Sched), so abandonParked neither waits for it nor is disturbed by it
 let dying: Atomic[u32];
 
+// How many deaths are under way in a worker's hook, in every build: a hook runs outside every counted activation, so
+// the stop's quiesce does not wait for an actor that dies there, and abandonParked waits for these itself (Bug 108)
+let hookDying: Atomic[u32];
+
 fn actorDied(h: *Header) {
   #if #debug { if me != 0usize {dying.add(1u32);} }
+  let inh = inHook;
+  if inh {
+    hookDying.add(1u32);
+  }
   let finalize = (*h).finalize;
   finalize(h);
   // The actor's region goes after its state, whose finals may read what they
@@ -2168,6 +2176,9 @@ fn actorDied(h: *Header) {
       i = i + 1usize;
     }
     libc.free(e as *u8);
+  }
+  if inh {
+    hookDying.sub(1u32);
   }
   #if #debug { if me != 0usize {dying.sub(1u32);} }
 }
@@ -2241,14 +2252,41 @@ pub fn makeActor[S, M: Sendable](dispatch: &fn(s: &uni S, m: *M)) *S {
 // from the address, moved, not copied. Its mailbox is marked idle, unless a
 // message was sent while the init ran: then the actor is queued, as a send
 // finding it idle queues it, to run them in the order sent.
+//
+// From a thread outside every counted activation (a thread that is not a worker, or a worker inside a hook) the
+// queueing passes THE STOP'S GATE, as a send from there does (sendNow): the activation it starts is not otherwise
+// seen by the stop's quiesce, and the first behaviour of an actor whose init sent could then run beside
+// abandonParked's take (Bug 108). Once the stop has begun the actor is not queued: it is marked idle, or, with the
+// messages its init sent in its mailbox, left unrun, counted ONCE in stats().refused however many messages the init
+// queued (a send the gate refused is counted once each, and these were accepted before it closed).
+//
+// THE UNIT IS THE QUEUEING, not the whole start. The handle's initializer is makeActor, then the state's construction
+// (its init: USER CODE, which sends and may block), then startActor (compiler/c/parser/parseactor.c: genStartOpen,
+// genStartClose); one gate held from makeActor to here would make the stop's spin on gateInflight wait on that user
+// code. The gate is entered here, after the init, so the stop waits only for the queueing itself; a message the init
+// sent while the gate was open and whose actor is refused here is the one thing left unrun.
 pub fn startActor[S, M: Sendable](st: *S) Arc[opaq, Mailbox[M]] {
   let h = headerOf[S, M](&*st);
+  if (me == 0usize || inHook) && stopperHere == 0usize {
+    if gateEnter() {
+      startQueued[M](h);
+      gateLeave();
+    } else if !mailMarkIdle(h) {
+      refuseSend(0u64);
+    }
+  } else {
+    startQueued[M](h);
+  }
+  var slot = h;
+  mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]))
+}
+
+// The new actor's mailbox marked idle, or, finding messages, the actor queued
+fn startQueued[M: Sendable](h: *Header) {
   if !mailMarkIdle(h) {
     holdArc[M](h);
     schedule(h);
   }
-  var slot = h;
-  mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]))
 }
 
 // Send msg to the actor whose Mailbox mb is: push it, and, if the push found
@@ -3819,8 +3857,9 @@ let regHead: Atomic[usize];       // the newest entry, a *PNode; touched only un
 // with 'running'), not here: its behaviour may park or unpark on a table being taken, and nothing at its start
 // could tell it. The gate closes before abandonParked runs and is passed by every sender but the stopper and a
 // worker inside an activation, a hook's send included (sendNow: 'inHook'), so a send accepted is pushed and its
-// activation counted before the quiesce above reads the counts, and none is accepted after. What neither closes:
-// an activation begun by an actor a hook makes (startActor, whose init sent), which is not a send.
+// activation counted before the quiesce above reads the counts, and none is accepted after. So does the queueing of
+// an actor a hook or a plain thread makes (startActor, whose init sent), which is not a send but begins an
+// activation as one does.
 let guardWord: Atomic[u64];
 const idIndexMask = 0x000000FFFFFFFFFFu64;
 const idGenMask = 0x3FFFFF0000000000u64;
@@ -3939,6 +3978,13 @@ fn pendingUnregister(n: *PNode) bool {
 // print goes through a console that is still there. That drain belongs at the
 // marked line in stopWorkers, ahead of this call, not in here.
 fn abandonParked(s: *Sched) {
+  // An actor dying in a worker's hook (its last handle let go there) is under no count the quiesce reads: wait for
+  // the deaths under way, which are finished with what they hold before the take begins. The assert below then
+  // stands for the deaths no hook explains. A hook death that begins between this wait's last look and the assert
+  // below can still trip the assert: that debug-only window is accepted (no release effect, a few instructions wide)
+  while hookDying.load() != 0u32 {
+    thread.sleep(time.Duration.fromMillis(1i64));
+  }
   assertDebugMsg(dying.load() == 0u32, "actors: a worker is inside an actor's death as the parked records are abandoned");
   var round = 0u32;
   while true {
@@ -4554,8 +4600,10 @@ let running: Atomic[usize];
 // Gated too, from a plain thread: an answer to an awaiting actor (answerNowIn, answerLentIn: refused, the value
 // dropped and the reply let go unanswered), a future's waiter's push (pushFuture: refused, abandoned as at the
 // end), the wake of opSpent, and orcancelled.signal. Each refusal of a reply or a push is counted with the
-// refused sends. NOT YET GATED: a startActor whose init sent, and parallelEach/parallelRange from a plain
-// thread; a thread that calls them must be joined before the stop.
+// refused sends. Gated too: startActor from such a thread, which queues the actor its init sent to (only the
+// queueing is the gated unit, not the init, which is user code; refused once the stop has begun: the actor is left
+// unrun, counted once in refused). NOT YET GATED: parallelEach/parallelRange from a
+// plain thread; a thread that calls them must be joined before the stop.
 let gateClosed: Atomic[u32];
 let gateInflight: Atomic[usize];
 let refusedSends: Atomic[u64];
@@ -6139,6 +6187,7 @@ fn @initpure init() {
   takeHeld = Atomic[u64].of(0u64);
   lateDrops = Atomic[u64].of(0u64);
   dying = Atomic[u32].of(0u32);
+  hookDying = Atomic[u32].of(0u32);
   gTicket = Atomic[u64].of(0u64);
   lateOwed = Atomic[usize].of(0usize);
   coDelivered = Atomic[u64].of(0u64);
