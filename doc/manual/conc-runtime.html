@@ -106,8 +106,9 @@ at least 1002 messages handled so far
 		thread (a buffer in it goes back to its pool, a handle is let go), and nothing tells the sender, except that the
 		refusal is counted (<span class="pre">actors.stats().refused</span>, and the event <span class="pre">msg.refused</span>
 		in the memory trace). A wait that arrives once the gate has closed returns at once, and one already inside it is
-		woken and returns; <span class="pre">waitUntilIdleFor</span> then answers true, as it does after the stop, though not idle: the stop ended the wait. Sends from the runtime's own workers, and from the thread that stops the runtime, are not gated, so
-		what the stop's own finalizers send is delivered. A message accepted before the gate closes is run, as quiescence
+		woken and returns; <span class="pre">waitUntilIdleFor</span> then answers true, as it does after the stop, though not idle: the stop ended the wait. Sends from the runtime's own workers inside an actor's turn, and from the thread that stops the runtime, are not
+		gated, so what the stop's own finalizers send is delivered; a worker's send from a hook it runs between turns
+		(<span class="pre">workerHooks</span>, which only the I/O package uses) is gated like a plain thread's. A message accepted before the gate closes is run, as quiescence
 		always promised. Joining the program's own threads before <span class="pre">main</span> returns is still the way to
 		have their last messages delivered.</p>
 	<p>The gate covers sends, the three waits, and the answers a plain thread makes to an awaiting actor or a future
@@ -115,9 +116,14 @@ at least 1002 messages handled so far
 		closed such an answer is refused like a send, its value dropped on the answering thread and the awaiting actor let
 		go as at the end, and counted in <span class="pre">refused</span>. A spent operation's wake and a group's cancel
 		(<span class="pre">orcancelled.signal</span>) are skipped. The other ways a thread the runtime does not join can
-		reach the runtime are not yet covered, and such a thread must be joined before the stop: an actor whose
-		<span class="pre">init</span> sent a message while <span class="pre">startActor</span> finishes starting it, and
-		<span class="pre">parallelEach</span> or <span class="pre">parallelRange</span> called from a plain thread.</p>
+		reach the runtime are not yet covered, and such a thread must be joined before the stop:
+		<span class="pre">parallelEach</span> or <span class="pre">parallelRange</span> called from a plain thread.
+		Starting an actor whose <span class="pre">init</span> sent a message is gated too, from a plain thread or a hook: once
+		the gate has closed the actor is not queued, its messages are not run, and the refusal is counted once in
+		<span class="pre">refused</span>, however many messages its init sent. The gated step is the queueing after the init, not
+		the init itself, which is the program's own code and may take as long as it likes, so a message the init sent
+		before the gate closed can be left unrun. The stop also waits for an actor that dies in a worker's hook (its last handle let go
+		there) to finish its <span class="pre">final</span> before it abandons the parked records.</p>
 	<p><span class="pre">actors.stats()</span> answers what the workers have done so far (<span class="pre">Stats</span>:
 		<span class="pre">workers</span>, <span class="pre">messages</span> handled, <span class="pre">activations</span> or
 		turns, <span class="pre">steals</span>, and <span class="pre">taskSteals</span>, loop pieces stolen, and <span class="pre">refused</span>,

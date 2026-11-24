@@ -1,0 +1,96 @@
+// Bug 108's other hook case (row 723), the drop that ends an actor WITH A TABLE: a worker's hook lets go of the last
+// owner of an actor whose pending table holds a parked record, beside the stop's take.
+//
+// Talker parks a record (two Notes held across an 'await' whose operation keeps the Reply, never answered) and asks
+// for the after-turn hook. Main lets go of its handle at once, so the Reply's count is the last owner. The hook waits
+// until the stop is held between its last quiesce and its take (actors.testHoldTake, 100 ms), then a further 90 to
+// 110 ms (from the clock, so that the runs fall on both sides of the take), and drops the Reply: Talker dies in the
+// hook, its table unregistered (or, if the take was first, already taken), its record dropped by whichever came first
+// under the registry's lock. The Notes' finals are slow (200 ms) so that the drops overlap what the stop does next.
+// Either way the Notes are dropped once each: Note 2 then Note 1, then the end.
+
+mod hookdroptable;
+
+import stdio use *;
+import libc;
+import actors;
+import thread;
+import time;
+
+struct Rec {
+  pub reply: actors.Reply;
+}
+
+let ready: Atomic[u64];       // 1 once Talker has parked
+let pending: Atomic[usize];   // the record the hook is to drop, 0 when none
+
+fn @initpure init() {
+  ready = Atomic[u64].of(0u64);
+  pending = Atomic[usize].of(0usize);
+}
+
+struct Note {
+  pub n: u64;
+  fn final(self: &uni) {
+    thread.sleep(time.Duration.fromMillis(200i64));
+    printStr("  drop "); printUInt(n); printStr("\n");
+  }
+}
+
+fn runKeep(ctx: *u8, rp: actors.Reply) {
+  let r = ctx as *Rec;
+  mem.writeRaw[Rec](r, Rec(rp));
+  pending.store(ctx as usize);
+  actors.askAfterTurn();
+  ready.store(1u64);
+}
+
+fn dropIt(ctx: *u8) {}
+
+fn keepOp(r: *Rec) actors.Awaitable[u64] {actors.Awaitable[u64].of(r as *u8, &runKeep, &dropIt)}
+
+fn afterTurn() {
+  let at = pending.swap(0usize);
+  if at == 0usize {
+    return;
+  }
+  let t0 = time.Instant.now();
+  while !actors.testTakeHeld() && t0.elapsed() < time.Duration.fromMillis(500i64) {
+    thread.sleep(time.Duration.fromMillis(1i64));
+  }
+  let jitter = i64.from(time.Instant.now().nanos() % 21i64);
+  thread.sleep(time.Duration.fromMillis(90i64 + jitter));
+  // The record's Reply, moved out of its place and dropped at the end of this function: the last owner of Talker
+  let rec = mem.readRaw[Rec](at as *Rec);
+}
+
+fn idleHook() bool {false}
+
+actor Talker {
+  pub async fn talk(self, rec: usize) {
+    let first = Note(1u64);
+    let second = Note(2u64);
+    let got = await keepOp(rec as *Rec);
+    printStr("resumed\n");
+  }
+}
+
+fn start(rec: usize) {
+  let t = Talker();
+  t.talk(rec);
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  actors.workerHooks(&afterTurn, &idleHook);
+  let rec = libc.malloc(mem.sizeof[Rec]());
+  start(rec as usize);
+  while ready.load() == 0u64 {
+    thread.yieldNow();
+  }
+  thread.sleep(time.Duration.fromMillis(50i64));
+  actors.testHoldTake(100i64);
+  finalAll();
+  printStr("end\n");
+}
