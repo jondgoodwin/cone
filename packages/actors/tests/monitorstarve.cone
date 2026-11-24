@@ -14,7 +14,14 @@
 // rounds. Hold was 400 ms with a bound of 100 ms, which a loaded machine
 // sometimes overran. What this gives up: a monitor that finds the stranded
 // queue up to 400 ms late (instead of 100) is not caught; one that never does
-// is.
+// is. Under load a busy worker whose own queue is empty for a moment steals
+// Late from Hold's queue before the monitor looks, which is the scheduler
+// working, so the monitor's find is required only in the rounds with no steal
+// anywhere (the steals count did not move), and at least one such round is
+// required: when all five had a steal, up to five more run, and with none
+// still the test FAILS ("no round tested the monitor"). What this gives up:
+// in a round with a steal the monitor's own work is not checked (Late's
+// timing and its running during Hold still are, in every round).
 
 mod monitorstarve;
 
@@ -81,11 +88,15 @@ fn main() i32 {
     let late = Late();
     var prompt = 0u32;
     var during = 0u32;
+    var free = 0u32;       // rounds with no steal anywhere: only the monitor could move Late
+    var freeFound = 0u32;  // of those, the rounds the monitor moved a queue in
     var r = 0u32;
-    while r < rounds {
+    while r < rounds || (free == 0u32 && r < 2u32 * rounds) {
       thread.sleep(time.Duration.fromMillis(30i64));
       flags.lateAt.store(0u64);
       flags.holdDone.store(0u32);
+      let f0 = actors.stats().monitorFinds;
+      let s0 = actors.stats().steals;
       hold.hold(late);
       let deadline = nowNs() + 2000000000u64;
       while flags.holdDone.load() == 0u32 && nowNs() < deadline {
@@ -95,13 +106,18 @@ fn main() i32 {
       require(flags.lateAt.load() != 0u64, "Late ran by the end of Hold's turn");
       if flags.lateAt.load() - flags.madeAt.load() < 400000000u64 {prompt = prompt + 1u32;}
       if flags.lateDuring.load() == 1u32 {during = during + 1u32;}
+      if actors.stats().steals == s0 {
+        free = free + 1u32;
+        if actors.stats().monitorFinds > f0 {freeFound = freeFound + 1u32;}
+      }
       r = r + 1u32;
     }
     flags.stop.store(1u32);
     actors.waitUntilIdle();
-    expectUInt(u64.from(during), u64.from(rounds), "every round, Late ran while Hold was still in its turn");
-    expectUInt(u64.from(prompt), u64.from(rounds), "every round, Late ran within 400 ms of being made runnable");
-    expectBool(actors.stats().monitorFinds >= u64.from(rounds), true, "the monitor found the stranded queue each round");
+    expectUInt(u64.from(during), u64.from(r), "every round, Late ran while Hold was still in its turn");
+    expectUInt(u64.from(prompt), u64.from(r), "every round, Late ran within 400 ms of being made runnable");
+    expect(free >= 1u32, "no round tested the monitor");
+    expectUInt(u64.from(freeFound), u64.from(free), "the monitor found the stranded queue in each round with no steal");
   }
   finalAll();
   done()

@@ -29,6 +29,8 @@
 //    deputy every holder is 10 to 45 ms late and the 3 ms median catches
 //    that, so the worst check only guards against a pathological stall. What
 //    it no longer catches: a few holders in a hundred late by under 50 ms.
+//    When the median or worst check fails, every pass's median, worst and
+//    sample count are printed ("DIAG ...", in microseconds).
 // 2. Moves racing the deputy: 16 holders each make 300 rounds of: set 1 to 3 ms
 //    on, spin 2 ms (a turn longer than the monitor's tick, so the deputy may
 //    fire, refile or discard the entry meanwhile), set again 0 to 1.5 ms on
@@ -166,6 +168,9 @@ fn part1() {
   var total = 0u64;
   var worst = 0u64;
   var pass = 0u32;
+  var pmed: Array[u64, 3] = [0u64, 0u64, 0u64];
+  var pworst: Array[u64, 3] = [0u64, 0u64, 0u64];
+  var psamples: Array[u64, 3] = [0u64, 0u64, 0u64];
   while pass < passes {
     var hist: Array[u64, 24] = [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
       0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
@@ -230,12 +235,29 @@ fn part1() {
       i = i + 1usize;
     }
     counted = samples;
+    pmed[usize.from(pass)] = p50;
+    pworst[usize.from(pass)] = worst;
+    psamples[usize.from(pass)] = samples;
     if counted >= minSamples && p50 != 0u64 && p50 <= boundUs && worst < worstUs {break;}
     pass = pass + 1u32;
   }
   expect(counted >= minSamples, "enough timers were set on the spinning worker");
   expect(p50 != 0u64 && p50 <= boundUs, "the median lateness is within 3 ms while the worker spins 50 ms");
   expect(worst < worstUs, "no held cell was left for the owner (the later ones would be 10 to 45 ms late)");
+  // A failed pass check prints every pass's median and worst (microseconds;
+  // the median is a 250 us bucket's upper edge) and its sample count, as
+  // failing checks: expected 0, got the number
+  if !(p50 != 0u64 && p50 <= boundUs) || worst >= worstUs {
+    expectUInt(pmed[0usize], 0u64, "DIAG median us, pass 0");
+    expectUInt(pworst[0usize], 0u64, "DIAG worst us, pass 0");
+    expectUInt(psamples[0usize], 0u64, "DIAG samples, pass 0");
+    expectUInt(pmed[1usize], 0u64, "DIAG median us, pass 1");
+    expectUInt(pworst[1usize], 0u64, "DIAG worst us, pass 1");
+    expectUInt(psamples[1usize], 0u64, "DIAG samples, pass 1");
+    expectUInt(pmed[2usize], 0u64, "DIAG median us, pass 2");
+    expectUInt(pworst[2usize], 0u64, "DIAG worst us, pass 2");
+    expectUInt(psamples[2usize], 0u64, "DIAG samples, pass 2");
+  }
   expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "part 1 idle");
   // CONE_DEPUTY_SHOW prints the last pass (as failing checks, for measuring)
   match env.get("CONE_DEPUTY_SHOW") {
