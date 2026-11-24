@@ -999,7 +999,8 @@ any warning, which is how a new one is noticed.
 means the compiler reached a state it had established cannot happen: not a bad
 program, a compiler defect. A source that provoked it would be a bug report
 rather than a test case, so it is the one code that lands without a scenario —
-deliberately, not by oversight.
+deliberately, not by oversight. It reports even inside a trial, whose errors are
+otherwise dropped: stopping with nothing said left no way to tell what happened.
 
 Everything about it follows from that. It goes through `errorMsgNode` so a
 report carries a source position **and the instantiation trace**, which for a

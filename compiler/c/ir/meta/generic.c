@@ -4631,8 +4631,12 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp, INode *e
         // where the value goes (a variant's enum, or the type itself), and last
         // what a literal's own type says
         StructNode *genstruct = (StructNode*)itypeGetTypeDcl(nodetoclone);
-        if (genericInferStructParms(pstate, genericinfo->parms, genstruct, srcgencall, inferredgencall) == 0)
+        // A failed inference leaves the call as an error, as every other refusal below does:
+        // its objfn holds the inferred call, whose arguments are still empty
+        if (genericInferStructParms(pstate, genericinfo->parms, genstruct, srcgencall, inferredgencall) == 0) {
+            *((INode**)srcgencallp) = newErrorNode((INode*)srcgencall);
             return 1;
+        }
         genericInferFromBounds(genericinfo->parms, genericinfo->where, inferredgencall);
         if (genericExpectUsable(expectType))
             genericInferFromExpected(genericinfo->parms, genericResultTemplate(genstruct, genericinfo),
