@@ -357,6 +357,19 @@ fn main() i32 {
   expectUInt(take(&mut rx), 1u64, "...timedOut");
   expectUInt(take(&mut rx), 1u64, "...stopped in time, not after four seconds");
 
+  // One child of 2 s alone first: what the machine takes for a child's spawn, run and answer, so the two checks of twelve
+  // at once below read "together" as under 2.4 times it (never under 5 s). Four at a time the twelve take three rounds of
+  // it, 3 times; under 24 burners one took 2.6 s and twelve together 3.0 to 5.1 s, where the fixed 5 s failed 3 of 20 runs
+  var lone = 0u64;
+  {
+    let t1 = Instant.now();
+    let c1 = Crowd();
+    c1.go(tx.clone());
+    crowdCheck(&mut rx, 1u64, "one child alone: Done");
+    lone = ms(t1);
+  }
+  let together = if lone * 12u64 / 5u64 > 5000u64 {lone * 12u64 / 5u64} else {5000u64};
+
   // Twelve children of a second at once: more than four run together
   {
     let t = Instant.now();
@@ -367,7 +380,7 @@ fn main() i32 {
       k = k + 1u64;
     }
     crowdCheck(&mut rx, 12u64, "twelve children at once: each Done");
-    expect(ms(t) < 5000u64, "...together, not four at a time (about 2 s together; 6 s or more four at a time)");
+    expect(ms(t) < together, "...together, not four at a time (about 2 s together; 6 s or more four at a time; under 2.4 times one alone)");
   }
 
   // 1 MiB on each stream
@@ -429,7 +442,7 @@ fn main() i32 {
       k = k + 1u64;
     }
     crowdCheck(&mut rx, 12u64, "twelve crashReport:false children at once: each Done");
-    expect(ms(t) < 5000u64, "...together, not four at a time (about 2 s together; 6 s or more four at a time)");
+    expect(ms(t) < together, "...together, not four at a time (about 2 s together; 6 s or more four at a time; under 2.4 times one alone)");
   }
 
   // Four 'crashReport: false' children stopped by their timeouts, and a fifth running in a group main cancels

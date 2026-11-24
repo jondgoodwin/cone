@@ -37,12 +37,18 @@ actor Ticker {
       n = n + 1u64;
     }
     // a million later moves, then the one fire, at or after the last, and
-    // soon after it (within 100 ms: a tick, under a loaded machine's slack)
+    // soon after it (within 100 ms: a tick, under a loaded machine's slack).
+    // Each move is 100 ms past the moment it is made (never earlier than the
+    // one before), so the deadline is still ahead of the wheel's first look
+    // however long the loop takes: the earlier form (the deadlines 100 ns
+    // apart, the last 100 ms on) ran out under load, when the million moves took
+    // over 100 ms: the entry then came up already due, with nothing to refile
+    // (24 Nov: 4 of 20 runs under 24 burners failed 'the later moves refiled')
     timer.set(at(1i64));
-    var last = at(1i64);
+    var last = at(100i64);
     var k = 0u64;
     while k < 1000000u64 {
-      last = Instant.fromNanos(last.nanos() + 100i64);   // the last 100 ms on: still ahead when the loop ends
+      last = at(100i64);
       timer.set(last);
       k = k + 1u64;
     }
@@ -138,7 +144,7 @@ fn runAll() {
   {
     let t = Ticker(Timer.make(), tx.clone());
     t.checks();
-    expect(recv(&mut rx) == 0u64, "fires on time, later and earlier moves, clear, a past deadline");
+    expectUInt(recv(&mut rx), 0u64, "fires on time, later and earlier moves, clear, a past deadline (bits of the failed checks)");
     t.park();
     thread.sleep(Duration.fromMillis(20i64));
     t.stopIt();
