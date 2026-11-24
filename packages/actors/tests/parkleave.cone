@@ -6,7 +6,7 @@
 //    itself, before its look), and a message wakes the lowest-numbered
 //    sleeper, L (notify takes the lowest bit); L runs it, spins, publishes
 //    itself again and is held before its look.
-// 2. Main sends X1, a message that keeps its worker 200 ms: notify claims
+// 2. Main sends X1, a message that keeps its worker 500 ms: notify claims
 //    the lowest bit again, L's, and marks L NOTIFIED. Main sends X2 at once:
 //    its notify finds 'searching' set by X1's and wakes nobody.
 // 3. L is let go: its look sees work, its compare-and-swap out of the park
@@ -16,9 +16,18 @@
 //    still in X1.
 //
 // The checks: L was held; marksSpent grew by one; X2 ran on a worker other
-// than L, within 150 ms of L's release (well inside X1's 200 ms), while X1
+// than L, within 300 ms of L's release (inside X1's 500 ms), while X1
 // was still running. Without foundAway's wake, X2 would wait for L to finish
-// X1.
+// X1 (about 500 ms after the release). The hold was 200 ms with a bound of
+// 150 ms, 50 ms of headroom, which a loaded machine took from it now and
+// then; with 500 ms and 300 ms the bound has 200 ms to either side. What this
+// gives up: a second sleeper's wake that is late by up to 300 ms (instead of
+// 150) is not caught; one that never comes is. Each round starts when every
+// worker is parked (the park count unmoved, no spinner), which the claim of
+// the lowest sleeper depends on; a round where a worker still stirred is
+// waited out, not skipped, so the test cannot pass by missing a round. When
+// the mark count comes up short, the round's L, X2's worker and the park
+// counters are printed ("DIAG ...").
 
 mod parkleave;
 
@@ -50,7 +59,7 @@ actor Work {
   pub async fn poke(self) {}
 
   pub async fn slow(self) {
-    let until = nowNs() + 200000000u64;
+    let until = nowNs() + 500000000u64;
     while nowNs() < until {}
     flags.x1done.store(1u32);
   }
@@ -65,6 +74,27 @@ actor Work {
 
 fn pause(ms: i64) {
   thread.sleep(time.Duration.fromMillis(ms));
+}
+
+// Until every worker is asleep: none spinning (spins not yet ended) and the
+// park count unmoved for 30 ms, so the next round's first wake finds the
+// lowest-numbered worker parked (a worker still spinning or about to park would
+// take the claim instead of L, and no mark would be spent)
+fn settle() {
+  let limit = nowNs() + 5000000000u64;
+  var last = actors.stats().parks;
+  var calm = 0u32;
+  while calm < 3u32 && nowNs() < limit {
+    pause(10i64);
+    let st = actors.stats();
+    if st.parks == last && st.spins - st.spinsFound - st.spinsOut == 0u64 {
+      calm = calm + 1u32;
+    } else {
+      calm = 0u32;
+      last = st.parks;
+    }
+  }
+  require(calm >= 3u32, "every worker is parked within 5 s");
 }
 
 fn main() i32 {
@@ -83,6 +113,7 @@ fn main() i32 {
     var r = 0u32;
     while r < rounds {
       pause(30i64);
+      settle();
       flags.x2done.store(0u32);
       flags.x1done.store(0u32);
       // 1. L held after publishing itself, before its look
@@ -96,7 +127,8 @@ fn main() i32 {
       held = held + 1u32;
       let lIdx = actors.parkHeldWorker();
       // 2. the burst: X1 claims L; X2's notify finds 'searching' set
-      let spent0 = actors.stats().marksSpent;
+      let st0 = actors.stats();
+      let spent0 = st0.marksSpent;
       x.slow();
       y.quick();
       // 3. L let go
@@ -107,9 +139,23 @@ fn main() i32 {
         thread.yieldNow();
       }
       require(flags.x2done.load() == 1u32, "X2 handled within 2 s");
-      if actors.stats().marksSpent - spent0 == 1u64 {spent = spent + 1u32;}
+      let st1 = actors.stats();
+      if st1.marksSpent - spent0 == 1u64 {
+        spent = spent + 1u32;
+      } else {
+        // Which worker took the claim is not recorded by the runtime: these
+        // numbers say who held L, who ran X2, and what the park counters did
+        // (a set 'searching' is not readable from a test)
+        expectUInt(st1.marksSpent - spent0, 1u64, "DIAG marks spent this round (round, L, X2's worker, parks, reparks, steals follow)");
+        expectUInt(u64.from(r), 0u64, "DIAG round");
+        expectUInt(u64.from(lIdx), 0u64, "DIAG L's worker");
+        expectUInt(u64.from(flags.x2worker.load()), 0u64, "DIAG X2's worker");
+        expectUInt(st1.parks - st0.parks, 0u64, "DIAG parks this round");
+        expectUInt(st1.reparks - st0.reparks, 0u64, "DIAG reparks this round");
+        expectUInt(st1.steals - st0.steals, 0u64, "DIAG steals this round");
+      }
       if flags.x2worker.load() != lIdx {second = second + 1u32;}
-      if flags.x2at.load() - t0 < 150000000u64 {prompt = prompt + 1u32;}
+      if flags.x2at.load() - t0 < 300000000u64 {prompt = prompt + 1u32;}
       if flags.x2during.load() == 1u32 {during = during + 1u32;}
       actors.waitUntilIdle();
       r = r + 1u32;
@@ -117,7 +163,7 @@ fn main() i32 {
     expectUInt(u64.from(held), u64.from(rounds), "every round held L between publishing itself and its look");
     expectUInt(u64.from(spent), u64.from(rounds), "every round, L spent the mark of X1's notify, which claimed it while it was leaving: a notify that woke nobody new");
     expectUInt(u64.from(second), u64.from(rounds), "every round, X2 ran on a second sleeper, not on L");
-    expectUInt(u64.from(prompt), u64.from(rounds), "every round, X2 ran within 150 ms of L's release");
+    expectUInt(u64.from(prompt), u64.from(rounds), "every round, X2 ran within 300 ms of L's release");
     expectUInt(u64.from(during), u64.from(rounds), "every round, X2 ran before X1 had finished");
   }
   finalAll();
