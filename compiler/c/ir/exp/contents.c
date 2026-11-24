@@ -629,6 +629,12 @@ static int contentsArrayShape(ArrayNode *arraydcl, INode *lexnode, uint32_t *lev
     *size = 1;
     INode *level = (INode*)arraydcl;
     for (uint32_t i = 0; i < *levels; ++i) {
+        // An array type with other than one size and one element type was refused where it was
+        // checked (arrayTypeCheck, ErrorBadArray), and has no first of either to read
+        ArrayNode *lvl = (ArrayNode*)level;
+        if (level == NULL || lvl->dimens == NULL || lvl->dimens->used != 1
+            || lvl->elems == NULL || lvl->elems->used != 1)
+            return 0;
         INode *dimnode = nodesGet(((ArrayNode*)level)->dimens, 0);
         if (dimnode->tag != ULitTag || ((ULitNode*)dimnode)->uintlit > UINT32_MAX
             || ((dimnode->flags & FlagLitNeg) && ((ULitNode*)dimnode)->uintlit != 0))
