@@ -155,7 +155,8 @@ when it is an expression with no `;`, decided before types, so a void call with 
 counts, as `ErrorTailOpen` takes it for a function. One that is given its
 type (`closureContextTail`) is held to the rule of a function: a last line with a `;`
 where the type is a value, or none where it is `void`, is `ErrorTailSemi` or
-`ErrorTailOpen`. A closure that writes its type is judged by the parser as a function is.
+`ErrorTailOpen`, and where the type is `void` an else-less `if` with a path that gives a value
+is refused as above (`closureContextTail` asks `closureTailGivesValue`). A closure that writes its type is judged by the parser as a function is.
 
 ## A closure given to a call
 

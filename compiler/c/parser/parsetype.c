@@ -1834,7 +1834,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         Nodes *parms = parseGenericParms(parse, 1, &strnode->lifeparms, NULL);
         parse->tparms = tparms;
         parse->tparmsend = lex->prevend - 1;
-        if (parse->dcltexts && parse->dcltexts->tparms == NULL) {
+        // A list cut off (1001) ends before it starts: it is written nowhere, and
+        // a generator copying the text would take a negative length of it
+        if (parse->tparmsend < parse->tparms)
+            parse->tparms = parse->tparmsend = NULL;
+        if (parse->dcltexts && parse->tparms && parse->dcltexts->tparms == NULL) {
             parse->dcltexts->tparms = parse->tparms;
             parse->dcltexts->tparmsend = parse->tparmsend;
         }
@@ -2129,7 +2133,7 @@ static void parseParmInferSelf(ParseState *parse, VarDclNode *parm, INode *at) {
     INode **typep = NULL;
     if (parm->vtype == unknownType)
         typep = &parm->vtype;
-    else if (parm->vtype->tag == RefTag && ((RefNode *)parm->vtype)->vtexp == unknownType)
+    else if (parm->vtype && parm->vtype->tag == RefTag &&((RefNode *)parm->vtype)->vtexp == unknownType)
         typep = &((RefNode *)parm->vtype)->vtexp;
     if (typep == NULL)
         return;
