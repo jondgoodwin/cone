@@ -24,12 +24,18 @@ actor Ticker {
   pub async fn checks(self) {
     var bad = 0u64;
     // plain fires, never early
+    // (the worst lateness of these twelve is the machine's own slack, which the
+    // 'soon after' bound below adds to its 100 ms: a loaded machine's wake can
+    // itself be over 100 ms late; 24 Nov, 10 of 20 runs under 24 burners)
     var n = 0u64;
-    while n < 3u64 {
+    var slack = 0i64;
+    while n < 12u64 {
       let d = at(2i64);
       timer.set(d);
       if !(await timer.next()) {bad = bad | 1u64;}
-      if Instant.now().nanos() < d.nanos() {bad = bad | 2u64;}
+      let late = Instant.now().nanos() - d.nanos();
+      if late < 0i64 {bad = bad | 2u64;}
+      if late > slack {slack = late;}
       match timer.deadline() {
         case let Some(x) {bad = bad | 4u64;}
         else {}
@@ -54,7 +60,7 @@ actor Ticker {
     }
     if !(await timer.next()) {bad = bad | 8u64;}
     let woke = Instant.now().nanos();
-    if woke < last.nanos() || woke - last.nanos() > 100000000i64 {bad = bad | 16u64;}
+    if woke < last.nanos() || woke - last.nanos() > 100000000i64 + 4i64 * slack {bad = bad | 16u64;}
     // an earlier move: 300 ms, then 2 ms
     let t0 = Instant.now().nanos();
     timer.set(at(300i64));
