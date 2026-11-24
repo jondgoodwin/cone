@@ -17,7 +17,10 @@
 // is. Under load a busy worker whose own queue is empty for a moment steals
 // Late from Hold's queue before the monitor looks, which is the scheduler
 // working, so the monitor's find is required only in the rounds with no steal
-// anywhere (the steals count did not move), and at least one such round is
+// anywhere between Late's being made runnable and its running (the runtime's
+// steals count read in Hold at the one and in Late at the other did not move;
+// a count over the whole 800 ms round had a steal in every round under load,
+// of Churn actors, and tested nothing), and at least one such round is
 // required: when all five had a steal, up to five more run, and with none
 // still the test FAILS ("no round tested the monitor"). What this gives up:
 // in a round with a steal the monitor's own work is not checked (Late's
@@ -38,13 +41,18 @@ struct Flags {
   pub lateAt: Atomic[u64];     // when Late ran, 0 before
   pub holdDone: Atomic[u32];
   pub lateDuring: Atomic[u32]; // Late ran before Hold had finished
+  pub stealsMade: Atomic[u64]; // the runtime's steals and the monitor's finds when Late was made runnable
+  pub findsMade: Atomic[u64];
+  pub stealsLate: Atomic[u64]; // and when Late ran
+  pub findsLate: Atomic[u64];
 }
 
 let flags: Flags;
 
 fn @initpure init() {
   flags = Flags(Atomic[u32].of(0u32), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u32].of(0u32), Atomic[u32].of(0u32));
+    Atomic[u32].of(0u32), Atomic[u32].of(0u32), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn nowNs() u64 {u64.from(time.Instant.now().nanos())}
@@ -60,12 +68,18 @@ actor Churn {
 actor Late {
   pub async fn run(self) {
     flags.lateDuring.store(1u32 - flags.holdDone.load());
+    let st = actors.stats();
+    flags.stealsLate.store(st.steals);
+    flags.findsLate.store(st.monitorFinds);
     flags.lateAt.store(nowNs());
   }
 }
 
 actor Hold {
   pub async fn hold(self, late: Late) {
+    let st = actors.stats();
+    flags.stealsMade.store(st.steals);
+    flags.findsMade.store(st.monitorFinds);
     flags.madeAt.store(nowNs());
     late.run();
     let until = nowNs() + 800000000u64;
@@ -90,30 +104,36 @@ fn main() i32 {
     var during = 0u32;
     var free = 0u32;       // rounds with no steal anywhere: only the monitor could move Late
     var freeFound = 0u32;  // of those, the rounds the monitor moved a queue in
+    var bad = 0u32;        // rounds where Hold or Late did not finish in time
     var r = 0u32;
     while r < rounds || (free == 0u32 && r < 2u32 * rounds) {
       thread.sleep(time.Duration.fromMillis(30i64));
       flags.lateAt.store(0u64);
       flags.holdDone.store(0u32);
-      let f0 = actors.stats().monitorFinds;
-      let s0 = actors.stats().steals;
       hold.hold(late);
       let deadline = nowNs() + 2000000000u64;
       while flags.holdDone.load() == 0u32 && nowNs() < deadline {
         thread.yieldNow();
       }
-      require(flags.holdDone.load() == 1u32, "Hold ended within 2 s");
-      require(flags.lateAt.load() != 0u64, "Late ran by the end of Hold's turn");
-      if flags.lateAt.load() - flags.madeAt.load() < 400000000u64 {prompt = prompt + 1u32;}
-      if flags.lateDuring.load() == 1u32 {during = during + 1u32;}
-      if actors.stats().steals == s0 {
-        free = free + 1u32;
-        if actors.stats().monitorFinds > f0 {freeFound = freeFound + 1u32;}
+      while flags.lateAt.load() == 0u64 && nowNs() < deadline {
+        thread.yieldNow();
+      }
+      if flags.holdDone.load() == 0u32 || flags.lateAt.load() == 0u64 {
+        bad = bad + 1u32;
+      } else {
+        if flags.lateAt.load() - flags.madeAt.load() < 400000000u64 {prompt = prompt + 1u32;}
+        if flags.lateDuring.load() == 1u32 {during = during + 1u32;}
+        // Steals and finds from Late's being made runnable to its running
+        if flags.stealsLate.load() == flags.stealsMade.load() {
+          free = free + 1u32;
+          if flags.findsLate.load() > flags.findsMade.load() {freeFound = freeFound + 1u32;}
+        }
       }
       r = r + 1u32;
     }
     flags.stop.store(1u32);
     actors.waitUntilIdle();
+    expectUInt(u64.from(bad), 0u64, "every round, Hold ended and Late ran, within 2 s");
     expectUInt(u64.from(during), u64.from(r), "every round, Late ran while Hold was still in its turn");
     expectUInt(u64.from(prompt), u64.from(r), "every round, Late ran within 400 ms of being made runnable");
     expect(free >= 1u32, "no round tested the monitor");
