@@ -848,6 +848,10 @@ enum ErrorCode {
 #define TailOpenMsg "End this line with ';': nothing uses this block's value."
 
 extern int errors;
+// How many times a check passed over a node already reported bad, leaving what was
+// written beside it unchecked, once an error stood. A function body that did so
+// is not walked by flow, though it reported no error of its own.
+extern int errorsPassedOver;
 extern int warnings;
 // Non-zero while code is checked as a trial (below): a diagnostic is counted and
 // not printed

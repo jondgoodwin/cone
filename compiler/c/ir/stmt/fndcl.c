@@ -657,6 +657,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // What is known of the variants names hold is this body's alone
     NarrowFnSave svNarrow;
     narrowFnBegin(&svNarrow);
+    int passedOverOnEntry = errorsPassedOver;
     inodeTypeCheck(pstate, &fnnode->value, noCareType);
     narrowFnEnd(&svNarrow);
     lifeBrandFnEnd(&svBrands);
@@ -677,7 +678,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // We run data flow separately as it requires type info which is inferred bottoms-up
     // Skip it when this function's own signature or body did not type check, as
     // flow analysis relies on the types that check was supposed to establish.
-    if (errors != errorsOnEntry)
+    if (errors != errorsOnEntry || errorsPassedOver != passedOverOnEntry)
         return;
     FlowState fstate;
     flowStateInit(&fstate, (FnSigNode *)fnnode->vtype);
