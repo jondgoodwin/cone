@@ -2966,10 +2966,15 @@ pub fn replyFor[S, M: Sendable](st: &S, run: *u8, id: u64, hasId: bool, size: us
   }
   // an await made in a cancel group notes the group, keyed by this actor and
   // the id word, and marks the id word (THE GROUP SURVIVES AN AWAIT)
-  var word = id;
+  // the id word carries the generation now (THE LATE-ANSWER GUARD): a record's index and, in bits 40..61, how
+  // many takes the program's end has made, which resumeSlotIn tells a late answer by and strips before the
+  // resume function sees the index
+  var idw = id;
+  if hasId {idw = id | guardGen() | idStamped;}
+  var word = idw;
   let gp = curGroup;
   if gp != 0usize {
-    word = groupNote(h, id, gp);
+    word = groupNote(h, idw, gp);
   }
   Reply(to: h, at: run, id: word, meta: metaOf(size, flags))
 }
@@ -3608,28 +3613,26 @@ fn resumeSlotIn[S](st: *S, p: *u8, kind: u64, id: u64) {
   // THE LATE-ANSWER GUARD (above regLock): an answer to a record whose table the stop has taken, or is taking,
   // is dropped, not resumed. One load of a static word and a compare, for a reply with a record; the flag alone
   // for one without
-  if kind == kindReply + 1u64 || kind == kindReply + 3u64 {
-    if lateById(id) {
-      dropLate(p, kind);
-      return;
-    }
-  } else if (guardWord.load() & guardTaking) != 0u64 {
+  let hasId = kind == kindReply + 1u64 || kind == kindReply + 3u64;
+  if lateAnswer(hasId, id) {
     dropLate(p, kind);
     return;
   }
+  // the index alone from here: the resume function and the table know no generation
+  let rid = plainId(id);
   let run = *(p as **u8);
   var data = p + replyHead;
   let boxed = kind >= kindReply + 2u64;
   if boxed {
     let w = *(data as *usize);
     if (w & 1usize) != 0usize {
-      resumeLent[S](st, p, kind, run, id);
+      resumeLent[S](st, p, kind, run, rid);
       return;
     }
     data = w as *u8;
   }
-  if kind == kindReply + 1u64 || kind == kindReply + 3u64 {
-    resumeId[S](&mut *st, run, id, data);
+  if hasId {
+    resumeId[S](&mut *st, run, rid, data);
   } else {
     resume[S](&mut *st, run, data);
   }
@@ -3790,10 +3793,13 @@ let regHead: Atomic[usize];       // the newest entry, a *PNode; touched only un
 //   bits 0..39    unused here
 //   bits 40..61   the GENERATION: how many takes have been made; abandonParked bumps it at each take
 //   bit 62        the TAKING flag: set while abandonParked is about to take and takes, clear otherwise
-// A record's id word is its slot's index (bits 0..39: a table of 2^40 slots is not reachable) and, in bits 40..61,
-// the generation when it was parked (parkReserve); bit 62 is never set in an id and bit 63 is the group's. An
-// answer is dropped, not resumed, when its id's generation is not the current one (its record was taken: the
-// answer is late) or the flag is set (a take is under way: the record is about to be taken, or has just been).
+// The id word of a reply with a record (replyFor; the Reply's, and so its slot's) is the record's slot index (bits
+// 0..39: a table of 2^40 slots is not reachable; parkReserve's plain id, which the generated code and the table
+// use) and, in bits 40..61, the generation when the await was made; bit 62 is never set in an id and bit 63 is
+// the group's. The resume strips the generation before it calls the second half. An answer is dropped, not
+// resumed, when its id's generation is not the current one (its record was taken: the answer is late) or the
+// flag is set (a take is under way: the record is about to be taken, or has just been). The held Timer's
+// resume (timers.cone, heldResume) reaches the second half without a slot of the record's, and checks the same.
 // A reply that carries no record has no id to compare and is dropped on the flag alone: its second half touches no
 // table of the taken records, but may park a new one, and that races the take.
 //
@@ -3816,16 +3822,37 @@ const idIndexMask = 0x000000FFFFFFFFFFu64;
 const idGenMask = 0x3FFFFF0000000000u64;
 const idGenStep = 0x0000010000000000u64;
 const guardTaking = 0x4000000000000000u64;
+const idStamped = 0x4000000000000000u64;
 
 // The current generation, shifted to where an id carries it
 fn guardGen() u64 {
   guardWord.load() & idGenMask
 }
 
-// Whether an answer to a record parked at 'id' must be dropped (a take is under way, or has been made since the
-// record parked); one load of the word, one compare
-fn lateById(id: u64) bool {
-  ((id ^ guardWord.load()) & (idGenMask | guardTaking)) != 0u64
+// An id word's record index, the generation and the stamp taken off. Only a stamped word (replyFor's) has them: a
+// reply's id word may be another's, a pointer of the runtime's own (a future set's member, an or-cancelled cell,
+// whose resume function takes it whole), which is passed on as it is
+fn plainId(id: u64) u64 {
+  if (id & idStamped) != 0u64 {
+    return id & idIndexMask;
+  }
+  id
+}
+
+// Whether an answer must be dropped, not resumed. A reply with a record carries a stamped id word (index,
+// generation at its await, and the stamp): dropped when a take is under way or has been made since, i.e. unless
+// the generation is the current one and the flag clear. A reply with an id that is not stamped (the runtime's own
+// pointer words) names no record of a table, and goes on; one with no id is dropped only when a take is under way.
+// One load of the word, a test and a compare
+fn lateAnswer(hasId: bool, id: u64) bool {
+  let w = guardWord.load();
+  if hasId {
+    if (id & idStamped) == 0u64 {
+      return false;
+    }
+    return ((id ^ w) & (idGenMask | idStamped)) != idStamped;
+  }
+  (w & guardTaking) != 0u64
 }
 
 // Enter table p, which is about to park its first record
@@ -4031,15 +4058,15 @@ fn noTrace(record: *u8, mode: u32) {}
 // '&fn(record: *u8)', which the table calls if the actor dies with the record
 // parked, and 'trace' the function '&fn(record: *u8, mode: u32)' handing each
 // traced reference the record holds to its region (null where it holds none).
-// THE ID is the slot's index (bits 0..39) and the generation (bits 40..61) of
-// the program's end when the record parks (THE LATE-ANSWER GUARD, above
-// regLock). A slot is freed only by the one reply its record is owed, which
-// comes exactly once, and that reply's envelope holds this actor's count, so
-// no reply can be doubled or sent to an actor that has died; the one way a
-// reply is late is the program's end taking the table while the reply is in
-// flight, which is what the generation tells (resumeSlotIn drops it). A
-// timeout or a cancel that frees a slot while its reply is in flight would
-// need the same: nothing has a timeout path yet.
+// A PLAIN ID, the slot's index (the reply's id word adds the generation of
+// the program's end, replyFor: THE LATE-ANSWER GUARD, above regLock). A slot
+// is freed only by the one reply its record is owed, which comes exactly once,
+// and that reply's envelope holds this actor's count, so no reply can be
+// doubled or sent to an actor that has died; the one way a reply is late is
+// the program's end taking the table while the reply is in flight, which the
+// generation tells (resumeSlotIn drops it). A timeout or a cancel that frees
+// a slot while its reply is in flight would need the same: nothing has a
+// timeout path yet.
 pub fn parkReserve(p: &mut Pending, size: usize, drop: *u8, trace: *u8) u64 {
   if p.node as usize == 0usize {
     pendingRegister(p);
@@ -4096,23 +4123,20 @@ pub fn parkReserve(p: &mut Pending, size: usize, drop: *u8, trace: *u8) u64 {
   mem.writeRaw[Erased](block as *Erased, Erased(block + recordHead, recordType(block)));
   *slot = block as usize;
   p.count = p.count + 1usize;
-  // the id: the slot's index, and the generation now (THE LATE-ANSWER GUARD), so that an answer that outlives a
-  // take of this table is told from one that does not
-  u64.from(id) | guardGen()
+  u64.from(id)
 }
 
 // Where the record parked at id goes in its block, to write it there
 pub fn parked(p: &mut Pending, id: u64) *u8 {
-  (*(p.slots + usize.from(id & idIndexMask)) as *u8) + recordHead
+  (*(p.slots + usize.from(id)) as *u8) + recordHead
 }
 
 // The reply for id arrived: where its record is, the slot freed
 pub fn unpark(p: &mut Pending, id: u64) *u8 {
-  let at = usize.from(id & idIndexMask);
-  let slot = p.slots + at;
+  let slot = p.slots + usize.from(id);
   let block = *slot as *u8;
   *slot = p.free * 2usize + 1usize;
-  p.free = at + 1usize;
+  p.free = usize.from(id) + 1usize;
   p.count = p.count - 1usize;
   block + recordHead
 }
