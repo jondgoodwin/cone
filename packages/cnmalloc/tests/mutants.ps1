@@ -27,9 +27,16 @@
 #        grows with the operations while takes per operation fall to about 0.01; the page-count check fails)
 #   s0   the out-of-memory sweep removed (lf_oom returns 0)                                (caught by lfoom: a 64 MiB heap filled, the hidden cells freed, and the
 #        first allocation after them fails; the model's s0 is the same mutation)
+#   (row 711, a lost compare-and-swap that only frees caused is not a collision; each mutant in two forms, a = lf_alloc's site, f =
+#   lf_fill's site, caught by lfcas, which runs with a non-worker taker for a and with CNCAS_FILL=1, a worker taker, for f)
+#   f1a/f1f  a free-only failure counted as a collision and not retried                (caught by lfcas round 1: the collision count rises, no retry is counted)
+#   f2a/f2f  a taker's failure treated as free-only (the free-only test dropped)       (caught by lfcas round 2: the collision is not counted, a retry is)
+#   f3a/f3f  the bound on free-only retries removed                                    (caught by lfcas round 3: five retries and no collision, not four and one)
+#   f4a/f4f  the retry re-reads g1 just before its swap (after the park point), so Rule G compares against the page's next life  (caught by lfcas round 4:
+#            no Rule G undo, the taker keeps the cell it took on a page that changed life after the first swap's g1)
 #   none the unmutated shim: doublefree, lfpage (single and grouped), lfrace (plain, with fills, and both again at the default
 #        threshold), lfstale (single and grouped), lfmulti, lfreturn, lfstorm (default, relist=2, relist=3) and lfoom (default,
-#        relist=2, relist=3) and lfslots must pass
+#        relist=2, relist=3), lfslots, and lfcas (a non-worker taker, and CNCAS_FILL=1) must pass
 # Everything is built and run under <Scratch> (default %TEMP%\cnmalloc-mutants); nothing in the tree changes. A mutant's test
 # runs -Runs times (all but a are deterministic: 5 of 5 must fail). lfrace on a mutant is capped at -RaceSecs seconds
 # (CNRACE_MAXSECS); the unmutated lfrace runs with its default. Windows only (cl and link; Linux's is mutants.py). Needs the Visual Studio build tools and the package's release build, which
@@ -114,7 +121,7 @@ function Run-Test([string]$libdir, [string]$test, [string]$tag, [hashtable]$extr
   Copy-Item "$pkg\tests\$test.*" "$run\tests"
   $log = Join-Path $Scratch "log-$test-$tag.txt"
   $save = @{}
-  foreach ($k in @('CNMALLOC', '_LINK_', 'LIB', 'CNRACE_MAXSECS', 'CNTEST_LOG', 'CNRACE_WORKERS', 'CNPAGE_GROUPED', 'CNSTALE_GROUPED')) { $save[$k] = (Get-Item "Env:$k" -ErrorAction SilentlyContinue).Value }
+  foreach ($k in @('CNMALLOC', '_LINK_', 'LIB', 'CNRACE_MAXSECS', 'CNTEST_LOG', 'CNRACE_WORKERS', 'CNPAGE_GROUPED', 'CNSTALE_GROUPED', 'CNCAS_FILL')) { $save[$k] = (Get-Item "Env:$k" -ErrorAction SilentlyContinue).Value }
   Push-Location $run
   try {
     $env:CNMALLOC = $cfg[$test]

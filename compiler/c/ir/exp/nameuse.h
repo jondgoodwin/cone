@@ -89,6 +89,7 @@ int nameUseLifecycleNamed(NameUseNode *name);
 // written with brackets, 'g[i64];', makes an instance of a generic and is no bare name.
 // A call's callee is not asked: it is a name bound to a function by design.
 int nameUseNoValue(INode *node, int wasName);
+int nameUseWasName(INode *node);
 
 // Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **name);

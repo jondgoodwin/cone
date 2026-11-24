@@ -92,7 +92,7 @@ void assignNameRes(NameResState *pstate, AssignNode *node) {
 void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
     // '_' takes the value whatever its type: the value is checked, and nothing else
     if (assignIsAnon(lval)) {
-        int wasName = isNameUseNode(*rval);
+        int wasName = nameUseWasName(*rval);
         if (iexpTypeCheckAny(pstate, rval) && !nameUseNoValue(*rval, wasName))
             ((IExpNode*)lval)->vtype = ((IExpNode*)*rval)->vtype;
         return;
