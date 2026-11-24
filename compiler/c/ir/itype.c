@@ -2364,6 +2364,10 @@ char *itypeName(INode *type) {
         snprintf(buf, sizeof(bodynames[0]), "Array[%s]", elemname);
         return buf;
     }
+    // A type already reported bad, or not inferred yet, has no name to give a
+    // message about it: the first error stands alone
+    if (dcltype == errorType || dcltype == unknownType)
+        return "this type";
     Name *namesym = inodeGetName(dcltype);
     return namesym ? (char*)&namesym->namestr : "this type";
 }
