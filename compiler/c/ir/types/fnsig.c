@@ -668,6 +668,63 @@ static char *fnSigConvWholeEnumRefusal(INode *from, INode *to) {
         (StructNode*)itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp));
 }
 
+// Why a reference 'from' is refused where the virtual reference 'to' is wanted, when
+// the type it refers to meets a requirement of the open trait that takes 'Self' by
+// value (a parameter or the result) as a bound would ('a.plus(b)' with 'b' that
+// type), but a vtable slot has one signature, and a by-value 'Self' is the size of
+// whichever type is behind the reference. NULL when it is not that
+static char *fnSigConvSelfByValueRefusal(INode *from, INode *to, int *code) {
+    INode *fromdcl = itypeGetTypeDcl(from);
+    INode *todcl = itypeGetTypeDcl(to);
+    if (fromdcl->tag != RefTag || todcl->tag != VirtRefTag)
+        return NULL;
+    StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)todcl)->vtexp);
+    StructNode *impl = (StructNode*)itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
+    if (trait->tag != StructTag || impl->tag != StructTag || trait->callsig || !(trait->flags & TraitType)
+        || (trait->flags & (EnumType | SameSize | HasTagField)) || (impl->flags & TraitType))
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        FnDclNode *meth = (FnDclNode*)*nodesp;
+        if (meth->vtype->tag != FnSigTag)
+            continue;
+        FnSigNode *sig = (FnSigNode*)meth->vtype;
+        // Where 'Self' is held by value: a parameter's name, or the result
+        char where[200] = "";
+        INode **parmp;
+        uint32_t pcnt;
+        for (nodesFor(sig->parms, pcnt, parmp)) {
+            INode *ptype = ((IExpNode*)*parmp)->vtype;
+            if (isNameUseNode(ptype) && ((NameUseNode*)ptype)->namesym == selfTypeName) {
+                snprintf(where, sizeof(where), "its parameter `%s`", &((VarDclNode*)*parmp)->namesym->namestr);
+                break;
+            }
+        }
+        if (!where[0] && isNameUseNode(sig->rettype) && ((NameUseNode*)sig->rettype)->namesym == selfTypeName)
+            snprintf(where, sizeof(where), "its result");
+        if (!where[0])
+            continue;
+        INode *binding = namespaceFind(&impl->namespace, meth->namesym);
+        if (binding == NULL || iNsTypeFindVrefMethod(binding, meth, NULL) != NULL
+            || iNsTypeFindVrefMethod(binding, meth, (INode*)impl) == NULL)
+            continue;
+        static char msg[900];
+        char have[160];
+        have[0] = '\0';
+        itypeSpellCat(have, sizeof(have), from, 0);
+        snprintf(msg, sizeof(msg),
+            "`%s` is refused where `&<%s` is wanted: %s's `%s` takes Self by value (%s), so it can't be reached through `&<`. A vtable slot has one signature, and a Self held by value is the size of whichever type is behind the reference. Take it by reference (`&Self`), or call it through a generic bound (`[T: %s]`), which knows the type.",
+            have, &trait->namesym->namestr, &trait->namesym->namestr, &meth->namesym->namestr, where,
+            &trait->namesym->namestr);
+        *code = ErrorInvType;
+        return msg;
+    }
+    return NULL;
+}
+
 // Why a value of type 'from' is refused where the type 'to' is wanted, when the
 // two are function references that differ only in the calling convention they
 // are marked for, or in a parameter or result held by value that is not one
@@ -679,6 +736,9 @@ char *fnSigConvRefusal(INode *from, INode *to, int *code) {
         *code = ErrorWholeEnumMeth;
         return enumwhy;
     }
+    char *selfwhy = fnSigConvSelfByValueRefusal(from, to, code);
+    if (selfwhy)
+        return selfwhy;
     FnSigNode *fromsig = fnSigRefTarget(from);
     if (fromsig == NULL)
         return NULL;

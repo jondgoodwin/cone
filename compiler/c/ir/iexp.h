@@ -22,6 +22,10 @@ INode *iexpGetTypeDcl(INode *node);
 // (Note: only use after it has been type-checked)
 INode *iexpGetDerefTypeDcl(INode *node);
 
+// Report (ErrorNotTyped) that 'node', not an expression, stands where one is wanted;
+// a type used as a value is named in the message.
+void iexpNotTypedMsg(INode *node);
+
 // Type check node we expect to be an expression. Return 0 if not.
 int iexpTypeCheckAny(TypeCheckState *pstate, INode **from);
 

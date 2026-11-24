@@ -30,12 +30,29 @@ INode *iexpGetDerefTypeDcl(INode *node) {
     return itypeGetDerefTypeDcl(iexpGetTypeDcl(node));
 }
 
+// Report (ErrorNotTyped) that 'node', not an expression, stands where one is wanted.
+// A type used as a value is named in the message.
+void iexpNotTypedMsg(INode *node) {
+    if (isTypeNode(node) || (isNameUseNode(node) && nameUseGroup((NameUseNode*)node) == TypeGroup)) {
+        char spelled[160];
+        spelled[0] = '\0';
+        itypeSpellCat(spelled, sizeof(spelled), node, 0);
+        if (spelled[0]) {
+            errorMsgNode(node, ErrorNotTyped,
+                "Expected a typed expression, but `%s` is a type, not a value: a type's name stands for no value, so write a value of it, or call one of its functions.",
+                spelled);
+            return;
+        }
+    }
+    errorMsgNode(node, ErrorNotTyped, "Expected a typed expression.");
+}
+
 // Type check node we expect to be an expression. Return 0 if not.
 int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
     inodeTypeCheckAny(pstate, from);
     // From should be a typed expression node
     if (!isExpNode(*from)) {
-        errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
+        iexpNotTypedMsg(*from);
         return 0;
     }
     return 1;
@@ -625,7 +642,7 @@ int iexpCheckedCoerceIn(TypeCheckState *pstate, INode *totype, INode **from) {
     if (totype == noCareType)
         return 1;
     if (!isExpNode(*from)) {
-        errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
+        iexpNotTypedMsg(*from);
         return 1; // pretend we match to not provoke additional errors
     }
     return iexpCoerceIn(pstate, from, totype);

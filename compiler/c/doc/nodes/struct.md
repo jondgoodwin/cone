@@ -513,8 +513,12 @@ trait held by value (`ErrorNoSize`, 1069), because `Self` there stands for the
 type meeting the trait, which has a size; a default using it is cloned into each
 implementer. A closed trait (`HasTagField`, `SameSize`) and an enum keep their
 own reading. A virtual reference to such a trait is still refused where a struct
-is given as one, as for `&Self` (`trait_typecheck_self_by_value`;
-`trait_self_by_value` runs the rest).
+is given as one (`trait_typecheck_self_by_value`; `trait_self_by_value` runs the
+rest). When the struct meets the requirement as a bound would but not as a vtable
+slot does, the refusal is `ErrorInvType` with `fnSigConvSelfByValueRefusal`'s words
+(`types/fnsig.c`, reached from `fnSigConvRefusal`, so from every site that
+coerces): the requirement, and the parameter or result that holds `Self` by value.
+A requirement using `&Self` keeps the plain mismatch.
 
 **One rule, spelled once** (`fnSigMeetKind` in `types/fnsig.c`; `fnSigVrefMeets`,
 `fnSigMeets` and `fnSigMeetsMethod` are its three forms by what stands first in the

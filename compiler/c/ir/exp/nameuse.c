@@ -495,7 +495,7 @@ int nameUseNoValue(INode *node, int wasName) {
     }
     else if (!isTypeNode(node))
         return 0;
-    errorMsgNode(node, ErrorNotTyped, "Expected a typed expression.");
+    iexpNotTypedMsg(node);
     return 1;
 }
 
