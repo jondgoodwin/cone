@@ -456,6 +456,14 @@ void nameUseBaseInstanceMember(TypeCheckState *pstate, NameUseNode *name) {
         name->dclnode = member;
 }
 
+// What a term is before it is checked, for nameUseNoValue: 1 a name, 2 a call giving type
+// arguments in parentheses ('h(S)'), which type check rewrites to the name of an instance, else 0
+int nameUseWasName(INode *node) {
+    if (isNameUseNode(node))
+        return 1;
+    return node->tag == FnCallTag && fnCallHasTypeArgs((FnCallNode*)node) ? 2 : 0;
+}
+
 int nameUseNoValue(INode *node, int wasName) {
     if (node == NULL || !wasName)
         return 0;
@@ -463,6 +471,17 @@ int nameUseNoValue(INode *node, int wasName) {
         NameUseNode *name = (NameUseNode*)node;
         INode *dcl = nameUseGetDcl(name);
         if (dcl == NULL || ((IExpNode*)name)->vtype == errorType)
+            return 0;
+        if (dcl->tag == FnDclTag && wasName == 2) {
+            // Not 'h names a function': the statement was an instantiation, and its brackets are
+            // what give a generic its type arguments
+            errorMsgNode(node, ErrorNoSize,
+                "%s(...) gives the generic function %s its type arguments, which makes the function and does not call it: type arguments are written in brackets, '%s[...]', and the call follows, '%s[...]()'.",
+                &name->namesym->namestr, &name->namesym->namestr, &name->namesym->namestr, &name->namesym->namestr);
+            ((IExpNode*)name)->vtype = errorType;
+            return 1;
+        }
+        if (wasName == 2)
             return 0;
         if (dcl->tag == FnDclTag) {
             errorMsgNode(node, ErrorNoSize,

@@ -72,8 +72,13 @@ static void arrayLitTypeCheckElems(TypeCheckState *pstate, ArrayNode *arrlit) {
     }
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(arrlit->elems, cnt, nodesp))
-        iexpTypeCheckAny(pstate, nodesp);
+    for (nodesFor(arrlit->elems, cnt, nodesp)) {
+        // An element that names no value, '[f]', is refused as 'let c = f;' is: its type is the
+        // signature's, which no array element can be
+        int wasName = nameUseWasName(*nodesp);
+        if (iexpTypeCheckAny(pstate, nodesp))
+            nameUseNoValue(*nodesp, wasName);
+    }
     arrayLitSettle(arrlit);
 }
 
