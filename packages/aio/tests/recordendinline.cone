@@ -48,11 +48,13 @@ import aio use Socket;
 let notes: Atomic[u64];       // the notes dropped: 1 + 2 + 4 when all three are
 let after: Atomic[u64];       // what ran after an await that must not go on: 1, 2, 4
 let got4: Atomic[u64];        // the bytes W4's answer held
+let counted: Atomic[u64];     // 1 once main has counted the records: W4 stays busy until then
 
 fn @initpure init() {
   notes = Atomic[u64].of(0u64);
   after = Atomic[u64].of(0u64);
   got4 = Atomic[u64].of(0u64);
+  counted = Atomic[u64].of(0u64);
 }
 
 struct Note {
@@ -119,16 +121,23 @@ actor W4 {
     }
   }
 
-  // Busy, with no await, while the read's answer waits lent in the mailbox
   // Never called: its argument is what gives every slot of W4's mailbox room
   // for a read's reply
   pub async fn pad(self, x: Array[u8, 96]) {
   }
 
+  // Busy, with no await, while the read's answer waits in the mailbox: until
+  // main has counted the records (the wait is bounded, so a main that never
+  // counts does not hold the program), and 450 ms more, so the end begins
+  // with W4 still busy however long the counting took
   pub async fn busy(self, ready: OneshotSender[u64]) {
     var r = ready;
     r.send(1u64);
-    thread.sleep(Duration.fromMillis(600i64));
+    let limit = Instant.now() + Duration.fromSeconds(60i64);
+    while counted.load() == 0u64 && Instant.now() < limit {
+      thread.sleep(Duration.fromMillis(5i64));
+    }
+    thread.sleep(Duration.fromMillis(450i64));
   }
 }
 
@@ -190,10 +199,28 @@ fn main() i32 {
   var a1 = krx.recv() || Socket.none();
   expect(!a1.isNone(), "Setup handed over the socket");
   rrx.recv();
-  // W4 is busy; its read's answer is sprung (not lent), its record dissolved, meanwhile
-  thread.sleep(Duration.fromMillis(150i64));
-  let mid = aio.opStats();
-  expectUInt(mid.inUse - base.inUse, 5u64, "records in each place: W1's two, W3's three (W2's sleep is a timer cell, no record); W4's was dissolved when it was answered");
+  // W4 is busy; its read's answer is sprung (not lent), its record dissolved, meanwhile.
+  // The records are not all there when W4 says it is busy: W3's child is launched on a worker
+  // of its own, and its three records (two pipe reads, the exit wait) appear together when
+  // the launch is done, which under load took from 10 ms to over 300 ms. So they are counted
+  // when the count has reached five and then held still for 150 ms (or after 30 s, to fail
+  // with the count it had). What this gives up: a count that is right only for an instant,
+  // or a transient of a different size, would not be seen, and a count that settles at five
+  // after passing through more is accepted; what it keeps is that the count settles at five
+  // and not at six, which is a lent W4 record still in use, or at two.
+  var inUse = aio.opStats().inUse - base.inUse;
+  var settled = Instant.now();
+  let settleBy = Instant.now() + Duration.fromSeconds(30i64);
+  while Instant.now() < settleBy && !(inUse >= 5u64 && (Instant.now() - settled).millis() >= 150i64) {
+    thread.sleep(Duration.fromMillis(5i64));
+    let v = aio.opStats().inUse - base.inUse;
+    if v != inUse {
+      inUse = v;
+      settled = Instant.now();
+    }
+  }
+  counted.store(1u64);
+  expectUInt(inUse, 5u64, "records in each place: W1's two, W3's three (W2's sleep is a timer cell, no record); W4's was dissolved when it was answered");
   finalAll();
   let end = aio.opStats();
   expectUInt(got4.load(), 100u64, "the answer waiting in the mailbox was taken and W4 went on with the bytes, before the I/O ended");
