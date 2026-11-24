@@ -5558,6 +5558,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             inodeTypeCheckAny(pstate, &node->objfn);
         objfnChecked = 1;
         if (inodeIsError(node->objfn)) {
+            // The receiver was reported where it was declared, so this body shows no
+            // error of its own and its arguments stay unchecked: flow must not walk
+            // them (fnDclTypeCheck)
+            if (errors)
+                ++errorsPassedOver;
             node->vtype = errorType;
             return;
         }

@@ -31,6 +31,15 @@
 //    it no longer catches: a few holders in a hundred late by under 50 ms.
 //    When the median or worst check fails, every pass's median, worst and
 //    sample count are printed ("DIAG ...", in microseconds).
+//    The 3 ms is for a machine with its cores free; under 24 CPU burners on 8
+//    logical processors (row 745, 24 Nov) the median was 3.2 to 5.7 ms in 8 of
+//    20 runs and failed the check in 12, with the deputy sound. So before each
+//    pass the test takes the machine's own scheduling lateness: the 75th
+//    percentile of how far past 1 ms each of 24 plain sleeps of this thread ran
+//    (schedUs, in microseconds), and the median's bound is 3 ms plus three
+//    times that (the deputy's wake and the resume's handover are two such
+//    wakes), never over 12 ms: with no deputy the median is about 27 ms, and a
+//    deputy that fires 15 ms late is over 12 ms with the machine as it is.
 // 2. Moves racing the deputy: 16 holders each make 300 rounds of: set 1 to 3 ms
 //    on, spin 2 ms (a turn longer than the monitor's tick, so the deputy may
 //    fire, refile or discard the entry meanwhile), set again 0 to 1.5 ms on
@@ -46,6 +55,7 @@ import env;
 import thread;
 import time use Duration, Instant;
 import sync use Channel, Sender, Receiver;
+import collections use List;
 import actors use Timer;
 
 const waiters = 8u64;
@@ -55,6 +65,8 @@ const bucketUs = 250u64;
 const nBuckets = 24usize;       // 0 to 6 ms in 250 us; the last one holds anything later
 const boundUs = 3000u64;
 const worstUs = 50000u64;
+const boundCapUs = 12000u64;           // the median's bound, whatever the machine's lateness
+const boundPerSchedUs = 3u64;          // the median's bound: boundUs plus this times the machine's scheduling lateness
 const minSamples = 24u64;              // of the 96 resumes in a pass
 const spinnerMark = 100000000000u64;   // the spinner's message: this plus its worker's index
 
@@ -74,6 +86,23 @@ fn @initpure init() {
 fn take(rx: &mut Receiver[u64]) u64 { rx.recv() || 7777777777u64 }
 
 fn afterUs(us: i64) Instant {Instant.fromNanos(Instant.now().nanos() + us * 1000i64)}
+
+// The machine's scheduling lateness, in microseconds: the 75th percentile of how
+// far past 1 ms each of 24 plain sleeps of this thread ran
+fn schedUs() u64 {
+  var xs = List[u64]();
+  var i = 0u64;
+  while i < 24u64 {
+    let t = Instant.now();
+    thread.sleep(Duration.fromMillis(1i64));
+    let over = (t.elapsed() - Duration.fromMillis(1i64)).nanos() / 1000i64;
+    xs.push(if over < 0i64 {0u64} else {u64.from(over)});
+    i = i + 1u64;
+  }
+  xs.sort();
+  let v = xs.view();
+  v[17usize]
+}
 
 // Part 1
 actor Spinner {
@@ -171,6 +200,8 @@ fn part1() {
   var pmed: Array[u64, 3] = [0u64, 0u64, 0u64];
   var pworst: Array[u64, 3] = [0u64, 0u64, 0u64];
   var psamples: Array[u64, 3] = [0u64, 0u64, 0u64];
+  var psched: Array[u64, 3] = [0u64, 0u64, 0u64];
+  var bound = boundUs;
   while pass < passes {
     var hist: Array[u64, 24] = [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
       0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
@@ -178,6 +209,11 @@ fn part1() {
     worst = 0u64;
     var samples = 0u64;
     var round = 0u64;
+    // This pass's bound: 3 ms on a free machine, more as the machine's own sleeps run late
+    let sched = schedUs();
+    bound = boundUs + boundPerSchedUs * sched;
+    if bound > boundCapUs {bound = boundCapUs;}
+    psched[usize.from(pass)] = sched;
     while round < roundsPerPass {
       st.start();
       var sw = 0u64;
@@ -238,16 +274,20 @@ fn part1() {
     pmed[usize.from(pass)] = p50;
     pworst[usize.from(pass)] = worst;
     psamples[usize.from(pass)] = samples;
-    if counted >= minSamples && p50 != 0u64 && p50 <= boundUs && worst < worstUs {break;}
+    if counted >= minSamples && p50 != 0u64 && p50 <= bound && worst < worstUs {break;}
     pass = pass + 1u32;
   }
   expect(counted >= minSamples, "enough timers were set on the spinning worker");
-  expect(p50 != 0u64 && p50 <= boundUs, "the median lateness is within 3 ms while the worker spins 50 ms");
+  expect(p50 != 0u64 && p50 <= bound, "the median lateness is within 3 ms (more by the machine's sleep lateness, up to 12 ms) while the worker spins 50 ms");
   expect(worst < worstUs, "no held cell was left for the owner (the later ones would be 10 to 45 ms late)");
   // A failed pass check prints every pass's median and worst (microseconds;
   // the median is a 250 us bucket's upper edge) and its sample count, as
   // failing checks: expected 0, got the number
-  if !(p50 != 0u64 && p50 <= boundUs) || worst >= worstUs {
+  if !(p50 != 0u64 && p50 <= bound) || worst >= worstUs {
+    expectUInt(psched[0usize], 0u64, "DIAG sleep lateness us, pass 0");
+    expectUInt(psched[1usize], 0u64, "DIAG sleep lateness us, pass 1");
+    expectUInt(psched[2usize], 0u64, "DIAG sleep lateness us, pass 2");
+    expectUInt(bound, 0u64, "DIAG the last pass's bound us");
     expectUInt(pmed[0usize], 0u64, "DIAG median us, pass 0");
     expectUInt(pworst[0usize], 0u64, "DIAG worst us, pass 0");
     expectUInt(psamples[0usize], 0u64, "DIAG samples, pass 0");
