@@ -2270,13 +2270,14 @@ fn sendTo[M: Sendable](h: *Header, msg: M) {
   sendNow[M](h, msg);
 }
 
-// The message pushed on the mailbox now. A send from a thread that is not one of the runtime's workers
-// passes THE STOP'S GATE (below, with 'running'): refused and dropped here, on this thread, once the stop has
-// begun, else counted in flight until its push is done, so the stop waits for it. A worker's send, and the
-// stopping thread's own, bypass it: the workers are joined only after the last quiesce, and the stop's
-// finalizers must still deliver.
+// The message pushed on the mailbox now. A send from a thread that is not one of the runtime's workers, or from
+// a worker outside any activation (inside a hook, between turns: 'inHook'), passes THE STOP'S GATE (below, with
+// 'running'): refused and dropped here, on this thread, once the stop has begun, else counted in flight until its
+// push is done (the activation it starts counted by then), so the stop waits for it. A worker's send inside an
+// activation, and the stopping thread's own, bypass it: an activation is counted, so the stop's quiesce waits for
+// it, the workers are joined only after the last quiesce, and the stop's finalizers must still deliver.
 fn sendNow[M: Sendable](h: *Header, msg: M) {
-  if me == 0usize && stopperHere == 0usize {
+  if (me == 0usize || inHook) && stopperHere == 0usize {
     if !gateEnter() {
       refuseSend(u64.from(mem.sizeof[M]()));
       return;
@@ -3814,12 +3815,12 @@ let regHead: Atomic[usize];       // the newest entry, a *PNode; touched only un
 // stopper's program order), so the answer is dropped; or (2) read the activation's count before it: then it is not
 // quiescent (the end is counted after the resume finishes, and the counts are read ended first), so the take comes
 // after the resume has finished, and the resume found its table whole. Either way no resume runs against the take.
-// What is NOT closed here: an activation a late producer starts by SENDING a message, not answering (its behaviour
-// may park or unpark on a table being taken). THE STOP'S GATE (below, with 'running') closes before abandonParked
-// runs, but it refuses only a thread that is neither a worker nor the stopper (sendNow: 'me == 0 && stopperHere ==
-// 0'); a send from a worker's hook bypasses it, so such a message can still be pushed and counted by 'schedule'
-// after the quiesce above has read the counts, and its behaviour can run beside the take. The check here is on the
-// replies, where the unsafe step of Bug 108 is.
+// An activation a late producer starts by SENDING a message, not answering, is closed by THE STOP'S GATE (below,
+// with 'running'), not here: its behaviour may park or unpark on a table being taken, and nothing at its start
+// could tell it. The gate closes before abandonParked runs and is passed by every sender but the stopper and a
+// worker inside an activation, a hook's send included (sendNow: 'inHook'), so a send accepted is pushed and its
+// activation counted before the quiesce above reads the counts, and none is accepted after. What neither closes:
+// an activation begun by an actor a hook makes (startActor, whose init sent), which is not a send.
 let guardWord: Atomic[u64];
 const idIndexMask = 0x000000FFFFFFFFFFu64;
 const idGenMask = 0x3FFFFF0000000000u64;
@@ -3951,6 +3952,7 @@ fn abandonParked(s: *Sched) {
     let gen = guardWord.load() & idGenMask;
     guardWord.store(gen | guardTaking);
     quiesce(s);
+    takeHold();
     regLock.lock();
     // step (3): the generation, bumped under the lock before any table is emptied, the flag still set
     guardWord.store(((gen + idGenStep) & idGenMask) | guardTaking);
@@ -3998,6 +4000,29 @@ fn abandonParked(s: *Sched) {
     }
     libc.free(lists as *u8);
     quiesce(s);
+  }
+}
+
+// TEST-ONLY seam (row 721), not for programs (public only because Cone has no test-only visibility): the stop
+// held between its last quiesce and its take, as a stop descheduled there would be, for 'ms' milliseconds, once.
+// testTakeHeld says it has reached the hold
+let takeHoldMs: Atomic[i64];
+let takeHeld: Atomic[u64];
+
+pub fn testHoldTake(ms: i64) {
+  takeHoldMs.store(ms);
+}
+
+pub fn testTakeHeld() bool {
+  takeHeld.load() != 0u64
+}
+
+fn takeHold() {
+  let ms = takeHoldMs.load();
+  if ms != 0i64 {
+    takeHoldMs.store(0i64);
+    takeHeld.store(1u64);
+    thread.sleep(time.Duration.fromMillis(ms));
   }
 }
 
@@ -4512,7 +4537,9 @@ let running: Atomic[usize];
 // after it lands in a mailbox no worker will run (a block lent in it is lost), or meets the freed scheduler.
 // The gate makes the check and the send one step against the stop. A send or a wait from a thread that is not
 // a worker or the stopping thread does 'gateInflight.add(1)' and then reads 'gateClosed'; the stop does
-// 'gateClosed.store(1)' and then reads 'gateInflight' until it is 0 (all SeqCst). With SeqCst on all four,
+// 'gateClosed.store(1)' and then reads 'gateInflight' until it is 0 (all SeqCst). A worker is such a sender while
+// it runs a hook ('inHook': a hook runs between turns, outside every counted activation, so the quiesce does not
+// see it); inside an activation it is counted and sends without the gate. With SeqCst on all four,
 // store buffering is excluded: either the sender reads closed and refuses, having queued nothing, or the stop
 // reads the sender's count and waits for its 'sub' (Release; the stop's load is the Acquire), which follows
 // its push. So every send accepted is pushed before the stop's next quiesce, with the workers alive to run it
@@ -6108,6 +6135,8 @@ fn @initpure init() {
   regLock = sync.Mutex.make();
   regHead = Atomic[usize].of(0usize);
   guardWord = Atomic[u64].of(0u64);
+  takeHoldMs = Atomic[i64].of(0i64);
+  takeHeld = Atomic[u64].of(0u64);
   lateDrops = Atomic[u64].of(0u64);
   dying = Atomic[u32].of(0u32);
   gTicket = Atomic[u64].of(0u64);
