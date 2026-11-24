@@ -545,6 +545,19 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
         return;
     }
 
+    // A field named through its type, 'Gadget.w', is asked for with no value of the type to
+    // read it from: a field is the per-instance route and has no storage of its own
+    // (names-and-namespaces: "a static folds on a type, never through a field"). Generation
+    // has nothing to load, so it is refused here, naming the form that works
+    if (name->dclnode->tag == FieldDclTag && (name->dclnode->flags & FlagMethFld)
+        && (name->flags & FlagQualified)) {
+        errorMsgNode((INode*)name, ErrorFieldViaType,
+            "%s is a field, which belongs to a value of its type: read it from one, 'value.%s'. Named through the type it has no value.",
+            &name->namesym->namestr, &name->namesym->namestr);
+        name->vtype = errorType;
+        return;
+    }
+
     // Rule 1: reaching a name analyzes the declaration it names, so what is read
     // below is a finished type rather than whatever source order happened to
     // leave behind. A declaration already type checked returns at once; one still

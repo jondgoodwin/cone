@@ -1,0 +1,110 @@
+// An enum with payload variants that lists Eq or Hash gets '==' and 'hash' written for it: the variant's
+// position, then each payload field in order (row 694; Question 18). A unit variant, a 'V(T)' variant and a
+// record variant, and a generic enum. Every printed value was checked by hand against the source.
+
+mod trait_enum_derive_payload;
+
+import collections use *;
+import stdio use *;
+
+enum Shape is Eq, Hash {
+  Dot;
+  Circle(i32);
+  pub struct Rect { pub w: i32; pub h: i32; }
+}
+
+enum Box[T] is Eq, Hash {
+  Empty;
+  Full(T);
+}
+
+// Floats are fine for Eq alone: '==' is IEEE's
+enum Reading is Eq {
+  None;
+  Value(f64);
+}
+
+fn hashOf[K: Hash](k: &K) u64 {
+  var h = Hasher.withSeed(1u64);
+  k.hash(&mut h);
+  h.finish()
+}
+
+fn yes(label: &str, b: bool) {
+  printStr(label);
+  printStr(if b {" yes\n"} else {" NO\n"});
+}
+
+fn main() {
+  let dot: Shape = Shape.Dot;
+  let dot2: Shape = Shape.Dot;
+  let c3: Shape = Shape.Circle(3i32);
+  let c3b: Shape = Shape.Circle(3i32);
+  let c4: Shape = Shape.Circle(4i32);
+  let r12: Shape = Shape.Rect(1i32, 2i32);
+  let r12b: Shape = Shape.Rect(1i32, 2i32);
+  let r21: Shape = Shape.Rect(2i32, 1i32);
+  yes("dot == dot", dot == dot2);
+  yes("circle 3 == circle 3", c3 == c3b);
+  yes("circle 3 == circle 4", c3 == c4);
+  yes("circle 3 != circle 4", c3 != c4);
+  yes("dot == circle 3", dot == c3);
+  yes("rect 1,2 == rect 1,2", r12 == r12b);
+  yes("rect 1,2 == rect 2,1", r12 == r21);
+  yes("circle 3 == rect 1,2", c3 == r12);
+  yes("equal dots hash equal", hashOf(&dot) == hashOf(&dot2));
+  yes("equal circles hash equal", hashOf(&c3) == hashOf(&c3b));
+  yes("equal rects hash equal", hashOf(&r12) == hashOf(&r12b));
+  yes("circle 3 and 4 hash differently", hashOf(&c3) != hashOf(&c4));
+  yes("rect 1,2 and 2,1 hash differently", hashOf(&r12) != hashOf(&r21));
+  yes("dot and circle hash differently", hashOf(&dot) != hashOf(&c3));
+
+  // 'hash' is the position as one u32, then each payload field in order
+  var wantdot = Hasher.withSeed(1u64);
+  wantdot.writeU32(0u32);
+  yes("dot fed position 0", hashOf(&dot) == wantdot.finish());
+  var wantc = Hasher.withSeed(1u64);
+  wantc.writeU32(1u32);
+  3i32.hash(&mut wantc);
+  yes("circle 3 fed position 1 then 3", hashOf(&c3) == wantc.finish());
+  var wantr = Hasher.withSeed(1u64);
+  wantr.writeU32(2u32);
+  1i32.hash(&mut wantr);
+  2i32.hash(&mut wantr);
+  yes("rect 1,2 fed position 2 then 1, 2", hashOf(&r12) == wantr.finish());
+
+  var d = Dict[Shape, i64]();
+  d.insert(Shape.Dot, 10i64);
+  d.insert(Shape.Circle(3i32), 20i64);
+  d.insert(Shape.Rect(1i32, 2i32), 30i64);
+  printInt(d.getCopy(&dot2).unwrap());
+  printStr(" ");
+  printInt(d.getCopy(&c3b).unwrap());
+  printStr(" ");
+  printInt(d.getCopy(&r12b).unwrap());
+  printStr(" ");
+  yes("circle 4 is not a key", match d.getCopy(&c4) { case let Some(v) { false } else { true } });
+
+  let e1: Box[i32] = Box.Full(7i32);
+  let e2: Box[i32] = Box.Full(7i32);
+  let e3: Box[i32] = Box.Full(8i32);
+  let e0: Box[i32] = Box.Empty;
+  yes("full 7 == full 7", e1 == e2);
+  yes("full 7 == full 8", e1 == e3);
+  yes("empty == full 7", e0 == e1);
+  yes("equal boxes hash equal", hashOf(&e1) == hashOf(&e2));
+  yes("different boxes hash differently", hashOf(&e1) != hashOf(&e3));
+  var bd = Dict[Box[i32], i64]();
+  bd.insert(Box.Full(7i32), 70i64);
+  bd.insert(Box.Empty, 1i64);
+  printInt(bd.getCopy(&e2).unwrap());
+  printStr(" ");
+  printInt(bd.getCopy(&e0).unwrap());
+  printStr("\n");
+
+  let n1: Reading = Reading.Value(1.5f64);
+  let n2: Reading = Reading.Value(1.5f64);
+  let n3: Reading = Reading.Value(2.5f64);
+  yes("float payload == itself", n1 == n2);
+  yes("float payload differs", n1 == n3);
+}
