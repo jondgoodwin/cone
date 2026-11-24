@@ -1035,14 +1035,30 @@ int flowHeldCounted(INode *type) {
 
 // Does a struct -- a variant among them -- hold a counted reference its drop
 // releases: in a field of its own, or inside one (flowHeldCounted)?
+//
+// A struct holding itself by value, which Error 1069 reported, has no end to this
+// walk: one already being walked answers 0, and the compile goes on to end with
+// that error.
 int flowVariantHeldCounted(INode *variant) {
+    static INode *walking[64];
+    static uint32_t depth = 0;
+    for (uint32_t i = 0; i < depth; ++i) {
+        if (walking[i] == variant)
+            return 0;
+    }
+    if (depth == sizeof(walking) / sizeof(walking[0]))
+        return 0;
+    walking[depth++] = variant;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&((StructNode *)variant)->fields, cnt, nodesp)) {
         INode *fldtype = ((FieldDclNode *)*nodesp)->vtype;
-        if (flowIsRcRef(fldtype) || flowHeldCounted(fldtype))
+        if (flowIsRcRef(fldtype) || flowHeldCounted(fldtype)) {
+            --depth;
             return 1;
+        }
     }
+    --depth;
     return 0;
 }
 

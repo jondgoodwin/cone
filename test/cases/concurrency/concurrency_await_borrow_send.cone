@@ -1,0 +1,31 @@
+// A borrow of an awaited value among the pieces of a send is a temporary the send holds, as
+// 'let r = &await c.get();' holds one: with no await after it the send is accepted, and with one
+// after it the borrow would live across the wait and is refused (ErrorFrozen). Neither is a
+// crash of the block that hoists the borrow's temporary.
+
+mod concurrency_await_borrow_send;
+
+import stdio use *;
+import actors;
+
+actor Counter {
+  total: u64;
+
+  fn init(self: &new, start: u64) {
+    *self = Self(total: start);
+  }
+
+  pub async fn get(self) u64 {
+    total
+  }
+}
+
+actor Reporter {
+  pub async fn last(self, c: Counter) {
+    print <- "n ", &await c.get(), "\n";
+  }
+
+  pub async fn before(self, c: Counter) {
+    print <- "a ", &await c.get(), " b ", await c.get(), "\n";   //~ ErrorFrozen "ends at this 'await'"
+  }
+}
