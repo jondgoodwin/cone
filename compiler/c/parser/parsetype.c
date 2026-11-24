@@ -577,7 +577,13 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode,
         lexNextToken();
         valuep = lex->tokp;
         fldnode->value = parseAnyExpr(parse);
-        valueendp = lex->prevend;
+        // A value that failed to parse has been reported and consumed nothing
+        // when it is missing ('x: u64 = ;'): the token before it ends before
+        // the text starts, so there is no text of it to keep
+        if (fldnode->value == NULL || lex->prevend < valuep)
+            valuep = NULL;
+        else
+            valueendp = lex->prevend;
     }
     if (parse->dcltexts)
         parseDclText(parse, (INode*)fldnode, fldnode->vtype != unknownType ? typep : NULL, typeendp, valuep, valueendp);
@@ -1409,7 +1415,9 @@ static void supplyAddText(SupplyBuf *b, const char *src, size_t len) {
 static int supplyIsTrait(INode *entry, const char *name) {
     if (entry != NULL && entry->tag == FnCallTag)
         entry = ((FnCallNode*)entry)->objfn;
-    if (entry == NULL || entry->tag != NameUseTag)
+    // An entry the parser could not read as a name ('is [X]') is a name use with no name, which
+    // the parser has already reported
+    if (entry == NULL || entry->tag != NameUseTag || ((NameUseNode*)entry)->namesym == NULL)
         return 0;
     return strcmp(&((NameUseNode*)entry)->namesym->namestr, name) == 0;
 }

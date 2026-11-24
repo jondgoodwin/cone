@@ -94,7 +94,10 @@ older one keeps what it published.
 fail to have a size six ways — `@opaque`, a trait or an `@unsized` enum, a
 function signature, a struct with an unsized field, a body whose length a
 reference carries (`str`), and a type still being laid out. All six report
-`ErrorNoSize`, and the cause is named in the message.
+`ErrorNoSize`, and the cause is named in the message. The function-signature cause
+is also met with no variable to hold it: a function's name written as a statement or
+as the value `_ =` takes (`f;`, `(f);`) reports it, naming the call that was probably
+meant (`nameUseNoValue`).
 
 **Six codes would be indistinguishable to everything except the wording**, and
 the wording is what the author actually needs — each cause has a different
@@ -1177,6 +1180,10 @@ one the enum declares, and names the form that works, `Vec3.zero`. `ErrorConstPl
 braces of a trait, where it would be a requirement each implementer meets (`parseStructItems`); it is read in full and not added to the type, so the rest of the file is checked.
 A `const` with no value is `ErrorNoInit`, one with no name `ErrorNoIdent`, a name the type already has `ErrorDupName`,
 and a value that is no constant expression `ErrorNotLit`, as at module level.
+
+`ErrorFieldViaType` (1628) is a field named through its type, `Shade.count` or `Gadget.w`, with no value of the type to
+read it from. A field is per instance and has no storage of its own, so the use (`nameUseTypeCheck`) is refused and takes the
+error type, and the message names the form that works, `value.field`. It is the mirror of `ErrorConstViaValue`.
 
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in

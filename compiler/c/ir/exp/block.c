@@ -253,7 +253,9 @@ static void blockStmtTypeCheck(TypeCheckState *pstate, INode **stmtp, Nodes **ho
         }
     }
     if (owner == NULL) {
+        int wasName = isNameUseNode(*stmtp);
         inodeTypeCheck(pstate, stmtp, noCareType);
+        nameUseNoValue(*stmtp, wasName);
         discardCheck(*stmtp);
         narrowStmtEnd(svstmt);
         return;
@@ -433,6 +435,7 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
     else {
         // Last statement of a regular block needs to be a break, continue, return or blockret
         if (laststmtp && isExpOrMacroNode(*laststmtp)) {
+            int lastWasName = isNameUseNode(*laststmtp);
             inodeTypeCheck(pstate, laststmtp, expectType);
             // A call that does not return ends the block as a 'return' would,
             // giving it no value to coerce, so it becomes one: returnTypeCheck
@@ -447,8 +450,10 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
             else {
                 // The block's last line ends in ';' (the parser makes no empty
                 // statement of it): its value is dropped
-                if (blk->flags & FlagTailSemi)
+                if (blk->flags & FlagTailSemi) {
+                    nameUseNoValue(*laststmtp, lastWasName);
                     discardCheck(*laststmtp);
+                }
                 lastexp = laststmtp;
                 match = iexpMultiCheckedCoerceInfer(expectType, &inferredType, lastexp, match);
             }
