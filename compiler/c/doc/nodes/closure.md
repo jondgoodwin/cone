@@ -143,7 +143,16 @@ place that finds it (`iexpMultiInfer`, told by `closureInferring`). A body with
 nothing to hand back returns nothing. So does one whose last line ends in `;`, which
 throws the value away: a closure that writes no return type goes either way,
 `fn(x: i64) { x + 1 }` returning the value and `fn(x: i64) { total += x; }` nothing
-(`FlagTailSemi` on the body, read by `closureImplicitReturn`). One that is given its
+(`FlagTailSemi` on the body, read by `closureImplicitReturn`). The decision is by what
+the last line gives, as Rust's is. A last line that is, or ends in (a block, an arm), an
+`if`, `else if` chain or `if let` with no final `else`, where every path present gives
+nothing (its last line has a `;`, is a statement, or is itself such an `if`), is a
+nothing-valued line: the closure returns nothing, as with a `;` after it
+(`closureTailGivesValue`). Where some path gives a value (`fn() { if c { 5 } }`) it is
+refused with `ErrorTailOpen`, as a function refuses it: "add an `else`, or end the line
+with `;` if the closure returns nothing". A path's last line counts as giving a value
+when it is an expression with no `;`, decided before types, so a void call with no `;`
+counts, as `ErrorTailOpen` takes it for a function. One that is given its
 type (`closureContextTail`) is held to the rule of a function: a last line with a `;`
 where the type is a value, or none where it is `void`, is `ErrorTailSemi` or
 `ErrorTailOpen`. A closure that writes its type is judged by the parser as a function is.

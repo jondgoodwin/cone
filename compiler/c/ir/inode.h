@@ -643,6 +643,10 @@ void inodeNameRes(NameResState *pstate, INode **pgm);
 // See conec.c for high-level info about the type checking pass
 void inodeTypeCheck(TypeCheckState *pstate, INode **pgm, INode *expectType);
 
+// An expression already checked, that a node built round it now holds ('Some(value)' for a value
+// converted to an Option): the walk does not check it again. NULL when none
+extern INode *inodeCheckedOnce;
+
 // The state of the innermost inodeTypeCheck still running, or NULL when no type
 // check is: what a type comparison reads to know which code is asking
 extern TypeCheckState *inodeCheckState;

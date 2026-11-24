@@ -104,6 +104,51 @@ int iexpTypeCheckCoerceCondition(TypeCheckState *pstate, INode **from) {
     return ok;
 }
 
+// ---- A plain value into an Option (Jon, Question 20, 23 Nov 2026): a value of type T converts to
+// 'Option[T]' as 'Some(value)', one level only ('??i32' takes 'Some(5)', never 5). Never into a Result.
+// An overload choice first asks with the wrap off (iexpOptWrapOff) and allows it only when no candidate
+// takes the call as written; a macro's lazy parameter never takes it (that argument is substituted as
+// written, so a wrap there would fail inside the macro's body).
+int iexpOptWrapOff = 0;
+static int iexpOptWrapBusy = 0;
+// Does this value reach an Option only by being what its 'Some' holds? Answers the variant and its payload
+static int iexpOptWrapApplies(INode **from, INode *totypedcl, StructNode **variant, INode **payload) {
+    if (iexpOptWrapOff || iexpOptWrapBusy || !isExpNode(*from) || totypedcl == NULL)
+        return 0;
+    StructNode *v = propagateOptionSome(totypedcl);
+    if (v == NULL)
+        return 0;
+    INode *held = propagateSuccessHeld(v);
+    if (held == NULL)
+        return 0;
+    INode *fromtype = iexpGetTypeDcl(*from);
+    if (fromtype == errorType || fromtype == unknownType)
+        return 0;
+    iexpOptWrapBusy = 1;
+    int direct = iexpMatches(from, totypedcl, Coercion) != NoMatch;
+    int viaheld = !direct && iexpMatches(from, held, Coercion) != NoMatch;
+    iexpOptWrapBusy = 0;
+    if (!viaheld)
+        return 0;
+    *variant = v;
+    *payload = held;
+    return 1;
+}
+static int iexpOptWrapMake(INode **from, INode *totype, StructNode *variant, INode *payload) {
+    TypeCheckState *pstate = iexpCoerceState ? iexpCoerceState : inodeCheckState;
+    if (pstate == NULL)
+        return 0;
+    if (!iexpCoerce(from, payload))
+        return 0;
+    INode *call = propagateWrap(variant, *from, *from);
+    INode *checkedwas = inodeCheckedOnce;
+    inodeCheckedOnce = *from;       // the value is checked: an operator's call is not checked twice
+    inodeTypeCheck(pstate, &call, totype);
+    inodeCheckedOnce = checkedwas;
+    *from = call;
+    return iexpCoerce(from, totype);
+}
+
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
     // A 'null' not yet typed is whichever raw pointer type is wanted, and nothing else
@@ -169,6 +214,12 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
         return ConvBorrow;    // Auto-borrow
     }
 
+    {
+        StructNode *wv; INode *wp;
+        if (constraint == Coercion && iexpOptWrapApplies(from, totyp, &wv, &wp)) {
+            return ConvSubtype;
+        }
+    }
     return NoMatch;
 }
 
@@ -483,6 +534,11 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         return 1;
     }
     case ConvSubtype: {
+        {
+            StructNode *wv; INode *wp;
+            if (iexpOptWrapApplies(from, totypedcl, &wv, &wp))
+                return iexpOptWrapMake(from, totype, wv, wp);
+        }
         if (totypedcl->tag == VirtRefTag && ((RefNode*)totypedcl)->region == borrowRef)
             borrowOwnerLendRefused(*from, ((RefNode*)totypedcl)->perm);
         // A float literal widened stays a literal, which the positions that
