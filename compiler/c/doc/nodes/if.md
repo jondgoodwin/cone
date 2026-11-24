@@ -400,7 +400,9 @@ aggregate is merged through a slot").
   coercion or a deref silently breaks detection — and it surfaces as
   `ErrorNoElse`, not as a defect.
 - **`ErrorNoElse` returns with `vtype` still `unknownType`.**
-- **`ifRemoveReturns` calls `nodesLast` without an emptiness guard.**
+- **`ifRemoveReturns` skips an arm that holds no statement.** A closure's last `if` is wrapped
+  in its return before it is type checked, so an arm written `{}` is still empty there
+  (Bug 111; it crashed any closure ending in `if c {}`, not only a failed condition).
 
 ## What lives elsewhere
 
