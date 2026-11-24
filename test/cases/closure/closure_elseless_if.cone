@@ -1,0 +1,72 @@
+// An inferring closure (no return type written, none given) whose last line is an 'if'
+// with no final 'else', where every path gives nothing, returns nothing, as a named
+// function ending in the same 'if' does. The decision is by what the line gives, not by
+// a ';'. Each form is called and its effect counted. Every count is worked out by hand
+// beside it.
+
+mod closure_elseless_if;
+
+import stdio use *;
+
+fn takes(f: &fn(c: bool)) { f(true); }
+
+fn main() {
+  var n = 0;
+
+  // 'if' with no 'else': counts the true call only. n = 1
+  var plain = fn(c: bool) { if c { n += 1; } };
+  plain(true);
+  plain(false);
+  printInt(i64.from(n));
+  printStr("\n");
+
+  // A ';' after it still compiles. true only: n = 2
+  var semi = fn(c: bool) { if c { n += 1; }; };
+  semi(true);
+  semi(false);
+  printInt(i64.from(n));
+  printStr("\n");
+
+  // 'else if' chain with no final 'else'. c true: +10. n = 12
+  var chain = fn(c: bool) { if c { n += 10; } else if !c { n += 20; } };
+  chain(true);
+  printInt(i64.from(n));
+  printStr("\n");
+  // c false: +20. n = 32
+  chain(false);
+  printInt(i64.from(n));
+  printStr("\n");
+
+  // 'if let' with no 'else': Some(5) adds 5, None adds nothing. n = 37
+  var iflet = fn(o: Option[i32]) { if let Some(v) = o { n += v; } };
+  iflet(Some[i32](5));
+  iflet(None[i32]);
+  printInt(i64.from(n));
+  printStr("\n");
+
+  // The else-less 'if' nested as the tail of an 'if' arm; c true adds 1 (n = 38)
+  var inarm = fn(c: bool) { if c { if c { n += 1; } } else { n += 100; } };
+  inarm(true);
+  printInt(i64.from(n));
+  printStr("\n");
+  // c false takes the else arm, adding 100. n = 138
+  inarm(false);
+  printInt(i64.from(n));
+  printStr("\n");
+
+  // As the tail of a block, and of an 'else' arm: 138 + 1 + 1 = 140
+  var inblock = fn(c: bool) { { if c { n += 1; } } };
+  inblock(true);
+  var inelse = fn(c: bool) { if c { n += 1; } else { if c { n += 1; } } };
+  inelse(true);
+  printInt(i64.from(n));
+  printStr("\n");
+
+  // A closure given its type is unchanged (it holds nothing, so it is a function): prints typed
+  takes(fn(c: bool) { if c { printStr("typed\n"); } });
+
+  // With an 'else' the line is as before: it still returns the value. 2
+  let value = fn(c: bool) { if c { 1 } else { 2 } };
+  printInt(i64.from(value(false)));
+  printStr("\n");
+}

@@ -1226,6 +1226,13 @@ void lexScanNumber(char *srcp) {
         }
         else if (*srcp=='3' && *(srcp+1)=='2')
             srcp += 2;
+    } else if ((*srcp=='i' || *srcp=='u') && isFloat) {
+        // A fraction or an exponent makes the number a float, which no integer
+        // suffix can type: generation would build a float constant of an integer type
+        errorMsgLex(ErrorBadTok, "A number written with a fraction or an exponent is a float, so it cannot take an integer suffix ('%c...'): use an 'f32' or 'f64' suffix, or none, or write a whole number.", *srcp);
+        while (isalnum((unsigned char)*srcp) || *srcp=='_')
+            srcp++;
+        lex->langtype = unknownType;
     } else if (*srcp=='i') {
         lex->langtype = (INode*)i32Type;
         if (*(++srcp)=='8') {        

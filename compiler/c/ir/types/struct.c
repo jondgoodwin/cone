@@ -53,6 +53,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->instmeth = NULL;
     snode->instdepth = 0;
     snode->memlazy = 0;
+    snode->memerrbase = -1;
     return snode;
 }
 
@@ -261,6 +262,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->instmeth = NULL;
     newnode->instdepth = 0;
     newnode->memlazy = 0;
+    newnode->memerrbase = -1;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     // An instance's fields are the generic's with its parameters bound, so
     // whether they carry a borrow, hold a traced reference or an atomic value,
@@ -5255,6 +5257,15 @@ static StructNode *structLazyRoot(INode *type) {
 static void structMembersRelease(StructNode *node) {
     if (!node->memlazy)
         return;
+    // An instance made by one whose member check reported an error stays unchecked: its
+    // members are that one's again at a larger argument, and a chain of them checked to
+    // repeat the same errors cost half a minute, nested a type deeper each time (Bug 120:
+    // 'Wrap[& R]' as a receiver). The program is refused already.
+    if (node->instfrom != NULL && !errorSilent) {
+        StructNode *from = structEnumRoot(node->instfrom);
+        if (from->memerrbase >= 0 && errors > from->memerrbase)
+            return;
+    }
     node->memlazy = 0;
     if (structLayoutInFlight())
         structWait(&structMembersWaiting, node);
@@ -5283,11 +5294,15 @@ void structMembersUse(TypeCheckState *pstate, INode *type, int construct) {
 static void structCheckMembers(StructNode *node) {
     StructNode *savedcur = structMembersCur;
     FnDclNode *savedmeth = structMembersMeth;
+    StructNode *root = structEnumRoot(node);
+    int savedbase = root->memerrbase;
+    root->memerrbase = errors;
     structMembersCur = node;
     structMembersMeth = NULL;
     structCheckMembersBody(node);
     structMembersCur = savedcur;
     structMembersMeth = savedmeth;
+    root->memerrbase = savedbase;
 }
 
 static void structCheckMembersBody(StructNode *node) {

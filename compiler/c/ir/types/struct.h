@@ -69,7 +69,8 @@ typedef struct StructNode {
     struct StructNode *instfrom;   // The instance whose member check made this one (structInstanceNote); NULL for the first of a chain
     struct FnDclNode *instmeth;    // The member of instfrom whose check made it
     uint32_t instdepth;            // How many instances' member checks lie between it and the first of its chain
-    uint8_t memlazy;               // Its members are not checked yet: a nested instance of a template already in its chain waits for a use (structMembersUse)
+    int32_t memerrbase;            // The error count when its member check began, while one is running, else -1: the instances made while it has reported an error wait unchecked (structMembersRelease)
+    uint8_t memlazy;             // Its members are not checked yet: a nested instance of a template already in its chain waits for a use (structMembersUse)
 } StructNode;
 
 // What a borrow one of its methods returns costs a container (StructNode.lends),
