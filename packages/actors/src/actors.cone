@@ -308,7 +308,7 @@
 // compiler cuts the behaviour there (compiler/c/genllvm/genlawait.c): its first
 // half returns to the dispatcher at the 'await', and what it still needs --
 // its record -- waits in its actor's PENDING TABLE, a hidden field of the
-// state, keyed by a plain id; its second half runs the rest when the reply
+// state, keyed by an id; its second half runs the rest when the reply
 // comes. The generated code calls what follows 'releaseHold', below:
 //
 // - The request carries an envelope, a Reply, in the message, beside the
@@ -3684,7 +3684,7 @@ fn resumeLent[S](st: *S, p: *u8, kind: u64, run: *u8, id: u64) {
 }
 
 // An actor's pending table: its parked continuations' records, each in a
-// block of its own, keyed by a plain id, the slot's index. A slot holds a
+// block of its own, keyed by an id (parkReserve): the slot's index. A slot holds a
 // record's block, or, free, the next free slot's index + 1, times 2, plus 1.
 // A block begins with the record's type record (core's TypeRecord, made in the
 // block at parking from the drop and the trace functions the compiler made for
@@ -3898,9 +3898,10 @@ fn pendingUnregister(n: *PNode) bool {
 // held, so each actor it names is alive until the drop lets it go, in
 // whatever order the tables fall; and it sends only to live actors, whose
 // workers still run. Slots emptied in step one may be parked in again by what
-// step two starts (the table is a plain id table with nothing owed to any
-// older id: no older reply can arrive), so that a reused id is never resumed
-// by an old reply.
+// step two starts (nothing is owed to any older id: no older reply can arrive,
+// and one a producer outside the counts pushes late is dropped by THE
+// LATE-ANSWER GUARD, the new records' ids carrying the generation this round's
+// take has bumped), so that a reused slot is never resumed by an old reply.
 //
 // SEAM FOR THE CONSOLE (text PR 1b): the owner of the console must drain
 // BEFORE any table is dropped, so that what the dropped frames' finalizers
@@ -4030,13 +4031,15 @@ fn noTrace(record: *u8, mode: u32) {}
 // '&fn(record: *u8)', which the table calls if the actor dies with the record
 // parked, and 'trace' the function '&fn(record: *u8, mode: u32)' handing each
 // traced reference the record holds to its region (null where it holds none).
-// A PLAIN ID, with no generation: a slot is freed only by the one
-// reply its record is owed, which comes exactly once, and that reply's
-// envelope holds this actor's count, so no reply can be stale, doubled, or
-// sent to an actor that has died. A generation becomes necessary exactly
-// when a timeout or a cancel can free a slot while its reply is still in
-// flight, and nothing has a timeout path yet: an I/O operation's answer
-// comes exactly once too, and its envelope counts the actor the same way.
+// THE ID is the slot's index (bits 0..39) and the generation (bits 40..61) of
+// the program's end when the record parks (THE LATE-ANSWER GUARD, above
+// regLock). A slot is freed only by the one reply its record is owed, which
+// comes exactly once, and that reply's envelope holds this actor's count, so
+// no reply can be doubled or sent to an actor that has died; the one way a
+// reply is late is the program's end taking the table while the reply is in
+// flight, which is what the generation tells (resumeSlotIn drops it). A
+// timeout or a cancel that frees a slot while its reply is in flight would
+// need the same: nothing has a timeout path yet.
 pub fn parkReserve(p: &mut Pending, size: usize, drop: *u8, trace: *u8) u64 {
   if p.node as usize == 0usize {
     pendingRegister(p);

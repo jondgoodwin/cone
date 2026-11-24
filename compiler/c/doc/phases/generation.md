@@ -1829,7 +1829,9 @@ is resumed by the actors package, which calls the second half.
   `genlAwait` checks both again at the seam. A record that is not empty is
   given a slot in the table (the actors package's `parkReserve`, with the
   record's size, its **drop function** and its **trace function**, below), which allocates its block:
-  the slot's index is the record's **id**, a plain index with no generation.
+  the record's **id** is the slot's index (the low 40 bits) with the generation the program's end had reached
+  (bits 40 to 61; the end drops an answer to a record it took, in `resumeSlotIn`), which the generated code
+  passes to `unpark` and `parked` as it is, opaque.
   The actor's generated
   `<Actor>.replyid'` (or `<Actor>.reply'`, where the record is empty) makes the
   envelope, an `actors.Reply` (one call of `actors.replyFor`): it takes one
