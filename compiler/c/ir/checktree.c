@@ -77,6 +77,23 @@ static void checkNode(INode *node) {
         return;
     }
 
+    // The unknown type is the placeholder an expression holds until type check says
+    // what it is, so a node that still holds it after a program was accepted was
+    // never typed. A refused program may leave it where the phase gave up.
+    // Only the nodes that always give a value are held to it. A name use, a call, an
+    // assignment, a block or an 'if' may stand as a statement (or name a type) and
+    // hold the unknown type by design.
+    if (!errors && isExpNode(node) && ((IExpNode*)node)->vtype == unknownType
+        && (node->tag == ULitTag || node->tag == FLitTag
+            || node->tag == SizeofTag || node->tag == NotLogicTag
+            || node->tag == OrLogicTag || node->tag == AndLogicTag || node->tag == FldAccessTag
+            || node->tag == ArrIndexTag)) {
+        errorMsgNode(node, ErrorBadTree,
+            "Compiler defect: an expression node (tag %d) was left with the unknown type.",
+            (int)node->tag);
+        return;
+    }
+
     switch (node->tag) {
     case ProgramTag:
         checkNodes(((ProgramNode*)node)->modules); break;
@@ -90,8 +107,21 @@ static void checkNode(INode *node) {
     case FnDclTag:
         if (((FnDclNode*)node)->genericinfo != NULL)
             checkInstances(((FnDclNode*)node)->genericinfo, node);
-        else
-            checkNode(((FnDclNode*)node)->value);
+        else {
+            FnDclNode *fn = (FnDclNode*)node;
+            // A function has a body or is declared 'extern'; a trait's required method
+            // and a module trait's declaration are the signatures that have none. A
+            // refused program may have stopped before its body was made.
+            // Only a function of a module is held to it: a method's owner may be a trait
+            // or an instance of a generic one, whose signatures are bodiless by design.
+            INode *owner = fn->dclinfo.owner;
+            int freefn = owner != NULL && owner->tag == ModuleTag;
+            if (!errors && fn->value == NULL && freefn
+                && !(fn->flags & FlagExtern) && !(fn->dclinfo.facts & DclExternal))
+                errorMsgNode(node, ErrorBadTree,
+                    "Compiler defect: a function declaration was left with no body and is not extern.");
+            checkNode(fn->value);
+        }
         break;
 
     case FnOverloadDclTag:

@@ -38,11 +38,13 @@ import aio use Socket;
 let notes: Atomic[u64];       // the notes dropped: 1 + 2 + 4 when all three are
 let after: Atomic[u64];       // what ran after an await that must not go on: 1, 2, 4
 let got4: Atomic[u64];        // the bytes W4's lent answer held
+let counted: Atomic[u64];     // 1 once main has counted the records: W4 stays busy until then
 
 fn @initpure init() {
   notes = Atomic[u64].of(0u64);
   after = Atomic[u64].of(0u64);
   got4 = Atomic[u64].of(0u64);
+  counted = Atomic[u64].of(0u64);
 }
 
 struct Note {
@@ -109,11 +111,18 @@ actor W4 {
     }
   }
 
-  // Busy, with no await, while the read's answer waits lent in the mailbox
+  // Busy, with no await, while the read's answer waits lent in the mailbox: until
+  // main has counted the records (the wait is bounded, so a main that never
+  // counts does not hold the program), and 450 ms more, so the end begins
+  // with W4 still busy however long the counting took
   pub async fn busy(self, ready: OneshotSender[u64]) {
     var r = ready;
     r.send(1u64);
-    thread.sleep(Duration.fromMillis(600i64));
+    let limit = Instant.now() + Duration.fromSeconds(60i64);
+    while counted.load() == 0u64 && Instant.now() < limit {
+      thread.sleep(Duration.fromMillis(5i64));
+    }
+    thread.sleep(Duration.fromMillis(450i64));
   }
 }
 
@@ -179,9 +188,28 @@ fn main() i32 {
   var a1 = krx.recv() || Socket.none();
   expect(!a1.isNone(), "Setup handed over the socket");
   rrx.recv();
-  // W4 is busy; its read's answer is sprung, lent, meanwhile
-  thread.sleep(Duration.fromMillis(150i64));
-  let mid = aio.opStats();
+  // W4 is busy; its read's answer is sprung, lent, meanwhile.
+  // The records are not all there when W4 says it is busy: W3's child is launched on a worker
+  // of its own, and its three records appear together when the launch is done (the count goes
+  // 3 -> 6), which under load took from 10 ms to over 300 ms. So they are counted when the
+  // count has reached five and then held still for 150 ms (or after 30 s, to fail with the
+  // count it had). What this gives up: a count that is five or more only for an instant would
+  // not be seen; what it keeps is the check below, as it was: the settled count is at least
+  // five (it settles at six: W1's two, W3's three and W4's lent one), not W1's two and W4's
+  // alone.
+  var settledAt = aio.opStats();
+  var settled = Instant.now();
+  let settleBy = Instant.now() + Duration.fromSeconds(30i64);
+  while Instant.now() < settleBy && !(settledAt.inUse - base.inUse >= 5u64 && (Instant.now() - settled).millis() >= 150i64) {
+    thread.sleep(Duration.fromMillis(5i64));
+    let v = aio.opStats();
+    if v.inUse != settledAt.inUse {
+      settled = Instant.now();
+    }
+    settledAt = v;
+  }
+  counted.store(1u64);
+  let mid = settledAt;
   expect(mid.inUse - base.inUse >= 5u64, "records in each place: W1's two, W2's, W3's, W4's lent one");
   finalAll();
   let end = aio.opStats();

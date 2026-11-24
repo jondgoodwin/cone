@@ -28,6 +28,9 @@ congo run -D FAST -D N=2   a constant for #defined and #define
 congo build --no-cache     compile everything, whatever an earlier build left
 congo build --release --strip   no debug info, and no .pdb beside the .exe
 congo build --release --lto     optimise across the packages at link time (ThinLTO)
+congo layout               build the package and print each struct's size, alignment, field offsets and
+                           padding bytes (a struct padded by a quarter of its size or more is marked
+                           PADDED); it changes nothing, and `congo.py` has it, not yet the Cone port
 congo publish              point an index registry at this package's current commit
 ```
 
@@ -496,7 +499,9 @@ says `/OPT:REF,ICF` (given by name: `/DEBUG`, which it also says unless the buil
 is `--strip`ped, would turn the folding off by default), so the linker drops what nothing reaches and folds
 identical functions: the net under the compiler's keeping each of a release
 program's generic instance functions as the program's own copy
-(`--private-instances` caps that by size). `tls` is the example of a
+(`--private-instances` caps that by size). A release link on Linux says
+`-Wl,--gc-sections`, and on macOS `-Wl,-dead_strip`, to the same end (the compiler
+gives each symbol a section of its own); a debug link says neither. `tls` is the example of a
 package whose libraries differ by system, with no plain `[link]`: on Windows
 OpenSSL's import libraries and `crypt32`, on Linux the system's `ssl` and
 `crypto` (Ubuntu's `libssl-dev`).

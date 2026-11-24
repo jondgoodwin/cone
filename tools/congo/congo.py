@@ -149,6 +149,10 @@ DEFINES: list[str] = []
 # carries debug info, and a link on Windows writes a PDB beside the .exe
 STRIP_DEBUG = [False]
 
+# 'congo layout': conec is passed --layout for every compile of the build, and
+# prints each struct and enum's size, alignment, field offsets and padding
+LAYOUT = [False]
+
 # '--lto' given to build, run or test with --release: every native compile writes
 # ThinLTO bitcode (<name>.bc) in place of an object, and the link is preceded by
 # conec's ThinLTO link of them all, whose objects the linker takes. Into a build
@@ -1877,7 +1881,9 @@ class Linker:
         [link] tables name, each searched for first in their [link] paths. A
         release link folds identical functions (/OPT:ICF), the net under the
         compiler's size gate on generic instances: the copies each object keeps
-        for itself that came out the same are one again in the program. On
+        for itself that came out the same are one again in the program, and
+        drops what nothing reaches (/OPT:REF; `--gc-sections` on Linux and `-dead_strip` on macOS,
+        which no debug link passes). On
         Windows a link that is not stripped, debug or release, also writes the debug info
         of the objects (CodeView) into a PDB beside the .exe, which a profiler
         reads for function names and lines; on Linux the info stays in the ELF."""
@@ -1902,9 +1908,13 @@ class Linker:
         extra = shlex.split(os.environ.get("CONGO_LINK_EXTRA", ""))
         dynamic = exe.with_name(exe.name + ".dynlist")
         dynamic.write_text("{\n  cnmalloc_*;\n};\n")
+        # A release link drops the sections no live code reaches, as Windows' /OPT:REF does: the compiler gives every
+        # symbol a section of its own for this. The symbols the dynamic list exports stay roots. Debug links are left alone.
+        strip_unreached = (["-Wl,-dead_strip"] if HOST_OS == "macos" else ["-Wl,--gc-sections"]) if release else []
         return [self.tool, *map(str, objs), *extra, str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
-                f"-Wl,--dynamic-list={dynamic}", "-o", str(exe), "-lm", "-lpthread", "-ldl"]   # -ldl: dlsym, in libc itself since glibc 2.34 (heapregion.c, actors)
+                f"-Wl,--dynamic-list={dynamic}", *strip_unreached,
+                "-o", str(exe), "-lm", "-lpthread", "-ldl"]   # -ldl: dlsym, in libc itself since glibc 2.34 (heapregion.c, actors)
 
 
 # ---------------------------------------------------------------------------
@@ -2054,7 +2064,8 @@ def conec_command(command: list[str], lto: bool = False) -> list[str]:
     put after the compiler."""
     defines = [arg for define in DEFINES for arg in ("-D", define)]
     strip = ["--strip"] if STRIP_DEBUG[0] else []
-    return [command[0], *defines, *strip, *(["--lto"] if lto and LTO[0] else []), *command[1:]]
+    layout = ["--layout"] if LAYOUT[0] else []
+    return [command[0], *defines, *strip, *layout, *(["--lto"] if lto and LTO[0] else []), *command[1:]]
 
 
 def key_inputs(command: list[str], env: dict[str, str],
@@ -2872,6 +2883,17 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_build(args: argparse.Namespace) -> int:
+    build(current_package(), "release" if args.release else "debug")
+    return 0
+
+
+def cmd_layout(args: argparse.Namespace) -> int:
+    """Build this package with conec's --layout, which prints each struct and enum's
+    size, alignment, field offsets and padding bytes, marking a struct padded by a
+    quarter of its size or more PADDED. It changes nothing in what the build makes.
+    Every compile of the build prints its own, so nothing is taken from the cache."""
+    LAYOUT[0] = True
+    USE_CACHE[0] = False
     build(current_package(), "release" if args.release else "debug")
     return 0
 
@@ -4408,6 +4430,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                       help="a library package, whose include file its build generates")
     init.set_defaults(func=cmd_init)
     for name, func, text in (("build", cmd_build, "build this package"),
+                             ("layout", cmd_layout, "build this package and print its types' sizes,"
+                                                    " field offsets and padding"),
                              ("run", cmd_run, "build this package or a lone file, and run it")):
         p = sub.add_parser(name, help=text)
         p.add_argument("--release", action="store_true", help="an optimised build")

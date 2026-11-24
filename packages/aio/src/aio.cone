@@ -109,6 +109,10 @@
 //   aio.testLateQuiet(on)   TEST-ONLY, not for programs (Cone has no test-only visibility, so it is
 //                           public): while on, reads with no buffer that begin with one go through
 //                           the bad case's late path when answered (READS WITH NO BUFFER)
+//   aio.testHoldAnswer(ms)  TEST-ONLY, not for programs (public as testLateQuiet is): in a debug build,
+//                           each answer of a record that waited on the worker port is held ms
+//                           milliseconds, just before it is pushed; a release build ignores it
+//                           (UDP ON THE WORKER PORT)
 //   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  IoLimits(group, deadline)
 //   aio.sleep(d)  aio.sleepUntil(at)   a pause of d (a Duration) / until at (an Instant)
 //                                                                Result[void, IoError]
@@ -760,6 +764,8 @@ fn @initpure init() {
   countsAt = Atomic[usize].of(0usize);
   udpOn = Atomic[bool].of(false);
   udpWaiting = Atomic[u64].of(0u64);
+  holdAnswerMs = Atomic[i64].of(0i64);
+  hookBusy = Atomic[u64].of(0u64);
   nameCacheAt = Atomic[usize].of(0usize);
   roomLock = Mutex.make();
   roomHead = Atomic[usize].of(0usize);
@@ -1018,7 +1024,12 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
 // THE END. Linux: the Loop's death unpublishes every handle and answers what waits on it, its answers
 // abandoned. Windows: the kernel holds each waiting record until its completion comes to the port;
 // the Loop's death closes the sockets (aborting them), and the I/O thread waits (waitUdpHome) until
-// the poller has taken them all, each abandoned, its buffer home, before it ends.
+// the poller has taken them all, each abandoned, its buffer home, before it ends. On both systems it
+// also waits until no worker is inside the port's hook (portEvents; hookBusy): what a worker does there
+// is outside any actor's turn, so the runtime's stop cannot see it, and an answer it pushed after the
+// stop had abandoned the parked records would resume an actor on a table already taken (Bug 108). A
+// record's count (udpWaiting) therefore ends after its answer is pushed or its drop is done (udpTake,
+// udpHome), never before.
 //
 // TCP ON THE WORKER PORT (iocore's shared.cone, the same name). With the port on, a listener (ListenJob)
 // and a connect (connectIn) are made with 'onWorkers': the sockets they give (accepted, connected)
@@ -1175,10 +1186,11 @@ fn readAnyNext(rp: *OpRec[Ask]) bool {
   if got is None {
     // A pool that refuses the buffer: the read waits for room (ROOM), the bytes staying with the socket.
     // It is parked on the I/O thread's pass, so a close or cancel queued before it is seen first
-    udpEnded(rp);
+    let was = udpTake(rp);
     (*rp).ask.stage = stageRoom();
     (*rp).ask.port = true;
     enqueueRec(core);
+    udpHome(was);
     return true;
   }
   readAnyTake(rp, got)
@@ -1189,7 +1201,10 @@ fn readAnyNext(rp: *OpRec[Ask]) bool {
 fn readAnyTake(rp: *OpRec[Ask], got: Option[IoBuf]) bool {
   let core = rp as *OpCore;
   let r = core as &mut OpCore;
-  udpEnded(rp);
+  // The first stage's count is let go of only after the second stage has taken over (its own wait counted,
+  // or the record answered, which uncounts it itself): the count never dips to 0 between, where aio's end
+  // would see no wait left while this worker still holds the record
+  let was = udpTake(rp);
   setBuf(core, got);
   r.kind = diag.kindRecv;
   (*rp).ask.stage = stageTake();
@@ -1202,15 +1217,19 @@ fn readAnyTake(rp: *OpRec[Ask], got: Option[IoBuf]) bool {
       sh.unlock(h);
       if issued == issueDone {
         bump(&mut (*c).here as *u64);
+        udpGiveBack(rp, was);
         answerRec(rp);
         return true;
       }
     }
   }
   if waitHere(rp, c) {
+    udpHome(was);
     return true;
   }
-  // No longer a worker-side socket (it cannot be, once made): answered as a read on a handle gone
+  // No longer a worker-side socket (it cannot be, once made): answered as a read on a handle gone, the
+  // count still the record's, for its answer to let go of
+  udpGiveBack(rp, was);
   r.status = diag.outcomeCancelled;
   r.n = 0usize;
   r.code = 0u32;
@@ -1473,8 +1492,9 @@ fn roomAbandon() {
   while p as usize != 0usize {
     let next = (*p).qnext;
     (*p).qnext = nullCore();
-    udpEnded(p as *OpRec[Ask]);
-    let gone = dissolveAt(p as *u8);
+    let was = udpTake(p as *OpRec[Ask]);
+    dropRec(p as *u8);
+    udpHome(was);
     p = next;
   }
 }
@@ -1544,7 +1564,20 @@ struct UdpWake is Sendable {
 // the runtime's inHook): Linux, the epoll event (a = its bits, b = the entry and generation of the
 // socket); Windows, a completion (b = its OVERLAPPED, the record, n = the bytes). What it answers goes
 // to the awaiting actors. True when it answered anything
+//
+// THE HOOK IS COUNTED. A worker in this hook is in no actor's activation, so the runtime's stop does not see
+// it (actors' quiesce counts activations), and what it does here (answering an actor, or dropping a record,
+// whose last count then ends an actor on this worker) must be finished before the program's end goes on:
+// 'hookBusy' counts the workers inside, from before they take a record to after the last answer is pushed
+// or the last record dropped, and the I/O thread's end waits for it (waitUdpHome), on every system
 fn portEvents(a: usize, b: usize, n: u32) bool {
+  hookBusy.add(1u64);
+  let answered = portEventsRun(a, b, n);
+  hookBusy.sub(1u64);
+  answered
+}
+
+fn portEventsRun(a: usize, b: usize, n: u32) bool {
   var out = List[*OpCore]();
   let sh = sharedNow();
   #if #os == .windows {
@@ -1567,8 +1600,11 @@ fn udpAnswered(out: &mut List[*OpCore]) bool {
   while k < out.len() {
     let p = *out[k];
     if ending {
-      udpEnded(p as *OpRec[Ask]);
-      let gone = dissolveAt(p as *u8);
+      // The count ends after the drop, which may end an actor on this worker (its last count was this
+      // record's reply): aio's end waits for the count, so it waits for the drop
+      let was = udpTake(p as *OpRec[Ask]);
+      dropRec(p as *u8);
+      udpHome(was);
     } else if !readAnyNext(p as *OpRec[Ask]) {
       answerRec(p as *OpRec[Ask]);
     }
@@ -1577,25 +1613,67 @@ fn udpAnswered(out: &mut List[*OpCore]) bool {
   out.len() != 0usize
 }
 
-// Record rp's wait on the worker port is over (it is answered or abandoned): uncounted, once
-fn udpEnded(rp: *OpRec[Ask]) {
+// Record rp's wait on the worker port is over (it is answered or abandoned). It is uncounted in two steps,
+// so that the count ends AFTER the last touch of the record and of the actor it answers (the stop's end waits
+// for the count: a count ended first let the end go on while this worker was still dropping the record, or
+// pushing the answer, which resumed an actor on a table the stop had already taken: Bug 108):
+//   udpTake(rp)   the record stops owning the count, once; true if it was counted. The record may still be
+//                 touched and answered; the count is still held
+//   udpHome(was)  the count ends, after the drop or the push; the record is not touched again (it may be
+//                 gone, or another's by now)
+fn udpTake(rp: *OpRec[Ask]) bool {
   if (*rp).ask.udp {
     (*rp).ask.udp = false;
+    return true;
+  }
+  false
+}
+
+fn udpHome(was: bool) {
+  if was {
     udpWaiting.sub(1u64);
     actors.workerPortWaits(false);
   }
 }
 
-// The I/O thread's end, Windows: the Loop's death has closed every socket, aborting what waits on it, and
-// the poller takes the aborted completions, each record answered abandoned. Wait for them, so that no
-// record or buffer is the kernel's when the program goes on. Bounded: with no poller to take them, they
-// stay (their memory is the pool's, never freed)
+// The count a udpTake took, given back to the record, for the answer (answerRec) to let go of after its push
+fn udpGiveBack(rp: *OpRec[Ask], was: bool) {
+  if was {
+    (*rp).ask.udp = true;
+  }
+}
+
+// Both steps at once, where nothing of the record or an actor is touched between them (a wait that was
+// not entered, a record not yet away)
+fn udpEnded(rp: *OpRec[Ask]) {
+  udpHome(udpTake(rp));
+}
+
+// The workers inside the worker port's hook (portEvents), counted from before a record is taken to after
+// the last answer pushed or record dropped: an atomic held by a 'let' global, set in 'init'
+let hookBusy: Atomic[u64];
+
+// The I/O thread's end, on every system: wait until no worker is inside the hook (portEvents), and, on
+// Windows, until every wait is over: the Loop's death has closed every socket, aborting what waits on it,
+// and the poller takes the aborted completions, each record answered abandoned, so that no record or buffer
+// is the kernel's when the program goes on. (Linux has no waits left to count here: the Loop's death
+// answers what waits in a worker-side entry itself, so only the workers already inside the hook remain.)
+// What a worker does in the hook after the wait is over is what the runtime's stop cannot see, so it is
+// waited for here: the hook's answers and drops finish before aio's final returns. Bounded: with no poller
+// to take them the records stay (their memory is the pool's, never freed), and a worker stuck in the hook
+// cannot hold the end for ever
 fn waitUdpHome() {
+  let limit = Instant.now() + Duration.fromMillis(5000i64);
+  while udpBusy() && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+}
+
+fn udpBusy() bool {
   #if #os == .windows {
-    let limit = Instant.now() + Duration.fromMillis(5000i64);
-    while udpWaiting.load() != 0u64 && Instant.now() < limit {
-      thread.sleep(Duration.fromMillis(1i64));
-    }
+    hookBusy.load() != 0u64 || udpWaiting.load() != 0u64
+  } #else {
+    hookBusy.load() != 0u64
   }
 }
 
@@ -1740,6 +1818,18 @@ let udpOn: Atomic[bool];
 // waitHere, uncounted by the answer or the abandon): the Windows end waits for it to reach 0, the
 // kernel holding those records until the aborted completions come to the port
 let udpWaiting: Atomic[u64];
+
+// TEST-ONLY (testHoldAnswer): how long a worker-port record's answer is held before it is pushed, in
+// milliseconds; read only in a debug build, so a release build never touches it
+let holdAnswerMs: Atomic[i64];
+
+// TEST-ONLY, not for programs (public only because Cone has no test-only visibility). In a debug build,
+// the answer of each record that waited on the worker port is held ms milliseconds in answerRec, as if
+// the worker making it were slow there; 0 turns it off. A release build compiles the hold away: this
+// stores a word nothing reads
+pub fn testHoldAnswer(ms: i64) {
+  holdAnswerMs.store(ms);
+}
 
 // A waiting record's group wake is registered under an id of its own (cancelgroups' watch, once per
 // loop id): this bit, over the record's id, keeps clear of every loop's id and of a worker's
@@ -3130,7 +3220,15 @@ fn answerRec(rp: *OpRec[Ask]) {
   if !(rp as *OpCore as &OpCore).isLetGo() {
     die("aio: a record lent while its Loop still holds it");
   }
-  udpEnded(rp);
+  // The wait's count is still held until the answer is pushed (or, where it is made here, taken), and the
+  // record let go of: aio's end waits for it, and the stop's quiesce cannot see this thread until then
+  let waited = udpTake(rp);
+  #if #debug {
+    let hold = holdAnswerMs.load();
+    if hold != 0i64 && waited {
+      thread.sleep(Duration.fromMillis(hold));
+    }
+  }
   let w = (*rp).ask.what;
   let back = &mut (*rp).ask.reply;
   if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt || w == opPipeRead || w == opPipeWrite {
@@ -3156,6 +3254,8 @@ fn answerRec(rp: *OpRec[Ask]) {
   } else {
     actors.answerLentIn[Result[usize, IoError]](back, rp as *Result[usize, IoError], &takeCount);
   }
+  // Pushed (the awaiting actor is scheduled, or its worker will take the lent record): the count ends
+  udpHome(waited);
 }
 
 // The bad case's answer, TimedOut, made here with nothing from the record and

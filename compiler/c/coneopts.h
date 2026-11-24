@@ -82,6 +82,8 @@ typedef struct ConeOptions {
     int ltolink;         // --lto-link: no compile; the bitcode files named link into one object each (genlLtoLink)
     int no_noalias;      // --no-noalias, or CONE_NO_NOALIAS set: no 'noalias' on a unique or immutable borrow parameter
     int warn_index_star; // Warn at each '*x[i]' over a type's index place (WarnIndexStar)
+    int layout;          // --layout: print each struct and enum's size, alignment, field offsets and padding after generation (genlLayoutReport)
+    int warn_unused_var; // Warn at each local 'let' or 'var' nothing reads (WarnUnusedVar)
     int await_direct;    // Test only: split each message's seams, each record handed straight to its second half
     int docs;            // Generate code documentation
     int docs_private;    // Generate code docs for private

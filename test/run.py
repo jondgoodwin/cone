@@ -1034,9 +1034,9 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         checks = []
         for entry in table.get("check", []):
             _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object", "within", "matches", "file"})
-            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta", "trust", "file"):
+            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta", "trust", "layout", "file"):
                 raise SuiteError(
-                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta', 'stdout', 'trust' or 'file'")
+                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta', 'stdout', 'trust', 'layout' or 'file'")
             # 'file' names a file the compile wrote into the scenario's output folder
             if entry["target"] == "file":
                 if not isinstance(entry.get("file"), str) or not entry["file"]:
@@ -1053,8 +1053,8 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             if "object" in entry:
                 if entry["target"] == "stdout":
                     raise SuiteError(f"{where}.check: 'object' names a generated object, which has no stdout")
-                if entry["target"] == "trust":
-                    raise SuiteError(f"{where}.check: 'trust' reads the scenario's own report, not a linked object's")
+                if entry["target"] in ("trust", "layout"):
+                    raise SuiteError(f"{where}.check: {entry['target']!r} reads the scenario's own report, not a linked object's")
                 if entry["target"] == "asm":
                     raise SuiteError(f"{where}.check: 'asm' reads the scenario's own assembly, not a linked object's")
                 if entry["object"] not in {path.stem for path in link}:
@@ -1064,7 +1064,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             if entry["target"] == "stdout" and category != "run":
                 raise SuiteError(
                     f"{where}.check: only a 'run' scenario produces stdout to check")
-            if entry["target"] in ("llvmir", "preir", "symbols", "asm", "trust") and category not in ("compile", "run"):
+            if entry["target"] in ("llvmir", "preir", "symbols", "asm", "trust", "layout") and category not in ("compile", "run"):
                 raise SuiteError(
                     f"{where}.check: a {category!r} scenario reaches no code generation")
             matches = parse_matches(f"{where}.check", entry.get("matches", []))
@@ -2122,6 +2122,20 @@ def execute(cmd: list[str], cwd: Path, out_dir: Path, stem: str,
 
 PASS, FAIL, SKIP = "pass", "fail", "skip"
 
+# A '--triple' names a back end, and an LLVM is built with only some of them
+# (Windows' carries X86 and SPIR-V, not AArch64). conec then stops with error
+# 1002 before anything about the case is known, so the run is skipped, not
+# failed. Only this message is: any other 1002 stays a failure.
+NO_BACKEND = re.compile(r'Error 1002: Could not create target: No available targets '
+                        r'are compatible with triple "([^"]*)"')
+
+
+def missing_backend(stderr: str) -> str | None:
+    """The note for a skipped run when this conec's LLVM lacks the triple's
+    back end, else None."""
+    found = NO_BACKEND.search(stderr)
+    return f"this conec's LLVM has no back end for {found.group(1)}" if found else None
+
 # R3.8. An xfail case that fails is XFAIL, which is not a failure; one that
 # passes is XPASS, which is. Reporting XFAIL as pass would lose the distinction
 # the mark exists to make, and reporting XPASS as pass would let a fix land
@@ -3009,6 +3023,12 @@ class Runner:
             result.commands.append(quote(lib_cmd))
             built = execute(lib_cmd, REPO, out_dir, f"conec-{lib.stem}",
                             self.compile_timeout_for(scenario, spec), self.args.max_output)
+            absent = not built.killed and built.code != 0 and missing_backend(built.stderr)
+            if absent:
+                result.status = SKIP
+                result.note = absent
+                result.seconds = time.monotonic() - started
+                return result
             if built.killed or built.code != 0 or parse_diagnostics(built.stderr):
                 result.status = FAIL
                 result.problems.append(
@@ -3051,6 +3071,12 @@ class Runner:
         if compiled.killed:
             result.status = FAIL
             result.problems.append(f"compiler {compiled.killed}")
+            result.seconds = time.monotonic() - started
+            return result
+        absent = compiled.code != 0 and missing_backend(compiled.stderr)
+        if absent:
+            result.status = SKIP
+            result.note = absent
             result.seconds = time.monotonic() - started
             return result
 
@@ -3101,6 +3127,20 @@ class Runner:
                 else:
                     (out_dir / f"{scenario.source.stem}.trust").write_text(trust.stdout, encoding="utf-8")
                     self.check_artifacts(result, scenario, out_dir, "trust")
+            # 'layout': what --layout prints (sizes, offsets, padding), from a run of its own
+            if any(c.target == "layout" for c in scenario.checks):
+                layout_cmd = [str(self.conec), *spec.options, "--layout", "-o", out_rel, scenario.source_rel]
+                result.commands.append(quote(layout_cmd))
+                layout = execute(layout_cmd, REPO, out_dir, "conec-layout",
+                                 self.compile_timeout_for(scenario, spec), self.args.max_output)
+                if layout.killed or layout.code != 0:
+                    result.status = FAIL
+                    result.problems.append("--layout "
+                                           + (f"was {layout.killed}" if layout.killed else f"exited {layout.code}")
+                                           + "\n" + indent(layout.stdout + layout.stderr))
+                else:
+                    (out_dir / f"{scenario.source.stem}.layout").write_text(layout.stdout, encoding="utf-8")
+                    self.check_artifacts(result, scenario, out_dir, "layout")
         if result.status == PASS and scenario.category == "run":
             self.link_and_run(result, scenario, spec, out_dir)
             if result.status == PASS:
@@ -3508,6 +3548,8 @@ class Runner:
                 text = normalize(artifact.read_text(encoding="utf-8", errors="replace"))
             elif check.target == "trust":
                 text = normalize((out_dir / f"{stem}.trust").read_text(encoding="utf-8", errors="replace"))
+            elif check.target == "layout":
+                text = normalize((out_dir / f"{stem}.layout").read_text(encoding="utf-8", errors="replace"))
             elif check.target == "meta":
                 # What --meta-ir wrote: each '#each' with the IR of the passes the parser made of it
                 artifact = out_dir / f"{stem}.meta"

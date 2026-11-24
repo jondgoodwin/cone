@@ -184,7 +184,10 @@ Two entry points, because a type name and a value name want different things.
    The type is the method's owner, or for a field, which records none,
    `pstate->typenode`. **Bare is the whole of the condition:
    `FlagQualified` excludes a field named through its type, `Gadget.w`, which
-   asked for that type's field and not for this method's receiver.**
+   asked for that type's field and not for this method's receiver.** A field
+   named through its type has no value (a field is per instance, with no
+   storage of its own), so it is `ErrorFieldViaType` and the use takes the
+   error type; generation would have nothing to load.
 3. **Demand the declaration.** `inodeTypeCheckAny` on `dclnode` — this is what
    puts the work in dependency order rather than source order.
 4. **Circularity.** A declaration still under check whose type is *still*
@@ -196,6 +199,18 @@ Two entry points, because a type name and a value name want different things.
 type that is still being laid out is not an error** — the name resolves to the
 same declaration either way. What such a type cannot answer is its *size*, and
 that is asked where a value of it is held, not here.
+
+**A name that is no value is refused by its consumer, not by the name's check.** A
+call's callee is a name bound to a function by design, so `nameUseTypeCheck` cannot
+refuse one. What a name written bare is asked where its value is used or thrown away:
+a statement (`blockStmtTypeCheck`, and a block's last line that ends in `;`) and the
+value `_ =` takes (`assignSingleCheck`) ask `nameUseNoValue`, which refuses a function's
+name, `f;`, `(f);`, `g;` (generic), `S.m;` (`ErrorNoSize`, the cause "a function
+signature is not a value at all", as `let c = f;` is), and a type's, `S;`, `Tr;`,
+`i32;`, an alias (`ErrorNotTyped`, as `let c = (S);` is). It asks only of what was
+written as a bare name before the check: `g[i64];` makes an instance of a generic and
+stands as a statement. A function's name is no assignment target (`f = f;`,
+`ErrorBadLval`, `assignTargetsTypeCheck`).
 
 ## Flow
 

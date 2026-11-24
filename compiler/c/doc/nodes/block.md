@@ -569,6 +569,11 @@ Then every registered break is folded in — except for the function's own body
 block, where `returnTypeCheck` already coerced returns against the signature.
 The fold loop uses a manual index because `breaks` can grow while iterating.
 
+Once the statements are checked, and under `--warn-unused-var` only, each
+`VarDclTag` statement with `userlocal` set whose `nuses <= nwrites` is warned
+`WarnUnusedVar`: nothing read it. It runs after the loop, so every use in the
+block, closures and nested blocks included, has been counted.
+
 `vtype` is `expectType` when one was given, else the inferred type. **A function
 body is checked with `noCareType`**, so its `vtype` is `unknownType` — except an
 **inline** function's, which `fnDclTypeCheck` then sets to the signature's return

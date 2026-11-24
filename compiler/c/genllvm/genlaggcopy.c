@@ -35,7 +35,9 @@
  *   function, its declarations and every call to it, direct or through a
  *   vtable or reference, are changed together, so every object compiled by
  *   this compiler agrees. A C-named function keeps the C ABI genlcabi.c gives
- *   it: it is marked as it is declared ("cone-cabi"), and left alone.
+ *   it: it is marked as it is declared ("cone-cabi"), and left alone; so is a
+ *   call made in that ABI, marked as it is made (GenlCAbiCallMark), which a
+ *   call through a '&fn @c' reference needs, its callee being no function.
  *
  * The same remaking gives a smaller aggregate result a register, since LLVM
  * returns a first-class aggregate one register per field, and on Win64 sends
@@ -637,7 +639,8 @@ static int genlAggLent(GenState *gen, LLVMValueRef load) {
         if (!LLVMIsACallInst(user))
             return 0;
         LLVMValueRef callee = LLVMGetCalledValue(user);
-        if (callee == load || genlAggIsIntrinsic(callee) || genlAggIsCAbi(callee))
+        if (callee == load || genlAggIsIntrinsic(callee) || genlAggIsCAbi(callee)
+                || genlAggMarked(gen, user, GenlCAbiCallMark))
             return 0;
         unsigned nargs = LLVMGetNumArgOperands(user);
         int found = 0;
@@ -1220,9 +1223,12 @@ static void genlAggInst(GenlAggFn *st, LLVMValueRef inst) {
     case LLVMCall: {
         LLVMValueRef callee = LLVMGetCalledValue(inst);
         LLVMTypeRef fntype = LLVMGetCalledFunctionType(inst);
+        // A call made as the C ABI passes values: to a C-named function, or
+        // through a '&fn @c' reference, whose callee carries no mark
+        int cabi = genlAggIsCAbi(callee) || genlAggMarked(gen, inst, GenlCAbiCallMark);
         if (genlAggIsIntrinsic(callee) || !genlAggSigChanged(gen, fntype))
             return;
-        if (!genlAggIsCAbi(callee)) {
+        if (!cabi) {
             genlAggCall(st, inst);
             return;
         }
@@ -1744,8 +1750,14 @@ void genlAggCopies(GenState *gen) {
 
     for (uint32_t o = 0; o < nold; ++o)
         LLVMDeleteFunction(old[o]);
-    for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn))
+    // The C ABI's marks have done their work: on each declaration, and on each call
+    for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn)) {
         LLVMRemoveStringAttributeAtIndex(fn, LLVMAttributeFunctionIndex, GenlCAbiMarker, (unsigned)strlen(GenlCAbiMarker));
+        for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb))
+            for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst; inst = LLVMGetNextInstruction(inst))
+                if (LLVMIsACallInst(inst))
+                    genlAggUnmark(gen, inst, GenlCAbiCallMark);
+    }
     free(retclass);
     free(params.slots);
     free(consts.slots);

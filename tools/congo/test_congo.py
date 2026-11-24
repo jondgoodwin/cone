@@ -593,6 +593,35 @@ class Scenarios(unittest.TestCase):
         self.assertIn("build: release",
                       (pkg / "build" / "release" / "show.conebuild").read_text())
 
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'layout' yet")
+    def test_layout_report(self):
+        """'congo layout' builds with conec's --layout and prints each struct's
+        size, alignment, field offsets and padding; a second run prints it again
+        (nothing comes from the cache), and a plain build prints none."""
+        self.congo("new", "lay", cwd=self.root)
+        pkg = self.root / "lay"
+        write(pkg / "src" / "lay.cone", """
+            mod lay;
+
+            struct Padded {
+              a: u8;
+              b: u64;
+              c: u8;
+            }
+
+            fn main() i32 {
+              let p = Padded(1, 2, 3);
+              _ = p;
+              0i32
+            }
+            """)
+        plain = self.congo("build", cwd=pkg)
+        self.assertNotIn("PADDED", plain.stdout)
+        for _ in range(2):
+            ran = self.congo("layout", cwd=pkg)
+            self.assertIn("lay.Padded: size 24, align 8, padding 14 PADDED", ran.stdout)
+            self.assertIn("+8 b, 8 bytes", ran.stdout)
+
     def test_release_symbols_and_strip(self):
         """A release build carries debug info, so a profiler can name its
         functions: on Windows its link writes a PDB beside the program, naming
@@ -4940,6 +4969,45 @@ def parallel_tasks() -> list[list[str]]:
     if together:
         tasks.insert(0, together)    # the long ones first
     return tasks
+
+
+class UnixLinkLine(unittest.TestCase):
+    """The link line on Linux and macOS, read with the host faked so it runs
+    anywhere: a release link drops the sections nothing reaches (--gc-sections
+    for ELF, -dead_strip for Mach-O), as /OPT:REF does on Windows, and a debug
+    link keeps them all. Whether the linker keeps what a program needs is the
+    Linux gate's to show; this holds only what Congo asks for."""
+
+    def line(self, host: str, release: bool) -> list[str]:
+        from unittest import mock
+        linker = congo.Linker.__new__(congo.Linker)
+        linker.tool = "cc"
+        linker.conestd = Path("conestd.a")
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(congo, "IS_WINDOWS", False), \
+                mock.patch.object(congo, "HOST_OS", host):
+            return linker.command([Path("a.o")], Path(folder) / "prog", [], [], release=release)
+
+    def test_an_elf_release_link_drops_the_sections_nothing_reaches(self):
+        line = self.line("linux", True)
+        self.assertIn("-Wl,--gc-sections", line)
+        self.assertNotIn("-Wl,-dead_strip", line)
+        # before the output name, with the rest of the options
+        self.assertLess(line.index("-Wl,--gc-sections"), line.index("-o"))
+
+    def test_a_mach_o_release_link_dead_strips(self):
+        line = self.line("macos", True)
+        self.assertIn("-Wl,-dead_strip", line)
+        self.assertNotIn("-Wl,--gc-sections", line)
+
+    def test_a_debug_link_keeps_every_section(self):
+        for host in ("linux", "macos"):
+            line = self.line(host, False)
+            self.assertNotIn("-Wl,--gc-sections", line)
+            self.assertNotIn("-Wl,-dead_strip", line)
+
+    def test_the_dynamic_list_that_exports_the_shims_names_stays(self):
+        self.assertTrue(any(a.startswith("-Wl,--dynamic-list=") for a in self.line("linux", True)))
 
 
 def run_in_parallel(jobs: int) -> int:
