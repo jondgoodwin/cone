@@ -2172,12 +2172,28 @@ generated function needs the same.
 build, not a GPU's) gives each parameter (`genlParmVar`) and each `let`/`var` local
 (`genlLocalVar`) a `DILocalVariable` and a declare record bound to the stack slot that holds it, in
 the function's subprogram, at the variable's own line. Only a type debug info can describe exactly is
-described: the number types, `bool` (a byte, `DW_ATE_boolean`), `char`, and a plain struct whose
-fields are all so described: not a trait, enum or variant, not generic or an instance, no
-generator frame or padding, so its LLVM struct's elements are its fields one for one; its members
-carry the data layout's offsets and sizes (a struct's description is made once and kept in
-`GenState.ditypes`). A variable of any other type (a reference, a slice, a string, an enum, an
-`Option`, a closure, a generic instance) gets no description, rather than a wrong one. Left out
+described: the number types, `bool` (a byte, `DW_ATE_boolean`), `char`, and a plain struct: not a
+trait, enum or variant, not generic or an instance, no generator frame or padding, so its LLVM
+struct's elements are its fields one for one; its members carry the data layout's offsets and sizes
+(a struct's description is made once and kept in `GenState.ditypes`). A member whose type is not
+described (a reference, a string) is left out of the member list, the struct's size still the
+type's. Also described (`genlDiEnum`, the `ArrayTag` case of `genlDiType`):
+- A fixed array by value: an array type of its element's described type, one subrange per dimension.
+- An enum whose arms hold nothing: an enumeration type over its tag's integer (`u8`, `i32`, ...),
+  named for the enum, with every arm's name and number.
+- Any other enum, an `Option[T]` included (no other generic instance): a struct named as a
+  diagnostic spells it (`Option[i64]`) of the enum's size, holding `tag` (an enumeration named
+  `<enum>.tag`) at the tag's offset in the enum's LLVM type, and `payload`, a union of one struct
+  per arm that holds something, each named for the arm, holding the arm's own fields at the offsets
+  of the arm's LLVM type (counted from the union's start, the first byte any arm uses). DWARF's
+  variant part is not used, since CodeView has none.
+- A nullable-pointer enum (`NullablePtr`: an `Option` of a thin reference or pointer, stored
+  as the pointer with null for the empty arm; the only niche layout Cone has): a pointer type
+  named as the enum is spelled, pointing at no described type. One of a fat reference (a slice,
+  a virtual reference) is stored as that pair and is not described.
+
+A variable of any other type (a reference, a slice, a string, a closure, a generic instance other
+than `Option`, a tuple) gets no description, rather than a wrong one. Left out
 too: a generator step's parameters (`genlGenBegin` may move a variable of its into the frame),
 locals of an inline function's expansion, which are the caller's slots (`GenState.inlinedepth`),
 and a match binding or generator frame variable, which has no slot of its own. A function whose
