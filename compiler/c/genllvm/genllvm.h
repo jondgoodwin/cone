@@ -646,6 +646,9 @@ LLVMTypeRef genlPointeeType(GenState *gen, INode *type);
 LLVMTypeRef genlVtableSlotFnType(GenState *gen, FnDclNode *meth);
 // Generate LLVM value corresponding to the size of a type
 LLVMValueRef genlSizeof(GenState *gen, INode *vtype);
+
+// '--layout': print each struct and enum's size, alignment, field offsets and padding
+void genlLayoutReport(GenState *gen, ProgramNode *pgm);
 // Generate LLVM value corresponding to the alignment of a type
 LLVMValueRef genlAlignof(GenState *gen, INode *vtype);
 // Generate unsigned integer whose bits are same size as a pointer

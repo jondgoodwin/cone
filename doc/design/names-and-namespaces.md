@@ -1,7 +1,12 @@
 This note is the **rules**: what a name means, how lookup, visibility,
-qualification, imports, aliases and overloading are supposed to behave, and
-where the compiler does not yet match. Parts of it describe intended rather than
-current behavior, and say so.
+qualification, imports, aliases and overloading behave, and the places where the
+compiler is not yet complete. Every paragraph can be tested against the compiler.
+What is designed and not built (a general `NameDef`, aliases of anything
+nameable, generic and macro namespaces as bindings, packages as a namespace
+layer) is kept apart from these rules.
+
+*Provenance: read from source (`compiler/c/ir/`, `compiler/c/parser/`); a few
+rules are Jon's stated decisions, marked with his name and date.*
 
 [Name Resolution](../../compiler/c/doc/phases/name-resolution.md) is the **mechanism** — how the walk
 implements these rules, what it retags, and where it stops. Change a rule here;
@@ -35,21 +40,15 @@ public name is Jon's* [Jon 27 Aug]; *deciding it by the name rather than by the
 candidates is Penny's default from the `pub` build* [Penny 19 Sep], standing
 unless he objects ("Visibility", below).
 
-⚠ **Parts of this note describe intended rather than current behaviour and say
-so.** The `NameDef` design below is the clearest case — the implementation
-predates it.
-
-The concepts should remain distinct:
+The concepts stay distinct:
 
 - A **name** is an interned, case-sensitive spelling.
-- A **NameDef** IR node binds a spelling within a namespace or lexical scope to the node it refers to.
-- The **IR node value** of the NameDef is what the NameDef refers to. More than one NameDef may refer to the same IR value, as with import folding or aliasing.
-- A **namespace** owns its unique NameDefs. It controls lookup, uniqueness, visibility, and qualification.
+- A **binding** ties a spelling within a namespace or lexical scope to the node it refers to: the declaration itself, an `AliasDclNode` (import folding, aliasing) or an `FnOverloadDclNode` (an overload name). More than one binding may refer to one declaration.
+- A **namespace** owns its unique bindings. It controls lookup, uniqueness, visibility, and qualification.
 
 ## Source-code manifest
 
-The current implementation predates the full `NameDef` design described in
-this note. It generally maps an interned `Name` directly to a heterogeneous IR
+The implementation maps an interned `Name` directly to a heterogeneous IR
 declaration node. Use this manifest to find the current behavior before
 changing it.
 
@@ -112,7 +111,7 @@ Namespaces are organized at various levels of code:
 
 Function parameters, generic parameters, blocks, and nested blocks establish lexical name contexts, effectively comparable to a namespace for that scope. Inner blocks may shadow names from outer contexts; duplicate declarations in the same local scope are errors. Local visibility is order-dependent because a local name becomes available only after its declaration is resolved.
 
-The compiler currently implements lexical lookup by temporarily hooking declarations onto the globally interned `Name` while traversing the scope's IR. It restores the previous binding when leaving the scope. This is a lookup optimization, not a reason for lexical bindings to differ semantically from namespace NameDefs.
+The compiler implements lexical lookup by temporarily hooking declarations onto the globally interned `Name` while traversing the scope's IR. It restores the previous binding when leaving the scope. This is a lookup optimization, not a reason for lexical bindings to differ semantically from namespace bindings.
 
 Unqualified lookup selects the nearest active binding. Function parameters may therefore shadow names from the containing type or module, and a local in an inner block may shadow a parameter or outer local. A second declaration of the spelling within the same lexical scope is an error. A hidden member of a *type* is still reachable, through `self` or through the type's own name; a hidden member of the enclosing *module* is reachable through the module's own name, which its `mod` declaration gives it. A path begins with the name of the namespace it walks, so naming the module is what makes the hidden name reachable, and a file that declares no module has no spelling for one.
 
@@ -140,9 +139,7 @@ Current compiler behavior:
 - `Some`, `None`, `Ok` and `Err` are bare in every program because core writes `pub use Option;` and `pub use Result;`, and every module's automatic import of core is a wildcard, which carries a public fold on.
 ### Generics and Macros
 
-The declared name of every generic or macro is an ordinary NameDef in its containing namespace, which may be a module/package or a type. It participates in the same cross-category uniqueness rules as every other name there.
-
-Each generic or macro also owns a nested namespace hierarchy analogous to a function's. Its parameters and generic/macro variables are NameDefs in the declaration's private parameter scope, and its body contributes the usual nested lexical scopes. These names are visible only where permitted within that generic or macro declaration. Macro hygiene may impose additional boundaries on names introduced during expansion, but does not create a separate name domain for the macro declaration itself.
+The declared name of every generic or macro is an ordinary name of its containing namespace, a module or a type, under the same cross-category uniqueness rules as every other name there. Its type parameters are names of its own scope ("Generics and macros", below).
 
 ### Modules
 
@@ -170,10 +167,9 @@ Current compiler behavior:
 - **A module reaches SIDEWAYS by importing a sister's name, and never UP**: importing a name of its parent is a loop, refused. A module is the registry for its children: they are public to each other and to it, invisible outside it unless it publishes them. Nothing arrives unasked — a module's namespace holds what it declares, what a fold brought in, its own children and what its imports bound, so a sister nobody imported is `ErrorUnkName`. That holds for the module's folds too, whichever module's fold pass ran them: a sister's `use Dir;` does not find the `Dir` of the sister whose import reached it, nor a child's its parent's (`module_fold_scope_nameres`; [module](../../compiler/c/doc/nodes/module.md), "Name resolution").
 - ⚠ **The registry is SCOPED and not accumulating, and that reading is provisional.** It is the *immediate* parent's namespace and no ancestor's, so descending a level drops the level above out of reach: a module two deep does not see its parent's sisters, and a parent re-exporting what its children need is no way round that, since a child importing what its parent binds depends on the parent and is refused. That keeps a module liftable, because its dependencies are stated at its own `mod`. It is decision 10 of the module design brief, adopted to be revisited.
 
-Documented intent allows libraries packaged for import. Package-level namespace rules remain to be built; the module tree a folder tree carries is built.
 ## Uniqueness, overloading and `extern`s
 
-The default rule is: **one spelling, one NameDef, at each namespace level**. This applies across declaration categories. A type and a variable, or a macro and a module, may not coexist under the same spelling in one namespace. With the exception of `extern`s and overloading, and of macros, which overload by repeating the name, declaring duplicate names in the same namespace results in a compiler error.
+The default rule is: **one spelling, one binding, at each namespace level**. This applies across declaration categories. A type and a variable, or a macro and a module, may not coexist under the same spelling in one namespace. With the exception of `extern`s and overloading, and of macros, which overload by repeating the name, declaring duplicate names in the same namespace results in a compiler error.
 
 A name of core is a name of every module, since the automatic import of core is a wildcard, so a module that declares `Option`, is named `Option` or imports a sister of that name has two things under one name, and is refused. The core import is written nowhere, so the collision is reported at what the module wrote, saying that core has the name. ⚠ **The built-in number types, `bool`, the permissions and `initAll`/`finalAll` are not in any module's namespace** — they are bound for the whole compile and looked up after a module's own names ([Name Resolution](../../compiler/c/doc/phases/name-resolution.md)) — yet a global name one of them holds is refused too, reported at the declaration and naming the built-in. Nothing written settles whether it should be: the reference's identifiers rule lets a program define any identifier but a keyword, and the lookup order would let a module's name hide a built-in.
 
@@ -181,9 +177,7 @@ A name of core is a name of every module, since the automatic import of core is 
 
 It is common practice for a package's interface to declare the same variables and functions as the package's source defines. The interface specifies them as `extern`s without values or function bodies; the source drops `extern` and supplies the implementation.
 
-Matching `extern` declarations and an implementation resolve to one canonical NameDef. Their declared types must be equivalent or the compiler reports a conflict. The implementation supplies the NameDef's IR value and makes the current compilation unit responsible for emitting the definition; the matching `extern` contributes no second definition. If no implementation is present, the NameDef remains external and code generation emits only the declaration/reference needed by the linker. More than one implementation for the same concrete name is a duplicate-definition error.
-
-A NameDef therefore records code-generation ownership or provenance separately from the namespace that lexically owns the binding. This determines whether the current compilation unit emits a concrete definition, treats the name as externally supplied, keeps a definition local/static, or emits a coalescible generic instantiation that the linker may merge with equivalent instantiations from other compilation units. Today that record is the declaration's `DclInfo` — see "Symbols" — whose `DclExternal` bit is the supply fact.
+A declaration records code-generation ownership or provenance separately from the namespace that lexically owns the binding. This determines whether the current compilation unit emits a concrete definition, treats the name as externally supplied, keeps a definition local/static, or emits a coalescible generic instantiation that the linker may merge with equivalent instantiations from other compilation units. That record is the declaration's `DclInfo` — see "Symbols" — whose `DclExternal` bit is the supply fact. An `extern` and an implementation of one name are not yet merged into one declaration (below).
 
 #### Function and method overloading
 
@@ -191,20 +185,18 @@ Every concrete function or method declares its own namespace-unique name. This i
 
 `fn intersect_bool overload intersect ...`
 
-Here `intersect_bool` is the concrete function's NameDef, while `intersect` is a distinct overload-set NameDef known to the compiler. The overload-set NameDef refers to the accumulated list of concrete function or method NameDefs that declare they overload that name. This preserves the namespace rule: each spelling still maps to exactly one NameDef. In the compiler today this is a concrete `FnDclNode`, whose `overloadsym` records the set it joins, and an `FnOverloadDclNode` bound to the overload name.
+Here `intersect_bool` is the concrete function's own name, while `intersect` is a distinct overload-set name. The overload set holds the accumulated list of concrete functions or methods that declare they overload that name. This preserves the namespace rule: each spelling still maps to exactly one binding. The concrete function is an `FnDclNode`, whose `overloadsym` records the set it joins, and the set is an `FnOverloadDclNode` bound to the overload name.
 
-During recursive name/semantic resolution of a call, a use of `intersect` first resolves to the overload-set NameDef. The resolver recursively obtains the argument and candidate-signature types, selects the one concrete definition, and points the call at it before resolution of the call node finishes. An overload-set name is valid only as the function or method being called; it is not a first-class function value and its address cannot be taken. The set must contain exactly one candidate whose signature accepts the arguments, including permitted implicit coercions:
+During recursive name/semantic resolution of a call, a use of `intersect` first resolves to the overload set. The resolver recursively obtains the argument and candidate-signature types, selects the one concrete definition, and points the call at it before resolution of the call node finishes. An overload-set name is valid only as the function or method being called; it is not a first-class function value and its address cannot be taken. The set must contain exactly one candidate whose signature accepts the arguments, including permitted implicit coercions:
 
 - No matching candidate is a compile error.
 - More than one matching candidate is an ambiguity compile error, even if one match is exact or would require fewer or "better" coercions.
 - Declaration order never selects between candidates.
 - The caller resolves ambiguity by using a concrete function name or by explicitly coercing arguments so that exactly one candidate remains applicable.
 
-After selection, the call refers directly to the chosen concrete function or method NameDef. Return types do not participate in overload selection. Methods follow the same model, with the receiver included in signature matching. Operators use this mechanism as well and normally appear in source through their overload name.
+After selection, the call refers directly to the chosen concrete function or method. Return types do not participate in overload selection. Methods follow the same model, with the receiver included in signature matching. Operators use this mechanism as well and normally appear in source through their overload name.
 
 Visibility is checked on the name the caller uses, so an overload set and its candidates must agree: a private concrete candidate may not join a public overload name. `fnOverloadDclAdd` reports `ErrorPrivOverload` where the set is built, for a module's functions and a type's methods alike, and leaves the candidate out; the author makes both private or both public. A compiler-defined intrinsic is exempt, because it is never a symbol — which is how the core types hide `_neg` behind `-`. A public name therefore holds only public candidates, and generation has nothing to reach that its own privacy filter would hide.
-
-Extending a type's overload sets from an extension is intended, but its ownership and collision rules are deferred until extensions are designed. Merging matching `extern` declarations with implementations is likewise deferred.
 
 A generic function or method is a candidate when every one of its type parameters is bound to a function signature (`[F: fn(u: f32) f32]`, or the same in a `where` clause); any other generic may not name an overload set (`ErrorGenericOverload`), because nothing ranks it against the rest. Such a candidate has no checked signature to compare, so it is judged by its arguments: a parameter that is, or is a reference to, a bound type parameter takes an argument whose type meets the bound, read off it as an inference reads it, and every other parameter is a plain function's. A closure literal among the arguments is matched against the candidates whose parameter there is callable, by parameter count and written types, as it is for any overload, and the generic is then instantiated for the one candidate selected, as a call by its own name instantiates it. Two such candidates a call cannot tell apart are an ambiguity, the error naming both.
 
@@ -224,8 +216,6 @@ Current compiler behavior:
 A path is parsed as a chain of member accesses and collapsed during name resolution, hop by hop, by `fnCallNameResPath` — [fncall](../../compiler/c/doc/nodes/fncall.md), "The path collapse", has the mechanism and the reason it cannot wait for type check.
 
 **One operator is Jon's decision** [Jon 19 Sep], built 21 Sep when `::` retired. What a reader loses is the signal that a name crossed a namespace rather than reached into a value; he declined it for the reason he declined the underscore for visibility — a name's spelling should not carry a fact about where it came from — and the two were never told apart by eye once a path ran through both (`mymod::config.width`). Four consequences were put to him before the build, and he took the recommendation in each [Jon 21 Sep]: *"Yeah, I'm good with all four of your recommendations. Let's make it happen."* They were: a module-level name hidden by a local or a member stays unreachable until a module can name itself (the `mod` declaration later gave it that name); the first name of a path is found by ordinary lexical lookup, so `Self.make(a)` works and a local shadows a module of its spelling — a behaviour change blessed, not slid past; the "namespace X does not exist" family of messages becomes ordinary unknown-name and no-member messages, less specific because the source is; and a hop through a generic instance or a type parameter (`Box[i64].make`, `T.make`) is out of scope and refused at type check. `::` itself is left unassigned: freeing it was that change's job, and spending it is a later grammar pass's.
-
-The NameDef design instead makes lookup return a stable NameDef. A resolved reference remains one kind of `NameUse` node pointing to that definition — as it already does — but the definition or its IR value explicitly indicates whether it is usable as a type, runtime value, callable, macro, namespace, generic, or other semantic kind, and the surrounding use validates that role, where today the use classifies the declaration by its tag.
 
 ### Bare names inside a type
 
@@ -271,7 +261,7 @@ The compiler enforces this on the routes that can reach a private name: `fnCallN
 
 That a private candidate may not sit behind a public overload name is Jon's [Jon 27 Aug]. ⚠ *How it is decided is Penny's default from the `pub` build, not his ruling* [Penny 19 Sep], standing unless he objects: an overload name's visibility is its candidates': the first candidate declares it, and every later candidate must agree (`ErrorPrivOverload`, either way round). A compiler-defined intrinsic candidate counts as `pub` for the name and is exempt from agreeing, which is how the core types keep a private `_neg` behind a pub `-`. One consequence is deliberate and worth knowing: **visibility is checked on the binding the caller's name reaches**, not on the candidate overload selection then picks, which is why a pub overload name may not hold a private concrete candidate — through the pub name the private one would be reachable.
 
-Visibility should belong to the original definition or declaration, while access is evaluated from the use site. A folded or renamed NameDef must not make a private definition public merely by changing its local spelling, and it does not: the alias an enrichment makes carries its target's visibility, which is what lets a private member of the base come across and stay out of the enrichment's clients' reach. Whether an alias may deliberately *narrow* visibility is still open, and nothing built asks it.
+Visibility should belong to the original definition or declaration, while access is evaluated from the use site. A folded or renamed binding must not make a private definition public merely by changing its local spelling, and it does not: the alias an enrichment makes carries its target's visibility, which is what lets a private member of the base come across and stay out of the enrichment's clients' reach. Whether an alias may deliberately *narrow* visibility is still open, and nothing built asks it.
 
 **The other half of that is the binding having a visibility of its own to widen with.** A fold into a *module* is private to the module that made it unless it says `pub` — `pub use` on a global's clause, on a standalone `use` and on an import's clause; or `pub import`, which reaches the module's own binding and every name the import folds alike — whatever the name's visibility where it was declared. The two spellings on an import do not overlap, so they cannot disagree: `import m pub use *` publishes the folds and leaves `m` private, `pub import m use *` publishes both, and `pub import m pub use *` says what `pub import` says alone. One keyword, one meaning, on a binding as on a declaration. It never widens past the origin: only a public name folds at all. `fnCallNameResPath` is the route that reads it, since `inodeIsPrivate` answers from the alias's own `FlagPub`; a `pub` fold is reachable as `mod.name` and a plain one is not.
 
@@ -319,15 +309,7 @@ That is what lets a diamond compile — `d` doing `import a use *; import b use 
 
 **Transit is not a rule of its own.** A fold is private to the module that made it unless the import says `pub` or `pub use`, which is the visibility rule; so what a third module sees through this one is what this one re-exported, and it is the same answer whatever order the files were loaded in. **Every module's folds run before any module's body is name resolved**, dependency-first, which is what removed the load order from the question — see [module](../../compiler/c/doc/nodes/module.md), "Name resolution".
 
-The intended NameDef behavior is:
-
-1. Folding or renaming creates a new NameDef owned by the receiving namespace.
-2. The new NameDef may have a different local spelling.
-3. It points to the same underlying IR value as the original definition.
-4. It retains a link to the original definition or origin for identity, visibility, diagnostics, and generated naming.
-5. Collision checks use the receiving namespace's complete name domain, regardless of the imported declaration's category.
-
-Thus import aliasing duplicates a binding, not the underlying type, function, module, or other IR value.
+A fold or a rename creates a new binding, an `AliasDclNode`, owned by the receiving namespace: it may have a different local spelling, it points to the same declaration as the original, it keeps a link to its origin for identity, visibility, diagnostics and generated naming, and collision checks use the receiving namespace's complete name domain whatever the imported declaration's category. Thus import aliasing duplicates a binding, not the underlying type, function, module, or other IR value.
 
 ### Folding into a type
 
@@ -513,15 +495,13 @@ It is made for:
 
 **A chain that comes back to itself names no type**, and every reader walks a chain to its end, so `aliasDclCheckCycle` reports `ErrorCircular` and cuts it before anything follows one: two pointers at two speeds meet only inside a cycle, and the target then becomes `unknown` so the name still answers as a type. One diagnostic per ring, at whichever name the walk reached first.
 
-The aspirational model generalizes aliases: a new NameDef may denote anything nameable. Alias chains should preserve each local binding for diagnostics and visibility while semantic operations can reach the final IR value. A type-valued alias remains structural; creating a distinct nominal type should use a separate construct.
+Alias chains keep each local binding for diagnostics and visibility while semantic operations reach the final declaration. A type-valued alias is structural; a distinct nominal type is a separate construct.
 
-Import folding is the alias above, and renaming on import is that alias with the local spelling an `as` in the import's `use` clause writes. Other aliases may bind declarations directly. Every alias statement is written `alias Name = target;`, and its target is anything resolved at compile time — a type, a function, a global, a module, a method — never a computation.
-
-The `alias` statement is the binding record itself, a module-scoped structural alias. What remains of the aspiration is the range of things a target may be: today a type expression, the others [planned].
+Import folding is the alias above, and renaming on import is that alias with the local spelling an `as` in the import's `use` clause writes. Other aliases may bind declarations directly. Every alias statement is written `alias Name = target;`, and its target is a type expression. The `alias` statement is the binding record itself, a module-scoped structural alias.
 
 ## Generics and macros
 
-Generic and macro syntax exists in the current compiler, but the website documentation labels much of this area incomplete or future-facing. Their namespace structure is defined above; specialization, expansion hygiene, and code-generation ownership remain separate implementation concerns.
+A generic's or macro's own name is a name of its containing namespace, and its parameters are names of a scope of its own, visible only within its declaration. Specialization, expansion hygiene, and code-generation ownership are not namespace rules.
 
 ### A generic module
 
@@ -1079,14 +1059,12 @@ would see little but `main`.
 ## Known gaps between implementation and intent
 
 - Overloading:
-	- Overloading is implemented with `FnDclNode` and `FnOverloadDclNode` rather than with a general `NameDef`, so the concrete/overload split described above exists only for functions and methods.
+	- The concrete/overload split described above exists only for functions and methods (`FnDclNode` and `FnOverloadDclNode`).
 	- A generic function may declare an overload name only when every type parameter is bound to a function signature; the parser reports any other combination.
 	- Extending a type's overload sets from an extension and merging matching `extern` declarations with implementations remain deferred.
 - Compile unit handling of duplicate, consistent type `extern` vs. value-specified names.
 - **A struct a global's fold needs is resolved once, even round a refused loop.** The fold passes retry a fold whose own source has not arrived, but a global's fold resolves its struct on demand, in the struct's module, and where that module is mid-fold round a loop a name the struct's declaration reaches through a late re-export (a field's type) is reported unknown beside the loop, and not retried ([module](../../compiler/c/doc/nodes/module.md), Hazards).
 - An `alias` statement's target is a type expression only. A function, a global, a module or a method as the target is not built: nothing yet names a declaration directly outside a fold clause.
-- Generic, macro and metaprogram namespace behavior is partly implemented, incomplete, or aspirational. Delegated inheritance and concrete enrichment are both built; see "Folding into a type" above.
-- Packages organize importable libraries but are not yet defined as a distinct namespace layer.
 - A path may only pass through a module or a struct-like type, or an alias of one. One whose base is a number type, a generic instance or a generic parameter is refused at type check, because none of those names a namespace at the point the collapse runs. Finishing those at type check, where they do, is the natural other half of the collapse and is built for a generic instance's functions and for a number type's `from`, its conversion (`u64.from(count)`, reached through an alias or a type parameter too); the rest is not built.
 - A lone file — the file the compiler is given when it is not its folder's designated file, or a module an import reached by its path — is still named after that file, and a `mod` declaration in it still renames it. A folder, or a place as a one-file module in a module's folder, is what replaces filename naming, and a lone file has nothing else to be named after.
 - **A C-named function's structs follow the C ABI on Win64 and SysV x86-64 only.** On wasm32 a struct passed or returned by value still crosses as LLVM's first-class value, which matches C only for a struct of one scalar. On every target a type's `fn @c` method keeps Cone's convention, and a reference to a C-named function is typed `&fn @c (...)`, called as C, a type no Cone function's `&fn` converts to or from ([generation](../../compiler/c/doc/phases/generation.md), "C-named functions and the C ABI").

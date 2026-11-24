@@ -507,6 +507,25 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         }
     }
 
+    // Type arguments are given by position, 'id[i32](3)': a generic's parameters
+    // are not matched to names, so 'id[T: i32]' is refused here, once, rather than
+    // reaching type check as a value no type can be read from
+    if (node->args && (node->flags & FlagIndex) && node->methfld == NULL && isNameUseNode(node->objfn)) {
+        INode *genericdcl = nameUseGetDcl((NameUseNode*)node->objfn);
+        // A generic struct's brackets may be its literal, 'Pair[a: 1, b: 2.0]', so
+        // only a generic function's brackets are all type arguments
+        if (genericdcl && genericdcl->tag == FnDclTag && genericGetInfo(genericdcl) != NULL) {
+            for (nodesFor(node->args, cnt, argsp)) {
+                if ((*argsp)->tag != NamedValTag)
+                    continue;
+                errorMsgNode(*argsp, ErrorNamedArg,
+                    "Type arguments are not named; give the type, such as `id[i32](3)`. Only a struct's implicit init, such as `Point(x: 1)`, takes values by name.");
+                node->vtype = errorType;
+                return;
+            }
+        }
+    }
+
     // Name resolve arguments/statements
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
@@ -4533,6 +4552,13 @@ static int fnCallArgMayInfer(INode *arg) {
     return arg->tag == FnCallTag;
 }
 
+// An argument whose value has branches or a body, typed branch by branch from where it goes:
+// an 'if', a 'match' or a block, but not the block a '?' is parsed to, whose value is its operand's
+// and is no branch to type
+static int fnCallArgBranches(INode *arg) {
+    return arg->tag == IfTag || (arg->tag == BlockTag && !(arg->flags & FlagPropagate));
+}
+
 // A number operator that wants both operands the one number type: a sum, difference,
 // product, quotient or remainder, or an ordering comparison, three-way included
 static int fnCallIsNumericOp(Name *op) {
@@ -5682,10 +5708,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // are that type, as a literal there is ('x * (if c {1.25} else {0.8})').
     INode *opexpect = NULL;
     Name *argopname = fnCallOperatorName(node);
-    int numericif = argopname && node->args && node->args->used == 1 && nodesGet(node->args, 0)->tag == IfTag
-        && fnCallIsNumericOp(argopname);
-    if (argopname && (argopname == eqName || argopname == neName || argopname == lessDashName || numericif)
-        && node->args && node->args->used == 1 && (numericif || fnCallArgMayInfer(nodesGet(node->args, 0)))
+    int branching = argopname && node->args && node->args->used == 1 && fnCallArgBranches(nodesGet(node->args, 0));
+    int numericif = branching && fnCallIsNumericOp(argopname);
+    if (argopname && node->args && node->args->used == 1
+        && (branching || ((argopname == eqName || argopname == neName || argopname == lessDashName)
+            && fnCallArgMayInfer(nodesGet(node->args, 0))))
         && (!objfnChecked || opchecked) && !calleeIsOverload
         && (!isNameUseNode(node->objfn) || nameUseNames(node->objfn, VarDclTag) || nameUseNames(node->objfn, ConstDclTag))) {
         if (!objfnChecked) {
@@ -5703,13 +5730,25 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                 if (found)
                     opexpect = fnCallArgAgreed(found, 1, 0, 1);
             }
-            else if (numericif) {
+            else if (numericif && fnCallOperandNumber(node->objfn)) {
                 // (a receiver that is an untyped literal is no type to want: it takes the argument's;
                 // nor is a pointer or a reference to a number)
                 opexpect = fnCallOperandNumber(node->objfn);
             }
-            else
-                opexpect = rcvtype;
+            else if (argopname == eqName || argopname == neName) {
+                if (!(branching && litIsUntypedNumber(node->objfn)))
+                    opexpect = rcvtype;
+            }
+            else if (branching && !litIsUntypedNumber(node->objfn) && iexpGetTypeDcl(node->objfn)->tag != PtrTag) {
+                // (nor does a pointer receiver push: 'rcvtype' reads through a pointer to its
+                // target, whose '+' is not the pointer's own, so 'p + (if c {2usize} else {0usize})' keeps the order it had)
+                // (a receiver that is an untyped literal has not taken its type yet, so its default
+                // type is no type to want: it takes the argument's, '0.18 * (if c {1.} else {x})')
+                // The type the receiver's method takes there, when every candidate agrees on one
+                INode *found = isMethodType(rcvtype) ? iNsTypeFindFnField((INsTypeNode*)rcvtype, argopname) : NULL;
+                if (found)
+                    opexpect = fnCallArgAgreed(found, 1, 0, 1);
+            }
         }
     }
 
@@ -5770,7 +5809,10 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             // So does a construction only its place can type ('None'), given to a
             // generic function or variant: the other arguments, and where the call's
             // value goes, may say what its type parameters are
-            if ((gengeneric || genlit) && fnCallArgIsCtor(*argsp)) {
+            // An 'if', 'match' or block given to a generic waits the same way: once the other
+            // arguments and the call's place have said what its type parameters are, its
+            // branches are wanted as the parameter's type
+            if ((gengeneric || genlit) && (fnCallArgIsCtor(*argsp) || (gengeneric && fnCallArgBranches(*argsp)))) {
                 ++argi;
                 continue;
             }
@@ -5788,14 +5830,15 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         if (gengeneric || genlit) {
             argi = 0;
             for (nodesFor(node->args, cnt, argsp)) {
-                if (fnCallArgIsCtor(*argsp)) {
+                int ctor = fnCallArgIsCtor(*argsp);
+                if (ctor || (gengeneric && fnCallArgBranches(*argsp))) {
                     INode *wanted = gengeneric
                         ? genericFnArgExpect(pstate, gengeneric, node->args, argi, firstparm, expectType)
                         : genericStructArgExpect(pstate, genlit, node->args, argi, expectType);
                     inodeTypeCheck(pstate, argsp, wanted ? wanted : unknownType);
                     // Its type is the enum its parameter takes, not the variant it
                     // is: the call reads its type parameters off the arguments
-                    if (wanted && isExpNode(*argsp) && !inodeIsError(*argsp))
+                    if (ctor && wanted && isExpNode(*argsp) && !inodeIsError(*argsp))
                         iexpCoerceIn(pstate, argsp, wanted);
                 }
                 ++argi;
