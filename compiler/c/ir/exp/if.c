@@ -954,12 +954,12 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
             if (nodesLast(((BlockNode *)*nodesp)->stmts)->tag != ContinueTag)
                 narrowKillDrop(killmark);
         }
-        // The 'else' of a let-else that leaves on every path, the last of them through an
-        // inner 'if' or block, is no path out either, so the variant is known after it, as
-        // after one that ends in a jump. Its changes are kept, as a 'continue' keeps them,
-        // since some of its paths may continue a loop.
-        else if ((ifnode->flags & FlagIfLetElse) && *(nodesp - 1) == elseCond && armblk
-            && ifBlockFallsOut(armblk, &leavewhy) == NULL)
+        // A branch that leaves on every path, the last of them through an inner 'if' or
+        // block (the 'else' of a let-else, or the branch of an ordinary 'if'), is no path
+        // out either, so the variant is known after it, as after one that ends in a jump.
+        // Its changes are kept, as a 'continue' keeps them, since some of its paths may
+        // continue a loop.
+        else if (armblk && ifBlockFallsOut(armblk, &leavewhy) == NULL)
             ;
         else {
             NarrowEnv *end = narrowSave();
