@@ -593,6 +593,35 @@ class Scenarios(unittest.TestCase):
         self.assertIn("build: release",
                       (pkg / "build" / "release" / "show.conebuild").read_text())
 
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'layout' yet")
+    def test_layout_report(self):
+        """'congo layout' builds with conec's --layout and prints each struct's
+        size, alignment, field offsets and padding; a second run prints it again
+        (nothing comes from the cache), and a plain build prints none."""
+        self.congo("new", "lay", cwd=self.root)
+        pkg = self.root / "lay"
+        write(pkg / "src" / "lay.cone", """
+            mod lay;
+
+            struct Padded {
+              a: u8;
+              b: u64;
+              c: u8;
+            }
+
+            fn main() i32 {
+              let p = Padded(1, 2, 3);
+              _ = p;
+              0i32
+            }
+            """)
+        plain = self.congo("build", cwd=pkg)
+        self.assertNotIn("PADDED", plain.stdout)
+        for _ in range(2):
+            ran = self.congo("layout", cwd=pkg)
+            self.assertIn("lay.Padded: size 24, align 8, padding 14 PADDED", ran.stdout)
+            self.assertIn("+8 b, 8 bytes", ran.stdout)
+
     def test_release_symbols_and_strip(self):
         """A release build carries debug info, so a profiler can name its
         functions: on Windows its link writes a PDB beside the program, naming

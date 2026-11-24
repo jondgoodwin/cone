@@ -837,6 +837,7 @@ enum ErrorCode {
     WarnTextEffect = 3008, // An expression sent with `<-` to a receiver that has `wants` changes state (an assignment, an increment, a send, a `&mut` or `&uni` call): it does not run when `wants` says no. Pointed at the expression
 
     WarnLifetimeTie = 3009, // A function with a body and no lifetime named, whose signature ties a borrowed parameter to its result or to another parameter, while its body never returns that parameter's borrow nor stores it: its callers are held to a tie the body does not need. The message gives the signature that separates them. Pointed at the parameter
+    WarnUnusedVar = 3010,   // A local `let` or `var` written as a statement that nothing ever reads: a variable only written to counts as unread. A name starting with `_` is exempt, as is any variable the compiler made. Reported only under `--warn-unused-var` until the packages and tests are cleaned of them. Pointed at the declaration
 
     // Uncounted
     Uncounted = 9000,
