@@ -1,0 +1,75 @@
+mod region_move_between;
+
+import stdio use *;
+import sync use Arc;
+
+// Moving a value from one region to another (Backlog\regions.md, ruled 1 Nov 2026).
+//
+// There is no feature for it: a value moves between regions as it does in Rust
+// ('Rc::new(*boxed)'). The sole owner gives its value up ('*owner'), and the
+// finished value is allocated in the new region, 'Rc[mut, T](*uni)'. The old
+// owner is deactivated and its allocation freed without finalizing what moved,
+// so the value's 'final' runs once, when its new holder goes. Each function
+// shows what the new holder reads, and the one 'finalized' after it is the
+// value's whole release (a second one would be a double finalize).
+//
+// A shared owner cannot give its value up (ErrorMoveOut), so it cannot move
+// into another region either: region_move_between_refused.
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Noisy {
+  pub id: i64;
+  fn final(self: &uni) { show("finalized", id); }
+}
+
+// A Uni's value into a counted, mutable region
+fn uniToRcMut() {
+  let u = Uni[Noisy](1);
+  let r = Rc[mut, Noisy](*u);
+  show("uni-to-rc-mut", r.id);
+}
+
+// ... into a counted immutable one, which can then be shared
+fn uniToRcImm() {
+  let u = Uni[Noisy](2);
+  let r = Rc[imm, Noisy](*u);
+  let again = r;
+  show("uni-to-rc-imm", r.id);
+  show("uni-to-rc-imm-copy", again.id);
+}
+
+// ... into the atomically counted region
+fn uniToArc() {
+  let u = Uni[Noisy](3);
+  let a = Arc[imm, Noisy](*u);
+  show("uni-to-arc", a.id);
+}
+
+// A unique counted owner is a sole owner too, and moves the same way
+fn rcUniToRcMut() {
+  let u = Rc[uni, Noisy](4);
+  let r = Rc[mut, Noisy](*u);
+  show("rc-uni-to-rc-mut", r.id);
+}
+
+// And back: a sole counted owner's value into a Uni
+fn rcUniToUni() {
+  let u = Rc[uni, Noisy](5);
+  let n = Uni[Noisy](*u);
+  show("rc-uni-to-uni", n.id);
+}
+
+fn main() i32 {
+  uniToRcMut();
+  uniToRcImm();
+  uniToArc();
+  rcUniToRcMut();
+  rcUniToUni();
+  0i32
+}

@@ -101,7 +101,7 @@ a suffixed literal is against its own type, and a float literal an `f32` cannot 
 is `ErrorFloatRange`. `iexpCoerce` does the same for a literal that reaches it still untyped, because
 an overload set's, a generic's or an operator's argument is checked before its
 callee is chosen. Neither reaches the branches of an `if` or a block passed as
-such an argument, whose literals keep the `i32` default; generation refuses one
+an overload set's argument, whose literals keep the `i32` default; generation refuses one
 whose value does not fit it ([literals](../nodes/literals.md)). **`bool` is the one
 number type excluded** — `litAdoptNumberType` refuses it, so a literal meets
 `bool` through section 5's `isTrue` branch as any other number does, rather than
@@ -370,9 +370,12 @@ name checked ahead of the arguments), a method the receiver's type binds to one
 `FnDcl` that is not generic (after `self`), and a literal of a struct named
 directly that is not generic (each value against the field it will fill,
 `fnCallTypeLitField`: a named value by name, a value by position while no named
-value precedes it). Every other argument is checked with no expectation:
-an overload set's and an operator's, because their types are what selection
-filters on, and a generic's, because they are what it infers from. The
+value precedes it). An argument with branches (an `if`, a `match`, a block) is
+also checked against a type when the call is an operator whose receiver's method
+takes one type there, or a generic whose other arguments and expected type say its
+type parameters (`genericFnArgExpect`). Every other argument is checked with no
+expectation: an overload set's, because their types are what selection filters
+on, and a generic's, because they are what it infers from. The
 coercion in `fnCallFinalizeArgs` still runs on every argument; one checked
 against its parameter already matches it.
 

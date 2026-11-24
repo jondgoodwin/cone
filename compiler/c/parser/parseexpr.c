@@ -47,6 +47,14 @@ INode *parseArrayLit(ParseState *parse) {
     int svinlist = parse->inlist;
     parse->inlist = 1;
 
+    // '[]' lists nothing: an empty array, whose element type its expected type
+    // supplies (arrayLitTypeCheck)
+    if (lexIsToken(RBracketToken)) {
+        parse->inlist = svinlist;
+        lexNextToken();
+        return (INode *)array;
+    }
+
     // Gather comma-separated expressions that are likely elements or element type
     while (1) {
         nodesAdd(&array->elems, parseContentsAfter(parse, parseSimpleExpr(parse)));
@@ -922,6 +930,13 @@ INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
     // 'x.(a, b)': the named fields of x
     if (lexIsToken(LParenToken))
         return parseFieldList(parse, node);
+
+    // '.[i]': the element of 'this', as 'this[i]' (a '[' suffix of the node
+    // returned, which the caller goes on to read). Only 'this' has this
+    // short form
+    if (lexIsToken(LBracketToken) && node->tag == NameUseTag
+        && ((NameUseNode*)node)->namesym == thisName)
+        return node;
 
     // Get field/method name. 'await' is a keyword, but no expression follows a
     // '.', so it may name the convention method a type is awaited by (ir/exp/await.c)

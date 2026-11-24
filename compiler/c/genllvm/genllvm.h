@@ -584,6 +584,8 @@ LLVMValueRef genlTypeRecordOf(GenState *gen, INode *vtype, StructNode *recnode);
 // genlcabi.c: a C-named function's values, as the platform's C ABI passes them
 // The CAbiTarget a target triple names
 int genlCAbiTarget(const char *triple);
+// Whether the 'system' calling convention is stdcall on this triple: only 32-bit x86
+int genlSystemIsStdcall(const char *triple);
 // Whether a function's values cross as C passes them: a C-named function a module owns
 int genlIsCAbiFn(FnDclNode *fndcl);
 // The LLVM function type of a declared function: its Cone signature, lowered
@@ -644,6 +646,9 @@ LLVMTypeRef genlPointeeType(GenState *gen, INode *type);
 LLVMTypeRef genlVtableSlotFnType(GenState *gen, FnDclNode *meth);
 // Generate LLVM value corresponding to the size of a type
 LLVMValueRef genlSizeof(GenState *gen, INode *vtype);
+
+// '--layout': print each struct and enum's size, alignment, field offsets and padding
+void genlLayoutReport(GenState *gen, ProgramNode *pgm);
 // Generate LLVM value corresponding to the alignment of a type
 LLVMValueRef genlAlignof(GenState *gen, INode *vtype);
 // Generate unsigned integer whose bits are same size as a pointer

@@ -169,7 +169,7 @@ class NotNames(unittest.TestCase):
                                  "isPermission": congo.PERMISSIONS})
         self.assertIsNone(congo.name_fault("usecheck"))
         self.assertIn("keyword", congo.name_fault("use"))
-        self.assertIn("reserved", congo.name_fault("wait"))
+        self.assertIn("reserved", congo.name_fault("catch"))
         self.assertIn("permission", congo.name_fault("mut"))
         self.assertIn("keyword", congo.name_fault("let"))
         self.assertIn("keyword", congo.name_fault("var"))
@@ -305,6 +305,70 @@ class Scenarios(unittest.TestCase):
         listed = ", ".join(f'"{f.as_posix()}"' for f in folders)
         write(self.root / "home" / "config.toml", f"[registry]\nfolders = [{listed}]\n")
 
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'init' yet")
+    def test_init_makes_a_package_of_an_existing_folder(self):
+        folder = self.root / "already_here"
+        write(folder / "notes.txt", "kept\n")
+        self.congo("init", cwd=folder)
+        self.assertTrue((folder / "congo.toml").is_file())
+        self.assertIn('name = "already_here"', (folder / "congo.toml").read_text())
+        self.assertTrue((folder / "src" / "already_here.cone").is_file())
+        self.assertTrue((folder / "tests").is_dir())
+        self.assertEqual((folder / "notes.txt").read_text(), "kept\n")
+        # A second init refuses, and leaves the manifest as it is
+        again = self.congo("init", cwd=folder, ok=False)
+        self.assertNotEqual(again.returncode, 0)
+        self.assertIn("exists already", again.stderr)
+        # A name is given, and a source file of that name is not overwritten
+        other = self.root / "other"
+        write(other / "src" / "mine.cone", "// mine\n")
+        self.congo("init", "mine", "--lib", cwd=other)
+        self.assertEqual((other / "src" / "mine.cone").read_text(), "// mine\n")
+        self.assertIn('output = "library"', (other / "congo.toml").read_text())
+        # A folder name that is no package name needs a name
+        bad = self.root / "9 bad folder"
+        bad.mkdir()
+        self.assertNotEqual(self.congo("init", cwd=bad, ok=False).returncode, 0)
+
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'run --example' yet")
+    def test_run_example(self):
+        self.congo("new", "demo", cwd=self.root)
+        pkg = self.root / "demo"
+        # No examples folder: the list says so
+        none = self.congo("run", "--example", cwd=pkg, ok=False)
+        self.assertNotEqual(none.returncode, 0)
+        self.assertIn("no examples", none.stderr)
+        source = (pkg / "src" / "demo.cone").read_text()
+        for name in ("first", "second"):
+            write(pkg / "examples" / f"{name}.cone",
+                  source.replace("mod demo;", f"mod {name};")
+                  .replace("Hello, world!", f"from {name}"))
+        listed = self.congo("run", "--example", cwd=pkg)
+        self.assertEqual(listed.stdout.splitlines(), ["examples of demo:", "  first", "  second"])
+        run = self.congo("run", "--example", "second", cwd=pkg)
+        self.assertEqual(self.program_output(run), "from second\n")
+        run = self.congo("run", "--example", "first.cone", cwd=pkg)
+        self.assertEqual(self.program_output(run), "from first\n")
+        missing = self.congo("run", "--example", "third", cwd=pkg, ok=False)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("no example 'third' (examples: first, second)", missing.stderr)
+        both = self.congo("run", "--example", "first", "x.cone", cwd=pkg, ok=False)
+        self.assertNotEqual(both.returncode, 0)
+
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo does not give the missing-ngtcp2 hint yet")
+    def test_a_missing_ngtcp2_says_what_to_run(self):
+        self.congo("new", "needs", cwd=self.root)
+        pkg = self.root / "needs"
+        # A library that exists nowhere, its name holding "ngtcp2": the link fails
+        # whether or not the machine has the real ngtcp2 (a gate puts deps/ngtcp2 on LIB)
+        with open(pkg / "congo.toml", "a", encoding="utf-8") as manifest:
+            manifest.write('\n[link]\nlibraries = ["ngtcp2_no_such_library"]\n')
+        run = self.congo("build", cwd=pkg, ok=False)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("link failed", run.stderr)
+        self.assertIn("quic needs deps: run tools/deps/fetch.py openssl-headers +"
+                      " tools/deps/build_ngtcp2.py", run.stderr)
+
     def test_new_then_run(self):
         self.congo("new", "hello", cwd=self.root)
         pkg = self.root / "hello"
@@ -349,6 +413,76 @@ class Scenarios(unittest.TestCase):
         # clean removes the build folder, the generated include files with it
         self.congo("clean", cwd=pkg)
         self.assertFalse((pkg / "build").exists())
+
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'check' yet")
+    def test_check_reports_errors_and_writes_nothing_for_the_package(self):
+        self.congo("new", "app", cwd=self.root)
+        pkg = self.root / "app"
+        out = pkg / "build" / "debug"
+        run = self.congo("check", cwd=pkg)
+        self.assertIn("Checked", run.stdout)
+        self.assertNotIn("Linking", run.stdout)
+        # What it imports was built; the package itself left no object or include file
+        for name in ("core", "stdio"):
+            self.assertTrue((out / f"{name}{congo.OBJ_EXT}").is_file(), name)
+        self.assertFalse((out / f"app{congo.OBJ_EXT}").exists())
+        self.assertFalse((out / "app.cone").exists())
+        self.assertFalse((out / f"app{congo.EXE_EXT}").exists())
+        # An error is reported and the command fails, as a build's does
+        good = (pkg / "src" / "app.cone").read_text()
+        write(pkg / "src" / "app.cone", good.replace("Hello, world!", "Hello") + "\nlet bad: i32 = \"no\";\n")
+        run = self.congo("check", cwd=pkg, ok=False)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("could not check app", run.stdout + run.stderr)
+        self.assertFalse((out / f"app{congo.OBJ_EXT}").exists())
+        built = self.congo("build", cwd=pkg, ok=False)
+        self.assertEqual(built.returncode, 1)
+
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'check' yet")
+    def test_check_of_a_package_with_a_library_dependency(self):
+        shelf = self.root / "reg" / "shelf"
+        self.congo("new", "shelf", str(shelf), "--lib", cwd=self.root)
+        write(shelf / "src" / "shelf.cone", """
+            mod shelf;
+
+            pub fn twice(n: i64) i64 {
+              n * 2i64
+            }
+            """)
+        self.registry(self.root / "reg")
+        self.congo("new", "app", cwd=self.root)
+        pkg = self.root / "app"
+        write(pkg / "src" / "app.cone", """
+            mod app;
+
+            import stdio use *;
+            import shelf;
+
+            fn main() i32 {
+              printInt(shelf.twice(21i64));
+              0i32
+            }
+            """)
+        run = self.congo("check", cwd=pkg)
+        self.assertIn("Checked", run.stdout)
+        out = pkg / "build" / "debug"
+        self.assertTrue((out / f"shelf{congo.OBJ_EXT}").is_file())
+        self.assertTrue((out / "shelf.cone").is_file())
+        self.assertFalse((out / f"app{congo.OBJ_EXT}").exists())
+        # A use of the library its include file does not satisfy is found
+        write(pkg / "src" / "app.cone", """
+            mod app;
+
+            import stdio use *;
+            import shelf;
+
+            fn main() i32 {
+              printInt(shelf.twice("x"));
+              0i32
+            }
+            """)
+        run = self.congo("check", cwd=pkg, ok=False)
+        self.assertEqual(run.returncode, 1)
 
     def test_an_import_renamed_with_as(self):
         # 'import x as y' names the package x, which is what Congo reads: the
@@ -458,6 +592,35 @@ class Scenarios(unittest.TestCase):
         self.assertTrue((pkg / "build" / "release" / f"show{congo.EXE_EXT}").is_file())
         self.assertIn("build: release",
                       (pkg / "build" / "release" / "show.conebuild").read_text())
+
+    @unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'layout' yet")
+    def test_layout_report(self):
+        """'congo layout' builds with conec's --layout and prints each struct's
+        size, alignment, field offsets and padding; a second run prints it again
+        (nothing comes from the cache), and a plain build prints none."""
+        self.congo("new", "lay", cwd=self.root)
+        pkg = self.root / "lay"
+        write(pkg / "src" / "lay.cone", """
+            mod lay;
+
+            struct Padded {
+              a: u8;
+              b: u64;
+              c: u8;
+            }
+
+            fn main() i32 {
+              let p = Padded(1, 2, 3);
+              _ = p;
+              0i32
+            }
+            """)
+        plain = self.congo("build", cwd=pkg)
+        self.assertNotIn("PADDED", plain.stdout)
+        for _ in range(2):
+            ran = self.congo("layout", cwd=pkg)
+            self.assertIn("lay.Padded: size 24, align 8, padding 14 PADDED", ran.stdout)
+            self.assertIn("+8 b, 8 bytes", ran.stdout)
 
     def test_release_symbols_and_strip(self):
         """A release build carries debug info, so a profiler can name its
@@ -1786,12 +1949,12 @@ class Scenarios(unittest.TestCase):
         self.assertIn("mut.cone: a one-file module is named by its file: 'mut' is a Cone"
                       " permission", run.stderr)
         (pkg / "src" / "mut.cone").unlink()
-        write(pkg / "src" / "wait" / "wait.cone", "mod wait;\n")
+        write(pkg / "src" / "catch" / "catch.cone", "mod catch;\n")
         run = self.congo("build", cwd=pkg, ok=False)
-        self.assertIn("wait.cone: a module folder names its module: 'wait' is reserved",
+        self.assertIn("catch.cone: a module folder names its module: 'catch' is reserved",
                       run.stderr)
         self.assertFalse((pkg / "build" / "debug" / "shelf.conebuild").exists())
-        shutil.rmtree(pkg / "src" / "wait")
+        shutil.rmtree(pkg / "src" / "catch")
         write(pkg / "congo.toml", '[package]\nname = "match"\nversion = "0.1.0"\n'
                                   'output = "library"\n')
         run = self.congo("build", cwd=pkg, ok=False)
@@ -3016,7 +3179,7 @@ class GpuKernels(unittest.TestCase):
         run = self.congo("build", cwd=kern)
         self.assertIn(f"Compiling kern v0.1.0 for the GPU ({kern})", run.stdout)
         out = kern / "build" / "debug"
-        self.assertIn(f"Finished debug library object {Path('build/debug/kern.obj')} and"
+        self.assertIn(f"Finished debug library object {Path('build/debug/kern' + congo.OBJ_EXT)} and"
                       f" kernels {Path('build/debug/kern.spv')}", run.stdout)
         # One module, its kernel named as its function is; geomath, marked
         # but with no kernels of its own, has none built
@@ -3245,7 +3408,7 @@ class GpuFolder(unittest.TestCase):
         run = self.congo("build", cwd=shapes)
         self.assertIn(f"Compiling shapes v0.1.0 for the GPU ({shapes / 'gpu'})", run.stdout)
         out = shapes / "build" / "debug"
-        self.assertIn(f"Finished debug library object {Path('build/debug/shapes.obj')} and"
+        self.assertIn(f"Finished debug library object {Path('build/debug/shapes' + congo.OBJ_EXT)} and"
                       f" kernels {Path('build/debug/shapes.spv')}", run.stdout)
         self.assertEqual(entry_points(out / "shapes.spv"), ["scale"])
         # For the CPU, gpu/'s modules are in the package's one description,
@@ -3398,7 +3561,7 @@ class GpuFolder(unittest.TestCase):
         run = self.congo("build", cwd=lib)
         self.assertNotIn("for the GPU", run.stdout)
         self.assertFalse((lib / "build" / "debug" / "lib.spv").exists())
-        self.assertIn(f"Finished debug library object {Path('build/debug/lib.obj')}\n",
+        self.assertIn(f"Finished debug library object {Path('build/debug/lib' + congo.OBJ_EXT)}\n",
                       run.stdout)
         # Its imports are checked all the same
         write(lib / "gpu" / "maths" / "maths.cone", "mod maths;\n\nimport stdio;\n")
@@ -4806,6 +4969,45 @@ def parallel_tasks() -> list[list[str]]:
     if together:
         tasks.insert(0, together)    # the long ones first
     return tasks
+
+
+class UnixLinkLine(unittest.TestCase):
+    """The link line on Linux and macOS, read with the host faked so it runs
+    anywhere: a release link drops the sections nothing reaches (--gc-sections
+    for ELF, -dead_strip for Mach-O), as /OPT:REF does on Windows, and a debug
+    link keeps them all. Whether the linker keeps what a program needs is the
+    Linux gate's to show; this holds only what Congo asks for."""
+
+    def line(self, host: str, release: bool) -> list[str]:
+        from unittest import mock
+        linker = congo.Linker.__new__(congo.Linker)
+        linker.tool = "cc"
+        linker.conestd = Path("conestd.a")
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(congo, "IS_WINDOWS", False), \
+                mock.patch.object(congo, "HOST_OS", host):
+            return linker.command([Path("a.o")], Path(folder) / "prog", [], [], release=release)
+
+    def test_an_elf_release_link_drops_the_sections_nothing_reaches(self):
+        line = self.line("linux", True)
+        self.assertIn("-Wl,--gc-sections", line)
+        self.assertNotIn("-Wl,-dead_strip", line)
+        # before the output name, with the rest of the options
+        self.assertLess(line.index("-Wl,--gc-sections"), line.index("-o"))
+
+    def test_a_mach_o_release_link_dead_strips(self):
+        line = self.line("macos", True)
+        self.assertIn("-Wl,-dead_strip", line)
+        self.assertNotIn("-Wl,--gc-sections", line)
+
+    def test_a_debug_link_keeps_every_section(self):
+        for host in ("linux", "macos"):
+            line = self.line(host, False)
+            self.assertNotIn("-Wl,--gc-sections", line)
+            self.assertNotIn("-Wl,-dead_strip", line)
+
+    def test_the_dynamic_list_that_exports_the_shims_names_stays(self):
+        self.assertTrue(any(a.startswith("-Wl,--dynamic-list=") for a in self.line("linux", True)))
 
 
 def run_in_parallel(jobs: int) -> int:

@@ -1400,9 +1400,9 @@ diagnostics = 2
 
 [scenario.module_generic_nameres]
 category = "reject"
-description = "A generic module named without type arguments -- a path through it, a standalone 'use', an import's 'use' clause, 'extends', its own default fold -- and one holding a module trait or a generic submodule"
+description = "A generic module named without type arguments -- a path through it, a standalone 'use', an import's 'use' clause, 'extends', its own default fold -- and one holding a module trait or a generic submodule, and a plain submodule of one holding a module trait (the message names the generic)"
 tags = ["nameres"]
-diagnostics = 7
+diagnostics = 8
 
 [scenario.module_generic_typecheck]
 category = "reject"
@@ -1874,7 +1874,12 @@ category = "compile"
 description = "An 'extern' fn with '@c(system)' and the imported, stdcall symbol it lowers to"
 tags = ["parse", "genllvm"]
 
-# '@c(system)' gives the C name and the x86 stdcall convention; on an 'extern'
+# Stdcall exists only on 32-bit x86, so this reads a 32-bit x86 target
+[[scenario.module_extern_system.run]]
+name = "x86-32"
+options = ["--triple=i686-pc-windows-msvc"]
+
+# '@c(system)' gives the C name and, on 32-bit x86, the stdcall convention; on an 'extern'
 # declaration the DLL import storage class comes with it. The declaration takes
 # no prefix and no COMDAT. Read before the optimizer, which deletes a
 # declaration nothing calls.
@@ -2011,6 +2016,11 @@ category = "compile"
 description = "'@c(system)' on a 'mod' line: the system convention for the functions it names, and a DLL import only for the extern one"
 tags = ["parse", "genllvm"]
 
+# Stdcall exists only on 32-bit x86, so this reads a 32-bit x86 target
+[[scenario.module_c_system.run]]
+name = "x86-32"
+options = ["--triple=i686-pc-windows-msvc"]
+
 # Both functions take the x86 stdcall convention from the module; only the
 # 'extern' one is imported from a DLL. The body is exported under its own
 # '@c' name.
@@ -2028,6 +2038,17 @@ excludes = ["win.", "dllimport x86_stdcallcc ConeTicks"]
 name = "calls-to-a-system-function-use-the-convention"
 target = "preir"
 contains = ["call x86_stdcallcc i32 @ConeTicks()", "call x86_stdcallcc i32 @GetTickCount()"]
+
+[scenario.module_system_c_convention]
+category = "compile"
+description = "On a 64-bit target '@c(system)' is the C convention: no stdcall on the declaration or the call (AArch64 rejects it, x86-64 ignores it)"
+tags = ["parse", "genllvm"]
+
+[[scenario.module_system_c_convention.check]]
+name = "no-stdcall-on-a-64-bit-target"
+target = "preir"
+contains = ["@GetTickCount()"]
+excludes = ["stdcallcc"]
 
 [scenario.module_c_byvalue]
 category = "run"
@@ -4502,3 +4523,20 @@ description = "A package whose source has CRLF line ends generates the same incl
 tags = ["genllvm", "runtime"]
 link = ["gq/gq.conebuild"]
 include = ["include/gq.cone"]
+
+# The name of a file a compile produced: `--ir` writes <srcname>.ast, and the
+# check asserts that name exists in the output folder and holds the source's function.
+[scenario.module_ir_artifact_name]
+category = "compile"
+description = "--ir writes the AST dump named for the source compiled (module_ir_artifact_name.ast), not for the injected corelib"
+tags = ["parse"]
+
+[[scenario.module_ir_artifact_name.run]]
+name = "ir"
+options = ["--ir"]
+
+[[scenario.module_ir_artifact_name.check]]
+name = "the-dump-is-named-for-the-source"
+target = "file"
+file = "module_ir_artifact_name.ast"
+contains = ["tallyIrArtifact"]

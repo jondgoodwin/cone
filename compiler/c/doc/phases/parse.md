@@ -226,6 +226,36 @@ A backslash at a line's end inside the literal already has its own error
 one diagnostic. `lexical_reject_mlstring_open` holds the refusal and
 `lexical_mlstring_open` the legal forms beside it.
 
+**Raw and triple-quoted literals** (`doc/manual/syntax-lexical.html#string`) are the same
+walk with a different opening: `lexScanStr(srcp, interp, raw, delim, dlen)`. An `r`
+directly before `"` or a backtick opens a raw literal (checked at the identifier case of
+the token dispatch, before `lexScanIdent`); three double quotes open a triple-quoted one
+(`dlen` 3), after an optional `r`. A raw literal copies a backslash as text and neither
+the sizing walk nor the build steps over an escape, so `r"a\"` is `a\`; the
+backslash-before-line-end join is an escape's, so a raw multi-line literal keeps it as
+text. A triple-quoted literal is closed by the last three of the run of quotes that ends
+it (`""""Happy Birthday!""""` holds the quotes), and a quote that is not part of the
+closing three is content; the sizing walk finds that closer first (`endp`) and the build
+stops there. A backtick raw literal ends at the next backtick. Margin, line-end and
+text-after-the-opening rules are the multi-line literal's, unchanged. `$"` stays the only
+interpolated opening, and a raw or triple-quoted literal written inside an interpolation's
+braces is stepped over whole by `lexInterpSkipBraces` (`lexInterpSkipRawOrTriple`), so a brace,
+quote or backslash in it closes nothing; an unclosed one is not taken for a literal there
+and is reported at its opening by the expression's own lexing. Tests:
+`lexical_raw_strings`, `lexical_reject_raw_strings`, `lexical_reject_unclosed_raw`,
+`lexical_raw_interp`, `lexical_reject_interp_raw_open`.
+
+**The `p` exponent is a hexadecimal literal's** (Jon 28 Oct, ruled 1 Nov 2026).
+`lexScanNumber` reads `p` or `P` as an exponent after a hex mantissa only; in a decimal
+literal a `p` that digits follow is `ErrorRadixFloat` ("takes its exponent with 'e'"),
+once, and is still read as the exponent so the literal ends where it should
+(`lexical_reject_decimal_p`). A hex float's exponent is decimal digits, so the `f` of
+`0x1.8p1f` begins the suffix and is applied (`lexical_hex_float_suffix`).
+
+**`local` and `wait` are ordinary names** (released, Jon 28 Oct 2026, built 23 Nov):
+`lexical_released_words`; Congo's reserved-word lists (`congo.py`, `header.cone`) follow
+the lexer's `ReservedToken` group, which test_congo.py checks.
+
 **A raw tab in a literal is content; every other raw control character is
 refused.** Jon's ruling of 24 September 2026: a tab written as itself is part
 of a one-line string, a multi-line string or a character literal alike, and
@@ -824,7 +854,9 @@ from an integer one, so the step is a call of a private name that type check fin
 ([block](../nodes/block.md), `eachRangeStepLower`). The comparison forms the range was once
 written in, `a < b`, are refused, `ErrorEachCompare`, and `...` is refused,
 `ErrorRangeEllipsis`. `with e {…}` becomes a block with a `this` declaration
-first. Prefix `.f` becomes `this.f`. Unary minus on
+first. Prefix `.f` becomes `this.f`, and prefix `.[i]` becomes `this[i]` (`parseDotCall` returns
+`this` where a `[` follows the `.`, and the suffix loop reads the index; after any other
+name that `.[` is still `ErrorNoMbr`). Unary minus on
 a literal is constant-folded in place, and an integer literal records it
 (`FlagLitNeg`), because its range check needs the digits written
 ([literals](../nodes/literals.md)).
