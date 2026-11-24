@@ -475,6 +475,8 @@ int lifeIsOwnBorrow(INode *parmtype) {
         && ((RefNode *)typedcl)->lifename != staticLifeName;
 }
 
+static int lifePartFlowsAs(FnSigNode *sig, INode *parm, uint32_t part, INode *to, int anon);
+
 int lifeCarry(FnSigNode *sig, INode *parm, INode *to, uint32_t *slots) {
     *slots = LifeAllSlots;
     if (sig == NULL)
@@ -491,7 +493,10 @@ int lifeCarry(FnSigNode *sig, INode *parm, INode *to, uint32_t *slots) {
         // loans, and a function's borrow none
         if (ref->lifename == staticLifeName || lifeIsFnBorrow(ref))
             return LifeCarryWhole;
-        if (lifeNameFlowsAs(sig, ref->lifename, to, 0))
+        // The argument's own borrow is the reference's outermost one: it is
+        // compared with the result's outermost lifetime, as the body's check
+        // does (Bug 122)
+        if (lifePartFlowsAs(sig, parm, LifePartOwn, to, 0))
             return LifeCarryWhole;
     }
     INode *held = lifeHeld(parm);
