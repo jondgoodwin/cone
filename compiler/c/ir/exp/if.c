@@ -104,7 +104,12 @@ void ifRemoveReturns(IfNode *ifnode) {
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
         INode **laststmt;
         cnt--; nodesp++;
-        laststmt = &nodesLast(((BlockNode*)*nodesp)->stmts);
+        // An arm written '{}' is not yet type checked here (a closure's last 'if' is
+        // wrapped in its return first) and holds no statement: nothing to strip
+        BlockNode *arm = (BlockNode*)*nodesp;
+        if (arm->tag != BlockTag || arm->stmts == NULL || arm->stmts->used == 0)
+            continue;
+        laststmt = &nodesLast(arm->stmts);
         if ((*laststmt)->tag == ReturnTag)
             *laststmt = ((BreakRetNode*)*laststmt)->exp;
         if ((*laststmt)->tag == IfTag)
