@@ -1448,8 +1448,10 @@ fn heldFire(ts: *TimerStore, tok: u64, now: i64) bool {
 }
 
 // The arrive slot, published to the waiting actor as pushFuture publishes a
-// future's: its resume function timerArrive, its id the cell. The count the
-// waiter's Reply held goes with it (the scheduler's owner, or let go)
+// future's: its resume function timerArrive, the cell where its value would be
+// (a slot with no id: an id word is a record's, which resumeSlotIn tells late
+// by, and the cell is no record). The count the waiter's Reply held goes with
+// it (the scheduler's owner, or let go)
 fn heldPublish(c: *TimerCell) {
   let h = (*c).reply.to;
   // THE STOP'S GATE, for a plain thread (a deputy): refused, the waiter is let go unanswered
@@ -1471,9 +1473,9 @@ fn heldPublish(c: *TimerCell) {
   let p = payloadOf(cl.slot);
   var rf = &timerArrive;
   *(p as **u8) = mem.readRaw[*u8](&mut rf as *(*u8));
-  *((p + 8usize) as *u64) = u64.from(c as usize);
-  *((p + replyHead) as **u8) = null;
-  let waited = publish(cl, kindReply + 1u64);
+  *((p + 8usize) as *u64) = 0u64;
+  *((p + replyHead) as *usize) = c as usize;
+  let waited = publish(cl, kindReply);
   if wakeAfter(h, cl, waited) {
     schedule(h);
   } else {
@@ -1485,13 +1487,13 @@ fn heldPublish(c: *TimerCell) {
   }
 }
 
-// The arrive slot reached the actor (its resume function; 'id' is the cell).
+// The arrive slot reached the actor (its resume function; 'data' holds the cell).
 // The decision is made again here, on the holder's thread: ended, false; due,
 // the deadline cleared and true; otherwise the waiter put back (a count of the
 // actor taken for it again), the deadline filed here if one is set, and the
 // program sees nothing
-fn timerArrive(st: *u8, id: u64, data: *u8) {
-  let c = usize.from(id) as *TimerCell;
+fn timerArrive(st: *u8, data: *u8) {
+  let c = *(data as *usize) as *TimerCell;
   while true {
     let w = (*c).hword.load();
     if (w & hEnded) != 0u64 {
@@ -1552,6 +1554,12 @@ fn heldResume(st: *u8, c: *TimerCell, v: bool) {
   var val = v;
   let data = &mut val as *bool as *u8;
   if (hr.id & groupBit) == 0u64 {
+    // THE LATE-ANSWER GUARD (actors.cone): this reaches the second half without resumeSlotIn, so it asks the
+    // same question; the answer, a bool, is dropped with nothing to give back
+    if lateAnswer(hr.hasId, hr.id) {
+      lateDrops.addOrdered(1u64, MemOrder.Relaxed);
+      return;
+    }
     heldCall(hr.run, st, hr.hasId, hr.id, data);
     return;
   }
@@ -1560,6 +1568,10 @@ fn heldResume(st: *u8, c: *TimerCell, v: bool) {
   let w = (*node).w;
   let g = mem.readRaw[CancelGroup](&(*node).g as *CancelGroup);
   libc.free(node as *u8);
+  if lateAnswer(hr.hasId, w) {
+    lateDrops.addOrdered(1u64, MemOrder.Relaxed);
+    return;
+  }
   curGroup = &g as *CancelGroup as usize;
   heldCall(hr.run, st, hr.hasId, w, data);
   curGroup = 0usize;
@@ -1569,7 +1581,7 @@ fn heldCall(run: *u8, st: *u8, hasId: bool, id: u64, data: *u8) {
   var f = run;
   if hasId {
     let fp = mem.readRaw[&fn(s: *u8, id: u64, data: *u8)](&mut f as *(&fn(s: *u8, id: u64, data: *u8)));
-    fp(st, id, data);
+    fp(st, plainId(id), data);
   } else {
     let fp = mem.readRaw[&fn(s: *u8, data: *u8)](&mut f as *(&fn(s: *u8, data: *u8)));
     fp(st, data);

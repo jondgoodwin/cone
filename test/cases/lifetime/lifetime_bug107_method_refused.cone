@@ -1,0 +1,30 @@
+// A call on the method path lends a reference argument handed by name as a call
+// of a free function does (Bug 107, row 710): the signature names no lifetime,
+// so the result borrows from every reference argument, and storing it into the
+// value that argument points at keeps a borrow of its own storage. Three
+// shapes, each accepted by name and refused as '&mut *s': a callable parameter
+// ('&<fn', '&<mut fn') called as 'f(s)', a struct's '()' method called as
+// 'p(s)' or 'p.`()`(s)', and a method's non-receiver argument, 'o.pick2(s)'.
+//
+// Verdict: refuse each, ErrorSelfStore, at the store.
+
+mod lifetime_bug107_method_refused;
+
+struct Tcb { pub id: i32; pub link: Option[&mut Tcb]; }
+struct Sched { pub cur: Option[&mut Tcb]; pub own: Tcb; }
+struct Other {
+  pub k: i32;
+  pub fn pick2(self: &, x: &mut Sched) Option[&mut Tcb] { Some[&mut Tcb](&mut x.own) }   //~ WarnLifetimeTie
+}
+struct Picker {
+  pub k: i32;
+  pub fn `()`(self: &, x: &mut Sched) Option[&mut Tcb] { Some[&mut Tcb](&mut x.own) }   //~ WarnLifetimeTie
+}
+
+fn viaCallable(s: &mut Sched, f: &<fn(x: &mut Sched) Option[&mut Tcb]) { s.cur = f(s); }   //~ ErrorSelfStore "borrow of '*s'"
+fn viaCallableMut(s: &mut Sched, f: &<mut fn(x: &mut Sched) Option[&mut Tcb]) { s.cur = f(s); }   //~ ErrorSelfStore "borrow of '*s'"
+fn viaStruct(s: &mut Sched, p: &Picker) { s.cur = p(s); }   //~ ErrorSelfStore "borrow of '*s'"
+fn viaStructCall(s: &mut Sched, p: &Picker) { s.cur = p.`()`(s); }   //~ ErrorSelfStore "borrow of '*s'"
+fn viaMethodArg(s: &mut Sched, o: &Other) { s.cur = o.pick2(s); }   //~ ErrorSelfStore "borrow of '*s'"
+
+fn main() { }

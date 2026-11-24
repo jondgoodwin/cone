@@ -213,6 +213,7 @@ enum NodeTags {
 // read once by dclInfoJoin into DclExternal; the name is the module's to spell.
 #define FlagExtern    0x0002        // FnDcl, VarDcl: 'extern', defined in another compiled unit
 #define FlagInline    0x0008        // FnDcl: "inline" fn/method
+#define FlagDerivedBody 0x0004      // FnDcl: an enum's '==' or 'hash' the compiler wrote over its variants' payloads (parseEnumSupply)
 // A declaration written 'pub' is visible from outside the namespace that owns
 // it; unmarked, it is private to that namespace. Set by the parser on whatever
 // declaration the keyword precedes -- fn, variable, field, type, alias, const

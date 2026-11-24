@@ -762,6 +762,11 @@ INode *parseYield(ParseState *parse) {
     }
     INode *exp = parseAnyExpr(parse);
     parseEndOfStatement();
+    // The value failed to parse and was reported (parseTerm): there is nothing to hand on
+    if (exp == NULL) {
+        node->exp = (INode *)newNilLitNode();
+        return (INode *)node;
+    }
     if (each)
         return parseYieldEach(parse, exp, node);
     ++ctx->yields;

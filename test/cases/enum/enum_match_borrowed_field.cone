@@ -1,0 +1,41 @@
+// A 'match' on a non-copy field of a borrowed 'self' moves nothing by itself: testing the
+// variant, with 'is' cases or an 'else', leaves the field whole for the next test and for
+// the caller. Only a pattern that takes the payload out by value moves it, and a borrowed
+// 'self' refuses that (enum_typecheck_match_borrowed_take).
+//
+//   isa: true   isb: false   both: 0 (the same field tested by two matches, then once more)
+//   then the Fin is finalized at the end, once: "fin1"
+
+mod enum_match_borrowed_field;
+
+import stdio use *;
+
+struct Fin {
+  pub id: i32;
+  fn final(self: &uni) {
+    printStr("fin");
+    printInt(i64.from(id));
+    printStr("\n");
+  }
+}
+
+enum E {
+  struct A { pub f: Fin; }
+  struct B { pub n: i32; }
+}
+use E;
+
+struct H {
+  e: E;
+  fn isa(self: &) bool { match e { case is A { true } else { false } } }
+  fn isb(self: &) bool { match e { case is B { true } else { false } } }
+  fn both(self: &) i32 { if isa() { if isb() { 2 } else { 0 } } else { 1 } }
+}
+
+fn main() {
+  let h = H(A(Fin(1)));
+  printStr(if h.isa() { "true " } else { "false " });
+  printStr(if h.isb() { "true " } else { "false " });
+  printInt(i64.from(h.both()));
+  printStr("\n");
+}

@@ -1,0 +1,105 @@
+// Lane 1025: the cost of making and letting go of an idle actor (startActor and actorDied), from the main thread
+// (the gated path of startActor) and from inside an activation (the worker's path).
+//   congo run --release examples\churnbench.cone -- <main|actor>
+mod churnbench;
+
+import stdio use *;
+import actors;
+import time use Instant;
+
+const churnN = 100000u64;
+
+actor Blip {
+  n: u64 = 0u64;
+  pub async fn hit(self) {n = n + 1u64;}
+}
+
+actor Maker {
+  pub async fn make(self, k: u64) {
+    var i = 0u64;
+    while i < k {
+      let b = Blip();
+      i = i + 1u64;
+    }
+  }
+}
+
+fn nanos(t: &Instant) u64 {u64.from(t.elapsed().nanos())}
+
+fn sortRuns(v: &mut Array[u64, 5]) {
+  var i = 0usize;
+  while i < 5usize {
+    var j = i + 1usize;
+    while j < 5usize {
+      if v[j] < v[i] {
+        let t = v[i];
+        v[i] = v[j];
+        v[j] = t;
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+fn report(name: &str, v: &mut Array[u64, 5]) {
+  sortRuns(v);
+  printStr(name);
+  printStr("  min ");
+  printUInt(v[0usize] / 100u64); printStr("."); printUInt(v[0usize] / 10u64 % 10u64);
+  printStr("  median ");
+  printUInt(v[2usize] / 100u64); printStr("."); printUInt(v[2usize] / 10u64 % 10u64);
+  printStr("  max ");
+  printUInt(v[4usize] / 100u64); printStr("."); printUInt(v[4usize] / 10u64 % 10u64);
+  printStr("  (ns per item)\n");
+}
+
+fn scMain() {
+  var v: Array[u64, 5] = [0u64, 0u64, 0u64, 0u64, 0u64];
+  let warm = Blip();
+  actors.waitUntilIdle();
+  var r = 0usize;
+  while r < 5usize {
+    let t0 = Instant.now();
+    var i = 0u64;
+    while i < churnN {
+      let b = Blip();
+      i = i + 1u64;
+    }
+    v[r] = nanos(&t0) * 100u64 / churnN;
+    r = r + 1usize;
+  }
+  report("churn: make+drop from main                  ", &mut v);
+}
+
+fn scActor() {
+  var v: Array[u64, 5] = [0u64, 0u64, 0u64, 0u64, 0u64];
+  let m = Maker();
+  actors.waitUntilIdle();
+  var r = 0usize;
+  while r < 5usize {
+    let t0 = Instant.now();
+    m.make(churnN);
+    actors.waitUntilIdle();
+    v[r] = nanos(&t0) * 100u64 / churnN;
+    r = r + 1usize;
+  }
+  report("churn: make+drop in an actor                ", &mut v);
+}
+
+fn eq(a: *u8, b: &str) bool {
+  var i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] {return false;}
+    i = i + 1usize;
+  }
+  *(a + i) == 0u8
+}
+
+fn main(argc: i32, argv: **u8) {
+  initAll();
+  actors.configure(actors.Options(workers: 0u32));
+  if argc >= 2i32 && eq(*(argv + 1usize), "main") {scMain();}
+  if argc >= 2i32 && eq(*(argv + 1usize), "actor") {scActor();}
+  finalAll();
+}
