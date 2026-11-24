@@ -9,10 +9,15 @@ or later, standard library only, living in the Cone repository beside
 ```
 congo new hello            make a program package, hello/
 congo new geometry --lib   make a library package
+congo init                 make a package of the folder you are in, named by the folder
+congo init name --lib      the same, with a name (a file already there is not overwritten)
 congo build                build the package this folder is in (debug)
 congo build --release      the same, optimised
+congo check                report the package's errors as a build would, writing nothing for it
 congo run                  build it and run it
 congo run hello.cone       build and run one lone file, no manifest needed
+congo run --example tour   build and run examples/tour.cone of this package
+congo run --example        list this package's examples
 congo run -- a b           arguments after '--' go to the program
 congo test                 build the package, run its tests, build its examples
 congo test vec             only the tests and examples with 'vec' in their name
@@ -23,10 +28,20 @@ congo run -D FAST -D N=2   a constant for #defined and #define
 congo build --no-cache     compile everything, whatever an earlier build left
 congo build --release --strip   no debug info, and no .pdb beside the .exe
 congo build --release --lto     optimise across the packages at link time (ThinLTO)
+congo layout               build the package and print each struct's size, alignment, field offsets and
+                           padding bytes (a struct padded by a quarter of its size or more is marked
+                           PADDED); it changes nothing, and `congo.py` has it, not yet the Cone port
 congo publish              point an index registry at this package's current commit
 ```
 
-`-D NAME` and `-D NAME=123`, given to `build`, `run` or `test`, are passed to
+`congo check` builds what the package imports, as `build` does, and runs `conec --check` on the package
+itself: every error a compile of it gives, with the same exit status, and no object, no include file, no
+cache entry and no link. It takes `--release`, `-D` and `--no-cache`, and prints `Checked`. Tests and
+examples are not checked (`congo test` builds them). A marked package's kernels are checked too. A link
+error (a missing C library, a symbol nothing defines) is not found, since nothing is linked. `check` runs
+the compiler's analysis, generation and verification in memory, and stops before optimising and emitting.
+
+`-D NAME` and `-D NAME=123`, given to `build`, `run`, `check` or `test`, are passed to
 every `conec` compile of the build, the packages it imports included, where
 `#defined("NAME")` and `#define("NAME")` read them in an `#if`
 (`doc/manual/mod-generativity.html#meta`).
@@ -111,7 +126,9 @@ There is no include file to write: a library's build generates it (below,
   only ever read. `congo clean` deletes the folder, include files and all.
 - **A package's example programs live in its `examples/` folder**, which no
   build of the package reads. Each is a lone file, run with
-  `congo run examples/<file>.cone`, and imports the package by name like any
+  `congo run examples/<file>.cone` or, inside the package, `congo run --example
+  <file>` (with no name it lists them; the package is resolved as the first
+  does), and imports the package by name like any
   other program, so the package is found through the registries: the
   examples of `packages/geomath` run as they stand, while a package in no
   registry cannot yet run its own that way (`congo test` builds them, below,
@@ -1233,6 +1250,9 @@ links is the Congo running, that Congo is first moved aside to
 build folder while it runs from it; `congo.py clean` can. Windows only, as its
 `process` package and its linking are for now.
 
+(`congo init` and `congo run --example` are in `congo.py` only so far; the Cone port
+has neither yet.)
+
 **It does everything `congo.py` does:** `congo new` (the manifest and the
 template, byte for byte), `congo build` (debug and `--release`, `-D`, a
 program linked or a library's object, the build folder, the descriptions, the
@@ -1309,6 +1329,7 @@ Where it differs from `congo.py`:
 
 ## Not built yet
 
+- `check` in the Cone Congo (`congo.py` has it).
 - Runtime libraries anywhere but Windows, where the dynamic loader finds a
   shared library by its own rules (`rpath`, `LD_LIBRARY_PATH`).
 - A package of C sources, which Congo would compile; a C package whose root

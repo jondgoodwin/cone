@@ -236,6 +236,10 @@ one** until something reads the hole.
 `ErrorBadTree` for any expression node with no value type or any block with no
 statement list. It runs whether or not errors were reported, because a phase
 that reports a bad program and returns early is exactly what leaves those holes.
+In a program with no errors it also reports a function of a module with no body that
+is not `extern`, and a literal, `sizeof`, `not`, `and`, `or`, field access or array
+index left with the unknown type (a name use, call, assignment, block, `if`, string
+literal, borrow, deref or cast may hold it by design, so those are not checked).
 `test/run.py` passes `--checktree` on every compile of every category.
 
 It does not descend into type declarations: a type may refer to itself through a

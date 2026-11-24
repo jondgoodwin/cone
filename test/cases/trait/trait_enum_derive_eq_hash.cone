@@ -1,0 +1,113 @@
+// An enum whose variants carry nothing and which lists Eq or Hash gets the method written for it by the
+// compiler (row 675; Question 18): '==' taking '&' and 'hash' feeding the variant's position as one u32.
+// An enum that writes its own 'hash' keeps it, and one that does not ask is not Eq or Hash (its by-value
+// '==' stays as it was). Every printed value was checked by hand against the source.
+
+mod trait_enum_derive_eq_hash;
+
+import collections use *;
+import stdio use *;
+
+enum Color is Eq, Hash {
+  Red;
+  Green;
+  Blue;
+}
+
+// Asks for both, writes its own hash: the own body is used, and '==' is still supplied
+enum Own is Eq, Hash {
+  A;
+  B;
+  pub fn hash(self: &, h: &mut Hasher) {
+    h.writeU32(99u32);
+  }
+}
+
+// Asks for neither: a by-value '==' only
+enum Plain {
+  P;
+  Q;
+}
+
+struct H is Eq, Hash {
+  pub c: Color;
+  pub n: i32;
+}
+
+fn hashOf[K: Hash](k: &K) u64 {
+  var h = Hasher.withSeed(1u64);
+  k.hash(&mut h);
+  h.finish()
+}
+
+fn same[K: Eq + Hash](a: &K, b: &K) bool {
+  a == b && hashOf(a) == hashOf(b)
+}
+
+fn yes(label: &str, b: bool) {
+  printStr(label);
+  printStr(if b {" yes\n"} else {" NO\n"});
+}
+
+fn main() {
+  let r: Color = Color.Red;
+  let r2: Color = Color.Red;
+  let g: Color = Color.Green;
+  let b: Color = Color.Blue;
+  yes("red == red", r == r2);
+  yes("red != red", r != r2);
+  yes("red == green", r == g);
+  yes("red != green", r != g);
+  yes("green != blue", g != b);
+  yes("bounded by Eq + Hash, equal", same(&r, &r2));
+  yes("bounded by Eq + Hash, different", same(&r, &g));
+  yes("equal values hash equal", hashOf(&r) == hashOf(&r2));
+  yes("different values hash differently", hashOf(&r) != hashOf(&g));
+  yes("green and blue differ", hashOf(&g) != hashOf(&b));
+
+  // The hash is the position as one u32: Red 0, Green 1, Blue 2
+  var want = Hasher.withSeed(1u64);
+  want.writeU32(1u32);
+  yes("green fed its position 1", hashOf(&g) == want.finish());
+  var want2 = Hasher.withSeed(1u64);
+  want2.writeU32(2u32);
+  yes("blue fed its position 2", hashOf(&b) == want2.finish());
+
+  var d = Dict[Color, i64]();
+  d.insert(Color.Red, 10i64);
+  d.insert(Color.Green, 20i64);
+  d.insert(Color.Blue, 30i64);
+  printInt(d.getCopy(&r2).unwrap());
+  printStr("\n");
+  printInt(d.getCopy(&g).unwrap());
+  printStr("\n");
+  printInt(d.getCopy(&b).unwrap());
+  printStr("\n");
+
+  // A struct derives both over the enum field
+  let h1 = H(Color.Red, 5);
+  let h2 = H(Color.Red, 5);
+  let h3 = H(Color.Blue, 5);
+  yes("equal H", same(&h1, &h2));
+  yes("another color, another H", h1 != h3);
+  yes("another color, another hash", hashOf(&h1) != hashOf(&h3));
+  var wh = Hasher.withSeed(1u64);
+  wh.writeU32(0u32);
+  wh.writeU32(5u32);
+  yes("H fed the enum's hash, then the i32", hashOf(&h1) == wh.finish());
+
+  // A hand-written hash is kept; '==' is supplied beside it
+  let oa: Own = Own.A;
+  let ob: Own = Own.B;
+  var wo = Hasher.withSeed(1u64);
+  wo.writeU32(99u32);
+  yes("own hash used", hashOf(&oa) == wo.finish());
+  yes("own: a == a", oa == oa);
+  yes("own: a != b", oa != ob);
+
+  // An enum that did not ask keeps its by-value '=='
+  let p: Plain = Plain.P;
+  let q: Plain = Plain.Q;
+  yes("plain p == p", p == p);
+  yes("plain p == q", p == q);
+}

@@ -54,6 +54,7 @@ enum
     OPT_FILENAMES,
     OPT_CHECKTREE,
     OPT_REPORT_TRUST,
+    OPT_CHECK,
     OPT_SPANS,
     OPT_META_IR,
     OPT_META_STEPS,
@@ -63,6 +64,8 @@ enum
     OPT_INTRINSIC_FALLBACK,
     OPT_AWAIT_DIRECT,
     OPT_WARN_INDEX_STAR,
+    OPT_WARN_UNUSED_VAR,
+    OPT_LAYOUT,
     OPT_PRIVATE_INSTANCES,
     OPT_NO_NOALIAS,
     OPT_LTO,
@@ -110,6 +113,7 @@ static opt_arg_t args[] =
     { "files", '\0', OPT_ARG_NONE, OPT_FILENAMES },
     { "checktree", '\0', OPT_ARG_NONE, OPT_CHECKTREE },
     { "report-trust", '\0', OPT_ARG_NONE, OPT_REPORT_TRUST },
+    { "check", '\0', OPT_ARG_NONE, OPT_CHECK },
     { "spans", '\0', OPT_ARG_NONE, OPT_SPANS },
     { "meta-ir", '\0', OPT_ARG_NONE, OPT_META_IR },
     { "meta-steps", '\0', OPT_ARG_REQUIRED, OPT_META_STEPS },
@@ -119,6 +123,8 @@ static opt_arg_t args[] =
     { "intrinsic-fallback", '\0', OPT_ARG_NONE, OPT_INTRINSIC_FALLBACK },
     { "await-direct", '\0', OPT_ARG_NONE, OPT_AWAIT_DIRECT },
     { "warn-index-star", '\0', OPT_ARG_NONE, OPT_WARN_INDEX_STAR },
+    { "warn-unused-var", '\0', OPT_ARG_NONE, OPT_WARN_UNUSED_VAR },
+    { "layout", '\0', OPT_ARG_NONE, OPT_LAYOUT },
     { "private-instances", '\0', OPT_ARG_REQUIRED, OPT_PRIVATE_INSTANCES },
     { "no-noalias", '\0', OPT_ARG_NONE, OPT_NO_NOALIAS },
     { "lto", '\0', OPT_ARG_NONE, OPT_LTO },
@@ -196,6 +202,9 @@ static void usage()
         "    =columns      Defaults to the terminal width.\n"
         "  --immerr        Report errors immediately rather than deferring.\n"
         "  --checktree     Verify IR well-formedness.\n"
+        "  --check         Report every error a compile would, and write nothing:\n"
+        "                  analyse, generate in memory and verify, stop before\n"
+        "                  optimising and emitting. Linking is not covered.\n"
         "  --report-trust  After type checking, list the unconstrained operations; generates no code.\n"
         "  --spans         Print where each of the root module's declarations\n"
         "                  and each of its types' members starts and ends.\n"
@@ -217,6 +226,12 @@ static void usage()
         "  --warn-index-star\n"
         "                  Warn at each '*x[i]' over an index through a type's\n"
         "                  '[]', the spelling indexing as a place retires.\n"
+        "  --warn-unused-var\n"
+        "                  Warn at each local 'let' or 'var' that nothing reads\n"
+        "                  (a name starting with '_' is exempt).\n"
+        "  --layout        Print each struct and enum's size, alignment, field\n"
+        "                  offsets and padding bytes (a type padded by a quarter\n"
+        "                  of its size or more is marked PADDED), and change nothing.\n"
         "  --private-instances=n\n"
         "                  A release program (not a library) keeps to itself each\n"
         "                  generic instance function, so it can be inlined or\n"
@@ -465,6 +480,7 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_FILENAMES: opt->print_filenames = 1; break;
         case OPT_CHECKTREE: opt->check_tree = 1; break;
         case OPT_REPORT_TRUST: opt->report_trust = 1; break;
+        case OPT_CHECK: opt->check = 1; opt->verify = 1; break;
         case OPT_SPANS: opt->print_spans = 1; break;
         case OPT_META_IR: opt->print_meta = 1; break;
         case OPT_META_STEPS:
@@ -477,6 +493,8 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_INTRINSIC_FALLBACK: opt->intrinsic_fallback = 1; break;
         case OPT_AWAIT_DIRECT: opt->await_direct = 1; break;
         case OPT_WARN_INDEX_STAR: opt->warn_index_star = 1; break;
+        case OPT_WARN_UNUSED_VAR: opt->warn_unused_var = 1; break;
+        case OPT_LAYOUT: opt->layout = 1; break;
         case OPT_PRIVATE_INSTANCES:
             opt->privateinst = atoi(s.arg_val);
             if (opt->privateinst < 0)

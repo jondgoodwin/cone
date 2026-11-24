@@ -591,6 +591,12 @@ where every holder needs the one count the list keeps. Sharing costs a second
 block and a second hop; a list held in a local is used directly, lends its
 elements as the slice, and `freeze()` moves its block into a `Uni[Array[T]]`.
 
+**A virtual reference is reborrowed, never dereferenced** (ruled 1 Nov 2026, built
+23 Nov). `&uni *v`, `&mut *v` and `&*v` on a virtual reference, or on the owner of an owning
+one, are a borrowed virtual reference over the same (data, vtable) pair with the borrow's
+permission, bounded by `v`'s own (the lifetime and freezing rules are a plain reborrow's); a bare
+`*v` and `&mut a` on an owner stay refused, as for a plain owner.
+
 Three of the five are fat pointers, and **the first two are indistinguishable at
 runtime** — region and permission are entirely compile-time. That is the single
 fact most likely to mislead when reading generated IR.

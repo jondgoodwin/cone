@@ -48,6 +48,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+# The note checker beside this file, imported by path so that a caller's working
+# directory and sys.path never decide which one is read
+import importlib.util as _importutil
+_nc_spec = _importutil.spec_from_file_location("notecheck", Path(__file__).resolve().with_name("notecheck.py"))
+_notecheck = _importutil.module_from_spec(_nc_spec)
+_nc_spec.loader.exec_module(_notecheck)
+notecheck_main = _notecheck.main
+notecheck_selftest = _notecheck.selftest
 CASES = REPO / "test" / "cases"
 CODES_TOML = REPO / "test" / "codes.toml"
 TAGS_TOML = REPO / "test" / "tags.toml"
@@ -775,6 +783,8 @@ class Check:
     # must match the regex, by re.search. A count pins an instruction by shape,
     # with no value names in it: six release stores, whatever they are called.
     matches: tuple[tuple[str, int], ...] = ()
+    # A 'file' check: the name of a file the compile wrote into the output folder
+    file: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1023,16 +1033,28 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
 
         checks = []
         for entry in table.get("check", []):
-            _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object", "within", "matches"})
-            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta", "trust"):
+            _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object", "within", "matches", "file"})
+            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta", "trust", "layout", "file"):
                 raise SuiteError(
-                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta', 'stdout' or 'trust'")
+                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta', 'stdout', 'trust', 'layout' or 'file'")
+            # 'file' names a file the compile wrote into the scenario's output folder
+            if entry["target"] == "file":
+                if not isinstance(entry.get("file"), str) or not entry["file"]:
+                    raise SuiteError(f"{where}.check: a 'file' check names the file in its 'file' key")
+                if "/" in entry["file"] or "\\" in entry["file"]:
+                    raise SuiteError(f"{where}.check: 'file' is a name in the output folder, not a path")
+                if "object" in entry or "within" in entry or entry.get("matches"):
+                    raise SuiteError(f"{where}.check: a 'file' check takes only 'file', 'contains' and 'excludes'")
+                if category not in ("compile", "run"):
+                    raise SuiteError(f"{where}.check: a {category!r} scenario writes no file to check")
+            elif "file" in entry:
+                raise SuiteError(f"{where}.check: 'file' belongs to a check whose target is 'file'")
             # 'object' reads what a package the scenario links generated
             if "object" in entry:
                 if entry["target"] == "stdout":
                     raise SuiteError(f"{where}.check: 'object' names a generated object, which has no stdout")
-                if entry["target"] == "trust":
-                    raise SuiteError(f"{where}.check: 'trust' reads the scenario's own report, not a linked object's")
+                if entry["target"] in ("trust", "layout"):
+                    raise SuiteError(f"{where}.check: {entry['target']!r} reads the scenario's own report, not a linked object's")
                 if entry["target"] == "asm":
                     raise SuiteError(f"{where}.check: 'asm' reads the scenario's own assembly, not a linked object's")
                 if entry["object"] not in {path.stem for path in link}:
@@ -1042,7 +1064,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             if entry["target"] == "stdout" and category != "run":
                 raise SuiteError(
                     f"{where}.check: only a 'run' scenario produces stdout to check")
-            if entry["target"] in ("llvmir", "preir", "symbols", "asm", "trust") and category not in ("compile", "run"):
+            if entry["target"] in ("llvmir", "preir", "symbols", "asm", "trust", "layout") and category not in ("compile", "run"):
                 raise SuiteError(
                     f"{where}.check: a {category!r} scenario reaches no code generation")
             matches = parse_matches(f"{where}.check", entry.get("matches", []))
@@ -1054,6 +1076,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                 object=entry.get("object"),
                 within=entry.get("within"),
                 matches=matches,
+                file=entry.get("file"),
             ))
 
         scenario = Scenario(
@@ -3062,6 +3085,7 @@ class Runner:
             if not use_lto:
                 self.check_artifacts(result, scenario, out_dir, "asm")
             self.check_artifacts(result, scenario, out_dir, "meta")
+            self.check_artifacts(result, scenario, out_dir, "file")
             # 'trust': what --report-trust prints for the same source, from a
             # run of its own because the option generates no code
             if any(c.target == "trust" for c in scenario.checks):
@@ -3077,6 +3101,20 @@ class Runner:
                 else:
                     (out_dir / f"{scenario.source.stem}.trust").write_text(trust.stdout, encoding="utf-8")
                     self.check_artifacts(result, scenario, out_dir, "trust")
+            # 'layout': what --layout prints (sizes, offsets, padding), from a run of its own
+            if any(c.target == "layout" for c in scenario.checks):
+                layout_cmd = [str(self.conec), *spec.options, "--layout", "-o", out_rel, scenario.source_rel]
+                result.commands.append(quote(layout_cmd))
+                layout = execute(layout_cmd, REPO, out_dir, "conec-layout",
+                                 self.compile_timeout_for(scenario, spec), self.args.max_output)
+                if layout.killed or layout.code != 0:
+                    result.status = FAIL
+                    result.problems.append("--layout "
+                                           + (f"was {layout.killed}" if layout.killed else f"exited {layout.code}")
+                                           + "\n" + indent(layout.stdout + layout.stderr))
+                else:
+                    (out_dir / f"{scenario.source.stem}.layout").write_text(layout.stdout, encoding="utf-8")
+                    self.check_artifacts(result, scenario, out_dir, "layout")
         if result.status == PASS and scenario.category == "run":
             self.link_and_run(result, scenario, spec, out_dir)
             if result.status == PASS:
@@ -3296,6 +3334,17 @@ class Runner:
         result = Result(scenario, spec, PASS, 0.0)
         cmd = [str(self.conec), *scenario.argv]
         result.commands.append(quote(cmd))
+
+        # --check writes nothing: the folder -o names holds the same files, each
+        # as it was, after the run
+        def folder_state() -> dict[str, tuple[int, int]] | None:
+            if "--check" not in scenario.argv or "-o" not in scenario.argv:
+                return None
+            folder = REPO / scenario.argv[scenario.argv.index("-o") + 1]
+            return {p.name: (p.stat().st_size, p.stat().st_mtime_ns)
+                    for p in folder.iterdir() if p.is_file()}
+
+        before = folder_state()
         invoked = execute(cmd, REPO, out_dir, "conec",
                           self.compile_timeout_for(scenario, spec), self.args.max_output)
         result.compiled = invoked
@@ -3304,6 +3353,9 @@ class Runner:
             result.problems.append(f"compiler {invoked.killed}")
         else:
             self.check_exit(result, scenario, invoked)
+            if before is not None and folder_state() != before:
+                result.status = FAIL
+                result.problems.append("--check wrote to its output folder")
             # coneOptSet reports bad options and prints usage on stdout, not
             # stderr, so a driver failure is invisible without this. Usage runs
             # to sixty lines and says nothing about why the case failed, so only
@@ -3458,8 +3510,20 @@ class Runner:
                     (out_dir / f"{stem}.symbols").write_text(
                         symbols[stem], encoding="utf-8")
                 text = symbols[stem]
+            elif check.target == "file":
+                # A produced artifact's name: the file must exist in the output
+                # folder, and 'contains' / 'excludes' read what it holds
+                artifact = out_dir / check.file
+                if not artifact.is_file():
+                    result.status = FAIL
+                    result.problems.append(
+                        f"check {check.name!r}: the compile wrote no file {check.file!r}")
+                    continue
+                text = normalize(artifact.read_text(encoding="utf-8", errors="replace"))
             elif check.target == "trust":
                 text = normalize((out_dir / f"{stem}.trust").read_text(encoding="utf-8", errors="replace"))
+            elif check.target == "layout":
+                text = normalize((out_dir / f"{stem}.layout").read_text(encoding="utf-8", errors="replace"))
             elif check.target == "meta":
                 # What --meta-ir wrote: each '#each' with the IR of the passes the parser made of it
                 artifact = out_dir / f"{stem}.meta"
@@ -4330,6 +4394,7 @@ def main(argv: list[str]) -> int:
         forbid_checks = forbidden_selftest()
         matches_checks = matches_selftest()
         if args.selftest:
+            print(f"note checker: {notecheck_selftest()} checks of its three rules hold")
             print(f"//~! forbidden text: {forbid_checks} checks hold")
             print(f"demangler: {len(DEMANGLE_EXAMPLES)} worked examples read as the scheme says")
             print(f"check 'matches': {matches_checks} checks of the count and its refusals hold")
@@ -4428,6 +4493,11 @@ def main(argv: list[str]) -> int:
         status = bless(results, scenarios, runner.by_number)
     else:
         status = report(results, scenarios)
+        # The notes the compiler's rules are written in are part of the same
+        # gate: a whole-suite run reads them (test/notecheck.py); a run of a
+        # selection does not
+        if not args.selectors and found is None and notecheck_main(["--quiet"]) != 0:
+            status = status or 1
     print(f"finished in {time.monotonic() - started:.1f}s")
     return status
 

@@ -550,6 +550,7 @@ enum ErrorCode {
 
     // Hashing: core's Hash trait, and the hash the compiler supplies for a struct declaring it
     ErrorHashFloat = 1330,      // A struct declaring Hash with no hash of its own has a float field: NaN is not equal to itself and -0 is equal to 0, so no hash of the bits agrees with ==
+    ErrorEnumDeriveEqHash = 1627, // An enum that lists Eq or Hash and writes no '==' or 'hash' has a variant that carries a payload: only an enum whose variants carry nothing is derived (by its tag) so far. The message names the variant
     ErrorHashField = 1331,      // A struct declaring Hash with no hash of its own has a field whose type is not Hash, so the compiler has nothing to feed for it
     ErrorHashNoEq = 1332,       // A type declaring Hash has no '==': a hash is only meaningful against the equality that decides which keys are the same
 
@@ -836,6 +837,7 @@ enum ErrorCode {
     WarnTextEffect = 3008, // An expression sent with `<-` to a receiver that has `wants` changes state (an assignment, an increment, a send, a `&mut` or `&uni` call): it does not run when `wants` says no. Pointed at the expression
 
     WarnLifetimeTie = 3009, // A function with a body and no lifetime named, whose signature ties a borrowed parameter to its result or to another parameter, while its body never returns that parameter's borrow nor stores it: its callers are held to a tie the body does not need. The message gives the signature that separates them. Pointed at the parameter
+    WarnUnusedVar = 3010,   // A local `let` or `var` written as a statement that nothing ever reads: a variable only written to counts as unread. A name starting with `_` is exempt, as is any variable the compiler made. Reported only under `--warn-unused-var` until the packages and tests are cleaned of them. Pointed at the declaration
 
     // Uncounted
     Uncounted = 9000,

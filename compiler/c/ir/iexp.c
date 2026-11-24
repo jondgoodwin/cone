@@ -1003,7 +1003,7 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
         INode *refexp = ((StarNode *)lval)->vtexp;
         INode *lvalvar = iexpLvalInfo(refexp, lvalperm, scope, stored);
         RefNode *vtype = (RefNode*)iexpGetTypeDcl(refexp);
-        if (vtype->tag == RefTag || vtype->tag == ArrayRefTag) {
+        if (vtype->tag == RefTag || vtype->tag == ArrayRefTag || vtype->tag == VirtRefTag) {
             // An owner held in a place reached through a borrow that does not
             // hold the place alone ('ro', 'imm', or 'mut', which others share)
             // lends no more than that borrow lets: its own permission is what

@@ -635,7 +635,8 @@ void genlLinkage(LLVMValueRef global, INode *dclnode, GenlDefinition defined) {
     if (dclnode) {
         DclInfo *dclinfo = inodeGetDclInfo(dclnode);
         if (dclnode->tag == FnDclTag && (dclinfo->facts & DclSystemCC)) {
-            LLVMSetFunctionCallConv(global, LLVMX86StdcallCallConv);
+            if (genlSystemIsStdcall(LLVMGetTarget(LLVMGetGlobalParent(global))))
+                LLVMSetFunctionCallConv(global, LLVMX86StdcallCallConv);
             if (dclinfo->facts & DclExternal)
                 LLVMSetDLLStorageClass(global, LLVMDLLImportStorageClass);
         }
@@ -1676,6 +1677,9 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     genlStitch(gen, 0);
     genlStitch(gen, 1);
 
+    if (gen->opt->layout)
+        genlLayoutReport(gen, pgm);
+
     if (gen->opt->debuginfo)
         LLVMDIBuilderFinalize(gen->dibuilder);
 }
@@ -2658,8 +2662,16 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
         }
     }
 
+    // --check: everything above is what generation can refuse. Nothing after
+    // it reports a user's error, but a GPU target's own pipeline below, which
+    // is what refuses a kernel's slice or atomic, so that target goes on
+    if (gen->opt->check && !gen->opt->gpu) {
+        LLVMDisposeModule(gen->module);
+        return;
+    }
+
     // Serialize the LLVM IR, if requested
-    if (gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, gen->opt->srcname, "preir"), &err) != 0) {
+    if (!gen->opt->check && gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, gen->opt->srcname, "preir"), &err) != 0) {
         errorMsg(ErrorGenErr, "Could not emit pre-ir file: %s", err);
         LLVMDisposeMessage(err);
     }
@@ -2773,6 +2785,12 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
             LLVMDisposeModule(gen->module);
             return;
         }
+    }
+
+    // --check ends here: what follows only writes
+    if (gen->opt->check) {
+        LLVMDisposeModule(gen->module);
+        return;
     }
 
     // Serialize the LLVM IR, if requested

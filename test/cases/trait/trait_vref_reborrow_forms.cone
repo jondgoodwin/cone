@@ -1,0 +1,83 @@
+// A virtual reference is reborrowed, not dereferenced: '&uni *v', '&mut *v' and '&*v'
+// on a virtual reference 'v', or on an owning one, are a borrowed virtual reference
+// over the same (data, vtable) pair, with the borrow's own permission (Backlog:
+// virtual-references, ruled 1 Nov 2026). Each form here is given to a function that
+// dispatches through it, on a borrowed and on an owning virtual reference, and a
+// '&<uni' reborrow is handed on twice in a row. trait_typecheck_vref_reborrow holds
+// the refusals.
+
+mod trait_vref_reborrow_forms;
+
+import stdio use *;
+
+trait App {
+  pub fn frame(self: &mut) bool;
+  pub fn look(self: &) i64;
+  pub fn take(self: &uni) i64;
+}
+
+struct Spinner {
+  pub n: i64;
+  pub fn frame(self: &mut) bool {n = n + 1; n < 4}
+  pub fn look(self: &) i64 {n}
+  pub fn take(self: &uni) i64 {n * 100}
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn useUni(b: &<uni App) i64 { b.frame(); b.take() }
+fn useMut(b: &<mut App) i64 { b.frame(); b.look() }
+fn useRo(b: &<App) i64 { b.look() }
+
+// A borrowed virtual reference reborrowed in each permission it holds
+fn fromUni(v: &<uni App) {
+  show("uni-uni", useUni(&uni *v));
+  show("uni-mut", useMut(&mut *v));
+  show("uni-ro", useRo(&*v));
+  show("uni-uni-again", useUni(&uni *v));
+  let r: &<uni App = &uni *v;
+  show("uni-bound", r.look());
+}
+fn fromMut(v: &<mut App) {
+  show("mut-mut", useMut(&mut *v));
+  show("mut-ro", useRo(&*v));
+  show("mut-mut-again", useMut(&mut *v));
+}
+fn fromRo(v: &<App) {
+  show("ro-ro", useRo(&*v));
+}
+
+// The same two reborrows in a row through a '&<uni' reborrow
+fn twice(b: &<uni App) i64 { b.frame(); b.frame(); b.look() }
+fn viaTwice(v: &<uni App) { show("twice", twice(&uni *v)); show("twice-after", v.look()); }
+
+// An owning virtual reference reborrowed
+fn fromOwner(o: Uni[App]) {
+  show("owner-uni", useUni(&uni *o));
+  show("owner-mut", useMut(&mut *o));
+  show("owner-ro", useRo(&*o));
+  show("owner-uni-again", useUni(&uni *o));
+}
+fn fromRc(c: Rc[mut, App]) {
+  show("rc-mut", useMut(&mut *c));
+  show("rc-ro", useRo(&*c));
+}
+
+fn main() i32 {
+  var u = Uni[Spinner](0);
+  fromUni(&uni *u);
+  var m = Spinner(10);
+  fromMut(&mut m);
+  let r = Spinner(20);
+  fromRo(&r);
+  var t = Uni[Spinner](30);
+  viaTwice(&uni *t);
+  fromOwner(Uni[Spinner](40));
+  fromRc(Rc[mut, Spinner](50));
+  0i32
+}

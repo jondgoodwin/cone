@@ -47,6 +47,14 @@ INode *parseArrayLit(ParseState *parse) {
     int svinlist = parse->inlist;
     parse->inlist = 1;
 
+    // '[]' lists nothing: an empty array, whose element type its expected type
+    // supplies (arrayLitTypeCheck)
+    if (lexIsToken(RBracketToken)) {
+        parse->inlist = svinlist;
+        lexNextToken();
+        return (INode *)array;
+    }
+
     // Gather comma-separated expressions that are likely elements or element type
     while (1) {
         nodesAdd(&array->elems, parseContentsAfter(parse, parseSimpleExpr(parse)));

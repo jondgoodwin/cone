@@ -496,8 +496,16 @@ struct TakeCtx {
 }
 
 // A class's stock. Every field is reached under 'lock', except the class's
-// constants, set once at registration, and the counters other threads read
-// to total (idleBlocks, slabs)
+// constants, set once at registration, and the two HINT FIELDS, idleBlocks and slabs, which other
+// threads read to total without the lock (idleBytes in stockPut and reclaim, decommitForRoom,
+// blockStats). Both are relaxed Atomics at every site, the writes under the lock too (a load then a
+// store, never an add or a swap: the lock already makes the writer alone, and a locked
+// read-modify-write would cost the fast paths), because a plain read racing a plain write is a data
+// race in the memory model, and the lock does not order a reader that never takes it. Relaxed is
+// enough: a stale count only delays or hastens a decommit or a room wake (decommitForRoom visits the
+// classes in a slightly different order and stops by the held bytes, which it re-reads), a missed
+// wake is caught by the backstop, and reclaim's total may be stale, so the stock keeps keepBytes to
+// within a slab, as it always did, not exactly
 struct ClassState {
   lock: Mutex;
   index: u32;
@@ -509,8 +517,8 @@ struct ClassState {
   all: *SlabRec;
   partial: *SlabRec;       // the head: the next slab to give from
   partialTail: *SlabRec;
-  slabs: usize;
-  idleBlocks: usize;       // blocks in free lists: returned, idle in the stock
+  slabs: Atomic[usize];    // a hint field, see above
+  idleBlocks: Atomic[usize];  // blocks in free lists: returned, idle in the stock (a hint field)
   lateTakes: Atomic[u64];  // takes and returns on finished threads, which count in no record
   lateReturns: Atomic[u64];
 }
@@ -582,6 +590,8 @@ fn blocksInit() {
   var c = 0usize;
   while c < maxClasses {
     (*classAt(g, c)).lock = Mutex.make();
+    (*classAt(g, c)).idleBlocks = Atomic[usize].of(0usize);
+    (*classAt(g, c)).slabs = Atomic[usize].of(0usize);
     (*classAt(g, c)).lateTakes = Atomic[u64].of(0u64);
     (*classAt(g, c)).lateReturns = Atomic[u64].of(0u64);
     c = c + 1usize;
@@ -1041,7 +1051,7 @@ pub fn checkSlabs() u64 {
       bytes = bytes + u64.from(ce - marked * bs);
       s = (*s).nextA;
     }
-    if idle != (*cs).idleBlocks {faults = faults + 1u64;}
+    if idle != (*cs).idleBlocks.loadOrdered(MemOrder.Relaxed) {faults = faults + 1u64;}
     (*cs).lock.unlock();
     c = c + 1usize;
   }
@@ -1175,7 +1185,7 @@ fn takeFrom(g: *Globals, cs: *ClassState, s: *SlabRec, want: u32, dest: **u8, st
     let h = (*s).freeHead;
     if h as usize != 0usize {
       (*s).freeHead = linkNext(h);
-      (*cs).idleBlocks = (*cs).idleBlocks - 1usize;
+      (*cs).idleBlocks.storeOrdered((*cs).idleBlocks.loadOrdered(MemOrder.Relaxed) - 1usize, MemOrder.Relaxed);
       *(dest + usize.from(got)) = h;
       (*s).used = (*s).used + 1u32;
       got = got + 1u32;
@@ -1310,7 +1320,7 @@ fn stockPut(g: *Globals, cs: *ClassState, src: **u8, n: u32, fire: bool) {
     }
     i = i + 1usize;
   }
-  (*cs).idleBlocks = (*cs).idleBlocks + count;
+  (*cs).idleBlocks.storeOrdered((*cs).idleBlocks.loadOrdered(MemOrder.Relaxed) + count, MemOrder.Relaxed);
   var doomed = null as *SlabRec;
   let keep = (*g).keepBytes.load();
   if idleBytes(g) > keep {
@@ -1329,7 +1339,7 @@ fn idleBytes(g: *Globals) u64 {
   let n = (*g).nClasses;
   while c < n {
     let cs = classAt(g, c);
-    total = total + u64.from((*cs).idleBlocks * (*cs).blockSize);
+    total = total + u64.from((*cs).idleBlocks.loadOrdered(MemOrder.Relaxed) * (*cs).blockSize);
     c = c + 1usize;
   }
   total
@@ -1352,8 +1362,8 @@ fn reclaim(g: *Globals, cs: *ClassState, keep: u64) *SlabRec {
         let p = (*s).prevA;
         if p as usize != 0usize {(*p).nextA = next;} else {(*cs).all = next;}
         if next as usize != 0usize {(*next).prevA = p;}
-        (*cs).slabs = (*cs).slabs - 1usize;
-        (*cs).idleBlocks = (*cs).idleBlocks - idleHere;
+        (*cs).slabs.storeOrdered((*cs).slabs.loadOrdered(MemOrder.Relaxed) - 1usize, MemOrder.Relaxed);
+        (*cs).idleBlocks.storeOrdered((*cs).idleBlocks.loadOrdered(MemOrder.Relaxed) - idleHere, MemOrder.Relaxed);
         idle = idle - own;
         (*s).nextA = doomed;
         (*s).prevA = null;
@@ -1439,7 +1449,7 @@ fn decommitForRoom(g: *Globals, size: usize, limit: u64, fire: bool) bool {
     var c = 0usize;
     while c < n {
       let cs = classAt(g, c);
-      let bytes = (*cs).idleBlocks * (*cs).blockSize;     // a hint, read without the lock
+      let bytes = (*cs).idleBlocks.loadOrdered(MemOrder.Relaxed) * (*cs).blockSize;    // a hint, read without the lock
       if (visited & (1u32 << u32.from(c))) == 0u32 && (*cs).blockSize >= page && bytes > bestBytes {
         best = c;
         bestBytes = bytes;
@@ -1490,7 +1500,7 @@ fn decommitSlab(g: *Globals, cs: *ClassState, s: *SlabRec) usize {
     b = next;
   }
   (*s).freeHead = null;
-  (*cs).idleBlocks = (*cs).idleBlocks - n;
+  (*cs).idleBlocks.storeOrdered((*cs).idleBlocks.loadOrdered(MemOrder.Relaxed) - n, MemOrder.Relaxed);
   (*s).decommitted = (*s).decommitted + u32.from(n);
   let carved = usize.from((*s).carved);
   var i = 0usize;
@@ -1559,7 +1569,7 @@ fn newSlab(g: *Globals, cs: *ClassState, fire: bool) bool {
   (*s).nextA = (*cs).all;
   if (*cs).all as usize != 0usize {(*(*cs).all).prevA = s;}
   (*cs).all = s;
-  (*cs).slabs = (*cs).slabs + 1usize;
+  (*cs).slabs.storeOrdered((*cs).slabs.loadOrdered(MemOrder.Relaxed) + 1usize, MemOrder.Relaxed);
   listPartial(cs, s);
   (*cs).lock.unlock();
   true
@@ -1729,8 +1739,8 @@ pub fn blockStats() BlockStats {
     lent = lent + out;
     lentBytes = lentBytes + usize.from(out) * (*cs).blockSize;
     cachedBytes = cachedBytes + cached * (*cs).blockSize;
-    stockBytes = stockBytes + (*cs).idleBlocks * (*cs).blockSize;
-    slabs = slabs + (*cs).slabs;
+    stockBytes = stockBytes + (*cs).idleBlocks.loadOrdered(MemOrder.Relaxed) * (*cs).blockSize;
+    slabs = slabs + (*cs).slabs.loadOrdered(MemOrder.Relaxed);
     c = c + 1usize;
   }
   var tc = (*g).regHead;

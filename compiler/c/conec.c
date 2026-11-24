@@ -173,13 +173,20 @@ static void writeIncludeFile(ConeOptions *opt, ProgramNode *pgm, BuildDesc *desc
         pgmNameResAlone(pgm, check);
     stdlibIncludeChecking = 0;
     if (errors != before) {
-        writeFile(rejected, text, len);
-        errorMsg(ErrorIncCheck,
-            "The include file generated for package %s does not parse and name-resolve as %s's module, so it is not written; what was generated is in %s. The generator cannot yet write what this package needs.",
-            &root->namesym->namestr, &root->namesym->namestr, rejected);
+        if (!opt->check)
+            writeFile(rejected, text, len);
+        if (opt->check)
+            errorMsg(ErrorIncCheck,
+                "The include file generated for package %s does not parse and name-resolve as %s's module, so it could not be written. The generator cannot yet write what this package needs.",
+                &root->namesym->namestr, &root->namesym->namestr);
+        else
+            errorMsg(ErrorIncCheck,
+                "The include file generated for package %s does not parse and name-resolve as %s's module, so it is not written; what was generated is in %s. The generator cannot yet write what this package needs.",
+                &root->namesym->namestr, &root->namesym->namestr, rejected);
         return;
     }
-    if (!writeFile(path, text, len))
+    // --check runs the self-check above and writes nothing
+    if (!opt->check && !writeFile(path, text, len))
         errorMsg(ErrorIncWrite, "Package %s's include file cannot be written to %s.",
             &root->namesym->namestr, path);
 }
@@ -206,6 +213,7 @@ int main(int argc, char **argv) {
     intrinsicForceFallback = coneopt.intrinsic_fallback;
     awaitDirect = coneopt.await_direct;
     derefWarnIndexStar = coneopt.warn_index_star;
+    blockWarnUnusedVar = coneopt.warn_unused_var;
     timerFine = coneopt.verbosity > 0;
     flowGateCountAll = coneopt.verbosity > 1;
 
@@ -252,7 +260,7 @@ int main(int argc, char **argv) {
             }
         } else if (errors == 0) {
             timerBegin(GenTimer);
-            if (coneopt.print_ir)
+            if (coneopt.print_ir && !coneopt.check)
                 inodePrint(coneopt.output, coneopt.srcname, (INode*)pgmnode);
             // A library's include file is generated from the analysed program,
             // before anything is generated, so that what it cannot declare

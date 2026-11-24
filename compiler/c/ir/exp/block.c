@@ -300,6 +300,8 @@ static void blockHoist(BlockNode *blk, Nodes *hoists) {
 
 static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expectType);
 
+int blockWarnUnusedVar = 0;
+
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     EachPass *svpass = errorEachPass;
     if (blk->eachpass)
@@ -483,6 +485,22 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
         parallelEachCheckBody(pstate, blk);
     if (parentered)
         parallelEachLeave();
+
+    // Every use of a variable this block declares has been checked
+    if (blockWarnUnusedVar) {
+        INode **sp;
+        uint32_t scnt;
+        for (nodesFor(blk->stmts, scnt, sp)) {
+            if ((*sp)->tag != VarDclTag)
+                continue;
+            VarDclNode *var = (VarDclNode*)*sp;
+            if (var->userlocal && var->nuses <= var->nwrites && var->namesym->namestr != '_'
+                && var->vtype != errorType)
+                errorMsgNode((INode*)var, WarnUnusedVar,
+                    "%s is %s. Use it, or start its name with '_' to say it is meant.",
+                    &var->namesym->namestr, var->nuses ? "written but never read" : "never used");
+        }
+    }
 
     // Do inference on all registered breaks to ensure they all return the expected type
     // Note: Iterate differently because list may grow while iterating
