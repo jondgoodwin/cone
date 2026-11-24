@@ -4971,6 +4971,45 @@ def parallel_tasks() -> list[list[str]]:
     return tasks
 
 
+class UnixLinkLine(unittest.TestCase):
+    """The link line on Linux and macOS, read with the host faked so it runs
+    anywhere: a release link drops the sections nothing reaches (--gc-sections
+    for ELF, -dead_strip for Mach-O), as /OPT:REF does on Windows, and a debug
+    link keeps them all. Whether the linker keeps what a program needs is the
+    Linux gate's to show; this holds only what Congo asks for."""
+
+    def line(self, host: str, release: bool) -> list[str]:
+        from unittest import mock
+        linker = congo.Linker.__new__(congo.Linker)
+        linker.tool = "cc"
+        linker.conestd = Path("conestd.a")
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(congo, "IS_WINDOWS", False), \
+                mock.patch.object(congo, "HOST_OS", host):
+            return linker.command([Path("a.o")], Path(folder) / "prog", [], [], release=release)
+
+    def test_an_elf_release_link_drops_the_sections_nothing_reaches(self):
+        line = self.line("linux", True)
+        self.assertIn("-Wl,--gc-sections", line)
+        self.assertNotIn("-Wl,-dead_strip", line)
+        # before the output name, with the rest of the options
+        self.assertLess(line.index("-Wl,--gc-sections"), line.index("-o"))
+
+    def test_a_mach_o_release_link_dead_strips(self):
+        line = self.line("macos", True)
+        self.assertIn("-Wl,-dead_strip", line)
+        self.assertNotIn("-Wl,--gc-sections", line)
+
+    def test_a_debug_link_keeps_every_section(self):
+        for host in ("linux", "macos"):
+            line = self.line(host, False)
+            self.assertNotIn("-Wl,--gc-sections", line)
+            self.assertNotIn("-Wl,-dead_strip", line)
+
+    def test_the_dynamic_list_that_exports_the_shims_names_stays(self):
+        self.assertTrue(any(a.startswith("-Wl,--dynamic-list=") for a in self.line("linux", True)))
+
+
 def run_in_parallel(jobs: int) -> int:
     """The suite on `jobs` processes, each a serial run of some of its tests; one
     summary line at the end, as unittest prints it."""
