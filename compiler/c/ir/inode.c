@@ -396,6 +396,10 @@ static void inodeTypeCheckWalk(TypeCheckState *pstate, INode **node, INode *expe
 // (structMemberHidden). NULL outside a type check.
 TypeCheckState *inodeCheckState = NULL;
 
+// An expression already type checked that a node built round it holds: the walk leaves it alone,
+// since checking an operator's call twice corrupts it. NULL when none
+INode *inodeCheckedOnce = NULL;
+
 void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     TypeCheckState *svState = inodeCheckState;
     inodeCheckState = pstate;
@@ -410,6 +414,9 @@ static void inodeTypeCheckWalkNode(TypeCheckState *pstate, INode **node, INode *
 // checked with nothing said. The declarations a trial did not make are checked
 // loud: what they report is the program's.
 static void inodeTypeCheckWalk(TypeCheckState *pstate, INode **node, INode *expectType) {
+    // The one expression already checked that a construction now holds (inodeCheckedOnce)
+    if (*node == inodeCheckedOnce)
+        return;
     if (errorSilent && !((*node)->flags & (TypeChecked | TypeChecking))
         && inodeGetOwner(*node) != NULL && !closureTrialOwns(*node)) {
         int saved = errorLoudBegin();

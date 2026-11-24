@@ -630,6 +630,17 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (placed == 0)
         return;
 
+    // A borrow needs a value to point at: a call that returns nothing (or never
+    // returns, 'panic') gives none, and no temporary of no type can be made for it.
+    // A place of no type is not this: a field of a generic 'R' instanced with void
+    // is borrowed (thread's Packet), so only a call is refused
+    if (node->vtexp->tag == FnCallTag && iexpGetTypeDcl(node->vtexp)->tag == VoidTag) {
+        errorMsgNode(node->vtexp, ErrorNotTyped,
+            "Expected a typed expression: a borrow needs a value, and this gives none.");
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
+
     // A written borrow of a string literal, '&"text"', borrows the bytes the
     // text is kept in: a reference to an array of its length, '&[]"text"' the
     // slice of them. (The literal alone is the borrow of its text, '&imm str'.)

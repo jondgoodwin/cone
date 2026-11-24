@@ -17,9 +17,16 @@
 // workers' passes the pairs keep up. Each read is answered once: Churn runs to
 // its end.
 //
-// At the end every record is dissolved, and workers' passes answered some of
-// the operations (a worker's poll found another actor's completion). The suite
-// runs this once; run it repeatedly, under load, to hunt.
+// At the end every record is dissolved. How many operations workers' passes
+// answered (a worker's poll found another actor's completion) is not asserted
+// (aio.opStats().workerDone shows it; examples/longturn.cone prints it): a pass
+// answers only while the I/O thread stands aside, which needs
+// turns asking at least every 100 us, and a machine loaded by other work leaves
+// whole runs (even many batches of these round trips) with none, so no
+// assertion on it can hold under load without a way to force it. What this test
+// hunts, a completion lost or answered twice, shows in the counts whichever
+// thread answered. The suite runs this once; run it repeatedly, under load, to
+// hunt.
 
 mod workerpass;
 
@@ -221,14 +228,12 @@ fn main() i32 {
     left = left - 1u64;
   }
   actors.waitUntilIdle();
-  let st = aio.opStats();
   finalAll();
   expectUInt(got.bad.load(), 0u64, "every message was the one expected");
   expectUInt(got.reads.load(), pairs * rounds * 2u64, "every read answered, once");
   expectUInt(got.writes.load(), pairs * rounds * 2u64, "every write answered, once");
   expectUInt(got.churned.load(), churnRounds, "every read of the churn answered");
   expectUInt(got.churnBad.load(), 0u64, "the churn's answers were ones its rounds can give");
-  expect(st.workerDone > 0u64, "workers' passes answered operations");
   expectUInt(aio.opStats().inUse, 0u64, "every record dissolved");
   done()
 }
