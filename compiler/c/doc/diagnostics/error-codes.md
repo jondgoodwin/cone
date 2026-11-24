@@ -94,7 +94,10 @@ older one keeps what it published.
 fail to have a size six ways — `@opaque`, a trait or an `@unsized` enum, a
 function signature, a struct with an unsized field, a body whose length a
 reference carries (`str`), and a type still being laid out. All six report
-`ErrorNoSize`, and the cause is named in the message.
+`ErrorNoSize`, and the cause is named in the message. The function-signature cause
+is also met with no variable to hold it: a function's name written as a statement or
+as the value `_ =` takes (`f;`, `(f);`) reports it, naming the call that was probably
+meant (`nameUseNoValue`).
 
 **Six codes would be indistinguishable to everything except the wording**, and
 the wording is what the author actually needs — each cause has a different

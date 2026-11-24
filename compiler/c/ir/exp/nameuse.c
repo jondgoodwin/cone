@@ -456,6 +456,30 @@ void nameUseBaseInstanceMember(TypeCheckState *pstate, NameUseNode *name) {
         name->dclnode = member;
 }
 
+int nameUseNoValue(INode *node, int wasName) {
+    if (node == NULL || !wasName)
+        return 0;
+    if (isNameUseNode(node)) {
+        NameUseNode *name = (NameUseNode*)node;
+        INode *dcl = nameUseGetDcl(name);
+        if (dcl == NULL || ((IExpNode*)name)->vtype == errorType)
+            return 0;
+        if (dcl->tag == FnDclTag) {
+            errorMsgNode(node, ErrorNoSize,
+                "%s names a function, and a function signature is not a value at all: call it with '%s()', or use a reference to it.",
+                &name->namesym->namestr, &name->namesym->namestr);
+            ((IExpNode*)name)->vtype = errorType;
+            return 1;
+        }
+        if (nameUseGroup(name) != TypeGroup)
+            return 0;
+    }
+    else if (!isTypeNode(node))
+        return 0;
+    errorMsgNode(node, ErrorNotTyped, "Expected a typed expression.");
+    return 1;
+}
+
 // Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;

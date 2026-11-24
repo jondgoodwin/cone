@@ -80,6 +80,16 @@ void nameUseNoSelf(TypeCheckState *pstate, NameUseNode *name);
 // and a module's other functions, are not
 int nameUseLifecycleNamed(NameUseNode *name);
 
+// A checked node standing where a value is used or thrown away (a statement, the value
+// '_ =' takes) that was written as a bare name, 'wasName' (asked of it before it was
+// checked, since type check may replace the name), and has no value: a function ('f;',
+// '(f);'), whose signature is not a value at all (ErrorNoSize, as in 'let c = f;'), or a
+// type ('S;', 'i32;', an alias), which is no typed expression (ErrorNotTyped, as in
+// 'let c = (S);'). Reports it and returns 1; returns 0 for any other node. What was
+// written with brackets, 'g[i64];', makes an instance of a generic and is no bare name.
+// A call's callee is not asked: it is a name bound to a function by design.
+int nameUseNoValue(INode *node, int wasName);
+
 // Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **name);
 
