@@ -45,6 +45,14 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2);
 // for; NULL compares exactly, as a vtable slot must.
 int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype);
 
+// Name the type parameters of the implementing generic method and of the generic
+// requirement the next fnSigVrefEqual compares, so a requirement's parameter is
+// met by the implementation's in the same place (NULL, NULL when neither is generic).
+// The pair that stood before is given back through 'previmpl' and 'prevreq' (either
+// may be NULL), and the caller restores it when done, so a compare reached from
+// inside another one leaves the outer one's lists as they were
+void fnSigGenericParms(Nodes *implparms, Nodes *reqparms, Nodes **previmpl, Nodes **prevreq);
+
 // The same match, loosened as a subtype's signature is to its supertype's:
 // 'impl' meets 'req' where each parameter after 'self' is the requirement's or a
 // supertype of it, and the result its or a subtype of it, wherever the difference
