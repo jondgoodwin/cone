@@ -1604,8 +1604,10 @@ static StructNode *pwLentArg(FnCallNode *call, uint32_t i, INode **parmtype) {
     return (StructNode *)container;
 }
 
-// A reference handed to a free function by name, whose result may hold a borrow
-// of it ('pick(s)', 's' a '&mut' parameter or local): lent as '&mut *s' is, so
+// A reference handed to a function by name, whose result may hold a borrow
+// of it ('pick(s)', 's' a '&mut' parameter or local): a free function's, a
+// function value's, or a method's non-receiver argument (a callable called as
+// 'f(s)' is such a method, its callable the receiver): lent as '&mut *s' is, so
 // the result carries a loan of what 's' points at, the loan a store of the
 // result into that same value is refused by (loanSelfStore). Without it the
 // result carried only what 's' itself holds, and 's.cur = pick(s)' kept a
@@ -1617,10 +1619,16 @@ static int pwLentByName(FnCallNode *call, uint32_t i, INode **parmtype) {
     INode *arg = nodesGet(call->args, i);
     if (!pwNamedVar(arg) || !pwIsBorrowed(iexpGetTypeDcl(arg)) || iexpGetTypeDcl(arg)->tag != RefTag)
         return 0;
+    // The callee's signature: a direct free function's declaration, or, for a
+    // call through a function value (a local, a parameter, a field), the
+    // function type the value has: the call learns its callee's signature
+    // from that type, as it does from the declaration
     INode *fnn = call->objfn;
-    if (!isNameUseNode(fnn) || ((NameUseNode *)fnn)->dclnode == NULL || ((NameUseNode *)fnn)->dclnode->tag != FnDclTag)
-        return 0;
-    FnSigNode *callsig = (FnSigNode *)((FnDclNode *)((NameUseNode *)fnn)->dclnode)->vtype;
+    FnSigNode *callsig;
+    if (isNameUseNode(fnn) && ((NameUseNode *)fnn)->dclnode != NULL && ((NameUseNode *)fnn)->dclnode->tag == FnDclTag)
+        callsig = (FnSigNode *)((FnDclNode *)((NameUseNode *)fnn)->dclnode)->vtype;
+    else
+        callsig = (FnSigNode *)iexpGetDerefTypeDcl(fnn);
     if (callsig == NULL || callsig->tag != FnSigTag || i >= callsig->parms->used)
         return 0;
     INode *argtype = iexpGetTypeDcl(nodesGet(callsig->parms, i));
@@ -3190,7 +3198,7 @@ static PathSet *pwCall(FnCallNode *call) {
             carried = pwLendRef(argsp, parmtype, 0, 0, &lentpl[argi], &lentloan[argi], &access);
             lentcnt[argi] = lentcont;
         }
-        else if (carries && !meth && pathLoans && pwLentByName(call, argi, &parmtype)) {
+        else if (carries && pathLoans && pwLentByName(call, argi, &parmtype)) {
             int access;
             carried = pwLendRef(argsp, parmtype, 0, 0, &lentpl[argi], &lentloan[argi], &access);
         }

@@ -307,7 +307,8 @@ unknown as `ErrorNoElse` left it. A match whose cases were not judged falls thro
 `ifTypeCheck` also carries what is known of the variant each name holds ([narrow](narrow.md)):
 it restores the environment going into each condition (the earlier conditions false), assumes the
 condition true for its block and false for the next, and after the arms joins the environments
-of those that do not jump with the path that went by every condition when no `else` ends the
+of those that do not leave (a branch ends in a jump, or leaves on every path through an inner `if`,
+`match` or block: `ifBlockFallsOut`) with the path that went by every condition when no `else` ends the
 `if` (a match whose cases cover counts as having one). It anchors the hidden local a shared
 reference's narrowing is held by to the block (`narrowAnchorArm`, `narrowInsertHeads`) or to
 the `if` as a statement of its block (`narrowAnchorAfter`).
