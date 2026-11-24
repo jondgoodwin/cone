@@ -57,12 +57,15 @@ static int genlParmInPlace(GenState *gen, FnDclNode *fndcl, VarDclNode *var) {
 }
 
 // Generate parameter variable of the function 'fndcl' being generated
-void genlParmVar(GenState *gen, FnDclNode *fndcl, VarDclNode *var) {
+void genlParmVar(GenState *gen, FnDclNode *fndcl, VarDclNode *var, unsigned argno) {
     assert(var->tag == VarDclTag);
     // We always alloca in case variable is mutable or we want to take address of its value
     var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
     genlRootNote(gen, var->llvmvar, var->vtype);
     LLVMValueRef store = LLVMBuildStore(gen->builder, genlFnDclParm(gen, fndcl, var), var->llvmvar);
+    // (A generator's step is left out: genlGenBegin may move a variable of its into the frame)
+    if (!yieldAny() || yieldGenOf(fndcl) == NULL)
+        genlDiVar(gen, var, var->llvmvar, argno);
     // The slot is then the pointer the parameter is passed as (genlAggCopies)
     if (genlParmInPlace(gen, fndcl, var))
         genlMark(gen, store, GenlParmHomeMark);
@@ -211,6 +214,9 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     // finalizes only the temporaries it makes itself
     uint32_t svtempbase = gen->tempbase;
     gen->tempbase = gen->tempcnt;
+    // ... and one is not inside an inline function's expansion
+    int svinlinedepth = gen->inlinedepth;
+    gen->inlinedepth = 0;
     // A split method is generated here as its first half, which ends at each
     // seam (genlawait.c); its second halves after it
     Nodes *svseams = gen->seams;
@@ -250,8 +256,9 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
 	// Generate LLVMValueRef's for all parameters, so we can use them as local vars in code
     uint32_t cnt;
     INode **nodesp;
+    unsigned argno = 0;
     for (nodesFor(fnsig->parms, cnt, nodesp))
-        genlParmVar(gen, fnnode, (VarDclNode*)*nodesp);
+        genlParmVar(gen, fnnode, (VarDclNode*)*nodesp, ++argno);
     genlGenBegin(gen, fnnode);
 
     // Generate the function's code (always a block). A drop the compiler gave
@@ -286,6 +293,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->unreached = svunreached;
     gen->tempcnt = gen->tempbase;
     gen->tempbase = svtempbase;
+    gen->inlinedepth = svinlinedepth;
     genlRootsRestore(gen, &svroots);
     int split = gen->seams != NULL;
     gen->seams = svseams;
@@ -893,6 +901,161 @@ LLVMMetadataRef genlDiFile(GenState *gen, INode *node) {
     return made->file;
 }
 
+// ---- Debug info for variables ------------------------------------------------
+//
+// A debug build (not release, not a GPU's) says what its parameters and locals are, so a
+// debugger can show them: a DILocalVariable for each, bound to the stack slot that
+// holds it by a declare record. Only a type debug info can describe exactly is
+// described: the numbers, 'bool', 'char', and a struct of plain fields of those. A
+// variable of any other type (a reference, an enum, an Option, a slice, a string, a
+// closure, a generic instance) gets no description rather than a wrong one.
+
+// A struct debug info describes: a plain one, laid out as its fields in order and
+// nothing else (no tag, base trait, generic parameters, generator frame or padding)
+static int genlDiPlainStruct(GenState *gen, StructNode *strnode) {
+    if (strnode->tag != StructTag || (strnode->flags & (TraitType | HasTagField | DeclaredOpaque))
+        || strnode->basetrait || strnode->genericinfo || strnode->derived || strnode->siblings
+        || strnode->namesym == NULL || strchr(&strnode->namesym->namestr, '[')
+        || strnode->fields.used == 0)
+        return 0;
+    LLVMTypeRef lltype = genlType(gen, (INode *)strnode);
+    return LLVMGetTypeKind(lltype) == LLVMStructTypeKind && !LLVMIsOpaqueStruct(lltype)
+        && LLVMCountStructElementTypes(lltype) == strnode->fields.used;
+}
+
+// The debug info type of a Cone type, or NULL if debug info does not describe it
+static LLVMMetadataRef genlDiType(GenState *gen, INode *type, int depth) {
+    INode *dcl = itypeGetTypeDcl(type);
+    switch (dcl->tag) {
+    case IntNbrTag: case UintNbrTag: case FloatNbrTag:
+    {
+        NbrNode *nbr = (NbrNode *)dcl;
+        uint64_t bits = nbr->bits;
+        // DWARF's base type encodings (DW_ATE_*), which the debug info C API takes as a bare number
+        enum { DwAteBoolean = 0x02, DwAteFloat = 0x04, DwAteSigned = 0x05, DwAteUnsigned = 0x07, DwAteUtf = 0x10 };
+        LLVMDWARFTypeEncoding encoding;
+        if (dcl == (INode *)boolType) {
+            bits = 8;   // a bool's slot is a byte holding 0 or 1
+            encoding = DwAteBoolean;
+        }
+        else if (dcl == (INode *)charType)
+            encoding = DwAteUtf;
+        else if (nbr->bits != 8 && nbr->bits != 16 && nbr->bits != 32 && nbr->bits != 64)
+            return NULL;
+        else
+            encoding = dcl->tag == FloatNbrTag ? DwAteFloat
+                : dcl->tag == IntNbrTag ? DwAteSigned : DwAteUnsigned;
+        return LLVMDIBuilderCreateBasicType(gen->dibuilder, &nbr->namesym->namestr,
+            strlen(&nbr->namesym->namestr), bits, encoding, LLVMDIFlagZero);
+    }
+    case StructTag:
+    {
+        StructNode *strnode = (StructNode *)dcl;
+        GenDiType **bucket = &gen->ditypes[((uintptr_t)strnode >> 4) % GenDiTypeBuckets];
+        for (GenDiType *known = *bucket; known; known = known->next) {
+            if (known->type == dcl)
+                return known->ditype;
+        }
+        LLVMMetadataRef ditype = NULL;
+        if (depth < 8 && genlDiPlainStruct(gen, strnode)) {
+            LLVMTypeRef lltype = strnode->llvmtype;
+            LLVMMetadataRef difile = genlDiFile(gen, dcl);
+            LLVMMetadataRef *members = memAllocBlk(strnode->fields.used * sizeof(LLVMMetadataRef));
+            LLVMMetadataRef *memberp = members;
+            INode **nodesp;
+            uint32_t cnt;
+            unsigned index = 0;
+            int whole = 1;
+            for (nodelistFor(&strnode->fields, cnt, nodesp), ++index) {
+                FieldDclNode *fld = (FieldDclNode *)*nodesp;
+                LLVMMetadataRef fldtype = fld->tag == FieldDclTag && !fld->hop && fld->namesym
+                    ? genlDiType(gen, fld->vtype, depth + 1) : NULL;
+                if (fldtype == NULL) {
+                    whole = 0;
+                    break;
+                }
+                LLVMTypeRef fldllvm = LLVMStructGetTypeAtIndex(lltype, index);
+                *memberp++ = LLVMDIBuilderCreateMemberType(gen->dibuilder, NULL,
+                    &fld->namesym->namestr, strlen(&fld->namesym->namestr), difile, fld->linenbr,
+                    LLVMABISizeOfType(gen->datalayout, fldllvm) * 8,
+                    LLVMABIAlignmentOfType(gen->datalayout, fldllvm) * 8,
+                    LLVMOffsetOfElement(gen->datalayout, lltype, index) * 8, LLVMDIFlagZero, fldtype);
+            }
+            if (whole)
+                ditype = LLVMDIBuilderCreateStructType(gen->dibuilder, NULL,
+                    &strnode->namesym->namestr, strlen(&strnode->namesym->namestr), difile, strnode->linenbr,
+                    LLVMABISizeOfType(gen->datalayout, lltype) * 8,
+                    LLVMABIAlignmentOfType(gen->datalayout, lltype) * 8, LLVMDIFlagZero, NULL,
+                    members, (unsigned)strnode->fields.used, 0, NULL, "", 0);
+        }
+        GenDiType *made = memAllocBlk(sizeof(GenDiType));
+        made->type = dcl;
+        made->ditype = ditype;
+        made->next = *bucket;
+        *bucket = made;
+        return ditype;
+    }
+    default:
+        return NULL;
+    }
+}
+
+// The variable 'var', held in 'slot' (its parameter or local stack slot), declared to
+// the debugger at the builder's place. 'argno' is the 1-based place of a parameter, 0
+// for a local.
+void genlDiVar(GenState *gen, VarDclNode *var, LLVMValueRef slot, unsigned argno) {
+    if (!gen->opt->debuginfo || gen->opt->release || gen->opt->gpu || gen->inlinedepth > 0
+        || gen->fn == NULL || var->namesym == NULL)
+        return;
+    LLVMMetadataRef scope = LLVMGetSubprogram(gen->fn);
+    if (scope == NULL)
+        return;
+    LLVMMetadataRef ditype = genlDiType(gen, var->vtype, 0);
+    if (ditype == NULL)
+        return;
+    char *name = &var->namesym->namestr;
+    LLVMMetadataRef difile = genlDiFile(gen, (INode *)var);
+    LLVMMetadataRef divar = argno
+        ? LLVMDIBuilderCreateParameterVariable(gen->dibuilder, scope, name, strlen(name), argno, difile,
+            var->linenbr, ditype, 1, LLVMDIFlagZero)
+        : LLVMDIBuilderCreateAutoVariable(gen->dibuilder, scope, name, strlen(name), difile,
+            var->linenbr, ditype, 1, LLVMDIFlagZero, 0);
+    unsigned col = var->srcp && var->linep ? (unsigned)(var->srcp - var->linep) : 0;
+    LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context, var->linenbr, col, scope, NULL);
+    LLVMDIBuilderInsertDeclareRecordAtEnd(gen->dibuilder, slot, divar,
+        LLVMDIBuilderCreateExpression(gen->dibuilder, NULL, 0), loc, LLVMGetInsertBlock(gen->builder));
+}
+
+// A function's debug info type: its real one when its return type and every
+// parameter's type are described, else the empty one
+LLVMMetadataRef genlDiSubroutine(GenState *gen, LLVMMetadataRef difile, FnDclNode *fn) {
+    if (!gen->opt->release && !gen->opt->gpu && fn->vtype && fn->vtype->tag == FnSigTag) {
+        FnSigNode *fnsig = (FnSigNode *)fn->vtype;
+        uint32_t cnt;
+        INode **nodesp;
+        LLVMMetadataRef *types = memAllocBlk((fnsig->parms->used + 1) * sizeof(LLVMMetadataRef));
+        unsigned used = 0;
+        // The return type first, NULL for a function returning nothing
+        if (itypeGetTypeDcl(fnsig->rettype)->tag == VoidTag)
+            types[used++] = NULL;
+        else if ((types[used] = genlDiType(gen, fnsig->rettype, 0)) != NULL)
+            ++used;
+        if (used > 0) {
+            for (nodesFor(fnsig->parms, cnt, nodesp)) {
+                if ((*nodesp)->tag != VarDclTag
+                    || (types[used] = genlDiType(gen, ((VarDclNode *)*nodesp)->vtype, 0)) == NULL) {
+                    used = 0;
+                    break;
+                }
+                ++used;
+            }
+        }
+        if (used > 0)
+            return LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, types, used, LLVMDIFlagZero);
+    }
+    return LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+}
+
 // Which borrow does a parameter of this type take, as far as LLVM's 'noalias'
 // is concerned: 1 a borrow, thin or a slice, of unique permission (no other live
 // reference reaches what it points at), 2 one of immutable permission whose
@@ -1063,8 +1226,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         if (gen->opt->debuginfo && defined != GenlDeclared) {
             char *fnname = glofn->namesym? &glofn->namesym->namestr : "";
             LLVMMetadataRef difile = genlDiFile(gen, (INode*)glofn);
-            LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder,
-                difile, NULL, 0, 0);
+            LLVMMetadataRef fntype = genlDiSubroutine(gen, difile, glofn);
             LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
                 fnname, strlen(fnname), symbol, strlen(symbol),
                 difile, glofn->linenbr, fntype, 0, 1, glofn->linenbr, LLVMDIFlagPublic, 0);
@@ -1605,6 +1767,8 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
                 LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(gen->context), LLVMDebugMetadataVersion(), 0)));
         gen->dibuilder = LLVMCreateDIBuilder(gen->module);
         gen->difiles = NULL;
+        memset(gen->ditypes, 0, sizeof(gen->ditypes));
+        gen->inlinedepth = 0;
         gen->difile = LLVMDIBuilderCreateFile(gen->dibuilder, gen->opt->srcpath, strlen(gen->opt->srcpath), ".", 1);
         // The compile unit is attached to the module; nothing reads it back
         LLVMDIBuilderCreateCompileUnit(gen->dibuilder, LLVMDWARFSourceLanguageC,

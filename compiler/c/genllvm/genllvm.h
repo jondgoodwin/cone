@@ -135,6 +135,15 @@ typedef struct GenDiFile {
     struct GenDiFile *next;
 } GenDiFile;
 
+// The debug info type made for a Cone struct, or NULL where the struct is not
+// one debug info describes (genlDiType)
+typedef struct GenDiType {
+    INode *type;
+    LLVMMetadataRef ditype;
+    struct GenDiType *next;
+} GenDiType;
+#define GenDiTypeBuckets 64
+
 // The cold function that finishes a counted reference's death (genlDropSlow)
 typedef struct GenDropSlow {
     INode *vtexp;           // The type the reference points at
@@ -155,6 +164,8 @@ typedef struct GenState {
     LLVMDIBuilderRef dibuilder;
     LLVMMetadataRef difile;     // The compile's main source file
     GenDiFile *difiles;         // The others, made as the code in them is reached
+    GenDiType *ditypes[GenDiTypeBuckets]; // The struct types debug info has described (genlDiType)
+    int inlinedepth;            // How many inline functions' bodies are being expanded, whose locals debug info leaves out
     GenDropSlow *dropslow;      // The cold death functions made so far (genlDropSlow)
     uint32_t dropslowcnt;
 
@@ -335,6 +346,12 @@ void genlLinkage(LLVMValueRef global, INode *dclnode, GenlDefinition defined);
 // the compile's main file, or one made once for the file or module it came from.
 // A node with no source of its own, one the compiler wrote, is in the main file.
 LLVMMetadataRef genlDiFile(GenState *gen, INode *node);
+// A debug build describes the variables whose types it can (numbers, 'bool', 'char'
+// and plain structs of them); any other gets no description. genlDiVar declares a
+// parameter ('argno' its 1-based place) or local held in 'slot'; genlDiSubroutine
+// is a function's type
+void genlDiVar(GenState *gen, VarDclNode *var, LLVMValueRef slot, unsigned argno);
+LLVMMetadataRef genlDiSubroutine(GenState *gen, LLVMMetadataRef difile, FnDclNode *fn);
 // What an object does with a vtable it builds: shared in a described build
 GenlDefinition genlVtableDefinition(GenState *gen);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
