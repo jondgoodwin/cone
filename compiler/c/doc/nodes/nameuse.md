@@ -184,7 +184,10 @@ Two entry points, because a type name and a value name want different things.
    The type is the method's owner, or for a field, which records none,
    `pstate->typenode`. **Bare is the whole of the condition:
    `FlagQualified` excludes a field named through its type, `Gadget.w`, which
-   asked for that type's field and not for this method's receiver.**
+   asked for that type's field and not for this method's receiver.** A field
+   named through its type has no value (a field is per instance, with no
+   storage of its own), so it is `ErrorFieldViaType` and the use takes the
+   error type; generation would have nothing to load.
 3. **Demand the declaration.** `inodeTypeCheckAny` on `dclnode` — this is what
    puts the work in dependency order rather than source order.
 4. **Circularity.** A declaration still under check whose type is *still*
