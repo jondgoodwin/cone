@@ -667,7 +667,10 @@ static int macroLazyArgsFit(TypeCheckState *pstate, INode **nodep, MacroDclNode 
             continue;
         }
         int fits = 1;
+        int wrapwas = iexpOptWrapOff;
+        iexpOptWrapOff = 1;     // a lazy argument is substituted as written: no plain value wraps into an Option
         INode *probe = macroArgTrial(pstate, nodesGet(args, i), parmtype, &fits, NULL);
+        iexpOptWrapOff = wrapwas;
         if (probe && !fits) {
             macroArgTypeRefused(probe, parm->namesym, 1, parmtype);
             bad = 1;
@@ -875,6 +878,10 @@ static int macroCandidateFits(TypeCheckState *pstate, INode *use, MacroDclNode *
             fits = 0;
             break;
         }
+        // A lazy argument is substituted as written, so a plain value is not wrapped into its Option
+        int wrapwas = iexpOptWrapOff;
+        if (parm->flags & FlagLazy)
+            iexpOptWrapOff = 1;
         if (probes[i])
             fits = iexpMatches(&probes[i], parmtype, Coercion) != NoMatch;
         else {
@@ -882,6 +889,7 @@ static int macroCandidateFits(TypeCheckState *pstate, INode *use, MacroDclNode *
             int coerces = 0;
             fits = macroArgTrial(pstate, nodesGet(args, i), parmtype, &coerces, NULL) != NULL && coerces;
         }
+        iexpOptWrapOff = wrapwas;
     }
     errorTrialEnd(&trial);
     genericTrialPurge();
@@ -922,30 +930,37 @@ static MacroDclNode *macroSelect(TypeCheckState *pstate, INode **nodep, MacroDcl
 
     MacroDclNode *found[2] = {NULL, NULL};
     uint32_t nfound = 0;
-    for (int pass = 0; pass < 2 && nfound == 0; ++pass) {
-        if (pass == 1) {
-            if (!slitAnyText(NULL, probed))
-                break;
-            slitBorrowFallback(1);
-        }
-        for (MacroDclNode *c = first; c; c = c->more) {
-            if (((c->flags & FlagMethFld) != 0) != (method != 0))
-                continue;
-            Nodes *ta = typeargs;
-            Nodes *va = args;
-            if (bracketed) {
-                ta = c->typeparms ? args : NULL;
-                va = c->typeparms ? NULL : args;
+    // A plain value wrapped into an Option's 'Some' never competes with a candidate that takes the
+    // call as written: the first round has the wrap off, the second allows it
+    int wrapwas = iexpOptWrapOff;
+    for (int wrap = 0; wrap < 2 && nfound == 0; ++wrap) {
+        iexpOptWrapOff = wrap == 0 ? 1 : wrapwas;
+        for (int pass = 0; pass < 2 && nfound == 0; ++pass) {
+            if (pass == 1) {
+                if (!slitAnyText(NULL, probed))
+                    break;
+                slitBorrowFallback(1);
             }
-            if (!macroCandidateFits(pstate, *nodep, c, ta, va, probes, method))
-                continue;
-            if (nfound < 2)
-                found[nfound] = c;
-            ++nfound;
+            for (MacroDclNode *c = first; c; c = c->more) {
+                if (((c->flags & FlagMethFld) != 0) != (method != 0))
+                    continue;
+                Nodes *ta = typeargs;
+                Nodes *va = args;
+                if (bracketed) {
+                    ta = c->typeparms ? args : NULL;
+                    va = c->typeparms ? NULL : args;
+                }
+                if (!macroCandidateFits(pstate, *nodep, c, ta, va, probes, method))
+                    continue;
+                if (nfound < 2)
+                    found[nfound] = c;
+                ++nfound;
+            }
+            if (pass == 1)
+                slitBorrowFallback(0);
         }
-        if (pass == 1)
-            slitBorrowFallback(0);
     }
+    iexpOptWrapOff = wrapwas;
     if (nfound == 1)
         return found[0];
 

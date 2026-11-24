@@ -170,7 +170,8 @@ FnDclNode *iNsTypeAmbiguous[2];
 // Find the one method candidate that accepts the call's receiver and arguments.
 // Every candidate is tested, using a viability test that never alters the call.
 // No candidate wins for being an exact rather than a coercible match, for needing
-// fewer coercions, or for being declared first: the caller resolves an ambiguity
+// fewer coercions, or for being declared first (the one exception, a plain value
+// wrapped into an Option, is iNsTypeFindMethod's): the caller resolves an ambiguity
 // by using a concrete name or by converting its arguments.
 static FnDclNode *iNsTypeFindMethodPass(INode *binding, INode **self, Nodes *args, enum OverloadMatch *status) {
     INode **candidatep;
@@ -201,8 +202,17 @@ static FnDclNode *iNsTypeFindMethodPass(INode *binding, INode **self, Nodes *arg
 // A call that no candidate takes is asked again with a string literal also
 // lent as a temporary to a '&T' where T declares 'fromLiteral'
 // (slitBorrowFallback): the conversion never competes with a candidate that
-// takes the literal as it is.
+// takes the literal as it is. The same holds for a plain value wrapped into an
+// Option's 'Some' (iexpOptWrapOff): the first look has the wrap off, and the wrap
+// joins only when no candidate took the call as written. This is overload
+// resolution's one ranking rule.
 FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, enum OverloadMatch *status) {
+    int wrapwas = iexpOptWrapOff;
+    iexpOptWrapOff = 1;
+    FnDclNode *first = iNsTypeFindMethodPass(binding, self, args, status);
+    iexpOptWrapOff = wrapwas;
+    if (first || *status != OverloadNone)
+        return first;
     FnDclNode *found = iNsTypeFindMethodPass(binding, self, args, status);
     if (found || *status != OverloadNone || !slitAnyText(self, args))
         return found;
