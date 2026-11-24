@@ -1,7 +1,8 @@
 // The pools package: sets of records that holders elsewhere name by a handle.
 // Order doesn't matter, freed cells are reused, and a stale handle reaches
-// nothing. GenPool[T] is the default kind (the others of the family come in
-// later changes). The pool owns its entries and its owner removes them;
+// nothing. GenPool[T] is the default kind; DensePool[T] (rows kept contiguous,
+// for a walk that costs O(live)) and IdPool (bare ids, no values) are the others.
+// The pool owns its entries and its owner removes them;
 // everyone else holds a Handle: a 32-bit cell index and a 32-bit generation,
 // plain data, copied freely, owning nothing.
 //
@@ -31,7 +32,7 @@
 //   t.borrowAt(i)      Some(&T) of the live entry in cell i, None if the cell is not live or past the pool
 //   t.borrowMutAt(i)   Some(&mut T) of it, the same
 //   t.handleAt(i)      the Handle of the live entry in cell i (Handle.none() if not live)
-//   t.slotAt(i)        the old name of handleAt, kept until the 'slots' aliases go
+//   t.slotAt(i)        the same as handleAt (its earlier name, kept for callers still using it)
 //   t.remove(h)        retire and free at once (the default): true; false if h was stale
 //   t.removeAt(i)      the same for whatever live entry occupies cell i
 //   t.retire(h)        the entry is dead to every handle and to borrowAt(i), not finalized, its cell not reused: true
@@ -46,7 +47,10 @@
 //   t.entries()        the same, each with its cell index: (u32, &T)
 //   t.nextLive(i)      the first live cell at or after i, or noCell
 //
-// WALKING. iter, entries and nextLive scan the cells of the block, so a walk costs O(capacity), not O(live):\n// a pool that is walked while sparse should be a DensePool (as in Rust's slotmap).\n//\n// STORAGE. The cells are one contiguous block, as a List's values are, from the
+// WALKING. iter, entries and nextLive scan the cells of the block, so a walk costs O(capacity), not O(live):
+// a pool that is walked while sparse should be a DensePool (as in Rust's slotmap).
+//
+// STORAGE. The cells are one contiguous block, as a List's values are, from the
 // pool's region, grown by doubling when it is full. A cell is an 8-byte header
 // (its generation, and the next free cell when it is free) then the value. A
 // cell is reached by its index from the block's start: a lookup is the block's
@@ -63,7 +67,9 @@
 // would wrap is retired for good and never reused.
 //
 // ONE THREAD AT A TIME. A pool does no locking: the thread that owns it adds,
-// removes and looks entries up. The pool's death finalizes every entry still in
+// removes and looks entries up. A pool is Sendable, so it may be moved, whole,
+// to another thread or actor (and so may the entries it holds); the
+// handles are plain data and travel anywhere, but only the owner uses them on the pool. The pool's death finalizes every entry still in
 // it (retired ones included) and gives the block back to its region.
 
 mod pools;
@@ -287,7 +293,7 @@ pub struct GenPool[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements
     Handle(i, (*c).gen)
   }
 
-  // The old name of handleAt, kept until step 10 deletes the 'slots' aliases
+  // The same as handleAt: its earlier name, kept for callers still using it
   pub fn slotAt(self: &, i: u32) Handle {self.handleAt(i)}
 
   // A cell has been emptied of its entry (already finalized or moved out): give
@@ -495,7 +501,8 @@ pub struct PoolEntries['a, T] is Iterator[(u32, &T)] {
 // makes the dense walk and rows() possible. All of that storage is behind
 // RowBlock, so a slab version would replace one small struct.
 //
-// A pool belongs to one actor or thread at a time. Nothing may add or remove
+// A pool belongs to one actor or thread at a time (it is Sendable, so it may be
+// moved, whole, to another). Nothing may add or remove
 // during a walk or while a borrow of an entry is held (the borrow checker
 // refuses it), because adding may move the whole block and removing moves rows.
 
@@ -573,6 +580,9 @@ struct RowBlock[T] is Move, GcTraceElements {
   }
 }
 
+// A collector reaches the Gc references in the rows through 'block' (RowBlock
+// declares GcTraceElements), so DensePool needs no declaration of its own
+// (packages/pools/tests/densegc.cone pins it).
 pub struct DensePool[T] is ShapeChanging, Sendable, CarriesRegion {
   index: GenPool[u32];    // sparse: a cell's row
   block: RowBlock[T];

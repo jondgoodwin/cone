@@ -1,0 +1,75 @@
+// A DensePool whose only holder of 'Gc' leaves is the pool itself: the collector
+// must find every leaf through the pool's rows (the pool declares no
+// GcTraceElements of its own; its row block does), including after a removal
+// moves the last row into the hole. The stress mode runs a step at every
+// allocation, and the garbage made between reads moves the survivors, so a leaf
+// the collector missed is freed while held and reads back wrong. Both
+// collection modes are run, and the leaves are made inside a function that has
+// returned, so no local still names one.
+
+mod densegc;
+
+import testing use *;
+import collector;
+import pools use *;
+import collections use List;
+
+struct LeafValue {
+  pub n: i64;
+}
+alias Leaf = Gc[mut, LeafValue];
+alias Leaves = DensePool[Leaf];
+
+fn garbage() {
+  var i = 0i64;
+  while i < 60 {
+    let junk = Leaf(i);
+    i = i + 1;
+  }
+}
+
+// Leaves 1 to count, held only by the pool; the handles go in 'hs'
+fn fill(pool: &mut Leaves, hs: &mut List[Handle], count: i64) {
+  var i = 1i64;
+  while i <= count {
+    hs.push(pool.add(Leaf(i)));
+    i = i + 1;
+  }
+}
+
+fn sum(pool: &Leaves) i64 {
+  var s = 0i64;
+  each v in pool.iter() { let c = *v; s = s + c.n; }
+  s
+}
+
+fn run(mode: &Array[u8]) {
+  var pool = Leaves();
+  var hs = List[Handle]();
+  fill(&mut pool, &mut hs, 20);
+  garbage();
+  Gc.collect();
+  garbage();
+  Gc.collect();
+  expectInt(sum(&pool), 210, mode);
+  // Remove the third leaf (3): the last row (20) moves into its place
+  expectBool(pool.remove(*hs.get(2usize).unwrap()), true, mode);
+  garbage();
+  Gc.collect();
+  garbage();
+  Gc.collect();
+  expectInt(sum(&pool), 207, mode);
+  expectUInt(u64.from(pool.len()), 19, mode);
+  // The handle of the moved leaf still finds it
+  let moved = pool.borrow(*hs.get(19usize).unwrap()).unwrap();
+  let m = *moved;
+  expectInt(m.n, 20, mode);
+}
+
+fn main() i32 {
+  Gc.setStress(true);
+  run("pool of leaves, incremental");
+  Gc.setGenerational(true);
+  run("pool of leaves, generational");
+  done()
+}
