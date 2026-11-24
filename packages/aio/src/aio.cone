@@ -109,6 +109,10 @@
 //   aio.testLateQuiet(on)   TEST-ONLY, not for programs (Cone has no test-only visibility, so it is
 //                           public): while on, reads with no buffer that begin with one go through
 //                           the bad case's late path when answered (READS WITH NO BUFFER)
+//   aio.testHoldAnswer(ms)  TEST-ONLY, not for programs (public as testLateQuiet is): in a debug build,
+//                           each answer of a record that waited on the worker port is held ms
+//                           milliseconds, just before it is pushed; a release build ignores it
+//                           (UDP ON THE WORKER PORT)
 //   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  IoLimits(group, deadline)
 //   aio.sleep(d)  aio.sleepUntil(at)   a pause of d (a Duration) / until at (an Instant)
 //                                                                Result[void, IoError]
@@ -760,6 +764,7 @@ fn @initpure init() {
   countsAt = Atomic[usize].of(0usize);
   udpOn = Atomic[bool].of(false);
   udpWaiting = Atomic[u64].of(0u64);
+  holdAnswerMs = Atomic[i64].of(0i64);
   nameCacheAt = Atomic[usize].of(0usize);
   roomLock = Mutex.make();
   roomHead = Atomic[usize].of(0usize);
@@ -1740,6 +1745,18 @@ let udpOn: Atomic[bool];
 // waitHere, uncounted by the answer or the abandon): the Windows end waits for it to reach 0, the
 // kernel holding those records until the aborted completions come to the port
 let udpWaiting: Atomic[u64];
+
+// TEST-ONLY (testHoldAnswer): how long a worker-port record's answer is held before it is pushed, in
+// milliseconds; read only in a debug build, so a release build never touches it
+let holdAnswerMs: Atomic[i64];
+
+// TEST-ONLY, not for programs (public only because Cone has no test-only visibility). In a debug build,
+// the answer of each record that waited on the worker port is held ms milliseconds in answerRec, as if
+// the worker making it were slow there; 0 turns it off. A release build compiles the hold away: this
+// stores a word nothing reads
+pub fn testHoldAnswer(ms: i64) {
+  holdAnswerMs.store(ms);
+}
 
 // A waiting record's group wake is registered under an id of its own (cancelgroups' watch, once per
 // loop id): this bit, over the record's id, keeps clear of every loop's id and of a worker's
@@ -3130,7 +3147,14 @@ fn answerRec(rp: *OpRec[Ask]) {
   if !(rp as *OpCore as &OpCore).isLetGo() {
     die("aio: a record lent while its Loop still holds it");
   }
+  let waited = (*rp).ask.udp;
   udpEnded(rp);
+  #if #debug {
+    let hold = holdAnswerMs.load();
+    if hold != 0i64 && waited {
+      thread.sleep(Duration.fromMillis(hold));
+    }
+  }
   let w = (*rp).ask.what;
   let back = &mut (*rp).ask.reply;
   if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt || w == opPipeRead || w == opPipeWrite {

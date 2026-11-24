@@ -1,0 +1,93 @@
+// Bug 108: an answer pushed by a worker inside the poller hook after the program's end has begun.
+//
+// Talker holds two Notes across an 'await' of a datagram, so a record is parked in its pending table, and
+// binds the socket it waits on. A helper sends it a datagram 100 ms later; the worker that takes the
+// completion is held for 500 ms (aio.testHoldAnswer, a debug build's hook in answerRec) just before it
+// pushes the answer, as a worker that is slow there (preempted, or busy) would be. Main runs finalAll()
+// 400 ms after Talker is ready, while the worker is still held. aio's end must wait for the worker's push
+// (the I/O thread does not end, and so main's finalAll does not go on, while a worker is inside the hook),
+// so that Talker resumes with its table whole: "resumed" prints before its Notes die, and the program
+// ends. Before the fix the stop went on past the worker: it abandoned Talker's table (its Notes died, in
+// the order the second half's would have, the last declared first) and then the held answer resumed
+// Talker on a table already taken, which crashed in unpark (exit 3221225477 on Windows).
+//
+// A release build ignores the hold, so there the answer comes at 100 ms and the same text prints.
+// Note 2's final is slow (300 ms), as a TLS context's free is: the old stop's window.
+
+mod hookanswer;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import time use Duration;
+import thread;
+import actors;
+import aio use UdpSocket;
+
+struct Note {
+  pub n: u64;
+  fn final(self: &uni) {
+    printStr("  drop "); printUInt(n); printStr("\n");
+    if n == 2u64 {thread.sleep(Duration.fromMillis(300i64));}
+  }
+}
+
+fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
+  var res = r;
+  var s = UdpSocket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {
+      panic("udpOf: the operation failed");
+    }
+  }
+  s
+}
+
+fn portOf(r: Result[SocketAddr, IoError]) u16 {
+  match r {
+    case let Ok(a) {a.port()}
+    else {0u16}
+  }
+}
+
+actor Later {
+  pub async fn send(self, s: UdpSocket, port: u16, ms: i64) {
+    let r = await aio.sleep(Duration.fromMillis(ms));
+    let sent = await s.sendTo(SocketAddr.localhost(port), IoBuf(8usize));
+  }
+}
+
+actor Talker {
+
+  pub async fn talk(self, ready: OneshotSender[u64]) {
+    let first = Note(1u64);
+    let a = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let b = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let pa = portOf(await a.localAddr());
+    let second = Note(2u64);
+    let later = Later();
+    later.send(b, pa, 100i64);
+    var r = ready;
+    r.send(1u64);
+    let got = await a.recvFrom(IoBuf(4096usize));
+    printStr("resumed\n");
+  }
+}
+
+fn main() {
+  initAll();
+  aio.testHoldAnswer(500i64);
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let t = Talker();
+    t.talk(tx);
+  }
+  rx.recv();
+  thread.sleep(Duration.fromMillis(400i64));
+  finalAll();
+  printStr("end\n");
+}
