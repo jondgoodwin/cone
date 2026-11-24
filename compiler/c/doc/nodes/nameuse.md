@@ -200,6 +200,18 @@ type that is still being laid out is not an error** — the name resolves to the
 same declaration either way. What such a type cannot answer is its *size*, and
 that is asked where a value of it is held, not here.
 
+**A name that is no value is refused by its consumer, not by the name's check.** A
+call's callee is a name bound to a function by design, so `nameUseTypeCheck` cannot
+refuse one. What a name written bare is asked where its value is used or thrown away:
+a statement (`blockStmtTypeCheck`, and a block's last line that ends in `;`) and the
+value `_ =` takes (`assignSingleCheck`) ask `nameUseNoValue`, which refuses a function's
+name, `f;`, `(f);`, `g;` (generic), `S.m;` (`ErrorNoSize`, the cause "a function
+signature is not a value at all", as `let c = f;` is), and a type's, `S;`, `Tr;`,
+`i32;`, an alias (`ErrorNotTyped`, as `let c = (S);` is). It asks only of what was
+written as a bare name before the check: `g[i64];` makes an instance of a generic and
+stands as a statement. A function's name is no assignment target (`f = f;`,
+`ErrorBadLval`, `assignTargetsTypeCheck`).
+
 ## Flow
 
 `nameuseFlow` is where initialization and move state are **diagnosed** by the

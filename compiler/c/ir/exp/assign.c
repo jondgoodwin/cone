@@ -92,7 +92,8 @@ void assignNameRes(NameResState *pstate, AssignNode *node) {
 void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
     // '_' takes the value whatever its type: the value is checked, and nothing else
     if (assignIsAnon(lval)) {
-        if (iexpTypeCheckAny(pstate, rval))
+        int wasName = isNameUseNode(*rval);
+        if (iexpTypeCheckAny(pstate, rval) && !nameUseNoValue(*rval, wasName))
             ((IExpNode*)lval)->vtype = ((IExpNode*)*rval)->vtype;
         return;
     }
@@ -340,6 +341,13 @@ static int assignTargetsTypeCheck(TypeCheckState *pstate, INode **lvalp) {
         fnCallSetPlaceEnd(setmark);
         if (typed == 0)
             return 0;
+        // A function's name is a name use of an expression, but it names no place to store into
+        if (nameUseNames(*lvalp, FnDclTag) && ((IExpNode*)*lvalp)->vtype != errorType) {
+            errorMsgNode(*lvalp, ErrorBadLval, "%s names a function, which is not a place to store a value.",
+                &((NameUseNode*)*lvalp)->namesym->namestr);
+            ((IExpNode*)*lvalp)->vtype = errorType;
+            return 0;
+        }
         if (setindex && *lvalp == (INode*)setindex && (setindex->flags & FlagBorrow))
             derefInject(lvalp);
         // 'ps[i].f = v' over a SoaList: written as a field, checked as the column's element
