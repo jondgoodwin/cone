@@ -467,6 +467,7 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
             retnode->tag = BlockRetTag;
             retnode->exp = (INode*)newNilLitNode();
             inodeLexCopy(retnode->exp, laststmtp ? *laststmtp : (INode*)blk);
+            inodeLexCopy((INode*)retnode, retnode->exp);
             nodesAdd(&blk->stmts, (INode*)retnode);
             match = iexpMultiCoerceInfer(pstate, expectType, &inferredType, &retnode->exp, match);
         }
@@ -680,14 +681,17 @@ static void blockFlowIn(FlowState *fstate, BlockNode **blknode) {
     default:
     {
         // Inject blockret node
+        // Each injected node takes the position of the last statement it follows, never the lexer's
         BreakRetNode *blkret = newReturnNode();
         blkret->tag = BlockRetTag;
+        inodeLexCopy((INode*)blkret, *lastnodep);
         if (isExpNode(*lastnodep)) {
             blkret->exp = *lastnodep;
             *lastnodep = (INode*)blkret;
         }
         else {
             blkret->exp = (INode*)newNilLitNode();
+            inodeLexCopy(blkret->exp, *lastnodep);
             nodesAdd(&blk->stmts, (INode*)blkret);
         }
     }
