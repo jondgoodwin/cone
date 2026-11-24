@@ -577,7 +577,13 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode,
         lexNextToken();
         valuep = lex->tokp;
         fldnode->value = parseAnyExpr(parse);
-        valueendp = lex->prevend;
+        // A value that failed to parse has been reported and consumed nothing
+        // when it is missing ('x: u64 = ;'): the token before it ends before
+        // the text starts, so there is no text of it to keep
+        if (fldnode->value == NULL || lex->prevend < valuep)
+            valuep = NULL;
+        else
+            valueendp = lex->prevend;
     }
     if (parse->dcltexts)
         parseDclText(parse, (INode*)fldnode, fldnode->vtype != unknownType ? typep : NULL, typeendp, valuep, valueendp);
