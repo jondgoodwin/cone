@@ -4,16 +4,17 @@
 // The producer here is not aio: it is this test's own worker hook (actors.workerHooks), the kind of code that
 // runs on a worker between turns, outside every activation, so that the stop's quiesce does not see it. Talker
 // holds two Notes across an 'await' whose operation keeps the Reply, so a record is parked in its pending
-// table, and asks for the hook (askAfterTurn). The hook runs on that worker as the turn ends and sits 200 ms,
-// as a worker preempted or busy there would, then answers. Main runs finalAll() 100 ms after Talker has
-// parked: the stop finds the runtime quiet (nothing is counted: the hook's worker is between turns), takes
-// Talker's table and drops its record, whose Note 2 final takes 300 ms, a slow finalizer, so the table is
-// taken and being dropped when the answer is pushed (at about 200 ms). The answer must not resume Talker:
-// "resumed" never prints, the guard counts the one answer it dropped, and the program ends. Without the guard
-// the push resumed Talker on the taken table: a null read in 'unpark' (access violation, exit 3221225477 on
-// Windows), in debug and release.
+// table, and asks for the hook (askAfterTurn). The hook runs on that worker as the turn ends and waits, as a
+// worker preempted or busy there would, until the stop is dropping Talker's record (Note 2's final has begun),
+// 100 ms more, and then answers. Main runs finalAll() 100 ms after Talker has parked: the stop finds the runtime
+// quiet (nothing is counted: the hook's worker is between turns), takes Talker's table and drops its record,
+// whose Note 2 final takes 300 ms, a slow finalizer, so the table is taken and being dropped when the answer is
+// pushed. The answer must not resume Talker: "resumed" never prints, the guard counts the one answer it dropped,
+// and the program ends. Without the guard the push resumed Talker on the taken table: a null read in 'unpark'
+// (access violation, exit 3221225477 on Windows), in debug and release.
 //
-// Expected, in this order (the gaps are 100 ms or more): Note 2 dropped by the stop, the answer pushed, Note 1.
+// The order the test prints is fixed by waits, not by the clock: Note 1's final waits for the push, so the output
+// is: Note 2 dropped by the stop, the answer pushed, Note 1.
 
 mod lateanswer;
 
@@ -30,15 +31,29 @@ struct Rec {
 
 let ready: Atomic[u64];       // 1 once Talker has parked
 let pending: Atomic[usize];   // the record the hook is to answer, 0 when none
+let noted: Atomic[u64];       // 1 once the stop is dropping Talker's record (Note 2's final has begun)
+let pushed: Atomic[u64];      // 1 once the hook has pushed its answer
 
 fn @initpure init() {
   ready = Atomic[u64].of(0u64);
   pending = Atomic[usize].of(0usize);
+  noted = Atomic[u64].of(0u64);
+  pushed = Atomic[u64].of(0u64);
+}
+
+// Wait, at most 20 s, for a mark to be set
+fn awaitMark(m: &Atomic[u64]) {
+  let t0 = time.Instant.now();
+  while m.load() == 0u64 && t0.elapsed() < time.Duration.fromSeconds(20i64) {
+    thread.sleep(time.Duration.fromMillis(1i64));
+  }
 }
 
 struct Note {
   pub n: u64;
   fn final(self: &uni) {
+    if n == 1u64 {awaitMark(&pushed);}
+    if n == 2u64 {noted.store(1u64);}
     printStr("  drop "); printUInt(n); printStr("\n");
     if n == 2u64 {thread.sleep(time.Duration.fromMillis(300i64));}
   }
@@ -63,10 +78,12 @@ fn afterTurn() {
   if at == 0usize {
     return;
   }
-  thread.sleep(time.Duration.fromMillis(200i64));
+  awaitMark(&noted);
+  thread.sleep(time.Duration.fromMillis(100i64));
   let r = at as *Rec;
   actors.answerNowIn[u64](&mut (*r).reply, 7u64);
   printStr("  pushed\n");
+  pushed.store(1u64);
 }
 
 fn idleHook() bool {false}
