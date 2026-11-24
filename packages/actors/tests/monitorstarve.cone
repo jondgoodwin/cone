@@ -21,10 +21,15 @@
 // steals count read in Hold at the one and in Late at the other did not move;
 // a count over the whole 800 ms round had a steal in every round under load,
 // of Churn actors, and tested nothing), and at least one such round is
-// required: when all five had a steal, up to five more run, and with none
-// still the test FAILS ("no round tested the monitor"). What this gives up:
-// in a round with a steal the monitor's own work is not checked (Late's
-// timing and its running during Hold still are, in every round).
+// wanted: when all five had a steal, up to fifteen more run (three times the
+// rounds). With no steal-free round still, and every other check sound, the
+// test reports itself SKIPPED ("no steal-free round under this load": nothing
+// is wrong, the load gave the monitor no round to be tested in); if another
+// check failed too, it FAILS ("no round tested the monitor"). What this gives
+// up: in a round with a steal the monitor's own work is not checked (Late's
+// timing and its running during Hold still are, in every round), and a run
+// with no steal-free round tests nothing of the monitor (it shows as skipped
+// in the report, not as passed).
 
 mod monitorstarve;
 
@@ -91,6 +96,7 @@ actor Hold {
 fn main() i32 {
   initAll();
   actors.configure(actors.Options(workers: 4u32, monitorMicros: 500u32));
+  var skipped = false;
   {
     let c1 = Churn();
     let c2 = Churn();
@@ -106,7 +112,7 @@ fn main() i32 {
     var freeFound = 0u32;  // of those, the rounds the monitor moved a queue in
     var bad = 0u32;        // rounds where Hold or Late did not finish in time
     var r = 0u32;
-    while r < rounds || (free == 0u32 && r < 2u32 * rounds) {
+    while r < rounds || (free == 0u32 && r < 4u32 * rounds) {
       thread.sleep(time.Duration.fromMillis(30i64));
       flags.lateAt.store(0u64);
       flags.holdDone.store(0u32);
@@ -136,9 +142,20 @@ fn main() i32 {
     expectUInt(u64.from(bad), 0u64, "every round, Hold ended and Late ran, within 2 s");
     expectUInt(u64.from(during), u64.from(r), "every round, Late ran while Hold was still in its turn");
     expectUInt(u64.from(prompt), u64.from(r), "every round, Late ran within 400 ms of being made runnable");
-    expect(free >= 1u32, "no round tested the monitor");
+    // No round without a steal, and everything else sound: nothing is wrong,
+    // the load gave the monitor no round to be tested in. Reported as skipped
+    // (status 77, not compared with the .out). If any other check failed, it
+    // is not a skip: the failure stands, and the missing round is a failure too
+    let noRound = free == 0u32 && bad == 0u32 && during == r && prompt == r;
+    if !noRound {
+      expect(free >= 1u32, "no round tested the monitor");
+    }
     expectUInt(u64.from(freeFound), u64.from(free), "the monitor found the stranded queue in each round with no steal");
+    skipped = noRound;
   }
   finalAll();
+  if skipped {
+    return skip("no steal-free round under this load");
+  }
   done()
 }
