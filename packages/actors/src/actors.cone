@@ -3815,8 +3815,11 @@ let regHead: Atomic[usize];       // the newest entry, a *PNode; touched only un
 // quiescent (the end is counted after the resume finishes, and the counts are read ended first), so the take comes
 // after the resume has finished, and the resume found its table whole. Either way no resume runs against the take.
 // What is NOT closed here: an activation a late producer starts by SENDING a message, not answering (its behaviour
-// may park or unpark on a table being taken): the check is on the replies, which are what a stop's gate does not
-// meet and where the unsafe step is.
+// may park or unpark on a table being taken). THE STOP'S GATE (below, with 'running') closes before abandonParked
+// runs, but it refuses only a thread that is neither a worker nor the stopper (sendNow: 'me == 0 && stopperHere ==
+// 0'); a send from a worker's hook bypasses it, so such a message can still be pushed and counted by 'schedule'
+// after the quiesce above has read the counts, and its behaviour can run beside the take. The check here is on the
+// replies, where the unsafe step of Bug 108 is.
 let guardWord: Atomic[u64];
 const idIndexMask = 0x000000FFFFFFFFFFu64;
 const idGenMask = 0x3FFFFF0000000000u64;
