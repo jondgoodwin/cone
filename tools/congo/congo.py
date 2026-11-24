@@ -1881,7 +1881,9 @@ class Linker:
         [link] tables name, each searched for first in their [link] paths. A
         release link folds identical functions (/OPT:ICF), the net under the
         compiler's size gate on generic instances: the copies each object keeps
-        for itself that came out the same are one again in the program. On
+        for itself that came out the same are one again in the program, and
+        drops what nothing reaches (/OPT:REF; `--gc-sections` on Linux and `-dead_strip` on macOS,
+        which no debug link passes). On
         Windows a link that is not stripped, debug or release, also writes the debug info
         of the objects (CodeView) into a PDB beside the .exe, which a profiler
         reads for function names and lines; on Linux the info stays in the ELF."""
@@ -1906,9 +1908,13 @@ class Linker:
         extra = shlex.split(os.environ.get("CONGO_LINK_EXTRA", ""))
         dynamic = exe.with_name(exe.name + ".dynlist")
         dynamic.write_text("{\n  cnmalloc_*;\n};\n")
+        # A release link drops the sections no live code reaches, as Windows' /OPT:REF does: the compiler gives every
+        # symbol a section of its own for this. The symbols the dynamic list exports stay roots. Debug links are left alone.
+        strip_unreached = (["-Wl,-dead_strip"] if HOST_OS == "macos" else ["-Wl,--gc-sections"]) if release else []
         return [self.tool, *map(str, objs), *extra, str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
-                f"-Wl,--dynamic-list={dynamic}", "-o", str(exe), "-lm", "-lpthread", "-ldl"]   # -ldl: dlsym, in libc itself since glibc 2.34 (heapregion.c, actors)
+                f"-Wl,--dynamic-list={dynamic}", *strip_unreached,
+                "-o", str(exe), "-lm", "-lpthread", "-ldl"]   # -ldl: dlsym, in libc itself since glibc 2.34 (heapregion.c, actors)
 
 
 # ---------------------------------------------------------------------------
