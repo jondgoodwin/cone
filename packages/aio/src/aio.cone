@@ -1024,7 +1024,12 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
 // THE END. Linux: the Loop's death unpublishes every handle and answers what waits on it, its answers
 // abandoned. Windows: the kernel holds each waiting record until its completion comes to the port;
 // the Loop's death closes the sockets (aborting them), and the I/O thread waits (waitUdpHome) until
-// the poller has taken them all, each abandoned, its buffer home, before it ends.
+// the poller has taken them all, each abandoned, its buffer home, before it ends. On both systems it
+// also waits until no worker is inside the port's hook (portEvents; hookBusy): what a worker does there
+// is outside any actor's turn, so the runtime's stop cannot see it, and an answer it pushed after the
+// stop had abandoned the parked records would resume an actor on a table already taken (Bug 108). A
+// record's count (udpWaiting) therefore ends after its answer is pushed or its drop is done (udpTake,
+// udpHome), never before.
 //
 // TCP ON THE WORKER PORT (iocore's shared.cone, the same name). With the port on, a listener (ListenJob)
 // and a connect (connectIn) are made with 'onWorkers': the sockets they give (accepted, connected)
