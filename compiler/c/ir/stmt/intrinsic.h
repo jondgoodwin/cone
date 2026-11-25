@@ -141,7 +141,8 @@ enum IntrinsicFn {
     SliceFromPartsIntrinsic,    // sliceFromParts[T](p: *T, len: usize) &Array[T]
     SliceFromPartsMutIntrinsic, // sliceFromPartsMut[T](p: *T, len: usize) &mut Array[T]
     SliceFromPartsUniIntrinsic, // sliceFromPartsUni[T](p: *T, len: usize) &uni Array[T]
-    ReadRawIntrinsic,       // readRaw[T](p: *T) T
+    UniArrayFromPartsIntrinsic, // uniArrayFromParts[T](p: *T, n: usize) Uni[Array[T]]
+    ReadRawIntrinsic,      // readRaw[T](p: *T) T
     WriteRawIntrinsic,      // writeRaw[T](p: *T, value: T)
     MoveRawIntrinsic,       // moveRaw[T](to: *T, from: *T, count: usize)
     MoveRawIntoIntrinsic,   // moveRawInto[T](to: *T, from: *T, count: usize)
