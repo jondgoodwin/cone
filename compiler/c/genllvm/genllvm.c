@@ -171,6 +171,21 @@ static int genlEntryMainParmsOk(FnDclNode *fnnode) {
     return 0;
 }
 
+// The program's 'main' returns an integer, nothing, or a Result (manual,
+// mod-globals.html): the entry takes the return as the exit status. Reports
+// and answers 0 for any other type, which was accepted and exited 0.
+static int genlEntryMainReturnOk(FnDclNode *fnnode) {
+    INode *rettexp = ((FnSigNode*)fnnode->vtype)->rettype;
+    INode *ret = itypeGetTypeDcl(rettexp);
+    if (ret->tag == VoidTag
+        || ((ret->tag == IntNbrTag || ret->tag == UintNbrTag) && ret != (INode*)boolType)
+        || propagateMainEntry(fnnode) != NULL)
+        return 1;
+    errorMsgNode(rettexp, ErrorInvType,
+        "The program's `main` returns an integer, nothing, or a `Result`.");
+    return 0;
+}
+
 static void genlBorrowDeref(GenState *gen, FnDclNode *fnnode);
 
 // The size of a function just generated, in LLVM instructions, before any
@@ -1050,9 +1065,13 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         nameSymbol(symbol, (INode*)glofn);
         // The program's own 'main' is called by the entry the compiler builds,
         // which is the one named 'main' (genlEntry)
-        if (genlIsEntryMain(gen, glofn, symbol) && genlEntryMainParmsOk(glofn)) {
-            strcpy(symbol, EntryMainSymbol);
-            gen->entrymain = glofn;
+        if (genlIsEntryMain(gen, glofn, symbol)) {
+            // both checks report
+            int parmsok = genlEntryMainParmsOk(glofn);
+            if (genlEntryMainReturnOk(glofn) && parmsok) {
+                strcpy(symbol, EntryMainSymbol);
+                gen->entrymain = glofn;
+            }
         }
         if (genlIsVoidMain(glofn, symbol)) {
             unsigned parmcnt = LLVMCountParamTypes(fntype);
