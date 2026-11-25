@@ -38,20 +38,27 @@ and the measurements are on file.
 
 ## The arena
 
-`memAllocBlk` is a bump allocator that **never frees and never zeroes**. There
-is no `free`, no reference counting of compiler structures, and no destructor
-anywhere in the front end.
+`memAllocBlk` (`shared/memory.c`) is a bump allocator that **never frees, and
+returns zeroed memory**. Each arena is `calloc`ed whole and handed out by
+bumping, never reused, so every block is still zero when it is returned; a block
+bigger than an arena is a `calloc` of its own. The zeroing is the function's
+written contract (commit 9b4865f00, "memAllocBlk returns zeroed memory"), and it
+costs nothing per allocation: the one `calloc` per arena pays it, and the
+operating system's fresh pages are already zero. There is no `free`, no
+reference counting of compiler structures, and no destructor anywhere in the
+front end.
 
 That is the right trade for a compiler: the process exits when the work is done,
 so returning memory buys nothing, and not tracking ownership removes an entire
 category of code and bug from every node constructor.
 
-**It has one cost, and it is paid repeatedly.** Because nothing is zeroed, a
-field a constructor forgets holds arena garbage rather than NULL — which reads
-as a plausible pointer rather than crashing at address zero. Several defects
-have had exactly this shape. The discipline is in
-[IR Nodes](../nodes/_index.md): a constructor initializes every field it
-declares.
+**Its one cost was paid repeatedly, until the zeroing.** While nothing was
+zeroed, a field a constructor forgot held arena garbage rather than NULL — which
+reads as a plausible pointer rather than crashing at address zero. Several
+defects had exactly this shape. Now an unset field reads as zero, so a
+forgotten field is NULL or 0, but a constructor still initializes every field
+it declares to its real default (`unknownType`, `-1` and the like are not zero):
+[IR Nodes](../nodes/_index.md).
 
 ## Interning
 

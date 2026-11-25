@@ -218,10 +218,12 @@ Where a whole subtree has to be replaced rather than one node retyped,
 because it holds a position.
 
 **A constructor must initialize every field it declares — not just `vtype`.**
-Nodes come from `memAllocBlk`, a bump allocator that **never frees and never
-zeroes**. An unset field holds arena garbage rather than NULL, which is why one
-such defect faulted at an arbitrary address instead of at zero, and why
-`--checktree` could not see it. A node that has not been type checked yet
+Nodes come from `memAllocBlk`, a bump allocator that **never frees and returns
+zeroed memory** (`shared/memory.c`; the zeroing was added in 9b4865f00, and
+before it an unset field held arena garbage, which is why one such defect
+faulted at an arbitrary address instead of at zero, and why `--checktree` could
+not see it). An unset field is now zero, which is not the default every field
+wants. A node that has not been type checked yet
 carries `unknownType`.
 
 This is one root cause behind several separate defects — an uninitialized
