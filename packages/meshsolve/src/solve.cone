@@ -1,0 +1,84 @@
+// ======== conjugateGradient ========
+
+// How a solve ended: the iterations taken, the final residual's norm relative to the
+// right side's (or its plain norm when the right side is zero), and whether that is
+// within the tolerance asked
+pub struct SolveReport {
+  pub iterations: u32;
+  pub residual: f64;
+  pub converged: bool;
+}
+
+fn dotd(a: &List[f64], b: &List[f64]) f64 {
+  var sum = 0.0;
+  var i = 0usize;
+  while i < a.len() {
+    sum = sum + *a[i] * *b[i];
+    i = i + 1usize;
+  }
+  sum
+}
+
+// Solve A x = b for x by conjugate gradients with a Jacobi (diagonal) preconditioner, in
+// f64, starting from the x given and leaving the answer there. A must be symmetric
+// positive-definite. It stops when the residual's norm is at most 'tolerance' times
+// b's norm (its own norm when b is zero), or after 'maxIterations'. A direction along
+// which the matrix gives no positive curvature (a singular or indefinite matrix) stops
+// it at once, not converged. If x or b does not hold size() values the report is not
+// converged with 0 iterations and x is untouched.
+pub fn conjugateGradient(a: &SparseMatrix, b: &List[f64], x: &mut List[f64], tolerance: f64,
+    maxIterations: u32) SolveReport {
+  let n = a.size();
+  if b.len() != n || x.len() != n { return SolveReport(0u32, 1.0, false); }
+  var diag = List[f64].withCapacity(n);
+  var r = 0usize;
+  while r < n {
+    let d = a.at(u32.from(r), u32.from(r));
+    diag.push(if d > 0.0 {1.0 / d} else {1.0});
+    r = r + 1usize;
+  }
+  let ax = a.times(x);
+  var res = List[f64].withCapacity(n);
+  var z = List[f64].withCapacity(n);
+  var d = List[f64].withCapacity(n);
+  r = 0usize;
+  while r < n {
+    let rr = *b[r] - *ax[r];
+    res.push(rr);
+    z.push(rr * *diag[r]);
+    d.push(rr * *diag[r]);
+    r = r + 1usize;
+  }
+  let bnorm = dotd(b, b).sqrt();
+  let scale = if bnorm > 0.0 {bnorm} else {1.0};
+  var rz = dotd(&res, &z);
+  var rnorm = dotd(&res, &res).sqrt();
+  var it = 0u32;
+  var stuck = false;
+  while rnorm > tolerance * scale && it < maxIterations && !stuck {
+    let ad = a.times(&d);
+    let dad = dotd(&d, &ad);
+    if dad <= 0.0 { stuck = true; }
+    else {
+      let alpha = rz / dad;
+      r = 0usize;
+      while r < n {
+        x.set(r, *x[r] + *d[r] * alpha);
+        res.set(r, *res[r] - *ad[r] * alpha);
+        z.set(r, *res[r] * *diag[r]);
+        r = r + 1usize;
+      }
+      let rzNew = dotd(&res, &z);
+      let beta = if rz > 0.0 {rzNew / rz} else {0.0};
+      rz = rzNew;
+      r = 0usize;
+      while r < n {
+        d.set(r, *z[r] + *d[r] * beta);
+        r = r + 1usize;
+      }
+      rnorm = dotd(&res, &res).sqrt();
+      it = it + 1u32;
+    }
+  }
+  SolveReport(it, rnorm / scale, rnorm <= tolerance * scale)
+}
