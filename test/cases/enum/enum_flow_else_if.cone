@@ -1,0 +1,54 @@
+// The block of an 'else if' whose own test names a variant is narrowed to it, as the
+// block of an 'if' is: a chain of two, a chain of three, and a narrowing that does not
+// carry into a block where the variable is assigned. Each printed value was worked out
+// by hand from the source.
+
+mod enum_flow_else_if;
+
+import stdio use *;
+
+enum State {
+  struct Idle {}
+  struct Run { pub speed: i64; }
+  struct Stop { pub code: i64; }
+  struct Pause { pub secs: i64; }
+}
+use State;
+
+fn num(n: i64) {
+  printInt(n);
+  printStr(" ");
+}
+
+// two: the 'else if' block reaches the field
+fn two(s: State) {
+  if s is Idle { num(0); }
+  else if s is Run { num(s.speed); }
+  else { num(-1); }
+}
+
+// three: the third test narrows too
+fn three(s: State) {
+  if s is Run { num(s.speed); }
+  else if s is Stop { num(s.code + 100); }
+  else if s is Pause { num(s.secs + 200); }
+  else { num(-1); }
+}
+
+// assigned inside an arm: the narrowing does not outlive the assignment, so the
+// 'is' test inside is made afresh and narrows to what was assigned
+fn assigned() {
+  var s: State = State.Run(4);
+  if s is Idle { num(0); }
+  else if s is Run {
+    num(s.speed);
+    s = State.Stop(9);
+    if s is Stop { num(s.code); }
+  }
+}
+
+fn main() {
+  two(State.Idle); two(State.Run(7)); two(State.Stop(1)); printStr("|\n");   // 0 7 -1
+  three(State.Run(1)); three(State.Stop(2)); three(State.Pause(3)); three(State.Idle); printStr("|\n");   // 1 102 203 -1
+  assigned(); printStr("|\n");   // 4 9
+}
