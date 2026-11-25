@@ -228,7 +228,9 @@ enum IntrinsicFn {
     PowiIntrinsic,              // x.powi(n: i32)
     HypotIntrinsic,             // x.hypot(y)
     CbrtIntrinsic,              // x.cbrt()
-    SinhIntrinsic,              // x.sinh()
+    TruncIntrinsic,             // x.trunc()
+    CopysignIntrinsic,          // x.copysign(sign)
+    SinhIntrinsic,             // x.sinh()
     CoshIntrinsic,              // x.cosh()
     TanhIntrinsic,              // x.tanh()
     IsNanIntrinsic,             // x.isNaN() bool

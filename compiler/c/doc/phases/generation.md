@@ -2547,7 +2547,8 @@ SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and 
 (`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`. A float's
 `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2`, `log10`, `pow`, `sinh`,
 `cosh` and `tanh` methods are likewise their intrinsics (`Tan` to `Tanh`, `Log` for `ln`;
-`log10` is `Log2` times a constant); `hypot`, `cbrt` and `powi` are formulas there
+`log10` is `Log2` times a constant); `trunc` is `Trunc`; `copysign` (bit operations, the back
+end not selecting `llvm.copysign`), `hypot`, `cbrt` and `powi` are formulas there
 ([intrinsic](../nodes/intrinsic.md)), and `isNaN` is `OpFUnordNotEqual`:
 `module_target_spirv_floatmath`.
 **A kernel's float `min`, `max` and `clamp` do not keep the NaN ruling (a stated

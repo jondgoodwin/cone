@@ -508,6 +508,21 @@ static LLVMValueRef genlNumberIntrinsic(GenState *gen, int16_t kind, INode *type
 
     // A float's, each LLVM's intrinsic of the same meaning (the libm call it
     // folds to or becomes on a CPU, the GLSL.std.450 instruction on a GPU)
+    case TruncIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.trunc", llvmtype, args, 1);
+    case CopysignIntrinsic:
+        args[1] = fnargs[1];
+        if (gen->opt->gpu) {
+            // The SPIR-V backend cannot select copysign: x's bits below the
+            // sign, joined to the sign bit of 'sign', exact as the intrinsic is
+            unsigned bits = LLVMGetTypeKind(llvmtype) == LLVMFloatTypeKind ? 32 : 64;
+            LLVMTypeRef inttype = LLVMIntTypeInContext(gen->context, bits);
+            LLVMValueRef signbit = LLVMConstInt(inttype, 1ULL << (bits - 1), 0);
+            LLVMValueRef mag = LLVMBuildAnd(gen->builder, LLVMBuildBitCast(gen->builder, args[0], inttype, ""),
+                LLVMConstInt(inttype, (1ULL << (bits - 1)) - 1, 0), "");
+            LLVMValueRef sgn = LLVMBuildAnd(gen->builder, LLVMBuildBitCast(gen->builder, args[1], inttype, ""), signbit, "");
+            return LLVMBuildBitCast(gen->builder, LLVMBuildOr(gen->builder, mag, sgn, ""), llvmtype, "");
+        }
+        return genlCallLlvmIntrinsic(gen, "llvm.copysign", llvmtype, args, 2);
     case TanIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.tan", llvmtype, args, 1);
     case AsinIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.asin", llvmtype, args, 1);
     case AcosIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.acos", llvmtype, args, 1);
@@ -755,6 +770,8 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case PowiIntrinsic:
     case HypotIntrinsic:
     case CbrtIntrinsic:
+    case TruncIntrinsic:
+    case CopysignIntrinsic:
     case SinhIntrinsic:
     case CoshIntrinsic:
     case TanhIntrinsic:
