@@ -329,7 +329,29 @@ fn rmSplitPass(w: &mut RmWork, hi: f32) bool {
 // ---- collapse ----
 
 // Whether the edge r-k may be collapsed, r removed and k moved to 'at'
-fn rmCollapsible(w: &RmWork, r: u32, k: u32, at: Vec3, hi: f32) bool {
+// A vertex's place when r has gone to k and k is at 'at'
+fn rmMapped(w: &RmWork, v: u32, r: u32, k: u32, at: Vec3) Vec3 {
+  if v == r || v == k { at } else { rmP(w, v) }
+}
+
+// Whether a triangle p0 p1 p2 still lies along the region's surface: its normal within about 53 degrees of the
+// surface's at its centre (a triangle on the surface's needles, with no normal of its own, is let through)
+fn rmFaithful(idx: &SurfaceIndex, p0: Vec3, p1: Vec3, p2: Vec3) bool {
+  let n = (p1 - p0).cross(p2 - p0);
+  let len = n.length();
+  if len <= 0. { return false; }
+  let hit = idx.nearest((p0 + p1 + p2) * (1. / 3.), 0.);
+  if !hit.found() { return true; }
+  if hit.normal.length() <= 0. { return true; }
+  n.dot(hit.normal) / len > 0.6
+}
+
+fn rmTriFaithful(w: &RmWork, idx: &SurfaceIndex, t: u32, r: u32, k: u32, at: Vec3) bool {
+  rmFaithful(idx, rmMapped(w, rmTv(w, usize.from(t), 0usize), r, k, at), rmMapped(w, rmTv(w, usize.from(t), 1usize), r, k, at),
+    rmMapped(w, rmTv(w, usize.from(t), 2usize), r, k, at))
+}
+
+fn rmCollapsible(w: &RmWork, idx: &SurfaceIndex, r: u32, k: u32, at: Vec3, hi: f32) bool {
   var ets = List[u32]();
   rmEdgeTris(w, r, k, &mut ets);
   if ets.len() != 2usize { return false; }
@@ -361,6 +383,7 @@ fn rmCollapsible(w: &RmWork, r: u32, k: u32, at: Vec3, hi: f32) bool {
       let n0 = rmNormalWith(w, t, NoIndex, at);
       let n1 = rmNormalWith(w, t, r, at);
       if n0.dot(n1) <= 0. { return false; }
+      if !rmTriFaithful(w, idx, t, r, k, at) { return false; }
     }
     i = i + 1usize;
   }
@@ -373,6 +396,7 @@ fn rmCollapsible(w: &RmWork, r: u32, k: u32, at: Vec3, hi: f32) bool {
       let n0 = rmNormalWith(w, t, NoIndex, at);
       let n1 = rmNormalWith(w, t, k, at);
       if n0.dot(n0) > 0. && n0.dot(n1) <= 0. { return false; }
+      if !rmTriFaithful(w, idx, t, r, k, at) { return false; }
     }
     i = i + 1usize;
   }
@@ -408,7 +432,7 @@ fn rmRemovable(w: &RmWork, v: u32) bool {
   *w.live[usize.from(v)] && *w.kind[usize.from(v)] == RmFree && !*w.rim[usize.from(v)]
 }
 
-fn rmCollapsePass(w: &mut RmWork, lo: f32, hi: f32) {
+fn rmCollapsePass(w: &mut RmWork, idx: &SurfaceIndex, lo: f32, hi: f32) {
   let edges = rmEdges(w);
   var i = 0usize;
   while i + 1usize < edges.len() {
@@ -429,7 +453,7 @@ fn rmCollapsePass(w: &mut RmWork, lo: f32, hi: f32) {
     } else if ra {
       r = a; k = b; at = rmP(w, b);
     }
-    if rmCollapsible(w, r, k, at, hi) { rmCollapse(w, r, k, at); }
+    if rmCollapsible(w, idx, r, k, at, hi) { rmCollapse(w, r, k, at); }
   }
 }
 
@@ -446,7 +470,7 @@ fn rmDeviation(w: &RmWork, v: u32, valence: i32) i32 {
   (valence - target) * (valence - target)
 }
 
-fn rmFlipPass(w: &mut RmWork) {
+fn rmFlipPass(w: &mut RmWork, idx: &SurfaceIndex) {
   let edges = rmEdges(w);
   var ts = List[u32]();
   var i = 0usize;
@@ -492,6 +516,7 @@ fn rmFlipPass(w: &mut RmWork) {
     let n3 = (rmP(w, p) - rmP(w, q)).cross(rmP(w, d) - rmP(w, q));
     let side = n0 + n3;
     if n1.dot(side) <= 0. || n2.dot(side) <= 0. { continue; }
+    if !rmFaithful(idx, rmP(w, c), rmP(w, p), rmP(w, d)) || !rmFaithful(idx, rmP(w, c), rmP(w, d), rmP(w, q)) { continue; }
     rmSetTri(w, t0, c, p, d);
     rmSetTri(w, t1, c, d, q);
   }
@@ -778,8 +803,8 @@ pub fn remeshRegion(m: &PolyMesh, faces: &Array[u32], edgeLength: f32, rounds: u
   while round < rounds {
     var sweeps = 0u32;
     while sweeps < 20u32 && rmSplitPass(&mut w, hi) { sweeps = sweeps + 1u32; }
-    rmCollapsePass(&mut w, lo, hi);
-    rmFlipPass(&mut w);
+    rmCollapsePass(&mut w, &idx, lo, hi);
+    rmFlipPass(&mut w, &idx);
     rmRelaxPass(&mut w, &idx, &segs);
     round = round + 1u32;
   }
