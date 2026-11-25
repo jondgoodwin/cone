@@ -1,0 +1,237 @@
+// ======== fairRegion: the smoothest surface through a region ========
+//
+// The listed vertices are free; every other vertex is held. With L the cotangent Laplacian
+// (meshsolve) and M the diagonal of vertex areas, two energies of the positions x are
+// meant:
+//   film     E1 = - x^T L x          (the area a soap film would take, to first order)
+//   bending  E2 = (L x)^T M^-1 (L x) (the integrated square of the mean-curvature vector)
+// Their gradients on the free vertices are -2 (L x)_f and 2 (L M^-1 L x)_f, so the
+// minimum solves, for the free block, A x_f = rhs, with the held positions moved to the
+// right. A is symmetric positive-definite whenever each connected piece of the region
+// touches a held vertex, so the solve is conjugate gradients, one per coordinate, from
+// the positions the vertices have. Order 1 minimises E1 alone, order 2 minimises
+// (1 - tension) E2 + tension E1.
+//
+// For E2 the held vertices that matter are two rings round the region: the first ring's
+// own (L x) reads the free vertices, and the second ring's positions go into that, so
+// the surface meets the skin in position and slope.
+
+// The free vertices as a flag per vertex, from the numbers given (repeats once); false
+// and a problem line if a number is outside the mesh
+fn freeFlags(m: &PolyMesh, vertices: &Array[u32], flags: &mut List[bool], problems: &mut List[String]) bool {
+  var i = 0usize;
+  while i < m.vertexCount() {
+    flags.push(false);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < vertices.len() {
+    if usize.from(vertices[i]) >= m.vertexCount() {
+      problems.push(String.from("fairRegion: vertex is not in the mesh"));
+      return false;
+    }
+    flags.set(usize.from(vertices[i]), true);
+    i = i + 1usize;
+  }
+  true
+}
+
+// Whether every connected piece of the free vertices touches a held vertex
+fn everyPieceHeld(m: &PolyMesh, free: &List[bool]) bool {
+  let nv = m.vertexCount();
+  var seen = List[bool].withCapacity(nv);
+  var i = 0usize;
+  while i < nv {
+    seen.push(false);
+    i = i + 1usize;
+  }
+  var start = 0usize;
+  while start < nv {
+    if *free[start] && !*seen[start] {
+      var stack = List[u32]();
+      stack.push(u32.from(start));
+      seen.set(start, true);
+      var touches = false;
+      while stack.len() > 0usize {
+        let v = *stack[stack.len() - 1usize];
+        stack.pop();
+        let ns = m.vertexNeighbors(v);
+        var k = 0usize;
+        while k < ns.len() {
+          let w = usize.from(*ns[k]);
+          if !*free[w] { touches = true; }
+          else if !*seen[w] {
+            seen.set(w, true);
+            stack.push(u32.from(w));
+          }
+          k = k + 1usize;
+        }
+      }
+      if !touches { return false; }
+    }
+    start = start + 1usize;
+  }
+  true
+}
+
+// The mesh with the vertices listed in 'vertices' moved to the smoothest surface that
+// meets the rest (held where they are): the topology and every channel unchanged. With
+// 'order' 1 it is a soap film, the free vertices solving L x = 0 (the discrete harmonic
+// surface, with the held ring's positions as its boundary); with 'order' 2 it is the
+// surface of least bending, solving L M^-1 L x = 0, which also meets the held vertices'
+// slope (the two rings of held vertices round the region set position and slope). L is
+// the cotangent Laplacian and M the vertex areas (meshsolve). A vertex number outside
+// the mesh, an 'order' other than 1 or 2, an empty mesh, a region with a piece that has
+// no held vertex to hang on (all of a closed mesh freed, say), or a solve that does not
+// reach its tolerance is a line pushed on 'problems' and an unchanged copy. An empty
+// list changes nothing and says nothing.
+pub fn fairRegion(m: &PolyMesh, vertices: &Array[u32], order: u32, problems: &mut List[String]) PolyMesh {
+  fairRegionWith(m, vertices, order, 0., problems)
+}
+
+// The same, order 2 minimising (1 - tension) of the bending energy plus tension of the
+// film energy; tension is held between 0 (fairRegion) and 1 (all film, as order 1). A
+// little tension keeps the surface from swinging out of the held skin's reach; order 1
+// ignores it.
+pub fn fairRegionWith(m: &PolyMesh, vertices: &Array[u32], order: u32, tension: f32,
+    problems: &mut List[String]) PolyMesh {
+  let nv = m.vertexCount();
+  if nv == 0usize {
+    problems.push(String.from("fairRegion: the mesh is empty"));
+    return m.clone();
+  }
+  if order != 1u32 && order != 2u32 {
+    problems.push(String.from("fairRegion: order must be 1 or 2"));
+    return m.clone();
+  }
+  var free = List[bool].withCapacity(nv);
+  if !freeFlags(m, vertices, &mut free, problems) { return m.clone(); }
+  var index = List[u32].withCapacity(nv);
+  var nf = 0usize;
+  var i = 0usize;
+  while i < nv {
+    if *free[i] {
+      index.push(u32.from(nf));
+      nf = nf + 1usize;
+    } else {
+      index.push(NoIndex);
+    }
+    i = i + 1usize;
+  }
+  if nf == 0usize { return m.clone(); }
+  if !everyPieceHeld(m, &free) {
+    problems.push(String.from("fairRegion: part of the region has no held vertex to meet"));
+    return m.clone();
+  }
+  var t = f64.from(tension);
+  if order == 1u32 || t > 1.0 { t = 1.0; }
+  if t < 0.0 { t = 0.0; }
+
+  let lap = cotangentLaplacian(m);
+  let areas = vertexAreas(m);
+
+  // A's cells, and the right sides, one per coordinate
+  var rows = List[u32]();
+  var cols = List[u32]();
+  var vals = List[f64]();
+  var rhsX = List[f64].withCapacity(nf);
+  var rhsY = List[f64].withCapacity(nf);
+  var rhsZ = List[f64].withCapacity(nf);
+  i = 0usize;
+  while i < nf {
+    rhsX.push(0.0); rhsY.push(0.0); rhsZ.push(0.0);
+    i = i + 1usize;
+  }
+
+  // Film: t (-L)_ff x_f = t L_fh x_h
+  if t > 0.0 {
+    var r = 0usize;
+    while r < nv {
+      if *free[r] {
+        let fr = *index[r];
+        var k = usize.from(*lap.rowStart[r]);
+        let end = usize.from(*lap.rowStart[r + 1usize]);
+        while k < end {
+          let c = usize.from(*lap.col[k]);
+          let w = *lap.val[k];
+          if *free[c] {
+            rows.push(fr); cols.push(*index[c]); vals.push(-t * w);
+          } else {
+            let p = *m.positions[c];
+            rhsX.set(usize.from(fr), *rhsX[usize.from(fr)] + t * w * f64.from(p.x));
+            rhsY.set(usize.from(fr), *rhsY[usize.from(fr)] + t * w * f64.from(p.y));
+            rhsZ.set(usize.from(fr), *rhsZ[usize.from(fr)] + t * w * f64.from(p.z));
+          }
+          k = k + 1usize;
+        }
+      }
+      r = r + 1usize;
+    }
+  }
+
+  // Bending: (1 - t) (L M^-1 L)_ff x_f = -(1 - t) (L M^-1 L)_fh x_h. Row k of L adds
+  // L_ki L_kj / m_k to the cell (i, j) of L M^-1 L, for every pair in the row
+  if t < 1.0 {
+    let s = 1.0 - t;
+    var k = 0usize;
+    while k < nv {
+      let inv = if *areas[k] > 0.0 {1.0 / *areas[k]} else {0.0};
+      let lo = usize.from(*lap.rowStart[k]);
+      let hi = usize.from(*lap.rowStart[k + 1usize]);
+      var a = lo;
+      while a < hi {
+        let ci = usize.from(*lap.col[a]);
+        if *free[ci] {
+          let fi = *index[ci];
+          var b = lo;
+          while b < hi {
+            let cj = usize.from(*lap.col[b]);
+            let v = s * *lap.val[a] * *lap.val[b] * inv;
+            if *free[cj] {
+              rows.push(fi); cols.push(*index[cj]); vals.push(v);
+            } else {
+              let p = *m.positions[cj];
+              rhsX.set(usize.from(fi), *rhsX[usize.from(fi)] - v * f64.from(p.x));
+              rhsY.set(usize.from(fi), *rhsY[usize.from(fi)] - v * f64.from(p.y));
+              rhsZ.set(usize.from(fi), *rhsZ[usize.from(fi)] - v * f64.from(p.z));
+            }
+            b = b + 1usize;
+          }
+        }
+        a = a + 1usize;
+      }
+      k = k + 1usize;
+    }
+  }
+
+  let a = SparseMatrix.fromTriplets(nf, rows.view(), cols.view(), vals.view());
+  var xs = List[f64].withCapacity(nf);
+  var ys = List[f64].withCapacity(nf);
+  var zs = List[f64].withCapacity(nf);
+  i = 0usize;
+  while i < nv {
+    if *free[i] {
+      let p = *m.positions[i];
+      xs.push(f64.from(p.x)); ys.push(f64.from(p.y)); zs.push(f64.from(p.z));
+    }
+    i = i + 1usize;
+  }
+  let limit = u32.from(20usize * nf);
+  let rx = conjugateGradient(&a, &rhsX, &mut xs, 0.0000000001, limit);
+  let ry = conjugateGradient(&a, &rhsY, &mut ys, 0.0000000001, limit);
+  let rz = conjugateGradient(&a, &rhsZ, &mut zs, 0.0000000001, limit);
+  if !rx.converged || !ry.converged || !rz.converged {
+    problems.push(String.from("fairRegion: the solve did not converge"));
+    return m.clone();
+  }
+  var pos = copyList[Vec3](&m.positions);
+  i = 0usize;
+  while i < nv {
+    if *free[i] {
+      let f = usize.from(*index[i]);
+      pos.set(i, Vec3(f32.from(*xs[f]), f32.from(*ys[f]), f32.from(*zs[f])));
+    }
+    i = i + 1usize;
+  }
+  withPositions(m, pos)
+}
