@@ -104,8 +104,9 @@ callee is chosen. Neither reaches the branches of an `if` or a block passed as
 an overload set's argument, whose literals keep the `i32` default; generation refuses one
 whose value does not fit it ([literals](../nodes/literals.md)). **`bool` is the one
 number type excluded** — `litAdoptNumberType` refuses it, so a literal meets
-`bool` through section 5's `isTrue` branch as any other number does, rather than
-being built at `bool`'s one bit and masked to it. Every other literal is typed by
+`bool` through section 5's `bool` branch as any other number does (through
+`isTrue` in a condition, refused elsewhere), rather than being built at `bool`'s
+one bit and masked to it. Every other literal is typed by
 the coercion in section 5.
 
 ## 4. The verdict vocabulary

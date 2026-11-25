@@ -157,11 +157,12 @@ before its callee is chosen. Every other literal is typed by
 answers `UintNbrTag` like any other, but its only values are `true` and `false`
 and a literal reaches it the way every other number does — through the `isTrue`
 coercion in [Type Check Reasoning](../phases/type-check-reasoning.md),
-"Coercion", which makes any non-zero value true. `litAdoptNumberType` returns 0
-for it, so both of its callers fall through to that coercion and every position
-agrees. `typemgmt_success` pins all of them — initializer, assignment, argument,
-return value, struct-literal field, `if`, `!`, `&&` and `||` — each with a
-value whose low bit is 0, because `1` and `-1` read the same either way.
+"Coercion", in a condition and under `!`, where any non-zero value is true; where
+a bool is wanted anywhere else it is `ErrorTruthOutsideCondition`.
+`litAdoptNumberType` returns 0 for it, so both of its callers fall through to that
+coercion. `typemgmt_success` pins `if`, `!` and the explicit `bool.from` in the
+other positions, each with a value whose low bit is 0, because `1` and `-1` read
+the same either way; `typemgmt_bool_refused` pins the refusals.
 `true` and `false` are built carrying `bool`, never `FlagUnkType`, so the rule
 never reaches them. `char` is refused too: an integer is no code point until it
 is converted, `char.from(65)`, so `litAdoptNumberType` returns 0 for it as well,
