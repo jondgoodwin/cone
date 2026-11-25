@@ -181,6 +181,7 @@ SCENARIO_KEYS = {
     "category", "description", "tags", "diagnostics", "exit", "xfail",
     "run", "unlocated", "check", "argv", "link", "include", "program_exit",
     "stderr_mask", "timeout", "compile_timeout", "link_options", "notes",
+    "release_only",
 }
 
 # Wall-clock seconds per process (R1.3) where neither the command line nor the
@@ -787,11 +788,20 @@ class Check:
     file: str | None = None
 
 
+def _release_only(where: str, table: dict) -> bool:
+    value = table.get("release_only", False)
+    if not isinstance(value, bool):
+        raise SuiteError(f"{where}: 'release_only' must be true or false")
+    return value
+
+
 @dataclass(frozen=True)
 class RunSpec:
     name: str
     options: tuple[str, ...]
     compile_timeout: float | None = None
+    # Skipped under --debug: this run's expectation is a release build's by design
+    release_only: bool = False
 
 
 @dataclass
@@ -828,6 +838,8 @@ class Scenario:
     includes: tuple[Path, ...] = ()
     # 'run' only: the exit status the program itself must return
     program_exit: int = 0
+    # Skipped under --debug: every run's expectation is a release build's by design
+    release_only: bool = False
     # 'run' only: patterns whose matches in the program's stderr are written
     # '<masked>' before it is compared with the .err file: what differs from
     # run to run, such as a thread's identity
@@ -1025,7 +1037,8 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
 
         runs = tuple(
             RunSpec(entry.get("name", "default"), tuple(entry.get("options", [])),
-                    parse_timeout(f"{where} run {entry.get('name', 'default')!r}", entry, "compile_timeout"))
+                    parse_timeout(f"{where} run {entry.get('name', 'default')!r}", entry, "compile_timeout"),
+                    _release_only(f"{where} run {entry.get('name', 'default')!r}", entry))
             for entry in table.get("run", [])
         ) or (RunSpec("default", ()),)
         if len({r.name for r in runs}) != len(runs):
@@ -1095,6 +1108,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             argv=argv,
             link=link,
             link_options=link_options,
+            release_only=_release_only(where, table),
             includes=includes,
             program_exit=program_exit,
             stderr_mask=tuple(stderr_mask),
@@ -2906,7 +2920,7 @@ class Runner:
             return False
         if "--lto" in spec.options:
             return True
-        if not self.args.lto:
+        if not self.args.lto or self.args.debug:
             return False
         skipped = {"--debug", "-d", "--wasm", "--library", "-l"}
         for options in (spec.options, scenario.link_options or ()):
@@ -2919,6 +2933,13 @@ class Runner:
                     r"^build:\s*debug", source.read_text(encoding="utf-8"), re.M):
                 return False
         return True
+
+    def debug_forced(self, spec: RunSpec) -> bool:
+        """Whether --debug is added to this run's compiles: under --debug, a run
+        whose options do not already name a debug build. Its optimised-IR and
+        assembly checks are skipped, as under --lto: the optimiser is off, so
+        the post-optimisation dump is not optimised."""
+        return bool(self.args.debug) and "--debug" not in spec.options and "-d" not in spec.options
 
     def timeout_for(self, scenario: Scenario) -> float:
         """Every process the scenario starts (a linked package's compile, its
@@ -2962,7 +2983,15 @@ class Runner:
             return self.run_driver(scenario, spec, out_dir, started)
 
         result = Result(scenario, spec, PASS, 0.0)
+        if self.args.debug and (scenario.release_only or spec.release_only):
+            result.status = SKIP
+            result.note = "release_only: its expectation is a release build's"
+            result.seconds = time.monotonic() - started
+            return result
         options = list(spec.options)
+        use_debug = self.debug_forced(spec)
+        if use_debug:
+            options.append("--debug")
         if scenario.category in ("compile", "run"):
             options += ["--checktree", "--verify"]        # R3.3
         elif scenario.category in ("reject", "recover", "warn"):
@@ -3016,6 +3045,8 @@ class Runner:
             lib_options = spec.options if scenario.link_options is None else scenario.link_options
             if self.lto_for(scenario, spec) and "--lto" not in lib_options:
                 lib_options = [*lib_options, "--lto"]
+            if use_debug and "--debug" not in lib_options and "-d" not in lib_options:
+                lib_options = [*lib_options, "--debug"]
             lib_cmd = [str(self.conec), *lib_options, "--checktree", "--verify",
                        "-o", out_rel, lib_rel]
             if any(c.object == lib.stem for c in scenario.checks):
@@ -3104,11 +3135,11 @@ class Runner:
         if result.status == PASS:
             # Under --lto the optimised IR is a pre-link pipeline's and there is
             # no assembly: those two are pinned by the ordinary run of the case
-            if not use_lto:
+            if not use_lto and not use_debug:
                 self.check_artifacts(result, scenario, out_dir, "llvmir")
             self.check_artifacts(result, scenario, out_dir, "preir")
             self.check_artifacts(result, scenario, out_dir, "symbols")
-            if not use_lto:
+            if not use_lto and not use_debug:
                 self.check_artifacts(result, scenario, out_dir, "asm")
             self.check_artifacts(result, scenario, out_dir, "meta")
             self.check_artifacts(result, scenario, out_dir, "file")
@@ -4385,6 +4416,12 @@ def main(argv: list[str]) -> int:
                         help="build each run scenario with ThinLTO (conec --lto, then"
                              " --lto-link): its compile writes bitcode, and the link"
                              " runs on the objects the ThinLTO link makes")
+    parser.add_argument("--debug", action="store_true",
+                        help="add --debug to every compile whose options do not already carry"
+                             " it (--debug or -d), libraries a scenario builds included: the"
+                             " whole suite as debug builds. Skips the optimised-IR and assembly"
+                             " checks of the runs it changes, and the scenarios and runs marked"
+                             " release_only")
     parser.add_argument("--allow-stale", action="store_true",
                         help="warn instead of refusing when the binary predates a source")
     parser.add_argument("--conec", type=Path, default=None,
