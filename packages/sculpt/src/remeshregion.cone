@@ -12,22 +12,34 @@
 // along its crease.
 //
 // A round, in this order, each pass over the edges in the order their triangles are met:
+//   0. FLIP (the same pass as 3, once more first), so a flat triangle is not split before it is mended.
 //   1. SPLIT every edge longer than 4/3 L at its middle, again and again until none is (at most 20 sweeps).
-//      A region-edge edge is never split. A crease edge's halves keep its crease.
+//      A region-edge edge is never split. A crease edge's halves keep its crease. An edge whose split would leave
+//      a triangle shaped worse than RmMinQuality, and worse than it was, is left (a flat triangle with its apex
+//      on the long edge is mended by a flip or a move; splitting it again and again only flattens it). A crease
+//      edge is split all the same, so its pieces come down to L.
 //   2. COLLAPSE every edge shorter than 4/5 L. A surface vertex is the only kind that goes: it goes to the
 //      other end when that end is a crease or held vertex, to the middle when both ends are surface vertices.
 //      So a crease edge, whose ends are never surface vertices, is never collapsed, and no vertex is ever
 //      pulled off a crease or the region's edge. Refused if a triangle would turn over, an edge would
-//      come out longer than 4/3 L, the manifold link condition fails, or the new edge would be one the rest
-//      of the mesh already has between two region-edge vertices.
-//   3. FLIP an edge where that brings the four vertices' valences nearer 6 (4 on the region's edge); never a
-//      crease, never one that turns a triangle over or makes an edge that exists.
+//      come out longer than 4/3 L, the manifold link condition fails, the new edge would be one the rest
+//      of the mesh already has between two region-edge vertices, or a changed triangle would stray from the
+//      region's surface (its normal more than about 53 degrees from the surface's at its centre) or be shaped
+//      worse than RmMinQuality and worse than it was.
+//   3. FLIP (up to 6 passes) an edge where that makes the shape of the two triangles clearly better (the
+//      Delaunay's reason), or brings the four vertices' valences nearer 6 (4 on the region's edge) with the shape
+//      no worse than RmMinQuality allows; never a crease, never one that turns a triangle over, strays from the
+//      surface, or makes an edge that exists.
 //   4. RELAX each free vertex to the area-weighted centroid of its triangles' centres, within its tangent
 //      plane (a crease vertex to the middle of its two crease neighbours), vertex by vertex in numbering
 //      order; and LAY IT BACK on the surface the region had on entry (SurfaceIndex.nearest on the region's
 //      faces, built once; a crease vertex on the nearest of the region's crease segments). A move that turns
 //      a triangle over is not made.
 // L is 'edgeLength'. Rounds count 'rounds' (0 only cuts the faces into triangles).
+//
+// SHAPE. The triangles that touch the region's edge are only as good as the held vertices there allow: a held
+// edge shorter than 4/5 L, or two held edges meeting at a sharp angle, fixes a sliver beside it. A source skin that
+// has needles along the region's edge keeps them (the nostril's has edges of 0.0006 mm there).
 //
 // NUMBERING. The faces outside the region first, in their order, then the region's triangles. The vertices
 // that no region face has all round (the mesh's own, and the region's edge) first, in their order; then the
@@ -57,6 +69,7 @@ const RmFree = 0u32;     // a surface vertex: moves, may be removed
 const RmCrease = 1u32;   // on a crease: moves along it
 const RmHeld = 2u32;     // never moves
 const RmMaxTriangles = 1000000.0;
+const RmMinQuality: f32 = 0.3;   // a collapse or flip may not leave a triangle shaped worse than this unless it was already
 
 // The working triangle mesh: local vertex numbers (the region's vertices, then new ones), triangles flat
 struct RmWork {
@@ -317,8 +330,22 @@ fn rmSplitPass(w: &mut RmWork, hi: f32) bool {
       rmEdgeTris(w, a, b, &mut ts);
       if ts.len() == 2usize {
         let tsCopy = copyList[u32](&ts);
-        rmSplit(w, a, b, &tsCopy);
-        any = true;
+        let c0 = rmOpposite(w, *ts[0usize], a, b);
+        let c1 = rmOpposite(w, *ts[1usize], a, b);
+        let q0 = rmQuality(rmP(w, a), rmP(w, b), rmP(w, c0));
+        let q1 = rmQuality(rmP(w, a), rmP(w, b), rmP(w, c1));
+        let mid = (rmP(w, a) + rmP(w, b)) * 0.5;
+        let m0 = rmQuality(rmP(w, a), mid, rmP(w, c0)).min(rmQuality(mid, rmP(w, b), rmP(w, c0)));
+        let m1 = rmQuality(rmP(w, a), mid, rmP(w, c1)).min(rmQuality(mid, rmP(w, b), rmP(w, c1)));
+        // not an edge whose split would leave a triangle worse than RmMinQuality, and worse than it was: such a
+        // triangle (a flat one, its apex on the edge) is mended by a flip or a move, and splitting it again and
+        // again only makes it flatter
+        let before = q0.min(q1);
+        let after = m0.min(m1);
+        if rmCrease(w, a, b) > 0. || !(after < RmMinQuality && after < before) {
+          rmSplit(w, a, b, &tsCopy);
+          any = true;
+        }
       }
     }
     i = i + 2usize;
@@ -346,9 +373,25 @@ fn rmFaithful(idx: &SurfaceIndex, p0: Vec3, p1: Vec3, p2: Vec3) bool {
   n.dot(hit.normal) / len > 0.6
 }
 
+// The shape of a triangle: 4 sqrt 3 times its area over the sum of its sides' squares, 1 for an equilateral one,
+// about 0.2 for one with a 10 degree angle, 0 for a flat one
+fn rmQuality(a: Vec3, b: Vec3, c: Vec3) f32 {
+  let s = (b - a).dot(b - a) + (c - b).dot(c - b) + (a - c).dot(a - c);
+  if s <= 0. { return 0.; }
+  6.9282032 * (b - a).cross(c - a).length() * 0.5 / s
+}
+
+// Whether the triangle t, with r gone to k and k at 'at', is faithful to the surface and no worse shaped than
+// MinQuality unless it was already
 fn rmTriFaithful(w: &RmWork, idx: &SurfaceIndex, t: u32, r: u32, k: u32, at: Vec3) bool {
-  rmFaithful(idx, rmMapped(w, rmTv(w, usize.from(t), 0usize), r, k, at), rmMapped(w, rmTv(w, usize.from(t), 1usize), r, k, at),
-    rmMapped(w, rmTv(w, usize.from(t), 2usize), r, k, at))
+  let p0 = rmMapped(w, rmTv(w, usize.from(t), 0usize), r, k, at);
+  let p1 = rmMapped(w, rmTv(w, usize.from(t), 1usize), r, k, at);
+  let p2 = rmMapped(w, rmTv(w, usize.from(t), 2usize), r, k, at);
+  let was = rmQuality(rmP(w, rmTv(w, usize.from(t), 0usize)), rmP(w, rmTv(w, usize.from(t), 1usize)),
+    rmP(w, rmTv(w, usize.from(t), 2usize)));
+  let now = rmQuality(p0, p1, p2);
+  if now < RmMinQuality && now < was { return false; }
+  rmFaithful(idx, p0, p1, p2)
 }
 
 fn rmCollapsible(w: &RmWork, idx: &SurfaceIndex, r: u32, k: u32, at: Vec3, hi: f32) bool {
@@ -470,7 +513,8 @@ fn rmDeviation(w: &RmWork, v: u32, valence: i32) i32 {
   (valence - target) * (valence - target)
 }
 
-fn rmFlipPass(w: &mut RmWork, idx: &SurfaceIndex) {
+fn rmFlipPass(w: &mut RmWork, idx: &SurfaceIndex) bool {
+  var flipped = false;
   let edges = rmEdges(w);
   var ts = List[u32]();
   var i = 0usize;
@@ -498,7 +542,6 @@ fn rmFlipPass(w: &mut RmWork, idx: &SurfaceIndex) {
     let before = rmDeviation(w, a, va) + rmDeviation(w, b, vb) + rmDeviation(w, c, vc) + rmDeviation(w, d, vd);
     let after = rmDeviation(w, a, va - 1i32) + rmDeviation(w, b, vb - 1i32) + rmDeviation(w, c, vc + 1i32)
       + rmDeviation(w, d, vd + 1i32);
-    if after >= before { continue; }
     // the new triangles keep the side of the old ones: t0 is (p, q, c) with p -> q along a -> b or b -> a
     var p = a;
     var q = b;
@@ -517,9 +560,18 @@ fn rmFlipPass(w: &mut RmWork, idx: &SurfaceIndex) {
     let side = n0 + n3;
     if n1.dot(side) <= 0. || n2.dot(side) <= 0. { continue; }
     if !rmFaithful(idx, rmP(w, c), rmP(w, p), rmP(w, d)) || !rmFaithful(idx, rmP(w, c), rmP(w, d), rmP(w, q)) { continue; }
+    let wasQ = rmQuality(rmP(w, p), rmP(w, q), rmP(w, c)).min(rmQuality(rmP(w, q), rmP(w, p), rmP(w, d)));
+    let nowQ = rmQuality(rmP(w, c), rmP(w, p), rmP(w, d)).min(rmQuality(rmP(w, c), rmP(w, d), rmP(w, q)));
+    // flip where the shape is clearly better (the Delaunay's reason), or the valences are nearer and the shape no worse
+    // than RmMinQuality allows
+    let shapeBetter = nowQ > wasQ * 1.05 + 0.001;
+    let valenceBetter = after < before && !(nowQ < RmMinQuality && nowQ < wasQ);
+    if !shapeBetter && !valenceBetter { continue; }
     rmSetTri(w, t0, c, p, d);
     rmSetTri(w, t1, c, d, q);
+    flipped = true;
   }
+  flipped
 }
 
 // ---- relax and lay back ----
@@ -802,9 +854,12 @@ pub fn remeshRegion(m: &PolyMesh, faces: &Array[u32], edgeLength: f32, rounds: u
   var round = 0u32;
   while round < rounds {
     var sweeps = 0u32;
+    var pre = 0u32;
+    while pre < 6u32 && rmFlipPass(&mut w, &idx) { pre = pre + 1u32; }
     while sweeps < 20u32 && rmSplitPass(&mut w, hi) { sweeps = sweeps + 1u32; }
     rmCollapsePass(&mut w, &idx, lo, hi);
-    rmFlipPass(&mut w, &idx);
+    var passes = 0u32;
+    while passes < 6u32 && rmFlipPass(&mut w, &idx) { passes = passes + 1u32; }
     rmRelaxPass(&mut w, &idx, &segs);
     round = round + 1u32;
   }

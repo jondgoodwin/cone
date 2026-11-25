@@ -851,15 +851,77 @@ fn regionEdgeVertices(m: &PolyMesh, flags: &List[bool]) List[bool] {
   out
 }
 
+// The angle between neighbouring faces over the edges inside the region whose middle is within 'reach' of where the old
+// rim lay (points 'rimPts'): the same question as lane 2b's rim angle, put where the rim was, so it can be asked of a
+// mesh that no longer has a rim
+fn nearOldRim(m: &PolyMesh, flags: &List[bool], rimPts: &List[Vec3], reach: f32, mean: &mut f32, count: &mut usize) f32 {
+  var mx: f32 = 0.;
+  var sum: f64 = 0.0;
+  var n = 0usize;
+  var e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    let h0 = m.edgeHalfedge(e, 0u32);
+    let f0 = m.face(h0);
+    let f1 = m.face(m.edgeHalfedge(e, 1u32));
+    if f0 != NoIndex && f1 != NoIndex && *flags[usize.from(f0)] && *flags[usize.from(f1)] {
+      let mid = (*m.positions[usize.from(m.toVertex(h0))] + *m.positions[usize.from(m.fromVertex(h0))]) * 0.5;
+      var near = false;
+      var k = 0usize;
+      while k < rimPts.len() && !near {
+        if (*rimPts[k] - mid).length() < reach { near = true; }
+        k = k + 1usize;
+      }
+      if near {
+        var d = m.faceNormal(f0).dot(m.faceNormal(f1));
+        if d > 1. { d = 1.; }
+        if d < -1. { d = -1.; }
+        let ang = f32.from(libc.acos(f64.from(d))) * 57.29578;
+        if ang > mx { mx = ang; }
+        sum = sum + f64.from(ang);
+        n = n + 1usize;
+      }
+    }
+    e = e + 1u32;
+  }
+  *mean = f32.from(sum / f64.from(n));
+  *count = n;
+  mx
+}
+
 fn regionRow(label: &str, rounds: u32, m: &PolyMesh, region: &List[u32], python: &SurfaceIndex, patchRim: &List[bool],
-    patchFaces: &List[u32], secs: f64) {
+    patchFaces: &List[u32], rimPts: &List[Vec3], secs: f64) {
+  var nrMean: f32 = 0.;
+  var nrCount = 0usize;
+  let nrMax = nearOldRim(m, &faceFlags(m, region), rimPts, 0.06, &mut nrMean, &mut nrCount);
+  var nrMean2: f32 = 0.;
+  var nrCount2 = 0usize;
+  let nrMax2 = nearOldRim(m, &faceFlags(m, region), rimPts, 0.03, &mut nrMean2, &mut nrCount2);
+  print <- "    NEAR within 0.06 mm of where the old rim lay: ", nrCount, " edges, angle between neighbouring faces max ", nrMax, " mean ", nrMean,
+    "; within 0.03 mm: ", nrCount2, " edges max ", nrMax2, " mean ", nrMean2, "\n";
   let a = angleStats(m, region);
   let d = patchDistance(m, region, python);
   let flags = faceFlags(m, region);
   let edge = regionEdgeVertices(m, &flags);
   let ra = rimAngles(m, &flags, &edge);
+  // the triangles with no vertex on the region's edge, and those with some
+  var inner = List[u32]();
+  var touching = List[u32]();
+  var held = List[u32]();      // with two vertices on the edge and a side there shorter than 0.02 mm (the source's own needles)
+  var qi = 0usize;
+  while qi < region.len() {
+    let vs = m.faceVertices(*region[qi]);
+    var on = 0;
+    var k = 0usize;
+    while k < vs.len() { if *edge[usize.from(*vs[k])] { on = on + 1; } k = k + 1usize; }
+    if on == 0 { inner.push(*region[qi]); } else { touching.push(*region[qi]); }
+    qi = qi + 1usize;
+  }
+  let ai = angleStats(m, &inner);
+  let at = angleStats(m, &touching);
   print <- "REMESH ", label, " ", rounds, ": triangles ", region.len(), "; smallest angle ", a.least, " deg, 5th percentile ", a.p5,
     "; to Python (region) max ", d.max, " RMS ", d.rms, " above ", d.out, " below ", d.inn, "\n";
+  print <- "    without a vertex on the region's edge: ", inner.len(), " triangles, smallest ", ai.least, ", 5th percentile ", ai.p5,
+    "; with one: ", touching.len(), " triangles, smallest ", at.least, ", 5th percentile ", at.p5, "\n";
   print <- "    rim angle across the region's own edge max ", ra.rimMax, " (mean ", ra.rimMean, "), skin just outside max ", ra.outMax,
     " (mean ", ra.outMean, ")";
   if patchFaces.len() > 0usize {
@@ -876,7 +938,8 @@ fn remeshProof(refined: &HoleFill, loop: &List[u32], python: &PolyMesh, src: &Po
   let m0 = &refined.mesh;
   var rimFlags = flagList(m0.vertexCount());
   var i = 0usize;
-  while i < loop.len() { rimFlags.set(usize.from(*loop[i]), true); i = i + 1usize; }
+  var rimPts = List[Vec3]();
+  while i < loop.len() { rimFlags.set(usize.from(*loop[i]), true); rimPts.push(*m0.positions[usize.from(*loop[i])]); i = i + 1usize; }
   // the region: the patch and one ring of skin round it (every face with a vertex on the rim)
   var inRegion = faceFlags(m0, &refined.faces);
   var ring = List[u32]();
@@ -919,9 +982,9 @@ fn remeshProof(refined: &HoleFill, loop: &List[u32], python: &PolyMesh, src: &Po
   let b2 = fairRegion(m0, bandList.view(), 2u32, &mut problems);
   let tB2 = t0.elapsed().secondsF64();
   let noFaces = List[u32]();
-  regionRow("refined fill, unfaired", 0u32, m0, &region0, &pyIndex, &rimFlags, &refined.faces, 0.);
-  regionRow("lane 2b order 2", 0u32, &o2, &region0, &pyIndex, &rimFlags, &refined.faces, tO2);
-  regionRow("lane 2b order 2 band", 0u32, &b2, &region0, &pyIndex, &rimFlags, &refined.faces, tB2);
+  regionRow("refined fill, unfaired", 0u32, m0, &region0, &pyIndex, &rimFlags, &refined.faces, &rimPts, 0.);
+  regionRow("lane 2b order 2", 0u32, &o2, &region0, &pyIndex, &rimFlags, &refined.faces, &rimPts, tO2);
+  regionRow("lane 2b order 2 band", 0u32, &b2, &region0, &pyIndex, &rimFlags, &refined.faces, &rimPts, tB2);
 
   // the remesh, at several rounds
   var rounds = List[u32]();
@@ -939,49 +1002,6 @@ fn remeshProof(refined: &HoleFill, loop: &List[u32], python: &PolyMesh, src: &Po
     let fr = fairRegion(&r.mesh, r.vertices.view(), 2u32, &mut problems);
     let tF = t0.elapsed().secondsF64();
     print <- "REMESH rounds ", *rounds[q], ": ", r.faces.len(), " triangles, ", r.vertices.len(), " free vertices, remesh ", tR, " s, fair ", tF, " s\n";
-    if q == 0usize {
-      let nOut = r.mesh.faceCount() - r.faces.len();
-      var ee = 0u32;
-      var shown = 0;
-      while usize.from(ee) < r.mesh.edgeCount() && shown < 8 {
-        let h0 = r.mesh.edgeHalfedge(ee, 0u32);
-        let f0 = r.mesh.face(h0);
-        let f1 = r.mesh.face(r.mesh.edgeHalfedge(ee, 1u32));
-        if f0 != NoIndex && f1 != NoIndex && ((usize.from(f0) >= nOut) != (usize.from(f1) >= nOut)) {
-          let d = r.mesh.faceNormal(f0).dot(r.mesh.faceNormal(f1));
-          let ang = f32.from(libc.acos(f64.from(d))) * 57.29578;
-          if ang > 40. {
-            let fi = if usize.from(f0) >= nOut { f0 } else { f1 };
-            let fo = if usize.from(f0) >= nOut { f1 } else { f0 };
-            var li = List[u32](); li.push(fi);
-            var lo = List[u32](); lo.push(fo);
-            let si = r.mesh.facePositions(fi);
-            let so = r.mesh.facePositions(fo);
-            print <- "  FOLD ", ang, " deg, inside tri least angle ", angleStats(&r.mesh, &li).least, " area ", (( *si[1usize] - *si[0usize]).cross(*si[2usize] - *si[0usize])).length() * 0.5,
-              "; outside tri least angle ", angleStats(&r.mesh, &lo).least, " area ", ((*so[1usize] - *so[0usize]).cross(*so[2usize] - *so[0usize])).length() * 0.5, "\n";
-            shown = shown + 1;
-          }
-        }
-        ee = ee + 1u32;
-      }
-      var bad = 0;
-      var ff = 0usize;
-      while ff < r.faces.len() && bad < 12 {
-        let one = List[u32]();
-        var oneL = List[u32]();
-        oneL.push(*r.faces[ff]);
-        let st = angleStats(&r.mesh, &oneL);
-        if st.least < 3. {
-          let vs = r.mesh.faceVertices(*r.faces[ff]);
-          let p0 = *r.mesh.positions[usize.from(*vs[0usize])];
-          let p1 = *r.mesh.positions[usize.from(*vs[1usize])];
-          let p2 = *r.mesh.positions[usize.from(*vs[2usize])];
-          print <- "  BAD face ", *r.faces[ff], " least ", st.least, " verts ", *vs[0usize], " ", *vs[1usize], " ", *vs[2usize], " free? ", r.vertices.contains(&*vs[0usize]), " ",  " side lengths ", (p1 - p0).length(), " ", (p2 - p1).length(), " ", (p0 - p2).length(), "\n";
-          bad = bad + 1;
-        }
-        ff = ff + 1usize;
-      }
-    }
     results.push(r);
     faired.push(fr);
     secs.push(tR);
@@ -993,8 +1013,8 @@ fn remeshProof(refined: &HoleFill, loop: &List[u32], python: &PolyMesh, src: &Po
   while i < problems.len() { print <- "  ", problems[i].view(), "\n"; i = i + 1usize; }
   q = 0usize;
   while q < rounds.len() {
-    regionRow("remeshed, rounds", *rounds[q], &results[q].mesh, &results[q].faces, &pyIndex, &rimFlags, &noFaces, *secs[q]);
-    regionRow("remeshed and faired order 2, rounds", *rounds[q], &faired[q], &results[q].faces, &pyIndex, &rimFlags, &noFaces,
+    regionRow("remeshed, rounds", *rounds[q], &results[q].mesh, &results[q].faces, &pyIndex, &rimFlags, &noFaces, &rimPts, *secs[q]);
+    regionRow("remeshed and faired order 2, rounds", *rounds[q], &faired[q], &results[q].faces, &pyIndex, &rimFlags, &noFaces, &rimPts,
       *secs[q] + *secsFair[q]);
     q = q + 1usize;
   }
@@ -1022,4 +1042,19 @@ fn remeshProof(refined: &HoleFill, loop: &List[u32], python: &PolyMesh, src: &Po
     row = row + 1;
   }
   save(&cv, "remesh-sheet.png");
+
+  // the wire, large: lane 2b's order 2 patch, its band's, and the remeshed region (the faces drawn blue are the patch,
+  // or the region)
+  var wv = Canvas.make(1800, 600);
+  var wc = 0;
+  while wc < 3 {
+    wv.tile(wc * 600, 0, (wc + 1) * 600, 600, Vec3(0.97, 0.97, 0.97));
+    let cam = Cam.make(outward, up, centre, 88., f32.from(wc * 600) + 300., 300.);
+    let lit = (cam.u * 0.92 + cam.w * 0.38).normalize();
+    let m: &PolyMesh = if wc == 0 { &o2 } else if wc == 1 { &b2 } else { &faired[chosen] };
+    let from = if wc <= 1 { holeFaces } else { faired[chosen].faceCount() - results[chosen].faces.len() };
+    drawMesh(&mut wv, m, &cam, lit, centre, 4.0, from, 0.5, true, false);
+    wc = wc + 1;
+  }
+  save(&wv, "remesh-wire.png");
 }
