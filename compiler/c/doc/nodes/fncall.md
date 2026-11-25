@@ -415,7 +415,8 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   one, and its diagnostics name `==`. A slice, directly or through references,
   has its `!=` derived the same way where its elements have a `==`, and so does
   an array, or a reference to one, compared with a slice; where the elements
-  have none, the `!=` is refused under its own name. A pointer declares its own
+  have none, the `!=` is refused under its own name. So is the `!=` of two
+  arrays. A pointer declares its own
   `!=`, on the pointer, and a virtual reference refuses it, so neither asks a
   referent. A type declaring its own `!=` keeps it, an enum's intrinsic pair
   is declared together, and a type declaring neither is reported missing its
@@ -437,7 +438,7 @@ by value, an array and a function go on to the table's own rows.
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
 | struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent (`fnCallImplicitName`, below), then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetPlace`) takes `&[]` |
 | `TTupleTag` | `==`, `!=` to `fnCallLowerTupleCompare` (below); else `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
-| `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice`; `len` to its count (`fnCallLowerArrayLen`); else a method of core's `Array[T]` (`fnCallLowerSliceMethod`, below) |
+| `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice`, with an array to `fnCallLowerArrayCompare` (below); `len` to its count (`fnCallLowerArrayLen`); else a method of core's `Array[T]` (`fnCallLowerSliceMethod`, below) |
 | `VectorTag` | `fnCallArrIndex` (a lane, `vectorIndex`) under `FlagIndex`; else fill in `()` as `methfld` if absent and `fnCallLowerMethod`, which finds the operator or method in the vector's own namespace. Four things are lowered by hooks of `fnCallLowerMethodOn` or the call's checks and not found there: a number beside a vector (`vectorBroadcastOperand`, before selection), `select` (`vectorSelectLower`), `.from` (`vectorFromCall`, ahead of `fnCallNumberFrom`) and a vector's contents (`contentsLowerVector`) — [vector](vector.md) |
 | `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType`, else a method of core's `Array[T]` |
 | `RefTag` | a key (`lifeIsKey`) refused for anything but `===` and `!==` (`ErrorKeyAccess`); else function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` (a reference to an array: a method of core's `Array[T]`) |
@@ -536,6 +537,8 @@ candidate. `fnCallLowerRefCompare`:
   and the comparison goes on between `Uni[str]` and `&str`. That is what
   `&str == &Uni[str]` already does by the `str` operator's taking the owner as
   its other side, so text compares alike in either order.
+- **Two references to arrays** are read through on both sides and compared as
+  the arrays (`fnCallLowerArrayCompare`).
 - **A referent whose type declares the operator** is asked first with the
   operands as written, so a method declared for references (`self: &`,
   `other: &T`) takes them unchanged. Only when no candidate matches are both
@@ -546,7 +549,7 @@ candidate. `fnCallLowerRefCompare`:
   no `==`.
 - **Anything else is `ErrorRefNoCompare`**, whose message names `===` for `==`
   and `!=`: a referent with no such operator, a referent with no methods at all
-  (an array, a function), and a trait other than an enum, whose comparison would
+  (an array against something else, a function), and a trait other than an enum, whose comparison would
   be dispatched on the variant and is not built. A virtual reference is refused
   the same way in its own arm.
 
@@ -593,8 +596,17 @@ Whether the elements can be compared is decided where the slices are, by
 `fnCallSliceElemNoEq`, which asks what `fnCallLowerRefCompare` would of the
 pair, so a refusal is `ErrorRefNoCompare` naming the element type rather than
 an error reported inside core: a struct declaring no `==`, an enum with a
-variant that carries fields and declares none, an array (whose comparison is not
-built), a trait, a virtual reference.
+variant that carries fields and declares none, a trait, a virtual reference. An
+array element is asked about its own elements.
+
+**A comparison of two arrays is the comparison of their slices**
+(`fnCallLowerArrayCompare`). The two types must be the same, element and length
+(`ErrorInvType`); an ordering and an element with no `==` are
+`ErrorRefNoCompare`. Both operands are lent read-only where they lie
+(`fnCallLendEnumOperand`), the left one converted to the slice of its elements,
+and `fnCallLowerSliceCompare` does the rest. Several sizes are nested arrays, so
+each level is the same comparison again, reached from `mem.sliceEq` through the
+references to its elements.
 
 **A comparison declared against `&Self` is found by values.** Where `==`, `<`,
 `<=`, `>`, `>=` or `<=>` (`threeWayName`) found no candidate for the operands as
