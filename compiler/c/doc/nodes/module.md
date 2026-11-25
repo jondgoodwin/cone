@@ -2604,7 +2604,7 @@ namespace, where folding a member is delegated inheritance.
 
 ### What is implemented
 
-**Little of it.** **A module spans a folder's files**, found by the walk from the
+**What is built is the module tree, folding, imports, `extends`, module traits, generic modules and the generated interface; what is missing is a package as a unit of compilation, a manifest, per-function sections and COMDATs, and nesting within a source file.** **A module spans a folder's files**, found by the walk from the
 designated file the compiler is given, and named for the folder; `mod name;` as
 that file's first statement declares the module and is checked against the
 folder's name. **Every module's first file opens with its `mod` line, and every
