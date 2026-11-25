@@ -15,6 +15,7 @@
 #include <stdarg.h>
 
 int errors = 0;
+int errorsPassedOver = 0;
 int warnings = 0;
 // Non-zero while code is checked as a trial (error.h): a diagnostic is counted
 // and not printed

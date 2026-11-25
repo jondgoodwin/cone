@@ -1,0 +1,36 @@
+// A 'const' is its literal at each use, so there is no place for an assignment to
+// write: a plain '=' to a const's own name is refused as the neighbouring writes
+// are, with ErrorNoMut (1017). Before, the check read flow flags a const does not
+// have: an array const compiled (the store went nowhere, and the constant stayed
+// as it was) and a scalar one stopped in code generation with an internal 1075.
+// Refused here: a scalar, an array, a struct and a tuple const, and an array
+// const while a borrow of it is live.
+
+mod core_const_assign_reject;
+
+struct Pt { pub x: i32; pub y: i32; }
+
+const N: i64 = 5;
+const P: Array[u32, 4] = [1u32, 2u32, 3u32, 4u32];
+const S: Pt = Pt(1i32, 2i32);
+const T: (i32, i32) = 1i32, 2i32;
+
+fn scalar() {
+  N = 6i64;                       //~ ErrorNoMut:3 "permission to modify lval"
+}
+
+fn array() {
+  P = [5u32, 6u32, 7u32, 8u32];   //~ ErrorNoMut:3 "permission to modify lval"
+  P = P;                          //~ ErrorNoMut:3 "permission to modify lval"
+}
+
+fn aggregate() {
+  S = Pt(3i32, 4i32);             //~ ErrorNoMut:3 "permission to modify lval"
+  T = 3i32, 4i32;                 //~ ErrorNoMut:3 "permission to modify lval"
+}
+
+fn pinned() {
+  let r = &P;
+  P = P;                          //~ ErrorNoMut:3 "permission to modify lval"
+  let n = r[0usize];
+}

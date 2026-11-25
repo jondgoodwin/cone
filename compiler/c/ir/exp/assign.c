@@ -481,8 +481,10 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
     uint16_t lvalscope = 0;
     INode *lvalperm = (INode*)immPerm;
     INode *lvalvar = iexpGetStoreLvalInfo(lval, &lvalperm, &lvalscope);
+    // A name that is no variable (a 'const') has no first assignment to wait
+    // for and no flow flags to read: a write to it is refused
     if (!(MayWrite & permGetFlags(lvalperm)) &&
-        (!lvalIsName || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
+        (!lvalIsName || lvalvar->tag != VarDclTag || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
         if (permIsLock(lvalperm))
             permLockRefused(lval, lvalperm, "write");
         else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagEachVar))
