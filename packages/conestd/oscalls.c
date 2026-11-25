@@ -28,6 +28,12 @@
  * See Copyright Notice in conec.h
 */
 
+// Before any include: glibc declares 'syscall' only under _GNU_SOURCE, and the
+// first header included fixes the feature set for every header after it
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 // Not empty on any system (an empty source file is not ISO C)
 typedef int cone_oscalls_t;
 
@@ -53,10 +59,6 @@ int cone_processors(void) {
 #endif
 
 #if defined(__linux__)
-
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
 
 #include <errno.h>
 #include <limits.h>
