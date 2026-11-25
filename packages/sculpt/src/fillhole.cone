@@ -1,0 +1,530 @@
+// ======== Filling a hole ========
+//
+// 'fillHole' closes the boundary loop through vertex v with a patch of triangles. Step 1 triangulates
+// the loop by the least total area, by the dynamic programme of Barequet and Sharir that Liepa (2003,
+// "Filling holes in meshes") starts from: O(n^3), which is why a loop is at most FillMaxLoop edges. A
+// diagonal that is already an edge of the mesh is not used (it would be a third face on an edge), so
+// the least is taken among the triangulations without one; and a triangle folded against the loop's
+// own direction (its Newell vector) costs a hundredth of the loop's area extra, so a jagged rim does not
+// get a patch triangle facing the wrong way unless nothing else covers it. Step 2, when 'refined', is Liepa's
+// refinement: the scale of each loop vertex is the mean length of the boundary edges at it, a patch
+// triangle is split at its centroid while, at every corner, sqrt 2 times the centroid's distance to
+// the corner is more than both the corner's scale and the centroid's (the mean of the corners', so the
+// scale is carried inward by averaging), and after each round of splits edges between two patch
+// triangles are flipped towards the Delaunay condition (the opposite angles add to more than pi), a
+// flip made only if it adds no edge the mesh already has and turns neither triangle over. Step 3, when
+// 'refined': 10 passes of the uniform Laplacian (each new vertex to the mean of its neighbours) on the
+// new vertices only, the loop's vertices held.
+//
+// The patch keeps the loop's boundary edges: old vertices and faces keep their numbers, and the
+// patch's faces and new vertices are appended. A new face, corner, edge or vertex takes each channel's
+// fill value ("crease" on a new edge is then 0).
+//
+// A refusal is a line in 'problems' and the mesh returned unchanged, 'faces' and 'vertices' empty: v is
+// on no boundary; the loop is longer than FillMaxLoop; the loop touches itself (a vertex twice); or
+// every triangulation needs an edge the mesh already has.
+
+pub const FillMaxLoop = 512u32;   // the longest hole boundary fillHole takes, in edges
+
+pub struct HoleFill {
+  pub mesh: PolyMesh;
+  pub faces: List[u32];      // the patch's faces, ascending
+  pub vertices: List[u32];   // the patch's new interior vertices, ascending (empty if not refined)
+}
+
+fn unfilled(m: &PolyMesh, problems: &mut List[String], why: &str) HoleFill {
+  var s = String.from("fillHole: ");
+  s.append(why);
+  problems.push(s);
+  HoleFill(m.clone(), List[u32](), List[u32]())
+}
+
+fn triArea(a: Vec3, b: Vec3, c: Vec3) f64 {
+  f64.from((b - a).cross(c - a).length()) * 0.5
+}
+
+// Whether a patch triangle list has the (undirected) edge a-b
+fn patchHasEdge(tris: &List[u32], a: u32, b: u32) bool {
+  var t = 0usize;
+  while t + 2usize < tris.len() {
+    var k = 0usize;
+    while k < 3usize {
+      let p = *tris[t + k];
+      let q = *tris[t + (k + 1usize) % 3usize];
+      if (p == a && q == b) || (p == b && q == a) { return true; }
+      k = k + 1usize;
+    }
+    t = t + 3usize;
+  }
+  false
+}
+
+fn hasNeighbour(m: &PolyMesh, a: u32, b: u32) bool {
+  let nb = m.vertexNeighbors(a);
+  var i = 0usize;
+  while i < nb.len() {
+    if *nb[i] == b { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+// The angle at p between the directions to a and b
+fn angleAt(p: Vec3, a: Vec3, b: Vec3) f32 {
+  let u = a - p;
+  let w = b - p;
+  let d = u.length() * w.length();
+  if d <= 0. { return 0.; }
+  var c = u.dot(w) / d;
+  if c > 1. { c = 1.; }
+  if c < -1. { c = -1.; }
+  c.acos()
+}
+
+pub fn fillHole(m: &PolyMesh, v: u32, refined: bool, problems: &mut List[String]) HoleFill {
+  let loop = boundaryLoop(m, v);
+  let n = loop.len();
+  if n == 0usize { return unfilled(m, problems, "the vertex is on no boundary"); }
+  if n > usize.from(FillMaxLoop) { return unfilled(m, problems, "the hole's loop is longer than FillMaxLoop"); }
+  var i = 0usize;
+  while i < n {
+    var j = i + 1usize;
+    while j < n {
+      if *loop[i] == *loop[j] { return unfilled(m, problems, "the hole's loop touches itself"); }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  let nv = m.positions.len();
+
+  // Local numbering: the loop's vertices 0..n-1, then the patch's new ones
+  var lp = List[Vec3]();
+  i = 0usize;
+  while i < n {
+    lp.push(*m.positions[usize.from(*loop[i])]);
+    i = i + 1usize;
+  }
+
+  // Diagonals the mesh already has
+  var bad = List[bool].withCapacity(n * n);
+  i = 0usize;
+  while i < n * n {
+    bad.push(false);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < n {
+    let nb = m.vertexNeighbors(*loop[i]);
+    var j = i + 2usize;
+    while j < n {
+      if !(i == 0usize && j == n - 1usize) {
+        var q = 0usize;
+        while q < nb.len() {
+          if *nb[q] == *loop[j] { bad.set(i * n + j, true); }
+          q = q + 1usize;
+        }
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+
+  // The least total area: w[i][j] for the polygon i..j closed by the diagonal j-i
+  let inf = 1.0e300;
+  // A triangle that faces against the loop's own direction (its Newell vector) is folded over the hole's
+  // rim; it costs a hundredth of the loop's area extra, so it is used only when nothing else covers the hole
+  var newell = Vec3(0., 0., 0.);
+  i = 0usize;
+  while i < n {
+    newell = newell + (*lp[i]).cross(*lp[(i + 1usize) % n]);
+    i = i + 1usize;
+  }
+  let penalty = f64.from(newell.length()) * 0.5 * 0.01;
+  var w = List[f64].withCapacity(n * n);
+  var kk = List[u32].withCapacity(n * n);
+  i = 0usize;
+  while i < n * n {
+    w.push(0.);
+    kk.push(0u32);
+    i = i + 1usize;
+  }
+  var len = 2usize;
+  while len < n {
+    i = 0usize;
+    while i + len < n {
+      let j = i + len;
+      var best = inf;
+      var bk = 0u32;
+      var k = i + 1usize;
+      while k < j {
+        let a = *w[i * n + k];
+        let b = *w[k * n + j];
+        if a < inf && b < inf {
+          let tn = (*lp[k] - *lp[i]).cross(*lp[j] - *lp[i]);
+          let against = tn.dot(newell) <= 0.;
+          let cost = a + b + triArea(*lp[i], *lp[k], *lp[j]) + (if against {penalty} else {0.});
+          if cost < best {
+            best = cost;
+            bk = u32.from(k);
+          }
+        }
+        k = k + 1usize;
+      }
+      if *bad[i * n + j] { best = inf; }
+      w.set(i * n + j, best);
+      kk.set(i * n + j, bk);
+      i = i + 1usize;
+    }
+    len = len + 1usize;
+  }
+  if n < 3usize || *w[n - 1usize] >= inf {
+    return unfilled(m, problems, "every triangulation of the hole needs an edge the mesh already has");
+  }
+  var tris = List[u32]();
+  var stack = List[usize]();
+  stack.push(0usize);
+  stack.push(n - 1usize);
+  while stack.len() > 0usize {
+    let j = *stack[stack.len() - 1usize];
+    let a = *stack[stack.len() - 2usize];
+    stack.truncate(stack.len() - 2usize);
+    if j - a >= 2usize {
+      let k = usize.from(*kk[a * n + j]);
+      tris.push(u32.from(a));
+      tris.push(u32.from(k));
+      tris.push(u32.from(j));
+      stack.push(a);
+      stack.push(k);
+      stack.push(k);
+      stack.push(j);
+    }
+  }
+
+  if refined {
+    var sc = List[f32]();
+    i = 0usize;
+    while i < n {
+      let p = (i + n - 1usize) % n;
+      let q = (i + 1usize) % n;
+      sc.push(((*lp[i] - *lp[p]).length() + (*lp[q] - *lp[i]).length()) * 0.5);
+      i = i + 1usize;
+    }
+    var round = 0u32;
+    var splitting = true;
+    while splitting && round < 40u32 && tris.len() < 150000usize {
+      splitting = false;
+      var next = List[u32]();
+      var t = 0usize;
+      while t + 2usize < tris.len() {
+        let a = *tris[t];
+        let b = *tris[t + 1usize];
+        let c = *tris[t + 2usize];
+        let pa = *lp[usize.from(a)];
+        let pb = *lp[usize.from(b)];
+        let pc = *lp[usize.from(c)];
+        let cen = (pa + pb + pc) * (1. / 3.);
+        let sCen = (*sc[usize.from(a)] + *sc[usize.from(b)] + *sc[usize.from(c)]) / 3.;
+        let r2: f32 = 1.4142135;
+        var split = true;
+        var q = 0usize;
+        while q < 3usize {
+          let id = usize.from(*tris[t + q]);
+          let d = (cen - *lp[id]).length() * r2;
+          if !(d > sCen && d > *sc[id]) { split = false; }
+          q = q + 1usize;
+        }
+        if split {
+          let x = u32.from(lp.len());
+          lp.push(cen);
+          sc.push(sCen);
+          next.push(a);
+          next.push(b);
+          next.push(x);
+          next.push(b);
+          next.push(c);
+          next.push(x);
+          next.push(c);
+          next.push(a);
+          next.push(x);
+          splitting = true;
+        } else {
+          next.push(a);
+          next.push(b);
+          next.push(c);
+        }
+        t = t + 3usize;
+      }
+      tris = next;
+      if splitting { flipEdges(m, &loop, &lp, &mut tris); }
+      round = round + 1u32;
+    }
+
+    // Fair the new vertices: the uniform Laplacian, 10 passes
+    let nl = lp.len();
+    var adj = List[List[u32]]();
+    i = 0usize;
+    while i < nl {
+      adj.push(List[u32]());
+      i = i + 1usize;
+    }
+    var t = 0usize;
+    while t + 2usize < tris.len() {
+      var q = 0usize;
+      while q < 3usize {
+        let a = *tris[t + q];
+        let b = *tris[t + (q + 1usize) % 3usize];
+        if usize.from(a) >= n { addOnce(&mut adj[usize.from(a)], b); }
+        if usize.from(b) >= n { addOnce(&mut adj[usize.from(b)], a); }
+        q = q + 1usize;
+      }
+      t = t + 3usize;
+    }
+    var pass = 0u32;
+    while pass < 10u32 {
+      var moved = List[Vec3].withCapacity(nl);
+      i = 0usize;
+      while i < nl {
+        if i >= n && adj[i].len() > 0usize {
+          var sum = Vec3(0., 0., 0.);
+          var q = 0usize;
+          while q < adj[i].len() {
+            sum = sum + *lp[usize.from(*adj[i][q])];
+            q = q + 1usize;
+          }
+          moved.push(sum * (1. / f32.from(adj[i].len())));
+        } else {
+          moved.push(*lp[i]);
+        }
+        i = i + 1usize;
+      }
+      lp = moved;
+      pass = pass + 1u32;
+    }
+  }
+
+  // The new mesh: m's faces, then the patch
+  let nf = m.fHalfedge.len();
+  var pos = List[Vec3]();
+  var vSrc = List[u32]();
+  var v0 = 0usize;
+  while v0 < nv {
+    pos.push(*m.positions[v0]);
+    vSrc.push(u32.from(v0));
+    v0 = v0 + 1usize;
+  }
+  i = n;
+  while i < lp.len() {
+    pos.push(*lp[i]);
+    vSrc.push(0u32);
+    i = i + 1usize;
+  }
+  var counts = List[u32]();
+  var idx = List[u32]();
+  var cSrc = List[u32]();
+  var eSrc = List[u32]();
+  var fSrc = List[u32]();
+  var f = 0usize;
+  while f < nf {
+    let hs = m.faceHalfedges(u32.from(f));
+    let vs = m.faceVertices(u32.from(f));
+    counts.push(u32.from(vs.len()));
+    var j = 0usize;
+    while j < vs.len() {
+      idx.push(*vs[j]);
+      cSrc.push(*hs[j]);
+      eSrc.push(m.edge(*hs[j]));
+      j = j + 1usize;
+    }
+    fSrc.push(u32.from(f));
+    f = f + 1usize;
+  }
+  var t = 0usize;
+  while t + 2usize < tris.len() {
+    counts.push(3u32);
+    var q = 0usize;
+    while q < 3usize {
+      let id = usize.from(*tris[t + q]);
+      idx.push(if id < n {*loop[id]} else {u32.from(nv + id - n)});
+      cSrc.push(0u32);
+      eSrc.push(NoIndex);
+      q = q + 1usize;
+    }
+    fSrc.push(0u32);
+    t = t + 3usize;
+  }
+  var out = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+  let patch = tris.len() / 3usize;
+  if out.fHalfedge.len() != nf + patch {
+    return unfilled(m, problems, "a patch face was refused (the hole's rim is not a simple loop of a manifold mesh)");
+  }
+
+  // Fill values on what is new
+  var newV = List[u32]();
+  i = nv;
+  while i < pos.len() {
+    newV.push(u32.from(i));
+    i = i + 1usize;
+  }
+  var newF = List[u32]();
+  f = nf;
+  while f < nf + patch {
+    newF.push(u32.from(f));
+    f = f + 1usize;
+  }
+  var newC = List[u32]();
+  var newE = List[u32]();
+  f = nf;
+  while f < nf + patch {
+    let hs = out.faceHalfedges(u32.from(f));
+    var j = 0usize;
+    while j < hs.len() {
+      newC.push(*hs[j]);
+      let tf = out.face(out.twin(*hs[j]));
+      if tf != NoIndex && usize.from(tf) >= nf { newE.push(out.edge(*hs[j])); }
+      j = j + 1usize;
+    }
+    f = f + 1usize;
+  }
+  var c = 0usize;
+  while c < out.floats.len() {
+    let els = elementsOf(out.floats[c].domain, &newV, &newF, &newC, &newE);
+    let fill = out.floats[c].fill;
+    var e = 0usize;
+    while e < els.len() {
+      out.setFloat(u32.from(c), *els[e], fill);
+      e = e + 1usize;
+    }
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < out.vec2s.len() {
+    let els = elementsOf(out.vec2s[c].domain, &newV, &newF, &newC, &newE);
+    let fill = out.vec2s[c].fill;
+    var e = 0usize;
+    while e < els.len() {
+      out.setVec2(u32.from(c), *els[e], fill);
+      e = e + 1usize;
+    }
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < out.vec3s.len() {
+    let els = elementsOf(out.vec3s[c].domain, &newV, &newF, &newC, &newE);
+    let fill = out.vec3s[c].fill;
+    var e = 0usize;
+    while e < els.len() {
+      out.setVec3(u32.from(c), *els[e], fill);
+      e = e + 1usize;
+    }
+    c = c + 1usize;
+  }
+  HoleFill(out, newF, if refined {newV} else {List[u32]()})
+}
+
+// The new elements of one domain
+fn elementsOf(domain: u32, newV: &List[u32], newF: &List[u32], newC: &List[u32], newE: &List[u32]) List[u32] {
+  if domain == VertexDomain { return copyList[u32](newV); }
+  if domain == FaceDomain { return copyList[u32](newF); }
+  if domain == CornerDomain { return copyList[u32](newC); }
+  copyList[u32](newE)
+}
+
+fn addOnce(list: &mut List[u32], x: u32) {
+  var i = 0usize;
+  while i < list.len() {
+    if *list[i] == x { return; }
+    i = i + 1usize;
+  }
+  list.push(x);
+}
+
+// Flip edges between two patch triangles towards Delaunay, passes until none flips (at most 60)
+fn flipEdges(m: &PolyMesh, loop: &List[u32], lp: &List[Vec3], tris: &mut List[u32]) {
+  let n = loop.len();
+  let pi: f32 = 3.14159265;
+  var pass = 0u32;
+  var flipped = true;
+  while flipped && pass < 60u32 {
+    flipped = false;
+    let nt = tris.len() / 3usize;
+    var touched = List[bool].withCapacity(nt);
+    var byVertex = List[List[u32]]();
+    var i = 0usize;
+    while i < lp.len() {
+      byVertex.push(List[u32]());
+      i = i + 1usize;
+    }
+    var t = 0usize;
+    while t < nt {
+      touched.push(false);
+      var q = 0usize;
+      while q < 3usize {
+        byVertex[usize.from(*tris[3usize * t + q])].push(u32.from(t));
+        q = q + 1usize;
+      }
+      t = t + 1usize;
+    }
+    t = 0usize;
+    while t < nt {
+      var q = 0usize;
+      while q < 3usize && !*touched[t] {
+        let a = *tris[3usize * t + q];
+        let b = *tris[3usize * t + (q + 1usize) % 3usize];
+        let c = *tris[3usize * t + (q + 2usize) % 3usize];
+        // The triangle u with the edge b -> a
+        var u = NoIndex;
+        var s = 0usize;
+        while s < byVertex[usize.from(a)].len() && u == NoIndex {
+          let cand = usize.from(*byVertex[usize.from(a)][s]);
+          if cand != t {
+            var r = 0usize;
+            while r < 3usize {
+              if *tris[3usize * cand + r] == b && *tris[3usize * cand + (r + 1usize) % 3usize] == a { u = u32.from(cand); }
+              r = r + 1usize;
+            }
+          }
+          s = s + 1usize;
+        }
+        if u != NoIndex && !*touched[usize.from(u)] {
+          let ub = 3usize * usize.from(u);
+          var d = NoIndex;
+          var r = 0usize;
+          while r < 3usize {
+            let x = *tris[ub + r];
+            if x != a && x != b { d = x; }
+            r = r + 1usize;
+          }
+          let pa = *lp[usize.from(a)];
+          let pb = *lp[usize.from(b)];
+          let pc = *lp[usize.from(c)];
+          let pd = *lp[usize.from(d)];
+          let sum = angleAt(pc, pa, pb) + angleAt(pd, pa, pb);
+          var ok = sum > pi + 0.0001 && c != d;
+          if ok && usize.from(c) < n && usize.from(d) < n && hasNeighbour(m, *loop[usize.from(c)], *loop[usize.from(d)]) { ok = false; }
+          if ok && patchHasEdge(tris, c, d) { ok = false; }
+          if ok {
+            // The new triangles (a, d, c) and (d, b, c) must keep the old ones' side
+            let n0 = (pb - pa).cross(pc - pa) + (pa - pb).cross(pd - pb);
+            let n1 = (pd - pa).cross(pc - pa);
+            let n2 = (pb - pd).cross(pc - pd);
+            if n1.dot(n0) <= 0. || n2.dot(n0) <= 0. { ok = false; }
+          }
+          if ok {
+            tris.set(3usize * t, a);
+            tris.set(3usize * t + 1usize, d);
+            tris.set(3usize * t + 2usize, c);
+            tris.set(ub, d);
+            tris.set(ub + 1usize, b);
+            tris.set(ub + 2usize, c);
+            touched.set(t, true);
+            touched.set(usize.from(u), true);
+            flipped = true;
+          }
+        }
+        q = q + 1usize;
+      }
+      t = t + 1usize;
+    }
+    pass = pass + 1u32;
+  }
+}

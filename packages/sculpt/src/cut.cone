@@ -1,0 +1,794 @@
+// ======== Cutting by a plane: section, bisect, delete faces ========
+//
+// 'symmetrize' (symmetry.cone) and 'bisect' share one cutting pass, 'cutKeepPositive': the faces
+// on the side the normal points to are kept, a face the plane crosses is cut, and the cut is made
+// as symmetry.cone's header describes (one new vertex per crossed edge, a vertex on the plane
+// reused, every channel blended along the edge). 'sectionByPlane' reads the same crossings into
+// loops, and 'deleteFaces' is the other half of surgery: faces removed, the mesh left manifold.
+//
+// The plane is a point 'origin' on it and a 'normal' (made unit). A vertex is on the plane when
+// its distance d = (p - origin) . normal is within a tolerance of 0: for 'bisect' and
+// 'sectionByPlane' that is 1e-6 of the mesh's bounding diagonal; for 'symmetrize' half its 'merge'.
+//
+// - 'sectionByPlane': the loops where the plane meets the mesh. A loop's segments come from the
+//   faces the plane passes through (one segment each, from where its boundary leaves the positive
+//   side to where it comes back) and from the edges lying in the plane between a face wholly on
+//   one side and a face wholly on the other; an edge in the plane whose two faces are not strictly
+//   on opposite sides gives no segment, so a plane that only touches the mesh gives no loop. The
+//   segments run with the positive side's face on their left. Loops come out in order of their
+//   lowest source edge (a segment's source edge: the edge its entry crosses, else the edge its
+//   exit crosses, else its in-plane edge, else the face's first edge), each starting at its lowest
+//   segment; a loop the mesh's own boundary opens is returned open, from its start.
+// - 'bisect': the half of the mesh on the side the normal points AWAY from is kept (d <= 0), the
+//   normal pointing at what is cut off. A face is kept only if one of its vertices is strictly on
+//   the kept side. 'capped' closes each section loop with one n-gon facing the cut-off side; a loop
+//   with another loop inside it (a tube cut across) is left open and a problem line says so.
+//   A cap takes its face values from the face beside its first side, its corner values from the
+//   corner opposite, and its sides' edge values from the edges they already are.
+// - 'deleteFaces': the faces numbered are removed (a number past the last face is ignored, as is a
+//   repeat). A vertex left on no face goes; the rest keep their order. A vertex left touching
+//   two separate fans of faces is made into one copy per fan (the first fan keeps its place, the
+//   other copies follow the last vertex), so the result is manifold.
+
+// Where an edge crosses the plane: the new vertex between vertices lo and hi
+// (lo the lower numbered), a fraction t of the way from lo to hi
+struct PlaneCut {
+  pub lo: u32;
+  pub hi: u32;
+  pub t: f32;
+}
+
+// The cut of edge e (joining a and b), made if it is not yet, as an index
+// into 'cuts'
+fn cutOfEdge(e: u32, a: u32, b: u32, da: f32, db: f32, byEdge: &mut List[u32], cuts: &mut List[PlaneCut]) u32 {
+  let found = *byEdge[usize.from(e)];
+  if found != NoIndex { return found; }
+  let lo = if a < b {a} else {b};
+  let hi = if a < b {b} else {a};
+  let dlo = if a < b {da} else {db};
+  let dhi = if a < b {db} else {da};
+  let id = u32.from(cuts.len());
+  cuts.push(PlaneCut(lo, hi, dlo / (dlo - dhi)));
+  byEdge.set(usize.from(e), id);
+  id
+}
+
+// The kept faces' corners (see 'cutFaces'), and the plane's segments
+struct CutPass {
+  pub counts: List[u32];
+  pub refs: List[u32];       // a vertex of m, or nv plus a cut
+  pub cSrc: List[u32];
+  pub eSrc: List[u32];
+  pub cOther: List[u32];
+  pub cT: List[f32];
+  pub fSrc: List[u32];
+  pub cuts: List[PlaneCut];
+  pub segA: List[u32];       // each segment's start, as a ref
+  pub segB: List[u32];       // and its end
+  pub segKey: List[u32];     // and its source edge
+}
+
+// Each vertex's distance from the plane and its side: 1, 0 (within eps) or -1
+fn planeSides(m: &PolyMesh, origin: Vec3, n: Vec3, eps: f32, dist: &mut List[f32], side: &mut List[i32]) {
+  let nv = m.positions.len();
+  var v = 0usize;
+  while v < nv {
+    let d = (*m.positions[v] - origin).dot(n);
+    dist.push(d);
+    side.push(if d > eps {1} else if d < -eps {-1} else {0});
+    v = v + 1usize;
+  }
+}
+
+// The cutting pass: which faces are kept (those with a vertex strictly on the positive side), cut
+// to that side, as corners; and the plane's segments (see the header)
+fn cutFaces(m: &PolyMesh, dist: &List[f32], side: &List[i32]) CutPass {
+  let nv = m.positions.len();
+  var counts = List[u32]();
+  var refs = List[u32]();
+  var cSrc = List[u32]();
+  var eSrc = List[u32]();
+  var cOther = List[u32]();
+  var cT = List[f32]();
+  var fSrc = List[u32]();
+  var segA = List[u32]();
+  var segB = List[u32]();
+  var segKey = List[u32]();
+  var fSign = List[i32].withCapacity(m.fHalfedge.len());
+  var byEdge = List[u32].withCapacity(m.edgeCount());
+  var e = 0usize;
+  while e < m.edgeCount() {
+    byEdge.push(NoIndex);
+    e = e + 1usize;
+  }
+  var cuts = List[PlaneCut]();
+
+  var f = 0usize;
+  while f < m.fHalfedge.len() {
+    let vs = m.faceVertices(u32.from(f));
+    let hs = m.faceHalfedges(u32.from(f));
+    let k = vs.len();
+    var npos = 0usize;
+    var nneg = 0usize;
+    var i = 0usize;
+    while i < k {
+      let s = *side[usize.from(*vs[i])];
+      if s > 0 { npos = npos + 1usize; }
+      if s < 0 { nneg = nneg + 1usize; }
+      i = i + 1usize;
+    }
+    fSign.push(if npos > 0usize && nneg == 0usize {1} else if nneg > 0usize && npos == 0usize {-1} else {0});
+    if npos > 0usize && nneg == 0usize {
+      counts.push(u32.from(k));
+      i = 0usize;
+      while i < k {
+        refs.push(*vs[i]);
+        cSrc.push(*hs[i]);
+        eSrc.push(m.edge(*hs[i]));
+        cOther.push(NoIndex);
+        cT.push(0.);
+        i = i + 1usize;
+      }
+      fSrc.push(u32.from(f));
+    } else if npos > 0usize {
+      var tRef = List[u32]();
+      var tCs = List[u32]();
+      var tEs = List[u32]();
+      var tOther = List[u32]();
+      var tT = List[f32]();
+      // Where the face's boundary leaves the positive side (0) and comes back (1)
+      var evKind = List[u32]();
+      var evRef = List[u32]();
+      var evEdge = List[u32]();
+      i = 0usize;
+      while i < k {
+        let p = (i + k - 1usize) % k;
+        let vp = *vs[p];
+        let vc = *vs[i];
+        let sp = *side[usize.from(vp)];
+        let sc = *side[usize.from(vc)];
+        let eIn = m.edge(*hs[i]);
+        let crossing = (sp > 0 && sc < 0) || (sp < 0 && sc > 0);
+        let tc = if crossing {*dist[usize.from(vp)] / (*dist[usize.from(vp)] - *dist[usize.from(vc)])} else {0.};
+        if sp >= 0 && sc >= 0 {
+          tRef.push(vc);
+          tCs.push(*hs[i]);
+          tEs.push(eIn);
+          tOther.push(NoIndex);
+          tT.push(0.);
+        } else if sp >= 0 && sc < 0 {
+          if sp > 0 {
+            let c = cutOfEdge(eIn, vp, vc, *dist[usize.from(vp)], *dist[usize.from(vc)], &mut byEdge, &mut cuts);
+            tRef.push(u32.from(nv) + c);
+            tCs.push(*hs[p]);
+            tEs.push(eIn);
+            tOther.push(*hs[i]);
+            tT.push(tc);
+            evKind.push(0u32);
+            evRef.push(u32.from(nv) + c);
+            evEdge.push(eIn);
+          } else {
+            evKind.push(0u32);
+            evRef.push(vp);
+            evEdge.push(NoIndex);
+          }
+        } else if sp < 0 && sc >= 0 {
+          if sc > 0 {
+            let c = cutOfEdge(eIn, vp, vc, *dist[usize.from(vp)], *dist[usize.from(vc)], &mut byEdge, &mut cuts);
+            tRef.push(u32.from(nv) + c);
+            tCs.push(*hs[p]);
+            tEs.push(NoIndex);
+            tOther.push(*hs[i]);
+            tT.push(tc);
+            evKind.push(1u32);
+            evRef.push(u32.from(nv) + c);
+            evEdge.push(eIn);
+          } else {
+            evKind.push(1u32);
+            evRef.push(vc);
+            evEdge.push(NoIndex);
+          }
+          tRef.push(vc);
+          tCs.push(*hs[i]);
+          tEs.push(if sc > 0 {eIn} else {NoIndex});
+          tOther.push(NoIndex);
+          tT.push(0.);
+        }
+        i = i + 1usize;
+      }
+      // The segments: each exit joined to the entry after it
+      if nneg > 0usize {
+        var j = 0usize;
+        while j < evKind.len() {
+          let nx = (j + 1usize) % evKind.len();
+          if *evKind[j] == 0u32 && *evKind[nx] == 1u32 && *evRef[j] != *evRef[nx] {
+            segA.push(*evRef[j]);
+            segB.push(*evRef[nx]);
+            var key = *evEdge[nx];
+            if *evEdge[j] != NoIndex && (key == NoIndex || *evEdge[j] < key) { key = *evEdge[j]; }
+            if key == NoIndex { key = m.edge(*hs[0usize]); }
+            segKey.push(key);
+          }
+          j = j + 1usize;
+        }
+      }
+      // Kept if it is a polygon: three corners, no vertex twice
+      var ok = tRef.len() >= 3usize;
+      i = 0usize;
+      while ok && i < tRef.len() {
+        var j = i + 1usize;
+        while j < tRef.len() {
+          if *tRef[i] == *tRef[j] { ok = false; }
+          j = j + 1usize;
+        }
+        i = i + 1usize;
+      }
+      if ok {
+        counts.push(u32.from(tRef.len()));
+        i = 0usize;
+        while i < tRef.len() {
+          refs.push(*tRef[i]);
+          cSrc.push(*tCs[i]);
+          eSrc.push(*tEs[i]);
+          cOther.push(*tOther[i]);
+          cT.push(*tT[i]);
+          i = i + 1usize;
+        }
+        fSrc.push(u32.from(f));
+      }
+    }
+    f = f + 1usize;
+  }
+
+  // Edges in the plane between a face wholly on one side and a face wholly on the other: a segment
+  // running with the positive face on its left
+  e = 0usize;
+  while e < m.edgeCount() {
+    let h0 = 2u32 * u32.from(e);
+    let h1 = h0 + 1u32;
+    let a = m.toVertex(h1);
+    let b = m.toVertex(h0);
+    if *side[usize.from(a)] == 0 && *side[usize.from(b)] == 0 {
+      let f0 = m.face(h0);
+      let f1 = m.face(h1);
+      if f0 != NoIndex && f1 != NoIndex {
+        let s0 = *fSign[usize.from(f0)];
+        let s1 = *fSign[usize.from(f1)];
+        if s0 > 0 && s1 < 0 {
+          segA.push(a);
+          segB.push(b);
+          segKey.push(u32.from(e));
+        } else if s1 > 0 && s0 < 0 {
+          segA.push(b);
+          segB.push(a);
+          segKey.push(u32.from(e));
+        }
+      }
+    }
+    e = e + 1usize;
+  }
+  CutPass(counts, refs, cSrc, eSrc, cOther, cT, fSrc, cuts, segA, segB, segKey)
+}
+
+// A cut's point, on the plane
+fn cutPoint(m: &PolyMesh, cut: &PlaneCut, origin: Vec3, n: Vec3) Vec3 {
+  let lo = *m.positions[usize.from(cut.lo)];
+  let hi = *m.positions[usize.from(cut.hi)];
+  let at = lo + (hi - lo) * cut.t;
+  at - n * (at - origin).dot(n)
+}
+
+// A pass's ref as a point
+fn refPoint(m: &PolyMesh, pass: &CutPass, r: u32, origin: Vec3, n: Vec3) Vec3 {
+  let nv = u32.from(m.positions.len());
+  if r < nv { *m.positions[usize.from(r)] } else { cutPoint(m, &pass.cuts[usize.from(r - nv)], origin, n) }
+}
+
+// The part of m on the side the unit normal n points to, cut at the plane, every channel carried
+// and the cuts' blended; the corners 'cutFaces' chose, assembled. Empty when nothing is kept.
+fn cutKeepPositive(m: &PolyMesh, origin: Vec3, n: Vec3, eps: f32) PolyMesh {
+  let nv = m.positions.len();
+  var dist = List[f32].withCapacity(nv);
+  var side = List[i32].withCapacity(nv);
+  planeSides(m, origin, n, eps, &mut dist, &mut side);
+  let pass = cutFaces(m, &dist, &side);
+  assembleCut(m, &pass, origin, n)
+}
+
+fn assembleCut(m: &PolyMesh, pass: &CutPass, origin: Vec3, n: Vec3) PolyMesh {
+  let nv = m.positions.len();
+  let counts = &pass.counts;
+  let refs = &pass.refs;
+  let cuts = &pass.cuts;
+  if counts.len() == 0usize { return PolyMesh(); }
+
+  // The vertices: those of the kept faces in their order, then the cuts
+  var used = List[bool].withCapacity(nv);
+  var v = 0usize;
+  while v < nv {
+    used.push(false);
+    v = v + 1usize;
+  }
+  var r = 0usize;
+  while r < refs.len() {
+    if usize.from(*refs[r]) < nv { used.set(usize.from(*refs[r]), true); }
+    r = r + 1usize;
+  }
+  var newOf = List[u32].withCapacity(nv);
+  var pos = List[Vec3]();
+  var vSrc = List[u32]();
+  v = 0usize;
+  while v < nv {
+    if *used[v] {
+      newOf.push(u32.from(pos.len()));
+      pos.push(*m.positions[v]);
+      vSrc.push(u32.from(v));
+    } else {
+      newOf.push(NoIndex);
+    }
+    v = v + 1usize;
+  }
+  let keptCount = pos.len();
+  var c = 0usize;
+  while c < cuts.len() {
+    pos.push(cutPoint(m, &cuts[c], origin, n));
+    vSrc.push(cuts[c].lo);
+    c = c + 1usize;
+  }
+  var idx = List[u32].withCapacity(refs.len());
+  r = 0usize;
+  while r < refs.len() {
+    let ref = *refs[r];
+    if usize.from(ref) < nv { idx.push(*newOf[usize.from(ref)]); } else { idx.push(u32.from(keptCount) + ref - u32.from(nv)); }
+    r = r + 1usize;
+  }
+  var kept = assemble(m, &pos, &vSrc, counts, &idx, &pass.cSrc, &pass.eSrc, &pass.fSrc);
+
+  // The cuts' vertex values, and the cut corners' values, blended
+  c = 0usize;
+  while c < cuts.len() {
+    let nvx = u32.from(keptCount + c);
+    let a = cuts[c].lo;
+    let b = cuts[c].hi;
+    let t = cuts[c].t;
+    var k = 0usize;
+    while k < kept.floats.len() {
+      if kept.floats[k].domain == VertexDomain {
+        let x = m.float(u32.from(k), a);
+        kept.setFloat(u32.from(k), nvx, x + (m.float(u32.from(k), b) - x) * t);
+      }
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < kept.vec2s.len() {
+      if kept.vec2s[k].domain == VertexDomain {
+        kept.setVec2(u32.from(k), nvx, m.vec2(u32.from(k), a).lerp(m.vec2(u32.from(k), b), t));
+      }
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < kept.vec3s.len() {
+      if kept.vec3s[k].domain == VertexDomain {
+        kept.setVec3(u32.from(k), nvx, m.vec3(u32.from(k), a).lerp(m.vec3(u32.from(k), b), t));
+      }
+      k = k + 1usize;
+    }
+    c = c + 1usize;
+  }
+  var given = List[u32]();
+  var first = List[u32]();
+  madeFaces(&kept, counts, &idx, &mut given, &mut first);
+  var kf = 0usize;
+  while kf < kept.fHalfedge.len() {
+    let hs = kept.faceHalfedges(u32.from(kf));
+    let base = usize.from(*first[kf]);
+    var j = 0usize;
+    while j < hs.len() {
+      let other = *pass.cOther[base + j];
+      if other != NoIndex {
+        let a = *pass.cSrc[base + j];
+        let t = *pass.cT[base + j];
+        let h = *hs[j];
+        var k = 0usize;
+        while k < kept.floats.len() {
+          if kept.floats[k].domain == CornerDomain {
+            let x = m.float(u32.from(k), a);
+            kept.setFloat(u32.from(k), h, x + (m.float(u32.from(k), other) - x) * t);
+          }
+          k = k + 1usize;
+        }
+        k = 0usize;
+        while k < kept.vec2s.len() {
+          if kept.vec2s[k].domain == CornerDomain {
+            kept.setVec2(u32.from(k), h, m.vec2(u32.from(k), a).lerp(m.vec2(u32.from(k), other), t));
+          }
+          k = k + 1usize;
+        }
+        k = 0usize;
+        while k < kept.vec3s.len() {
+          if kept.vec3s[k].domain == CornerDomain {
+            kept.setVec3(u32.from(k), h, m.vec3(u32.from(k), a).lerp(m.vec3(u32.from(k), other), t));
+          }
+          k = k + 1usize;
+        }
+      }
+      j = j + 1usize;
+    }
+    kf = kf + 1usize;
+  }
+  kept
+}
+
+// ---- sectionByPlane ----
+
+// The loops in which a plane meets a mesh
+pub struct PlaneSection {
+  pub points: List[Vec3];   // every loop's points, loop after loop
+  pub starts: List[u32];    // each loop's first index into points, and one last entry, points.len()
+  pub closed: List[bool];   // per loop: true if it returns to its start
+}
+
+// The bounding diagonal's 1e-6, the tolerance for 'on the plane'
+fn planeTolerance(m: &PolyMesh) f32 {
+  let b = m.bounds();
+  (b.max - b.min).length() * 0.000001
+}
+
+pub fn sectionByPlane(m: &PolyMesh, origin: Vec3, normal: Vec3) PlaneSection {
+  var out = PlaneSection(List[Vec3](), List[u32](), List[bool]());
+  out.starts.push(0u32);
+  let n = unit(normal);
+  let nv = m.positions.len();
+  if n.dot(n) == 0. || nv == 0usize { return out; }
+  var dist = List[f32].withCapacity(nv);
+  var side = List[i32].withCapacity(nv);
+  planeSides(m, origin, n, planeTolerance(m), &mut dist, &mut side);
+  let pass = cutFaces(m, &dist, &side);
+  let ns = pass.segA.len();
+
+  // The segments by source edge, then by number
+  var order = List[usize].withCapacity(ns);
+  var s = 0usize;
+  while s < ns {
+    var at = order.len();
+    order.push(s);
+    while at > 0usize && *pass.segKey[*order[at - 1usize]] > *pass.segKey[s] {
+      order.set(at, *order[at - 1usize]);
+      at = at - 1usize;
+      order.set(at, s);
+    }
+    s = s + 1usize;
+  }
+  var used = List[bool].withCapacity(ns);
+  s = 0usize;
+  while s < ns {
+    used.push(false);
+    s = s + 1usize;
+  }
+
+  var o = 0usize;
+  while o < ns {
+    let s0 = *order[o];
+    o = o + 1usize;
+    if !*used[s0] {
+    // Back from s0 to where its chain begins (or round to s0 again, a closed loop)
+    var head = s0;
+    var steps = 0usize;
+    var going = true;
+    while going && steps <= ns {
+      var found = NoIndex;
+      var q = 0usize;
+      while q < ns && found == NoIndex {
+        let t = *order[q];
+        if !*used[t] && *pass.segB[t] == *pass.segA[head] { found = u32.from(t); }
+        q = q + 1usize;
+      }
+      if found == NoIndex {
+        going = false;
+      } else if usize.from(found) == s0 {
+        head = s0;
+        going = false;
+      } else {
+        head = usize.from(found);
+      }
+      steps = steps + 1usize;
+    }
+    // Forward from the head
+    var cur = head;
+    var chain = List[usize]();
+    var more = true;
+    while more {
+      used.set(cur, true);
+      chain.push(cur);
+      var next = NoIndex;
+      var q = 0usize;
+      while q < ns && next == NoIndex {
+        let t = *order[q];
+        if !*used[t] && *pass.segA[t] == *pass.segB[cur] { next = u32.from(t); }
+        q = q + 1usize;
+      }
+      if next == NoIndex { more = false; } else { cur = usize.from(next); }
+    }
+    var i = 0usize;
+    while i < chain.len() {
+      out.points.push(refPoint(m, &pass, *pass.segA[*chain[i]], origin, n));
+      i = i + 1usize;
+    }
+    let isClosed = *pass.segB[*chain[chain.len() - 1usize]] == *pass.segA[*chain[0usize]];
+    if !isClosed { out.points.push(refPoint(m, &pass, *pass.segB[*chain[chain.len() - 1usize]], origin, n)); }
+    out.closed.push(isClosed);
+    out.starts.push(u32.from(out.points.len()));
+    }
+  }
+  out
+}
+
+// ---- bisect ----
+
+pub fn bisect(m: &PolyMesh, origin: Vec3, normal: Vec3, capped: bool, problems: &mut List[String]) PolyMesh {
+  let n = unit(normal);
+  if n.dot(n) == 0. || m.positions.len() == 0usize {
+    problems.push(String.from("bisect: the plane has no normal, or the mesh no vertices"));
+    return m.clone();
+  }
+  let eps = planeTolerance(m);
+  let away = Vec3(0., 0., 0.) - n;
+  let kept = cutKeepPositive(m, origin, away, eps);
+  if !capped || kept.positions.len() == 0usize { return kept; }
+
+  // The boundary loops lying in the plane
+  var loopHs = List[u32]();      // each loop's half-edges, loop after loop
+  var loopStarts = List[u32]();
+  var seen = List[bool].withCapacity(kept.hVertex.len());
+  var h = 0usize;
+  while h < kept.hVertex.len() {
+    seen.push(false);
+    h = h + 1usize;
+  }
+  h = 0usize;
+  while h < kept.hVertex.len() {
+    if !*seen[h] && kept.isBoundaryHalfedge(u32.from(h)) {
+      var cur = u32.from(h);
+      var inPlane = true;
+      var tmp = List[u32]();
+      var going = true;
+      while going {
+        seen.set(usize.from(cur), true);
+        tmp.push(cur);
+        let d = (*kept.positions[usize.from(kept.toVertex(cur))] - origin).dot(n);
+        if d.abs() > eps * 2. { inPlane = false; }
+        cur = kept.next(cur);
+        going = usize.from(cur) != h && tmp.len() <= kept.hVertex.len();
+      }
+      if inPlane && tmp.len() >= 3usize {
+        loopStarts.push(u32.from(loopHs.len()));
+        var q = 0usize;
+        while q < tmp.len() {
+          loopHs.push(*tmp[q]);
+          q = q + 1usize;
+        }
+      }
+    }
+    h = h + 1usize;
+  }
+  loopStarts.push(u32.from(loopHs.len()));
+  let nl = loopStarts.len() - 1usize;
+  if nl == 0usize { return kept; }
+
+  // Which loops have another loop inside them: in the plane, by a basis of it
+  let ax = if n.x.abs() < 0.9 {Vec3(1., 0., 0.)} else {Vec3(0., 1., 0.)};
+  let u = unit(n.cross(ax));
+  let w = n.cross(u);
+  var xs = List[f64]();
+  var ys = List[f64]();
+  var cycles = List[List[u32]]();
+  var l = 0usize;
+  while l < nl {
+    var cyc = List[u32]();
+    var i = usize.from(*loopStarts[l]);
+    while i < usize.from(*loopStarts[l + 1usize]) {
+      let p = *kept.positions[usize.from(kept.toVertex(*loopHs[i]))];
+      cyc.push(u32.from(xs.len()));
+      xs.push(f64.from(p.dot(u)));
+      ys.push(f64.from(p.dot(w)));
+      i = i + 1usize;
+    }
+    cycles.push(cyc);
+    l = l + 1usize;
+  }
+  var nested = List[bool]();
+  l = 0usize;
+  while l < nl {
+    nested.push(false);
+    l = l + 1usize;
+  }
+  l = 0usize;
+  while l < nl {
+    var o = 0usize;
+    while o < nl {
+      if o != l {
+        let probe = usize.from(*cycles[o][0usize]);
+        if pointInPolygon(*xs[probe], *ys[probe], &xs, &ys, &cycles[l]) > 0i32 {
+          nested.set(l, true);
+          nested.set(o, true);
+        }
+      }
+      o = o + 1usize;
+    }
+    l = l + 1usize;
+  }
+
+  // The kept mesh's faces, and a cap for each loop not nested
+  var counts = List[u32]();
+  var idx = List[u32]();
+  var cSrc = List[u32]();
+  var eSrc = List[u32]();
+  var fSrc = List[u32]();
+  var vSrc = List[u32]();
+  var f = 0usize;
+  while f < kept.fHalfedge.len() {
+    let hs = kept.faceHalfedges(u32.from(f));
+    let vs = kept.faceVertices(u32.from(f));
+    counts.push(u32.from(vs.len()));
+    var i = 0usize;
+    while i < vs.len() {
+      idx.push(*vs[i]);
+      cSrc.push(*hs[i]);
+      eSrc.push(kept.edge(*hs[i]));
+      i = i + 1usize;
+    }
+    fSrc.push(u32.from(f));
+    f = f + 1usize;
+  }
+  var v = 0usize;
+  while v < kept.positions.len() {
+    vSrc.push(u32.from(v));
+    v = v + 1usize;
+  }
+  var anyNested = false;
+  l = 0usize;
+  while l < nl {
+    if *nested[l] {
+      anyNested = true;
+    } else {
+      let a = usize.from(*loopStarts[l]);
+      let b = usize.from(*loopStarts[l + 1usize]);
+      counts.push(u32.from(b - a));
+      var i = a;
+      while i < b {
+        let hh = *loopHs[i];
+        idx.push(kept.fromVertex(hh));
+        cSrc.push(kept.twin(hh));
+        eSrc.push(kept.edge(hh));
+        i = i + 1usize;
+      }
+      fSrc.push(kept.face(kept.twin(*loopHs[a])));
+    }
+    l = l + 1usize;
+  }
+  if anyNested {
+    problems.push(String.from("bisect: a section loop has another loop inside it (a tube cut across), so it is left open"));
+  }
+  assemble(&kept, &kept.positions, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc)
+}
+
+// ---- deleteFaces ----
+
+fn fanRoot(parent: &mut List[u32], x: u32) u32 {
+  var r = x;
+  while *parent[usize.from(r)] != r { r = *parent[usize.from(r)]; }
+  var c = x;
+  while *parent[usize.from(c)] != r {
+    let nx = *parent[usize.from(c)];
+    parent.set(usize.from(c), r);
+    c = nx;
+  }
+  r
+}
+
+pub fn deleteFaces(m: &PolyMesh, faces: &Array[u32]) PolyMesh {
+  let nf = m.fHalfedge.len();
+  var gone = List[bool].withCapacity(nf);
+  var f = 0usize;
+  while f < nf {
+    gone.push(false);
+    f = f + 1usize;
+  }
+  var i = 0usize;
+  while i < faces.len {
+    if usize.from(faces[i]) < nf { gone.set(usize.from(faces[i]), true); }
+    i = i + 1usize;
+  }
+  // A fan: corners (half-edges ending at a vertex) of kept faces joined across kept edges
+  let nh = m.hVertex.len();
+  var parent = List[u32].withCapacity(nh);
+  var h = 0usize;
+  while h < nh {
+    parent.push(u32.from(h));
+    h = h + 1usize;
+  }
+  h = 0usize;
+  while h < nh {
+    let fh = m.face(u32.from(h));
+    if fh != NoIndex && !*gone[usize.from(fh)] {
+      let t = m.twin(m.next(u32.from(h)));
+      let ft = m.face(t);
+      if ft != NoIndex && !*gone[usize.from(ft)] {
+        let ra = fanRoot(&mut parent, u32.from(h));
+        let rb = fanRoot(&mut parent, t);
+        if ra < rb { parent.set(usize.from(rb), ra); } else if rb < ra { parent.set(usize.from(ra), rb); }
+      }
+    }
+    h = h + 1usize;
+  }
+  // Numbering: each vertex's first fan in vertex order, then the other fans' copies
+  var newOf = List[u32].withCapacity(nh);
+  var first = List[u32].withCapacity(m.positions.len());
+  h = 0usize;
+  while h < nh {
+    newOf.push(NoIndex);
+    h = h + 1usize;
+  }
+  var v = 0usize;
+  while v < m.positions.len() {
+    first.push(NoIndex);
+    v = v + 1usize;
+  }
+  h = 0usize;
+  while h < nh {
+    let fh = m.face(u32.from(h));
+    if fh != NoIndex && !*gone[usize.from(fh)] {
+      let tv = usize.from(m.toVertex(u32.from(h)));
+      let r = fanRoot(&mut parent, u32.from(h));
+      if *first[tv] == NoIndex || r < *first[tv] { first.set(tv, r); }
+    }
+    h = h + 1usize;
+  }
+  var pos = List[Vec3]();
+  var vSrc = List[u32]();
+  v = 0usize;
+  while v < m.positions.len() {
+    if *first[v] != NoIndex {
+      newOf.set(usize.from(*first[v]), u32.from(pos.len()));
+      pos.push(*m.positions[v]);
+      vSrc.push(u32.from(v));
+    }
+    v = v + 1usize;
+  }
+  h = 0usize;
+  while h < nh {
+    let fh = m.face(u32.from(h));
+    if fh != NoIndex && !*gone[usize.from(fh)] {
+      let r = fanRoot(&mut parent, u32.from(h));
+      if *newOf[usize.from(r)] == NoIndex {
+        newOf.set(usize.from(r), u32.from(pos.len()));
+        let tv = usize.from(m.toVertex(u32.from(h)));
+        pos.push(*m.positions[tv]);
+        vSrc.push(u32.from(tv));
+      }
+    }
+    h = h + 1usize;
+  }
+  var counts = List[u32]();
+  var idx = List[u32]();
+  var cSrc = List[u32]();
+  var eSrc = List[u32]();
+  var fSrc = List[u32]();
+  f = 0usize;
+  while f < nf {
+    if !*gone[f] {
+      let hs = m.faceHalfedges(u32.from(f));
+      counts.push(u32.from(hs.len()));
+      var j = 0usize;
+      while j < hs.len() {
+        idx.push(*newOf[usize.from(fanRoot(&mut parent, *hs[j]))]);
+        cSrc.push(*hs[j]);
+        eSrc.push(m.edge(*hs[j]));
+        j = j + 1usize;
+      }
+      fSrc.push(u32.from(f));
+    }
+    f = f + 1usize;
+  }
+  assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc)
+}

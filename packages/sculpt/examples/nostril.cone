@@ -1,0 +1,542 @@
+// nostril: the knight's right nostril cut away and filled, by sculpt's surgery operators, with numbers and
+// raking-light pictures (a software renderer, no GPU).
+//
+//   congo run --release --example nostril          (from packages/sculpt; needs the files below)
+//
+// Input, made once by C:/src/mesh-tools-shots/prep.py (trimesh) from the Python run that was kept
+// (perc/nonos-final.json): knight-noears-r4.obj (the source skin, 258,494 triangles, welded),
+// nostril-faces.txt (the faces that run cut for the right nostril, 13,040), and knight-nonos.obj (the Python
+// result, to measure against). Output: PNG sheets and the numbers on stdout, in C:/src/mesh-tools-shots.
+
+mod nostril;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import imagedecode use *;
+import fs;
+import path use Path as FilePath;
+import sculpt use *;
+import time use Instant;
+
+let dir = "C:/src/mesh-tools-shots/";
+
+// ---------------------------------------------------------------- renderer
+
+struct Canvas {
+  w: i32;
+  h: i32;
+  px: List[u8];
+  zb: List[f32];
+  x0: i32;
+  y0: i32;
+  x1: i32;
+  y1: i32;
+
+  fn make(w: i32, h: i32) Canvas {
+    var c = Canvas(w, h, List[u8](), List[f32](), 0, 0, w, h);
+    c.px.resize(usize.from(w) * usize.from(h) * 4usize, 255u8);
+    c.zb.resize(usize.from(w) * usize.from(h), -1000000.);
+    c
+  }
+
+  fn tile(self: &mut, tx0: i32, ty0: i32, tx1: i32, ty1: i32, bg: Vec3) {
+    x0 = tx0; y0 = ty0; x1 = tx1; y1 = ty1;
+    var y = ty0;
+    while y < ty1 {
+      var x = tx0;
+      while x < tx1 {
+        self.setPixel(x, y, bg);
+        zb.set(usize.from(y * w + x), -1000000.);
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn setPixel(self: &mut, x: i32, y: i32, c: Vec3) {
+    let i = usize.from(y * w + x) * 4usize;
+    px.set(i, byteOf(c.x));
+    px.set(i + 1usize, byteOf(c.y));
+    px.set(i + 2usize, byteOf(c.z));
+  }
+
+  fn plot(self: &mut, x: i32, y: i32, z: f32, c: Vec3) {
+    if x >= x0 && x < x1 && y >= y0 && y < y1 {
+      let i = usize.from(y * w + x);
+      if z > *zb[i] {
+        zb.set(i, z);
+        self.setPixel(x, y, c);
+      }
+    }
+  }
+
+  // A triangle given in screen space, its corners' light ia, ib, ic interpolated, times 'col'
+  fn triangle(self: &mut, a: Vec3, b: Vec3, c: Vec3, ia: f32, ib: f32, ic: f32, col: Vec3) {
+    let minx = x0.max(i32.from(libc.floorf(fmin3(a.x, b.x, c.x))));
+    let maxx = (x1 - 1).min(i32.from(libc.ceilf(fmax3(a.x, b.x, c.x))));
+    let miny = y0.max(i32.from(libc.floorf(fmin3(a.y, b.y, c.y))));
+    let maxy = (y1 - 1).min(i32.from(libc.ceilf(fmax3(a.y, b.y, c.y))));
+    let den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if den > -0.0000001 && den < 0.0000001 { return; }
+    var y = miny;
+    while y <= maxy {
+      var x = minx;
+      while x <= maxx {
+        let px_ = f32.from(x) + 0.5;
+        let py_ = f32.from(y) + 0.5;
+        let l0 = ((b.y - c.y) * (px_ - c.x) + (c.x - b.x) * (py_ - c.y)) / den;
+        let l1 = ((c.y - a.y) * (px_ - c.x) + (a.x - c.x) * (py_ - c.y)) / den;
+        let l2 = 1. - l0 - l1;
+        if l0 >= -0.0001 && l1 >= -0.0001 && l2 >= -0.0001 {
+          let li = l0 * ia + l1 * ib + l2 * ic;
+          self.plot(x, y, l0 * a.z + l1 * b.z + l2 * c.z, col * li);
+        }
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn line(self: &mut, a: Vec3, b: Vec3, col: Vec3, bias: f32, thick: i32) {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let steps = i32.from(fmax3(dx.abs(), dy.abs(), 1.)) + 1;
+    var i = 0;
+    while i <= steps {
+      let t = f32.from(i) / f32.from(steps);
+      let x = a.x + dx * t;
+      let y = a.y + dy * t;
+      let z = a.z + (b.z - a.z) * t + bias;
+      var ox = 0;
+      while ox < thick {
+        var oy = 0;
+        while oy < thick {
+          self.plot(i32.from(x) + ox, i32.from(y) + oy, z, col);
+          oy = oy + 1;
+        }
+        ox = ox + 1;
+      }
+      i = i + 1;
+    }
+  }
+}
+
+fn fmin3(a: f32, b: f32, c: f32) f32 { let m = if a < b {a} else {b}; if m < c {m} else {c} }
+fn fmax3(a: f32, b: f32, c: f32) f32 { let m = if a > b {a} else {b}; if m > c {m} else {c} }
+
+fn byteOf(v: f32) u8 {
+  var x = i32.from(v * 255. + 0.5);
+  if x < 0 { x = 0; }
+  if x > 255 { x = 255; }
+  u8.from(x)
+}
+
+// An orthographic camera: u right, v up, w towards the viewer, round 'c', 'sc' pixels per unit, the
+// tile's middle at (ox, oy)
+struct Cam {
+  u: Vec3;
+  v: Vec3;
+  w: Vec3;
+  c: Vec3;
+  sc: f32;
+  ox: f32;
+  oy: f32;
+
+  fn make(w: Vec3, upHint: Vec3, c: Vec3, sc: f32, ox: f32, oy: f32) Cam {
+    let ww = w.normalize();
+    let u = upHint.cross(ww).normalize();
+    let v = ww.cross(u);
+    Cam(u, v, ww, c, sc, ox, oy)
+  }
+
+  fn scr(self: &, p: Vec3) Vec3 {
+    let q = p - c;
+    Vec3(ox + q.dot(u) * sc, oy - q.dot(v) * sc, q.dot(w) * sc)
+  }
+}
+
+// The faces of pm with a vertex inside 'radius' of 'centre', Gouraud-shaded by the light 'lit' (a unit vector
+// towards the light), a smooth skin; the faces from 'tintFrom' on are tinted blue by 'tint' and, with 'wire',
+// outlined
+fn drawMesh(cv: &mut Canvas, pm: &PolyMesh, cam: &Cam, lit: Vec3, centre: Vec3, radius: f32, tintFrom: usize,
+    tint: f32, wire: bool) {
+  let nrm = pm.vertexNormals();
+  var sp = List[Vec3]();
+  var v = 0usize;
+  while v < pm.positions.len() {
+    sp.push(cam.scr(*pm.positions[v]));
+    v = v + 1usize;
+  }
+  var f = 0usize;
+  while f < pm.faceCount() {
+    let vs = pm.faceVertices(u32.from(f));
+    var near = false;
+    var k = 0usize;
+    while k < vs.len() {
+      if (*pm.positions[usize.from(*vs[k])] - centre).length() < radius { near = true; }
+      k = k + 1usize;
+    }
+    if near {
+      let isPatch = f >= tintFrom;
+      let base = if isPatch { Vec3(0.80 - 0.5 * tint, 0.80 - 0.3 * tint, 0.82) } else { Vec3(0.82, 0.80, 0.78) };
+      k = 1usize;
+      while k + 1usize < vs.len() {
+        let a = usize.from(*vs[0usize]);
+        let b = usize.from(*vs[k]);
+        let c = usize.from(*vs[k + 1usize]);
+        cv.triangle(*sp[a], *sp[b], *sp[c], shade(*nrm[a], lit), shade(*nrm[b], lit), shade(*nrm[c], lit), base);
+        k = k + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  if wire {
+    f = tintFrom;
+    while f < pm.faceCount() {
+      let vs = pm.faceVertices(u32.from(f));
+      var k = 0usize;
+      while k < vs.len() {
+        cv.line(*sp[usize.from(*vs[k])], *sp[usize.from(*vs[(k + 1usize) % vs.len()])], Vec3(0.1, 0.2, 0.7), 0.002 * cam.sc, 1);
+        k = k + 1usize;
+      }
+      f = f + 1usize;
+    }
+  }
+}
+
+fn shade(n: Vec3, lit: Vec3) f32 {
+  let d = n.dot(lit);
+  0.10 + 0.90 * (if d > 0. {d} else {0.})
+}
+
+fn save(cv: &Canvas, name: &str) {
+  var r = Raster();
+  r.width = cv.w;
+  r.height = cv.h;
+  r.depth = 8;
+  r.colorSpace = ColorSpace.Srgb;
+  var i = 0usize;
+  while i < cv.px.len() { r.pixels8.push(*cv.px[i]); i = i + 1usize; }
+  let png = encodePng(&r, 6);
+  var full = String.from(dir);
+  full.append(name);
+  let op = FilePath.from(full.view());
+  if let Err(e) = fs.writeFile(&op, png.view()) { print <- "could not write ", full.view(), ": ", e, "\n"; return; }
+  print <- "wrote ", full.view(), " (", png.len(), " bytes)\n";
+}
+
+// ---------------------------------------------------------------- input
+
+fn loadObj(name: &str) PolyMesh {
+  var full = String.from(dir);
+  full.append(name);
+  var problems = List[String]();
+  let m = readPolyObj(&FilePath.from(full.view()), &mut problems);
+  if problems.len() > 0usize { print <- "problems reading ", name, ": ", problems.len(), " first: ", problems[0usize].view(), "\n"; }
+  m
+}
+
+fn loadFaces(name: &str) List[u32] {
+  var full = String.from(dir);
+  full.append(name);
+  var text = String();
+  let fp = FilePath.from(full.view());
+  match fs.readFile(&fp) {
+    case var Ok(r) { text <-> r; }
+    case let Err(e) { print <- "could not read ", full.view(), ": ", e, "\n"; }
+  }
+  var out = List[u32]();
+  let lines = List[&str].from(text.lines());
+  var i = 0usize;
+  while i < lines.len() {
+    if lines[i].len() > 0usize {
+      match i64.parse(lines[i]) {
+        case let Ok(n) { out.push(u32.from(n)); }
+        case is Err {}
+      }
+    }
+    i = i + 1usize;
+  }
+  out
+}
+
+// ---------------------------------------------------------------- measures
+
+struct Dist {
+  max: f32;
+  rms: f32;
+  out: f32;     // the farthest the patch stands outside the Python skin
+  inn: f32;     // the farthest inside it
+  n: usize;
+}
+
+// How far the patch's faces are from the target skin, by points on them (a barycentric grid of 4 divisions)
+fn patchDistance(m: &PolyMesh, faces: &List[u32], target: &SurfaceIndex) Dist {
+  var mx: f32 = 0.;
+  var sum: f64 = 0.0;
+  var out: f32 = 0.;
+  var inn: f32 = 0.;
+  var n = 0usize;
+  var i = 0usize;
+  while i < faces.len() {
+    let pts = m.facePositions(*faces[i]);
+    var a = 0;
+    while a <= 4 {
+      var b = 0;
+      while a + b <= 4 {
+        let wa = f32.from(a) / 4.;
+        let wb = f32.from(b) / 4.;
+        let p = *pts[0usize] * (1. - wa - wb) + *pts[1usize] * wa + *pts[2usize] * wb;
+        let hit = target.nearest(p, 0.);
+        if hit.found() {
+          let d = hit.distance;
+          if d > mx { mx = d; }
+          sum = sum + f64.from(d) * f64.from(d);
+          let s = (p - hit.point).dot(hit.normal);
+          if s > out { out = s; }
+          if -s > inn { inn = -s; }
+          n = n + 1usize;
+        }
+        b = b + 1;
+      }
+      a = a + 1;
+    }
+    i = i + 1usize;
+  }
+  Dist(mx, f32.from(libc.sqrt(sum / f64.from(n))), out, inn, n)
+}
+
+fn inwardCount(m: &PolyMesh, faces: &List[u32], outward: Vec3) usize {
+  var c = 0usize;
+  var i = 0usize;
+  while i < faces.len() {
+    if m.faceNormal(*faces[i]).dot(outward) <= 0. { c = c + 1usize; }
+    i = i + 1usize;
+  }
+  c
+}
+
+// Patch triangles whose normal points against the Python skin's normal at the nearest point to the triangle's
+// centroid; 'least' is the least dot product among all
+fn localInward(m: &PolyMesh, faces: &List[u32], target: &SurfaceIndex, least: &mut f32) usize {
+  var c = 0usize;
+  var i = 0usize;
+  *least = 2.;
+  while i < faces.len() {
+    let hit = target.nearest(m.faceCentroid(*faces[i]), 0.);
+    let d = m.faceNormal(*faces[i]).dot(hit.normal);
+    if d < *least { *least = d; }
+    if d <= 0. { c = c + 1usize; }
+    i = i + 1usize;
+  }
+  c
+}
+
+fn meanSide(m: &PolyMesh, faces: &List[u32]) f32 {
+  var sum: f32 = 0.;
+  var n = 0usize;
+  var i = 0usize;
+  while i < faces.len() {
+    let pts = m.facePositions(*faces[i]);
+    var k = 0usize;
+    while k < 3usize {
+      sum = sum + (*pts[(k + 1usize) % 3usize] - *pts[k]).length();
+      n = n + 1usize;
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+  sum / f32.from(n)
+}
+
+fn report(label: &str, h: &HoleFill, outward: Vec3, target: &SurfaceIndex, seconds: f64) {
+  let d = patchDistance(&h.mesh, &h.faces, target);
+  var least: f32 = 0.;
+  let li = localInward(&h.mesh, &h.faces, target, &mut least);
+  var leastOut: f32 = 2.;
+  var q = 0usize;
+  while q < h.faces.len() {
+    let dd = h.mesh.faceNormal(*h.faces[q]).dot(outward);
+    if dd < leastOut { leastOut = dd; }
+    q = q + 1usize;
+  }
+  print <- label, ": inward by the local test (normal against the Python skin's at the nearest point) ", li, ", least dot ", least,
+    "; least dot with the mean outward direction ", leastOut, "\n";
+  print <- label, ": patch triangles ", h.faces.len(), ", new vertices ", h.vertices.len(), ", inward ",
+    inwardCount(&h.mesh, &h.faces, outward), ", mean side ", meanSide(&h.mesh, &h.faces), " mm\n";
+  print <- "    distance to the Python result over ", d.n, " points: largest ", d.max, " mm, RMS ", d.rms,
+    " mm; stands out by at most ", d.out, ", in by at most ", d.inn, "; closed: ", h.mesh.validate().len() == 0usize,
+    "; time ", seconds, " s\n";
+}
+
+fn boundaryNear(m: &PolyMesh, p: Vec3) u32 {
+  var best = NoIndex;
+  var bd: f32 = 1000000.;
+  var v = 0usize;
+  while v < m.vertexCount() {
+    if m.isBoundaryVertex(u32.from(v)) {
+      let d = (*m.positions[v] - p).length();
+      if d < bd { bd = d; best = u32.from(v); }
+    }
+    v = v + 1usize;
+  }
+  best
+}
+
+// ---------------------------------------------------------------- main
+
+fn main() i32 {
+  let dirp = FilePath.from("C:/src/mesh-tools-shots");
+  if let Err(e) = fs.makeDirAll(&dirp) { print <- "could not make the folder: ", e, "\n"; return 1; }
+  var t0 = Instant.now();
+  let src = loadObj("knight-noears-r4.obj");
+  print <- "read source: ", src.vertexCount(), " vertices, ", src.faceCount(), " faces, ", src.edgeCount(), " edges, in ",
+    t0.elapsed().secondsF64(), " s; validate problems ", src.validate().len(), "\n";
+  let python = loadObj("knight-nonos.obj");
+  print <- "read Python result: ", python.faceCount(), " faces\n";
+  let sel = loadFaces("nostril-faces.txt");
+  print <- "right nostril faces: ", sel.len(), "\n";
+
+  // The nostril's centre (the selected faces' mean centre) and the skin's outward direction there
+  var centre = Vec3(0., 0., 0.);
+  var i = 0usize;
+  while i < sel.len() {
+    centre = centre + src.faceCentroid(*sel[i]);
+    i = i + 1usize;
+  }
+  centre = centre * (1. / f32.from(sel.len()));
+  print <- "centre (", centre.x, ", ", centre.y, ", ", centre.z, ")\n";
+
+  t0 = Instant.now();
+  let hole = deleteFaces(&src, sel.view());
+  let tDelete = t0.elapsed().secondsF64();
+  print <- "deleteFaces: ", hole.faceCount(), " faces left, validate problems ", hole.validate().len(), ", ", tDelete, " s\n";
+  let v = boundaryNear(&hole, centre);
+  let loop = boundaryLoop(&hole, v);
+  print <- "hole loop: ", loop.len(), " edges (FillMaxLoop ", FillMaxLoop, ")\n";
+  // The outward direction: the mean of the vertex normals round the loop
+  let hn = hole.vertexNormals();
+  var outward = Vec3(0., 0., 0.);
+  i = 0usize;
+  while i < loop.len() {
+    outward = outward + *hn[usize.from(*loop[i])];
+    i = i + 1usize;
+  }
+  outward = outward.normalize();
+  print <- "outward (", outward.x, ", ", outward.y, ", ", outward.z, ")\n";
+
+  let target = SurfaceIndex.of(&python);
+  var problems = List[String]();
+  t0 = Instant.now();
+  let plain = fillHole(&hole, v, false, &mut problems);
+  let tPlain = t0.elapsed().secondsF64();
+  t0 = Instant.now();
+  let refined = fillHole(&hole, v, true, &mut problems);
+  let tRefined = t0.elapsed().secondsF64();
+  print <- "fillHole problems: ", problems.len(), "\n";
+  report("plain fill", &plain, outward, &target, tPlain);
+  report("refined fill", &refined, outward, &target, tRefined);
+  print <- "closed (no boundary but the neck's): plain boundary vertices ", countBoundary(&plain.mesh), ", hole ", countBoundary(&hole), ", source ", countBoundary(&src), "\n";
+
+  // The same camera for every tile: looking down the outward direction, raking light from one side
+  let up = if outward.dot(Vec3(0., 1., 0.)).abs() < 0.9 { Vec3(0., 1., 0.) } else { Vec3(1., 0., 0.) };
+  var cv = Canvas.make(1800, 760);
+  let tw = 360;
+  let radius: f32 = 4.6;
+  let names: Array[&str, 5] = ["source", "hole", "plain fill", "refined fill", "Python result"];
+  var pass = 0;
+  while pass < 2 {
+    var t = 0;
+    while t < 5 {
+      cv.tile(t * tw, pass * 380, (t + 1) * tw, (pass + 1) * 380, Vec3(0.97, 0.97, 0.97));
+      let cam = Cam.make(outward, up, centre, 36., f32.from(t * tw) + 180., f32.from(pass * 380) + 190.);
+      let lit = (cam.u * 0.92 + cam.w * 0.38).normalize();
+      let m: &PolyMesh = if t == 0 { &src } else if t == 1 { &hole } else if t == 2 { &plain.mesh } else if t == 3 { &refined.mesh } else { &python };
+      let from = if t == 2 || t == 3 { hole.faceCount() } else { 1000000000usize };
+      drawMesh(&mut cv, m, &cam, lit, centre, radius, from, if pass == 1 { 1. } else { 0. }, pass == 1);
+      t = t + 1;
+    }
+    pass = pass + 1;
+  }
+  save(&cv, "nostril-fills.png");
+
+  // The cut across the muzzle at the nostril
+  let origin = centre;
+  let normal = Vec3(0., 0., 1.);
+  t0 = Instant.now();
+  let sec = sectionByPlane(&src, origin, normal);
+  let tSec = t0.elapsed().secondsF64();
+  print <- "sectionByPlane z = ", origin.z, ": ", sec.closed.len(), " loops, in ", tSec, " s\n";
+  var l = 0usize;
+  while l < sec.closed.len() {
+    let a = usize.from(*sec.starts[l]);
+    let b = usize.from(*sec.starts[l + 1usize]);
+    var len: f32 = 0.;
+    var k = a;
+    while k < b {
+      let j = if k + 1usize < b {k + 1usize} else {a};
+      len = len + (*sec.points[j] - *sec.points[k]).length();
+      k = k + 1usize;
+    }
+    print <- "  loop ", l, ": ", b - a, " points, length ", len, " mm, closed ", *sec.closed[l], "\n";
+    l = l + 1usize;
+  }
+  var bp = List[String]();
+  t0 = Instant.now();
+  let cutOpen = bisect(&src, origin, normal, false, &mut bp);
+  let tBisectOpen = t0.elapsed().secondsF64();
+  t0 = Instant.now();
+  let cutCap = bisect(&src, origin, normal, true, &mut bp);
+  let tBisect = t0.elapsed().secondsF64();
+  print <- "bisect open: ", cutOpen.faceCount(), " faces in ", tBisectOpen, " s; capped: ", cutCap.vertexCount(), " vertices, ",
+    cutCap.faceCount(), " faces, validate problems ", cutCap.validate().len(), ", problems ", bp.len(), ", ", tBisect, " s\n";
+  var b = 0usize;
+  while b < bp.len() { print <- "  problem: ", bp[b].view(), "\n"; b = b + 1usize; }
+  print <- "boundary vertices: source ", countBoundary(&src), ", open cut ", countBoundary(&cutOpen), ", capped cut ", countBoundary(&cutCap), "\n";
+
+  // Sheet 2: the capped bisect from +z (its cap), and the source from the side and three quarters with the loop
+  var c2 = Canvas.make(1800, 640);
+  let mid = (src.bounds().min + src.bounds().max) * 0.5;
+  var tile = 0;
+  while tile < 3 {
+    c2.tile(tile * 600, 0, (tile + 1) * 600, 640, Vec3(0.97, 0.97, 0.97));
+    let w = if tile == 0 { Vec3(0., 0., 1.) } else if tile == 1 { Vec3(-1., 0., 0.) } else { Vec3(0.7, 0.35, 0.62) };
+    let focus = if tile == 0 { Vec3(0., 24., origin.z) } else { Vec3(0., 24., -26.) };
+    let cam = Cam.make(w, Vec3(0., 1., 0.), focus, if tile == 0 { 14. } else { 7.4 }, f32.from(tile * 600) + 300., 320.);
+    let lit = (cam.u * 0.5 + cam.v * 0.5 + cam.w * 0.7).normalize();
+    let m: &PolyMesh = if tile == 0 { &cutCap } else { &src };
+    drawMesh(&mut c2, m, &cam, lit, focus, 1000., 1000000000usize, 0., false);
+    if tile > 0 {
+      var l2 = 0usize;
+      while l2 < sec.closed.len() {
+        let a2 = usize.from(*sec.starts[l2]);
+        let b2 = usize.from(*sec.starts[l2 + 1usize]);
+        var k = a2;
+        while k < b2 {
+          let j = if k + 1usize < b2 {k + 1usize} else {a2};
+          c2.line(cam.scr(*sec.points[k]), cam.scr(*sec.points[j]), Vec3(0.9, 0.05, 0.05), 0.5 * cam.sc, 2);
+          k = k + 1usize;
+        }
+        l2 = l2 + 1usize;
+      }
+    }
+    tile = tile + 1;
+  }
+  save(&c2, "nostril-cut.png");
+  print <- "timings (s): read ", 0, ", deleteFaces ", tDelete, ", fillHole plain ", tPlain, ", refined ", tRefined,
+    ", sectionByPlane ", tSec, ", bisect open ", tBisectOpen, ", capped ", tBisect, "\n";
+  0
+}
+
+fn countBoundary(m: &PolyMesh) usize {
+  var n = 0usize;
+  var v = 0usize;
+  while v < m.vertexCount() {
+    if m.isBoundaryVertex(u32.from(v)) { n = n + 1usize; }
+    v = v + 1usize;
+  }
+  n
+}
