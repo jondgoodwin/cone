@@ -53,6 +53,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->instmeth = NULL;
     snode->instdepth = 0;
     snode->memlazy = 0;
+    snode->memerrbase = -1;
     return snode;
 }
 
@@ -261,6 +262,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->instmeth = NULL;
     newnode->instdepth = 0;
     newnode->memlazy = 0;
+    newnode->memerrbase = -1;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     // An instance's fields are the generic's with its parameters bound, so
     // whether they carry a borrow, hold a traced reference or an atomic value,
@@ -4497,6 +4499,31 @@ static void structCheckCopy(StructNode *node) {
 // body is built resolved against the inherited requirement's parameters, so
 // type check reaches it as it would a written one, and a field of a struct that
 // is itself supplied reaches that struct's own.
+// Does this field have a hash that agrees with its '=='? If not, say so at the field and
+// return 0. 'name' is the type the hash is for, 'fname' what the message calls the field
+static int structHashFieldOk(FieldDclNode *field, StructNode *hashtrait, const char *name, const char *fname) {
+    INode *fldtype = itypeGetTypeDcl(field->vtype);
+    if (fldtype->tag == FloatNbrTag) {
+        errorMsgNode((INode*)field, ErrorHashFloat,
+            "%s declares Hash and writes no `hash`, and its field %s is %s: a float has no hash that agrees with `==`, since NaN is not equal to itself and -0 is equal to 0. Hash an integer made from it (its bits, or its value rounded) in a `hash` of your own, or leave the float out of the key.",
+            name, fname, itypeName(fldtype));
+        return 0;
+    }
+    if (fldtype->tag == IntNbrTag || fldtype->tag == UintNbrTag)
+        return 1;
+    if (fldtype->tag == StructTag && (!(fldtype->flags & TraitType) || (fldtype->flags & EnumType))
+        && genericTypeIs(field->vtype, hashtrait))
+        return 1;
+    // An owner of text, Uni[str] or Rc[str], is Hash by the compiler's grant (its
+    // hash is str's, which feeds the bytes)
+    if (fldtype->tag == RefTag && genericTypeIs(field->vtype, hashtrait))
+        return 1;
+    errorMsgNode((INode*)field, ErrorHashField,
+        "%s declares Hash and writes no `hash`, and its field %s is %s, which is not Hash. Declare it Hash, or write a `hash` of your own that feeds what identifies %s.",
+        name, fname, fldtype->tag == PtrTag ? "a pointer" : itypeName(fldtype), name);
+    return 0;
+}
+
 static void structHashCheck(StructNode *node) {
     if ((node->flags & (TraitType | EnumType)) || node->traits == NULL)
         return;
@@ -4530,29 +4557,8 @@ static void structHashCheck(StructNode *node) {
         FieldDclNode *field = (FieldDclNode*)*nodesp;
         if (field->flags & IsMixin)
             continue;
-        INode *fldtype = itypeGetTypeDcl(field->vtype);
-        char *fname = &field->namesym->namestr;
-        if (fldtype->tag == FloatNbrTag) {
-            errorMsgNode((INode*)field, ErrorHashFloat,
-                "%s declares Hash and writes no `hash`, and its field %s is %s: a float has no hash that agrees with `==`, since NaN is not equal to itself and -0 is equal to 0. Hash an integer made from it (its bits, or its value rounded) in a `hash` of your own, or leave the float out of the key.",
-                name, fname, itypeName(fldtype));
+        if (!structHashFieldOk(field, hashtrait, name, &field->namesym->namestr))
             refused = 1;
-        }
-        else if (fldtype->tag == IntNbrTag || fldtype->tag == UintNbrTag)
-            continue;
-        else if (fldtype->tag == StructTag && (!(fldtype->flags & TraitType) || (fldtype->flags & EnumType))
-            && genericTypeIs(field->vtype, hashtrait))
-            continue;
-        // An owner of text, Uni[str] or Rc[str], is Hash by the compiler's grant (its
-        // hash is str's, which feeds the bytes)
-        else if (fldtype->tag == RefTag && genericTypeIs(field->vtype, hashtrait))
-            continue;
-        else {
-            errorMsgNode((INode*)field, ErrorHashField,
-                "%s declares Hash and writes no `hash`, and its field %s is %s, which is not Hash. Declare it Hash, or write a `hash` of your own that feeds what identifies %s.",
-                name, fname, fldtype->tag == PtrTag ? "a pointer" : itypeName(fldtype), name);
-            refused = 1;
-        }
     }
 
     // A refused struct gets an empty body, so type check says nothing more of it
@@ -4701,6 +4707,71 @@ static void structEqCheck(StructNode *node) {
     inodeLexCopy((INode*)ret, (INode*)node);
     nodesAdd(&block->stmts, (INode*)ret);
     eqfn->value = (INode*)block;
+}
+
+// An enum's '==' and 'hash' the compiler wrote over its variants' payloads (parseEnumSupply,
+// FlagDerivedBody) compare and feed each payload field with the '==' and hash it has. A
+// field that has none is refused here, at the field, with the struct derive's errors
+// (ErrorEqField, ErrorHashFloat, ErrorHashField), and the body is replaced so type check
+// says nothing more of it. A variant that is a type variant ('V(T)') has the one field.
+static void structEnumDeriveCheck(StructNode *node) {
+    if (!(node->flags & EnumType) || node->traits == NULL || node->derived == NULL)
+        return;
+    INode *eqb = namespaceFind(&node->namespace, eqName);
+    INode *hashb = namespaceFind(&node->namespace, hashName);
+    int eqderived = eqb && eqb->tag == FnDclTag && (eqb->flags & FlagDerivedBody);
+    int hashderived = hashb && hashb->tag == FnDclTag && (hashb->flags & FlagDerivedBody);
+    if (!eqderived && !hashderived)
+        return;
+    INode **traitp;
+    uint32_t cnt;
+    StructNode *eqtrait = NULL, *hashtrait = NULL;
+    for (nodesFor(node->traits, cnt, traitp)) {
+        if (coreIsEqTrait(*traitp))
+            eqtrait = (StructNode*)*traitp;
+        if (coreIsHashTrait(*traitp))
+            hashtrait = (StructNode*)*traitp;
+    }
+    char *name = &node->namesym->namestr;
+    int eqrefused = 0, hashrefused = 0;
+    INode **vp;
+    for (nodesFor(node->derived, cnt, vp)) {
+        StructNode *variant = (StructNode*)*vp;
+        INode **nodesp;
+        uint32_t fcnt;
+        for (nodelistFor(&variant->fields, fcnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode*)*nodesp;
+            if (field->flags & (IsMixin | IsTagField))
+                continue;
+            char fname[256];
+            if (field->namesym == payloadName)
+                snprintf(fname, sizeof(fname), "%s(_)", &variant->namesym->namestr);
+            else
+                snprintf(fname, sizeof(fname), "%s.%s", &variant->namesym->namestr, &field->namesym->namestr);
+            if (eqderived && eqtrait && !structEqFieldHasEq(field->vtype, eqtrait, 0)) {
+                INode *fldtype = itypeGetTypeDcl(field->vtype);
+                errorMsgNode((INode*)field, ErrorEqField,
+                    "%s declares Eq and writes no `==`, and its field %s is %s, which has no `==`. Write a `==` of your own that compares what identifies %s, or give the field's type one.",
+                    name, fname, fldtype->tag == PtrTag ? "a pointer" : itypeName(fldtype), name);
+                eqrefused = 1;
+            }
+            if (hashderived && hashtrait && !structHashFieldOk(field, hashtrait, name, fname))
+                hashrefused = 1;
+        }
+    }
+    if (eqrefused) {
+        BlockNode *block = newBlockNode();
+        inodeLexCopy((INode*)block, (INode*)node);
+        BreakRetNode *ret = newReturnNodeExp((INode*)newULitNodeTC(0, (INode*)boolType));
+        inodeLexCopy((INode*)ret, (INode*)node);
+        nodesAdd(&block->stmts, (INode*)ret);
+        ((FnDclNode*)eqb)->value = (INode*)block;
+    }
+    if (hashrefused) {
+        BlockNode *block = newBlockNode();
+        inodeLexCopy((INode*)block, (INode*)node);
+        ((FnDclNode*)hashb)->value = (INode*)block;
+    }
 }
 
 // A type declaring core's Clone has a 'clone': one it wrote, or, when it wrote
@@ -5186,6 +5257,15 @@ static StructNode *structLazyRoot(INode *type) {
 static void structMembersRelease(StructNode *node) {
     if (!node->memlazy)
         return;
+    // An instance made by one whose member check reported an error stays unchecked: its
+    // members are that one's again at a larger argument, and a chain of them checked to
+    // repeat the same errors cost half a minute, nested a type deeper each time (Bug 120:
+    // 'Wrap[& R]' as a receiver). The program is refused already.
+    if (node->instfrom != NULL && !errorSilent) {
+        StructNode *from = structEnumRoot(node->instfrom);
+        if (from->memerrbase >= 0 && errors > from->memerrbase)
+            return;
+    }
     node->memlazy = 0;
     if (structLayoutInFlight())
         structWait(&structMembersWaiting, node);
@@ -5214,11 +5294,15 @@ void structMembersUse(TypeCheckState *pstate, INode *type, int construct) {
 static void structCheckMembers(StructNode *node) {
     StructNode *savedcur = structMembersCur;
     FnDclNode *savedmeth = structMembersMeth;
+    StructNode *root = structEnumRoot(node);
+    int savedbase = root->memerrbase;
+    root->memerrbase = errors;
     structMembersCur = node;
     structMembersMeth = NULL;
     structCheckMembersBody(node);
     structMembersCur = savedcur;
     structMembersMeth = savedmeth;
+    root->memerrbase = savedbase;
 }
 
 static void structCheckMembersBody(StructNode *node) {
@@ -5751,6 +5835,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     structHashCheck(node);
     // and one declaring core's Eq has an '==' it is given from its fields
     structEqCheck(node);
+    // and an enum's '==' and 'hash' written over its payloads have fields that allow them
+    structEnumDeriveCheck(node);
     // and one declaring core's Clone has a 'clone' it is given from its fields
     structCloneCheck(node);
     // and one declaring core's Serialize or Deserialize[Self] has the record walk it is given

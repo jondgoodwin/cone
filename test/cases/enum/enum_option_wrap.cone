@@ -1,0 +1,111 @@
+// A plain value of type T converts to an Option[T] ('?T') as Some(value), at a return or
+// tail, an initializer, a store and an argument (Jon, Question 20, 23 Nov 2026). One level
+// only. Never a Result. An overload choice asks first with the wrap off and allows it only
+// where no candidate takes the call as written, so a call that meant a plain candidate
+// ('pick(5)' beside 'pick(x: ?i64)', 'opt || 0') keeps its meaning. Every value is worked
+// out by hand in the comments.
+
+mod enum_option_wrap;
+
+import stdio use *;
+
+fn show(label: &str, o: ?i64) {
+  printStr(label);
+  match o {
+    case let Some(v) { printStr(" some "); printInt(v); }
+    case is None { printStr(" none"); }
+  }
+  printStr("\n");
+}
+
+fn say(n: i64, label: &str) {
+  printInt(n);
+  printStr(label);
+  printStr("\n");
+}
+
+// A return, and a tail
+fn ret(n: i64) ?i64 {
+  if n < 0 { return 7; }
+  if n == 0 { return None; }
+  n + 1
+}
+fn tail(n: i64) ?i64 { n * 2 }
+
+fn takes(label: &str, x: ?i64) { show(label, x); }
+
+struct Holder {
+  pub f: ?i64;
+}
+
+// A function pair: the plain candidate wins where it takes the call as written
+fn pickPlain overload pick(x: i64) i64 { 100 }
+fn pickOpt overload pick(x: ?i64) i64 { 200 }
+
+// A call only the wrap lets in
+fn only(x: ?i64) i64 { 300 }
+
+// A macro pair
+macro mark[x: i64] { 1 }
+macro mark[x: ?i64] { 2 }
+
+fn main() {
+  // An initializer: some 5, some 9, none
+  var x: ?i64 = 5;
+  show("var x", x);
+  let n = 9i64;
+  var y: ?i64 = n;
+  show("var y", y);
+  let z: ?i64 = None;
+  show("let z", z);
+
+  // A store: some 11; a field initializer some 3, a field store some 4
+  x = 11;
+  show("store x", x);
+  var h = Holder(f: 3);
+  show("field init", h.f);
+  h.f = 4;
+  show("field store", h.f);
+
+  // A return and a tail: 7, none, 5, 12
+  show("ret -1", ret(-1));
+  show("ret 0", ret(0));
+  show("ret 4", ret(4));
+  show("tail 6", tail(6));
+
+  // An argument: some 5, some 9, none, some 6
+  takes("arg lit", 5);
+  takes("arg var", n);
+  takes("arg none", None);
+  takes("arg some", Some(6));
+
+  // One level: Some(5) into ??i64 is Some(Some(5)), None is the outer None
+  let w: ??i64 = Some(5);
+  match w {
+    case let Some(inner) { show("w inner", inner); }
+    case is None { printStr("w outer none\n"); }
+  }
+  let v: ??i64 = None;
+  match v {
+    case let Some(inner) { show("v inner", inner); }
+    case is None { printStr("v outer none\n"); }
+  }
+
+  // The tie-break: the plain candidate for 5 and n (100), the Option one for an
+  // Option and for None (200), the only candidate for a wrap (300), a macro pair 1, 1, 2
+  say(pick(5), " pick(5)");
+  say(pick(n), " pick(n)");
+  say(pick(x), " pick(opt)");
+  say(only(5), " only(5)");
+  say(mark(5), " mark(5)");
+  let mo: ?i64 = Some(1);
+  say(mark(n), " mark(n)");
+  say(mark(mo), " mark(opt)");
+
+  // 'opt || 0' unwraps, as it did: 0, 8, and an Option on the right stays an Option
+  let none: ?i64 = None;
+  let some: ?i64 = Some(8);
+  say(none || 0, " none || 0");
+  say(some || 0, " some || 0");
+  show("none || some", none || some);
+}

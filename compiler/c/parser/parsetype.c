@@ -577,7 +577,13 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode,
         lexNextToken();
         valuep = lex->tokp;
         fldnode->value = parseAnyExpr(parse);
-        valueendp = lex->prevend;
+        // A value that failed to parse has been reported and consumed nothing
+        // when it is missing ('x: u64 = ;'): the token before it ends before
+        // the text starts, so there is no text of it to keep
+        if (fldnode->value == NULL || lex->prevend < valuep)
+            valuep = NULL;
+        else
+            valueendp = lex->prevend;
     }
     if (parse->dcltexts)
         parseDclText(parse, (INode*)fldnode, fldnode->vtype != unknownType ? typep : NULL, typeendp, valuep, valueendp);
@@ -1409,7 +1415,9 @@ static void supplyAddText(SupplyBuf *b, const char *src, size_t len) {
 static int supplyIsTrait(INode *entry, const char *name) {
     if (entry != NULL && entry->tag == FnCallTag)
         entry = ((FnCallNode*)entry)->objfn;
-    if (entry == NULL || entry->tag != NameUseTag)
+    // An entry the parser could not read as a name ('is [X]') is a name use with no name, which
+    // the parser has already reported
+    if (entry == NULL || entry->tag != NameUseTag || ((NameUseNode*)entry)->namesym == NULL)
         return 0;
     return strcmp(&((NameUseNode*)entry)->namesym->namestr, name) == 0;
 }
@@ -1508,20 +1516,6 @@ static void parseEnumSupply(ParseState *parse, StructItems *items) {
     int wanthash = supplyDeclares(en, "Hash") && !supplyHasMethod(en, "hash");
     INode **nodesp;
     uint32_t cnt;
-    // Eq and Hash are written for an enum whose variants carry nothing: by the tag. One that
-    // carries a payload is refused, naming the first such variant, and keeps its own bodies
-    if ((wanteq || wanthash) && en->derived) {
-        for (nodesFor(en->derived, cnt, nodesp)) {
-            StructNode *v = (StructNode*)*nodesp;
-            if (supplyKind(v) != SupplyUnit) {
-                errorMsgNode((INode*)v, ErrorEnumDeriveEqHash,
-                    "Enum %s asks for %s, but variant %s carries a payload: payload enums aren't derived yet. Write the method yourself, or leave the trait out.",
-                    &en->namesym->namestr, wanteq && wanthash ? "Eq and Hash" : wanteq ? "Eq" : "Hash", &v->namesym->namestr);
-                wanteq = wanthash = 0;
-                break;
-            }
-        }
-    }
     if (!wantser && !wantdes && !wanteq && !wanthash)
         return;
     for (nodelistFor(&en->fields, cnt, nodesp))
@@ -1559,9 +1553,80 @@ static void parseEnumSupply(ParseState *parse, StructItems *items) {
         supplyAdd(&b, "  }\n}\n");
     }
 
-    // '==' takes '&', as Eq requires, and compares the variants' positions in the enum's list;
-    // 'hash' feeds the position as one u32. Both read the position with the same match.
-    for (int which = 0; which < 2; ++which) {
+    // '==' takes '&', as Eq requires; 'hash' feeds the variant's position as one u32. For an
+    // enum whose variants carry nothing the two read the position with a match; one with a
+    // payload compares, or feeds, the payload after the position (type check refuses a payload
+    // field with no '==' or no hash, at the field: structEnumDeriveCheck)
+    int haspayload = 0;
+    for (nodesFor(en->derived, cnt, nodesp))
+        if (supplyKind((StructNode*)*nodesp) != SupplyUnit)
+            haspayload = 1;
+    if (haspayload && wanteq) {
+        supplyAdd(&b, "pub fn `==`(self: &%s, o: &%s) bool", tn.text, tn.text);
+        supplyWhere(&b, en, "Eq", 0);
+        supplyAdd(&b, " {\n  match self {\n");
+        for (nodesFor(en->derived, cnt, nodesp)) {
+            StructNode *v = (StructNode*)*nodesp;
+            char *vname = &v->namesym->namestr;
+            switch (supplyKind(v)) {
+            case SupplyUnit:
+                supplyAdd(&b, "    case is %s { match o { case is %s { true } else { false } } }\n", vname, vname);
+                break;
+            case SupplyType:
+                supplyAdd(&b, "    case let %s(x) { match o { case let %s(y) { x == y } else { false } } }\n", vname, vname);
+                break;
+            case SupplyRecord: {
+                supplyAdd(&b, "    case let %s(x) { match o { case let %s(y) { ", vname, vname);
+                int first = 1;
+                INode **fp;
+                uint32_t fcnt;
+                for (nodelistFor(&v->fields, fcnt, fp)) {
+                    if ((*fp)->flags & (IsTagField | IsMixin))
+                        continue;
+                    char *fname = &((FieldDclNode*)*fp)->namesym->namestr;
+                    supplyAdd(&b, "%sx.%s == y.%s", first ? "" : " && ", fname, fname);
+                    first = 0;
+                }
+                supplyAdd(&b, " } else { false } } }\n");
+                break;
+            }
+            }
+        }
+        supplyAdd(&b, "  }\n}\n");
+    }
+    if (haspayload && wanthash) {
+        supplyAdd(&b, "pub fn hash(self: &%s, h: &mut Hasher)", tn.text);
+        supplyWhere(&b, en, "Hash", 0);
+        supplyAdd(&b, " {\n  match self {\n");
+        uint32_t index = 0;
+        for (nodesFor(en->derived, cnt, nodesp)) {
+            StructNode *v = (StructNode*)*nodesp;
+            char *vname = &v->namesym->namestr;
+            switch (supplyKind(v)) {
+            case SupplyUnit:
+                supplyAdd(&b, "    case is %s { h.writeU32(%uu32); }\n", vname, index);
+                break;
+            case SupplyType:
+                supplyAdd(&b, "    case let %s(x) { h.writeU32(%uu32); x.hash(h); }\n", vname, index);
+                break;
+            case SupplyRecord: {
+                supplyAdd(&b, "    case let %s(x) { h.writeU32(%uu32);", vname, index);
+                INode **fp;
+                uint32_t fcnt;
+                for (nodelistFor(&v->fields, fcnt, fp)) {
+                    if ((*fp)->flags & (IsTagField | IsMixin))
+                        continue;
+                    supplyAdd(&b, " x.%s.hash(h);", &((FieldDclNode*)*fp)->namesym->namestr);
+                }
+                supplyAdd(&b, " }\n");
+                break;
+            }
+            }
+            index++;
+        }
+        supplyAdd(&b, "  }\n}\n");
+    }
+    for (int which = 0; which < 2 && !haspayload; ++which) {
         if (which == 0 ? !wanteq : !wanthash)
             continue;
         if (which == 0)
@@ -1627,6 +1692,15 @@ static void parseEnumSupply(ParseState *parse, StructItems *items) {
     lexPush(lexNew(b.text, "<supplied by the compiler>"));
     parseStructItems(parse, items);
     lexPop();
+    // A '==' or 'hash' written over a payload is marked, for the field checks of type check
+    // (structEnumDeriveCheck); the enum had no method of either name before this
+    if (haspayload && (wanteq || wanthash))
+        for (nodelistFor(&en->nodelist, cnt, nodesp))
+            if ((*nodesp)->tag == FnDclTag) {
+                const char *mname = &((FnDclNode*)*nodesp)->namesym->namestr;
+                if ((wanteq && strcmp(mname, "==") == 0) || (wanthash && strcmp(mname, "hash") == 0))
+                    (*nodesp)->flags |= FlagDerivedBody;
+            }
 }
 
 // Parse a struct, a trait or an enum. They are one node, and what tells them
@@ -1760,7 +1834,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         Nodes *parms = parseGenericParms(parse, 1, &strnode->lifeparms, NULL);
         parse->tparms = tparms;
         parse->tparmsend = lex->prevend - 1;
-        if (parse->dcltexts && parse->dcltexts->tparms == NULL) {
+        // A list cut off (1001) ends before it starts: it is written nowhere, and
+        // a generator copying the text would take a negative length of it
+        if (parse->tparmsend < parse->tparms)
+            parse->tparms = parse->tparmsend = NULL;
+        if (parse->dcltexts && parse->tparms && parse->dcltexts->tparms == NULL) {
             parse->dcltexts->tparms = parse->tparms;
             parse->dcltexts->tparmsend = parse->tparmsend;
         }
@@ -2055,7 +2133,7 @@ static void parseParmInferSelf(ParseState *parse, VarDclNode *parm, INode *at) {
     INode **typep = NULL;
     if (parm->vtype == unknownType)
         typep = &parm->vtype;
-    else if (parm->vtype->tag == RefTag && ((RefNode *)parm->vtype)->vtexp == unknownType)
+    else if (parm->vtype && parm->vtype->tag == RefTag &&((RefNode *)parm->vtype)->vtexp == unknownType)
         typep = &((RefNode *)parm->vtype)->vtexp;
     if (typep == NULL)
         return;

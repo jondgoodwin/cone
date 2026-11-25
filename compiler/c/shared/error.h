@@ -550,7 +550,6 @@ enum ErrorCode {
 
     // Hashing: core's Hash trait, and the hash the compiler supplies for a struct declaring it
     ErrorHashFloat = 1330,      // A struct declaring Hash with no hash of its own has a float field: NaN is not equal to itself and -0 is equal to 0, so no hash of the bits agrees with ==
-    ErrorEnumDeriveEqHash = 1627, // An enum that lists Eq or Hash and writes no '==' or 'hash' has a variant that carries a payload: only an enum whose variants carry nothing is derived (by its tag) so far. The message names the variant
     ErrorHashField = 1331,      // A struct declaring Hash with no hash of its own has a field whose type is not Hash, so the compiler has nothing to feed for it
     ErrorHashNoEq = 1332,       // A type declaring Hash has no '==': a hash is only meaningful against the equality that decides which keys are the same
 
@@ -823,6 +822,7 @@ enum ErrorCode {
     ErrorWholeEnumMeth = 1604,  // An enum's variant (or the enum) viewed as a trait behind a virtual reference (`&<Trait`, `AnyError.from`, `?`) where the enum writes a method the trait requires over the whole enum (`self: &Two`): no variant has a copy of it, so none complies. The message names the method and says `self: &` makes the variants comply
     ErrorConstViaValue = 1620,  // A type's 'const' named through a value of the type, 'v.zero'. A constant belongs to the type, never to a value of it (Jon, 22 Sep: a name folds on a type, not on a field). The message gives the type form, 'Vec3.zero'
     ErrorConstPlace = 1621,     // A 'const' in a type body where it is not built: in a trait. The message says which
+    ErrorFieldViaType = 1628,   // A field named through its type, 'Shade.count': a field belongs to a value of the type, so naming it through the type asks for a value nothing holds
     ErrorMetaFieldsType = 1590,// A '#fields(T)' that cannot be answered for the type the generic was cloned for: T is no struct (a primitive, reference, enum or trait), or a field has no written permission or region for '#f.perm' or '#f.region' to describe. Pointed at the loop, inside the generic's instance
 
     // Warnings
@@ -837,6 +837,7 @@ enum ErrorCode {
     WarnTextEffect = 3008, // An expression sent with `<-` to a receiver that has `wants` changes state (an assignment, an increment, a send, a `&mut` or `&uni` call): it does not run when `wants` says no. Pointed at the expression
 
     WarnLifetimeTie = 3009, // A function with a body and no lifetime named, whose signature ties a borrowed parameter to its result or to another parameter, while its body never returns that parameter's borrow nor stores it: its callers are held to a tie the body does not need. The message gives the signature that separates them. Pointed at the parameter
+    WarnUnusedVar = 3010,   // A local `let` or `var` written as a statement that nothing ever reads: a variable only written to counts as unread. A name starting with `_` is exempt, as is any variable the compiler made. Reported only under `--warn-unused-var` until the packages and tests are cleaned of them. Pointed at the declaration
 
     // Uncounted
     Uncounted = 9000,
@@ -847,6 +848,10 @@ enum ErrorCode {
 #define TailOpenMsg "End this line with ';': nothing uses this block's value."
 
 extern int errors;
+// How many times a check passed over a node already reported bad, leaving what was
+// written beside it unchecked, once an error stood. A function body that did so
+// is not walked by flow, though it reported no error of its own.
+extern int errorsPassedOver;
 extern int warnings;
 // Non-zero while code is checked as a trial (below): a diagnostic is counted and
 // not printed

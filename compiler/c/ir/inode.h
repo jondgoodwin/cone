@@ -213,6 +213,7 @@ enum NodeTags {
 // read once by dclInfoJoin into DclExternal; the name is the module's to spell.
 #define FlagExtern    0x0002        // FnDcl, VarDcl: 'extern', defined in another compiled unit
 #define FlagInline    0x0008        // FnDcl: "inline" fn/method
+#define FlagDerivedBody 0x0004      // FnDcl: an enum's '==' or 'hash' the compiler wrote over its variants' payloads (parseEnumSupply)
 // A declaration written 'pub' is visible from outside the namespace that owns
 // it; unmarked, it is private to that namespace. Set by the parser on whatever
 // declaration the keyword precedes -- fn, variable, field, type, alias, const
@@ -641,6 +642,10 @@ void inodeNameRes(NameResState *pstate, INode **pgm);
 // - expectType is the type expected of an expression node (or unknownType)
 // See conec.c for high-level info about the type checking pass
 void inodeTypeCheck(TypeCheckState *pstate, INode **pgm, INode *expectType);
+
+// An expression already checked, that a node built round it now holds ('Some(value)' for a value
+// converted to an Option): the walk does not check it again. NULL when none
+extern INode *inodeCheckedOnce;
 
 // The state of the innermost inodeTypeCheck still running, or NULL when no type
 // check is: what a type comparison reads to know which code is asking

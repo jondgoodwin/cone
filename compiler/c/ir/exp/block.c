@@ -253,7 +253,9 @@ static void blockStmtTypeCheck(TypeCheckState *pstate, INode **stmtp, Nodes **ho
         }
     }
     if (owner == NULL) {
+        int wasName = nameUseWasName(*stmtp);
         inodeTypeCheck(pstate, stmtp, noCareType);
+        nameUseNoValue(*stmtp, wasName);
         discardCheck(*stmtp);
         narrowStmtEnd(svstmt);
         return;
@@ -285,12 +287,16 @@ static void blockHoist(BlockNode *blk, Nodes *hoists) {
         return;
     uint32_t from = 0;
     for (uint32_t at = 0; at < blk->stmts->used && from < hoists->used; ++at) {
+        // The statement ends its run of hidden locals, and may itself be a hidden
+        // local (a lowered send's own temporary), so the run is read up to and
+        // including the statement, never past the list
         uint32_t to = from;
-        while (nodesGet(hoists, to)->tag == VarDclTag
+        while (to < hoists->used && nodesGet(hoists, to) != nodesGet(blk->stmts, at)
+            && nodesGet(hoists, to)->tag == VarDclTag
             && (((VarDclNode *)nodesGet(hoists, to))->namesym == tempLocalName
                 || ((VarDclNode *)nodesGet(hoists, to))->namesym == matchAliasName))
             ++to;
-        if (nodesGet(blk->stmts, at) != nodesGet(hoists, to))
+        if (to >= hoists->used || nodesGet(blk->stmts, at) != nodesGet(hoists, to))
             continue;
         for (uint32_t h = from; h < to; ++h)
             nodesInsert(&blk->stmts, nodesGet(hoists, h), at++);
@@ -299,6 +305,8 @@ static void blockHoist(BlockNode *blk, Nodes *hoists) {
 }
 
 static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expectType);
+
+int blockWarnUnusedVar = 0;
 
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     EachPass *svpass = errorEachPass;
@@ -431,6 +439,7 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
     else {
         // Last statement of a regular block needs to be a break, continue, return or blockret
         if (laststmtp && isExpOrMacroNode(*laststmtp)) {
+            int lastWasName = nameUseWasName(*laststmtp);
             inodeTypeCheck(pstate, laststmtp, expectType);
             // A call that does not return ends the block as a 'return' would,
             // giving it no value to coerce, so it becomes one: returnTypeCheck
@@ -445,8 +454,10 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
             else {
                 // The block's last line ends in ';' (the parser makes no empty
                 // statement of it): its value is dropped
-                if (blk->flags & FlagTailSemi)
+                if (blk->flags & FlagTailSemi) {
+                    nameUseNoValue(*laststmtp, lastWasName);
                     discardCheck(*laststmtp);
+                }
                 lastexp = laststmtp;
                 match = iexpMultiCheckedCoerceInfer(expectType, &inferredType, lastexp, match);
             }
@@ -465,6 +476,7 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
             retnode->tag = BlockRetTag;
             retnode->exp = (INode*)newNilLitNode();
             inodeLexCopy(retnode->exp, laststmtp ? *laststmtp : (INode*)blk);
+            inodeLexCopy((INode*)retnode, retnode->exp);
             nodesAdd(&blk->stmts, (INode*)retnode);
             match = iexpMultiCoerceInfer(pstate, expectType, &inferredType, &retnode->exp, match);
         }
@@ -483,6 +495,22 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
         parallelEachCheckBody(pstate, blk);
     if (parentered)
         parallelEachLeave();
+
+    // Every use of a variable this block declares has been checked
+    if (blockWarnUnusedVar) {
+        INode **sp;
+        uint32_t scnt;
+        for (nodesFor(blk->stmts, scnt, sp)) {
+            if ((*sp)->tag != VarDclTag)
+                continue;
+            VarDclNode *var = (VarDclNode*)*sp;
+            if (var->userlocal && var->nuses <= var->nwrites && var->namesym->namestr != '_'
+                && var->vtype != errorType)
+                errorMsgNode((INode*)var, WarnUnusedVar,
+                    "%s is %s. Use it, or start its name with '_' to say it is meant.",
+                    &var->namesym->namestr, var->nuses ? "written but never read" : "never used");
+        }
+    }
 
     // Do inference on all registered breaks to ensure they all return the expected type
     // Note: Iterate differently because list may grow while iterating
@@ -662,14 +690,17 @@ static void blockFlowIn(FlowState *fstate, BlockNode **blknode) {
     default:
     {
         // Inject blockret node
+        // Each injected node takes the position of the last statement it follows, never the lexer's
         BreakRetNode *blkret = newReturnNode();
         blkret->tag = BlockRetTag;
+        inodeLexCopy((INode*)blkret, *lastnodep);
         if (isExpNode(*lastnodep)) {
             blkret->exp = *lastnodep;
             *lastnodep = (INode*)blkret;
         }
         else {
             blkret->exp = (INode*)newNilLitNode();
+            inodeLexCopy(blkret->exp, *lastnodep);
             nodesAdd(&blk->stmts, (INode*)blkret);
         }
     }

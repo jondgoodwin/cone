@@ -47,6 +47,14 @@ INode *parseArrayLit(ParseState *parse) {
     int svinlist = parse->inlist;
     parse->inlist = 1;
 
+    // '[]' lists nothing: an empty array, whose element type its expected type
+    // supplies (arrayLitTypeCheck)
+    if (lexIsToken(RBracketToken)) {
+        parse->inlist = svinlist;
+        lexNextToken();
+        return (INode *)array;
+    }
+
     // Gather comma-separated expressions that are likely elements or element type
     while (1) {
         nodesAdd(&array->elems, parseContentsAfter(parse, parseSimpleExpr(parse)));
@@ -998,6 +1006,11 @@ static INode *parsePropagate(ParseState *parse, INode *node) {
 // 'awaited' stops them before a '?': the term is the operand of an 'await',
 // which the '?' follows (parsePrefix).
 static INode *parseSuffixUntil(ParseState *parse, INode *node, uint16_t flags, int awaited) {
+    // A term that failed to parse has been reported (parseTerm) and is NULL:
+    // no suffix has anything to apply to, so the ones after it go unread, as
+    // the other readers of a failed term leave what follows it
+    if (node == NULL)
+        return NULL;
 
     // Process as many suffixes as we have, each applying to the term before
     while (1) {

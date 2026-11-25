@@ -74,6 +74,19 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;
 
+    // The region slot holds what was written after the '+', which is any name: '+ n 2' (a
+    // stray '+') names a variable. Only a type is a region, and the message below names it
+    if (!isTypeNode(node->region)) {
+        if (isNameUseNode(node->region))
+            errorMsgNode(node->region, ErrorNotRegion,
+                "'%.*s' is not a region: '+' starts a region annotation, '+Rc 5'. Is the '+' left over from an expression?",
+                (int)((NameUseNode*)node->region)->namesym->namesz, &((NameUseNode*)node->region)->namesym->namestr);
+        else
+            errorMsgNode(node->region, ErrorNotRegion, "This is not a region: '+' starts a region annotation, '+Rc 5'.");
+        node->vtype = errorType;
+        return;
+    }
+
     INode *vtype = ((IExpNode*)node->vtexp)->vtype;
     char *perm = itypeName(node->perm);
     int uni = itypeGetTypeDcl(node->perm) == (INode*)uniPerm;

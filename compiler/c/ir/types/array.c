@@ -151,7 +151,9 @@ void arrayNameRes(NameResState *pstate, ArrayNode *node) {
     uint32_t cnt;
     for (nodesFor(node->elems, cnt, nodesp))
         inodeNameRes(pstate, nodesp);
-    if (node->elems->used > 0 && !isTypeNode(nodesGet(node->elems, 0))) {
+    if (node->elems->used == 0 && node->dimens->used == 0)
+        node->tag = ArrayLitTag; // '[]' lists nothing: the empty array literal
+    else if (node->elems->used > 0 && !isTypeNode(nodesGet(node->elems, 0))) {
         node->tag = ArrayLitTag; // We have an array literal, not array type
         if (node->dimens->used > 0 && !inodeIsProvisionalType(nodesGet(node->elems, 0)))
             arrayRefuseFillLiteral((INode*)node);

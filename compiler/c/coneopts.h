@@ -70,6 +70,7 @@ typedef struct ConeOptions {
     int print_asm;        // Print out assembly file
     int print_llvmir;    // Print out LLVM IR
     int check_tree;        // Verify IR well-formedness
+    int check;             // Report a compile's errors and write nothing (--check)
     int report_trust;      // List the unconstrained operations after type checking, generating nothing
     int print_spans;       // Print the root module's declaration spans after parse
     int print_meta;        // --meta-ir: write the passes of each '#each' as the parser expanded them
@@ -81,6 +82,8 @@ typedef struct ConeOptions {
     int ltolink;         // --lto-link: no compile; the bitcode files named link into one object each (genlLtoLink)
     int no_noalias;      // --no-noalias, or CONE_NO_NOALIAS set: no 'noalias' on a unique or immutable borrow parameter
     int warn_index_star; // Warn at each '*x[i]' over a type's index place (WarnIndexStar)
+    int layout;          // --layout: print each struct and enum's size, alignment, field offsets and padding after generation (genlLayoutReport)
+    int warn_unused_var; // Warn at each local 'let' or 'var' nothing reads (WarnUnusedVar)
     int await_direct;    // Test only: split each message's seams, each record handed straight to its second half
     int docs;            // Generate code documentation
     int docs_private;    // Generate code docs for private

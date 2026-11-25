@@ -1,0 +1,129 @@
+// Bug 108's last residual (row 721): a message SENT by a worker's hook after the stop's last quiesce, whose
+// behaviour parks a record while the stop takes the pending tables.
+//
+// A worker's hook (actors.workerHooks) runs between turns, outside every counted activation, and a worker's send
+// bypasses the stop's gate (sendNow: only a thread that is neither a worker nor the stopper is gated). So the hook
+// can send to an idle actor after the stop's quiesce has read the counts: the push passes, 'schedule' counts the
+// activation after it, and the activation runs beside abandonParked's take.
+//
+// The producer is this test's own after-turn hook. Talker holds two Notes across an 'await' whose operation keeps
+// the Reply, so a record is parked in its pending table, and asks for the hook (askAfterTurn). The hook waits until
+// the stop is held between its last quiesce and its take (actors.testHoldTake: the stop descheduled there; the
+// hook's own wait is bounded, so a build that counts the hook is not held off for ever), then sends Talker 'late'.
+// 'late' parks a second record (parkReserve) and its operation, started after the park's slot is reserved and
+// before the record is written (genlawait: parkReserve, startAwait, parked), stays 300 ms, so the take, 100 ms
+// after the hold begins, lands inside the park. Without a guard the take empties the table and drops the
+// reserved block, and the park then writes into the emptied table: a null read in 'parked' (access violation,
+// exit 3221225477 on Windows). With the guard the program ends cleanly.
+//
+// The guard is the stop's gate, which a worker's send outside an activation (a hook) now passes as a plain
+// thread's does: the late message is refused and counted (stats().refused), 'late' never runs, and the output is
+// Note 2 and Note 1 dropped by the stop, the refusal counted, and the end.
+
+mod latesend;
+
+import stdio use *;
+import libc;
+import actors;
+import thread;
+import time;
+
+// The operation's record: the Reply the seam gave, kept for the hook
+struct Rec {
+  pub reply: actors.Reply;
+}
+
+let ready: Atomic[u64];       // 1 once Talker has parked
+let pending: Atomic[usize];   // the record the hook is to hand on, 0 when none
+let talkerAt: Atomic[usize];  // the Talker the hook sends to
+let lateRan: Atomic[u64];     // 1 once 'late' has run its operation
+
+fn @initpure init() {
+  ready = Atomic[u64].of(0u64);
+  pending = Atomic[usize].of(0usize);
+  talkerAt = Atomic[usize].of(0usize);
+  lateRan = Atomic[u64].of(0u64);
+}
+
+struct Note {
+  pub n: u64;
+  fn final(self: &uni) {
+    printStr("  drop "); printUInt(n); printStr("\n");
+  }
+}
+
+// The first operation: keeps the Reply in its record (never answered) and has the worker run the hook once this
+// turn ends
+fn runKeep(ctx: *u8, rp: actors.Reply) {
+  let r = ctx as *Rec;
+  mem.writeRaw[Rec](r, Rec(rp));
+  pending.store(ctx as usize);
+  actors.askAfterTurn();
+  ready.store(1u64);
+}
+
+fn dropIt(ctx: *u8) {}
+
+fn keepOp(r: *Rec) actors.Awaitable[u64] {actors.Awaitable[u64].of(r as *u8, &runKeep, &dropIt)}
+
+// The second operation, started by 'late' after its slot is reserved and before its record is written: it stays
+// inside the park for 300 ms, and answers (the answer, if it comes after the take, is a late one: dropped)
+fn runLate(ctx: *u8, rp: actors.Reply) {
+  lateRan.store(1u64);
+  thread.sleep(time.Duration.fromMillis(300i64));
+  var r = rp;
+  actors.answerNowIn[u64](&mut r, 9u64);
+}
+
+fn lateOp(ctx: *u8) actors.Awaitable[u64] {actors.Awaitable[u64].of(ctx, &runLate, &dropIt)}
+
+// The producer: a worker's after-turn hook, outside every activation
+fn afterTurn() {
+  let at = pending.swap(0usize);
+  if at == 0usize {
+    return;
+  }
+  let t0 = time.Instant.now();
+  while !actors.testTakeHeld() && t0.elapsed() < time.Duration.fromMillis(500i64) {
+    thread.sleep(time.Duration.fromMillis(1i64));
+  }
+  let t = talkerAt.load() as *Talker as &Talker;
+  t.late(at);
+}
+
+fn idleHook() bool {false}
+
+actor Talker {
+  pub async fn talk(self, rec: usize) {
+    let first = Note(1u64);
+    let second = Note(2u64);
+    let got = await keepOp(rec as *Rec);
+    printStr("resumed\n");
+  }
+
+  pub async fn late(self, ctx: usize) {
+    let held = 5u64;
+    let got = await lateOp(ctx as *u8);
+    if held != 5u64 {
+      printStr("held changed\n");
+    }
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  actors.workerHooks(&afterTurn, &idleHook);
+  let rec = libc.malloc(mem.sizeof[Rec]());
+  let t = Talker();
+  talkerAt.store(&t as *Talker as usize);
+  t.talk(rec as usize);
+  while ready.load() == 0u64 {
+    thread.yieldNow();
+  }
+  thread.sleep(time.Duration.fromMillis(50i64));
+  actors.testHoldTake(100i64);
+  finalAll();
+  printStr("late sends refused "); printUInt(actors.stats().refused); printStr("\n");
+  printStr("end\n");
+}

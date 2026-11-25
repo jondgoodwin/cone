@@ -6,9 +6,11 @@
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
 #
-# Slices and array references ('&[]', '.len', a pointer taken from a slice) are
+# Slices and array references ('&[]', a pointer taken from a slice) are
 # collection's subject, not this group's, so they appear here only as the
-# '&Array[u8]' string parameter every run scenario's print helpers need.
+# '&Array[u8]' string parameter every run scenario's print helpers need. An
+# array's own count, 'a.len', and the empty literal '[]' are this group's:
+# array_empty_len runs them, array_reject_empty has what they refuse.
 #
 # The two success scenarios split on whether a literal's elements are constants.
 # array_success writes only constant ones, which is the whole of what the
@@ -39,9 +41,6 @@
 #
 # Left uncovered on purpose:
 #
-# - An empty array literal, '[]'. ErrorBadArray "Array literal list may not be
-#   empty" cannot be provoked from source: the parser demands an expression
-#   after '[' and reports ErrorBadTerm first, which is lexical's subject.
 # - ErrorBadIndex "Indexing not supported on a value of this type." The array,
 #   array-ref and pointer paths all call the index check only after testing the
 #   same flag it tests, so nothing reaches it.
@@ -307,9 +306,20 @@ diagnostics = 2
 
 [scenario.array_reject_use]
 category = "reject"
-description = "Array initializers, indices and member access the compiler rejects"
+description = "Array initializers and indices the compiler rejects"
 tags = ["typecheck"]
-diagnostics = 5
+diagnostics = 4
+
+[scenario.array_empty_len]
+category = "run"
+description = "The empty literal '[]' typed by a declared variable, parameter, field and return of 'Array[T, 0]'; 'a.len' as the array type's count, for arrays, borrows of them, several sizes and arrays of arrays"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.array_reject_empty]
+category = "reject"
+description = "'[]' with no array type expected, or one of some elements; '.len' on a receiver that runs code"
+tags = ["typecheck"]
+diagnostics = 3
 
 # A global array whose elements are string literals filling byte arrays, an
 # Array of Array[u8, n], crashed conec in LLVM: the literal was generated as a load
@@ -330,3 +340,23 @@ contains = ["@gstr = internal constant [2 x [3 x i8]] [[3 x i8] c\"abc\", [3 x i
 [scenario.array_const_size]
 category = "run"
 description = "A named constant sizes an array type: usize, untyped integer, and a constant naming another"
+
+# A constant array literal, a constant array and a string literal are written out
+# once for each use, each global 'unnamed_addr' so LLVM's constant merge may fold
+# equal ones; the merge is LLVM's and the optimized dump of a program this small
+# has folded the reads away, so the checks pin what generation decides.
+[scenario.array_const_merge]
+category = "run"
+description = "Constant array literals, a constant array and string literals are 'unnamed_addr' globals, and each read finds its values"
+tags = ["genllvm", "runtime"]
+
+[[scenario.array_const_merge.check]]
+name = "a-constant-array-literal-is-an-unnamed-addr-constant"
+target = "preir"
+contains = ["@arraylit = internal unnamed_addr constant [4 x i32] [i32 5, i32 6, i32 7, i32 8]",
+            "internal unnamed_addr constant [4 x i32] [i32 2, i32 3, i32 5, i32 7]"]
+
+[[scenario.array_const_merge.check]]
+name = "a-string-literal-is-an-unnamed-addr-constant"
+target = "preir"
+contains = ['internal unnamed_addr constant [12 x i8] c"merged text\00"']

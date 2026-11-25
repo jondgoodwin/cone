@@ -456,6 +456,49 @@ void nameUseBaseInstanceMember(TypeCheckState *pstate, NameUseNode *name) {
         name->dclnode = member;
 }
 
+// What a term is before it is checked, for nameUseNoValue: 1 a name, 2 a call giving type
+// arguments in parentheses ('h(S)'), which type check rewrites to the name of an instance, else 0
+int nameUseWasName(INode *node) {
+    if (isNameUseNode(node))
+        return 1;
+    return node->tag == FnCallTag && fnCallHasTypeArgs((FnCallNode*)node) ? 2 : 0;
+}
+
+int nameUseNoValue(INode *node, int wasName) {
+    if (node == NULL || !wasName)
+        return 0;
+    if (isNameUseNode(node)) {
+        NameUseNode *name = (NameUseNode*)node;
+        INode *dcl = nameUseGetDcl(name);
+        if (dcl == NULL || ((IExpNode*)name)->vtype == errorType)
+            return 0;
+        if (dcl->tag == FnDclTag && wasName == 2) {
+            // Not 'h names a function': the statement was an instantiation, and its brackets are
+            // what give a generic its type arguments
+            errorMsgNode(node, ErrorNoSize,
+                "%s(...) gives the generic function %s its type arguments, which makes the function and does not call it: type arguments are written in brackets, '%s[...]', and the call follows, '%s[...]()'.",
+                &name->namesym->namestr, &name->namesym->namestr, &name->namesym->namestr, &name->namesym->namestr);
+            ((IExpNode*)name)->vtype = errorType;
+            return 1;
+        }
+        if (wasName == 2)
+            return 0;
+        if (dcl->tag == FnDclTag) {
+            errorMsgNode(node, ErrorNoSize,
+                "%s names a function, and a function signature is not a value at all: call it with '%s()', or use a reference to it.",
+                &name->namesym->namestr, &name->namesym->namestr);
+            ((IExpNode*)name)->vtype = errorType;
+            return 1;
+        }
+        if (nameUseGroup(name) != TypeGroup)
+            return 0;
+    }
+    else if (!isTypeNode(node))
+        return 0;
+    iexpNotTypedMsg(node);
+    return 1;
+}
+
 // Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
@@ -542,6 +585,19 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
         fncall->instnode = name->instnode;  // and what instantiated it, which a '&uni' field's error names
         *((FnCallNode**)namep) = fncall;
         inodeTypeCheckAny(pstate, (INode**)namep);
+        return;
+    }
+
+    // A field named through its type, 'Gadget.w', is asked for with no value of the type to
+    // read it from: a field is the per-instance route and has no storage of its own
+    // (names-and-namespaces: "a static folds on a type, never through a field"). Generation
+    // has nothing to load, so it is refused here, naming the form that works
+    if (name->dclnode->tag == FieldDclTag && (name->dclnode->flags & FlagMethFld)
+        && (name->flags & FlagQualified)) {
+        errorMsgNode((INode*)name, ErrorFieldViaType,
+            "%s is a field, which belongs to a value of its type: read it from one, 'value.%s'. Named through the type it has no value.",
+            &name->namesym->namestr, &name->namesym->namestr);
+        name->vtype = errorType;
         return;
     }
 

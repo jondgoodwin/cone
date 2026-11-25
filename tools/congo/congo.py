@@ -149,6 +149,10 @@ DEFINES: list[str] = []
 # carries debug info, and a link on Windows writes a PDB beside the .exe
 STRIP_DEBUG = [False]
 
+# 'congo layout': conec is passed --layout for every compile of the build, and
+# prints each struct and enum's size, alignment, field offsets and padding
+LAYOUT = [False]
+
 # '--lto' given to build, run or test with --release: every native compile writes
 # ThinLTO bitcode (<name>.bc) in place of an object, and the link is preceded by
 # conec's ThinLTO link of them all, whose objects the linker takes. Into a build
@@ -808,7 +812,7 @@ def registry_folders() -> list[Path]:
     after every folder."""
     folders = [REPO_PACKAGES] if REPO_PACKAGES.is_dir() else []
     config = config_path()
-    listed = machine_config().get("registry", {}).get("folders", [])
+    listed = registry_table().get("folders", [])
     if not isinstance(listed, list) or not all(isinstance(f, str) for f in listed):
         raise CongoError(f"{config}: [registry] folders must be a list of folder paths")
     for entry in listed:
@@ -830,10 +834,18 @@ def machine_config() -> dict:
         raise CongoError(f"{config}: cannot read the machine config: {exc}") from None
 
 
+def registry_table() -> dict:
+    """The machine config's [registry] table; {} where there is none."""
+    table = machine_config().get("registry", {})
+    if not isinstance(table, dict):
+        raise CongoError(f"{config_path()}: [registry] must be a table, with folders and indexes")
+    return table
+
+
 def registry_indexes() -> list[str]:
     """The index registries the machine config lists, in order: the git URLs (or
     folders) of repositories holding one TOML file per package."""
-    listed = machine_config().get("registry", {}).get("indexes", [])
+    listed = registry_table().get("indexes", [])
     if not isinstance(listed, list) or not all(isinstance(f, str) and f for f in listed):
         raise CongoError(f"{config_path()}: [registry] indexes must be a list of git URLs")
     return listed
@@ -1877,7 +1889,9 @@ class Linker:
         [link] tables name, each searched for first in their [link] paths. A
         release link folds identical functions (/OPT:ICF), the net under the
         compiler's size gate on generic instances: the copies each object keeps
-        for itself that came out the same are one again in the program. On
+        for itself that came out the same are one again in the program, and
+        drops what nothing reaches (/OPT:REF; `--gc-sections` on Linux and `-dead_strip` on macOS,
+        which no debug link passes). On
         Windows a link that is not stripped, debug or release, also writes the debug info
         of the objects (CodeView) into a PDB beside the .exe, which a profiler
         reads for function names and lines; on Linux the info stays in the ELF."""
@@ -1902,9 +1916,13 @@ class Linker:
         extra = shlex.split(os.environ.get("CONGO_LINK_EXTRA", ""))
         dynamic = exe.with_name(exe.name + ".dynlist")
         dynamic.write_text("{\n  cnmalloc_*;\n};\n")
+        # A release link drops the sections no live code reaches, as Windows' /OPT:REF does: the compiler gives every
+        # symbol a section of its own for this. The symbols the dynamic list exports stay roots. Debug links are left alone.
+        strip_unreached = (["-Wl,-dead_strip"] if HOST_OS == "macos" else ["-Wl,--gc-sections"]) if release else []
         return [self.tool, *map(str, objs), *extra, str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
-                f"-Wl,--dynamic-list={dynamic}", "-o", str(exe), "-lm", "-lpthread", "-ldl"]   # -ldl: dlsym, in libc itself since glibc 2.34 (heapregion.c, actors)
+                f"-Wl,--dynamic-list={dynamic}", *strip_unreached,
+                "-o", str(exe), "-lm", "-lpthread", "-ldl"]   # -ldl: dlsym, in libc itself since glibc 2.34 (heapregion.c, actors)
 
 
 # ---------------------------------------------------------------------------
@@ -2054,7 +2072,8 @@ def conec_command(command: list[str], lto: bool = False) -> list[str]:
     put after the compiler."""
     defines = [arg for define in DEFINES for arg in ("-D", define)]
     strip = ["--strip"] if STRIP_DEBUG[0] else []
-    return [command[0], *defines, *strip, *(["--lto"] if lto and LTO[0] else []), *command[1:]]
+    layout = ["--layout"] if LAYOUT[0] else []
+    return [command[0], *defines, *strip, *layout, *(["--lto"] if lto and LTO[0] else []), *command[1:]]
 
 
 def key_inputs(command: list[str], env: dict[str, str],
@@ -2133,8 +2152,14 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
                  env: dict[str, str], packages: list[Package] = (),
                  includes: Path | None = None, announce: bool = True,
                  prelude: list[tuple[str, Path]] | None = (),
-                 homes: "Callable[[Package], Path] | None" = None) -> Path:
-    """Write the package's build description into build/<mode>/ and compile the
+                 homes: "Callable[[Package], Path] | None" = None,
+                 check: bool = False) -> Path:
+    """With 'check' (the package 'congo check' checks, never one it imports),
+    conec runs with --check, which reports what a compile would and writes
+    nothing: the build cache is neither read nor written, an earlier build's
+    object and include file stand, and the object's path is returned unmade.
+
+    Write the package's build description into build/<mode>/ and compile the
     package on its own. Every package but the one being built is a library;
     the one being built is what its manifest says. 'packages' is the unit's
     dependency closure, which the description lists for its include files.
@@ -2162,6 +2187,12 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     obj = out / f"{unit.pkg.name}{LTO_EXT if LTO[0] else OBJ_EXT}"
     include = include_for(unit.pkg, out)
     outputs = [obj, include] if output == "library" else [obj]
+    if check:
+        if announce:
+            say("Checking", f"{unit.pkg.label()} ({unit.pkg.root})")
+        if not run_conec(conec_command([str(conec), "--check", "-o", str(out), str(desc)]), env):
+            raise CongoError(f"could not check {unit.pkg.name} (build description: {desc})")
+        return obj
     command = conec_command([str(conec), "-o", str(out), str(desc)], lto=True)
     files: list[tuple[str, Path]] = []
     if not unit.pkg.lone:
@@ -2376,8 +2407,11 @@ def gpu_module_order(tree: Module) -> list[Module]:
 
 
 def compile_gpu(conec: Path, unit: Unit, units: dict[str, Unit], core: Package, out: Path,
-                mode: str, env: dict[str, str]) -> Path:
-    """Compile a package's kernels into out/<name>.spv: a direct conec compile,
+                mode: str, env: dict[str, str], check: bool = False) -> Path:
+    """With 'check', conec runs with --check, writes nothing and the cache is
+    left alone; the module it checks is still written under out/gpu/.
+
+    Compile a package's kernels into out/<name>.spv: a direct conec compile,
     for SPIR-V's Vulkan form, in out/gpu/<name>/, of a module written here,
     so that what it imports is found on the package search path and compiled
     from its source. For a marked package, the module imports the package;
@@ -2409,6 +2443,11 @@ def compile_gpu(conec: Path, unit: Unit, units: dict[str, Unit], core: Package, 
         command.append("--debug")
     if folders:
         command.append("--path=" + ";".join(str(f) for f in folders))
+    if check:
+        say("Checking", f"{pkg.label()} for the GPU ({shown_root})")
+        if not run_conec(conec_command([*command, "--check", "-o", str(work), str(source)]), env):
+            raise CongoError(f"could not check {pkg.name} for the GPU ({source})")
+        return spv
     command = conec_command([*command, "-o", str(work), str(source)])
     # The key (above, "The build cache") holds what conec may read of each
     # package it finds on its search path and compiles from source, more than
@@ -2537,7 +2576,7 @@ class Session:
         return self.shared / f"{pkg.name}-{where}"
 
     def compile(self, order: list[Unit], top: Package, top_out: Path | None = None,
-                announce: bool = True) -> list[Path]:
+                announce: bool = True, check: bool = False) -> list[Path]:
         """Compile every unit of the order not compiled already, each after what
         it imports; return the objects in the order's order. 'top' gets the
         output its manifest says, into 'top_out' where that is given (a test
@@ -2605,7 +2644,7 @@ class Session:
                   else contextlib.nullcontext()):
                 obj = compile_unit(conec, unit, into, self.mode, is_top, env,
                                    packages, self.out, announce or not is_top, prelude,
-                                   self.home)
+                                   self.home, check=check and is_top)
             if not is_top or (into == self.out and unit.pkg.output == "library"):
                 self.objs[unit.pkg.key] = obj
             objs.append(obj)
@@ -2614,7 +2653,8 @@ class Session:
         for unit in order:
             if unit.kernels and core is not None and unit.pkg.key not in self.spvs:
                 self.spvs[unit.pkg.key] = compile_gpu(conec, unit, by_name, core, self.out,
-                                                       self.mode, env)
+                                                       self.mode, env,
+                                                       check=check and unit.pkg is top)
         return objs
 
     def lto_link(self, bitcode: list[Path], exe: Path, announce: bool) -> list[Path]:
@@ -2698,6 +2738,8 @@ class Session:
                      else "the linker's own search path")
             hint = (f"\nC libraries linked ({named}): the linker looks for each in the"
                     f" folders [link] paths names, then in {where}" if named else "")
+            if "ngtcp2" in said:
+                hint += NGTCP2_HINT
             raise CongoError(f"link failed:\n{' '.join(command)}\n{said}{hint}{again}")
         for name, source in runtime.items():
             if copy_runtime(source, exe.parent, name) and announce:
@@ -2728,6 +2770,17 @@ def build(pkg: Package, mode: str, session: Session | None = None) -> Path:
     session.link(order, objs, exe)
     say("Finished", f"{mode} {shown(exe)}")
     return exe
+
+
+def check_package(pkg: Package, mode: str) -> None:
+    """Build what pkg imports, as build does, and have conec check pkg itself:
+    every error a compile of it gives, with nothing written for it and nothing
+    linked."""
+    session = Session(open_registry(), build_folder(pkg, mode), mode)
+    restore(pkg, session.registry)
+    order = build_order(pkg, session.registry)
+    session.compile(order, pkg, check=True)
+    say("Checked", f"{mode} {pkg.label()} ({pkg.root})")
 
 
 def lone_package(file: Path) -> Package:
@@ -2790,6 +2843,28 @@ pub fn answer() i64 {{
 """
 
 
+# Said after a link that names ngtcp2 as missing, in place of the bare linker
+# failure: the package quic links C libraries a checkout does not carry
+NGTCP2_HINT = ("\nquic needs deps: run tools/deps/fetch.py openssl-headers +"
+               " tools/deps/build_ngtcp2.py")
+
+
+def make_package(root: Path, name: str, lib: bool, existing: bool) -> None:
+    """The folders and files of a new package at root. For 'init' (existing),
+    the folder is there already, and a source file in it is never overwritten."""
+    output = "library" if lib else "executable"
+    (root / "src").mkdir(parents=True, exist_ok=existing)
+    (root / "tests").mkdir(exist_ok=existing)
+    (root / MANIFEST).write_text(
+        f'[package]\nname = "{name}"\nversion = "0.1.0"\noutput = "{output}"\n',
+        encoding="utf-8")
+    template = LIBRARY_TEMPLATE if lib else PROGRAM_TEMPLATE
+    root_file = root / "src" / f"{name}.cone"
+    if not (existing and root_file.exists()):
+        root_file.write_text(template.format(name=name), encoding="utf-8")
+    say("Created", f"{output} package {name} ({shown(root)})")
+
+
 def cmd_new(args: argparse.Namespace) -> int:
     name = args.name
     if name_fault(name):
@@ -2797,20 +2872,42 @@ def cmd_new(args: argparse.Namespace) -> int:
     root = Path(args.path or name).resolve()
     if root.exists():
         raise CongoError(f"{root} already exists")
-    output = "library" if args.lib else "executable"
-    (root / "src").mkdir(parents=True)
-    (root / "tests").mkdir()
-    (root / MANIFEST).write_text(
-        f'[package]\nname = "{name}"\nversion = "0.1.0"\noutput = "{output}"\n',
-        encoding="utf-8")
-    template = LIBRARY_TEMPLATE if args.lib else PROGRAM_TEMPLATE
-    (root / "src" / f"{name}.cone").write_text(template.format(name=name), encoding="utf-8")
-    say("Created", f"{output} package {name} ({shown(root)})")
+    make_package(root, name, args.lib, existing=False)
+    return 0
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """'congo init': the package of the current folder, which exists already;
+    named by the folder unless a name is given."""
+    root = Path.cwd().resolve()
+    name = args.name or root.name
+    if name_fault(name):
+        raise CongoError(f"'{name}' {name_fault(name)}"
+                         + ("" if args.name else "; 'congo init <name>' names the package"))
+    if (root / MANIFEST).exists():
+        raise CongoError(f"{root / MANIFEST} exists already: this folder is a package")
+    make_package(root, name, args.lib, existing=True)
     return 0
 
 
 def cmd_build(args: argparse.Namespace) -> int:
     build(current_package(), "release" if args.release else "debug")
+    return 0
+
+
+def cmd_layout(args: argparse.Namespace) -> int:
+    """Build this package with conec's --layout, which prints each struct and enum's
+    size, alignment, field offsets and padding bytes, marking a struct padded by a
+    quarter of its size or more PADDED. It changes nothing in what the build makes.
+    Every compile of the build prints its own, so nothing is taken from the cache."""
+    LAYOUT[0] = True
+    USE_CACHE[0] = False
+    build(current_package(), "release" if args.release else "debug")
+    return 0
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    check_package(current_package(), "release" if args.release else "debug")
     return 0
 
 
@@ -2973,8 +3070,36 @@ def show_stderr(text: str, exe: Path) -> str:
     return "\n".join(lines)
 
 
+def example_package(pkg: Package, name: str) -> Package | None:
+    """'congo run --example <name>': examples/<name>.cone of the package of the
+    current folder, resolved as 'congo run examples/<name>.cone' resolves it. With
+    no name, the examples are listed and None comes back."""
+    folder = pkg.root / EXAMPLES
+    names = [f.stem for f in programs(folder, None)]
+    if not name:
+        if not names:
+            raise CongoError(f"{pkg.name} has no examples (no .cone file in {shown(folder)})")
+        print(f"examples of {pkg.name}:")
+        for stem in names:
+            print(f"  {stem}")
+        return None
+    name = name[:-5] if name.endswith(".cone") else name
+    if name not in names:
+        have = ", ".join(names) if names else "none"
+        raise CongoError(f"{pkg.name} has no example '{name}' (examples: {have})")
+    return lone_package(folder / f"{name}.cone")
+
+
 def cmd_run(args: argparse.Namespace) -> int:
-    pkg = lone_package(Path(args.file)) if args.file else current_package()
+    if args.example is not None:
+        if args.file:
+            raise CongoError("--example names a program in this package's examples folder;"
+                             " it takes no file")
+        pkg = example_package(current_package(), args.example)
+        if pkg is None:
+            return 0
+    else:
+        pkg = lone_package(Path(args.file)) if args.file else current_package()
     if pkg.output != "executable":
         raise CongoError(f"{pkg.name} is a library, which has nothing to run;"
                          f" 'congo build' builds it")
@@ -4307,7 +4432,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     new.add_argument("--lib", action="store_true",
                      help="a library package, whose include file its build generates")
     new.set_defaults(func=cmd_new)
+    init = sub.add_parser("init", help="make a package of the current folder")
+    init.add_argument("name", nargs="?", help="the package's name (default: the folder's)")
+    init.add_argument("--lib", action="store_true",
+                      help="a library package, whose include file its build generates")
+    init.set_defaults(func=cmd_init)
     for name, func, text in (("build", cmd_build, "build this package"),
+                             ("layout", cmd_layout, "build this package and print its types' sizes,"
+                                                    " field offsets and padding"),
                              ("run", cmd_run, "build this package or a lone file, and run it")):
         p = sub.add_parser(name, help=text)
         p.add_argument("--release", action="store_true", help="an optimised build")
@@ -4317,8 +4449,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         add_cache_argument(p)
         if name == "run":
             p.add_argument("file", nargs="?", help="a lone .cone file, run with no manifest")
+            p.add_argument("--example", nargs="?", const="", default=None, metavar="NAME",
+                           help="run examples/NAME.cone of this package; with no name,"
+                                " list the examples")
             p.epilog = "Arguments after '--' are passed to the program."
         p.set_defaults(func=func)
+    check = sub.add_parser("check", help="report this package's errors, as a build would, and"
+                                         " write nothing for it (what it imports is built)")
+    check.add_argument("--release", action="store_true", help="check as a release build")
+    add_define_argument(check)
+    add_cache_argument(check)
+    check.set_defaults(func=cmd_check)
     test = sub.add_parser("test", help="build this package, run its tests and build its"
                                        " examples")
     test.add_argument("name", nargs="?",

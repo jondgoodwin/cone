@@ -3372,6 +3372,8 @@ static LLVMValueRef genlAddrIn(GenState *gen, INode *lval) {
         LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMTypeOf(strconst), "string");
         LLVMSetLinkage(sglobal, LLVMInternalLinkage);
         LLVMSetGlobalConstant(sglobal, 1);
+        // Cone promises no address for a literal: LLVM's constant merge folds equal ones
+        LLVMSetUnnamedAddress(sglobal, LLVMGlobalUnnamedAddr);
         genlComdat(gen, sglobal);
         LLVMSetInitializer(sglobal, strconst);
         if (gen->opt->gpu)
@@ -3391,6 +3393,8 @@ static LLVMValueRef genlAddrIn(GenState *gen, INode *lval) {
             LLVMValueRef aglobal = LLVMAddGlobal(gen->module, LLVMTypeOf(arrval), "arraylit");
             LLVMSetLinkage(aglobal, LLVMInternalLinkage);
             LLVMSetGlobalConstant(aglobal, 1);
+            // A 'const' is a value that may be duplicated per use, so the copies may merge
+            LLVMSetUnnamedAddress(aglobal, LLVMGlobalUnnamedAddr);
             genlComdat(gen, aglobal);
             LLVMSetInitializer(aglobal, arrval);
             return genlFlatAddr(gen, aglobal);

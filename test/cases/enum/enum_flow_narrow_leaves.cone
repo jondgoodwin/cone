@@ -1,0 +1,72 @@
+// A name tested with an ordinary 'if' is known to be the other variants after it when the
+// branch leaves on every path, though its last statement is an inner 'if' or 'match' and
+// not a jump itself: the same every-path-leaves test a let-else's 'else' is held to. A
+// branch that leaves through a 'return', a 'break', a 'continue' or a call that does not
+// return counts alike.
+//
+// The expected lines are worked out by hand in the comments.
+
+mod enum_flow_narrow_leaves;
+
+import stdio use *;
+
+enum Shape {
+  struct Circle { pub radius: i32; }
+  struct Rect { pub w: i32; }
+}
+use Shape;
+
+fn num(n: i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+
+// An inner 'if' with an 'else', both returning: after it 's' is a Circle
+//   Circle(5): 5      Rect(1), true: 100     Rect(1), false: 200
+fn viaIf(s: Shape, c: bool) i32 {
+  if s is Rect { if c { return 100; } else { return 200; } }
+  s.radius
+}
+
+// An inner 'match' that covers its cases, each returning
+fn viaMatch(s: Shape, n: i32) i32 {
+  if s is Rect {
+    match n {
+      case 0 { return 10; }
+      else { return 20; }
+    }
+  }
+  s.radius
+}
+
+// The leaving is nested one block deeper, and ends in 'panic'
+fn viaBlock(s: Shape, c: bool) i32 {
+  if s is Rect { { if c { return 7; } else { panic("no"); } } }
+  s.radius
+}
+
+// A loop: one path breaks, the other continues; either way 's' was a Circle after the 'if'
+fn inLoop(s: Shape) i32 {
+  var total = 0;
+  var i = 0;
+  while i < 3 {
+    i += 1;
+    if s is Rect { if i == 2 { break; } else { continue; } }
+    total += s.radius;
+  }
+  total
+}
+
+fn main() {
+  num(viaIf(Circle(5), true));      // 5
+  num(viaIf(Rect(1), true));        // 100
+  num(viaIf(Rect(1), false));       // 200
+  num(viaMatch(Circle(6), 0));      // 6
+  num(viaMatch(Rect(1), 0));        // 10
+  num(viaMatch(Rect(1), 3));        // 20
+  num(viaBlock(Circle(8), true));   // 8
+  num(viaBlock(Rect(1), true));     // 7
+  num(inLoop(Circle(2)));           // 6
+  num(inLoop(Rect(1)));             // 0
+  printStr("\n");
+}

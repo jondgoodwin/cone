@@ -713,13 +713,24 @@ every cursor's items (`IterIndexed[T, Self]`, whose own `indexed` is a cursor of
 without end, and would refuse a cursor whose items hold a brand (a `List` of
 `&'=a mut R`) for a method nobody called. A method the type declares itself under the
 name still replaces the default, as for a generic one.
-Not yet built: a trait's public generic method met by a generic method the type
-declares itself. `structCheckTraitReqs` compares the requirement with that
-method by `fnSigVrefEqual`, and `itypeIsSame` finds no two
-uses of a type parameter the same — a use of one is not a type, so neither
-resolves to a declaration — so every such type is `ErrorInvType`, "none of
-what it declares has the signature". Comparing them would mean matching type
-parameters by position. The opposite pairing, a type's generic method against a
+A trait's public generic method is met by a generic method the type declares
+itself where the two have as many type parameters and each place agrees in its
+bound (names aside; a different bound or number is `ErrorInvType`, "none of what
+it declares has the signature"). `structCheckTraitReqs` compares the requirement
+with that method by `fnSigVrefEqual`, and `itypeIsSame` finds no two uses of a
+type parameter the same — a use of one is not a type, so neither resolves to a
+declaration — so `iNsTypeFindVrefMethod` hands the two methods' parameter lists
+to `fnSigGenericParms`, and `fnSigReqTypeSame` matches a use of the
+requirement's parameter with the use of the implementation's parameter at the
+same place (`trait_generic_method_params`, `trait_typecheck_generic_method_params`).
+The lists are held in statics for the one compare; `iNsTypeFindVrefMethod` saves
+the pair that stood and restores it afterwards, so a compare reached from inside
+another keeps the outer one's lists. No such nested path was found today
+(read, not proven: `fnSigVrefEqual` calls only type comparison and lifetime
+checks), so there is no test for it; the save and restore is a guard. A bound
+is compared by the bound's name, so two bounds of the same name from different
+modules match; that is not unsound, since the instance's own `where` check still
+runs against the real trait. The opposite pairing, a type's generic method against a
 trait's method that is not generic, is refused by design, as in Rust:
 `iNsTypeFindVrefMethod` skips a generic candidate then, so it never fits a
 bound, an `is` or a virtual reference, whether or not its signature names its
@@ -1166,7 +1177,11 @@ instance's `final` (checked with its layout, since the drop of a local calls it)
 reaches is not reported for that instance. The first instance of the chain is
 checked whole and its body is the template's, so an error that does not depend on
 the argument is reported there; an error that does (`self.v + 1`, fine for `i64`, not
-for `Option[i64]`) surfaces only when a call reaches that instance. The same holds for
+for `Option[i64]`) surfaces only when a call reaches that instance. A use does not
+release an instance made by a member check that has reported an error since it began
+(`StructNode.memerrbase`, Bug 120): the program is refused, and checking each link of such
+a chain only repeated the errors (`Wrap[& R]` as a receiver: two hundred repeats, half a
+minute, the nesting of the type argument growing every link). The same holds for
 what the members check does beyond bodies: the requirements of a trait the instance
 claims, and its overload sets, are verified when a use releases it. A generic trait's
 instance is always eager.

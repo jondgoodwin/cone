@@ -92,7 +92,8 @@ void assignNameRes(NameResState *pstate, AssignNode *node) {
 void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
     // '_' takes the value whatever its type: the value is checked, and nothing else
     if (assignIsAnon(lval)) {
-        if (iexpTypeCheckAny(pstate, rval))
+        int wasName = nameUseWasName(*rval);
+        if (iexpTypeCheckAny(pstate, rval) && !nameUseNoValue(*rval, wasName))
             ((IExpNode*)lval)->vtype = ((IExpNode*)*rval)->vtype;
         return;
     }
@@ -340,6 +341,13 @@ static int assignTargetsTypeCheck(TypeCheckState *pstate, INode **lvalp) {
         fnCallSetPlaceEnd(setmark);
         if (typed == 0)
             return 0;
+        // A function's name is a name use of an expression, but it names no place to store into
+        if (nameUseNames(*lvalp, FnDclTag) && ((IExpNode*)*lvalp)->vtype != errorType) {
+            errorMsgNode(*lvalp, ErrorBadLval, "%s names a function, which is not a place to store a value.",
+                &((NameUseNode*)*lvalp)->namesym->namestr);
+            ((IExpNode*)*lvalp)->vtype = errorType;
+            return 0;
+        }
         if (setindex && *lvalp == (INode*)setindex && (setindex->flags & FlagBorrow))
             derefInject(lvalp);
         // 'ps[i].f = v' over a SoaList: written as a field, checked as the column's element
@@ -381,6 +389,13 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
     }
     if (assignTargetsTypeCheck(pstate, &node->lval) == 0)
         return;
+    // A plain '=' to a bare local name stores to it and reads nothing of it
+    // (WarnUnusedVar counts those uses apart)
+    if (node->assignType == NormalAssign && isNameUseNode(node->lval)) {
+        INode *dcl = ((NameUseNode*)node->lval)->dclnode;
+        if (dcl && dcl->tag == VarDclTag && ((VarDclNode*)dcl)->nwrites < 255)
+            ((VarDclNode*)dcl)->nwrites++;
+    }
 
     // Handle tuple decomposition for parallel assignment
     INode *lval = node->lval;
@@ -466,8 +481,10 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
     uint16_t lvalscope = 0;
     INode *lvalperm = (INode*)immPerm;
     INode *lvalvar = iexpGetStoreLvalInfo(lval, &lvalperm, &lvalscope);
+    // A name that is no variable (a 'const') has no first assignment to wait
+    // for and no flow flags to read: a write to it is refused
     if (!(MayWrite & permGetFlags(lvalperm)) &&
-        (!lvalIsName || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
+        (!lvalIsName || lvalvar->tag != VarDclTag || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
         if (permIsLock(lvalperm))
             permLockRefused(lval, lvalperm, "write");
         else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagEachVar))

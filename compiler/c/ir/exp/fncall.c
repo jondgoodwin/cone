@@ -507,6 +507,25 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         }
     }
 
+    // Type arguments are given by position, 'id[i32](3)': a generic's parameters
+    // are not matched to names, so 'id[T: i32]' is refused here, once, rather than
+    // reaching type check as a value no type can be read from
+    if (node->args && (node->flags & FlagIndex) && node->methfld == NULL && isNameUseNode(node->objfn)) {
+        INode *genericdcl = nameUseGetDcl((NameUseNode*)node->objfn);
+        // A generic struct's brackets may be its literal, 'Pair[a: 1, b: 2.0]', so
+        // only a generic function's brackets are all type arguments
+        if (genericdcl && genericdcl->tag == FnDclTag && genericGetInfo(genericdcl) != NULL) {
+            for (nodesFor(node->args, cnt, argsp)) {
+                if ((*argsp)->tag != NamedValTag)
+                    continue;
+                errorMsgNode(*argsp, ErrorNamedArg,
+                    "Type arguments are not named; give the type, such as `id[i32](3)`. Only a struct's implicit init, such as `Point(x: 1)`, takes values by name.");
+                node->vtype = errorType;
+                return;
+            }
+        }
+    }
+
     // Name resolve arguments/statements
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
@@ -1961,6 +1980,72 @@ static INode *fnCallSliceBodyOf(TypeCheckState *pstate, FnCallNode *callnode) {
 static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INode *bodytype);
 static void fnCallReadThroughRefs(FnCallNode *node);
 int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *objdereftype);
+
+// Does reading this expression do nothing but name a place: a variable, a
+// field or element of one, a dereference of one? The count of an array is its
+// type's, so '.len' never reads the array, and a receiver that runs code
+// ('make().items.len') would have that code silently dropped.
+static int fnCallIsQuietPlace(INode *node) {
+    switch (node->tag) {
+    case NameUseTag:
+    case ULitTag:
+    case FLitTag:
+    case StringLitTag:
+        return 1;
+    case DerefTag:
+        return fnCallIsQuietPlace(((StarNode*)node)->vtexp);
+    case BorrowTag:
+        return fnCallIsQuietPlace(((RefNode*)node)->vtexp);
+    case ArrayLitTag: {
+        ArrayNode *lit = (ArrayNode*)node;
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(lit->elems, cnt, elemp))
+            if (!fnCallIsQuietPlace(*elemp))
+                return 0;
+        return 1;
+    }
+    case FldAccessTag:
+        return fnCallIsQuietPlace(((FnCallNode*)node)->objfn);
+    case ArrIndexTag: {
+        FnCallNode *index = (FnCallNode*)node;
+        INode **argp;
+        uint32_t cnt;
+        if (!fnCallIsQuietPlace(index->objfn))
+            return 0;
+        if (index->args)
+            for (nodesFor(index->args, cnt, argp))
+                if (!fnCallIsQuietPlace(*argp))
+                    return 0;
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+// 'a.len' on an array: the count its type states, a 'usize' constant standing
+// where the call stood (nothing is read at run time). Answers 0, changing
+// nothing, where the call is not a '.len' of an array of one dimension's count.
+static int fnCallLowerArrayLen(FnCallNode **nodep, INode *arraytype) {
+    FnCallNode *node = *nodep;
+    if (node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != lenName
+        || (node->args != NULL && node->args->used > 0)
+        || (node->flags & (FlagIndex | FlagOperator | FlagBorrow | FlagRange))
+        || arraytype->tag != ArrayTag || ((ArrayNode*)arraytype)->dimens->used != 1)
+        return 0;
+    if (!fnCallIsQuietPlace(node->objfn)) {
+        errorMsgNode((INode*)node, ErrorBadArray,
+            "The length of an array is its type's, so '.len' reads no value, and this receiver runs code that would be dropped: name the array in a variable first.");
+        node->vtype = errorType;
+        return 1;
+    }
+    ULitNode *count = newULitNodeTC(arrayDim1(arraytype), (INode*)usizeType);
+    inodeLexCopy((INode*)count, (INode*)node);
+    *((INode**)nodep) = (INode*)count;
+    return 1;
+}
 
 // A method called on an array, a reference to one or a slice, lowered against
 // core's 'Array[T]' for its element type. Answers 0, changing nothing, where
@@ -4467,6 +4552,13 @@ static int fnCallArgMayInfer(INode *arg) {
     return arg->tag == FnCallTag;
 }
 
+// An argument whose value has branches or a body, typed branch by branch from where it goes:
+// an 'if', a 'match' or a block, but not the block a '?' is parsed to, whose value is its operand's
+// and is no branch to type
+static int fnCallArgBranches(INode *arg) {
+    return arg->tag == IfTag || (arg->tag == BlockTag && !(arg->flags & FlagPropagate));
+}
+
 // A number operator that wants both operands the one number type: a sum, difference,
 // product, quotient or remainder, or an ordering comparison, three-way included
 static int fnCallIsNumericOp(Name *op) {
@@ -5466,6 +5558,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             inodeTypeCheckAny(pstate, &node->objfn);
         objfnChecked = 1;
         if (inodeIsError(node->objfn)) {
+            // The receiver was reported where it was declared, so this body shows no
+            // error of its own and its arguments stay unchecked: flow must not walk
+            // them (fnDclTypeCheck)
+            if (errors)
+                ++errorsPassedOver;
             node->vtype = errorType;
             return;
         }
@@ -5616,10 +5713,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // are that type, as a literal there is ('x * (if c {1.25} else {0.8})').
     INode *opexpect = NULL;
     Name *argopname = fnCallOperatorName(node);
-    int numericif = argopname && node->args && node->args->used == 1 && nodesGet(node->args, 0)->tag == IfTag
-        && fnCallIsNumericOp(argopname);
-    if (argopname && (argopname == eqName || argopname == neName || argopname == lessDashName || numericif)
-        && node->args && node->args->used == 1 && (numericif || fnCallArgMayInfer(nodesGet(node->args, 0)))
+    int branching = argopname && node->args && node->args->used == 1 && fnCallArgBranches(nodesGet(node->args, 0));
+    int numericif = branching && fnCallIsNumericOp(argopname);
+    if (argopname && node->args && node->args->used == 1
+        && (branching || ((argopname == eqName || argopname == neName || argopname == lessDashName)
+            && fnCallArgMayInfer(nodesGet(node->args, 0))))
         && (!objfnChecked || opchecked) && !calleeIsOverload
         && (!isNameUseNode(node->objfn) || nameUseNames(node->objfn, VarDclTag) || nameUseNames(node->objfn, ConstDclTag))) {
         if (!objfnChecked) {
@@ -5637,13 +5735,25 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                 if (found)
                     opexpect = fnCallArgAgreed(found, 1, 0, 1);
             }
-            else if (numericif) {
+            else if (numericif && fnCallOperandNumber(node->objfn)) {
                 // (a receiver that is an untyped literal is no type to want: it takes the argument's;
                 // nor is a pointer or a reference to a number)
                 opexpect = fnCallOperandNumber(node->objfn);
             }
-            else
-                opexpect = rcvtype;
+            else if (argopname == eqName || argopname == neName) {
+                if (!(branching && litIsUntypedNumber(node->objfn)))
+                    opexpect = rcvtype;
+            }
+            else if (branching && !litIsUntypedNumber(node->objfn) && iexpGetTypeDcl(node->objfn)->tag != PtrTag) {
+                // (nor does a pointer receiver push: 'rcvtype' reads through a pointer to its
+                // target, whose '+' is not the pointer's own, so 'p + (if c {2usize} else {0usize})' keeps the order it had)
+                // (a receiver that is an untyped literal has not taken its type yet, so its default
+                // type is no type to want: it takes the argument's, '0.18 * (if c {1.} else {x})')
+                // The type the receiver's method takes there, when every candidate agrees on one
+                INode *found = isMethodType(rcvtype) ? iNsTypeFindFnField((INsTypeNode*)rcvtype, argopname) : NULL;
+                if (found)
+                    opexpect = fnCallArgAgreed(found, 1, 0, 1);
+            }
         }
     }
 
@@ -5704,7 +5814,10 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             // So does a construction only its place can type ('None'), given to a
             // generic function or variant: the other arguments, and where the call's
             // value goes, may say what its type parameters are
-            if ((gengeneric || genlit) && fnCallArgIsCtor(*argsp)) {
+            // An 'if', 'match' or block given to a generic waits the same way: once the other
+            // arguments and the call's place have said what its type parameters are, its
+            // branches are wanted as the parameter's type
+            if ((gengeneric || genlit) && (fnCallArgIsCtor(*argsp) || (gengeneric && fnCallArgBranches(*argsp)))) {
                 ++argi;
                 continue;
             }
@@ -5722,14 +5835,15 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         if (gengeneric || genlit) {
             argi = 0;
             for (nodesFor(node->args, cnt, argsp)) {
-                if (fnCallArgIsCtor(*argsp)) {
+                int ctor = fnCallArgIsCtor(*argsp);
+                if (ctor || (gengeneric && fnCallArgBranches(*argsp))) {
                     INode *wanted = gengeneric
                         ? genericFnArgExpect(pstate, gengeneric, node->args, argi, firstparm, expectType)
                         : genericStructArgExpect(pstate, genlit, node->args, argi, expectType);
                     inodeTypeCheck(pstate, argsp, wanted ? wanted : unknownType);
                     // Its type is the enum its parameter takes, not the variant it
                     // is: the call reads its type parameters off the arguments
-                    if (wanted && isExpNode(*argsp) && !inodeIsError(*argsp))
+                    if (ctor && wanted && isExpNode(*argsp) && !inodeIsError(*argsp))
                         iexpCoerceIn(pstate, argsp, wanted);
                 }
                 ++argi;
@@ -6112,6 +6226,8 @@ dispatch:
             fnCallArrIndex(node);  // indexing or borrowed ref to index
         else if (fnCallIsValueCompare(opname) && fnCallArrayAsSlice(pstate, node))
             ;
+        else if (fnCallLowerArrayLen(nodep, objtype))
+            ;
         else if (fnCallLowerSliceMethod(pstate, node))
             ;
         else
@@ -6172,8 +6288,18 @@ dispatch:
                     if (fnCallLowerTraitMethod(pstate, node, objdereftype) == 0)
                         fnCallLowerMethod(pstate, node);
                 }
-                else if (objdereftype->tag == PtrTag)
-                    fnCallLowerPtrMethod(node, ptrType);
+                else if (objdereftype->tag == PtrTag) {
+                    // A pointer has no '<-' (nor any operator it does not declare): the
+                    // call is refused as the missing method it is, not left unlowered
+                    if (fnCallLowerPtrMethod(node, ptrType) == 0 && node->methfld
+                        && isNameUseNode(node->methfld)) {
+                        errorMsgNode((INode*)node, ErrorNoMbr, "Method or field `%s` not found.",
+                            &((NameUseNode*)node->methfld)->namesym->namestr);
+                        node->vtype = errorType;
+                    }
+                }
+                else if (objdereftype->tag == ArrayTag && fnCallLowerArrayLen(nodep, objdereftype))
+                    ;
                 else if (objdereftype->tag == ArrayTag && fnCallLowerSliceMethod(pstate, node))
                     ;
                 // A borrow of an owner ('self: &Uni[Node]', a method's receiver form) is

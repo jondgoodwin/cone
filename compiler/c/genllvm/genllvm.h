@@ -293,6 +293,7 @@ enum CAbiTarget {
     CAbiOther,      // None built: structs cross as LLVM's first-class values
     CAbiWin64,      // x86_64 Windows
     CAbiSysV,       // x86_64 elsewhere
+    CAbiArm64Apple, // arm64 (AArch64) on Apple's systems: AAPCS64 as Apple varies it
     CAbiWasm32      // wasm32 (not built)
 };
 
@@ -624,9 +625,12 @@ int genlAggPassesByPtr(GenState *gen, LLVMTypeRef type);
 // The marks generation leaves for genlAggCopies, each an empty node: a load
 // of a place whose storage the call it is passed to may be handed in place
 // of a copy (genlLendable), and the store of a parameter into its variable's
-// slot where the body may read its caller's storage in place (genlParmVar)
+// slot where the body may read its caller's storage in place (genlParmVar);
+// and a call made as the C ABI passes values (genlCAbiCall), which keeps its
+// convention, as a C-named function's declaration does, even through a reference
 #define GenlLendMark "cone.lend"
 #define GenlParmHomeMark "cone.parmhome"
+#define GenlCAbiCallMark "cone.cabicall"
 // Mark an instruction so
 void genlMark(GenState *gen, LLVMValueRef inst, const char *mark);
 
@@ -646,6 +650,9 @@ LLVMTypeRef genlPointeeType(GenState *gen, INode *type);
 LLVMTypeRef genlVtableSlotFnType(GenState *gen, FnDclNode *meth);
 // Generate LLVM value corresponding to the size of a type
 LLVMValueRef genlSizeof(GenState *gen, INode *vtype);
+
+// '--layout': print each struct and enum's size, alignment, field offsets and padding
+void genlLayoutReport(GenState *gen, ProgramNode *pgm);
 // Generate LLVM value corresponding to the alignment of a type
 LLVMValueRef genlAlignof(GenState *gen, INode *vtype);
 // Generate unsigned integer whose bits are same size as a pointer

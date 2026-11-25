@@ -1028,9 +1028,23 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
     // An array as it is written, 'Array[u8, 4]', a nested one with its sizes
     // together, outermost first: 'Array[f32, 2, 3]'
     if (depth < 4 && dcl->tag == ArrayTag) {
+        // An array type written with other than one literal size and one element type is refused
+        // where it is checked (arrayTypeCheck) but is still named by what follows, so what is
+        // wrong with it is not read here
         INode *elem = dcl;
-        while (elem->tag == ArrayTag)
+        while (elem != NULL && elem->tag == ArrayTag) {
+            ArrayNode *arr = (ArrayNode*)elem;
+            if (arr->dimens == NULL || arr->dimens->used != 1 || nodesGet(arr->dimens, 0)->tag != ULitTag
+                || arr->elems == NULL || arr->elems->used != 1) {
+                elem = NULL;
+                break;
+            }
             elem = arrayElemType(elem);
+        }
+        if (elem == NULL) {
+            snprintf(buf + used, size - used, "Array[?]");
+            return;
+        }
         snprintf(buf + used, size - used, "Array[");
         itypeSpellCat(buf, size, elem, depth + 1);
         for (INode *dim = dcl; dim != elem; dim = arrayElemType(dim)) {
@@ -2350,6 +2364,10 @@ char *itypeName(INode *type) {
         snprintf(buf, sizeof(bodynames[0]), "Array[%s]", elemname);
         return buf;
     }
+    // A type already reported bad, or not inferred yet, has no name to give a
+    // message about it: the first error stands alone
+    if (dcltype == errorType || dcltype == unknownType)
+        return "this type";
     Name *namesym = inodeGetName(dcltype);
     return namesym ? (char*)&namesym->namestr : "this type";
 }

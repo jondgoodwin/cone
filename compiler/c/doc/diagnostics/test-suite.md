@@ -364,6 +364,12 @@ scenario checks a C-named function against the calling convention C really
 uses, in both directions (`module_c_byvalue`). With no C compiler the scenario
 is skipped, as a `run` scenario with no linker is.
 
+A scenario whose `options` name a `--triple` is skipped where this `conec`'s LLVM
+was built without that triple's back end: `conec` reports error 1002, "No
+available targets are compatible with triple", and the run is noted as such
+rather than failed (`module_c_byvalue_arm64_shape` needs AArch64). Any other
+error 1002 still fails.
+
 **The round trip** of a package's include file is the `include` key beside
 `link`. A linked package compiled as a library writes its include file,
 `<package>.cone`, beside its object; each golden file `include` names — named
@@ -728,6 +734,7 @@ include     = ["include/q.cone"] # what q's compile must generate, which the pro
 category    = "driver"       # a driver scenario has no .cone file
 argv        = ["--bogus"]    # the whole invocation; nothing is appended
 exit        = 4              # required: asserting it is the whole category
+                                 # an argv with '--check' and '-o <dir>' also asserts that <dir> is unchanged
 
 [[scenario.core_overload.run]]   # omit entirely for a single default run
 name    = "debug"                # declare all of them once you declare any
@@ -760,6 +767,22 @@ The `trust` target (a `compile` or `run` scenario) is the output of a second run
 of the same source with `--report-trust`, which generates no code; its lines are
 `<kind> <file>:<line> <function> [<what>]`, so a check names a site by kind, line
 and function (`doc/design/safety.md` says what the kinds are).
+
+The `file` target (a `compile` or `run` scenario) asserts the name of a file the
+compile produced: the check's `file` key names a file in the scenario's output
+folder, which must exist; `contains` and `excludes` read what it holds, and may be
+left out when the name is all that matters. `file` is a name, not a path, and a
+`file` check takes no `object`, `within` or `matches`. The run passes whatever
+option writes the file, in its `options`. `module_ir_artifact_name` pins that `--ir`
+writes `<srcname>.ast`, named for the source compiled:
+
+```toml
+[[scenario.module_ir_artifact_name.check]]
+name = "the-dump-is-named-for-the-source"
+target = "file"
+file = "module_ir_artifact_name.ast"
+contains = ["tallyIrArtifact"]
+```
 
 **Several runs of one source** is how an option matrix avoids duplicating a
 `.cone` file. Every run is compared against the same expectations, so what a

@@ -24,12 +24,18 @@ actor Ticker {
   pub async fn checks(self) {
     var bad = 0u64;
     // plain fires, never early
+    // (the worst lateness of these twelve is the machine's own slack, which the
+    // 'soon after' bound below adds to its 100 ms: a loaded machine's wake can
+    // itself be over 100 ms late; 24 Nov, 10 of 20 runs under 24 burners)
     var n = 0u64;
-    while n < 3u64 {
+    var slack = 0i64;
+    while n < 12u64 {
       let d = at(2i64);
       timer.set(d);
       if !(await timer.next()) {bad = bad | 1u64;}
-      if Instant.now().nanos() < d.nanos() {bad = bad | 2u64;}
+      let late = Instant.now().nanos() - d.nanos();
+      if late < 0i64 {bad = bad | 2u64;}
+      if late > slack {slack = late;}
       match timer.deadline() {
         case let Some(x) {bad = bad | 4u64;}
         else {}
@@ -37,18 +43,24 @@ actor Ticker {
       n = n + 1u64;
     }
     // a million later moves, then the one fire, at or after the last, and
-    // soon after it (within 100 ms: a tick, under a loaded machine's slack)
+    // soon after it (within 100 ms: a tick, under a loaded machine's slack).
+    // Each move is 100 ms past the moment it is made (never earlier than the
+    // one before), so the deadline is still ahead of the wheel's first look
+    // however long the loop takes: the earlier form (the deadlines 100 ns
+    // apart, the last 100 ms on) ran out under load, when the million moves took
+    // over 100 ms: the entry then came up already due, with nothing to refile
+    // (24 Nov: 4 of 20 runs under 24 burners failed 'the later moves refiled')
     timer.set(at(1i64));
-    var last = at(1i64);
+    var last = at(100i64);
     var k = 0u64;
     while k < 1000000u64 {
-      last = Instant.fromNanos(last.nanos() + 100i64);   // the last 100 ms on: still ahead when the loop ends
+      last = at(100i64);
       timer.set(last);
       k = k + 1u64;
     }
     if !(await timer.next()) {bad = bad | 8u64;}
     let woke = Instant.now().nanos();
-    if woke < last.nanos() || woke - last.nanos() > 100000000i64 {bad = bad | 16u64;}
+    if woke < last.nanos() || woke - last.nanos() > 100000000i64 + 4i64 * slack {bad = bad | 16u64;}
     // an earlier move: 300 ms, then 2 ms
     let t0 = Instant.now().nanos();
     timer.set(at(300i64));
@@ -138,7 +150,7 @@ fn runAll() {
   {
     let t = Ticker(Timer.make(), tx.clone());
     t.checks();
-    expect(recv(&mut rx) == 0u64, "fires on time, later and earlier moves, clear, a past deadline");
+    expectUInt(recv(&mut rx), 0u64, "fires on time, later and earlier moves, clear, a past deadline (bits of the failed checks)");
     t.park();
     thread.sleep(Duration.fromMillis(20i64));
     t.stopIt();

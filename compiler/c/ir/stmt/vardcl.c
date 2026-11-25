@@ -30,6 +30,8 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     name->flowtracked = 0;
     name->flowlend = 0;
     name->nuses = 0;
+    name->nwrites = 0;
+    name->userlocal = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->hollowuse = NULL;
@@ -56,6 +58,8 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     name->flowtracked = 0;
     name->flowlend = 0;
     name->nuses = 0;
+    name->nwrites = 0;
+    name->userlocal = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->hollowuse = NULL;
@@ -77,6 +81,7 @@ VarDclNode *cloneVarDclShell(VarDclNode *node) {
     // What flow finds of the copy is the copy's own (VarLendSeen)
     newnode->flowlend = 0;
     newnode->nuses = 0;
+    newnode->nwrites = 0;
     return newnode;
 }
 
@@ -512,6 +517,9 @@ Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext) {
 // A variable holds its type by value: rule 4's report site
 static void varDclSizeCheck(TypeCheckState *pstate, INode *node, void *extra) {
     VarDclNode *name = (VarDclNode *)node;
+    // A variable whose initializer was refused (a tuple of types, Error 1044) has no type to size
+    if (name->vtype == NULL)
+        return;
     // 'Self' in an open trait's requirement stands for whichever type meets it, which
     // has a size (a default is checked in each implementer, with Self repointed to it).
     // What has no size is the trait itself, so a virtual reference to such a trait

@@ -104,7 +104,12 @@ void ifRemoveReturns(IfNode *ifnode) {
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
         INode **laststmt;
         cnt--; nodesp++;
-        laststmt = &nodesLast(((BlockNode*)*nodesp)->stmts);
+        // An arm written '{}' is not yet type checked here (a closure's last 'if' is
+        // wrapped in its return first) and holds no statement: nothing to strip
+        BlockNode *arm = (BlockNode*)*nodesp;
+        if (arm->tag != BlockTag || arm->stmts == NULL || arm->stmts->used == 0)
+            continue;
+        laststmt = &nodesLast(arm->stmts);
         if ((*laststmt)->tag == ReturnTag)
             *laststmt = ((BreakRetNode*)*laststmt)->exp;
         if ((*laststmt)->tag == IfTag)
@@ -954,12 +959,12 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
             if (nodesLast(((BlockNode *)*nodesp)->stmts)->tag != ContinueTag)
                 narrowKillDrop(killmark);
         }
-        // The 'else' of a let-else that leaves on every path, the last of them through an
-        // inner 'if' or block, is no path out either, so the variant is known after it, as
-        // after one that ends in a jump. Its changes are kept, as a 'continue' keeps them,
-        // since some of its paths may continue a loop.
-        else if ((ifnode->flags & FlagIfLetElse) && *(nodesp - 1) == elseCond && armblk
-            && ifBlockFallsOut(armblk, &leavewhy) == NULL)
+        // A branch that leaves on every path, the last of them through an inner 'if' or
+        // block (the 'else' of a let-else, or the branch of an ordinary 'if'), is no path
+        // out either, so the variant is known after it, as after one that ends in a jump.
+        // Its changes are kept, as a 'continue' keeps them, since some of its paths may
+        // continue a loop.
+        else if (armblk && ifBlockFallsOut(armblk, &leavewhy) == NULL)
             ;
         else {
             NarrowEnv *end = narrowSave();

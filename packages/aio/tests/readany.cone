@@ -102,6 +102,7 @@ fn lenOf(r: Result[IoBuf, IoError]) u64 {
 }
 
 actor Client {
+  keep: Socket;
 
   pub async fn dial(self, port: u16) {
     let c = await aio.connect(SocketAddr.localhost(port));
@@ -118,18 +119,33 @@ actor Client {
       let w = await s.write(filled(100usize));
       k = k + 1u64;
     }
+    // The socket is kept for the sends Server asks for (below), well before it
+    // can have read the thirty messages and run its deadlines
+    keep = s;
     // Silence. Server's next read began calm, with a buffer; it gives it up
     // when the quiet passes, long before this look at the pool, which finds
     // no byte lent (nothing else here holds one)
     let pause3 = await aio.sleep(Duration.fromMillis(40i64));
     got.lentDuring.store(u64.from(iobuf.stats().lentBytes));
-    // Server reads under two deadlines and in a group meanwhile (220 ms)
-    let pause3b = await aio.sleep(Duration.fromMillis(300i64));
-    let w3 = await s.write(filled(50usize));
-    let pause4 = await aio.sleep(Duration.fromMillis(100i64));
-    let w4 = await s.write(filled(100usize));
-    let pause5 = await aio.sleep(Duration.fromMillis(100i64));
-    // and the peer's close
+    // Server reads under two deadlines and in a group meanwhile, then asks for
+    // each of the next sends in its turn (sendFifty, sendHundred, finish): sends
+    // on a fixed clock landed in the wrong read when Server's reads ran late
+    // under load (24 burners: 9 of 20 runs failed)
+  }
+
+  // 50 bytes, 40 ms after Server asked, so its read is waiting for them
+  pub async fn sendFifty(self) {
+    let pause = await aio.sleep(Duration.fromMillis(40i64));
+    let w = await keep.write(filled(50usize));
+  }
+
+  pub async fn sendHundred(self) {
+    let w = await keep.write(filled(100usize));
+  }
+
+  // The peer's close
+  pub async fn finish(self) {
+    keep = Socket.none();
   }
 }
 
@@ -222,10 +238,12 @@ actor Server {
 
     // A read that waits through the rest of the silence, answered by Client's
     // 50 bytes
+    client.sendFifty();
     let r3 = await conn.read();
     got.afterSilence.store(lenOf(r3));
 
     // Room for 16 KiB
+    client.sendHundred();
     let rr = await conn.readRoom(16384usize);
     match rr {
       case let Ok(b) {
@@ -236,6 +254,7 @@ actor Server {
     }
 
     // The peer's close
+    client.finish();
     let re = await conn.read();
     match re {
       case let Ok(b) {if b.len() == 0usize {got.ended.store(1u64);}}
@@ -264,7 +283,7 @@ fn main() i32 {
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    let client = Client();
+    let client = Client(Socket.none());
     let server = Server();
     server.serve(client, tx);
   }

@@ -513,8 +513,12 @@ trait held by value (`ErrorNoSize`, 1069), because `Self` there stands for the
 type meeting the trait, which has a size; a default using it is cloned into each
 implementer. A closed trait (`HasTagField`, `SameSize`) and an enum keep their
 own reading. A virtual reference to such a trait is still refused where a struct
-is given as one, as for `&Self` (`trait_typecheck_self_by_value`;
-`trait_self_by_value` runs the rest).
+is given as one (`trait_typecheck_self_by_value`; `trait_self_by_value` runs the
+rest). When the struct meets the requirement as a bound would but not as a vtable
+slot does, the refusal is `ErrorInvType` with `fnSigConvSelfByValueRefusal`'s words
+(`types/fnsig.c`, reached from `fnSigConvRefusal`, so from every site that
+coerces): the requirement, and the parameter or result that holds `Self` by value.
+A requirement using `&Self` keeps the plain mismatch.
 
 **One rule, spelled once** (`fnSigMeetKind` in `types/fnsig.c`; `fnSigVrefMeets`,
 `fnSigMeets` and `fnSigMeetsMethod` are its three forms by what stands first in the
@@ -1593,13 +1597,18 @@ or lifetimes, or that extends another. The trait is found by its name in the `is
 supplied text names core's functions. Variant text for a `V(T)` payload type is kept as written
 (`parseVariantTextNote`). The text read is `<supplied by the compiler>` in a diagnostic.
 
-**An enum that lists `Eq` or `Hash`** (Jon's yes to Question 18, 22 Nov 2026; opt-in, unit-only first) is
+**An enum that lists `Eq` or `Hash`** (Jon's yes to Question 18, 22 Nov 2026; opt-in) is
 supplied by the same function: `==` taking `&` (`self: &E, o: &E`) when `Eq` is listed and no `==` is
-written, `hash` when `Hash` is listed and no `hash` is written. Each reads the variant's position in the
-enum's list into a `u32` with a `match`; `==` compares the two, `hash` feeds the one with `writeU32`. An enum
-that lists either and has a variant carrying a payload (a type variant, a record variant) is
-`ErrorEnumDeriveEqHash`, at the first such variant, and nothing is supplied for it: payload enums are the
-follow-up. An enum that lists neither gets nothing, so it stays not `Hash`, and its by-value `==` is
+written, `hash` when `Hash` is listed and no `hash` is written. For an enum whose variants carry nothing,
+each reads the variant's position in the enum's list into a `u32` with a `match`; `==` compares the two,
+`hash` feeds the one with `writeU32`. For an enum with a payload variant, `hash` is one `match` that
+feeds each variant's position and then each payload field's `.hash(h)` in field order (a `V(T)` variant
+feeds T's), and `==` is a `match` of `self` over a `match` of `o`, true for the same variant with every
+payload field `==`. A generic enum's methods carry `where T is Eq` (`Hash`) for each parameter. The payload
+methods are marked `FlagDerivedBody`, and `structEnumDeriveCheck` (type check, after `structEqCheck`)
+refuses a payload field with no `==` (`ErrorEqField`, for `==`), a float or a type that is not Hash
+(`ErrorHashFloat`, `ErrorHashField`, for `hash`), at the field, with `structHashFieldOk`, the check a struct's
+fields get; a refused body is replaced so type check says nothing more of it. An enum that lists neither gets nothing, so it stays not `Hash`, and its by-value `==` is
 unchanged. Because the supplied `==` is in the enum's namespace, `structEnumAddEquality` leaves it be;
 `a == b` on two values then calls it through `&`. Fields in common, an extension and lifetimes
 exclude an enum as for `Serialize`.
@@ -2050,7 +2059,7 @@ nothing.
 
 **`cstr` is declared the same way, and has a field.** `cstr` is C's `const char *`
 (a one-field struct holding a `*u8`, which crosses to C as one pointer: `genlCAbiPassOne` makes a struct of 8 bytes one
-integer on Win64, and on SysV x86-64 one INTEGER eightbyte, a `ptr`), and the C-named modules, which get no prelude and
+integer on Win64, on SysV x86-64 one INTEGER eightbyte, a `ptr`, and on arm64 Apple an `i64`), and the C-named modules, which get no prelude and
 cannot import core (core imports libc), declare their strings with it. So the compiler
 makes the struct whole in `stdlibInit` (`cstrTypeDcl`, name resolved, type checked on
 first use, with the field `p`) and binds the name for every module as it does

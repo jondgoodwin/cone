@@ -366,8 +366,13 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     // does not return either
     int never = itypeIsNever(rettype);
     if (rettype->tag == VoidTag && !never) {
-        if (laststmt->tag != ReturnTag)
-            nodesAdd(&blk->stmts, (INode*)newReturnNodeExp((INode*)newNilLitNode()));
+        if (laststmt->tag != ReturnTag) {
+            // The injected 'return nil' stands where the body's last statement is, not where the
+            // lexer ended up, so a diagnostic about it points into the user's text
+            INode *nil = (INode*)newNilLitNode();
+            inodeLexCopy(nil, laststmt);
+            nodesAdd(&blk->stmts, (INode*)newReturnNodeExp(nil));
+        }
     }
     else {
         // Inject return in front of expression
@@ -652,6 +657,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // What is known of the variants names hold is this body's alone
     NarrowFnSave svNarrow;
     narrowFnBegin(&svNarrow);
+    int passedOverOnEntry = errorsPassedOver;
     inodeTypeCheck(pstate, &fnnode->value, noCareType);
     narrowFnEnd(&svNarrow);
     lifeBrandFnEnd(&svBrands);
@@ -672,7 +678,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // We run data flow separately as it requires type info which is inferred bottoms-up
     // Skip it when this function's own signature or body did not type check, as
     // flow analysis relies on the types that check was supposed to establish.
-    if (errors != errorsOnEntry)
+    if (errors != errorsOnEntry || errorsPassedOver != passedOverOnEntry)
         return;
     FlowState fstate;
     flowStateInit(&fstate, (FnSigNode *)fnnode->vtype);
