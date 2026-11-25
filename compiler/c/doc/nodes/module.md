@@ -2304,8 +2304,9 @@ nothing runs for it (`module_generic_struct_static`).
 
 ## Principles — the model, as decided
 
-**This section is this note's principles**, and it is `[planned]` almost
-throughout — "What is implemented" below says how little of it exists. ▸ **So a
+**This section is this note's principles**, and it is `[planned]` except
+where "What is implemented" below says it is built (the module tree, imports, folding,
+`extends`, module traits and generic modules are). ▸ **So a
 reader should take every statement here as ruling what gets built, not as
 describing what runs.**
 
