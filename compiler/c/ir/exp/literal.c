@@ -358,28 +358,83 @@ int litCharRefusedAsByte(INode *node, INode *totypedcl) {
         && ((ULitNode*)node)->uintlit >= 128;
 }
 
-// A number literal's value as a signed 64-bit integer. 0 when its magnitude is
-// beyond what a signed 64 bits holds, which is none this folds.
-static int litUntypedInt(INode *node, int64_t *v) {
+// An exact integer for the fold: a sign and a 64-bit magnitude, which holds every value of
+// i64 and of u64 together (from -2^63 to 2^64-1). 'neg' is never set for a magnitude of 0.
+typedef struct {
+    int neg;
+    uint64_t mag;
+} LitExact;
+
+// Does an exact value lie within what i64 and u64 together hold?
+static int litExactInRange(LitExact v) {
+    return !v.neg || v.mag <= (uint64_t)1 << 63;
+}
+
+static LitExact litExactMake(int neg, uint64_t mag) {
+    LitExact v = { neg && mag != 0, mag };
+    return v;
+}
+
+// A number literal's value, exactly. 0 when it is beyond what the fold holds.
+static int litUntypedInt(INode *node, LitExact *v) {
     ULitNode *lit = (ULitNode*)node;
     int negated = (lit->flags & FlagLitNeg) != 0;
     uint64_t magnitude = negated ? 0 - lit->uintlit : lit->uintlit;
-    if (negated ? magnitude > (uint64_t)INT64_MAX + 1 : magnitude > (uint64_t)INT64_MAX)
+    *v = litExactMake(negated, magnitude);
+    return litExactInRange(*v);
+}
+
+// The sum of two exact values; 0 when its magnitude passes 64 bits
+static int litExactAdd(LitExact x, LitExact y, LitExact *r) {
+    if (x.neg == y.neg) {
+        uint64_t m = x.mag + y.mag;
+        if (m < x.mag)
+            return 0;
+        *r = litExactMake(x.neg, m);
+    }
+    else if (x.mag >= y.mag)
+        *r = litExactMake(x.neg, x.mag - y.mag);
+    else
+        *r = litExactMake(y.neg, y.mag - x.mag);
+    return 1;
+}
+
+// The product; 0 when its magnitude passes 64 bits
+static int litExactMul(LitExact x, LitExact y, LitExact *r) {
+    if (x.mag != 0 && y.mag > UINT64_MAX / x.mag)
         return 0;
-    *v = negated ? (int64_t)(0 - magnitude) : (int64_t)magnitude;
+    *r = litExactMake(x.neg != y.neg, x.mag * y.mag);
+    return 1;
+}
+
+// A value as the 64 low bits of its two's complement, every bit above them being its sign
+static uint64_t litExactBits(LitExact v) {
+    return v.neg ? 0 - v.mag : v.mag;
+}
+
+// The exact value of the infinite two's complement number with these low 64 bits and this
+// sign in every bit above; 0 when that is below i64's minimum.
+static int litExactFromBits(uint64_t lo, int ext, LitExact *r) {
+    if (!ext) {
+        *r = litExactMake(0, lo);
+        return 1;
+    }
+    if (!(lo >> 63))
+        return 0;
+    *r = litExactMake(1, 0 - lo);
     return 1;
 }
 
 static double litUntypedDouble(INode *node) {
     if (node->tag == FLitTag)
         return ((FLitNode*)node)->floatlit;
-    int64_t v;
+    LitExact v;
     if (!litUntypedInt(node, &v)) {
         ULitNode *lit = (ULitNode*)node;
         double magnitude = (double)((lit->flags & FlagLitNeg) ? 0 - lit->uintlit : lit->uintlit);
         return (lit->flags & FlagLitNeg) ? -magnitude : magnitude;
     }
-    return (double)v;
+    return v.neg ? -(double)v.mag : (double)v.mag;
 }
 
 // An expression made only of number literals with no suffix -- '2.0 * 3.0', '200 + 100',
@@ -388,12 +443,13 @@ static double litUntypedDouble(INode *node) {
 // are known, into one untyped literal whose value is what the expression comes to;
 // where a place names the type the literal then adopts it, and a value that type
 // cannot hold is refused at the literal (litCheckRange). A sum, difference, product,
-// quotient or remainder, and a negation. Integers are computed exactly, in 64 bits,
+// quotient or remainder, a negation, and on integers the bit operators '|', '&', '^', '<<' and '>>'. Integers are computed exactly across every value i64 and u64 hold (a sign and a 64-bit magnitude),
 // division truncating toward zero; a float is computed as an f64, the result
 // rounded once to the f32 a place may ask for. An integer operand beside a float one
 // is that number as a float, the operand's own kind deciding the subexpression it
-// is in ('7 / 2 + 0.5' is 3.5). What would not be a finite literal or fits no 64 bits
-// is not folded, nor a division by zero: the operation is left for type check and
+// is in ('7 / 2 + 0.5' is 3.5). What would not be a finite literal
+// is not folded, nor a division by zero; an integer result beyond that range is refused
+// where it stands (ErrorLitRange, ErrorConstShift for a shift): the operation is left for type check and
 // generation to judge as it has been. The node is made the literal in place: both are
 // expression nodes with the same header, and nothing yet points into the call's
 // operands. Returns 1 when it was folded.
@@ -404,7 +460,8 @@ int litFoldUntyped(FnCallNode *call) {
     int unary = call->args == NULL || call->args->used == 0;
     if (!unary && call->args->used != 1)
         return 0;
-    if (op != plusName && op != minusName && op != multName && op != divName && op != remName)
+    int isbit = op == orName || op == andName || op == xorName || op == shlName || op == shrName;
+    if (op != plusName && op != minusName && op != multName && op != divName && op != remName && !isbit)
         return 0;
     if (unary && op != minusName)
         return 0;
@@ -417,40 +474,67 @@ int litFoldUntyped(FnCallNode *call) {
         return 0;
 
     int isfloat = a->tag == FLitTag || (b && b->tag == FLitTag);
+    if (isbit && isfloat)
+        return 0;
     uint64_t ibits = 0;
     int ineg = 0;
     double fval = 0.0;
     if (!isfloat) {
-        int64_t x, y, r;
+        LitExact x, y = { 0, 0 }, r = { 0, 0 };
         if (!litUntypedInt(a, &x) || (b && !litUntypedInt(b, &y)))
             return 0;
-        if (unary) {
-            if (x == INT64_MIN) return 0;
-            r = -x;
-        }
-        else if (op == plusName) {
-            if ((y > 0 && x > INT64_MAX - y) || (y < 0 && x < INT64_MIN - y)) return 0;
-            r = x + y;
-        }
-        else if (op == minusName) {
-            if ((y < 0 && x > INT64_MAX + y) || (y > 0 && x < INT64_MIN + y)) return 0;
-            r = x - y;
-        }
-        else if (op == multName) {
-            if (x != 0 && y != 0) {
-                if ((x == -1 && y == INT64_MIN) || (y == -1 && x == INT64_MIN)) return 0;
-                r = (int64_t)((uint64_t)x * (uint64_t)y);
-                if (r / y != x) return 0;
+        int ok = 1;
+        if (unary)
+            r = litExactMake(!x.neg, x.mag);
+        else if (isbit) {
+            uint64_t xl = litExactBits(x), yl = litExactBits(y);
+            if (op == orName)
+                ok = litExactFromBits(xl | yl, x.neg | y.neg, &r);
+            else if (op == andName)
+                ok = litExactFromBits(xl & yl, x.neg & y.neg, &r);
+            else if (op == xorName)
+                ok = litExactFromBits(xl ^ yl, x.neg ^ y.neg, &r);
+            else if (y.neg || y.mag > 63) {
+                errorMsgNode((INode*)call, ErrorConstShift,
+                    "This shift of literals is by %s%" PRIu64 ", which is not from 0 to 63.", y.neg ? "-" : "", y.mag);
+                r = litExactMake(0, 0);
             }
-            else
-                r = 0;
+            else if (op == shrName) {
+                // Arithmetic: the exact floor, the sign filling in from the top
+                uint64_t sh = xl >> y.mag;
+                if (x.neg && y.mag > 0)
+                    sh |= ~(uint64_t)0 << (64 - y.mag);
+                ok = litExactFromBits(sh, x.neg, &r);
+            }
+            else {
+                // The bits shifted out must all be the sign, or the value is beyond 64 bits
+                uint64_t out = y.mag == 0 ? 0 : xl >> (64 - y.mag);
+                uint64_t allsign = (x.neg && y.mag > 0) ? ~(uint64_t)0 >> (64 - y.mag) : 0;
+                if (out != allsign || !litExactFromBits(xl << y.mag, x.neg, &r)) {
+                    errorMsgNode((INode*)call, ErrorConstShift,
+                        "The value of this shift of literals does not fit 64 bits.");
+                    r = litExactMake(0, 0);
+                }
+            }
         }
+        else if (op == plusName)
+            ok = litExactAdd(x, y, &r);
+        else if (op == minusName)
+            ok = litExactAdd(x, litExactMake(!y.neg, y.mag), &r);
+        else if (op == multName)
+            ok = litExactMul(x, y, &r);
         else {
-            if (y == 0 || (x == INT64_MIN && y == -1)) return 0;
-            r = op == divName ? x / y : x % y;
+            if (y.mag == 0)
+                return 0;
+            r = op == divName ? litExactMake(x.neg != y.neg, x.mag / y.mag) : litExactMake(x.neg, x.mag % y.mag);
         }
-        ineg = r < 0;
-        ibits = (uint64_t)r;
+        if (!ok || !litExactInRange(r)) {
+            errorMsgNode((INode*)call, ErrorLitRange,
+                "The value of this expression of literals is beyond every integer type, which run from -9223372036854775808 to 18446744073709551615.");
+            r = litExactMake(0, 0);
+        }
+        ineg = r.neg;
+        ibits = r.neg ? 0 - r.mag : r.mag;
     }
     else {
         double x = litUntypedDouble(a);

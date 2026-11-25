@@ -17,6 +17,11 @@
 //   along a line, which it then follows at an even speed.
 // - (Sampling a curve into a polyline is sculpt's 'sampleCurve', checked in
 //   its curvesamples test.)
+// - The uniform cubic B-spline: its weights at a knot are 1/6, 4/6, 1/6. Equal coefficients 3 give 3 everywhere
+//   with slope 0. Coefficients 0, 1, 2, 3, 4 on [0, 2] (two spans) are the straight line 1 + x: 1 at 0 and 3 at 2,
+//   slope 1 throughout, held to its ends outside the range. One bump, coefficients 0, 0, 6, 0, 0, 0 on [0, 3]
+//   (three spans of 1): at x = 1 the value is 6 * 4/6 = 4 and the slope 0; at x = 2 the value is 6 * 1/6 = 1 and
+//   the slope 6 * (-1/2) = -3. Fewer than 4 coefficients give 0.
 // - Polylines: length, and the point at a distance along, within a segment,
 //   at a corner, before the start and past the end; no points and one point.
 
@@ -90,8 +95,40 @@ fn polylines() {
   point(polylinePointAt(&path3, 4.5), 0., 1.5, 4., "polyline in space: halfway up the second");
 }
 
+fn bsplines() {
+  let flat: Array[f32, 6] = [3., 3., 3., 3., 3., 3.];
+  var x: f32 = 0.;
+  while x <= 3.01 {
+    expectFloat(bsplineAt(&flat, 0., 3., x), 3., close, "constant spline: value");
+    expectFloat(bsplineSlopeAt(&flat, 0., 3., x), 0., close, "constant spline: slope");
+    x = x + 0.25;
+  }
+  let ramp: Array[f32, 5] = [0., 1., 2., 3., 4.];
+  expectFloat(bsplineAt(&ramp, 0., 2., 0.), 1., close, "ramp at 0");
+  expectFloat(bsplineAt(&ramp, 0., 2., 2.), 3., close, "ramp at 2");
+  expectFloat(bsplineAt(&ramp, 0., 2., 0.7), 1.7, close, "ramp at 0.7");
+  expectFloat(bsplineAt(&ramp, 0., 2., 1.3), 2.3, close, "ramp at 1.3");
+  expectFloat(bsplineAt(&ramp, 0., 2., -5.), 1., close, "ramp held below its range");
+  expectFloat(bsplineAt(&ramp, 0., 2., 9.), 3., close, "ramp held above its range");
+  x = 0.;
+  while x <= 2.01 {
+    expectFloat(bsplineSlopeAt(&ramp, 0., 2., x), 1., close, "ramp slope");
+    x = x + 0.2;
+  }
+  // the same ramp on [0, 4] runs at half the slope
+  expectFloat(bsplineSlopeAt(&ramp, 0., 4., 1.), 0.5, close, "ramp on a wider range");
+  let bump: Array[f32, 6] = [0., 0., 6., 0., 0., 0.];
+  expectFloat(bsplineAt(&bump, 0., 3., 1.), 4., close, "bump at x = 1");
+  expectFloat(bsplineSlopeAt(&bump, 0., 3., 1.), 0., close, "bump slope at x = 1");
+  expectFloat(bsplineAt(&bump, 0., 3., 2.), 1., close, "bump at x = 2");
+  expectFloat(bsplineSlopeAt(&bump, 0., 3., 2.), -3., close, "bump slope at x = 2");
+  let few: Array[f32, 3] = [1., 2., 3.];
+  expectFloat(bsplineAt(&few, 0., 1., 0.5), 0., close, "fewer than 4 coefficients");
+}
+
 fn main() i32 {
   beziers();
+  bsplines();
   polylines();
   done()
 }

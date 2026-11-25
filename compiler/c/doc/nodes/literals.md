@@ -251,14 +251,19 @@ the parallel range answers with `parallelEachBoundsFirst`).
 
 **An expression made only of untyped number literals is one literal.** Once a call's
 operands are checked, `fnCallTypeCheckNode` asks `litFoldUntyped`: a sum, difference,
-product, quotient, remainder or negation of two untyped literals, or of one, becomes a single
+product, quotient, remainder, negation, or (integers only) `|`, `&`, `^`, `<<` or `>>` of two
+untyped literals, or of one, becomes a single
 untyped literal holding what it comes to, and the call's memory is made that literal in
 place (an `FnCallNode` is larger than a literal and shares its header; nothing yet points
-into its operands). Integers are computed exactly in 64 bits, a division truncating toward
-zero; a float is computed as an `f64`, so it is rounded once to the `f32` a place may ask
+into its operands). Integers are computed exactly across every value `i64` and `u64` hold together (a sign and a
+64-bit magnitude, `LitExact`), a division truncating toward zero, `>>` of a negative the floor; a float is computed as an `f64`, so it is rounded once to the `f32` a place may ask
 for; an integer beside a float is that number as a float, the kind of each subexpression
 deciding its own (`7 / 2 + 0.5` is `3.5`). A result that is no finite number, a division
-by zero or an overflow of 64 bits is not folded, and is judged as it has been. The
+by zero is not folded, and is judged as it has been. A result beyond that range (below `i64`'s
+minimum or above `u64`'s maximum) is refused at the expression (`ErrorLitRange`) and folds to 0, as
+is a shift by a negative count or by more than 63 or a left shift whose value is beyond it
+(`ErrorConstShift`). The fit to the place's type is `litCheckRange`'s, unchanged, so
+`let t: u64 = 1 << 63` is accepted and the same into an `i64` is refused. `~` is not folded (no exact value without a width). The
 literal then takes its place's type as any untyped literal does (`let a: f32 = 2.0 * 3.0`,
 `let b: u8 = 200 + 50`), or the default of its kind: `2147483647 + 1` is the `i32` default's
 value past its range, refused at generation like any such literal. Folding is on the
