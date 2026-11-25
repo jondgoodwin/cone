@@ -968,6 +968,44 @@ static int closureIsChange(INode *stmt) {
         || (stmt->tag == FnCallTag && (stmt->flags & FlagLvalOp));
 }
 
+// What the last line of an inferring closure gives, by its own paths, when it is or ends in
+// an 'if' with no final 'else'. A path gives a value when its last line is an expression
+// with no ';'. '*elseless' is set when an 'if' with no 'else' was met. Returns 1 if any
+// path gives a value.
+static int closureTailGivesValue(INode *stmt, int *elseless);
+
+static int closureBlockGivesValue(BlockNode *blk, int *elseless) {
+    if (blk->stmts == NULL || blk->stmts->used == 0)
+        return 0;
+    INode *last = nodesLast(blk->stmts);
+    if (last->tag == ReturnTag || (blk->flags & FlagTailSemi))
+        return 0;
+    return closureTailGivesValue(last, elseless);
+}
+
+static int closureTailGivesValue(INode *stmt, int *elseless) {
+    if (stmt->tag == BlockTag && !(((BlockNode*)stmt)->flags & FlagLoop))
+        return closureBlockGivesValue((BlockNode*)stmt, elseless);
+    if (stmt->tag == IfTag) {
+        IfNode *ifnode = (IfNode*)stmt;
+        int hasElse = (ifnode->flags & (FlagIfMatch | FlagIfMatchTail)) != 0;
+        int value = 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+            if (*nodesp == elseCond)
+                hasElse = 1;
+            cnt--; nodesp++;
+            if ((*nodesp)->tag == BlockTag && closureBlockGivesValue((BlockNode*)*nodesp, elseless))
+                value = 1;
+        }
+        if (!hasElse)
+            *elseless = 1;
+        return value;
+    }
+    return isExpOrMacroNode(stmt) && !closureIsChange(stmt);
+}
+
 void closureImplicitReturn(FnDclNode *fn) {
     BlockNode *blk = (BlockNode*)fn->value;
     FnSigNode *sig = (FnSigNode*)fn->vtype;
@@ -978,6 +1016,18 @@ void closureImplicitReturn(FnDclNode *fn) {
     // one without the ';' returns it. Either is the closure's to write, as its return
     // type is read off the paths
     int semi = (blk->flags & FlagTailSemi) != 0;
+    // A last line that is, or ends in, an 'if' with no 'else' gives a value only on the paths
+    // whose last line gives one. If none does, the line is nothing-valued and the closure
+    // returns nothing. If some do, it is refused, as a function refuses it
+    if (last && !semi && (last->tag == IfTag || last->tag == BlockTag)) {
+        int elseless = 0;
+        int value = closureTailGivesValue(last, &elseless);
+        if (elseless) {
+            if (value)
+                errorMsgNode(last, ErrorTailOpen, "this 'if' gives a value on one path and nothing on the other: add an 'else', or end the line with ';' if the closure returns nothing");
+            semi = 1;
+        }
+    }
     if (last && isExpOrMacroNode(last) && !closureIsChange(last) && !semi) {
         nodesLast(blk->stmts) = (INode*)newReturnNodeExp(last);
         return;
@@ -1000,6 +1050,16 @@ void closureContextTail(FnDclNode *fn) {
         errorMsgNode(blk->tailmark, ErrorTailSemi, TailSemiMsg);
     else if ((blk->flags & FlagTailOpen) && voidret)
         errorMsgNode(blk->tailmark, ErrorTailOpen, TailOpenMsg);
+    // A last line that is, or ends in, an 'if' with no 'else' where no value is wanted: some
+    // path giving a value is refused, as for an inferring closure
+    else if (voidret && !(blk->flags & FlagTailSemi)) {
+        INode *last = nodesLast(blk->stmts);
+        if (last->tag == IfTag || last->tag == BlockTag) {
+            int elseless = 0;
+            if (closureTailGivesValue(last, &elseless) && elseless)
+                errorMsgNode(last, ErrorTailOpen, "this 'if' gives a value on one path and nothing on the other: add an 'else', or end the line with ';' if the closure returns nothing");
+        }
+    }
 }
 
 void closureReturnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {

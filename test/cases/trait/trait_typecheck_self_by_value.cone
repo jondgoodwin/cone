@@ -1,8 +1,10 @@
 // A trait whose requirement takes 'Self' by value is met by the types that declare
 // it, but cannot be reached through a virtual reference: a vtable slot has one
 // signature, and a by-value 'Self' is the size of whichever type is behind it. A
-// struct given as such a virtual reference is refused as it is for a requirement
-// using 'Self' by reference ('&Self').
+// struct given as such a virtual reference is refused, with the message naming the
+// requirement and where it holds 'Self' by value (a parameter, or the result), as
+// a call argument, an initializer and a returned value. A requirement using 'Self'
+// by reference ('&Self') is refused with the plain mismatch.
 
 mod trait_typecheck_self_by_value;
 
@@ -15,10 +17,33 @@ struct V is Addable {
   pub fn plus(self: &, b: V) V { V(n + b.n) }
 }
 
+trait Maker {
+  pub fn make(self: &) Self;
+}
+
+struct M is Maker {
+  pub n: i64;
+  pub fn make(self: &) M { M(n) }
+}
+
+trait Peer {
+  pub fn same(self: &, b: &Self) bool;
+}
+
+struct P is Peer {
+  pub n: i64;
+  pub fn same(self: &, b: &P) bool { n == b.n }
+}
+
 fn viaRef(a: &<Addable) { }
 
 fn main() i32 {
   var v = V(1);
-  viaRef(&v);   //~ ErrorInvType:10 "does not match declared parameter"
+  viaRef(&v);   //~ ErrorInvType:10 "`plus` takes Self by value (its parameter `b`), so it can't be reached through `&<`"
+  let r: &<Addable = &v;  //~ ErrorInvType:22 "Addable's `plus` takes Self by value"
+  var m = M(1);
+  let k: &<Maker = &m;  //~ ErrorInvType:20 "`make` takes Self by value (its result)"
+  var p = P(1);
+  let q: &<Peer = &p;  //~ ErrorInvType:19 "Initialization value's type does not match"
   0
 }

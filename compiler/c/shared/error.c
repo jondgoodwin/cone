@@ -15,6 +15,7 @@
 #include <stdarg.h>
 
 int errors = 0;
+int errorsPassedOver = 0;
 int warnings = 0;
 // Non-zero while code is checked as a trial (error.h): a diagnostic is counted
 // and not printed
@@ -280,6 +281,9 @@ void errorMsg(int code, const char *msg, ...) {
 // Nothing calls this for a bad program. A condition a source can reach is a
 // missing diagnostic and gets a code and a message of its own.
 void errorUnreachable(INode *node, const char *msg) {
+    // Inside a trial (a speculative check whose errors are dropped) the report would be
+    // swallowed and the compile would stop with nothing said, so it is made loud here
+    errorSilent = 0;
     errorMsgNode(node, ErrorUnreachable,
         "Compiler defect: %s. Please report this, with the source that provoked it.", msg);
     errorExit(ExitGen, "Compile abandoned: the compiler reached a state it had ruled out");

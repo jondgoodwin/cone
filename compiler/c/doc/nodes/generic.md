@@ -1177,7 +1177,11 @@ instance's `final` (checked with its layout, since the drop of a local calls it)
 reaches is not reported for that instance. The first instance of the chain is
 checked whole and its body is the template's, so an error that does not depend on
 the argument is reported there; an error that does (`self.v + 1`, fine for `i64`, not
-for `Option[i64]`) surfaces only when a call reaches that instance. The same holds for
+for `Option[i64]`) surfaces only when a call reaches that instance. A use does not
+release an instance made by a member check that has reported an error since it began
+(`StructNode.memerrbase`, Bug 120): the program is refused, and checking each link of such
+a chain only repeated the errors (`Wrap[& R]` as a receiver: two hundred repeats, half a
+minute, the nesting of the type argument growing every link). The same holds for
 what the members check does beyond bodies: the requirements of a trait the instance
 claims, and its overload sets, are verified when a use releases it. A generic trait's
 instance is always eager.

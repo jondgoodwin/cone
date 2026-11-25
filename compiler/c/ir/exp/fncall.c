@@ -5558,6 +5558,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             inodeTypeCheckAny(pstate, &node->objfn);
         objfnChecked = 1;
         if (inodeIsError(node->objfn)) {
+            // The receiver was reported where it was declared, so this body shows no
+            // error of its own and its arguments stay unchecked: flow must not walk
+            // them (fnDclTypeCheck)
+            if (errors)
+                ++errorsPassedOver;
             node->vtype = errorType;
             return;
         }
@@ -6283,8 +6288,16 @@ dispatch:
                     if (fnCallLowerTraitMethod(pstate, node, objdereftype) == 0)
                         fnCallLowerMethod(pstate, node);
                 }
-                else if (objdereftype->tag == PtrTag)
-                    fnCallLowerPtrMethod(node, ptrType);
+                else if (objdereftype->tag == PtrTag) {
+                    // A pointer has no '<-' (nor any operator it does not declare): the
+                    // call is refused as the missing method it is, not left unlowered
+                    if (fnCallLowerPtrMethod(node, ptrType) == 0 && node->methfld
+                        && isNameUseNode(node->methfld)) {
+                        errorMsgNode((INode*)node, ErrorNoMbr, "Method or field `%s` not found.",
+                            &((NameUseNode*)node->methfld)->namesym->namestr);
+                        node->vtype = errorType;
+                    }
+                }
                 else if (objdereftype->tag == ArrayTag && fnCallLowerArrayLen(nodep, objdereftype))
                     ;
                 else if (objdereftype->tag == ArrayTag && fnCallLowerSliceMethod(pstate, node))

@@ -207,10 +207,16 @@ a statement (`blockStmtTypeCheck`, and a block's last line that ends in `;`) and
 value `_ =` takes (`assignSingleCheck`) ask `nameUseNoValue`, which refuses a function's
 name, `f;`, `(f);`, `g;` (generic), `S.m;` (`ErrorNoSize`, the cause "a function
 signature is not a value at all", as `let c = f;` is), and a type's, `S;`, `Tr;`,
-`i32;`, an alias (`ErrorNotTyped`, as `let c = (S);` is). It asks only of what was
+`i32;`, an alias (`ErrorNotTyped`, as `let c = (S);` is), naming the type
+(`iexpNotTypedMsg`, which `iexpTypeCheckAny` and a coercion of a non-expression
+share). It asks only of what was
 written as a bare name before the check: `g[i64];` makes an instance of a generic and
 stands as a statement. A function's name is no assignment target (`f = f;`,
-`ErrorBadLval`, `assignTargetsTypeCheck`).
+`ErrorBadLval`, `assignTargetsTypeCheck`). An element of an untyped array literal asks
+too (`[f]`, `arrayLitTypeCheckElems`). `nameUseWasName` answers 2 for a call that gives
+type arguments in parentheses, `h(S);`, which type check rewrites to the instance's name:
+that one is refused with its own message (type arguments are written in brackets), only
+where it became a function.
 
 ## Flow
 

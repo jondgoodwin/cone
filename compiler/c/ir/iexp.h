@@ -22,11 +22,20 @@ INode *iexpGetTypeDcl(INode *node);
 // (Note: only use after it has been type-checked)
 INode *iexpGetDerefTypeDcl(INode *node);
 
+// Report (ErrorNotTyped) that 'node', not an expression, stands where one is wanted;
+// a type used as a value is named in the message.
+void iexpNotTypedMsg(INode *node);
+
 // Type check node we expect to be an expression. Return 0 if not.
 int iexpTypeCheckAny(TypeCheckState *pstate, INode **from);
 
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint);
+
+// While nonzero, a plain value does not convert to an Option as its 'Some'. An overload choice
+// sets it for its first look at the candidates (the wrap never competes with a candidate that
+// takes the call as written), and a macro's lazy parameter for its own test
+extern int iexpOptWrapOff;
 
 // A char where a number is wanted, a number where a char is wanted, or a
 // non-ASCII character literal wanted as a u8: none reaches the other
