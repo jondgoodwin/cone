@@ -732,6 +732,38 @@ const char *iexpImmBorrowHint(INode *node, INode *totype) {
     return "; a plain `&` borrow is read-only but not `imm`, so write `&imm` before the borrowed value to lend it as imm";
 }
 
+// The two types of a refused value, " (found X, wanted Y)", written into buf; "" where the
+// value has no type to name. An error message that names neither type leaves the reader
+// bisecting (row 771).
+const char *iexpMismatchTypes(char *buf, size_t size, INode *node, INode *totype) {
+    buf[0] = '\0';
+    if (!isExpNode(node) || totype == NULL)
+        return buf;
+    INode *found = ((IExpNode*)node)->vtype;
+    if (found == NULL || found == unknownType || found == errorType || totype == unknownType)
+        return buf;
+    // Only a type itypeName can name: it reports a compiler defect for one with no name (a lazy parameter's)
+    INode *foundtag = itypeGetTypeDcl(found), *wantedtag = itypeGetTypeDcl(totype);
+    switch (foundtag->tag) {
+    case StructTag: case IntNbrTag: case UintNbrTag: case FloatNbrTag: case FnSigTag: case ArrayTag:
+    case VectorTag: case RefTag: case VirtRefTag: case ArrayRefTag: case PtrTag: case TTupleTag:
+        break;
+    default:
+        return buf;
+    }
+    switch (wantedtag->tag) {
+    case StructTag: case IntNbrTag: case UintNbrTag: case FloatNbrTag: case FnSigTag: case ArrayTag:
+    case VectorTag: case RefTag: case VirtRefTag: case ArrayRefTag: case PtrTag: case TTupleTag:
+        break;
+    default:
+        return buf;
+    }
+    char foundname[200];
+    snprintf(foundname, sizeof(foundname), "%s", itypeName(found));
+    snprintf(buf, size, " (found %s, wanted %s)", foundname, itypeName(totype));
+    return buf;
+}
+
 // Report that expression 'node' was refused where 'totype' is wanted
 void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg) {
     int whycode;
@@ -743,8 +775,11 @@ void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg) {
         errorMsgNode(node, ErrorPrivateMatch, "%s.%s", msg, privwhy);
     else if (isExpNode(node) && structDefaultRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)node)->vtype, totype))
         errorMsgNode(node, code, "%s.%s", msg, privwhy);
-    else
-        errorMsgNode(node, code, "%s%s", msg, iexpImmBorrowHint(node, totype));
+    else {
+        char types[460];
+        errorMsgNode(node, code, "%s%s%s", msg, iexpImmBorrowHint(node, totype),
+            iexpMismatchTypes(types, sizeof(types), node, totype));
+    }
 }
 
 // Used by 'if' and 'loop'/break to infer the type in common across all branches,
