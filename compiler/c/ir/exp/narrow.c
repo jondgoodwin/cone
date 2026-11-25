@@ -459,7 +459,11 @@ static void narrowAssumeVar(VarDclNode *var, StructNode *enumdcl, int shared, ui
     if (truth)
         fact->possible = (fact->possible & bits) ? (fact->possible & bits) : bits;
     else {
-        fact->possible &= ~bits;
+        // The same of a test that failed: the name is not what was tested, so it is one
+        // of the others, even where it was believed to be what was tested (a loop that
+        // stores another variant comes back to this test)
+        uint64_t others = narrowAll(fact->nvariants) & ~bits;
+        fact->possible = (fact->possible & others) ? (fact->possible & others) : others;
         if (fact->possible == 0)
             fact->possible = narrowAll(fact->nvariants);
     }
