@@ -22,6 +22,7 @@ DOMAINS = [
   ]),
   ("Meshes and geometry", [
    ("geomath", "The numbers 2-D and 3-D worlds are built from: vectors, matrices, quaternions, colours."),
+   ("meshsolve", "Sparse linear solves on meshes: a sparse matrix, the cotangent Laplacian and a conjugate-gradient solver, shared by fairing and fitting."),
    ("mesh", "Surfaces made of polygons in the two forms the industry keeps them in: indexed triangles and a half-edge polygon mesh."),
    ("spatialindex", "Where things are, asked three ways: which boxes a ray, a box, a ball or a frustum meets."),
    ("autolod", "Levels of detail for any mesh, made automatically, ending in an octahedral impostor."),
