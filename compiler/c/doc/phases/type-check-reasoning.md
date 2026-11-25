@@ -349,10 +349,13 @@ case or `else` that can never run is `ErrorMatchUnreachable`.
   have widened the type in common to their trait, a third is asked for a
   supertype of *the trait and a variant*, not of two variants. `structFindSuper`
   and `structRefFindSuper` answer both shapes. Answering only the first unifies
-  two branches and fails on three. Two references meet only through their
-  pointees, and only struct pointees have a supertype: `&i32` and `&i64`, or a
-  `&Point` and an `&i64`, have none. `structRefFindSuper` is handed any two
-  pointees, so it is the one that checks both are structs.
+  two branches and fails on three. Two references of one permission meet only
+  through their pointees, and only struct pointees have a supertype: `&i32` and
+  `&i64`, or a `&Point` and an `&i64`, have none. `structRefFindSuper` is handed
+  any two pointees, so it is the one that checks both are structs. Two
+  references or slices differing only in permission meet at the least permission
+  both coerce to (`refPermJoin`; [References](../nodes/references.md), "Meeting
+  two reference types").
 - **a real type**: every branch is matched against it directly, and the type in
   common becomes the expected supertype as soon as two branches differ.
 

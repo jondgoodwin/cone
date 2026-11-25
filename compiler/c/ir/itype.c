@@ -2197,6 +2197,12 @@ INode *itypeFindSuper(INode *type1, INode *type2) {
     case VirtRefTag:
         return refFindSuper(type1, type2);
 
+    // Slices meet only over a difference of permission: their element types
+    // must be the same, since the elements lie one stride apart. A raw pointer
+    // has no permission, so two pointer types that differ have none to join
+    case ArrayRefTag:
+        return refPermJoin(type1, type2);
+
     default:
         return NULL;
     }

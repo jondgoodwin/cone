@@ -190,6 +190,31 @@ int permMatches(INode *ito, INode *ifrom) {
     return NoMatch;
 }
 
+// The permission two references that differ only in it meet as: of the static
+// permissions both coerce to, the one every other of them accepts, so the join
+// weakens no more than it must ('mut' with 'imm' is 'ro', not 'opaq'). NULL
+// where there is none: a lock permission, or a guard's, coerces to no other
+PermNode *permJoin(INode *perm1, INode *perm2) {
+    PermNode *p1 = (PermNode *)itypeGetTypeDcl(perm1);
+    PermNode *p2 = (PermNode *)itypeGetTypeDcl(perm2);
+    if (p1->tag != PermTag || p2->tag != PermTag || p1->held || p2->held)
+        return NULL;
+    PermNode *perms[] = { uniPerm, mutPerm, immPerm, mut1Perm, roPerm, opaqPerm, newPerm };
+    int count = (int)(sizeof(perms) / sizeof(perms[0]));
+    for (int i = 0; i < count; ++i) {
+        if (!permMatches((INode*)perms[i], (INode*)p1) || !permMatches((INode*)perms[i], (INode*)p2))
+            continue;
+        int least = 1;
+        for (int j = 0; j < count && least; ++j) {
+            if (permMatches((INode*)perms[j], (INode*)p1) && permMatches((INode*)perms[j], (INode*)p2))
+                least = permMatches((INode*)perms[j], (INode*)perms[i]);
+        }
+        if (least)
+            return perms[i];
+    }
+    return NULL;
+}
+
 // Verify that permission init is correctly declared
 void permInitTypeCheck(INode *perm) {
     if (perm->tag != StructTag)
