@@ -1,0 +1,1067 @@
+// taggedmuzzle: the knight's muzzle corner by the tagged loft, with numbers and raking-light pictures (a
+// software renderer, no GPU).
+//
+//   congo run --release --example taggedmuzzle        (from packages/sculpt; needs the file below)
+//
+// Input: C:/src/mesh-tools-shots/knight-nonos-cone.obj (the knight with both nostrils taken off by the Cone
+// order-2 fill). Output: PNG sheets and the numbers on stdout, in C:/src/mesh-tools-shots/tagged/.
+//
+// The muzzle frame and span are those of assemble2_ps.py (read there): x' = y, y' = x, z' = z - ZCUT with
+// ZCUT = -38.31, the slices square to the forward direction (-x', which is -y here) from x' = XB + 1 = 19 (XB 18)
+// to the front less 4.5 mm (MFRONT 4.5 in run.sh, X0 = xf + MFRONT, xf the least x' of the part above ZCUT).
+// Here y runs from X0 to 19; the profile of a key is the +x half of the muzzle's loop in its plane y = const,
+// from the top midline to the bottom, resampled every 0.04 mm (TH). The Python touch-point rule: a point
+// where the turn between the chords 0.5 mm before and 0.5 mm after is at least 35 degrees, a local maximum of
+// |turn| over 0.5 mm, found on the middle key and tracked to the others.
+//
+// The profile's coordinates (n, b) = (-x, z - zc): the path runs along +y (back, from the front key), its first
+// frame, with 'up' +z, has normal -x and binormal +z, and the top-to-bottom half on the +x side runs
+// counterclockwise there, so the faces face outward and the mirror (x -> -x) gives the other half.
+
+mod taggedmuzzle;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import imagedecode use *;
+import fs;
+import path use Path as FilePath;
+import sculpt use *;
+import shapefit;
+import time use Instant;
+
+let dir = "C:/src/mesh-tools-shots/";
+let outDir = "C:/src/mesh-tools-shots/tagged/";
+let zcut: f32 = -38.31;
+let th: f32 = 0.04;          // mm between the points of a half path
+let zc: f32 = -8.;           // the path's z
+let muzzleMeanZ: f32 = -19.31;   // z' mean > 19
+let keyCount = 5usize;
+let tagThr: f32 = 7.;        // degrees; the Python rule's 35 finds no touch point on this muzzle (see main)
+let trackThr: f32 = 5.;      // degrees, the peaks the other keys' tags are tracked to
+
+// ---------------------------------------------------------------- renderer
+
+struct Canvas {
+  w: i32;
+  h: i32;
+  px: List[u8];
+  zb: List[f32];
+  x0: i32;
+  y0: i32;
+  x1: i32;
+  y1: i32;
+
+  fn make(w: i32, h: i32) Canvas {
+    var c = Canvas(w, h, List[u8](), List[f32](), 0, 0, w, h);
+    c.px.resize(usize.from(w) * usize.from(h) * 4usize, 255u8);
+    c.zb.resize(usize.from(w) * usize.from(h), -1000000.);
+    c
+  }
+
+  fn tile(self: &mut, tx0: i32, ty0: i32, tx1: i32, ty1: i32, bg: Vec3) {
+    x0 = tx0; y0 = ty0; x1 = tx1; y1 = ty1;
+    var y = ty0;
+    while y < ty1 {
+      var x = tx0;
+      while x < tx1 {
+        self.setPixel(x, y, bg);
+        zb.set(usize.from(y * w + x), -1000000.);
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn setPixel(self: &mut, x: i32, y: i32, c: Vec3) {
+    let i = usize.from(y * w + x) * 4usize;
+    px.set(i, byteOf(c.x));
+    px.set(i + 1usize, byteOf(c.y));
+    px.set(i + 2usize, byteOf(c.z));
+  }
+
+  fn line(self: &mut, a: Vec3, b: Vec3, col: Vec3, bias: f32, thick: i32) {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let steps = i32.from(fmax3(dx.abs(), dy.abs(), 1.)) + 1;
+    var i = 0;
+    while i <= steps {
+      let t = f32.from(i) / f32.from(steps);
+      let x = a.x + dx * t;
+      let y = a.y + dy * t;
+      var ox = 0;
+      while ox < thick {
+        var oy = 0;
+        while oy < thick {
+          self.plot(i32.from(x) + ox, i32.from(y) + oy, bias + 1., col);
+          oy = oy + 1;
+        }
+        ox = ox + 1;
+      }
+      i = i + 1;
+    }
+  }
+
+  fn plot(self: &mut, x: i32, y: i32, z: f32, c: Vec3) {
+    if x >= x0 && x < x1 && y >= y0 && y < y1 {
+      let i = usize.from(y * w + x);
+      if z > *zb[i] {
+        zb.set(i, z);
+        self.setPixel(x, y, c);
+      }
+    }
+  }
+
+  fn triangle(self: &mut, a: Vec3, b: Vec3, c: Vec3, ia: f32, ib: f32, ic: f32, col: Vec3) {
+    let minx = x0.max(i32.from(libc.floorf(fmin3(a.x, b.x, c.x))));
+    let maxx = (x1 - 1).min(i32.from(libc.ceilf(fmax3(a.x, b.x, c.x))));
+    let miny = y0.max(i32.from(libc.floorf(fmin3(a.y, b.y, c.y))));
+    let maxy = (y1 - 1).min(i32.from(libc.ceilf(fmax3(a.y, b.y, c.y))));
+    let den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if den > -0.0000001 && den < 0.0000001 { return; }
+    var y = miny;
+    while y <= maxy {
+      var x = minx;
+      while x <= maxx {
+        let px_ = f32.from(x) + 0.5;
+        let py_ = f32.from(y) + 0.5;
+        let l0 = ((b.y - c.y) * (px_ - c.x) + (c.x - b.x) * (py_ - c.y)) / den;
+        let l1 = ((c.y - a.y) * (px_ - c.x) + (a.x - c.x) * (py_ - c.y)) / den;
+        let l2 = 1. - l0 - l1;
+        if l0 >= -0.0001 && l1 >= -0.0001 && l2 >= -0.0001 {
+          let li = l0 * ia + l1 * ib + l2 * ic;
+          self.plot(x, y, l0 * a.z + l1 * b.z + l2 * c.z, col * li);
+        }
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+}
+
+fn fmin3(a: f32, b: f32, c: f32) f32 { let m = if a < b {a} else {b}; if m < c {m} else {c} }
+fn fmax3(a: f32, b: f32, c: f32) f32 { let m = if a > b {a} else {b}; if m > c {m} else {c} }
+
+fn byteOf(v: f32) u8 {
+  var x = i32.from(v * 255. + 0.5);
+  if x < 0 { x = 0; }
+  if x > 255 { x = 255; }
+  u8.from(x)
+}
+
+struct Cam {
+  u: Vec3;
+  v: Vec3;
+  w: Vec3;
+  c: Vec3;
+  sc: f32;
+  ox: f32;
+  oy: f32;
+
+  fn make(w: Vec3, upHint: Vec3, c: Vec3, sc: f32, ox: f32, oy: f32) Cam {
+    let ww = w.normalize();
+    let u = upHint.cross(ww).normalize();
+    let v = ww.cross(u);
+    Cam(u, v, ww, c, sc, ox, oy)
+  }
+
+  fn scr(self: &, p: Vec3) Vec3 {
+    let q = p - c;
+    Vec3(ox + q.dot(u) * sc, oy - q.dot(v) * sc, q.dot(w) * sc)
+  }
+}
+
+// How a face is coloured: 0 plain skin, 1 a checker by the face's mean uv with cells 'cu' by 'cv' per unit of uv
+struct Paint {
+  mode: i32;
+  cu: f32;
+  cv: f32;
+}
+
+// The faces of pm whose centroid lies in y0..y1 and above zmin, shaded by the light 'lit' (a unit vector
+// towards the light), Gouraud, or checkered
+fn drawMesh(cv: &mut Canvas, pm: &PolyMesh, cam: &Cam, lit: Vec3, ylo: f32, yhi: f32, zmin: f32, paint: &Paint) {
+  let nrm = pm.vertexNormals();
+  var sp = List[Vec3]();
+  var v = 0usize;
+  while v < pm.positions.len() {
+    sp.push(cam.scr(*pm.positions[v]));
+    v = v + 1usize;
+  }
+  let uvc = pm.findVec2Channel(CornerDomain, "uv");
+  let fill = (cam.w * 0.8 - cam.u * 0.5 + cam.v * 0.3).normalize();
+  var f = 0usize;
+  while f < pm.faceCount() {
+    let c = pm.faceCentroid(u32.from(f));
+    if c.y >= ylo && c.y <= yhi && c.z >= zmin {
+      let vs = pm.faceVertices(u32.from(f));
+      var base = Vec3(0.82, 0.80, 0.78);
+      if paint.mode == 1 && uvc != NoIndex {
+        let hs = pm.faceHalfedges(u32.from(f));
+        var su: f32 = 0.;
+        var sv: f32 = 0.;
+        var q = 0usize;
+        while q < hs.len() {
+          let t = pm.vec2(uvc, *hs[q]);
+          su = su + t.x;
+          sv = sv + t.y;
+          q = q + 1usize;
+        }
+        su = su / f32.from(hs.len());
+        sv = sv / f32.from(hs.len());
+        let iu = i32.from(libc.floorf(su * paint.cu));
+        let iv = i32.from(libc.floorf(sv * paint.cv));
+        base = if (iu + iv) % 2 == 0 { Vec3(0.92, 0.88, 0.62) } else { Vec3(0.30, 0.45, 0.78) };
+      }
+      var k = 1usize;
+      while k + 1usize < vs.len() {
+        let a = usize.from(*vs[0usize]);
+        let b = usize.from(*vs[k]);
+        let cc = usize.from(*vs[k + 1usize]);
+        cv.triangle(*sp[a], *sp[b], *sp[cc], shade(*nrm[a], lit, fill), shade(*nrm[b], lit, fill), shade(*nrm[cc], lit, fill), base);
+        k = k + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+}
+
+fn shade(n: Vec3, lit: Vec3, fill: Vec3) f32 {
+  let d = n.dot(lit);
+  let e = n.dot(fill);
+  0.06 + 0.85 * (if d > 0. {d} else {0.}) + 0.12 * (if e > 0. {e} else {0.})
+}
+
+fn save(cv: &Canvas, name: &str) {
+  var r = Raster();
+  r.width = cv.w;
+  r.height = cv.h;
+  r.depth = 8;
+  r.colorSpace = ColorSpace.Srgb;
+  var i = 0usize;
+  while i < cv.px.len() { r.pixels8.push(*cv.px[i]); i = i + 1usize; }
+  let png = encodePng(&r, 6);
+  var full = String.from(outDir);
+  full.append(name);
+  let op = FilePath.from(full.view());
+  if let Err(e) = fs.writeFile(&op, png.view()) { print <- "could not write ", full.view(), ": ", e, "\n"; return; }
+  print <- "wrote ", full.view(), " (", png.len(), " bytes)\n";
+}
+
+fn loadObj(name: &str) PolyMesh {
+  var full = String.from(dir);
+  full.append(name);
+  var problems = List[String]();
+  let m = readPolyObj(&FilePath.from(full.view()), &mut problems);
+  if problems.len() > 0usize { print <- "problems reading ", name, ": ", problems.len(), "\n"; }
+  m
+}
+
+// ---------------------------------------------------------------- half paths and turns
+
+fn cumLen(p: &List[Vec2]) List[f32] {
+  var out = List[f32].withCapacity(p.len());
+  var s: f32 = 0.;
+  var i = 0usize;
+  while i < p.len() {
+    if i > 0usize { s = s + (*p[i] - *p[i - 1usize]).length(); }
+    out.push(s);
+    i = i + 1usize;
+  }
+  out
+}
+
+// n points evenly by length along p from index a to index b, both ends included
+fn resampleBy(p: &List[Vec2], a: usize, b: usize, n: usize) List[Vec2] {
+  let cum = cumLen(p);
+  let s0 = *cum[a];
+  let tot = *cum[b] - s0;
+  var out = List[Vec2].withCapacity(n);
+  var j = 0usize;
+  var i = a;
+  while j < n {
+    let t = if j + 1usize == n {tot} else {tot * f32.from(j) / f32.from(n - 1usize)};
+    while i + 1usize < b && *cum[i + 1usize] - s0 <= t { i = i + 1usize; }
+    let seg = *cum[i + 1usize] - *cum[i];
+    let f = if seg > 0. { (s0 + t - *cum[i]) / seg } else { 0. };
+    let fc = if f < 0. {0.} else if f > 1. {1.} else {f};
+    out.push(*p[i] + (*p[i + 1usize] - *p[i]) * fc);
+    j = j + 1usize;
+  }
+  out
+}
+
+// The point at distance c from 'cur' along the polyline p (from segment i on), advancing 'i' to the segment
+// holding it; the polyline's end when none is that far
+fn nextAtDistance(p: &List[Vec2], i: &mut usize, cur: Vec2, c: f32, last: usize, over: &mut bool) Vec2 {
+  while *i + 1usize < last && (*p[*i + 1usize] - cur).length() < c { *i = *i + 1usize; }
+  if *i + 1usize > last { *over = true; return *p[last]; }
+  let a = *p[*i];
+  let d = *p[*i + 1usize] - a;
+  let w = a - cur;
+  let qa = d.dot(d);
+  let qb = w.dot(d);
+  let qc = w.dot(w) - c * c;
+  let disc = qb * qb - qa * qc;
+  if qa <= 0. || disc < 0. { *over = true; return *p[last]; }
+  let s = (-qb + libc.sqrtf(disc)) / qa;
+  if s > 1. { *over = true; return *p[last]; }
+  a + d * (if s < 0. {0.} else {s})
+}
+
+// n points from index a to index b of p, every one the same Euclidean distance from the one before (the last
+// the end exactly): the chord-length fractions j / (n - 1) the loft's columns are made from, so that two keys
+// so resampled share their columns (evenly by arc length would differ by chords: up to 5 times the columns)
+fn resampleChords(p: &List[Vec2], a: usize, b: usize, n: usize) List[Vec2] {
+  var lo: f32 = 0.;
+  var hi = (*p[b] - *p[a]).length();
+  var iter = 0;
+  while iter < 60 {
+    let c = (lo + hi) * 0.5;
+    var i = a;
+    var cur = *p[a];
+    var over = false;
+    var s = 1usize;
+    while s < n && !over {
+      cur = nextAtDistance(p, &mut i, cur, c, b, &mut over);
+      s = s + 1usize;
+    }
+    // too short a chord falls short of the end; too long runs off it
+    if over { hi = c; } else { lo = c; }
+    iter = iter + 1;
+  }
+  let c = (lo + hi) * 0.5;
+  var out = List[Vec2].withCapacity(n);
+  out.push(*p[a]);
+  var i = a;
+  var cur = *p[a];
+  var over = false;
+  var s = 1usize;
+  while s + 1usize < n {
+    cur = nextAtDistance(p, &mut i, cur, c, b, &mut over);
+    out.push(cur);
+    s = s + 1usize;
+  }
+  out.push(*p[b]);
+  out
+}
+
+// The +x half of the muzzle loop of a section in the plane y = const, from the top midline to the bottom, as
+// (x, z), every th mm. Empty when there is no such loop.
+fn halfPath(sec: &PlaneSection) List[Vec2] {
+  var q = List[Vec2]();
+  var l = 0usize;
+  while l < sec.closed.len() && q.len() == 0usize {
+    let a = usize.from(*sec.starts[l]);
+    let e = usize.from(*sec.starts[l + 1usize]);
+    var mz: f32 = 0.;
+    var i = a;
+    while i < e { mz = mz + sec.points[i].z; i = i + 1usize; }
+    if e > a && mz / f32.from(e - a) > muzzleMeanZ {
+      i = a;
+      while i < e {
+        q.push(Vec2(sec.points[i].x, sec.points[i].z));
+        i = i + 1usize;
+      }
+    }
+    l = l + 1usize;
+  }
+  let n = q.len();
+  if n < 3usize { return List[Vec2](); }
+  var it = NoIndex;
+  var ib = NoIndex;
+  var pt = Vec2(0., 0.);
+  var pb = Vec2(0., 0.);
+  var i = 0usize;
+  while i < n {
+    let a = *q[i];
+    let b = *q[(i + 1usize) % n];
+    if (a.x < 0.) != (b.x < 0.) {
+      let f = a.x / (a.x - b.x);
+      let c = Vec2(0., a.y + (b.y - a.y) * f);
+      if it == NoIndex || c.y > pt.y { it = u32.from(i); pt = c; }
+      if ib == NoIndex || c.y < pb.y { ib = u32.from(i); pb = c; }
+    }
+    i = i + 1usize;
+  }
+  if it == NoIndex { return List[Vec2](); }
+  let ti = usize.from(it);
+  let bi = usize.from(ib);
+  var a1 = List[Vec2]();
+  a1.push(pt);
+  var j = 0usize;
+  while j < (bi + n - ti) % n { a1.push(*q[(ti + 1usize + j) % n]); j = j + 1usize; }
+  a1.push(pb);
+  var a2 = List[Vec2]();
+  a2.push(pb);
+  j = 0usize;
+  while j < (ti + n - bi) % n { a2.push(*q[(bi + 1usize + j) % n]); j = j + 1usize; }
+  a2.push(pt);
+  var m1: f32 = 0.;
+  j = 1usize;
+  while j + 1usize < a1.len() { m1 = m1 + a1[j].x; j = j + 1usize; }
+  var m2: f32 = 0.;
+  j = 1usize;
+  while j + 1usize < a2.len() { m2 = m2 + a2[j].x; j = j + 1usize; }
+  m1 = m1 / f32.from(a1.len());
+  m2 = m2 / f32.from(a2.len());
+  var h = List[Vec2]();
+  if m1 > m2 { h = copyOf(&a1); }
+  else {
+    var k = a2.len();
+    while k > 0usize { k = k - 1usize; h.push(*a2[k]); }
+  }
+  let cum = cumLen(&h);
+  let total = *cum[h.len() - 1usize];
+  let cnt = usize.from(libc.floorf(total / th)) + 1usize;
+  let rs = resampleBy(&h, 0usize, h.len() - 1usize, cnt + 1usize);
+  // the exact step is total / cnt (a hair under or over th); the ends are the midlines
+  var out = copyOf(&rs);
+  out.set(0usize, Vec2(0., pt.y));
+  out.set(out.len() - 1usize, Vec2(0., pb.y));
+  out
+}
+
+fn copyOf(a: &List[Vec2]) List[Vec2] {
+  var out = List[Vec2].withCapacity(a.len());
+  var i = 0usize;
+  while i < a.len() { out.push(*a[i]); i = i + 1usize; }
+  out
+}
+
+// The turn in degrees at each point of an open path between the chords 'win' mm back and ahead (k points)
+fn turnAt(p: &List[Vec2], win: f32) List[f32] {
+  var k = usize.from(win / th);
+  if k < 2usize { k = 2usize; }
+  let n = p.len();
+  var out = List[f32].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    if i >= k && i + k < n {
+      let a = *p[i] - *p[i - k];
+      let b = *p[i + k] - *p[i];
+      out.push(atan2(a.x * b.y - a.y * b.x, a.x * b.x + a.y * b.y) * (180. / pi));
+    } else { out.push(0.); }
+    i = i + 1usize;
+  }
+  out
+}
+
+// Indices where |turn| peaks at least 'thr' degrees, over k points either side, and at least k apart
+fn sharpPoints(tt: &List[f32], k: usize, thr: f32) List[usize] {
+  var out = List[usize]();
+  var i = k;
+  while i + k < tt.len() {
+    let v = (*tt[i]).abs();
+    if v >= thr {
+      var peak = true;
+      var j = i - k;
+      while j <= i + k { if (*tt[j]).abs() > v { peak = false; } j = j + 1usize; }
+      if peak && (out.len() == 0usize || i - *out[out.len() - 1usize] > k) { out.push(i); }
+    }
+    i = i + 1usize;
+  }
+  out
+}
+
+// ---------------------------------------------------------------- builds
+
+fn mirrored(m: &PolyMesh) PolyMesh {
+  mirrorWith(m, Vec3(0., 0., 0.), Vec3(1., 0., 0.), 0.0005, true, false, Vec2(-1., 0.))
+}
+
+struct Miss {
+  mean: f32;
+  p95: f32;
+  max: f32;
+}
+
+fn missOf(samples: &List[Vec3], target: &SurfaceIndex) Miss {
+  var d = List[f32].withCapacity(samples.len());
+  var sum: f64 = 0.0;
+  var i = 0usize;
+  while i < samples.len() {
+    let hit = target.nearest(*samples[i], 0.);
+    d.push(hit.distance);
+    sum = sum + f64.from(hit.distance);
+    i = i + 1usize;
+  }
+  d.sort();
+  let n = d.len();
+  if n == 0usize { return Miss(0., 0., 0.); }
+  Miss(f32.from(sum / f64.from(n)), *d[(n - 1usize) * 95usize / 100usize], *d[n - 1usize])
+}
+
+// The turn (degrees, absolute) of the half path in plane y, the greatest within 'half' fractions of 'frac'
+fn cornerTurn(m: &PolyMesh, y: f32, frac: f32, half: f32, at: &mut f32) f32 {
+  let sec = sectionByPlane(m, Vec3(0., y, 0.), Vec3(0., 1., 0.));
+  let h = halfPath(&sec);
+  if h.len() < 100usize { return -1.; }
+  let tt = turnAt(&h, 0.5);
+  let cum = cumLen(&h);
+  let total = *cum[h.len() - 1usize];
+  var best: f32 = 0.;
+  var i = 0usize;
+  while i < h.len() {
+    let f = *cum[i] / total;
+    if (f - frac).abs() <= half && (*tt[i]).abs() > best { best = (*tt[i]).abs(); *at = f; }
+    i = i + 1usize;
+  }
+  best
+}
+
+struct Numbers {
+  label: String;
+  stored: usize;
+}
+
+fn storedNumbers(secs: &List[Profile], tags: usize, creases: usize) usize {
+  var n = 0usize;
+  var i = 0usize;
+  while i < secs.len() { n = n + 2usize * secs[i].points.len(); i = i + 1usize; }
+  n + tags + creases + keyCount + 6usize
+}
+
+fn main() i32 {
+  let dirp = FilePath.from("C:/src/mesh-tools-shots/tagged");
+  if let Err(e) = fs.makeDirAll(&dirp) { print <- "could not make the folder: ", e, "\n"; return 1; }
+  var t0 = Instant.now();
+  let src = loadObj("knight-nonos-cone.obj");
+  print <- "read source: ", src.vertexCount(), " vertices, ", src.faceCount(), " faces, in ", t0.elapsed().secondsF64(), " s\n";
+  var xf: f32 = 1000000.;
+  var v = 0usize;
+  while v < src.vertexCount() {
+    let p = *src.positions[v];
+    if p.z > zcut && p.y < xf { xf = p.y; }
+    v = v + 1usize;
+  }
+  let y0 = xf + 4.5;
+  let y1: f32 = 19.;
+  let span = y1 - y0;
+  print <- "muzzle frame: front xf = ", xf, ", slices from y = ", y0, " to ", y1, " (span ", span, " mm), mirror plane x = 0\n";
+
+  // The key sections: five planes evenly spaced, each the +x half of the muzzle's loop
+  var halves = List[List[Vec2]]();
+  var ys = List[f32]();
+  var k = 0usize;
+  while k < keyCount {
+    let y = y0 + span * f32.from(k) / f32.from(keyCount - 1usize);
+    ys.push(y);
+    let sec = sectionByPlane(&src, Vec3(0., y, 0.), Vec3(0., 1., 0.));
+    let h = halfPath(&sec);
+    let cum = cumLen(&h);
+    print <- "key ", k, " at y = ", y, ": half path ", h.len(), " points, length ", *cum[h.len() - 1usize], " mm\n";
+    halves.push(h);
+    k = k + 1usize;
+  }
+
+  // Tags: the Python rule on the middle key
+  let mid = keyCount / 2usize;
+  let kw = usize.from(0.5 / th);
+  let tmid = turnAt(&halves[mid], 0.5);
+  // The brief's rule is 35 degrees within 0.5 mm. On this source no point of the middle key turns that far
+  // (the muzzle's section is rounded: the greatest is 23 degrees), so the threshold is 'tagThr'.
+  let py = sharpPoints(&tmid, kw, 35.);
+  print <- "the Python rule (35 degrees within 0.5 mm) finds ", py.len(), " touch points on the middle key; peaks of 6 degrees or more on each key:\n";
+  var kq = 0usize;
+  while kq < keyCount {
+    let tq = turnAt(&halves[kq], 0.5);
+    print <- " key ", kq, ":\n";
+    i0Print(&sharpPoints(&tq, kw, 6.), &tq, &halves[kq]);
+    kq = kq + 1usize;
+  }
+  let peaks = sharpPoints(&tmid, kw, tagThr);
+  let cumMid = cumLen(&halves[mid]);
+  let totMid = *cumMid[halves[mid].len() - 1usize];
+  var fracs = List[f32]();      // the tags' fractions of the middle key's length, without the ends
+  var i = 0usize;
+  while i < peaks.len() {
+    fracs.push(*cumMid[*peaks[i]] / totMid);
+    print <- "middle key tag ", i + 1usize, ": point ", *peaks[i], " at fraction ", *fracs[i], ", turn ", *tmid[*peaks[i]], " degrees, at (x ",
+      halves[mid][*peaks[i]].x, ", z ", halves[mid][*peaks[i]].y, ")\n";
+    i = i + 1usize;
+  }
+  var big = 0usize;     // the corner tag: the one with the greatest turn on any key, found after tracking
+  var tagTurn = List[f32]();
+  i = 0usize;
+  while i < peaks.len() { tagTurn.push(0.); i = i + 1usize; }
+
+  // Tracked to the other keys: the peak (17.5 degrees or more) nearest in fraction within 0.08, else the point
+  // at the same fraction (soft)
+  var tagIdx = List[List[usize]]();
+  var cornerFrac = List[f32]();
+  k = 0usize;
+  while k < keyCount {
+    let h = &halves[k];
+    let cum = cumLen(h);
+    let total = *cum[h.len() - 1usize];
+    var idx = List[usize]();
+    idx.push(0usize);
+    if k == mid {
+      i = 0usize;
+      while i < peaks.len() { idx.push(*peaks[i]); i = i + 1usize; }
+    } else {
+      let tt = turnAt(h, 0.5);
+      let pk = sharpPoints(&tt, kw, trackThr);
+      i = 0usize;
+      while i < fracs.len() {
+        var best = NoIndex;
+        var bd: f32 = 0.08;
+        var q = 0usize;
+        while q < pk.len() {
+          let d = (*cum[*pk[q]] / total - *fracs[i]).abs();
+          if d <= bd && *pk[q] > *idx[idx.len() - 1usize] { bd = d; best = u32.from(q); }
+          q = q + 1usize;
+        }
+        if best != NoIndex { idx.push(*pk[usize.from(best)]); }
+        else {
+          // the point at the same fraction
+          var p = 0usize;
+          while p + 1usize < h.len() && *cum[p] / total < *fracs[i] { p = p + 1usize; }
+          idx.push(p);
+          print <- "key ", k, ": tag ", i + 1usize, " has no turn peak within 0.08 of fraction ", *fracs[i], ": placed at that fraction (soft)\n";
+        }
+        i = i + 1usize;
+      }
+    }
+    idx.push(h.len() - 1usize);
+    let tk = turnAt(h, 0.5);
+    print <- "key ", k, ": tags at fractions";
+    i = 0usize;
+    while i < fracs.len() {
+      let tv = (*tk[*idx[i + 1usize]]).abs();
+      if tv > *tagTurn[i] { tagTurn.set(i, tv); }
+      print <- " ", *cum[*idx[i + 1usize]] / total, " (", tv, " deg)";
+      i = i + 1usize;
+    }
+    print <- "\n";
+    tagIdx.push(idx);
+    k = k + 1usize;
+  }
+  i = 1usize;
+  while i < fracs.len() {
+    if *tagTurn[i] > *tagTurn[big] { big = i; }
+    i = i + 1usize;
+  }
+  print <- "the tag of the largest turn on any key: tag ", big + 1usize, " (", *tagTurn[big], " degrees)\n";
+  k = 0usize;
+  while k < keyCount {
+    let cumk = cumLen(&halves[k]);
+    cornerFrac.push(*cumk[*tagIdx[k][big + 1usize]] / *cumk[halves[k].len() - 1usize]);
+    k = k + 1usize;
+  }
+
+  // Profiles: each stretch between tags resampled to the same count on every key (the middle key's length / 0.5 mm)
+  let nt = tagIdx[0usize].len();
+  var counts = List[usize]();
+  var s = 0usize;
+  while s + 1usize < nt {
+    let len = *cumMid[*tagIdx[mid][s + 1usize]] - *cumMid[*tagIdx[mid][s]];
+    var c = usize.from(libc.ceilf(len / 0.5)) + 1usize;
+    if c < 3usize { c = 3usize; }
+    counts.push(c);
+    s = s + 1usize;
+  }
+  var total = 1usize;
+  s = 0usize;
+  while s < counts.len() { total = total + *counts[s] - 1usize; s = s + 1usize; }
+  print <- "points a profile: ", total, " (stretches ", counts.len(), ")\n";
+  var tagged = List[TaggedProfile]();
+  var plain = List[Profile]();
+  var tagsStored = 0usize;
+  var kk = 0usize;
+  while kk < keyCount {
+    let h = &halves[kk];
+    var pts = List[Vec2]();
+    var tg = List[u32]();
+    s = 0usize;
+    while s + 1usize < nt {
+      let part = resampleChords(h, *tagIdx[kk][s], *tagIdx[kk][s + 1usize], *counts[s]);
+      let first = if s == 0usize {0usize} else {1usize};
+      var q = first;
+      if s == 0usize { tg.push(0u32); }
+      while q < part.len() {
+        pts.push(Vec2(-part[q].x, part[q].y - zc));
+        q = q + 1usize;
+      }
+      tg.push(u32.from(pts.len() - 1usize));
+      s = s + 1usize;
+    }
+    // exactly on the midlines
+    pts.set(0usize, Vec2(0., pts[0usize].y));
+    pts.set(pts.len() - 1usize, Vec2(0., pts[pts.len() - 1usize].y));
+    tagsStored = tg.len();
+    let prof = Profile(copyOf(&pts), false);
+    var creases = List[f32]();
+    var q2 = 0usize;
+    while q2 < tg.len() { creases.push(0.); q2 = q2 + 1usize; }
+    tagged.push(TaggedProfile(prof, tg, creases));
+    // the untagged build's profiles: the same number of points, evenly by length over the whole half
+    let ev = resampleChords(h, 0usize, h.len() - 1usize, total);
+    var ep = List[Vec2]();
+    var q3 = 0usize;
+    while q3 < ev.len() { ep.push(Vec2(-ev[q3].x, ev[q3].y - zc)); q3 = q3 + 1usize; }
+    ep.set(0usize, Vec2(0., ep[0usize].y));
+    ep.set(ep.len() - 1usize, Vec2(0., ep[ep.len() - 1usize].y));
+    plain.push(Profile(ep, false));
+    kk = kk + 1usize;
+  }
+  print <- "profiles: ", tagged.len(), " keys of ", tagged[0usize].profile.points.len(), " points, ", tagsStored, " tags\n";
+
+  var st = List[f32]();
+  k = 0usize;
+  while k < keyCount { st.push(f32.from(k) / f32.from(keyCount - 1usize)); k = k + 1usize; }
+  var path = Path.line(Vec3(0., y0, zc), Vec3(0., y1, zc), 8u32);
+  path.up = Vec3(0., 0., 1.);
+  let between = 7u32;
+  var problems = List[String]();
+
+  // Build C's creases: 1 at the front key on the corner tag, fading to 0 at the back key
+  var creased = List[TaggedProfile]();
+  k = 0usize;
+  while k < keyCount {
+    var cr = List[f32]();
+    var q = 0usize;
+    while q < tagged[k].tags.len() {
+      cr.push(if q == big + 1usize { 1. - f32.from(k) / f32.from(keyCount - 1usize) } else { 0. });
+      q = q + 1usize;
+    }
+    creased.push(TaggedProfile(Profile(copyOf(&tagged[k].profile.points), false), copyTags(&tagged[k].tags), cr));
+    k = k + 1usize;
+  }
+
+  t0 = Instant.now();
+  let aHalf = loftAlong(&plain, &path, st.view(), 0u32, between, true, false);
+  let aMesh = mirrored(&aHalf);
+  let tA = t0.elapsed().secondsF64();
+  t0 = Instant.now();
+  let bHalf = loftTagged(&tagged, &path, st.view(), between, false, false, &mut problems);
+  let bMesh = mirrored(&bHalf);
+  let tB = t0.elapsed().secondsF64();
+  t0 = Instant.now();
+  let cHalf = loftTagged(&creased, &path, st.view(), between, false, false, &mut problems);
+  let cMesh = mirrored(&cHalf);
+  let tC = t0.elapsed().secondsF64();
+  t0 = Instant.now();
+  let dHalf = loftTagged(&creased, &path, st.view(), between, true, false, &mut problems);
+  let dMesh = mirrored(&dHalf);
+  let tD = t0.elapsed().secondsF64();
+  print <- "loft problems: ", problems.len(), "\n";
+  print <- "lofts (mirrored): A loftAlong ", aMesh.vertexCount(), " vertices ", aMesh.faceCount(), " faces ", tA, " s; B ",
+    bMesh.vertexCount(), " ", bMesh.faceCount(), " ", tB, " s; C ", cMesh.faceCount(), " ", tC, " s; D ", dMesh.faceCount(), " ", tD, " s; validate: ",
+    aMesh.validate().len(), " ", bMesh.validate().len(), " ", cMesh.validate().len(), " ", dMesh.validate().len(), "\n";
+
+  t0 = Instant.now();
+  let aSub = subdivide(&aMesh, 2u32);
+  let bSub = subdivide(&bMesh, 2u32);
+  let cSub = subdivide(&cMesh, 2u32);
+  let dSub = subdivide(&dMesh, 2u32);
+  print <- "subdivided twice: ", aSub.faceCount(), " faces each, ", t0.elapsed().secondsF64(), " s\n";
+
+  // Stored numbers
+  print <- "stored numbers: A ", storedNumbers(&plain, 0usize, 0usize), ", B ", storedNumbers(&profilesOf(&tagged), tagsStored, 0usize),
+    ", C and D ", storedNumbers(&profilesOf(&tagged), tagsStored, tagsStored * keyCount), "\n";
+
+  // Miss both ways over the span
+  var samples = List[Vec3]();
+  v = 0usize;
+  while v < src.vertexCount() {
+    let p = *src.positions[v];
+    if p.y >= y0 + 0.2 && p.y <= y1 - 0.2 && p.z > -16.6 { samples.push(p); }
+    v = v + 1usize;
+  }
+  print <- "source samples in the span: ", samples.len(), "\n";
+  let srcIdx = SurfaceIndex.of(&src);
+  reportMiss("A loftAlong untagged", &aSub, &samples, &srcIdx);
+  reportMiss("B loftTagged", &bSub, &samples, &srcIdx);
+  reportMiss("C loftTagged, crease fading", &cSub, &samples, &srcIdx);
+
+  // The corner's turn at ten cuts
+  print <- "corner turn (degrees, greatest within 0.06 of the corner tag's fraction) at ten cuts:\n";
+  var j = 0usize;
+  var passB = 0usize;
+  var passC = 0usize;
+  var passA = 0usize;
+  while j < 10usize {
+    let y = y0 + span * f32.from(j + 1usize) / 11.;
+    // the corner tag's fraction here: between the keys' values
+    let pos = (y - y0) / span * f32.from(keyCount - 1usize);
+    var lo = usize.from(pos);
+    if lo >= keyCount - 1usize { lo = keyCount - 2usize; }
+    let fr = pos - f32.from(lo);
+    let frac = *cornerFrac[lo] + (*cornerFrac[lo + 1usize] - *cornerFrac[lo]) * fr;
+    var w0: f32 = 0.;
+    var w1: f32 = 0.;
+    let ts = cornerTurn(&src, y, frac, 0.06, &mut w0);
+    let ta = cornerTurn(&aSub, y, w0, 0.02, &mut w1);
+    let tb = cornerTurn(&bSub, y, w0, 0.02, &mut w1);
+    let tc = cornerTurn(&cSub, y, w0, 0.02, &mut w1);
+    if (ta / ts - 1.).abs() <= 0.25 { passA = passA + 1usize; }
+    if (tb / ts - 1.).abs() <= 0.25 { passB = passB + 1usize; }
+    if (tc / ts - 1.).abs() <= 0.25 { passC = passC + 1usize; }
+    print <- "  y ", y, " (fraction ", frac, ", peak at ", w0, "): source ", ts, "  A ", ta, " (", ta / ts, ")  B ", tb, " (", tb / ts, ")  C ", tc, " (", tc / ts, ")\n";
+    j = j + 1usize;
+  }
+  print <- "cuts within 25% of the source's turn (of 10): A ", passA, ", B ", passB, ", C ", passC, "\n";
+
+  // uv stretch, on the lofts (mirrored)
+  let uF = shapefit.uvStretch(&bMesh);
+  let uL = shapefit.uvStretch(&dMesh);
+  print <- "uvStretch by fractions: ", uF.triangles, " triangles, median ", uF.median, ", p95 ", uF.p95, ", max ", uF.max, ", scale p5 ", uF.scaleP5, ", p95 ", uF.scaleP95, "\n";
+  print <- "uvStretch by length:    ", uL.triangles, " triangles, median ", uL.median, ", p95 ", uL.p95, ", max ", uL.max, ", scale p5 ", uL.scaleP5, ", p95 ", uL.scaleP95, "\n";
+  // v by the path: v = along x path length, u by length
+  var dPath = dMesh.clone();
+  let uvc = dPath.findVec2Channel(CornerDomain, "uv");
+  let al = dPath.findFloatChannel(VertexDomain, "along");
+  var f = 0usize;
+  while f < dPath.faceCount() {
+    let hs = dPath.faceHalfedges(u32.from(f));
+    var q = 0usize;
+    while q < hs.len() {
+      let t = dPath.vec2(uvc, *hs[q]);
+      dPath.setVec2(uvc, *hs[q], Vec2(t.x, dPath.float(al, dPath.toVertex(*hs[q])) * span));
+      q = q + 1usize;
+    }
+    f = f + 1usize;
+  }
+  let uP = shapefit.uvStretch(&dPath);
+  print <- "uvStretch, u by length and v by the path: median ", uP.median, ", p95 ", uP.p95, ", max ", uP.max, ", scale p5 ", uP.scaleP5, ", p95 ", uP.scaleP95, "\n";
+  // A variant measured only, not in the API: u the first ring's distance to the vertex's column (the same
+  // along each column, so rings of different lengths shear nothing), v by the column as before
+  let rings = 33usize;
+  let nc = dHalf.vertexCount() / rings;
+  var u0 = List[f32]();
+  var jj = 0usize;
+  var acc: f32 = 0.;
+  while jj < nc {
+    if jj > 0usize { acc = acc + (*dHalf.positions[jj] - *dHalf.positions[jj - 1usize]).length(); }
+    u0.push(acc);
+    jj = jj + 1usize;
+  }
+  var eMesh = dHalf.clone();
+  let uve = eMesh.findVec2Channel(CornerDomain, "uv");
+  f = 0usize;
+  while f < eMesh.faceCount() {
+    let hs = eMesh.faceHalfedges(u32.from(f));
+    var q = 0usize;
+    while q < hs.len() {
+      let t = eMesh.vec2(uve, *hs[q]);
+      eMesh.setVec2(uve, *hs[q], Vec2(*u0[usize.from(eMesh.toVertex(*hs[q])) % nc], t.y));
+      q = q + 1usize;
+    }
+    f = f + 1usize;
+  }
+  let uE = shapefit.uvStretch(&eMesh);
+  print <- "uvStretch, u the first ring's length to the column, v by the column (variant): median ", uE.median, ", p95 ", uE.p95, ", max ", uE.max, ", scale p5 ", uE.scaleP5, ", p95 ", uE.scaleP95, "\n";
+  // Why: the muzzle's section rises as it runs back, so the columns slant against the rings (which are planes
+  // y = const), and a rectangle of uv in lengths is not a rectangle on the surface. Measured by taking the
+  // slant out (each key's profile moved in z by the line through the keys' middles, the rings unchanged):
+  var zmid0: f32 = 0.;
+  var zmid4: f32 = 0.;
+  {
+    var q = 0usize;
+    var lo0: f32 = 1000000.;
+    var hi0: f32 = -1000000.;
+    var lo4: f32 = 1000000.;
+    var hi4: f32 = -1000000.;
+    while q < halves[0usize].len() {
+      let z = halves[0usize][q].y;
+      if z < lo0 { lo0 = z; }
+      if z > hi0 { hi0 = z; }
+      q = q + 1usize;
+    }
+    q = 0usize;
+    while q < halves[keyCount - 1usize].len() {
+      let z = halves[keyCount - 1usize][q].y;
+      if z < lo4 { lo4 = z; }
+      if z > hi4 { hi4 = z; }
+      q = q + 1usize;
+    }
+    zmid0 = (lo0 + hi0) * 0.5;
+    zmid4 = (lo4 + hi4) * 0.5;
+  }
+  let slope = (zmid4 - zmid0) / span;
+  var straightened = List[TaggedProfile]();
+  k = 0usize;
+  while k < keyCount {
+    var pts = List[Vec2]();
+    var q = 0usize;
+    while q < tagged[k].profile.points.len() {
+      let p = *tagged[k].profile.points[q];
+      pts.push(Vec2(p.x, p.y - slope * (*ys[k] - y0)));
+      q = q + 1usize;
+    }
+    straightened.push(TaggedProfile(Profile(pts, false), copyTags(&tagged[k].tags), copyZeros(tagged[k].tags.len())));
+    k = k + 1usize;
+  }
+  let gLen = loftTagged(&straightened, &path, st.view(), between, true, false, &mut problems);
+  let gFrac = loftTagged(&straightened, &path, st.view(), between, false, false, &mut problems);
+  let uGL = shapefit.uvStretch(&gLen);
+  let uGF = shapefit.uvStretch(&gFrac);
+  print <- "with the slant taken out (the section's middle rises ", zmid4 - zmid0, " mm over the span, slope ", slope, "):\n";
+  print <- "   by length:    median ", uGL.median, ", p95 ", uGL.p95, ", max ", uGL.max, ", scale p5 ", uGL.scaleP5, ", p95 ", uGL.scaleP95, "\n";
+  print <- "   by fractions: median ", uGF.median, ", p95 ", uGF.p95, ", max ", uGF.max, ", scale p5 ", uGF.scaleP5, ", p95 ", uGF.scaleP95, "\n";
+  let uH = shapefit.uvStretch(&dHalf);
+  print <- "(check: the unmirrored half by length: median ", uH.median, ", p95 ", uH.p95, ", columns ", nc, ")\n";
+
+  // The mirrored by-length u at the midlines: 0 at the top (continuous), the ring's half length either way at
+  // the bottom (the seam)
+  {
+    let uvm = dMesh.findVec2Channel(CornerDomain, "uv");
+    var topMax: f32 = 0.;
+    var botLo: f32 = 1000000.;
+    var botHi: f32 = -1000000.;
+    var f2 = 0usize;
+    while f2 < dMesh.faceCount() {
+      let hs = dMesh.faceHalfedges(u32.from(f2));
+      var q = 0usize;
+      while q < hs.len() {
+        let p = *dMesh.positions[usize.from(dMesh.toVertex(*hs[q]))];
+        if p.x.abs() < 0.0001 && p.y < y0 + 0.01 {
+          let t = dMesh.vec2(uvm, *hs[q]);
+          if p.z > -9. { if t.x.abs() > topMax { topMax = t.x.abs(); } }
+          else { if t.x < botLo { botLo = t.x; } if t.x > botHi { botHi = t.x; } }
+        }
+        q = q + 1usize;
+      }
+      f2 = f2 + 1usize;
+    }
+    print <- "mirrored by-length u on the first ring at the midlines: top |u| at most ", topMax, "; bottom u from ", botLo, " to ", botHi, "\n";
+  }
+
+  // Pictures
+  let centre = Vec3(0., (y0 + y1) * 0.5, -7.);
+  let paint0 = Paint(0, 1., 1.);
+  var halfLen = *cumMid[halves[mid].len() - 1usize];
+  let cvFrac = Paint(1, halfLen / 1., span / 1.);
+  let cvLen = Paint(1, 1., 1.);
+  var sheet = Canvas.make(1760, 900);
+  var row = 0;
+  while row < 2 {
+    let lit = if row == 0 { Vec3(0.30, -0.20, 0.93).normalize() } else { Vec3(0.95, -0.10, 0.25).normalize() };
+    let w = if row == 0 { Vec3(0.85, -0.40, 0.35) } else { Vec3(0.20, -0.50, 0.85) };
+    let upHint = if row == 0 { Vec3(0., 0., 1.) } else { Vec3(0., 1., 0.) };
+    var col = 0;
+    while col < 4 {
+      let cam = Cam.make(w, upHint, centre, 24., 220., 225.);
+      let ox = 440 * col;
+      let oy = 450 * row;
+      sheet.tile(ox, oy, ox + 440, oy + 450, Vec3(0.12, 0.12, 0.14));
+      let c2 = Cam.make(w, upHint, centre, 24., f32.from(ox) + 220., f32.from(oy) + 225.);
+      if col == 0 { drawMesh(&mut sheet, &src, &c2, lit, y0, y1, -16.6, &paint0); }
+      if col == 1 { drawMesh(&mut sheet, &aSub, &c2, lit, y0, y1, -50., &paint0); }
+      if col == 2 { drawMesh(&mut sheet, &bSub, &c2, lit, y0, y1, -50., &paint0); }
+      if col == 3 { drawMesh(&mut sheet, &cSub, &c2, lit, y0, y1, -50., &paint0); }
+      col = col + 1;
+    }
+    row = row + 1;
+  }
+  save(&sheet, "raking-sheet.png");
+  var sheet2 = Canvas.make(1760, 900);
+  row = 0;
+  while row < 2 {
+    let lit = if row == 0 { Vec3(0.30, -0.20, 0.93).normalize() } else { Vec3(0.95, -0.10, 0.25).normalize() };
+    let w = if row == 0 { Vec3(0.85, -0.40, 0.35) } else { Vec3(0.20, -0.50, 0.85) };
+    let upHint = if row == 0 { Vec3(0., 0., 1.) } else { Vec3(0., 1., 0.) };
+    var col = 0;
+    while col < 2 {
+      let ox = 880 * col;
+      let oy = 450 * row;
+      sheet2.tile(ox, oy, ox + 880, oy + 450, Vec3(0.12, 0.12, 0.14));
+      let c2 = Cam.make(w, upHint, centre, 24., f32.from(ox) + 440., f32.from(oy) + 225.);
+      if col == 0 { drawMesh(&mut sheet2, &bSub, &c2, lit, y0, y1, -50., &cvFrac); }
+      if col == 1 { drawMesh(&mut sheet2, &dSub, &c2, lit, y0, y1, -50., &cvLen); }
+      col = col + 1;
+    }
+    row = row + 1;
+  }
+  save(&sheet2, "checker-sheet.png");
+
+  // Sections at four cuts, zoomed on the corner: the source white, A red, B green, C cyan (the same 90 pixels a mm)
+  var sheet3 = Canvas.make(1760, 440);
+  var pj = 0usize;
+  while pj < 4usize {
+    let cutNo = pj * 3usize;
+    let y = y0 + span * f32.from(cutNo + 1usize) / 11.;
+    let pos = (y - y0) / span * f32.from(keyCount - 1usize);
+    var lo = usize.from(pos);
+    if lo >= keyCount - 1usize { lo = keyCount - 2usize; }
+    let fr = pos - f32.from(lo);
+    let frac = *cornerFrac[lo] + (*cornerFrac[lo + 1usize] - *cornerFrac[lo]) * fr;
+    sheet3.tile(440 * i32.from(pj), 0, 440 * i32.from(pj) + 440, 440, Vec3(0.12, 0.12, 0.14));
+    let srcHalf = halfPath(&sectionByPlane(&src, Vec3(0., y, 0.), Vec3(0., 1., 0.)));
+    var pc = Vec2(0., 0.);
+    {
+      let cum = cumLen(&srcHalf);
+      var ii = 0usize;
+      while ii + 1usize < srcHalf.len() && *cum[ii] / *cum[srcHalf.len() - 1usize] < frac { ii = ii + 1usize; }
+      pc = *srcHalf[ii];
+    }
+    drawSection(&mut sheet3, 440 * i32.from(pj), &srcHalf, pc, Vec3(1., 1., 1.));
+    drawSection(&mut sheet3, 440 * i32.from(pj), &halfPath(&sectionByPlane(&aSub, Vec3(0., y, 0.), Vec3(0., 1., 0.))), pc, Vec3(1., 0.3, 0.3));
+    drawSection(&mut sheet3, 440 * i32.from(pj), &halfPath(&sectionByPlane(&bSub, Vec3(0., y, 0.), Vec3(0., 1., 0.))), pc, Vec3(0.3, 1., 0.4));
+    drawSection(&mut sheet3, 440 * i32.from(pj), &halfPath(&sectionByPlane(&cSub, Vec3(0., y, 0.), Vec3(0., 1., 0.))), pc, Vec3(0.3, 0.9, 1.));
+    pj = pj + 1usize;
+  }
+  save(&sheet3, "section-sheet.png");
+  0
+}
+
+fn drawSection(cv: &mut Canvas, ox: i32, h: &List[Vec2], pc: Vec2, col: Vec3) {
+  var i = 1usize;
+  while i < h.len() {
+    let a = *h[i - 1usize] - pc;
+    let b = *h[i] - pc;
+    // x to the right, z up, 90 pixels a mm, the corner in the tile's middle
+    let pa = Vec3(f32.from(ox) + 220. + a.x * 300., 220. - a.y * 300., 0.);
+    let pb = Vec3(f32.from(ox) + 220. + b.x * 300., 220. - b.y * 300., 0.);
+    cv.line(pa, pb, col, 0., 2);
+    i = i + 1usize;
+  }
+}
+
+fn i0Print(p: &List[usize], tt: &List[f32], h: &List[Vec2]) {
+  let cum = cumLen(h);
+  let tot = *cum[h.len() - 1usize];
+  var i = 0usize;
+  while i < p.len() {
+    print <- "  turn peak at point ", *p[i], " fraction ", *cum[*p[i]] / tot, " turn ", *tt[*p[i]], " at (", h[*p[i]].x, ", ", h[*p[i]].y, ")\n";
+    i = i + 1usize;
+  }
+}
+
+fn copyZeros(n: usize) List[f32] {
+  var out = List[f32].withCapacity(n);
+  var i = 0usize;
+  while i < n { out.push(0.); i = i + 1usize; }
+  out
+}
+
+fn copyTags(a: &List[u32]) List[u32] {
+  var out = List[u32].withCapacity(a.len());
+  var i = 0usize;
+  while i < a.len() { out.push(*a[i]); i = i + 1usize; }
+  out
+}
+
+fn profilesOf(t: &List[TaggedProfile]) List[Profile] {
+  var out = List[Profile]();
+  var i = 0usize;
+  while i < t.len() {
+    out.push(Profile(copyOf(&t[i].profile.points), false));
+    i = i + 1usize;
+  }
+  out
+}
+
+fn reportMiss(label: &str, build: &PolyMesh, samples: &List[Vec3], srcIdx: &SurfaceIndex) {
+  let bi = SurfaceIndex.of(build);
+  let toBuild = missOf(samples, &bi);
+  var bv = List[Vec3]();
+  var v = 0usize;
+  while v < build.vertexCount() { bv.push(*build.positions[v]); v = v + 1usize; }
+  let toSrc = missOf(&bv, srcIdx);
+  print <- label, ": source to build mean ", toBuild.mean, " p95 ", toBuild.p95, " max ", toBuild.max, "; build to source mean ", toSrc.mean, " p95 ", toSrc.p95, " max ", toSrc.max, " (build vertices ", bv.len(), ")\n";
+}
