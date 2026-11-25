@@ -38,6 +38,9 @@ DclSpan *dclSpanAdd(DclSpans **listp, INode *node, Lexer *lexer, char *start, ch
     span->kind = kind;
     span->typed = 0;
     span->members = NULL;
+    span->doc = span->docend = NULL;
+    if (kind != SpanOther && start && lexer)
+        lexCmtRunAbove(lexer, start, &span->doc, &span->docend);
     list->items[list->count++] = span;
     return span;
 }
@@ -144,6 +147,18 @@ static void dclSpanPrintList(DclSpans *list, int depth) {
             printf("  %s", span->typed ? "typed" : "inferred");
         }
         dclSpanPrintPos(span->lexer, "end", span->end);
+        if (span->doc) {
+            printf("  doc \"");
+            for (char *p = span->doc; p < span->docend; ++p) {
+                if (*p == '\n')
+                    printf("\\n");
+                else if (*p == '"' || *p == '\\')
+                    printf("\\%c", *p);
+                else if (*p != '\r')
+                    putchar(*p);
+            }
+            printf("\"");
+        }
         printf("\n");
         dclSpanPrintList(span->members, depth + 1);
         if (span->node && span->node->tag == StructTag)
