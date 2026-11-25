@@ -1114,7 +1114,15 @@ type is reachable *inside* what it borrows (`itypeMayHoldBorrowInside`: the
 type itself, its fields and elements, what it owns through owning references and
 pointers; a type either side shows only in part, such as a type parameter, trait,
 virtual reference, closure or arena, answers "can hold"; a read-only borrow is
-held by no `&mut` slot). So `arrive(&mut world, &mut all, name)` leaves `world`,
+held by no `&mut` slot). The walk inside what is borrowed does not descend
+through a shared borrow found there: `&held` for a `held: &Shape` is no borrow
+of the `Shape`, whose loans a copy of `held` carries by itself (a writable or
+lock reference is still descended). A reference passed by its name, which the
+call reborrows (`f(a)` for `a: &mut L`), is a lend site typed as the reborrow
+written out (`f(&mut *a)`), so the two get the same answer. A borrow converted
+or cast to a raw pointer carries no loan of the place it points at, only what
+that place holds (`pwPointerOf`): raw pointers carry no lifetime, and a store
+through one is checked by the place's type. So `arrive(&mut world, &mut all, name)` leaves `world`,
 which holds `&str` and handles, holding nothing of `all`, a `List[Ref[Creature]]`
 with no `str` inside, and each is free while the other is used; `put(&mut h, &mut l)`
 with `h` holding a `&Pt` and `l` a `List[Pt]` is not (`&l[0]` is a `&Pt`: the old
