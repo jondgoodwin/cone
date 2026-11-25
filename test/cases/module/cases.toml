@@ -3443,6 +3443,85 @@ name = "release-defines-a-subprogram-per-function"
 target = "preir"
 contains = ["!DISubprogram(name: \"main\"", "!DISubprogram(name: \"twice\"", "!dbg"]
 
+# Variables are a debug build's (module_debug_locals): 'n' is a number, which a debug build describes
+[[scenario.module_debug_info.check]]
+name = "release-describes-no-variable-or-type"
+target = "preir"
+excludes = ["DILocalVariable", "dbg_declare", "DICompositeType", "DIBasicType"]
+
+[scenario.module_debug_locals]
+category = "compile"
+description = "A debug build describes its parameters and locals of a number, 'bool' or plain struct type to a debugger (name, type, line, the stack slot holding it, a struct's fields with their offsets), and a function so described has its real subroutine type; a reference or string gets none, and a release build carries none"
+tags = ["genllvm"]
+
+[[scenario.module_debug_locals.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.module_debug_locals.check]]
+name = "debug-names-each-parameter-with-its-type-and-line"
+target = "preir"
+contains = [
+  "!DILocalVariable(name: \"scale\", arg: 1, scope: ",
+  "!DILocalVariable(name: \"count\", arg: 2, scope: ",
+  "!DILocalVariable(name: \"origin\", arg: 3, scope: ",
+  "!DILocalVariable(name: \"n\", arg: 1, scope: ",
+  "!DILocalVariable(name: \"f\", arg: 2, scope: ",
+  "!DIBasicType(name: \"f64\", size: 64, encoding: DW_ATE_float)",
+  "!DIBasicType(name: \"i64\", size: 64, encoding: DW_ATE_signed)",
+]
+matches = [
+  { pattern = "name: \"(scale|count|origin)\", arg: [123], scope: !\\d+, file: !\\d+, line: 19, type: ", count = 3 },
+  { pattern = "name: \"(n|f)\", arg: [12], scope: !\\d+, file: !\\d+, line: 15, type: ", count = 2 },
+]
+excludes = ["name: \"label\""]
+
+[[scenario.module_debug_locals.check]]
+name = "debug-names-each-local-with-its-type-and-line"
+target = "preir"
+contains = [
+  "!DIBasicType(name: \"bool\", size: 8, encoding: DW_ATE_boolean)",
+]
+matches = [
+  { pattern = "name: \"steps\", scope: !\\d+, file: !\\d+, line: 20, type: ", count = 1 },
+  { pattern = "name: \"corner\", scope: !\\d+, file: !\\d+, line: 21, type: ", count = 1 },
+  { pattern = "name: \"big\", scope: !\\d+, file: !\\d+, line: 22, type: ", count = 1 },
+  { pattern = "name: \"r\", scope: !\\d+, file: !\\d+, line: 28, type: ", count = 1 },
+  { pattern = "name: \"t\", scope: !\\d+, file: !\\d+, line: 29, type: ", count = 1 },
+]
+excludes = ["name: \"name\""]
+
+[[scenario.module_debug_locals.check]]
+name = "debug-describes-a-struct-with-its-fields-and-offsets"
+target = "preir"
+contains = [
+  "!DICompositeType(tag: DW_TAG_structure_type, name: \"Point\", file: ",
+  "line: 10, size: 128, align: 64, elements: ",
+  "!DIDerivedType(tag: DW_TAG_member, name: \"x\", file: ",
+  "line: 11, baseType: ",
+  "!DIDerivedType(tag: DW_TAG_member, name: \"y\", file: ",
+  "line: 12, baseType: ",
+  "size: 64, align: 64, offset: 64)",
+]
+
+# The declare names the slot its variable is called after, so one variable is never
+# bound to another's slot; a variable that is not described has no declare
+[[scenario.module_debug_locals.check]]
+name = "debug-binds-each-variable-to-its-own-slot"
+target = "preir"
+matches = [
+  { pattern = "#dbg_declare\\(ptr %(scale|count|origin|steps|corner|big|n|f|r|t),", count = 10 },
+  { pattern = "#dbg_declare\\(ptr %(label|name),", count = 0 },
+]
+
+[[scenario.module_debug_locals.check]]
+name = "debug-gives-a-described-function-its-real-subroutine-type"
+target = "preir"
+matches = [
+  { pattern = "!DISubroutineType\\(types: ", count = 3 },
+  { pattern = "^!\\d+ = !\\{!\\d+, !\\d+, !\\d+\\}$", count = 1 },
+]
+
 [scenario.module_debug_strip]
 category = "compile"
 description = "'--strip' emits no debug information, in a release build or a debug one"

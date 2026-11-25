@@ -2147,8 +2147,9 @@ link that is not `--strip`ped) writes a PDB; on Linux the object holds DWARF, wh
 information does not change the code: a release program's `.text` is the same instructions
 with and without it (measured on `nbody` and `richards`; only the displacements into `.rdata`
 move, as the PDB's path is written there).
-Debug info covers only files,
-subprograms and each instruction's line and column. A subprogram is in the file its
+Debug info covers files,
+subprograms, each instruction's line and column, and, in a `--debug` build alone, the
+parameters and locals of a type it can describe exactly (the paragraph below). A subprogram is in the file its
 function was written in (`genlDiFile`: the lexer's url, one `DIFile` for each, the
 compile's main file for a node with no lexer), so a sibling file of a folder module,
 a submodule and an imported package that is compiled in each have their own.
@@ -2166,6 +2167,25 @@ a release build inlines the program's own `main` into it, and an entry with no s
 would drop the inlined code's lines), a type's drop, a parallel `each`'s body, a split
 method, a kernel, and a counted reference's `cone.dropslow.N` (release only). A new
 generated function needs the same.
+
+**Variables (`genlDiVar`, `genlDiType`, `genlDiSubroutine`).** A `--debug` build (not a release
+build, not a GPU's) gives each parameter (`genlParmVar`) and each `let`/`var` local
+(`genlLocalVar`) a `DILocalVariable` and a declare record bound to the stack slot that holds it, in
+the function's subprogram, at the variable's own line. Only a type debug info can describe exactly is
+described: the number types, `bool` (a byte, `DW_ATE_boolean`), `char`, and a plain struct whose
+fields are all so described: not a trait, enum or variant, not generic or an instance, no
+generator frame or padding, so its LLVM struct's elements are its fields one for one; its members
+carry the data layout's offsets and sizes (a struct's description is made once and kept in
+`GenState.ditypes`). A variable of any other type (a reference, a slice, a string, an enum, an
+`Option`, a closure, a generic instance) gets no description, rather than a wrong one. Left out
+too: a generator step's parameters (`genlGenBegin` may move a variable of its into the frame),
+locals of an inline function's expansion, which are the caller's slots (`GenState.inlinedepth`),
+and a match binding or generator frame variable, which has no slot of its own. A function whose
+return type (or `void`) and every parameter's type are described has its real subroutine type;
+any other keeps the empty one. A release build emits none of this, so its object does not change.
+The debug pipeline runs `mem2reg` (section on the pass pipeline), which turns the declares into
+`dbg.value`: a debugger then shows a variable only where its value lives in a register, and one the
+optimizer folded away as optimized out.
 
 The environment variable `CONE_LLVM_OPTIONS` hands LLVM command-line options,
 separated by spaces, parsed in `genSetup` before the LLVM context exists. It is
@@ -2663,8 +2683,8 @@ What does not work yet:
 
 Also absent: a `&fn` value is a bare function pointer with no capture struct (a
 closure that holds something is the struct type check makes of it,
-[closure](../nodes/closure.md)). No exception handling or unwinding. No debug info for types or
-variables.
+[closure](../nodes/closure.md)). No exception handling or unwinding. Debug info describes
+the variables of numbers, `bool`, `char` and plain structs only (above).
 
 ### Link-time optimisation (`--lto`)
 
