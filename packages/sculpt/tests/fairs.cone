@@ -1,0 +1,341 @@
+// The sculpt package's fairing, fairRegion and fairRegionWith, checked with the testing
+// package against values worked out by hand; only a failure prints, so fairs.out holds
+// the summary alone.
+//
+// - A flat grid of 11 x 11 vertices (vertex 11 j + i at (i, j, 0) but for a fixed jitter
+//   inside the plane at the vertices off the border), each cell cut into two triangles,
+//   the inner 5 x 5 vertices (i, j from 3 to 7) raised by a fixed noise. Any surface
+//   that is flat has no film area to give and no bending, so the smoothest surface
+//   through the held skin, at z = 0 all round, is the plane z = 0: order 1 and order 2
+//   both return every freed vertex to z = 0 (to 1e-5, f32 positions), and the held
+//   vertices, the topology and the channels are untouched. The flat answer holds on any
+//   jittered triangulation because cotangent weights are exact on a plane.
+// - A sphere of radius 1 from lathe, 12 latitude steps over the semicircle and 16
+//   around, axis y. The vertices above the ring at latitude 120 degrees (height
+//   0.5, 'y > 0.5 + 1e-4': the three rings above it and the pole) are freed. Order 1 is
+//   harmonic with that ring's circle as its boundary: y = 0.5 is harmonic and meets the
+//   boundary, so the cap becomes the flat disc at y = 0.5, every freed vertex at height
+//   0.5 to 1e-5 (the film's solution is unique). Order 2 is the least-bending cap: its
+//   largest distance from the unit sphere is recorded below (the number is the test's
+//   value; no hand answer, it is the independent Python solve's, 0.09788). The cap here
+//   reaches 60 degrees from the pole (ring at height 0.5), where the flat disc is 0.5
+//   out at the pole.
+// - A grid of 11 columns by 5 rows of unit quads, each cut on the same diagonal,
+//   columns 0 and 1 held at z = 0, columns 9 and 10 at z = 1, columns 2 to 8 free:
+//   order 2 gives the cubic 1/2 + a u + b u^3, u = column - 5, whose four conditions
+//   (0 at u = -5 and -4, 1 at 4 and 5) give b = -1/360, a = 61/360 = 0.169444:
+//   z by column 2..8 = 0.066667, 0.183333, 0.333333, 0.5, 0.666667, 0.816667, 0.933333.
+//   Only z is checked: the free vertices on the open edges slide in y, as expected. The
+//   step in height is 0.001, not 1, and z is read in units of it: the cotangent weights
+//   follow the real shape, and a step as tall as the unit spacing bends the triangles
+//   (z at column 2 is then 0.0610, not 0.0667, by an independent dense solve); at 0.001
+//   the shape is flat to 1e-6 and the cubic is the answer.
+// - The same strip with column 5 stretched to twice the width (columns 5 to 6 are 2 apart),
+//   which gives unequal vertex areas: order 2's answer there is recorded, and differs from
+//   the answer without the areas by the recorded amount: the mutant that drops the M^-1
+//   between the two Laplacians must change it.
+// - The cube with every vertex freed: refused, one problem line, an unchanged copy; a
+//   vertex number outside the mesh and an order of 3 are refused; an empty list is a
+//   silent copy. fairRegionWith at tension 1 is order 1 in effect.
+// - Determinism: the same call twice gives the same bits.
+
+mod fairs;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+let near = 0.00001;
+
+// The grid of the columns' x coordinates 'xs' by 'ny' rows, rows at y = j, each cell cut
+// into the triangles (a b c) and (a c d), a at its lower left. Jitter inside the plane at
+// the vertices off the border when 'jitter'.
+fn grid(xs: &Array[f32], ny: u32, jitter: bool) PolyMesh {
+  let nx = u32.from(xs.len());
+  var pts = List[Vec3]();
+  var j = 0u32;
+  while j < ny {
+    var i = 0u32;
+    while i < nx {
+      var x = xs[usize.from(i)];
+      var y = f32.from(j);
+      if jitter && i > 0u32 && i + 1u32 < nx && j > 0u32 && j + 1u32 < ny {
+        x = x + 0.3 * f32.from((i * 7u32 + j * 3u32) % 5u32) / 5. - 0.12;
+        y = y + 0.3 * f32.from((i * 3u32 + j * 11u32) % 7u32) / 7. - 0.13;
+      }
+      pts.push(Vec3(x, y, 0.));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var counts = List[u32]();
+  var idx = List[u32]();
+  j = 0u32;
+  while j + 1u32 < ny {
+    var i = 0u32;
+    while i + 1u32 < nx {
+      let a = nx * j + i;
+      counts.push(3u32); idx.push(a); idx.push(a + 1u32); idx.push(a + nx + 1u32);
+      counts.push(3u32); idx.push(a); idx.push(a + nx + 1u32); idx.push(a + nx);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems)
+}
+
+fn evenXs(n: u32) List[f32] {
+  var xs = List[f32]();
+  var i = 0u32;
+  while i < n {
+    xs.push(f32.from(i));
+    i = i + 1u32;
+  }
+  xs
+}
+
+fn withZ(m: &PolyMesh, zs: &List[f32]) PolyMesh {
+  var out = m.clone();
+  var i = 0usize;
+  while i < out.positions.len() {
+    let p = *out.positions[i];
+    out.positions.set(i, Vec3(p.x, p.y, *zs[i]));
+    i = i + 1usize;
+  }
+  out
+}
+
+fn main() i32 {
+  flatGrid();
+  sphereCap();
+  strip();
+  stretched();
+  refusals();
+  done()
+}
+
+fn flatGrid() {
+  let xs = evenXs(11u32);
+  let flat = grid(xs.view(), 11u32, true);
+  var zs = List[f32]();
+  var free = List[u32]();
+  var j = 0u32;
+  while j < 11u32 {
+    var i = 0u32;
+    while i < 11u32 {
+      if i >= 3u32 && i <= 7u32 && j >= 3u32 && j <= 7u32 {
+        zs.push(0.4 * f32.from((i * 5u32 + j * 9u32) % 7u32) - 0.9);
+        free.push(11u32 * j + i);
+      } else {
+        zs.push(0.);
+      }
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  let bumpy = withZ(&flat, &zs);
+  var order = 1u32;
+  while order <= 2u32 {
+    var problems = List[String]();
+    let out = fairRegion(&bumpy, free.view(), order, &mut problems);
+    expectInt(i64.from(problems.len()), 0, "flat grid no problem");
+    var worst = 0.0;
+    var v = 0usize;
+    while v < out.positions.len() {
+      let d = f64.from((*out.positions[v]).z.abs());
+      if d > worst { worst = d; }
+      let q = *out.positions[v];
+      let p = *bumpy.positions[v];
+      let vi = v % 11usize;
+      let vj = v / 11usize;
+      let inside = vi >= 3usize && vi <= 7usize && vj >= 3usize && vj <= 7usize;
+      if !inside && (q.x != p.x || q.y != p.y || q.z != 0.) { worst = 99.; }
+      v = v + 1usize;
+    }
+    expectFloat(worst, 0.0, near, "flat grid back to z = 0");
+    expectInt(i64.from(out.validate().len()), 0, "flat grid valid");
+    expectInt(i64.from(out.faceCount()), i64.from(bumpy.faceCount()), "flat grid faces");
+    order = order + 1u32;
+  }
+}
+
+// The vertex numbers of the sphere above height y0 (and the vertex count)
+fn capAbove(m: &PolyMesh, y0: f32) List[u32] {
+  var out = List[u32]();
+  var v = 0usize;
+  while v < m.positions.len() {
+    if (*m.positions[v]).y > y0 { out.push(u32.from(v)); }
+    v = v + 1usize;
+  }
+  out
+}
+
+fn sphere() PolyMesh {
+  var pts = List[Vec2]();
+  var j = 0u32;
+  while j <= 12u32 {
+    let t = pi * f32.from(j) / 12.;
+    pts.push(Vec2(t.sin(), -t.cos()));
+    j = j + 1u32;
+  }
+  lathe(&Profile.fromPoints(pts.view(), false), Vec3(0., 1., 0.), 2. * pi, 16u32)
+}
+
+fn sphereCap() {
+  let s = sphere();
+  expectInt(i64.from(s.validate().len()), 0, "sphere valid");
+  let cap = capAbove(&s, 0.5001);
+  expect(cap.len() > 40usize, "cap has its rings");
+  var problems = List[String]();
+  let disc = fairRegion(&s, cap.view(), 1u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "disc no problem");
+  var worst = 0.0;
+  var k = 0usize;
+  while k < cap.len() {
+    let d = f64.from((*disc.positions[usize.from(*cap[k])]).y) - 0.5;
+    if d.abs() > worst { worst = d.abs(); }
+    k = k + 1usize;
+  }
+  expectFloat(worst, 0.0, near, "order 1 cap is the flat disc at y = 0.5");
+
+  let bent = fairRegion(&s, cap.view(), 2u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "order 2 cap no problem");
+  var far = 0.0;
+  k = 0usize;
+  while k < cap.len() {
+    let p = *bent.positions[usize.from(*cap[k])];
+    let d = f64.from((p.x * p.x + p.y * p.y + p.z * p.z).sqrt()) - 1.0;
+    if d.abs() > far { far = d.abs(); }
+    k = k + 1usize;
+  }
+  // recorded: 0.0979 at the worst freed vertex (an independent dense solve in Python gives
+  // 0.09788), under the flat disc's 0.5 at this 60 degree cap
+  expectFloat(far, 0.09788, 0.0002, "order 2 cap's largest distance from the sphere");
+}
+
+fn strip() {
+  let xs = evenXs(11u32);
+  let m = grid(xs.view(), 5u32, false);
+  var zs = List[f32]();
+  var free = List[u32]();
+  var j = 0u32;
+  while j < 5u32 {
+    var i = 0u32;
+    while i < 11u32 {
+      zs.push(if i >= 9u32 {RELIEF32} else {0.});
+      if i >= 2u32 && i <= 8u32 { free.push(11u32 * j + i); }
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  let start = withZ(&m, &zs);
+  var problems = List[String]();
+  let out = fairRegion(&start, free.view(), 2u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "strip no problem");
+  // z is read in units of the relief RELIEF
+  var want = List[f64]();
+  want.push(0.066667); want.push(0.183333); want.push(0.333333); want.push(0.5);
+  want.push(0.666667); want.push(0.816667); want.push(0.933333);
+  var c = 0usize;
+  while c < 7usize {
+    var row = 0usize;
+    while row < 5usize {
+      let v = row * 11usize + 2usize + c;
+      expectFloat(f64.from((*out.positions[v]).z) / RELIEF, *want[c], 0.00001, "strip cubic");
+      row = row + 1usize;
+    }
+    c = c + 1usize;
+  }
+}
+
+fn stretched() {
+  var xs = List[f32]();
+  var i = 0u32;
+  var x: f32 = 0.;
+  while i < 11u32 {
+    xs.push(x);
+    x = x + if i == 5u32 {2.} else {1.};
+    i = i + 1u32;
+  }
+  let m = grid(xs.view(), 5u32, false);
+  var zs = List[f32]();
+  var free = List[u32]();
+  var j = 0u32;
+  while j < 5u32 {
+    i = 0u32;
+    while i < 11u32 {
+      zs.push(if i >= 9u32 {RELIEF32} else {0.});
+      if i >= 2u32 && i <= 8u32 { free.push(11u32 * j + i); }
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  let start = withZ(&m, &zs);
+  var problems = List[String]();
+  let out = fairRegion(&start, free.view(), 2u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "stretched no problem");
+  // the values at columns 5 and 6, row 2 (z in units of RELIEF), from an independent dense
+  // solve in Python; without the areas (M^-1 dropped) they would be 0.418405 and 0.716816
+  expectFloat(f64.from((*out.positions[2usize * 11usize + 5usize]).z) / RELIEF, 0.419162, 0.00002, "stretched column 5");
+  expectFloat(f64.from((*out.positions[2usize * 11usize + 6usize]).z) / RELIEF, 0.724551, 0.00002, "stretched column 6");
+}
+
+// The strips' step in height is small against their unit spacing: the cotangent weights
+// follow the real shape, so a step as big as the spacing would bend the triangles and the
+// flat cubic below would no longer be the answer (it is to 1e-6 at this relief)
+let RELIEF = 0.001;
+let RELIEF32: f32 = 0.001;
+
+fn refusals() {
+  let cube = PolyMesh.cube(1.);
+  var all = List[u32]();
+  var v = 0u32;
+  while v < 8u32 {
+    all.push(v);
+    v = v + 1u32;
+  }
+  var problems = List[String]();
+  let same = fairRegion(&cube, all.view(), 2u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "whole cube refused");
+  expectInt(i64.from(same.vertexCount()), 8, "refused copy");
+  let one = List[u32]();
+  var p2 = List[String]();
+  fairRegion(&cube, one.view(), 2u32, &mut p2);
+  expectInt(i64.from(p2.len()), 0, "empty list is silent");
+  var bad = List[u32]();
+  bad.push(99u32);
+  fairRegion(&cube, bad.view(), 2u32, &mut p2);
+  expectInt(i64.from(p2.len()), 1, "outside vertex refused");
+  var some = List[u32]();
+  some.push(0u32);
+  fairRegion(&cube, some.view(), 3u32, &mut p2);
+  expectInt(i64.from(p2.len()), 2, "order 3 refused");
+  // a determinate result, twice
+  var p3 = List[String]();
+  let a = fairRegion(&cube, some.view(), 1u32, &mut p3);
+  let b = fairRegion(&cube, some.view(), 1u32, &mut p3);
+  expectInt(i64.from(p3.len()), 0, "one vertex of the cube is fine");
+  var same2 = true;
+  var k = 0usize;
+  while k < 8usize {
+    let u = *a.positions[k];
+    let w = *b.positions[k];
+    if u.x != w.x || u.y != w.y || u.z != w.z { same2 = false; }
+    k = k + 1usize;
+  }
+  expectBool(same2, true, "deterministic");
+  // tension 1 is order 1
+  let t1 = fairRegionWith(&cube, some.view(), 2u32, 1., &mut p3);
+  var tsame = true;
+  k = 0usize;
+  while k < 8usize {
+    let u = *a.positions[k];
+    let w = *t1.positions[k];
+    if (u.x - w.x).abs() > 0.000001 || (u.y - w.y).abs() > 0.000001 || (u.z - w.z).abs() > 0.000001 { tsame = false; }
+    k = k + 1usize;
+  }
+  expectBool(tsame, true, "tension 1 is order 1");
+}

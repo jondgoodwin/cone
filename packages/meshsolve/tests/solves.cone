@@ -1,0 +1,273 @@
+// The meshsolve package: the sparse matrix, the conjugate-gradient solver, the
+// cotangent Laplacian and the vertex areas, checked with the testing package against
+// values worked out by hand; only a failure prints, so solves.out holds the summary.
+//
+// - Triplets (0,0,2), (0,1,-1), (1,0,-1), (1,1,1), (1,1,1) make [[2,-1],[-1,2]]: the
+//   two (1,1) entries sum. times([1, 1]) = [2 - 1, -1 + 2] = [1, 1]. An entry given in
+//   any order lands in its row with columns ascending; an unstored cell reads 0.
+// - [[2,-1,0],[-1,2,-1],[0,-1,2]] x = [1,0,1] has x = [1,1,1] (2 - 1 = 1; -1 + 2 - 1 =
+//   0; -1 + 2 = 1). With its constant diagonal the preconditioner does nothing and
+//   conjugate gradients finish in at most 3 steps.
+// - A matrix of zeros: no direction has positive curvature, so the solve stops at once,
+//   not converged, residual 1, x untouched.
+// - One equilateral triangle of side 1: every angle is 60 degrees, cot 60 = 1/sqrt 3 =
+//   0.577350, so each off-diagonal is half of that, 0.288675 (one triangle is opposite
+//   each edge), and each diagonal is minus the two off-diagonals, -0.577350.
+// - The unit square as one quad face (0,0) (1,0) (1,1) (0,1), cut on the diagonal 0-2:
+//   triangle (0,1,2) has a right angle at 1 and 45 degrees at 0 and 2, so the side edge
+//   0-1, opposite the corner at 2, gets half of cot 45 = 0.5, and so do 1-2 (opposite
+//   0), and likewise 2-3 and 3-0 in the other triangle. The diagonal is opposite the two
+//   right angles, cot 90 = 0: weight 0. Each row sums to 0 and the matrix is symmetric.
+// - A flat triangulated grid of 9 x 9 vertices, the 49 interior vertices moved inside
+//   the plane by a fixed amount: the cotangent weights make L p exactly 0 at an interior
+//   vertex for any flat triangulation (the weights reproduce linear functions: a
+//   vertex is the weighted mean of its neighbours), so L x and L y are 0 at every
+//   interior vertex, to 1e-5 in the f32 positions. A uniform-weight Laplacian would not
+//   be, on this jittered grid (that is the mutant, tried by hand).
+// - vertexAreas sums to the mesh's area: the grid's (here the jitter keeps the border
+//   fixed, so 8 x 8 = 64); the unit square's 1 is quartered, a quarter each (a third of
+//   each triangle's 0.5, and 0.5/3 + 0.5/3 on the diagonal's two ends, 0.5/3 on the
+//   others: 1/3, 1/6, 1/3, 1/6).
+// - Determinism: the Laplacian of the grid built twice gives the same bits.
+
+mod solves;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import meshsolve use *;
+
+fn quadMesh(pts: &Array[Vec3]) PolyMesh {
+  var counts = List[u32]();
+  counts.push(u32.from(pts.len()));
+  var idx = List[u32]();
+  var i = 0usize;
+  while i < pts.len() {
+    idx.push(u32.from(i));
+    i = i + 1usize;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts, counts.view(), idx.view(), &mut problems)
+}
+
+// A grid of nx x ny vertices (vertex nx j + i at (i, j, 0), plus a fixed jitter inside
+// the plane at the vertices not on the border), each cell cut on its i + j diagonal
+// (0 to 3), made as triangles
+fn jitteredGrid(nx: u32, ny: u32) PolyMesh {
+  var pts = List[Vec3]();
+  var j = 0u32;
+  while j < ny {
+    var i = 0u32;
+    while i < nx {
+      var x = f32.from(i);
+      var y = f32.from(j);
+      if i > 0u32 && i + 1u32 < nx && j > 0u32 && j + 1u32 < ny {
+        x = x + 0.3 * f32.from((i * 7u32 + j * 3u32) % 5u32) / 5. - 0.12;
+        y = y + 0.3 * f32.from((i * 3u32 + j * 11u32) % 7u32) / 7. - 0.13;
+      }
+      pts.push(Vec3(x, y, 0.));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var counts = List[u32]();
+  var idx = List[u32]();
+  j = 0u32;
+  while j + 1u32 < ny {
+    var i = 0u32;
+    while i + 1u32 < nx {
+      let a = nx * j + i;
+      let b = a + 1u32;
+      let c = a + nx + 1u32;
+      let d = a + nx;
+      counts.push(3u32); idx.push(a); idx.push(b); idx.push(c);
+      counts.push(3u32); idx.push(a); idx.push(c); idx.push(d);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems)
+}
+
+fn main() i32 {
+  triplets();
+  solver();
+  weights();
+  grid();
+  done()
+}
+
+fn triplets() {
+  var r = List[u32](); var c = List[u32](); var v = List[f64]();
+  r.push(0u32); c.push(0u32); v.push(2.0);
+  r.push(1u32); c.push(1u32); v.push(1.0);
+  r.push(1u32); c.push(0u32); v.push(-1.0);
+  r.push(0u32); c.push(1u32); v.push(-1.0);
+  r.push(1u32); c.push(1u32); v.push(1.0);
+  let a = SparseMatrix.fromTriplets(2usize, r.view(), c.view(), v.view());
+  expectInt(i64.from(a.size()), 2, "size");
+  expectFloat(a.at(1u32, 1u32), 2.0, 0.0, "summed cell");
+  expectFloat(a.at(0u32, 0u32), 2.0, 0.0, "cell 00");
+  expectFloat(a.at(0u32, 1u32), -1.0, 0.0, "cell 01");
+  expectFloat(a.at(1u32, 0u32), -1.0, 0.0, "cell 10");
+  expectFloat(a.at(5u32, 0u32), 0.0, 0.0, "outside");
+  expectInt(i64.from(a.col.len()), 4, "four stored cells");
+  expectInt(i64.from(*a.col[0]), 0, "row 0 ascending");
+  var x = List[f64]();
+  x.push(1.0); x.push(1.0);
+  let y = a.times(&x);
+  expectFloat(*y[0], 1.0, 0.0, "times 0");
+  expectFloat(*y[1], 1.0, 0.0, "times 1");
+  // an empty row, and a missing last row
+  var r2 = List[u32](); var c2 = List[u32](); var v2 = List[f64]();
+  r2.push(2u32); c2.push(2u32); v2.push(4.0);
+  let e = SparseMatrix.fromTriplets(4usize, r2.view(), c2.view(), v2.view());
+  expectFloat(e.at(2u32, 2u32), 4.0, 0.0, "sparse cell");
+  expectFloat(e.at(3u32, 3u32), 0.0, 0.0, "empty last row");
+  expectInt(i64.from(e.rowStart.len()), 5, "rowStart has n + 1");
+}
+
+fn solver() {
+  var r = List[u32](); var c = List[u32](); var v = List[f64]();
+  var i = 0u32;
+  while i < 3u32 {
+    r.push(i); c.push(i); v.push(2.0);
+    if i + 1u32 < 3u32 {
+      r.push(i); c.push(i + 1u32); v.push(-1.0);
+      r.push(i + 1u32); c.push(i); v.push(-1.0);
+    }
+    i = i + 1u32;
+  }
+  let a = SparseMatrix.fromTriplets(3usize, r.view(), c.view(), v.view());
+  var b = List[f64]();
+  b.push(1.0); b.push(0.0); b.push(1.0);
+  var x = List[f64]();
+  x.push(0.0); x.push(0.0); x.push(0.0);
+  let rep = conjugateGradient(&a, &b, &mut x, 0.0000000001, 100u32);
+  expectBool(rep.converged, true, "tridiagonal converged");
+  expect(rep.iterations <= 3u32, "at most 3 iterations");
+  expectFloat(*x[0], 1.0, 0.000000001, "x0");
+  expectFloat(*x[1], 1.0, 0.000000001, "x1");
+  expectFloat(*x[2], 1.0, 0.000000001, "x2");
+
+  // zeros
+  var r0 = List[u32](); var c0 = List[u32](); var v0 = List[f64]();
+  r0.push(0u32); c0.push(0u32); v0.push(0.0);
+  let z = SparseMatrix.fromTriplets(3usize, r0.view(), c0.view(), v0.view());
+  var x0 = List[f64]();
+  x0.push(0.0); x0.push(0.0); x0.push(0.0);
+  let rz = conjugateGradient(&z, &b, &mut x0, 0.0000000001, 100u32);
+  expectBool(rz.converged, false, "zeros not converged");
+  expectInt(i64.from(rz.iterations), 0, "zeros no iterations");
+  expectFloat(rz.residual, 1.0, 0.000001, "zeros residual");
+
+  // a size mismatch is reported, not a crash
+  var short = List[f64]();
+  short.push(0.0);
+  let rs = conjugateGradient(&a, &b, &mut short, 0.0000000001, 100u32);
+  expectBool(rs.converged, false, "mismatch not converged");
+}
+
+fn weights() {
+  var pts = List[Vec3]();
+  pts.push(Vec3(0., 0., 0.));
+  pts.push(Vec3(1., 0., 0.));
+  pts.push(Vec3(0.5, 0.8660254, 0.));
+  let tri = quadMesh(pts.view());
+  let l = cotangentLaplacian(&tri);
+  expectFloat(l.at(0u32, 1u32), 0.288675, 0.00001, "triangle off-diagonal");
+  expectFloat(l.at(1u32, 2u32), 0.288675, 0.00001, "triangle off-diagonal 12");
+  expectFloat(l.at(2u32, 0u32), 0.288675, 0.00001, "triangle off-diagonal 20");
+  expectFloat(l.at(1u32, 1u32), -0.577350, 0.00001, "triangle diagonal");
+
+  var sq = List[Vec3]();
+  sq.push(Vec3(0., 0., 0.));
+  sq.push(Vec3(1., 0., 0.));
+  sq.push(Vec3(1., 1., 0.));
+  sq.push(Vec3(0., 1., 0.));
+  let quad = quadMesh(sq.view());
+  let q = cotangentLaplacian(&quad);
+  expectFloat(q.at(0u32, 1u32), 0.5, 0.000001, "square side 01");
+  expectFloat(q.at(1u32, 2u32), 0.5, 0.000001, "square side 12");
+  expectFloat(q.at(2u32, 3u32), 0.5, 0.000001, "square side 23");
+  expectFloat(q.at(3u32, 0u32), 0.5, 0.000001, "square side 30");
+  expectFloat(q.at(0u32, 2u32), 0.0, 0.000001, "square diagonal 02");
+  expectFloat(q.at(1u32, 3u32), 0.0, 0.000001, "square cross 13");
+  var ones = List[f64]();
+  ones.push(1.0); ones.push(1.0); ones.push(1.0); ones.push(1.0);
+  let sums = q.times(&ones);
+  var i = 0usize;
+  var worst = 0.0;
+  while i < 4usize {
+    if (*sums[i]).abs() > worst { worst = (*sums[i]).abs(); }
+    i = i + 1usize;
+  }
+  expectFloat(worst, 0.0, 0.000000001, "rows sum to zero");
+  var asym = 0.0;
+  i = 0usize;
+  while i < 4usize {
+    var j = 0usize;
+    while j < 4usize {
+      let d = (q.at(u32.from(i), u32.from(j)) - q.at(u32.from(j), u32.from(i))).abs();
+      if d > asym { asym = d; }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  expectFloat(asym, 0.0, 0.0000001, "symmetric");
+
+  let areas = vertexAreas(&quad);
+  expectFloat(*areas[0], 1. / 3., 0.000001, "area 0");
+  expectFloat(*areas[1], 1. / 6., 0.000001, "area 1");
+  expectFloat(*areas[2], 1. / 3., 0.000001, "area 2");
+  expectFloat(*areas[3], 1. / 6., 0.000001, "area 3");
+}
+
+fn grid() {
+  let g = jitteredGrid(9u32, 9u32);
+  expectInt(i64.from(g.validate().len()), 0, "grid valid");
+  let l = cotangentLaplacian(&g);
+  var xs = List[f64]();
+  var ys = List[f64]();
+  var i = 0usize;
+  while i < g.vertexCount() {
+    xs.push(f64.from(g.positions[i].x));
+    ys.push(f64.from(g.positions[i].y));
+    i = i + 1usize;
+  }
+  let lx = l.times(&xs);
+  let ly = l.times(&ys);
+  var worst = 0.0;
+  var j = 1usize;
+  while j < 8usize {
+    var k = 1usize;
+    while k < 8usize {
+      let v = j * 9usize + k;
+      if (*lx[v]).abs() > worst { worst = (*lx[v]).abs(); }
+      if (*ly[v]).abs() > worst { worst = (*ly[v]).abs(); }
+      k = k + 1usize;
+    }
+    j = j + 1usize;
+  }
+  expectFloat(worst, 0.0, 0.00001, "L reproduces linear functions inside");
+
+  let areas = vertexAreas(&g);
+  var total = 0.0;
+  i = 0usize;
+  while i < areas.len() {
+    total = total + *areas[i];
+    i = i + 1usize;
+  }
+  expectFloat(total, 64.0, 0.00001, "areas sum to the area");
+
+  let l2 = cotangentLaplacian(&jitteredGrid(9u32, 9u32));
+  var same = l.col.len() == l2.col.len();
+  i = 0usize;
+  while same && i < l.val.len() {
+    if *l.val[i] != *l2.val[i] { same = false; }
+    i = i + 1usize;
+  }
+  expectBool(same, true, "deterministic");
+}

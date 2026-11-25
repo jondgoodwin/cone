@@ -1,0 +1,116 @@
+// fairshots: fairRegion on two synthetic cases, written as OBJ files for the plot script.
+//
+//   congo run --release packages/sculpt/examples/fairshots.cone
+//
+// A: a unit sphere (24 x 32 by lathe) with a pimple raised at the pole (Gaussian, 0.15 high,
+//    0.25 wide), its inner 0.55 freed: faired by order 1, order 2 and order 2 with tension 0.03.
+// B: the same sphere with the whole cap above height 0.5 freed (60 degrees from the pole).
+// Prints, for each fair, the freed vertices' largest and RMS distance from the unit sphere and
+// the largest height above it, and writes C:/src/mesh-tools-shots/fair-*.obj.
+
+mod fairshots;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import fs;
+import path use Path as FilePath;
+import sculpt use *;
+
+fn sphere() PolyMesh {
+  var pts = List[Vec2]();
+  var j = 0u32;
+  while j <= 24u32 {
+    let t = pi * f32.from(j) / 24.;
+    pts.push(Vec2(t.sin(), -t.cos()));
+    j = j + 1u32;
+  }
+  lathe(&Profile.fromPoints(pts.view(), false), Vec3(0., 1., 0.), 2. * pi, 32u32)
+}
+
+fn radius(p: Vec3) f64 { f64.from((p.x * p.x + p.y * p.y + p.z * p.z).sqrt()) }
+
+fn report(name: &str, m: &PolyMesh, free: &List[u32]) {
+  var worst = 0.0;
+  var high = -9.0;
+  var sum = 0.0;
+  var k = 0usize;
+  while k < free.len() {
+    let d = radius(*m.positions[usize.from(*free[k])]) - 1.0;
+    if d.abs() > worst { worst = d.abs(); }
+    if d > high { high = d; }
+    sum = sum + d * d;
+    k = k + 1usize;
+  }
+  print <- name, ": worst ", worst, " rms ", (sum / f64.from(free.len())).sqrt(), " highest above the sphere ", high, "\n";
+}
+
+fn save(name: &str, m: &PolyMesh) {
+  var full = String.from("C:/src/mesh-tools-shots/fair-");
+  full.append(name);
+  full.append(".obj");
+  let p = FilePath.from(full.view());
+  if !writeObj(m, &p) { print <- "could not write ", full.view(), "\n"; }
+}
+
+fn main() i32 {
+  let dir = FilePath.from("C:/src/mesh-tools-shots");
+  if let Err(e) = fs.makeDirAll(&dir) { print <- "could not make the folder: ", e, "\n"; return 1; }
+  var problems = List[String]();
+
+  // A: the pimple
+  var s = sphere();
+  var v = 0usize;
+  while v < s.positions.len() {
+    let p = *s.positions[v];
+    let dx = p.x; let dy = p.y - 1.; let dz = p.z;
+    let d = (dx * dx + dy * dy + dz * dz).sqrt();
+    let lift = 1. + 0.15 * libc.expf(-(d / 0.25) * (d / 0.25));
+    s.positions.set(v, Vec3(p.x * lift, p.y * lift, p.z * lift));
+    v = v + 1usize;
+  }
+  var free = List[u32]();
+  v = 0usize;
+  while v < s.positions.len() {
+    let p = *s.positions[v];
+    let d = (p.x * p.x + (p.y - 1.) * (p.y - 1.) + p.z * p.z).sqrt();
+    if d < 0.55 { free.push(u32.from(v)); }
+    v = v + 1usize;
+  }
+  print <- "A: pimple, ", free.len(), " freed of ", s.positions.len(), "\n";
+  report("A source", &s, &free);
+  save("a0", &s);
+  let a1 = fairRegion(&s, free.view(), 1u32, &mut problems);
+  report("A order 1", &a1, &free);
+  save("a1", &a1);
+  let a2 = fairRegion(&s, free.view(), 2u32, &mut problems);
+  report("A order 2", &a2, &free);
+  save("a2", &a2);
+  let a3 = fairRegionWith(&s, free.view(), 2u32, 0.03, &mut problems);
+  report("A order 2 tension 0.03", &a3, &free);
+  save("a3", &a3);
+
+  // B: the cap
+  let t = sphere();
+  var cap = List[u32]();
+  v = 0usize;
+  while v < t.positions.len() {
+    if (*t.positions[v]).y > 0.5001 { cap.push(u32.from(v)); }
+    v = v + 1usize;
+  }
+  print <- "B: cap, ", cap.len(), " freed of ", t.positions.len(), "\n";
+  save("b0", &t);
+  let b1 = fairRegion(&t, cap.view(), 1u32, &mut problems);
+  report("B order 1", &b1, &cap);
+  save("b1", &b1);
+  let b2 = fairRegion(&t, cap.view(), 2u32, &mut problems);
+  report("B order 2", &b2, &cap);
+  save("b2", &b2);
+  let b3 = fairRegionWith(&t, cap.view(), 2u32, 0.03, &mut problems);
+  report("B order 2 tension 0.03", &b3, &cap);
+  save("b3", &b3);
+  print <- "problems: ", problems.len(), "\n";
+  0
+}

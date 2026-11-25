@@ -1,0 +1,102 @@
+// ======== SparseMatrix: a square f64 matrix in compressed rows ========
+
+// One entry waiting to be placed: its row and column packed into 'key' (row in the high
+// half), so a stable sort by key puts rows together, columns ascending, and equal cells
+// in the order they were given
+struct Triplet {
+  key: u64;
+  value: f64;
+}
+
+fn tripletKey(t: &Triplet) u64 { t.key }
+
+// A square matrix of f64, row r's entries at rowStart[r] up to rowStart[r + 1] in
+// 'col' (ascending within a row) and 'val'. Read the lists; make it with fromTriplets.
+pub struct SparseMatrix {
+  pub n: usize;
+  pub rowStart: List[u32];
+  pub col: List[u32];
+  pub val: List[f64];
+
+  // The n x n matrix whose cell (rows[k], cols[k]) holds the sum of values[k] over the
+  // entries naming it, added in the order given. An entry outside 0..n is ignored. The
+  // three arrays are read up to the shortest's length.
+  pub fn fromTriplets(n: usize, rows: &Array[u32], cols: &Array[u32], values: &Array[f64]) SparseMatrix {
+    var len = rows.len();
+    if cols.len() < len { len = cols.len(); }
+    if values.len() < len { len = values.len(); }
+    var items = List[Triplet].withCapacity(len);
+    var k = 0usize;
+    while k < len {
+      let r = usize.from(rows[k]);
+      let c = usize.from(cols[k]);
+      if r < n && c < n {
+        items.push(Triplet((u64.from(rows[k]) << 32u64) | u64.from(cols[k]), values[k]));
+      }
+      k = k + 1usize;
+    }
+    items.sortByKey(&tripletKey);
+    var m = SparseMatrix(n, List[u32].withCapacity(n + 1usize), List[u32](), List[f64]());
+    var row = 0usize;
+    m.rowStart.push(0u32);
+    k = 0usize;
+    while k < items.len() {
+      let key = items[k].key;
+      var sum = items[k].value;
+      var j = k + 1usize;
+      while j < items.len() && items[j].key == key {
+        sum = sum + items[j].value;
+        j = j + 1usize;
+      }
+      let r = usize.from(key >> 32u64);
+      while row < r {
+        m.rowStart.push(u32.from(m.col.len()));
+        row = row + 1usize;
+      }
+      m.col.push(u32.from(key & 4294967295u64));
+      m.val.push(sum);
+      k = j;
+    }
+    while row < n {
+      m.rowStart.push(u32.from(m.col.len()));
+      row = row + 1usize;
+    }
+    m
+  }
+
+  // The number of rows (and columns)
+  pub fn size(self: &) usize { n }
+
+  // The cell (row, c); 0 where nothing is stored or the cell is outside the matrix
+  pub fn at(self: &, row: u32, c: u32) f64 {
+    if usize.from(row) >= n { return 0.0; }
+    var lo = usize.from(*rowStart[usize.from(row)]);
+    var hi = usize.from(*rowStart[usize.from(row) + 1usize]);
+    while lo < hi {
+      let mid = (lo + hi) / 2usize;
+      let have = *col[mid];
+      if have == c { return *val[mid]; }
+      if have < c { lo = mid + 1usize; } else { hi = mid; }
+    }
+    0.0
+  }
+
+  // The product with x (a list of size() values; a shorter x counts as zero past its end)
+  pub fn times(self: &, x: &List[f64]) List[f64] {
+    var out = List[f64].withCapacity(n);
+    var r = 0usize;
+    while r < n {
+      var sum = 0.0;
+      var k = usize.from(*rowStart[r]);
+      let end = usize.from(*rowStart[r + 1usize]);
+      while k < end {
+        let c = usize.from(*col[k]);
+        if c < x.len() { sum = sum + *val[k] * *x[c]; }
+        k = k + 1usize;
+      }
+      out.push(sum);
+      r = r + 1usize;
+    }
+    out
+  }
+}
