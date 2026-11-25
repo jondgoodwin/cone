@@ -1,0 +1,63 @@
+// A type named by a path takes a brand, and a lifetime, as one named alone does:
+// in a parameter, a field, a result, a construction, beside type arguments, and
+// through a module to an enum's variant.
+//
+// Hand-worked, in the order printed: 'count' starts at 4 and report returns it,
+// 4; 'same' hands the borrow back and one more than its count is 5; the alloc holds 7, which 'peek' reads through the key, 7; 'Held' is built
+// over that key with 5 beside it, 7 + 5 = 12; 'View' borrows a local 3, 3; the
+// branded variant is built with line 1 and value 6, 1 + 6 = 7; make(2) is 20.
+
+mod module_brand_path;
+
+import stdio use *;
+import arena use *;
+
+struct Holds['=c] {
+  pub k: &'=c i64;
+  pub held: &'=c ir.Held['=c, i64];
+}
+
+fn report(c: &mut ir.Compile['=c]) i32 {
+  c.count
+}
+
+fn same(c: &ir.Compile['=c]) &ir.Compile['=c] {
+  c
+}
+
+fn peek(ar: &DynArena['=c], k: &'=c i64) i64 {
+  *ar[k]
+}
+
+fn total(ar: &DynArena['=c], h: ir.Held['=c, i64]) i64 {
+  *ar[h.key] + h.extra
+}
+
+fn look(v: ir.View['a]) i64 {
+  *v.of
+}
+
+fn leaf(ar: &mut DynArena['=c]) i64 {
+  let k = ar.alloc(ir.Node.Leaf['=c](1, 6i64));
+  ar[k].line + ar[k].val
+}
+
+fn use1(ar: &mut DynArena['=c]) {
+  let k = ar.alloc(7i64);
+  let h = ir.Held['=c, i64](k, 5i64);
+  print <- peek(ar, k), "\n", total(ar, h), "\n";
+}
+
+fn main() i32 {
+  var c = ir.Compile(DynArena.empty(), 4);
+  print <- report(&mut c), "\n";
+  print <- same(&c).count + 1i32, "\n";
+  var ar = DynArena.empty();
+  use1(&mut ar);
+  let n = 3i64;
+  print <- look(ir.View(&n)), "\n";
+  var ar2 = DynArena.empty();
+  print <- leaf(&mut ar2), "\n";
+  print <- ir.make(2i64), "\n";
+  0i32
+}

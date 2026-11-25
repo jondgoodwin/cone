@@ -2144,6 +2144,10 @@ static INode *pwLendSite(INode *arg) {
     while (1) {
         if (arg->tag == BorrowTag || arg->tag == ArrayBorrowTag)
             return arg;
+        // A reference passed by its name, which the call reborrows ('f(a)' for 'a: &mut L'): the
+        // reborrow the loan is made of, typed as the one written out ('&mut *a') is
+        if (loanAt(arg) && pwIsBorrowed(iexpGetTypeDcl(arg)))
+            return arg;
         if (arg->tag != CastTag || (arg->flags & FlagConvert))
             return NULL;
         if (pwIsOwnedLent((CastNode *)arg))
@@ -3101,6 +3105,15 @@ static FnDclNode *pwTiedCallee(FnCallNode *call) {
             ++borrows;
     }
     return borrows > 1 ? fn : NULL;
+}
+
+// What a raw pointer made from a borrow carries: raw pointers carry no lifetime
+// (Jon, 18 Nov; references-and-regions.md), so it holds no loan of the place the
+// borrow points at (the near one), only what that place holds in turn (the far
+// ones, made near: what is read through the pointer). A store through it is
+// checked by the place's type, as before
+static PathSet *pwPointerOf(PathSet *carried) {
+    return pathSetRemake(carried, RemakePointees, 0, 0xFFFFFFFFu);
 }
 
 // A call: the function reference it calls through, then each argument in
@@ -4521,6 +4534,9 @@ static PathSet *pwValue(INode **nodep, int move) {
             if (loan)
                 loanNotBoxable(node, loan);
         }
+        // A borrow made a raw pointer holds no loan of what it pointed at (pwPointerOf)
+        if (iexpGetTypeDcl(node)->tag == PtrTag && pwIsBorrowed(iexpGetTypeDcl(((CastNode *)node)->exp)))
+            holds = pwPointerOf(holds);
         return pwCarries(((IExpNode *)node)->vtype) ? pathSetUntagged(holds) : NULL;
     }
     case IsTag:

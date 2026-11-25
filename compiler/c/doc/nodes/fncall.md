@@ -115,6 +115,12 @@ bound, and **what it binds to is the whole test** — a `ModuleTag` or a
 `StructTag` is a namespace, anything else is a receiver. An operator, a tuple
 index and a call with no member name are never paths.
 
+**Lifetimes written after a path**, `ir.Compile['=c]`, are held by the parser on
+the path's last name (`parseLifeHolder`, the `lifeuse` an unqualified type's use
+holds), which the collapse keeps. They are refused (`ErrorLifetimeArgs`) where the
+base is a value or a type parameter (`fnCallPathLifeCheck`, before the associated
+type paths) and where the member reached is a function, global, const or module.
+
 The member is looked up with `namespaceFind` in that namespace, bound, stamped
 `FlagQualified`, and the hop disappears:
 
