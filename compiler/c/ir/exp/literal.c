@@ -388,7 +388,7 @@ static double litUntypedDouble(INode *node) {
 // are known, into one untyped literal whose value is what the expression comes to;
 // where a place names the type the literal then adopts it, and a value that type
 // cannot hold is refused at the literal (litCheckRange). A sum, difference, product,
-// quotient or remainder, and a negation. Integers are computed exactly, in 64 bits,
+// quotient or remainder, a negation, and on integers the bit operators '|', '&', '^', '<<' and '>>'. Integers are computed exactly, in 64 bits,
 // division truncating toward zero; a float is computed as an f64, the result
 // rounded once to the f32 a place may ask for. An integer operand beside a float one
 // is that number as a float, the operand's own kind deciding the subexpression it
@@ -404,7 +404,8 @@ int litFoldUntyped(FnCallNode *call) {
     int unary = call->args == NULL || call->args->used == 0;
     if (!unary && call->args->used != 1)
         return 0;
-    if (op != plusName && op != minusName && op != multName && op != divName && op != remName)
+    int isbit = op == orName || op == andName || op == xorName || op == shlName || op == shrName;
+    if (op != plusName && op != minusName && op != multName && op != divName && op != remName && !isbit)
         return 0;
     if (unary && op != minusName)
         return 0;
@@ -417,6 +418,8 @@ int litFoldUntyped(FnCallNode *call) {
         return 0;
 
     int isfloat = a->tag == FLitTag || (b && b->tag == FLitTag);
+    if (isbit && isfloat)
+        return 0;
     uint64_t ibits = 0;
     int ineg = 0;
     double fval = 0.0;
@@ -427,6 +430,25 @@ int litFoldUntyped(FnCallNode *call) {
         if (unary) {
             if (x == INT64_MIN) return 0;
             r = -x;
+        }
+        else if (isbit) {
+            if (op == orName) r = x | y;
+            else if (op == andName) r = x & y;
+            else if (op == xorName) r = x ^ y;
+            else if (y < 0 || y > 63) {
+                errorMsgNode((INode*)call, ErrorConstShift,
+                    "This shift of literals is by %" PRId64 ", which is not from 0 to 63.", y);
+                r = 0;
+            }
+            else if (op == shrName)
+                r = x < 0 ? ~(~x >> y) : x >> y;
+            else if (x > (INT64_MAX >> y) || x < (INT64_MIN >> y)) {
+                errorMsgNode((INode*)call, ErrorConstShift,
+                    "The value of this shift of literals does not fit 64 bits.");
+                r = 0;
+            }
+            else
+                r = (int64_t)((uint64_t)x << y);
         }
         else if (op == plusName) {
             if ((y > 0 && x > INT64_MAX - y) || (y < 0 && x < INT64_MIN - y)) return 0;
