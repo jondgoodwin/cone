@@ -135,3 +135,50 @@ pub fn polylinePointAt3 overload polylinePointAt(points: &Array[Vec3], distance:
   }
   points[points.len - 1usize]
 }
+
+// -------- the uniform cubic B-spline --------
+
+// A uniform cubic B-spline over [lo, hi] with n = coefficients.len coefficients, which makes n - 3 equal spans.
+// The value at x is a blend of four neighbouring coefficients with the cubic B-spline weights; the curve is smooth
+// to the second derivative and does not pass through its coefficients (equal coefficients give a constant, evenly
+// rising ones a straight line). x outside [lo, hi] is held to the nearest end. Fewer than 4 coefficients, or a range
+// that is not lo < hi, give 0. Evaluated in f64 and returned as f32. (shapefit's 'fitPenalisedSpline' finds the
+// coefficients from points.)
+pub fn bsplineAt(coefficients: &Array[f32], lo: f32, hi: f32, x: f32) f32 {
+  f32.from(bsplineEval(coefficients, lo, hi, x, false))
+}
+
+// The slope (derivative with respect to x) of the same curve
+pub fn bsplineSlopeAt(coefficients: &Array[f32], lo: f32, hi: f32, x: f32) f32 {
+  f32.from(bsplineEval(coefficients, lo, hi, x, true))
+}
+
+fn bsplineEval(coefficients: &Array[f32], lo: f32, hi: f32, x: f32, slope: bool) f64 {
+  if coefficients.len < 4usize || !(lo < hi) {return 0.0;}
+  let spans = coefficients.len - 3usize;
+  let width = f64.from(hi) - f64.from(lo);
+  var xc = f64.from(x);
+  if xc < f64.from(lo) {xc = f64.from(lo);}
+  if xc > f64.from(hi) {xc = f64.from(hi);}
+  let u = (xc - f64.from(lo)) / width * f64.from(spans);
+  var s = usize.from(libc.floor(u));
+  if s > spans - 1usize {s = spans - 1usize;}
+  let t = u - f64.from(s);
+  let c0 = f64.from(coefficients[s]);
+  let c1 = f64.from(coefficients[s + 1usize]);
+  let c2 = f64.from(coefficients[s + 2usize]);
+  let c3 = f64.from(coefficients[s + 3usize]);
+  let m = 1.0 - t;
+  if slope {
+    let d0 = -0.5 * m * m;
+    let d1 = (9.0 * t * t - 12.0 * t) / 6.0;
+    let d2 = (-9.0 * t * t + 6.0 * t + 3.0) / 6.0;
+    let d3 = 0.5 * t * t;
+    return (c0 * d0 + c1 * d1 + c2 * d2 + c3 * d3) * f64.from(spans) / width;
+  }
+  let b0 = m * m * m / 6.0;
+  let b1 = (3.0 * t * t * t - 6.0 * t * t + 4.0) / 6.0;
+  let b2 = (-3.0 * t * t * t + 3.0 * t * t + 3.0 * t + 1.0) / 6.0;
+  let b3 = t * t * t / 6.0;
+  c0 * b0 + c1 * b1 + c2 * b2 + c3 * b3
+}

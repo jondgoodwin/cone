@@ -1,0 +1,130 @@
+// ======== a penalised spline ========
+//
+// Fits a uniform cubic B-spline (geomath's 'bsplineAt') to scattered points y(x) by least squares with a
+// roughness penalty, the P-spline of Eilers and Marx (1996): minimise
+//
+//   sum over points of (y - spline(x))^2  +  penalty * sum over k of (a[k] - 2 a[k+1] + a[k+2])^2
+//
+// where a are the spline's coefficients. A penalty of 0 is the plain least-squares spline; a large one pulls the
+// second differences to 0, so the curve tends to the best straight line. Between the two it trades the misses
+// against bending, which is what stops a spline with many coefficients ringing round a sharp step in the data.
+// The normal equations are built and solved in f64 with 'solveLinear', in a fixed order.
+
+// One point's weights: the coefficient 'first' takes 'w[0]', 'first + 1' takes 'w[1]', and so on
+struct SplineRow {
+  first: usize;
+  w: List[f64];
+}
+
+fn splineRow(x: f64, lo: f64, hi: f64, count: usize) SplineRow {
+  let spans = count - 3usize;
+  var xc = x;
+  if xc < lo {xc = lo;}
+  if xc > hi {xc = hi;}
+  let u = (xc - lo) / (hi - lo) * f64.from(spans);
+  var s = usize.from(libc.floor(u));
+  if s > spans - 1usize {s = spans - 1usize;}
+  let t = u - f64.from(s);
+  let m = 1.0 - t;
+  var w = List[f64]();
+  w.push(m * m * m / 6.0);
+  w.push((3.0 * t * t * t - 6.0 * t * t + 4.0) / 6.0);
+  w.push((-3.0 * t * t * t + 3.0 * t * t + 3.0 * t + 1.0) / 6.0);
+  w.push(t * t * t / 6.0);
+  SplineRow(s, w)
+}
+
+// The free parameter that coefficient i belongs to: itself, or with 'even' the nearer end's twin
+fn splineParam(i: usize, count: usize, even: bool) usize {
+  if even && count - 1usize - i < i { count - 1usize - i } else { i }
+}
+
+// Add scale * (row . a)(row . a)^T to the matrix and scale * target * row to the right side, the row's entries
+// being w[k] on coefficient first + k
+fn splineAccumulate(a: &mut List[f64], b: &mut List[f64], m: usize, count: usize, even: bool, first: usize,
+    w: &List[f64], scale: f64, target: f64) {
+  var j = 0usize;
+  while j < w.len() {
+    let pj = splineParam(first + j, count, even);
+    b.set(pj, *b[pj] + scale * target * *w[j]);
+    var k = 0usize;
+    while k < w.len() {
+      let pk = splineParam(first + k, count, even);
+      a.set(pj * m + pk, *a[pj * m + pk] + scale * *w[j] * *w[k]);
+      k += 1usize;
+    }
+    j += 1usize;
+  }
+}
+
+// The coefficients (count of them, 'count' from 4 to 512) of the uniform cubic B-spline over [lo, hi] that best
+// fits the points (xs[i], ys[i]) with the roughness penalty described above; x outside [lo, hi] is held to the
+// nearest end, as 'bsplineAt' does. 'evenAboutMiddle' ties coefficient i to coefficient count - 1 - i, so the curve
+// is the same on either side of the middle of [lo, hi] and level (slope 0) there; the points need not be
+// symmetric, nor lie on both sides. A refusal gives a line in 'problems' and an empty list: a count outside 4 to
+// 512, lists of unequal length, no points, lo not below hi, a negative penalty, or a system that cannot be solved
+// (a penalty of 0 with fewer points than free coefficients, or the points all at one x).
+pub fn fitPenalisedSpline(xs: &Array[f32], ys: &Array[f32], lo: f32, hi: f32, count: u32, penalty: f32,
+    evenAboutMiddle: bool, problems: &mut List[String]) List[f32] {
+  var none = List[f32]();
+  if count < 4u32 || count > 512u32 {
+    problems.push(String.from("fitPenalisedSpline: the coefficient count must be from 4 to 512; nothing is fitted"));
+    return none;
+  }
+  if xs.len != ys.len || xs.len == 0usize {
+    problems.push(String.from("fitPenalisedSpline: the points need equal, non-empty lists of x and y; nothing is fitted"));
+    return none;
+  }
+  if !(lo < hi) || !(penalty >= 0.) {
+    problems.push(String.from("fitPenalisedSpline: lo must be below hi and the penalty 0 or more; nothing is fitted"));
+    return none;
+  }
+  let n = usize.from(count);
+  let m = if evenAboutMiddle { (n + 1usize) / 2usize } else { n };
+  let lod = f64.from(lo);
+  let hid = f64.from(hi);
+  let lam = f64.from(penalty);
+
+  var a = List[f64].withCapacity(m * m);
+  var i = 0usize;
+  while i < m * m { a.push(0.0); i += 1usize; }
+  var b = List[f64].withCapacity(m);
+  i = 0usize;
+  while i < m { b.push(0.0); i += 1usize; }
+
+  var xmin = f64.from(xs[0]);
+  var xmax = xmin;
+  i = 0usize;
+  while i < xs.len {
+    let x = f64.from(xs[i]);
+    if x < xmin {xmin = x;}
+    if x > xmax {xmax = x;}
+    let row = splineRow(x, lod, hid, n);
+    splineAccumulate(&mut a, &mut b, m, n, evenAboutMiddle, row.first, &row.w, 1.0, f64.from(ys[i]));
+    i += 1usize;
+  }
+  if lam == 0.0 && xs.len < m || xmin == xmax {
+    problems.push(String.from("fitPenalisedSpline: too few distinct points for the free coefficients; nothing is fitted"));
+    return none;
+  }
+  if lam > 0.0 {
+    var d = List[f64]();
+    d.push(1.0); d.push(-2.0); d.push(1.0);
+    var k = 0usize;
+    while k + 2usize < n {
+      splineAccumulate(&mut a, &mut b, m, n, evenAboutMiddle, k, &d, lam, 0.0);
+      k += 1usize;
+    }
+  }
+  if !solveLinear(&mut a, &mut b, m) {
+    problems.push(String.from("fitPenalisedSpline: the system is singular; nothing is fitted"));
+    return none;
+  }
+  var out = List[f32].withCapacity(n);
+  i = 0usize;
+  while i < n {
+    out.push(f32.from(*b[splineParam(i, n, evenAboutMiddle)]));
+    i += 1usize;
+  }
+  out
+}
