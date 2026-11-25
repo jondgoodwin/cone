@@ -93,6 +93,17 @@ untyped number literals follow the others.** `ifLiteralArmsFollow` runs after th
 arms are joined: they were left out of the join, and take the number type the others met at,
 or are joined as ever when it is none (see [literals](literals.md)).
 
+**With no expected type, an arm whose value is a `None`, `Ok(v)` or `Err(e)` waits for
+the others.** Such a construction (`fnCallOpenVariantFamily`: a variant of `Option` or
+`Result` with a type parameter none of its values names, no type arguments written) has no
+type of its own, so `ifTypeCheck` checks it after every other arm, under the narrowing the
+arm started with, wanted as the enum of the first arm, as written, whose value is an Option
+(or Result) of known arguments (`ifSiblingType`; a value of a variant says its enum). Only
+the direct arms of this `if` are asked, and one parameter is not taken from one arm and the
+other from another: `Ok(1)` beside `Err("x")` is refused. Where no arm says, it is checked
+with no expectation and refused where it stands. When any arm waits, all are joined once
+all are checked, in the order written. An expected type is used as before.
+
 **A pattern's first operand decides between a range, a value and a refusal.**
 A pattern beginning with neither `is` nor a comparison operator reads one
 operand (`parseOr`); a following `..=` or `..<` makes it a range (a bare `..` is refused, `ErrorRangeBare`, and read as `..=`). A comparison
