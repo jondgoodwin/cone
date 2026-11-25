@@ -1,0 +1,57 @@
+// The example in aio.cone's header comment, compiled and run: socketOf and Client are the header's text with its
+// "..." placeholders filled in; the listener, the accept and main are added so that it runs.
+
+mod headerexample;
+
+import stdio use *;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {panic("socketOf: the operation failed");}
+  }
+  s
+}
+
+actor Client {
+  pub async fn send(self, port: u16) {
+    let conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    var buf = IoBuf(64usize);
+    buf.append("hello");
+    let sent = await conn.write(buf);          // pauses until all of it is sent
+    match sent {
+      case let Ok(n) {}
+      case let Err(e) {printStr("write failed\n");}
+    }
+  }                                           // conn closes here
+}
+
+actor Server {
+  client: Client;
+  pub async fn serve(self) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    match addr {
+      case let Ok(a) {client.send(a.port());}
+      case let Err(e) {panic("no address");}
+    }
+    let conn = socketOf(await listener.accept());
+    let got = await conn.read(IoBuf(4096usize));
+    match got {
+      case let Ok(b) {printStr("received "); printUInt(u64.from(b.len())); printStr("\n");}
+      case let Err(e) {printStr("read failed\n");}
+    }
+  }
+}
+
+fn main() {
+  let s = Server(Client());
+  s.serve();
+  actors.waitUntilIdle();
+}
