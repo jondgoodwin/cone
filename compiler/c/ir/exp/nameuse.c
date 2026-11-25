@@ -350,6 +350,19 @@ void nameUseShadowNotes(void) {
     }
 }
 
+// A use takes lifetimes where it names a type, not a value, type parameter,
+// function, global, const or module: there they are refused and dropped
+void nameUseLifeCheck(NameUseNode *use) {
+    if (use->lifeuse == NULL || use->dclnode == NULL)
+        return;
+    uint16_t tag = use->dclnode->tag;
+    if (tag == FnDclTag || tag == FnOverloadDclTag || tag == VarDclTag || tag == FieldDclTag
+        || tag == ConstDclTag || tag == ModuleTag || tag == GenVarDclTag) {
+        errorMsgNode(use->lifeuse->at, ErrorLifetimeArgs, "Lifetimes are named on a struct's use by its name: 'Cursor['a]'.");
+        use->lifeuse = NULL;
+    }
+}
+
 // Handle name resolution for name use references: point dclnode at the name's
 // declaration. That is all a use needs -- whether it is a type, a value or a
 // macro is asked of the declaration (nameUseGroup), and a bare field name is
@@ -370,6 +383,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     // A bare name is already hooked into the global name table by whichever
     // scope owns it, innermost last, so this is one pointer read and no walk
     name->dclnode = name->namesym->node;
+    nameUseLifeCheck(name);
 
     // In a generator's body a bare name may be a parameter, which is a field of
     // the generator's struct; in a generator method's, a field of the receiver

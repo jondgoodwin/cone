@@ -604,8 +604,8 @@ brackets lack (a struct naming only one may leave it undeclared), a borrow of
 none in a struct that declares lifetimes, or a `where` clause ordering one its
 declaration does not have; the remedy is to declare it, or to fix the
 spelling. A use naming a struct's lifetimes otherwise than it declares them —
-too many, too few, or any for a type declaring none — is `ErrorLifetimeArgs`,
-the use's own mistake. A lifetime comparison under `||` or `!` in a `where`
+too many, too few, or any for a type declaring none or for a name that is no
+type — is `ErrorLifetimeArgs`, the use's own mistake. A lifetime comparison under `||` or `!` in a `where`
 clause is `ErrorLifetimeOr`, apart from `ErrorWhereForm`: the form is one the
 clause reads, and refused for what it would mean. A named lifetime that is
 checked and broken is none of these: returned or stored where its lifetime

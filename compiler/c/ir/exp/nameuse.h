@@ -57,6 +57,8 @@ void nameUsePrint(NameUseNode *name);
 // Handle name resolution for name use references: bind dclnode to the
 // declaration the name refers to, in this module or another
 void nameUseNameRes(NameResState *pstate, NameUseNode **namep);
+// Refuse lifetimes written on a use of anything but a type, once it is bound
+void nameUseLifeCheck(NameUseNode *use);
 // After a failed compile, say of each name that meant an enum's variant inside
 // the enum's braces, over a type of the module, that it did
 void nameUseShadowNotes(void);
