@@ -105,6 +105,20 @@ fn waitConns(e: &H3Endpoint, want: u32, limitMs: i64) Snap {
   s
 }
 
+// The endpoint's snapshot once its handshaking places held are down to `want` (or the limit passes). A place is
+// given back by the connection's 'established' message to the endpoint, posted after the drive that answered the
+// client: the answer can reach the test before the message reaches the endpoint (row 767, Linux nightlies 23 and
+// 25 Nov), so the check waits on the count, as waitConns waits on the connections
+fn waitHs(e: &H3Endpoint, want: u32, limitMs: i64) Snap {
+  let until = Instant.now() + Duration.fromMillis(limitMs);
+  var s = snap(e);
+  while s.hs != want && Instant.now() < until {
+    aioNap(5i64);
+    s = snap(e);
+  }
+  s
+}
+
 fn aioNap(ms: i64) {
   let t = Instant.now() + Duration.fromMillis(ms);
   while Instant.now() < t {thread.sleep(Duration.fromMillis(1i64));}
@@ -309,7 +323,7 @@ fn main() i32 {
     expect(c.connected, "1: the client's handshake completed through the endpoint");
     runClient(&mut c, 2u32, 8000i64);
     expectUInt(u64.from(c.status), 503u64, "1: its request is answered 503 (the handler half is not built)");
-    let s = snap(&ep.endpoint);
+    let s = waitHs(&ep.endpoint, 0u32, 8000i64);
     expectUInt(s.stats.admitted, 1u64, "1: one Initial admitted");
     expectUInt(u64.from(s.conns), 1u64, "1: one connection held");
     expectUInt(u64.from(s.hs), 0u64, "1: its handshaking place is given back once the handshake is done");
