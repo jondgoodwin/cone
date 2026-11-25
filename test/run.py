@@ -1047,9 +1047,9 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         checks = []
         for entry in table.get("check", []):
             _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object", "within", "matches", "file"})
-            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta", "trust", "layout", "file"):
+            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta", "trust", "layout", "spans", "file"):
                 raise SuiteError(
-                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta', 'stdout', 'trust', 'layout' or 'file'")
+                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta', 'stdout', 'trust', 'layout', 'spans' or 'file'")
             # 'file' names a file the compile wrote into the scenario's output folder
             if entry["target"] == "file":
                 if not isinstance(entry.get("file"), str) or not entry["file"]:
@@ -1066,7 +1066,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             if "object" in entry:
                 if entry["target"] == "stdout":
                     raise SuiteError(f"{where}.check: 'object' names a generated object, which has no stdout")
-                if entry["target"] in ("trust", "layout"):
+                if entry["target"] in ("trust", "layout", "spans"):
                     raise SuiteError(f"{where}.check: {entry['target']!r} reads the scenario's own report, not a linked object's")
                 if entry["target"] == "asm":
                     raise SuiteError(f"{where}.check: 'asm' reads the scenario's own assembly, not a linked object's")
@@ -1077,7 +1077,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             if entry["target"] == "stdout" and category != "run":
                 raise SuiteError(
                     f"{where}.check: only a 'run' scenario produces stdout to check")
-            if entry["target"] in ("llvmir", "preir", "symbols", "asm", "trust", "layout") and category not in ("compile", "run"):
+            if entry["target"] in ("llvmir", "preir", "symbols", "asm", "trust", "layout", "spans") and category not in ("compile", "run"):
                 raise SuiteError(
                     f"{where}.check: a {category!r} scenario reaches no code generation")
             matches = parse_matches(f"{where}.check", entry.get("matches", []))
@@ -3172,6 +3172,20 @@ class Runner:
                 else:
                     (out_dir / f"{scenario.source.stem}.layout").write_text(layout.stdout, encoding="utf-8")
                     self.check_artifacts(result, scenario, out_dir, "layout")
+            # 'spans': what --spans prints (each declaration's place and the comment run above it), from a run of its own
+            if any(c.target == "spans" for c in scenario.checks):
+                spans_cmd = [str(self.conec), *spec.options, "--spans", "-o", out_rel, scenario.source_rel]
+                result.commands.append(quote(spans_cmd))
+                spans = execute(spans_cmd, REPO, out_dir, "conec-spans",
+                                self.compile_timeout_for(scenario, spec), self.args.max_output)
+                if spans.killed or spans.code != 0:
+                    result.status = FAIL
+                    result.problems.append("--spans "
+                                           + (f"was {spans.killed}" if spans.killed else f"exited {spans.code}")
+                                           + "\n" + indent(spans.stdout + spans.stderr))
+                else:
+                    (out_dir / f"{scenario.source.stem}.spans").write_text(spans.stdout, encoding="utf-8")
+                    self.check_artifacts(result, scenario, out_dir, "spans")
         if result.status == PASS and scenario.category == "run":
             self.link_and_run(result, scenario, spec, out_dir)
             if result.status == PASS:
@@ -3581,6 +3595,8 @@ class Runner:
                 text = normalize((out_dir / f"{stem}.trust").read_text(encoding="utf-8", errors="replace"))
             elif check.target == "layout":
                 text = normalize((out_dir / f"{stem}.layout").read_text(encoding="utf-8", errors="replace"))
+            elif check.target == "spans":
+                text = normalize((out_dir / f"{stem}.spans").read_text(encoding="utf-8", errors="replace"))
             elif check.target == "meta":
                 # What --meta-ir wrote: each '#each' with the IR of the passes the parser made of it
                 artifact = out_dir / f"{stem}.meta"

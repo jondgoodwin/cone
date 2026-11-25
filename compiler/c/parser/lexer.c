@@ -65,6 +65,9 @@ Lexer *lexNew(char *src, char *url) {
     newlex->genat = NULL;
     newlex->gennames = NULL;
     newlex->ngennames = 0;
+    newlex->cmtruns = (CmtRuns*)memAllocBlk(sizeof(CmtRuns));
+    newlex->cmtruns->items = NULL;
+    newlex->cmtruns->count = newlex->cmtruns->avail = 0;
     return newlex;
 }
 
@@ -1455,6 +1458,74 @@ void lexScanTickedIdent(char *srcp) {
     lex->srcp = srcp + 1;
 }
 
+// Note a comment the lexer has just passed: it lies from 'beg' to 'end', and
+// began on line 'startline'. One that begins its line, or follows a comment at
+// most one line above, is part of a run; a comment after code on its line (a
+// trailing one) belongs to no run. A stretch lexed twice (a mark restored)
+// notes nothing the second time.
+static void lexNoteComment(char *beg, char *end, uint32_t startline) {
+    CmtRuns *runs = lex->cmtruns;
+    if (runs == NULL)
+        return;
+    CmtRun *last = runs->count ? &runs->items[runs->count - 1] : NULL;
+    if (last && beg < last->end)
+        return;
+    int joins = last && startline == last->endline;
+    if (!joins) {
+        for (char *p = lex->linep; p < beg; ++p)
+            if (*p != ' ' && *p != '\t' && *p != '\r' && *p != '\x1a')
+                return;
+        joins = last && startline == last->endline + 1;
+    }
+    if (joins) {
+        last->end = end;
+        last->endline = lex->linenbr;
+        return;
+    }
+    if (runs->count == runs->avail) {
+        runs->avail = runs->avail ? runs->avail * 2 : 16;
+        CmtRun *grown = (CmtRun*)memAllocBlk(runs->avail * sizeof(CmtRun));
+        if (runs->count)
+            memcpy(grown, runs->items, runs->count * sizeof(CmtRun));
+        runs->items = grown;
+    }
+    CmtRun *run = &runs->items[runs->count++];
+    run->beg = beg;
+    run->end = end;
+    run->endline = lex->linenbr;
+}
+
+int lexCmtRunAbove(Lexer *lexer, char *start, char **beg, char **end) {
+    CmtRuns *runs = lexer->cmtruns;
+    if (runs == NULL || runs->count == 0)
+        return 0;
+    // The last run that ends before 'start'
+    uint32_t lo = 0, hi = runs->count;
+    while (lo < hi) {
+        uint32_t mid = (lo + hi) / 2;
+        if (runs->items[mid].end < start)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo == 0)
+        return 0;
+    CmtRun *run = &runs->items[lo - 1];
+    // Only white space, and one line break, lies between the run and 'start'
+    int newlines = 0;
+    for (char *p = run->end; p < start; ++p) {
+        if (*p == '\n')
+            ++newlines;
+        else if (*p != ' ' && *p != '\t' && *p != '\r' && *p != '\x1a')
+            return 0;
+    }
+    if (newlines != 1)
+        return 0;
+    *beg = run->beg;
+    *end = run->end;
+    return 1;
+}
+
 // Skip over nested block comment. Every line inside it is counted, so the
 // first diagnostic after the comment names the right line.
 char *lexBlockComment(char *srcp) {
@@ -1829,15 +1900,24 @@ void lexNextTokenx() {
             // Line comment: '//'. One opening a line of a generated include
             // file may be a line mark
             if (*(srcp+1)=='/') {
-                if ((lex->flags & LexLineMarks) && srcp == lex->linep)
+                char *cmtbeg = srcp;
+                int linemark = 0;
+                if ((lex->flags & LexLineMarks) && srcp == lex->linep) {
                     lexLineMark(srcp);
+                    linemark = strncmp(srcp, LexLineMark, strlen(LexLineMark)) == 0;
+                }
                 srcp += 2;
                 while (*srcp && *srcp!='\n')
                     srcp++;
+                if (!linemark)
+                    lexNoteComment(cmtbeg, srcp, lex->linenbr);
             }
             // Block comment, nested: '/*'
             else if (*(srcp + 1) == '*') {
+                char *cmtbeg = srcp;
+                uint32_t cmtline = lex->linenbr;
                 srcp = lexBlockComment(srcp+2);
+                lexNoteComment(cmtbeg, srcp, cmtline);
             }
             // '/' operator (e.g., division)
             else if (*(srcp + 1) == '=') {

@@ -44,6 +44,10 @@ typedef struct DclSpan {
                         // ShapeChanging there)
     char *isend;        // A struct: just past the last entry of its 'is' list; NULL where it has none
     char *end;          // Just past its last token, its ';' or '}' included
+    char *doc;          // The run of comments on the lines directly above it, no blank line
+    char *docend;       // between: raw text, markers included, doc up to docend; NULL where there
+                        // is none. Groundwork for doc comments and the formatter; nothing
+                        // reads it but the --spans dump
     uint16_t kind;      // DclSpanKind
     uint16_t typed;     // A global: its type is written
     struct DclSpans *members; // An extern block's items; NULL for anything else

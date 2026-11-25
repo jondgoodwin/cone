@@ -1439,6 +1439,21 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
   ends and whether its type is written. Only the include-file generator reads
   them ([module](../nodes/module.md), "Generating the include file"), and
   `--spans` prints the root module's.
+- **The comment run above a declaration is kept** (groundwork for doc comments
+  and the formatter; no spelling is decided, and nothing reads it in checking
+  or generation). The lexer notes each run of comments, line or block, that
+  begins its own line, each on the line after the one before (`CmtRuns` on the
+  `Lexer`, shared by the copies a line mark and an interpolation make); a
+  trailing comment after code, and a generated include file's `//#line` marks,
+  belong to no run. `dclSpanAdd` asks `lexCmtRunAbove` for the run that ends on
+  the line directly above the span's first token, nothing but white space and
+  one line break between, and keeps it raw (markers included) as the span's
+  `doc` and `docend`. So every declaration that has a span has its run: a
+  module's line, functions, globals, constants, aliases, macros, module traits,
+  structs, enums and traits, their members, and each item of an `extern` block;
+  a parameter or a statement has none. The span is the side table: no node grew
+  a field. `--spans` prints it as `doc "..."`, which is how `lexical_doc_runs`
+  reads it.
 
 **Not yet true:**
 
@@ -1514,6 +1529,7 @@ numbers.
 | | `lexScanStr` (interpolated) | `$"..."` as one `InterpToken`: the text read as a plain literal's, `{{`/`}}` for a brace, and each brace's expression left as source (`InterpPart`, found by `lexInterpSkipBraces`, which steps over strings and characters inside); an open brace no close brace closes ends the literal at the line's last quote, so the rest of the file lexes as before |
 | | `parseInterpPieces`, `parseEntries` (`parseexpr.c`) | an interpolated string's expressions read by a lexer of their own over the brace's source (`lexPush`/`lexPop`); a whole entry of a `<-` list splices its pieces into the list, anywhere else it is `String() <- pieces` |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
+| | `lexNoteComment`, `lexCmtRunAbove` | note each comment passed into the file's runs; find the run directly above a token (used by `dclSpanAdd`) |
 | | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, and not `mod trait`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
 | | `lexIdentOpensType` | whether the name the lexer is on, in a `&fn` signature's parameter list, begins a type (followed by `.` or by type arguments), read off the text with nothing lexed (section 2) |
 | | `lexNextOpensValue` | whether white space and a value follow the name the lexer is on, which makes `fill` the word in an entry after `<-` (section 2) |

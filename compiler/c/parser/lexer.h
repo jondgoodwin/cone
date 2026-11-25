@@ -31,6 +31,25 @@ typedef struct InterpLit {
     InterpPart parts[1];
 } InterpLit;
 
+// A run of comments the lexer passed: line (//) or block comments, each on the
+// line after the one before it, in the file's text from 'beg' to 'end' (the
+// newline that ends the last line comment, or just past the last '*/'). It is
+// groundwork for doc comments and the formatter: nothing yet reads one but
+// dclSpanAdd, which gives a declaration the run directly above it.
+typedef struct CmtRun {
+    char *beg;
+    char *end;
+    uint32_t endline;  // The line 'end' is on
+} CmtRun;
+
+// A source file's runs, in the order written. One header is shared by every
+// Lexer copied from the file's (a line mark's, an interpolation's)
+typedef struct CmtRuns {
+    CmtRun *items;
+    uint32_t count;
+    uint32_t avail;
+} CmtRuns;
+
 // Lexer state (one per source file)
 typedef struct Lexer {
     // Value info about a discovered token
@@ -52,6 +71,8 @@ typedef struct Lexer {
                       // for: url's, but where a line mark renamed the url (LexLineMarks)
     char *fname;    // The filename of the url (no extension)
     char *source;    // The source text (0-terminated)
+
+    CmtRuns *cmtruns;  // The comment runs passed so far (CmtRun)
 
     struct Lexer *next;    // Next lexer (linked list of injected lexers)
     struct Lexer *prev; // Previous lexer
@@ -291,6 +312,12 @@ int parseMetaIsBound(Name *name);
 
 // Is the current token one of the range operators?
 #define lexIsRangeOp() (lex->toktype == DotDotToken || lex->toktype == DotDotLessToken || lex->toktype == DotDotEqToken || lex->toktype == EllipsisToken)
+
+// The run of comments that ends on the line directly above 'start' (a token of
+// the lexer's source, here the first of a declaration), with no blank line
+// between: its text is *beg up to *end, raw, markers included. False where
+// there is none.
+int lexCmtRunAbove(Lexer *lexer, char *start, char **beg, char **end);
 
 // Lexer functions
 void lexInit(ConeOptions *opt);
