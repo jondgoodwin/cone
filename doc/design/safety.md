@@ -128,7 +128,9 @@ says how many instances the run made. `tools/trustmap.py` runs it through
 Congo's build descriptions over every package, and over each package's tests and
 examples, so that what real code instantiates is counted
 (`compiler/c/ir/trustreport.c` is the walk). With `--report-trust` a library
-description still writes its include file, which that tool relies on.
+description still writes its include file, which that tool relies on. The tool exits 1
+where anything did not compile for the report, and `tools/congo/test_congo.py`
+(`TrustMap`) runs it over one package.
 
 **`trust` is meant to be narrow.** It is framed as a remedy for compiler
 over-reach — constraints that are "sometimes overzealous, preventing behavior
