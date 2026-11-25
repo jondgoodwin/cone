@@ -812,7 +812,7 @@ def registry_folders() -> list[Path]:
     after every folder."""
     folders = [REPO_PACKAGES] if REPO_PACKAGES.is_dir() else []
     config = config_path()
-    listed = machine_config().get("registry", {}).get("folders", [])
+    listed = registry_table().get("folders", [])
     if not isinstance(listed, list) or not all(isinstance(f, str) for f in listed):
         raise CongoError(f"{config}: [registry] folders must be a list of folder paths")
     for entry in listed:
@@ -834,10 +834,18 @@ def machine_config() -> dict:
         raise CongoError(f"{config}: cannot read the machine config: {exc}") from None
 
 
+def registry_table() -> dict:
+    """The machine config's [registry] table; {} where there is none."""
+    table = machine_config().get("registry", {})
+    if not isinstance(table, dict):
+        raise CongoError(f"{config_path()}: [registry] must be a table, with folders and indexes")
+    return table
+
+
 def registry_indexes() -> list[str]:
     """The index registries the machine config lists, in order: the git URLs (or
     folders) of repositories holding one TOML file per package."""
-    listed = machine_config().get("registry", {}).get("indexes", [])
+    listed = registry_table().get("indexes", [])
     if not isinstance(listed, list) or not all(isinstance(f, str) and f for f in listed):
         raise CongoError(f"{config_path()}: [registry] indexes must be a list of git URLs")
     return listed

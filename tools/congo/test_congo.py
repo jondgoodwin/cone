@@ -4942,6 +4942,14 @@ class IndexRegistries(unittest.TestCase):
         self.app("alpha")
         self.assertEqual(self.program_output(self.congo("run", "app.cone", cwd=self.root)), "11\n")
 
+    def test_a_registry_key_that_is_not_a_table_is_refused(self):
+        write(self.root / "home" / "config.toml", "registry = 1\n")
+        self.app("nosuch")
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("config.toml: [registry] must be a table, with folders and indexes", run.stderr)
+        self.assertNotIn("Traceback", run.stderr)
+
     def test_an_empty_registry_option_names_no_index(self):
         # congo.py's `if args.registry` is false for "": the configured index is used,
         # and with none configured the refusal is the same as with no option
