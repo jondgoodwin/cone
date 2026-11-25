@@ -9,35 +9,42 @@
 // meanwhile: the actor handles its other messages.
 //
 //   mod hello;
+//   import stdio use *;
 //   import iobuf use IoBuf;
 //   import iocore use SocketAddr, IoError;
 //   import actors;
 //   import aio use Socket;
 //
 //   // The Socket an answer holds. A failure is reported and the program stops:
-//   an empty Socket here would leave the awaits after it waiting for ever
+//   // an empty Socket here would leave the awaits after it waiting for ever
 //   fn socketOf(r: Result[Socket, IoError]) Socket {
-//     match r {
-//       case let Ok(s) {s}
-//       case let Err(e) {
-//         printUInt(u64.from(e.code));
-//         panic("socketOf: the operation failed");
-//       }
+//     var res = r;
+//     var s = Socket.none();
+//     match &mut res {
+//       case var &mut Ok(ok) {s <-> *ok;}
+//       case let &mut Err(e) {panic("socketOf: the operation failed");}
 //     }
+//     s
 //   }
 //
 //   actor Client {
-//     pub async fn send(self, port u16) {
-//       imm conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
-//       mut buf = IoBuf(64usize);
+//     pub async fn send(self, port: u16) {
+//       let conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
+//       var buf = IoBuf(64usize);
 //       buf.append("hello");
-//       imm sent = await conn.write(buf);          // pauses until all of it is sent
+//       let sent = await conn.write(buf);          // pauses until all of it is sent
 //       match sent {
-//         case imm n Ok {...n bytes were sent...}
-//         case imm e Err {...e.kind() says what went wrong (IoErrorKind)...}
+//         case let Ok(n) {...n bytes were sent...}
+//         case let Err(e) {...e.kind() says what went wrong (IoErrorKind)...}
 //       }
 //     }                                           // conn closes here
 //   }
+//
+// A behaviour paused on I/O does not keep the program open. A main that only
+// starts such an actor returns at once and the program ends with status 0 and
+// no message, the I/O cancelled. Main waits for the work: on a channel the
+// work sends to when it is done (doc/manual/conc-io.html, "Awaiting I/O"), or
+// with actors.waitUntilIdle().
 //
 // (tests/manual.cone, the reference manual's example, is a server and this
 // client, run.)
