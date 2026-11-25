@@ -295,5 +295,6 @@ int main(int argc, char **argv) {
         flowPathPrint();
         dropPrint();
     }
+    nameUseShadowNotes();
     errorSummary();
 }

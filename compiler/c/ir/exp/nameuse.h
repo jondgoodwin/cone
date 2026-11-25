@@ -57,6 +57,10 @@ void nameUsePrint(NameUseNode *name);
 // Handle name resolution for name use references: bind dclnode to the
 // declaration the name refers to, in this module or another
 void nameUseNameRes(NameResState *pstate, NameUseNode **namep);
+// After a failed compile, say of each name that meant an enum's variant inside
+// the enum's braces, over a type of the module, that it did
+void nameUseShadowNotes(void);
+
 // Inside a body an importer expands (NameResState.expander), mark what a bound
 // name use names DclExpandReached, for a library compile to export
 void nameUseMarkExpandReached(NameResState *pstate, NameUseNode *name);

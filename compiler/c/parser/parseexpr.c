@@ -766,6 +766,29 @@ static void parseRangeBareAt(LexSpot spot) {
     lex->linenbr = now.linenbr;
 }
 
+// The name a '[...]' suffix of 'node' would name lifetimes on: 'node' itself
+// when it is a name alone, and the last name of a path, 'ir.Compile' or
+// 'stack[i64].Cursor', which name resolution collapses to that name with its
+// lifetimes (and refuses where the path goes through a value). NULL for any
+// other node.
+static NameUseNode *parseLifeHolder(INode *node) {
+    if (node == NULL)
+        return NULL;
+    if (node->tag == NameUseTag)
+        return (NameUseNode*)node;
+    if (node->tag != FnCallTag)
+        return NULL;
+    FnCallNode *path = (FnCallNode*)node;
+    if (path->methfld == NULL || path->methfld->tag != NameUseTag || path->args != NULL
+        || (path->flags & (FlagIndex | FlagOperator)))
+        return NULL;
+    INode *base = path->objfn;
+    // 'stack[i64].Cursor': a generic module's instance stands before the name
+    if (base && base->tag == FnCallTag && (base->flags & FlagIndex) && ((FnCallNode*)base)->methfld == NULL)
+        base = ((FnCallNode*)base)->objfn;
+    return parseLifeHolder(base) ? (NameUseNode*)path->methfld : NULL;
+}
+
 // Parse the arguments of an index, 'x[...]': a list of expressions, or one range
 // that a borrow makes a slice of part of an array (doc/manual/
 // lib-collections.html#subslices, "Subslices"). 'a..=b' includes b and 'a..<b' stops before it; a
@@ -815,8 +838,9 @@ static Nodes *parseIndexArgs(ParseState *parse, FnCallNode *fncall) {
         lifeuse->names[lifeuse->count++] = name;
     }
     if (allowed) {
-        if (fncall->objfn && fncall->objfn->tag == NameUseTag)
-            ((NameUseNode*)fncall->objfn)->lifeuse = lifeuse;
+        NameUseNode *holder = parseLifeHolder(fncall->objfn);
+        if (holder)
+            holder->lifeuse = lifeuse;
         else
             errorMsgNode(lifeuse->at, ErrorLifetimeArgs, "Lifetimes are named on a struct's use by its name: 'Cursor['a]'.");
     }
@@ -1041,8 +1065,9 @@ static INode *parseSuffixUntil(ParseState *parse, INode *node, uint16_t flags, i
             fncall->flags |= flags | FlagIndex;
             fncall->args = parseIndexArgs(parse, fncall);
             // A struct's use naming only its lifetimes, 'Cursor['a]', is the
-            // name itself, which holds them
-            if (fncall->args->used == 0 && node->tag == NameUseTag && ((NameUseNode*)node)->lifeuse)
+            // name or path itself, whose last name holds them
+            NameUseNode *holder = parseLifeHolder(node);
+            if (fncall->args->used == 0 && holder && holder->lifeuse)
                 continue;
             node = (INode*)fncall;
         }
