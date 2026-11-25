@@ -1,0 +1,104 @@
+// ======== the cotangent Laplacian and the vertex areas ========
+
+// Every triangle of the mesh, each face cut as PolyMesh.cutFace cuts it, as three vertex
+// numbers a triangle, face after face
+fn meshTriangles(m: &PolyMesh) List[u32] {
+  var out = List[u32]();
+  var f = 0usize;
+  while f < m.faceCount() {
+    let vs = m.faceVertices(u32.from(f));
+    var cut = List[u32]();
+    m.cutFace(u32.from(f), &mut cut);
+    var k = 0usize;
+    while k < cut.len() {
+      out.push(*vs[usize.from(*cut[k])]);
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  out
+}
+
+// The length of the cross product of two vectors, in f64
+fn crossLength(u: DVec3, w: DVec3) f64 {
+  let x = u.y * w.z - u.z * w.y;
+  let y = u.z * w.x - u.x * w.z;
+  let z = u.x * w.y - u.y * w.x;
+  (x * x + y * y + z * z).sqrt()
+}
+
+// The cotangent Laplacian of the mesh: a vertexCount x vertexCount matrix. The entry for
+// an edge i-j is half the sum of the cotangents of the angles opposite it in the
+// triangles on it (each face cut as PolyMesh.cutFace cuts it), and each diagonal entry is
+// minus its row's sum, so every row sums to zero and (L x)_i = sum_j w_ij (x_j - x_i).
+// A triangle with no area adds nothing. The weights are not clamped, so an obtuse
+// triangle gives a negative one.
+pub fn cotangentLaplacian(m: &PolyMesh) SparseMatrix {
+  let tris = meshTriangles(m);
+  let n = m.vertexCount();
+  var rows = List[u32]();
+  var cols = List[u32]();
+  var vals = List[f64]();
+  var diag = List[f64].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    diag.push(0.0);
+    i = i + 1usize;
+  }
+  var t = 0usize;
+  while t + 2usize < tris.len() {
+    var c = 0usize;
+    while c < 3usize {
+      // the corner at vertex a; its opposite edge is b-d
+      let a = *tris[t + c];
+      let b = *tris[t + (c + 1usize) % 3usize];
+      let d = *tris[t + (c + 2usize) % 3usize];
+      let pa = DVec3.from(*m.positions[usize.from(a)]);
+      let u = DVec3.from(*m.positions[usize.from(b)]) - pa;
+      let w = DVec3.from(*m.positions[usize.from(d)]) - pa;
+      let cr = crossLength(u, w);
+      if cr > 0.0 {
+        let half = 0.5 * u.dot(w) / cr;
+        rows.push(b); cols.push(d); vals.push(half);
+        rows.push(d); cols.push(b); vals.push(half);
+        diag.set(usize.from(b), *diag[usize.from(b)] - half);
+        diag.set(usize.from(d), *diag[usize.from(d)] - half);
+      }
+      c = c + 1usize;
+    }
+    t = t + 3usize;
+  }
+  i = 0usize;
+  while i < n {
+    rows.push(u32.from(i)); cols.push(u32.from(i)); vals.push(*diag[i]);
+    i = i + 1usize;
+  }
+  SparseMatrix.fromTriplets(n, rows.view(), cols.view(), vals.view())
+}
+
+// A third of the area of the triangles round each vertex, a list of vertexCount values
+// that sums to the mesh's area (each face cut as PolyMesh.cutFace cuts it)
+pub fn vertexAreas(m: &PolyMesh) List[f64] {
+  let tris = meshTriangles(m);
+  var out = List[f64].withCapacity(m.vertexCount());
+  var i = 0usize;
+  while i < m.vertexCount() {
+    out.push(0.0);
+    i = i + 1usize;
+  }
+  var t = 0usize;
+  while t + 2usize < tris.len() {
+    let pa = DVec3.from(*m.positions[usize.from(*tris[t])]);
+    let pb = DVec3.from(*m.positions[usize.from(*tris[t + 1usize])]);
+    let pc = DVec3.from(*m.positions[usize.from(*tris[t + 2usize])]);
+    let third = crossLength(pb - pa, pc - pa) / 6.0;
+    var c = 0usize;
+    while c < 3usize {
+      let v = usize.from(*tris[t + c]);
+      out.set(v, *out[v] + third);
+      c = c + 1usize;
+    }
+    t = t + 3usize;
+  }
+  out
+}
