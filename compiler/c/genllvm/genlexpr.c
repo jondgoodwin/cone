@@ -1045,7 +1045,10 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         }
 
         // Now generate function's block, as if any block, returning block's value
+        // (Its locals are the caller's slots, and not described to a debugger)
+        ++gen->inlinedepth;
         LLVMValueRef inlined = genlBlock(gen, (BlockNode *)fndcl->value);
+        --gen->inlinedepth;
         // A construction that waited must have run where the body wrote it
         for (uint32_t i = defermark; i < gen->deferredcnt; ++i) {
             if (!gen->deferred[i].wait->done)
@@ -2516,6 +2519,7 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     if (!genlGenFrameVar(gen, var)) {
         var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
         genlRootNote(gen, var->llvmvar, var->vtype);
+        genlDiVar(gen, var, var->llvmvar, 0);
     }
     // A construction by a declared 'init' fills the variable in place
     if (var->value && genlNewInto(gen, var->value, var->llvmvar))
