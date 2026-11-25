@@ -50,7 +50,7 @@ registry's `fallback` is 0), so `--intrinsic-fallback` changes nothing for them.
 type outside the class is refused for `mem.abs[T]` and the rest by `intrinsicClassCheck`
 as for the bit operations; a method asked of a type that lacks it is `ErrorNoMbr`.
 
-**A float's `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2`, `log10`, `pow`,
+**A float's `trunc`, `copysign`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2`, `log10`, `pow`,
 `powi`, `hypot`, `cbrt`, `sinh`, `cosh`, `tanh`, `isNaN`, `isInfinite` and `isFinite` are methods
 of the float types alone, declared in C and not in core.** `nbrMathMethods` (`corenumber.c`) adds
 them to `f32` and `f64` after the shared ones, kinds `TanIntrinsic` to `IsFiniteIntrinsic`, each
@@ -59,7 +59,9 @@ node's `typearg` the float type, and they go through `genlDeclaredIntrinsic` to
 have them). Each is LLVM's overloaded intrinsic of the same meaning (`llvm.tan`, `llvm.atan2`,
 `llvm.log` for `ln`, `llvm.pow`, `llvm.sinh` and the rest), except: `powi` is `llvm.powi` (on a
 GPU, `pow` of the magnitude, negated for a negative base and an odd exponent, and 1 for an
-exponent of 0, because GLSL's `pow` is undefined for a negative base); `hypot` and `cbrt` have no intrinsic, so
+exponent of 0, because GLSL's `pow` is undefined for a negative base); `copysign` is
+`llvm.copysign` (on a GPU, an and of each value's bits and an or of the two, because the SPIR-V
+back end cannot select it); `hypot` and `cbrt` have no intrinsic, so
 they call the C library by name (`genlCallLibm`; an `f32`'s `hypot` through the double form,
 the UCRT having no `hypotf`), and on a GPU are `sqrt(fma(x, x, y*y))` and the sign of `x` times
 `exp2(log2|x| / 3)`; `isNaN` is `fcmp une x, x` (Shader has no `OpUnordered`), `isInfinite` and

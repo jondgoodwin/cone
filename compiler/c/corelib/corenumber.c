@@ -393,7 +393,8 @@ static void nbrMathMethods(NbrNode *nbrtype) {
 
     // A float's transcendental and classifying methods. Rust's names, except
     // that the predicates are camelCase as the bit methods are ('signBit').
-    // sig: 0 = (self), 1 = (self, other), 2 = (self, n: i32), 3 = (self) bool
+    // sig: 0 = (self), 1 = (self, other), 2 = (self, n: i32), 3 = (self) bool,
+    // 4 = (self, sign)
     if (isfloat) {
         FnSigNode *powisig = newFnSigNode();
         powisig->rettype = (INode*)selftype;
@@ -402,7 +403,12 @@ static void nbrMathMethods(NbrNode *nbrtype) {
         FnSigNode *testsig = newFnSigNode();
         testsig->rettype = (INode*)boolType;
         nodesAdd(&testsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+        FnSigNode *signsig = newFnSigNode();
+        signsig->rettype = (INode*)selftype;
+        nodesAdd(&signsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+        nodesAdd(&signsig->parms, (INode *)newVarDclFull(nametblFind("sign", 4), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
         static struct { char *name; int16_t kind; int sig; } floatmeths[] = {
+            {"trunc", TruncIntrinsic, 0}, {"copysign", CopysignIntrinsic, 4},
             {"tan", TanIntrinsic, 0}, {"asin", AsinIntrinsic, 0}, {"acos", AcosIntrinsic, 0},
             {"atan", AtanIntrinsic, 0}, {"atan2", Atan2Intrinsic, 1},
             {"exp", ExpIntrinsic, 0}, {"exp2", Exp2Intrinsic, 0}, {"ln", LnIntrinsic, 0},
@@ -417,7 +423,7 @@ static void nbrMathMethods(NbrNode *nbrtype) {
             node->typearg = (INode*)selftype;
             iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(nametblFind(floatmeths[i].name, strlen(floatmeths[i].name)),
                 FlagMethFld | FlagPub, (INode *)(floatmeths[i].sig == 0 ? unarysig : floatmeths[i].sig == 1 ? binarysig
-                    : floatmeths[i].sig == 2 ? powisig : testsig), (INode *)node));
+                    : floatmeths[i].sig == 2 ? powisig : floatmeths[i].sig == 3 ? testsig : signsig), (INode *)node));
         }
     }
 }

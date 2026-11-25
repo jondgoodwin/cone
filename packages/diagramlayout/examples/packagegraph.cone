@@ -29,44 +29,16 @@ import render use *;
 import vector2d use *;
 import msdftext use *;
 import diagramlayout use *;
+import imagedecode;
 
 fn saveBmp(file: &Path, p: *u8, w: u32, h: u32) {
-  let rowBytes = w * 3u32;
-  let pad = (4u32 - rowBytes % 4u32) % 4u32;
-  let size = 54u32 + (rowBytes + pad) * h;
-  var b = List[u8].withCapacity(usize.from(size));
-  b.push('B');
-  b.push('M');
-  var words = Array[u32, 13]() <- fill 0u32;
-  words[0] = size;
-  words[2] = 54u32;
-  words[3] = 40u32;
-  words[4] = w;
-  words[5] = h;
-  words[6] = 0x00180001u32;
-  var k = 0usize;
-  while k < 13usize {
-    b.push(u8.from(words[k] & 255u32));
-    b.push(u8.from((words[k] >> 8u32) & 255u32));
-    b.push(u8.from((words[k] >> 16u32) & 255u32));
-    b.push(u8.from((words[k] >> 24u32) & 255u32));
-    k = k + 1usize;
+  // p is the read-back's RGBA pixels, rows top first
+  let rgba = mem.sliceFromParts(p, usize.from(w * h * 4u32));
+  let bmp = imagedecode.encodeBmp(i32.from(w), i32.from(h), 4i32, rgba, false);
+  match bmp.contiguous(0usize, bmp.len()) {
+    case let Some(v) { if let Err(e) = fs.writeFile(file, v) { print <- "could not write the picture: ", e, "\n"; } }
+    case is None { print <- "could not write the picture\n"; }
   }
-  var y = h;
-  while y > 0u32 {
-    y = y - 1u32;
-    var x = 0u32;
-    while x < w {
-      let at = p + usize.from((y * w + x) * 4u32);
-      b.push(*(at + 2usize));
-      b.push(*(at + 1usize));
-      b.push(*at);
-      x = x + 1u32;
-    }
-    var q = 0u32;
-    while q < pad { b.push(0u8); q = q + 1u32; }
-  }
-  if let Err(e) = fs.writeFile(file, b.view()) { print <- "could not write the picture: ", e, "\n"; }
 }
 
 // ---- reading the packages ----
