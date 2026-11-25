@@ -1,0 +1,97 @@
+// sortBy and sortByKey on lists that hold borrows (a List[&Shape], a List[(f64, &str)]) sort in place. They were
+// refused 1085 and 1409 inside core.cone, at lines the caller did not write (row 772): the loan walk read the pivot's
+// raw pointer ('&held' as '*T') and the merge's scratch reference as storing a borrow of a local into the list.
+// Every printed value was checked by hand against the source: the areas 6, 1, 8 sort to 1, 6, 8 (by sortByKey, and
+// by sortBy with the comparison reversed, 8, 6, 1), and the pairs (2.5, "b"), (0.5, "a"), (1.5, "c") sort by their
+// number to a, c, b; by 'sortBy' with the number's order reversed they are b, c, a. The 300 shapes behind
+// virtual references ('&<Fig') are sorted by named functions: a key closure written in the call stays borrowed by a
+// list of virtual references, which the checker cannot see into, as it does for 'sortUnstableByKey'.
+
+mod collection_sort_borrows;
+
+import stdio use *;
+import collections use *;
+
+struct Shape {
+  w: i32;
+  h: i32;
+  fn area(self: &) i32 { self.w * self.h }
+}
+
+fn bigFirst(a: &&Shape, b: &&Shape) i32 {
+  let x = a.area();
+  let y = b.area();
+  if x > y { -1i32 } else if x < y { 1i32 } else { 0i32 }
+}
+
+trait Fig { pub fn size(self: &) i32; }
+struct Sq is Fig { w: i32; pub fn size(self: &) i32 { self.w } }
+
+fn figSize(f: &&<Fig) i32 { f.size() }
+
+fn numberDown(a: &(f64, &str), b: &(f64, &str)) i32 { b.0 <=> a.0 }
+
+fn show(l: &List[&Shape]) {
+  var i = 0usize;
+  while i < l.len {
+    printStr(if l[i].area() == 1i32 { "1 " } else if l[i].area() == 6i32 { "6 " } else { "8 " });
+    i = i + 1usize;
+  }
+  printStr("\n");
+}
+
+fn main() {
+  var a = Shape(2i32, 3i32);
+  var b = Shape(1i32, 1i32);
+  var c = Shape(4i32, 2i32);
+  var l = List[&Shape]();
+  l.push(&a); l.push(&b); l.push(&c);
+  l.sortByKey(s => s.area());
+  show(&l);
+  l.sortBy(&bigFirst);
+  show(&l);
+
+  var t = List[(f64, &str)]();
+  t.push((2.5, "b")); t.push((0.5, "a")); t.push((1.5, "c"));
+  t.sortByKey(e => e.0);
+  var j = 0usize;
+  while j < t.len { printStr(t[j].1); j = j + 1usize; }
+  printStr("\n");
+  t.sortBy(&numberDown);
+  j = 0usize;
+  while j < t.len { printStr(t[j].1); j = j + 1usize; }
+  printStr("\n");
+
+  // 300 virtual references, long enough for the merge and the quicksort paths: sizes (i * 137) % 300 + 1
+  var squares = List[Sq]();
+  var n = 0i32;
+  while n < 300i32 { squares.push(Sq((n * 137i32) % 300i32 + 1i32)); n = n + 1i32; }
+  var figs = List[&<Fig]();
+  var m = 0usize;
+  while m < squares.len { figs.push(&squares[m]); m = m + 1usize; }
+  figs.sortByKey(&figSize);
+  var figsInOrder = true;
+  m = 0usize;
+  while m < figs.len {
+    if figs[m].size() != i32.from(m) + 1i32 { figsInOrder = false; }
+    m = m + 1usize;
+  }
+  printStr(if figsInOrder { "300 figs in order\n" } else { "300 figs NOT in order\n" });
+
+  // 300 borrows of 300 shapes (areas (i * 137) % 300 + 1: each of 1 to 300 once), long enough for the merge and the
+  // quicksort paths: sorted by area, then every area from 1 to 300 appears in turn
+  var owners = List[Shape]();
+  var i = 0i32;
+  while i < 300i32 { owners.push(Shape((i * 137i32) % 300i32 + 1i32, 1i32)); i = i + 1i32; }
+  var many = List[&Shape]();
+  var k = 0usize;
+  while k < owners.len { many.push(&owners[k]); k = k + 1usize; }
+  many.sortByKey(s => s.area());
+  var inOrder = true;
+  k = 0usize;
+  while k < many.len {
+    if many[k].area() != i32.from(k) + 1i32 { inOrder = false; }
+    k = k + 1usize;
+  }
+  printStr(if inOrder { "300 in order\n" } else { "300 NOT in order\n" });
+}
