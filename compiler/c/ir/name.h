@@ -100,8 +100,8 @@ extern Name *shrName;      // ">>"
 
 extern Name *incrName;     // "++"
 extern Name *decrName;     // "--"
-extern Name *incrPostName; // "_++"
-extern Name *decrPostName; // "_--"
+extern Name *incrPostName; // "+++"
+extern Name *decrPostName; // "---"
 
 extern Name *eqName;       // "=="
 extern Name *neName;       // "!="
