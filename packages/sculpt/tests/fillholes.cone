@@ -1,0 +1,379 @@
+// The sculpt package's hole filling, fillHole, checked with the testing package against values worked
+// out by hand; only a failure prints, so fillholes.out holds the summary alone. Every result must
+// pass validate().
+//
+// - The cube PolyMesh.cube(1) less face 0: a hole of 4 edges, a quad of side 2 and area 4. Any
+//   triangulation is 2 triangles, so the result has 5 + 2 = 7 faces,
+//   8 vertices, 12 + 1 = 13 edges, closed, and the cube's volume 8 again (the diagonal lies in
+//   the quad's own plane).
+// - A regular hexagon hole of radius 1 in a flat ring (outer hexagon radius 2, six quads): a
+//   triangulation of a convex hexagon has 6 - 2 = 4 triangles, and any covers the hexagon's area
+//   6 x (sqrt 3 / 4) = 2.598076.
+// - A flat 10 x 10 grid of unit quads with the central 4 x 4 faces deleted: a hole of 16 edges whose
+//   patch covers the 4 x 4 square, area 16, every vertex at z = 0. Refined, each boundary vertex
+//   has scale 1 (a corner too: its two edges are 1), and the splits make triangles of side about
+//   0.7 to 1.2: new vertices exist, all at z = 0 (a flat hole stays flat, the fairing included), and
+//   the mean side of the patch's triangles lies between 0.6 and 1.6.
+// - A lathed unit sphere (12 columns, 8 rows, poles on the axis), the faces with centroid y > 0.6
+//   deleted and the cap filled, refined: closed, and every patch triangle faces outward (its
+//   normal . its centroid > 0). The volume is recorded in the report (a cap of the sphere is
+//   convex outward, and the patch is flat-ish, so it is less than the sphere's).
+// - Refused, one problem line each, the mesh unchanged: a hole of 600 edges (a flat ring of 600 quads),
+//   and an interior vertex.
+// - Channels: a vertex channel "w" = v with fill 7, a face channel "id" with fill 3 and an edge channel
+//   "crease" (fill 0) on the cube less face 0: the old values stay, a new triangle's face value is 3,
+//   a new vertex's (from the refined grid) is 7, the new edge's crease is 0.
+
+mod fillholes;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+let near = 0.00001;
+
+fn clean(m: &PolyMesh, label: &Array[u8]) {
+  let problems = m.validate();
+  expectInt(i64.from(problems.len()), 0, label);
+}
+
+fn counts(m: &PolyMesh, nv: i64, ne: i64, nf: i64, label: &Array[u8]) {
+  expectInt(i64.from(m.vertexCount()), nv, label);
+  expectInt(i64.from(m.edgeCount()), ne, label);
+  expectInt(i64.from(m.faceCount()), nf, label);
+}
+
+fn volume(m: &PolyMesh) f32 {
+  var sum: f32 = 0.;
+  var f = 0usize;
+  while f < m.faceCount() {
+    let pts = m.facePositions(u32.from(f));
+    var i = 1usize;
+    while i + 1usize < pts.len() {
+      sum = sum + pts[0usize].dot(pts[i].cross(*pts[i + 1usize]));
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.
+}
+
+fn boundaryEdges(m: &PolyMesh) i64 {
+  var n = 0i64;
+  var e = 0usize;
+  while e < m.edgeCount() {
+    if m.isBoundaryEdge(u32.from(e)) { n = n + 1i64; }
+    e = e + 1usize;
+  }
+  n
+}
+
+fn firstBoundary(m: &PolyMesh) u32 {
+  var v = 0u32;
+  while usize.from(v) < m.vertexCount() {
+    if m.isBoundaryVertex(v) { return v; }
+    v = v + 1u32;
+  }
+  NoIndex
+}
+
+// The patch faces' total area
+fn patchArea(h: &HoleFill) f32 {
+  var a: f32 = 0.;
+  var i = 0usize;
+  while i < h.faces.len() {
+    let pts = h.mesh.facePositions(*h.faces[i]);
+    a = a + (*pts[1usize] - *pts[0usize]).cross(*pts[2usize] - *pts[0usize]).length() * 0.5;
+    i = i + 1usize;
+  }
+  a
+}
+
+fn patchMeanSide(h: &HoleFill) f32 {
+  var sum: f32 = 0.;
+  var n = 0usize;
+  var i = 0usize;
+  while i < h.faces.len() {
+    let pts = h.mesh.facePositions(*h.faces[i]);
+    var k = 0usize;
+    while k < 3usize {
+      sum = sum + (*pts[(k + 1usize) % 3usize] - *pts[k]).length();
+      n = n + 1usize;
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+  sum / f32.from(n)
+}
+
+fn cubeHole() PolyMesh {
+  let one: Array[u32, 1] = [0u32];
+  deleteFaces(&PolyMesh.cube(1.), &one)
+}
+
+fn polyMesh(pts: &List[Vec3], sizes: &List[u32], idx: &List[u32]) PolyMesh {
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), sizes.view(), idx.view(), &mut problems)
+}
+
+// A flat ring: inner n-gon of radius r, outer of radius 2r, n quads facing +z
+fn ring(n: u32, r: f32) PolyMesh {
+  var pts = List[Vec3]();
+  var k = 0u32;
+  while k < n {
+    let a = 2. * pi * f32.from(k) / f32.from(n);
+    pts.push(Vec3(r * a.cos(), r * a.sin(), 0.));
+    k = k + 1u32;
+  }
+  k = 0u32;
+  while k < n {
+    let a = 2. * pi * f32.from(k) / f32.from(n);
+    pts.push(Vec3(2. * r * a.cos(), 2. * r * a.sin(), 0.));
+    k = k + 1u32;
+  }
+  var sizes = List[u32]();
+  var idx = List[u32]();
+  k = 0u32;
+  while k < n {
+    let k1 = (k + 1u32) % n;
+    sizes.push(4u32);
+    idx.push(k);
+    idx.push(n + k);
+    idx.push(n + k1);
+    idx.push(k1);
+    k = k + 1u32;
+  }
+  polyMesh(&pts, &sizes, &idx)
+}
+
+fn grid(size: u32) PolyMesh {
+  var pts = List[Vec3]();
+  var j = 0u32;
+  while j <= size {
+    var i = 0u32;
+    while i <= size {
+      pts.push(Vec3(f32.from(i), f32.from(j), 0.));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var sizes = List[u32]();
+  var idx = List[u32]();
+  j = 0u32;
+  while j < size {
+    var i = 0u32;
+    while i < size {
+      let a = (size + 1u32) * j + i;
+      sizes.push(4u32);
+      idx.push(a);
+      idx.push(a + 1u32);
+      idx.push(a + size + 2u32);
+      idx.push(a + size + 1u32);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  polyMesh(&pts, &sizes, &idx)
+}
+
+fn plain() {
+  let h = cubeHole();
+  var p = List[String]();
+  let r = fillHole(&h, firstBoundary(&h), false, &mut p);
+  counts(&r.mesh, 8i64, 13i64, 7i64, "cube: counts");
+  clean(&r.mesh, "cube: valid");
+  expectInt(boundaryEdges(&r.mesh), 0i64, "cube: closed");
+  expectFloat(volume(&r.mesh), 8., near, "cube: volume 8");
+  expectInt(i64.from(r.faces.len()), 2, "cube: 2 patch triangles");
+  expectInt(i64.from(*r.faces[0usize]), 5, "cube: the patch follows face 4");
+  expectInt(i64.from(r.vertices.len()), 0, "cube: no new vertices");
+  expectInt(i64.from(p.len()), 0, "cube: no problems");
+
+  let hex = ring(6u32, 1.);
+  let rh = fillHole(&hex, firstBoundary(&hex), false, &mut p);
+  expectInt(i64.from(rh.faces.len()), 4, "hexagon: 4 triangles");
+  expectFloat(patchArea(&rh), 2.598076, near, "hexagon: area 2.598076");
+  clean(&rh.mesh, "hexagon: valid");
+  expectInt(boundaryEdges(&rh.mesh), 6i64, "hexagon: only the outer rim is left");
+}
+
+fn grids() {
+  var g = grid(10u32);
+  var gone = List[u32]();
+  var j = 3u32;
+  while j < 7u32 {
+    var i = 3u32;
+    while i < 7u32 {
+      gone.push(10u32 * j + i);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  let hole = deleteFaces(&g, gone.view());
+  counts(&hole, 112i64, 196i64, 84i64, "grid hole: counts (121 - 9 inner vertices, 220 - 24 inner edges)");
+  var p = List[String]();
+  // an inner boundary vertex: the one at (3, 3), number 11 * 3 + 3 = 36
+  let v = 36u32;
+  let r = fillHole(&hole, v, false, &mut p);
+  expectFloat(patchArea(&r), 16., near, "grid: plain patch area 16");
+  expectInt(i64.from(r.faces.len()), 14, "grid: a 16-gon is 14 triangles");
+  clean(&r.mesh, "grid plain: valid");
+
+  let q = fillHole(&hole, v, true, &mut p);
+  clean(&q.mesh, "grid refined: valid");
+  expectFloat(patchArea(&q), 16., 0.0001, "grid refined: patch area 16");
+  expectBool(q.vertices.len() >= 1usize, true, "grid refined: new interior vertices");
+  var worst: f32 = 0.;
+  var i = 0usize;
+  while i < q.vertices.len() {
+    worst = worst.max(q.mesh.positions[usize.from(*q.vertices[i])].z.abs());
+    i = i + 1usize;
+  }
+  expectFloat(worst, 0., near, "grid refined: new vertices at z = 0");
+  let mean = patchMeanSide(&q);
+  expectBool(mean > 0.6 && mean < 1.6, true, "grid refined: mean side in 0.6 .. 1.6");
+  expectInt(boundaryEdges(&q.mesh), 40i64, "grid refined: only the outer rim is open");
+  expectInt(i64.from(p.len()), 0, "grid: no problems");
+  let again = fillHole(&hole, v, true, &mut p);
+  expectBool(again.mesh.positions.len() == q.mesh.positions.len(), true, "grid refined: the same twice");
+  var same = true;
+  i = 0usize;
+  while i < q.mesh.positions.len() {
+    if q.mesh.positions[i].x != again.mesh.positions[i].x || q.mesh.positions[i].y != again.mesh.positions[i].y { same = false; }
+    i = i + 1usize;
+  }
+  expectBool(same, true, "grid refined: same bits twice");
+}
+
+fn sphere() {
+  var pts = List[Vec2]();
+  var k = 0u32;
+  while k <= 8u32 {
+    let a = -0.5 * pi + pi * f32.from(k) / 8.;
+    pts.push(Vec2(a.cos(), a.sin()));
+    k = k + 1u32;
+  }
+  let s = lathe(&Profile.fromPoints(pts.view(), false), Vec3(0., 1., 0.), 2. * pi, 12u32);
+  clean(&s, "sphere: valid");
+  expectInt(boundaryEdges(&s), 0i64, "sphere: closed");
+  var gone = List[u32]();
+  var f = 0u32;
+  while usize.from(f) < s.faceCount() {
+    if s.faceCentroid(f).y > 0.6 { gone.push(f); }
+    f = f + 1u32;
+  }
+  let hole = deleteFaces(&s, gone.view());
+  var p = List[String]();
+  let r = fillHole(&hole, firstBoundary(&hole), true, &mut p);
+  clean(&r.mesh, "sphere cap: valid");
+  expectInt(boundaryEdges(&r.mesh), 0i64, "sphere cap: closed");
+  var inward = 0i64;
+  var i = 0usize;
+  while i < r.faces.len() {
+    let n = r.mesh.faceNormal(*r.faces[i]);
+    if n.dot(r.mesh.faceCentroid(*r.faces[i])) <= 0. { inward = inward + 1i64; }
+    i = i + 1usize;
+  }
+  expectInt(inward, 0i64, "sphere cap: no patch triangle faces inward");
+  expectBool(r.faces.len() >= 2usize, true, "sphere cap: a patch");
+  let vol = volume(&r.mesh);
+  expectBool(vol > 2.5 && vol < 4.19, true, "sphere cap: volume below the sphere's 4.19");
+  expectInt(i64.from(p.len()), 0, "sphere: no problems");
+}
+
+fn refusals() {
+  let big = ring(600u32, 10.);
+  var p = List[String]();
+  let r = fillHole(&big, firstBoundary(&big), false, &mut p);
+  expectInt(i64.from(p.len()), 1, "600 edges: one problem line");
+  expectInt(i64.from(r.faces.len()), 0, "600 edges: no patch");
+  counts(&r.mesh, i64.from(big.vertexCount()), i64.from(big.edgeCount()), i64.from(big.faceCount()), "600 edges: unchanged");
+  var q = List[String]();
+  let c = PolyMesh.cube(1.);
+  let z = fillHole(&c, 0u32, false, &mut q);
+  expectInt(i64.from(q.len()), 1, "interior vertex: one problem line");
+  counts(&z.mesh, 8i64, 12i64, 6i64, "interior vertex: unchanged");
+  let far = fillHole(&c, 99u32, true, &mut q);
+  expectInt(i64.from(q.len()), 2, "no such vertex: a problem line");
+  expectInt(i64.from(far.faces.len()), 0, "no such vertex: no patch");
+}
+
+fn channels() {
+  var h = cubeHole();
+  let w = h.addFloatChannel(VertexDomain, "w", 7.);
+  var v = 0u32;
+  while usize.from(v) < h.vertexCount() {
+    h.setFloat(w, v, f32.from(v));
+    v = v + 1u32;
+  }
+  let id = h.addFloatChannel(FaceDomain, "id", 3.);
+  var f = 0u32;
+  while usize.from(f) < h.faceCount() {
+    h.setFloat(id, f, 10. + f32.from(f));
+    f = f + 1u32;
+  }
+  let cr = h.addFloatChannel(EdgeDomain, "crease", 0.);
+  var e = 0u32;
+  while usize.from(e) < h.edgeCount() {
+    h.setFloat(cr, e, 1.);
+    e = e + 1u32;
+  }
+  var p = List[String]();
+  let r = fillHole(&h, firstBoundary(&h), false, &mut p);
+  let id2 = r.mesh.findFloatChannel(FaceDomain, "id");
+  expectFloat(r.mesh.float(id2, 0u32), 10., near, "channels: face 0 keeps its value");
+  expectFloat(r.mesh.float(id2, *r.faces[0usize]), 3., near, "channels: a new face takes the fill, 3");
+  let cr2 = r.mesh.findFloatChannel(EdgeDomain, "crease");
+  var zeros = 0i64;
+  e = 0u32;
+  while usize.from(e) < r.mesh.edgeCount() {
+    if r.mesh.float(cr2, e) == 0. { zeros = zeros + 1i64; }
+    e = e + 1u32;
+  }
+  expectInt(zeros, 1i64, "channels: exactly the diagonal has crease 0");
+  let w2 = r.mesh.findFloatChannel(VertexDomain, "w");
+  expectFloat(r.mesh.float(w2, 5u32), 5., near, "channels: old vertex value kept");
+
+  // New vertices take the fill: the refined grid
+  var g = grid(6u32);
+  let gw = g.addFloatChannel(VertexDomain, "w", 7.);
+  var gv = 0u32;
+  while usize.from(gv) < g.vertexCount() {
+    g.setFloat(gw, gv, 1.);
+    gv = gv + 1u32;
+  }
+  var gone = List[u32]();
+  gone.push(14u32);
+  gone.push(15u32);
+  gone.push(20u32);
+  gone.push(21u32);
+  let hole = deleteFaces(&g, gone.view());
+  var bv = NoIndex;
+  var q = 0u32;
+  while usize.from(q) < hole.vertexCount() && bv == NoIndex {
+    if hole.isBoundaryVertex(q) && hole.positions[usize.from(q)].x > 1.5 && hole.positions[usize.from(q)].x < 4.5
+        && hole.positions[usize.from(q)].y > 1.5 && hole.positions[usize.from(q)].y < 4.5 { bv = q; }
+    q = q + 1u32;
+  }
+  let rr = fillHole(&hole, bv, true, &mut p);
+  expectBool(rr.vertices.len() >= 1usize, true, "channels: refined has new vertices");
+  let gw2 = rr.mesh.findFloatChannel(VertexDomain, "w");
+  var allFill = true;
+  var i = 0usize;
+  while i < rr.vertices.len() {
+    if rr.mesh.float(gw2, *rr.vertices[i]) != 7. { allFill = false; }
+    i = i + 1usize;
+  }
+  expectBool(allFill, true, "channels: new vertices take the fill, 7");
+}
+
+fn main() i32 {
+  plain();
+  grids();
+  sphere();
+  refusals();
+  channels();
+  done()
+}
