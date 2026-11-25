@@ -2147,8 +2147,9 @@ link that is not `--strip`ped) writes a PDB; on Linux the object holds DWARF, wh
 information does not change the code: a release program's `.text` is the same instructions
 with and without it (measured on `nbody` and `richards`; only the displacements into `.rdata`
 move, as the PDB's path is written there).
-Debug info covers only files,
-subprograms and each instruction's line and column. A subprogram is in the file its
+Debug info covers files,
+subprograms, each instruction's line and column, and, in a `--debug` build alone, the
+parameters and locals of a type it can describe exactly (the paragraph below). A subprogram is in the file its
 function was written in (`genlDiFile`: the lexer's url, one `DIFile` for each, the
 compile's main file for a node with no lexer), so a sibling file of a folder module,
 a submodule and an imported package that is compiled in each have their own.
@@ -2166,6 +2167,58 @@ a release build inlines the program's own `main` into it, and an entry with no s
 would drop the inlined code's lines), a type's drop, a parallel `each`'s body, a split
 method, a kernel, and a counted reference's `cone.dropslow.N` (release only). A new
 generated function needs the same.
+
+**Variables (`genlDiVar`, `genlDiType`, `genlDiSubroutine`).** A `--debug` build (not a release
+build, not a GPU's) gives each parameter (`genlParmVar`) and each `let`/`var` local
+(`genlLocalVar`) a `DILocalVariable` and a declare record bound to the stack slot that holds it, in
+the function's subprogram, at the variable's own line. Only a type debug info can describe exactly is
+described: the number types, `bool` (a byte, `DW_ATE_boolean`), `char`, and a plain struct: not a
+trait, enum or enum arm, no generator frame or padding, so its LLVM struct's elements are its
+fields one for one (a generic instance is such a struct, named as a diagnostic spells it,
+`Dict[str, i64]`, `genlDiSpell`; so is a closure's hidden struct, `closure#N`, whose fields are
+its captures named as the source names them); its members carry the data layout's offsets and
+sizes. A member whose type is not described is left out of the member list, the struct's size
+still the type's. A struct or enum is described once (`GenState.ditypes`): while its members are
+made it stands in the table as a replaceable forward declaration
+(`LLVMDIBuilderCreateReplaceableCompositeType`), so a type reached again through itself
+(`next: Option[&Node]`, an enum arm pointing back at the enum) names that one description, and
+the finished type replaces the forward declaration. Also described (`genlDiEnum`, the `ArrayTag`
+and reference cases of `genlDiType`):
+- A reference of any permission or region (`&T`, `&mut T`, `Rc[mut, T]`, `Uni[T]`, `Gc[T]`),
+  and a raw pointer `*T`: a pointer type named as a diagnostic spells it, to the pointee's
+  described type (to nothing, a `void *`, where the pointee is not described: a trait, an enum arm,
+  a function signature, an opaque type). The pointer addresses the value; an owner's region
+  header (an `Rc` count before the value) is not described.
+- A slice and a reference that carries its body's length (`&Array[T]`, `&str`): a struct named
+  as spelled, `ptr` (a pointer to the element's type) and `len` (`usize`) at the offsets of the
+  LLVM pair.
+- `List[T]`, `String`, `Dict[K, V]` and any other generic struct are the structs they are
+  (the `ptr`, `used`, `cap`, `region` of a `List`); the elements beyond the pointer are not
+  expanded.
+- A fixed array by value: an array type of its element's described type, one subrange per dimension.
+- An enum whose arms hold nothing: an enumeration type over its tag's integer (`u8`, `i32`, ...),
+  named for the enum, with every arm's name and number.
+- Any other enum, `Option[T]` and any other generic enum included: a struct named as a
+  diagnostic spells it (`Option[i64]`) of the enum's size, holding `tag` (an enumeration named
+  `<enum>.tag`) at the tag's offset in the enum's LLVM type, and `payload`, a union of one struct
+  per arm that holds something, each named for the arm, holding the arm's own fields at the offsets
+  of the arm's LLVM type (counted from the union's start, the first byte any arm uses). DWARF's
+  variant part is not used, since CodeView has none.
+- A nullable-pointer enum (`NullablePtr`: an `Option` of a thin reference or pointer, stored
+  as the pointer with null for the empty arm; the only niche layout Cone has): a pointer type
+  named as the enum is spelled, pointing at the type its reference points at. One of a fat
+  reference (a slice, a virtual reference) is stored as that pair and is not described.
+
+A variable of any other type (a virtual reference, a tuple, an enum arm, a vector, a future or
+actor) gets no description, rather than a wrong one. Left out
+too: a generator step's parameters (`genlGenBegin` may move a variable of its into the frame),
+locals of an inline function's expansion, which are the caller's slots (`GenState.inlinedepth`),
+and a match binding or generator frame variable, which has no slot of its own. A function whose
+return type (or `void`) and every parameter's type are described has its real subroutine type;
+any other keeps the empty one. A release build emits none of this, so its object does not change.
+The debug pipeline runs `mem2reg` (section on the pass pipeline), which turns the declares into
+`dbg.value`: a debugger then shows a variable only where its value lives in a register, and one the
+optimizer folded away as optimized out.
 
 The environment variable `CONE_LLVM_OPTIONS` hands LLVM command-line options,
 separated by spaces, parsed in `genSetup` before the LLVM context exists. It is
@@ -2663,8 +2716,8 @@ What does not work yet:
 
 Also absent: a `&fn` value is a bare function pointer with no capture struct (a
 closure that holds something is the struct type check makes of it,
-[closure](../nodes/closure.md)). No exception handling or unwinding. No debug info for types or
-variables.
+[closure](../nodes/closure.md)). No exception handling or unwinding. Debug info describes
+the variables of numbers, `bool`, `char` and plain structs only (above).
 
 ### Link-time optimisation (`--lto`)
 

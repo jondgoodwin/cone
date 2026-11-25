@@ -806,6 +806,33 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         return NULL;
     }
 
+    // A hint that a loop is spinning: x86's pause (llvm.x86.sse2.pause) or
+    // AArch64's yield (llvm.aarch64.hint(1)); nothing on a GPU, WebAssembly or
+    // any other target
+    case SpinHintIntrinsic: {
+        if (gen->opt->gpu || gen->opt->wasm)
+            return NULL;
+        const char *triple = gen->opt->triple;
+        const char *name = NULL;
+        LLVMValueRef args[1];
+        unsigned nargs = 0;
+        if (strncmp(triple, "x86_64", 6) == 0 || strncmp(triple, "i386", 4) == 0
+            || strncmp(triple, "i686", 4) == 0 || strncmp(triple, "amd64", 5) == 0)
+            name = "llvm.x86.sse2.pause";
+        else if (strncmp(triple, "aarch64", 7) == 0 || strncmp(triple, "arm64", 5) == 0) {
+            name = "llvm.aarch64.hint";
+            args[nargs++] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 1, 0);
+        }
+        if (name == NULL)
+            return NULL;
+        unsigned id = LLVMLookupIntrinsicID(name, strlen(name));
+        if (id == 0)
+            return NULL;
+        LLVMValueRef fn = LLVMGetIntrinsicDeclaration(gen->module, id, NULL, 0);
+        LLVMBuildCall2(gen->builder, LLVMIntrinsicGetType(gen->context, id, NULL, 0), fn, args, nargs, "");
+        return NULL;
+    }
+
     // A GPU workgroup's barriers (genlgpusync.c): on a GPU an instruction, on
     // the CPU a call to the thread's barrier hook when it has set one.
     // WebAssembly links no conestd, which holds the hook, and runs a kernel one
@@ -1045,7 +1072,10 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         }
 
         // Now generate function's block, as if any block, returning block's value
+        // (Its locals are the caller's slots, and not described to a debugger)
+        ++gen->inlinedepth;
         LLVMValueRef inlined = genlBlock(gen, (BlockNode *)fndcl->value);
+        --gen->inlinedepth;
         // A construction that waited must have run where the body wrote it
         for (uint32_t i = defermark; i < gen->deferredcnt; ++i) {
             if (!gen->deferred[i].wait->done)
@@ -2516,6 +2546,7 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     if (!genlGenFrameVar(gen, var)) {
         var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
         genlRootNote(gen, var->llvmvar, var->vtype);
+        genlDiVar(gen, var, var->llvmvar, 0);
     }
     // A construction by a declared 'init' fills the variable in place
     if (var->value && genlNewInto(gen, var->value, var->llvmvar))

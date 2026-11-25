@@ -57,8 +57,8 @@ fn main() {
 </pre>
 	<p>It prints:</p>
 <pre>
-area 78.5397, perimeter 31.4159
-area 100, perimeter 40
+area 78.53975, perimeter 31.415901
+area 100.0, perimeter 40.0
 </pre>
 	<p><b>Try this:</b> add a <span class="pre">Triangle</span> with its own <span class="pre">area</span> and
 		<span class="pre">perimeter</span>, and pass it to <span class="pre">describe</span>, which does not change.
@@ -584,10 +584,10 @@ trait Counter {
 }
 fn bumpTwice(c: &amp;&lt;mut Counter) i32 { c.bump(1); c.bump(10) }
 
-bumpTwice(fn(step: i32) [var n = 5] i32 { n += step; n; });    // 6, then 16: 16
+bumpTwice(fn(step: i32) [var n = 5] i32 { n += step; n });    // 6, then 16: 16
 
 var total = 0.;
-depth(q =&gt; { total += q.x; total; }, p);    // ERROR: Shape's distance takes 'self: &amp;'
+depth(q =&gt; { total += q.x; total }, p);    // ERROR: Shape's distance takes 'self: &amp;'
 </pre>
 <pre>
 Error 1401: This closure's `distance` needs `self: &amp;mut` (it changes state it holds or borrows), but Shape's
@@ -901,10 +901,14 @@ fn kind(s: &amp;Shape) i32 {
 		<li>by an assignment of a known variant: after <span class="pre">state = State.Run(speed)</span>,
 			<span class="pre">state.speed</span> reads the field.</li>
 	</ul>
-	<p style="margin-left: 40px;"><i>Not followed yet: the block of an <span class="pre">else if</span>
-		whose own test names a variant is meant to be narrowed too, and today it is
-		not (<span class="pre">else if state is Run { state.speed ...</span> gives 1024, "Method or field `speed` not
-		found"). Test with a separate <span class="pre">if</span>, or match.</i></p>
+	<p>The block of an <span class="pre">else if</span> whose own test names a variant is narrowed too, as the block of
+		an <span class="pre">if</span> is, in a chain of any length.</p>
+	<p style="margin-left: 40px;"><i>Not followed yet: a value of a known variant on entering the chain. After
+		<span class="pre">var state: State = State.Idle;</span>, the <span class="pre">else if state is Run { state.speed ...</span>
+		of a chain that begins <span class="pre">if state is Idle</span> is held to be a branch that cannot run, so it
+		gives 1024, "Method or field `speed` not found". That holds for a loop that changes <span class="pre">state</span>
+		as well, where the branch does run on a later pass, because the loop's body is checked with what was known
+		on entering it. Test with a separate <span class="pre">if</span>, or match.</i></p>
 	<p>An <span class="pre">if</span> used as a value needs its <span class="pre">else</span>, since every path must
 		give a value. But an <span class="pre">if</span> chain of <span class="pre">is</span> tests that names every
 		variant of an enum is a value without one, as <span class="pre">kind</span> is; unlike a match, which must
@@ -966,6 +970,10 @@ while running {
   if state is Run { state.speed = state.speed + 1; }    // narrowed by its own test
 }
 </pre>
+	<p>A test that fails says the name is one of the other variants, even where the name was narrowed to the tested
+		one before the loop: the loop may have stored another since. So <span class="pre">else if state is Run { state.speed ...</span>
+		and a plain <span class="pre">else</span> read the other variant's fields in a loop that stores to the name,
+		whatever it held going in.</p>
 	<p id="mutvariant">A <span class="pre">var</span> variable, parameter or field whose type is inferred from a
 		variant holds the variant's enum, so another variant can be stored in it later, a <span class="pre">&amp;mut</span>
 		of it goes where a <span class="pre">&amp;mut</span> of the enum is wanted, and <span class="pre">match</span> and

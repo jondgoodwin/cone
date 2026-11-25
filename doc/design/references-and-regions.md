@@ -234,8 +234,9 @@ declaring bookkeeping fields plus a protocol of methods: `alloc`, `init`,
 `weak`, `drop` — and attributes such as `@move` and `traced` that the compiler
 keys off. ⚠ **[differs: of that protocol `alloc`, `init`, `aliasRef`, `dealiasRef`,
 `free` and `writeBarrier` are built, spelled without the underscore (the
-barrier a traced region's alone, handed only what was stored), and `mark`,
-which a traced region's trace calls; the annotation is a struct, not a module; and what the
+barrier a traced region's alone, handed only what was stored), `mark`,
+which a traced region's trace calls, and `visit`, which a trace calls to ask whether
+it has reached an object before (`Rc` declares it in `core.cone`); the annotation is a struct, not a module; and what the
 compiler keys off is a trait, not an attribute: `Move`, `Traced` and
 `ThreadSafe`, the three built so far]** A trait is a fact other code may ask about or
 constrain on; an attribute is an instruction about representation or linkage
