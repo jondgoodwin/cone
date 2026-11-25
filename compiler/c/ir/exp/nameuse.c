@@ -297,6 +297,59 @@ int nameUseLifecycleNamed(NameUseNode *name) {
     return 1;
 }
 
+// A bare name inside an enum's braces that bound to one of its variants while
+// the module declares something else of the same name: the rules mean the
+// variant, and the errors of an author who meant the other do not say so. The
+// first such use of each variant is kept for nameUseShadowNotes.
+typedef struct VariantShadow {
+    struct VariantShadow *next;
+    NameUseNode *use;
+    StructNode *variant;
+    INode *outer;       // What the module declares under the name
+} VariantShadow;
+static VariantShadow *variantShadows = NULL;
+static VariantShadow **variantShadowsEnd = &variantShadows;
+
+static void nameUseShadowRecord(NameResState *pstate, NameUseNode *name) {
+    INode *dcl = name->dclnode;
+    if (pstate->mod == NULL || dcl->tag != StructTag || !(dcl->flags & HasTagField)
+        || (dcl->flags & (EnumType | TraitType)))
+        return;
+    INode *owner = inodeGetOwner(dcl);
+    if (owner == NULL || owner->tag != StructTag || !(owner->flags & EnumType))
+        return;
+    INode *outer = namespaceFind(&pstate->mod->namespace, name->namesym);
+    if (outer == NULL || outer == dcl)
+        return;
+    for (VariantShadow *seen = variantShadows; seen; seen = seen->next)
+        if (seen->variant == (StructNode*)dcl)
+            return;
+    VariantShadow *shadow = (VariantShadow*)memAllocBlk(sizeof(VariantShadow));
+    shadow->next = NULL;
+    shadow->use = name;
+    shadow->variant = (StructNode*)dcl;
+    shadow->outer = outer;
+    *variantShadowsEnd = shadow;
+    variantShadowsEnd = &shadow->next;
+}
+
+void nameUseShadowNotes(void) {
+    if (errorsOwn() == 0)
+        return;
+    for (VariantShadow *shadow = variantShadows; shadow; shadow = shadow->next) {
+        INode *outer = shadow->outer;
+        if (outer->tag == AliasDclTag)
+            outer = aliasDclResolve(outer);
+        if (outer == NULL || outer->tag != StructTag || outer == (INode*)shadow->variant)
+            continue;
+        char *name = &shadow->use->namesym->namestr;
+        errorMsgNode((INode*)shadow->use, Uncounted,
+            "... %s here is the variant of %s, not the %s %s: inside an enum's braces, its variants' names come first.",
+            name, &((StructNode*)inodeGetOwner((INode*)shadow->variant))->namesym->namestr,
+            (outer->flags & EnumType) ? "enum" : (outer->flags & TraitType) ? "trait" : "struct", name);
+    }
+}
+
 // Handle name resolution for name use references: point dclnode at the name's
 // declaration. That is all a use needs -- whether it is a type, a value or a
 // macro is asked of the declaration (nameUseGroup), and a bare field name is
@@ -367,6 +420,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
             &name->namesym->namestr, &name->namesym->namestr);
 
     nameUseMarkExpandReached(pstate, name);
+    nameUseShadowRecord(pstate, name);
 
     // The declaration stays attached after the diagnostic, as a private path's does
     nameUseLifecycleNamed(name);

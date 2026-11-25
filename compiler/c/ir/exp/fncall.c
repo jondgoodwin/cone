@@ -286,6 +286,15 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     // nameUseNameRes returns at once for a use that arrives bound
     nameUseMarkExpandReached(pstate, member);
 
+    // A path takes lifetimes where it names a type, not a function, global,
+    // const or module
+    uint16_t reached = member->dclnode->tag;
+    if (member->lifeuse && (reached == FnDclTag || reached == FnOverloadDclTag || reached == VarDclTag
+        || reached == ConstDclTag || reached == ModuleTag)) {
+        errorMsgNode(member->lifeuse->at, ErrorLifetimeArgs, "Lifetimes are named on a struct's use by its name: 'Cursor['a]'.");
+        member->lifeuse = NULL;
+    }
+
     // A private name belongs to the module that declares it, and naming a path
     // through that module reaches past it. Refusing it here is what
     // mod-namespaces.html says, and is also the only answer generation can honour:
@@ -447,6 +456,32 @@ static void fnCallConstructNameRes(FnCallNode *node) {
         fnCallMarkConstruction(node);
 }
 
+// The parser holds the lifetimes written after a path, 'ir.Compile['=c]', on
+// the path's last name (parseLifeHolder), which the collapsed path keeps. Only a
+// path through a module or a type collapses to a name: through a value, or a
+// generic parameter, the lifetimes name nothing and are refused.
+static void fnCallPathLifeCheck(FnCallNode *node) {
+    if (node->methfld == NULL || !isNameUseNode(node->methfld))
+        return;
+    NameUseNode *member = (NameUseNode*)node->methfld;
+    if (member->lifeuse == NULL)
+        return;
+    INode *base = node->objfn;
+    // A generic module's instance, 'stack[i64].Cursor'
+    int instance = base->tag == FnCallTag && (base->flags & FlagIndex) && ((FnCallNode*)base)->methfld == NULL;
+    if (instance)
+        base = ((FnCallNode*)base)->objfn;
+    if (isNameUseNode(base)) {
+        INode *basedcl = nameUseGetDcl((NameUseNode*)base);
+        // A base name that is not declared has been reported
+        if (basedcl == NULL || basedcl->tag == ModuleTag
+            || (!instance && (basedcl->tag == StructTag || basedcl->tag == ModTraitTag)))
+            return;
+    }
+    errorMsgNode(member->lifeuse->at, ErrorLifetimeArgs, "Lifetimes are named on a struct's use by its name: 'Cursor['a]'.");
+    member->lifeuse = NULL;
+}
+
 // Name resolution on 'fncall'
 // - If node is indexing on a type, retag node as a typelit
 // Note: this never name resolves .methfld, which is handled in type checking --
@@ -463,6 +498,8 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
 
     // Name resolve objfn so we know what it is to vary subsequent processing
     inodeNameRes(pstate, &node->objfn);
+
+    fnCallPathLifeCheck(node);
 
     // 'C.Cursor': an associated type that a bound of the type parameter C
     // declares, resolved in each instance (generic.c)
