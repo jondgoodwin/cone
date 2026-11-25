@@ -162,7 +162,7 @@ struct Cam {
 // towards the light), a smooth skin; the faces from 'tintFrom' on are tinted blue by 'tint' and, with 'wire',
 // outlined
 fn drawMesh(cv: &mut Canvas, pm: &PolyMesh, cam: &Cam, lit: Vec3, centre: Vec3, radius: f32, tintFrom: usize,
-    tint: f32, wire: bool) {
+    tint: f32, wire: bool, backRed: bool) {
   let nrm = pm.vertexNormals();
   var sp = List[Vec3]();
   var v = 0usize;
@@ -181,7 +181,9 @@ fn drawMesh(cv: &mut Canvas, pm: &PolyMesh, cam: &Cam, lit: Vec3, centre: Vec3, 
     }
     if near {
       let isPatch = f >= tintFrom;
-      let base = if isPatch { Vec3(0.80 - 0.5 * tint, 0.80 - 0.3 * tint, 0.82) } else { Vec3(0.82, 0.80, 0.78) };
+      var base = if isPatch { Vec3(0.80 - 0.5 * tint, 0.80 - 0.3 * tint, 0.82) } else { Vec3(0.82, 0.80, 0.78) };
+      // one-sided shading: a face turned away from the viewer is drawn red, never lit
+      if backRed && pm.faceNormal(u32.from(f)).dot(cam.w) <= 0. { base = Vec3(0.95, 0.1, 0.1); }
       k = 1usize;
       while k + 1usize < vs.len() {
         let a = usize.from(*vs[0usize]);
@@ -456,12 +458,13 @@ fn main() i32 {
       let lit = (cam.u * 0.92 + cam.w * 0.38).normalize();
       let m: &PolyMesh = if t == 0 { &src } else if t == 1 { &hole } else if t == 2 { &plain.mesh } else if t == 3 { &refined.mesh } else { &python };
       let from = if t == 2 || t == 3 { hole.faceCount() } else { 1000000000usize };
-      drawMesh(&mut cv, m, &cam, lit, centre, radius, from, if pass == 1 { 1. } else { 0. }, pass == 1);
+      drawMesh(&mut cv, m, &cam, lit, centre, radius, from, if pass == 1 { 1. } else { 0. }, pass == 1, true);
       t = t + 1;
     }
     pass = pass + 1;
   }
   save(&cv, "nostril-fills.png");
+  experiment(&src, &loop, &plain, &refined, &python, outward, centre, up);
 
   // The cut across the muzzle at the nostril
   let origin = centre;
@@ -508,7 +511,7 @@ fn main() i32 {
     let cam = Cam.make(w, Vec3(0., 1., 0.), focus, if tile == 0 { 14. } else { 7.4 }, f32.from(tile * 600) + 300., 320.);
     let lit = (cam.u * 0.5 + cam.v * 0.5 + cam.w * 0.7).normalize();
     let m: &PolyMesh = if tile == 0 { &cutCap } else { &src };
-    drawMesh(&mut c2, m, &cam, lit, focus, 1000., 1000000000usize, 0., false);
+    drawMesh(&mut c2, m, &cam, lit, focus, 1000., 1000000000usize, 0., false, false);
     if tile > 0 {
       var l2 = 0usize;
       while l2 < sec.closed.len() {
@@ -539,4 +542,240 @@ fn countBoundary(m: &PolyMesh) usize {
     v = v + 1usize;
   }
   n
+}
+
+// ---------------------------------------------------------------- the faired fill experiment (lane 2b)
+//
+// The same hole through six fills (plus the Python band's own tension as a seventh), five measures each,
+// and a picture sheet from one camera in two raking lights.
+
+struct Trial {
+  label: String;
+  mesh: PolyMesh;
+  faces: List[u32];
+  secs: f64;
+}
+
+fn copyFaces(a: &List[u32]) List[u32] {
+  var o = List[u32]();
+  var i = 0usize;
+  while i < a.len() { o.push(*a[i]); i = i + 1usize; }
+  o
+}
+
+fn flagList(n: usize) List[bool] {
+  var f = List[bool].withCapacity(n);
+  var i = 0usize;
+  while i < n { f.push(false); i = i + 1usize; }
+  f
+}
+
+// Adds to 'flags' every vertex next to a flagged one, 'layers' times
+fn growFlags(m: &PolyMesh, flags: &mut List[bool], layers: i32) {
+  var l = 0;
+  while l < layers {
+    var add = List[u32]();
+    var v = 0usize;
+    while v < m.vertexCount() {
+      if *flags[v] {
+        let ns = m.vertexNeighbors(u32.from(v));
+        var k = 0usize;
+        while k < ns.len() {
+          if !*flags[usize.from(*ns[k])] { add.push(*ns[k]); }
+          k = k + 1usize;
+        }
+      }
+      v = v + 1usize;
+    }
+    var a = 0usize;
+    while a < add.len() { flags.set(usize.from(*add[a]), true); a = a + 1usize; }
+    l = l + 1;
+  }
+}
+
+fn flaggedList(flags: &List[bool]) List[u32] {
+  var o = List[u32]();
+  var i = 0usize;
+  while i < flags.len() {
+    if *flags[i] { o.push(u32.from(i)); }
+    i = i + 1usize;
+  }
+  o
+}
+
+struct Rim {
+  rimMax: f32;     // the largest angle between neighbouring faces across the patch's rim, degrees
+  rimMean: f32;
+  outMax: f32;     // the same on the skin just outside: edges between two skin faces that touch a rim vertex
+  outMean: f32;
+}
+
+fn rimAngles(m: &PolyMesh, patch: &List[bool], rim: &List[bool]) Rim {
+  var rMax: f32 = 0.; var rSum: f64 = 0.0; var rN = 0usize;
+  var oMax: f32 = 0.; var oSum: f64 = 0.0; var oN = 0usize;
+  var e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    let h0 = m.edgeHalfedge(e, 0u32);
+    let h1 = m.edgeHalfedge(e, 1u32);
+    let f0 = m.face(h0);
+    let f1 = m.face(h1);
+    if f0 != NoIndex && f1 != NoIndex {
+      let p0 = *patch[usize.from(f0)];
+      let p1 = *patch[usize.from(f1)];
+      let a = m.fromVertex(h0);
+      let b = m.toVertex(h0);
+      var d = m.faceNormal(f0).dot(m.faceNormal(f1));
+      if d > 1. { d = 1.; }
+      if d < -1. { d = -1.; }
+      let ang = f32.from(libc.acos(f64.from(d))) * 57.29578;
+      if p0 != p1 {
+        if ang > rMax { rMax = ang; }
+        rSum = rSum + f64.from(ang); rN = rN + 1usize;
+      } else if !p0 && (*rim[usize.from(a)] || *rim[usize.from(b)]) {
+        if ang > oMax { oMax = ang; }
+        oSum = oSum + f64.from(ang); oN = oN + 1usize;
+      }
+    }
+    e = e + 1u32;
+  }
+  Rim(rMax, f32.from(rSum / f64.from(rN)), oMax, f32.from(oSum / f64.from(oN)))
+}
+
+fn faceFlags(m: &PolyMesh, faces: &List[u32]) List[bool] {
+  var f = flagList(m.faceCount());
+  var i = 0usize;
+  while i < faces.len() { f.set(usize.from(*faces[i]), true); i = i + 1usize; }
+  f
+}
+
+fn trialReport(t: &Trial, outward: Vec3, python: &SurfaceIndex, ref: &SurfaceIndex, rim: &List[bool]) {
+  let d = patchDistance(&t.mesh, &t.faces, python);
+  let r = patchDistance(&t.mesh, &t.faces, ref);
+  var least: f32 = 0.;
+  let li = localInward(&t.mesh, &t.faces, python, &mut least);
+  let oi = inwardCount(&t.mesh, &t.faces, outward);
+  let pf = faceFlags(&t.mesh, &t.faces);
+  let ra = rimAngles(&t.mesh, &pf, rim);
+  print <- "TRIAL ", t.label.view(), ": inward ", li, " (by the Python skin; least dot ", least, "), ", oi, " (by mean outward)\n";
+  print <- "    to Python: max ", d.max, " RMS ", d.rms, " above ", d.out, " below ", d.inn, "\n";
+  print <- "    to order-2-with-tension fill: above ", r.out, " below ", r.inn, " (max ", r.max, ")\n";
+  print <- "    rim angle: across the rim max ", ra.rimMax, " mean ", ra.rimMean, " deg; skin just outside max ", ra.outMax,
+    " mean ", ra.outMean, " deg; closed ", t.mesh.validate().len() == 0usize, "; time ", t.secs, " s\n";
+}
+
+// Signed height of the patch above the Python skin (centroids), binned by distance from the rim: the tent
+// shows as a rise in the middle bins, a rim mismatch in the first
+fn profile(t: &Trial, python: &SurfaceIndex, rimPts: &List[Vec3]) {
+  var sum = List[f64]();
+  var mx = List[f32]();
+  var mn = List[f32]();
+  var cnt = List[u32]();
+  var b = 0;
+  while b < 10 { sum.push(0.0); mx.push(-1000.); mn.push(1000.); cnt.push(0u32); b = b + 1; }
+  var i = 0usize;
+  while i < t.faces.len() {
+    let c = t.mesh.faceCentroid(*t.faces[i]);
+    var dmin: f32 = 1000.;
+    var k = 0usize;
+    while k < rimPts.len() {
+      let d = (*rimPts[k] - c).length();
+      if d < dmin { dmin = d; }
+      k = k + 1usize;
+    }
+    let hit = python.nearest(c, 0.);
+    let s = (c - hit.point).dot(hit.normal);
+    var bin = i32.from(dmin / 0.25);
+    if bin > 9 { bin = 9; }
+    let bi = usize.from(bin);
+    sum.set(bi, *sum[bi] + f64.from(s));
+    if s > *mx[bi] { mx.set(bi, s); }
+    if s < *mn[bi] { mn.set(bi, s); }
+    cnt.set(bi, *cnt[bi] + 1u32);
+    i = i + 1usize;
+  }
+  print <- "PROFILE ", t.label.view(), " (height above the Python skin by distance from the rim, 0.25 mm bins: mean/max/min, n)\n";
+  b = 0;
+  while b < 10 {
+    let bi = usize.from(b);
+    if *cnt[bi] > 0u32 {
+      print <- "    ", f32.from(b) * 0.25, "+ : ", f32.from(*sum[bi] / f64.from(*cnt[bi])), " / ", *mx[bi], " / ", *mn[bi], ", n ", *cnt[bi], "\n";
+    }
+    b = b + 1;
+  }
+}
+
+fn experiment(src: &PolyMesh, loop: &List[u32], plain: &HoleFill, refined: &HoleFill,
+    python: &PolyMesh, outward: Vec3, centre: Vec3, up: Vec3) {
+  let pyIndex = SurfaceIndex.of(python);
+  var rimPts = List[Vec3]();
+  var rq = 0usize;
+  while rq < loop.len() { rimPts.push(*refined.mesh.positions[usize.from(*loop[rq])]); rq = rq + 1usize; }
+  var rim = flagList(refined.mesh.vertexCount());
+  var i = 0usize;
+  while i < loop.len() { rim.set(usize.from(*loop[i]), true); i = i + 1usize; }
+  var problems = List[String]();
+  var trials = List[Trial]();
+  trials.push(Trial(String.from("1 plain"), plain.mesh.clone(), copyFaces(&plain.faces), 0.));
+  trials.push(Trial(String.from("2 refined"), refined.mesh.clone(), copyFaces(&refined.faces), 0.));
+  let free = refined.vertices.view();
+  var t0 = Instant.now();
+  let o1 = fairRegion(&refined.mesh, free, 1u32, &mut problems);
+  trials.push(Trial(String.from("3 order 1"), o1, copyFaces(&refined.faces), t0.elapsed().secondsF64()));
+  t0 = Instant.now();
+  let o2 = fairRegion(&refined.mesh, free, 2u32, &mut problems);
+  trials.push(Trial(String.from("4 order 2"), o2, copyFaces(&refined.faces), t0.elapsed().secondsF64()));
+  t0 = Instant.now();
+  let o2t = fairRegionWith(&refined.mesh, free, 2u32, 0.03, &mut problems);
+  trials.push(Trial(String.from("5 order 2 tension 0.03"), o2t, copyFaces(&refined.faces), t0.elapsed().secondsF64()));
+  // the band: the patch's new vertices, the rim (ring 1) and the ring beyond it (ring 2)
+  var band = flagList(refined.mesh.vertexCount());
+  i = 0usize;
+  while i < free.len() { band.set(usize.from(free[i]), true); i = i + 1usize; }
+  i = 0usize;
+  while i < loop.len() { band.set(usize.from(*loop[i]), true); i = i + 1usize; }
+  growFlags(&refined.mesh, &mut band, 1);
+  let bandList = flaggedList(&band);
+  print <- "band: ", bandList.len(), " free vertices (patch ", free.len(), ", rim ", loop.len(), ")\n";
+  t0 = Instant.now();
+  let b2 = fairRegion(&refined.mesh, bandList.view(), 2u32, &mut problems);
+  trials.push(Trial(String.from("6 order 2 band 2"), b2, copyFaces(&refined.faces), t0.elapsed().secondsF64()));
+  t0 = Instant.now();
+  let b2t = fairRegionWith(&refined.mesh, bandList.view(), 2u32, 0.03, &mut problems);
+  trials.push(Trial(String.from("7 (extra) band 2 tension 0.03"), b2t, copyFaces(&refined.faces), t0.elapsed().secondsF64()));
+  print <- "fair problems: ", problems.len(), "\n";
+  i = 0usize;
+  while i < problems.len() { print <- "  ", problems[i].view(), "\n"; i = i + 1usize; }
+
+  let ref = SurfaceIndex.of(&trials[4usize].mesh);
+  i = 0usize;
+  while i < trials.len() {
+    trialReport(&trials[i], outward, &pyIndex, &ref, &rim);
+    if i == 0usize || i == 2usize || i == 3usize || i == 5usize { profile(&trials[i], &pyIndex, &rimPts); }
+    i = i + 1usize;
+  }
+
+  // sheets: tiles source, 7 trials, Python; two raking lights
+  let tw = 360;
+  var sheet = 0;
+  while sheet < 2 {
+    var cv = Canvas.make(1800, 760);
+    var t = 0;
+    while t < 10 {
+      let col = t % 5;
+      let row = t / 5;
+      cv.tile(col * tw, row * 380, (col + 1) * tw, (row + 1) * 380, Vec3(0.97, 0.97, 0.97));
+      let cam = Cam.make(outward, up, centre, 36., f32.from(col * tw) + 180., f32.from(row * 380) + 190.);
+      let lit = if sheet == 0 { (cam.u * 0.92 + cam.w * 0.38).normalize() } else { (cam.v * -0.85 + cam.u * 0.3 + cam.w * 0.43).normalize() };
+      if t == 0 {
+        drawMesh(&mut cv, src, &cam, lit, centre, 4.6, 1000000000usize, 0., false, true);
+      } else if t <= 7 {
+        drawMesh(&mut cv, &trials[usize.from(t - 1)].mesh, &cam, lit, centre, 4.6, 1000000000usize, 0., false, true);
+      } else if t == 8 {
+        drawMesh(&mut cv, python, &cam, lit, centre, 4.6, 1000000000usize, 0., false, true);
+      }
+      t = t + 1;
+    }
+    if sheet == 0 { save(&cv, "fairfill-raking-a.png"); } else { save(&cv, "fairfill-raking-b.png"); }
+    sheet = sheet + 1;
+  }
 }
