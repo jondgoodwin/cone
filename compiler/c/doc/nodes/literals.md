@@ -74,7 +74,9 @@ are the scalars of: `Array[i32, 2, 3]() <- 1, 2, 3, 4, 5, 6` is a list form
 of six `i32`s typed `Array[i32, 2, 3]`, `nsizes` 2, and its fill form's
 `dimens` counts scalars. Such a literal arrives typed, and
 `arrayLitTypeCheck` and `arrayLitCoerce` leave it alone, since its count of
-elements does not give its type.
+elements does not give its type. `arrayLitTypeCheck` refuses an element type
+holding an `@unsized` enum's value, which no written array type is there to
+refuse ([Type check](../phases/type-check.md), "Size").
 Several sizes build nested nodes, each of one size, the first size the
 outermost: `Array[i32, 2, 3]` is the node of `Array[Array[i32, 3], 2]`, so it is
 that type, laid out and indexed (`a[i][j]`) as it is. The parser builds every

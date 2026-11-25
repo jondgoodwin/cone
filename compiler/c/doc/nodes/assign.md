@@ -148,6 +148,14 @@ four helpers:**
 
 Then `vtype` becomes the rval's type.
 
+**No value of an `@unsized` enum is assigned.** Its variants differ in size, so
+a target holding one (`*r`, `p[1]`) and a value holding one (`*s`) are refused
+by the walk of the typed body (`ir/byvalue.c`), for `=`, a multiple assignment
+and `<->` alike, as is every other use of such a value
+([Type check](../phases/type-check.md), "Size"). A variant given to such a
+target does not coerce to it, and `assignSingleCheck` reports that as the same
+`ErrorNoSize` rather than as a type mismatch.
+
 **An init's `*self = T(...)` may not run the init it is in.** After an
 ordinary single assignment, `assignInitRecurse` asks whether the lval is
 `*self` of the function being checked and the rval a construction lowered to

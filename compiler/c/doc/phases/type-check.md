@@ -459,7 +459,7 @@ it is. `itypeNoSizeCause` answers, and there are six ways the answer is no:
 | a body whose length a reference carries (`str`, `Array[T]`) | `itypeLenBodyElem` | hold it through a reference: `&str` or `Uni[str]`, `&Array[T]` or `Uni[Array[T]]` |
 | a trait that is not `SameSize` | `structTypeCheck` | use a virtual reference, `&<Trait>` |
 | a function signature | `fnSigTypeCheck` | use a reference to a function |
-| a struct with an unsized field, or a tuple with an unsized element | `structTypeCheck`, infectiously | fix that field or element — the cause is further down |
+| a struct with an unsized field, or a tuple or array with an unsized element | `structTypeCheck`, infectiously | fix that field or element — the cause is further down |
 | a by-value cycle: still being laid out | rule 4 | break the cycle with a reference |
 
 All six are one `ErrorCode`, `ErrorNoSize`. Six codes would be
@@ -502,9 +502,9 @@ Error 1069: Field p cannot be held by value: P contains Q contains R contains P 
 ```
 
 An array or a tuple on the stack is part of the type holding it and is not
-named. A tuple holds each element by value as a struct holds a field, so the
-walk crosses a tuple to its first element with no size (`itypeNoSizeElem`) as it
-crosses a field, with no hop recorded for the tuple: `struct N { k: (i32, N) }`,
+named. A tuple or an array holds each element by value as a struct holds a
+field, so the walk crosses one to its first element with no size
+(`itypeNoSizeElem`) as it crosses a field, with no hop recorded for it: `struct N { k: (i32, N) }`,
 the same with the tuple nested or inside an array, and a tuple of an enum whose
 variant holds the struct are refused as the type held directly is. Were the type not on the stack, which no measured case reaches, the
 message would be the old one, "is still being laid out, so it would have to
@@ -529,7 +529,35 @@ the mark would wrongly answer yes to. See 10.2.
 no size has none either — and then it is not a type at all, not even behind a
 reference, because there is nothing to allocate. `arrayTypeCheck` says so where
 the array type is written, which is the only site that can: a reference to such
-an array asks it nothing.
+an array asks it nothing. An array a literal builds is written nowhere, so
+`arrayLitTypeCheck` asks of it what is asked below.
+
+**No value of an `@unsized` enum exists.** Its variants differ in size, so a
+deref of a reference to it has only the tag and the common fields to give, and
+copying that, or storing it over another variant, retags without the payload the
+tag promises. Sizes asked of variables and fields do not reach that: types can
+hold such a value, and a body can use one without holding it.
+`itypeHeldUnsizedEnum` says whether a type is the enum, or a tuple or array
+holding it, and each place is refused (`ErrorNoSize`):
+
+- **Types that would hold it:** a return type (`fnSigTypeCheck`, a function
+  reference's signature included), a slice's element (`arrayRefTypeCheck`), an
+  `Array[T]` body (`genericInstantiate`'s caller, before any method is cloned),
+  an array literal (`arrayLitTypeCheck`), and a pointer indexed over one
+  (`fnCallArrIndex`, since even `&p[1]` steps by the element's size).
+- **Uses in a body:** a deref is typed without knowing whether its value or its
+  place is wanted, and values are consumed by many nodes, so `byValueCheck`
+  (`ir/byvalue.c`) walks each function body once it is typed, generic instances
+  included, and refuses every expression of such a type that is not asked for as
+  a place. The places are the operand of a borrow and the base of a field
+  access; a method's receiver is a borrow by then, and a match or `is` through a
+  reference has a reference for its subject. A node the walk has no case for is
+  `errorUnreachable`, not a place. A body with an error of its own is not
+  walked: the compile has failed already.
+
+A whole variant stored or copied through a reference to that variant is not
+refused. No store through a reference to the enum can change which variant a
+slot holds, so the variant's size is the slot's.
 
 **Opacity is infectious**, so the type a field names is usually unsized only
 because of something several levels below it. The diagnostic names the
@@ -860,7 +888,7 @@ elsewhere, whichever walk arrived at it.
 | Code | Raised when |
 | --- | --- |
 | `ErrorNoRefType` (1074) | a reference or slice type never says what it refers to — `refTypeCheck` and `arrayRefTypeCheck` are its only two sites |
-| `ErrorNoSize` (1069) | a value's type cannot say how large it is — six causes, named in the message |
+| `ErrorNoSize` (1069) | a value's type cannot say how large it is — six causes, named in the message; or an `@unsized` enum's value is held or used |
 | `ErrorSizeMarkerUse` (1296) | a type declares `Sized` or `DynSized`, which the compiler grants from the type's size |
 | `ErrorImmutableWrite` (1297) | `mut`, `mut1` or a lock permission written on a reference to a type declaring `Immutable` (`refImmutableBan`, from `refTypeCheck` and `borrowTypeCheck`) |
 | `ErrorSoleOwnerMut` (1507) | `mut` written on an owner of a region declaring `Move` (`refSoleOwnerPermCheck`, from `refTypeCheck` and `refvirtTypeCheck`) |
@@ -957,6 +985,8 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | | `inodeTypeCheckAny` | the same with no expected type |
 | `ir/itype.c` | `itypeTypeCheck` | check a node expected to be a type |
 | | `itypeNoSizeCause`, `itypeNoSizeExplain` | the six causes of section 6, and the hop-by-hop trace |
+| | `itypeHeldUnsizedEnum` | the `@unsized` enum a type holds by value — section 6 |
+| `ir/byvalue.c` | `byValueCheck` | every use of an `@unsized` enum's value in a typed function body — section 6 |
 | | `itypeVariantPending` | whether a variant of an enum is still being laid out — section 10.2 |
 | `ir/iexp.c` | `iexpTypeCheckAny` | check a node expected to be an expression |
 | `ir/types/struct.c` | `structTypeCheck` | the layout, steps 1 to 8a of section 10.1; sets `TypeChecked` at the layout point; `structSetDropFn` is step 8 |

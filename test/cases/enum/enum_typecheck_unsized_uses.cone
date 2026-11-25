@@ -1,0 +1,108 @@
+// An '@unsized' enum's value is never used: not copied, assigned, stored,
+// swapped, discarded or carried through a tuple, a block or an 'if'. Its
+// variants differ in size, so the "value" a deref would give is only the tag and
+// the common fields, and storing it over another variant would retag that
+// variant without giving it the payload the new tag promises.
+//
+// Type check walks each body once it is typed, and refuses every expression of
+// such a type that is not asked for as a place (the operand of a borrow, the base
+// of a field access); enum_unsized_places is what stays accepted. One function
+// per use, since a body is walked only where it has no error of its own.
+
+mod enum_typecheck_unsized_uses;
+
+enum @unsized Node {
+  pub kind: i32;
+
+  struct Lit { pub val: i32; }
+  struct Add { pub a: i64; pub b: i64; }
+}
+use Node;
+
+// Stores through a reference
+
+fn store(r: &mut Node, s: &Node) {
+  *r = *s;                          //~ ErrorNoSize:3 "its value can't be assigned or stored"
+}
+
+fn storeConstructed(r: &mut Node) {
+  *r = Node.Lit(1, 2);              //~ ErrorNoSize:3 "its value can't be assigned or stored"
+}
+
+fn storeVariantValue(r: &mut Node) {
+  let l = Lit(1, 2);
+  *r = l;                           //~ ErrorNoSize:3 "its value can't be assigned or stored"
+}
+
+fn storeMultiple(r: &mut Node, s: &Node, x: &mut i32) {
+  *r, *x = *s, 3;                   //~ ErrorNoSize:3 "swapped or stored by a multiple assignment"
+}
+
+fn swapOperator(r: &mut Node, s: &mut Node) {
+  *r <-> *s;                        //~ ErrorNoSize:3 "its value can't be swapped"
+}
+
+fn swapMultiple(r: &mut Node, s: &mut Node) {
+  *r, *s = *s, *r;                  //~ ErrorNoSize:3 "swapped or stored by a multiple assignment"
+}
+
+fn storePointer(r: *Node, s: *Node) {
+  *r = *s;                          //~ ErrorNoSize:3 "its value can't be assigned or stored"
+}
+
+fn storeGeneric[T](a: &mut T, b: &T) {
+  *a = *b;                          //~ ErrorNoSize:3 "its value can't be assigned or stored"
+}
+fn storeThroughGeneric(a: &mut Node, b: &Node) {
+  storeGeneric(a, b);
+}
+
+// Copies and moves out through a reference
+
+fn discard(s: &Node) {
+  _ = *s;                           //~ ErrorNoSize:7 "its value can't be discarded"
+}
+
+fn statement(s: &Node) {
+  *s;                               //~ ErrorNoSize:3 "its value can't be discarded"
+}
+
+fn blockStatements(c: bool, s: &Node) {
+  if c {
+    *s;                             //~ ErrorNoSize:5 "its value can't be discarded"
+  } else {
+    *s;                             //~ ErrorNoSize:5 "its value can't be discarded"
+  }
+}
+
+fn tupleElement(s: &Node) {
+  _ = (*s, 1);                      //~ ErrorNoSize:8 "its value can't be put in a tuple"
+}
+
+fn tupleBorrowed(s: &Node) {
+  let t = &(*s, 1);                 //~ ErrorNoSize:13 "its value can't be put in a tuple"
+}
+
+fn tupleHeld(s: &Node) {
+  let t = (*s, 1);                  //~ ErrorNoSize:7 "its variants differ in size"
+}
+
+fn blockValue(s: &Node) {
+  _ = {*s};                         //~ ErrorNoSize:8 "its value can't be given as a block's value"
+}
+
+fn ifValue(c: bool, a: &Node, b: &Node) {
+  let x = &if c {
+    *a                              //~ ErrorNoSize:5 "its value can't be given as a block's value"
+  } else {
+    *b                              //~ ErrorNoSize:5 "its value can't be given as a block's value"
+  };
+}
+
+fn pointerElement(p: *Node) {
+  _ = p[1];                         //~ ErrorNoSize:8 "reached by indexing a pointer"
+}
+
+fn pointerElementStore(p: *Node, s: &Node) {
+  p[1] = *s;                        //~ ErrorNoSize:4 "reached by indexing a pointer"
+}
