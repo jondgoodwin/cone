@@ -4,7 +4,9 @@
 // the loop by the least total area, by the dynamic programme of Barequet and Sharir that Liepa (2003,
 // "Filling holes in meshes") starts from: O(n^3), which is why a loop is at most FillMaxLoop edges. A
 // diagonal that is already an edge of the mesh is not used (it would be a third face on an edge), so
-// the least is taken among the triangulations without one. Step 2, when 'refined', is Liepa's
+// the least is taken among the triangulations without one; and a triangle folded against the loop's
+// own direction (its Newell vector) costs a hundredth of the loop's area extra, so a jagged rim does not
+// get a patch triangle facing the wrong way unless nothing else covers it. Step 2, when 'refined', is Liepa's
 // refinement: the scale of each loop vertex is the mean length of the boundary edges at it, a patch
 // triangle is split at its centroid while, at every corner, sqrt 2 times the centroid's distance to
 // the corner is more than both the corner's scale and the centroid's (the mean of the corners', so the
@@ -129,6 +131,15 @@ pub fn fillHole(m: &PolyMesh, v: u32, refined: bool, problems: &mut List[String]
 
   // The least total area: w[i][j] for the polygon i..j closed by the diagonal j-i
   let inf = 1.0e300;
+  // A triangle that faces against the loop's own direction (its Newell vector) is folded over the hole's
+  // rim; it costs a hundredth of the loop's area extra, so it is used only when nothing else covers the hole
+  var newell = Vec3(0., 0., 0.);
+  i = 0usize;
+  while i < n {
+    newell = newell + (*lp[i]).cross(*lp[(i + 1usize) % n]);
+    i = i + 1usize;
+  }
+  let penalty = f64.from(newell.length()) * 0.5 * 0.01;
   var w = List[f64].withCapacity(n * n);
   var kk = List[u32].withCapacity(n * n);
   i = 0usize;
@@ -149,7 +160,9 @@ pub fn fillHole(m: &PolyMesh, v: u32, refined: bool, problems: &mut List[String]
         let a = *w[i * n + k];
         let b = *w[k * n + j];
         if a < inf && b < inf {
-          let cost = a + b + triArea(*lp[i], *lp[k], *lp[j]);
+          let tn = (*lp[k] - *lp[i]).cross(*lp[j] - *lp[i]);
+          let against = tn.dot(newell) <= 0.;
+          let cost = a + b + triArea(*lp[i], *lp[k], *lp[j]) + (if against {penalty} else {0.});
           if cost < best {
             best = cost;
             bk = u32.from(k);
