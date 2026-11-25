@@ -401,7 +401,8 @@ malformed: a header field's name has a space before its colon
 	<ul>
 	<li><span class="pre">handleInput(buf, now)</span>: the bytes that arrived, in an owned buffer; an empty
 		buffer is the end of the peer's stream.</li>
-	<li><span class="pre">pollTransmit(now)</span>: the next buffer to send, empty when there is none.</li>
+	<li><span class="pre">pollTransmit(now)</span>: a <span class="pre">Chain</span> of the buffers to send, empty when there is none
+		(<span class="pre">popFront()</span> takes the next buffer off it).</li>
 	<li><span class="pre">pollEvent()</span>: what happened. A server's request arrives as
 		<span class="pre">Request</span> (the head and what is known of the body), any number of
 		<span class="pre">Data</span> (each an owned buffer), then <span class="pre">End</span> (with the trailer
@@ -479,10 +480,12 @@ fn events(c: &amp;mut Connection) {
 
 // The bytes the connection wants sent, written out
 fn wire(c: &amp;mut Connection, at: Instant) {
+  var ch = c.pollTransmit(at);
   while true {
-    let b = c.pollTransmit(at);
-    if b.len() == 0usize {break;}
-    printStr(b.view() as &amp;str);
+    match ch.popFront() {
+      case let Some(b) {printStr(b.view() as &amp;str);}
+      else {break;}
+    }
   }
 }
 
@@ -553,7 +556,7 @@ Content-Length: 0
 		<span class="pre">IoBuf</span> from <span class="pre">iobuf</span>'s pools (<span class="pre">IoBuf(n)</span>, then
 		<span class="pre">buf.append(bytes)</span>), and a buffer a <span class="pre">Data</span> event gives the
 		program is the program's. A driver is driven by the thread that owns its loop. The simplest way is
-		<span class="pre">drv.poll(&amp;mut lp, until, &amp;mut events)</span>: it waits in the loop for at most
+		<span class="pre">drv.poll(&amp;mut lp, until, &amp;uni events)</span>: it waits in the loop for at most
 		<span class="pre">until</span> (<span class="pre">iocore.forever()</span> for no limit; not at all while
 		events are ready) and appends to <span class="pre">events</span>, a
 		<span class="pre">List[Event]</span>, what happened; the program handles them and clears the list. It
@@ -722,7 +725,7 @@ fn main() {
   var events = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while step &lt; 3u32 &amp;&amp; Instant.now() &lt; giveUp {
-    drv.poll(&amp;mut lp, giveUp, &amp;mut events);
+    drv.poll(&amp;mut lp, giveUp, &amp;uni events);
     var k = 0usize;
     while k &lt; events.len() {
       let e = &amp;mut events[k];
