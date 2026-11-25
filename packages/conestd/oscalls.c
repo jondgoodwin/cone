@@ -13,12 +13,14 @@
  * 'cone_processors' and 'cone_flushProcessWriteBuffers', and the process
  * package's 'cone_environ' (the variable 'environ', which Cone cannot name).
  * Everything else the
- * packages need on Linux (pthread_create and pthread_join, sched_yield,
- * nanosleep) is POSIX, and the packages bind it by name; those are shared with
- * macOS, which this file's Linux half is not: macOS has no futex, so its
- * 'cone_futexWait' and 'cone_futexWake' would be 'os_sync_wait_on_address'
- * (or '__ulock_wait'), its thread identity 'pthread_threadid_np' and its
- * barrier another kind of fence.
+ * packages need on Linux and macOS (pthread_create and pthread_join,
+ * sched_yield, nanosleep) is POSIX, and the packages bind it by name.
+ *
+ * 'cone_environ' and 'cone_processors' are POSIX, and one definition serves
+ * both systems. The rest is each system's own. macOS has no futex: it has
+ * 'os_sync_wait_on_address' and its wakes (macOS 14.4 and later), and its
+ * thread identity is 'pthread_threadid_np'. It has no membarrier either, and
+ * the barrier is made another way (its comment says why).
  *
  * Nothing here is compiled on Windows.
  *
@@ -26,14 +28,37 @@
  * See Copyright Notice in conec.h
 */
 
+// Before any include: glibc declares 'syscall' only under _GNU_SOURCE, and the
+// first header included fixes the feature set for every header after it
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 // Not empty on any system (an empty source file is not ISO C)
 typedef int cone_oscalls_t;
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
+#include <unistd.h>
+
+// The environment as the C library holds it now, an array of 'NAME=value'
+// strings ending in a null pointer: 'environ' is a variable Cone cannot
+// name, and setenv may have moved it since the program started. The process
+// package passes it to the program it starts with posix_spawn.
+char **cone_environ(void) {
+    extern char **environ;
+    return environ;
+}
+
+// How many logical processors are online, at least 1
+int cone_processors(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n < 1 ? 1 : (int)n;
+}
+
 #endif
+
+#if defined(__linux__)
 
 #include <errno.h>
 #include <limits.h>
@@ -73,21 +98,6 @@ void cone_futexWake(uint32_t *word, int count) {
 // The kernel's id for the calling thread, which is never 0
 uint32_t cone_threadId(void) {
     return (uint32_t)syscall(SYS_gettid);
-}
-
-// The environment as the C library holds it now, an array of 'NAME=value'
-// strings ending in a null pointer: 'environ' is a variable Cone cannot
-// name, and setenv may have moved it since the program started. The process
-// package passes it to the program it starts with posix_spawn.
-char **cone_environ(void) {
-    extern char **environ;
-    return environ;
-}
-
-// How many logical processors are online, at least 1
-int cone_processors(void) {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n < 1 ? 1 : (int)n;
 }
 
 // Every processor running a thread of this process drains its stores, as if
@@ -134,6 +144,94 @@ void cone_flushProcessWriteBuffers(void) {
     __atomic_add_fetch((size_t *)barrierPage, 1, __ATOMIC_SEQ_CST);
     mprotect(barrierPage, barrierPageSize, PROT_NONE);
     pthread_mutex_unlock(&barrierLock);
+}
+
+#elif defined(__APPLE__)
+
+#include <errno.h>
+#include <limits.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <mach/mach.h>
+#include <mach/thread_state.h>
+#include <os/os_sync_wait_on_address.h>
+
+// As on Linux: sleep while *word holds 'expected', until woken or 'timeoutNs'
+// passes (UINT64_MAX is no limit); 0 only if the timeout passed, 1 for every
+// other return. The wait takes no zero timeout (EINVAL), so no time is a
+// timeout unless the word already differs, as the futex answers it. Without
+// the SHARED flag the word is this process's alone.
+int cone_futexWait(uint32_t *word, uint32_t expected, uint64_t timeoutNs) {
+    int result;
+    if (timeoutNs == UINT64_MAX)
+        result = os_sync_wait_on_address(word, expected, sizeof *word, OS_SYNC_WAIT_ON_ADDRESS_NONE);
+    else if (timeoutNs == 0)
+        return __atomic_load_n(word, __ATOMIC_SEQ_CST) != expected;
+    else
+        result = os_sync_wait_on_address_with_timeout(word, expected, sizeof *word,
+            OS_SYNC_WAIT_ON_ADDRESS_NONE, OS_CLOCK_MACH_ABSOLUTE_TIME, timeoutNs);
+    return !(result == -1 && errno == ETIMEDOUT);
+}
+
+// Wake one thread asleep on *word, or (INT_MAX) all. A wake with no sleeper
+// answers ENOENT, which is no error here.
+void cone_futexWake(uint32_t *word, int count) {
+    if (count == INT_MAX)
+        os_sync_wake_by_address_all(word, sizeof *word, OS_SYNC_WAKE_BY_ADDRESS_NONE);
+    else
+        os_sync_wake_by_address_any(word, sizeof *word, OS_SYNC_WAKE_BY_ADDRESS_NONE);
+}
+
+// The kernel's 64-bit id for the calling thread, which the system never
+// reuses, in the low 32 bits the packages hold; never 0
+uint32_t cone_threadId(void) {
+    uint64_t id = 0;
+    pthread_threadid_np(NULL, &id);
+    return (uint32_t)id != 0 ? (uint32_t)id : 1u;
+}
+
+// Every processor running a thread of this process drains its stores, as if
+// each had made a full fence where it stands (the Linux half says what for).
+// macOS has no membarrier, and the Linux fallback is no barrier on Apple
+// silicon: the processors invalidate each other's translations in hardware,
+// so changing a page's protection interrupts none of them (measured on an M2:
+// no thread of the process stopped during any flush). What does stop every
+// running thread is the way .NET makes this barrier on macOS: asking the
+// kernel for each thread's registers. To read them the kernel interrupts the
+// processor running the thread, which saves its state and hands it to the
+// asking processor; that hand-over is ordered after every store the thread
+// made before it, so each is visible once the call returns (measured: every
+// running thread stopped inside every flush). A thread starting or ending
+// while the list is read has no registers to give: the kernel answers an
+// invalid port, an invalid argument, terminated, or (for the call itself) a
+// server that died, and the thread state cannot be read either. One not yet
+// running has made no stores; one ending made its last before it began to
+// end, which the kernel's own locking published. Any other refusal leaves
+// no correct answer.
+void cone_flushProcessWriteBuffers(void) {
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    mach_port_t task = mach_task_self();
+    thread_act_array_t threads;
+    mach_msg_type_number_t count;
+    if (task_threads(task, &threads, &count) != KERN_SUCCESS)
+        abort();
+    thread_act_t self = pthread_mach_thread_np(pthread_self());
+    for (mach_msg_type_number_t i = 0; i < count; i++) {
+        if (threads[i] != self) {
+            uintptr_t sp;
+            uintptr_t registers[128];
+            size_t n = sizeof registers / sizeof registers[0];
+            kern_return_t got = thread_get_register_pointer_values(threads[i], &sp, &n, registers);
+            if (got != KERN_SUCCESS && got != KERN_INSUFFICIENT_BUFFER_SIZE
+                && got != MACH_SEND_INVALID_DEST && got != KERN_INVALID_ARGUMENT
+                && got != KERN_TERMINATED && got != MIG_SERVER_DIED)
+                abort();
+        }
+        mach_port_deallocate(task, threads[i]);
+    }
+    vm_deallocate(task, (vm_address_t)threads, count * sizeof threads[0]);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
 
 #endif
