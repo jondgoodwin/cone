@@ -21,47 +21,19 @@ import geomath use *;
 import gpu use *;
 import render use Camera;
 import msdftext use *;
+import imagedecode;
 
 const W = 960u32;
 const H = 560u32;
 
 fn saveBmp(file: &Path, p: *u8) {
-  let rowBytes = W * 3u32;
-  let pad = (4u32 - rowBytes % 4u32) % 4u32;
-  let size = 54u32 + (rowBytes + pad) * H;
-  var b = List[u8].withCapacity(usize.from(size));
-  b.push('B');
-  b.push('M');
-  var words = Array[u32, 13]() <- fill 0u32;
-  words[0] = size;
-  words[2] = 54u32;
-  words[3] = 40u32;
-  words[4] = W;
-  words[5] = H;
-  words[6] = 0x00180001u32;
-  var w = 0usize;
-  while w < 13usize {
-    b.push(u8.from(words[w] & 255u32));
-    b.push(u8.from((words[w] >> 8u32) & 255u32));
-    b.push(u8.from((words[w] >> 16u32) & 255u32));
-    b.push(u8.from((words[w] >> 24u32) & 255u32));
-    w = w + 1usize;
+  // p is the read-back's RGBA pixels, rows top first
+  let rgba = mem.sliceFromParts(p, usize.from(W * H * 4u32));
+  let bmp = imagedecode.encodeBmp(i32.from(W), i32.from(H), 4i32, rgba, false);
+  match bmp.contiguous(0usize, bmp.len()) {
+    case let Some(v) { if let Err(e) = fs.writeFile(file, v) { let why = String() <- e; print <- "could not write the picture: ", why.view(), "\n"; } }
+    case is None { print <- "could not write the picture\n"; }
   }
-  var y = H;
-  while y > 0u32 {
-    y = y - 1u32;
-    var x = 0u32;
-    while x < W {
-      let at = p + usize.from((y * W + x) * 4u32);
-      b.push(*(at + 2usize));
-      b.push(*(at + 1usize));
-      b.push(*at);
-      x = x + 1u32;
-    }
-    var q = 0u32;
-    while q < pad { b.push(0u8); q = q + 1u32; }
-  }
-  if let Err(e) = fs.writeFile(file, b.view()) { let why = String() <- e; print <- "could not write the picture: ", why.view(), "\n"; }
 }
 
 fn draw(font: &Font, out: &Path) {
