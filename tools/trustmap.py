@@ -22,6 +22,11 @@ how many instances were made; one that no run instantiated is a blind spot.
     python tools/trustmap.py [--conec PATH] [--jobs N] [--only a,b] [--out DIR]
                              [--no-tests] [--aggregate-only]
 
+Exits 1, with the tables still written, where a package, test or example did
+not compile for the report. tools/congo/test_congo.py ('TrustMap') runs it over
+one package, since it stands in for a function of Congo's and reads conec's
+lines, and either can change under it.
+
 Writes under DIR (default build/trustmap): raw.jsonl (every conec run's output),
 sites.txt, by-function.md, generics.txt and summary.md, and prints the summary.
 `--aggregate-only` rebuilds the files from raw.jsonl without running anything.
@@ -82,7 +87,7 @@ def install(collector, conec_path):
     file still is), and its GPU kernels with nothing."""
 
     def compile_unit(conec, unit, out, mode, top, env, packages=(), includes=None, announce=True, prelude=(),
-                     homes=None):
+                     homes=None, check=False):
         pkg = unit.pkg
         if pkg.lone:
             return one_compile(conec, unit, out, mode, env, packages, includes)
@@ -357,6 +362,7 @@ def write_all(out):
     (out / "by-function.md").write_text("\n".join(rows), encoding="utf-8")
     print(summary)
     print(f"(sites: {out / 'sites.txt'}; per function: {out / 'by-function.md'}; generics: {out / 'generics.txt'})")
+    return not (broken or failed_test or not runs)
 
 
 def main():
@@ -372,7 +378,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     if not args.aggregate_only:
         run_everything(args, out)
-    write_all(out)
+    if not write_all(out):
+        sys.exit("trustmap: not everything compiled for the report (summary.md lists what)")
 
 
 if __name__ == "__main__":
