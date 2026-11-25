@@ -428,6 +428,13 @@ static void insideCollect(InsideSet *set, INode *type) {
         return;
     case RefTag:
     case ArrayRefTag:
+        // A borrow of a place is not a borrow of what a shared reference inside it points at:
+        // a copy of that reference carries the loans it holds, not the borrow of the place
+        // ('&held' for a 'held: &Shape' is no borrow of the 'Shape'); only a way through a
+        // writable one is a reborrow that lasts no longer than the borrow of the place
+        if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef
+                && !(permGetFlags(((RefNode *)type)->perm) & MayWrite) && !permIsLock(((RefNode *)type)->perm))
+            return;
         insideCollect(set, ((RefNode *)type)->vtexp);
         return;
     case PtrTag:
