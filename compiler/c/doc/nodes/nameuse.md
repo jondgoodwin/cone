@@ -104,6 +104,14 @@ of the matched value's enum, which type check decides. Where an import of this
 module renamed a module of that name with `as` (`importRenaming`), the message
 says which name it is reached by instead.
 
+**A variant's name over a module's type.** Inside an enum's braces a variant's
+bare name comes before the module's, so `enum Shape { Circle(&Circle); }` holds a
+reference to the variant, not to a `struct Circle`. That is no error, but the
+errors that follow from meaning the struct do not say it. `nameUseShadowRecord`
+keeps the first such use of each variant, and a compile that fails with errors of
+its own ends with a note at each (`nameUseShadowNotes`, called by `conec.c`),
+where the module's declaration of the name is a struct, enum or trait.
+
 ## What a use answers
 
 `isExpNode`, `isTypeNode` and `isMetaNode` ask `nameUseGroup`, which follows
