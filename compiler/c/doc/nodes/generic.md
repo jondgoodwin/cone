@@ -1505,8 +1505,15 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
   Otherwise NULL yields NULL silently, and an unhandled tag kills the compile.
   This one path is where an unrelated defect elsewhere becomes a hard abort.
 - **A clone must clear the type check marks**, or the instance silently skips
-  its own check. Only four clone functions do; every other copies `flags`
-  verbatim. A new declaration-bearing node kind inherits the bug.
+  its own check. Eight sites do (checked 25 Nov); every other clone copies
+  `flags` verbatim. A new declaration-bearing node kind inherits the bug. They
+  are `cloneFnDclShell` (`ir/stmt/fndcl.c`, which also clears `DclBodyTyped`),
+  `cloneVarDclShell` (`vardcl.c`), `cloneConstDclShell` (`const.c`),
+  `cloneFieldDclNode` (`fielddcl.c`), and in `ir/types/struct.c`
+  `cloneStructNode` twice (the struct itself, and each alias it copies) and
+  `structFoldCopy` (the field copy of a fold; it also clears `IsTagField` and
+  `IsMixin`); `cloneVectorNode` (`ir/types/vector.c`) clears `NameResolved` as
+  well.
 - **`MacroDclNode.memonodes` is dead.**
 - **A generic type's own bare name is told from its instantiation by its
   arguments alone.** While an instance is cloned the template is mapped to the
