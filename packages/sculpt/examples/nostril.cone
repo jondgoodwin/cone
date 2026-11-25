@@ -546,8 +546,11 @@ fn countBoundary(m: &PolyMesh) usize {
 
 // ---------------------------------------------------------------- the faired fill experiment (lane 2b)
 //
-// The same hole through six fills (plus the Python band's own tension as a seventh), five measures each,
-// and a picture sheet from one camera in two raking lights.
+// The same hole through five fills (plain, refined, order 1, order 2, order 2 on a band of rim and one more
+// ring), measures for each, and a picture sheet from one camera in two raking lights. The experiment's
+// sixth fill, order 2 with tension 0.03 (alone and on the band), was run at the commit before the one that
+// removed fairRegionWith: it differed from the same fill without tension by at most 0.0025 mm and looked
+// identical, so tension is no longer public (see the PR).
 
 struct Trial {
   label: String;
@@ -658,7 +661,7 @@ fn trialReport(t: &Trial, outward: Vec3, python: &SurfaceIndex, ref: &SurfaceInd
   let ra = rimAngles(&t.mesh, &pf, rim);
   print <- "TRIAL ", t.label.view(), ": inward ", li, " (by the Python skin; least dot ", least, "), ", oi, " (by mean outward)\n";
   print <- "    to Python: max ", d.max, " RMS ", d.rms, " above ", d.out, " below ", d.inn, "\n";
-  print <- "    to order-2-with-tension fill: above ", r.out, " below ", r.inn, " (max ", r.max, ")\n";
+  print <- "    to the order 2 fill: above ", r.out, " below ", r.inn, " (max ", r.max, ")\n";
   print <- "    rim angle: across the rim max ", ra.rimMax, " mean ", ra.rimMean, " deg; skin just outside max ", ra.outMax,
     " mean ", ra.outMean, " deg; closed ", t.mesh.validate().len() == 0usize, "; time ", t.secs, " s\n";
 }
@@ -725,8 +728,6 @@ fn experiment(src: &PolyMesh, loop: &List[u32], plain: &HoleFill, refined: &Hole
   let o2 = fairRegion(&refined.mesh, free, 2u32, &mut problems);
   trials.push(Trial(String.from("4 order 2"), o2, copyFaces(&refined.faces), t0.elapsed().secondsF64()));
   t0 = Instant.now();
-  let o2t = fairRegionWith(&refined.mesh, free, 2u32, 0.03, &mut problems);
-  trials.push(Trial(String.from("5 order 2 tension 0.03"), o2t, copyFaces(&refined.faces), t0.elapsed().secondsF64()));
   // the band: the patch's new vertices, the rim (ring 1) and the ring beyond it (ring 2)
   var band = flagList(refined.mesh.vertexCount());
   i = 0usize;
@@ -738,19 +739,16 @@ fn experiment(src: &PolyMesh, loop: &List[u32], plain: &HoleFill, refined: &Hole
   print <- "band: ", bandList.len(), " free vertices (patch ", free.len(), ", rim ", loop.len(), ")\n";
   t0 = Instant.now();
   let b2 = fairRegion(&refined.mesh, bandList.view(), 2u32, &mut problems);
-  trials.push(Trial(String.from("6 order 2 band 2"), b2, copyFaces(&refined.faces), t0.elapsed().secondsF64()));
-  t0 = Instant.now();
-  let b2t = fairRegionWith(&refined.mesh, bandList.view(), 2u32, 0.03, &mut problems);
-  trials.push(Trial(String.from("7 (extra) band 2 tension 0.03"), b2t, copyFaces(&refined.faces), t0.elapsed().secondsF64()));
+  trials.push(Trial(String.from("5 order 2 band 2"), b2, copyFaces(&refined.faces), t0.elapsed().secondsF64()));
   print <- "fair problems: ", problems.len(), "\n";
   i = 0usize;
   while i < problems.len() { print <- "  ", problems[i].view(), "\n"; i = i + 1usize; }
 
-  let ref = SurfaceIndex.of(&trials[4usize].mesh);
+  let ref = SurfaceIndex.of(&trials[3usize].mesh);
   i = 0usize;
   while i < trials.len() {
     trialReport(&trials[i], outward, &pyIndex, &ref, &rim);
-    if i == 0usize || i == 2usize || i == 3usize || i == 5usize { profile(&trials[i], &pyIndex, &rimPts); }
+    if i == 0usize || i == 2usize || i == 3usize || i == 4usize { profile(&trials[i], &pyIndex, &rimPts); }
     i = i + 1usize;
   }
 
@@ -768,9 +766,9 @@ fn experiment(src: &PolyMesh, loop: &List[u32], plain: &HoleFill, refined: &Hole
       let lit = if sheet == 0 { (cam.u * 0.92 + cam.w * 0.38).normalize() } else { (cam.v * -0.85 + cam.u * 0.3 + cam.w * 0.43).normalize() };
       if t == 0 {
         drawMesh(&mut cv, src, &cam, lit, centre, 4.6, 1000000000usize, 0., false, true);
-      } else if t <= 7 {
+      } else if t <= 5 {
         drawMesh(&mut cv, &trials[usize.from(t - 1)].mesh, &cam, lit, centre, 4.6, 1000000000usize, 0., false, true);
-      } else if t == 8 {
+      } else if t == 6 {
         drawMesh(&mut cv, python, &cam, lit, centre, 4.6, 1000000000usize, 0., false, true);
       }
       t = t + 1;
