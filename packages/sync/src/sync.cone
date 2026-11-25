@@ -579,8 +579,7 @@ fn yieldProcessor() {
 // lock held: Rust's 100 ("chosen by fair dice roll"). A lock held only
 // briefly is often free again within that, and a sleep and a wake cost far
 // more than the reads. Rust's spin also tells the processor it is spinning
-// (x86's 'pause'); Cone has no way to say that yet, so these spins are plain
-// relaxed loads.
+// (x86's 'pause'), and so do these, with mem.spinHint between the relaxed loads.
 const spinLimit = 100u32;
 
 // Put desired in *p if it holds expected, acquiring when it does: whether it
@@ -678,6 +677,7 @@ pub struct Mutex is Move, LockPermission, ThreadSafe {
       if state != mutexLocked || n == 0u32 {
         return state;
       }
+      mem.spinHint();
       n = n - 1u32;
     }
     mutexLocked
@@ -937,6 +937,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
       if !rwIsWriteLocked(s) || rwHasReadersWaiting(s) || rwHasWritersWaiting(s) || n == 0u32 {
         return s;
       }
+      mem.spinHint();
       n = n - 1u32;
     }
     0u32
@@ -952,6 +953,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
       if rwIsUnlocked(s) || rwHasWritersWaiting(s) || n == 0u32 {
         return s;
       }
+      mem.spinHint();
       n = n - 1u32;
     }
     0u32
@@ -1330,6 +1332,7 @@ fn chanPassBlock[T](b: *Block[T]) *Block[T] {
 // step is short, but the thread taking it may have been preempted in it.
 fn chanBackoff(step: u32) u32 {
   if step < spinLimit {
+    mem.spinHint();
     return step + 1u32;
   }
   yieldProcessor();
