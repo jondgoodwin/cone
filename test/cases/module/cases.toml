@@ -3437,6 +3437,7 @@ contains = ["!DISubprogram(name: \"addOne\"", "!DISubprogram(name: \"triple\""]
 category = "compile"
 description = "A release build, which is the default, carries debug information: a subprogram for each function it defines, the program's entry included"
 tags = ["genllvm"]
+release_only = true
 
 [[scenario.module_debug_info.check]]
 name = "release-defines-a-subprogram-per-function"
@@ -3548,6 +3549,7 @@ tags = ["genllvm"]
 [[scenario.module_debug_wasm.run]]
 name = "release"
 options = ["--wasm"]
+release_only = true
 
 [[scenario.module_debug_wasm.check]]
 name = "a-release-wasm-build-has-no-debug-info"
@@ -4880,4 +4882,86 @@ matches = [
   { pattern = "!DILocalVariable\\(name: \"(node|owner|tree|label|items|text)\", arg: [1-6], scope: !\\d+, file: !\\d+, line: 25, type: ", count = 6 },
   { pattern = "!DILocalVariable\\(name: \"(list|pair|grid|raw|counted|sole|base|add|name)\", scope: !\\d+, file: !\\d+, line: (2[6-9]|3[0-4]), type: ", count = 9 },
   { pattern = "!DILocalVariable\\(name: \"(leaf|node|other|r)\", scope: !\\d+, file: !\\d+, line: (39|4[0-2]), type: ", count = 4 },
+]
+
+[scenario.module_debug_shapes]
+category = "compile"
+description = "A debug build describes an enum arm as a struct of the enum's tag and its own fields at the arm's offsets (the target of '&Circle'); a virtual reference as the pair 'object' and 'vtable' with the vtable a struct of function pointers and field offsets; an Option of one as that pair; a tuple as a struct of '0', '1', ...; a SIMD vector as a vector-flagged array of its lanes"
+tags = ["genllvm"]
+
+[[scenario.module_debug_shapes.run]]
+name = "debug"
+options = ["--debug"]
+
+# 'Figure' is 24 bytes: the tag at 0, then each arm's fields. An arm as a type of its own is 24 bytes (192 bits)
+# holding the tag and the arm's fields at the offsets of its LLVM type; the enum's payload union (which holds
+# each arm's fields from its first used byte, offset 4) is another description of the same arms, 160 bits wide.
+[[scenario.module_debug_shapes.check]]
+name = "debug-describes-an-enum-arm-as-a-struct-of-the-tag-and-its-fields"
+target = "preir"
+matches = [
+  { pattern = "name: \"Circle\", file: !\\d+, line: 23, size: 192, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"Rect\", file: !\\d+, line: 24, size: 192, align: 32, elements: ", count = 1 },
+  { pattern = "name: \"Nest\", file: !\\d+, line: 25, size: 192, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"tag\", file: !\\d+, line: 21, baseType: !\\d+, size: 8, align: 8\\)", count = 1 },
+  # the arms' fields at their LLVM offsets (the payload union's copies are 32 bits earlier)
+  { pattern = "name: \"radius\", file: !\\d+, line: 23, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 1 },
+  { pattern = "name: \"radius\", file: !\\d+, line: 23, baseType: !\\d+, size: 64, align: 64, offset: 32\\)", count = 1 },
+  { pattern = "name: \"w\", file: !\\d+, line: 24, baseType: !\\d+, size: 32, align: 32, offset: 32\\)", count = 1 },
+  { pattern = "name: \"h\", file: !\\d+, line: 24, baseType: !\\d+, size: 32, align: 32, offset: 64\\)", count = 1 },
+  { pattern = "name: \"inner\", file: !\\d+, line: 25, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 1 },
+  { pattern = "name: \"n\", file: !\\d+, line: 25, baseType: !\\d+, size: 32, align: 32, offset: 128\\)", count = 1 },
+  # a reference to an arm points at it
+  { pattern = "tag: DW_TAG_pointer_type, name: \"&ro Circle\", baseType: !\\d+, size: 64, align: 64", count = 1 },
+  { pattern = "tag: DW_TAG_pointer_type, name: \"&ro Nest\", baseType: !\\d+, size: 64, align: 64", count = 1 },
+]
+excludes = ["name: \"&ro Circle\", baseType: null", "name: \"&ro Nest\", baseType: null"]
+
+# The pair is two words: 'object' at 0 and the vtable pointer at 8. The vtable (the code generator's layout:
+# 'area' at 0, the field 'sides' as a 32-bit offset at 8, then the type record at 16) is 24 bytes.
+[[scenario.module_debug_shapes.check]]
+name = "debug-describes-a-virtual-reference-as-an-object-and-a-vtable-of-slots"
+target = "preir"
+matches = [
+  { pattern = "name: \"&<Shape\", file: !\\d+, size: 128, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"object\", file: !\\d+, baseType: !\\d+, size: 64, align: 64\\)", count = 1 },
+  { pattern = "name: \"vtable\", file: !\\d+, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 1 },
+  { pattern = "tag: DW_TAG_pointer_type, baseType: null, size: 64, align: 64", count = 1 },
+  { pattern = "name: \"Shape vtable\", file: !\\d+, size: 192, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"area\", file: !\\d+, baseType: !\\d+, size: 64, align: 64\\)", count = 1 },
+  { pattern = "tag: DW_TAG_pointer_type, name: \"area\", baseType: !\\d+, size: 64, align: 64", count = 1 },
+  { pattern = "name: \"sides.offset\", file: !\\d+, baseType: !\\d+, size: 32, align: 32, offset: 64\\)", count = 1 },
+  { pattern = "name: \"typerecord\", file: !\\d+, baseType: !\\d+, size: 64, align: 64, offset: 128\\)", count = 1 },
+  { pattern = "!DIBasicType\\(name: \"u32\", size: 32, encoding: DW_ATE_unsigned\\)", count = 1 },
+  # an Option of one is the pair it is stored as, null 'object' meaning None
+  { pattern = "name: \"Option\\[&<Shape\\]\", file: !\\d+, size: 128, align: 64, elements: ", count = 1 },
+]
+contains = ["!DISubroutineType(types: !"]
+
+[[scenario.module_debug_shapes.check]]
+name = "debug-describes-a-tuple-and-a-vector"
+target = "preir"
+matches = [
+  { pattern = "name: \"\\(i64, f64\\)\", file: !\\d+, size: 128, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"0\", file: !\\d+, baseType: !\\d+, size: 64, align: 64\\)", count = 1 },
+  { pattern = "name: \"1\", file: !\\d+, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 1 },
+  # a tuple inside a tuple: the inner one 8-aligned after a 4-byte element
+  { pattern = "name: \"\\(i32, \\(i32, f64\\)\\)\", file: !\\d+, size: 192, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"\\(i32, f64\\)\", file: !\\d+, size: 128, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"1\", file: !\\d+, baseType: !\\d+, size: 128, align: 64, offset: 64\\)", count = 1 },
+  { pattern = "tag: DW_TAG_pointer_type, name: \"&ro \\(i64, f64\\)\", baseType: !\\d+, size: 64, align: 64", count = 1 },
+  # four f32 lanes, 16 bytes aligned to 16, with the vector flag
+  { pattern = "tag: DW_TAG_array_type, baseType: !\\d+, size: 128, align: 128, flags: DIFlagVector, elements: ", count = 1 },
+  { pattern = "!DISubrange\\(count: 4, lowerBound: 0\\)", count = 1 },
+]
+# a mask of 'bool' lanes (single bits) is not described, so neither are the variables of its type
+excludes = ["!DILocalVariable(name: \"m\",", "!DILocalVariable(name: \"mask\","]
+
+[[scenario.module_debug_shapes.check]]
+name = "debug-declares-each-variable-of-these-types"
+target = "preir"
+matches = [
+  { pattern = "!DILocalVariable\\(name: \"(s|opt|circle|nest|rect|tup|tref|wide)\", arg: [1-8], scope: !\\d+, file: !\\d+, line: (28|29), type: ", count = 8 },
+  { pattern = "!DILocalVariable\\(name: \"(again|pair|nested)\", scope: !\\d+, file: !\\d+, line: 3[0-2], type: ", count = 3 },
+  { pattern = "!DILocalVariable\\(name: \"(d|f|w|t|n|o|r)\", scope: !\\d+, file: !\\d+, line: (3[7-9]|4[0-4]), type: ", count = 7 },
 ]

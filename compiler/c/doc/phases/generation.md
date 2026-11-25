@@ -2173,7 +2173,7 @@ build, not a GPU's) gives each parameter (`genlParmVar`) and each `let`/`var` lo
 (`genlLocalVar`) a `DILocalVariable` and a declare record bound to the stack slot that holds it, in
 the function's subprogram, at the variable's own line. Only a type debug info can describe exactly is
 described: the number types, `bool` (a byte, `DW_ATE_boolean`), `char`, and a plain struct: not a
-trait, enum or enum arm, no generator frame or padding, so its LLVM struct's elements are its
+trait or enum, no generator frame or padding, so its LLVM struct's elements are its
 fields one for one (a generic instance is such a struct, named as a diagnostic spells it,
 `Dict[str, i64]`, `genlDiSpell`; so is a closure's hidden struct, `closure#N`, whose fields are
 its captures named as the source names them); its members carry the data layout's offsets and
@@ -2186,9 +2186,27 @@ the finished type replaces the forward declaration. Also described (`genlDiEnum`
 and reference cases of `genlDiType`):
 - A reference of any permission or region (`&T`, `&mut T`, `Rc[mut, T]`, `Uni[T]`, `Gc[T]`),
   and a raw pointer `*T`: a pointer type named as a diagnostic spells it, to the pointee's
-  described type (to nothing, a `void *`, where the pointee is not described: a trait, an enum arm,
-  a function signature, an opaque type). The pointer addresses the value; an owner's region
-  header (an `Rc` count before the value) is not described.
+  described type (to nothing, a `void *`, where the pointee is not described: a trait, a function
+  signature, an opaque type, an arm of a nullable-pointer enum). The pointer addresses the value;
+  an owner's region header (an `Rc` count before the value) is not described.
+- A virtual reference (`&<Shape`, `Rc[<Shape]`; `genlDiRef`): the pair it is stored as, a struct
+  named as spelled, `object` (a pointer to nothing: the concrete type is not known statically) at
+  the pair's offset 0 and `vtable` at 8, a pointer to a struct named `<trait> vtable` (once per
+  vtable, `genlDiVtable`) that follows the code generator's layout (`genlVtableType`): a member
+  named for each method, a function pointer (named for the method, to a signature-less subroutine
+  type) at its slot's offset, then `<field>.offset`, a `u32` where the trait has a field (the
+  offset of that field in the object), and last `typerecord` (the implementer's type record, which
+  only an owner reads), each at the data layout's offset in the vtable's LLVM struct.
+- An enum arm as a type of its own (`Circle`, the target of `&Circle`; `genlDiArm`): a struct named
+  for the arm, holding the enum's own fields (`tag`, the enum's enumeration, at its place) and the
+  arm's fields, at the offsets of the arm's LLVM type; its size is the enum's, since every arm is
+  padded to it. An arm of a nullable-pointer enum is stored as a bare pointer and is not described.
+- A tuple: a struct named as written (`(i64, f64)`; a diagnostic says only `a tuple`) with members
+  `0`, `1`, ... at the offsets of its LLVM struct.
+- A SIMD vector (`Vector[f32, 4]`): an array type of its lane type with the vector flag
+  (`DIFlagVector`, `LLVMDIBuilderCreateVectorType`), one subrange of its lanes, of the size and
+  alignment LLVM gives the whole. A vector of `bool` lanes (a comparison's mask, `<N x i1>`) is not
+  described: its lanes are single bits.
 - A slice and a reference that carries its body's length (`&Array[T]`, `&str`): a struct named
   as spelled, `ptr` (a pointer to the element's type) and `len` (`usize`) at the offsets of the
   LLVM pair.
@@ -2207,10 +2225,14 @@ and reference cases of `genlDiType`):
 - A nullable-pointer enum (`NullablePtr`: an `Option` of a thin reference or pointer, stored
   as the pointer with null for the empty arm; the only niche layout Cone has): a pointer type
   named as the enum is spelled, pointing at the type its reference points at. One of a fat
-  reference (a slice, a virtual reference) is stored as that pair and is not described.
+  reference (a slice, a virtual reference) is stored as that pair: a struct named as the `Option`
+  is spelled (`Option[&<Shape]`) with the pair's members, a null `object` or `ptr` meaning `None`.
 
-A variable of any other type (a virtual reference, a tuple, an enum arm, a vector, a future or
-actor) gets no description, rather than a wrong one. Left out
+Still not described: a future or actor (a variable of one gets no description, rather than a wrong
+one; as a field its struct's size stays right), a vector of `bool` lanes, a struct whose LLVM
+type is not its fields one for one (a generator frame, padding), the elements behind a `List`'s,
+`Dict`'s or `String`'s pointer, a method's signature behind a vtable's function pointer, and an
+owner's region header. Left out
 too: a generator step's parameters (`genlGenBegin` may move a variable of its into the frame),
 locals of an inline function's expansion, which are the caller's slots (`GenState.inlinedepth`),
 and a match binding or generator frame variable, which has no slot of its own. A function whose
