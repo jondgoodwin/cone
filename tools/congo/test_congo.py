@@ -4942,6 +4942,55 @@ class IndexRegistries(unittest.TestCase):
         self.app("alpha")
         self.assertEqual(self.program_output(self.congo("run", "app.cone", cwd=self.root)), "11\n")
 
+    def test_an_empty_registry_option_names_no_index(self):
+        # congo.py's `if args.registry` is false for "": the configured index is used,
+        # and with none configured the refusal is the same as with no option
+        src, src_url = self.repo("src")
+        self.library(src, "alpha", self.answer(11))
+        self.commit(src, "first")
+        index, index_url = self.index()
+        run = self.congo("publish", "--registry", "", cwd=src, ok=False)
+        self.assertIn("no index registry to publish to", run.stderr)
+        run = self.congo("publish", "--registry=", cwd=src, ok=False)
+        self.assertIn("no index registry to publish to", run.stderr)
+        self.config(indexes=[index_url])
+        run = self.congo("publish", "--registry", "", cwd=src)
+        self.assertIn("Published", run.stdout)
+        # Once more with nothing changed
+        run = self.congo("publish", cwd=src)
+        self.assertIn("Unchanged", run.stdout)
+
+    def test_more_unusable_entries_are_refused(self):
+        src, src_url = self.repo("src")
+        self.library(src, "alpha", self.answer(11))
+        self.library(src / "pkgs" / "beta", "beta", self.answer(12))
+        commit = self.commit(src, "first")
+        index, index_url = self.index()
+        self.config(indexes=[index_url])
+        self.app("alpha")
+        good = congo.index_entry_text("alpha", src_url, commit, "")
+        cases = {
+            "needs git, a string": f'name = "alpha"\ncommit = "{commit}"\n',
+            "needs commit, a string": f'name = "alpha"\ngit = "{src_url}"\n',
+            "needs name, a string": f'git = "{src_url}"\ncommit = "{commit}"\n',
+            "path must be a string": good + "path = 5\n",
+            "path must be a folder inside the repository": good + 'path = "."\n',
+            "'extra' is not an index key": good + "[extra]\nx = 1\n",
+            "is named 'beta', not 'alpha'": good + 'path = "pkgs/beta"\n',
+        }
+        for message, text in cases.items():
+            write(index / "alpha.toml", text)
+            self.commit(index, message)
+            run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+            self.assertEqual(run.returncode, 1, message)
+            self.assertIn(message, run.stderr)
+        # A path written with a backslash is the same folder
+        write(index / "beta.toml", congo.index_entry_text("beta", src_url, commit, "")
+              + 'path = "pkgs\\\\beta"\n')
+        self.commit(index, "backslash path")
+        self.app("beta")
+        self.assertEqual(self.program_output(self.congo("run", "app.cone", cwd=self.root)), "12\n")
+
 
 def all_test_ids() -> list[str]:
     """Every test of this module as 'Class.method', in the order unittest runs them."""
