@@ -44,6 +44,12 @@
 // return type is not written, a generator (ErrorQuesReturn, the last at parse).
 void propagateLower(TypeCheckState *pstate, BlockNode *blk);
 
+// A plain value into an Option (iexp.c, iexpOptWrapApplies): the Option's 'Some', what it holds, and
+// the 'Some(value)' call to type check
+StructNode *propagateOptionSome(INode *type);
+INode *propagateSuccessHeld(StructNode *variant);
+INode *propagateWrap(StructNode *variant, INode *value, INode *lexnode);
+
 // "Result" or "Option" where this type is an instance of core's, else NULL
 char *propagateCoreName(INode *type);
 

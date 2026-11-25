@@ -151,6 +151,44 @@ static int genlIsEntryMain(GenState *gen, FnDclNode *fnnode, const char *symbol)
     return parmcnt == 0 || parmcnt == 2;
 }
 
+// The program's 'main' that takes arguments takes C's: an i32 and a **u8
+// (manual, mod-globals.html, "When every module's initializer and finalizer
+// run"). The entry passes argc and argv through, so any other types would make
+// it call 'main' with the wrong ones. Reports and answers 0 when they differ.
+static int genlEntryMainParmsOk(FnDclNode *fnnode) {
+    Nodes *parms = ((FnSigNode*)fnnode->vtype)->parms;
+    if (parms->used != 2)
+        return 1;
+    INode *argc = itypeGetTypeDcl(((IExpNode*)nodesGet(parms, 0))->vtype);
+    INode *argv = itypeGetTypeDcl(((IExpNode*)nodesGet(parms, 1))->vtype);
+    int argvok = argv->tag == PtrTag;
+    if (argvok) {
+        INode *inner = itypeGetTypeDcl(((StarNode*)argv)->vtexp);
+        argvok = inner->tag == PtrTag
+            && itypeGetTypeDcl(((StarNode*)inner)->vtexp) == (INode*)u8Type;
+    }
+    if (argc == (INode*)i32Type && argvok)
+        return 1;
+    errorMsgNode(nodesGet(parms, argc == (INode*)i32Type ? 1 : 0), ErrorInvType,
+        "The program's `main` takes nothing, or C's arguments: an `i32` and a `**u8`.");
+    return 0;
+}
+
+// The program's 'main' returns an integer, nothing, or a Result (manual,
+// mod-globals.html): the entry takes the return as the exit status. Reports
+// and answers 0 for any other type, which was accepted and exited 0.
+static int genlEntryMainReturnOk(FnDclNode *fnnode) {
+    INode *rettexp = ((FnSigNode*)fnnode->vtype)->rettype;
+    INode *ret = itypeGetTypeDcl(rettexp);
+    if (ret->tag == VoidTag
+        || ((ret->tag == IntNbrTag || ret->tag == UintNbrTag) && ret != (INode*)boolType)
+        || propagateMainEntry(fnnode) != NULL)
+        return 1;
+    errorMsgNode(rettexp, ErrorInvType,
+        "The program's `main` returns an integer, nothing, or a `Result`.");
+    return 0;
+}
+
 static void genlBorrowDeref(GenState *gen, FnDclNode *fnnode);
 
 // The size of a function just generated, in LLVM instructions, before any
@@ -1359,8 +1397,12 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         // The program's own 'main' is called by the entry the compiler builds,
         // which is the one named 'main' (genlEntry)
         if (genlIsEntryMain(gen, glofn, symbol)) {
-            strcpy(symbol, EntryMainSymbol);
-            gen->entrymain = glofn;
+            // both checks report
+            int parmsok = genlEntryMainParmsOk(glofn);
+            if (genlEntryMainReturnOk(glofn) && parmsok) {
+                strcpy(symbol, EntryMainSymbol);
+                gen->entrymain = glofn;
+            }
         }
         if (genlIsVoidMain(glofn, symbol)) {
             unsigned parmcnt = LLVMCountParamTypes(fntype);

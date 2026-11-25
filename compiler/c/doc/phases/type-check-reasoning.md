@@ -187,6 +187,18 @@ for anything else.
 4. **Auto-borrow** (`borrowAutoMatches`): can a borrow of the source produce the
    target reference? The borrow `borrowAuto` then injects carries the source
    lval's scope, as `&[]arr` written out would.
+5. **A plain value into an `Option`** (`iexpOptWrapApplies`; Jon, Question 20, 23 Nov
+   2026): where the target is core's `Option[T]` and the source does not meet it as it
+   is but meets `T`, the verdict is `ConvSubtype` and `iexpCoerceShape` builds
+   `Some(value)` (`propagateWrap`) and type checks it, so a return, a tail, an
+   initializer, a store and an argument all take it. One level: `??i32` takes
+   `Some(5)` and refuses `5`, and `None` is the outer `None`. Never a `Result`:
+   its success stays `Ok(v)`. The value is already checked, so the construction's
+   check leaves it alone (`inodeCheckedOnce`): checking an operator's call twice
+   corrupts it. A macro's `lazy` parameter never takes the wrap (that argument is
+   substituted as written, so the wrap would fail inside the macro's body, and
+   `opt && 5` keeps its refusal). `iexpOptWrapOff` switches it off for a trial; a
+   selection's first look is made with it off ("Selecting a candidate").
 
 `iexpCoerce` then switches on the verdict and injects, copying source position
 onto every node it creates with `inodeLexCopy` so the diagnostic still points at
@@ -430,7 +442,12 @@ receiver passable as parameter 0 (a virtual reference, which never coerces to
 the `&Trait` parameter 0 declares, where parameter 0 is a reference whose
 permission its own grants, as `permMatches` decides for a plain one), every argument `iexpMatches`-compatible with
 its parameter, and every unsupplied parameter carrying a default. Two viable
-candidates is `OverloadAmbiguous` and an error, not a tie-break. One conversion
+candidates is `OverloadAmbiguous` and an error, not a tie-break, with one ranking
+rule, the first (Jon, Question 20, 23 Nov 2026): the call is tried first with the
+plain-value wrap into an `Option` switched off (`iexpOptWrapOff`), and the wrap joins only
+when no candidate takes the call as written, for functions (`iNsTypeFindMethod`) and
+macros (`macroSelect`) alike. So `pick(5)` beside `pick(x: ?i32)`, and `opt || 0`
+beside Option's two `||` macros, keep their meaning. One conversion
 is not counted at first: a string literal lent as a temporary to a `&T`. A call
 no candidate takes, with a string literal among its arguments, is asked again
 with it counted (`slitBorrowFallback`), so that conversion never competes with

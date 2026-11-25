@@ -123,6 +123,10 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 3, {ShapePtrT, ShapePtrT, ShapeUsize}, ShapeVoid, 1, 1, PhaseOperation, 1},
     {"prefetch", PrefetchIntrinsic, "prefetch[T](p: *T)",
         1, 1, {ShapePtrT}, ShapeVoid, 1, 1, PhaseOperation, 1},
+    // A hint to the processor that a loop is spinning (x86 pause, AArch64
+    // yield), nothing where the target has none
+    {"spinHint", SpinHintIntrinsic, "spinHint()",
+        0, 0, {0}, ShapeVoid, 0, 1, PhaseOperation, 1},
     {"forget", ForgetIntrinsic, "forget[T](value: T)",
         1, 1, {ShapeT}, ShapeVoid, 0, 0, PhaseExpansion, 1},
     {"typeRecord", TypeRecordIntrinsic, "typeRecord[T]() *TypeRecord",

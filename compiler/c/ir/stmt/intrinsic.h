@@ -146,6 +146,7 @@ enum IntrinsicFn {
     MoveRawIntrinsic,       // moveRaw[T](to: *T, from: *T, count: usize)
     MoveRawIntoIntrinsic,   // moveRawInto[T](to: *T, from: *T, count: usize)
     PrefetchIntrinsic,      // prefetch[T](p: *T)
+    SpinHintIntrinsic,      // spinHint()
     ForgetIntrinsic,        // forget[T](value: T)
     TypeRecordIntrinsic,    // typeRecord[T]() *TypeRecord
     HoldsTracedIntrinsic,   // holdsTraced[T]() bool

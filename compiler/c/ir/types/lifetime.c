@@ -475,6 +475,8 @@ int lifeIsOwnBorrow(INode *parmtype) {
         && ((RefNode *)typedcl)->lifename != staticLifeName;
 }
 
+static int lifePartFlowsAs(FnSigNode *sig, INode *parm, uint32_t part, INode *to, int anon);
+
 int lifeCarry(FnSigNode *sig, INode *parm, INode *to, uint32_t *slots) {
     *slots = LifeAllSlots;
     if (sig == NULL)
@@ -491,7 +493,10 @@ int lifeCarry(FnSigNode *sig, INode *parm, INode *to, uint32_t *slots) {
         // loans, and a function's borrow none
         if (ref->lifename == staticLifeName || lifeIsFnBorrow(ref))
             return LifeCarryWhole;
-        if (lifeNameFlowsAs(sig, ref->lifename, to, 0))
+        // The argument's own borrow is the reference's outermost one: it is
+        // compared with the result's outermost lifetime, as the body's check
+        // does (Bug 122)
+        if (lifePartFlowsAs(sig, parm, LifePartOwn, to, 0))
             return LifeCarryWhole;
     }
     INode *held = lifeHeld(parm);
@@ -532,6 +537,19 @@ static int lifePartFlowsAs(FnSigNode *sig, INode *parm, uint32_t part, INode *to
     lifeSetInit(&partset);
     lifeSetInit(&toset);
     lifePartGather(parm, part, anon, &partset);
+    // A parameter's own borrow handed back as a borrowed reference is that
+    // reference's outermost borrow: it must outlast the outermost lifetime
+    // the result names, not any lifetime named inside the result's type
+    // (Bug 122: a '&'static Node['a]' is no place for a borrow of ''a')
+    INode *todcl = to ? itypeGetTypeDcl(to) : NULL;
+    if (part == LifePartOwn && !anon && todcl && todcl->tag == RefTag && lifeIsBorrowRef(todcl)
+        && !lifeIsFnBorrow((RefNode *)todcl) && !lifeIsInvariant(((RefNode *)todcl)->lifename)) {
+        Name *outer = ((RefNode *)todcl)->lifename;
+        if (outer == staticLifeName)
+            return partset.cnt == 0 && !partset.unnamed;
+        lifeSetAdd(&toset, outer);
+        return lifeSetFlows(sig, &partset, &toset, anon);
+    }
     lifeGather(to, anon, &toset);
     return lifeSetFlows(sig, &partset, &toset, anon);
 }

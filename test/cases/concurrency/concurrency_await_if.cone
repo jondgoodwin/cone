@@ -1,0 +1,134 @@
+// An 'await' in an 'if': in its condition, in either branch, and in an 'if'
+// used as a value (ruled 1 Nov 2026, concurrency-async-await: an await is
+// allowed wherever an expression is). Each case is run for both answers of the
+// condition, and a droppable ('Fin') made before the 'if' and one made in the
+// branch cross the seam and die where the one scope says.
+//
+// - cond: 'if await h.yes(b) {...} else {...}';
+// - branch: 'if b {... await ...} else {...}', the seam in the then-branch, then
+//   in the else-branch, and in both;
+// - value: 'let d = if await h.yes(b) {await h.num(1)} else {await h.num(2)}';
+// - nested: an 'if' with an awaiting condition inside an awaiting branch;
+// - chain: 'else if await ...'.
+
+mod concurrency_await_if;
+
+import stdio use *;
+import actors;
+
+struct Fin {
+  pub n: u64;
+  fn final(self: &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
+}
+
+fn say(s: &str, n: u64) {printStr("  "); printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn head(s: &str, b: bool) {printStr(s); printStr(if b {" true"} else {" false"}); printStr("\n");}
+
+actor Helper {
+  pub async fn yes(self, b: bool) bool {b}
+  pub async fn num(self, n: u64) u64 {say("num", n); n}
+}
+
+actor Page {
+  h: Helper;
+
+  pub async fn cond(self, b: bool) u64 {
+    head("cond", b);
+    let f = Fin(1u64);
+    if await h.yes(b) {say("then", 1u64);} else {say("else", 2u64);}
+    say("after", 3u64);
+    0u64
+  }
+
+  pub async fn thenBranch(self, b: bool) u64 {
+    head("then branch", b);
+    let f = Fin(10u64);
+    if b {
+      let g = Fin(11u64);
+      let n = await h.num(12u64);
+      say("then", n);
+    } else {say("else", 13u64);}
+    say("after", 14u64);
+    0u64
+  }
+
+  pub async fn elseBranch(self, b: bool) u64 {
+    head("else branch", b);
+    let f = Fin(20u64);
+    if b {say("then", 21u64);}
+    else {
+      let g = Fin(22u64);
+      let n = await h.num(23u64);
+      say("else", n);
+    }
+    say("after", 24u64);
+    0u64
+  }
+
+  pub async fn both(self, b: bool) u64 {
+    head("both branches", b);
+    let f = Fin(30u64);
+    if b {let g = Fin(31u64); say("then", await h.num(32u64));}
+    else {let g = Fin(33u64); say("else", await h.num(34u64));}
+    say("after", 35u64);
+    0u64
+  }
+
+  pub async fn value(self, b: bool) u64 {
+    head("value", b);
+    let f = Fin(40u64);
+    let d = if await h.yes(b) {await h.num(41u64)} else {await h.num(42u64)};
+    say("d", d);
+    let e = if b {await h.num(43u64)} else {44u64};
+    say("e", e);
+    let g = if b {45u64} else {await h.num(46u64)};
+    say("g", g);
+    0u64
+  }
+
+  pub async fn nested(self, b: bool) u64 {
+    head("nested", b);
+    let f = Fin(50u64);
+    if await h.yes(b) {
+      let g = Fin(51u64);
+      if await h.yes(!b) {say("inner then", 52u64);} else {say("inner else", await h.num(53u64));}
+    } else {
+      say("outer else", await h.num(54u64));
+    }
+    say("after", 55u64);
+    0u64
+  }
+
+  pub async fn chain(self, b: bool) u64 {
+    head("chain", b);
+    let f = Fin(60u64);
+    if await h.yes(!b) {say("first", 61u64);}
+    else if await h.yes(b) {say("second", await h.num(62u64));}
+    else {say("third", 63u64);}
+    say("after", 64u64);
+    0u64
+  }
+}
+
+actor Driver {
+  p: Page;
+  pub async fn run(self) {
+    let a = await p.cond(true); let b = await p.cond(false);
+    let c = await p.thenBranch(true); let d = await p.thenBranch(false);
+    let e = await p.elseBranch(true); let f = await p.elseBranch(false);
+    let g = await p.both(true); let h = await p.both(false);
+    let i = await p.value(true); let j = await p.value(false);
+    let k = await p.nested(true); let l = await p.nested(false);
+    let m = await p.chain(true); let n = await p.chain(false);
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 1u32));
+  {
+    let d = Driver(Page(Helper()));
+    d.run();
+  }
+  finalAll();
+}

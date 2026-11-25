@@ -517,6 +517,9 @@ Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext) {
 // A variable holds its type by value: rule 4's report site
 static void varDclSizeCheck(TypeCheckState *pstate, INode *node, void *extra) {
     VarDclNode *name = (VarDclNode *)node;
+    // A variable whose initializer was refused (a tuple of types, Error 1044) has no type to size
+    if (name->vtype == NULL)
+        return;
     // 'Self' in an open trait's requirement stands for whichever type meets it, which
     // has a size (a default is checked in each implementer, with Self repointed to it).
     // What has no size is the trait itself, so a virtual reference to such a trait

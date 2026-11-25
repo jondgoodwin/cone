@@ -16,10 +16,13 @@
 // it, say) the worker would sleep with the message queued: the check that it
 // is handled within 2 s stops the test there.
 //
-// Then, with the worker asleep, its park word is woken fifty times with no
-// mark (pokeParked, a test hook): each such return finds the word still
-// PARKED and sleeps again at once (stats' reparks), with no spin and no park
-// of its own, and nothing runs.
+// Then, with the worker asleep, its park word is woken with no mark
+// (pokeParked, a test hook, 1 ms apart) until the worker has slept again 40
+// times: each such return finds the word still PARKED and sleeps again at once
+// (stats' reparks), with no spin and no park of its own, and nothing runs. It
+// was fifty pokes of which 40 had to show, which a starved box failed (24 Nov,
+// the Linux nightly): a wake sent before the worker waits is lost, and pokes
+// that land together are one return.
 
 mod parkwake;
 
@@ -92,15 +95,16 @@ fn main() i32 {
     thread.sleep(time.Duration.fromMillis(20i64));
     let a = actors.stats();
     let h0 = handled.load();
-    var p = 0u32;
-    while p < 50u32 {
+    // The pokes are not counted: they go on, 1 ms apart, until the worker has
+    // slept again 40 times (or 10 s have gone)
+    let reparkLimit = nowNs() + 10000000000u64;
+    while actors.stats().reparks - a.reparks < 40u64 && nowNs() < reparkLimit {
       actors.pokeParked();
       thread.sleep(time.Duration.fromMillis(1i64));
-      p = p + 1u32;
     }
     thread.sleep(time.Duration.fromMillis(20i64));
     let b = actors.stats();
-    expect(b.reparks - a.reparks >= 40u64, "unmarked wakes of the park word: the worker slept again (40 or more reparks of 50 pokes)");
+    expect(b.reparks - a.reparks >= 40u64, "unmarked wakes of the park word: the worker slept again (40 reparks, within 10 s of pokes 1 ms apart)");
     expectUInt(b.spins, a.spins, "...with no spin");
     expectUInt(b.parks, a.parks, "...and no new park: it never left the one it was in");
     expectUInt(handled.load(), h0, "...and nothing ran");

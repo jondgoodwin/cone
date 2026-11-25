@@ -520,3 +520,60 @@ excludes = ["i64 27", "mem.blackBox", "@blackBox"]
 category = "run"
 description = "A store through a raw pointer, of a whole value or of a field, finalizes the value it replaces; mem.writeRaw over a live value finalizes nothing"
 tags = ["genllvm", "runtime"]
+
+# mem.spinHint, a hint: x86's pause, AArch64's yield, nothing on a GPU or
+# WebAssembly target, and no change to what a program does (ruled 1 Nov 2026,
+# concurrency-threads: a spin-loop hint intrinsic)
+[scenario.intrinsic_genllvm_spinhint]
+category = "compile"
+description = "mem.spinHint is expanded where it is called as a call of llvm.x86.sse2.pause on an x86 target and of llvm.aarch64.hint with 1 (yield) on an AArch64 target; no function of its own"
+tags = ["genllvm"]
+
+[[scenario.intrinsic_genllvm_spinhint.run]]
+name = "x86"
+options = ["--triple=x86_64-pc-windows-msvc", "--library", "--verify"]
+
+[[scenario.intrinsic_genllvm_spinhint.check]]
+name = "a-spin-hint-is-the-x86-pause"
+target = "preir"
+contains = ["call void @llvm.x86.sse2.pause()"]
+excludes = ["spinHint", "@mem.spinHint"]
+
+[scenario.intrinsic_genllvm_spinhint_none]
+category = "compile"
+description = "On a SPIR-V target (OpenCL and Vulkan forms) and on WebAssembly mem.spinHint compiles to nothing: no pause or yield call and no declaration of one"
+tags = ["genllvm"]
+
+[[scenario.intrinsic_genllvm_spinhint_none.run]]
+name = "opencl"
+options = ["--triple=spirv64-unknown-unknown", "--library", "--verify"]
+
+[[scenario.intrinsic_genllvm_spinhint_none.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--library", "--verify"]
+
+[[scenario.intrinsic_genllvm_spinhint_none.run]]
+name = "wasm"
+options = ["--wasm", "--library", "--verify"]
+
+[[scenario.intrinsic_genllvm_spinhint_none.check]]
+name = "no-spin-hint-is-emitted"
+target = "preir"
+excludes = ["pause", "llvm.aarch64.hint", "spinHint"]
+
+[scenario.intrinsic_spinhint_run]
+category = "run"
+description = "A loop hinting on each of 1000 passes ends with the counter and the pass count it has without the hint; lowered, unoptimized and through the empty fallback body"
+tags = ["genllvm", "runtime"]
+
+[[scenario.intrinsic_spinhint_run.run]]
+name = "release"
+options = []
+
+[[scenario.intrinsic_spinhint_run.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.intrinsic_spinhint_run.run]]
+name = "fallback"
+options = ["--intrinsic-fallback", "--debug"]
