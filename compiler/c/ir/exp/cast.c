@@ -964,6 +964,23 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
         return;
     }
 
+    // A reference 'as' a virtual reference is the conversion a call argument gets
+    // (safe-types.html, "Where an expression needs a coercion said out loud"): it
+    // attaches the struct's table of methods, so it is no reinterpretation
+    if (!(node->flags & FlagConvert) && fromtype->tag == RefTag && totype->tag == VirtRefTag) {
+        if (!iexpCoerceIn(pstate, &node->exp, node->typ)) {
+            // The refusal a call argument gets (fnCallTypeCheck)
+            char why[400];
+            if (structPrivateRefWhy(why, sizeof(why), fromtype, totype))
+                errorMsgNode(node->exp, ErrorPrivateMatch, "Expression's type does not match the virtual reference wanted.%s", why);
+            else if (structDefaultRefWhy(why, sizeof(why), fromtype, totype))
+                errorMsgNode(node->exp, ErrorInvType, "Expression's type does not match the virtual reference wanted.%s", why);
+            else
+                errorMsgNode(node->exp, ErrorInvType, "Expression's type does not match the virtual reference wanted.");
+        }
+        return;
+    }
+
     // Handle reinterpret casts, which must be same size
     if (!(node->flags & FlagConvert)) {
         if (castRecastTargetCheck(node, fromtype, totype))

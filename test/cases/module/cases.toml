@@ -3437,6 +3437,7 @@ contains = ["!DISubprogram(name: \"addOne\"", "!DISubprogram(name: \"triple\""]
 category = "compile"
 description = "A release build, which is the default, carries debug information: a subprogram for each function it defines, the program's entry included"
 tags = ["genllvm"]
+release_only = true
 
 [[scenario.module_debug_info.check]]
 name = "release-defines-a-subprogram-per-function"
@@ -3451,7 +3452,7 @@ excludes = ["DILocalVariable", "dbg_declare", "DICompositeType", "DIBasicType"]
 
 [scenario.module_debug_locals]
 category = "compile"
-description = "A debug build describes its parameters and locals of a number, 'bool' or plain struct type to a debugger (name, type, line, the stack slot holding it, a struct's fields with their offsets), and a function so described has its real subroutine type; a reference or string gets none, and a release build carries none"
+description = "A debug build describes its parameters and locals of a number, 'bool' or plain struct type to a debugger (name, type, line, the stack slot holding it, a struct's fields with their offsets), and a function so described has its real subroutine type; a release build carries none"
 tags = ["genllvm"]
 
 [[scenario.module_debug_locals.run]]
@@ -3474,7 +3475,6 @@ matches = [
   { pattern = "name: \"(scale|count|origin)\", arg: [123], scope: !\\d+, file: !\\d+, line: 19, type: ", count = 3 },
   { pattern = "name: \"(n|f)\", arg: [12], scope: !\\d+, file: !\\d+, line: 15, type: ", count = 2 },
 ]
-excludes = ["name: \"label\""]
 
 [[scenario.module_debug_locals.check]]
 name = "debug-names-each-local-with-its-type-and-line"
@@ -3488,8 +3488,8 @@ matches = [
   { pattern = "name: \"big\", scope: !\\d+, file: !\\d+, line: 22, type: ", count = 1 },
   { pattern = "name: \"r\", scope: !\\d+, file: !\\d+, line: 28, type: ", count = 1 },
   { pattern = "name: \"t\", scope: !\\d+, file: !\\d+, line: 29, type: ", count = 1 },
+  { pattern = "name: \"name\", scope: !\\d+, file: !\\d+, line: 23, type: ", count = 1 },
 ]
-excludes = ["name: \"name\""]
 
 [[scenario.module_debug_locals.check]]
 name = "debug-describes-a-struct-with-its-fields-and-offsets"
@@ -3510,16 +3510,17 @@ contains = [
 name = "debug-binds-each-variable-to-its-own-slot"
 target = "preir"
 matches = [
-  { pattern = "#dbg_declare\\(ptr %(scale|count|origin|steps|corner|big|n|f|r|t),", count = 10 },
-  { pattern = "#dbg_declare\\(ptr %(label|name),", count = 0 },
+  { pattern = "#dbg_declare\\(ptr %(scale|count|origin|steps|corner|big|n|f|r|t|label|name),", count = 12 },
 ]
 
 [[scenario.module_debug_locals.check]]
 name = "debug-gives-a-described-function-its-real-subroutine-type"
 target = "preir"
 matches = [
-  { pattern = "!DISubroutineType\\(types: ", count = 3 },
+  { pattern = "!DISubroutineType\\(types: ", count = 4 },
   { pattern = "^!\\d+ = !\\{!\\d+, !\\d+, !\\d+\\}$", count = 1 },
+  # 'mix' returns f64 and takes an f64, an i64, a Point and a &str: five entries
+  { pattern = "^!\\d+ = !\\{!\\d+, !\\d+, !\\d+, !\\d+, !\\d+\\}$", count = 1 },
 ]
 
 [scenario.module_debug_strip]
@@ -3548,6 +3549,7 @@ tags = ["genllvm"]
 [[scenario.module_debug_wasm.run]]
 name = "release"
 options = ["--wasm"]
+release_only = true
 
 [[scenario.module_debug_wasm.check]]
 name = "a-release-wasm-build-has-no-debug-info"
@@ -4692,7 +4694,7 @@ contains = ["tallyIrArtifact"]
 
 [scenario.module_debug_types]
 category = "compile"
-description = "A debug build describes an enum, a fixed array and a struct holding them to a debugger: a tag-only enum as an enumeration type with every arm's name and number; an enum holding values (an 'Option' too) as a struct of its tag and a union of a struct per arm, at the code generator's offsets; a fixed array as an array type; a nullable-pointer 'Option' as the pointer it is stored as; a struct member of a type not described (a reference) left out with the size unchanged; a generic instance other than 'Option' not described"
+description = "A debug build describes an enum, a fixed array and a struct holding them to a debugger: a tag-only enum as an enumeration type with every arm's name and number; an enum holding values (an 'Option' too) as a struct of its tag and a union of a struct per arm, at the code generator's offsets; a fixed array as an array type; a nullable-pointer 'Option' as the pointer it is stored as, pointing at its pointee's type; a struct member of a type not described is left out with the size unchanged; a generic enum other than 'Option' is described as an enum, named with its type arguments"
 tags = ["genllvm"]
 
 [[scenario.module_debug_types.run]]
@@ -4752,7 +4754,8 @@ contains = [
 matches = [
   # the Option[i64] struct is 16 bytes with its payload at byte 8
   { pattern = "name: \"Option\\[i64\\]\", file: !\\d+, line: \\d+, size: 128, align: 64, elements: ", count = 1 },
-  { pattern = "name: \"payload\", file: !\\d+, line: \\d+, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 1 },
+  # (Pending[i64], another generic enum, has its payload at byte 8 too)
+  { pattern = "name: \"payload\", file: !\\d+, line: \\d+, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 2 },
 ]
 
 [[scenario.module_debug_types.check]]
@@ -4770,29 +4773,195 @@ matches = [
   { pattern = "tag: DW_TAG_array_type, baseType: !\\d+, size: 128, align: 32, elements: ", count = 1 },
   { pattern = "tag: DW_TAG_array_type, baseType: !\\d+, size: 96, align: 32, elements: ", count = 1 },
   # Outer is 80 bytes; its members sit at inner 0, lamp 16, grid 20, maybe 40, last 72 (bits: 0, 128, 160, 320, 576),
-  # and 'name: &str', a type not described, is left out
+  # and 'name: &str' (a slice, 16 bytes) sits at 56 (bits 448)
+  { pattern = "name: \"name\", file: !\\d+, line: 34, baseType: !\\d+, size: 128, align: 64, offset: 448\\)", count = 1 },
   { pattern = "name: \"Outer\", file: !\\d+, line: 29, size: 640, align: 64, elements: ", count = 1 },
   { pattern = "name: \"lamp\", file: !\\d+, line: 31, baseType: !\\d+, size: 8, align: 8, offset: 128\\)", count = 1 },
   { pattern = "name: \"grid\", file: !\\d+, line: 32, baseType: !\\d+, size: 128, align: 32, offset: 160\\)", count = 1 },
   { pattern = "name: \"maybe\", file: !\\d+, line: 33, baseType: !\\d+, size: 128, align: 64, offset: 320\\)", count = 1 },
   { pattern = "name: \"last\", file: !\\d+, line: 35, baseType: !\\d+, size: 8, align: 8, offset: 576\\)", count = 1 },
 ]
-excludes = ["DW_TAG_member, name: \"name\""]
 
 [[scenario.module_debug_types.check]]
-name = "debug-describes-a-nullable-pointer-option-as-the-pointer-and-leaves-out-other-generics"
+name = "debug-describes-a-nullable-pointer-option-as-the-pointer-and-another-generic-enum-as-an-enum"
 target = "preir"
 contains = [
-  "!DIDerivedType(tag: DW_TAG_pointer_type, name: \"Option[*i32]\", baseType: null, size: 64, align: 64",
   "!DILocalVariable(name: \"p\", arg: 1, scope: ",
   "!DILocalVariable(name: \"again\", scope: ",
+  "!DICompositeType(tag: DW_TAG_enumeration_type, name: \"Pending[i64].tag\", file: ",
+  "!DICompositeType(tag: DW_TAG_structure_type, name: \"Pending[i64]\", file: ",
+  "!DILocalVariable(name: \"w\", arg: 2, scope: ",
+  "!DILocalVariable(name: \"wait\", scope: ",
 ]
-excludes = ["name: \"Pending", "DILocalVariable(name: \"w\"", "DILocalVariable(name: \"wait\""]
+matches = [
+  # the nullable-pointer Option is the pointer it is stored as, to an i32
+  { pattern = "tag: DW_TAG_pointer_type, name: \"Option\\[\\*i32\\]\", baseType: !\\d+, size: 64, align: 64", count = 1 },
+]
 
 [[scenario.module_debug_types.check]]
 name = "debug-binds-each-new-variable-to-its-own-slot"
 target = "preir"
 matches = [
-  { pattern = "#dbg_declare\\(ptr %(lamp|shape|some|nothing|inner|outer|grid|other|r|p|again),", count = 12 },
-  { pattern = "#dbg_declare\\(ptr %(w|wait),", count = 0 },
+  { pattern = "#dbg_declare\\(ptr %(lamp|shape|some|nothing|inner|outer|grid|other|r|p|again|w|wait),", count = 14 },
+]
+
+[scenario.module_debug_refs]
+category = "compile"
+description = "A debug build describes a reference of any permission or region and a raw pointer as a pointer to its pointee's type named as a diagnostic spells it; a slice and '&str' as a struct of pointer and length at the code generator's offsets; a 'List', a 'String', a generic struct and a closure as the structs they are; a type that reaches itself through a reference (a list node, a tree) as one description that its own parts name"
+tags = ["genllvm"]
+
+[[scenario.module_debug_refs.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.module_debug_refs.check]]
+name = "debug-describes-a-reference-as-a-pointer-to-its-pointee"
+target = "preir"
+contains = [
+  "tag: DW_TAG_pointer_type, name: \"&mut Node\", baseType: ",
+  "tag: DW_TAG_pointer_type, name: \"&ro Node\", baseType: ",
+  "tag: DW_TAG_pointer_type, name: \"Rc[mut, Node]\", baseType: ",
+  "tag: DW_TAG_pointer_type, name: \"Uni[Node]\", baseType: ",
+  "tag: DW_TAG_pointer_type, name: \"*i64\", baseType: ",
+  "tag: DW_TAG_pointer_type, name: \"&new List[i64]\", baseType: ",
+]
+excludes = ["name: \"&mut Node\", baseType: null", "name: \"&ro Node\", baseType: null", "name: \"Rc[mut, Node]\", baseType: null"]
+
+# One description of a type that is reached again through itself: 'Node' (a list node, through
+# 'Option[&Node]') and 'Tree' (an enum whose arm points back at the enum), each of its own parts naming it
+[[scenario.module_debug_refs.check]]
+name = "debug-describes-a-type-reached-again-through-itself-once"
+target = "preir"
+matches = [
+  { pattern = "name: \"Node\", file: !\\d+, line: 10, size: 128, align: 64, elements: ", count = 1 },
+  { pattern = "tag: DW_TAG_pointer_type, name: \"Option\\[&ro Node\\]\", baseType: !\\d+, size: 64, align: 64", count = 1 },
+  { pattern = "name: \"Tree\", file: !\\d+, line: 15, size: 256, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"Branch\", file: !\\d+, line: 17, size: 192, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"(left|right)\", file: !\\d+, line: 17, baseType: !\\d+, size: 64, align: 64(, offset: 64)?\\)", count = 2 },
+  { pattern = "name: \"weight\", file: !\\d+, line: 17, baseType: !\\d+, size: 32, align: 32, offset: 128\\)", count = 1 },
+]
+excludes = ["DW_TAG_structure_type, name: \"Node\", file: !\\d+, line: 10, size: 128, align: 64, elements: null"]
+
+[[scenario.module_debug_refs.check]]
+name = "debug-describes-a-slice-and-a-str-as-a-pointer-and-a-length"
+target = "preir"
+contains = [
+  "name: \"&ro Array[i64]\", file: ",
+  "name: \"&imm str\", file: ",
+  "!DIDerivedType(tag: DW_TAG_member, name: \"ptr\", file: ",
+  # the length member, an 8-byte 'usize' 8 bytes in
+  "tag: DW_TAG_member, name: \"len\", file: !",
+  "baseType: !",
+  "size: 64, align: 64, offset: 64)",
+]
+
+[[scenario.module_debug_refs.check]]
+name = "debug-describes-a-list-a-string-a-generic-struct-and-a-closure-as-structs"
+target = "preir"
+contains = [
+  "name: \"used\", file: ",
+  "name: \"cap\", file: ",
+  "name: \"buf\", file: ",
+  "name: \"first\", file: !",
+  "name: \"second\", file: !",
+]
+matches = [
+  { pattern = "name: \"List\\[i64\\]\", file: !\\d+, line: \\d+, size: 256, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"String\", file: !\\d+, line: \\d+, size: 256, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"Pair\\[i64, f64\\]\", file: !\\d+, line: 20, size: 128, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"second\", file: !\\d+, line: 22, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 1 },
+  # the closure's one capture, 'base' (an i32), as the source names it
+  { pattern = "name: \"closure#\\d+\", file: !\\d+, line: 33, size: 32, align: 32, elements: ", count = 1 },
+  { pattern = "name: \"base\", file: !\\d+, line: 33, baseType: !\\d+, size: 32, align: 32\\)", count = 1 },
+]
+
+[[scenario.module_debug_refs.check]]
+name = "debug-declares-each-variable-of-these-types"
+target = "preir"
+matches = [
+  { pattern = "!DILocalVariable\\(name: \"(node|owner|tree|label|items|text)\", arg: [1-6], scope: !\\d+, file: !\\d+, line: 25, type: ", count = 6 },
+  { pattern = "!DILocalVariable\\(name: \"(list|pair|grid|raw|counted|sole|base|add|name)\", scope: !\\d+, file: !\\d+, line: (2[6-9]|3[0-4]), type: ", count = 9 },
+  { pattern = "!DILocalVariable\\(name: \"(leaf|node|other|r)\", scope: !\\d+, file: !\\d+, line: (39|4[0-2]), type: ", count = 4 },
+]
+
+[scenario.module_debug_shapes]
+category = "compile"
+description = "A debug build describes an enum arm as a struct of the enum's tag and its own fields at the arm's offsets (the target of '&Circle'); a virtual reference as the pair 'object' and 'vtable' with the vtable a struct of function pointers and field offsets; an Option of one as that pair; a tuple as a struct of '0', '1', ...; a SIMD vector as a vector-flagged array of its lanes"
+tags = ["genllvm"]
+
+[[scenario.module_debug_shapes.run]]
+name = "debug"
+options = ["--debug"]
+
+# 'Figure' is 24 bytes: the tag at 0, then each arm's fields. An arm as a type of its own is 24 bytes (192 bits)
+# holding the tag and the arm's fields at the offsets of its LLVM type; the enum's payload union (which holds
+# each arm's fields from its first used byte, offset 4) is another description of the same arms, 160 bits wide.
+[[scenario.module_debug_shapes.check]]
+name = "debug-describes-an-enum-arm-as-a-struct-of-the-tag-and-its-fields"
+target = "preir"
+matches = [
+  { pattern = "name: \"Circle\", file: !\\d+, line: 23, size: 192, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"Rect\", file: !\\d+, line: 24, size: 192, align: 32, elements: ", count = 1 },
+  { pattern = "name: \"Nest\", file: !\\d+, line: 25, size: 192, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"tag\", file: !\\d+, line: 21, baseType: !\\d+, size: 8, align: 8\\)", count = 1 },
+  # the arms' fields at their LLVM offsets (the payload union's copies are 32 bits earlier)
+  { pattern = "name: \"radius\", file: !\\d+, line: 23, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 1 },
+  { pattern = "name: \"radius\", file: !\\d+, line: 23, baseType: !\\d+, size: 64, align: 64, offset: 32\\)", count = 1 },
+  { pattern = "name: \"w\", file: !\\d+, line: 24, baseType: !\\d+, size: 32, align: 32, offset: 32\\)", count = 1 },
+  { pattern = "name: \"h\", file: !\\d+, line: 24, baseType: !\\d+, size: 32, align: 32, offset: 64\\)", count = 1 },
+  { pattern = "name: \"inner\", file: !\\d+, line: 25, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 1 },
+  { pattern = "name: \"n\", file: !\\d+, line: 25, baseType: !\\d+, size: 32, align: 32, offset: 128\\)", count = 1 },
+  # a reference to an arm points at it
+  { pattern = "tag: DW_TAG_pointer_type, name: \"&ro Circle\", baseType: !\\d+, size: 64, align: 64", count = 1 },
+  { pattern = "tag: DW_TAG_pointer_type, name: \"&ro Nest\", baseType: !\\d+, size: 64, align: 64", count = 1 },
+]
+excludes = ["name: \"&ro Circle\", baseType: null", "name: \"&ro Nest\", baseType: null"]
+
+# The pair is two words: 'object' at 0 and the vtable pointer at 8. The vtable (the code generator's layout:
+# 'area' at 0, the field 'sides' as a 32-bit offset at 8, then the type record at 16) is 24 bytes.
+[[scenario.module_debug_shapes.check]]
+name = "debug-describes-a-virtual-reference-as-an-object-and-a-vtable-of-slots"
+target = "preir"
+matches = [
+  { pattern = "name: \"&<Shape\", file: !\\d+, size: 128, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"object\", file: !\\d+, baseType: !\\d+, size: 64, align: 64\\)", count = 1 },
+  { pattern = "name: \"vtable\", file: !\\d+, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 1 },
+  { pattern = "tag: DW_TAG_pointer_type, baseType: null, size: 64, align: 64", count = 1 },
+  { pattern = "name: \"Shape vtable\", file: !\\d+, size: 192, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"area\", file: !\\d+, baseType: !\\d+, size: 64, align: 64\\)", count = 1 },
+  { pattern = "tag: DW_TAG_pointer_type, name: \"area\", baseType: !\\d+, size: 64, align: 64", count = 1 },
+  { pattern = "name: \"sides.offset\", file: !\\d+, baseType: !\\d+, size: 32, align: 32, offset: 64\\)", count = 1 },
+  { pattern = "name: \"typerecord\", file: !\\d+, baseType: !\\d+, size: 64, align: 64, offset: 128\\)", count = 1 },
+  { pattern = "!DIBasicType\\(name: \"u32\", size: 32, encoding: DW_ATE_unsigned\\)", count = 1 },
+  # an Option of one is the pair it is stored as, null 'object' meaning None
+  { pattern = "name: \"Option\\[&<Shape\\]\", file: !\\d+, size: 128, align: 64, elements: ", count = 1 },
+]
+contains = ["!DISubroutineType(types: !"]
+
+[[scenario.module_debug_shapes.check]]
+name = "debug-describes-a-tuple-and-a-vector"
+target = "preir"
+matches = [
+  { pattern = "name: \"\\(i64, f64\\)\", file: !\\d+, size: 128, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"0\", file: !\\d+, baseType: !\\d+, size: 64, align: 64\\)", count = 1 },
+  { pattern = "name: \"1\", file: !\\d+, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 1 },
+  # a tuple inside a tuple: the inner one 8-aligned after a 4-byte element
+  { pattern = "name: \"\\(i32, \\(i32, f64\\)\\)\", file: !\\d+, size: 192, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"\\(i32, f64\\)\", file: !\\d+, size: 128, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"1\", file: !\\d+, baseType: !\\d+, size: 128, align: 64, offset: 64\\)", count = 1 },
+  { pattern = "tag: DW_TAG_pointer_type, name: \"&ro \\(i64, f64\\)\", baseType: !\\d+, size: 64, align: 64", count = 1 },
+  # four f32 lanes, 16 bytes aligned to 16, with the vector flag
+  { pattern = "tag: DW_TAG_array_type, baseType: !\\d+, size: 128, align: 128, flags: DIFlagVector, elements: ", count = 1 },
+  { pattern = "!DISubrange\\(count: 4, lowerBound: 0\\)", count = 1 },
+]
+# a mask of 'bool' lanes (single bits) is not described, so neither are the variables of its type
+excludes = ["!DILocalVariable(name: \"m\",", "!DILocalVariable(name: \"mask\","]
+
+[[scenario.module_debug_shapes.check]]
+name = "debug-declares-each-variable-of-these-types"
+target = "preir"
+matches = [
+  { pattern = "!DILocalVariable\\(name: \"(s|opt|circle|nest|rect|tup|tref|wide)\", arg: [1-8], scope: !\\d+, file: !\\d+, line: (28|29), type: ", count = 8 },
+  { pattern = "!DILocalVariable\\(name: \"(again|pair|nested)\", scope: !\\d+, file: !\\d+, line: 3[0-2], type: ", count = 3 },
+  { pattern = "!DILocalVariable\\(name: \"(d|f|w|t|n|o|r)\", scope: !\\d+, file: !\\d+, line: (3[7-9]|4[0-4]), type: ", count = 7 },
 ]

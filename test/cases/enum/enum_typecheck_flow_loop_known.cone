@@ -1,0 +1,61 @@
+// Flow typing in a loop that stores to a variable of a known variant (enum_flow_loop_known
+// is what is accepted). What is refused stays refused: a use at the top of the loop that
+// needs the variant the name had going in, where the body stores another and comes back
+// to it, by the loop's end, by 'continue', and from an inner loop; and a name known not to
+// be a variant, after a failed test, does not have its fields.
+
+mod enum_typecheck_flow_loop_known;
+
+enum State {
+  struct Idle {}
+  struct Run { pub speed: i32; }
+}
+use State;
+
+// Known Run going in, the body stores Idle and comes back
+fn atTop() {
+  var s: State = State.Run(1);
+  var n = 0;
+  while n < 3 {
+    s.speed;                             //~ ErrorNarrowLoop "does not hold on the next pass"
+    s = State.Idle;
+    n += 1;
+  }
+}
+
+// ... the store before a 'continue'
+fn viaContinue() {
+  var s: State = State.Run(1);
+  var n = 0;
+  while n < 3 {
+    s.speed;                             //~ ErrorNarrowLoop "does not hold on the next pass"
+    n += 1;
+    if n < 2 { s = State.Idle; continue; }
+  }
+}
+
+// ... a use in an inner loop of the outer loop's entry fact, the outer body stores
+fn inner() {
+  var s: State = State.Run(1);
+  var n = 0;
+  while n < 3 {
+    var m = 0;
+    while m < 2 {
+      s.speed;                           //~ ErrorNarrowLoop "does not hold on the next pass"
+      m += 1;
+    }
+    s = State.Idle;
+    n += 1;
+  }
+}
+
+// After 'is Run' fails the name is not Run: its field is not there
+fn elseIsNotRun() {
+  var s: State = State.Run(1);
+  var n = 0;
+  while n < 3 {
+    if s is Run { s = State.Idle; }
+    else { s.speed; }                    //~ ErrorNoMbr "speed"
+    n += 1;
+  }
+}

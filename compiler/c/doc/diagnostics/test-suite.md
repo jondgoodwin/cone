@@ -15,6 +15,23 @@ build description, WebAssembly, GPU, library) and the checks of the optimised IR
 and the assembly, which are a different pipeline's under `--lto`. A scenario whose
 options name `--lto` is built so in every run (`module_lto`). Both runs must pass.
 
+`python test/run.py --debug` builds the whole suite as debug builds: it adds `--debug`
+to each compile whose options do not already carry `--debug` or `-d`, and to the
+libraries a scenario builds. A debug build is what a user reaches for when something
+is wrong, so a miscompile there is met at the worst moment; the result of a clean
+tree is 0 failures. Two things are skipped, and the summary counts them as skipped:
+by rule, the optimised-IR (`llvmir`) and assembly (`asm`) checks of a run `--debug`
+changed, as under `--lto` (the optimiser is off, so the post-optimisation dump is not
+optimised; those runs still compile, run and pass their other checks); and by key, a
+scenario or a `[[scenario.x.run]]` entry carrying `release_only = true`. Give a test
+`release_only` only when its expected output is a release build's by design: it
+asserts `#debug` is false, that no debug information is made, the release-only code
+path (`cone.dropslow`), a pre-optimisation IR that quotes release code, or a release
+behaviour a debug build differs from on purpose (a sort given a bad comparison
+panics). Mark the narrowest thing: the run entry where the scenario has a debug run
+of its own. A test that merely happens to fold under the optimiser, such as an
+out-of-bounds read the optimiser hides, is a test to fix, not to mark.
+
 The suite tests the compiler, not the packages. What a package does — `libc`'s
 bindings, `geomath`'s values — is tested by the package's own `tests/` folder,
 which `congo test` runs against the package compiled on its own
