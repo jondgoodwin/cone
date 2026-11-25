@@ -459,7 +459,7 @@ it is. `itypeNoSizeCause` answers, and there are six ways the answer is no:
 | a body whose length a reference carries (`str`, `Array[T]`) | `itypeLenBodyElem` | hold it through a reference: `&str` or `Uni[str]`, `&Array[T]` or `Uni[Array[T]]` |
 | a trait that is not `SameSize` | `structTypeCheck` | use a virtual reference, `&<Trait>` |
 | a function signature | `fnSigTypeCheck` | use a reference to a function |
-| a struct with an unsized field, or a tuple or array with an unsized element | `structTypeCheck`, infectiously | fix that field or element — the cause is further down |
+| a struct with an unsized field, or a tuple with an unsized element (or an array of an `@unsized` enum) | `structTypeCheck`, infectiously | fix that field or element — the cause is further down |
 | a by-value cycle: still being laid out | rule 4 | break the cycle with a reference |
 
 All six are one `ErrorCode`, `ErrorNoSize`. Six codes would be
@@ -502,9 +502,11 @@ Error 1069: Field p cannot be held by value: P contains Q contains R contains P 
 ```
 
 An array or a tuple on the stack is part of the type holding it and is not
-named. A tuple or an array holds each element by value as a struct holds a
-field, so the walk crosses one to its first element with no size
-(`itypeNoSizeElem`) as it crosses a field, with no hop recorded for it: `struct N { k: (i32, N) }`,
+named. A tuple holds each element by value as a struct holds a field, so the
+walk crosses a tuple to its first element with no size (`itypeNoSizeElem`) as it
+crosses a field, with no hop recorded for the tuple. It crosses an array too,
+but only to an `@unsized` enum, since a written array is already held to its
+element's size where it is written (below): `struct N { k: (i32, N) }`,
 the same with the tuple nested or inside an array, and a tuple of an enum whose
 variant holds the struct are refused as the type held directly is. Were the type not on the stack, which no measured case reaches, the
 message would be the old one, "is still being laid out, so it would have to

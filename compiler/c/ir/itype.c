@@ -2481,9 +2481,14 @@ static Nodes *itypeElemTypes(INode *dcltype) {
 // holds each element by value and is part of whatever holds it, so it is a hop
 // the walk crosses like a field, but it has no declaration of its own to be the
 // cause.
+//
+// An array is crossed only to an '@unsized' enum. A written array is held to its
+// element's size where it is written (arrayTypeFinish), and crossing it for any
+// other cause would report that again at whatever holds the array.
 static INode *itypeNoSizeElem(INode *dcltype, uint32_t depth) {
     Nodes *elems = itypeElemTypes(dcltype);
-    if (elems == NULL || depth >= NoSizeChainMax)
+    if (elems == NULL || depth >= NoSizeChainMax
+        || (dcltype->tag == ArrayTag && itypeHeldUnsizedEnum(dcltype) == NULL))
         return NULL;
     INode **nodesp;
     uint32_t cnt;
