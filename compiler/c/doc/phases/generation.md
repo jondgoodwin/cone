@@ -2549,8 +2549,10 @@ SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and 
 `cosh` and `tanh` methods are likewise their intrinsics (`Tan` to `Tanh`, `Log` for `ln`;
 `log10` is `Log2` times a constant); `trunc` is `Trunc`; `copysign` (bit operations, the back
 end not selecting `llvm.copysign`), `hypot`, `cbrt` and `powi` are formulas there
-([intrinsic](../nodes/intrinsic.md)), and `isNaN` is `OpFUnordNotEqual`:
-`module_target_spirv_floatmath`.
+([intrinsic](../nodes/intrinsic.md)): `module_target_spirv_floatmath`. `isNaN`,
+`isInfinite` and `isFinite` are integer comparisons of the value's bits there, with no
+float comparison a driver could assume the answer of: `module_target_spirv_floatclass`,
+and run on a GPU by `packages/gpuwork/tests/kernels.cone`.
 **A kernel's float `min`, `max` and `clamp` do not keep the NaN ruling (a stated
 exception, design chat and Jon, 6 Nov 2026).** The CPU propagates NaN: a float's `min`,
 `max` and `clamp` are `llvm.minimum` and `llvm.maximum`. On SPIR-V the back end selects
