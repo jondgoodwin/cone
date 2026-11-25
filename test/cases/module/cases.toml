@@ -4689,3 +4689,110 @@ name = "the-dump-is-named-for-the-source"
 target = "file"
 file = "module_ir_artifact_name.ast"
 contains = ["tallyIrArtifact"]
+
+[scenario.module_debug_types]
+category = "compile"
+description = "A debug build describes an enum, a fixed array and a struct holding them to a debugger: a tag-only enum as an enumeration type with every arm's name and number; an enum holding values (an 'Option' too) as a struct of its tag and a union of a struct per arm, at the code generator's offsets; a fixed array as an array type; a nullable-pointer 'Option' as the pointer it is stored as; a struct member of a type not described (a reference) left out with the size unchanged; a generic instance other than 'Option' not described"
+tags = ["genllvm"]
+
+[[scenario.module_debug_types.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.module_debug_types.check]]
+name = "debug-describes-a-tag-only-enum-as-an-enumeration"
+target = "preir"
+contains = [
+  "!DICompositeType(tag: DW_TAG_enumeration_type, name: \"Lamp\", file: ",
+  "line: 12, baseType: ",
+  "size: 8, align: 8, elements: ",
+  "!DIEnumerator(name: \"Red\", value: 0, isUnsigned: true)",
+  "!DIEnumerator(name: \"Green\", value: 1, isUnsigned: true)",
+  "!DIEnumerator(name: \"Blink\", value: 2, isUnsigned: true)",
+  "!DILocalVariable(name: \"lamp\", arg: 1, scope: ",
+]
+
+[[scenario.module_debug_types.check]]
+name = "debug-describes-an-enum-with-values-as-a-tag-and-a-union-of-arms"
+target = "preir"
+contains = [
+  "!DICompositeType(tag: DW_TAG_enumeration_type, name: \"Shape.tag\", file: ",
+  "!DIEnumerator(name: \"Dot\", value: 0, isUnsigned: true)",
+  "!DIEnumerator(name: \"Circle\", value: 1, isUnsigned: true)",
+  "!DIEnumerator(name: \"Rect\", value: 2, isUnsigned: true)",
+  "!DICompositeType(tag: DW_TAG_structure_type, name: \"Shape\", file: ",
+  "line: 18, size: 128, align: 64, elements: ",
+  "!DIDerivedType(tag: DW_TAG_member, name: \"tag\", file: ",
+  "!DICompositeType(tag: DW_TAG_union_type, name: \"payload\", file: ",
+  "line: 18, size: 96, align: 64, elements: ",
+  "!DICompositeType(tag: DW_TAG_structure_type, name: \"Circle\", file: ",
+  "!DICompositeType(tag: DW_TAG_structure_type, name: \"Rect\", file: ",
+  "!DIDerivedType(tag: DW_TAG_member, name: \"radius\", file: ",
+  "!DIDerivedType(tag: DW_TAG_member, name: \"w\", file: ",
+  "!DIDerivedType(tag: DW_TAG_member, name: \"h\", file: ",
+]
+matches = [
+  # the payload starts at byte 4 (the i32 after the tag and its padding); Rect's i64 is byte 8, 32 bits into the union
+  { pattern = "name: \"payload\", file: !\\d+, line: 18, baseType: !\\d+, size: 96, align: 64, offset: 32\\)", count = 1 },
+  { pattern = "name: \"h\", file: !\\d+, line: 21, baseType: !\\d+, size: 64, align: 64, offset: 32\\)", count = 1 },
+  { pattern = "name: \"(radius|w)\", file: !\\d+, line: 2[01], baseType: !\\d+, size: 32, align: 32\\)", count = 2 },
+]
+
+[[scenario.module_debug_types.check]]
+name = "debug-names-an-option-instance-as-it-is-spelled"
+target = "preir"
+contains = [
+  "!DICompositeType(tag: DW_TAG_enumeration_type, name: \"Option[i64].tag\", file: ",
+  "!DICompositeType(tag: DW_TAG_structure_type, name: \"Option[i64]\", file: ",
+  "!DIDerivedType(tag: DW_TAG_member, name: \"Some\", file: ",
+  "!DIDerivedType(tag: DW_TAG_member, name: \"(payload)\", file: ",
+  "!DILocalVariable(name: \"some\", scope: ",
+  "!DILocalVariable(name: \"nothing\", scope: ",
+]
+matches = [
+  # the Option[i64] struct is 16 bytes with its payload at byte 8
+  { pattern = "name: \"Option\\[i64\\]\", file: !\\d+, line: \\d+, size: 128, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"payload\", file: !\\d+, line: \\d+, baseType: !\\d+, size: 64, align: 64, offset: 64\\)", count = 1 },
+]
+
+[[scenario.module_debug_types.check]]
+name = "debug-describes-a-fixed-array-and-a-struct-holding-the-types"
+target = "preir"
+contains = [
+  "!DICompositeType(tag: DW_TAG_array_type, baseType: ",
+  "!DISubrange(count: 4, lowerBound: 0)",
+  "!DISubrange(count: 3, lowerBound: 0)",
+  "!DICompositeType(tag: DW_TAG_structure_type, name: \"Outer\", file: ",
+  "!DILocalVariable(name: \"outer\", scope: ",
+  "!DILocalVariable(name: \"grid\", scope: ",
+]
+matches = [
+  { pattern = "tag: DW_TAG_array_type, baseType: !\\d+, size: 128, align: 32, elements: ", count = 1 },
+  { pattern = "tag: DW_TAG_array_type, baseType: !\\d+, size: 96, align: 32, elements: ", count = 1 },
+  # Outer is 80 bytes; its members sit at inner 0, lamp 16, grid 20, maybe 40, last 72 (bits: 0, 128, 160, 320, 576),
+  # and 'name: &str', a type not described, is left out
+  { pattern = "name: \"Outer\", file: !\\d+, line: 29, size: 640, align: 64, elements: ", count = 1 },
+  { pattern = "name: \"lamp\", file: !\\d+, line: 31, baseType: !\\d+, size: 8, align: 8, offset: 128\\)", count = 1 },
+  { pattern = "name: \"grid\", file: !\\d+, line: 32, baseType: !\\d+, size: 128, align: 32, offset: 160\\)", count = 1 },
+  { pattern = "name: \"maybe\", file: !\\d+, line: 33, baseType: !\\d+, size: 128, align: 64, offset: 320\\)", count = 1 },
+  { pattern = "name: \"last\", file: !\\d+, line: 35, baseType: !\\d+, size: 8, align: 8, offset: 576\\)", count = 1 },
+]
+excludes = ["DW_TAG_member, name: \"name\""]
+
+[[scenario.module_debug_types.check]]
+name = "debug-describes-a-nullable-pointer-option-as-the-pointer-and-leaves-out-other-generics"
+target = "preir"
+contains = [
+  "!DIDerivedType(tag: DW_TAG_pointer_type, name: \"Option[*i32]\", baseType: null, size: 64, align: 64",
+  "!DILocalVariable(name: \"p\", arg: 1, scope: ",
+  "!DILocalVariable(name: \"again\", scope: ",
+]
+excludes = ["name: \"Pending", "DILocalVariable(name: \"w\"", "DILocalVariable(name: \"wait\""]
+
+[[scenario.module_debug_types.check]]
+name = "debug-binds-each-new-variable-to-its-own-slot"
+target = "preir"
+matches = [
+  { pattern = "#dbg_declare\\(ptr %(lamp|shape|some|nothing|inner|outer|grid|other|r|p|again),", count = 12 },
+  { pattern = "#dbg_declare\\(ptr %(w|wait),", count = 0 },
+]

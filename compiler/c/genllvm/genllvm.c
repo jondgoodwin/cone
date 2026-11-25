@@ -954,11 +954,161 @@ static int genlDiPlainStruct(GenState *gen, StructNode *strnode) {
     if (strnode->tag != StructTag || (strnode->flags & (TraitType | HasTagField | DeclaredOpaque))
         || strnode->basetrait || strnode->genericinfo || strnode->derived || strnode->siblings
         || strnode->namesym == NULL || strchr(&strnode->namesym->namestr, '[')
+        || itypeInstanceTypeArgs((INode *)strnode)
         || strnode->fields.used == 0)
         return 0;
     LLVMTypeRef lltype = genlType(gen, (INode *)strnode);
     return LLVMGetTypeKind(lltype) == LLVMStructTypeKind && !LLVMIsOpaqueStruct(lltype)
         && LLVMCountStructElementTypes(lltype) == strnode->fields.used;
+}
+
+static LLVMMetadataRef genlDiType(GenState *gen, INode *type, int depth);
+
+// The integer type a tag is stored as, as debug info names it
+static LLVMMetadataRef genlDiTagType(GenState *gen, EnumNode *tag) {
+    enum { DwAteSigned = 0x05, DwAteUnsigned = 0x07 };
+    char name[8];
+    unsigned bits = tag->bytes * 8;
+    snprintf(name, sizeof(name), "%c%u", tag->issigned ? 'i' : 'u', bits);
+    return LLVMDIBuilderCreateBasicType(gen->dibuilder, name, strlen(name), bits,
+        tag->issigned ? DwAteSigned : DwAteUnsigned, LLVMDIFlagZero);
+}
+
+// An enum (a tagged trait and its variants) as debug info describes it, or NULL when it
+// is not one it describes. Its name is the Cone spelling: a plain enum's, or an 'Option'
+// instance's as a diagnostic prints it ('Option[i64]'); any other generic instance is not
+// described. The tag is an enumeration type over its integer, with each arm's name and
+// number. An enum whose arms hold nothing is that enumeration alone. Any other enum is a
+// struct of its size holding the tag at the offset the code generator gave it, then a
+// union of a struct per arm that holds something, each named for its arm, whose members
+// sit at the offsets of the arm's own LLVM type. A nullable-pointer enum (an 'Option' of a
+// reference, stored as the pointer with null for the empty arm) is described as what is
+// stored: a pointer, which points at no described type.
+static LLVMMetadataRef genlDiEnum(GenState *gen, StructNode *base, int depth) {
+    if (base->basetrait || base->derived == NULL || base->derived->used == 0
+        || (base->flags & (HasTagField | SameSize)) != (HasTagField | SameSize)
+        || base->namesym == NULL || base->genericinfo || base->siblings)
+        return NULL;
+    char spelled[512];
+    const char *name = &base->namesym->namestr;
+    if (strchr(name, '[') || itypeInstanceTypeArgs((INode *)base)) {
+        char *core = propagateCoreName((INode *)base);
+        if (core == NULL || strcmp(core, "Option") != 0)
+            return NULL;
+        name = propagateSpell(spelled, sizeof(spelled), (INode *)base);
+    }
+    LLVMTypeRef lltype = genlType(gen, (INode *)base);
+    LLVMMetadataRef difile = genlDiFile(gen, (INode *)base);
+    if (base->flags & NullablePtr) {
+        if (LLVMGetTypeKind(lltype) != LLVMPointerTypeKind)
+            return NULL;
+        return LLVMDIBuilderCreatePointerType(gen->dibuilder, NULL,
+            LLVMABISizeOfType(gen->datalayout, lltype) * 8,
+            LLVMABIAlignmentOfType(gen->datalayout, lltype) * 8, 0, name, strlen(name));
+    }
+    if (LLVMGetTypeKind(lltype) != LLVMStructTypeKind || LLVMIsOpaqueStruct(lltype))
+        return NULL;
+
+    // The tag: the field of the enumeration type, wherever the enum put it
+    unsigned tagidx = 0;
+    FieldDclNode *tagfld = NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&base->fields, cnt, nodesp), ++tagidx) {
+        if (itypeGetTypeDcl(((FieldDclNode *)*nodesp)->vtype)->tag == EnumTag) {
+            tagfld = (FieldDclNode *)*nodesp;
+            break;
+        }
+    }
+    if (tagfld == NULL || tagidx >= LLVMCountStructElementTypes(lltype))
+        return NULL;
+    EnumNode *tagnode = (EnumNode *)itypeGetTypeDcl(tagfld->vtype);
+    unsigned narms = 0;
+    LLVMMetadataRef *enumerators = memAllocBlk(base->derived->used * sizeof(LLVMMetadataRef));
+    int payload = 0;
+    unsigned ownfields = base->fields.used;
+    for (nodesFor(base->derived, cnt, nodesp)) {
+        StructNode *arm = (StructNode *)*nodesp;
+        if (arm->tag != StructTag || arm->namesym == NULL || arm->fields.used < ownfields)
+            return NULL;
+        const char *armname = &arm->namesym->namestr;
+        enumerators[narms++] = LLVMDIBuilderCreateEnumerator(gen->dibuilder, armname, strlen(armname),
+            arm->tagnbr, !tagnode->issigned);
+        if (arm->fields.used > ownfields)
+            payload = 1;
+    }
+    char tagname[560];
+    snprintf(tagname, sizeof(tagname), payload ? "%s.tag" : "%s", name);
+    LLVMMetadataRef tagtype = LLVMDIBuilderCreateEnumerationType(gen->dibuilder, NULL, tagname, strlen(tagname),
+        difile, base->linenbr, tagnode->bytes * 8, tagnode->bytes * 8, enumerators, narms,
+        genlDiTagType(gen, tagnode));
+    unsigned long long size = LLVMABISizeOfType(gen->datalayout, lltype);
+    unsigned long long tagoff = LLVMOffsetOfElement(gen->datalayout, lltype, tagidx);
+    if (!payload && ownfields == 1 && tagoff == 0 && size == tagnode->bytes)
+        return tagtype;
+
+    unsigned nmembers = 0;
+    LLVMMetadataRef members[2];
+    members[nmembers++] = LLVMDIBuilderCreateMemberType(gen->dibuilder, NULL, "tag", 3, difile,
+        base->linenbr, tagnode->bytes * 8, tagnode->bytes * 8, tagoff * 8, LLVMDIFlagZero, tagtype);
+    if (payload) {
+        // Each arm holding something: a struct of the fields it adds, offsets from the union's start,
+        // which is the first byte any of them uses
+        unsigned long long start = size;
+        for (nodesFor(base->derived, cnt, nodesp)) {
+            StructNode *arm = (StructNode *)*nodesp;
+            LLVMTypeRef armtype = arm->llvmtype;
+            if (arm->fields.used == ownfields)
+                continue;
+            if (armtype == NULL || LLVMGetTypeKind(armtype) != LLVMStructTypeKind
+                || LLVMCountStructElementTypes(armtype) < arm->fields.used)
+                return NULL;
+            for (unsigned idx = ownfields; idx < arm->fields.used; ++idx) {
+                unsigned long long off = LLVMOffsetOfElement(gen->datalayout, armtype, idx);
+                if (off < start)
+                    start = off;
+            }
+        }
+        unsigned long long unionsize = size - start;
+        unsigned nstructs = 0;
+        LLVMMetadataRef *structs = memAllocBlk(base->derived->used * sizeof(LLVMMetadataRef));
+        for (nodesFor(base->derived, cnt, nodesp)) {
+            StructNode *arm = (StructNode *)*nodesp;
+            LLVMTypeRef armtype = arm->llvmtype;
+            if (arm->fields.used == ownfields)
+                continue;
+            LLVMMetadataRef *armmembers = memAllocBlk((arm->fields.used - ownfields) * sizeof(LLVMMetadataRef));
+            unsigned nmem = 0;
+            for (unsigned idx = ownfields; idx < arm->fields.used; ++idx) {
+                FieldDclNode *fld = (FieldDclNode *)nodelistGet(&arm->fields, idx);
+                LLVMMetadataRef fldtype = fld->tag == FieldDclTag && !fld->hop && fld->namesym && depth < 8
+                    ? genlDiType(gen, fld->vtype, depth + 1) : NULL;
+                if (fldtype == NULL)
+                    continue;
+                LLVMTypeRef fldllvm = LLVMStructGetTypeAtIndex(armtype, idx);
+                armmembers[nmem++] = LLVMDIBuilderCreateMemberType(gen->dibuilder, NULL,
+                    &fld->namesym->namestr, strlen(&fld->namesym->namestr), difile, fld->linenbr,
+                    LLVMABISizeOfType(gen->datalayout, fldllvm) * 8,
+                    LLVMABIAlignmentOfType(gen->datalayout, fldllvm) * 8,
+                    (LLVMOffsetOfElement(gen->datalayout, armtype, idx) - start) * 8, LLVMDIFlagZero, fldtype);
+            }
+            const char *armname = &arm->namesym->namestr;
+            unsigned armalign =LLVMABIAlignmentOfType(gen->datalayout, armtype) * 8;
+            LLVMMetadataRef armstruct = LLVMDIBuilderCreateStructType(gen->dibuilder, NULL, armname,
+                strlen(armname), difile, arm->linenbr, unionsize * 8, armalign, LLVMDIFlagZero, NULL,
+                armmembers, nmem, 0, NULL, "", 0);
+            structs[nstructs++] = LLVMDIBuilderCreateMemberType(gen->dibuilder, NULL, armname, strlen(armname),
+                difile, arm->linenbr, unionsize * 8, armalign, 0, LLVMDIFlagZero, armstruct);
+        }
+        unsigned align = LLVMABIAlignmentOfType(gen->datalayout, lltype) * 8;
+        LLVMMetadataRef uni = LLVMDIBuilderCreateUnionType(gen->dibuilder, NULL, "payload", 7, difile,
+            base->linenbr, unionsize * 8, align, LLVMDIFlagZero, structs, nstructs, 0, "", 0);
+        members[nmembers++] = LLVMDIBuilderCreateMemberType(gen->dibuilder, NULL, "payload", 7, difile,
+            base->linenbr, unionsize * 8, align, start * 8, LLVMDIFlagZero, uni);
+    }
+    return LLVMDIBuilderCreateStructType(gen->dibuilder, NULL, name, strlen(name), difile, base->linenbr,
+        size * 8, LLVMABIAlignmentOfType(gen->datalayout, lltype) * 8, LLVMDIFlagZero, NULL,
+        members, nmembers, 0, NULL, "", 0);
 }
 
 // The debug info type of a Cone type, or NULL if debug info does not describe it
@@ -995,7 +1145,9 @@ static LLVMMetadataRef genlDiType(GenState *gen, INode *type, int depth) {
                 return known->ditype;
         }
         LLVMMetadataRef ditype = NULL;
-        if (depth < 8 && genlDiPlainStruct(gen, strnode)) {
+        if (depth < 8 && (strnode->flags & HasTagField) && strnode->basetrait == NULL)
+            ditype = genlDiEnum(gen, strnode, depth);
+        else if (depth < 8 && genlDiPlainStruct(gen, strnode)) {
             LLVMTypeRef lltype = strnode->llvmtype;
             LLVMMetadataRef difile = genlDiFile(gen, dcl);
             LLVMMetadataRef *members = memAllocBlk(strnode->fields.used * sizeof(LLVMMetadataRef));
@@ -1003,15 +1155,12 @@ static LLVMMetadataRef genlDiType(GenState *gen, INode *type, int depth) {
             INode **nodesp;
             uint32_t cnt;
             unsigned index = 0;
-            int whole = 1;
             for (nodelistFor(&strnode->fields, cnt, nodesp), ++index) {
                 FieldDclNode *fld = (FieldDclNode *)*nodesp;
                 LLVMMetadataRef fldtype = fld->tag == FieldDclTag && !fld->hop && fld->namesym
                     ? genlDiType(gen, fld->vtype, depth + 1) : NULL;
-                if (fldtype == NULL) {
-                    whole = 0;
-                    break;
-                }
+                if (fldtype == NULL)
+                    continue;   // a field not described is left out of the members, not described wrongly
                 LLVMTypeRef fldllvm = LLVMStructGetTypeAtIndex(lltype, index);
                 *memberp++ = LLVMDIBuilderCreateMemberType(gen->dibuilder, NULL,
                     &fld->namesym->namestr, strlen(&fld->namesym->namestr), difile, fld->linenbr,
@@ -1019,12 +1168,11 @@ static LLVMMetadataRef genlDiType(GenState *gen, INode *type, int depth) {
                     LLVMABIAlignmentOfType(gen->datalayout, fldllvm) * 8,
                     LLVMOffsetOfElement(gen->datalayout, lltype, index) * 8, LLVMDIFlagZero, fldtype);
             }
-            if (whole)
-                ditype = LLVMDIBuilderCreateStructType(gen->dibuilder, NULL,
-                    &strnode->namesym->namestr, strlen(&strnode->namesym->namestr), difile, strnode->linenbr,
-                    LLVMABISizeOfType(gen->datalayout, lltype) * 8,
-                    LLVMABIAlignmentOfType(gen->datalayout, lltype) * 8, LLVMDIFlagZero, NULL,
-                    members, (unsigned)strnode->fields.used, 0, NULL, "", 0);
+            ditype = LLVMDIBuilderCreateStructType(gen->dibuilder, NULL,
+                &strnode->namesym->namestr, strlen(&strnode->namesym->namestr), difile, strnode->linenbr,
+                LLVMABISizeOfType(gen->datalayout, lltype) * 8,
+                LLVMABIAlignmentOfType(gen->datalayout, lltype) * 8, LLVMDIFlagZero, NULL,
+                members, (unsigned)(memberp - members), 0, NULL, "", 0);
         }
         GenDiType *made = memAllocBlk(sizeof(GenDiType));
         made->type = dcl;
@@ -1032,6 +1180,26 @@ static LLVMMetadataRef genlDiType(GenState *gen, INode *type, int depth) {
         made->next = *bucket;
         *bucket = made;
         return ditype;
+    }
+    case ArrayTag:
+    {
+        // A fixed array held by value: its elements' type, one subrange per dimension
+        ArrayNode *anode = (ArrayNode *)dcl;
+        LLVMMetadataRef elem = depth < 8 ? genlDiType(gen, arrayElemType((INode *)anode), depth + 1) : NULL;
+        if (elem == NULL)
+            return NULL;
+        LLVMTypeRef lltype = genlType(gen, dcl);
+        LLVMMetadataRef *ranges = memAllocBlk(anode->dimens->used * sizeof(LLVMMetadataRef));
+        uint32_t cnt;
+        INode **nodesp;
+        unsigned used = 0;
+        for (nodesFor(anode->dimens, cnt, nodesp)) {
+            if ((*nodesp)->tag != ULitTag)
+                return NULL;
+            ranges[used++] = LLVMDIBuilderGetOrCreateSubrange(gen->dibuilder, 0, (int64_t)((ULitNode *)*nodesp)->uintlit);
+        }
+        return LLVMDIBuilderCreateArrayType(gen->dibuilder, LLVMABISizeOfType(gen->datalayout, lltype) * 8,
+            LLVMABIAlignmentOfType(gen->datalayout, lltype) * 8, elem, ranges, used);
     }
     default:
         return NULL;
