@@ -409,8 +409,12 @@ fn linkRun(name: &str, upIn: Link, downIn: Link) {
   }
   describe(name, &t);
   p.c.shutdown();
+  // The shutdown has its own time (the clock is the test's, so waiting costs nothing). The client's close can be one
+  // of the datagrams the link loses, and then the server ends by QUIC's idle timeout (30 s by default), so the limit
+  // is that and a margin, not what is left of the requests' 20 s (the run read 'no, no' when the close was lost)
+  let shutLimit = now + Duration.fromSeconds(quic.defaultIdleSeconds + 15i64);
   passes = 0u32;
-  while passes < 100000u32 && now < limit && !(t.clientClosed && t.serverClosed) {
+  while passes < 100000u32 && now < shutLimit && !(t.clientClosed && t.serverClosed) {
     passes = passes + 1u32;
     pass(&mut p, &mut up, &mut down, &mut t, &mut now);
   }
