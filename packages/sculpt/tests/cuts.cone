@@ -1,0 +1,293 @@
+// The sculpt package's plane cuts: sectionByPlane, bisect and deleteFaces, checked with the
+// testing package against values worked out by hand; only a failure prints, so cuts.out holds the
+// summary alone. Every result must pass validate().
+//
+// The cube PolyMesh.cube(1): corners (+-1, +-1, +-1), volume 8, 8 vertices, 12 edges, 6 faces.
+// - Section, normal +y through 0: the four side faces each give one segment at y = 0, so one
+//   closed loop of 4 points, each a side of the square of side 2: length 8.
+// - Normal (1, -1, 0): the plane x = y passes through four corners ((1, 1, +-1), (-1, -1, +-1)).
+//   Top and bottom each give a diagonal (length 2 sqrt 2), and the two edges up the corners are in
+//   the plane between a face wholly on one side and a face wholly on the other: 2 each. So one
+//   loop of 4 points, length 4 + 4 sqrt 2 = 9.656854. A plane through (0, 2, 0) misses the cube;
+//   one through (0, 1, 0) with normal +y only touches its top face: no loops either.
+// - A torus lathed from a circle (tube radius 0.5, centre 2 from the axis, 16 columns): the plane
+//   z = 0 through the axis holds column 0 and column 8 (each a whole ring of vertices in the
+//   plane): 2 closed loops.
+// - Bisect, normal +y at 0: keeps y <= 0. The four vertical edges are cut at y = 0, so 8 vertices,
+//   the bottom, four shortened sides and one cap: 6 faces, 12 edges, closed, volume 4. Open:
+//   5 faces and one boundary loop of 4. Normal (1, -1, 0): the four corners on the plane are
+//   reused and the two corners (-1, 1, +-1) kept: 6 vertices, none new, 5 faces (x = -1, y = 1,
+//   two triangles, the cap), 9 edges, volume 4 (a wedge: half of 8). Origin (0, 2, 0) or (0, -2, 0):
+//   everything is kept, or nothing. A vertex channel "h" = y is 0 at the new vertices.
+// - A tube cut across: a 16-sided open tube of radius 1 and length 2, solidified 0.2 with its
+//   rim, cut at z = 1: two nested section loops, so the bisect is left open, with one problem.
+// - Delete: face 0 of the cube leaves 8 vertices, 12 edges, 5 faces and one boundary loop of 4;
+//   all 6 leave nothing. A 2 x 2 grid of quads (9 vertices) with faces 0 and 3 (a diagonal)
+//   deleted leaves faces 1 and 2 touching only at the centre vertex: 2 faces, 8 vertices, so the
+//   centre is duplicated. Repeats and a number past the last face are ignored.
+// - Symmetrize is checked by symmetries.cone, whose output is unchanged by the move of its cut.
+
+mod cuts;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+let near = 0.00001;
+
+fn clean(m: &PolyMesh, label: &Array[u8]) {
+  let problems = m.validate();
+  expectInt(i64.from(problems.len()), 0, label);
+}
+
+fn counts(m: &PolyMesh, nv: i64, ne: i64, nf: i64, label: &Array[u8]) {
+  expectInt(i64.from(m.vertexCount()), nv, label);
+  expectInt(i64.from(m.edgeCount()), ne, label);
+  expectInt(i64.from(m.faceCount()), nf, label);
+}
+
+fn volume(m: &PolyMesh) f32 {
+  var sum: f32 = 0.;
+  var f = 0usize;
+  while f < m.faceCount() {
+    let pts = m.facePositions(u32.from(f));
+    var i = 1usize;
+    while i + 1usize < pts.len() {
+      sum = sum + pts[0usize].dot(pts[i].cross(*pts[i + 1usize]));
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.
+}
+
+fn boundaryEdges(m: &PolyMesh) i64 {
+  var n = 0i64;
+  var e = 0usize;
+  while e < m.edgeCount() {
+    if m.isBoundaryEdge(u32.from(e)) { n = n + 1i64; }
+    e = e + 1usize;
+  }
+  n
+}
+
+fn loopLength(s: &PlaneSection, l: usize) f32 {
+  let a = usize.from(*s.starts[l]);
+  let b = usize.from(*s.starts[l + 1usize]);
+  var len: f32 = 0.;
+  var i = a;
+  while i < b {
+    let j = if i + 1usize < b {i + 1usize} else {a};
+    len = len + (*s.points[j] - *s.points[i]).length();
+    i = i + 1usize;
+  }
+  len
+}
+
+fn loopCount(s: &PlaneSection) i64 {i64.from(s.closed.len())}
+
+fn sections() {
+  let c = PolyMesh.cube(1.);
+  let s = sectionByPlane(&c, Vec3(0., 0., 0.), Vec3(0., 1., 0.));
+  expectInt(loopCount(&s), 1, "section y: one loop");
+  expectBool(*s.closed[0usize], true, "section y: closed");
+  expectInt(i64.from(*s.starts[1usize] - *s.starts[0usize]), 4, "section y: 4 points");
+  var i = 0usize;
+  var worst: f32 = 0.;
+  while i < s.points.len() {
+    worst = worst.max(s.points[i].y.abs());
+    i = i + 1usize;
+  }
+  expectFloat(worst, 0., near, "section y: all at y = 0");
+  expectFloat(loopLength(&s, 0usize), 8., near, "section y: length 8");
+
+  let d = sectionByPlane(&c, Vec3(0., 0., 0.), Vec3(1., -1., 0.));
+  expectInt(loopCount(&d), 1, "section diagonal: one loop");
+  expectBool(*d.closed[0usize], true, "section diagonal: closed");
+  expectInt(i64.from(*d.starts[1usize] - *d.starts[0usize]), 4, "section diagonal: 4 points");
+  expectFloat(loopLength(&d, 0usize), 9.656854, near, "section diagonal: length 4 + 4 sqrt 2");
+
+  expectInt(loopCount(&sectionByPlane(&c, Vec3(0., 2., 0.), Vec3(0., 1., 0.))), 0, "section: a miss");
+  expectInt(loopCount(&sectionByPlane(&c, Vec3(0., 1., 0.), Vec3(0., 1., 0.))), 0, "section: touching the top");
+  expectInt(loopCount(&sectionByPlane(&c, Vec3(0., 1., 0.), Vec3(0., -1., 0.))), 0, "section: touching, other way");
+  expectInt(loopCount(&sectionByPlane(&c, Vec3(0., 0., 0.), Vec3(0., 0., 0.))), 0, "section: no normal");
+
+  let t = torus();
+  let st = sectionByPlane(&t, Vec3(0., 0., 0.), Vec3(0., 0., 1.));
+  expectInt(loopCount(&st), 2, "section torus: two loops");
+  expectBool(*st.closed[0usize] && *st.closed[1usize], true, "section torus: both closed");
+}
+
+fn torus() PolyMesh {
+  var pts = List[Vec2]();
+  var k = 0u32;
+  while k < 8u32 {
+    let a = 2. * pi * f32.from(k) / 8.;
+    pts.push(Vec2(2. + 0.5 * a.cos(), 0.5 * a.sin()));
+    k = k + 1u32;
+  }
+  lathe(&Profile.fromPoints(pts.view(), true), Vec3(0., 1., 0.), 2. * pi, 16u32)
+}
+
+fn withHeights(m: &PolyMesh) PolyMesh {
+  var g = m.clone();
+  let h = g.addFloatChannel(VertexDomain, "h", 0.);
+  var v = 0u32;
+  while usize.from(v) < g.vertexCount() {
+    g.setFloat(h, v, g.positions[usize.from(v)].y);
+    v = v + 1u32;
+  }
+  g
+}
+
+fn bisects() {
+  let c = PolyMesh.cube(1.);
+  var p = List[String]();
+  let b = bisect(&c, Vec3(0., 0., 0.), Vec3(0., 1., 0.), true, &mut p);
+  counts(&b, 8i64, 12i64, 6i64, "bisect y capped: counts");
+  clean(&b, "bisect y capped: valid");
+  expectInt(boundaryEdges(&b), 0i64, "bisect y capped: closed");
+  expectFloat(volume(&b), 4., near, "bisect y capped: volume 4");
+  expectInt(i64.from(p.len()), 0, "bisect y capped: no problem");
+  var top = 0.;
+  var v = 0usize;
+  while v < b.vertexCount() {
+    top = top.max(b.positions[v].y);
+    v = v + 1usize;
+  }
+  expectFloat(top, 0., near, "bisect y: nothing above the plane");
+
+  let o = bisect(&c, Vec3(0., 0., 0.), Vec3(0., 1., 0.), false, &mut p);
+  counts(&o, 8i64, 12i64, 5i64, "bisect y open: counts");
+  clean(&o, "bisect y open: valid");
+  expectInt(boundaryEdges(&o), 4i64, "bisect y open: one loop of 4");
+  expectInt(i64.from(boundaryLoop(&o, firstBoundary(&o)).len()), 4, "bisect y open: boundaryLoop 4");
+
+  let d = bisect(&c, Vec3(0., 0., 0.), Vec3(1., -1., 0.), true, &mut p);
+  counts(&d, 6i64, 9i64, 5i64, "bisect diagonal capped: counts");
+  clean(&d, "bisect diagonal capped: valid");
+  expectInt(boundaryEdges(&d), 0i64, "bisect diagonal: closed");
+  expectFloat(volume(&d), 4., near, "bisect diagonal: volume 4");
+
+  let all = bisect(&c, Vec3(0., 2., 0.), Vec3(0., 1., 0.), true, &mut p);
+  counts(&all, 8i64, 12i64, 6i64, "bisect miss: the cube unchanged");
+  expectFloat(volume(&all), 8., near, "bisect miss: volume 8");
+  let none = bisect(&c, Vec3(0., -2., 0.), Vec3(0., 1., 0.), true, &mut p);
+  expectInt(i64.from(none.vertexCount()), 0, "bisect, all cut off: empty");
+  expectInt(i64.from(p.len()), 0, "bisect: no problems so far");
+
+  let h = withHeights(&c);
+  let bh = bisect(&h, Vec3(0., 0., 0.), Vec3(0., 1., 0.), true, &mut p);
+  let ch = bh.findFloatChannel(VertexDomain, "h");
+  var worst: f32 = 0.;
+  var cuts = 0i64;
+  v = 0usize;
+  while v < bh.vertexCount() {
+    // A vertex on the plane has h = y = 0 (the new four); the bottom's are at -1
+    if bh.positions[v].y > -0.5 {
+      cuts = cuts + 1i64;
+      worst = worst.max(bh.float(ch, u32.from(v)).abs());
+    }
+    v = v + 1usize;
+  }
+  expectInt(cuts, 4i64, "bisect channel: four new vertices");
+  expectFloat(worst, 0., near, "bisect channel: h = 0 at the new vertices");
+
+  let tube = solidify(&extrude(&Profile.circle(16u32, 1.), Vec3(0., 0., 2.), 1u32, false), 0.2, 0., false, true);
+  clean(&tube, "tube: valid");
+  var q = List[String]();
+  let tc = bisect(&tube, Vec3(0., 0., 1.), Vec3(0., 0., 1.), true, &mut q);
+  expectInt(i64.from(q.len()), 1, "tube: one problem line");
+  clean(&tc, "tube cut: valid");
+  expectInt(boundaryEdges(&tc), 32i64, "tube cut: left open, two loops of 16");
+}
+
+fn firstBoundary(m: &PolyMesh) u32 {
+  var v = 0u32;
+  while usize.from(v) < m.vertexCount() {
+    if m.isBoundaryVertex(v) { return v; }
+    v = v + 1u32;
+  }
+  NoIndex
+}
+
+fn grid2() PolyMesh {
+  var pts = List[Vec3]();
+  var j = 0u32;
+  while j < 3u32 {
+    var i = 0u32;
+    while i < 3u32 {
+      pts.push(Vec3(f32.from(i), f32.from(j), 0.));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var sizes = List[u32]();
+  var idx = List[u32]();
+  j = 0u32;
+  while j < 2u32 {
+    var i = 0u32;
+    while i < 2u32 {
+      let a = 3u32 * j + i;
+      sizes.push(4u32);
+      idx.push(a);
+      idx.push(a + 1u32);
+      idx.push(a + 4u32);
+      idx.push(a + 3u32);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), sizes.view(), idx.view(), &mut problems)
+}
+
+fn deletions() {
+  let c = PolyMesh.cube(1.);
+  let one: Array[u32, 1] = [0u32];
+  let d = deleteFaces(&c, &one);
+  counts(&d, 8i64, 12i64, 5i64, "delete face 0: counts");
+  clean(&d, "delete face 0: valid");
+  expectInt(boundaryEdges(&d), 4i64, "delete face 0: a loop of 4");
+  let rep: Array[u32, 4] = [0u32, 0u32, 99u32, 0u32];
+  let r = deleteFaces(&c, &rep);
+  counts(&r, 8i64, 12i64, 5i64, "delete: repeats and out of range ignored");
+  let all: Array[u32, 6] = [0u32, 1u32, 2u32, 3u32, 4u32, 5u32];
+  let e = deleteFaces(&c, &all);
+  expectInt(i64.from(e.vertexCount()), 0, "delete all: empty");
+  expectInt(i64.from(e.faceCount()), 0, "delete all: no faces");
+
+  let g = grid2();
+  counts(&g, 9i64, 12i64, 4i64, "grid: counts");
+  let diag: Array[u32, 2] = [0u32, 3u32];
+  let x = deleteFaces(&g, &diag);
+  counts(&x, 8i64, 8i64, 2i64, "delete diagonal faces: the centre duplicated");
+  clean(&x, "delete diagonal faces: valid");
+
+  // Channels follow: a vertex channel "w" = v
+  var w = c.clone();
+  let ch = w.addFloatChannel(VertexDomain, "w", 0.);
+  var v = 0u32;
+  while usize.from(v) < w.vertexCount() {
+    w.setFloat(ch, v, f32.from(v));
+    v = v + 1u32;
+  }
+  let dw = deleteFaces(&w, &one);
+  let cw = dw.findFloatChannel(VertexDomain, "w");
+  var sum = 0.;
+  v = 0u32;
+  while usize.from(v) < dw.vertexCount() {
+    sum = sum + dw.float(cw, v);
+    v = v + 1u32;
+  }
+  expectFloat(sum, 28., near, "delete: channel carried (0 + ... + 7)");
+}
+
+fn main() i32 {
+  sections();
+  bisects();
+  deletions();
+  done()
+}
