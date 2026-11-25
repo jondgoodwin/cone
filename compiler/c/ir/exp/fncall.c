@@ -4578,6 +4578,28 @@ static INode *fnCallOperandNumber(INode *operand) {
     return NULL;
 }
 
+// A value that is no call to narrowing (narrowCallMade): not a call at all, or an
+// operator whose operands are such values, '(a + b) * 2'. The operator may turn out to
+// be a user type's, which is a call; narrowing is asked at the check of the operator
+// itself, which this only moves after the other arguments of the call it is in.
+static int fnCallArgPlain(INode *arg) {
+    if (arg->tag == NamedValTag)
+        arg = ((NamedValNode*)arg)->val;
+    if (arg->tag != FnCallTag)
+        return 1;
+    FnCallNode *call = (FnCallNode*)arg;
+    if (!(call->flags & FlagOperator) || (call->flags & FlagIndex) || call->objfn == NULL
+        || !fnCallArgPlain(call->objfn))
+        return 0;
+    INode **argp;
+    uint32_t cnt;
+    if (call->args)
+        for (nodesFor(call->args, cnt, argp))
+            if (!fnCallArgPlain(*argp))
+                return 0;
+    return 1;
+}
+
 // A variant of a generic enum constructed with its type arguments left to be
 // inferred ('Some(5)', 'None', 'Some(None)'): what the generic it is given to
 // wants of it may fix them ('Some(5)' wanted as an 'Option[i64]' holds an i64).
@@ -4606,7 +4628,7 @@ static int fnCallArgIsCtor(INode *arg) {
     uint32_t cnt;
     if (call->args)
         for (nodesFor(call->args, cnt, argp))
-            if ((*argp)->tag == FnCallTag && !fnCallArgIsCtor(*argp))
+            if ((*argp)->tag == FnCallTag && !fnCallArgPlain(*argp) && !fnCallArgIsCtor(*argp))
                 return 0;
     return 1;
 }

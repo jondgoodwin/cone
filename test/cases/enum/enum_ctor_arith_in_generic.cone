@@ -1,0 +1,64 @@
+// A variant constructed from arithmetic and given to a generic variant, 'Ok(State.HasMoney(m + c))',
+// 'Err(Fault.Short(price - m))', 'Some(State.HasMoney(a * b - 2))', takes the enum its
+// place wants, as 'Ok(State.HasMoney(c))' does: the arithmetic on plain values is no call, so
+// the construction waits for the call's place to say what it is [row 771, the 0.1 book's port
+// pilot]. Before, the argument was typed as the variant alone and the function's return
+// type refused it (1013).
+//
+// Each printed value was checked by hand against the source.
+
+mod enum_ctor_arith_in_generic;
+
+import stdio use *;
+
+enum State {
+  Idle;
+  HasMoney(i32);
+}
+
+enum Fault {
+  Short(i32);
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn add(m: i32, c: i32) Result[State, Fault] { Ok(State.HasMoney(m + c)) }
+fn short(price: i32, m: i32) Result[State, Fault] { Err(Fault.Short(price - m)) }
+fn some(a: i32, b: i32) Option[State] { Some(State.HasMoney(a * b - 2)) }
+fn lit(a: i32) Result[State, Fault] { Ok(State.HasMoney(a + 1)) }
+
+fn amount(r: Result[State, Fault]) i64 {
+  match r {
+    case let Ok(s) {
+      match s {
+        case let HasMoney(m) {i64.from(m)}
+        else {-1}
+      }
+    }
+    case let Err(e) {
+      match e {
+        case let Short(n) {i64.from(n) + 1000}
+      }
+    }
+  }
+}
+
+fn main() {
+  show("add", amount(add(3, 4)));        // 7
+  show("short", amount(short(10, 4)));   // 6 + 1000 = 1006
+  show("lit", amount(lit(9)));           // 10
+  match some(3, 5) {
+    case let Some(s) {
+      match s {
+        case let HasMoney(m) {show("some", i64.from(m));}   // 3 * 5 - 2 = 13
+        else {}
+      }
+    }
+    else {}
+  }
+}

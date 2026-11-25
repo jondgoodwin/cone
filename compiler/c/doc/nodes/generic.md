@@ -659,7 +659,11 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    **A variant of a non-generic enum given to a generic** (`Err(Fault.SoldOut)`,
    `Ok(Drink.Tea)`, `Some(Fault.Short(3))`) is held back the same way:
    `fnCallArgIsCtor` is true for it too, so long as no function call is among its
-   values (a call would change the order narrowing sees). It names no type parameter of
+   values (a call would change the order narrowing sees). An operator applied to
+   operands that are themselves no calls, `m + c`, is no call here (`fnCallArgPlain`),
+   so `Ok(State.HasMoney(m + c))` is held back too; a function call, or a field read
+   written `p.m`, among the values still keeps it from being held back (row 771).
+   It names no type parameter of
    its own, so where the call goes may say its place is the enum: `genericFnArgExpect`
    / `genericStructArgExpect` answer `Fault`, and `iexpCoerceIn` widens the variant
    to it before the call's inference reads the argument's type, so `E` is `Fault`
