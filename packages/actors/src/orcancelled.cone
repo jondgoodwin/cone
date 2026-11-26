@@ -272,15 +272,29 @@ fn orArcOf(w: u64) Arc[imm, OrCell] {
   mem.readRaw[Arc[imm, OrCell]](&mut x as *(Arc[imm, OrCell]))
 }
 
+// The actor whose ring the waiter on the callee's future resumes in: the one
+// the envelope answers, or, for a wrapper inside another (orRunAwaitable),
+// whose envelope answers a future and names no actor, the one running the
+// seam, which is the outer await's
+fn orAwaiter(to: *Header) *Header {
+  if to as usize != 0usize {to} else {curActor as *Header}
+}
+
 // The start every orCancelled await shares. rp is the envelope the seam made.
 // A count of the awaiting actor is taken for the Waiter (the caller gives it
 // to the Waiter or lets it go), the cell is made, and, if the await is in a
 // cancel group, registered with it. Some(cell) to go on and wait for the
 // callee; None if the group is cancelled already, when the envelope has been
 // answered with Err and the count let go. 'twice': an operation is to be
-// started under the envelope (OrCell)
+// started under the envelope (OrCell).
+//
+// A WRAPPER INSIDE ANOTHER is handed a future's envelope, with no group in its
+// id word, so it registers with none: the cancel is the outer wrapper's, which
+// wakes the await at its own level, and the inner one only passes the callee's
+// answer, or its ending without one, out through the future. The operation
+// itself is started in the await's group as under one wrapper
 fn orPrepare[R](rp: Reply, twice: bool) Option[Arc[imm, OrCell]] {
-  let h = rp.to;
+  let h = orAwaiter(rp.to);
   let w = rp.id;
   holdHeader(h);
   let cell = Arc[imm, OrCell](OrCell(Atomic[u32].of(orOpen), rp.to, rp.at, rp.id, rp.cell, rp.meta, twice));
@@ -352,7 +366,7 @@ fn orArrive[R](st: *u8, id: u64, data: *u8) {
 fn orJoin[R](cell: Arc[imm, OrCell], f: Future[R]) {
   var fut = f;
   let at = &mut fut as *Future[R] as *u8;
-  let h = cell.to;
+  let h = orAwaiter(cell.to);
   if !futureReady(at) {
     var rf = &orArrive[R];
     let run = mem.readRaw[*u8](&mut rf as *(*u8));
