@@ -603,9 +603,18 @@ static void flowMoveHollow(VarDclNode *owner, INode *owneruse, Nodes **moved, IN
     nodesAdd(&parts->hollowuse, owneruse);
 }
 
-// Can this value, or one a block or an 'if' in it may hand back, be an owning
-// reference that moves ('Rc[uni, T]', 'Uni[T]')?
-static int flowHandsMovedOwner(INode *node) {
+static int flowIsOwnerRef(INode *node) {
+    INode *type = iexpGetTypeDcl(node);
+    return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
+        && regionIsOwning(((RefNode *)type)->region);
+}
+
+// Does a recast, a block or an 'if' hand on a value that moves though the node
+// itself may be typed as one that copies? An owning reference that moves
+// ('Rc[uni, T]', 'Uni[T]') recast as another owning type, and in a block or an
+// 'if' any such owner, or a value recast to a type that moves (an enum's
+// variant as its enum, where the arm keeps the variant's type).
+static int flowHandsMoved(INode *node) {
     if (!isExpNode(node))
         return 0;
     INode **nodesp;
@@ -613,7 +622,7 @@ static int flowHandsMovedOwner(INode *node) {
     if (node->tag == IfTag) {
         for (nodesFor(((IfNode *)node)->condblk, cnt, nodesp)) {
             nodesp++; cnt--;
-            if (flowHandsMovedOwner(*nodesp))
+            if (flowHandsMoved(*nodesp))
                 return 1;
         }
         return 0;
@@ -622,30 +631,35 @@ static int flowHandsMovedOwner(INode *node) {
         BlockNode *blk = (BlockNode *)node;
         INode *last = blk->stmts->used > 0 ? nodesLast(blk->stmts) : NULL;
         if (last != NULL && last->tag == BlockRetTag && !(blk->flags & FlagLoop)
-            && flowHandsMovedOwner(((BreakRetNode *)last)->exp))
+            && flowHandsMoved(((BreakRetNode *)last)->exp))
             return 1;
         if (blk->breaks) {
             for (nodesFor(blk->breaks, cnt, nodesp)) {
-                if ((*nodesp)->tag == BreakTag && flowHandsMovedOwner(((BreakRetNode *)*nodesp)->exp))
+                if ((*nodesp)->tag == BreakTag && flowHandsMoved(((BreakRetNode *)*nodesp)->exp))
                     return 1;
             }
         }
         return 0;
     }
-    INode *type = iexpGetTypeDcl(node);
-    return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
-        && regionIsOwning(((RefNode *)type)->region) && iexpIsMove(node);
+    if (node->tag == CastTag && flowCastCarries(node)) {
+        if (iexpIsMove(node))
+            return 1;
+        return flowIsOwnerRef(node) && flowHandsMoved(((CastNode *)node)->exp);
+    }
+    return flowIsOwnerRef(node) && iexpIsMove(node);
 }
 
-// Does taking this value move something? Its own type says so, or an owner a
-// block or an 'if' may hand back does: where a permission changes in one arm
-// ('Rc[uni, T]' wanted as 'Rc[mut, T]'), the arm's value is the same node with
-// the same type, and the 'if' is typed as the counted reference it was wanted
-// as, yet that arm's owner still moves.
+// Does taking this value move something? Its own type says so, or what it hands
+// on does. Where an owner's permission changes ('Rc[uni, T]' wanted as
+// 'Rc[mut, T]'), the owner moves whether the type step builds nothing (an 'if'
+// arm's value keeps its 'uni' type) or a recast, as to an enrichment or trait
+// of the value type, typed as the counted reference it was wanted as.
 int flowValueMoves(INode *node) {
     if (!isExpNode(node))
         return 0;
-    return iexpIsMove(node) || ((node->tag == IfTag || node->tag == BlockTag) && flowHandsMovedOwner(node));
+    if (iexpIsMove(node))
+        return 1;
+    return (node->tag == IfTag || node->tag == BlockTag || node->tag == CastTag) && flowHandsMoved(node);
 }
 
 // Walk one of the values a block or an 'if' may hand back, narrowing 'common'
