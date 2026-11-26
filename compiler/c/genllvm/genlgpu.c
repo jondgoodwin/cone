@@ -1195,9 +1195,191 @@ static char *genlGpuNoContractionAsm(const char *text, size_t len) {
     return out;
 }
 
+// ---- IEEE comparisons -------------------------------------------------------
+
+// A Vulkan driver may assume that a float is never a NaN or an infinity, and
+// the sign of a zero not matter, unless the module says otherwise: the RTX
+// 4060 answered 't != t' false for a NaN it had computed. Each entry point of a
+// module with 32-bit or 64-bit floats declares SignedZeroInfNanPreserve for
+// that width. LLVM 23's SPIR-V backend writes the execution mode from
+// '!spirv.ExecutionMode' metadata but not the capability it requires, so both
+// are added to the module it emitted. The capability is core from SPIR-V 1.4,
+// and before that is the extension SPV_KHR_float_controls.
+#define SpvOpExtension 10
+#define SpvOpMemoryModel 14
+#define SpvOpEntryPoint 15
+#define SpvOpExecutionMode 16
+#define SpvOpTypeFloat 22
+#define SpvOpExecutionModeId 331
+#define SpvModeSignedZeroInfNanPreserve 4461
+#define SpvCapabilitySignedZeroInfNanPreserve 4466
+#define genlSpvFloatControls "SPV_KHR_float_controls"
+#define genlSpvVersion14 0x00010400u
+
+// 'words' is reallocated; answers its new count.
+static size_t genlGpuFloatPreserve(uint32_t **wordsp, size_t nwords) {
+    uint32_t *words = *wordsp;
+    if (nwords < 5)
+        return nwords;
+    uint32_t widths[2], nwidths = 0, nentries = 0;
+    size_t at = 0;      // where the execution modes end
+    size_t extat = 0;   // where the capabilities end
+    for (size_t i = 5; i < nwords;) {
+        uint32_t count = words[i] >> 16, op = words[i] & 0xFFFF;
+        if (count == 0 || i + count > nwords)
+            break;
+        if (extat == 0 && op != SpvOpCapability)
+            extat = i;
+        if (op == SpvOpEntryPoint)
+            ++nentries;
+        else if (at == 0 && nentries > 0 && op != SpvOpExecutionMode && op != SpvOpExecutionModeId)
+            at = i;
+        // A 16-bit float's type, and one of another encoding (an operand
+        // more), are left out
+        if (op == SpvOpTypeFloat && count == 3 && (words[i + 2] == 32 || words[i + 2] == 64) && nwidths < 2)
+            widths[nwidths++] = words[i + 2];
+        i += count;
+    }
+    if (nwidths == 0 || at == 0)
+        return nwords;
+
+    int ext = words[1] < genlSpvVersion14;
+    uint32_t extwords = (uint32_t)(sizeof(genlSpvFloatControls) + 3) / 4;
+    size_t extra = 2 + (ext ? 1 + extwords : 0) + 4 * (size_t)nwidths * nentries;
+    uint32_t *out = (uint32_t *)malloc((nwords + extra) * sizeof(uint32_t));
+    memcpy(out, words, 5 * sizeof(uint32_t));
+    size_t o = 5;
+    out[o++] = (2u << 16) | SpvOpCapability;
+    out[o++] = SpvCapabilitySignedZeroInfNanPreserve;
+    memcpy(&out[o], &words[5], (extat - 5) * sizeof(uint32_t));
+    o += extat - 5;
+    if (ext) {
+        out[o++] = ((1 + extwords) << 16) | SpvOpExtension;
+        memset(&out[o], 0, extwords * sizeof(uint32_t));
+        for (size_t b = 0; b < sizeof(genlSpvFloatControls); ++b)
+            out[o + b / 4] |= (uint32_t)(unsigned char)genlSpvFloatControls[b] << (8 * (b % 4));
+        o += extwords;
+    }
+    memcpy(&out[o], &words[extat], (at - extat) * sizeof(uint32_t));
+    o += at - extat;
+    for (size_t i = 5; i < at;) {
+        uint32_t count = words[i] >> 16, op = words[i] & 0xFFFF;
+        if (count == 0)
+            break;
+        if (op == SpvOpEntryPoint && count >= 4)
+            for (uint32_t w = 0; w < nwidths; ++w) {
+                out[o++] = (4u << 16) | SpvOpExecutionMode;
+                out[o++] = words[i + 2];
+                out[o++] = SpvModeSignedZeroInfNanPreserve;
+                out[o++] = widths[w];
+            }
+        i += count;
+    }
+    memcpy(&out[o], &words[at], (nwords - at) * sizeof(uint32_t));
+    o += nwords - at;
+    free(words);
+    *wordsp = out;
+    return o;
+}
+
+// The word of a line of assembly at '*p', which is moved past it
+static size_t genlSpvAsmWord(const char **p, const char *end, const char **word) {
+    while (*p < end && (**p == ' ' || **p == '\t' || **p == '='))
+        ++*p;
+    *word = *p;
+    while (*p < end && **p != ' ' && **p != '\t' && **p != '\r')
+        ++*p;
+    return *p - *word;
+}
+
+static int genlSpvAsmIs(const char *word, size_t len, const char *text) {
+    return strlen(text) == len && strncmp(word, text, len) == 0;
+}
+
+// The same in the module's assembly, so that '--asm' shows what the module
+// holds. Answers the new text, which the caller frees, or NULL when the module
+// has nothing to declare.
+static char *genlGpuFloatPreserveAsm(const char *text, size_t len) {
+    size_t capat = len, extat = len, at = len;
+    int widths[2], nwidths = 0, ext = 0;
+    size_t nentries = 0, davail = 256, dlen = 0;
+    const char **ids = (const char **)malloc(davail * sizeof(char *));
+    size_t *idlens = (size_t *)malloc(davail * sizeof(size_t));
+    for (size_t i = 0; i < len;) {
+        size_t end = i;
+        while (end < len && text[end] != '\n')
+            ++end;
+        const char *p = &text[i], *lineend = &text[end], *word;
+        size_t wlen = genlSpvAsmWord(&p, lineend, &word);
+        if (wlen > 0 && *word == ';') {
+            // LLVM's header comment names the version: '; Version: 1.6'
+            wlen = genlSpvAsmWord(&p, lineend, &word);
+            if (genlSpvAsmIs(word, wlen, "Version:") && genlSpvAsmWord(&p, lineend, &word) >= 3)
+                ext = word[0] == '1' && word[2] < '4';
+        }
+        else {
+            if (wlen > 0 && *word == '%')
+                wlen = genlSpvAsmWord(&p, lineend, &word);
+            if (wlen > 0) {
+                int cap = genlSpvAsmIs(word, wlen, "OpCapability");
+                if (cap && capat == len)
+                    capat = i;
+                if (!cap && capat != len && extat == len)
+                    extat = i;
+                if (genlSpvAsmIs(word, wlen, "OpEntryPoint") && nentries < davail) {
+                    genlSpvAsmWord(&p, lineend, &word); // the execution model
+                    idlens[nentries] = genlSpvAsmWord(&p, lineend, &word);
+                    ids[nentries++] = word;
+                }
+                else if (at == len && nentries > 0 && !genlSpvAsmIs(word, wlen, "OpExecutionMode")
+                    && !genlSpvAsmIs(word, wlen, "OpExecutionModeId"))
+                    at = i;
+                if (genlSpvAsmIs(word, wlen, "OpTypeFloat") && nwidths < 2) {
+                    const char *width;
+                    size_t widthlen = genlSpvAsmWord(&p, lineend, &width);
+                    const char *more;
+                    if (genlSpvAsmWord(&p, lineend, &more) == 0) {
+                        if (genlSpvAsmIs(width, widthlen, "32"))
+                            widths[nwidths++] = 32;
+                        else if (genlSpvAsmIs(width, widthlen, "64"))
+                            widths[nwidths++] = 64;
+                    }
+                }
+            }
+        }
+        i = end < len ? end + 1 : end;
+    }
+    char *out = NULL;
+    if (nwidths > 0 && capat < len && at < len) {
+        for (size_t e = 0; e < nentries; ++e)
+            dlen += nwidths * (idlens[e] + 64);
+        out = (char *)malloc(len + dlen + 128);
+        size_t o = 0;
+        memcpy(out, text, capat);
+        o += capat;
+        o += sprintf(&out[o], "\tOpCapability SignedZeroInfNanPreserve\n");
+        memcpy(&out[o], &text[capat], extat - capat);
+        o += extat - capat;
+        if (ext)
+            o += sprintf(&out[o], "\tOpExtension \"" genlSpvFloatControls "\"\n");
+        memcpy(&out[o], &text[extat], at - extat);
+        o += at - extat;
+        for (size_t e = 0; e < nentries; ++e)
+            for (int w = 0; w < nwidths; ++w)
+                o += sprintf(&out[o], "\tOpExecutionMode %.*s SignedZeroInfNanPreserve %d\n",
+                    (int)idlens[e], ids[e], widths[w]);
+        memcpy(&out[o], &text[at], len - at);
+        out[o + len - at] = '\0';
+    }
+    free((void *)ids);
+    free(idlens);
+    return out;
+}
+
 // Emit a module for SPIR-V's Vulkan form: assembly, if asked, from a copy
 // (genlOut says why), and the module itself through genlGpuPatch; both
-// decorated against contraction (genlGpuNoContraction)
+// decorated against contraction (genlGpuNoContraction) and declaring IEEE
+// comparisons (genlGpuFloatPreserve)
 void genlGpuOut(GenState *gen, char *objpath, char *asmpath) {
     char *err;
     if (asmpath) {
@@ -1222,11 +1404,17 @@ void genlGpuOut(GenState *gen, char *objpath, char *asmpath) {
             char *decorated = genlGpuNoContractionAsm(text, len);
             const char *outtext = decorated ? decorated : text;
             size_t outlen = decorated ? strlen(decorated) : len;
+            char *preserved = genlGpuFloatPreserveAsm(outtext, outlen);
+            if (preserved) {
+                outtext = preserved;
+                outlen = strlen(preserved);
+            }
             FILE *file = fopen(asmpath, "wb");
             if (file == NULL || fwrite(outtext, 1, outlen, file) != outlen)
                 errorMsg(ErrorGenErr, "Could not write asm file: %s", asmpath);
             if (file)
                 fclose(file);
+            free(preserved);
             free(decorated);
             LLVMDisposeMemoryBuffer(asmbuf);
         }
@@ -1248,6 +1436,7 @@ void genlGpuOut(GenState *gen, char *objpath, char *asmpath) {
     nwords = genlGpuSyncPatch(&words, nwords);
     nwords = genlGpuPatch(gen, &words, nwords);
     nwords = genlGpuNoContraction(&words, nwords);
+    nwords = genlGpuFloatPreserve(&words, nwords);
     FILE *file = fopen(objpath, "wb");
     if (file == NULL || fwrite(words, 4, nwords, file) != nwords)
         errorMsg(ErrorGenErr, "Could not write obj file: %s", objpath);
