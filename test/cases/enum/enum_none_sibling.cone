@@ -1,0 +1,188 @@
+// A 'None', 'Ok(v)' or 'Err(e)' where no place says its type takes it from a
+// sibling branch that has one: the branch before or after it, an arm of a
+// 'match' between two others, a branch of a nested 'if', a branch that
+// declares first, one whose sibling is a variable, a borrow or a value of the
+// whole enum, a closure with no written return type, and Result's two variants.
+// A literal beside an expected sibling takes its payload's type too.
+//
+// Each printed value was checked by hand against the source.
+
+mod enum_none_sibling;
+
+import stdio use *;
+
+fn show(label: &str, o: Option[i64]) {
+  printStr(label);
+  match o {
+    case let Some(n) { printStr(" Some "); printInt(n); }
+    case None { printStr(" None"); }
+  }
+  printStr("\n");
+}
+
+fn showR(label: &str, r: Result[i64, bool]) {
+  printStr(label);
+  match r {
+    case let Ok(n) { printStr(" Ok "); printInt(n); }
+    case let Err(b) { printStr(if b { " Err true" } else { " Err false" }); }
+  }
+  printStr("\n");
+}
+
+fn noneFirst(n: i64) {
+  let b = if n > 0 { None } else { Some(n) };
+  show("noneFirst", b);
+}
+
+fn noneLast(n: i64) {
+  let b = if n > 0 { Some(n) } else { None };
+  show("noneLast", b);
+}
+
+fn matched(n: i64) {
+  let c = match n {
+    case 0 { Some(10i64) }
+    case 1 { None }
+    else { Some(n) }
+  };
+  show("matched", c);
+}
+
+fn nested(n: i64) {
+  let d = if n > 0 {
+    if n > 1 { None } else { Some(n) }
+  } else {
+    Some(-1i64)
+  };
+  show("nested", d);
+}
+
+fn chain(n: i64) {
+  let e = if n == 0 { None } else if n == 1 { Some(n) } else { None };
+  show("chain", e);
+}
+
+fn declaring(n: i64) {
+  var seen = 0i64;
+  let f = if n > 0 {
+    let twice = n * 2;
+    seen = twice;
+    None
+  } else {
+    Some(n)
+  };
+  show("declaring", f);
+  printStr("seen ");
+  printInt(seen);
+  printStr("\n");
+}
+
+fn variable(n: i64) {
+  let held: Option[i64] = Some(n);
+  let g = if n > 0 { None } else { held };
+  show("variable", g);
+}
+
+fn narrowed(n: i64) {
+  let held: Option[i64] = if n > 0 { Some(n) } else { None };
+  let h = match held {
+    case let Some(v) { Some(v + 1) }
+    case None { None }
+  };
+  show("narrowed", h);
+}
+
+fn borrowed(n: i64) {
+  let k = n;
+  let p = if n > 0 { Some(&k) } else { None };
+  match p {
+    case let Some(r) { show("borrowed", Some(*r)); }
+    case None { show("borrowed", None); }
+  }
+}
+
+fn closed(n: i64) {
+  let pick = fn (x: i64) { if x > 0 { None } else { Some(x) } };
+  show("closed", pick(n));
+}
+
+fn okBesideWhole(n: i64) {
+  let whole: Result[i64, bool] = Err(false);
+  let r = if n > 0 { Ok(5) } else { whole };
+  showR("okBesideWhole", r);
+  let s = if n > 0 { whole } else { Err(true) };
+  showR("errBesideWhole", s);
+}
+
+// A waiting arm that binds a pattern's name, 'Ok(v)' read from it
+fn bound(n: i64) {
+  let held: Option[i64] = if n > 0 { Some(n) } else { None };
+  let r = match held {
+    case let Some(v) { Ok(v * 10) }
+    else { Err[i64, bool](true) }
+  };
+  showR("bound", r);
+}
+
+fn generic[T](n: i64, x: T) Option[T] {
+  let b = if n > 0 { None } else { Some(x) };
+  b
+}
+
+// A waiting arm in a loop that leaves it from inside on one path
+fn looped() {
+  var i = 0i64;
+  while i < 5 {
+    i += 1;
+    let o = if i != 3 {
+      if i == 4 { break; }
+      None
+    } else {
+      Some(i)
+    };
+    show("looped", o);
+  }
+}
+
+fn twice(n: i64) {
+  let o = if n > 0 { None } else { Some(Some(n)) };
+  match o {
+    case let Some(inner) { show("twice", inner); }
+    case None { printStr("twice None\n"); }
+  }
+}
+
+fn main() {
+  bound(3);
+  bound(0);
+  show("generic", generic(0, 11i64));
+  show("generic", generic(1, 11i64));
+  looped();
+  twice(0);
+  twice(1);
+  noneFirst(1);
+  noneFirst(-3);
+  noneLast(4);
+  noneLast(0);
+  matched(0);
+  matched(1);
+  matched(7);
+  nested(2);
+  nested(1);
+  nested(0);
+  chain(0);
+  chain(1);
+  chain(2);
+  declaring(3);
+  declaring(-4);
+  variable(1);
+  variable(-2);
+  narrowed(6);
+  narrowed(0);
+  borrowed(8);
+  borrowed(-8);
+  closed(1);
+  closed(-9);
+  okBesideWhole(1);
+  okBesideWhole(0);
+}

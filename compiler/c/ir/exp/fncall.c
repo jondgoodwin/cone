@@ -4835,6 +4835,25 @@ static StructNode *fnCallVariantEnum(StructNode *variant) {
     return structBaseTraitDcl(variant);
 }
 
+// Is this the construction of an Option's or a Result's variant that has a type
+// parameter none of its own values names, 'None', 'Ok(v)', 'Err(e)', with no
+// type arguments written? Its enum's name if so, else NULL. A branch of an 'if'
+// or 'match' that is one takes its type from a sibling branch (ifTypeCheck).
+Name *fnCallOpenVariantFamily(INode *node) {
+    if (node->tag != FnCallTag)
+        return NULL;
+    FnCallNode *call = (FnCallNode*)node;
+    if (call->methfld != NULL || (call->flags & FlagOperator))
+        return NULL;
+    StructNode *variant = fnCallVariantNamed(call->objfn);
+    if (variant == NULL || variant->genericinfo == NULL || !genericVariantParmUnnamed(variant))
+        return NULL;
+    StructNode *base = fnCallVariantEnum(variant);
+    if (base == NULL || (base->namesym != optionName && base->namesym != resultName))
+        return NULL;
+    return base->namesym;
+}
+
 // A method called through an empty variant's name, 'Lamp.Red.get()', 'Red.get()' after
 // a 'use', 'Pending.Waiting[i64].key()', is called on that variant constructed, as if it were
 // written '(Lamp.Red).get()': the name alone is the value (fnCallVariantTermNameRes),
