@@ -1,0 +1,1226 @@
+// ======== remeshRegion: even triangles in a region, its edge and creases held ========
+//
+// Isotropic remeshing of a region of faces (Botsch and Kobbelt 2004, "A remeshing approach to multiresolution
+// modeling", as CGAL's and Blender-style isotropic remeshers run it), so that a patch or band that is
+// afterwards faired (fairRegion) is solved on good triangles: a hole fill's jagged 0.1 mm rim triangles, or the
+// slivers a boolean leaves along its seam.
+//
+// The region's faces are cut into triangles as PolyMesh.cutFace cuts them. Held, never moved, split or removed:
+// every vertex and edge on the region's edge (an edge with a face of the region on one side only, the other
+// side a face outside it or the mesh's own boundary), and every vertex that has one, or more than two,
+// "crease" edges (a crease's end or a corner). A vertex with exactly two is a crease vertex: it moves only
+// along its crease.
+//
+// A round, in this order, each pass over the edges in the order their triangles are met:
+//   0. FLIP (the same pass as 3, once more first), so a flat triangle is not split before it is mended.
+//   1. SPLIT every edge longer than 4/3 L at its middle, again and again until none is (at most 20 sweeps).
+//      A region-edge edge is never split. A crease edge's halves keep its crease. An edge whose split would leave
+//      a triangle shaped worse than RmMinQuality, and worse than it was, is left (a flat triangle with its apex
+//      on the long edge is mended by a flip or a move; splitting it again and again only flattens it). A crease
+//      edge is split all the same, so its pieces come down to L.
+//   2. COLLAPSE every edge shorter than 4/5 L. A surface vertex is the only kind that goes: it goes to the
+//      other end when that end is a crease or held vertex, to the middle when both ends are surface vertices.
+//      So a crease edge, whose ends are never surface vertices, is never collapsed, and no vertex is ever
+//      pulled off a crease or the region's edge. Refused if a triangle would turn over, an edge would
+//      come out longer than 4/3 L, the manifold link condition fails, the new edge would be one the rest
+//      of the mesh already has between two region-edge vertices, or a changed triangle would stray from the
+//      region's surface (its normal more than about 53 degrees from the surface's at its centre) or be shaped
+//      worse than RmMinQuality and worse than it was.
+//   3. FLIP (up to 6 passes) an edge where that makes the shape of the two triangles clearly better (the
+//      Delaunay's reason), or brings the four vertices' valences nearer 6 (4 on the region's edge) with the shape
+//      no worse than RmMinQuality allows; never a crease, never one that turns a triangle over, strays from the
+//      surface, or makes an edge that exists.
+//   4. RELAX each free vertex to the area-weighted centroid of its triangles' centres, within its tangent
+//      plane (a crease vertex to the middle of its two crease neighbours), vertex by vertex in numbering
+//      order; and LAY IT BACK on the surface the region had on entry (SurfaceIndex.nearest on the region's
+//      faces, built once; a crease vertex on the nearest of the region's crease segments). A move that turns
+//      a triangle over is not made.
+// L is 'edgeLength'. Rounds count 'rounds' (0 only cuts the faces into triangles).
+//
+// SHAPE. The triangles that touch the region's edge are only as good as the held vertices there allow: a held
+// edge shorter than 4/5 L, or two held edges meeting at a sharp angle, fixes a sliver beside it. A source skin that
+// has needles along the region's edge keeps them (the nostril's has edges of 0.0006 mm there).
+//
+// NUMBERING. The faces outside the region first, in their order, then the region's triangles. The vertices
+// that no region face has all round (the mesh's own, and the region's edge) first, in their order; then the
+// region's own: the surviving old ones in their order, then the new ones in the order made. As rebuild.cone's
+// 'assemble' does. Everything outside the region and on its edge is bit for bit the input's.
+//
+// CHANNELS. A free vertex takes its vertex values from the region triangle nearest it (the input's), blended
+// by barycentric weight; each corner of a region triangle, its corner values from the triangle nearest a point
+// a twentieth of the way in from the corner; each face, its face values from the nearest face to its centre.
+// A new edge takes each edge channel's fill, crease halves their crease. A corner channel that jumps inside the
+// region (a uv seam) is reported, and the work still done: the seam is not held. Held vertices keep theirs.
+//
+// 'vertices' lists the region's free surface vertices (the ones fairRegion may free); crease vertices are
+// left out, since fairing would round a crease off.
+//
+// A refusal is a problem line and an unchanged copy of the mesh, 'faces' and 'vertices' empty: 'edgeLength'
+// at or below 0; a face number outside the mesh; an estimated result over 1,000,000 triangles (the region's
+// area over (sqrt 3 / 4) L^2). An empty list of faces is a silent copy.
+
+pub struct RegionRemesh {
+  pub mesh: PolyMesh;
+  pub faces: List[u32];      // the region's faces in the result, ascending
+  pub vertices: List[u32];   // the region's free vertices in the result, ascending: what fairRegion frees
+}
+
+const RmFree = 0u32;     // a surface vertex: moves, may be removed
+const RmCrease = 1u32;   // on a crease: moves along it
+const RmHeld = 2u32;     // never moves
+const RmMaxTriangles = 1000000.0;
+const RmMinQuality: f32 = 0.3;   // a collapse or flip may not leave a triangle shaped worse than this unless it was already
+
+// The working triangle mesh: local vertex numbers (the region's vertices, then new ones), triangles flat
+struct RmWork {
+  pos: List[Vec3];
+  kind: List[u32];
+  rim: List[bool];            // on the region's edge
+  live: List[bool];           // per vertex
+  orig: List[u32];            // the input's vertex number, NoIndex for a new one
+  vtris: List[List[u32]];     // per vertex: the live triangles it is in
+  cn: List[List[u32]];        // per vertex: its crease neighbours
+  cw: List[List[f32]];        // and the crease of each
+  near: List[List[u32]];      // per rim vertex: the other rim vertices it is joined to in the input
+  tv: List[u32];              // 3 a triangle
+  tlive: List[bool];
+}
+
+fn rmRemove(list: &mut List[u32], x: u32) {
+  var i = 0usize;
+  while i < list.len() {
+    if *list[i] == x {
+      let last = *list[list.len() - 1usize];
+      list.set(i, last);
+      list.pop();
+      return;
+    }
+    i = i + 1usize;
+  }
+}
+
+fn rmHas(list: &List[u32], x: u32) bool {
+  var i = 0usize;
+  while i < list.len() {
+    if *list[i] == x { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+fn rmP(w: &RmWork, v: u32) Vec3 { *w.pos[usize.from(v)] }
+fn rmTv(w: &RmWork, t: usize, k: usize) u32 { *w.tv[3usize * t + k] }
+
+fn rmNewVertex(w: &mut RmWork, p: Vec3, kind: u32) u32 {
+  let id = u32.from(w.pos.len());
+  w.pos.push(p);
+  w.kind.push(kind);
+  w.rim.push(false);
+  w.live.push(true);
+  w.orig.push(NoIndex);
+  w.vtris.push(List[u32]());
+  w.cn.push(List[u32]());
+  w.cw.push(List[f32]());
+  w.near.push(List[u32]());
+  id
+}
+
+fn rmAddTri(w: &mut RmWork, a: u32, b: u32, c: u32) u32 {
+  let t = u32.from(w.tlive.len());
+  w.tv.push(a); w.tv.push(b); w.tv.push(c);
+  w.tlive.push(true);
+  w.vtris[usize.from(a)].push(t);
+  w.vtris[usize.from(b)].push(t);
+  w.vtris[usize.from(c)].push(t);
+  t
+}
+
+fn rmKillTri(w: &mut RmWork, t: u32) {
+  var k = 0usize;
+  while k < 3usize {
+    let v = rmTv(w, usize.from(t), k);
+    rmRemove(&mut w.vtris[usize.from(v)], t);
+    k = k + 1usize;
+  }
+  w.tlive.set(usize.from(t), false);
+}
+
+// Triangle t given the corners a, b, c
+fn rmSetTri(w: &mut RmWork, t: u32, a: u32, b: u32, c: u32) {
+  var k = 0usize;
+  while k < 3usize {
+    let v = rmTv(w, usize.from(t), k);
+    rmRemove(&mut w.vtris[usize.from(v)], t);
+    k = k + 1usize;
+  }
+  w.tv.set(3usize * usize.from(t), a);
+  w.tv.set(3usize * usize.from(t) + 1usize, b);
+  w.tv.set(3usize * usize.from(t) + 2usize, c);
+  w.vtris[usize.from(a)].push(t);
+  w.vtris[usize.from(b)].push(t);
+  w.vtris[usize.from(c)].push(t);
+}
+
+fn rmHasVertex(w: &RmWork, t: u32, v: u32) bool {
+  var k = 0usize;
+  while k < 3usize {
+    if rmTv(w, usize.from(t), k) == v { return true; }
+    k = k + 1usize;
+  }
+  false
+}
+
+// The live triangles with both a and b
+fn rmEdgeTris(w: &RmWork, a: u32, b: u32, out: &mut List[u32]) {
+  out.clear();
+  var i = 0usize;
+  while i < w.vtris[usize.from(a)].len() {
+    let t = *w.vtris[usize.from(a)][i];
+    if rmHasVertex(w, t, b) { out.push(t); }
+    i = i + 1usize;
+  }
+}
+
+// The vertex of triangle t that is neither a nor b
+fn rmOpposite(w: &RmWork, t: u32, a: u32, b: u32) u32 {
+  var k = 0usize;
+  while k < 3usize {
+    let v = rmTv(w, usize.from(t), k);
+    if v != a && v != b { return v; }
+    k = k + 1usize;
+  }
+  NoIndex
+}
+
+// The vertices joined to v, each once, in the order met
+fn rmNeighbours(w: &RmWork, v: u32, out: &mut List[u32]) {
+  out.clear();
+  var i = 0usize;
+  while i < w.vtris[usize.from(v)].len() {
+    let t = usize.from(*w.vtris[usize.from(v)][i]);
+    var k = 0usize;
+    while k < 3usize {
+      let x = rmTv(w, t, k);
+      if x != v && !rmHas(out, x) { out.push(x); }
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+fn rmCrease(w: &RmWork, a: u32, b: u32) f32 {
+  var i = 0usize;
+  while i < w.cn[usize.from(a)].len() {
+    if *w.cn[usize.from(a)][i] == b { return *w.cw[usize.from(a)][i]; }
+    i = i + 1usize;
+  }
+  0.
+}
+
+fn rmCreaseDrop(w: &mut RmWork, a: u32, b: u32) {
+  var i = 0usize;
+  while i < w.cn[usize.from(a)].len() {
+    if *w.cn[usize.from(a)][i] == b {
+      let last = w.cn[usize.from(a)].len() - 1usize;
+      let ln = *w.cn[usize.from(a)][last];
+      let lw = *w.cw[usize.from(a)][last];
+      w.cn[usize.from(a)].set(i, ln);
+      w.cw[usize.from(a)].set(i, lw);
+      w.cn[usize.from(a)].pop();
+      w.cw[usize.from(a)].pop();
+      return;
+    }
+    i = i + 1usize;
+  }
+}
+
+fn rmCreaseAdd(w: &mut RmWork, a: u32, b: u32, c: f32) {
+  w.cn[usize.from(a)].push(b);
+  w.cw[usize.from(a)].push(c);
+}
+
+fn rmDist(w: &RmWork, a: u32, b: u32) f32 { (rmP(w, a) - rmP(w, b)).length() }
+
+// Triangle t's normal times twice its area, with corner positions overridden: vertex 'moved' at 'at'
+fn rmNormalWith(w: &RmWork, t: u32, moved: u32, at: Vec3) Vec3 {
+  let tt = usize.from(t);
+  var p0 = rmP(w, rmTv(w, tt, 0usize));
+  var p1 = rmP(w, rmTv(w, tt, 1usize));
+  var p2 = rmP(w, rmTv(w, tt, 2usize));
+  if rmTv(w, tt, 0usize) == moved { p0 = at; }
+  if rmTv(w, tt, 1usize) == moved { p1 = at; }
+  if rmTv(w, tt, 2usize) == moved { p2 = at; }
+  (p1 - p0).cross(p2 - p0)
+}
+
+// Whether moving v to 'at' turns over a triangle at v (or flattens one that was not flat)
+fn rmTurns(w: &RmWork, v: u32, at: Vec3) bool {
+  var i = 0usize;
+  while i < w.vtris[usize.from(v)].len() {
+    let t = *w.vtris[usize.from(v)][i];
+    let n0 = rmNormalWith(w, t, NoIndex, at);
+    let n1 = rmNormalWith(w, t, v, at);
+    if n0.dot(n0) > 0. && n0.dot(n1) <= 0. { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+// The edges a < b, once each, in the order of the triangles that have them as a -> b
+fn rmEdges(w: &RmWork) List[u32] {
+  var out = List[u32]();
+  var t = 0usize;
+  while t < w.tlive.len() {
+    if *w.tlive[t] {
+      var k = 0usize;
+      while k < 3usize {
+        let a = rmTv(w, t, k);
+        let b = rmTv(w, t, (k + 1usize) % 3usize);
+        if a < b { out.push(a); out.push(b); }
+        k = k + 1usize;
+      }
+    }
+    t = t + 1usize;
+  }
+  out
+}
+
+// ---- split ----
+
+fn rmSplit(w: &mut RmWork, a: u32, b: u32, ts: &List[u32]) {
+  let c = rmCrease(w, a, b);
+  let mid = (rmP(w, a) + rmP(w, b)) * 0.5;
+  let m = rmNewVertex(w, mid, if c > 0. { RmCrease } else { RmFree });
+  var i = 0usize;
+  while i < ts.len() {
+    let t = *ts[i];
+    var k = 0usize;
+    while k < 3usize {
+      let p = rmTv(w, usize.from(t), k);
+      let q = rmTv(w, usize.from(t), (k + 1usize) % 3usize);
+      let r = rmTv(w, usize.from(t), (k + 2usize) % 3usize);
+      if (p == a && q == b) || (p == b && q == a) {
+        rmSetTri(w, t, p, m, r);
+        rmAddTri(w, m, q, r);
+        k = 3usize;
+      }
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+  if c > 0. {
+    rmCreaseDrop(w, a, b);
+    rmCreaseDrop(w, b, a);
+    rmCreaseAdd(w, a, m, c);
+    rmCreaseAdd(w, m, a, c);
+    rmCreaseAdd(w, b, m, c);
+    rmCreaseAdd(w, m, b, c);
+  }
+}
+
+fn rmSplitPass(w: &mut RmWork, hi: f32) bool {
+  let edges = rmEdges(w);
+  var ts = List[u32]();
+  var any = false;
+  var i = 0usize;
+  while i + 1usize < edges.len() {
+    let a = *edges[i];
+    let b = *edges[i + 1usize];
+    if rmDist(w, a, b) > hi {
+      rmEdgeTris(w, a, b, &mut ts);
+      if ts.len() == 2usize {
+        let tsCopy = copyList[u32](&ts);
+        let c0 = rmOpposite(w, *ts[0usize], a, b);
+        let c1 = rmOpposite(w, *ts[1usize], a, b);
+        let q0 = rmQuality(rmP(w, a), rmP(w, b), rmP(w, c0));
+        let q1 = rmQuality(rmP(w, a), rmP(w, b), rmP(w, c1));
+        let mid = (rmP(w, a) + rmP(w, b)) * 0.5;
+        let m0 = rmQuality(rmP(w, a), mid, rmP(w, c0)).min(rmQuality(mid, rmP(w, b), rmP(w, c0)));
+        let m1 = rmQuality(rmP(w, a), mid, rmP(w, c1)).min(rmQuality(mid, rmP(w, b), rmP(w, c1)));
+        // not an edge whose split would leave a triangle worse than RmMinQuality, and worse than it was: such a
+        // triangle (a flat one, its apex on the edge) is mended by a flip or a move, and splitting it again and
+        // again only makes it flatter
+        let before = q0.min(q1);
+        let after = m0.min(m1);
+        if rmCrease(w, a, b) > 0. || !(after < RmMinQuality && after < before) {
+          rmSplit(w, a, b, &tsCopy);
+          any = true;
+        }
+      }
+    }
+    i = i + 2usize;
+  }
+  any
+}
+
+// ---- collapse ----
+
+// Whether the edge r-k may be collapsed, r removed and k moved to 'at'
+// A vertex's place when r has gone to k and k is at 'at'
+fn rmMapped(w: &RmWork, v: u32, r: u32, k: u32, at: Vec3) Vec3 {
+  if v == r || v == k { at } else { rmP(w, v) }
+}
+
+// Whether a triangle p0 p1 p2 still lies along the region's surface: its normal within about 53 degrees of the
+// surface's at its centre (a triangle on the surface's needles, with no normal of its own, is let through)
+fn rmFaithful(idx: &SurfaceIndex, p0: Vec3, p1: Vec3, p2: Vec3) bool {
+  let n = (p1 - p0).cross(p2 - p0);
+  let len = n.length();
+  if len <= 0. { return false; }
+  let hit = idx.nearest((p0 + p1 + p2) * (1. / 3.), 0.);
+  if !hit.found() { return true; }
+  if hit.normal.length() <= 0. { return true; }
+  n.dot(hit.normal) / len > 0.6
+}
+
+// The shape of a triangle: 4 sqrt 3 times its area over the sum of its sides' squares, 1 for an equilateral one,
+// about 0.2 for one with a 10 degree angle, 0 for a flat one
+fn rmQuality(a: Vec3, b: Vec3, c: Vec3) f32 {
+  let s = (b - a).dot(b - a) + (c - b).dot(c - b) + (a - c).dot(a - c);
+  if s <= 0. { return 0.; }
+  6.9282032 * (b - a).cross(c - a).length() * 0.5 / s
+}
+
+// Whether the triangle t, with r gone to k and k at 'at', is faithful to the surface and no worse shaped than
+// MinQuality unless it was already
+fn rmTriFaithful(w: &RmWork, idx: &SurfaceIndex, t: u32, r: u32, k: u32, at: Vec3) bool {
+  let p0 = rmMapped(w, rmTv(w, usize.from(t), 0usize), r, k, at);
+  let p1 = rmMapped(w, rmTv(w, usize.from(t), 1usize), r, k, at);
+  let p2 = rmMapped(w, rmTv(w, usize.from(t), 2usize), r, k, at);
+  let was = rmQuality(rmP(w, rmTv(w, usize.from(t), 0usize)), rmP(w, rmTv(w, usize.from(t), 1usize)),
+    rmP(w, rmTv(w, usize.from(t), 2usize)));
+  let now = rmQuality(p0, p1, p2);
+  if now < RmMinQuality && now < was { return false; }
+  rmFaithful(idx, p0, p1, p2)
+}
+
+fn rmCollapsible(w: &RmWork, idx: &SurfaceIndex, r: u32, k: u32, at: Vec3, hi: f32) bool {
+  var ets = List[u32]();
+  rmEdgeTris(w, r, k, &mut ets);
+  if ets.len() != 2usize { return false; }
+  let o0 = rmOpposite(w, *ets[0usize], r, k);
+  let o1 = rmOpposite(w, *ets[1usize], r, k);
+  var nr = List[u32]();
+  var nk = List[u32]();
+  rmNeighbours(w, r, &mut nr);
+  rmNeighbours(w, k, &mut nk);
+  var i = 0usize;
+  while i < nr.len() {
+    let x = *nr[i];
+    if x != k {
+      let opp = x == o0 || x == o1;
+      if rmHas(&nk, x) {
+        if !opp { return false; }       // the link condition
+      } else {
+        if rmHas(&w.near[usize.from(k)], x) { return false; }   // an edge the rest of the mesh has
+        if (at - rmP(w, x)).length() > hi { return false; }
+      }
+    }
+    i = i + 1usize;
+  }
+  // the triangles round r that stay, with r replaced by k at 'at'
+  i = 0usize;
+  while i < w.vtris[usize.from(r)].len() {
+    let t = *w.vtris[usize.from(r)][i];
+    if !rmHasVertex(w, t, k) {
+      let n0 = rmNormalWith(w, t, NoIndex, at);
+      let n1 = rmNormalWith(w, t, r, at);
+      if n0.dot(n1) <= 0. { return false; }
+      if !rmTriFaithful(w, idx, t, r, k, at) { return false; }
+    }
+    i = i + 1usize;
+  }
+  // and round k, if it moves
+  let moved = (at - rmP(w, k)).length() > 0.;
+  i = 0usize;
+  while moved && i < w.vtris[usize.from(k)].len() {
+    let t = *w.vtris[usize.from(k)][i];
+    if !rmHasVertex(w, t, r) {
+      let n0 = rmNormalWith(w, t, NoIndex, at);
+      let n1 = rmNormalWith(w, t, k, at);
+      if n0.dot(n0) > 0. && n0.dot(n1) <= 0. { return false; }
+      if !rmTriFaithful(w, idx, t, r, k, at) { return false; }
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while moved && i < nk.len() {
+    let x = *nk[i];
+    if x != r && (at - rmP(w, x)).length() > hi { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+fn rmCollapse(w: &mut RmWork, r: u32, k: u32, at: Vec3) {
+  let ts = copyList[u32](&w.vtris[usize.from(r)]);
+  var i = 0usize;
+  while i < ts.len() {
+    let t = *ts[i];
+    if rmHasVertex(w, t, k) {
+      rmKillTri(w, t);
+    } else {
+      let a = if rmTv(w, usize.from(t), 0usize) == r { k } else { rmTv(w, usize.from(t), 0usize) };
+      let b = if rmTv(w, usize.from(t), 1usize) == r { k } else { rmTv(w, usize.from(t), 1usize) };
+      let c = if rmTv(w, usize.from(t), 2usize) == r { k } else { rmTv(w, usize.from(t), 2usize) };
+      rmSetTri(w, t, a, b, c);
+    }
+    i = i + 1usize;
+  }
+  w.live.set(usize.from(r), false);
+  w.pos.set(usize.from(k), at);
+}
+
+fn rmRemovable(w: &RmWork, v: u32) bool {
+  *w.live[usize.from(v)] && *w.kind[usize.from(v)] == RmFree && !*w.rim[usize.from(v)]
+}
+
+fn rmCollapsePass(w: &mut RmWork, idx: &SurfaceIndex, lo: f32, hi: f32) {
+  let edges = rmEdges(w);
+  var i = 0usize;
+  while i + 1usize < edges.len() {
+    let a = *edges[i];
+    let b = *edges[i + 1usize];
+    i = i + 2usize;
+    if !*w.live[usize.from(a)] || !*w.live[usize.from(b)] { continue; }
+    if rmDist(w, a, b) >= lo { continue; }
+    let ra = rmRemovable(w, a);
+    let rb = rmRemovable(w, b);
+    if !ra && !rb { continue; }
+    // r goes, k stays
+    var r = b;
+    var k = a;
+    var at = rmP(w, a);
+    if ra && rb {
+      at = (rmP(w, a) + rmP(w, b)) * 0.5;
+    } else if ra {
+      r = a; k = b; at = rmP(w, b);
+    }
+    if rmCollapsible(w, idx, r, k, at, hi) { rmCollapse(w, r, k, at); }
+  }
+}
+
+// ---- flip ----
+
+fn rmValence(w: &RmWork, v: u32) i32 {
+  var nb = List[u32]();
+  rmNeighbours(w, v, &mut nb);
+  i32.from(nb.len())
+}
+
+fn rmDeviation(w: &RmWork, v: u32, valence: i32) i32 {
+  let target = if *w.rim[usize.from(v)] { 4i32 } else { 6i32 };
+  (valence - target) * (valence - target)
+}
+
+fn rmFlipPass(w: &mut RmWork, idx: &SurfaceIndex) bool {
+  var flipped = false;
+  let edges = rmEdges(w);
+  var ts = List[u32]();
+  var i = 0usize;
+  while i + 1usize < edges.len() {
+    let a = *edges[i];
+    let b = *edges[i + 1usize];
+    i = i + 2usize;
+    rmEdgeTris(w, a, b, &mut ts);
+    if ts.len() != 2usize { continue; }
+    if rmCrease(w, a, b) > 0. { continue; }
+    let t0 = *ts[0usize];
+    let t1 = *ts[1usize];
+    let c = rmOpposite(w, t0, a, b);
+    let d = rmOpposite(w, t1, a, b);
+    if c == d { continue; }
+    var nc = List[u32]();
+    rmNeighbours(w, c, &mut nc);
+    if rmHas(&nc, d) { continue; }
+    if rmHas(&w.near[usize.from(c)], d) { continue; }
+    let va = rmValence(w, a);
+    let vb = rmValence(w, b);
+    let vc = i32.from(nc.len());
+    let vd = rmValence(w, d);
+    if (va <= 3i32 && !*w.rim[usize.from(a)]) || (vb <= 3i32 && !*w.rim[usize.from(b)]) { continue; }
+    let before = rmDeviation(w, a, va) + rmDeviation(w, b, vb) + rmDeviation(w, c, vc) + rmDeviation(w, d, vd);
+    let after = rmDeviation(w, a, va - 1i32) + rmDeviation(w, b, vb - 1i32) + rmDeviation(w, c, vc + 1i32)
+      + rmDeviation(w, d, vd + 1i32);
+    // the new triangles keep the side of the old ones: t0 is (p, q, c) with p -> q along a -> b or b -> a
+    var p = a;
+    var q = b;
+    var k = 0usize;
+    while k < 3usize {
+      let x = rmTv(w, usize.from(t0), k);
+      let y = rmTv(w, usize.from(t0), (k + 1usize) % 3usize);
+      if (x == a && y == b) || (x == b && y == a) { p = x; q = y; }
+      k = k + 1usize;
+    }
+    // t0 = (p, q, c), t1 = (q, p, d): the flip gives (c, p, d) and (c, d, q)
+    let n0 = (rmP(w, q) - rmP(w, p)).cross(rmP(w, c) - rmP(w, p));
+    let n1 = (rmP(w, p) - rmP(w, c)).cross(rmP(w, d) - rmP(w, c));
+    let n2 = (rmP(w, d) - rmP(w, c)).cross(rmP(w, q) - rmP(w, c));
+    let n3 = (rmP(w, p) - rmP(w, q)).cross(rmP(w, d) - rmP(w, q));
+    let side = n0 + n3;
+    if n1.dot(side) <= 0. || n2.dot(side) <= 0. { continue; }
+    if !rmFaithful(idx, rmP(w, c), rmP(w, p), rmP(w, d)) || !rmFaithful(idx, rmP(w, c), rmP(w, d), rmP(w, q)) { continue; }
+    let wasQ = rmQuality(rmP(w, p), rmP(w, q), rmP(w, c)).min(rmQuality(rmP(w, q), rmP(w, p), rmP(w, d)));
+    let nowQ = rmQuality(rmP(w, c), rmP(w, p), rmP(w, d)).min(rmQuality(rmP(w, c), rmP(w, d), rmP(w, q)));
+    // flip where the shape is clearly better (the Delaunay's reason), or the valences are nearer and the shape no worse
+    // than RmMinQuality allows
+    let shapeBetter = nowQ > wasQ * 1.05 + 0.001;
+    let valenceBetter = after < before && !(nowQ < RmMinQuality && nowQ < wasQ);
+    if !shapeBetter && !valenceBetter { continue; }
+    rmSetTri(w, t0, c, p, d);
+    rmSetTri(w, t1, c, d, q);
+    flipped = true;
+  }
+  flipped
+}
+
+// ---- relax and lay back ----
+
+// The nearest point to p on the segment a b
+fn rmOnSegment(p: Vec3, a: Vec3, b: Vec3) Vec3 {
+  let ab = b - a;
+  let len2 = ab.dot(ab);
+  if len2 <= 0. { return a; }
+  var s = (p - a).dot(ab) / len2;
+  if s < 0. { s = 0.; }
+  if s > 1. { s = 1.; }
+  a + ab * s
+}
+
+fn rmRelaxPass(w: &mut RmWork, idx: &SurfaceIndex, segs: &List[Vec3]) {
+  var stack = List[u32]();
+  var v = 0usize;
+  while v < w.pos.len() {
+    let id = u32.from(v);
+    v = v + 1usize;
+    if !*w.live[usize.from(id)] { continue; }
+    let kind = *w.kind[usize.from(id)];
+    if kind == RmHeld || *w.rim[usize.from(id)] { continue; }
+    let p = rmP(w, id);
+    var q = p;
+    if kind == RmFree {
+      var sum = Vec3(0., 0., 0.);
+      var nrm = Vec3(0., 0., 0.);
+      var area: f32 = 0.;
+      var i = 0usize;
+      while i < w.vtris[usize.from(id)].len() {
+        let t = usize.from(*w.vtris[usize.from(id)][i]);
+        let a = rmP(w, rmTv(w, t, 0usize));
+        let b = rmP(w, rmTv(w, t, 1usize));
+        let c = rmP(w, rmTv(w, t, 2usize));
+        let n = (b - a).cross(c - a);
+        let ar = n.length() * 0.5;
+        sum = sum + (a + b + c) * (ar / 3.);
+        nrm = nrm + n;
+        area = area + ar;
+        i = i + 1usize;
+      }
+      if area <= 0. { continue; }
+      let centre = sum * (1. / area);
+      let un = unit(nrm);
+      let d = centre - p;
+      q = p + (d - un * d.dot(un));
+    } else {
+      if w.cn[usize.from(id)].len() != 2usize { continue; }
+      q = (rmP(w, *w.cn[usize.from(id)][0usize]) + rmP(w, *w.cn[usize.from(id)][1usize])) * 0.5;
+    }
+    if !rmTurns(w, id, q) {
+      // lay it back
+      var back = q;
+      if kind == RmFree {
+        let hit = idx.nearestWith(q, 0., &mut stack);
+        if hit.found() { back = hit.point; }
+      } else {
+        var best: f32 = 1.0e30;
+        var s = 0usize;
+        while s + 1usize < segs.len() {
+          let c = rmOnSegment(q, *segs[s], *segs[s + 1usize]);
+          let dd = (c - q).dot(c - q);
+          if dd < best { best = dd; back = c; }
+          s = s + 2usize;
+        }
+      }
+      if rmTurns(w, id, back) { back = q; }
+      w.pos.set(usize.from(id), back);
+    }
+  }
+}
+
+// ---- the operator ----
+
+fn rmRefused(m: &PolyMesh, problems: &mut List[String], why: &str) RegionRemesh {
+  var s = String.from("remeshRegion: ");
+  s.append(why);
+  problems.push(s);
+  RegionRemesh(m.clone(), List[u32](), List[u32]())
+}
+
+pub fn remeshRegion(m: &PolyMesh, faces: &Array[u32], edgeLength: f32, rounds: u32, problems: &mut List[String]) RegionRemesh {
+  if faces.len() == 0usize { return RegionRemesh(m.clone(), List[u32](), List[u32]()); }
+  if edgeLength <= 0. { return rmRefused(m, problems, "edgeLength is not above 0"); }
+  let nv = m.vertexCount();
+  let nf = m.faceCount();
+
+  // The region's faces, once each, ascending
+  var inRegion = List[bool].withCapacity(nf);
+  var i = 0usize;
+  while i < nf {
+    inRegion.push(false);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < faces.len() {
+    if usize.from(faces[i]) >= nf { return rmRefused(m, problems, "a face is not in the mesh"); }
+    inRegion.set(usize.from(faces[i]), true);
+    i = i + 1usize;
+  }
+  var region = List[u32]();
+  i = 0usize;
+  while i < nf {
+    if *inRegion[i] { region.push(u32.from(i)); }
+    i = i + 1usize;
+  }
+
+  // The region's triangles: their source face and corners (half-edges)
+  var triF = List[u32]();      // the input face
+  var triC = List[u32]();      // 3 a triangle: the input half-edge of each corner
+  var triV = List[u32]();      // 3 a triangle: its input vertices
+  var cut = List[u32]();
+  var area: f32 = 0.;
+  i = 0usize;
+  while i < region.len() {
+    let f = *region[i];
+    let hs = m.faceHalfedges(f);
+    let vs = m.faceVertices(f);
+    cut.clear();
+    m.cutFace(f, &mut cut);
+    var k = 0usize;
+    while k + 2usize < cut.len() {
+      triF.push(f);
+      var c = 0usize;
+      while c < 3usize {
+        let j = usize.from(*cut[k + c]);
+        triC.push(*hs[j]);
+        triV.push(*vs[j]);
+        c = c + 1usize;
+      }
+      let a = *m.positions[usize.from(*triV[triV.len() - 3usize])];
+      let b = *m.positions[usize.from(*triV[triV.len() - 2usize])];
+      let cc = *m.positions[usize.from(*triV[triV.len() - 1usize])];
+      area = area + (b - a).cross(cc - a).length() * 0.5;
+      k = k + 3usize;
+    }
+    i = i + 1usize;
+  }
+  let hi = edgeLength * 4. / 3.;
+  let lo = edgeLength * 4. / 5.;
+  if f64.from(area) / (0.4330127 * f64.from(edgeLength) * f64.from(edgeLength)) > RmMaxTriangles {
+    return rmRefused(m, problems, "the result would have over 1,000,000 triangles");
+  }
+
+  // The region's own surface, to lay vertices back on and to take values from. Its face k is region[k].
+  var subCounts = List[u32]();
+  var subIdx = List[u32]();
+  i = 0usize;
+  while i < region.len() {
+    let vs = m.faceVertices(*region[i]);
+    subCounts.push(u32.from(vs.len()));
+    var j = 0usize;
+    while j < vs.len() {
+      subIdx.push(*vs[j]);
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  var sp = List[String]();
+  let sub = PolyMesh.fromPolygons(m.positions.view(), subCounts.view(), subIdx.view(), &mut sp);
+  if sub.faceCount() != region.len() { return rmRefused(m, problems, "the region's faces do not make a surface"); }
+  let idx = SurfaceIndex.of(&sub);
+  // sub half-edge -> input half-edge
+  var hmap = List[u32].withCapacity(sub.halfedgeCount());
+  i = 0usize;
+  while i < sub.halfedgeCount() {
+    hmap.push(NoIndex);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < region.len() {
+    let sh = sub.faceHalfedges(u32.from(i));
+    let mh = m.faceHalfedges(*region[i]);
+    var j = 0usize;
+    while j < sh.len() {
+      hmap.set(usize.from(*sh[j]), *mh[j]);
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+
+  // Which vertices are on the region's edge, and the crease edges
+  let cc = m.findFloatChannel(EdgeDomain, "crease");
+  var rimV = List[bool].withCapacity(nv);
+  var touched = List[bool].withCapacity(nv);
+  i = 0usize;
+  while i < nv {
+    rimV.push(false);
+    touched.push(false);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < region.len() {
+    let hs = m.faceHalfedges(*region[i]);
+    var j = 0usize;
+    while j < hs.len() {
+      let h = *hs[j];
+      let tf = m.face(m.twin(h));
+      touched.set(usize.from(m.toVertex(h)), true);
+      if tf == NoIndex || !*inRegion[usize.from(tf)] {
+        rimV.set(usize.from(m.toVertex(h)), true);
+        rimV.set(usize.from(m.fromVertex(h)), true);
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+
+  // The working mesh: local numbers for the region's vertices in the input's order
+  var w = RmWork(List[Vec3](), List[u32](), List[bool](), List[bool](), List[u32](), List[List[u32]](),
+    List[List[u32]](), List[List[f32]](), List[List[u32]](), List[u32](), List[bool]());
+  var loc = List[u32].withCapacity(nv);
+  var v = 0usize;
+  while v < nv {
+    loc.push(NoIndex);
+    if *touched[v] {
+      let id = rmNewVertex(&mut w, *m.positions[v], RmFree);
+      w.orig.set(usize.from(id), u32.from(v));
+      w.rim.set(usize.from(id), *rimV[v]);
+      loc.set(v, id);
+    }
+    v = v + 1usize;
+  }
+  var segs = List[Vec3]();            // the region's crease segments, laid back on
+  i = 0usize;
+  while i < region.len() {
+    let hs = m.faceHalfedges(*region[i]);
+    var j = 0usize;
+    while j < hs.len() {
+      let h = *hs[j];
+      let a = m.fromVertex(h);
+      let b = m.toVertex(h);
+      if cc != NoIndex && m.float(cc, m.edge(h)) > 0. && a < b {
+        let la = *loc[usize.from(a)];
+        let lb = *loc[usize.from(b)];
+        let c = m.float(cc, m.edge(h));
+        rmCreaseAdd(&mut w, la, lb, c);
+        rmCreaseAdd(&mut w, lb, la, c);
+        segs.push(*m.positions[usize.from(a)]);
+        segs.push(*m.positions[usize.from(b)]);
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  // Each vertex's kind: on the region's edge, or a crease's end or a corner: held; two creases: crease vertex
+  v = 0usize;
+  while v < nv {
+    let id = *loc[v];
+    if id != NoIndex {
+      let n = w.cn[usize.from(id)].len();
+      if *rimV[v] || n == 1usize || n > 2usize { w.kind.set(usize.from(id), RmHeld); }
+      else if n == 2usize { w.kind.set(usize.from(id), RmCrease); }
+      if *rimV[v] {
+        // the other rim vertices it shares an edge with in the input
+        let nb = m.vertexNeighbors(u32.from(v));
+        var j = 0usize;
+        while j < nb.len() {
+          let o = *loc[usize.from(*nb[j])];
+          if o != NoIndex && *rimV[usize.from(*nb[j])] { w.near[usize.from(id)].push(o); }
+          j = j + 1usize;
+        }
+      }
+    }
+    v = v + 1usize;
+  }
+  i = 0usize;
+  while i < triF.len() {
+    rmAddTri(&mut w, *loc[usize.from(*triV[3usize * i])], *loc[usize.from(*triV[3usize * i + 1usize])],
+      *loc[usize.from(*triV[3usize * i + 2usize])]);
+    i = i + 1usize;
+  }
+
+  // A corner channel that jumps inside the region
+  reportSeams(m, &region, problems);
+
+  // The rounds
+  var round = 0u32;
+  while round < rounds {
+    var sweeps = 0u32;
+    var pre = 0u32;
+    while pre < 6u32 && rmFlipPass(&mut w, &idx) { pre = pre + 1u32; }
+    while sweeps < 20u32 && rmSplitPass(&mut w, hi) { sweeps = sweeps + 1u32; }
+    rmCollapsePass(&mut w, &idx, lo, hi);
+    var passes = 0u32;
+    while passes < 6u32 && rmFlipPass(&mut w, &idx) { passes = passes + 1u32; }
+    rmRelaxPass(&mut w, &idx, &segs);
+    round = round + 1u32;
+  }
+
+  // Numbering: the input's vertices that the region does not own, then the region's
+  var outId = List[u32].withCapacity(w.pos.len());
+  var pos = List[Vec3]();
+  var vSrc = List[u32]();
+  var nA = 0u32;
+  v = 0usize;
+  var own = List[bool].withCapacity(nv);          // per input vertex: owned by the region
+  while v < nv {
+    own.push(*touched[v] && !*rimV[v]);
+    v = v + 1usize;
+  }
+  var aId = List[u32].withCapacity(nv);           // per input vertex: its number if not owned
+  v = 0usize;
+  while v < nv {
+    if *own[v] { aId.push(NoIndex); }
+    else {
+      aId.push(nA);
+      pos.push(*m.positions[v]);
+      vSrc.push(u32.from(v));
+      nA = nA + 1u32;
+    }
+    v = v + 1usize;
+  }
+  var lv = 0usize;
+  while lv < w.pos.len() {
+    outId.push(NoIndex);
+    lv = lv + 1usize;
+  }
+  lv = 0usize;
+  while lv < w.pos.len() {
+    let o = *w.orig[lv];
+    if o != NoIndex && !*own[usize.from(o)] {
+      outId.set(lv, *aId[usize.from(o)]);
+    } else if *w.live[lv] {
+      outId.set(lv, u32.from(pos.len()));
+      pos.push(*w.pos[lv]);
+      vSrc.push(if o != NoIndex { o } else { 0u32 });    // new vertices: set from the surface below
+    }
+    lv = lv + 1usize;
+  }
+
+  // The region's values, from the surface it had: for each free vertex, each corner, each triangle
+  var vSample = List[Sample]();           // per output vertex (a held one's is its own)
+  var vHeld = List[bool]();
+  i = 0usize;
+  while i < pos.len() {
+    vSample.push(sampleNone());
+    vHeld.push(true);
+    i = i + 1usize;
+  }
+  var stack = List[u32]();
+  lv = 0usize;
+  while lv < w.pos.len() {
+    let id = *outId[lv];
+    if *w.live[lv] && id != NoIndex && usize.from(id) >= usize.from(nA) {
+      if *w.kind[lv] != RmHeld || *w.orig[lv] == NoIndex {
+        let hit = idx.nearestWith(*w.pos[lv], 0., &mut stack);
+        if hit.found() {
+          let k = 3usize * usize.from(hit.tri);
+          vSample.set(usize.from(id), Sample(*idx.tv[k], *idx.tv[k + 1usize], *idx.tv[k + 2usize], hit.bary));
+          vHeld.set(usize.from(id), false);
+          var best = 0usize;
+          if hit.bary.y > hit.bary.x && hit.bary.y >= hit.bary.z { best = 1usize; }
+          else if hit.bary.z > hit.bary.x && hit.bary.z > hit.bary.y { best = 2usize; }
+          vSrc.set(usize.from(id), *idx.tv[k + best]);
+        }
+      }
+    }
+    lv = lv + 1usize;
+  }
+
+  // The faces: outside the region first, then the region's triangles
+  var counts = List[u32]();
+  var vidx = List[u32]();
+  var cSrc = List[u32]();
+  var eSrc = List[u32]();
+  var fSrc = List[u32]();
+  var f = 0usize;
+  while f < nf {
+    if !*inRegion[f] {
+      let hs = m.faceHalfedges(u32.from(f));
+      let vs = m.faceVertices(u32.from(f));
+      counts.push(u32.from(vs.len()));
+      var j = 0usize;
+      while j < vs.len() {
+        let o = usize.from(*vs[j]);
+        vidx.push(if *own[o] { *outId[usize.from(*loc[o])] } else { *aId[o] });
+        cSrc.push(*hs[j]);
+        eSrc.push(m.edge(*hs[j]));
+        j = j + 1usize;
+      }
+      fSrc.push(u32.from(f));
+    }
+    f = f + 1usize;
+  }
+  let nOutside = fSrc.len();
+  var regionTris = List[u32]();           // the live triangles, in order
+  var corners = List[Sample]();           // 3 a region triangle
+  var rEsrc = List[u32]();                // 3 a region triangle: the input edge of each incoming side
+  var t = 0usize;
+  while t < w.tlive.len() {
+    if *w.tlive[t] {
+      regionTris.push(u32.from(t));
+      let a = rmTv(&w, t, 0usize);
+      let b = rmTv(&w, t, 1usize);
+      let c = rmTv(&w, t, 2usize);
+      let centre = (rmP(&w, a) + rmP(&w, b) + rmP(&w, c)) * (1. / 3.);
+      let hc = idx.nearestWith(centre, 0., &mut stack);
+      var srcF = 0u32;
+      if hc.found() { srcF = *region[usize.from(hc.face)]; }
+      counts.push(3u32);
+      var q = 0usize;
+      while q < 3usize {
+        let lvq = rmTv(&w, t, q);
+        let lvp = rmTv(&w, t, (q + 2usize) % 3usize);
+        vidx.push(*outId[usize.from(lvq)]);
+        // the corner's values: from the triangle nearest a point a twentieth of the way in
+        let inward = rmP(&w, lvq) + (centre - rmP(&w, lvq)) * 0.05;
+        let hit = idx.nearestWith(inward, 0., &mut stack);
+        if hit.found() {
+          let k = 3usize * usize.from(hit.tri);
+          // the weights of the corner's own place on that triangle
+          let own = rmBary(rmP(&w, lvq), *m.positions[usize.from(*idx.tv[k])], *m.positions[usize.from(*idx.tv[k + 1usize])],
+            *m.positions[usize.from(*idx.tv[k + 2usize])]);
+          let s = Sample(*hmap[usize.from(*idx.tc[k])], *hmap[usize.from(*idx.tc[k + 1usize])],
+            *hmap[usize.from(*idx.tc[k + 2usize])], own);
+          corners.push(s);
+          var best = 0usize;
+          if own.y > own.x && own.y >= own.z { best = 1usize; }
+          else if own.z > own.x && own.z > own.y { best = 2usize; }
+          cSrc.push(*hmap[usize.from(*idx.tc[k + best])]);
+        } else {
+          corners.push(sampleNone());
+          cSrc.push(0u32);
+        }
+        // the side into this corner, from the corner before: an input edge, or a new one
+        let es = inputEdge(m, *w.orig[usize.from(lvp)], *w.orig[usize.from(lvq)]);
+        eSrc.push(es);
+        rEsrc.push(es);
+        q = q + 1usize;
+      }
+      fSrc.push(srcF);
+    }
+    t = t + 1usize;
+  }
+  var out = assemble(m, &pos, &vSrc, &counts, &vidx, &cSrc, &eSrc, &fSrc);
+  if out.fHalfedge.len() != nOutside + regionTris.len() {
+    return rmRefused(m, problems, "a face was refused (the region's rim is not a manifold boundary)");
+  }
+  carryRegion(m, &mut out, nOutside, &vSample, &vHeld, &corners, &region);
+  newEdges(&mut out, nOutside, &w, &regionTris, &outId, &rEsrc);
+
+  // What the caller asked for back
+  var rf = List[u32]();
+  var k = nOutside;
+  while k < out.faceCount() {
+    rf.push(u32.from(k));
+    k = k + 1usize;
+  }
+  var free = List[u32]();
+  lv = 0usize;
+  while lv < w.pos.len() {
+    if *w.live[lv] && *w.kind[lv] == RmFree && !*w.rim[lv] && *outId[lv] != NoIndex { free.push(*outId[lv]); }
+    lv = lv + 1usize;
+  }
+  RegionRemesh(out, rf, free)
+}
+
+// The barycentric weights of p's projection on the triangle a b c (in f64; (1, 0, 0) for a triangle of no area)
+fn rmBary(p: Vec3, a: Vec3, b: Vec3, c: Vec3) DVec3 {
+  let da = DVec3.from(a);
+  let v0 = DVec3.from(b) - da;
+  let v1 = DVec3.from(c) - da;
+  let v2 = DVec3.from(p) - da;
+  let d00 = v0.dot(v0);
+  let d01 = v0.dot(v1);
+  let d11 = v1.dot(v1);
+  let d20 = v2.dot(v0);
+  let d21 = v2.dot(v1);
+  let den = d00 * d11 - d01 * d01;
+  if den.abs() <= 0.0 { return DVec3(1.0, 0.0, 0.0); }
+  let wb = (d11 * d20 - d01 * d21) / den;
+  let wc = (d00 * d21 - d01 * d20) / den;
+  DVec3(1.0 - wb - wc, wb, wc)
+}
+
+// The input's edge between two input vertices (NoIndex if either is new or they are not joined)
+fn inputEdge(m: &PolyMesh, a: u32, b: u32) u32 {
+  if a == NoIndex || b == NoIndex { return NoIndex; }
+  let hs = m.vertexOutgoing(a);
+  var i = 0usize;
+  while i < hs.len() {
+    if m.toVertex(*hs[i]) == b { return m.edge(*hs[i]); }
+    i = i + 1usize;
+  }
+  NoIndex
+}
+
+// A corner channel's values differ between two region faces at one vertex: report it, once
+fn reportSeams(m: &PolyMesh, region: &List[u32], problems: &mut List[String]) {
+  var jumps = false;
+  var domainsDone = 0u32;
+  var c = 0usize;
+  while c < m.floats.len() + m.vec2s.len() + m.vec3s.len() && !jumps {
+    var vals = List[Vec3]();
+    var corner = false;
+    if c < m.floats.len() {
+      corner = m.floats[c].domain == CornerDomain;
+      if corner { vals = floatChannelVec3s(m, c); }
+    } else if c < m.floats.len() + m.vec2s.len() {
+      let k = c - m.floats.len();
+      corner = m.vec2s[k].domain == CornerDomain;
+      if corner { vals = vec2ChannelVec3s(m, k); }
+    } else {
+      let k = c - m.floats.len() - m.vec2s.len();
+      corner = m.vec3s[k].domain == CornerDomain;
+      if corner { vals = vec3ChannelVec3s(m, k); }
+    }
+    if corner {
+      var first = List[Vec3].withCapacity(m.vertexCount());
+      var seen = List[bool].withCapacity(m.vertexCount());
+      var v = 0usize;
+      while v < m.vertexCount() {
+        first.push(Vec3(0., 0., 0.));
+        seen.push(false);
+        v = v + 1usize;
+      }
+      var i = 0usize;
+      while i < region.len() && !jumps {
+        let hs = m.faceHalfedges(*region[i]);
+        var j = 0usize;
+        while j < hs.len() {
+          let vv = usize.from(m.toVertex(*hs[j]));
+          let x = *vals[usize.from(*hs[j])];
+          if *seen[vv] {
+            let d = x - *first[vv];
+            if d.x.abs() > 0.000001 || d.y.abs() > 0.000001 || d.z.abs() > 0.000001 { jumps = true; }
+          } else {
+            seen.set(vv, true);
+            first.set(vv, x);
+          }
+          j = j + 1usize;
+        }
+        i = i + 1usize;
+      }
+    }
+    c = c + 1usize;
+  }
+  if jumps {
+    problems.push(String.from("remeshRegion: a corner channel jumps inside the region (a seam); the seam is not held"));
+  }
+}
+
+// The values of the region's free vertices and corners, blended from the input's surface
+fn carryRegion(m: &PolyMesh, out: &mut PolyMesh, nOutside: usize, vSample: &List[Sample], vHeld: &List[bool],
+    corners: &List[Sample], region: &List[u32]) {
+  var c = 0usize;
+  while c < m.floats.len() {
+    let domain = m.floats[c].domain;
+    if domain == VertexDomain || domain == CornerDomain {
+      let vals = floatChannelVec3s(m, c);
+      carryOne(out, domain, nOutside, vSample, vHeld, corners, &vals, 0u32, c);
+    }
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec2s.len() {
+    let domain = m.vec2s[c].domain;
+    if domain == VertexDomain || domain == CornerDomain {
+      let vals = vec2ChannelVec3s(m, c);
+      carryOne(out, domain, nOutside, vSample, vHeld, corners, &vals, 1u32, c);
+    }
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec3s.len() {
+    let domain = m.vec3s[c].domain;
+    if domain == VertexDomain || domain == CornerDomain {
+      let vals = vec3ChannelVec3s(m, c);
+      carryOne(out, domain, nOutside, vSample, vHeld, corners, &vals, 2u32, c);
+    }
+    c = c + 1usize;
+  }
+}
+
+// One channel (type 0 f32, 1 Vec2, 2 Vec3; number c) of the output
+fn carryOne(out: &mut PolyMesh, domain: u32, nOutside: usize, vSample: &List[Sample], vHeld: &List[bool],
+    corners: &List[Sample], vals: &List[Vec3], type_: u32, c: usize) {
+  if domain == VertexDomain {
+    var v = 0usize;
+    while v < vSample.len() {
+      if !*vHeld[v] {
+        let b = blendV3(vals, &vSample[v]);
+        putValue(out, type_, c, u32.from(v), b);
+      }
+      v = v + 1usize;
+    }
+  } else {
+    var f = nOutside;
+    var k = 0usize;
+    while f < out.faceCount() {
+      let hs = out.faceHalfedges(u32.from(f));
+      var q = 0usize;
+      while q < hs.len() {
+        if corners[k].e0 != NoIndex {
+          let b = blendV3(vals, &corners[k]);
+          putValue(out, type_, c, *hs[q], b);
+        }
+        k = k + 1usize;
+        q = q + 1usize;
+      }
+      f = f + 1usize;
+    }
+  }
+}
+
+fn putValue(out: &mut PolyMesh, type_: u32, c: usize, element: u32, b: Vec3) {
+  if type_ == 0u32 { out.setFloat(u32.from(c), element, b.x); }
+  else if type_ == 1u32 { out.setVec2(u32.from(c), element, Vec2(b.x, b.y)); }
+  else { out.setVec3(u32.from(c), element, b); }
+}
+
+// New edges take each edge channel's fill; crease halves their crease
+fn newEdges(out: &mut PolyMesh, nOutside: usize, w: &RmWork, tris: &List[u32], outId: &List[u32], rEsrc: &List[u32]) {
+  let cc = out.findFloatChannel(EdgeDomain, "crease");
+  var j = 0usize;
+  while j < tris.len() {
+    let t = usize.from(*tris[j]);
+    let hs = out.faceHalfedges(u32.from(nOutside + j));
+    var q = 0usize;
+    while q < 3usize {
+      let e = out.edge(*hs[q]);
+      let a = rmTv(w, t, (q + 2usize) % 3usize);
+      let b = rmTv(w, t, q);
+      if *rEsrc[3usize * j + q] == NoIndex {
+        var c = 0usize;
+        while c < out.floats.len() {
+          if out.floats[c].domain == EdgeDomain { out.setFloat(u32.from(c), e, out.floats[c].fill); }
+          c = c + 1usize;
+        }
+        c = 0usize;
+        while c < out.vec2s.len() {
+          if out.vec2s[c].domain == EdgeDomain { out.setVec2(u32.from(c), e, out.vec2s[c].fill); }
+          c = c + 1usize;
+        }
+        c = 0usize;
+        while c < out.vec3s.len() {
+          if out.vec3s[c].domain == EdgeDomain { out.setVec3(u32.from(c), e, out.vec3s[c].fill); }
+          c = c + 1usize;
+        }
+      }
+      if cc != NoIndex {
+        let cr = rmCrease(w, a, b);
+        if cr > 0. { out.setFloat(cc, e, cr); }
+      }
+      q = q + 1usize;
+    }
+    j = j + 1usize;
+  }
+}

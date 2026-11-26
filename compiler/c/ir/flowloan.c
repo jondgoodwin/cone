@@ -56,6 +56,8 @@ typedef struct {
     uint8_t elemview;   // a receiver's loan whose method returned an element out of the receiver's own block
                         // (loanElemViewSet): a borrow it carries is of that element, wherever else it is reached
     uint32_t roots[3];  // the local variables (walk indexes) whose storage it points into
+    uint32_t aliasby;   // a reference narrowed out of a match's own borrow: the loan of the 'mut' borrow of the
+                        // enum held beside it, which a refusal names (loanShapeAliasBy), else 0
 } Loan;
 
 // A pending conflict: 'access' conflicted with 'loan', held by 'holder'. On a
@@ -284,6 +286,7 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->shapeowner = NULL;
     loan->shapeownerval = 0;
     loan->source = 0;
+    loan->aliasby = 0;
     loan->uniq = loan->kind == LoanAlias && !pl->shared;
     // Another name for the source met by the access that made this borrow: it is one of several
     loan->aliased = loan->uniq && lastEventVar == pl->var;
@@ -334,6 +337,7 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->shapeowner = NULL;
     loan->shapeownerval = 0;
     loan->source = 0;
+    loan->aliasby = 0;
     loan->uniq = 0;
     loan->aliased = 0;
     loan->lazycont = NULL;
@@ -2140,6 +2144,56 @@ static int loanAliasHeld(uint32_t root) {
     return 0;
 }
 
+// A 'mut' borrow held now that reaches a place one of a set's near loans borrows
+// read-only, or 0: asked of what a match's own '&' holds, whether what it borrows has
+// another name that writes (flowpath.c, pwNarrowAliased). It is a borrow of the place,
+// of a place that lies inside, or, for a place reached through a reference ('&*r'), of
+// the reference variable itself ('&mut r', through which '**m' stores). A borrow of a
+// different field of the same variable is no name for it
+uint32_t loanMutAliasOf(PathSet *holds) {
+    if (holds == NULL)
+        return 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        uint32_t entry = holds->ids[i];
+        Loan *loan = &loans[loanOf(entry)];
+        if ((entry & LoanFar) || loan->kind != LoanShared)
+            continue;
+        for (uint32_t id = pathVars[loan->place.var].loans; id; id = loans[id].next) {
+            Loan *other = &loans[id];
+            if (!other->uniq || !other->aliased || other->kind != LoanAlias)
+                continue;
+            if (other->place.deref == loan->place.deref ? !placeOverlaps(&other->place, &loan->place)
+                    : other->place.deref > loan->place.deref)
+                continue;
+            if (loanHeldNow(id))
+                return id;
+        }
+    }
+    return 0;
+}
+
+void loanShapeAliasBy(uint32_t loan, uint32_t alias) {
+    loans[loan].aliasby = alias;
+}
+
+// Why another name could change what a marked loan points into, for a message
+static char *loanShapeThrough(Loan *loan, char *buf, size_t size) {
+    char where[160];
+    if (loan->aliasby)
+        snprintf(buf, size, "while the 'mut' borrow made %s can still change it",
+            loanWhere(&loans[loan->aliasby], where, sizeof(where)));
+    else
+        snprintf(buf, size, "through a path other references share");
+    return buf;
+}
+
+// What a refused change of variant says to do instead
+static char *loanShapeNarrowAdvice(Loan *loan) {
+    return loan->aliasby
+        ? "Bind the payload by value, or do not use the 'mut' borrow while the narrowed reference is still to be used"
+        : "Narrow a borrow of a local, an 'imm' or 'uni' reference, or the value";
+}
+
 // A borrow into a collection or enum that changes shape, through a source no other name
 // reaches yet (a 'mut' borrow of a place reached as 'uni' that is the only one held, as
 // the exclusive loan it always was): marked for the shape check, as its container's, if
@@ -2516,6 +2570,8 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
     char used[160];
     loanShapeContName(pend->loan, cont, sizeof(cont));
     loanWhere(loan, where, sizeof(where));
+    char through[224];
+    loanShapeThrough(loan, through, sizeof(through));
     VarDclNode *holder = pathVars[pend->holder].var;
     if (usenode->tag == VarDclTag)
         snprintf(used, sizeof(used), "when '%s''s value is finalized", &holder->namesym->namestr);
@@ -2526,8 +2582,8 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
     char msg[1400];
     if (pend->holder == yieldHolder) {
         snprintf(msg, sizeof(msg),
-            "This %s could change the shape of a %s while the generator's caller may still hold a borrow into it that a 'yield' handed out (made %s, through a path other references share): %s. A %s that changes shape may move or free what it lent. Yield a copy, or yield the borrow only once the generator has done changing the %s.",
-            what, cont, where, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont, cont);
+            "This %s could change the shape of a %s while the generator's caller may still hold a borrow into it that a 'yield' handed out (made %s, %s): %s. A %s that changes shape may move or free what it lent. Yield a copy, or yield the borrow only once the generator has done changing the %s.",
+            what, cont, where, through, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont, cont);
         loanShapeEmit(pend->access, pend->loan, note->why, msg);
         return;
     }
@@ -2551,8 +2607,9 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
         }
         else
             snprintf(msg, sizeof(msg),
-                "'%s', a reference into one of the variants of a %s (made %s, through a path other references share), is used here after the %s at %s, which could change which variant the %s holds: %s. A reference into a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Narrow a borrow of a local, an 'imm' or 'uni' reference, or the value, or do not use '%s' after this %s.",
-                &holder->namesym->namestr, cont, where, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)),
+                "'%s', a reference into one of the variants of a %s (made %s, %s), is used here after the %s at %s, which could change which variant the %s holds: %s. A reference into a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. %s, or do not use '%s' after this %s.",
+                &holder->namesym->namestr, cont, where, through, what, change, cont,
+                loanShapeReason(note, cont, sum, reason, sizeof(reason)), loanShapeNarrowAdvice(loan),
                 &holder->namesym->namestr, what);
         loanShapeEmit(at, pend->loan, note->why, msg);
         return;
@@ -2582,10 +2639,13 @@ void loanShapeNow(INode *call, uint32_t loan, int why, Name *callee) {
     int sum = loanShapeIsSum(loan);
     const char *what = why == ReshapeStore ? "store" : "call";
     char msg[1400];
+    char through[224];
+    loanShapeThrough(&loans[loan], through, sizeof(through));
     if (sum)
         snprintf(msg, sizeof(msg),
-            "This %s could change which variant a %s holds while a reference into one of its variants (made %s, through a path other references share) is still to be used by this %s or by a value around it: %s. A reference into a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Narrow a borrow of a local, an 'imm' or 'uni' reference, or the value.",
-            what, cont, where, what, loanShapeReason(&note, cont, sum, reason, sizeof(reason)));
+            "This %s could change which variant a %s holds while a reference into one of its variants (made %s, %s) is still to be used by this %s or by a value around it: %s. A reference into a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. %s.",
+            what, cont, where, through, what, loanShapeReason(&note, cont, sum, reason, sizeof(reason)),
+            loanShapeNarrowAdvice(&loans[loan]));
     else if (loanShapeIsOwner(loan))
         snprintf(msg, sizeof(msg),
             "This %s could replace the %s that owns what a borrow (made %s, through a path other references share) points into, which is still to be used by this %s or by a value around it: %s. Replacing an owner frees what it points at, so the borrow would dangle. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this %s.",
