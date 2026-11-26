@@ -262,12 +262,12 @@ struct ServerExchanges[C: httpconn.ServerProto] is Move {
       self.dropStream(sc, host, stream);
       return;
     }
-    var seen = false;      // in streamed mode the handler may have the request already
+    var processed = false; // in streamed mode the handler may have the request already
     match streams.get(&stream) {
-      case let Some(r) {seen = r.state == stHanded;}
+      case let Some(r) {processed = r.state == stHanded;}
       else {}
     }
-    self.answerText(sc, host, stream, 413u16, "request body too large", seen);
+    self.answerText(sc, host, stream, 413u16, "request body too large", processed);
     sc.stopBody(stream);
   }
 
@@ -444,22 +444,22 @@ struct ServerExchanges[C: httpconn.ServerProto] is Move {
   }
 
   // The pool refused the buffer for a response's bytes (iobuf, THE RESERVE: a peer that asks and does not read causes
-  // them): that one request fails and the server goes on. HTTP/2 and 3 reset the stream ('seen': whether the program has
+  // them): that one request fails and the server goes on. HTTP/2 and 3 reset the stream ('processed': whether the program has
   // had the request, which picks the code); HTTP/1.1 carries one request at a time, so its connection ends. Counted
-  fn refuseSend(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, seen: bool) {
+  fn refuseSend(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, processed: bool) {
     srv.bufferRefused();
-    sc.reset(stream, seen);
+    sc.reset(stream, processed);
     if !sc.isHttp2() {cut = true;}
     self.dropStream(sc, host, stream);
   }
 
   // The library's own answers: a whole text response
-  fn answerText(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, status: u16, text: &str, seen: bool) {
-    // the buffer first: refused, no head has gone out, so an unseen request can still be said not to have been processed
+  fn answerText(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, status: u16, text: &str, processed: bool) {
+    // the buffer first: refused, no head has gone out, so the request can still be said not to have been processed
     var b = match IoBuf.tryMake(text.len()) {
       case var Some(got) {got}
       else {
-        self.refuseSend(sc, host, stream, seen);
+        self.refuseSend(sc, host, stream, processed);
         return;
       }
     };
