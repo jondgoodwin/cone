@@ -68,7 +68,9 @@ the UCRT having no `hypotf`), and on a GPU are `sqrt(fma(x, x, y*y))` and the si
 with the infinity, and on a GPU all three are integer comparisons of the bits below the sign with
 the infinity's (above it, equal to it, below it: `genlGpuFloatClass`), because a Vulkan driver may
 assume a float operation sees no NaN or infinity unless the module declares
-`SignedZeroInfNanPreserve`, which Cone does not. The GPU's math table (`genlGpuMath`) is for C
+`SignedZeroInfNanPreserve`, which Cone declares for the comparisons' sake
+([generation](../phases/generation.md), "IEEE comparisons in a kernel"); the bit tests do not
+depend on the mode. The GPU's math table (`genlGpuMath`) is for C
 bindings and is untouched: these methods reach the GPU as intrinsics, not by C symbol.
 
 **A bool's `&&` and `||` are methods with no function behind them.** `newNbrTypeNode`
