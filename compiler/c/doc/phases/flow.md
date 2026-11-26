@@ -1948,8 +1948,11 @@ view through a reference field (refused) beside the view through a by-value fiel
 
 **An enum** is a marked loan's container too. A reference narrowed from an enum to one
 of its variants through a path others share, or from a `&mut` borrow of a local (an alias
-loan; a `&`, `&imm` or `&uni` one freezes the local, `castBorrowsUni`)
-(`FlagVariantNarrow`, `castSumNarrows`) is lent by `pwNarrowShared`: a loan of the place
+loan; an `&imm` or `&uni` one excludes every other name)
+(`FlagVariantNarrow`, `castSumNarrows`), or from a `&` borrow of a local made where it is
+matched while a `mut` borrow of it made earlier is held (`FlagNarrowOwnBorrow`,
+`pwNarrowAliased`: the `&` freezes the local against its own name only, and the refusal
+names the `mut` borrow), is lent by `pwNarrowShared`: a loan of the place
 the reference is read through, held
 by whatever holds the narrowed reference (a pattern's hidden local, then the binding),
 marked with the enum as its container where the place is shared (`pwShapeBorrow`).
