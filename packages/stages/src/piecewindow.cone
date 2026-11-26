@@ -43,8 +43,8 @@
 // (ChunkPool's 'floored' counts those lends). A stream whose pool has no room for a second piece therefore
 // goes one piece at a time: a pool of its own that is to overlap large pieces holds two of them.
 // So every buffer 'fresh' gives is sent ('sent') or given back ('unusedBuffer') before the next is asked
-// for. One buffer an answer brought back is kept to be refilled, still counted in the pool until the window
-// is dropped.
+// for. One buffer an answer brought back is kept to be refilled, still counted in the pool, until the window
+// is dropped; while the pool is over its cap none is kept, so what was lent past it comes back.
 //
 // One behaviour collects a window's answers at a time, oldest first.
 //
@@ -112,7 +112,7 @@ pub struct PieceWindow[T] is Move {
   }
 
   // The answer of the piece 'oldest' gave: its cost leaves the window, a buffer that came back is kept to
-  // be refilled. Some(why) when the receiver said Stop
+  // be refilled, unless the pool is over its cap. Some(why) when the receiver said Stop
   pub fn answered(self: &mut, a: PieceAck[T]) Option[Ending] {
     var cost = 0usize;
     match costs.popFront() {
@@ -123,7 +123,7 @@ pub struct PieceWindow[T] is Move {
     match a {
       case is More { self.release(cost); }
       case let MoreWith(back) {
-        if spare is None {
+        if spare is None && !self.overCap() {
           spare = Some[T](back);
           spareCost = cost;
         } else {
@@ -151,6 +151,19 @@ pub struct PieceWindow[T] is Move {
     var t = None[T];
     t <-> spare;
     if t is Some { self.release(spareCost); }
+  }
+
+  // Whether the pool is lending past its cap: then a buffer that comes home goes back to it, as a
+  // ChunkWindow's does, and none is kept
+  fn overCap(self: &) bool {
+    var over = false;
+    #if #defined("MUT_KEEP_OVER") {} #else {
+      match &pool {
+        case let &Some(p) { over = p.lent() > p.cap(); }
+        case is None {}
+      }
+    }
+    over
   }
 
   fn release(self: &, cost: usize) {
@@ -215,7 +228,7 @@ pub fn fresh(w: &mut PieceWindow[IoBuf], want: usize) Option[IoBuf] {
 pub fn unusedBuffer(w: &mut PieceWindow[IoBuf], b: IoBuf) {
   let cap = b.capacity();
   w.filling = if w.filling > cap {w.filling - cap} else {0usize};
-  if w.spare is None {
+  if w.spare is None && !w.overCap() {
     w.spare = Some[IoBuf](b);
     w.spareCost = cap;
   } else {
