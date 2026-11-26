@@ -5067,6 +5067,36 @@ class UnixLinkLine(unittest.TestCase):
         self.assertTrue(any(a.startswith("-Wl,--dynamic-list=") for a in self.line("linux", True)))
 
 
+@unittest.skipIf(CONGO_EXE, "tools/trustmap.py drives congo.py, not the Cone Congo")
+class TrustMap(unittest.TestCase):
+    """tools/trustmap.py, over one package: it stands in for congo.compile_unit
+    and reads the lines of 'conec --report-trust', and a change to either can
+    stop it counting without any other test noticing."""
+
+    def test_one_package_and_its_tests(self):
+        sys.path.insert(0, str(HERE.parent))
+        import trustmap
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "map"
+            run = subprocess.run(
+                [sys.executable, str(HERE.parent / "trustmap.py"), "--conec", str(congo.find_conec()),
+                 "--only", "thread", "--out", str(out)],
+                env=dict(os.environ, CONGO_HOME=str(Path(tmp) / "home")),
+                capture_output=True, text=True, encoding="utf-8", errors="replace")
+            self.assertEqual(run.returncode, 0, run.stderr[-4000:] + run.stdout[-4000:])
+            runs = [json.loads(line) for line in (out / "raw.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual({r["phase"] for r in runs}, {"src", "test"})
+            lines = [line for r in runs for line in r["text"].splitlines()]
+            # A line trustmap cannot read is a site it silently does not count
+            unread = [line for line in lines
+                      if not (trustmap.SITE.match(line) or trustmap.GENERIC.match(line)
+                              or trustmap.PTROPS.match(line)
+                              or line.startswith("unreported-pointer-operations "))]
+            self.assertEqual(unread[:5], [])
+            kinds = {line.split()[0] for line in (out / "sites.txt").read_text(encoding="utf-8").splitlines()}
+            self.assertLessEqual({"deref", "extern"}, kinds)
+
+
 def run_in_parallel(jobs: int) -> int:
     """The suite on `jobs` processes, each a serial run of some of its tests; one
     summary line at the end, as unittest prints it."""

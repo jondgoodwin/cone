@@ -102,6 +102,13 @@ void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
         return;
     }
     if (iexpTypeCheckCoerceStated(pstate, ((IExpNode*)lval)->vtype, rval) == 0) {
+        // No variant coerces to an '@unsized' enum by value, and storing one
+        // would be swapping a variant in place, which is what is said
+        INode *unsizedenum = itypeHeldUnsizedEnum(((IExpNode*)lval)->vtype);
+        if (unsizedenum) {
+            itypeUnsizedEnumMsg(lval, unsizedenum, "assigned or stored");
+            return;
+        }
         iexpMismatchMsg(*rval, ((IExpNode*)lval)->vtype, ErrorInvType, "Expression's type does not match lval's type");
         return;
     }
