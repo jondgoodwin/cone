@@ -173,11 +173,16 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectT
     if (arrlit->dimens->used > 0 && !arrayLitDimIsConst(nodesGet(arrlit->dimens, 0))) {
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant: an integer literal, or a named constant holding one");
     }
-    if (arrayLitTypeCheckEmpty(arrlit, expectType))
-        return;
-    if (arrayLitTypeCheckExpected(pstate, arrlit, expectType))
-        return;
-    arrayLitTypeCheckElems(pstate, arrlit);
+    if (!arrayLitTypeCheckEmpty(arrlit, expectType) && !arrayLitTypeCheckExpected(pstate, arrlit, expectType))
+        arrayLitTypeCheckElems(pstate, arrlit);
+
+    // A literal's type is built from its elements, not written, so it was not
+    // held to what a written array type is
+    INode *unsizedenum = itypeHeldUnsizedEnum(arrlit->vtype);
+    if (unsizedenum) {
+        itypeUnsizedEnumMsg((INode*)arrlit, unsizedenum, "put in an array");
+        arrlit->vtype = errorType;
+    }
 }
 
 // Join the types of the elements of a list literal that are number literals with no

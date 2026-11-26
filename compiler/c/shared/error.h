@@ -710,7 +710,7 @@ enum ErrorCode {
     ErrorShapeKeepingDeclared = 1501, // A type declaring ShapeKeeping: the compiler finds it from the methods a virtual reference marked '+ ShapeKeeping' dispatches to, where the value becomes one
 
     // 'as' between references (ir/exp/cast.c)
-    ErrorCastPerm = 1502,       // 'as' from one reference to another whose permission is not the same as the source's or a supertype of it (the coercions a type check allows): reinterpretation between references is only a legal coercion, and anything else needs 'trust', which is not built yet
+    ErrorCastPerm = 1502,       // 'as' from one reference to another whose permission is not the same as the source's or a supertype of it (the coercions a type check allows), or whose region is neither the source's nor a borrow (a borrow made an owner, one region's owner made another's): between references permission and region change only as a coercion would, and anything else needs 'trust', which is not built yet
 
     // The calling convention of a function reference (ir/types/fnsig.c)
     ErrorFnRefConv = 1503,      // A function reference given where one marked for the other calling convention is wanted: a C-named function's '&fn @c (...)' where a Cone function's '&fn (...)' is wanted, or the reverse. Neither converts to the other, so the mismatch is refused where it is written and never becomes a call that passes its values wrongly

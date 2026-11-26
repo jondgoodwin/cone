@@ -4340,6 +4340,16 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         structTargetResume(target);
     }
 
+    // 'Array[T]' is a body of T values side by side, so a T with no one size
+    // makes none. Refused before its methods are cloned over such a T
+    if (nodetoclone == (INode*)arrayTypeDcl && srcgencall->args->used == 1) {
+        INode *unsizedenum = itypeHeldUnsizedEnum(nodesGet(srcgencall->args, 0));
+        if (unsizedenum) {
+            itypeUnsizedEnumMsg((INode*)srcgencall, unsizedenum, "held in an array");
+            return newErrorNode((INode*)srcgencall);
+        }
+    }
+
     // A constraint the arguments do not meet refuses the instance here, before
     // anything of it is made.
     if (!genericRequirementsMet(pstate, srcgencall, nodetoclone, genericinfo, name))

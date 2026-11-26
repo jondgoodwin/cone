@@ -50,7 +50,7 @@ registry's `fallback` is 0), so `--intrinsic-fallback` changes nothing for them.
 type outside the class is refused for `mem.abs[T]` and the rest by `intrinsicClassCheck`
 as for the bit operations; a method asked of a type that lacks it is `ErrorNoMbr`.
 
-**A float's `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2`, `log10`, `pow`,
+**A float's `trunc`, `copysign`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2`, `log10`, `pow`,
 `powi`, `hypot`, `cbrt`, `sinh`, `cosh`, `tanh`, `isNaN`, `isInfinite` and `isFinite` are methods
 of the float types alone, declared in C and not in core.** `nbrMathMethods` (`corenumber.c`) adds
 them to `f32` and `f64` after the shared ones, kinds `TanIntrinsic` to `IsFiniteIntrinsic`, each
@@ -59,7 +59,9 @@ node's `typearg` the float type, and they go through `genlDeclaredIntrinsic` to
 have them). Each is LLVM's overloaded intrinsic of the same meaning (`llvm.tan`, `llvm.atan2`,
 `llvm.log` for `ln`, `llvm.pow`, `llvm.sinh` and the rest), except: `powi` is `llvm.powi` (on a
 GPU, `pow` of the magnitude, negated for a negative base and an odd exponent, and 1 for an
-exponent of 0, because GLSL's `pow` is undefined for a negative base); `hypot` and `cbrt` have no intrinsic, so
+exponent of 0, because GLSL's `pow` is undefined for a negative base); `copysign` is
+`llvm.copysign` (on a GPU, an and of each value's bits and an or of the two, because the SPIR-V
+back end cannot select it); `hypot` and `cbrt` have no intrinsic, so
 they call the C library by name (`genlCallLibm`; an `f32`'s `hypot` through the double form,
 the UCRT having no `hypotf`), and on a GPU are `sqrt(fma(x, x, y*y))` and the sign of `x` times
 `exp2(log2|x| / 3)`; `isNaN` is `fcmp une x, x` (Shader has no `OpUnordered`), `isInfinite` and
@@ -230,7 +232,7 @@ type while each call gives its own orderings.
 | `alignof[T]` | constant | `LLVMABIAlignmentOfType`, `genlAlignof` |
 | `needsFinal[T]` | constant | `itypeNeedsFinal`, a front-end question, emitted as an `i1` |
 | `finalize[T]` | expansion | `genlFinalizeAt`: release an owning reference; a struct's or an enum's drop; a tuple's elements, an array's in element order |
-| `sliceFromParts[T]`, `…Mut`, `…Uni` | expansion | two `insertvalue`s into the `{ptr, usize}` pair; a null `p` is first replaced by the element's ABI alignment as an address (a `select`), because a slice's pointer word is never null: an `Option` of a slice reads null as `None` |
+| `sliceFromParts[T]`, `…Mut`, `…Uni`, `uniArrayFromParts[T]` (an owner, `Uni[Array[T]]`, is the same pair) | expansion | two `insertvalue`s into the `{ptr, usize}` pair; a null `p` is first replaced by the element's ABI alignment as an address (a `select`), because a slice's pointer word is never null: an `Option` of a slice reads null as `None` |
 | `readRaw[T]` | expansion | a load (`%rawread`) |
 | `writeRaw[T]` | expansion | a store; where the value is a construction by a declared init, `T(...)`, the init is called with the pointer as its `self`, filling it in place (`genlFnCall`, `genlNewInto`), as an allocation's value is: so an init that uses its `self`'s address -- an actor's, sending through its own handle -- sees where the value stays |
 | `spinHint` | operation | a call of `llvm.x86.sse2.pause` on an x86 triple (`x86_64`, `i386`, `i686`, `amd64`), of `llvm.aarch64.hint(i32 1)` (yield) on an `aarch64` or `arm64` triple, nothing on any other triple and on a GPU or WebAssembly target. Neither LLVM intrinsic is overloaded, so it uses `LLVMGetIntrinsicDeclaration` with no types, not `genlCallLlvmIntrinsic`. Declared in `mem` with an empty fallback body |

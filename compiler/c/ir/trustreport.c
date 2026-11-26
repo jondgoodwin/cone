@@ -201,7 +201,8 @@ static void walkCall(FnCallNode *call) {
         char *name = fn->namesym ? &fn->namesym->namestr : "?";
         char *trust = intrinsicTrustName(fn);
         if (trust)
-            report(strncmp(trust, "sliceFromParts", 14) == 0 ? "ref-from-ptr" : "intrinsic", (INode*)call, trust);
+            report(strncmp(trust, "sliceFromParts", 14) == 0 || strcmp(trust, "uniArrayFromParts") == 0
+                       ? "ref-from-ptr" : "intrinsic", (INode*)call, trust);
         else if ((fn->flags & FlagExtern) && fn->value == NULL
                  && !declaredByInclude(fn))
             report("extern", (INode*)call, name);
