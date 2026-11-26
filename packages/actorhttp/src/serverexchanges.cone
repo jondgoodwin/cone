@@ -87,6 +87,7 @@ struct ServerExchanges[C: httpconn.ServerProto] is Move {
   h2Rids: Dict[u64, bool];  // multiplexed: the requests whose handler holds the exchange still
   h2Live: u32;              // multiplexed: stream handlers that have not returned (reset streams' included)
   protoClosed: bool;        // the protocol is over (Closed was given)
+  cut: bool;                // HTTP/1.1: a response's buffer was refused and the connection aborted: the owner ends it at once
   streams: Dict[u32, Strm];
   pends: Deque[Pend];
   h1: Option[HttpHandler];
@@ -96,7 +97,7 @@ struct ServerExchanges[C: httpconn.ServerProto] is Move {
   fn make(id: u64, srv: ServerActor, args: Arc[imm, ListenArgs], peer: SocketAddr, secure: bool, quic: bool,
       altSvc: String) ServerExchanges[C] {
     ServerExchanges[C](id: id, srv: srv, args: args, peer: peer, secure: secure, quic: quic, altSvc: altSvc,
-      h2Rids: Dict[u64, bool](), h2Live: 0u32, protoClosed: false, streams: Dict[u32, Strm](), pends: Deque[Pend](),
+      h2Rids: Dict[u64, bool](), h2Live: 0u32, protoClosed: false, cut: false, streams: Dict[u32, Strm](), pends: Deque[Pend](),
       h1: None[HttpHandler], h1ix: 0usize, nextRid: 1u64)
   }
 
@@ -261,7 +262,12 @@ struct ServerExchanges[C: httpconn.ServerProto] is Move {
       self.dropStream(sc, host, stream);
       return;
     }
-    self.answerText(sc, host, stream, 413u16, "request body too large");
+    var processed = false; // in streamed mode the handler may have the request already
+    match streams.get(&stream) {
+      case let Some(r) {processed = r.state == stHanded;}
+      else {}
+    }
+    self.answerText(sc, host, stream, 413u16, "request body too large", processed);
     sc.stopBody(stream);
   }
 
@@ -334,7 +340,7 @@ struct ServerExchanges[C: httpconn.ServerProto] is Move {
           self.runHandler(sc, host, stream, rid, ix, make);
         }
       }
-      else {self.answerText(sc, host, stream, 404u16, "not found");}
+      else {self.answerText(sc, host, stream, 404u16, "not found", false);}
     }
   }
 
@@ -370,7 +376,7 @@ struct ServerExchanges[C: httpconn.ServerProto] is Move {
     // handlers still running are counted here and a stream past the cap is answered 503 (the handlers of an
     // HTTP/2 connection are bounded by maxConcurrentStreams, not by how fast the peer opens and resets)
     if sc.isHttp2() && h2Live >= args.cfg.conn.h2.maxConcurrentStreams {
-      self.answerText(sc, host, stream, 503u16, "the server is busy");
+      self.answerText(sc, host, stream, 503u16, "the server is busy", false);
       sc.stopBody(stream);
       return;
     }
@@ -434,16 +440,33 @@ struct ServerExchanges[C: httpconn.ServerProto] is Move {
       else {}
     }
     if !ok {return;}
-    self.answerText(sc, host, stream, 503u16, "the server is busy");
+    self.answerText(sc, host, stream, 503u16, "the server is busy", false);
+  }
+
+  // The pool refused the buffer for a response's bytes (iobuf, THE RESERVE: a peer that asks and does not read causes
+  // them): that one request fails and the server goes on. HTTP/2 and 3 reset the stream ('processed': whether the program has
+  // had the request, which picks the code); HTTP/1.1 carries one request at a time, so its connection ends. Counted
+  fn refuseSend(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, processed: bool) {
+    srv.bufferRefused();
+    sc.reset(stream, processed);
+    if !sc.isHttp2() {cut = true;}
+    self.dropStream(sc, host, stream);
   }
 
   // The library's own answers: a whole text response
-  fn answerText(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, status: u16, text: &str) {
+  fn answerText(self: &mut, sc: &mut C, host: ExchangeHost, stream: u32, status: u16, text: &str, processed: bool) {
+    // the buffer first: refused, no head has gone out, so the request can still be said not to have been processed
+    var b = match IoBuf.tryMake(text.len()) {
+      case var Some(got) {got}
+      else {
+        self.refuseSend(sc, host, stream, processed);
+        return;
+      }
+    };
     let r = sc.response();
     r.status = status;
     r.headers.add("Content-Type", "text/plain; charset=utf-8");
     sc.respond(stream, BodyLength.sized(u64.from(text.len())));
-    var b = IoBuf(text.len());
     b.append(text);
     sc.sendData(stream, b);
     sc.finish(stream);
@@ -551,7 +574,7 @@ struct ServerExchanges[C: httpconn.ServerProto] is Move {
       else {}
     }
     if st == stHanded {
-      self.answerText(sc, host, stream, 500u16, "the handler gave no answer");
+      self.answerText(sc, host, stream, 500u16, "the handler gave no answer", true);
     } else if st == stStreaming {
       if sized {
         if sc.isHttp2() {sc.stopBody(stream);} else {sc.abort();}
@@ -595,18 +618,28 @@ struct ServerExchanges[C: httpconn.ServerProto] is Move {
       }
       // a write: as much as the protocol takes
       var refused = false;
+      var starved = false;      // the pool gave no buffer
       let bytes = p.data.view() as &Array[u8];
-      while p.off < bytes.len && !refused {
+      while p.off < bytes.len && !refused && !starved {
         let left = bytes.len - p.off;
         let m = if left > writePiece {writePiece} else {left};
-        var b = IoBuf(m);
-        b.append(&bytes[p.off ..< p.off + m]);
-        match sc.sendData(stream, b) {
-          case let Some(back) {refused = true;}
-          else {p.off = p.off + m;}
+        match IoBuf.tryMake(m) {
+          case var Some(got) {
+            var b = got;
+            b.append(&bytes[p.off ..< p.off + m]);
+            match sc.sendData(stream, b) {
+              case let Some(back) {refused = true;}
+              else {p.off = p.off + m;}
+            }
+          }
+          else {starved = true;}
         }
       }
-      if refused {
+      if starved {
+        // the write is answered as when the client leaves: the stream is gone (its later pends find it so, above)
+        self.answerClosed(sc, host, p);
+        self.refuseSend(sc, host, stream, true);
+      } else if refused {
         blocked.insert(stream, true);
         pends.push(p);
       } else {

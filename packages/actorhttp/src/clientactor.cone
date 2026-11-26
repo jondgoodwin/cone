@@ -1199,29 +1199,49 @@ struct ClientExchanges[C: httpconn.ClientProto] is Move {
       }
       if !done {
         var refused = false;
-        while off < total && !refused {
+        var starved = false;      // the pool gave no buffer: a server that does not read causes them to pile up
+        while off < total && !refused && !starved {
           let left = total - off;
           let m = if left > writePiece {writePiece} else {left};
-          var b = IoBuf(m);
+          match IoBuf.tryMake(m) {
+            case var Some(got) {
+              var b = got;
+              match exch.get(&stream) {
+                case let Some(x) {b.append(&(x.bytes.view() as &Array[u8])[off ..< off + m]);}
+                else {}
+              }
+              match cc.sendData(stream, b) {
+                case let Some(back) {refused = true;}
+                else {off = off + m;}
+              }
+            }
+            else {starved = true;}
+          }
+        }
+        if starved {
+          // this one fetch fails, Overloaded; HTTP/1.1 carries it alone, so its connection goes too
+          var fetch = httpclient.FetchId.none();
           match exch.get(&stream) {
-            case let Some(x) {b.append(&(x.bytes.view() as &Array[u8])[off ..< off + m]);}
+            case let Some(x) {fetch = x.fetch;}
             else {}
           }
-          match cc.sendData(stream, b) {
-            case let Some(back) {refused = true;}
-            else {off = off + m;}
-          }
-        }
-        match exch.getMut(&stream) {
-          case let Some(x) {
-            x.off = off;
-            if off >= total {x.finished = true;}
-          }
-          else {}
-        }
-        if off >= total {
-          cc.finish(stream);
+          exch.remove(&stream);
+          if !cc.isHttp2() {hard = true;}
+          cc.cancel(stream);
+          self.tellExchange(cc, fetch, 1u32, httpclient.Response.blank(), overloadedFailure());
           done = true;
+        } else {
+          match exch.getMut(&stream) {
+            case let Some(x) {
+              x.off = off;
+              if off >= total {x.finished = true;}
+            }
+            else {}
+          }
+          if off >= total {
+            cc.finish(stream);
+            done = true;
+          }
         }
       }
       if done {
