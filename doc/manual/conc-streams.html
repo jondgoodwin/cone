@@ -82,8 +82,8 @@ match r.peek(4usize) {                 // the first four bytes, or None (too few
 		<span class="pre">stop(why)</span>. The library's own
 		stages are generic actors: <span class="pre">TransformStage[T]</span> for any transform and
 		<span class="pre">HashStage[D]</span> for a digest that passes the chunk on untouched. The ends of a pipeline in the
-		OS are actors too, in their own package, <span class="pre">stageio</span>, so that <span class="pre">stages</span>
-		imports no I/O; they are over <span class="pre">aio</span>: <span class="pre">FileSink</span> writes the chunks to a
+		OS are actors too, in their own package, <span class="pre">stageio</span>;
+		they are over <span class="pre">aio</span>: <span class="pre">FileSink</span> writes the chunks to a
 		file and <span class="pre">FileSource</span> reads a file into a stream, <span class="pre">SocketSource</span>
 		reads a connection into one. Each stops when the cancel group it works in is cancelled. A
 		<span class="pre">FileSink</span> that fails (a write, or a cancel) leaves the partly written file as it is (made with <span class="pre">removeOnFailure</span>, <span class="pre">FileSink(name, done, true)</span>, it closes and removes a file it had opened, and touches nothing if its open failed), and
@@ -128,6 +128,25 @@ src.start(SocketAddr.localhost(port));
 		in one call (<span class="pre">streamsample.cone</span> runs both, on the same input). The stream holds a few
 		windows of it at a time instead of the body and its inflated form whole, and it overlaps the inflate with the hash
 		and the write.</p>
+
+	<h2 id="core">A piece is a call, and its answer is the way back</h2>
+	<p><span class="pre">stages</span> also has the stream core the stages above are moving to, one package at a
+		time (its names are placeholders). A consumer is a <span class="pre">PieceSink[T]</span>: the producer calls
+		<span class="pre">piece(tag, item)</span> for each piece and then <span class="pre">end(tag, how)</span>. The call
+		answers a <span class="pre">PieceAck[T]</span>: <span class="pre">More</span>, <span class="pre">MoreWith(buffer)</span>
+		(refill this one) or <span class="pre">Stop(why)</span>, so there is no second trait on the producer and no
+		<span class="pre">attach</span>. The tag is a number the receiver chose, so one actor takes many streams. A producer
+		holds its stream as a <span class="pre">StreamTo[T]</span>, which ends it <span class="pre">Failed</span> if it is
+		dropped un-ended; a stream on offer is a <span class="pre">StreamFrom[T]</span>, which declines it if it is dropped
+		untaken. A producer runs ahead through a <span class="pre">PieceWindow[T]</span>: unanswered pieces up to a
+		budget of bytes (256 KiB by default; two pieces for values), never fewer than two pieces, with buffers from a
+		<span class="pre">ChunkPool</span> that <span class="pre">fresh</span> waits on when it is at its cap. A
+		receiver whose <span class="pre">piece</span> awaits is entered again before it has answered, so it carries only the
+		tag across the await, looks the stream up again, and puts a generation in the tag.
+		<span class="pre">SocketFrom</span>, <span class="pre">TransformPass[T]</span>, <span class="pre">HashPass[D]</span>
+		and <span class="pre">FileTo</span> are stages on it (so <span class="pre">stages</span> now imports
+		<span class="pre">aio</span>), and <span class="pre">ChunkBridge</span> and <span class="pre">PieceBridge</span>
+		join the two kinds while packages move.</p>
 
 	<h2 id="cancel">Cancelling a stream</h2>
 	<p>Work that is cancelled stops, and a stream is no exception. Everything that runs in a

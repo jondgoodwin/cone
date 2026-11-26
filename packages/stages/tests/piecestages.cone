@@ -3,7 +3,8 @@
 //   A. a socket, an inflate, a sha256 and a file: the file holds exactly what was compressed and the digest is
 //      its digest
 //   B. rule 5, a stage that takes one input at a time: a producer that runs ahead feeds a TransformPass in small
-//      pieces while its output waits on a slow receiver; every byte comes out, in order
+//      pieces while its output waits on a slow receiver; every byte comes out, in order, and a transform that
+//      objects to being fed before it asked is never fed so
 //   C. cancel: each stage handles a piece of a cancelled group: it answers Stop, ends what follows with
 //      Failed("streams: cancelled"), once; the hash stage's digest sink is answered with an error, the file end
 //      reports it, SocketFrom ends without connecting a stream
@@ -269,6 +270,39 @@ pub actor Feeder {
   }
 }
 
+// A transform that gives its input back a KiB a pull, and fails if it is fed before it has asked for input
+// (a Transform's rule: pull until NeedInput before feeding the next, or the input piles up)
+pub struct Strict is Transform, Sendable, Move {
+  held: List[u8];
+  at: usize;
+  over: bool;
+  broken: bool;
+
+  pub fn make() Strict {
+    Strict(List[u8](), 0usize, false, false)
+  }
+
+  pub fn feed(self: &mut, input: &Array[u8]) {
+    if at < held.len() { broken = true; }
+    held.appendSlice(input);
+  }
+
+  pub fn pull(self: &mut, out: &mut IoBuf) Status {
+    if broken { return Status.Failed; }
+    if at >= held.len() {
+      return if over {Status.Done} else {Status.NeedInput};
+    }
+    let n = if held.len() - at < 1024usize {held.len() - at} else {1024usize};
+    out.append(&held.view()[at ..< at + n]);
+    at = at + n;
+    Status.MoreOutput
+  }
+
+  pub fn finish(self: &mut) { over = true; }
+
+  pub fn failure(self: &) Option[AnyError] { None[AnyError] }
+}
+
 // One piece to 'sink', to be sent in whatever group the message that asks for it carries
 pub actor Poke {
   sink: PieceSink[IoBuf];
@@ -443,6 +477,16 @@ fn main() i32 {
     expectUInt(o.wrong, 0u64, "B: each in its place");
     expectUInt(o.ends, 1u64, "B: one end");
     expectUInt(u64.from(o.endKind), 1u64, "B: Finished");
+  }
+  {
+    let sink = Collect(corpus(200000usize), 2i64);
+    let stage = TransformPass[Strict](StreamTo[IoBuf].at(sink, 1u64, 1usize), Strict.make());
+    let f = Feeder();
+    f.run(StreamTo[IoBuf].at(stage, 1u64), corpus(200000usize), 8192usize);
+    let o = ended(sink);
+    expectUInt(u64.from(o.endKind), 1u64, "B: the transform was never fed before it asked: one input at a time");
+    expectUInt(o.bytes, 200000u64, "B: every byte through it");
+    expectUInt(o.wrong, 0u64, "B: in order");
   }
 
   // C. cancel, each stage
