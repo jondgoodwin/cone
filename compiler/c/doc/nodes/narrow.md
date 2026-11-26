@@ -136,9 +136,10 @@ tests keeps them on both paths, which can refuse a change that came before the t
   With `let r = &mut p;` before `if p is Circle`, the loan walk's stand-in follows changes of
   the enum `p` reaches, and `*r = other`, or a call handed `r` that does it, changes which enum
   that is.
-- **A change in a later operand of a condition is forgotten in the block.** The block of `if s is
-  Circle && reset(&mut s)` is narrowed again from the whole condition (`narrowAssume`), and so is
-  an operand after it.
+- **A change in a later operand of a condition is forgotten** for a name held by value or through
+  `uni`, `imm`, `mut1`. The block of `if s is Circle && reset(&mut s)`, and an operand after
+  `reset`, are narrowed again from the `is` tests of the whole condition (`narrowAssume`,
+  `narrowAssumeLocal`).
 - **It does not retype the name.** Only a member of the variant named on it sees the variant.
   Passing the name where the variant is wanted is still a type error, since the name is the
   original value (4c).
