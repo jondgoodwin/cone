@@ -290,25 +290,30 @@ the wrong type. It is the collection rule's case: allowed, and refused only if
 something could change the variant while the narrowed reference is used.
 `castSumInterior` asks, once the conversion has become a recast:
 - the from-reference's permission has `MayIntRefSum` — `uni`, `imm`, `mut1`: no
-  other name can change the variant, and nothing more is asked; or
-- it is a read-only or `uni` borrow made here of a place reached as `uni`
-  (`castBorrowsUni`): the value of the hidden `_` variable a `match` or bound
-  `if` captures its scrutinee in is a `BorrowTag` whose place
-  (`castUniPlace`) is a non-static variable of this function held by value, a
-  field or array element of one (not reached through a reference, slice or
-  pointer), or a dereference of a `uni` reference such a place holds. The loan
-  walk then freezes that place while the borrow, and the binding that holds its
-  loan, are used. A `mut` borrow (`match &mut s`) is no longer such: it is an
-  alias loan, the local has other names while it is held, and the narrowing is
-  followed by the loan walk as one through a shared path is (flow.md, "A change
-  through another name").
+  other name can change the variant, and nothing more is asked.
+
+Everything else is marked `FlagVariantNarrow` (`castSumNarrows`), which gates the
+function for the walk (`FlowGateShape`, `flowGateNarrow`).
+
+One kind of it is also marked `FlagNarrowOwnBorrow`: a read-only borrow made here
+of a place reached as `uni` (`castBorrowsUni`), where the value of the hidden `_`
+variable a `match` or bound `if` captures its scrutinee in is a `BorrowTag` whose
+place (`castUniPlace`) is a non-static variable of this function held by value, a
+field or array element of one (not reached through a reference, slice or
+pointer), or a dereference of a `uni` reference such a place holds. The loan walk
+freezes that place against its own name while the borrow, and the binding that
+holds its loan, are used, but not against a `mut` borrow of it made earlier, an
+alias loan that may still store another variant. So the walk follows it only
+where such a borrow is held when the narrowing is made (`pwNarrowAliased`,
+`loanMutAliasOf`): one of the place, of what holds it, or of the reference
+variable a `uni` place is reached through. A `mut` borrow made here
+(`match &mut s`) is not of this kind: it is itself an alias loan.
 
 Everything else — a parameter of reference type, a reborrow through a shared
 path, a field reached through a `mut` reference, a variable the program names
 holding a borrow (a copy of it would reach the local another way, which freezing
-does not follow) — is a narrowing the loan walk follows: the cast is marked
-`FlagVariantNarrow` (`castSumNarrows`), which gates the function for the walk
-(`FlowGateShape`, `flowGateNarrow`) and makes `pwNarrowShared` lend the place the
+does not follow), and the one above where the `mut` borrow is held — is a narrowing
+the loan walk follows: `pwNarrowShared` lends the place the
 reference is read through to whatever holds the narrowed reference, marking the
 loan as the loan of a borrow into a collection is marked (flow.md, "A change through
 another name"). A narrowing of an owning reference, an `Rc[imm, T]` narrowed to an `Rc[imm, Variant]`, is

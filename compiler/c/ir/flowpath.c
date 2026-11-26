@@ -2978,6 +2978,17 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
     }
 }
 
+// The reference narrowed out of the borrow a 'match &s' made itself of a place reached
+// as 'uni' (FlagNarrowOwnBorrow): that borrow freezes the place against its own name,
+// so nothing changes the variant unless a 'mut' borrow of the place is held, which is
+// one more name for it. Returns that borrow's loan, or 0 for none.
+static uint32_t pwNarrowAliased(CastNode *cast) {
+    VarDclNode *hidden = pwNamedVar(cast->exp);
+    if (hidden == NULL)
+        return 0;
+    return loanMutAliasOf(pathVars[pathVar(hidden)].holds);
+}
+
 // A reference narrowed from an enum to one of its variants, through a reference other
 // references share (castSumNarrows): the collection rule applies. It is a borrow of
 // the place the enum is reached by, held by whatever holds the narrowed reference, and
@@ -2985,8 +2996,9 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
 // is held asks whether it could change which variant the enum holds (pwShapeCall,
 // pwShapeStore). It freezes nothing: the enum may be read and its fields written, by
 // this name or another, as a collection may; only a change of variant is refused, by
-// whichever name, and only if the narrowed reference is used afterwards.
-static PathSet *pwNarrowShared(CastNode *cast) {
+// whichever name, and only if the narrowed reference is used afterwards. 'alias' is the
+// loan of the 'mut' borrow that is the other name beside a match's own borrow, else 0.
+static PathSet *pwNarrowShared(CastNode *cast, uint32_t alias) {
     Place pl;
     PathSet *base;
     if (!pwThrough(&cast->exp, &pl, &base))
@@ -3001,6 +3013,8 @@ static PathSet *pwNarrowShared(CastNode *cast) {
         // enum is where that borrow is, which another field of 'm' is not
         if (pl.deref && pl.nsteps == 0)
             loanShapeSource(loan, pathVars[pl.var].holds);
+        if (alias)
+            loanShapeAliasBy(loan, alias);
         pwShapeBorrow(&pl, loan, sum);
     }
     return holds;
@@ -4516,8 +4530,13 @@ static PathSet *pwValue(INode **nodep, int move) {
         // is not fully seen (pwTieWarn)
         if (iexpGetTypeDcl(node)->tag == PtrTag || iexpGetTypeDcl(((CastNode *)node)->exp)->tag == PtrTag)
             pwTieBlind = 1;
-        if (pathLoans && castSumNarrows(node))
-            return pwNarrowShared((CastNode *)node);
+        if (pathLoans && castSumNarrows(node)) {
+            if (!(node->flags & FlagNarrowOwnBorrow))
+                return pwNarrowShared((CastNode *)node, 0);
+            uint32_t alias = pwNarrowAliased((CastNode *)node);
+            if (alias)
+                return pwNarrowShared((CastNode *)node, alias);
+        }
         if (!(node->flags & FlagConvert) && pwIsOwnedLent((CastNode *)node))
             return pwOwnedLent((CastNode *)node);
         // A conversion moves nothing but an owner it carries; whatever borrow
