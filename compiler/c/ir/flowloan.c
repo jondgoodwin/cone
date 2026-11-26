@@ -1626,6 +1626,24 @@ static void loanChosenReport(INode *node, char *what, uint32_t la, uint32_t lb);
 
 static void loanShapeReport(Pending *pend, INode *usenode);
 
+// A pending change of shape or variant meets its use: one error per call or store
+static void loanShapeFire(Pending *pend, INode *usenode) {
+    pend->fired = 1;
+    if (mapGet(pend->access, 0, 1))
+        return;
+    mapPut(pend->access, 0, 1, 1);
+    loanShapeReport(pend, usenode);
+}
+
+void loanUseShape(uint32_t var, INode *usenode) {
+    PathSet *pending = pathVars[var].pending;
+    for (uint32_t i = 0; pending && i < pending->cnt; ++i) {
+        Pending *pend = &pendings[pending->ids[i]];
+        if (!pend->fired && pend->kind == PendingShape)
+            loanShapeFire(pend, usenode);
+    }
+}
+
 void loanUse(uint32_t var, INode *usenode) {
     PathSet *pending = pathVars[var].pending;
     if (pending == NULL)
@@ -1652,11 +1670,7 @@ void loanUse(uint32_t var, INode *usenode) {
             continue;
         }
         if (pend->kind == PendingShape) {
-            pend->fired = 1;
-            if (mapGet(pend->access, 0, 1))
-                continue;
-            mapPut(pend->access, 0, 1, 1);
-            loanShapeReport(pend, usenode);
+            loanShapeFire(pend, usenode);
             continue;
         }
         pend->fired = 1;
@@ -2580,7 +2594,7 @@ static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
     snprintf(buf, size, "'%s'%s", st->namesym ? &st->namesym->namestr : "collection", reshapeIsSum((INode *)st) ? " value" : "");
 }
 
-static int loanShapeIsSum(uint32_t loan) {
+int loanShapeIsSum(uint32_t loan) {
     return reshapeIsSum(loans[loan].shapecont);
 }
 
@@ -2625,7 +2639,12 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
             && isNameUseNode(((CastNode *)holder->value)->exp))
             narrowed = (VarDclNode *)((NameUseNode *)((CastNode *)holder->value)->exp)->dclnode;
         INode *at = usenode->tag == VarDclTag ? pend->access : usenode;
-        if (pathVars[pend->holder].narrowed) {
+        if (pathVars[pend->holder].compound) {
+            snprintf(msg, sizeof(msg),
+                "This compound assignment writes into one of the variants of a %s (borrowed %s, %s), but the %s at %s, made before it writes, could change which variant the %s holds: %s. The place is borrowed before the right side is made, so the result would be written into another variant's bytes. Do what changes it before the 'is' test or pattern, or after the assignment.",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)));
+        }
+        else if (pathVars[pend->holder].narrowed) {
             // The name itself, narrowed (pwNarrowName): the use is typed as the variant
             INode *as = itypeGetTypeDcl(((IExpNode *)usenode)->vtype);
             if (as->tag == RefTag)
