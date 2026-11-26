@@ -119,7 +119,8 @@ index and a call with no member name are never paths.
 the path's last name (`parseLifeHolder`, the `lifeuse` an unqualified type's use
 holds), which the collapse keeps. They are refused (`ErrorLifetimeArgs`) where the
 base is a value or a type parameter (`fnCallPathLifeCheck`, before the associated
-type paths) and where the member reached is a function, global, const or module.
+type paths) and where the member reached is not a type (`nameUseLifeCheck`, which
+`nameUseNameRes` asks of a bare name too).
 
 The member is looked up with `namespaceFind` in that namespace, bound, stamped
 `FlagQualified`, and the hop disappears:

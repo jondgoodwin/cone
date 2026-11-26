@@ -286,14 +286,7 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     // nameUseNameRes returns at once for a use that arrives bound
     nameUseMarkExpandReached(pstate, member);
 
-    // A path takes lifetimes where it names a type, not a function, global,
-    // const or module
-    uint16_t reached = member->dclnode->tag;
-    if (member->lifeuse && (reached == FnDclTag || reached == FnOverloadDclTag || reached == VarDclTag
-        || reached == ConstDclTag || reached == ModuleTag)) {
-        errorMsgNode(member->lifeuse->at, ErrorLifetimeArgs, "Lifetimes are named on a struct's use by its name: 'Cursor['a]'.");
-        member->lifeuse = NULL;
-    }
+    nameUseLifeCheck(member);
 
     // A private name belongs to the module that declares it, and naming a path
     // through that module reaches past it. Refusing it here is what
