@@ -1,15 +1,15 @@
-// What 100 idle streams hold (piecewindow.cone, HOLDING WHILE IDLE). Each server sends a piece, later a second,
-// then nothing; the receivers answer at once. Counted in buffers (every one a 64 KiB block):
+// What 100 idle streams hold (piecewindow.cone, HOLDING WHILE IDLE). Each producer sends a piece, later a
+// second, then nothing; the receivers answer at once. Counted in buffers (every one a 64 KiB block):
 //
-//   A. SocketFrom on one shared pool, idle after one piece: AT MOST TWO a stream, the buffer it waits to fill and
-//      the piece's, whose answer came in during that wait (a stream whose answer was in before the read holds
-//      one: a few in a hundred). Today's source holds one (C), so this does NOT come down to today's
-//   B. the same streams, idle after a second piece: at most two still. The first answer, in before the next
-//      read, came home; only the second's, in during the wait, is held
+//   A. SocketFrom on one shared pool, idle after one piece: ONE a stream, the buffer it waits to fill, though the
+//      piece's answer came in during that wait
+//   B. the same streams, idle after a second piece: one a stream still
 //   C. today's SocketSource: one a stream, after one piece and after two
+//   D. TransformPass on one shared pool, idle after one piece and after two: NONE, as today's TransformStage
 //
-// Mutant, run as 'congo test --no-cache -D NAME':
-//   MUT_NO_COLLECT   nothing is collected before a wait: B fails (three a stream)
+// Mutants, run as 'congo test --no-cache -D NAME':
+//   MUT_NO_COLLECTOR     no collector is started when a piece is sent: A fails (two a stream), B (three), D (one)
+//   MUT_KEEP_IDLE_SPARE  an idle producer keeps the buffer it could refill: A and B fail (two), D (one)
 
 mod pieceidle;
 
@@ -128,9 +128,37 @@ fn settle(n: u64) {
   thread.sleep(Duration.fromMillis(500i64));
 }
 
-// 'got' is no more than 'most' (and the failure says both)
-fn atMost(got: u64, most: u64, label: &str) {
-  expectUInt(got, if got <= most {got} else {most}, label);
+// A transform that gives its input back as it is
+pub struct Echo is Transform, Sendable, Move {
+  held: List[u8];
+  at: usize;
+  over: bool;
+
+  pub fn make() Echo { Echo(List[u8](), 0usize, false) }
+
+  pub fn feed(self: &mut, input: &Array[u8]) { held.appendSlice(input); }
+
+  pub fn pull(self: &mut, out: &mut IoBuf) Status {
+    if at >= held.len() {
+      return if over {Status.Done} else {Status.NeedInput};
+    }
+    out.append(&held.view()[at ..< held.len()]);
+    at = held.len();
+    Status.MoreOutput
+  }
+
+  pub fn finish(self: &mut) { over = true; }
+
+  pub fn failure(self: &) Option[AnyError] { None[AnyError] }
+}
+
+// A transform stage's producer: one piece, its answer awaited
+actor Feeder {
+  pub async fn one(self, to: TransformPass[Echo]) {
+    var b = IoBuf(100usize);
+    b.setLen(100usize);
+    _ = await to.piece(1u64, b);
+  }
 }
 
 fn restart() {
@@ -156,11 +184,11 @@ fn main() i32 {
       k = k + 1u32;
     }
     settle(n);
-    atMost(u64.from(pool.lent() / blockBytes), 2u64 * n, "A: idle after one piece, two buffers a stream at most");
+    expectUInt(u64.from(pool.lent() / blockBytes), n, "A: idle after one piece, one buffer a stream");
     flags.second.store(1u64);
     settle(2u64 * n);
     expectUInt(flags.pieces.load(), 2u64 * n, "B: every second piece arrived");
-    atMost(u64.from(pool.lent() / blockBytes), 2u64 * n, "B: idle after two pieces, still two a stream at most");
+    expectUInt(u64.from(pool.lent() / blockBytes), n, "B: idle after two pieces, one a stream still");
     _ = stop.cancel();
     // the reads end by their cancel, which the runtime's being quiet does not wait for
     var tries = 0u32;
@@ -194,6 +222,40 @@ fn main() i32 {
       sinks[usize.from(k)].quit();
       k = k + 1u32;
     }
+  }
+
+  // D
+  {
+    restart();
+    actors.waitQuiet();
+    let pool = ChunkPool.make(67108864usize);
+    let sink = Takes();
+    let feeder = Feeder();
+    var stagesMade = List[TransformPass[Echo]]();
+    var k = 0u32;
+    while k < count {
+      let stage = TransformPass[Echo](StreamTo[IoBuf].at(sink, u64.from(k) + 1u64), Echo.make(), pool.clone());
+      feeder.one(stage);
+      stagesMade.push(stage);
+      k = k + 1u32;
+    }
+    settle(n);
+    expectUInt(flags.pieces.load(), n, "D: every stage's piece went through");
+    expectUInt(u64.from(pool.lent()), 0u64, "D: an idle transform stage holds nothing, after one piece");
+    k = 0u32;
+    while k < count {
+      feeder.one(stagesMade[usize.from(k)]);
+      k = k + 1u32;
+    }
+    settle(2u64 * n);
+    expectUInt(flags.pieces.load(), 2u64 * n, "D: every second piece went through");
+    expectUInt(u64.from(pool.lent()), 0u64, "D: and after two");
+    k = 0u32;
+    while k < count {
+      stagesMade[usize.from(k)].end(1u64, Ending.Finished);
+      k = k + 1u32;
+    }
+    actors.waitQuiet();
   }
 
   finalAll();
