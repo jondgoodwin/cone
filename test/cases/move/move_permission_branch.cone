@@ -1,0 +1,285 @@
+// An owner whose permission changes in one branch ('Rc[uni, T]' wanted as
+// 'Rc[mut, T]') is moved on that path alone: the change is a subtype step, the
+// same pointer and count, so each value is finalized once, whichever arm ran.
+mod move_permission_branch;
+import stdio use *;
+import sync use Arc;
+
+struct Noisy {
+  pub n: i32;
+  fn final(self: &uni) { printStr("final "); printInt(self.n); printStr("\n"); }
+}
+struct Hold { pub r: Rc[mut, Noisy]; }
+
+fn show(n: i32) { printInt(n); printStr("\n"); }
+fn take(r: Rc[mut, Noisy]) { show(r.n); }
+fn label(s: &str) { printStr(s); printStr("\n"); }
+
+fn ifArm(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut, Noisy](Noisy(26));
+  let r: Rc[mut, Noisy] = if c {a} else {b};
+  show(r.n);
+}
+
+fn matchArm(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut, Noisy](Noisy(26));
+  let r: Rc[mut, Noisy] = match c { case true {a} else {b} };
+  show(r.n);
+}
+
+fn loopBreak(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut, Noisy](Noisy(26));
+  let r: Rc[mut, Noisy] = while { if c { break a; } if !c { break b; } };
+  show(r.n);
+}
+
+fn blockValue(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut, Noisy](Noisy(26));
+  let r: Rc[mut, Noisy] = { show(1); if c {a} else {b} };
+  show(r.n);
+}
+
+fn blockOwns(c: bool) {
+  let r: Rc[mut, Noisy] = {
+    let a = Rc[Noisy](Noisy(25));
+    let b = Rc[mut, Noisy](Noisy(26));
+  if c {a} else {b}
+  };
+  show(r.n);
+}
+
+fn nested(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut, Noisy](Noisy(26));
+  let r: Rc[mut, Noisy] = if c { if c {a} else {b} } else {b};
+  show(r.n);
+}
+
+fn bothUni(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[Noisy](Noisy(26));
+  let r: Rc[mut, Noisy] = if c {a} else {b};
+  show(r.n);
+}
+
+fn argument(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut, Noisy](Noisy(26));
+  take(if c {a} else {b});
+}
+
+fn assigned(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut, Noisy](Noisy(26));
+  var r = Rc[mut, Noisy](Noisy(27));
+  r = if c {a} else {b};
+  show(r.n);
+}
+
+fn field(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut, Noisy](Noisy(26));
+  let h = Hold(if c {a} else {b});
+  show(h.r.n);
+}
+
+fn arrayElement(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut, Noisy](Noisy(26));
+  let xs: Array[Rc[mut, Noisy], 1] = [if c {a} else {b}];
+  show(xs[0].n);
+}
+
+fn pickTail(c: bool) Rc[mut, Noisy] {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut, Noisy](Noisy(26));
+  if c {a} else {b}
+}
+fn tailValue(c: bool) {
+  let r = pickTail(c);
+  show(r.n);
+}
+
+fn pickReturn(c: bool) Rc[mut, Noisy] {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut, Noisy](Noisy(26));
+  return if c {a} else {b};
+}
+fn returned(c: bool) {
+  let r = pickReturn(c);
+  show(r.n);
+}
+
+fn closure(c: bool) {
+  let pick = fn(c: bool) Rc[mut, Noisy] {
+    let a = Rc[Noisy](Noisy(25));
+    let b = Rc[mut, Noisy](Noisy(26));
+  if c {a} else {b}
+  };
+  let r = pick(c);
+  show(r.n);
+}
+
+fn uniImm(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[imm, Noisy](Noisy(26));
+  let r: Rc[imm, Noisy] = if c {a} else {b};
+  show(r.n);
+}
+
+fn uniRo(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[ro, Noisy](Noisy(26));
+  let r: Rc[ro, Noisy] = if c {a} else {b};
+  show(r.n);
+}
+
+fn uniMut1(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[mut1, Noisy](Noisy(26));
+  let r: Rc[mut1, Noisy] = if c {a} else {b};
+  show(r.n);
+}
+
+fn uniOpaq(c: bool) {
+  let a = Rc[Noisy](Noisy(25));
+  let b = Rc[opaq, Noisy](Noisy(26));
+  let r: Rc[opaq, Noisy] = if c {a} else {b};
+  show(0);
+}
+
+fn arcImm(c: bool) {
+  let a = Arc[uni, Noisy](Noisy(25));
+  let b = Arc[imm, Noisy](Noisy(26));
+  let r: Arc[imm, Noisy] = if c {a} else {b};
+  show(r.n);
+}
+
+fn mutRo(c: bool) {
+  let a = Rc[mut, Noisy](Noisy(25));
+  let b = Rc[ro, Noisy](Noisy(26));
+  let r: Rc[ro, Noisy] = if c {a} else {b};
+  show(r.n);
+  show(a.n);
+}
+
+fn immRo(c: bool) {
+  let a = Rc[imm, Noisy](Noisy(25));
+  let b = Rc[ro, Noisy](Noisy(26));
+  let r: Rc[ro, Noisy] = if c {a} else {b};
+  show(r.n);
+  show(a.n);
+}
+
+fn soleImm(c: bool) {
+  let a = Uni[uni, Noisy](Noisy(25));
+  let b = Uni[imm, Noisy](Noisy(26));
+  let r: Uni[imm, Noisy] = if c {a} else {b};
+  show(r.n);
+}
+
+fn soleRo(c: bool) {
+  let a = Uni[uni, Noisy](Noisy(25));
+  let b = Uni[uni, Noisy](Noisy(26));
+  let r: Uni[ro, Noisy] = if c {a} else {b};
+  show(r.n);
+}
+
+fn main() {
+  label("ifArm true");
+  ifArm(true);
+  label("ifArm false");
+  ifArm(false);
+  label("matchArm true");
+  matchArm(true);
+  label("matchArm false");
+  matchArm(false);
+  label("loopBreak true");
+  loopBreak(true);
+  label("loopBreak false");
+  loopBreak(false);
+  label("blockValue true");
+  blockValue(true);
+  label("blockValue false");
+  blockValue(false);
+  label("blockOwns true");
+  blockOwns(true);
+  label("blockOwns false");
+  blockOwns(false);
+  label("nested true");
+  nested(true);
+  label("nested false");
+  nested(false);
+  label("bothUni true");
+  bothUni(true);
+  label("bothUni false");
+  bothUni(false);
+  label("argument true");
+  argument(true);
+  label("argument false");
+  argument(false);
+  label("assigned true");
+  assigned(true);
+  label("assigned false");
+  assigned(false);
+  label("field true");
+  field(true);
+  label("field false");
+  field(false);
+  label("arrayElement true");
+  arrayElement(true);
+  label("arrayElement false");
+  arrayElement(false);
+  label("tailValue true");
+  tailValue(true);
+  label("tailValue false");
+  tailValue(false);
+  label("returned true");
+  returned(true);
+  label("returned false");
+  returned(false);
+  label("closure true");
+  closure(true);
+  label("closure false");
+  closure(false);
+  label("uniImm true");
+  uniImm(true);
+  label("uniImm false");
+  uniImm(false);
+  label("uniRo true");
+  uniRo(true);
+  label("uniRo false");
+  uniRo(false);
+  label("uniMut1 true");
+  uniMut1(true);
+  label("uniMut1 false");
+  uniMut1(false);
+  label("uniOpaq true");
+  uniOpaq(true);
+  label("uniOpaq false");
+  uniOpaq(false);
+  label("arcImm true");
+  arcImm(true);
+  label("arcImm false");
+  arcImm(false);
+  label("mutRo true");
+  mutRo(true);
+  label("mutRo false");
+  mutRo(false);
+  label("immRo true");
+  immRo(true);
+  label("immRo false");
+  immRo(false);
+  label("soleImm true");
+  soleImm(true);
+  label("soleImm false");
+  soleImm(false);
+  label("soleRo true");
+  soleRo(true);
+  label("soleRo false");
+  soleRo(false);
+}
