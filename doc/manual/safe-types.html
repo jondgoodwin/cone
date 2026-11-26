@@ -458,11 +458,26 @@ fn poke(r: &amp;P) { let m = r as &amp;mut P; m.x = 99; }
   //   `imm` to `&amp;`); anything else needs `trust`, which is not built yet.
 fn share(r: &amp;mut P) &amp;uni P { r as &amp;uni P }   // **ERROR** 1502, mut to uni
 </pre>
-	<p>A raw pointer cast to a reference is not asked this (it is how a library hands out memory it manages),
+	<p>Nor may <span class="pre">as</span> between references change the region, except to lend: the result is in
+		the source's region, or it is a borrow, as a coercion's is. A borrow made an owner, or one region's owner
+		made another's, would be an owner of memory it never held, released by its death, or by another region's
+		rules:</p>
+<pre>
+fn steal(r: &amp;uni P) { let o = r as Uni[P]; }
+  // **ERROR** 1502: `as` makes an owner from a borrow, which is not a coercion; that needs `trust`,
+  //   which is not built yet.
+fn alone(a: Rc[imm, P]) { let o = a as Uni[imm, P]; }
+  // **ERROR** 1502: `as` makes an owner of region Uni from an owner of region Rc, ...
+</pre>
+	<p>An owner cast to a borrow stays, and so does a cast within one region:
+		<span class="pre">p as Uni[str]</span> makes text of the bytes a <span class="pre">Uni[Array[u8]]</span>
+		owns. A library that has a block of its own makes the owner of it with
+		<a href="safe-intrinsics.html#uniarrayfromparts"><span class="pre">mem.uniArrayFromParts</span></a>.</p>
+	<p>A raw pointer cast to a reference is asked neither (it is how a library hands out memory it manages),
 		and neither is a reference cast to a pointer. One more exception stands for now: a type declaring
 		<span class="pre">Immutable</span> makes a reference written with no permission <span class="pre">imm</span>,
 		and <span class="pre">&amp;</span> may be cast to it. That is how a slice of bytes becomes text:
-		<span class="pre">bytes as &amp;str</span>, or <span class="pre">p as Uni[str]</span>
+		<span class="pre">bytes as &amp;str</span>
 		(<a href="lib-string.html#bytes">Text and bytes</a>). A permission written out is checked
 		like any other, so <span class="pre">bytes as &amp;imm str</span> and, from a <span class="pre">&amp;</span>,
 		<span class="pre">r as &amp;imm P</span> are refused. The cast promises that the bytes are text and that

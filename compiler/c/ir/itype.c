@@ -2416,6 +2416,12 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
     if (itypeVariantPending(dcltype))
         return itypeVariantPendingCause;
 
+    // An array is as unsized as its element, which is then the cause. One an
+    // array literal or a tuple built was never refused as a written type is
+    // (arrayTypeFinish), so it may carry no flag saying so
+    if (dcltype->tag == ArrayTag && itypeNoSizeElem(dcltype, depth) != NULL)
+        return NULL;
+
     if (!(dcltype->flags & OpaqueType))
         return NULL;
 
@@ -2463,16 +2469,33 @@ static INode *itypeNoSizeField(INode *dcltype, uint32_t depth) {
     return NULL;
 }
 
-// The first element of this tuple whose own type has no size, as the type it
-// names, or NULL if none does or this is not a tuple. A tuple holds each element
-// by value and is part of whatever holds it, so it is a hop the walk crosses like
-// a field, but it has no declaration of its own to be the cause.
+// The element types of a tuple or an array type, or NULL for any other type
+static Nodes *itypeElemTypes(INode *dcltype) {
+    if (dcltype->tag == TTupleTag)
+        return ((TupleNode*)dcltype)->elems;
+    return dcltype->tag == ArrayTag ? ((ArrayNode*)dcltype)->elems : NULL;
+}
+
+// The first element of this tuple or array whose own type has no size, as the
+// type it names, or NULL if none does or this is neither. A tuple or an array
+// holds each element by value and is part of whatever holds it, so it is a hop
+// the walk crosses like a field, but it has no declaration of its own to be the
+// cause.
+//
+// An array is crossed only to an '@unsized' enum. A written array is held to its
+// element's size where it is written (arrayTypeFinish), and crossing it for any
+// other cause would report that again at whatever holds the array.
 static INode *itypeNoSizeElem(INode *dcltype, uint32_t depth) {
-    if (dcltype->tag != TTupleTag || depth >= NoSizeChainMax)
+    Nodes *elems = itypeElemTypes(dcltype);
+    if (elems == NULL || depth >= NoSizeChainMax
+        || (dcltype->tag == ArrayTag && itypeHeldUnsizedEnum(dcltype) == NULL))
         return NULL;
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(((TupleNode*)dcltype)->elems, cnt, nodesp)) {
+    for (nodesFor(elems, cnt, nodesp)) {
+        // An array already refused for its element may hold no type there
+        if (!isTypeNode(*nodesp))
+            continue;
         INode *elemtype = itypeGetTypeDcl(*nodesp);
         if (itypeNoSizeOwnCause(elemtype, depth + 1) != NULL
             || itypeNoSizeField(elemtype, depth + 1) != NULL
@@ -2480,6 +2503,36 @@ static INode *itypeNoSizeElem(INode *dcltype, uint32_t depth) {
             return elemtype;
     }
     return NULL;
+}
+
+// The '@unsized' enum a value of this type holds by value. See itype.h.
+// No depth bound: a tuple or an array cannot hold itself, and a bound would let
+// a value through
+INode *itypeHeldUnsizedEnum(INode *type) {
+    if (type == NULL || !isTypeNode(type))
+        return NULL;
+    INode *dcltype = itypeGetTypeDcl(type);
+    if (dcltype->tag == StructTag)
+        return (dcltype->flags & TraitType) && (dcltype->flags & EnumType) && !(dcltype->flags & SameSize)
+            ? dcltype : NULL;
+    Nodes *elems = itypeElemTypes(dcltype);
+    if (elems == NULL)
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(elems, cnt, nodesp)) {
+        INode *held = itypeHeldUnsizedEnum(*nodesp);
+        if (held)
+            return held;
+    }
+    return NULL;
+}
+
+// Refuse a use of an '@unsized' enum's value. See itype.h.
+void itypeUnsizedEnumMsg(INode *node, INode *enumdcl, const char *use) {
+    errorMsgNode(node, ErrorNoSize,
+        "%s is an '@unsized' enum, so its value can't be %s; its variants differ in size. Reach it through a reference.",
+        itypeName(enumdcl), use);
 }
 
 // Why this type cannot report a size. See itype.h.

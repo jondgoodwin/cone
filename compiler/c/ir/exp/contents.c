@@ -431,6 +431,35 @@ static INode **contentsEntries(FnCallNode *node, uint32_t *nentries) {
     return argp;
 }
 
+// Report a type written to the left of '<-', 'Uni[Array[u8]] <- 1u8, 2u8', and
+// name the form that works: contents follow a construction's or allocation's
+// parentheses, and an owner of a body with no fixed size copies a borrow
+static void contentsTypeReceiverMsg(TypeCheckState *pstate, INode **typep) {
+    // A type refused as a type was reported there
+    if (!itypeTypeCheck(pstate, typep))
+        return;
+    INode *type = itypeGetTypeDcl(*typep);
+    char spelled[160];
+    spelled[0] = '\0';
+    itypeSpellCat(spelled, sizeof(spelled), *typep, 0);
+    if (!spelled[0]) {
+        iexpNotTypedMsg(*typep);
+        return;
+    }
+    INode *body = type->tag == RefTag ? ((RefNode*)type)->vtexp : type;
+    if (itypeLenBodyElem(body))
+        errorMsgNode(*typep, ErrorNotTyped,
+            "`%s` is a type, not a value, so '<-' has nothing to append to. %s takes no contents: an owner of it copies a borrow of one, '%s%s%s(view)'.",
+            spelled, itypeName(body), type->tag == RefTag ? "" : "Uni[", spelled, type->tag == RefTag ? "" : "]");
+    else if (type->tag == StructTag || type->tag == ArrayTag || type->tag == VectorTag
+        || (type->tag == RefTag && ((RefNode*)type)->region != borrowRef))
+        errorMsgNode(*typep, ErrorNotTyped,
+            "`%s` is a type, not a value, so '<-' has nothing to append to. Contents follow a construction or an allocation, after its parentheses: '%s() <- ...'.",
+            spelled, spelled);
+    else
+        iexpNotTypedMsg(*typep);
+}
+
 // The entries of a '<-' on a value that is not a construction become a block
 // that borrows the receiver once and applies each entry against that borrow:
 //   { let recv = &mut xs; *recv <- 1; ... }
@@ -451,8 +480,15 @@ static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
     int eachTemps = contentsTextList;
     contentsTextList = 0;
 
-    // A receiver with no type was reported where it was made
+    // A receiver with no type was reported where it was made, except a type's
+    // name, which is no error until something wants a value of it
     inodeTypeCheckAny(pstate, &node->objfn);
+    if (isTypeNode(node->objfn)
+        || (isNameUseNode(node->objfn) && nameUseGroup((NameUseNode*)node->objfn) == TypeGroup)) {
+        contentsTypeReceiverMsg(pstate, &node->objfn);
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
     if (!isExpNode(node->objfn) || iexpGetTypeDcl(node->objfn) == errorType
         || iexpGetTypeDcl(node->objfn) == unknownType) {
         *((INode**)nodep) = newErrorNode((INode*)node);

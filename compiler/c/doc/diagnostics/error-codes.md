@@ -715,9 +715,11 @@ check, `castRefPermCheck` in `cast.c`): between references `as` is only a legal 
 question an implicit coercion asks of the permissions (`permMatches`), and the message names both
 permissions and says the cast needs `trust`, which is not built yet ([cast](../nodes/cast.md),
 "`castTypeCheck`"). A `&` made the `imm` a type declaring `Immutable` defaults to, with no permission written
-(`bytes as &str`, `p as Uni[str]`), is let through for now; the same permission written out
-(`as &imm P`, `bytes as &imm str`) is refused. A raw pointer made a reference, and a reference
-made a pointer, are not asked.
+(`bytes as &str`), is let through for now; the same permission written out
+(`as &imm P`, `bytes as &imm str`) is refused. The same code, with its own message, refuses a
+change of region that is not to a borrow (`castRefRegionCheck`, asked after the permission): a
+borrow made an owner, or one region's owner made another's (`Rc` as `Uni`). A raw pointer made a
+reference, and a reference made a pointer, are not asked.
 
 An `as` onto a struct, an enum or a `char` from anything that is not a coercion to it
 (a type as itself and a variant as its enum are the coercions) is `ErrorAsTarget` (type check,
