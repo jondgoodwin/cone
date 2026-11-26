@@ -1,0 +1,84 @@
+// What stays of an '@unsized' enum once its value is never used
+// (enum_typecheck_unsized_uses): a common field read and written through a
+// reference, with and without a written '*', matching and testing through a
+// reference, dispatch, a reference to a variant given where one to the enum is
+// wanted, and a variant stored or copied whole through a reference to that
+// variant, which has one size. Every line printed is checked against the
+// values written here.
+
+mod enum_unsized_places;
+
+import stdio use *;
+
+enum @unsized Node {
+  pub kind: i32;
+  pub fn area(self: &) i32 {kind * 10}
+
+  struct Lit { pub val: i32; }
+  struct Add { pub a: i64; pub b: i64; }
+}
+use Node;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn describe(n: &Node) i64 {
+  match n {
+    case let &Lit(l) {i64.from(l.val)}
+    case let &Add(x) {x.a + x.b}
+  }
+}
+
+fn isLit(n: &Node) i64 {
+  if n is &Lit {1i64} else {0i64}
+}
+
+fn readBare(n: &Node) i64 {i64.from(n.kind)}
+fn readStarred(n: &Node) i64 {i64.from((*n).kind)}
+
+fn bump(n: &mut Node) {
+  n.kind += 1;
+  (*n).kind += 10;
+}
+
+fn dispatch(n: &Node) i64 {i64.from(n.area())}
+fn dispatchStarred(n: &Node) i64 {i64.from((*n).area())}
+
+fn main() {
+  var lit = Lit(1, 5);
+  var add = Add(2, 30i64, 4i64);
+
+  // A reference to a variant given where one to the enum is wanted
+  show("lit", describe(&lit));
+  show("add", describe(&add));
+  show("lit-is-lit", isLit(&lit));
+  show("add-is-lit", isLit(&add));
+
+  // 1 + 1 + 10, then 12 + 100
+  bump(&mut lit as &mut Node);
+  show("kind-after-bump", readBare(&lit));
+  let r = &mut lit as &mut Node;
+  r.kind = r.kind + 100;
+  show("kind-after-store", readStarred(r));
+  (*r).kind = 3;
+  show("kind-after-starred-store", readBare(r));
+
+  show("dispatch", dispatch(&add));
+  show("dispatch-starred", dispatchStarred(&add));
+  // The borrow of a field of a deref is a place too
+  show("borrowed-field", i64.from(*&(*r).kind));
+
+  // Through a reference to the variant, whose size is the variant's own
+  let l = r as &mut Lit;
+  *l = Lit(7, 70);
+  let copy = *l;
+  show("variant-stored", i64.from(copy.val));
+  // The match still reads the variant it was
+  show("variant-kind", readBare(r));
+  show("lit-still-lit", describe(r));
+  show("add-untouched", describe(&add));
+}

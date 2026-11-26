@@ -119,6 +119,7 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 #include "types/vector.h"
 
 #include "export.h"
+#include "byvalue.h"
 
 #include "meta/genvardcl.h"
 #include "meta/macro.h"

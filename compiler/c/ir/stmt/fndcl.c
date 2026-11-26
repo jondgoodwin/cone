@@ -664,6 +664,10 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     pstate->scope = svScope;
     pstate->fn = svFn;
     pstate->extend = svExtend;
+    // What a body does with an '@unsized' enum's value is judged whole, once
+    // every expression in it is typed (byvalue.h)
+    if (errors == errorsOnEntry && errorsPassedOver == passedOverOnEntry)
+        byValueCheck(fnnode);
     if (errors == errorsOnEntry)
         fnnode->dclinfo.facts |= DclBodyTyped;
 
