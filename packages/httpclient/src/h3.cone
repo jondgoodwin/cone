@@ -154,8 +154,9 @@ pub trait Http3 {
 // the httpconn trait by forwarding. If that is fixed, these may extend httpconn's and the adapters go.
 //
 // A TURN, as the value's header says: the host's call of datagramIn or handleTimeout (or of the calls above the
-// wire), then takeDatagram until it gives None (or at the host's send depth, then finishTurn); wantsTurn says
-// another turn is owed.
+// wire), then startTurn, then takeDatagram until it gives None (or at the host's send depth, then finishTurn);
+// wantsTurn says another turn is owed, and stays true until a startTurn takes it up, so a host that asks wantsTurn
+// calls startTurn before each turn, or it is told to turn again for ever. 'byTimer' says a timer began the turn.
 
 // A connection ID of at most 20 bytes (RFC 9000's most), its bytes packed into three words, and its length: the
 // key a host's routing table holds a connection under
@@ -196,6 +197,8 @@ pub trait H3ServerConn {
   pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine());
   pub fn release(self: &mut, stream: u32, n: usize);
   pub fn stopBody(self: &mut, stream: u32) bool;
+  // processed — true: the application began processing the request (INTERNAL_ERROR); false: it never had it (REFUSED_STREAM / H3_REQUEST_REJECTED)
+  pub fn reset(self: &mut, stream: u32, processed: bool);
   pub fn pollTimeout(self: &) Option[Instant];
   pub fn handleTimeout(self: &mut, now: Instant);
   pub fn shutdown(self: &mut);
@@ -207,10 +210,12 @@ pub trait H3ServerConn {
   pub fn wantsCall(self: &) bool;
   pub fn takeCall(self: &mut) Op;
   pub fn callDone(self: &mut, c: &mut Completion, now: Instant);
-  // Below the wire: one UDP payload from the peer; the next datagram to send (None when there is none now);
-  // what the last call of a turn would do, when the host stops taking datagrams early; whether another turn is
-  // owed; the connection IDs it answers to now, appended to out (how many), and the count that moves when they change
+  // Below the wire: one UDP payload from the peer; the start of a turn, taking up an owed one; the next datagram
+  // to send (None when there is none now); what the last call of a turn would do, when the host stops taking
+  // datagrams early; whether another turn is owed; the connection IDs it answers to now, appended to out (how
+  // many), and the count that moves when they change
   pub fn datagramIn(self: &mut, d: &Array[u8], now: Instant);
+  pub fn startTurn(self: &mut, byTimer: bool);
   pub fn takeDatagram(self: &mut, now: Instant) Option[IoBuf];
   pub fn finishTurn(self: &mut, now: Instant);
   pub fn wantsTurn(self: &) bool;
@@ -245,6 +250,7 @@ pub trait H3ClientConn {
   pub fn callDone(self: &mut, c: &mut Completion, now: Instant);
   pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant);
   pub fn datagramIn(self: &mut, d: &Array[u8], now: Instant);
+  pub fn startTurn(self: &mut, byTimer: bool);
   pub fn takeDatagram(self: &mut, now: Instant) Option[IoBuf];
   pub fn finishTurn(self: &mut, now: Instant);
   pub fn wantsTurn(self: &) bool;

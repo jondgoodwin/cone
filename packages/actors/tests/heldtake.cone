@@ -1,0 +1,108 @@
+// A held timer's parked next() ended by its group's cancel, with the thread that ends it stopped between taking the
+// waiter and reading the Reply out of the cell (row 809, Bug 127). Meanwhile the Timer is dropped by its own actor,
+// and another actor's Timer parks on the same worker. The ended next() must answer false, and the other actor's stay
+// parked and answer true at its own deadline: a cell is not freed, and so not given to another Timer, until its Reply
+// has been read. One worker, so that a cell freed here is the next one taken.
+
+mod heldtake;
+
+import testing use *;
+import thread;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import cancelgroups use CancelGroup;
+import actors use Timer;
+
+const first = 1u64;
+const second = 2u64;
+const anHour = 3600000000000i64;
+
+actor Racer {
+  tag: u64;
+  timer: Timer;
+  woke: Sender[u64];    // ten times the tag, plus the value next() answered
+  pong: Sender[u64];
+
+  // Park on a deadline an hour off, in group g
+  pub async fn parkIn(self, g: CancelGroup) {
+    timer = Timer.within(&g);
+    timer.set(Instant.fromNanos(Instant.now().nanos() + anHour));
+    let v = await timer.next();
+    woke.send(tag * 10u64 + (if v {1u64} else {0u64}));
+  }
+
+  // The same, in no group
+  pub async fn park(self) {
+    timer.set(Instant.fromNanos(Instant.now().nanos() + anHour));
+    let v = await timer.next();
+    woke.send(tag * 10u64 + (if v {1u64} else {0u64}));
+  }
+
+  pub async fn hurry(self) {
+    timer.set(Instant.now());
+  }
+
+  pub async fn letGo(self) {
+    timer = Timer.make();
+  }
+
+  pub async fn ping(self) {
+    pong.send(tag);
+  }
+}
+
+fn cancelIt(g: CancelGroup) u32 {
+  g.cancel();
+  0u32
+}
+
+fn runAll() {
+  var wtx: Sender[u64];
+  var wrx: Receiver[u64];
+  wtx, wrx = Channel[u64].make();
+  var ptx: Sender[u64];
+  var prx: Receiver[u64];
+  ptx, prx = Channel[u64].make();
+  let a = Racer(first, Timer.make(), wtx.clone(), ptx.clone());
+  let b = Racer(second, Timer.make(), wtx.clone(), ptx.clone());
+  let g = CancelGroup.make();
+  a.parkIn(g);
+  // a ping runs once the behaviour before it has parked
+  a.ping();
+  expect((prx.recv() || 0u64) == first, "the first racer parked");
+
+  actors.stallNextHeldTake();
+  let t = thread.startWith(thread.Options(name: "canceller"), g, &cancelIt);
+  while !actors.publishStalled() {
+    thread.yieldNow();
+  }
+  // the waiter is taken and its Reply not yet read: drop that Timer, then park another
+  a.letGo();
+  a.ping();
+  expect((prx.recv() || 0u64) == first, "its Timer dropped while the cancel is stopped");
+  b.park();
+  b.ping();
+  expect((prx.recv() || 0u64) == second, "the second racer parked");
+  actors.releaseStalled();
+  t.join();
+  expect((wrx.recv() || 0u64) == 10u64, "the cancelled next() answers false, to the actor that awaits it");
+  b.hurry();
+  expect((wrx.recv() || 0u64) == 21u64, "the other Timer's next() stayed parked, and answers true at its deadline");
+  b.letGo();
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 1u32));
+  runAll();
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), "idle: every operation spent");
+  var waited = 0u64;
+  while (actors.timerStats().held != 0u64 || actors.timerStats().heldEntries != 0u64) && waited < 500u64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u64;
+  }
+  let st = actors.timerStats();
+  expect(st.held == 0u64, "no cell held once the Timers have gone");
+  expect(st.heldEntries == 0u64, "no entry left in a wheel");
+  done()
+}

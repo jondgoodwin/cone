@@ -125,6 +125,10 @@ void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
                 "''static' is named on a parameter's own reference ('p &'static T') or in the result, not inside a parameter's type: what a caller passes there is not checked to be global.");
     }
     itypeTypeCheck(pstate, &sig->rettype);
+    // A call hands its result back by value
+    INode *unsizedenum = itypeHeldUnsizedEnum(sig->rettype);
+    if (unsizedenum)
+        itypeUnsizedEnumMsg(sig->rettype, unsizedenum, "returned");
     // A function reference's signature, checked as a reference's target while a
     // layout is in flight, has its lifetimes read once its types are laid out:
     // what a type's values hold is read from its layout

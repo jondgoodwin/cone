@@ -224,14 +224,15 @@ Stated so nobody assumes otherwise:
   measuring.
 - **Bounds checks are not elided** by the front end; whatever LLVM proves is
   what goes.
-- **The pass list is short** — mem2reg, reassociate, GVN, CFG simplification,
-  and function inlining. The compiler is not trying to out-optimize LLVM, only
-  to hand it IR it can optimize.
+- **There is no pass list of the compiler's own** — a release build runs LLVM's
+  O3 pipeline, and a debug build only drops what nothing reaches and simplifies
+  the control flow graph, leaving every variable in its stack slot. The compiler
+  is not trying to out-optimize LLVM, only to hand it IR it can optimize.
 
 ## Hazards
 
 - **Judging cost from `.preir` is misleading** — the alloca-everything strategy
-  dominates it, and mem2reg removes most of it.
+  dominates it, and a release build removes most of it.
 - **"It compiled to a pointer" does not mean it is a borrow.** Owning and
   borrowed references are the same machine value; only the emitted release code
   tells them apart.

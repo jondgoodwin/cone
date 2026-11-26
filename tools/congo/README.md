@@ -54,7 +54,9 @@ does not read and a profiler (WPA, `llvm-pdbutil`) does; on Linux it stays in
 the ELF. `--strip`, given to `build`, `run` or `test`, passes `--strip` to every
 `conec` compile, so the objects carry none, and writes no `.pdb` (and removes
 the one an earlier link left). A
-WebAssembly or SPIR-V release build carries none either way.
+WebAssembly or SPIR-V release build carries none either way. A debug build also
+describes parameters and locals, and keeps each in its stack slot (conec's debug
+passes promote none), so a debugger reads it anywhere in its function.
 
 `--lto`, given to `build`, `run` or `test` together with `--release` (alone it
 is refused), is link-time optimisation, never the default. Every native compile

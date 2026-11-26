@@ -64,6 +64,11 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node, INode *expectTyp
 // type arguments, 'None[i32]' (FlagValueTermCall).
 void fnCallVariantTermNameRes(NameResState *pstate, INode **nodep);
 
+// The enum's name ('Option' or 'Result') of a construction of a variant that
+// leaves a type parameter unnamed by its values and writes no type arguments,
+// 'None', 'Ok(v)', 'Err(e)'; NULL for anything else
+Name *fnCallOpenVariantFamily(INode *node);
+
 // The indexes of a place written to, marked while the place is checked: on a type
 // declaring '&[]', each is lowered as '&mut x[i]' would be. 'fnCallSetPlace'
 // marks every index of the chain of field reads and indexes that leads from

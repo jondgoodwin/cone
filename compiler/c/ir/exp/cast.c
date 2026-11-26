@@ -7,6 +7,8 @@
 
 #include "../ir.h"
 
+#include <stdio.h>
+
 // Create node for recasting to a new type without conversion
 CastNode *newRecastNode(INode *exp, INode *type) {
     CastNode *node;
@@ -549,6 +551,35 @@ static int castRefPermCheck(CastNode *node, INode *fromtype, INode *totype) {
     return 1;
 }
 
+// Between references 'as' keeps the region or lends: the region is the source's,
+// or the result is a borrow, which is all a coercion does (regionMatches).
+// A borrow made an owner, or one region's owner made another's, forges an owner:
+// it would release memory it never held, or by another region's rules. That
+// needs 'trust', which is not built yet. A pointer 'as' a reference is not asked,
+// as for the permission. Returns whether it reported.
+static int castRefRegionCheck(CastNode *node, INode *fromtype, INode *totype) {
+    if (!castIsRefKind(fromtype) || !castIsRefKind(totype))
+        return 0;
+    INode *fromregion = ((RefNode*)fromtype)->region;
+    INode *toregion = ((RefNode*)totype)->region;
+    // A region already refused (refRegionCheck) has said so
+    if (fromregion == errorType || toregion == errorType
+        || regionMatches(toregion, fromregion, Coercion) != NoMatch)
+        return 0;
+    if (itypeGetTypeDcl(fromregion) == borrowRef)
+        errorMsgNode(node->exp, ErrorCastPerm,
+            "`as` makes an owner from a borrow, which is not a coercion; that needs `trust`, which is not built yet.");
+    else {
+        // Each call of itypeName reuses its buffer, so the first is copied
+        char toname[200];
+        snprintf(toname, sizeof(toname), "%s", itypeName(toregion));
+        errorMsgNode(node->exp, ErrorCastPerm,
+            "`as` makes an owner of region %s from an owner of region %s, which is not a coercion; that needs `trust`, which is not built yet.",
+            toname, itypeName(fromregion));
+    }
+    return 1;
+}
+
 // A struct, an enum or a char made by 'as' from something that is not a coercion
 // to it is refused. Their values are more than their bits: a struct has private
 // fields and may hold a reference, an enum has a tag that names its variant, a
@@ -670,10 +701,12 @@ static int castBorrowsUni(INode *exp) {
 // reference is used.
 //
 // Where nothing can, the narrowing needs no more: the reference is 'uni', 'imm'
-// or 'mut1' (MayIntRefSum), or it is a read-only or 'uni' borrow made here
-// of a place reached as 'uni' -- a local above all, which the stack alone owns and
-// which the loan walk freezes against change while the borrow and the narrowed
-// reference live. A 'mut' borrow of one is an alias loan and is followed like the rest.
+// or 'mut1' (MayIntRefSum). A read-only borrow made here of a place reached as
+// 'uni' -- a local above all -- freezes the place against change by its own name,
+// but not against a 'mut' borrow of it made earlier, which is an alias loan and may
+// still store another variant. Only the loan walk knows whether one is held, so such
+// a narrowing is marked too (FlagNarrowOwnBorrow) and followed only where one is. A
+// 'mut' borrow made here is an alias loan itself and is followed like the rest.
 // A reference of unseen origin -- a parameter, one reached through
 // another reference or a shared owner -- may be one of several, any of which may
 // change the variant: the loan walk follows the narrowed reference as it follows a
@@ -688,10 +721,14 @@ static int castIsSumNarrow(RefNode *from, RefNode *to) {
         && (fromstr->flags & (HasTagField | SameSize));
 }
 
-static int castSumNarrowsRefs(CastNode *node, RefNode *from, RefNode *to) {
-    if (!castIsSumNarrow(from, to))
-        return 0;
-    return !((permGetFlags(from->perm) & MayIntRefSum) || castBorrowsUni(node->exp));
+// Mark a borrowed reference narrowed into a variant for the loan walk, unless its own
+// permission rules out a change of variant
+static void castMarkSumNarrow(CastNode *node, RefNode *from, RefNode *to) {
+    if (!castIsSumNarrow(from, to) || (permGetFlags(from->perm) & MayIntRefSum))
+        return;
+    node->flags |= FlagVariantNarrow;
+    if (castBorrowsUni(node->exp))
+        node->flags |= FlagNarrowOwnBorrow;
 }
 
 // A borrow is followed by the loan walk. An owner narrowed to a variant ('Rc[imm, Shape]'
@@ -713,8 +750,7 @@ static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
             &perm->namesym->namestr, &((StructNode *)itypeGetTypeDcl(from->vtexp))->namesym->namestr);
         return;
     }
-    if (castSumNarrowsRefs(node, from, to))
-        node->flags |= FlagVariantNarrow;
+    castMarkSumNarrow(node, from, to);
 }
 
 // The field of the hidden local holding the matched value, which a variable
@@ -986,6 +1022,8 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
         if (castRecastTargetCheck(node, fromtype, totype))
             return;
         if (castRefPermCheck(node, fromtype, totype))
+            return;
+        if (castRefRegionCheck(node, fromtype, totype))
             return;
         // usize and isize are as wide as a pointer, which a fixed-width number
         // is only on some targets, so no reinterpretation joins the two: what

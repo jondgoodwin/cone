@@ -1,0 +1,60 @@
+// No type holds an '@unsized' enum's value, since its variants differ in size:
+// not a return type, however deep in a tuple or a function reference's
+// signature, not an array's element or a slice's, not an array literal, and not
+// what a pointer is indexed over. enum_typecheck_unsized has the variable,
+// parameter and field, and enum_typecheck_unsized_uses what a body does with a
+// value reached through a reference.
+
+mod enum_typecheck_unsized_holders;
+
+enum @unsized Node {
+  pub kind: i32;
+
+  struct Lit { pub val: i32; }
+  struct Add { pub a: i64; pub b: i64; }
+}
+use Node;
+
+fn returned(s: &Node) Node {          //~ ErrorNoSize "its value can't be returned"
+  *s
+}
+
+fn returnedInTuple(s: &Node) (Node, i32) {   //~ ErrorNoSize "its value can't be returned"
+  (*s, 1)
+}
+
+fn returnedByReferred(f: &fn() Node) {   //~ ErrorNoSize "its value can't be returned"
+}
+
+fn slice(p: &Array[Node]) {           //~ ErrorNoSize "its value can't be held in a slice"
+}
+
+fn sliceMutable(p: &mut Array[Node]) {   //~ ErrorNoSize "its value can't be held in a slice"
+}
+
+fn bodyOwned(x: &Uni[Array[Node]]) {   //~ ErrorNoSize "its value can't be held in an array"
+}
+
+fn arrayType(x: &Array[Node, 2]) {    //~ ErrorNoSize "its variants differ in size"
+}
+
+fn literal(s: &Node) {
+  let x = [*s];                       //~ ErrorNoSize:11 "its value can't be put in an array"
+}
+
+fn literalPair(s: &Node) {
+  let x = [*s, *s];                   //~ ErrorNoSize:11 "its value can't be put in an array"
+}
+
+fn literalOfTuples(s: &Node) {
+  let x = [(*s, 1)];                  //~ ErrorNoSize:11 "its value can't be put in an array"
+}
+
+fn literalBorrowed(s: &Node) {
+  let x = &[*s, *s];                  //~ ErrorNoSize:12 "its value can't be put in an array"
+}
+
+// Even a field read of one element steps over those before it by their size
+fn pointerElementField(p: *Node) i32 {
+  p[1].kind                           //~ ErrorNoSize:4 "reached by indexing a pointer"
+}

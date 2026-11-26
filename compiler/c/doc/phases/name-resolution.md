@@ -34,7 +34,7 @@ with the author is the claim that these rule rather than describe.**
    `dclnode` is set and the node keeps its tag, since what it is can be asked of
    the declaration — and the parser-ambiguous shapes are retagged. Either way the
    phase mutates the node it was handed; swapping one node for another is type
-   check's job, with exactly one exception. ▸ **Settles** that a caller's pointer
+   check's job, with six exceptions (section 4). ▸ **Settles** that a caller's pointer
    stays valid across this phase, which is what lets the walk hand out nodes
    without indirection.
 4. **Anything needing a type is deferred wholesale.** The one lookup primitive
@@ -244,10 +244,25 @@ name means for now: `refNameRes` asks `castPatternPending` too, because a
 pattern's bare root is bound at type check and may be unbound, or mean a value
 lexically, until then. `case let &Circle(c)` is a narrowing, never a borrow.
 
-**Two sites rewrite a parent's pointer**: `allocateQuesNameRes` collapses `&x?`
-into the allocation node with `FlagQues` set, and `fnCallNameResPath` replaces
-an argument-less namespace hop with the name it bound. Everything else mutates
-in place.
+**Six sites rewrite a parent's pointer** (`*nodep = ...`), checked against the
+code on 25 Nov:
+1. `allocateQuesNameRes` (`ir/exp/allocate.c`) collapses `&x?` into the
+   allocation node with `FlagQues` set, and `trynew T(...)` into its argument.
+2. `fnCallNameResPath` (`ir/exp/fncall.c`) replaces an argument-less namespace
+   hop with the name it bound.
+3. `fnCallVariantTermNameRes` (`ir/exp/fncall.c`) replaces an empty variant used
+   as a value with a construction literal.
+4. `arrayTypeLower` (`ir/types/array.c`) replaces the `Array[T, n, …]` call with
+   the array type node, or with an error node.
+5. `vectorTypeLower` (`ir/types/vector.c`) replaces the `Vector[T, N]` call with
+   the vector type node, or with an error node.
+6. `nameUseGenMember` (`ir/exp/nameuse.c`) replaces a bare field name inside a
+   generator method with `recv.field`, a new call carrying a member use, and
+   resolves that. This is the one place name resolution does the `self.field`
+   lowering that is otherwise type check's.
+
+Everything else mutates in place. (The comment in `doAnalysis`, `conec.c`, "Some
+nodes may be replaced (e.g., 'a' to 'self.a')", describes only the sixth.)
 
 ## 5. Where it stops, and why
 
@@ -458,7 +473,7 @@ next pass a null to trip over.
 | | `itypeIsManagedRefType`, `itypeManagedRefRegion` | make an unlowered `Rc[mut, Node]` count as a type: a region's head, its `is` list read as written (`regionStructWritesRegionRef`), and type arguments |
 | `ir/types/array.c` | `arrayNameRes`, `arrayTypeLower` | an array literal, refusing `[n; x]`, the old spelling of a type and the retired fill literal; the array type `Array[T, n, …]` built from its bracketed call, which `fnCallNameRes` hands it once the call's head is bound to `arrayTypeDcl`, refusing a size that is arithmetic over a generic's value parameter (`ErrorGenValueArith`) |
 | `ir/types/vector.c` | `vectorNameRes`, `vectorTypeLower` | the vector type `Vector[T, N]` built from its bracketed call, which `fnCallNameRes` hands it once the call's head is bound to `vectorTypeDcl`, refusing a call that is not a lane type and a count (`ErrorVectorArgs`) and a count that is arithmetic over a generic's value parameter ([vector](../nodes/vector.md)) |
-| `ir/exp/allocate.c` | `allocateQuesNameRes` | the one parent-pointer rewrite |
+| `ir/exp/allocate.c` | `allocateQuesNameRes` | the first of six parent-pointer rewrites (section 4) |
 | `ir/exp/closure.c` | `closureNameRes`, `closureNoteUse` | a closure literal: its state's values and parameters' types read in the code around it, then its own names hooked over that for the body; each local of the code around that a bound name reaches, and the `self` a bare member is reached through, is noted as one it borrows ([closure](../nodes/closure.md)) |
 | `ir/clone.c` | `cloneNode`, `cloneDclFix`, `clonePushState` | how a resolved template survives instantiation |
 

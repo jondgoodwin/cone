@@ -59,12 +59,12 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
 }
 
 // Set only around the coercion of a condition operand (iexpCoerceCondition).
-// An Option or Result converts to bool through isTrue there and under '!', and
-// nowhere else. In particular not as an operand of '||' or '&&' (logicTypeCheck
-// refuses those, with its own message): PR 6 makes those operators methods on
-// Option and Result, so 'opt || flag' written now would silently change meaning.
-// Elsewhere ('let b: bool = opt', an argument, a return) they stay refused, as
-// before isTrue existed on them.
+// A value of any type with isTrue (a number, Option, Result, a user type) converts to
+// bool through it there and under '!', and nowhere else. In particular not as an
+// operand of '||' or '&&' (their operands are checked outside the window; an Option
+// or Result on a bool's right is refused by logicTypeCheck with its own message, since
+// those operators are methods of Option and Result). Elsewhere ('let b: bool = x', an
+// argument, a return) it is refused: ErrorTruthOutsideCondition, from iexpCoerce.
 static int iexpInCondition = 0;
 
 // The check state under way where a coercion is asked for with one (iexpCoerceIn,
@@ -149,6 +149,17 @@ static int iexpOptWrapMake(INode **from, INode *totype, StructNode *variant, INo
     return iexpCoerce(from, totype);
 }
 
+// Does the type declare an isTrue a condition can test it through? A value of a variant
+// reaches its enum's isTrue that takes the whole enum ('self: &Option[T]'), as it
+// reaches any such method (fnCallLowerMethod)
+static int iexpHasIsTrue(INode *fromtype) {
+    INode *foundnode = aliasDclResolve(iTypeFindFnField(fromtype, istrueName));
+    StructNode *enumdcl;
+    if (foundnode == NULL && (enumdcl = structVariantEnum(fromtype)) != NULL)
+        foundnode = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)enumdcl, istrueName));
+    return foundnode && (foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag);
+}
+
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
     // A 'null' not yet typed is whichever raw pointer type is wanted, and nothing else
@@ -167,21 +178,12 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     if (actorTraitWanted(fromtype, itypeGetTypeDcl(totype)))
         return ConvByMeth;
 
-    // Handle implicit coercion to boolean, if type supports "isTrue" method
-    INode *foundnode;
+    // Handle implicit coercion to boolean, if type supports "isTrue" method, and only in a
+    // condition. Elsewhere a bool wanted is refused for every type (iexpCoerce says why)
     if (totype == (INode*)boolType) {
-        if (!iexpInCondition && iexpIsOptionOrResult(*from))
+        if (!iexpInCondition)
             return NoMatch;
-        foundnode = aliasDclResolve(iTypeFindFnField(fromtype, istrueName));
-        // A value of a variant reaches its enum's isTrue that takes the whole enum
-        // ('self: &Option[T]'), as it reaches any such method (fnCallLowerMethod)
-        StructNode *enumdcl;
-        if (foundnode == NULL && (enumdcl = structVariantEnum(fromtype)) != NULL)
-            foundnode = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)enumdcl, istrueName));
-        if (foundnode && (foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag))
-            return ConvByMeth;
-        else
-            return NoMatch;
+        return iexpHasIsTrue(fromtype) ? ConvByMeth : NoMatch;
     }
 
     // Handle implicit conversion of untyped literal integer to any number type
@@ -471,6 +473,18 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         // So may a borrowed constant one, and the borrow then match as it is
         if (borrowConstLitCoerce(*from, totypedcl))
             return iexpMatches(from, totypedcl, Coercion) != NoMatch && iexpCoerce(from, totype);
+        // A bool wanted where the value's type has isTrue is refused outside a condition,
+        // for every type, and the conversion built anyway so nothing more is said of it
+        if (totypedcl == (INode*)boolType && !iexpInCondition && isExpNode(*from)
+            && iexpHasIsTrue(iexpGetTypeDcl(*from))) {
+            errorMsgNode(*from, ErrorTruthOutsideCondition,
+                "%s is not a bool, and a bool is wanted here. A value is tested through its 'isTrue' only in an 'if' or 'while' condition and under '!'. Write 'x.isTrue()' (for a number, 'n != 0').",
+                itypeName(iexpGetTypeDcl(*from)));
+            INode *conv = (INode*)newConvCastNode(*from, totypedcl);
+            inodeLexCopy(conv, *from);
+            *from = conv;
+            return 1;
+        }
         // A bool wanted as a number is refused here, naming the conversion that
         // would say what it means. The conversion is then built anyway, so what
         // uses the value sees the type it wanted and says nothing more.
@@ -732,6 +746,38 @@ const char *iexpImmBorrowHint(INode *node, INode *totype) {
     return "; a plain `&` borrow is read-only but not `imm`, so write `&imm` before the borrowed value to lend it as imm";
 }
 
+// The two types of a refused value, " (found X, wanted Y)", written into buf; "" where the
+// value has no type to name. An error message that names neither type leaves the reader
+// bisecting (row 771).
+const char *iexpMismatchTypes(char *buf, size_t size, INode *node, INode *totype) {
+    buf[0] = '\0';
+    if (!isExpNode(node) || totype == NULL)
+        return buf;
+    INode *found = ((IExpNode*)node)->vtype;
+    if (found == NULL || found == unknownType || found == errorType || totype == unknownType)
+        return buf;
+    // Only a type itypeName can name: it reports a compiler defect for one with no name (a lazy parameter's)
+    INode *foundtag = itypeGetTypeDcl(found), *wantedtag = itypeGetTypeDcl(totype);
+    switch (foundtag->tag) {
+    case StructTag: case IntNbrTag: case UintNbrTag: case FloatNbrTag: case FnSigTag: case ArrayTag:
+    case VectorTag: case RefTag: case VirtRefTag: case ArrayRefTag: case PtrTag: case TTupleTag:
+        break;
+    default:
+        return buf;
+    }
+    switch (wantedtag->tag) {
+    case StructTag: case IntNbrTag: case UintNbrTag: case FloatNbrTag: case FnSigTag: case ArrayTag:
+    case VectorTag: case RefTag: case VirtRefTag: case ArrayRefTag: case PtrTag: case TTupleTag:
+        break;
+    default:
+        return buf;
+    }
+    char foundname[200];
+    snprintf(foundname, sizeof(foundname), "%s", itypeName(found));
+    snprintf(buf, size, " (found %s, wanted %s)", foundname, itypeName(totype));
+    return buf;
+}
+
 // Report that expression 'node' was refused where 'totype' is wanted
 void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg) {
     int whycode;
@@ -743,8 +789,11 @@ void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg) {
         errorMsgNode(node, ErrorPrivateMatch, "%s.%s", msg, privwhy);
     else if (isExpNode(node) && structDefaultRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)node)->vtype, totype))
         errorMsgNode(node, code, "%s.%s", msg, privwhy);
-    else
-        errorMsgNode(node, code, "%s%s", msg, iexpImmBorrowHint(node, totype));
+    else {
+        char types[460];
+        errorMsgNode(node, code, "%s%s%s", msg, iexpImmBorrowHint(node, totype),
+            iexpMismatchTypes(types, sizeof(types), node, totype));
+    }
 }
 
 // Used by 'if' and 'loop'/break to infer the type in common across all branches,

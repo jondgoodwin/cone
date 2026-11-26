@@ -1,0 +1,64 @@
+// A user type's '+' is a call, and one that reaches the narrowed enum may store another
+// variant over it. Arithmetic inside a variant given to a generic ('pair(State.HasW(w1 + w2), ...)')
+// is checked after its sibling arguments (row 771), but narrowing is judged in the order the
+// source is written: a narrowed reference used after the '+' is refused whether the
+// use is a sibling argument or a later statement, as it was before that change.
+
+mod enum_flow_narrow_ctor_operator;
+
+enum Shape {
+  kind: i32;
+
+  struct Circle {
+    pub radius: i32;
+  }
+
+  struct Rect {
+    pub w: i32;
+    h: i32;
+  }
+}
+use Shape;
+
+enum State {
+  Idle;
+  HasW(i32);
+}
+
+fn reset(s: &mut Shape) {
+  *s = Shape.Rect(0, 0, 0);
+}
+
+struct W {
+  pub v: i32;
+  pub s: &mut Shape;
+
+  pub fn `+`(self: &mut, o: W) i32 {
+    reset(self.s);
+    self.v + o.v
+  }
+}
+
+fn pair[T](st: T, n: i32) Option[T] { Some(st) }
+
+// The narrowed reference is a sibling argument after the operator
+fn sibling(w1: &mut W, w2: W, s: &mut Shape) i32 {
+  match s {
+    case let Circle(c) {
+      let r = pair(State.HasW(w1 + w2), c.radius);   //~ ErrorVariantReshape "'+' is handed something that reaches a 'Shape' value"
+      0
+    }
+    else {0}
+  }
+}
+
+// ... or used in a later statement
+fn later(w1: &mut W, w2: W, s: &mut Shape) i32 {
+  match s {
+    case let Circle(c) {
+      let r = pair(State.HasW(w1 + w2), 1);
+      c.radius                                       //~ ErrorVariantReshape "'+' is handed something that reaches a 'Shape' value"
+    }
+    else {0}
+  }
+}

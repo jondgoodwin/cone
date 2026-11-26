@@ -1,0 +1,104 @@
+// The 'main' of the reference manual's "The program must wait for it" (doc/manual/conc-io.html), run
+// with the page's example; the page shows the Starter and main below verbatim.
+
+mod manualmain;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import ioerror use IoErrorKind;
+import actors;
+import aio use Socket;
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn sayKind(s: &str, k: IoErrorKind) {printStr(s); printStr(": "); print <- toText(&k); printStr("\n");}
+
+// manual: begin
+// The Socket an answer holds, swapped out of it. A failure is reported and the
+// program stops, not carried on as an empty socket that nothing will answer
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {
+      sayKind("failed", (*e).kind());
+      panic("socketOf: the operation failed");
+    }
+  }
+  s
+}
+
+actor Client {
+
+  pub async fn send(self, port: u16) {
+    let conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    var buf = IoBuf(64usize);
+    buf.append("hello");
+    let sent = await conn.write(buf);          // pauses until all of it is sent
+    match sent {
+      case let Err(e) {sayKind("write failed", e.kind());}
+      else {}
+    }
+  }                                           // conn closes here
+}
+
+actor Server {
+  client: Client;
+
+  pub async fn serve(self) u64 {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();     // the port the system chose
+    match addr {
+      case let Ok(a) {client.send(a.port());}
+      case let Err(e) {sayKind("no address", e.kind());}
+    }
+    let conn = socketOf(await listener.accept());
+    let none = await conn.read(IoBuf());           // a buffer with no room
+    match none {
+      case let Err(e) {sayKind("no room", e.kind());}
+      else {}
+    }
+    var total = 0u64;
+    var more = true;
+    while more {
+      let got = await conn.read(IoBuf(4096usize));
+      match got {
+        case let Ok(b) {
+          if b.len() == 0usize {
+            say("end of stream", total);                 // the peer closed
+            more = false;
+          } else {
+            say("received", u64.from(b.len()));
+            total = total + u64.from(b.len());
+          }
+        }
+        case let Err(e) {
+          sayKind("read failed", e.kind());
+          more = false;
+        }
+      }
+    }
+    total
+  }
+}
+// manual: end
+
+actor Starter {
+  pub async fn start(self, done: OneshotSender[u64]) {
+    let server = Server(Client());
+    let total = await server.serve();       // pauses until the server has finished
+    var d = done;
+    d.send(total);                          // tell main
+  }
+}
+
+fn main() {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  let s = Starter();
+  s.start(tx);
+  rx.recv();                                // main waits here; without it the program ends at once
+}

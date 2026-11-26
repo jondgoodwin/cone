@@ -598,10 +598,26 @@ fn restart(s: &amp;mut Shape) i32 {
 }
 </pre>
 	<p>The same store after the narrowed reference's last use is fine, which is how a state machine moves to its next
-		state. A <span class="pre">&amp;mut</span> borrow of a local is an alias loan and is asked the same; a read-only
-		borrow of a local is frozen (<a href="mem-borrowing.html#freezing">What a borrow leaves its source free to do</a>),
-		and a <span class="pre">uni</span>, <span class="pre">imm</span> or <a href="mem-permissions.html#mut1">mut1</a>
-		reference has no other name to change it, so neither is asked. A name narrowed by a test,
+		state. A <span class="pre">&amp;mut</span> borrow of a local is an alias loan and is asked the same. A read-only
+		borrow of a local made where it is matched freezes the local
+		(<a href="mem-borrowing.html#freezing">What a borrow leaves its source free to do</a>), so it is asked only where a
+		<span class="pre">&amp;mut</span> borrow of it (or of what holds it) made earlier is still held: that borrow may
+		still store another variant.</p>
+<pre>
+fn replaced() i32 {
+  var s: Shape = Shape.Circle(5);
+  let m = &amp;mut s;
+  match &amp;s {
+    case let &amp;Circle(c) {
+      *m = Shape.Rect(1, 2, 3);
+      c.radius               // Error 1425: 'c' ..., made while the 'mut' borrow can still change it,
+    }                        //   is used here after the store
+    else { 0 }
+  }
+}
+</pre>
+	<p>A <span class="pre">uni</span>, <span class="pre">imm</span> or <a href="mem-permissions.html#mut1">mut1</a>
+		reference has no other name to change it, so it is not asked. A name narrowed by a test,
 		<span class="pre">if s is Circle</span>, is followed the same way (flow typing). A value owned by an <span class="pre">Rc</span> is another owner of the value, and no loan stands for
 		the other owners: where none can store another variant (<span class="pre">Rc[imm, T]</span>) the binding is a copy
 		of the owner typed as the variant, and where one could (<span class="pre">mut</span>, <span class="pre">ro</span>) it

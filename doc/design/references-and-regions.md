@@ -421,9 +421,10 @@ generic gets one instance for every lifetime, because a lifetime changes no
 generated code (Rust erases lifetimes before code generation for the same
 reason). That is right, and so is ignoring other things that do not change the
 code. **The type:** a lifetime is part of what the checker knows about a value,
-and it must stay in the type. Today `refIsSame` ignores it and `refFindSuper`
-drops it when types are compared, which removes it from the type and not only
-from instancing. That is a gap ("Where it is not yet enforced", below). How long a borrow *freezes* its source is a different question, and is not
+and it must stay in the type. Today `refIsSame` ignores it, and `refFindSuper`
+drops it where two references' pointees meet at a base trait (two differing
+only in permission keep the shorter), which removes it from the type and not
+only from instancing. That is a gap ("Where it is not yet enforced", below). How long a borrow *freezes* its source is a different question, and is not
 in the type at all: flow's loan walk records which loans each local may hold,
 per path, and a borrow's source stays frozen until the last use of whatever
 holds its loan ([Flow Analysis](../../compiler/c/doc/phases/flow.md), "The loan

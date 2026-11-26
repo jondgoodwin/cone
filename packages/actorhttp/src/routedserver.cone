@@ -95,6 +95,7 @@ pub actor ServerActor {
   accepting: bool;
   refs: u64;                      // Server handles (the last one's going closes the server)
   dl: actors.Timer;               // the shutdown deadline
+  refusedBufs: u64;               // responses given up because the buffer pool refused them (Server.refusedBuffers)
   guard: LiveGuard;
 
   fn init(self: &new, args: Arc[imm, ListenArgs]) {
@@ -103,7 +104,7 @@ pub actor ServerActor {
       connGroup: CancelGroup.make(), live: 0u64, nextConn: 1u64, conns: Dict[u64, ConnActor](), h3: None[H3Endpoint], h3Done: true, altSvc: String(),
       waiting: Deque[Waiting](), takers: Deque[actors.ReplyOf[Result[Exchange, ServerError]]](),
       closing: false, closedDone: false, closedWaiters: List[actors.ReplyOf[bool]](), accepting: false,
-      refs: 1u64, dl: actors.Timer.make(), guard: LiveGuard(false));
+      refs: 1u64, dl: actors.Timer.make(), refusedBufs: 0u64, guard: LiveGuard(false));
   }
 
   // Listen, and answer the caller with the Server (or why not). With HTTP/3 offered the UDP endpoint is bound on the TCP
@@ -416,6 +417,11 @@ pub actor ServerActor {
     rp.answer(u64.from(waiting.len()));
   }
 
+  // A connection gave up a response because the buffer pool refused its buffer
+  pub async fn bufferRefused(self) {refusedBufs = refusedBufs + 1u64;}
+
+  pub async fn askRefused(self, rp: actors.ReplyOf[u64]) {rp.answer(refusedBufs);}
+
   pub async fn addRef(self) {refs = refs + 1u64;}
 
   // The last Server handle's going closes the server
@@ -568,6 +574,11 @@ pub actor ConnActor is ExchangeHost {
 
   fn kick(self, now: Instant) {
     if ended {return;}
+    // a response's buffer was refused: the connection goes now, not after a write its peer may never take
+    if hx.cut {
+      self.finishEnd();
+      return;
+    }
     let isDone = sc.done(now);
     if !writing {
       let n = sc.fill(now);

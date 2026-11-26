@@ -286,6 +286,8 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     // nameUseNameRes returns at once for a use that arrives bound
     nameUseMarkExpandReached(pstate, member);
 
+    nameUseLifeCheck(member);
+
     // A private name belongs to the module that declares it, and naming a path
     // through that module reaches past it. Refusing it here is what
     // mod-namespaces.html says, and is also the only answer generation can honour:
@@ -447,6 +449,32 @@ static void fnCallConstructNameRes(FnCallNode *node) {
         fnCallMarkConstruction(node);
 }
 
+// The parser holds the lifetimes written after a path, 'ir.Compile['=c]', on
+// the path's last name (parseLifeHolder), which the collapsed path keeps. Only a
+// path through a module or a type collapses to a name: through a value, or a
+// generic parameter, the lifetimes name nothing and are refused.
+static void fnCallPathLifeCheck(FnCallNode *node) {
+    if (node->methfld == NULL || !isNameUseNode(node->methfld))
+        return;
+    NameUseNode *member = (NameUseNode*)node->methfld;
+    if (member->lifeuse == NULL)
+        return;
+    INode *base = node->objfn;
+    // A generic module's instance, 'stack[i64].Cursor'
+    int instance = base->tag == FnCallTag && (base->flags & FlagIndex) && ((FnCallNode*)base)->methfld == NULL;
+    if (instance)
+        base = ((FnCallNode*)base)->objfn;
+    if (isNameUseNode(base)) {
+        INode *basedcl = nameUseGetDcl((NameUseNode*)base);
+        // A base name that is not declared has been reported
+        if (basedcl == NULL || basedcl->tag == ModuleTag
+            || (!instance && (basedcl->tag == StructTag || basedcl->tag == ModTraitTag)))
+            return;
+    }
+    errorMsgNode(member->lifeuse->at, ErrorLifetimeArgs, "Lifetimes are named on a struct's use by its name: 'Cursor['a]'.");
+    member->lifeuse = NULL;
+}
+
 // Name resolution on 'fncall'
 // - If node is indexing on a type, retag node as a typelit
 // Note: this never name resolves .methfld, which is handled in type checking --
@@ -463,6 +491,8 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
 
     // Name resolve objfn so we know what it is to vary subsequent processing
     inodeNameRes(pstate, &node->objfn);
+
+    fnCallPathLifeCheck(node);
 
     // 'C.Cursor': an associated type that a bound of the type parameter C
     // declares, resolved in each instance (generic.c)
@@ -748,9 +778,15 @@ void fnCallArrIndex(FnCallNode *node) {
     case ArrayRefTag:
         node->vtype = ((RefNode*)objtype)->vtexp;
         break;
-    case PtrTag:
+    case PtrTag: {
         node->vtype = ((StarNode*)objtype)->vtexp;
+        // Indexing a pointer steps by the element's size, which even '&p[1]'
+        // computes
+        INode *unsizedenum = itypeHeldUnsizedEnum(node->vtype);
+        if (unsizedenum)
+            itypeUnsizedEnumMsg((INode*)node, unsizedenum, "reached by indexing a pointer");
         break;
+    }
     default:
         // fnCallTypeCheck calls this from its array, slice, reference and
         // pointer arms only, switching on this same receiver type
@@ -1229,6 +1265,36 @@ static int fnCallLowerRefIntField(FnCallNode *callnode, INode *objtype) {
         "A number after '.' names a tuple's element, and this is not a tuple or a reference to one.");
     callnode->vtype = errorType;
     return 1;
+}
+
+// Refuse a pointer's '+', '-', '+=', '-=', '++' and '--', and the difference of
+// two pointers, where it points at an '@unsized' enum: each steps by, or counts
+// in, the element's size, and such an enum has no single one
+static void fnCallRefusePtrStep(INode *callnode, FnDclNode *selected, INode *selftype) {
+    if (selected->value == NULL || selected->value->tag != IntrinsicTag)
+        return;
+    switch (((IntrinsicNode*)selected->value)->intrinsicFn) {
+    case AddIntrinsic:
+    case SubIntrinsic:
+    case DiffIntrinsic:
+    case AddEqIntrinsic:
+    case SubEqIntrinsic:
+    case IncrIntrinsic:
+    case DecrIntrinsic:
+    case IncrPostIntrinsic:
+    case DecrPostIntrinsic:
+        break;
+    default:
+        return;
+    }
+    // A method that changes the pointer holds it by reference
+    if (selftype->tag == RefTag)
+        selftype = itypeGetTypeDcl(((RefNode*)selftype)->vtexp);
+    if (selftype->tag != PtrTag)
+        return;
+    INode *unsizedenum = itypeHeldUnsizedEnum(((StarNode*)selftype)->vtexp);
+    if (unsizedenum)
+        itypeUnsizedEnumMsg(callnode, unsizedenum, "reached by pointer arithmetic");
 }
 
 // Report why the name the caller used selected no single candidate.
@@ -2670,6 +2736,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     methodrefnode->vtype = selected->vtype;
     callnode->objfn = (INode*)methodrefnode;
     callnode->methfld = NULL;
+    fnCallRefusePtrStep((INode*)callnode, selected, selftype);
 
     // Now that exactly one candidate is selected, coerce the argument once.
     // These compiler-declared signatures are generic over the pointer/reference's
@@ -2799,7 +2866,8 @@ static char *fnCallSliceElemNoEq(INode *elemtype, char *buf, size_t size) {
     case VirtRefTag:
         return "comparing what two virtual references refer to is not built";
     case ArrayTag:
-        return "comparing two arrays is not built";
+        // (several sizes are nested arrays)
+        return fnCallSliceElemNoEq(arrayElemType(type), buf, size);
     default:
         break;
     }
@@ -2953,6 +3021,65 @@ static void fnCallLowerTupleCompare(TypeCheckState *pstate, FnCallNode *node) {
     fnCallFinalizeArgs(pstate, node);
 }
 
+// An array literal compared with an array of another type takes that array's
+// element type, as it does where that type is declared ('let b: Array[i64, 2] =
+// [1, 2]'), when it holds only literals with no type of their own and the other
+// side is not such a literal too: two of those keep their defaults, as two
+// number literals beside an operator do. Where it cannot take the type, nothing
+// changes, and the comparison refuses the two types.
+static void fnCallAdoptArrayLit(INode **litp, INode *other) {
+    INode *othertype = iexpGetTypeDcl(other);
+    if (arrayLitIsUntyped(*litp, othertype) && !arrayLitIsUntyped(other, NULL))
+        arrayLitCoerce((ArrayNode*)*litp, othertype);
+}
+
+// '==' on two arrays of the same type compares their elements, as two slices'
+// are: each is lent read-only where it lies (a value that is not a place, to the
+// end of its statement), taken as a slice of all its elements, and compared by
+// fnCallLowerSliceCompare. '!=' arrives as '==' under a '!' (fnCallNeFromEq)
+// unless the elements have no '=='. An array has no order, as a slice has none.
+// The length is part of the type, so arrays of different lengths do not compare.
+static void fnCallLowerArrayCompare(TypeCheckState *pstate, FnCallNode *node) {
+    Name *op = ((NameUseNode*)node->methfld)->namesym;
+    if (op != eqName && op != neName) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            "`%s` on two arrays is refused: an array has no order. Compare their elements one by one.",
+            &op->namestr);
+        node->vtype = errorType;
+        return;
+    }
+    INode **argp = &nodesGet(node->args, 0);
+    if (!itypeIsSame(iexpGetTypeDcl(node->objfn), iexpGetTypeDcl(*argp))) {
+        fnCallAdoptArrayLit(&node->objfn, *argp);
+        fnCallAdoptArrayLit(argp, node->objfn);
+    }
+    INode *arraytype = iexpGetTypeDcl(node->objfn);
+    if (!itypeIsSame(arraytype, iexpGetTypeDcl(*argp))) {
+        errorMsgNode((INode*)node, ErrorInvType,
+            "An array is compared with an array of the same element type and length, and this one is not.");
+        node->vtype = errorType;
+        return;
+    }
+    char buf[256];
+    char *why = fnCallSliceElemNoEq(arrayElemType(arraytype), buf, sizeof(buf));
+    if (why) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            "`%s` on two arrays compares their elements, and %s.", &op->namestr, why);
+        node->vtype = errorType;
+        return;
+    }
+    INode *slicetype = (INode*)newRefNodeFull(ArrayRefTag, (INode*)node, borrowRef,
+        newPermUseNode(roPerm), arrayElemType(arraytype));
+    fnCallLendEnumOperand(pstate, &node->objfn);
+    fnCallLendEnumOperand(pstate, argp);
+    if (!iexpCoerce(&node->objfn, slicetype)) {
+        errorUnreachable((INode*)node, "a borrowed array that is no slice of its elements");
+        node->vtype = errorType;
+        return;
+    }
+    fnCallLowerSliceCompare(pstate, node);
+}
+
 // An array, a reference to one, or a '&str' (a string literal is one), compared
 // with a slice is taken as the slice it converts to, as the other side of a slice's comparison already is:
 // '"box" == s' means what 's == "box"' does. Answers 0, changing nothing,
@@ -3013,6 +3140,15 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     }
 
     INode *referent = itypeGetTypeDcl(reftype->vtexp);
+
+    // References to two arrays compare the arrays (fnCallLowerArrayCompare)
+    if (referent->tag == ArrayTag && iexpGetTypeDcl(*argp)->tag == RefTag
+        && itypeGetTypeDcl(((RefNode*)iexpGetTypeDcl(*argp))->vtexp)->tag == ArrayTag) {
+        fnCallDerefOperand(&node->objfn, node);
+        fnCallDerefOperand(argp, node);
+        fnCallLowerArrayCompare(pstate, node);
+        return;
+    }
 
     // Text through an owner, '&Uni[str]' or '&Rc[str]', against text one level
     // shallower, '&str': only the owner's side is read through, as '&str ==
@@ -3445,6 +3581,15 @@ static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
         return 0;
     while (objtype->tag == RefTag)
         objtype = itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+    // two arrays', from the '==' that compares their elements, where they have
+    // one (fnCallLowerArrayCompare)
+    if (objtype->tag == ArrayTag && argtype) {
+        while (argtype->tag == RefTag)
+            argtype = itypeGetTypeDcl(((RefNode*)argtype)->vtexp);
+        char buf[256];
+        return argtype->tag == ArrayTag
+            && fnCallSliceElemNoEq(arrayElemType(objtype), buf, sizeof(buf)) == NULL;
+    }
     // a tuple's, from the '==' that compares its elements (fnCallLowerTupleCompare)
     if (objtype->tag == TTupleTag)
         return 1;
@@ -4578,6 +4723,28 @@ static INode *fnCallOperandNumber(INode *operand) {
     return NULL;
 }
 
+// A value that is no call to narrowing (narrowCallMade): not a call at all, or an
+// operator whose operands are such values, '(a + b) * 2'. The operator may turn out to
+// be a user type's, which is a call; narrowing is asked at the check of the operator
+// itself, which this only moves after the other arguments of the call it is in.
+static int fnCallArgPlain(INode *arg) {
+    if (arg->tag == NamedValTag)
+        arg = ((NamedValNode*)arg)->val;
+    if (arg->tag != FnCallTag)
+        return 1;
+    FnCallNode *call = (FnCallNode*)arg;
+    if (!(call->flags & FlagOperator) || (call->flags & FlagIndex) || call->objfn == NULL
+        || !fnCallArgPlain(call->objfn))
+        return 0;
+    INode **argp;
+    uint32_t cnt;
+    if (call->args)
+        for (nodesFor(call->args, cnt, argp))
+            if (!fnCallArgPlain(*argp))
+                return 0;
+    return 1;
+}
+
 // A variant of a generic enum constructed with its type arguments left to be
 // inferred ('Some(5)', 'None', 'Some(None)'): what the generic it is given to
 // wants of it may fix them ('Some(5)' wanted as an 'Option[i64]' holds an i64).
@@ -4606,7 +4773,7 @@ static int fnCallArgIsCtor(INode *arg) {
     uint32_t cnt;
     if (call->args)
         for (nodesFor(call->args, cnt, argp))
-            if ((*argp)->tag == FnCallTag && !fnCallArgIsCtor(*argp))
+            if ((*argp)->tag == FnCallTag && !fnCallArgPlain(*argp) && !fnCallArgIsCtor(*argp))
                 return 0;
     return 1;
 }
@@ -4682,6 +4849,25 @@ static StructNode *fnCallVariantEnum(StructNode *variant) {
         return owner != NULL && owner->tag == StructTag && (owner->flags & EnumType) ? (StructNode*)owner : NULL;
     }
     return structBaseTraitDcl(variant);
+}
+
+// Is this the construction of an Option's or a Result's variant that has a type
+// parameter none of its own values names, 'None', 'Ok(v)', 'Err(e)', with no
+// type arguments written? Its enum's name if so, else NULL. A branch of an 'if'
+// or 'match' that is one takes its type from a sibling branch (ifTypeCheck).
+Name *fnCallOpenVariantFamily(INode *node) {
+    if (node->tag != FnCallTag)
+        return NULL;
+    FnCallNode *call = (FnCallNode*)node;
+    if (call->methfld != NULL || (call->flags & FlagOperator))
+        return NULL;
+    StructNode *variant = fnCallVariantNamed(call->objfn);
+    if (variant == NULL || variant->genericinfo == NULL || !genericVariantParmUnnamed(variant))
+        return NULL;
+    StructNode *base = fnCallVariantEnum(variant);
+    if (base == NULL || (base->namesym != optionName && base->namesym != resultName))
+        return NULL;
+    return base->namesym;
 }
 
 // A method called through an empty variant's name, 'Lamp.Red.get()', 'Red.get()' after
@@ -6226,6 +6412,9 @@ dispatch:
             fnCallArrIndex(node);  // indexing or borrowed ref to index
         else if (fnCallIsValueCompare(opname) && fnCallArrayAsSlice(pstate, node))
             ;
+        else if (fnCallIsValueCompare(opname) && node->args && node->args->used == 1
+            && iexpGetTypeDcl(nodesGet(node->args, 0))->tag == ArrayTag)
+            fnCallLowerArrayCompare(pstate, node);
         else if (fnCallLowerArrayLen(nodep, objtype))
             ;
         else if (fnCallLowerSliceMethod(pstate, node))

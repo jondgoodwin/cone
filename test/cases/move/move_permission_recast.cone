@@ -1,0 +1,134 @@
+// An owner moved into an owning reference of another type ('Rc[uni, Louder]'
+// wanted as 'Rc[mut, Noisy]' or a trait's 'Rc[mut, Shown]') is moved, as one
+// wanted as its own type is, so each value is finalized once. So is an enum's
+// variant taken by an 'if' that infers the enum, which is finalized with the
+// enum that took it, not with the variable it left.
+mod move_permission_recast;
+import stdio use *;
+import sync use Arc;
+
+struct Noisy {
+  pub n: i32;
+  fn final(self: &uni) { printStr("final "); printInt(self.n); printStr("\n"); }
+}
+struct Louder extends Noisy {
+  pub fn get(self: &) i32 { self.n }
+}
+trait Shown { pub fn get(self: &) i32; }
+struct Hold { pub r: Rc[mut, Noisy]; }
+enum E {
+  struct A { pub r: Rc[mut, Noisy]; }
+  struct B { pub o: Uni[Noisy]; }
+}
+
+fn show(n: i32) { printInt(n); printStr("\n"); }
+fn label(s: &str) { printStr(s); printStr("\n"); }
+fn take(r: Rc[mut, Noisy]) { show(r.n); }
+fn takeShown(r: Rc[mut, Shown]) { show(r.get()); }
+
+fn bindings() {
+  let a = Rc[Louder](Louder(1));
+  let r: Rc[mut, Noisy] = a;
+  let b = Rc[Louder](Louder(2));
+  let s: Rc[mut, Shown] = b;
+  let c = Rc[Louder](Louder(3));
+  let t: Rc[imm, Noisy] = c;
+  let d = Arc[Louder](Louder(4));
+  let u: Arc[imm, Noisy] = d;
+  let e = Rc[Louder](Louder(5));
+  let v = e as Rc[mut, Noisy];
+  show(r.n + s.get() + t.n + u.n + v.n);
+}
+
+fn targets() {
+  let a = Rc[Louder](Louder(6));
+  take(a);
+  let b = Rc[Louder](Louder(7));
+  takeShown(b);
+  let c = Rc[Louder](Louder(8));
+  let h = Hold(c);
+  let d = Rc[Louder](Louder(9));
+  var r = Rc[mut, Noisy](Noisy(10));
+  r = d;
+  let e = Rc[Louder](Louder(11));
+  let l = [e];
+  let f = Rc[Louder](Louder(12));
+  let t: (Rc[mut, Noisy], i32) = (f, 0);
+  let g = Rc[Louder](Louder(13));
+  let o: Option[Rc[mut, Noisy]] = g;
+  label("held");
+}
+
+fn tail() Rc[mut, Noisy] {
+  let a = Rc[Louder](Louder(14));
+  a
+}
+fn returned(c: bool) Rc[mut, Noisy] {
+  let a = Rc[Louder](Louder(15));
+  if c { return a; }
+  Rc[mut, Noisy](Noisy(16))
+}
+fn handedBack(c: bool) {
+  let r = tail();
+  show(r.n);
+  let s = returned(c);
+  show(s.n);
+}
+
+fn arms(c: bool) {
+  let a = Rc[Louder](Louder(17));
+  let b = Rc[mut, Noisy](Noisy(18));
+  let r: Rc[mut, Noisy] = if c {a} else {b};
+  show(r.n);
+}
+fn inferredArms(c: bool) {
+  let a = Rc[Louder](Louder(19));
+  let b = Rc[mut, Noisy](Noisy(20));
+  var r = Rc[mut, Noisy](Noisy(21));
+  r = match c { case true {a} else {b} };
+  show(r.n);
+}
+fn breaks(c: bool) {
+  let a = Rc[Louder](Louder(22));
+  let b = Rc[mut, Noisy](Noisy(23));
+  let r: Rc[mut, Noisy] = while { if c { break a; } if !c { break b; } };
+  show(r.n);
+}
+fn inBlock(c: bool) {
+  let r: Rc[mut, Noisy] = {
+    let a = Rc[Louder](Louder(24));
+    let b = Rc[mut, Noisy](Noisy(25));
+    if c {a} else {b}
+  };
+  show(r.n);
+}
+
+// The 'if' infers 'E' and casts each arm to it after typing it: the variant
+// taken leaves its variable, so the value it holds lasts as long as the enum
+fn variant(c: bool) E {
+  let x = E.A(Rc[mut, Noisy](Noisy(26)));
+  let b = E.B(Uni[Noisy](Noisy(27)));
+  let e = if c {x} else {b};
+  e
+}
+fn variants(c: bool) {
+  let k = variant(c);
+  label("kept");
+}
+
+fn main() {
+  label("bindings"); bindings();
+  label("targets"); targets();
+  label("handedBack true"); handedBack(true);
+  label("handedBack false"); handedBack(false);
+  label("arms true"); arms(true);
+  label("arms false"); arms(false);
+  label("inferredArms true"); inferredArms(true);
+  label("inferredArms false"); inferredArms(false);
+  label("breaks true"); breaks(true);
+  label("breaks false"); breaks(false);
+  label("inBlock true"); inBlock(true);
+  label("inBlock false"); inBlock(false);
+  label("variant true"); variants(true);
+  label("variant false"); variants(false);
+}
