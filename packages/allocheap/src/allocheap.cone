@@ -6,12 +6,14 @@ import cnmalloc;
 // Alloc over cnmalloc's heap, called directly: no C name in between. The heap is the module's own, made on the
 // first call from the CNMALLOC settings, by compare-and-swap (a thread that loses destroys its own). Under the
 // shim (cn.lib) the C names reach another heap, so a block of one is never given to the other.
+// No shim serves this heap, so it is cnmalloc's lock design ('cnm_boot(false)', row 533): don't set
+// CNMALLOC=design=lockfree for a program that uses it, whose small allocations would then crash.
 let heap = Atomic[usize].of(0usize);
 
 fn h() usize {
   var p = heap.load();
   if p == 0usize {
-    let mine = cnmalloc.cnm_boot();
+    let mine = cnmalloc.cnm_boot(false);
     let was, ok = heap.compareSwap(0usize, mine);
     if ok { p = mine; } else { cnmalloc.cnm_destroy(mine); p = was; }
   }
