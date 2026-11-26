@@ -61,6 +61,23 @@
 // Stop it then collects, or Failed("streams: cancelled") when there is none. The messages it sends stay in its
 // own group. The group is a CHILD of the group the stream runs in, so that a cancel of the whole still reaches
 // those waits: one that is not would hide it from them.
+//
+// IN A CHAIN OF STAGES the groups NEST FROM THE SINK END: the group of each feeding stream is a child of the
+// group of the stream after it, so that a Stop or a cancel anywhere downstream reaches the first read. A stage
+// is given the group of the stream feeding it, as an optional last argument 'group', and cancels it when it
+// stops (piecestages.cone, piecebridge.cone):
+//
+//   let intoFile = actors.currentGroup().child();            // the stream into the sink end
+//   let intoHash = intoFile.child();                         // into the hash
+//   let intoInf = intoHash.child();                          // into the inflate: the socket reads in it
+//   let sink = FileTo(file, done, Some[CancelGroup](intoFile));
+//   let hash = HashPass[cryptohash.Sha256](StreamTo[IoBuf].at(sink, 1u64, 0usize, Some[CancelGroup](intoFile)),
+//     cryptohash.Sha256.make(), who, Some[CancelGroup](intoHash));
+//   let inf = TransformPass[deflate.Inflater](StreamTo[IoBuf].at(hash, 1u64, 0usize, Some[CancelGroup](intoHash)),
+//     deflate.Inflater.make(deflate.Format.Gzip), Some[CancelGroup](intoInf));
+//   SocketFrom().run(addr, StreamTo[IoBuf].at(inf, 1u64, 0usize, Some[CancelGroup](intoInf)));
+//
+// A stage given no group cancels nothing: its Stop is then heard with the producer's next collected answer.
 
 // The answer to a piece
 pub use PieceAck;

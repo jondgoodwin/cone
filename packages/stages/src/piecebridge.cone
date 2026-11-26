@@ -103,10 +103,13 @@ pub actor PieceBridge is PieceSink[IoBuf], ChunkSource {
   home: Deque[IoBuf];           // buffers given back that no piece is waiting for
   waiting: Deque[actors.ReplyOf[PieceAck[IoBuf]]];
   why: Option[Ending];          // the old sink said stop, or the group was cancelled
+  feed: Option[CancelGroup];    // of the stream feeding us, cancelled when we stop
 
-  pub fn init(self: &new, down: ChunkSink) {
+  // 'group', optional, is the cancel group of the stream feeding the bridge: cancelled when the old sink says
+  // stop or the bridge's group is cancelled (piece.cone, HEARING A STOP)
+  pub fn init(self: &new, down: ChunkSink, group: Option[CancelGroup] = None[CancelGroup]) {
     *self = Self(down: Some[ChunkSink](down), home: Deque[IoBuf](),
-      waiting: Deque[actors.ReplyOf[PieceAck[IoBuf]]](), why: None[Ending]);
+      waiting: Deque[actors.ReplyOf[PieceAck[IoBuf]]](), why: None[Ending], feed: group);
     down.attach(selfactor);
   }
 
@@ -160,6 +163,7 @@ pub actor PieceBridge is PieceSink[IoBuf], ChunkSource {
   pub async fn stop(self, reason: Ending) {
     if why is Some || down is None { return; }
     why = Some[Ending](reasonCopy(&reason));
+    cancelFeed(&feed);
     self.endDown(reason);
     self.stopWaiting();
   }
@@ -172,6 +176,7 @@ pub actor PieceBridge is PieceSink[IoBuf], ChunkSource {
   fn cancelCheck(self: &mut) {
     if why is Some || down is None || !actors.isCancelled() { return; }
     why = Some[Ending](Ending.Failed(AnyError.msg("streams: cancelled")));
+    cancelFeed(&feed);
     self.endDown(Ending.Failed(AnyError.msg("streams: cancelled")));
     self.stopWaiting();
   }

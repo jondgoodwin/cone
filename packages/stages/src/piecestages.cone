@@ -14,6 +14,12 @@
 //     deflate.Inflater.make(deflate.Format.Gzip));
 //   SocketFrom().run(addr, StreamTo[IoBuf].at(inf, 1u64));
 //
+// So wired, a Stop is heard with the producer's next collected answer. To have it reach a socket that is
+// idle, each stage is also given the cancel group of the stream FEEDING it, as an optional last argument
+// 'group' (piece.cone, HEARING A STOP, which shows the wiring). A stage cancels that group as it answers a
+// Stop of its own or passes one on, and when it ends the stream after it early on a failure or a cancel; a
+// transform that is merely done cancels nothing.
+//
 // A stage that makes buffers (SocketFrom, TransformPass) takes them from a ChunkPool: its own, or a
 // pipeline's shared one ('shared'), and waits when the pool is at its cap (piecewindow.cone). The pool a
 // stage makes for itself holds the budget its receiver set ('linkWindow' if none), and never less than two of
@@ -28,9 +34,7 @@
 // in no group never sees a cancel.
 //
 // SocketFrom connects and reads in the stream's own group where its StreamTo has one, so a receiver that stops
-// ends a read on an idle socket (piece.cone, HEARING A STOP). These stages, as receivers, are not handed the
-// group of the stream that feeds them and cancel none: a Stop of theirs is heard with the producer's next
-// collected answer.
+// ends a read on an idle socket (piece.cone, HEARING A STOP).
 //
 // FAILURE. A transform that fails ends the stream after it with its own typed error, and answers Stop (the
 // error as text) to the stage before it. A file that cannot be written answers Stop and reports the error. The
@@ -99,6 +103,17 @@ fn ownPool(budget: usize) ChunkPool {
   ChunkPool.make(cap)
 }
 
+// A stage that stops cancels the group of the stream feeding it, where it was given one, so that a producer
+// parked on I/O hears of it at once
+fn cancelFeed(group: &Option[CancelGroup]) {
+  #if #defined("MUT_NO_FEED_CANCEL") {} #else {
+    match group {
+      case let &Some(g) { _ = g.cancel(); }
+      case is None {}
+    }
+  }
+}
+
 // ---- a stage over a Transform ----
 
 // What a pull did
@@ -115,6 +130,7 @@ enum Pulled {
 //
 //   TransformPass[deflate.Inflater](to, deflate.Inflater.make(deflate.Format.Gzip))
 //   TransformPass[deflate.Inflater](to, inflater, pool)          // its buffers from a pipeline's pool
+//   TransformPass[deflate.Inflater](to, inflater, group)         // 'group' of the stream feeding it, last
 pub actor TransformPass[T: Transform] is PieceSink[IoBuf] {
   t: T;
   down: StreamTo[IoBuf];
@@ -122,17 +138,20 @@ pub actor TransformPass[T: Transform] is PieceSink[IoBuf] {
   turns: Turns;
   why: Option[Ending];          // the stream is over for us: the reason, as the answers after it are given
   sated: bool;                  // the transform reached the end of its own stream
+  feed: Option[CancelGroup];    // of the stream feeding us, cancelled when we stop
 
-  pub fn own overload init(self: &new, down: StreamTo[IoBuf], t: T) {
+  pub fn own overload init(self: &new, down: StreamTo[IoBuf], t: T,
+      group: Option[CancelGroup] = None[CancelGroup]) {
     let budget = down.budget;
     *self = Self(t: t, down: down, out: PieceWindow[IoBuf].bytes(budget, ownPool(budget)),
-      turns: Turns.make(), why: None[Ending], sated: false);
+      turns: Turns.make(), why: None[Ending], sated: false, feed: group);
   }
 
-  pub fn shared overload init(self: &new, down: StreamTo[IoBuf], t: T, pool: ChunkPool) {
+  pub fn shared overload init(self: &new, down: StreamTo[IoBuf], t: T, pool: ChunkPool,
+      group: Option[CancelGroup] = None[CancelGroup]) {
     let budget = down.budget;
     *self = Self(t: t, down: down, out: PieceWindow[IoBuf].bytes(budget, pool),
-      turns: Turns.make(), why: None[Ending], sated: false);
+      turns: Turns.make(), why: None[Ending], sated: false, feed: group);
   }
 
   // The envelope of a behaviour waiting its turn
@@ -162,6 +181,8 @@ pub actor TransformPass[T: Transform] is PieceSink[IoBuf] {
         }
       }
     }
+    // stopped, whoever's the reason: the producer hears now, not after our answers are in
+    if why is Some && !sated { cancelFeed(&feed); }
     if why is Some && !down.ended() {
       var more = true;
       while more {
@@ -328,9 +349,11 @@ pub actor HashPass[D: Digester] is PieceSink[IoBuf] {
   to: DigestSink[D.Out];
   cut: Option[Ending];          // the stage after us said Stop
   over: bool;                   // the answer to 'to' and the end downstream have gone
+  feed: Option[CancelGroup];    // of the stream feeding us, cancelled when we stop
 
-  pub fn init(self: &new, down: StreamTo[IoBuf], d: D, to: DigestSink[D.Out]) {
-    *self = Self(d: d, down: down, to: to, cut: None[Ending], over: false);
+  pub fn init(self: &new, down: StreamTo[IoBuf], d: D, to: DigestSink[D.Out],
+      group: Option[CancelGroup] = None[CancelGroup]) {
+    *self = Self(d: d, down: down, to: to, cut: None[Ending], over: false, feed: group);
   }
 
   // 'feed' and the send are one step before any wait, so pieces in flight together keep their order
@@ -340,7 +363,10 @@ pub actor HashPass[D: Digester] is PieceSink[IoBuf] {
     d.feed(c.view());
     let a = await down.sink.piece(down.tag, c);
     match &a {
-      case let &Stop(w) { if cut is None { cut = Some[Ending](reasonCopy(w)); } }
+      case let &Stop(w) {
+        if cut is None { cut = Some[Ending](reasonCopy(w)); }
+        cancelFeed(&feed);
+      }
       else {}
     }
     a
@@ -365,6 +391,7 @@ pub actor HashPass[D: Digester] is PieceSink[IoBuf] {
   fn cancelCheck(self: &mut) {
     if over || !actors.isCancelled() { return; }
     over = true;
+    cancelFeed(&feed);
     to.digest(Err[D.Out, AnyError](AnyError.msg("streams: cancelled")));
     down.end(Ending.Failed(AnyError.msg("streams: cancelled")));
   }
@@ -383,16 +410,21 @@ pub actor FileTo is PieceSink[IoBuf] {
   ending: Option[Ending];       // the end, arrived while writes were in flight
   reported: bool;
   done: OneshotSender[Result[u64, AnyError]];
+  feed: Option[CancelGroup];    // of the stream feeding us, cancelled when we stop
 
-  pub fn init(self: &new, file: File, done: OneshotSender[Result[u64, AnyError]]) {
+  pub fn init(self: &new, file: File, done: OneshotSender[Result[u64, AnyError]],
+      group: Option[CancelGroup] = None[CancelGroup]) {
     *self = Self(file: file, at: 0u64, written: 0u64, flying: 0usize, failed: None[AnyError],
-      ending: None[Ending], reported: false, done: done);
+      ending: None[Ending], reported: false, done: done, feed: group);
   }
 
   pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
     if failed is None && actors.isCancelled() { failed = Some[AnyError](AnyError.msg("streams: cancelled")); }
     match &failed {
-      case let &Some(e) { return Stop[IoBuf](Ending.Failed(textCopy(e))); }
+      case let &Some(e) {
+        cancelFeed(&feed);
+        return Stop[IoBuf](Ending.Failed(textCopy(e)));
+      }
       case is None {}
     }
     var cur = c;
@@ -418,6 +450,7 @@ pub actor FileTo is PieceSink[IoBuf] {
       case let Err(e) {
         // a failed write lost the buffer: the producer is answered with an empty one of its size
         if failed is None { failed = Some[AnyError](AnyError.from(e)); }
+        cancelFeed(&feed);
         answer = Some[PieceAck[IoBuf]](Stop[IoBuf](Ending.Failed(AnyError.msg("streams: the file write failed"))));
       }
     }
