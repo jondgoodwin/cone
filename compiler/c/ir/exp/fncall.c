@@ -1274,6 +1274,36 @@ static int fnCallLowerRefIntField(FnCallNode *callnode, INode *objtype) {
     return 1;
 }
 
+// Refuse a pointer's '+', '-', '+=', '-=', '++' and '--', and the difference of
+// two pointers, where it points at an '@unsized' enum: each steps by, or counts
+// in, the element's size, and such an enum has no single one
+static void fnCallRefusePtrStep(INode *callnode, FnDclNode *selected, INode *selftype) {
+    if (selected->value == NULL || selected->value->tag != IntrinsicTag)
+        return;
+    switch (((IntrinsicNode*)selected->value)->intrinsicFn) {
+    case AddIntrinsic:
+    case SubIntrinsic:
+    case DiffIntrinsic:
+    case AddEqIntrinsic:
+    case SubEqIntrinsic:
+    case IncrIntrinsic:
+    case DecrIntrinsic:
+    case IncrPostIntrinsic:
+    case DecrPostIntrinsic:
+        break;
+    default:
+        return;
+    }
+    // A method that changes the pointer holds it by reference
+    if (selftype->tag == RefTag)
+        selftype = itypeGetTypeDcl(((RefNode*)selftype)->vtexp);
+    if (selftype->tag != PtrTag)
+        return;
+    INode *unsizedenum = itypeHeldUnsizedEnum(((StarNode*)selftype)->vtexp);
+    if (unsizedenum)
+        itypeUnsizedEnumMsg(callnode, unsizedenum, "reached by pointer arithmetic");
+}
+
 // Report why the name the caller used selected no single candidate.
 // 'kind' names what the name declares, for a call ("function") or a method call ("method").
 static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *namesym, char *kind) {
@@ -2713,6 +2743,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     methodrefnode->vtype = selected->vtype;
     callnode->objfn = (INode*)methodrefnode;
     callnode->methfld = NULL;
+    fnCallRefusePtrStep((INode*)callnode, selected, selftype);
 
     // Now that exactly one candidate is selected, coerce the argument once.
     // These compiler-declared signatures are generic over the pointer/reference's
