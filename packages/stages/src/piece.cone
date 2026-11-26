@@ -10,7 +10,9 @@
 //                   stream Failed
 //   PieceSource[T]  an actor trait, what has a stream of T to give: deliver(tag, to), decline(tag)
 //   StreamFrom[T]   "a stream on offer", owned by whoever may take it. Dropped untaken, it declines
-//   PieceWindow[T]  a producer's run-ahead: the unanswered pieces it keeps (piecewindow.cone)
+//
+// Stages' own producers also share a run-ahead window (piecewindow.cone), which is transitional and no part
+// of the package's API.
 //
 // The tag is a number the RECEIVER chooses and gets back with every call, so one actor takes many streams.
 //
@@ -25,8 +27,8 @@
 //   to.end(Ending.Finished);
 //
 // Awaiting each piece's answer before the next makes a chain of stages run one after another, not side by
-// side, so a producer runs ahead: it keeps unanswered answers as futures, in a PieceWindow. Every answer is
-// collected before the one 'end'.
+// side, so a producer runs ahead: it keeps unanswered answers as futures. Every answer is collected before
+// the one 'end'.
 //
 // THE RULES OF A RECEIVER (a behaviour of an actor that runs other messages while it awaits):
 //
@@ -44,8 +46,21 @@
 //      sends before it waits; FileTo reserves its offset before it waits.
 //
 // A receiver that has answered Stop answers Stop to every piece that still arrives, and still gets one end.
-// A producer with nothing to send hears a stop late; what ends a wait on I/O is the cancel group, which
-// travels with every message.
+//
+// HEARING A STOP. A producer hears an answer only when it collects it, so one that is waiting on I/O with
+// nothing to send hears a Stop late. A receiver that wants those waits ended builds its StreamTo with a cancel
+// group of its own, a child of the group it works in, keeps a handle, and cancels it as it answers Stop (or
+// when it wants the stream no more and has no piece to answer):
+//
+//   let stop = actors.currentGroup().child();
+//   src.run(addr, StreamTo[IoBuf].at(selfactor, tag, 0usize, Some[CancelGroup](stop)));
+//   ...
+//   stop.cancel();                                 // in 'piece', beside: Stop[IoBuf](why)
+//
+// The producer runs its waits on I/O in that group ('to.group'), and ends the stream with the reason of the
+// Stop it then collects, or Failed("streams: cancelled") when there is none. The messages it sends stay in its
+// own group. The group is a CHILD of the group the stream runs in, so that a cancel of the whole still reaches
+// those waits: one that is not would hide it from them.
 
 // The answer to a piece
 pub use PieceAck;
@@ -65,15 +80,18 @@ pub actor trait PieceSink[T] {
 
 // "Deliver here": owned by the one producer of one stream. Dropped un-ended, it ends the stream Failed.
 // 'budget' is how far ahead the receiver will take it: 0 is the default of what flows (256 KiB of bytes,
-// two pieces of values), see PieceWindow
+// two pieces of values). 'group', when the receiver gives one, is the cancel group the producer waits on I/O
+// in (HEARING A STOP, above)
 pub struct StreamTo[T] is Move {
   pub sink: PieceSink[T];
   pub tag: u64;
   pub budget: usize;
+  pub group: Option[CancelGroup];
   over: bool;
 
-  pub fn at(sink: PieceSink[T], tag: u64, budget: usize = 0usize) StreamTo[T] {
-    StreamTo[T](sink, tag, budget, false)
+  pub fn at(sink: PieceSink[T], tag: u64, budget: usize = 0usize,
+      group: Option[CancelGroup] = None[CancelGroup]) StreamTo[T] {
+    StreamTo[T](sink, tag, budget, group, false)
   }
 
   // The one end; nothing is to be sent after it. A second call does nothing

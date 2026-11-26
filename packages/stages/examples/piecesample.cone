@@ -1,10 +1,13 @@
 // Today's stages against the stream core, in one program so both run on the same build and alternate.
 //
-//   congo run --release packages/stages/examples/piecesample.cone -- <old|new> <socket|bigin|bigraw> [MiB]
+//   congo run --release packages/stages/examples/piecesample.cone -- <old|new> <socket|bigin|bigraw|bigin2|bigraw2> [MiB]
 //
 //   socket   a socket sends the gzip stream; inflate, sha256, file (PR 7's sample; pieces of 64 KiB)
 //   bigin    the gzip stream comes from memory in 256 KiB pieces; inflate, sha256, file
 //   bigraw   the data itself comes from memory in 256 KiB pieces; sha256, sha256, file
+//   bigin2, bigraw2   (new only) the same, the producer's pool holding two pieces: bigin's and bigraw's pool is
+//            the window's size, one such piece, and a pool's cap wins over the floor of two, so those send one
+//            at a time; these two show the floor
 //   old      today's SocketSource (or a chunk source of the same window), TransformStage, HashStage, FileSink
 //   new      SocketFrom (or a producer with a PieceWindow), TransformPass, HashPass, FileTo, all at their defaults
 //
@@ -187,11 +190,12 @@ actor OldBig is ChunkSource {
   }
 }
 
-// The core's side: the same, from a PieceWindow at the default
+// The core's side: the same, from a PieceWindow at the default, its buffers from a pool of 'poolBytes'
+// (PieceWindow is transitional, no part of stages' API: piecewindow.cone)
 actor NewBig {
-  pub async fn run(self, to: StreamTo[IoBuf], data: List[u8]) {
+  pub async fn run(self, to: StreamTo[IoBuf], data: List[u8], poolBytes: usize) {
     var dest = to;
-    var w = PieceWindow[IoBuf].bytes(dest.budget, ChunkPool.make(linkWindow));
+    var w = PieceWindow[IoBuf].bytes(dest.budget, ChunkPool.make(poolBytes));
     var at = 0usize;
     var stopped = false;
     while at < data.len() && !stopped {
@@ -233,7 +237,7 @@ actor NewBig {
 // The core's pipeline: the file is opened first (FileTo takes an open file), then the stages are made from the
 // sink end back, and the source is started
 actor Wire {
-  pub async fn run(self, port: u16, name: String, data: List[u8], want: List[u8], mode: u32,
+  pub async fn run(self, port: u16, name: String, data: List[u8], want: List[u8], mode: u32, poolBytes: usize,
       fileTx: OneshotSender[Result[u64, AnyError]]) {
     let opened = await aio.openFile(&Path.from(name.view()), Access.Create);
     var file = File.none();
@@ -252,14 +256,14 @@ actor Wire {
     if mode == 2u32 {
       let first = HashPass[cryptohash.Sha256](StreamTo[IoBuf].at(hash, 1u64), cryptohash.Sha256.make(),
         Checker(wantAgain));
-      NewBig().run(StreamTo[IoBuf].at(first, 1u64), data);
+      NewBig().run(StreamTo[IoBuf].at(first, 1u64), data, poolBytes);
     } else {
       let inf = TransformPass[deflate.Inflater](StreamTo[IoBuf].at(hash, 1u64),
         deflate.Inflater.make(deflate.Format.Gzip));
       if mode == 0u32 {
         SocketFrom().run(SocketAddr.localhost(port), StreamTo[IoBuf].at(inf, 1u64));
       } else {
-        NewBig().run(StreamTo[IoBuf].at(inf, 1u64), data);
+        NewBig().run(StreamTo[IoBuf].at(inf, 1u64), data, poolBytes);
       }
     }
   }
@@ -270,11 +274,16 @@ fn main(argc: i32, argv: **u8) i32 {
   var isNew = false;
   var mode = 0u32;                          // 0 socket, 1 bigin, 2 bigraw
   var mib = 64u32;
+  var two = false;                          // the new producer's pool holds two pieces
   if argc > 1i32 { isNew = *(*(argv + 1usize)) == 'n'; }
   if argc > 2i32 {
     let m = *(argv + 2usize);
     if *m == 'b' { mode = if *(m + 3usize) == 'i' {1u32} else {2u32}; }
+    var end = m;
+    while *end != 0u8 { end = end + 1usize; }
+    two = *(end - 1usize) == '2';
   }
+  let poolBytes = if two {2usize * bigPiece} else {linkWindow};
   if argc > 3i32 { mib = digits(*(argv + 3usize)); }
   let size = usize.from(mib) * 1048576usize;
   let data = corpus(size);
@@ -311,7 +320,7 @@ fn main(argc: i32, argv: **u8) i32 {
     }
     t0 = Instant.now();
     if isNew {
-      Wire().run(port, String.from(name), feed, want, mode, fileTx);
+      Wire().run(port, String.from(name), feed, want, mode, poolBytes, fileTx);
     } else {
       let sink = FileSink(String.from(name), fileTx);
       var wantAgain = List[u8]();
@@ -349,7 +358,8 @@ fn main(argc: i32, argv: **u8) i32 {
   _ = fs.removeFile(&Path.from(name));
   let tail = doneAt - outcome.sentAt.load();
   printStr(if isNew {"new"} else {"old"});
-  printStr(if mode == 0u32 {" socket "} else if mode == 1u32 {" bigin "} else {" bigraw "});
+  printStr(if mode == 0u32 {" socket"} else if mode == 1u32 {" bigin"} else {" bigraw"});
+  printStr(if two {"2 "} else {" "});
   printUInt(u64.from(mib)); printStr(" MiB: ");
   printUInt(ns / 1000000u64); printStr(" ms, ");
   printUInt(u64.from(size) * 1000u64 / ns); printStr(" MB/s, tail ");

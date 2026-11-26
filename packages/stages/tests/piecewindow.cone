@@ -6,13 +6,18 @@
 //   D. values, the default: two unanswered; with a budget of 5, five
 //   E. a pool capped at four 64 KiB buffers under a 1 MiB budget: the producer waits at the cap (refused > 0),
 //      holds four, never past the cap, and every piece arrives as buffers come home
-//   F. the same pool filled by another holder: the floor lends two past the cap and the producer waits after
-//      them; every piece arrives; when the other lets go, four again
+//   F. the same pool filled by another holder: the cap wins over the floor, so one buffer is lent past it and
+//      the producer goes one piece at a time; every piece arrives; when the other lets go, four again
+//   G. a pool as big as one large piece: no room for the floor's second, so one unanswered, within the cap
+//   H. twelve streams over one pool of four buffers: it lends at most the cap and one buffer for each stream,
+//      and every stream finishes
 //
-// The counts checked are the producer's own (its window's peaks), which do not depend on timing.
+// The counts checked are the producer's own (its window's stats), which do not depend on timing.
+// (PieceWindow is transitional, no part of stages' API: piecewindow.cone. This test names it from outside.)
 // Mutants, run as 'congo test --no-cache -D NAME':
-//   MUT_NO_FLOOR   no floor of two: B fails (one unanswered)
-//   MUT_NO_CAP     'fresh' ignores the pool's cap: E and F fail
+//   MUT_NO_FLOOR        no floor of two: B fails (one unanswered)
+//   MUT_NO_CAP          'fresh' ignores the pool's cap: E, F, G and H fail
+//   MUT_CAP_FLOOR_TWO   the floor of two is lent past the cap: F and G fail
 
 mod piecewindow;
 
@@ -121,7 +126,8 @@ pub actor Maker {
     }
     dest.end(Ending.Finished);
     var r = report;
-    r.send(Ran(i, u64.from(w.peak()), u64.from(w.peakCost()), w.stalls()));
+    let s = w.stats();
+    r.send(Ran(i, u64.from(s.peak), u64.from(s.peakCost), s.stalls));
   }
 }
 
@@ -156,7 +162,8 @@ pub actor ValueMaker {
     }
     dest.end(Ending.Finished);
     var r = report;
-    r.send(Ran(i, u64.from(w.peak()), u64.from(w.peakCost()), w.stalls()));
+    let s = w.stats();
+    r.send(Ran(i, u64.from(s.peak), u64.from(s.peakCost), s.stalls));
   }
 }
 
@@ -253,9 +260,10 @@ fn main() i32 {
       }
       expectUInt(u64.from(pool.lent()), 262144u64, "F: another holds the whole cap");
       let r = bytesRun(10u64, 65536usize, 1048576usize, pool.clone());
-      expectUInt(r.0.peak, 2u64, "F: only the floor's two stand unanswered");
-      expectBool(pool.floored() > 0u64, true, "F: lent past the cap by the floor");
-      expectBool(pool.peak() <= 393216usize, true, "F: by two buffers at most");
+      expectUInt(r.0.peak, 1u64, "F: one stands unanswered, the cap over the floor");
+      expectBool(pool.floored() > 0u64, true, "F: lent past the cap, the stream holding nothing");
+      expectBool(pool.refused() > 0u64, true, "F: and the floor's second refused");
+      expectBool(pool.peak() <= 327680usize, true, "F: by one buffer at most");
       expectUInt(r.1.pieces, 10u64, "F: and every piece arrived");
       var more = true;
       while more {
@@ -267,6 +275,47 @@ fn main() i32 {
     }
     let after = bytesRun(10u64, 65536usize, 1048576usize, pool.clone());
     expectUInt(after.0.peak, 4u64, "F: when it lets go, four again");
+  }
+  // G
+  {
+    let pool = ChunkPool.make(262144usize);
+    let r = bytesRun(6u64, 262144usize, 0usize, pool.clone());
+    expectUInt(r.0.peak, 1u64, "G: a pool of one large piece holds the producer to it");
+    expectUInt(u64.from(pool.peak()), 262144u64, "G: and lends nothing past its cap");
+    expectUInt(r.1.bytes, 1572864u64, "G: all of them arrived");
+  }
+  // H
+  {
+    let pool = ChunkPool.make(262144usize);
+    let slow = Slow();
+    var reports = List[OneshotReceiver[Ran]]();
+    var k = 0u64;
+    while k < 12u64 {
+      var tx: OneshotSender[Ran];
+      var rx: OneshotReceiver[Ran];
+      tx, rx = Oneshot[Ran].make();
+      let m = Maker();
+      m.run(StreamTo[IoBuf].at(slow, k + 1u64, 1048576usize), 6u64, 65536usize, pool.clone(), tx);
+      reports.push(rx);
+      k = k + 1u64;
+    }
+    var sent = 0u64;
+    var more = true;
+    while more {
+      match reports.pop() {
+        case let Some(r) {
+          var x = r;
+          let ran = x.recv() || Ran(0u64, 0u64, 0u64, 0u64);
+          sent = sent + ran.sent;
+        }
+        case is None { more = false; }
+      }
+    }
+    actors.waitQuiet();
+    expectUInt(sent, 72u64, "H: every stream sent all its pieces: none stalled for good");
+    expectBool(pool.peak() <= 262144usize + 12usize * 65536usize, true,
+      "H: the cap and one buffer for each stream at most");
+    expectUInt(u64.from(pool.lent()), 0u64, "H: every byte came home");
   }
 
   finalAll();

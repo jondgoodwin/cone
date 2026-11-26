@@ -216,6 +216,7 @@ fn ended(c: Collect) Got {
 }
 
 // Feeds 'data' in pieces of 'size' bytes, running ahead as its window lets it
+// (PieceWindow is transitional, no part of stages' API: piecewindow.cone)
 pub actor Feeder {
   pub async fn run(self, to: StreamTo[IoBuf], data: List[u8], size: usize) {
     var dest = to;
@@ -467,12 +468,15 @@ fn main() i32 {
     let data = corpus(600000usize);
     let gz = deflate.gzipCompress(data.view(), 6);
     let sink = Collect(corpus(600000usize), 2i64);
-    // a budget of one byte: only the floor's two output pieces stand, so the stage parks inside an input
+    // a budget of one byte: the stage's pool holds no piece, so only one output piece stands, and the stage
+    // parks inside an input
     let inf = TransformPass[deflate.Inflater](StreamTo[IoBuf].at(sink, 1u64, 1usize),
       deflate.Inflater.make(deflate.Format.Gzip));
     let f = Feeder();
     f.run(StreamTo[IoBuf].at(inf, 1u64), gz, 4096usize);
     let o = ended(sink);
+    actors.waitQuiet();
+    expectUInt(iobuf.stats().lent, 0u64, "B: the stage, ended and still alive, keeps no buffer");
     expectUInt(o.bytes, 600000u64, "B: every byte came out");
     expectUInt(o.wrong, 0u64, "B: each in its place");
     expectUInt(o.ends, 1u64, "B: one end");

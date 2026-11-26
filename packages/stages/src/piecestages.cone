@@ -24,6 +24,11 @@
 // hash stage also answers its digest sink with an error), and SocketFrom's reads end by their group. A stage
 // in no group never sees a cancel.
 //
+// SocketFrom connects and reads in the stream's own group where its StreamTo has one, so a receiver that stops
+// ends a read on an idle socket (piece.cone, HEARING A STOP). These stages, as receivers, are not handed the
+// group of the stream that feeds them and cancel none: a Stop of theirs is heard with the producer's next
+// collected answer.
+//
 // FAILURE. A transform that fails ends the stream after it with its own typed error, and answers Stop (the
 // error as text) to the stage before it. A file that cannot be written answers Stop and reports the error. The
 // stream's one end follows its last piece's answer.
@@ -284,9 +289,11 @@ pub actor TransformPass[T: Transform] is PieceSink[IoBuf] {
     }
   }
 
-  // The one end downstream, with the reason itself; a copy stays for the answers after it
+  // The one end downstream, with the reason itself; a copy stays for the answers after it. Every answer is in,
+  // so the window's kept buffer goes too: an ended stage holds none
   fn closeDown(self: &mut) {
     if down.ended() { return; }
+    #if #defined("MUT_KEEP_SPARE") {} #else { out.dropSpare(); }
     var w = None[Ending];
     w <-> why;
     match w {
@@ -467,7 +474,16 @@ pub actor SocketFrom {
       case is None {}
     }
     var window = PieceWindow[IoBuf].bytes(dest.budget, mine);
-    let r = await aio.connectIn(addr, IoLimits.within(actors.currentGroup()));
+    // the waits on I/O run in the stream's group where the receiver gave one, so that it can end them
+    var waits = actors.currentGroup();
+    #if #defined("MUT_NO_STOP_GROUP") {} #else {
+      match dest.group {
+        case let Some(g) { waits = g; }
+        case is None {}
+      }
+    }
+    var cut = false;                 // that group was cancelled, the message's own was not
+    let r = await aio.connectIn(addr, IoLimits.within(waits));
     var conn = Socket.none();
     match r {
       case let Ok(s) { conn = s; }
@@ -481,6 +497,9 @@ pub actor SocketFrom {
     while more {
       if actors.isCancelled() {
         stopped = Some[Ending](Ending.Failed(AnyError.msg("streams: cancelled")));
+        more = false;
+      } else if waits.isCancelled() {
+        cut = true;                  // the reason is in the receiver's Stop, collected below
         more = false;
       } else {
         var buf = None[IoBuf];
@@ -510,7 +529,7 @@ pub actor SocketFrom {
           taken <-> buf;
           match taken {
             case let Some(b) {
-              let got = await conn.readIn(b, IoLimits.within(actors.currentGroup()));
+              let got = await conn.readIn(b, IoLimits.within(waits));
               match got {
                 case let Ok(data) {
                   if data.isEmpty() {
@@ -522,9 +541,13 @@ pub actor SocketFrom {
                   }
                 }
                 case let Err(e) {
-                  var failure = Ending.Failed(AnyError.from(e));
-                  if actors.isCancelled() { failure = Ending.Failed(AnyError.msg("streams: cancelled")); }
-                  stopped = Some[Ending](failure);
+                  if actors.isCancelled() {
+                    stopped = Some[Ending](Ending.Failed(AnyError.msg("streams: cancelled")));
+                  } else if waits.isCancelled() {
+                    cut = true;
+                  } else {
+                    stopped = Some[Ending](Ending.Failed(AnyError.from(e)));
+                  }
                   more = false;
                 }
               }
@@ -548,6 +571,8 @@ pub actor SocketFrom {
         case is None { draining = false; }
       }
     }
+    // cut short with no Stop to give the reason
+    if stopped is None && cut { stopped = Some[Ending](Ending.Failed(AnyError.msg("streams: cancelled"))); }
     var how = Ending.Finished;
     var s = None[Ending];
     s <-> stopped;
