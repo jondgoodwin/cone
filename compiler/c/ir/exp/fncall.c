@@ -2835,7 +2835,8 @@ static char *fnCallSliceElemNoEq(INode *elemtype, char *buf, size_t size) {
     case VirtRefTag:
         return "comparing what two virtual references refer to is not built";
     case ArrayTag:
-        return "comparing two arrays is not built";
+        // (several sizes are nested arrays)
+        return fnCallSliceElemNoEq(arrayElemType(type), buf, size);
     default:
         break;
     }
@@ -2989,6 +2990,49 @@ static void fnCallLowerTupleCompare(TypeCheckState *pstate, FnCallNode *node) {
     fnCallFinalizeArgs(pstate, node);
 }
 
+// '==' on two arrays of the same type compares their elements, as two slices'
+// are: each is lent read-only where it lies (a value that is not a place, to the
+// end of its statement), taken as a slice of all its elements, and compared by
+// fnCallLowerSliceCompare. '!=' arrives as '==' under a '!' (fnCallNeFromEq)
+// unless the elements have no '=='. An array has no order, as a slice has none.
+// The length is part of the type, so arrays of different lengths do not compare.
+static void fnCallLowerArrayCompare(TypeCheckState *pstate, FnCallNode *node) {
+    Name *op = ((NameUseNode*)node->methfld)->namesym;
+    if (op != eqName && op != neName) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            "`%s` on two arrays is refused: an array has no order. Compare their elements one by one.",
+            &op->namestr);
+        node->vtype = errorType;
+        return;
+    }
+    INode *arraytype = iexpGetTypeDcl(node->objfn);
+    INode **argp = &nodesGet(node->args, 0);
+    if (!itypeIsSame(arraytype, iexpGetTypeDcl(*argp))) {
+        errorMsgNode((INode*)node, ErrorInvType,
+            "An array is compared with an array of the same element type and length, and this one is not.");
+        node->vtype = errorType;
+        return;
+    }
+    char buf[256];
+    char *why = fnCallSliceElemNoEq(arrayElemType(arraytype), buf, sizeof(buf));
+    if (why) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            "`%s` on two arrays compares their elements, and %s.", &op->namestr, why);
+        node->vtype = errorType;
+        return;
+    }
+    INode *slicetype = (INode*)newRefNodeFull(ArrayRefTag, (INode*)node, borrowRef,
+        newPermUseNode(roPerm), arrayElemType(arraytype));
+    fnCallLendEnumOperand(pstate, &node->objfn);
+    fnCallLendEnumOperand(pstate, argp);
+    if (!iexpCoerce(&node->objfn, slicetype)) {
+        errorUnreachable((INode*)node, "a borrowed array that is no slice of its elements");
+        node->vtype = errorType;
+        return;
+    }
+    fnCallLowerSliceCompare(pstate, node);
+}
+
 // An array, a reference to one, or a '&str' (a string literal is one), compared
 // with a slice is taken as the slice it converts to, as the other side of a slice's comparison already is:
 // '"box" == s' means what 's == "box"' does. Answers 0, changing nothing,
@@ -3049,6 +3093,15 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     }
 
     INode *referent = itypeGetTypeDcl(reftype->vtexp);
+
+    // References to two arrays compare the arrays (fnCallLowerArrayCompare)
+    if (referent->tag == ArrayTag && iexpGetTypeDcl(*argp)->tag == RefTag
+        && itypeGetTypeDcl(((RefNode*)iexpGetTypeDcl(*argp))->vtexp)->tag == ArrayTag) {
+        fnCallDerefOperand(&node->objfn, node);
+        fnCallDerefOperand(argp, node);
+        fnCallLowerArrayCompare(pstate, node);
+        return;
+    }
 
     // Text through an owner, '&Uni[str]' or '&Rc[str]', against text one level
     // shallower, '&str': only the owner's side is read through, as '&str ==
@@ -3481,6 +3534,15 @@ static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
         return 0;
     while (objtype->tag == RefTag)
         objtype = itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+    // two arrays', from the '==' that compares their elements, where they have
+    // one (fnCallLowerArrayCompare)
+    if (objtype->tag == ArrayTag && argtype) {
+        while (argtype->tag == RefTag)
+            argtype = itypeGetTypeDcl(((RefNode*)argtype)->vtexp);
+        char buf[256];
+        return argtype->tag == ArrayTag
+            && fnCallSliceElemNoEq(arrayElemType(objtype), buf, sizeof(buf)) == NULL;
+    }
     // a tuple's, from the '==' that compares its elements (fnCallLowerTupleCompare)
     if (objtype->tag == TTupleTag)
         return 1;
@@ -6284,6 +6346,9 @@ dispatch:
             fnCallArrIndex(node);  // indexing or borrowed ref to index
         else if (fnCallIsValueCompare(opname) && fnCallArrayAsSlice(pstate, node))
             ;
+        else if (fnCallIsValueCompare(opname) && node->args && node->args->used == 1
+            && iexpGetTypeDcl(nodesGet(node->args, 0))->tag == ArrayTag)
+            fnCallLowerArrayCompare(pstate, node);
         else if (fnCallLowerArrayLen(nodep, objtype))
             ;
         else if (fnCallLowerSliceMethod(pstate, node))
