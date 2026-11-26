@@ -109,7 +109,43 @@ entry. That is correct because a permission lowers to a zero-field struct and
 occupies no bytes.
 
 **Neither identity test compares `scope`**, so lifetime is not part of type
-identity — and `refFindSuper` drops it entirely.
+identity.
+
+## Meeting two reference types
+
+Where several values must settle on one type (the arms of an `if` or `match`,
+a loop's breaks, an array literal's elements, a closure's returns),
+`itypeFindSuper` finds it. Two thin or virtual references go to
+`refFindSuper`, which refuses different regions. With one permission, the
+pointees meet at a base trait (`structRefFindSuper`), and the result is a thin
+borrow of lifetime 0 with no name. With two permissions, `refPermJoin` joins
+them only if both are borrows and nothing else differs: the same pointee, the
+same virtual marks and bound, and neither a key. Owners that differ are not
+joined: a `uni` and a `mut` `Rc` coerced to `Rc[mut, T]` in the arms of an `if`
+is generated wrong, even where the type is declared. Two slices (`ArrayRefTag`) go to `refPermJoin`
+alone, since slices of two element types have two strides. A raw pointer has no
+permission, so two different pointer types have nothing to join.
+
+`refPermJoin` takes the permission from `permJoin`, which is the least of those
+`permMatches` converts both to, and checks that both types coerce to the
+result:
+
+| | uni | mut | imm | mut1 | ro | opaq |
+| --- | --- | --- | --- | --- | --- | --- |
+| uni | uni | mut | imm | mut1 | ro | opaq |
+| mut | | mut | ro | ro | ro | opaq |
+| imm | | | imm | ro | ro | opaq |
+| mut1 | | | | mut1 | ro | opaq |
+| ro | | | | | ro | opaq |
+| opaq | | | | | | opaq |
+
+`new` joins as `uni` does, except that `new` with `uni` is `uni`. A lock
+permission and a guard's are never joined with another.
+
+The result carries the shorter of the two bands (the higher `scope`), and a
+lifetime name only where both have it. `ifTypeCheck` and `blockTypeCheck` then
+narrow it again over all their arms (`iexpNarrowestType`); an array literal does
+not, and what an escaping element borrowed is judged by the loan walk.
 
 ## Parse
 
