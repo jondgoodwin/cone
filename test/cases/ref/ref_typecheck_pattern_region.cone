@@ -1,0 +1,50 @@
+// No test or pattern makes an owner from a borrow, as no 'as' does
+// (ref_typecheck_cast_region). A downcast keeps the reference's region, so 'is'
+// and a pattern that name an owner are refused against a borrow of any kind: a
+// plain, a virtual, an enum's, a slice, a payload's. A pattern that names the
+// variant alone narrows to a borrow, which is no owner either. ('into' is
+// retired: typemgmt_parse_into.)
+mod ref_typecheck_pattern_region;
+
+struct Loud { pub x: i64; }
+trait Named { fn tag(self: &) i64; }
+struct Cat is Named {
+  pub x: i64;
+  fn tag(self: &) i64 { x }
+}
+trait Round { }
+enum Shape {
+  struct Circle is Round { pub r: i64; }
+  struct Square { pub s: i64; }
+}
+
+fn takeLoud(o: Uni[Loud]) { }
+fn takeCat(o: Uni[Cat]) { }
+fn takeCircle(o: Uni[Shape.Circle]) { }
+
+fn isPlain(r: &uni Loud) { if r is Uni[Loud] { } }                                    //~ ErrorInvType "won't downcast safely"
+fn matchIsPlain(r: &uni Loud) { match r { case is Uni[Loud] { } else { } } }          //~ ErrorInvType "won't downcast safely"
+fn armPlain(r: &uni Loud) { match r { case let Uni[Loud](o) { takeLoud(o); } else { } } }   //~ ErrorInvType "won't downcast safely"
+fn ifLetPlain(r: &uni Loud) { if let Uni[Loud](o) = r { takeLoud(o); } }              //~ ErrorInvType "won't downcast safely"
+fn isVirt(r: &<uni Named) { if r is Uni[Cat] { } }                                    //~ ErrorInvType "won't downcast safely"
+fn armVirt(r: &<uni Named) { match r { case let Uni[Cat](o) { takeCat(o); } else { } } }     //~ ErrorInvType "won't downcast safely"
+fn isEnum(r: &uni Shape) { if r is Uni[Shape.Circle] { } }                            //~ ErrorInvType "won't downcast safely"
+fn armEnum(r: &mut Shape) { match r { case let Rc[mut, Shape.Circle](o) { } else { } } }     //~ ErrorInvType "won't downcast safely"
+fn isEnumTrait(r: &uni Shape) { if r is Uni[Round] { } }                              //~ ErrorInvType "won't downcast safely"
+fn isText(b: &Array[u8]) { if b is Uni[str] { } }                                     //~ ErrorInvType "not compatible"
+fn isPayload(r: Option[&uni Loud]) { if r is Some[Uni[Loud]] { } }                    //~ ErrorInvType "not compatible"
+fn isTraitOwner(r: &<uni Named) { if r is Uni[Named] { } }                            //~ ErrorPatTrait
+// the owner named by an alias, or by a type parameter in an instance
+alias Owned = Uni[Loud];
+fn isAlias(r: &uni Loud) { if let Owned(o) = r { takeLoud(o); } }                     //~ ErrorInvType "won't downcast safely"
+fn isParm[T](r: &uni Loud) { if r is T { } }                                          //~ ErrorInvType "won't downcast safely"
+fn useParm(r: &uni Loud) { isParm[Uni[Loud]](r); }
+
+// narrowed by the variant's name: a borrow, which is not the owner asked for
+fn armNarrows(r: &uni Shape) { match r { case let Circle(c) { takeCircle(c); } else { } } }  //~ ErrorInvType
+fn armNarrowsVirt(r: &<uni Named) { match r { case let Cat(c) { takeCat(c); } else { } } }   //~ ErrorInvType
+fn testNarrows(r: &uni Shape) { if r is Circle { takeCircle(r); } }                   //~ ErrorInvType
+
+// allowed: what the pattern binds, used as the borrow it is
+fn lends(r: &uni Shape) i64 { match r { case let Circle(c) { c.r } else { 0i64 } } }
+fn lendsVirt(r: &<uni Named) i64 { match r { case let Cat(c) { c.x } else { 0i64 } } }
