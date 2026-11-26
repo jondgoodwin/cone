@@ -274,7 +274,7 @@ cancel again
 		worker threads never wait on I/O. An operation in
 		flight keeps the actor awaiting it alive, whether or not anything else holds the actor, as a request to another actor
 		does. There is one I/O thread; more than one is not built yet.</p>
-	<p>But it does not keep the <i>program</i> alive, and a program cut short this way ends with status 0 and no message.
+	<p>But it does not keep the <i>program</i> alive, and a program cut short this way ends with status 0.
 		At the program's end, the final its entry runs waits until no actor
 		is queued or running (an actor paused on I/O is neither; <a href="conc-runtime.html#runtime">The runtime starts and
 		stops by itself</a>) and then ends the I/O: every operation still in flight is cancelled and every socket closed,
@@ -284,6 +284,27 @@ cancel again
 		does a read from a peer that never sends, and an HTTP fetch still in flight. A program whose work is waiting on I/O
 		therefore keeps <span class="pre">main</span> waiting until it is done, as <a href="conc-io.html">the kitchen</a>
 		does on its channel.</p>
+	<p id="pending-line">A program that uses <span class="pre">aio</span> says so when it ends this way. Before the I/O is
+		cancelled, <span class="pre">aio</span>'s final writes one line to standard error, naming the program (without its
+		folder or <span class="pre">.exe</span>) and the number of awaited operations that were started and not yet
+		answered:</p>
+<pre>
+kitchen: ended with 2 awaited operations pending
+</pre>
+	<p>The line changes nothing else: the exit status is the same, and it appears only when the number is above zero. A
+		program that does not use <span class="pre">aio</span> never prints it.</p>
+	<ul>
+		<li><b>Counted:</b> an <span class="pre">await</span> of an operation, a timer, a
+			<span class="pre">FutureSet</span> or <span class="pre">actors.orCancelled</span>, once each. After a cancel has
+			woken an <span class="pre">actors.orCancelledOp</span> await, the operation it was waiting for is still counted
+			until it is answered.</li>
+		<li><b>Not counted:</b> an actor awaiting another actor's behaviour, and anything started without
+			<span class="pre">await</span>. So no line does not prove that every actor finished its work.</li>
+		<li>The finals of packages that import <span class="pre">aio</span> run before its own, and what they abandon first
+			is not counted: <span class="pre">actorhttp</span>'s abandons the fetches and server requests still waiting on
+			it, so a program cut short in one of those prints no line for it.</li>
+	</ul>
+	<p>The same number can be read while the program runs, as <span class="pre">actors.stats().awaitsPending</span>.</p>
 	<p>Or <span class="pre">main</span> can end by calling <span class="pre">actors.waitUntilIdle()</span>. It returns once
 		no actor is queued or running and no awaited operation is outstanding: every timer or I/O operation an actor awaits
 		has been answered, and whatever its answer started has run. The runtime stays running, and the final then ends the
