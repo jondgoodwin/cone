@@ -3446,9 +3446,12 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // build first drops what no live symbol reaches (globaldce: a definition
     // with internal, private or linkonce linkage that nothing refers to, and
     // then what only it referred to, which a release build's O3 does too),
-    // then only promotes allocas to registers, reassociates, eliminates
-    // common subexpressions and simplifies the control flow graph, each
-    // function in turn, with no target machine. So a helper holding the
+    // then only simplifies the control flow graph, each function in turn,
+    // with no target machine. It promotes no stack slot to a register (no
+    // mem2reg, sroa or gvn): a variable's debug info declares its slot, which
+    // a debugger reads anywhere in the function; promoted, the variable is
+    // readable only while its value happens to sit in a register, or not at
+    // all. So a helper holding the
     // calls of one OS, which only the other OS's branch of an 'if' on a
     // constant of the build calls, is no part of the object in a debug build
     // either, and the symbols it names need not exist. The roots are the
@@ -3496,7 +3499,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
             : "always-inline,function(sroa,instsimplify,sroa,infer-address-spaces,instsimplify,simplifycfg)")
         : gen->opt->release
         ? (gen->opt->lto ? "thinlto-pre-link<O3>" : "default<O3>")
-        : "globaldce,function(mem2reg,reassociate,gvn,simplifycfg)";
+        : "globaldce,function(simplifycfg)";
     LLVMPassBuilderOptionsRef passopts = LLVMCreatePassBuilderOptions();
     LLVMErrorRef passerr = LLVMRunPasses(gen->module, pipeline,
         gen->opt->gpu || gen->opt->release ? gen->machine : NULL, passopts);
