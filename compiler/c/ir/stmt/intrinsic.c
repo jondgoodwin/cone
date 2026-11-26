@@ -59,7 +59,8 @@ typedef enum {
     ShapeSliceU8,       // &Array[u8]: a borrowed slice of bytes, read only
     ShapeStr,           // &str: borrowed text, which shares a slice's layout
     ShapeI64,           // i64
-    ShapeU64            // u64
+    ShapeU64,           // u64
+    ShapeUniArrayT      // Uni[Array[T]]: core's unique owner of an array body
 } IntrinsicShape;
 
 // The types T may be, where an entry does not take every type with a size. A
@@ -113,6 +114,9 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 2, {ShapePtrT, ShapeUsize}, ShapeSliceMutT, 1, 0, PhaseExpansion, 1},
     {"sliceFromPartsUni", SliceFromPartsUniIntrinsic, "sliceFromPartsUni[T](p: *T, len: usize) &uni Array[T]",
         1, 2, {ShapePtrT, ShapeUsize}, ShapeSliceUniT, 1, 0, PhaseExpansion, 1},
+    // The same two words as an owner, which 'as' will not make from the slice
+    {"uniArrayFromParts", UniArrayFromPartsIntrinsic, "uniArrayFromParts[T](p: *T, n: usize) Uni[Array[T]]",
+        1, 2, {ShapePtrT, ShapeUsize}, ShapeUniArrayT, 1, 0, PhaseExpansion, 1},
     {"readRaw", ReadRawIntrinsic, "readRaw[T](p: *T) T",
         1, 1, {ShapePtrT}, ShapeT, 1, 1, PhaseExpansion, 1},
     {"writeRaw", WriteRawIntrinsic, "writeRaw[T](p: *T, value: T)",
@@ -314,6 +318,23 @@ static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
         return body == (INode *)strTypeDcl
             || (body->tag == StructTag && ((StructNode *)body)->namesym == strTypeName
                 && intrinsicModuleIsCore(((StructNode *)body)->dclinfo.owner));
+    }
+    case ShapeUniArrayT: {
+        // 'Uni[Array[T]]' is a call node until type check lowers it into the
+        // owner it names. No permission is written: a unique owner's is 'uni'
+        if (type->tag != FnCallTag)
+            return 0;
+        FnCallNode *owner = (FnCallNode *)type;
+        INode *region = itypeManagedRefRegion(type);
+        if (region == NULL || strcmp(&((StructNode *)region)->namesym->namestr, "Uni") != 0
+            || !intrinsicModuleIsCore(((StructNode *)region)->dclinfo.owner)
+            || owner->args == NULL || owner->args->used != 1 || nodesGet(owner->args, 0)->tag != FnCallTag)
+            return 0;
+        FnCallNode *body = (FnCallNode *)nodesGet(owner->args, 0);
+        return (body->flags & FlagIndex) && body->methfld == NULL && isNameUseNode(body->objfn)
+            && stdlibIsArrayBody(nameUseGetDcl((NameUseNode *)body->objfn))
+            && body->args != NULL && body->args->used == 1
+            && intrinsicIsTParm(nodesGet(body->args, 0), tparm);
     }
     case ShapePtrTypeRecord:
         return typeRecordIsPtr(type);

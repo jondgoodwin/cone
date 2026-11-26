@@ -611,7 +611,7 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   word and the variant test (`genlIsType`) and the drop read it, the second word
   left alone. That is why no slice may be made with a null pointer word, empty
   or not: the only place a slice is made from a raw pointer, the `sliceFromParts`
-  intrinsics, swaps a null pointer for the element's alignment as an address
+  intrinsics (and `uniArrayFromParts`, which makes an owner's pair the same way), swaps a null pointer for the element's alignment as an address
   (Rust's `NonNull::dangling()`), and every other slice (a sub-slice, a
   reference to an array) derives from a non-null one. Each enum decides this for its own set: an extension's variants are copies, so an
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
@@ -1685,7 +1685,7 @@ a `RegionRef`:
   with). 16 is what the heap gives (core's `RawBlocks`). The attribute assumes a
   borrow's address meets the pointee's alignment up to 16, as a read through that
   borrow already assumes its ABI alignment. A cast from a pointer or integer to a
-  reference is not checked for it (`castRefPermCheck`); whether that changes
+  reference is not checked for it (`castRefPermCheck`, `castRefRegionCheck`); whether that changes
   belongs to `trust` (`WI\trust.md` in the MyDrive Cone domain).
 - `dereferenceable(<store size of T>)` on both, added by `genlBorrowDeref` as
   the body is generated, because a pointee's layout is not known when the

@@ -284,6 +284,17 @@ char *itypeNoSizeCause(INode *type, INode **rootp);
 // Says nothing where the type is its own cause -- the diagnostic already did.
 void itypeNoSizeExplain(INode *type);
 
+// The '@unsized' enum a value of this type holds by value -- the type itself, or
+// an element of the tuple or array it is -- or NULL where it holds none. Such a
+// value has no size, so none may exist. A struct is not walked: a field of such
+// an enum is refused where it is declared. Asked of flags set at parse, so it
+// demands no layout.
+INode *itypeHeldUnsizedEnum(INode *type);
+
+// Refuse (ErrorNoSize) what 'node' does with a value of such an enum, which
+// 'use' completes: "its value can't be <use>"
+void itypeUnsizedEnumMsg(INode *node, INode *enumdcl, const char *use);
+
 // A type's name, for a diagnostic. Types that have no name of their own
 // describe themselves instead, since a diagnostic still has to call them
 // something.
