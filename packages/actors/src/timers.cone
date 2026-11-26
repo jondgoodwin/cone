@@ -1031,7 +1031,13 @@ pub fn timerStats() TimerStats {
 // A parked next() holds a count of its actor, as every await does, so an
 // actor with its loop parked lives until stop() or the cancel; one dropped with
 // no waiter frees the cell at its end (or, its arrive still in flight, leaves
-// that to timerArrive). Dead entries and a stale Wakeup find the cell's
+// that to timerArrive). Winning the waiter does not give a thread the cell to
+// itself: a cancel or the stop's walk, off the actor, reads the Reply after
+// its CAS, while the actor may drop the Timer. So that CAS sets hTaking, and a
+// Timer dropped meanwhile leaves the freeing to the taker (heldTaken), as it
+// leaves it to timerArrive: a cell is not freed, and so not taken by another,
+// while a thread has still to read a Reply out of it (tests/heldtake.cone).
+// Dead entries and a stale Wakeup find the cell's
 // generation or life moved, and cells are never unmapped. At THE STOP each
 // store's walk lets its parked waiters go unanswered, as it does armed sleeps.
 // Every wheel operation here runs on the wheel's owner, under THE WHEEL WORD,
@@ -1048,7 +1054,8 @@ const hEnded = 8u64;       // stopped, cancelled or dropped: next() answers fals
 const hByGroup = 16u64;    // ... and it was the group's cancel
 const hBusy = 32u64;       // the filer is writing 'hentry'
 const hMoved = 64u64;      // an earlier move came while it was: the filer looks again
-const hGone = 128u64;      // the Timer was dropped with an arrive in flight: timerArrive frees the cell
+const hGone = 128u64;      // the Timer was dropped with an arrive in flight, or its Reply being taken: timerArrive, or the taker, frees the cell
+const hTaking = 256u64;    // the thread that ended a parked next() has yet to read its Reply out (heldTaken)
 const hFilerMask = 0xFFFF0000u64;
 const hGenMask = 0xFFFF00000000u64;
 const hLifeMask = 0xFFFF000000000000u64;
@@ -1340,19 +1347,46 @@ fn heldEnd(c: *TimerCell, sw: u64, life: u64, byGroup: bool) bool {
     var nw = w | hEnded;
     if byGroup {nw = nw | hByGroup;}
     let take = (w & hWaiter) != 0u64 && (w & hInflight) == 0u64;
-    if take {nw = nw & ~hWaiter;}
+    if take {nw = (nw & ~hWaiter) | hTaking;}
     let seen, ok = (*c).hword.compareSwap(w, nw);
     if ok {
       if take {
         (*(*c).store).waiters.sub(1u64);
         (*(*c).store).cancels.addOrdered(1u64, MemOrder.Relaxed);
-        var r = cellReply(c);
+        var r = heldTaken(c);
         answerNowIn[bool](&mut r, false);
       }
       return true;
     }
   }
   false
+}
+
+// The parked Reply out of a held cell, for a thread that has just taken the
+// waiter from outside the actor (heldEnd, heldDrop) and set hTaking in the
+// same CAS. Until hTaking is cleared here the cell is not freed, so no other
+// Timer can have put its own Reply in it; the actor's drop of the Timer
+// meanwhile leaves the freeing to this thread (hGone). The caller does not
+// touch the cell after
+fn heldTaken(c: *TimerCell) Reply {
+  if stallState.loadOrdered(MemOrder.Relaxed) != 0u32 {
+    stallHere(4u32);
+  }
+  let r = cellReply(c);
+  var w = (*c).hword.load();
+  while true {
+    let seen, ok = (*c).hword.compareSwap(w, w & ~hTaking);
+    if ok {
+      break;
+    }
+    w = seen;
+  }
+  if (w & hGone) != 0u64 {
+    // retired, whichever thread this is: it may be under the group's lock, and freeing a cell drops its group
+    (*(*c).store).held.sub(1u64);
+    cellRetire(c);
+  }
+  r
 }
 
 // A held cell's Wakeup in its group's registry (watchHere), for one life of
@@ -1380,7 +1414,7 @@ fn heldDrop(c: *TimerCell) {
     if (w & hWaiter) == 0u64 {
       return;
     }
-    let seen, ok = (*c).hword.compareSwap(w, (w & ~hWaiter) | hEnded);
+    let seen, ok = (*c).hword.compareSwap(w, (w & ~hWaiter) | hEnded | hTaking);
     if ok {
       (*(*c).store).dropped.addOrdered(1u64, MemOrder.Relaxed);
       let st = (*c).store;
@@ -1393,7 +1427,7 @@ fn heldDrop(c: *TimerCell) {
 }
 
 fn dropWaiter(c: *TimerCell) {
-  let r = cellReply(c);
+  let r = heldTaken(c);
 }
 
 // THE FIRE for one held entry that came up in this wheel (the owner's step, and
@@ -1659,13 +1693,14 @@ fn heldNoDrop(ctx: *u8) {}
 // The Timer gone (its final): ended, its entry here cancelled, a parked next()
 // answered false (the Timer was replaced or dropped by its own actor while its
 // loop waited), and the cell freed, or, with an arrive in flight, left for
-// timerArrive to free
+// timerArrive to free, or, with its Reply being taken, for the taker
 fn heldFinal(c: *TimerCell) {
   let ts = myTimers as *TimerStore;
   let mine = hereIndex(ts);
   var here = false;
   var take = false;
   var flying = false;
+  var taking = false;
   while true {
     let w = (*c).hword.load();
     if (w & hBusy) != 0u64 {
@@ -1677,9 +1712,10 @@ fn heldFinal(c: *TimerCell) {
     take = (w & hWaiter) != 0u64 && (w & hInflight) == 0u64;
     here = (w & hFiled) != 0u64 && filerOf(w) == mine;
     flying = (w & hInflight) != 0u64;
+    taking = (w & hTaking) != 0u64;
     var nw = genBumped(w | hEnded) & ~hWaiter;
     if here {nw = nw & ~hFiled;}
-    if flying {nw = nw | hGone;}
+    if flying || taking {nw = nw | hGone;}
     let seen, ok = (*c).hword.compareSwap(w, nw);
     if ok {
       break;
@@ -1693,7 +1729,7 @@ fn heldFinal(c: *TimerCell) {
     var r = cellReply(c);
     answerNowIn[bool](&mut r, false);
   }
-  if !flying {
+  if !flying && !taking {
     heldRelease(c);
   }
 }
