@@ -1,0 +1,69 @@
+// The program ends with two actors awaiting reads that are never answered (each
+// on a connection to the program's own listener, which sends nothing), one
+// plainly and one with 'actors.orCancelledOp'. aio's finalizer says so on stderr
+// before it ends the I/O: one line, 2 operations, since the second await counts
+// once. The exit status is unchanged.
+
+mod pendingline;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {panic("socketOf: the operation failed");}
+  }
+  s
+}
+
+actor Reader {
+
+  pub async fn go(self, wake: bool, ready: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
+    match a {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let conn = socketOf(c);
+    var r = ready;
+    r.send(1u64);
+    if wake {
+      match await actors.orCancelledOp(conn.read(IoBuf(4096usize))) {
+        case let Ok(got) {printStr("read\n");}
+        case let Err(e) {printStr("woken\n");}
+      }
+    } else {
+      let got = await conn.read(IoBuf(4096usize));
+      printStr("read\n");
+    }
+  }
+}
+
+fn start(wake: bool) {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  let t = Reader();
+  t.go(wake, tx);
+  rx.recv();
+}
+
+fn main() {
+  initAll();
+  start(false);
+  start(true);
+  printStr("both connected\n");
+  finalAll();
+  printStr("end\n");
+}
