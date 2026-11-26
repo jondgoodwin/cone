@@ -94,12 +94,22 @@ struct OrCell is Sendable {
   id: u64;
   cell: *u8;
   meta: u64;
+  // orCancelledOp's: the operation started under the envelope is counted too,
+  // so while the cell is Open one await is counted twice (opsDoubled). Whoever
+  // moves the state out of Open, where one of the two is about to be or has
+  // been spent, takes that back
+  twice: bool;
+
+  fn leftOpen(self: &) {
+    if twice {opsDoubled.subOrdered(1u64, MemOrder.SeqCst);}
+  }
 
   // Dying with the envelope still in it: neither side won (a callee that ended
   // without answering and a group that was never cancelled). The envelope is
   // let go as any unanswered one is: the awaiting behaviour is abandoned
   fn final(self: &uni) {
     let s = state.load();
+    if s == orOpen {leftOpen();}
     if s == orOpen || s == orGone {
       let r = Reply(to: to, at: at, id: id, cell: cell, meta: meta);
     }
@@ -123,6 +133,7 @@ struct OrCell is Sendable {
       let seen, ok = state.compareSwap(cur, orWoken);
       if ok {
         if owed && cur == orGone {lateSub();}
+        if cur == orOpen {leftOpen();}
         return true;
       }
     }
@@ -132,6 +143,7 @@ struct OrCell is Sendable {
   // The callee's answer wins the envelope if the cancel has not
   fn claimArrive(self: &) bool {
     let seen, ok = state.compareSwap(orOpen, orCallee);
+    if ok {leftOpen();}
     ok
   }
 
@@ -140,6 +152,7 @@ struct OrCell is Sendable {
   // True if the await was open: it now has no arm but the cancel
   fn markGone(self: &) bool {
     let seen, ok = state.compareSwap(orOpen, orGone);
+    if ok {leftOpen();}
     if !ok && (seen == orWoken || seen == orAnswered) {
       lateSub();
     }
@@ -264,12 +277,14 @@ fn orArcOf(w: u64) Arc[imm, OrCell] {
 // to the Waiter or lets it go), the cell is made, and, if the await is in a
 // cancel group, registered with it. Some(cell) to go on and wait for the
 // callee; None if the group is cancelled already, when the envelope has been
-// answered with Err and the count let go
-fn orPrepare[R](rp: Reply) Option[Arc[imm, OrCell]] {
+// answered with Err and the count let go. 'twice': an operation is to be
+// started under the envelope (OrCell)
+fn orPrepare[R](rp: Reply, twice: bool) Option[Arc[imm, OrCell]] {
   let h = rp.to;
   let w = rp.id;
   holdHeader(h);
-  let cell = Arc[imm, OrCell](OrCell(Atomic[u32].of(orOpen), rp.to, rp.at, rp.id, rp.cell, rp.meta));
+  let cell = Arc[imm, OrCell](OrCell(Atomic[u32].of(orOpen), rp.to, rp.at, rp.id, rp.cell, rp.meta, twice));
+  if twice {opsDoubled.addOrdered(1u64, MemOrder.SeqCst);}
   mem.forget[Reply](rp);
   if (w & groupBit) != 0u64 {
     match groupCopy(h, w ^ groupBit) {
@@ -379,7 +394,7 @@ fn orFuture[R]() Future[R] {
 fn orRunFuture[R](ctx: *u8, rp: Reply) {
   let f = mem.readRaw[Future[R]](ctx as *Future[R]);
   libc.free(ctx);
-  match orPrepare[R](rp) {
+  match orPrepare[R](rp, false) {
     case let Some(cell) {orJoin[R](cell, f);}
     case is None {}
   }
@@ -394,7 +409,7 @@ fn orDropFuture[R](ctx: *u8) {
 // The Awaitable's form starts: ctx is an Awaitable[R], moved into a block of
 // its own. The operation answers into a future made here, which the cell waits on
 fn orRunAwaitable[R](ctx: *u8, rp: Reply) {
-  match orPrepare[R](rp) {
+  match orPrepare[R](rp, true) {
     case let Some(cell) {
       var f = orFuture[R]();
       let inner = futureReply(&f);

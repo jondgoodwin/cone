@@ -2520,11 +2520,35 @@ fn endUnstarted(first: *OpCore, lp: &mut Loop) {
   }
 }
 
+// '<program>: ended with N awaited operations pending' on stderr, in one write,
+// the program named by its first argument without its folder or '.exe'. Nothing
+// when none is pending
+fn sayPending(n: u64) {
+  if n == 0u64 {return;}
+  var line = String.from("");
+  let argv = process.args();
+  if argv.len() > 0usize {
+    let path = Path.from(argv[0usize].view());
+    var name = path.name();
+    if name.endsWith(".exe") {name = name.slice(0usize, name.len() - 4usize);}
+    line <- name;
+    line <- ": ";
+  }
+  line <- "ended with ";
+  line.appendUInt(n);
+  line <- if n == 1u64 {" awaited operation pending\n"} else {" awaited operations pending\n"};
+  let text = line.view() as &Array[u8];
+  libc.fwrite(text as *u8, 1usize, text.len, libc.stderr());
+  libc.fflush(libc.stderr());
+}
+
 // The package's finalizer, run by finalAll() before the actors package's:
 // once no actor is queued or running, the I/O ends, and every behaviour
-// still paused on it is abandoned (the package's header, THE PROGRAM'S END)
+// still paused on it is abandoned (the package's header, THE PROGRAM'S END),
+// after a line on stderr counting the awaits still outstanding, if any
 fn final() {
   actors.waitQuiet();
+  sayPending(actors.stats().awaitsPending);
   ioLock.lock();
   ended.store(true);
   let t = io.load() as *IoThread;
