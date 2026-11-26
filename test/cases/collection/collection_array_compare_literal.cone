@@ -1,0 +1,60 @@
+// An array literal compared with an array of a wider element type takes that
+// element type, as it does where the type is declared ('let b: Array[i64, 3] =
+// [1, 2, 3]'), on either side of '==' and '!=' (row 798).
+//
+// Each printed value was checked by hand: 1 where the two sides hold equal
+// elements and '==' was asked, or unequal ones and '!=' was.
+
+mod collection_array_compare_literal;
+
+import stdio use *;
+
+fn show(label: &str, n: bool) {
+  printStr(label);
+  printStr(" ");
+  printInt(if n {1i64} else {0i64});
+  printStr("\n");
+}
+
+fn main() {
+  let a: Array[i64, 3] = [1, 2, 3];
+  show("let", a == a);                                   // 1
+  show("right", a == [1, 2, 3]);                         // 1
+  show("right-ne", a != [1, 2, 3]);                      // 0
+  show("right-differs", a == [1, 2, 4]);                 // 0
+  show("right-differs-ne", a != [1, 2, 4]);              // 1
+  show("left", [1, 2, 3] == a);                          // 1
+  show("left-ne", [1, 2, 3] != a);                       // 0
+  show("left-differs", [0, 2, 3] == a);                  // 0
+  show("left-differs-ne", [0, 2, 3] != a);               // 1
+
+  // Values past i32, compared at 64 bits: 4294967297 is not 1
+  let big: Array[i64, 2] = [4294967297, -5000000000];
+  show("wide", big == [4294967297, -5000000000]);        // 1
+  show("wide-low-bits", big == [1, -5000000000]);        // 0
+
+  let u: Array[u64, 2] = [18446744073709551615, 7];
+  show("u64", u == [18446744073709551615, 7]);           // 1
+  show("u64-left", [18446744073709551615, 8] != u);      // 1
+  show("u64-fold", [1 << 63, 7] == u);                   // 0
+
+  let f: Array[f32, 2] = [0.1, 2.5];
+  show("f32", f == [0.1, 2.5]);                          // 1
+  show("f32-left", [0.1, 2.5] != f);                     // 0
+  let d: Array[f64, 2] = [1.0, 0.5];
+  show("f64", d == [1.0, 0.5]);                          // 1
+  show("f64-integers", [1, 2] == d);                     // 0
+  let w: Array[f64, 2] = [1.0, 2.0];
+  show("f64-integers-equal", w == [1, 2]);               // 1
+
+  let bytes: Array[u8, 2] = [97, 98];
+  show("bytes", bytes == ['a', 'b']);                    // 1
+
+  let nest: Array[Array[i64, 2], 2] = [[1, 2], [3, 4]];
+  show("nested", nest == [[1, 2], [3, 4]]);              // 1
+  show("nested-left", [[1, 2], [3, 5]] == nest);         // 0
+  show("nested-ne", [[1, 2], [3, 5]] != nest);           // 1
+
+  // Beside a literal holding a suffixed value, the other takes its type
+  show("both", [4294967297, 2] == [4294967297i64, 2]);   // 1
+}
