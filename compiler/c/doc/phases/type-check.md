@@ -546,7 +546,13 @@ holding it, and each place is refused (`ErrorNoSize`):
   reference's signature included), a slice's element (`arrayRefTypeCheck`), an
   `Array[T]` body (`genericInstantiate`'s caller, before any method is cloned),
   an array literal (`arrayLitTypeCheck`), and a pointer indexed over one
-  (`fnCallArrIndex`, since even `&p[1]` steps by the element's size).
+  (`fnCallArrIndex`, since even `&p[1]` steps by the element's size). A
+  pointer's arithmetic and the difference of two are refused for the same
+  reason (`fnCallRefusePtrStep`).
+
+A borrow of such a deref, `&*s`, infers `ro` where no permission is written, as
+for any struct (`borrowTypeCheck`); the enum's `OpaqueType` flag does not make
+it `opaq`.
 - **Uses in a body:** a deref is typed without knowing whether its value or its
   place is wanted, and values are consumed by many nodes, so `byValueCheck`
   (`ir/byvalue.c`) walks each function body once it is typed, generic instances

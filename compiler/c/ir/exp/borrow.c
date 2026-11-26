@@ -354,7 +354,7 @@ static int borrowRefIndexDispatches(RefNode *node) {
     // Probe with the receiver the borrow is about to become, which is the
     // permission the borrow's own inference below would settle on.
     INode *perm = node->perm != unknownType ? node->perm
-        : newPermUseNode(itypeIsConcrete(lvaltype) ? roPerm : opaqPerm);
+        : newPermUseNode(itypeIsConcrete(lvaltype) || itypeHeldUnsizedEnum(lvaltype) ? roPerm : opaqPerm);
     INode *recvr = newBorrowMutRef(node->vtexp, lvaltype, perm);
     enum OverloadMatch status;
     return iNsTypeFindMethod(found, &recvr, NULL, &status) != NULL;
@@ -781,7 +781,10 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     INode *refperm = node->perm;
     if (refperm == unknownType) {
         // a virtual reference's trait is not concrete, but '&<Trait' is the read-only one
-        refperm = newPermUseNode(vreborrow || itypeIsConcrete(refvtype) || itypeLenBodyElem(refvtype) ? roPerm : opaqPerm);
+        // An '@unsized' enum has no single size but is read as any struct is: its
+        // tag says which variant it is, as '&Node' written has 'ro'
+        refperm = newPermUseNode(vreborrow || itypeIsConcrete(refvtype) || itypeLenBodyElem(refvtype)
+            || itypeHeldUnsizedEnum(refvtype) ? roPerm : opaqPerm);
         // Immutable's rule one: 'imm', where the place allows it. A place that
         // does not (a 'var' variable, a 'ro' borrow) keeps the ordinary default,
         // so that a borrow of what is already held stays possible

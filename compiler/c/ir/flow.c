@@ -603,12 +603,57 @@ static void flowMoveHollow(VarDclNode *owner, INode *owneruse, Nodes **moved, IN
     nodesAdd(&parts->hollowuse, owneruse);
 }
 
+// Can this value, or one a block or an 'if' in it may hand back, be an owning
+// reference that moves ('Rc[uni, T]', 'Uni[T]')?
+static int flowHandsMovedOwner(INode *node) {
+    if (!isExpNode(node))
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    if (node->tag == IfTag) {
+        for (nodesFor(((IfNode *)node)->condblk, cnt, nodesp)) {
+            nodesp++; cnt--;
+            if (flowHandsMovedOwner(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    if (node->tag == BlockTag) {
+        BlockNode *blk = (BlockNode *)node;
+        INode *last = blk->stmts->used > 0 ? nodesLast(blk->stmts) : NULL;
+        if (last != NULL && last->tag == BlockRetTag && !(blk->flags & FlagLoop)
+            && flowHandsMovedOwner(((BreakRetNode *)last)->exp))
+            return 1;
+        if (blk->breaks) {
+            for (nodesFor(blk->breaks, cnt, nodesp)) {
+                if ((*nodesp)->tag == BreakTag && flowHandsMovedOwner(((BreakRetNode *)*nodesp)->exp))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    INode *type = iexpGetTypeDcl(node);
+    return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
+        && regionIsOwning(((RefNode *)type)->region) && iexpIsMove(node);
+}
+
+// Does taking this value move something? Its own type says so, or an owner a
+// block or an 'if' may hand back does: where a permission changes in one arm
+// ('Rc[uni, T]' wanted as 'Rc[mut, T]'), the arm's value is the same node with
+// the same type, and the 'if' is typed as the counted reference it was wanted
+// as, yet that arm's owner still moves.
+int flowValueMoves(INode *node) {
+    if (!isExpNode(node))
+        return 0;
+    return iexpIsMove(node) || ((node->tag == IfTag || node->tag == BlockTag) && flowHandsMovedOwner(node));
+}
+
 // Walk one of the values a block or an 'if' may hand back, narrowing 'common'
 // to the variables that every value walked so far moves out of ('first' says
 // none has been walked yet). With 'moved' NULL the walk only checks.
 static void flowMoveExit(INode *exp, Nodes **moved, Nodes **common, int *first, MoveParts *parts) {
     Nodes *these = NULL;
-    if (iexpIsMove(exp))
+    if (flowValueMoves(exp))
         flowMoveSource(exp, moved ? &these : NULL, exp, parts);
     if (moved == NULL)
         return;
@@ -802,7 +847,7 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(((TupleNode*)node)->elems, cnt, nodesp)) {
-            if (iexpIsMove(*nodesp))
+            if (flowValueMoves(*nodesp))
                 flowMoveSource(*nodesp, moved, *nodesp, parts);
         }
         break;
@@ -955,7 +1000,7 @@ void flowHandleMove(INode *node) {
 // here: a local handed back is exempted from the scope's release by
 // flowScopeDealias instead.
 void flowResultMove(INode *node) {
-    if (iexpIsMove(node))
+    if (flowValueMoves(node))
         flowMoveSource(node, NULL, node, NULL);
 }
 
@@ -1173,7 +1218,7 @@ void flowHandleMoveOrCopy(INode **nodep) {
             flowHandleMoveOrCopy(elemp);
         return;
     }
-    if (iexpIsMove(*nodep) || flowIsSolePayloadTake(*nodep)) {
+    if (flowValueMoves(*nodep) || flowIsSolePayloadTake(*nodep)) {
         // Moving needs to deactivate source variable use
         flowHandleMove(*nodep);
     }
@@ -1719,7 +1764,7 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode, Nodes **hollow)
     // as if handed back directly. A local handed back on only some of those
     // paths is exempt on all of them: it leaks on the others rather than being
     // finalized twice on these, as a conditional move does.
-    if (iexpIsMove(retexp)) {
+    if (flowValueMoves(retexp)) {
         switch (retexp->tag) {
         case BlockTag:
         {

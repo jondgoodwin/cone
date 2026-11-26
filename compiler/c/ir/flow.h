@@ -368,6 +368,10 @@ void flowHandleMoveOrCopy(INode **nodep);
 // turn into a move
 void flowHandleMoveOrCopyLast(INode **nodep);
 
+// Does taking this value move something: by its type, or by the type of a value a
+// block or an 'if' may hand back
+int flowValueMoves(INode *node);
+
 // Deactivate the source of a value moved to a new holder (or say the move is illegal)
 void flowHandleMove(INode *node);
 
