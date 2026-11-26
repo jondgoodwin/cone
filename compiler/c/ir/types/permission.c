@@ -199,7 +199,7 @@ PermNode *permJoin(INode *perm1, INode *perm2) {
     PermNode *p2 = (PermNode *)itypeGetTypeDcl(perm2);
     if (p1->tag != PermTag || p2->tag != PermTag || p1->held || p2->held)
         return NULL;
-    PermNode *perms[] = { uniPerm, mutPerm, immPerm, mut1Perm, roPerm, opaqPerm, newPerm };
+    PermNode *perms[] ={ uniPerm, mutPerm, immPerm, mut1Perm, roPerm, opaqPerm, newPerm };
     int count = (int)(sizeof(perms) / sizeof(perms[0]));
     for (int i = 0; i < count; ++i) {
         if (!permMatches((INode*)perms[i], (INode*)p1) || !permMatches((INode*)perms[i], (INode*)p2))

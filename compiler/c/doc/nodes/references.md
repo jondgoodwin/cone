@@ -119,8 +119,10 @@ a loop's breaks, an array literal's elements, a closure's returns),
 `refFindSuper`, which refuses different regions. With one permission, the
 pointees meet at a base trait (`structRefFindSuper`), and the result is a thin
 borrow of lifetime 0 with no name. With two permissions, `refPermJoin` joins
-them only if nothing else differs: the same pointee, the same virtual marks and
-bound, and neither a key. Two slices (`ArrayRefTag`) go to `refPermJoin`
+them only if both are borrows and nothing else differs: the same pointee, the
+same virtual marks and bound, and neither a key. Owners that differ are not
+joined: a `uni` and a `mut` `Rc` coerced to `Rc[mut, T]` in the arms of an `if`
+is generated wrong, even where the type is declared. Two slices (`ArrayRefTag`) go to `refPermJoin`
 alone, since slices of two element types have two strides. A raw pointer has no
 permission, so two different pointer types have nothing to join.
 

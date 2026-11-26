@@ -839,7 +839,11 @@ INode *refPermJoin(INode *type1, INode *type2) {
     RefNode *typ1 = (RefNode *)itypeGetTypeDcl(type1);
     RefNode *typ2 = (RefNode *)itypeGetTypeDcl(type2);
 
+    // Borrows only: an owner coerced to another permission in one branch of
+    // several is not yet generated right (a 'uni' and a 'mut' Rc, so wanted,
+    // corrupt the heap), so owners that differ are still refused
     if (typ1->tag != typ2->tag
+        || itypeGetTypeDcl(typ1->region) != (INode*)borrowRef
         || itypeGetTypeDcl(typ1->region) != itypeGetTypeDcl(typ2->region)
         || lifeIsInvariant(typ1->lifename) || lifeIsInvariant(typ2->lifename)
         || typ1->marks != typ2->marks || typ1->bound != typ2->bound
