@@ -9,9 +9,12 @@
 //      Failed("streams: cancelled"), once; the hash stage's digest sink is answered with an error, the file end
 //      reports it, SocketFrom ends without connecting a stream
 //   D. a corrupt stream: the receiver gets one end carrying the inflater's error, the producer a Stop
+//   E. a stage's own pool holds two of its pieces, though its receiver's budget is one byte: two stand
+//      unanswered, from TransformPass and from SocketFrom
 //
-// Mutant, run as 'congo test --no-cache -D NAME':
-//   MUT_NO_TURNS   TransformPass lets a second piece enter while the first is parked: B fails
+// Mutants, run as 'congo test --no-cache -D NAME':
+//   MUT_NO_TURNS      TransformPass lets a second piece enter while the first is parked: B fails
+//   MUT_POOL_BUDGET   a stage's own pool is only as big as the budget: E fails (one stands)
 
 mod piecestages;
 
@@ -304,6 +307,27 @@ pub struct Strict is Transform, Sendable, Move {
   pub fn failure(self: &) Option[AnyError] { None[AnyError] }
 }
 
+// Answers each piece after a while and tells, at the stream's end, the most it held unanswered at once
+pub actor Depth is PieceSink[IoBuf] {
+  now: u64;
+  most: u64;
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, done: OneshotSender[u64]) { *self = Self(now: 0u64, most: 0u64, done: done); }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    now = now + 1u64;
+    if now > most { most = now; }
+    _ = await aio.sleep(Duration.fromMillis(5i64));
+    now = now - 1u64;
+    var b = c;
+    b.clear();
+    MoreWith[IoBuf](b)
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) { done.send(most); }
+}
+
 // One piece to 'sink', to be sent in whatever group the message that asks for it carries
 pub actor Poke {
   sink: PieceSink[IoBuf];
@@ -468,8 +492,7 @@ fn main() i32 {
     let data = corpus(600000usize);
     let gz = deflate.gzipCompress(data.view(), 6);
     let sink = Collect(corpus(600000usize), 2i64);
-    // a budget of one byte: the stage's pool holds no piece, so only one output piece stands, and the stage
-    // parks inside an input
+    // a budget of one byte: only the floor's two output pieces stand, so the stage parks inside an input
     let inf = TransformPass[deflate.Inflater](StreamTo[IoBuf].at(sink, 1u64, 1usize),
       deflate.Inflater.make(deflate.Format.Gzip));
     let f = Feeder();
@@ -491,6 +514,32 @@ fn main() i32 {
     expectUInt(u64.from(o.endKind), 1u64, "B: the transform was never fed before it asked: one input at a time");
     expectUInt(o.bytes, 200000u64, "B: every byte through it");
     expectUInt(o.wrong, 0u64, "B: in order");
+  }
+
+  // E. a stage that makes its own pool holds two of its pieces there, however small its receiver's budget
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let depth = Depth(tx);
+    let stage = TransformPass[Strict](StreamTo[IoBuf].at(depth, 1u64, 1usize), Strict.make());
+    let f = Feeder();
+    f.run(StreamTo[IoBuf].at(stage, 1u64), corpus(200000usize), 8192usize);
+    expectUInt(rx.recv() || 0u64, 2u64, "E: TransformPass's own pool lets two output pieces stand");
+  }
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let depth = Depth(tx);
+    var portTx: OneshotSender[u16];
+    var portRx: OneshotReceiver[u16];
+    portTx, portRx = Oneshot[u16].make();
+    let server = Server(corpus(600000usize));
+    server.serve(portTx);
+    let port = portRx.recv() || 0u16;
+    SocketFrom().run(SocketAddr.localhost(port), StreamTo[IoBuf].at(depth, 1u64, 1usize));
+    expectUInt(rx.recv() || 0u64, 2u64, "E: SocketFrom's own pool lets two pieces stand");
   }
 
   // C. cancel, each stage

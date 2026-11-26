@@ -15,7 +15,10 @@
 //   SocketFrom().run(addr, StreamTo[IoBuf].at(inf, 1u64));
 //
 // A stage that makes buffers (SocketFrom, TransformPass) takes them from a ChunkPool: its own, or a
-// pipeline's shared one ('shared'), and waits when the pool is at its cap (piecewindow.cone).
+// pipeline's shared one ('shared'), and waits when the pool is at its cap (piecewindow.cone). The pool a
+// stage makes for itself holds the budget its receiver set ('linkWindow' if none), and never less than two of
+// its pieces, so that two overlap where nobody chose a memory limit; a pool handed in is such a limit, and
+// its cap wins.
 //
 // ONE STREAM PER STAGE, as today's: the tag is not used by these stages.
 //
@@ -86,6 +89,16 @@ struct Turns is Move {
   }
 }
 
+// The pool a stage makes for itself: the budget, and never less than two of its pieces
+fn ownPool(budget: usize) ChunkPool {
+  var cap = if budget == 0usize {linkWindow} else {budget};
+  #if #defined("MUT_POOL_BUDGET") {} #else {
+    let two = 2usize * capacityFor(linkBytes);
+    if cap < two { cap = two; }
+  }
+  ChunkPool.make(cap)
+}
+
 // ---- a stage over a Transform ----
 
 // What a pull did
@@ -112,8 +125,7 @@ pub actor TransformPass[T: Transform] is PieceSink[IoBuf] {
 
   pub fn own overload init(self: &new, down: StreamTo[IoBuf], t: T) {
     let budget = down.budget;
-    let cap = if budget == 0usize {linkWindow} else {budget};
-    *self = Self(t: t, down: down, out: PieceWindow[IoBuf].bytes(budget, ChunkPool.make(cap)),
+    *self = Self(t: t, down: down, out: PieceWindow[IoBuf].bytes(budget, ownPool(budget)),
       turns: Turns.make(), why: None[Ending], sated: false);
   }
 
@@ -467,8 +479,7 @@ pub actor SocketFrom {
   // Connect to addr and stream what it sends into 'to'
   pub async fn run(self, addr: SocketAddr, to: StreamTo[IoBuf]) {
     var dest = to;
-    let cap = if dest.budget == 0usize {linkWindow} else {dest.budget};
-    var mine = ChunkPool.make(cap);
+    var mine = ownPool(dest.budget);
     match &pool {
       case let &Some(p) { mine = p.clone(); }
       case is None {}
