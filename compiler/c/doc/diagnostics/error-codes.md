@@ -463,6 +463,12 @@ of the key; the second also by declaring the field's type `Hash`.
 An enum that lists `Hash` or `Eq` and writes no `hash` or `==` is held to the same errors for its variants'
 payload fields, named `Variant(_)` for a `V(T)` variant and `Variant.field` for a record variant.
 
+`ErrorTruthOutsideCondition` is a value of a type with `isTrue` (a number, `Option`, `Result`, a user type)
+where a bool is wanted outside a condition: a `let` typed `bool`, an argument, a return, the operand of a
+bool's `&&` or `||`. `isTrue` is inserted only in an `if` or `while` condition and under `!`; the remedy is
+`x.isTrue()` (for a number `n != 0`). An `Option` or `Result` as the right operand of a bool's `&&` or `||`
+keeps `ErrorOptionLogic`. The conversion is built anyway so nothing more is said of the value.
+
 Core's `Eq` takes one. `ErrorEqField` is a field of a struct that declares `Eq` and
 writes no `==` whose type has no `==` against itself (an array, a tuple, a struct
 declaring none), reported at the field. The remedy is an `==` of the struct's own,
@@ -604,8 +610,8 @@ brackets lack (a struct naming only one may leave it undeclared), a borrow of
 none in a struct that declares lifetimes, or a `where` clause ordering one its
 declaration does not have; the remedy is to declare it, or to fix the
 spelling. A use naming a struct's lifetimes otherwise than it declares them —
-too many, too few, or any for a type declaring none — is `ErrorLifetimeArgs`,
-the use's own mistake. A lifetime comparison under `||` or `!` in a `where`
+too many, too few, or any for a type declaring none or for a name that is no
+type — is `ErrorLifetimeArgs`, the use's own mistake. A lifetime comparison under `||` or `!` in a `where`
 clause is `ErrorLifetimeOr`, apart from `ErrorWhereForm`: the form is one the
 clause reads, and refused for what it would mean. A named lifetime that is
 checked and broken is none of these: returned or stored where its lifetime

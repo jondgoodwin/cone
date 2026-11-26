@@ -1,0 +1,131 @@
+// Two references that differ only in permission meet as one with the least
+// permission both coerce to: 'mut' with 'ro' as 'ro', 'imm' with 'mut' as 'ro',
+// 'uni' with 'mut' as 'mut'. The branches of an 'if' and a 'match', a loop's
+// breaks, a closure's returns and an array literal's elements all ask the same
+// question; slices and virtual references meet as thin references do. Each
+// value is printed, since the join must read the branch that was taken.
+
+mod typemgmt_ref_join;
+
+import stdio use *;
+
+fn showInt(n: i32) {
+  printInt(n); printStr("\n");
+}
+
+trait Shape {
+  pub fn side(self: &) i32;
+}
+
+struct Square is Shape {
+  pub n: i32;
+  pub fn side(self: &) i32 { self.n }
+}
+
+fn mutOrRo(c: bool) {
+  var a = 1;
+  var b = 2;
+  let r = if c {&mut a} else {&b};
+  showInt(*r);
+}
+
+fn roOrMut(c: bool) {
+  var a = 3;
+  var b = 4;
+  let r = if c {&a} else {&mut b};
+  showInt(*r);
+}
+
+fn immOrMut(c: bool) {
+  let a = 5;
+  var b = 6;
+  let r = if c {&imm a} else {&mut b};
+  showInt(*r);
+}
+
+// 'uni' converts to 'mut', so the join of the two may still be written through
+fn uniOrMut(c: bool) {
+  var a = 7;
+  var b = 8;
+  {
+    let r = if c {&uni a} else {&mut b};
+    *r = *r + 100;
+  };
+  showInt(a);
+  showInt(b);
+}
+
+fn matched(c: bool) {
+  var a = 9;
+  var b = 10;
+  let r = match c {case ==true {&mut a} else {&b}};
+  showInt(*r);
+}
+
+// A third branch meets the join of the first two
+fn three(n: i32) {
+  var a = 11;
+  let b = 12;
+  var d = 13;
+  let r = if n == 0 {&mut a} else if n == 1 {&imm b} else {&d};
+  showInt(*r);
+}
+
+fn broke(c: bool) {
+  var a = 14;
+  var b = 15;
+  var n = 0;
+  let r = while {
+    if c {break &mut a;}
+    else {break &b;}
+  };
+  showInt(*r);
+}
+
+fn listed() {
+  var a = 16;
+  var b = 17;
+  let w = [&mut a, &b];
+  showInt(*w[0u]);
+  showInt(*w[1u]);
+}
+
+fn slices(c: bool) {
+  var a = [18, 19];
+  var b = [20, 21, 22];
+  let r = if c {&[]mut a} else {&[]b};
+  showInt(i32.from(r.len));
+  showInt(r[1u]);
+}
+
+fn virtuals(c: bool) {
+  var a = Square(23);
+  var b = Square(24);
+  let x: &<mut Shape = &mut a;
+  let y: &<Shape = &b;
+  let r = if c {x} else {y};
+  showInt(r.side());
+}
+
+fn main() {
+  mutOrRo(true);
+  mutOrRo(false);
+  roOrMut(true);
+  roOrMut(false);
+  immOrMut(true);
+  immOrMut(false);
+  uniOrMut(true);
+  uniOrMut(false);
+  matched(true);
+  matched(false);
+  three(0);
+  three(1);
+  three(2);
+  broke(true);
+  broke(false);
+  listed();
+  slices(true);
+  slices(false);
+  virtuals(true);
+  virtuals(false);
+}

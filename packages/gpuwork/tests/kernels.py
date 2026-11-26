@@ -38,7 +38,8 @@ ends made LF) and of where they start.
 
 WHAT --check CHECKS: that the hash recorded is that of the kernels as they
 are now (kernels edited and not recompiled fail), and, where conec is found,
-that compiling them again makes exactly the words embedded.
+that compiling them again makes exactly the words embedded. The language
+suite (test/run.py, a whole run on Windows) runs it with the conec under test.
 
 The compiler is CONEC if set, else the repository's build/x64-release/conec.exe;
 it is warned about if older than the compiler's sources (a direct conec run
@@ -197,12 +198,16 @@ def main() -> int:
             if not h or h.group(1) != digest:
                 problems.append("the kernels have changed since they were compiled; run tests/kernels.py")
             try:
-                again = compile_kernels(first, lines)
-                if [int(w, 16) for w in WORD.findall(body)] != again:
-                    problems.append("the words embedded are not what conec makes of the kernels now")
-                how = "compiled again and compared"
+                find_conec()
             except KernelError as err:
                 how = f"not compiled again: {err}"
+            else:
+                # a conec that cannot compile them fails the check (below)
+                again = compile_kernels(first, lines)
+                if [int(w, 16) for w in WORD.findall(body)] != again:
+                    problems.append("the words embedded are not what conec makes of the kernels now;"
+                                    " run tests/kernels.py")
+                how = "compiled again and compared"
             for p in problems:
                 print(f"kernels: {p}")
             print(f"kernels: {TEST.name} checked ({how}); "

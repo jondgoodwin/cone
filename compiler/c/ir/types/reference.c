@@ -830,14 +830,56 @@ TypeCompare refvirtMatches(RefNode *to, RefNode *from, SubtypeConstraint constra
     return match == EqMatch && to->marks != from->marks ? CastSubtype : match;
 }
 
+// The type two references (thin, virtual or slice, alike) meet as when they
+// differ only in permission: one with the least permission both coerce to, and
+// the shorter of their lifetimes. NULL when they differ in anything else
+// (region, what is pointed at, a virtual reference's promises), when either is a
+// key, whose brand says more than a lifetime, or when no permission is common
+INode *refPermJoin(INode *type1, INode *type2) {
+    RefNode *typ1 = (RefNode *)itypeGetTypeDcl(type1);
+    RefNode *typ2 = (RefNode *)itypeGetTypeDcl(type2);
+
+    // Borrows only: an owner coerced to another permission in one branch of
+    // several is not yet generated right (a 'uni' and a 'mut' Rc, so wanted,
+    // corrupt the heap), so owners that differ are still refused
+    if (typ1->tag != typ2->tag
+        || itypeGetTypeDcl(typ1->region) != (INode*)borrowRef
+        || itypeGetTypeDcl(typ1->region) != itypeGetTypeDcl(typ2->region)
+        || lifeIsInvariant(typ1->lifename) || lifeIsInvariant(typ2->lifename)
+        || typ1->marks != typ2->marks || typ1->bound != typ2->bound
+        || !itypeIsSame(typ1->vtexp, typ2->vtexp))
+        return NULL;
+    PermNode *perm = permJoin(typ1->perm, typ2->perm);
+    if (perm == NULL)
+        return NULL;
+
+    RefNode *join = newRefNodeFull(typ1->tag, (INode*)typ1, typ1->region,
+        newPermUseNode(perm), typ1->vtexp);
+    // The representation is that of either: a static permission occupies no bytes
+    join->typeinfo = typ1->typeinfo;
+    // The higher number is the shorter-lived band. A name is read only on a
+    // signature's own types, so one the two do not share is not carried
+    join->scope = typ1->scope > typ2->scope ? typ1->scope : typ2->scope;
+    join->lifename = typ1->lifename == typ2->lifename ? typ1->lifename : NULL;
+    join->bound = typ1->bound;
+    join->marks = typ1->marks;
+
+    // Both must coerce to it as they would to any wanted type
+    if (itypeMatches((INode*)join, (INode*)typ1, Coercion) == NoMatch
+        || itypeMatches((INode*)join, (INode*)typ2, Coercion) == NoMatch)
+        return NULL;
+    return (INode*)join;
+}
+
 // Return a type that is the supertype of both type nodes, or NULL if none found
 INode *refFindSuper(INode *type1, INode *type2) {
     RefNode *typ1 = (RefNode *)itypeGetTypeDcl(type1);
     RefNode *typ2 = (RefNode *)itypeGetTypeDcl(type2);
 
-    if (itypeGetTypeDcl(typ1->region) != itypeGetTypeDcl(typ2->region)
-        || itypeGetTypeDcl(typ1->perm) != itypeGetTypeDcl(typ2->perm))
+    if (itypeGetTypeDcl(typ1->region) != itypeGetTypeDcl(typ2->region))
         return NULL;
+    if (itypeGetTypeDcl(typ1->perm) != itypeGetTypeDcl(typ2->perm))
+        return refPermJoin(type1, type2);
 
     INode *vtexp = structRefFindSuper(typ1->vtexp, typ2->vtexp);
     if (vtexp == NULL)
