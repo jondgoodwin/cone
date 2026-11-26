@@ -8,8 +8,8 @@
 //   1. A child writing 1 GiB to its output and 4 MiB to its error, exit code 5: every byte of both streams arrives in order,
 //      each sink is ended Finished once, the exit says code 5. The time of the 1 GiB run is not checked (a throughput row for
 //      a quiet machine).
-//   2. A slow consumer holds the child through the pipe: a child writing 64 MiB, a sink that keeps its chunks: after a second
-//      the sink has got a small part of the body (the window and the pipe hold the rest) and the exit is not told; when the
+//   2. A slow consumer holds the child through the pipe: a child writing 64 MiB, a sink that keeps its chunks: a second after its first
+//      bytes the sink has got a small part of the body (the window and the pipe hold the rest) and the exit is not told; when the
 //      sink is released every byte arrives and the exit comes.
 //   3. The two streams are independent: a child writing 8 MiB to its error and then 1 MiB to its output, the output sink held
 //      back: the whole error stream arrives (the held output stream does not stall it), the output is not whole (the child
@@ -358,9 +358,11 @@ fn main() i32 {
   clear(&errT);
   outT.slow.store(1u64);
   var s2 = begin(command(exe.view(), "both", "67108864", "0", "0"));
+  // the child's start is not what is tested: its first bytes are waited for (long, for a loaded machine), then a second more
+  waitFor(&outT.bytes, 1u64, 60000i64);
   thread.sleep(Duration.fromMillis(1000i64));
   let got = outT.bytes.load();
-  expect(got > 0u64 && got < 4194304u64, "2: after a second the slow sink has a small part of the 64 MiB");
+  expect(got > 0u64 && got < 4194304u64, "2: a second after its first bytes the slow sink has a small part of the 64 MiB");
   expectUInt(outT.ends.load(), 0u64, "2: the output stream has not ended");
   expect(s2.rx.tryRecv() is None, "2: the exit is not told");
   s2.out.release();
