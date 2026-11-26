@@ -667,6 +667,7 @@ actor H3ConnActor is ExchangeHost {
   tm: actors.Timer;
   driving: bool;                      // a drive is running (it awaits sends)
   again: bool;                        // input arrived while it ran: another round
+  timerDue: bool;                     // the Timer woke it: the next pass is one a timer began
   told: bool;                         // the endpoint has been told the handshake is done
   ended: bool;
   idsSent: u64;                       // the value's idsEpoch the endpoint holds the IDs of
@@ -685,7 +686,7 @@ actor H3ConnActor is ExchangeHost {
     }
     *self = Self(id: id, ep: Some[H3Endpoint](ep), acc: acc, bound: bound, peer: peer, tx: tx, group: group,
       backlog: backlog, conn: None[H3ServerAdapter], hx: hx, tm: actors.Timer.within(&group), driving: false,
-      again: false, told: false, ended: false, idsSent: unreadEpoch, guard: H3LiveGuard(true));
+      again: false, timerDue: false, told: false, ended: false, idsSent: unreadEpoch, guard: H3LiveGuard(true));
   }
 
   // The value out of its place, for a call that needs it beside the handler half (and 'putConn' to give it back)
@@ -751,13 +752,16 @@ actor H3ConnActor is ExchangeHost {
         else {}
       }
       self.putConn(held);
+      timerDue = true;
       selfactor.drive();
     }
     self.finishEnd(false);
   }
 
-  // The turn: the value's events, then its datagrams sent, again until nothing more moves. One drive at a time
-  // (a send is awaited, and another message may arrive then: it feeds the value and sets 'again')
+  // The turn: the value's events, then its datagrams sent, again until nothing more moves and the value owes no
+  // turn. Each pass starts one (startTurn), so an owed turn is taken up once. One drive at a time (a send is
+  // awaited, and another message may arrive then: it feeds the value and sets 'again'). Every pass awaits
+  // 'sends', itself a message to this actor, so the messages already waiting are handled between passes
   pub async fn drive(self) {
     if driving {
       again = true;
@@ -768,6 +772,7 @@ actor H3ConnActor is ExchangeHost {
     while more && !ended {
       more = false;
       again = false;
+      self.startTurn();
       if self.events() {more = true;}
       let sent = await self.sends();
       if sent {more = true;}
@@ -776,6 +781,17 @@ actor H3ConnActor is ExchangeHost {
     }
     driving = false;
     if !ended {self.settle();}
+  }
+
+  fn startTurn(self) {
+    let byTimer = timerDue;
+    timerDue = false;
+    var held = self.takeConn();
+    match &mut held {
+      case let &mut Some(a) {a.conn.startTurn(byTimer);}
+      else {}
+    }
+    self.putConn(held);
   }
 
   fn wantsTurn(self) bool {
