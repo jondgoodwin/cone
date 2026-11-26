@@ -659,7 +659,11 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    **A variant of a non-generic enum given to a generic** (`Err(Fault.SoldOut)`,
    `Ok(Drink.Tea)`, `Some(Fault.Short(3))`) is held back the same way:
    `fnCallArgIsCtor` is true for it too, so long as no function call is among its
-   values (a call would change the order narrowing sees). It names no type parameter of
+   values (a call would change the order narrowing sees). An operator applied to
+   operands that are themselves no calls, `m + c`, is no call here (`fnCallArgPlain`),
+   so `Ok(State.HasMoney(m + c))` is held back too; a function call, or a field read
+   written `p.m`, among the values still keeps it from being held back (row 771).
+   It names no type parameter of
    its own, so where the call goes may say its place is the enum: `genericFnArgExpect`
    / `genericStructArgExpect` answer `Fault`, and `iexpCoerceIn` widens the variant
    to it before the call's inference reads the argument's type, so `E` is `Fault`
@@ -1505,8 +1509,15 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
   Otherwise NULL yields NULL silently, and an unhandled tag kills the compile.
   This one path is where an unrelated defect elsewhere becomes a hard abort.
 - **A clone must clear the type check marks**, or the instance silently skips
-  its own check. Only four clone functions do; every other copies `flags`
-  verbatim. A new declaration-bearing node kind inherits the bug.
+  its own check. Eight sites do (checked 25 Nov); every other clone copies
+  `flags` verbatim. A new declaration-bearing node kind inherits the bug. They
+  are `cloneFnDclShell` (`ir/stmt/fndcl.c`, which also clears `DclBodyTyped`),
+  `cloneVarDclShell` (`vardcl.c`), `cloneConstDclShell` (`const.c`),
+  `cloneFieldDclNode` (`fielddcl.c`), and in `ir/types/struct.c`
+  `cloneStructNode` twice (the struct itself, and each alias it copies) and
+  `structFoldCopy` (the field copy of a fold; it also clears `IsTagField` and
+  `IsMixin`); `cloneVectorNode` (`ir/types/vector.c`) clears `NameResolved` as
+  well.
 - **`MacroDclNode.memonodes` is dead.**
 - **A generic type's own bare name is told from its instantiation by its
   arguments alone.** While an instance is cloned the template is mapped to the

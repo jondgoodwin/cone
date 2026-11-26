@@ -222,7 +222,7 @@ writes through a read-only view). **A raw pointer `as` a reference is not asked*
 needs a `&uni` slice of memory it owns calls `mem.sliceFromPartsUni`, not a cast.
 **One case is let through for now: a `ro` source made the `imm` a type
 declaring `Immutable` gives a reference that writes no permission**, which is how
-a slice of bytes is made text (`bytes as &str`, `p as Uni[str]`, documented in
+a slice of bytes is made text (`bytes as &str`, documented in
 lib-collections.html). It is keyed on the target being *defaulted*, not written:
 `refTypeCheck` sets `RefNode.permImmDefault` when it replaces the unwritten
 permission with `refImmutableDefaultPerm`, and `castRefPermCheck` asks it of the
@@ -231,6 +231,19 @@ target. A permission written out (`as &imm P` from a `&`, `bytes as &imm str`,
 `&imm`. The name `str` appears nowhere in the test. The cast promises that the
 bytes are text and that nothing changes them while the text is used, neither of
 which is checked, so it is for `trust` to guard too once that is built.
+
+**Between two references, `as` keeps the region or lends** (`castRefRegionCheck`,
+after the permission, so a cast that breaks both reports the permission). It asks
+what a coercion asks of the region (`regionMatches`): the target's region is the
+source's, or the target is a borrow. A borrow made an owner, or one region's
+owner made another's, is `ErrorCastPerm` too, with its own message: the owner's
+death would release memory it never held, or by another region's rules (an `Rc`
+made a `Uni` frees what other owners still read). A cast within one region stays,
+whatever it does to the referenced type: `bytes as Uni[str]` from a
+`Uni[Array[u8]]`. As for the permission, a raw pointer `as` an owner is not
+asked, so `(r as *T) as Uni[T]` still compiles and waits for `trust`. A library
+that has a block and no owner of it uses `mem.uniArrayFromParts`
+(collections' two `freeze`s).
 
 **`usize` and `isize` are pointer-sized**, and a pointer's width is the
 target's, so no reinterpretation joins either of them to a fixed-width number
@@ -277,25 +290,30 @@ the wrong type. It is the collection rule's case: allowed, and refused only if
 something could change the variant while the narrowed reference is used.
 `castSumInterior` asks, once the conversion has become a recast:
 - the from-reference's permission has `MayIntRefSum` — `uni`, `imm`, `mut1`: no
-  other name can change the variant, and nothing more is asked; or
-- it is a read-only or `uni` borrow made here of a place reached as `uni`
-  (`castBorrowsUni`): the value of the hidden `_` variable a `match` or bound
-  `if` captures its scrutinee in is a `BorrowTag` whose place
-  (`castUniPlace`) is a non-static variable of this function held by value, a
-  field or array element of one (not reached through a reference, slice or
-  pointer), or a dereference of a `uni` reference such a place holds. The loan
-  walk then freezes that place while the borrow, and the binding that holds its
-  loan, are used. A `mut` borrow (`match &mut s`) is no longer such: it is an
-  alias loan, the local has other names while it is held, and the narrowing is
-  followed by the loan walk as one through a shared path is (flow.md, "A change
-  through another name").
+  other name can change the variant, and nothing more is asked.
+
+Everything else is marked `FlagVariantNarrow` (`castSumNarrows`), which gates the
+function for the walk (`FlowGateShape`, `flowGateNarrow`).
+
+One kind of it is also marked `FlagNarrowOwnBorrow`: a read-only borrow made here
+of a place reached as `uni` (`castBorrowsUni`), where the value of the hidden `_`
+variable a `match` or bound `if` captures its scrutinee in is a `BorrowTag` whose
+place (`castUniPlace`) is a non-static variable of this function held by value, a
+field or array element of one (not reached through a reference, slice or
+pointer), or a dereference of a `uni` reference such a place holds. The loan walk
+freezes that place against its own name while the borrow, and the binding that
+holds its loan, are used, but not against a `mut` borrow of it made earlier, an
+alias loan that may still store another variant. So the walk follows it only
+where such a borrow is held when the narrowing is made (`pwNarrowAliased`,
+`loanMutAliasOf`): one of the place, of what holds it, or of the reference
+variable a `uni` place is reached through. A `mut` borrow made here
+(`match &mut s`) is not of this kind: it is itself an alias loan.
 
 Everything else — a parameter of reference type, a reborrow through a shared
 path, a field reached through a `mut` reference, a variable the program names
 holding a borrow (a copy of it would reach the local another way, which freezing
-does not follow) — is a narrowing the loan walk follows: the cast is marked
-`FlagVariantNarrow` (`castSumNarrows`), which gates the function for the walk
-(`FlowGateShape`, `flowGateNarrow`) and makes `pwNarrowShared` lend the place the
+does not follow), and the one above where the `mut` borrow is held — is a narrowing
+the loan walk follows: `pwNarrowShared` lends the place the
 reference is read through to whatever holds the narrowed reference, marking the
 loan as the loan of a borrow into a collection is marked (flow.md, "A change through
 another name"). A narrowing of an owning reference, an `Rc[imm, T]` narrowed to an `Rc[imm, Variant]`, is

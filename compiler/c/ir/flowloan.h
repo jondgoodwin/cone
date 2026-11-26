@@ -383,6 +383,10 @@ int loanElemView(uint32_t entry);
 // Does the entry stand for what a caller lent through a parameter, what its own reference points at?
 int loanIsCallerOwn(uint32_t entry);
 void loanShapeSource(uint32_t loan, PathSet *holds);
+// The 'mut' borrow held now of a place that one of 'holds' near loans borrows read-only
+// (0 for none), and the note on a narrowed reference's loan that this is why it is followed
+uint32_t loanMutAliasOf(PathSet *holds);
+void loanShapeAliasBy(uint32_t loan, uint32_t alias);
 int loanIsExclusive(uint32_t entry);
 void loanShapeMark(uint32_t loan, INode *container);
 uint32_t loanShapeCount();

@@ -1,0 +1,37 @@
+// What the checker still refuses when a call is handed a borrow of a local beside a holder, after sortBy and
+// sortByKey on lists of borrows were accepted (collection_sort_borrows): a callee that really stores the borrow,
+// written out ('&mut *l') or by the reference's name ('l'), is refused at the call that is the user's line; and a
+// store of a borrow through a raw pointer parameter is held to the place's type (the global lifetime), ErrorInvType.
+//
+// Basis: references-and-regions.md, "Lifetimes: one invariant, checked from both sides of a call", and the raw
+// pointer rule (Jon, 18 Nov 2026): raw pointers carry no lifetime, a store through one is checked by the place's type.
+
+mod collection_sort_borrows_refused;
+
+import collections use *;
+
+struct Shape { w: i32; }
+
+fn stash(l: &mut List[&Shape], p: &Shape) { l.push(p); }
+
+fn viaRaw(p: *&Shape, x: &Shape) {
+  *p = x;   //~ ErrorInvType
+}
+
+// The same store through a raw pointer made here from a '&mut' parameter
+fn viaRawHere(h: &mut &Shape, x: &Shape) {
+  let p = h as *&Shape;
+  *p = x;   //~ ErrorInvType
+}
+
+fn written(l: &mut List[&Shape]) {
+  var s = Shape(1i32);
+  stash(&mut *l, &s);   //~ ErrorCallEscape
+}
+
+fn byName(l: &mut List[&Shape]) {
+  var s = Shape(1i32);
+  stash(l, &s);   //~ ErrorCallEscape
+}
+
+fn main() i32 { 0 }

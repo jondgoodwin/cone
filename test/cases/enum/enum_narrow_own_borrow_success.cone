@@ -1,0 +1,178 @@
+// What is accepted beside enum_flow_narrow_own_borrow: a 'match' on a borrow it makes
+// itself, with no 'mut' borrow of the place to change which variant it holds while the
+// narrowed reference is used.
+
+mod enum_narrow_own_borrow_success;
+
+import stdio use *;
+
+enum Shape {
+  struct Circle {
+    pub r: i32;
+  }
+
+  struct Square {
+    pub s: i32;
+  }
+}
+use Shape;
+
+// A field every variant shares
+enum Node {
+  pub line: i32;
+
+  struct Lit {
+    pub v: i32;
+  }
+
+  struct Add {
+    pub l: i32;
+    pub r: i32;
+  }
+}
+use Node;
+
+struct Pair {
+  pub sh: Shape;
+  pub other: Shape;
+}
+
+fn set(m: &mut Shape) {
+  *m = Square(99);
+}
+
+fn show(s: &Shape) {
+  match s {
+    case let &Circle(c) {
+      printInt(i64.from(c.r));
+    }
+    case let &Square(q) {
+      printInt(i64.from(q.s));
+    }
+  }
+  printStr(" ");
+}
+
+// No 'mut' borrow: the borrow freezes the local, and a store follows the match
+fn noAlias() {
+  var s: Shape = Circle(5);
+  match &s {
+    case let &Circle(c) {
+      var t: Shape = Circle(1);
+      set(&mut t);
+      printInt(i64.from(c.r));
+      printStr(" ");
+    }
+    else {}
+  }
+  s = Square(9);
+  show(&s);
+}
+
+// A 'mut' borrow used only after the match, and after the narrowed reference's last use
+fn usedAfter() {
+  var s: Shape = Circle(6);
+  let m = &mut s;
+  set(m);
+  *m = Circle(7);
+  match &s {
+    case let &Circle(c) {
+      printInt(i64.from(c.r));
+      printStr(" ");
+      *m = Square(8);
+    }
+    else {}
+  }
+  show(&s);
+  set(m);
+  show(&s);
+}
+
+// A field the variants share, written through the 'mut' borrow, before, during and after
+fn sharedField() {
+  var n: Node = Lit(1, 5);
+  let m = &mut n;
+  m.line = 3;
+  match &n {
+    case let &Lit(x) {
+      m.line = 4;
+      printInt(i64.from(x.v));
+      printStr(" ");
+      printInt(i64.from(x.line));
+      printStr(" ");
+    }
+    else {}
+  }
+  m.line = 8;
+  printInt(i64.from(n.line));
+  printStr(" ");
+}
+
+// A 'mut' borrow of another field, or of another value, is no name for the one matched
+fn otherPlace() {
+  var w = Pair(Circle(10), Circle(11));
+  let m = &mut w.other;
+  match &w.sh {
+    case let &Circle(c) {
+      *m = Square(12);
+      set(m);
+      printInt(i64.from(c.r));
+      printStr(" ");
+    }
+    else {}
+  }
+  show(&w.other);
+  var s: Shape = Circle(13);
+  var t: Shape = Circle(14);
+  let n = &mut t;
+  match &s {
+    case let &Circle(c) {
+      set(n);
+      printInt(i64.from(c.r));
+      printStr(" ");
+    }
+    else {}
+  }
+  show(&t);
+}
+
+// What a 'uni' parameter points at has no other name: a call handed another enum is no
+// change of this one
+fn param(p: &uni Shape, q: &mut Shape) {
+  match &*p {
+    case let &Circle(c) {
+      set(q);
+      printInt(i64.from(c.r));
+      printStr(" ");
+    }
+    else {}
+  }
+}
+
+// By value the arm holds a copy, whatever is stored after
+fn byValue() {
+  var s: Shape = Circle(17);
+  let m = &mut s;
+  match s {
+    case let Circle(c) {
+      *m = Square(18);
+      printInt(i64.from(c.r));
+      printStr(" ");
+    }
+    else {}
+  }
+  show(&s);
+}
+
+fn main() {
+  noAlias();
+  usedAfter();
+  sharedField();
+  otherPlace();
+  var a: Shape = Circle(15);
+  var b: Shape = Circle(16);
+  param(&uni a, &mut b);
+  show(&b);
+  byValue();
+  printStr("\n");
+}

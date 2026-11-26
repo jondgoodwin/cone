@@ -21,6 +21,12 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectT
 // Return 1 if every element coerces, 0 otherwise.
 int arrayLitCoerce(ArrayNode *arrlit, INode *totypedcl);
 
+// Is a node an array literal of nothing but literals with no type of their own,
+// unsuffixed numbers and ASCII characters, nested ones included? Where 'totype'
+// is not NULL, could arrayLitCoerce also give it that array type: the same
+// number of values at every level, each of a kind the element type takes.
+int arrayLitIsUntyped(INode *node, INode *totype);
+
 // Perform data flow analysis on an array literal's element values
 void arrayLitFlow(FlowState *fstate, ArrayNode **nodep);
 

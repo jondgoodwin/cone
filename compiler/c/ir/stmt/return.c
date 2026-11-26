@@ -228,9 +228,12 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
                 && structDefaultRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)retnode->exp)->vtype, fnsig->rettype))
                 errorMsgNode((INode*)retnode, ErrorInvType,
                     "Return expression type does not match return type on function.%s", privwhy);
-            else
-                errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function%s",
-                    iexpImmBorrowHint(retnode->exp, fnsig->rettype));
+            else {
+                char types[460];
+                errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function%s%s",
+                    iexpImmBorrowHint(retnode->exp, fnsig->rettype),
+                    iexpMismatchTypes(types, sizeof(types), retnode->exp, fnsig->rettype));
+            }
             errorMsgNode((INode*)fnsig->rettype, ErrorInvType, "This is the declared function's return type");
         }
     }

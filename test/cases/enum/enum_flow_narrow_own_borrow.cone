@@ -1,0 +1,233 @@
+// A 'match' or bound 'if' on a borrow it makes itself ('match &s') of a local, or of what
+// a 'uni' reference reaches, freezes the place against change by its own name, but a
+// 'mut' borrow of it made earlier is another name that may still store another variant
+// (a 'mut' borrow of a local is an alias loan). Where one is held, the narrowed reference
+// is followed as any reference into a variant is: the change is refused if the narrowed
+// reference is used afterwards, and the refusal names the 'mut' borrow.
+// enum_narrow_own_borrow_success holds what is accepted beside each.
+
+mod enum_flow_narrow_own_borrow;
+
+import stdio use *;
+
+enum Shape {
+  struct Circle {
+    pub r: i32;
+  }
+
+  struct Square {
+    pub s: i32;
+  }
+}
+use Shape;
+
+// The payload a stale read would take for a pointer and a length
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub a: usize;
+    pub b: usize;
+  }
+}
+use Slot;
+
+struct W {
+  pub sh: Shape;
+}
+
+struct Holder {
+  pub p: &mut Shape;
+
+  fn go(self: &mut) {
+    *self.p = Square(99);
+  }
+}
+
+fn set(m: &mut Shape) {
+  *m = Square(99);
+}
+
+fn setPast(m: &mut &uni Shape) {
+  **m = Square(99);
+}
+
+// A local, stored over through the 'mut' borrow in the arm
+fn local() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  match &s {
+    case let &Circle(c) {
+      *m = Square(99);
+      printInt(i64.from(c.r));          //~ ErrorVariantReshape "while the 'mut' borrow made"
+    }
+    else {}
+  }
+}
+
+// The same, where the stale payload is a string's pointer and length
+fn string() {
+  var s: Slot = Text("hello");
+  let m = &mut s;
+  match &s {
+    case let &Text(t) {
+      *m = Num(4096usize, 8usize);
+      printStr(t.s);                    //~ ErrorVariantReshape "while the 'mut' borrow made"
+    }
+    else {}
+  }
+}
+
+// A field of a local, stored over by a call handed the 'mut' borrow
+fn field() {
+  var w = W(Circle(5));
+  let m = &mut w.sh;
+  match &w.sh {
+    case let &Circle(c) {
+      set(m);
+      printInt(i64.from(c.r));          //~ ErrorVariantReshape "'set' is handed something that reaches a 'Shape' value"
+    }
+    else {}
+  }
+}
+
+// After an 'is' test of the same borrow
+fn testedFirst() {
+  var t: Shape = Circle(5);
+  let o = &mut t;
+  if &t is &Circle {}
+  match &t {
+    case let &Circle(c) {
+      set(o);
+      printInt(i64.from(c.r));          //~ ErrorVariantReshape "'set' is handed something that reaches a 'Shape' value"
+    }
+    else {}
+  }
+}
+
+// The 'mut' borrow is of the struct the enum is a field of
+fn enclosing() {
+  var w = W(Circle(5));
+  let m = &mut w;
+  match &w.sh {
+    case let &Circle(c) {
+      m.sh = Square(99);
+      printInt(i64.from(c.r));          //~ ErrorVariantReshape "while the 'mut' borrow made"
+    }
+    else {}
+  }
+}
+
+// The 'mut' borrow is held in a struct, and stored through by its method
+fn held() {
+  var s: Shape = Circle(5);
+  var h = Holder(&mut s);
+  match &s {
+    case let &Circle(c) {
+      h.go();
+      printInt(i64.from(c.r));          //~ ErrorVariantReshape "'go' is handed something that reaches a 'Shape' value"
+    }
+    else {}
+  }
+}
+
+// A closure captured the 'mut' borrow
+fn captured() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  var f = fn() [m] { set(m); };
+  match &s {
+    case let &Circle(c) {
+      f();
+      printInt(i64.from(c.r));          //~ ErrorVariantReshape "while the 'mut' borrow made"
+    }
+    else {}
+  }
+}
+
+// What a 'uni' parameter points at, reborrowed 'mut'
+fn param(p: &uni Shape) {
+  let m = &mut *p;
+  match &*p {
+    case let &Circle(c) {
+      *m = Square(99);
+      printInt(i64.from(c.r));          //~ ErrorVariantReshape "while the 'mut' borrow made"
+    }
+    else {}
+  }
+}
+
+// The 'mut' borrow is of the variable holding the 'uni' reference matched through
+fn pastReference() {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let m = &mut r;
+  match &*r {
+    case let &Circle(c) {
+      setPast(m);
+      printInt(i64.from(c.r));          //~ ErrorVariantReshape "'setPast' is handed something that reaches a 'Shape' value"
+    }
+    else {}
+  }
+}
+
+// Bound by 'if let', with a guard, and the payload borrowed further
+fn bound() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  if let &Circle(c) = &s {
+    *m = Square(99);
+    printInt(i64.from(c.r));            //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+fn guarded() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  match &s {
+    case let &Circle(c) if c.r > 0 {
+      let k = &c.r;
+      *m = Square(99);
+      printInt(i64.from(*k));           //~ ErrorVariantReshape "while the 'mut' borrow made"
+    }
+    else {}
+  }
+}
+
+// The 'mut' borrow is held on one path only
+fn onePath(go: bool) {
+  var s: Shape = Circle(5);
+  var other: Shape = Circle(1);
+  var m = &mut other;
+  if go {
+    m = &mut s;
+  }
+  match &s {
+    case let &Circle(c) {
+      *m = Square(99);
+      printInt(i64.from(c.r));          //~ ErrorVariantReshape "while the 'mut' borrow made"
+    }
+    else {}
+  }
+}
+
+// The 'mut' borrow is made after the match, and held when the loop comes round again
+fn around() {
+  var s: Shape = Circle(5);
+  var other: Shape = Circle(1);
+  var m = &mut other;
+  var i = 0;
+  while i < 2 {
+    match &s {
+      case let &Circle(c) {
+        *m = Square(99);
+        printInt(i64.from(c.r));        //~ ErrorVariantReshape "while the 'mut' borrow made"
+      }
+      else {}
+    }
+    m = &mut s;
+    i += 1;
+  }
+}

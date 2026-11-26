@@ -48,6 +48,7 @@ import geomath use *;
 import gpu use *;
 import render use Camera;
 import msdftext use *;
+import imagedecode;
 
 const W = 640u32;
 const H = 300u32;
@@ -87,44 +88,14 @@ fn shot(p: *u8, name: &str) {
   if (env as usize) == 0usize { return; }
   var file = String.fromCStr(cstr.fromPtr(env));
   file.append(name);
-  let rowBytes = W * 3u32;
-  let pad = (4u32 - rowBytes % 4u32) % 4u32;
-  let size = 54u32 + (rowBytes + pad) * H;
-  var b = List[u8].withCapacity(usize.from(size));
-  b.push('B');
-  b.push('M');
-  // File header (after 'BM'): size, reserved, offset; info header: 40, w, h, planes 1 + bpp 24, then zeros
-  var words = Array[u32, 13]() <- fill 0u32;
-  words[0] = size;
-  words[2] = 54u32;
-  words[3] = 40u32;
-  words[4] = W;
-  words[5] = H;
-  words[6] = 0x00180001u32;
-  var w = 0usize;
-  while w < 13usize {
-    b.push(u8.from(words[w] & 255u32));
-    b.push(u8.from((words[w] >> 8u32) & 255u32));
-    b.push(u8.from((words[w] >> 16u32) & 255u32));
-    b.push(u8.from((words[w] >> 24u32) & 255u32));
-    w = w + 1usize;
-  }
-  var y = H;
-  while y > 0u32 {
-    y = y - 1u32;
-    var x = 0u32;
-    while x < W {
-      let at = p + usize.from((y * W + x) * 4u32);
-      b.push(*(at + 2usize));
-      b.push(*(at + 1usize));
-      b.push(*at);
-      x = x + 1u32;
-    }
-    var q = 0u32;
-    while q < pad { b.push(0u8); q = q + 1u32; }
-  }
+  let rgba = mem.sliceFromParts(p, usize.from(W * H * 4u32));
+  let bmp = imagedecode.encodeBmp(i32.from(W), i32.from(H), 4i32, rgba, false);
   let out = Path.fromLiteral(file.view());
-  _ = fs.writeFile(&out, b.view());   // the dump is a courtesy: the checks read the pixels, not this file
+  // the dump is a courtesy: the checks read the pixels, not this file
+  match bmp.contiguous(0usize, bmp.len()) {
+    case let Some(v) { _ = fs.writeFile(&out, v); }
+    case is None {}
+  }
 }
 
 fn finish(device: &mut Device, encoder: &mut CommandEncoder, target: &Texture, readback: &Buffer) {

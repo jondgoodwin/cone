@@ -23,6 +23,7 @@ import cnmalloc;
 extern {
   fn @c("strlen") strlen(s: cstr) usize;
   fn @c("strncpy") copyLit(d: *u8, s: cstr, n: usize) *u8;
+  fn @c("strstr") findText(hay: *u8, needle: cstr) *u8;
 }
 
 alias Collect = &fn @c (force: i32) u64;
@@ -87,6 +88,10 @@ fn main() i32 {
   let collect = cnmalloc.cnm_hostSym("cnmalloc_collect");
   if collect == 0usize { return testing.skip("lfoom: the cnmalloc shim is not linked: cnmalloc_collect was not found (the shim is not linked or, on Linux, not exported by the link)"); }
   if (design as *u8 as DesignFn)() != 2i32 { return testing.skip("lfoom: the cnmalloc shim is linked but the second design is off (CNMALLOC=design=lockfree is needed)"); }
+  // the second design is the default behind the shim (row 533), so the design alone no longer says this test was asked for:
+  // it also needs a small reservation, or the heap never says no
+  let settings = libc.getenv("CNMALLOC");
+  if settings as usize == 0usize || findText(settings, "reserve=") as usize == 0usize { return testing.skip("lfoom: needs a small reservation (CNMALLOC=giveback=now,reserve=64m)"); }
   let coll = collect as *u8 as Collect;
   let h = (heapSym as *u8 as HeapFn)();
   let cl = cnmalloc.cnm_class_of(h, cellSize);

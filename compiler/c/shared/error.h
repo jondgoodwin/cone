@@ -710,7 +710,7 @@ enum ErrorCode {
     ErrorShapeKeepingDeclared = 1501, // A type declaring ShapeKeeping: the compiler finds it from the methods a virtual reference marked '+ ShapeKeeping' dispatches to, where the value becomes one
 
     // 'as' between references (ir/exp/cast.c)
-    ErrorCastPerm = 1502,       // 'as' from one reference to another whose permission is not the same as the source's or a supertype of it (the coercions a type check allows): reinterpretation between references is only a legal coercion, and anything else needs 'trust', which is not built yet
+    ErrorCastPerm = 1502,       // 'as' from one reference to another whose permission is not the same as the source's or a supertype of it (the coercions a type check allows), or whose region is neither the source's nor a borrow (a borrow made an owner, one region's owner made another's): between references permission and region change only as a coercion would, and anything else needs 'trust', which is not built yet
 
     // The calling convention of a function reference (ir/types/fnsig.c)
     ErrorFnRefConv = 1503,      // A function reference given where one marked for the other calling convention is wanted: a C-named function's '&fn @c (...)' where a Cone function's '&fn (...)' is wanted, or the reverse. Neither converts to the other, so the mismatch is refused where it is written and never becomes a call that passes its values wrongly
@@ -823,6 +823,7 @@ enum ErrorCode {
     ErrorConstViaValue = 1620,  // A type's 'const' named through a value of the type, 'v.zero'. A constant belongs to the type, never to a value of it (Jon, 22 Sep: a name folds on a type, not on a field). The message gives the type form, 'Vec3.zero'
     ErrorConstPlace = 1621,     // A 'const' in a type body where it is not built: in a trait. The message says which
     ErrorFieldViaType = 1628,   // A field named through its type, 'Shade.count': a field belongs to a value of the type, so naming it through the type asks for a value nothing holds
+    ErrorTruthOutsideCondition = 1629, // A value of a type with isTrue (a number, Option, Result, a user type) where a bool is wanted outside a condition: it is tested through isTrue only in an 'if' or 'while' condition and under '!'. Elsewhere write 'x.isTrue()' (for a number 'n != 0')
     ErrorMetaFieldsType = 1590,// A '#fields(T)' that cannot be answered for the type the generic was cloned for: T is no struct (a primitive, reference, enum or trait), or a field has no written permission or region for '#f.perm' or '#f.region' to describe. Pointed at the loop, inside the generic's instance
 
     // Warnings

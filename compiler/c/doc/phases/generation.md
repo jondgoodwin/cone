@@ -393,9 +393,11 @@ operation fast-math or contractable, so a vectorizer widens only what keeps
 each lane's operations in their written order (a loop scaling a slice, a
 matrix's columns), never a sum over a loop, and no multiply and add are fused,
 whatever the CPU. A `--debug` build runs only
-`globaldce,function(mem2reg,reassociate,gvn,simplifycfg)`, with no target
-machine, and turns off the code generator's optimization and enables DWARF. A
-GPU target's pipeline is its own, at every level (section 7). **There is no
+`globaldce,function(simplifycfg)`, with no target
+machine, and turns off the code generator's optimization and enables DWARF. It
+runs no pass that promotes a stack slot to a register (`mem2reg`, `sroa`, `gvn`),
+so every variable stays in its slot for a debugger to read (section 3,
+"Variables"). A GPU target's pipeline is its own, at every level (section 7). **There is no
 `--release` flag** — release is the default and `--debug` turns it off.
 
 **Only what live code reaches is emitted**, in a debug build as in a release
@@ -611,7 +613,7 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   word and the variant test (`genlIsType`) and the drop read it, the second word
   left alone. That is why no slice may be made with a null pointer word, empty
   or not: the only place a slice is made from a raw pointer, the `sliceFromParts`
-  intrinsics, swaps a null pointer for the element's alignment as an address
+  intrinsics (and `uniArrayFromParts`, which makes an owner's pair the same way), swaps a null pointer for the element's alignment as an address
   (Rust's `NonNull::dangling()`), and every other slice (a sub-slice, a
   reference to an array) derives from a non-null one. Each enum decides this for its own set: an extension's variants are copies, so an
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
@@ -908,7 +910,7 @@ as a move out of it or out through it (`genlDropFlagUse`, from `genlTerm` and
 flag). A release that depends on it — a `DropFlagNode` in a release list, a
 store's old value under `FlagDropTest`, a `HollowNode` with `test` — loads the
 slot, compares it with the state it runs in, and branches round the release
-(`genlDropFlagIf`, `genlDropFlagEnd`). The optimizer's mem2reg keeps the slot
+(`genlDropFlagIf`, `genlDropFlagEnd`). A release build's optimizer keeps the slot
 in a register and folds each test where one path's value is known.
 
 **A drop the compiler gives a type is built here, not lowered**
@@ -1685,7 +1687,7 @@ a `RegionRef`:
   with). 16 is what the heap gives (core's `RawBlocks`). The attribute assumes a
   borrow's address meets the pointee's alignment up to 16, as a read through that
   borrow already assumes its ABI alignment. A cast from a pointer or integer to a
-  reference is not checked for it (`castRefPermCheck`); whether that changes
+  reference is not checked for it (`castRefPermCheck`, `castRefRegionCheck`); whether that changes
   belongs to `trust` (`WI\trust.md` in the MyDrive Cone domain).
 - `dereferenceable(<store size of T>)` on both, added by `genlBorrowDeref` as
   the body is generated, because a pointee's layout is not known when the
@@ -2238,9 +2240,8 @@ locals of an inline function's expansion, which are the caller's slots (`GenStat
 and a match binding or generator frame variable, which has no slot of its own. A function whose
 return type (or `void`) and every parameter's type are described has its real subroutine type;
 any other keeps the empty one. A release build emits none of this, so its object does not change.
-The debug pipeline runs `mem2reg` (section on the pass pipeline), which turns the declares into
-`dbg.value`: a debugger then shows a variable only where its value lives in a register, and one the
-optimizer folded away as optimized out.
+The debug pipeline promotes no slot (section on the pass pipeline), so each declare reaches the
+object and a debugger reads the variable from its stack slot anywhere in the function.
 
 The environment variable `CONE_LLVM_OPTIONS` hands LLVM command-line options,
 separated by spaces, parsed in `genSetup` before the LLVM context exists. It is
@@ -2547,17 +2548,35 @@ SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and 
 (`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`. A float's
 `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2`, `log10`, `pow`, `sinh`,
 `cosh` and `tanh` methods are likewise their intrinsics (`Tan` to `Tanh`, `Log` for `ln`;
-`log10` is `Log2` times a constant); `hypot`, `cbrt` and `powi` are formulas there
-([intrinsic](../nodes/intrinsic.md)), and `isNaN` is `OpFUnordNotEqual`:
-`module_target_spirv_floatmath`.
+`log10` is `Log2` times a constant); `trunc` is `Trunc`; `copysign` (bit operations, the back
+end not selecting `llvm.copysign`), `hypot`, `cbrt` and `powi` are formulas there
+([intrinsic](../nodes/intrinsic.md)): `module_target_spirv_floatmath`. `isNaN`,
+`isInfinite` and `isFinite` are integer comparisons of the value's bits there, with no
+float comparison a driver could assume the answer of: `module_target_spirv_floatclass`,
+and run on a GPU by `packages/gpuwork/tests/kernels.cone`.
 **A kernel's float `min`, `max` and `clamp` do not keep the NaN ruling (a stated
 exception, design chat and Jon, 6 Nov 2026).** The CPU propagates NaN: a float's `min`,
 `max` and `clamp` are `llvm.minimum` and `llvm.maximum`. On SPIR-V the back end selects
-`NMin` and `NMax` for those same intrinsics (read from `--asm`). Vulkan lets a driver assume
-there are no NaNs unless a kernel declares `SignedZeroInfNanPreserve`, an optional feature,
-which Cone does not declare. So a kernel answers as it always has, and the NaN and the
-`-0.0` answers of the CPU are not promised there. None of this has been run on a GPU;
+`NMin` and `NMax` for those same intrinsics (read from `--asm`), which give the other value
+where one is a NaN. So the NaN and the `-0.0` answers of the CPU's `min`, `max` and `clamp`
+are not promised in a kernel. None of this has been run on a GPU;
 `module_target_spirv_numbers` pins only the instructions selected.
+
+**IEEE comparisons in a kernel** (`genlGpuFloatPreserve`). Vulkan lets a driver assume a
+float is never a NaN or an infinity, and the sign of a zero not matter, unless the module
+declares `SignedZeroInfNanPreserve`: undeclared, the RTX 4060 answered `t != t` false and
+`t == t` true for a NaN out of `trunc`, `floor`, `ceil`, `round`, `sqrt` or `fma`. A module
+with 32-bit floats declares it for 32 bits, one with 64-bit floats for 64, on every entry
+point, with its capability (before SPIR-V 1.4, with `SPV_KHR_float_controls`); a module with
+neither declares nothing. LLVM 23's backend writes the execution mode from
+`!spirv.ExecutionMode` metadata but not the capability, so both are added to the emitted
+module, and to `--asm`'s text (`genlGpuFloatPreserveAsm`): `module_target_spirv_floatpreserve`,
+`module_target_spirv_nopreserve`, `module_target_spirv_floatclass`, and the `compares` kernel
+of `packages/gpuwork/tests/kernels.cone` on a GPU. It is a device property
+(`shaderSignedZeroInfNanPreserveFloat32` and `64`), not a feature to enable; Vulkan forbids
+the mode where it is false (VUID-RuntimeSpirv-shaderSignedZeroInfNanPreserveFloat32-06294,
+...Float64-06295), and `gpu`'s `createShaderModule` refuses such a module
+(`floatModesOffered`, `packages/gpu/src/features.cone`).
 
 `module_target_spirv_math` pins the intrinsics and the instructions (its
 `asm` check reads `--asm`'s `.spvasm`). The double forms of `sqrt`, `fabs`,
@@ -2890,6 +2909,7 @@ compile writes its bitcode, and the objects are made at the link).
 | | `genlGpuBufferAccess` | a struct or array loaded from or stored into a storage buffer a scalar at a time |
 | | `genlGpuOut`, `genlGpuPatch` | the Vulkan form's module emitted to memory, `OpArrayLength` and the source files' list written into it |
 | | `genlGpuNoContraction`, `genlGpuNoContractionAsm` | every float operation's result but a remainder's decorated `NoContraction`, in the module and in `--asm`'s text (section 7, "The C library's math") |
+| | `genlGpuFloatPreserve`, `genlGpuFloatPreserveAsm` | `SignedZeroInfNanPreserve` declared on every entry point of a module with floats, in the module and in `--asm`'s text (section 7, "IEEE comparisons in a kernel") |
 | `genllvm/genlgpusync.c` | `genlGpuAtomics`, `genlGpuAtomicConstPtr`, `genlGpuCompareSwap`, `genlGpuAtomicSite` | on a GPU target, after optimization, each atomic's scope and ordering from its memory, an atomic at a constant place reached by an address-computing instruction, a compareSwap as `llvm.spv.cmpxchg`, one on unshared memory refused in a kernel (`ErrorGpuAtomicPlace`) (section 7, "What invocations share") |
 | | `genlGpuBarrier`, `genlGpuGlobalSpace` | the two barriers as LLVM's SPIR-V intrinsics; a `@workgroup` global's address space |
 | | `genlCpuBarrier` | a barrier on a native target: the thread's barrier hook called when it is set (section 7, "Barriers on the CPU") |

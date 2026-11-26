@@ -1,10 +1,11 @@
 // A bare 'None' takes the Option it is wanted as from where it goes (a declared
 // variable, a return, the branches of an 'if' and the arms of a 'match' that
-// have one: generic_infer_expected). Where nothing says, it is refused where it
-// is written, naming the type parameter, as the last statement of a block, the arm
-// of a match and the branch of an 'if' that start a variable are. It was reported
-// at "init:1:1" with no source line, because the block that ends in a type had
-// nothing to point at.
+// have one: generic_infer_expected), and where no place says, from a sibling
+// branch that has a type (enum_none_sibling). Where neither says, it is refused
+// where it is written, naming the type parameter: the last statement of a block
+// with no sibling, and branches that are all open. Siblings that disagree are
+// the inconsistent branches they were. It was once reported at "init:1:1" with
+// no source line, because the block that ends in a type had nothing to point at.
 
 mod enum_typecheck_none_branch;
 
@@ -12,21 +13,41 @@ fn blockEnd() {
   let a = { None };                                       //~ ErrorInvType:13 "Could not infer the type parameter T of None"
 }
 
-fn thenArm(cnt: i32) {
-  let b = if cnt > 0 { None } else { Some(cnt) };        //~ ErrorInvType:24 "Could not infer the type parameter T of None"
+fn bothNone(cnt: i32) {
+  let b = if cnt > 0 { None }                             //~ ErrorInvType:24 "Could not infer the type parameter T of None"
+          else { None };                                  //~ ErrorInvType:18 "Could not infer the type parameter T of None"
 }
 
-fn matched(cnt: i32) {
-  let c = match cnt { case 0 { None } else { Some(cnt) } };   //~ ErrorInvType:32 "Could not infer the type parameter T of None"
+// A sibling that is no Option says nothing
+fn otherSibling(cnt: i32) {
+  let c = if cnt > 0 { None } else { cnt };               //~ ErrorInvType:24 "Could not infer the type parameter T of None"
 }
 
-// With the type given, the value is built
+// 'Ok' says only T and 'Err' only E, and neither branch has a type of its own
+fn bothOpen(cnt: i32) {
+  let d = if cnt > 0 { Ok(cnt) }                          //~ ErrorInvType:26 "Could not infer the type parameter E of Ok"
+          else { Err(cnt) };                              //~ ErrorInvType:21 "Could not infer the type parameter T of Err"
+}
+
+fn disagree(cnt: i32) {
+  let e = if cnt > 1 { Some(1) }
+          else if cnt > 0 { None }
+          else { Some("a") };                             //~ ErrorInvType:16 "Branch's expression type inconsistent with other branches."
+}
+
+// With the type given, or said by a sibling, the value is built
 fn given(cnt: i32) Option[i32] {
   if cnt > 0 { Some(cnt) } else { None }
 }
 
 fn written(cnt: i32) Option[i32] {
   if cnt > 0 { Some(cnt) } else { None[i32] }
+}
+
+fn sibling(cnt: i32) Option[i32] {
+  let f = if cnt > 0 { None } else { Some(cnt) };
+  let g = match cnt { case 0 { None } else { Some(cnt) } };
+  if cnt > 1 { f } else { g }
 }
 
 fn main() {}

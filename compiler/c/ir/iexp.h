@@ -130,6 +130,9 @@ void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg);
 // the cause. For a refusal reported without iexpMismatchMsg.
 const char *iexpImmBorrowHint(INode *node, INode *totype);
 
+// " (found X, wanted Y)" for a refused value, written into buf; "" when there is nothing to name
+const char *iexpMismatchTypes(char *buf, size_t size, INode *node, INode *totype);
+
 // Return true if an lval, and 0 if not.
 int iexpIsLval(INode *lval);
 

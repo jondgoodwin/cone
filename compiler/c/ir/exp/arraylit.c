@@ -173,11 +173,16 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectT
     if (arrlit->dimens->used > 0 && !arrayLitDimIsConst(nodesGet(arrlit->dimens, 0))) {
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant: an integer literal, or a named constant holding one");
     }
-    if (arrayLitTypeCheckEmpty(arrlit, expectType))
-        return;
-    if (arrayLitTypeCheckExpected(pstate, arrlit, expectType))
-        return;
-    arrayLitTypeCheckElems(pstate, arrlit);
+    if (!arrayLitTypeCheckEmpty(arrlit, expectType) && !arrayLitTypeCheckExpected(pstate, arrlit, expectType))
+        arrayLitTypeCheckElems(pstate, arrlit);
+
+    // A literal's type is built from its elements, not written, so it was not
+    // held to what a written array type is
+    INode *unsizedenum = itypeHeldUnsizedEnum(arrlit->vtype);
+    if (unsizedenum) {
+        itypeUnsizedEnumMsg((INode*)arrlit, unsizedenum, "put in an array");
+        arrlit->vtype = errorType;
+    }
 }
 
 // Join the types of the elements of a list literal that are number literals with no
@@ -285,6 +290,53 @@ int arrayLitCoerce(ArrayNode *arrlit, INode *totypedcl) {
             return 0;
     }
     arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, (size_t)arrayDim1(littype), elemtype);
+    return 1;
+}
+
+// Is a node an array literal of nothing but literals with no type of their own,
+// and, where 'totype' is given, one that can take that array type? Nothing is
+// changed and nothing reported, so a caller may ask before it coerces. Whether
+// a number fits is left to the coercion, which reports it.
+int arrayLitIsUntyped(INode *node, INode *totype) {
+    if (node->tag != ArrayLitTag)
+        return 0;
+    ArrayNode *arrlit = (ArrayNode*)node;
+    if (arrlit->nsizes > 1 || arrlit->elems->used == 0)
+        return 0;
+    INode *elemtype = NULL;
+    if (totype) {
+        INode *littype = arrlit->vtype;
+        totype = itypeGetTypeDcl(totype);
+        if (totype->tag != ArrayTag || littype->tag != ArrayTag
+            || ((ArrayNode*)totype)->dimens->used != 1 || ((ArrayNode*)littype)->dimens->used != 1
+            || arrayDim1(totype) != arrayDim1(littype))
+            return 0;
+        elemtype = itypeGetTypeDcl(arrayElemType(totype));
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(arrlit->elems, cnt, nodesp)) {
+        INode *elem = *nodesp;
+        if (elem->tag == ArrayLitTag) {
+            if (!arrayLitIsUntyped(elem, elemtype))
+                return 0;
+        }
+        else if (litIsUntypedNumber(elem)) {
+            if (elemtype == NULL)
+                continue;
+            if (elemtype == (INode*)boolType || elemtype == (INode*)charType)
+                return 0;
+            if (elemtype->tag != FloatNbrTag
+                && (elem->tag != ULitTag || (elemtype->tag != IntNbrTag && elemtype->tag != UintNbrTag)))
+                return 0;
+        }
+        else if (elem->tag == ULitTag && (elem->flags & FlagCharLit)) {
+            if (elemtype && !litCharMatchesByte(elem, elemtype))
+                return 0;
+        }
+        else
+            return 0;
+    }
     return 1;
 }
 

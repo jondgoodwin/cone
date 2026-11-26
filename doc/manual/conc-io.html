@@ -193,8 +193,10 @@ actor Server {
 		<span class="pre">IoBuf</span> is <span class="pre">iobuf</span>'s, <span class="pre">SocketAddr</span>,
 		<span class="pre">IoError</span> <span class="pre">iocore</span>'s, <span class="pre">IoErrorKind</span>
 		<span class="pre">ioerror</span>'s, and
-		<span class="pre">Socket</span> <span class="pre">aio</span>'s.) Sent <span class="pre">serve()</span>, the server
-		prints:</p>
+		<span class="pre">Socket</span> <span class="pre">aio</span>'s; the example's module imports
+		<span class="pre">stdio</span>, <span class="pre">sync</span>, <span class="pre">iobuf</span>,
+		<span class="pre">iocore</span>, <span class="pre">ioerror</span>, <span class="pre">actors</span> and
+		<span class="pre">aio</span>.) Sent <span class="pre">serve()</span>, the server prints:</p>
 <pre>
 no room: invalid input
 received 5
@@ -202,6 +204,36 @@ end of stream 5
 </pre>
 	<p>Each <span class="pre">await</span> there pauses one behaviour, and only it. While the server waits for a
 		connection, the client waits for its connect; the worker threads run neither until an answer comes.</p>
+
+	<p><b>The program must wait for it.</b> A <span class="pre">main</span> that only calls
+		<span class="pre">server.serve()</span> and returns does not run this server: every behaviour above is paused on I/O,
+		which does not keep the program open, so the program ends at once with status 0, prints nothing, and the sockets
+		are closed mid-flight. Nothing reports it. <span class="pre">main</span> waits on a channel until the work says it
+		is done, here a <a href="conc-threads.html#channel">oneshot</a> that a small actor sends the server's answer on:</p>
+<pre>
+actor Starter {
+  pub async fn start(self, done: OneshotSender[u64]) {
+    let server = Server(Client());
+    let total = await server.serve();       // pauses until the server has finished
+    var d = done;
+    d.send(total);                          // tell main
+  }
+}
+
+fn main() {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  let s = Starter();
+  s.start(tx);
+  rx.recv();                                // main waits here; without it the program ends at once
+}
+</pre>
+	<p>Without that wait the program ends with the work cut off, and a line on standard error says how many awaited
+		operations were still pending (<a href="conc-ioloop.html#pending-line">what is counted</a>).</p>
+	<p>A server meant to run for ever waits the same way, on a channel that nothing sends to until it is to stop.
+		<span class="pre">actors.waitUntilIdle()</span> is the other way (<a href="conc-ioloop.html#io-thread">The I/O
+		thread, and the program's end</a>).</p>
 
 	<h3 id="await-io-answers">What an operation answers</h3>
 	<p>Each operation declares its own answer, and the <span class="pre">await</span>'s value is exactly that:
@@ -732,7 +764,8 @@ actor Weather {
 	<p>A cancel and a completion that race, and a fetch dropped with its client, are settled as an
 		<span class="pre">aio</span> operation's are: exactly one answer. At the program's end, a behaviour still paused on a
 		fetch is abandoned, as one paused on a socket is (<a href="conc-ioloop.html#io-thread">The I/O thread, and the
-		program's end</a>).</p>
+		program's end</a>). <span class="pre">actorhttp</span> abandons it before <span class="pre">aio</span> counts what is
+		pending, so the <a href="conc-ioloop.html#pending-line">line on standard error</a> does not include it.</p>
 
 	<h3 id="await-io-unbuilt">Not built yet</h3>
 	<ul>

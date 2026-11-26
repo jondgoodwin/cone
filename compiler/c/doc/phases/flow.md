@@ -451,6 +451,21 @@ values hands back the same way (`blockResultMove`). An expression statement
 never reaches `flowHandleMove`, so a block whose value is thrown away moves
 nothing.
 
+**Whether a value moves is asked of its sources too** (`flowValueMoves`), not
+only of its type. A change of permission is a subtype step with no node of its
+own: a `Rc[uni, T]` wanted as `Rc[mut, T]` is the same name use, still typed
+`uni`, and moves. A recast of it, to the value type's enrichment base or a
+trait, is typed as wanted, a counted copy, and so is a block or an `if` handing
+it back. An `if` that infers an enum from its arms leaves each arm block typed
+as its variant, which may copy where the enum moves. So `flowHandleMoveOrCopy`,
+`flowMoveExit`, `flowResultMove`, `blockResultMove`, `blockResultCount` and the
+scope's exemption (`flowIsScopeResult`) ask `flowValueMoves`, which says yes
+where the node's type is a move type; where it recasts, as another owning
+reference type, an owning reference that moves; or where a block or `if` can
+hand back such a value, or one recast to a move type. The arms whose values
+copy are counted as copies and the arm that moves is not, so either way the new
+holder holds one count.
+
 **A copy handed out of a scope is a new holder.** A copy-typed value holding a
 counted reference that a scope hands out — a `return`'s, a block's value that
 is used, a `break`'s — is counted as a copy into a variable is
@@ -564,7 +579,7 @@ narrowed) deactivates it as before, and no drop flag follows it.
 
 ```c
 if (*nodep is a tuple literal)   each element, as below;
-else if (iexpIsMove(*nodep))     flowHandleMove(*nodep);      // deactivate source
+else if (flowValueMoves(*nodep)) flowHandleMove(*nodep);      // deactivate source
 else if (flowIsKeptRead(*nodep)) flowInjectRefCount(nodep);   // +1
 ```
 
@@ -1114,7 +1129,15 @@ type is reachable *inside* what it borrows (`itypeMayHoldBorrowInside`: the
 type itself, its fields and elements, what it owns through owning references and
 pointers; a type either side shows only in part, such as a type parameter, trait,
 virtual reference, closure or arena, answers "can hold"; a read-only borrow is
-held by no `&mut` slot). So `arrive(&mut world, &mut all, name)` leaves `world`,
+held by no `&mut` slot). The walk inside what is borrowed does not descend
+through a shared borrow found there: `&held` for a `held: &Shape` is no borrow
+of the `Shape`, whose loans a copy of `held` carries by itself (a writable or
+lock reference is still descended). A reference passed by its name, which the
+call reborrows (`f(a)` for `a: &mut L`), is a lend site typed as the reborrow
+written out (`f(&mut *a)`), so the two get the same answer. A borrow converted
+or cast to a raw pointer carries no loan of the place it points at, only what
+that place holds (`pwPointerOf`): raw pointers carry no lifetime, and a store
+through one is checked by the place's type. So `arrive(&mut world, &mut all, name)` leaves `world`,
 which holds `&str` and handles, holding nothing of `all`, a `List[Ref[Creature]]`
 with no `str` inside, and each is free while the other is used; `put(&mut h, &mut l)`
 with `h` holding a `&Pt` and `l` a `List[Pt]` is not (`&l[0]` is a `&Pt`: the old
@@ -1925,8 +1948,11 @@ view through a reference field (refused) beside the view through a by-value fiel
 
 **An enum** is a marked loan's container too. A reference narrowed from an enum to one
 of its variants through a path others share, or from a `&mut` borrow of a local (an alias
-loan; a `&`, `&imm` or `&uni` one freezes the local, `castBorrowsUni`)
-(`FlagVariantNarrow`, `castSumNarrows`) is lent by `pwNarrowShared`: a loan of the place
+loan; an `&imm` or `&uni` one excludes every other name)
+(`FlagVariantNarrow`, `castSumNarrows`), or from a `&` borrow of a local made where it is
+matched while a `mut` borrow of it made earlier is held (`FlagNarrowOwnBorrow`,
+`pwNarrowAliased`: the `&` freezes the local against its own name only, and the refusal
+names the `mut` borrow), is lent by `pwNarrowShared`: a loan of the place
 the reference is read through, held
 by whatever holds the narrowed reference (a pattern's hidden local, then the binding),
 marked with the enum as its container where the place is shared (`pwShapeBorrow`).

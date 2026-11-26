@@ -1,0 +1,67 @@
+// What the join of two references differing only in permission does not give.
+// The join only weakens: a '&mut' met with a '&' may not be written through.
+// A difference in anything but permission is not joined, though the
+// permissions differ too: what is pointed at, a slice's element, the region.
+// A lock permission converts to no other, so none is common with it. Owners
+// that differ in permission are not joined: only borrows are.
+
+mod typemgmt_ref_join_refuse;
+
+import sync use Arc, Mutex;
+
+struct Point {pub x: i32;}
+
+fn locked(c: bool) {
+  let a = Arc[Mutex, Point](Point(1));
+  let b = Arc[mut, Point](Point(2));
+  let r = if c {a} else {b};               //~ ErrorInvType:25
+}
+
+fn owners(c: bool) {
+  let a = Rc[Point](Point(1));
+  let b = Rc[mut, Point](Point(2));
+  let r = if c {a} else {b};               //~ ErrorInvType:25
+}
+
+fn writeJoined(c: bool) {
+  var a = 1;
+  let b = 2;
+  let r = if c {&mut a} else {&b};
+  *r = 3;                                  //~ ErrorNoMut:3
+}
+
+fn writeJoinedSlice(c: bool) {
+  var a = [1, 2];
+  var b = [3, 4];
+  let r = if c {&[]mut a} else {&[]b};
+  r[0u] = 5;                               //~ ErrorNoMut:4
+}
+
+fn writeJoinedList() {
+  var a = 1;
+  let b = 2;
+  let w = [&mut a, &b];
+  *w[0u] = 3;                              //~ ErrorNoMut:3
+}
+
+fn pointees(c: bool, a: i32, b: i64) {
+  var x = a;
+  let r = if c {&mut x} else {&b};         //~ ErrorInvType:30
+}
+
+fn sliceElements(c: bool) {
+  var a = [1, 2];
+  var b = [3i64, 4i64];
+  let r = if c {&[]mut a} else {&[]b};     //~ ErrorInvType:32
+}
+
+fn sliceAndReference(c: bool) {
+  var a = [1, 2];
+  let b = 3;
+  let r = if c {&[]mut a} else {&b};       //~ ErrorInvType:32
+}
+
+fn regions(c: bool) {
+  let a = 1;
+  let r = if c {Rc[mut, i32](2)} else {&a};  //~ ErrorInvType:39
+}

@@ -40,6 +40,12 @@ which `congo test` runs against the package compiled on its own
 asserts what the compiler makes of it, such as the symbols its declarations
 become (`module_package_libc`), not what its functions return.
 
+A whole-suite run ends with two checks that are no scenario: the notes the compiler's rules
+are written in (`test/notecheck.py`), and, on Windows, that the SPIR-V embedded in
+`packages/gpuwork/tests/kernels.cone` is what the compiler under test makes of its kernels
+(`kernels.py --check`). A change to how a kernel compiles fails the second until
+`python packages/gpuwork/tests/kernels.py` is run and the result committed.
+
 ## Principles — [derived]
 
 **An unknown widens the run; it never narrows it.** An unmapped path, or a change

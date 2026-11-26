@@ -458,6 +458,23 @@ static LLVMValueRef genlFloatBits(GenState *gen, int16_t kind, LLVMValueRef arg,
     }
 }
 
+// isNaN, isInfinite and isFinite on a GPU, asked of the bits. A Vulkan driver
+// may assume a float operation sees no NaN and no infinity (the module declares
+// no SignedZeroInfNanPreserve), and then answers a float comparison for one
+// wrongly; integer tests it cannot assume away. With the sign bit cleared, an
+// infinity is the exponent all ones and nothing else, a NaN is above it, and a
+// finite value below it
+static LLVMValueRef genlGpuFloatClass(GenState *gen, int16_t kind, LLVMTypeRef llvmtype, LLVMValueRef x) {
+    int is32 = LLVMGetTypeKind(llvmtype) == LLVMFloatTypeKind;
+    LLVMTypeRef inttype = LLVMIntTypeInContext(gen->context, is32 ? 32 : 64);
+    LLVMValueRef infinity = LLVMConstInt(inttype, is32 ? 0x7F800000ULL : 0x7FF0000000000000ULL, 0);
+    LLVMValueRef mag = LLVMBuildAnd(gen->builder, LLVMBuildBitCast(gen->builder, x, inttype, ""),
+        LLVMConstInt(inttype, is32 ? 0x7FFFFFFFULL : 0x7FFFFFFFFFFFFFFFULL, 0), "");
+    LLVMIntPredicate test = kind == IsNanIntrinsic ? LLVMIntUGT
+        : kind == IsInfiniteIntrinsic ? LLVMIntEQ : LLVMIntULT;
+    return LLVMBuildICmp(gen->builder, test, mag, infinity, "");
+}
+
 // Expand a call to one of a number's methods, abs, min, max, floor, ceil, round
 // and fma, whose type is a number or a vector of them (the vector's methods
 // carry the vector as their typearg), so one lowering serves both: LLVM's
@@ -508,6 +525,21 @@ static LLVMValueRef genlNumberIntrinsic(GenState *gen, int16_t kind, INode *type
 
     // A float's, each LLVM's intrinsic of the same meaning (the libm call it
     // folds to or becomes on a CPU, the GLSL.std.450 instruction on a GPU)
+    case TruncIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.trunc", llvmtype, args, 1);
+    case CopysignIntrinsic:
+        args[1] = fnargs[1];
+        if (gen->opt->gpu) {
+            // The SPIR-V backend cannot select copysign: x's bits below the
+            // sign, joined to the sign bit of 'sign', exact as the intrinsic is
+            unsigned bits = LLVMGetTypeKind(llvmtype) == LLVMFloatTypeKind ? 32 : 64;
+            LLVMTypeRef inttype = LLVMIntTypeInContext(gen->context, bits);
+            LLVMValueRef signbit = LLVMConstInt(inttype, 1ULL << (bits - 1), 0);
+            LLVMValueRef mag = LLVMBuildAnd(gen->builder, LLVMBuildBitCast(gen->builder, args[0], inttype, ""),
+                LLVMConstInt(inttype, (1ULL << (bits - 1)) - 1, 0), "");
+            LLVMValueRef sgn = LLVMBuildAnd(gen->builder, LLVMBuildBitCast(gen->builder, args[1], inttype, ""), signbit, "");
+            return LLVMBuildBitCast(gen->builder, LLVMBuildOr(gen->builder, mag, sgn, ""), llvmtype, "");
+        }
+        return genlCallLlvmIntrinsic(gen, "llvm.copysign", llvmtype, args, 2);
     case TanIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.tan", llvmtype, args, 1);
     case AsinIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.asin", llvmtype, args, 1);
     case AcosIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.acos", llvmtype, args, 1);
@@ -582,13 +614,18 @@ static LLVMValueRef genlNumberIntrinsic(GenState *gen, int16_t kind, INode *type
         }
         return genlCallLibm(gen, "cbrt", llvmtype, args, 1);
     case IsNanIntrinsic:
-        // x != x (unordered or not equal), as SPIR-V's Shader capability has no OpUnordered
+        if (gen->opt->gpu)
+            return genlGpuFloatClass(gen, kind, llvmtype, args[0]);
         return LLVMBuildFCmp(gen->builder, LLVMRealUNE, args[0], args[0], "");
     case IsInfiniteIntrinsic: {
+        if (gen->opt->gpu)
+            return genlGpuFloatClass(gen, kind, llvmtype, args[0]);
         LLVMValueRef mag = genlCallLlvmIntrinsic(gen, "llvm.fabs", llvmtype, args, 1);
         return LLVMBuildFCmp(gen->builder, LLVMRealOEQ, mag, LLVMConstReal(llvmtype, HUGE_VAL), "");
     }
     case IsFiniteIntrinsic: {
+        if (gen->opt->gpu)
+            return genlGpuFloatClass(gen, kind, llvmtype, args[0]);
         LLVMValueRef mag = genlCallLlvmIntrinsic(gen, "llvm.fabs", llvmtype, args, 1);
         return LLVMBuildFCmp(gen->builder, LLVMRealOLT, mag, LLVMConstReal(llvmtype, HUGE_VAL), "");
     }
@@ -641,10 +678,12 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         genlFinalizeAt(gen, fnargs[0], type);
         return NULL;
 
-    // A slice is the {pointer, length} pair; the pointer is the first element's
+    // A slice is the {pointer, length} pair; the pointer is the first element's.
+    // An owner of an array body is the same pair
     case SliceFromPartsIntrinsic:
     case SliceFromPartsMutIntrinsic:
-    case SliceFromPartsUniIntrinsic: {
+    case SliceFromPartsUniIntrinsic:
+    case UniArrayFromPartsIntrinsic: {
         LLVMTypeRef slicetype = genlType(gen, ((FnSigNode *)fndcl->vtype)->rettype);
         LLVMValueRef slice = LLVMGetUndef(slicetype);
         // A null pointer is the absence of an Option of a slice, so a slice
@@ -753,6 +792,8 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case PowiIntrinsic:
     case HypotIntrinsic:
     case CbrtIntrinsic:
+    case TruncIntrinsic:
+    case CopysignIntrinsic:
     case SinhIntrinsic:
     case CoshIntrinsic:
     case TanhIntrinsic:

@@ -278,7 +278,9 @@ let made = Rc[mut, Array[i32, 4]](four);          // four is moved in
 		never changes: <span class="pre">Uni[Array[T]]</span>, <span class="pre">Rc[Array[T]]</span>,
 		<span class="pre">Arc[Array[T]]</span> or <span class="pre">Gc[Array[T]]</span>, each a pointer and a count, one hop
 		to the elements. It is allocated by copying the elements of a slice, as an owner of <span class="pre">str</span> is,
-		so only where the elements copy. The owner has <span class="pre">len</span>, is indexed
+		so only where the elements copy. It takes no contents after
+		<span class="pre">&lt;-</span>: <span class="pre">Uni[Array[u8]] &lt;- 104u8, 105u8</span> is refused,
+		<i>Error 1044</i>. The owner has <span class="pre">len</span>, is indexed
 		(<span class="pre">o[i]</span>) and takes a borrowed range (<span class="pre">&amp;o[a ..&lt; b]</span>) as a slice
 		does, and is lent as the slice wherever a <span class="pre">&amp;Array[T]</span> is wanted, a generic's element type
 		inferred from it. A borrow of a fixed-size array, <span class="pre">&amp;Array[T, n]</span>, converts to the slice.
@@ -364,10 +366,15 @@ let shape: &amp;Shape = &amp;someDot;     // a reference to a variant coerces to
 </pre>
 	<p>Each variant then takes only what it needs, and the enum has no single size, so no value of it may be held, not in
 		a variable, a parameter or a field (<i>Error 1069: Variable s cannot be held by value: Shape is an '@unsized' enum, so
-		its variants differ in size. Reach it through a reference.</i>), and it is reached only by reference. Everything else
-		is unchanged: the tag is still in the value, a common field is still readable through the reference, matching still
-		recovers the variant, and dispatch still works. What is given up is the value semantics: holding one in a variable,
-		copying it, passing it by value, and swapping a variant in place. Its references are thin and say nothing of the size.
+		its variants differ in size. Reach it through a reference.</i>), nor in an array, a slice or a function's result,
+		and it is reached only by reference. Everything else is unchanged: the tag is still in the value, a common field is
+		still readable and writable through the reference, matching still recovers the variant, and dispatch still works.
+		What is given up is the value semantics: holding one in a variable, copying it, passing it by value, and swapping a
+		variant in place. So <span class="pre">*s</span> may only be borrowed again or have a field taken from it
+		(<i>Error 1069: Shape is an '@unsized' enum, so its value can't be assigned or stored; its variants differ in size.
+		Reach it through a reference.</i>), and a pointer to one is not indexed, moved by arithmetic or subtracted from
+		another. A <span class="pre">&amp;*s</span> borrows with the permission a plain struct's would. A reference to a
+		variant still reaches the whole variant, which has one size. Its references are thin and say nothing of the size.
 		Most types that want this are graphs and trees, and those are usually better served by an open
 		<a href="mod-substitution.html">trait</a> and structs that are one: once a type is reached by reference anyway, there
 		is little left for a closed set to buy. So <span class="pre">@unsized</span> is for the case that is genuinely closed,
