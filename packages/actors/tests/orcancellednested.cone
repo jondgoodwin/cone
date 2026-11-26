@@ -1,0 +1,301 @@
+// An orCancelled wrapper inside another (row 869, Bug 132): the inner one is
+// started by the outer, into a future, with no actor named in its envelope.
+//
+//   await actors.orCancelledOp(actors.orCancelledOp(op))
+//   await actors.orCancelledOp(actors.orCancelled(fut))
+//
+// Answered first, each is Ok(Ok(the answer)). Cancelled first, each is
+// Err(Cancelled(cause)) at the outer level, exactly once, and what the operation
+// does later is not delivered. Three levels behave the same. A callee that ends
+// unanswered leaves the behaviour parked for the cancel, as with one wrapper.
+
+mod orcancellednested;
+
+import testing use *;
+import stdio use *;
+import libc;
+import thread;
+import actors;
+import cancelgroups use *;
+import time use Instant, Duration;
+
+struct Seen {
+  pub gate: Atomic[u64];       // set to let the slow callee answer
+  pub held: Atomic[u64];       // requests it has in hand
+  pub ok: Atomic[u64];         // awaits that ended Ok at every level
+  pub inner: Atomic[u64];      // ... Ok outside, Err inside
+  pub err: Atomic[u64];        // ... Err outside
+  pub value: Atomic[u64];
+  pub cause: Atomic[u64];
+  pub started: Atomic[u64];    // operations started
+  pub hung: Atomic[u64];       // the address of the envelope a hung operation keeps
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64));
+}
+
+fn bounded(limitMs: i64) Instant {Instant.now() + Duration.fromMillis(limitMs)}
+
+fn causeNum(c: Cause) u64 {
+  match c {
+    case Cause.Cancelled {1u64}
+    case Cause.TimedOut {2u64}
+    case Cause.SiblingFinished {3u64}
+    case Cause.Shutdown {4u64}
+  }
+}
+
+actor Slow {
+  // answers once the gate is set (or after five seconds)
+  pub async fn gated(self, n: u64) u64 {
+    seen.held.add(1u64);
+    let limit = bounded(5000i64);
+    while seen.gate.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+    n
+  }
+}
+
+fn instantOp(n: u64) actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) [n] {
+    seen.started.add(1u64);
+    rp.answer(n);
+  })
+}
+
+fn hungOp() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) {
+    let b = libc.malloc(mem.sizeof[actors.ReplyOf[u64]]());
+    mem.writeRaw[actors.ReplyOf[u64]](b as *actors.ReplyOf[u64], rp);
+    seen.hung.store(u64.from(b as usize));
+    seen.started.add(1u64);
+  })
+}
+
+fn hungAnswer(v: u64) {
+  let b = usize.from(seen.hung.load()) as *actors.ReplyOf[u64];
+  seen.hung.store(0u64);
+  let rp = mem.readRaw[actors.ReplyOf[u64]](b);
+  libc.free(b as *u8);
+  rp.answer(v);
+}
+
+fn hungDrop() {
+  let b = usize.from(seen.hung.load()) as *actors.ReplyOf[u64];
+  seen.hung.store(0u64);
+  let rp = mem.readRaw[actors.ReplyOf[u64]](b);
+  libc.free(b as *u8);
+}
+
+fn woken(c: Cancelled) {
+  seen.cause.store(causeNum(c.cause));
+  seen.err.add(1u64);
+}
+
+actor Asker {
+  // two levels over an operation: 'hang' picks the one that keeps its envelope
+  pub async fn twoOps(self, hang: bool) {
+    let op = if hang {hungOp()} else {instantOp(5u64)};
+    match await actors.orCancelledOp(actors.orCancelledOp(op)) {
+      case let Ok(r) {
+        match r {
+          case let Ok(v) {
+            seen.value.store(v);
+            seen.ok.add(1u64);
+          }
+          case let Err(c) {seen.inner.add(1u64);}
+        }
+      }
+      case let Err(c) {woken(c);}
+    }
+  }
+
+  // an operation's wrapper over a future's
+  pub async fn opOverFuture(self, slow: Slow, n: u64) {
+    match await actors.orCancelledOp(actors.orCancelled(slow.gated(n))) {
+      case let Ok(r) {
+        match r {
+          case let Ok(v) {
+            seen.value.store(v);
+            seen.ok.add(1u64);
+          }
+          case let Err(c) {seen.inner.add(1u64);}
+        }
+      }
+      case let Err(c) {woken(c);}
+    }
+  }
+
+  pub async fn threeOps(self, hang: bool) {
+    let op = if hang {hungOp()} else {instantOp(9u64)};
+    match await actors.orCancelledOp(actors.orCancelledOp(actors.orCancelledOp(op))) {
+      case let Ok(r) {
+        match r {
+          case let Ok(s) {
+            match s {
+              case let Ok(v) {
+                seen.value.store(v);
+                seen.ok.add(1u64);
+              }
+              case let Err(c) {seen.inner.add(1u64);}
+            }
+          }
+          case let Err(c) {seen.inner.add(1u64);}
+        }
+      }
+      case let Err(c) {woken(c);}
+    }
+  }
+}
+
+fn waitFor(a: &Atomic[u64], n: u64) {
+  let limit = bounded(60000i64);
+  while a.load() < n && Instant.now() < limit {thread.yieldNow();}
+}
+
+fn reset() {
+  seen.gate.store(0u64);
+  seen.held.store(0u64);
+  seen.ok.store(0u64);
+  seen.inner.store(0u64);
+  seen.err.store(0u64);
+  seen.value.store(0u64);
+  seen.cause.store(0u64);
+  seen.started.store(0u64);
+}
+
+// What every case ends with: one resume, nothing owed, no group entry left
+fn expectOne(ok: u64, err: u64, what: &str) {
+  expectUInt(seen.ok.load(), ok, what);
+  expectUInt(seen.err.load(), err, what);
+  expectUInt(seen.inner.load(), 0u64, what);
+  expectUInt(u64.from(actors.lateAnswersOwed()), 0u64, what);
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, what);
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  let slow = Slow();
+  let a = Asker();
+
+  // answered first: no group, then a live one
+  reset();
+  a.twoOps(false);
+  actors.waitUntilIdle();
+  expectUInt(seen.value.load(), 5u64, "op op: the answer");
+  expectOne(1u64, 0u64, "op op, no group");
+  reset();
+  let g1 = CancelGroup.make();
+  actors.withGroup(&g1, fn() [a] { a.twoOps(false); });
+  actors.waitUntilIdle();
+  expectUInt(seen.value.load(), 5u64, "op op: the answer in a group");
+  expectOne(1u64, 0u64, "op op, live group");
+
+  reset();
+  seen.gate.store(1u64);
+  a.opOverFuture(slow, 6u64);
+  actors.waitUntilIdle();
+  expectUInt(seen.value.load(), 6u64, "op future: the answer");
+  expectOne(1u64, 0u64, "op future, no group");
+  reset();
+  let g2 = CancelGroup.make();
+  actors.withGroup(&g2, fn() [a, slow] { a.opOverFuture(slow, 7u64); });
+  waitFor(&seen.held, 1u64);
+  seen.gate.store(1u64);
+  actors.waitUntilIdle();
+  expectUInt(seen.value.load(), 7u64, "op future: answered while parked");
+  expectOne(1u64, 0u64, "op future, live group");
+
+  // an answer that comes after the await has parked
+  reset();
+  let g3 = CancelGroup.make();
+  actors.withGroup(&g3, fn() [a] { a.twoOps(true); });
+  waitFor(&seen.started, 1u64);
+  actors.waitQuiet();
+  expectUInt(seen.ok.load() + seen.err.load(), 0u64, "op op: parked");
+  hungAnswer(8u64);
+  actors.waitUntilIdle();
+  expectUInt(seen.value.load(), 8u64, "op op: answered late in time");
+  expectOne(1u64, 0u64, "op op, answered while parked");
+
+  // the cancel wins
+  reset();
+  let g4 = CancelGroup.make();
+  actors.withGroup(&g4, fn() [a] { a.twoOps(true); });
+  waitFor(&seen.started, 1u64);
+  actors.waitQuiet();
+  g4.cancelWith(Cause.TimedOut);
+  waitFor(&seen.err, 1u64);
+  expectUInt(seen.cause.load(), 2u64, "op op: cancelled, with the cause");
+  expectUInt(u64.from(actors.lateAnswersOwed()), 1u64, "op op: one answer owed, by the outer wrapper");
+  hungAnswer(11u64);
+  actors.waitUntilIdle();
+  expectOne(0u64, 1u64, "op op, cancel wins");
+
+  reset();
+  let g5 = CancelGroup.make();
+  actors.withGroup(&g5, fn() [a, slow] { a.opOverFuture(slow, 12u64); });
+  waitFor(&seen.held, 1u64);
+  g5.cancelWith(Cause.Shutdown);
+  waitFor(&seen.err, 1u64);
+  expectUInt(seen.cause.load(), 4u64, "op future: cancelled, with the cause");
+  seen.gate.store(1u64);
+  actors.waitUntilIdle();
+  expectOne(0u64, 1u64, "op future, cancel wins");
+
+  // cancelled before the await: nothing started
+  reset();
+  let g6 = CancelGroup.make();
+  g6.cancel();
+  actors.withGroup(&g6, fn() [a] { a.twoOps(false); });
+  actors.waitUntilIdle();
+  expectUInt(seen.started.load(), 0u64, "op op, cancelled before: not started");
+  expectOne(0u64, 1u64, "op op, cancelled before");
+
+  // the operation ends unanswered: parked still, for the cancel
+  reset();
+  let g7 = CancelGroup.make();
+  actors.withGroup(&g7, fn() [a] { a.twoOps(true); });
+  waitFor(&seen.started, 1u64);
+  actors.waitQuiet();
+  hungDrop();
+  actors.waitQuiet();
+  // not waitUntilIdle: the outer await is outstanding until the cancel
+  expectUInt(seen.ok.load() + seen.err.load(), 0u64, "op op, dropped: parked");
+  g7.cancel();
+  waitFor(&seen.err, 1u64);
+  actors.waitUntilIdle();
+  expectOne(0u64, 1u64, "op op, dropped then cancelled");
+
+  // three levels
+  reset();
+  let g8 = CancelGroup.make();
+  actors.withGroup(&g8, fn() [a] { a.threeOps(false); });
+  actors.waitUntilIdle();
+  expectUInt(seen.value.load(), 9u64, "three: the answer");
+  expectOne(1u64, 0u64, "three, answered");
+  reset();
+  let g9 = CancelGroup.make();
+  actors.withGroup(&g9, fn() [a] { a.threeOps(true); });
+  waitFor(&seen.started, 1u64);
+  actors.waitQuiet();
+  g9.cancel();
+  waitFor(&seen.err, 1u64);
+  hungAnswer(13u64);
+  actors.waitUntilIdle();
+  expectOne(0u64, 1u64, "three, cancel wins");
+
+  // left parked at the program's end, with no group: abandoned, no resume
+  reset();
+  a.twoOps(true);
+  waitFor(&seen.started, 1u64);
+  actors.waitQuiet();
+  expectUInt(seen.ok.load() + seen.err.load(), 0u64, "left parked at the end");
+
+  done()
+}
