@@ -201,7 +201,7 @@ For anything finer, instrument and compile the corpus:
   which is most of a large package's release compile: `sculpt`, 12,900 lines,
   compiled in 5.1 s, 2.8 s of it optimizing and 2.3 s generating code (3 Oct
   2026, at O2; 2.7 s in all under the short list it replaced). A `--debug` build runs
-  four passes.
+  two passes, `globaldce` and `simplifycfg`.
 
 ## Hazards
 

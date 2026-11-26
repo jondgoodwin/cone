@@ -393,9 +393,11 @@ operation fast-math or contractable, so a vectorizer widens only what keeps
 each lane's operations in their written order (a loop scaling a slice, a
 matrix's columns), never a sum over a loop, and no multiply and add are fused,
 whatever the CPU. A `--debug` build runs only
-`globaldce,function(mem2reg,reassociate,gvn,simplifycfg)`, with no target
-machine, and turns off the code generator's optimization and enables DWARF. A
-GPU target's pipeline is its own, at every level (section 7). **There is no
+`globaldce,function(simplifycfg)`, with no target
+machine, and turns off the code generator's optimization and enables DWARF. It
+runs no pass that promotes a stack slot to a register (`mem2reg`, `sroa`, `gvn`),
+so every variable stays in its slot for a debugger to read (section 3,
+"Variables"). A GPU target's pipeline is its own, at every level (section 7). **There is no
 `--release` flag** — release is the default and `--debug` turns it off.
 
 **Only what live code reaches is emitted**, in a debug build as in a release
@@ -908,7 +910,7 @@ as a move out of it or out through it (`genlDropFlagUse`, from `genlTerm` and
 flag). A release that depends on it — a `DropFlagNode` in a release list, a
 store's old value under `FlagDropTest`, a `HollowNode` with `test` — loads the
 slot, compares it with the state it runs in, and branches round the release
-(`genlDropFlagIf`, `genlDropFlagEnd`). The optimizer's mem2reg keeps the slot
+(`genlDropFlagIf`, `genlDropFlagEnd`). A release build's optimizer keeps the slot
 in a register and folds each test where one path's value is known.
 
 **A drop the compiler gives a type is built here, not lowered**
@@ -2238,9 +2240,8 @@ locals of an inline function's expansion, which are the caller's slots (`GenStat
 and a match binding or generator frame variable, which has no slot of its own. A function whose
 return type (or `void`) and every parameter's type are described has its real subroutine type;
 any other keeps the empty one. A release build emits none of this, so its object does not change.
-The debug pipeline runs `mem2reg` (section on the pass pipeline), which turns the declares into
-`dbg.value`: a debugger then shows a variable only where its value lives in a register, and one the
-optimizer folded away as optimized out.
+The debug pipeline promotes no slot (section on the pass pipeline), so each declare reaches the
+object and a debugger reads the variable from its stack slot anywhere in the function.
 
 The environment variable `CONE_LLVM_OPTIONS` hands LLVM command-line options,
 separated by spaces, parsed in `genSetup` before the LLVM context exists. It is
