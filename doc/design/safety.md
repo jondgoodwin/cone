@@ -113,7 +113,8 @@ each as needing `trust`, and nothing yet asks for it (`safe-intrinsics.html`).
 What the guard would cover can be listed. `conec --report-trust` type checks the
 program, prints one line per site and generates no code: `deref` (a dereference
 or index through a raw pointer, not through a reference), `ref-from-ptr` (a
-reference or slice made from a pointer by `as`, `&*p` or `sliceFromParts*`),
+reference or slice made from a pointer by `as`, `&*p` or `sliceFromParts*`, and
+the owner `uniArrayFromParts` makes from one),
 `intrinsic` (a call of an intrinsic the registry marks `trust`), `extern` (a call
 of an extern function), `reinterpret` (a written `as` that keeps the bits),
 `reinterpret-perm` (an `as` between two references that changes only the
