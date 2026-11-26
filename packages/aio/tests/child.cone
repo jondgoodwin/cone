@@ -39,6 +39,10 @@ import fs;
 import actors;
 import aio use IoLimits;
 
+// What 'at once' may take. Every child these checks cut short runs 30 s, so an answer that waited for the child's end
+// reads 30 s or more, and a loaded machine's slow start of a child stays well under
+const promptMs = 20000u64;
+
 fn take(rx: &mut Receiver[u64]) u64 { rx.recv() || 999u64 }
 
 fn b(v: bool) u64 {if v {1u64} else {0u64}}
@@ -204,12 +208,12 @@ actor Runner {
     }
     {
       let t = Instant.now();
-      let r = await aio.runLine(slowLine(4u64).view(), process.Options(timeout: Duration.fromMillis(300i64)));
+      let r = await aio.runLine(slowLine(30u64).view(), process.Options(timeout: Duration.fromMillis(300i64)));
       let how = endedBy(&r);
       let o = outputOf(r);
       out.send(how);
       out.send(b(o.timedOut));
-      out.send(b(ms(t) < 2500u64));
+      out.send(b(ms(t) < promptMs));
     }
   }
 }
@@ -298,7 +302,7 @@ actor Holder {
 actor Waiter {
   pub async fn go(self, g: CancelGroup, out: Sender[u64]) {
     let t = Instant.now();
-    let r = await aio.runLineIn(slowLine(1u64).view(), process.Options(crashReport: false), "", IoLimits.within(g));
+    let r = await aio.runLineIn(slowLine(30u64).view(), process.Options(crashReport: false), "", IoLimits.within(g));
     out.send(endedBy(&r));
     out.send(ms(t));
   }
@@ -308,7 +312,7 @@ actor Waiter {
 actor Cancelee {
   pub async fn go(self, g: CancelGroup, out: Sender[u64]) {
     let t = Instant.now();
-    let r = await aio.runLineIn(slowLine(5u64).view(), process.Options(), "", IoLimits.within(g));
+    let r = await aio.runLineIn(slowLine(30u64).view(), process.Options(), "", IoLimits.within(g));
     out.send(endedBy(&r));
     out.send(ms(t));
   }
@@ -318,7 +322,7 @@ actor Cancelee {
 actor Deadliner {
   pub async fn go(self, out: Sender[u64]) {
     let t = Instant.now();
-    let r = await aio.runLineIn(slowLine(5u64).view(), process.Options(timeout: Duration.fromMillis(1500i64)), "",
+    let r = await aio.runLineIn(slowLine(30u64).view(), process.Options(timeout: Duration.fromMillis(1500i64)), "",
       IoLimits.until(t + Duration.fromMillis(100i64)));
     out.send(endedBy(&r));
     out.send(ms(t));
@@ -355,7 +359,7 @@ fn main() i32 {
 
   expectUInt(take(&mut rx), 1u64, "a child slower than its timeout: Done");
   expectUInt(take(&mut rx), 1u64, "...timedOut");
-  expectUInt(take(&mut rx), 1u64, "...stopped in time, not after four seconds");
+  expectUInt(take(&mut rx), 1u64, "...stopped in time, not after thirty seconds");
 
   // One child of 2 s alone first: what the machine takes for a child's spawn, run and answer, so the two checks of twelve
   // at once below read "together" as under 2.4 times it (never under 5 s). Four at a time the twelve take three rounds of
@@ -461,7 +465,7 @@ fn main() i32 {
   thread.sleep(Duration.fromMillis(150i64));
   expect(g.cancel(), "the group was live");
   expectUInt(take(&mut rx), 2u64, "a fifth crashReport:false child, running beside four: Cancelled");
-  expect(take(&mut rx) < 900u64, "...at once");
+  expect(take(&mut rx) < promptMs, "...at once");
   var held = 0u64;
   {
     var k = 0u64;
@@ -480,14 +484,14 @@ fn main() i32 {
     thread.sleep(Duration.fromMillis(300i64));
     expect(g2.cancel(), "the group was live");
     expectUInt(take(&mut rx), 2u64, "a running child in a cancelled group: Cancelled");
-    expect(take(&mut rx) < 1500u64, "...at once, not when the child ended");
+    expect(take(&mut rx) < promptMs, "...at once, not when the child ended");
   }
 
   // A running child under a deadline
   let d = Deadliner();
   d.go(tx.clone());
   expectUInt(take(&mut rx), 3u64, "a running child under a deadline: TimedOut");
-  expect(take(&mut rx) < 1000u64, "...at the deadline, not when the child ended");
+  expect(take(&mut rx) < promptMs, "...at the deadline, not when the child ended");
   expectUInt(take(&mut rx), 1u64, "...and the child ended by its own timeout meanwhile");
   finalAll();
   done()
