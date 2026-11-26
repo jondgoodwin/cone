@@ -170,13 +170,12 @@ the base's privates, and its base's variants', through any value
 (`typeLitStructReorder`, its caller and `genericInferStructParms`) and by a
 construction through a private `init`.
 
-A call to `isTrue` that a coercion to `bool` injects (`iexpCoerce`) is lowered
-with no type check state (a temporary receiver an `isTrue` taking `self: &`
-borrows, Option's or Result's, takes its scope from `inodeCheckState`,
-`fnCallBorrowReceiver`; a variant's value reaches its enum's whole-enum `isTrue`,
-`iexpMatches`), so only a receiver named `self` reaches a private one;
-every other is refused, in the module too. The state is not threaded through
-`iexpCoerce`'s callers.
+A call to `isTrue` that a condition's coercion to `bool` injects (`iexpCoerce`)
+is lowered with the state of the check under way (`iexpCoerceState`, set by
+`iexpCoerceIn`; a condition arrives through `iexpCoerceCondition` or
+`iexpTypeCheckCoerceCondition`), so it reaches a private `isTrue` as an explicit
+call does: from the module that declares the receiver's type. A variant's value
+reaches its enum's whole-enum `isTrue` (`iexpMatches`).
 
 **A `pub` field of a `pub` type names no type private to its module**
 (`ErrorPubFieldPrivType`, `fieldDclNameRes`). Such a field is reached from
