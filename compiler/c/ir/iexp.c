@@ -59,12 +59,12 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
 }
 
 // Set only around the coercion of a condition operand (iexpCoerceCondition).
-// An Option or Result converts to bool through isTrue there and under '!', and
-// nowhere else. In particular not as an operand of '||' or '&&' (logicTypeCheck
-// refuses those, with its own message): PR 6 makes those operators methods on
-// Option and Result, so 'opt || flag' written now would silently change meaning.
-// Elsewhere ('let b: bool = opt', an argument, a return) they stay refused, as
-// before isTrue existed on them.
+// A value of any type with isTrue (a number, Option, Result, a user type) converts to
+// bool through it there and under '!', and nowhere else. In particular not as an
+// operand of '||' or '&&' (their operands are checked outside the window; an Option
+// or Result on a bool's right is refused by logicTypeCheck with its own message, since
+// those operators are methods of Option and Result). Elsewhere ('let b: bool = x', an
+// argument, a return) it is refused: ErrorTruthOutsideCondition, from iexpCoerce.
 static int iexpInCondition = 0;
 
 // The check state under way where a coercion is asked for with one (iexpCoerceIn,
@@ -149,6 +149,17 @@ static int iexpOptWrapMake(INode **from, INode *totype, StructNode *variant, INo
     return iexpCoerce(from, totype);
 }
 
+// Does the type declare an isTrue a condition can test it through? A value of a variant
+// reaches its enum's isTrue that takes the whole enum ('self: &Option[T]'), as it
+// reaches any such method (fnCallLowerMethod)
+static int iexpHasIsTrue(INode *fromtype) {
+    INode *foundnode = aliasDclResolve(iTypeFindFnField(fromtype, istrueName));
+    StructNode *enumdcl;
+    if (foundnode == NULL && (enumdcl = structVariantEnum(fromtype)) != NULL)
+        foundnode = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)enumdcl, istrueName));
+    return foundnode && (foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag);
+}
+
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
     // A 'null' not yet typed is whichever raw pointer type is wanted, and nothing else
@@ -167,21 +178,12 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     if (actorTraitWanted(fromtype, itypeGetTypeDcl(totype)))
         return ConvByMeth;
 
-    // Handle implicit coercion to boolean, if type supports "isTrue" method
-    INode *foundnode;
+    // Handle implicit coercion to boolean, if type supports "isTrue" method, and only in a
+    // condition. Elsewhere a bool wanted is refused for every type (iexpCoerce says why)
     if (totype == (INode*)boolType) {
-        if (!iexpInCondition && iexpIsOptionOrResult(*from))
+        if (!iexpInCondition)
             return NoMatch;
-        foundnode = aliasDclResolve(iTypeFindFnField(fromtype, istrueName));
-        // A value of a variant reaches its enum's isTrue that takes the whole enum
-        // ('self: &Option[T]'), as it reaches any such method (fnCallLowerMethod)
-        StructNode *enumdcl;
-        if (foundnode == NULL && (enumdcl = structVariantEnum(fromtype)) != NULL)
-            foundnode = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)enumdcl, istrueName));
-        if (foundnode && (foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag))
-            return ConvByMeth;
-        else
-            return NoMatch;
+        return iexpHasIsTrue(fromtype) ? ConvByMeth : NoMatch;
     }
 
     // Handle implicit conversion of untyped literal integer to any number type
@@ -471,6 +473,18 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         // So may a borrowed constant one, and the borrow then match as it is
         if (borrowConstLitCoerce(*from, totypedcl))
             return iexpMatches(from, totypedcl, Coercion) != NoMatch && iexpCoerce(from, totype);
+        // A bool wanted where the value's type has isTrue is refused outside a condition,
+        // for every type, and the conversion built anyway so nothing more is said of it
+        if (totypedcl == (INode*)boolType && !iexpInCondition && isExpNode(*from)
+            && iexpHasIsTrue(iexpGetTypeDcl(*from))) {
+            errorMsgNode(*from, ErrorTruthOutsideCondition,
+                "%s is not a bool, and a bool is wanted here. A value is tested through its 'isTrue' only in an 'if' or 'while' condition and under '!'. Write 'x.isTrue()' (for a number, 'n != 0').",
+                itypeName(iexpGetTypeDcl(*from)));
+            INode *conv = (INode*)newConvCastNode(*from, totypedcl);
+            inodeLexCopy(conv, *from);
+            *from = conv;
+            return 1;
+        }
         // A bool wanted as a number is refused here, naming the conversion that
         // would say what it means. The conversion is then built anyway, so what
         // uses the value sees the type it wanted and says nothing more.
