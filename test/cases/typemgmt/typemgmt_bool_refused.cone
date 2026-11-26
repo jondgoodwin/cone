@@ -1,0 +1,66 @@
+// A value is tested through its 'isTrue' only where the syntax asks a truth question:
+// an 'if' or 'while' condition and the operand of '!'. Where a bool is wanted anywhere
+// else, a value that is not a bool is refused, whatever its type: a number or a struct
+// with its own 'isTrue'. The message names the explicit form, 'x.isTrue()' (for a
+// number, 'n != 0').
+//
+// The right operand of a bool's '&&' and '||' is such a place. (Option and Result
+// there keep ErrorOptionLogic: enum_typecheck_option_bool.)
+//
+// Accepted forms are in typemgmt_bool_convert (numbers) and typemgmt_bool_user (a struct).
+
+mod typemgmt_bool_refused;
+
+struct Gate {
+  pub open: i32;
+  pub fn isTrue(self: &) bool { open != 0 }
+}
+
+struct Holder {
+  pub flag: bool;
+}
+
+fn wantBool(b: bool) bool { b }
+
+fn numberReturn(n: i32) bool {
+  n                                  //~ ErrorTruthOutsideCondition "Write 'x.isTrue()'"
+}
+
+fn gateReturn(g: Gate) bool {
+  g                                  //~ ErrorTruthOutsideCondition
+}
+
+fn main() {
+  let n: i32 = 2;
+  let f: f64 = 0.5;
+  let g = Gate(1);
+  var flag = true;
+
+  let a: bool = n;                   //~ ErrorTruthOutsideCondition "n != 0"
+  let b: bool = f;                   //~ ErrorTruthOutsideCondition
+  let c: bool = 2;                   //~ ErrorTruthOutsideCondition
+  flag = n;                          //~ ErrorTruthOutsideCondition
+  let d = wantBool(n);               //~ ErrorTruthOutsideCondition
+  let h = Holder(n);                 //~ ErrorTruthOutsideCondition
+
+  let e: bool = g;                   //~ ErrorTruthOutsideCondition "only in an 'if' or 'while' condition and under '!'"
+  let i = wantBool(g);               //~ ErrorTruthOutsideCondition
+  let j = true && g;                 //~ ErrorTruthOutsideCondition
+  let k = flag || n;                 //~ ErrorTruthOutsideCondition
+
+  // Even where an 'if' encloses the operator: the operands of a bool's '&&' are not conditions
+  if flag && n {}                    //~ ErrorTruthOutsideCondition
+  // Nor is a left operand whose type has no '&&' or '||' of its own
+  if n && flag {}                    //~ ErrorNoLogicMethod
+  while g || flag {}                 //~ ErrorNoLogicMethod
+
+  // A raw pointer is a value with an 'isTrue' like any other
+  let p: *i32 = &n;
+  let m: bool = p;                   //~ ErrorTruthOutsideCondition
+
+  // The explicit forms
+  let ok1: bool = n != 0;
+  let ok2: bool = g.isTrue();
+  let ok3 = wantBool(bool.from(n));
+  let ok4 = true && g.isTrue();
+}

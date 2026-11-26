@@ -64,8 +64,11 @@ exponent of 0, because GLSL's `pow` is undefined for a negative base); `copysign
 back end cannot select it); `hypot` and `cbrt` have no intrinsic, so
 they call the C library by name (`genlCallLibm`; an `f32`'s `hypot` through the double form,
 the UCRT having no `hypotf`), and on a GPU are `sqrt(fma(x, x, y*y))` and the sign of `x` times
-`exp2(log2|x| / 3)`; `isNaN` is `fcmp une x, x` (Shader has no `OpUnordered`), `isInfinite` and
-`isFinite` compare `llvm.fabs` with the infinity. The GPU's math table (`genlGpuMath`) is for C
+`exp2(log2|x| / 3)`; `isNaN` is `fcmp une x, x`, `isInfinite` and `isFinite` compare `llvm.fabs`
+with the infinity, and on a GPU all three are integer comparisons of the bits below the sign with
+the infinity's (above it, equal to it, below it: `genlGpuFloatClass`), because a Vulkan driver may
+assume a float operation sees no NaN or infinity unless the module declares
+`SignedZeroInfNanPreserve`, which Cone does not. The GPU's math table (`genlGpuMath`) is for C
 bindings and is untouched: these methods reach the GPU as intrinsics, not by C symbol.
 
 **A bool's `&&` and `||` are methods with no function behind them.** `newNbrTypeNode`

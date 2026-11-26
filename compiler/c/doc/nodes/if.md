@@ -204,10 +204,11 @@ template made inside another generic) leaves the `if` copied whole. See
 `ifExhaustCheck`; if it is not `elseCond`, coerce it to `bool` with
 `iexpCoerceCondition` — which is where an implicit `.isTrue` reaches a
 conditional (an Option or a Result through core's, true on `Some` or `Ok`). That
-is the one place, with the operand of `!` (`logicNotTypeCheck`,
-`fnCallNeFromEq`'s derived `!`), where an Option or a Result converts: `iexpMatches`
-refuses them elsewhere (`let b: bool = opt`, an argument, a return) as it did
-before they answered `isTrue`, and `logicTypeCheck` refuses them as the right operand of a bool's
+is the one place, with `while` and the operand of `!` (`logicNotTypeCheck`,
+`fnCallNeFromEq`'s derived `!`), where a value of any type with an `isTrue` (a number, a
+pointer, an Option, a Result, a user type) converts: `iexpMatches` answers `NoMatch` for a `bool`
+wanted outside `iexpInCondition`, and `iexpCoerce` reports it (`let b: bool = x`, an argument, a
+return, an operand of a bool's `&&`) as `ErrorTruthOutsideCondition` (1629), and `logicTypeCheck` refuses an Option or Result as the right operand of a bool's
 `||` or `&&` (1561); as the left operand they are the receiver of their own `||` and `&&`
 (`fnCallLogicMethod`, [fncall](fncall.md)). The coercion is given the state of the check under way, which
 lends a temporary receiver (`if f()` on a returned Option) for the statement being checked. A match's case whose condition is an Option or a Result
