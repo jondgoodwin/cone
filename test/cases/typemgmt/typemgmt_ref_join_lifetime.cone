@@ -1,0 +1,54 @@
+// A join of references differing only in permission lives only as long as the
+// shorter-lived of them: whichever branch runs, the other's referent may be the
+// one that is gone.
+
+mod typemgmt_ref_join_lifetime;
+
+let g: i32 = 1;
+
+fn afterBlock(c: bool) i32 {
+  var out: &i32 = &g;
+  {
+    var l = 2;                             //~ ErrorFrozen:9
+    let r = if c {&g} else {&mut l};
+    out = r;
+  };
+  *out
+}
+
+fn returned(c: bool) &i32 {
+  var l = 2;
+  if c {&g} else {&mut l}                  //~ ErrorEscape:19
+}
+
+fn returnedLocal(c: bool) &i32 {
+  var l = 2;
+  let r = if c {&mut l} else {&g};
+  r                                        //~ ErrorEscape:3
+}
+
+fn returnedElement() &i32 {
+  var l = 2;
+  let w = [&g, &mut l];
+  w[0u]                                    //~ ErrorEscape:4
+}
+
+// Stored through a parameter, the element's own lifetime is all that is asked:
+// that of the shorter-lived of the two the array's elements joined
+struct Holder { pub r: &i32; }
+
+fn storedElement(h: &mut Holder) {
+  var l = 2;
+  let w = [&g, &mut l];
+  h.r = w[0u];                             //~ ErrorInvType:4
+}
+
+// Lifetimes named apart stay apart
+fn named(c: bool, x: &'a mut i32, y: &'b i32) &'a i32 {
+  if c {x} else {y}                        //~ ErrorEscape:3
+}
+
+// What both references point at is the caller's, so the join is too
+fn callers(c: bool, x: &mut i32, y: &i32) &i32 {
+  if c {x} else {y}
+}
