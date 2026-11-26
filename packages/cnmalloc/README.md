@@ -47,7 +47,7 @@ powershell -File packages\cnmalloc\shim\build-cn.ps1 -Out <dir>        # writes 
   `$env:_LINK_ = '"<dir>\cn.lib"'`. (Not `LINK`: that puts the shim ahead of `conestd.lib`, so conestd's own `malloc`
   calls fall through to the C runtime.) Delete a package's `build\` folder to make congo relink.
 * A C program: compile with `/D_ACRTIMP=` (else `malloc` is a dllimport and the swap silently does not happen) and
-  link `cn.lib`.
+  link `cn.lib` and `conestd.lib` (`cn.lib` alone leaves `cone_panicDivide` unresolved).
 * `aio`'s test `alloc` and `iocore`'s test `jobrecord` define their own counting `malloc` family and cannot link with
   any shim.
 
@@ -104,7 +104,7 @@ CONGO_LINK_EXTRA="<dir>/cn_shim.o <dir>/libcnpkg.a" python3 tools/congo/congo.py
 | `collisions=<n>` | `64` | `design=lockfree`: lost compare-and-swaps on a class, since its slot count last changed, that add a slot (up to `slots`). It bounds how fast the slot count grows. |
 | `relist=<k>` | `8` | Row 603. `design=lockfree`: a page that is neither attached nor listed is listed again when a free brings some word of its bits to `min(k, the word's valid bits / q)` free cells (at least 1; `q` is `relistq`; k from 1 to 64). `relist=1` is the rule of one free cell (a free into a full page lists it), which a live set spanning many pages turns into two class-lock takes per operation (about 0.95 takes per operation at 640 bytes and 3000 live cells, against about 0.14 at the default). The cost is hidden cells: fewer than the threshold in each word of a page that is neither attached nor listed (below). It is a setting string, not an API. |
 | `relistq=<q>` | `4` | Row 603. `design=lockfree`: the divisor of a word's valid bits in the threshold above (1 to 64): a 64-cell word has the threshold `min(k, 64 / q)`, a 32-cell page `min(k, 32 / q)`. |
-| `cache=<n>` | `0` (off) | Row 426: blocks per size class that a worker thread may keep in its own cache (see below). 0 touches no thread-local. |
+| `cache=<n>` | `0` (off) | Row 426: blocks per size class that a worker thread may keep in its own cache (see below). 0 touches no thread-local. The worker cache with the lock-free design is untimed: a smoke check (not a timing) read it about 10x slower than the lock design at 16 threads with `cache=1024`. |
 | `cache_max=<bytes>` | `1024` | Only requests up to this size, and their classes, are cached (at most 32768). |
 
 `CONE_HEAP_CLASS_SIZE=1`, a separate environment variable and not one of the `CNMALLOC` settings, is read by conestd's
