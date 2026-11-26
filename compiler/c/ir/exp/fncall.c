@@ -1267,6 +1267,36 @@ static int fnCallLowerRefIntField(FnCallNode *callnode, INode *objtype) {
     return 1;
 }
 
+// Refuse a pointer's '+', '-', '+=', '-=', '++' and '--', and the difference of
+// two pointers, where it points at an '@unsized' enum: each steps by, or counts
+// in, the element's size, and such an enum has no single one
+static void fnCallRefusePtrStep(INode *callnode, FnDclNode *selected, INode *selftype) {
+    if (selected->value == NULL || selected->value->tag != IntrinsicTag)
+        return;
+    switch (((IntrinsicNode*)selected->value)->intrinsicFn) {
+    case AddIntrinsic:
+    case SubIntrinsic:
+    case DiffIntrinsic:
+    case AddEqIntrinsic:
+    case SubEqIntrinsic:
+    case IncrIntrinsic:
+    case DecrIntrinsic:
+    case IncrPostIntrinsic:
+    case DecrPostIntrinsic:
+        break;
+    default:
+        return;
+    }
+    // A method that changes the pointer holds it by reference
+    if (selftype->tag == RefTag)
+        selftype = itypeGetTypeDcl(((RefNode*)selftype)->vtexp);
+    if (selftype->tag != PtrTag)
+        return;
+    INode *unsizedenum = itypeHeldUnsizedEnum(((StarNode*)selftype)->vtexp);
+    if (unsizedenum)
+        itypeUnsizedEnumMsg(callnode, unsizedenum, "reached by pointer arithmetic");
+}
+
 // Report why the name the caller used selected no single candidate.
 // 'kind' names what the name declares, for a call ("function") or a method call ("method").
 static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *namesym, char *kind) {
@@ -2706,6 +2736,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     methodrefnode->vtype = selected->vtype;
     callnode->objfn = (INode*)methodrefnode;
     callnode->methfld = NULL;
+    fnCallRefusePtrStep((INode*)callnode, selected, selftype);
 
     // Now that exactly one candidate is selected, coerce the argument once.
     // These compiler-declared signatures are generic over the pointer/reference's
@@ -4802,6 +4833,25 @@ static StructNode *fnCallVariantEnum(StructNode *variant) {
         return owner != NULL && owner->tag == StructTag && (owner->flags & EnumType) ? (StructNode*)owner : NULL;
     }
     return structBaseTraitDcl(variant);
+}
+
+// Is this the construction of an Option's or a Result's variant that has a type
+// parameter none of its own values names, 'None', 'Ok(v)', 'Err(e)', with no
+// type arguments written? Its enum's name if so, else NULL. A branch of an 'if'
+// or 'match' that is one takes its type from a sibling branch (ifTypeCheck).
+Name *fnCallOpenVariantFamily(INode *node) {
+    if (node->tag != FnCallTag)
+        return NULL;
+    FnCallNode *call = (FnCallNode*)node;
+    if (call->methfld != NULL || (call->flags & FlagOperator))
+        return NULL;
+    StructNode *variant = fnCallVariantNamed(call->objfn);
+    if (variant == NULL || variant->genericinfo == NULL || !genericVariantParmUnnamed(variant))
+        return NULL;
+    StructNode *base = fnCallVariantEnum(variant);
+    if (base == NULL || (base->namesym != optionName && base->namesym != resultName))
+        return NULL;
+    return base->namesym;
 }
 
 // A method called through an empty variant's name, 'Lamp.Red.get()', 'Red.get()' after
