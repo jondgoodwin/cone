@@ -1,0 +1,214 @@
+// A LOCK BORROW'S LOCK IS FREE WHILE ITS BEHAVIOUR AWAITS. An Asker and a
+// Taker share one 'Arc[Mutex, Count]'. The Asker takes the lock, adds 1, and
+// awaits a message to the Taker, whose method takes the same lock before it
+// replies. So the order is forced by the messages, not timed: the reply that
+// ends the Asker's pause exists only once the Taker has had the lock. A lock
+// held across the pause would leave the Taker's worker asleep on it for ever,
+// and the timeout stands for that hang.
+//
+// One phase for each place the lock is given back before the pause: the end
+// of an inner block; the borrow's last use, with no block; an 'if' arm that
+// ends first; the start of an 'if' arm that never uses the borrow; each pass
+// of a loop; a global's lock; and, given back by the 'await' itself, a local's
+// borrow and a temporary borrow last used in the awaiting statement. Each
+// phase checks what the Taker saw and what the Asker reads afterwards, so a
+// lost update shows too.
+
+mod awaitlockfree;
+
+import testing use *;
+import actors;
+import sync use Arc, Mutex;
+
+struct Count {pub n: u64;}
+
+let shared: Arc[Mutex, Count];
+let seen: Atomic[u64];     // the sum of the Taker's replies, as the Asker got them
+let after: Atomic[u64];    // the count the Asker reads when it is done
+let done_: Atomic[u64];    // behaviours that reached their end
+
+fn @initpure init() {
+  shared = Arc[Mutex, Count](0u64);
+  seen = Atomic[u64].of(0u64);
+  after = Atomic[u64].of(0u64);
+  done_ = Atomic[u64].of(0u64);
+}
+
+// Takes the lock, adds 1, and answers what the count then is, plus 100 times
+// what it was sent
+actor Taker {
+  count: Arc[Mutex, Count];
+
+  pub async fn take(self, sent: u64) u64 {
+    let g = &mut *count;
+    g.n += 1u64;
+    g.n + sent * 100u64
+  }
+
+  pub async fn takeShared(self) u64 {
+    let g = &mut *shared;
+    g.n += 1u64;
+    g.n
+  }
+}
+
+actor Asker {
+  count: Arc[Mutex, Count];
+  other: Taker;
+
+  fn finish(self, got: u64, left: u64) {
+    seen.add(got);
+    after.add(left);
+    done_.add(1u64);
+  }
+
+  pub async fn inBlock(self) {
+    {
+      let g = &mut *count;
+      g.n += 1u64;
+    }
+    let s = await other.take(0u64);
+    finish(s, (&*count).n);
+  }
+
+  pub async fn lastUse(self) {
+    let g = &mut *count;
+    g.n += 1u64;
+    let s = await other.take(0u64);
+    finish(s, (&*count).n);
+  }
+
+  pub async fn inArm(self, write: bool) {
+    if write {
+      let g = &mut *count;
+      g.n += 1u64;
+    }
+    let s = await other.take(0u64);
+    finish(s, (&*count).n);
+  }
+
+  // The borrow is made before the 'if': where the arm taken uses it, the lock
+  // goes back after that use; where it does not, as the other arm begins
+  pub async fn oneArmUses(self, write: bool) {
+    let g = &mut *count;
+    if write {
+      g.n += 1u64;
+    }
+    let s = await other.take(0u64);
+    finish(s, (&*count).n);
+  }
+
+  pub async fn loops(self, passes: u64) {
+    var i = 0u64;
+    var sum = 0u64;
+    while i < passes {
+      let g = &mut *count;
+      g.n += 1u64;
+      sum = sum + await other.take(0u64);
+      i = i + 1u64;
+    }
+    finish(sum, (&*count).n);
+  }
+
+  pub async fn global(self) {
+    let g = &mut *shared;
+    g.n += 1u64;
+    let s = await other.takeShared();
+    finish(s, (&*shared).n);
+  }
+
+  // The local borrow's last use is in the awaiting statement itself
+  pub async fn localAtSeam(self) {
+    let g = &mut *count;
+    g.n += 1u64;
+    let s = await other.take(g.n);
+    finish(s, (&*count).n);
+  }
+
+  // A temporary borrow in the awaiting statement
+  pub async fn tempAtSeam(self) {
+    (&mut *count).n += 1u64;
+    let s = await other.take((&*count).n);
+    finish(s, (&*count).n);
+  }
+}
+
+// What one phase left: every behaviour ended, what the Taker's replies added
+// up to, and the count read after the last 'await'
+fn check(got: u64, left: u64, label: &Array[u8]) {
+  actors.waitUntilIdle();
+  expectUInt(done_.load(), 1u64, label);
+  expectUInt(seen.load(), got, label);
+  expectUInt(after.load(), left, label);
+  done_.store(0u64);
+  seen.store(0u64);
+  after.store(0u64);
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  {
+    let c = Arc[Mutex, Count](0u64);
+    let a = Asker(c, Taker(c));
+    a.inBlock();
+    check(2u64, 2u64, "the lock is free after an inner block");
+  }
+  {
+    let c = Arc[Mutex, Count](0u64);
+    let a = Asker(c, Taker(c));
+    a.lastUse();
+    check(2u64, 2u64, "the lock is free after the borrow's last use");
+  }
+  {
+    let c = Arc[Mutex, Count](0u64);
+    let a = Asker(c, Taker(c));
+    a.inArm(true);
+    check(2u64, 2u64, "an 'if' arm that borrows, taken");
+  }
+  {
+    let c = Arc[Mutex, Count](0u64);
+    let a = Asker(c, Taker(c));
+    a.inArm(false);
+    check(1u64, 1u64, "an 'if' arm that borrows, not taken");
+  }
+  {
+    let c = Arc[Mutex, Count](0u64);
+    let a = Asker(c, Taker(c));
+    a.oneArmUses(true);
+    check(2u64, 2u64, "a borrow used in the arm taken");
+  }
+  {
+    let c = Arc[Mutex, Count](0u64);
+    let a = Asker(c, Taker(c));
+    a.oneArmUses(false);
+    check(1u64, 1u64, "a borrow the path taken never uses");
+  }
+  {
+    let c = Arc[Mutex, Count](0u64);
+    let a = Asker(c, Taker(c));
+    a.loops(100u64);
+    // Pass i of 100 leaves the count at 2i: the replies sum to 2 + 4 + ... + 200
+    check(10100u64, 200u64, "a borrow and an 'await' on each of 100 passes");
+  }
+  {
+    let a = Asker(Arc[Mutex, Count](0u64), Taker(Arc[Mutex, Count](0u64)));
+    a.global();
+    check(2u64, 2u64, "a global's lock is free");
+  }
+  {
+    let c = Arc[Mutex, Count](0u64);
+    let a = Asker(c, Taker(c));
+    a.localAtSeam();
+    // Sent 1; the Taker's count is then 2
+    check(102u64, 2u64, "the 'await' gives back a local's lock");
+  }
+  {
+    let c = Arc[Mutex, Count](0u64);
+    let a = Asker(c, Taker(c));
+    a.tempAtSeam();
+    check(102u64, 2u64, "the 'await' gives back a temporary's lock");
+  }
+  finalAll();
+  done()
+}
