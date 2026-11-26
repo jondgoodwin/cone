@@ -1,0 +1,558 @@
+// The stages on the stream core (piecestages.cone):
+//
+//   A. a socket, an inflate, a sha256 and a file: the file holds exactly what was compressed and the digest is
+//      its digest
+//   B. rule 5, a stage that takes one input at a time: a producer that runs ahead feeds a TransformPass in small
+//      pieces while its output waits on a slow receiver; every byte comes out, in order
+//   C. cancel: each stage handles a piece of a cancelled group: it answers Stop, ends what follows with
+//      Failed("streams: cancelled"), once; the hash stage's digest sink is answered with an error, the file end
+//      reports it, SocketFrom ends without connecting a stream
+//   D. a corrupt stream: the receiver gets one end carrying the inflater's error, the producer a Stop
+//
+// Mutant, run as 'congo test --no-cache -D NAME':
+//   MUT_NO_TURNS   TransformPass lets a second piece enter while the first is parked: B fails
+
+mod piecestages;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration;
+import thread;
+import actors;
+import aio use Socket;
+import iocore use SocketAddr, IoError, Access, CancelGroup;
+import path use Path;
+import fs;
+import streams use *;
+import stages use *;
+import deflate;
+import cryptohash;
+
+fn textOf(e: &AnyError) String {
+  var text = String();
+  {
+    var w = text.textOut();
+    e.report(&uni w);
+  }
+  text
+}
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) { panic("socketOf: the operation failed"); }
+  }
+  s
+}
+
+actor Server {
+  gz: List[u8];
+
+  pub fn init(self: &new, gz: List[u8]) { *self = Self(gz: gz); }
+
+  pub async fn serve(self, port: OneshotSender[u16]) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    var p = port;
+    match addr {
+      case let Ok(a) { p.send(a.port()); }
+      case is Err { p.send(0u16); return; }
+    }
+    let conn = socketOf(await listener.accept());
+    var at = 0usize;
+    var more = true;
+    while more && at < gz.len() {
+      let n = if gz.len() - at < 40000usize {gz.len() - at} else {40000usize};
+      var buf = IoBuf(n);
+      buf.append(&gz.view()[at ..< at + n]);
+      at = at + n;
+      let sent = await conn.write(buf);
+      match sent {
+        case is Err { more = false; }
+        else {}
+      }
+    }
+  }
+}
+
+pub struct Digested is Sendable {
+  pub ok: u64;
+  pub err: u64;
+  pub right: u64;
+  pub text: String;
+}
+
+pub actor Checker is DigestSink[Array[u8, 32]] {
+  want: List[u8];
+  ok: u64;
+  err: u64;
+  right: u64;
+  text: String;
+
+  pub fn init(self: &new, want: List[u8]) {
+    *self = Self(want: want, ok: 0u64, err: 0u64, right: 0u64, text: String());
+  }
+
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {
+    match r {
+      case let Ok(d) {
+        ok = ok + 1u64;
+        var same = want.len() == 32usize;
+        var i = 0usize;
+        while same && i < 32usize {
+          if d[i] != want[i] { same = false; }
+          i = i + 1usize;
+        }
+        if same { right = right + 1u64; }
+      }
+      case let Err(e) { err = err + 1u64; text = textOf(&e); }
+    }
+  }
+
+  pub async fn report(self, to: OneshotSender[Digested]) {
+    var t = to;
+    t.send(Digested(ok, err, right, String.from(text.view())));
+  }
+}
+
+fn digestedOf(c: Checker) Digested {
+  var tx: OneshotSender[Digested];
+  var rx: OneshotReceiver[Digested];
+  tx, rx = Oneshot[Digested].make();
+  c.report(tx);
+  rx.recv() || Digested(9u64, 9u64, 9u64, String())
+}
+
+pub struct Got is Sendable {
+  pub bytes: u64;
+  pub wrong: u64;          // bytes that differ from the corpus
+  pub ends: u64;
+  pub endKind: u32;
+  pub endText: String;
+}
+
+// Collects what reaches it and compares it with the corpus, answering each piece after a while
+pub actor Collect is PieceSink[IoBuf] {
+  want: List[u8];
+  delay: i64;
+  bytes: u64;
+  wrong: u64;
+  ends: u64;
+  endKind: u32;
+  endText: String;
+
+  pub fn init(self: &new, want: List[u8], delay: i64) {
+    *self = Self(want: want, delay: delay, bytes: 0u64, wrong: 0u64, ends: 0u64, endKind: 0u32, endText: String());
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    var at = usize.from(bytes);
+    bytes = bytes + u64.from(c.len());
+    var i = 0usize;
+    let v = c.view();
+    while i < c.len() {
+      if at >= want.len() || v[i] != want[at] { wrong = wrong + 1u64; }
+      at = at + 1usize;
+      i = i + 1usize;
+    }
+    if delay > 0i64 { _ = await aio.sleep(Duration.fromMillis(delay)); }
+    var b = c;
+    b.clear();
+    MoreWith[IoBuf](b)
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    ends = ends + 1u64;
+    match how {
+      case is Finished { endKind = 1u32; }
+      case let Failed(e) { endKind = 2u32; endText = textOf(&e); }
+    }
+  }
+
+  pub async fn report(self, to: OneshotSender[Got]) {
+    var t = to;
+    t.send(Got(bytes, wrong, ends, endKind, String.from(endText.view())));
+  }
+}
+
+fn gotOf(c: Collect) Got {
+  var tx: OneshotSender[Got];
+  var rx: OneshotReceiver[Got];
+  tx, rx = Oneshot[Got].make();
+  c.report(tx);
+  rx.recv() || Got(0u64, 0u64, 0u64, 0u32, String())
+}
+
+// What reached it once its end has come, waiting for it (a sink that sleeps leaves the runtime quiet meanwhile)
+fn ended(c: Collect) Got {
+  var tries = 0u32;
+  var got = gotOf(c);
+  while got.ends == 0u64 && tries < 2000u32 {
+    thread.sleep(Duration.fromMillis(5i64));
+    got = gotOf(c);
+    tries = tries + 1u32;
+  }
+  actors.waitQuiet();
+  got
+}
+
+// Feeds 'data' in pieces of 'size' bytes, running ahead as its window lets it
+pub actor Feeder {
+  pub async fn run(self, to: StreamTo[IoBuf], data: List[u8], size: usize) {
+    var dest = to;
+    var w = PieceWindow[IoBuf].bytes(dest.budget, ChunkPool.make(1048576usize));
+    var at = 0usize;
+    var stop = None[Ending];
+    while at < data.len() && stop is None {
+      match fresh(&mut w, size) {
+        case let Some(b) {
+          var x = b;
+          let n = if data.len() - at < size {data.len() - at} else {size};
+          x.append(&data.view()[at ..< at + n]);
+          at = at + n;
+          let cost = x.capacity();
+          w.sent(dest.sink.piece(dest.tag, x), cost);
+        }
+        case is None {
+          match w.oldest() {
+            case let Some(reply) {
+              let a = await reply;
+              match w.answered(a) {
+                case let Some(why) { stop = Some[Ending](why); }
+                case is None {}
+              }
+            }
+            case is None {}
+          }
+        }
+      }
+    }
+    var more = true;
+    while more {
+      match w.oldest() {
+        case let Some(reply) {
+          let a = await reply;
+          match w.answered(a) {
+            case let Some(why) { if stop is None { stop = Some[Ending](why); } }
+            case is None {}
+          }
+        }
+        case is None { more = false; }
+      }
+    }
+    var how = Ending.Finished;
+    var s = None[Ending];
+    s <-> stop;
+    match s {
+      case let Some(x) { how = x; }
+      case is None {}
+    }
+    dest.end(how);
+  }
+}
+
+// One piece to 'sink', to be sent in whatever group the message that asks for it carries
+pub actor Poke {
+  sink: PieceSink[IoBuf];
+  stopped: u64;
+  more: u64;
+  why: String;
+
+  pub fn init(self: &new, sink: PieceSink[IoBuf]) {
+    *self = Self(sink: sink, stopped: 0u64, more: 0u64, why: String());
+  }
+
+  pub async fn go(self) {
+    // 100 bytes that are no gzip stream
+    var junk = List[u8]();
+    while junk.len() < 100usize { junk.push('U'); }
+    var b = IoBuf(100usize);
+    b.append(junk.view());
+    let a = await sink.piece(7u64, b);
+    match a {
+      case let Stop(w) {
+        stopped = stopped + 1u64;
+        match &w {
+          case let &Failed(e) { why = textOf(e); }
+          case is Finished {}
+        }
+        sink.end(7u64, w);
+      }
+      else {
+        more = more + 1u64;
+        sink.end(7u64, Ending.Finished);
+      }
+    }
+  }
+
+  pub async fn report(self, to: OneshotSender[(u64, u64, String)]) {
+    var t = to;
+    t.send((stopped, more, String.from(why.view())));
+  }
+}
+
+fn poked(p: Poke) (u64, u64, String) {
+  var tx: OneshotSender[(u64, u64, String)];
+  var rx: OneshotReceiver[(u64, u64, String)];
+  tx, rx = Oneshot[(u64, u64, String)].make();
+  p.report(tx);
+  rx.recv() || (9u64, 9u64, String())
+}
+
+// A group already cancelled: 'p.go()' is sent in it
+fn pokeCancelled(p: Poke) {
+  let g = CancelGroup.make();
+  g.cancel();
+  actors.withGroup(&g, fn() [p] { p.go(); });
+}
+
+// An old sink for the bridge
+pub actor Old is ChunkSink {
+  up: Option[ChunkSource];
+  ends: u64;
+  endText: String;
+
+  pub fn init(self: &new) { *self = Self(up: None[ChunkSource], ends: 0u64, endText: String()); }
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+  pub async fn accept(self, c: IoBuf) {
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+  pub async fn end(self, how: Ending) {
+    ends = ends + 1u64;
+    up = None[ChunkSource];
+    match how {
+      case let Failed(e) { endText = textOf(&e); }
+      case is Finished {}
+    }
+  }
+  pub async fn report(self, to: OneshotSender[(u64, String)]) {
+    var t = to;
+    t.send((ends, String.from(endText.view())));
+  }
+}
+
+actor Wire {
+  pub async fn run(self, port: u16, name: String, check: Checker, pool: ChunkPool,
+      done: OneshotSender[Result[u64, AnyError]]) {
+    let opened = await aio.openFile(&Path.from(name.view()), Access.Create);
+    match opened {
+      case let Ok(f) {
+        let sink = FileTo(f, done);
+        let hash = HashPass[cryptohash.Sha256](StreamTo[IoBuf].at(sink, 1u64), cryptohash.Sha256.make(), check);
+        let inf = TransformPass[deflate.Inflater](StreamTo[IoBuf].at(hash, 1u64),
+          deflate.Inflater.make(deflate.Format.Gzip));
+        SocketFrom(pool).run(SocketAddr.localhost(port), StreamTo[IoBuf].at(inf, 1u64));
+      }
+      case let Err(e) { var d = done; d.send(Err[u64, AnyError](AnyError.from(e))); }
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  let size = 3000000usize;
+
+  // A. the pipeline
+  {
+    let data = corpus(size);
+    let gz = deflate.gzipCompress(data.view(), 6);
+    let digest = cryptohash.sha256(data.view());
+    var want = List[u8]();
+    want.appendSlice(&digest);
+    let name = "piecestages.tmp";
+    var ptx: OneshotSender[u16];
+    var prx: OneshotReceiver[u16];
+    ptx, prx = Oneshot[u16].make();
+    var ftx: OneshotSender[Result[u64, AnyError]];
+    var frx: OneshotReceiver[Result[u64, AnyError]];
+    ftx, frx = Oneshot[Result[u64, AnyError]].make();
+    let server = Server(gz);
+    server.serve(ptx);
+    let port = prx.recv() || 0u16;
+    let check = Checker(want);
+    let w = Wire();
+    let pool = ChunkPool.make(262144usize);
+    w.run(port, String.from(name), check, pool.clone(), ftx);
+    var written = 0u64;
+    match frx.recv() {
+      case let Some(r) {
+        match r {
+          case let Ok(n) { written = n; }
+          case is Err {}
+        }
+      }
+      case is None {}
+    }
+    expectUInt(written, u64.from(size), "A: the file end wrote every inflated byte");
+    actors.waitQuiet();
+    let d = digestedOf(check);
+    expectUInt(d.ok, 1u64, "A: one digest");
+    expectUInt(d.right, 1u64, "A: the data's");
+    var same = false;
+    match fs.readFile(&Path.from(name)) {
+      case let Ok(text) {
+        let bytes = text.view();
+        same = bytes.len == data.len();
+        var i = 0usize;
+        while same && i < data.len() {
+          if bytes[i] != data[i] { same = false; }
+          i = i + 1usize;
+        }
+      }
+      case is Err {}
+    }
+    expectBool(same, true, "A: the file holds the original, in order");
+    expectBool(pool.lends() > 0u64, true, "A: the socket end took its buffers from the pipeline's pool");
+    expectUInt(u64.from(pool.lent()), 0u64, "A: and every byte came home, the last read's too");
+    _ = fs.removeFile(&Path.from(name));
+  }
+
+  // B. a stage that takes one input at a time
+  {
+    let data = corpus(600000usize);
+    let gz = deflate.gzipCompress(data.view(), 6);
+    let sink = Collect(corpus(600000usize), 2i64);
+    // a budget of one byte: only the floor's two output pieces stand, so the stage parks inside an input
+    let inf = TransformPass[deflate.Inflater](StreamTo[IoBuf].at(sink, 1u64, 1usize),
+      deflate.Inflater.make(deflate.Format.Gzip));
+    let f = Feeder();
+    f.run(StreamTo[IoBuf].at(inf, 1u64), gz, 4096usize);
+    let o = ended(sink);
+    expectUInt(o.bytes, 600000u64, "B: every byte came out");
+    expectUInt(o.wrong, 0u64, "B: each in its place");
+    expectUInt(o.ends, 1u64, "B: one end");
+    expectUInt(u64.from(o.endKind), 1u64, "B: Finished");
+  }
+
+  // C. cancel, each stage
+  {
+    let sink = Collect(corpus(0usize), 0i64);
+    let inf = TransformPass[deflate.Inflater](StreamTo[IoBuf].at(sink, 1u64),
+      deflate.Inflater.make(deflate.Format.Gzip));
+    let p = Poke(inf);
+    pokeCancelled(p);
+    actors.waitQuiet();
+    let a = poked(p);
+    let o = gotOf(sink);
+    expectUInt(a.0, 1u64, "C: TransformPass answers Stop");
+    expectStr(a.2.view(), "streams: cancelled", "C: with the cancel's reason");
+    expectUInt(o.ends, 1u64, "C: one end after it");
+    expectStr(o.endText.view(), "streams: cancelled", "C: saying cancelled");
+  }
+  {
+    let sink = Collect(corpus(0usize), 0i64);
+    let check = Checker(corpus(0usize));
+    let hash = HashPass[cryptohash.Sha256](StreamTo[IoBuf].at(sink, 1u64), cryptohash.Sha256.make(), check);
+    let p = Poke(hash);
+    pokeCancelled(p);
+    actors.waitQuiet();
+    let a = poked(p);
+    let o = gotOf(sink);
+    let d = digestedOf(check);
+    expectUInt(a.0, 1u64, "C: HashPass answers Stop");
+    expectUInt(o.ends, 1u64, "C: one end after it");
+    expectStr(o.endText.view(), "streams: cancelled", "C: saying cancelled");
+    expectUInt(d.err, 1u64, "C: the digest sink got one error");
+    expectUInt(d.ok, 0u64, "C: and no digest");
+  }
+  {
+    var ftx: OneshotSender[Result[u64, AnyError]];
+    var frx: OneshotReceiver[Result[u64, AnyError]];
+    ftx, frx = Oneshot[Result[u64, AnyError]].make();
+    let sink = FileTo(aio.File.none(), ftx);
+    let p = Poke(sink);
+    pokeCancelled(p);
+    var failed = String();
+    match frx.recv() {
+      case let Some(r) {
+        match r {
+          case let Err(e) { failed = textOf(&e); }
+          case is Ok {}
+        }
+      }
+      case is None {}
+    }
+    expectStr(failed.view(), "streams: cancelled", "C: FileTo reports the cancel");
+    actors.waitQuiet();
+    let a = poked(p);
+    expectUInt(a.0, 1u64, "C: and answered Stop");
+  }
+  {
+    let sink = Collect(corpus(0usize), 0i64);
+    let src = SocketFrom();
+    let w = Cancelled();
+    w.run(src, sink);
+    let o = ended(sink);
+    expectUInt(o.ends, 1u64, "C: SocketFrom ends its stream once");
+    expectUInt(u64.from(o.endKind), 2u64, "C: Failed");
+    expectUInt(o.bytes, 0u64, "C: with nothing sent");
+  }
+  {
+    let old = Old();
+    let bridge = PieceBridge(old);
+    let p = Poke(bridge);
+    pokeCancelled(p);
+    actors.waitQuiet();
+    let a = poked(p);
+    var tx: OneshotSender[(u64, String)];
+    var rx: OneshotReceiver[(u64, String)];
+    tx, rx = Oneshot[(u64, String)].make();
+    old.report(tx);
+    let o = rx.recv() || (9u64, String());
+    expectUInt(a.0, 1u64, "C: PieceBridge answers Stop");
+    expectUInt(o.0, 1u64, "C: the old sink got one end");
+    expectStr(o.1.view(), "streams: cancelled", "C: saying cancelled");
+  }
+
+  // D. a corrupt stream
+  {
+    let sink = Collect(corpus(0usize), 0i64);
+    let inf = TransformPass[deflate.Inflater](StreamTo[IoBuf].at(sink, 1u64),
+      deflate.Inflater.make(deflate.Format.Gzip));
+    let p = Poke(inf);
+    p.go();
+    actors.waitQuiet();
+    let a = poked(p);
+    let o = gotOf(sink);
+    expectUInt(a.0, 1u64, "D: bytes that are no gzip stream are answered Stop");
+    expectUInt(o.ends, 1u64, "D: one end");
+    expectUInt(u64.from(o.endKind), 2u64, "D: Failed");
+  }
+
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}
+
+// Starts a SocketFrom in a group already cancelled
+actor Cancelled {
+  pub async fn run(self, src: SocketFrom, sink: Collect) {
+    let g = CancelGroup.make();
+    g.cancel();
+    let s = sink;
+    actors.withGroup(&g, fn() [src, s] {
+      src.run(SocketAddr.localhost(1u16), StreamTo[IoBuf].at(s, 1u64));
+    });
+  }
+}

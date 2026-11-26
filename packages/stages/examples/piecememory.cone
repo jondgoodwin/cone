@@ -1,0 +1,348 @@
+// What a hundred concurrent streams hold, today's stages and the stream core at their defaults, one program so both
+// run on the same build (streammemory.cone's pattern: N pipelines made and left idle, then all started at once and
+// run to their ends; private bytes before, idle, at the most while they ran, and after).
+//
+//   congo run --release packages/stages/examples/piecememory.cone -- <old|new> <hash|deflate> [streams] [poolMiB]
+//
+//   hash     source -> hash -> hash -> sink
+//   deflate  source -> Deflater stage -> hash -> sink
+//   poolMiB  0 (the default): each link has a pool of its own, as big as its window; otherwise every link of every
+//            stream draws on one pool of that many MiB, whose peak, refusals and floor lends are printed
+//
+// Each stream moves 2 MiB in 64 KiB pieces. iobuf's bound is left at its default (64 MiB): a run that
+// passes it panics.
+
+mod piecememory;
+
+import stdio use *;
+import libc;
+import thread;
+import collections use *;
+import iobuf use IoBuf;
+import time use Instant, Duration;
+import actors;
+import streams use *;
+import stages use *;
+import deflate;
+import cryptohash;
+
+const chunkBytes = 65536usize;
+const chunksPer = 32u64;
+
+extern {
+  fn @c(system) GetCurrentProcess() usize;
+  fn @c(system) K32GetProcessMemoryInfo(process: usize, counters: *u8, cb: u32) i32;
+}
+
+// The bytes the process has committed for itself: Windows' PrivateUsage (PROCESS_MEMORY_COUNTERS_EX), Linux's
+// data size
+fn privateBytes() u64 {
+  #if #os == .windows {
+    var c = Array[usize, 10]() <- fill 0usize;
+    let p = &mut c as *u8;
+    *(p as *u32) = 80u32;
+    K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
+    u64.from(c[9usize])
+  } #else {
+    dataBytes()
+  }
+}
+
+fn dataBytes() u64 {
+  let f = libc.fopen("/proc/self/statm", "rb");
+  if f == null {return 0u64;}
+  var buf = Array[u8, 256]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  let n = libc.fread(bp, 1usize, 255usize, f);
+  libc.fclose(f);
+  var field = 0u32;
+  var value = 0u64;
+  var k = 0usize;
+  while k < n {
+    let c = buf[k];
+    if c >= '0' && c <= '9' {
+      if field == 5u32 {value = value * 10u64 + u64.from(c - '0');}
+    } else {
+      field = field + 1u32;
+    }
+    k = k + 1usize;
+  }
+  value * 4096u64
+}
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+struct Totals {
+  pub bytes: Atomic[u64];
+  pub ended: Atomic[u64];
+}
+
+let totals: Totals;
+
+fn @initpure init() {
+  totals = Totals(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+// ---- today's ----
+
+actor Source is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  data: List[u8];
+  left: u64;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, data: List[u8], pool: ChunkPool) {
+    *self = Self(down: down, link: ChunkWindow.make(4usize * chunkBytes, pool), data: data, left: chunksPer,
+      over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {}
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if left == 0u64 {
+        over = true;
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        match link.take(chunkBytes) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            buf.append(data.view());
+            left = left - 1u64;
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
+actor Sink is ChunkSink {
+  up: Option[ChunkSource];
+
+  pub fn init(self: &new) { *self = Self(up: None[ChunkSource]); }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    totals.bytes.add(u64.from(c.len()));
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    up = None[ChunkSource];
+    totals.ended.add(1u64);
+  }
+}
+
+actor Quiet is DigestSink[Array[u8, 32]] {
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {}
+}
+
+// ---- the stream core's ----
+
+actor Gen {
+  to: StreamTo[IoBuf];
+  data: List[u8];
+  pool: ChunkPool;
+
+  pub fn init(self: &new, to: StreamTo[IoBuf], data: List[u8], pool: ChunkPool) {
+    *self = Self(to: to, data: data, pool: pool);
+  }
+
+  pub async fn start(self) {
+    var w = PieceWindow[IoBuf].bytes(to.budget, pool.clone());
+    var i = 0u64;
+    var stopped = false;
+    while i < chunksPer && !stopped {
+      match fresh(&mut w, chunkBytes) {
+        case let Some(b) {
+          var buf = b;
+          buf.append(data.view());
+          let cost = buf.capacity();
+          w.sent(to.sink.piece(to.tag, buf), cost);
+          i = i + 1u64;
+        }
+        case is None {
+          match w.oldest() {
+            case let Some(reply) {
+              let a = await reply;
+              if w.answered(a) is Some { stopped = true; }
+            }
+            case is None {}
+          }
+        }
+      }
+    }
+    var more = true;
+    while more {
+      match w.oldest() {
+        case let Some(reply) {
+          let a = await reply;
+          _ = w.answered(a);
+        }
+        case is None { more = false; }
+      }
+    }
+    to.end(Ending.Finished);
+  }
+}
+
+actor CountTo is PieceSink[IoBuf] {
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    totals.bytes.add(u64.from(c.len()));
+    var b = c;
+    b.clear();
+    MoreWith[IoBuf](b)
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) { totals.ended.add(1u64); }
+}
+
+fn kib(b: u64) u64 { b / 1024u64 }
+
+fn say(what: &str, v: u64) {
+  printStr(what); printStr(" "); printUInt(kib(v)); printStr(" KiB\n");
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  var isNew = false;
+  var codec = false;
+  var n = 100u32;
+  var poolMiB = 0u32;
+  if argc > 1i32 { isNew = *(*(argv + 1usize)) == 'n'; }
+  if argc > 2i32 { codec = *(*(argv + 2usize)) == 'd'; }
+  if argc > 3i32 { n = digits(*(argv + 3usize)); }
+  if argc > 4i32 { poolMiB = digits(*(argv + 4usize)); }
+  actors.configure(actors.Options(workers: 4u32));
+  let shared = ChunkPool.make(if poolMiB == 0u32 {linkWindow} else {usize.from(poolMiB) * 1048576usize});
+  // start the workers and the buffer pool before the first reading
+  {
+    let warm = Sink();
+    let src = Source(warm, corpus(chunkBytes), ChunkPool.make(linkWindow));
+    src.start();
+  }
+  actors.waitQuiet();
+  totals.bytes.store(0u64);
+  totals.ended.store(0u64);
+  let before = privateBytes();
+
+  var sources = List[Source]();
+  var gens = List[Gen]();
+  var k = 0u32;
+  while k < n {
+    let first = if poolMiB == 0u32 {ChunkPool.make(linkWindow)} else {shared.clone()};
+    if isNew {
+      let sink = CountTo();
+      if codec {
+        let h = HashPass[cryptohash.Sha256](StreamTo[IoBuf].at(sink, 1u64), cryptohash.Sha256.make(), Quiet());
+        let defTo = StreamTo[IoBuf].at(h, 1u64);
+        let deflater = deflate.Deflater.make(deflate.Format.Zlib, 1i32);
+        if poolMiB == 0u32 {
+          let def = TransformPass[deflate.Deflater](defTo, deflater);
+          gens.push(Gen(StreamTo[IoBuf].at(def, 1u64), corpus(chunkBytes), first));
+        } else {
+          let def = TransformPass[deflate.Deflater](defTo, deflater, shared.clone());
+          gens.push(Gen(StreamTo[IoBuf].at(def, 1u64), corpus(chunkBytes), first));
+        }
+      } else {
+        let h2 = HashPass[cryptohash.Sha256](StreamTo[IoBuf].at(sink, 1u64), cryptohash.Sha256.make(), Quiet());
+        let h1 = HashPass[cryptohash.Sha256](StreamTo[IoBuf].at(h2, 1u64), cryptohash.Sha256.make(), Quiet());
+        gens.push(Gen(StreamTo[IoBuf].at(h1, 1u64), corpus(chunkBytes), first));
+      }
+    } else {
+      let sink = Sink();
+      if codec {
+        let hash = HashStage[cryptohash.Sha256](sink, cryptohash.Sha256.make(), Quiet());
+        let deflater = deflate.Deflater.make(deflate.Format.Zlib, 1i32);
+        if poolMiB == 0u32 {
+          let def = TransformStage[deflate.Deflater](hash, deflater);
+          sources.push(Source(def, corpus(chunkBytes), first));
+        } else {
+          let def = TransformStage[deflate.Deflater](hash, deflater, shared.clone(), linkWindow);
+          sources.push(Source(def, corpus(chunkBytes), first));
+        }
+      } else {
+        let h2 = HashStage[cryptohash.Sha256](sink, cryptohash.Sha256.make(), Quiet());
+        let h1 = HashStage[cryptohash.Sha256](h2, cryptohash.Sha256.make(), Quiet());
+        sources.push(Source(h1, corpus(chunkBytes), first));
+      }
+    }
+    k += 1u32;
+  }
+  actors.waitQuiet();
+  let idle = privateBytes();
+
+  var peak = idle;
+  let t0 = Instant.now();
+  k = 0u32;
+  while k < n {
+    if isNew { gens[usize.from(k)].start(); } else { sources[usize.from(k)].start(); }
+    k += 1u32;
+  }
+  while totals.ended.load() < u64.from(n) {
+    let p = privateBytes();
+    if p > peak { peak = p; }
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  let ms = u64.from(t0.elapsed().nanos()) / 1000000u64;
+  actors.waitQuiet();
+  let after = privateBytes();
+  let held = iobuf.stats().heldBytes;
+  printStr(if isNew {"new"} else {"old"}); printStr(" ");
+  printStr(if codec {"deflate"} else {"hash"}); printStr(" streams "); printUInt(u64.from(n));
+  printStr(" pool "); printUInt(u64.from(poolMiB));
+  printStr(", "); printUInt(totals.bytes.load() / 1048576u64); printStr(" MiB moved in "); printUInt(ms); printStr(" ms\n");
+  say("private bytes before", before);
+  say("  with the pipelines made, idle", idle);
+  say("  at the most while they ran", peak);
+  say("  when they were over", after);
+  say("buffer pool holds", u64.from(held));
+  printStr("per stream, idle "); printUInt((idle - before) / u64.from(n)); printStr(" B, busy ");
+  printUInt((peak - before) / u64.from(n)); printStr(" B\n");
+  if poolMiB != 0u32 {
+    printStr("shared pool: peak "); printUInt(kib(u64.from(shared.peak())));
+    printStr(" KiB, refused "); printUInt(shared.refused());
+    printStr(", floored "); printUInt(shared.floored()); printStr("\n");
+  }
+  finalAll();
+  0i32
+}

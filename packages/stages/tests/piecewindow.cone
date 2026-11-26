@@ -1,0 +1,275 @@
+// The producer's run-ahead (piecewindow.cone): what a PieceWindow lets stand unanswered, and the pool's cap.
+//
+//   A. 64 KiB pieces at the default budget (256 KiB): four unanswered, never more bytes than the budget
+//   B. 300 KiB pieces (a 1 MiB buffer each): the floor of two keeps two unanswered
+//   C. a receiver's budget of 512 KiB: eight 64 KiB pieces
+//   D. values, the default: two unanswered; with a budget of 5, five
+//   E. a pool capped at four 64 KiB buffers under a 1 MiB budget: the producer waits at the cap (refused > 0),
+//      holds four, never past the cap, and every piece arrives as buffers come home
+//   F. the same pool filled by another holder: the floor lends two past the cap and the producer waits after
+//      them; every piece arrives; when the other lets go, four again
+//
+// The counts checked are the producer's own (its window's peaks), which do not depend on timing.
+// Mutants, run as 'congo test --no-cache -D NAME':
+//   MUT_NO_FLOOR   no floor of two: B fails (one unanswered)
+//   MUT_NO_CAP     'fresh' ignores the pool's cap: E and F fail
+
+mod piecewindow;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration;
+import actors;
+import aio;
+import stages use *;
+
+pub struct Ran is Sendable {
+  pub sent: u64;
+  pub peak: u64;           // the most pieces unanswered
+  pub peakCost: u64;       // the most cost unanswered
+  pub stalls: u64;
+}
+
+pub struct Took is Sendable {
+  pub pieces: u64;
+  pub bytes: u64;
+  pub ends: u64;
+}
+
+// Answers each piece after a while, so that the producer runs as far as its window lets it
+pub actor Slow is PieceSink[IoBuf] {
+  pieces: u64;
+  bytes: u64;
+  ends: u64;
+
+  pub fn init(self: &new) { *self = Self(pieces: 0u64, bytes: 0u64, ends: 0u64); }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    _ = await aio.sleep(Duration.fromMillis(3i64));
+    pieces = pieces + 1u64;
+    bytes = bytes + u64.from(c.len());
+    var b = c;
+    b.clear();
+    MoreWith[IoBuf](b)
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) { ends = ends + 1u64; }
+
+  pub async fn report(self, to: OneshotSender[Took]) {
+    var t = to;
+    t.send(Took(pieces, bytes, ends));
+  }
+}
+
+pub actor SlowValues is PieceSink[u64] {
+  sum: u64;
+  ends: u64;
+
+  pub fn init(self: &new) { *self = Self(sum: 0u64, ends: 0u64); }
+
+  pub async fn piece(self, tag: u64, v: u64) PieceAck[u64] {
+    _ = await aio.sleep(Duration.fromMillis(3i64));
+    sum = sum + v;
+    More[u64]
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) { ends = ends + 1u64; }
+
+  pub async fn report(self, to: OneshotSender[Took]) {
+    var t = to;
+    t.send(Took(sum, 0u64, ends));
+  }
+}
+
+// A producer of 'pieces' pieces of 'size' bytes, from a PieceWindow over 'pool'
+pub actor Maker {
+  pub async fn run(self, to: StreamTo[IoBuf], pieces: u64, size: usize, pool: ChunkPool, report: OneshotSender[Ran]) {
+    var dest = to;
+    var w = PieceWindow[IoBuf].bytes(dest.budget, pool);
+    var i = 0u64;
+    while i < pieces {
+      match fresh(&mut w, size) {
+        case let Some(b) {
+          var x = b;
+          x.setLen(size);
+          let n = x.capacity();
+          w.sent(dest.sink.piece(dest.tag, x), n);
+          i = i + 1u64;
+        }
+        case is None {
+          match w.oldest() {
+            case let Some(reply) {
+              let a = await reply;
+              _ = w.answered(a);
+            }
+            case is None {}
+          }
+        }
+      }
+    }
+    var more = true;
+    while more {
+      match w.oldest() {
+        case let Some(reply) {
+          let a = await reply;
+          _ = w.answered(a);
+        }
+        case is None { more = false; }
+      }
+    }
+    dest.end(Ending.Finished);
+    var r = report;
+    r.send(Ran(i, u64.from(w.peak()), u64.from(w.peakCost()), w.stalls()));
+  }
+}
+
+pub actor ValueMaker {
+  pub async fn run(self, to: StreamTo[u64], pieces: u64, report: OneshotSender[Ran]) {
+    var dest = to;
+    var w = PieceWindow[u64].values(dest.budget);
+    var i = 0u64;
+    while i < pieces {
+      if w.room(1usize) {
+        i = i + 1u64;
+        w.sent(dest.sink.piece(dest.tag, i), 1usize);
+      } else {
+        match w.oldest() {
+          case let Some(reply) {
+            let a = await reply;
+            _ = w.answered(a);
+          }
+          case is None {}
+        }
+      }
+    }
+    var more = true;
+    while more {
+      match w.oldest() {
+        case let Some(reply) {
+          let a = await reply;
+          _ = w.answered(a);
+        }
+        case is None { more = false; }
+      }
+    }
+    dest.end(Ending.Finished);
+    var r = report;
+    r.send(Ran(i, u64.from(w.peak()), u64.from(w.peakCost()), w.stalls()));
+  }
+}
+
+fn bytesRun(pieces: u64, size: usize, budget: usize, pool: ChunkPool) (Ran, Took) {
+  let slow = Slow();
+  var tx: OneshotSender[Ran];
+  var rx: OneshotReceiver[Ran];
+  tx, rx = Oneshot[Ran].make();
+  let m = Maker();
+  m.run(StreamTo[IoBuf].at(slow, 1u64, budget), pieces, size, pool, tx);
+  let ran = rx.recv() || Ran(0u64, 0u64, 0u64, 0u64);
+  actors.waitQuiet();
+  var ttx: OneshotSender[Took];
+  var trx: OneshotReceiver[Took];
+  ttx, trx = Oneshot[Took].make();
+  slow.report(ttx);
+  (ran, trx.recv() || Took(0u64, 0u64, 0u64))
+}
+
+fn valuesRun(pieces: u64, budget: usize) (Ran, Took) {
+  let slow = SlowValues();
+  var tx: OneshotSender[Ran];
+  var rx: OneshotReceiver[Ran];
+  tx, rx = Oneshot[Ran].make();
+  let m = ValueMaker();
+  m.run(StreamTo[u64].at(slow, 1u64, budget), pieces, tx);
+  let ran = rx.recv() || Ran(0u64, 0u64, 0u64, 0u64);
+  actors.waitQuiet();
+  var ttx: OneshotSender[Took];
+  var trx: OneshotReceiver[Took];
+  ttx, trx = Oneshot[Took].make();
+  slow.report(ttx);
+  (ran, trx.recv() || Took(0u64, 0u64, 0u64))
+}
+
+fn main() i32 {
+  initAll();
+  let big = 16777216usize;
+
+  // A
+  {
+    let r = bytesRun(20u64, 65536usize, 0usize, ChunkPool.make(big));
+    expectUInt(r.0.peak, 4u64, "A: four 64 KiB pieces unanswered at the default budget");
+    expectUInt(r.0.peakCost, 262144u64, "A: never more than the budget's bytes");
+    expectBool(r.0.stalls > 0u64, true, "A: the producer waited at its window");
+    expectUInt(r.1.pieces, 20u64, "A: all twenty arrived");
+    expectUInt(r.1.ends, 1u64, "A: with one end");
+  }
+  // B
+  {
+    let r = bytesRun(6u64, 307200usize, 0usize, ChunkPool.make(big));
+    expectUInt(r.0.peak, 2u64, "B: two large pieces unanswered, the floor");
+    expectUInt(r.0.peakCost, 2097152u64, "B: two 1 MiB buffers");
+    expectUInt(r.1.bytes, 1843200u64, "B: all of them arrived");
+  }
+  // C
+  {
+    let r = bytesRun(20u64, 65536usize, 524288usize, ChunkPool.make(big));
+    expectUInt(r.0.peak, 8u64, "C: the receiver's 512 KiB budget lets eight stand");
+    expectUInt(r.0.peakCost, 524288u64, "C: and no more bytes than that");
+  }
+  // D
+  {
+    let r = valuesRun(12u64, 0usize);
+    expectUInt(r.0.peak, 2u64, "D: values run two ahead by default");
+    expectUInt(r.1.pieces, 78u64, "D: all twelve values arrived");
+    let s = valuesRun(12u64, 5usize);
+    expectUInt(s.0.peak, 5u64, "D: a receiver's budget of five");
+  }
+  // E
+  {
+    let pool = ChunkPool.make(262144usize);
+    let r = bytesRun(20u64, 65536usize, 1048576usize, pool.clone());
+    expectUInt(r.0.peak, 4u64, "E: the pool's cap holds the producer to four");
+    expectBool(pool.refused() > 0u64, true, "E: it was refused at the cap and waited");
+    expectBool(pool.peak() <= 262144usize, true, "E: the pool never lent past its cap");
+    expectUInt(pool.floored(), 0u64, "E: nor needed the floor");
+    expectUInt(r.1.pieces, 20u64, "E: and all twenty arrived");
+    expectUInt(u64.from(pool.lent()), 0u64, "E: every byte came home to the pool");
+  }
+  // F
+  {
+    let pool = ChunkPool.make(262144usize);
+    {
+      var other = ChunkWindow.make(262144usize, pool.clone());
+      var held = List[IoBuf]();
+      var k = 0u32;
+      while k < 4u32 {
+        match other.take(65536usize) {
+          case let Some(b) { held.push(b); }
+          case is None {}
+        }
+        k = k + 1u32;
+      }
+      expectUInt(u64.from(pool.lent()), 262144u64, "F: another holds the whole cap");
+      let r = bytesRun(10u64, 65536usize, 1048576usize, pool.clone());
+      expectUInt(r.0.peak, 2u64, "F: only the floor's two stand unanswered");
+      expectBool(pool.floored() > 0u64, true, "F: lent past the cap by the floor");
+      expectBool(pool.peak() <= 393216usize, true, "F: by two buffers at most");
+      expectUInt(r.1.pieces, 10u64, "F: and every piece arrived");
+      var more = true;
+      while more {
+        match held.pop() {
+          case let Some(b) { other.give(b); }
+          case is None { more = false; }
+        }
+      }
+    }
+    let after = bytesRun(10u64, 65536usize, 1048576usize, pool.clone());
+    expectUInt(after.0.peak, 4u64, "F: when it lets go, four again");
+  }
+
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}

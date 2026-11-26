@@ -71,6 +71,16 @@
 // import streams, do not import actors.
 //
 // 'down <- chunk' is 'down.accept(chunk)': ChunkSink's accept declares '<-' as its overload name.
+//
+// THE STREAM CORE, which these stages move to one package at a time (its names are placeholders):
+//
+//   PieceAck[T], PieceSink[T], PieceSource[T], StreamTo[T], StreamFrom[T]   a piece is a call and its
+//                  answer is the way back: go on, go on and here is your buffer, or stop. The rules a
+//                  receiver keeps are in its header (piece.cone)
+//   PieceWindow[T], fresh   a producer's run-ahead, in bytes, never fewer than two pieces, its
+//                  buffers from a ChunkPool (piecewindow.cone)
+//   SocketFrom, TransformPass[T], HashPass[D], FileTo   stages on the core (piecestages.cone)
+//   ChunkBridge, PieceBridge   the two bridges, old to new and new to old (piecebridge.cone)
 
 mod stages;
 
@@ -79,7 +89,9 @@ import libc;
 import collections use AnyError, List, Deque, String;
 import actors;
 import streams use *;
-import sync use Arc, Channel, Receiver, SoloSender;
+import sync use Arc, Channel, Receiver, SoloSender, OneshotSender;
+import iocore use SocketAddr;
+import aio use Socket, File, IoLimits;
 
 // How far ahead a stream's link may run by default (its window, in bytes), and the
 // size a stage makes its chunks at most
