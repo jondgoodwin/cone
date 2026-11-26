@@ -823,6 +823,7 @@ enum ErrorCode {
     ErrorConstViaValue = 1620,  // A type's 'const' named through a value of the type, 'v.zero'. A constant belongs to the type, never to a value of it (Jon, 22 Sep: a name folds on a type, not on a field). The message gives the type form, 'Vec3.zero'
     ErrorConstPlace = 1621,     // A 'const' in a type body where it is not built: in a trait. The message says which
     ErrorFieldViaType = 1628,   // A field named through its type, 'Shade.count': a field belongs to a value of the type, so naming it through the type asks for a value nothing holds
+    ErrorTruthOutsideCondition = 1629, // A value of a type with isTrue (a number, Option, Result, a user type) where a bool is wanted outside a condition: it is tested through isTrue only in an 'if' or 'while' condition and under '!'. Elsewhere write 'x.isTrue()' (for a number 'n != 0')
     ErrorMetaFieldsType = 1590,// A '#fields(T)' that cannot be answered for the type the generic was cloned for: T is no struct (a primitive, reference, enum or trait), or a field has no written permission or region for '#f.perm' or '#f.region' to describe. Pointed at the loop, inside the generic's instance
 
     // Warnings

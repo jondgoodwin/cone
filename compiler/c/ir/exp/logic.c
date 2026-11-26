@@ -63,8 +63,9 @@ void logicNameRes(NameResState *pstate, LogicNode *node) {
     inodeNameRes(pstate, &node->rexp);
 }
 
-// The right operand of a bool's '||' or '&&' is a bool: an Option or Result converts to
-// bool in a condition and under '!' only, and is refused here ('flag && res'). Their own
+// The right operand of a bool's '||' or '&&' is a bool: no type converts to bool there
+// (iexpCoerce refuses a number or a user type with ErrorTruthOutsideCondition), and an
+// Option or Result is refused here with its own message ('flag && res'). Their own
 // '||' and '&&' are the methods of the left operand's type. Answer whether it refused.
 static int logicOptionOperand(INode *operand) {
     if (!iexpIsOptionOrResult(operand))
