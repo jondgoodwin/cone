@@ -30,7 +30,7 @@
 #endif
 
 // the Cone package's exports (all take the heap's address first)
-extern uintptr_t cnm_boot(void);
+extern uintptr_t cnm_boot(_Bool shim);
 extern _Bool cnm_owns(uintptr_t h, uintptr_t p);
 extern _Bool cnm_wants_stats(uintptr_t h);
 extern void* cnm_malloc(uintptr_t h, size_t n);
@@ -81,7 +81,8 @@ static int g_stats;
 static int g_fast;                  // (row 519) the lock-free design is on and nothing else is: no worker cache, no statistics. Set once, in cn_start, before g_state is 2
 
 // ---- THE SECOND DESIGN (row 454; WI\cnmalloc-second-design-spec.md) ------------------------------------------------
-// Off unless CNMALLOC=design=lockfree (g_lf is 0, and nothing below this banner is reached). The page descriptors and the
+// The process heap's design on Windows unless CNMALLOC=design=lock (row 533); on Linux only with design=lockfree. Under the
+// lock design g_lf is 0, and nothing below this banner is reached. The page descriptors and the
 // per-class records are the Cone package's (src/cnmalloc.cone, "THE SECOND DESIGN" has the layout and the rules for
 // who writes what); this file reads and compare-and-swaps them on the common paths of section 3 (allocate) and
 // section 4 (free). Static asserts pin the layout both sides agree on.
@@ -529,7 +530,7 @@ static uintptr_t cn_start(void) {
 #ifdef CN_LINUX
     t_starter = 1;
 #endif
-    uintptr_t h = cnm_boot();
+    uintptr_t h = cnm_boot(1);   // the process's heap: this file installs design 2's common paths below
     if (!h) cn_exit(3);   // nothing sane to do without a heap
     cn_st64_rel(&g_heap, h);
     g_stats = cnm_wants_stats(h) ? 1 : 0;   // CNMALLOC=stats
