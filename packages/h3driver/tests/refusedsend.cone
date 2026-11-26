@@ -1,6 +1,7 @@
 // The HTTP/3 half of actorhttp's refusedsend test: a response whose bytes the buffer pool refuses a buffer for resets
-// that one stream. The test actor takes each request from the queue route, takes every 16 KiB buffer the try bank will
-// give (the datagrams' 4 KiB class is left alone), and answers: the handler's write answers closed, the client's fetch
+// that one stream. The client is a second process of this program ('refusedsend client <port>'), so only the server's
+// pool is emptied: for /fill the test actor holds all but a few of the 16 KiB buffers the try bank will give (the
+// datagrams' 4 KiB class is left alone) before writing 1 MiB. The handler's write answers closed, the client's fetch
 // fails, the refusal is counted, a request in hand on the same connection is answered after, and so is the next.
 
 mod refusedsend;
@@ -8,19 +9,20 @@ mod refusedsend;
 import stdio use *;
 import libc;
 import fs;
+import process;
 import path use Path;
 import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
 import collections use List, String;
-import iobuf use IoBuf, stats;
+import iobuf use IoBuf, flushThread;
 import iocore use SocketAddr;
 import http use *;
 import httpclient;
 import tls;
 import actors;
+import aio;
+import time use Duration;
 import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, HttpRoutes;
 import h3driver;
-
-fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
 fn certs(name: &str) Path {
   var p = String.from("../../../../../tls/tests/certs/");
@@ -45,6 +47,18 @@ fn url(port: u16, path: &str) String {
   u
 }
 
+fn say(what: &str, ok: bool) {
+  printStr(what);
+  printStr(": ");
+  printStr(if ok {"yes"} else {"NO"});
+  printStr("\n");
+  print.flush();
+}
+
+// ---------------------------------------------------------------------------
+// The client process
+// ---------------------------------------------------------------------------
+
 fn client(port: u16) HttpClient {
   var cfg = httpclient.Config.make();
   cfg.maxRetries = 0u32;
@@ -53,79 +67,6 @@ fn client(port: u16) HttpClient {
   cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
   cfg.http3Origins.push(url(port, ""));
   HttpClient.make(cfg, actorhttp.defaultMaxBody)
-}
-
-fn piece() String {
-  var s = String.withCapacity(1048576usize);
-  var i = 0usize;
-  while i < 1048576usize {
-    s.appendByte(97u8);
-    i = i + 1usize;
-  }
-  s
-}
-
-actor Taker {
-  server: Server;
-
-  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
-    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
-    var res = r;
-    match &mut res {
-      case var &mut Ok(ok) {server <-> *ok;}
-      case let &mut Err(e) {printStr("listen failed\n"); libc.exit(1i32);}
-    }
-    ports.send(server.port());
-  }
-
-  // /nap is kept until /fill has been answered. Reports whether /fill's write answered closed
-  pub async fn serve(self, want: u32, var done: OneshotSender[u64]) {
-    var kept = List[Exchange]();
-    var held = List[IoBuf]();
-    var left = want;
-    var report = 0u64;
-    var pins = List[IoBuf]();
-    match IoBuf.tryMake(4096usize) {case var Some(b) {pins.push(b);} else {}}
-    match IoBuf.tryMake(65536usize) {case var Some(b) {pins.push(b);} else {}}
-    while left > 0u32 {
-      left = left - 1u32;
-      match await server.next() {
-        case var Ok(got) {
-          var ex = got;
-          let p = String.from(ex.request.path());
-          if p.view() == "/nap" {
-            kept.push(ex);
-          } else if p.view() == "/fill" {
-            while true {
-              match IoBuf.tryMake(16384usize) {
-                case var Some(b) {held.push(b);}
-                else {break;}
-              }
-            }
-            ex.start(ResponseHead.make(200u16), BodyLength.unsized());
-            let w = await ex.write(piece());
-            held = List[IoBuf]();
-            report = match w {
-              case is Ok {0u64}
-              case is Err {1u64}
-            };
-          } else {
-            ex.text(200u16, "hello");
-          }
-        }
-        case let Err(e) {break;}
-      }
-    }
-    while kept.len() > 0usize {
-      var ex = kept.pop().unwrap();
-      ex.text(200u16, "rested");
-    }
-    done.send(report);
-  }
-
-  pub async fn count(self, var done: OneshotSender[u64]) {done.send(await server.refusedBuffers());}
-
-  pub async fn stop(self) {server.close();}
 }
 
 actor Fetch {
@@ -141,6 +82,11 @@ actor Fetch {
     }
     done.send(if ok {1u64} else {0u64});
   }
+
+  pub async fn later(self, var done: OneshotSender[u64]) {
+    await aio.sleep(Duration.fromMillis(300i64));
+    done.send(1u64);
+  }
 }
 
 fn fetch(c: &HttpClient, u: String, want: &str) OneshotReceiver[u64] {
@@ -151,32 +97,113 @@ fn fetch(c: &HttpClient, u: String, want: &str) OneshotReceiver[u64] {
   rx
 }
 
-fn say(what: &str, ok: bool) {
-  printStr("HTTP/3: ");
-  printStr(what);
-  printStr(": ");
-  printStr(yes(ok));
-  printStr("\n");
-}
-
-fn serving(taker: &Taker, want: u32) OneshotReceiver[u64] {
+fn pause(c: &HttpClient) {
   var tx: OneshotSender[u64];
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
-  taker.serve(want, tx);
-  rx
+  Fetch(c.clone()).later(tx);
+  let n = rx.recv() || 0u64;
 }
 
-fn counted(taker: &Taker) u64 {
-  var tx: OneshotSender[u64];
-  var rx: OneshotReceiver[u64];
-  tx, rx = Oneshot[u64].make();
-  taker.count(tx);
-  rx.recv() || 0u64
+fn clientMain(port: u16) {
+  let c = client(port);
+  var hello = fetch(&c, url(port, "/hello"), "hello");
+  say("  a request is answered", (hello.recv() || 0u64) == 1u64);
+  // two requests on the one connection: /nap is in the server's hand while /fill is refused
+  var nap = fetch(&c, url(port, "/nap"), "rested");
+  pause(&c);
+  var fill = fetch(&c, url(port, "/fill"), "");
+  say("  the refused fetch fails", (fill.recv() || 0u64) == 1u64);
+  say("  the other request on the connection is answered", (nap.recv() || 0u64) == 1u64);
+  var again = fetch(&c, url(port, "/hello"), "hello");
+  say("  the next request is answered", (again.recv() || 0u64) == 1u64);
 }
 
-fn main() i32 {
-  initAll();
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+actor Taker {
+  server: Server;
+  kept: List[Exchange];
+
+  fn init(self: &new, var s: Server) {*self = Self(server: s, kept: List[Exchange]());}
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  // Takes 'want' requests. /nap is kept until /fill has been answered. Reports whether /fill's write answered closed
+  pub async fn serve(self, want: u32, var done: OneshotSender[u64]) {
+    var left = want;
+    var report = 0u64;
+    var pins = List[IoBuf]();
+    match IoBuf.tryMake(4096usize) {case var Some(b) {pins.push(b);} else {}}
+    match IoBuf.tryMake(65536usize) {case var Some(b) {pins.push(b);} else {}}
+    while left > 0u32 {
+      left = left - 1u32;
+      match await server.next() {
+        case var Ok(got) {
+          var ex = got;
+          let p = String.from(ex.request.path());
+          if p.view() == "/nap" {
+            kept.push(ex);
+          } else if p.view() == "/fill" {
+            ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+            var held = List[IoBuf]();
+            while true {
+              match IoBuf.tryMake(16384usize) {
+                case var Some(b) {held.push(b);}
+                else {break;}
+              }
+            }
+            var back = 0u32;
+            while back < 8u32 && held.len() > 0usize {
+              let b = held.pop();
+              back = back + 1u32;
+            }
+            flushThread();
+            var body = String.withCapacity(1048576usize);
+            var i = 0usize;
+            while i < 1048576usize {
+              body.appendByte(97u8);
+              i = i + 1usize;
+            }
+            let w = await ex.write(body);
+            held = List[IoBuf]();
+            flushThread();
+            report = match w {
+              case is Ok {0u64}
+              case is Err {1u64}
+            };
+            while kept.len() > 0usize {
+              var napper = kept.pop().unwrap();
+              napper.text(200u16, "rested");
+            }
+          } else {
+            ex.text(200u16, "hello");
+          }
+        }
+        case let Err(e) {break;}
+      }
+    }
+    done.send(report);
+  }
+
+  pub async fn count(self, var done: OneshotSender[u64]) {done.send(await server.refusedBuffers());}
+
+  pub async fn stop(self) {server.close();}
+}
+
+fn serverMain() {
+  printStr("HTTP/3\n");
+  print.flush();
   var ptx: Sender[u16];
   var prx: Receiver[u16];
   ptx, prx = Channel[u16].make();
@@ -186,24 +213,56 @@ fn main() i32 {
   taker.open(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp3(&h3driver.plugin)
     .routes(HttpRoutes.make().queue("", "/")), ptx.clone());
   let port = prx.recv() || 0u16;
-  let c = client(port);
-  let first = serving(&taker, 1u32);
-  let hello = fetch(&c, url(port, "/hello"), "hello");
-  say("a request is answered", (hello.recv() || 0u64) == 1u64);
-  let one = first.recv() || 9u64;
-  let second = serving(&taker, 2u32);
-  let nap = fetch(&c, url(port, "/nap"), "rested");
-  let fill = fetch(&c, url(port, "/fill"), "");
-  say("the write answers closed", (second.recv() || 0u64) == 1u64);
-  say("the fetch fails", (fill.recv() || 0u64) == 1u64);
-  say("the other request on the connection is answered", (nap.recv() || 0u64) == 1u64);
-  say("one refusal counted", counted(&taker) == 1u64);
-  let third = serving(&taker, 1u32);
-  let again = fetch(&c, url(port, "/hello"), "hello");
-  say("the next request is answered", (again.recv() || 0u64) == 1u64);
-  let three = third.recv() || 9u64;
-  say("the pool refused", stats().refused > 0u64);
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  taker.serve(4u32, tx);
+  var args = List[String]();
+  match process.currentExe() {
+    case let Ok(exe) {args.push(String.from(exe.view()));}
+    case let Err(e) {printStr("no path to this program\n"); libc.exit(1i32);}
+  }
+  args.push(String.from("client"));
+  var n = String();
+  n.appendUInt(u64.from(port));
+  args.push(n);
+  match process.run(args.view()) {
+    case let Ok(out) {
+      // the client's lines, without the carriage returns its text-mode output has on Windows
+      var text = String();
+      let bytes = out.stdout.view() as &Array[u8];
+      var i = 0usize;
+      while i < bytes.len {
+        if bytes[i] != 13u8 {text.appendByte(bytes[i]);}
+        i = i + 1usize;
+      }
+      printStr(text.view());
+    }
+    case let Err(e) {printStr("the client did not run\n");}
+  }
+  print.flush();
+  say("  the write answers closed", (rx.recv() || 0u64) == 1u64);
+  var ctx: OneshotSender[u64];
+  var crx: OneshotReceiver[u64];
+  ctx, crx = Oneshot[u64].make();
+  taker.count(ctx);
+  say("  one refusal counted", (crx.recv() || 0u64) == 1u64);
   taker.stop();
+}
+
+fn main() i32 {
+  initAll();
+  let args = process.args();
+  if args.len() > 2usize && args[1usize].view() == "client" {
+    var port = 0u16;
+    match u16.parse(args[2usize].view()) {
+      case let Ok(p) {port = p;}
+      case is Err {}
+    }
+    clientMain(port);
+  } else {
+    serverMain();
+  }
   finalAll();
   0
 }
