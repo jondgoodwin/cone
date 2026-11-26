@@ -18,6 +18,10 @@ import libc;
 import cnmalloc;
 import collections use List;
 
+extern {
+  fn @c("strstr") findText(hay: *u8, needle: cstr) *u8;
+}
+
 alias DesignFn = &fn @c () i32;
 alias ActiveFn = &fn @c (cl: i32) i32;
 alias HeapFn = &fn @c () usize;
@@ -69,6 +73,10 @@ fn main() i32 {
   let heap = cnmalloc.cnm_hostSym("cnmalloc_heap");
   if heap == 0usize { return testing.skip("lfslots: the cnmalloc shim is not linked: cnmalloc_heap was not found"); }
   if (design as *u8 as DesignFn)() != 2i32 { return testing.skip("lfslots: the cnmalloc shim is linked but the second design is off (CNMALLOC=design=lockfree is needed)"); }
+  // the second design is the default behind the shim (row 533), so the design alone no longer says this test was asked for:
+  // at the default collisions=64 sixteen threads need not take the class past eight slots in the test's time
+  let settings = libc.getenv("CNMALLOC");
+  if settings as usize == 0usize || findText(settings, "collisions=") as usize == 0usize { return testing.skip("lfslots: needs CNMALLOC=giveback=now,collisions=4"); }
   let np = cnmalloc.cnm_hostProcessors();
   if np < 12usize { return testing.skip("lfslots: needs 12 or more processors (the default cap is min(processors, 32))"); }
   let h = (heap as *u8 as HeapFn)();
