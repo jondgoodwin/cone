@@ -451,6 +451,21 @@ values hands back the same way (`blockResultMove`). An expression statement
 never reaches `flowHandleMove`, so a block whose value is thrown away moves
 nothing.
 
+**Whether a value moves is asked of its sources too** (`flowValueMoves`), not
+only of its type. A change of permission is a subtype step with no node of its
+own: a `Rc[uni, T]` wanted as `Rc[mut, T]` is the same name use, still typed
+`uni`, and moves. A recast of it, to the value type's enrichment base or a
+trait, is typed as wanted, a counted copy, and so is a block or an `if` handing
+it back. An `if` that infers an enum from its arms leaves each arm block typed
+as its variant, which may copy where the enum moves. So `flowHandleMoveOrCopy`,
+`flowMoveExit`, `flowResultMove`, `blockResultMove`, `blockResultCount` and the
+scope's exemption (`flowIsScopeResult`) ask `flowValueMoves`, which says yes
+where the node's type is a move type; where it recasts, as another owning
+reference type, an owning reference that moves; or where a block or `if` can
+hand back such a value, or one recast to a move type. The arms whose values
+copy are counted as copies and the arm that moves is not, so either way the new
+holder holds one count.
+
 **A copy handed out of a scope is a new holder.** A copy-typed value holding a
 counted reference that a scope hands out — a `return`'s, a block's value that
 is used, a `break`'s — is counted as a copy into a variable is
@@ -564,7 +579,7 @@ narrowed) deactivates it as before, and no drop flag follows it.
 
 ```c
 if (*nodep is a tuple literal)   each element, as below;
-else if (iexpIsMove(*nodep))     flowHandleMove(*nodep);      // deactivate source
+else if (flowValueMoves(*nodep)) flowHandleMove(*nodep);      // deactivate source
 else if (flowIsKeptRead(*nodep)) flowInjectRefCount(nodep);   // +1
 ```
 

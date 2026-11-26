@@ -1,0 +1,66 @@
+// Which design a heap gets (row 533). When CNMALLOC names none: the process's heap, behind the shim, is the lock-free
+// design (2) on Windows and the lock design (1) on Linux; a heap with no shim behind it is the lock design on both,
+// because the lock-free allocate and free are the shim's. design=lock and design=lockfree choose, behind the shim.
+//
+// The heaps it makes itself need no shim, so those checks run under a plain 'congo test'. With the shim linked it also
+// asks the process's heap, which read CNMALLOC as the program started (without the shim that check has nothing to ask
+// and passes): run it there with CNMALLOC unset and with CNMALLOC=design=lock.
+
+mod design;
+
+import testing use *;
+import libc;
+import cnmalloc;
+
+extern {
+  fn @c("strstr") findText(hay: *u8, needle: cstr) *u8;
+}
+
+alias DesignFn = &fn @c () i32;
+
+// the design of a heap booted with this CNMALLOC text; shim is cnm_boot's. Nothing is allocated from it: this test
+// installs no common paths for a design 2 heap
+fn bootedDesign(text: cstr, shim: bool) u64 {
+  cnmalloc.cnm_hostSetenv("CNMALLOC", text);
+  let h = cnmalloc.cnm_boot(shim);
+  let d = cnmalloc.cnm_design(h);
+  cnmalloc.cnm_destroy(h);
+  u64.from(d)
+}
+
+fn unsetDesign() u64 {
+  #if #os == .windows { 2u64 } #else { 1u64 }
+}
+
+fn main() i32 {
+  // the process's heap first, before this test changes CNMALLOC
+  var processRight = true;
+  let design = cnmalloc.cnm_hostSym("cnmalloc_design");
+  if design != 0usize {
+    var want = unsetDesign();
+    let env = libc.getenv("CNMALLOC");
+    if env as usize != 0usize {
+      if findText(env, "design=lockfree") as usize != 0usize { want = 2u64; }
+      else if findText(env, "design=lock") as usize != 0usize { want = 1u64; }
+    }
+    processRight = u64.from((design as *u8 as DesignFn)()) == want;
+  }
+  expect(processRight, "the process's heap has the design CNMALLOC names, or the system's default");
+
+  expectUInt(bootedDesign("", true), unsetDesign(), "behind the shim, nothing set: lock-free on Windows, the lock design on Linux");
+  expectUInt(bootedDesign("giveback=never", true), unsetDesign(), "behind the shim, other settings only: still the system's default");
+  expectUInt(bootedDesign("design=lock", true), 1u64, "behind the shim, design=lock: the lock design");
+  expectUInt(bootedDesign("design=lockfree", true), 2u64, "behind the shim, design=lockfree: the lock-free design");
+  expectUInt(bootedDesign("", false), 1u64, "no shim, nothing set: the lock design, which needs none");
+  expectUInt(bootedDesign("giveback=never", false), 1u64, "no shim, other settings only: the lock design");
+
+  // and that heap serves a small block: a design 2 heap with no shim would call a function nobody installed
+  cnmalloc.cnm_hostSetenv("CNMALLOC", "");
+  let h = cnmalloc.cnm_boot(false);
+  let p = cnmalloc.cnm_malloc(h, 100usize);
+  expect(p as usize != 0usize, "a heap with no shim serves a small block");
+  cnmalloc.cnm_free(h, p);
+  cnmalloc.cnm_destroy(h);
+
+  done()
+}

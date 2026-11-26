@@ -1255,29 +1255,39 @@ pub fn mailboxTooFull[M: Sendable](mb: &opaq Mailbox[M]) bool {
 // ---- A TEST HOOK: a sender held between its claim and its publication ----
 
 // The state of the hook: 0 off; 1 armed, the next send to stop here; 2 a
-// sender stopped, its slot claimed and not published; 3 released. For tests of
-// the protocol for a slot claimed and not yet published (THE MAILBOX): it
-// costs a send one relaxed load.
+// thread stopped; 3 released; 4 armed, the next thread to take a held timer's
+// parked Reply to stop before it reads it (timers.cone, heldTaken). For tests of
+// the protocol for a slot claimed and not yet published (THE MAILBOX) and of a
+// held cell whose Reply is being taken (THE HELD TIMER): it costs a send, and
+// such a take, one relaxed load.
 let stallState: Atomic[u32];
 
 pub fn stallNextPublish() {
   stallState.storeOrdered(1u32, MemOrder.SeqCst);
 }
 
-// Whether a sender is stopped, between its claim and its publication
+// A TEST HOOK, not part of the API (tests/heldtake.cone): the next thread that ends a held Timer's parked next()
+// (its group's cancel, the stop) stops once it has taken the waiter and before it has read the Reply out of the
+// cell. publishStalled() then says so, and releaseStalled() lets it go on
+pub fn stallNextHeldTake() {
+  stallState.storeOrdered(4u32, MemOrder.SeqCst);
+}
+
+// Whether a thread is stopped: a sender between its claim and its publication, or a held Reply's taker
 pub fn publishStalled() bool {
   stallState.loadOrdered(MemOrder.SeqCst) == 2u32
 }
 
-// Let the stopped sender publish
+// Let the stopped thread go on
 pub fn releaseStalled() {
   stallState.storeOrdered(3u32, MemOrder.SeqCst);
 }
 
-fn stallHere() {
+// Stop here if the hook is armed for this site ('armedFor': 1 a send, 4 a held take)
+fn stallHere(armedFor: u32) {
   var seen = 0u32;
   var armed = false;
-  seen, armed = stallState.compareSwap(1u32, 2u32);
+  seen, armed = stallState.compareSwap(armedFor, 2u32);
   if !armed {
     return;
   }
@@ -2350,7 +2360,7 @@ fn sendLive[M: Sendable](h: *Header, msg: M) {
   mem.atomicStore[u64](ccause(c.slot), cause, MemOrder.Relaxed);
   mem.writeRaw[M](payloadOf(c.slot) as *M, msg);
   if stallState.loadOrdered(MemOrder.Relaxed) != 0u32 {
-    stallHere();
+    stallHere(1u32);
   }
   let waited = publish(c, kindMsg);
   if wakeAfter(h, c, waited) {
@@ -2382,7 +2392,7 @@ fn sendGrouped[M: Sendable](h: *Header, msg: M, gp: usize) {
   let g = *(gp as &CancelGroup);
   mem.writeRaw[CancelGroup](payloadOf(c1.slot) as *CancelGroup, g);
   if stallState.loadOrdered(MemOrder.Relaxed) != 0u32 {
-    stallHere();
+    stallHere(1u32);
   }
   publish(c2, kindMsg);
   let waited = publish(c1, kindMsgGroup);
@@ -5860,7 +5870,7 @@ fn monitorPause(timer: usize, d: time.Duration) {
 // fact (a weak default for each name, which the library's definition would replace) needs a C file or a linker
 // option in this package, which is Cone alone; the lookup costs three table searches per worker start, and
 // finds nothing, and so calls nothing, in a program that did not link cnmalloc (the default). Windows and Linux,
-// as cnmalloc is. A fourth, cnmalloc_workerParkMs (row 454), answers 0 unless cnmalloc's second design is on (CNMALLOC=design=lockfree);
+// as cnmalloc is. A fourth, cnmalloc_workerParkMs (row 454), answers 0 unless cnmalloc's second design is on (its default on Windows, row 533);
 // then it answers the give-back delay in milliseconds, and a parking worker sleeps that long before it calls
 // cnmalloc_workerPark (and keeps its cache until then), and then sleeps without a limit. With 0 the park is what it always was.
 alias CnCall = &fn @c ();

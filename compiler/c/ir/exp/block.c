@@ -597,7 +597,7 @@ static void blockResultMove(INode *result) {
     INode *exp = result;
     while (exp->tag == CastTag && flowCastCarries(exp))
         exp = ((CastNode *)exp)->exp;
-    if ((exp->tag == IfTag || (exp->tag == BlockTag && !(exp->flags & FlagLoop))) && iexpIsMove(result))
+    if ((exp->tag == IfTag || (exp->tag == BlockTag && !(exp->flags & FlagLoop))) && flowValueMoves(result))
         flowHandleMove(result);
     else
         flowResultMove(result);
@@ -622,7 +622,7 @@ static void blockResultCount(INode **retexp, INode *result, size_t startpos) {
             blockResultCount(elemp, *elemp, startpos);
         return;
     }
-    if (iexpIsMove(*retexp) || !flowIsKeptRead(*retexp) || flowScopeHandsBack(startpos, result))
+    if (flowValueMoves(*retexp) || !flowIsKeptRead(*retexp) || flowScopeHandsBack(startpos, result))
         return;
     flowInjectRefCount(retexp);
 }
@@ -811,7 +811,7 @@ static void blockFlowIn(FlowState *fstate, BlockNode **blknode) {
                 && fstate->jumped;
             // The function's own block hands its value to the caller, as a return does
             if (fstate->scope == 2 && !loop && (exp->tag == IfTag || exp->tag == BlockTag)
-                && itypeGetTypeDcl(fstate->fnsig->rettype)->tag != VoidTag && iexpIsMove(*retexp))
+                && itypeGetTypeDcl(fstate->fnsig->rettype)->tag != VoidTag && flowValueMoves(*retexp))
                 blockResultMove(*retexp);
             if (discards)
                 flowTempRead(retexp);
