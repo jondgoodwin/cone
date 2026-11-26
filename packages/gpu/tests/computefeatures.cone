@@ -30,6 +30,9 @@
 //      float tolerance, the sum being in another order).
 // 5. 'createBuffer' refuses a buffer larger than the GPU's maxBufferSize,
 //    once, and makes none.
+// 6. A module that declares SignedZeroInfNanPreserve is refused at
+//    'createShaderModule', with one failure, where the GPU's property for that
+//    width is false (forced so here), and loads where it is true.
 //
 // It needs a GPU driver with Vulkan 1.3 and SDL3.dll (which loads Vulkan); with
 // the Vulkan SDK, validation and synchronization validation are on, and must say
@@ -704,8 +707,99 @@ let CFQUANT_SPIRV: Array[u32, 1218] = [
 
 fn yesNo(b: bool) &str { if b { "yes" } else { "no" } }
 
+// ---- SignedZeroInfNanPreserve on a GPU without it ----
+
+// A Cone kernel with 32-bit floats, as conec made it (--triple=spirv1.6-unknown-vulkan1.3), so its module declares
+// SignedZeroInfNanPreserve for 32 bits: the OpExecutionMode at word 25, its mode at word 27 and its width at word 28.
+//
+//   mod cfpreserve;
+//   fn @compute(64) halve(inv: Invocation, out: &mut Array[f32]) {
+//     let i = usize.from(inv.globalId[0]);
+//     if i < out.len { out[i] = out[i] * 0.5; }
+//   }
+let CFPRESERVE_SPIRV: Array[u32, 271] = [
+  0x07230203u32, 0x00010600u32, 0x002b0017u32, 0x00000053u32, 0x00000000u32, 0x00020011u32, 0x00001172u32, 0x00020011u32,
+  0x00000001u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0007000fu32, 0x00000005u32, 0x0000001du32, 0x766c6168u32,
+  0x00000065u32, 0x0000001bu32, 0x0000001cu32, 0x00060010u32, 0x0000001du32, 0x00000011u32, 0x00000040u32, 0x00000001u32,
+  0x00000001u32, 0x00040010u32, 0x0000001du32, 0x0000116du32, 0x00000020u32, 0x00030003u32, 0x00000000u32, 0x00000000u32,
+  0x00080004u32, 0x656e6f63u32, 0x6c69662eu32, 0x20312065u32, 0x72706663u32, 0x72657365u32, 0x632e6576u32, 0x00656e6fu32,
+  0x00040005u32, 0x0000001du32, 0x766c6168u32, 0x00000065u32, 0x00040005u32, 0x0000001eu32, 0x646e6962u32, 0x00676e69u32,
+  0x000b0005u32, 0x0000001bu32, 0x70735f5fu32, 0x5f767269u32, 0x6c697542u32, 0x476e4974u32, 0x61626f6cu32, 0x766e496cu32,
+  0x7461636fu32, 0x496e6f69u32, 0x00000064u32, 0x00050005u32, 0x0000001cu32, 0x766c6168u32, 0x756f2e65u32, 0x00000074u32,
+  0x00070005u32, 0x0000000au32, 0x72697073u32, 0x75562e76u32, 0x6e616b6cu32, 0x66667542u32, 0x00007265u32, 0x00040005u32,
+  0x00000001u32, 0x72746e65u32, 0x00000079u32, 0x00050005u32, 0x00000002u32, 0x6e756f62u32, 0x6b6f7364u32, 0x00692e36u32,
+  0x00060005u32, 0x00000003u32, 0x766c6168u32, 0x6f622e65u32, 0x652e7964u32, 0x00746978u32, 0x00040047u32, 0x0000001bu32,
+  0x0000000bu32, 0x0000001cu32, 0x00040047u32, 0x0000001cu32, 0x00000022u32, 0x00000000u32, 0x00040047u32, 0x0000001cu32,
+  0x00000021u32, 0x00000000u32, 0x00040047u32, 0x00000008u32, 0x00000006u32, 0x00000004u32, 0x00050048u32, 0x00000009u32,
+  0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00030047u32, 0x00000009u32, 0x00000002u32, 0x00030047u32, 0x00000026u32,
+  0x0000002au32, 0x00020013u32, 0x00000004u32, 0x00030021u32, 0x00000005u32, 0x00000004u32, 0x00040015u32, 0x00000006u32,
+  0x00000020u32, 0x00000000u32, 0x00030016u32, 0x00000007u32, 0x00000020u32, 0x0003001du32, 0x00000008u32, 0x00000007u32,
+  0x0003001eu32, 0x00000009u32, 0x00000008u32, 0x00040020u32, 0x0000000au32, 0x0000000cu32, 0x00000009u32, 0x00040021u32,
+  0x0000000bu32, 0x00000006u32, 0x0000000au32, 0x00040020u32, 0x0000000cu32, 0x0000000cu32, 0x00000007u32, 0x00020014u32,
+  0x0000000du32, 0x0004002bu32, 0x00000006u32, 0x0000000eu32, 0x00000003u32, 0x0004001cu32, 0x0000000fu32, 0x00000006u32,
+  0x0000000eu32, 0x00040020u32, 0x00000010u32, 0x00000007u32, 0x0000000fu32, 0x0004002bu32, 0x00000006u32, 0x00000011u32,
+  0x00000000u32, 0x00040017u32, 0x00000012u32, 0x00000006u32, 0x00000003u32, 0x00040020u32, 0x00000013u32, 0x00000001u32,
+  0x00000012u32, 0x0004002bu32, 0x00000007u32, 0x00000014u32, 0x3f000000u32, 0x0004002bu32, 0x00000006u32, 0x00000015u32,
+  0x00000074u32, 0x0004002bu32, 0x00000006u32, 0x00000016u32, 0x756f2e65u32, 0x0004002bu32, 0x00000006u32, 0x00000017u32,
+  0x766c6168u32, 0x0006002cu32, 0x0000000fu32, 0x0000001au32, 0x00000017u32, 0x00000016u32, 0x00000015u32, 0x0004003bu32,
+  0x00000013u32, 0x0000001bu32, 0x00000001u32, 0x0004003bu32, 0x0000000au32, 0x0000001cu32, 0x0000000cu32, 0x00050036u32,
+  0x00000004u32, 0x0000001du32, 0x00000000u32, 0x00000005u32, 0x000200f8u32, 0x00000001u32, 0x0005003bu32, 0x00000010u32,
+  0x0000001eu32, 0x00000007u32, 0x0000001au32, 0x0004003du32, 0x00000012u32, 0x0000001fu32, 0x0000001bu32, 0x00050051u32,
+  0x00000006u32, 0x00000020u32, 0x0000001fu32, 0x00000000u32, 0x00040053u32, 0x0000000au32, 0x00000021u32, 0x0000001cu32,
+  0x00050044u32, 0x00000006u32, 0x00000022u32, 0x00000021u32, 0x00000000u32, 0x000500b0u32, 0x0000000du32, 0x00000023u32,
+  0x00000020u32, 0x00000022u32, 0x000300f7u32, 0x00000003u32, 0x00000000u32, 0x000400fau32, 0x00000023u32, 0x00000002u32,
+  0x00000003u32, 0x000200f8u32, 0x00000002u32, 0x00060041u32, 0x0000000cu32, 0x00000024u32, 0x00000021u32, 0x00000011u32,
+  0x00000020u32, 0x0004003du32, 0x00000007u32, 0x00000025u32, 0x00000024u32, 0x00050085u32, 0x00000007u32, 0x00000026u32,
+  0x00000025u32, 0x00000014u32, 0x00040053u32, 0x0000000au32, 0x00000027u32, 0x0000001cu32, 0x0003003eu32, 0x00000024u32,
+  0x00000026u32, 0x000200f9u32, 0x00000003u32, 0x000200f8u32, 0x00000003u32, 0x000100fdu32, 0x00010038u32
+];
+
+// Whether 'device' loads 'spirv': 1 loaded with no failure, 0 refused with one, 2 anything else
+fn loadsAs(device: &Device, spirv: &Array[u32]) u32 {
+  let before = failures();
+  let module = device.createShaderModule(spirv);
+  let failed = failures() - before;
+  if module.isValid() && failed == 0u32 { return 1u32; }
+  if !module.isValid() && failed == 1u32 { return 0u32; }
+  2u32
+}
+
+// The properties are forced false by writing 'device.compute', which 'createShaderModule' reads, so a GPU that has
+// them stands in for one that does not.
+fn floatModeRefusals(adapter: &Adapter, has: &ComputeCapabilities) {
+  var d = adapter.requestDevice();
+  require(d.isValid(), "a device to load the float kernel");
+  expectBool(d.compute.signedZeroInfNanPreserve32, has.signedZeroInfNanPreserve32,
+    "a drawing device says what the GPU keeps: a property, nothing to enable");
+  expect(CFPRESERVE_SPIRV[27usize] == 4461u32 && CFPRESERVE_SPIRV[28usize] == 32u32, "the kernel declares the mode for 32 bits");
+  if has.signedZeroInfNanPreserve32 {
+    expectUInt(u64.from(loadsAs(&d, &CFPRESERVE_SPIRV)), 1u64, "a GPU that keeps them loads it");
+    d.compute.signedZeroInfNanPreserve32 = false;
+    expectUInt(u64.from(loadsAs(&d, &CFPRESERVE_SPIRV)), 0u64, "one without the 32-bit property refuses it, with one failure");
+    d.compute.signedZeroInfNanPreserve32 = true;
+    d.compute.signedZeroInfNanPreserve16 = false;
+    d.compute.signedZeroInfNanPreserve64 = false;
+    expectUInt(u64.from(loadsAs(&d, &CFPRESERVE_SPIRV)), 1u64, "the other widths' properties do not matter to it");
+  } else {
+    expect(true, "(skipped)");
+    expect(true, "(skipped)");
+    expect(true, "(skipped)");
+  }
+  // The same kernel saying 64 and 16 bits: each refused for its own property, before Vulkan sees the words
+  var words = CFPRESERVE_SPIRV;
+  words[28usize] = 64u32;
+  d.compute.signedZeroInfNanPreserve16 = true;
+  d.compute.signedZeroInfNanPreserve32 = true;
+  d.compute.signedZeroInfNanPreserve64 = false;
+  expectUInt(u64.from(loadsAs(&d, &words)), 0u64, "a 64-bit declaration needs the 64-bit property");
+  words[28usize] = 16u32;
+  d.compute.signedZeroInfNanPreserve16 = false;
+  d.compute.signedZeroInfNanPreserve64 = true;
+  expectUInt(u64.from(loadsAs(&d, &words)), 0u64, "and a 16-bit one the 16-bit property");
+}
+
 fn main() i32 {
-  let report = (libc.getenv("GPU_COMPUTE_REPORT") as usize) != 0usize;
+  let report =(libc.getenv("GPU_COMPUTE_REPORT") as usize) != 0usize;
   var instance = Instance.create("computefeatures");
   require(instance.isValid(), "a Vulkan 1.3 instance");
   var none = Surface.none();
@@ -728,6 +822,9 @@ fn main() i32 {
     printStr(", unsigned "); printStr(yesNo(has.dot4x8PackedUnsignedAccelerated));
     printStr(", mixed "); printStr(yesNo(has.dot4x8PackedMixedAccelerated));
     printStr(", 8-bit signed "); printStr(yesNo(has.dot8BitSignedAccelerated)); printStr("\n");
+    printStr("signedZeroInfNanPreserve 16 "); printStr(yesNo(has.signedZeroInfNanPreserve16));
+    printStr(", 32 "); printStr(yesNo(has.signedZeroInfNanPreserve32));
+    printStr(", 64 "); printStr(yesNo(has.signedZeroInfNanPreserve64)); printStr("\n");
     printStr("subgroup size "); printUInt(u64.from(has.subgroupSize));
     printStr(" (range "); printUInt(u64.from(has.subgroupMinSize)); printStr(" to "); printUInt(u64.from(has.subgroupMaxSize));
     printStr("), stages "); printUInt(u64.from(has.subgroupStages));
@@ -836,6 +933,8 @@ fn main() i32 {
     expectBool(widePipeline.isValid(), perStage >= 12u32, "a layout of 12 storage buffers is made when the GPU allows it");
     expectUInt(u64.from(failures() - wideBefore), if perStage >= 12u32 { 0u64 } else { 1u64 }, "and refused when it does not");
   }
+  // ---- 6. A module declaring SignedZeroInfNanPreserve on a GPU without it ----
+  floatModeRefusals(&adapter, &has);
   let planned = failures();
 
   // ---- 4. The features at work ----
@@ -1171,6 +1270,7 @@ fn main() i32 {
     if !has.storage16Bit { return skip("this GPU has no 16-bit values in buffers (storageBuffer16BitAccess): the blessed output is from a GPU with every feature"); }
     if !has.int8Arithmetic || !has.storage8Bit { return skip("this GPU has no 8-bit integers in arithmetic and buffers: the blessed output is from a GPU with every feature"); }
     if !has.integerDotProduct { return skip("this GPU has no integer dot product: the blessed output is from a GPU with every feature"); }
+    if !has.signedZeroInfNanPreserve32 { return skip("this GPU does not keep NaN and signed zero in 32-bit shaders (shaderSignedZeroInfNanPreserveFloat32)"); }
     if !has.hasSubgroupOps(SUBGROUP_OP_BASIC | SUBGROUP_OP_ARITHMETIC | SUBGROUP_OP_BALLOT | SUBGROUP_OP_SHUFFLE) { return skip("this GPU has no subgroup operations in compute: the blessed output is from a GPU with every feature"); }
   }
   code

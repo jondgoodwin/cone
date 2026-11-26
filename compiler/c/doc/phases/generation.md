@@ -2572,8 +2572,10 @@ neither declares nothing. LLVM 23's backend writes the execution mode from
 module, and to `--asm`'s text (`genlGpuFloatPreserveAsm`): `module_target_spirv_floatpreserve`,
 `module_target_spirv_nopreserve`, `module_target_spirv_floatclass`, and the `compares` kernel
 of `packages/gpuwork/tests/kernels.cone` on a GPU. It is a device property
-(`shaderSignedZeroInfNanPreserveFloat32` and `64`), not a feature to enable, and `gpu` does
-not read it.
+(`shaderSignedZeroInfNanPreserveFloat32` and `64`), not a feature to enable; Vulkan forbids
+the mode where it is false (VUID-RuntimeSpirv-shaderSignedZeroInfNanPreserveFloat32-06294,
+...Float64-06295), and `gpu`'s `createShaderModule` refuses such a module
+(`floatModesOffered`, `packages/gpu/src/features.cone`).
 
 `module_target_spirv_math` pins the intrinsics and the instructions (its
 `asm` check reads `--asm`'s `.spvasm`). The double forms of `sqrt`, `fabs`,
