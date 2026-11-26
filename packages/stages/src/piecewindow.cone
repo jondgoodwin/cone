@@ -48,6 +48,13 @@
 //
 // One behaviour collects a window's answers at a time, oldest first.
 //
+// HOLDING WHILE IDLE. A buffer that came back lies in its answer until the answer is collected, and still
+// counts in the pool. So stages' own producers collect every answer already in before they wait (SocketFrom
+// before each read, TransformPass before it takes more input): one buffer is kept to be refilled, the rest go
+// back. What this does not reach: an answer that arrives WHILE the producer waits stays in its future until
+// the wait is over, so an idle stream can still hold up to its window (the budget, or two pieces) beside the
+// buffer it waits to fill.
+//
 //   w.stats()     the most pieces and the most cost unanswered at once, and the times there was no room
 
 // What a window has counted so far
@@ -110,6 +117,24 @@ pub struct PieceWindow[T] is Move {
   // The oldest answer, to be awaited and handed to 'answered'; None when all are collected
   pub fn oldest(self: &mut) Option[actors.Future[PieceAck[T]]] {
     replies.popFront()
+  }
+
+  // The oldest answer if it is already in, so that awaiting it does not wait; None when it is not, or all are
+  // collected. A producer takes these before it goes to wait for something else (HOLDING WHILE IDLE, above)
+  fn oldestIn(self: &mut) Option[actors.Future[PieceAck[T]]] {
+    #if #defined("MUT_NO_COLLECT") {} #else {
+      match replies.popFront() {
+        case let Some(f) {
+          var reply = f;
+          if actors.futureReady(&mut reply as *actors.Future[PieceAck[T]] as *u8) {
+            return Some[actors.Future[PieceAck[T]]](reply);
+          }
+          replies.pushFront(reply);
+        }
+        case is None {}
+      }
+    }
+    None[actors.Future[PieceAck[T]]]
   }
 
   // The answer of the piece 'oldest' gave: its cost leaves the window, a buffer that came back is kept to

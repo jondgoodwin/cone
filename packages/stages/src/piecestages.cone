@@ -181,6 +181,17 @@ pub actor TransformPass[T: Transform] is PieceSink[IoBuf] {
         }
       }
     }
+    // before the stage goes back to waiting for input, every answer already in comes home
+    var look = true;
+    while look {
+      match out.oldestIn() {
+        case let Some(reply) {
+          let a = await reply;
+          self.heard(a);
+        }
+        case is None { look = false; }
+      }
+    }
     // stopped, whoever's the reason: the producer hears now, not after our answers are in
     if why is Some && !sated { cancelFeed(&feed); }
     if why is Some && !down.ended() {
@@ -546,11 +557,34 @@ pub actor SocketFrom {
         cut = true;                  // the reason is in the receiver's Stop, collected below
         more = false;
       } else {
+        // before waiting on the socket, every answer already in comes home: its buffer is the one read into
+        // next, or goes back to the pool
+        var look = true;
+        while look {
+          match window.oldestIn() {
+            case let Some(reply) {
+              let a = await reply;
+              match window.answered(a) {
+                case let Some(why) {
+                  #if #defined("MUT_IGNORE_STOP") {} #else {
+                    stopped = Some[Ending](why);
+                    more = false;
+                    look = false;
+                  }
+                }
+                case is None {}
+              }
+            }
+            case is None { look = false; }
+          }
+        }
         var buf = None[IoBuf];
         var full = false;
-        match fresh(&mut window, linkBytes) {
-          case let Some(b) { buf = Some[IoBuf](b); }
-          case is None { full = true; }
+        if more {
+          match fresh(&mut window, linkBytes) {
+            case let Some(b) { buf = Some[IoBuf](b); }
+            case is None { full = true; }
+          }
         }
         if full {
           match window.oldest() {

@@ -1,0 +1,202 @@
+// What 100 idle streams hold (piecewindow.cone, HOLDING WHILE IDLE). Each server sends a piece, later a second,
+// then nothing; the receivers answer at once. Counted in buffers (every one a 64 KiB block):
+//
+//   A. SocketFrom on one shared pool, idle after one piece: AT MOST TWO a stream, the buffer it waits to fill and
+//      the piece's, whose answer came in during that wait (a stream whose answer was in before the read holds
+//      one: a few in a hundred). Today's source holds one (C), so this does NOT come down to today's
+//   B. the same streams, idle after a second piece: at most two still. The first answer, in before the next
+//      read, came home; only the second's, in during the wait, is held
+//   C. today's SocketSource: one a stream, after one piece and after two
+//
+// Mutant, run as 'congo test --no-cache -D NAME':
+//   MUT_NO_COLLECT   nothing is collected before a wait: B fails (three a stream)
+
+mod pieceidle;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import thread;
+import actors;
+import aio use Socket, IoLimits;
+import iocore use SocketAddr, IoError, CancelGroup;
+import streams use *;
+import stages use *;
+import stageio use SocketSource;
+
+const count = 100u32;           // of streams
+const blockBytes = 65536usize;
+
+struct Flags {
+  pub pieces: Atomic[u64];       // pieces the receivers have had
+  pub second: Atomic[u64];       // the servers are to send their second
+}
+
+let flags: Flags;
+
+fn @initpure init() {
+  flags = Flags(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) { panic("socketOf: the operation failed"); }
+  }
+  s
+}
+
+// Its waits hold no buffer: the last is a read with none, ending when the other side goes
+actor Server {
+  pub async fn serve(self, port: OneshotSender[u16]) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    var p = port;
+    match addr {
+      case let Ok(a) { p.send(a.port()); }
+      case is Err { p.send(0u16); return; }
+    }
+    let conn = socketOf(await listener.accept());
+    var one = IoBuf(100usize);
+    one.setLen(100usize);
+    _ = await conn.write(one);
+    while flags.second.load() == 0u64 { _ = await aio.sleep(Duration.fromMillis(10i64)); }
+    var two = IoBuf(100usize);
+    two.setLen(100usize);
+    _ = await conn.write(two);
+    _ = await conn.readIn(IoLimits.until(Instant.now() + Duration.fromMillis(60000i64)));
+  }
+}
+
+fn portOf() u16 {
+  var tx: OneshotSender[u16];
+  var rx: OneshotReceiver[u16];
+  tx, rx = Oneshot[u16].make();
+  Server().serve(tx);
+  rx.recv() || 0u16
+}
+
+// The core's receiver: every stream's, answering at once
+pub actor Takes is PieceSink[IoBuf] {
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    flags.pieces.add(1u64);
+    var b = c;
+    b.clear();
+    MoreWith[IoBuf](b)
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {}
+}
+
+// Today's: one a stream, giving each buffer back at once
+pub actor OldTakes is ChunkSink {
+  up: Option[ChunkSource];
+
+  pub fn init(self: &new) { *self = Self(up: None[ChunkSource]); }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    flags.pieces.add(1u64);
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) { up = None[ChunkSource]; }
+
+  pub async fn quit(self) {
+    match &up {
+      case let &Some(u) { u.stop(Ending.Finished); }
+      case is None {}
+    }
+  }
+}
+
+// Until the receivers have had 'n' pieces, then a while for the answers to them to arrive
+fn settle(n: u64) {
+  var tries = 0u32;
+  while flags.pieces.load() < n && tries < 6000u32 {
+    thread.sleep(Duration.fromMillis(5i64));
+    tries = tries + 1u32;
+  }
+  thread.sleep(Duration.fromMillis(500i64));
+}
+
+// 'got' is no more than 'most' (and the failure says both)
+fn atMost(got: u64, most: u64, label: &str) {
+  expectUInt(got, if got <= most {got} else {most}, label);
+}
+
+fn restart() {
+  flags.pieces.store(0u64);
+  flags.second.store(0u64);
+}
+
+fn main() i32 {
+  initAll();
+  let n = u64.from(count);
+
+  // A and B
+  {
+    restart();
+    let pool = ChunkPool.make(67108864usize);
+    let stop = CancelGroup.make();
+    let sink = Takes();
+    var k = 0u32;
+    while k < count {
+      let port = portOf();
+      SocketFrom(pool.clone()).run(SocketAddr.localhost(port),
+        StreamTo[IoBuf].at(sink, u64.from(k) + 1u64, 0usize, Some[CancelGroup](stop)));
+      k = k + 1u32;
+    }
+    settle(n);
+    atMost(u64.from(pool.lent() / blockBytes), 2u64 * n, "A: idle after one piece, two buffers a stream at most");
+    flags.second.store(1u64);
+    settle(2u64 * n);
+    expectUInt(flags.pieces.load(), 2u64 * n, "B: every second piece arrived");
+    atMost(u64.from(pool.lent() / blockBytes), 2u64 * n, "B: idle after two pieces, still two a stream at most");
+    _ = stop.cancel();
+    // the reads end by their cancel, which the runtime's being quiet does not wait for
+    var tries = 0u32;
+    while pool.lent() != 0usize && tries < 2000u32 {
+      thread.sleep(Duration.fromMillis(5i64));
+      tries = tries + 1u32;
+    }
+    actors.waitQuiet();
+    expectUInt(u64.from(pool.lent()), 0u64, "B: and all come home when the streams end");
+  }
+  // C
+  {
+    restart();
+    let before = iobuf.stats().lent;
+    var sinks = List[OldTakes]();
+    var k = 0u32;
+    while k < count {
+      let port = portOf();
+      let sink = OldTakes();
+      SocketSource(sink).start(SocketAddr.localhost(port));
+      sinks.push(sink);
+      k = k + 1u32;
+    }
+    settle(n);
+    expectUInt(iobuf.stats().lent - before, n, "C: today's source, idle after one piece, holds one a stream");
+    flags.second.store(1u64);
+    settle(2u64 * n);
+    expectUInt(iobuf.stats().lent - before, n, "C: and one after two");
+    k = 0u32;
+    while k < count {
+      sinks[usize.from(k)].quit();
+      k = k + 1u32;
+    }
+  }
+
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}
