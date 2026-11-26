@@ -14,7 +14,9 @@ known to be a variant, a writable borrow of the whole enum, a swap, a store thro
 reference, puts every variant back and remembers the change. The one place the knowledge is
 read is a member named on the name (`narrowReceiver`, from `fnCallTypeCheckNode`): if the
 member is the variant's alone and the name is narrowed to it, the use is typed as the
-variant. Nothing in flow, the loan walk or generation reads the facts.
+variant. Nothing in flow, the loan walk or generation reads the facts. The loan walk is told
+where a name itself was narrowed, to hold it against a `mut` borrow ("A name narrowed beside a
+`mut` borrow").
 
 *Provenance: read from source.*
 
@@ -92,13 +94,42 @@ narrowing it inherits from before it is good for its first pass: each such use i
 change made in the loop is noted, and at the loop's end a use a change reaches is
 `ErrorNarrowLoop`. Both are reported at the use.
 
+## A name narrowed beside a `mut` borrow
+
+A live borrow freezes a narrowed name. For a name held by value or through `uni`, `imm` or
+`mut1`, an exclusive borrow live at the test keeps the test from reading it, and a read-only
+one changes nothing. A `mut` borrow of a local, or of what a `uni` reference points at, is an
+alias loan: it freezes nothing, and may store another variant while the name is read as the one
+tested. There the rule is kept by the loan walk, as for a reference narrowed into a variant.
+
+The name is retyped and no node converts anything, so type check marks where a name is
+narrowed: the `is` test (`FlagNarrowTest`) and the store of a variant over it
+(`FlagNarrowAssigned`). At each, the walk asks whether a `mut` borrow is held of the place,
+of a place inside it, or of the reference variable it is reached through (`pwNarrowName`,
+`loanMutAliasAt`). Where one is, it makes a marked loan of the place (`loanNarrowName`),
+freezing nothing, held by a stand-in variable that bears the name. Every call made and every
+store that could change the variant while it is held pends on the stand-in (flow.md, "A change
+through another name"), and a use of the stand-in is each member of the variant named on the
+name (`FlagNarrowed`, `pwPlace`), where the refusal, `ErrorVariantReshape`, names the `mut`
+borrow. What is borrowed through such a member, and a narrowed reference handed on as the
+receiver, carries the loan too (`Place.narrow`, `pwLend`). Where none is held, nothing is done.
+
+A test or store that establishes the variant by itself drops what earlier ones held, so a name
+tested again after a change is accepted. Where what is known past a test rests on earlier ones
+too (`FlagNarrowKeeps`: two tests leaving one of three variants), their loans are kept beside
+its own, except in the arm of a test that establishes the variant alone
+(`FlagNarrowArmAlone`). A test inside a larger condition whose other path rests on earlier
+tests keeps them on both paths, which can refuse a change that came before the test.
+
 ## What it does not do
 
-- **It never proves a call harmless for a name held by value or through `uni`, `imm`, `mut1`.**
-  No other name can change the variant there: a local is reached only by itself, and a
-  borrow of it that is live when the test reads it freezes it (the loan walk's read of an
-  exclusively borrowed place). Only the name's own assignments, writable borrows of the whole
-  enum and swaps end the narrowing.
+- **It never proves a call harmless for a name held by value or through `uni`, `imm`, `mut1`,
+  in type check.** Only the name's own assignments, writable borrows of the whole enum and
+  swaps end the narrowing there; what another name may change is the loan walk's, above.
+- **It does not see a `mut` borrow of the reference variable made after the test.** `let r =
+  &mut p;` under `if p is Circle`, `p` a `uni` reference, ends no narrowing (`narrowBorrowed`
+  asks for a borrow of the enum) and none is held when the walk asks, so a call handed `r` is
+  not followed.
 - **It does not retype the name.** Only a member of the variant named on it sees the variant.
   Passing the name where the variant is wanted is still a type error, since the name is the
   original value (4c).
