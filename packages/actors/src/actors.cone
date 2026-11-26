@@ -6059,6 +6059,7 @@ pub struct Stats {
   pub monitorFinds: u64 = 0u64; // the monitor's finds: times it found a worker holding one turn for a whole tick with actors waiting in its queue, and moved the queue to the inject queue (THE MONITOR)
   pub monitorMoved: u64 = 0u64; // the actors those moves took off the queues
   pub refused: u64 = 0u64;      // sends from threads other than the workers refused because the stop had begun (THE STOP'S GATE); their messages were dropped by the senders
+  pub awaitsPending: u64 = 0u64;  // awaited operations (I/O, timers, FutureSet, orCancelled) started and not yet answered, read now; an actor awaiting another actor's behaviour is not counted
 }
 
 // What configure set, read when the workers start: atomics, since 'configure'
@@ -6123,6 +6124,7 @@ fn @initpure init() {
   stallState = Atomic[u32].of(0u32);
   opsStarted = Atomic[u64].of(0u64);
   opsEnded = Atomic[u64].of(0u64);
+  opsDoubled = Atomic[u64].of(0u64);
   startOnce = sync.Once.make();
   envOnce = sync.Once.make();
   floorBytes = Atomic[usize].of(defaultFloor);
@@ -6384,6 +6386,20 @@ pub fn waitQuiet() {
 let opsStarted: Atomic[u64];
 let opsEnded: Atomic[u64];
 
+// The orCancelledOp awaits counted twice just now: the await's envelope and the
+// operation started under it, neither spent (orcancelled.cone, OrCell's
+// 'twice'). waitUntilIdle waits for both; Stats.awaitsPending counts one
+let opsDoubled: Atomic[u64];
+
+// Stats.awaitsPending. The spent count is read first, as idleNow reads it; a
+// look between two of the counts' changes may fall below nothing, and is 0
+fn awaitsPendingNow() u64 {
+  let spent = opsEnded.loadOrdered(MemOrder.SeqCst);
+  let started = opsStarted.loadOrdered(MemOrder.SeqCst);
+  let less = spent + opsDoubled.loadOrdered(MemOrder.SeqCst);
+  if started > less {started - less} else {0u64}
+}
+
 // An awaited operation's reply is spent, by its answer (after the answer's
 // push, so that the actor it woke is already counted as scheduled) or by its
 // drop: count it, and, if none is now outstanding, wake a thread waiting for
@@ -6576,6 +6592,7 @@ pub fn stats() Stats {
   if n == 0u32 {
     var none = Stats(0u32, 0u64, 0u64, 0u64, 0u64);
     none.refused = refusedSends.loadOrdered(MemOrder.Relaxed);
+    none.awaitsPending = awaitsPendingNow();
     return none;
   }
   let slots = statSlots.load();
@@ -6595,6 +6612,7 @@ pub fn stats() Stats {
     i = i + 1u32;
   }
   st.refused = refusedSends.loadOrdered(MemOrder.Relaxed);
+  st.awaitsPending = awaitsPendingNow();
   st.monitorFinds = monitorFindsTotal.loadOrdered(MemOrder.Relaxed);
   st.monitorMoved = monitorMovedTotal.loadOrdered(MemOrder.Relaxed);
   st
