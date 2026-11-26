@@ -23,6 +23,8 @@
 //     bytes packed in a u32, multiplied and added: Slang's dot4add_i8packed and
 //     dot4add_u8packed, SPIR-V's OpSDot and OpUDot);
 //   - shaderSubgroupExtendedTypes: subgroup operations on 16-bit and 8-bit values;
+//   - shaderSignedZeroInfNanPreserveFloat16, 32 and 64 (VK_KHR_shader_float_controls, core in 1.2):
+//     properties, not enabled; a shader module that declares the mode for a width without it is refused;
 //   - the subgroup (a GPU's warp or wave): its size, the range of sizes, the
 //     shader stages that have subgroup operations (this layer's SHADER_STAGE_...
 //     bits) and which operations (SUBGROUP_OP_... bits, Vulkan's);
@@ -68,11 +70,12 @@
 // or 1.3, which this layer requires, so the core features are used);
 // subgroupSizeControl and computeFullSubgroups (a pipeline choosing its subgroup size: the
 // size is queried, a kernel that depends on 32 checks 'subgroupSize'); the cooperative-matrix
-// extensions (tensor cores: VK_KHR_cooperative_matrix) and 64-bit floats and integers;
+// extensions (tensor cores: VK_KHR_cooperative_matrix) and 64-bit floats and integers as features;
 // 16-bit and 8-bit values in immediates (storagePushConstant16/8) and in shader inputs and
 // outputs (storageInputOutput16); VK_EXT_memory_budget (the free
-// share of a heap, not its size); the Vulkan 1.2 properties (float controls, denormal
-// behaviour: a kernel that must not flush half denormals checks the GPU itself); raising
+// share of a heap, not its size); the float controls properties other than
+// SignedZeroInfNanPreserve (denormal and rounding behaviour: a kernel that must not flush
+// half denormals checks the GPU itself); raising
 // the compute workgroup limit above WebGPU's 256 invocations, or the dispatch count above
 // 65535 (the GPU allows 1024 invocations and more groups; the layer still holds programs to
 // WebGPU's, and gpuwork to 8 bindings); a device that is both a compute device and has
@@ -109,6 +112,12 @@ pub struct ComputeCapabilities {
   pub dot4x8PackedUnsignedAccelerated: bool = false;     // the unsigned form
   pub dot4x8PackedMixedAccelerated: bool = false;        // one signed and one unsigned
   pub dot8BitSignedAccelerated: bool = false;            // the unpacked 8-bit vector form (SPIR-V's DotProductInput4x8Bit)
+  // Whether the GPU keeps NaN, infinity and the sign of zero in a shader that asks it to, a float width at a time
+  // (properties, nothing to enable). A module that declares SignedZeroInfNanPreserve for a width the GPU does not
+  // offer is refused by 'createShaderModule'. Cone's kernels with 32-bit or 64-bit floats declare it.
+  pub signedZeroInfNanPreserve16: bool = false;          // shaderSignedZeroInfNanPreserveFloat16
+  pub signedZeroInfNanPreserve32: bool = false;          // shaderSignedZeroInfNanPreserveFloat32
+  pub signedZeroInfNanPreserve64: bool = false;          // shaderSignedZeroInfNanPreserveFloat64
   // The subgroup
   pub subgroupSize: u32 = 0u32;          // invocations in a subgroup (a compute shader's, unless its size is chosen)
   pub subgroupMinSize: u32 = 0u32;       // the range a pipeline may require (subgroupSizeControl, not enabled here)
@@ -179,8 +188,11 @@ fn stageBits(vk: u32) u32 {
 fn queryCompute(ifns: &InstFns, physical: vulkan.PhysicalDevice) ComputeCapabilities {
   var r = ComputeCapabilities();
   // Properties: Vulkan 1.1's (subgroup, allocation size), then 1.3's (subgroup range, dot products, buffer size)
+  var floats = zeroed[vulkan.PhysicalDeviceFloatControlsProperties]();
+  floats.sType = vulkan.STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
   var p13 = zeroed[vulkan.PhysicalDeviceVulkan13Properties]();
   p13.sType = vulkan.STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES;
+  p13.pNext = &mut floats as *u8;
   var p11 = zeroed[vulkan.PhysicalDeviceVulkan11Properties]();
   p11.sType = vulkan.STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
   p11.pNext = &mut p13 as *u8;
@@ -204,6 +216,9 @@ fn queryCompute(ifns: &InstFns, physical: vulkan.PhysicalDevice) ComputeCapabili
   r.dot4x8PackedUnsignedAccelerated = asBool(p13.integerDotProduct4x8BitPackedUnsignedAccelerated);
   r.dot4x8PackedMixedAccelerated = asBool(p13.integerDotProduct4x8BitPackedMixedSignednessAccelerated);
   r.dot8BitSignedAccelerated = asBool(p13.integerDotProduct8BitSignedAccelerated);
+  r.signedZeroInfNanPreserve16 = asBool(floats.shaderSignedZeroInfNanPreserveFloat16);
+  r.signedZeroInfNanPreserve32 = asBool(floats.shaderSignedZeroInfNanPreserveFloat32);
+  r.signedZeroInfNanPreserve64 = asBool(floats.shaderSignedZeroInfNanPreserveFloat64);
 
   r.subgroupSize = p11.subgroupSize;
   r.subgroupMinSize = p13.minSubgroupSize;
@@ -266,6 +281,9 @@ const CAP_STORAGE_BUFFER_8 = 4448u32;
 const CAP_UNIFORM_AND_STORAGE_8 = 4449u32;
 const CAP_DOT_PRODUCT_INPUT_ALL = 6016u32;
 const CAP_DOT_PRODUCT = 6019u32;
+const OP_EXECUTION_MODE = 16u32;
+const OP_FUNCTION = 54u32;
+const MODE_SIGNED_ZERO_INF_NAN_PRESERVE = 4461u32;
 
 // Whether the device 'has' enabled what each capability 'spirv' declares needs; if not, fail once, naming the first
 fn capabilitiesEnabled(spirv: &Array[u32], has: &ComputeCapabilities) bool {
@@ -299,6 +317,38 @@ fn capabilitiesEnabled(spirv: &Array[u32], has: &ComputeCapabilities) bool {
       return false;
     }
     i = i + 2usize;
+  }
+  true
+}
+
+// Whether the GPU offers each SignedZeroInfNanPreserve execution mode 'spirv' declares; if not, fail once, naming
+// the first. Vulkan forbids the mode where the property is false (VUID-RuntimeSpirv-
+// shaderSignedZeroInfNanPreserveFloat16-06293, ...Float32-06294, ...Float64-06295), so such a module is refused:
+// loading it would be undefined, and taking the mode out would change what its comparisons answer.
+// An OpExecutionMode is 'entry mode width'; they all come before the first function.
+fn floatModesOffered(spirv: &Array[u32], has: &ComputeCapabilities) bool {
+  var i = 5usize;                  // past the header
+  while i < spirv.len {
+    let word = spirv[i];
+    let count = usize.from(word >> 16u32);
+    let op = word & 0xFFFFu32;
+    if count == 0usize || op == OP_FUNCTION { return true; }
+    if op == OP_EXECUTION_MODE && count == 4usize && i + 3usize < spirv.len && spirv[i + 2usize] == MODE_SIGNED_ZERO_INF_NAN_PRESERVE {
+      let width = spirv[i + 3usize];
+      if width == 16u32 && !has.signedZeroInfNanPreserve16 {
+        fail("createShaderModule: the shader declares SignedZeroInfNanPreserve for 16-bit floats, which this GPU does not offer (shaderSignedZeroInfNanPreserveFloat16)");
+        return false;
+      }
+      if width == 32u32 && !has.signedZeroInfNanPreserve32 {
+        fail("createShaderModule: the shader declares SignedZeroInfNanPreserve for 32-bit floats, which this GPU does not offer (shaderSignedZeroInfNanPreserveFloat32)");
+        return false;
+      }
+      if width == 64u32 && !has.signedZeroInfNanPreserve64 {
+        fail("createShaderModule: the shader declares SignedZeroInfNanPreserve for 64-bit floats, which this GPU does not offer (shaderSignedZeroInfNanPreserveFloat64)");
+        return false;
+      }
+    }
+    i = i + count;
   }
   true
 }
