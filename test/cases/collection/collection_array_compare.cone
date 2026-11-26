@@ -1,0 +1,108 @@
+// '==' and '!=' on two fixed arrays of the same type compare them element by
+// element, each pair with the element type's own '==', as two slices are
+// compared (doc/manual/lib-collections.html#array, "Array"). Neither array is
+// moved. An array compared with a slice is compared as one.
+//
+// Each printed value was checked by hand: 1 where the two sides hold equal
+// elements and '==' was asked, or unequal ones and '!=' was.
+
+mod collection_array_compare;
+
+import stdio use *;
+
+fn show(label: &str, n: bool) {
+  printStr(label);
+  printStr(" ");
+  printInt(if n {1i64} else {0i64});
+  printStr("\n");
+}
+
+// An element type with its own '==', which ignores 'serial'
+struct Coin {
+  pub value: i32;
+  pub serial: i32;
+
+  pub fn `==`(self, other: Coin) bool {
+    self.value == other.value
+  }
+}
+
+fn three() Array[i32, 3] {
+  [1, 2, 3]
+}
+
+fn same(a: &Array[i32, 3], b: &Array[i32, 3]) bool {
+  a == b
+}
+
+fn matches(a: &Array[i32]) bool {
+  var b: Array[i32, 3] = [1, 2, 3];
+  b == a
+}
+
+fn main() {
+  var a: Array[i32, 3] = [1, 2, 3];
+  var b: Array[i32, 3] = [1, 2, 3];
+  var c: Array[i32, 3] = [1, 2, 4];
+  show("equal", a == b);                      // 1
+  show("equal-ne", a != b);                   // 0
+  show("unequal", a == c);                    // 0
+  show("unequal-ne", a != c);                 // 1
+  show("itself", a == a);                     // 1
+  show("literals", [1, 2, 3] == [1, 2, 3]);   // 1
+  show("literal-differs", a == [0, 2, 3]);    // 0
+  show("returned", three() == three());       // 1
+  show("returned-ne", three() != c);          // 1
+
+  // Nested arrays: only the last element of the second row differs
+  var m: Array[Array[i32, 2], 2] = [[1, 2], [3, 4]];
+  var n: Array[Array[i32, 2], 2] = [[1, 2], [3, 4]];
+  var p: Array[Array[i32, 2], 2] = [[1, 2], [3, 5]];
+  show("nested", m == n);                     // 1
+  show("nested-differs", m == p);             // 0
+  show("nested-ne", m != p);                  // 1
+  show("row", m[0] == n[0]);                  // 1
+
+  // Several sizes are nested arrays: only the last element differs
+  var g = Array[i32, 2, 2]() <- fill 7;
+  var h = Array[i32, 2, 2]() <- fill 7;
+  show("sizes", g == h);                      // 1
+  h[1][1] = 8;
+  show("sizes-differ", g == h);               // 0
+
+  // An array against an array reference, either way round
+  let sa = &[]a;
+  let sc = &[]c;
+  show("array-slice", b == sa);               // 1
+  show("slice-array", sa == b);               // 1
+  show("array-slice-differs", b == sc);       // 0
+  show("array-slice-ne", b != sc);            // 1
+  show("parameter-slice", matches(sc));       // 0
+
+  // References to two arrays compare the arrays
+  show("refs", same(&a, &b));                 // 1
+  show("refs-differ", same(&a, &c));          // 0
+  show("refs-ne", &a != &c);                  // 1
+
+  // Slices of arrays compare each array
+  show("slice-of-arrays", &[]m == &[]n);      // 1
+  show("slice-of-arrays-differs", &[]m == &[]p); // 0
+
+  // A struct's own '==': equal values, different serials
+  var x: Array[Coin, 2] = [Coin(5, 1), Coin(10, 2)];
+  var y: Array[Coin, 2] = [Coin(5, 3), Coin(10, 4)];
+  var z: Array[Coin, 2] = [Coin(5, 1), Coin(25, 2)];
+  show("struct", x == y);                     // 1
+  show("struct-differs", x == z);             // 0
+
+  // A tuple holding arrays
+  let t = (a, 1);
+  let u = (b, 1);
+  show("tuple-of-arrays", t == u);            // 1
+
+  // Floats compare by IEEE '==': NaN equals nothing, itself included
+  let zero = 0.0f32;
+  var f: Array[f32, 2] = [1.5f32, zero / zero];
+  show("nan", f == f);                        // 0
+  show("nan-ne", f != f);                     // 1
+}
