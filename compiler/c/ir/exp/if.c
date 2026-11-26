@@ -885,25 +885,146 @@ static void ifLiteralArmsFollow(IfNode *ifnode, INode **maybeType, TypeCompare *
     }
 }
 
+// What the branches of one 'if' give together as each is checked: how they join
+// (iexpMultiInfer), and what is known where those that do not leave end
+typedef struct IfArms {
+    TypeCompare match;
+    INode *maybeType;   // the type in common
+    NarrowEnv *armends; // where the branches that do not leave end, met
+    int livearms;
+    int joinlater;      // a branch waits, so all are joined once all are checked
+} IfArms;
+
+// A branch that waits for its siblings to say its type, and what was known going into it
+typedef struct IfWaitingArm {
+    INode **arm;
+    NarrowEnv *env;
+} IfWaitingArm;
+
+// The enum's name where a branch's value is a 'None', 'Ok(v)' or 'Err(e)', which
+// cannot say its own type (fnCallOpenVariantFamily), else NULL
+static Name *ifArmOpenFamily(INode *arm) {
+    if (arm->tag != BlockTag || (arm->flags & FlagTailSemi) || ((BlockNode *)arm)->stmts->used == 0)
+        return NULL;
+    return fnCallOpenVariantFamily(nodesLast(((BlockNode *)arm)->stmts));
+}
+
+// The type a waiting branch is wanted as: the enum of the first sibling, as
+// written, whose value is an Option (or Result) of known type arguments.
+// unknownType where no branch says, so the branch is refused where it stands.
+static INode *ifSiblingType(IfNode *ifnode, Name *family) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+        ++nodesp; --cnt;
+        if ((*nodesp)->tag != BlockTag || ifArmOpenFamily(*nodesp)
+            || ifBlockJumps((BlockNode *)*nodesp) || !isExpNode(*nodesp))
+            continue;
+        INode *dcl = iexpGetTypeDcl(*nodesp);
+        if (dcl->tag != StructTag)
+            continue;
+        // A value of a variant, 'Some(n)', says its enum
+        StructNode *enumdcl = structVariantEnum(dcl);
+        INode *type = enumdcl ? (INode*)enumdcl : ((IExpNode *)*nodesp)->vtype;
+        if (enumdcl == NULL)
+            enumdcl = (StructNode*)dcl;
+        if (enumdcl->namesym == family && (enumdcl->flags & EnumType) && enumdcl->genericinfo == NULL)
+            return type;
+    }
+    return unknownType;
+}
+
+// Join a checked branch's type with the others'
+static void ifArmJoin(INode *expectType, IfArms *arms, INode **nodesp) {
+    switch (iexpMultiInfer(expectType, &arms->maybeType, nodesp)) {
+    case NoMatch:
+        arms->match = NoMatch;
+        break;
+    case CastSubtype:
+        if (arms->match != NoMatch)
+            arms->match = CastSubtype;
+        break;
+    case ConvSubtype:
+        if (arms->match != NoMatch)
+            arms->match = ConvSubtype;
+        break;
+    default:
+        break;
+    }
+}
+
+// Type check the node performed when a condition is true. 'wanted' is what the
+// branch is checked against: the if's expected type, or the one its siblings say
+static void ifArmCheck(TypeCheckState *pstate, INode *expectType, INode *wanted, INode **nodesp, IfArms *arms) {
+    char *leavewhy = NULL;                      // what a let-else's 'else' lacks (unused here)
+    BlockNode *armblk = (*nodesp)->tag == BlockTag ? (BlockNode *)*nodesp : NULL;
+    if (armblk)
+        narrowAnchorArm(armblk, (uint16_t)(pstate->scope + 1));
+    uint32_t killmark = narrowKillMark();
+    int armtyped = iexpTypeCheckCoerce(pstate, wanted, nodesp);
+    if (armblk)
+        narrowInsertHeads(armblk);
+    if (ifBlockJumps((BlockNode *)*nodesp)) {
+        // A branch that leaves the loop takes its changes with it; one that
+        // continues the loop carries them to its next pass
+        if (nodesLast(((BlockNode *)*nodesp)->stmts)->tag != ContinueTag)
+            narrowKillDrop(killmark);
+    }
+    // A branch that leaves on every path, the last of them through an inner 'if' or
+    // block (the 'else' of a let-else, or the branch of an ordinary 'if'), is no path
+    // out either, so the variant is known after it, as after one that ends in a jump.
+    // Its changes are kept, as a 'continue' keeps them, since some of its paths may
+    // continue a loop.
+    else if (armblk && ifBlockFallsOut(armblk, &leavewhy) == NULL)
+        ;
+    else {
+        NarrowEnv *end = narrowSave();
+        arms->armends = arms->livearms++ ? narrowJoin(arms->armends, end) : end;
+    }
+    if (!armtyped) {
+        errorMsgNode(*nodesp, ErrorInvType, "Expression does not match expected type.");
+        arms->match = NoMatch;
+    }
+    else if (!isExpNode(*nodesp)) {
+        arms->match = NoMatch;
+    }
+    // A block that jumps away -- a 'return', or a call that does not
+    // return -- gives the 'if' no value, so has no say in its type
+    else if (ifBlockJumps((BlockNode *)*nodesp))
+        ;
+    // A branch that is a literal waits for the others to say its type (ifLiteralArmsFollow)
+    else if (expectType == unknownType && ifArmIsLiteral(*nodesp))
+        ;
+    else if (!arms->joinlater)
+        ifArmJoin(expectType, arms, nodesp);
+}
+
 // Type check the if statement node
 // - Every conditional expression must be a bool
 // - else can only be last
 // All branches must resolve to either the expected type or the same inferred supertype
 // Coercion is performed on branches as needed to accomplish this, or errors result
+// With no expected type, a branch that is a 'None', 'Ok(v)' or 'Err(e)' is checked
+// after the others, wanted as the type a sibling branch has
 void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     int hasElse = 0;
-    TypeCompare match = EqMatch;
-    INode *maybeType = unknownType;
+    IfArms arms = {EqMatch, unknownType, NULL, 0, 0};
     INode **nodesp;
     uint32_t cnt;
+    if (expectType == unknownType) {
+        for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+            ++nodesp; --cnt;
+            if (ifArmOpenFamily(*nodesp))
+                arms.joinlater = 1;
+        }
+    }
     int condErrors = 0;     // a condition (a match's pattern) was reported
+    IfWaitingArm *waiting = NULL;   // the branches that wait for their siblings' type
+    uint32_t nwaiting = 0;
     // Flow typing: each condition is checked knowing the ones before it were false, and
     // its branch knowing it was true (narrow.h)
     NarrowEnv *pathenv = narrowSave();  // what holds going into the next condition
-    NarrowEnv *armends = NULL;          // where the branches that do not leave end, met
-    int livearms = 0;
     int direct = narrowIsStmt((INode*)ifnode);  // a statement of its block
-    char *leavewhy = NULL;                      // what a let-else's 'else' lacks (unused here)
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
         narrowRestore(pathenv);
 
@@ -946,62 +1067,33 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
 
         // Validate the node performed when previous condition is true
         ++nodesp; --cnt;
-        BlockNode *armblk = (*nodesp)->tag == BlockTag ? (BlockNode *)*nodesp : NULL;
-        if (armblk)
-            narrowAnchorArm(armblk, (uint16_t)(pstate->scope + 1));
-        uint32_t killmark = narrowKillMark();
-        int armtyped = iexpTypeCheckCoerce(pstate, expectType, nodesp);
-        if (armblk)
-            narrowInsertHeads(armblk);
-        if (ifBlockJumps((BlockNode *)*nodesp)) {
-            // A branch that leaves the loop takes its changes with it; one that
-            // continues the loop carries them to its next pass
-            if (nodesLast(((BlockNode *)*nodesp)->stmts)->tag != ContinueTag)
-                narrowKillDrop(killmark);
+        if (arms.joinlater && ifArmOpenFamily(*nodesp)) {
+            if (waiting == NULL)
+                waiting = (IfWaitingArm *)memAllocBlk(ifnode->condblk->used * sizeof(IfWaitingArm));
+            waiting[nwaiting].arm = nodesp;
+            waiting[nwaiting++].env = narrowSave();
         }
-        // A branch that leaves on every path, the last of them through an inner 'if' or
-        // block (the 'else' of a let-else, or the branch of an ordinary 'if'), is no path
-        // out either, so the variant is known after it, as after one that ends in a jump.
-        // Its changes are kept, as a 'continue' keeps them, since some of its paths may
-        // continue a loop.
-        else if (armblk && ifBlockFallsOut(armblk, &leavewhy) == NULL)
-            ;
-        else {
-            NarrowEnv *end = narrowSave();
-            armends = livearms++ ? narrowJoin(armends, end) : end;
-        }
-        if (!armtyped) {
-            errorMsgNode(*nodesp, ErrorInvType, "Expression does not match expected type.");
-            match = NoMatch;
-        }
-        else if (!isExpNode(*nodesp)) {
-            match = NoMatch;
-        }
-        // A block that jumps away -- a 'return', or a call that does not
-        // return -- gives the 'if' no value, so has no say in its type
-        else if (ifBlockJumps((BlockNode *)*nodesp))
-            ;
-        // A branch that is a literal waits for the others to say its type (ifLiteralArmsFollow)
-        else if (expectType == unknownType && ifArmIsLiteral(*nodesp))
-            ;
-        else {
-            switch (iexpMultiInfer(expectType, &maybeType, nodesp)) {
-            case NoMatch:
-                match = NoMatch;
-                break;
-            case CastSubtype:
-                if (match != NoMatch)
-                    match = CastSubtype;
-                break;
-            case ConvSubtype:
-                if (match != NoMatch)
-                    match = ConvSubtype;
-                break;
-            default:
-                break;
-            }
+        else
+            ifArmCheck(pstate, expectType, expectType, nodesp, &arms);
+    }
+    // Their siblings are all checked: each takes the type one of them says
+    for (uint32_t i = 0; i < nwaiting; ++i) {
+        narrowRestore(waiting[i].env);
+        ifArmCheck(pstate, expectType, ifSiblingType(ifnode, ifArmOpenFamily(*waiting[i].arm)),
+            waiting[i].arm, &arms);
+    }
+    // Joined in the order written, so a mismatch is reported where it would be
+    if (arms.joinlater) {
+        for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+            ++nodesp; --cnt;
+            if (isExpNode(*nodesp) && !ifBlockJumps((BlockNode *)*nodesp) && !ifArmIsLiteral(*nodesp))
+                ifArmJoin(expectType, &arms, nodesp);
         }
     }
+    TypeCompare match = arms.match;
+    INode *maybeType = arms.maybeType;
+    NarrowEnv *armends = arms.armends;
+    int livearms = arms.livearms;
 
     // A match must cover every value it can be shown to, or end in 'else'; a match whose
     // cases cover them all ends in one
