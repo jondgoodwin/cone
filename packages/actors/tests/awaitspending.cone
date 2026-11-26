@@ -1,0 +1,144 @@
+// actors.stats().awaitsPending: the awaited operations started and not yet
+// answered. Each await counts once, orCancelledOp's too, which the runtime
+// counts twice inside while it is open (the await's envelope and the operation
+// under it). After a cancel has woken it, the operation it left behind is still
+// outstanding, and counts until it is answered. An actor awaiting another
+// actor's behaviour is not counted. 'waitQuiet' returns once each behaviour has
+// parked.
+
+mod awaitspending;
+
+import testing use *;
+import libc;
+import actors;
+import cancelgroups use *;
+
+// The address of the envelope the hung operation keeps, and what woke
+let hung: Atomic[u64];
+let ok: Atomic[u64];
+let woken: Atomic[u64];
+
+fn @initpure init() {
+  hung = Atomic[u64].of(0u64);
+  ok = Atomic[u64].of(0u64);
+  woken = Atomic[u64].of(0u64);
+}
+
+// An operation that keeps its envelope, for the test to answer or drop
+fn hungOp() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) {
+    let b = libc.malloc(mem.sizeof[actors.ReplyOf[u64]]());
+    mem.writeRaw[actors.ReplyOf[u64]](b as *actors.ReplyOf[u64], rp);
+    hung.store(u64.from(b as usize));
+  })
+}
+
+fn instantOp() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) {rp.answer(1u64);})
+}
+
+fn hungAnswer() {
+  let b = usize.from(hung.load()) as *actors.ReplyOf[u64];
+  hung.store(0u64);
+  let rp = mem.readRaw[actors.ReplyOf[u64]](b);
+  libc.free(b as *u8);
+  rp.answer(7u64);
+}
+
+fn hungDrop() {
+  let b = usize.from(hung.load()) as *actors.ReplyOf[u64];
+  hung.store(0u64);
+  let rp = mem.readRaw[actors.ReplyOf[u64]](b);
+  libc.free(b as *u8);
+}
+
+actor Other {
+  pub async fn ask(self) u64 {await hungOp()}
+}
+
+actor Asker {
+  pub async fn plain(self) {
+    let v = await hungOp();
+    ok.add(1u64);
+  }
+
+  pub async fn once(self) {
+    match await actors.orCancelledOp(hungOp()) {
+      case let Ok(v) {ok.add(1u64);}
+      case let Err(c) {woken.add(1u64);}
+    }
+  }
+
+  pub async fn instant(self) {
+    match await actors.orCancelledOp(instantOp()) {
+      case let Ok(v) {ok.add(1u64);}
+      case let Err(c) {woken.add(1u64);}
+    }
+  }
+
+  pub async fn onActor(self, other: Other) {
+    let v = await other.ask();
+    ok.add(1u64);
+  }
+}
+
+fn pending(n: u64, what: &Array[u8]) {
+  actors.waitQuiet();
+  expectUInt(actors.stats().awaitsPending, n, what);
+}
+
+fn main() i32 {
+  initAll();
+  expectUInt(actors.stats().awaitsPending, 0u64, "before any actor");
+  actors.configure(actors.Options(workers: 2u32));
+  let a = Asker();
+
+  a.plain();
+  pending(1u64, "a plain await");
+  hungAnswer();
+  pending(0u64, "... answered");
+
+  a.plain();
+  pending(1u64, "a plain await again");
+  hungDrop();
+  pending(0u64, "... its operation dropped unanswered");
+
+  a.once();
+  pending(1u64, "orCancelledOp, parked, counts once");
+  hungAnswer();
+  pending(0u64, "... answered");
+
+  let g1 = CancelGroup.make();
+  actors.withGroup(&g1, fn() [a] { a.once(); });
+  pending(1u64, "orCancelledOp in a group counts once");
+  g1.cancel();
+  pending(1u64, "... woken by the cancel: the operation left behind is outstanding");
+  hungAnswer();
+  pending(0u64, "... and answered late");
+
+  let g2 = CancelGroup.make();
+  actors.withGroup(&g2, fn() [a] { a.once(); });
+  pending(1u64, "orCancelledOp whose operation will be dropped");
+  hungDrop();
+  pending(1u64, "... dropped: only the cancel can wake the await, still outstanding");
+  g2.cancel();
+  pending(0u64, "... cancelled");
+
+  let g3 = CancelGroup.make();
+  g3.cancel();
+  actors.withGroup(&g3, fn() [a] { a.once(); });
+  pending(0u64, "orCancelledOp in a cancelled group starts nothing");
+
+  a.instant();
+  pending(0u64, "orCancelledOp answered as it starts");
+
+  let other = Other();
+  a.onActor(other);
+  pending(1u64, "an actor awaiting another is not counted: only the other's operation");
+  hungAnswer();
+  pending(0u64, "... answered");
+
+  expectUInt(ok.load(), 4u64, "the awaits that ended with an answer");
+  expectUInt(woken.load(), 3u64, "... and woken by a cancel");
+  done()
+}
