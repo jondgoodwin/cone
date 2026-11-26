@@ -96,7 +96,7 @@
 //                                                               Result[Server, ServerError]
 //   ServerConfig.make()  cfg.secure(tlsServerConfig)  cfg.offerHttp2()  cfg.maxBody cfg.maxPending cfg.conn
 //   cfg.offerHttp3(maker)   HTTP/3 beside it, through a plug-in (h3driver's)       (HTTP/3)
-//   server.next()  server.close()  server.closed()  server.waiting()  server.clone()  server.port() localAddr() isSecure() offersHttp3()
+//   server.next()  server.close()  server.closed()  server.waiting()  server.refusedBuffers()  server.clone()  server.port() localAddr() isSecure() offersHttp3()
 //   Server.none()  server.isNone()          next(): the next request, an Exchange  Result[Exchange, ServerError]
 //   ex.request (Request: head body peer secure; path() query() methodName() header(name))
 //   ex.respond(head, body)  ex.text(status, text)                  a whole response (not awaited)
@@ -469,6 +469,16 @@
 // connection by message, and a write or finish answers Closed once the connection has ended. A body sent 'to' a
 // sink gets the connection's own buffers, and a buffer's credit returns when the sink gives it back. Not on a
 // routed server: HTTP/3, and 'bodySink' (the response's sink).
+//
+// A RESPONSE THE POOL REFUSES. A client that asks and does not read fills the buffer pool, so the buffers a
+// response's bytes are copied into are tryMake (iobuf, THE RESERVE), never a plain construction, which would panic
+// the process at the bound. Refused, the one request fails and the server goes on: HTTP/2 and 3 reset that stream
+// (INTERNAL_ERROR, H3_INTERNAL_ERROR; for an answer of the server's own to a request the program never had,
+// REFUSED_STREAM or H3_REQUEST_REJECTED), HTTP/1.1 ends that connection at once; the handler's write answers Closed,
+// as when the client leaves; and 'await server.refusedBuffers()' counts it (httpconn.ServerProto's 'reset'). This
+// bounds the harm, not the pile-up: nothing yet bounds what one connection may have queued, and while the pool is
+// full other buffers a connection needs (a TLS record's, an HTTP/3 frame head's) can be refused too, which ends that
+// connection. A client's request body refused so fails that fetch, Overloaded.
 //
 // The queue route's waiting requests are named to the server by (connection, request) and their bytes stay in
 // the connection. Only live ones count against maxPending: a request whose peer has gone (its connection
