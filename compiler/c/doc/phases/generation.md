@@ -2556,11 +2556,24 @@ and run on a GPU by `packages/gpuwork/tests/kernels.cone`.
 **A kernel's float `min`, `max` and `clamp` do not keep the NaN ruling (a stated
 exception, design chat and Jon, 6 Nov 2026).** The CPU propagates NaN: a float's `min`,
 `max` and `clamp` are `llvm.minimum` and `llvm.maximum`. On SPIR-V the back end selects
-`NMin` and `NMax` for those same intrinsics (read from `--asm`). Vulkan lets a driver assume
-there are no NaNs unless a kernel declares `SignedZeroInfNanPreserve`, an optional feature,
-which Cone does not declare. So a kernel answers as it always has, and the NaN and the
-`-0.0` answers of the CPU are not promised there. None of this has been run on a GPU;
+`NMin` and `NMax` for those same intrinsics (read from `--asm`), which give the other value
+where one is a NaN. So the NaN and the `-0.0` answers of the CPU's `min`, `max` and `clamp`
+are not promised in a kernel. None of this has been run on a GPU;
 `module_target_spirv_numbers` pins only the instructions selected.
+
+**IEEE comparisons in a kernel** (`genlGpuFloatPreserve`). Vulkan lets a driver assume a
+float is never a NaN or an infinity, and the sign of a zero not matter, unless the module
+declares `SignedZeroInfNanPreserve`: undeclared, the RTX 4060 answered `t != t` false and
+`t == t` true for a NaN out of `trunc`, `floor`, `ceil`, `round`, `sqrt` or `fma`. A module
+with 32-bit floats declares it for 32 bits, one with 64-bit floats for 64, on every entry
+point, with its capability (before SPIR-V 1.4, with `SPV_KHR_float_controls`); a module with
+neither declares nothing. LLVM 23's backend writes the execution mode from
+`!spirv.ExecutionMode` metadata but not the capability, so both are added to the emitted
+module, and to `--asm`'s text (`genlGpuFloatPreserveAsm`): `module_target_spirv_floatpreserve`,
+`module_target_spirv_nopreserve`, `module_target_spirv_floatclass`, and the `compares` kernel
+of `packages/gpuwork/tests/kernels.cone` on a GPU. It is a device property
+(`shaderSignedZeroInfNanPreserveFloat32` and `64`), not a feature to enable, and `gpu` does
+not read it.
 
 `module_target_spirv_math` pins the intrinsics and the instructions (its
 `asm` check reads `--asm`'s `.spvasm`). The double forms of `sqrt`, `fabs`,
@@ -2893,6 +2906,7 @@ compile writes its bitcode, and the objects are made at the link).
 | | `genlGpuBufferAccess` | a struct or array loaded from or stored into a storage buffer a scalar at a time |
 | | `genlGpuOut`, `genlGpuPatch` | the Vulkan form's module emitted to memory, `OpArrayLength` and the source files' list written into it |
 | | `genlGpuNoContraction`, `genlGpuNoContractionAsm` | every float operation's result but a remainder's decorated `NoContraction`, in the module and in `--asm`'s text (section 7, "The C library's math") |
+| | `genlGpuFloatPreserve`, `genlGpuFloatPreserveAsm` | `SignedZeroInfNanPreserve` declared on every entry point of a module with floats, in the module and in `--asm`'s text (section 7, "IEEE comparisons in a kernel") |
 | `genllvm/genlgpusync.c` | `genlGpuAtomics`, `genlGpuAtomicConstPtr`, `genlGpuCompareSwap`, `genlGpuAtomicSite` | on a GPU target, after optimization, each atomic's scope and ordering from its memory, an atomic at a constant place reached by an address-computing instruction, a compareSwap as `llvm.spv.cmpxchg`, one on unshared memory refused in a kernel (`ErrorGpuAtomicPlace`) (section 7, "What invocations share") |
 | | `genlGpuBarrier`, `genlGpuGlobalSpace` | the two barriers as LLVM's SPIR-V intrinsics; a `@workgroup` global's address space |
 | | `genlCpuBarrier` | a barrier on a native target: the thread's barrier hook called when it is set (section 7, "Barriers on the CPU") |
