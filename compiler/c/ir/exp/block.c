@@ -622,7 +622,7 @@ static void blockResultCount(INode **retexp, INode *result, size_t startpos) {
             blockResultCount(elemp, *elemp, startpos);
         return;
     }
-    if (iexpIsMove(*retexp) || !flowIsKeptRead(*retexp) || flowScopeHandsBack(startpos, result))
+    if (flowValueMoves(*retexp) || !flowIsKeptRead(*retexp) || flowScopeHandsBack(startpos, result))
         return;
     flowInjectRefCount(retexp);
 }
