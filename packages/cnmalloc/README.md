@@ -140,11 +140,11 @@ The specification is `WI\cnmalloc-second-design-spec.md`; the comment above "THE
 the one above `lf_alloc` in `shim/cn_shim.c` hold the layout and the rules. The default behind the shim on Windows (row 533);
 under the lock design nothing here is reached.
 
-**What it costs and buys** (Windows, 24-thread x64 laptop, row 533's run, 23 Nov 2026): against the lock design, faster
+**What it costs and buys** (Windows, 24-thread x64 machine, row 533's run, 23 Nov 2026): against the lock design, faster
 or level on every row measured but one, and 4.5 to 10 times faster once several pairs of threads free each other's
 blocks; a single producer-consumer pair of threads pays about 10 ns more for each cross-thread free (a C program on the
-shim, or Cone actors, whose workers cache nothing at the default `cache=0`). Peak memory was 0.1 to 1.4 MiB higher on
-those rows.
+shim, or Cone actors, whose workers cache nothing at the default `cache=0`). Peak memory was between 0.2 MiB lower
+and 1.4 MiB higher.
 One shared heap, the same 64 KiB pages, size classes, large blocks, page pool and give-back; the lock per class stays, for the slow
 paths only.
 
