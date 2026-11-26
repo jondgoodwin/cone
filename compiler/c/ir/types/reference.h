@@ -220,4 +220,7 @@ TypeCompare refvirtMatches(RefNode *to, RefNode *from, SubtypeConstraint constra
 // Return a type that is the supertype of both type nodes, or NULL if none found
 INode *refFindSuper(INode *type1, INode *type2);
 
+// The type two references differing only in permission meet as, or NULL
+INode *refPermJoin(INode *type1, INode *type2);
+
 #endif
