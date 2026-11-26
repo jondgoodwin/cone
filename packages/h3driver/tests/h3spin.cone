@@ -1,0 +1,478 @@
+// An HTTP/3 server connection actor takes up an owed turn once (actorhttp's h3endpoint.cone; row 811, Bug 128). A turn
+// that runs out of its rounds sets 'wantsTurn', which only 'startTurn' clears: an actor that never called it handled
+// about 900,000 messages a second on one core, from one connection, long after its peer had left, until QUIC's idle
+// timeout. Two raw QUIC peers (the quic package, no HTTP/3 of their own, as examples/h3atk's rows 'ctl' and 'data')
+// open 100 request streams, each a complete POST head and a DATA frame announcing 1 MiB, write it in pieces (1 byte,
+// or random sizes) for 1.5 s, and leave without closing. Within a second the process's actor messages stop rising (two
+// counts 100 ms apart), while the endpoint still holds the connections (they have not ended: the quiet is the actor's).
+//
+// Honest traffic reaches the same rounds: a routed server answering two 4 MB downloads and a 2 MB upload from the actor
+// client leaves its connection actor quiet too (with the turn never started, it spins after them).
+
+mod h3spin;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, Op, Target, Handle, SocketAddr, Completion;
+import sync use Channel, Sender, Receiver;
+import tls;
+import thread;
+import actors;
+import quic;
+import actorhttp use H3Endpoint, H3EndpointConfig, H3BoundEndpoint, startH3Endpoint, HttpClient, Server, ServerConfig,
+  HttpRoutes, Exchange, liveClientConnActors;
+import http use *;
+import httpclient;
+import aio;
+import h3driver use *;
+import testing use *;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  String()
+}
+
+// ---------------------------------------------------------------------------
+// The raw peer
+// ---------------------------------------------------------------------------
+
+const tag = 0x5Au64;
+
+struct Raw {
+  q: quic.Connection;
+  h: Handle;
+  peer: SocketAddr;
+  sends: u32;
+  up: bool;
+  opened: bool;
+  closed: bool;
+  streams: List[i64];
+  written: List[u64];
+}
+
+fn tok(i: usize, k: u64) u64 {(tag << 56u64) | (u64.from(i) << 8u64) | k}
+
+fn newRaw(lp: &mut Loop, cctx: &quic.Context, port: u16) Option[Raw] {
+  match lp.bindUdp(SocketAddr.localhost(0u16)) {
+    case let Ok(h) {
+      var lq = quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 0u16);
+      match lp.localAddr(h) {
+        case let Ok(a) {lq = quic.Addr.v4(127u8, 0u8, 0u8, 1u8, a.port());}
+        case let Err(e) {}
+      }
+      let rq = quic.Addr.v4(127u8, 0u8, 0u8, 1u8, port);
+      match quic.Connection.client(cctx, "localhost", &lq, &rq, Instant.now()) {
+        case let Ok(q) {
+          var r = Raw(q, h, SocketAddr.localhost(port), 0u32, false, false, false, List[i64](), List[u64]());
+          return Some[Raw](r);
+        }
+        case let Err(e) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  None
+}
+
+fn post(lp: &mut Loop, r: &mut Raw, i: usize) {
+  var k = 0u32;
+  while k < 4u32 {
+    match IoBuf.tryMake(2048usize) {
+      case var Some(b) {lp.submit(Op.RecvFrom(r.h, b), Target.Here(tok(i, 0u64)));}
+      else {}
+    }
+    k = k + 1u32;
+  }
+}
+
+fn rnd(x: &mut u64) u64 {
+  var v = *x;
+  v = v ^ (v << 13u64);
+  v = v ^ (v >> 7u64);
+  v = v ^ (v << 17u64);
+  *x = v;
+  v
+}
+
+// The control stream, then 100 request streams: HEADERS (a POST) and the start of a DATA frame of 1 MiB
+fn openStreams(r: &mut Raw) {
+  match r.q.openUni() {
+    case let Some(id) {
+      var c = Array[u8, 3]() <- fill 0u8;
+      c[1usize] = 4u8;
+      let ok = r.q.writeBytes(id, &c[0usize ..< 3usize]);
+    }
+    case is None[i64] {return;}
+  }
+  var nb = 0usize;
+  while nb < 100usize {
+    match r.q.openBidi() {
+      case let Some(id) {
+        let host = "localhost";
+        var k = 0usize;
+        var f = Array[u8, 32]() <- fill 0u8;
+        f[0usize] = 1u8; f[1usize] = 16u8;
+        f[2usize] = 0u8; f[3usize] = 0u8; f[4usize] = 0xD4u8; f[5usize] = 0xD7u8; f[6usize] = 0xC1u8;
+        f[7usize] = 0x50u8; f[8usize] = 9u8;
+        while k < 9usize {f[9usize + k] = host[k]; k = k + 1usize;}
+        f[18usize] = 0u8; f[19usize] = 0x80u8; f[20usize] = 0x10u8; f[21usize] = 0u8; f[22usize] = 0u8;
+        let ok = r.q.writeBytes(id, &f[0usize ..< 23usize]);
+        r.streams.push(id);
+        r.written.push(0u64);
+      }
+      case is None[i64] {}
+    }
+    nb = nb + 1usize;
+  }
+  r.opened = true;
+}
+
+fn events(r: &mut Raw) {
+  var going = true;
+  while going {
+    match r.q.pollEvent() {
+      case is Nothing {going = false;}
+      case is HandshakeDone {r.up = true;}
+      case is VerifyNeeded {r.q.verifyNow();}
+      case let PeerStream(p) {}
+      case let Data(d) {r.q.release(d.stream, d.buf.len());}
+      case let Reset(x) {}
+      case let WriteStopped(x) {}
+      case let MoreStreams(m) {}
+      case let Closed(x) {
+        r.closed = true;
+        going = false;
+      }
+    }
+  }
+}
+
+fn transmit(lp: &mut Loop, r: &mut Raw, i: usize, now: Instant) bool {
+  var any = false;
+  while r.sends < 16u32 && !r.closed {
+    let b = r.q.pollTransmit(now);
+    if b.len() == 0usize {break;}
+    any = true;
+    r.sends = r.sends + 1u32;
+    lp.submit(Op.SendTo(r.h, r.peer, b), Target.Here(tok(i, 1u64)));
+  }
+  any
+}
+
+// Run 'conns' raw peers against 'port' for 'ms' milliseconds, writing pieces of 1..maxp bytes round robin to their
+// streams. They stop there: no close is sent, and nothing more is read. How many handshakes completed
+fn attack(lp: &mut Loop, raws: &mut List[Raw], port: u16, conns: usize, maxp: u64, ms: i64) usize {
+  var cfg = quic.Config.make();
+  cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  var ups = 0usize;
+  match quic.Context.client(cfg) {
+    case let Ok(c) {
+      var i = 0usize;
+      while i < conns {
+        match newRaw(lp, &c, port) {
+          case var Some(r) {
+            raws.push(r);
+            let at = raws.len() - 1usize;
+            post(lp, &mut raws[at], at);
+          }
+          case is None[Raw] {}
+        }
+        i = i + 1usize;
+      }
+      var seed = 88172645463325252u64;
+      let end = Instant.now() + Duration.fromMillis(ms);
+      while Instant.now() < end {
+        let now = Instant.now();
+        var busy = false;
+        var k = 0usize;
+        ups = 0usize;
+        while k < raws.len() {
+          let r = &mut raws[k];
+          if !r.closed {
+            events(r);
+            if r.up {ups = ups + 1usize;}
+            if r.up && !r.opened {openStreams(r);}
+            if r.opened && !r.closed {
+              let s = stats();
+              if s.lent < 4000u64 {
+                var q = 0usize;
+                while q < r.streams.len() {
+                  var n = usize.from(rnd(&mut seed) % maxp) + 1usize;
+                  var buf = Array[u8, 4096]() <- fill 0x62u8;
+                  if n > 4096usize {n = 4096usize;}
+                  if r.written[q] < 1000000u64 {
+                    let ok = r.q.writeBytes(r.streams[q], &buf[0usize ..< n]);
+                    r.written[q] = r.written[q] + u64.from(n);
+                    busy = true;
+                  }
+                  q = q + 1usize;
+                }
+              }
+            }
+            if transmit(lp, r, k, now) {busy = true;}
+          }
+          k = k + 1usize;
+        }
+        var limit = end;
+        k = 0usize;
+        while k < raws.len() {
+          match raws[k].q.wakeAt() {
+            case let Some(t) {if t < limit {limit = t;}}
+            case is None[Instant] {}
+          }
+          k = k + 1usize;
+        }
+        if busy {limit = Instant();}
+        var cs = List[Completion]();
+        lp.poll(limit, &mut cs);
+        var j = 0usize;
+        while j < cs.len() {
+          let c2 = &mut cs[j];
+          j = j + 1usize;
+          if (c2.token >> 56u64) != tag {continue;}
+          let idx = usize.from((c2.token >> 8u64) & 0xFFFFFFu64);
+          let kind = c2.token & 0xFFu64;
+          if idx >= raws.len() {continue;}
+          let r = &mut raws[idx];
+          if kind == 0u64 {
+            if c2.isDone() && c2.buf.len() > 0usize && !r.closed {
+              r.q.handleInput(mem.sliceFromParts(c2.buf.base(), c2.buf.len()), Instant.now());
+            }
+            if !r.closed && c2.isDone() {
+              match IoBuf.tryMake(2048usize) {
+                case var Some(b) {lp.submit(Op.RecvFrom(r.h, b), Target.Here(c2.token));}
+                else {}
+              }
+            }
+          } else {
+            if r.sends > 0u32 {r.sends = r.sends - 1u32;}
+          }
+        }
+      }
+    }
+    case let Err(e) {}
+  }
+  ups
+}
+
+// ---------------------------------------------------------------------------
+// The endpoint and what it holds
+// ---------------------------------------------------------------------------
+
+actor Prober {
+  pub async fn ask(self, e: H3Endpoint, out: Sender[u32]) {
+    let c = await e.connections();
+    out.send(c);
+  }
+}
+
+fn held(e: &H3Endpoint) u32 {
+  var tx: Sender[u32];
+  var rx: Receiver[u32];
+  tx, rx = Channel[u32].make();
+  Prober().ask(*e, tx);
+  match rx.recvTimeout(Duration.fromMillis(4000i64)) {
+    case let Some(c) {return c;}
+    case is None[u32] {}
+  }
+  panic("the endpoint did not answer")
+}
+
+fn startEndpoint() H3BoundEndpoint {
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  let scfg = tls.ServerConfig.make(&cert, &key);
+  let plug = Plugin.make(Config.make());
+  let acc = match plug.acceptor(&scfg) {
+    case var Ok(a) {a}
+    case let Err(f) {panic("no acceptor")}
+  };
+  match startH3Endpoint(SocketAddr.localhost(0u16), acc, H3EndpointConfig.make()) {
+    case var Ok(b) {return b;}
+    case let Err(e) {}
+  }
+  panic("the endpoint could not bind")
+}
+
+fn nap(ms: i64) {thread.sleep(Duration.fromMillis(ms));}
+
+// The actor messages handled in the 100 ms from now
+fn messagesIn100ms() u64 {
+  let before = actors.stats().messages;
+  nap(100i64);
+  actors.stats().messages - before
+}
+
+// One row: attack, leave, and the messages must stop within a second
+fn row(name: &str, conns: usize, maxp: u64) {
+  let ep = startEndpoint();
+  var lp = Loop.mustMake();
+  var raws = List[Raw]();
+  let ups = attack(&mut lp, &mut raws, ep.port, conns, maxp, 1500i64);
+  expectUInt(u64.from(ups), u64.from(conns), "every raw peer completed its handshake and wrote");
+  let until = Instant.now() + Duration.fromMillis(1000i64);
+  var last = messagesIn100ms();
+  while last >= 2000u64 && Instant.now() < until {last = messagesIn100ms();}
+  if last >= 2000u64 {
+    printStr(name);
+    printStr(": messages in the last 100 ms: ");
+    printUInt(last);
+    printStr("\n");
+  }
+  expect(last < 2000u64, "the connection actors stop handling messages once their peer has left");
+  expectUInt(u64.from(held(&ep.endpoint)), u64.from(conns), "the connections have not ended: the quiet is theirs");
+  ep.endpoint.shutdown();
+  printStr(name);
+  printStr(": quiet\n");
+}
+
+// ---------------------------------------------------------------------------
+// Honest traffic: a routed server (whose HTTP/3 runs on the same connection actor) and the actor client
+// ---------------------------------------------------------------------------
+
+const bodySize = 4000000usize;
+
+fn filled(n: usize) String {
+  var s = String();
+  while s.len() < n {s.append("0123456789012345678901234567890123456789012345678901234567890123");}
+  s
+}
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    ex.respond(ResponseHead.make(200u16), filled(bodySize));
+  }
+}
+
+actor Honest {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {server.close();}
+}
+
+actor One {
+  client: HttpClient;
+
+  pub async fn run(self, u: String, upload: usize, done: Sender[u64]) {
+    var good = 0u64;
+    if upload > 0usize {
+      var q = httpclient.Request.make("POST", u.view());
+      q.body = filled(upload);
+      let r = await client.send(q);
+      match &r {
+        case let &Ok(ok) {if ok.version == Version.Http3 {good = u64.from(ok.body.len());}}
+        else {}
+      }
+    } else {
+      let r = await client.get(u.view());
+      match &r {
+        case let &Ok(ok) {if ok.version == Version.Http3 {good = u64.from(ok.body.len());}}
+        else {}
+      }
+    }
+    done.send(good);
+  }
+}
+
+fn fetch(client: &HttpClient, port: u16, upload: usize) {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  One(client.clone()).run(u, upload, tx);
+  var got = 0u64;
+  match rx.recvTimeout(Duration.fromMillis(20000i64)) {
+    case let Some(n) {got = n;}
+    case is None[u64] {}
+  }
+  // the handler's body, padded to its 64-byte steps
+  expect(got >= u64.from(bodySize), "the answer arrived whole over HTTP/3");
+}
+
+fn honest() {
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  var scfg = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp3(&h3driver.plugin);
+  scfg.maxBody = 8000000usize;
+  scfg = scfg.routes(HttpRoutes.make().queue("", "/"));
+  let server = Honest(Server.none());
+  server.open(scfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  server.serve();
+  expect(port != 0u16, "the routed server listens");
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
+  var origin = String.from("https://127.0.0.1:");
+  origin.appendUInt(u64.from(port));
+  cfg.http3Origins.push(origin);
+  let client = HttpClient.make(cfg, 8000000usize);
+  fetch(&client, port, 0usize);
+  fetch(&client, port, 0usize);
+  fetch(&client, port, 2000000usize);
+  let until = Instant.now() + Duration.fromMillis(1000i64);
+  var last = messagesIn100ms();
+  while last >= 2000u64 && Instant.now() < until {last = messagesIn100ms();}
+  if last >= 2000u64 {
+    printStr("honest: messages in the last 100 ms: ");
+    printUInt(last);
+    printStr("\n");
+  }
+  expect(last < 2000u64, "after honest downloads and an upload, no connection actor keeps handling messages");
+  expect(liveClientConnActors() >= 1u64, "the client's connection is still up: the quiet is its own");
+  server.stop();
+  printStr("honest: quiet\n");
+}
+
+fn main() i32 {
+  initAll();
+  row("ctl", 1usize, 1u64);
+  row("data", 3usize, 3000u64);
+  honest();
+  finalAll();
+  0i32
+}

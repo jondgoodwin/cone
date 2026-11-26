@@ -5,6 +5,11 @@
 // connector inside this actor (it never crosses actors) and held through h3adapt.cone's adapter. There is no half-close and no
 // linger: the value's own CONNECTION_CLOSE is its last datagram.
 //
+// A TURN ('turn') starts the value's (startTurn), takes up its events, then takes its datagrams into the send queue.
+// The value bounds what one turn does: when it still owes one afterwards (wantsTurn), the actor posts itself 'owedTurn'
+// (one at a time), so the datagrams and calls already waiting are handled between, and nothing waits for the next
+// datagram or timer.
+//
 // The attempt's deadline (httpclient's http3Timeout, as 'by') is this actor's: a connection not up by then ends with a Connect
 // failure, which the client's core meets as a fallback to TCP (ClientCore.closed, h3Broken).
 
@@ -25,6 +30,7 @@ actor ClientQuicActor {
   tm: actors.Timer;
   outq: Deque[IoBuf];                  // datagrams taken from the value and not yet handed to the socket
   sending: bool;                       // sendOut is running
+  owing: bool;                         // an 'owedTurn' has been posted and not yet run
   guard: ClientGuard;
 
   fn init(self: &new, client: ClientActor, pc: u32, gen: u32, host: String, peer: SocketAddr, upBy: Instant,
@@ -32,7 +38,8 @@ actor ClientQuicActor {
     liveClientConns.add(1u64);
     *self = Self(args: args, group: parent.child(), host: host, peer: peer, upBy: upBy, cc: None[H3ClientAdapter],
       ex: ClientExchanges[H3ClientAdapter].make(client, pc, gen, args.maxBody, true), sock: aio.UdpSocket.none(),
-      tx: aio.UdpSender.none(), tm: actors.Timer.make(), outq: Deque[IoBuf](), sending: false, guard: ClientGuard(true));
+      tx: aio.UdpSender.none(), tm: actors.Timer.make(), outq: Deque[IoBuf](), sending: false,
+      owing: false, guard: ClientGuard(true));
     selfactor.begin();
   }
 
@@ -107,7 +114,7 @@ actor ClientQuicActor {
         self.finishEnd(false, fl, false);
         return;
       }
-      self.turn();
+      self.turn(true);
     }
   }
 
@@ -214,13 +221,21 @@ actor ClientQuicActor {
 
   // ---- what happened on the connection, and what follows from it
 
-  fn turn(self) {
+  // The turn the value owed after the last one ran out
+  pub async fn owedTurn(self) {
+    owing = false;
+    self.turn();
+  }
+
+  fn turn(self, byTimer: bool = false) {
     if ex.ended {return;}
     let now = Instant.now();
     var calling = false;
     var done = false;
+    var owed = false;
     match cc.asMut() {
       case let Some(c) {
+        c.conn.startTurn(byTimer);
         ex.step(c, now);
         ex.report(c);
         // The datagrams it has to send, as many as the queue takes
@@ -236,6 +251,7 @@ actor ClientQuicActor {
         }
         if outq.len() >= quicSendDepth {c.conn.finishTurn(now);}
         done = c.done(now);
+        owed = c.conn.wantsTurn();
         match c.pollTimeout() {
           case let Some(t) {tm.set(if !ex.up && upBy < t {upBy} else {t});}
           else {if !ex.up {tm.set(upBy);} else {tm.clear();}}
@@ -249,6 +265,10 @@ actor ClientQuicActor {
       selfactor.sendOut();
     }
     if calling {selfactor.runCall();}
+    if owed && !owing {
+      owing = true;
+      selfactor.owedTurn();
+    }
     if done && outq.len() == 0usize && !sending {self.finishEnd(true, httpclient.Failure.none(), false);}
   }
 
