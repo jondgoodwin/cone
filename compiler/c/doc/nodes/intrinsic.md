@@ -64,8 +64,11 @@ exponent of 0, because GLSL's `pow` is undefined for a negative base); `copysign
 back end cannot select it); `hypot` and `cbrt` have no intrinsic, so
 they call the C library by name (`genlCallLibm`; an `f32`'s `hypot` through the double form,
 the UCRT having no `hypotf`), and on a GPU are `sqrt(fma(x, x, y*y))` and the sign of `x` times
-`exp2(log2|x| / 3)`; `isNaN` is `fcmp une x, x` (Shader has no `OpUnordered`), `isInfinite` and
-`isFinite` compare `llvm.fabs` with the infinity. The GPU's math table (`genlGpuMath`) is for C
+`exp2(log2|x| / 3)`; `isNaN` is `fcmp une x, x`, `isInfinite` and `isFinite` compare `llvm.fabs`
+with the infinity, and on a GPU all three are integer comparisons of the bits below the sign with
+the infinity's (above it, equal to it, below it: `genlGpuFloatClass`), because a Vulkan driver may
+assume a float operation sees no NaN or infinity unless the module declares
+`SignedZeroInfNanPreserve`, which Cone does not. The GPU's math table (`genlGpuMath`) is for C
 bindings and is untouched: these methods reach the GPU as intrinsics, not by C symbol.
 
 **A bool's `&&` and `||` are methods with no function behind them.** `newNbrTypeNode`
@@ -232,7 +235,7 @@ type while each call gives its own orderings.
 | `alignof[T]` | constant | `LLVMABIAlignmentOfType`, `genlAlignof` |
 | `needsFinal[T]` | constant | `itypeNeedsFinal`, a front-end question, emitted as an `i1` |
 | `finalize[T]` | expansion | `genlFinalizeAt`: release an owning reference; a struct's or an enum's drop; a tuple's elements, an array's in element order |
-| `sliceFromParts[T]`, `…Mut`, `…Uni` | expansion | two `insertvalue`s into the `{ptr, usize}` pair; a null `p` is first replaced by the element's ABI alignment as an address (a `select`), because a slice's pointer word is never null: an `Option` of a slice reads null as `None` |
+| `sliceFromParts[T]`, `…Mut`, `…Uni`, `uniArrayFromParts[T]` (an owner, `Uni[Array[T]]`, is the same pair) | expansion | two `insertvalue`s into the `{ptr, usize}` pair; a null `p` is first replaced by the element's ABI alignment as an address (a `select`), because a slice's pointer word is never null: an `Option` of a slice reads null as `None` |
 | `readRaw[T]` | expansion | a load (`%rawread`) |
 | `writeRaw[T]` | expansion | a store; where the value is a construction by a declared init, `T(...)`, the init is called with the pointer as its `self`, filling it in place (`genlFnCall`, `genlNewInto`), as an allocation's value is: so an init that uses its `self`'s address -- an actor's, sending through its own handle -- sees where the value stays |
 | `spinHint` | operation | a call of `llvm.x86.sse2.pause` on an x86 triple (`x86_64`, `i386`, `i686`, `amd64`), of `llvm.aarch64.hint(i32 1)` (yield) on an `aarch64` or `arm64` triple, nothing on any other triple and on a GPU or WebAssembly target. Neither LLVM intrinsic is overloaded, so it uses `LLVMGetIntrinsicDeclaration` with no types, not `genlCallLlvmIntrinsic`. Declared in `mem` with an empty fallback body |

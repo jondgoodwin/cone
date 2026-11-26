@@ -64,6 +64,10 @@ void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
     itypeTypeCheck(pstate, (INode**)&node->perm);
     if (node->vtexp) {
         refTargetTypeCheck(pstate, &node->vtexp, NULL);
+        // A slice steps from one element to the next by the element's size
+        INode *unsizedenum = itypeHeldUnsizedEnum(node->vtexp);
+        if (unsizedenum)
+            itypeUnsizedEnumMsg((INode*)node, unsizedenum, "held in a slice");
         // A slice spelled out in source must acquire the same move semantics as
         // the identical type a borrow builds, which goes through
         // newRefNodeFull. refAdoptInfections reads vtexp, so it stays guarded.

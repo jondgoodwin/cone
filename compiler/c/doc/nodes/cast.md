@@ -222,7 +222,7 @@ writes through a read-only view). **A raw pointer `as` a reference is not asked*
 needs a `&uni` slice of memory it owns calls `mem.sliceFromPartsUni`, not a cast.
 **One case is let through for now: a `ro` source made the `imm` a type
 declaring `Immutable` gives a reference that writes no permission**, which is how
-a slice of bytes is made text (`bytes as &str`, `p as Uni[str]`, documented in
+a slice of bytes is made text (`bytes as &str`, documented in
 lib-collections.html). It is keyed on the target being *defaulted*, not written:
 `refTypeCheck` sets `RefNode.permImmDefault` when it replaces the unwritten
 permission with `refImmutableDefaultPerm`, and `castRefPermCheck` asks it of the
@@ -231,6 +231,19 @@ target. A permission written out (`as &imm P` from a `&`, `bytes as &imm str`,
 `&imm`. The name `str` appears nowhere in the test. The cast promises that the
 bytes are text and that nothing changes them while the text is used, neither of
 which is checked, so it is for `trust` to guard too once that is built.
+
+**Between two references, `as` keeps the region or lends** (`castRefRegionCheck`,
+after the permission, so a cast that breaks both reports the permission). It asks
+what a coercion asks of the region (`regionMatches`): the target's region is the
+source's, or the target is a borrow. A borrow made an owner, or one region's
+owner made another's, is `ErrorCastPerm` too, with its own message: the owner's
+death would release memory it never held, or by another region's rules (an `Rc`
+made a `Uni` frees what other owners still read). A cast within one region stays,
+whatever it does to the referenced type: `bytes as Uni[str]` from a
+`Uni[Array[u8]]`. As for the permission, a raw pointer `as` an owner is not
+asked, so `(r as *T) as Uni[T]` still compiles and waits for `trust`. A library
+that has a block and no owner of it uses `mem.uniArrayFromParts`
+(collections' two `freeze`s).
 
 **`usize` and `isize` are pointer-sized**, and a pointer's width is the
 target's, so no reinterpretation joins either of them to a fixed-width number
