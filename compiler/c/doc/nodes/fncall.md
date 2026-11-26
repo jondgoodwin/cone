@@ -601,8 +601,13 @@ variant that carries fields and declares none, a trait, a virtual reference. An
 array element is asked about its own elements.
 
 **A comparison of two arrays is the comparison of their slices**
-(`fnCallLowerArrayCompare`). The two types must be the same, element and length
-(`ErrorInvType`); an ordering and an element with no `==` are
+(`fnCallLowerArrayCompare`). Where the two types differ, an operand that is an
+array literal of nothing but untyped literals (`arrayLitIsUntyped`: unsuffixed
+numbers and ASCII characters, nested) is coerced to the other's type first
+(`arrayLitCoerce`), unless the other is such a literal too. The operands were
+checked with no type expected, so a literal whose own values do not join
+(`[1, 2.5]`) is refused before this. The two types must then be the same,
+element and length (`ErrorInvType`); an ordering and an element with no `==` are
 `ErrorRefNoCompare`. Both operands are lent read-only where they lie
 (`fnCallLendEnumOperand`), the left one converted to the slice of its elements,
 and `fnCallLowerSliceCompare` does the rest. Several sizes are nested arrays, so

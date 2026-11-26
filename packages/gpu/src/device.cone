@@ -367,10 +367,14 @@ pub struct Device {
 
   // A shader module from SPIR-V: 32-bit words, as tools/shaders/shaders.py
   // embeds them. A compute entry point's workgroup must be within WebGPU's
-  // limits (MAX_COMPUTE_WORKGROUP_SIZE_X and the rest). Check 'isValid'.
+  // limits (MAX_COMPUTE_WORKGROUP_SIZE_X and the rest). A module that needs a
+  // feature the device lacks, or declares SignedZeroInfNanPreserve for a float
+  // width the GPU does not offer it for (features.cone), is refused with one
+  // failure naming it. Check 'isValid'.
   pub fn createShaderModule(self: &, spirv: &Array[u32]) ShaderModule {
     var module = vulkan.ShaderModule(0u64);
-    if self.isValid() && spirv.len > 0usize && workgroupsWithinLimits(spirv) && capabilitiesEnabled(spirv, &compute) {
+    if self.isValid() && spirv.len > 0usize && workgroupsWithinLimits(spirv) && capabilitiesEnabled(spirv, &compute)
+        && floatModesOffered(spirv, &compute) {
       let ci = vulkan.ShaderModuleCreateInfo(codeSize: spirv.len * 4usize, pCode: &spirv[0] as *u32);
       check(backend.fns.createShaderModule(backend.device, &ci, nullp(), &mut module), "vkCreateShaderModule");
     }
