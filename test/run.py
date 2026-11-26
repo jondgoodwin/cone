@@ -1694,6 +1694,23 @@ def vcvars_command(vcvars: str, rest: str) -> str:
     return f'cmd /c ""{vcvars}" >nul && {rest}"'
 
 
+def check_embedded_kernels(conec: Path) -> int:
+    """packages/gpuwork/tests/kernels.cone embeds the SPIR-V conec makes of its
+    kernels. Compile them again and compare (tests/kernels.py --check): 0 if the
+    words are the same. A change to the kernels, or to how conec compiles them,
+    fails until 'python packages/gpuwork/tests/kernels.py' is run. Windows only,
+    where that test runs and its words are written."""
+    if os.name != "nt":
+        return 0
+    tool = REPO / "packages" / "gpuwork" / "tests" / "kernels.py"
+    done = subprocess.run([sys.executable, str(tool), "--check"], cwd=REPO,
+                          env=dict(os.environ, CONEC=str(conec.resolve())),
+                          capture_output=True, text=True)
+    if done.returncode != 0:
+        print(f"{done.stdout}{done.stderr}", end="")
+    return done.returncode
+
+
 def build_compiler(conec: Path) -> None:
     build_dir = conec.parent
     command: str | list[str] = ["cmake", "--build", str(build_dir)]
@@ -4576,6 +4593,10 @@ def main(argv: list[str]) -> int:
         # gate: a whole-suite run reads them (test/notecheck.py); a run of a
         # selection does not
         if not args.selectors and found is None and notecheck_main(["--quiet"]) != 0:
+            status = status or 1
+        # And so does the SPIR-V a package's test carries, compiled by this
+        # compiler from kernels the same file holds
+        if not args.selectors and found is None and check_embedded_kernels(args.conec) != 0:
             status = status or 1
     print(f"finished in {time.monotonic() - started:.1f}s")
     return status

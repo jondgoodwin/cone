@@ -1,0 +1,43 @@
+// The programs that once retagged a 'Lit' as an 'Add' from safe code, and then
+// matched it and read an 'Add''s payload past the 'Lit': a swap, a store of one
+// value over another, and an array literal holding a copy of the tag and common
+// fields. Each is refused where the value is used.
+
+mod enum_typecheck_unsized_retag;
+
+enum @unsized Node {
+  pub kind: i32;
+
+  struct Lit { pub val: i32; }
+  struct Add { pub a: i64; pub b: i64; pub c: i64; pub d: i64; }
+}
+use Node;
+
+fn swapNodes(r: &mut Node, s: &mut Node) {
+  *r, *s = *s, *r;                  //~ ErrorNoSize:3 "swapped or stored by a multiple assignment"
+}
+
+fn storeThrough(r: &mut Node, s: &Node) {
+  *r = *s;                          //~ ErrorNoSize:3 "its value can't be assigned or stored"
+}
+
+fn peek(n: &Node) i64 {
+  match n {
+    case let &Lit(l) {i64.from(l.val)}
+    case let &Add(x) {x.a + x.d}
+  }
+}
+
+fn readCopy(s: &Node) i64 {
+  let x = [*s];                     //~ ErrorNoSize:11 "its value can't be put in an array"
+  peek(&x[0])                       //~ ErrorNoMeth:10 "Invalid operation" follow-on
+                                    //~^ ErrorInvType:10 "does not match declared parameter" follow-on
+}
+
+fn retag() {
+  var lit = Lit(1, 5);
+  var add = Add(2, 111i64, 222i64, 333i64, 444i64);
+  swapNodes(&mut lit as &mut Node, &mut add as &mut Node);
+  storeThrough(&mut lit as &mut Node, &add);
+  _ = peek(&lit) + readCopy(&add);
+}

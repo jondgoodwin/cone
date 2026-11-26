@@ -533,8 +533,16 @@ int nameUseWasName(INode *node) {
 }
 
 int nameUseNoValue(INode *node, int wasName) {
-    if (node == NULL || !wasName)
+    if (node == NULL)
         return 0;
+    if (!wasName) {
+        // A type written otherwise than as a bare name, '*Point;', '&Point;', 'Box[i32];',
+        // has no value either, and code generation has none to make
+        if (!isTypeNode(node) && !(isNameUseNode(node) && nameUseGroup((NameUseNode*)node) == TypeGroup))
+            return 0;
+        iexpNotTypedMsg(node);
+        return 1;
+    }
     if (isNameUseNode(node)) {
         NameUseNode *name = (NameUseNode*)node;
         INode *dcl = nameUseGetDcl(name);
@@ -549,7 +557,8 @@ int nameUseNoValue(INode *node, int wasName) {
             ((IExpNode*)name)->vtype = errorType;
             return 1;
         }
-        if (wasName == 2)
+        // 'g[i64];' on a generic module makes the instance, which is the statement's purpose
+        if (wasName == 2 && (nameUseGroup(name) != TypeGroup || dcl->tag == ModuleTag))
             return 0;
         if (dcl->tag == FnDclTag) {
             errorMsgNode(node, ErrorNoSize,

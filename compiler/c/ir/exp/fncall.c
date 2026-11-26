@@ -778,9 +778,15 @@ void fnCallArrIndex(FnCallNode *node) {
     case ArrayRefTag:
         node->vtype = ((RefNode*)objtype)->vtexp;
         break;
-    case PtrTag:
+    case PtrTag: {
         node->vtype = ((StarNode*)objtype)->vtexp;
+        // Indexing a pointer steps by the element's size, which even '&p[1]'
+        // computes
+        INode *unsizedenum = itypeHeldUnsizedEnum(node->vtype);
+        if (unsizedenum)
+            itypeUnsizedEnumMsg((INode*)node, unsizedenum, "reached by indexing a pointer");
         break;
+    }
     default:
         // fnCallTypeCheck calls this from its array, slice, reference and
         // pointer arms only, switching on this same receiver type

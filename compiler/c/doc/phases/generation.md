@@ -611,7 +611,7 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   word and the variant test (`genlIsType`) and the drop read it, the second word
   left alone. That is why no slice may be made with a null pointer word, empty
   or not: the only place a slice is made from a raw pointer, the `sliceFromParts`
-  intrinsics, swaps a null pointer for the element's alignment as an address
+  intrinsics (and `uniArrayFromParts`, which makes an owner's pair the same way), swaps a null pointer for the element's alignment as an address
   (Rust's `NonNull::dangling()`), and every other slice (a sub-slice, a
   reference to an array) derives from a non-null one. Each enum decides this for its own set: an extension's variants are copies, so an
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
@@ -1685,7 +1685,7 @@ a `RegionRef`:
   with). 16 is what the heap gives (core's `RawBlocks`). The attribute assumes a
   borrow's address meets the pointee's alignment up to 16, as a read through that
   borrow already assumes its ABI alignment. A cast from a pointer or integer to a
-  reference is not checked for it (`castRefPermCheck`); whether that changes
+  reference is not checked for it (`castRefPermCheck`, `castRefRegionCheck`); whether that changes
   belongs to `trust` (`WI\trust.md` in the MyDrive Cone domain).
 - `dereferenceable(<store size of T>)` on both, added by `genlBorrowDeref` as
   the body is generated, because a pointee's layout is not known when the
@@ -2547,9 +2547,12 @@ SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and 
 (`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`. A float's
 `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2`, `log10`, `pow`, `sinh`,
 `cosh` and `tanh` methods are likewise their intrinsics (`Tan` to `Tanh`, `Log` for `ln`;
-`log10` is `Log2` times a constant); `hypot`, `cbrt` and `powi` are formulas there
-([intrinsic](../nodes/intrinsic.md)), and `isNaN` is `OpFUnordNotEqual`:
-`module_target_spirv_floatmath`.
+`log10` is `Log2` times a constant); `trunc` is `Trunc`; `copysign` (bit operations, the back
+end not selecting `llvm.copysign`), `hypot`, `cbrt` and `powi` are formulas there
+([intrinsic](../nodes/intrinsic.md)): `module_target_spirv_floatmath`. `isNaN`,
+`isInfinite` and `isFinite` are integer comparisons of the value's bits there, with no
+float comparison a driver could assume the answer of: `module_target_spirv_floatclass`,
+and run on a GPU by `packages/gpuwork/tests/kernels.cone`.
 **A kernel's float `min`, `max` and `clamp` do not keep the NaN ruling (a stated
 exception, design chat and Jon, 6 Nov 2026).** The CPU propagates NaN: a float's `min`,
 `max` and `clamp` are `llvm.minimum` and `llvm.maximum`. On SPIR-V the back end selects

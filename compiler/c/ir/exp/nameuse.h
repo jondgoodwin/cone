@@ -92,7 +92,8 @@ int nameUseLifecycleNamed(NameUseNode *name);
 // '(f);'), whose signature is not a value at all (ErrorNoSize, as in 'let c = f;'), or a
 // type ('S;', 'i32;', an alias), which is no typed expression (ErrorNotTyped, as in
 // 'let c = (S);'). Reports it and returns 1; returns 0 for any other node. What was
-// written with brackets, 'g[i64];', makes an instance of a generic and is no bare name.
+// written with brackets, 'g[i64];', makes an instance of a generic and is no bare name. A type written any other way
+// ('*S;', '&S;', 'Box[i32];') is reported whatever 'wasName' says.
 // A call's callee is not asked: it is a name bound to a function by design.
 int nameUseNoValue(INode *node, int wasName);
 int nameUseWasName(INode *node);

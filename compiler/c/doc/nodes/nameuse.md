@@ -217,9 +217,14 @@ name, `f;`, `(f);`, `g;` (generic), `S.m;` (`ErrorNoSize`, the cause "a function
 signature is not a value at all", as `let c = f;` is), and a type's, `S;`, `Tr;`,
 `i32;`, an alias (`ErrorNotTyped`, as `let c = (S);` is), naming the type
 (`iexpNotTypedMsg`, which `iexpTypeCheckAny` and a coercion of a non-expression
-share). It asks only of what was
-written as a bare name before the check: `g[i64];` makes an instance of a generic and
-stands as a statement. A function's name is no assignment target (`f = f;`,
+share). It asks that of what was
+written as a bare name before the check: a function's instance, `g[i64];`,
+stands as a statement. A type written any other way, `*S;`, `&S;`, `Box[i32];`,
+`(i32, i32);`, is refused the same way. A type written to the left of a `<-` of
+several entries, or of a repeat, fill or `each`, `Uni[Array[u8]] <- 1u8, 2u8`, is
+refused by `contentsLowerEntries` (`ErrorNotTyped`, naming the form that takes
+contents, or for an owner of `Array[T]` or `str` the copy of a borrow).
+A function's name is no assignment target (`f = f;`,
 `ErrorBadLval`, `assignTargetsTypeCheck`). An element of an untyped array literal asks
 too (`[f]`, `arrayLitTypeCheckElems`). `nameUseWasName` answers 2 for a call that gives
 type arguments in parentheses, `h(S);`, which type check rewrites to the instance's name:

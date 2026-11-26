@@ -113,7 +113,8 @@ each as needing `trust`, and nothing yet asks for it (`safe-intrinsics.html`).
 What the guard would cover can be listed. `conec --report-trust` type checks the
 program, prints one line per site and generates no code: `deref` (a dereference
 or index through a raw pointer, not through a reference), `ref-from-ptr` (a
-reference or slice made from a pointer by `as`, `&*p` or `sliceFromParts*`),
+reference or slice made from a pointer by `as`, `&*p` or `sliceFromParts*`, and
+the owner `uniArrayFromParts` makes from one),
 `intrinsic` (a call of an intrinsic the registry marks `trust`), `extern` (a call
 of an extern function), `reinterpret` (a written `as` that keeps the bits),
 `reinterpret-perm` (an `as` between two references that changes only the
@@ -128,7 +129,9 @@ says how many instances the run made. `tools/trustmap.py` runs it through
 Congo's build descriptions over every package, and over each package's tests and
 examples, so that what real code instantiates is counted
 (`compiler/c/ir/trustreport.c` is the walk). With `--report-trust` a library
-description still writes its include file, which that tool relies on.
+description still writes its include file, which that tool relies on. The tool exits 1
+where anything did not compile for the report, and `tools/congo/test_congo.py`
+(`TrustMap`) runs it over one package.
 
 **`trust` is meant to be narrow.** It is framed as a remedy for compiler
 over-reach — constraints that are "sometimes overzealous, preventing behavior
