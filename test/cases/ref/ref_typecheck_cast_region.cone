@@ -1,0 +1,44 @@
+// Between references 'as' keeps the region or lends (safe-types.html#as,
+// "Reinterpretation: as"). A borrow made an owner, or one region's owner made
+// another's, forges an owner: its death releases memory it never held, or by
+// another region's rules, which from safe code corrupts the heap. Each cast
+// below is refused alone; the functions at the end are the casts that stay
+// allowed (ref_cast_region_legal runs the safe ones).
+mod ref_typecheck_cast_region;
+
+import libc;
+import collections use *;
+
+struct Loud {
+  pub x: i64;
+  fn final(self: &uni) {}
+}
+
+struct Arena is RegionRef {
+  fn alloc(size: usize) *u8 inline { libc.malloc(size) }
+}
+
+// a borrow made an owner: of a parameter, of a local, of a slice
+fn steal(r: &uni Loud) { let o = r as Uni[Loud]; }                      //~ ErrorCastPerm "makes an owner from a borrow"
+fn stealRc(r: &uni Loud) { let o = r as Rc[mut, Loud]; }                //~ ErrorCastPerm "makes an owner from a borrow"
+fn localRc() { var v = Loud(7); let o = &uni v as Rc[mut, Loud]; }      //~ ErrorCastPerm "makes an owner from a borrow"
+fn sharedRc() { let v = Loud(7); let o = &imm v as Rc[imm, Loud]; }     //~ ErrorCastPerm "makes an owner from a borrow"
+fn arena(r: &uni Loud) { let o = r as Arena[uni, Loud]; }               //~ ErrorCastPerm "makes an owner from a borrow"
+fn body(p: *i64) Uni[Array[i64]] { mem.sliceFromPartsUni(p, 2usize) as Uni[Array[i64]] }   //~ ErrorCastPerm "makes an owner from a borrow"
+// '&' as the 'imm' text defaults to passes the permission, not the region
+fn textOwner(b: &Array[u8]) Uni[str] { b as Uni[str] }                  //~ ErrorCastPerm "makes an owner from a borrow"
+
+// one region's owner made another's
+fn rcUni(a: Rc[imm, Loud]) { let o = a as Uni[imm, Loud]; }             //~ ErrorCastPerm "of region Uni from an owner of region Rc"
+fn uniRc(a: Uni[Loud]) { let o = a as Rc[mut, Loud]; }                  //~ ErrorCastPerm "of region Rc from an owner of region Uni"
+fn arenaUni(a: Arena[Loud]) { let o = a as Uni[Loud]; }                 //~ ErrorCastPerm "of region Uni from an owner of region Arena"
+fn bodyRc(a: Uni[Array[u8]]) { let o = a as Rc[imm, str]; }             //~ ErrorCastPerm "of region Rc from an owner of region Uni"
+
+// allowed: an owner lent as a borrow, the same region, and a pointer made an
+// owner, which is how library code trusts memory it manages
+fn lend(a: Uni[Loud]) i64 { let r = a as &Loud; r.x }
+fn lendShared(a: &Rc[imm, Loud]) &imm Loud { *a as &imm Loud }
+fn lendArena(a: Arena[Loud]) i64 { let r = a as &mut Loud; r.x }
+fn same(a: Uni[Loud]) Uni[Loud] { a as Uni[Loud] }
+fn bytesText(a: Uni[Array[u8]]) Uni[str] { a as Uni[str] }
+fn fromPtr(r: &uni Loud) { let o = (r as *Loud) as Uni[Loud]; }

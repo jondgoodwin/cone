@@ -678,10 +678,12 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         genlFinalizeAt(gen, fnargs[0], type);
         return NULL;
 
-    // A slice is the {pointer, length} pair; the pointer is the first element's
+    // A slice is the {pointer, length} pair; the pointer is the first element's.
+    // An owner of an array body is the same pair
     case SliceFromPartsIntrinsic:
     case SliceFromPartsMutIntrinsic:
-    case SliceFromPartsUniIntrinsic: {
+    case SliceFromPartsUniIntrinsic:
+    case UniArrayFromPartsIntrinsic: {
         LLVMTypeRef slicetype = genlType(gen, ((FnSigNode *)fndcl->vtype)->rettype);
         LLVMValueRef slice = LLVMGetUndef(slicetype);
         // A null pointer is the absence of an Option of a slice, so a slice

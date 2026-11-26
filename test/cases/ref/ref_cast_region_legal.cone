@@ -1,0 +1,95 @@
+// What a region may still do under 'as' (ref_typecheck_cast_region refuses the
+// rest): an owner lent as a borrow, and an owner's bytes made text in the same
+// region. And the two 'freeze's, whose owners are made from a block by
+// 'mem.uniArrayFromParts': each owner reads what was put in, and its death
+// gives the block back once and finalizes each element once.
+//
+// That each block is given back once is the heap's to say. The debug allocator
+// says it: link cnmalloc's cnd.lib (packages/cnmalloc, "Linking it") with
+// $env:_LINK_ = '"<dir>\cnd.lib"' and $env:CNMALLOC = 'design=lockfree', and a
+// second free of a block ends the program with exit 134.
+mod ref_cast_region_legal;
+
+import stdio use *;
+import collections use *;
+
+var @threadlocal finals = 0i64;
+var @threadlocal summed = 0i64;
+
+struct Fin {
+  pub n: i64;
+  fn final(self: &uni) { finals = finals + 1i64; summed = summed + self.n; }
+}
+
+fn show(label: &str, v: i64) { printStr(label); printStr(" "); printInt(v); printStr("\n"); }
+
+// An owner lent as a borrow
+fn lendUni(o: Uni[Fin]) i64 { let r = o as &Fin; r.n }
+fn lendRc(o: Rc[imm, Fin]) i64 { let r = o as &imm Fin; r.n }
+fn lendBody(o: Uni[Array[i64]]) i64 { let s = o as &Array[i64]; s[0] + s[1] }
+
+// The same region, the referenced type changed: bytes made text
+fn text() {
+  let bytes = (List[u8]() <- 104u8, 105u8).freeze();
+  let owned = bytes as Uni[str];
+  let lent = owned as &str;
+  printStr(lent); printStr("\n");
+}
+
+// The intrinsic by itself, over a block of the heap's
+fn direct() i64 {
+  let p = RawBlocks.alloc(2usize * mem.sizeof[i64](), mem.alignof[i64]()) as *i64;
+  p[0usize] = 40i64;
+  p[1usize] = 2i64;
+  let o = mem.uniArrayFromParts(p, 2usize);
+  o[0usize] + o[1usize]
+}
+
+// One round of each freeze, with k values. Every owner dies at the end
+fn round(k: i64) i64 {
+  var nums = List[i64]();
+  var s = String();
+  var i = 0i64;
+  while i < k {
+    i = i + 1i64;
+    nums.push(i);
+    s.append("a");
+  }
+  let owner = nums.freeze();
+  let name = s.freeze();
+  let fins = (List[Fin]() <- Fin(1), Fin(2), Fin(3)).freeze();
+  let none = List[i64]().freeze();
+  let blank = String().freeze();
+  var total = 0i64;
+  var j = 0usize;
+  while j < owner.len {
+    total = total + owner[j];
+    j = j + 1usize;
+  }
+  total + i64.from(name.len) * 1000000i64 + i64.from(none.len + blank.len + fins.len - 3usize)
+}
+
+fn main() {
+  show("uni lent", lendUni(Uni[Fin](Fin(7))));
+  show("rc lent", lendRc(Rc[imm, Fin](Fin(8))));
+  show("body lent", lendBody((List[i64]() <- 5i64, 6i64).freeze()));
+  show("finals", finals);
+  show("summed", summed);
+  text();
+  show("direct", direct());
+
+  finals = 0i64;
+  summed = 0i64;
+  var total = 0i64;
+  var i = 0i64;
+  while i < 500i64 {
+    total = total + round(i % 40i64);
+    i = i + 1i64;
+  }
+  // k runs 0..39 twelve times, then 0..19: the values sum to 12 * 10660 + 1330,
+  // and the texts' lengths to 12 * 780 + 190
+  show("values", total % 1000000i64);
+  show("text bytes", total / 1000000i64);
+  show("finals", finals);
+  show("summed", summed);
+}
