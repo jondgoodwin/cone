@@ -1,0 +1,255 @@
+// A response whose bytes the buffer pool refuses a buffer for fails that one request and the server goes on (iobuf, THE
+// RESERVE: a client that asks and does not read fills the pool; a plain construction there would panic the process). The
+// pool is the process's, so the client is a second process of this program ('refusedsend client ...') and only the
+// server's pool is emptied: the test actor takes each request from the queue route and, for /fill, holds all but a few
+// of the 16 KiB buffers the try bank will give before writing 1 MiB. HTTP/1.1 (plain TCP) and HTTP/2 (TLS), each:
+// the handler's write answers closed, the client's fetch fails, the refusal is counted and the server answers the next
+// request. The server's receive buffers are 32 KiB (the pool's 64 KiB class), so they are left alone. Not checked
+// here: that the HTTP/2 connection lives on (its TLS records need 16 KiB buffers too, which this empties, so now and
+// then it ends as well); h3driver's refusedsend checks that for a stream's reset.
+
+mod refusedsend;
+
+import stdio use *;
+import libc;
+import fs;
+import process;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import iobuf use IoBuf, flushThread;
+import iocore use SocketAddr;
+import http use *;
+import httpclient;
+import tls;
+import actors;
+import path use Path;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, HttpRoutes;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn url(secure: bool, port: u16, path: &str) String {
+  var u = String.from(if secure {"https://127.0.0.1:"} else {"http://127.0.0.1:"});
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn say(what: &str, ok: bool) {
+  printStr(what);
+  printStr(": ");
+  printStr(if ok {"yes"} else {"NO"});
+  printStr("\n");
+  print.flush();
+}
+
+// ---------------------------------------------------------------------------
+// The client process: 'client h1|h2 <port>'
+// ---------------------------------------------------------------------------
+
+fn client(h2: bool) HttpClient {
+  var cfg = httpclient.Config.make();
+  cfg.http2 = h2;
+  cfg.maxRetries = 0u32;
+  if h2 {
+    cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+    cfg.tlsConfig.offline = true;
+  }
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
+}
+
+actor Fetch {
+  client: HttpClient;
+
+  // 'want' empty: the fetch is to fail
+  pub async fn run(self, u: String, want: String, var done: OneshotSender[u64]) {
+    let r = await client.get(u.view());
+    var ok = false;
+    match &r {
+      case let &Ok(x) {ok = x.status == 200u16 && x.body.view() == want.view();}
+      case let &Err(e) {ok = want.len() == 0usize;}
+    }
+    done.send(if ok {1u64} else {0u64});
+  }
+
+}
+
+fn fetch(c: &HttpClient, u: String, want: &str) OneshotReceiver[u64] {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  Fetch(c.clone()).run(u, String.from(want), tx);
+  rx
+}
+
+fn clientMain(h2: bool, port: u16) {
+  let c = client(h2);
+  var hello = fetch(&c, url(h2, port, "/hello"), "hello");
+  say("  a request is answered", (hello.recv() || 0u64) == 1u64);
+  var fill = fetch(&c, url(h2, port, "/fill"), "");
+  say("  the refused fetch fails", (fill.recv() || 0u64) == 1u64);
+  var again = fetch(&c, url(h2, port, "/hello"), "hello");
+  say("  the next request is answered", (again.recv() || 0u64) == 1u64);
+}
+
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+actor Taker {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  // Takes 'want' requests. /fill is answered with the pool nearly empty; anything else is answered. Reports whether
+  // /fill's write answered closed
+  pub async fn serve(self, want: u32, var done: OneshotSender[u64]) {
+    var left = want;
+    var report = 0u64;
+    // a buffer of these classes stays in the try bank, so its slab has free blocks while the rest are taken
+    var pins = List[IoBuf]();
+    match IoBuf.tryMake(4096usize) {case var Some(b) {pins.push(b);} else {}}
+    match IoBuf.tryMake(65536usize) {case var Some(b) {pins.push(b);} else {}}
+    while left > 0u32 {
+      left = left - 1u32;
+      match await server.next() {
+        case var Ok(got) {
+          var ex = got;
+          let p = String.from(ex.request.path());
+          if p.view() == "/fill" {
+            ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+            var held = List[IoBuf]();
+            while true {
+              match IoBuf.tryMake(16384usize) {
+                case var Some(b) {held.push(b);}
+                else {break;}
+              }
+            }
+            // a few are given back for the connection's own use (its TLS records): the response needs many more
+            var back = 0u32;
+            while back < 8u32 && held.len() > 0usize {
+              let b = held.pop();
+              back = back + 1u32;
+            }
+            flushThread();
+            var body = String.withCapacity(1048576usize);
+            var i = 0usize;
+            while i < 1048576usize {
+              body.appendByte(97u8);
+              i = i + 1usize;
+            }
+            let w = await ex.write(body);
+            held = List[IoBuf]();
+            flushThread();
+            report = match w {
+              case is Ok {0u64}
+              case is Err {1u64}
+            };
+          } else {
+            ex.text(200u16, "hello");
+          }
+        }
+        case let Err(e) {break;}
+      }
+    }
+    done.send(report);
+  }
+
+  pub async fn count(self, var done: OneshotSender[u64]) {done.send(await server.refusedBuffers());}
+
+  pub async fn stop(self) {server.close();}
+}
+
+// One server and the client process that works it
+fn round(h2: bool, want: u32) {
+  printStr(if h2 {"HTTP/2\n"} else {"HTTP/1.1\n"});
+  print.flush();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var cfg = ServerConfig.make().routes(HttpRoutes.make().queue("", "/"));
+  cfg.conn.recvSize = 32768usize;
+  if h2 {
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    cfg = cfg.secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2();
+  }
+  let taker = Taker(Server.none());
+  taker.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  taker.serve(want, tx);
+  var args = List[String]();
+  match process.currentExe() {
+    case let Ok(exe) {args.push(String.from(exe.view()));}
+    case let Err(e) {printStr("no path to this program\n"); libc.exit(1i32);}
+  }
+  args.push(String.from("client"));
+  args.push(String.from(if h2 {"h2"} else {"h1"}));
+  var n = String();
+  n.appendUInt(u64.from(port));
+  args.push(n);
+  match process.run(args.view()) {
+    case let Ok(out) {
+      // the client's lines, without the carriage returns its text-mode output has on Windows
+      var text = String();
+      let bytes = out.stdout.view() as &Array[u8];
+      var i = 0usize;
+      while i < bytes.len {
+        if bytes[i] != 13u8 {text.appendByte(bytes[i]);}
+        i = i + 1usize;
+      }
+      printStr(text.view());
+    }
+    case let Err(e) {printStr("the client did not run\n");}
+  }
+  print.flush();
+  say("  the write answers closed", (rx.recv() || 0u64) == 1u64);
+  var ctx: OneshotSender[u64];
+  var crx: OneshotReceiver[u64];
+  ctx, crx = Oneshot[u64].make();
+  taker.count(ctx);
+  say("  one refusal counted", (crx.recv() || 0u64) == 1u64);
+  taker.stop();
+}
+
+fn main() i32 {
+  initAll();
+  let args = process.args();
+  if args.len() > 3usize && args[1usize].view() == "client" {
+    var port = 0u16;
+    match u16.parse(args[3usize].view()) {
+      case let Ok(p) {port = p;}
+      case is Err {}
+    }
+    clientMain(args[2usize].view() == "h2", port);
+  } else {
+    round(false, 3u32);
+    round(true, 3u32);
+  }
+  finalAll();
+  0
+}
