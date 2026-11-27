@@ -393,6 +393,12 @@ uint32_t loanMutAliasAt(Place *pl);
 uint32_t loanNarrowName(INode *site, Place *pl, uint32_t alias);
 int loanIsExclusive(uint32_t entry);
 void loanShapeMark(uint32_t loan, INode *container);
+// A view through a reference ('*r', '**m') not marked as it was made, marked for the shape
+// check once the reference has another name: one loan, or each a value points at; and the
+// call that says a variable's own storage is lent writably
+void loanShapeRefView(uint32_t loan, INode *container);
+void loanShapeRefViews(PathSet *holds, INode *container);
+void loanShapeRefLent(uint32_t var);
 // Is this a marked loan into a variant of an enum, whose variant a call or store may change?
 int loanShapeIsSum(uint32_t loan);
 // A use of 'var' that reports only a pending change of shape or variant (a compound
