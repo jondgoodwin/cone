@@ -373,8 +373,8 @@ static uint32_t *temps = NULL;
 static uint32_t ntemps = 0;
 static uint32_t tempcap = 0;
 
-// The stand-ins of the function's dereferences of a borrow that a block, an 'if' or a
-// slice borrow yields (pwYieldStandIn), by the reference dereferenced
+// The stand-ins of the function's dereferences of a borrow that is no place
+// (pwYieldStandIn), by the reference dereferenced
 typedef struct {
     INode *ref;
     VarDclNode *var;
@@ -1190,17 +1190,12 @@ static int pwWayWritten(Place *pl) {
 // reference that may alias makes the path shared from there on.
 static int pwIsOwnedLent(CastNode *cast);
 
-// Set while the receiver of a method returning a borrow, on a container that changes
-// shape, is walked: a reference a call returns, read through on the way to that
-// receiver ('ui.items[0].label.view()'), is held by a stand-in variable (pwStandIn), as the
-// name it would be given ('let item = ui.items[0]; item.label.view()') would hold it
-static int pwStandInOn = 0;
-
-// A stand-in variable for the reference a call returned: it holds what the call carries, and
-// ends with the statement as a temporary does (pwTempsEnd)
-static uint32_t pwStandIn(INode *call, PathSet *holds) {
-    VarDclNode *var = newVarDclFull(tempName, VarDclTag, ((IExpNode *)call)->vtype, (INode *)immPerm, NULL);
-    inodeLexCopy((INode *)var, call);
+// A stand-in variable for the reference a compound assignment's temporary borrowed
+// (pwCompoundPlace): it holds what is given it, and ends with the statement as a temporary
+// does (pwTempsEnd)
+static uint32_t pwStandIn(INode *ref, PathSet *holds) {
+    VarDclNode *var = newVarDclFull(tempName, VarDclTag, ((IExpNode *)ref)->vtype, (INode *)immPerm, NULL);
+    inodeLexCopy((INode *)var, ref);
     var->scope = 2;
     var->flowtracked = 1;
     uint32_t index = pathVar(var);
@@ -1215,17 +1210,12 @@ static uint32_t pwStandIn(INode *call, PathSet *holds) {
     return index;
 }
 
-// Is this reference, which is no place, the value of a block, of an 'if' or a 'match', or a
-// slice borrow? What each yields is a borrow, or a reference some name holds, and which of
-// them it is the walk does not say. So the dereference is read as through a name given that
-// value ('let r = if c {&a} else {&b}; *r'): through every place it can be
-static int pwYieldedRef(INode *ref) {
-    while (ref->tag == CastTag && !(ref->flags & FlagConvert))
-        ref = ((CastNode *)ref)->exp;
-    return ref->tag == BlockTag || ref->tag == IfTag || ref->tag == ArrayBorrowTag;
-}
-
-// The stand-in for such a value. It is a temporary of its statement, but what it holds is
+// The stand-in for a borrowed reference that is no place: the value of a block, an 'if', a
+// 'match', a slice borrow, an assignment or a call, or an element or field of a value made
+// here. Which place it points at the walk does not say, so a dereference of it is read as
+// through a name given that value ('let r = pick(&a, &b); *r'): through every place the
+// value's loans name, a call's being those its signature gives its result.
+// It is a temporary of its statement, but what it holds is
 // not dropped when the statement ends: a view made through it may be marked for the shape
 // check later (loanShapeLazy), and where the view points is then read from what the
 // stand-in holds. One variable per dereference, so that a loop's next walk finds the loans
@@ -1276,12 +1266,11 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     }
     Place refpl;
     if (!pwPlace(refp, &refpl, base)) {
-        // A borrow that a block, an 'if' or a slice borrow yields is held by a stand-in too,
-        // wherever it is dereferenced (pwYieldedRef)
-        int yielded = pwIsBorrowed(reftype) && pwYieldedRef(*refp);
-        if (!yielded && (!pwStandInOn || (*refp)->tag != FnCallTag || reftype->tag != RefTag || !pwIsBorrowed(reftype)))
+        // A borrow that any other value yields is held by a stand-in too, wherever it
+        // is dereferenced (pwYieldStandIn)
+        if (!pwIsBorrowed(reftype))
             return 0;
-        refpl.var = yielded ? pwYieldStandIn(*refp, *base) : pwStandIn(*refp, *base);
+        refpl.var = pwYieldStandIn(*refp, *base);
         refpl.deref = 0;
         refpl.nsteps = 0;
         refpl.shared = 0;
@@ -1296,7 +1285,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         refpl.slotted = NULL;
         refpl.slots = 0;
         refpl.narrow = 0;
-        refpl.kept = yielded ? pwWritingLoans(*base) : NULL;
+        refpl.kept = pwWritingLoans(*base);
     }
     if (pwIsBorrowed(reftype)) {
         // The reference itself is read: a variable it is read from that some
@@ -1590,6 +1579,9 @@ static PathSet *pwPlaceValue(INode **nodep, int move) {
     // ('*&uni r') carries that borrow's loan too
     if (pwCarries(((IExpNode *)*nodep)->vtype))
         holds = pathSetUnion(holds, pl.kept);
+    // A borrow copied out of what a call lent, read through the call's result
+    if ((*nodep)->tag == DerefTag)
+        holds = pwSlotRead((StarNode *)*nodep, holds);
     // A holder moved away whole holds nothing here: its value, and the
     // finalizer that might read its borrows, went with the move
     if (moves && !pl.deref && pl.nsteps == 0 && pathVars[pl.var].holder)
@@ -4324,18 +4316,7 @@ static PathSet *pwCall(FnCallNode *call) {
         INode **argsp = &nodesGet(call->args, argi);
         PathSet *carried;
         if (meth && argi == 0) {
-            // A borrow this method returns out of a container that changes shape, the container
-            // reached through a reference another call returned, is followed as if that reference
-            // were held by a name (pwStandIn)
-            int savedstandin = pwStandInOn;
-            pwStandInOn = 0;
-            if (carries && pathLoans) {
-                INode *selftype = iexpGetTypeDcl(nodesGet(((FnSigNode *)meth->vtype)->parms, 0));
-                INode *selfcont = selftype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)selftype)->vtexp) : NULL;
-                pwStandInOn = selfcont && selfcont->tag == StructTag && shapeChanging((StructNode *)selfcont);
-            }
             carried = pwReceiver(call, meth, &recvpl, &recvloan, &recvaccess);
-            pwStandInOn = savedstandin;
             if (carries && pathLoans && recvloan && !sig) {
                 FnDclNode *tiedfn = pwTiedCallee(call);
                 if (tiedfn)

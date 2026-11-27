@@ -1,0 +1,424 @@
+// A borrow that an assignment, a call, or an element or field of a value made here yields,
+// then dereferenced, reaches what it was borrowed from, as the borrow written there does,
+// and a call's result reaches what its signature says it may borrow. The walk made no place
+// of such a value, so what was reached through it was not followed back, and each function
+// here was accepted (collection_yielded_value_deref_success holds what stays accepted;
+// collection_flow_yielded_borrow_deref has what a block, an 'if' or a slice borrow yields).
+
+mod collection_flow_yielded_value_deref;
+
+import stdio use *;
+import collections use *;
+
+enum Shape {
+  struct Poly { pub pts: List[i32]; }
+  struct Empty {}
+}
+use Shape;
+
+struct Held { pub r: &i32; }
+
+alias Owner = Rc[mut, List[i32]];
+alias Sum = Rc[mut, Shape];
+
+struct W { pub r: &Owner; }
+struct Wrap { pub w: W; }
+struct Taker { pub r: &mut Held; }
+struct Giver { pub n: i32;
+  pub fn give(self: &, o: &'a Sum) &'a Sum { return o; }
+}
+struct Fns { pub f: &fn(o: &Sum) &Sum; }
+
+fn make() List[i32] {
+  var l = List[i32]();
+  l.push(7i32);
+  l
+}
+
+fn makeShape() Shape { Poly(make()) }
+
+fn pass(o: &Owner) &Owner { return o; }
+fn passSum(o: &Sum) &Sum { return o; }
+fn passHeld(h: &mut Held) &mut Held { return h; }
+fn same[T](x: T) T { return x; }
+fn wrapped(o: &Owner) W { return W(o); }
+fn paired(o: &Owner) (&Owner, i32) { return o, 1i32; }
+fn through(t: &mut Taker) &mut Taker { return t; }
+fn maybe(o: &Sum) Option[&Sum] { return Some(o); }
+// The result borrows only what the first parameter does
+fn first(a: &'a mut Held, b: &'b mut Held) &'a mut Held { return a; }
+
+// ---- An assignment's value: a view, then a store through the other holder ----
+
+fn assign() {
+  let o = Owner(make());
+  let o2 = o;
+  let p = Owner(make());
+  var r = &p;
+  let v = &(**(r = &o))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn assignThrough() {
+  let o = Owner(make());
+  let o2 = o;
+  let p = Owner(make());
+  var r = &p;
+  let rr = &mut r;
+  let v = &(**(*rr = &o))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn assignField() {
+  let o = Owner(make());
+  let o2 = o;
+  let p = Owner(make());
+  var w = W(&p);
+  let v = &(**(w.r = &o))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn assignElement() {
+  let o = Owner(make());
+  let o2 = o;
+  let p = Owner(make());
+  var a = [&p];
+  let v = &(**(a[0usize] = &o))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn assignChain() {
+  let o = Owner(make());
+  let o2 = o;
+  let p = Owner(make());
+  var r = &p;
+  var s = pass(r);
+  let v = &(**(r = s = &o))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn assignParallel() {
+  let o = Owner(make());
+  let o2 = o;
+  let p = Owner(make());
+  var r = &p;
+  var s = pass(r);
+  let v = &(**((r, s = &o, &p).0))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+// ---- An element or a field of a value made here ----
+
+fn tuple() {
+  let o = Owner(make());
+  let o2 = o;
+  let v = &(**((&o, 1i32).0))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn tupleNested() {
+  let o = Owner(make());
+  let o2 = o;
+  let v = &(**(((1i32, &o), 2i32).0.1))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+// A value made of several parts is read whole: an 'if' of two tuples
+fn tupleOfIf(c: bool) {
+  let o = Owner(make());
+  let o2 = o;
+  let p = Owner(make());
+  let v = &(**((if c {(&p, 1i32)} else {(&o, 2i32)}).0))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn structField() {
+  let o = Owner(make());
+  let o2 = o;
+  let v = &(**W(&o).r)[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn structNested() {
+  let o = Owner(make());
+  let o2 = o;
+  let v = &(**Wrap(W(&o)).w.r)[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn fieldOfBlock() {
+  let o = Owner(make());
+  let o2 = o;
+  let v = &(**({ W(&o) }.r))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn destructured() {
+  let o = Owner(make());
+  let o2 = o;
+  let v = &(**(W(&o).(r)))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn arrayElement() {
+  let o = Owner(make());
+  let o2 = o;
+  let v = &(**([&o][0usize]))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn arrayFilled() {
+  let o = Owner(make());
+  let o2 = o;
+  let v = &(**((Array[&Owner, 2]() <- fill &o)[0usize]))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn fieldOfCall() {
+  let o = Owner(make());
+  let o2 = o;
+  let v = &(**wrapped(&o).r)[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn elementOfCall() {
+  let o = Owner(make());
+  let o2 = o;
+  let v = &(**(paired(&o).0))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn castOfCall() {
+  let o = Owner(make());
+  let o2 = o;
+  let v = &(**(pass(&o) as &Owner))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+// ---- A call's returned borrow: a variant narrowed through it ----
+
+fn called() {
+  let s = Sum(makeShape());
+  let s2 = s;
+  match &**passSum(&s) {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+fn calledOnAName() {
+  let s = Sum(makeShape());
+  let s2 = s;
+  let r = &s;
+  match &**passSum(r) {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+fn calledTwice() {
+  let s = Sum(makeShape());
+  let s2 = s;
+  match &**passSum(passSum(&s)) {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+fn calledGeneric() {
+  let s = Sum(makeShape());
+  let s2 = s;
+  match &**same(&s) {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+fn calledMethod() {
+  let s = Sum(makeShape());
+  let s2 = s;
+  let g = Giver(1i32);
+  match &**g.give(&s) {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+fn calledByReference() {
+  let s = Sum(makeShape());
+  let s2 = s;
+  let f = &passSum;
+  match &**f(&s) {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+fn calledField() {
+  let s = Sum(makeShape());
+  let s2 = s;
+  let h = Fns(&passSum);
+  match &**h.f(&s) {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+fn calledClosure() {
+  let s = Sum(makeShape());
+  let s2 = s;
+  let f = fn (x: &Sum) &Sum { x };
+  match &**f(&s) {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+fn calledUnwrap() {
+  let s = Sum(makeShape());
+  let s2 = s;
+  match &**maybe(&s).unwrap() {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+fn assignNarrowed() {
+  let s = Sum(makeShape());
+  let s2 = s;
+  let t = Sum(makeShape());
+  var r = &t;
+  match &**(r = &s) {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+fn tupleNarrowed() {
+  let s = Sum(makeShape());
+  let s2 = s;
+  match &**((&s, 1i32).0) {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+// ---- A shorter-lived borrow stored through one ----
+
+fn storedThroughCall() {
+  var a = 1i32;
+  var h = Held(&a);
+  {
+    var b = 2i32;                          //~ ErrorFrozen "goes out of scope while 'h' still holds"
+    *passHeld(&mut h) = Held(&b);
+  }
+  printInt(i64.from(*h.r));
+}
+
+fn storedThroughFirst() {
+  var a = 1i32;
+  var h = Held(&a);
+  var k = Held(&a);
+  {
+    var b = 2i32;                          //~ ErrorFrozen "goes out of scope while 'h' still holds"
+    *first(&mut h, &mut k) = Held(&b);
+  }
+  printInt(i64.from(*h.r));
+}
+
+fn storedThroughAssign() {
+  var a = 1i32;
+  var h = Held(&a);
+  var k = Held(&a);
+  var r = &mut k;
+  {
+    var b = 2i32;                          //~ ErrorFrozen "goes out of scope while 'h' still holds"
+    *(r = &mut h) = Held(&b);
+  }
+  printInt(i64.from(*h.r));
+}
+
+fn storedThroughTuple() {
+  var a = 1i32;
+  var h = Held(&a);
+  {
+    var b = 2i32;                          //~ ErrorFrozen "goes out of scope while 'h' still holds"
+    *((&mut h, 1i32).0) = Held(&b);
+  }
+  printInt(i64.from(*h.r));
+}
+
+fn storedThroughStruct() {
+  var a = 1i32;
+  var h = Held(&a);
+  {
+    var b = 2i32;                          //~ ErrorFrozen "goes out of scope while 'h' still holds"
+    *Taker(&mut h).r = Held(&b);
+  }
+  printInt(i64.from(*h.r));
+}
+
+// ---- A store of a local into what a caller lent ----
+
+fn storedOut(h: &mut Held) {
+  var a = 1i32;
+  *passHeld(h) = Held(&a);               //~ ErrorEscape "outlive this function"
+}
+
+fn storedOutTuple(h: &mut Held) {
+  var a = 1i32;
+  *((h, 1i32).0) = Held(&a);             //~ ErrorEscape "outlive this function"
+}
+
+fn main() {}
