@@ -407,7 +407,7 @@ fn southTravel(smoothness: f32) f64 {
   let target = cap(&sphere(1., 4u32), 0.2);
   let start = icosahedron(1.);
   var p = List[String]();
-  let fit = fitCageWith(&target, &start, 3u32, 6u32, smoothness, true, &mut p);
+  let fit = fitCageWith(&target, &start, 3u32, 6u32, smoothness, true, false, &mut p);
   var worst = 0.0;
   var v = 0usize;
   while v < start.vertexCount() {
@@ -427,16 +427,16 @@ fn mutants() {
   let start = skew(&icosahedron(1.3), 1., 1.4, 0.6);
   var p = List[String]();
   let plane = fitCage(&target, &start, 3u32, 8u32, &mut p);
-  let point = fitCageWith(&target, &start, 3u32, 8u32, f32.from(CageSmoothness), false, &mut p);
+  let point = fitCageWith(&target, &start, 3u32, 8u32, f32.from(CageSmoothness), false, false, &mut p);
   expect(plane.rms > 0.003 && plane.rms < 0.004, "mutant point-to-point: the plane's rms after 8 rounds is 0.00351");
   expect(point.rms > 0.012 && point.rms < 0.022, "mutant point-to-point: 0.0164 after the same 8 rounds");
   expect(point.rms > plane.rms * 4., "mutant point-to-point: over 4 times the plane's (4.7)");
   expect(*point.history[8usize] < *point.history[7usize], "mutant point-to-point: still falling");
   let plane30 = fitCage(&target, &start, 3u32, 30u32, &mut p);
-  let point30 = fitCageWith(&target, &start, 3u32, 30u32, f32.from(CageSmoothness), false, &mut p);
+  let point30 = fitCageWith(&target, &start, 3u32, 30u32, f32.from(CageSmoothness), false, false, &mut p);
   expect(point30.rms > plane30.rms * 2., "mutant point-to-point: still over 2 times the plane's after 30 rounds (0.00796, 0.00297)");
   // no smoothness: the first step is larger (0.0723 against 0.0576), and the fit stops at round 6, at the floor
-  let flat = fitCageWith(&target, &start, 3u32, 8u32, 0., true, &mut p);
+  let flat = fitCageWith(&target, &start, 3u32, 8u32, 0., true, false, &mut p);
   expect(flat.rms < plane.rms * 0.9, "mutant no smoothness: after 8 rounds 15% below the smoothed fit's (0.002966, 0.00351)");
   expect(flat.rounds < 8u32, "mutant no smoothness: it stops before 8 rounds, a round gaining under 0.05% (6)");
   expect(*flat.history[1usize] > *plane.history[1usize] * 1.1, "mutant no smoothness: round 1 goes further (0.0723 against 0.0576)");
@@ -449,7 +449,67 @@ fn mutants() {
   expectInt(i64.from(p.len()), 0, "mutants: no problems");
 }
 
+// how far from its start's direction (the sine of the angle) the cage's vertex that moved farthest sideways has gone
+fn sideways(cage: &PolyMesh, start: &PolyMesh) f64 {
+  var worst = 0.0;
+  var v = 0usize;
+  while v < cage.vertexCount() {
+    let p = *cage.positions[v];
+    let s = *start.positions[v];
+    let c = p.cross(s).length() / (p.length() * s.length());
+    if f64.from(c) > worst { worst = f64.from(c); }
+    v = v + 1usize;
+  }
+  worst
+}
+
+// A sphere from the regular icosahedron: by symmetry each control point's normal is the line through the
+// origin, so with 'normalOnly' every point stays on its start's ray (the sine of the angle below 0.00001)
+// and the fit reaches the floor, R 1.338, rms 0.00297 (the same as the free fit), and still falls every
+// round; the free fit's points wander off their rays by the sphere target's own asymmetry
+fn alongNormals() {
+  let target = sphere(1., 4u32);
+  let start = icosahedron(1.3);
+  var p = List[String]();
+  let held = fitCageWith(&target, &start, 3u32, 30u32, f32.from(CageSmoothness), true, true, &mut p);
+  let free = fitCageWith(&target, &start, 3u32, 30u32, f32.from(CageSmoothness), true, false, &mut p);
+  expectInt(i64.from(held.cage.vertexCount()), 12, "normal only: the cage keeps its 12 vertices");
+  expect(sideways(&held.cage, &start) < 0.00001, "normal only: every point stays on its start's ray");
+  expect(sideways(&free.cage, &start) > 0.00001, "free steps: the points leave their rays (so the row above can fail)");
+  expect(held.rounds >= 2u32, "normal only: it takes rounds");
+  var i = 1usize;
+  var falling = true;
+  while i < held.history.len() {
+    if !(*held.history[i] < *held.history[i - 1usize]) { falling = false; }
+    i = i + 1usize;
+  }
+  expect(falling, "normal only: the rms falls on every round");
+  expect(held.rms < 0.0031, "normal only: it reaches the floor (0.00297) within 4%");
+  expect(held.rms < free.rms * 1.02, "normal only: no worse than the free fit's rms (a sphere needs no sideways move)");
+  var r = 0.0;
+  var v = 0usize;
+  while v < held.cage.vertexCount() {
+    r = r + f64.from((*held.cage.positions[v]).length());
+    v = v + 1usize;
+  }
+  r = r / 12.;
+  expect(r > 1.333 && r < 1.343, "normal only: the cage's radius reaches 1.338");
+  // the skewed start: normal-only moves cannot undo a stretch as fast, but the rms still falls every round
+  let skewed = skew(&icosahedron(1.3), 1., 1.4, 0.6);
+  let s2 = fitCageWith(&target, &skewed, 3u32, 30u32, f32.from(CageSmoothness), true, true, &mut p);
+  i = 1usize;
+  falling = true;
+  while i < s2.history.len() {
+    if !(*s2.history[i] < *s2.history[i - 1usize]) { falling = false; }
+    i = i + 1usize;
+  }
+  expect(falling && s2.rounds >= 3u32, "normal only, skewed start: the rms falls on every round");
+  expect(s2.rms < 0.5 * *s2.history[0usize], "normal only, skewed start: the rms halves");
+  expectInt(i64.from(p.len()), 0, "normal only: no problems");
+}
+
 fn main() i32 {
+  alongNormals();
   sphereFit();
   exactCages();
   heightsOfSphere();
