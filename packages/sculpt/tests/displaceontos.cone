@@ -1,0 +1,462 @@
+// The sculpt package's displaceOnto and footprintWeights, checked with the testing package against values worked out by
+// hand; only a failure prints, so displaceontos.out holds the summary. Every result must pass validate().
+//
+// THE GRID. n x n quads over [-2, 2]^2 (a cell 4/n; every coordinate used below is a multiple of 1/16, exact in f32),
+// vertex (n + 1) j + i at (-2 + i 4/n, -2 + j 4/n); the base is n = 16 (cells of 0.25, 289 vertices, 256 faces) in the
+// plane z = 0, whose vertex normals are (0, 0, 1). A TARGET is a grid with its own z(x): 'flat 0.2' (z = 0.2), 'flat
+// 0.4', 'two sheets' (two stacked flat grids, z = 0.1 and 0.5) and 'the wall', z = 0.8 q(s) with q the smoothstep
+// 3 s^2 - 2 s^3 and s = (x + 0.5) / 0.5 clamped to 0..1 (0 left of x = -0.5, 0.8 right of x = 0, slope up to
+// 0.8 * 1.5 / 0.5 = 2.4), as a 64 x 64 grid (cells of 1/16) so that it is finer than the base.
+//
+// FOOTPRINTWEIGHTS on the base, footprint = cells 4 to 11 each way (the square [-1, 1]^2, 64 faces, 81 vertices on or
+// inside it; its edge vertices are the 32 with |x| = 1 or |y| = 1 there). Along the row y = 0 the surface distance of
+// a vertex to the nearest edge vertex is a whole number of cells (0.25 each, exact):
+// - inward 0.5, outward 0: s = 0 at x = 1 -> weight smoothstep(0) = 0; x = 0.75 (s = 0.25) -> smoothstep(0.5) = 0.5;
+//   x = 0.5 (s = 0.5) -> 1; x = 0 -> 1; x = 1.25 (outside) -> 0.
+// - inward 0, outward 0.5: x = 1 (s = 0) -> smoothstep(0.5 / 0.5) = 1; x = 1.25 (s = -0.25) -> smoothstep(0.5) = 0.5;
+//   x = 1.5 (s = -0.5) -> 0; x = 1.75 -> 0.
+// - both 0: 1 on the 81 vertices of a footprint face, 0 on the other 208.
+// - no footprint (no faces): 0 everywhere; the whole mesh: 1 everywhere.
+//
+// DISPLACEONTO, base n = 16 and the target flat 0.2 (the base's normal is +z; the line cast finds the sheet at 0.2):
+// - Feather: weights from footprintWeights(inward 0, outward 0.5) of the 64 cells; maxEdge 10 (nothing refines). Row
+//   y = 0: x = 0 and 1 -> z = 0.2; x = 1.25 -> 0.5 * 0.2 = 0.1; x = 1.5 and beyond -> 0. Every vertex of weight 0
+//   is bit for bit the input's (x, y, z); the faces are the input's 256 quads in order; no problem line.
+// - Refined: the same at maxEdge 0.15, 8 passes. The input's 289 vertices keep their x and y; the result has more than
+//   256 faces; every vertex with weight 1 has z = 0.2 (the sheet is flat, so recasting and interpolating agree;
+//   the steep row tells them apart); the vertices the input had with weight 0 are bit for bit the input's.
+// - Abutting: target A flat 0.2 with weight 1 on the vertices with x <= 0, target B flat 0.4 with weight 1 on x >= 0.
+//   The 17 vertices at x = 0 have weights 1 and 1: normalised, 0.5 and 0.5 -> z = 0.5 * 0.2 + 0.5 * 0.4 = 0.3. The
+//   vertices at x < 0 are at 0.2, at x > 0 at 0.4; the problem line is "displaceOnto: 17 vertices had weights over 1
+//   and were normalised"; the mesh is valid, 256 faces, no gap (a gap would be a vertex with a missing face).
+//   WITHOUT the normalisation (a mutant) the x = 0 column is at 0.6.
+// - Out of reach: the sheet at 0.2 with a reach of 0.1, weight 1 on all 289: every cast misses; z = 0 everywhere,
+//   the line is "displaceOnto: 289 casts found no hit within reach". With reach 0.3 every vertex is at 0.2.
+// - Two sheets (0.1 and 0.5, 0.4 apart, within a reach of 1): every vertex sees two distinct hits and stays at 0;
+//   the line is "... 289 casts found more than one distinct hit". Within a reach of 0.2 only the sheet at 0.1 is
+//   seen: z = 0.1.
+// - The wall, weight 1 everywhere, reach 1, maxEdge 0.3, 10 passes: the target's nodes are multiples of 1/16, so a
+//   vertex of the result with x a multiple of 1/16 has z = 0.8 q((x + 0.5) / 0.5) to 1e-5 (a recast at a node reads
+//   the target there exactly; an INTERPOLATED height at a new vertex is the mean of its ends' and is off by up to
+//   f''h^2/8 = 19.2 * 0.125^2 / 8 = 0.037 where the wall curves: the mutant fails this). No edge of the result is over
+//   0.3 + 1e-5, measured on the displaced mesh (the unrefined displacement has an edge of sqrt(0.25^2 + 0.4^2) = 0.4717 across the wall (the wall rises 0.4 per cell
+//   at its middle; the quads have no diagonals until they are cut),
+//   checked in the same test at maxEdge 10), and no cap line is written (the passes suffice).
+// - Determinism: the wall run twice gives the same positions and faces, bit for bit.
+// - Refusals (one problem line starting "displaceOnto: ", the mesh as it was): one target and no weights; a weights
+//   list of 288 (not one per vertex); a reach of 0; maxEdge 0. No targets is a silent copy. Weights all 0 is a
+//   silent copy.
+//
+// MUTANTS (run by hand, the test fails as noted): recasting replaced by interpolating at new vertices fails the wall's
+// node check; the normalisation removed fails the abutting row (z = 0.6 at x = 0 and the count line missing).
+
+mod displaceontos;
+
+import testing use *;
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn clean(m: &PolyMesh, label: &Array[u8]) {
+  let problems = m.validate();
+  expectInt(i64.from(problems.len()), 0, label);
+}
+
+fn wallZ(x: f32) f32 {
+  var s = (x + 0.5) / 0.5;
+  if s < 0. { s = 0.; }
+  if s > 1. { s = 1.; }
+  0.8 * s * s * (3. - 2. * s)
+}
+
+// kind 0: z = 0, 1: 0.2, 2: 0.4, 3: two sheets (0.1 and 0.5), 4: the wall
+fn zOf(kind: u32, x: f32) f32 {
+  if kind == 1u32 { 0.2 } else if kind == 2u32 { 0.4 } else if kind == 4u32 { wallZ(x) } else { 0. }
+}
+
+fn grid(n: u32, kind: u32) PolyMesh {
+  let layers = if kind == 3u32 { 2u32 } else { 1u32 };
+  var pts = List[Vec3]();
+  var counts = List[u32]();
+  var idx = List[u32]();
+  var l = 0u32;
+  while l < layers {
+    var j = 0u32;
+    while j <= n {
+      var i = 0u32;
+      while i <= n {
+        let x = -2. + 4. * f32.from(i) / f32.from(n);
+        let z: f32 = if kind == 3u32 { if l == 0u32 { 0.1 } else { 0.5 } } else { zOf(kind, x) };
+        pts.push(Vec3(x, -2. + 4. * f32.from(j) / f32.from(n), z));
+        i = i + 1u32;
+      }
+      j = j + 1u32;
+    }
+    let off = l * (n + 1u32) * (n + 1u32);
+    j = 0u32;
+    while j < n {
+      var i = 0u32;
+      while i < n {
+        let a = off + (n + 1u32) * j + i;
+        counts.push(4u32);
+        idx.push(a); idx.push(a + 1u32); idx.push(a + n + 2u32); idx.push(a + n + 1u32);
+        i = i + 1u32;
+      }
+      j = j + 1u32;
+    }
+    l = l + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems)
+}
+
+fn cells(lo: u32, hi: u32) List[u32] {
+  var out = List[u32]();
+  var j = lo;
+  while j <= hi {
+    var i = lo;
+    while i <= hi {
+      out.push(16u32 * j + i);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  out
+}
+
+fn constant(n: usize, v: f32) List[f32] {
+  var w = List[f32]();
+  var i = 0usize;
+  while i < n {
+    w.push(v);
+    i = i + 1usize;
+  }
+  w
+}
+
+fn one(t: PolyMesh) List[PolyMesh] {
+  var ts = List[PolyMesh]();
+  ts.push(t);
+  ts
+}
+
+fn reachOf(r: f32) List[f32] {
+  var l = List[f32]();
+  l.push(r);
+  l
+}
+
+fn weightsOf(w: List[f32]) List[List[f32]] {
+  var l = List[List[f32]]();
+  l.push(w);
+  l
+}
+
+// The vertex of the 17 x 17 grid at (x, y): the row of the weights
+fn vAt(x: f32, y: f32) usize {
+  usize.from(u32.from((y + 2.) / 0.25 + 0.5)) * 17usize + usize.from(u32.from((x + 2.) / 0.25 + 0.5))
+}
+
+fn same(a: &PolyMesh, b: &PolyMesh) bool {
+  if a.vertexCount() != b.vertexCount() || a.faceCount() != b.faceCount() { return false; }
+  var i = 0usize;
+  while i < a.vertexCount() {
+    let p = *a.positions[i];
+    let q = *b.positions[i];
+    if p.x != q.x || p.y != q.y || p.z != q.z { return false; }
+    i = i + 1usize;
+  }
+  var f = 0u32;
+  while usize.from(f) < a.faceCount() {
+    let u = a.faceVertices(f);
+    let v = b.faceVertices(f);
+    if u.len() != v.len() { return false; }
+    var k = 0usize;
+    while k < u.len() {
+      if *u[k] != *v[k] { return false; }
+      k = k + 1usize;
+    }
+    f = f + 1u32;
+  }
+  true
+}
+
+fn maxEdge(m: &PolyMesh) f32 {
+  var best: f32 = 0.;
+  var e = 0usize;
+  while e < m.edgeCount() {
+    let a = *m.positions[usize.from(m.fromVertex(2u32 * u32.from(e)))];
+    let b = *m.positions[usize.from(m.toVertex(2u32 * u32.from(e)))];
+    let l = (a - b).length();
+    if l > best { best = l; }
+    e = e + 1usize;
+  }
+  best
+}
+
+fn main() i32 {
+  footprints();
+  feather();
+  refined();
+  abutting();
+  reach();
+  sheets();
+  wall();
+  refusals();
+  done()
+}
+
+fn footprints() {
+  let g = grid(16u32, 0u32);
+  let fp = cells(4u32, 11u32);
+  let a = footprintWeights(&g, fp.view(), 0.5, 0.);
+  expectInt(i64.from(a.len()), 289, "footprintWeights: one per vertex");
+  expectFloat(f64.from(*a[vAt(1., 0.)]), 0., 0., "inward: 0 on the edge");
+  expectFloat(f64.from(*a[vAt(0.75, 0.)]), 0.5, 0.000001, "inward: smoothstep(0.5) a quarter in");
+  expectFloat(f64.from(*a[vAt(0.5, 0.)]), 1., 0.000001, "inward: 1 at the soften distance");
+  expectFloat(f64.from(*a[vAt(0., 0.)]), 1., 0.000001, "inward: 1 at the centre");
+  expectFloat(f64.from(*a[vAt(1.25, 0.)]), 0., 0., "inward: 0 outside");
+  let b = footprintWeights(&g, fp.view(), 0., 0.5);
+  expectFloat(f64.from(*b[vAt(1., 0.)]), 1., 0.000001, "outward: 1 on the edge");
+  expectFloat(f64.from(*b[vAt(1.25, 0.)]), 0.5, 0.000001, "outward: smoothstep(0.5) a quarter out");
+  expectFloat(f64.from(*b[vAt(1.5, 0.)]), 0., 0., "outward: 0 at the soften distance");
+  expectFloat(f64.from(*b[vAt(1.75, 0.)]), 0., 0., "outward: 0 beyond");
+  expectFloat(f64.from(*b[vAt(0., 0.)]), 1., 0.000001, "outward: 1 inside");
+  let c = footprintWeights(&g, fp.view(), 0., 0.);
+  var ones = 0u32;
+  var zeros = 0u32;
+  var i = 0usize;
+  while i < c.len() {
+    if *c[i] == 1. { ones = ones + 1u32; }
+    if *c[i] == 0. { zeros = zeros + 1u32; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(ones), 81, "hard: 81 vertices of the footprint are 1");
+  expectInt(i64.from(zeros), 208, "hard: the other 208 are 0");
+  let none = List[u32]();
+  let d = footprintWeights(&g, none.view(), 0.5, 0.5);
+  var dz = true;
+  i = 0usize;
+  while i < d.len() { if *d[i] != 0. { dz = false; } i = i + 1usize; }
+  expectBool(dz, true, "no footprint: all 0");
+  var allf = List[u32]();
+  var f = 0u32;
+  while f < 256u32 { allf.push(f); f = f + 1u32; }
+  let e = footprintWeights(&g, allf.view(), 0.5, 0.5);
+  var eo = true;
+  i = 0usize;
+  while i < e.len() { if *e[i] != 1. { eo = false; } i = i + 1usize; }
+  expectBool(eo, true, "the whole mesh: all 1");
+}
+
+fn feather() {
+  let g = grid(16u32, 0u32);
+  let fp = cells(4u32, 11u32);
+  let w = footprintWeights(&g, fp.view(), 0., 0.5);
+  let ts = one(grid(16u32, 1u32));
+  var problems = List[String]();
+  let r = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(1.), HeightZero, 10., 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "feather: no problem line");
+  clean(&r, "feather: valid");
+  expectInt(i64.from(r.faceCount()), 256, "feather: the faces are the input's");
+  expectFloat(f64.from(r.positions[vAt(0., 0.)].z), 0.2, 0.000001, "feather: 0.2 inside");
+  expectFloat(f64.from(r.positions[vAt(1., 0.)].z), 0.2, 0.000001, "feather: 0.2 on the edge");
+  expectFloat(f64.from(r.positions[vAt(1.25, 0.)].z), 0.1, 0.000001, "feather: half at the first step out");
+  expectFloat(f64.from(r.positions[vAt(1.5, 0.)].z), 0., 0., "feather: 0 at the soften distance");
+  var bad = 0u32;
+  var i = 0usize;
+  while i < 289usize {
+    let p = *g.positions[i];
+    let q = *r.positions[i];
+    if q.x != p.x || q.y != p.y { bad = bad + 1u32; }
+    if *w[i] == 0. && q.z != p.z { bad = bad + 1u32; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(bad), 0, "feather: x and y as they were, a weight of 0 bit for bit");
+}
+
+fn copyW(w: &List[f32]) List[f32] {
+  var o = List[f32]();
+  var i = 0usize;
+  while i < w.len() { o.push(*w[i]); i = i + 1usize; }
+  o
+}
+
+fn refined() {
+  let g = grid(16u32, 0u32);
+  let fp = cells(4u32, 11u32);
+  let w = footprintWeights(&g, fp.view(), 0., 0.5);
+  let ts = one(grid(16u32, 1u32));
+  var problems = List[String]();
+  let r = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(1.), HeightZero, 0.15, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "refined: no problem line");
+  clean(&r, "refined: valid");
+  expectBool(r.faceCount() > 256usize, true, "refined: more faces");
+  var bad = 0u32;
+  var badTop = 0u32;
+  var i = 0usize;
+  while i < 289usize {
+    let p = *g.positions[i];
+    let q = *r.positions[i];
+    if q.x != p.x || q.y != p.y { bad = bad + 1u32; }
+    if *w[i] == 0. && q.z != p.z { bad = bad + 1u32; }
+    if *w[i] == 1. && (q.z - 0.2).abs() > 0.000001 { badTop = badTop + 1u32; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(bad), 0, "refined: the input's vertices keep x, y; weight 0 is bit for bit");
+  expectInt(i64.from(badTop), 0, "refined: weight 1 is at 0.2");
+  var high = 0u32;
+  i = 289usize;
+  while i < r.vertexCount() {
+    let q = *r.positions[i];
+    if q.z > 0.2000001 || q.z < -0.0000001 { high = high + 1u32; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(high), 0, "refined: every new vertex is between the base and the sheet");
+}
+
+fn abutting() {
+  let g = grid(16u32, 0u32);
+  var ts = one(grid(16u32, 1u32));
+  ts.push(grid(16u32, 2u32));
+  var wa = List[f32]();
+  var wb = List[f32]();
+  var j = 0u32;
+  while j < 17u32 {
+    var i = 0u32;
+    while i < 17u32 {
+      wa.push(if i <= 8u32 { 1. } else { 0. });
+      wb.push(if i >= 8u32 { 1. } else { 0. });
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var ws = List[List[f32]]();
+  ws.push(wa);
+  ws.push(wb);
+  var rs = reachOf(1.);
+  rs.push(1.);
+  var problems = List[String]();
+  let r = displaceOnto(&g, &ts, &ws, &rs, HeightZero, 10., 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "abutting: one problem line");
+  expectStr(problems[0usize].view(), "displaceOnto: 17 vertices had weights over 1 and were normalised", "abutting: the count line");
+  clean(&r, "abutting: valid");
+  expectInt(i64.from(r.faceCount()), 256, "abutting: no face lost");
+  expectFloat(f64.from(r.positions[vAt(-0.25, 0.)].z), 0.2, 0.000001, "abutting: 0.2 left of the edge");
+  expectFloat(f64.from(r.positions[vAt(0., 0.)].z), 0.3, 0.000001, "abutting: the mean 0.3 on it");
+  expectFloat(f64.from(r.positions[vAt(0.25, 0.)].z), 0.4, 0.000001, "abutting: 0.4 right of it");
+  expectFloat(f64.from(r.positions[vAt(0., 1.75)].z), 0.3, 0.000001, "abutting: the whole column");
+}
+
+fn reach() {
+  let g = grid(16u32, 0u32);
+  let ts = one(grid(16u32, 1u32));
+  let w = constant(289usize, 1.);
+  var problems = List[String]();
+  let r = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(0.1), HeightZero, 10., 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "reach: one problem line");
+  expectStr(problems[0usize].view(), "displaceOnto: 289 casts found no hit within reach", "reach: the miss count");
+  expectBool(same(&r, &g), true, "reach: every miss is height 0, the mesh as it was");
+  var p2 = List[String]();
+  let r2 = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(0.3), HeightZero, 10., 8u32, &mut p2);
+  expectInt(i64.from(p2.len()), 0, "reach: in reach, no line");
+  expectFloat(f64.from(r2.positions[vAt(0.5, 0.5)].z), 0.2, 0.000001, "reach: in reach it is 0.2");
+}
+
+fn sheets() {
+  let g = grid(16u32, 0u32);
+  let ts = one(grid(16u32, 3u32));
+  let w = constant(289usize, 1.);
+  var problems = List[String]();
+  let r = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(1.), HeightZero, 10., 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "sheets: one problem line");
+  expectStr(problems[0usize].view(), "displaceOnto: 289 casts found more than one distinct hit", "sheets: the count line");
+  expectBool(same(&r, &g), true, "sheets: two hits is height 0");
+  var p2 = List[String]();
+  let r2 = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(0.2), HeightZero, 10., 8u32, &mut p2);
+  expectInt(i64.from(p2.len()), 0, "sheets: reach 0.2 sees one sheet");
+  expectFloat(f64.from(r2.positions[vAt(0.5, 0.5)].z), 0.1, 0.000001, "sheets: it is the sheet at 0.1");
+  var p3 = List[String]();
+  let r3 = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(1.), HeightNearest, 10., 8u32, &mut p3);
+  expectInt(i64.from(p3.len()), 1, "sheets, nearest: still counted");
+  expectStr(p3[0usize].view(), "displaceOnto: 289 casts found more than one distinct hit", "sheets, nearest: the count line");
+  expectFloat(f64.from(r3.positions[vAt(0.5, 0.5)].z), 0.1, 0.000001, "sheets, nearest: the nearer sheet, 0.1 not 0.5");
+  var p4 = List[String]();
+  let r4 = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(1.), 2u32, 10., 8u32, &mut p4);
+  expectInt(i64.from(p4.len()), 1, "sheets: an unknown policy is refused");
+  expectBool(same(&r4, &g), true, "sheets: refused, unchanged");
+}
+
+fn wallRun() PolyMesh {
+  let g = grid(16u32, 0u32);
+  let ts = one(grid(64u32, 4u32));
+  let w = constant(289usize, 1.);
+  var problems = List[String]();
+  let r = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(1.), HeightZero, 0.3, 10u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "wall: no problem line, the passes suffice");
+  r
+}
+
+fn wall() {
+  let g = grid(16u32, 0u32);
+  let ts = one(grid(64u32, 4u32));
+  let w = constant(289usize, 1.);
+  var p0 = List[String]();
+  let raw = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(1.), HeightZero, 10., 10u32, &mut p0);
+  expectBool(maxEdge(&raw) > 0.47, true, "wall: unrefined, an edge across the wall is over 0.47");
+  let r = wallRun();
+  clean(&r, "wall: valid");
+  expectBool(maxEdge(&r) <= 0.30001, true, "wall: no edge over maxEdge after displacement");
+  var nodes = 0u32;
+  var bad = 0u32;
+  var i = 0usize;
+  while i < r.vertexCount() {
+    let q = *r.positions[i];
+    let k = q.x * 16. + 100.;
+    let fr = k - f32.from(u32.from(k));
+    if fr < 0.0001 || fr > 0.9999 {
+      nodes = nodes + 1u32;
+      if (q.z - wallZ(q.x)).abs() > 0.00001 { bad = bad + 1u32; }
+    }
+    i = i + 1usize;
+  }
+  expectBool(nodes > 400u32, true, "wall: many vertices at nodes");
+  expectInt(i64.from(bad), 0, "wall: a vertex at a node of the target reads the target there");
+  let again = wallRun();
+  expectBool(same(&r, &again), true, "wall: the same run twice, the same bits");
+}
+
+fn refusals() {
+  let g = grid(16u32, 0u32);
+  let ts = one(grid(16u32, 1u32));
+  let w = constant(289usize, 1.);
+  var p1 = List[String]();
+  let none = List[List[f32]]();
+  let r1 = displaceOnto(&g, &ts, &none, &reachOf(1.), HeightZero, 10., 8u32, &mut p1);
+  expectInt(i64.from(p1.len()), 1, "refuse: weights short of the targets");
+  expectBool(same(&r1, &g), true, "refuse: weights short, unchanged");
+  var p2 = List[String]();
+  let r2 = displaceOnto(&g, &ts, &weightsOf(constant(288usize, 1.)), &reachOf(1.), HeightZero, 10., 8u32, &mut p2);
+  expectInt(i64.from(p2.len()), 1, "refuse: 288 weights");
+  expectBool(same(&r2, &g), true, "refuse: 288 weights, unchanged");
+  var p3 = List[String]();
+  let r3 = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(0.), HeightZero, 10., 8u32, &mut p3);
+  expectInt(i64.from(p3.len()), 1, "refuse: reach 0");
+  expectBool(same(&r3, &g), true, "refuse: reach 0, unchanged");
+  var p4 = List[String]();
+  let r4 = displaceOnto(&g, &ts, &weightsOf(copyW(&w)), &reachOf(1.), HeightZero, 0., 8u32, &mut p4);
+  expectInt(i64.from(p4.len()), 1, "refuse: maxEdge 0");
+  expectStr(p4[0usize].view(), "displaceOnto: maxEdge is not above 0", "refuse: the line");
+  expectBool(same(&r4, &g), true, "refuse: maxEdge 0, unchanged");
+  var p5 = List[String]();
+  let notargets = List[PolyMesh]();
+  let r5 = displaceOnto(&g, &notargets, &none, &List[f32](), HeightZero, 0.1, 8u32, &mut p5);
+  expectInt(i64.from(p5.len()), 0, "no targets: silent");
+  expectBool(same(&r5, &g), true, "no targets: a copy");
+  var p6 = List[String]();
+  let r6 = displaceOnto(&g, &ts, &weightsOf(constant(289usize, 0.)), &reachOf(1.), HeightZero, 0.05, 8u32, &mut p6);
+  expectInt(i64.from(p6.len()), 0, "weights all 0: silent");
+  expectBool(same(&r6, &g), true, "weights all 0: a copy");
+}

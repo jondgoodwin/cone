@@ -115,7 +115,10 @@ struct DsTris {
 
 struct DsWork {
   pos: List[Vec3];     // per vertex, undisplaced
-  hgt: List[f32];      // per vertex: its height (0 when it does not move)
+  off: List[Vec3];     // per vertex: how far it moves (0 when it does not move)
+  nrm: List[Vec3];     // displaceOnto: per vertex, the unit direction it moves along (empty for displaceRegion)
+  wt: List[f32];       // displaceOnto: per vertex, nt weights (one per target) in a row
+  nt: usize;
   moved: List[bool];   // per vertex: a region vertex
   pa: List[u32];       // per vertex: the two vertices a new one is the middle of (NoIndex for the input's)
   pb: List[u32];
@@ -137,8 +140,9 @@ fn dsTri(o: &mut DsTris, f: u32, r: bool, v0: u32, c0: u32, e0: u32, v1: u32, c1
   o.tr.push(r);
 }
 
-fn dsRefused(m: &PolyMesh, problems: &mut List[String], why: &str) PolyMesh {
-  var s = String.from("displaceRegion: ");
+fn dsRefused(m: &PolyMesh, problems: &mut List[String], name: &str, why: &str) PolyMesh {
+  var s = String.from(name);
+  s.append(": ");
   s.append(why);
   problems.push(s);
   m.clone()
@@ -164,10 +168,10 @@ fn dsFind(keys: &List[u64], k: u64) u32 {
 }
 
 // A vertex's place after the patch moves it
-fn dsPlace(w: &DsWork, axis: Vec3, v: u32) Vec3 {
+fn dsPlace(w: &DsWork, v: u32) Vec3 {
   let p = *w.pos[usize.from(v)];
-  let h = *w.hgt[usize.from(v)];
-  if h != 0. { p + axis * h } else { p }
+  let o = *w.off[usize.from(v)];
+  if o.x != 0. || o.y != 0. || o.z != 0. { p + o } else { p }
 }
 
 // Longest first, ties by the key: the order new vertices are numbered in
@@ -281,7 +285,7 @@ fn dsInputEdge(m: &PolyMesh, a: u32, b: u32) u32 {
 }
 
 // The unique keys (ascending) of the region triangles' edges whose displaced length is over maxEdge
-fn dsOver(w: &DsWork, t: &DsTris, axis: Vec3, maxEdge: f32) List[u64] {
+fn dsOver(w: &DsWork, t: &DsTris, maxEdge: f32) List[u64] {
   var keys = List[u64]();
   var i = 0usize;
   while i < t.tr.len() {
@@ -290,7 +294,7 @@ fn dsOver(w: &DsWork, t: &DsTris, axis: Vec3, maxEdge: f32) List[u64] {
       while k < 3usize {
         let a = *t.tv[3usize * i + k];
         let b = *t.tv[3usize * i + (k + 1usize) % 3usize];
-        if (dsPlace(w, axis, a) - dsPlace(w, axis, b)).length() > maxEdge { keys.push(dsKey(a, b)); }
+        if (dsPlace(w, a) - dsPlace(w, b)).length() > maxEdge { keys.push(dsKey(a, b)); }
         k = k + 1usize;
       }
     }
@@ -309,13 +313,22 @@ fn dsOver(w: &DsWork, t: &DsTris, axis: Vec3, maxEdge: f32) List[u64] {
 pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, maxEdge: f32, maxPasses: u32,
     problems: &mut List[String]) PolyMesh {
   if faces.len() == 0usize { return m.clone(); }
-  if !(maxEdge > 0.) { return dsRefused(m, problems, "maxEdge is not above 0"); }
+  if !(maxEdge > 0.) { return dsRefused(m, problems, "displaceRegion", "maxEdge is not above 0"); }
   if patch.nu < 2u32 || patch.nv < 2u32 || patch.heights.len() != usize.from(patch.nu) * usize.from(patch.nv) {
-    return dsRefused(m, problems, "heights are not nu * nv (nu and nv at least 2)");
+    return dsRefused(m, problems, "displaceRegion", "heights are not nu * nv (nu and nv at least 2)");
   }
+  var on = DsOnto(false, false, List[SurfaceIndex](), List[f32](), 0u32, 0u32, 0u32);
+  dsRun(m, faces, patch, &mut on, &List[Vec3](), &List[f32](), maxEdge, maxPasses, problems)
+}
+
+// The driver both functions share: the region's faces refined under the displaced edge length, then moved. In
+// displaceRegion's mode ('on.active' false) a vertex moves along the patch's axis by the patch's height; in
+// displaceOnto's, along its own normal by the weighted heights to the targets (see displaceonto.cone).
+fn dsRun(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, on: &mut DsOnto, nrm0: &List[Vec3], wt0: &List[f32],
+    maxEdge: f32, maxPasses: u32, problems: &mut List[String]) PolyMesh {
+  let who = if on.active { "displaceOnto" } else { "displaceRegion" };
   let nv = m.vertexCount();
   let nf = m.faceCount();
-  let axis = patch.axis;
 
   var inRegion = List[bool].withCapacity(nf);
   var i = 0usize;
@@ -325,16 +338,17 @@ pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, max
   }
   i = 0usize;
   while i < faces.len() {
-    if usize.from(faces[i]) >= nf { return dsRefused(m, problems, "a face is not in the mesh"); }
+    if usize.from(faces[i]) >= nf { return dsRefused(m, problems, who, "a face is not in the mesh"); }
     inRegion.set(usize.from(faces[i]), true);
     i = i + 1usize;
   }
 
-  var w = DsWork(copyList(&m.positions), List[f32].withCapacity(nv), List[bool].withCapacity(nv), List[u32].withCapacity(nv),
-    List[u32].withCapacity(nv), u32.from(m.halfedgeCount()), List[u32](), List[u32](), false);
+  var w = DsWork(copyList(&m.positions), List[Vec3].withCapacity(nv), copyList(nrm0), copyList(wt0), on.targets(),
+    List[bool].withCapacity(nv), List[u32].withCapacity(nv), List[u32].withCapacity(nv), u32.from(m.halfedgeCount()),
+    List[u32](), List[u32](), false);
   i = 0usize;
   while i < nv {
-    w.hgt.push(0.);
+    w.off.push(Vec3(0., 0., 0.));
     w.moved.push(false);
     w.pa.push(NoIndex);
     w.pb.push(NoIndex);
@@ -360,7 +374,7 @@ pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, max
         let v = usize.from(*vs[j]);
         if !*w.moved[v] {
           w.moved.set(v, true);
-          w.hgt.set(v, patch.heightAt(*w.pos[v]));
+          dsInputOff(&mut w, patch, on, v);
         }
         j = j + 1usize;
       }
@@ -370,9 +384,9 @@ pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, max
   var area: f32 = 0.;
   i = 0usize;
   while i < tris.tr.len() {
-    let a = dsPlace(&w, axis, *tris.tv[3usize * i]);
-    let b = dsPlace(&w, axis, *tris.tv[3usize * i + 1usize]);
-    let cc = dsPlace(&w, axis, *tris.tv[3usize * i + 2usize]);
+    let a = dsPlace(&w,*tris.tv[3usize * i]);
+    let b = dsPlace(&w,*tris.tv[3usize * i + 1usize]);
+    let cc = dsPlace(&w,*tris.tv[3usize * i + 2usize]);
     area = area + (b - a).cross(cc - a).length() * 0.5;
     i = i + 1usize;
   }
@@ -383,7 +397,7 @@ pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, max
     f = f + 1usize;
   }
   if f64.from(nOut) + f64.from(area) / (0.4330127 * 0.5625 * f64.from(maxEdge) * f64.from(maxEdge)) > DsMaxFaces {
-    return dsRefused(m, problems, "the result would have over 2,000,000 faces");
+    return dsRefused(m, problems, who, "the result would have over 2,000,000 faces");
   }
 
   // The passes
@@ -398,7 +412,7 @@ pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, max
   var capHit = 0usize;
   var go = true;
   while go {
-    let keys = dsOver(&w, &tris, axis, maxEdge);
+    let keys = dsOver(&w, &tris, maxEdge);
     if keys.len() == 0usize { go = false; }
     else if pass >= maxPasses { capHit = keys.len(); go = false; }
     else {
@@ -410,7 +424,7 @@ pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, max
       while i < keys.len() {
         let a = dsKeyA(*keys[i]);
         let b = dsKeyB(*keys[i]);
-        lens.push((dsPlace(&w, axis, a) - dsPlace(&w, axis, b)).length());
+        lens.push((dsPlace(&w,a) - dsPlace(&w,b)).length());
         order.push(u32.from(i));
         i = i + 1usize;
       }
@@ -429,10 +443,10 @@ pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, max
         let p = (*w.pos[usize.from(a)] + *w.pos[usize.from(b)]) * 0.5;
         mid.set(ki, u32.from(w.pos.len()));
         w.pos.push(p);
-        w.hgt.push(patch.heightAt(p));
         w.moved.push(true);
         w.pa.push(a);
         w.pb.push(b);
+        dsNewOff(&mut w, patch, on, a, b);
         i = i + 1usize;
       }
       // The ring: input faces beside a split edge between input vertices
@@ -474,13 +488,14 @@ pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, max
       }
       tris = next;
       if f64.from(nOut) + f64.from(tris.tr.len()) > DsMaxFaces {
-        return dsRefused(m, problems, "the result would have over 2,000,000 faces");
+        return dsRefused(m, problems, who, "the result would have over 2,000,000 faces");
       }
       pass = pass + 1u32;
     }
   }
   if capHit > 0usize {
-    var s = String.from("displaceRegion: maxPasses reached with ");
+    var s = String.from(who);
+    s.append(": maxPasses reached with ");
     s.appendUInt(u64.from(capHit));
     s.append(" edges still over maxEdge");
     problems.push(s);
@@ -491,7 +506,7 @@ pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, max
     var out = m.clone();
     i = 0usize;
     while i < nv {
-      if *w.moved[i] && *w.hgt[i] != 0. { out.positions.set(i, dsPlace(&w, axis, u32.from(i))); }
+      if *w.moved[i] { out.positions.set(i, dsPlace(&w, u32.from(i))); }
       i = i + 1usize;
     }
     return out;
@@ -502,7 +517,7 @@ pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, max
   var vSrc = List[u32].withCapacity(w.pos.len());
   i = 0usize;
   while i < w.pos.len() {
-    pos.push(dsPlace(&w, axis, u32.from(i)));
+    pos.push(dsPlace(&w,u32.from(i)));
     var s = u32.from(i);
     while usize.from(s) >= nv { s = *w.pa[usize.from(s)]; }
     vSrc.push(s);
@@ -548,7 +563,7 @@ pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, max
   }
   var out = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
   if out.faceCount() != counts.len() {
-    return dsRefused(m, problems, "a face was refused (the region's edge is not a manifold boundary)");
+    return dsRefused(m, problems, who, "a face was refused (the region's edge is not a manifold boundary)");
   }
   dsCarry(m, &mut out, &w, &cNode, &eSrc);
   out
