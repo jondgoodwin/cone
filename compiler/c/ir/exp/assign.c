@@ -755,6 +755,7 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
             assignFlowLvalReads(fstate, &node->lval);
         flowGateAssigned(fstate, node->lval);
         flowGateShapeStore(fstate, node->lval);
+        flowGateCompound(fstate, node->lval, node->rval);
     }
 
     // Handle tuple decomposition for parallel assignment

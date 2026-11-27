@@ -1061,6 +1061,43 @@ static int pwHoldsUnwritten(PathSet *holds) {
     return elems;
 }
 
+// Does a reference holding 'holds' point at a place whose way others may write by
+// (Place.uniway)? A borrow of it ('&**o', '&uni **o') kept in a variable promises no
+// more than that place does, whatever its own permission says: freezing the owner it
+// was read from stops that name only
+static int pwHoldsUniway(PathSet *holds) {
+    if (holds == NULL)
+        return 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        if (!(holds->ids[i] & LoanFar) && loanPlaceOf(holds->ids[i])->uniway)
+            return 1;
+    }
+    return 0;
+}
+
+// May another holder write by the way to the reference at the place 'pl' (Place.uniway)?
+// Not where 'pl' is just what a borrow made through a lock points at ('g' of '&mut *shared',
+// the loan rooted at the lock's guard): no other holder reaches it while the lock is held
+static int pwIsGuard(VarDclNode *var);
+static int pwWayWritten(Place *pl) {
+    if (pl->uniway)
+        return 1;
+    if (!pl->shwrite)
+        return 0;
+    PathSet *holds = pl->deref && pl->nsteps == 0 ? pathVars[pl->var].holds : NULL;
+    if (holds == NULL)
+        return 1;
+    int locked = 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        if (holds->ids[i] & LoanFar)
+            continue;
+        if (!pwIsGuard(pathVars[loanPlaceOf(holds->ids[i])->var].var))
+            return 1;
+        locked = 1;
+    }
+    return !locked;
+}
+
 // The place reached through the reference 'ref' evaluates to. Through a
 // borrowed reference it is a root of its own, what the reference points at,
 // keyed by the variable the reference is read from; through an owning one, a
@@ -1110,6 +1147,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         refpl.shared = 0;
         refpl.sharedlen = 0;
         refpl.shwrite = 0;
+        refpl.uniway = 0;
         refpl.owned = 0;
         refpl.far = 0;
         refpl.use = *refp;
@@ -1132,6 +1170,9 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->sharedlen = 0;
         pl->shwrite = pwMayAliasWritten(reftype)
             && !(refpl.nsteps == 0 && !refpl.deref && pwHoldsUnwritten(pathVars[refpl.var].holds));
+        pl->uniway = (!pwMayAlias(reftype) && pwWayWritten(&refpl))
+            || (!pwMayAliasWritten(reftype) && refpl.nsteps == 0 && !refpl.deref
+                && pwHoldsUniway(pathVars[refpl.var].holds));
         pl->owned = 0;
         pl->far = refpl.deref;
         pl->ownertype = NULL;
@@ -1211,6 +1252,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->shared = 0;
         pl->sharedlen = 0;
         pl->shwrite = 0;
+        pl->uniway = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -1229,6 +1271,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->shared = 0;
         pl->sharedlen = 0;
         pl->shwrite = 0;
+        pl->uniway = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -2655,7 +2698,10 @@ static int pwHeldExcluding(Place *pl, int sharedok) {
     if (held == NULL || held->cnt == 0)
         return 0;
     for (uint32_t i = 0; i < held->cnt; ++i) {
+        // A loan of a place others reach by another way (Place.uniway) excludes no writer
         if (sharedok ? !loanExcludesWriters(held->ids[i]) : !loanIsExclusive(held->ids[i]))
+            return 0;
+        if (loanPlaceOf(held->ids[i])->uniway)
             return 0;
     }
     return 1;
@@ -2868,6 +2914,10 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
         loanShapeMark(loan, container);
     else if (loanShapeContainer(loan) == NULL)
         loanShapeRefView(loan, container);
+    // Through a 'uni' reference that others may reach (Place.uniway): marked, whatever froze it,
+    // since the freezing is of this name only
+    if (pl->uniway)
+        loanShapeMark(loan, container);
 }
 
 // A borrow into what an owning reference points at ('&mut *s', a field of what 'so' owns, the
@@ -2891,6 +2941,8 @@ static void pwOwnerLent(Place *pl, uint32_t loan) {
     }
     if (loanShapeContainer(loan) == NULL)
         loanShapeRefView(loan, cont);
+    if (pl->uniway)
+        loanShapeMark(loan, cont);
 }
 
 // A call is made. Each marked loan is asked whether the call could reshape the
@@ -2904,7 +2956,8 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
     // references only, or through a reference that holds only the exclusive
     // borrow of such a place (the temporary an operator changing its operand in
     // place borrows it through: 'text <- a, b')
-    int recvunique = recvpl && !recvpl->owned && (!recvpl->shared || (recvpl->deref && pwHeldExcluding(recvpl, 0)));
+    int recvunique = recvpl && !recvpl->owned && !recvpl->uniway
+        && (!recvpl->shared || (recvpl->deref && pwHeldExcluding(recvpl, 0)));
     // What the call can reach of the function's own storage, and what its receiver can. A
     // 'mut' borrow of a local is an alias loan, so the local has other names (the source by
     // name, another borrow), but only ones the call is handed: a loan that points only into
@@ -3181,8 +3234,9 @@ static void pwShapeStore(INode *lval, Place *pl) {
         // What a 'uni' reference points at is reached by that reference and nothing else,
         // unless the reference was itself read through a borrowed one ('**m', 'far'): then
         // the store lands in what that one borrows, which the root variable's loans say, as
-        // they do for a shared path. There the root's own storage is not what is stored in
-        if (pl->deref && (pl->shared || pl->far))
+        // they do for a shared path. There the root's own storage is not what is stored in. So
+        // too where the 'uni' reference was read from where others may write ('**o', Place.uniway)
+        if (pl->deref && (pl->shared || pl->far || pl->uniway))
             loanReachAdd(&reach, pathVars[pl->var].holds);
         if (!pl->deref || !pl->shared)
             loanReachRoot(&reach, pl->var);
@@ -3549,11 +3603,11 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
 // A compound assignment through a temporary ('x += e' is '{let tmp = &mut x; *tmp = *tmp + e}')
 // borrows its place before its right side is made, and writes into it after. A plain store
 // reaches its place after the value, which uses whatever the place is reached through, and so
-// refuses a change of variant the value made. The temporary is no holder, so nothing would
-// pend on it: a stand-in holds the references into a variant it was borrowed through, from
-// before the right side, and the write is its use. Returns it, or 0 for none
-static uint32_t pwCompoundVariant(INode *lval) {
-    if (!pathLoans || !loanShapeCount() || lval->tag != DerefTag)
+// refuses a change of shape or variant the value made. The temporary is no holder, so nothing
+// would pend on it: a stand-in holds the borrows it was made with into a collection, an owner
+// or a variant, from before the right side, and the write is its use. Returns it, or 0 for none
+static uint32_t pwCompoundPlace(INode *lval) {
+    if (!pathLoans || lval->tag != DerefTag)
         return 0;
     INode *ref = ((StarNode *)lval)->vtexp;
     VarDclNode *tmp = pwNamedVar(ref);
@@ -3563,7 +3617,7 @@ static uint32_t pwCompoundVariant(INode *lval) {
     PathSet *holds = NULL;
     for (uint32_t i = 0; all && i < all->cnt; ++i) {
         // (a far loan is of what the place holds, not of where the place is)
-        if (!(all->ids[i] & LoanFar) && loanShapeIsSum(loanOf(all->ids[i])))
+        if (!(all->ids[i] & LoanFar) && loanShapeMayMark(loanOf(all->ids[i])))
             holds = pathSetAdd(holds, all->ids[i]);
     }
     if (holds == NULL)
@@ -3574,7 +3628,7 @@ static uint32_t pwCompoundVariant(INode *lval) {
 }
 
 static PathSet *pwAssign(AssignNode *node) {
-    uint32_t compound = pwCompoundVariant(node->lval);
+    uint32_t compound = pwCompoundPlace(node->lval);
     PathSet *holds = pwValue(&node->rval, 1);
     if (compound) {
         loanUseShape(compound, node->lval);
@@ -3652,6 +3706,7 @@ static void pwSwap(SwapNode *node) {
             pl->shared = 0;
             pl->sharedlen = 0;
             pl->shwrite = 0;
+            pl->uniway = 0;
             pl->owned = 0;
             pl->far = 0;
             pl->use = *sides[i];
