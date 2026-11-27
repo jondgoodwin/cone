@@ -668,8 +668,11 @@ void narrowBorrowed(INode *place, INode *perm, INode *pointee) {
     NarrowFact *fact = narrowFind(var);
     if (fact == NULL || !(permGetFlags(perm) & MayWrite))
         return;
-    // Only a borrow of the whole enum may store another variant in it
-    if (itypeGetTypeDcl(pointee) != (INode *)fact->enumdcl)
+    // Only a borrow of the whole enum may store another variant in it. One of a reference
+    // variable itself ('&mut p') is such a route: it stores over the enum through the
+    // reference ('**r = v'), or points the name at another value ('*r = o')
+    int ofrefvar = place == root && itypeGetTypeDcl(var->vtype)->tag == RefTag;
+    if (!ofrefvar && itypeGetTypeDcl(pointee) != (INode *)fact->enumdcl)
         return;
     narrowKill(var, place);
 }

@@ -1,0 +1,123 @@
+// A name narrowed to a variant by a test, where the name is a reference ('p: &uni Slot'): a
+// 'mut' or 'uni' borrow of the name itself, made after the test, is a route to write the
+// whole enum ('**r = v'), or to point the name at another value ('*r = o'), so it ends the
+// narrowing, as a writable borrow of the enum does. enum_narrow_ref_borrow_success holds
+// what is accepted beside each; enum_flow_narrow_name_mut_borrow, one made before the test.
+
+mod enum_typecheck_narrow_ref_borrow;
+
+import stdio use *;
+
+// The payload a stale read would take for a pointer and a length
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub a: usize;
+    pub b: usize;
+  }
+}
+use Slot;
+
+fn set(r: &mut &uni Slot) {
+  **r = Num(4096usize, 8usize);
+}
+
+fn setUni(r: &uni &uni Slot) {
+  **r = Num(4096usize, 8usize);
+}
+
+fn setTwo(r: &mut &mut &uni Slot) {
+  ***r = Num(4096usize, 8usize);
+}
+
+fn point(r: &mut &imm Slot, other: &imm Slot) {
+  *r = other;
+}
+
+// Handed to a call
+fn handed(var p: &uni Slot) {
+  if p is Text {
+    let r = &mut p;
+    set(r);
+    printStr(p.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// Stored through directly
+fn stored(var p: &uni Slot) {
+  if p is Text {
+    let r = &mut p;
+    **r = Num(4096usize, 8usize);
+    printStr(p.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// Made in a nested block, which is left before the use
+fn nested(var p: &uni Slot, go: bool) {
+  if p is Text {
+    if go {
+      let r = &mut p;
+      set(r);
+    }
+    printStr(p.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// A '&uni' of the name
+fn uniBorrow(var p: &uni Slot) {
+  if p is Text {
+    setUni(&uni p);
+    printStr(p.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// Two levels: the borrow of the name is itself borrowed
+fn twoLevels(var p: &uni Slot) {
+  if p is Text {
+    var q = &mut p;
+    let r = &mut q;
+    setTwo(r);
+    printStr(p.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// Narrowed by the test of the other variant leaving
+fn leftOver(var p: &uni Slot) {
+  if p is Num {
+    return;
+  }
+  set(&mut p);
+  printStr(p.s);                        //~ ErrorNarrowStale "it was changed at"
+}
+
+// Made late in a loop, and met again on the next pass
+fn around(var p: &uni Slot) {
+  if p is Text {
+    var i = 0;
+    while i < 2 {
+      printStr(p.s);                    //~ ErrorNarrowLoop "the loop changes it"
+      set(&mut p);
+      i += 1;
+    }
+  }
+}
+
+// The name is pointed at another value by a call
+fn pointed(var p: &imm Slot, other: &imm Slot) {
+  if p is Text {
+    point(&mut p, other);
+    printStr(p.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// And by a store
+fn pointedStore(var p: &imm Slot, other: &imm Slot) {
+  if p is Text {
+    let r = &mut p;
+    *r = other;
+    printStr(p.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
