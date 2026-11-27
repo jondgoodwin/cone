@@ -442,8 +442,9 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
                 narrowAssigned(*elemp, NULL);
         }
     }
-    else if (!assignIsAnon(lval))
-        narrowAssigned(lval, assignOneTakesTuple(node) || node->rval->tag != VTupleTag ? node->rval : NULL);
+    else if (!assignIsAnon(lval)
+            && narrowAssigned(lval, assignOneTakesTuple(node) || node->rval->tag != VTupleTag ? node->rval : NULL))
+        node->flags |= FlagNarrowAssigned;
     // A store through a reference or a field may change an enum another name reaches
     if (!assignIsAnon(lval) && !(isNameUseNode(lval) && isExpNode(lval)))
         narrowCallMade((INode*)node);

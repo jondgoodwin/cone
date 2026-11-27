@@ -715,6 +715,10 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // are the loan walk's as well (flowpath.c, pwYield)
     int seams = fstate.awaits != NULL;
     int yields = fstate.yields != NULL;
+    // A name narrowed by a test is followed where a 'mut' borrow of it is held, which only
+    // a marked function can hold: its callees are checked first, as for any followed narrowing
+    if (fstate.narrowname && fstate.gate)
+        fstate.gate |= FlowGateShape;
     if ((fstate.gate || fstate.dropgate || flowGpu || seams || yields) && errors == errorsOnEntry) {
         int loans = fstate.gate != 0 || flowGpu || seams || yields;
         // A borrow of a shape-changing value freezes what it was reached

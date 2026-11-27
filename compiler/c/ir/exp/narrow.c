@@ -467,6 +467,16 @@ static void narrowAssumeVar(VarDclNode *var, StructNode *enumdcl, int shared, ui
         if (fact->possible == 0)
             fact->possible = narrowAll(fact->nvariants);
     }
+    // The loan walk is told of a test the name itself is narrowed by, and whether what is
+    // known after it rests on this test alone or on what was known before it too
+    if (!shared && test != NULL) {
+        uint64_t all = narrowAll(fact->nvariants);
+        test->flags |= FlagNarrowTest;
+        if (fact->possible != (truth ? bits : all & ~bits) && fact->possible != all)
+            test->flags |= FlagNarrowKeeps;
+        else if (truth)
+            test->flags |= FlagNarrowArmAlone;
+    }
     // A test made in this pass of a loop is a narrowing made in it
     if (narrowIsSingle(fact->possible))
         narrowFresh(fact, test);
@@ -585,33 +595,33 @@ void narrowKill(VarDclNode *var, INode *cause) {
     narrowKillFact(fact, cause);
 }
 
-void narrowAssigned(INode *lval, INode *rval) {
+int narrowAssigned(INode *lval, INode *rval) {
     if (lval == NULL)
-        return;
+        return 0;
     // '*s = v' through a reference variable replaces the value it points at
     if (lval->tag == DerefTag) {
         VarDclNode *refvar = narrowVarOf(((StarNode *)lval)->vtexp);
         if (refvar != NULL)
             narrowKill(refvar, lval);
-        return;
+        return 0;
     }
     VarDclNode *var = narrowVarOf(lval);
     if (var == NULL)
-        return;
+        return 0;
     narrowKill(var, lval);
     // A variant stored is the variant it holds
     int isref, shared;
     StructNode *enumdcl = narrowEnumOfVar(var, &isref, &shared);
     if (enumdcl == NULL || isref || rval == NULL)
-        return;
+        return 0;
     INode *value = rval;
     while (value->tag == CastTag && !(value->flags & FlagConvert))
         value = ((CastNode *)value)->exp;
     if (!isExpNode(value))
-        return;
+        return 0;
     uint32_t idx = narrowIndexOf(enumdcl, iexpGetTypeDcl(value));
     if (idx == ~0u)
-        return;
+        return 0;
     NarrowFact *fact = narrowFind(var);
     if (fact == NULL)
         fact = narrowAdd(var, enumdcl, 0);
@@ -620,6 +630,7 @@ void narrowAssigned(INode *lval, INode *rval) {
     gLocalAssume = 0;
     narrowFresh(fact, NULL);
     gLocalAssume = svlocal;
+    return 1;
 }
 
 void narrowDeclared(VarDclNode *var) {

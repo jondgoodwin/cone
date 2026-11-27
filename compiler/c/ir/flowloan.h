@@ -387,6 +387,10 @@ void loanShapeSource(uint32_t loan, PathSet *holds);
 // (0 for none), and the note on a narrowed reference's loan that this is why it is followed
 uint32_t loanMutAliasOf(PathSet *holds);
 void loanShapeAliasBy(uint32_t loan, uint32_t alias);
+// The same for a name narrowed by a test or a store: the held 'mut' borrow of the place,
+// and the loan the name holds beside it (flowpath.c, pwNarrowName)
+uint32_t loanMutAliasAt(Place *pl);
+uint32_t loanNarrowName(INode *site, Place *pl, uint32_t alias);
 int loanIsExclusive(uint32_t entry);
 void loanShapeMark(uint32_t loan, INode *container);
 uint32_t loanShapeCount();

@@ -506,6 +506,8 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->flagged = 0;
     pv->partmix = 0;
     pv->guardname = NULL;
+    pv->narrow = 0;
+    pv->narrowed = 0;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
     pv->dies = pv->tracked && itypeNeedsFinal(var->vtype);
     // A holder is a local variable or a parameter whose type carries a
@@ -1139,6 +1141,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         refpl.referent = NULL;
         refpl.slotted = NULL;
         refpl.slots = 0;
+        refpl.narrow = 0;
     }
     if (pwIsBorrowed(reftype)) {
         // The reference itself is read: a variable it is read from that some
@@ -1164,6 +1167,9 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         // reaches only what that field's slots hold
         pl->slotted = refpl.slotted;
         pl->slots = refpl.slots;
+        // What a narrowed name's own reference points at is the variant; what a
+        // reference read from a field of the variant points at is not
+        pl->narrow = refpl.nsteps == 0 && !refpl.deref ? refpl.narrow : 0;
         return 1;
     }
     *pl = refpl;
@@ -1193,9 +1199,15 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
 static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
     INode *node = *nodep;
     *base = NULL;
+    pl->narrow = 0;
     VarDclNode *var = pwNamedVar(node);
     if (var) {
         uint32_t index = pathVar(var);
+        // A member of the variant named on a narrowed name is a use of what its
+        // narrowing holds: a change of variant pending on that is refused here
+        uint32_t narrow = (node->flags & FlagNarrowed) ? pathVars[index].narrow : 0;
+        if (narrow)
+            loanUse(narrow, node);
         // A holder's pending conflicts fire; any variable's live mark at a
         // seam does (pwSeam)
         if (pathVars[index].holder || pathVars[index].pending)
@@ -1234,6 +1246,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->referent = NULL;
         pl->slotted = NULL;
         pl->slots = 0;
+        pl->narrow = narrow;
         return 1;
     }
     switch (node->tag) {
@@ -1377,6 +1390,9 @@ static PathSet *pwPlaceValue(INode **nodep, int move) {
     int moves = cand || (move && iexpIsMove(*nodep));
     pwAccess(&pl, moves ? AccessMove : AccessRead, cand ? pwCandSite : *nodep);
     PathSet *holds = pwPlaceHolds(&pl, *nodep);
+    // A narrowed reference handed on as it is points into the variant
+    if (pl.narrow && !pl.deref && pl.nsteps == 0 && pwCarries(((IExpNode *)*nodep)->vtype))
+        holds = pathSetUnion(holds, pathVars[pl.narrow].holds);
     // A holder moved away whole holds nothing here: its value, and the
     // finalizer that might read its borrows, went with the move
     if (moves && !pl.deref && pl.nsteps == 0 && pathVars[pl.var].holder)
@@ -1450,7 +1466,11 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
         held = pathSetLoansAs(held, 1);
     else if (pl->far)
         held = pl->shared ? pathSetThrough(held) : pathSetUnsure(held);
-    return pathSetAdd(pwPlaceSlots(pl, held), id);
+    PathSet *lentset = pathSetAdd(pwPlaceSlots(pl, held), id);
+    // A borrow into the variant a name is narrowed to is a reference into it too
+    if (pl->narrow)
+        lentset = pathSetUnion(lentset, pathVars[pl->narrow].holds);
+    return lentset;
 }
 
 // An owning reference coerced to a borrowed one ('let b: &i32 = u', 'u' a
@@ -3073,6 +3093,50 @@ static PathSet *pwNarrowShared(CastNode *cast, uint32_t alias) {
     return holds;
 }
 
+// A test, or a store of a variant, narrowed the name 'var' itself ('if s is Circle'): no
+// node converts anything, so nothing holds a narrowed reference. The name freezes nothing,
+// and a change by it ends the narrowing ('s = v'), but a 'mut' borrow of the enum, or of the
+// reference it is reached through, held here is one more name for it. Then a loan like that
+// of a reference narrowed into a variant (pwNarrowShared) is held by a stand-in for the
+// name, which each member of the variant named on it uses, and what is borrowed through one
+// carries (pwLend). 'keep': the narrowing rests on earlier tests too, whose loans stay
+static void pwNarrowName(INode *site, VarDclNode *var, int keep) {
+    if (!pathLoans)
+        return;
+    uint32_t index = pathVar(var);
+    Place pl = { index, 0, 0 };
+    INode *type = itypeGetTypeDcl(var->vtype);
+    if (type->tag == RefTag) {
+        pl.deref = 1;
+        type = itypeGetTypeDcl(((RefNode *)type)->vtexp);
+    }
+    uint32_t alias = loanMutAliasAt(&pl);
+    uint32_t stand = pathVars[index].narrow;
+    if (!alias && !stand)
+        return;
+    if (!stand) {
+        VarDclNode *dcl = newVarDclFull(var->namesym, VarDclTag, var->vtype, (INode *)immPerm, NULL);
+        inodeLexCopy((INode *)dcl, site);
+        dcl->scope = 2;
+        dcl->flowtracked = 1;
+        stand = pathVar(dcl);
+        pathVars[stand].holder = 1;
+        pathVars[stand].tracked = 0;
+        pathVars[stand].dies = 0;
+        pathVars[stand].narrowed = 1;
+        pathVars[index].narrow = stand;
+    }
+    PathSet *holds = keep ? pathVars[stand].holds : NULL;
+    PathSet *pending = keep ? pathVars[stand].pending : NULL;
+    uint32_t loan = alias ? loanNarrowName(site, &pl, alias) : 0;
+    if (loan) {
+        // (its roots are read from what 'var' holds, where it is a reference)
+        loanShapeMark(loan, type);
+        holds = pathSetAdd(holds, loan);
+    }
+    pathSetFacts(stand, holds, pending);
+}
+
 // A store over a field of the container itself ('r.buf = String()' while a borrow into 'r's own
 // storage is held), where the field holds something that owns storage (a collection, or a struct,
 // array, tuple or owning reference holding one: shapeStoredShaping): the old value is freed, the very storage the borrow may be into. The container
@@ -3523,6 +3587,10 @@ static PathSet *pwAssign(AssignNode *node) {
             loanFlightPushOf(holds, 0, node->rval);
         pwStore(&node->lval, holds, &node->rval);
         loanFlightPop(mark);
+        // The variant stored narrows the name to it from here
+        VarDclNode *narrowed = (node->flags & FlagNarrowAssigned) ? pwNamedVar(node->lval) : NULL;
+        if (narrowed)
+            pwNarrowName((INode *)node, narrowed, 0);
     }
     return holds;
 }
@@ -3567,6 +3635,7 @@ static void pwSwap(SwapNode *node) {
             pl->referent = NULL;
             pl->slotted = NULL;
             pl->slots = 0;
+            pl->narrow = 0;
             holds[i] = pathVars[whole[i]].holds;
             pwAccess(pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *sides[i]);
             pwDropUse(pl, *sides[i], 0);
@@ -3632,6 +3701,9 @@ static void pwVarDcl(VarDclNode *var) {
     decls[ndecls++] = index;
     if (var->namesym == tempLocalName && pwIsGuard(var))
         pwSawGuard = 1;
+    // Nor does what its name was narrowed to, on an earlier pass
+    if (pathVars[index].narrow)
+        pathSetFacts(pathVars[index].narrow, NULL, NULL);
     // It holds nothing until its value is stored, again on each pass of a loop
     if (pathVars[index].tracked)
         pathSetState(index, DropUninit);
@@ -4121,9 +4193,18 @@ static PathSet *pwIf(IfNode *ifnode, int move) {
             mark = nlog;
             first = 0;
         }
+        INode *cond = *nodesp;
         nodesp++; cnt--;
         uint32_t condmark = nlog;
         pwArm = 1;
+        // A test whose arm knows the variant by it alone, though the path past it rests on
+        // earlier tests too: in the arm, what those tests' loans met is left behind
+        if (cond != elseCond && cond->tag == IsTag && (cond->flags & FlagNarrowArmAlone)
+                && (cond->flags & FlagNarrowKeeps)) {
+            VarDclNode *tested = pwNamedVar(((CastNode *)cond)->exp);
+            if (tested)
+                pwNarrowName(cond, tested, 0);
+        }
         PathSet *armval = pwBlock((BlockNode *)*nodesp, 0, move);
         if (!dead) {
             paths = pathDeltaPush(paths, pathDelta(mark, armval));
@@ -4618,6 +4699,11 @@ static PathSet *pwValue(INode **nodep, int move) {
     }
     case IsTag:
         pwValue(&((CastNode *)node)->exp, 0);
+        if (node->flags & FlagNarrowTest) {
+            VarDclNode *tested = pwNamedVar(((CastNode *)node)->exp);
+            if (tested)
+                pwNarrowName(node, tested, (node->flags & FlagNarrowKeeps) != 0);
+        }
         return NULL;
     case NotLogicTag:
         pwValue(&((LogicNode *)node)->lexp, 0);

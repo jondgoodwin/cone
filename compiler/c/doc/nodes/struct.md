@@ -1899,8 +1899,9 @@ cost":
   constraint including `Coercion` — a by-value crossing is a recast, which
   `genlRecast` lowers through a store and a load, the sizes being equal by
   construction.
-- `refMatches`, in the **invariant** `&mut` case, which is the one exception the
-  language grants to invariance: neither type adds state the other could break, so
+- `refMatches`, in the **invariant** `&mut` case, as one of its two exceptions
+  to invariance (the other is a variant to its `@unsized` enum,
+  [references](references.md)): neither type adds state the other could break, so
   a write of either through a reference to the other stores one representation.
   It answers `CastSubtype` rather than the permission's own verdict, because the
   two are still distinct types and the pointer has to be recast — without it

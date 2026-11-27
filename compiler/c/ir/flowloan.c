@@ -56,8 +56,8 @@ typedef struct {
     uint8_t elemview;   // a receiver's loan whose method returned an element out of the receiver's own block
                         // (loanElemViewSet): a borrow it carries is of that element, wherever else it is reached
     uint32_t roots[3];  // the local variables (walk indexes) whose storage it points into
-    uint32_t aliasby;   // a reference narrowed out of a match's own borrow: the loan of the 'mut' borrow of the
-                        // enum held beside it, which a refusal names (loanShapeAliasBy), else 0
+    uint32_t aliasby;   // a reference narrowed out of a match's own borrow, or a name narrowed by a test: the loan of
+                        // the 'mut' borrow of the enum held beside it, which a refusal names, else 0
 } Loan;
 
 // A pending conflict: 'access' conflicted with 'loan', held by 'holder'. On a
@@ -2144,12 +2144,27 @@ static int loanAliasHeld(uint32_t root) {
     return 0;
 }
 
+// A 'mut' borrow held now of the place 'pl', of a place that lies inside it, or, for a
+// place reached through a reference ('&*r'), of the reference variable itself ('&mut r',
+// through which '**m' stores), else 0. A borrow of a different field of the same variable
+// is no name for it. 'met': only one that another name of its source has been used beside
+static uint32_t loanMutOver(Place *pl, int met) {
+    for (uint32_t id = pathVars[pl->var].loans; id; id = loans[id].next) {
+        Loan *other = &loans[id];
+        if (!other->uniq || (met && !other->aliased) || other->kind != LoanAlias)
+            continue;
+        if (other->place.deref == pl->deref ? !placeOverlaps(&other->place, pl)
+                : other->place.deref > pl->deref)
+            continue;
+        if (loanHeldNow(id))
+            return id;
+    }
+    return 0;
+}
+
 // A 'mut' borrow held now that reaches a place one of a set's near loans borrows
 // read-only, or 0: asked of what a match's own '&' holds, whether what it borrows has
-// another name that writes (flowpath.c, pwNarrowAliased). It is a borrow of the place,
-// of a place that lies inside, or, for a place reached through a reference ('&*r'), of
-// the reference variable itself ('&mut r', through which '**m' stores). A borrow of a
-// different field of the same variable is no name for it
+// another name that writes (flowpath.c, pwNarrowAliased)
 uint32_t loanMutAliasOf(PathSet *holds) {
     if (holds == NULL)
         return 0;
@@ -2158,18 +2173,31 @@ uint32_t loanMutAliasOf(PathSet *holds) {
         Loan *loan = &loans[loanOf(entry)];
         if ((entry & LoanFar) || loan->kind != LoanShared)
             continue;
-        for (uint32_t id = pathVars[loan->place.var].loans; id; id = loans[id].next) {
-            Loan *other = &loans[id];
-            if (!other->uniq || !other->aliased || other->kind != LoanAlias)
-                continue;
-            if (other->place.deref == loan->place.deref ? !placeOverlaps(&other->place, &loan->place)
-                    : other->place.deref > loan->place.deref)
-                continue;
-            if (loanHeldNow(id))
-                return id;
-        }
+        uint32_t id = loanMutOver(&loan->place, 1);
+        if (id)
+            return id;
     }
     return 0;
+}
+
+// For a name narrowed by a test or a store: the name is itself the other one, so a 'mut'
+// borrow nothing has been used beside yet counts
+uint32_t loanMutAliasAt(Place *pl) {
+    return loanMutOver(pl, 0);
+}
+
+// The loan such a name holds beside the 'mut' borrow 'alias', made by the test or store
+// 'site': read-only and freezing nothing, as of a place others may reach, but reached by
+// the name and the borrows of it alone, as through a 'uni' reference. The caller marks it
+uint32_t loanNarrowName(INode *site, Place *pl, uint32_t alias) {
+    Place lent = *pl;
+    lent.shared = 1;
+    uint32_t id = loanMake(site, &lent, (INode *)roPerm);
+    if (id) {
+        loans[id].place.shared = 0;
+        loans[id].aliasby = alias;
+    }
+    return id;
 }
 
 void loanShapeAliasBy(uint32_t loan, uint32_t alias) {
@@ -2600,7 +2628,17 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
             && isNameUseNode(((CastNode *)holder->value)->exp))
             narrowed = (VarDclNode *)((NameUseNode *)((CastNode *)holder->value)->exp)->dclnode;
         INode *at = usenode->tag == VarDclTag ? pend->access : usenode;
-        if (narrowed) {
+        if (pathVars[pend->holder].narrowed) {
+            // The name itself, narrowed (pwNarrowName): the use is typed as the variant
+            INode *as = itypeGetTypeDcl(((IExpNode *)usenode)->vtype);
+            if (as->tag == RefTag)
+                as = itypeGetTypeDcl(((RefNode *)as)->vtexp);
+            snprintf(msg, sizeof(msg),
+                "`%s` may no longer be a %s here: the %s at %s could change which variant the %s holds (it was narrowed %s, %s): %s. A name narrowed to a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Test it again with 'is' after the %s, bind the payload by value, or do not use the 'mut' borrow while the name is still to be used as the variant.",
+                &holder->namesym->namestr, &((StructNode *)as)->namesym->namestr, what, change, cont, where, through,
+                loanShapeReason(note, cont, sum, reason, sizeof(reason)), what);
+        }
+        else if (narrowed) {
             RefNode *reftype = (RefNode *)itypeGetTypeDcl(holder->vtype);
             StructNode *variant = (StructNode *)itypeGetTypeDcl(reftype->vtexp);
             snprintf(msg, sizeof(msg),
