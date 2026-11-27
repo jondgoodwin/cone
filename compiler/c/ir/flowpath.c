@@ -1419,6 +1419,13 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     // A borrow into what an owner points at: the owner stored over frees it (pwOwnerLent)
     if (pl->ownertype && id)
         pwOwnerLent(pl, id);
+    // A writable borrow of a variable's own storage, of a value that may hold a reference: a
+    // second name for what that reference borrows, so views through it are marked
+    if (!pl->deref && (permGetFlags(perm) & MayWrite)) {
+        INode *lentref = iexpGetTypeDcl(site);
+        if (lentref->tag != RefTag || pwCarries(((RefNode *)lentref)->vtexp))
+            loanShapeRefLent(pl->var);
+    }
     // Only a holder holds loans, but for an operator's temporary (pwVarDcl).
     // The new loan is near: the borrow points at its place. What the root
     // holds is held there, so a borrow of the root's own storage ('&mut q',
@@ -2859,6 +2866,8 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
     // freezing stops the global's own name in this function, never a callee that writes it by name
     if (loanPlaceInGlobal(pl))
         loanShapeMark(loan, container);
+    else if (loanShapeContainer(loan) == NULL)
+        loanShapeRefView(loan, container);
 }
 
 // A borrow into what an owning reference points at ('&mut *s', a field of what 'so' owns, the
@@ -2880,6 +2889,8 @@ static void pwOwnerLent(Place *pl, uint32_t loan) {
         else if (loanUniqAlias(loan))
             loanShapeLazy(loan, cont);
     }
+    if (loanShapeContainer(loan) == NULL)
+        loanShapeRefView(loan, cont);
 }
 
 // A call is made. Each marked loan is asked whether the call could reshape the
@@ -3050,6 +3061,13 @@ static PathSet *pwNarrowShared(CastNode *cast, uint32_t alias) {
         if (alias)
             loanShapeAliasBy(loan, alias);
         pwShapeBorrow(&pl, loan, sum);
+    }
+    if (loan && loanShapeContainer(loan) == NULL) {
+        loanShapeRefView(loan, sum);
+        // Narrowed from a reference to what a 'uni' one borrows ('let x = &*r; match x'): the
+        // loan 'x' holds of '*r' is a view too
+        if (pl.deref)
+            loanShapeRefViews(pathVars[pl.var].holds, sum);
     }
     return holds;
 }
@@ -4688,6 +4706,12 @@ static PathSet *pwValue(INode **nodep, int move) {
         // its value holds came from its operand ('case let Some(e)' converts
         // the matched 'Option[&T]' to its 'Some[&T]'), of no struct's slot
         PathSet *holds = pwValue(&((CastNode *)node)->exp, flowCastCarries(node) ? move : 0);
+        // A reference narrowed into a variant and not followed above (a 'uni' one, or a
+        // match's own '&' with no 'mut' borrow held): where what it is narrowed from is a
+        // reference nothing else reaches, that may be given another name while it is used
+        INode *sum = pathLoans ? castNarrowedSum(node) : NULL;
+        if (sum)
+            loanShapeRefViews(holds, sum);
         // One into an owning virtual reference ('Uni[Trait]' from a 'Uni[H]')
         // keeps its operand's value under a type that names no lifetime, so
         // nothing after follows what it holds: it may hold only global
