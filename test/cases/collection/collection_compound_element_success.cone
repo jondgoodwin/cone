@@ -10,6 +10,9 @@ import stdio use *;
 
 struct Item { pub n: usize; }
 struct Counter { pub count: usize; }
+struct Pair { pub a: usize; pub b: usize; }
+
+fn taken(l: List[usize]) usize { l.len() }
 
 fn five() usize { 5usize }
 fn grow(m: &mut List[usize]) usize {
@@ -96,6 +99,48 @@ fn owned() usize {
   u.n
 }
 
+// a variable's own storage, which a store leaves in place: 1 is read, then 'x' is 5,
+// and 1 + 1 = 2 is written over it
+fn scalarAssigned() usize {
+  var x = 1usize;
+  x += {x = 5usize; 1usize};
+  x
+}
+
+// the same for a field: 1 + 10 = 11 is written into the struct stored, whose other field is 40
+fn fieldAssigned() usize {
+  var p = Pair(1usize, 2usize);
+  p.a += {p = Pair(30usize, 40usize); 10usize};
+  p.a * 1000usize + p.b
+}
+
+// the length is read into a local first: 1 + 2 = 3
+fn lenInside() usize {
+  var l = two();
+  l[0usize] += {let t = l.len(); t};
+  l[0usize]
+}
+
+// another list assigned over and moved: 1 + 2 = 3
+fn otherMoved() usize {
+  var l = two();
+  var m = List[usize]();
+  l[0usize] += {m = two(); taken(m)};
+  l[0usize]
+}
+
+// through a held 'mut' borrow, the list only read, or another list moved: 1 + 2 = 3,
+// + 2 = 5
+fn throughBorrow() usize {
+  var l = two();
+  var m = two();
+  let r = &mut l;
+  r[0usize] += l.len();
+  let s = &mut l;
+  s[0usize] += taken(m);
+  l[0usize]
+}
+
 fn show(n: usize) { printInt(i64.from(n)); printStr("\n"); }
 
 fn main() {
@@ -114,4 +159,9 @@ fn main() {
   show(field());
   show(dictLen());
   show(owned());
+  show(scalarAssigned());
+  show(fieldAssigned());
+  show(lenInside());
+  show(otherMoved());
+  show(throughBorrow());
 }
