@@ -41,6 +41,10 @@ struct NameUseNode;
 // reference that other references may share: the collection rule applies to the
 // narrowed reference (castSumInterior). Set once the conversion is a plain recast.
 #define FlagVariantNarrow 0x0010  // Cast: narrows a shared reference into one of an enum's variants
+// With FlagVariantNarrow: what is narrowed is a borrow the 'match' or bound 'if' made itself
+// of a place reached as 'uni' ('match &s'), which no other name reaches unless a 'mut' borrow
+// of the place is held. Only then is the narrowed reference followed (flowpath.c, pwNarrowAliased).
+#define FlagNarrowOwnBorrow 0x0100  // Cast: narrows the match's own borrow of a place reached as 'uni'
 // The binding a guard makes of a variable the arm binds again ('case let T(x) if g'):
 // it reads the matched place before the arm is chosen, so it takes nothing from it --
 // a payload that moves is viewed through a borrow (castGuardBorrow)
