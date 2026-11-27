@@ -62,6 +62,8 @@ typedef struct {
     uint32_t roots[3];  // the local variables (walk indexes) whose storage it points into
     uint32_t aliasby;   // a reference narrowed out of a match's own borrow, or a name narrowed by a test: the loan of
                         // the 'mut' borrow of the enum held beside it, which a refusal names, else 0
+    uint8_t repoint;    // the loan of a narrowed reference variable itself (loanNarrowName): a call or store that
+                        // stores a reference of its type over it points the name elsewhere
 } Loan;
 
 // A pending conflict: 'access' conflicted with 'loan', held by 'holder'. On a
@@ -264,8 +266,10 @@ static uint8_t loanKindOf(INode *perm, Place *pl) {
     }
 }
 
-uint32_t loanMake(INode *site, Place *pl, INode *perm) {
-    uint32_t id = mapGet(site, 0, 0);
+// 'key' tells apart the loans made at one site: 0, but for the loan of a narrowed
+// reference variable beside that of what it points at (loanNarrowName)
+static uint32_t loanMakeKeyed(INode *site, Place *pl, INode *perm, uint32_t key) {
+    uint32_t id = mapGet(site, 0, key);
     if (id)
         return id;
     if (nloans > LoanIdMask) {
@@ -301,11 +305,16 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->rootsext = 0;
     loan->globalview = 0;
     loan->elemview = 0;
+    loan->repoint = 0;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
     pathVars[pl->var].loans = id;
-    mapPut(site, 0, 0, id);
+    mapPut(site, 0, key, id);
     return id;
+}
+
+uint32_t loanMake(INode *site, Place *pl, INode *perm) {
+    return loanMakeKeyed(site, pl, perm, 0);
 }
 
 // A caller loan is not linked from its parameter: no access here meets it.
@@ -2221,16 +2230,24 @@ uint32_t loanMutAliasAt(Place *pl) {
 
 // The loan such a name holds beside the 'mut' borrow 'alias', made by the test or store
 // 'site': read-only and freezing nothing, as of a place others may reach, but reached by
-// the name and the borrows of it alone, as through a 'uni' reference. The caller marks it
-uint32_t loanNarrowName(INode *site, Place *pl, uint32_t alias) {
+// the name and the borrows of it alone, as through a 'uni' reference. The caller marks it.
+// 'repoint': the place is the reference variable the name is, which 'alias' borrows, so
+// that what stores another reference over it is a change too
+uint32_t loanNarrowName(INode *site, Place *pl, uint32_t alias, int repoint) {
     Place lent = *pl;
     lent.shared = 1;
-    uint32_t id = loanMake(site, &lent, (INode *)roPerm);
+    // (2: 1 keys the reports, loanReportOnce)
+    uint32_t id = loanMakeKeyed(site, &lent, (INode *)roPerm, repoint ? 2 : 0);
     if (id) {
         loans[id].place.shared = 0;
         loans[id].aliasby = alias;
+        loans[id].repoint = repoint ? 1 : 0;
     }
     return id;
+}
+
+int loanIsRepoint(uint32_t loan) {
+    return loans[loan].repoint;
 }
 
 void loanShapeAliasBy(uint32_t loan, uint32_t alias) {
@@ -2427,7 +2444,10 @@ static void loanRootsNote(uint32_t id) {
     // what it points at, and by nothing else, the caller having frozen the rest
     if (!p->shared) {
         loanRootsAdd(l, p->var);
-        return;
+        // A 'uni' reference others may reach (Place.uniway): what it borrows has their names too,
+        // so it is followed as a shared one is, beside the name it was read by
+        if (!p->uniway)
+            return;
     }
     PathSet *holds = pathVars[p->var].holds;
     if (holds == NULL) {
@@ -2652,12 +2672,14 @@ static char *loanShapeReason(ShapeNote *note, char *cont, int sum, char *buf, si
     return buf;
 }
 
+// (a narrowed reference variable's own loan is marked with its type as an owner's is,
+// but is no owner: it is reported as the change of what the narrowed name is)
 static int loanShapeIsOwner(uint32_t loan) {
-    return reshapeIsOwner(loans[loan].shapecont);
+    return !loans[loan].repoint && reshapeIsOwner(loans[loan].shapecont);
 }
 
 static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
-    if (loanShapeIsOwner(loan)) {
+    if (loanShapeIsOwner(loan) || loans[loan].repoint) {
         // An owner as the type printer spells it: its permission left out where it is the
         // default ('Uni[Item]'), written otherwise ('Rc[mut, Item]')
         char spelled[100] = "";
@@ -2670,7 +2692,7 @@ static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
 }
 
 static int loanShapeIsSum(uint32_t loan) {
-    return reshapeIsSum(loans[loan].shapecont);
+    return loans[loan].repoint || reshapeIsSum(loans[loan].shapecont);
 }
 
 int loanShapeMayMark(uint32_t loan) {
@@ -2762,10 +2784,17 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
             INode *as = itypeGetTypeDcl(((IExpNode *)usenode)->vtype);
             if (as->tag == RefTag)
                 as = itypeGetTypeDcl(((RefNode *)as)->vtexp);
-            snprintf(msg, sizeof(msg),
-                "`%s` may no longer be a %s here: the %s at %s could change which variant the %s holds (it was narrowed %s, %s): %s. A name narrowed to a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Test it again with 'is' after the %s, bind the payload by value, or do not use the 'mut' borrow while the name is still to be used as the variant.",
-                &holder->namesym->namestr, &((StructNode *)as)->namesym->namestr, what, change, cont, where, through,
-                loanShapeReason(note, cont, sum, reason, sizeof(reason)), what);
+            if (loan->repoint)
+                snprintf(msg, sizeof(msg),
+                    "`%s` may no longer be a %s here: the %s at %s could point `%s` at another value (it was narrowed %s, %s): %s. A name narrowed to a variant reads what it refers to as that variant, so pointing it at another value would have it read what may be another variant's bytes. Test it again with 'is' after the %s, bind the payload by value, or do not use the 'mut' borrow while the name is still to be used as the variant.",
+                    &holder->namesym->namestr, &((StructNode *)as)->namesym->namestr, what, change, &holder->namesym->namestr,
+                    where, through, loanShapeReason(note, cont, sum, reason, sizeof(reason)), what);
+            else {
+                snprintf(msg, sizeof(msg),
+                    "`%s` may no longer be a %s here: the %s at %s could change which variant the %s holds (it was narrowed %s, %s): %s. A name narrowed to a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Test it again with 'is' after the %s, bind the payload by value, or do not use the 'mut' borrow while the name is still to be used as the variant.",
+                    &holder->namesym->namestr, &((StructNode *)as)->namesym->namestr, what, change, cont, where, through,
+                    loanShapeReason(note, cont, sum, reason, sizeof(reason)), what);
+            }
         }
         else if (narrowed) {
             RefNode *reftype = (RefNode *)itypeGetTypeDcl(holder->vtype);

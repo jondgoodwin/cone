@@ -718,6 +718,19 @@ static PathSet *pwBlock(BlockNode *blk, int fnblock, int move);
 static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan);
 static void pwOwnerLent(Place *pl, uint32_t loan);
 static void pwHolderDies(uint32_t var);
+
+// What a borrow made through a narrowed name, or the name's reference handed on, carries of
+// its stand-in 'stand': all but the loan of the reference variable itself (loanIsRepoint).
+// What was made from the reference stays where it points when the name is pointed elsewhere
+static PathSet *pwNarrowCarried(uint32_t stand) {
+    PathSet *all = pathVars[stand].holds;
+    PathSet *carried = NULL;
+    for (uint32_t i = 0; all && i < all->cnt; ++i) {
+        if (!loanIsRepoint(loanOf(all->ids[i])))
+            carried = pathSetAdd(carried, all->ids[i]);
+    }
+    return carried;
+}
 static PathSet *pwPlaceSlots(Place *pl, PathSet *holds);
 static int pwIsGuard(VarDclNode *var);
 static void pwLockPoint(BlockNode *blk, INode *site, int kind);
@@ -1120,6 +1133,43 @@ static int pwHoldsUnwritten(PathSet *holds) {
     return elems;
 }
 
+// Does a reference holding 'holds' point at a place whose way others may write by
+// (Place.uniway)? A borrow of it ('&**o', '&uni **o') kept in a variable promises no
+// more than that place does, whatever its own permission says: freezing the owner it
+// was read from stops that name only
+static int pwHoldsUniway(PathSet *holds) {
+    if (holds == NULL)
+        return 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        if (!(holds->ids[i] & LoanFar) && loanPlaceOf(holds->ids[i])->uniway)
+            return 1;
+    }
+    return 0;
+}
+
+// May another holder write by the way to the reference at the place 'pl' (Place.uniway)?
+// Not where 'pl' is just what a borrow made through a lock points at ('g' of '&mut *shared',
+// the loan rooted at the lock's guard): no other holder reaches it while the lock is held
+static int pwIsGuard(VarDclNode *var);
+static int pwWayWritten(Place *pl) {
+    if (pl->uniway)
+        return 1;
+    if (!pl->shwrite)
+        return 0;
+    PathSet *holds = pl->deref && pl->nsteps == 0 ? pathVars[pl->var].holds : NULL;
+    if (holds == NULL)
+        return 1;
+    int locked = 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        if (holds->ids[i] & LoanFar)
+            continue;
+        if (!pwIsGuard(pathVars[loanPlaceOf(holds->ids[i])->var].var))
+            return 1;
+        locked = 1;
+    }
+    return !locked;
+}
+
 // The place reached through the reference 'ref' evaluates to. Through a
 // borrowed reference it is a root of its own, what the reference points at,
 // keyed by the variable the reference is read from; through an owning one, a
@@ -1169,6 +1219,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         refpl.shared = 0;
         refpl.sharedlen = 0;
         refpl.shwrite = 0;
+        refpl.uniway = 0;
         refpl.owned = 0;
         refpl.far = 0;
         refpl.use = *refp;
@@ -1191,6 +1242,9 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->sharedlen = 0;
         pl->shwrite = pwMayAliasWritten(reftype)
             && !(refpl.nsteps == 0 && !refpl.deref && pwHoldsUnwritten(pathVars[refpl.var].holds));
+        pl->uniway = (!pwMayAlias(reftype) && pwWayWritten(&refpl))
+            || (!pwMayAliasWritten(reftype) && refpl.nsteps == 0 && !refpl.deref
+                && pwHoldsUniway(pathVars[refpl.var].holds));
         pl->owned = 0;
         pl->far = refpl.deref;
         pl->ownertype = NULL;
@@ -1270,6 +1324,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->shared = 0;
         pl->sharedlen = 0;
         pl->shwrite = 0;
+        pl->uniway = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -1288,6 +1343,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->shared = 0;
         pl->sharedlen = 0;
         pl->shwrite = 0;
+        pl->uniway = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -1427,7 +1483,7 @@ static PathSet *pwPlaceValue(INode **nodep, int move) {
     PathSet *holds = pwPlaceHolds(&pl, *nodep);
     // A narrowed reference handed on as it is points into the variant
     if (pl.narrow && !pl.deref && pl.nsteps == 0 && pwCarries(((IExpNode *)*nodep)->vtype))
-        holds = pathSetUnion(holds, pathVars[pl.narrow].holds);
+        holds = pathSetUnion(holds, pwNarrowCarried(pl.narrow));
     // A holder moved away whole holds nothing here: its value, and the
     // finalizer that might read its borrows, went with the move
     if (moves && !pl.deref && pl.nsteps == 0 && pathVars[pl.var].holder)
@@ -1511,7 +1567,7 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     PathSet *lentset = pathSetAdd(pwPlaceSlots(pl, held), id);
     // A borrow into the variant a name is narrowed to is a reference into it too
     if (pl->narrow)
-        lentset = pathSetUnion(lentset, pathVars[pl->narrow].holds);
+        lentset = pathSetUnion(lentset, pwNarrowCarried(pl->narrow));
     return lentset;
 }
 
@@ -2724,7 +2780,10 @@ static int pwHeldExcluding(Place *pl, int sharedok) {
     if (held == NULL || held->cnt == 0)
         return 0;
     for (uint32_t i = 0; i < held->cnt; ++i) {
+        // A loan of a place others reach by another way (Place.uniway) excludes no writer
         if (sharedok ? !loanExcludesWriters(held->ids[i]) : !loanIsExclusive(held->ids[i]))
+            return 0;
+        if (loanPlaceOf(held->ids[i])->uniway)
             return 0;
     }
     return 1;
@@ -2937,6 +2996,10 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
         loanShapeMark(loan, container);
     else if (loanShapeContainer(loan) == NULL)
         loanShapeRefView(loan, container);
+    // Through a 'uni' reference that others may reach (Place.uniway): marked, whatever froze it,
+    // since the freezing is of this name only
+    if (pl->uniway)
+        loanShapeMark(loan, container);
 }
 
 // A borrow into what an owning reference points at ('&mut *s', a field of what 'so' owns, the
@@ -2960,6 +3023,8 @@ static void pwOwnerLent(Place *pl, uint32_t loan) {
     }
     if (loanShapeContainer(loan) == NULL)
         loanShapeRefView(loan, cont);
+    if (pl->uniway)
+        loanShapeMark(loan, cont);
 }
 
 // A call is made. Each marked loan is asked whether the call could reshape the
@@ -2973,7 +3038,8 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
     // references only, or through a reference that holds only the exclusive
     // borrow of such a place (the temporary an operator changing its operand in
     // place borrows it through: 'text <- a, b')
-    int recvunique = recvpl && !recvpl->owned && (!recvpl->shared || (recvpl->deref && pwHeldExcluding(recvpl, 0)));
+    int recvunique = recvpl && !recvpl->owned && !recvpl->uniway
+        && (!recvpl->shared || (recvpl->deref && pwHeldExcluding(recvpl, 0)));
     // What the call can reach of the function's own storage, and what its receiver can. A
     // 'mut' borrow of a local is an alias loan, so the local has other names (the source by
     // name, another borrow), but only ones the call is handed: a loan that points only into
@@ -3147,18 +3213,28 @@ static PathSet *pwNarrowShared(CastNode *cast, uint32_t alias) {
 // reference it is reached through, held here is one more name for it. Then a loan like that
 // of a reference narrowed into a variant (pwNarrowShared) is held by a stand-in for the
 // name, which each member of the variant named on it uses, and what is borrowed through one
-// carries (pwLend). 'keep': the narrowing rests on earlier tests too, whose loans stay
+// carries (pwLend). Where the name is a reference and the 'mut' borrow is of the variable
+// itself ('&mut p'), it can point the name elsewhere as well ('*r = other'), so the
+// stand-in holds a second loan, of the variable, marked with the reference's type as an
+// owner's is: a store of such a reference over it, or a call that may, is a change too.
+// Only the name's uses meet that one (pwNarrowCarried). 'keep': the narrowing rests on
+// earlier tests too, whose loans stay
 static void pwNarrowName(INode *site, VarDclNode *var, int keep) {
     if (!pathLoans)
         return;
     uint32_t index = pathVar(var);
     Place pl = { index, 0, 0 };
+    Place self = { index, 0, 0 };
     INode *type = itypeGetTypeDcl(var->vtype);
+    INode *reftype = NULL;
     if (type->tag == RefTag) {
         pl.deref = 1;
+        reftype = type;
         type = itypeGetTypeDcl(((RefNode *)type)->vtexp);
     }
     uint32_t alias = loanMutAliasAt(&pl);
+    // (a borrow of the variable itself is among those 'pl' finds, so there is an 'alias')
+    uint32_t repoint = reftype ? loanMutAliasAt(&self) : 0;
     uint32_t stand = pathVars[index].narrow;
     if (!alias && !stand)
         return;
@@ -3176,10 +3252,15 @@ static void pwNarrowName(INode *site, VarDclNode *var, int keep) {
     }
     PathSet *holds = keep ? pathVars[stand].holds : NULL;
     PathSet *pending = keep ? pathVars[stand].pending : NULL;
-    uint32_t loan = alias ? loanNarrowName(site, &pl, alias) : 0;
+    uint32_t loan = alias ? loanNarrowName(site, &pl, alias, 0) : 0;
     if (loan) {
         // (its roots are read from what 'var' holds, where it is a reference)
         loanShapeMark(loan, type);
+        holds = pathSetAdd(holds, loan);
+    }
+    loan = repoint ? loanNarrowName(site, &self, repoint, 1) : 0;
+    if (loan) {
+        loanShapeMark(loan, reshapeOwnerCont(reftype));
         holds = pathSetAdd(holds, loan);
     }
     pathSetFacts(stand, holds, pending);
@@ -3235,8 +3316,9 @@ static void pwShapeStore(INode *lval, Place *pl) {
         // What a 'uni' reference points at is reached by that reference and nothing else,
         // unless the reference was itself read through a borrowed one ('**m', 'far'): then
         // the store lands in what that one borrows, which the root variable's loans say, as
-        // they do for a shared path. There the root's own storage is not what is stored in
-        if (pl->deref && (pl->shared || pl->far))
+        // they do for a shared path. There the root's own storage is not what is stored in. So
+        // too where the 'uni' reference was read from where others may write ('**o', Place.uniway)
+        if (pl->deref && (pl->shared || pl->far || pl->uniway))
             loanReachAdd(&reach, pathVars[pl->var].holds);
         if (!pl->deref || !pl->shared)
             loanReachRoot(&reach, pl->var);
@@ -3706,6 +3788,7 @@ static void pwSwap(SwapNode *node) {
             pl->shared = 0;
             pl->sharedlen = 0;
             pl->shwrite = 0;
+            pl->uniway = 0;
             pl->owned = 0;
             pl->far = 0;
             pl->use = *sides[i];

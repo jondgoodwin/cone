@@ -865,6 +865,25 @@ many steps lead to that reference (0 when it is the root's). A dereference cut
 off by the step limit is not marked shared, so the place is held to the
 stricter rule.
 
+`Place.shared` is set by the borrowed reference the root is read through, so a
+`uni` one read from where others reach it (`**o`, `o` an `Rc[mut, &uni T]`;
+`**m`, `m: &mut &uni T`) leaves it clear. **`Place.uniway`** records that: the
+last reference does not say others may write, but the way to it does
+(`pwWayWritten`: some reference before it writes by a shared path), or the
+variable it is read from holds a borrow of such a place (`pwHoldsUniway`:
+`let x = &**o`, `&imm **o`, `&uni **o`). It is asked only by the shape check,
+which then treats the place as one others write by: a borrow into it is marked
+(`pwShapeLent`, `pwOwnerLent`), whatever the freezing
+did; a store through it reaches what the root variable holds (`pwShapeStore`);
+a method called on it has no receiver that is the only name (`pwShapeCall`); the
+loan's roots include what the root variable borrows (`loanRootsNote`); and a
+loan of it excludes no writer (`pwHeldExcluding`). It changes no loan's kind and
+no freezing. A borrow made through a lock (`g`, `&mut *shared`) is not such a way: no
+other holder reaches the value while the lock is held. A view through `&mut *shared`'s guard is
+still one read through a `mut` borrow of the reference (`refway`, under "A reference variable lent
+writably"), so it is marked, and a call handed some other writable `List` is refused under it,
+though nothing else reaches what it views.
+
 A *loan* is one borrow (`BorrowTag`, `ArrayBorrowTag`) of a place, the same
 loan each time a loop walks it again. Its kind comes from the borrow's
 permission and the place (`loanKindOf`):
@@ -1730,7 +1749,8 @@ Part (b) of the rule (`reshape.c`, `flowpath.c`'s `pwShapeBorrow`/`pwShapeCall`,
 `flowloan.c`'s shape section). When `pwCall` freezes a shape-changing receiver's
 path (above) and the place is reached through a reference that others may
 write by (`Place.shwrite`: a `mut`, `ro` or lock-permission reference, an `Rc[mut]`
-owner; not `imm`, `mut1`, `opaq` or `uni`), the borrow's loan is *marked*
+owner; not `imm`, `mut1`, `opaq` or `uni` -- but a `uni` one read from such a way
+counts, `Place.uniway` under "The loan walk"), the borrow's loan is *marked*
 (`loanShapeMark`, `Loan.shapecont`) — unless the reference is read-only and what it
 was borrowed from is a place this function holds a loan on that excludes writers,
 where there is no other name. A place reached as `uni` has no other name until a
@@ -1862,9 +1882,10 @@ locals, which only a call that reaches one of them is asked of):
   only into locals is skipped unless the store reaches one of them: the place's root
   variable; through a reference others may share, what that variable holds instead;
   and through a reference itself read through a borrowed one (`**m`, `Place.far`)
-  both what it holds and, where the last reference is `uni`, the root. A `uni`
-  reference's referent is its own only while nothing else reaches the reference, and
-  one read through a borrow is reached by that borrow's holder. It reshapes
+  both what it holds and, where the last reference is `uni`, the root, and so too
+  through a `uni` reference read from where others may write (`**o` of an
+  `Rc[mut, &uni T]`, `Place.uniway`). A `uni` reference's referent is its own only
+  while nothing else reaches the reference. It reshapes
   (`reshapeStoreHits`) when the value stored over is the loan's container itself, or
   a value that holds one by value (`ReachContained`) or through owning references
   alone (`ReachOwned`: `Uni`, `Rc`, `Arc` or a region a program declares, with fields and
@@ -1897,6 +1918,9 @@ writes, of a variable's own storage, of a value that may hold a reference, marks
 through that variable (`pwLend`, `loanShapeRefLent`). The borrow first: a view through a `uni`
 reference read through a `mut` borrow (`Place.far`, `loanHoldsUniqAlias`) is marked as it is made,
 its roots the locals along the way (`refway`, `loanRootsNote`), so a store through `r` reaches it.
+Such a place is `Place.uniway` too: its roots stay the way's locals, and a view into a collection
+under an owner (`***m`, an `&uni Uni[List]`) takes the collection as its container (`pwShapeLent`),
+so a push through `r` is refused as a store over the owner is.
 Either way the freezing stays, so a change by the view's own name is reported as before; the mark adds
 the store and call checks, which refuse only a change made while the view is still to be used. The
 views noted are a method's or a function's borrow into a collection (`pwShapeLent`), a borrow into what
@@ -2023,8 +2047,11 @@ is this narrowed reference: the message names the original name, which is the on
 sees go stale. A name narrowed by a test and read from its own storage, held by value or
 through `uni`, `imm` or `mut1`, has no narrowed reference: where a `mut` borrow of it is held
 at the test, a stand-in holds the same kind of loan and each use of the name as the variant is
-a use of it (`pwNarrowName`; [narrow](../nodes/narrow.md), "A name narrowed beside a `mut`
-borrow").
+a use of it. Where the name is a reference and the `mut` borrow is of the variable itself, the
+stand-in also holds a loan of the variable, marked with the reference's type as an owner is
+(`reshapeOwnerCont`), so that a store of such a reference over it, which points the name
+elsewhere, is asked too (`pwNarrowName`; [narrow](../nodes/narrow.md), "A name narrowed beside
+a `mut` borrow").
 
 An answer is yes, no or not yet, as the inference of a shape-changing type is: a
 callee whose body is not type checked yet answers not yet, counted in

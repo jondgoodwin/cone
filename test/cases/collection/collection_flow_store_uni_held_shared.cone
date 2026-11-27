@@ -1,0 +1,321 @@
+// A '&uni' reference held where others reach it -- in an 'Rc[mut, ..]' with two holders,
+// above all -- is one of several ways to what it points at, whatever its own permission
+// says. So a borrow into that value, taken through one holder, is asked of every store
+// and call made through another while it is still to be used
+// (collection_store_uni_held_shared_success holds what is accepted beside each refusal).
+
+mod collection_flow_store_uni_held_shared;
+
+import collections use *;
+
+enum Shape {
+  struct Circle { pub r: i32; }
+  struct Square { pub s: i32; }
+}
+use Shape;
+
+fn oneList() List[i32] {
+  var l = List[i32]();
+  l.push(7i32);
+  l
+}
+
+fn emptyOne(x: &mut List[i32]) {
+  *x = List[i32]();
+}
+
+fn emptyHeld(x: Rc[mut, &uni List[i32]]) {
+  **x = List[i32]();
+}
+
+// Stored over through the other holder
+fn stored() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let v = &(**o)[0usize];
+  **o2 = List[i32]();            //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// Pushed onto through it
+fn pushed() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let v = &(**o)[0usize];
+  (**o2).push(1i32);             //~ ErrorShapeReshape "This call could change the shape of a 'List'"
+  *v
+}
+
+// Cleared
+fn cleared() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let v = &(**o)[0usize];
+  (**o2).clear();                //~ ErrorShapeReshape "This call could change the shape of a 'List'"
+  *v
+}
+
+// Swapped for another list
+fn swapped() i32 {
+  var l = oneList();
+  var r = &uni l;
+  var n = List[i32]();
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let v = &(**o)[0usize];
+  **o2 <-> n;                    //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// A 'mut' borrow of it handed to a function
+fn borrowPassed() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let v = &(**o)[0usize];
+  emptyOne(&mut **o2);           //~ ErrorShapeReshape "This call could change the shape of a 'List'"
+  *v
+}
+
+// The other holder handed to a function
+fn holderPassed() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let v = &(**o)[0usize];
+  emptyHeld(o2);                 //~ ErrorShapeReshape "This call could change the shape of a 'List'"
+  *v
+}
+
+// A 'mut' borrow of it stored through
+fn reborrowed() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let v = &(**o)[0usize];
+  let p = &mut **o2;
+  *p = List[i32](); //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// The list borrowed through a holder, then viewed through that borrow
+fn borrowedFirst() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let x = &**o;
+  let v = &(*x)[0usize];
+  **o2 = List[i32]();            //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// ... though that borrow says 'imm', which the holder cannot promise
+fn borrowedImm() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let x = &imm **o;
+  let v = &(*x)[0usize];
+  **o2 = List[i32]();            //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// ... or 'uni'
+fn borrowedUni() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let x = &uni **o;
+  let v = &(*x)[0usize];
+  **o2 = List[i32]();            //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// The view taken through a borrow of one holder
+fn holderLent() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let h = &o;
+  let v = &(***h)[0usize];
+  **o2 = List[i32]();            //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// The two holders are a function's parameters
+fn byParm(o: Rc[mut, &uni List[i32]], p: Rc[mut, &uni List[i32]]) i32 {
+  let v = &(**o)[0usize];
+  **p = List[i32]();             //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// ... or pushed onto by the other, nothing here the function's own storage
+fn byParmPush(o: Rc[mut, &uni List[i32]], p: Rc[mut, &uni List[i32]]) i32 {
+  let v = &(**o)[0usize];
+  (**p).push(1i32);              //~ ErrorShapeReshape "This call could change the shape of a 'List'"
+  *v
+}
+
+// A '&' parameter reading a '&uni': what holds the '&uni' may be written by another name
+fn byRef(o: &&uni List[i32], p: Rc[mut, &uni List[i32]]) i32 {
+  let v = &(**o)[0usize];
+  **p = List[i32]();             //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// A struct holding one holder
+struct Keeper {
+  pub held: Rc[mut, &uni List[i32]];
+}
+
+fn inStruct() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let w = Keeper(o);
+  let v = &(**w.held)[0usize];
+  **o2 = List[i32]();            //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// The shared owner is further out: an 'Rc[mut, ..]' holding a 'Uni' of the '&uni'
+fn uniInside() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, Uni[&uni List[i32]]](Uni[&uni List[i32]](r));
+  let o2 = o;
+  let v = &(***o)[0usize];
+  ***o2 = List[i32]();           //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// Two '&uni' deep
+fn twoUni() i32 {
+  var l = oneList();
+  var r = &uni l;
+  var rr = &uni r;
+  let o = Rc[mut, &uni &uni List[i32]](rr);
+  let o2 = o;
+  let v = &(***o)[0usize];
+  ***o2 = List[i32]();           //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// A Dict
+fn dictReplaced() i32 {
+  var d = Dict[i32, i32]();
+  d.insert(1i32, 7i32);
+  var r = &uni d;
+  let o = Rc[mut, &uni Dict[i32, i32]](r);
+  let o2 = o;
+  let key = 1i32;
+  match (**o).get(&key) {
+    case let Some(g) {
+      **o2 = Dict[i32, i32]();   //~ ErrorShapeStore "This store could change the shape of a 'Dict'"
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+// An owner behind the '&uni', stored over: what it owned is freed
+fn ownerReplaced() i32 {
+  var u = Uni[i32](7i32);
+  var r = &uni u;
+  let o = Rc[mut, &uni Uni[i32]](r);
+  let o2 = o;
+  let v = &***o;
+  **o2 = Uni[i32](9i32);         //~ ErrorShapeStore "This store could replace the 'Uni[i32]'"
+  *v
+}
+
+// An enum's variant, narrowed by a 'match' on a borrow of it
+fn variantReplaced() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let o = Rc[mut, &uni Shape](r);
+  let o2 = o;
+  match &**o {
+    case let &Circle(c) {
+      **o2 = Square(99);
+      return c.r;                //~ ErrorVariantReshape "is used here after the store"
+    }
+    else {}
+  }
+  0i32
+}
+
+// ... and by a borrow made before the 'match'
+fn variantReplacedBound() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let o = Rc[mut, &uni Shape](r);
+  let o2 = o;
+  let x: &Shape = &**o;
+  match x {
+    case let &Circle(c) {
+      **o2 = Square(99);
+      return c.r;                //~ ErrorVariantReshape "is used here after the store"
+    }
+    else {}
+  }
+  0i32
+}
+
+// A compound assignment's place is borrowed before its right side is made and written
+// after (collection_flow_compound_element), through a held '&uni' as through any other
+// way: a store made through the other holder
+fn compoundStored() {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  (**o)[0usize] += {**o2 = List[i32](); 1i32};     //~ ErrorShapeStore "This compound assignment writes into what a 'List' lent"
+}
+
+// ... a call that pushes onto it
+fn compoundPushed() {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  (**o)[0usize] += {(**o2).push(1i32); 1i32};      //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+
+// ... a push through the reference variable, into a list under an owner
+fn compoundOwnerThrough() {
+  var o: Uni[List[i32]] = Uni[List[i32]](oneList());
+  var r = &uni o;
+  let m = &mut r;
+  (***m)[0usize] += {(**r).push(1i32); 1i32};      //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+
+// ... and a change of the variant it writes into
+fn compoundVariant() {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let o = Rc[mut, &uni Shape](r);
+  let o2 = o;
+  var p = &mut **o;
+  if p is Circle {
+    p.r += {**o2 = Square(99); 1i32};              //~ ErrorVariantReshape "This compound assignment writes into one of the variants"
+  }
+}
+
+fn main() {
+}

@@ -1,0 +1,154 @@
+// A name that is a reference to an enum ('p: &imm Slot'), narrowed by a test while a 'mut'
+// borrow of the name itself, made before the test, is held: through that borrow the name can
+// be pointed at another value ('*r = other'), which ends what the test found, as a change of
+// variant does. The refusal is at the next use of the name as the variant, and names the
+// 'mut' borrow. enum_narrow_ref_repoint_success holds what is accepted beside each;
+// enum_flow_narrow_name_mut_borrow, a change of the variant itself through such a borrow.
+
+mod enum_flow_narrow_ref_repoint;
+
+import stdio use *;
+
+// The payload a stale read would take for a pointer and a length
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub a: usize;
+    pub b: usize;
+  }
+}
+use Slot;
+
+alias SlotRef = &imm Slot;
+
+struct Held {
+  pub r: &mut &imm Slot;
+}
+
+fn set(r: &mut &imm Slot, o: &imm Slot) {
+  *r = o;
+}
+
+fn setTrue(r: &mut &imm Slot, o: &imm Slot) bool {
+  *r = o;
+  return true;
+}
+
+// The store through the borrow
+fn store(var p: &imm Slot, o: &imm Slot) {
+  let r = &mut p;
+  if p is Text {
+    *r = o;
+    printStr(p.s);                      //~ ErrorVariantReshape "could point `p` at another value"
+  }
+}
+
+// A call handed the borrow that does the store
+fn call(var p: &imm Slot, o: &imm Slot) {
+  let r = &mut p;
+  if p is Text {
+    set(r, o);
+    printStr(p.s);                      //~ ErrorVariantReshape "'set' is handed something that reaches a '&imm Slot'"
+  }
+}
+
+// A 'uni' reference
+fn uniStore(var p: &'a uni Slot, o: &'a uni Slot) {
+  let r = &mut p;
+  if p is Text {
+    *r = o;
+    printStr(p.s);                      //~ ErrorVariantReshape "could point `p` at another value"
+  }
+}
+
+// A 'mut1' reference
+fn mut1Store(var p: &mut1 Slot, o: &mut1 Slot) {
+  let r = &mut p;
+  if p is Text {
+    *r = o;
+    printStr(p.s);                      //~ ErrorVariantReshape "could point `p` at another value"
+  }
+}
+
+// Swapped through the borrow
+fn swapped(var p: &imm Slot, var q: &imm Slot) {
+  let r = &mut p;
+  if p is Text {
+    *r <-> q;
+    printStr(p.s);                      //~ ErrorVariantReshape "could point `p` at another value"
+  }
+}
+
+// Through a borrow of the borrow
+fn deeper(var p: &imm Slot, o: &imm Slot) {
+  var r = &mut p;
+  let rr = &mut r;
+  if p is Text {
+    **rr = o;
+    printStr(p.s);                      //~ ErrorVariantReshape "could point `p` at another value"
+  }
+}
+
+// The borrow held in a struct
+fn inStruct(var p: &imm Slot, o: &imm Slot) {
+  let h = Held(&mut p);
+  if p is Text {
+    *h.r = o;
+    printStr(p.s);                      //~ ErrorVariantReshape "could point `p` at another value"
+  }
+}
+
+// The reference type spelled through an alias
+fn aliased(var p: SlotRef, o: SlotRef) {
+  let r = &mut p;
+  if p is Text {
+    *r = o;
+    printStr(p.s);                      //~ ErrorVariantReshape "could point `p` at another value"
+  }
+}
+
+// Narrowed by elimination
+fn eliminated(var p: &imm Slot, o: &imm Slot) {
+  let r = &mut p;
+  if p is Num {
+    return;
+  }
+  *r = o;
+  printStr(p.s);                        //~ ErrorVariantReshape "could point `p` at another value"
+}
+
+// A later operand of the condition
+fn inCondition(var p: &imm Slot, o: &imm Slot) {
+  let r = &mut p;
+  if p is Text && setTrue(r, o) {
+    printStr(p.s);                      //~ ErrorVariantReshape "'setTrue' is handed something that reaches a '&imm Slot'"
+  }
+}
+
+// Between two uses in a loop the test is outside
+fn looped(var p: &imm Slot, o: &imm Slot) {
+  let r = &mut p;
+  var i = 0usize;
+  if p is Text {
+    while i < 2usize {
+      printStr(p.s);                    //~ ErrorVariantReshape "could point `p` at another value"
+      *r = o;
+      i += 1usize;
+    }
+  }
+}
+
+// A borrow taken through the name after it was pointed elsewhere
+fn borrowedAfter(var p: &imm Slot, o: &imm Slot) {
+  let r = &mut p;
+  if p is Text {
+    *r = o;
+    let a = &p.s;                       //~ ErrorVariantReshape "could point `p` at another value"
+    printStr(*a);
+  }
+}
+
+fn main() {}

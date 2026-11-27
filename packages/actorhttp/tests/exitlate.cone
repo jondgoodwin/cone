@@ -1,0 +1,64 @@
+// A client and a fetch made after the package's finalizer has run: a value held by a behaviour that aio's end abandons
+// makes them in its finalizer. The late client is not recorded in a package global, and its fetch is abandoned at once.
+mod exitlate;
+
+import stdio use *;
+import thread;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+import actorhttp use HttpClient;
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {panic("socketOf: failed");}
+  }
+  s
+}
+
+actor Fetcher {
+  client: HttpClient;
+
+  pub async fn run(self) {
+    let answer = await client.get("http://127.0.0.1:9/");
+    printStr("late fetch answered\n");
+  }
+}
+
+struct Late is Move {
+  n: u32;
+
+  fn final(self: &uni) {
+    printStr("late client\n");
+    let f = Fetcher(HttpClient.standard());
+    f.run();
+  }
+}
+
+actor Waiter {
+  pub async fn run(self, ready: OneshotSender[u64]) {
+    let held = Late(1u32);
+    let l = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var r = ready;
+    r.send(1u64);
+    let s = await l.accept();
+    printStr("accepted\n");
+    printUInt(u64.from(held.n));
+  }
+}
+
+fn main() {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {let w = Waiter(); w.run(tx);}
+  rx.recv();
+  thread.sleep(Duration.fromMillis(100i64));
+  printStr("end of main\n");
+}
