@@ -1,0 +1,80 @@
+// What stays accepted beside collection_flow_reshape_virtual_result: a virtual call whose
+// result names no borrowed type, from a trait object and from a closure; a view from behind a
+// virtual reference kept past a store to a list of another type and past a call that only
+// reads; one used up before the list is stored over; and a store that replaces a local list
+// whole while the view is held.
+
+mod collection_reshape_virtual_result_success;
+
+import stdio use *;
+import collections use *;
+
+trait Firster {
+  pub fn first(self: &) &i32;
+  pub fn count(self: &) i32;
+}
+
+struct Holder {
+  pub rc: Rc[mut, List[i32]];
+  pub fn first(self: &) &i32 { return &(*rc)[0usize]; }
+  pub fn count(self: &) i32 { return (*rc)[0usize] + 100i32; }
+}
+
+fn make(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+fn peek(o: &Rc[mut, List[i32]]) i32 { return (**o)[0usize]; }
+
+// A result naming no borrowed type
+fn noView(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  let n = h.count();
+  *o2 = make(2i32);
+  print <- "noView = ", n, " ", h.count(), "\n";
+}
+
+fn noViewClosure(f: &<fn() i32, o2: Rc[mut, List[i32]]) {
+  let n = f();
+  *o2 = make(3i32);
+  print <- "noViewClosure = ", n, " ", f(), "\n";
+}
+
+// A store to a list of another type, and a call that only reads
+fn otherType(h: &<Firster, o2: Rc[mut, List[i32]], wide: Rc[mut, List[i64]]) {
+  let v = h.first();
+  *wide = List[i64]();
+  let n = h.count() + peek(&o2);
+  print <- "otherType = ", *v, " ", n, "\n";
+}
+
+// The view used up before the store
+fn usedFirst(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  let v = h.first();
+  print <- "usedFirst = ", *v, "\n";
+  *o2 = make(4i32);
+  print <- "after = ", *h.first(), "\n";
+}
+
+// A list the function owns whole
+fn ownList(h: &<Firster) {
+  var mine = List[i32]();
+  let v = h.first();
+  mine.push(1i32);
+  mine = make(9i32);
+  print <- "ownList = ", *v, " ", mine[0usize], "\n";
+}
+
+fn main() {
+  let o = Rc[mut, List[i32]](make(1i32));
+  let held = Holder(o);
+  let wide = Rc[mut, List[i64]](List[i64]());
+
+  noView(&held, o);
+  var f = fn() [c = o] i32 { (*c)[0usize] + 200i32 };
+  noViewClosure(&f, o);
+  otherType(&held, o, wide);
+  usedFirst(&held, o);
+  ownList(&held);
+}

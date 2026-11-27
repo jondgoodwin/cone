@@ -2138,9 +2138,28 @@ reference lent by `pwLentArg`). A result naming no borrowed type gets none.
 `flowGateReachesOwner`), so a view handed straight to the call that takes the other holder is
 asked. Two containers of one type are not told apart, as everywhere here: a store through
 another `Rc[mut, List[i32]]` is refused too, as it is for `&(*o)[0]`. Not followed: a view
-returned through a virtual reference or a trait object, a closure's captured owner, and a
-result whose borrow is hidden in a trait object it owns.
+returned by a function handed a trait object (`get(h)`, `h` a `&<Firster`, or a struct holding
+one), whose parameter's type names nothing behind it, and a result whose borrow is hidden in a
+trait object it owns.
 Tests: `collection_flow_reshape_shared_result`, `collection_reshape_shared_result_success`.
+
+**A result borrowed from behind a virtual call's receiver** (`pwReachShared`, argument 0 of a
+`FlagVDisp` call: a method called through a virtual reference, a closure behind `&<fn`, a method
+of a trait object an owner holds). The signature is the trait method's, and a trait names no
+fields, so there is no list of containers to mark at the call. The result is given one more loan,
+marked for the trait, holding the types its borrows may point at (`PwUnseen`, `Loan.unseen`; a
+result that borrows a trait: anything), and each later store or call is asked about what it
+touches. A store is asked whether the stored type holds, by value or by ownership, a collection,
+enum or owner with one of those types in it, or owns a trait object (`pwUnseenStoreHits`; a
+local owning reference stored over is not counted). A call is asked about each such container
+that its parameters' types or a global reach (`pwUnseenConts`, `reshapeCall`), as well as about
+the trait. So a result such as `&<Error`, which may point at anything, is held against every
+store or call that could free a container. `flowGateShapeAsk` walks a function that makes a
+virtual call whose result names a borrow. The refusal (`ErrorShapeStore`, `ErrorShapeReshape`)
+names "a value behind a virtual reference": the trait's name says nothing of what is held, and a
+closure's is made up. A closure called directly needs none of this, its captures' loans being
+its own. Tests: `collection_flow_reshape_virtual_result`,
+`collection_reshape_virtual_result_success`.
 
 What it does not follow: types are compared as types, so two `List[Pt]` are not told apart
 (the point: it is never a proof of aliasing, only that nothing proves it absent);

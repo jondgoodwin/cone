@@ -3070,17 +3070,17 @@ static void pwOwnerLent(Place *pl, uint32_t loan) {
         loanShapeMark(loan, cont);
 }
 
+// What a result from behind a virtual reference may point at: nothing says what holds it,
+// so each store and call is asked of what it could free that holds one (below, pwReach)
+typedef struct PwUnseen PwUnseen;
+static int pwUnseenStoreHits(INode *lval, PwUnseen *unseen);
+static uint32_t pwUnseenConts(FnCallNode *call, PwUnseen *unseen, INode ***conts);
+
 // A call is made. Each marked loan is asked whether the call could reshape the
 // collection it points into: reported at once if the borrow is handed to this very
 // call or waits in flight for the call around it; otherwise a pending conflict for
 // each variable holding it, fired when that variable is used again. The answer is
 // the same for the loans of one type, so it is worked out once.
-// What a result from behind a trait object may point at: nothing says what holds it, so
-// each store and call is asked of what it could free that holds one (below, pwReach)
-typedef struct PwUnseen PwUnseen;
-static int pwUnseenStoreHits(INode *lval, PwUnseen *unseen);
-static uint32_t pwUnseenConts(FnCallNode *call, PwUnseen *unseen, INode ***conts);
-
 static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSet **argsets, uint32_t nargs,
         uint32_t recvloan, PathSet *fnholds) {
     // No other name reaches the receiver: a local, a place reached through 'uni'
@@ -3476,10 +3476,11 @@ static PathSet *pwPointerOf(PathSet *carried) {
 // every container (a collection, an enum, an owner) reached past a shared owner that could
 // hold what the result points at.
 //
-// A trait object names no fields, so its type says nothing of what is reached: the receiver
-// of a virtual call, a '&<Trait' handed to a function, or one held in what is handed. The
-// result's loan is then marked for the trait, and holds what it may point at (PwUnseen): a
-// store or a call is asked of every container it could free that holds one of those
+// A virtual call's receiver is behind a trait, which names no fields, so its type says
+// nothing of what is reached. The result is then given one more loan, marked for the trait,
+// which holds what the result may point at (PwUnseen): a store or a call is asked of every
+// container it could free that holds one of those. A trait object a function is handed, or
+// one held in what is handed, is not followed so
 
 #define PwReachMax 24
 
@@ -3497,7 +3498,7 @@ typedef struct {
     uint32_t nconts;                // the containers found, in 'pwReachConts'
     uint32_t nseen;                 // the types walked, in 'pwReachSeen'
     int visits;                     // types visited by the walks that keep no record of them
-    INode *unseen;                  // the trait of a trait object met, whose contents no type names
+    INode *unseen;                  // a trait object owned on the way, whose contents no type names
     int owned;                      // follow only what a value holds and owns, not what it borrows
 } PwReach;
 
@@ -3672,9 +3673,7 @@ static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int ow
                 break;
             // A held borrow: its own loans say where it points, and a borrow through it is
             // marked for no owner, but past a shared owner others write by it too
-            if (type->tag == VirtRefTag)
-                r->unseen = itypeGetTypeDcl(ref->vtexp);
-            else
+            if (type->tag != VirtRefTag)
                 pwReachWalk(r, ref->vtexp, NULL, pwMayAliasWritten(type) || (shared && perm == (INode *)uniPerm),
                     owner, depth + 1);
             break;
@@ -3722,10 +3721,6 @@ static void pwReachByValue(PwReach *r, INode *type, int depth) {
     case ArrayRefTag:
         if (pwIsBorrowed(type))
             pwReachWalk(r, ((RefNode *)type)->vtexp, NULL, pwMayAliasWritten(type), 0, 0);
-        break;
-    case VirtRefTag:
-        if (pwIsBorrowed(type))
-            r->unseen = itypeGetTypeDcl(((RefNode *)type)->vtexp);
         break;
     case ArrayTag:
         pwReachByValue(r, arrayElemType(type), depth + 1);
@@ -3852,13 +3847,6 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
     // A result naming no borrowed type hands back no view of anything
     if (!r.any && r.ntargets == 0)
         return result;
-    // A virtual call's receiver: the signature's 'self' names the trait, and what is behind
-    // it is not known
-    if (argi == 0 && (call->flags & FlagVDisp)) {
-        INode *self = iexpGetTypeDcl(nodesGet(call->args, 0));
-        if (self->tag == VirtRefTag)
-            r.unseen = itypeGetTypeDcl(((RefNode *)self)->vtexp);
-    }
     INode *referent = NULL;
     if ((ptype->tag == RefTag || ptype->tag == ArrayRefTag) && pwIsBorrowed(ptype)) {
         referent = itypeGetTypeDcl(((RefNode *)ptype)->vtexp);
@@ -3873,8 +3861,11 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
         if (pwReachLoan(call, argi, cont, base, &result) == 0)
             break;
     }
-    if (r.unseen) {
-        uint32_t id = pwReachLoan(call, argi, r.unseen, base, &result);
+    // A virtual call's receiver: the signature's 'self' names the trait, and what is behind
+    // it is not known
+    INode *self = argi == 0 && (call->flags & FlagVDisp) ? iexpGetTypeDcl(nodesGet(call->args, 0)) : NULL;
+    if (self && self->tag == VirtRefTag) {
+        uint32_t id = pwReachLoan(call, argi, itypeGetTypeDcl(((RefNode *)self)->vtexp), base, &result);
         if (id && loanUnseen(id) == NULL) {
             PwUnseen *unseen = (PwUnseen *)memAllocBlk(sizeof(PwUnseen));
             memcpy(unseen->targets, r.targets, sizeof(unseen->targets));
