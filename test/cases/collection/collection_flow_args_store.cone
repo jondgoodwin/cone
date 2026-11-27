@@ -1,0 +1,132 @@
+// A store over a variable while an earlier argument's borrow of it still waits
+// for its call is refused (ErrorFrozen), as a move there is: the store replaces
+// or frees what the call is about to write into. A store reads nothing of the
+// variable, so each function below holds nothing else that would have the loan
+// walk follow it: no borrow held in a local, none handed out. Each was accepted
+// before, but the swap, which reads both sides.
+//
+// The borrow may also be kept by the temporary an operator changing its operand
+// in place borrows it through, as '<-' with more than one entry does: a store or
+// a move in a later entry is refused too.
+//
+// collection_args_store_success runs the neighbours that stay accepted.
+
+mod collection_flow_args_store;
+
+import collections use *;
+
+struct N { pub n: usize; pub fn `+=`(self: &mut, k: usize) { n = n + k; } }
+struct H { pub items: List[List[usize]]; pub n: usize; }
+struct W { pub a: &mut List[usize]; pub k: usize; }
+enum E {
+  struct Full { pub l: List[List[usize]]; }
+  struct Bare {}
+}
+
+fn lists() List[List[usize]] {
+  var l = List[List[usize]]();
+  l.push(List[usize]());
+  l
+}
+fn listsAnd() List[List[usize]], usize { lists(), 1usize }
+fn take(l: List[usize]) usize { 5usize }
+fn pair(a: &mut List[usize], k: usize) { a.push(k); }
+fn useW(w: W) { w.a.push(w.k); }
+
+// A compound that is a method the element's type declares
+fn declaredCompound() {
+  var l = List[N]();
+  l.push(N(1usize));
+  l[0usize] += {l = List[N](); 5usize};    //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn methodArg() {
+  var l = lists();
+  l[0usize].push({l = lists(); 5usize});   //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn append() {
+  var l = lists();
+  l[0usize] <- {l = lists(); 5usize};      //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn assignAndKeep() {
+  var l = lists();
+  l[0usize].push({let old = l := lists(); 5usize});   //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn swapped() {
+  var l = List[usize]();
+  var q = List[usize]();
+  l.push({l <-> q; 5usize});               //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn tupleStore() {
+  var l = lists();
+  var n = 0usize;
+  l[0usize].push({l, n = lists(), 1usize; 5usize});   //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn manyReturned() {
+  var l = lists();
+  var n = 0usize;
+  l[0usize].push({n, l = 1usize, lists(); 5usize});   //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn manyFromCall() {
+  var l = lists();
+  var n = 0usize;
+  l[0usize].push({l, n = listsAnd(); 5usize});        //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn wholeStruct() {
+  var s = H(lists(), 0usize);
+  s.items[0usize].push({s = H(lists(), 0usize); 5usize});   //~ ErrorFrozen "for a call or value still being made"
+}
+
+// The field's store is the shape check's to name
+fn oneField() {
+  var s = H(lists(), 0usize);
+  s.items[0usize].push({s.items = lists(); 5usize});  //~ ErrorShapeStore "This store could change the shape"
+}
+
+fn wholeArray() {
+  var a: Array[List[usize], 2] = [List[usize](), List[usize]()];
+  a[0usize].push({a = [List[usize](), List[usize]()]; 5usize});   //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn variant() {
+  var e: E = E.Full(lists());
+  if e is E.Full {
+    e.l[0usize].push({e = E.Bare; 5usize});           //~ ErrorFrozen "for a call or value still being made"
+  }
+}
+
+fn plainArg() {
+  var l = List[usize]();
+  pair(&mut l, {l = List[usize](); 5usize});          //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn literalValue() {
+  var l = List[usize]();
+  useW(W(&mut l, {l = List[usize](); 5usize}));        //~ ErrorFrozen "for a call or value still being made"
+}
+
+// The temporary of '<-' with two entries keeps the borrow
+fn secondEntryStores() {
+  var l = List[usize]();
+  l <- 1usize, {l = List[usize](); 5usize};           //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn secondEntryMoves() {
+  var l = List[usize]();
+  l <- 1usize, take(l);                               //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn elementEntryStores() {
+  var l = lists();
+  l[0usize] <- 1usize, {l = lists(); 5usize};         //~ ErrorFrozen "for a call or value still being made"
+}
+
+fn main() {
+}
