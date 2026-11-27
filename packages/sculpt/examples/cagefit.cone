@@ -1,0 +1,109 @@
+// cagefit: a head patch decimated to a coarse cage, fitted by 'fitCage', and the height along its normals
+//
+//   congo run --release packages/sculpt/examples/cagefit.cone
+//
+// Reads <data>/gauss_patch.obj (the cage's source, decimated) and <data>/source_patch.obj (the target) and,
+// for 311 and 1019 control points at 3 and 4 levels, writes the fitted cage and its subdivided surface to
+// <out>/cage_<points>_<levels>.obj and base_<points>_<levels>.obj, prints the fit, and prints each base
+// vertex's hits, height, folded flag, area and displaced point (reach 2.5) on a line starting "H".
+
+mod cagefitdemo;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import env;
+import fs;
+import path use Path as FilePath;
+import sculpt use *;
+
+let dataDir = "C:/src/zz-w84/data/";
+let outDir = "C:/src/zz-w84/out/";
+
+fn load(name: &str) PolyMesh {
+  var full = String.from(dataDir);
+  full.append(name);
+  var problems = List[String]();
+  let m = readPolyObj(&FilePath.from(full.view()), &mut problems);
+  print <- name, ": ", m.vertexCount(), " vertices, ", m.faceCount(), " faces, ", problems.len(), " problems\n";
+  m
+}
+
+fn save(name: &str, m: &PolyMesh) {
+  var full = String.from(outDir);
+  full.append(name);
+  if !writeObj(m, &FilePath.from(full.view())) { print <- "could not write ", full.view(), "\n"; }
+}
+
+// The patch decimated until it has about 'points' vertices
+fn cage(source: &PolyMesh, points: usize) PolyMesh {
+  var faces = u32.from(2usize * points);
+  var d = decimateWith(source, faces, -1., DecimateSymmetryNone, "");
+  var tries = 0u32;
+  while tries < 6u32 && (d.mesh.vertexCount() * 100usize > points * 103usize || d.mesh.vertexCount() * 100usize < points * 97usize) {
+    let scaled = f64.from(faces) * f64.from(points) / f64.from(d.mesh.vertexCount());
+    faces = u32.from(usize.from(scaled + 0.5));
+    d = decimateWith(source, faces, -1., DecimateSymmetryNone, "");
+    tries = tries + 1u32;
+  }
+  print <- "cage ", points, ": ", d.mesh.vertexCount(), " vertices, ", d.mesh.faceCount(), " triangles, error ", d.error, "\n";
+  d.(mesh)
+}
+
+fn run(target: &PolyMesh, start: &PolyMesh, points: usize, levels: u32, cname: &str, bname: &str) {
+  var problems = List[String]();
+  let fit = fitCage(target, start, levels, 8u32, &mut problems);
+  print <- "FIT ", points, " levels ", levels, ": control points ", fit.cage.vertexCount(), " rounds ", fit.rounds,
+    " pooled rms ", fit.rms, " max ", fit.max, " | to target rms ", fit.targetRms, " max ", fit.targetMax,
+    " | to surface rms ", fit.surfaceRms, " max ", fit.surfaceMax, " problems ", problems.len(), "\n";
+  var i = 0usize;
+  while i < fit.history.len() {
+    print <- "  history ", i, " ", *fit.history[i], "\n";
+    i = i + 1usize;
+  }
+  let base = subdivide(&fit.cage, levels);
+  save(cname, &fit.cage);
+  save(bname, &base);
+  print <- "PHASE heights ", points, " ", levels, "\n";
+  var hp = List[String]();
+  let h = heightsAlongNormals(&base, target, 2.5, &mut hp);
+  print <- "HEIGHTS ", points, " levels ", levels, ": valid ", h.validArea, " multi ", h.multiHitArea, " folded ", h.foldedArea,
+    " none ", h.noHitArea, " problems ", hp.len(), "\n";
+  print <- "BEGIN ", points, " ", levels, "\n";
+  let nrm = base.vertexNormals();
+  var v = 0usize;
+  while v < base.vertexCount() {
+    let q = *base.positions[v] + *nrm[v] * *h.heights[v];
+    print <- "H ", *h.hits[v], " ", *h.heights[v], " ", if *h.folded[v] {1} else {0}, " ", *h.vertexArea[v], " ", q.x, " ", q.y, " ", q.z, "\n";
+    v = v + 1usize;
+  }
+  print <- "END\n";
+}
+
+fn main() i32 {
+  let outPath = FilePath.from(outDir);
+  if let Err(e) = fs.makeDirAll(&outPath) { print <- "could not make the folder: ", e, "\n"; return 1; }
+  let target = load("source_patch.obj");
+  let gauss = load("gauss_patch.obj");
+  print <- "PHASE decimate 311\n";
+  let c311 = cage(&gauss, 311usize);
+  print <- "PHASE decimate 1019\n";
+  let c1019 = cage(&gauss, 1019usize);
+  save("start_311.obj", &c311);
+  save("start_1019.obj", &c1019);
+  // CAGEFIT_ONLY_DECIMATE stops here, with the start cages written
+  match env.get("CAGEFIT_ONLY_DECIMATE") {
+    case let Some(v) { return 0; }
+    case None {}
+  }
+  print <- "PHASE fit 311 3\n";
+  run(&target, &c311, 311usize, 3u32, "cage_311_3.obj", "base_311_3.obj");
+  print <- "PHASE fit 311 4\n";
+  run(&target, &c311, 311usize, 4u32, "cage_311_4.obj", "base_311_4.obj");
+  print <- "PHASE fit 1019 3\n";
+  run(&target, &c1019, 1019usize, 3u32, "cage_1019_3.obj", "base_1019_3.obj");
+  print <- "PHASE fit 1019 4\n";
+  run(&target, &c1019, 1019usize, 4u32, "cage_1019_4.obj", "base_1019_4.obj");
+  0
+}

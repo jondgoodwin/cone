@@ -1,0 +1,436 @@
+// The sculpt package's cage fitting ('fitCage') and the height along the normals ('heightsAlongNormals'),
+// checked with the testing package; only a failure prints, so cagefits.out holds the summary alone.
+//
+// - A sphere and an icosahedron: the target is the unit sphere as the icosahedron's Catmull-Clark level 4
+//   pushed out to radius 1 (15,360 quads, edges at most 0.08, so a facet is within 0.0006 of the sphere:
+//   an edge e is a chord of sagitta e^2 / 8). The start is the icosahedron stretched (1, 1.4, 0.6) times
+//   1.3, fitted at 3 levels (3,840 faces) for 8 rounds. By the icosahedron's symmetry the best cage is the
+//   icosahedron scaled by one number R, so the answer is found independently of the solver: 'fitCage' with 0
+//   rounds on the regular icosahedron of radius R measures the pooled rms of that cage, and the least of
+//   those over R = 1.20 to 1.50 in steps of 0.005 is the floor (the subdivided icosahedron is not round; the
+//   floor was 0.00297 at R = 1.335 when written). The fit must reach that floor within 3%, the rms must fall
+//   on each of the first three rounds (0.210, 0.072, 0.0061, 0.0030 when written: the stretch is undone in
+//   about 3 rounds and then the rms sits on the floor, moving by under 1%), and the cage returned is the
+//   best of the rounds', so its rms is no more than any round's.
+// - A cage exact for itself: the target is a stretched icosahedron's own level 3, the start the same cage:
+//   the rms is 0 up to the arithmetic of f32 (3e-8 when written; the test allows 0.000001). The start pushed
+//   off (1.1, 0.9, 1.05 times) falls back to 0 in 10 rounds (3.5e-8). With 5 edges creased by 2 (carried
+//   through the subdivision as they stand) the same holds, which shows that the weights follow the creases,
+//   and the cage returned keeps the channel and its values.
+// - heightsAlongNormals of a unit sphere (level 3) against the sphere of radius 1.1 (level 4), reach 0.5:
+//   every vertex has one hit, at the height 0.1. The target's facets sag by at most 0.0006 (as above, e up to
+//   0.08), so the height is within 0.0006 of 0.1 up to the vertex normal's lean, which adds under 0.0001:
+//   the test allows 0.002 and has valid area = all the area.
+// - A fin: the base a 20 x 20 grid over (-1, 1) at z = 0 (normals +z), the target a plane z = 0.1 (30 x 30
+//   over (-1.5, 1.5)) and a closed thin box standing over it, x within 0.05, y within 1.2, z from 0.4 to
+//   0.8. A line up from a base vertex at x = 0 (21 of them) meets the plane, the box's underside and its top,
+//   3 hits within reach 1; any other meets the plane only. Every vertex's height is 0.1 (the nearest). A
+//   vertex's area is a third of each fan triangle round it: 0.01 inside (6 shares of a third of 0.005), 0.005
+//   on the grid's edge: the fin's column has 19 inside and 2 on the edge, 0.2, the rest 3.8.
+// - The same run twice gives the same bits (cage positions, history, heights).
+// - A cap of the sphere (the faces above z = 0.2) against the unit icosahedron: the cage's southern
+//   controls are far from the target, and the smoothness keeps them where the far rows would leave them
+//   (see 'unseen' below, whose figures are recorded).
+// - The mutants (the figures recorded in the checks below): point-to-point instead of point-to-plane gives
+//   0.0311 after the same 8 rounds against 0.0030 (and is still falling); with no smoothness term
+//   the southern controls move by the amount recorded in 'unseen'.
+
+mod cagefits;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn icosahedron(r: f32) PolyMesh {
+  let t: f32 = 1.6180339887;
+  let raw: Array[Vec3, 12] = [Vec3(-1., t, 0.), Vec3(1., t, 0.), Vec3(-1., -t, 0.), Vec3(1., -t, 0.),
+    Vec3(0., -1., t), Vec3(0., 1., t), Vec3(0., -1., -t), Vec3(0., 1., -t),
+    Vec3(t, 0., -1.), Vec3(t, 0., 1.), Vec3(-t, 0., -1.), Vec3(-t, 0., 1.)];
+  var pts = List[Vec3]();
+  var i = 0usize;
+  while i < 12usize {
+    let p = raw[i];
+    pts.push(p * (r / p.length()));
+    i = i + 1usize;
+  }
+  let cnt: Array[u32, 20] = [3u32, 3u32, 3u32, 3u32, 3u32, 3u32, 3u32, 3u32, 3u32, 3u32,
+    3u32, 3u32, 3u32, 3u32, 3u32, 3u32, 3u32, 3u32, 3u32, 3u32];
+  let idx: Array[u32, 60] = [0u32, 11u32, 5u32,  0u32, 5u32, 1u32,  0u32, 1u32, 7u32,  0u32, 7u32, 10u32,
+    0u32, 10u32, 11u32,  1u32, 5u32, 9u32,  5u32, 11u32, 4u32,  11u32, 10u32, 2u32,  10u32, 7u32, 6u32,
+    7u32, 1u32, 8u32,  3u32, 9u32, 4u32,  3u32, 4u32, 2u32,  3u32, 2u32, 6u32,  3u32, 6u32, 8u32,
+    3u32, 8u32, 9u32,  4u32, 9u32, 5u32,  2u32, 4u32, 11u32,  6u32, 2u32, 10u32,  8u32, 6u32, 7u32,
+    9u32, 8u32, 1u32];
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), &cnt, &idx, &mut problems)
+}
+
+// A mesh's faces over other positions, a fresh mesh with no channels
+fn remake(m: &PolyMesh, pts: &List[Vec3]) PolyMesh {
+  var cnt = List[u32]();
+  var idx = List[u32]();
+  var f = 0u32;
+  while usize.from(f) < m.faceCount() {
+    let vs = m.faceVertices(f);
+    cnt.push(u32.from(vs.len()));
+    var k = 0usize;
+    while k < vs.len() {
+      idx.push(*vs[k]);
+      k = k + 1usize;
+    }
+    f = f + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), cnt.view(), idx.view(), &mut problems)
+}
+
+// m with its positions scaled by (sx, sy, sz)
+fn skew(m: &PolyMesh, sx: f32, sy: f32, sz: f32) PolyMesh {
+  var pts = List[Vec3]();
+  var v = 0usize;
+  while v < m.vertexCount() {
+    let p = *m.positions[v];
+    pts.push(Vec3(p.x * sx, p.y * sy, p.z * sz));
+    v = v + 1usize;
+  }
+  remake(m, &pts)
+}
+
+// The icosahedron's Catmull-Clark subdivision, every vertex pushed out to radius r
+fn sphere(r: f32, levels: u32) PolyMesh {
+  let m = subdivide(&icosahedron(1.), levels);
+  var pts = List[Vec3]();
+  var v = 0usize;
+  while v < m.vertexCount() {
+    let p = *m.positions[v];
+    pts.push(p * (r / p.length()));
+    v = v + 1usize;
+  }
+  remake(&m, &pts)
+}
+
+// The faces of m all of whose vertices have z above zmin, as a mesh of their own
+fn cap(m: &PolyMesh, zmin: f32) PolyMesh {
+  var index = List[u32]();
+  var v = 0usize;
+  var pts = List[Vec3]();
+  while v < m.vertexCount() {
+    index.push(NoIndex);
+    v = v + 1usize;
+  }
+  var cnt = List[u32]();
+  var idx = List[u32]();
+  var f = 0u32;
+  while usize.from(f) < m.faceCount() {
+    let vs = m.faceVertices(f);
+    var all = true;
+    var k = 0usize;
+    while k < vs.len() {
+      if (*m.positions[usize.from(*vs[k])]).z <= zmin { all = false; }
+      k = k + 1usize;
+    }
+    if all {
+      cnt.push(u32.from(vs.len()));
+      k = 0usize;
+      while k < vs.len() {
+        let old = usize.from(*vs[k]);
+        if *index[old] == NoIndex {
+          index.set(old, u32.from(pts.len()));
+          pts.push(*m.positions[old]);
+        }
+        idx.push(*index[old]);
+        k = k + 1usize;
+      }
+    }
+    f = f + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), cnt.view(), idx.view(), &mut problems)
+}
+
+// An n x n grid of quads over (-half, half)^2 at height z, normals +z
+fn grid(n: u32, half: f32, z: f32) PolyMesh {
+  var pts = List[Vec3]();
+  var cnt = List[u32]();
+  var idx = List[u32]();
+  var j = 0u32;
+  while j <= n {
+    var i = 0u32;
+    while i <= n {
+      pts.push(Vec3(-half + 2. * half * f32.from(i) / f32.from(n), -half + 2. * half * f32.from(j) / f32.from(n), z));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  j = 0u32;
+  while j < n {
+    var i = 0u32;
+    while i < n {
+      let a = j * (n + 1u32) + i;
+      cnt.push(4u32);
+      idx.push(a); idx.push(a + 1u32); idx.push(a + n + 2u32); idx.push(a + n + 1u32);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), cnt.view(), idx.view(), &mut problems)
+}
+
+// A closed box, faces outward
+fn box(x0: f32, x1: f32, y0: f32, y1: f32, z0: f32, z1: f32) PolyMesh {
+  let pts: Array[Vec3, 8] = [Vec3(x0, y0, z0), Vec3(x1, y0, z0), Vec3(x1, y1, z0), Vec3(x0, y1, z0),
+    Vec3(x0, y0, z1), Vec3(x1, y0, z1), Vec3(x1, y1, z1), Vec3(x0, y1, z1)];
+  let cnt: Array[u32, 6] = [4u32, 4u32, 4u32, 4u32, 4u32, 4u32];
+  let idx: Array[u32, 24] = [3u32, 2u32, 1u32, 0u32,  4u32, 5u32, 6u32, 7u32,  0u32, 1u32, 5u32, 4u32,
+    1u32, 2u32, 6u32, 5u32,  2u32, 3u32, 7u32, 6u32,  3u32, 0u32, 4u32, 7u32];
+  var problems = List[String]();
+  PolyMesh.fromPolygons(&pts, &cnt, &idx, &mut problems)
+}
+
+fn sameCage(a: &CageFit, b: &CageFit) bool {
+  if a.cage.vertexCount() != b.cage.vertexCount() || a.history.len() != b.history.len() { return false; }
+  var v = 0usize;
+  while v < a.cage.vertexCount() {
+    let p = *a.cage.positions[v];
+    let q = *b.cage.positions[v];
+    if p.x != q.x || p.y != q.y || p.z != q.z { return false; }
+    v = v + 1usize;
+  }
+  var i = 0usize;
+  while i < a.history.len() {
+    if *a.history[i] != *b.history[i] { return false; }
+    i = i + 1usize;
+  }
+  a.rms == b.rms && a.max == b.max
+}
+
+fn sphereFit() {
+  let target = sphere(1., 4u32);
+  let start = skew(&icosahedron(1.3), 1., 1.4, 0.6);
+  var problems = List[String]();
+  let fit = fitCage(&target, &start, 3u32, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "sphere: no problems");
+  expect(fit.rounds >= 3u32 && fit.rounds <= 8u32, "sphere: 3 to 8 rounds (it stops when a round gains under 0.05%)");
+  expectInt(i64.from(fit.history.len()), i64.from(fit.rounds) + 1, "sphere: a measure before the first round and after each");
+  expectInt(i64.from(fit.cage.vertexCount()), 12, "sphere: the cage keeps its 12 vertices");
+  expectInt(i64.from(fit.cage.faceCount()), 20, "sphere: and its 20 faces");
+  // the floor: the best regular icosahedron
+  var floor = 1000.0;
+  var r = 1.2;
+  while r < 1.501 {
+    var p = List[String]();
+    let at = fitCage(&target, &icosahedron(f32.from(r)), 3u32, 0u32, &mut p);
+    if f64.from(at.rms) < floor { floor = f64.from(at.rms); }
+    r = r + 0.005;
+  }
+  expect(f64.from(fit.rms) < floor * 1.03, "sphere: the fit reaches the regular cage's floor");
+  expect(*fit.history[1usize] < *fit.history[0usize] * 0.5, "sphere: round 1 falls");
+  expect(*fit.history[2usize] < *fit.history[1usize] * 0.5, "sphere: round 2 falls");
+  expect(*fit.history[3usize] < *fit.history[2usize], "sphere: round 3 falls");
+  var i = 1usize;
+  var falling = true;
+  while i < fit.history.len() {
+    if !(*fit.history[i] < *fit.history[i - 1usize]) { falling = false; }
+    i = i + 1usize;
+  }
+  expect(falling, "sphere: the rms falls on every round, the stop test being all that ends them");
+  expect(fit.rms == *fit.history[fit.history.len() - 1usize], "sphere: the rms returned is the last measure's");
+  expect(fit.max < 0.01, "sphere: no distance above 0.01");
+  expect(fit.targetRms > 0. && fit.surfaceRms > 0., "sphere: both directions measured");
+  expect(fit.max >= fit.targetMax && fit.max >= fit.surfaceMax, "sphere: max is the greater of the two");
+}
+
+fn exactCages() {
+  let cage = skew(&icosahedron(1.), 1., 1.4, 0.6);
+  let target = subdivide(&cage, 3u32);
+  var problems = List[String]();
+  let fit = fitCage(&target, &cage, 3u32, 3u32, &mut problems);
+  expect(fit.rms < 0.000001, "exact: the rms is 0 within f32");
+  expect(fit.max < 0.00001, "exact: so is the greatest distance");
+  let off = skew(&cage, 1.1, 0.9, 1.05);
+  let back = fitCage(&target, &off, 3u32, 10u32, &mut problems);
+  expect(*back.history[0usize] > 0.03, "pushed off: the start is off by more than 0.03");
+  expect(back.rms < 0.000001, "pushed off: back to 0 in 10 rounds");
+  // creases
+  var creased = skew(&icosahedron(1.), 1., 1.4, 0.6);
+  let ch = creased.addFloatChannel(EdgeDomain, "crease", 0.);
+  var e = 0u32;
+  while e < 5u32 {
+    creased.setFloat(ch, e, 2.);
+    e = e + 1u32;
+  }
+  let creasedTarget = subdivide(&creased, 3u32);
+  let plainTarget = subdivide(&cage, 3u32);
+  expect(!sameBits(&creasedTarget, &plainTarget), "creased: the creases change the surface");
+  let cf = fitCage(&creasedTarget, &creased, 3u32, 3u32, &mut problems);
+  expect(cf.rms < 0.000001, "creased: the creased cage is exact for its own surface");
+  let cch = cf.cage.findFloatChannel(EdgeDomain, "crease");
+  expect(cch != NoIndex, "creased: the cage keeps the channel");
+  var same = cch != NoIndex;
+  e = 0u32;
+  while same && usize.from(e) < creased.edgeCount() {
+    if cf.cage.float(cch, e) != creased.float(ch, e) { same = false; }
+    e = e + 1u32;
+  }
+  expect(same, "creased: with its values");
+  let wrong = fitCage(&creasedTarget, &cage, 3u32, 3u32, &mut problems);
+  expect(wrong.rms > 0.0001, "creased: a cage without the creases cannot reach it");
+  expectInt(i64.from(problems.len()), 0, "exact: no problems");
+}
+
+fn sameBits(a: &PolyMesh, b: &PolyMesh) bool {
+  if a.vertexCount() != b.vertexCount() { return false; }
+  var v = 0usize;
+  while v < a.vertexCount() {
+    let p = *a.positions[v];
+    let q = *b.positions[v];
+    if p.x != q.x || p.y != q.y || p.z != q.z { return false; }
+    v = v + 1usize;
+  }
+  true
+}
+
+fn heightsOfSphere() {
+  let base = sphere(1., 3u32);
+  let target = sphere(1.1, 4u32);
+  var problems = List[String]();
+  let h = heightsAlongNormals(&base, &target, 0.5, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "sphere heights: no problems");
+  expectInt(i64.from(h.heights.len()), i64.from(base.vertexCount()), "sphere heights: one per vertex");
+  var worst: f32 = 0.;
+  var valid = 0usize;
+  var single = 0usize;
+  var v = 0usize;
+  while v < base.vertexCount() {
+    let d = (*h.heights[v] - 0.1).abs();
+    if d > worst { worst = d; }
+    if *h.valid[v] { valid = valid + 1usize; }
+    if *h.hits[v] == 1u32 { single = single + 1usize; }
+    v = v + 1usize;
+  }
+  expect(worst < 0.002, "sphere heights: every height 0.1 within 0.002");
+  expectInt(i64.from(valid), i64.from(base.vertexCount()), "sphere heights: valid everywhere");
+  expectInt(i64.from(single), i64.from(base.vertexCount()), "sphere heights: one hit everywhere");
+  // the base's area: a polyhedron inside the unit sphere, 4 pi = 12.566 less the sag of its facets
+  var total: f32 = 0.;
+  v = 0usize;
+  while v < base.vertexCount() {
+    total = total + *h.vertexArea[v];
+    v = v + 1usize;
+  }
+  expectFloat(f64.from(h.validArea), f64.from(total), 0.001, "sphere heights: valid area is all the area");
+  expect(total > 12.3 && total < 12.567, "sphere heights: the area is that of the sphere less the facets' sag");
+  expectFloat(f64.from(h.multiHitArea + h.foldedArea + h.noHitArea), 0., 0., "sphere heights: nothing else");
+  // a reach too short sees nothing
+  let none = heightsAlongNormals(&base, &target, 0.05, &mut problems);
+  expectFloat(f64.from(none.noHitArea), f64.from(total), 0.001, "sphere heights: reach 0.05 misses all");
+  expectFloat(f64.from(none.validArea), 0., 0., "sphere heights: so none is valid");
+  var bad = List[String]();
+  let refused = heightsAlongNormals(&base, &target, 0., &mut bad);
+  expectInt(i64.from(bad.len()), 1, "sphere heights: reach 0 is a problem");
+  expectFloat(f64.from(refused.validArea), 0., 0., "sphere heights: and gives nothing");
+}
+
+fn fin() {
+  let base = grid(20u32, 1., 0.);
+  var parts = List[PolyMesh]();
+  parts.push(grid(30u32, 1.5, 0.1));
+  parts.push(box(-0.05, 0.05, -1.2, 1.2, 0.4, 0.8));
+  var problems = List[String]();
+  let target = join(&parts, &mut problems);
+  let h = heightsAlongNormals(&base, &target, 1., &mut problems);
+  expectInt(i64.from(problems.len()), 0, "fin: no problems");
+  var multi = 0i64;
+  var wrongColumn = 0i64;
+  var wrongHeight = 0i64;
+  var v = 0usize;
+  while v < base.vertexCount() {
+    let p = *base.positions[v];
+    let column = p.x.abs() < 0.001;
+    if column && *h.hits[v] == 3u32 && !*h.valid[v] { multi = multi + 1; }
+    if column != (*h.hits[v] > 1u32) { wrongColumn = wrongColumn + 1; }
+    if !column && (!*h.valid[v] || *h.hits[v] != 1u32) { wrongColumn = wrongColumn + 1; }
+    if (*h.heights[v] - 0.1).abs() > 0.0001 { wrongHeight = wrongHeight + 1; }
+    v = v + 1usize;
+  }
+  expectInt(multi, 21, "fin: the 21 vertices under it have 3 hits and are not valid");
+  expectInt(wrongColumn, 0, "fin: and no other vertex has more than one hit");
+  expectInt(wrongHeight, 0, "fin: every height is the plane's, 0.1");
+  expectFloat(f64.from(h.multiHitArea), 0.2, 0.0001, "fin: the multi-hit area is the column's 0.2");
+  expectFloat(f64.from(h.validArea), 3.8, 0.0001, "fin: the valid area is the rest, 3.8");
+  expectFloat(f64.from(h.foldedArea + h.noHitArea), 0., 0., "fin: none folded, none missed");
+}
+
+fn determinism() {
+  let target = sphere(1., 3u32);
+  let start = skew(&icosahedron(1.2), 1., 1.3, 0.7);
+  var p = List[String]();
+  let a = fitCage(&target, &start, 3u32, 4u32, &mut p);
+  let b = fitCage(&target, &start, 3u32, 4u32, &mut p);
+  expect(sameCage(&a, &b), "determinism: the same fit twice, the same bits");
+  let base = sphere(1., 2u32);
+  let ha = heightsAlongNormals(&base, &target, 0.5, &mut p);
+  let hb = heightsAlongNormals(&base, &target, 0.5, &mut p);
+  var same = ha.heights.len() == hb.heights.len();
+  var v = 0usize;
+  while same && v < ha.heights.len() {
+    if *ha.heights[v] != *hb.heights[v] || *ha.hits[v] != *hb.hits[v] { same = false; }
+    v = v + 1usize;
+  }
+  expect(same, "determinism: the same heights twice, the same bits");
+  expectInt(i64.from(p.len()), 0, "determinism: no problems");
+}
+
+// The southern controls of the unit icosahedron (z below -0.5; there are 3 of the 12) against a cap of
+// the sphere above z = 0.2, and how far they travel
+fn southTravel(smoothness: f32) f64 {
+  let target = cap(&sphere(1., 4u32), 0.2);
+  let start = icosahedron(1.);
+  var p = List[String]();
+  let fit = fitCageWith(&target, &start, 3u32, 6u32, smoothness, true, &mut p);
+  var worst = 0.0;
+  var v = 0usize;
+  while v < start.vertexCount() {
+    let a = *start.positions[v];
+    let b = *fit.cage.positions[v];
+    if a.z < -0.5 {
+      let d = f64.from((b - a).length());
+      if d > worst { worst = d; }
+    }
+    v = v + 1usize;
+  }
+  worst
+}
+
+fn mutants() {
+  let target = sphere(1., 4u32);
+  let start = skew(&icosahedron(1.3), 1., 1.4, 0.6);
+  var p = List[String]();
+  let plane = fitCage(&target, &start, 3u32, 8u32, &mut p);
+  let point = fitCageWith(&target, &start, 3u32, 8u32, f32.from(CageSmoothness), false, &mut p);
+  expect(plane.rms < 0.0031, "mutant point-to-point: the plane's rms is 0.0030");
+  expect(point.rms > 0.02 && point.rms < 0.04, "mutant point-to-point: 0.0311 after the same 8 rounds");
+  expect(point.rms > plane.rms * 5., "mutant point-to-point: over 5 times the plane's");
+  expect(*point.history[8usize] < *point.history[7usize], "mutant point-to-point: still falling");
+  let flat = fitCageWith(&target, &start, 3u32, 8u32, 0., true, &mut p);
+  expect(flat.rms > plane.rms * 0.98 && flat.rms < plane.rms * 1.02, "mutant no smoothness: the same rms, within 2%");
+  expect(*flat.history[1usize] > *plane.history[1usize] * 0.5 && *flat.history[1usize] < *plane.history[1usize] * 2.,
+    "mutant no smoothness: round 1 within a factor of 2 (0.0722 with, about the same without)");
+  let kept = southTravel(f32.from(CageSmoothness));
+  let drift = southTravel(0.);
+  expect(kept > 1.5 && drift > 1.5, "far controls: both are dragged about 2 up to the cap (2.04 with, 1.94 without)");
+  expect(drift < kept + 0.2, "far controls: no smoothness does not move them further");
+  expectInt(i64.from(p.len()), 0, "mutants: no problems");
+}
+
+fn main() i32 {
+  sphereFit();
+  exactCages();
+  heightsOfSphere();
+  fin();
+  determinism();
+  mutants();
+  done()
+}
