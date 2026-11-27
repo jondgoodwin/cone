@@ -8,7 +8,8 @@
 // 2. Already due when the second is awaited.
 // 3. The arrive slot in flight: the actor is held in one turn past the
 //    deadline, with the second queued behind it, ahead of the slot. Plain and
-//    wrapped, and with stop() ahead of the second: Ok(false).
+//    wrapped; with a later move ahead of the second, so the arrival puts it
+//    back to wait; and with stop() ahead of the second: false.
 // 4. The tick racing the second await, 500 rounds: the second gets one tick
 //    each time.
 // Nothing stays owed, and every actor made is finalized when its handle goes:
@@ -119,6 +120,10 @@ actor Asker {
     }
   }
 
+  pub async fn later(self) {
+    timer.set(fromNow(30000000i64));
+  }
+
   pub async fn hurry(self) {
     timer.set(Instant.now());
   }
@@ -217,23 +222,28 @@ fn runAll() u64 {
   idle("2: idle");
 
   // 3. the arrive slot in flight
+  // (the third and fourth: moved later ahead of the second, so that the arrival
+  // puts the second's Reply back to wait)
   var k = 0u64;
-  while k < 3u64 {
+  while k < 5u64 {
     let g = CancelGroup.make();
     actors.withGroup(&g, fn() [a] { a.first(30000000i64); });
     asked(&a, &mut prx);
     g.cancel();
     expectUInt(wrx.recv() || 9u64, wasErr, "3: the cancel wins");
     a.busy(80000000i64);
-    if k == 2u64 {
+    if k == 2u64 || k == 3u64 {
+      a.later();
+    }
+    if k == 4u64 {
       a.stopIt();
     }
-    if k == 1u64 {
+    if k == 1u64 || k == 3u64 {
       actors.withGroup(&live, fn() [a] { a.wrapped(); });
     } else {
       a.plain();
     }
-    expectUInt(wrx.recv() || 9u64, if k == 2u64 {wasFalse} else {wasTrue},
+    expectUInt(wrx.recv() || 9u64, if k == 4u64 {wasFalse} else {wasTrue},
       "3: the slot in flight answers the second");
     expect(owedComesTo(0u64), "3: nothing owed");
     idle("3: idle");
