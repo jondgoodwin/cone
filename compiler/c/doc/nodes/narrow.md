@@ -174,6 +174,9 @@ whether the element is stored into, read or borrowed. The walk holds what the ba
 a stand-in while the index is walked, and reaching the element is its use (flow.md, "What is not
 held"): `ErrorVariantReshape`.
 
+`n.r[0usize] <-> x[change(m)]`: a swap makes both addresses before it uses either, so the left
+side is held the same way while the right side is made (flow.md, "What is not held").
+
 ## What it does not do
 
 - **It never proves a call harmless for a name held by value or through `uni`, `imm`, `mut1`,

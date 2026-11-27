@@ -1,0 +1,144 @@
+// A swap makes the address of its left side, then its right side, and only then uses both.
+// Where the left side is in what a collection lent or an owner holds, a right side that calls
+// or stores something that could change the collection's shape or replace the owner is
+// refused, or the exchange would be made in freed storage.
+// collection_swap_index_success holds what is accepted beside each.
+
+mod collection_flow_swap_index;
+
+import collections use *;
+
+struct Item { pub a: Array[usize, 3]; }
+
+// A list whose index for change grows it to reach the element asked for
+struct Stretch {
+  pub items: List[usize];
+
+  pub fn `[]`(self: &, i: usize) &usize { &items[i] }
+  pub fn `&[]`(self: &mut, i: usize) &mut usize {
+    while items.len() <= i { items.push(0usize); }
+    &mut items[i]
+  }
+}
+
+fn item() Item { Item([1usize, 2usize, 3usize]) }
+
+fn grow(m: &mut List[Item]) usize {
+  var i = 0usize;
+  while i < 64usize { m.push(item()); i += 1usize; }
+  0usize
+}
+fn growNums(m: &mut List[usize]) usize {
+  var i = 0usize;
+  while i < 64usize { m.push(i); i += 1usize; }
+  0usize
+}
+fn takeList(l: List[Item]) usize { 0usize }
+fn replaceItem(m: &mut Uni[Item]) usize { *m = Uni[Item](item()); 0usize }
+fn growThen(m: &mut List[Item], n: &'a mut usize) &'a mut usize { let i = grow(m); n }
+
+// A local list, borrowed by its name
+fn local() {
+  var l = List[Item]();
+  l.push(item());
+  var x = [4usize, 5usize];
+  l[0usize].a[0usize] <-> x[grow(&mut l)];      //~ ErrorShapeReshape "One side of this swap is in what a 'List' lent"
+}
+
+// Through two references that may be to one list
+fn shared(l: &mut List[Item], m: &mut List[Item]) {
+  var x = [4usize, 5usize];
+  l[0usize].a[0usize] <-> x[grow(m)];           //~ ErrorShapeReshape "made in the other side, could change the shape"
+}
+
+// The element of the list itself
+fn element() {
+  var l = List[usize]();
+  l.push(1usize);
+  var x = [4usize, 5usize];
+  l[0usize] <-> x[growNums(&mut l)];            //~ ErrorShapeReshape "One side of this swap"
+}
+
+// Two elements of one list, the second's index growing it
+fn bothElements() {
+  var l = List[usize]();
+  l.push(1usize);
+  l[0usize] <-> l[growNums(&mut l)];            //~ ErrorShapeReshape "One side of this swap"
+}
+
+// A reference bound to the element before the swap
+fn bound() {
+  var l = List[usize]();
+  l.push(1usize);
+  var x = [4usize, 5usize];
+  let p = &mut l[0usize];
+  *p <-> x[growNums(&mut l)];                   //~ ErrorShapeReshape "One side of this swap"
+}
+
+// A list handed away in the index
+fn moved() {
+  var l = List[Item]();
+  l.push(item());
+  var x = [4usize, 5usize];
+  l[0usize].a[0usize] <-> x[takeList(l)];       //~ ErrorFrozen "to reach one side of this swap"
+}
+
+// A list stored over in the index, by its name and through another reference
+fn storedByName() {
+  var l = List[Item]();
+  l.push(item());
+  var x = [4usize, 5usize];
+  l[0usize].a[0usize] <-> x[{l = List[Item](); 0usize}];    //~ ErrorFrozen "to reach one side of this swap"
+}
+
+fn storedThroughRef(l: &mut List[Item], m: &mut List[Item]) {
+  var x = [4usize, 5usize];
+  l[0usize].a[0usize] <-> x[{*m = List[Item](); 0usize}];   //~ ErrorShapeStore "One side of this swap"
+}
+
+// What an owner holds
+fn owned() {
+  var u = Uni[Item](item());
+  var x = [4usize, 5usize];
+  u.a[0usize] <-> x[replaceItem(&mut u)];       //~ ErrorShapeReshape "One side of this swap is in what a 'Uni[Item]' owns"
+}
+
+fn ownedShared(u: &mut Uni[Item], m: &mut Uni[Item]) {
+  var x = [4usize, 5usize];
+  u.a[0usize] <-> x[replaceItem(m)];            //~ ErrorShapeReshape "could replace the 'Uni[Item]'"
+}
+
+// Both sides in what an owner holds: each side's owner is held apart from the other's.
+// The right side's own is held by its index, the left side's by the swap
+fn rightOwnerReplaced() {
+  var v = Uni[Item](item());
+  var u = Uni[Item](item());
+  v.a[0usize] <-> u.a[replaceItem(&mut u)];     //~ ErrorShapeReshape "The place this index picks from"
+}
+
+fn leftOwnerReplaced() {
+  var v = Uni[Item](item());
+  var u = Uni[Item](item());
+  v.a[0usize] <-> u.a[replaceItem(&mut v)];     //~ ErrorShapeReshape "One side of this swap"
+}
+
+// The right side reached through what a call returns
+fn returned() {
+  var l = List[Item]();
+  l.push(item());
+  var n = 4usize;
+  l[0usize].a[0usize] <-> *growThen(&mut l, &mut n);    //~ ErrorShapeReshape "made in the other side"
+}
+
+// The right side's own index method changes the shape the left side is in
+fn stretched() {
+  var s = Stretch(List[usize]());
+  s[0usize] <-> s[1000usize];                   //~ ErrorShapeReshape "One side of this swap"
+}
+
+fn stretchedShared(s: &mut Stretch, t: &mut Stretch) {
+  s[0usize] <-> t[1000usize];                   //~ ErrorShapeReshape "made in the other side"
+}
+
+fn main() {
+}
