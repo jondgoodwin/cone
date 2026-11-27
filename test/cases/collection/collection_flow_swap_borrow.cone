@@ -1,0 +1,155 @@
+// A swap reaches both its places before it writes either. So what the walk of one side
+// borrows, stores or moves meets the other side's write, as it does where the places are
+// written one statement after another: 'r = &l[0usize]; l <-> ls[0usize];' is refused, and
+// so is 'l <-> ls[{r = &l[0usize]; 0usize}];', which would leave 'r' pointing into what
+// 'ls[0usize]' owns after the swap.
+// collection_swap_borrow_success holds what is accepted beside each.
+
+mod collection_flow_swap_borrow;
+
+import collections use *;
+
+struct Item { pub a: Array[usize, 3]; }
+struct Owner { pub x: Uni[Item]; }
+
+fn item() Item { Item([1usize, 2usize, 3usize]) }
+fn nums() List[usize] {
+  var l = List[usize]();
+  l.push(1usize);
+  l
+}
+fn keep(r: &mut &'a usize, l: &'a List[usize]) usize {
+  *r = &l[0usize];
+  0usize
+}
+fn take(o: Owner) usize { 0usize }
+
+// A list, and the right side's index borrows an element of it
+fn listElement() {
+  var l = nums();
+  var ls = [nums()];
+  var z = 0usize;
+  var r = &z;
+  l <-> ls[{r = &l[0usize]; 0usize}];           //~ ErrorFrozen "'l' is borrowed"
+  let v = *r;
+}
+
+// An owner, and the right side's index borrows inside what it owns
+fn owned() {
+  var u = Uni[Item](item());
+  var us = [Uni[Item](item())];
+  var z = 0usize;
+  var r = &z;
+  u <-> us[{r = &u.a[0usize]; 0usize}];         //~ ErrorFrozen "'u' is borrowed"
+  let v = *r;
+}
+
+// The same, the borrow made by a call in the index
+fn throughCall() {
+  var l = nums();
+  var ls = [nums()];
+  var z = 0usize;
+  var r = &z;
+  l <-> ls[keep(&mut r, &l)];                   //~ ErrorFrozen "'l' is borrowed"
+  let v = *r;
+}
+
+// The left side a field
+fn field() {
+  var o = Owner(Uni[Item](item()));
+  var us = [Uni[Item](item())];
+  var z = 0usize;
+  var r = &z;
+  o.x <-> us[{r = &o.x.a[0usize]; 0usize}];     //~ ErrorFrozen "'o' is borrowed"
+  let v = *r;
+}
+
+// The left side reached through a reference
+fn throughReference() {
+  var l = nums();
+  var ls = [nums()];
+  var z = 0usize;
+  var r = &z;
+  var p = &mut l;
+  *p <-> ls[{r = &(*p)[0usize]; 0usize}];       //~ ErrorFrozen "'*p' is borrowed"
+  let v = *r;
+}
+
+// The other way round: the left side's index borrows what the right side holds
+fn mirrored() {
+  var l = nums();
+  var ls = [nums()];
+  var z = 0usize;
+  var r = &z;
+  ls[{r = &l[0usize]; 0usize}] <-> l;           //~ ErrorFrozen "'l' is borrowed"
+  let v = *r;
+}
+
+fn mirroredOwned() {
+  var u = Uni[Item](item());
+  var us = [Uni[Item](item())];
+  var z = 0usize;
+  var r = &z;
+  us[{r = &u.a[0usize]; 0usize}] <-> u;         //~ ErrorFrozen "'u' is borrowed"
+  let v = *r;
+}
+
+// What is swapped is what the left side holds once the right side's index has run: here
+// a borrow of 'b', which would leave its scope inside 'out'
+fn holderStored() {
+  var a = 1usize;
+  var out = [&a];
+  {
+    var b = 2usize;                             //~ ErrorFrozen "'b', declared here, goes out of scope"
+    var h = &a;
+    h <-> out[{h = &b; 0usize}];
+  }
+  let v = *out[0usize];
+}
+
+fn elementStored() {
+  var a = 1usize;
+  var out = [&a];
+  {
+    var b = 2usize;                             //~ ErrorFrozen "'b', declared here, goes out of scope"
+    var h = [&a];
+    h[0usize] <-> out[{h[0usize] = &b; 0usize}];
+  }
+  let v = *out[0usize];
+}
+
+// Through a reference, what its target held when the address was made counts too: 'p' is
+// pointed elsewhere by the index, and the swap still takes the borrow of 'b' out of 'h'
+fn referenceMoved() {
+  var a = 1usize;
+  var out = [&a];
+  {
+    var b = 2usize;                             //~ ErrorFrozen "'b', declared here, goes out of scope"
+    var h = &b;
+    var other = &a;
+    var p = &mut h;
+    *p <-> out[{p = &mut other; 0usize}];
+  }
+  let v = *out[0usize];
+}
+
+// A move in the right side's index, made on one path
+fn movedOnAPath(c: bool) {
+  var o = Owner(Uni[Item](item()));
+  var us = [Uni[Item](item())];
+  o.x <-> us[{if c { let i = take(o); } 0usize}];  //~ ErrorMove "may have been moved out"
+}
+
+fn main() {
+  listElement();
+  owned();
+  throughCall();
+  field();
+  throughReference();
+  mirrored();
+  mirroredOwned();
+  holderStored();
+  elementStored();
+  referenceMoved();
+  movedOnAPath(false);
+}

@@ -1611,9 +1611,18 @@ lent or owned place and whose right side does more than read (`flowGateSwap`).
 Where only the right side holds an `await` it is made first, and the left, a plain
 path, changes nothing. With the sides written the other way round, the call in the
 left side's index runs before the right side is reached, and nothing is held.
-Not held: a borrow the right side's index makes of the left side's value itself
-(`l <-> ls[{r = &l[0usize]; 0usize}]`), since the walk writes the left side before
-it walks the right.
+`pwSwap` walks both places, in the order generation makes their addresses, and only
+then makes either side's write, drop use and read of what it holds, after the
+stand-in has ended. So a borrow the right side's index makes of the left side's
+value meets the left side's write, as in the sequential form:
+`l <-> ls[{r = &l[0usize]; 0usize}]` is refused while `r` is used later. A borrow
+the index is done with is not (`l <-> ls[*r - 1usize]`, `r` into `l` and read no
+more). What a side holds is what it holds once both are reached
+(`h <-> out[{h = &b; 0usize}]` moves `b`'s borrow into `out`); for a side reached
+through a reference, also what the target held when the address was made. A move in
+an index is seen where the path walk makes the function's drops (one made on a path,
+say); a move on a straight line (`l <-> ls[take(l)]`) is not, the tree walk having
+checked the left side's name before the right side's index.
 
 A borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
