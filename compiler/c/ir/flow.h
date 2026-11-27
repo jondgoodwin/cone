@@ -189,6 +189,10 @@ void flowGateShapeAsk(FlowState *fstate, INode *call);
 void flowGateShapeWrite(FlowState *fstate, Nodes *args);
 // A store, which may be the one that ends a compound assignment through a temporary
 void flowGateCompound(FlowState *fstate, INode *lval, INode *rval);
+// An index of a place, whose address is made before the index is
+void flowGateIndex(FlowState *fstate, INode *index);
+// Does making this value do no more than read?
+int flowGateOnlyReads(INode *node);
 // A call's or literal's operands are about to be walked: whether it is itself an
 // operand whose value may carry a borrow (flowGateOperandNext), read once and cleared
 static inline uint8_t flowGateOperandsKeep(FlowState *fstate) {

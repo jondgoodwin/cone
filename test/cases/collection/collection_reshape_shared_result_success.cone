@@ -1,0 +1,78 @@
+// What stays accepted beside collection_flow_reshape_shared_result: a view a function took
+// out of a shared owner, used up before the owner is stored over; stores to a list of another
+// type, to a local list and to a field beside the one viewed; a second read through the other
+// holder; the whole list handed back, which a store replaces in place; an owner no one else
+// writes by ('imm'); and a view of what a 'Uni' a local struct holds owns.
+
+mod collection_reshape_shared_result_success;
+
+import stdio use *;
+import collections use *;
+
+fn make(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+fn first(o: &Rc[mut, List[i32]]) &i32 { return &(**o)[0usize]; }
+fn whole(o: &Rc[mut, List[i32]]) &List[i32] { return &**o; }
+fn through(o: &Rc[mut, List[i32]]) &i32 { return first(o); }
+fn firstImm(o: &Rc[imm, List[i32]]) &i32 { return &(**o)[0usize]; }
+
+struct Holder { pub rc: Rc[mut, List[i32]]; pub n: i32; }
+fn heldInStruct(h: &Holder) &i32 { return &(*h.rc)[0usize]; }
+
+struct Box { pub items: List[i32]; pub count: i32; }
+fn item(o: &Rc[mut, Box]) &i32 { return &(*o).items[0usize]; }
+
+struct Own { pub u: Uni[List[i32]]; }
+fn owned(h: &Own) &i32 { return &(*h.u)[0usize]; }
+
+fn main() {
+  let o = Rc[mut, List[i32]](make(7));
+  let o2 = o;
+
+  let v = first(&o);
+  print <- "usedUp = ", *v, "\n";
+  *o2 = make(8);
+  print <- "after = ", *first(&o), "\n";
+
+  let other = Rc[mut, List[i64]](List[i64]());
+  var local = make(1);
+  let w = through(&o);
+  *other = List[i64]();
+  local = make(2);
+  print <- "otherLists = ", *w, " ", local[0usize], "\n";
+
+  let a = first(&o);
+  let b = first(&o2);
+  print <- "readTwice = ", *a + *b, "\n";
+
+  let l = whole(&o);
+  *o2 = make(9);
+  print <- "whole = ", (*l)[0usize], "\n";
+
+  var h = Holder(o, 1);
+  let x = heldInStruct(&h);
+  print <- "struct = ", *x, "\n";
+  h.n = 5;
+
+  let bx = Rc[mut, Box](Box(make(2), 1));
+  let bx2 = bx;
+  let m = item(&bx);
+  (*bx2).count = 5;
+  print <- "field = ", *m, " ", (*bx).count, "\n";
+
+  var i = Rc[imm, List[i32]](make(3));
+  let y = firstImm(&i);
+  var i2 = Rc[imm, List[i32]](make(4));
+  i2 = i;
+  print <- "imm = ", *y, " ", (*i2)[0usize], "\n";
+
+  let ow = Own(Uni[List[i32]](make(6)));
+  var third = make(0);
+  let z = owned(&ow);
+  third = make(11);
+  print <- "uni = ", *z, " ", third[0usize], "\n";
+}

@@ -317,6 +317,80 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     return loanMakeKeyed(site, pl, perm, 0);
 }
 
+// Is the loan's place in what a shared owning reference holds, where others may write?
+// So is one read through a 'uni' reference others may reach ('**o', 'o' an
+// 'Rc[mut, &uni T]': Place.uniway)
+int loanThroughSharedOwner(uint32_t loan) {
+    Loan *l = &loans[loan];
+    return l->kind != LoanCaller
+        && (l->place.uniway || (l->place.shwrite && (l->place.owned || l->place.ownertype != NULL)));
+}
+
+// A second loan made beside 'base', an argument's own, for the shape check: a call's result
+// may borrow from what that argument reaches through a shared owner (flowpath.c,
+// pwReachShared), which the argument's loan, of the handle alone, says nothing of. Its place
+// is the base's root variable and nothing more, taken as reached through a shared path past
+// an owner: it freezes nothing the base does not, and what it points into is never storage
+// the function owns. Keyed by the argument and 'n', the container's index among its own
+uint32_t loanMakeReach(INode *site, uint32_t n, uint32_t base) {
+    uint32_t key = 0x40000000u | n;
+    uint32_t id = mapGet(site, 0, key);
+    if (id)
+        return id;
+    if (nloans > LoanIdMask) {
+        errorUnreachable(site, "more loans in one function than an entry of a loan set can name");
+        return 0;
+    }
+    if (nloans >= loancap)
+        loans = (Loan *)pathGrow(loans, &loancap, sizeof(Loan));
+    id = nloans++;
+    Loan *loan = &loans[id];
+    *loan = loans[base];
+    loan->site = site;
+    loan->by = NULL;
+    loan->tiedfn = NULL;
+    loan->place.nsteps = 0;
+    loan->place.shared = 1;
+    loan->place.sharedlen = 0;
+    loan->place.shwrite = 1;
+    loan->place.owned = 1;
+    loan->place.ownertype = NULL;
+    loan->place.referent = NULL;
+    loan->place.slotted = NULL;
+    loan->place.slots = 0;
+    loan->place.narrow = 0;
+    loan->mayhold = 0;
+    loan->nmay = 0;
+    loan->maycap = 0;
+    // A caller loan's clone stays the caller's, so a result handed out keeps its lifetime
+    if (loan->kind != LoanCaller)
+        loan->kind = LoanAlias;
+    loan->writes = 0;
+    loan->shapecont = NULL;
+    loan->shapeowner = NULL;
+    loan->shapeownerval = 0;
+    loan->source = 0;
+    loan->uniq = 0;
+    loan->aliased = 0;
+    loan->aliasby = 0;
+    loan->lazycont = NULL;
+    loan->refcont = NULL;
+    loan->refway = 0;
+    loan->nroots = 0;
+    loan->rootsext = 0;
+    loan->globalview = 0;
+    loan->elemview = 0;
+    loan->repoint = 0;
+    if (loan->kind == LoanCaller)
+        loan->next = 0;
+    else {
+        loan->next = pathVars[loan->place.var].loans;
+        pathVars[loan->place.var].loans = id;
+    }
+    mapPut(site, 0, key, id);
+    return id;
+}
+
 // A caller loan is not linked from its parameter: no access here meets it.
 // Each part's is keyed by the parameter and the part, apart from every other
 // key the map holds: a borrow's (site, 0, 0), a report's (node, 0, 1) and a
@@ -1570,6 +1644,13 @@ static void loanReport(Pending *pend, INode *usenode) {
     else
         snprintf(used, sizeof(used), "at %u:%u", usenode->linenbr, loanColumn(usenode));
     char *mutably = loan->writes ? " mutably" : "";
+    // The holder is the stand-in for the place an index picks from, which has no name
+    if (pathVars[pend->holder].indexed) {
+        errorMsgNode(pend->access, ErrorFrozen,
+            "'%s' is borrowed%s (%s) to reach the place an index picks from, before the index is made. It may not be %s in the index, or the place would be reached through what is no longer there. Make the index first, into a local of its own ('let i = ...; x[i]').",
+            srcname, mutably, where, loanAttempt(pend->kind));
+        return;
+    }
     // A borrow a 'yield' handed to the caller, who may keep it as long as the
     // generator lives
     if (pend->holder == yieldHolder) {
@@ -1652,12 +1733,30 @@ static void loanShapeFire(Pending *pend, INode *usenode) {
     loanShapeReport(pend, usenode);
 }
 
-void loanUseShape(uint32_t var, INode *usenode) {
+// A pending conflict of an access meets its use
+static void loanAccessFire(Pending *pend, INode *usenode) {
+    pend->fired = 1;
+    // A candidate for its variable's last use is not, with a borrow of the
+    // variable used after it: it stays a copy (flowpath.c, pwCandidate)
+    if (pend->kind == AccessMove && pathCandFailAccess(pend->access))
+        return;
+    // One error per access, however many borrows it conflicts with
+    if (mapGet(pend->access, 0, 1))
+        return;
+    mapPut(pend->access, 0, 1, 1);
+    loanReport(pend, usenode);
+}
+
+void loanUseCompound(uint32_t var, INode *usenode) {
     PathSet *pending = pathVars[var].pending;
     for (uint32_t i = 0; pending && i < pending->cnt; ++i) {
         Pending *pend = &pendings[pending->ids[i]];
-        if (!pend->fired && pend->kind == PendingShape)
+        if (pend->fired)
+            continue;
+        if (pend->kind == PendingShape)
             loanShapeFire(pend, usenode);
+        else if (pend->kind == AccessMove || pend->kind == AccessReplace)
+            loanAccessFire(pend, usenode);
     }
 }
 
@@ -1690,16 +1789,11 @@ void loanUse(uint32_t var, INode *usenode) {
             loanShapeFire(pend, usenode);
             continue;
         }
-        pend->fired = 1;
-        // A candidate for its variable's last use is not, with a borrow of the
-        // variable used after it: it stays a copy (flowpath.c, pwCandidate)
-        if (pend->kind == AccessMove && pathCandFailAccess(pend->access))
+        // The place an index picks from is only reached after the index: what the index
+        // read, or borrowed to read, leaves it where it was (pwIndexStandIn)
+        if (pathVars[var].indexed && (pend->kind < AccessBorrowMut || pend->kind == AccessBorrowOpaq))
             continue;
-        // One error per access, however many borrows it conflicts with
-        if (mapGet(pend->access, 0, 1))
-            continue;
-        mapPut(pend->access, 0, 1, 1);
-        loanReport(pend, usenode);
+        loanAccessFire(pend, usenode);
     }
 }
 
@@ -2716,6 +2810,25 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
         snprintf(msg, sizeof(msg),
             "This %s could change the shape of a %s while the generator's caller may still hold a borrow into it that a 'yield' handed out (made %s, %s): %s. A %s that changes shape may move or free what it lent. Yield a copy, or yield the borrow only once the generator has done changing the %s.",
             what, cont, where, through, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont, cont);
+        loanShapeEmit(pend->access, pend->loan, note->why, msg);
+        return;
+    }
+    if (pathVars[pend->holder].indexed) {
+        // The holder is the stand-in for the place an index picks from, which has no name
+        char change[40];
+        snprintf(change, sizeof(change), "%u:%u", pend->access->linenbr, loanColumn(pend->access));
+        if (sum)
+            snprintf(msg, sizeof(msg),
+                "The place this index picks from is in one of the variants of a %s (borrowed %s, %s), and is reached before the index is made, but the %s at %s, made in the index, could change which variant the %s holds: %s. The place would then be another variant's bytes. Do what changes it before the 'is' test or pattern.",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)));
+        else if (loanShapeIsOwner(pend->loan))
+            snprintf(msg, sizeof(msg),
+                "The place this index picks from is in what a %s owns (borrowed %s, %s), and is reached before the index is made, but the %s at %s, made in the index, could replace the %s: %s. Replacing an owner frees what it points at, so the place would be in freed storage. Make the index first, into a local of its own ('let i = ...; x[i]').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, 1, reason, sizeof(reason)));
+        else
+            snprintf(msg, sizeof(msg),
+                "The place this index picks from is in what a %s lent (borrowed %s, %s), and is reached before the index is made, but the %s at %s, made in the index, could change the shape of the %s: %s. A %s that changes shape may move or free what it lent, so the place would be in freed storage. Make the index first, into a local of its own ('let i = ...; x[i]').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont);
         loanShapeEmit(pend->access, pend->loan, note->why, msg);
         return;
     }

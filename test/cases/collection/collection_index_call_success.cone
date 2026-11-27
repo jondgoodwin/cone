@@ -1,0 +1,81 @@
+// What is accepted beside collection_flow_index_call: an index that reaches nothing of the
+// collection the place is in, only reads it or changes another one; one made first into a
+// local; and an index of a List itself, which is a method that reaches the List's storage
+// only after its index is made.
+
+mod collection_index_call_success;
+
+import collections use *;
+import stdio use *;
+
+struct Item { pub a: Array[usize, 3]; }
+
+fn item() Item { Item([1usize, 2usize, 3usize]) }
+
+fn grow(m: &mut List[Item]) usize {
+  var i = 0usize;
+  while i < 64usize { m.push(item()); i += 1usize; }
+  0usize
+}
+// Adds sixty-four numbers, 0 to 63, and answers where the first of them is
+fn growNums(m: &mut List[usize]) usize {
+  let at = m.len();
+  var i = 0usize;
+  while i < 64usize { m.push(i); i += 1usize; }
+  at
+}
+// Only reads
+fn count(m: &List[Item]) usize { m.len() }
+fn peek(m: &Uni[Item]) usize { 1usize }
+// Writes the first element, and picks it
+fn bump(a: &mut Array[usize, 3]) usize { (*a)[0usize] += 10usize; 0usize }
+
+fn show(n: usize) {
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+fn main() {
+  var l = List[Item]();
+  l.push(item());
+  var other = List[Item]();
+
+  // Another list grown in the index: a[0] = 10
+  l[0usize].a[grow(&mut other)] = 10usize;
+  // The list only read: 'count' is 1, a[1] = 20
+  l[0usize].a[count(&l)] = 20usize;
+  // The list's length, 1: a[1] = 20 + 5 = 25
+  l[0usize].a[l.len()] += 5usize;
+  // The index made first, into a local: the list holds 65, a[0] = 10 + 1 = 11
+  let i = grow(&mut l);
+  l[0usize].a[i] += 1usize;
+  show(l[0usize].a[0usize]);
+  show(l[0usize].a[1usize]);
+  show(l.len());
+  show(other.len());
+
+  // A List's own index: its storage is reached after the index has grown it
+  var nums = List[usize]();
+  nums.push(7usize);
+  nums[growNums(&mut nums)] = 100usize;
+  show(nums.len());
+  show(nums[0usize]);
+  show(nums[1usize]);
+  show(nums[2usize]);
+
+  // An owner only read: a[1] = 30
+  var u = Uni[Item](item());
+  u.a[peek(&u)] = 30usize;
+  show(u.a[1usize]);
+
+  // An array held by value is not moved by what changes it
+  var arr = [1usize, 2usize, 3usize];
+  arr[{arr[2usize] = 9usize; 0usize}] = 40usize;
+  show(arr[0usize]);
+  show(arr[2usize]);
+
+  // Nor by a mutable borrow of it, in the index of an element then borrowed
+  var held = [1usize, 2usize, 3usize];
+  let p = &held[bump(&mut held)];
+  show(*p);
+}

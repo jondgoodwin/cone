@@ -302,6 +302,13 @@ void loanHeldBy(uint32_t var, PathSet *holds);
 // A method's returned borrow carries this loan: name the method in a message
 void loanReturnedBy(uint32_t loan, Name *method);
 
+// Is the loan's place in what a shared owning reference holds, where others may write?
+int loanThroughSharedOwner(uint32_t loan);
+
+// A second loan beside an argument's 'base' for a container a result may point into, reached
+// through a shared owner from that argument, 'n' telling the containers of one argument apart
+uint32_t loanMakeReach(INode *site, uint32_t n, uint32_t base);
+
 // A call to this function, whose signature names no lifetime, was passed the
 // borrow that made this loan, and its result carries it by that unannotated
 // rule: name the signature where a holder's use is refused
@@ -404,9 +411,10 @@ int loanShapeMayMark(uint32_t loan);
 void loanShapeRefView(uint32_t loan, INode *container);
 void loanShapeRefViews(PathSet *holds, INode *container);
 void loanShapeRefLent(uint32_t var);
-// A use of 'var' that reports only a pending change of shape or variant (a compound
-// assignment's write: flowpath.c, pwCompoundPlace)
-void loanUseShape(uint32_t var, INode *usenode);
+// The write of a compound assignment, a use of its stand-in 'var' (flowpath.c,
+// pwCompoundPlace): reports a pending change of shape or variant, and a move or a
+// replacement of what the place was borrowed from
+void loanUseCompound(uint32_t var, INode *usenode);
 uint32_t loanShapeCount();
 uint32_t loanShapeId(uint32_t i);
 INode *loanShapeContainer(uint32_t loan);

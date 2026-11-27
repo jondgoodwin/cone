@@ -716,6 +716,7 @@ static void assignFlowLvalReads(FlowState *fstate, INode **lvalp) {
     case ArrIndexTag: {
         FnCallNode *index = (FnCallNode *)*lvalp;
         assignFlowLvalReads(fstate, &index->objfn);
+        flowGateIndex(fstate, (INode *)index);
         flowLoadValue(fstate, &nodesGet(index->args, 0));
         break;
     }
