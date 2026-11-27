@@ -446,6 +446,17 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     return id;
 }
 
+uint32_t loanOwnNext(uint32_t var, uint32_t loan) {
+    uint32_t id = loan ? loans[loan].next : pathVars[var].loans;
+    while (id && (loans[id].kind == LoanCaller || loans[id].place.deref))
+        id = loans[id].next;
+    return id;
+}
+
+uint32_t loanMayHolder(uint32_t loan, uint32_t k) {
+    return k < loans[loan].nmay ? maypool[loans[loan].mayhold + k] : 0;
+}
+
 uint32_t loanRoot(uint32_t loan) {
     return loans[loan].place.var;
 }
