@@ -64,6 +64,8 @@ typedef struct {
                         // the 'mut' borrow of the enum held beside it, which a refusal names, else 0
     uint8_t repoint;    // the loan of a narrowed reference variable itself (loanNarrowName): a call or store that
                         // stores a reference of its type over it points the name elsewhere
+    void *unseen;       // a shape loan of what came from behind a trait object ('shapecont' the trait): what the
+                        // borrow may point at (flowpath.c, PwUnseen), else NULL
 } Loan;
 
 // A pending conflict: 'access' conflicted with 'loan', held by 'holder'. On a
@@ -124,6 +126,7 @@ typedef struct {
     INode *call;
     Name *callee;
     uint8_t why;        // ReshapeWhy
+    uint8_t unseen;     // of a loan of what came from behind a virtual reference (Loan.unseen)
 } ShapeNote;
 
 static uint32_t *shapeloans = NULL;
@@ -305,6 +308,7 @@ static uint32_t loanMakeKeyed(INode *site, Place *pl, INode *perm, uint32_t key)
     loan->rootsext = 0;
     loan->globalview = 0;
     loan->elemview = 0;
+    loan->unseen = NULL;
     loan->repoint = 0;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
@@ -380,6 +384,7 @@ uint32_t loanMakeReach(INode *site, uint32_t n, uint32_t base) {
     loan->rootsext = 0;
     loan->globalview = 0;
     loan->elemview = 0;
+    loan->unseen = NULL;
     loan->repoint = 0;
     if (loan->kind == LoanCaller)
         loan->next = 0;
@@ -436,6 +441,7 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->rootsext = 0;
     loan->globalview = 0;
     loan->elemview = 0;
+    loan->unseen = NULL;
     mapPut(parm, 0, loanCallerKey(part), id);
     return id;
 }
@@ -2574,6 +2580,14 @@ static void loanRootsNote(uint32_t id) {
         l->rootsext = 1;
 }
 
+void loanUnseenSet(uint32_t loan, void *unseen) {
+    loans[loan].unseen = unseen;
+}
+
+void *loanUnseen(uint32_t loan) {
+    return loans[loan].unseen;
+}
+
 void loanShapeMark(uint32_t loan, INode *container) {
     if (loans[loan].shapecont == NULL) {
         if (nshapeloans == shapeloancap)
@@ -2741,7 +2755,9 @@ static char *loanShapeReason(ShapeNote *note, char *cont, int sum, char *buf, si
             snprintf(buf, size, "'%s' is handed something that reaches a %s, and it, or something it calls, changes the shape of one", name, cont);
         break;
     case ReshapeStore:
-        if (sum)
+        if (note->unseen)
+            snprintf(buf, size, "what is behind the virtual reference is not known, and this store frees what could hold what the borrow points at");
+        else if (sum)
             snprintf(buf, size, "this store replaces a %s whole, or a value that holds one", cont);
         else
             snprintf(buf, size, "this store replaces a %s, or a value that holds one, or an element of one that owns what the borrow points into, and frees what it owned", cont);
@@ -2769,6 +2785,11 @@ static int loanShapeIsOwner(uint32_t loan) {
 }
 
 static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
+    // Marked for a trait, whose name says nothing of what is held (a closure's is made up)
+    if (loans[loan].unseen) {
+        snprintf(buf, size, "value behind a virtual reference");
+        return;
+    }
     if (loanShapeIsOwner(loan) || loans[loan].repoint) {
         // An owner as the type printer spells it: its permission left out where it is the
         // default ('Uni[Item]'), written otherwise ('Rc[mut, Item]')
@@ -2938,7 +2959,7 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
 void loanShapeNow(INode *call, uint32_t loan, int why, Name *callee) {
     if (!loanReportOnce(call))
         return;
-    ShapeNote note = { call, callee, (uint8_t)why };
+    ShapeNote note = { call, callee, (uint8_t)why, loans[loan].unseen != NULL };
     char cont[100];
     char reason[480];
     char where[160];
@@ -2986,6 +3007,7 @@ void loanShapePend(INode *call, uint32_t loan, int why, Name *callee) {
                 shapenotes[note].call = call;
                 shapenotes[note].callee = callee;
                 shapenotes[note].why = (uint8_t)why;
+                shapenotes[note].unseen = l->unseen != NULL;
                 have = 1;
             }
             if (npendings >= pendingcap)

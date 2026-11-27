@@ -2297,7 +2297,8 @@ static int flowGateReachesOwner(INode *type, int depth) {
         uint16_t flags = permGetFlags(ref->perm);
         if (itypeGetTypeDcl(ref->region) != borrowRef && (flags & MayAlias) && !(flags & MayIntRefSum))
             return 1;
-        return type->tag != VirtRefTag && flowGateReachesOwner(ref->vtexp, depth + 1);
+        // A trait object: what it holds is not known
+        return type->tag == VirtRefTag || flowGateReachesOwner(ref->vtexp, depth + 1);
     }
     case PtrTag:
         return flowGateReachesOwner(((StarNode *)type)->vtexp, depth + 1);
@@ -2393,7 +2394,9 @@ void flowGateShapeAsk(FlowState *fstate, INode *node) {
             if (self && self->tag == StructTag && ((StructNode *)self)->lends == LendsShapeChanging)
                 continue;
             flowGateVisits = 0;
-            if (flowGateReachesOwner(((IExpNode *)nodesGet(parms, i))->vtype, 0)) {
+            // (a virtual call's receiver: its 'self' names the trait, not what is behind it)
+            if ((i == 0 && (call->flags & FlagVDisp))
+                    || flowGateReachesOwner(((IExpNode *)nodesGet(parms, i))->vtype, 0)) {
                 fstate->shapelend = 1;
                 flowGateShapeWrite(fstate, call->args);
                 break;
