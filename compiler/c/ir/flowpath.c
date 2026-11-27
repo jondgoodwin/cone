@@ -3277,9 +3277,11 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         // An owner lent as the receiver of its own method is asked as any argument is: what the
         // receiver holds may lead back to the owner, which the method then stores over
         // ('t.task.run()'). Not where it cannot, a unique owner whose receiver holds no way back
-        // to one (a node's method called through its owner, 'left.insert(v)')
+        // to one (a node's method called through its owner, 'left.insert(v)'). A virtual call's
+        // receiver (a trait object, an owned closure called) is not asked yet
         int ownrecv = loan == recvloan && reshapeIsOwner(cont);
-        int sk = ownrecv && meth && nargs > 0 && reshapeOwnerAbove(cont, iexpGetTypeDcl(nodesGet(call->args, 0)));
+        int sk = ownrecv && meth && nargs > 0
+            && ((call->flags & FlagVDisp) || reshapeOwnerAbove(cont, iexpGetTypeDcl(nodesGet(call->args, 0))));
         int gv = loanShapeGlobalView(loan);
         // A method lending a borrow from a place reached through this loan's own borrow ('view' in
         // 'gl.items[0].label.view()') reads through it: the call that lends is not a call that

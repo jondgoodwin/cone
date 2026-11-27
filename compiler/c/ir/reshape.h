@@ -165,8 +165,8 @@ typedef struct {
 // call is then taken to be able to write that global, but for the intrinsics, an init and a call
 // through a virtual reference marked '+ ShapeKeeping'.
 // 'skiprecv' says the borrow the loan is of is the receiver's own, an owner lent as the 'self' of
-// the method called, and the owner is out of the receiver's reach (reshapeOwnerAbove): only the
-// other arguments are then asked.
+// the method called, and the owner is out of the receiver's reach (reshapeOwnerAbove) or the call is
+// virtual (not asked yet): only the other arguments are then asked.
 // 'recvowner' is the struct the call's receiver is a field of, where the receiver is written as a field
 // access ('ui.input.clipboard.append(..)': Input), else NULL. A receiver that is a 'cont' held as a field
 // of a struct other than the borrow's 'owner' is another value than the one the borrow is into, and is

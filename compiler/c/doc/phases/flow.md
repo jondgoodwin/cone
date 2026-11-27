@@ -2015,7 +2015,9 @@ owner's own place (`reshapeUniqueLocalOf`), reached by no other name but a borro
 root variables are listed beside the loan even where the owner is shared (`loanRootsNote`), so
 `&mut r` lent to the call that replaces `r` is asked. The receiver's own borrow of an owner
 (`t.task.run()`: an owner lent as `self`, the loan `recvloan`) is asked as any argument is, since what
-the receiver holds may lead back to the owner, which the method then stores over. The one exception
+the receiver holds may lead back to the owner, which the method then stores over. A virtual call's
+receiver (`FlagVDisp`: a method of an owned trait object, an owned closure called) is not asked, so one
+that leads back to its owner is accepted [differs]. The other exception
 (`reshapeOwnerAbove`, `reshapeCall`'s `skiprecv`) is a unique owner (`Uni`, a region that is `Move`)
 whose receiver reaches an owner of that type only through what it owns uniquely: no shared owner,
 borrow, pointer or virtual reference it holds leads to one, so every owner it can store over is below
