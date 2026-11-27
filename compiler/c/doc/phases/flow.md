@@ -875,7 +875,8 @@ points at the walk does not say, so it holds what the value carries in a stand-i
 (`let r = pick(&a, &b); *r`). The place stands for every place the value's loans name, a
 call's result carrying those its signature gives it ("What holds what"): a view made
 through it holds the loans of each, and is marked for the shape check as one through a name
-is, and a store through it lands in each. A value made of several parts is read whole, so
+is, and a store through it lands in each. A borrow written there is not such a value (above),
+and the one an index with `FlagBorrow` is made on is left as it is. A value made of several parts is read whole, so
 an element of a tuple carries its neighbours' loans too. The loans of borrows that may write
 are kept on the place too (`pwWritingLoans`, `Place.kept`), as `*&uni x` keeps its own,
 but a borrow copied out through a call's result drops the ones the call made of its receiver

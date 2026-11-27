@@ -1267,8 +1267,13 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     Place refpl;
     if (!pwPlace(refp, &refpl, base)) {
         // A borrow that any other value yields is held by a stand-in too, wherever it
-        // is dereferenced (pwYieldStandIn)
-        if (!pwIsBorrowed(reftype))
+        // is dereferenced (pwYieldStandIn). A borrow written here is not such a value:
+        // pwDeref reads it as the place borrowed, so one reaches this only where it is
+        // not read as a dereference (an index with FlagBorrow gives the borrow it makes)
+        INode *written = *refp;
+        while (written->tag == CastTag && !(written->flags & FlagConvert))
+            written = ((CastNode *)written)->exp;
+        if (!pwIsBorrowed(reftype) || written->tag == BorrowTag)
             return 0;
         refpl.var = pwYieldStandIn(*refp, *base);
         refpl.deref = 0;
