@@ -1258,7 +1258,9 @@ static PathSet *pwWritingLoans(PathSet *set) {
     return writing;
 }
 
-static int pwThrough(INode **refp, Place *pl, PathSet **base) {
+// 'gives' is set for the reference an index with FlagBorrow is made on, which is no
+// dereference: the index gives that borrow back as its own result
+static int pwThrough(INode **refp, Place *pl, PathSet **base, int gives) {
     INode *reftype = iexpGetTypeDcl(*refp);
     if (reftype->tag != RefTag && reftype->tag != ArrayRefTag && reftype->tag != VirtRefTag) {
         *base = pwValue(refp, 0);
@@ -1268,12 +1270,15 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     if (!pwPlace(refp, &refpl, base)) {
         // A borrow that any other value yields is held by a stand-in too, wherever it
         // is dereferenced (pwYieldStandIn). A borrow written here is not such a value:
-        // pwDeref reads it as the place borrowed, so one reaches this only where it is
-        // not read as a dereference (an index with FlagBorrow gives the borrow it makes)
+        // a '&x', which pwDeref reads as the place borrowed, an owner lent by a recast
+        // (pwOwnedLent), and what an index with FlagBorrow is made on ('gives'), whose
+        // result is the borrow itself and keeps all it carries
         INode *written = *refp;
         while (written->tag == CastTag && !(written->flags & FlagConvert))
             written = ((CastNode *)written)->exp;
-        if (!pwIsBorrowed(reftype) || written->tag == BorrowTag)
+        if (!pwIsBorrowed(reftype) || written->tag == BorrowTag
+            || ((*refp)->tag == CastTag && pwIsOwnedLent((CastNode *)*refp))
+            || (gives && written->tag != ArrayBorrowTag))
             return 0;
         refpl.var = pwYieldStandIn(*refp, *base);
         refpl.deref = 0;
@@ -1355,7 +1360,7 @@ static int pwDeref(INode **refp, Place *pl, PathSet **base) {
     while ((*borrowp)->tag == CastTag && !((*borrowp)->flags & FlagConvert))
         borrowp = &((CastNode *)*borrowp)->exp;
     if ((*borrowp)->tag != BorrowTag)
-        return pwThrough(refp, pl, base);
+        return pwThrough(refp, pl, base, 0);
     RefNode *borrow = (RefNode *)*borrowp;
     if (!pwPlace(&borrow->vtexp, pl, base))
         return 0;
@@ -1490,7 +1495,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         // (with FlagBorrow the borrow indexed makes the reference the index gives, and is
         // no borrow dereferenced where it is written)
         int found = objtag == RefTag || objtag == ArrayRefTag || objtag == PtrTag
-            ? ((node->flags & FlagBorrow) ? pwThrough(&index->objfn, pl, base) : pwDeref(&index->objfn, pl, base))
+            ? ((node->flags & FlagBorrow) ? pwThrough(&index->objfn, pl, base, 1) : pwDeref(&index->objfn, pl, base))
             : pwPlace(&index->objfn, pl, base);
         // On a GPU target, elements holding references are picked only by a
         // literal index, so that the array breaks into separate values
@@ -1689,7 +1694,7 @@ static int pwIsOwnedLent(CastNode *cast) {
 static PathSet *pwOwnedLent(CastNode *cast) {
     Place pl;
     PathSet *base;
-    if (!pwThrough(&cast->exp, &pl, &base))
+    if (!pwThrough(&cast->exp, &pl, &base, 0))
         return base;
     INode *perm = ((RefNode *)iexpGetTypeDcl((INode *)cast))->perm;
     return pwLend((INode *)cast, &pl, perm, loanBorrowAccess(perm), NULL);
@@ -1814,7 +1819,7 @@ static PathSet *pwLendRef(INode **recvp, INode *selftype, int lvalop, int reserv
     // owner, and not a borrowed reference read through, which would make the
     // path shared
     if (recv->tag == CastTag && pwIsOwnedLent((CastNode *)recv)) {
-        if (!pwThrough(&((CastNode *)recv)->exp, pl, &base))
+        if (!pwThrough(&((CastNode *)recv)->exp, pl, &base, 0))
             return base;
         INode *perm = ((RefNode *)iexpGetTypeDcl(recv))->perm;
         *access = loanBorrowAccess(perm);
@@ -1835,7 +1840,7 @@ static PathSet *pwLendRef(INode **recvp, INode *selftype, int lvalop, int reserv
     }
     if (!pwIsBorrowed(iexpGetTypeDcl(recv)) || selftype->tag != RefTag)
         return pwValue(recvp, 1);
-    if (!pwThrough(recvp, pl, &base))
+    if (!pwThrough(recvp, pl, &base, 0))
         return base;
     INode *perm = ((RefNode *)selftype)->perm;
     *access = loanBorrowAccess(perm);
@@ -3392,7 +3397,7 @@ static uint32_t pwNarrowAliased(CastNode *cast) {
 static PathSet *pwNarrowShared(CastNode *cast, uint32_t alias) {
     Place pl;
     PathSet *base;
-    if (!pwThrough(&cast->exp, &pl, &base))
+    if (!pwThrough(&cast->exp, &pl, &base, 0))
         return base;
     INode *fromtype = iexpGetTypeDcl(cast->exp);
     INode *sum = itypeGetTypeDcl(((RefNode *)fromtype)->vtexp);
