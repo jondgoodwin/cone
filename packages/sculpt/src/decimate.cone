@@ -125,9 +125,19 @@ pub fn triangleCount(m: &PolyMesh) usize {
 // vertex's quadric scaled by its value in the f32 vertex channel named
 // 'weight' ("" for none)
 pub fn decimateWith(m: &PolyMesh, faces: u32, maxError: f32, symmetry: u32, weight: &str) Decimated {
+  decimateWithBoundary(m, faces, maxError, symmetry, weight, f32.from(DecimateSharpWeight))
+}
+
+// 'decimateWith' with the weight of a boundary side's penalty plane (per unit
+// of the side's length squared) given. DecimateSharpWeight is what
+// 'decimateWith' uses, so the rim keeps its line; 0 leaves an open patch's rim
+// to the quadrics of its triangles alone, so the rim thins out as the surface
+// does (a patch cut to a coarse cage keeps tens of boundary sides, not
+// hundreds). A side that is also creased or a seam keeps DecimateSharpWeight.
+pub fn decimateWithBoundary(m: &PolyMesh, faces: u32, maxError: f32, symmetry: u32, weight: &str, boundary: f32) Decimated {
   var te = List[u32]();
   var tf = List[u32]();
-  var c = startCollapser(m, symmetry, weight, &mut te, &mut tf);
+  var c = startCollapser(m, symmetry, weight, boundary, &mut te, &mut tf);
   let nt = c.tv.len() / 3usize;
   var live = nt;
   let target = usize.from(faces);
@@ -1042,7 +1052,7 @@ struct Collapser {
 // source edge, of the side coming into it, into te, NoIndex for a cut;
 // each triangle's source face into tf), the quadrics, the channel values,
 // the mirror links, and every edge costed into the heap
-fn startCollapser(m: &PolyMesh, symmetry: u32, weight: &str, te: &mut List[u32], tf: &mut List[u32]) Collapser {
+fn startCollapser(m: &PolyMesh, symmetry: u32, weight: &str, boundary: f32, te: &mut List[u32], tf: &mut List[u32]) Collapser {
   let nv = m.positions.len();
   // The triangles, and each corner's source half-edge
   var tv = List[u32]();
@@ -1144,6 +1154,7 @@ fn startCollapser(m: &PolyMesh, symmetry: u32, weight: &str, te: &mut List[u32],
     v = v + 1usize;
   }
   let sharpW = f64.from(DecimateSharpWeight);
+  let boundaryW = f64.from(boundary);
   var t = 0usize;
   while t < nt {
     let p0 = *pos[usize.from(*tv[3usize * t])];
@@ -1166,7 +1177,9 @@ fn startCollapser(m: &PolyMesh, symmetry: u32, weight: &str, te: &mut List[u32],
       while k < 3usize {
         let c = 3usize * t + k;
         let e = *te[c];
-        if e != NoIndex && (m.isBoundaryEdge(e) || (ecrease != NoIndex && m.float(ecrease, e) > 0.) || seamEdge(m, e)) {
+        let creased = e != NoIndex && ((ecrease != NoIndex && m.float(ecrease, e) > 0.) || seamEdge(m, e));
+        let rim = e != NoIndex && !creased && m.isBoundaryEdge(e);
+        if creased || (rim && boundaryW > 0.0) {
           let va = usize.from(*tv[3usize * t + (k + 2usize) % 3usize]);
           let vb = usize.from(*tv[c]);
           let d = *pos[vb] - *pos[va];
@@ -1175,7 +1188,7 @@ fn startCollapser(m: &PolyMesh, symmetry: u32, weight: &str, te: &mut List[u32],
           let pl = pn.length();
           if l2 > 0.0 && pl > 0.0 {
             let pu = pn * (1.0 / pl);
-            let qs = Quadric.plane(pu, -pu.dot(*pos[va]), sharpW * l2);
+            let qs = Quadric.plane(pu, -pu.dot(*pos[va]), (if creased {sharpW} else {boundaryW}) * l2);
             quad.set(va, *quad[va] + qs.scaled(*wts[va]));
             quad.set(vb, *quad[vb] + qs.scaled(*wts[vb]));
           }
