@@ -3324,22 +3324,31 @@ static PathSet *pwPointerOf(PathSet *carried) {
 // hold what the result points at
 
 #define PwReachMax 24
-#define PwReachSeen 96
+
+// A type walked, with what it was walked for: so that a type that holds itself ends
+typedef struct {
+    INode *type;
+    INode *cont;
+    uint8_t how;
+} PwReachAt;
 
 typedef struct {
     INode *targets[PwReachMax];     // what the result's borrows may point at
     int ntargets;
     int any;                        // anything: a borrow of a trait, or more types than are kept
-    INode *conts[PwReachMax];       // the containers found
-    int nconts;
-    INode *seen[PwReachSeen];
-    INode *seencont[PwReachSeen];
-    uint8_t seenhow[PwReachSeen];
-    int nseen;
-    int visits;                     // types visited by the walks that keep no 'seen'
+    uint32_t nconts;                // the containers found, in 'pwReachConts'
+    uint32_t nseen;                 // the types walked, in 'pwReachSeen'
+    int visits;                     // types visited by the walks that keep no record of them
 } PwReach;
 
-#define PwReachVisits 512
+#define PwReachVisits 4096
+
+// The lists one walk fills, kept for the next: neither is cut short, or a container past
+// the end of it would go unmarked
+static PwReachAt *pwReachSeen = NULL;
+static uint32_t pwReachSeenCap = 0;
+static INode **pwReachConts = NULL;
+static uint32_t pwReachContCap = 0;
 
 static void pwReachTarget(PwReach *r, INode *type) {
     for (int i = 0; i < r->ntargets; ++i) {
@@ -3423,12 +3432,13 @@ static int pwReachMatch(PwReach *r, INode *type) {
 }
 
 static void pwReachFound(PwReach *r, INode *cont) {
-    for (int i = 0; i < r->nconts; ++i) {
-        if (r->conts[i] == cont)
+    for (uint32_t i = 0; i < r->nconts; ++i) {
+        if (pwReachConts[i] == cont)
             return;
     }
-    if (r->nconts < PwReachMax)
-        r->conts[r->nconts++] = cont;
+    if (r->nconts >= pwReachContCap)
+        pwReachConts = (INode **)pathGrow(pwReachConts, &pwReachContCap, sizeof(INode *));
+    pwReachConts[r->nconts++] = cont;
 }
 
 // Walk what a value of 'type' reaches. 'cont' is the container a borrow of it would be
@@ -3436,20 +3446,21 @@ static void pwReachFound(PwReach *r, INode *cont) {
 // 'owner', that the way passed an owner others hold too
 static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int owner, int depth) {
     type = itypeGetTypeDcl(type);
-    if (type == NULL || depth > 16)
+    // (a bound on the stack only: no type is written this deep)
+    if (type == NULL || depth > 64)
         return;
     if (cont && shared && owner && pwReachMatch(r, type))
         pwReachFound(r, cont);
     uint8_t how = (uint8_t)((shared ? 1 : 0) | (owner ? 2 : 0));
-    for (int i = 0; i < r->nseen; ++i) {
-        if (r->seen[i] == type && r->seencont[i] == cont && r->seenhow[i] == how)
+    for (uint32_t i = 0; i < r->nseen; ++i) {
+        if (pwReachSeen[i].type == type && pwReachSeen[i].cont == cont && pwReachSeen[i].how == how)
             return;
     }
-    if (r->nseen == PwReachSeen)
-        return;
-    r->seen[r->nseen] = type;
-    r->seencont[r->nseen] = cont;
-    r->seenhow[r->nseen++] = how;
+    if (r->nseen >= pwReachSeenCap)
+        pwReachSeen = (PwReachAt *)pathGrow(pwReachSeen, &pwReachSeenCap, sizeof(PwReachAt));
+    pwReachSeen[r->nseen].type = type;
+    pwReachSeen[r->nseen].cont = cont;
+    pwReachSeen[r->nseen++].how = how;
 
     switch (type->tag) {
     case StructTag: {
@@ -3563,6 +3574,22 @@ static void pwReachByValue(PwReach *r, INode *type, int depth) {
     }
 }
 
+// A number for each container ever marked so, which with the argument keys its loan: a
+// walk of a loop again, or one that finds other containers, meets the same loan for the same
+static uint32_t pwReachContKey(INode *cont) {
+    static INode **conts = NULL;
+    static uint32_t used = 0;
+    static uint32_t cap = 0;
+    for (uint32_t i = 0; i < used; ++i) {
+        if (conts[i] == cont)
+            return i;
+    }
+    if (used >= cap)
+        conts = (INode **)pathGrow(conts, &cap, sizeof(INode *));
+    conts[used] = cont;
+    return used++;
+}
+
 // Mark what a call's result may borrow through a shared owner from the argument at 'argi',
 // which carries 'carried' into it. 'covered' says the lending of this argument already marks
 // the referent's own type where it should (a receiver, a reference lent as pwLentArg does).
@@ -3599,17 +3626,17 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
     }
     else
         pwReachByValue(&r, ptype, 0);
-    uint32_t n = 0;
-    for (int k = 0; k < r.nconts; ++k) {
-        if (covered && r.conts[k] == referent)
+    for (uint32_t k = 0; k < r.nconts; ++k) {
+        INode *cont = pwReachConts[k];
+        if (covered && cont == referent)
             continue;
-        uint32_t id = loanMakeReach((INode *)nodesGet(call->args, argi), n++, base);
+        uint32_t id = loanMakeReach((INode *)nodesGet(call->args, argi), pwReachContKey(cont), base);
         if (id == 0)
             break;
         if (isNameUseNode(call->objfn) && ((NameUseNode *)call->objfn)->dclnode
                 && ((NameUseNode *)call->objfn)->dclnode->tag == FnDclTag)
             loanReturnedBy(id, ((NameUseNode *)call->objfn)->namesym);
-        loanShapeMark(id, r.conts[k]);
+        loanShapeMark(id, cont);
         result = pathSetAdd(result, id);
         if (pwOwnCnt < sizeof(pwOwnLoans) / sizeof(pwOwnLoans[0]))
             pwOwnLoans[pwOwnCnt++] = id;
