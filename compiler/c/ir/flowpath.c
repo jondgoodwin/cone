@@ -510,6 +510,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->narrowed = 0;
     pv->compound = 0;
     pv->indexed = 0;
+    pv->swapped = 0;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
     pv->dies = pv->tracked && itypeNeedsFinal(var->vtype);
     // A holder is a local variable or a parameter whose type carries a
@@ -4114,6 +4115,7 @@ static void pwSwap(SwapNode *node) {
     PathSet *holds[2] = { NULL, NULL };
     Place places[2];
     int found[2] = { 0, 0 };
+    PathSet *bases[2] = { NULL, NULL };
     // A side holding a seam reaches its place first, the other after the
     // seam, as generation does (genlTerm, SwapTag)
     int first = pwSeams && awaitWithin(node->rval) && !awaitWithin(node->lval) ? 1 : 0;
@@ -4130,7 +4132,18 @@ static void pwSwap(SwapNode *node) {
         int i = k ^ first;
         VarDclNode *var = pwNamedVar(*sides[i]);
         Place *pl = &places[i];
-        PathSet *base;
+        // Both addresses are made before either element is used (genlTerm,
+        // SwapTag), so the first one made is held while the other side's place
+        // is walked, as a place's base is while its index is ('n.r[0usize] <->
+        // x[change(m)]', pwIndexStandIn): reaching the other element is its use.
+        // The loan of what an owner holds is keyed by the first side's own node:
+        // the second side's index keys its own by a node of the second
+        uint32_t stand = 0;
+        if (k == 1 && pathLoans && !flowGateOnlyReads(*sides[i]))
+            stand = pwIndexStandIn(*sides[i],
+                found[first] ? pwPlaceRests(*sides[first], &places[first]) : bases[first]);
+        if (stand)
+            pathVars[stand].swapped = 1;
         if (var) {
             whole[i] = pathVar(var);
             pl->var = whole[i];
@@ -4158,11 +4171,14 @@ static void pwSwap(SwapNode *node) {
                 loanUse(whole[i], *sides[i]);
             found[i] = 1;
         }
-        else if (pwPlace(sides[i], pl, &base)) {
-            pwDropUse(pl, *sides[i], 0);
-            holds[i] = pwPlaceHolds(pl, *sides[i]);
-            pwAccess(pl, AccessWrite, *sides[i]);
-            found[i] = 1;
+        else {
+            found[i] = pwPlace(sides[i], pl, &bases[i]);
+            pwIndexUse(stand, *sides[i]);
+            if (found[i]) {
+                pwDropUse(pl, *sides[i], 0);
+                holds[i] = pwPlaceHolds(pl, *sides[i]);
+                pwAccess(pl, AccessWrite, *sides[i]);
+            }
         }
     }
     pwPreCnt = premark;
