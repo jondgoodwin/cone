@@ -1594,9 +1594,16 @@ pub actor ClientConnActor {
       case let &Some(f) {f.stage == httpconn.Stage.Tls}
       else {false}
     };
-    let isDone = cc.done(now);
+    var isDone = cc.done(now);
     if !writing {
-      let n = cc.fill(now);
+      var n = cc.fill(now);
+      if n == 0usize {
+        // 'fill' can itself end the protocol (as ConnActor's kick says): what it says is read now
+        ex.step(&mut cc, now);
+        ex.report(&cc);
+        isDone = cc.done(now);
+        n = cc.fill(now);
+      }
       // A layer that failed with nothing left to end the connection (as ConnActor's kick says): it goes now, its
       // fetches failed with the layer's failure
       var lost = false;

@@ -584,9 +584,22 @@ pub actor ConnActor is ExchangeHost {
       case let &Some(f) {f.stage == httpconn.Stage.Tls}
       else {false}
     };
-    let isDone = sc.done(now);
+    var isDone = sc.done(now);
     if !writing {
-      let n = sc.fill(now);
+      var n = sc.fill(now);
+      // 'fill' can itself end the protocol (HTTP/2, refused a buffer for a frame, says Failed and Closed then): what it
+      // says is read now, since no byte need ever come to bring another turn
+      var again = n == 0usize;
+      while again {
+        let said = hx.events(&mut sc, selfactor, now);
+        if hx.cut {
+          self.finishEnd();
+          return;
+        }
+        if said {isDone = sc.done(now);}
+        n = sc.fill(now);
+        again = said && n == 0usize;
+      }
       // A layer that failed in 'done' or 'fill' (the pool refused its wire buffer), or that failed before and now has
       // nothing to write and the connection is not done: no read or deadline would end it, since the peer waits for
       // what will not come. It goes now, as a cut one does. A connection that is done closes as ever

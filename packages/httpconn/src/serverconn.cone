@@ -565,7 +565,10 @@ pub struct ServerConn is Move, ServerProto {
   // The layer, asked in 'fill': 'feed' asks only when bytes come, and an end
   // that waits for this one sends none. A layer that still gives bytes (a TLS
   // alert goes before the session says it failed) is left to the write's end,
-  // which feeds; a refusal is not, for what it was refused for does not go
+  // which feeds; a refusal is not, for what it was refused for does not go. A
+  // refusal is also recorded over an earlier failure that is not the layer's (an
+  // abort's, the protocol's): while the layer holds those bytes 'done' is not
+  // true, and 'failureOf()' is how the owner learns of it
   fn takeLayerFailure(self: &mut) {
     var failed = false;
     var refused = false;
@@ -576,7 +579,14 @@ pub struct ServerConn is Move, ServerProto {
       }
       else {}
     }
-    if failed && (wire.len() == 0usize || (refused && !self.pClosed())) {self.layerFailed();}
+    if !failed || (wire.len() > 0usize && (!refused || self.pClosed())) {return;}
+    var other = false;
+    match &failure {
+      case let &Some(f) {other = refused && f.stage != Stage.Tls;}
+      else {}
+    }
+    if other {failure = None[Failure];}
+    self.layerFailed();
   }
 
   // The protocol's output, into the wire (when there is no layer) or the layer's feed Chain
