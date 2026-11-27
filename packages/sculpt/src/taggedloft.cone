@@ -1,0 +1,370 @@
+// ======== Tagged loft: key sections whose features line up ========
+//
+// 'loftAlong' matches its profiles by the fraction of the whole ring's length, so a feature that moves round
+// the section (a corner, a lip line) is smeared between stations. A tagged profile names its feature points
+// (tags); 'loftTagged' matches stretch to stretch between the tags, so a tag's column runs from one section's
+// tag to the next section's, on the way it is placed, and a crease can sit on a tag's column and fade along the
+// run. It also can lay u and v in the surface's own length, so a texture keeps its size.
+//
+// - Placement is 'loftAlong''s with 'smooth' on: section k at fraction stations[k] of the path's length, in the
+//   path's rotation-minimizing frame there (profile x on the frame's normal, y on its binormal), 'between' rings
+//   in each band, each column on the Catmull-Rom spline through the sections, knots the stations. With fewer
+//   stations than sections they are spread evenly, as 'loftAlong' spreads them.
+// - Stretches: the tags cut each profile into stretches, tag i to tag i + 1, and on a closed profile the last
+//   tag round to tag 0 (a closed profile with one tag has one stretch, the whole ring). Stretch s of every
+//   section corresponds to stretch s of every other. There is no search for a start: tag 0 is the seam of a
+//   closed ring, and its column is column 0 (the points before tag 0 close the last stretch).
+// - Columns: within each stretch, the union of all sections' point fractions of that stretch's length, as
+//   'loft' with count 0 takes them over the whole ring, snapped by LoftSnap, so each section keeps each of its
+//   points and a tag's point is its column's, bit for bit.
+// - Creases: the edge channel "crease" is always added (0 fill). The edge of tag i's column between ring r
+//   and ring r + 1 takes the crease blended linearly between the two sections of its band, at the band's
+//   middle fraction; every other edge is 0. Subdivision's semi-sharp rules carry it.
+// - Uvs: "uv" is per corner. With 'uvByLength' false they are 'loftAlong''s exactly: u the column's fraction of
+//   the ring's length, v the fraction along the path. With it true, u and v are lengths in the mesh's own
+//   units: u the distance along the ring (as straight chords between its vertices) from tag 0's column, the
+//   closing corners of a closed ring at the ring's whole length; v the distance along the vertex's own column
+//   from the first ring (a closed path's closing corners at the column's whole length), so a texture keeps its
+//   scale on the outside of a bend as well as the inside; v by the path would stretch the outer side by
+//   (radius + offset) / radius. The cap faces keep their 'loftAlong' uvs. Vertex "along" and "around" stay
+//   fractions, as every generator writes them.
+// - A mirrored half: an open half running from the top midline to the bottom, put through
+//   'mirrorWith(..., mirrorU true, uvOffset (-1, 0))', gives the copy u = -u (the copy's u is 1 - u, and the
+//   offset takes it to -u): u is continuous across the top midline, and the seam is under the part. No new code.
+// - Refusals (one problem line, an empty mesh): fewer than 2 sections or a path of fewer than 2 points; open
+//   and closed mixed; tag counts that differ, or creases not one per tag; tags not rising or out of range, or
+//   (open) missing either end, or too few (closed 1, open 2); a closed profile not counterclockwise (the loft
+//   turns those; with tags a turn would renumber them, so the caller turns it); a stretch of no length (the
+//   birth of a tag, which is not built); stations, when given, not rising.
+
+// A profile and its feature points
+pub struct TaggedProfile {
+  pub profile: Profile;
+  // The feature points' numbers, rising. An open profile's first and last points are tags
+  pub tags: List[u32];
+  // One per tag: the "crease" sharpness of the tag's column at this section; 0 is smooth
+  pub creases: List[f32];
+
+  // The profile with these tags and every crease 0
+  pub fn of(profile: &Profile, tags: &Array[u32]) TaggedProfile {
+    var t = List[u32].withCapacity(tags.len);
+    var c = List[f32].withCapacity(tags.len);
+    var i = 0usize;
+    while i < tags.len {
+      t.push(tags[i]);
+      c.push(0.);
+      i = i + 1usize;
+    }
+    TaggedProfile(Profile(copyList(&profile.points), profile.closed), t, c)
+  }
+}
+
+// One problem line and an empty mesh
+fn taggedRefused(problems: &mut List[String], why: &str) PolyMesh {
+  problems.push(String.from(why));
+  PolyMesh()
+}
+
+// The length of a polyline
+fn polyLength(pts: &List[Vec3]) f32 {
+  var total: f32 = 0.;
+  var j = 1usize;
+  while j < pts.len() {
+    total = total + pts[j].distance(*pts[j - 1usize]);
+    j = j + 1usize;
+  }
+  total
+}
+
+// The tagged loft (see the top of this file). 'caps' closes the end rings of a closed profile by an n-gon each,
+// as 'loftAlong''s do. Numbering, ring by ring from the first section: ring r's column j vertex r n + j, n the
+// columns, columns in order from tag 0; quads as 'loftAlong''s, then the caps.
+pub fn loftTagged(sections: &List[TaggedProfile], path: &Path, stations: &Array[f32], between: u32, uvByLength: bool,
+    caps: bool, problems: &mut List[String]) PolyMesh {
+  let ns = sections.len();
+  if ns < 2usize { return taggedRefused(problems, "loftTagged: fewer than 2 sections"); }
+  if path.points.len() < 2usize { return taggedRefused(problems, "loftTagged: the path has fewer than 2 points"); }
+  let closed = sections[0usize].profile.closed;
+  let nt = sections[0usize].tags.len();
+  var k = 0usize;
+  while k < ns {
+    if sections[k].profile.closed != closed {
+      return taggedRefused(problems, "loftTagged: open and closed profiles mixed");
+    }
+    if sections[k].tags.len() != nt { return taggedRefused(problems, "loftTagged: the sections' tag counts differ"); }
+    if sections[k].creases.len() != nt {
+      return taggedRefused(problems, "loftTagged: creases are not one per tag");
+    }
+    let m = sections[k].profile.points.len();
+    if (closed && (m < 3usize || nt < 1usize)) || (!closed && (m < 2usize || nt < 2usize)) {
+      return taggedRefused(problems, "loftTagged: too few points or tags");
+    }
+    var i = 0usize;
+    while i < nt {
+      let t = usize.from(*sections[k].tags[i]);
+      if t >= m || (i > 0usize && t <= usize.from(*sections[k].tags[i - 1usize])) {
+        return taggedRefused(problems, "loftTagged: tags not rising or out of range");
+      }
+      i = i + 1usize;
+    }
+    if !closed && (*sections[k].tags[0usize] != 0u32 || usize.from(*sections[k].tags[nt - 1usize]) != m - 1usize) {
+      return taggedRefused(problems, "loftTagged: an open profile's first and last points must be tags");
+    }
+    if closed && !sections[k].profile.isCounterClockwise() {
+      return taggedRefused(problems, "loftTagged: a closed profile must run counterclockwise");
+    }
+    k = k + 1usize;
+  }
+  if stations.len >= ns {
+    k = 1usize;
+    while k < ns {
+      if stations[k] <= stations[k - 1usize] { return taggedRefused(problems, "loftTagged: stations not rising"); }
+      k = k + 1usize;
+    }
+  }
+
+  // Each section's points as Vec3 (z 0), a closed one started at tag 0, and its tags from there
+  var pts = List[List[Vec3]].withCapacity(ns);
+  var tg = List[List[usize]].withCapacity(ns);
+  k = 0usize;
+  while k < ns {
+    let m = sections[k].profile.points.len();
+    var p = List[Vec3].withCapacity(m);
+    var j = 0usize;
+    while j < m {
+      let q = *sections[k].profile.points[j];
+      p.push(Vec3(q.x, q.y, 0.));
+      j = j + 1usize;
+    }
+    let shift = if closed {usize.from(*sections[k].tags[0usize])} else {0usize};
+    if shift != 0usize { p = rotated(&p, shift); }
+    var t = List[usize].withCapacity(nt);
+    var i = 0usize;
+    while i < nt {
+      t.push(usize.from(*sections[k].tags[i]) - shift);
+      i = i + 1usize;
+    }
+    pts.push(p);
+    tg.push(t);
+    k = k + 1usize;
+  }
+
+  // The stretches' polylines and their fractions, section by section
+  let nst = if closed {nt} else {nt - 1usize};
+  var polys = List[List[Vec3]].withCapacity(ns * nst);
+  var frs = List[List[f32]].withCapacity(ns * nst);
+  k = 0usize;
+  while k < ns {
+    let m = pts[k].len();
+    var s = 0usize;
+    while s < nst {
+      let a = *tg[k][s];
+      let b = if s + 1usize < nt {*tg[k][s + 1usize]} else {m};
+      var poly = List[Vec3].withCapacity(b - a + 1usize);
+      var j = a;
+      while j <= b {
+        poly.push(*pts[k][j % m]);
+        j = j + 1usize;
+      }
+      if !(polyLength(&poly) > 0.) { return taggedRefused(problems, "loftTagged: a stretch between tags has no length"); }
+      frs.push(loopFractions(&poly, false));
+      polys.push(poly);
+      s = s + 1usize;
+    }
+    k = k + 1usize;
+  }
+
+  // The columns: each stretch's start (its tag), then the union of the sections' interior points' fractions
+  var colS = List[usize]();
+  var colT = List[f32]();
+  var tagCol = List[usize].withCapacity(nt);
+  var s = 0usize;
+  while s < nst {
+    var inner = List[f32]();
+    k = 0usize;
+    while k < ns {
+      let fr = &frs[k * nst + s];
+      let cnt = polys[k * nst + s].len();
+      var own = List[f32]();
+      var j = 1usize;
+      while j + 1usize < cnt {
+        let t = *fr[j];
+        if t > LoftSnap && t < 1. - LoftSnap { own.push(t); }
+        j = j + 1usize;
+      }
+      inner = mergeFractions(&inner, &own);
+      k = k + 1usize;
+    }
+    tagCol.push(colS.len());
+    colS.push(s);
+    colT.push(0.);
+    var q = 0usize;
+    while q < inner.len() {
+      colS.push(s);
+      colT.push(*inner[q]);
+      q = q + 1usize;
+    }
+    s = s + 1usize;
+  }
+  if !closed {
+    tagCol.push(colS.len());
+    colS.push(nst - 1usize);
+    colT.push(1.);
+  }
+  let n = colS.len();
+
+  // Each section's ring on the columns, and the columns' fractions of its whole length
+  var rings = List[Vec3].withCapacity(ns * n);
+  var us = List[f32].withCapacity(ns * (n + 1usize));
+  k = 0usize;
+  while k < ns {
+    var ring = List[Vec3].withCapacity(n);
+    var c = 0usize;
+    while c < n {
+      let sc = *colS[c];
+      ring.push(pointAt(&polys[k * nst + sc], &frs[k * nst + sc], false, *colT[c]));
+      c = c + 1usize;
+    }
+    let fr = loopFractions(&ring, closed);
+    c = 0usize;
+    while c < n {
+      rings.push(*ring[c]);
+      us.push(*fr[c]);
+      c = c + 1usize;
+    }
+    us.push(1.);
+    k = k + 1usize;
+  }
+
+  // Placement, as loftAlong's with 'smooth' on
+  var knots = List[f32].withCapacity(ns);
+  k = 0usize;
+  while k < ns {
+    if stations.len >= ns { knots.push(stations[k].clamp(0., 1.)); }
+    else if path.closed { knots.push(f32.from(k) / f32.from(ns)); }
+    else { knots.push(f32.from(k) / f32.from(ns - 1usize)); }
+    k = k + 1usize;
+  }
+  let ringsClosed = path.closed;
+  let frames = path.frames();
+  let dist = path.distances();
+  let total = path.length();
+  let steps = usize.from(between) + 1usize;
+  let bands = if ringsClosed {ns} else {ns - 1usize};
+  let nr = if ringsClosed {ns * steps} else {bands * steps + 1usize};
+  let first = *knots[0usize];
+  let span = *knots[ns - 1usize] - first;
+  var pos = List[Vec3].withCapacity(nr * n);
+  var ringUs = List[f32].withCapacity(nr * (n + 1usize));
+  var vs = List[f32].withCapacity(nr + 1usize);
+  var r = 0usize;
+  while r < nr && frames.len() > 0usize {
+    let kk = r / steps;
+    let i = r % steps;
+    let f = f32.from(i) / f32.from(steps);
+    let k1 = (kk + 1usize) % ns;
+    let ta = *knots[kk];
+    let tb = if i == 0usize {ta} else if k1 == 0usize {*knots[0usize] + 1.} else {*knots[k1]};
+    let t = if i == 0usize {ta} else {mixf(ta, tb, f)};
+    let fr = frameAtDistance(path, &frames, &dist, total, t * total);
+    var j = 0usize;
+    while j < n {
+      let p = if i == 0usize {*rings[kk * n + j]}
+        else {columnPoint(&rings, &knots, ns, n, path.closed, true, kk, j, f)};
+      pos.push(fr.place(Vec2(p.x, p.y)));
+      ringUs.push(if i == 0usize {*us[kk * (n + 1usize) + j]}
+        else {mixf(*us[kk * (n + 1usize) + j], *us[k1 * (n + 1usize) + j], f)});
+      j = j + 1usize;
+    }
+    ringUs.push(1.);
+    if ringsClosed { vs.push(t - first); }
+    else if span > 0. { vs.push((t - first) / span); }
+    else { vs.push(f32.from(r) / f32.from(nr - 1usize)); }
+    r = r + 1usize;
+  }
+  vs.push(1.);
+  if pos.len() == 0usize { return PolyMesh(); }
+  let capA = ringCapUvs(&rings, 0usize, n, true);
+  let capB = ringCapUvs(&rings, ns - 1usize, n, false);
+  var m = tube(&pos, n, nr, closed, ringsClosed, caps, false, &ringUs, &vs, &capA, &capB);
+
+  // Creases on the tags' columns, by band
+  let crease = m.addFloatChannel(EdgeDomain, "crease", 0.);
+  let nb = if ringsClosed && nr >= 3usize {nr} else {nr - 1usize};
+  r = 0usize;
+  while r < nb {
+    let kk = r / steps;
+    let k1 = (kk + 1usize) % ns;
+    let f = (f32.from(r % steps) + 0.5) / f32.from(steps);
+    let r1 = (r + 1usize) % nr;
+    var i = 0usize;
+    while i < nt {
+      let a = *sections[kk].creases[i];
+      let b = *sections[k1].creases[i];
+      let c = mixf(a, b, f);
+      if c != 0. {
+        let col = *tagCol[i];
+        let e =edgeBetween(&m, u32.from(r * n + col), u32.from(r1 * n + col));
+        if e != NoIndex { m.setFloat(crease, e, c); }
+      }
+      i = i + 1usize;
+    }
+    r = r + 1usize;
+  }
+
+  if uvByLength { setLengthUvs(&mut m, &pos, n, nr, closed, ringsClosed); }
+  m
+}
+
+// The quads' corner uvs in the mesh's own lengths (see the top of this file). The quads are the mesh's first
+// faces, band by band, each band's columns in order, as 'tube' makes them.
+fn setLengthUvs(m: &mut PolyMesh, pos: &List[Vec3], n: usize, nr: usize, closed: bool, ringsClosed: bool) {
+  let pClosed = closed && n >= 3usize;
+  let rClosed = ringsClosed && nr >= 3usize;
+  // u: the distance along each ring from column 0, and n for the closing one; v: along each column
+  var uL = List[f32].withCapacity(nr * (n + 1usize));
+  var vL = List[f32].withCapacity(nr * n);
+  var vTot = List[f32].withCapacity(n);
+  var r = 0usize;
+  while r < nr {
+    var u: f32 = 0.;
+    var j = 0usize;
+    while j < n {
+      if j > 0usize { u = u + pos[r * n + j].distance(*pos[r * n + j - 1usize]); }
+      uL.push(u);
+      let v = if r == 0usize {0.} else {*vL[(r - 1usize) * n + j] + pos[r * n + j].distance(*pos[(r - 1usize) * n + j])};
+      vL.push(v);
+      j = j + 1usize;
+    }
+    if pClosed { u = u + pos[r * n].distance(*pos[r * n + n - 1usize]); }
+    uL.push(u);
+    r = r + 1usize;
+  }
+  var j = 0usize;
+  while j < n {
+    vTot.push(*vL[(nr - 1usize) * n + j] + pos[j].distance(*pos[(nr - 1usize) * n + j]));
+    j = j + 1usize;
+  }
+  let ch = m.findVec2Channel(CornerDomain, "uv");
+  let nb = if rClosed {nr} else {nr - 1usize};
+  let nj = if pClosed {n} else {n - 1usize};
+  var i = 0usize;
+  while i < nb {
+    let i1 = i + 1usize;
+    let ir = i1 % nr;
+    var jj = 0usize;
+    while jj < nj {
+      let j1 = (jj + 1usize) % n;
+      let f = u32.from(i * nj + jj);
+      let hs = m.faceHalfedges(f);
+      let v1a = if i1 == nr {*vTot[j1]} else {*vL[i1 * n + j1]};
+      let v1b = if i1 == nr {*vTot[jj]} else {*vL[i1 * n + jj]};
+      m.setVec2(ch, *hs[0usize], Vec2(*uL[i * (n + 1usize) + jj], *vL[i * n + jj]));
+      m.setVec2(ch, *hs[1usize], Vec2(*uL[i * (n + 1usize) + jj + 1usize], *vL[i * n + j1]));
+      m.setVec2(ch, *hs[2usize], Vec2(*uL[ir * (n + 1usize) + jj + 1usize], v1a));
+      m.setVec2(ch, *hs[3usize], Vec2(*uL[ir * (n + 1usize) + jj], v1b));
+      jj = jj + 1usize;
+    }
+    i = i + 1usize;
+  }
+}

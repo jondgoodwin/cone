@@ -1831,7 +1831,13 @@ locals, which only a call that reaches one of them is asked of):
 - **A store** is asked of each marked loan the same way (`pwShapeStore`, from `pwStore`
   and `pwSwap`, for a place that is no local named whole, and none this function owns
   whole: `reshapeUniqueLocal`, but for a loan that points into that local; a local
-  named whole is asked for those; `ReshapeStore`, `ErrorShapeStore`). It reshapes
+  named whole is asked for those; `ReshapeStore`, `ErrorShapeStore`). A loan that points
+  only into locals is skipped unless the store reaches one of them: the place's root
+  variable; through a reference others may share, what that variable holds instead;
+  and through a reference itself read through a borrowed one (`**m`, `Place.far`)
+  both what it holds and, where the last reference is `uni`, the root. A `uni`
+  reference's referent is its own only while nothing else reaches the reference, and
+  one read through a borrow is reached by that borrow's holder. It reshapes
   (`reshapeStoreHits`) when the value stored over is the loan's container itself, or
   a value that holds one by value (`ReachContained`) or through owning references
   alone (`ReachOwned`: `Uni`, `Rc`, `Arc` or a region a program declares, with fields and

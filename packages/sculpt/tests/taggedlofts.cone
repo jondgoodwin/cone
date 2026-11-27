@@ -1,0 +1,447 @@
+// The sculpt package's loftTagged and TaggedProfile, checked with the testing package against values worked
+// out by hand; only a failure prints, so taggedlofts.out holds the summary alone. Path P is
+// Path.line((0,0,0), (0,0,4), 4), whose first frame puts profile x on world x and y on world y (checked by
+// the first row), and the stations are 0 and 1 unless said. Every result validates.
+//
+// - Two squares (1,1) (-1,1) (-1,-1) (1,-1), tags 0 1 2 3, stations 0 and 1, between 3: 5 rings of 4
+//   columns, 20 vertices, 16 quads; vertex (r, j) at (x_j, y_j, r) exactly.
+// - The same by length: u 0, 2, 4, 6, 8 at the closing corners (side 2); v = r.
+// - The same by fractions: u 0, 0.25, 0.5, 0.75, 1 and v = r / 4, and equal bit for bit to
+//   loftAlong(count 0, smooth) of the same profiles.
+// - Section A the square with its side midpoints (8 points, tags at the corners 0 2 4 6), section B the same
+//   corners with each side's middle point at a quarter of the side: the stretches' fractions are {0, 0.25,
+//   0.5} (A's 0.5, B's 0.25; the tag is 0), 3 a stretch, 12 columns a ring; every corner column runs straight
+//   in z.
+// - Open A (0,0) (1,0) (4,0) and B (0,0) (3,0) (4,0), tags 0 1 2, between 1: 3 rings of 3 columns, 9
+//   vertices, 4 quads; the middle ring (0,0,2) (2,0,2) (4,0,2): the tag column runs from x = 1 to x = 3. By
+//   the whole ring's fraction (loftAlong, count 0) the union of fractions {0, 1/4, 3/4, 1} and {0, 3/4, 1}
+//   gives 4 columns and no vertex at x = 2.
+// - The squares with creases on tag 1: 2 at section 0, 0 at section 1: the column's edges 1.75, 1.25, 0.75,
+//   0.25 (bands of a quarter, at their middles 1/8, 3/8, 5/8, 7/8); every other edge 0.
+// - A quarter circle of radius 3 in the xy plane, 9 points at theta = k pi / 16, the square section, between
+//   7 (9 rings, one on each path point), by length: the columns at profile x = 1 lie at radius 2 and those at
+//   x = -1 at radius 4 (the frame's normal points inward); v on the last ring 8 (2 rho sin(pi / 32)): 3.136548
+//   at radius 2, 6.273097 at radius 4. By the path's v the same ring would be 3 pi / 2 = 4.712389 each.
+// - Each refusal: one problem line, an empty mesh.
+
+mod taggedlofts;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+let near = 0.00001;
+
+fn clean(m: &PolyMesh, label: &Array[u8]) {
+  let problems = m.validate();
+  expectInt(i64.from(problems.len()), 0, label);
+}
+
+fn floatAt(m: &PolyMesh, name: &str, v: u32) f32 {m.float(m.findFloatChannel(VertexDomain, name), v)}
+
+fn sameMesh(a: &PolyMesh, b: &PolyMesh, label: &Array[u8]) {
+  var same = a.vertexCount() == b.vertexCount() && a.faceCount() == b.faceCount()
+    && a.halfedgeCount() == b.halfedgeCount();
+  var v = 0usize;
+  while same && v < a.vertexCount() {
+    let p = *a.positions[v];
+    let q = *b.positions[v];
+    if p.x != q.x || p.y != q.y || p.z != q.z { same = false; }
+    if floatAt(a, "along", u32.from(v)) != floatAt(b, "along", u32.from(v)) { same = false; }
+    if floatAt(a, "around", u32.from(v)) != floatAt(b, "around", u32.from(v)) { same = false; }
+    v = v + 1usize;
+  }
+  var f = 0usize;
+  let ua = a.findVec2Channel(CornerDomain, "uv");
+  let ub = b.findVec2Channel(CornerDomain, "uv");
+  while same && f < a.faceCount() {
+    let ha = a.faceHalfedges(u32.from(f));
+    let hb = b.faceHalfedges(u32.from(f));
+    if ha.len() != hb.len() { same = false; }
+    var k = 0usize;
+    while same && k < ha.len() {
+      if a.toVertex(*ha[k]) != b.toVertex(*hb[k]) { same = false; }
+      let x = a.vec2(ua, *ha[k]);
+      let y = b.vec2(ub, *hb[k]);
+      if x.x != y.x || x.y != y.y { same = false; }
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  expect(same, label);
+}
+
+// The corner uv of face f at vertex v
+fn uvAt(m: &PolyMesh, f: u32, v: u32) Vec2 {
+  let hs = m.faceHalfedges(f);
+  var i = 0usize;
+  while i < hs.len() {
+    if m.toVertex(*hs[i]) == v { return m.vec2(m.findVec2Channel(CornerDomain, "uv"), *hs[i]); }
+    i = i + 1usize;
+  }
+  Vec2(-1., -1.)
+}
+
+fn at(m: &PolyMesh, v: u32, x: f32, y: f32, z: f32, label: &Array[u8]) {
+  let p = *m.positions[usize.from(v)];
+  expectFloat(p.x, x, near, label);
+  expectFloat(p.y, y, near, label);
+  expectFloat(p.z, z, near, label);
+}
+
+// The "crease" of the edge between two vertices, or -1 when there is none
+fn creaseBetween(m: &PolyMesh, a: u32, b: u32) f32 {
+  let hs = m.vertexOutgoing(a);
+  var k = 0usize;
+  while k < hs.len() {
+    if m.toVertex(*hs[k]) == b { return m.float(m.findFloatChannel(EdgeDomain, "crease"), *hs[k] / 2u32); }
+    k = k + 1usize;
+  }
+  -1.
+}
+
+fn ends() List[f32] {
+  var l = List[f32]();
+  l.push(0.);
+  l.push(1.);
+  l
+}
+
+// The square of half-side h, from (h, h) counterclockwise
+fn squareFrom(h: f32) Profile {
+  let pts = List[Vec2](4) <- Vec2(h, h), Vec2(-h, h), Vec2(-h, -h), Vec2(h, -h);
+  Profile(pts, true)
+}
+
+fn fourTags() List[u32] {List[u32](4) <- 0u32, 1u32, 2u32, 3u32}
+
+fn fourCreases(a: f32, b: f32, c: f32, d: f32) List[f32] {List[f32](4) <- a, b, c, d}
+
+fn tagged(p: &Profile, tags: &List[u32]) TaggedProfile {TaggedProfile.of(p, tags.view())}
+
+fn twoSquares() List[TaggedProfile] {
+  var s = List[TaggedProfile]();
+  let a = squareFrom(1.);
+  let t = fourTags();
+  s.push(tagged(&a, &t));
+  s.push(tagged(&a, &t));
+  s
+}
+
+fn line4() Path {Path.line(Vec3(0., 0., 0.), Vec3(0., 0., 4.), 4u32)}
+
+fn squares() {
+  let path = line4();
+  let st = ends();
+  var problems = List[String]();
+  let sec = twoSquares();
+  let m = loftTagged(&sec, &path, st.view(), 3u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "squares: no problem line");
+  clean(&m, "squares: validates");
+  expectInt(i64.from(m.vertexCount()), 20, "squares: 20 vertices");
+  expectInt(i64.from(m.faceCount()), 16, "squares: 16 quads");
+  var r = 0u32;
+  while r < 5u32 {
+    at(&m, r * 4u32, 1., 1., f32.from(r), "squares: column 0");
+    at(&m, r * 4u32 + 1u32, -1., 1., f32.from(r), "squares: column 1");
+    at(&m, r * 4u32 + 2u32, -1., -1., f32.from(r), "squares: column 2");
+    at(&m, r * 4u32 + 3u32, 1., -1., f32.from(r), "squares: column 3");
+    r = r + 1u32;
+  }
+  expect(m.findFloatChannel(EdgeDomain, "crease") != NoIndex, "squares: a crease channel");
+  expectFloat(creaseBetween(&m, 0u32, 4u32), 0., near, "squares: crease 0 on a column edge");
+
+  // Fractions: loftAlong's, bit for bit
+  var profs = List[Profile]();
+  profs.push(squareFrom(1.));
+  profs.push(squareFrom(1.));
+  let la = loftAlong(&profs, &path, st.view(), 0u32, 3u32, true, false);
+  sameMesh(&m, &la, "squares: by fractions equals loftAlong, count 0, smooth");
+  expectFloat(uvAt(&m, 3u32, 0u32).x, 1., near, "squares: closing corner u 1");
+  expectFloat(uvAt(&m, 1u32, 5u32).x, 0.25, near, "squares: u 0.25");
+  expectFloat(uvAt(&m, 4u32, 8u32).y, 0.5, near, "squares: v 0.5 on ring 2 of 4");
+
+  // By length
+  let ml = loftTagged(&sec, &path, st.view(), 3u32, true, false, &mut problems);
+  clean(&ml, "squares by length: validates");
+  expectFloat(uvAt(&ml, 0u32, 0u32).x, 0., near, "length: u 0");
+  expectFloat(uvAt(&ml, 0u32, 1u32).x, 2., near, "length: u 2");
+  expectFloat(uvAt(&ml, 1u32, 2u32).x, 4., near, "length: u 4");
+  expectFloat(uvAt(&ml, 2u32, 3u32).x, 6., near, "length: u 6");
+  expectFloat(uvAt(&ml, 3u32, 0u32).x, 8., near, "length: closing corner u 8");
+  expectFloat(uvAt(&ml, 3u32, 3u32).x, 6., near, "length: u 6 beside it");
+  expectFloat(uvAt(&ml, 12u32, 16u32).y, 4., near, "length: v 4 on the last ring");
+  expectFloat(uvAt(&ml, 0u32, 4u32).y, 1., near, "length: v 1 on ring 1");
+  expectFloat(uvAt(&ml, 4u32, 8u32).y, 2., near, "length: v 2 on ring 2");
+  // "along" and "around" stay fractions
+  expectFloat(floatAt(&ml, "along", 8u32), 0.5, near, "length: along 0.5");
+  expectFloat(floatAt(&ml, "around", 9u32), 0.25, near, "length: around 0.25");
+}
+
+fn sideMidpoints() {
+  let path = line4();
+  let st = ends();
+  var problems = List[String]();
+  let a8 = List[Vec2](8) <- Vec2(1., 1.), Vec2(0., 1.), Vec2(-1., 1.), Vec2(-1., 0.), Vec2(-1., -1.), Vec2(0., -1.),
+    Vec2(1., -1.), Vec2(1., 0.);
+  let b8 = List[Vec2](8) <- Vec2(1., 1.), Vec2(0.5, 1.), Vec2(-1., 1.), Vec2(-1., 0.5), Vec2(-1., -1.), Vec2(-0.5, -1.),
+    Vec2(1., -1.), Vec2(1., -0.5);
+  let pa = Profile(a8, true);
+  let pb = Profile(b8, true);
+  let tg = List[u32](4) <- 0u32, 2u32, 4u32, 6u32;
+  var sec = List[TaggedProfile]();
+  sec.push(tagged(&pa, &tg));
+  sec.push(tagged(&pb, &tg));
+  let m = loftTagged(&sec, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "midpoints: no problem line");
+  clean(&m, "midpoints: validates");
+  expectInt(i64.from(m.vertexCount()), 36, "midpoints: 12 columns, 3 rings");
+  // Each tag's column is straight in z, its x and y those of the corner
+  var c = 0u32;
+  while c < 12u32 {
+    if c % 3u32 == 0u32 {
+      let p0 = *m.positions[usize.from(c)];
+      let p1 = *m.positions[usize.from(12u32 + c)];
+      let p2 = *m.positions[usize.from(24u32 + c)];
+      expectFloat(p1.x, p0.x, near, "midpoints: corner column straight in x");
+      expectFloat(p2.y, p0.y, near, "midpoints: corner column straight in y");
+    }
+    c = c + 1u32;
+  }
+  // Column 1 of side 0 is at the quarter (0.5, 1) on ring 0 as A has (0, 1) there; the union holds
+  // both points at 0.25 and 0.5 of the side
+  at(&m, 1u32, 0.5, 1., 0., "midpoints: A on the column at a quarter of the side");
+  at(&m, 2u32, 0., 1., 0., "midpoints: A's own midpoint kept");
+  at(&m, 25u32, 0.5, 1., 4., "midpoints: B's quarter point kept at the far end");
+  at(&m, 26u32, 0., 1., 4., "midpoints: the half-way column at the far end");
+}
+
+fn openTag() {
+  let path = line4();
+  let st = ends();
+  var problems = List[String]();
+  let a = List[Vec2](3) <- Vec2(0., 0.), Vec2(1., 0.), Vec2(4., 0.);
+  let b = List[Vec2](3) <- Vec2(0., 0.), Vec2(3., 0.), Vec2(4., 0.);
+  let pa = Profile(a, false);
+  let pb = Profile(b, false);
+  let tg = List[u32](3) <- 0u32, 1u32, 2u32;
+  var sec = List[TaggedProfile]();
+  sec.push(tagged(&pa, &tg));
+  sec.push(tagged(&pb, &tg));
+  let m = loftTagged(&sec, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "open: no problem line");
+  clean(&m, "open: validates");
+  expectInt(i64.from(m.vertexCount()), 9, "open: 9 vertices");
+  expectInt(i64.from(m.faceCount()), 4, "open: 4 quads");
+  at(&m, 3u32, 0., 0., 2., "open: middle ring column 0");
+  at(&m, 4u32, 2., 0., 2., "open: the tag column from x = 1 to x = 3");
+  at(&m, 5u32, 4., 0., 2., "open: middle ring column 2");
+  at(&m, 1u32, 1., 0., 0., "open: A's tag");
+  at(&m, 7u32, 3., 0., 4., "open: B's tag");
+  // loftAlong with count 0 and equal point counts joins point to point: the same 3 columns, the middle at
+  // x = 2 too (the brief expected 4 columns and no vertex at x = 2, which holds only for counts that differ)
+  var profs = List[Profile]();
+  let oa2 = List[Vec2](3) <- Vec2(0., 0.), Vec2(1., 0.), Vec2(4., 0.);
+  let ob2 = List[Vec2](3) <- Vec2(0., 0.), Vec2(3., 0.), Vec2(4., 0.);
+  profs.push(Profile(oa2, false));
+  profs.push(Profile(ob2, false));
+  let la = loftAlong(&profs, &path, st.view(), 0u32, 1u32, true, false);
+  expectInt(i64.from(la.vertexCount()), 9, "open: loftAlong, equal counts: point to point, 3 columns");
+
+  // Counts that differ: B (0,0) (2,0) (3,0) (4,0), tags 0 1 3, against A's tags 0 1 2. The stretches:
+  // A's tag 1 at x = 1 meets B's at x = 2; B's interior point (3,0) is half-way along stretch 1, so the
+  // columns are 0, tag 1, the half-way, tag 2: 4 columns. The middle ring's tag column x = 1.5.
+  // loftAlong (count 0) puts both on the union of the whole rings' fractions {0, 1/4, 1/2, 3/4, 1}: 5
+  // columns, and its column at 1/4 is at x = 1 on both ends, so its middle ring has x = 1 there: smeared
+  let oc = List[Vec2](4) <- Vec2(0., 0.), Vec2(2., 0.), Vec2(3., 0.), Vec2(4., 0.);
+  let pc = Profile(oc, false);
+  let tc = List[u32](3) <- 0u32, 1u32, 3u32;
+  var sec2 = List[TaggedProfile]();
+  sec2.push(tagged(&pa, &tg));
+  sec2.push(tagged(&pc, &tc));
+  let m2 = loftTagged(&sec2, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "open, counts differ: no problem line");
+  clean(&m2, "open, counts differ: validates");
+  expectInt(i64.from(m2.vertexCount()), 12, "open, counts differ: 4 columns, 3 rings");
+  at(&m2, 5u32, 1.5, 0., 2., "open, counts differ: the tag column runs from x = 1 to x = 2");
+  at(&m2, 6u32, 2.75, 0., 2., "open, counts differ: the half-way column, x 2.5 to 3 at the ends");
+  var profs2 = List[Profile]();
+  let od1 = List[Vec2](3) <- Vec2(0., 0.), Vec2(1., 0.), Vec2(4., 0.);
+  let od2 = List[Vec2](4) <- Vec2(0., 0.), Vec2(2., 0.), Vec2(3., 0.), Vec2(4., 0.);
+  profs2.push(Profile(od1, false));
+  profs2.push(Profile(od2, false));
+  let la2 = loftAlong(&profs2, &path, st.view(), 0u32, 1u32, true, false);
+  expectInt(i64.from(la2.vertexCount()), 15, "open, counts differ: loftAlong makes 5 columns");
+  at(&la2, 6u32, 1., 0., 2., "open, counts differ: loftAlong's column at a quarter has x = 1 at the middle ring");
+}
+
+fn creases() {
+  let path = line4();
+  let st = ends();
+  var problems = List[String]();
+  var sec = List[TaggedProfile]();
+  sec.push(TaggedProfile(squareFrom(1.), fourTags(), fourCreases(0., 2., 0., 0.)));
+  sec.push(TaggedProfile(squareFrom(1.), fourTags(), fourCreases(0., 0., 0., 0.)));
+  let m = loftTagged(&sec, &path, st.view(), 3u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "creases: no problem line");
+  clean(&m, "creases: validates");
+  let want = List[f32](4) <- 1.75, 1.25, 0.75, 0.25;
+  var r = 0u32;
+  while r < 4u32 {
+    expectFloat(creaseBetween(&m, r * 4u32 + 1u32, (r + 1u32) * 4u32 + 1u32), *want[usize.from(r)], near, "creases: tag 1's column");
+    expectFloat(creaseBetween(&m, r * 4u32, (r + 1u32) * 4u32), 0., near, "creases: column 0 smooth");
+    expectFloat(creaseBetween(&m, r * 4u32 + 2u32, (r + 1u32) * 4u32 + 2u32), 0., near, "creases: column 2 smooth");
+    r = r + 1u32;
+  }
+  // A ring's edges carry none
+  expectFloat(creaseBetween(&m, 1u32, 2u32), 0., near, "creases: a ring edge is 0");
+}
+
+fn quarterCircle() {
+  var pts = List[Vec3]();
+  var k = 0u32;
+  while k <= 8u32 {
+    let th = pi * f32.from(k) / 16.;
+    pts.push(Vec3(3. * cos(th), 3. * sin(th), 0.));
+    k = k + 1u32;
+  }
+  var path = Path.fromPoints(pts.view(), false);
+  // 'up' is the first frame's binormal (its profile y) and the normal is binormal x tangent. Left at
+  // (0, 0, 0) the arc's first binormal is radial and the normal +z; with up +z the normal is inward, so
+  // profile x is inward and y is z (the brief's derivation left this out)
+  path.up = Vec3(0., 0., 1.);
+  let st = ends();
+  var problems = List[String]();
+  let sec = twoSquares();
+  let m = loftTagged(&sec, &path, st.view(), 7u32, true, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "arc: no problem line");
+  clean(&m, "arc: validates");
+  expectInt(i64.from(m.vertexCount()), 36, "arc: 9 rings of 4");
+  let p0 = *m.positions[0usize];
+  // The end rings sit in the end frames, whose tangents lean half a step (pi / 32) off the radius's
+  // normal, so only the rings 1 to 7 are exactly at radius 2 and 4 (ring 4 is vertices 16 to 19)
+  let q0 = *m.positions[16usize];
+  expectFloat(Vec3(q0.x, q0.y, 0.).length(), 2., 0.0001, "arc: column 0 at radius 2 (x = 1 is inward)");
+  let q1 = *m.positions[17usize];
+  expectFloat(Vec3(q1.x, q1.y, 0.).length(), 4., 0.0001, "arc: column 1 at radius 4");
+  // v is the chord length along the column: rings 1 to 7 are 6 chords of 2 rho sin(pi / 32) apart
+  // (the brief's 8 chords, 3.136548 and 6.273097, assumed the end rings radial too: they are not)
+  let inner = uvAt(&m, 24u32, 28u32).y - uvAt(&m, 4u32, 4u32).y;
+  let outer = uvAt(&m, 24u32, 29u32).y - uvAt(&m, 4u32, 5u32).y;
+  expectFloat(inner, 2.352411, 0.0001, "arc: v between rings 1 and 7, inner wall: 6 x 0.392069");
+  expectFloat(outer, 4.704823, 0.0002, "arc: v between rings 1 and 7, outer wall: 6 x 0.784137");
+  // By the path, v would be 6 pi / 16 = 1.178 on both walls: the walls differ by 2 here, as they should
+  expect(outer > 1.99 * inner, "arc: the outer wall's v is twice the inner's (by the path it would be equal)");
+}
+
+fn refusals() {
+  let path = line4();
+  let st = ends();
+  var problems = List[String]();
+  let sq0 = squareFrom(1.);
+  let tg0 = fourTags();
+  var one = List[TaggedProfile]();
+  one.push(tagged(&sq0, &tg0));
+  let a = loftTagged(&one, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(a.vertexCount()), 0, "refusal: one section: empty");
+  expectInt(i64.from(problems.len()), 1, "refusal: one section: a line");
+
+  // Open and closed mixed
+  var mixed = twoSquares();
+  let op = List[Vec2](4) <- Vec2(1., 1.), Vec2(-1., 1.), Vec2(-1., -1.), Vec2(1., -1.);
+  let po = Profile(op, false);
+  let tg = fourTags();
+  mixed.set(1usize, tagged(&po, &tg));
+  let b = loftTagged(&mixed, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(b.vertexCount()), 0, "refusal: mixed: empty");
+  expectInt(i64.from(problems.len()), 2, "refusal: mixed: a line");
+
+  // Tag counts that differ
+  var diff = twoSquares();
+  let sq = squareFrom(1.);
+  let t3 = List[u32](3) <- 0u32, 1u32, 2u32;
+  diff.set(1usize, tagged(&sq, &t3));
+  let c = loftTagged(&diff, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(c.vertexCount()), 0, "refusal: tag counts: empty");
+  expectInt(i64.from(problems.len()), 3, "refusal: tag counts: a line");
+
+  // Tags not rising
+  var down = twoSquares();
+  let td = List[u32](4) <- 0u32, 2u32, 1u32, 3u32;
+  down.set(0usize, tagged(&sq, &td));
+  down.set(1usize, tagged(&sq, &td));
+  let d = loftTagged(&down, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(d.vertexCount()), 0, "refusal: tags not rising: empty");
+  expectInt(i64.from(problems.len()), 4, "refusal: tags not rising: a line");
+
+  // Out of range
+  var big = twoSquares();
+  let tb = List[u32](4) <- 0u32, 1u32, 2u32, 4u32;
+  big.set(0usize, tagged(&sq, &tb));
+  big.set(1usize, tagged(&sq, &tb));
+  let e = loftTagged(&big, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(e.vertexCount()), 0, "refusal: tag out of range: empty");
+  expectInt(i64.from(problems.len()), 5, "refusal: tag out of range: a line");
+
+  // Open, the last point not a tag
+  let oa = List[Vec2](3) <- Vec2(0., 0.), Vec2(1., 0.), Vec2(4., 0.);
+  let po3 = Profile(oa, false);
+  let to = List[u32](2) <- 0u32, 1u32;
+  var ends2 = List[TaggedProfile]();
+  ends2.push(tagged(&po3, &to));
+  ends2.push(tagged(&po3, &to));
+  let f = loftTagged(&ends2, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(f.vertexCount()), 0, "refusal: open without its end tag: empty");
+  expectInt(i64.from(problems.len()), 6, "refusal: open without its end tag: a line");
+
+  // Clockwise
+  let cw = List[Vec2](4) <- Vec2(1., 1.), Vec2(1., -1.), Vec2(-1., -1.), Vec2(-1., 1.);
+  let pcw = Profile(cw, true);
+  var cws = List[TaggedProfile]();
+  cws.push(tagged(&pcw, &tg));
+  cws.push(tagged(&pcw, &tg));
+  let g = loftTagged(&cws, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(g.vertexCount()), 0, "refusal: clockwise: empty");
+  expectInt(i64.from(problems.len()), 7, "refusal: clockwise: a line");
+
+  // A stretch of no length: tags 0 and 1 on the same point
+  let dup = List[Vec2](4) <- Vec2(1., 1.), Vec2(1., 1.), Vec2(-1., 1.), Vec2(-1., -1.);
+  let pdup = Profile(dup, true);
+  let tdp = List[u32](2) <- 0u32, 1u32;
+  var dups = List[TaggedProfile]();
+  dups.push(tagged(&pdup, &tdp));
+  dups.push(tagged(&pdup, &tdp));
+  let h = loftTagged(&dups, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(h.vertexCount()), 0, "refusal: no length: empty");
+  expectInt(i64.from(problems.len()), 8, "refusal: no length: a line");
+
+  // Creases not one per tag
+  var short = List[TaggedProfile]();
+  let three = List[f32](3) <- 0., 0., 0.;
+  short.push(TaggedProfile(squareFrom(1.), fourTags(), three));
+  short.push(TaggedProfile(squareFrom(1.), fourTags(), fourCreases(0., 0., 0., 0.)));
+  let i = loftTagged(&short, &path, st.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(i.vertexCount()), 0, "refusal: creases: empty");
+  expectInt(i64.from(problems.len()), 9, "refusal: creases: a line");
+
+  // Stations not rising
+  var bad = List[f32]();
+  bad.push(0.5);
+  bad.push(0.5);
+  let ok = twoSquares();
+  let j = loftTagged(&ok, &path, bad.view(), 1u32, false, false, &mut problems);
+  expectInt(i64.from(j.vertexCount()), 0, "refusal: stations: empty");
+  expectInt(i64.from(problems.len()), 10, "refusal: stations: a line");
+}
+
+fn main() i32 {
+  squares();
+  sideMidpoints();
+  openTag();
+  creases();
+  quarterCircle();
+  refusals();
+  done()
+}

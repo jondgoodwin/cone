@@ -354,16 +354,46 @@ reader(&amp;same, &amp;mut pt);       // 3
 		or a result giving a reference to a variant where the trait's gives one to the enum, meets it; the other way
 		round is refused (1186). A wider number, a value made an
 		<span class="pre">Option</span>, and a variant or an enum held by value for the other are conversions, so they do
-		not; nor does anything behind a <span class="pre">&amp;mut</span> that differs at all, since it is read and
-		written. Where a name declares a method of exactly the required signature, that one meets the requirement.</p>
+		not; nor does anything behind a <span class="pre">&amp;mut</span> that differs, since it is read and
+		written, except where <a href="#refvariance">references</a>, below, let it vary. Where a name declares a method of exactly the required signature, that one meets the requirement.</p>
 	<p>A <span class="pre">&amp;&lt;fn</span> made from a plain function, and a module meeting a
 		<a href="mod-substitution.html#modtrait">module trait</a>, follow the same rule, and so do
 		<span class="pre">Uni[fn(..)](&amp;f)</span> and a generic's <span class="pre">fn(..)</span> condition: there is
 		one rule for every place a function or method meets a signature, and each refuses a parameter or result held by
 		value that is not one layout with the same error (1506) and the same advice.</p>
-	<p id="refvariance"><b>References.</b> Whether the type a reference points at may vary depends on the reference's
-		permission. A reference that may only read is covariant: a <span class="pre">&amp;Circle</span>, to an enum's
-		variant, may be read as a <span class="pre">&amp;Shape</span>. A reference that may read and write is invariant:
+	<p id="refvariance"><b>References.</b> A reference coerces to a reference to its referent's supertype wherever no
+		store through the wider reference can change the referent's variant. A reference that may only read always
+		meets that, so it is covariant: a <span class="pre">&amp;Circle</span>, to an enum's variant, may be read as a
+		<span class="pre">&amp;Shape</span>. A <span class="pre">mut</span> or <span class="pre">uni</span> reference
+		meets it for an <a href="mem-regions.html#unsized"><span class="pre">@unsized</span></a> enum, because no whole
+		value of such an enum can be written (1069): a <span class="pre">&amp;mut Shape</span> can only write the
+		fields every variant shares, or reach a variant's own fields by matching. So there a
+		<span class="pre">&amp;mut Circle</span> is given as a <span class="pre">&amp;mut Shape</span>, a
+		<span class="pre">&amp;uni Circle</span> as a <span class="pre">&amp;uni Shape</span>, and a
+		<a href="mem-regions.html#unsized">key</a> to the variant as a key to the enum:</p>
+<pre>
+enum @unsized Shape {
+  pub x: i32;
+
+  struct Circle { pub r: i32; }
+  struct Square { pub s: i32; }
+}
+
+fn paint(s: &amp;mut Shape) {
+  s.x = 1;                                      // a field every variant has
+  match s {
+    case let &amp;mut Shape.Circle(c) { c.r = c.r * 2; }   // a variant's own, once matched
+    case let &amp;mut Shape.Square(q) { q.s = q.s * 2; }
+  }
+}
+
+var c = Shape.Circle(0, 5);
+paint(&amp;mut c);        // c.x is 1, c.r is 10
+</pre>
+	<p>Owning references do not coerce this way: a <span class="pre">Uni[Circle]</span> or an
+		<span class="pre">Rc[mut, Circle]</span> is made one to the enum with <span class="pre">as</span>, and a
+		<span class="pre">mut1</span> reference stays invariant. An ordinary enum, whose variants are padded to one
+		size, may have a whole value stored through it, so for it a reference that may read and write is invariant:
 		through a <span class="pre">&amp;mut Shape</span>, code may store any shape, so a
 		<span class="pre">&amp;mut Circle</span> may not be given as one, or a <span class="pre">Square</span> could be
 		stored where a <span class="pre">Circle</span> must be:</p>
