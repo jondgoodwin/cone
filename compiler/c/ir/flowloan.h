@@ -399,6 +399,11 @@ void loanShapeMark(uint32_t loan, INode *container);
 void loanShapeRefView(uint32_t loan, INode *container);
 void loanShapeRefViews(PathSet *holds, INode *container);
 void loanShapeRefLent(uint32_t var);
+// Is this a marked loan into a variant of an enum, whose variant a call or store may change?
+int loanShapeIsSum(uint32_t loan);
+// A use of 'var' that reports only a pending change of shape or variant (a compound
+// assignment's write: flowpath.c, pwCompoundVariant)
+void loanUseShape(uint32_t var, INode *usenode);
 uint32_t loanShapeCount();
 uint32_t loanShapeId(uint32_t i);
 INode *loanShapeContainer(uint32_t loan);
