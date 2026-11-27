@@ -53,7 +53,7 @@ fn cage(source: &PolyMesh, points: usize) PolyMesh {
 
 fn run(target: &PolyMesh, start: &PolyMesh, points: usize, levels: u32, cname: &str, bname: &str) {
   var problems = List[String]();
-  let fit = fitCage(target, start, levels, 8u32, &mut problems);
+  let fit = fitCage(target, start, levels, 40u32, &mut problems);
   print <- "FIT ", points, " levels ", levels, ": control points ", fit.cage.vertexCount(), " rounds ", fit.rounds,
     " pooled rms ", fit.rms, " max ", fit.max, " | to target rms ", fit.targetRms, " max ", fit.targetMax,
     " | to surface rms ", fit.surfaceRms, " max ", fit.surfaceMax, " problems ", problems.len(), "\n";
@@ -81,7 +81,38 @@ fn run(target: &PolyMesh, start: &PolyMesh, points: usize, levels: u32, cname: &
   print <- "END\n";
 }
 
+fn envNum(name: &str, dflt: f64) f64 {
+  match env.get(name) {
+    case let Some(s) { f64.parse(s.view()) || dflt }
+    case None { dflt }
+  }
+}
+
+// CAGEFIT_TUNE=311 or 1019: one fit of the saved start cage, with CAGEFIT_SMOOTH, CAGEFIT_ROUNDS and
+// CAGEFIT_LEVELS, printing the fit line only
+fn tune(points: usize) i32 {
+  let target = load("source_patch.obj");
+  var nm = String.from("../out/start_");
+  if points == 311usize { nm.append("311"); } else { nm.append("1019"); }
+  nm.append(".obj");
+  let start = load(nm.view());
+  let smooth = f32.from(envNum("CAGEFIT_SMOOTH", 0.1));
+  let rounds = u32.from(envNum("CAGEFIT_ROUNDS", 8.));
+  let levels = u32.from(envNum("CAGEFIT_LEVELS", 3.));
+  var problems = List[String]();
+  let fit = fitCageWith(&target, &start, levels, rounds, smooth, true, &mut problems);
+  print <- "TUNE ", points, " smooth ", smooth, " rounds ", rounds, " levels ", levels, ": kept ", fit.rounds,
+    " pooled ", fit.rms, " | to target rms ", fit.targetRms, " max ", fit.targetMax,
+    " | to surface rms ", fit.surfaceRms, " max ", fit.surfaceMax, "\n";
+  save("../out/tune_base.obj", &subdivide(&fit.cage, levels));
+  0
+}
+
 fn main() i32 {
+  match env.get("CAGEFIT_TUNE") {
+    case let Some(v) { return tune(if v.view() == "311" { 311usize } else { 1019usize }); }
+    case None {}
+  }
   let outPath = FilePath.from(outDir);
   if let Err(e) = fs.makeDirAll(&outPath) { print <- "could not make the folder: ", e, "\n"; return 1; }
   let target = load("source_patch.obj");

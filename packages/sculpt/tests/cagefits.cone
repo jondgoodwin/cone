@@ -4,17 +4,21 @@
 // - A sphere and an icosahedron: the target is the unit sphere as the icosahedron's Catmull-Clark level 4
 //   pushed out to radius 1 (15,360 quads, edges at most 0.08, so a facet is within 0.0006 of the sphere:
 //   an edge e is a chord of sagitta e^2 / 8). The start is the icosahedron stretched (1, 1.4, 0.6) times
-//   1.3, fitted at 3 levels (3,840 faces) for 8 rounds. By the icosahedron's symmetry the best cage is the
-//   icosahedron scaled by one number R, so the answer is found independently of the solver: 'fitCage' with 0
-//   rounds on the regular icosahedron of radius R measures the pooled rms of that cage, and the least of
-//   those over R = 1.20 to 1.50 in steps of 0.005 is the floor (the subdivided icosahedron is not round; the
-//   floor was 0.00297 at R = 1.335 when written). The fit must reach that floor within 3%, the rms must fall
-//   on each of the first three rounds (0.210, 0.072, 0.0061, 0.0030 when written: the stretch is undone in
-//   about 3 rounds and then the rms sits on the floor, moving by under 1%), and the cage returned is the
-//   best of the rounds', so its rms is no more than any round's.
+//   1.3, fitted at 3 levels (3,840 faces) for up to 30 rounds. By the icosahedron's symmetry the best cage is
+//   the icosahedron scaled by one number R, so the answer is found independently of the solver: 'fitCage'
+//   with 0 rounds on the regular icosahedron of radius R measures the pooled rms of that cage, and the least
+//   over R is the floor (the subdivided icosahedron is not round). The rms is V-shaped in R (0.0037 at 1.335,
+//   0.0033 at 1.340, with a minimum between), so the floor is found by ternary search over 1.30 to 1.38, not
+//   a grid: 0.0029666 at R = 1.3380 when written. The fit must reach that floor within 3% (0.002974 after
+//   30 rounds when written, 0.3% over; after 8 rounds 0.00351, 18% over: the default smoothness 0.2 damps
+//   each step, so the stretch is undone in 3 rounds (0.210, 0.058, 0.0081, 0.0045) and the last few percent
+//   take the rest). The rms must fall on each of the first three rounds and every round after, and the cage
+//   returned is the best of the rounds', so its rms is no more than any round's.
 // - A cage exact for itself: the target is a stretched icosahedron's own level 3, the start the same cage:
 //   the rms is 0 up to the arithmetic of f32 (3e-8 when written; the test allows 0.000001). The start pushed
-//   off (1.1, 0.9, 1.05 times) falls back to 0 in 10 rounds (3.5e-8). With 5 edges creased by 2 (carried
+//   off (1.1, 0.9, 1.05 times, rms 0.0397) is brought back by 10 rounds to 0.00033 (0.00016 after 20, 0.00007
+//   after 40: the smoothness term slows the last steps, it does not stall them; the test allows 0.0005
+//   after 10 and needs every round to fall). With 5 edges creased by 2 (carried
 //   through the subdivision as they stand) the same holds, which shows that the weights follow the creases,
 //   and the cage returned keeps the channel and its values.
 // - heightsAlongNormals of a unit sphere (level 3) against the sphere of radius 1.1 (level 4), reach 0.5:
@@ -29,11 +33,15 @@
 //   on the grid's edge: the fin's column has 19 inside and 2 on the edge, 0.2, the rest 3.8.
 // - The same run twice gives the same bits (cage positions, history, heights).
 // - A cap of the sphere (the faces above z = 0.2) against the unit icosahedron: the cage's southern
-//   controls are far from the target, and the smoothness keeps them where the far rows would leave them
-//   (see 'unseen' below, whose figures are recorded).
-// - The mutants (the figures recorded in the checks below): point-to-point instead of point-to-plane gives
-//   0.0311 after the same 8 rounds against 0.0030 (and is still falling); with no smoothness term
-//   the southern controls move by the amount recorded in 'unseen'.
+//   controls (z below -0.5, 3 of them) are far from the target. Every subdivided vertex has a row, so no
+//   control is unseen; the southern ones are dragged up toward the cap by the rows of the surface above them.
+//   After 6 rounds they have moved 1.626 with the default smoothness and 2.025 with none: the smoothness
+//   term holds them back by 20%.
+// - The mutants (figures recorded in the checks below, from runs when written): point-to-point instead of
+//   point-to-plane gives 0.0164 after 8 rounds against 0.00351 (4.7 times) and 0.00796 after 30 against
+//   0.00297 (2.7 times), still falling at 30; with no smoothness the fit stops at round 6 at 0.002966 (so
+//   after 8 rounds it is 15% below the smoothed fit and after 30 within 1% of it) and the southern controls
+//   travel 2.025 where the default's travel 1.626.
 
 mod cagefits;
 
@@ -206,25 +214,34 @@ fn sameCage(a: &CageFit, b: &CageFit) bool {
   a.rms == b.rms && a.max == b.max
 }
 
+// The pooled rms of the regular icosahedron of radius r (3 levels) against the target
+fn regularRms(target: &PolyMesh, r: f64) f64 {
+  var p = List[String]();
+  f64.from(fitCage(target, &icosahedron(f32.from(r)), 3u32, 0u32, &mut p).rms)
+}
+
 fn sphereFit() {
   let target = sphere(1., 4u32);
   let start = skew(&icosahedron(1.3), 1., 1.4, 0.6);
   var problems = List[String]();
-  let fit = fitCage(&target, &start, 3u32, 8u32, &mut problems);
+  let fit = fitCage(&target, &start, 3u32, 30u32, &mut problems);
   expectInt(i64.from(problems.len()), 0, "sphere: no problems");
-  expect(fit.rounds >= 3u32 && fit.rounds <= 8u32, "sphere: 3 to 8 rounds (it stops when a round gains under 0.05%)");
+  expect(fit.rounds >= 3u32 && fit.rounds <= 30u32, "sphere: 3 to 30 rounds (it stops when a round gains under 0.05%)");
   expectInt(i64.from(fit.history.len()), i64.from(fit.rounds) + 1, "sphere: a measure before the first round and after each");
   expectInt(i64.from(fit.cage.vertexCount()), 12, "sphere: the cage keeps its 12 vertices");
   expectInt(i64.from(fit.cage.faceCount()), 20, "sphere: and its 20 faces");
   // the floor: the best regular icosahedron
-  var floor = 1000.0;
-  var r = 1.2;
-  while r < 1.501 {
-    var p = List[String]();
-    let at = fitCage(&target, &icosahedron(f32.from(r)), 3u32, 0u32, &mut p);
-    if f64.from(at.rms) < floor { floor = f64.from(at.rms); }
-    r = r + 0.005;
+  var lo = 1.30;
+  var hi = 1.38;
+  var k = 0;
+  while k < 40 {
+    let a = lo + (hi - lo) / 3.;
+    let b = hi - (hi - lo) / 3.;
+    if regularRms(&target, a) < regularRms(&target, b) { hi = b; } else { lo = a; }
+    k = k + 1;
   }
+  let floor = regularRms(&target, lo);
+  expect(lo > 1.33 && lo < 1.345, "sphere: the floor's R is 1.338");
   expect(f64.from(fit.rms) < floor * 1.03, "sphere: the fit reaches the regular cage's floor");
   expect(*fit.history[1usize] < *fit.history[0usize] * 0.5, "sphere: round 1 falls");
   expect(*fit.history[2usize] < *fit.history[1usize] * 0.5, "sphere: round 2 falls");
@@ -252,7 +269,8 @@ fn exactCages() {
   let off = skew(&cage, 1.1, 0.9, 1.05);
   let back = fitCage(&target, &off, 3u32, 10u32, &mut problems);
   expect(*back.history[0usize] > 0.03, "pushed off: the start is off by more than 0.03");
-  expect(back.rms < 0.000001, "pushed off: back to 0 in 10 rounds");
+  expect(back.rms < 0.0005, "pushed off: 10 rounds bring the rms from 0.0397 to 0.00033");
+  expect(back.rms < *back.history[0usize] * 0.02, "pushed off: under 2% of the start's");
   // creases
   var creased = skew(&icosahedron(1.), 1., 1.4, 0.6);
   let ch = creased.addFloatChannel(EdgeDomain, "crease", 0.);
@@ -410,18 +428,24 @@ fn mutants() {
   var p = List[String]();
   let plane = fitCage(&target, &start, 3u32, 8u32, &mut p);
   let point = fitCageWith(&target, &start, 3u32, 8u32, f32.from(CageSmoothness), false, &mut p);
-  expect(plane.rms < 0.0031, "mutant point-to-point: the plane's rms is 0.0030");
-  expect(point.rms > 0.02 && point.rms < 0.04, "mutant point-to-point: 0.0311 after the same 8 rounds");
-  expect(point.rms > plane.rms * 5., "mutant point-to-point: over 5 times the plane's");
+  expect(plane.rms > 0.003 && plane.rms < 0.004, "mutant point-to-point: the plane's rms after 8 rounds is 0.00351");
+  expect(point.rms > 0.012 && point.rms < 0.022, "mutant point-to-point: 0.0164 after the same 8 rounds");
+  expect(point.rms > plane.rms * 4., "mutant point-to-point: over 4 times the plane's (4.7)");
   expect(*point.history[8usize] < *point.history[7usize], "mutant point-to-point: still falling");
+  let plane30 = fitCage(&target, &start, 3u32, 30u32, &mut p);
+  let point30 = fitCageWith(&target, &start, 3u32, 30u32, f32.from(CageSmoothness), false, &mut p);
+  expect(point30.rms > plane30.rms * 2., "mutant point-to-point: still over 2 times the plane's after 30 rounds (0.00796, 0.00297)");
+  // no smoothness: the first step is larger (0.0723 against 0.0576), and the fit stops at round 6, at the floor
   let flat = fitCageWith(&target, &start, 3u32, 8u32, 0., true, &mut p);
-  expect(flat.rms > plane.rms * 0.98 && flat.rms < plane.rms * 1.02, "mutant no smoothness: the same rms, within 2%");
-  expect(*flat.history[1usize] > *plane.history[1usize] * 0.5 && *flat.history[1usize] < *plane.history[1usize] * 2.,
-    "mutant no smoothness: round 1 within a factor of 2 (0.0722 with, about the same without)");
+  expect(flat.rms < plane.rms * 0.9, "mutant no smoothness: after 8 rounds 15% below the smoothed fit's (0.002966, 0.00351)");
+  expect(flat.rounds < 8u32, "mutant no smoothness: it stops before 8 rounds, a round gaining under 0.05% (6)");
+  expect(*flat.history[1usize] > *plane.history[1usize] * 1.1, "mutant no smoothness: round 1 goes further (0.0723 against 0.0576)");
+  expect(plane30.rms < flat.rms * 1.01, "no smoothness: the smoothed fit catches up, within 1% after 30 rounds");
+  // far controls: the southern 3 travel 1.626 with the default, 2.025 without
   let kept = southTravel(f32.from(CageSmoothness));
   let drift = southTravel(0.);
-  expect(kept > 1.5 && drift > 1.5, "far controls: both are dragged about 2 up to the cap (2.04 with, 1.94 without)");
-  expect(drift < kept + 0.2, "far controls: no smoothness does not move them further");
+  expect(kept > 1.4 && kept < 1.8, "far controls: the default smoothness holds them to 1.626");
+  expect(drift > kept + 0.2, "far controls: with none they travel 2.025, over 0.2 more");
   expectInt(i64.from(p.len()), 0, "mutants: no problems");
 }
 
