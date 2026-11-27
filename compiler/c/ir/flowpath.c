@@ -1104,19 +1104,19 @@ static int pwMayAlias(INode *reftype) {
 
 // May a holder other than this reference change what it points at while it is
 // used? Every permission that may alias and does not allow interior references
-// (MayIntRefSum, as castSumInterior reads it): 'mut', 'ro' (its holder only
-// promises not to), and a lock permission, whose value is reached by a borrow
-// taking the lock. Not 'imm', 'mut1' or a held lock's: nothing else changes what
-// they reach, or only through this reference.
+// (MayIntRefSum, as castSumInterior reads it): 'mut', 'mut1' (permWriterFlags),
+// 'ro' (its holder only promises not to), and a lock permission, whose value is
+// reached by a borrow taking the lock. Not 'imm' or a held lock's: nothing else
+// changes what they reach.
 static int pwMayAliasWritten(INode *reftype) {
-    return pwMayAlias(reftype) && !(permGetFlags(((RefNode *)reftype)->perm) & MayIntRefSum)
+    return pwMayAlias(reftype) && !(permWriterFlags(((RefNode *)reftype)->perm) & MayIntRefSum)
         && itypeGetTypeDcl(((RefNode *)reftype)->perm) != (INode *)opaqPerm;
 }
 
 // Does a borrowed reference holding 'holds' point only where no other name writes? It does when
 // every borrow it may hold (only the near loans are where it points: flowloan.h) is of an
 // element a method returned out of its receiver's own block (pwElemView), the receiver reached
-// through a reference nothing writes by ('imm', 'mut1'; not 'ro', 'mut': Place.shwrite), or is
+// through a reference nothing writes by ('imm'; not 'ro', 'mut', 'mut1': Place.shwrite), or is
 // what a caller lent through a parameter of such a reference, the one the receiver was reached by
 // (a reborrow carries it): the element is then in an 'imm' path, though the '&' the method
 // returned says only that its holder may not write. Anything else keeps what the reference's

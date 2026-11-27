@@ -917,9 +917,9 @@ permission and the place (`loanKindOf`):
 
 | Kind | Borrow | Of a place reached |
 | --- | --- | --- |
-| *exclusive* | `&mut1` / `&uni` | as `uni` / either way |
+| *exclusive* | `&uni` | either way |
 | *shared* | `&ro` (the default `&`), `&imm` / `&imm` | as `uni` / through a shared path |
-| *alias* | `&mut` / `&mut1`, `&ro` | either way / through a shared path |
+| *alias* | `&mut`, `&mut1` / `&ro` | either way / through a shared path |
 | *pin* | `&opaq` | either way |
 
 A *holder* is a local or a parameter whose type carries a borrow
@@ -983,7 +983,8 @@ what a `uni` reference points at, an owner's contents or a `uni` slice's element
 be lent `&mut` any number of times (in one call, held in locals, held in structs), and
 read, written and borrowed beside them; only what needs the source unique conflicts
 (a move, a replacement, its end, an `&uni` or `&imm` borrow, as the table says).
-`&mut1`, which hands out interior references into a sum, keeps the source to itself. The
+`&mut1` is lent as `&mut` is: its reference may be copied and a copy writes, so every question
+"may another name write?" is answered for `mut1` as for `mut` (`permWriterFlags`). The
 rest is the shape rule, which a source another name reaches is asked of, and which the
 source of an alias loan has other names for. So long as a loan is the only `mut`
 borrow of its source, nothing differs from the exclusive loan it replaced: the loans a
@@ -1665,7 +1666,7 @@ returned borrow carries, read-only or writing (`l[0usize]`, `&mut l[0usize]`, `l
 stays an alias loan marked for the shape check (`pwShapeLent`): the path, `l` or
 `self.items`, stays readable, lendable and writable, and a change of its shape is what is
 refused. Where the check does not follow the loan (the path is reached through a reference
-others do not write by: `imm`, `mut1`), a read-only borrow's loan is made a `LoanShared`
+others do not write by: `imm`), a read-only borrow's loan is made a `LoanShared`
 one and a writing one a `LoanExcl` one (`loanFreezeShared`, `loanFreezeWritable`): the
 path is frozen as a local's is. So
 `let e = l[0usize]; l.push(p); e.x`, the
@@ -1817,7 +1818,7 @@ Part (b) of the rule (`reshape.c`, `flowpath.c`'s `pwShapeBorrow`/`pwShapeCall`,
 `flowloan.c`'s shape section). When `pwCall` freezes a shape-changing receiver's
 path (above) and the place is reached through a reference that others may
 write by (`Place.shwrite`: a `mut`, `ro` or lock-permission reference, an `Rc[mut]`
-owner; not `imm`, `mut1`, `opaq` or `uni` -- but a `uni` one read from such a way
+owner, and `mut1` as `mut`; not `imm`, `opaq` or `uni` -- but a `uni` one read from such a way
 counts, `Place.uniway` under "The loan walk"), the borrow's loan is *marked*
 (`loanShapeMark`, `Loan.shapecont`) — unless the reference is read-only and what it
 was borrowed from is a place this function holds a loan on that excludes writers,
@@ -2113,7 +2114,7 @@ lent and marked as it is out of a collection (`shapeChanging` of an enum is
 narrowed ([narrow](../nodes/narrow.md)) is held by the hidden local `-narrow`, whose recast
 is this narrowed reference: the message names the original name, which is the one the writer
 sees go stale. A name narrowed by a test and read from its own storage, held by value or
-through `uni`, `imm` or `mut1`, has no narrowed reference: where a `mut` borrow of it is held
+through `uni` or `imm`, has no narrowed reference: where a `mut` borrow of it is held
 at the test, a stand-in holds the same kind of loan and each use of the name as the variant is
 a use of it. Where the name is a reference and the `mut` borrow is of the variable itself, the
 stand-in also holds a loan of the variable, marked with the reference's type as an owner is
