@@ -127,6 +127,22 @@ its own, except in the arm of a test that establishes the variant alone
 (`FlagNarrowArmAlone`). A test inside a larger condition whose other path rests on earlier
 tests keeps them on both paths, which can refuse a change that came before the test.
 
+## A compound assignment
+
+`x += e`, and each compound form, is one statement that reaches its place before its right
+side and writes into it after. Where the type declares the operator it is a call handed
+`&mut x`, and the borrow is in flight while `e` is made. Otherwise it is
+`{let tmp = &mut x; *tmp = *tmp + e}`. A plain store reaches its place after the value,
+which uses whatever the place is reached through (`-narrow`, a narrowed name's stand-in, a
+reference bound into the variant) and so meets a change the value made; `tmp` was made
+before, and is no holder (flow.md, "What is not held"). So where `tmp` carries a reference
+into a variant, the walk holds those in a stand-in for the length of the right side, and the
+write through `tmp` is its use (`pwCompoundVariant`): a call or store there that could change
+which variant the enum holds is `ErrorVariantReshape`, whether the place was reached through
+a narrowed reference, a narrowed name beside a `mut` borrow, a pattern's binding or a
+reference bound into the variant. Only a change of variant is asked of it: `x += x` reads
+what it writes.
+
 ## What it does not do
 
 - **It never proves a call harmless for a name held by value or through `uni`, `imm`, `mut1`,

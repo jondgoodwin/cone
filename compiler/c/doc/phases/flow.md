@@ -1535,7 +1535,11 @@ borrows it through (`x += 1` is `{let tmp = &mut x; *tmp = *tmp + 1}`, and
 `v <- a, b` appends through one; both named `tempName`) is an access, a write,
 and no holder: `k += k` compiles. What is borrowed through it still carries
 its loan (`pwVarDcl` keeps it on the temporary, `pwLend` reads it), so
-`r = (v <- (1, 2))` holds `v`'s loan. A
+`r = (v <- (1, 2))` holds `v`'s loan. One thing is asked of it as of a holder:
+where it points into an enum's variant, whether the right side of the compound
+assignment could change that variant before the temporary is written through
+(`pwCompoundVariant`; [narrow](../nodes/narrow.md), "A compound assignment").
+A change of a collection's shape there is not asked. A
 borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
 shared path (`l: &mut List`, a field of `self`, a `Rc[mut, T]` owner) that loan

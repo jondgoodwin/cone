@@ -508,6 +508,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->guardname = NULL;
     pv->narrow = 0;
     pv->narrowed = 0;
+    pv->compound = 0;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
     pv->dies = pv->tracked && itypeNeedsFinal(var->vtype);
     // A holder is a local variable or a parameter whose type carries a
@@ -3499,8 +3500,40 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     pwStoreInto(pl.var, pwPlaceLevel(&pl), pwPlaceLevel(&pl), pwStoreTagged(&pl, holds));
 }
 
+// A compound assignment through a temporary ('x += e' is '{let tmp = &mut x; *tmp = *tmp + e}')
+// borrows its place before its right side is made, and writes into it after. A plain store
+// reaches its place after the value, which uses whatever the place is reached through, and so
+// refuses a change of variant the value made. The temporary is no holder, so nothing would
+// pend on it: a stand-in holds the references into a variant it was borrowed through, from
+// before the right side, and the write is its use. Returns it, or 0 for none
+static uint32_t pwCompoundVariant(INode *lval) {
+    if (!pathLoans || !loanShapeCount() || lval->tag != DerefTag)
+        return 0;
+    INode *ref = ((StarNode *)lval)->vtexp;
+    VarDclNode *tmp = pwNamedVar(ref);
+    if (tmp == NULL || tmp->namesym != tempName)
+        return 0;
+    PathSet *all = pathVars[pathVar(tmp)].holds;
+    PathSet *holds = NULL;
+    for (uint32_t i = 0; all && i < all->cnt; ++i) {
+        // (a far loan is of what the place holds, not of where the place is)
+        if (!(all->ids[i] & LoanFar) && loanShapeIsSum(loanOf(all->ids[i])))
+            holds = pathSetAdd(holds, all->ids[i]);
+    }
+    if (holds == NULL)
+        return 0;
+    uint32_t stand = pwStandIn(ref, holds);
+    pathVars[stand].compound = 1;
+    return stand;
+}
+
 static PathSet *pwAssign(AssignNode *node) {
+    uint32_t compound = pwCompoundVariant(node->lval);
     PathSet *holds = pwValue(&node->rval, 1);
+    if (compound) {
+        loanUseShape(compound, node->lval);
+        pathSetFacts(compound, NULL, NULL);
+    }
     if (node->lval->tag == VTupleTag) {
         INode **lvalp;
         uint32_t cnt;
