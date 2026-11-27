@@ -627,6 +627,7 @@ fn boundaryNear(m: &PolyMesh, p: Vec3) u32 {
     v = v + 1usize;
   }
   best
+}
 
 // ---------------------------------------------------------------- the loops
 
@@ -762,13 +763,27 @@ fn main() i32 {
     let pts = loadPoints(name);
     if pts.len() > 0usize {
       var worst: f32 = 0.;
-      let loop = snapLoop(&src, &pts, &mut worst);
-      print <- "points ", pts.len(), ", snapped to ", loop.len(), " vertices (the farthest snap ", worst, " mm)\n";
+      let snapped = snapLoop(&src, &pts, &mut worst);
+      print <- "points ", pts.len(), ", snapped to ", snapped.len(), " vertices (the farthest snap ", worst, " mm)\n";
+      // The finder's points are closer together than the mesh's edges, so the snapped vertices zigzag and the joined
+      // loop revisits one; the loop is thinned (every step-th vertex, step from 1) until facesInsideLoop accepts it
+      var loop = List[u32]();
       var problems = List[String]();
-      t0 = Instant.now();
-      let faces = facesInsideLoop(&src, loop.view(), &mut problems);
-      let tIn = t0.elapsed().secondsF64();
-      print <- "facesInsideLoop: ", faces.len(), " faces in ", tIn, " s, problems ", problems.len(), "\n";
+      var faces = List[u32]();
+      var tIn = 0.0;
+      var step = 1usize;
+      while step <= 12usize && faces.len() == 0usize {
+        loop = List[u32]();
+        var s = 0usize;
+        while s < snapped.len() { loop.push(*snapped[s]); s = s + step; }
+        problems = List[String]();
+        t0 = Instant.now();
+        faces = facesInsideLoop(&src, loop.view(), &mut problems);
+        tIn = t0.elapsed().secondsF64();
+        print <- "  every ", step, " vertex: ", loop.len(), " vertices, ", faces.len(), " faces, problems ", problems.len(), "\n";
+        if faces.len() == 0usize { step = step + 1usize; }
+      }
+      print <- "facesInsideLoop: step ", step, ", ", faces.len(), " faces in ", tIn, " s, problems ", problems.len(), "\n";
       var q = 0usize;
       while q < problems.len() { print <- "  problem: ", problems[q].view(), "\n"; q = q + 1usize; }
       if faces.len() > 0usize {
