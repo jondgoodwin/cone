@@ -58,6 +58,10 @@ typedef struct {
     uint8_t sharedlen;  // then, how many steps lead to the first reference that may alias (0: the root's)
     uint8_t shwrite;    // 1: some reference on the way may alias and is not 'imm' or 'mut1' (pwMayAliasWritten),
                         // so another holder may change what the place is in; a collection's block may move
+    uint8_t uniway;     // the borrowed reference the root is read through is 'uni', but was itself read from
+                        // where another holder may write ('**o', 'o' an 'Rc[mut, &uni T]'; '**m'): what it
+                        // points at is not reached by one name. Asked by the shape check only: it changes
+                        // no loan's kind and no freezing
     uint8_t owned;     // nonzero (1 + the index of the last such step, loanShapeDisjoint): a step dereferences an owning reference others may own too ('Rc'), so
                         // the place may outlive its root variable
     uint8_t far;        // deref: the reference was itself read through a borrowed one ('**pp',
@@ -73,6 +77,9 @@ typedef struct {
     StructNode *slotted; // A struct declaring lifetimes whose field the path's first step is, where
                         // the root variable's loans are tagged by its slots (flowloan.h); else NULL
     uint32_t slots;     // then, the slots of that field (lifeFieldSlots)
+    uint32_t narrow;    // reached by a member of the variant named on a narrowed name: its stand-in (pwNarrowName), else 0
+    PathSet *kept;      // the loans of each writing borrow dereferenced where it is written on the way here
+                        // ('*&uni x', '*&mut x'), which a view of the place holds too (pwDeref); else NULL
 } Place;
 // A step is a field's name (a Name pointer, so even), a tuple element's index
 // ((n << 2) | 2), an element of an array (any index: all overlap), or a
@@ -136,6 +143,12 @@ typedef struct {
     uint8_t hascand;    // a read of it is a candidate for its last use (RefCountNode.cand): a move of it may be undone
     void *lastcand;     // the RefCountNode of the candidate that last moved it on the walk, which the next read of it fails
     VarDclNode *guardname; // a lock's hidden guard: the variable the writer named that held a borrow through it
+    uint32_t narrow;    // a name narrowed by a test or a store: its stand-in's index (pwNarrowName), else 0
+    uint8_t narrowed;   // it is such a stand-in, bearing the name it stands for
+    uint8_t compound;   // it is the stand-in for the place a compound assignment writes (pwCompoundPlace)
+    uint8_t indexed;    // it is the stand-in for the place an index picks from (pwIndexStandIn)
+    uint8_t swapped;    // ... or for one side of a swap, while the other side is made (pwSwap)
+    uint8_t yielded;    // a temporary's stand-in that goes on holding what it held when the statement ends (pwYieldStandIn)
 } PathVar;
 
 // The variables the current walk has met, by index; index 0 is unused

@@ -1,0 +1,155 @@
+// A store through a reference to a reference ('**m') lands in what the reference
+// read from it borrows. A 'uni' reference read that way is no exception: what it
+// points at is reached by it alone only while nothing else can reach the reference,
+// and 'm' is exactly that. So the store is asked of every borrow into the value the
+// 'uni' reference borrows, as a store through the name 'r' is, at any depth
+// (collection_store_through_ref_success holds what is accepted beside each refusal).
+
+mod collection_flow_store_through_ref;
+
+import collections use *;
+
+enum Shape {
+  struct Circle { pub r: i32; }
+  struct Square { pub s: i32; }
+}
+use Shape;
+
+fn oneList() List[i32] {
+  var l = List[i32]();
+  l.push(7i32);
+  l
+}
+
+// The list an element was borrowed from through 'r' is replaced through 'm'
+fn listReplaced() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let m = &mut r;
+  let v = &(*r)[0usize];
+  **m = List[i32]();             //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// Three levels deep
+fn threeDeep() i32 {
+  var l = oneList();
+  var r = &uni l;
+  var m = &mut r;
+  let n = &mut m;
+  let v = &(*r)[0usize];
+  ***n = List[i32]();            //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// The 'uni' reference is a struct's field, the field lent 'mut'
+struct Holder {
+  pub r: &uni List[i32];
+}
+
+fn fieldLent() i32 {
+  var l = oneList();
+  var w = Holder(&uni l);
+  let m = &mut w.r;
+  let v = &(*w.r)[0usize];
+  **m = List[i32]();             //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// A struct's field holding the 'mut' reference to the 'uni' one
+struct Keeper {
+  pub m: &mut &uni List[i32];
+}
+
+fn fieldHolds() i32 {
+  var l = oneList();
+  var r = &uni l;
+  var w = Keeper(&mut r);
+  let v = &(*r)[0usize];
+  **w.m = List[i32]();           //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// A '&uni' borrow of the 'mut' reference reads through it as well
+fn uniOfMut() i32 {
+  var l = oneList();
+  var r = &uni l;
+  var m = &mut r;
+  let v = &(*r)[0usize];
+  let n = &uni m;
+  ***n = List[i32]();            //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// Swapped with another list
+fn swapped() i32 {
+  var l = oneList();
+  var other = List[i32]();
+  var r = &uni l;
+  let m = &mut r;
+  let v = &(*r)[0usize];
+  **m <-> other;                 //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// A field of the struct the 'uni' reference borrows, holding the list
+struct Crate {
+  pub items: List[i32];
+}
+
+fn fieldReplaced() i32 {
+  var c = Crate(oneList());
+  var r = &uni c;
+  let m = &mut r;
+  let v = &(*r).items[0usize];
+  (**m).items = List[i32]();     //~ ErrorShapeStore "This store could change the shape of a 'List'"
+  *v
+}
+
+// A Dict in place of the List
+fn dictReplaced() i32 {
+  var d = Dict[i32, i32]();
+  d.insert(1i32, 7i32);
+  var r = &uni d;
+  let m = &mut r;
+  let key = 1i32;
+  match (*r).get(&key) {
+    case let Some(g) {
+      **m = Dict[i32, i32]();    //~ ErrorShapeStore "This store could change the shape of a 'Dict'"
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+// An enum's variant: the reference narrowed by a 'match' on a borrow of '*r'
+fn variantReplaced() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let m = &mut r;
+  match &*r {
+    case let &Circle(c) {
+      **m = Square(99);
+      return c.r;                //~ ErrorVariantReshape "is used here after the store"
+    }
+    else {}
+  }
+  0i32
+}
+
+// ... and by a borrow made before the 'match'
+fn variantReplacedBound() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let m = &mut r;
+  let x: &Shape = &*r;
+  match x {
+    case let &Circle(c) {
+      **m = Square(99);
+      return c.r;                //~ ErrorVariantReshape "is used here after the store"
+    }
+    else {}
+  }
+  0i32
+}

@@ -127,6 +127,14 @@ void swapFlow(FlowState *fstate, SwapNode **nodep) {
     flowGateAssigned(fstate, node->rval);
     flowGateShapeStore(fstate, node->lval);
     flowGateShapeStore(fstate, node->rval);
+    flowGateSwap(fstate, node->lval, node->rval);
     flowLoadValue(fstate, &node->lval);
     flowLoadValue(fstate, &node->rval);
+    // The left side's address is made before the right side runs, and written through after.
+    // The walk above met its owner before any move in the right side, so a move still
+    // standing is left to the path walk, where the write's drop use meets it
+    VarDclNode *root = isNameUseNode(node->lval) ? (VarDclNode *)((NameUseNode *)node->lval)->dclnode
+        : flowLvalRootVar(node->lval);
+    if (root && root->tag == VarDclTag && (root->flowtempflags & (VarMoved | VarHollow)))
+        fstate->dropgate = 1;
 }

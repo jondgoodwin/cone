@@ -31,7 +31,8 @@ enum FlowGate {
     FlowGateStore  = 0x4,   // a call with a '&mut X' argument, X carrying a borrow, or a struct holding
                             // such a writable borrow, beside another argument carrying one; or a literal
                             // of two such values (flowGateJoinAsk)
-    FlowGateInCall = 0x8,   // a variable named while an operand's borrow of it waits for its call or literal
+    FlowGateInCall = 0x8,   // a variable named or stored over while an operand's borrow of it waits for its call
+                            // or literal, or the temporary of a '<-' with several entries keeps it
     FlowGateBoxed  = 0x10,  // a value whose type carries a borrow converted to an owning virtual reference
     FlowGateShape  = 0x20,  // a method call lending a borrow of a value that may change shape (a list, a string)
                             // reached through a reference, transient or not, in a function that also makes a
@@ -58,6 +59,7 @@ typedef struct FlowState {
     uint8_t shapeglobal;    // FlowGateShape: the borrow was lent from a 'var' global, which any call may write
     uint8_t inflightkeep;   // FlowGateInCall: the call or literal about to be walked is an operand whose value
                             // may carry a borrow, so what its own operands lend waits for the one around it too
+    uint8_t narrowname; // FlowGateShape: a test or a store narrowed a name itself (pwNarrowName)
     uint8_t intrinsic;  // The function is an '@intrinsic' (a fallback body), which may move a value out through a raw pointer
     Nodes *awaits;     // Each 'await' the walk met, a seam the loan walk applies its rules to, or NULL
     Nodes *hollowvars; // Each variable the walk has hollowed (VarHollow), for the seams that find it so, or NULL
@@ -173,6 +175,8 @@ void flowGateResultAsk(FlowState *fstate, INode *type);
 void flowGateCallAsk(FlowState *fstate, Nodes *args);
 // An operand just walked may be a borrow
 void flowGateOperandAsk(FlowState *fstate, INode *operand);
+// A place is stored over while operands' borrows wait
+void flowGateStoredAsk(FlowState *fstate, INode *place);
 // A conversion may make an owning virtual reference of a value holding a borrow
 void flowGateBoxedAsk(FlowState *fstate, INode *cast);
 // A literal may give a field holding only ''static' borrows a value holding one
@@ -183,6 +187,14 @@ void flowGateJoinAsk(FlowState *fstate, Nodes *elems);
 void flowGateShapeAsk(FlowState *fstate, INode *call);
 // A call with a writable argument
 void flowGateShapeWrite(FlowState *fstate, Nodes *args);
+// A store, which may be the one that ends a compound assignment through a temporary
+void flowGateCompound(FlowState *fstate, INode *lval, INode *rval);
+// An index of a place, whose address is made before the index is
+void flowGateIndex(FlowState *fstate, INode *index);
+// A swap, whose left side's address is made before the right side is
+void flowGateSwap(FlowState *fstate, INode *lval, INode *rval);
+// Does making this value do no more than read?
+int flowGateOnlyReads(INode *node);
 // A call's or literal's operands are about to be walked: whether it is itself an
 // operand whose value may carry a borrow (flowGateOperandNext), read once and cleared
 static inline uint8_t flowGateOperandsKeep(FlowState *fstate) {

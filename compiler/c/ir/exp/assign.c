@@ -442,8 +442,9 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
                 narrowAssigned(*elemp, NULL);
         }
     }
-    else if (!assignIsAnon(lval))
-        narrowAssigned(lval, assignOneTakesTuple(node) || node->rval->tag != VTupleTag ? node->rval : NULL);
+    else if (!assignIsAnon(lval)
+            && narrowAssigned(lval, assignOneTakesTuple(node) || node->rval->tag != VTupleTag ? node->rval : NULL))
+        node->flags |= FlagNarrowAssigned;
     // A store through a reference or a field may change an enum another name reaches
     if (!assignIsAnon(lval) && !(isNameUseNode(lval) && isExpNode(lval)))
         narrowCallMade((INode*)node);
@@ -715,6 +716,7 @@ static void assignFlowLvalReads(FlowState *fstate, INode **lvalp) {
     case ArrIndexTag: {
         FnCallNode *index = (FnCallNode *)*lvalp;
         assignFlowLvalReads(fstate, &index->objfn);
+        flowGateIndex(fstate, (INode *)index);
         flowLoadValue(fstate, &nodesGet(index->args, 0));
         break;
     }
@@ -754,6 +756,7 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
             assignFlowLvalReads(fstate, &node->lval);
         flowGateAssigned(fstate, node->lval);
         flowGateShapeStore(fstate, node->lval);
+        flowGateCompound(fstate, node->lval, node->rval);
     }
 
     // Handle tuple decomposition for parallel assignment

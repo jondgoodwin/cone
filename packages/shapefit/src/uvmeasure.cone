@@ -1,0 +1,95 @@
+// ======== UV stretch: how far a texture's map to the surface departs from a similarity ========
+//
+// The texture map of a triangle takes the plane of its uvs to the plane of its three-dimensional corners. Its
+// derivative, a 3 x 2 matrix J, has two singular values: sigma1 >= sigma2, the greatest and least stretch (a
+// unit square of uv becomes sigma1 by sigma2 on the surface, at most). Their ratio sigma1 / sigma2 is the
+// stretch of that triangle (1 where the map is a similarity: a texture keeps its shape), and sqrt(sigma1
+// sigma2) its texel scale (surface length per unit of uv; it is the same everywhere when texels are an even
+// size). This is the metric of Sander, Snyder, Gortler and Hoppe, "Texture mapping progressive meshes" (2001),
+// with the ratio in place of their root-mean-square, which hides a one-sided stretch. Houdini's UV quality
+// and Blender's UV stretching overlay show the same angle- and area-distortion.
+//
+// The map's J is [e1 e2] [d1 d2]^-1, e the triangle's edges from its first corner and d the uv's; JtJ is a
+// 2 x 2 matrix whose eigenvalues are sigma1^2 and sigma2^2. Faces are cut into triangles as
+// PolyMesh.cutFace cuts them. A triangle with no uv area, or no area in space, has no map and is left out.
+
+// The stretch of a mesh's uv map, over its triangles (see the top of this file)
+pub struct UvStretch {
+  pub triangles: u32;     // the triangles measured
+  pub median: f32;        // sigma1 / sigma2 of each triangle's uv-to-surface map: 1 is no stretch
+  pub p95: f32;
+  pub max: f32;
+  pub scaleP5: f32;       // sqrt(sigma1 sigma2) over its median: how even the texel size is
+  pub scaleP95: f32;
+}
+
+// The p-quantile (0 to 1) of an ascending list by linear interpolation between its values
+fn quantileOf(sorted: &List[f32], p: f32) f32 {
+  let n = sorted.len();
+  if n == 0usize { return 0.; }
+  let pos = p * f32.from(n - 1usize);
+  var lo = usize.from(pos);
+  if lo >= n - 1usize { lo = n - 1usize; }
+  let hi = if lo + 1usize < n {lo + 1usize} else {lo};
+  let f = pos - f32.from(lo);
+  *sorted[lo] + (*sorted[hi] - *sorted[lo]) * f
+}
+
+// Stretch and texel scale of the mesh's corner channel "uv" (an empty measure, all 0, if it has none)
+pub fn uvStretch(m: &PolyMesh) UvStretch {
+  let ch = m.findVec2Channel(CornerDomain, "uv");
+  var stretch = List[f32]();
+  var scale = List[f32]();
+  if ch != NoIndex {
+    var tris = List[u32]();
+    var f = 0usize;
+    while f < m.faceCount() {
+      let face = u32.from(f);
+      let hs = m.faceHalfedges(face);
+      let pts = m.facePositions(face);
+      tris.clear();
+      m.cutFace(face, &mut tris);
+      var t = 0usize;
+      while t + 2usize < tris.len() {
+        let a = usize.from(*tris[t]);
+        let b = usize.from(*tris[t + 1usize]);
+        let c = usize.from(*tris[t + 2usize]);
+        let e1 = DVec3.from(*pts[b] - *pts[a]);
+        let e2 = DVec3.from(*pts[c] - *pts[a]);
+        let ua = m.vec2(ch, *hs[a]);
+        let ub = m.vec2(ch, *hs[b]);
+        let uc = m.vec2(ch, *hs[c]);
+        let d1x = f64.from(ub.x) - f64.from(ua.x);
+        let d1y = f64.from(ub.y) - f64.from(ua.y);
+        let d2x = f64.from(uc.x) - f64.from(ua.x);
+        let d2y = f64.from(uc.y) - f64.from(ua.y);
+        let det = d1x * d2y - d1y * d2x;
+        if det.abs() > 1.0e-30 {
+          let ju = (e1 * d2y - e2 * d1y) * (1.0 / det);
+          let jv = (e2 * d1x - e1 * d2x) * (1.0 / det);
+          let p = ju.dot(ju);
+          let q = ju.dot(jv);
+          let r = jv.dot(jv);
+          let mid = (p + r) * 0.5;
+          let rad = (((p - r) * 0.5) * ((p - r) * 0.5) + q * q).sqrt();
+          let l1 = mid + rad;
+          let l2 = mid - rad;
+          if l2 > 1.0e-30 * l1 && l2 > 0.0 {
+            stretch.push(f32.from((l1 / l2).sqrt()));
+            scale.push(f32.from((l1 * l2).sqrt().sqrt()));
+          }
+        }
+        t = t + 3usize;
+      }
+      f = f + 1usize;
+    }
+  }
+  let n = stretch.len();
+  if n == 0usize { return UvStretch(0u32, 0., 0., 0., 0., 0.); }
+  stretch.sort();
+  scale.sort();
+  let med = quantileOf(&scale, 0.5);
+  let inv = if med > 0. {1. / med} else {1.};
+  UvStretch(u32.from(n), quantileOf(&stretch, 0.5), quantileOf(&stretch, 0.95), *stretch[n - 1usize],
+    quantileOf(&scale, 0.05) * inv, quantileOf(&scale, 0.95) * inv)
+}

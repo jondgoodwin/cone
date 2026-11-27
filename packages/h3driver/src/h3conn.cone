@@ -15,10 +15,11 @@
 //   pollTimeout()           the Instant to wake at (QUIC's wake time, clamped: WAKE TIMES)
 //   ids(out) idsEpoch()     the connection IDs it answers to, for the host's routing table
 // A TURN is the host's call of datagramIn or handleTimeout (or the calls it makes above the wire),
-// then takeDatagram until it gives None (finishTurn does what the last call would). Each call of
-// takeDatagram first moves the value as far as it goes on what it was given (QUIC's events, the
-// bytes HTTP/3 has credit for, HTTP/3's events and what it writes: up to 'maxRounds' rounds, then
-// 'wantsTurn' says another turn is owed), then polls QUIC once.
+// then startTurn, then takeDatagram until it gives None (finishTurn does what the last call would).
+// Each call of takeDatagram first moves the value as far as it goes on what it was given (QUIC's
+// events, the bytes HTTP/3 has credit for, HTTP/3's events and what it writes: up to 'maxRounds'
+// rounds, then 'wantsTurn' says another turn is owed, until a startTurn takes it up), then polls QUIC
+// once.
 //
 // WAKE TIMES. QUIC has no handleTimeout: a wake time that has come is acted on by the next
 // pollTransmit, which every turn makes once at least. Under loss ngtcp2 can keep the wake time at
@@ -494,6 +495,17 @@ pub struct H3Conn is Move {
     answer(self, slot.index, EventKind.Cancelled, Failure.none(), now);
     work = true;
     true
+  }
+
+  // Give up a server's request whose response cannot be sent: both ways reset, H3_REQUEST_REJECTED when the program
+  // has not had it (no response head queued), else H3_INTERNAL_ERROR. Dropping a HEADERS section still queued strands
+  // no QPACK reference: the peer, seeing the reset, sends a Stream Cancellation (RFC 9204, 4.4.2)
+  fn refuseResponse(self: &mut, slot: RecId, processed: bool, now: Instant) {
+    if !self.live(slot) {return;}
+    let sid = streams.borrow(slot).unwrap().id;
+    h.reset(sid, if processed {http3.h3InternalError} else {http3.h3RequestRejected});
+    answer(self, slot.index, EventKind.Cancelled, Failure.none(), now);
+    work = true;
   }
 
   // End it gracefully: a GOAWAY, what is open finishes, then the close

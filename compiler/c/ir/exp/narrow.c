@@ -102,11 +102,20 @@ static NarrowCall *gCalls;
 static uint32_t gTestBase;      // the first of gTests that is the function being checked's
 static uint32_t gWalkStamp;
 
-// The calls made on the path when each test was checked, by its node
-typedef struct { INode *test; NarrowCall *calls; } NarrowTest;
+// The calls made on the path when each test was checked, by its node, and how many of
+// gChanged had been
+typedef struct { INode *test; NarrowCall *calls; uint32_t changed; } NarrowTest;
 static NarrowTest *gTests;
 static uint32_t gTestUsed;
 static uint32_t gTestCap;
+
+// The variables changed (narrowKill) from the function's first test on, narrowed or not, in
+// order: a condition's tests are asked again for its later operands and its branch, and
+// one whose name has been changed since says nothing then. Not gKills, which holds only
+// the changes that ended a narrowing, and gives some back
+static VarDclNode **gChanged;
+static uint32_t gChangedUsed;
+static uint32_t gChangedCap;
 
 static uint64_t narrowAll(uint32_t n) {
     return n >= 64 ? ~(uint64_t)0 : (((uint64_t)1 << n) - 1);
@@ -365,15 +374,42 @@ void narrowFnEnd(NarrowFnSave *save) {
 
 // ---- Calls between a test and where it is protected ----
 
-// A test was type checked: the calls made so far
+// A test was type checked: the calls and changes made so far
 void narrowNoteTest(INode *test) {
+    if (gTestUsed == 0)
+        gChangedUsed = 0;
     if (gTestUsed == gTestCap) {
         gTestCap = gTestCap ? gTestCap * 2 : 32;
         gTests = (NarrowTest *)realloc(gTests, gTestCap * sizeof(NarrowTest));
     }
     gTests[gTestUsed].test = test;
     gTests[gTestUsed].calls = gCalls;
+    gTests[gTestUsed].changed = gChangedUsed;
     ++gTestUsed;
+}
+
+static void narrowChangeMade(VarDclNode *var) {
+    if (gTestUsed <= gTestBase)
+        return;
+    if (gChangedUsed == gChangedCap) {
+        gChangedCap = gChangedCap ? gChangedCap * 2 : 32;
+        gChanged = (VarDclNode **)realloc(gChanged, gChangedCap * sizeof(VarDclNode *));
+    }
+    gChanged[gChangedUsed++] = var;
+}
+
+// Was 'var' changed after 'test' was type checked? A later operand of the test's
+// condition did it, so what the test found no longer holds
+static int narrowChangedSince(INode *test, VarDclNode *var) {
+    for (uint32_t i = gTestUsed; i > gTestBase; --i) {
+        if (gTests[i - 1].test != test)
+            continue;
+        for (uint32_t k = gTests[i - 1].changed; k < gChangedUsed; ++k)
+            if (gChanged[k] == var)
+                return 1;
+        return 0;
+    }
+    return 0;
 }
 
 // A call, or a store through a name, was type checked: it may change the variant of an enum
@@ -467,6 +503,16 @@ static void narrowAssumeVar(VarDclNode *var, StructNode *enumdcl, int shared, ui
         if (fact->possible == 0)
             fact->possible = narrowAll(fact->nvariants);
     }
+    // The loan walk is told of a test the name itself is narrowed by, and whether what is
+    // known after it rests on this test alone or on what was known before it too
+    if (!shared && test != NULL) {
+        uint64_t all = narrowAll(fact->nvariants);
+        test->flags |= FlagNarrowTest;
+        if (fact->possible != (truth ? bits : all & ~bits) && fact->possible != all)
+            test->flags |= FlagNarrowKeeps;
+        else if (truth)
+            test->flags |= FlagNarrowArmAlone;
+    }
     // A test made in this pass of a loop is a narrowing made in it
     if (narrowIsSingle(fact->possible))
         narrowFresh(fact, test);
@@ -484,7 +530,7 @@ static void narrowAssumeCond(INode *cond, int truth) {
             || castPatternPending(isnode->typ))
             return;
         VarDclNode *var = narrowVarOf(isnode->exp);
-        if (var == NULL)
+        if (var == NULL || narrowChangedSince(cond, var))
             return;
         int isref, shared;
         StructNode *enumdcl = narrowEnumOfVar(var, &isref, &shared);
@@ -577,6 +623,7 @@ static void narrowKillFact(NarrowFact *fact, INode *cause) {
 }
 
 void narrowKill(VarDclNode *var, INode *cause) {
+    narrowChangeMade(var);
     NarrowFact *fact = narrowFind(var);
     if (fact == NULL)
         return;
@@ -585,33 +632,33 @@ void narrowKill(VarDclNode *var, INode *cause) {
     narrowKillFact(fact, cause);
 }
 
-void narrowAssigned(INode *lval, INode *rval) {
+int narrowAssigned(INode *lval, INode *rval) {
     if (lval == NULL)
-        return;
+        return 0;
     // '*s = v' through a reference variable replaces the value it points at
     if (lval->tag == DerefTag) {
         VarDclNode *refvar = narrowVarOf(((StarNode *)lval)->vtexp);
         if (refvar != NULL)
             narrowKill(refvar, lval);
-        return;
+        return 0;
     }
     VarDclNode *var = narrowVarOf(lval);
     if (var == NULL)
-        return;
+        return 0;
     narrowKill(var, lval);
     // A variant stored is the variant it holds
     int isref, shared;
     StructNode *enumdcl = narrowEnumOfVar(var, &isref, &shared);
     if (enumdcl == NULL || isref || rval == NULL)
-        return;
+        return 0;
     INode *value = rval;
     while (value->tag == CastTag && !(value->flags & FlagConvert))
         value = ((CastNode *)value)->exp;
     if (!isExpNode(value))
-        return;
+        return 0;
     uint32_t idx = narrowIndexOf(enumdcl, iexpGetTypeDcl(value));
     if (idx == ~0u)
-        return;
+        return 0;
     NarrowFact *fact = narrowFind(var);
     if (fact == NULL)
         fact = narrowAdd(var, enumdcl, 0);
@@ -620,6 +667,7 @@ void narrowAssigned(INode *lval, INode *rval) {
     gLocalAssume = 0;
     narrowFresh(fact, NULL);
     gLocalAssume = svlocal;
+    return 1;
 }
 
 void narrowDeclared(VarDclNode *var) {
@@ -657,8 +705,11 @@ void narrowBorrowed(INode *place, INode *perm, INode *pointee) {
     NarrowFact *fact = narrowFind(var);
     if (fact == NULL || !(permGetFlags(perm) & MayWrite))
         return;
-    // Only a borrow of the whole enum may store another variant in it
-    if (itypeGetTypeDcl(pointee) != (INode *)fact->enumdcl)
+    // Only a borrow of the whole enum may store another variant in it. One of a reference
+    // variable itself ('&mut p') is such a route: it stores over the enum through the
+    // reference ('**r = v'), or points the name at another value ('*r = o')
+    int ofrefvar = place == root && itypeGetTypeDcl(var->vtype)->tag == RefTag;
+    if (!ofrefvar && itypeGetTypeDcl(pointee) != (INode *)fact->enumdcl)
         return;
     narrowKill(var, place);
 }

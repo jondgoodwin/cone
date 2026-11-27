@@ -1,0 +1,85 @@
+// A swap makes the address of its left side, then its right side, and only then uses both.
+// Where the left side is in a variant of an enum, a right side that could change which
+// variant the enum holds is refused, or the exchange would be made in another variant's
+// bytes. With the sides the other way round, the narrowed name is used after the change.
+// enum_swap_index_success holds what is accepted beside each.
+
+mod enum_flow_swap_index;
+
+enum Slot {
+  struct Text { pub s: &str; }
+  struct Num { pub a: usize; pub r: Array[usize, 3]; }
+}
+use Slot;
+
+fn change(m: &mut Slot) usize {
+  *m = Text("0123456789");
+  0usize
+}
+fn changeThen(m: &mut Slot, n: &'a mut usize) &'a mut usize {
+  *m = Text("0123456789");
+  n
+}
+
+fn element(n: &mut Slot, m: &mut Slot) {
+  var x = [100000usize, 1usize];
+  if n is Num {
+    n.r[0usize] <-> x[change(m)];       //~ ErrorVariantReshape "One side of this swap is in one of the variants"
+  }
+}
+
+fn otherWayRound(n: &mut Slot, m: &mut Slot) {
+  var x = [100000usize, 1usize];
+  if n is Num {
+    x[change(m)] <-> n.r[0usize];       //~ ErrorVariantReshape
+  }
+}
+
+fn field(n: &mut Slot, m: &mut Slot) {
+  var x = [100000usize, 1usize];
+  if n is Num {
+    n.a <-> x[change(m)];               //~ ErrorVariantReshape "made in the other side, could change which variant"
+  }
+}
+
+fn stored(n: &mut Slot, m: &mut Slot) {
+  var x = [100000usize, 1usize];
+  if n is Num {
+    n.a <-> x[{*m = Text("0123456789"); 0usize}];    //~ ErrorVariantReshape "One side of this swap"
+  }
+}
+
+fn boundReference(n: &mut Slot, m: &mut Slot) {
+  var x = [100000usize, 1usize];
+  if n is Num {
+    let p = &mut n.r;
+    p[0usize] <-> x[change(m)];         //~ ErrorVariantReshape "One side of this swap"
+  }
+}
+
+fn patternBinding(n: &mut Slot, m: &mut Slot) {
+  var x = [100000usize, 1usize];
+  if let Num(c) = n {
+    c.r[0usize] <-> x[change(m)];       //~ ErrorVariantReshape "One side of this swap"
+  }
+}
+
+fn byValue() {
+  var s: Slot = Num(1usize, [2usize, 3usize, 4usize]);
+  let m = &mut s;
+  var x = [100000usize, 1usize];
+  if s is Num {
+    s.a <-> x[change(m)];               //~ ErrorVariantReshape
+  }
+}
+
+// The right side reached through what a call returns
+fn returned(n: &mut Slot, m: &mut Slot) {
+  var y = 100000usize;
+  if n is Num {
+    n.a <-> *changeThen(m, &mut y);     //~ ErrorVariantReshape "One side of this swap"
+  }
+}
+
+fn main() {
+}

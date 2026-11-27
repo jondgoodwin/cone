@@ -32,7 +32,8 @@ void narrowFnEnd(NarrowFnSave *save);
 
 // 'cond', a type checked condition, is known true (or false): what that says of the
 // names it tests. The second form is for the right operand of '&&' or '||', where the
-// knowledge is good for that operand alone.
+// knowledge is good for that operand alone. Neither takes anything from a test whose
+// name has changed since the test was checked: a later operand of the condition did it.
 void narrowAssume(INode *cond, int truth);
 void narrowAssumeLocal(INode *cond, int truth);
 
@@ -46,8 +47,8 @@ void narrowKill(VarDclNode *var, INode *cause);
 uint32_t narrowKillMark(void);
 void narrowKillDrop(uint32_t mark);
 
-// 'var = value' was type checked
-void narrowAssigned(INode *lval, INode *rval);
+// 'var = value' was type checked. Returns 1 where it narrows the name to the variant stored
+int narrowAssigned(INode *lval, INode *rval);
 
 // 'var' was declared with a value of a variant of its enum
 void narrowDeclared(VarDclNode *var);

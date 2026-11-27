@@ -143,6 +143,7 @@ struct TimerCell {
   hword: Atomic[u64];         // a held cell's word (THE HELD TIMER)
   want: Atomic[i64];          // a held cell's deadline, noDue for none: written by its holder only
   hentry: Atomic[u64];        // a held cell's live wheel entry (a TimerId's word), written by whoever holds hBusy
+  own: Reply;                 // beside a held cell's 'reply' that is a future's: the actor, counted (heldKeep)
 }
 
 struct TimerChunk {
@@ -267,7 +268,7 @@ fn cellTake(ts: *TimerStore) *TimerCell {
       let c = block + i;
       mem.writeRaw[TimerCell](c, TimerCell(Atomic[u64].of(cellGenStep), (*ts).free, null, ts,
         TimerId.none(), 0i64, 0i64, 0u32, Reply(), None, &noAnswer,
-        Atomic[u64].of(0u64), Atomic[i64].of(noDue), Atomic[u64].of(0u64)));
+        Atomic[u64].of(0u64), Atomic[i64].of(noDue), Atomic[u64].of(0u64), Reply()));
       (*ts).free = c;
     }
     (*ch).next = (*ts).chunks;
@@ -1031,7 +1032,33 @@ pub fn timerStats() TimerStats {
 // A parked next() holds a count of its actor, as every await does, so an
 // actor with its loop parked lives until stop() or the cancel; one dropped with
 // no waiter frees the cell at its end (or, its arrive still in flight, leaves
-// that to timerArrive). Dead entries and a stale Wakeup find the cell's
+// that to timerArrive). Winning the waiter does not give a thread the cell to
+// itself: a cancel or the stop's walk, off the actor, reads the Reply after
+// its CAS, while the actor may drop the Timer. So that CAS sets hTaking, and a
+// Timer dropped meanwhile leaves the freeing to the taker (heldTaken), as it
+// leaves it to timerArrive: a cell is not freed, and so not taken by another,
+// while a thread has still to read a Reply out of it (tests/heldtake.cone).
+// A parked next()'s Reply names the actor that awaits it, or is a FUTURE'S, as
+// orCancelledOp makes: it names no actor. Either way the arrive slot goes to
+// the Timer's actor and timerArrive decides there; a future's is then answered
+// as any answer is, by answerNowIn. For a future's the actor is the one that
+// ran the seam, and the cell holds the count of it the future's Reply does not,
+// as a Reply to it that is never sent ('own', heldKeep): a publish hands that
+// count to the slot, and every other end of the wait drops it (heldDisown;
+// tests/timerwrap.cone).
+// A WAIT THE WRAPPER'S CANCEL LEFT BEHIND. Once the cancel has won, the code
+// that awaited has gone on, and the next() stays parked with a Reply nobody
+// reads. A next() awaited then TAKES IT OVER: the old Reply is answered (a
+// late answer, so what is owed stays exact) and the new one waits for the same
+// tick, in the old one's place. Whether the wait is cancelled is read from the
+// wrapper's cell, reached through the future's one waiter (heldWoken): the
+// cancel moves the cell's state before it answers, so the code it woke always
+// sees it. A wait still live is two awaits on one Timer, a panic. A parked
+// waiter is taken by the CAS that clears hWaiter before its Reply is read. One
+// in flight is the actor's to change once the publisher has read the actor out
+// of the cell: hSending is set by the fire's CAS until heldPublish has
+// (tests/timeragain.cone).
+// Dead entries and a stale Wakeup find the cell's
 // generation or life moved, and cells are never unmapped. At THE STOP each
 // store's walk lets its parked waiters go unanswered, as it does armed sleeps.
 // Every wheel operation here runs on the wheel's owner, under THE WHEEL WORD,
@@ -1048,7 +1075,9 @@ const hEnded = 8u64;       // stopped, cancelled or dropped: next() answers fals
 const hByGroup = 16u64;    // ... and it was the group's cancel
 const hBusy = 32u64;       // the filer is writing 'hentry'
 const hMoved = 64u64;      // an earlier move came while it was: the filer looks again
-const hGone = 128u64;      // the Timer was dropped with an arrive in flight: timerArrive frees the cell
+const hGone = 128u64;      // the Timer was dropped with an arrive in flight, or its Reply being taken: timerArrive, or the taker, frees the cell
+const hTaking = 256u64;    // the thread that ended a parked next() has yet to read its Reply out (heldTaken)
+const hSending = 512u64;    // the fire has yet to read the actor out of the cell for its arrive slot (heldSent)
 const hFilerMask = 0xFFFF0000u64;
 const hGenMask = 0xFFFF00000000u64;
 const hLifeMask = 0xFFFF000000000000u64;
@@ -1316,6 +1345,7 @@ fn heldStop(xs: *TimerStore, c: *TimerCell) {
       }
       if take {
         (*(*c).store).waiters.sub(1u64);
+        heldDisown(c);
         var r = cellReply(c);
         answerNowIn[bool](&mut r, false);
       }
@@ -1340,19 +1370,48 @@ fn heldEnd(c: *TimerCell, sw: u64, life: u64, byGroup: bool) bool {
     var nw = w | hEnded;
     if byGroup {nw = nw | hByGroup;}
     let take = (w & hWaiter) != 0u64 && (w & hInflight) == 0u64;
-    if take {nw = nw & ~hWaiter;}
+    if take {nw = (nw & ~hWaiter) | hTaking;}
     let seen, ok = (*c).hword.compareSwap(w, nw);
     if ok {
       if take {
         (*(*c).store).waiters.sub(1u64);
         (*(*c).store).cancels.addOrdered(1u64, MemOrder.Relaxed);
-        var r = cellReply(c);
+        // while hTaking still keeps the cell
+        heldDisown(c);
+        var r = heldTaken(c);
         answerNowIn[bool](&mut r, false);
       }
       return true;
     }
   }
   false
+}
+
+// The parked Reply out of a held cell, for a thread that has just taken the
+// waiter from outside the actor (heldEnd, heldDrop) and set hTaking in the
+// same CAS. Until hTaking is cleared here the cell is not freed, so no other
+// Timer can have put its own Reply in it; the actor's drop of the Timer
+// meanwhile leaves the freeing to this thread (hGone). The caller does not
+// touch the cell after
+fn heldTaken(c: *TimerCell) Reply {
+  if stallState.loadOrdered(MemOrder.Relaxed) != 0u32 {
+    stallHere(4u32);
+  }
+  let r = cellReply(c);
+  var w = (*c).hword.load();
+  while true {
+    let seen, ok = (*c).hword.compareSwap(w, w & ~hTaking);
+    if ok {
+      break;
+    }
+    w = seen;
+  }
+  if (w & hGone) != 0u64 {
+    // retired, whichever thread this is: it may be under the group's lock, and freeing a cell drops its group
+    (*(*c).store).held.sub(1u64);
+    cellRetire(c);
+  }
+  r
 }
 
 // A held cell's Wakeup in its group's registry (watchHere), for one life of
@@ -1380,10 +1439,11 @@ fn heldDrop(c: *TimerCell) {
     if (w & hWaiter) == 0u64 {
       return;
     }
-    let seen, ok = (*c).hword.compareSwap(w, (w & ~hWaiter) | hEnded);
+    let seen, ok = (*c).hword.compareSwap(w, (w & ~hWaiter) | hEnded | hTaking);
     if ok {
       (*(*c).store).dropped.addOrdered(1u64, MemOrder.Relaxed);
       let st = (*c).store;
+      heldDisown(c);
       dropWaiter(c);
       // After the reply has gone, so that an actor it was the last count of has died (THE STOP WAITS FOR THE DEATHS)
       (*st).waiters.sub(1u64);
@@ -1393,7 +1453,43 @@ fn heldDrop(c: *TimerCell) {
 }
 
 fn dropWaiter(c: *TimerCell) {
-  let r = cellReply(c);
+  let r = heldTaken(c);
+}
+
+// A parked next()'s Reply into its cell. A Reply to an actor names it and holds
+// a count of it. A future's names none (orCancelledOp's): the actor is the one
+// running the seam, whose Timer this is, and the count is taken here, so that a
+// parked next() holds one of its actor either way
+fn heldKeep(c: *TimerCell, r: Reply) {
+  var own = Reply();
+  if r.to as usize == 0usize {
+    let h = curActor as *Header;
+    if h as usize == 0usize {
+      die("actors: a Timer's next() awaited outside a behaviour");
+    }
+    holdHeader(h);
+    own.to = h;
+  }
+  // written raw: after a publish 'own' names an actor whose count went with the slot
+  mem.writeRaw[Reply](&(*c).own as *Reply, own);
+  mem.writeRaw[Reply](&(*c).reply as *Reply, r);
+}
+
+// The actor of the parked next(): where its arrive slot goes
+fn heldActor(c: *TimerCell) *Header {
+  let h = (*c).reply.to;
+  if h as usize != 0usize {h} else {(*c).own.to}
+}
+
+// The count held beside a future's Reply let go, for a wait that ends with no
+// arrive slot to carry it ('own' is blank beside a Reply to an actor, which
+// carries its own). Called while the cell is still the wait's, and before the
+// Reply is answered or dropped: whoever waits on the future holds a count of the
+// actor until then, so this one is not the last
+fn heldDisown(c: *TimerCell) {
+  // moved out as cellReply moves the Reply, and dropped here, unsent
+  let r = mem.readRaw[Reply](&(*c).own as *Reply);
+  mem.writeRaw[Reply](&(*c).own as *Reply, Reply());
 }
 
 // THE FIRE for one held entry that came up in this wheel (the owner's step, and
@@ -1431,7 +1527,7 @@ fn heldFire(ts: *TimerStore, tok: u64, now: i64) bool {
         return false;
       }
     } else if (w & hWaiter) != 0u64 {
-      let seen, ok = (*c).hword.compareSwap(w, (w & ~(hFiled | hWaiter)) | hInflight);
+      let seen, ok = (*c).hword.compareSwap(w, (w & ~(hFiled | hWaiter)) | hInflight | hSending);
       if ok {
         (*(*c).store).waiters.sub(1u64);
         heldPublish(c);
@@ -1453,14 +1549,18 @@ fn heldFire(ts: *TimerStore, tok: u64, now: i64) bool {
 // by, and the cell is no record). The count the waiter's Reply held goes with
 // it (the scheduler's owner, or let go)
 fn heldPublish(c: *TimerCell) {
-  let h = (*c).reply.to;
+  let h = heldActor(c);
   // THE STOP'S GATE, for a plain thread (a deputy): refused, the waiter is let go unanswered
   let plain = me == 0usize && stopperHere == 0usize;
   if plain && !gateEnter() {
     refuseSend(0u64);
+    heldDisown(c);
     let r = cellReply(c);
+    heldSent(c);
     return;
   }
+  // past the last read of the cell's Replies here: a next() taking over may change them
+  heldSent(c);
   if running.load() == 0usize {
     die("actors: a timer's fire after the runtime stopped");
   }
@@ -1484,6 +1584,18 @@ fn heldPublish(c: *TimerCell) {
   }
   if plain {
     gateLeave();
+  }
+}
+
+// hSending cleared, if the fire set it
+fn heldSent(c: *TimerCell) {
+  var w = (*c).hword.load();
+  while (w & hSending) != 0u64 {
+    let seen, ok = (*c).hword.compareSwap(w, w & ~hSending);
+    if ok {
+      break;
+    }
+    w = seen;
   }
 }
 
@@ -1517,7 +1629,7 @@ fn timerArrive(st: *u8, data: *u8) {
       }
       continue;
     }
-    let h = (*c).reply.to;
+    let h = heldActor(c);
     holdHeader(h);
     (*(*c).store).waiters.add(1u64);
     let seen, ok = (*c).hword.compareSwap(w, (w & ~hInflight) | hWaiter);
@@ -1550,6 +1662,13 @@ fn heldSpend(c: *TimerCell) HeldRun {
 // seam's resume function called directly, the value on this stack, in the
 // group noted at its await
 fn heldResume(st: *u8, c: *TimerCell, v: bool) {
+  if (*c).reply.to as usize == 0usize {
+    // A future's (orCancelledOp): answered the ordinary way, and whoever waits on the future resumes. The count of
+    // the actor went with the arrive slot, as a Reply's does
+    var r = cellReply(c);
+    answerNowIn[bool](&mut r, v);
+    return;
+  }
   let hr = heldSpend(c);
   var val = v;
   let data = &mut val as *bool as *u8;
@@ -1588,6 +1707,64 @@ fn heldCall(run: *u8, st: *u8, hasId: bool, id: u64, data: *u8) {
   }
 }
 
+// Whether the wait whose Reply the cell holds has been woken by a wrapper's
+// cancel, for a thread that has that Reply to itself (so the futures on the way
+// are not ended, nor their waiters freed). The Reply is then a future's that no
+// actor owes (orFuture's), whose one waiter's id is the wrapper's cell. A cell
+// still open may itself answer such a future: a wrapper inside another, whose
+// cancel is the outer one's
+fn heldWoken(c: *TimerCell) bool {
+  if (*c).reply.to as usize != 0usize {
+    return false;
+  }
+  var at = (*c).reply.cell;
+  while at as usize != 0usize {
+    let f = at as *FutureCell[u8];
+    if (*f).owesActor != 0usize {
+      break;
+    }
+    let w = mem.atomicLoad[*Waiter](&(*f).waiters as **Waiter, MemOrder.Acquire);
+    if w as usize == 0usize || w as usize == waitersClosed {
+      break;
+    }
+    // the waiter's own count of the cell, borrowed and given back
+    let oc = orArcOf((*w).id);
+    let s = oc.state.load();
+    at = oc.cell;
+    mem.forget[Arc[imm, OrCell]](oc);
+    if s == orWoken || s == orAnswered {
+      return true;
+    }
+  }
+  false
+}
+
+// A next() while the cell holds another's Reply: a panic unless that wait was
+// cancelled (A WAIT THE WRAPPER'S CANCEL LEFT BEHIND)
+fn heldLeftBehind(c: *TimerCell) {
+  if !heldWoken(c) {
+    die("actors: a Timer's next() awaited while another is (a cancelled wait is taken over; this one is still live)");
+  }
+}
+
+// r in the place of a cancelled wait's Reply while an arrive slot is in flight.
+// The count of the actor went with the slot, so neither the Reply kept nor 'own'
+// holds one: a Reply to the actor gives its count back
+fn heldReplace(c: *TimerCell, r: Reply) {
+  var old = cellReply(c);
+  var own = Reply();
+  let h = r.to;
+  if h as usize == 0usize {
+    own.to = curActor as *Header;
+  } else {
+    let release = (*h).release;
+    release(h);
+  }
+  mem.writeRaw[Reply](&(*c).own as *Reply, own);
+  mem.writeRaw[Reply](&(*c).reply as *Reply, r);
+  answerNowIn[bool](&mut old, false);
+}
+
 // next()'s start, at the seam (on the actor's worker): ended, false at once;
 // due, an arrive slot published to the actor at once, as the fire publishes
 // one, so that timerArrive decides again when it is reached (a set or clear
@@ -1602,9 +1779,36 @@ fn heldStart(ctx: *u8, rp: Reply) {
     // the stop has begun: let go unanswered, as a sleep is
     return;
   }
-  let w0 = (*c).hword.load();
-  if (w0 & (hWaiter | hInflight)) != 0u64 {
-    die("actors: a Timer's next() awaited while another is");
+  var w0 = (*c).hword.load();
+  while (w0 & (hWaiter | hInflight)) != 0u64 {
+    if (w0 & hInflight) != 0u64 {
+      if (w0 & hSending) != 0u64 {
+        yieldProcessor();
+        w0 = (*c).hword.load();
+        continue;
+      }
+      if !wanted(&(*c).reply) {
+        // THE STOP'S GATE refused the publish: let go unanswered, as above
+        return;
+      }
+      heldLeftBehind(c);
+      // timerArrive decides for r as it would have for the old one
+      heldReplace(c, r);
+      return;
+    }
+    // parked: taken first, so that no cancel of the Timer's group, and no fire, has it while it is looked at
+    let seen, ok = (*c).hword.compareSwap(w0, w0 & ~hWaiter);
+    if ok {
+      (*(*c).store).waiters.sub(1u64);
+      heldLeftBehind(c);
+      heldDisown(c);
+      var old = cellReply(c);
+      answerNowIn[bool](&mut old, false);
+      // and r goes on as a first next() does
+      w0 = (*c).hword.load();
+    } else {
+      w0 = seen;
+    }
   }
   if (w0 & hEnded) != 0u64 {
     answerNowIn[bool](&mut r, false);
@@ -1615,7 +1819,7 @@ fn heldStart(ctx: *u8, rp: Reply) {
     // nothing stays filed while the slot is in flight, as at the fire: an
     // entry here is cancelled, one elsewhere left dead (hFiled cleared, a new
     // move generation), once any filer writing it (hBusy) is done
-    mem.writeRaw[Reply](&(*c).reply as *Reply, r);
+    heldKeep(c, r);
     let mine = hereIndex(xs);
     while true {
       let w = (*c).hword.load();
@@ -1635,12 +1839,13 @@ fn heldStart(ctx: *u8, rp: Reply) {
     heldPublish(c);
     return;
   }
-  mem.writeRaw[Reply](&(*c).reply as *Reply, r);
+  heldKeep(c, r);
   (*(*c).store).waiters.add(1u64);
   while true {
     let w = (*c).hword.load();
     if (w & hEnded) != 0u64 {
       (*(*c).store).waiters.sub(1u64);
+      heldDisown(c);
       var back = cellReply(c);
       answerNowIn[bool](&mut back, false);
       return;
@@ -1659,13 +1864,14 @@ fn heldNoDrop(ctx: *u8) {}
 // The Timer gone (its final): ended, its entry here cancelled, a parked next()
 // answered false (the Timer was replaced or dropped by its own actor while its
 // loop waited), and the cell freed, or, with an arrive in flight, left for
-// timerArrive to free
+// timerArrive to free, or, with its Reply being taken, for the taker
 fn heldFinal(c: *TimerCell) {
   let ts = myTimers as *TimerStore;
   let mine = hereIndex(ts);
   var here = false;
   var take = false;
   var flying = false;
+  var taking = false;
   while true {
     let w = (*c).hword.load();
     if (w & hBusy) != 0u64 {
@@ -1677,9 +1883,10 @@ fn heldFinal(c: *TimerCell) {
     take = (w & hWaiter) != 0u64 && (w & hInflight) == 0u64;
     here = (w & hFiled) != 0u64 && filerOf(w) == mine;
     flying = (w & hInflight) != 0u64;
+    taking = (w & hTaking) != 0u64;
     var nw = genBumped(w | hEnded) & ~hWaiter;
     if here {nw = nw & ~hFiled;}
-    if flying {nw = nw | hGone;}
+    if flying || taking {nw = nw | hGone;}
     let seen, ok = (*c).hword.compareSwap(w, nw);
     if ok {
       break;
@@ -1690,10 +1897,11 @@ fn heldFinal(c: *TimerCell) {
   }
   if take {
     (*(*c).store).waiters.sub(1u64);
+    heldDisown(c);
     var r = cellReply(c);
     answerNowIn[bool](&mut r, false);
   }
-  if !flying {
+  if !flying && !taking {
     heldRelease(c);
   }
 }
@@ -1764,7 +1972,12 @@ pub struct Timer is Move {
   }
 
   // Wait for the deadline: true when it has come (and it is cleared), false
-  // once the timer has ended. One next() may be parked at a time
+  // once the timer has ended. One next() may be awaited at a time: a second
+  // while one is live stops the program.
+  // Under orCancelledOp the cancel wakes the awaiting code and not the Timer:
+  // next() stays parked until it is answered (its deadline, stop(), the Timer
+  // dropped), and one awaited before then takes its place, waiting for the
+  // same tick
   pub fn next(self: &mut) Awaitable[bool] {
     if self.cell as usize == 0usize {
       let xs = timersHere();

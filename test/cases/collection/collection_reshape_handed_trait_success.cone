@@ -1,0 +1,241 @@
+// What stays accepted beside collection_flow_reshape_handed_trait: a function handed a trait
+// object or closure whose signature can hand out nothing the result could point at, and one
+// handed a plain trait reference whose fields cannot; a view from behind a trait object used
+// up before the store; a collection's 'region' pointer, which is no way to anything safe code
+// can borrow; and shapes from the packages that a mark on every trait object would refuse.
+
+mod collection_reshape_handed_trait_success;
+
+import stdio use *;
+import collections use *;
+import pools use *;
+
+fn make(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+trait Counter { pub fn count(self: &) i32; }
+
+struct Holder {
+  pub rc: Rc[mut, List[i32]];
+  pub fn count(self: &) i32 { return (*rc)[0usize]; }
+}
+
+// No method hands out a reference. The trait object and the list the view is into are
+// handed in one struct, so that the result may be either's
+struct Counting { pub h: &<Counter; pub src: &List[i32]; }
+
+fn pick(w: &Counting) &i32 {
+  let n = w.h.count();
+  return &(*w.src)[0usize];
+}
+
+fn noReference(h: &<Counter, o2: Rc[mut, List[i32]]) {
+  let other = make(10i32);
+  let w = Counting(h, &other);
+  let v = pick(&w);
+  *o2 = make(2i32);
+  print <- "noReference = ", *v, " ", h.count(), "\n";
+}
+
+struct Calling { pub f: &<fn() i32; pub src: &List[i32]; }
+
+fn pickClosure(w: &Calling) &i32 {
+  let n = w.f();
+  return &(*w.src)[0usize];
+}
+
+fn noReferenceClosure(f: &<fn() i32, o2: Rc[mut, List[i32]]) {
+  let other = make(11i32);
+  let w = Calling(f, &other);
+  let v = pickClosure(&w);
+  *o2 = make(3i32);
+  print <- "noReferenceClosure = ", *v, " ", f(), "\n";
+}
+
+// A method hands out a reference of another type than the result's
+trait Wide { pub fn wide(self: &) &i64; }
+
+struct WideHolder {
+  pub n: i64;
+  pub rc: Rc[mut, List[i32]];
+  pub fn wide(self: &) &i64 { return &n; }
+}
+
+struct Widening { pub h: &<Wide; pub src: &List[i32]; }
+
+fn pickWide(w: &Widening) &i32 {
+  let n = *w.h.wide();
+  return &(*w.src)[0usize];
+}
+
+fn otherType(h: &<Wide, o2: Rc[mut, List[i32]]) {
+  let other = make(12i32);
+  let w = Widening(h, &other);
+  let v = pickWide(&w);
+  *o2 = make(4i32);
+  print <- "otherType = ", *v, " ", *h.wide(), "\n";
+}
+
+// A plain reference to a trait whose fields hold no list
+trait Tagged { pub tag: i32; }
+
+struct Tag { pub tag: i32; }
+
+struct Tagging { pub h: &Tagged; pub src: &List[i32]; }
+
+fn pickTagged(w: &Tagging) &i32 {
+  let n = w.h.tag;
+  return &(*w.src)[0usize];
+}
+
+fn plainNoList(h: &Tagged, o2: Rc[mut, List[i32]]) {
+  let other = make(13i32);
+  let w = Tagging(h, &other);
+  let v = pickTagged(&w);
+  *o2 = make(5i32);
+  print <- "plainNoList = ", *v, " ", h.tag, "\n";
+}
+
+// A view from behind a trait object, used up before the store
+trait Firster { pub fn first(self: &) &i32; }
+
+struct FirstHolder {
+  pub rc: Rc[mut, List[i32]];
+  pub fn first(self: &) &i32 { return &(*rc)[0usize]; }
+}
+
+fn get(h: &<Firster) &i32 { return h.first(); }
+
+fn usedFirst(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  let v = get(h);
+  print <- "usedFirst = ", *v, "\n";
+  *o2 = make(6i32);
+  print <- "after = ", *get(h), "\n";
+}
+
+// A record that owns a trait object whose method hands out a head with a list in it, viewed
+// through two pools to read a bool. The list's 'region' points at what 'marks' also does
+struct Head { pub name: String; }
+
+trait Conn { pub fn head(self: &) &Head; }
+
+struct Wire { pub h: Head; pub fn head(self: &) &Head { return &h; } }
+
+struct Ex { pub waiting: bool; }
+
+struct Srv {
+  pub exs: GenPool[Ex];
+  pub names: Dict[u64, String];
+  pub conn: Uni[Conn];
+  pub marks: List[&'static u32];
+}
+
+fn noMarks() List[&'static u32] { return List[&u32](); }
+
+fn waiting(srvs: &mut GenPool[Srv], k: u32) bool {
+  if !srvs.borrowAt(k).unwrap().exs.borrowAt(0u32).unwrap().waiting { return false; }
+  return true;
+}
+
+// A '&mut self' method that takes a trait object out of a pool's cell and puts it back
+struct Cell { pub layer: Option[Uni[Counter]]; }
+
+struct Count { pub n: i32; pub fn count(self: &) i32 { return n; } }
+
+struct Driver {
+  pub cells: List[Cell];
+
+  pub fn take(self: &mut, i: usize) Uni[Counter] {
+    match self.cells[i].layer.take() {
+      case var Some(l) {l}
+      else {panic("a cell's layer is out for a call")}
+    }
+  }
+
+  pub fn put(self: &mut, i: usize, l: Uni[Counter]) {
+    self.cells[i].layer = Some[Uni[Counter]](l);
+  }
+
+  pub fn layerCount(self: &mut, i: usize) i32 {
+    var l = self.take(i);
+    let n = l.count();
+    self.put(i, l);
+    return n;
+  }
+}
+
+// A method's borrowed result handed to a call that changes a list of words
+struct Kernel { pub size: u32; }
+
+struct Job {
+  pub log: List[u32];
+  pub runner: Option[Uni[Counter]];
+  pub fn dispatch(self: &mut, k: &Kernel, words: &Array[u32]) bool {
+    self.log.push(k.size + words[0usize]);
+    return true;
+  }
+}
+
+struct Plan {
+  pub kernels: List[Kernel];
+  pub fn kernel(self: &, i: usize) &Kernel { return &self.kernels[i]; }
+
+  pub fn record(self: &, job: &mut Job, words: &List[u32]) u32 {
+    var slots = List[u32]();
+    slots.push((*words)[0usize]);
+    job.dispatch(self.kernel(0usize), slots.view());
+    return job.log[0usize];
+  }
+}
+
+fn main() {
+  let l = make(1i32);
+  let o = Rc[mut, List[i32]](l);
+  let o2 = o;
+  let h = Holder(o);
+  let r: &<Counter = &h;
+  noReference(r, o2);
+
+  let n = 7i32;
+  var f = fn() [x = n] i32 { x };
+  noReferenceClosure(&f, o2);
+
+  let wh = WideHolder(20i64, o);
+  let w: &<Wide = &wh;
+  otherType(w, o2);
+
+  let t = Tag(30i32);
+  plainNoList(&t, o2);
+
+  let fh = FirstHolder(o);
+  let fr: &<Firster = &fh;
+  usedFirst(fr, o2);
+
+  var srvs = GenPool[Srv]();
+  var srv = Srv(GenPool[Ex](), Dict[u64, String](), Uni[Wire](Wire(Head(String()))), noMarks());
+  srv.exs.add(Ex(true));
+  srvs.add(srv);
+  print <- "waiting = ", waiting(&mut srvs, 0u32), "\n";
+
+  var ls = List[&<Counter]();
+  let c1 = Count(1i32);
+  let c2 = Count(2i32);
+  ls.push(&c1);
+  ls.push(&c2);
+  ls.rotateLeft(1usize);
+  print <- "rotated = ", ls[0usize].count(), " ", ls[1usize].count(), "\n";
+
+  var d = Driver(List[Cell]());
+  d.cells.push(Cell(Some[Uni[Counter]](Uni[Count](Count(41i32)))));
+  print <- "layer = ", d.layerCount(0usize), " ", d.layerCount(0usize), "\n";
+
+  var plan = Plan(List[Kernel]());
+  plan.kernels.push(Kernel(100u32));
+  var words = List[u32]();
+  words.push(5u32);
+  var job = Job(List[u32](), None[Uni[Counter]]);
+  print <- "recorded = ", plan.record(&mut job, &words), "\n";
+}

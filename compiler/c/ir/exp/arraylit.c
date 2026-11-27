@@ -293,6 +293,53 @@ int arrayLitCoerce(ArrayNode *arrlit, INode *totypedcl) {
     return 1;
 }
 
+// Is a node an array literal of nothing but literals with no type of their own,
+// and, where 'totype' is given, one that can take that array type? Nothing is
+// changed and nothing reported, so a caller may ask before it coerces. Whether
+// a number fits is left to the coercion, which reports it.
+int arrayLitIsUntyped(INode *node, INode *totype) {
+    if (node->tag != ArrayLitTag)
+        return 0;
+    ArrayNode *arrlit = (ArrayNode*)node;
+    if (arrlit->nsizes > 1 || arrlit->elems->used == 0)
+        return 0;
+    INode *elemtype = NULL;
+    if (totype) {
+        INode *littype = arrlit->vtype;
+        totype = itypeGetTypeDcl(totype);
+        if (totype->tag != ArrayTag || littype->tag != ArrayTag
+            || ((ArrayNode*)totype)->dimens->used != 1 || ((ArrayNode*)littype)->dimens->used != 1
+            || arrayDim1(totype) != arrayDim1(littype))
+            return 0;
+        elemtype = itypeGetTypeDcl(arrayElemType(totype));
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(arrlit->elems, cnt, nodesp)) {
+        INode *elem = *nodesp;
+        if (elem->tag == ArrayLitTag) {
+            if (!arrayLitIsUntyped(elem, elemtype))
+                return 0;
+        }
+        else if (litIsUntypedNumber(elem)) {
+            if (elemtype == NULL)
+                continue;
+            if (elemtype == (INode*)boolType || elemtype == (INode*)charType)
+                return 0;
+            if (elemtype->tag != FloatNbrTag
+                && (elem->tag != ULitTag || (elemtype->tag != IntNbrTag && elemtype->tag != UintNbrTag)))
+                return 0;
+        }
+        else if (elem->tag == ULitTag && (elem->flags & FlagCharLit)) {
+            if (elemtype && !litCharMatchesByte(elem, elemtype))
+                return 0;
+        }
+        else
+            return 0;
+    }
+    return 1;
+}
+
 // Perform data flow analysis on an array literal's element values.
 //
 // The list form '[a, b]' gives every element a holder of its own, so each value

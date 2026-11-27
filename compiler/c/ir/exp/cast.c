@@ -701,10 +701,12 @@ static int castBorrowsUni(INode *exp) {
 // reference is used.
 //
 // Where nothing can, the narrowing needs no more: the reference is 'uni', 'imm'
-// or 'mut1' (MayIntRefSum), or it is a read-only or 'uni' borrow made here
-// of a place reached as 'uni' -- a local above all, which the stack alone owns and
-// which the loan walk freezes against change while the borrow and the narrowed
-// reference live. A 'mut' borrow of one is an alias loan and is followed like the rest.
+// or 'mut1' (MayIntRefSum). A read-only borrow made here of a place reached as
+// 'uni' -- a local above all -- freezes the place against change by its own name,
+// but not against a 'mut' borrow of it made earlier, which is an alias loan and may
+// still store another variant. Only the loan walk knows whether one is held, so such
+// a narrowing is marked too (FlagNarrowOwnBorrow) and followed only where one is. A
+// 'mut' borrow made here is an alias loan itself and is followed like the rest.
 // A reference of unseen origin -- a parameter, one reached through
 // another reference or a shared owner -- may be one of several, any of which may
 // change the variant: the loan walk follows the narrowed reference as it follows a
@@ -719,10 +721,26 @@ static int castIsSumNarrow(RefNode *from, RefNode *to) {
         && (fromstr->flags & (HasTagField | SameSize));
 }
 
-static int castSumNarrowsRefs(CastNode *node, RefNode *from, RefNode *to) {
-    if (!castIsSumNarrow(from, to))
-        return 0;
-    return !((permGetFlags(from->perm) & MayIntRefSum) || castBorrowsUni(node->exp));
+// The enum a cast narrows a reference to into one of its variants, whatever the
+// reference's permission, else NULL
+INode *castNarrowedSum(INode *cast) {
+    if (cast->tag != CastTag || (cast->flags & FlagConvert))
+        return NULL;
+    INode *to = iexpGetTypeDcl(cast);
+    INode *from = iexpGetTypeDcl(((CastNode *)cast)->exp);
+    if (to->tag != RefTag || from->tag != RefTag || !castIsSumNarrow((RefNode *)from, (RefNode *)to))
+        return NULL;
+    return itypeGetTypeDcl(((RefNode *)from)->vtexp);
+}
+
+// Mark a borrowed reference narrowed into a variant for the loan walk, unless its own
+// permission rules out a change of variant
+static void castMarkSumNarrow(CastNode *node, RefNode *from, RefNode *to) {
+    if (!castIsSumNarrow(from, to) || (permGetFlags(from->perm) & MayIntRefSum))
+        return;
+    node->flags |= FlagVariantNarrow;
+    if (castBorrowsUni(node->exp))
+        node->flags |= FlagNarrowOwnBorrow;
 }
 
 // A borrow is followed by the loan walk. An owner narrowed to a variant ('Rc[imm, Shape]'
@@ -744,8 +762,7 @@ static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
             &perm->namesym->namestr, &((StructNode *)itypeGetTypeDcl(from->vtexp))->namesym->namestr);
         return;
     }
-    if (castSumNarrowsRefs(node, from, to))
-        node->flags |= FlagVariantNarrow;
+    castMarkSumNarrow(node, from, to);
 }
 
 // The field of the hidden local holding the matched value, which a variable

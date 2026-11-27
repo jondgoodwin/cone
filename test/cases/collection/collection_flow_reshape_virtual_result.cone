@@ -1,0 +1,77 @@
+// A view a virtual call returns: a method called through '&<Firster', a closure behind '&<fn',
+// or a method of a trait object an owner holds. What is behind a virtual reference is not
+// known, and it may hold a list through an 'Rc' that another holder writes. The result carried
+// only the loan of the virtual reference, marked for the trait, which no store of a list meets,
+// so each of these was accepted and read freed storage
+// (collection_reshape_virtual_result_success holds what stays accepted).
+
+mod collection_flow_reshape_virtual_result;
+
+import stdio use *;
+import collections use *;
+
+trait Firster { pub fn first(self: &) &i32; }
+
+struct Holder {
+  pub rc: Rc[mut, List[i32]];
+  pub fn first(self: &) &i32 { return &(*rc)[0usize]; }
+}
+
+fn same(x: &i32) &i32 { return x; }
+
+fn use2(v: &i32, o: Rc[mut, List[i32]]) {
+  *o = List[i32]();
+  printInt(i64.from(*v));
+}
+
+fn reset(o: &mut Rc[mut, List[i32]]) { **o = List[i32](); }
+
+fn method(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  let v = h.first();
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn pushed(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  let v = h.first();
+  o2.push(8i32);                         //~ ErrorShapeReshape "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn closure(f: &<fn() &i32, o2: Rc[mut, List[i32]]) {
+  let v = f();
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn passedOn(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  use2(h.first(), o2);                   //~ ErrorShapeReshape "Copy what is needed out of the result before this"
+}
+
+fn throughAnother(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  let v = same(h.first());
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn handedHolder(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  var o3 = o2;
+  let v = h.first();
+  reset(&mut o3);                        //~ ErrorShapeReshape "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn owned(h: Rc[mut, Firster], o2: Rc[mut, List[i32]]) {
+  let v = h.first();
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn heldUni(o: Rc[mut, &uni Holder], o2: Rc[mut, List[i32]]) {
+  let r: &<Firster = &**o;
+  let v = r.first();
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn main() {}

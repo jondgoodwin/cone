@@ -657,6 +657,29 @@ int refHeldMoveSeenAsCopy(INode *to, INode *from) {
     return itypeIsMove(from) && !itypeIsMove(to);
 }
 
+// May a read-and-write borrow, or key, of a variant of an '@unsized' enum be
+// seen as one of the enum? No whole value of such an enum is ever written
+// (ErrorNoSize), so a store through the wider reference writes a common field,
+// or a field or the whole of a variant reached by matching, and never changes
+// which variant the value is. 'mut' and 'uni' borrows and keys only: an owner,
+// and 'mut1', stay invariant.
+static int refWidensToUnsizedEnum(RefNode *to, RefNode *from) {
+    // A slice's elements are strided, so only a single value is widened
+    if (to->tag != RefTag)
+        return 0;
+    INode *perm = itypeGetTypeDcl(to->perm);
+    if (perm != (INode*)mutPerm && perm != (INode*)uniPerm)
+        return 0;
+    if (itypeGetTypeDcl(to->region) != borrowRef || itypeGetTypeDcl(from->region) != borrowRef)
+        return 0;
+    INode *todcl = itypeGetTypeDcl(to->vtexp);
+    if (todcl->tag != StructTag || !(todcl->flags & EnumType) || (todcl->flags & SameSize))
+        return 0;
+    // Only a variant of this enum answers: another enum's, an extension's among
+    // them, and another instance's of a generic enum, do not
+    return itypeMatches(to->vtexp, from->vtexp, Regref) == CastSubtype;
+}
+
 // Will from-reference coerce to a to-reference (we know they are not the same)
 TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
 
@@ -691,8 +714,9 @@ TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint)
         break;
     case MayRead | MayWrite:
         // Invariant, because a write through the reference must not leave a
-        // different shape where a read expects this one. An enrichment and its
-        // base are the exception the language does have: 'extends' may not touch
+        // different shape where a read expects this one. A variant seen as its
+        // '@unsized' enum has no such write (refWidensToUnsizedEnum). An
+        // enrichment and its base are the other exception: 'extends' may not touch
         // the fields, so neither adds state the other could break, and a write of
         // either through a reference to the other stores one representation.
         // CastSubtype rather than the permission's own answer, because the two
@@ -700,6 +724,8 @@ TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint)
         // passes a pointer to one where the function's signature says the other.
         if (itypeIsSame(to->vtexp, from->vtexp))
             return result;
+        if (refWidensToUnsizedEnum(to, from))
+            return CastSubtype;
         return structExtendsEquiv(to->vtexp, from->vtexp) ? CastSubtype : NoMatch;
     }
     switch (match) {

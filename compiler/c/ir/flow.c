@@ -603,9 +603,18 @@ static void flowMoveHollow(VarDclNode *owner, INode *owneruse, Nodes **moved, IN
     nodesAdd(&parts->hollowuse, owneruse);
 }
 
-// Can this value, or one a block or an 'if' in it may hand back, be an owning
-// reference that moves ('Rc[uni, T]', 'Uni[T]')?
-static int flowHandsMovedOwner(INode *node) {
+static int flowIsOwnerRef(INode *node) {
+    INode *type = iexpGetTypeDcl(node);
+    return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
+        && regionIsOwning(((RefNode *)type)->region);
+}
+
+// Does a recast, a block or an 'if' hand on a value that moves though the node
+// itself may be typed as one that copies? An owning reference that moves
+// ('Rc[uni, T]', 'Uni[T]') recast as another owning type, and in a block or an
+// 'if' any such owner, or a value recast to a type that moves (an enum's
+// variant as its enum, where the arm keeps the variant's type).
+static int flowHandsMoved(INode *node) {
     if (!isExpNode(node))
         return 0;
     INode **nodesp;
@@ -613,7 +622,7 @@ static int flowHandsMovedOwner(INode *node) {
     if (node->tag == IfTag) {
         for (nodesFor(((IfNode *)node)->condblk, cnt, nodesp)) {
             nodesp++; cnt--;
-            if (flowHandsMovedOwner(*nodesp))
+            if (flowHandsMoved(*nodesp))
                 return 1;
         }
         return 0;
@@ -622,30 +631,35 @@ static int flowHandsMovedOwner(INode *node) {
         BlockNode *blk = (BlockNode *)node;
         INode *last = blk->stmts->used > 0 ? nodesLast(blk->stmts) : NULL;
         if (last != NULL && last->tag == BlockRetTag && !(blk->flags & FlagLoop)
-            && flowHandsMovedOwner(((BreakRetNode *)last)->exp))
+            && flowHandsMoved(((BreakRetNode *)last)->exp))
             return 1;
         if (blk->breaks) {
             for (nodesFor(blk->breaks, cnt, nodesp)) {
-                if ((*nodesp)->tag == BreakTag && flowHandsMovedOwner(((BreakRetNode *)*nodesp)->exp))
+                if ((*nodesp)->tag == BreakTag && flowHandsMoved(((BreakRetNode *)*nodesp)->exp))
                     return 1;
             }
         }
         return 0;
     }
-    INode *type = iexpGetTypeDcl(node);
-    return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
-        && regionIsOwning(((RefNode *)type)->region) && iexpIsMove(node);
+    if (node->tag == CastTag && flowCastCarries(node)) {
+        if (iexpIsMove(node))
+            return 1;
+        return flowIsOwnerRef(node) && flowHandsMoved(((CastNode *)node)->exp);
+    }
+    return flowIsOwnerRef(node) && iexpIsMove(node);
 }
 
-// Does taking this value move something? Its own type says so, or an owner a
-// block or an 'if' may hand back does: where a permission changes in one arm
-// ('Rc[uni, T]' wanted as 'Rc[mut, T]'), the arm's value is the same node with
-// the same type, and the 'if' is typed as the counted reference it was wanted
-// as, yet that arm's owner still moves.
+// Does taking this value move something? Its own type says so, or what it hands
+// on does. Where an owner's permission changes ('Rc[uni, T]' wanted as
+// 'Rc[mut, T]'), the owner moves whether the type step builds nothing (an 'if'
+// arm's value keeps its 'uni' type) or a recast, as to an enrichment or trait
+// of the value type, typed as the counted reference it was wanted as.
 int flowValueMoves(INode *node) {
     if (!isExpNode(node))
         return 0;
-    return iexpIsMove(node) || ((node->tag == IfTag || node->tag == BlockTag) && flowHandsMovedOwner(node));
+    if (iexpIsMove(node))
+        return 1;
+    return (node->tag == IfTag || node->tag == BlockTag || node->tag == CastTag) && flowHandsMoved(node);
 }
 
 // Walk one of the values a block or an 'if' may hand back, narrowing 'common'
@@ -1450,6 +1464,8 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     case IfTag:
         ifFlow(fstate, (IfNode **)nodep); break;
     case AssignTag:
+        if ((*nodep)->flags & FlagNarrowAssigned)
+            fstate->narrowname = 1;
         assignFlow(fstate, (AssignNode **)nodep); break;
     case FnCallTag:
         fnCallFlow(fstate, (FnCallNode**)nodep);
@@ -1492,6 +1508,8 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
             flowGateBoxed(fstate, *nodep);
             flowGateNarrow(fstate, *nodep);
         }
+        else if ((*nodep)->flags & FlagNarrowTest)
+            fstate->narrowname = 1;
         // A raw pointer made of a borrow carries no permission: what it
         // points at may be written through it (VarLendWritable)
         if ((*nodep)->tag == CastTag && iexpGetTypeDcl(*nodep)->tag == PtrTag) {
@@ -2128,13 +2146,14 @@ void flowGateCallAsk(FlowState *fstate, Nodes *args) {
     }
 }
 
-// The variable at the root of a borrowed place, or NULL for one not rooted in
-// a variable. A place reached through a reference is keyed by that reference.
+// The variable at the root of a borrowed or stored place, or NULL for one not
+// rooted in a variable ('_' too). A place reached through a reference is keyed
+// by that reference.
 static VarDclNode *flowGatePlaceRoot(INode *place) {
     while (1) {
         if (isNameUseNode(place) && isExpNode(place)) {
             INode *dcl = ((NameUseNode *)place)->dclnode;
-            return dcl->tag == VarDclTag ? (VarDclNode *)dcl : NULL;
+            return dcl && dcl->tag == VarDclTag ? (VarDclNode *)dcl : NULL;
         }
         switch (place->tag) {
         case FldAccessTag:
@@ -2196,6 +2215,14 @@ void flowGateOperandAsk(FlowState *fstate, INode *operand) {
     fstate->inflight[fstate->inflightcnt++] = root;
 }
 
+// A store reads nothing of its target's root ('l = v', 'l.f = v', 'a[i] = v'
+// of an array), so no name use asks it: asked here as the use it is
+void flowGateStoredAsk(FlowState *fstate, INode *place) {
+    VarDclNode *root = flowGatePlaceRoot(place);
+    if (root)
+        flowGateUse(fstate, root);
+}
+
 // A value whose type carries a borrow made an owning virtual reference: the
 // loan walk checks that every borrow it holds is global (pwValue)
 void flowGateBoxedAsk(FlowState *fstate, INode *cast) {
@@ -2247,6 +2274,107 @@ void flowGateJoinAsk(FlowState *fstate, Nodes *elems) {
         fstate->gate |= FlowGateStore;
 }
 
+// How many types the two walks below may visit for one call; past it they answer yes, which
+// only walks a function that need not be
+#define FlowGateTypeVisits 256
+static int flowGateVisits;
+
+// Does a value of this type reach an owner others hold too and may write by ('Rc[mut]'),
+// through the fields, elements and references it holds?
+static int flowGateReachesOwner(INode *type, int depth) {
+    type = type ? flowGateTypeDcl(type) : NULL;
+    if (type == NULL || depth > 6)
+        return 0;
+    if (++flowGateVisits > FlowGateTypeVisits)
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag: {
+        RefNode *ref = (RefNode *)type;
+        uint16_t flags = permGetFlags(ref->perm);
+        if (itypeGetTypeDcl(ref->region) != borrowRef && (flags & MayAlias) && !(flags & MayIntRefSum))
+            return 1;
+        // A borrowed trait object: what is behind it is not named, and may hold such an owner
+        if (type->tag == VirtRefTag && itypeGetTypeDcl(ref->region) == borrowRef)
+            return 1;
+        return type->tag != VirtRefTag && flowGateReachesOwner(ref->vtexp, depth + 1);
+    }
+    case PtrTag:
+        return flowGateReachesOwner(((StarNode *)type)->vtexp, depth + 1);
+    case ArrayTag:
+        return flowGateReachesOwner(arrayElemType(type), depth + 1);
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (flowGateReachesOwner(*nodesp, depth + 1))
+                return 1;
+        }
+        return 0;
+    case StructTag: {
+        StructNode *st = (StructNode *)type;
+        for (nodelistFor(&st->fields, cnt, nodesp)) {
+            if (flowGateReachesOwner(((IExpNode *)*nodesp)->vtype, depth + 1))
+                return 1;
+        }
+        if (st->derived) {
+            for (nodesFor(st->derived, cnt, nodesp)) {
+                if (flowGateReachesOwner(*nodesp, depth + 1))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Does a value of this type hold a borrowed reference, named in it: a result that hands
+// back a view of something?
+static int flowGateNamesBorrow(INode *type, int depth) {
+    type = type ? flowGateTypeDcl(type) : NULL;
+    if (type == NULL || depth > 5)
+        return 0;
+    if (++flowGateVisits > FlowGateTypeVisits)
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef)
+            return 1;
+        return flowGateNamesBorrow(((RefNode *)type)->vtexp, depth + 1);
+    case ArrayTag:
+        return flowGateNamesBorrow(arrayElemType(type), depth + 1);
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (flowGateNamesBorrow(*nodesp, depth + 1))
+                return 1;
+        }
+        return 0;
+    case StructTag: {
+        StructNode *st = (StructNode *)type;
+        for (nodelistFor(&st->fields, cnt, nodesp)) {
+            if (flowGateNamesBorrow(((IExpNode *)*nodesp)->vtype, depth + 1))
+                return 1;
+        }
+        if (st->derived) {
+            for (nodesFor(st->derived, cnt, nodesp)) {
+                if (flowGateNamesBorrow(*nodesp, depth + 1))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
 // A method called on a value that may change shape (a list, a string, a struct
 // holding one: shapeinfer.h), returning a borrow, whose receiver is reached
 // through a reference (or is one): another name for the value may change it
@@ -2254,6 +2382,29 @@ void flowGateJoinAsk(FlowState *fstate, Nodes *elems) {
 // receiver that is a plain local, or a field of one, has no other name.
 void flowGateShapeAsk(FlowState *fstate, INode *node) {
     FnCallNode *call = (FnCallNode *)node;
+    // A call whose result may borrow from what an argument reaches through a shared owner
+    // ('first(&o)', 'o' an 'Rc[mut, List]') lends it too (flowpath.c, pwReachShared)
+    flowGateVisits = 0;
+    if (!fstate->shapelend && call->args && call->args->used > 0 && call->vtype && flowGateNamesBorrow(call->vtype, 0)) {
+        INode *sig = iexpGetDerefTypeDcl(call->objfn);
+        Nodes *parms = sig && sig->tag == FnSigTag ? ((FnSigNode *)sig)->parms : NULL;
+        for (uint32_t i = 0; parms && i < parms->used; ++i) {
+            // (a collection's own method lends its receiver, asked below)
+            INode *parm = i == 0 && ((VarDclNode *)nodesGet(parms, 0))->namesym == selfName
+                ? flowGateTypeDcl(((IExpNode *)nodesGet(parms, 0))->vtype) : NULL;
+            INode *self = parm && parm->tag == RefTag ? flowGateTypeDcl(((RefNode *)parm)->vtexp) : NULL;
+            if (self && self->tag == StructTag && ((StructNode *)self)->lends == LendsShapeChanging)
+                continue;
+            flowGateVisits = 0;
+            // (a virtual call's receiver: its 'self' names the trait, not what is behind it)
+            if ((i == 0 && (call->flags & FlagVDisp))
+                    || flowGateReachesOwner(((IExpNode *)nodesGet(parms, i))->vtype, 0)) {
+                fstate->shapelend = 1;
+                flowGateShapeWrite(fstate, call->args);
+                break;
+            }
+        }
+    }
     if (call->args == NULL || call->args->used == 0 || !isNameUseNode(call->objfn)
         || !itypeCarriesBorrow(call->vtype))
         return;
@@ -2342,6 +2493,128 @@ void flowGateShapeWrite(FlowState *fstate, Nodes *args) {
             return;
         }
     }
+}
+
+// Could what this place was borrowed through be freed before the borrow's last use: was
+// it lent by a call (the only way into a collection's storage), or is it what an owner
+// points at?
+static int flowGatePlaceLent(INode *place) {
+    while (1) {
+        switch (place->tag) {
+        case BorrowTag:
+        case ArrayBorrowTag:
+            place = ((RefNode *)place)->vtexp;
+            break;
+        case CastTag:
+            place = ((CastNode *)place)->exp;
+            break;
+        case FldAccessTag:
+            place = ((FnCallNode *)place)->objfn;
+            break;
+        case ArrIndexTag:
+        case DerefTag: {
+            INode *from = place->tag == DerefTag ? ((StarNode *)place)->vtexp : ((FnCallNode *)place)->objfn;
+            INode *type = iexpGetTypeDcl(from);
+            if ((type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag) && !flowGateIsBorrowRef(type))
+                return 1;
+            place = from;
+            break;
+        }
+        case FnCallTag:
+            return 1;
+        default:
+            return 0;
+        }
+    }
+}
+
+// Does making this value do no more than read: names, literals, places and the
+// built-in operators on them? Anything else may call, or store
+int flowGateOnlyReads(INode *node) {
+    if (isNameUseNode(node))
+        return 1;
+    switch (node->tag) {
+    case ULitTag:
+    case FLitTag:
+    case NilLitTag:
+    case StringLitTag:
+        return 1;
+    case CastTag:
+        return flowGateOnlyReads(((CastNode *)node)->exp);
+    case DerefTag:
+        return flowGateOnlyReads(((StarNode *)node)->vtexp);
+    case FldAccessTag:
+        return flowGateOnlyReads(((FnCallNode *)node)->objfn);
+    case ArrIndexTag:
+    case FnCallTag: {
+        FnCallNode *call = (FnCallNode *)node;
+        if (node->tag == ArrIndexTag) {
+            if (!flowGateOnlyReads(call->objfn))
+                return 0;
+        }
+        else {
+            if (!isNameUseNode(call->objfn))
+                return 0;
+            INode *fn = ((NameUseNode *)call->objfn)->dclnode;
+            if (fn == NULL || fn->tag != FnDclTag || ((FnDclNode *)fn)->value == NULL
+                || ((FnDclNode *)fn)->value->tag != IntrinsicTag)
+                return 0;
+        }
+        INode **argsp;
+        uint32_t cnt;
+        if (call->args == NULL)
+            return 1;
+        for (nodesFor(call->args, cnt, argsp)) {
+            if (!flowGateOnlyReads(*argsp))
+                return 0;
+        }
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+// 'x += e' is '{let tmp = &mut x; *tmp = *tmp + e}' (fnCallOpAssgn): the temporary
+// holds the place's borrow while 'e' is made, and is no holder, so no trigger above
+// asks about it ('l[i] += grow(&mut l)' on a local list marked nothing). Where the
+// place is one a change could free, and 'e' does more than read, the function is
+// walked, for what changes it before the store (flowpath.c, pwCompoundPlace)
+void flowGateCompound(FlowState *fstate, INode *lval, INode *rval) {
+    if ((fstate->gate & FlowGateShape) || lval->tag != DerefTag)
+        return;
+    INode *ref = ((StarNode *)lval)->vtexp;
+    if (!isNameUseNode(ref))
+        return;
+    VarDclNode *tmp = (VarDclNode *)((NameUseNode *)ref)->dclnode;
+    if (tmp == NULL || tmp->tag != VarDclTag || tmp->namesym != tempName || tmp->value == NULL)
+        return;
+    if (flowGatePlaceLent(tmp->value) && !flowGateOnlyReads(rval))
+        fstate->gate |= FlowGateShape;
+}
+
+// A place's address is made before its index, and used after. Where the place is
+// one a change could free, and the index does more than read, the function is
+// walked, for what changes it in between (flowpath.c, pwIndexStandIn). A narrowed
+// variant, and a borrow held in a name, have marked the function already
+void flowGateIndex(FlowState *fstate, INode *index) {
+    if ((fstate->gate & FlowGateShape) || !flowGatePlaceLent(index))
+        return;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(((FnCallNode *)index)->args, cnt, argsp)) {
+        if (!flowGateOnlyReads(*argsp))
+            fstate->gate |= FlowGateShape;
+    }
+}
+
+// A swap makes its left side's address, then its right side, and only then uses both.
+// Where the left side is a place a change could free, and the right does more than read,
+// the function is walked, for what changes it in between (flowpath.c, pwSwap). Where an
+// 'await' makes the right side first, the left is a plain path, with nothing to change
+void flowGateSwap(FlowState *fstate, INode *lval, INode *rval) {
+    if (flowGatePlaceLent(lval) && !flowGateOnlyReads(rval))
+        fstate->gate |= FlowGateShape;
 }
 
 void flowGateUse(FlowState *fstate, VarDclNode *var) {

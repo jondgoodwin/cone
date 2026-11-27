@@ -373,6 +373,16 @@ static uint32_t *temps = NULL;
 static uint32_t ntemps = 0;
 static uint32_t tempcap = 0;
 
+// The stand-ins of the function's dereferences of a borrow that a block, an 'if' or a
+// slice borrow yields (pwYieldStandIn), by the reference dereferenced
+typedef struct {
+    INode *ref;
+    VarDclNode *var;
+} PwYield;
+static PwYield *yields = NULL;
+static uint32_t nyields = 0;
+static uint32_t yieldcap = 0;
+
 static PathFrame *frames = NULL;
 static uint32_t nframes = 0;
 static uint32_t framecap = 0;
@@ -506,6 +516,12 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->flagged = 0;
     pv->partmix = 0;
     pv->guardname = NULL;
+    pv->narrow = 0;
+    pv->narrowed = 0;
+    pv->compound = 0;
+    pv->indexed = 0;
+    pv->swapped = 0;
+    pv->yielded = 0;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
     pv->dies = pv->tracked && itypeNeedsFinal(var->vtype);
     // A holder is a local variable or a parameter whose type carries a
@@ -706,7 +722,7 @@ static PathDelta *pathDeltaPush(PathDelta *list, PathDelta *delta) {
 
 // The last call walked, and the loans it made itself of its receiver and the references it was lent
 static FnCallNode *pwOwnCall = NULL;
-static uint32_t pwOwnLoans[9];
+static uint32_t pwOwnLoans[33];
 static uint32_t pwOwnCnt = 0;
 
 static PathSet *pwValue(INode **nodep, int move);
@@ -714,6 +730,19 @@ static PathSet *pwBlock(BlockNode *blk, int fnblock, int move);
 static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan);
 static void pwOwnerLent(Place *pl, uint32_t loan);
 static void pwHolderDies(uint32_t var);
+
+// What a borrow made through a narrowed name, or the name's reference handed on, carries of
+// its stand-in 'stand': all but the loan of the reference variable itself (loanIsRepoint).
+// What was made from the reference stays where it points when the name is pointed elsewhere
+static PathSet *pwNarrowCarried(uint32_t stand) {
+    PathSet *all = pathVars[stand].holds;
+    PathSet *carried = NULL;
+    for (uint32_t i = 0; all && i < all->cnt; ++i) {
+        if (!loanIsRepoint(loanOf(all->ids[i])))
+            carried = pathSetAdd(carried, all->ids[i]);
+    }
+    return carried;
+}
 static PathSet *pwPlaceSlots(Place *pl, PathSet *holds);
 static int pwIsGuard(VarDclNode *var);
 static void pwLockPoint(BlockNode *blk, INode *site, int kind);
@@ -826,7 +855,7 @@ static void pwTempsEnd(uint32_t mark, PathSet *value) {
     for (uint32_t i = ntemps; i > mark; --i) {
         uint32_t index = temps[i - 1];
         PathVar *pv = &pathVars[index];
-        if (pv->holder && (pv->holds || pv->pending)) {
+        if (pv->holder && !pv->yielded && (pv->holds || pv->pending)) {
             pwHolderDies(index);
             pathSetFacts(index, NULL, NULL);
         }
@@ -837,6 +866,77 @@ static void pwTempsEnd(uint32_t mark, PathSet *value) {
     }
     loanFlightPop(flight);
     ntemps = mark;
+}
+
+// What the address of the place 'pl', already walked, rests on: what a borrow of it
+// would hold (pwLend), with no access of its own. 'site' keys the loan of what an
+// owner points at, where the place is there
+static PathSet *pwPlaceRests(INode *site, Place *pl) {
+    PathSet *held = NULL;
+    // (what a variable holds in its own storage is not where that storage is)
+    if (pl->deref) {
+        held = pathVars[pl->var].holds;
+        if (pl->far)
+            held = pl->shared ? pathSetThrough(held) : pathSetUnsure(held);
+        held = pwPlaceSlots(pl, held);
+    }
+    if (pl->ownertype) {
+        uint32_t id = loanMake(site, pl, (INode *)mutPerm);
+        if (id) {
+            pwOwnerLent(pl, id);
+            held = pathSetAdd(held, id);
+        }
+    }
+    if (pl->narrow)
+        held = pathSetUnion(held, pathVars[pl->narrow].holds);
+    return pathSetUnion(held, pl->kept);
+}
+
+// A place's address is made before its index and used after it (genlAddr; an element
+// borrowed where it lies is reached the same way), so the address is a borrow held
+// while the index is walked: a stand-in holds the borrows it rests on, and reaching the
+// element is its use. A change of shape or variant the index made is refused, as is a
+// move, a replacement, a store or a mutable borrow of what was borrowed; reading it is
+// not (loanUse). 'rests' is what the address rests on: nothing, for a place in a
+// variable's own storage, which none of those moves. Returns the stand-in, or 0
+static uint32_t pwIndexStandIn(INode *index, PathSet *rests) {
+    PathSet *holds = NULL;
+    for (uint32_t i = 0; rests && i < rests->cnt; ++i) {
+        // (a far loan is of what the place holds, not of where the place is)
+        if (!(rests->ids[i] & LoanFar))
+            holds = pathSetAdd(holds, rests->ids[i]);
+    }
+    if (holds == NULL)
+        return 0;
+    VarDclNode *var = newVarDclFull(tempName, VarDclTag, ((IExpNode *)index)->vtype, (INode *)immPerm, NULL);
+    inodeLexCopy((INode *)var, index);
+    var->scope = 2;
+    var->flowtracked = 1;
+    uint32_t stand = pathVar(var);
+    pathVars[stand].holder = 1;
+    pathVars[stand].tracked = 0;
+    pathVars[stand].dies = 0;
+    pathVars[stand].indexed = 1;
+    pathSetFacts(stand, holds, NULL);
+    return stand;
+}
+
+static void pwIndexUse(uint32_t stand, INode *index) {
+    if (stand) {
+        loanUse(stand, index);
+        pathSetFacts(stand, NULL, NULL);
+    }
+}
+
+// Does an index (each dimension's, a range's two ends) do no more than read?
+static int pwIndexOnlyReads(INode *index) {
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(((FnCallNode *)index)->args, cnt, argsp)) {
+        if (!flowGateOnlyReads(*argsp))
+            return 0;
+    }
+    return 1;
 }
 
 static void pwStep(Place *pl, uintptr_t step) {
@@ -1045,6 +1145,43 @@ static int pwHoldsUnwritten(PathSet *holds) {
     return elems;
 }
 
+// Does a reference holding 'holds' point at a place whose way others may write by
+// (Place.uniway)? A borrow of it ('&**o', '&uni **o') kept in a variable promises no
+// more than that place does, whatever its own permission says: freezing the owner it
+// was read from stops that name only
+static int pwHoldsUniway(PathSet *holds) {
+    if (holds == NULL)
+        return 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        if (!(holds->ids[i] & LoanFar) && loanPlaceOf(holds->ids[i])->uniway)
+            return 1;
+    }
+    return 0;
+}
+
+// May another holder write by the way to the reference at the place 'pl' (Place.uniway)?
+// Not where 'pl' is just what a borrow made through a lock points at ('g' of '&mut *shared',
+// the loan rooted at the lock's guard): no other holder reaches it while the lock is held
+static int pwIsGuard(VarDclNode *var);
+static int pwWayWritten(Place *pl) {
+    if (pl->uniway)
+        return 1;
+    if (!pl->shwrite)
+        return 0;
+    PathSet *holds = pl->deref && pl->nsteps == 0 ? pathVars[pl->var].holds : NULL;
+    if (holds == NULL)
+        return 1;
+    int locked = 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        if (holds->ids[i] & LoanFar)
+            continue;
+        if (!pwIsGuard(pathVars[loanPlaceOf(holds->ids[i])->var].var))
+            return 1;
+        locked = 1;
+    }
+    return !locked;
+}
+
 // The place reached through the reference 'ref' evaluates to. Through a
 // borrowed reference it is a root of its own, what the reference points at,
 // keyed by the variable the reference is read from; through an owning one, a
@@ -1078,6 +1215,59 @@ static uint32_t pwStandIn(INode *call, PathSet *holds) {
     return index;
 }
 
+// Is this reference, which is no place, the value of a block, of an 'if' or a 'match', or a
+// slice borrow? What each yields is a borrow, or a reference some name holds, and which of
+// them it is the walk does not say. So the dereference is read as through a name given that
+// value ('let r = if c {&a} else {&b}; *r'): through every place it can be
+static int pwYieldedRef(INode *ref) {
+    while (ref->tag == CastTag && !(ref->flags & FlagConvert))
+        ref = ((CastNode *)ref)->exp;
+    return ref->tag == BlockTag || ref->tag == IfTag || ref->tag == ArrayBorrowTag;
+}
+
+// The stand-in for such a value. It is a temporary of its statement, but what it holds is
+// not dropped when the statement ends: a view made through it may be marked for the shape
+// check later (loanShapeLazy), and where the view points is then read from what the
+// stand-in holds. One variable per dereference, so that a loop's next walk finds the loans
+// of it that the last one made
+static uint32_t pwYieldStandIn(INode *ref, PathSet *holds) {
+    uint32_t i = 0;
+    while (i < nyields && yields[i].ref != ref)
+        ++i;
+    if (i == nyields) {
+        VarDclNode *var = newVarDclFull(tempName, VarDclTag, ((IExpNode *)ref)->vtype, (INode *)immPerm, NULL);
+        inodeLexCopy((INode *)var, ref);
+        var->scope = 2;
+        var->flowtracked = 1;
+        if (nyields == yieldcap)
+            yields = (PwYield *)pathGrow(yields, &yieldcap, sizeof(PwYield));
+        yields[nyields].ref = ref;
+        yields[nyields++].var = var;
+    }
+    uint32_t index = pathVar(yields[i].var);
+    PathVar *pv = &pathVars[index];
+    pv->temp = 1;
+    pv->yielded = 1;
+    pv->holder = 1;
+    pathSetFacts(index, holds, NULL);
+    if (ntemps == tempcap)
+        temps = (uint32_t *)pathGrow(temps, &tempcap, sizeof(uint32_t));
+    temps[ntemps++] = index;
+    return index;
+}
+
+// The loans in 'set' of borrows that may write, of where the reference points: what a view
+// made through such a value keeps, as one made through '*&uni x' keeps that borrow's
+// (pwDeref). A read-only borrow's is left to the stand-in, which a value read drops
+static PathSet *pwWritingLoans(PathSet *set) {
+    PathSet *writing = NULL;
+    for (uint32_t i = 0; set && i < set->cnt; ++i) {
+        if (!(set->ids[i] & LoanFar) && loanWrites(loanOf(set->ids[i])))
+            writing = pathSetAdd(writing, set->ids[i]);
+    }
+    return writing;
+}
+
 static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     INode *reftype = iexpGetTypeDcl(*refp);
     if (reftype->tag != RefTag && reftype->tag != ArrayRefTag && reftype->tag != VirtRefTag) {
@@ -1086,14 +1276,18 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     }
     Place refpl;
     if (!pwPlace(refp, &refpl, base)) {
-        if (!pwStandInOn || (*refp)->tag != FnCallTag || reftype->tag != RefTag || !pwIsBorrowed(reftype))
+        // A borrow that a block, an 'if' or a slice borrow yields is held by a stand-in too,
+        // wherever it is dereferenced (pwYieldedRef)
+        int yielded = pwIsBorrowed(reftype) && pwYieldedRef(*refp);
+        if (!yielded && (!pwStandInOn || (*refp)->tag != FnCallTag || reftype->tag != RefTag || !pwIsBorrowed(reftype)))
             return 0;
-        refpl.var = pwStandIn(*refp, *base);
+        refpl.var = yielded ? pwYieldStandIn(*refp, *base) : pwStandIn(*refp, *base);
         refpl.deref = 0;
         refpl.nsteps = 0;
         refpl.shared = 0;
         refpl.sharedlen = 0;
         refpl.shwrite = 0;
+        refpl.uniway = 0;
         refpl.owned = 0;
         refpl.far = 0;
         refpl.use = *refp;
@@ -1101,6 +1295,8 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         refpl.referent = NULL;
         refpl.slotted = NULL;
         refpl.slots = 0;
+        refpl.narrow = 0;
+        refpl.kept = yielded ? pwWritingLoans(*base) : NULL;
     }
     if (pwIsBorrowed(reftype)) {
         // The reference itself is read: a variable it is read from that some
@@ -1115,6 +1311,9 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->sharedlen = 0;
         pl->shwrite = pwMayAliasWritten(reftype)
             && !(refpl.nsteps == 0 && !refpl.deref && pwHoldsUnwritten(pathVars[refpl.var].holds));
+        pl->uniway = (!pwMayAlias(reftype) && pwWayWritten(&refpl))
+            || (!pwMayAliasWritten(reftype) && refpl.nsteps == 0 && !refpl.deref
+                && pwHoldsUniway(pathVars[refpl.var].holds));
         pl->owned = 0;
         pl->far = refpl.deref;
         pl->ownertype = NULL;
@@ -1123,6 +1322,11 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         // reaches only what that field's slots hold
         pl->slotted = refpl.slotted;
         pl->slots = refpl.slots;
+        // What a narrowed name's own reference points at is the variant; what a
+        // reference read from a field of the variant points at is not
+        pl->narrow = refpl.nsteps == 0 && !refpl.deref ? refpl.narrow : 0;
+        // Reached through a writing borrow, it lasts no longer than that one does
+        pl->kept = refpl.kept;
         return 1;
     }
     *pl = refpl;
@@ -1145,6 +1349,33 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     return 1;
 }
 
+// The place a dereference of the reference 'refp' reaches: pwThrough, but '*&x' is 'x', so a
+// borrow written where it is dereferenced gives the place borrowed, and what is done there
+// is judged as it would be by the place's own name ('&(**&o)[0]' as '&(*o)[0]'). The borrow
+// is still asked what it asks of the place. A read-only one ('&', '&imm') makes no loan:
+// nothing holds it. One that may write ('&uni', '&mut') keeps its loan, which a view of
+// what is dereferenced holds as long as it lives, so that '&*&uni x' promises of 'x' what
+// '&uni x' does
+static int pwDeref(INode **refp, Place *pl, PathSet **base) {
+    INode **borrowp = refp;
+    while ((*borrowp)->tag == CastTag && !((*borrowp)->flags & FlagConvert))
+        borrowp = &((CastNode *)*borrowp)->exp;
+    if ((*borrowp)->tag != BorrowTag)
+        return pwThrough(refp, pl, base);
+    RefNode *borrow = (RefNode *)*borrowp;
+    if (!pwPlace(&borrow->vtexp, pl, base))
+        return 0;
+    INode *perm = ((RefNode *)iexpGetTypeDcl((INode *)borrow))->perm;
+    if (permGetFlags(perm) & MayWrite)
+        pl->kept = pwLend((INode *)borrow, pl, perm, loanBorrowAccess(perm), NULL);
+    else {
+        pwDropUse(pl, (INode *)borrow, 1);
+        if (pathLoans)
+            pwAccess(pl, loanBorrowAccess(perm), (INode *)borrow);
+    }
+    return 1;
+}
+
 // Walk a place expression: the values inside it (an index, the reference it
 // is reached through) are walked, and each holder named along it is used.
 // Returns 1 and fills 'pl' when it is a place the walk tracks; otherwise walks
@@ -1152,9 +1383,16 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
 static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
     INode *node = *nodep;
     *base = NULL;
+    pl->narrow = 0;
+    pl->kept = NULL;
     VarDclNode *var = pwNamedVar(node);
     if (var) {
         uint32_t index = pathVar(var);
+        // A member of the variant named on a narrowed name is a use of what its
+        // narrowing holds: a change of variant pending on that is refused here
+        uint32_t narrow = (node->flags & FlagNarrowed) ? pathVars[index].narrow : 0;
+        if (narrow)
+            loanUse(narrow, node);
         // A holder's pending conflicts fire; any variable's live mark at a
         // seam does (pwSeam)
         if (pathVars[index].holder || pathVars[index].pending)
@@ -1185,6 +1423,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->shared = 0;
         pl->sharedlen = 0;
         pl->shwrite = 0;
+        pl->uniway = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -1192,6 +1431,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->referent = NULL;
         pl->slotted = NULL;
         pl->slots = 0;
+        pl->narrow = narrow;
         return 1;
     }
     switch (node->tag) {
@@ -1202,6 +1442,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->shared = 0;
         pl->sharedlen = 0;
         pl->shwrite = 0;
+        pl->uniway = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -1224,7 +1465,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         FnCallNode *fld = (FnCallNode *)node;
         // A virtual reference's field is read through it, with no dereference injected
         int found = iexpGetTypeDcl(fld->objfn)->tag == VirtRefTag
-            ? pwThrough(&fld->objfn, pl, base) : pwPlace(&fld->objfn, pl, base);
+            ? pwDeref(&fld->objfn, pl, base) : pwPlace(&fld->objfn, pl, base);
         if (!found)
             return 0;
         INode *methfld = fld->methfld;
@@ -1252,8 +1493,11 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
             premark = pwPreBegin(one);
         }
         int seamfirst = pwPreHas(node);
+        // (with FlagBorrow the borrow indexed makes the reference the index gives, and is
+        // no borrow dereferenced where it is written)
         int found = objtag == RefTag || objtag == ArrayRefTag || objtag == PtrTag
-            ? pwThrough(&index->objfn, pl, base) : pwPlace(&index->objfn, pl, base);
+            ? ((node->flags & FlagBorrow) ? pwThrough(&index->objfn, pl, base) : pwDeref(&index->objfn, pl, base))
+            : pwPlace(&index->objfn, pl, base);
         // On a GPU target, elements holding references are picked only by a
         // literal index, so that the array breaks into separate values
         // (flowloan.h, "GPU targets"). What is indexed through a reference or
@@ -1264,6 +1508,10 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         else if (objtag == PtrTag)
             indexed = ((StarNode *)indexed)->vtexp;
         int holdsrefs = pathGpuChoices && pwCarries(indexed);
+        // The address of what is indexed is made already: what the index changes
+        // must leave it good ('n.r[change(m)]', 'l[0].a[grow(&mut l)]')
+        uint32_t stand = pathLoans && !seamfirst && !pwIndexOnlyReads(node)
+            ? pwIndexStandIn(node, found ? pwPlaceRests(node, pl) : *base) : 0;
         INode **argsp;
         uint32_t cnt;
         for (nodesFor(index->args, cnt, argsp)) {
@@ -1272,13 +1520,14 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
             if (holdsrefs && !pwIsLitIndex(*argsp))
                 loanIndexedRefs(node);
         }
+        pwIndexUse(stand, node);
         if (found)
             pwStep(pl, PlaceStepElem);
         pwPreCnt = premark;
         return found;
     }
     case DerefTag:
-        return pwThrough(&((StarNode *)node)->vtexp, pl, base);
+        return pwDeref(&((StarNode *)node)->vtexp, pl, base);
     default:
         break;
     }
@@ -1334,6 +1583,13 @@ static PathSet *pwPlaceValue(INode **nodep, int move) {
     int moves = cand || (move && iexpIsMove(*nodep));
     pwAccess(&pl, moves ? AccessMove : AccessRead, cand ? pwCandSite : *nodep);
     PathSet *holds = pwPlaceHolds(&pl, *nodep);
+    // A narrowed reference handed on as it is points into the variant
+    if (pl.narrow && !pl.deref && pl.nsteps == 0 && pwCarries(((IExpNode *)*nodep)->vtype))
+        holds = pathSetUnion(holds, pwNarrowCarried(pl.narrow));
+    // What is read through a writing borrow dereferenced where it is written
+    // ('*&uni r') carries that borrow's loan too
+    if (pwCarries(((IExpNode *)*nodep)->vtype))
+        holds = pathSetUnion(holds, pl.kept);
     // A holder moved away whole holds nothing here: its value, and the
     // finalizer that might read its borrows, went with the move
     if (moves && !pl.deref && pl.nsteps == 0 && pathVars[pl.var].holder)
@@ -1389,6 +1645,13 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     // A borrow into what an owner points at: the owner stored over frees it (pwOwnerLent)
     if (pl->ownertype && id)
         pwOwnerLent(pl, id);
+    // A writable borrow of a variable's own storage, of a value that may hold a reference: a
+    // second name for what that reference borrows, so views through it are marked
+    if (!pl->deref && (permGetFlags(perm) & MayWrite)) {
+        INode *lentref = iexpGetTypeDcl(site);
+        if (lentref->tag != RefTag || pwCarries(((RefNode *)lentref)->vtexp))
+            loanShapeRefLent(pl->var);
+    }
     // Only a holder holds loans, but for an operator's temporary (pwVarDcl).
     // The new loan is near: the borrow points at its place. What the root
     // holds is held there, so a borrow of the root's own storage ('&mut q',
@@ -1407,7 +1670,11 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
         held = pathSetLoansAs(held, 1);
     else if (pl->far)
         held = pl->shared ? pathSetThrough(held) : pathSetUnsure(held);
-    return pathSetAdd(pwPlaceSlots(pl, held), id);
+    PathSet *lentset = pathSetAdd(pwPlaceSlots(pl, held), id);
+    // A borrow into the variant a name is narrowed to is a reference into it too
+    if (pl->narrow)
+        lentset = pathSetUnion(lentset, pwNarrowCarried(pl->narrow));
+    return pathSetUnion(lentset, pl->kept);
 }
 
 // An owning reference coerced to a borrowed one ('let b: &i32 = u', 'u' a
@@ -1505,15 +1772,20 @@ static int pwElemBorrowPlace(INode *node, Place *pl, PathSet **base, INode **per
     return 1;
 }
 
-// The arguments of the indexes, the innermost first
-static void pwElemBorrowIndexes(INode *node) {
+// The arguments of the indexes, the innermost first. The array's address is made before
+// them (pwIndexStandIn): 'pl' is its place, or NULL where it is no place the walk
+// tracks, and 'base' then what it carries
+static void pwElemBorrowIndexes(INode *node, Place *pl, PathSet *base) {
     INode *arr = ((FnCallNode *)node)->objfn;
     if (arr->tag != BorrowTag)
-        pwElemBorrowIndexes(arr);
+        pwElemBorrowIndexes(arr, pl, base);
+    uint32_t stand = pathLoans && !pwIndexOnlyReads(node)
+        ? pwIndexStandIn(node, pl ? pwPlaceRests(node, pl) : base) : 0;
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(((FnCallNode *)node)->args, cnt, argsp))
         pwValue(argsp, 0);
+    pwIndexUse(stand, node);
 }
 
 // A method's receiver taken by reference: a loan of the receiver's place,
@@ -1556,12 +1828,12 @@ static PathSet *pwLendRef(INode **recvp, INode *selftype, int lvalop, int reserv
         INode *perm;
         INode *site;
         if (!pwElemBorrowPlace(recv, pl, &base, &perm, &site)) {
-            pwElemBorrowIndexes(recv);
+            pwElemBorrowIndexes(recv, NULL, base);
             return base;
         }
         *access = lvalop ? AccessWrite : loanBorrowAccess(perm);
         PathSet *lent = pwLend(site, pl, perm, reserve ? pwReserved(*access) : *access, loan);
-        pwElemBorrowIndexes(recv);
+        pwElemBorrowIndexes(recv, pl, NULL);
         return lent;
     }
     if (!pwIsBorrowed(iexpGetTypeDcl(recv)) || selftype->tag != RefTag)
@@ -1653,6 +1925,82 @@ static int pwPlaceLevel(Place *pl) {
     return pl->deref ? (pl->far ? 2 : 1) : 0;
 }
 
+static int pwReachesPtr(INode *type, int depth);
+
+// Can a value of this type read a borrow through a borrowed reference in it,
+// from what that reference points at? Not where each one it holds points at a
+// value that holds none ('&i64', and an 'Option', a tuple or a struct of such).
+// What it cannot see into (a raw pointer, a virtual reference, a type past
+// 'depth') may.
+static int pwReadsBorrows(INode *type, int depth) {
+    if (type == NULL || depth > 8)
+        return 1;
+    INode *dcl = itypeGetTypeDcl(type);
+    switch (dcl->tag) {
+    case RefTag:
+    case ArrayRefTag: {
+        INode *vtexp = ((RefNode *)dcl)->vtexp;
+        if (pwIsBorrowed(dcl))
+            return pwCarries(vtexp) || pwIsNoLoanMut(vtexp);
+        return pwReadsBorrows(vtexp, depth + 1);
+    }
+    case ArrayTag:
+        return pwReadsBorrows(arrayElemType(dcl), depth + 1);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)dcl)->elems, cnt, nodesp)) {
+            if (pwCarries(*nodesp) && pwReadsBorrows(*nodesp, depth + 1))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)dcl;
+        if (pwIsNoLoanMut(dcl) || (strnode->flags & TraitType && !strnode->derived) || pwReachesPtr(dcl, 0))
+            return 1;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            INode *ftype = ((IExpNode *)*nodesp)->vtype;
+            if (pwCarries(ftype) && pwReadsBorrows(ftype, depth + 1))
+                return 1;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (pwReadsBorrows(*nodesp, depth + 1))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 1;
+    }
+}
+
+// A value carrying 'holds' is stored into the variable 'var', whole or in part.
+// Whatever holds a borrow of its storage can read that value there, so holds
+// its loans too, further on: as a borrow made after the store would (pwLend),
+// whether the store names the variable or reaches it through another reference.
+static void pwLentGains(uint32_t var, PathSet *holds) {
+    if (!pathLoans || holds == NULL)
+        return;
+    for (uint32_t loan = loanOwnNext(var, 0); loan; loan = loanOwnNext(var, loan)) {
+        uint32_t holder;
+        for (uint32_t k = 0; (holder = loanMayHolder(loan, k)) != 0; ++k) {
+            PathVar *pv = &pathVars[holder];
+            if (holder == var || !pathSetHasLoan(pv->holds, loan) || !pwReadsBorrows(pv->var->vtype, 0))
+                continue;
+            PathSet *gain = pathSetLoansAs(pwPlaceSlots(loanPlaceOf(loan), holds), 1);
+            if (pathSetWithin(gain, pv->holds))
+                continue;
+            pathSetFacts(holder, pathSetUnion(pv->holds, gain), pv->pending);
+            pwLentGains(holder, gain);
+        }
+    }
+}
+
 // A store of a value carrying 'holds' lands where a value holding 'refholds'
 // points: in each place its near loans borrow (every loan's, for 'beyond').
 // The holder rooted there holds those loans: as they are, where the loan
@@ -1676,6 +2024,7 @@ static void pwStoreLands(PathSet *refholds, int beyond, PathSet *holds, uint32_t
         if (!loanWhole(loan))
             put = pathSetUntagged(put);
         pathSetFacts(root, pathSetUnion(rv->holds, put), rv->pending);
+        pwLentGains(root, put);
     }
 }
 
@@ -1741,7 +2090,9 @@ static void pwStoreInto(uint32_t var, int from, int to, PathSet *holds) {
     if (pwIsParm(pv->var) || pwHoldsParmReach(pv->holds))
         pwNoteReach(holds, PwReachStored);
     PathSet *held = pv->holds;
-    pathSetFacts(var, pathSetUnion(held, from == 0 ? holds : pathSetLoansAs(holds, 1)), pv->pending);
+    PathSet *put = from == 0 ? holds : pathSetLoansAs(holds, 1);
+    pathSetFacts(var, pathSetUnion(held, put), pv->pending);
+    pwLentGains(var, put);
     if (to > 0)
         pwStoreLands(held, to > 1, holds, var);
 }
@@ -2085,6 +2436,7 @@ static void pwUntagHolder(uint32_t var) {
 static int pwStoreTarget(INode *ref, Place *pl) {
     while (ref->tag == CastTag && !(ref->flags & FlagConvert))
         ref = ((CastNode *)ref)->exp;
+    ref = reshapeUnborrow(ref);
     memset(pl, 0, sizeof(Place));
     INode *place = ref;
     // The reference through which the store lands nearest it, and whether it
@@ -2097,6 +2449,7 @@ static int pwStoreTarget(INode *ref, Place *pl) {
     else if (!pwIsBorrowed(iexpGetTypeDcl(ref)))
         through = NULL;
     while (1) {
+        place = reshapeUnborrow(place);
         VarDclNode *var = pwNamedVar(place);
         if (var) {
             pl->var = pathVar(var);
@@ -2124,6 +2477,7 @@ static int pwStoreTarget(INode *ref, Place *pl) {
         default:
             return 0;
         }
+        refexp = reshapeUnborrow(refexp);
         INode *reftype = iexpGetTypeDcl(refexp);
         if (pwIsBorrowed(reftype)) {
             // Another reference, read through to reach that one: further on
@@ -2614,7 +2968,10 @@ static int pwHeldExcluding(Place *pl, int sharedok) {
     if (held == NULL || held->cnt == 0)
         return 0;
     for (uint32_t i = 0; i < held->cnt; ++i) {
+        // A loan of a place others reach by another way (Place.uniway) excludes no writer
         if (sharedok ? !loanExcludesWriters(held->ids[i]) : !loanIsExclusive(held->ids[i]))
+            return 0;
+        if (loanPlaceOf(held->ids[i])->uniway)
             return 0;
     }
     return 1;
@@ -2687,6 +3044,7 @@ static int pwFieldHeldByValue(INode *fld) {
 // points at is the struct's to free (a store over it)
 INode *pwReceiverFieldOwner(INode *recv, int owning) {
     for (;;) {
+        recv = reshapeUnborrow(recv);
         if (recv->tag == CastTag && !(recv->flags & FlagConvert))
             recv = ((CastNode *)recv)->exp;
         else if (recv->tag == BorrowTag || recv->tag == ArrayBorrowTag)
@@ -2825,6 +3183,12 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
     // freezing stops the global's own name in this function, never a callee that writes it by name
     if (loanPlaceInGlobal(pl))
         loanShapeMark(loan, container);
+    else if (loanShapeContainer(loan) == NULL)
+        loanShapeRefView(loan, container);
+    // Through a 'uni' reference that others may reach (Place.uniway): marked, whatever froze it,
+    // since the freezing is of this name only
+    if (pl->uniway)
+        loanShapeMark(loan, container);
 }
 
 // A borrow into what an owning reference points at ('&mut *s', a field of what 'so' owns, the
@@ -2846,7 +3210,17 @@ static void pwOwnerLent(Place *pl, uint32_t loan) {
         else if (loanUniqAlias(loan))
             loanShapeLazy(loan, cont);
     }
+    if (loanShapeContainer(loan) == NULL)
+        loanShapeRefView(loan, cont);
+    if (pl->uniway)
+        loanShapeMark(loan, cont);
 }
+
+// What a result from behind a virtual reference may point at: nothing says what holds it,
+// so each store and call is asked of what it could free that holds one (below, pwReach)
+typedef struct PwUnseen PwUnseen;
+static int pwUnseenStoreHits(INode *lval, PwUnseen *unseen);
+static uint32_t pwUnseenConts(FnCallNode *call, PwUnseen *unseen, INode ***conts);
 
 // A call is made. Each marked loan is asked whether the call could reshape the
 // collection it points into: reported at once if the borrow is handed to this very
@@ -2859,7 +3233,8 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
     // references only, or through a reference that holds only the exclusive
     // borrow of such a place (the temporary an operator changing its operand in
     // place borrows it through: 'text <- a, b')
-    int recvunique = recvpl && !recvpl->owned && (!recvpl->shared || (recvpl->deref && pwHeldExcluding(recvpl, 0)));
+    int recvunique = recvpl && !recvpl->owned && !recvpl->uniway
+        && (!recvpl->shared || (recvpl->deref && pwHeldExcluding(recvpl, 0)));
     // What the call can reach of the function's own storage, and what its receiver can. A
     // 'mut' borrow of a local is an alias loan, so the local has other names (the source by
     // name, another borrow), but only ones the call is handed: a loan that points only into
@@ -2953,18 +3328,37 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             if (local || nmine || anyapart)
                 rus[c] = -1;       // not kept for another loan
         }
-        if (!answers[c])
+        ReshapeVerdict verdict = verdicts[c];
+        int answer = answers[c];
+        // From behind a trait object: asked too of every collection, enum or owner this call
+        // reaches that could hold what the borrow points at
+        PwUnseen *unseen = (PwUnseen *)loanUnseen(loan);
+        if (!answer && unseen) {
+            INode **ucont;
+            uint32_t nucont = pwUnseenConts(call, unseen, &ucont);
+            for (uint32_t u = 0; u < nucont && !answer; ++u) {
+                uint32_t unsettled = shapeUnsettled;
+                int ugv = gv ? gv : reshapeMutGlobalsReach(ucont[u]) ? 2 : 0;
+                answer = reshapeCall(call, meth, ru, ucont[u], NULL, recvfield, ugv, &verdict, mine, nmine, 0,
+                    anyapart ? apart : NULL);
+                if (shapeUnsettled != unsettled && !flowWalkFinal) {
+                    flowShapeRetry = 1;
+                    answer = 0;
+                }
+            }
+        }
+        if (!answer)
             continue;
         // The collection changed through the very name the borrow was taken by is
         // the loan's own freezing, which reports it; another field of the same
         // struct, through the same reference, is another collection
         // (a borrow narrowed into an enum's variant freezes nothing, so a change of
         // variant through the same name is for this check to report)
-        if ((verdicts[c].why == ReshapeReceiver || verdicts[c].why == ReshapeReceiverUnseen) && recvpl
+        if ((verdict.why == ReshapeReceiver || verdict.why == ReshapeReceiverUnseen) && recvpl
                 && (((loanShapeFrozen(loan) || (loanUniqAlias(loan) && !loanIsAliased(loan)))
                         && loanShapeSamePlace(loan, recvpl)) || loanShapeDisjoint(loan, recvpl)))
             continue;
-        Name *callee = verdicts[c].callee ? verdicts[c].callee->namesym : NULL;
+        Name *callee = verdict.callee ? verdict.callee->namesym : NULL;
         // The borrow handed to this very call, beside whatever could reshape its collection
         int own = 0;
         for (uint32_t j = 0; (loan != recvloan || sk) && j < nargs; ++j) {
@@ -2972,10 +3366,21 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
                 own = 1;
         }
         if (own || loanShapeInFlight(loan))
-            loanShapeNow((INode *)call, loan, verdicts[c].why, callee);
+            loanShapeNow((INode *)call, loan, verdict.why, callee);
         else
-            loanShapePend((INode *)call, loan, verdicts[c].why, callee);
+            loanShapePend((INode *)call, loan, verdict.why, callee);
     }
+}
+
+// The reference narrowed out of the borrow a 'match &s' made itself of a place reached
+// as 'uni' (FlagNarrowOwnBorrow): that borrow freezes the place against its own name,
+// so nothing changes the variant unless a 'mut' borrow of the place is held, which is
+// one more name for it. Returns that borrow's loan, or 0 for none.
+static uint32_t pwNarrowAliased(CastNode *cast) {
+    VarDclNode *hidden = pwNamedVar(cast->exp);
+    if (hidden == NULL)
+        return 0;
+    return loanMutAliasOf(pathVars[pathVar(hidden)].holds);
 }
 
 // A reference narrowed from an enum to one of its variants, through a reference other
@@ -2985,8 +3390,9 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
 // is held asks whether it could change which variant the enum holds (pwShapeCall,
 // pwShapeStore). It freezes nothing: the enum may be read and its fields written, by
 // this name or another, as a collection may; only a change of variant is refused, by
-// whichever name, and only if the narrowed reference is used afterwards.
-static PathSet *pwNarrowShared(CastNode *cast) {
+// whichever name, and only if the narrowed reference is used afterwards. 'alias' is the
+// loan of the 'mut' borrow that is the other name beside a match's own borrow, else 0.
+static PathSet *pwNarrowShared(CastNode *cast, uint32_t alias) {
     Place pl;
     PathSet *base;
     if (!pwThrough(&cast->exp, &pl, &base))
@@ -3001,9 +3407,77 @@ static PathSet *pwNarrowShared(CastNode *cast) {
         // enum is where that borrow is, which another field of 'm' is not
         if (pl.deref && pl.nsteps == 0)
             loanShapeSource(loan, pathVars[pl.var].holds);
+        if (alias)
+            loanShapeAliasBy(loan, alias);
         pwShapeBorrow(&pl, loan, sum);
     }
+    if (loan && loanShapeContainer(loan) == NULL) {
+        loanShapeRefView(loan, sum);
+        // Narrowed from a reference to what a 'uni' one borrows ('let x = &*r; match x'): the
+        // loan 'x' holds of '*r' is a view too
+        if (pl.deref)
+            loanShapeRefViews(pathVars[pl.var].holds, sum);
+    }
     return holds;
+}
+
+// A test, or a store of a variant, narrowed the name 'var' itself ('if s is Circle'): no
+// node converts anything, so nothing holds a narrowed reference. The name freezes nothing,
+// and a change by it ends the narrowing ('s = v'), but a 'mut' borrow of the enum, or of the
+// reference it is reached through, held here is one more name for it. Then a loan like that
+// of a reference narrowed into a variant (pwNarrowShared) is held by a stand-in for the
+// name, which each member of the variant named on it uses, and what is borrowed through one
+// carries (pwLend). Where the name is a reference and the 'mut' borrow is of the variable
+// itself ('&mut p'), it can point the name elsewhere as well ('*r = other'), so the
+// stand-in holds a second loan, of the variable, marked with the reference's type as an
+// owner's is: a store of such a reference over it, or a call that may, is a change too.
+// Only the name's uses meet that one (pwNarrowCarried). 'keep': the narrowing rests on
+// earlier tests too, whose loans stay
+static void pwNarrowName(INode *site, VarDclNode *var, int keep) {
+    if (!pathLoans)
+        return;
+    uint32_t index = pathVar(var);
+    Place pl = { index, 0, 0 };
+    Place self = { index, 0, 0 };
+    INode *type = itypeGetTypeDcl(var->vtype);
+    INode *reftype = NULL;
+    if (type->tag == RefTag) {
+        pl.deref = 1;
+        reftype = type;
+        type = itypeGetTypeDcl(((RefNode *)type)->vtexp);
+    }
+    uint32_t alias = loanMutAliasAt(&pl);
+    // (a borrow of the variable itself is among those 'pl' finds, so there is an 'alias')
+    uint32_t repoint = reftype ? loanMutAliasAt(&self) : 0;
+    uint32_t stand = pathVars[index].narrow;
+    if (!alias && !stand)
+        return;
+    if (!stand) {
+        VarDclNode *dcl = newVarDclFull(var->namesym, VarDclTag, var->vtype, (INode *)immPerm, NULL);
+        inodeLexCopy((INode *)dcl, site);
+        dcl->scope = 2;
+        dcl->flowtracked = 1;
+        stand = pathVar(dcl);
+        pathVars[stand].holder = 1;
+        pathVars[stand].tracked = 0;
+        pathVars[stand].dies = 0;
+        pathVars[stand].narrowed = 1;
+        pathVars[index].narrow = stand;
+    }
+    PathSet *holds = keep ? pathVars[stand].holds : NULL;
+    PathSet *pending = keep ? pathVars[stand].pending : NULL;
+    uint32_t loan = alias ? loanNarrowName(site, &pl, alias, 0) : 0;
+    if (loan) {
+        // (its roots are read from what 'var' holds, where it is a reference)
+        loanShapeMark(loan, type);
+        holds = pathSetAdd(holds, loan);
+    }
+    loan = repoint ? loanNarrowName(site, &self, repoint, 1) : 0;
+    if (loan) {
+        loanShapeMark(loan, reshapeOwnerCont(reftype));
+        holds = pathSetAdd(holds, loan);
+    }
+    pathSetFacts(stand, holds, pending);
 }
 
 // A store over a field of the container itself ('r.buf = String()' while a borrow into 'r's own
@@ -3019,6 +3493,7 @@ static int pwStoreOverField(INode *lval, INode *cont) {
     INode *place = lval;
     while (place->tag == CastTag && !(place->flags & FlagConvert))
         place = ((CastNode *)place)->exp;
+    place = reshapeUnborrow(place);
     INode *under = place->tag == DerefTag ? ((StarNode *)place)->vtexp : place;
     int indexed = 0;
     if (under->tag == ArrIndexTag) {
@@ -3053,10 +3528,14 @@ static void pwShapeStore(INode *lval, Place *pl) {
     LoanReach reach;
     loanReachInit(&reach);
     if (pl) {
-        // What a 'uni' reference points at is reached by that reference and nothing else
-        if (pl->deref && pl->shared)
+        // What a 'uni' reference points at is reached by that reference and nothing else,
+        // unless the reference was itself read through a borrowed one ('**m', 'far'): then
+        // the store lands in what that one borrows, which the root variable's loans say, as
+        // they do for a shared path. There the root's own storage is not what is stored in. So
+        // too where the 'uni' reference was read from where others may write ('**o', Place.uniway)
+        if (pl->deref && (pl->shared || pl->far || pl->uniway))
             loanReachAdd(&reach, pathVars[pl->var].holds);
-        else
+        if (!pl->deref || !pl->shared)
             loanReachRoot(&reach, pl->var);
     }
     for (uint32_t i = 0; i < loanShapeCount(); ++i) {
@@ -3069,7 +3548,9 @@ static void pwShapeStore(INode *lval, Place *pl) {
         // A store that reaches only other locals cannot change what the loan points into
         if (local && pl && !loanShapeReaches(loan, &reach))
             continue;
-        if (!reshapeStoreHits(lval, loanShapeContainer(loan)) && !pwStoreOverField(lval, loanShapeContainer(loan)))
+        PwUnseen *unseen = (PwUnseen *)loanUnseen(loan);
+        if (!reshapeStoreHits(lval, loanShapeContainer(loan)) && !pwStoreOverField(lval, loanShapeContainer(loan))
+                && !(unseen && pwUnseenStoreHits(lval, unseen)))
             continue;
         if (pl && (loanShapeDisjoint(loan, pl) || (loanShapeFrozen(loan) && loanShapeSamePlace(loan, pl))))
             continue;
@@ -3131,6 +3612,670 @@ static PathSet *pwPointerOf(PathSet *carried) {
 // ('NoLoanMut', an arena; 'NoLoanRead', for a read-only borrow) lends with no
 // loan on it: its receiver's place gets only a pin, which forbids moving,
 // replacing or ending it.
+// ---- A result borrowed from what an argument reaches through a shared owner --------
+//
+// A function handed '&o', 'o' an 'Rc[mut, List]', may return a borrow of an element: its
+// signature says the result comes from the argument, and the argument's loan is of the
+// handle 'o' alone, which another holder of the same 'Rc' stores over without touching. A
+// borrow written in place ('&(*o)[0]') is marked for the shape check with the containers it
+// is into, so the call's result is given the same, worked out from the parameter's type:
+// every container (a collection, an enum, an owner) reached past a shared owner that could
+// hold what the result points at.
+//
+// A virtual call's receiver is behind a trait, which names no fields, so its type says
+// nothing of what is reached. The result is then given one more loan, marked for the trait,
+// which holds what the result may point at (PwUnseen): a store or a call is asked of every
+// container it could free that holds one of those.
+//
+// A trait object a function is handed, or one held in what is handed, is judged by its
+// trait's signature, as the call is by its own: its public fields, whose types are known and
+// walked as a struct's are, and its public methods (for a callable, what it returns). Where
+// a method can hand out something the result could point at, by what it returns or what it
+// writes through a reference it is handed, the result is given the same unseen loan.
+// A downcast of the trait object is not seen by this
+
+#define PwReachMax 24
+
+// A type walked, with what it was walked for: so that a type that holds itself ends
+typedef struct {
+    INode *type;
+    INode *cont;
+    uint8_t how;
+} PwReachAt;
+
+typedef struct {
+    INode *targets[PwReachMax];     // what the result's borrows may point at
+    int ntargets;
+    int any;                        // anything: a borrow of a trait, or more types than are kept
+    uint32_t nconts;                // the containers found, in 'pwReachConts'
+    uint32_t nseen;                 // the types walked, in 'pwReachSeen'
+    int visits;                     // types visited by the walks that keep no record of them
+    INode *unseen;                  // a trait object owned on the way, whose contents no type names
+    int owned;                      // follow only what a value holds and owns, not what it borrows
+    INode *handed;                  // a trait object met whose methods can hand out a target
+} PwReach;
+
+struct PwUnseen {
+    INode *targets[PwReachMax];
+    int ntargets;
+    int any;
+};
+
+#define PwReachVisits 4096
+
+// The lists one walk fills, kept for the next: neither is cut short, or a container past
+// the end of it would go unmarked
+static PwReachAt *pwReachSeen = NULL;
+static uint32_t pwReachSeenCap = 0;
+static INode **pwReachConts = NULL;
+static uint32_t pwReachContCap = 0;
+
+static void pwReachTarget(PwReach *r, INode *type) {
+    for (int i = 0; i < r->ntargets; ++i) {
+        if (itypeIsSame(r->targets[i], type))
+            return;
+    }
+    if (r->ntargets == PwReachMax)
+        r->any = 1;
+    else
+        r->targets[r->ntargets++] = type;
+}
+
+// The types the borrows a result of 'type' holds may point at
+static void pwReachTargets(PwReach *r, INode *type, int depth) {
+    type = itypeGetTypeDcl(type);
+    if (type == NULL || depth > 5)
+        return;
+    if (++r->visits > PwReachVisits) {
+        r->any = 1;
+        return;
+    }
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag: {
+        INode *to = itypeGetTypeDcl(((RefNode *)type)->vtexp);
+        if (pwIsBorrowed(type)) {
+            // A trait, or a trait object: whatever implements it
+            if (type->tag == VirtRefTag || (to->tag == StructTag && (to->flags & TraitType) && !reshapeIsSum(to)))
+                r->any = 1;
+            else
+                pwReachTarget(r, to);
+        }
+        pwReachTargets(r, to, depth + 1);
+        break;
+    }
+    case ArrayTag:
+        pwReachTargets(r, arrayElemType(type), depth + 1);
+        break;
+    case PtrTag:
+        // A raw pointer a struct that carries borrows holds ('List[&i32]''s block,
+        // or a view a library makes of one)
+        pwReachTarget(r, itypeGetTypeDcl(((StarNode *)type)->vtexp));
+        pwReachTargets(r, ((StarNode *)type)->vtexp, depth + 1);
+        break;
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp))
+            pwReachTargets(r, *nodesp, depth + 1);
+        break;
+    }
+    case StructTag: {
+        if (!pwCarries(type))
+            break;
+        StructNode *st = (StructNode *)type;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&st->fields, cnt, nodesp))
+            pwReachTargets(r, ((IExpNode *)*nodesp)->vtype, depth + 1);
+        if (st->derived) {
+            for (nodesFor(st->derived, cnt, nodesp))
+                pwReachTargets(r, *nodesp, depth + 1);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+// May a borrow of a value of 'type' be one of the result's?
+static int pwReachMatch(PwReach *r, INode *type) {
+    if (r->any)
+        return 1;
+    for (int i = 0; i < r->ntargets; ++i) {
+        if (itypeIsSame(r->targets[i], type))
+            return 1;
+    }
+    return 0;
+}
+
+// Does 'type' name one of 'args', itself or in what it is made of?
+static int pwNamesArg(INode *type, Nodes *args, int depth) {
+    type = type ? itypeGetTypeDcl(type) : NULL;
+    if (type == NULL || depth > 8)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, nodesp)) {
+        if (isTypeNode(*nodesp) && itypeIsSame(itypeGetTypeDcl(*nodesp), type))
+            return 1;
+    }
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        return pwNamesArg(((RefNode *)type)->vtexp, args, depth + 1);
+    case PtrTag:
+        return pwNamesArg(((StarNode *)type)->vtexp, args, depth + 1);
+    case ArrayTag:
+        return pwNamesArg(arrayElemType(type), args, depth + 1);
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (pwNamesArg(*nodesp, args, depth + 1))
+                return 1;
+        }
+        return 0;
+    case StructTag: {
+        Nodes *typeargs = itypeInstanceTypeArgs(type);
+        if (typeargs) {
+            for (nodesFor(typeargs, cnt, nodesp)) {
+                if (isTypeNode(*nodesp) && pwNamesArg(*nodesp, args, depth + 1))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Asking what a trait's methods hand out: is a struct's raw pointer, one to 'pointee', a
+// way safe code reaches what the struct holds? Safe code dereferences no raw pointer: only a collection's elements are reached
+// by one, and those its type's arguments name ('List[T]''s '*T', 'Dict[K, V]''s
+// '*DictEntry[K, V]'). Where one of a struct's pointers names an argument, its others are
+// not followed ('List''s 'region'). A struct where none does has nothing to tell by, and
+// each of its pointers is taken as the way to its elements. (The walk of what a
+// parameter reaches follows every pointer of a shape-changing type)
+static int pwElementPtr(StructNode *st, INode *pointee) {
+    Nodes *args = itypeInstanceTypeArgs((INode *)st);
+    if (args == NULL || pwNamesArg(pointee, args, 0))
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&st->fields, cnt, nodesp)) {
+        INode *ftype = itypeGetTypeDcl(((IExpNode *)*nodesp)->vtype);
+        if (ftype && ftype->tag == PtrTag && pwNamesArg(((StarNode *)ftype)->vtexp, args, 0))
+            return 0;
+    }
+    return 1;
+}
+
+// What one asking of a trait's methods may walk. Each type is walked once for how it was
+// reached, and types are many behind a trait whose methods are handed a library's values,
+// so the bound is far past any program's: a lower one answers yes for an unrelated type
+#define PwHandsVisits 100000
+
+typedef struct {
+    INode *type;
+    uint8_t how;                    // 1, through a borrow; 2, as a trait object
+} PwHandsAt;
+
+// The types walked so far, the list kept for the next asking
+static PwHandsAt *pwHandsList = NULL;
+static uint32_t pwHandsCap = 0;
+
+typedef struct {
+    uint32_t ntypes;                // the types walked, in 'pwHandsList'
+    int visits;
+} PwHands;
+
+static int pwTraitHands(PwReach *r, INode *trait, int lent, int fields, PwHands *h, int depth);
+
+// Was this type walked so already? Else it is recorded
+static int pwHandsSeen(PwHands *h, INode *type, int how) {
+    for (uint32_t i = 0; i < h->ntypes; ++i) {
+        if (pwHandsList[i].type == type && pwHandsList[i].how == how)
+            return 1;
+    }
+    if (h->ntypes >= pwHandsCap)
+        pwHandsList = (PwHandsAt *)pathGrow(pwHandsList, &pwHandsCap, sizeof(PwHandsAt));
+    pwHandsList[h->ntypes].type = type;
+    pwHandsList[h->ntypes++].how = (uint8_t)how;
+    return 0;
+}
+
+// Can a borrow of one of the result's targets be had from a value of 'type' that a trait's
+// method hands out? 'lent' says the value is reached through a borrow, so that it, and
+// everything it holds, can be borrowed as long. Past the bounds it answers yes
+static int pwHands(PwReach *r, INode *type, int lent, PwHands *h, int depth) {
+    type = type ? itypeGetTypeDcl(type) : NULL;
+    if (type == NULL)
+        return 0;
+    if (depth > 200 || ++h->visits > PwHandsVisits)
+        return 1;
+    if (lent && pwReachMatch(r, type))
+        return 1;
+    if (pwHandsSeen(h, type, lent))
+        return 0;
+
+    INode **nodesp;
+    uint32_t cnt;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag: {
+        RefNode *ref = (RefNode *)type;
+        // Nothing is read through 'opaq', and no borrow outlives a lock's guard
+        if (itypeGetTypeDcl(ref->perm) == (INode *)opaqPerm || permIsLock(ref->perm))
+            return pwIsBorrowed(type) && pwReachMatch(r, itypeGetTypeDcl(ref->vtexp));
+        if (pwIsBorrowed(type)) {
+            if (r->any)
+                return 1;
+            lent = 1;
+        }
+        if (type->tag == VirtRefTag)
+            return pwTraitHands(r, ref->vtexp, lent, 1, h, depth + 1);
+        return pwHands(r, ref->vtexp, lent, h, depth + 1);
+    }
+    case ArrayTag:
+        return pwHands(r, arrayElemType(type), lent, h, depth + 1);
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (pwHands(r, *nodesp, lent, h, depth + 1))
+                return 1;
+        }
+        return 0;
+    case StructTag: {
+        StructNode *st = (StructNode *)type;
+        if (reshapeIsSum(type)) {
+            if (st->derived) {
+                for (nodesFor(st->derived, cnt, nodesp)) {
+                    if (pwHands(r, *nodesp, lent, h, depth + 1))
+                        return 1;
+                }
+            }
+            return 0;
+        }
+        // (a trait here is a plain reference's referent: no method can be called through
+        // one, so its fields are what it offers)
+        for (nodelistFor(&st->fields, cnt, nodesp)) {
+            INode *ftype = itypeGetTypeDcl(((IExpNode *)*nodesp)->vtype);
+            if (ftype == NULL)
+                continue;
+            // A raw pointer: a collection's block, or the view a borrow-carrying struct holds
+            if (ftype->tag == PtrTag) {
+                if ((lent || pwCarries(type)) && pwElementPtr(st, ((StarNode *)ftype)->vtexp)
+                        && pwHands(r, ((StarNode *)ftype)->vtexp, 1, h, depth + 1))
+                    return 1;
+            }
+            else if (pwHands(r, ftype, lent, h, depth + 1))
+                return 1;
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Can what is behind a trait object hand out one of the result's targets, as its trait's
+// signature says: what a public method returns, or writes through a reference it is
+// handed, and (where 'fields') what a public field holds?
+static int pwTraitHands(PwReach *r, INode *trait, int lent, int fields, PwHands *h, int depth) {
+    trait = itypeGetTypeDcl(trait);
+    if (trait == NULL || trait->tag != StructTag)
+        return 0;
+    if (depth > 200 || ++h->visits > PwHandsVisits)
+        return 1;
+    if (fields && pwHandsSeen(h, trait, lent | 2))
+        return 0;
+    Vtable *vtable = ((StructNode *)trait)->vtable;
+    if (vtable == NULL)
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(vtable->methfld, cnt, nodesp)) {
+        if ((*nodesp)->tag == FieldDclTag) {
+            if (fields && pwHands(r, ((IExpNode *)*nodesp)->vtype, lent, h, depth + 1))
+                return 1;
+            continue;
+        }
+        FnSigNode *sig = (FnSigNode *)itypeGetTypeDcl(((FnDclNode *)*nodesp)->vtype);
+        if (sig == NULL || sig->tag != FnSigTag)
+            return 1;
+        if (pwHands(r, sig->rettype, 0, h, depth + 1))
+            return 1;
+        // (the first parameter is the receiver)
+        for (uint32_t i = 1; i < sig->parms->used; ++i) {
+            INode *ptype = itypeGetTypeDcl(((IExpNode *)nodesGet(sig->parms, i))->vtype);
+            if (ptype && (ptype->tag == RefTag || ptype->tag == ArrayRefTag) && pwIsBorrowed(ptype)
+                    && (permGetFlags(((RefNode *)ptype)->perm) & MayWrite)
+                    && pwHands(r, ((RefNode *)ptype)->vtexp, 0, h, depth + 1))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int owner, int depth);
+
+// A trait object met on the way: its trait's public fields are walked as a struct's are,
+// and its methods are asked whether they hand out what the result could point at
+static void pwReachTrait(PwReach *r, RefNode *ref, INode *cont, int shared, int owner, int depth) {
+    INode *trait = itypeGetTypeDcl(ref->vtexp);
+    if (trait == NULL || trait->tag != StructTag)
+        return;
+    Vtable *vtable = ((StructNode *)trait)->vtable;
+    if (vtable) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(vtable->methfld, cnt, nodesp)) {
+            if ((*nodesp)->tag == FieldDclTag)
+                pwReachWalk(r, ((IExpNode *)*nodesp)->vtype, cont, shared, owner, depth + 1);
+        }
+    }
+    if (r->handed == NULL) {
+        PwHands h;
+        h.ntypes = 0;
+        h.visits = 0;
+        if (pwTraitHands(r, trait, 0, 0, &h, 0))
+            r->handed = trait;
+    }
+}
+
+static void pwReachFound(PwReach *r, INode *cont) {
+    for (uint32_t i = 0; i < r->nconts; ++i) {
+        if (pwReachConts[i] == cont)
+            return;
+    }
+    if (r->nconts >= pwReachContCap)
+        pwReachConts = (INode **)pathGrow(pwReachConts, &pwReachContCap, sizeof(INode *));
+    pwReachConts[r->nconts++] = cont;
+}
+
+// Walk what a value of 'type' reaches. 'cont' is the container a borrow of it would be
+// marked for, NULL where it would not be; 'shared', that others may write by the way to it;
+// 'owner', that the way passed an owner others hold too
+static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int owner, int depth) {
+    type = itypeGetTypeDcl(type);
+    // (a bound on the stack only: no type is written this deep)
+    if (type == NULL || depth > 64)
+        return;
+    if (cont && shared && owner && pwReachMatch(r, type))
+        pwReachFound(r, cont);
+    uint8_t how = (uint8_t)((shared ? 1 : 0) | (owner ? 2 : 0));
+    for (uint32_t i = 0; i < r->nseen; ++i) {
+        if (pwReachSeen[i].type == type && pwReachSeen[i].cont == cont && pwReachSeen[i].how == how)
+            return;
+    }
+    if (r->nseen >= pwReachSeenCap)
+        pwReachSeen = (PwReachAt *)pathGrow(pwReachSeen, &pwReachSeenCap, sizeof(PwReachAt));
+    pwReachSeen[r->nseen].type = type;
+    pwReachSeen[r->nseen].cont = cont;
+    pwReachSeen[r->nseen++].how = how;
+
+    switch (type->tag) {
+    case StructTag: {
+        StructNode *st = (StructNode *)type;
+        INode **nodesp;
+        uint32_t cnt;
+        // An enum: what is in a variant goes when another is stored
+        if (reshapeIsSum(type)) {
+            if (st->derived) {
+                for (nodesFor(st->derived, cnt, nodesp))
+                    pwReachWalk(r, *nodesp, shared ? type : cont, shared, owner, depth + 1);
+            }
+            break;
+        }
+        // A trait here is a plain reference's referent: no method can be called through
+        // one, so its fields, walked as a struct's are, are what it offers
+        int changing = shapeChanging(st);
+        for (nodelistFor(&st->fields, cnt, nodesp)) {
+            INode *ftype = itypeGetTypeDcl(((IExpNode *)*nodesp)->vtype);
+            if (ftype == NULL)
+                continue;
+            // A collection's block, reached by its own raw pointer
+            if (ftype->tag == PtrTag) {
+                if (changing)
+                    pwReachWalk(r, ((StarNode *)ftype)->vtexp, shared ? type : cont, shared, owner, depth + 1);
+            }
+            else
+                pwReachWalk(r, ftype, cont, shared, owner, depth + 1);
+        }
+        break;
+    }
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag: {
+        RefNode *ref = (RefNode *)type;
+        INode *perm = itypeGetTypeDcl(ref->perm);
+        // Nothing is read through 'opaq', and a lock's value only through a guard that ends
+        // in the callee, which no borrow it returns may outlive
+        if (perm == (INode *)opaqPerm || permIsLock(ref->perm))
+            break;
+        if (pwIsBorrowed(type)) {
+            if (r->owned)
+                break;
+            // A held borrow: its own loans say where it points, and a borrow through it is
+            // marked for no owner, but past a shared owner others write by it too
+            int past = pwMayAliasWritten(type) || (shared && perm == (INode *)uniPerm);
+            if (type->tag != VirtRefTag)
+                pwReachWalk(r, ref->vtexp, NULL, past, owner, depth + 1);
+            else
+                pwReachTrait(r, ref, NULL, past, owner, depth);
+            break;
+        }
+        // An owner: stored over, it frees what it holds
+        int writers = pwMayAliasWritten(type);
+        int inshared = shared || writers;
+        int inowner = owner || writers;
+        INode *incont = inshared && inowner ? reshapeOwnerCont(type) : cont;
+        if (type->tag == VirtRefTag) {
+            // A trait object: what it holds is unknown
+            r->unseen = itypeGetTypeDcl(ref->vtexp);
+            if (inshared && inowner)
+                pwReachFound(r, incont);
+            pwReachTrait(r, ref, incont, inshared, inowner, depth);
+        }
+        else
+            pwReachWalk(r, ref->vtexp, incont, inshared, inowner, depth + 1);
+        break;
+    }
+    case ArrayTag:
+        pwReachWalk(r, arrayElemType(type), cont, shared, owner, depth + 1);
+        break;
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp))
+            pwReachWalk(r, *nodesp, cont, shared, owner, depth + 1);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+// A parameter passed by value: only the borrows it holds can be what the result points into,
+// for what it owns is the callee's and ends there
+static void pwReachByValue(PwReach *r, INode *type, int depth) {
+    type = itypeGetTypeDcl(type);
+    if (type == NULL || depth > 6 || !pwCarries(type) || ++r->visits > PwReachVisits)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+        if (pwIsBorrowed(type))
+            pwReachWalk(r, ((RefNode *)type)->vtexp, NULL, pwMayAliasWritten(type), 0, 0);
+        break;
+    case VirtRefTag:
+        if (pwIsBorrowed(type))
+            pwReachTrait(r, (RefNode *)type, NULL, pwMayAliasWritten(type), 0, 0);
+        break;
+    case ArrayTag:
+        pwReachByValue(r, arrayElemType(type), depth + 1);
+        break;
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp))
+            pwReachByValue(r, *nodesp, depth + 1);
+        break;
+    case StructTag: {
+        StructNode *st = (StructNode *)type;
+        for (nodelistFor(&st->fields, cnt, nodesp))
+            pwReachByValue(r, ((IExpNode *)*nodesp)->vtype, depth + 1);
+        if (st->derived) {
+            for (nodesFor(st->derived, cnt, nodesp))
+                pwReachByValue(r, *nodesp, depth + 1);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+// A number for each container ever marked so, which with the argument keys its loan: a
+// walk of a loop again, or one that finds other containers, meets the same loan for the same
+static uint32_t pwReachContKey(INode *cont) {
+    static INode **conts = NULL;
+    static uint32_t used = 0;
+    static uint32_t cap = 0;
+    for (uint32_t i = 0; i < used; ++i) {
+        if (conts[i] == cont)
+            return i;
+    }
+    if (used >= cap)
+        conts = (INode **)pathGrow(conts, &cap, sizeof(INode *));
+    conts[used] = cont;
+    return used++;
+}
+
+// Does storing over 'lval' free something that holds what a result from behind a trait
+// object may point at? The value replaced whole takes what it holds and owns with it
+static int pwUnseenStoreHits(INode *lval, PwUnseen *unseen) {
+    INode *stored = iexpGetTypeDcl(lval);
+    if (stored == NULL)
+        return 0;
+    // A local owning reference is its own place: the others' hold keeps what it points at
+    if ((stored->tag == RefTag || stored->tag == VirtRefTag) && !pwIsBorrowed(stored)
+            && reshapeUniqueLocalOf(lval, reshapeOwnerCont(stored)))
+        return 0;
+    PwReach r;
+    memset(&r, 0, sizeof(r));
+    memcpy(r.targets, unseen->targets, sizeof(r.targets));
+    r.ntargets = unseen->ntargets;
+    r.any = unseen->any;
+    r.owned = 1;
+    pwReachWalk(&r, stored, NULL, 1, 1, 0);
+    return r.nconts > 0 || r.unseen != NULL;
+}
+
+// The collections, enums and owners holding what 'unseen' names that a call could reach:
+// through what it is handed, or through a global. Copied out of the walk's list, which
+// asking of each may walk again
+static uint32_t pwUnseenConts(FnCallNode *call, PwUnseen *unseen, INode ***conts) {
+    PwReach r;
+    memset(&r, 0, sizeof(r));
+    memcpy(r.targets, unseen->targets, sizeof(r.targets));
+    r.ntargets = unseen->ntargets;
+    r.any = unseen->any;
+    FnSigNode *sig = (FnSigNode *)iexpGetDerefTypeDcl(call->objfn);
+    uint32_t nargs = call->args ? call->args->used : 0;
+    for (uint32_t i = 0; i < nargs; ++i) {
+        INode *type = sig && sig->tag == FnSigTag && i < sig->parms->used
+            ? iexpGetTypeDcl(nodesGet(sig->parms, i)) : iexpGetTypeDcl(nodesGet(call->args, i));
+        pwReachWalk(&r, type, NULL, 1, 1, 0);
+    }
+    for (uint32_t i = 0; i < reshapeGlobalCount(); ++i)
+        pwReachWalk(&r, reshapeGlobalAt(i)->vtype, NULL, 1, 1, 0);
+    *conts = (INode **)memAllocBlk((r.nconts ? r.nconts : 1) * sizeof(INode *));
+    memcpy(*conts, pwReachConts, r.nconts * sizeof(INode *));
+    return r.nconts;
+}
+
+// A loan for what a call's result may borrow from the argument at 'argi', marked for 'cont'
+static uint32_t pwReachLoan(FnCallNode *call, uint32_t argi, INode *cont, uint32_t base, PathSet **result) {
+    uint32_t id = loanMakeReach((INode *)nodesGet(call->args, argi), pwReachContKey(cont), base);
+    if (id == 0)
+        return 0;
+    if (isNameUseNode(call->objfn) && ((NameUseNode *)call->objfn)->dclnode
+            && ((NameUseNode *)call->objfn)->dclnode->tag == FnDclTag)
+        loanReturnedBy(id, ((NameUseNode *)call->objfn)->namesym);
+    loanShapeMark(id, cont);
+    *result = pathSetAdd(*result, id);
+    if (pwOwnCnt < sizeof(pwOwnLoans) / sizeof(pwOwnLoans[0]))
+        pwOwnLoans[pwOwnCnt++] = id;
+    return id;
+}
+
+// Mark what a call's result may borrow through a shared owner from the argument at 'argi',
+// which carries 'carried' into it. 'covered' says the lending of this argument already marks
+// the referent's own type where it should (a receiver, a reference lent as pwLentArg does).
+// Returns the loans made, added to 'result'
+static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, PathSet *carried, int covered,
+        PathSet *result) {
+    INode *ptype = itypeGetTypeDcl(parmtype);
+    if (carried == NULL || ptype == NULL)
+        return result;
+    // The argument's own loan: a near one, which is what the argument points at
+    uint32_t base = 0;
+    int seed = 0;
+    for (uint32_t i = 0; i < carried->cnt; ++i) {
+        if (carried->ids[i] & LoanFar)
+            continue;
+        uint32_t id = loanOf(carried->ids[i]);
+        if (base == 0)
+            base = id;
+        if (loanThroughSharedOwner(id))
+            seed = 1;
+    }
+    if (base == 0)
+        base = loanOf(carried->ids[0]);
+    PwReach r;
+    memset(&r, 0, sizeof(r));
+    pwReachTargets(&r, ((IExpNode *)call)->vtype, 0);
+    // A result naming no borrowed type hands back no view of anything
+    if (!r.any && r.ntargets == 0)
+        return result;
+    INode *referent = NULL;
+    if ((ptype->tag == RefTag || ptype->tag == ArrayRefTag) && pwIsBorrowed(ptype)) {
+        referent = itypeGetTypeDcl(((RefNode *)ptype)->vtexp);
+        pwReachWalk(&r, referent, NULL, seed, seed, 0);
+    }
+    else if (ptype->tag == VirtRefTag && pwIsBorrowed(ptype))
+        pwReachTrait(&r, (RefNode *)ptype, NULL, seed, seed, 0);
+    else
+        pwReachByValue(&r, ptype, 0);
+    for (uint32_t k = 0; k < r.nconts; ++k) {
+        INode *cont = pwReachConts[k];
+        if (covered && cont == referent)
+            continue;
+        if (pwReachLoan(call, argi, cont, base, &result) == 0)
+            break;
+    }
+    // A trait object, what is behind which is not known: a virtual call's receiver, whose
+    // signature's 'self' names the trait, or one the argument is or holds whose methods hand
+    // out what the result could point at
+    INode *self = argi == 0 && (call->flags & FlagVDisp) ? iexpGetTypeDcl(nodesGet(call->args, 0)) : NULL;
+    INode *behind = self && self->tag == VirtRefTag ? itypeGetTypeDcl(((RefNode *)self)->vtexp) : r.handed;
+    if (behind) {
+        uint32_t id = pwReachLoan(call, argi, behind, base, &result);
+        if (id && loanUnseen(id) == NULL) {
+            PwUnseen *unseen = (PwUnseen *)memAllocBlk(sizeof(PwUnseen));
+            memcpy(unseen->targets, r.targets, sizeof(unseen->targets));
+            unseen->ntargets = r.ntargets;
+            unseen->any = r.any;
+            loanUnseenSet(id, unseen);
+        }
+    }
+    return result;
+}
+
 static PathSet *pwCall(FnCallNode *call) {
     INode *objfn = call->objfn;
     // What a function value called holds, a closure's borrows, is reached by the call too
@@ -3319,6 +4464,19 @@ static PathSet *pwCall(FnCallNode *call) {
         if (lentloan[i])
             pwOwnLoans[pwOwnCnt++] = lentloan[i];
     }
+    // What an argument reaches through a shared owner, which its result may borrow
+    FnSigNode *calleesig = pathLoans ? (FnSigNode *)iexpGetDerefTypeDcl(call->objfn) : NULL;
+    if (calleesig && calleesig->tag == FnSigTag) {
+        for (uint32_t i = 0; i < nargs && i < calleesig->parms->used; ++i) {
+            // An arena's method lends what never moves
+            if (meth && i == 0 && recvown && recvholds != argsets[0])
+                continue;
+            int covered = (meth && i == 0 && recvown) || (i < 8 && lentloan[i] && lentcnt[i]);
+            PathSet *into = pwArgCarriesTo(sig, i, sig ? sig->rettype : NULL,
+                meth && i == 0 ? recvholds : argsets[i], globalonly);
+            result = pwReachShared(call, i, iexpGetTypeDcl(nodesGet(calleesig->parms, i)), into, covered, result);
+        }
+    }
     // What the result's borrows point at may be anything its arguments reach
     // ('h.r' returned from '&h'): every loan both near and far, and of no
     // struct's slot
@@ -3375,6 +4533,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
         if (pathVars[index].holder) {
             pwHolderDies(index);
             pathSetFacts(index, pathSetWithoutThrough(holds, index), NULL);
+            pwLentGains(index, pathVars[index].holds);
         }
         // Nor was any other variable stored over whole live before: a seam's
         // live mark on it is dropped (pwSeam)
@@ -3418,8 +4577,47 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     pwStoreInto(pl.var, pwPlaceLevel(&pl), pwPlaceLevel(&pl), pwStoreTagged(&pl, holds));
 }
 
+// A compound assignment through a temporary ('x += e' is '{let tmp = &mut x; *tmp = *tmp + e}')
+// borrows its place before its right side is made, and writes into it after. A plain store
+// reaches its place after the value, which uses whatever the place is reached through, and so
+// refuses a change of shape or variant the value made, and a move or a replacement of what the
+// place is part of. The temporary is no holder, so nothing would pend on it: where one of the
+// borrows it was made with is into a collection, an owner or a variant, a stand-in holds them
+// all (a 'mut' borrow the place was reached through, 'let r = &mut l; r[0] += ...', names what
+// a move takes away), from before the right side, and the write is its use. A place with no
+// such borrow ('x += {x = 5; 1}') is in the variable's own storage, which a move or a store
+// leaves in place. Returns it, or 0 for none
+static uint32_t pwCompoundPlace(INode *lval) {
+    if (!pathLoans || lval->tag != DerefTag)
+        return 0;
+    INode *ref = ((StarNode *)lval)->vtexp;
+    VarDclNode *tmp = pwNamedVar(ref);
+    if (tmp == NULL || tmp->namesym != tempName)
+        return 0;
+    PathSet *all = pathVars[pathVar(tmp)].holds;
+    PathSet *holds = NULL;
+    int owned = 0;
+    for (uint32_t i = 0; all && i < all->cnt; ++i) {
+        // (a far loan is of what the place holds, not of where the place is)
+        if (all->ids[i] & LoanFar)
+            continue;
+        holds = pathSetAdd(holds, all->ids[i]);
+        owned |= loanShapeMayMark(loanOf(all->ids[i]));
+    }
+    if (!owned)
+        return 0;
+    uint32_t stand = pwStandIn(ref, holds);
+    pathVars[stand].compound = 1;
+    return stand;
+}
+
 static PathSet *pwAssign(AssignNode *node) {
+    uint32_t compound = pwCompoundPlace(node->lval);
     PathSet *holds = pwValue(&node->rval, 1);
+    if (compound) {
+        loanUseCompound(compound, node->lval);
+        pathSetFacts(compound, NULL, NULL);
+    }
     if (node->lval->tag == VTupleTag) {
         INode **lvalp;
         uint32_t cnt;
@@ -3452,6 +4650,10 @@ static PathSet *pwAssign(AssignNode *node) {
             loanFlightPushOf(holds, 0, node->rval);
         pwStore(&node->lval, holds, &node->rval);
         loanFlightPop(mark);
+        // The variant stored narrows the name to it from here
+        VarDclNode *narrowed = (node->flags & FlagNarrowAssigned) ? pwNamedVar(node->lval) : NULL;
+        if (narrowed)
+            pwNarrowName((INode *)node, narrowed, 0);
     }
     return holds;
 }
@@ -3463,6 +4665,7 @@ static void pwSwap(SwapNode *node) {
     PathSet *holds[2] = { NULL, NULL };
     Place places[2];
     int found[2] = { 0, 0 };
+    PathSet *bases[2] = { NULL, NULL };
     // A side holding a seam reaches its place first, the other after the
     // seam, as generation does (genlTerm, SwapTag)
     int first = pwSeams && awaitWithin(node->rval) && !awaitWithin(node->lval) ? 1 : 0;
@@ -3475,11 +4678,23 @@ static void pwSwap(SwapNode *node) {
         nodesAdd(&both, node->rval);
         premark = pwPreBegin(both);
     }
+    // Reach both places, in the order generation makes their addresses
     for (int k = 0; k < 2; ++k) {
         int i = k ^ first;
         VarDclNode *var = pwNamedVar(*sides[i]);
         Place *pl = &places[i];
-        PathSet *base;
+        // Both addresses are made before either element is used (genlTerm,
+        // SwapTag), so the first one made is held while the other side's place
+        // is walked, as a place's base is while its index is ('n.r[0usize] <->
+        // x[change(m)]', pwIndexStandIn): reaching the other element is its use.
+        // The loan of what an owner holds is keyed by the first side's own node:
+        // the second side's index keys its own by a node of the second
+        uint32_t stand = 0;
+        if (k == 1 && pathLoans && !flowGateOnlyReads(*sides[i]))
+            stand = pwIndexStandIn(*sides[i],
+                found[first] ? pwPlaceRests(*sides[first], &places[first]) : bases[first]);
+        if (stand)
+            pathVars[stand].swapped = 1;
         if (var) {
             whole[i] = pathVar(var);
             pl->var = whole[i];
@@ -3488,6 +4703,7 @@ static void pwSwap(SwapNode *node) {
             pl->shared = 0;
             pl->sharedlen = 0;
             pl->shwrite = 0;
+            pl->uniway = 0;
             pl->owned = 0;
             pl->far = 0;
             pl->use = *sides[i];
@@ -3495,6 +4711,30 @@ static void pwSwap(SwapNode *node) {
             pl->referent = NULL;
             pl->slotted = NULL;
             pl->slots = 0;
+            pl->narrow = 0;
+            pl->kept = NULL;
+            found[i] = 1;
+        }
+        else {
+            found[i] = pwPlace(sides[i], pl, &bases[i]);
+            pwIndexUse(stand, *sides[i]);
+            // What a reference's target holds, as it was when the address was
+            // made: the other side may point the reference elsewhere
+            if (found[i] && pl->deref)
+                holds[i] = pwPlaceHolds(pl, *sides[i]);
+        }
+    }
+    pwPreCnt = premark;
+    // Only then is either side read and written (genlTerm, SwapTag), as in
+    // the sequential form: what the walk of one side borrowed, moved or stored
+    // meets the other side's write ('l <-> ls[{r = &l[0usize]; 0usize}]')
+    for (int k = 0; k < 2; ++k) {
+        int i = k ^ first;
+        Place *pl = &places[i];
+        if (!found[i])
+            continue;
+        if (whole[i]) {
+            VarDclNode *var = pathVars[whole[i]].var;
             holds[i] = pathVars[whole[i]].holds;
             pwAccess(pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *sides[i]);
             pwDropUse(pl, *sides[i], 0);
@@ -3503,16 +4743,14 @@ static void pwSwap(SwapNode *node) {
             // mark on it
             if (!pathVars[whole[i]].holder && pathVars[whole[i]].pending)
                 loanUse(whole[i], *sides[i]);
-            found[i] = 1;
         }
-        else if (pwPlace(sides[i], pl, &base)) {
+        else {
             pwDropUse(pl, *sides[i], 0);
-            holds[i] = pwPlaceHolds(pl, *sides[i]);
+            PathSet *now = pwPlaceHolds(pl, *sides[i]);
+            holds[i] = pl->deref ? pathSetUnion(holds[i], now) : now;
             pwAccess(pl, AccessWrite, *sides[i]);
-            found[i] = 1;
         }
     }
-    pwPreCnt = premark;
     // A side that is not a local named whole is stored over: through another name, it
     // could reshape a value a borrow is into
     if (pathLoans && loanShapeCount()) {
@@ -3545,6 +4783,7 @@ static void pwSwap(SwapNode *node) {
                 pathSetFacts(whole[i], holds[other], i == 0 ? pending1 : pending0);
             else
                 pathSetFacts(whole[i], pathSetUnion(holds[i], holds[other]), pathVars[whole[i]].pending);
+            pwLentGains(whole[i], holds[other]);
         }
     }
 }
@@ -3560,6 +4799,9 @@ static void pwVarDcl(VarDclNode *var) {
     decls[ndecls++] = index;
     if (var->namesym == tempLocalName && pwIsGuard(var))
         pwSawGuard = 1;
+    // Nor does what its name was narrowed to, on an earlier pass
+    if (pathVars[index].narrow)
+        pathSetFacts(pathVars[index].narrow, NULL, NULL);
     // It holds nothing until its value is stored, again on each pass of a loop
     if (pathVars[index].tracked)
         pathSetState(index, DropUninit);
@@ -4049,9 +5291,18 @@ static PathSet *pwIf(IfNode *ifnode, int move) {
             mark = nlog;
             first = 0;
         }
+        INode *cond = *nodesp;
         nodesp++; cnt--;
         uint32_t condmark = nlog;
         pwArm = 1;
+        // A test whose arm knows the variant by it alone, though the path past it rests on
+        // earlier tests too: in the arm, what those tests' loans met is left behind
+        if (cond != elseCond && cond->tag == IsTag && (cond->flags & FlagNarrowArmAlone)
+                && (cond->flags & FlagNarrowKeeps)) {
+            VarDclNode *tested = pwNamedVar(((CastNode *)cond)->exp);
+            if (tested)
+                pwNarrowName(cond, tested, 0);
+        }
         PathSet *armval = pwBlock((BlockNode *)*nodesp, 0, move);
         if (!dead) {
             paths = pathDeltaPush(paths, pathDelta(mark, armval));
@@ -4398,11 +5649,11 @@ static PathSet *pwValue(INode **nodep, int move) {
         INode *perm;
         INode *site;
         if (!pwElemBorrowPlace(node, &pl, &base, &perm, &site)) {
-            pwElemBorrowIndexes(node);
+            pwElemBorrowIndexes(node, NULL, base);
             return base;
         }
         PathSet *lent = pwLend(site, &pl, perm, loanBorrowAccess(perm), NULL);
-        pwElemBorrowIndexes(node);
+        pwElemBorrowIndexes(node, &pl, NULL);
         return lent;
     }
     if (pwNamedVar(node) || node->tag == DerefTag || node->tag == ArrIndexTag
@@ -4516,14 +5767,25 @@ static PathSet *pwValue(INode **nodep, int move) {
         // is not fully seen (pwTieWarn)
         if (iexpGetTypeDcl(node)->tag == PtrTag || iexpGetTypeDcl(((CastNode *)node)->exp)->tag == PtrTag)
             pwTieBlind = 1;
-        if (pathLoans && castSumNarrows(node))
-            return pwNarrowShared((CastNode *)node);
+        if (pathLoans && castSumNarrows(node)) {
+            if (!(node->flags & FlagNarrowOwnBorrow))
+                return pwNarrowShared((CastNode *)node, 0);
+            uint32_t alias = pwNarrowAliased((CastNode *)node);
+            if (alias)
+                return pwNarrowShared((CastNode *)node, alias);
+        }
         if (!(node->flags & FlagConvert) && pwIsOwnedLent((CastNode *)node))
             return pwOwnedLent((CastNode *)node);
         // A conversion moves nothing but an owner it carries; whatever borrow
         // its value holds came from its operand ('case let Some(e)' converts
         // the matched 'Option[&T]' to its 'Some[&T]'), of no struct's slot
         PathSet *holds = pwValue(&((CastNode *)node)->exp, flowCastCarries(node) ? move : 0);
+        // A reference narrowed into a variant and not followed above (a 'uni' one, or a
+        // match's own '&' with no 'mut' borrow held): where what it is narrowed from is a
+        // reference nothing else reaches, that may be given another name while it is used
+        INode *sum = pathLoans ? castNarrowedSum(node) : NULL;
+        if (sum)
+            loanShapeRefViews(holds, sum);
         // One into an owning virtual reference ('Uni[Trait]' from a 'Uni[H]')
         // keeps its operand's value under a type that names no lifetime, so
         // nothing after follows what it holds: it may hold only global
@@ -4541,6 +5803,11 @@ static PathSet *pwValue(INode **nodep, int move) {
     }
     case IsTag:
         pwValue(&((CastNode *)node)->exp, 0);
+        if (node->flags & FlagNarrowTest) {
+            VarDclNode *tested = pwNamedVar(((CastNode *)node)->exp);
+            if (tested)
+                pwNarrowName(node, tested, (node->flags & FlagNarrowKeeps) != 0);
+        }
         return NULL;
     case NotLogicTag:
         pwValue(&((LogicNode *)node)->lexp, 0);
@@ -4928,6 +6195,7 @@ static int flowPathWalkOnce(FnDclNode *fndcl, int loans, int drops, int seams) {
     nlog = 0;
     ndecls = 0;
     ntemps = 0;
+    nyields = 0;
     nframes = 0;
     dead = 0;
     pwSawGuard = 0;

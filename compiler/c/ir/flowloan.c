@@ -50,12 +50,22 @@ typedef struct {
                         // until then the loan is exclusive as an 'uni' source's always was
     INode *lazycont;    // a borrow into a collection or enum that changes shape through a source no other name
                         // reaches yet: the container it is marked for if one does (loanShapePromote)
-    uint8_t nroots;     // a shape loan whose collection is function-local storage: how many of 'roots' (else 0)
+    INode *refcont;     // a view through a reference ('*r', '**m') not marked as it was made: the container
+                        // it is marked for once the reference has another name (loanShapeRefView)
+    uint8_t refway;     // such a view read through a 'mut' borrow of the reference, marked as it is made:
+                        // its roots are the locals along that way (loanRootsNote)
+    uint8_t nroots;    // a shape loan whose collection is function-local storage: how many of 'roots' (else 0)
     uint8_t rootsext;   // a shape loan's collection may be storage the function does not own
     uint8_t globalview; // a shape loan's collection is a 'var' global, or reached from one: any call may write it
     uint8_t elemview;   // a receiver's loan whose method returned an element out of the receiver's own block
                         // (loanElemViewSet): a borrow it carries is of that element, wherever else it is reached
     uint32_t roots[3];  // the local variables (walk indexes) whose storage it points into
+    uint32_t aliasby;   // a reference narrowed out of a match's own borrow, or a name narrowed by a test: the loan of
+                        // the 'mut' borrow of the enum held beside it, which a refusal names, else 0
+    uint8_t repoint;    // the loan of a narrowed reference variable itself (loanNarrowName): a call or store that
+                        // stores a reference of its type over it points the name elsewhere
+    void *unseen;       // a shape loan of what came from behind a trait object ('shapecont' the trait): what the
+                        // borrow may point at (flowpath.c, PwUnseen), else NULL
 } Loan;
 
 // A pending conflict: 'access' conflicted with 'loan', held by 'holder'. On a
@@ -116,6 +126,7 @@ typedef struct {
     INode *call;
     Name *callee;
     uint8_t why;        // ReshapeWhy
+    uint8_t unseen;     // of a loan of what came from behind a virtual reference (Loan.unseen)
 } ShapeNote;
 
 static uint32_t *shapeloans = NULL;
@@ -258,8 +269,10 @@ static uint8_t loanKindOf(INode *perm, Place *pl) {
     }
 }
 
-uint32_t loanMake(INode *site, Place *pl, INode *perm) {
-    uint32_t id = mapGet(site, 0, 0);
+// 'key' tells apart the loans made at one site: 0, but for the loan of a narrowed
+// reference variable beside that of what it points at (loanNarrowName)
+static uint32_t loanMakeKeyed(INode *site, Place *pl, INode *perm, uint32_t key) {
+    uint32_t id = mapGet(site, 0, key);
     if (id)
         return id;
     if (nloans > LoanIdMask) {
@@ -284,18 +297,102 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->shapeowner = NULL;
     loan->shapeownerval = 0;
     loan->source = 0;
+    loan->aliasby = 0;
     loan->uniq = loan->kind == LoanAlias && !pl->shared;
     // Another name for the source met by the access that made this borrow: it is one of several
     loan->aliased = loan->uniq && lastEventVar == pl->var;
     loan->lazycont = NULL;
+    loan->refcont = NULL;
+    loan->refway = 0;
     loan->nroots = 0;
     loan->rootsext = 0;
     loan->globalview = 0;
     loan->elemview = 0;
+    loan->unseen = NULL;
+    loan->repoint = 0;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
     pathVars[pl->var].loans = id;
-    mapPut(site, 0, 0, id);
+    mapPut(site, 0, key, id);
+    return id;
+}
+
+uint32_t loanMake(INode *site, Place *pl, INode *perm) {
+    return loanMakeKeyed(site, pl, perm, 0);
+}
+
+// Is the loan's place in what a shared owning reference holds, where others may write?
+// So is one read through a 'uni' reference others may reach ('**o', 'o' an
+// 'Rc[mut, &uni T]': Place.uniway)
+int loanThroughSharedOwner(uint32_t loan) {
+    Loan *l = &loans[loan];
+    return l->kind != LoanCaller
+        && (l->place.uniway || (l->place.shwrite && (l->place.owned || l->place.ownertype != NULL)));
+}
+
+// A second loan made beside 'base', an argument's own, for the shape check: a call's result
+// may borrow from what that argument reaches through a shared owner (flowpath.c,
+// pwReachShared), which the argument's loan, of the handle alone, says nothing of. Its place
+// is the base's root variable and nothing more, taken as reached through a shared path past
+// an owner: it freezes nothing the base does not, and what it points into is never storage
+// the function owns. Keyed by the argument and 'n', the container's index among its own
+uint32_t loanMakeReach(INode *site, uint32_t n, uint32_t base) {
+    uint32_t key = 0x40000000u | n;
+    uint32_t id = mapGet(site, 0, key);
+    if (id)
+        return id;
+    if (nloans > LoanIdMask) {
+        errorUnreachable(site, "more loans in one function than an entry of a loan set can name");
+        return 0;
+    }
+    if (nloans >= loancap)
+        loans = (Loan *)pathGrow(loans, &loancap, sizeof(Loan));
+    id = nloans++;
+    Loan *loan = &loans[id];
+    *loan = loans[base];
+    loan->site = site;
+    loan->by = NULL;
+    loan->tiedfn = NULL;
+    loan->place.nsteps = 0;
+    loan->place.shared = 1;
+    loan->place.sharedlen = 0;
+    loan->place.shwrite = 1;
+    loan->place.owned = 1;
+    loan->place.ownertype = NULL;
+    loan->place.referent = NULL;
+    loan->place.slotted = NULL;
+    loan->place.slots = 0;
+    loan->place.narrow = 0;
+    loan->mayhold = 0;
+    loan->nmay = 0;
+    loan->maycap = 0;
+    // A caller loan's clone stays the caller's, so a result handed out keeps its lifetime
+    if (loan->kind != LoanCaller)
+        loan->kind = LoanAlias;
+    loan->writes = 0;
+    loan->shapecont = NULL;
+    loan->shapeowner = NULL;
+    loan->shapeownerval = 0;
+    loan->source = 0;
+    loan->uniq = 0;
+    loan->aliased = 0;
+    loan->aliasby = 0;
+    loan->lazycont = NULL;
+    loan->refcont = NULL;
+    loan->refway = 0;
+    loan->nroots = 0;
+    loan->rootsext = 0;
+    loan->globalview = 0;
+    loan->elemview = 0;
+    loan->unseen = NULL;
+    loan->repoint = 0;
+    if (loan->kind == LoanCaller)
+        loan->next = 0;
+    else {
+        loan->next = pathVars[loan->place.var].loans;
+        pathVars[loan->place.var].loans = id;
+    }
+    mapPut(site, 0, key, id);
     return id;
 }
 
@@ -334,15 +431,30 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->shapeowner = NULL;
     loan->shapeownerval = 0;
     loan->source = 0;
+    loan->aliasby = 0;
     loan->uniq = 0;
     loan->aliased = 0;
     loan->lazycont = NULL;
+    loan->refcont = NULL;
+    loan->refway = 0;
     loan->nroots = 0;
     loan->rootsext = 0;
     loan->globalview = 0;
     loan->elemview = 0;
+    loan->unseen = NULL;
     mapPut(parm, 0, loanCallerKey(part), id);
     return id;
+}
+
+uint32_t loanOwnNext(uint32_t var, uint32_t loan) {
+    uint32_t id = loan ? loans[loan].next : pathVars[var].loans;
+    while (id && (loans[id].kind == LoanCaller || loans[id].place.deref))
+        id = loans[id].next;
+    return id;
+}
+
+uint32_t loanMayHolder(uint32_t loan, uint32_t k) {
+    return k < loans[loan].nmay ? maypool[loans[loan].mayhold + k] : 0;
 }
 
 uint32_t loanRoot(uint32_t loan) {
@@ -351,6 +463,10 @@ uint32_t loanRoot(uint32_t loan) {
 
 int loanThrough(uint32_t loan) {
     return loans[loan].place.deref;
+}
+
+int loanWrites(uint32_t loan) {
+    return loans[loan].writes;
 }
 
 uint32_t loanViaVar(uint32_t loan) {
@@ -1549,6 +1665,20 @@ static void loanReport(Pending *pend, INode *usenode) {
     else
         snprintf(used, sizeof(used), "at %u:%u", usenode->linenbr, loanColumn(usenode));
     char *mutably = loan->writes ? " mutably" : "";
+    // The holder is the stand-in for one side of a swap, which has no name
+    if (pathVars[pend->holder].swapped) {
+        errorMsgNode(pend->access, ErrorFrozen,
+            "'%s' is borrowed%s (%s) to reach one side of this swap, before the other side is made. It may not be %s while the other side is made, or the swap would reach what is no longer there. Make the other side's index first, into a local of its own ('let i = ...; a <-> x[i]').",
+            srcname, mutably, where, loanAttempt(pend->kind));
+        return;
+    }
+    // The holder is the stand-in for the place an index picks from, which has no name
+    if (pathVars[pend->holder].indexed) {
+        errorMsgNode(pend->access, ErrorFrozen,
+            "'%s' is borrowed%s (%s) to reach the place an index picks from, before the index is made. It may not be %s in the index, or the place would be reached through what is no longer there. Make the index first, into a local of its own ('let i = ...; x[i]').",
+            srcname, mutably, where, loanAttempt(pend->kind));
+        return;
+    }
     // A borrow a 'yield' handed to the caller, who may keep it as long as the
     // generator lives
     if (pend->holder == yieldHolder) {
@@ -1622,6 +1752,42 @@ static void loanChosenReport(INode *node, char *what, uint32_t la, uint32_t lb);
 
 static void loanShapeReport(Pending *pend, INode *usenode);
 
+// A pending change of shape or variant meets its use: one error per call or store
+static void loanShapeFire(Pending *pend, INode *usenode) {
+    pend->fired = 1;
+    if (mapGet(pend->access, 0, 1))
+        return;
+    mapPut(pend->access, 0, 1, 1);
+    loanShapeReport(pend, usenode);
+}
+
+// A pending conflict of an access meets its use
+static void loanAccessFire(Pending *pend, INode *usenode) {
+    pend->fired = 1;
+    // A candidate for its variable's last use is not, with a borrow of the
+    // variable used after it: it stays a copy (flowpath.c, pwCandidate)
+    if (pend->kind == AccessMove && pathCandFailAccess(pend->access))
+        return;
+    // One error per access, however many borrows it conflicts with
+    if (mapGet(pend->access, 0, 1))
+        return;
+    mapPut(pend->access, 0, 1, 1);
+    loanReport(pend, usenode);
+}
+
+void loanUseCompound(uint32_t var, INode *usenode) {
+    PathSet *pending = pathVars[var].pending;
+    for (uint32_t i = 0; pending && i < pending->cnt; ++i) {
+        Pending *pend = &pendings[pending->ids[i]];
+        if (pend->fired)
+            continue;
+        if (pend->kind == PendingShape)
+            loanShapeFire(pend, usenode);
+        else if (pend->kind == AccessMove || pend->kind == AccessReplace)
+            loanAccessFire(pend, usenode);
+    }
+}
+
 void loanUse(uint32_t var, INode *usenode) {
     PathSet *pending = pathVars[var].pending;
     if (pending == NULL)
@@ -1648,23 +1814,14 @@ void loanUse(uint32_t var, INode *usenode) {
             continue;
         }
         if (pend->kind == PendingShape) {
-            pend->fired = 1;
-            if (mapGet(pend->access, 0, 1))
-                continue;
-            mapPut(pend->access, 0, 1, 1);
-            loanShapeReport(pend, usenode);
+            loanShapeFire(pend, usenode);
             continue;
         }
-        pend->fired = 1;
-        // A candidate for its variable's last use is not, with a borrow of the
-        // variable used after it: it stays a copy (flowpath.c, pwCandidate)
-        if (pend->kind == AccessMove && pathCandFailAccess(pend->access))
+        // The place an index picks from is only reached after the index: what the index
+        // read, or borrowed to read, leaves it where it was (pwIndexStandIn)
+        if (pathVars[var].indexed && (pend->kind < AccessBorrowMut || pend->kind == AccessBorrowOpaq))
             continue;
-        // One error per access, however many borrows it conflicts with
-        if (mapGet(pend->access, 0, 1))
-            continue;
-        mapPut(pend->access, 0, 1, 1);
-        loanReport(pend, usenode);
+        loanAccessFire(pend, usenode);
     }
 }
 
@@ -2140,6 +2297,92 @@ static int loanAliasHeld(uint32_t root) {
     return 0;
 }
 
+// A 'mut' borrow held now of the place 'pl', of a place that lies inside it, or, for a
+// place reached through a reference ('&*r'), of the reference variable itself ('&mut r',
+// through which '**m' stores), else 0. A borrow of a different field of the same variable
+// is no name for it. 'met': only one that another name of its source has been used beside
+static uint32_t loanMutOver(Place *pl, int met) {
+    for (uint32_t id = pathVars[pl->var].loans; id; id = loans[id].next) {
+        Loan *other = &loans[id];
+        if (!other->uniq || (met && !other->aliased) || other->kind != LoanAlias)
+            continue;
+        if (other->place.deref == pl->deref ? !placeOverlaps(&other->place, pl)
+                : other->place.deref > pl->deref)
+            continue;
+        if (loanHeldNow(id))
+            return id;
+    }
+    return 0;
+}
+
+// A 'mut' borrow held now that reaches a place one of a set's near loans borrows
+// read-only, or 0: asked of what a match's own '&' holds, whether what it borrows has
+// another name that writes (flowpath.c, pwNarrowAliased)
+uint32_t loanMutAliasOf(PathSet *holds) {
+    if (holds == NULL)
+        return 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        uint32_t entry = holds->ids[i];
+        Loan *loan = &loans[loanOf(entry)];
+        if ((entry & LoanFar) || loan->kind != LoanShared)
+            continue;
+        uint32_t id = loanMutOver(&loan->place, 1);
+        if (id)
+            return id;
+    }
+    return 0;
+}
+
+// For a name narrowed by a test or a store: the name is itself the other one, so a 'mut'
+// borrow nothing has been used beside yet counts
+uint32_t loanMutAliasAt(Place *pl) {
+    return loanMutOver(pl, 0);
+}
+
+// The loan such a name holds beside the 'mut' borrow 'alias', made by the test or store
+// 'site': read-only and freezing nothing, as of a place others may reach, but reached by
+// the name and the borrows of it alone, as through a 'uni' reference. The caller marks it.
+// 'repoint': the place is the reference variable the name is, which 'alias' borrows, so
+// that what stores another reference over it is a change too
+uint32_t loanNarrowName(INode *site, Place *pl, uint32_t alias, int repoint) {
+    Place lent = *pl;
+    lent.shared = 1;
+    // (2: 1 keys the reports, loanReportOnce)
+    uint32_t id = loanMakeKeyed(site, &lent, (INode *)roPerm, repoint ? 2 : 0);
+    if (id) {
+        loans[id].place.shared = 0;
+        loans[id].aliasby = alias;
+        loans[id].repoint = repoint ? 1 : 0;
+    }
+    return id;
+}
+
+int loanIsRepoint(uint32_t loan) {
+    return loans[loan].repoint;
+}
+
+void loanShapeAliasBy(uint32_t loan, uint32_t alias) {
+    loans[loan].aliasby = alias;
+}
+
+// Why another name could change what a marked loan points into, for a message
+static char *loanShapeThrough(Loan *loan, char *buf, size_t size) {
+    char where[160];
+    if (loan->aliasby)
+        snprintf(buf, size, "while the 'mut' borrow made %s can still change it",
+            loanWhere(&loans[loan->aliasby], where, sizeof(where)));
+    else
+        snprintf(buf, size, "through a path other references share");
+    return buf;
+}
+
+// What a refused change of variant says to do instead
+static char *loanShapeNarrowAdvice(Loan *loan) {
+    return loan->aliasby
+        ? "Bind the payload by value, or do not use the 'mut' borrow while the narrowed reference is still to be used"
+        : "Narrow a borrow of a local, an 'imm' or 'uni' reference, or the value";
+}
+
 // A borrow into a collection or enum that changes shape, through a source no other name
 // reaches yet (a 'mut' borrow of a place reached as 'uni' that is the only one held, as
 // the exclusive loan it always was): marked for the shape check, as its container's, if
@@ -2158,6 +2401,47 @@ static void loanShapePromote() {
         uint32_t id = lazyloans[i];
         if (loans[id].shapecont == NULL && loanHeldNow(id))
             loanShapeMark(id, loans[id].lazycont);
+    }
+}
+
+// A view through a reference, frozen rather than followed by the shape check -- through
+// a 'uni' one, or a 'mut' one nothing else writes by yet -- is frozen against the name it
+// was taken by alone. Once the reference has another name, a writable borrow of where it
+// is held, the storage can be changed by a name the freezing does not see ('**m' for a
+// view of '*r', '*r' for one of '**m'), so the view is marked for the shape check, which
+// asks of every store and call that reaches it. A view through a 'uni' reference read
+// through a 'mut' borrow of it has that name already and is marked now; any other when
+// the variable is next lent (loanShapeRefLent). The freezing stays either way.
+// 'container' is what the view is into
+void loanShapeRefView(uint32_t loan, INode *container) {
+    Loan *l = &loans[loan];
+    if (!l->place.deref)
+        return;
+    if (!l->place.shared && l->place.far && loanHoldsUniqAlias(pathVars[l->place.var].holds)) {
+        l->refway = 1;
+        loanShapeMark(loan, container);
+    }
+    else
+        l->refcont = container;
+}
+
+// Each view recorded among what a value carries: those it points at ('near')
+void loanShapeRefViews(PathSet *holds, INode *container) {
+    if (holds == NULL)
+        return;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        if (!(holds->ids[i] & LoanFar) && loans[loanOf(holds->ids[i])].kind != LoanCaller)
+            loanShapeRefView(loanOf(holds->ids[i]), container);
+    }
+}
+
+// The variable 'var' is lent by a borrow that writes, of its own storage, which a
+// reference in it may be: each view held through such a reference now has a second
+// name for what it is into, and is marked
+void loanShapeRefLent(uint32_t var) {
+    for (uint32_t id = pathVars[var].loans; id; id = loans[id].next) {
+        if (loans[id].refcont && loans[id].shapecont == NULL && loanHeldNow(id))
+            loanShapeMark(id, loans[id].refcont);
     }
 }
 
@@ -2237,6 +2521,21 @@ static void loanRootsNote(uint32_t id) {
     Place *p = loanShapePlace(l);
     if (loanPlaceInGlobal(p))
         l->globalview = 1;
+    // Read through a 'mut' borrow of the reference (loanShapeRefView): reached by the variable
+    // the way starts at and each local it borrows, near and far -- the reference, and what the
+    // reference borrows -- so a store or call by any of those names reaches it
+    if (l->refway && !p->owned) {
+        loanRootsAdd(l, p->var);
+        PathSet *way = pathVars[p->var].holds;
+        for (uint32_t i = 0; way && i < way->cnt; ++i) {
+            Loan *h = &loans[loanOf(way->ids[i])];
+            if (h->kind == LoanCaller || h->place.owned || h->place.far || loanVarIsGlobal(pathVars[h->place.var].var))
+                l->rootsext = 1;
+            else if (!h->place.deref || !h->place.shared)
+                loanRootsAdd(l, h->place.var);
+        }
+        return;
+    }
     if (p->owned || p->far) {
         l->rootsext = 1;
         // A borrow into what an owner points at, the owner a local's own ('Rc[mut]', others may own the
@@ -2256,7 +2555,10 @@ static void loanRootsNote(uint32_t id) {
     // what it points at, and by nothing else, the caller having frozen the rest
     if (!p->shared) {
         loanRootsAdd(l, p->var);
-        return;
+        // A 'uni' reference others may reach (Place.uniway): what it borrows has their names too,
+        // so it is followed as a shared one is, beside the name it was read by
+        if (!p->uniway)
+            return;
     }
     PathSet *holds = pathVars[p->var].holds;
     if (holds == NULL) {
@@ -2291,6 +2593,14 @@ static void loanRootsNote(uint32_t id) {
     }
     if (!found)
         l->rootsext = 1;
+}
+
+void loanUnseenSet(uint32_t loan, void *unseen) {
+    loans[loan].unseen = unseen;
+}
+
+void *loanUnseen(uint32_t loan) {
+    return loans[loan].unseen;
 }
 
 void loanShapeMark(uint32_t loan, INode *container) {
@@ -2460,7 +2770,9 @@ static char *loanShapeReason(ShapeNote *note, char *cont, int sum, char *buf, si
             snprintf(buf, size, "'%s' is handed something that reaches a %s, and it, or something it calls, changes the shape of one", name, cont);
         break;
     case ReshapeStore:
-        if (sum)
+        if (note->unseen)
+            snprintf(buf, size, "what is behind the virtual reference is not known, and this store frees what could hold what the borrow points at");
+        else if (sum)
             snprintf(buf, size, "this store replaces a %s whole, or a value that holds one", cont);
         else
             snprintf(buf, size, "this store replaces a %s, or a value that holds one, or an element of one that owns what the borrow points into, and frees what it owned", cont);
@@ -2481,12 +2793,19 @@ static char *loanShapeReason(ShapeNote *note, char *cont, int sum, char *buf, si
     return buf;
 }
 
+// (a narrowed reference variable's own loan is marked with its type as an owner's is,
+// but is no owner: it is reported as the change of what the narrowed name is)
 static int loanShapeIsOwner(uint32_t loan) {
-    return reshapeIsOwner(loans[loan].shapecont);
+    return !loans[loan].repoint && reshapeIsOwner(loans[loan].shapecont);
 }
 
 static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
-    if (loanShapeIsOwner(loan)) {
+    // Marked for a trait, whose name says nothing of what is held (a closure's is made up)
+    if (loans[loan].unseen) {
+        snprintf(buf, size, "value behind a virtual reference");
+        return;
+    }
+    if (loanShapeIsOwner(loan) || loans[loan].repoint) {
         // An owner as the type printer spells it: its permission left out where it is the
         // default ('Uni[Item]'), written otherwise ('Rc[mut, Item]')
         char spelled[100] = "";
@@ -2499,12 +2818,23 @@ static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
 }
 
 static int loanShapeIsSum(uint32_t loan) {
-    return reshapeIsSum(loans[loan].shapecont);
+    return loans[loan].repoint || reshapeIsSum(loans[loan].shapecont);
+}
+
+int loanShapeMayMark(uint32_t loan) {
+    return loans[loan].shapecont != NULL || loans[loan].lazycont != NULL || loans[loan].refcont != NULL;
 }
 
 static void loanShapeEmit(INode *node, uint32_t loan, int why, char *msg) {
     int code = loanShapeIsSum(loan) ? ErrorVariantReshape : why == ReshapeStore ? ErrorShapeStore : ErrorShapeReshape;
     errorMsgNode(node, code, "%s", msg);
+}
+
+// What to do about a borrow held across a change, less the 'before this store' that
+// follows it. Behind a virtual reference there is no path of ours to make 'imm' or 'uni'
+static const char *loanShapeAdvice(uint32_t loan) {
+    return loans[loan].unseen ? "Copy what is needed out of the result"
+        : "Reach it through an 'imm' or 'uni' reference, or copy what is needed out";
 }
 
 static void loanShapeReport(Pending *pend, INode *usenode) {
@@ -2516,6 +2846,8 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
     char used[160];
     loanShapeContName(pend->loan, cont, sizeof(cont));
     loanWhere(loan, where, sizeof(where));
+    char through[224];
+    loanShapeThrough(loan, through, sizeof(through));
     VarDclNode *holder = pathVars[pend->holder].var;
     if (usenode->tag == VarDclTag)
         snprintf(used, sizeof(used), "when '%s''s value is finalized", &holder->namesym->namestr);
@@ -2526,8 +2858,61 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
     char msg[1400];
     if (pend->holder == yieldHolder) {
         snprintf(msg, sizeof(msg),
-            "This %s could change the shape of a %s while the generator's caller may still hold a borrow into it that a 'yield' handed out (made %s, through a path other references share): %s. A %s that changes shape may move or free what it lent. Yield a copy, or yield the borrow only once the generator has done changing the %s.",
-            what, cont, where, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont, cont);
+            "This %s could change the shape of a %s while the generator's caller may still hold a borrow into it that a 'yield' handed out (made %s, %s): %s. A %s that changes shape may move or free what it lent. Yield a copy, or yield the borrow only once the generator has done changing the %s.",
+            what, cont, where, through, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont, cont);
+        loanShapeEmit(pend->access, pend->loan, note->why, msg);
+        return;
+    }
+    if (pathVars[pend->holder].swapped) {
+        // The holder is the stand-in for one side of a swap, which has no name
+        char change[40];
+        snprintf(change, sizeof(change), "%u:%u", pend->access->linenbr, loanColumn(pend->access));
+        if (sum)
+            snprintf(msg, sizeof(msg),
+                "One side of this swap is in one of the variants of a %s (borrowed %s, %s), and is reached before the other side is made, but the %s at %s, made in the other side, could change which variant the %s holds: %s. The swap would then be in another variant's bytes. Do what changes it before the 'is' test or pattern.",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)));
+        else if (loanShapeIsOwner(pend->loan))
+            snprintf(msg, sizeof(msg),
+                "One side of this swap is in what a %s owns (borrowed %s, %s), and is reached before the other side is made, but the %s at %s, made in the other side, could replace the %s: %s. Replacing an owner frees what it points at, so the swap would be in freed storage. Make the other side's index first, into a local of its own ('let i = ...; a <-> x[i]').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, 1, reason, sizeof(reason)));
+        else
+            snprintf(msg, sizeof(msg),
+                "One side of this swap is in what a %s lent (borrowed %s, %s), and is reached before the other side is made, but the %s at %s, made in the other side, could change the shape of the %s: %s. A %s that changes shape may move or free what it lent, so the swap would be in freed storage. Make the other side's index first, into a local of its own ('let i = ...; a <-> x[i]').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont);
+        loanShapeEmit(pend->access, pend->loan, note->why, msg);
+        return;
+    }
+    if (pathVars[pend->holder].indexed) {
+        // The holder is the stand-in for the place an index picks from, which has no name
+        char change[40];
+        snprintf(change, sizeof(change), "%u:%u", pend->access->linenbr, loanColumn(pend->access));
+        if (sum)
+            snprintf(msg, sizeof(msg),
+                "The place this index picks from is in one of the variants of a %s (borrowed %s, %s), and is reached before the index is made, but the %s at %s, made in the index, could change which variant the %s holds: %s. The place would then be another variant's bytes. Do what changes it before the 'is' test or pattern.",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)));
+        else if (loanShapeIsOwner(pend->loan))
+            snprintf(msg, sizeof(msg),
+                "The place this index picks from is in what a %s owns (borrowed %s, %s), and is reached before the index is made, but the %s at %s, made in the index, could replace the %s: %s. Replacing an owner frees what it points at, so the place would be in freed storage. Make the index first, into a local of its own ('let i = ...; x[i]').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, 1, reason, sizeof(reason)));
+        else
+            snprintf(msg, sizeof(msg),
+                "The place this index picks from is in what a %s lent (borrowed %s, %s), and is reached before the index is made, but the %s at %s, made in the index, could change the shape of the %s: %s. A %s that changes shape may move or free what it lent, so the place would be in freed storage. Make the index first, into a local of its own ('let i = ...; x[i]').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont);
+        loanShapeEmit(pend->access, pend->loan, note->why, msg);
+        return;
+    }
+    if (pathVars[pend->holder].compound && !sum) {
+        // The holder is the stand-in for a compound assignment's place, which has no name
+        char change[40];
+        snprintf(change, sizeof(change), "%u:%u", pend->access->linenbr, loanColumn(pend->access));
+        if (loanShapeIsOwner(pend->loan))
+            snprintf(msg, sizeof(msg),
+                "This compound assignment writes into what a %s owns (borrowed %s, %s), but the %s at %s, made before it writes, could replace the %s: %s. The place is borrowed before the right side is made, and replacing an owner frees what it points at, so the result would be written into freed storage. Make the right side first, into a local of its own ('let v = ...; x += v').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, 1, reason, sizeof(reason)));
+        else
+            snprintf(msg, sizeof(msg),
+                "This compound assignment writes into what a %s lent (borrowed %s, %s), but the %s at %s, made before it writes, could change the shape of the %s: %s. The place is borrowed before the right side is made, and a %s that changes shape may move or free what it lent, so the result would be written into freed storage. Make the right side first, into a local of its own ('let v = ...; x += v').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont);
         loanShapeEmit(pend->access, pend->loan, note->why, msg);
         return;
     }
@@ -2541,7 +2926,29 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
             && isNameUseNode(((CastNode *)holder->value)->exp))
             narrowed = (VarDclNode *)((NameUseNode *)((CastNode *)holder->value)->exp)->dclnode;
         INode *at = usenode->tag == VarDclTag ? pend->access : usenode;
-        if (narrowed) {
+        if (pathVars[pend->holder].compound) {
+            snprintf(msg, sizeof(msg),
+                "This compound assignment writes into one of the variants of a %s (borrowed %s, %s), but the %s at %s, made before it writes, could change which variant the %s holds: %s. The place is borrowed before the right side is made, so the result would be written into another variant's bytes. Do what changes it before the 'is' test or pattern, or after the assignment.",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)));
+        }
+        else if (pathVars[pend->holder].narrowed) {
+            // The name itself, narrowed (pwNarrowName): the use is typed as the variant
+            INode *as = itypeGetTypeDcl(((IExpNode *)usenode)->vtype);
+            if (as->tag == RefTag)
+                as = itypeGetTypeDcl(((RefNode *)as)->vtexp);
+            if (loan->repoint)
+                snprintf(msg, sizeof(msg),
+                    "`%s` may no longer be a %s here: the %s at %s could point `%s` at another value (it was narrowed %s, %s): %s. A name narrowed to a variant reads what it refers to as that variant, so pointing it at another value would have it read what may be another variant's bytes. Test it again with 'is' after the %s, bind the payload by value, or do not use the 'mut' borrow while the name is still to be used as the variant.",
+                    &holder->namesym->namestr, &((StructNode *)as)->namesym->namestr, what, change, &holder->namesym->namestr,
+                    where, through, loanShapeReason(note, cont, sum, reason, sizeof(reason)), what);
+            else {
+                snprintf(msg, sizeof(msg),
+                    "`%s` may no longer be a %s here: the %s at %s could change which variant the %s holds (it was narrowed %s, %s): %s. A name narrowed to a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Test it again with 'is' after the %s, bind the payload by value, or do not use the 'mut' borrow while the name is still to be used as the variant.",
+                    &holder->namesym->namestr, &((StructNode *)as)->namesym->namestr, what, change, cont, where, through,
+                    loanShapeReason(note, cont, sum, reason, sizeof(reason)), what);
+            }
+        }
+        else if (narrowed) {
             RefNode *reftype = (RefNode *)itypeGetTypeDcl(holder->vtype);
             StructNode *variant = (StructNode *)itypeGetTypeDcl(reftype->vtexp);
             snprintf(msg, sizeof(msg),
@@ -2551,8 +2958,9 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
         }
         else
             snprintf(msg, sizeof(msg),
-                "'%s', a reference into one of the variants of a %s (made %s, through a path other references share), is used here after the %s at %s, which could change which variant the %s holds: %s. A reference into a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Narrow a borrow of a local, an 'imm' or 'uni' reference, or the value, or do not use '%s' after this %s.",
-                &holder->namesym->namestr, cont, where, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)),
+                "'%s', a reference into one of the variants of a %s (made %s, %s), is used here after the %s at %s, which could change which variant the %s holds: %s. A reference into a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. %s, or do not use '%s' after this %s.",
+                &holder->namesym->namestr, cont, where, through, what, change, cont,
+                loanShapeReason(note, cont, sum, reason, sizeof(reason)), loanShapeNarrowAdvice(loan),
                 &holder->namesym->namestr, what);
         loanShapeEmit(at, pend->loan, note->why, msg);
         return;
@@ -2565,15 +2973,16 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
         return;
     }
     snprintf(msg, sizeof(msg),
-        "This %s could change the shape of a %s while '%s' still holds a borrow into it (made %s, through a path other references share), used again %s: %s. A %s that changes shape may move or free what it lent. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this %s.",
-        what, cont, &holder->namesym->namestr, where, used, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont, what);
+        "This %s could change the shape of a %s while '%s' still holds a borrow into it (made %s, through a path other references share), used again %s: %s. A %s that changes shape may move or free what it lent. %s before this %s.",
+        what, cont, &holder->namesym->namestr, where, used, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont,
+        loanShapeAdvice(pend->loan), what);
     loanShapeEmit(pend->access, pend->loan, note->why, msg);
 }
 
 void loanShapeNow(INode *call, uint32_t loan, int why, Name *callee) {
     if (!loanReportOnce(call))
         return;
-    ShapeNote note = { call, callee, (uint8_t)why };
+    ShapeNote note = { call, callee, (uint8_t)why, loans[loan].unseen != NULL };
     char cont[100];
     char reason[480];
     char where[160];
@@ -2582,18 +2991,22 @@ void loanShapeNow(INode *call, uint32_t loan, int why, Name *callee) {
     int sum = loanShapeIsSum(loan);
     const char *what = why == ReshapeStore ? "store" : "call";
     char msg[1400];
+    char through[224];
+    loanShapeThrough(&loans[loan], through, sizeof(through));
     if (sum)
         snprintf(msg, sizeof(msg),
-            "This %s could change which variant a %s holds while a reference into one of its variants (made %s, through a path other references share) is still to be used by this %s or by a value around it: %s. A reference into a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Narrow a borrow of a local, an 'imm' or 'uni' reference, or the value.",
-            what, cont, where, what, loanShapeReason(&note, cont, sum, reason, sizeof(reason)));
+            "This %s could change which variant a %s holds while a reference into one of its variants (made %s, %s) is still to be used by this %s or by a value around it: %s. A reference into a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. %s.",
+            what, cont, where, through, what, loanShapeReason(&note, cont, sum, reason, sizeof(reason)),
+            loanShapeNarrowAdvice(&loans[loan]));
     else if (loanShapeIsOwner(loan))
         snprintf(msg, sizeof(msg),
             "This %s could replace the %s that owns what a borrow (made %s, through a path other references share) points into, which is still to be used by this %s or by a value around it: %s. Replacing an owner frees what it points at, so the borrow would dangle. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this %s.",
             what, cont, where, what, loanShapeReason(&note, cont, 1, reason, sizeof(reason)), what);
     else
         snprintf(msg, sizeof(msg),
-            "This %s could change the shape of a %s while a borrow into it (made %s, through a path other references share) is still to be used by this %s or by a value around it: %s. A %s that changes shape may move or free what it lent. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this %s.",
-            what, cont, where, what, loanShapeReason(&note, cont, sum, reason, sizeof(reason)), cont, what);
+            "This %s could change the shape of a %s while a borrow into it (made %s, through a path other references share) is still to be used by this %s or by a value around it: %s. A %s that changes shape may move or free what it lent. %s before this %s.",
+            what, cont, where, what, loanShapeReason(&note, cont, sum, reason, sizeof(reason)), cont,
+            loanShapeAdvice(loan), what);
     loanShapeEmit(call, loan, why, msg);
 }
 
@@ -2618,6 +3031,7 @@ void loanShapePend(INode *call, uint32_t loan, int why, Name *callee) {
                 shapenotes[note].call = call;
                 shapenotes[note].callee = callee;
                 shapenotes[note].why = (uint8_t)why;
+                shapenotes[note].unseen = l->unseen != NULL;
                 have = 1;
             }
             if (npendings >= pendingcap)

@@ -622,7 +622,7 @@ static void blockResultCount(INode **retexp, INode *result, size_t startpos) {
             blockResultCount(elemp, *elemp, startpos);
         return;
     }
-    if (iexpIsMove(*retexp) || !flowIsKeptRead(*retexp) || flowScopeHandsBack(startpos, result))
+    if (flowValueMoves(*retexp) || !flowIsKeptRead(*retexp) || flowScopeHandsBack(startpos, result))
         return;
     flowInjectRefCount(retexp);
 }
@@ -667,6 +667,9 @@ static void blockFlowIn(FlowState *fstate, BlockNode **blknode) {
         for (nodesFor(fstate->fnsig->parms, cnt, nodesp))
             flowAddVar((VarDclNode*)*nodesp);
     }
+    // The receiver's borrow a '<-' of several entries keeps in a temporary
+    // declared here stops waiting at this block's end (varDclFlow)
+    uint16_t inflight = fstate->inflightcnt;
     // A loop's body runs on some paths only, and again after itself
     int loop = (blk->flags & FlagLoop) != 0;
     if (loop) {
@@ -851,6 +854,7 @@ static void blockFlowIn(FlowState *fstate, BlockNode **blknode) {
         jumped = 0;
     }
     fstate->jumped = jumped;
+    fstate->inflightcnt = inflight;
     --fstate->scope;
     flowScopePop(svpos);
 }

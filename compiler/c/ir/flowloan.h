@@ -70,6 +70,9 @@ uint32_t loanRoot(uint32_t loan);
 // a reference, or what a caller lent -- rather than the variable's own storage?
 int loanThrough(uint32_t loan);
 
+// May the borrow that made this loan write?
+int loanWrites(uint32_t loan);
+
 // The variable a loan is of what a caller lent through: a caller loan, or a reborrow through a
 // reference (a place reached by '*'). Else 0. Whether that variable is a parameter is the asker's
 uint32_t loanViaVar(uint32_t loan);
@@ -299,8 +302,22 @@ void loanUse(uint32_t var, INode *usenode);
 // loan's place finds the holders to ask
 void loanHeldBy(uint32_t var, PathSet *holds);
 
+// The loans of a borrow of the variable 'var's own storage, one at a time: the
+// one after 'loan' (0 for the first), or 0 after the last
+uint32_t loanOwnNext(uint32_t var, uint32_t loan);
+
+// The 'k'th variable that may hold this loan, or 0 after the last
+uint32_t loanMayHolder(uint32_t loan, uint32_t k);
+
 // A method's returned borrow carries this loan: name the method in a message
 void loanReturnedBy(uint32_t loan, Name *method);
+
+// Is the loan's place in what a shared owning reference holds, where others may write?
+int loanThroughSharedOwner(uint32_t loan);
+
+// A second loan beside an argument's 'base' for a container a result may point into, reached
+// through a shared owner from that argument, 'n' telling the containers of one argument apart
+uint32_t loanMakeReach(INode *site, uint32_t n, uint32_t base);
 
 // A call to this function, whose signature names no lifetime, was passed the
 // borrow that made this loan, and its result carries it by that unannotated
@@ -383,8 +400,35 @@ int loanElemView(uint32_t entry);
 // Does the entry stand for what a caller lent through a parameter, what its own reference points at?
 int loanIsCallerOwn(uint32_t entry);
 void loanShapeSource(uint32_t loan, PathSet *holds);
+// The 'mut' borrow held now of a place that one of 'holds' near loans borrows read-only
+// (0 for none), and the note on a narrowed reference's loan that this is why it is followed
+uint32_t loanMutAliasOf(PathSet *holds);
+void loanShapeAliasBy(uint32_t loan, uint32_t alias);
+// The same for a name narrowed by a test or a store: the held 'mut' borrow of the place,
+// and the loan the name holds beside it (flowpath.c, pwNarrowName). 'repoint': that loan
+// is of the reference variable itself, borrowed by 'alias', which loanIsRepoint says
+uint32_t loanMutAliasAt(Place *pl);
+uint32_t loanNarrowName(INode *site, Place *pl, uint32_t alias, int repoint);
+int loanIsRepoint(uint32_t loan);
 int loanIsExclusive(uint32_t entry);
 void loanShapeMark(uint32_t loan, INode *container);
+// A shape loan of what a call returned from behind a trait object: 'unseen' is the loan
+// walk's own record of what the borrow may point at (flowpath.c, PwUnseen), or NULL
+void loanUnseenSet(uint32_t loan, void *unseen);
+void *loanUnseen(uint32_t loan);
+// Is this a loan into a value that changes shape, marked so or marked once another
+// name for it is met?
+int loanShapeMayMark(uint32_t loan);
+// A view through a reference ('*r', '**m') not marked as it was made, marked for the shape
+// check once the reference has another name: one loan, or each a value points at; and the
+// call that says a variable's own storage is lent writably
+void loanShapeRefView(uint32_t loan, INode *container);
+void loanShapeRefViews(PathSet *holds, INode *container);
+void loanShapeRefLent(uint32_t var);
+// The write of a compound assignment, a use of its stand-in 'var' (flowpath.c,
+// pwCompoundPlace): reports a pending change of shape or variant, and a move or a
+// replacement of what the place was borrowed from
+void loanUseCompound(uint32_t var, INode *usenode);
 uint32_t loanShapeCount();
 uint32_t loanShapeId(uint32_t i);
 INode *loanShapeContainer(uint32_t loan);

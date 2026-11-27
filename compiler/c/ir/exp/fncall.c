@@ -3021,6 +3021,18 @@ static void fnCallLowerTupleCompare(TypeCheckState *pstate, FnCallNode *node) {
     fnCallFinalizeArgs(pstate, node);
 }
 
+// An array literal compared with an array of another type takes that array's
+// element type, as it does where that type is declared ('let b: Array[i64, 2] =
+// [1, 2]'), when it holds only literals with no type of their own and the other
+// side is not such a literal too: two of those keep their defaults, as two
+// number literals beside an operator do. Where it cannot take the type, nothing
+// changes, and the comparison refuses the two types.
+static void fnCallAdoptArrayLit(INode **litp, INode *other) {
+    INode *othertype = iexpGetTypeDcl(other);
+    if (arrayLitIsUntyped(*litp, othertype) && !arrayLitIsUntyped(other, NULL))
+        arrayLitCoerce((ArrayNode*)*litp, othertype);
+}
+
 // '==' on two arrays of the same type compares their elements, as two slices'
 // are: each is lent read-only where it lies (a value that is not a place, to the
 // end of its statement), taken as a slice of all its elements, and compared by
@@ -3036,8 +3048,12 @@ static void fnCallLowerArrayCompare(TypeCheckState *pstate, FnCallNode *node) {
         node->vtype = errorType;
         return;
     }
-    INode *arraytype = iexpGetTypeDcl(node->objfn);
     INode **argp = &nodesGet(node->args, 0);
+    if (!itypeIsSame(iexpGetTypeDcl(node->objfn), iexpGetTypeDcl(*argp))) {
+        fnCallAdoptArrayLit(&node->objfn, *argp);
+        fnCallAdoptArrayLit(argp, node->objfn);
+    }
+    INode *arraytype = iexpGetTypeDcl(node->objfn);
     if (!itypeIsSame(arraytype, iexpGetTypeDcl(*argp))) {
         errorMsgNode((INode*)node, ErrorInvType,
             "An array is compared with an array of the same element type and length, and this one is not.");
@@ -6626,6 +6642,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
 // dereference being injected, so the element is read through the reference here
 void fnCallArrIndexFlow(FlowState *fstate, FnCallNode **node) {
     flowLoadThroughRef(fstate, &(*node)->objfn);
+    flowGateIndex(fstate, (INode *)*node);
     // Every index is read: each dimension's, or a range's start and end
     INode **argsp;
     uint32_t cnt;

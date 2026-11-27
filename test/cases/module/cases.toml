@@ -3513,6 +3513,17 @@ matches = [
   { pattern = "#dbg_declare\\(ptr %(scale|count|origin|steps|corner|big|n|f|r|t|label|name),", count = 12 },
 ]
 
+# After the debug passes every variable is still declared at its stack slot, so a
+# debugger reads it anywhere in the function. A pass that promotes slots (mem2reg,
+# sroa) turns the declares into '#dbg_value' records of registers
+[[scenario.module_debug_locals.check]]
+name = "debug-keeps-each-variable-in-its-slot-through-the-passes"
+target = "llvmir"
+excludes = ["#dbg_value"]
+matches = [
+  { pattern = "#dbg_declare\\(ptr %(scale|count|origin|steps|corner|big|n|f|r|t|label|name),", count = 12 },
+]
+
 [[scenario.module_debug_locals.check]]
 name = "debug-gives-a-described-function-its-real-subroutine-type"
 target = "preir"
@@ -4664,6 +4675,54 @@ name = "the-bits-are-asked"
 target = "asm"
 contains = [" OpUGreaterThan %", " OpIEqual %", " OpULessThan %", " OpBitwiseAnd %"]
 excludes = [" OpFUnord", " OpFOrd", " OpIsNan %", " OpIsInf %"]
+
+[scenario.module_target_spirv_floatpreserve64]
+category = "compile"
+description = "A compute entry point over f64 values, on SPIR-V's Vulkan form, declares the SignedZeroInfNanPreserve capability and execution mode for 64 bits, and not for 32"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv_floatpreserve64.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.module_target_spirv_floatpreserve64.check]]
+name = "the-width-used"
+target = "asm"
+contains = ["OpCapability SignedZeroInfNanPreserve", "SignedZeroInfNanPreserve 64", " OpFUnordNotEqual %"]
+excludes = ["SignedZeroInfNanPreserve 32"]
+
+# A module with floats says its entry points keep signed zeros, infinities and
+# NaNs, or a driver may answer a comparison as though there were none
+[scenario.module_target_spirv_floatpreserve]
+category = "compile"
+description = "Each compute entry point of a module with f32 values, on SPIR-V's Vulkan form, declares the SignedZeroInfNanPreserve capability and execution mode for 32 bits, and not for 64"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv_floatpreserve.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.module_target_spirv_floatpreserve.check]]
+name = "both-entry-points-declare-it"
+target = "asm"
+contains = ["OpCapability SignedZeroInfNanPreserve", "SignedZeroInfNanPreserve 32", " OpFUnordNotEqual %"]
+excludes = ["SignedZeroInfNanPreserve 64", "OpExtension \"SPV_KHR_float_controls\""]
+
+# A module without floats asks nothing of the device
+[scenario.module_target_spirv_nopreserve]
+category = "compile"
+description = "A compute entry point over integers alone, on SPIR-V's Vulkan form, declares no SignedZeroInfNanPreserve capability or execution mode"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv_nopreserve.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.module_target_spirv_nopreserve.check]]
+name = "no-float-controls"
+target = "asm"
+contains = ["OpEntryPoint"]
+excludes = ["SignedZeroInfNanPreserve", "OpTypeFloat"]
 
 [scenario.module_noalias_reject]
 category = "reject"

@@ -1,0 +1,211 @@
+// The client's HTTP/3 actor takes up a turn its connection value owes (clientquic.cone; row 811). A real value owes one
+// when a turn runs out of its rounds, which real traffic reaches too rarely to be driven, so the value here is a
+// stand-in plug-in that owes OWED turns before it answers: each turn it is given does one step of work, and says
+// 'wantsTurn' until a 'startTurn' takes it up, as h3driver's does. It sends no datagram and sets no wake time, so
+// nothing but the actor's own owed turn can turn it again. Checked:
+//   - a GET is answered, after exactly OWED turns each started (the value counts them). Without the actor's check of
+//     'wantsTurn' it is never turned again and the fetch is not answered; without 'startTurn' the value does one step
+//     and owes for ever
+//   - the actor is quiet once the value owes nothing: the process's actor messages stop
+
+mod h3owed;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import iocore use SocketAddr, Handle, Completion, Op, Loop, forever, IoError;
+import http use *;
+import httpconn;
+import httpclient;
+import tls;
+import actors;
+import actorhttp use HttpClient, liveClientConnActors;
+import testing use *;
+
+const OWED = 40u32;
+const MOST = 200000u32;
+let turnsDone: Atomic[u32];
+
+fn @initpure init() {turnsDone = Atomic[u32].of(0u32);}
+
+// ---------------------------------------------------------------------------
+// The stand-in value
+// ---------------------------------------------------------------------------
+
+struct FakeClient is Move, httpclient.H3ClientConn {
+  left: u32;           // steps of work before the answer
+  asked: bool;         // a request has begun
+  more: bool;          // another turn is owed
+  stepped: bool;       // this turn has done its step
+  calls: u32;          // times asked for events: past MOST it stops owing, so a host that never starts a turn ends
+  answered: u8;        // 0 nothing given, 1 the Response, 2 the End
+  closed: bool;
+  failure: Option[httpconn.Failure];
+
+  pub fn room(self: &) usize {if asked {0usize} else {8usize}}
+  pub fn request(self: &mut, head: RequestHead, body: BodyLength, now: Instant,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) u32 {
+    asked = true;
+    left = OWED;
+    more = true;
+    1u32
+  }
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {None[IoBuf]}
+  pub fn writeRoom(self: &, stream: u32) usize {0usize}
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {}
+  pub fn release(self: &mut, stream: u32, n: usize) {}
+  pub fn cancel(self: &mut, stream: u32) {}
+  pub fn next(self: &mut, now: Instant) httpconn.ClientEvent {
+    calls = calls + 1u32;
+    if asked && left > 0u32 && !stepped {
+      stepped = true;
+      left = left - 1u32;
+      more = true;
+      let n = turnsDone.add(1u32);
+    }
+    if asked && left == 0u32 && answered == 0u8 {
+      answered = 1u8;
+      return httpconn.ClientEvent.Response(1u32, ResponseHead.make(200u16), BodyLength.sized(0u64));
+    }
+    if answered == 1u8 {
+      answered = 2u8;
+      return httpconn.ClientEvent.End(1u32, HttpHeaders());
+    }
+    httpconn.ClientEvent.Nothing
+  }
+  pub fn pollTimeout(self: &) Option[Instant] {None[Instant]}
+  pub fn handleTimeout(self: &mut, now: Instant) {}
+  pub fn shutdown(self: &mut) {closed = true;}
+  pub fn abort(self: &mut) {closed = true;}
+  pub fn done(self: &mut, now: Instant) bool {closed}
+  pub fn failureOf(self: &) &Option[httpconn.Failure] {&failure}
+  pub fn isHttp2(self: &) bool {true}
+  pub fn isOpen(self: &) bool {true}
+  pub fn isIdle(self: &) bool {answered != 0u8 || !asked}
+  pub fn liveStreams(self: &) usize {if asked && answered < 2u8 {1usize} else {0usize}}
+  pub fn peerStreams(self: &) usize {100usize}
+  pub fn wantsCall(self: &) bool {false}
+  pub fn takeCall(self: &mut) Op {Op.RecvReady(Handle.none())}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {}
+  pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant) {}
+  pub fn datagramIn(self: &mut, d: &Array[u8], now: Instant) {}
+  pub fn startTurn(self: &mut, byTimer: bool) {
+    more = false;
+    stepped = false;
+  }
+  pub fn takeDatagram(self: &mut, now: Instant) Option[IoBuf] {None[IoBuf]}
+  pub fn finishTurn(self: &mut, now: Instant) {}
+  pub fn wantsTurn(self: &) bool {more && !closed && calls < MOST}
+}
+
+struct FakeConnector is httpclient.H3Connector {
+  pad: u32;
+
+  pub fn connect(self: &, serverName: &str, bound: SocketAddr, peer: SocketAddr, now: Instant)
+      Result[Uni[httpclient.H3ClientConn], httpclient.Failure] {
+    let c = FakeClient(0u32, false, false, false, 0u32, 0u8, false, None[httpconn.Failure]);
+    Ok[Uni[httpclient.H3ClientConn], httpclient.Failure](Uni[FakeClient](c))
+  }
+}
+
+// The plug-in: only its connector is asked for
+struct FakeHttp3 is httpclient.Http3 {
+  pad: u32;
+
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {forever()}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+  pub fn takeEvents(self: &mut, out: &mut List[httpclient.H3Event]) usize {0usize}
+  pub fn connect(self: &mut, lp: &mut Loop, addr: SocketAddr, serverName: &str, token: u64) Result[u64, httpclient.Failure] {
+    Err[u64, httpclient.Failure](httpclient.Failure.none())
+  }
+  pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, cfg: &tls.ServerConfig, token: u64) Result[u64, httpclient.Failure] {
+    Err[u64, httpclient.Failure](httpclient.Failure.none())
+  }
+  pub fn localPort(self: &, lp: &Loop, listener: u64) u16 {0u16}
+  pub fn stopListening(self: &mut, lp: &mut Loop, listener: u64) bool {false}
+  pub fn close(self: &mut, lp: &mut Loop, conn: u64) bool {false}
+  pub fn abort(self: &mut, lp: &mut Loop, conn: u64) bool {false}
+  pub fn abortAll(self: &mut, lp: &mut Loop) {}
+  pub fn takesRequests(self: &, conn: u64) bool {false}
+  pub fn hasRoom(self: &, conn: u64) bool {false}
+  pub fn peer(self: &, conn: u64) SocketAddr {SocketAddr.localhost(0u16)}
+  pub fn live(self: &) usize {0usize}
+  pub fn request(self: &mut, lp: &mut Loop, conn: u64, head: RequestHead, body: BodyLength, token: u64) httpclient.H3Req {
+    httpclient.H3Req.none()
+  }
+  pub fn respond(self: &mut, req: httpclient.H3Req, head: ResponseHead, body: BodyLength) bool {false}
+  pub fn sendInterim(self: &mut, req: httpclient.H3Req, head: ResponseHead) bool {false}
+  pub fn sendData(self: &mut, req: httpclient.H3Req, buf: IoBuf) Option[IoBuf] {None[IoBuf]}
+  pub fn finish(self: &mut, req: httpclient.H3Req) {}
+  pub fn release(self: &mut, req: httpclient.H3Req, n: usize) {}
+  pub fn cancel(self: &mut, lp: &mut Loop, req: httpclient.H3Req) bool {false}
+  pub fn connector(self: &) Result[Uni[httpclient.H3Connector], httpclient.Failure] {
+    Ok[Uni[httpclient.H3Connector], httpclient.Failure](Uni[FakeConnector](FakeConnector(0u32)))
+  }
+}
+
+fn plugin(t: &tls.ClientConfig) Uni[httpclient.Http3] {Uni[FakeHttp3](FakeHttp3(0u32))}
+
+// ---------------------------------------------------------------------------
+// The fetch
+// ---------------------------------------------------------------------------
+
+actor One {
+  client: HttpClient;
+
+  pub async fn run(self, u: String, done: Sender[u32]) {
+    var status = 1u32;
+    let r = await client.get(u.view());
+    match &r {
+      case let &Ok(ok) {status = u32.from(ok.status);}
+      else {}
+    }
+    done.send(status);
+  }
+}
+
+fn messagesIn100ms() u64 {
+  let before = actors.stats().messages;
+  thread.sleep(Duration.fromMillis(100i64));
+  actors.stats().messages - before
+}
+
+fn main() i32 {
+  // the origin is known to speak HTTP/3; nothing is ever sent to it
+  let origin = String.from("https://127.0.0.1:19311");
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.offline = true;
+  cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&plugin);
+  cfg.http3Origins.push(origin.clone());
+  let client = HttpClient.make(cfg, actorhttp.defaultMaxBody);
+  var tx: Sender[u32];
+  var rx: Receiver[u32];
+  tx, rx = Channel[u32].make();
+  One(client.clone()).run(origin, tx);
+  var status = 0u32;
+  match rx.recvTimeout(Duration.fromMillis(3000i64)) {
+    case let Some(s) {status = s;}
+    case is None[u32] {}
+  }
+  if status != 200u32 {
+    // the connection actor may still be turning, so nothing is torn down: the process ends here
+    printStr("the GET was not answered; turns done: ");
+    printUInt(u64.from(turnsDone.load()));
+    printStr("\n");
+    libc.exit(1i32);
+  }
+  expectUInt(u64.from(status), 200u64, "the GET is answered, with nothing but owed turns to turn the connection");
+  expectUInt(u64.from(turnsDone.load()), u64.from(OWED), "each owed turn was started once");
+  let until = Instant.now() + Duration.fromMillis(1000i64);
+  var last = messagesIn100ms();
+  while last >= 200u64 && Instant.now() < until {last = messagesIn100ms();}
+  expect(last < 200u64, "the connection actor stops handling messages once its value owes nothing");
+  expect(liveClientConnActors() >= 1u64, "the connection is still up: the quiet is its own");
+  done()
+}

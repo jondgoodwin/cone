@@ -1,0 +1,167 @@
+// A compound assignment into an element a collection lent, accepted: its right side
+// takes nothing that reaches the collection, only reads it, changes another one, or
+// writes another element without changing the shape; and the right side made first,
+// into a local of its own (collection_flow_compound_element holds what is refused).
+
+mod collection_compound_element_success;
+
+import collections use *;
+import stdio use *;
+
+struct Item { pub n: usize; }
+struct Counter { pub count: usize; }
+struct Pair { pub a: usize; pub b: usize; }
+
+fn taken(l: List[usize]) usize { l.len() }
+
+fn five() usize { 5usize }
+fn grow(m: &mut List[usize]) usize {
+  var i = 0usize;
+  while i < 64usize { m.push(i); i += 1usize; }
+  5usize
+}
+fn growItems(m: &mut List[Item]) usize { m.push(Item(1usize)); 5usize }
+fn first(l: &List[usize]) usize { l[0usize] }
+fn bump(l: &mut List[usize]) usize { l[1usize] += 100usize; 5usize }
+fn tick(c: &mut Counter) usize { c.count += 1usize; 10usize }
+
+fn two() List[usize] {
+  var l = List[usize]();
+  l.push(1usize);
+  l.push(2usize);
+  l
+}
+
+// 1 + 5 = 6, + 5 = 11, + 2 (the length) = 13, + 2 (the second) = 15, + 15 = 30
+fn reads() usize {
+  var l = two();
+  l[0usize] += 5usize;
+  l[0usize] += five();
+  l[0usize] += l.len();
+  l[0usize] += l[1usize];
+  l[0usize] += first(&l);
+  l[0usize]
+}
+
+// the other list grows: 1 + 5 = 6, and its 64 elements
+fn otherList() usize {
+  var l = two();
+  var o = List[usize]();
+  l[0usize] += grow(&mut o);
+  l[0usize] * 1000usize + o.len()
+}
+
+// the right side made first, into a local: 1 + 5 = 6, and 66 elements
+fn madeFirst() usize {
+  var l = two();
+  let v = grow(&mut l);
+  l[0usize] += v;
+  l[0usize] * 1000usize + l.len()
+}
+
+// another element is written, the shape kept: 1 + 5 = 6, and 2 + 100 = 102
+fn writesElement() usize {
+  var l = two();
+  l[0usize] += bump(&mut l);
+  l[0usize] * 1000usize + l[1usize]
+}
+
+// lists of two types cannot be one: 1 + 5 = 6
+fn otherType(l: &mut List[Item], m: &mut List[usize]) usize {
+  l[0usize].n += grow(m);
+  l[0usize].n
+}
+fn otherElement(l: &mut List[usize], m: &mut List[Item]) usize {
+  l[0usize] += growItems(m);
+  l[0usize]
+}
+
+// a field of a struct is no element: 0 + 1 (made by 'tick') is read before, so 10
+fn field() usize {
+  var c = Counter(0usize);
+  c.count += tick(&mut c);
+  c.count
+}
+
+// a Dict's value: 7 + 1 = 8
+fn dictLen() usize {
+  var d = Dict[usize, usize]();
+  d.insert(1usize, 7usize);
+  let k = 1usize;
+  d[&k] += d.len();
+  d[&k]
+}
+
+// what an owner points at, the owner left alone: 1 + 5 = 6
+fn owned() usize {
+  var u = Uni[Item](Item(1usize));
+  u.n += five();
+  u.n
+}
+
+// a variable's own storage, which a store leaves in place: 1 is read, then 'x' is 5,
+// and 1 + 1 = 2 is written over it
+fn scalarAssigned() usize {
+  var x = 1usize;
+  x += {x = 5usize; 1usize};
+  x
+}
+
+// the same for a field: 1 + 10 = 11 is written into the struct stored, whose other field is 40
+fn fieldAssigned() usize {
+  var p = Pair(1usize, 2usize);
+  p.a += {p = Pair(30usize, 40usize); 10usize};
+  p.a * 1000usize + p.b
+}
+
+// the length is read into a local first: 1 + 2 = 3
+fn lenInside() usize {
+  var l = two();
+  l[0usize] += {let t = l.len(); t};
+  l[0usize]
+}
+
+// another list assigned over and moved: 1 + 2 = 3
+fn otherMoved() usize {
+  var l = two();
+  var m = List[usize]();
+  l[0usize] += {m = two(); taken(m)};
+  l[0usize]
+}
+
+// through a held 'mut' borrow, the list only read, or another list moved: 1 + 2 = 3,
+// + 2 = 5
+fn throughBorrow() usize {
+  var l = two();
+  var m = two();
+  let r = &mut l;
+  r[0usize] += l.len();
+  let s = &mut l;
+  s[0usize] += taken(m);
+  l[0usize]
+}
+
+fn show(n: usize) { printInt(i64.from(n)); printStr("\n"); }
+
+fn main() {
+  show(reads());
+  show(otherList());
+  show(madeFirst());
+  show(writesElement());
+  var items = List[Item]();
+  items.push(Item(1usize));
+  var nums = List[usize]();
+  show(otherType(&mut items, &mut nums));
+  var more = List[usize]();
+  more.push(1usize);
+  var moreItems = List[Item]();
+  show(otherElement(&mut more, &mut moreItems));
+  show(field());
+  show(dictLen());
+  show(owned());
+  show(scalarAssigned());
+  show(fieldAssigned());
+  show(lenInside());
+  show(otherMoved());
+  show(throughBorrow());
+}

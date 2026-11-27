@@ -1,0 +1,101 @@
+// What stays accepted beside collection_flow_inline_borrow_deref: a view taken through an
+// inline borrow used up before the store, one kept past a store to a different list or to a
+// field beside it, and stores and calls made through '*&' with no view held.
+//
+// The expected output is worked out by hand in the comments.
+
+mod collection_inline_borrow_deref_success;
+
+import stdio use *;
+import collections use *;
+
+enum Shape {
+  struct Poly { pub pts: List[i32]; }
+  struct Empty {}
+}
+use Shape;
+
+struct Box { pub items: List[i32]; pub count: i32; }
+
+fn listOf(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+fn num(n: i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+
+// The view is used before the store: 7, then the new list's 3
+fn usedFirst() {
+  let o = Rc[mut, List[i32]](listOf(7i32));
+  let o2 = o;
+  let v = &(**&o)[0usize];
+  num(*v);
+  *o2 = listOf(3i32);
+  num((**&o)[0usize]);
+}
+
+// A store to a local list while the view is held: 7, then 4
+fn otherLocal() {
+  let o = Rc[mut, List[i32]](listOf(7i32));
+  var m = listOf(1i32);
+  let v = &(**&o)[0usize];
+  *&mut m = listOf(4i32);
+  num(*v);
+  num(m[0usize]);
+}
+
+// The view is of a local, the store through the owner: 5, then 6
+fn otherOwner() {
+  let o = Rc[mut, List[i32]](listOf(7i32));
+  var m = listOf(5i32);
+  let v = &(*&m)[0usize];
+  *o = listOf(6i32);
+  num(*v);
+  num((**&o)[0usize]);
+}
+
+// Stores, a swap and calls through '*&' with nothing held: 12 (11 plus 1), 2 elements, 20
+fn nothingHeld() {
+  let o = Rc[mut, List[i32]](listOf(7i32));
+  var o2 = o;
+  **&mut o2 = listOf(11i32);
+  (**&mut o2)[0usize] += 1i32;
+  (**&mut o2).push(13i32);
+  num((**&o)[0usize]);
+  num(i32.from((**&o).len));
+  var other = listOf(20i32);
+  **&mut o2 <-> other;
+  num((**&o)[0usize]);
+}
+
+// A field beside the one viewed is written through '*&mut': 8, then 2
+fn fieldBeside() {
+  var b = Box(listOf(8i32), 1i32);
+  let v = &(*&b.items)[0usize];
+  *&mut b.count = 2i32;
+  num(*v);
+  num(b.count);
+}
+
+// A variant narrowed through one and read with no change of variant: 9
+fn narrowedRead() {
+  let s = Rc[mut, Shape](Poly(listOf(9i32)));
+  match &**&s {
+    case let &Poly(q) { num(q.pts[0usize]); }
+    else {}
+  }
+}
+
+fn main() {
+  usedFirst();        // 7 3
+  otherLocal();       // 7 4
+  otherOwner();       // 5 6
+  nothingHeld();      // 12 2 20
+  fieldBeside();      // 8 2
+  narrowedRead();     // 9
+  printStr("\n");
+}

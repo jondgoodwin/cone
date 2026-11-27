@@ -225,6 +225,12 @@ category = "run"
 description = "'<-' and '=' through a 'let' variable holding an 'Rc[mut, ...]' or an 'Arc[mut, ...]', and '<-' on a '&mut' parameter: one entry and several, a field, the whole value and an element stored through the owner"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
+# A list of entries on a receiver that is an index or a method call, evaluated once
+[scenario.collection_append_indexed]
+category = "run"
+description = "a list of entries after '<-' on an indexed element (List, array, a field of an element, nested), a borrowed element, a method call's reference and a temporary owner, each receiver evaluated once"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
 # -------- name resolution stage --------
 
 # The retired slice type '&[]T' for '&Array[T]', in the three groups of case
@@ -254,13 +260,13 @@ diagnostics = 5
 category = "reject"
 description = "A '<-' whose method takes 'self &mut' is refused on a 'let' variable, a 'let' global and a receiver lent read-only, for one entry and for several; of two overloads, only the writing one is refused"
 tags = ["typecheck"]
-diagnostics = 6
+diagnostics = 5
 
 [scenario.collection_typecheck_append_through_ref]
 category = "reject"
 description = "'<-' and '=' through a reference need the reference to permit the write: an 'Arc[imm, ...]' or 'Rc[imm, ...]' in a 'var' variable, a '&' parameter and an 'imm' List are refused, one entry or several"
 tags = ["typecheck"]
-diagnostics = 16
+diagnostics = 15
 
 [scenario.collection_typecheck_contents]
 category = "reject"
@@ -284,6 +290,17 @@ category = "reject"
 description = "Fixed arrays compared where the elements have no '==' ('==' and '!='), where the lengths differ, and by order"
 tags = ["typecheck"]
 diagnostics = 4
+
+[scenario.collection_array_compare_literal]
+category = "run"
+description = "An array literal compared with a wider array takes its element type: either side of '==' and '!=', i64, u64, f32, f64, u8 and nested arrays"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.collection_array_compare_literal_reject]
+category = "reject"
+description = "An array literal compared with a wider array still refused: a value that does not fit, another length, and a variable or suffixed element of another type"
+tags = ["typecheck"]
+diagnostics = 6
 
 [scenario.collection_typecheck_range]
 category = "reject"
@@ -520,6 +537,38 @@ category = "run"
 description = "A borrow of an element held while another name replaces it with a value that owns nothing, an element's field replaced through the borrow of the element, a number in it through the other name, a field of some other struct that holds a String, a list the function owns, and a view used up before the store"
 tags = ["flow", "genllvm", "runtime"]
 
+# A store through a reference to a reference lands in what the reference read borrows,
+# though that one is 'uni' (collection_store_through_ref_success holds what is accepted)
+[scenario.collection_flow_store_through_ref]
+category = "reject"
+description = "A borrow through a '&uni' reference held while '**m' (m a 'mut' borrow of that reference), '***n', a field lent 'mut', a struct holding the 'mut' reference or a '&uni' borrow of it stores over or swaps what the reference borrows: a List, a struct's List field, a Dict and an enum's variant"
+tags = ["flow"]
+diagnostics = 10
+
+[scenario.collection_store_through_ref_success]
+category = "run"
+description = "A store through a reference to a '&uni' reference, accepted: with the borrow taken after it or used up before it, while a view of another list is held, three levels deep, through a field lent 'mut', and an enum stored over before it is matched"
+tags = ["flow", "genllvm", "runtime"]
+
+# A '&uni' reference held where others reach it is one way of several to what it points at
+# (collection_store_uni_held_shared_success holds what is accepted)
+[scenario.collection_flow_store_uni_held_shared]
+category = "reject"
+description = "A borrow through a '&uni' held in an 'Rc[mut, ..]' with two holders, or read through a '&' parameter, while the other holder stores over, swaps, pushes onto or clears what it points at, or hands it to a function: a List, a Dict, an owner and an enum's variant, with the borrow taken directly or through a borrow kept in a variable; and a compound assignment's place across the same changes"
+tags = ["flow"]
+diagnostics = 25
+
+[scenario.collection_flow_store_uni_held_one]
+category = "reject"
+description = "An 'Rc[mut, &uni ..]' with one holder: a store by the name the borrow was taken through is refused by the freezing, as before"
+tags = ["flow"]
+diagnostics = 1
+
+[scenario.collection_store_uni_held_shared_success]
+category = "run"
+description = "A '&uni' held in an 'Rc[mut, ..]' with two holders, accepted: the borrow used up before the store, taken after it, of another list, other reads while it is live, an enum stored over before it is matched, and a view through a lock's guard"
+tags = ["flow", "genllvm", "runtime"]
+
 # The same store over a field that OWNS the collection ('Uni', 'Rc', 'Arc', a program's own
 # region): replaced, the owner frees the collection (collection_store_owner_success holds
 # what is accepted beside each refusal)
@@ -578,6 +627,48 @@ diagnostics = 3
 [scenario.collection_reshape_through_call_success]
 category = "run"
 description = "A view taken through a reference a call returned ('ui.items[0usize].label.view()') and copied out first, handed to a callee that grows nothing it points into or only reads, used up before the call that grows, or taken from a list the function owns; and handed to a callee that grows a String of its own and is handed nothing that holds the viewed one (a read-only source, a loop, a field beside the list, an element of a List[String])"
+tags = ["flow", "genllvm", "runtime"]
+
+# A view a function took out of what a shared owner holds ('first(&o)', 'o' an 'Rc[mut, List]'),
+# which a second holder then replaces or grows
+# (collection_reshape_shared_result_success holds what is accepted beside each refusal).
+[scenario.collection_flow_reshape_shared_result]
+category = "reject"
+description = "A view returned by a function handed a shared owner (by '&', '&uni', '&mut' or by name, a method or its other argument, a function value, through two calls, out of a Dict, a list of owners, an enum's variant, an owner or a borrow inside the owner, a borrow of what a held '&uni' points at), then stored over, grown or handed to a call through the other holder"
+tags = ["flow"]
+diagnostics = 21
+
+[scenario.collection_reshape_shared_result_success]
+category = "run"
+description = "A view returned out of a shared owner used up before the store, kept past a store to another list or to a field beside it, read twice through both holders, the whole list handed back, an 'imm' owner, and a view of what a local struct's 'Uni' owns"
+tags = ["flow", "genllvm", "runtime"]
+
+# A view a virtual call returned, whose receiver's concrete type is not known and may hold a
+# list through an 'Rc' that a second holder then replaces or grows
+# (collection_reshape_virtual_result_success holds what is accepted beside each refusal).
+[scenario.collection_flow_reshape_virtual_result]
+category = "reject"
+description = "A view returned by a method called through '&<Firster', by a closure behind '&<fn', by a trait object an 'Rc' owns, or one made of a held '&uni', then stored over, grown, handed to a call through the other holder, or passed on to another call"
+tags = ["flow"]
+diagnostics = 8
+
+[scenario.collection_reshape_virtual_result_success]
+category = "run"
+description = "A virtual call whose result names no borrowed type, and a view from behind a virtual reference kept past a store to a list of another type, past a call that only reads or the replacement of a local list, or used up before the list is stored over"
+tags = ["flow", "genllvm", "runtime"]
+
+# A view returned by a function handed a trait object, or a plain reference to an open trait:
+# the call is judged by the trait's signature, its public methods and fields
+# (collection_reshape_handed_trait_success holds what is accepted beside each refusal).
+[scenario.collection_flow_reshape_handed_trait]
+category = "reject"
+description = "A view returned by a function handed a '&<Firster', a struct, 'Option' or list holding one, a closure, an owned or nested trait object, a trait whose method returns or writes the view or whose field holds the list, or a plain reference to an open trait, then the list stored over"
+tags = ["flow"]
+diagnostics = 16
+
+[scenario.collection_reshape_handed_trait_success]
+category = "run"
+description = "A function handed a trait object, closure or plain trait reference whose signature can hand out nothing the result points at, a view used up before the store, a collection's 'region' pointer, and the package shapes a mark on every trait object would refuse"
 tags = ["flow", "genllvm", "runtime"]
 
 # The same rule for a view taken through a reference a call returned, with no name to hold it
@@ -1176,3 +1267,111 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 category = "reject"
 description = "A callee that stores a borrow of a local into a list it is handed is refused at the call, whether the list reference is written out or passed by name; a store of a borrow through a raw pointer, a parameter or one made from a '&mut' parameter, is ErrorInvType (the place is global)"
 tags = ["flow"]
+
+# A compound assignment borrows its place before its right side is made and writes
+# into it after. collection_compound_element_success holds what is accepted beside each.
+[scenario.collection_flow_compound_element]
+category = "reject"
+description = "A compound assignment into an element a List or Dict lent (the element, a field of it, a reference bound to it, a List in an array, a type whose '+=' is rewritten to its '+'), or into what a Uni owns, whose right side calls or stores something that could change the shape of the collection or replace the owner"
+tags = ["flow"]
+diagnostics = 18
+
+[scenario.collection_flow_compound_moved]
+category = "reject"
+description = "A compound assignment into an element a List or Dict lent (also a List that is a struct's field, through a held 'mut' borrow and through a reference bound to the element), or into what a Uni owns, whose right side moves away or assigns over the collection or the owner by its own name"
+tags = ["flow"]
+diagnostics = 12
+
+[scenario.collection_compound_element_success]
+category = "run"
+description = "A compound assignment into a collection's element, accepted: its right side reaches nothing of the collection, only reads it, changes another one or another element, or is made first into a local; and one into a variable's own storage whose right side assigns over or moves the variable"
+tags = ["flow", "genllvm", "runtime"]
+
+# A writable borrow of the variable holding a reference is a second name for what it borrows:
+# a view taken before it, and one taken through it, are both judged against the change
+[scenario.collection_flow_store_ref_second_name]
+category = "reject"
+description = "A view into what a reference borrows, and a writable borrow of the variable holding that reference, in either order, then a store or a call through the other name: a List, a Dict and an enum's variant, a struct's field, a parameter, a 'mut' reference and an owner's contents"
+tags = ["flow"]
+diagnostics = 47
+
+[scenario.collection_store_ref_second_name_success]
+category = "run"
+description = "Beside collection_flow_store_ref_second_name, accepted: the view used up before the reference variable is lent, a view of another list, another list changed under a view, a read-only borrow of the variable, and a writable one with nothing changed while the view is used"
+tags = ["flow", "genllvm", "runtime"]
+
+# A store over a variable whose borrow an earlier argument, or an operator's own
+# temporary, still holds (collection_args_store_success holds the neighbours).
+[scenario.collection_flow_args_store]
+category = "reject"
+description = "A store inside a call's argument over the variable the receiver or an earlier argument is borrowed from, in a function holding nothing else the loan walk follows: '=', ':=', '<->', tuple and multiple-value stores, a field, a whole struct or array, an enum, in a call, a struct literal, a compound the type declares and '<-'; and a store or a move in a later entry of a '<-' with two. All but the swap were accepted and wrote into freed or replaced storage"
+tags = ["flow"]
+diagnostics = 17
+
+[scenario.collection_args_store_success]
+category = "run"
+description = "Beside collection_flow_args_store, accepted: another list stored and grown inside an argument, a sibling field stored, 'x += {x = 5; 1}', 'x += x', a '<-' whose later entry reads the list or stores another variable, and a store once the call is made"
+tags = ["flow", "genllvm", "runtime"]
+
+# The address of a place is made before its index and used after.
+# collection_index_call_success holds what is accepted beside each.
+[scenario.collection_flow_index_call]
+category = "reject"
+description = "A place in what a List lent or a Uni owns, indexed by something that calls or stores what could change the list's shape, replace the owner, or move or replace either by name: stored into, compound-assigned, read and sliced; through the name, through references and through references bound to the element"
+tags = ["flow"]
+diagnostics = 17
+
+[scenario.collection_index_call_success]
+category = "run"
+description = "Beside collection_flow_index_call, accepted: an index that reaches nothing of the collection, only reads it or changes another one, one made first into a local, a List's own index that grows the List, and an array held by value changed by its index"
+tags = ["flow", "genllvm", "runtime"]
+
+# A borrow made and dereferenced where it is written ('*&x') is the place borrowed
+# (collection_inline_borrow_deref_success holds what is accepted beside each refusal).
+[scenario.collection_flow_inline_borrow_deref]
+category = "reject"
+description = "A view taken through an inline borrow ('&(**&o)[0usize]', '&mut', nested twice, through a cast or a named reference, a field, a match) then a store, a push or a compound assignment by the other holder or through '*&' itself, and a local grown or stored over through one; and a source used while a view through '&*&uni' still holds it: read, an element, a slice, through a reference, a value read"
+tags = ["flow"]
+diagnostics = 20
+
+[scenario.collection_inline_borrow_deref_success]
+category = "run"
+description = "A view through an inline borrow used up before the store, kept past a store to a different list or a field beside it, and stores, a swap, calls and a match through '*&' with no view held"
+tags = ["flow", "genllvm", "runtime"]
+
+# collection_swap_borrow_success holds what is accepted beside each.
+[scenario.collection_flow_swap_borrow]
+category = "reject"
+description = "A swap reaches both its places before it writes either, so a borrow, a store or a move made while one side is walked meets the other side's write: the right side's index borrowing what the left side holds (a list's element, what an owner holds, through a call, a field, through a reference), the left side's index borrowing what the right side holds, the right side's index storing a shorter-lived borrow in the left side or pointing the left side's reference elsewhere, and a move of the left side's owner by the right side's index (on one path, on a straight line, a field's owner, and what it points at moved out) or by the left side's own index"
+tags = ["flow"]
+diagnostics = 15
+
+[scenario.collection_swap_borrow_success]
+category = "run"
+description = "Beside collection_flow_swap_borrow, accepted: two elements of one list, an index that borrows another list, one whose borrow of the left side ends in its block, a borrow made before that the index last reads or replaces, an index that reads the left side, one that moves the left side's value and assigns it again, and one that moves another list"
+tags = ["flow", "genllvm", "runtime"]
+
+# collection_swap_index_success holds what is accepted beside each.
+[scenario.collection_flow_swap_index]
+category = "reject"
+description = "A swap whose left side is in what a List lent or a Uni owns, and whose right side calls something that could change the list's shape, replace the owner or move the list: an index, an index of the same list, a call returning the place, and an index method that grows; through the name, through references and through a reference bound to the element; and two owners, either one replaced by the right side's index; and a list stored over in the index"
+tags = ["flow"]
+diagnostics = 15
+
+[scenario.collection_swap_index_success]
+category = "run"
+description = "Beside collection_flow_swap_index, accepted: two elements of one list, an index that only reads, one that changes another list, an index of the left side that grows the list, an owner's elements, and two stores in one assignment"
+tags = ["flow", "genllvm", "runtime"]
+
+# A borrow that a block, an 'if', a 'match' or a slice borrow yields, then dereferenced, reaches
+# what it was borrowed from (collection_yielded_borrow_deref_success holds what stays accepted).
+[scenario.collection_flow_yielded_borrow_deref]
+category = "reject"
+description = "A view through a borrow a block, a nested block, an 'if', a 'match' or a slice borrow yields, then a store, a push or a compound assignment by another name; a local grown or stored over through one; a local stored into what a caller lent; a variant narrowed through one; and a source used while a view through a yielded '&uni' still holds it"
+tags = ["flow"]
+diagnostics = 23
+
+[scenario.collection_yielded_borrow_deref_success]
+category = "run"
+description = "A view through a borrow a block or an 'if' yields kept while another list changes or used up before the change, and reads, stores, a swap and calls through one with no view held"
+tags = ["flow", "genllvm", "runtime"]

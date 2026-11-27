@@ -1,0 +1,226 @@
+// What is accepted beside enum_flow_narrow_name_mut_borrow: a name narrowed by a test,
+// where no change of variant comes between the test and the uses of the name as the
+// variant, or no 'mut' borrow of it is held.
+
+mod enum_narrow_name_mut_borrow_success;
+
+import stdio use *;
+
+enum Shape {
+  struct Circle {
+    pub r: i32;
+
+    fn grow(self: &mut) {
+      self.r += 1;
+    }
+  }
+
+  struct Square {
+    pub s: i32;
+  }
+}
+use Shape;
+
+enum Three {
+  struct One {
+    pub x: i32;
+  }
+
+  struct Two {
+    pub y: i32;
+  }
+
+  struct Many {
+    pub a: i32;
+    pub b: i32;
+  }
+}
+use Three;
+
+struct W {
+  pub sh: Shape;
+  pub n: i32;
+}
+
+fn set(m: &mut Shape) {
+  *m = Square(99);
+}
+
+fn bump(n: &mut i32) {
+  *n += 1;
+}
+
+fn num(n: i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+
+fn show(m: &Shape) {
+  match m {
+    case let &Circle(c) { num(c.r); }
+    case let &Square(q) { num(q.s); }
+  }
+}
+
+// No 'mut' borrow: nothing changes the variant but the name, which ends the narrowing
+fn noBorrow() {
+  var s: Shape = Circle(1);
+  if s is Circle {
+    s.r = 2;
+    num(s.r);
+  }
+}
+
+// The 'mut' borrow is used only after the last use of the name as the variant
+fn usedAfter() {
+  var s: Shape = Circle(3);
+  let m = &mut s;
+  if s is Circle {
+    num(s.r);
+    set(m);
+  }
+  show(&s);
+}
+
+// Written through the 'mut' borrow before the test, and between two tests of the name
+fn testedAgain() {
+  var s: Shape = Circle(4);
+  let m = &mut s;
+  *m = Circle(5);
+  if s is Circle {
+    num(s.r);
+  }
+  set(m);
+  if s is Circle {
+    num(s.r);
+  }
+  else {
+    num(s.s);
+  }
+  *m = Circle(6);
+  if s is Circle {
+    num(s.r);
+  }
+}
+
+// Each pass of the loop tests the name again before using it
+fn eachPass() {
+  var s: Shape = Circle(7);
+  let m = &mut s;
+  var i = 0;
+  while i < 2 {
+    if s is Circle {
+      num(s.r);
+    }
+    else {
+      num(s.s);
+    }
+    set(m);
+    i += 1;
+  }
+}
+
+// A variant stored over the name narrows it afresh
+fn storedAgain() {
+  var s: Shape = Circle(8);
+  let m = &mut s;
+  var i = 0;
+  while i < 2 {
+    s = Circle(9);
+    num(s.r);
+    set(m);
+    i += 1;
+  }
+  show(&s);
+}
+
+// Two tests leave one variant, with no change between or after them
+fn twoTests() {
+  var s: Three = One(10);
+  let m = &mut s;
+  if s is Many {
+    return;
+  }
+  if s is Two {
+    return;
+  }
+  num(s.x);
+  *m = Two(11);
+  if s is Two {
+    num(s.y);
+  }
+}
+
+// The same name written and read through its narrowing, by a method of the variant too,
+// with other enums stored over beside it
+fn within() {
+  var s: Shape = Circle(12);
+  let m = &mut s;
+  var other: Shape = Circle(13);
+  let o = &mut other;
+  if s is Circle {
+    set(o);
+    *o = Circle(14);
+    other = Square(15);
+    s.r += 1;
+    s.grow();
+    let k = &s.r;
+    num(*k);
+    num(s.r);
+  }
+  set(m);
+  show(&s);
+  show(&other);
+}
+
+// A 'mut' borrow of a field beside the one the narrowed reference points at
+fn sibling() {
+  var w = W(Circle(16), 17);
+  let n = &mut w.n;
+  var p = &uni w.sh;
+  if p is Circle {
+    bump(n);
+    num(*n);
+    num(p.r);
+  }
+}
+
+// What a 'uni' parameter points at has no other name: a call handed another enum is no
+// change of this one
+fn param(p: &uni Shape, q: &mut Shape) {
+  let m = &mut *p;
+  if p is Circle {
+    set(q);
+    num(p.r);
+  }
+  set(m);
+}
+
+// A copy of the payload is not followed
+fn byValue() {
+  var s: Shape = Circle(18);
+  let m = &mut s;
+  if let Circle(c) = s {
+    set(m);
+    num(c.r);
+  }
+  show(&s);
+}
+
+fn main() {
+  noBorrow();
+  usedAfter();
+  testedAgain();
+  eachPass();
+  storedAgain();
+  twoTests();
+  within();
+  sibling();
+  var a: Shape = Circle(19);
+  var b: Shape = Circle(20);
+  param(&uni a, &mut b);
+  show(&a);
+  show(&b);
+  byValue();
+  printStr("\n");
+}

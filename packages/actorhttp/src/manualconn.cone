@@ -44,13 +44,16 @@ struct ManualRegistry {
   ids: List[u64];
 }
 
+// Neither touches the registry once the program is over (final): it is a global, dropped when final returns
 fn mAdd(a: ManualConn, id: u64) {
+  if programOver.load() {return;}
   let r = &mut *manualReg;
   r.actors.push(a);
   r.ids.push(id);
 }
 
 fn mRemove(id: u64) {
+  if programOver.load() {return;}
   let r = &mut *manualReg;
   match r.ids.indexOf(&id) {
     case let Some(k) {
@@ -61,7 +64,7 @@ fn mRemove(id: u64) {
   }
 }
 
-// At the program's end (final): every manual connection not ended lets go of its replies, unanswered
+// At the program's end (final): every manual connection not ended lets go of its replies, unanswered, and ends
 fn abandonManual() {
   var all = List[ManualConn]();
   {
@@ -146,10 +149,18 @@ pub actor ManualConn is ConnOwner {
     mAdd(selfactor, myId);
   }
 
-  // The program ends (see abandonManual): the replies held are let go unanswered, so a behaviour paused on one is abandoned
+  // The program ends (see abandonManual): the replies held are let go unanswered, so a behaviour paused on one is abandoned,
+  // and the connection is reset. Nothing is waited for: its connection actor tells of its end when its cancelled I/O completes
   pub async fn abandon(self) {
     reqs.clear();
     pending = None[ConnReply];
+    closing = true;
+    match &conn {
+      case let &Some(c) {c.abort();}
+      else {}
+    }
+    conn = None[ClientConnActor];
+    group.cancel();
   }
 
   // The connection is over: no more is asked of the registry's hold on this actor
@@ -161,6 +172,9 @@ pub actor ManualConn is ConnOwner {
   // The connection made: the host looked up (within connectTimeout), then the connection actor, which connects each address in
   // turn
   pub async fn start(self, rp: ConnReply, host: String, port: u16, secure: bool, cfg: tls.ClientConfig) {
+    // Asked once the program is over: its reply dropped, so the behaviour awaiting it is abandoned, and no TLS context is
+    // looked up (they are a global, dropped by then)
+    if programOver.load() {return;}
     pending = Some[ConnReply](rp);
     let conf = httpconn.Config.make();
     var tlsc: Option[tls.Client] = None;
@@ -211,6 +225,7 @@ pub actor ManualConn is ConnOwner {
   // A request on the connection: its whole body, and its limits. Given a group of its own so that the program's group and its
   // deadline both end it
   pub async fn exchange(self, head: RequestHead, body: String, outer: Option[CancelGroup], deadline: Instant, rp: FetchReply) {
+    if programOver.load() {return;}
     if closing || ended {
       rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(closedFailure("the connection is closed"))));
       return;

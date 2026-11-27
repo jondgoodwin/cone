@@ -1,0 +1,78 @@
+// An owner moved into an owning reference of another type may not be used after,
+// as one moved into its own type may not; nor may a variant an 'if' infers into
+// its enum.
+mod move_flow_permission_recast;
+import sync use Arc;
+
+struct Noisy { pub n: i32; }
+struct Louder extends Noisy { pub fn get(self: &) i32 { self.n } }
+trait Shown { pub fn get(self: &) i32; }
+struct Keeper { pub o: Rc[Louder]; }
+struct Hold { pub r: Rc[mut, Noisy]; }
+enum E {
+  struct A { pub r: Rc[mut, Noisy]; }
+  struct B { pub o: Uni[Noisy]; }
+}
+
+fn read(r: Rc[mut, Noisy]) {}
+
+fn enriched() i32 {
+  let a = Rc[Louder](Louder(1));
+  let r: Rc[mut, Noisy] = a;
+  a.n                                                       //~ ErrorMove "moved out"
+}
+fn traited() i32 {
+  let a = Rc[Louder](Louder(1));
+  let r: Rc[mut, Shown] = a;
+  a.n                                                       //~ ErrorMove "moved out"
+}
+fn immutable() i32 {
+  let a = Arc[Louder](Louder(1));
+  let r: Arc[imm, Noisy] = a;
+  a.n                                                       //~ ErrorMove "moved out"
+}
+fn explicitly() i32 {
+  let a = Rc[Louder](Louder(1));
+  let r = a as Rc[mut, Noisy];
+  a.n                                                       //~ ErrorMove "moved out"
+}
+fn argument() i32 {
+  let a = Rc[Louder](Louder(1));
+  read(a);
+  a.n                                                       //~ ErrorMove "moved out"
+}
+fn field() i32 {
+  let a = Rc[Louder](Louder(1));
+  let h = Hold(a);
+  a.n                                                       //~ ErrorMove "moved out"
+}
+fn optioned() i32 {
+  let a = Rc[Louder](Louder(1));
+  let o: Option[Rc[mut, Noisy]] = a;
+  a.n                                                       //~ ErrorMove "moved out"
+}
+fn arm(c: bool) i32 {
+  let a = Rc[Louder](Louder(1));
+  let r: Rc[mut, Noisy] = if c {a} else {Rc[mut, Noisy](Noisy(2))};
+  a.n                                                       //~ ErrorMove "moved out"
+}
+fn broken(c: bool) i32 {
+  let a = Rc[Louder](Louder(1));
+  let r: Rc[mut, Noisy] = while { if c { break a; } if !c { break Rc[mut, Noisy](Noisy(2)); } };
+  a.n                                                       //~ ErrorMove "moved out"
+}
+fn eachPass(c: bool) {
+  let a = Rc[Louder](Louder(1));
+  while c {
+    let r: Rc[mut, Noisy] = a;                              //~ ErrorMove "moved out"
+  }
+}
+fn throughBorrow(k: &mut Keeper) {
+  let r: Rc[mut, Noisy] = k.o;                              //~ ErrorMoveField
+}
+fn variant(c: bool) i32 {
+  let x = E.A(Rc[mut, Noisy](Noisy(1)));
+  let b = E.B(Uni[Noisy](Noisy(2)));
+  let e = if c {x} else {b};
+  x.r.n                                                     //~ ErrorMove "moved out"
+}

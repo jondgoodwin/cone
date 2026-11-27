@@ -235,7 +235,8 @@ nothing.
    A variant's own by-value method (`d.drop()`) called on an enum-typed variable
    needs a dispatch on the tag that a value receiver does not have (`ErrorEnumValueDispatch`,
    1150). A program that needs either declares the variant as the type: `var d: Dv.Own = ...`.
-   A writable borrow of the whole variable also ends its narrowing (`narrowBorrowed`),
+   A writable borrow of the whole variable, a reference variable's included, also ends
+   its narrowing (`narrowBorrowed`),
    so a field read after `&mut v` is `ErrorNarrowStale` for a variable that started
    as a variant.
 6. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
@@ -401,7 +402,7 @@ Fields and constants have no flow participation at all.
   (`genlFnDclParm`, [generation](../phases/generation.md), "C-named functions
   and the C ABI"). A parameter arrives as an SSA value but Cone lets
   you assign to it and borrow from it, so it needs storage. `genlAlloca` hoists
-  it to the entry block for mem2reg to undo. A struct passed as a pointer
+  it to the entry block, for a release build's optimizer to undo. A struct passed as a pointer
   that the body only reads (not `var`, never borrowed, nothing finalizing it:
   `genlParmInPlace`, from the `VarFlowLend` flags flow leaves) has its store
   marked, and `genlAggCopies` makes the pointer the variable's storage, so

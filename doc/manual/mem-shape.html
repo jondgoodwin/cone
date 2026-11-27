@@ -451,6 +451,69 @@ fn two() {
   *e;                                               //   the one e is into
 }
 </pre>
+	<p>A compound assignment, <span class="pre">l[0usize] += more()</span>, borrows the element before its right side is
+		made and writes into it after, so the right side may not change the collection's shape. The same holds for a field
+		of an element, an element reached through a reference to it, and what an owner such as a <span class="pre">Uni</span>
+		points at, which the right side may not replace. Nor may the right side move the collection or the owner away, or
+		assign over it, by its own name. Make the right side first, into a local:</p>
+<pre>
+fn grow(m: &amp;mut List[usize]) usize {
+  m.push(1usize);
+  5usize
+}
+fn add(l: &amp;mut List[usize]) {
+  l[0usize] += l.len();      // Ok: len changes nothing
+  l[0usize] += grow(l);      // Error 1339: this compound assignment writes into what a 'List' lent
+  let v = grow(l);
+  l[0usize] += v;            // Ok
+}
+fn take(l: List[usize]) usize { l.len() }
+fn gone() {
+  var l = List[usize]();
+  l.push(1usize);
+  l[0usize] += take(l);      // Error 1168: 'l' is borrowed, so it may not be moved yet
+}
+</pre>
+	<h3 id="indexcall">A call in an index</h3>
+	<p>The array or slice an index picks from is reached before the index is made, and the element after it. So an index
+		that calls, or stores, may not take that array away: it may not change the shape of the collection that lent it or
+		which variant of an enum it is in, nor replace or move, by its own name, the collection or owner it was borrowed
+		from. Reading them is accepted. This holds for a store, a read and a borrow of the element alike; where the element
+		is only read or borrowed read-only, the index may not borrow its collection mutably either, as a <span class="pre">let</span>
+		holding that borrow would not let it. Make the index first, into a local:</p>
+<pre>
+struct Row { pub cells: Array[usize, 3]; }
+
+fn grow(m: &amp;mut List[Row]) usize {
+  m.push(Row([0usize, 0usize, 0usize]));
+  0usize
+}
+fn mark(l: &amp;mut List[Row]) {
+  l[0usize].cells[l.len() - 1usize] = 1usize;   // Ok: len changes nothing
+  l[0usize].cells[grow(l)] = 1usize;            // Error 1339: the element was reached, then grow may move it
+  let i = grow(l);
+  l[0usize].cells[i] = 1usize;                  // Ok
+}
+</pre>
+	<p>A <span class="pre">List</span>'s own index, <span class="pre">l[grow(&amp;mut l)] = v</span>, is a method of the
+		list that reaches the storage only once its index is made, and is accepted.</p>
+	<p>A swap, <span class="pre">a &lt;-&gt; b</span>, reaches its left side, then its right side, and only then
+		exchanges the two values. So the right side may not take away what the left side is in, whether by an index,
+		by a call that returns the place, or by an index method that changes shape. Two elements of one list,
+		<span class="pre">l[i] &lt;-&gt; l[j]</span>, are accepted:</p>
+<pre>
+fn extend(m: &amp;mut List[usize]) usize {
+  m.push(0usize);
+  0usize
+}
+fn rotate(l: &amp;mut List[usize]) {
+  var spare = [1usize, 2usize];
+  l[0usize] &lt;-&gt; l[1usize];            // Ok: neither side changes the list's shape
+  l[0usize] &lt;-&gt; spare[extend(l)];     // Error 1339: the element was reached, then extend may move it
+  let i = extend(l);
+  l[0usize] &lt;-&gt; spare[i];             // Ok
+}
+</pre>
 
 	<h3 id="stores">Stores</h3>
 	<p>A store is asked as a call is, for it is no call but could do the same. While such a borrow is still to be used,
@@ -486,6 +549,62 @@ fn wholeShip(a: &amp;mut Ship, b: &amp;mut Ship, s: Ship) i64 {
   let e = a.vec[0usize];
   *b = s;                       // Error 1426, the same
   e.n
+}
+</pre>
+	<p>A store through a reference to a reference reaches what the inner one borrows, however deep, and whether or not the
+		inner one is <span class="pre">&amp;uni</span>: what a <span class="pre">&amp;uni</span> reference points at is no
+		longer reached by its name alone once another reference can reach that name.</p>
+	<p>The same holds for a <span class="pre">&amp;uni</span> reference held where others can write, in an
+		<span class="pre">Rc[mut, &amp;uni List[i32]]</span> with two holders for instance. A borrow into what it points
+		at, taken through one holder, is refused if it is still to be used after a store or call through another that
+		could change the value's shape. A <span class="pre">&amp;uni</span> reached through a lock's guard is not shared
+		in this way, since no other holder can reach it while the lock is held.</p>
+<pre>
+fn held() i32 {
+  var l = List[i32]();
+  l.push(7i32);
+  var r = &amp;uni l;
+  let o = Rc[mut, &amp;uni List[i32]](r);
+  let o2 = o;
+  let v = &amp;(**o)[0usize];
+  **o2 = List[i32]();           // Error 1426: 'o2' reaches the list 'v' points into
+  *v
+}
+</pre>
+<pre>
+fn through() i32 {
+  var l = List[i32]();
+  l.push(7i32);
+  var r = &amp;uni l;
+  let m = &amp;mut r;
+  let v = &amp;(*r)[0usize];
+  **m = List[i32]();            // Error 1426: this replaces the list 'v' points into
+  *v
+}
+</pre>
+	<p>The order does not matter. A writable borrow of the variable holding a reference is a second name for what that
+		reference borrows, so a borrow taken before <span class="pre">m</span> was made, and one taken through
+		<span class="pre">**m</span>, are both refused a change made by the other name while they are still to be used.
+		A read-only borrow of the variable (<span class="pre">&amp;r</span>) can change nothing, and refuses nothing.</p>
+<pre>
+fn before() i32 {
+  var l = List[i32]();
+  l.push(7i32);
+  var r = &amp;uni l;
+  let v = &amp;(*r)[0usize];
+  let m = &amp;mut r;               // Ok: nothing is changed yet
+  (**m).push(8i32);             // Error 1339: this call could move what 'v' points into
+  *v
+}
+
+fn through() i32 {
+  var l = List[i32]();
+  l.push(7i32);
+  var r = &amp;uni l;
+  let m = &amp;mut r;
+  let v = &amp;(**m)[0usize];
+  *r = List[i32]();             // Error 1426: this replaces the list 'v' points into
+  *v
 }
 </pre>
 	<p>Writing an element that owns nothing in place is not refused, nor is replacing a field of an element through the
@@ -564,6 +683,57 @@ fn after(a: &amp;mut Uni[Item]) i64 {
 		the object while a borrow its <span class="pre">count()</span> lent is held is refused, unless the owner is declared
 		<span class="pre">Uni[Gadget + ShapeKeeping]</span>.</p>
 
+	<p>A borrow a function returns is held to the same rules as one written in place. A function handed
+		<span class="pre">&amp;o</span>, where <span class="pre">o</span> is an <span class="pre">Rc[mut, List[i32]]</span>, may
+		return a borrow of an element, so a store or a push through another holder of the list is refused while the
+		result is still to be used. The compiler reads this from the parameter's type, not from the function's body:
+		whatever a result's type could point at, behind an owner others may write by, counts.</p>
+<pre>
+fn first(o: &amp;Rc[mut, List[i32]]) &amp;i32 { return &amp;(**o)[0usize]; }
+
+fn shared(o: Rc[mut, List[i32]]) {
+  let o2 = o;
+  let v = first(&amp;o);
+  *o2 = List[i32]();            // Error 1426: v may point into this list
+  v;
+}
+</pre>
+	<p>Through a virtual reference, the signature is the trait method's, and the type behind the reference is not
+		known: it may hold a list through an <span class="pre">Rc</span> that another holder writes. So while a borrow
+		returned by such a call is still to be used, a store or a call that could free a collection, an enum or an owner
+		holding what the borrow points at is refused: copy what is needed out of the result before the change. A closure called through
+		<span class="pre">&amp;&lt;fn</span> is the same, and so is a method of a trait object an owner holds. A method
+		whose result holds no borrow is not affected.</p>
+<pre>
+trait Firster { pub fn first(self: &amp;) &amp;i32; }
+
+fn behind(h: &amp;&lt;Firster, o2: Rc[mut, List[i32]]) {
+  let v = h.first();
+  *o2 = List[i32]();            // Error 1426: v may point into this list
+  v;
+}
+</pre>
+	<p>A function that is <i>handed</i> the virtual reference, or a struct, <span class="pre">Option</span> or list
+		holding one, is judged the same way, from the trait's signature: its public methods and fields. Its result is
+		held where a method could hand out something the result could point at, by what it returns or what it writes
+		through a <span class="pre">&amp;mut</span> parameter, and so on through whatever those hand out. The trait's
+		fields are read as a struct's are, and a closure is judged by what it returns. A trait whose methods hand out
+		nothing of the kind holds nothing against the result. A plain reference to an open trait
+		(<span class="pre">&amp;Gadget</span>) calls no method, so its fields are all it offers.</p>
+<pre>
+fn get(h: &amp;&lt;Firster) &amp;i32 { return h.first(); }
+
+fn handed(h: &amp;&lt;Firster, o2: Rc[mut, List[i32]]) {
+  let v = get(h);
+  *o2 = List[i32]();            // Error 1426: 'first' could hand v out of this list
+  v;
+}
+</pre>
+	<p style="margin-left: 40px;"><i>Note: Not checked yet: a function that finds the concrete type behind the virtual
+		reference (<span class="pre">is</span>, <span class="pre">match</span>, <span class="pre">downcastRef</span>) and
+		returns a borrow from past a shared owner in it, which no method or field of the trait hands out. Such a borrow
+		is not held against a store or a call through another holder, so it can dangle.</i></p>
+
 	<h2 id="enums">An enum's variant</h2>
 	<p>For an enum, nothing is frozen. A reference into the payload of an enum's variant, the binding of
 		<span class="pre">case var Circle(c)</span> on a reference, is a borrow into the enum, through a
@@ -598,11 +768,65 @@ fn restart(s: &amp;mut Shape) i32 {
 }
 </pre>
 	<p>The same store after the narrowed reference's last use is fine, which is how a state machine moves to its next
-		state. A <span class="pre">&amp;mut</span> borrow of a local is an alias loan and is asked the same; a read-only
-		borrow of a local is frozen (<a href="mem-borrowing.html#freezing">What a borrow leaves its source free to do</a>),
-		and a <span class="pre">uni</span>, <span class="pre">imm</span> or <a href="mem-permissions.html#mut1">mut1</a>
-		reference has no other name to change it, so neither is asked. A name narrowed by a test,
-		<span class="pre">if s is Circle</span>, is followed the same way (flow typing). A value owned by an <span class="pre">Rc</span> is another owner of the value, and no loan stands for
+		state. A <span class="pre">&amp;mut</span> borrow of a local is an alias loan and is asked the same. A read-only
+		borrow of a local made where it is matched freezes the local
+		(<a href="mem-borrowing.html#freezing">What a borrow leaves its source free to do</a>), so it is asked only where a
+		<span class="pre">&amp;mut</span> borrow of it (or of what holds it) made earlier is still held: that borrow may
+		still store another variant.</p>
+<pre>
+fn replaced() i32 {
+  var s: Shape = Shape.Circle(5);
+  let m = &amp;mut s;
+  match &amp;s {
+    case let &amp;Circle(c) {
+      *m = Shape.Rect(1, 2, 3);
+      c.radius               // Error 1425: 'c' ..., made while the 'mut' borrow can still change it,
+    }                        //   is used here after the store
+    else { 0 }
+  }
+}
+</pre>
+	<p>A <span class="pre">uni</span>, <span class="pre">imm</span> or <a href="mem-permissions.html#mut1">mut1</a>
+		reference has no other name to change it, so it is not asked.</p>
+	<p>A name narrowed by a test, <span class="pre">if s is Circle</span>
+		(<a href="mod-substitution.html#flow">flow typing</a>), is followed the same way. For a local, or a
+		<span class="pre">uni</span> reference, that is only where a <span class="pre">&amp;mut</span> borrow of it
+		made earlier is still held at the test: the change is refused where the name is next used as the variant.
+		Where the name is a <span class="pre">uni</span>, <span class="pre">imm</span> or
+		<a href="mem-permissions.html#mut1">mut1</a> reference and the <span class="pre">&amp;mut</span> borrow is of the
+		name itself (<span class="pre">let r = &amp;mut s;</span>), pointing the name at another value through it
+		(<span class="pre">*r = other</span>, or a call handed <span class="pre">r</span> that may) is a change too.
+		Test it again after the change, or bind the payload by value.</p>
+<pre>
+fn narrowed() i32 {
+  var s: Shape = Shape.Circle(5);
+  let m = &amp;mut s;
+  if s is Circle {
+    *m = Shape.Rect(1, 2, 3);
+    s.radius                 // Error 1425: 's' may no longer be a Circle here
+  }
+  else { 0 }
+}
+</pre>
+	<p>A compound assignment, <span class="pre">c.radius += more()</span>, reaches the field before its right side is
+		made and writes into it after, so the right side may not change the variant either, whether or not the field is
+		used again:</p>
+<pre>
+fn widen(m: &amp;mut Shape) i32 {
+  *m = Shape.Rect(1, 2, 3);
+  5
+}
+fn grown(s: &amp;mut Shape, m: &amp;mut Shape) {
+  if s is Circle {
+    s.radius += 5;           // Ok
+    s.radius += widen(m);    // Error 1425: this compound assignment writes into one of the variants
+  }
+}
+</pre>
+	<p>An array in a variant is reached before an index into it is made, so a call in the index may not change the variant
+		either: <span class="pre">s.points[widen(m)] = p</span>, with <span class="pre">s</span> narrowed, is error 1425.
+		Change the enum before the test, or after the last use of the variant.</p>
+	<p>A value owned by an <span class="pre">Rc</span> is another owner of the value, and no loan stands for
 		the other owners: where none can store another variant (<span class="pre">Rc[imm, T]</span>) the binding is a copy
 		of the owner typed as the variant, and where one could (<span class="pre">mut</span>, <span class="pre">ro</span>) it
 		is refused (<i>Error 1034: A 'mut' reference to Shape, held by an owner (an 'Rc'), may not be narrowed to a

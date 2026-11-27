@@ -239,6 +239,16 @@ typedef struct VkPhysicalDeviceVulkan13Properties {
   VkDeviceSize maxBufferSize;
 } VkPhysicalDeviceVulkan13Properties;
 
+typedef struct VkPhysicalDeviceFloatControlsProperties {
+  VkStructureType sType; void* pNext; int denormBehaviorIndependence; int roundingModeIndependence;
+  VkBool32 shaderSignedZeroInfNanPreserveFloat16; VkBool32 shaderSignedZeroInfNanPreserveFloat32;
+  VkBool32 shaderSignedZeroInfNanPreserveFloat64; VkBool32 shaderDenormPreserveFloat16;
+  VkBool32 shaderDenormPreserveFloat32; VkBool32 shaderDenormPreserveFloat64; VkBool32 shaderDenormFlushToZeroFloat16;
+  VkBool32 shaderDenormFlushToZeroFloat32; VkBool32 shaderDenormFlushToZeroFloat64; VkBool32 shaderRoundingModeRTEFloat16;
+  VkBool32 shaderRoundingModeRTEFloat32; VkBool32 shaderRoundingModeRTEFloat64; VkBool32 shaderRoundingModeRTZFloat16;
+  VkBool32 shaderRoundingModeRTZFloat32; VkBool32 shaderRoundingModeRTZFloat64;
+} VkPhysicalDeviceFloatControlsProperties;
+
 typedef struct VkPhysicalDeviceProperties2 {
   VkStructureType sType; void* pNext; VkPhysicalDeviceProperties properties;
 } VkPhysicalDeviceProperties2;

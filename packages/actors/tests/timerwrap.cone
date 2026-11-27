@@ -1,0 +1,369 @@
+// A held Timer's next() awaited through orCancelledOp (row 873, Bug 135). The
+// wrapper hands next() a future's Reply, which names no actor, and the timer
+// took it to name the awaiting one: it wrote through null at the fire.
+//
+// 1. The tick answers first: Ok(true), in no group and in a live one, parked or
+//    already due, and the deadline is cleared.
+// 2. The cancel wins: Err at once, and next() stays parked. It is answered
+//    later (stop(), its deadline, the Timer replaced), and nobody sees that.
+// 3. The Timer's own end while parked (its group cancelled, stop()): Ok(false).
+// 4. A move queued ahead of the answer of a next() already due: the resume
+//    comes at or after the deadline set last, or not while there is none.
+// 5. The Timer's group cancelled, with the cancelling thread stopped between
+//    taking the waiter and reading its Reply (Bug 127's seam), the deadline
+//    passing meanwhile.
+// 6. The tick racing the cancel, 500 rounds: each ends once.
+// 1 and 2 also take two wrappers over next() (rows 869 and 873 together): the
+// tick answers first, Ok(Ok(true)); a cancel wakes the outer one with Err.
+// Every actor made is finalized when its handle goes: the count a parked next()
+// holds of its actor is neither leaked nor let go twice. The last one is left
+// parked at the program's end.
+
+mod timerwrap;
+
+import testing use *;
+import stdio use *;
+import thread;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import cancelgroups use CancelGroup;
+import actors use Timer;
+
+const anHour = 3600000000000i64;
+const wasFalse = 0u64;
+const wasTrue = 1u64;
+const wasErr = 2u64;
+const rounds = 500u64;
+
+let finalized = Atomic[u64].of(0u64);
+
+struct Mark is Move {
+  pub n: u64;
+  fn final(self: &uni) {
+    finalized.add(1u64);
+  }
+}
+
+fn nowNs() i64 {Instant.now().nanos()}
+fn fromNow(ns: i64) Instant {Instant.fromNanos(nowNs() + ns)}
+
+actor Waiter {
+  mark: Mark;
+  timer: Timer;
+  last: i64;
+  woke: Sender[u64];
+  pong: Sender[u64];
+
+  // Set ns from now (a negative ns: already due) and await it, wrapped
+  pub async fn go(self, ns: i64) {
+    timer.set(fromNow(ns));
+    match await actors.orCancelledOp(timer.next()) {
+      case let Ok(v) {woke.send(if v {wasTrue} else {wasFalse});}
+      case let Err(c) {woke.send(wasErr);}
+    }
+  }
+
+  // As go, with two wrappers: the inner one's Result is never Err
+  pub async fn goTwice(self, ns: i64) {
+    timer.set(fromNow(ns));
+    match await actors.orCancelledOp(actors.orCancelledOp(timer.next())) {
+      case let Ok(inner) {
+        match inner {
+          case let Ok(v) {woke.send(if v {wasTrue} else {wasFalse});}
+          case let Err(c) {woke.send(9u64);}
+        }
+      }
+      case let Err(c) {woke.send(wasErr);}
+    }
+  }
+
+  // A loop of n ticks 1 ms apart: how many came
+  pub async fn tick(self, n: u64) {
+    var k = 0u64;
+    while k < n {
+      timer.set(fromNow(1000000i64));
+      match await actors.orCancelledOp(timer.next()) {
+        case let Ok(v) {
+          if !v {
+            break;
+          }
+        }
+        case let Err(c) {break;}
+      }
+      k = k + 1u64;
+    }
+    woke.send(k);
+  }
+
+  // A Timer of group g (own) or of none, replacing the last one
+  pub async fn race(self, g: CancelGroup, own: bool, ns: i64) {
+    timer = if own {Timer.within(&g)} else {Timer.make()};
+    timer.set(fromNow(ns));
+    match await actors.orCancelledOp(timer.next()) {
+      case let Ok(v) {woke.send(if v {wasTrue} else {wasFalse});}
+      case let Err(c) {woke.send(wasErr);}
+    }
+  }
+
+  // Already due, with a move 50 ms later queued ahead of the answer: sends how
+  // early the resume came (0 if not early), or 1 for anything but Ok(true)
+  pub async fn passedMoved(self) {
+    self.moveLater();
+    last = nowNs() - 1000i64;
+    timer.set(Instant.fromNanos(last));
+    match await actors.orCancelledOp(timer.next()) {
+      case let Ok(v) {
+        let early = last - nowNs();
+        var bad = 0u64;
+        if !v {
+          bad = 1u64;
+        } else if early > 0i64 {
+          bad = u64.from(early);
+        }
+        woke.send(bad);
+      }
+      case let Err(c) {woke.send(1u64);}
+    }
+  }
+
+  pub async fn moveLater(self) {
+    last = nowNs() + 50000000i64;
+    timer.set(Instant.fromNanos(last));
+  }
+
+  // Already due, with a clear queued ahead of the answer: stays parked
+  pub async fn passedCleared(self) {
+    self.clearIt();
+    timer.set(fromNow(-1000i64));
+    match await actors.orCancelledOp(timer.next()) {
+      case let Ok(v) {woke.send(if v {wasTrue} else {wasFalse});}
+      case let Err(c) {woke.send(wasErr);}
+    }
+  }
+
+  pub async fn clearIt(self) {
+    timer.clear();
+  }
+
+  pub async fn hurry(self) {
+    timer.set(Instant.now());
+  }
+
+  pub async fn stopIt(self) {
+    timer.stop();
+  }
+
+  pub async fn letGo(self) {
+    timer = Timer.make();
+  }
+
+  pub async fn ping(self) {
+    var due = 0u64;
+    match timer.deadline() {
+      case let Some(t) {due = 1u64;}
+      else {}
+    }
+    pong.send(due);
+  }
+}
+
+fn cancelIt(g: CancelGroup) u32 {
+  g.cancel();
+  0u32
+}
+
+fn owed() u64 {u64.from(actors.lateAnswersOwed())}
+
+fn idle(what: &'static str) {
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), what);
+}
+
+// The ping's answer: whether a deadline is set. It runs once the behaviour
+// sent before it has parked
+fn asked(a: &Waiter, prx: &mut Receiver[u64]) u64 {
+  a.ping();
+  prx.recv() || 9u64
+}
+
+// Park a with an await in group g, then cancel g: Err, with next() left parked
+fn cancelWins(a: &Waiter, wrx: &mut Receiver[u64], prx: &mut Receiver[u64], ns: i64) {
+  let g = CancelGroup.make();
+  actors.withGroup(&g, fn() [a, ns] { a.go(ns); });
+  expectUInt(asked(a, &mut *prx), 1u64, "2: parked, its deadline set");
+  g.cancel();
+  expectUInt(wrx.recv() || 9u64, wasErr, "2: the cancel wins: Err");
+  expectUInt(owed(), 1u64, "2: ... next() still parked, its answer owed");
+}
+
+// Returns the actors it made, all of whose handles go with it
+fn runAll() u64 {
+  var wtx: Sender[u64];
+  var wrx: Receiver[u64];
+  wtx, wrx = Channel[u64].make();
+  var ptx: Sender[u64];
+  var prx: Receiver[u64];
+  ptx, prx = Channel[u64].make();
+
+  // 1. the tick answers first
+  let a = Waiter(Mark(1u64), Timer.make(), 0i64, wtx.clone(), ptx.clone());
+  a.go(20000000i64);
+  expectUInt(wrx.recv() || 9u64, wasTrue, "1: no group: Ok(true)");
+  expectUInt(asked(&a, &mut prx), 0u64, "1: ... and the deadline cleared");
+  a.tick(5u64);
+  expectUInt(wrx.recv() || 9u64, 5u64, "1: a loop of five ticks");
+  let live = CancelGroup.make();
+  actors.withGroup(&live, fn() [a] { a.tick(5u64); });
+  expectUInt(wrx.recv() || 9u64, 5u64, "1: ... and in a live group");
+  a.go(-1000i64);
+  expectUInt(wrx.recv() || 9u64, wasTrue, "1: already due: Ok(true)");
+  a.goTwice(20000000i64);
+  expectUInt(wrx.recv() || 9u64, wasTrue, "1: two wrappers: Ok(Ok(true))");
+  idle("1: idle");
+  expectUInt(owed(), 0u64, "1: nothing owed");
+
+  // 2. the cancel wins
+  cancelWins(&a, &mut wrx, &mut prx, anHour);
+  a.stopIt();
+  idle("2: idle after stop()");
+  expectUInt(owed(), 0u64, "2: ... stop() answered the next() left parked");
+  let a2 = Waiter(Mark(10u64), Timer.make(), 0i64, wtx.clone(), ptx.clone());
+  let og = CancelGroup.make();
+  actors.withGroup(&og, fn() [a2] { a2.goTwice(anHour); });
+  expectUInt(asked(&a2, &mut prx), 1u64, "2: two wrappers: parked");
+  og.cancel();
+  expectUInt(wrx.recv() || 9u64, wasErr, "2: ... the cancel wins: the outer one's Err");
+  expectUInt(owed(), 1u64, "2: ... next() still parked, its answer owed");
+  a2.stopIt();
+  idle("2: idle after stop(), two wrappers");
+  expectUInt(owed(), 0u64, "2: ... stop() answered it");
+  let b = Waiter(Mark(2u64), Timer.make(), 0i64, wtx.clone(), ptx.clone());
+  cancelWins(&b, &mut wrx, &mut prx, anHour);
+  b.hurry();
+  idle("2: idle after its deadline");
+  expectUInt(owed(), 0u64, "2: ... its deadline answered it");
+  expectUInt(asked(&b, &mut prx), 0u64, "2: ... and was cleared");
+  b.go(1000000i64);
+  expectUInt(wrx.recv() || 9u64, wasTrue, "2: ... the Timer ticks again");
+  cancelWins(&b, &mut wrx, &mut prx, anHour);
+  b.letGo();
+  idle("2: idle after the Timer is replaced");
+  expectUInt(owed(), 0u64, "2: ... replacing it answered it");
+
+  // 3. the Timer's own end while parked
+  let tg = CancelGroup.make();
+  let c = Waiter(Mark(3u64), Timer.within(&tg), 0i64, wtx.clone(), ptx.clone());
+  c.go(anHour);
+  expectUInt(asked(&c, &mut prx), 1u64, "3: parked on a Timer of a group");
+  tg.cancel();
+  expectUInt(wrx.recv() || 9u64, wasFalse, "3: its group cancelled: Ok(false)");
+  c.go(anHour);
+  expectUInt(wrx.recv() || 9u64, wasFalse, "3: ... ended: the next next() answers false at once");
+  let d = Waiter(Mark(4u64), Timer.make(), 0i64, wtx.clone(), ptx.clone());
+  d.go(anHour);
+  expectUInt(asked(&d, &mut prx), 1u64, "3: parked");
+  d.stopIt();
+  expectUInt(wrx.recv() || 9u64, wasFalse, "3: stop(): Ok(false)");
+
+  // 4. a move queued ahead of the answer
+  let e = Waiter(Mark(5u64), Timer.make(), 0i64, wtx.clone(), ptx.clone());
+  e.passedMoved();
+  expectUInt(wrx.recv() || 9u64, 0u64, "4: moved later ahead of the answer: true, not before the new deadline");
+  e.passedCleared();
+  thread.sleep(Duration.fromMillis(50i64));
+  e.stopIt();
+  expectUInt(wrx.recv() || 9u64, wasFalse, "4: cleared ahead of the answer: parked until stop()");
+  idle("4: idle");
+
+  // 5. the take held (one thread stopped in it), the deadline passing meanwhile
+  let sg = CancelGroup.make();
+  let f = Waiter(Mark(6u64), Timer.within(&sg), 0i64, wtx.clone(), ptx.clone());
+  let h = Waiter(Mark(7u64), Timer.make(), 0i64, wtx.clone(), ptx.clone());
+  // half a second: the cancel's thread must take the waiter before the deadline
+  let dueAt = nowNs() + 500000000i64;
+  f.go(500000000i64);
+  expectUInt(asked(&f, &mut prx), 1u64, "5: parked");
+  actors.stallNextHeldTake();
+  let t = thread.startWith(thread.Options(name: "canceller"), sg, &cancelIt);
+  while !actors.publishStalled() && nowNs() < dueAt + 10000000000i64 {
+    thread.yieldNow();
+  }
+  expect(actors.publishStalled(), "5: the cancel stopped with the waiter taken");
+  while nowNs() < dueAt + 100000000i64 {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  f.letGo();
+  expectUInt(asked(&f, &mut prx), 0u64, "5: its Timer dropped while the cancel is stopped");
+  h.go(anHour);
+  expectUInt(asked(&h, &mut prx), 1u64, "5: another actor's Timer parked");
+  actors.releaseStalled();
+  t.join();
+  expectUInt(wrx.recv() || 9u64, wasFalse, "5: the cancelled next() answers false, though its deadline passed");
+  h.hurry();
+  expectUInt(wrx.recv() || 9u64, wasTrue, "5: the other stayed parked, and answers true at its deadline");
+  idle("5: idle");
+
+  // 6. the tick racing the cancel: the await's group, and in every other round
+  // the Timer's too
+  let r = Waiter(Mark(8u64), Timer.make(), 0i64, wtx.clone(), ptx.clone());
+  var ended = 0u64;
+  var oks = 0u64;
+  var errs = 0u64;
+  var k = 0u64;
+  while k < rounds {
+    let g = CancelGroup.make();
+    let own = k % 2u64 == 0u64;
+    let due = i64.from((k * 7u64) % 80u64) * 1000i64;
+    actors.withGroup(&g, fn() [r, g, own, due] { r.race(g, own, due); });
+    let until = nowNs() + i64.from((k * 13u64) % 100u64) * 1000i64;
+    while nowNs() < until {
+      thread.yieldNow();
+    }
+    g.cancel();
+    let got = wrx.recv() || 9u64;
+    if got == wasErr {
+      errs = errs + 1u64;
+    } else if got == wasTrue || got == wasFalse {
+      oks = oks + 1u64;
+    }
+    ended = ended + 1u64;
+    k = k + 1u64;
+  }
+  expectUInt(oks + errs, rounds, "6: every round ended Ok or Err");
+  r.letGo();
+  idle("6: idle");
+  expectUInt(owed(), 0u64, "6: nothing owed");
+  eprint <- "6: ", oks, " answered first, ", errs, " woken by the cancel\n";
+  var extra = 0u64;
+  match wrx.tryRecv() {
+    case let Some(v) {extra = 1u64;}
+    else {}
+  }
+  expectUInt(extra, 0u64, "6: and no round ended twice");
+  9u64
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  let made = runAll();
+  idle("idle: every operation spent");
+  var waited = 0u64;
+  while (finalized.load() < made || actors.timerStats().held != 0u64) && waited < 500u64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u64;
+  }
+  expectUInt(finalized.load(), made, "every actor finalized once: no count of one left or let go twice");
+  expect(actors.timerStats().held == 0u64, "no cell held once the Timers have gone");
+
+  // left parked at the program's end
+  var wtx: Sender[u64];
+  var wrx: Receiver[u64];
+  wtx, wrx = Channel[u64].make();
+  var ptx: Sender[u64];
+  var prx: Receiver[u64];
+  ptx, prx = Channel[u64].make();
+  let last = Waiter(Mark(9u64), Timer.make(), 0i64, wtx.clone(), ptx.clone());
+  last.go(anHour);
+  expectUInt(asked(&last, &mut prx), 1u64, "left parked at the program's end");
+  done()
+}

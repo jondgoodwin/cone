@@ -1,6 +1,17 @@
 // cnmalloc: one shared heap for a process, standard C allocation API only (malloc, calloc, realloc, free,
 // _msize, _expand, _recalloc and the _aligned_ family, which shim/cn_shim.c exports over the functions here).
-// It is off by default: nothing links it unless a program asks (shim/README.md, "Linking it").
+// It is off by default: nothing links it unless a program asks (README.md, "Linking it").
+//
+// TWO DESIGNS, AND WHICH ONE A PROGRAM GETS (row 533)
+//   Design 1 gives each size class a lock. Design 2 (row 454, "THE SECOND DESIGN" below) takes and gives small cells with one
+//   atomic each. CNMALLOC=design=lock or design=lockfree chooses. When it names neither:
+//     Windows (x64), behind the shim (cn.lib): design 2, lock-free.
+//     Linux: design 1, until its rows are measured there. A Linux program uses the C runtime's allocator unless it links
+//     cnmalloc itself.
+//     A heap with no shim behind it (cnm_make; cnm_boot(false), as allocheap's is): design 1, on both systems, because
+//     design 2's allocate and free are C in the shim. Told design=lockfree, such a heap still takes it and can serve large
+//     blocks only: a small allocation there calls a function nobody installed.
+//   x64 only: design 2's memory orderings are checked nowhere else (shim/cn_plat.h refuses other processors).
 //
 // The heap has no per-thread state. Everything a thread touches is under a lock or is read-only. (Row 426's
 // optional workers' cache is the one per-thread thing, and it is in shim/cn_shim.c, outside the heap: a cached
@@ -45,9 +56,9 @@
 //   Everything about a page that holds cells of class c (its descriptor, its cells' free list, its bit in c's
 //   bitmap) is read and written only under c's lock. The one exception is free()'s read of the descriptor's
 //   class (see freeSmall). A page's class is changed only by the pool, under the pool lock, while the page is
-//   empty and in no class's hands. No atomics, no lock-free path. (That is the lock design, the default. The second
-//   design, CNMALLOC=design=lockfree (row 454), keeps the lock for everything but a page's cells, which are bits in a
-//   second descriptor taken and given by one atomic operation each: "THE SECOND DESIGN" below has its rules.)
+//   empty and in no class's hands. No atomics, no lock-free path. (That is the lock design, design 1. The second
+//   design (row 454) keeps the lock for everything but a page's cells, which are bits in a second descriptor taken
+//   and given by one atomic operation each: "THE SECOND DESIGN" below has its rules.)
 //
 // ADDRESS SPACE
 //   One reservation (size a setting, default 64 GiB) holds every small-block page. (p - base) < size is the
@@ -791,7 +802,7 @@ fn putCell(h: *Heap, c: *Class, cl: usize, page: usize, d: *Desc, a: usize) bool
 
 // ---------------------------------------------------------------------------
 // THE SECOND DESIGN (row 454; WI\cnmalloc-second-design-spec.md, sections 1, 2, 5, 6 and 8): lock-free shared pages.
-// Off unless CNMALLOC=design=lockfree. The common paths (allocate: one compare-and-swap; free: one fetch_or) are C, in
+// The default behind the shim on Windows (row 533; CNMALLOC=design=lock turns it off). The common paths (allocate: one compare-and-swap; free: one fetch_or) are C, in
 // shim/cn_shim.c (lf_alloc, lf_free, lf_release); this is everything that is under a class lock: attaching a page to a
 // slot, listing a page that has room again, retiring a wholly free page, adding and dropping slots.
 //
@@ -810,7 +821,7 @@ fn putCell(h: *Heap, c: *Class, cl: usize, page: usize, d: *Desc, a: usize) bool
 // row. THE MEMORY BOUND: a slot is added only on a collision and idles back down, so a class holds at most
 // (cap - 8) x 64 KiB more than the former cap of 8 did, while that many threads collide on it.
 //
-// RE-LISTING AND HIDDEN CELLS (row 603; settings relist=<k>, relistq=<q>, default 8 and 4, provisional until row 602's memory numbers and Jon's answer; relist=1 is the rule of one free
+// RE-LISTING AND HIDDEN CELLS (row 603; settings relist=<k>, relistq=<q>, default 8 and 4, the default Jon accepted on Cone malloc's recommendation, 22 Nov (row 602); relist=1 is the rule of one free
 // cell). A page that is neither attached nor listed is listed again when a free brings some WORD of its bits to thr free
 // cells, thr = min(k, the word's valid bits / q), at least 1 (thrOf here, g_lfthrf and g_lfthrl in the shim; the same
 // numbers). The free tests it with popcount(old) + 1 == thr on the word its fetch_or returned: one popcount, no new atomic;
@@ -1703,7 +1714,7 @@ pub struct Settings {
   cacheMax: usize;
   largeReserve: usize;     // row 446: CNMALLOC=largereserve=<n>, 1 to 64, default 2
   largeReserveCap: usize;  // row 446: CNMALLOC=largereservecap=<bytes>, 1 MiB to 64 GiB, default 64 MiB
-  design: usize;           // row 454: CNMALLOC=design=lockfree chooses the lock-free shared pages; 1 (default, also design=lock) the lock design
+  design: usize;           // row 454: 2 the lock-free shared pages (design=lockfree), 1 the lock design (design=lock). Which when CNMALLOC names neither: cnm_boot
   slotCap: usize;          // row 454: CNMALLOC=slots=<n>, the most slots a class may hold (1 to 32; 0, the default, means min(processors, 32))
   collLimit: usize;        // row 454: CNMALLOC=collisions=<n>, collisions that add a slot (default 64)
   largeSlack: usize;       // row 547: CNMALLOC=largeslack=<bytes>, default 256 KiB; 0 trims a reused block to its request
@@ -1712,7 +1723,8 @@ pub struct Settings {
 }
 
 // the defaults: 64 GiB of address space, give-back after 1000 ms, 64 MiB of large blocks kept, no cache
-// (row 426: cache=<n> blocks per class per worker, 0 = off; cache_max=<bytes>, 1024)
+// (row 426: cache=<n> blocks per class per worker, 0 = off; cache_max=<bytes>, 1024). The design here is the one a
+// heap with no shim can run; cnm_boot raises it for the process's heap.
 pub fn cnm_defaults(s: *Settings) {
   s.reserve = 68719476736usize;
   s.mode = modeDelay;
@@ -1919,10 +1931,13 @@ pub fn cnm_make(reserve: usize, mode: usize, delayMs: u64, largeCap: usize) usiz
   cnm_create(&mut s)
 }
 
-// A heap from the CNMALLOC environment variable. This is the process's: shim/cn_shim.c calls it once.
-pub fn cnm_boot() usize {
+// A heap from the CNMALLOC environment variable. shim says whether the shim's common paths of design 2 will serve this
+// heap: true only for the process's heap (shim/cn_shim.c calls this once, and installs them), false for any other.
+// Behind the shim on Windows the design is 2 when CNMALLOC names none (row 533); everywhere else it is 1.
+pub fn cnm_boot(shim: bool) usize {
   var s = Settings(0usize, 0usize, 0u64, 0usize, 0usize, 0usize, 1024usize, 2usize, 67108864usize, 1usize, 8usize, 64usize, 262144usize, 8usize, 4usize);
   cnm_defaults(&mut s);
+  #if #os == .windows { if shim { s.design = 2usize; } }
   // the settings text is read into a scratch area, so the heap's own region is not made yet: a small
   // reservation holds it for the moment
   let tmp = osplat.reserve(65536usize);

@@ -1,0 +1,115 @@
+// What stays invariant beside a 'mut' or 'uni' reference to a variant of an
+// '@unsized' enum widening to it (enum_unsized_widen). A sized enum's variant
+// does not widen, since a whole value of the enum is stored through a reference
+// to it. Nor does an owner, 'mut1', a reference held behind a mutable one, a
+// variant of another enum or of another instance; and the widened reference
+// stores no shorter borrow into a common field than the variant's own would.
+
+mod enum_typecheck_unsized_widen;
+
+import arena use *;
+
+enum Shape {
+  struct Circle { pub r: i32; }
+  struct Square { pub s: i32; }
+}
+
+enum @unsized Node {
+  pub kind: i32;
+
+  struct Lit { pub val: i32; }
+  struct Add { pub a: i64; }
+}
+use Node;
+
+enum @unsized Other {
+  struct Q { pub z: i32; }
+}
+
+enum @unsized Tree[T] {
+  pub struct Leaf { pub v: T; }
+}
+
+enum @unsized Ptr {
+  pub r: &i64;
+
+  struct One { pub v: i32; }
+}
+use Ptr;
+
+fn reshape(s: &mut Shape) {
+  *s = Shape.Square(1);
+}
+fn uniShape(s: &uni Shape) {}
+fn mutNode(n: &mut Node) {}
+fn mut1Node(n: &mut1 Node) {}
+fn ownNode(n: Uni[Node]) {}
+fn rcNode(n: Rc[mut, Node]) {}
+fn refNode(n: &mut &mut Node) {}
+fn wideTree(t: &mut Tree[i64]) {}
+
+fn sized() {
+  var c: Shape.Circle = Shape.Circle(5);
+  reshape(&mut c);          //~ ErrorInvType
+  uniShape(&uni c);         //~ ErrorInvType
+}
+
+fn sizedKey(k: &'=a mut Shape.Circle) {
+  let s: &'=a mut Shape = k;   //~ ErrorInvType
+}
+
+fn mut1From(l: &mut1 Lit) {
+  mut1Node(l);              //~ ErrorInvType
+}
+
+fn owners() {
+  var u = Uni[Lit](Lit(0, 1));
+  ownNode(u);               //~ ErrorInvType
+  var u2 = Uni[Lit](Lit(0, 1));
+  mutNode(u2);              //~ ErrorInvType
+  var r = Rc[mut, Lit](Lit(0, 1));
+  rcNode(r);                //~ ErrorInvType
+}
+
+fn deeper() {
+  var l = Lit(0, 1);
+  var p = &mut l;
+  refNode(&mut p);          //~ ErrorInvType
+}
+
+fn others() {
+  var q = Other.Q(1);
+  mutNode(&mut q);          //~ ErrorInvType
+  var leaf = Tree.Leaf[i32](1i32);
+  wideTree(&mut leaf);      //~ ErrorInvType
+}
+
+fn keyNode(k: &'=a mut Node, ar: &DynArena['=a]) {}
+
+// A widened key keeps its brand
+fn wrongArena(br: &DynArena['=b], k: &'=a mut Lit) {
+  keyNode(k, br);           //~ ErrorBrand
+}
+
+fn shortStore() {
+  let long = 1i64;
+  var one = One(&long, 5);
+  {
+    let short = 2i64;
+    let w: &mut Ptr = &mut one;
+    w.r = &short;           //~ ErrorInvType "lval outlives the borrowed reference you are storing"
+  }
+  let y = *one.r;
+}
+
+fn put(p: &mut Ptr, x: &i64) { p.r = x; }
+
+fn shortCall() {
+  let long = 1i64;
+  var one = One(&long, 5);
+  {
+    let short = 2i64;       //~ ErrorFrozen
+    put(&mut one, &short);
+  }
+  let y = *one.r;
+}

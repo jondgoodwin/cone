@@ -1,0 +1,104 @@
+// What a store through a reference to a reference ('**m') leaves alone, beside the
+// refusals of collection_flow_store_through_ref: a store made while no borrow into
+// the value is still to be used, a borrow taken after the store, and a borrow into
+// some other value.
+
+mod collection_store_through_ref_success;
+
+import collections use *;
+import stdio use *;
+
+enum Shape {
+  struct Circle { pub r: i32; }
+  struct Square { pub s: i32; }
+}
+use Shape;
+
+fn listOf(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+struct Holder {
+  pub r: &uni List[i32];
+}
+
+// No view is live at the store; one is taken after it
+fn viewAfter() i32 {
+  var l = listOf(7i32);
+  var r = &uni l;
+  let m = &mut r;
+  **m = listOf(11i32);
+  (**m).push(3i32);
+  let v = &(*r)[0usize];
+  *v * 100i32 + (*r)[1usize]
+}
+
+// The view is used up before the store
+fn viewBefore() i32 {
+  var l = listOf(7i32);
+  var r = &uni l;
+  let m = &mut r;
+  let v = &(*r)[0usize];
+  let seen = *v;
+  **m = listOf(12i32);
+  seen * 100i32 + (*r)[0usize]
+}
+
+// A view of another list, through another 'uni' reference and by name
+fn otherList() i32 {
+  var l = listOf(7i32);
+  var k = listOf(5i32);
+  var j = listOf(6i32);
+  var r = &uni l;
+  var q = &uni k;
+  let m = &mut r;
+  let v = &(*q)[0usize];
+  let u = &j[0usize];
+  **m = listOf(13i32);
+  *v * 10000i32 + *u * 100i32 + (*r)[0usize]
+}
+
+// Three levels deep with nothing live
+fn threeDeep() i32 {
+  var l = listOf(7i32);
+  var r = &uni l;
+  var m = &mut r;
+  let n = &mut m;
+  ***n = listOf(14i32);
+  (***n).push(2i32);
+  let v = &(*r)[1usize];
+  *v * 100i32 + (*r)[0usize]
+}
+
+// A struct's field lent 'mut'
+fn fieldLent() i32 {
+  var l = listOf(7i32);
+  var w = Holder(&uni l);
+  let m = &mut w.r;
+  **m = listOf(15i32);
+  let v = &(*w.r)[0usize];
+  *v
+}
+
+// The enum stored over, then matched
+fn variant() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let m = &mut r;
+  **m = Square(99);
+  match &*r {
+    case let &Square(q) { q.s }
+    else { 0i32 }
+  }
+}
+
+fn main() {
+  printInt(i64.from(viewAfter())); printStr("\n");
+  printInt(i64.from(viewBefore())); printStr("\n");
+  printInt(i64.from(otherList())); printStr("\n");
+  printInt(i64.from(threeDeep())); printStr("\n");
+  printInt(i64.from(fieldLent())); printStr("\n");
+  printInt(i64.from(variant())); printStr("\n");
+}
