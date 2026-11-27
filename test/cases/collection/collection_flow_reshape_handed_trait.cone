@@ -1,0 +1,187 @@
+// A view returned by a function handed a trait object: the '&<Firster' itself, or something
+// that holds one, a closure behind '&<fn', or a plain reference to an open trait. What is
+// behind it may hold a list through an 'Rc' that another holder writes, and the parameter's
+// type names none of it, so the result carried nothing a store of the list meets: each of
+// these was accepted and read freed storage. A call is judged by its signature, and a trait's
+// is its public methods and fields: where one can hand out what the result could point at,
+// the result is held (collection_reshape_handed_trait_success holds what stays accepted).
+
+mod collection_flow_reshape_handed_trait;
+
+import stdio use *;
+import collections use *;
+
+trait Firster { pub fn first(self: &) &i32; }
+
+struct Holder {
+  pub rc: Rc[mut, List[i32]];
+  pub fn first(self: &) &i32 { return &(*rc)[0usize]; }
+}
+
+fn get(h: &<Firster) &i32 { return h.first(); }
+
+fn handed(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  let v = get(h);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+struct Wrap { pub inner: &<Firster; }
+
+fn getWrapped(w: &Wrap) &i32 { return w.inner.first(); }
+
+fn inStruct(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  let w = Wrap(h);
+  let v = getWrapped(&w);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn getByValue(w: Wrap) &i32 { return w.inner.first(); }
+
+fn byValue(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  let v = getByValue(Wrap(h));
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn getMaybe(w: Option[&<Firster], other: &i32) &i32 {
+  if let Some(f) = w { return f.first(); }
+  return other;
+}
+
+fn inOption(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  let v = getMaybe(Some[&<Firster](h), &zero);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn getListed(fs: &List[&<Firster]) &i32 { return (*fs)[0usize].first(); }
+
+fn inList(h: &<Firster, o2: Rc[mut, List[i32]]) {
+  var fs = List[&<Firster]();
+  fs.push(h);
+  let v = getListed(&fs);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn run(f: &<fn() &i32) &i32 { return f(); }
+
+fn closureHanded(f: &<fn() &i32, o2: Rc[mut, List[i32]]) {
+  let v = run(f);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+struct View { pub at: &i32; }
+trait Viewer { pub fn look(self: &) View; }
+
+fn getView(h: &<Viewer) View { return h.look(); }
+
+fn structReturned(h: &<Viewer, o2: Rc[mut, List[i32]]) {
+  let v = getView(h);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v.at));
+}
+
+trait Handler { pub fn handle(self: &) &Rc[mut, List[i32]]; }
+
+fn getHandled(h: &<Handler) &i32 { return &(*(*h.handle()))[0usize]; }
+
+fn handleReturned(h: &<Handler, o2: Rc[mut, List[i32]]) {
+  let v = getHandled(h);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+trait Outer { pub fn inner(self: &) &<Firster; }
+
+fn getInner(b: &<Outer) &i32 { return b.inner().first(); }
+
+fn nestedTrait(b: &<Outer, o2: Rc[mut, List[i32]]) {
+  let v = getInner(b);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn getOwned(h: &Rc[mut, Firster]) &i32 { return h.first(); }
+
+fn ownedTrait(h: Rc[mut, Firster], o2: Rc[mut, List[i32]]) {
+  let v = getOwned(&h);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+trait Putter { pub fn put(self: &, out: &mut Option[&i32]); }
+
+fn getPut(h: &<Putter, other: &i32) &i32 {
+  var out = Some[&i32](other);
+  h.put(&mut out);
+  if let Some(v) = out { return v; }
+  return other;
+}
+
+fn outParam(h: &<Putter, o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  let v = getPut(h, &zero);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+// A trait's public field is part of its signature too
+trait Counted { pub rc: Rc[mut, List[i32]]; pub fn count(self: &) i32; }
+
+fn getField(h: &<Counted) &i32 { return &(*h.rc)[0usize]; }
+
+fn virtualField(h: &<Counted, o2: Rc[mut, List[i32]]) {
+  let v = getField(h);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "could change the shape of a 'List'"
+  printInt(i64.from(*v));
+}
+
+// A plain reference to an open trait: no method is called through one, and its fields are
+// read, the private ones too inside the trait's module
+trait Based { pub rc: Rc[mut, List[i32]]; }
+
+fn getBased(h: &Based) &i32 { return &(*h.rc)[0usize]; }
+
+fn plainReference(h: &Based, o2: Rc[mut, List[i32]]) {
+  let v = getBased(h);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "could change the shape of a 'List'"
+  printInt(i64.from(*v));
+}
+
+struct PlainWrap { pub inner: &Based; }
+
+fn getPlainWrapped(w: &PlainWrap) &i32 { return &(*w.inner.rc)[0usize]; }
+
+fn plainHeld(h: &Based, o2: Rc[mut, List[i32]]) {
+  let w = PlainWrap(h);
+  let v = getPlainWrapped(&w);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "could change the shape of a 'List'"
+  printInt(i64.from(*v));
+}
+
+trait Hidden { rows: Rc[mut, List[i32]]; }
+
+fn getHidden(h: &Hidden) &i32 { return &(*h.rows)[0usize]; }
+
+fn plainPrivate(h: &Hidden, o2: Rc[mut, List[i32]]) {
+  let v = getHidden(h);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "could change the shape of a 'List'"
+  printInt(i64.from(*v));
+}
+
+trait Boxer { pub fn based(self: &) &Based; }
+
+fn getBoxed(b: &<Boxer) &i32 { let h = b.based(); return &(*h.rc)[0usize]; }
+
+fn plainReturned(b: &<Boxer, o2: Rc[mut, List[i32]]) {
+  let v = getBoxed(b);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "Copy what is needed out of the result before this"
+  printInt(i64.from(*v));
+}
+
+fn main() {}

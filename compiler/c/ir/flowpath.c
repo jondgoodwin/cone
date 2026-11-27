@@ -3672,6 +3672,67 @@ static int pwReachMatch(PwReach *r, INode *type) {
     return 0;
 }
 
+// Does 'type' name one of 'args', itself or in what it is made of?
+static int pwNamesArg(INode *type, Nodes *args, int depth) {
+    type = type ? itypeGetTypeDcl(type) : NULL;
+    if (type == NULL || depth > 8)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, nodesp)) {
+        if (isTypeNode(*nodesp) && itypeIsSame(itypeGetTypeDcl(*nodesp), type))
+            return 1;
+    }
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        return pwNamesArg(((RefNode *)type)->vtexp, args, depth + 1);
+    case PtrTag:
+        return pwNamesArg(((StarNode *)type)->vtexp, args, depth + 1);
+    case ArrayTag:
+        return pwNamesArg(arrayElemType(type), args, depth + 1);
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (pwNamesArg(*nodesp, args, depth + 1))
+                return 1;
+        }
+        return 0;
+    case StructTag: {
+        Nodes *typeargs = itypeInstanceTypeArgs(type);
+        if (typeargs) {
+            for (nodesFor(typeargs, cnt, nodesp)) {
+                if (isTypeNode(*nodesp) && pwNamesArg(*nodesp, args, depth + 1))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Is a struct's raw pointer, one to 'pointee', a way safe code reaches what the struct
+// holds? Safe code dereferences no raw pointer: only a collection's elements are reached
+// by one, and those its type's arguments name ('List[T]''s '*T', 'Dict[K, V]''s
+// '*DictEntry[K, V]'). Where one of a struct's pointers names an argument, its others are
+// not followed ('List''s 'region'). A struct where none does has nothing to tell by, and
+// each of its pointers is taken as the way to its elements
+static int pwElementPtr(StructNode *st, INode *pointee) {
+    Nodes *args = itypeInstanceTypeArgs((INode *)st);
+    if (args == NULL || pwNamesArg(pointee, args, 0))
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&st->fields, cnt, nodesp)) {
+        INode *ftype = itypeGetTypeDcl(((IExpNode *)*nodesp)->vtype);
+        if (ftype && ftype->tag == PtrTag && pwNamesArg(((StarNode *)ftype)->vtexp, args, 0))
+            return 0;
+    }
+    return 1;
+}
+
 // What one asking of a trait's methods may walk. Each type is walked once for how it was
 // reached, and types are many behind a trait whose methods are handed a library's values,
 // so the bound is far past any program's: a lower one answers yes for an unrelated type
@@ -3758,15 +3819,16 @@ static int pwHands(PwReach *r, INode *type, int lent, PwHands *h, int depth) {
             }
             return 0;
         }
-        if (st->flags & TraitType)
-            return pwTraitHands(r, type, lent, 1, h, depth + 1);
+        // (a trait here is a plain reference's referent: no method can be called through
+        // one, so its fields are what it offers)
         for (nodelistFor(&st->fields, cnt, nodesp)) {
             INode *ftype = itypeGetTypeDcl(((IExpNode *)*nodesp)->vtype);
             if (ftype == NULL)
                 continue;
             // A raw pointer: a collection's block, or the view a borrow-carrying struct holds
             if (ftype->tag == PtrTag) {
-                if ((lent || pwCarries(type)) && pwHands(r, ((StarNode *)ftype)->vtexp, 1, h, depth + 1))
+                if ((lent || pwCarries(type)) && pwElementPtr(st, ((StarNode *)ftype)->vtexp)
+                        && pwHands(r, ((StarNode *)ftype)->vtexp, 1, h, depth + 1))
                     return 1;
             }
             else if (pwHands(r, ftype, lent, h, depth + 1))
@@ -3888,8 +3950,8 @@ static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int ow
             }
             break;
         }
-        if (st->flags & TraitType)
-            break;
+        // A trait here is a plain reference's referent: no method can be called through
+        // one, so its fields, walked as a struct's are, are what it offers
         int changing = shapeChanging(st);
         for (nodelistFor(&st->fields, cnt, nodesp)) {
             INode *ftype = itypeGetTypeDcl(((IExpNode *)*nodesp)->vtype);
@@ -3897,7 +3959,7 @@ static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int ow
                 continue;
             // A collection's block, reached by its own raw pointer
             if (ftype->tag == PtrTag) {
-                if (changing)
+                if (changing && pwElementPtr(st, ((StarNode *)ftype)->vtexp))
                     pwReachWalk(r, ((StarNode *)ftype)->vtexp, shared ? type : cont, shared, owner, depth + 1);
             }
             else

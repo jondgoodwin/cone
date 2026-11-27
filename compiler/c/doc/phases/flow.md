@@ -2151,11 +2151,33 @@ reference lent by `pwLentArg`). A result naming no borrowed type gets none.
 `flowGateShapeAsk` walks a function that makes such a call (`flowGateNamesBorrow`,
 `flowGateReachesOwner`), so a view handed straight to the call that takes the other holder is
 asked. Two containers of one type are not told apart, as everywhere here: a store through
-another `Rc[mut, List[i32]]` is refused too, as it is for `&(*o)[0]`. Not followed: a view
-returned by a function handed a trait object (`get(h)`, `h` a `&<Firster`, or a struct holding
-one), whose parameter's type names nothing behind it, and a result whose borrow is hidden in a
-trait object it owns.
+another `Rc[mut, List[i32]]` is refused too, as it is for `&(*o)[0]`. Not followed: a result
+whose borrow is hidden in a trait object it owns.
 Tests: `collection_flow_reshape_shared_result`, `collection_reshape_shared_result_success`.
+
+**A raw pointer on the way** (`pwElementPtr`, shared by this walk and `pwHands` below). Safe
+code dereferences none: a pointer is followed only as it is the way to a collection's elements.
+Where one of a struct's pointers points at what names one of the struct's type arguments (`*T`,
+`*DictEntry[K, V]`), the others are not followed (`List`'s `region`); where none does, as in a
+struct that is no generic instance, each is. This walk follows them only in a shape-changing
+type (its block); `pwHands` in any type reached through a borrow or that carries one (an
+iterator's view). A raw pointer a result's type holds is still one of the result's targets
+(`pwReachTargets`).
+
+**A trait object a function is handed** (`pwReachTrait`, wherever the walk above meets a virtual
+reference: a parameter, a field or element within one, borrowed, or owned). The call is judged by
+its signature, and a trait object's signature is its trait's public methods and fields (the
+vtable's), a closure's its return type. The fields are walked as a struct's are, with their
+containers. The methods are asked (`pwTraitHands`, `pwHands`) whether one can hand out something
+the result could point at: what it returns, or writes through a `&mut` parameter, followed
+through fields, elements, owners' referents and the traits those reach. If one can, the result is
+given the unseen loan a virtual call's result has (below), under the trait. Nothing is followed
+through `opaq` or a lock. Past 200 deep or 100000 types the answer is yes. `flowGateReachesOwner`
+answers yes for every borrowed virtual reference, so such a function's caller is walked. A plain
+reference to an open trait calls no method (`fnCallLowerTraitMethod`), so its referent is walked
+as a struct is, field by field. Not followed: a downcast of the trait object in the callee, which
+can reach past a shared owner in the concrete value that no method or field of the trait hands
+out. Tests: `collection_flow_reshape_handed_trait`, `collection_reshape_handed_trait_success`.
 
 **A result borrowed from behind a virtual call's receiver** (`pwReachShared`, argument 0 of a
 `FlagVDisp` call: a method called through a virtual reference, a closure behind `&<fn`, a method
