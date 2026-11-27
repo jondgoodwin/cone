@@ -1,0 +1,596 @@
+// A view into what a reference borrows is frozen against the name it was taken by. A
+// writable borrow of the variable holding the reference ('&mut r') is a second name for the
+// same storage, so a store or a call through either is judged against a view taken by the
+// other: whichever of the view and the borrow comes second
+// (collection_store_ref_second_name_success holds what is accepted beside each refusal).
+// Every form is made of a 'List', of a 'Dict' and of an enum's variant. A variant
+// narrowed from '&**m' with 'm' made first was refused already (throughStoreShape,
+// throughCallShape, throughDeepShape), the 'mut' reference being a path others share.
+
+mod collection_flow_store_ref_second_name;
+
+import collections use *;
+
+enum Shape {
+  struct Circle { pub r: i32; }
+  struct Square { pub s: i32; }
+}
+use Shape;
+
+fn oneList() List[i32] {
+  var l = List[i32]();
+  l.push(7i32);
+  l
+}
+
+fn oneDict() Dict[i32, i32] {
+  var d = Dict[i32, i32]();
+  d.insert(1i32, 7i32);
+  d
+}
+
+fn setList(m: &mut &uni List[i32]) {
+  **m = List[i32]();
+}
+fn setDict(m: &mut &uni Dict[i32, i32]) {
+  **m = Dict[i32, i32]();
+}
+fn setShape(m: &mut &uni Shape) {
+  **m = Square(99);
+}
+fn reshape(s: &mut Shape) {
+  *s = Square(99);
+}
+
+fn idList(m: &mut &uni List[i32]) &mut &uni List[i32] {
+  return m;
+}
+fn idDict(m: &mut &uni Dict[i32, i32]) &mut &uni Dict[i32, i32] {
+  return m;
+}
+fn idShape(m: &mut &uni Shape) &mut &uni Shape {
+  return m;
+}
+
+// ---- List: the view taken first, the reference variable lent after ----
+
+fn thenStoreList() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let v = &(*r)[0usize];
+  let m = &mut r;
+  **m = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+
+fn thenCallList() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let v = &(*r)[0usize];
+  let m = &mut r;
+  setList(m);    //~ ErrorShapeReshape
+  *v
+}
+
+fn thenLentCallList() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let v = &(*r)[0usize];
+  setList(&mut r);    //~ ErrorShapeReshape
+  *v
+}
+
+fn thenMethodList() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let v = &(*r)[0usize];
+  let m = &mut r;
+  (**m).clear();    //~ ErrorShapeReshape
+  *v
+}
+
+fn thenReturnedList() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let v = &(*r)[0usize];
+  **idList(&mut r) = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+
+fn thenInPlaceList() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let v = &(*r)[0usize];
+  *(*(&mut r)) = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+
+fn thenUniList() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let v = &(*r)[0usize];
+  let m = &uni r;
+  **m = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+
+// ---- List: the view taken through the second name, the change by the first ----
+
+fn throughStoreList() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let m = &mut r;
+  let v = &(**m)[0usize];
+  *r = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+
+fn throughCallList() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let m = &mut r;
+  let v = &(**m)[0usize];
+  (*r).clear();    //~ ErrorShapeReshape
+  *v
+}
+
+fn throughDeepList() i32 {
+  var l = oneList();
+  var r = &uni l;
+  var m = &mut r;
+  let n = &mut m;
+  let v = &(***n)[0usize];
+  **m = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+
+fn deepAfterList() i32 {
+  var l = oneList();
+  var r = &uni l;
+  var m = &mut r;
+  let v = &(**m)[0usize];
+  let n = &mut m;
+  ***n = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+
+// ---- Dict: the view taken first, the reference variable lent after ----
+
+fn thenStoreDict() i32 {
+  var d = oneDict();
+  var r = &uni d;
+  let key = 1i32;
+  match (*r).get(&key) {
+    case let Some(g) {
+      let m = &mut r;
+    **m = Dict[i32, i32]();    //~ ErrorShapeStore "This store could change the shape"
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenCallDict() i32 {
+  var d = oneDict();
+  var r = &uni d;
+  let key = 1i32;
+  match (*r).get(&key) {
+    case let Some(g) {
+      let m = &mut r;
+    setDict(m);    //~ ErrorShapeReshape
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenLentCallDict() i32 {
+  var d = oneDict();
+  var r = &uni d;
+  let key = 1i32;
+  match (*r).get(&key) {
+    case let Some(g) {
+    setDict(&mut r);    //~ ErrorShapeReshape
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenMethodDict() i32 {
+  var d = oneDict();
+  var r = &uni d;
+  let key = 1i32;
+  match (*r).get(&key) {
+    case let Some(g) {
+      let m = &mut r;
+    (**m).clear();    //~ ErrorShapeReshape
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenReturnedDict() i32 {
+  var d = oneDict();
+  var r = &uni d;
+  let key = 1i32;
+  match (*r).get(&key) {
+    case let Some(g) {
+    **idDict(&mut r) = Dict[i32, i32]();    //~ ErrorShapeStore "This store could change the shape"
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenInPlaceDict() i32 {
+  var d = oneDict();
+  var r = &uni d;
+  let key = 1i32;
+  match (*r).get(&key) {
+    case let Some(g) {
+    *(*(&mut r)) = Dict[i32, i32]();    //~ ErrorShapeStore "This store could change the shape"
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenUniDict() i32 {
+  var d = oneDict();
+  var r = &uni d;
+  let key = 1i32;
+  match (*r).get(&key) {
+    case let Some(g) {
+      let m = &uni r;
+    **m = Dict[i32, i32]();    //~ ErrorShapeStore "This store could change the shape"
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+// ---- Dict: the view taken through the second name, the change by the first ----
+
+fn throughStoreDict() i32 {
+  var d = oneDict();
+  var r = &uni d;
+  let m = &mut r;
+  let key = 1i32;
+  match (**m).get(&key) {
+    case let Some(g) {
+    *r = Dict[i32, i32]();    //~ ErrorShapeStore "This store could change the shape"
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+fn throughCallDict() i32 {
+  var d = oneDict();
+  var r = &uni d;
+  let m = &mut r;
+  let key = 1i32;
+  match (**m).get(&key) {
+    case let Some(g) {
+    (*r).clear();    //~ ErrorShapeReshape
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+fn throughDeepDict() i32 {
+  var d = oneDict();
+  var r = &uni d;
+  var m = &mut r;
+  let n = &mut m;
+  let key = 1i32;
+  match (***n).get(&key) {
+    case let Some(g) {
+    **m = Dict[i32, i32]();    //~ ErrorShapeStore "This store could change the shape"
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+fn deepAfterDict() i32 {
+  var d = oneDict();
+  var r = &uni d;
+  var m = &mut r;
+  let key = 1i32;
+  match (**m).get(&key) {
+    case let Some(g) {
+      let n = &mut m;
+    ***n = Dict[i32, i32]();    //~ ErrorShapeStore "This store could change the shape"
+      return *g;
+    }
+    else {}
+  }
+  0i32
+}
+
+// ---- Shape: the view taken first, the reference variable lent after ----
+
+fn thenStoreShape() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  match &*r {
+    case let &Circle(c) {
+      let m = &mut r;
+    **m = Square(99);
+    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenCallShape() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  match &*r {
+    case let &Circle(c) {
+      let m = &mut r;
+    setShape(m);
+    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenLentCallShape() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  match &*r {
+    case let &Circle(c) {
+    setShape(&mut r);
+    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenMethodShape() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  match &*r {
+    case let &Circle(c) {
+      let m = &mut r;
+    reshape(&mut **m);
+    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenReturnedShape() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  match &*r {
+    case let &Circle(c) {
+    **idShape(&mut r) = Square(99);
+    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenInPlaceShape() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  match &*r {
+    case let &Circle(c) {
+    *(*(&mut r)) = Square(99);
+    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+fn thenUniShape() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  match &*r {
+    case let &Circle(c) {
+      let m = &uni r;
+    **m = Square(99);
+    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+// ---- Shape: the view taken through the second name, the change by the first ----
+
+fn throughStoreShape() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let m = &mut r;
+  match &**m {
+    case let &Circle(c) {
+    *r = Square(99);
+    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+fn throughCallShape() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let m = &mut r;
+  match &**m {
+    case let &Circle(c) {
+    reshape(&mut *r);
+    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+fn throughDeepShape() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  var m = &mut r;
+  let n = &mut m;
+  match &***n {
+    case let &Circle(c) {
+    **m = Square(99);
+    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+fn deepAfterShape() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  var m = &mut r;
+  match &**m {
+    case let &Circle(c) {
+      let n = &mut m;
+    ***n = Square(99);
+    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+// ---- Other ways to the same second name ----
+
+// Narrowed by the 'uni' reference itself, no '&'
+fn narrowedByUni() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  match r {
+    case let &Circle(c) {
+      let m = &mut r;
+      **m = Square(99);
+      return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+// ... and by one read through the 'mut' borrow of it
+fn narrowedThrough() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  var m = &mut r;
+  match *m {
+    case let &Circle(c) {
+      *r = Square(99);
+      return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+// ... and of a borrow held in a name before the 'match'
+fn narrowedBound() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let x: &Shape = &*r;
+  match x {
+    case let &Circle(c) {
+      let m = &mut r;
+      **m = Square(99);
+      return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    }
+    else {}
+  }
+  0i32
+}
+
+// The reference variable is a 'mut' one that nothing else writes by yet
+fn mutRefStore() i32 {
+  var l = oneList();
+  var r = &mut l;
+  let v = &(*r)[0usize];
+  let m = &mut r;
+  **m = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+fn mutRefCall() i32 {
+  var l = oneList();
+  var r = &mut l;
+  let v = &(*r)[0usize];
+  let m = &mut r;
+  (**m).push(8i32);    //~ ErrorShapeReshape
+  *v
+}
+
+// A view that writes
+fn writingView() i32 {
+  var l = oneList();
+  var r = &uni l;
+  let v = &mut (*r)[0usize];
+  let m = &mut r;
+  **m = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+
+// The 'uni' reference is a struct's field, or the 'mut' borrow of it is held in one
+struct Holder {
+  pub r: &uni List[i32];
+}
+struct Keeper {
+  pub m: &mut &uni List[i32];
+}
+fn fieldThenLent() i32 {
+  var l = oneList();
+  var w = Holder(&uni l);
+  let v = &(*w.r)[0usize];
+  let m = &mut w.r;
+  **m = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+fn wholeThenLent() i32 {
+  var l = oneList();
+  var w = Holder(&uni l);
+  let v = &(*w.r)[0usize];
+  let m = &uni w;
+  *(*m).r = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+fn fieldKeeps() i32 {
+  var l = oneList();
+  var r = &uni l;
+  var w = Keeper(&mut r);
+  let v = &(**w.m)[0usize];
+  *r = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}
+
+// The reference variable is a parameter
+fn parameterLent(var r: &uni List[i32]) i32 {
+  let v = &(*r)[0usize];
+  let m = &mut r;
+  **m = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *v
+}

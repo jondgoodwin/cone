@@ -1,0 +1,153 @@
+// What stays accepted beside each refusal of collection_flow_store_ref_second_name: a
+// second name for a reference variable refuses only a change made while a view it
+// reaches is still to be used.
+
+mod collection_store_ref_second_name_success;
+
+import collections use *;
+import stdio use *;
+
+enum Shape {
+  struct Circle { pub r: i32; }
+  struct Square { pub s: i32; }
+}
+use Shape;
+
+fn oneList(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+fn area(s: &Shape) i32 {
+  match s {
+    case let &Circle(c) {return c.r;}
+    case let &Square(q) {return q.s;}
+  }
+  0i32
+}
+
+// The view is used up before the reference variable is lent
+fn usedUpFirst() i32 {
+  var l = oneList(7i32);
+  var r = &uni l;
+  let v = &(*r)[0usize];
+  let first = *v;
+  let m = &mut r;
+  **m = oneList(3i32);
+  first * 100i32 + (*r)[0usize]
+}
+
+// A view of another list is held
+fn otherList() i32 {
+  var l = oneList(7i32);
+  var other = oneList(9i32);
+  var r = &uni l;
+  var o = &uni other;
+  let v = &(*o)[0usize];
+  let m = &mut r;
+  **m = oneList(3i32);
+  *v * 100i32 + (**m)[0usize]
+}
+
+// ... and another list is changed under a view taken through the 'mut' borrow
+fn otherChanged() i32 {
+  var l = oneList(7i32);
+  var other = oneList(9i32);
+  var third = oneList(2i32);
+  var r = &uni l;
+  var o = &uni other;
+  var p = &mut third;
+  let m = &mut r;
+  let v = &(**m)[0usize];
+  *o = oneList(4i32);
+  *p = oneList(6i32);
+  (*o).push(1i32);
+  *v * 100i32 + (*o)[0usize] * 10i32 + (*p)[0usize]
+}
+
+// A read-only borrow of the reference variable is no second way to change it
+fn readOnly() i32 {
+  var l = oneList(7i32);
+  var r = &uni l;
+  let v = &(*r)[0usize];
+  let m = &r;
+  let n = i32.from((**m).len());
+  *v * 100i32 + n
+}
+
+// Lent writably, and nothing changed while the view is used
+fn lentOnly() i32 {
+  var l = oneList(7i32);
+  var r = &uni l;
+  let v = &(*r)[0usize];
+  let m = &mut r;
+  let n = i32.from((**m).len());
+  let a = *v * 100i32 + n;
+  **m = oneList(5i32);
+  a * 100i32 + (*r)[0usize]
+}
+
+// Read through the 'mut' borrow, used up, then changed by the first name
+fn throughUsedUp() i32 {
+  var l = oneList(7i32);
+  var r = &uni l;
+  let m = &mut r;
+  let v = &(**m)[0usize];
+  let first = *v;
+  *r = oneList(8i32);
+  first * 100i32 + (*r)[0usize]
+}
+
+// A narrowed reference used up before the reference variable is lent
+fn narrowedUsedUp() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  var got = 0i32;
+  match r {
+    case let &Circle(c) {
+      got = c.r;
+      let m = &mut r;
+      **m = Square(9);
+    }
+    else {}
+  }
+  got * 100i32 + area(&*r)
+}
+
+// Lent writably under a narrowed reference, nothing changed
+fn narrowedLentOnly() i32 {
+  var s: Shape = Circle(4);
+  var r = &uni s;
+  match &*r {
+    case let &Circle(c) {
+      let m = &mut r;
+      return area(&**m) * 100i32 + c.r;
+    }
+    else {}
+  }
+  0i32
+}
+
+// A 'mut' reference variable lent after its view is used up
+fn mutRefUsedUp() i32 {
+  var l = oneList(7i32);
+  var r = &mut l;
+  let v = &(*r)[0usize];
+  let first = *v;
+  let m = &mut r;
+  (**m).push(6i32);
+  first * 100i32 + (*r)[1usize]
+}
+
+fn main() {
+  printInt(i64.from(usedUpFirst())); printStr("\n");
+  printInt(i64.from(otherList())); printStr("\n");
+  printInt(i64.from(otherChanged())); printStr("\n");
+  printInt(i64.from(readOnly())); printStr("\n");
+  printInt(i64.from(lentOnly())); printStr("\n");
+  printInt(i64.from(throughUsedUp())); printStr("\n");
+  printInt(i64.from(narrowedUsedUp())); printStr("\n");
+  printInt(i64.from(narrowedLentOnly())); printStr("\n");
+  printInt(i64.from(mutRefUsedUp())); printStr("\n");
+}
