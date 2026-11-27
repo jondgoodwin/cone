@@ -508,6 +508,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->guardname = NULL;
     pv->narrow = 0;
     pv->narrowed = 0;
+    pv->compound = 0;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
     pv->dies = pv->tracked && itypeNeedsFinal(var->vtype);
     // A holder is a local variable or a parameter whose type carries a
@@ -1448,6 +1449,13 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     // A borrow into what an owner points at: the owner stored over frees it (pwOwnerLent)
     if (pl->ownertype && id)
         pwOwnerLent(pl, id);
+    // A writable borrow of a variable's own storage, of a value that may hold a reference: a
+    // second name for what that reference borrows, so views through it are marked
+    if (!pl->deref && (permGetFlags(perm) & MayWrite)) {
+        INode *lentref = iexpGetTypeDcl(site);
+        if (lentref->tag != RefTag || pwCarries(((RefNode *)lentref)->vtexp))
+            loanShapeRefLent(pl->var);
+    }
     // Only a holder holds loans, but for an operator's temporary (pwVarDcl).
     // The new loan is near: the borrow points at its place. What the root
     // holds is held there, so a borrow of the root's own storage ('&mut q',
@@ -2879,10 +2887,6 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
             marked = 1;
         }
     }
-    // Through a 'uni' reference that others may reach (Place.uniway): marked, whatever froze it,
-    // since the freezing is of this name only
-    if (pl->uniway)
-        loanShapeMark(loan, container);
     // Followed by the shape check, a borrow through a shared path is an alias loan whether it
     // writes or not: the path stays readable, lendable and writable, a change of its shape
     // being what is refused. Not followed, it freezes the path as a local's loan does
@@ -2894,6 +2898,12 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
     // (reshapeCall's 'globalview'). A loan only marked lazily (an exclusive one) is asked too: its
     // freezing stops the global's own name in this function, never a callee that writes it by name
     if (loanPlaceInGlobal(pl))
+        loanShapeMark(loan, container);
+    else if (loanShapeContainer(loan) == NULL)
+        loanShapeRefView(loan, container);
+    // Through a 'uni' reference that others may reach (Place.uniway): marked, whatever froze it,
+    // since the freezing is of this name only
+    if (pl->uniway)
         loanShapeMark(loan, container);
 }
 
@@ -2916,6 +2926,8 @@ static void pwOwnerLent(Place *pl, uint32_t loan) {
         else if (loanUniqAlias(loan))
             loanShapeLazy(loan, cont);
     }
+    if (loanShapeContainer(loan) == NULL)
+        loanShapeRefView(loan, cont);
     if (pl->uniway)
         loanShapeMark(loan, cont);
 }
@@ -3089,6 +3101,13 @@ static PathSet *pwNarrowShared(CastNode *cast, uint32_t alias) {
         if (alias)
             loanShapeAliasBy(loan, alias);
         pwShapeBorrow(&pl, loan, sum);
+    }
+    if (loan && loanShapeContainer(loan) == NULL) {
+        loanShapeRefView(loan, sum);
+        // Narrowed from a reference to what a 'uni' one borrows ('let x = &*r; match x'): the
+        // loan 'x' holds of '*r' is a view too
+        if (pl.deref)
+            loanShapeRefViews(pathVars[pl.var].holds, sum);
     }
     return holds;
 }
@@ -3553,8 +3572,40 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     pwStoreInto(pl.var, pwPlaceLevel(&pl), pwPlaceLevel(&pl), pwStoreTagged(&pl, holds));
 }
 
+// A compound assignment through a temporary ('x += e' is '{let tmp = &mut x; *tmp = *tmp + e}')
+// borrows its place before its right side is made, and writes into it after. A plain store
+// reaches its place after the value, which uses whatever the place is reached through, and so
+// refuses a change of variant the value made. The temporary is no holder, so nothing would
+// pend on it: a stand-in holds the references into a variant it was borrowed through, from
+// before the right side, and the write is its use. Returns it, or 0 for none
+static uint32_t pwCompoundVariant(INode *lval) {
+    if (!pathLoans || !loanShapeCount() || lval->tag != DerefTag)
+        return 0;
+    INode *ref = ((StarNode *)lval)->vtexp;
+    VarDclNode *tmp = pwNamedVar(ref);
+    if (tmp == NULL || tmp->namesym != tempName)
+        return 0;
+    PathSet *all = pathVars[pathVar(tmp)].holds;
+    PathSet *holds = NULL;
+    for (uint32_t i = 0; all && i < all->cnt; ++i) {
+        // (a far loan is of what the place holds, not of where the place is)
+        if (!(all->ids[i] & LoanFar) && loanShapeIsSum(loanOf(all->ids[i])))
+            holds = pathSetAdd(holds, all->ids[i]);
+    }
+    if (holds == NULL)
+        return 0;
+    uint32_t stand = pwStandIn(ref, holds);
+    pathVars[stand].compound = 1;
+    return stand;
+}
+
 static PathSet *pwAssign(AssignNode *node) {
+    uint32_t compound = pwCompoundVariant(node->lval);
     PathSet *holds = pwValue(&node->rval, 1);
+    if (compound) {
+        loanUseShape(compound, node->lval);
+        pathSetFacts(compound, NULL, NULL);
+    }
     if (node->lval->tag == VTupleTag) {
         INode **lvalp;
         uint32_t cnt;
@@ -4682,6 +4733,12 @@ static PathSet *pwValue(INode **nodep, int move) {
         // its value holds came from its operand ('case let Some(e)' converts
         // the matched 'Option[&T]' to its 'Some[&T]'), of no struct's slot
         PathSet *holds = pwValue(&((CastNode *)node)->exp, flowCastCarries(node) ? move : 0);
+        // A reference narrowed into a variant and not followed above (a 'uni' one, or a
+        // match's own '&' with no 'mut' borrow held): where what it is narrowed from is a
+        // reference nothing else reaches, that may be given another name while it is used
+        INode *sum = pathLoans ? castNarrowedSum(node) : NULL;
+        if (sum)
+            loanShapeRefViews(holds, sum);
         // One into an owning virtual reference ('Uni[Trait]' from a 'Uni[H]')
         // keeps its operand's value under a type that names no lifetime, so
         // nothing after follows what it holds: it may hold only global

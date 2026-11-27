@@ -1,0 +1,129 @@
+// What is accepted beside enum_flow_narrow_compound: a compound assignment into a member of
+// a narrowed variant, where nothing on the right side could change which variant the enum
+// holds, and a change made before the test or after the assignment.
+
+mod enum_narrow_compound_success;
+
+import stdio use *;
+
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub a: usize;
+    pub b: usize;
+  }
+}
+use Slot;
+
+fn change(m: &mut Slot) usize {
+  *m = Text("0123456789");
+  return 5usize;
+}
+
+// Reaches nothing of the enum
+fn three() usize {
+  return 3usize;
+}
+
+// Reads the enum and changes nothing
+fn peek(m: &Slot) usize {
+  match m {
+    case var Num(c) { return c.b; }
+    else { return 0usize; }
+  }
+}
+
+fn show(m: &Slot) {
+  match m {
+    case var Num(c) {
+      printInt(i64.from(c.a));
+      printStr(" ");
+      printInt(i64.from(c.b));
+    }
+    case var Text(t) { printStr(t.s); }
+  }
+  printStr("\n");
+}
+
+fn shared(n: &'a mut Slot, m: &'b mut Slot) {
+  if n is Num {
+    n.a += 5usize;
+    n.a += three();
+    n.a += n.b;
+    n.a += peek(m);
+    n.b += n.a;
+    var i = 0usize;
+    while i < 3usize {
+      n.b -= three();
+      i += 1usize;
+    }
+  }
+}
+
+// The call that changes the variant is made after the last use of the narrowed name
+fn changeAfter(n: &'a mut Slot, m: &'b mut Slot) {
+  if n is Num {
+    n.a += 1usize;
+    change(m);
+  }
+}
+
+// ... or before the test
+fn changeBefore(n: &'a mut Slot, m: &'b mut Slot) {
+  var more = change(m);
+  *m = Num(10usize, 20usize);
+  if n is Num {
+    n.a += more;
+  }
+}
+
+// A bound reference, written while nothing changes the variant, which changes only after
+fn boundReference(n: &'a mut Slot, m: &'b mut Slot) {
+  if n is Num {
+    let q = &mut n.b;
+    *q += three();
+    q += 1usize;
+  }
+  change(m);
+}
+
+fn main() {
+  var s: Slot = Num(1usize, 2usize);
+  let a = &mut s;
+
+  // a: 1 + 5 + 3 + 2 + 2 = 13; b: 2 + 13 = 15, less 9 = 6
+  shared(a, a);
+  show(a);
+
+  changeAfter(a, a);
+  show(a);
+
+  // 'change' gives 5, then Num(10, 20) is stored: a = 15
+  changeBefore(a, a);
+  show(a);
+
+  // b: 20 + 3 + 1 = 24, then the variant is changed
+  boundReference(a, a);
+  show(a);
+
+  // By value, with a 'mut' borrow held and not used to change it
+  var v: Slot = Num(4usize, 5usize);
+  let m = &mut v;
+  if v is Num {
+    v.a += three();
+    v.b *= peek(m);
+  }
+  show(m);
+
+  // By value, with a call that changes another enum
+  var w: Slot = Num(6usize, 7usize);
+  var other: Slot = Num(0usize, 0usize);
+  if w is Num {
+    w.a += change(&mut other);
+  }
+  show(&w);
+  show(&other);
+}

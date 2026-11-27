@@ -1,0 +1,206 @@
+// A compound assignment reads and writes the place around its right side: 'x += e' borrows
+// 'x', makes 'e', then writes through the borrow. Where the place is a member of the variant
+// an enum was narrowed to, a right side that could change the variant is refused, as it is for
+// a plain store, or the result would be written into another variant's bytes.
+// enum_narrow_compound_success holds what is accepted beside each.
+
+mod enum_flow_narrow_compound;
+
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub a: usize;
+    pub p: Pair;
+    pub t: Tally;
+  }
+}
+use Slot;
+
+struct Pair {
+  pub a: usize;
+  pub b: usize;
+}
+
+// A type with a '+' and no '+=' of its own, so 't += n' is rewritten to 't = t + n'
+struct Tally {
+  pub n: usize;
+
+  pub fn `+`(self, more: usize) Tally {
+    return Tally(self.n + more);
+  }
+}
+
+fn change(m: &mut Slot) usize {
+  *m = Text("0123456789");
+  return 5usize;
+}
+
+struct Changer {
+  pub give: usize;
+
+  pub fn change(self, m: &mut Slot) usize {
+    *m = Text("0123456789");
+    return self.give;
+  }
+}
+
+// A name narrowed through a reference others may share: every compound operator, each the
+// only use of the name after its test, so that nothing but the assignment can refuse it
+fn addOp(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a += change(m);                   //~ ErrorVariantReshape "This compound assignment writes into one of the variants"
+  }
+}
+
+fn subOp(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a -= change(m);                   //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+fn mulOp(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a *= change(m);                   //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+fn divOp(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a /= change(m);                   //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+fn remOp(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a %= change(m);                   //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+fn orOp(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a |= change(m);                   //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+fn andOp(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a &= change(m);                   //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+fn xorOp(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a ^= change(m);                   //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+fn shlOp(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a <<= change(m);                  //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+fn shrOp(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a >>= change(m);                  //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+fn twoDeep(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.p.b += change(m);                 //~ ErrorVariantReshape "'change' is handed something that reaches a 'Slot' value"
+  }
+}
+
+fn methodOnRight(n: &mut Slot, m: &mut Slot, c: Changer) {
+  if n is Num {
+    n.a += c.change(m);                 //~ ErrorVariantReshape "'change' is handed something that reaches a 'Slot' value"
+  }
+}
+
+// The change is deeper in the right side than its outermost call, and the place is read there too
+fn readToo(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a += n.a + change(m);             //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+fn storeOnRight(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.a += { *m = Text("x"); 5usize };  //~ ErrorVariantReshape "but the store at"
+  }
+}
+
+fn rewrittenToPlus(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.t += change(m);                   //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+// A reference into the variant, bound and not used again after the assignment
+fn boundReference(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    let q = &mut n.a;
+    *q += change(m);                    //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+// ... the reference itself as the left side
+fn referenceAsPlace(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    let q = &mut n.a;
+    q += change(m);                     //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+// A pattern's binding of the variant
+fn patternBinding(n: &mut Slot, m: &mut Slot) {
+  if let Num(c) = n {
+    c.a += change(m);                   //~ ErrorVariantReshape "This compound assignment writes"
+  }
+}
+
+// A name held by value and narrowed by a test, beside a 'mut' borrow of it
+fn byValue() {
+  var s: Slot = Num(1usize, Pair(2usize, 3usize), Tally(4usize));
+  let m = &mut s;
+  if s is Num {
+    s.a += change(m);                   //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+fn byValueDeep() {
+  var s: Slot = Num(1usize, Pair(2usize, 3usize), Tally(4usize));
+  let m = &mut s;
+  if s is Num {
+    s.p.a -= change(m);                 //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+fn main() {
+  var s: Slot = Num(1usize, Pair(2usize, 3usize), Tally(4usize));
+  let a = &mut s;
+  addOp(a, a);
+  subOp(a, a);
+  mulOp(a, a);
+  divOp(a, a);
+  remOp(a, a);
+  orOp(a, a);
+  andOp(a, a);
+  xorOp(a, a);
+  shlOp(a, a);
+  shrOp(a, a);
+  twoDeep(a, a);
+  methodOnRight(a, a, Changer(1usize));
+  readToo(a, a);
+  storeOnRight(a, a);
+  rewrittenToPlus(a, a);
+  boundReference(a, a);
+  referenceAsPlace(a, a);
+  patternBinding(a, a);
+  byValue();
+  byValueDeep();
+}

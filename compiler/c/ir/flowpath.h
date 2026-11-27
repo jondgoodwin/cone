@@ -143,6 +143,7 @@ typedef struct {
     VarDclNode *guardname; // a lock's hidden guard: the variable the writer named that held a borrow through it
     uint32_t narrow;    // a name narrowed by a test or a store: its stand-in's index (pwNarrowName), else 0
     uint8_t narrowed;   // it is such a stand-in, bearing the name it stands for
+    uint8_t compound;   // it is the stand-in for the variant a compound assignment writes (pwCompoundVariant)
 } PathVar;
 
 // The variables the current walk has met, by index; index 0 is unused

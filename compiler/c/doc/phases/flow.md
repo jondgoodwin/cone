@@ -879,7 +879,10 @@ a method called on it has no receiver that is the only name (`pwShapeCall`); the
 loan's roots include what the root variable borrows (`loanRootsNote`); and a
 loan of it excludes no writer (`pwHeldExcluding`). It changes no loan's kind and
 no freezing. A borrow made through a lock (`g`, `&mut *shared`) is not such a way: no
-other holder reaches the value while the lock is held.
+other holder reaches the value while the lock is held. A view through `&mut *shared`'s guard is
+still one read through a `mut` borrow of the reference (`refway`, under "A reference variable lent
+writably"), so it is marked, and a call handed some other writable `List` is refused under it,
+though nothing else reaches what it views.
 
 A *loan* is one borrow (`BorrowTag`, `ArrayBorrowTag`) of a place, the same
 loan each time a loop walks it again. Its kind comes from the borrow's
@@ -1551,7 +1554,11 @@ borrows it through (`x += 1` is `{let tmp = &mut x; *tmp = *tmp + 1}`, and
 `v <- a, b` appends through one; both named `tempName`) is an access, a write,
 and no holder: `k += k` compiles. What is borrowed through it still carries
 its loan (`pwVarDcl` keeps it on the temporary, `pwLend` reads it), so
-`r = (v <- (1, 2))` holds `v`'s loan. A
+`r = (v <- (1, 2))` holds `v`'s loan. One thing is asked of it as of a holder:
+where it points into an enum's variant, whether the right side of the compound
+assignment could change that variant before the temporary is written through
+(`pwCompoundVariant`; [narrow](../nodes/narrow.md), "A compound assignment").
+A change of a collection's shape there is not asked. A
 borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
 shared path (`l: &mut List`, a field of `self`, a `Rc[mut, T]` owner) that loan
@@ -1874,6 +1881,24 @@ locals, which only a call that reaches one of them is asked of):
   that reshapes (`siTypeWriteHits`, which asks the same). The gate
   (`flowGateShapeStore`) sets `FlowGateShape` for a store into a struct-typed place that is no
   local named whole, in a function that has lent.
+
+**A reference variable lent writably is a second name** for what the reference borrows. A view through
+a reference that is frozen rather than marked -- into `*r` of a `&uni`, or of a `&mut` nothing else
+writes by yet, or into `**m` -- is frozen under the one name it was taken by, which `&mut r` does not
+touch (a place and its dereference are apart). The two meet at whichever comes second.
+The view first: `loanShapeRefView` notes the container on the loan (`refcont`), and a borrow that
+writes, of a variable's own storage, of a value that may hold a reference, marks every such view held
+through that variable (`pwLend`, `loanShapeRefLent`). The borrow first: a view through a `uni`
+reference read through a `mut` borrow (`Place.far`, `loanHoldsUniqAlias`) is marked as it is made,
+its roots the locals along the way (`refway`, `loanRootsNote`), so a store through `r` reaches it.
+Such a place is `Place.uniway` too: its roots stay the way's locals, and a view into a collection
+under an owner (`***m`, an `&uni Uni[List]`) takes the collection as its container (`pwShapeLent`),
+so a push through `r` is refused as a store over the owner is.
+Either way the freezing stays, so a change by the view's own name is reported as before; the mark adds
+the store and call checks, which refuse only a change made while the view is still to be used. The
+views noted are a method's or a function's borrow into a collection (`pwShapeLent`), a borrow into what
+an owner owns (`pwOwnerLent`), and a narrowing into a variant, whether followed (`pwNarrowShared`) or
+not (`castNarrowedSum`: by a `uni` reference, or a match's own `&`).
 
 **An owner is a shape-changing value too.** Storing over an owning reference (`Uni`, `Rc`, `Arc`, a
 program's region) frees what it points at, so a borrow into what an owner owns (`&mut *s`, a field of the
