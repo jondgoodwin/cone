@@ -388,9 +388,11 @@ void loanShapeSource(uint32_t loan, PathSet *holds);
 uint32_t loanMutAliasOf(PathSet *holds);
 void loanShapeAliasBy(uint32_t loan, uint32_t alias);
 // The same for a name narrowed by a test or a store: the held 'mut' borrow of the place,
-// and the loan the name holds beside it (flowpath.c, pwNarrowName)
+// and the loan the name holds beside it (flowpath.c, pwNarrowName). 'repoint': that loan
+// is of the reference variable itself, borrowed by 'alias', which loanIsRepoint says
 uint32_t loanMutAliasAt(Place *pl);
-uint32_t loanNarrowName(INode *site, Place *pl, uint32_t alias);
+uint32_t loanNarrowName(INode *site, Place *pl, uint32_t alias, int repoint);
+int loanIsRepoint(uint32_t loan);
 int loanIsExclusive(uint32_t entry);
 void loanShapeMark(uint32_t loan, INode *container);
 // Is this a loan into a value that changes shape, marked so or marked once another

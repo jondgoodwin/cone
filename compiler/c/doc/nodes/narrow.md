@@ -120,6 +120,14 @@ name (`FlagNarrowed`, `pwPlace`), where the refusal, `ErrorVariantReshape`, name
 borrow. What is borrowed through such a member, and a narrowed reference handed on as the
 receiver, carries the loan too (`Place.narrow`, `pwLend`). Where none is held, nothing is done.
 
+Where the name is a reference and the `mut` borrow is of the variable itself (`&mut p`), that
+borrow can also point the name elsewhere (`*r = other`, or a call handed `r` that does it),
+which changes which enum is read. The stand-in then holds a second loan, of the variable,
+marked with the reference's type as an owner's is (`reshapeOwnerCont`): a store of such a
+reference over it, or a call that may, is refused where the name is next used as the variant.
+This loan is the name's alone (`pwNarrowCarried`): what was borrowed through a member before,
+or copied from the reference, stays where it pointed.
+
 A test or store that establishes the variant by itself drops what earlier ones held, so a name
 tested again after a change is accepted. Where what is known past a test rests on earlier ones
 too (`FlagNarrowKeeps`: two tests leaving one of three variants), their loans are kept beside
@@ -153,10 +161,6 @@ asked of it (`loanUseCompound`): `x += x` reads what it writes.
 - **It never proves a call harmless for a name held by value or through `uni`, `imm`, `mut1`,
   in type check.** Only the name's own assignments, writable borrows of the whole enum and
   swaps end the narrowing there; what another name may change is the loan walk's, above.
-- **It does not see the name pointed at another value through a `mut` borrow held at the test.**
-  With `let r = &mut p;` before `if p is Circle`, the loan walk's stand-in follows changes of
-  the enum `p` reaches, and `*r = other`, or a call handed `r` that does it, changes which enum
-  that is.
 - **A change in a later operand of a condition is forgotten** for a name held by value or through
   `uni`, `imm`, `mut1`. The block of `if s is Circle && reset(&mut s)`, and an operand after
   `reset`, are narrowed again from the `is` tests of the whole condition (`narrowAssume`,
@@ -168,6 +172,11 @@ asked of it (`loanUseCompound`): `x += x` reads what it writes.
   owner typed as the variant (cast.md); no name of an owner is narrowed.
 - **It does not follow a closure that changes a captured name,** or a pointer made of one, past
   the writable borrow that made it (`narrowBorrowed` ends the narrowing at the borrow).
+- **It does not see a shared name (`ro`, `mut`) pointed at another value within a condition,**
+  through a `mut` borrow of it made before the test. The hidden local is declared after the
+  whole condition, and a transient copy is made at the use, from what the name points at by
+  then, while the call log asks only what could store over the enum. In
+  `if p is Circle && repoint(r)` the block reads the new value as a `Circle`.
 
 ## Hazards
 

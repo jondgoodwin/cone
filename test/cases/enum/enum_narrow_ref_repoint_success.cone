@@ -1,0 +1,155 @@
+// What is accepted beside enum_flow_narrow_ref_repoint: a name that is a reference to an
+// enum, narrowed by a test while a 'mut' borrow of the name itself is held, where pointing
+// the name elsewhere meets no later use of it as the variant tested
+
+mod enum_narrow_ref_repoint_success;
+
+import stdio use *;
+
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub a: usize;
+    pub b: usize;
+  }
+}
+use Slot;
+
+fn set(r: &mut &imm Slot, o: &imm Slot) {
+  *r = o;
+}
+
+fn look(r: &mut &imm Slot) usize {
+  if *r is Text {
+    return 1usize;
+  }
+  return 2usize;
+}
+
+fn say(s: &str) {
+  printStr(s);
+  printStr("\n");
+}
+
+fn show(p: &imm Slot) {
+  if p is Num {
+    printInt(i64.from(p.a + p.b));
+    printStr("\n");
+  }
+  else if p is Text {
+    say(p.s);
+  }
+}
+
+// No use of the name as the variant after the store
+fn noUse(var p: &imm Slot, o: &imm Slot) {
+  let r = &mut p;
+  if p is Text {
+    say(p.s);
+    *r = o;
+  }
+  show(p);
+}
+
+// Tested again after the store
+fn testedAgain(var p: &imm Slot, o: &imm Slot) {
+  let r = &mut p;
+  if p is Text {
+    *r = o;
+    if p is Text {
+      say(p.s);
+    }
+  }
+}
+
+// Tested again after a call that stores
+fn testedAfterCall(var p: &imm Slot, o: &imm Slot) {
+  let r = &mut p;
+  if p is Text {
+    set(r, o);
+  }
+  show(p);
+}
+
+// A call handed the borrow that stores nothing
+fn readCall(var p: &imm Slot) {
+  let r = &mut p;
+  if p is Text {
+    printInt(i64.from(look(r)));
+    printStr("\n");
+    say(p.s);
+  }
+}
+
+// A reference of the same type that is another variable, stored over by name and by borrow
+fn otherLocal(var p: &imm Slot, o: &imm Slot) {
+  var q = o;
+  let r = &mut p;
+  let x = &mut q;
+  if p is Text {
+    q = o;
+    *x = o;
+    set(x, o);
+    say(p.s);
+  }
+  show(*r);
+}
+
+// A borrow into the variant, and a copy of the reference, made before the store stay where
+// the name pointed
+fn madeBefore(var p: &imm Slot, o: &imm Slot) {
+  let r = &mut p;
+  if p is Text {
+    let a = &p.s;
+    let q = p;
+    *r = o;
+    say(*a);
+    show(q);
+  }
+  show(p);
+}
+
+// Tested on each pass of a loop
+fn looped(var p: &imm Slot, o: &imm Slot) {
+  let r = &mut p;
+  var i = 0usize;
+  while i < 2usize {
+    if p is Text {
+      say(p.s);
+      *r = o;
+    }
+    i += 1usize;
+  }
+  show(p);
+}
+
+// A 'uni' reference pointed elsewhere, then tested again
+fn uniAgain(var p: &'a uni Slot, o: &'a uni Slot) {
+  let r = &mut p;
+  if p is Text {
+    say(p.s);
+    *r = o;
+    if p is Text {
+      say(p.s);
+    }
+  }
+}
+
+fn main() {
+  let first: Slot = Text("first");
+  let second: Slot = Text("second");
+  let num: Slot = Num(40usize, 2usize);
+  noUse(&imm first, &imm num);
+  testedAgain(&imm first, &imm second);
+  testedAfterCall(&imm first, &imm num);
+  readCall(&imm first);
+  otherLocal(&imm first, &imm num);
+  madeBefore(&imm first, &imm num);
+  looped(&imm first, &imm second);
+  var a: Slot = Text("uni one");
+  var b: Slot = Text("uni two");
+  uniAgain(&uni a, &uni b);
+}
